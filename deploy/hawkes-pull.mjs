@@ -96,12 +96,18 @@ async function ciState(repo, sha, token) {
  */
 function retryLater(seconds, why) {
   if (DRY) return;
+  // A retry already waiting to fire is enough. Only the timer counts: the service half of the retry that started this
+  // very check may still be up, and its name being taken must not swallow the next retry (that ended the chain once).
+  const waiting = (u) => { try { return execFileSync('systemctl', ['is-active', u], { encoding: 'utf8' }).trim() === 'active'; } catch { return false; } };
+  if (waiting('hawkes-pull-retry.timer')) return;
+  // --no-block: the retry's service only starts the pull and exits, so it never holds the name while the pull runs.
+  const run = (unit) => execFileSync('systemd-run', ['--on-active', String(seconds), '--unit', unit, '--collect', '--quiet', 'systemctl', 'start', '--no-block', 'hawkes-pull.service'], { stdio: 'ignore' });
   try {
-    execFileSync('systemd-run', ['--on-active', String(seconds), '--unit', 'hawkes-pull-retry', '--collect', '--quiet', 'systemctl', 'start', 'hawkes-pull.service'], { stdio: 'ignore' });
-    say(`will look again in ${seconds} s (${why})`);
+    run('hawkes-pull-retry');
   } catch {
-    // A retry is already scheduled.
+    try { run(`hawkes-pull-retry-${Date.now()}`); } catch (e) { say(`could not schedule a retry: ${e.message}`); return; }
   }
+  say(`will look again in ${seconds} s (${why})`);
 }
 
 async function getJson(url) {
