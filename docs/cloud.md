@@ -46,7 +46,7 @@ node hawkesstudio/deploy/secrets.mjs           # update the API keys from hawkes
 node hawkesstudio/deploy/github-token.mjs      # store a new GitHub token (hidden input)
 studio.cmd repos sync                          # the server pulls every product repo
 ssh -i hawkesstudio/deploy/.keys/control_ed25519 ubuntu@52.0.19.230
-  journalctl -u hawkes-gen -f                  # logs (also hawkes-studio, hawkes-daily, caddy)
+  journalctl -u hawkes-gen -f                  # logs (also hawkes-studio, hawkes-daily, hawkes-pull, caddy)
   sudo systemctl restart hawkes-secrets hawkes-gen hawkes-studio   # after changing a secret
 ```
 
