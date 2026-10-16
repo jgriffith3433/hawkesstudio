@@ -98,8 +98,11 @@ Every day it runs these steps for every product (one at a time, through Hawkes G
 1. Builds it: Unity games on the **AWS build server**, incrementally.
 2. Playtests it in a real browser, locally and live. The game's own bot plays through real input, via the **playtest
    contract** `window.hawkesPlaytest` (spec: `hawkesstudio/docs/playtest.md`).
-3. Has Claude review the footage against the story doc.
-4. Merges the findings into a backlog.
+3. Has Claude review the footage against the story doc and the product's quality bar (`products.json` `quality`).
+   Reviews converge: at most 5 new findings each, told what's already known, a mode per run kind (daily full; beta,
+   agent checks and live checks look only for regressions). See `hawkesstudio/docs/daily.md` ("Reviews converge").
+4. Merges the findings into a backlog (blockers and bugs). Polish and ideas go to an ideas list: never auto-fixed,
+   expired after 14 days unseen.
 5. Writes the morning report (`hawkesstudio/reports/`).
 
 - J reads the report with Claude in chat, picks what matters, and Claude starts one session per fix.
