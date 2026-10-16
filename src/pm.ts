@@ -25,7 +25,7 @@ import { spawnSync } from 'node:child_process';
 import { db, J, parse } from './db.ts';
 import { DATA, PROJECTS, getProduct, isInfra, today, StudioError } from './config.ts';
 import {
-  getTask, setTask, getItem, startableTasks, taskOfChange, addQuestion, listQuestions, getQuestion, setQuestion, addComment,
+  getTask, setTask, getItem, startableTasks, tasksAwaitingGpu, taskOfChange, addQuestion, listQuestions, getQuestion, setQuestion, addComment,
   logDecision, listDecisions, getDecision, markUndone, countToday, listItems, threadFor, milestonesToReach, markReached, getMilestone,
   type Task, type Check,
 } from './roadmap.ts';
@@ -181,7 +181,7 @@ async function checkOnBeta(t: Task) {
       const { getChange } = await changes();
       const c = getChange(t.change!);
       const { startBeta } = await import('./pipeline.ts');
-      const r = startBeta(t.product, { focus: `Checking "${t.title}" on beta.`, criteria: t.criteria, scenario: c?.verify?.scenario });
+      const r = startBeta(t.product, { focus: `Checking "${t.title}" on beta.`, criteria: t.criteria, scenario: c?.verify?.scenario, options: c?.verify?.options });
       logDecision('beta-check', t.id, t.product, `started beta run ${r.id} to check "${t.title}" against its criteria`);
     }
     if (!t.criteria.length && Date.now() - (t.merged_at ?? 0) > 2 * 3600_000) {
@@ -219,7 +219,7 @@ async function checkOnBeta(t: Task) {
 async function startTaskChange(t: Task, note?: string) {
   const { startTask } = await changes();
   const request = `${t.request}${note ? `\n\nFrom the PM (an earlier attempt): ${note}` : ''}`;
-  const id = startTask(t.product, request, { criteria: t.criteria, task: t.id, title: t.title });
+  const id = startTask(t.product, request, { criteria: t.criteria, task: t.id, title: t.title, gpuBudget: t.gpu?.items?.length ? t.gpu.budget ?? 0 : null });
   setTask(t.id, { status: 'working', change: id, changes: [...t.changes, id], tries: t.tries + 1, merged_at: null });
   logDecision('start', t.id, t.product, `started ${id} for "${t.title}" (try ${t.tries + 1})${note ? `: ${note.slice(0, 300)}` : ''}`, { kind: 'start', change: id, task: t.id });
   return id;
@@ -248,6 +248,14 @@ export async function startWork() {
   const sd = selfDeploys(1)[0];
   if (sd?.outcome === 'waiting' && Date.now() - Date.parse(sd.at) < 3 * 3600_000) return [];
   const out: string[] = [];
+  // Content tasks that would spend GPU money wait for J's budget: ask him once each, with the estimate.
+  for (const t of tasksAwaitingGpu()) {
+    const e = t.gpu?.estimate;
+    const text = e && !e.error
+      ? `"${t.title}" (${name(t.product)}) will generate on the GPU: about ${e.gpuHours} GPU-hours on ${e.servers} server(s), ~$${e.cost.toFixed(2)} ($${e.withIdleTail.toFixed(2)} if the servers idle out instead of being stopped), about ${e.wallMinutes} min. Approve a budget for it?`
+      : `"${t.title}" (${name(t.product)}) will generate on the GPU, but it couldn't be priced${e?.error ? ` (${e.error})` : ''}. Price it again, or approve a budget anyway?`;
+    askJ(text, { subject: t.id, product: t.product, options: e && !e.error ? [`Approve $${Math.ceil(e.cost * 1.25 * 100) / 100}`, 'Not now'] : ['Price it again', 'Not now'], from: 'PM' });
+  }
   let cap = capacity();
   // J's own reports from the beta sites (bugreport.ts) come first: before roadmap tasks and the reviews' bugs.
   const startBug = (f: any, why: string) => {

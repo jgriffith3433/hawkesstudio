@@ -24,7 +24,7 @@ export const paths = {
 for (const d of [DATA, paths.logs, paths.reports]) fs.mkdirSync(d, { recursive: true });
 
 /** device "phone": a 390x844 touch phone (the review also judges touch controls, text size and layout). */
-export type Playtest = { scenario?: string; mode?: 'auto' | 'contract' | 'generic' | 'site'; where: 'local' | 'live'; device?: 'desktop' | 'phone'; daily?: boolean; timeout?: number };
+export type Playtest = { scenario?: string; mode?: 'auto' | 'contract' | 'generic' | 'site'; where: 'local' | 'live'; device?: 'desktop' | 'phone'; daily?: boolean; timeout?: number; seed?: number; options?: Record<string, unknown> };
 
 export type Product = {
   id: string;

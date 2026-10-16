@@ -137,7 +137,7 @@ const server = http.createServer(async (req, res) => {
     }
     if (route === '/api/playtest' && method === 'POST') {
       const b = await readJson(req);
-      return send(res, 200, { ok: true, run: startPartial('playtest', String(b.product), { scenario: b.scenario, where: b.where, device: b.device === 'phone' ? 'phone' : undefined, mode: b.mode, review: b.review, focus: b.focus, reviewMode: ['full', 'verify', 'regression'].includes(b.reviewMode) ? b.reviewMode : undefined, origin }).id });
+      return send(res, 200, { ok: true, run: startPartial('playtest', String(b.product), { scenario: b.scenario, where: b.where, device: b.device === 'phone' ? 'phone' : undefined, mode: b.mode, review: b.review, focus: b.focus, reviewMode: ['full', 'verify', 'regression'].includes(b.reviewMode) ? b.reviewMode : undefined, seed: Number(b.seed) || undefined, options: b.options && typeof b.options === 'object' && !Array.isArray(b.options) ? b.options : undefined, origin }).id });
     }
 
     // Playtests: every run with its video, screenshots and review (dashboard Playtests tab), trends.
@@ -271,10 +271,18 @@ const server = http.createServer(async (req, res) => {
       m = /^\/api\/roadmap\/items\/(i_[0-9a-f]+)$/.exec(route);
       if (m && method === 'GET') return send(res, 200, rm.getItem(m[1]) ?? { error: 'no such item' });
       if (m && method === 'PATCH') { const it = rm.updateItem(m[1], b); pm.kick(); return send(res, 200, it); }
-      if (route === '/api/roadmap/tasks' && method === 'POST') { const t = rm.addTask(b); pm.kick(); return send(res, 200, t); }
+      if (route === '/api/roadmap/tasks' && method === 'POST') { let t: any = rm.addTask(b); if (t.gpu) t = await rm.estimateTask(t.id); pm.kick(); return send(res, 200, t); }
       m = /^\/api\/roadmap\/tasks\/(k_[0-9a-f]+)$/.exec(route);
       if (m && method === 'GET') return send(res, 200, rm.getTask(m[1]) ?? { error: 'no such task' });
-      if (m && method === 'PATCH') { const t = rm.updateTask(m[1], b); pm.kick(); return send(res, 200, t); }
+      if (m && method === 'PATCH') { let t: any = rm.updateTask(m[1], b); if (b.gpu !== undefined && t.gpu) t = await rm.estimateTask(t.id); pm.kick(); return send(res, 200, t); }
+      // A content task's GPU: estimate it again, or record J's approved budget (dollars), after which it can start.
+      m = /^\/api\/roadmap\/tasks\/(k_[0-9a-f]+)\/gpu$/.exec(route);
+      if (m && method === 'POST') {
+        let t: any = b.budget !== undefined ? rm.approveGpu(m[1], Number(b.budget), by ?? 'J') : await rm.estimateTask(m[1]);
+        if (b.budget !== undefined && t.gpu?.items?.length && !t.gpu.estimate) t = await rm.estimateTask(m[1]);
+        pm.kick();
+        return send(res, 200, t);
+      }
       if (route === '/api/comments' && method === 'GET') return send(res, 200, { comments: rm.commentsOn(...String(q('subject') ?? '').split(',')) });
       if (route === '/api/comments' && method === 'POST') return send(res, 200, rm.addComment(String(b.subject), String(b.text ?? ''), by, b.kind === 'question' ? 'question' : 'comment'));
       if (route === '/api/questions' && method === 'GET') return send(res, 200, { questions: rm.listQuestions(q('status') ?? 'open,asked J') });
@@ -315,7 +323,7 @@ const server = http.createServer(async (req, res) => {
     if (route === '/api/changes' && method === 'POST') {
       const b = await readJson(req);
       const by = origin ? 'Talk' : typeof b.by === 'string' ? b.by.slice(0, 60) : null;
-      const change = b.request ? startTask(String(b.product), String(b.request)) : startFix(String(b.product), Array.isArray(b.findings) ? b.findings.map(String) : [String(b.finding)]);
+      const change = b.request ? startTask(String(b.product), String(b.request), { gpuBudget: b.gpuBudget === undefined || b.gpuBudget === null ? null : Number(b.gpuBudget) }) : startFix(String(b.product), Array.isArray(b.findings) ? b.findings.map(String) : [String(b.finding)]);
       tagChange(change, origin, by);
       return send(res, 200, { ok: true, change });
     }

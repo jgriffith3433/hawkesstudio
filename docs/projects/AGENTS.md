@@ -210,6 +210,13 @@ to drive. The patterns that repeat across projects:
    batch-mode tests. DoD has `npm test` (sim) and `npm run typecheck`. Every game has a playtest bot behind the
    contract; `studio.cmd playtest <product> <scenario> --wait` plays it in a browser and Claude reviews it.
 6. **Studio plays everything daily** (Hawkes Studio, above). The report and backlog are where work comes from.
+7. **Agents make content too.** Each product repo has content skills in `.claude/skills/` (DoD `dod-stage`,
+   `dod-fighter`, `dod-voice-music`; Sick Of It `soi-enemy`, `soi-level`, `soi-voice-music`; PH Origins
+   `phorigins-level`; Imagine Live TV `iltv-story-branch`): story and canon first, data in the product's format,
+   generation through Hawkes Gen (asset manifests, best-of-N picked by Claude against the art direction and canon,
+   library reuse, batched GPU), the product's validators, and a playtest of the new content. GPU work is priced
+   (`hawkesgen_estimate`, `POST /v1/estimate`) and needs J's approved budget: roadmap content tasks wait for it, and an
+   agent without one designs and prices but generates nothing on the GPU (`hawkesstudio/docs/daily.md`, "Content tasks").
 
 ### AI services and where they are wired
 

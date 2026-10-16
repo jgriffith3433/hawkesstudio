@@ -55,7 +55,7 @@ try { db.exec('ALTER TABLE changes ADD COLUMN request TEXT'); } catch { /* alrea
 // The Talk conversation that started it (results report there, followup.ts), whether it was told, and who started it.
 for (const col of ['origin', 'told', 'started_by']) try { db.exec(`ALTER TABLE changes ADD COLUMN ${col} TEXT`); } catch { /* already there */ }
 // A roadmap task's change (roadmap.ts): the task, its acceptance criteria, the agent's session (to resume after a question), what the PM saw.
-for (const col of ['task', 'criteria', 'session', 'pm_seen']) try { db.exec(`ALTER TABLE changes ADD COLUMN ${col} TEXT`); } catch { /* already there */ }
+for (const col of ['task', 'criteria', 'session', 'pm_seen', 'gpu_budget']) try { db.exec(`ALTER TABLE changes ADD COLUMN ${col} TEXT`); } catch { /* already there */ }
 
 export type Change = {
   id: string; product: string; findings: string[]; status: string; detail: string | null; repo: string; slug: string; branch: string; base: string;
@@ -63,6 +63,8 @@ export type Change = {
   verify: any; notes: { at: number; by: string; text: string }[]; log: string[]; cost: number; created: number; updated: number | null;
   /** The roadmap task it works on (roadmap.ts), its acceptance criteria, and the agent's Claude Code session (to resume after a question). */
   task: string | null; criteria: string[]; session: string | null;
+  /** Dollars J approved for GPU generation in this change (content work); null: no GPU approved. */
+  gpu_budget: string | null;
   /** A change to Hawkes Studio or Hawkes Gen (a pull request into main, which deploys itself), not a product. */
   infra: boolean;
 };
@@ -142,6 +144,28 @@ async function github(route: string, init: { method?: string; body?: unknown } =
 
 // ----------------------------------------------------------------- brief
 
+/** What GPU generation this change may do (content work): J's approved budget, or none. */
+function gpuBrief(c: Change) {
+  const b = c.gpu_budget === null ? null : Number(c.gpu_budget);
+  if (b !== null && b > 0) {
+    return `## GPU budget: $${b.toFixed(2)} (approved by J)
+
+You may generate through Hawkes Gen up to that: queue each kind of job as one batch (one model load), reuse what
+the library already has (\`reuse\`, asset manifests), stop the servers you started when the batch is done, and report
+the GPU minutes and dollars spent (\`hawkesgen_jobs\`). If it won't fit, make the most important part and say what the
+rest would cost.
+
+`;
+  }
+  return `## GPU budget: none
+
+Nothing here was approved for GPU generation (images, video, music, 3D on the fleet). Do everything that needs no GPU
+(design, data, specs, Claude-only steps, voice and sound effects are fine: cents each), price the GPU part with
+\`hawkesgen_estimate\`, and end with that estimate in your summary so J can approve it. Never start a GPU server.
+
+`;
+}
+
 async function writeBrief(c: Change, p: Product, findings: any[], note?: string) {
   const dir = path.join(c.worktree, '.hawkes');
   fs.mkdirSync(path.join(dir, 'shots'), { recursive: true });
@@ -175,7 +199,7 @@ ${c.request}
 Work out what that means in this project (read the story doc and AGENTS.md), make it well, and keep it consistent with
 the product's tone and style. If it's too big for one change, do a solid first part and say what's left in the summary.
 
-` : ''}${c.criteria.length ? `## Acceptance criteria (how this is judged)
+${gpuBrief(c)}` : ''}${c.criteria.length ? `## Acceptance criteria (how this is judged)
 
 The change is merged into beta only when a playtest of it shows every one of these, and it is done only when they also
 pass on beta:
@@ -185,7 +209,8 @@ Where the game implements the playtest contract (\`window.hawkesPlaytest\`: see 
 at \`hawkesstudio/docs/playtest.md\` next to this repository), add or extend a scenario that plays to what the criteria
 describe (through real input, no teleporting; named setup shortcuts are fine) and logs events or checks that show each
 one, so the review can judge them from the footage and the timeline. Write that scenario's name (one line, e.g.
-\`checkout\`) in \`.hawkes/scenario.txt\`: Studio's verification playtest, and beta's, play it. Without a contract, make
+\`checkout\`) in \`.hawkes/scenario.txt\`: Studio's verification playtest, and beta's, play it. To play specific content
+(a new stage, level or enemy), add a second line with the scenario's options as JSON, e.g. \`{"stage":"neon-pit"}\`. Without a contract, make
 sure each criterion can be seen when the page is played.
 
 ` : ''}${thread.length ? `## The thread (J, Talk and agents on this work; newest last)
@@ -296,7 +321,7 @@ export function costToday() {
 }
 
 /** Starts an agent on something J asked for (a feature, a change, a tweak): a branch, a pull request, a preview. */
-export function startTask(productId: string, request: string, { criteria = [], task = null, title }: { criteria?: string[]; task?: string | null; title?: string } = {}) {
+export function startTask(productId: string, request: string, { criteria = [], task = null, title, gpuBudget = null }: { criteria?: string[]; task?: string | null; title?: string; gpuBudget?: number | null } = {}) {
   const s = agentSettings();
   if (!s.enabled) throw new Error('Agent workers are turned off (settings).');
   // Studio and Gen themselves: a pull request into main (they have no beta lane).
@@ -311,7 +336,7 @@ export function startTask(productId: string, request: string, { criteria = [], t
   const words = request.toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 40).replace(/^-|-$/g, '');
   db.prepare('INSERT INTO changes (id, product, findings, status, detail, repo, slug, branch, base, worktree, title, request, notes, log, created) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
     .run(id, target.id, '[]', 'queued', task ? 'queued by the PM (a roadmap task)' : 'queued (J asked)', top, slug, `task/${id.slice(2)}-${words}`, inf ? 'main' : BETA, path.join(WORK(), id), (title ?? request.split(String.fromCharCode(10))[0]).slice(0, 120), request, '[]', '[]', Date.now());
-  db.prepare('UPDATE changes SET task = ?, criteria = ? WHERE id = ?').run(task, J(criteria), id);
+  db.prepare('UPDATE changes SET task = ?, criteria = ?, gpu_budget = ? WHERE id = ?').run(task, J(criteria), gpuBudget === null || !(gpuBudget >= 0) ? null : String(gpuBudget), id);
   void pump();
   return id;
 }
@@ -522,12 +547,21 @@ async function verifyChange(c: Change, p: Product, findings: any[]) {
       return undefined;
     }
   })();
+  // A second line in scenario.txt may give the scenario's options as JSON ({"stage":"neon-pit"}): the new content to play.
+  const agentOptions = (() => {
+    try {
+      const o = JSON.parse(fs.readFileSync(path.join(c.worktree, '.hawkes', 'scenario.txt'), 'utf8').trim().split('\n').slice(1).join('\n').trim() || 'null');
+      return o && typeof o === 'object' && !Array.isArray(o) ? (o as Record<string, unknown>) : undefined;
+    } catch {
+      return undefined;
+    }
+  })();
   const scenario = agentScenario ?? findings.map((f: any) => f.scenario).find((s: string) => s && s.endsWith('@local'))?.split('@')[0] ?? (p.playtests.find((t) => t.where === 'local')?.scenario ?? 'smoke');
   const mode = agentScenario ? undefined : p.playtests.find((t) => t.where === 'local' && (t.scenario ?? t.mode) === scenario)?.mode;
   const port = 8800 + (parseInt(c.id.slice(2, 6), 16) % 200);
   const url = await serveDir(p, dir, port);
   try {
-    const run = await genRun('playtest.run', p.id, { url, mode: mode ?? (p.contract ? 'contract' : 'auto'), ...(mode ? {} : { scenario }), ...(mode === 'site' ? { maxPages: 40 } : {}) });
+    const run = await genRun('playtest.run', p.id, { url, mode: mode ?? (p.contract ? 'contract' : 'auto'), ...(mode ? {} : { scenario }), ...(mode === 'site' ? { maxPages: 40 } : {}), ...(agentScenario && agentOptions ? { options: agentOptions } : {}) });
     if (run.status !== 'done') return { outcome: 'failed', error: run.error, playtest: run.id, build };
     // A verify review (review.ts): did the change work (it says by id whether the findings look fixed), did anything regress.
     // A roadmap task's acceptance criteria go with it and are judged one by one (acceptance.ts).
@@ -538,7 +572,7 @@ async function verifyChange(c: Change, p: Product, findings: any[]) {
     const v = rev.result ?? {};
     const video = run.outputs?.find((o: any) => o.kind === 'video')?.asset ?? null;
     const criteria = c.criteria.length ? await judgeCriteria(c.criteria, v, run.result, c.summary) : undefined;
-    return { outcome: run.result?.outcome, scenario, playtest: run.id, review: rev.id, verdict: v.verdict, changeWorked: v.changeWorked, known: v.known ?? [], summary: v.summary, scores: v.scores, findings: (v.findings ?? []).slice(0, 8), video, url: localUrl(p), build, ...(criteria ? { criteria } : {}) };
+    return { outcome: run.result?.outcome, scenario, ...(agentScenario && agentOptions ? { options: agentOptions } : {}), playtest: run.id, review: rev.id, verdict: v.verdict, changeWorked: v.changeWorked, known: v.known ?? [], summary: v.summary, scores: v.scores, findings: (v.findings ?? []).slice(0, 8), video, url: localUrl(p), build, ...(criteria ? { criteria } : {}) };
   } finally {
     stopServed(port);
   }
@@ -889,7 +923,7 @@ export async function approve(id: string, { confirm, by = 'J', origin }: { confi
   await cleanup(id, { deleteBranch: true });
   // Beta moved: its pre-deploy build, its build (Unity), the beta site and a local playtest of it follow, in the background.
   // A roadmap task's criteria are judged again on beta, on the scenario its agent wrote for them.
-  void import('./pipeline.ts').then(({ startBeta }) => startBeta(c.product, { focus: `Just merged into beta: ${c.title}. Check it works and nothing regressed.`, origin, criteria: c.criteria, scenario: c.verify?.scenario })).catch((e) => console.warn(`[studio] beta after ${id}: ${e.message ?? e}`));
+  void import('./pipeline.ts').then(({ startBeta }) => startBeta(c.product, { focus: `Just merged into beta: ${c.title}. Check it works and nothing regressed.`, origin, criteria: c.criteria, scenario: c.verify?.scenario, options: c.verify?.options })).catch((e) => console.warn(`[studio] beta after ${id}: ${e.message ?? e}`));
   return getChange(id);
 }
 

@@ -140,3 +140,24 @@ test('the ready report shows verified criteria and known bugs', () => {
   assert.match(md, /Press Leaderboard/);
   assert.match(md, /Names overflow/);
 });
+
+test('a content task that spends GPU money waits for J\'s budget', async () => {
+  const it = rm.addItem({ product: 'pmtest', title: 'New stage', goal: 'A stage from a concept', criteria: ['the stage plays'], size: 'M', status: 'planned' });
+  const t = rm.addTask({ item: it.id, request: 'Make the stage', gpu: [{ tool: 'image.edit', count: 20, label: 'paint' }] });
+  assert.equal(t.gpu?.items?.length, 1);
+  assert.ok(!rm.startableTasks().some((x) => x.id === t.id), 'not priced yet: waits');
+  // Priced (as estimateTask would store it): still waits for J.
+  db.prepare('UPDATE tasks SET gpu = ? WHERE id = ?').run(JSON.stringify({ ...t.gpu, estimate: { gpuHours: 0.4, cost: 0.75, withIdleTail: 1.4, servers: 1, wallMinutes: 30, at: Date.now() } }), t.id);
+  assert.equal(rm.tasksAwaitingGpu().some((x) => x.id === t.id), true);
+  assert.ok(!rm.startableTasks().some((x) => x.id === t.id));
+  rm.approveGpu(t.id, 0.5, 'J');
+  assert.ok(!rm.startableTasks().some((x) => x.id === t.id), 'a budget under the estimate does not cover it');
+  rm.approveGpu(t.id, 1, 'J');
+  assert.ok(rm.startableTasks().some((x) => x.id === t.id), 'approved: it can start');
+  assert.equal(rm.tasksAwaitingGpu().some((x) => x.id === t.id), false);
+  // A task with no GPU work never waits.
+  const plain = rm.addTask({ item: it.id, request: 'Write the blurb' });
+  assert.equal(rm.gpuCleared(plain), true);
+  assert.throws(() => rm.addTask({ item: it.id, request: 'x', gpu: [{ count: 2 }] }), /tool \| preset/);
+  rm.updateItem(it.id, { status: 'dropped' });
+});

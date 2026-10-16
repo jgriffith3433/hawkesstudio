@@ -49,7 +49,7 @@ db.exec(`
 `);
 // Findings can belong to a roadmap item; the PM loop marks the runs it has seen. (Changes get their task columns in agents.ts.)
 // J's reports from the beta sites (bugreport.ts) are findings with source 'J', the milestone he was testing and the report.
-for (const [table, col] of [['runs', 'pm_seen'], ['findings', 'item'], ['items', 'milestone'], ['findings', 'source'], ['findings', 'milestone'], ['findings', 'report']]) {
+for (const [table, col] of [['runs', 'pm_seen'], ['findings', 'item'], ['items', 'milestone'], ['findings', 'source'], ['findings', 'milestone'], ['findings', 'report'], ['tasks', 'gpu']]) {
   try { db.exec(`ALTER TABLE ${table} ADD COLUMN ${col} TEXT`); } catch { /* already there */ }
 }
 
@@ -65,14 +65,20 @@ export type Task = {
   checks: { where: 'change' | 'beta'; at: number; run?: string; change?: string; video?: string | null; verdict?: string; results: Check[] } | null;
   /** How J can try it (the agent's words). */
   try: string | null; note: string | null; merged_at: number | null; verified_at: number | null; live_at: number | null; created: number; updated: number | null;
+  /**
+   * Content tasks that generate on the GPU: what they will make (Hawkes Gen estimate items), the estimate, and the
+   * budget J approved. A task whose estimate costs money waits until J approves a budget that covers it.
+   */
+  gpu: TaskGpu | null;
 };
+export type TaskGpu = { items?: any[]; estimate?: { gpuHours: number; cost: number; withIdleTail: number; servers: number; wallMinutes: number; at: number; error?: string }; budget?: number | null; approvedBy?: string | null; approvedAt?: number | null };
 export type Item = {
   id: string; product: string; title: string; goal: string | null; why: string | null; criteria: string[]; size: string | null; status: string;
   ord: number; origin: string | null; note: string | null; by: string | null; milestone?: string | null; created: number; updated: number | null; tasks?: Task[];
 };
 
 const toItem = (r: any): Item => ({ ...r, criteria: parse(r.criteria) ?? [] });
-const toTask = (r: any): Task => ({ ...r, criteria: parse(r.criteria) ?? [], depends: parse(r.depends) ?? [], changes: parse(r.changes) ?? [], checks: parse(r.checks) });
+const toTask = (r: any): Task => ({ ...r, criteria: parse(r.criteria) ?? [], depends: parse(r.depends) ?? [], changes: parse(r.changes) ?? [], checks: parse(r.checks), gpu: parse(r.gpu) ?? null });
 const list = (v: unknown) => (Array.isArray(v) ? v : typeof v === 'string' && v.trim() ? v.split('\n') : []).map((s) => String(s).replace(/^\s*[-*\d.)]+\s*/, '').trim()).filter(Boolean).slice(0, 20);
 const productId = (id: string) => {
   const p = loadProducts().find((x) => x.id === id || x.name.toLowerCase() === String(id).toLowerCase());
@@ -136,7 +142,7 @@ export function updateItem(id: string, patch: Partial<{ title: string; goal: str
   return getItem(id)!;
 }
 
-export function addTask(a: { item: string; title?: string; request: string; criteria?: unknown; depends?: unknown; status?: string; ord?: number }) {
+export function addTask(a: { item: string; title?: string; request: string; criteria?: unknown; depends?: unknown; status?: string; ord?: number; gpu?: unknown }) {
   const item = getItem(a.item);
   if (!item) throw new StudioError(`No item ${a.item}`, 404);
   if (!a.request?.trim()) throw new StudioError('A task needs a request (what the agent should do)');
@@ -147,17 +153,25 @@ export function addTask(a: { item: string; title?: string; request: string; crit
   const id = newId('k');
   db.prepare('INSERT INTO tasks (id, item, product, title, request, criteria, depends, status, ord, created) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
     .run(id, item.id, item.product, (a.title ?? a.request.split('\n')[0]).trim().slice(0, 160), a.request.trim(), J(list(a.criteria)), J(depends), status, a.ord ?? nextOrd('tasks', 'item', item.id), Date.now());
+  const gpu = gpuItems(a.gpu);
+  if (gpu) db.prepare('UPDATE tasks SET gpu = ? WHERE id = ?').run(J({ items: gpu }), id);
   return getTask(id)!;
 }
 
 /** Fields Talk and J may set. Status changes the loop makes (working, review, merged, ...) go through setTask. */
-export function updateTask(id: string, patch: Partial<{ title: string; request: string; criteria: unknown; depends: unknown; status: string; ord: number; note: string }>) {
+export function updateTask(id: string, patch: Partial<{ title: string; request: string; criteria: unknown; depends: unknown; status: string; ord: number; note: string; gpu: unknown }>) {
   const cur = getTask(id);
   if (!cur) throw new StudioError(`No task ${id}`, 404);
   // working, review, merged, verified and live come from the agents and the checks, never by hand.
   if (patch.status && !['idea', 'planned', 'dropped'].includes(patch.status)) throw new StudioError(`A task's status is set by its work and its checks; by hand it can be idea, planned (start or retry) or dropped`);
   // Back to planned (to try again from scratch) resets the tries and the change.
   const fresh = patch.status === 'planned' && !['idea', 'planned'].includes(cur.status);
+  // New GPU items: estimated again by the caller (estimateTask); an approval stays only while it covers the estimate.
+  if (patch.gpu !== undefined) {
+    const items = gpuItems(patch.gpu);
+    db.prepare('UPDATE tasks SET gpu = ? WHERE id = ?').run(items ? J({ ...(cur.gpu ?? {}), items, estimate: undefined }) : null, id);
+    delete patch.gpu;
+  }
   return setTask(id, {
     ...patch, criteria: patch.criteria !== undefined ? list(patch.criteria) : undefined, depends: patch.depends !== undefined ? list(patch.depends) : undefined,
     ...(fresh ? { tries: 0, change: null, checks: null } : {}),
@@ -198,7 +212,68 @@ export function startableTasks() {
   const rows = (db.prepare(`SELECT t.* FROM tasks t JOIN items i ON i.id = t.item WHERE t.status = 'planned' AND i.status IN ('planned', 'in progress')
     ORDER BY i.ord, i.created, t.ord, t.created`).all() as any[]).map(toTask);
   const done = (d: string) => ['merged', 'verified', 'live'].includes(getTask(d)?.status ?? '');
-  return rows.filter((t) => t.depends.every(done));
+  return rows.filter((t) => t.depends.every(done) && gpuCleared(t));
+}
+
+// ------------------------------------------------------------- GPU budgets
+
+/** The estimate items a task will generate ([{ tool | preset, params, count, label }]), or null for none. */
+function gpuItems(v: unknown): any[] | null {
+  let raw: any = v;
+  if (typeof v === 'string') {
+    try {
+      raw = JSON.parse(v);
+    } catch {
+      raw = null;
+    }
+  }
+  const items = Array.isArray(raw) ? raw : Array.isArray(raw?.items) ? raw.items : null;
+  if (!items?.length) return null;
+  for (const it of items) if (!it || typeof it !== 'object' || (!it.tool && !it.preset)) throw new StudioError('gpu: a list of { tool | preset, params, count, label } (Hawkes Gen estimate items)');
+  return items.slice(0, 40);
+}
+
+/** A task can start when it generates nothing on the GPU, or J approved a budget that covers its estimate. */
+export function gpuCleared(t: Task) {
+  const g = t.gpu;
+  if (!g?.items?.length) return true;
+  if (!g.estimate || g.estimate.error) return false;
+  if (g.estimate.cost <= 0) return true;
+  return typeof g.budget === 'number' && g.budget >= g.estimate.cost;
+}
+
+/** Prices a task's GPU items through Hawkes Gen (its job history) and keeps the estimate on the task. */
+export async function estimateTask(id: string) {
+  const t = getTask(id);
+  if (!t?.gpu?.items?.length) return t;
+  const { gen } = await import('./gen.ts');
+  let estimate: NonNullable<TaskGpu['estimate']>;
+  try {
+    const e = await gen.estimate(t.gpu.items, { project: t.product });
+    estimate = { gpuHours: e.gpu.hours, cost: e.cost.total, withIdleTail: e.cost.withIdleTail, servers: e.gpu.servers, wallMinutes: e.wallMinutes, at: Date.now() };
+  } catch (err: any) {
+    estimate = { gpuHours: 0, cost: 0, withIdleTail: 0, servers: 0, wallMinutes: 0, at: Date.now(), error: String(err.message ?? err).slice(0, 300) };
+  }
+  // A budget J approved stays while it still covers the estimate.
+  const keep = typeof t.gpu.budget === 'number' && t.gpu.budget >= estimate.cost;
+  db.prepare('UPDATE tasks SET gpu = ?, updated = ? WHERE id = ?')
+    .run(J({ ...t.gpu, estimate, ...(keep ? {} : { budget: null, approvedBy: null, approvedAt: null }) }), Date.now(), id);
+  return getTask(id);
+}
+
+/** J's approval of a GPU budget for a task (dollars). Only on J's own word. */
+export function approveGpu(id: string, budget: number, by: string) {
+  const t = getTask(id);
+  if (!t) throw new StudioError(`No task ${id}`, 404);
+  if (!(budget >= 0)) throw new StudioError('budget: dollars, 0 or more');
+  db.prepare('UPDATE tasks SET gpu = ?, updated = ? WHERE id = ?').run(J({ ...(t.gpu ?? {}), budget, approvedBy: by, approvedAt: Date.now() }), Date.now(), id);
+  return getTask(id)!;
+}
+
+/** Planned tasks waiting only on J's GPU approval (the PM asks him once each). */
+export function tasksAwaitingGpu() {
+  return (db.prepare(`SELECT t.* FROM tasks t JOIN items i ON i.id = t.item WHERE t.status = 'planned' AND t.gpu IS NOT NULL AND i.status IN ('planned', 'in progress')`).all() as any[])
+    .map(toTask).filter((t) => t.gpu?.items?.length && !gpuCleared(t));
 }
 
 // -------------------------------------------------------------- milestones

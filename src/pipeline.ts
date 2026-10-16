@@ -359,7 +359,7 @@ export async function playtestProduct(run: string, p: Product, t: Playtest, { re
     return null;
   }
   // Live sites may not have the contract yet (it ships with the next deploy): auto falls back to a generic smoke test.
-  const params: Record<string, unknown> = { url, mode: t.mode ?? (p.contract && t.where === 'local' ? 'contract' : 'auto'), ...(t.scenario ? { scenario: t.scenario } : {}), ...(t.timeout ? { timeout: t.timeout } : {}) };
+  const params: Record<string, unknown> = { url, mode: t.mode ?? (p.contract && t.where === 'local' ? 'contract' : 'auto'), ...(t.scenario ? { scenario: t.scenario } : {}), ...(t.timeout ? { timeout: t.timeout } : {}), ...(t.seed ? { seed: t.seed } : {}), ...(t.options ? { options: t.options } : {}) };
   if (t.mode === 'site') params.maxPages = 40;
   Object.assign(params, playtestExtras(p.id, name, t));
   if (gpuGate && p.engine !== 'static') {
@@ -438,7 +438,7 @@ export async function playtestProduct(run: string, p: Product, t: Playtest, { re
 }
 
 /** Runs the pipeline pieces on their own (from the API, CLI or MCP) as a small run. */
-export function startPartial(kind: 'build' | 'playtest' | 'test', productId: string, opts: { scenario?: string; where?: 'local' | 'live'; device?: 'desktop' | 'phone'; mode?: string; force?: boolean; review?: boolean; focus?: string; reviewMode?: ReviewMode; platform?: 'EditMode' | 'PlayMode'; category?: string; origin?: string | null } = {}) {
+export function startPartial(kind: 'build' | 'playtest' | 'test', productId: string, opts: { scenario?: string; where?: 'local' | 'live'; device?: 'desktop' | 'phone'; mode?: string; force?: boolean; review?: boolean; focus?: string; reviewMode?: ReviewMode; platform?: 'EditMode' | 'PlayMode'; category?: string; origin?: string | null; seed?: number; options?: Record<string, unknown> } = {}) {
   const p = getProduct(productId);
   const id = newId('r');
   db.prepare('INSERT INTO runs (id, kind, status, detail, products, options, started) VALUES (?, ?, ?, ?, ?, ?, ?)').run(id, kind, 'running', `${kind} ${p.id}`, J([p.id]), J(opts), Date.now());
@@ -447,7 +447,7 @@ export function startPartial(kind: 'build' | 'playtest' | 'test', productId: str
     try {
       if (kind === 'build') await buildProduct(id, p, { force: opts.force ?? true });
       else if (kind === 'test') await testProduct(id, p, opts.platform ?? 'EditMode', opts.category);
-      else await playtestProduct(id, p, { scenario: opts.scenario ?? (opts.mode ? undefined : 'smoke'), mode: (opts.mode as any) ?? undefined, where: opts.where ?? 'local', device: opts.device }, { review: opts.review !== false, focus: opts.focus, mode: opts.reviewMode ?? (opts.where === 'live' ? 'regression' : 'verify') });
+      else await playtestProduct(id, p, { scenario: opts.scenario ?? (opts.mode ? undefined : 'smoke'), mode: (opts.mode as any) ?? undefined, where: opts.where ?? 'local', device: opts.device, seed: opts.seed, options: opts.options }, { review: opts.review !== false, focus: opts.focus, mode: opts.reviewMode ?? (opts.where === 'live' ? 'regression' : 'verify') });
       const cost = (db.prepare('SELECT COALESCE(SUM(cost), 0) AS c FROM steps WHERE run = ?').get(id) as any).c;
       const failed = (db.prepare(`SELECT COUNT(*) AS n FROM steps WHERE run = ? AND status = 'failed'`).get(id) as any).n;
       db.prepare(`UPDATE runs SET status = ?, detail = ?, finished = ?, cost = ? WHERE id = ?`).run(failed ? 'failed' : 'done', `${kind} ${p.id}${failed ? ' failed' : ''}`, Date.now(), cost, id);
@@ -463,7 +463,7 @@ export function startPartial(kind: 'build' | 'playtest' | 'test', productId: str
  * background. Its pre-deploy build is committed to beta, Unity builds beta, the beta site is rebuilt, and (on the
  * server) the first local scenario is playtested and reviewed.
  */
-export function startBeta(productId: string, { focus, origin, criteria, scenario }: { focus?: string; origin?: string | null; criteria?: string[]; scenario?: string } = {}) {
+export function startBeta(productId: string, { focus, origin, criteria, scenario, options }: { focus?: string; origin?: string | null; criteria?: string[]; scenario?: string; options?: Record<string, unknown> } = {}) {
   const p = getProduct(productId);
   const id = newId('r');
   db.prepare('INSERT INTO runs (id, kind, status, detail, products, options, started) VALUES (?, ?, ?, ?, ?, ?, ?)').run(id, 'beta', 'running', `beta ${p.id}`, J([p.id]), J({ focus }), Date.now());
@@ -481,7 +481,7 @@ export function startBeta(productId: string, { focus, origin, criteria, scenario
       if (p.build && lane) await buildProduct(id, p);
       else void import('./previews.ts').then(({ buildPreview }) => buildPreview(p.id)).catch(() => {});
       // A merged roadmap task: the scenario its agent wrote for its criteria, and the criteria judged again.
-      const t: Playtest | undefined = scenario ? { scenario, where: 'local' } : p.playtests.find((x) => x.where === 'local' && x.device !== 'phone');
+      const t: Playtest | undefined = scenario ? { scenario, where: 'local', ...(options ? { options } : {}) } : p.playtests.find((x) => x.where === 'local' && x.device !== 'phone');
       if (lane && t) await playtestProduct(id, p, t, { focus, mode: 'verify', criteria });
       const cost = (db.prepare('SELECT COALESCE(SUM(cost), 0) AS c FROM steps WHERE run = ?').get(id) as any).c;
       const failed = (db.prepare(`SELECT COUNT(*) AS n FROM steps WHERE run = ? AND status = 'failed'`).get(id) as any).n;

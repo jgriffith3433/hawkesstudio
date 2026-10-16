@@ -178,6 +178,27 @@ triage restores the finding; settings go back). The **pause switch** (Roadmap ta
 false }` on J's word) stops starts, merges and PM turns; statuses still follow what finishes. Settings: `.data/pm.json`
 (`POST /api/pm/settings`); state: `.data/pm-state.json`.
 
+**11. Content tasks** ("DoD: 3 new stages for the Encore chapter", "a Sick Of It enemy for Circle IX"). Agents make game
+content end to end with each product's content skills (`.claude/skills/` in the product repo, loaded by Claude Code):
+DoD `dod-stage`, `dod-fighter`, `dod-voice-music`; Sick Of It `soi-enemy`, `soi-level`, `soi-voice-music`; PH Origins
+`phorigins-level`; Imagine Live TV `iltv-story-branch`. Each one knows the product's data format, its Hawkes Gen
+presets and tools, the story doc and canon, and how to playtest the new content (scenario options such as
+`{"stage": "<id>"}`, the second line of `.hawkes/scenario.txt`). Plan them like features, with one difference: **the
+GPU costs money, so it is priced and approved.**
+- A content task carries `gpu`: what it will generate, as Hawkes Gen estimate items (`[{ tool | preset, params, count,
+  label }]`; an `asset.make` item expands into its steps and candidates). Studio prices it through Gen's
+  `POST /v1/estimate` (from the history of real jobs: GPU work, model loads, boots, API costs, and the idle tail if
+  servers aren't stopped) and keeps the estimate on the task (`gpu.estimate`).
+- A task whose estimate costs money **does not start until J approves a budget that covers it**: the PM asks him once
+  (a decision question with the numbers), and Talk records his answer with `studio_roadmap_edit gpu_budget { id,
+  budget }` (only on his words). A new estimate above the budget needs a new approval.
+- The agent's brief says its GPU budget. With none (a task without `gpu`, or `studio_task` without `gpu_budget`), the
+  agent does everything that needs no GPU (design, data, specs, Claude steps; voice and sound effects are cents) and
+  ends with the estimate in its summary. With one, it batches each kind of job (one model load), reuses the library
+  (`reuse`, asset manifests), stops the servers it started, and reports what it spent.
+- Checks: the product's own validators and tests, the canon check of the diff (shared memory), and the acceptance
+  criteria judged from a playtest of the new content; then the normal flow onto beta.
+
 ## Talking to Talk by voice (calls)
 
 The 📞 button in Talk starts a call: J talks, Talk answers aloud, back and forth until he hangs up. It is made for the

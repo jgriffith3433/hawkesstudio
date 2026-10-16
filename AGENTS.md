@@ -105,6 +105,13 @@ himself: reaching one (every item on beta, checks passed) is one of the few thin
 went wrong and decisions only he can make). Every decision is in the PM log with undo. Keep
 the gate (`gate()` in acceptance.ts) and "verified only on beta" intact when changing it; they are what lets J trust it.
 
+**Content agents** (docs/daily.md, "Content tasks"): stages, fighters, enemies, levels, story branches, lines and
+music are made by agents with each product's content skills (`.claude/skills/` in the product repos). Roadmap tasks
+carry `gpu` (Hawkes Gen estimate items); `src/roadmap.ts` prices them (`estimateTask`) and holds them until J approves
+a budget (`approveGpu`, `gpuCleared`, `tasksAwaitingGpu`; the PM asks him once); the change's brief states the budget
+(`gpu_budget` on changes, `gpuBrief` in agents.ts). Content playtests pass scenario `options` (`studio_playtest`,
+`.hawkes/scenario.txt` line 2) through to `playtest.run`. Keep "no budget, no GPU" intact.
+
 ## Layout
 
 | Path | What |

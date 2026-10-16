@@ -16,7 +16,7 @@
 //
 // Source of truth: C:\Projects\hawkesgen\clients\js\hawkesgen.mjs. Version 4 (presets, builder, playtests; ~/.hawkes/client.json).
 
-export const CLIENT_VERSION = 4;
+export const CLIENT_VERSION = 5;
 
 /** ~/.hawkes/client.json (Node only): where Hawkes Gen and Studio are, for every project on this PC. */
 function userConfig() {
@@ -102,7 +102,8 @@ export class HawkesGen {
   }
 
   /**
-   * Queues a job. opts: { project, preset, params, inputs, labels, key, priority }.
+   * Queues a job. opts: { project, preset, params, inputs, labels, key, priority, reuse }.
+   * reuse: true (or { exclude: [assetIds] }) hands back a finished job of exactly this recipe instead of paying again.
    * preset: a project's art direction ("name" or "project/name"); tool may be null when the preset names one.
    * key: a stable id for this piece of work; sending it again returns the same job.
    */
@@ -111,7 +112,7 @@ export class HawkesGen {
     if (!project) throw new HawkesGenError('Give a project (new HawkesGen({ project }) or opts.project)');
     const { jobs } = await this.request('/jobs', {
       method: 'POST',
-      body: { tool, project, preset: opts.preset, params: opts.params ?? {}, inputs: await this.prepareInputs(opts.inputs), labels: opts.labels, key: opts.key, priority: opts.priority },
+      body: { tool, project, preset: opts.preset, params: opts.params ?? {}, inputs: await this.prepareInputs(opts.inputs), labels: opts.labels, key: opts.key, priority: opts.priority, reuse: opts.reuse },
     });
     return jobs[0];
   }
@@ -165,6 +166,14 @@ export class HawkesGen {
   /** Is there a library asset made from exactly this tool, params and inputs (any seed)? → { status: 'current'|'missing', asset } */
   check(tool, { params, inputs, project } = {}) {
     return this.request('/recipes/check', { method: 'POST', body: { tool, params, inputs, project: project ?? this.project } });
+  }
+
+  /**
+   * What a batch would cost: items [{ tool | preset, params, count, label }] (asset.make expands into its steps).
+   * → { gpu: { hours, servers, ... }, wallMinutes, cost: { gpu, api, idleTail, total, withIdleTail }, lines, note }
+   */
+  estimate(items, { project, servers } = {}) {
+    return this.request('/estimate', { method: 'POST', body: { project: project ?? this.project, items, servers } });
   }
 
   asset(id) { return this.request(`/assets/${id}`); }

@@ -29,6 +29,7 @@ type Scenario = {
   title: string;
   seconds: number;       // how long it usually takes (the runner allows 2x, then calls it stuck)
   tags?: string[];       // "smoke" (fast, run on every build), "full" (daily), "balance" (many runs), "menus"
+  description?: string;  // optional: what it does, and the content options it takes ("options: stage, fighter")
 };
 
 type State = {
@@ -71,6 +72,10 @@ type Report = {
 - **Ship the hooks in release builds**: they cost nothing until called. Live-site checks use them too.
 - **Deterministic where possible:** honor `options.seed`. `options.speed` > 1 may run the simulation faster when
   the game supports it; the video is then sped up.
+- **Content options:** `options` may also carry scenario-specific keys (`playtest.run` `options`, `studio_playtest`
+  `options`, or the second line of an agent's `.hawkes/scenario.txt`) so a playtest plays new content: Dose Of
+  Destruction takes `{ "stage": "<id>", "fighter": "<id>" }` (Sick Of It needs none: `level-<n>` per level). Ignore keys you don't
+  know; list the ones you take in the scenario's `description`. Not a contract version change.
 - **Never let the playtest code change what a player sees** when it isn't running.
 
 ## What the runner records
