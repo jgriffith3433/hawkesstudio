@@ -349,15 +349,35 @@ ${storyOf(p, 6000)}
 
 // ------------------------------------------------------------------ agent
 
+/** Git LFS files in a new worktree (Sick Of It keeps its art there): real files, not pointers. Fast when the repo has them. */
+function lfsPull(worktree: string, log: (s: string) => void) {
+  try {
+    if (!/filter=lfs/.test(fs.readFileSync(path.join(worktree, '.gitattributes'), 'utf8'))) return;
+  } catch {
+    return;
+  }
+  const t0 = Date.now();
+  const r = git(worktree, ['lfs', 'pull'], 20 * 60_000);
+  log(r.ok ? `git lfs pull (${Math.round((Date.now() - t0) / 1000)} s)` : `git lfs pull failed: ${r.err.split('\n').pop()}`);
+}
+
 export const AGENT_MEMORY_TOOLS = ['memory_search', 'memory_get', 'memory_write'];
 /** The role an agent change runs as: content work, a build (requests, roadmap tasks, Studio and Gen), or a fix. */
 export const agentRole = (c: Change): RoleName => ({ infra: 'builder', content: 'content', builder: 'builder', fixer: 'fixer' } as const)[roleOf(c)];
-/** An agent's or scout's MCP config: Studio's server with the memory tools only, as that agent (writes are candidates). */
+/**
+ * An agent's or scout's MCP config: Studio's server with the memory tools only, as that agent (writes are candidates),
+ * and Hawkes Gen's with a "user" role key (generate, estimate, read jobs and the library; no fleet launches, no keys):
+ * AGENT_GEN_KEY, else Talk's, else the devtools' key. Never Studio's own (owner) key.
+ */
 export function agentMcp(id: string) {
   const dir = sandboxShare('mcp');
   fs.mkdirSync(dir, { recursive: true });
   const file = path.join(dir, `${id}.json`);
-  const cfg = { mcpServers: { hawkesstudio: { command: process.execPath, args: [path.join(ROOT, 'bin', 'studio-mcp.mjs')], env: { STUDIO_SERVER: '1', STUDIO_AGENT: id, STUDIO_MCP_TOOLS: AGENT_MEMORY_TOOLS.join(',') } } } };
+  const genKey = process.env.AGENT_GEN_KEY ?? process.env.TALK_GEN_KEY ?? process.env.DEV_GEN_KEY ?? '';
+  const cfg = { mcpServers: {
+    hawkesstudio: { command: process.execPath, args: [path.join(ROOT, 'bin', 'studio-mcp.mjs')], env: { STUDIO_SERVER: '1', STUDIO_AGENT: id, STUDIO_MCP_TOOLS: AGENT_MEMORY_TOOLS.join(',') } },
+    ...(genKey ? { hawkesgen: { command: process.execPath, args: [path.join(PROJECTS, 'hawkesgen', 'bin', 'hawkesgen-mcp.mjs')], env: { HAWKESGEN_URL: process.env.HAWKESGEN_URL ?? 'http://127.0.0.1:8790', HAWKESGEN_KEY: genKey } } } : {}),
+  } };
   fs.writeFileSync(file, JSON.stringify(cfg, null, 2));
   return file;
 }
@@ -383,7 +403,7 @@ function runAgent(c: Change, briefFile: string, s: AgentSettings, env = claudeEn
       // The role (.claude/agents/<role>.md): its model, standing instructions (the stable, cached part of the prompt),
       // tools and turn limit; the task itself is the brief.
       const { args: roleFlags, role } = roleArgs(agentRole(c), {
-        extraAllowed: AGENT_MEMORY_TOOLS.map((t) => `mcp__hawkesstudio__${t}`),
+        extraAllowed: [...AGENT_MEMORY_TOOLS.map((t) => `mcp__hawkesstudio__${t}`), 'mcp__hawkesgen'],
         maxTurns: s.maxTurns !== DEFAULTS.maxTurns ? s.maxTurns : undefined,
       });
       const args = [
@@ -618,6 +638,7 @@ async function work(id: string, note?: string, answer?: string, resumed?: Phase 
         });
         // A warm start: node_modules from a checkout with the same lockfile (warm.ts), not a fresh npm ci.
         warmDeps(c.worktree, c.repo, (s) => addLog(id, s));
+      lfsPull(c.worktree, (s) => addLog(id, s));
       }
       await writeBrief(c, p, findings, note);
       // A question from an earlier pass isn't asked again.
@@ -967,6 +988,7 @@ async function workInfra(id: string, note?: string, resumed?: Phase | null) {
           if (!w.ok) throw new Error(`worktree failed: ${w.err}`);
           // A warm start: node_modules from a checkout with the same lockfile (warm.ts), not a fresh npm ci.
           warmDeps(c.worktree, c.repo, (s) => addLog(id, s));
+      lfsPull(c.worktree, (s) => addLog(id, s));
         } else if (note) {
           // Another pass: bring the branch up to date with main first (main may have moved, or the merge conflicted).
           git(repoDir, ['fetch', '--quiet', 'origin']);
