@@ -1,7 +1,7 @@
 # The Hawkes story bible (canon)
 
 The facts every product shares, and each product's own: characters, places and rules. Content and story changes are
-checked against these. Generated from Studio's shared memory (2026-10-16 22:00 UTC); edit them in Studio's Memory tab.
+checked against these. Generated from Studio's shared memory (2026-10-16 22:36 UTC); edit them in Studio's Memory tab.
 
 ## All of Hawkes
 
@@ -97,6 +97,11 @@ checked against these. Generated from Studio's shared memory (2026-10-16 22:00 U
 - **Yooba (Gooey)**: Two extra jumps and a mouth with a long reach. Fighter id yooba (doseofdestructionwebsite/content/fighters.json; art in AllTheCharacters/Yooba).  
   <sub>m_23c99d8d9c96 · seed · 2026-10-16 · doseofdestructionwebsite/content/fighters.json, content/campaign.json</sub>
 
+## Hawkes Biomedical
+
+- **The Place Department product image**: on the corporate site it is a daylight records room (filing cabinet, folders, window with sky only), never the night apartment.  
+  <sub>m_3f158fc6ab17 · agent c_9612b8758163 · 2026-10-16 · item i_e697ccead74a · https://github.com/jgriffith3433/hawkesbiomedical/pull/2</sub>
+
 ## I Can Be
 
 - **I Can Be is a day in a developer's life; the character is "AI"**: Simulated in real time from day.config.js. Its direction is undecided: don't invent one.  
@@ -111,6 +116,8 @@ checked against these. Generated from Studio's shared memory (2026-10-16 22:00 U
 
 ## PH Origins
 
+- **About beat 01 Room for Grace**: the board meets on the 58th floor; Voss calls B3 a ward of patients, Lang wants a date for Zurich, Hale says a secret lab is a number and numbers die in public; Pierce answers that compliance does not set the ceiling, he does; the meeting ends and Hale stays behind.  
+  <sub>m_a3916673c001 · agent c_af2ca5015e63 · 2026-10-16 · item i_3d920ac3dd13 · https://github.com/jgriffith3433/phoriginswebsite/pull/3</sub>
 - **Arctic Rift is listed but has no story yet**: Don't write story for it without J.  
   <sub>m_49aacfd3dff8 · seed · 2026-10-16 · phoriginsassets/Lore.txt</sub>
 - **PH Origins is one night in Hawkes Tower (Act I only)**: The board meets on the 58th floor, Pierce defends B3, Hale stays behind, Pierce looks out over the city from his office, Voss calls then texts "Pick up the terminal", an alarm shows a shape on the 58th-floor monitor, Pierce rides the elevator to B3 himself, chases the creature, the vat's glass breaks and he transforms.  
