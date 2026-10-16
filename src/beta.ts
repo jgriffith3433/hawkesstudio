@@ -57,7 +57,11 @@ export const listDeploys = (product: string, limit = 20) => db.prepare('SELECT *
  */
 export function git(cwd: string, args: string[], timeoutMs = 10 * 60_000) {
   if (SLOW.has(args[0])) console.warn(`[studio] synchronous git ${args[0]} in ${path.basename(cwd)}: use gitAsync`);
+  const t0 = Date.now();
   const r = spawnSync('git', args, { cwd, encoding: 'utf8', windowsHide: true, timeout: timeoutMs, maxBuffer: 64 * 1024 * 1024 });
+  // A "quick" read that wasn't (git status on a Unity site copy with a big build takes seconds): name it, so it moves to gitAsync.
+  const ms = Date.now() - t0;
+  if (ms > 300) console.warn(`[studio] synchronous git ${args.slice(0, 3).join(' ')} in ${path.basename(cwd)} held Studio for ${ms} ms: use gitAsync`);
   return { ok: r.status === 0, out: (r.stdout ?? '').trim(), err: (r.stderr ?? r.error?.message ?? '').trim() };
 }
 const SLOW = new Set(['fetch', 'push', 'clone', 'pull']);
@@ -281,8 +285,8 @@ async function prepareBetaNow(p: Product, log: (s: string) => void = () => {}) {
   log(`$ ${p.deploy.prebuild}`);
   const r = await sh(p.deploy.prebuild, dir);
   if (!r.ok) throw new Error(`${p.deploy.prebuild} failed on beta (${sha.slice(0, 7)}):\n${r.tail}`);
-  must(git(wt, ['add', '-A']), 'git add');
-  if (!git(wt, ['diff', '--cached', '--quiet']).ok) {
+  must(await gitAsync(wt, ['add', '-A']), 'git add');
+  if (!(await gitAsync(wt, ['diff', '--cached', '--quiet'])).ok) {
     must(git(wt, [...AUTHOR, 'commit', '--quiet', '-m', `${STUDIO_BUILD} ${p.deploy.prebuild} (beta ${sha.slice(0, 7)})`]), 'committing the build');
     must(await gitAsync(wt, ['push', '--quiet', 'origin', `HEAD:refs/heads/${BETA}`]), 'pushing beta');
     await fetchOrigin(source);

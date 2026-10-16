@@ -89,7 +89,7 @@ export async function deployPlan(productId: string) {
   if (unity) {
     const b = betaBuild(p);
     const siteMain = shaOf(site, `origin/${MAIN}`);
-    const files = b?.ok ? gitIn(betaSiteDir(p), ['status', '--porcelain']).out.split('\n').filter(Boolean) : [];
+    const files = b?.ok ? (await gitAsync(betaSiteDir(p), ['status', '--porcelain'])).out.split('\n').filter(Boolean) : [];
     build = b && { ...b, files: files.length, sample: files.slice(0, 20) };
     if (!b) blockers.push(`${BETA} has no build yet (the daily run on the server builds it, or "studio build ${p.id}").`);
     else if (!b.ok) blockers.push(`The last build of ${BETA} failed: ${b.error ?? '?'}`);
@@ -149,8 +149,8 @@ async function deployNow(productId: string, { confirm, by = 'J', mergeMain, orig
     await fetchOrigin(site);
     before = shaOf(site, `origin/${MAIN}`);
     const b = betaBuild(p)!;
-    must(gitIn(copy, ['add', '-A']), 'git add');
-    if (!gitIn(copy, ['diff', '--cached', '--quiet']).ok) {
+    must(await gitAsync(copy, ['add', '-A']), 'git add');
+    if (!(await gitAsync(copy, ['diff', '--cached', '--quiet'])).ok) {
       opLog(`committing the build${b.version ? ` (Game/v${b.version})` : ''}`);
       must(await gitAsync(copy, [...AUTHOR, 'commit', '--quiet', '-m', `Go live: ${p.name}${b.version ? ` Game/v${b.version}` : ''} (${BETA} ${beta.short}, by ${by})`]), 'committing the build');
     }
@@ -219,8 +219,8 @@ async function rollbackNow(productId: string, { confirm, by = 'J', origin }: { c
   const { site } = repoDirs(p);
   const d = lastLive(p.id)!;
   const wt = await scratch(site, `${p.id}-rollback`, plan.main!.sha);
-  must(gitIn(wt, ['read-tree', '-u', '--reset', d.before!]), 'restoring the files');
-  if (gitIn(wt, ['diff', '--cached', '--quiet']).ok) throw new StudioError(`${MAIN} already has the files of ${d.before!.slice(0, 7)}; nothing to roll back.`);
+  must(await gitAsync(wt, ['read-tree', '-u', '--reset', d.before!]), 'restoring the files');
+  if ((await gitAsync(wt, ['diff', '--cached', '--quiet'])).ok) throw new StudioError(`${MAIN} already has the files of ${d.before!.slice(0, 7)}; nothing to roll back.`);
   must(gitIn(wt, [...AUTHOR, 'commit', '--quiet', '-m', `${STUDIO_ROLLBACK} ${p.name} to ${d.before!.slice(0, 7)} (undoes go live ${d.id}, ${d.after.slice(0, 7)}; by ${by})`]), 'committing the rollback');
   must(await gitAsync(wt, ['push', 'origin', `HEAD:refs/heads/${MAIN}`]), `pushing ${MAIN}`);
   const after = shaOf(wt, 'HEAD')!;

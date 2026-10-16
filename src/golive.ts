@@ -86,9 +86,9 @@ export async function publishUnity(p: Product, sha: string, { by = 'a push to ma
     const s = startStep(run.id, p.id, 'deploy', p.site, `publishing ${what}`);
     // Pushing the website's main and recording it are one critical section (drain.ts): a deploy of Studio waits for it.
     return critical(`publishing ${p.name} live`, async () => {
-      must(gitIn(copy, ['add', '-A']), 'git add');
+      must(await gitAsync(copy, ['add', '-A']), 'git add');
       let after = before;
-      if (!gitIn(copy, ['diff', '--cached', '--quiet']).ok) {
+      if (!(await gitAsync(copy, ['diff', '--cached', '--quiet'])).ok) {
         must(await gitAsync(copy, [...AUTHOR, 'commit', '--quiet', '-m', `Go live: ${p.name}${version ? ` Game/v${version}` : ''} (${p.repo.split('/')[0]} ${sha.slice(0, 7)}, ${by})`]), 'committing the build');
         // The website's main may have moved since the copy was made: put the build on top of it.
         must(await gitAsync(copy, ['fetch', '--quiet', 'origin', MAIN]), 'fetching the website');
