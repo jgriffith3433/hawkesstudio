@@ -196,27 +196,6 @@
   el('#talkLog').addEventListener('dragover', (e) => e.preventDefault());
   el('#talkLog').addEventListener('drop', (e) => { e.preventDefault(); attach([...(e.dataTransfer?.files ?? [])]); });
 
-  // Phone notifications (ntfy): the topic to subscribe to, a test button, on/off.
-  async function loadNotify() {
-    const n = await api('/api/notify');
-    el('#notifyBody').innerHTML = `<p>Install the <b>ntfy</b> app (Android or iPhone), tap +, and subscribe to this topic${n.server !== 'https://ntfy.sh' ? ` on server <code>${esc(n.server)}</code>` : ''}:</p>
-      <p><code class="notify-topic">${esc(n.topic)}</code> <button class="small" id="notifyCopy">Copy</button> <a href="${esc(n.subscribe)}" target="_blank" rel="noopener">open</a></p>
-      <p>Keep it secret: anyone with the name can read the notifications. You get the morning brief, changes ready to approve, live sites failing, and the agent budget running out.</p>
-      <p><label><input type="checkbox" id="notifyOn" ${n.enabled ? 'checked' : ''}> on</label> <button class="small" id="notifyTest">Send a test notification</button> <button class="small" id="notifyRotate">New topic</button> <span id="notifyMsg"></span></p>`;
-  }
-  el('#notifyBox').addEventListener('toggle', () => { if (el('#notifyBox').open) loadNotify().catch((e) => (el('#notifyBody').textContent = e.message)); });
-  document.addEventListener('click', async (e) => {
-    const msg = (t) => { const m = el('#notifyMsg'); if (m) m.textContent = t; };
-    try {
-      if (e.target.id === 'notifyTest') { await api('/api/notify/test', { method: 'POST', body: {} }); msg('Sent.'); }
-      if (e.target.id === 'notifyCopy') { await navigator.clipboard.writeText(el('.notify-topic').textContent); msg('Copied.'); }
-      if (e.target.id === 'notifyRotate' && confirm('Make a new topic? You will have to subscribe again.')) { await api('/api/notify', { method: 'POST', body: { rotate: true } }); await loadNotify(); }
-    } catch (err) { msg(err.message); }
-  });
-  document.addEventListener('change', async (e) => {
-    if (e.target.id === 'notifyOn') await api('/api/notify', { method: 'POST', body: { enabled: e.target.checked } }).catch((err) => alert(err.message));
-  });
-
   window.loadTalk = async () => { await loadList(); await loadConversation(); };
   /** The conversation on screen (a call started here continues it; call.js). */
   window.talkConversation = () => current;

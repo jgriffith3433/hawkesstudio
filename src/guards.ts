@@ -8,6 +8,7 @@
 //   POST /api/changes/<id>/approve       a Studio or Gen change (it merges into main, which deploys): "MERGE <id>"
 //   POST /api/agents/settings, /api/notify, /api/memory/seed: never from the sandbox (J's dashboard)
 //   POST /api/pm/settings                only from a Talk conversation (attributable), on J's word (Talk's rules)
+//   POST /api/settings                   only from a Talk conversation; raising costs needs J's quoted yes (settings.ts)
 //
 // Beta stays open on purpose: agents' merges into beta (J delegated them to the PM) and Talk's fast lane. Main is
 // also protected on GitHub (rulesets) and the sandbox holds no GitHub token.
@@ -62,5 +63,6 @@ export function guardRoute(route: string, method: string, conv: string | null): 
   }
   if (route === '/api/agents/settings' || route === '/api/notify' || route === '/api/memory/seed') return `${route} is changed from Studio's dashboard by J, not from a sandboxed agent.`;
   if (route === '/api/pm/settings' && !conv) return 'PM settings change only from a Talk conversation, on J\'s word.';
+  if (route === '/api/settings' && !conv) return 'Settings change from a Talk conversation (J\'s quoted yes for anything that raises costs) or on the dashboard.';
   return null;
 }

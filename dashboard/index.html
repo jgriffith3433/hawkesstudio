@@ -23,6 +23,7 @@
       <button data-tab="runs">Runs</button>
       <button data-tab="costs">Costs</button>
       <button data-tab="memory">Memory</button>
+      <button data-tab="settings" title="Call voice and listening, agent and PM limits, notifications, budgets: stored in Studio, so they follow you across devices">⚙ Settings</button>
     </nav>
     <div class="status" id="status"></div>
     <button id="actBtn" class="act-btn" title="Everything running in the background: agents, runs, Hawkes Gen jobs">Activity <span class="act-count zero" id="actCount">0</span></button>
@@ -51,18 +52,16 @@
             <button id="talkCall" class="talk-call" title="Call Talk: talk out loud, Talk answers aloud">📞</button>
           </div>
           <div id="callPane" class="call" data-state="connecting" hidden>
-            <div class="call-top"><b>📞 On a call with Talk</b><button class="small" id="callSettingsBtn" title="Call settings">⚙</button></div>
-            <div id="callSettings" class="call-settings" hidden><div id="callSettingsBody"></div></div>
+            <div class="call-top"><b>📞 On a call with Talk</b><button class="small" id="callSettingsBtn" title="Voice and listening settings">⚙ Settings</button></div>
             <button id="callOrb" class="call-orb" title="Tap to interrupt Talk, or to send what you said now"></button>
             <div id="callState" class="call-state">Connecting…</div>
             <div id="callYou" class="call-you"></div>
             <div id="callNote" class="call-note"></div>
-            <button id="callPtt" class="call-ptt" hidden>Hold to talk</button>
+            <button id="callPtt" class="call-ptt" title="Hold while you talk (or hold Space on a computer). Pressing cuts Talk off.">Hold to talk</button>
             <div class="call-buttons"><button id="callMute">Mute</button><button id="callHang" class="call-hang">Hang up</button></div>
             <div id="callLatency" class="call-latency"></div>
           </div>
           <div class="meta" id="talkBilling"></div>
-          <details id="notifyBox" class="meta"><summary>Phone notifications</summary><div id="notifyBody"></div></details>
         </div>
       </div>
     </section>
@@ -143,6 +142,10 @@
       <div class="bar"><input id="memRunsQ" placeholder="How did we fix… (Enter)" style="min-width:20em"> <button class="small" id="memRunsGo">Search</button></div>
       <div id="memRuns"></div>
     </section>
+    <section id="settings" class="tab">
+      <div class="bar"><span class="meta">Stored in Studio, so they follow you from your laptop to your phone. Talk can read and change them too ("make the voice a bit faster"); anything that can raise costs needs your yes.</span></div>
+      <div id="setBody"><div class="meta">Loading…</div></div>
+    </section>
   </main>
   <div id="viewer" class="viewer" hidden><div class="inner"><button class="close">×</button><div class="content"></div></div></div>
   <script src="app.js"></script>
@@ -154,5 +157,6 @@
   <script src="inbox.js"></script>
   <script src="costs.js"></script>
   <script src="memory.js"></script>
+  <script src="settings.js"></script>
 </body>
 </html>

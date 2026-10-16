@@ -1,22 +1,67 @@
-// Calls: J talks to Talk like a phone call (the 📞 button in Talk). Loaded after talk.js (uses api, esc, GEN, openTalk).
+// Calls: J talks to Talk out loud (the 📞 button in Talk). Loaded after talk.js (uses api, esc, GEN, openTalk).
 //
-// Cheap and fast by default: the browser hears J (Web Speech API SpeechRecognition, free) and speaks Talk's answer
-// (speechSynthesis, free), sentence by sentence as it streams in (GET /api/talk/<id>/events). The server keeps a warm
-// Claude Code process for the call (talk.ts startCall), so a turn doesn't pay Claude Code's start-up. Hands-free: a
-// pause after J speaks sends it; J talking while Talk speaks interrupts it (barge-in; what the mic hears of Talk's own
-// voice is ignored). Push to talk is the fallback. The call is a normal Talk conversation: every word is in the chat.
-// Optional: an ElevenLabs Flash voice through Hawkes Gen (audio.voice), off by default, with its cost per minute.
+// Cheap and fast by default: the browser hears J (Web Speech API SpeechRecognition, free) and Talk's answer is spoken
+// sentence by sentence as it streams in (GET /api/talk/<id>/events). The voice:
+//   - the browser's own voice (the default: free and instant; Edge's "Natural" voices first).
+//   - Kokoro (free, more natural): an 82M-parameter TTS model running in this browser (kokoro-worker.js: WebGPU, else
+//     WebAssembly), loaded on the first call and cached. A sentence it hasn't made within 1.5 s is spoken by the
+//     browser's voice instead; a device that is too slow for it falls back for the rest of the call. Measured on J's
+//     laptop (Intel integrated graphics, October 2026): 1.2-2.5 s for a short sentence on WebGPU (real-time factor
+//     0.5-1.2 once warm, 20-35 s to load), 5-14 s on the CPU: too slow to be the default there; it suits a real GPU.
+//   - ElevenLabs Flash through Hawkes Gen (audio.voice, paid: its price is shown in Settings).
+// The server keeps a warm Claude Code process for the call (talk.ts startCall) and is told the device J calls from.
+//
+// Listening: push to talk is always there (the big button, or holding Space on a computer): pressing cuts Talk off at
+// once (barge-in) and the mic listens only while it is held. Hands-free (a pause sends) keeps the mic off while Talk
+// speaks unless barge-in is on (headphones), and what the mic hears that matches what Talk just said is dropped (echo).
+//
+// Settings come from Studio (GET /api/settings, the Settings tab) so they follow J across devices; only the browser
+// voice's name is this device's own (localStorage).
 (() => {
   const el = (s) => document.querySelector(s);
   const Rec = () => window.SpeechRecognition || window.webkitSpeechRecognition;
   const iOS = /iP(hone|ad|od)/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
-  /** Flash costs half the credits of the standard voices: about 900 characters per spoken minute. */
-  const FLASH_PER_MIN = 900 / 1000 * 0.3 * 0.5;
 
-  // Settings (this browser only).
-  const load = () => { try { return JSON.parse(localStorage.getItem('studio.call') ?? '{}'); } catch { return {}; } };
-  const prefs = { mode: 'hands-free', bargeIn: !iOS, pause: 800, rate: 1.08, voice: '', eleven: false, elevenVoice: '', ...load() };
-  const savePrefs = () => { try { localStorage.setItem('studio.call', JSON.stringify(prefs)); } catch {} };
+  /** phone | tablet | computer: what Talk is told, and which listening mode applies. */
+  function device() {
+    const ua = navigator.userAgent;
+    if (/iPad/.test(ua) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1) || (/Android/.test(ua) && !/Mobile/.test(ua))) return 'tablet';
+    if (/iPhone|iPod|Android.*Mobile|Mobile Safari|IEMobile|Opera Mini/.test(ua)) return 'phone';
+    if (matchMedia('(pointer: coarse)').matches && !matchMedia('(any-pointer: fine)').matches && Math.min(screen.width, screen.height) < 600) return 'phone';
+    return 'computer';
+  }
+
+  // ------------------------------------------------------------ settings
+
+  const DEFAULTS = { engine: 'browser', kokoroVoice: 'af_heart', elevenVoice: '', rate: 1.05, mode: { computer: 'push', phone: 'hands-free' }, bargeIn: false, pause: 800 };
+  let S = { ...DEFAULTS };
+  let prices = { elevenPerMinute: 0.14 };
+  /** This device only: the browser voice's name (voices differ per browser and OS). */
+  const LOCAL_KEY = 'studio.call.device';
+  const local = (() => { try { return JSON.parse(localStorage.getItem(LOCAL_KEY) ?? '{}'); } catch { return {}; } })();
+  const saveLocal = () => { try { localStorage.setItem(LOCAL_KEY, JSON.stringify(local)); } catch {} };
+  const mode = () => (device() === 'computer' ? S.mode.computer : S.mode.phone);
+
+  async function loadSettings() {
+    try {
+      const r = await api('/api/settings');
+      prices = r.prices ?? prices;
+      S = { ...DEFAULTS, ...r.call, mode: { ...DEFAULTS.mode, ...(r.call?.mode ?? {}) } };
+      // Once: the old per-browser call settings move to Studio (if Studio has none yet).
+      let old = null;
+      try { old = JSON.parse(localStorage.getItem('studio.call') ?? 'null'); } catch {}
+      if (old) {
+        if (old.voice && !local.browserVoice) { local.browserVoice = old.voice; saveLocal(); }
+        if (!r.call?.saved) {
+          const patch = { bargeIn: !!old.bargeIn && !iOS, pause: old.pause, rate: old.rate, ...(old.mode ? { mode: { [device() === 'computer' ? 'computer' : 'phone']: old.mode } } : {}), ...(old.elevenVoice ? { elevenVoice: old.elevenVoice } : {}) };
+          const saved = await api('/api/settings', { method: 'POST', body: { section: 'call', patch } }).catch(() => null);
+          if (saved) S = { ...S, ...saved.settings };
+        }
+        try { localStorage.removeItem('studio.call'); } catch {}
+      }
+    } catch {}
+    return S;
+  }
 
   let call = null; // the call in progress
 
@@ -37,39 +82,151 @@
       .trim();
   }
 
+  /** The browser's voice: J's pick on this device, else Edge's "Natural" neural voices, else the best one there is. */
   function pickVoice() {
     const voices = speechSynthesis.getVoices();
-    if (prefs.voice) { const v = voices.find((x) => x.name === prefs.voice); if (v) return v; }
+    if (local.browserVoice) { const v = voices.find((x) => x.name === local.browserVoice); if (v) return v; }
     const lang = navigator.language || 'en-US';
     const en = voices.filter((v) => v.lang?.startsWith(lang.slice(0, 2)));
-    return en.find((v) => /natural|premium|enhanced|neural/i.test(v.name)) ?? en.find((v) => /Google US English|Samantha|Daniel|Karen/i.test(v.name)) ?? en.find((v) => v.lang === lang) ?? en[0] ?? null;
+    const best = (re) => en.find((v) => re.test(v.name) && v.lang === lang) ?? en.find((v) => re.test(v.name));
+    return best(/\(Natural\)|Natural/) ?? best(/Online|Neural|Premium|Enhanced/i) ?? best(/Google US English|Samantha|Daniel|Karen/) ?? en.find((v) => v.lang === lang) ?? en[0] ?? null;
   }
 
-  /** Speaks sentences in order: the browser's voice, or ElevenLabs Flash clips (fetched ahead while one plays). */
+  /** Kokoro in a worker: loaded once per page, on the first call (or the Settings tab's test). */
+  const kokoro = {
+    worker: null, state: 'off', device: null, dtype: null, loadMs: null, error: null, waiters: new Map(), seq: 0, ready: null,
+    /** WebGPU (fp32, the precision Kokoro needs there) when the browser has an adapter, else WebAssembly (q8: 92 MB). */
+    async pick() {
+      try {
+        const a = await navigator.gpu?.requestAdapter();
+        if (a) return { device: 'webgpu', dtype: 'fp32' };
+      } catch {}
+      return { device: 'wasm', dtype: 'q8' };
+    },
+    load(force) {
+      if (this.ready && !force) return this.ready;
+      this.state = 'loading';
+      this.ready = (async () => {
+        const want = force ?? await this.pick();
+        this.worker?.terminate();
+        this.worker = new Worker('kokoro-worker.js', { type: 'module' });
+        const t0 = performance.now();
+        return await new Promise((resolve) => {
+          this.worker.onerror = (e) => { this.state = 'failed'; this.error = e.message || 'the worker failed'; resolve(false); };
+          this.worker.onmessage = (ev) => {
+            const m = ev.data;
+            if (m.type === 'ready') {
+              Object.assign(this, { state: 'ready', device: m.device, dtype: m.dtype, loadMs: Math.round(performance.now() - t0) });
+              console.info('[call] kokoro ready', { device: m.device, dtype: m.dtype, ms: this.loadMs, fellBack: m.fellBack });
+              resolve(true);
+            } else if (m.type === 'error' && m.id === undefined) {
+              this.state = 'failed';
+              this.error = m.error;
+              resolve(false);
+            } else {
+              const w = this.waiters.get(m.id);
+              this.waiters.delete(m.id);
+              if (w) m.type === 'audio' ? w.resolve(m) : w.reject(new Error(m.error));
+            }
+          };
+          this.worker.postMessage({ type: 'load', ...want });
+        });
+      })();
+      return this.ready;
+    },
+    /** One sentence: { audio, rate, ms } (ms: the model's time for it). */
+    synth(text, voice, speed) {
+      if (this.state !== 'ready') return Promise.reject(new Error('not ready'));
+      const id = ++this.seq;
+      return new Promise((resolve, reject) => {
+        this.waiters.set(id, { resolve, reject });
+        this.worker.postMessage({ type: 'speak', id, text, voice, speed });
+      });
+    },
+    label() {
+      return this.state === 'ready' ? `Kokoro (${this.device === 'webgpu' ? 'WebGPU' : 'CPU'})` : this.state === 'loading' ? 'Kokoro (loading…)' : this.state === 'failed' ? 'Kokoro (failed)' : 'Kokoro';
+    },
+  };
+
+  /** How long a Kokoro sentence may keep the voice waiting before the browser's voice says it instead. */
+  const KOKORO_WAIT_MS = 1500;
+
+  /** Speaks sentences in order: Kokoro or ElevenLabs clips (made ahead while one plays), or the browser's voice. */
   class Speaker {
-    constructor() { this.queue = []; this.busy = false; this.ctx = null; this.source = null; this.spoken = []; this.gen = 0; }
+    /** owner: who hears about the voice starting and ending (the call, or the Settings tab's test). */
+    constructor(owner = () => call) {
+      this.owner = owner;
+      this.queue = []; this.busy = false; this.ctx = null; this.source = null; this.gen = 0;
+      /** What Talk said lately, with when it finished (for echo): [{ text, words, until }]. */
+      this.said = [];
+      this.slow = 0; // Kokoro sentences in a row that came too late
+      this.stats = []; // { engine, wait, rtf } per sentence
+      this.endedAt = 0;
+    }
     get speaking() { return this.busy || this.queue.length > 0; }
+    engine() {
+      if (S.engine === 'eleven' && S.elevenVoice && this.ctx) return 'eleven';
+      if (S.engine === 'kokoro' && kokoro.state === 'ready' && this.ctx && this.slow < 3) return 'kokoro';
+      return 'browser';
+    }
     say(text) {
-      const item = { text, gen: this.gen };
-      if (prefs.eleven && prefs.elevenVoice && this.ctx) item.clip = elevenClip(text, this.ctx).catch(() => null);
+      const item = { text, gen: this.gen, at: performance.now(), engine: this.engine() };
+      if (item.engine === 'eleven') item.clip = elevenClip(text, this.ctx).catch(() => null);
+      if (item.engine === 'kokoro') {
+        item.clip = kokoro.synth(text, S.kokoroVoice, S.rate).then((m) => {
+          item.model = m.ms;
+          item.seconds = m.audio.length / m.rate;
+          const buf = this.ctx.createBuffer(1, m.audio.length, m.rate);
+          buf.copyToChannel(m.audio, 0);
+          return buf;
+        }).catch(() => null);
+      }
       this.queue.push(item);
+      this.remember(text, Infinity);
       this.next();
+    }
+    remember(text, until) {
+      const words = norm(text);
+      const hit = this.said.find((x) => x.text === text && x.until === Infinity);
+      if (hit && until !== Infinity) { hit.until = until; return; }
+      if (!hit) this.said.push({ text, words, until });
+      const now = performance.now();
+      this.said = this.said.filter((x) => x.until === Infinity || now - x.until < 20_000).slice(-12);
     }
     async next() {
       if (this.busy || !this.queue.length) return;
       const item = this.queue.shift();
       this.busy = true;
-      this.spoken.push(item.text);
-      if (this.spoken.length > 4) this.spoken.shift();
-      const done = () => { if (item.gen !== this.gen) return; this.busy = false; call?.onSpoken(); this.next(); };
-      // A clip that isn't there within 3 s is spoken by the browser's voice instead.
-      const clip = item.clip ? await Promise.race([item.clip, new Promise((r) => setTimeout(() => r(null), 3000))]) : null;
+      const done = () => {
+        if (item.gen !== this.gen) return;
+        this.busy = false;
+        this.endedAt = performance.now();
+        this.remember(item.text, this.endedAt);
+        this.owner()?.onSpoken();
+        this.next();
+      };
+      let clip = null;
+      if (item.clip) {
+        const t0 = performance.now();
+        // Kokoro gets 1.5 s from the moment its sentence is due; ElevenLabs 3 s (a network round trip).
+        const wait = item.engine === 'kokoro' ? KOKORO_WAIT_MS : 3000;
+        clip = await Promise.race([item.clip, new Promise((r) => setTimeout(() => r(null), wait))]);
+        if (item.engine === 'kokoro') {
+          if (clip) this.slow = 0;
+          else if (++this.slow >= 3) this.owner()?.note('Kokoro is too slow on this device: the browser voice speaks for the rest of the call.');
+        }
+        item.waited = Math.round(performance.now() - t0);
+      }
       if (item.gen !== this.gen) return;
+      const stat = { engine: clip ? item.engine : 'browser', wait: Math.round(performance.now() - item.at), rtf: item.model && item.seconds ? item.model / 1000 / item.seconds : null };
+      this.stats.push(stat);
+      if (this.stats.length > 50) this.stats.shift();
       if (clip) {
-        call?.onSpeechStart();
+        this.owner()?.onSpeechStart(stat);
         const src = this.ctx.createBufferSource();
         src.buffer = clip;
-        src.playbackRate.value = Math.min(1.2, prefs.rate);
+        // Kokoro already speaks at S.rate; ElevenLabs is sped up here.
+        if (item.engine === 'eleven') src.playbackRate.value = Math.min(1.2, S.rate);
         src.connect(this.ctx.destination);
         src.onended = done;
         this.source = src;
@@ -79,8 +236,8 @@
       const u = new SpeechSynthesisUtterance(item.text);
       const v = pickVoice();
       if (v) { u.voice = v; u.lang = v.lang; }
-      u.rate = prefs.rate;
-      u.onstart = () => call?.onSpeechStart();
+      u.rate = S.rate;
+      u.onstart = () => this.owner()?.onSpeechStart(stat);
       u.onend = done;
       u.onerror = done;
       speechSynthesis.speak(u);
@@ -88,24 +245,41 @@
     /** Barge-in or hang up: silence now, drop what was waiting. */
     hush() {
       this.gen++;
+      for (const x of this.queue) this.remember(x.text, performance.now());
       this.queue = [];
+      if (this.busy) this.endedAt = performance.now();
       this.busy = false;
       speechSynthesis.cancel();
       try { this.source?.stop(); } catch {}
       this.source = null;
+      for (const x of this.said) if (x.until === Infinity) x.until = performance.now();
     }
-    /** Does what the mic heard look like Talk's own voice (speaker echo)? */
+    /**
+     * Does what the mic heard look like Talk's own voice (speaker echo, or recognition catching up after Talk spoke)?
+     * Fuzzy: most of the heard words are in what Talk said in the last 20 seconds, in roughly the same order.
+     */
     isEcho(heard) {
-      const words = heard.toLowerCase().match(/[a-z0-9']+/g) ?? [];
+      const words = norm(heard);
       if (!words.length) return true;
-      const said = new Set(this.spoken.join(' ').toLowerCase().match(/[a-z0-9']+/g) ?? []);
-      return words.filter((w) => said.has(w)).length / words.length >= 0.5;
+      const now = performance.now();
+      const recent = this.said.filter((x) => x.until === Infinity || now - x.until < 20_000);
+      if (!recent.length) return false;
+      const said = recent.flatMap((x) => x.words);
+      const set = new Set(said);
+      const overlap = words.filter((w) => set.has(w)).length / words.length;
+      if (words.length <= 2) return overlap === 1 && (this.speaking || now - this.endedAt < 4000);
+      if (overlap >= 0.75) return true;
+      // Pairs of words in the same order: a sentence half-heard still matches.
+      const pairs = new Set(said.slice(1).map((w, i) => `${said[i]} ${w}`));
+      const heardPairs = words.slice(1).map((w, i) => `${words[i]} ${w}`);
+      return overlap >= 0.5 && heardPairs.filter((p) => pairs.has(p)).length / heardPairs.length >= 0.4;
     }
   }
+  const norm = (s) => String(s).toLowerCase().replace(/[’']/g, '').match(/[a-z0-9]+/g) ?? [];
 
   /** One sentence in ElevenLabs Flash through Hawkes Gen (about half a second), decoded and ready to play. */
   async function elevenClip(text, ctx) {
-    const r = await fetch(`${GEN}/v1/run`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tool: 'audio.voice', project: 'hawkesstudio', labels: { from: 'talk call' }, params: { text, voice: prefs.elevenVoice, model: 'eleven_flash_v2_5', format: 'mp3_44100_64' }, timeout: 20 }) });
+    const r = await fetch(`${GEN}/v1/run`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tool: 'audio.voice', project: 'hawkesstudio', labels: { from: 'talk call' }, params: { text, voice: S.elevenVoice, model: 'eleven_flash_v2_5', format: 'mp3_44100_64' }, timeout: 20 }) });
     const j = await r.json();
     const asset = j.outputs?.[0]?.asset;
     if (!r.ok || !asset) throw new Error(j.error ?? 'no audio');
@@ -126,15 +300,18 @@
       this.thinking = false;
       this.pttDown = false;
       this.latencies = [];
+      this.dropped = 0;
       this.abort = new AbortController();
     }
 
     async start(conversation) {
       this.render();
-      const r = await api('/api/talk/call', { method: 'POST', body: { conversation } });
+      await loadSettings();
+      if (S.engine === 'kokoro') kokoro.load().then(() => this.render());
+      const r = await api('/api/talk/call', { method: 'POST', body: { conversation, device: device() } });
       this.id = r.id;
       window.openTalk?.(r.id);
-      this.listen();
+      if (mode() === 'hands-free') this.listen();
       this.ping = setInterval(() => this.checkIn(), 20_000);
       this.lockScreen();
       this.events();
@@ -143,7 +320,7 @@
 
     async checkIn() {
       if (!this.id) return;
-      await api(`/api/talk/${this.id}/call`, { method: 'POST', body: {} }).catch(() => {});
+      await api(`/api/talk/${this.id}/call`, { method: 'POST', body: { device: device() } }).catch(() => {});
     }
 
     /** The answer streams in as events: sentences are spoken as soon as they are complete. */
@@ -234,12 +411,12 @@
       if (this.state !== 'speaking') this.setState('speaking');
     }
 
-    onSpeechStart() {
+    onSpeechStart(stat) {
       // Latency: J's last word heard (or the send) to Talk's first word.
       if (this.waitingSince) {
         const ms = Math.round(performance.now() - this.waitingSince);
         this.latencies.push(ms);
-        this.lastLatency = { ms, claude: this.firstDelta ? Math.round(this.firstDelta - this.sentAt) : null, pause: Math.round(this.sentAt - this.waitingSince) };
+        this.lastLatency = { ms, claude: this.firstDelta ? Math.round(this.firstDelta - this.sentAt) : null, pause: Math.round(this.sentAt - this.waitingSince), voice: stat?.engine, voiceMs: stat?.wait };
         this.waitingSince = null;
         console.info('[call] latency', this.lastLatency);
       }
@@ -253,7 +430,7 @@
     // -------------------------------------------- listening
 
     listen() {
-      if (!Rec()) return this.note('This browser has no speech recognition: use Chrome or Safari. You can still type in the chat; answers are spoken.');
+      if (!Rec()) return this.note('This browser has no speech recognition: use Chrome, Edge or Safari. You can still type in the chat; answers are spoken.');
       if (this.rec) return;
       const rec = new (Rec())();
       rec.lang = navigator.language || 'en-US';
@@ -271,45 +448,53 @@
       rec.onerror = (ev) => {
         if (ev.error === 'not-allowed' || ev.error === 'service-not-allowed') {
           this.micBlocked = true;
-          this.note(iOS ? 'Microphone blocked: allow it in Settings › Safari › Microphone (and Speech Recognition), then tap Call again.' : 'Microphone blocked: allow it for this site (the lock icon in the address bar), then tap Call again.');
+          this.note(iOS ? 'Microphone blocked: allow it in Settings › Safari › Microphone (and Speech Recognition), then tap Call again.' : 'Microphone blocked: allow it for this site (the lock icon in the address bar), then call again.');
           this.render();
         } else if (ev.error !== 'no-speech' && ev.error !== 'aborted') this.note(`Speech recognition: ${ev.error}`);
       };
       rec.onend = () => {
-        this.rec = null;
+        if (this.rec === rec) this.rec = null;
         // It stops by itself after a phrase or a silence: start it again while the call wants to hear J.
-        if (call === this && this.wantsMic() && !this.micBlocked && !document.hidden) setTimeout(() => this.listen(), 150);
+        if (call === this && this.wantsMic() && !this.micBlocked && !document.hidden) setTimeout(() => this.wantsMic() && this.listen(), 150);
       };
       this.rec = rec;
       try { rec.start(); } catch { this.rec = null; }
     }
 
-    /** Hands-free: always, except while Talk speaks without barge-in. Push to talk: while the button is held. */
+    /**
+     * Push to talk: only while the button (or Space) is held, and a moment after. Hands-free: always, except while
+     * Talk speaks (and a moment after its voice ends, so the tail of it isn't heard) unless barge-in is on.
+     */
     wantsMic() {
       if (this.muted) return false;
-      if (prefs.mode === 'push') return this.pttDown || !!this.heard;
-      return prefs.bargeIn || !this.speaker.speaking;
+      if (this.pttDown || this.pttTail) return true;
+      if (mode() === 'push') return false;
+      if (S.bargeIn) return true;
+      return !this.speaker.speaking && performance.now() - this.speaker.endedAt > 350;
     }
 
-    stopMic() { try { this.rec?.abort(); } catch {} this.rec = null; }
+    stopMic() { const r = this.rec; this.rec = null; try { r?.abort(); } catch {} }
 
     onHeard(fin, interim) {
       const text = `${fin} ${interim}`.trim();
       if (!text) return;
-      // While Talk speaks, what the mic hears may be Talk itself: only J's own words interrupt it.
-      if (this.speaker.speaking || this.thinking) {
-        if (prefs.mode !== 'push' && this.speaker.speaking && this.speaker.isEcho(text)) return;
-        if (prefs.mode !== 'push' && text.split(/\s+/).length < 2 && !fin) return;
-        this.bargeIn();
+      const held = this.pttDown || this.pttTail;
+      if (!held) {
+        // Hands-free: what sounds like Talk's own words is its voice coming back through the mic.
+        if (this.speaker.isEcho(text)) { if (fin) this.dropped++; return; }
+        if (this.speaker.speaking || this.thinking) {
+          if (text.split(/\s+/).length < 2 && !fin) return;
+          this.bargeIn();
+        }
       }
       if (fin) this.heard = `${this.heard} ${fin}`.trim();
       this.interim = interim;
       this.lastHeardAt = performance.now();
       this.setState('hearing');
-      if (prefs.mode === 'push') return;
+      if (held) return;
       clearTimeout(this.silence);
       // A pause ends J's turn: shorter after a final phrase than after words still being recognized.
-      this.silence = setTimeout(() => this.send(), interim && !fin ? prefs.pause + 700 : prefs.pause);
+      this.silence = setTimeout(() => this.send(), interim && !fin ? S.pause + 700 : S.pause);
     }
 
     bargeIn() {
@@ -320,11 +505,13 @@
       this.note('Interrupted');
     }
 
-    async send() {
+    async send({ held = false } = {}) {
       clearTimeout(this.silence);
-      const text = `${this.heard} ${this.interim}`.trim();
+      let text = `${this.heard} ${this.interim}`.trim();
       this.heard = '';
       this.interim = '';
+      // Recognition can deliver Talk's last sentence late, after it stopped speaking: never send that as J's words.
+      if (text && !held && this.speaker.isEcho(text)) { this.dropped++; text = ''; }
       if (!text) return this.setState('listening');
       this.waitingSince = this.lastHeardAt || performance.now();
       this.setState('thinking');
@@ -345,8 +532,13 @@
     // -------------------------------------------- push to talk
 
     pttStart() {
+      if (this.pttDown) return;
       this.pttDown = true;
+      clearTimeout(this.pttTimer);
+      this.pttTail = false;
+      // Pressing cuts Talk off at once, and what it was saying never counts as J's words.
       this.bargeIn();
+      clearTimeout(this.silence);
       this.heard = '';
       this.interim = '';
       this.stopMic();
@@ -357,8 +549,14 @@
     pttEnd() {
       if (!this.pttDown) return;
       this.pttDown = false;
-      // Recognition lags the voice a little: give it a moment to finish the last words.
-      setTimeout(() => { this.stopMic(); this.send(); }, 450);
+      // Recognition lags the voice a little: keep listening a moment to catch the last words, then send.
+      this.pttTail = true;
+      this.render();
+      this.pttTimer = setTimeout(() => {
+        this.pttTail = false;
+        this.stopMic();
+        this.send({ held: true });
+      }, 450);
     }
 
     // -------------------------------------------- the phone
@@ -377,9 +575,19 @@
 
     setState(s) {
       this.state = s;
-      // Without barge-in the mic is off while Talk speaks, and back on after.
-      if (this.wantsMic()) { if (!this.rec && prefs.mode !== 'push') this.listen(); } else if (prefs.mode !== 'push') this.stopMic();
+      this.syncMic();
       this.render();
+    }
+
+    /** The mic follows wantsMic(): on when it should hear J, off otherwise (no echo while Talk speaks). */
+    syncMic() {
+      clearTimeout(this.micTimer);
+      if (this.wantsMic()) { if (!this.rec && !this.micBlocked) this.listen(); }
+      else {
+        this.stopMic();
+        // Hands-free without barge-in: back on shortly after Talk's voice ends.
+        if (mode() === 'hands-free' && !this.muted && !this.speaker.speaking) this.micTimer = setTimeout(() => this.syncMic(), 400);
+      }
     }
 
     note(t) {
@@ -393,23 +601,32 @@
     render(said) {
       const box = el('#callPane');
       if (!box) return;
-      const label = { connecting: 'Connecting…', listening: prefs.mode === 'push' ? 'Hold to talk' : 'Listening…', hearing: 'Hearing you…', thinking: 'Thinking…', speaking: 'Talk is speaking' }[this.state];
+      const push = mode() === 'push';
+      const label = { connecting: 'Connecting…', listening: push ? 'Hold the button (or Space) to talk' : this.wantsMic() ? 'Listening…' : 'Hold to talk', hearing: 'Hearing you…', thinking: 'Thinking…', speaking: push ? 'Talk is speaking: hold to cut in' : 'Talk is speaking' }[this.state];
       box.dataset.state = this.state;
+      box.dataset.mode = push ? 'push' : 'hands-free';
       el('#callState').textContent = this.muted ? 'Muted' : label;
       if (said !== undefined) el('#callYou').textContent = said;
       else if (this.state === 'hearing') el('#callYou').textContent = `${this.heard} ${this.interim}`.trim();
       el('#callNote').textContent = this.lastNote ?? '';
       const l = this.lastLatency;
       const med = this.latencies.length ? [...this.latencies].sort((a, b) => a - b)[Math.floor(this.latencies.length / 2)] : null;
-      el('#callLatency').textContent = l ? `Last reply: ${(l.ms / 1000).toFixed(1)} s from your last word to Talk's first (pause ${(l.pause / 1000).toFixed(1)} s${l.claude ? `, Claude ${(l.claude / 1000).toFixed(1)} s` : ''})${this.latencies.length > 1 ? ` · median ${(med / 1000).toFixed(1)} s over ${this.latencies.length}` : ''}` : '';
+      const voice = S.engine === 'kokoro' ? kokoro.label() : S.engine === 'eleven' ? 'ElevenLabs Flash' : 'browser voice';
+      el('#callLatency').textContent = [
+        l ? `Last reply: ${(l.ms / 1000).toFixed(1)} s from your last word to Talk's first (pause ${(l.pause / 1000).toFixed(1)} s${l.claude ? `, Claude ${(l.claude / 1000).toFixed(1)} s` : ''}, voice ${(l.voiceMs / 1000).toFixed(1)} s)${this.latencies.length > 1 ? ` · median ${(med / 1000).toFixed(1)} s over ${this.latencies.length}` : ''}` : '',
+        `Voice: ${voice}${this.dropped ? ` · ${this.dropped} echo${this.dropped > 1 ? 'es' : ''} ignored` : ''}`,
+      ].filter(Boolean).join(' · ');
       el('#callMute').textContent = this.muted ? 'Unmute' : 'Mute';
-      el('#callPtt').hidden = prefs.mode !== 'push';
+      const ptt = el('#callPtt');
+      ptt.classList.toggle('down', this.pttDown || !!this.pttTail);
+      ptt.textContent = this.pttDown ? 'Listening… release to send' : this.pttTail ? 'Sending…' : `Hold to talk${device() === 'computer' ? ' (or Space)' : ''}`;
     }
 
     async hangUp() {
       call = null;
       clearInterval(this.ping);
       clearTimeout(this.silence);
+      clearTimeout(this.micTimer);
       this.abort.abort();
       this.stopMic();
       this.speaker.hush();
@@ -459,66 +676,85 @@
     }
   }
 
-  function renderSettings() {
-    const voices = speechSynthesis.getVoices().filter((v) => v.lang?.startsWith((navigator.language || 'en').slice(0, 2)));
-    const auto = pickVoice();
-    el('#callSettingsBody').innerHTML = `
-      <label>Mode <select id="callMode"><option value="hands-free" ${prefs.mode === 'hands-free' ? 'selected' : ''}>Hands-free (a pause sends)</option><option value="push" ${prefs.mode === 'push' ? 'selected' : ''}>Push to talk</option></select></label>
-      <label><input type="checkbox" id="callBarge" ${prefs.bargeIn ? 'checked' : ''}> Talking interrupts Talk${iOS ? ' (works best with headphones on iPhone)' : ''}</label>
-      <label>Pause before Talk answers <select id="callPause">${[[500, 'short'], [800, 'normal'], [1300, 'long']].map(([v, n]) => `<option value="${v}" ${prefs.pause === v ? 'selected' : ''}>${n}</option>`).join('')}</select></label>
-      <label>Voice <select id="callVoice"><option value="">Automatic (${esc(auto?.name ?? 'browser default')})</option>${voices.map((v) => `<option ${v.name === prefs.voice ? 'selected' : ''}>${esc(v.name)}</option>`).join('')}</select></label>
-      <label>Speed <input type="range" id="callRate" min="0.8" max="1.4" step="0.02" value="${prefs.rate}"></label>
-      <label><input type="checkbox" id="callEleven" ${prefs.eleven ? 'checked' : ''}> Nicer voice: ElevenLabs Flash through Hawkes Gen, about $${FLASH_PER_MIN.toFixed(2)} a minute while Talk speaks (adds about half a second before Talk's first word)</label>
-      <label ${prefs.eleven ? '' : 'hidden'}>ElevenLabs voice <select id="callElevenVoice"><option value="">loading…</option></select></label>
-      <p class="meta">The browser's voice and speech recognition are free. Talk's answers run on the Max plan like the chat.</p>`;
-    if (prefs.eleven) loadElevenVoices();
+  /**
+   * The Settings tab's voice test (and a measurement): says a sentence with the chosen engine and reports the time to
+   * the first sound, and Kokoro's real-time factor (seconds of compute per second of speech; under 1 keeps up).
+   */
+  async function testVoice(text = "Hi J. This is Talk's voice: the agent is started, and the details are in the chat.") {
+    await loadSettings();
+    const tmp = {};
+    unlockAudio(tmp);
+    const ctx = tmp.ctx;
+    const out = { engine: S.engine };
+    if (S.engine === 'kokoro') {
+      const t0 = performance.now();
+      const ok = await kokoro.load();
+      out.load = { ms: Math.round(performance.now() - t0), device: kokoro.device, dtype: kokoro.dtype, ok, error: kokoro.error };
+      if (!ok) return out;
+      const runs = [];
+      for (const s of [text, 'Two short sentences.', 'The daily run found three bugs in Dose Of Destruction, and one of them blocks the second stage.']) {
+        const t1 = performance.now();
+        const m = await kokoro.synth(s, S.kokoroVoice, S.rate);
+        runs.push({ chars: s.length, ms: Math.round(performance.now() - t1), audioSeconds: +(m.audio.length / m.rate).toFixed(2), rtf: +((performance.now() - t1) / 1000 / (m.audio.length / m.rate)).toFixed(2) });
+      }
+      out.sentences = runs;
+    }
+    await new Promise((resolve) => {
+      const t0 = performance.now();
+      const sp = new Speaker(() => listener);
+      const listener = { onSpeechStart: () => (out.firstSoundMs = Math.round(performance.now() - t0)), onSpoken: () => !sp.speaking && resolve(), note: () => {} };
+      sp.ctx = ctx;
+      sp.say(text);
+      out.speaker = sp;
+      setTimeout(resolve, 20_000);
+    });
+    ctx?.close?.().catch(() => {});
+    const sp = out.speaker;
+    delete out.speaker;
+    out.voice = out.engine === 'browser' || !sp.stats[0] || sp.stats[0].engine === 'browser' ? pickVoice()?.name ?? 'browser default' : out.engine === 'kokoro' ? S.kokoroVoice : S.elevenVoice;
+    console.info('[call] voice test', out);
+    return out;
   }
 
-  async function loadElevenVoices() {
-    try {
-      const r = await fetch(`${GEN}/v1/providers/elevenlabs/voices`).then((x) => x.json());
-      const list = (r.voices ?? []).filter((v) => v.category === 'premade' || v.category === 'professional' || v.category === 'cloned' || v.category === 'generated');
-      if (!prefs.elevenVoice && list[0]) { prefs.elevenVoice = list[0].id; savePrefs(); }
-      el('#callElevenVoice').innerHTML = list.map((v) => `<option value="${esc(v.id)}" ${v.id === prefs.elevenVoice ? 'selected' : ''}>${esc(v.name)}</option>`).join('');
-    } catch (e) {
-      el('#callElevenVoice').innerHTML = `<option>couldn't load: ${esc(e.message)}</option>`;
-    }
-  }
+  /** For the Settings tab (settings.js). */
+  window.callVoice = {
+    device, pickVoice, testVoice, kokoro, loadSettings,
+    get settings() { return S; },
+    /** The call in progress (for debugging in the console). */
+    get call() { return call; },
+    get prices() { return prices; },
+    get local() { return local; },
+    setLocal(patch) { Object.assign(local, patch); saveLocal(); },
+    /** New settings saved on the Settings tab: a call in progress uses them from its next sentence. */
+    apply(next) {
+      S = { ...DEFAULTS, ...next, mode: { ...DEFAULTS.mode, ...(next?.mode ?? {}) } };
+      if (S.engine === 'kokoro' && call) kokoro.load();
+      if (call) { call.syncMic(); call.render(); }
+    },
+  };
 
   document.addEventListener('click', (e) => {
     if (e.target.closest('#talkCall')) startCall();
     if (e.target.id === 'callHang') call?.hangUp();
-    if (e.target.id === 'callMute' && call) { call.muted = !call.muted; if (call.muted) call.stopMic(); call.setState(call.state); }
-    if (e.target.id === 'callOrb' && call && prefs.mode !== 'push') {
+    if (e.target.id === 'callMute' && call) { call.muted = !call.muted; call.syncMic(); call.render(); }
+    if (e.target.id === 'callOrb' && call) {
       // Tapping the circle: interrupt Talk, or send what was heard now.
       if (call.speaker.speaking || call.thinking) call.bargeIn();
       else if (call.heard || call.interim) call.send();
     }
-    if (e.target.id === 'callSettingsBtn') { const b = el('#callSettings'); b.hidden = !b.hidden; if (!b.hidden) renderSettings(); }
+    if (e.target.id === 'callSettingsBtn') window.show?.('settings');
   });
-  document.addEventListener('change', (e) => {
-    const t = e.target;
-    if (t.id === 'callMode') prefs.mode = t.value;
-    else if (t.id === 'callBarge') prefs.bargeIn = t.checked;
-    else if (t.id === 'callPause') prefs.pause = Number(t.value);
-    else if (t.id === 'callVoice') prefs.voice = t.value;
-    else if (t.id === 'callRate') prefs.rate = Number(t.value);
-    else if (t.id === 'callEleven') { prefs.eleven = t.checked; renderSettings(); }
-    else if (t.id === 'callElevenVoice') prefs.elevenVoice = t.value;
-    else return;
-    savePrefs();
-    if (call) { call.stopMic(); call.setState(call.state); }
-  });
-  // Push to talk: hold the button (touch or mouse), or hold the space bar on a computer.
+  // Push to talk: hold the button (touch or mouse), or hold the space bar on a computer, in either mode.
   const ptt = el('#callPtt');
   ptt.addEventListener('pointerdown', (e) => { e.preventDefault(); ptt.setPointerCapture?.(e.pointerId); call?.pttStart(); });
   ptt.addEventListener('pointerup', () => call?.pttEnd());
   ptt.addEventListener('pointercancel', () => call?.pttEnd());
   ptt.addEventListener('contextmenu', (e) => e.preventDefault());
-  addEventListener('keydown', (e) => { if (call && prefs.mode === 'push' && e.code === 'Space' && !e.repeat && !/INPUT|TEXTAREA|SELECT/.test(e.target.tagName)) { e.preventDefault(); call.pttStart(); } });
-  addEventListener('keyup', (e) => { if (call && prefs.mode === 'push' && e.code === 'Space') call.pttEnd(); });
+  const typing = (t) => /INPUT|TEXTAREA|SELECT/.test(t.tagName) || t.isContentEditable;
+  addEventListener('keydown', (e) => { if (call && e.code === 'Space' && !typing(e.target)) { e.preventDefault(); if (!e.repeat) call.pttStart(); } });
+  addEventListener('keyup', (e) => { if (call && e.code === 'Space' && !typing(e.target)) { e.preventDefault(); call.pttEnd(); } });
+  addEventListener('blur', () => call?.pttEnd()); // Space released in another window
   // The screen locked or the tab went away: the mic stops; it comes back with the page.
   document.addEventListener('visibilitychange', () => call?.onVisible());
-  window.speechSynthesis?.addEventListener?.('voiceschanged', () => { if (!el('#callSettings').hidden) renderSettings(); });
   if (!('speechSynthesis' in window)) el('#talkCall').hidden = true;
 })();

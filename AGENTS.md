@@ -99,6 +99,7 @@ the service detached; restart it after changing `src/`. The MCP server (`bin/stu
 - `studio_dev_open`, `studio_dev_status` (also beta vs live), `studio_dev_stop`, `studio_dev_resolve`
 - `studio_roadmap`, `studio_roadmap_edit`, `studio_scout`, `studio_ready`, `studio_comments`, `studio_pm` (the PM loop)
 - `studio_costs` (what the studio costs: AWS, generation, Claude, per product, idle money; the budget)
+- `studio_settings` (J's settings: calls, agents, PM, notifications, budgets; cost-raising changes need his quoted yes)
 - `studio_inbox` (J's Inbox: what's waiting on him, his answers given in Talk, filing a question instead of asking in prose)
 - `memory_search`, `memory_get`, `memory_write`, `memory_curate` (the shared memory; agents get a server with only search,
   get and write, as candidates)
@@ -146,7 +147,8 @@ a budget (`approveGpu`, `gpuCleared`, `tasksAwaitingGpu`; the PM asks him once);
 | `src/detach.ts`, `bin/detached-run.mjs`, `src/drain.ts` | Work that survives a restart: agents' and Talk's Claude Code as `systemd-run --user` units (output in `.data/detached/`, reattached after a restart); critical sections (a merge, a push) that a deploy waits for; resumes are `resumeChanges` (agents.ts, `changes.phase`), `resumeRuns` (pipeline.ts), `resumeTalk` (talk.ts). docs/cloud.md, "Restarts end nothing" |
 | `deploy/` | Server setup (`provision.mjs`, `deploy.mjs`: units, Caddy, DNS, keys), `hawkes-pull.mjs` (the server's pull-deploy), secrets and token helpers |
 | `src/talk.ts`, `dashboard/talk.js` | Talk: Claude Code on the server; streaming, stop, rename/delete, attachments (Gen blobs), Max-plan vs API marker, Studio's notices and the turns Studio starts to explain them (`studioSays`) |
-| `dashboard/call.js` (+ `talk.ts` calls) | Calls: J talks to Talk by voice (📞). Browser speech recognition and voice (free), the answer spoken sentence by sentence from `GET /api/talk/<id>/events`, a warm Claude Code process per call (`startCall`), barge-in, push to talk, optional ElevenLabs Flash through Gen; docs/daily.md, "Talking to Talk by voice" |
+| `dashboard/call.js`, `dashboard/kokoro-worker.js` (+ `talk.ts` calls) | Calls: J talks to Talk by voice (📞). Browser speech recognition and voice (free, the default), the answer spoken sentence by sentence from `GET /api/talk/<id>/events`, a warm Claude Code process per call (`startCall`, told the device), push to talk (the button, Space) that cuts Talk off, hands-free with the mic off while Talk speaks and echo dropped, Kokoro in the browser (optional, free) and ElevenLabs Flash through Gen (optional, paid); docs/daily.md, "Talking to Talk by voice" |
+| `src/settings.ts`, `dashboard/settings.js` | The ⚙ Settings tab and `/api/settings`: calls, agents, PM, notifications, budgets in one API, stored in Studio (follows J across devices); Talk's `studio_settings`, cost-raising changes need J's quoted yes; docs/daily.md, "Settings" |
 | `src/followup.ts` | Results back to Talk: the conversation a call came from (`X-Talk-Conversation`, sent by Talk's MCP server) is the origin of the changes and runs it starts; finished ones are posted into it (docs/cloud.md, "Talk") |
 | `src/roadmap.ts` | The roadmap (items, tasks, their statuses), comment threads, questions (agents' and J's decisions), the PM decision log |
 | `src/pm.ts` | The PM loop: task statuses from changes, beta checks and go lives; starting work within caps; PM turns; the merge gate, revisions, retries; questions for J; ready to test; undo |

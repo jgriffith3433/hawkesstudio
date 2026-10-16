@@ -14,7 +14,7 @@
 // Calls (J talks, Talk answers aloud; dashboard/call.js): a call keeps one Claude Code process warm for the conversation
 // (--input-format stream-json: each message goes to its stdin), because starting Claude Code and its MCP servers takes
 // most of a normal turn (about 9 s to the first word on the server, 1-2 s warm). Its system prompt asks for spoken,
-// short answers (CALL_PROMPT). The text streams to the call page as events (talkEvents, GET /api/talk/<id>/events),
+// short answers (callPrompt, told the device J calls from). The text streams to the call page as events (talkEvents, GET /api/talk/<id>/events),
 // stop interrupts the answer without ending the process (barge-in), and the call ends when J hangs up or goes quiet.
 //
 // A Studio restart (a deploy) doesn't cut an answer off: each turn's Claude Code runs outside Studio where it can
@@ -112,7 +112,7 @@ How to work:
   studio_deploy_plan, studio_rollback (without confirm: the plan). Use hawkesgen tools for generation (images, video,
   music, voice, 3D) and the library.
 - The repos and docs are in ${PROJECTS} (the same layout as J's C:\\Projects); read AGENTS.md files and story docs
-  when you need context. ${sandboxOn() ? 'You can change files only in your workspace (see above); the server\'s own checkouts are read-only.' : 'You can\'t edit files here: changes go through agents (studio_fix starts one for findings).'}
+  when you need context. ${sandboxOn() ? 'You change files only in your workspace (see above); the server\'s own checkouts are read-only.' : 'You change things by starting agents (below), not by editing files in this session.'}
 - J doesn't review code. Explain changes in plain words: what was wrong, what changed, how it was verified, the
   verdict of the verification playtest, and show the evidence. Screenshots and videos are library assets: link them as
   ${media}/v1/files/<asset id> (images as ![...](url), videos as plain links). Agent changes carry ready-made links
@@ -148,7 +148,17 @@ How to work:
   Quality bars: products.json "quality" says what "done" means per product; once a full review says a scenario meets
   it, that scenario's daily review is regression-only until the build changes meaningfully (10+ files or 300+ lines,
   or 14 days). When J asks why few findings come in, that is why; studio_playtest with reviewMode "full" asks for one.
-- Making changes: ${sandboxOn() ? 'small ones yourself through the fast lane (above); everything else' : 'you can\'t edit files; you make changes'} by starting an agent (studio_task for a request, studio_fix
+- A request for a change is an action, not a discussion. When J asks for a change (a fix, a feature, a tweak to a
+  product, Studio or Gen), start it in the same turn: ${sandboxOn() ? 'the fast lane (above) when it is small enough, else ' : ''}studio_task (studio_fix for a backlog
+  finding). Don't argue it, don't say you can't edit files, don't ask him to confirm what he just asked for, and never
+  ask twice. If there is a quicker route he could take himself (a setting, a devtools page), say it in at most one
+  sentence while the agent runs. Ask first only when the request is genuinely ambiguous, costs money (GPU, big
+  batches) or touches anything live; the typed words for DEPLOY, ROLLBACK and MERGE stay.
+- Settings (studio_settings; the dashboard's ⚙ Settings tab, stored in Studio so they follow J across devices): the
+  call voice and listening, agent and PM limits, notifications, budgets. Read them when J asks; change them when he
+  asks. A change that can raise costs (more agents or starts, higher limits or budget, the paid ElevenLabs voice) needs
+  his own yes in this conversation: pass his words as quote (Studio checks them).
+- Making changes: ${sandboxOn() ? 'small ones yourself through the fast lane (above); everything else' : 'you make changes'} by starting an agent (studio_task for a request, studio_fix
   for a backlog finding). It works on its own branch, opens a pull request into beta, playtests it and shows a
   preview at https://<sub>.hawkesgen.com/c/<change id>/. When J approves it here it merges into beta, and the beta
   site rebuilds within a few minutes (any push to beta does: each product repo has a GitHub Action that tells Studio; a Unity game's beta
@@ -403,25 +413,38 @@ talkEvents.setMaxListeners(100);
 const emit = (id: string, e: Record<string, unknown>) => talkEvents.emit(id, e);
 
 /** Spoken answers: appended to the system prompt of a call's process (only calls; the chat stays as it is). */
-const CALL_PROMPT = `
+/** Where J is calling from, as the call page says (its screen and input): phone, tablet or computer. */
+export type CallDevice = 'phone' | 'tablet' | 'computer';
+const DEVICE: Record<CallDevice, string> = {
+  phone: 'on his phone',
+  tablet: 'on a tablet',
+  computer: 'at his computer, a laptop or desktop: he can see the chat and type in it while you talk',
+};
 
-J is on a voice call with you right now (Studio's call mode, often on his phone). What you write is read aloud by a
-speech voice, sentence by sentence as you write it, and he answers by talking:
-- Talk like a person on the phone: one to three short sentences, the answer first, no filler openers. He can ask for more.
+/** Spoken answers: appended to the system prompt of a call's process (only calls; the chat stays as it is). */
+function callPrompt(device: CallDevice | null) {
+  return `
+
+J is on a voice call with you right now (Studio's call mode${device ? `, ${DEVICE[device]}` : ''}). What you write is read aloud
+by a speech voice, sentence by sentence as you write it, and he answers by talking:
+- Spoken answers are one or two short sentences, the answer first, no filler openers. He can ask for more.
 - Never put tables, Markdown lists, headings, code, file paths, ids or URLs in what you say: they can't be read aloud.
   Say numbers and names the way you'd say them.
-- When there are details worth seeing (links, videos, lists, numbers), say "I'll put the details in the chat" and write
-  them after a line with only --- on it: everything after that line shows in the conversation and isn't read aloud.
+- Details worth seeing (links, videos, lists, numbers, ids) go after a line with only --- on it: everything after that
+  line shows in the chat and isn't read aloud. Don't announce it ("I'll put the details in the chat"): just do it.
 - Before tool calls that take a while, say a few words first ("Let me look at last night's report."), so he isn't left
   in silence.
 - Speech recognition mishears names: if his words look garbled, make your best guess and say it, or ask briefly.
+- A spoken yes or no answers your own simple questions ("Start the agent?" "Yes."): act on it. When he asks for a
+  change, start it (studio_task) and say so in a sentence.
 - Spoken words never confirm anything irreversible: DEPLOY, ROLLBACK and MERGE confirmations have to be typed in the
   chat. Say so, and put the exact words to type in the details.`;
+}
 
-function claudeArgs(c: Conversation, call: boolean) {
+function claudeArgs(c: Conversation, call: boolean, device: CallDevice | null = null) {
   // The role (.claude/agents/talk.md, or pm.md in the PM's conversation): model, tools, its standing instructions
   // first (stable, so the prompt caches), then Studio's context (products, lanes, the shared memory's decisions).
-  const { args: role } = roleArgs((c as any).kind === 'pm' ? 'pm' : 'talk', { extraPrompt: systemPrompt() + (call ? CALL_PROMPT : '') });
+  const { args: role } = roleArgs((c as any).kind === 'pm' ? 'pm' : 'talk', { extraPrompt: systemPrompt() + (call ? callPrompt(device) : '') });
   const model = (call && process.env.TALK_CALL_MODEL) || process.env.TALK_MODEL;
   if (model) role.splice(role.indexOf('--model') + 1, 1, model);
   return [
@@ -646,7 +669,7 @@ function finishTurn(id: string, ctx: TurnCtx, { stopped = false, code = 0, turn 
 
 // ------------------------------------------------------------ calls
 
-type Call = { child: ChildProcess | null; turn: TurnCtx | null; seen: number; started: number; err: string };
+type Call = { child: ChildProcess | null; turn: TurnCtx | null; seen: number; started: number; err: string; device: CallDevice | null };
 const calls = new Map<string, Call>();
 /** A call ends by itself when the call page stops checking in (it pings every 20 s while the call is up). */
 const CALL_IDLE_MS = () => Number(process.env.TALK_CALL_IDLE_MS ?? 90_000);
@@ -654,7 +677,7 @@ const CALL_IDLE_MS = () => Number(process.env.TALK_CALL_IDLE_MS ?? 90_000);
 /** The call's warm Claude Code process: it reads one stream-json message per turn from stdin. */
 function spawnCall(id: string, call: Call) {
   const c = getConversation(id)!;
-  const child = spawnClaude(['-p', '--input-format', 'stream-json', ...claudeArgs(c, true)]);
+  const child = spawnClaude(['-p', '--input-format', 'stream-json', ...claudeArgs(c, true, call.device)]);
   call.child = child;
   call.err = '';
   readLines(child, (m) => call.turn && !call.turn.finished && onLine(id, m, call.turn));
@@ -683,14 +706,15 @@ function spawnCall(id: string, call: Call) {
  * J starts a call (or the call page checks in): the conversation gets a warm Claude Code process, started now so it is
  * ready by the time J finishes his first sentence (if a text answer is still running, on the next turn instead).
  */
-export function startCall(id: string) {
+export function startCall(id: string, { device }: { device?: unknown } = {}) {
   if (!getConversation(id)) throw new Error('No such conversation');
   const call = calls.get(id);
   if (call) {
     call.seen = Date.now();
     return callInfo(id);
   }
-  const fresh: Call = { child: null, turn: null, seen: Date.now(), started: Date.now(), err: '' };
+  const dev = device === 'phone' || device === 'tablet' || device === 'computer' ? device : null;
+  const fresh: Call = { child: null, turn: null, seen: Date.now(), started: Date.now(), err: '', device: dev };
   calls.set(id, fresh);
   if (!running.has(id)) spawnCall(id, fresh);
   return callInfo(id);
@@ -707,7 +731,7 @@ export function endCall(id: string) {
 
 export function callInfo(id: string) {
   const call = calls.get(id);
-  return call ? { active: true, warm: !!call.child, since: call.started } : { active: false, warm: false, since: null };
+  return call ? { active: true, warm: !!call.child, since: call.started, device: call.device } : { active: false, warm: false, since: null };
 }
 
 setInterval(() => {

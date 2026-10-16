@@ -229,32 +229,58 @@ GPU costs money, so it is priced and approved.**
 
 ## Talking to Talk by voice (calls)
 
-The 📞 button in Talk starts a call: J talks, Talk answers aloud, back and forth until he hangs up. It is made for the
-phone (studio.hawkesgen.com in Safari or Chrome) and costs nothing extra: speech recognition and the voice are the
-browser's own (Web Speech API), and the answers run on the Max plan like the chat. Afterwards it is a normal Talk
-conversation: everything said is in it (J's words marked 🎙, spoken answers 📞).
+The 📞 button in Talk starts a call: J talks, Talk answers aloud, back and forth until he hangs up. It works on the
+laptop and the phone (studio.hawkesgen.com in Edge, Chrome or Safari) and costs nothing extra: speech recognition and
+the default voice are the browser's own (Web Speech API), and the answers run on the Max plan like the chat.
+Afterwards it is a normal Talk conversation: everything said is in it (J's words marked 🎙, spoken answers 📞). The call
+tells Talk the device (phone, tablet or computer, from the page); Talk never assumes a phone.
 
-- **Hands-free** by default: a pause sends what J said (Pause: short, normal, long). Talking while Talk speaks
-  interrupts it (barge-in): its voice stops, the answer stops on the server (what it had written stays in the chat), and
-  J's new words are sent. What the mic hears of Talk's own voice is ignored (it is compared with what Talk just said).
-  On an iPhone barge-in is off by default (iOS mixes the mic and the speaker badly; with headphones turn it on): the mic
-  pauses while Talk speaks, and tapping the circle interrupts. **Push to talk** (⚙ settings) is the fallback: hold the
-  button (or the space bar on a computer). Tapping the circle sends what was heard right away.
+- **Push to talk, front and center:** the big "Hold to talk" button is always on the call bar, and on a computer holding
+  Space does the same. Pressing cuts Talk off at once (barge-in: its voice stops and the answer stops on the server;
+  what it had written stays in the chat), and the mic listens only while it is held. Push to talk is the default on a
+  computer; hands-free is the default on a phone (Settings, per kind of device).
+- **Hands-free:** a pause sends what J said (short, normal, long). The mic is off while Talk speaks, and for a moment
+  after, so it never hears Talk through the speakers, unless barge-in is on (Settings: "I use headphones"). Whatever
+  the mic hears that matches what Talk said in the last 20 seconds (fuzzy: most of the words, in order) is dropped,
+  also when recognition delivers it late, after Talk stopped. The call bar counts the echoes it ignored.
 - **Fast:** the reply is spoken sentence by sentence as it streams (`GET /api/talk/<id>/events`), not after it ends,
   and a call keeps one Claude Code process warm (`talk.ts` `startCall`, `--input-format stream-json`), started when J
-  taps 📞 so it is ready by his first sentence. Starting Claude Code with its MCP servers is most of a normal turn's
-  wait (measured October 2026: about 9.5 s to the first word per chat turn, 0.7 s to the first word warm with Haiku);
-  the call page shows each reply's time from J's last word to Talk's first, and the median.
-- **Spoken answers:** in a call Talk's instructions (`CALL_PROMPT`) ask for one to three short sentences, nothing that
-  can't be read aloud (tables, links, ids), and details after a `---` line: they show in the chat and aren't read.
-  Confirmations that change something for good (`DEPLOY`, `ROLLBACK`, `MERGE`) are never taken by voice: J types them.
-- **Nicer voice (optional, off):** ⚙ → ElevenLabs Flash through Hawkes Gen (`audio.voice`, `eleven_flash_v2_5`),
-  about $0.14 per minute Talk speaks, about half a second more before the first word (measured 0.4–0.75 s a sentence).
-  A sentence whose clip isn't back in 3 s is spoken by the browser's voice. Clips land in Gen's library (project
-  `hawkesstudio`).
+  taps 📞 so it is ready by his first sentence (measured October 2026: about 9.5 s to the first word per chat turn,
+  1.3-2.6 s warm on the server). The call bar shows each reply's time from J's last word to Talk's first, and the voice's
+  share of it.
+- **Spoken answers:** in a call Talk's instructions (`callPrompt` in talk.ts) ask for one or two short sentences,
+  nothing that can't be read aloud (tables, links, ids), and details after a `---` line, silently: they show in the chat
+  and aren't read, with no "I'll put the details in the chat". A spoken yes or no answers Talk's own simple questions
+  ("start the agent?"). Confirmations that change something for good (`DEPLOY`, `ROLLBACK`, `MERGE`) are never taken
+  by voice: J types them.
+- **Voices** (Settings › Calls):
+  - *Browser voice* (the default): free and instant; Edge's "Natural" neural voices are picked first. The voice's name
+    is kept per device (voices differ per browser).
+  - *Kokoro* (free, more natural): kokoro-js 1.2.1 (82M parameters) running in the browser (`dashboard/kokoro-worker.js`,
+    WebGPU fp32, else WebAssembly q8), loaded on the first call and cached by the browser. A sentence it hasn't made
+    within 1.5 s is said by the browser voice; three late in a row and the browser voice takes the rest of the call.
+    Measured on J's laptop (Core Ultra 7 155U, Intel integrated graphics, October 2026): load 20-35 s the first time
+    (the model is about 330 MB), the first sentence after loading 4-14 s (warm-up), then 1.2-2.5 s for a short sentence
+    and 3-5 s for a long one (real-time factor 0.5-1.2). On the CPU (WebAssembly, single-threaded without cross-origin
+    isolation): 5-14 s a sentence (real-time factor 2.3-2.9). Too slow to be the default on integrated graphics; worth
+    trying on a machine with a real GPU (Settings has a test that measures it on the device).
+  - *ElevenLabs Flash* (premium) through Hawkes Gen (`audio.voice`, `eleven_flash_v2_5`): about $0.14 per minute
+    Talk speaks (shown in Settings), about half a second more before the first word (0.4-0.75 s a sentence); a clip
+    that isn't back in 3 s is said by the browser voice. Clips land in Gen's library (project `hawkesstudio`).
 - **Phones:** the first tap unlocks sound and asks for the microphone (iOS: Settings › Safari › Microphone and Speech
   Recognition if it was denied). The screen is kept on during a call (Wake Lock); if it locks anyway the mic stops and
   the call picks up again when J comes back. The call ends by itself 90 s after the page stops checking in.
+
+## Settings
+
+The ⚙ Settings tab (`dashboard/settings.js`, `GET/POST /api/settings`, `src/settings.ts`) has everything J can set,
+stored in Studio so it follows him from his laptop to his phone: calls (voice, Kokoro and ElevenLabs voices, speed,
+push to talk or hands-free per kind of device, barge-in, the pause; the browser voice's name is the device's own), agent
+limits, the PM loop, phone notifications (the ntfy topic, test, new topic) and budgets (with a link to Costs). Call
+settings are in the `settings` table; the others stay where they were (`agents.json`, `pm.json`, notify, costs) behind
+the one API. Talk reads and changes them with `studio_settings` when J asks; from Talk, anything that can raise costs
+(higher limits or budget, more agents or starts, auto-fix or the PM on, another model, the paid voice) is refused unless
+the request quotes J's own yes from that conversation, and the notification topic is changed only on the dashboard.
 
 ## The conversation (J and Claude, in the Claude app)
 
