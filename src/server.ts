@@ -353,6 +353,8 @@ server.listen(PORT, '127.0.0.1', () => {
   db.prepare(`UPDATE runs SET status = 'interrupted' WHERE status = 'running'`).run();
   for (const { job } of orphans) gen.cancel(job).catch(() => {});
   console.log(`Hawkes Studio on http://127.0.0.1:${PORT}`);
+  // An agent's smoke check of a changed Studio (agents.ts) starts the server and nothing else.
+  if (process.env.STUDIO_SMOKE === '1') return;
   // /dev/ on each beta site: the front doors Caddy sends /dev/* to, and the beta working copies' auto-commit.
   startFronts();
   startDevService();

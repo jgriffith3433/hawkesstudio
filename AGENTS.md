@@ -37,7 +37,7 @@ So everything also shows in Gen's dashboard, library and usage. Studio adds:
 - `docs/playtest.md`: **the playtest contract** every game implements (`window.hawkesPlaytest`).
 - `docs/daily.md`: how J and Claude use the daily loop.
 - `docs/cloud.md`: **where it runs now** (hawkesgen.com, the AWS control server), how to deploy changes, secrets, logs.
-- `src/agents.ts`: agent workers. A finding goes to Claude Code on a branch cut from beta, then a pull request into beta, then a verification playtest, then J approves, which merges it into beta (not live).
+- `src/agents.ts`: agent workers. A finding goes to Claude Code on a branch cut from beta, then a pull request into beta, then a verification playtest, then J approves, which merges it into beta (not live). Studio and Gen themselves: a pull request into main, checked by CI and a smoke check (below).
 - `products.json`: every product, how to serve it locally, what to playtest, its story docs and deploy steps.
 - `CLAUDE.md` just imports this file.
 
@@ -50,6 +50,19 @@ Do not commit unless asked. **Never go live or roll back without J's exact words
 `npm run typecheck` and `npm test`; commit only your own files (other sessions edit here too). Roll back with
 `git revert` + push. `deploy/deploy.mjs` is for server setup (units, Caddy, DNS, keys) and never copies this folder.
 See `docs/cloud.md` ("How code gets to the server").
+
+**Studio and Gen as agent targets** (`products.json` `infra`, `workInfra` in `src/agents.ts`): J can ask Talk for a
+change to Hawkes Studio or Hawkes Gen (`studio_task` with `hawkesstudio` / `hawkesgen`). The agent works in a worktree
+of `/srv/hawkes/<repo>` on `task/<id>` cut from main (npm ci, then `npm run typecheck` and `npm test` against the
+running Gen); Studio opens a pull request into main and verifies it: CI on the pull request (GitHub check runs), the
+checks again, and a smoke check (the changed service from the worktree on a spare port with a scratch data folder and
+no keys: health ok, the dashboard page loads, `node --check` on `dashboard/*.js`; Studio runs with `STUDIO_SMOKE=1`,
+which skips the `/dev/` front doors). Approving (`MERGE <id>`, J's call, refused unless CI is green) merges into main,
+and the server deploys it like any push. Guard rails (`guardFiles`): a change touching `.data/`, `.env`, keys or `*.pem`
+fails unpushed; so does one touching the deploy scripts (`deploy/hawkes-pull.mjs`, `deploy/deploy.mjs` with Caddy,
+provisioning), secrets handling (`deploy/secrets.mjs`, `deploy/*-token.mjs`, `src/claude.ts`, `bin/git-credential-hawkes`;
+Gen: `bin/fetch-secrets.mjs`, `src/auth.ts`), CI workflows or the hooks' token check (`src/github-oidc.ts`), unless J's
+request names the file. Infra agents and their checks run without GitHub, AWS or service keys in their environment.
 
 ## Run
 

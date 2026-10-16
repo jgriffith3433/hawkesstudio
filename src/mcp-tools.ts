@@ -145,7 +145,7 @@ export function studioMcp({ studio, waitRun }: Client = { studio: defaultStudio,
     },
     {
       name: 'studio_changes',
-      description: 'Agent changes: findings an agent fixed on a branch, with the pull request, a summary, the diff size and a verification playtest (verdict, video). Also the agent spend and limits for today.',
+      description: 'Agent changes: findings an agent fixed on a branch, or requests J made, with the pull request, a summary, the diff size and a verification playtest (verdict, video), or for Hawkes Studio and Hawkes Gen (infra: true) the checks (CI, tests, smoke check). Also the agent spend and limits for today.',
       inputSchema: obj({ status: str('queued, working, verifying, ready, failed, merged, closed (comma list, optional)'), product: str('Product id (optional)') }),
       run: async ({ status, product }) => studio(`/api/changes?${new URLSearchParams({ ...(status ? { status } : {}), ...(product ? { product } : {}) })}`),
     },
@@ -157,13 +157,13 @@ export function studioMcp({ studio, waitRun }: Client = { studio: defaultStudio,
     },
     {
       name: 'studio_task',
-      description: 'Have an agent do something J asked for in a product (a feature, a change, a polish pass, content): Claude Code works on a new branch, runs the checks, Studio opens a pull request, playtests it and makes a preview. Nothing goes live until J approves. Write the request the way J said it, plus any detail you agreed with him.',
-      inputSchema: obj({ product: str('Product id'), request: str('What to do, in plain words') }, ['product', 'request']),
+      description: 'Have an agent do something J asked for in a product (a feature, a change, a polish pass, content): Claude Code works on a new branch, runs the checks, Studio opens a pull request into beta, playtests it and makes a preview. Nothing goes live until J approves. Also for Hawkes Studio and Hawkes Gen themselves (product "hawkesstudio" or "hawkesgen"): a branch from main, typecheck and tests, a pull request into main, then CI on it and a smoke check of the changed service; approving merges into main, which deploys that service (a restart). Agents may not change deploy scripts, secrets handling, CI workflows or the GitHub hooks\' token checks unless the request names the file, and never .data, keys or .env. Write the request the way J said it, plus any detail you agreed with him.',
+      inputSchema: obj({ product: str('Product id, or hawkesstudio / hawkesgen'), request: str('What to do, in plain words') }, ['product', 'request']),
       run: async ({ product, request }) => studio('/api/changes', { method: 'POST', body: { product, request } }),
     },
     {
       name: 'studio_change',
-      description: 'One agent change in detail (summary, commits, verify playtest, notes, the last log lines), or act on it: revise (the agent tries again with a note), close (close the PR), approve (merge the PR into beta: the beta site, not live; ONLY after J approves in chat; confirm must be exactly "MERGE <change id>"). Going live is studio_deploy_plan, then studio_deploy.',
+      description: 'One agent change in detail (summary, commits, verify playtest, notes, the last log lines), or act on it: revise (the agent tries again with a note), close (close the PR), approve (merge the PR into beta: the beta site, not live; ONLY after J approves in chat; confirm must be exactly "MERGE <change id>"). Going live is studio_deploy_plan, then studio_deploy. A Hawkes Studio or Hawkes Gen change (infra: true) has "Checks" instead of a playtest (CI on the pull request, the tests, a smoke check); approve merges it into main, which deploys that service itself once CI passes (a restart; refused unless CI is green).',
       inputSchema: obj({ id: str('Change id (c_...)'), action: str('revise | close | approve (optional)'), note: str('For revise: what to change'), confirm: str('For approve: exactly "MERGE <id>" after J said yes') }, ['id']),
       run: async ({ id, action, note, confirm }) => {
         if (action === 'approve') return studio(`/api/changes/${id}/approve`, { method: 'POST', body: { confirm, by: 'J (via Claude)' } });

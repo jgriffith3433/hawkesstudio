@@ -352,13 +352,13 @@ async function loadChanges() {
       <h4>${CH_ICON[c.status] ?? ''} ${esc(c.title)} <span class="pill ${c.status === 'ready' ? 'ship' : c.status === 'failed' ? 'failed' : ''}">${esc(c.status)}</span><span class="meta">${esc(c.product)} · ${esc(c.id)} · $${(c.cost ?? 0).toFixed(2)}</span></h4>
       <div class="meta">${esc(c.detail ?? '')}${c.diffstat ? ` · ${esc(c.diffstat)}` : ''}${c.pr_url ? ` · <a href="${esc(c.pr_url)}" target="_blank">pull request #${c.pr}</a>` : ''}</div>
       ${c.summary ? `<details><summary class="meta">What the agent did</summary><pre>${esc(c.summary)}</pre></details>` : ''}
-      ${v ? `<div class="summary"><b>Verify playtest:</b> ${esc(v.outcome ?? '')} · review <span class="pill ${esc(v.verdict ?? '')}">${esc(v.verdict ?? 'n/a')}</span> ${esc(v.summary ?? '')}</div>` : ''}
+      ${v && c.infra ? `<div class="summary"><b>Checks:</b> <span class="pill ${esc(v.verdict ?? '')}">${esc(v.outcome ?? '')}</span> ${esc(v.summary ?? '')}</div>` : v ? `<div class="summary"><b>Verify playtest:</b> ${esc(v.outcome ?? '')} · review <span class="pill ${esc(v.verdict ?? '')}">${esc(v.verdict ?? 'n/a')}</span> ${esc(v.summary ?? '')}</div>` : ''}
       ${c.notes?.length ? `<div class="meta">${c.notes.map((n) => `${esc(n.by)}: ${esc(n.text)}`).join(' · ')}</div>` : ''}
       <details><summary class="meta">Log</summary><pre>${esc((c.log ?? []).slice(-40).join(String.fromCharCode(10)))}</pre></details>
     </div><div class="side">
       ${v?.video ? `<a href="#" data-video="${file(v.video)}">▶ fixed version</a>` : ''}${v?.preview ? ` <a href="${esc(v.preview)}" target="_blank">🔗 try it</a>` : ''}
       <div class="actions">
-        ${c.status === 'ready' ? `<button class="small primary" data-change="${c.id}" data-act="approve" title="Merges it into the beta branch (the beta site). Nothing goes live until you go live from Today.">Approve into beta</button>` : ''}
+        ${c.status === 'ready' && c.infra ? `<button class="small primary" data-change="${c.id}" data-act="approve" data-infra="1" title="Merges it into main: ${esc(c.product)} deploys itself once CI passes (a restart).">Approve into main</button>` : c.status === 'ready' ? `<button class="small primary" data-change="${c.id}" data-act="approve" title="Merges it into the beta branch (the beta site). Nothing goes live until you go live from Today.">Approve into beta</button>` : ''}
         ${['ready', 'failed'].includes(c.status) ? `<button class="small" data-change="${c.id}" data-act="revise">Ask for changes</button>` : ''}
         ${!['merged', 'closed'].includes(c.status) ? `<button class="small" data-change="${c.id}" data-act="close">Close</button>` : ''}
       </div></div></div>`;
@@ -371,7 +371,10 @@ document.addEventListener('click', async (e) => {
     const id = b.dataset.change;
     try {
       if (b.dataset.act === 'approve') {
-        if (!confirm('Merge this pull request into beta? The beta site and a beta playtest follow; nothing goes live until you use "Go live" on Today.')) return;
+        const ask = b.dataset.infra
+          ? 'Merge this pull request into main? It deploys itself once CI passes: the service restarts (after running work finishes) and rolls back if it is not healthy.'
+          : 'Merge this pull request into beta? The beta site and a beta playtest follow; nothing goes live until you use "Go live" on Today.';
+        if (!confirm(ask)) return;
         await api(`/api/changes/${id}/approve`, { method: 'POST', body: { confirm: `MERGE ${id}`, by: 'J' } });
       }
       if (b.dataset.act === 'revise') {

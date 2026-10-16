@@ -82,6 +82,11 @@ Hawkes Gen and Hawkes Studio run on an AWS control server: **https://studio.hawk
 - **Gen and Studio themselves** are private repos (`jgriffith3433/hawkesgen`, `jgriffith3433/hawkesstudio`) with no beta
   lane: a push to their `main` deploys to the cloud once CI passes (CI's last job tells the server, which pulls it within seconds). Push only with
   J's OK; roll back with `git revert` + push.
+- **Talk can change Gen and Studio too** (`studio_task` with `hawkesstudio` or `hawkesgen`): the agent works on a branch
+  from main, Studio opens a pull request into main and checks it (CI, tests, a smoke check of the changed service on a
+  spare port). J approving it (`MERGE <id>`) merges into main, which deploys and restarts that service. Agents can't
+  touch deploy scripts, secrets handling, CI or the hooks' token checks unless J names the file, and never `.data`, keys
+  or `.env`. See `hawkesstudio/docs/cloud.md` ("Changing Studio and Gen through agents").
 - **The 5 AM daily trial** runs there and plays beta (and the live sites). Agents then open pull requests into `beta`
   for the worst new bugs; J approves them in Studio's Changes tab, which merges them into beta (not live). Going live is
   a separate step (below).

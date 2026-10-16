@@ -13,14 +13,24 @@
 //                        Going live is a separate step (deploy.ts: the deploy plan, then "DEPLOY <product>").
 //   revise(change, note) -> the agent continues on the same branch with J's note; the PR updates.
 //
+// Hawkes Studio and Hawkes Gen themselves (products.json "infra") take requests too (startTask), but they have no beta
+// lane: main is what runs on the control server. Their changes are a worktree of /srv/hawkes/<repo> on task/<id> cut
+// from main, npm ci, the agent (typecheck and tests against the running Gen), guard rails (protected files), a pull
+// request into main, then verifyInfra: CI on the pull request, the checks again, and a smoke check of the changed
+// service on a spare port. Approving merges into main; CI on main tells the server and it deploys itself
+// (deploy/hawkes-pull.mjs: waits for runs, agents and Talk answers; rolls back if unhealthy).
+//
 // Runs on the server (STUDIO_SERVER=1, repos cloned by repos.ts, GITHUB_TOKEN from /run/hawkes/github.env).
 // Caps (settings.agents): how many fixes run at once and per day, and a daily cost limit.
 
 import fs from 'node:fs';
+import os from 'node:os';
+import net from 'node:net';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import { spawn, spawnSync } from 'node:child_process';
 import { db, newId, J, parse } from './db.ts';
-import { getProduct, PROJECTS, DATA, storyOf, localUrl, type Product } from './config.ts';
+import { getProduct, getInfra, isInfra, PROJECTS, DATA, storyOf, localUrl, type Product, type Infra } from './config.ts';
 import { getFinding, updateFinding } from './backlog.ts';
 import { gen, genRun } from './gen.ts';
 import { repoMap } from './repos.ts';
@@ -44,6 +54,8 @@ export type Change = {
   id: string; product: string; findings: string[]; status: string; detail: string | null; repo: string; slug: string; branch: string; base: string;
   worktree: string; request: string | null; pr: number | null; pr_url: string | null; title: string | null; summary: string | null; commits: string[]; diffstat: string | null;
   verify: any; notes: { at: number; by: string; text: string }[]; log: string[]; cost: number; created: number; updated: number | null;
+  /** A change to Hawkes Studio or Hawkes Gen (a pull request into main, which deploys itself), not a product. */
+  infra: boolean;
 };
 
 const SETTINGS_FILE = path.join(DATA, 'agents.json');
@@ -62,7 +74,7 @@ export function saveAgentSettings(patch: Partial<AgentSettings>) {
   return next;
 }
 
-const toChange = (r: any): Change => ({ ...r, findings: parse(r.findings) ?? [], commits: parse(r.commits) ?? [], verify: parse(r.verify), notes: parse(r.notes) ?? [], log: parse(r.log) ?? [] });
+const toChange = (r: any): Change => ({ ...r, infra: isInfra(r.product), findings: parse(r.findings) ?? [], commits: parse(r.commits) ?? [], verify: parse(r.verify), notes: parse(r.notes) ?? [], log: parse(r.log) ?? [] });
 export const getChange = (id: string) => {
   const r = db.prepare('SELECT * FROM changes WHERE id = ?').get(id);
   return r ? toChange(r) : null;
@@ -183,7 +195,7 @@ ${storyOf(p, 6000)}
 
 // ------------------------------------------------------------------ agent
 
-function runAgent(c: Change, briefFile: string, s: AgentSettings): Promise<{ ok: boolean; cost: number; result: string }> {
+function runAgent(c: Change, briefFile: string, s: AgentSettings, env = claudeEnv()): Promise<{ ok: boolean; cost: number; result: string }> {
   return new Promise((resolve) => {
     const prompt = `Read ${path.relative(c.worktree, briefFile).replace(/\\/g, '/')} and do what it says. It's your whole task.`;
     const args = [
@@ -191,7 +203,7 @@ function runAgent(c: Change, briefFile: string, s: AgentSettings): Promise<{ ok:
       '--permission-mode', 'acceptEdits',
       '--allowedTools', 'Read,Edit,Write,Glob,Grep,TodoWrite,Bash(git status:*),Bash(git diff:*),Bash(git add:*),Bash(git commit:*),Bash(git log:*),Bash(npm:*),Bash(npx:*),Bash(node:*),Bash(ls:*),Bash(cat:*)',
     ];
-    const child = spawn('claude', args, { cwd: c.worktree, env: claudeEnv(), windowsHide: true });
+    const child = spawn('claude', args, { cwd: c.worktree, env, windowsHide: true });
     let buf = '';
     let cost = 0;
     let result = '';
@@ -249,15 +261,18 @@ export function costToday() {
 export function startTask(productId: string, request: string) {
   const s = agentSettings();
   if (!s.enabled) throw new Error('Agent workers are turned off (settings).');
-  const p = getProduct(productId);
+  // Studio and Gen themselves: a pull request into main (they have no beta lane).
+  const inf = isInfra(productId) ? getInfra(productId) : null;
+  const p = inf ? null : getProduct(productId);
+  const target = inf ?? p!;
   if (!request.trim()) throw new Error('Say what to do');
-  const busy = listChanges({ status: 'working,verifying,revising', product: p.id });
-  if (busy.length) throw new Error(`${p.name} already has an agent working (${busy[0].id}); it can take the next one when that finishes.`);
-  const { top, slug } = repoFor(p);
+  const busy = listChanges({ status: 'working,verifying,revising', product: target.id });
+  if (busy.length) throw new Error(`${target.name} already has an agent working (${busy[0].id}); it can take the next one when that finishes.`);
+  const { top, slug } = inf ? { top: inf.repo, slug: inf.slug } : repoFor(p!);
   const id = newId('c');
   const words = request.toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 40).replace(/^-|-$/g, '');
   db.prepare('INSERT INTO changes (id, product, findings, status, detail, repo, slug, branch, base, worktree, title, request, notes, log, created) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
-    .run(id, p.id, '[]', 'queued', 'queued (J asked)', top, slug, `task/${id.slice(2)}-${words}`, BETA, path.join(WORK(), id), request.split(String.fromCharCode(10))[0].slice(0, 120), request, '[]', '[]', Date.now());
+    .run(id, target.id, '[]', 'queued', 'queued (J asked)', top, slug, `task/${id.slice(2)}-${words}`, inf ? 'main' : BETA, path.join(WORK(), id), request.split(String.fromCharCode(10))[0].slice(0, 120), request, '[]', '[]', Date.now());
   void pump();
   return id;
 }
@@ -266,6 +281,7 @@ export function startTask(productId: string, request: string) {
 export function startFix(productId: string, findingIds: string[], { auto = false } = {}) {
   const s = agentSettings();
   if (!s.enabled) throw new Error('Agent workers are turned off (settings).');
+  if (isInfra(productId)) throw new Error(`${getInfra(productId).name} has no playtest findings: ask for the change with studio_task.`);
   const p = getProduct(productId);
   const findings = findingIds.map((id) => getFinding(id)).filter(Boolean) as any[];
   if (!findings.length) throw new Error('No such findings');
@@ -301,6 +317,7 @@ async function pump() {
 }
 
 async function work(id: string, note?: string) {
+  if (getChange(id)!.infra) return workInfra(id, note);
   let c = getChange(id)!;
   const p = getProduct(c.product);
   const s = agentSettings();
@@ -455,6 +472,303 @@ async function verifyChange(c: Change, p: Product, findings: any[]) {
   }
 }
 
+// ------------------------------------------------------------ Studio and Gen
+
+/** Never changed by an agent, whatever the request says: data, keys, env files. */
+const FORBIDDEN = [/^\.data\//, /(^|\/)\.env(\.|$)/, /^deploy\/\.keys\//, /\.pem$/, /(^|\/)keys\.env$/];
+/**
+ * Changed only when J names the file in his request (or a note on it): how the server deploys and checks itself,
+ * Caddy (in deploy.mjs), secrets, and the GitHub hooks' token checks. A change that touches one otherwise isn't pushed.
+ */
+const GUARDED: Record<string, string[]> = {
+  hawkesstudio: [
+    'deploy/hawkes-pull.mjs', 'deploy/deploy.mjs', 'deploy/provision.mjs', 'deploy/cloud-init.sh', 'deploy/secrets.mjs', 'deploy/github-token.mjs',
+    'deploy/claude-token.mjs', 'bin/git-credential-hawkes', 'src/github-oidc.ts', 'src/claude.ts', '.github/workflows/',
+  ],
+  hawkesgen: ['bin/fetch-secrets.mjs', 'src/auth.ts', '.github/workflows/'],
+};
+
+/** The files a change may not touch: forbidden ones always; guarded ones unless J's words name them. */
+export function guardFiles(target: string, files: string[], words: string) {
+  const said = words.toLowerCase();
+  const named = (f: string) => said.includes(f.toLowerCase()) || said.includes(path.posix.basename(f).toLowerCase());
+  const out: { file: string; why: 'forbidden' | 'guarded' }[] = [];
+  for (const f of files) {
+    if (FORBIDDEN.some((r) => r.test(f))) out.push({ file: f, why: 'forbidden' });
+    else if ((GUARDED[target] ?? []).some((g) => (g.endsWith('/') ? f.startsWith(g) : f === g)) && !named(f)) out.push({ file: f, why: 'guarded' });
+  }
+  return out;
+}
+
+/** The environment of an infra agent and its checks: no GitHub, AWS or other service keys (Claude's own login stays for the agent). */
+const SECRET = /(KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|AWS_|ANTHROPIC|ELEVENLABS|OPENAI|GITHUB|CLAUDE|STRIPE|SMTP)/i;
+function infraEnv({ agent = false, keepGenKey = true } = {}) {
+  const env: Record<string, string> = {};
+  for (const [k, v] of Object.entries(agent ? claudeEnv() : process.env)) {
+    if (v === undefined) continue;
+    const claude = agent && /^(CLAUDE_CODE_OAUTH_TOKEN|ANTHROPIC_API_KEY)$/.test(k);
+    if (!SECRET.test(k) || claude || (keepGenKey && k === 'HAWKESGEN_KEY')) env[k] = v;
+  }
+  // Not the server: a worktree must never act like the running Studio (repo syncs) or Gen (fleet access).
+  delete env.STUDIO_SERVER;
+  delete env.HAWKES_AWS_ROLE;
+  return env as NodeJS.ProcessEnv;
+}
+
+function sh(cwd: string, cmd: string, env: NodeJS.ProcessEnv, timeoutMs = 15 * 60_000): Promise<{ ok: boolean; out: string; ms: number }> {
+  return new Promise((resolve) => {
+    const t0 = Date.now();
+    const child = spawn(cmd, { cwd, env, shell: true, windowsHide: true });
+    let out = '';
+    const keep = (d: any) => { out = (out + d).slice(-20_000); };
+    child.stdout.on('data', keep);
+    child.stderr.on('data', keep);
+    const timer = setTimeout(() => { out += `\n(timed out after ${Math.round(timeoutMs / 60_000)} min)`; child.kill('SIGTERM'); }, timeoutMs);
+    child.on('close', (code) => { clearTimeout(timer); resolve({ ok: code === 0, out, ms: Date.now() - t0 }); });
+    child.on('error', (e) => { clearTimeout(timer); resolve({ ok: false, out: e.message, ms: Date.now() - t0 }); });
+  });
+}
+const tail = (s: string, n = 25) => s.trim().split('\n').slice(-n).join('\n');
+
+/** npm ci in the worktree, unless node_modules already matches package-lock.json. */
+async function npmCi(id: string, dir: string) {
+  const lock = path.join(dir, 'package-lock.json');
+  const hash = fs.existsSync(lock) ? crypto.createHash('sha1').update(fs.readFileSync(lock)).digest('hex') : 'none';
+  const stamp = path.join(dir, 'node_modules', '.hawkes-lock');
+  if (fs.existsSync(stamp) && fs.readFileSync(stamp, 'utf8') === hash) return;
+  update(id, { detail: 'installing packages (npm ci)' });
+  const r = await sh(dir, 'npm ci --no-audit --no-fund', { ...infraEnv(), PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1' });
+  if (!r.ok) throw new Error(`npm ci failed: ${tail(r.out, 5)}`);
+  fs.writeFileSync(stamp, hash);
+  addLog(id, `npm ci (${Math.round(r.ms / 1000)} s)`);
+}
+
+function writeInfraBrief(c: Change, t: Infra, note?: string) {
+  const dir = path.join(c.worktree, '.hawkes');
+  fs.mkdirSync(dir, { recursive: true });
+  const exclude = path.join(PROJECTS, c.repo, '.git', 'info', 'exclude');
+  if (!fs.existsSync(exclude) || !fs.readFileSync(exclude, 'utf8').includes('.hawkes/')) fs.appendFileSync(exclude, '\n.hawkes/\n');
+  const brief = `# Work on ${t.name}
+
+You are changing ${t.name} itself: ${t.about}
+
+This repository deploys itself. There is no beta lane: when J approves your change, Studio merges its pull request
+into main, CI runs typecheck and tests, and the control server pulls main and restarts ${t.name} (it rolls back if
+the service doesn't come up healthy). A mistake here breaks the service J uses for everything: be careful and keep
+the change small.
+
+## What J asked for
+
+${c.request ?? '(no request)'}
+${note ? `\n## J's note on the last attempt\n\n${note}\n` : ''}
+## How to work
+
+1. Read \`AGENTS.md\` (and the docs it points to, e.g. \`docs/cloud.md\`) before changing anything. Follow its rules.
+2. Make the smallest correct change that does what J asked. Don't refactor unrelated code.
+3. Never touch \`.data/\`, \`.env\` files, keys (\`deploy/.keys/\`, \`*.pem\`, \`keys.env\`) or secrets. Don't change these
+   unless J's request names the file: ${(GUARDED[t.id] ?? []).map((f) => `\`${f}\``).join(', ')}. A change that touches
+   them anyway is thrown away.
+4. Run the checks, and fix what fails:
+${t.checks.map((k) => `   - \`${k}\``).join('\n')}
+   ${t.id === 'hawkesstudio' ? `Studio's tests use the running Hawkes Gen at ${process.env.HAWKESGEN_URL ?? 'http://127.0.0.1:8790'} (free local tools only).` : 'Tests that need something missing here skip themselves.'}
+5. Commit your change with a clear message. Don't push; Studio does.
+6. Write \`.hawkes/summary.md\`: what you changed (files) and why, how you checked it, and anything J should know
+   (in plain words: J doesn't read code). If you couldn't do it, explain why there instead, and don't commit.
+`;
+  fs.writeFileSync(path.join(dir, 'brief.md'), brief);
+  return path.join(dir, 'brief.md');
+}
+
+async function workInfra(id: string, note?: string) {
+  let c = getChange(id)!;
+  const t = getInfra(c.product);
+  const s = agentSettings();
+  const repoDir = path.join(PROJECTS, c.repo);
+  try {
+    update(id, { status: note ? 'revising' : 'working', detail: 'preparing the worktree' });
+    if (!fs.existsSync(c.worktree)) {
+      fs.mkdirSync(WORK(), { recursive: true });
+      // Only refs move in the server's checkout; its files only change through deploy/hawkes-pull.mjs.
+      const f = git(repoDir, ['fetch', '--quiet', 'origin']);
+      if (!f.ok) throw new Error(`fetch failed: ${f.err}`);
+      const w = git(repoDir, ['worktree', 'add', '-b', c.branch, c.worktree, `origin/${c.base}`]);
+      if (!w.ok) throw new Error(`worktree failed: ${w.err}`);
+    }
+    await npmCi(id, c.worktree);
+    const brief = writeInfraBrief(c, t, note);
+    update(id, { detail: 'Claude is working on it' });
+    addLog(id, `agent started (${s.model})`);
+    const before = git(c.worktree, ['rev-parse', 'HEAD']).out;
+    const r = await runAgent(getChange(id)!, brief, s, infraEnv({ agent: true }));
+    c = getChange(id)!;
+    update(id, { cost: c.cost + r.cost });
+    const summaryFile = path.join(c.worktree, '.hawkes', 'summary.md');
+    const summary = fs.existsSync(summaryFile) ? fs.readFileSync(summaryFile, 'utf8').trim() : r.result;
+    const commits = git(c.worktree, ['log', '--format=%h %s', `origin/${c.base}..HEAD`]).out.split('\n').filter(Boolean);
+    const changedNow = git(c.worktree, ['rev-parse', 'HEAD']).out !== before;
+    if (!commits.length || (note && !changedNow)) {
+      update(id, { status: 'failed', detail: 'the agent made no commit', summary, commits });
+      return;
+    }
+    // Guard rails, before anything leaves the server.
+    const files = git(c.worktree, ['diff', '--name-only', `origin/${c.base}...HEAD`]).out.split('\n').filter(Boolean);
+    const bad = guardFiles(t.id, files, [c.request ?? '', ...c.notes.map((n) => n.text)].join('\n'));
+    if (bad.length) {
+      const list = bad.map((b) => `${b.file} (${b.why === 'forbidden' ? 'never changed by agents' : 'only when J names it'})`).join(', ');
+      addLog(id, `guard rails: ${list}`);
+      update(id, { status: 'failed', detail: `not pushed: it changes protected files: ${list}`.slice(0, 300), summary, commits });
+      return;
+    }
+    const diffstat = git(c.worktree, ['diff', '--shortstat', `origin/${c.base}...HEAD`]).out;
+    update(id, { summary, commits, diffstat, detail: 'pushing and opening the pull request' });
+    const push = git(c.worktree, ['push', '--quiet', '-u', 'origin', `HEAD:${c.branch}`, ...(note ? ['--force-with-lease'] : [])]);
+    if (!push.ok) throw new Error(`push failed: ${push.err}`);
+    c = getChange(id)!;
+    const body = `${summary}\n\n---\n**J asked:** ${c.request ?? ''}\n\nMade by a Hawkes Studio agent. Approving it in Studio merges it into main, and ${t.name} deploys itself once CI passes (the control server pulls it, restarts the service and rolls back if it isn't healthy).\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)`;
+    if (!c.pr) {
+      const pr = await github(`/repos/${c.slug}/pulls`, { method: 'POST', body: { title: c.title, head: c.branch, base: c.base, body, draft: false } });
+      update(id, { pr: pr.number, pr_url: pr.html_url });
+      addLog(id, `opened ${pr.html_url}`);
+    } else {
+      await github(`/repos/${c.slug}/pulls/${c.pr}`, { method: 'PATCH', body: { body } });
+      addLog(id, `updated pull request #${c.pr}`);
+    }
+    update(id, { status: 'verifying', detail: 'checking: CI on the pull request, the checks, a smoke check' });
+    const v = await verifyInfra(getChange(id)!, t);
+    update(id, { status: 'ready', detail: `${v.outcome}: ${v.summary}`.slice(0, 300), verify: v });
+    void notify(`Ready to approve: ${t.name}`, `${c.title}\nChecks: ${v.outcome}. ${v.summary}`, { url: `${PUBLIC_URL}/#changes`, tags: [v.outcome === 'passed' ? 'white_check_mark' : 'warning'] });
+  } catch (e: any) {
+    addLog(id, `error: ${e.message}`);
+    update(id, { status: 'failed', detail: String(e.message).slice(0, 300) });
+  }
+}
+
+/** GitHub's check runs of a commit ("Tell the server" doesn't count: it only runs on main). waitMs 0: one look. */
+export async function ciChecks(slug: string, sha: string, { waitMs = 30 * 60_000, onWait }: { waitMs?: number; onWait?: (detail: string) => void } = {}) {
+  const t0 = Date.now();
+  for (;;) {
+    const r = await github(`/repos/${slug}/commits/${sha}/check-runs?per_page=100`);
+    const runs = ((r.check_runs ?? []) as any[]).filter((x) => x.name !== 'Tell the server');
+    const list = runs.map((x) => ({ name: x.name, status: x.status, conclusion: x.conclusion, url: x.html_url }));
+    const open = runs.filter((x) => x.status !== 'completed');
+    if (runs.length && !open.length) {
+      const bad = runs.filter((x) => !['success', 'skipped', 'neutral'].includes(x.conclusion));
+      return { state: bad.length ? 'failure' : 'success', detail: bad.length ? bad.map((x) => `${x.name}: ${x.conclusion}`).join(', ') : `${runs.length} check(s) passed`, runs: list };
+    }
+    const waited = Date.now() - t0;
+    if (waited >= waitMs || (!runs.length && waited >= Math.min(waitMs, 5 * 60_000))) {
+      return { state: runs.length ? 'pending' : 'none', detail: runs.length ? `${open.length} check(s) still running` : 'no CI ran on this commit', runs: list };
+    }
+    onWait?.(runs.length ? `waiting for CI (${open.length} running)` : 'waiting for CI to start');
+    await new Promise((res) => setTimeout(res, 20_000));
+  }
+}
+
+const freePort = () => new Promise<number>((resolve, reject) => {
+  const s = net.createServer();
+  s.once('error', reject);
+  s.listen(0, '127.0.0.1', () => { const port = (s.address() as net.AddressInfo).port; s.close(() => resolve(port)); });
+});
+
+/**
+ * Starts the changed service from the worktree on a spare port with a scratch data folder (no keys, none of the live
+ * service's state), then: its health answers ok, the dashboard page loads, and every dashboard script parses.
+ */
+export async function smokeCheck(dir: string, t: Infra) {
+  const port = await freePort();
+  const data = fs.mkdtempSync(path.join(os.tmpdir(), `hawkes-smoke-${t.id}-`));
+  const env = { ...infraEnv({ keepGenKey: false }), ...(t.smoke.env ?? {}), [t.smoke.portEnv]: String(port), [t.smoke.dataEnv]: data };
+  const child = spawn(process.execPath, ['--disable-warning=ExperimentalWarning', t.smoke.start], { cwd: dir, env, windowsHide: true });
+  let log = '';
+  child.stdout.on('data', (d) => { log = (log + d).slice(-8000); });
+  child.stderr.on('data', (d) => { log = (log + d).slice(-8000); });
+  let exited: number | null = null;
+  child.on('close', (code) => { exited = code ?? -1; });
+  const base = `http://127.0.0.1:${port}`;
+  const get = async (route: string) => {
+    try {
+      const r = await fetch(base + route, { signal: AbortSignal.timeout(10_000) });
+      return { status: r.status, text: await r.text() };
+    } catch (e: any) {
+      return { status: 0, text: String(e.message ?? e) };
+    }
+  };
+  try {
+    let health: any = null;
+    for (let i = 0; i < 60 && exited === null; i++) {
+      await new Promise((r) => setTimeout(r, 1000));
+      const h = await get(t.smoke.health);
+      if (h.status === 200) { try { health = JSON.parse(h.text); } catch { health = { ok: false }; } break; }
+    }
+    const page = health ? await get('/') : null;
+    const dashboard = Boolean(page && page.status === 200 && /<html/i.test(page.text));
+    const scriptDir = path.join(dir, t.smoke.scripts);
+    const scripts = (fs.existsSync(scriptDir) ? fs.readdirSync(scriptDir).filter((f) => f.endsWith('.js')) : []).map((f) => {
+      const r = spawnSync(process.execPath, ['--check', path.join(scriptDir, f)], { encoding: 'utf8', windowsHide: true });
+      return { file: `${t.smoke.scripts}/${f}`, ok: r.status === 0, error: r.status === 0 ? undefined : tail(r.stderr ?? '', 5) };
+    });
+    const ok = Boolean(health?.ok) && dashboard && scripts.every((x) => x.ok);
+    const detail = !health ? (exited !== null ? `the server exited (code ${exited})` : 'no health answer in 60 s')
+      : !health.ok ? 'health is not ok'
+        : !dashboard ? 'the dashboard page did not load'
+          : scripts.some((x) => !x.ok) ? `script errors: ${scripts.filter((x) => !x.ok).map((x) => x.file).join(', ')}`
+            : `health ok, dashboard ok, ${scripts.length} script(s) parse`;
+    return { ok, port, health: Boolean(health?.ok), dashboard, scripts, detail, log: ok ? undefined : tail(log, 30) };
+  } finally {
+    child.kill('SIGTERM');
+    setTimeout(() => fs.rmSync(data, { recursive: true, force: true }), 3000).unref();
+  }
+}
+
+/** Verification of a Studio or Gen change: the checks and a smoke check here, and CI on the pull request (GitHub). */
+async function verifyInfra(c: Change, t: Infra) {
+  const sha = git(c.worktree, ['rev-parse', 'HEAD']).out;
+  const ci = ciChecks(c.slug, sha, { onWait: (d) => update(c.id, { detail: d }) }).catch((e: any) => ({ state: 'error', detail: String(e.message ?? e), runs: [] as any[] }));
+  await npmCi(c.id, c.worktree);
+  const checks: { cmd: string; ok: boolean; seconds: number; out?: string }[] = [];
+  for (const cmd of t.checks) {
+    update(c.id, { detail: `running ${cmd}` });
+    const r = await sh(c.worktree, cmd, infraEnv());
+    checks.push({ cmd, ok: r.ok, seconds: Math.round(r.ms / 1000), out: r.ok ? undefined : tail(r.out) });
+    addLog(c.id, `${cmd}: ${r.ok ? 'ok' : 'FAILED'} (${Math.round(r.ms / 1000)} s)`);
+  }
+  update(c.id, { detail: 'smoke check: starting the changed service on a spare port' });
+  const smoke = await smokeCheck(c.worktree, t).catch((e: any) => ({ ok: false, detail: String(e.message ?? e) }) as any);
+  addLog(c.id, `smoke: ${smoke.ok ? 'ok' : 'FAILED'}: ${smoke.detail}`);
+  const ciResult = await ci;
+  addLog(c.id, `CI: ${ciResult.state}: ${ciResult.detail}`);
+  const ok = ciResult.state === 'success' && checks.every((k) => k.ok) && smoke.ok;
+  const summary = [
+    `CI ${ciResult.state === 'success' ? 'green' : `${ciResult.state} (${ciResult.detail})`}`,
+    ...checks.map((k) => `${k.cmd} ${k.ok ? 'ok' : 'FAILED'}`),
+    `smoke: ${smoke.detail}`,
+  ].join(' · ');
+  return { kind: 'infra', sha, outcome: ok ? 'passed' : 'failed', verdict: ok ? 'ship' : 'broken', summary, ci: ciResult, checks, smoke };
+}
+
+/** J's approval of a Studio or Gen change: merge into main (only with CI green on the pull request); the server deploys it itself. */
+async function approveInfra(c: Change, by: string) {
+  const t = getInfra(c.product);
+  const pr = await github(`/repos/${c.slug}/pulls/${c.pr}`);
+  if (pr.state !== 'open') throw new Error(`Pull request #${c.pr} is ${pr.merged ? 'already merged' : pr.state}.`);
+  const ci = await ciChecks(c.slug, pr.head.sha, { waitMs: 0 });
+  if (ci.state !== 'success') throw new Error(`CI on pull request #${c.pr} isn't green (${ci.state}: ${ci.detail}); not merging into main, which deploys ${t.name}.`);
+  let m: any;
+  try {
+    m = await github(`/repos/${c.slug}/pulls/${c.pr}/merge`, { method: 'PUT', body: { merge_method: 'squash', sha: pr.head.sha, commit_title: `${c.title} (#${c.pr})` } });
+  } catch (e: any) {
+    throw new Error(`Merging into main failed: ${e.message ?? e}. If main changed the same files, revise ${c.id} so the agent updates its branch from main.`);
+  }
+  const sha = String(m.sha ?? '').slice(0, 7);
+  update(c.id, {
+    status: 'merged',
+    detail: `merged into main by ${by}: ${sha}. CI runs on main, then the server deploys ${t.name} itself (it waits for runs, agents and Talk answers, and rolls back if unhealthy): GET /api/self-deploys`,
+    notes: [...c.notes, { at: Date.now(), by, text: `approved and merged into main (${t.name} deploys itself)` }],
+  });
+  await cleanup(c.id, { deleteBranch: true });
+  return getChange(c.id);
+}
+
 /**
  * J's approval: merge the pull request (squash) into beta. Nothing goes live: the beta site is rebuilt and beta is
  * playtested with the change in; going live is deploy() (the deploy plan, then "DEPLOY <product>").
@@ -462,8 +776,14 @@ async function verifyChange(c: Change, p: Product, findings: any[]) {
 export async function approve(id: string, { confirm, by = 'J' }: { confirm?: string; by?: string } = {}) {
   const c = getChange(id);
   if (!c) throw new Error('No such change');
-  if (confirm !== `MERGE ${id}`) throw new Error(`Approving merges this change into ${BETA} (the beta site; going live is a separate step). Send confirm: "MERGE ${id}" (J's call).`);
+  if (confirm !== `MERGE ${id}`) throw new Error(c.infra
+    ? `Approving merges this change into main, and ${getInfra(c.product).name} deploys itself once CI passes (a restart). Send confirm: "MERGE ${id}" (J's call).`
+    : `Approving merges this change into ${BETA} (the beta site; going live is a separate step). Send confirm: "MERGE ${id}" (J's call).`);
   if (!c.pr) throw new Error('This change has no pull request');
+  if (c.infra) {
+    if (c.status !== 'ready') throw new Error(`The change is ${c.status}, not ready to approve.`);
+    return approveInfra(c, by);
+  }
   // Changes opened before the beta lane target main: point them at beta first, so approving never goes live.
   if (c.base !== BETA) {
     ensureBeta(path.join(PROJECTS, c.repo));
@@ -520,7 +840,7 @@ export async function close(id: string, by = 'J') {
 
 async function cleanup(id: string, { deleteBranch = false } = {}) {
   const c = getChange(id)!;
-  await removePreview(c.product, id).catch(() => {});
+  if (!c.infra) await removePreview(c.product, id).catch(() => {});
   const repoDir = path.join(PROJECTS, c.repo);
   git(repoDir, ['worktree', 'remove', '--force', c.worktree]);
   git(repoDir, ['branch', '-D', c.branch]);

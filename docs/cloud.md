@@ -180,6 +180,28 @@ is missing). `TALK_MODEL` picks the model; `TALK_CLAUDE` the Claude Code executa
    GitHub Pages publishes, and Studio playtests live. "Rollback…" undoes the last go live with a new commit
    (`ROLLBACK <product>`). Details: `docs/daily.md`, "Beta and going live".
 
+### Changing Studio and Gen through agents
+
+J can ask Talk to fix or add something in Hawkes Studio or Hawkes Gen themselves (`studio_task`, product
+`hawkesstudio` or `hawkesgen`; `products.json` `infra`). There's no beta lane for these, so:
+
+1. The agent works in `/srv/hawkes/.work/<change>`, a worktree of `/srv/hawkes/<repo>` on `task/<id>` cut from
+   `origin/main` (only refs move in the server's checkout; its files change only through `hawkes-pull.mjs`). Studio
+   runs `npm ci` there; the agent runs `npm run typecheck` and `npm test` (Studio's tests use the running Gen) and commits.
+2. **Guard rails** before anything is pushed: a change that touches `.data/`, `.env` files, keys or `*.pem` fails; so
+   does one touching the deploy and server-setup scripts (`deploy/hawkes-pull.mjs`, `deploy/deploy.mjs` and its Caddy
+   config, provisioning), secrets handling, CI workflows (`.github/workflows/`) or the GitHub hooks' token check
+   (`src/github-oidc.ts`), unless J's request (or his note on the change) names that file. The list is `GUARDED` in
+   `src/agents.ts`. The agent and its checks run without the GitHub token, AWS variables or service keys.
+3. Studio pushes the branch and opens a pull request into **main**, then checks it: CI on the pull request (GitHub check
+   runs; it waits up to 30 minutes), the checks again, and a **smoke check**: the changed service started from the
+   worktree on a spare port with a scratch data folder (health `ok`, the dashboard page loads, `node --check` on every
+   `dashboard/*.js`). The change shows **Checks: passed/failed** in the Changes tab and in `studio_change`.
+4. **Approve** (`MERGE <id>`, only after J says yes in Talk; refused unless CI on the pull request is green) squash-merges
+   into main. CI runs on main and tells the server, which deploys it as above: it waits for running runs, agents and
+   Talk answers, restarts the service, and rolls back if it isn't healthy. Approving a Studio change restarts Studio,
+   which runs Talk: an answer in progress may be cut off, and the conversation stays.
+
 ### Pushes drive it (GitHub Actions)
 
 Every product source repo has `.github/workflows/hawkes-studio.yml`: on each push to `beta` or `main` it calls

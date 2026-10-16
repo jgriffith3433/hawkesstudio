@@ -62,6 +62,32 @@ export function getProduct(id: string): Product {
   return p;
 }
 
+/**
+ * Hawkes Studio and Hawkes Gen as agent targets (products.json "infra"): not products (no playtests, no beta lane).
+ * An agent change is a pull request into main; main deploys itself to the control server once CI passes.
+ * smoke: how agents.ts starts the changed service on a spare port for its smoke check (portEnv/dataEnv point it at
+ * that port and a scratch data folder; health must answer { ok: true }; scripts are node --check'ed).
+ */
+export type Infra = {
+  id: string;
+  name: string;
+  repo: string;
+  slug: string;
+  about: string;
+  checks: string[];
+  smoke: { start: string; portEnv: string; dataEnv: string; health: string; scripts: string; env?: Record<string, string> };
+};
+
+export function loadInfra(): Infra[] {
+  return JSON.parse(fs.readFileSync(paths.products, 'utf8')).infra ?? [];
+}
+export const isInfra = (id: string) => loadInfra().some((x) => x.id === id);
+export function getInfra(id: string): Infra {
+  const t = loadInfra().find((x) => x.id === id || x.name.toLowerCase() === id.toLowerCase());
+  if (!t) throw new StudioError(`No infra target "${id}"`, 404);
+  return t;
+}
+
 export const localUrl = (p: Product) => `http://localhost:${p.local.port}${p.local.path}`;
 export const abs = (rel: string) => path.join(PROJECTS, rel);
 

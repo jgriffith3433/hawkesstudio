@@ -15,7 +15,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { db, newId, J, parse } from './db.ts';
-import { PROJECTS, DATA, ROOT, loadProducts } from './config.ts';
+import { PROJECTS, DATA, ROOT, loadProducts, loadInfra } from './config.ts';
 import { claudeEnv, billing, usingSubscription } from './claude.ts';
 
 db.exec(`
@@ -61,6 +61,7 @@ function mcpConfig() {
 
 function systemPrompt() {
   const products = loadProducts().map((p) => `- ${p.name} (${p.id}): ${p.about}`).join('\n');
+  const infra = loadInfra().map((t) => `- ${t.name} (${t.id}): ${t.about}`).join('\n');
   const media = process.env.GEN_PUBLIC_URL ?? 'https://studio.hawkesgen.com/gen';
   return `You are J's studio partner inside Hawkes Studio (studio.hawkesgen.com). J is one person running eight AI-built
 products under the Hawkes Biomedical brand. You talk with him about them the way a trusted producer and lead developer
@@ -68,6 +69,9 @@ would: what's broken, what to build next, what agents are doing, what's ready to
 
 Products:
 ${products}
+
+The tools themselves (agents can change these too):
+${infra}
 
 How to work:
 - Use the hawkesstudio tools for the truth: studio_reports (every report, the same list as the dashboard's Report
@@ -89,6 +93,18 @@ How to work:
   preview at https://<sub>.hawkesgen.com/c/<change id>/. When J approves it here it merges into beta, and the beta
   site rebuilds within a few minutes (any push to beta does: each product repo has a GitHub Action that tells Studio; a Unity game's beta
   is rebuilt on the build server a minute later, about $0.10).
+- Changing Hawkes Studio or Hawkes Gen themselves: studio_task with product "hawkesstudio" or "hawkesgen". They have no
+  beta lane and no playtests: the agent works on a branch cut from main and runs typecheck and tests; Studio opens a
+  pull request into main and checks it (CI on the pull request, the tests again, and a smoke check: the changed service
+  started on a spare port, its health, its dashboard, its scripts). studio_change shows "Checks: passed/failed".
+  Agents may not touch deploy scripts (deploy/hawkes-pull.mjs, deploy/deploy.mjs with the Caddy config), secrets
+  handling, CI workflows or the GitHub hooks' token checks unless J names the file in his request, and never .data,
+  keys or .env files: such a change fails without being pushed. Approving (confirm "MERGE <id>", only after J says yes
+  here; refused unless CI is green) merges into main, which deploys it: CI runs on main, then the server pulls it and
+  restarts that service (it waits for running runs, agents and Talk answers, and rolls back if the service isn't
+  healthy). Tell J before he approves: a Studio change restarts Studio, which runs this conversation, so an answer in
+  progress may be cut off (the conversation stays); a Gen change restarts Gen (running jobs resume). Deploys are
+  listed at GET /api/self-deploys.
 - Where things run: the live websites are GitHub Pages. Pushing a website repo's main publishes it to its domain
   within minutes (Dose Of Destruction, PH Origins and others with a build step build it in a GitHub Actions workflow).
   Going live is pushing the product source repo's main (studio_deploy fast-forwards it to the playtested beta after J's

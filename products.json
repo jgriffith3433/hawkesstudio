@@ -413,6 +413,27 @@
       }
     }
   ],
+  "infra": [
+    {
+      "id": "hawkesstudio",
+      "name": "Hawkes Studio",
+      "repo": "hawkesstudio",
+      "slug": "jgriffith3433/hawkesstudio",
+      "about": "J's cockpit (studio.hawkesgen.com): the daily build/playtest/review loop, backlog, reports, agent changes, beta lane and go live, Talk. Node 24 + TypeScript (type stripping), a plain-JS dashboard.",
+      "checks": ["npm run typecheck", "npm test"],
+      "smoke": { "start": "src/server.ts", "portEnv": "STUDIO_PORT", "dataEnv": "STUDIO_DATA", "health": "/api/health", "scripts": "dashboard", "env": { "STUDIO_SMOKE": "1" } }
+    },
+    {
+      "id": "hawkesgen",
+      "name": "Hawkes Gen",
+      "repo": "hawkesgen",
+      "slug": "jgriffith3433/hawkesgen",
+      "about": "The shared generative-AI service (gen.hawkesgen.com): the job queue, the AWS GPU fleet (ComfyUI), ElevenLabs, Claude, local tools, the library, usage and API keys, the build server and the playtester. Node 24 + TypeScript (type stripping), a plain-JS dashboard.",
+      "checks": ["npm run typecheck", "npm test"],
+      "smoke": { "start": "src/server.ts", "portEnv": "HAWKESGEN_PORT", "dataEnv": "HAWKESGEN_DATA_DIR", "health": "/v1/health", "scripts": "dashboard" }
+    }
+  ],
+  "$comment_infra": "Hawkes Studio and Hawkes Gen as agent targets (src/agents.ts): a change is a pull request into main (no beta lane), verified by CI on the pull request, the checks and a smoke check of the changed service on a spare port. Approving merges into main, and the server deploys it itself. Not in \"repos\": the server's checkouts of these two only move through deploy/hawkes-pull.mjs.",
   "repos": {
     "doseofdestructionwebsite": "jgriffith3433/doseofdestructionwebsite",
     "phoriginswebsite": "jgriffith3433/phoriginswebsite",
