@@ -318,7 +318,7 @@ export async function startWork() {
 /** Changes the PM reviews: roadmap tasks' changes, and finding fixes (not J's own requests; never Studio or Gen). */
 export function reviewable(c: any) {
   // Changes from before the loop first ran stay J's to approve, as they were.
-  return c.status === 'ready' && !c.infra && c.created >= pmSince() && (c.task || (c.findings?.length && !c.request)) && !waitingOnJ(c);
+  return c.status === 'ready' && !c.infra && c.created >= pmSince() && (c.task || (c.findings?.length && !c.request)) && !c.pm_escalated && !waitingOnJ(c);
 }
 /** A change (or its task) J was asked about: the PM leaves it alone until he answers. */
 const waitingOnJ = (c: any) => listQuestions('open,asked J').some((q) => q.kind === 'decision' && Boolean(q.subject) && [c.id, c.task].filter(Boolean).some((s) => q.subject!.split(/[\s,]+/).includes(s)));
@@ -349,14 +349,20 @@ export async function pmRevise(changeId: string, note: string, by = 'Talk (PM)')
   const { getChange, revise } = await changes();
   const c = getChange(changeId);
   if (!c) throw new StudioError(`No change ${changeId}`, 404);
+  if (c.status !== 'ready') throw new StudioError(`${changeId} is ${c.status}, not ready`);
   if (!note.trim()) throw new StudioError('Say what to change');
   const t = c.task ? getTask(c.task) : null;
   const tries = t ? t.tries : (c.notes ?? []).filter((n: any) => /PM/.test(n.by)).length + 1;
   if (tries >= s.maxTries) {
+    // Already with J: his answer decides (a fresh start is the task back to planned), never another question.
+    if (c.pm_escalated) return { escalated: true, already: true };
     if (t) setTask(t.id, { status: 'failed', note: note.slice(0, 1000) });
-    askJ(`"${c.title}" (${name(c.product)}) still isn't right after ${tries} tries: ${note.slice(0, 600)} Try another way, change what it should do, or drop it?`, { subject: c.task ?? changeId, product: c.product, options: ['try again', 'change it', 'drop it'] });
-    logDecision('escalate', c.task ?? changeId, c.product, `asked J about ${changeId} after ${tries} tries`);
-    return { escalated: true };
+    const before = new Set(listQuestions().map((q) => q.id));
+    const q = askJ(`"${c.title}" (${name(c.product)}) still isn't right after ${tries} tries: ${note.slice(0, 600)} Try another way, change what it should do, or drop it?`, { subject: c.task ?? changeId, product: c.product, options: ['try again', 'change it', 'drop it'] });
+    db.prepare('UPDATE changes SET pm_escalated = ? WHERE id = ?').run(Date.now(), changeId);
+    // Merged into a question already open: nothing new was asked.
+    if (!before.has(q.id)) logDecision('escalate', c.task ?? changeId, c.product, `asked J about ${changeId} after ${tries} tries`);
+    return { escalated: true, question: q.id };
   }
   revise(changeId, note, by);
   if (t) setTask(t.id, { status: 'working', tries: t.tries + 1 });
@@ -422,6 +428,18 @@ export async function answerQuestion(id: string, answer: string, by = 'Talk (PM)
       setQuestion(waiting.id, { status: 'answered', answer, answered_by: by });
       if (waiting.subject) await resume(waiting.subject);
     }
+  }
+  // Drop / close / park: the change closes now (its task dropped, or back to an idea when parked), not on a PM turn.
+  const stop = q.kind === 'decision' && q.topic !== 'gpu' ? answer.trim().toLowerCase().match(/^(drop|close|park)/)?.[1] : null;
+  if (stop && q.subject) {
+    const { getChange, close } = await changes();
+    const t = q.subject.startsWith('k_') ? getTask(q.subject) : q.subject.startsWith('c_') ? taskOfChange(q.subject) : null;
+    const c = getChange(q.subject.startsWith('c_') ? q.subject : t?.change ?? '');
+    if (c && !['merged', 'closed'].includes(c.status)) {
+      await close(c.id, by);
+      logDecision('close', t?.id ?? c.id, c.product, `closed ${c.id} (${c.title}) on ${byJ ? 'J' : by}'s answer to ${id}: ${answer.slice(0, 300)}`);
+    }
+    if (t && !['merged', 'verified', 'live', 'dropped'].includes(t.status)) setTask(t.id, { status: stop === 'park' ? 'idea' : 'dropped', note: `${stop === 'park' ? 'parked' : 'dropped'} on ${byJ ? 'J' : by}'s answer to ${id}` });
   }
   // A decision on a failed task: the PM's next turn acts on it ("try again", "drop it").
   if (q.kind === 'decision' && q.topic !== 'gpu') pmEvent('decided', `${byJ ? 'J' : by} decided on ${q.subject ?? 'a question'} (${id}): "${answer}" (the question was: ${q.text.slice(0, 400)})`, q.subject ?? id, q.product);
