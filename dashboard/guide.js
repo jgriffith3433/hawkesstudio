@@ -5,6 +5,7 @@
 //
 // The safety rules are enforced here, whatever Talk sends:
 //   - never pressed or typed into: approve, merge, deploy / go live, rollback, delete, drop, undo, the Inbox's answers,
+//     the Approve / Deny cards (approval.js; their buttons also act only on a trusted click and the server only on J's page),
 //     Settings, budgets, limits, costs and PM switches, Talk's own controls (OFF_ATTRS, OFF_IDS, OFF_TEXT; markup can
 //     also say data-guide="off"); the typed confirmations (MERGE, DEPLOY, ROLLBACK) are never typed.
 //   - elements are found again right before each action (selector and/or visible text): gone, hidden, ambiguous or
@@ -20,6 +21,8 @@ var HawkesGuide = (() => {
     ['data-gl', null, "going live, rollbacks and merging main into beta are J's"],
     ['data-confirm', null, "typed confirmations are J's"],
     ['data-act', 'approve', "approving a change is J's"],
+    ['data-apdecide', null, "Approve / Deny cards are J's tap alone"],
+    ['data-approval', null, "Approve / Deny cards are J's tap alone"],
     ['data-act', 'deploy', "going live is J's"],
     ['data-act', 'close', "closing a change is J's"],
     ['data-ibopt', null, "answering his Inbox is J's"],
@@ -35,7 +38,7 @@ var HawkesGuide = (() => {
     settings: "Settings (budgets, limits, PM, agents) are J's", coSettings: "budgets are J's", coAlerts: "alerts are J's", coRefresh: 'fetching costs costs money',
     glConfirm: "typed confirmations are J's",
   };
-  const OFF_CLASSES = { golive: "going live and rollbacks are J's" };
+  const OFF_CLASSES = { golive: "going live and rollbacks are J's", approval: "Approve / Deny cards are J's tap alone" };
   /** Words on a button, link or field that mean it is J's to press. */
   const OFF_TEXT = /\b(approve[ds]?|merge[ds]?|deploy(s|ed)?|go(ing)? live|roll ?back|delete[ds]?|drop|undo|budgets?|limits?|costs?|alerts?)\b/i;
   const CONFIRM_WORDS = /\b(MERGE|DEPLOY|ROLLBACK)\b/;

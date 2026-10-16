@@ -71,12 +71,14 @@
       el('#talkStop').hidden = true;
       return idlePoll();
     }
-    const c = await api(`/api/talk/${current}`);
+    // From the page itself (approval.js's call): Approve cards come with their token only to J's dashboard.
+    const c = await approvals.call(`/api/talk/${current}`);
     if (c.error) { current = null; return loadConversation(); }
     // Talk showing J around (studio_guide): this page runs what waits for the conversation (guide.js).
     if (c.guide?.length) window.studioGuide?.offer(c.id, c.guide);
     const thinking = c.status === 'thinking';
-    const sig = `${c.id}|${c.title}|${c.messages.length}|${c.status}|${c.partial ?? ''}|${JSON.stringify(c.messages.at(-1)?.turn ?? null)}`;
+    const cards = c.approvals ?? [];
+    const sig = `${c.id}|${c.title}|${c.messages.length}|${c.status}|${c.partial ?? ''}|${JSON.stringify(c.messages.at(-1)?.turn ?? null)}|${cards.map((a) => `${a.id}:${a.status}:${Math.round((a.expires - Date.now()) / 60000)}`).join(',')}`;
     if (sig !== shown) {
       shown = sig;
       renderHead(c);
@@ -87,6 +89,8 @@
         : m.notice
           ? `<div class="talk-msg assistant notice"><span class="talk-who">Studio</span>${md(m.text)}</div>`
           : `<div class="talk-msg ${m.role}">${m.role === 'user' ? (m.voice ? '<span class="talk-voice" title="Said on a call">🎙</span>' : '') + esc(m.text).replace(/\n/g, '<br>') + fileChips(m.files) : md(m.text)}</div>`) + (turnMark(m.turn) ?? '')).join('')
+        // Approve / Deny cards Talk asked for in this conversation (pending, and decided in the last hour).
+        + cards.map(approvals.html).join('')
         + (thinking && c.partial ? `<div class="talk-msg assistant streaming">${md(c.partial)}<span class="talk-caret"></span></div>` : '')
         + (thinking && !c.partial ? `<div class="talk-tool">${c.messages.at(-1)?.notice ? 'Studio asked Claude to explain the result…' : 'Claude is thinking…'}</div>` : '');
       if (atBottom || thinking) log.scrollTop = log.scrollHeight;
@@ -184,6 +188,8 @@
       view(type.startsWith('video/') ? `<video src="${u}" controls autoplay></video>` : type.startsWith('image/') ? `<img src="${u}">` : `<a href="${u}" target="_blank">Open file</a>`);
     }
   });
+  // J tapped Approve or Deny somewhere: the chat shows what happened.
+  addEventListener('studio-approval', () => { shown = ''; if (current) loadConversation().catch(() => {}); });
   el('#talkSend').addEventListener('click', send);
   el('#talkFile').addEventListener('change', (e) => { attach([...e.target.files]); e.target.value = ''; });
   el('#talkInput').addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey && !matchMedia('(pointer: coarse)').matches) { e.preventDefault(); send(); } });

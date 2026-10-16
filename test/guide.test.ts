@@ -71,6 +71,12 @@ test('the denylist: approve, merge, go live, rollback, delete, Inbox answers, se
   const ptt = new El('button', { id: 'callPtt' }, 'Hold to talk');
   new El('body', {}, '', [new El('aside', { id: 'talkDock' }, '', [ptt])]);
   assert.match(G.offLimits(ptt), /Talk's own controls/);
+  // Approve / Deny cards (approval.js), wherever they show (the Inbox here): neither button, nor anything in the card.
+  const yes = new El('button', { 'data-apdecide': 'approve' }, 'Yes, start it');
+  const no = new El('button', { 'data-apdecide': 'deny' }, 'Not now');
+  const link = new El('a', {}, 'Preview');
+  new El('body', {}, '', [new El('main', {}, '', [new El('div', { class: 'ib-card' }, '', [new El('div', { class: 'approval st-pending', 'data-approval': 'a_1' }, '', [link, yes, no])])])]);
+  for (const n of [yes, no, link]) assert.match(G.offLimits(n), /Approve \/ Deny cards are J's/);
 });
 
 test('typing: never the typed confirmations, only into text fields', () => {

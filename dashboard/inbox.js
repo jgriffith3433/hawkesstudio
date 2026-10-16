@@ -4,6 +4,8 @@ const IB_KIND = { question: ['your call', 'broken'], agent: ['agent asks', 'warn
 let ibItems = [];
 
 function ibCard(x) {
+  // An Approve / Deny card (approval.js): J's tap decides it; no options or free text.
+  if (x.kind === 'approval') return `<div class="ib-card ib-approval" data-ib="${esc(x.id)}">${approvals.html(x.approval)}${x.conversation ? `<div class="meta"><a href="/?conversation=${esc(x.conversation)}#talk">Conversation</a></div>` : ''}</div>`;
   const [label, pill] = IB_KIND[x.kind] ?? [x.kind, ''];
   const rec = (o) => x.recommendation && (o === x.recommendation || x.recommendation.toLowerCase().startsWith(o.toLowerCase()));
   const options = x.options.length ? x.options : x.recommendation ? [x.recommendation] : [];
@@ -23,7 +25,7 @@ function ibCard(x) {
 }
 
 async function loadInbox() {
-  const r = await api('/api/inbox');
+  const r = await approvals.call('/api/inbox');
   ibItems = r.items;
   setInboxCount(r.count);
   // A card J is typing in isn't redrawn under him.
@@ -46,9 +48,15 @@ async function ibAnswer(card, answer) {
   let confirmWords;
   if (x.kind === 'merge' && /^merge/i.test(answer)) {
     if (x.confirm) {
-      const typed = prompt(`Merging into main deploys ${x.productName} (a restart once CI passes). Type ${x.confirm} to confirm.`);
-      if (typed?.trim() !== x.confirm) return;
-      confirmWords = typed.trim();
+      // Into main deploys Studio or Gen: an Approve / Deny card with the checks takes this card's place.
+      try {
+        await approvals.request({ kind: 'merge', target: x.subject });
+        return void loadInbox();
+      } catch (err) {
+        const typed = prompt(`${err.message}\n\nOr type ${x.confirm} to merge into main (it deploys ${x.productName}).`);
+        if (typed?.trim() !== x.confirm) return;
+        confirmWords = typed.trim();
+      }
     } else if (!confirm(`${x.title} The beta site and a beta playtest follow; nothing goes live.`)) return;
   }
   if (x.kind === 'merge' && answer === 'Close' && !confirm('Close this change and its pull request?')) return;
@@ -94,6 +102,7 @@ $('#inbox').addEventListener('keydown', (e) => {
   if (e.key === 'Enter' && e.target.matches('[data-ibtext]')) e.target.closest('.ib-card').querySelector('[data-ibsend]').click();
 });
 
+addEventListener('studio-approval', () => setTimeout(ibRefresh, 1500));
 function ibRefresh() {
   if (location.hash.slice(1).split('/')[0] === 'inbox') loadInbox().catch((e) => ($('#ibList').innerHTML = `<div class="empty">${esc(e.message)}</div>`));
   else pollInboxCount();

@@ -163,7 +163,7 @@ export function studioMcp({ studio, waitRun }: Client = { studio: defaultStudio,
     },
     {
       name: 'studio_change',
-      description: 'One agent change in detail (summary, commits, verify playtest, notes, the last log lines), or act on it: revise (the agent tries again with a note), close (close the PR), approve (merge the PR into beta: the beta site, not live; ONLY after J approves in chat; confirm must be exactly "MERGE <change id>"). Going live is studio_deploy_plan, then studio_deploy. A Hawkes Studio or Hawkes Gen change (infra: true) has "Checks" instead of a playtest (CI on the pull request, the tests, a smoke check); approve merges it into main, which deploys that service itself once CI passes (a restart; refused unless CI is green).',
+      description: 'One agent change in detail (summary, commits, verify playtest, notes, the last log lines), or act on it: revise (the agent tries again with a note), close (close the PR), approve (merge the PR into beta: the beta site, not live; ONLY after J approves in chat; confirm must be exactly "MERGE <change id>"; where J must OK it, offer him an Approve card first: studio_approval { kind: merge, target: <id> }). Going live is studio_deploy_plan, then studio_deploy. A Hawkes Studio or Hawkes Gen change (infra: true) has "Checks" instead of a playtest (CI on the pull request, the tests, a smoke check); approve merges it into main, which deploys that service itself once CI passes (a restart; refused unless CI is green).',
       inputSchema: obj({ id: str('Change id (c_...)'), action: str('revise | close | approve | answer (optional)'), note: str('For revise: what to change; for answer: what J answered to the agent question'), confirm: str('For approve: exactly "MERGE <id>" after J said yes') }, ['id']),
       run: async ({ id, action, note, confirm }) => {
         // Who did it is Studio's call (inbox.ts actor): J only in a turn J started, else Talk or the PM.
@@ -224,7 +224,7 @@ export function studioMcp({ studio, waitRun }: Client = { studio: defaultStudio,
     },
     {
       name: 'studio_deploy',
-      description: 'Goes live: fast-forwards the product\'s main to the playtested beta commit (Unity: commits the beta build to the website repo\'s main), which GitHub Pages publishes; Studio then playtests live. ONLY after J has seen studio_deploy_plan and said yes to this product in chat; confirm must be exactly "DEPLOY <product id>". action "merge-main" instead merges main\'s extra commits into beta (needed when the plan says main has commits beta lacks; nothing goes live, beta must be playtested again). action "beta" brings beta up to date and plays it (pre-deploy build, Unity build, beta site, a local playtest; nothing goes live).',
+      description: 'Goes live: fast-forwards the product\'s main to the playtested beta commit (Unity: commits the beta build to the website repo\'s main), which GitHub Pages publishes; Studio then playtests live. Offer J an Approve card first (studio_approval { kind: deploy, target: <product> }: it shows him the plan and his tap goes live). The typed fallback: ONLY after J has seen studio_deploy_plan and typed it; confirm must be exactly "DEPLOY <product id>". action "merge-main" instead merges main\'s extra commits into beta (needed when the plan says main has commits beta lacks; nothing goes live, beta must be playtested again). action "beta" brings beta up to date and plays it (pre-deploy build, Unity build, beta site, a local playtest; nothing goes live).',
       inputSchema: obj({ product: str('Product id'), confirm: str('To go live: exactly "DEPLOY <product id>", after J approved'), action: str('Optional: "merge-main" or "beta" (neither goes live)') }, ['product']),
       run: async ({ product, confirm, action }) => {
         if (action === 'merge-main') return studio(`/api/deploy/${product}`, { method: 'POST', body: { mergeMain: true, by: 'J (via Claude)' } });
@@ -234,7 +234,7 @@ export function studioMcp({ studio, waitRun }: Client = { studio: defaultStudio,
     },
     {
       name: 'studio_rollback',
-      description: 'Rolls a product\'s live site back to what was live before its last go live: a new commit on main with that commit\'s files (never a force push); Studio then playtests live. Without confirm it returns the rollback plan (read-only): what\'s live now, what it goes back to, the commits undone. ONLY roll back after J has seen the plan and said yes in chat; confirm must be exactly "ROLLBACK <product id>".',
+      description: 'Rolls a product\'s live site back to what was live before its last go live: a new commit on main with that commit\'s files (never a force push); Studio then playtests live. Without confirm it returns the rollback plan (read-only): what\'s live now, what it goes back to, the commits undone. Offer J an Approve card first (studio_approval { kind: rollback, target: <product> }). The typed fallback: ONLY after J has seen the plan and typed it; confirm must be exactly "ROLLBACK <product id>".',
       inputSchema: obj({ product: str('Product id'), confirm: str('Exactly "ROLLBACK <product id>", after J approved (omit for the plan)') }, ['product']),
       run: async ({ product, confirm }) => (confirm ? studio(`/api/rollback/${product}`, { method: 'POST', body: { confirm, by: 'J (via Claude)' } }) : studio(`/api/rollback/${product}`)),
     },
@@ -304,7 +304,7 @@ export function studioMcp({ studio, waitRun }: Client = { studio: defaultStudio,
     },
     {
       name: 'studio_settings',
-      description: "J's settings (the dashboard's ⚙ Settings tab, stored in Studio so they follow him across devices). get (default): every section: call (engine kokoro | browser | eleven, kokoroVoice, elevenVoice, rate 0.8-1.4, mode { computer, phone }: push | hands-free, bargeIn, pause ms), agents (enabled, autoFix, maxConcurrent, maxPerDay, maxCostPerDay, severities, model, maxTurns), pm (enabled, delegatedMerges, maxStartsPerDay, maxConcurrent, maxTries, fixBugs, dailyHour, graceMinutes), notify (enabled; the topic is the dashboard's), costs (budget, alerts, gpuHours, builderHours, playtesterHours, subscriptions), and prices (elevenPerMinute). set { section, patch }: change fields when J asks. Anything that can raise costs (higher limits or budget, more agents or starts, auto-fix or the PM on, a different model, the paid eleven voice) is refused unless quote has J's own yes from this conversation (his exact words). A call picks up call settings on its next sentence.",
+      description: "J's settings (the dashboard's ⚙ Settings tab, stored in Studio so they follow him across devices). get (default): every section: call (engine kokoro | browser | eleven, kokoroVoice, elevenVoice, rate 0.8-1.4, mode { computer, phone }: push | hands-free, bargeIn, pause ms), agents (enabled, autoFix, maxConcurrent, maxPerDay, maxCostPerDay, severities, model, maxTurns), pm (enabled, delegatedMerges, maxStartsPerDay, maxConcurrent, maxTries, fixBugs, dailyHour, graceMinutes), notify (enabled; the topic is the dashboard's), costs (budget, alerts, gpuHours, builderHours, playtesterHours, subscriptions), and prices (elevenPerMinute). set { section, patch }: change fields when J asks. Anything that can raise costs (higher limits or budget, more agents or starts, auto-fix or the PM on, a different model, the paid eleven voice) is refused unless quote has J's own yes from this conversation (his exact words); rather than asking him for words, offer an Approve card (studio_approval { kind: settings, target: section, patch }). A call picks up call settings on its next sentence.",
       inputSchema: obj({
         action: str('get (default) | set'), section: str('set: call | agents | pm | notify | costs'),
         patch: { type: 'object', description: 'set: the fields to change, e.g. { "engine": "browser" }' },
@@ -343,7 +343,7 @@ export function studioMcp({ studio, waitRun }: Client = { studio: defaultStudio,
     },
     {
       name: 'studio_inbox',
-      description: 'J\'s Inbox: everything waiting on him in one place (decisions filed by you, the PM and agents; GPU budgets; changes only he may merge; milestones reached), sorted by what each blocks. list (default): the cards (id, question, context, what waits and since when, who asked, the recommendation, options, links) as a short list; for "what\'s waiting on me?". answer { id, answer }: J\'s answer to a card when he gives it in this conversation ("q_123: yes" → id q_123, answer yes; "yes" takes the recommendation); it routes like the Inbox buttons (an agent resumes, the PM hears it, a budget is approved, a change merges: a Studio/Gen merge needs J to type "MERGE <id>"). Studio records who answered: J only when his own message started this turn. ask { text, options[], recommend, subject, product, blocks }: file a question for J instead of asking only in prose (the same subject merges into the open one). Refer to the Inbox ("3 decisions in your Inbox") rather than repeating the list.',
+      description: 'J\'s Inbox: everything waiting on him in one place (decisions filed by you, the PM and agents; GPU budgets; changes only he may merge; milestones reached), sorted by what each blocks. list (default): the cards (id, question, context, what waits and since when, who asked, the recommendation, options, links) as a short list; for "what\'s waiting on me?". answer { id, answer }: J\'s answer to a card when he gives it in this conversation ("q_123: yes" → id q_123, answer yes; "yes" takes the recommendation); it routes like the Inbox buttons (an agent resumes, the PM hears it, a budget is approved, a change merges: for a Studio/Gen merge offer an Approve card, studio_approval, or J types "MERGE <id>"). Approve / Deny cards (approval:a_...) are only decided by J\'s tap. Studio records who answered: J only when his own message started this turn. ask { text, options[], recommend, subject, product, blocks }: file a question for J instead of asking only in prose (the same subject merges into the open one). Refer to the Inbox ("3 decisions in your Inbox") rather than repeating the list.',
       inputSchema: obj({
         action: str('list (default) | answer | ask'), id: str('answer: the card id (q_..., gpu:k_..., merge:c_..., milestone:n_...)'), answer: str('answer: J\'s answer (an option or his words)'),
         text: str('ask: the one-line question'), options: strs('ask: the options (buttons)'), recommend: str('ask: the option you would pick'), subject: str('ask: what it is about (k_ task, i_ item, c_ change, f_ finding, n_ milestone)'),
@@ -358,9 +358,26 @@ export function studioMcp({ studio, waitRun }: Client = { studio: defaultStudio,
         return [`${r.items.length} waiting on J (most blocking first):`, ...r.items.map((x: any, i: number) => [
           `${i + 1}. ${x.id} · ${x.productName ?? 'studio'} · ${x.title}`,
           `   ${x.context ?? ''}${x.context ? ' · ' : ''}holding up: ${x.blocks} (for ${age(x.since)}) · asked by ${x.asker}${x.asks > 1 ? ` (${x.asks} times)` : ''}`,
-          `   options: ${x.options.join(' | ') || 'free text'}${x.recommendation ? ` · recommended: ${x.recommendation}` : ''}${x.confirm ? ` · J types "${x.confirm}"` : ''}`,
+          x.kind === 'approval' ? '   an Approve / Deny card: J taps it' : `   options: ${x.options.join(' | ') || 'free text'}${x.recommendation ? ` · recommended: ${x.recommendation}` : ''}${x.confirm ? ` · offer an Approve card (studio_approval merge ${x.subject}); typed fallback "${x.confirm}"` : ''}`,
           x.links.length ? `   links: ${x.links.map((l: any) => `${l.label} ${l.url ?? `video ${l.video}`}`).join(' · ')}` : '',
         ].filter(Boolean).join('\n'))].join('\n');
+      },
+    },
+    {
+      name: 'studio_approval',
+      description: "Ask J for his OK with an Approve / Deny card instead of asking him to type words. The card shows in this conversation (also during a call) and in his Inbox, on phone and desktop, with what will happen in plain words (the deploy plan's commits, playtests and blockers; the change, its checks and whether it restarts Studio). Only J's tap approves: you can't, and nothing you send can. request { kind, target, ... }: merge (target c_...: a Studio/Gen merge into main, or a merge only J may make), deploy (target product: go live with the playtested beta commit), rollback (target product), gpu (target k_..., amount: dollars, else the estimate +25%), settings (target section: agents | pm | costs | call | notify, patch: the fields; for limits, budgets and anything that raises costs), decision (target q_...: a yes/no Inbox question). The card is bound to that target as it is now: it expires in 15 minutes and goes stale if the target changes (beta moves, the change is revised). Tell J in a line that the card is on his screen and wait; Studio tells you in this conversation when he approves (with the result) or denies. status { id }: one card. Typed words (MERGE <id>, DEPLOY <product>, ROLLBACK <product>, a quoted yes) still work as a fallback if J prefers.",
+      inputSchema: obj({
+        action: str('request (default) | status'), kind: str('request: merge | deploy | rollback | gpu | settings | decision'), target: str('request: c_..., product id, k_..., settings section or q_...'),
+        amount: { type: 'number', description: 'gpu: the budget in dollars (optional)' }, patch: { type: 'object', description: 'settings: the fields to change' }, id: str('status: the card id (a_...)'),
+      }),
+      run: async (a) => {
+        const show = (x: any) => [
+          `${x.id} · ${x.status} · ${x.card.title}`, ...x.card.lines.map((l: string) => `  ${l}`),
+          ...x.card.blockers.map((b: string) => `  blocker: ${b}`), ...x.card.warnings.map((w: string) => `  warning: ${w}`),
+          x.status === 'pending' ? `  waiting for J's tap (expires ${new Date(x.expires).toLocaleTimeString()})` : `  ${x.decided_by ? `by ${x.decided_by} ` : ''}${x.result ?? ''}`,
+        ].join('\n');
+        if (a.action === 'status') return show(await studio(`/api/approvals/${a.id}`));
+        return show(await studio('/api/approvals', { method: 'POST', body: { kind: a.kind, target: a.target, amount: a.amount, patch: a.patch } }));
       },
     },
     {

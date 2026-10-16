@@ -119,12 +119,14 @@ export function deployPlan(productId: string) {
 
 /** Going live (pushing main, recording it) is a critical section (drain.ts): a Studio deploy waits for it. */
 export const deploy = (...a: Parameters<typeof deployNow>) => critical(`going live: ${a[0]}`, () => deployNow(...a));
-async function deployNow(productId: string, { confirm, by = 'J', mergeMain, origin }: { confirm?: string; by?: string; mergeMain?: boolean; message?: string; origin?: string | null }) {
+async function deployNow(productId: string, { confirm, by = 'J', mergeMain, origin, beta: expect }: { confirm?: string; by?: string; mergeMain?: boolean; message?: string; origin?: string | null; beta?: string }) {
   const p = getProduct(productId);
   if (mergeMain) return { ok: true, product: p.id, ...mergeMainIntoBeta(p, by), note: `Nothing went live. Playtest ${BETA} again before going live.` };
   const plan = deployPlan(p.id);
   if (confirm !== plan.confirm) throw new StudioError(`Going live publishes ${plan.live}: ${plan.what} Show J the plan, then send confirm: "${plan.confirm}" (J's call).`);
   if (plan.blockers.length) throw new StudioError(`Not going live:\n- ${plan.blockers.join('\n- ')}`);
+  // An Approve card (approvals.ts) is for one beta commit: a different one now isn't what J approved.
+  if (expect && plan.beta?.sha !== expect) throw new StudioError(`${BETA} is ${plan.beta?.short ?? '?'} now, not ${expect.slice(0, 7)} that J approved; look at the plan again.`);
   const { source, site, unity } = repoDirs(p);
   const beta = plan.beta!;
   const log: string[] = [];

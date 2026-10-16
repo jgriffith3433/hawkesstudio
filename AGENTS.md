@@ -46,8 +46,8 @@ So everything also shows in Gen's dashboard, library and usage. Studio adds:
 - `products.json`: every product, how to serve it locally, what to playtest, its story docs and deploy steps.
 - `CLAUDE.md` just imports this file.
 
-Do not commit unless asked. **Never go live or roll back without J's exact words in chat** (`DEPLOY <product>`,
-`ROLLBACK <product>`): main is the live site. Pushing `beta` deploys nothing.
+Do not commit unless asked. **Never go live or roll back without J's own OK**: his tap on an Approve card
+(`studio_approval`), or his exact words in chat (`DEPLOY <product>`, `ROLLBACK <product>`): main is the live site. Pushing `beta` deploys nothing.
 
 **This repo itself** (`jgriffith3433/hawkesstudio`, like `hawkesgen`) deploys to the cloud on every push to `main`: CI
 (`.github/workflows/ci.yml`) runs typecheck and tests, and the control server pulls a passing commit
@@ -63,7 +63,7 @@ of `/srv/hawkes/<repo>` on `task/<id>` cut from main (npm ci, then `npm run type
 running Gen); Studio opens a pull request into main and verifies it: CI on the pull request (GitHub check runs), the
 checks again, and a smoke check (the changed service from the worktree on a spare port with a scratch data folder and
 no keys: health ok, the dashboard page loads, `node --check` on `dashboard/*.js`; Studio runs with `STUDIO_SMOKE=1`,
-which skips the `/dev/` front doors). Approving (`MERGE <id>`, J's call, refused unless CI is green) merges into main,
+which skips the `/dev/` front doors). Approving (J's tap on an Approve card, or `MERGE <id>`; J's call, refused unless CI is green) merges into main,
 and the server deploys it like any push. Guard rails (`guardFiles`): a change touching `.data/`, `.env`, keys or `*.pem`
 fails unpushed; so does one touching the deploy scripts (`deploy/hawkes-pull.mjs`, `deploy/deploy.mjs` with Caddy,
 provisioning), secrets handling (`deploy/secrets.mjs`, `deploy/*-token.mjs`, `src/claude.ts`, `bin/git-credential-hawkes`;
@@ -101,6 +101,8 @@ the service detached; restart it after changing `src/`. The MCP server (`bin/stu
 - `studio_costs` (what the studio costs: AWS, generation, Claude, per product, idle money; the budget)
 - `studio_settings` (J's settings: calls, agents, PM, notifications, budgets; cost-raising changes need his quoted yes)
 - `studio_inbox` (J's Inbox: what's waiting on him, his answers given in Talk, filing a question instead of asking in prose)
+- `studio_approval` (an Approve / Deny card for anything needing J's OK: merges only he may make, go live, rollback,
+  GPU budgets, cost-raising settings, yes/no decisions; Talk asks for one, only J's tap decides it)
 - `memory_search`, `memory_get`, `memory_write`, `memory_curate` (the shared memory; agents get a server with only search,
   get and write, as candidates)
 - `studio_workspace`, `studio_fastlane` (Talk's workspace and fast lane, in the agent sandbox)
@@ -163,6 +165,7 @@ a budget (`approveGpu`, `gpuCleared`, `tasksAwaitingGpu`; the PM asks him once);
 | `src/sandbox.ts`, `src/guards.ts`, `deploy/agent-sandbox.mjs`, `deploy/github-rulesets.mjs` | The agent sandbox (its own Linux user, no secrets, no instance role), who's calling the API, what needs J's typed words, rulesets on main |
 | `src/fastlane.ts`, `src/warm.ts` | Talk's workspace and fast lane to beta; warm starts for agent worktrees |
 | `src/inbox.ts`, `dashboard/inbox.js` | The Inbox (first tab, badge): everything waiting on J (filed questions, agent questions on his requests, GPU budgets, merges only he may make, milestones reached), sorted by what it blocks, answered in one place and routed as before; `actor()`: who acted (J only from the dashboard or a Talk turn he started; the PM is "Talk (PM)"). docs/daily.md, "The Inbox" |
+| `src/approvals.ts`, `dashboard/approval.js` | Approve / Deny cards: J's OK as a tap instead of typed words; a card is bound to one action and target (the change's verified commit, beta's exact commit for a go live), one-time, 15 minutes, stale when the target changes; only J's dashboard page decides (never the sandbox, Talk's or agents' headers, the MCP key); shown in Talk's chat, the Inbox and the go-live dialog; the typed words stay as a fallback (docs/daily.md, "Approve / Deny cards") |
 | `dashboard/roadmap.js` | The Roadmap tab (items, tasks, threads, questions, PM switch, decision log) and Ready to test |
 | `src/costs.ts`, `src/aws.ts`, `dashboard/costs.js` | What the studio costs (the Costs tab, `studio_costs`, the brief's cost line): AWS from Cost Explorer (else an estimate), idle money from EC2 Describe* (read-only), Hawkes Gen usage, Claude usage (Max plan: not billed), per product; the budget and the hourly check that tells J's phone only when something looks wrong (docs/cloud.md, "Costs") |
 | `src/activity.ts`, `dashboard/activity.js` | The Activity drawer (`GET /api/activity`): agents, runs and their steps, Gen jobs, Talk answers in progress |
@@ -202,5 +205,6 @@ a budget (`approveGpu`, `gpuCleared`, `tasksAwaitingGpu`; the PM asks him once);
 
   Ask J before big batches.
 - **Going live:** show `studio_deploy_plan` in plain words (the commits, their authors, the playtested beta commit and
-  its verdicts, blockers, warnings) and wait for J to type exactly `DEPLOY <product>`; only then call `studio_deploy`.
-  Rollbacks the same way with `studio_rollback` and `ROLLBACK <product>`. Never push to main any other way.
+  its verdicts, blockers, warnings) and put an Approve card on J's screen (`studio_approval` kind deploy); his tap goes
+  live. The fallback: he types exactly `DEPLOY <product>`, then `studio_deploy`. Rollbacks the same way (kind rollback,
+  or `studio_rollback` and `ROLLBACK <product>`). Never push to main any other way.
