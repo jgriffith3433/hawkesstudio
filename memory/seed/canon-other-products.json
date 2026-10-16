@@ -1,0 +1,10 @@
+{
+  "kind": "canon",
+  "source": "hawkesstudio/docs/projects/AGENTS.md, products.json, TheFinalSpark/Decision tree.txt, breakingthrough/AGENTS.md",
+  "entries": [
+    { "product": "yoobaland", "title": "Yooba Land is Yooba's origin: eat, grow, and find the way home", "body": "Yooba is a gooey character (two extra jumps and a long-reach mouth when he fights in Dose Of Destruction). Older Sick Of It blog lore has Yooba as a farmer whose village the Overlord burned.", "tags": "yooba origin eat grow home" },
+    { "product": "theplacedepartment", "title": "The Place Department: where things that should not exist are given an address", "body": "The current build (breakingthrough) is Warrok, a bow-wielding brute, defending a pirate pianist from waves of birds.", "tags": "warrok pianist birds" },
+    { "product": "imaginelivetv", "title": "The Final Spark starts in a sewer, found by a rat", "body": "A choose-your-path video story: each choice is a page with a video. Touching the green sludge ends the run (\"Try again in another life\"). The tree is TheFinalSpark/Decision tree.txt.", "tags": "final spark sewer rat sludge choices" },
+    { "product": "icanbe", "title": "I Can Be is a day in a developer's life; the character is \"AI\"", "body": "Simulated in real time from day.config.js. Its direction is undecided: don't invent one.", "tags": "ai developer day" }
+  ]
+}

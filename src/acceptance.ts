@@ -83,6 +83,8 @@ export function gate(verify: any, criteria: string[]) {
     if (verify.verdict === 'broken') why.push('the review called it broken');
     if (verify.changeWorked === 'no' || verify.changeWorked === 'partly') why.push(`the review says the change worked: ${verify.changeWorked}`);
     if (verify.error) why.push(String(verify.error).slice(0, 200));
+    // The canon check of a content change (canon.ts): a contradiction of the story bible never merges by itself.
+    if (verify.canon?.ok === false) why.push(`it contradicts the canon: ${(verify.canon.conflicts ?? []).map((k: any) => `${k.entry} (${String(k.why).slice(0, 120)})`).join('; ') || verify.canon.summary}`);
     const checks = (verify.criteria ?? []) as Check[];
     if (criteria.length && !checks.length) why.push('the criteria were not judged');
     for (const c of checks) if (c.met === 'no') why.push(`not met: ${c.criterion} (${c.evidence ?? ''})`);

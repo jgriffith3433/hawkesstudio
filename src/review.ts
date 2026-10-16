@@ -13,6 +13,7 @@ import { db, rowToStep } from './db.ts';
 import { storyOf, type Product } from './config.ts';
 import { knownFindings, type ReviewMode } from './backlog.ts';
 import { repoDirs, git, shaOf } from './beta.ts';
+import { canonLines } from './memory.ts';
 
 /** Reviews run on Sonnet: cents each. */
 export const reviewModel = () => process.env.STUDIO_REVIEW_MODEL ?? 'claude-sonnet-5-5';
@@ -65,11 +66,18 @@ export function reviewedSha(p: Product, where: 'local' | 'live', played: { sha: 
   return shaOf(repoDirs(p).source, 'origin/main');
 }
 
+/** The story for a review, with the canon from the shared memory: what the game must keep (a contradiction is a bug). */
+export function withCanon(p: Product) {
+  const canon = canonLines(p.id, 4000).text;
+  if (!canon) return storyOf(p);
+  return `${storyOf(p)}\n--- CANON (Hawkes Studio's shared memory: facts that must hold; report anything on screen that contradicts one as a bug titled "Canon: ...")\n${canon}\n`;
+}
+
 /** playtest.review's params for a product: model, mode, cap, known findings, story and bar. */
 export function reviewParams(p: Product, job: string, mode: ReviewMode, extra: Record<string, unknown> = {}) {
   return {
     model: reviewModel(), job, mode, maxFindings: reviewMax(),
-    product: `${p.name} (presented publicly as "${p.framing}"). ${p.about}`, story: storyOf(p),
+    product: `${p.name} (presented publicly as "${p.framing}"). ${p.about}`, story: withCanon(p),
     known: knownFindings(p.id),
     ...(p.quality ? { bar: p.quality } : {}),
     ...extra,

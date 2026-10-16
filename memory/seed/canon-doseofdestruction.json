@@ -1,0 +1,226 @@
+{
+  "kind": "canon",
+  "product": "doseofdestruction",
+  "source": "doseofdestructionwebsite/content/fighters.json, content/campaign.json",
+  "about": "Generated on 2026-10-16 from fighters.json and campaign.json; regenerate when the roster changes.",
+  "entries": [
+    {
+      "title": "The Dose Of Destruction campaign is a TV show",
+      "body": "Every night at midnight the Foundry furnace floor becomes a stage and the whole city tunes in. The Orchestrator runs the show and hosts; a narrator voices the scenes. Chapters run from Open Mic (Exit Punk, a walk-on with no record and one skateboard) to Encore (the Orchestrator steps onto his own show). \"There isn't an exit. There's only the next show.\"",
+      "tags": "campaign tv show orchestrator foundry"
+    },
+    {
+      "title": "Campaign chapters, in order",
+      "body": "1. Open Mic (A walk-on with no record and one skateboard. vs kaelen on city-top) 2. House Heavy (The house fighter is the size of the house. vs break on yo-house) 3. Bad Signal (Two on one, on platforms that will not hold still. vs dj-wont-read, shutup-bot on solar-array) 4. Low Pressure (Someone brought the weather. vs small-weather on desert) 5. Turn the Page (A partner, finally. He writes too. vs blog-man, evil-blue-bird, got-ur-back on watercolor-nebula) 6. Sudden Death (The show is running long. One stock, high damage. vs slice on cursed-town) 7. Dead Weight (They want the kid off the air. vs ss-boulder, stratabots on space-chess) 8. Encore (The man who runs the show steps onto it. vs orchestrator on humans-in-the-loop)",
+      "tags": "chapters campaign order stages"
+    },
+    {
+      "title": "Exit Punk is the campaign hero",
+      "body": "A walk-on with one skateboard: \"I'm not here for the show. I'm here for the exit.\" Dry and short-spoken. Ends the show in Encore: \"I came for the exit. Turns out it was the main event.\"",
+      "tags": "exit punk hero"
+    },
+    {
+      "title": "Shutup Bot barely speaks",
+      "body": "He answers with \"...\" and \"Fine.\" DJ Won't Read talks for him (\"Only when he loses\").",
+      "tags": "shutup bot dj wont read voice"
+    },
+    {
+      "key": "seed:dod-fighter:ball-person",
+      "title": "Ball Person (Striker)",
+      "body": "Fast feet and kicks that carry. Fighter id ball-person (doseofdestructionwebsite/content/fighters.json; art in AllTheCharacters/Ball Person).",
+      "tags": "fighter roster striker"
+    },
+    {
+      "key": "seed:dod-fighter:blog-man",
+      "title": "Blog Man (All-rounder)",
+      "body": "Floats a little, hits a little harder than he looks. Fighter id blog-man (doseofdestructionwebsite/content/fighters.json; art in AllTheCharacters/Blog Man).",
+      "tags": "fighter roster all-rounder"
+    },
+    {
+      "key": "seed:dod-fighter:break",
+      "title": "Break (Heavy)",
+      "body": "Slow hands, huge reach, hard to launch. Fighter id break (doseofdestructionwebsite/content/fighters.json; art in AllTheCharacters/Break).",
+      "tags": "fighter roster heavy"
+    },
+    {
+      "key": "seed:dod-fighter:cel",
+      "title": "Cel (Aerial)",
+      "body": "Three extra jumps and the best air speed on the roster. Fighter id cel (doseofdestructionwebsite/content/fighters.json; art in AllTheCharacters/Cel).",
+      "tags": "fighter roster aerial"
+    },
+    {
+      "key": "seed:dod-fighter:chooser",
+      "title": "Chooser (Bouncer)",
+      "body": "Small, round, and very hard to pin down. Fighter id chooser (doseofdestructionwebsite/content/fighters.json; art in AllTheCharacters/Chooser).",
+      "tags": "fighter roster bouncer"
+    },
+    {
+      "key": "seed:dod-fighter:crosser",
+      "title": "Crosser (Counter-puncher)",
+      "body": "Slow to start, but every hit lands heavy. Fighter id crosser (doseofdestructionwebsite/content/fighters.json; art in AllTheCharacters/Crosser).",
+      "tags": "fighter roster counter-puncher"
+    },
+    {
+      "key": "seed:dod-fighter:crystalline-intelligences",
+      "title": "Crystalline Intelligences (Burner)",
+      "body": "Long, bright swings with real weight behind them. Fighter id crystalline-intelligences (doseofdestructionwebsite/content/fighters.json; art in AllTheCharacters/Crystalline Intelligences).",
+      "tags": "fighter roster burner"
+    },
+    {
+      "key": "seed:dod-fighter:dj-wont-read",
+      "title": "DJ Won't Read (Combo)",
+      "body": "Quick hits that chain into each other. Fighter id dj-wont-read (doseofdestructionwebsite/content/fighters.json; art in AllTheCharacters/DJ Won't Read).",
+      "tags": "fighter roster combo"
+    },
+    {
+      "key": "seed:dod-fighter:evil-blue-bird",
+      "title": "Evil Blue Bird (Floaty)",
+      "body": "Two extra jumps and an air game that never lands. Fighter id evil-blue-bird (doseofdestructionwebsite/content/fighters.json; art in AllTheCharacters/Evil Blue Bird).",
+      "tags": "fighter roster floaty"
+    },
+    {
+      "key": "seed:dod-fighter:exit-punk",
+      "title": "Exit Punk (All-rounder)",
+      "body": "Nothing to learn around, nothing to hide behind. Fighter id exit-punk (doseofdestructionwebsite/content/fighters.json; art in AllTheCharacters/Exit Punk).",
+      "tags": "fighter roster all-rounder"
+    },
+    {
+      "key": "seed:dod-fighter:future-man",
+      "title": "Future Man (Brawler)",
+      "body": "Fast for his weight, and he does not fall off. Fighter id future-man (doseofdestructionwebsite/content/fighters.json; art in AllTheCharacters/Future Man).",
+      "tags": "fighter roster brawler"
+    },
+    {
+      "key": "seed:dod-fighter:got-ur-back",
+      "title": "Got Ur Back (Big friend)",
+      "body": "Huge, soft, and launches people anyway. Fighter id got-ur-back (doseofdestructionwebsite/content/fighters.json; art in AllTheCharacters/Got Ur Back).",
+      "tags": "fighter roster big friend"
+    },
+    {
+      "key": "seed:dod-fighter:kaelen",
+      "title": "Kaelen (Fast)",
+      "body": "Quick hits, quick fall, gone before the trade lands. Fighter id kaelen (doseofdestructionwebsite/content/fighters.json; art in AllTheCharacters/Kaelen).",
+      "tags": "fighter roster fast"
+    },
+    {
+      "key": "seed:dod-fighter:lapis-man",
+      "title": "Lapis Man (Zoner)",
+      "body": "The staff reaches farther than anyone expects. Fighter id lapis-man (doseofdestructionwebsite/content/fighters.json; art in AllTheCharacters/Lapis Man).",
+      "tags": "fighter roster zoner"
+    },
+    {
+      "key": "seed:dod-fighter:not-an-old-man-yet",
+      "title": "Not an Old Man Yet (Bruiser)",
+      "body": "Owns the middle of the stage and refuses to leave it. Fighter id not-an-old-man-yet (doseofdestructionwebsite/content/fighters.json; art in AllTheCharacters/Not an Old Man Yet).",
+      "tags": "fighter roster bruiser"
+    },
+    {
+      "key": "seed:dod-fighter:orchestrator",
+      "title": "Orchestrator (Conductor)",
+      "body": "Floats, waits, and punishes everything. Fighter id orchestrator (doseofdestructionwebsite/content/fighters.json; art in AllTheCharacters/Orchestrator).",
+      "tags": "fighter roster conductor"
+    },
+    {
+      "key": "seed:dod-fighter:pyro-singer",
+      "title": "Pyro Singer (Air striker)",
+      "body": "Her aerials burn the hardest. Fighter id pyro-singer (doseofdestructionwebsite/content/fighters.json; art in AllTheCharacters/Pyro Singer).",
+      "tags": "fighter roster air striker"
+    },
+    {
+      "key": "seed:dod-fighter:shark-dude",
+      "title": "Shark Dude (Rushdown)",
+      "body": "Runs in, bites, runs in again. Fighter id shark-dude (doseofdestructionwebsite/content/fighters.json; art in AllTheCharacters/Shark Dude).",
+      "tags": "fighter roster rushdown"
+    },
+    {
+      "key": "seed:dod-fighter:shutup-bot",
+      "title": "Shutup Bot (Tank)",
+      "body": "Barely jumps. Barely flinches. Fighter id shutup-bot (doseofdestructionwebsite/content/fighters.json; art in AllTheCharacters/Shutup Bot).",
+      "tags": "fighter roster tank"
+    },
+    {
+      "key": "seed:dod-fighter:slice",
+      "title": "Slice (Glass cannon)",
+      "body": "The fastest hands, and the lightest body. Fighter id slice (doseofdestructionwebsite/content/fighters.json; art in AllTheCharacters/Slice).",
+      "tags": "fighter roster glass cannon"
+    },
+    {
+      "key": "seed:dod-fighter:slow-rider",
+      "title": "Slow Rider (Drifter)",
+      "body": "Walks slow, flies far, and never hurries a finish. Fighter id slow-rider (doseofdestructionwebsite/content/fighters.json; art in AllTheCharacters/Slow Rider).",
+      "tags": "fighter roster drifter"
+    },
+    {
+      "key": "seed:dod-fighter:small-weather",
+      "title": "Small Weather (Storm caller)",
+      "body": "Floaty, with two extra jumps and long swings. Fighter id small-weather (doseofdestructionwebsite/content/fighters.json; art in AllTheCharacters/Small Weather).",
+      "tags": "fighter roster storm caller"
+    },
+    {
+      "key": "seed:dod-fighter:spider-bot",
+      "title": "Spider Bot (Walker)",
+      "body": "Wide, low, and very hard to knock over. Fighter id spider-bot (doseofdestructionwebsite/content/fighters.json; art in AllTheCharacters/Spider Bot).",
+      "tags": "fighter roster walker"
+    },
+    {
+      "key": "seed:dod-fighter:ss-boulder",
+      "title": "SS Boulder (Super heavy)",
+      "body": "The slowest swings in the game. The biggest hits too. Fighter id ss-boulder (doseofdestructionwebsite/content/fighters.json; art in AllTheCharacters/SS Boulder).",
+      "tags": "fighter roster super heavy"
+    },
+    {
+      "key": "seed:dod-fighter:stratabots",
+      "title": "Stratabots (Rock)",
+      "body": "Heavy plates and short, hard hits. Fighter id stratabots (doseofdestructionwebsite/content/fighters.json; art in AllTheCharacters/Stratabots).",
+      "tags": "fighter roster rock"
+    },
+    {
+      "key": "seed:dod-fighter:susan",
+      "title": "Susan (Shadow)",
+      "body": "Long tendrils and a float that drifts forever. Fighter id susan (doseofdestructionwebsite/content/fighters.json; art in AllTheCharacters/Susan).",
+      "tags": "fighter roster shadow"
+    },
+    {
+      "key": "seed:dod-fighter:the-mechanic",
+      "title": "The Mechanic (Grinder)",
+      "body": "A wrench, a long day, and no quit. Fighter id the-mechanic (doseofdestructionwebsite/content/fighters.json; art in AllTheCharacters/The Mechanic).",
+      "tags": "fighter roster grinder"
+    },
+    {
+      "key": "seed:dod-fighter:try-belt",
+      "title": "Try Belt (Switch hitter)",
+      "body": "Even speed, even power, and quick off the ground. Fighter id try-belt (doseofdestructionwebsite/content/fighters.json; art in AllTheCharacters/Try Belt).",
+      "tags": "fighter roster switch hitter"
+    },
+    {
+      "key": "seed:dod-fighter:tt",
+      "title": "TT (Shell)",
+      "body": "Short, slow, and much heavier than he looks. Fighter id tt (doseofdestructionwebsite/content/fighters.json; art in AllTheCharacters/TT).",
+      "tags": "fighter roster shell"
+    },
+    {
+      "key": "seed:dod-fighter:uh-me",
+      "title": "Uh Me (Floater)",
+      "body": "Light, calm, and almost impossible to catch in the air. Fighter id uh-me (doseofdestructionwebsite/content/fighters.json; art in AllTheCharacters/Uh Me).",
+      "tags": "fighter roster floater"
+    },
+    {
+      "key": "seed:dod-fighter:wallit",
+      "title": "Wallit (Slugger)",
+      "body": "The bat adds reach. The cash adds attitude. Fighter id wallit (doseofdestructionwebsite/content/fighters.json; art in AllTheCharacters/Wallit).",
+      "tags": "fighter roster slugger"
+    },
+    {
+      "key": "seed:dod-fighter:yo-bot",
+      "title": "Yo Bot (Rig)",
+      "body": "Four legs, two arms, and a laptop that hits back. Fighter id yo-bot (doseofdestructionwebsite/content/fighters.json; art in AllTheCharacters/Yo Bot).",
+      "tags": "fighter roster rig"
+    },
+    {
+      "key": "seed:dod-fighter:yooba",
+      "title": "Yooba (Gooey)",
+      "body": "Two extra jumps and a mouth with a long reach. Fighter id yooba (doseofdestructionwebsite/content/fighters.json; art in AllTheCharacters/Yooba).",
+      "tags": "fighter roster gooey"
+    }
+  ]
+}

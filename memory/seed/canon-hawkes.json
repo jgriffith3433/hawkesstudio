@@ -1,0 +1,14 @@
+{
+  "kind": "canon",
+  "source": "hawkesstudio/docs/projects/AGENTS.md, hawkesbiomedicalnew/AGENTS.md, phoriginsassets/Lore.txt",
+  "about": "Canon every product shares: Hawkes Biomedical, its people and its rules. Studio imports this at startup (memory.ts importSeed); keyed, so editing here updates the entries unless J edited them in the Memory tab.",
+  "entries": [
+    { "title": "Hawkes Biomedical is a fictional pharma megacorp over every product", "body": "Each game is presented publicly as one of the company's medical products; the game is the thing behind that front. hawkesbiomedical.com lists the product line. Its footer says the company is a work of fiction.", "tags": "brand parent company products" },
+    { "title": "Pierce Hawkes is Chairman, at Hawkes Tower, 58th floor", "body": "HQ: Hawkes Tower (1000 Madison Avenue, New York), the 58th floor boardroom is the Apex Peak. Capital and investor relations desk in Zurich. Pierce sells dominance and category ownership.", "tags": "pierce chairman tower zurich" },
+    { "title": "The board is Director Hale, Voss and Lang, with no first names", "body": "Never invent first names. Hale (she) watches the quarter and the valuation; Voss (he) keeps the charter and calls B3's people patients; Lang keeps the date Zurich wants. The other chairs are silent and unnamed.", "tags": "board hale voss lang names" },
+    { "title": "The public line: \"We do not pitch a cure. We own the category.\"", "body": "Category ownership, never a cure. Pierce's own line: \"There's always room for grace.\" and \"Compliance does not set the ceiling. I do.\"", "tags": "slogan motto cure category" },
+    { "title": "The secret is basement B3: the vat and the creature", "body": "B3 (Sector 4 / B-102) is the restricted lab under the tower: containment, decon, the acid vat, an unnamed creature. Pierce's transformation is told in PH Origins. Never put B3, the vat, the creature or gameplay on the corporate site.", "tags": "b3 secret vat creature basement" },
+    { "title": "Products are never called games on the corporate site", "body": "Public framings: PH Origins = pH balance; Sick Of It = single-use fever shots; Dose Of Destruction = cytotoxic dose; Yooba Land = hyporexia support; I Can Be = AI-assisted full-body assessment; The Place Department = HIPAA-compliant document storage; Imagine Live TV = live medical education.", "tags": "products framing medical corporate site" },
+    { "title": "Every IP character can fight in Dose Of Destruction", "body": "AllTheCharacters/<Folder>/ holds each character (33 so far); their stats, names and roles live in doseofdestructionwebsite/content/fighters.json. A new character that fights gets a folder there.", "tags": "characters roster fighters crossover" }
+  ]
+}

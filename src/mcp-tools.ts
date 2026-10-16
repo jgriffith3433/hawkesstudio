@@ -326,6 +326,52 @@ export function studioMcp({ studio, waitRun }: Client = { studio: defaultStudio,
         }
       },
     },
+    ...memoryTools(studio),
   ];
-  return { name: 'hawkesstudio', version: '0.2.0', instructions: INSTRUCTIONS, tools };
+  // An agent's or scout's own server lists only the tools it may use (STUDIO_MCP_TOOLS: names or prefixes, comma list).
+  const only = (process.env.STUDIO_MCP_TOOLS ?? '').split(',').map((x) => x.trim()).filter(Boolean);
+  const allowed = only.length ? tools.filter((t) => only.some((o) => (o.endsWith('*') ? t.name.startsWith(o.slice(0, -1)) : t.name === o))) : tools;
+  return { name: 'hawkesstudio', version: '0.3.0', instructions: INSTRUCTIONS, tools: allowed };
+}
+
+/** The shared memory (memory.ts): every Claude that works on Hawkes reads and adds to it. */
+function memoryTools(studio: Client['studio']): McpTool[] {
+  return [
+    {
+      name: 'memory_search',
+      description: "Search the shared memory every Hawkes agent, scout, reviewer and Talk uses: J's decisions and preferences, how each codebase works (conventions), lessons (what broke and the fix), canon (story and IP facts: characters, places, rules), work in progress; plus past agent runs (\"how did we fix X last time?\"). Full-text, ranked; filter by product and kind. Read before planning or changing something; cite entries by id.",
+      inputSchema: obj({ query: str('What to look for (words, not a sentence)'), product: str('Product id (its entries and the studio-wide ones)'), kind: str('decision, preference, convention, lesson, canon, state (comma list)'), limit: { type: 'number', description: 'How many entries (default 12)' }, runs: bool('Also past agent runs (default true)') }, ['query']),
+      run: async ({ query, product, kind, limit, runs }) => studio(`/api/memory/search?${new URLSearchParams({ q: String(query ?? ''), ...(product ? { product } : {}), ...(kind ? { kind } : {}), ...(limit ? { limit: String(limit) } : {}), ...(runs === false ? { runs: '0' } : {}) })}`),
+    },
+    {
+      name: 'memory_get',
+      description: 'One shared-memory entry in full (m_...) with its provenance (who, when, which run or conversation, where else it was seen), or a past agent run (ar_...) with its summary and lessons.',
+      inputSchema: obj({ id: str('m_... or ar_...') }, ['id']),
+      run: async ({ id }) => studio(String(id).startsWith('ar_') ? `/api/memory/runs/${id}` : `/api/memory/${id}`),
+    },
+    {
+      name: 'memory_write',
+      description: "Add to the shared memory (the next agent, scout, reviewer and Talk turn get it). kind: decision (J's word only: give quote, his exact words from his message in this conversation; refused otherwise), preference (how J likes things), convention (how a codebase works), lesson (what broke and the fix), canon (story/IP facts; give source: the doc it comes from), state (work in progress; fades after a week). Scope: product (an id), item (a roadmap item, i_...), or neither for studio-wide. Short title (one line), body with the specifics. A near-duplicate isn't added twice: the existing entry is confirmed. Agents and scouts write candidates the PM reviews.",
+      inputSchema: obj({ kind: str('decision | preference | convention | lesson | canon | state'), title: str('What to remember, in one line'), body: str('The specifics: files, commands, numbers, why'), product: str('Product id (optional; none = studio-wide)'), item: str('Roadmap item i_... (optional)'), tags: str('A few words that help find it'), quote: str("decision: J's exact words"), source: str('Where it comes from (a doc path, a pull request, a run)'), supersedes: str('m_... this replaces (the old one fades)') }, ['kind', 'title']),
+      run: async (a) => studio('/api/memory', { method: 'POST', body: a }),
+    },
+    {
+      name: 'memory_curate',
+      description: "Curate the shared memory (the PM and Talk; agents can only propose). actions: list (candidates waiting, likely duplicates, disputed entries, counts); confirm { id } (a candidate becomes active); edit { id, title, body, kind, product, tags }; merge { id, from } (from folds into id); fade { id, note } (no longer relevant: it stays searchable); dispute { id, note } (it contradicts something: then ask J with studio_pm ask_j); delete { id } (a candidate that is wrong); publish (push the Markdown export to the hawkesstudio \"memory\" branch). J's decisions are his: dispute them, never fade or edit them.",
+      inputSchema: obj({ action: str('list | confirm | edit | merge | fade | dispute | delete | publish'), id: str('m_...'), from: str('merge: the m_... to fold in'), note: str('fade/dispute: why'), title: str('edit'), body: str('edit'), kind: str('edit'), product: str('edit'), tags: str('edit') }, ['action']),
+      run: async (a) => {
+        switch (a.action) {
+          case 'list': return studio('/api/memory/curation');
+          case 'confirm': return studio(`/api/memory/${a.id}`, { method: 'PATCH', body: { status: 'active' } });
+          case 'edit': return studio(`/api/memory/${a.id}`, { method: 'PATCH', body: Object.fromEntries(['title', 'body', 'kind', 'product', 'tags'].filter((k) => a[k] !== undefined).map((k) => [k, a[k]])) });
+          case 'merge': return studio(`/api/memory/${a.id}/merge`, { method: 'POST', body: { from: a.from } });
+          case 'fade': return studio(`/api/memory/${a.id}`, { method: 'PATCH', body: { status: 'faded', note: a.note } });
+          case 'dispute': return studio(`/api/memory/${a.id}`, { method: 'PATCH', body: { status: 'disputed', note: a.note } });
+          case 'delete': return studio(`/api/memory/${a.id}`, { method: 'DELETE' });
+          case 'publish': return studio('/api/memory/publish', { method: 'POST', body: {} });
+          default: throw new Error('action: list | confirm | edit | merge | fade | dispute | delete | publish');
+        }
+      },
+    },
+  ];
 }

@@ -32,6 +32,7 @@ import {
 import { gate, allMet } from './acceptance.ts';
 import { notify, PUBLIC_URL } from './notify.ts';
 import { BETA } from './beta.ts';
+import { curationLine } from './memory.ts';
 
 // ---------------------------------------------------------------- settings
 
@@ -638,6 +639,11 @@ Do, with the studio_pm, studio_roadmap and studio tools:
    or ask J if it's really his call.
 5. Starting work is automatic (roadmap order, then the worst bugs, within the limits). Change the order or statuses
    with studio_roadmap when what came in says so (a blocker on a product jumps the queue: make or reorder a task).
+6. The shared memory${daily ? ' (daily turn)' : ' (when there are candidates)'}: ${curationLine() || 'nothing waiting.'} Curate with memory_curate:
+   confirm a candidate that is true and useful, merge near-duplicates (list shows likely pairs), fade what no longer
+   holds, delete what is wrong. A candidate that contradicts one of J's decisions or the canon: dispute it and ask J
+   (studio_pm ask_j) which holds; never edit or fade J's decisions yourself. When J decided something in a thread or an
+   answer, record it as a decision quoting his words. Keep it short: entries are one line plus specifics.
 Never: go live or roll back, merge Studio or Gen changes, launch GPU servers, raise limits, or decide direction. Those
 are J's: ask him (studio_pm ask_j: one clear question with options). Anything you leave undecided gets Studio's default
 after this turn (merge if the change passes its gate, else revise with the failures; unanswered questions go to J).

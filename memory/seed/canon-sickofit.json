@@ -1,0 +1,15 @@
+{
+  "kind": "canon",
+  "product": "sickofit",
+  "source": "sickofitgame-unity/Docs/Story.md",
+  "entries": [
+    { "title": "Slimes are villagers, never enemies", "body": "Gloob is a slime; the village's slimes are villagers. No slime enemies. The old slime enemies (chaser, swarmer, exploder, sludge, slimeGlob, slimeSplat) are retired.", "tags": "slime gloob enemy rule" },
+    { "title": "No office or work jokes anywhere in Sick Of It", "body": "No Mondays, inboxes, meetings, coffee, bosses-as-managers: not in titles, lines, upgrades or result quips. The humor is the hero's attitude and Hell itself.", "tags": "tone humor jokes rule" },
+    { "title": "Hell is repetition; rewind is the hero's power", "body": "Hell runs everything on a loop; the hero grabs the loop and pulls it backward (Deja Vu, hold R). Rewind orbs are loop shards dropped by the damned. Death sends you back to repeat floors (\"YOU OBVIOUSLY DIED\").", "tags": "rewind deja vu loop death" },
+    { "title": "The climb: 1,000 floors counting down, Overlord at Floor 1", "body": "The portal drops the hero at Floor 1,000; the Overlord sits at Floor 1 under the meadow, feeding the stolen diamonds into a gate. 10 Circles of 100 floors, each with one biome, one enemy family and one Warden at its top floor (901, 801, ... 101). The floor number is always on screen.", "tags": "floors circles overlord structure" },
+    { "title": "The cast of Sick Of It", "body": "The Hero (name working): thirties, unimpressed, one-liners, never speeches. The Overlord: giant obsidian titan, red eyes, never in a hurry. Gloob (working): the village's gossip slime who swallowed diamonds and runs the shop. The Announcer: Hell's booming 90s arcade voice. The Wardens: one boss per Circle.", "tags": "cast hero overlord gloob announcer wardens" },
+    { "title": "Every enemy has a reason to be on its floor", "body": "One Circle, one family; a new enemy arrives alone; look comes from the art pipeline, never a tint of a different creature. Imps are the Overlord's raiders carrying the diamonds; Cinders are sparks from the burning village; the Magma King is Circle X's Warden.", "tags": "enemies rules imp cinder magma king" },
+    { "title": "Diamonds are the village's portal fuel; Gloob works them into gear", "body": "Enemies drop the stolen diamonds back; the shop is Gloob (permanent upgrades). Between-level picks are Grudges (lost when a run ends): Spite Rounds, Short Fuse, Not Today, Deja Vu.", "tags": "diamonds shop grudges upgrades" },
+    { "title": "Circle X is the Ember Wastes (floors 1000-901)", "body": "Lava rivers where the portal spits out everything that falls through. First stage: Level6, \"Floors 1000-976: The Landing\".", "tags": "ember wastes circle x level6" }
+  ]
+}

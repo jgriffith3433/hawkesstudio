@@ -24,6 +24,7 @@ import { EventEmitter } from 'node:events';
 import { db, newId, J, parse } from './db.ts';
 import { PROJECTS, DATA, ROOT, loadProducts, loadInfra } from './config.ts';
 import { claudeEnv, billing, usingSubscription } from './claude.ts';
+import { memoryBlock } from './memory.ts';
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS conversations (
@@ -202,7 +203,26 @@ How to work:
   - Never raise limits, launch GPU servers or change PM settings without J's word.
 - J can attach files: his message then lists each one's path (Read it; images too) and its blob id (blob:<sha>, usable
   as a hawkesgen input).
-- Be concise and direct: lead with what matters, use short lists, no filler. Ask when a decision is J's.`;
+- Be concise and direct: lead with what matters, use short lists, no filler. Ask when a decision is J's.
+${MEMORY_RULES}${memoryStable()}`;
+}
+
+/** How Talk uses the shared memory (memory.ts; docs/memory.md). */
+const MEMORY_RULES = `- The shared memory is what every agent, scout, reviewer and Talk conversation knows (it outlives this
+  conversation): J's decisions and preferences, how each codebase works, lessons, canon (story and IP facts), work in
+  progress. Each of your turns starts with the entries that match J's message; memory_search finds more (also past agent
+  runs: "how did we fix X last time?"), memory_get shows one with its provenance.
+  - When J decides something ("we'll do X", "never Y"), record it: memory_write kind decision with quote set to his exact
+    words from his message (refused otherwise). How he likes things: preference. Something durable you or an agent
+    learned about a codebase: convention or lesson. Story facts: canon with its source doc. Keep entries short and
+    specific; scope them to the product or roadmap item they're about.
+  - Follow decisions and canon; when what J asks contradicts one, say so and ask which holds (then update or supersede it).
+  - Agents' notes arrive as candidates; the PM curates them (memory_curate). Cite entries by id when they matter.`;
+
+/** Studio-wide decisions and preferences: stable between turns (so the prompt caches), changing only when memory does. */
+function memoryStable() {
+  const b = memoryBlock({ role: 'talk', stableOnly: true, maxChars: 2500 });
+  return b.text ? `\n\nFrom the shared memory (studio-wide decisions and preferences):\n${b.text}` : '';
 }
 
 const running = new Map<string, ChildProcess>();
@@ -267,7 +287,10 @@ export function say(id: string, text: string, files: Attachment[] = [], { voice 
     : '';
   // Studio's notices since Claude last answered (a new conversation's are all of them) go first, so Claude knows them.
   const notices = unanswered(c).map((m) => `[Studio posted this in the conversation]\n${m.text}`);
-  const prompt = `${notices.length ? `${notices.join('\n\n')}\n\n[J's message]\n` : ''}${text.trim() || 'See the attached files.'}${attached}`;
+  // What the shared memory knows about this message (after the stable system prompt, so the cached prefix holds).
+  const known = memoryBlock({ role: 'talk', relevantOnly: true, text: `${text} ${notices.join(' ')}`.slice(0, 4000), maxChars: 2500, limit: 8, exclude: memoryBlock({ role: 'talk', stableOnly: true }).ids });
+  const recall = known.text ? `\n\n[From the shared memory, matching this message (memory_get <id> for more)]\n${known.text}` : '';
+  const prompt = `${notices.length ? `${notices.join('\n\n')}\n\n[J's message]\n` : ''}${text.trim() || 'See the attached files.'}${attached}${recall}`;
   runTurn(id, prompt, userAt);
   return getConversation(id)!;
 }

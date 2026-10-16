@@ -1,0 +1,14 @@
+{
+  "kind": "canon",
+  "product": "phorigins",
+  "source": "phoriginsassets/Lore.txt",
+  "entries": [
+    { "title": "PH Origins is one night in Hawkes Tower (Act I only)", "body": "The board meets on the 58th floor, Pierce defends B3, Hale stays behind, Pierce looks out over the city from his office, Voss calls then texts \"Pick up the terminal\", an alarm shows a shape on the 58th-floor monitor, Pierce rides the elevator to B3 himself, chases the creature, the vat's glass breaks and he transforms.", "tags": "story act sequence levels" },
+    { "title": "The creature has no name in the story", "body": "Names found only in asset filenames are not in-game names. It lives on B3, is not lost (the halls are the long way home, the acid vat is home), and goes to the glass to be opened. Shooting it does not change its mind. Its origin is not established: don't invent one.", "tags": "creature unnamed vat" },
+    { "title": "Pierce keeps his thoughts and voice after the vat, but is not the same", "body": "Green light runs through the skin; the voice stays. \"I can still think. That is not the same as still being me.\" and \"I am still in here. And I am that now.\" He recognizes himself in the creature.", "tags": "transformation pierce metamorphosis" },
+    { "title": "Pierce goes down himself instead of sending a team", "body": "His terminal authorizes the descent; the elevator passes the lobby without stopping (58, 40, 20, L, B1, B2, B3). It is his answer to the charter's demand to seal B3. He carries a company phone and a company-issued sidearm (empty magazine until the basement).", "tags": "elevator descent terminal sidearm" },
+    { "title": "What B3 means to each board member", "body": "Pierce: a pipeline and the product's future. Hale: a financial and reputational risk (\"a secret lab is a number, and numbers die in public\"). Voss: a ward of patients (\"Those are patients down there, Pierce. Not prototypes.\"). Lang: a timeline and investor commitment (\"Zurich wants a date\").", "tags": "board b3 hale voss lang" },
+    { "title": "The B3 signs", "body": "BASEMENT, SECTOR 4 / B-102, CONTAINMENT, ACID VAT, DECON, CONTROL.", "tags": "signs rooms b3 lab" },
+    { "title": "Arctic Rift is listed but has no story yet", "body": "Don't write story for it without J.", "tags": "arctic rift level" }
+  ]
+}

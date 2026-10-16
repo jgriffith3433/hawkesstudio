@@ -25,7 +25,9 @@ export const studioAt = (base: string, auth: string | null = null) => async func
     r = await fetch(`${base}${pathname}`, {
       method,
       // In Talk, the conversation this MCP server belongs to: what the call starts reports back there (followup.ts).
-      headers: { ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}), ...(auth ? { Authorization: auth } : {}), ...(process.env.TALK_CONVERSATION ? { 'X-Talk-Conversation': process.env.TALK_CONVERSATION } : {}) },
+      headers: { ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}), ...(auth ? { Authorization: auth } : {}), ...(process.env.TALK_CONVERSATION ? { 'X-Talk-Conversation': process.env.TALK_CONVERSATION } : {}),
+        // An agent's or scout's own MCP server (memory tools only): who is writing to the shared memory.
+        ...(process.env.STUDIO_AGENT ? { 'X-Studio-Agent': process.env.STUDIO_AGENT } : {}) },
       body: body !== undefined ? JSON.stringify(body) : undefined,
     });
   } catch {

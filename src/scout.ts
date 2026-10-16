@@ -12,6 +12,7 @@ import { PROJECTS, getProduct, getInfra, isInfra, storyOf, StudioError } from '.
 import { repoMap } from './repos.ts';
 import { claudeEnv } from './claude.ts';
 import { BETA } from './beta.ts';
+import { briefSection, recordRun } from './memory.ts';
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS scouts (
@@ -60,6 +61,7 @@ async function run(id: string, top: string, base: string) {
     if (!w.ok) throw new Error(`worktree: ${w.err}`);
     set(id, { detail: `reading ${top} (${ref})` });
     const story = isInfra(s.product) ? '' : storyOf(getProduct(s.product), 4000);
+    const mem = briefSection({ product: s.product, role: 'scout', text: s.question });
     const prompt = `You are a scout for Hawkes Studio. J asked: "${s.question}"
 
 Find out what it would take, by reading this repository (${top}, at ${ref}; read AGENTS.md first). You can't change
@@ -78,9 +80,10 @@ anything: don't edit, don't commit. Be concrete and short. Reply with a Markdown
   or GPU time (about $1.86/hr), and how long
 ## Questions for J
 (only real direction choices; with the option you'd pick)
-${story ? `\nThe product's story, for tone:\n${story}\n` : ''}`;
+${mem.text ? `\n${mem.text}` : ''}${story ? `\nThe product's story, for tone:\n${story}\n` : ''}`;
     const args = ['-p', prompt, '--output-format', 'stream-json', '--verbose', '--model', process.env.SCOUT_MODEL ?? 'claude-opus-5-5', '--max-turns', '40',
-      '--allowedTools', 'Read,Glob,Grep,Bash(git log:*),Bash(git show:*),Bash(ls:*)', '--disallowedTools', 'Edit,Write,NotebookEdit,WebFetch,WebSearch'];
+      '--allowedTools', 'Read,Glob,Grep,Bash(git log:*),Bash(git show:*),Bash(ls:*),mcp__hawkesstudio__memory_search,mcp__hawkesstudio__memory_get,mcp__hawkesstudio__memory_write',
+      '--mcp-config', (await import('./agents.ts')).agentMcp(id), '--strict-mcp-config', '--disallowedTools', 'Edit,Write,NotebookEdit,WebFetch,WebSearch'];
     const r = await new Promise<{ result: string; cost: number }>((resolve) => {
       const child = spawn(process.env.TALK_CLAUDE || 'claude', args, { cwd: wt, env: claudeEnv(), windowsHide: true });
       let buf = '';
@@ -112,6 +115,7 @@ ${story ? `\nThe product's story, for tone:\n${story}\n` : ''}`;
     fs.rmSync(wt, { recursive: true, force: true });
   }
   const done = getScout(id)!;
+  recordRun({ id: `ar_${id.slice(2)}`, kind: 'scout', subject: id, product: done.product, title: `Scout: ${done.question.slice(0, 150)}`, outcome: done.status, summary: done.report ?? done.detail ?? '', by: done.origin ? 'Talk' : 'J', model: process.env.SCOUT_MODEL ?? 'claude-opus-5-5', cost: done.cost, started: done.created, finished: done.finished ?? Date.now() });
   const text = done.status === 'done'
     ? `Scout ${id} reported on "${done.question}" (${done.product}):\n\n${done.report}\n\nTurn this into a proposal for J: the roadmap item and tasks with acceptance criteria, order, size and rough cost. Add them (studio_roadmap) only after J says yes.`
     : `Scout ${id} on "${done.question}" (${done.product}) failed: ${done.detail}`;

@@ -30,7 +30,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { spawn, spawnSync } from 'node:child_process';
 import { db, newId, J, parse } from './db.ts';
-import { getProduct, getInfra, isInfra, PROJECTS, DATA, storyOf, localUrl, type Product, type Infra } from './config.ts';
+import { getProduct, getInfra, isInfra, PROJECTS, DATA, ROOT, storyOf, localUrl, type Product, type Infra } from './config.ts';
 import { getFinding, updateFinding } from './backlog.ts';
 import { reviewParams } from './review.ts';
 import { gen, genRun } from './gen.ts';
@@ -43,6 +43,8 @@ import { deployPending } from './drain.ts';
 import { notify, notifyOnce, PUBLIC_URL } from './notify.ts';
 import { threadFor } from './roadmap.ts';
 import { judgeCriteria } from './acceptance.ts';
+import { briefSection, learnFrom, recordRun, LEARNED_ASK } from './memory.ts';
+import { canonCheck, CONTENTISH } from './canon.ts';
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS changes (
@@ -167,6 +169,47 @@ Nothing here was approved for GPU generation (images, video, music, 3D on the fl
 `;
 }
 
+/** Content and story work (dialogue, lore, levels, characters) is checked against canon; the rest is a fix or a build. */
+const CONTENT = /\b(story|lore|canon|dialog(ue)?|line|lines|bark|script|cutscene|quest|character|fighter|level|floor|stage|map|name|text|copy|voice|narrat|chapter|scene|enemy|enemies|boss)\b/i;
+export function roleOf(c: { infra?: boolean; request?: string | null; findings?: string[]; title?: string | null }): 'infra' | 'content' | 'builder' | 'fixer' {
+  if (c.infra) return 'infra';
+  if (CONTENT.test(`${c.request ?? ''} ${c.title ?? ''}`)) return 'content';
+  return c.request ? 'builder' : 'fixer';
+}
+/** The roadmap item a task's change belongs to (its memory scope). */
+function taskItem(c: Change) {
+  if (!c.task) return null;
+  return (db.prepare('SELECT item FROM tasks WHERE id = ?').get(c.task) as { item: string } | undefined)?.item ?? null;
+}
+
+/**
+ * After an agent pass: what it left in .hawkes/learned.md becomes shared-memory candidates (once per pass), and its run
+ * goes into the run history with the change's outcome (updated again when it is merged or closed).
+ */
+export function remember(id: string) {
+  const c = getChange(id);
+  if (!c) return;
+  try {
+    const file = path.join(c.worktree, '.hawkes', 'learned.md');
+    let lessons = '';
+    if (fs.existsSync(file)) {
+      lessons = fs.readFileSync(file, 'utf8').trim().slice(0, 4000);
+      const scope = c.infra ? { product: c.product } : { product: c.product, item: taskItem(c) };
+      const ids = learnFrom(lessons, { who: 'agent', id: c.id }, { ...scope, source: c.pr_url ?? c.id });
+      if (ids.length) addLog(id, `memory: ${ids.length} note(s) for the next agent (${ids.join(', ')})`);
+      fs.renameSync(file, `${file}.${Date.now()}`);
+    }
+    const prev = db.prepare('SELECT lessons FROM agent_runs WHERE id = ?').get(`ar_${c.id.slice(2)}`) as { lessons: string } | undefined;
+    recordRun({
+      id: `ar_${c.id.slice(2)}`, kind: c.infra ? 'infra' : c.task ? 'task' : c.request ? 'request' : 'fix', subject: c.id, product: c.product, title: c.title ?? c.id,
+      outcome: c.status, summary: `${c.summary ?? ''}${c.detail ? `\n\nStatus: ${c.detail}` : ''}${c.pr_url ? `\n${c.pr_url}` : ''}`, lessons: [prev?.lessons, lessons].filter(Boolean).join('\n'),
+      by: c.task ? 'PM' : 'J', model: agentSettings().model, cost: c.cost, started: c.created, finished: Date.now(),
+    });
+  } catch (e: any) {
+    console.warn(`[memory] ${id}: ${e.message}`);
+  }
+}
+
 async function writeBrief(c: Change, p: Product, findings: any[], note?: string) {
   const dir = path.join(c.worktree, '.hawkes');
   fs.mkdirSync(path.join(dir, 'shots'), { recursive: true });
@@ -186,6 +229,7 @@ async function writeBrief(c: Change, p: Product, findings: any[], note?: string)
     }
   }
   const thread = threadFor(c);
+  const mem = briefSection({ product: p.id, item: taskItem(c), role: roleOf(c), text: [c.request, c.title, ...findings.map((f) => `${f.title} ${f.area ?? ''} ${f.detail ?? ''}`)].filter(Boolean).join(' ') });
   const checks = (p.checks ?? []).map((k) => `- \`${k.cmd}\` (in ${k.dir === p.repo ? 'the repo root' : k.dir})`).join('\n') || '- (none listed: at least make sure it builds or loads)';
   const sub = repoFor(p).sub;
   const brief = `# ${c.request ? 'Work' : 'Fix'} for ${p.name}
@@ -227,7 +271,7 @@ ${findings.map((f) => `### [${f.severity}] ${f.title}
 - What's wrong: ${f.detail ?? '-'}
 - Suggested fix: ${f.fix ?? '-'}
 - Screenshots: ${(shots.filter((s) => s.includes(f.id)).map((s) => `\`${s}\``).join(', ')) || 'none'}`).join('\n\n')}
-${note ? `\n## Notes on the last attempt (J's or the PM's)\n\n${note}\n` : ''}
+${note ? `\n## Notes on the last attempt (J's or the PM's)\n\n${note}\n` : ''}${mem.text ? `\n${mem.text}` : ''}
 ## How to work
 
 1. Read \`AGENTS.md\` (and any docs it points to) before changing anything. Follow its rules.
@@ -245,6 +289,7 @@ ${checks}
    choice, not a detail you can decide well yourself), write ONE clear question to \`.hawkes/question.md\` (the options
    you see and the one you'd pick), commit nothing, and stop. Studio gets you the answer and you continue in this same
    session.
+9. ${LEARNED_ASK.replace(/\n/g, '\n   ')}
 
 ## The product's story (for tone and intent)
 
@@ -256,6 +301,17 @@ ${storyOf(p, 6000)}
 
 // ------------------------------------------------------------------ agent
 
+export const AGENT_MEMORY_TOOLS = ['memory_search', 'memory_get', 'memory_write'];
+/** An agent's or scout's MCP config: Studio's server with the memory tools only, as that agent (writes are candidates). */
+export function agentMcp(id: string) {
+  const dir = path.join(DATA, 'agent-mcp');
+  fs.mkdirSync(dir, { recursive: true });
+  const file = path.join(dir, `${id}.json`);
+  const cfg = { mcpServers: { hawkesstudio: { command: process.execPath, args: [path.join(ROOT, 'bin', 'studio-mcp.mjs')], env: { STUDIO_SERVER: '1', STUDIO_AGENT: id, STUDIO_MCP_TOOLS: AGENT_MEMORY_TOOLS.join(',') } } } };
+  fs.writeFileSync(file, JSON.stringify(cfg, null, 2));
+  return file;
+}
+
 function runAgent(c: Change, briefFile: string, s: AgentSettings, env = claudeEnv(), resume?: { session: string; prompt: string }): Promise<{ ok: boolean; cost: number; result: string }> {
   return new Promise((resolve) => {
     const prompt = resume?.prompt ?? `Read ${path.relative(c.worktree, briefFile).replace(/\\/g, '/')} and do what it says. It's your whole task.`;
@@ -263,7 +319,9 @@ function runAgent(c: Change, briefFile: string, s: AgentSettings, env = claudeEn
       ...(resume ? ['--resume', resume.session] : []),
       '-p', prompt, '--output-format', 'stream-json', '--verbose', '--model', s.model, '--max-turns', String(s.maxTurns),
       '--permission-mode', 'acceptEdits',
-      '--allowedTools', 'Read,Edit,Write,Glob,Grep,TodoWrite,Bash(git status:*),Bash(git diff:*),Bash(git add:*),Bash(git commit:*),Bash(git log:*),Bash(npm:*),Bash(npx:*),Bash(node:*),Bash(ls:*),Bash(cat:*)',
+      '--allowedTools', `Read,Edit,Write,Glob,Grep,TodoWrite,Bash(git status:*),Bash(git diff:*),Bash(git add:*),Bash(git commit:*),Bash(git log:*),Bash(npm:*),Bash(npx:*),Bash(node:*),Bash(ls:*),Bash(cat:*),${AGENT_MEMORY_TOOLS.map((t) => `mcp__hawkesstudio__${t}`).join(',')}`,
+      // Its own Studio MCP server with only the shared-memory tools, writing as this change (X-Studio-Agent).
+      '--mcp-config', agentMcp(c.id), '--strict-mcp-config',
     ];
     const child = spawn('claude', args, { cwd: c.worktree, env, windowsHide: true });
     let buf = '';
@@ -378,6 +436,7 @@ async function pump() {
     running.add(c.id);
     void work(c.id).finally(() => {
       running.delete(c.id);
+      remember(c.id);
       void pump();
     });
   }
@@ -460,6 +519,15 @@ async function work(id: string, note?: string, answer?: string) {
     // Verify: play the finding's scenario on the fixed version (web: the worktree; Unity: a build of the branch).
     update(id, { status: 'verifying', detail: 'playtesting the fix' });
     const verify: any = await verifyChange(getChange(id)!, p, findings);
+    // Content and story changes are checked against the canon (canon.ts); a contradiction fails the merge gate.
+    if (roleOf(getChange(id)!) === 'content') {
+      update(id, { detail: 'checking the change against the canon' });
+      const files = git(c.worktree, ['diff', '--name-only', `origin/${c.base}...HEAD`]).out.split('\n').filter((f) => CONTENTISH.test(f));
+      const diff = files.length ? git(c.worktree, ['diff', `origin/${c.base}...HEAD`, '--', ...files.slice(0, 60)]).out : '';
+      const canon = await canonCheck(p.id, diff, c.title ?? c.request ?? id).catch((e: any) => ({ ok: true, summary: `couldn't check: ${e.message}`, conflicts: [], checked: 0, skipped: 'error' }));
+      addLog(id, `canon: ${canon.ok ? 'ok' : 'CONFLICT'}: ${canon.summary}${canon.conflicts.length ? ` (${canon.conflicts.map((k) => k.entry).join(', ')})` : ''}`);
+      if (verify) verify.canon = canon;
+    }
     // A preview J can open: <product>.hawkesgen.com/c/<id>/
     const pv = await buildPreview(p.id, { change: id, dir: c.worktree }).catch((e: any) => ({ status: 'failed', detail: e.message }) as any);
     const preview = pv?.status === 'ready' ? previewUrl(p.id, id) : null;
@@ -653,6 +721,7 @@ async function npmCi(id: string, dir: string) {
 }
 
 function writeInfraBrief(c: Change, t: Infra, note?: string) {
+  const mem = briefSection({ product: t.id, role: 'infra', text: `${c.request ?? ''} ${c.title ?? ''}` });
   const dir = path.join(c.worktree, '.hawkes');
   fs.mkdirSync(dir, { recursive: true });
   const exclude = path.join(PROJECTS, c.repo, '.git', 'info', 'exclude');
@@ -683,7 +752,8 @@ ${t.checks.map((k) => `   - \`${k}\``).join('\n')}
 5. Commit your change with a clear message. Don't push; Studio does.
 6. Write \`.hawkes/summary.md\`: what you changed (files) and why, how you checked it, and anything J should know
    (in plain words: J doesn't read code). If you couldn't do it, explain why there instead, and don't commit.
-`;
+7. ${LEARNED_ASK.replace(/\n/g, '\n   ')}
+${mem.text ? `\n${mem.text}` : ''}`;
   fs.writeFileSync(path.join(dir, 'brief.md'), brief);
   return path.join(dir, 'brief.md');
 }
@@ -880,6 +950,7 @@ async function approveInfra(c: Change, by: string) {
     detail: `merged into main by ${by}: ${sha}. CI runs on main, then the server deploys ${t.name} itself (it waits for runs, agents and Talk answers, and rolls back if unhealthy): GET /api/self-deploys`,
     notes: [...c.notes, { at: Date.now(), by, text: `approved and merged into main (${t.name} deploys itself)` }],
   });
+  remember(c.id);
   await cleanup(c.id, { deleteBranch: true });
   return getChange(c.id);
 }
@@ -922,6 +993,7 @@ export async function approve(id: string, { confirm, by = 'J', origin }: { confi
   }
   void pullDev(c.product, `after merging ${id}`).catch((e) => console.warn(`[studio] beta working copy after ${id}: ${e.message ?? e}`));
   update(id, { status: 'merged', detail: `merged into ${BETA} by ${by}: ${String(m.sha ?? '').slice(0, 7)} (not live yet)`, notes: [...c.notes, { at: Date.now(), by, text: `approved and merged into ${BETA}` }] });
+  remember(id);
   for (const f of c.findings) updateFinding(f, { status: 'fixed', note: `merged into ${BETA} in ${c.pr_url} (goes live with the next deploy)` });
   await cleanup(id, { deleteBranch: true });
   // Beta moved: its pre-deploy build, its build (Unity), the beta site and a local playtest of it follow, in the background.
@@ -940,6 +1012,7 @@ export function revise(id: string, note: string, by = 'J') {
   // When it's done, the queue goes on (a revision holds a slot like any change).
   void work(id, note).finally(() => {
     running.delete(id);
+    remember(id);
     void pump();
   });
   return getChange(id);
@@ -955,6 +1028,7 @@ export function answerChange(id: string, answer: string, by = 'J') {
   running.add(id);
   void work(id, undefined, `${by}: ${answer}`).finally(() => {
     running.delete(id);
+    remember(id);
     void pump();
   });
   return getChange(id);
@@ -965,6 +1039,7 @@ export async function close(id: string, by = 'J') {
   if (!c) throw new Error('No such change');
   if (c.pr) await github(`/repos/${c.slug}/pulls/${c.pr}`, { method: 'PATCH', body: { state: 'closed' } }).catch(() => {});
   update(id, { status: 'closed', detail: `closed by ${by}`, notes: [...c.notes, { at: Date.now(), by, text: 'closed' }] });
+  remember(id);
   for (const f of c.findings) {
     const fd = getFinding(f);
     if (fd?.status === 'fixing') updateFinding(f, { status: 'open' });

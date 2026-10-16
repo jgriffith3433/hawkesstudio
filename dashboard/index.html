@@ -21,6 +21,7 @@
       <button data-tab="changes">Changes</button>
       <button data-tab="runs">Runs</button>
       <button data-tab="costs">Costs</button>
+      <button data-tab="memory">Memory</button>
     </nav>
     <div class="status" id="status"></div>
     <button id="actBtn" class="act-btn" title="Everything running in the background: agents, runs, Hawkes Gen jobs">Activity <span class="act-count zero" id="actCount">0</span></button>
@@ -121,6 +122,21 @@
       <div id="runList"></div>
       <div id="runDetail"></div>
     </section>
+    <section id="memory" class="tab">
+      <div class="bar">
+        <select id="memProduct"><option value="">All products</option></select>
+        <select id="memKind"><option value="">Every kind</option><option value="decision">Decisions</option><option value="preference">Preferences</option><option value="convention">Conventions</option><option value="lesson">Lessons</option><option value="canon">Canon</option><option value="state">In progress</option></select>
+        <select id="memStatus"><option value="active,candidate,disputed">Active and waiting</option><option value="candidate,disputed">Waiting for curation</option><option value="active">Active</option><option value="faded">Faded</option><option value="all">Everything</option></select>
+        <input id="memQ" placeholder="Search the memory (Enter)" style="min-width:16em">
+        <button class="small" id="memNew">Add…</button>
+      </div>
+      <div id="memStats" class="meta" style="margin:8px 0"></div>
+      <div id="memCandidates"></div>
+      <div id="memList"></div>
+      <h3>Agent runs</h3>
+      <div class="bar"><input id="memRunsQ" placeholder="How did we fix… (Enter)" style="min-width:20em"> <button class="small" id="memRunsGo">Search</button></div>
+      <div id="memRuns"></div>
+    </section>
   </main>
   <div id="viewer" class="viewer" hidden><div class="inner"><button class="close">×</button><div class="content"></div></div></div>
   <script src="app.js"></script>
@@ -130,5 +146,6 @@
   <script src="activity.js"></script>
   <script src="roadmap.js"></script>
   <script src="costs.js"></script>
+  <script src="memory.js"></script>
 </body>
 </html>

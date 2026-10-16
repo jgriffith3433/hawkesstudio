@@ -92,6 +92,8 @@ const server = http.createServer(async (req, res) => {
   const origin = originOf(req);
   try {
     if (route === '/mcp' || route.startsWith('/mcp/')) return await handleMcp(req, res, route);
+    // The shared memory (memory.ts, memory-api.ts): the Memory tab, the memory_* tools.
+    if (route === '/api/memory' || route.startsWith('/api/memory/')) return await (await import('./memory-api.ts')).handleMemory(req, res, url, send, readJson);
     if (route === '/api/config') return send(res, 200, { genUrl: process.env.GEN_PUBLIC_URL || 'http://127.0.0.1:8790' });
     if (route === '/api/health') return send(res, 200, { ok: true, name: 'hawkesstudio', gen: await genUp(), run: activeRun()?.id ?? null });
     if (route === '/api/self-deploys') return send(res, 200, { deploys: selfDeploys(Number(q('limit') ?? 30)), busy: selfBusy() });
@@ -483,6 +485,8 @@ server.listen(PORT, '127.0.0.1', () => {
   console.log(`Hawkes Studio on http://127.0.0.1:${PORT}`);
   // An agent's smoke check of a changed Studio (agents.ts) starts the server and nothing else.
   if (process.env.STUDIO_SMOKE === '1') return;
+  // The shared memory: its seed, and the daily fade and export (memory.ts).
+  void import('./memory.ts').then(({ startMemory }) => startMemory());
   // /dev/ on each beta site: the front doors Caddy sends /dev/* to, and the beta working copies' auto-commit.
   startFronts();
   startDevService();
