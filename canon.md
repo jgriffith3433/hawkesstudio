@@ -1,7 +1,7 @@
 # The Hawkes story bible (canon)
 
 The facts every product shares, and each product's own: characters, places and rules. Content and story changes are
-checked against these. Generated from Studio's shared memory (2026-10-16 22:43 UTC); edit them in Studio's Memory tab.
+checked against these. Generated from Studio's shared memory (2026-10-16 22:48 UTC); edit them in Studio's Memory tab.
 
 ## All of Hawkes
 
