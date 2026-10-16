@@ -1,6 +1,11 @@
 # Learned: I Can Be
 
-Generated from Hawkes Studio's shared memory (2026-10-16 20:58 UTC). Edit entries in Studio's Memory tab, not here.
+Generated from Hawkes Studio's shared memory (2026-10-16 21:28 UTC). Edit entries in Studio's Memory tab, not here.
+
+## J's decisions
+
+- **I Can Be bugs and tasks get dismissed, not fixed**: On 2026-10-16 J had every I Can Be finding marked won't-fix (f_a61570b31ea1, f_de71f1a8771e). The roadmap had no I Can Be items. Don't start fixes or tasks for I Can Be, and mark new findings won't-fix, until J gives it a direction.  
+  <sub>m_7614cb204c05 · Talk · 2026-10-16 · t_01639fac177e</sub>
 
 ## How the code works
 
@@ -13,3 +18,7 @@ Generated from Hawkes Studio's shared memory (2026-10-16 20:58 UTC). Edit entrie
 
 - **Multi-commit changes can land partly**: c_27c0945b76a6 reached beta with only its first commit, so the playtest asked for a scenario beta didn't have; check that every scenario a change names is registered in js/playtest.js installPlaytest({scenarios}) and in start().  
   <sub>m_0069fff796e0 · agent c_34900a2a4607 · 2026-10-16 · https://github.com/jgriffith3433/icanbeaiwebsite/pull/2</sub>
+- **car cabin hid the driver**: makeCar's cabin is a solid box the person sits inside; hiding only the roof still showed a dark lump. Cabin and roof are both disabled while pp.inCar.  
+  <sub>m_795075f485fa · agent c_1fff7ea72482 · 2026-10-16 · https://github.com/jgriffith3433/icanbeaiwebsite/pull/3</sub>
+- **drive camera must be locked to the car**: a damped follow trails a fast car by speed/follow units and shows empty road; world.js sets the camera target to the car exactly while pp.inCar (soft follow only when walking). The playtest `day` logs car-on-screen.  
+  <sub>m_1b58d02fd990 · agent c_1fff7ea72482 · 2026-10-16 · https://github.com/jgriffith3433/icanbeaiwebsite/pull/3</sub>

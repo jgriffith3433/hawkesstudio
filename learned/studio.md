@@ -1,9 +1,11 @@
 # Learned: All of Hawkes
 
-Generated from Hawkes Studio's shared memory (2026-10-16 20:58 UTC). Edit entries in Studio's Memory tab, not here.
+Generated from Hawkes Studio's shared memory (2026-10-16 21:28 UTC). Edit entries in Studio's Memory tab, not here.
 
 ## J's decisions
 
+- **Approvals move from typed words to an Approve / Deny button**  
+  <sub>m_286ae9f4cd83 · Talk · 2026-10-16 · t_d51e3c809c39</sub>
 - **At most 4 GPU servers, US regions only**: us-east-1, us-east-2, us-west-2 (cheapest). Launching, starting or terminating servers asks J first.  
   <sub>m_82439219e260 · seed · 2026-10-16 · hawkesstudio/docs/projects/AGENTS.md, hawkesstudio/AGENTS.md, docs/cloud.md, J's notes (2026-10-16)</sub>
 - **Going live is J's call: he types DEPLOY <product>**: Agents and Talk never push main or go live. Show studio_deploy_plan in plain words, then wait for the exact words. Rollbacks the same with ROLLBACK <product>. "Yes" or "ship it" are not enough.  
