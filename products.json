@@ -406,9 +406,6 @@
         "hawkesbiomedicalnew/AGENTS.md"
       ],
       "about": "The corporate front of Hawkes Biomedical, a fictional pharma megacorp. It lists the product line as medical products, never games; the footer says it's fiction. Never mention B3, the vat or the creature. \"We do not pitch a cure. We own the category.\"",
-      "deploy": {
-        "prebuild": "npm run build"
-      },
       "dev": {
         "front": 8705,
         "port": 8715,
