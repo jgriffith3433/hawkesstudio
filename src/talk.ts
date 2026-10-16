@@ -25,6 +25,7 @@ import { db, newId, J, parse } from './db.ts';
 import { PROJECTS, DATA, ROOT, loadProducts, loadInfra } from './config.ts';
 import { claudeEnv, billing, usingSubscription } from './claude.ts';
 import { memoryBlock } from './memory.ts';
+import { roleArgs } from './roles.ts';
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS conversations (
@@ -204,20 +205,8 @@ How to work:
 - J can attach files: his message then lists each one's path (Read it; images too) and its blob id (blob:<sha>, usable
   as a hawkesgen input).
 - Be concise and direct: lead with what matters, use short lists, no filler. Ask when a decision is J's.
-${MEMORY_RULES}${memoryStable()}`;
+${memoryStable()}`;
 }
-
-/** How Talk uses the shared memory (memory.ts; docs/memory.md). */
-const MEMORY_RULES = `- The shared memory is what every agent, scout, reviewer and Talk conversation knows (it outlives this
-  conversation): J's decisions and preferences, how each codebase works, lessons, canon (story and IP facts), work in
-  progress. Each of your turns starts with the entries that match J's message; memory_search finds more (also past agent
-  runs: "how did we fix X last time?"), memory_get shows one with its provenance.
-  - When J decides something ("we'll do X", "never Y"), record it: memory_write kind decision with quote set to his exact
-    words from his message (refused otherwise). How he likes things: preference. Something durable you or an agent
-    learned about a codebase: convention or lesson. Story facts: canon with its source doc. Keep entries short and
-    specific; scope them to the product or roadmap item they're about.
-  - Follow decisions and canon; when what J asks contradicts one, say so and ask which holds (then update or supersede it).
-  - Agents' notes arrive as candidates; the PM curates them (memory_curate). Cite entries by id when they matter.`;
 
 /** Studio-wide decisions and preferences: stable between turns (so the prompt caches), changing only when memory does. */
 function memoryStable() {
@@ -399,13 +388,15 @@ speech voice, sentence by sentence as you write it, and he answers by talking:
   chat. Say so, and put the exact words to type in the details.`;
 
 function claudeArgs(c: Conversation, call: boolean) {
+  // The role (.claude/agents/talk.md, or pm.md in the PM's conversation): model, tools, its standing instructions
+  // first (stable, so the prompt caches), then Studio's context (products, lanes, the shared memory's decisions).
+  const { args: role } = roleArgs((c as any).kind === 'pm' ? 'pm' : 'talk', { extraPrompt: systemPrompt() + (call ? CALL_PROMPT : '') });
+  const model = (call && process.env.TALK_CALL_MODEL) || process.env.TALK_MODEL;
+  if (model) role.splice(role.indexOf('--model') + 1, 1, model);
   return [
     '--output-format', 'stream-json', '--verbose', '--include-partial-messages',
-    '--model', (call && process.env.TALK_CALL_MODEL) || (process.env.TALK_MODEL ?? 'claude-opus-5-5'),
     '--mcp-config', mcpConfig(c.id), '--strict-mcp-config',
-    '--allowedTools', 'mcp__hawkesstudio,mcp__hawkesgen,Read,Glob,Grep',
-    '--disallowedTools', 'Bash,Edit,Write,NotebookEdit,WebFetch,WebSearch',
-    '--append-system-prompt', systemPrompt() + (call ? CALL_PROMPT : ''),
+    ...role,
     ...(c.session ? ['--resume', c.session] : []),
   ];
 }

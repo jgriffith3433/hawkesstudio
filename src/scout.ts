@@ -6,13 +6,15 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { spawn, spawnSync } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
 import { db, newId } from './db.ts';
 import { PROJECTS, getProduct, getInfra, isInfra, storyOf, StudioError } from './config.ts';
 import { repoMap } from './repos.ts';
 import { claudeEnv } from './claude.ts';
 import { BETA } from './beta.ts';
 import { briefSection, recordRun } from './memory.ts';
+import { roleArgs } from './roles.ts';
+import { spawnClaude } from './sandbox.ts';
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS scouts (
@@ -81,11 +83,13 @@ anything: don't edit, don't commit. Be concrete and short. Reply with a Markdown
 ## Questions for J
 (only real direction choices; with the option you'd pick)
 ${mem.text ? `\n${mem.text}` : ''}${story ? `\nThe product's story, for tone:\n${story}\n` : ''}`;
-    const args = ['-p', prompt, '--output-format', 'stream-json', '--verbose', '--model', process.env.SCOUT_MODEL ?? 'claude-opus-5-5', '--max-turns', '40',
-      '--allowedTools', 'Read,Glob,Grep,Bash(git log:*),Bash(git show:*),Bash(ls:*),mcp__hawkesstudio__memory_search,mcp__hawkesstudio__memory_get,mcp__hawkesstudio__memory_write',
-      '--mcp-config', (await import('./agents.ts')).agentMcp(id), '--strict-mcp-config', '--disallowedTools', 'Edit,Write,NotebookEdit,WebFetch,WebSearch'];
+    // The scout role (.claude/agents/scout.md): model, read-only tools, turn limit; SCOUT_MODEL still overrides the model.
+    const { args: roleFlags } = roleArgs('scout', { extraAllowed: ['mcp__hawkesstudio__memory_search', 'mcp__hawkesstudio__memory_get', 'mcp__hawkesstudio__memory_write'] });
+    if (process.env.SCOUT_MODEL) roleFlags.splice(roleFlags.indexOf('--model') + 1, 1, process.env.SCOUT_MODEL);
+    const args = ['-p', prompt, '--output-format', 'stream-json', '--verbose', ...roleFlags,
+      '--mcp-config', (await import('./agents.ts')).agentMcp(id), '--strict-mcp-config'];
     const r = await new Promise<{ result: string; cost: number }>((resolve) => {
-      const child = spawn(process.env.TALK_CLAUDE || 'claude', args, { cwd: wt, env: claudeEnv(), windowsHide: true });
+      const child = spawnClaude(args, { cwd: wt, env: claudeEnv() });
       let buf = '';
       let result = '';
       let cost = 0;

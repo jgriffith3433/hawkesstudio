@@ -45,6 +45,8 @@ import { threadFor } from './roadmap.ts';
 import { judgeCriteria } from './acceptance.ts';
 import { briefSection, learnFrom, recordRun, LEARNED_ASK } from './memory.ts';
 import { canonCheck, CONTENTISH } from './canon.ts';
+import { roleArgs, loadRole, type RoleName } from './roles.ts';
+import { spawnClaude } from './sandbox.ts';
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS changes (
@@ -203,7 +205,7 @@ export function remember(id: string) {
     recordRun({
       id: `ar_${c.id.slice(2)}`, kind: c.infra ? 'infra' : c.task ? 'task' : c.request ? 'request' : 'fix', subject: c.id, product: c.product, title: c.title ?? c.id,
       outcome: c.status, summary: `${c.summary ?? ''}${c.detail ? `\n\nStatus: ${c.detail}` : ''}${c.pr_url ? `\n${c.pr_url}` : ''}`, lessons: [prev?.lessons, lessons].filter(Boolean).join('\n'),
-      by: c.task ? 'PM' : 'J', model: agentSettings().model, cost: c.cost, started: c.created, finished: Date.now(),
+      by: c.task ? 'PM' : 'J', model: (() => { try { return loadRole(agentRole(c)).model; } catch { return null; } })(), cost: c.cost, started: c.created, finished: Date.now(),
     });
   } catch (e: any) {
     console.warn(`[memory] ${id}: ${e.message}`);
@@ -302,6 +304,8 @@ ${storyOf(p, 6000)}
 // ------------------------------------------------------------------ agent
 
 export const AGENT_MEMORY_TOOLS = ['memory_search', 'memory_get', 'memory_write'];
+/** The role an agent change runs as: content work, a build (requests, roadmap tasks, Studio and Gen), or a fix. */
+export const agentRole = (c: Change): RoleName => ({ infra: 'builder', content: 'content', builder: 'builder', fixer: 'fixer' } as const)[roleOf(c)];
 /** An agent's or scout's MCP config: Studio's server with the memory tools only, as that agent (writes are candidates). */
 export function agentMcp(id: string) {
   const dir = path.join(DATA, 'agent-mcp');
@@ -315,15 +319,21 @@ export function agentMcp(id: string) {
 function runAgent(c: Change, briefFile: string, s: AgentSettings, env = claudeEnv(), resume?: { session: string; prompt: string }): Promise<{ ok: boolean; cost: number; result: string }> {
   return new Promise((resolve) => {
     const prompt = resume?.prompt ?? `Read ${path.relative(c.worktree, briefFile).replace(/\\/g, '/')} and do what it says. It's your whole task.`;
+    // The role (.claude/agents/<role>.md): its model, standing instructions (the stable, cached part of the prompt),
+    // tools and turn limit; the task itself is the brief.
+    const { args: roleFlags, role } = roleArgs(agentRole(c), {
+      extraAllowed: AGENT_MEMORY_TOOLS.map((t) => `mcp__hawkesstudio__${t}`),
+      maxTurns: s.maxTurns !== DEFAULTS.maxTurns ? s.maxTurns : undefined,
+    });
     const args = [
       ...(resume ? ['--resume', resume.session] : []),
-      '-p', prompt, '--output-format', 'stream-json', '--verbose', '--model', s.model, '--max-turns', String(s.maxTurns),
+      '-p', prompt, '--output-format', 'stream-json', '--verbose', ...roleFlags,
       '--permission-mode', 'acceptEdits',
-      '--allowedTools', `Read,Edit,Write,Glob,Grep,TodoWrite,Bash(git status:*),Bash(git diff:*),Bash(git add:*),Bash(git commit:*),Bash(git log:*),Bash(npm:*),Bash(npx:*),Bash(node:*),Bash(ls:*),Bash(cat:*),${AGENT_MEMORY_TOOLS.map((t) => `mcp__hawkesstudio__${t}`).join(',')}`,
       // Its own Studio MCP server with only the shared-memory tools, writing as this change (X-Studio-Agent).
       '--mcp-config', agentMcp(c.id), '--strict-mcp-config',
     ];
-    const child = spawn('claude', args, { cwd: c.worktree, env, windowsHide: true });
+    addLog(c.id, `role ${role.name} (${role.model})`);
+    const child = spawnClaude(args, { cwd: c.worktree, env });
     let buf = '';
     let cost = 0;
     let result = '';
@@ -474,7 +484,7 @@ async function work(id: string, note?: string, answer?: string) {
     const resume = answer && c.session
       ? { session: c.session, prompt: `The answer to your question:\n\n${answer}\n\nContinue the task in .hawkes/brief.md (rewritten with the latest thread) and finish it the way it says.` }
       : undefined;
-    addLog(id, resume ? `agent resumed its session with the answer (${s.model})` : `agent started (${s.model})`);
+    addLog(id, resume ? `agent resumed its session with the answer` : `agent started`);
     const r = await runAgent(getChange(id)!, brief, s, claudeEnv(), resume);
     c = getChange(id)!;
     update(id, { cost: c.cost + r.cost });
@@ -782,7 +792,7 @@ async function workInfra(id: string, note?: string) {
     await npmCi(id, c.worktree);
     const brief = writeInfraBrief(c, t, note);
     update(id, { detail: 'Claude is working on it' });
-    addLog(id, `agent started (${s.model})`);
+    addLog(id, `agent started`);
     const before = git(c.worktree, ['rev-parse', 'HEAD']).out;
     const r = await runAgent(getChange(id)!, brief, s, infraEnv({ agent: true }));
     c = getChange(id)!;

@@ -1,0 +1,6 @@
+{
+  "name": "hawkes",
+  "version": "1.0.0",
+  "description": "Hawkes Studio's roles (talk, pm, fixer, builder, content, scout, reviewer) and skills (the studio's recurring procedures). Studio passes --plugin-dir hawkesstudio/.claude to every Claude Code it runs; on J's PC: claude --plugin-dir C:/Projects/hawkesstudio/.claude",
+  "author": { "name": "Hawkes Studio" }
+}

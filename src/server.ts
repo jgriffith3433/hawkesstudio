@@ -348,6 +348,8 @@ const server = http.createServer(async (req, res) => {
       if (m[2] === 'close') return send(res, 200, await close(m[1], b.by ?? 'J'));
     }
     if (route === '/api/agents/settings' && method === 'GET') return send(res, 200, agentSettings());
+    // The roles (.claude/agents/*.md) and skills (.claude/skills/) every Claude Code run uses (roles.ts).
+    if (route === '/api/agents/roles' && method === 'GET') { const r = await import('./roles.ts'); return send(res, 200, { roles: r.listRoles(), skills: r.listSkills() }); }
     if (route === '/api/agents/settings' && method === 'POST') return send(res, 200, saveAgentSettings(await readJson(req)));
 
     // Phone notifications (ntfy.sh) and the morning brief.
