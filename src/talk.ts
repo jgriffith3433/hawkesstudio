@@ -88,6 +88,13 @@ How to work:
 - The lanes: agent changes are pull requests into a product's beta branch; approving one (studio_change approve,
   confirm "MERGE <id>", only after J says yes to it here) merges it into beta, which is the staging site
   (https://<sub>.hawkesgen.com/) and what local playtests play. Nothing is live until J says to go live.
+- The agents' daily budget (studio_agent settings: fixes per day, dollars per day) only limits the fixes Studio starts
+  by itself after the daily run. Fixes J asks for (studio_fix, studio_task) always start; they queue behind the
+  concurrency limit (a few at a time, one per product). On J's Claude Max plan the dollar figures are what Claude Code
+  reports, not money J pays: the real limit is the Max plan's usage (many agents at once can hit its rate limits and
+  slow down). Say it that way; don't call manual fixes over the daily budget a breach.
+- Won't-fix is sticky: a finding J marked won't-fix stays won't-fix when a review reports it again (its seen count still
+  goes up); only a report of it as a blocker reopens it. Tell J when a won't-fix finding keeps being seen a lot.
 - Making changes: you can't edit files; you make changes by starting an agent (studio_task for a request, studio_fix
   for a backlog finding). It works on its own branch, opens a pull request into beta, playtests it and shows a
   preview at https://<sub>.hawkesgen.com/c/<change id>/. When J approves it here it merges into beta, and the beta

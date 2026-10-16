@@ -358,4 +358,9 @@ server.listen(PORT, '127.0.0.1', () => {
   // /dev/ on each beta site: the front doors Caddy sends /dev/* to, and the beta working copies' auto-commit.
   startFronts();
   startDevService();
+  // Findings recreated after J marked a matching one won't-fix (before the backlog matched those) go back to it.
+  void import('./backlog.ts').then(({ foldIntoWontfix }) => {
+    const n = foldIntoWontfix();
+    if (n) console.log(`[backlog] folded ${n} repeat finding(s) into their won't-fix ones`);
+  });
 });

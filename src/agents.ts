@@ -827,7 +827,11 @@ export function revise(id: string, note: string, by = 'J') {
   if (!['ready', 'failed'].includes(c.status)) throw new Error(`The change is ${c.status}`);
   update(id, { status: 'queued', detail: 'queued for another pass', notes: [...c.notes, { at: Date.now(), by, text: note }] });
   running.add(id);
-  void work(id, note).finally(() => running.delete(id));
+  // When it's done, the queue goes on (a revision holds a slot like any change).
+  void work(id, note).finally(() => {
+    running.delete(id);
+    void pump();
+  });
   return getChange(id);
 }
 
@@ -882,3 +886,5 @@ export function autoFix(runId: string) {
 // Changes interrupted by a restart go back to the queue.
 db.prepare(`UPDATE changes SET status = 'queued', detail = 'requeued after a restart' WHERE status IN ('working', 'verifying', 'revising')`).run();
 setTimeout(() => void pump(), 5000).unref();
+// A safety net for the local queue (no GitHub involved): queued changes never wait on a slot nobody frees.
+setInterval(() => void pump(), 60_000).unref();

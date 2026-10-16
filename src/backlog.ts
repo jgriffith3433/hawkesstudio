@@ -24,20 +24,38 @@ function similar(a: string, b: string) {
 
 const toFinding = (r: any): Finding => ({ ...r, shots: parse(r.shots) ?? [] });
 
-/** Adds a review's findings to the backlog. Returns which were new. */
+/** The best match for a title among findings (same key first, then the most similar at 55% or more). */
+const bestMatch = (list: Finding[], title: string) => {
+  const key = keyOf(title);
+  return list.find((o) => o.key === key) ?? list.filter((o) => similar(o.title, title) >= 0.55).sort((a, b) => similar(b.title, title) - similar(a.title, title))[0];
+};
+
+/**
+ * Adds a review's findings to the backlog. Returns which were new. A finding J marked won't-fix stays won't-fix when
+ * a review reports it again (its seen count and screenshots still update, so it's visible that it keeps happening);
+ * only a report of it as a blocker reopens it.
+ */
 export function absorb(product: string, run: string, scenario: string, findings: any[]) {
   const now = Date.now();
   const open = (db.prepare(`SELECT * FROM findings WHERE product = ? AND status IN ('open', 'fixing')`).all(product) as any[]).map(toFinding);
+  const wontfix = (db.prepare(`SELECT * FROM findings WHERE product = ? AND status = 'wontfix'`).all(product) as any[]).map(toFinding);
   const added: string[] = [];
   const updated: string[] = [];
   for (const f of findings) {
     if (!f?.title) continue;
     const key = keyOf(f.title);
-    const match = open.find((o) => o.key === key) ?? open.filter((o) => similar(o.title, f.title) >= 0.55).sort((a, b) => similar(b.title, f.title) - similar(a.title, f.title))[0];
+    const live = bestMatch(open, f.title);
+    const dropped = live ? null : bestMatch(wontfix, f.title);
+    const match = live ?? dropped;
     if (match) {
       // Seen again (counted once per run, however many scenarios hit it).
       db.prepare(`UPDATE findings SET seen = seen + (CASE WHEN last_run = ? THEN 0 ELSE 1 END), last_seen = ?, last_run = ?, shots = ?, severity = ?, detail = ?, fix = ?, scenario = ? WHERE id = ?`)
         .run(run, now, run, J([...(f.shots ?? []), ...match.shots].slice(0, 6)), worse(match.severity, f.severity), f.detail ?? match.detail, f.fix ?? match.fix, scenario, match.id);
+      if (dropped && f.severity === 'blocker') {
+        db.prepare(`UPDATE findings SET status = 'open', note = ?, updated = ? WHERE id = ?`).run(`Reopened ${new Date(now).toISOString().slice(0, 10)}: reported again as a blocker (it was won't-fix).`, now, match.id);
+        open.push(toFinding(db.prepare('SELECT * FROM findings WHERE id = ?').get(match.id)));
+        wontfix.splice(wontfix.indexOf(match), 1);
+      }
       updated.push(match.id);
     } else {
       const id = newId('f');
@@ -48,6 +66,28 @@ export function absorb(product: string, run: string, scenario: string, findings:
     }
   }
   return { added, updated };
+}
+
+/**
+ * Repair: open findings created after J marked a matching finding won't-fix (before absorb knew to match those) are
+ * folded into it: marked won't-fix with a note, and the won't-fix one's seen count goes up. Blockers are left open.
+ * Idempotent; Studio runs it at startup.
+ */
+export function foldIntoWontfix() {
+  const products = (db.prepare(`SELECT DISTINCT product FROM findings WHERE status = 'wontfix'`).all() as any[]).map((r) => r.product as string);
+  let folded = 0;
+  for (const product of products) {
+    const wontfix = (db.prepare(`SELECT * FROM findings WHERE product = ? AND status = 'wontfix'`).all(product) as any[]).map(toFinding);
+    const open = (db.prepare(`SELECT * FROM findings WHERE product = ? AND status = 'open' AND severity != 'blocker'`).all(product) as any[]).map(toFinding);
+    for (const o of open) {
+      const w = bestMatch(wontfix, o.title);
+      if (!w || o.first_seen <= (w.updated ?? 0)) continue;
+      db.prepare(`UPDATE findings SET status = 'wontfix', note = ?, updated = ? WHERE id = ?`).run(`Same as ${w.id} (won't fix): reported again after it was marked won't-fix.`, Date.now(), o.id);
+      db.prepare(`UPDATE findings SET seen = seen + ?, last_seen = MAX(last_seen, ?) WHERE id = ?`).run(o.seen, o.last_seen, w.id);
+      folded++;
+    }
+  }
+  return folded;
 }
 
 const RANK: Record<string, number> = { blocker: 4, bug: 3, polish: 2, idea: 1 };

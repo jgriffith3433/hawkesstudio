@@ -71,7 +71,7 @@ Hawkes Gen and Hawkes Studio are private GitHub repos (`jgriffith3433/hawkesgen`
      when every check passed. A pending commit waits; a failing one is logged once and never deployed. Only the newest
      commit on main counts: fix forward, and the fix deploys when its CI passes.
    - It waits while a restart would interrupt something: a Studio run, an agent fix, a Talk answer, or a running Gen
-     job (a Unity build, a GPU job, a playtest). After `HAWKES_PULL_MAX_WAIT_MIN` (180) it deploys anyway.
+     job (a Unity build, a GPU job, a playtest). After `HAWKES_PULL_MAX_WAIT_MIN` (720, 12 hours: a restart would stop agents mid-change) it deploys anyway.
    - `git merge --ff-only`; `npm ci` only if `package.json` or `package-lock.json` changed (Gen: also Playwright's
      Chromium); then it restarts that service and checks its health for 90 seconds. If it doesn't come up, it goes
      back to the previous commit, restarts again, and doesn't retry that commit.

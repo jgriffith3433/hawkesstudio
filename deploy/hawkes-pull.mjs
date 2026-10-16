@@ -8,7 +8,7 @@
 //   - it deploys only a commit whose CI passed (GitHub check runs, with the server's token in /run/hawkes/github.env);
 //     a failing commit is logged once and never deployed; a pending one is looked at again a minute later
 //   - it waits (looking again every 5 minutes) while Studio is busy (a run, an agent fix, a Talk answer) or Gen is running a job (a Unity build, a GPU
-//     job, a playtest), up to HAWKES_PULL_MAX_WAIT_MIN (default 180), then deploys anyway
+//     job, a playtest), up to HAWKES_PULL_MAX_WAIT_MIN (default 720), then deploys anyway
 //   - git merge --ff-only (refuses if the server's checkout has edits to tracked files, or main was rewritten)
 //   - npm ci only when package.json or package-lock.json changed (Gen: also Playwright's Chromium)
 //   - restarts the service and checks its health; if it doesn't come up, it goes back to the previous commit and
@@ -24,7 +24,9 @@ import { execFileSync } from 'node:child_process';
 
 const ROOT = process.env.HAWKES_ROOT ?? '/srv/hawkes';
 const OWNER = process.env.HAWKES_GITHUB_OWNER ?? 'jgriffith3433';
-const MAX_WAIT_MIN = Number(process.env.HAWKES_PULL_MAX_WAIT_MIN ?? 180);
+// How long a deploy waits for a run, agent fix or Gen job before restarting anyway. Agents and runs have their own time
+// limits, so this is long: a restart stops agents mid-change (J may have a dozen queued).
+const MAX_WAIT_MIN = Number(process.env.HAWKES_PULL_MAX_WAIT_MIN ?? 720);
 const STATE = process.env.HAWKES_PULL_STATE ?? '/var/lib/hawkes/pull.json';
 const LOG = path.join(ROOT, 'hawkesstudio', '.data', 'self-deploys.jsonl');
 const DRY = process.argv.includes('--dry-run');
