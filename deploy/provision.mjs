@@ -1,6 +1,7 @@
 // Creates the Hawkes control server on AWS (idempotent: run again to finish or check).
 //
 //   node deploy/provision.mjs            create what's missing, print the state
+//   node deploy/provision.mjs --role     only update the role's policy (e.g. after adding a permission below)
 //
 // What it makes (all tagged Project=hawkes-cloud):
 //   - IAM role hawkes/hawkes-control + instance profile: the server's AWS access (fleet, build server, secrets,
@@ -35,6 +36,8 @@ const ROLE_POLICY = {
     { Effect: 'Allow', Action: 'secretsmanager:GetSecretValue', Resource: `arn:aws:secretsmanager:*:${ACCOUNT}:secret:hawkes/*` },
     { Effect: 'Allow', Action: 's3:*', Resource: ['arn:aws:s3:::hawkes-*', 'arn:aws:s3:::hawkes-*/*'] },
     { Effect: 'Allow', Action: ['logs:CreateLogGroup', 'logs:CreateLogStream', 'logs:PutLogEvents', 'logs:DescribeLogStreams'], Resource: '*' },
+    // Studio's Costs tab (src/costs.ts): reading the bill and its forecast. Read-only; each request costs $0.01.
+    { Effect: 'Allow', Action: ['ce:GetCostAndUsage', 'ce:GetCostForecast'], Resource: '*' },
   ],
 };
 
@@ -156,7 +159,7 @@ async function main() {
   log(JSON.stringify(s, null, 2));
 }
 
-main().catch((e) => {
+(process.argv.includes('--role') ? ensureRole().then(() => log('updated the policy of IAM role hawkes/hawkes-control')) : main()).catch((e) => {
   console.error(`[deploy] ${e.name}: ${e.message}`);
   process.exit(1);
 });

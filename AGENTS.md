@@ -93,6 +93,7 @@ the service detached; restart it after changing `src/`. The MCP server (`bin/stu
 - `studio_deploy_plan`, `studio_deploy` (also `action: merge-main | beta`), `studio_rollback`
 - `studio_dev_open`, `studio_dev_status` (also beta vs live), `studio_dev_stop`, `studio_dev_resolve`
 - `studio_roadmap`, `studio_roadmap_edit`, `studio_scout`, `studio_ready`, `studio_comments`, `studio_pm` (the PM loop)
+- `studio_costs` (what the studio costs: AWS, generation, Claude, per product, idle money; the budget)
 
 **Talk as J's PM** (`src/roadmap.ts`, `src/pm.ts`, `src/acceptance.ts`, `src/scout.ts`; docs/daily.md, "Running the
 studio with Talk"): J sets direction in Talk, Talk keeps the roadmap (items with acceptance criteria, tasks under them),
@@ -133,8 +134,9 @@ the gate (`gate()` in acceptance.ts) and "verified only on beta" intact when cha
 | `src/acceptance.ts` | Acceptance criteria judged from a playtest (yes/no/unclear with evidence) and the merge gate |
 | `src/scout.ts` | Scouts: a read-only Claude Code investigation in a worktree, reported back to Talk |
 | `dashboard/roadmap.js` | The Roadmap tab (items, tasks, threads, questions, PM switch, decision log) and Ready to test |
+| `src/costs.ts`, `src/aws.ts`, `dashboard/costs.js` | What the studio costs (the Costs tab, `studio_costs`, the brief's cost line): AWS from Cost Explorer (else an estimate), idle money from EC2 Describe* (read-only), Hawkes Gen usage, Claude usage (Max plan: not billed), per product; the budget and the hourly check that tells J's phone only when something looks wrong (docs/cloud.md, "Costs") |
 | `src/activity.ts`, `dashboard/activity.js` | The Activity drawer (`GET /api/activity`): agents, runs and their steps, Gen jobs, Talk answers in progress |
-| `dashboard/` | Today (cards per product), Ready to test, Roadmap, Report, Playtests (`playtests.js`: every playtest with video, screenshots, timeline, review, visual changes, the previous run side by side, trends), Backlog, Runs |
+| `dashboard/` | Today (cards per product), Ready to test, Roadmap, Report, Costs, Playtests (`playtests.js`: every playtest with video, screenshots, timeline, review, visual changes, the previous run side by side, trends), Backlog, Runs |
 | `clients/web/hawkes-playtest.js` (+ `.d.ts`) | The contract helper web games copy |
 | `clients/unity/com.hawkes.playtest` | The contract for Unity games (runtime package + WebGL bridge) |
 | `.data/` | `studio.db` (runs, steps, findings), logs, local server state (gitignored) |

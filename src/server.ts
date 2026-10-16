@@ -314,6 +314,15 @@ const server = http.createServer(async (req, res) => {
       return send(res, ok ? 200 : 502, ok ? { ok } : { error: 'Not sent (notifications off, or ntfy unreachable: see the Studio log)' });
     }
     // The month's AWS cost line (one Cost Explorer request, $0.01), and the brief again for a finished daily run.
+    // Costs (costs.ts): AWS (Cost Explorer or an estimate), idle money, Claude usage, Hawkes Gen, per product.
+    if (route === '/api/costs' && method === 'GET') {
+      const { costReport, costMarkdown } = await import('./costs.ts');
+      const r = await costReport(q('period') ?? 'month', { force: q('refresh') === '1' });
+      return send(res, 200, q('format') === 'md' ? { markdown: costMarkdown(r) } : r);
+    }
+    if (route === '/api/costs/settings' && method === 'GET') return send(res, 200, (await import('./costs.ts')).costSettings());
+    if (route === '/api/costs/settings' && method === 'POST') return send(res, 200, (await import('./costs.ts')).saveCostSettings(await readJson(req)));
+    if (route === '/api/costs/check' && method === 'POST') return send(res, 200, { sent: await (await import('./costs.ts')).checkCosts() });
     if (route === '/api/brief/cost' && method === 'GET') return send(res, 200, { line: await (await import('./brief.ts')).awsCostLine() });
     if (route === '/api/brief' && method === 'POST') {
       const b = await readJson(req);
@@ -434,6 +443,8 @@ server.listen(PORT, '127.0.0.1', () => {
   startDevService();
   // Results of work Talk started go back into its conversation.
   startFollowups();
+  // Costs: an hourly look for a forecast over budget or a server left running (phone only then).
+  void import('./costs.ts').then(({ startCostWatch }) => startCostWatch());
   // The PM loop (pm.ts): on the server, or on J's PC with STUDIO_PM=on.
   if ((process.platform !== 'win32' && process.env.STUDIO_SERVER === '1') || process.env.STUDIO_PM === 'on') void import('./pm.ts').then(({ startPm }) => startPm());
   // Findings recreated after J marked a matching one won't-fix (before the backlog matched those) go back to it.

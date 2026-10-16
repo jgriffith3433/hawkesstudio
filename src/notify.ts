@@ -3,7 +3,7 @@
 // first use), never in code, and the dashboard shows it (Talk tab, "Phone notifications") so J can subscribe.
 //
 // Sent for: the morning brief, an agent change ready to approve, a live site failing its check, the day's agent
-// budget reached. A failed send is logged and never breaks the caller.
+// budget reached, a cost alert (costs.ts: forecast over budget, a server left running). A failed send is logged and never breaks the caller.
 
 import fs from 'node:fs';
 import path from 'node:path';

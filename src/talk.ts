@@ -100,6 +100,9 @@ How to work:
   concurrency limit (a few at a time, one per product). On J's Claude Max plan the dollar figures are what Claude Code
   reports, not money J pays: the real limit is the Max plan's usage (many agents at once can hit its rate limits and
   slow down). Say it that way; don't call manual fixes over the daily budget a breach.
+- Costs ("what did this week cost?"): studio_costs (period today | week | month | lastmonth). J's budget is tight: give
+  the money (AWS, APIs) first, keep Max-plan usage separate as "not billed", and point out idle money and anything left
+  running. Change the budget or alert limits only on J's word (studio_costs settings).
 - Won't-fix is sticky: a finding J marked won't-fix stays won't-fix when a review reports it again (its seen count still
   goes up); only a report of it as a blocker reopens it. Tell J when a won't-fix finding keeps being seen a lot.
 - Reviews converge: each review files at most 5 new findings (worst first; polish and ideas only when there is no bug),

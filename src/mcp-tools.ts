@@ -286,6 +286,19 @@ export function studioMcp({ studio, waitRun }: Client = { studio: defaultStudio,
       run: async ({ subject, text, by }) => (text ? studio('/api/comments', { method: 'POST', body: { subject, text, by } }) : (await studio(`/api/comments?subject=${encodeURIComponent(subject)}`)).comments),
     },
     {
+      name: 'studio_costs',
+      description: "What the studio costs, as Markdown: AWS (Cost Explorer when allowed, else an estimate) by part (control server, build server, playtester, GPU servers, disks, S3, DNS), this month's forecast against J's budget, Hawkes Gen's usage (GPU hours, ElevenLabs, Claude API), Claude Code usage (on J's Max plan: usage, not billed), per product, servers left running and idle money (stopped servers' disks, unattached disks, unused IPs, snapshots). Use it for \"what did this week cost?\". settings: change the budget or alert limits (only on J's word).",
+      inputSchema: obj({
+        period: str('today | week (last 7 days) | month (this month so far, default) | lastmonth | <n>d'),
+        refresh: bool('Fetch fresh Cost Explorer numbers (each request costs $0.01; cached ones under an hour old are reused)'),
+        settings: { type: 'object', description: "Only on J's word: { budget, alerts, gpuHours, builderHours, playtesterHours, subscriptions: { name: USD per month } }" },
+      }),
+      run: async ({ period, refresh, settings }) => {
+        if (settings) return studio('/api/costs/settings', { method: 'POST', body: settings });
+        return (await studio(`/api/costs?${new URLSearchParams({ period: period ?? 'month', format: 'md', ...(refresh ? { refresh: '1' } : {}) })}`)).markdown;
+      },
+    },
+    {
       name: 'studio_pm',
       description: 'The PM loop (Talk as J\'s PM). actions: status (settings, limits, what is waiting for review, open questions, the decision log); merge { change, why } (merge a ready agent change into beta yourself: only when delegated merges are on, never Studio/Gen, refused unless it passes its gate: playtested, not broken, no criterion failed); revise { change, note } (send it back with specific notes; after the last try J is asked); answer { question, answer } (answer an agent\'s question, which resumes its session, or record J\'s answer to a decision: by "J" when it is J\'s words); ask_j { text, options[], subject, product } (one clear question only J can answer: direction, money, still failing after 3 tries, anything live; also question: an agent question to pass on); triage { finding, triage: wontfix | duplicate | link | reopen | idea, note, of (duplicate of), item (link to) }; undo { decision } (take back a merge, won\'t-fix, start, link or settings change); settings { settings: { enabled, delegatedMerges, maxStartsPerDay, maxConcurrent, maxTries, fixBugs, dailyHour } } (only on J\'s word); tick (run the loop now). Every action is logged.',
       inputSchema: obj({

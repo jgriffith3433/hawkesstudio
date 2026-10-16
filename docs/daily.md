@@ -27,7 +27,7 @@ testing.
    to the backlog; polish and ideas go to the ideas list.
 8. **Report:** `reports/<date>-<run>.md` (and the dashboard's Report tab).
 9. **Morning brief** (`src/brief.ts`, on the server): a Talk conversation "Morning brief: <date>" where Claude sums the
-   report up in five bullets (on Mondays plus the month's AWS cost: Cost Explorer if allowed, else an estimate), and a
+   report up in five bullets plus a cost line (AWS this month, the forecast against J's budget, idle money; `src/costs.ts`), and a
    phone notification that opens it (`/?conversation=<id>#talk`). `POST /api/brief` makes it again for the last run.
 
 **Phone notifications** (`src/notify.ts`, ntfy.sh, free): the morning brief, an agent change ready to approve, a live

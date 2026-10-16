@@ -20,6 +20,7 @@
       <button data-tab="backlog">Backlog</button>
       <button data-tab="changes">Changes</button>
       <button data-tab="runs">Runs</button>
+      <button data-tab="costs">Costs</button>
     </nav>
     <div class="status" id="status"></div>
     <button id="actBtn" class="act-btn" title="Everything running in the background: agents, runs, Hawkes Gen jobs">Activity <span class="act-count zero" id="actCount">0</span></button>
@@ -94,6 +95,16 @@
       <div class="bar"><select id="chStatus"><option value="queued,working,verifying,revising,ready">Active</option><option value="ready">Ready for you</option><option value="merged">Merged</option><option value="failed,closed">Failed or closed</option><option value="">All</option></select> <span id="chInfo" class="meta"></span></div>
       <div id="chList"></div>
     </section>
+    <section id="costs" class="tab">
+      <div class="bar">
+        <select id="coPeriod"><option value="month">This month</option><option value="week">Last 7 days</option><option value="today">Today</option><option value="lastmonth">Last month</option><option value="30d">Last 30 days</option></select>
+        <button class="small" id="coRefresh" title="Fetch fresh Cost Explorer numbers ($0.01 per request; anything under an hour old is reused)">Refresh</button>
+        <button class="small" id="coSettings">Budget and alerts…</button>
+        <button class="small" id="coAlerts" title="Phone alerts: forecast over budget, a server left running, charges outside the US regions">Alerts on/off</button>
+        <span id="coBudget" class="meta"></span>
+      </div>
+      <div id="costsBody"></div>
+    </section>
     <section id="runs" class="tab">
       <div id="runList"></div>
       <div id="runDetail"></div>
@@ -105,5 +116,6 @@
   <script src="playtests.js"></script>
   <script src="activity.js"></script>
   <script src="roadmap.js"></script>
+  <script src="costs.js"></script>
 </body>
 </html>

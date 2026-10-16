@@ -334,6 +334,7 @@ async function refresh() {
     if (tab === 'backlog') await loadBacklog();
     if (tab === 'runs') await loadRuns();
     if (tab === 'changes') await loadChanges();
+    if (tab === 'costs' && window.loadCosts) await window.loadCosts();
     if (tab === 'talk' && window.loadTalk && !window.__talkLoaded) { window.__talkLoaded = true; await window.loadTalk(); }
   } catch (e) {
     $('#status').innerHTML = `<span><span class="dot bad"></span>${esc(e.message)}</span>`;

@@ -300,6 +300,35 @@ commits saves to beta. How J uses it: `docs/daily.md`, "Developing on beta". The
 
 ## Costs (kept low: J's budget is tight)
 
+**Where to see them:** Studio's **Costs** tab (`src/costs.ts`, `GET /api/costs?period=month|week|today|lastmonth|<n>d`),
+Talk (`studio_costs`: "what did this week cost?"), and a line at the end of every morning brief. It shows:
+- **AWS:** this month so far, the forecast, last month, per day, and by part (control server, build server, playtester,
+  GPU servers, disks, snapshots, IPs, S3, DNS…, from Cost Explorer's usage types) and by service. Without Cost Explorer
+  access it shows an estimate (the fixed table below prorated, plus the GPU and build-server time Hawkes Gen recorded).
+- **Idle money** (EC2 Describe* in `HAWKES_REGIONS`, free): stopped servers' disks, unattached disks, Elastic IPs
+  attached to nothing, snapshots, and servers running longer than they should. Studio only reads AWS; deleting is J's call.
+- **Generation:** Hawkes Gen's usage per provider (GPU hours, build-server hours, ElevenLabs characters, Claude API).
+  GPU and build-server time are part of the AWS bill; Claude API and ElevenLabs are separate money.
+- **Claude:** Talk, agents and scouts run on J's Max plan: what Claude Code reports is usage at API prices, **not
+  billed**. Claude through the API (Gen's reviews and llm tools, or Claude Code without the subscription token) is money.
+- **Per product:** Gen's usage by project, playtester time from playtest jobs ($0.53/h while a game plays), agents'
+  Claude usage. The rest (control server, disks, S3, DNS, servers booting and idling) is shared.
+- **Subscriptions** Studio can't see (Claude Max, ElevenLabs): J enters them under "Budget and alerts…" and they show
+  beside the totals.
+
+**Budget and alerts** (`.data/costs.json`, the tab's "Budget and alerts…", or `studio_costs settings` on J's word): a
+monthly budget for AWS plus pay-per-use APIs (default $150). An hourly check on the server sends a phone notification
+only when something looks wrong, once each: the month's forecast passes the budget (again at 125%), a GPU server runs
+over 3 h, the build server over 2 h, the playtester over 3 h (each settable), or AWS charges appear outside the US
+regions.
+
+**Cost Explorer access:** the control server's role needs `ce:GetCostAndUsage` and `ce:GetCostForecast` (in
+`deploy/provision.mjs`'s role policy since 2026-10-16). J applies it from his PC with
+`node deploy/provision.mjs --role` (it re-applies the role's inline policy). Each request costs $0.01; Studio caches
+results for about a day (three requests per refresh, a forced Refresh reuses anything under an hour old), so about $1 a
+month. The tab shows how many requests ran this month.
+
+
 Fixed, per month (since 2026-10-16):
 
 | Item | Cost |
