@@ -4,7 +4,7 @@
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
-import { PORT, paths, loadProducts, getProduct, StudioError, localUrl } from './config.ts';
+import { PORT, DATA, paths, loadProducts, getProduct, StudioError, localUrl } from './config.ts';
 import { db, rowToStep } from './db.ts';
 import { startRun, startPartial, getRun, listRuns, activeRun, lastStep, nameOf, type RunOptions } from './pipeline.ts';
 import { listFindings, getFinding, updateFinding } from './backlog.ts';
@@ -273,6 +273,26 @@ const server = http.createServer(async (req, res) => {
     // A push to beta or main, from the product repo's GitHub Actions workflow (hawkes-studio.yml). The web server lets
     // this path through without the login: the caller proves itself with GitHub's signed OIDC token (J's repos).
     // beta: the beta site rebuilds (a Unity game builds). main: going live (golive.ts publishes a Unity game's build).
+    // Studio and Gen deploy themselves: their CI's last job ("Tell the server", on main after the tests pass) calls this
+    // with GitHub's OIDC token; Studio touches .data/pull-now and the hawkes-pull.path watcher runs deploy/hawkes-pull.mjs,
+    // which still checks CI itself and waits while something is running. No polling.
+    if (route === '/api/hooks/self-deploy' && method === 'POST') {
+      const token = /^Bearer\s+(\S+)$/i.exec(String(req.headers.authorization ?? ''))?.[1];
+      if (!token) return send(res, 401, { error: 'a GitHub Actions OIDC token is required' });
+      const { verifyGitHubOidc } = await import('./github-oidc.ts');
+      let claims: Record<string, any>;
+      try {
+        claims = await verifyGitHubOidc(token, 'https://studio.hawkesgen.com');
+      } catch (e: any) {
+        return send(res, 401, { error: `token rejected: ${e.message}` });
+      }
+      const repo = String(claims.repository).toLowerCase();
+      if (!['jgriffith3433/hawkesstudio', 'jgriffith3433/hawkesgen'].includes(repo)) return send(res, 403, { error: `${claims.repository} doesn't deploy this server` });
+      if (claims.ref !== 'refs/heads/main') return send(res, 403, { error: `only main deploys (got ${claims.ref})` });
+      fs.writeFileSync(path.join(DATA, 'pull-now'), `${new Date().toISOString()} ${repo} ${String(claims.sha ?? '').slice(0, 7)}
+`);
+      return send(res, 202, { ok: true, note: 'the server pulls it now (after its own CI check), unless a run is going' });
+    }
     if ((route === '/api/hooks/github' || route === '/api/hooks/github-beta') && method === 'POST') {
       const token = /^Bearer\s+(\S+)$/i.exec(String(req.headers.authorization ?? ''))?.[1];
       if (!token) return send(res, 401, { error: 'a GitHub Actions OIDC token is required' });

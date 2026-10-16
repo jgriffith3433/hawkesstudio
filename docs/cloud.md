@@ -61,7 +61,11 @@ Hawkes Gen and Hawkes Studio are private GitHub repos (`jgriffith3433/hawkesgen`
 1. **CI** (`.github/workflows/ci.yml` in each repo) runs on every push and pull request: Node 24, `npm ci`,
    `npm run typecheck`, `npm test`. Tests that need something CI doesn't have skip themselves (Gen: the ComfyUI
    template cache and `.venv`; Studio: a running Hawkes Gen).
-2. **The server pulls.** `hawkes-pull.timer` runs `hawkesstudio/deploy/hawkes-pull.mjs` every 2 minutes (as root).
+2. **CI tells the server; the server pulls.** No polling: CI's last job, "Tell the server" (on main, after the tests
+   pass), calls `POST studio.hawkesgen.com/api/hooks/self-deploy` with GitHub's OIDC token (this repo, main). Studio
+   touches `.data/pull-now`, and the `hawkes-pull.path` watcher runs `hawkesstudio/deploy/hawkes-pull.mjs` (as root;
+   also once at boot). The only timer is a retry it schedules for itself while a deploy waits (1 minute for CI, 5
+   minutes for a run).
    For each repo, Gen first, when `origin/main` has a new commit:
    - It asks GitHub for the commit's check runs (with the server's token, `/run/hawkes/github.env`). It deploys only
      when every check passed. A pending commit waits; a failing one is logged once and never deployed. Only the newest

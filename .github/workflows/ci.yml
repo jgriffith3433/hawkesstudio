@@ -27,3 +27,22 @@ jobs:
       - run: npm test
         env:
           HAWKESGEN_URL: http://127.0.0.1:8790
+
+  # On main, once the tests pass: tell the control server to deploy this commit (no polling). Studio checks GitHub's
+  # OIDC token (this repo, main) and the server pulls it itself (hawkesstudio/deploy/hawkes-pull.mjs). The server
+  # ignores this job when it checks CI, since this job is what starts the check.
+  tell-server:
+    name: Tell the server
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Tell the control server to deploy this commit
+        run: |
+          token=$(curl -sSf -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=https://studio.hawkesgen.com" | jq -r .value)
+          curl -sS --fail-with-body --retry 3 --retry-delay 10 --retry-all-errors \
+            -X POST -H "Authorization: Bearer $token" https://studio.hawkesgen.com/api/hooks/self-deploy

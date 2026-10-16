@@ -1,5 +1,5 @@
 // Sets up Hawkes Gen and Hawkes Studio on the control server (after provision.mjs). Code changes don't need it: the
-// server deploys itself from GitHub main after CI passes (hawkes-pull.timer, deploy/hawkes-pull.mjs; docs/cloud.md).
+// server deploys itself from GitHub main after CI passes (CI tells it; hawkes-pull.path, deploy/hawkes-pull.mjs; docs/cloud.md).
 // Run it for what lives outside the repos: units, Caddy, DNS, keys, packages, and a new server.
 //
 //   node deploy/deploy.mjs                git checkouts of main (clone or fast-forward), packages, keys, units, Caddy
@@ -59,7 +59,7 @@ async function waitReady() {
 }
 
 // The code comes from GitHub main, never from this PC's folders (they hold other sessions' half-finished work).
-// After this first setup, the server deploys itself on every push to main (hawkes-pull.timer, deploy/hawkes-pull.mjs).
+// After this first setup, the server deploys itself on every push to main (CI tells it; hawkes-pull.path, deploy/hawkes-pull.mjs).
 const CODE_REPOS = ['hawkesgen', 'hawkesstudio'];
 const GITHUB_OWNER = 'jgriffith3433';
 
@@ -304,17 +304,22 @@ Wants=network-online.target
 [Service]
 Type=oneshot
 ExecStart=/usr/bin/node /srv/hawkes/hawkesstudio/deploy/hawkes-pull.mjs
-TimeoutStartSec=30min`),
-    unit('hawkes-pull.timer', `
-[Unit]
-Description=Hawkes: check GitHub main for Gen and Studio every 2 minutes
-
-[Timer]
-OnBootSec=2min
-OnUnitInactiveSec=2min
+TimeoutStartSec=30min
 
 [Install]
-WantedBy=timers.target`),
+# Once at boot (anything pushed while the server was off); after that, only when CI says so (hawkes-pull.path).
+WantedBy=multi-user.target`),
+    // No polling: CI's "Tell the server" job -> Studio (POST /api/hooks/self-deploy) touches .data/pull-now -> this.
+    unit('hawkes-pull.path', `
+[Unit]
+Description=Hawkes: deploy Gen and Studio when their CI on main says so
+
+[Path]
+PathModified=/srv/hawkes/hawkesstudio/.data/pull-now
+Unit=hawkes-pull.service
+
+[Install]
+WantedBy=paths.target`),
   ];
   for (const u of units) {
     const local = path.join(os.tmpdir(), u.name);
@@ -323,7 +328,7 @@ WantedBy=timers.target`),
     fs.rmSync(local);
     await ssh(`sudo mv /tmp/${u.name} /etc/systemd/system/${u.name}`, { quiet: true });
   }
-  await ssh('sudo systemctl daemon-reload && sudo systemctl enable --now hawkes-secrets hawkes-gen hawkes-studio hawkes-daily.timer hawkes-pull.timer && sudo systemctl restart hawkes-secrets hawkes-gen && sleep 6 && sudo systemctl restart hawkes-studio && echo services-ok');
+  await ssh('sudo systemctl daemon-reload && sudo systemctl enable --now hawkes-secrets hawkes-gen hawkes-studio hawkes-daily.timer hawkes-pull.service hawkes-pull.path && (sudo systemctl disable --now hawkes-pull.timer 2>/dev/null; sudo rm -f /etc/systemd/system/hawkes-pull.timer; true) && sudo systemctl restart hawkes-secrets hawkes-gen && sleep 6 && sudo systemctl restart hawkes-studio && echo services-ok');
 }
 
 /** studio.<domain> and gen.<domain> point at the server's Elastic IP (Route 53, the domain's hosted zone). */
@@ -449,9 +454,9 @@ studio.${domain} {
 		header_regexp Authorization ^Bearer\\s+hs_
 	}
 	@mcpurl path_regexp ^/mcp/hs_[\\w-]+/?$
-	# Pushes to beta and main from the product repos' GitHub Actions (hawkes-studio.yml): no login; Studio checks
+	# Pushes from the product repos (hawkes-studio.yml) and CI on main of hawkesstudio/hawkesgen: no login; Studio checks
 	# GitHub's signed OIDC token itself (src/github-oidc.ts).
-	@githook path /api/hooks/github /api/hooks/github-beta
+	@githook path /api/hooks/github /api/hooks/github-beta /api/hooks/self-deploy
 	handle @githook {
 		reverse_proxy 127.0.0.1:8791
 	}

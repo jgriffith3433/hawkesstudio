@@ -1,11 +1,13 @@
 #!/usr/bin/env node
-// On the control server: deploys Hawkes Gen and Hawkes Studio from GitHub main. Run by hawkes-pull.timer (every 2
-// minutes) as root; installed by deploy/deploy.mjs. Nothing reaches in from GitHub: the server pulls.
+// On the control server: deploys Hawkes Gen and Hawkes Studio from GitHub main, as root; installed by
+// deploy/deploy.mjs. No polling: each repo's CI ends with a "Tell the server" job (on main, after the tests pass) that
+// calls Studio (POST /api/hooks/self-deploy, GitHub's OIDC token), Studio touches .data/pull-now, and the
+// hawkes-pull.path watcher starts this. Nothing reaches in from GitHub but that signal: the server pulls itself.
 //
 // For each repo (Gen first), when origin/main has a new commit:
 //   - it deploys only a commit whose CI passed (GitHub check runs, with the server's token in /run/hawkes/github.env);
-//     a failing commit is logged once and never deployed; a pending one waits for the next tick
-//   - it waits while Studio is busy (a run, an agent fix, a Talk answer) or Gen is running a job (a Unity build, a GPU
+//     a failing commit is logged once and never deployed; a pending one is looked at again a minute later
+//   - it waits (looking again every 5 minutes) while Studio is busy (a run, an agent fix, a Talk answer) or Gen is running a job (a Unity build, a GPU
 //     job, a playtest), up to HAWKES_PULL_MAX_WAIT_MIN (default 180), then deploys anyway
 //   - git merge --ff-only (refuses if the server's checkout has edits to tracked files, or main was rewritten)
 //   - npm ci only when package.json or package-lock.json changed (Gen: also Playwright's Chromium)
@@ -74,7 +76,8 @@ async function ciState(repo, sha, token) {
   try {
     const r = await fetch(`https://api.github.com/repos/${OWNER}/${repo}/commits/${sha}/check-runs?per_page=100`, { headers, signal: AbortSignal.timeout(20_000) });
     if (!r.ok) return { state: 'error', detail: `GitHub check runs: HTTP ${r.status}` };
-    const runs = (await r.json()).check_runs ?? [];
+    // "Tell the server" is CI's last job: it is what started this run, so it is still running; it doesn't count.
+    const runs = ((await r.json()).check_runs ?? []).filter((c) => c.name !== 'Tell the server');
     if (!runs.length) return { state: 'none', detail: 'no CI check runs for this commit (yet)' };
     if (runs.some((c) => c.status !== 'completed')) return { state: 'pending', detail: `${runs.filter((c) => c.status !== 'completed').length} check(s) still running` };
     const bad = runs.filter((c) => !['success', 'skipped', 'neutral'].includes(c.conclusion));
@@ -82,6 +85,20 @@ async function ciState(repo, sha, token) {
     return { state: 'success', detail: runs.map((c) => c.name).join(', ') };
   } catch (e) {
     return { state: 'error', detail: e.message };
+  }
+}
+
+/**
+ * Runs this script again later (systemd-run, one pending retry at a time). Deploys are triggered by CI ("Tell the
+ * server" -> Studio -> the hawkes-pull.path watcher), so this is the only timer: while a deploy has to wait.
+ */
+function retryLater(seconds, why) {
+  if (DRY) return;
+  try {
+    execFileSync('systemd-run', ['--on-active', String(seconds), '--unit', 'hawkes-pull-retry', '--collect', '--quiet', 'systemctl', 'start', 'hawkes-pull.service'], { stdio: 'ignore' });
+    say(`will look again in ${seconds} s (${why})`);
+  } catch {
+    // A retry is already scheduled.
   }
 }
 
@@ -162,7 +179,7 @@ for (const r of REPOS) {
   }
   const ci = await ciState(r.repo, tip, token);
   if (ci.state === 'failure') { once('refused', { outcome: 'refused', detail: `CI failed: ${ci.detail}` }); continue; }
-  if (ci.state !== 'success') { say(`[${r.repo}] ${tip.slice(0, 7)} waits for CI: ${ci.detail}`); continue; }
+  if (ci.state !== 'success') { say(`[${r.repo}] ${tip.slice(0, 7)} waits for CI: ${ci.detail}`); retryLater(60, 'waiting for CI'); continue; }
   todo.push({ ...r, dir, head, tip, subject: git(dir, 'log', '-1', '--format=%s', tip) });
 }
 
@@ -177,6 +194,7 @@ if (todo.length) {
       if (!s.waitingSince) { s.waitingSince = new Date().toISOString(); record({ repo: t.repo, from: t.head, to: t.tip, outcome: 'waiting', detail: why }); }
     }
     say(`waiting (${Math.round(waited)} of ${MAX_WAIT_MIN} min): ${why}`);
+    retryLater(5 * 60, 'waiting for a run to finish');
     todo.length = 0;
   } else if (why) {
     say(`still busy after ${MAX_WAIT_MIN} minutes (${why}); deploying anyway`);

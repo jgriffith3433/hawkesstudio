@@ -80,7 +80,7 @@ Hawkes Gen and Hawkes Studio run on an AWS control server: **https://studio.hawk
   pull request into `beta` (the server keeps product source repos on beta).
 - **Runbook:** `hawkesstudio/docs/cloud.md` (deploys, secrets, logs, costs).
 - **Gen and Studio themselves** are private repos (`jgriffith3433/hawkesgen`, `jgriffith3433/hawkesstudio`) with no beta
-  lane: a push to their `main` deploys to the cloud once CI passes (the server pulls every 2 minutes). Push only with
+  lane: a push to their `main` deploys to the cloud once CI passes (CI's last job tells the server, which pulls it within seconds). Push only with
   J's OK; roll back with `git revert` + push.
 - **The 5 AM daily trial** runs there and plays beta (and the live sites). Agents then open pull requests into `beta`
   for the worst new bugs; J approves them in Studio's Changes tab, which merges them into beta (not live). Going live is

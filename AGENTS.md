@@ -46,7 +46,7 @@ Do not commit unless asked. **Never go live or roll back without J's exact words
 
 **This repo itself** (`jgriffith3433/hawkesstudio`, like `hawkesgen`) deploys to the cloud on every push to `main`: CI
 (`.github/workflows/ci.yml`) runs typecheck and tests, and the control server pulls a passing commit
-(`deploy/hawkes-pull.mjs`, every 2 minutes, waiting out runs and agent fixes). Push to main only with J's OK, after
+(`deploy/hawkes-pull.mjs`, started by CI's "Tell the server" job, waiting out runs and agent fixes). Push to main only with J's OK, after
 `npm run typecheck` and `npm test`; commit only your own files (other sessions edit here too). Roll back with
 `git revert` + push. `deploy/deploy.mjs` is for server setup (units, Caddy, DNS, keys) and never copies this folder.
 See `docs/cloud.md` ("How code gets to the server").
