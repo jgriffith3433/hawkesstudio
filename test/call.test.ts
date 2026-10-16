@@ -86,3 +86,20 @@ test('stop interrupts a call turn: what was said stays, the process goes on', { 
   conv = getConversation(c.id)!;
   assert.equal(conv.messages.at(-1)!.turn?.call, undefined);
 });
+
+test('the call is told the device J calls from, and never assumes a phone', { timeout: 20_000 }, async () => {
+  const c = startConversation('Laptop call');
+  const before = starts().length;
+  assert.equal(startCall(c.id, { device: 'computer' }).device, 'computer');
+  await until(() => starts().length === before + 1);
+  const prompt = (starts().at(-1)!.start as string[]).at((starts().at(-1)!.start as string[]).indexOf('--append-system-prompt') + 1)!;
+  assert.match(prompt, /at his computer/);
+  assert.doesNotMatch(prompt, /often on his phone/);
+  assert.doesNotMatch(prompt, /say "I'll put the details in the chat"/);
+  assert.match(prompt, /one or two short sentences/);
+  endCall(c.id);
+  // An unknown device is left out rather than guessed.
+  const d = startConversation('Unknown device');
+  assert.equal(startCall(d.id, { device: 'toaster' }).device, null);
+  endCall(d.id);
+});

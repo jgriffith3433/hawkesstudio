@@ -239,12 +239,13 @@ const server = http.createServer(async (req, res) => {
       const b = await readJson(req);
       const c = b.conversation ? getConversation(String(b.conversation)) : startConversation();
       if (!c) return send(res, 404, { error: 'no such conversation' });
-      return send(res, 200, { id: c.id, call: startCall(c.id) });
+      return send(res, 200, { id: c.id, call: startCall(c.id, { device: b.device }) });
     }
     m = /^\/api\/talk\/(t_[0-9a-f]+)\/(call|events)$/.exec(route);
     if (m && m[2] === 'call' && method === 'POST') {
       if (!getConversation(m[1])) return send(res, 404, { error: 'no such conversation' });
-      return send(res, 200, (await readJson(req)).end ? { ended: endCall(m[1]), call: callInfo(m[1]) } : { call: startCall(m[1]) });
+      const b = await readJson(req);
+      return send(res, 200, b.end ? { ended: endCall(m[1]), call: callInfo(m[1]) } : { call: startCall(m[1], { device: b.device }) });
     }
     if (m && m[2] === 'events' && method === 'GET') {
       const c = getConversation(m[1]);
@@ -379,6 +380,15 @@ const server = http.createServer(async (req, res) => {
     // The roles (.claude/agents/*.md) and skills (.claude/skills/) every Claude Code run uses (roles.ts).
     if (route === '/api/agents/roles' && method === 'GET') { const r = await import('./roles.ts'); return send(res, 200, { roles: r.listRoles(), skills: r.listSkills() }); }
     if (route === '/api/agents/settings' && method === 'POST') return send(res, 200, saveAgentSettings(await readJson(req)));
+
+    // Settings (settings.ts): every setting in one place, for the Settings tab and Talk (studio_settings).
+    if (route === '/api/settings' && method === 'GET') return send(res, 200, await (await import('./settings.ts')).allSettings());
+    if (route === '/api/settings' && method === 'POST') {
+      const b = await readJson(req);
+      const conv = /^t_[0-9a-f]{6,32}$/.test(String(req.headers['x-talk-conversation'] ?? '')) ? String(req.headers['x-talk-conversation']) : null;
+      const { saveSettings } = await import('./settings.ts');
+      return send(res, 200, { section: b.section, settings: await saveSettings(String(b.section ?? ''), b.patch, { conversation: conv, quote: b.quote ?? null }) });
+    }
 
     // Phone notifications (ntfy.sh) and the morning brief.
     if (route === '/api/notify' && method === 'GET') return send(res, 200, notifyInfo());

@@ -303,6 +303,18 @@ export function studioMcp({ studio, waitRun }: Client = { studio: defaultStudio,
       },
     },
     {
+      name: 'studio_settings',
+      description: "J's settings (the dashboard's ⚙ Settings tab, stored in Studio so they follow him across devices). get (default): every section: call (engine kokoro | browser | eleven, kokoroVoice, elevenVoice, rate 0.8-1.4, mode { computer, phone }: push | hands-free, bargeIn, pause ms), agents (enabled, autoFix, maxConcurrent, maxPerDay, maxCostPerDay, severities, model, maxTurns), pm (enabled, delegatedMerges, maxStartsPerDay, maxConcurrent, maxTries, fixBugs, dailyHour, graceMinutes), notify (enabled; the topic is the dashboard's), costs (budget, alerts, gpuHours, builderHours, playtesterHours, subscriptions), and prices (elevenPerMinute). set { section, patch }: change fields when J asks. Anything that can raise costs (higher limits or budget, more agents or starts, auto-fix or the PM on, a different model, the paid eleven voice) is refused unless quote has J's own yes from this conversation (his exact words). A call picks up call settings on its next sentence.",
+      inputSchema: obj({
+        action: str('get (default) | set'), section: str('set: call | agents | pm | notify | costs'),
+        patch: { type: 'object', description: 'set: the fields to change, e.g. { "engine": "browser" }' },
+        quote: str("set: J's exact words approving a change that can raise costs"),
+      }),
+      run: async ({ action, section, patch, quote }) => (action === 'set'
+        ? studio('/api/settings', { method: 'POST', body: { section, patch, quote } })
+        : studio('/api/settings')),
+    },
+    {
       name: 'studio_pm',
       description: 'The PM loop (Talk as J\'s PM). actions: status (settings, limits, what is waiting for review, open questions, the decision log); merge { change, why } (merge a ready agent change into beta yourself: only when delegated merges are on, never Studio/Gen, refused unless it passes its gate: playtested, not broken, no criterion failed); revise { change, note } (send it back with specific notes; after the last try J is asked); answer { question, answer } (answer an agent\'s question, which resumes its session, or record J\'s answer to a decision: Studio records who answered: J only when J\'s own message started this turn); ask_j { text, options[], recommend, subject, product, blocks } (one clear question only J can answer: direction, money, still failing after 3 tries, anything live; it goes to his Inbox, and the same subject merges into the open question; also question: an agent question to pass on); triage { finding, triage: wontfix | duplicate | link | reopen | idea, note, of (duplicate of), item (link to) }; undo { decision } (take back a merge, won\'t-fix, start, link or settings change); settings { settings: { enabled, delegatedMerges, maxStartsPerDay, maxConcurrent, maxTries, fixBugs, dailyHour } } (only on J\'s word); tick (run the loop now). Every action is logged.',
       inputSchema: obj({
