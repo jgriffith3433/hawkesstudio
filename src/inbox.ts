@@ -21,6 +21,7 @@ import {
   approveGpu, updateTask, estimateTask, addComment, type Question, type Task,
 } from './roadmap.ts';
 import { gate } from './acceptance.ts';
+import { listApprovals, type Approval } from './approvals.ts';
 
 // Answers to the cards that aren't questions (budgets, merges, milestones): what was answered, by whom, and for a
 // milestone how long its card stays away (until; null: for good).
@@ -31,7 +32,7 @@ export type InboxLink = { label: string; url?: string; video?: string };
 export type InboxItem = {
   /** q_... for a question; gpu:k_..., merge:c_..., milestone:n_... for the others. */
   id: string;
-  kind: 'question' | 'agent' | 'gpu' | 'merge' | 'milestone';
+  kind: 'question' | 'agent' | 'gpu' | 'merge' | 'milestone' | 'approval';
   /** The one-line question, and the whole of it when it's longer. */
   title: string; text: string | null;
   product: string | null; productName: string | null;
@@ -46,8 +47,10 @@ export type InboxItem = {
   weight: number;
   links: InboxLink[];
   subject: string | null; conversation: string | null; asks: number;
-  /** Words J must type to confirm (a Studio or Gen merge into main). */
+  /** Words J may type to confirm (a Studio or Gen merge into main): the fallback; the Approve card comes first. */
   confirm?: string;
+  /** An Approve / Deny card (approvals.ts): J taps one of its buttons; the Inbox's answer doesn't decide it. */
+  approval?: Approval;
 };
 
 const name = (product: string | null | undefined) => {
@@ -197,12 +200,23 @@ async function pmHandles() {
 }
 
 /** Everything waiting on J, sorted by what it blocks most (then oldest first). */
-export async function inbox(): Promise<InboxItem[]> {
+export async function inbox({ tokens = false }: { tokens?: boolean } = {}): Promise<InboxItem[]> {
   tidy();
   const pm = await import('./pm.ts');
   const handled = await pmHandles();
   const settings = pm.pmSettings();
   const out: InboxItem[] = [];
+
+  // Approve / Deny cards waiting (they expire in 15 minutes: first). Their merge or budget card isn't shown twice.
+  const cards = listApprovals({ pending: true }, tokens).filter((a) => a.status === 'pending');
+  const carded = new Set(cards.map((a) => `${a.kind}:${a.target}`));
+  for (const a of cards) {
+    out.push({
+      id: `approval:${a.id}`, kind: 'approval', title: a.card.title, text: null, product: null, productName: null, context: a.card.lines[0] ?? null,
+      asker: a.requested_by ?? 'Studio', recommendation: null, options: [], blocks: `${a.kind} ${a.target}`, since: a.created, weight: 60,
+      links: [], subject: a.target, conversation: a.conversation, asks: 1, approval: a,
+    });
+  }
   const open = listQuestions();
   const forwarded = new Set(open.map((q) => q.forwards).filter(Boolean));
   const gpuQ = new Map(open.filter((q) => q.topic === 'gpu' && q.subject).map((q) => [q.subject!, q]));
@@ -226,6 +240,7 @@ export async function inbox(): Promise<InboxItem[]> {
   }
 
   for (const t of tasksAwaitingGpu()) {
+    if (carded.has(`gpu:${t.id}`)) continue;
     const q = gpuQ.get(t.id);
     const e = t.gpu?.estimate;
     const amount = e && !e.error ? Math.ceil(e.cost * 1.25 * 100) / 100 : null;
@@ -243,7 +258,7 @@ export async function inbox(): Promise<InboxItem[]> {
 
   for (const c of readyChanges()) {
     const pmReviews = handled && settings.delegatedMerges && pm.reviewable(c);
-    if (pmReviews) continue;
+    if (pmReviews || carded.has(`merge:${c.id}`)) continue;
     const g = c.infra ? null : gate(c.verify, c.criteria);
     const v = c.verify ?? {};
     const into = c.infra ? 'main' : 'beta';
@@ -293,7 +308,9 @@ export function recentAnswers(days = 7) {
   const since = Date.now() - days * 86_400_000;
   const qs = answeredSince(since, 30).filter((q) => q.answered_by !== 'Studio').map((q) => ({ id: q.id, title: firstLine(q.text), answer: q.answer, by: q.answered_by, at: q.answered_at, product: q.product }));
   const acks = (db.prepare('SELECT * FROM inbox_acks WHERE at >= ? ORDER BY at DESC LIMIT 20').all(since) as any[]).map((r) => ({ id: String(r.id).split('@')[0], title: r.title ?? r.id, answer: r.answer, by: r.by, at: r.at, product: null }));
-  return [...qs, ...acks].sort((a, b) => (b.at ?? 0) - (a.at ?? 0)).slice(0, 30);
+  const cards = (db.prepare(`SELECT id, card, status, decided_by, decided_at, result FROM approvals WHERE decided_at >= ? ORDER BY decided_at DESC LIMIT 20`).all(since) as any[])
+    .map((r) => ({ id: r.id, title: parse(r.card)?.title ?? r.id, answer: `${r.status}${r.result ? `: ${r.result}` : ''}`, by: r.decided_by, at: r.decided_at, product: null }));
+  return [...qs, ...acks, ...cards].sort((a, b) => (b.at ?? 0) - (a.at ?? 0)).slice(0, 30);
 }
 
 // ----------------------------------------------------------------- who
@@ -331,6 +348,7 @@ export async function answerInbox(id: string, answer: string, by: string, opts: 
   const text = String(answer ?? '').trim();
   if (!text) throw new StudioError('Say the answer (one of the options, or your own words)');
   const pm = await import('./pm.ts');
+  if (id.startsWith('approval:')) throw new StudioError('An Approve / Deny card is decided only by J\'s tap on its buttons (the Inbox or the Talk chat), not by an answer.', 403);
   if (/^q_[0-9a-f]+$/.test(id)) return { answered: id, by, question: await pm.answerQuestion(id, text, by) };
   const jOnly = (what: string) => {
     if (!isJ(by)) throw new StudioError(`${what} is J's call (answered by ${by}). Ask J; he answers in the Inbox or in his own words in Talk.`);

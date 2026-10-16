@@ -247,6 +247,14 @@ body.in-call .talk-input, body.in-call .talk-files, body.in-call #notifyBox { di
 .ib-card .ib-free input { flex: 1; min-width: 0; }
 .ib-card.ib-busy { opacity: .6; pointer-events: none; }
 .ib-card.ib-done { opacity: 0; }
+/* Approve / Deny cards (approval.js): the Talk chat, the Inbox, the go-live dialog; big buttons for a thumb. */
+.approval { border: 2px solid var(--amber); border-radius: 12px; background: var(--panel); padding: 12px 14px; margin: 8px 0; max-width: 860px; align-self: stretch; }
+.approval:not(.st-pending) { border-color: var(--line); opacity: .85; }
+.approval .ap-head { display: flex; flex-wrap: wrap; gap: 6px; align-items: baseline; font-size: 15px; }
+.approval ul { margin: 6px 0 6px 18px; padding: 0; line-height: 1.45; }
+.approval .ap-block { color: var(--red, #e5484d); margin: 6px 0; } .approval .ap-warn { color: var(--amber); margin: 6px 0; }
+.approval .ap-actions { display: flex; flex-wrap: wrap; gap: 10px; margin: 10px 0 4px; }
+.approval .ap-actions button { min-height: 44px; min-width: 120px; font-size: 15px; flex: 1 1 140px; }
 .act-count { background: var(--amber); color: #1b1300; font-weight: 700; font-size: 11px; border-radius: 9px; padding: 0 6px; min-width: 18px; text-align: center; }
 .act-count.zero { background: var(--panel2); color: var(--dim); }
 .activity { position: fixed; right: 0; top: var(--hdr, 56px); bottom: 0; width: 360px; background: var(--panel); border-left: 1px solid var(--line); overflow: auto; z-index: 4; padding: 10px 12px 40px; }

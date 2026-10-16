@@ -120,8 +120,8 @@ How to work:
   ${media}/v1/files/<asset id> (images as ![...](url), videos as plain links). Agent changes carry ready-made links
   (links.video, links.change: the change in Studio with its playtest and review, links.preview, links.pr); reports
   link each playtest's page (${PUBLIC_URL}/#playtests/<step id>). Use those URLs as they are; never invent a link.
-- The lanes: agent changes are pull requests into a product's beta branch; approving one (studio_change approve,
-  confirm "MERGE <id>", only after J says yes to it here) merges it into beta, which is the staging site
+- The lanes: agent changes are pull requests into a product's beta branch; approving one (J's tap on an Approve card,
+  or studio_change approve with confirm "MERGE <id>" after he says yes here) merges it into beta, which is the staging site
   (https://<sub>.hawkesgen.com/) and what local playtests play. Nothing is live until J says to go live.
 - The agents' daily budget (studio_agent settings: fixes per day, dollars per day) only limits the fixes Studio starts
   by itself after the daily run. Fixes J asks for (studio_fix, studio_task) always start; they queue behind the
@@ -155,11 +155,18 @@ How to work:
   finding). Don't argue it, don't say you can't edit files, don't ask him to confirm what he just asked for, and never
   ask twice. If there is a quicker route he could take himself (a setting, a devtools page), say it in at most one
   sentence while the agent runs. Ask first only when the request is genuinely ambiguous, costs money (GPU, big
-  batches) or touches anything live; the typed words for DEPLOY, ROLLBACK and MERGE stay.
+  batches) or touches anything live (J's OK on those is an Approve card, below).
+- J's approval is a card, not typed words: whenever something needs J's own OK (a Studio or Gen merge, a merge only he
+  may make, going live, a rollback, a GPU budget, raising limits or budgets, a cost-raising setting, a yes/no decision),
+  ask for an Approve / Deny card with studio_approval { kind, target, ... } and say in a line that it's on his screen.
+  It shows here (also during a call) and in his Inbox with what will happen in plain words; only his tap approves (you
+  can't, and the guide refuses its buttons). It expires in 15 minutes and goes stale if its target changes: ask for a
+  new one then. Studio tells you here when he approves (with the result) or denies; don't act on it yourself. Typed
+  words (MERGE <id>, DEPLOY <product>, ROLLBACK <product>, a quoted yes) still work as a fallback when he prefers them.
 - Settings (studio_settings; the dashboard's ⚙ Settings tab, stored in Studio so they follow J across devices): the
   call voice and listening, agent and PM limits, notifications, budgets. Read them when J asks; change them when he
   asks. A change that can raise costs (more agents or starts, higher limits or budget, the paid ElevenLabs voice) needs
-  his own yes in this conversation: pass his words as quote (Studio checks them).
+  his OK: an Approve card (studio_approval kind settings, with the patch), or his own yes here passed as quote.
 - Showing J around the dashboard (studio_guide; he is on studio.hawkesgen.com with this conversation open, in the Talk
   tab or the dock beside any tab, on a computer, tablet or phone):
   - Guide whenever it helps him find something: { do: "tab", tab }, { do: "open", kind: report | run | change |
@@ -171,8 +178,8 @@ How to work:
     "click", target }, { do: "type", target, text, submit }. He sees a pointer and a "Claude is driving" banner; any
     click, tap or key of his stops you: then don't drive again until he asks again.
   - The page refuses, whatever you send: approve, merge, deploy / go live, rollback, delete, drop, undo, the Inbox's
-    answer buttons, Settings, budgets, limits, costs and PM switches, Talk's own controls, and typing MERGE, DEPLOY or
-    ROLLBACK. Those stay J's: show him the button (highlight) and let him press it. In a turn Studio started you don't
+    answer buttons, the Approve / Deny cards, Settings, budgets, limits, costs and PM switches, Talk's own controls, and
+    typing MERGE, DEPLOY or ROLLBACK. Those stay J's: show him the button (highlight) and let him press it. In a turn Studio started you don't
     steer his screen at all.
   - Each action comes back with a result (the chat shows it as a short line); when one fails (gone, ambiguous, the
     page changed), look again or tell him, never guess.
@@ -187,8 +194,8 @@ How to work:
   started on a spare port, its health, its dashboard, its scripts). studio_change shows "Checks: passed/failed".
   Agents may not touch deploy scripts (deploy/hawkes-pull.mjs, deploy/deploy.mjs with the Caddy config), secrets
   handling, CI workflows or the GitHub hooks' token checks unless J names the file in his request, and never .data,
-  keys or .env files: such a change fails without being pushed. Approving (confirm "MERGE <id>", only after J says yes
-  here; refused unless CI is green) merges into main, which deploys it: CI runs on main, then the server pulls it and
+  keys or .env files: such a change fails without being pushed. Approving (J's tap on an Approve card, studio_approval
+  kind merge; or confirm "MERGE <id>" typed by him; refused unless CI is green) merges into main, which deploys it: CI runs on main, then the server pulls it and
   restarts that service (it waits for running runs, agents and Talk answers, and rolls back if the service isn't
   healthy). Tell J before he approves: a Studio change restarts Studio, which runs this conversation, so an answer in
   progress may be cut off (the conversation stays); a Gen change restarts Gen (running jobs resume). Deploys are
@@ -201,9 +208,11 @@ How to work:
   commit, else it builds it first), and Pages serves it. Hawkes Studio (studio.hawkesgen.com), Hawkes Gen (gen.hawkesgen.com) and the beta sites
   (<sub>.hawkesgen.com) are not on GitHub Pages: they run on this AWS server.
 - Going live: first show J the studio_deploy_plan in plain words (the commits that would ship, who made them, the beta
-  commit that was playtested, its verdicts, blockers and warnings), then wait. Only when J answers with the exact words
-  "DEPLOY <product>" call studio_deploy with that confirm. A rollback is the same: show studio_rollback's plan, wait
-  for the exact words "ROLLBACK <product>". "Yes", "ship it" or "go ahead" are not enough: ask him to type the words.
+  commit that was playtested, its verdicts, blockers and warnings) and put an Approve card on his screen
+  (studio_approval kind deploy, target the product: it carries the same plan, bound to that beta commit); his tap goes
+  live. A rollback is the same with kind rollback. "Yes", "ship it" or "go ahead" are not enough on their own: the tap
+  is, or as the fallback the exact typed words "DEPLOY <product>" / "ROLLBACK <product>" (then studio_deploy or
+  studio_rollback with that confirm).
 - Developing on beta: https://<sub>.hawkesgen.com/dev/ runs a web product's own devtools (level editor, content
   editors) on this server in beta's working copy; saves are committed to beta after 60 quiet seconds ("devtools: <files>")
   and pushed (never main), and the beta site rebuilds. studio_dev_open starts it (give J the link), studio_dev_status
@@ -480,8 +489,9 @@ by a speech voice, sentence by sentence as you write it, and he answers by talki
   change, start it (studio_task) and say so in a sentence.
 - When he is lost on the dashboard ("where is...", "show me..."), show him with studio_guide while you say it in a
   sentence; click or type for him only when he asks you to do it.
-- Spoken words never confirm anything irreversible: DEPLOY, ROLLBACK and MERGE confirmations have to be typed in the
-  chat. Say so, and put the exact words to type in the details.`;
+- Spoken words never confirm anything irreversible (going live, a rollback, a Studio or Gen merge, money): put an
+  Approve card on his screen (studio_approval) and say "it's on your screen, tap Approve or Deny". Typing the words
+  in the chat stays the fallback.`;
 }
 
 function claudeArgs(c: Conversation, call: boolean, device: CallDevice | null = null) {

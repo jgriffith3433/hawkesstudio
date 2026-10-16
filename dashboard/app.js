@@ -207,10 +207,17 @@ async function goLive(p) {
       <button class="small" data-gl="beta" data-p="${esc(plan.product)}" title="Pre-deploy build, Unity build, beta site and a local playtest of beta. Nothing goes live.">Update &amp; playtest beta</button>
       <button class="small" data-gl="rollback" data-p="${esc(plan.product)}">Rollback…</button>
     </div>
-    ${plan.canDeploy ? `<p>Type <code>${esc(plan.confirm)}</code> to go live:</p>
-      <div class="actions"><input id="glConfirm" autocomplete="off" placeholder="${esc(plan.confirm)}" style="flex:1"><button class="small primary" data-gl="go" data-p="${esc(plan.product)}" data-confirm="${esc(plan.confirm)}" disabled>Go live</button></div>` : ''}
+    ${plan.canDeploy ? `<div id="glCard"></div><details><summary class="meta">Or type <code>${esc(plan.confirm)}</code></summary>
+      <div class="actions"><input id="glConfirm" autocomplete="off" placeholder="${esc(plan.confirm)}" style="flex:1"><button class="small primary" data-gl="go" data-p="${esc(plan.product)}" data-confirm="${esc(plan.confirm)}" disabled>Go live</button></div></details>` : ''}
     ${plan.previous.length ? `<details><summary class="meta">Previous go lives</summary>${plan.previous.map((d) => `<div class="meta">${esc(d.kind)} ${esc(d.id)} · ${esc(when(d.at))} · ${esc(d.by ?? '')} · ${esc(d.before ?? '?')} → ${esc(d.after)}${d.rolledBack ? ` · rolled back (${esc(d.rolledBack)})` : ''} · ${esc(d.detail ?? '')}</div>`).join('')}</details>` : ''}
     <div id="glOut"></div>`));
+  if (plan.canDeploy) glCard('deploy', plan.product);
+}
+/** The Approve / Deny card (approval.js) for going live or rolling back, bound to what the dialog shows. */
+function glCard(kind, product) {
+  approvals.request({ kind, target: product })
+    .then((a) => { const n = $('#glCard'); if (n) n.innerHTML = approvals.html(a); })
+    .catch((err) => { const n = $('#glCard'); if (n) n.innerHTML = `<p class="meta">${esc(err.message)}</p>`; });
 }
 async function rollbackView(p) {
   const plan = await api(`/api/rollback/${p}`);
@@ -221,9 +228,10 @@ async function rollbackView(p) {
     ${plan.undo.length ? `<h4>Undoes ${plan.undo.length} commit(s)</h4>${plan.undo.map((x) => `<div class="meta"><code>${esc(x.short)}</code> ${esc(x.title)} · ${esc(x.author)}</div>`).join('')}` : ''}
     ${plan.blockers.length ? `<p style="color:var(--red, #e5484d)">${plan.blockers.map(esc).join('<br>')}</p>` : ''}
     ${plan.warnings.length ? `<p style="color:var(--amber)">${plan.warnings.map(esc).join('<br>')}</p>` : ''}
-    ${plan.canRollback ? `<p>Type <code>${esc(plan.confirm)}</code> to roll back:</p>
-      <div class="actions"><input id="glConfirm" autocomplete="off" placeholder="${esc(plan.confirm)}" style="flex:1"><button class="small primary" data-gl="dorollback" data-p="${esc(plan.product)}" data-confirm="${esc(plan.confirm)}" disabled>Roll back</button></div>` : ''}
+    ${plan.canRollback ? `<div id="glCard"></div><details><summary class="meta">Or type <code>${esc(plan.confirm)}</code></summary>
+      <div class="actions"><input id="glConfirm" autocomplete="off" placeholder="${esc(plan.confirm)}" style="flex:1"><button class="small primary" data-gl="dorollback" data-p="${esc(plan.product)}" data-confirm="${esc(plan.confirm)}" disabled>Roll back</button></div></details>` : ''}
     <div id="glOut"></div>`));
+  if (plan.canRollback) glCard('rollback', plan.product);
 }
 $('#viewer').addEventListener('input', (e) => {
   if (e.target.id !== 'glConfirm') return;

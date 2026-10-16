@@ -134,7 +134,9 @@ the one place for everything waiting on J, across every conversation, agent and 
 - questions: decisions filed for him, and agent questions on his own requests (the PM answers its agents' questions
   first and passes on what it can't; the decision passing one on is one card with it, `questions.forwards`)
 - GPU budgets: content tasks waiting for his budget (`tasksAwaitingGpu`)
-- merges only he may make: Studio and Gen changes (into main, which deploys: he types `MERGE <id>`), changes the PM
+- Approve / Deny cards waiting for his tap (below), first: they expire in 15 minutes
+- merges only he may make: Studio and Gen changes (into main, which deploys: "Merge into main" brings up an Approve
+  card with the checks; typing `MERGE <id>` is the fallback), changes the PM
   doesn't review (his own requests, work from before the loop), everything while delegated merges are off
 - milestones reached: playtest it (the beta link), with Go live (the deploy plan and `DEPLOY <product>` on Today),
   Something is wrong (his words go to the milestone's thread and the PM makes them tasks), or Later (a day)
@@ -154,6 +156,30 @@ signal. "Answered lately" lists each answer with who gave it.
 Talk)" only during a Talk turn J's own message started; otherwise "Talk", or "Talk (PM)" in the PM's conversation,
 whatever the caller claims. So the PM's own notes, closes and answers are never logged as J's, and a GPU budget, a
 merge only J may make, and a milestone answer are refused unless they are J's.
+
+**Approve / Deny cards** (`src/approvals.ts`, `dashboard/approval.js`, `studio_approval`; `/api/approvals`): J's OK is
+one tap instead of typed words. Anything that needs it can ask for a card: a Studio or Gen merge, a merge only he may
+make, going live, a rollback, a GPU budget, a settings change (limits, budgets, anything that raises costs), a yes/no
+decision (`kind`: merge | deploy | rollback | gpu | settings | decision). Talk asks for one instead of telling J to type
+words; the Inbox asks for one when he presses "Merge into main"; the go-live and rollback dialogs on Today show one.
+- **What it shows**, in plain words: the deploy plan (commits and authors, beta's playtests and verdicts, blockers and
+  warnings), or the change, its checks or verification, where it merges and "this restarts Studio"; blockers disable
+  Approve. It shows in the Talk conversation that asked (also during a call: the chat stays on screen) and in the
+  Inbox, on a phone with big buttons.
+- **Bound and one-time:** a card is for one action on one target as it was when made: the change's status and verified
+  commit; for a deploy the exact beta commit (and main); for a rollback main and the go live it undoes; the patch and
+  today's values for a setting. Its token works once, expires after 15 minutes, and the card goes **stale** (refused)
+  when the target changed (beta moved, the change was revised, the setting changed meanwhile): ask for a new card.
+  Asking again for the same thing returns the same pending card; a newer one replaces an older one for that target.
+- **Only J's tap:** approving or denying is refused from the agent sandbox's user (guards.ts), from any request with
+  Talk's or an agent's headers or the MCP key, and from anything but the dashboard page itself (`Sec-Fetch-Site:
+  same-origin` and `X-Studio-Click`, which approval.js sends; its buttons also ignore synthetic clicks). The token only
+  goes to J's page. Talk's tools can ask for and read cards, never decide them, and the guide's driver refuses the card.
+- **Approve** runs the action as J through the same code as before, with the same refusals (CI green for a Studio or
+  Gen merge, the deploy blockers, beta still the approved commit). **Deny** closes the card (for a decision it answers
+  no). Either way the card records who and when (also in the Inbox's "Answered lately") and the conversation that
+  asked hears it (Studio's notice, then a short turn of Talk's).
+- **Typed words stay as a fallback** for now (`MERGE <id>`, `DEPLOY <product>`, `ROLLBACK <product>`, a quoted yes).
 
 **8. Milestones** (Roadmap tab, `studio_roadmap_edit add_milestone`): a named point J will playtest himself ("DoD:
 controls done"), made of roadmap items (`items.milestone`), with what he'll test. open -> **reached** when every item in
@@ -251,8 +277,9 @@ tells Talk the device (phone, tablet or computer, from the page); Talk never ass
 - **Spoken answers:** in a call Talk's instructions (`callPrompt` in talk.ts) ask for one or two short sentences,
   nothing that can't be read aloud (tables, links, ids), and details after a `---` line, silently: they show in the chat
   and aren't read, with no "I'll put the details in the chat". A spoken yes or no answers Talk's own simple questions
-  ("start the agent?"). Confirmations that change something for good (`DEPLOY`, `ROLLBACK`, `MERGE`) are never taken
-  by voice: J types them.
+  ("start the agent?"). Confirmations that change something for good (going live, rollbacks, Studio/Gen merges, money)
+  are never taken by voice: Talk puts an Approve / Deny card on his screen and he taps it (typing the words stays the
+  fallback).
 - **Voices** (Settings › Calls):
   - *Browser voice* (the default): free and instant; Edge's "Natural" neural voices are picked first. The voice's name
     is kept per device (voices differ per browser).
@@ -293,7 +320,8 @@ In the chat and on a call, Talk can steer the dashboard J has open on that conve
   of J's (Stop included) stops it at once, the rest of the batch is skipped, and driving stays off until J writes or
   speaks again. Studio refuses driving in a turn Studio started (results, PM turns), and all steering there.
 - **What Talk never presses, enforced in the page** (`HawkesGuide.offLimits` in guide.js, whatever Talk sends):
-  approve, merge, deploy / go live, rollback, delete, drop, undo, close a change, the Inbox's answer buttons, everything
+  approve, merge, deploy / go live, rollback, delete, drop, undo, close a change, the Inbox's answer buttons, the
+  Approve / Deny cards (`.approval`, `data-apdecide`), everything
   on Settings, the Costs tab's budget, alert and refresh buttons, the PM's switches and limits, beta-conflict
   resolution, Talk's own controls (the chat, the call), and the go-live and rollback dialogs. Markup can mark more with
   `data-guide="off"`; words on a control (approve, merge, deploy, go live, rollback, delete, drop, undo, budget, limit,
@@ -317,8 +345,9 @@ push to talk or hands-free per kind of device, barge-in, the pause; the browser 
 limits, the PM loop, phone notifications (the ntfy topic, test, new topic) and budgets (with a link to Costs). Call
 settings are in the `settings` table; the others stay where they were (`agents.json`, `pm.json`, notify, costs) behind
 the one API. Talk reads and changes them with `studio_settings` when J asks; from Talk, anything that can raise costs
-(higher limits or budget, more agents or starts, auto-fix or the PM on, another model, the paid voice) is refused unless
-the request quotes J's own yes from that conversation, and the notification topic is changed only on the dashboard.
+(higher limits or budget, more agents or starts, auto-fix or the PM on, another model, the paid voice) needs J's OK:
+Talk puts an Approve card on his screen (`studio_approval` kind settings), or, as the fallback, the request quotes his
+own yes from that conversation. The notification topic is changed only on the dashboard.
 
 ## The conversation (J and Claude, in the Claude app)
 
@@ -331,15 +360,18 @@ the request quotes J's own yes from that conversation, and the notification topi
    - runs `studio_playtest` on the scenario to verify
    - marks the finding `fixed` (`studio_update_finding`)
 4. J approves agent changes into beta (Changes tab, or "approve it" in chat). Beta's site, build and a playtest follow.
-5. When beta looks right, J says "go live with Sick Of It". Claude shows `studio_deploy_plan` and waits for J to type
-   `DEPLOY sickofit`; then it goes live (see below).
+5. When beta looks right, J says "go live with Sick Of It". Claude shows `studio_deploy_plan` and puts an Approve card
+   on his screen (`studio_approval` kind deploy); his tap goes live (see below). Typing `DEPLOY sickofit` still works.
 6. Studio waits for GitHub Pages and playtests the live site.
 
 ## Beta and going live
 
 ```
-agent branch (fix/..., task/...) --approve ("MERGE <id>")--> beta --go live ("DEPLOY <product>")--> main = live
+agent branch (fix/..., task/...) --approve (a tap, or "MERGE <id>")--> beta --go live (a tap, or "DEPLOY <product>")--> main = live
 ```
+
+J's OK is an Approve / Deny card ("Approve / Deny cards" above), bound to the exact beta commit for a go live; the typed
+words are the fallback.
 
 - **beta** is a branch in every repo agents change (the website repo for web products, the Unity source repo for Unity
   games). Studio makes it from main the first time an agent starts there. Pushing beta deploys nothing.
@@ -435,7 +467,7 @@ J and agents build on beta together, live on the cloud server (`src/dev.ts`, `sr
 
 ## What only J does
 
-- Go live and roll back (they publish live sites, and need his typed words), and money: launching servers, big
+- Go live and roll back (they publish live sites, and need his tap on an Approve card, or his typed words), and money: launching servers, big
   generation batches, raising limits. Approving agent changes into beta is delegated to Talk's PM loop (through their
   checks; J can turn that off); Studio and Gen changes stay his.
 - Direction: what goes on the roadmap (Talk proposes; J says yes), and the questions the PM passes to him.

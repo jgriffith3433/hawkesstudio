@@ -278,16 +278,34 @@ const server = http.createServer(async (req, res) => {
     m = /^\/api\/talk\/(t_[0-9a-f]+)(\/stop)?$/.exec(route);
     if (m && method === 'GET' && !m[2]) {
       const c = getConversation(m[1]);
-      return send(res, 200, c ? { ...c, guide: (await import('./guide.ts')).pendingGuide(c.id) } : { error: 'no such conversation' });
+      const ap = await import('./approvals.ts');
+      return send(res, 200, c ? { ...c, guide: (await import('./guide.ts')).pendingGuide(c.id), approvals: ap.listApprovals({ conversation: c.id }, !ap.notJClick(req)) } : { error: 'no such conversation' });
     }
     if (m && method === 'POST' && m[2]) return send(res, 200, { ok: true, stopped: stopTalk(m[1]) });
     if (m && method === 'PATCH' && !m[2]) return send(res, 200, renameConversation(m[1], String((await readJson(req)).title ?? '')));
     if (m && method === 'DELETE' && !m[2]) { deleteConversation(m[1]); return send(res, 200, { ok: true }); }
 
+    // Approve / Deny cards (approvals.ts): anyone asks for one; only J's tap on the dashboard decides it (the token only
+    // goes to his page).
+    if (route === '/api/approvals' || route.startsWith('/api/approvals/')) {
+      const ap = await import('./approvals.ts');
+      const jPage = !ap.notJClick(req);
+      if (route === '/api/approvals' && method === 'GET') return send(res, 200, { approvals: ap.listApprovals({ conversation: q('conversation') ?? null, pending: q('pending') === '1' }, jPage) });
+      if (route === '/api/approvals' && method === 'POST') {
+        const b = await readJson(req);
+        const by = await (await import('./inbox.ts')).actor(req, b.by);
+        return send(res, 200, await ap.requestApproval(String(b.kind ?? ''), String(b.target ?? ''), { amount: b.amount, patch: b.patch }, { by, conversation: origin ?? (typeof b.conversation === 'string' && /^t_[0-9a-f]{6,32}$/.test(b.conversation) ? b.conversation : null) }).then((a) => ap.getApproval(a.id, jPage)));
+      }
+      m = /^\/api\/approvals\/(a_[0-9a-f]+)(?:\/(approve|deny))?$/.exec(route);
+      if (m && method === 'GET' && !m[2]) { const a = ap.getApproval(m[1], jPage); return a ? send(res, 200, a) : send(res, 404, { error: 'no such approval' }); }
+      if (m && method === 'POST' && m[2]) return send(res, 200, await ap.decideApproval(m[1], String((await readJson(req)).token ?? ''), m[2], req));
+      return send(res, 404, { error: `No route ${method} ${route}` });
+    }
+
     // The Inbox (inbox.ts): everything waiting on J, sorted by what it blocks; answering routes it the way it always went.
     if (route === '/api/inbox' && method === 'GET') {
       const ib = await import('./inbox.ts');
-      const items = await ib.inbox();
+      const items = await ib.inbox({ tokens: !(await import('./approvals.ts')).notJClick(req) });
       return send(res, 200, q('count') === '1' ? { count: items.length } : { count: items.length, items, answered: ib.recentAnswers() });
     }
     if (route === '/api/inbox/answer' && method === 'POST') {
