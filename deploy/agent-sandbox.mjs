@@ -95,7 +95,8 @@ umask 002
 exec "$@"
 EOF
 chown root:root /usr/local/bin/hawkes-agent-run; chmod 755 /usr/local/bin/hawkes-agent-run
-echo 'hawkes ALL=(hawkes-agent) NOPASSWD:SETENV: /usr/local/bin/hawkes-agent-run' > /etc/sudoers.d/hawkes-agent
+# Not logged on every run (each run's command line is a whole prompt); refusals still are.
+printf '%s\n' 'Defaults!/usr/local/bin/hawkes-agent-run !log_allowed' 'hawkes ALL=(hawkes-agent) NOPASSWD:SETENV: /usr/local/bin/hawkes-agent-run' > /etc/sudoers.d/hawkes-agent
 chmod 440 /etc/sudoers.d/hawkes-agent; visudo -cf /etc/sudoers.d/hawkes-agent >/dev/null
 
 # No instance metadata (the server's IAM role) for the agent.
