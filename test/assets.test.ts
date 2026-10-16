@@ -2,11 +2,17 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 process.env.STUDIO_PRODUCTS = path.join(here, 'fixture', 'products.json');
+// The fixture's paths start with hawkesstudio/: point them at this checkout wherever it lives (an agent's worktree is
+// .work/<change>), through a link in a scratch projects folder.
+const projects = fs.mkdtempSync(path.join(os.tmpdir(), 'studio-assets-'));
+fs.symlinkSync(path.resolve(here, '..'), path.join(projects, 'hawkesstudio'), 'junction');
+process.env.STUDIO_PROJECTS = projects;
 const dir = path.join(here, 'fixture', 'selftest');
 const { assetStatus, makeAsset } = await import('../src/assets.ts');
 const { genUp } = await import('../src/gen.ts');
