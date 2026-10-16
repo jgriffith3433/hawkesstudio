@@ -113,8 +113,18 @@ async function getJson(url) {
   }
 }
 
-/** Why a restart now would interrupt something, or null. */
-async function busy() {
+/**
+ * Why restarting this repo's service now would interrupt something, or null. Each service waits only for its own work:
+ * Gen for Unity builds on the build server (its other jobs resume after a restart; an older Gen without the count
+ * waits for any running job), Studio for a run, agent fixes and Talk answers (a Gen restart doesn't touch those).
+ */
+async function busyFor(repo) {
+  if (repo === 'hawkesgen') {
+    const gen = await getJson('http://127.0.0.1:8790/v1/health');
+    if (!gen) return null;
+    const n = typeof gen.building === 'number' ? gen.building : (gen.queue?.running ?? 0);
+    return n ? `${n} ${typeof gen.building === 'number' ? 'Unity build(s) on the build server' : 'Gen job(s) running'}` : null;
+  }
   const why = [];
   const studio = await getJson('http://127.0.0.1:8791/api/self-deploys?limit=0');
   if (studio?.busy) {
@@ -127,10 +137,26 @@ async function busy() {
     const h = await getJson('http://127.0.0.1:8791/api/health');
     if (h?.run) why.push(`Studio run ${h.run}`);
   }
-  const gen = await getJson('http://127.0.0.1:8790/v1/health');
-  if (gen?.queue?.running) why.push(`${gen.queue.running} Gen job(s) running`);
   return why.length ? why.join(', ') : null;
 }
+
+/**
+ * The drain flag: while a repo's deploy waits, <repo>/.data/deploy-pending tells its service to start nothing new
+ * (Studio: no new agents; Gen: no new Unity builds), so the work in progress finishes and the deploy gets its moment.
+ */
+const flagFile = (dir) => path.join(dir, '.data', 'deploy-pending');
+function setFlag(dir, why) {
+  if (DRY) return;
+  try {
+    fs.mkdirSync(path.dirname(flagFile(dir)), { recursive: true });
+    fs.writeFileSync(flagFile(dir), `${new Date().toISOString()} ${why}
+`);
+    if (HAWKES) fs.chownSync(flagFile(dir), HAWKES.uid, HAWKES.gid);
+  } catch (e) {
+    say(`could not write the drain flag: ${e.message}`);
+  }
+}
+const clearFlag = (dir) => { if (!DRY) fs.rmSync(flagFile(dir), { force: true }); };
 
 async function healthy(url) {
   for (let i = 0; i < 30; i++) {
@@ -166,7 +192,7 @@ for (const r of REPOS) {
   }
   const head = git(dir, 'rev-parse', 'HEAD');
   const tip = git(dir, 'rev-parse', 'origin/main');
-  if (head === tip) { delete s.waitingSince; continue; }
+  if (head === tip) { delete s.waitingSince; clearFlag(dir); continue; }
   const once = (key, entry) => { if (s[key] !== tip) { record({ repo: r.repo, from: head, to: tip, ...entry }); s[key] = tip; } };
   if (s.badCommit === tip) continue; // it was deployed once and didn't come up; wait for a new commit
   try {
@@ -185,21 +211,19 @@ for (const r of REPOS) {
   todo.push({ ...r, dir, head, tip, subject: git(dir, 'log', '-1', '--format=%s', tip) });
 }
 
-// 2. Wait while something would be interrupted (up to the limit).
-if (todo.length) {
-  const why = await busy();
-  const since = Math.min(...todo.map((t) => Date.parse(state[t.repo].waitingSince ?? new Date().toISOString())));
-  const waited = (Date.now() - since) / 60_000;
+// 2. Per repo: wait while restarting its service would interrupt its own work (up to the limit), draining meanwhile.
+for (const t of [...todo]) {
+  const why = await busyFor(t.repo);
+  const s = state[t.repo];
+  const waited = s.waitingSince ? (Date.now() - Date.parse(s.waitingSince)) / 60_000 : 0;
   if (why && waited < MAX_WAIT_MIN) {
-    for (const t of todo) {
-      const s = state[t.repo];
-      if (!s.waitingSince) { s.waitingSince = new Date().toISOString(); record({ repo: t.repo, from: t.head, to: t.tip, outcome: 'waiting', detail: why }); }
-    }
-    say(`waiting (${Math.round(waited)} of ${MAX_WAIT_MIN} min): ${why}`);
-    retryLater(5 * 60, 'waiting for a run to finish');
-    todo.length = 0;
+    if (!s.waitingSince) { s.waitingSince = new Date().toISOString(); record({ repo: t.repo, from: t.head, to: t.tip, outcome: 'waiting', detail: why }); }
+    setFlag(t.dir, why);
+    say(`[${t.repo}] waiting (${Math.round(waited)} of ${MAX_WAIT_MIN} min), draining: ${why}`);
+    retryLater(2 * 60, 'waiting for work in progress to finish');
+    todo.splice(todo.indexOf(t), 1);
   } else if (why) {
-    say(`still busy after ${MAX_WAIT_MIN} minutes (${why}); deploying anyway`);
+    say(`[${t.repo}] still busy after ${MAX_WAIT_MIN} minutes (${why}); deploying anyway`);
   }
 }
 
@@ -217,6 +241,7 @@ for (const t of todo) {
     if (!(await healthy(t.health))) throw new Error(`${t.service} did not answer ${t.health} within 90 seconds`);
     record({ repo: t.repo, from: t.head, to: t.tip, outcome: 'deployed', detail: t.subject, files: files.length, npm: pkgs, seconds: Math.round((Date.now() - started) / 1000) });
     delete s.waitingSince;
+    clearFlag(t.dir);
   } catch (e) {
     // Back to what ran before, and don't try this commit again.
     let back = 'rolled back';
@@ -230,6 +255,7 @@ for (const t of todo) {
     }
     s.badCommit = t.tip;
     delete s.waitingSince;
+    clearFlag(t.dir);
     record({ repo: t.repo, from: t.head, to: t.tip, outcome: 'failed', detail: `${e.message.split('\n')[0]}; ${back}` });
   }
 }

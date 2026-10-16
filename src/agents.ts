@@ -39,6 +39,7 @@ import { serveDir, stopServed } from './local.ts';
 import { claudeEnv } from './claude.ts';
 import { buildPreview, removePreview, previewUrl, changeSiteDir, changeBuild, type ChangeBuild } from './previews.ts';
 import { BETA, ensureBeta } from './beta.ts';
+import { deployPending } from './drain.ts';
 import { notify, notifyOnce, PUBLIC_URL } from './notify.ts';
 import { threadFor } from './roadmap.ts';
 import { judgeCriteria } from './acceptance.ts';
@@ -368,6 +369,8 @@ export function startFix(productId: string, findingIds: string[], { auto = false
 
 /** Runs queued changes up to the concurrency limit. */
 async function pump() {
+  // A Studio deploy is waiting (drain.ts): start nothing new; the queue resumes after the deploy restarts Studio.
+  if (deployPending()) return;
   const s = agentSettings();
   for (const c of listChanges({ status: 'queued' }).reverse()) {
     if (running.size >= s.maxConcurrent) return;
