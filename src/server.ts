@@ -270,6 +270,30 @@ const server = http.createServer(async (req, res) => {
 
     // Reports: every run has one (rendered from its steps), newest first, daily runs flagged. The Report tab, Talk
     // (studio_reports) and the CLI all read this list, so they agree. ?daily=1 for daily reports only.
+    // A push to beta, from the product repo's GitHub Actions workflow (beta-to-studio.yml). The web server lets this path
+    // through without the login: the caller proves itself with GitHub's signed OIDC token (J's repos, the beta branch).
+    if (route === '/api/hooks/github-beta' && method === 'POST') {
+      const token = /^Bearer\s+(\S+)$/i.exec(String(req.headers.authorization ?? ''))?.[1];
+      if (!token) return send(res, 401, { error: 'a GitHub Actions OIDC token is required' });
+      const { verifyGitHubOidc } = await import('./github-oidc.ts');
+      let claims: Record<string, any>;
+      try {
+        claims = await verifyGitHubOidc(token, 'https://studio.hawkesgen.com');
+      } catch (e: any) {
+        return send(res, 401, { error: `token rejected: ${e.message}` });
+      }
+      if (String(claims.repository_owner).toLowerCase() !== 'jgriffith3433') return send(res, 403, { error: 'not one of J\'s repos' });
+      if (claims.ref !== 'refs/heads/beta') return send(res, 403, { error: `only pushes to beta (got ${claims.ref})` });
+      const { betaFolderFor, onBetaPush } = await import('./betawatch.ts');
+      const folder = betaFolderFor(String(claims.repository));
+      if (!folder) return send(res, 404, { error: `${claims.repository} isn't a product source repo Studio keeps on beta` });
+      return send(res, 200, { ok: true, ...(await onBetaPush(folder, String(claims.sha ?? ''))) });
+    }
+    if (route === '/api/hooks/beta-pushes' && method === 'GET') {
+      const { betaPushes } = await import('./betawatch.ts');
+      return send(res, 200, { pushes: betaPushes });
+    }
+
     if (route === '/api/reports' && method === 'GET') {
       const all = listReports(Number(q('limit')) || 60);
       const reports = q('daily') === '1' ? all.filter((r) => r.daily) : all;

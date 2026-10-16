@@ -449,6 +449,11 @@ studio.${domain} {
 		header_regexp Authorization ^Bearer\\s+hs_
 	}
 	@mcpurl path_regexp ^/mcp/hs_[\\w-]+/?$
+	# Pushes to beta from the product repos' GitHub Actions (beta-to-studio.yml): no login; Studio checks GitHub's
+	# signed OIDC token itself (src/github-oidc.ts).
+	handle /api/hooks/github-beta {
+		reverse_proxy 127.0.0.1:8791
+	}
 	handle @mcp {
 		reverse_proxy 127.0.0.1:8791 {
 			flush_interval -1
