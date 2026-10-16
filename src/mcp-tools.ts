@@ -363,6 +363,26 @@ export function studioMcp({ studio, waitRun }: Client = { studio: defaultStudio,
         ].filter(Boolean).join('\n'))].join('\n');
       },
     },
+    {
+      name: 'studio_guide',
+      description: "Show J around the Studio dashboard he has open (this conversation, in the Talk tab or the dock), and work it for him when he asks. Guide (whenever it helps): tab { tab }, open { kind: report | run | change | finding | playtest, id }, highlight { target, label } (scroll to it, outline it with a short label), clear, scroll { target }, look (what is on his screen: tab, open item, buttons, fields, items, each with a selector). Drive (only when J asked you to do it for him): click { target }, type { target, text, submit }. target: { selector } (#id or [data-...] from look) and/or { text } (visible words). Runs in order, up to 8; each action's result comes back (ok, a line, an error; look's data), and the chat shows a line per action. The page refuses approve, merge, deploy / go live, rollback, delete, drop, undo, Inbox answers, Settings, budgets, limits, costs, PM switches, Talk's own controls and typing MERGE/DEPLOY/ROLLBACK; any click, tap or key of J's stops driving. Nothing in a turn Studio started.",
+      inputSchema: obj({
+        actions: {
+          type: 'array', description: 'The actions, in order (1-8)',
+          items: {
+            type: 'object',
+            properties: {
+              do: str('tab | open | highlight | clear | scroll | look | click | type'), tab: str('tab: inbox | talk | today | ready | roadmap | report | playtests | backlog | changes | runs | costs | memory | settings'),
+              kind: str('open: report | run | change | finding | playtest'), id: str('open: its id (report: the run id)'),
+              target: { type: 'object', properties: { selector: str('A CSS selector, e.g. #runDaily or [data-cid="c_123"]'), text: str('Visible words of the element') }, description: 'highlight, scroll, click, type: the element' },
+              label: str('highlight: a short label shown beside it'), text: str('type: the text'), submit: bool('type: press Enter afterwards'),
+            },
+            required: ['do'],
+          },
+        },
+      }, ['actions']),
+      run: async ({ actions }) => studio('/api/guide', { method: 'POST', body: { actions } }),
+    },
     ...memoryTools(studio),
     {
       name: 'studio_workspace',

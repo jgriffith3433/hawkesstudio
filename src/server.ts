@@ -261,8 +261,25 @@ const server = http.createServer(async (req, res) => {
       });
       return;
     }
+    // Guide and drive (guide.ts, dashboard/guide.js): Talk's studio_guide waits here until the dashboard showing its
+    // conversation has run the actions (the page lists them with the conversation, claims a batch, reports back).
+    if (route === '/api/guide' && method === 'POST') {
+      const b = await readJson(req);
+      const abort = new AbortController();
+      res.on('close', () => { if (!res.writableEnded) abort.abort(); });
+      return send(res, 200, await (await import('./guide.ts')).requestGuide(origin, b.actions, { cancel: abort.signal }));
+    }
+    m = /^\/api\/talk\/(t_[0-9a-f]+)\/guide\/(g_[0-9a-f]+)(\/claim)?$/.exec(route);
+    if (m && method === 'POST') {
+      const g = await import('./guide.ts');
+      const b = await readJson(req);
+      return send(res, 200, { ok: m[3] ? g.claimGuide(m[1], m[2], String(b.page ?? '')) : g.reportGuide(m[1], m[2], String(b.page ?? ''), b.results) });
+    }
     m = /^\/api\/talk\/(t_[0-9a-f]+)(\/stop)?$/.exec(route);
-    if (m && method === 'GET' && !m[2]) return send(res, 200, getConversation(m[1]) ?? { error: 'no such conversation' });
+    if (m && method === 'GET' && !m[2]) {
+      const c = getConversation(m[1]);
+      return send(res, 200, c ? { ...c, guide: (await import('./guide.ts')).pendingGuide(c.id) } : { error: 'no such conversation' });
+    }
     if (m && method === 'POST' && m[2]) return send(res, 200, { ok: true, stopped: stopTalk(m[1]) });
     if (m && method === 'PATCH' && !m[2]) return send(res, 200, renameConversation(m[1], String((await readJson(req)).title ?? '')));
     if (m && method === 'DELETE' && !m[2]) { deleteConversation(m[1]); return send(res, 200, { ok: true }); }

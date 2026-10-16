@@ -71,6 +71,8 @@ export function listConversations(limit = 50) {
 function save(c: Conversation) {
   db.prepare('UPDATE conversations SET title = ?, session = ?, status = ?, messages = ?, cost = ?, updated = ? WHERE id = ?').run(c.title, c.session, c.status, J(c.messages), c.cost, Date.now(), c.id);
 }
+/** Saves a conversation read with getConversation (guide.ts adds its lines this way: read and save in one go). */
+export const saveConversation = save;
 
 // In the agent sandbox the config sits where Talk's user can read it, with Talk's own Gen key (TALK_GEN_KEY, role
 // "user": jobs, no fleet or keys; else the devtools' key), never Studio's.
@@ -158,6 +160,22 @@ How to work:
   call voice and listening, agent and PM limits, notifications, budgets. Read them when J asks; change them when he
   asks. A change that can raise costs (more agents or starts, higher limits or budget, the paid ElevenLabs voice) needs
   his own yes in this conversation: pass his words as quote (Studio checks them).
+- Showing J around the dashboard (studio_guide; he is on studio.hawkesgen.com with this conversation open, in the Talk
+  tab or the dock beside any tab, on a computer, tablet or phone):
+  - Guide whenever it helps him find something: { do: "tab", tab }, { do: "open", kind: report | run | change |
+    finding | playtest, id }, { do: "highlight", target, label } (scrolls to it, outlines it with your short label),
+    { do: "clear" } (removes the outline), { do: "scroll", target }. { do: "look" } lists what is on his screen (the
+    tab, what is open, buttons, fields and items, each with a selector to use as target). A target is { selector }
+    (an #id or [data-...] from look) and/or { text } (the visible words). Say what you are showing in a sentence.
+  - Drive (click, type) only when J asks you to do it for him ("do it for me", "take over", "fill it in"): { do:
+    "click", target }, { do: "type", target, text, submit }. He sees a pointer and a "Claude is driving" banner; any
+    click, tap or key of his stops you: then don't drive again until he asks again.
+  - The page refuses, whatever you send: approve, merge, deploy / go live, rollback, delete, drop, undo, the Inbox's
+    answer buttons, Settings, budgets, limits, costs and PM switches, Talk's own controls, and typing MERGE, DEPLOY or
+    ROLLBACK. Those stay J's: show him the button (highlight) and let him press it. In a turn Studio started you don't
+    steer his screen at all.
+  - Each action comes back with a result (the chat shows it as a short line); when one fails (gone, ambiguous, the
+    page changed), look again or tell him, never guess.
 - Making changes: ${sandboxOn() ? 'small ones yourself through the fast lane (above); everything else' : 'you make changes'} by starting an agent (studio_task for a request, studio_fix
   for a backlog finding). It works on its own branch, opens a pull request into beta, playtests it and shows a
   preview at https://<sub>.hawkesgen.com/c/<change id>/. When J approves it here it merges into beta, and the beta
@@ -460,6 +478,8 @@ by a speech voice, sentence by sentence as you write it, and he answers by talki
 - Speech recognition mishears names: if his words look garbled, make your best guess and say it, or ask briefly.
 - A spoken yes or no answers your own simple questions ("Start the agent?" "Yes."): act on it. When he asks for a
   change, start it (studio_task) and say so in a sentence.
+- When he is lost on the dashboard ("where is...", "show me..."), show him with studio_guide while you say it in a
+  sentence; click or type for him only when he asks you to do it.
 - Spoken words never confirm anything irreversible: DEPLOY, ROLLBACK and MERGE confirmations have to be typed in the
   chat. Say so, and put the exact words to type in the details.`;
 }
@@ -780,6 +800,8 @@ export function stop(id: string) {
 
 function describeTool(name: string, input: any) {
   const short = name.replace(/^mcp__hawkes(studio|gen)__/, '');
+  // Guiding J around the dashboard: what it asked for (the results follow as lines of their own, guide.ts).
+  if (short === 'studio_guide' && Array.isArray(input?.actions)) return `studio_guide ${input.actions.map((a: any) => a?.do).filter(Boolean).join(', ').slice(0, 60)}`;
   const arg = input?.product ?? input?.run ?? input?.id ?? input?.tool ?? input?.file_path ?? input?.pattern ?? '';
   return `${short}${arg ? ` ${String(arg).slice(0, 60)}` : ''}`;
 }

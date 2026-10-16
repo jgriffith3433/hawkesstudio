@@ -53,7 +53,7 @@ document.querySelector('main').addEventListener('click', (e) => {
   let p = null;
   while (box && !(p = pickIn(box))) box = box.parentElement?.closest(boxes);
   // The title only: without its pills and meta line.
-  const h = box.querySelector('h4, h3, b')?.cloneNode(true);
+  const h = box?.querySelector('h4, h3, b')?.cloneNode(true);
   h?.querySelectorAll('.pill, .meta, small').forEach((n) => n.remove());
   if (p) picked = { tab, ...p, label: (h?.textContent ?? '').replace(/\s+/g, ' ').trim().slice(0, 120) };
 }, true);
@@ -147,7 +147,7 @@ function card(p) {
       <button class="small" data-act="all" data-p="${p.id}">Full trial</button>
       ${p.engine === 'unity' ? `<button class="small" data-act="build" data-p="${p.id}">Build</button>` : ''}
       <button class="small" data-act="backlog" data-p="${p.id}">Backlog</button>
-      <button class="small primary" data-act="deploy" data-p="${p.id}">Go live…</button>
+      <button class="small primary" data-act="deploy" data-p="${p.id}" data-guide="off">Go live…</button>
     </div>
   </div>`;
 }
@@ -408,7 +408,7 @@ async function loadChanges() {
     </div><div class="side">
       ${v?.video ? `<a href="${file(v.video)}" target="_blank" rel="noopener" data-video="${file(v.video)}">▶ fixed version</a>` : ''}${v?.preview ? ` <a href="${esc(v.preview)}" target="_blank">🔗 try it</a>` : ''}
       <div class="actions">
-        ${c.status === 'ready' && c.infra ? `<button class="small primary" data-change="${c.id}" data-act="approve" data-infra="1" title="Merges it into main: ${esc(c.product)} deploys itself once CI passes (a restart).">Approve into main</button>` : c.status === 'ready' ? `<button class="small primary" data-change="${c.id}" data-act="approve" title="Merges it into the beta branch (the beta site). Nothing goes live until you go live from Today.">Approve into beta</button>` : ''}
+        ${c.status === 'ready' && c.infra ? `<button class="small primary" data-change="${c.id}" data-act="approve" data-infra="1" data-guide="off" title="Merges it into main: ${esc(c.product)} deploys itself once CI passes (a restart).">Approve into main</button>` : c.status === 'ready' ? `<button class="small primary" data-change="${c.id}" data-act="approve" data-guide="off" title="Merges it into the beta branch (the beta site). Nothing goes live until you go live from Today.">Approve into beta</button>` : ''}
         ${['ready', 'failed'].includes(c.status) ? `<button class="small" data-change="${c.id}" data-act="revise">Ask for changes</button>` : ''}
         ${!['merged', 'closed'].includes(c.status) ? `<button class="small" data-change="${c.id}" data-act="close">Close</button>` : ''}
       </div></div></div>`;

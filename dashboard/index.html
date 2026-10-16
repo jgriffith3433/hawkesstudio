@@ -123,8 +123,8 @@
       <div class="bar">
         <select id="coPeriod"><option value="month">This month</option><option value="week">Last 7 days</option><option value="today">Today</option><option value="lastmonth">Last month</option><option value="30d">Last 30 days</option></select>
         <button class="small" id="coRefresh" title="Fetch fresh Cost Explorer numbers ($0.01 per request; anything under an hour old is reused)">Refresh</button>
-        <button class="small" id="coSettings">Budget and alerts…</button>
-        <button class="small" id="coAlerts" title="Phone alerts: forecast over budget, a server left running, charges outside the US regions">Alerts on/off</button>
+        <button class="small" id="coSettings" data-guide="off">Budget and alerts…</button>
+        <button class="small" id="coAlerts" data-guide="off" title="Phone alerts: forecast over budget, a server left running, charges outside the US regions">Alerts on/off</button>
         <span id="coBudget" class="meta"></span>
       </div>
       <div id="costsBody"></div>
@@ -148,7 +148,7 @@
       <div class="bar"><input id="memRunsQ" placeholder="How did we fix… (Enter)" style="min-width:20em"> <button class="small" id="memRunsGo">Search</button></div>
       <div id="memRuns"></div>
     </section>
-    <section id="settings" class="tab">
+    <section id="settings" class="tab" data-guide="off">
       <div class="bar"><span class="meta">Stored in Studio, so they follow you from your laptop to your phone. Talk can read and change them too ("make the voice a bit faster"); anything that can raise costs needs your yes.</span></div>
       <div id="setBody"><div class="meta">Loading…</div></div>
     </section>
@@ -164,5 +164,6 @@
   <script src="costs.js"></script>
   <script src="memory.js"></script>
   <script src="settings.js"></script>
+  <script src="guide.js"></script>
 </body>
 </html>
