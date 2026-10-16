@@ -529,7 +529,7 @@ gen.${domain} {
   await scp(local, '/tmp/Caddyfile');
   fs.rmSync(local);
   // Caddy reads WEB_GEN_KEY from the keys file.
-  await ssh(`sudo mv /tmp/Caddyfile /etc/caddy/Caddyfile && sudo mkdir -p /etc/systemd/system/caddy.service.d && printf '[Service]\\nEnvironmentFile=/etc/hawkes/keys.env\\n' | sudo tee /etc/systemd/system/caddy.service.d/hawkes.conf >/dev/null && sudo usermod -aG hawkes caddy && sudo systemctl daemon-reload && sudo caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile >/dev/null && sudo systemctl restart caddy && echo caddy-ok`);
+  await ssh(`sudo mv /tmp/Caddyfile /etc/caddy/Caddyfile && sudo mkdir -p /etc/systemd/system/caddy.service.d && printf '[Service]\\nEnvironmentFile=/etc/hawkes/keys.env\\n' | sudo tee /etc/systemd/system/caddy.service.d/hawkes.conf >/dev/null && sudo usermod -aG hawkes caddy && sudo systemctl daemon-reload && sudo -u caddy caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile >/dev/null && sudo install -d -o caddy -g caddy /var/log/caddy && sudo touch /var/log/caddy/access.log && sudo chown caddy:caddy /var/log/caddy/access.log && sudo systemctl restart caddy && echo caddy-ok`);
   saveState({ domain });
   log(`HTTPS: https://studio.${domain} and https://gen.${domain} (user "j", password in ${pwFile})`);
 }
