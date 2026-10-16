@@ -24,6 +24,7 @@ import type http from 'node:http';
 import { db, newId, parse, J } from './db.ts';
 import { StudioError, getInfra, isInfra, getProduct } from './config.ts';
 import { requestUser } from './sandbox.ts';
+import { sessionUser, cookieToken } from './auth.ts';
 
 db.exec(`CREATE TABLE IF NOT EXISTS approvals (
   id TEXT PRIMARY KEY, kind TEXT NOT NULL, target TEXT NOT NULL, params TEXT, bind TEXT NOT NULL, token TEXT NOT NULL,
@@ -190,6 +191,9 @@ export function notJClick(req: http.IncomingMessage): string | null {
   if (h['x-talk-conversation'] || h['x-studio-agent']) return 'it comes from Talk, the PM or an agent';
   if (/^\s*bearer\s/i.test(String(h.authorization ?? ''))) return 'it comes with an API key, not J\'s login';
   if (h['sec-fetch-site'] !== 'same-origin' || h['x-studio-click'] !== '1') return 'it isn\'t a click on Studio\'s dashboard';
+  // A signed-in member's click isn't J's: approving is an admin's (auth.ts).
+  const u = sessionUser(cookieToken(req));
+  if (u && u.role !== 'admin') return `${u.email} is a member, not an admin`;
   return null;
 }
 

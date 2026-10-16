@@ -23,6 +23,7 @@
       <button data-tab="runs">Runs</button>
       <button data-tab="costs">Costs</button>
       <button data-tab="memory">Memory</button>
+      <button data-tab="users" hidden title="Who can sign in: invites, roles, password resets, the sign-in log (admins)">Users</button>
       <button data-tab="settings" title="Call voice and listening, agent and PM limits, notifications, budgets: stored in Studio, so they follow you across devices">⚙ Settings</button>
     </nav>
     <div class="status" id="status"></div>
@@ -148,6 +149,9 @@
       <div class="bar"><input id="memRunsQ" placeholder="How did we fix… (Enter)" style="min-width:20em"> <button class="small" id="memRunsGo">Search</button></div>
       <div id="memRuns"></div>
     </section>
+    <section id="users" class="tab" data-guide="off">
+      <div id="usBody"><div class="meta">Loading…</div></div>
+    </section>
     <section id="settings" class="tab" data-guide="off">
       <div class="bar"><span class="meta">Stored in Studio, so they follow you from your laptop to your phone. Talk can read and change them too ("make the voice a bit faster"); anything that can raise costs needs your yes.</span></div>
       <div id="setBody"><div class="meta">Loading…</div></div>
@@ -165,6 +169,7 @@
   <script src="costs.js"></script>
   <script src="memory.js"></script>
   <script src="settings.js"></script>
+  <script src="users.js"></script>
   <script src="guide.js"></script>
 </body>
 </html>

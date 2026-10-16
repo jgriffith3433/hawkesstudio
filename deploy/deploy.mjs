@@ -335,6 +335,43 @@ WantedBy=paths.target`),
 }
 
 /** studio.<domain> and gen.<domain> point at the server's Elastic IP (Route 53, the domain's hosted zone). */
+/**
+ * Email for Studio's invites and password resets (src/mail.ts): the domain as an SES identity in us-east-1 with DKIM
+ * (the records go in Route 53), and permission for the server's role to send from it, and only from it. A new SES
+ * account is in the sandbox (it only delivers to verified addresses) until J asks AWS for production access.
+ */
+async function setupEmail(domain) {
+  const { SESClient, VerifyDomainIdentityCommand, VerifyDomainDkimCommand, GetSendQuotaCommand, GetIdentityVerificationAttributesCommand } = await import('@aws-sdk/client-ses');
+  const { Route53Client, ListHostedZonesByNameCommand, ChangeResourceRecordSetsCommand } = await import('@aws-sdk/client-route-53');
+  const { IAMClient, PutRolePolicyCommand } = await import('@aws-sdk/client-iam');
+  const { cfg } = await import('./aws.mjs');
+  const ses = new SESClient({ ...cfg, region: 'us-east-1' });
+  const token = (await ses.send(new VerifyDomainIdentityCommand({ Domain: domain }))).VerificationToken;
+  const dkim = (await ses.send(new VerifyDomainDkimCommand({ Domain: domain }))).DkimTokens ?? [];
+  const r53 = new Route53Client(cfg);
+  const zone = (await r53.send(new ListHostedZonesByNameCommand({ DNSName: domain }))).HostedZones?.find((z) => z.Name === `${domain}.`);
+  if (!zone) throw new Error(`No Route 53 hosted zone for ${domain}`);
+  await r53.send(new ChangeResourceRecordSetsCommand({
+    HostedZoneId: zone.Id,
+    ChangeBatch: {
+      Comment: 'Hawkes Studio email (SES)',
+      Changes: [
+        { Action: 'UPSERT', ResourceRecordSet: { Name: `_amazonses.${domain}`, Type: 'TXT', TTL: 1800, ResourceRecords: [{ Value: `"${token}"` }] } },
+        ...dkim.map((t) => ({ Action: 'UPSERT', ResourceRecordSet: { Name: `${t}._domainkey.${domain}`, Type: 'CNAME', TTL: 1800, ResourceRecords: [{ Value: `${t}.dkim.amazonses.com` }] } })),
+      ],
+    },
+  }));
+  await new IAMClient(cfg).send(new PutRolePolicyCommand({
+    RoleName: 'hawkes-control', PolicyName: 'hawkes-mail',
+    PolicyDocument: JSON.stringify({ Version: '2012-10-17', Statement: [{ Effect: 'Allow', Action: ['ses:SendEmail', 'ses:SendRawEmail'], Resource: `arn:aws:ses:us-east-1:*:identity/${domain}`, Condition: { StringLike: { 'ses:FromAddress': `*@${domain}` } } }] }),
+  }));
+  const status = (await ses.send(new GetIdentityVerificationAttributesCommand({ Identities: [domain] }))).VerificationAttributes?.[domain]?.VerificationStatus ?? 'Pending';
+  const quota = await ses.send(new GetSendQuotaCommand({}));
+  const sandbox = (quota.Max24HourSend ?? 0) <= 200;
+  log(`email: ${domain} is an SES identity (${status}; DNS can take a few minutes), DKIM records in Route 53, the server may send from *@${domain}`);
+  if (sandbox) log('email: SES is in the sandbox (it only delivers to verified addresses). To invite anyone by email: AWS console > Amazon SES (us-east-1) > Account dashboard > "Request production access" (transactional, low volume). Until then the Users tab shows each invite link to send yourself.');
+}
+
 async function ensureDns(domain) {
   const { Route53Client, ListHostedZonesByNameCommand, ChangeResourceRecordSetsCommand } = await import('@aws-sdk/client-route-53');
   const { cfg } = await import('./aws.mjs');
@@ -432,19 +469,29 @@ ${sub}.${domain} {
 
 async function installCaddy(domain) {
   await ensureDns(domain);
-  // One login (the same for both sites) until GitHub sign-in is set up.
+  // People sign in with their own accounts (src/auth.ts). The old shared login (j + this password) still works for J's
+  // scripts (src/client.ts): Studio checks it against its SHA-256 in keys.env (the password itself never leaves here).
   const pwFile = path.join(KEYS, 'web-password.txt');
   if (!fs.existsSync(pwFile)) fs.writeFileSync(pwFile, crypto.randomBytes(18).toString('base64url') + '\n', { mode: 0o600 });
   const password = fs.readFileSync(pwFile, 'utf8').trim();
-  const hash = (await ssh(`caddy hash-password --plaintext '${password}'`, { quiet: true })).trim();
+  const loginSha = crypto.createHash('sha256').update(password).digest('hex');
+  const had = (await ssh(`sudo grep -c '^WEB_LOGIN_SHA256=${loginSha}$' /etc/hawkes/keys.env || true`, { quiet: true })).trim();
+  if (had !== '1') {
+    await ssh(`sudo sed -i '/^WEB_LOGIN_SHA256=/d' /etc/hawkes/keys.env && echo 'WEB_LOGIN_SHA256=${loginSha}' | sudo tee -a /etc/hawkes/keys.env > /dev/null && sudo systemctl restart hawkes-studio && sleep 4 && echo studio-restarted`, { quiet: true });
+    log('web login: the script login (j) is checked by Studio now; restarted Studio to read it');
+  }
   const caddy = `
 {
 	email ${opt('email') ?? 'jgriffith3433@gmail.com'}
 }
 
+# The sign-in (src/auth.ts): Caddy asks Studio's /auth/check on every protected request. A signed-in session cookie
+# (or the old j:<password> login from J's scripts) passes with X-Hawkes-User / X-Hawkes-Role; a browser without one is
+# sent to https://studio.${domain}/auth/signin and back after signing in.
 (login) {
-	basic_auth {
-		j ${hash}
+	forward_auth 127.0.0.1:8791 {
+		uri /auth/check
+		copy_headers X-Hawkes-User X-Hawkes-Role
 	}
 }
 
@@ -474,6 +521,10 @@ studio.${domain} {
 	# GitHub's signed OIDC token itself (src/github-oidc.ts).
 	@githook path /api/hooks/github /api/hooks/github-beta /api/hooks/self-deploy
 	handle @githook {
+		reverse_proxy 127.0.0.1:8791
+	}
+	# The sign-in pages themselves (no session needed to reach them).
+	handle /auth/* {
 		reverse_proxy 127.0.0.1:8791
 	}
 	handle @mcp {
@@ -528,10 +579,11 @@ gen.${domain} {
   fs.writeFileSync(local, caddy + (await previewSites(domain)));
   await scp(local, '/tmp/Caddyfile');
   fs.rmSync(local);
-  // Caddy reads WEB_GEN_KEY from the keys file.
-  await ssh(`sudo mv /tmp/Caddyfile /etc/caddy/Caddyfile && sudo mkdir -p /etc/systemd/system/caddy.service.d && printf '[Service]\\nEnvironmentFile=/etc/hawkes/keys.env\\n' | sudo tee /etc/systemd/system/caddy.service.d/hawkes.conf >/dev/null && sudo usermod -aG hawkes caddy && sudo systemctl daemon-reload && sudo -u caddy caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile >/dev/null && sudo install -d -o caddy -g caddy /var/log/caddy && sudo touch /var/log/caddy/access.log && sudo chown caddy:caddy /var/log/caddy/access.log && sudo systemctl restart caddy && echo caddy-ok`);
+  // Caddy reads WEB_GEN_KEY from the keys file. The new file is checked (as the caddy user) before it replaces the old
+  // one, and the old one is kept as Caddyfile.prev: `node deploy/deploy.mjs --caddy-rollback` puts it back.
+  await ssh(`sudo chown caddy:caddy /tmp/Caddyfile && sudo install -d -o caddy -g caddy /var/log/caddy && sudo touch /var/log/caddy/access.log && sudo chown caddy:caddy /var/log/caddy/access.log && sudo mkdir -p /etc/systemd/system/caddy.service.d && printf '[Service]\\nEnvironmentFile=/etc/hawkes/keys.env\\n' | sudo tee /etc/systemd/system/caddy.service.d/hawkes.conf >/dev/null && sudo usermod -aG hawkes caddy && sudo systemctl daemon-reload && sudo -u caddy caddy validate --config /tmp/Caddyfile --adapter caddyfile >/dev/null && sudo cp /etc/caddy/Caddyfile /etc/caddy/Caddyfile.prev && sudo mv /tmp/Caddyfile /etc/caddy/Caddyfile && sudo chown root:root /etc/caddy/Caddyfile && sudo systemctl restart caddy && sleep 2 && systemctl is-active caddy && echo caddy-ok`);
   saveState({ domain });
-  log(`HTTPS: https://studio.${domain} and https://gen.${domain} (user "j", password in ${pwFile})`);
+  log(`HTTPS: https://studio.${domain} and https://gen.${domain} (sign in with an account; first run: ${'admin@hawkesgen.com'} / admin, then set a password)`);
 }
 
 async function health() {
@@ -540,6 +592,11 @@ async function health() {
 }
 
 await waitReady();
+// Puts the previous Caddyfile back (installCaddy keeps it as Caddyfile.prev) and restarts Caddy.
+if (flag('caddy-rollback')) {
+  log((await ssh('sudo test -f /etc/caddy/Caddyfile.prev && sudo cp /etc/caddy/Caddyfile /etc/caddy/Caddyfile.rolled-back && sudo cp /etc/caddy/Caddyfile.prev /etc/caddy/Caddyfile && sudo systemctl restart caddy && sleep 2 && systemctl is-active caddy && echo caddy-rolled-back', { quiet: true })).trim());
+  process.exit(0);
+}
 if (!flag('caddy-only')) {
   await setupGit();
   await gitCode();
@@ -551,4 +608,5 @@ if (!flag('caddy-only')) {
 const domain = opt('domain') ?? st.domain;
 await installServices(domain);
 if (domain) await installCaddy(domain);
+if (domain && flag('email')) await setupEmail(domain);
 await health();

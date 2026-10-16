@@ -7,7 +7,10 @@ talk to the cloud, and `auto-start.bat` opens the cloud dashboards. (`auto-start
 |---|---|
 | **Studio** (dashboard, reports, backlog, changes) | https://studio.hawkesgen.com |
 | **Hawkes Gen** (dashboard, and the API for programs) | https://gen.hawkesgen.com |
-| **Login** | user `j`, password in `hawkesstudio/deploy/.keys/web-password.txt` (one login for both) |
+| **Sign in** | Your own account at https://studio.hawkesgen.com/auth/signin (one session covers Studio, Gen and the beta sites). First run: `admin@hawkesgen.com` / `admin`, then set a password (after that "admin" never works). Invite people, reset passwords and see the sign-in log in Studio's **Users** tab (admins). Members use Studio, Talk and the beta sites; going live, merging into main, money and users are admins'. `src/auth.ts`, `src/auth-pages.ts`; Caddy asks `/auth/check` (forward_auth) |
+| **Script login** | user `j`, password in `hawkesstudio/deploy/.keys/web-password.txt`: J's scripts (`src/client.ts`) still send it; Studio checks its SHA-256 (`WEB_LOGIN_SHA256` in keys.env) and counts it as J |
+| **Email** | invites and resets go through Amazon SES from `noreply@hawkesgen.com` (`src/mail.ts`; set up with `node deploy/deploy.mjs --caddy-only --email`). In the SES sandbox only verified addresses get mail; the Users tab always shows the link too |
+| **Undo the web server config** | `node deploy/deploy.mjs --caddy-rollback` puts the previous Caddyfile back |
 | **Programs** (Unity, scripts, CLIs, MCP) | `~/.hawkes/client.json` holds the Gen URL and API key, and Studio's URL and login. Every client reads it |
 
 ## What runs where

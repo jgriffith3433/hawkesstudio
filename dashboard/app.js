@@ -14,6 +14,14 @@ const icon = (s) => ({ done: '✅', failed: '❌', skipped: '⏭️', running: '
 
 async function api(path, opts = {}) {
   const r = await fetch(path, { ...opts, headers: opts.body ? { 'Content-Type': 'application/json' } : {}, body: opts.body ? JSON.stringify(opts.body) : undefined });
+  // Signed out (the session expired, or the password must be set first): back to the sign-in page, then here again.
+  if ((r.status === 401 || r.status === 403) && /json/.test(r.headers.get('content-type') ?? '')) {
+    const e = await r.clone().json().catch(() => ({}));
+    if (e.signin) {
+      location.href = `${e.signin}?next=${encodeURIComponent(location.href)}`;
+      throw new Error('Signing in again…');
+    }
+  }
   const d = await r.json();
   if (!r.ok) throw new Error(d.error ?? r.status);
   return d;
@@ -385,6 +393,7 @@ async function refresh() {
     if (tab === 'changes') await loadChanges();
     if (tab === 'costs' && window.loadCosts) await window.loadCosts();
     if (tab === 'settings' && window.loadSettingsTab) await window.loadSettingsTab();
+    if (tab === 'users' && window.loadUsersTab) await window.loadUsersTab();
     if (tab === 'talk' && window.loadTalk && !window.__talkLoaded) { window.__talkLoaded = true; await window.loadTalk(); }
   } catch (e) {
     $('#status').innerHTML = `<span><span class="dot bad"></span>${esc(e.message)}</span>`;
