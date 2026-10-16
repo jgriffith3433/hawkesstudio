@@ -1,9 +1,11 @@
 # Learned: All of Hawkes
 
-Generated from Hawkes Studio's shared memory (2026-10-16 23:08 UTC). Edit entries in Studio's Memory tab, not here.
+Generated from Hawkes Studio's shared memory (2026-10-16 23:55 UTC). Edit entries in Studio's Memory tab, not here.
 
 ## J's decisions
 
+- **Agent changes aren't auto-playtested; a playtest is something J asks for, not an acceptance gate**: 2026-10-16. Agent changes become ready on the agent's own checks; a change's playtest runs only on request. Merge cards and the PM's delegated beta merges no longer require a playtest. The daily run, the beta runs after a push and the live checks stay as they are.  
+  <sub>m_4f34c00cfce3 · Talk · 2026-10-16 · t_0218cbf1dee7</sub>
 - **Approvals move from typed words to an Approve / Deny button**  
   <sub>m_286ae9f4cd83 · Talk · 2026-10-16 · t_d51e3c809c39</sub>
 - **At most 4 GPU servers, US regions only**: us-east-1, us-east-2, us-west-2 (cheapest). Launching, starting or terminating servers asks J first.  
@@ -14,8 +16,6 @@ Generated from Hawkes Studio's shared memory (2026-10-16 23:08 UTC). Edit entrie
   <sub>m_0754baa8d780 · seed · 2026-10-16 · hawkesstudio/docs/projects/AGENTS.md, hawkesstudio/AGENTS.md, docs/cloud.md, J's notes (2026-10-16)</sub>
 - **Reviews run on Sonnet**: STUDIO_REVIEW_MODEL; a review is a few cents. Keep them there.  
   <sub>m_1bfcd733d45d · seed · 2026-10-16 · hawkesstudio/docs/projects/AGENTS.md, hawkesstudio/AGENTS.md, docs/cloud.md, J's notes (2026-10-16)</sub>
-- **Talk's PM loop merges verified changes into beta without asking**: Delegated merges: a change that passes its acceptance gate goes into beta. Never live, never Studio or Gen (those are J's MERGE).  
-  <sub>m_ddd21be441d7 · seed · 2026-10-16 · hawkesstudio/docs/projects/AGENTS.md, hawkesstudio/AGENTS.md, docs/cloud.md, J's notes (2026-10-16)</sub>
 
 ## Preferences
 
