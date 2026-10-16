@@ -174,8 +174,10 @@ Nothing here was approved for GPU generation (images, video, music, 3D on the fl
 
 /** Content and story work (dialogue, lore, levels, characters) is checked against canon; the rest is a fix or a build. */
 const CONTENT = /\b(story|lore|canon|dialog(ue)?|line|lines|bark|script|cutscene|quest|character|fighter|level|floor|stage|map|name|text|copy|voice|narrat|chapter|scene|enemy|enemies|boss)\b/i;
-export function roleOf(c: { infra?: boolean; request?: string | null; findings?: string[]; title?: string | null }): 'infra' | 'content' | 'builder' | 'fixer' {
+export function roleOf(c: { infra?: boolean; request?: string | null; findings?: string[]; title?: string | null; gpu_budget?: string | null }): 'infra' | 'content' | 'builder' | 'fixer' {
   if (c.infra) return 'infra';
+  // A task J gave a GPU budget is content work (generated art, music, levels).
+  if (c.gpu_budget !== undefined && c.gpu_budget !== null) return 'content';
   if (CONTENT.test(`${c.request ?? ''} ${c.title ?? ''}`)) return 'content';
   return c.request ? 'builder' : 'fixer';
 }

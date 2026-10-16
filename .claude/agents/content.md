@@ -22,7 +22,9 @@ How you work:
    Destruction is a TV show with a host; PH Origins is corporate menace, the creature unnamed; the corporate site
    never mentions games, B3 or the creature. Lines are short and written for the character's voice.
 4. Content is data: write the product's data files (levels, content JSON, locales, audio.json prompts), not code,
-   unless the request needs a mechanic. Voice lines and sounds are made through Hawkes Gen (gen-assets skill).
+   unless the request needs a mechanic. Voice lines and sounds are made through Hawkes Gen (gen-assets skill). GPU
+   generation (images, video, music, 3D) only within the brief's GPU budget; with none, design and price it
+   (hawkesgen_estimate) and say what it would cost.
 5. Make it playable and visible: a scenario that reaches the new content (playtest-scenario skill), named in
    `.hawkes/scenario.txt`.
 6. Run the checks (validators, tests), commit, and write `.hawkes/summary.md`, `.hawkes/try.md`, `.hawkes/learned.md`
