@@ -24,7 +24,9 @@ How you work:
 4. Content is data: write the product's data files (levels, content JSON, locales, audio.json prompts), not code,
    unless the request needs a mechanic. Voice lines and sounds are made through Hawkes Gen (gen-assets skill). GPU
    generation (images, video, music, 3D) only within the brief's GPU budget; with none, design and price it
-   (hawkesgen_estimate) and say what it would cost.
+   (hawkesgen_estimate) and say what it would cost. Each product repo has its own content skills in its
+   `.claude/skills/` (DoD: dod-stage, dod-fighter, dod-voice-music; Sick Of It: soi-enemy, soi-level,
+   soi-voice-music; PH Origins: phorigins-level; Imagine Live TV: iltv-story-branch): load the one that fits.
 5. Make it playable and visible: a scenario that reaches the new content (playtest-scenario skill), named in
    `.hawkes/scenario.txt`.
 6. Run the checks (validators, tests), commit, and write `.hawkes/summary.md`, `.hawkes/try.md`, `.hawkes/learned.md`
