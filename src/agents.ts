@@ -292,7 +292,6 @@ export function startFix(productId: string, findingIds: string[], { auto = false
   if (busy.length) throw new Error(`${p.name} already has a fix in progress (${busy[0].id}).`);
   const today = costToday();
   if (auto && (today.count >= s.maxPerDay || today.cost >= s.maxCostPerDay)) {
-    void notifyOnce(`budget:${new Date().toDateString()}`, 86_400_000, 'Agent budget reached for today', `${today.count} fixes, $${today.cost.toFixed(2)} of $${s.maxCostPerDay}. New findings wait for tomorrow (or start one by hand).`, { url: `${PUBLIC_URL}/#changes`, tags: ['money_with_wings'] });
     throw new Error(`Today's agent budget is used (${today.count} fixes, $${today.cost.toFixed(2)}).`);
   }
   const { top, slug } = repoFor(p);
@@ -384,7 +383,7 @@ async function work(id: string, note?: string) {
     const preview = pv?.status === 'ready' ? previewUrl(p.id, id) : null;
     if (preview) addLog(id, `preview: ${preview}`);
     update(id, { status: 'ready', detail: `${verify ? `${verify.outcome ?? '?'} · review: ${verify.verdict ?? 'n/a'}` : 'ready (not playtested: needs a build)'}${preview ? ` · preview ${preview}` : ''}`, verify: { ...(verify ?? {}), preview } });
-    void notify(`Ready to approve: ${p.name}`, `${c.title}\n${verify?.verdict ? `Verification: ${verify.verdict}. ` : ''}${preview ? `Preview: ${preview}` : ''}`, { url: `${PUBLIC_URL}/#changes`, tags: ['white_check_mark'] });
+    // No phone notification (J's rule: only when something went wrong or a milestone is reached): Talk reports it.
   } catch (e: any) {
     addLog(id, `error: ${e.message}`);
     update(id, { status: 'failed', detail: String(e.message).slice(0, 300) });
@@ -646,7 +645,7 @@ async function workInfra(id: string, note?: string) {
     update(id, { status: 'verifying', detail: 'checking: CI on the pull request, the checks, a smoke check' });
     const v = await verifyInfra(getChange(id)!, t);
     update(id, { status: 'ready', detail: `${v.outcome}: ${v.summary}`.slice(0, 300), verify: v });
-    void notify(`Ready to approve: ${t.name}`, `${c.title}\nChecks: ${v.outcome}. ${v.summary}`, { url: `${PUBLIC_URL}/#changes`, tags: [v.outcome === 'passed' ? 'white_check_mark' : 'warning'] });
+    // Talk tells J in the chat; no phone notification (only failures and milestones go to the phone).
   } catch (e: any) {
     addLog(id, `error: ${e.message}`);
     update(id, { status: 'failed', detail: String(e.message).slice(0, 300) });

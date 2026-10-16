@@ -53,9 +53,12 @@ ${cost ? `Then add this line exactly as written: ${cost}\n` : ''}No headings, no
   while (Date.now() < end && getConversation(c.id)?.status === 'thinking') await new Promise((r) => setTimeout(r, 5000));
   const answer = getConversation(c.id)?.messages.filter((m) => m.role === 'assistant').at(-1)?.text ?? '';
   const first = /^\s*(?:[-*]|1\.)\s+(.+)$/m.exec(answer)?.[1]?.replace(/\*\*/g, '') ?? '';
-  await notify(title, [R.headline, first, ready.length ? `${ready.length} change${ready.length > 1 ? 's' : ''} to approve.` : ''].filter(Boolean).join('\n'), {
-    url: conversationUrl(c.id), tags: ['sunrise'], priority: ready.length || R.per.some((x) => x.verdict === 'broken') ? 4 : 3,
-  });
+  // The phone only hears about the brief when something is broken (J's rule: failures and milestones only); the brief
+  // itself is always in Talk.
+  const broken = R.per.filter((x: any) => x.verdict === 'broken' || x.failed?.length).map((x: any) => x.name);
+  if (broken.length) {
+    await notify(`Broken: ${broken.join(', ')}`, [R.headline, first].filter(Boolean).join('\n'), { url: conversationUrl(c.id), tags: ['warning'], priority: 4 });
+  }
   return c.id;
 }
 
