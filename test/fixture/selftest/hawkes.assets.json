@@ -1,0 +1,14 @@
+{
+  "project": "hawkesgen-test",
+  "assets": [
+    {
+      "id": "sign-material",
+      "inputs": ["source.png"],
+      "steps": [
+        { "tool": "image.tile", "inputs": { "image": "$input:0" }, "save": "albedo" },
+        { "tool": "texture.maps", "inputs": { "image": "$prev" }, "save": "maps" }
+      ],
+      "files": { "albedo": "out/sign_albedo.png", "maps.normal": "out/sign_normal.png" }
+    }
+  ]
+}

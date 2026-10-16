@@ -1,0 +1,444 @@
+{
+  "$comment": "Every Hawkes product Studio builds, playtests and reports on. Paths are relative to C:\\Projects. local.serve: how Studio starts the product locally for playtests (npm: the dev server; static: python's http.server over a folder). playtests: what runs each day (where: local or live). Scenarios come from each game's playtest contract (docs/playtest.md). dev: developing on beta (src/dev.ts): front = the /dev/ front door port Caddy routes https://<sub>.hawkesgen.com/dev/* to, port = the dev server port in the beta working copy (web products), path = the devtools page.",
+  "products": [
+    {
+      "id": "doseofdestruction",
+      "name": "Dose Of Destruction",
+      "framing": "cytotoxic dose",
+      "engine": "web",
+      "repo": "doseofdestructionwebsite",
+      "site": "doseofdestructionwebsite",
+      "live": "https://doseofdestruction.com/Game/",
+      "local": {
+        "serve": "npm",
+        "dir": "doseofdestructionwebsite",
+        "port": 8089,
+        "path": "/Game/"
+      },
+      "checks": [
+        {
+          "dir": "doseofdestructionwebsite",
+          "cmd": "npm test"
+        },
+        {
+          "dir": "doseofdestructionwebsite",
+          "cmd": "npm run typecheck"
+        }
+      ],
+      "playtests": [
+        {
+          "scenario": "smoke",
+          "where": "local"
+        },
+        {
+          "scenario": "match",
+          "where": "local"
+        },
+        {
+          "scenario": "campaign",
+          "where": "local"
+        },
+        {
+          "scenario": "smoke",
+          "where": "live"
+        },
+        {
+          "scenario": "smoke",
+          "where": "live",
+          "device": "phone"
+        }
+      ],
+      "story": [
+        "doseofdestructionwebsite/content/campaign.json"
+      ],
+      "about": "A browser platform fighter (Babylon.js) with every main Hawkes IP character. The campaign is a TV show, from Open Mic (a walk-on with one skateboard, Exit Punk) to Encore. Fighters, poses and animations are AI-generated.",
+      "contract": true,
+      "dev": {
+        "front": 8701,
+        "port": 8711,
+        "path": "/devtools.html",
+        "env": {
+          "DOD_ART_ROOT": "${PROJECTS}/AllTheCharacters",
+          "DOD_MAPS_ROOT": "${PROJECTS}/AllTheMaps"
+        }
+      }
+    },
+    {
+      "id": "phorigins",
+      "name": "PH Origins",
+      "framing": "pH balance",
+      "engine": "web",
+      "repo": "phoriginswebsite",
+      "site": "phoriginswebsite",
+      "live": "https://phorigins.com/play/game.html",
+      "local": {
+        "serve": "npm",
+        "dir": "phoriginswebsite",
+        "port": 5173,
+        "path": "/game.html"
+      },
+      "checks": [
+        {
+          "dir": "phoriginswebsite",
+          "cmd": "npx tsc --noEmit"
+        }
+      ],
+      "playtests": [
+        {
+          "scenario": "smoke",
+          "where": "local"
+        },
+        {
+          "scenario": "full",
+          "where": "local"
+        },
+        {
+          "scenario": "smoke",
+          "where": "live"
+        },
+        {
+          "scenario": "smoke",
+          "where": "live",
+          "device": "phone"
+        }
+      ],
+      "story": [
+        "phoriginsassets/Lore.txt"
+      ],
+      "about": "A third-person story game (Babylon.js): one night in Hawkes Tower. The board meets, B3 writes back, Pierce Hawkes goes down to the vat and transforms. Levels 1-6 are playable; dialogue, voice lines and cutscenes.",
+      "deploy": {
+        "prebuild": "npm run build"
+      },
+      "contract": true,
+      "dev": {
+        "front": 8702,
+        "port": 8712,
+        "path": "/devtools.html"
+      }
+    },
+    {
+      "id": "sickofit",
+      "name": "Sick Of It",
+      "framing": "single-use fever shots",
+      "engine": "unity",
+      "repo": "sickofitgame-unity",
+      "site": "sickofitgamewebsite",
+      "live": "https://sickofitgame.com/Game/",
+      "build": {
+        "project": "sickofitgame-unity",
+        "site": "sickofitgamewebsite",
+        "method": "SickOfIt.Tools.Editor.GameDeployWindow.FullDeployBatch",
+        "tests": [
+          "EditMode"
+        ]
+      },
+      "local": {
+        "serve": "static",
+        "dir": "sickofitgamewebsite",
+        "port": 8087,
+        "path": "/Game/"
+      },
+      "playtests": [
+        {
+          "scenario": "smoke",
+          "where": "local"
+        },
+        {
+          "scenario": "menus",
+          "where": "local"
+        },
+        {
+          "scenario": "full",
+          "where": "local"
+        },
+        {
+          "scenario": "smoke",
+          "where": "live"
+        },
+        {
+          "scenario": "smoke",
+          "where": "live",
+          "device": "phone"
+        }
+      ],
+      "story": [
+        "sickofitgame-unity/Docs/Story.md"
+      ],
+      "about": "A 2D arcade bullet-dodger (Unity WebGL) with rewind: a sarcastic nobody chases the Overlord up 1,000 floors of Hell. Hell is repetition, so rewind is the hero's power. Slimes are villagers, never enemies. No office or work jokes.",
+      "contract": true,
+      "dev": {
+        "front": 8706
+      }
+    },
+    {
+      "id": "yoobaland",
+      "name": "Yooba Land",
+      "framing": "hyporexia support",
+      "engine": "unity",
+      "repo": "YoobaLand/YoobaLand",
+      "site": "YoobaLandGame",
+      "live": "https://yoobalandgame.com/Game/",
+      "build": {
+        "project": "YoobaLand/YoobaLand",
+        "site": "YoobaLandGame",
+        "method": "YoobaWebBuild.FullDeploy",
+        "tests": [
+          "EditMode"
+        ]
+      },
+      "local": {
+        "serve": "static",
+        "dir": "YoobaLandGame",
+        "port": 8088,
+        "path": "/Game/"
+      },
+      "playtests": [
+        {
+          "scenario": "smoke",
+          "where": "local"
+        },
+        {
+          "scenario": "explore",
+          "where": "local"
+        },
+        {
+          "scenario": "full",
+          "where": "local"
+        },
+        {
+          "scenario": "smoke",
+          "where": "live"
+        },
+        {
+          "scenario": "smoke",
+          "where": "live",
+          "device": "phone"
+        }
+      ],
+      "story": [
+        "YoobaLand/AGENTS.md"
+      ],
+      "about": "A 3D game (Unity URP, WebGL) about where Yooba came from: eat, grow, and find the way home.",
+      "contract": true,
+      "dev": {
+        "front": 8707
+      }
+    },
+    {
+      "id": "theplacedepartment",
+      "name": "The Place Department",
+      "framing": "HIPAA-compliant document storage",
+      "engine": "unity",
+      "repo": "breakingthrough",
+      "site": "theplacedepartmentwebsite",
+      "live": "https://theplacedepartment.com/Game/",
+      "build": {
+        "project": "breakingthrough",
+        "site": "theplacedepartmentwebsite",
+        "method": "WebGlBuild.FullDeploy",
+        "tests": [
+          "EditMode"
+        ]
+      },
+      "local": {
+        "serve": "static",
+        "dir": "theplacedepartmentwebsite",
+        "port": 4173,
+        "path": "/Game/"
+      },
+      "playtests": [
+        {
+          "scenario": "smoke",
+          "where": "local"
+        },
+        {
+          "scenario": "run",
+          "where": "local"
+        },
+        {
+          "scenario": "menus",
+          "where": "local"
+        },
+        {
+          "scenario": "smoke",
+          "where": "live"
+        },
+        {
+          "scenario": "smoke",
+          "where": "live",
+          "device": "phone"
+        }
+      ],
+      "story": [
+        "breakingthrough/AGENTS.md"
+      ],
+      "about": "A prototype roguelike wave-defense game (Unity WebGL): Warrok, a bow-wielding brute, defends a pirate pianist from waves of birds. \"Where things that should not exist are given an address.\"",
+      "contract": true,
+      "dev": {
+        "front": 8708
+      }
+    },
+    {
+      "id": "icanbe",
+      "name": "I Can Be",
+      "framing": "AI-assisted full-body assessment",
+      "engine": "web",
+      "repo": "icanbeaiwebsite",
+      "site": "icanbeaiwebsite",
+      "live": "https://icanbe.ai/",
+      "local": {
+        "serve": "npm",
+        "dir": "icanbeaiwebsite",
+        "port": 8092,
+        "path": "/"
+      },
+      "playtests": [
+        {
+          "scenario": "smoke",
+          "where": "local"
+        },
+        {
+          "scenario": "day",
+          "where": "local"
+        },
+        {
+          "scenario": "smoke",
+          "where": "live"
+        },
+        {
+          "scenario": "smoke",
+          "where": "live",
+          "device": "phone"
+        }
+      ],
+      "story": [
+        "icanbeaiwebsite/day.config.js"
+      ],
+      "about": "A real-time simulation (Babylon.js) of a day in a developer's life; the character is \"AI\". Direction undecided.",
+      "deploy": {
+        "prebuild": "node scripts/bump-version.mjs patch"
+      },
+      "contract": true,
+      "dev": {
+        "front": 8703,
+        "port": 8713,
+        "path": "/"
+      }
+    },
+    {
+      "id": "imaginelivetv",
+      "name": "Imagine Live TV",
+      "framing": "live medical education",
+      "engine": "web",
+      "repo": "imaginelivetvwebsite",
+      "site": "imaginelivetvwebsite",
+      "live": "https://imaginelivetv.com/",
+      "local": {
+        "serve": "npm",
+        "dir": "imaginelivetvwebsite",
+        "port": 8090,
+        "path": "/"
+      },
+      "playtests": [
+        {
+          "scenario": "smoke",
+          "where": "local"
+        },
+        {
+          "scenario": "branches",
+          "where": "local"
+        },
+        {
+          "scenario": "blog",
+          "where": "local"
+        },
+        {
+          "scenario": "smoke",
+          "where": "live"
+        },
+        {
+          "scenario": "smoke",
+          "where": "live",
+          "device": "phone"
+        }
+      ],
+      "story": [
+        "TheFinalSpark/Decision tree.txt"
+      ],
+      "about": "A choose-your-path video story, The Final Spark: you wake in a sewer, found by a rat; each choice is a page with a video. Plus a blog.",
+      "contract": true,
+      "dev": {
+        "front": 8704,
+        "port": 8714,
+        "path": "/"
+      }
+    },
+    {
+      "id": "hawkesbiomedical",
+      "name": "Hawkes Biomedical",
+      "framing": "the parent company",
+      "engine": "static",
+      "repo": "hawkesbiomedicalnew",
+      "site": "hawkesbiomedicalnew",
+      "live": "https://hawkesbiomedical.com/",
+      "local": {
+        "serve": "npm",
+        "dir": "hawkesbiomedicalnew",
+        "port": 5174,
+        "path": "/"
+      },
+      "playtests": [
+        {
+          "mode": "site",
+          "where": "local"
+        },
+        {
+          "mode": "site",
+          "where": "live"
+        },
+        {
+          "mode": "site",
+          "where": "live",
+          "device": "phone"
+        }
+      ],
+      "story": [
+        "hawkesbiomedicalnew/AGENTS.md"
+      ],
+      "about": "The corporate front of Hawkes Biomedical, a fictional pharma megacorp. It lists the product line as medical products, never games; the footer says it's fiction. Never mention B3, the vat or the creature. \"We do not pitch a cure. We own the category.\"",
+      "deploy": {
+        "prebuild": "npm run build"
+      },
+      "dev": {
+        "front": 8705,
+        "port": 8715,
+        "path": "/"
+      }
+    }
+  ],
+  "repos": {
+    "doseofdestructionwebsite": "jgriffith3433/doseofdestructionwebsite",
+    "phoriginswebsite": "jgriffith3433/phoriginswebsite",
+    "sickofitgame-unity": "jgriffith3433/sickofitgame-unity",
+    "sickofitgamewebsite": "jgriffith3433/sickofitgamewebsite",
+    "YoobaLand": "jgriffith3433/YoobaLand",
+    "YoobaLandGame": "jgriffith3433/YoobaLandGame",
+    "breakingthrough": "jgriffith3433/breakingthrough",
+    "theplacedepartmentwebsite": "jgriffith3433/theplacedepartmentwebsite",
+    "icanbeaiwebsite": "jgriffith3433/icanbeaiwebsite",
+    "imaginelivetvwebsite": "jgriffith3433/imaginelivetvwebsite",
+    "hawkesbiomedicalnew": "jgriffith3433/hawkesbiomedical"
+  },
+  "$comment_repos": "GitHub repo for each top-level folder (the server clones them into the same layout as C:\\Projects).",
+  "previews": {
+    "dod": "doseofdestruction",
+    "phorigins": "phorigins",
+    "sickofit": "sickofit",
+    "yoobaland": "yoobaland",
+    "placedept": "theplacedepartment",
+    "icanbe": "icanbe",
+    "imaginelivetv": "imaginelivetv",
+    "corporate": "hawkesbiomedical"
+  },
+  "$comment_previews": "Beta sites: https://<subdomain>.hawkesgen.com/ is the product built from its beta branch (what going live ships), /c/<change id>/ an agent change (src/previews.ts; DNS and Caddy in deploy/deploy.mjs). Same login as Studio."
+}

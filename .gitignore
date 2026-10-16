@@ -1,0 +1,29 @@
+# Dependencies
+node_modules/
+
+# Everything Studio makes: studio.db, logs, local server state, dev homes
+.data/
+
+# Daily reports are made on the server, where the runs happen
+reports/
+
+# Deploy secrets and state (SSH keys, web password, MCP key, the instance's state)
+deploy/.keys/
+deploy/.state.json
+
+# Test output (assets.test.ts makes and deletes these)
+test/fixture/selftest/out/
+test/fixture/selftest/hawkes.assets.lock.json
+
+# Secrets that should never be here, just in case
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*_ed25519
+
+# Local noise
+*.log
+.DS_Store
+Thumbs.db

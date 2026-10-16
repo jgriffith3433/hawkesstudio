@@ -1,0 +1,303 @@
+// Hawkes Studio service: the dashboard and API on http://127.0.0.1:8791. Runs (daily or one-off) execute
+// in this process; the CLI and MCP server talk to it.
+
+import http from 'node:http';
+import fs from 'node:fs';
+import path from 'node:path';
+import { PORT, paths, loadProducts, getProduct, StudioError, localUrl } from './config.ts';
+import { db, rowToStep } from './db.ts';
+import { startRun, startPartial, getRun, listRuns, activeRun, lastStep, nameOf, type RunOptions } from './pipeline.ts';
+import { listFindings, getFinding, updateFinding } from './backlog.ts';
+import { reportMarkdown, listReports } from './report.ts';
+import { deployPlan, deploy, rollbackPlan, rollback } from './deploy.ts';
+import { assetStatus } from './assets.ts';
+import { syncRepos } from './repos.ts';
+import { startConversation, say, getConversation, listConversations, stop as stopTalk, talkInfo, renameConversation, deleteConversation } from './talk.ts';
+import { notify, notifyInfo, saveNotifySettings, PUBLIC_URL } from './notify.ts';
+import { listChanges, getChange, startFix, startTask, approve, revise, close, agentSettings, saveAgentSettings, costToday } from './agents.ts';
+import { startAssets } from './pipeline.ts';
+import { gitState, stopServers } from './local.ts';
+import { gen, genUp } from './gen.ts';
+import { listPreviews, buildPreview, previewUrl } from './previews.ts';
+import { listPlaytests, getPlaytest, fileLink, trends } from './playtests.ts';
+import { handleMcp } from './mcp-http.ts';
+import { listDev, devStatus, startDev, stopDev, flushDev, resolveDev, sinceLive, startDevService } from './dev.ts';
+import { startFronts } from './dev-front.ts';
+import { selfDeploys, selfBusy } from './selfdeploy.ts';
+
+const MIME: Record<string, string> = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.json': 'application/json', '.md': 'text/markdown; charset=utf-8' };
+
+function send(res: http.ServerResponse, status: number, body: unknown) {
+  res.writeHead(status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+  res.end(JSON.stringify(body));
+}
+
+async function readJson(req: http.IncomingMessage): Promise<any> {
+  const chunks: Buffer[] = [];
+  for await (const c of req) chunks.push(c as Buffer);
+  if (!chunks.length) return {};
+  try {
+    return JSON.parse(Buffer.concat(chunks).toString('utf8'));
+  } catch {
+    throw new StudioError('The body is not JSON');
+  }
+}
+
+const memo = new Map<string, { at: number; value: any }>();
+/** Caches slow reads (git status on big repos, the build server over SSH) for a few seconds. */
+async function cached<T>(key: string, ms: number, f: () => T | Promise<T>): Promise<T> {
+  const hit = memo.get(key);
+  if (hit && Date.now() - hit.at < ms) return hit.value;
+  const value = await f();
+  memo.set(key, { at: Date.now(), value });
+  return value;
+}
+
+/** Everything the dashboard's front page shows, per product. */
+async function overview() {
+  const products = await Promise.all(loadProducts().map(async (p) => {
+    const steps = (db.prepare(`SELECT * FROM steps WHERE product = ? ORDER BY started DESC LIMIT 60`).all(p.id) as any[]).map(rowToStep);
+    const latest = (kind: string) => steps.filter((s) => s.kind === kind);
+    const reviews = latest('review').filter((s) => s.status === 'done');
+    const byName = new Map<string, any>();
+    for (const s of [...latest('playtest'), ...reviews]) if (!byName.has(`${s.kind}:${s.name}`)) byName.set(`${s.kind}:${s.name}`, s);
+    const open = (db.prepare(`SELECT severity, COUNT(*) AS n FROM findings WHERE product = ? AND status IN ('open','fixing') GROUP BY severity`).all(p.id) as any[]);
+    return {
+      id: p.id, name: p.name, framing: p.framing, engine: p.engine, live: p.live, local: localUrl(p),
+      git: await cached(`git:${p.repo}`, 30_000, () => gitState(p.repo)), site: p.site !== p.repo ? await cached(`git:${p.site}`, 30_000, () => gitState(p.site)) : null,
+      build: p.build ? lastStep(p.id, 'build', 'unity') ?? latest('build')[0] ?? null : null,
+      playtests: p.playtests.map((t) => {
+        const name = nameOf(t);
+        return { name, playtest: byName.get(`playtest:${name}`) ?? null, review: byName.get(`review:${name}`) ?? null };
+      }),
+      lastReview: reviews[0] ?? null,
+      open: Object.fromEntries(open.map((r) => [r.severity, r.n])),
+    };
+  }));
+  let builder: any = null;
+  let genOk = await genUp();
+  if (genOk) builder = await cached('builder', 20_000, () => gen.request('/builder').catch((e: any) => ({ error: e.message })));
+  return { products, run: activeRun() ?? null, gen: genOk, builder, runs: listRuns(8) };
+}
+
+const server = http.createServer(async (req, res) => {
+  const url = new URL(req.url ?? '/', `http://127.0.0.1:${PORT}`);
+  const route = url.pathname;
+  const method = req.method ?? 'GET';
+  const q = (k: string) => url.searchParams.get(k) ?? undefined;
+  try {
+    if (route === '/mcp' || route.startsWith('/mcp/')) return await handleMcp(req, res, route);
+    if (route === '/api/config') return send(res, 200, { genUrl: process.env.GEN_PUBLIC_URL || 'http://127.0.0.1:8790' });
+    if (route === '/api/health') return send(res, 200, { ok: true, name: 'hawkesstudio', gen: await genUp(), run: activeRun()?.id ?? null });
+    if (route === '/api/self-deploys') return send(res, 200, { deploys: selfDeploys(Number(q('limit') ?? 30)), busy: selfBusy() });
+    if (route === '/api/overview') return send(res, 200, await overview());
+    if (route === '/api/products' && method === 'GET') return send(res, 200, { products: loadProducts() });
+    let m = /^\/api\/products\/([\w-]+)$/.exec(route);
+    if (m && method === 'GET') return send(res, 200, { product: getProduct(m[1]), git: gitState(getProduct(m[1]).repo) });
+
+    // Runs.
+    if (route === '/api/runs' && method === 'GET') return send(res, 200, { runs: listRuns(Number(q('limit')) || 30) });
+    if (route === '/api/runs' && method === 'POST') {
+      const b = await readJson(req);
+      const opts: RunOptions = {
+        products: Array.isArray(b.products) ? b.products : undefined, noBuild: !!b.noBuild, forceBuild: !!b.forceBuild,
+        scenarios: Array.isArray(b.scenarios) ? b.scenarios : undefined, where: b.where, noReview: !!b.noReview, noChecks: !!b.noChecks, focus: b.focus,
+      };
+      const { id } = startRun(b.kind === 'daily' ? 'daily' : 'manual', opts);
+      return send(res, 200, { ok: true, run: id });
+    }
+    m = /^\/api\/runs\/(r_[0-9a-f]+)$/.exec(route);
+    if (m && method === 'GET') {
+      const r = getRun(m[1]);
+      return r ? send(res, 200, r) : send(res, 404, { error: 'no such run' });
+    }
+    m = /^\/api\/runs\/(r_[0-9a-f]+)\/report$/.exec(route);
+    if (m && method === 'GET') {
+      const r = reportMarkdown(m[1]);
+      if (q('format') === 'md') {
+        res.writeHead(200, { 'Content-Type': MIME['.md'] });
+        return res.end(r.markdown);
+      }
+      return send(res, 200, { markdown: r.markdown, headline: r.headline, date: r.date, cost: r.cost });
+    }
+    if (route === '/api/build' && method === 'POST') {
+      const b = await readJson(req);
+      return send(res, 200, { ok: true, run: startPartial('build', String(b.product), { force: b.force !== false }).id });
+    }
+    if (route === '/api/test' && method === 'POST') {
+      const b = await readJson(req);
+      return send(res, 200, { ok: true, run: startPartial('test', String(b.product), { platform: b.platform === 'PlayMode' ? 'PlayMode' : 'EditMode', category: b.category }).id });
+    }
+    if (route === '/api/playtest' && method === 'POST') {
+      const b = await readJson(req);
+      return send(res, 200, { ok: true, run: startPartial('playtest', String(b.product), { scenario: b.scenario, where: b.where, device: b.device === 'phone' ? 'phone' : undefined, mode: b.mode, review: b.review, focus: b.focus }).id });
+    }
+
+    // Playtests: every run with its video, screenshots and review (dashboard Playtests tab), trends.
+    if (route === '/api/playtests' && method === 'GET') return send(res, 200, listPlaytests({ product: q('product'), scenario: q('scenario'), where: q('where'), device: q('device'), outcome: q('outcome'), limit: Number(q('limit')) || 100, before: Number(q('before')) || undefined }));
+    if (route === '/api/playtests/trends' && method === 'GET') return send(res, 200, trends({ product: q('product'), days: Number(q('days')) || 30 }));
+    m = /^\/api\/playtests\/(s_[0-9a-f]+)(?:\/(video|report))?$/.exec(route);
+    if (m && method === 'GET' && !m[2]) return send(res, 200, (await getPlaytest(m[1], { vs: q('vs') })) ?? { error: 'no such playtest' });
+    if (m && method === 'GET' && m[2]) {
+      // S3 (a short-lived signed link) when it was uploaded, else Hawkes Gen's library.
+      const link = await fileLink(m[1], m[2] as 'video' | 'report');
+      if (!link) return send(res, 404, { error: `no ${m[2]} for this playtest` });
+      res.writeHead(302, { Location: link, 'Cache-Control': 'no-store' });
+      return res.end();
+    }
+
+    // Backlog.
+    if (route === '/api/findings' && method === 'GET') return send(res, 200, { findings: listFindings({ product: q('product'), status: q('status'), severity: q('severity'), limit: Number(q('limit')) || 500 }) });
+    m = /^\/api\/findings\/(f_[0-9a-f]+)$/.exec(route);
+    if (m && method === 'GET') return send(res, 200, getFinding(m[1]) ?? { error: 'no such finding' });
+    if (m && method === 'PATCH') return send(res, 200, updateFinding(m[1], await readJson(req)));
+
+    // Asset manifests.
+    m = /^\/api\/assets\/([\w-]+)$/.exec(route);
+    if (m && method === 'GET') return send(res, 200, assetStatus(m[1]));
+    if (m && method === 'POST') {
+      const b = await readJson(req);
+      const r = startAssets(m[1], { only: Array.isArray(b.only) ? b.only : undefined, force: !!b.force });
+      return send(res, 200, { ok: true, run: r.id, todo: r.todo });
+    }
+
+    // Go live (gated): the plan, then "DEPLOY <product>" fast-forwards main to the playtested beta (deploy.ts).
+    m = /^\/api\/deploy\/([\w-]+)$/.exec(route);
+    if (m && method === 'GET') return send(res, 200, deployPlan(m[1]));
+    if (m && method === 'POST') return send(res, 200, await deploy(m[1], await readJson(req)));
+    m = /^\/api\/rollback\/([\w-]+)$/.exec(route);
+    if (m && method === 'GET') return send(res, 200, rollbackPlan(m[1]));
+    if (m && method === 'POST') return send(res, 200, await rollback(m[1], await readJson(req)));
+    // Beta brought up to date and played (pre-deploy build, Unity build, beta site, a local playtest). Nothing goes live.
+    m = /^\/api\/beta\/([\w-]+)$/.exec(route);
+    if (m && method === 'POST') {
+      const b = await readJson(req);
+      const { startBeta } = await import('./pipeline.ts');
+      return send(res, 200, { ok: true, run: startBeta(m[1], { focus: b.focus }).id });
+    }
+
+    // Developing on beta (dev.ts): <sub>.hawkesgen.com/dev/, the beta working copy and its dev server.
+    if (route === '/api/dev' && method === 'GET') return send(res, 200, { dev: listDev() });
+    m = /^\/api\/dev\/([\w-]+)(?:\/(start|stop|commit|resolve|since-live))?$/.exec(route);
+    if (m && method === 'GET' && !m[2]) return send(res, 200, devStatus(m[1]));
+    if (m && method === 'GET' && m[2] === 'since-live') return send(res, 200, sinceLive(m[1]));
+    if (m && method === 'POST' && m[2]) {
+      const b = await readJson(req);
+      if (m[2] === 'start') {
+        const run = startDev(m[1], { by: b.by ?? 'Studio' });
+        if (b.wait) await run;
+        else run.catch(() => {});
+        return send(res, 200, devStatus(m[1]));
+      }
+      if (m[2] === 'stop') return send(res, 200, await stopDev(m[1], { why: `stopped by ${b.by ?? 'J'}` }));
+      if (m[2] === 'commit') return send(res, 200, { ...(await flushDev(m[1], 'committed by hand')), status: devStatus(m[1]) });
+      if (m[2] === 'resolve') {
+        if (b.action !== 'retry' && b.action !== 'keep-beta') throw new StudioError('action: retry | keep-beta');
+        return send(res, 200, await resolveDev(m[1], b.action));
+      }
+    }
+
+    // Talk (chat with Claude about the products).
+    if (route === '/api/talk' && method === 'GET') return send(res, 200, { conversations: listConversations(), ...talkInfo() });
+    if (route === '/api/talk' && method === 'POST') {
+      const b = await readJson(req);
+      const c = b.conversation ? getConversation(String(b.conversation)) : startConversation();
+      if (!c) return send(res, 404, { error: 'no such conversation' });
+      return send(res, 200, say(c.id, String(b.message ?? ''), Array.isArray(b.files) ? b.files : []));
+    }
+    m = /^\/api\/talk\/(t_[0-9a-f]+)(\/stop)?$/.exec(route);
+    if (m && method === 'GET' && !m[2]) return send(res, 200, getConversation(m[1]) ?? { error: 'no such conversation' });
+    if (m && method === 'POST' && m[2]) return send(res, 200, { ok: true, stopped: stopTalk(m[1]) });
+    if (m && method === 'PATCH' && !m[2]) return send(res, 200, renameConversation(m[1], String((await readJson(req)).title ?? '')));
+    if (m && method === 'DELETE' && !m[2]) { deleteConversation(m[1]); return send(res, 200, { ok: true }); }
+
+    // Agent changes (findings -> pull requests).
+    if (route === '/api/changes' && method === 'GET') return send(res, 200, { changes: listChanges({ status: q('status'), product: q('product') }), today: costToday(), settings: agentSettings() });
+    if (route === '/api/changes' && method === 'POST') {
+      const b = await readJson(req);
+      if (b.request) return send(res, 200, { ok: true, change: startTask(String(b.product), String(b.request)) });
+      return send(res, 200, { ok: true, change: startFix(String(b.product), Array.isArray(b.findings) ? b.findings.map(String) : [String(b.finding)]) });
+    }
+    m = /^\/api\/changes\/(c_[0-9a-f]+)(?:\/(approve|revise|close))?$/.exec(route);
+    if (m && method === 'GET' && !m[2]) return send(res, 200, getChange(m[1]) ?? { error: 'no such change' });
+    if (m && method === 'POST' && m[2]) {
+      const b = await readJson(req);
+      if (m[2] === 'approve') return send(res, 200, await approve(m[1], { confirm: b.confirm, by: b.by ?? 'J' }));
+      if (m[2] === 'revise') return send(res, 200, revise(m[1], String(b.note ?? ''), b.by ?? 'J'));
+      if (m[2] === 'close') return send(res, 200, await close(m[1], b.by ?? 'J'));
+    }
+    if (route === '/api/agents/settings' && method === 'GET') return send(res, 200, agentSettings());
+    if (route === '/api/agents/settings' && method === 'POST') return send(res, 200, saveAgentSettings(await readJson(req)));
+
+    // Phone notifications (ntfy.sh) and the morning brief.
+    if (route === '/api/notify' && method === 'GET') return send(res, 200, notifyInfo());
+    if (route === '/api/notify' && method === 'POST') {
+      const b = await readJson(req);
+      return send(res, 200, saveNotifySettings({ enabled: typeof b.enabled === 'boolean' ? b.enabled : undefined, server: b.server, rotate: b.rotate === true }));
+    }
+    if (route === '/api/notify/test' && method === 'POST') {
+      const ok = await notify('Hawkes Studio test', 'Notifications work. Tap to open Studio.', { url: `${PUBLIC_URL}/#talk`, tags: ['bell'] });
+      return send(res, ok ? 200 : 502, ok ? { ok } : { error: 'Not sent (notifications off, or ntfy unreachable: see the Studio log)' });
+    }
+    // The month's AWS cost line (one Cost Explorer request, $0.01), and the brief again for a finished daily run.
+    if (route === '/api/brief/cost' && method === 'GET') return send(res, 200, { line: await (await import('./brief.ts')).awsCostLine() });
+    if (route === '/api/brief' && method === 'POST') {
+      const b = await readJson(req);
+      const run = b.run ?? (db.prepare(`SELECT id FROM runs WHERE kind = 'daily' AND status = 'done' ORDER BY started DESC LIMIT 1`).get() as any)?.id;
+      if (!run) return send(res, 404, { error: 'no finished daily run' });
+      const { morningBrief } = await import('./brief.ts');
+      void morningBrief(String(run), { force: true }).catch((e) => console.warn(`[studio] morning brief: ${e.message ?? e}`));
+      return send(res, 200, { ok: true, run });
+    }
+
+    if (route === '/api/repos/sync' && method === 'POST') {
+      const b = await readJson(req);
+      const repos = syncRepos(Array.isArray(b.only) ? b.only : undefined);
+      const { previewsAfterSync } = await import('./previews.ts');
+      previewsAfterSync(repos);
+      return send(res, 200, { repos });
+    }
+    if (route === '/api/servers/stop' && method === 'POST') return send(res, 200, { stopped: stopServers() });
+
+    // Staging sites (<sub>.hawkesgen.com): main and agent changes. POST rebuilds (body: { change? }) in the background.
+    if (route === '/api/previews' && method === 'GET') return send(res, 200, { previews: listPreviews() });
+    m = /^\/api\/previews\/([\w-]+)$/.exec(route);
+    if (m && method === 'POST') {
+      const b = await readJson(req);
+      void buildPreview(m[1], { change: b.change ? String(b.change) : undefined });
+      return send(res, 200, { ok: true, building: m[1], change: b.change ?? null, url: previewUrl(getProduct(m[1]).id, b.change) });
+    }
+
+    // Reports: every run has one (rendered from its steps), newest first, daily runs flagged. The Report tab, Talk
+    // (studio_reports) and the CLI all read this list, so they agree. ?daily=1 for daily reports only.
+    if (route === '/api/reports' && method === 'GET') {
+      const all = listReports(Number(q('limit')) || 60);
+      const reports = q('daily') === '1' ? all.filter((r) => r.daily) : all;
+      return send(res, 200, { reports, daily: all.filter((r) => r.daily).length, other: all.filter((r) => !r.daily).length });
+    }
+
+    // The dashboard.
+    if (method === 'GET' && !route.startsWith('/api/')) {
+      const rel = route === '/' ? 'index.html' : route.slice(1);
+      const file = path.join(paths.dashboard, path.normalize(rel));
+      if (!file.startsWith(paths.dashboard) || !fs.existsSync(file) || fs.statSync(file).isDirectory()) return send(res, 404, { error: 'not found' });
+      res.writeHead(200, { 'Content-Type': MIME[path.extname(file)] ?? 'application/octet-stream', 'Cache-Control': 'no-store' });
+      return fs.createReadStream(file).pipe(res);
+    }
+    return send(res, 404, { error: `No route ${method} ${route}` });
+  } catch (e: any) {
+    return send(res, e instanceof StudioError ? e.status : 400, { error: e.message ?? String(e) });
+  }
+});
+
+server.listen(PORT, '127.0.0.1', () => {
+  // A run whose process died is no longer running, and the Gen jobs it was waiting on would only clog the queue.
+  const orphans = db.prepare(`SELECT job FROM steps WHERE status = 'running' AND job IS NOT NULL AND run IN (SELECT id FROM runs WHERE status = 'running')`).all() as { job: string }[];
+  db.prepare(`UPDATE steps SET status = 'failed', detail = 'interrupted (Studio restarted)', finished = ? WHERE status = 'running' AND run IN (SELECT id FROM runs WHERE status = 'running')`).run(Date.now());
+  db.prepare(`UPDATE runs SET status = 'interrupted' WHERE status = 'running'`).run();
+  for (const { job } of orphans) gen.cancel(job).catch(() => {});
+  console.log(`Hawkes Studio on http://127.0.0.1:${PORT}`);
+  // /dev/ on each beta site: the front doors Caddy sends /dev/* to, and the beta working copies' auto-commit.
+  startFronts();
+  startDevService();
+});

@@ -1,0 +1,6 @@
+{ "products": [ {
+  "id": "selftest", "name": "Studio self-test", "framing": "test", "engine": "static",
+  "repo": "hawkesstudio/test/fixture/selftest", "site": "hawkesstudio/test/fixture/selftest", "live": "https://example.com/",
+  "local": { "serve": "static", "dir": "hawkesstudio/test/fixture/selftest", "port": 8799, "path": "/" },
+  "playtests": [], "story": [], "about": "A fixture for Studio's tests."
+} ] }

@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Hawkes Studio</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='%23101418'/><path d='M8 8v16M24 8v16M8 16h16' stroke='%2333d6a6' stroke-width='3.5' stroke-linecap='round'/></svg>">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header>
+    <div class="brand"><span class="mark">H</span> Hawkes Studio <small>clinical trials, daily</small></div>
+    <nav>
+      <button data-tab="talk">Talk</button>
+      <button data-tab="today" class="on">Today</button>
+      <button data-tab="report">Report</button>
+      <button data-tab="playtests">Playtests</button>
+      <button data-tab="backlog">Backlog</button>
+      <button data-tab="changes">Changes</button>
+      <button data-tab="runs">Runs</button>
+    </nav>
+    <div class="status" id="status"></div>
+  </header>
+  <main>
+    <section id="talk" class="tab">
+      <div class="talk">
+        <aside id="talkList"></aside>
+        <div class="talk-main">
+          <div id="talkHead" class="talk-head"></div>
+          <div id="talkLog" class="talk-log"></div>
+          <div id="talkFiles" class="talk-files"></div>
+          <div class="talk-input">
+            <button id="talkAttach" title="Attach an image or file">📎</button><input type="file" id="talkFile" multiple hidden>
+            <textarea id="talkInput" rows="2" placeholder="Talk about the products, ask for work, approve changes…"></textarea>
+            <button class="primary" id="talkSend">Send</button><button id="talkStop" hidden>Stop</button>
+          </div>
+          <div class="meta" id="talkBilling"></div>
+          <details id="notifyBox" class="meta"><summary>Phone notifications</summary><div id="notifyBody"></div></details>
+        </div>
+      </div>
+    </section>
+    <section id="today" class="tab on">
+      <div class="bar">
+        <button class="primary" id="runDaily">Run daily trials</button>
+        <button id="runSmoke">Smoke-test everything</button>
+        <label><input type="checkbox" id="optNoBuild"> skip Unity builds</label>
+        <label><input type="checkbox" id="optLocal"> local only</label>
+        <span id="runInfo"></span>
+      </div>
+      <div id="cards" class="cards"></div>
+    </section>
+    <section id="report" class="tab">
+      <div class="bar"><select id="reportRun"></select> <a id="reportMd" target="_blank">Markdown</a></div>
+      <div id="reportBody"></div>
+    </section>
+    <section id="playtests" class="tab">
+      <div id="ptListView"><div class="bar" id="ptBar"></div><div id="ptTrends"></div><div id="ptList"></div></div>
+      <div id="ptDetail"></div>
+    </section>
+    <section id="backlog" class="tab">
+      <div class="bar">
+        <select id="blProduct"><option value="">All products</option></select>
+        <select id="blStatus"><option value="open,fixing">Open</option><option value="fixed">Fixed</option><option value="wontfix">Won't fix</option><option value="open,fixing,fixed,wontfix">All</option></select>
+        <span id="blCount"></span>
+      </div>
+      <div id="blList"></div>
+    </section>
+    <section id="changes" class="tab">
+      <div class="bar"><select id="chStatus"><option value="queued,working,verifying,revising,ready">Active</option><option value="ready">Ready for you</option><option value="merged">Merged</option><option value="failed,closed">Failed or closed</option><option value="">All</option></select> <span id="chInfo" class="meta"></span></div>
+      <div id="chList"></div>
+    </section>
+    <section id="runs" class="tab">
+      <div id="runList"></div>
+      <div id="runDetail"></div>
+    </section>
+  </main>
+  <div id="viewer" class="viewer" hidden><div class="inner"><button class="close">×</button><div class="content"></div></div></div>
+  <script src="app.js"></script>
+  <script src="talk.js"></script>
+  <script src="playtests.js"></script>
+</body>
+</html>

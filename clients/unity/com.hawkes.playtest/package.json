@@ -1,0 +1,8 @@
+{
+  "name": "com.hawkes.playtest",
+  "version": "0.1.0",
+  "displayName": "Hawkes Playtest",
+  "description": "The Hawkes playtest contract (v1) for Unity WebGL games: register scenarios and a bot coroutine, and the Hawkes Studio runner can start, watch and report a playtest from the browser (window.hawkesPlaytest). Costs nothing until a playtest starts. Spec: C:/Projects/hawkesstudio/docs/playtest.md.",
+  "unity": "2021.3",
+  "author": { "name": "Hawkes Studio" }
+}

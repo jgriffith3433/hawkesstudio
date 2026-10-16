@@ -1,0 +1,15 @@
+{
+  "name": "hawkes-deploy",
+  "private": true,
+  "type": "module",
+  "description": "Provisions and deploys Hawkes Gen + Hawkes Studio to the AWS control server.",
+  "dependencies": {
+    "@aws-sdk/client-ec2": "^3.1151.0",
+    "@aws-sdk/client-elastic-load-balancing-v2": "^3.1152.0",
+    "@aws-sdk/client-iam": "^3.1151.0",
+    "@aws-sdk/client-lightsail": "^3.1152.0",
+    "@aws-sdk/client-rds": "^3.1152.0",
+    "@aws-sdk/client-route-53": "^3.1151.0",
+    "@aws-sdk/client-secrets-manager": "^3.1151.0"
+  }
+}

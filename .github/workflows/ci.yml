@@ -1,0 +1,29 @@
+# Typecheck and tests on every push and pull request. The control server deploys a commit on main only after
+# this passes (hawkesstudio/deploy/hawkes-pull.mjs checks the commit's check runs).
+name: CI
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - run: npm run typecheck
+      # The beta-lane and dev tests make git repos and commits.
+      - run: |
+          git config --global user.name "CI"
+          git config --global user.email "ci@example.invalid"
+          git config --global init.defaultBranch main
+      # Without Hawkes Gen running here, the asset test skips itself; the rest need nothing else.
+      - run: npm test
+        env:
+          HAWKESGEN_URL: http://127.0.0.1:8790

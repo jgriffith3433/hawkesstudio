@@ -1,0 +1,10 @@
+import { EC2Client, DescribeNetworkInterfacesCommand, DescribeNatGatewaysCommand } from '@aws-sdk/client-ec2';
+import { ElasticLoadBalancingV2Client, DescribeLoadBalancersCommand } from '@aws-sdk/client-elastic-load-balancing-v2';
+import { cfg } from './aws.mjs';
+const ec2 = new EC2Client(cfg);
+const enis = await ec2.send(new DescribeNetworkInterfacesCommand({ NetworkInterfaceIds: ['eni-04f29d874750bcd03', 'eni-079d6e9ffc0a607f2'] }));
+for (const e of enis.NetworkInterfaces) console.log(e.NetworkInterfaceId, e.InterfaceType, e.RequesterId, e.Description);
+const nat = await ec2.send(new DescribeNatGatewaysCommand({}));
+for (const n of nat.NatGateways) console.log('NAT', n.NatGatewayId, n.State, n.CreateTime);
+const lbs = await new ElasticLoadBalancingV2Client(cfg).send(new DescribeLoadBalancersCommand({}));
+for (const l of lbs.LoadBalancers) console.log('LB', l.LoadBalancerName, l.Type, l.State?.Code, l.CreatedTime);

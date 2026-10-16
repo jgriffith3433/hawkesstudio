@@ -1,0 +1,19 @@
+{
+  "name": "hawkesstudio",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Hawkes Studio: J's cockpit for every Hawkes product. Builds, playtests and reviews each one every day (through Hawkes Gen), keeps the backlog, writes the morning report, and gates deploys.",
+  "type": "module",
+  "engines": { "node": ">=24" },
+  "scripts": {
+    "start": "node --disable-warning=ExperimentalWarning src/server.ts",
+    "daily": "node --disable-warning=ExperimentalWarning src/cli.ts daily",
+    "studio": "node --disable-warning=ExperimentalWarning src/cli.ts",
+    "typecheck": "tsc -p . && node --check dashboard/app.js && node --check dashboard/talk.js && node --check dashboard/playtests.js",
+    "test": "node --disable-warning=ExperimentalWarning --test \"test/**/*.test.ts\""
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.9.0"
+  }
+}
