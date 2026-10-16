@@ -137,7 +137,8 @@ function update(id: string, patch: Partial<Record<string, any>>) {
  * Where a change's work is, recorded as it goes so a Studio restart (a deploy) doesn't redo it: the steps in order
  * (prepare: worktree and brief; agent: Claude Code, detached, with its process and how far its output was read;
  * publish: push and pull request; verify: build, playtest and review, with their Gen jobs; finish: canon, preview,
- * ready), and what the pass is (J's note, an answer). Null once the change isn't being worked on.
+ * ready), and what the pass is (J's note, an answer). Null once the change isn't being worked on
+ * (a failed one keeps the step it failed at, with `failed`).
  */
 export type Phase = {
   step: 'prepare' | 'agent' | 'publish' | 'verify' | 'finish';
@@ -154,6 +155,8 @@ export type Phase = {
   /** Verification's Hawkes Gen jobs (build, playtest, review): waited on again after a restart, not submitted again. */
   jobs?: Record<string, string>;
   verify?: any;
+  /** On a failed change: the step it failed at, kept for the Activity panel's stages (nothing resumes it). */
+  failed?: boolean;
 };
 export const phaseOf = (id: string): Phase | null => parse((db.prepare('SELECT phase FROM changes WHERE id = ?').get(id) as any)?.phase ?? null);
 function addLog(id: string, line: string) {
@@ -729,7 +732,7 @@ async function work(id: string, note?: string, answer?: string, resumed?: Phase 
     // and a roadmap task's change is the PM's to review (pm.ts).
   } catch (e: any) {
     addLog(id, `error: ${e.message}`);
-    update(id, { status: 'failed', detail: String(e.message).slice(0, 300), phase: null });
+    update(id, { status: 'failed', detail: String(e.message).slice(0, 300), phase: { step: ph.step, jobs: ph.jobs, failed: true } });
     for (const f of getChange(id)!.findings) updateFinding(f, { status: 'open' });
   }
 }
@@ -1048,7 +1051,7 @@ async function workInfra(id: string, note?: string, resumed?: Phase | null) {
     // Talk tells J in the chat; no phone notification (only failures and milestones go to the phone).
   } catch (e: any) {
     addLog(id, `error: ${e.message}`);
-    update(id, { status: 'failed', detail: String(e.message).slice(0, 300), phase: null });
+    update(id, { status: 'failed', detail: String(e.message).slice(0, 300), phase: { step: ph.step, failed: true } });
   }
 }
 
@@ -1347,7 +1350,7 @@ export function resumeChanges() {
   const out: string[] = [];
   for (const c of listChanges({ status: 'working,verifying,revising', limit: 200 })) {
     const ph = phaseOf(c.id);
-    if (!ph?.step) {
+    if (!ph?.step || ph.failed) {
       update(c.id, { status: 'queued', detail: 'requeued after a restart' });
       continue;
     }

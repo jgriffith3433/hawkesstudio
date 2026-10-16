@@ -20,10 +20,36 @@ const convTitle = (id: string) => {
   return titles.get(id) ?? 'a conversation';
 };
 
+/** Builds a Unity change's branch before playtesting it (agents.ts verifyChange). */
+const builds = (product: string) => {
+  try {
+    if (isInfra(product)) return false;
+    const p = getProduct(product);
+    return p.engine === 'unity' || Boolean(p.build);
+  } catch {
+    return false;
+  }
+};
+
+/**
+ * What the Activity panel's stages are drawn from (dashboard/activity.js ChangeStages): the kind of change, the step
+ * its work is at (or failed at: agents.ts keeps it), which verification jobs it got to, and its verification's outcome.
+ */
+function stageOf(c: any, v: any) {
+  const ph = parse(c.phase);
+  const jobs = ph?.jobs ?? {};
+  return {
+    infra: isInfra(c.product), unity: builds(c.product), step: ph?.step ?? null, failed: Boolean(ph?.failed),
+    jobs: { build: Boolean(jobs.build), playtest: Boolean(jobs.playtest), review: Boolean(jobs.review) },
+    outcome: v?.outcome ?? null,
+  };
+}
+
 function changeRow(c: any) {
   const log = (parse(c.log) ?? []) as string[];
   const v = parse(c.verify);
   return {
+    stage: stageOf(c, v),
     id: c.id, product: c.product, productName: name(c.product), title: c.title, status: c.status, detail: c.detail,
     started: c.created, updated: c.updated, cost: c.cost ?? 0, pr: c.pr_url ?? null, preview: v?.preview ?? null,
     origin: c.origin ?? null, by: c.origin ? `Talk: ${convTitle(c.origin)}` : c.started_by ?? 'J', log: log.slice(-12),

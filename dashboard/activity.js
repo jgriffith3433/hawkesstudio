@@ -2,7 +2,47 @@
 // current step, Hawkes Gen jobs, Talk answers in progress, and what finished in the last 15 minutes. A drawer on the
 // right, opened from the header's Activity button (its badge counts what's running); on a wide screen it sits beside
 // Talk. Polled every 3 s while open, every 10 s for the badge. Loaded after app.js (uses its api, esc, show, ago).
-(() => {
+
+// An agent change's stages (coding → building → playtesting → review → ready; Studio and Gen: coding → checks →
+// ready), each todo, now, done or failed, from the change's status and its `stage` facts (src/activity.ts stageOf).
+// Pure, so it is tested without a DOM (test/activity.test.ts).
+var ChangeStages = (() => {
+  const names = (s) => (s.infra ? ['coding', 'checks', 'ready'] : s.unity ? ['coding', 'building', 'playtesting', 'review', 'ready'] : ['coding', 'playtesting', 'review', 'ready']);
+  /** The stage a step of the work (agents.ts Phase) is in. */
+  function stageAt(s) {
+    if (!s.step || ['prepare', 'agent', 'publish'].includes(s.step)) return 'coding';
+    if (s.infra) return 'checks';
+    if (s.step === 'finish' || s.jobs?.review) return 'review';
+    if (s.jobs?.playtest || !s.unity) return 'playtesting';
+    return 'building';
+  }
+  /** A ready change whose verification didn't get through: the stage that stopped it. */
+  function stoppedAt(s) {
+    if (s.infra) return s.outcome === 'failed' ? 'checks' : null;
+    if (s.outcome === 'build failed') return s.unity ? 'building' : 'playtesting';
+    return s.outcome === 'failed' ? 'playtesting' : null;
+  }
+  function stages(status, s = {}) {
+    const list = names(s);
+    const row = (at, how, after = 'todo') => {
+      const i = list.indexOf(at);
+      return list.map((name, k) => ({ name, state: k < i ? 'done' : k === i ? how : after }));
+    };
+    if (status === 'merged') return list.map((name) => ({ name, state: 'done' }));
+    if (status === 'queued' || status === 'closed') return list.map((name) => ({ name, state: 'todo' }));
+    if (status === 'failed') return row(s.failed ? stageAt(s) : 'coding', 'failed');
+    if (status === 'ready') {
+      const stop = stoppedAt(s);
+      if (!stop) return row('ready', 'now');
+      return row(stop, 'failed').map((x) => (x.name === 'ready' ? { ...x, state: 'now' } : x));
+    }
+    // working, revising, verifying, needs answer
+    return row(status === 'verifying' && !s.step ? (s.infra ? 'checks' : s.unity ? 'building' : 'playtesting') : stageAt(s), 'now');
+  }
+  return { stages, stageAt };
+})();
+
+if (typeof document !== 'undefined') (() => {
   const el = (s) => document.querySelector(s);
   const KEY = 'studio.activity';
   const remembered = () => { try { return localStorage.getItem(KEY); } catch { return null; } };
@@ -23,10 +63,14 @@
   const link = (href, text, ext = true) => `<a href="${esc(href)}"${ext ? ' target="_blank" rel="noopener"' : ''}>${text}</a>`;
   const by = (x) => (x.origin ? `<a href="?conversation=${esc(x.origin)}#talk" data-talk="${esc(x.origin)}">${esc(x.by)}</a>` : esc(x.by));
 
+  const stagesHtml = (c) => `<div class="act-stages">${ChangeStages.stages(c.status, c.stage ?? {})
+    .map((x) => `<span class="stg ${x.state}" title="${esc(`${x.name}: ${x.state}`)}">${x.state === 'done' ? '✓ ' : x.state === 'failed' ? '✗ ' : ''}${esc(x.name)}</span>`).join('<span class="stg-arrow">›</span>')}</div>`;
+
   function changeHtml(c, done = false) {
     return `<div class="act-item">
       <div class="act-top">${ICON[c.status] ?? '•'} <b>${esc(c.productName)}</b> <span class="pill ${c.status === 'ready' ? 'ship' : c.status === 'failed' ? 'failed' : ''}">${esc(c.status)}</span><span class="act-time">${done ? `${ago(c.at)}` : since(c.started)}</span></div>
       <div class="act-title">${esc(c.title)}</div>
+      ${stagesHtml(c)}
       ${c.detail ? `<div class="act-now">${esc(c.detail)}</div>` : ''}
       <div class="meta">by ${by(c)} · <a href="#changes/${esc(c.id)}" data-change-log="${esc(c.id)}">log</a>${c.pr ? ` · ${link(c.pr, 'PR')}` : ''}${c.preview ? ` · ${link(c.preview, 'preview')}` : ''}${c.cost ? ` · $${c.cost.toFixed(2)}` : ''}</div>
       ${!done && c.log?.length ? `<details class="act-log"><summary class="meta">last log lines</summary><pre>${esc(c.log.join('\n'))}</pre></details>` : ''}
