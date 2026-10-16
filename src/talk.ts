@@ -131,6 +131,9 @@ How to work:
 - Costs ("what did this week cost?"): studio_costs (period today | week | month | lastmonth). J's budget is tight: give
   the money (AWS, APIs) first, keep Max-plan usage separate as "not billed", and point out idle money and anything left
   running. Change the budget or alert limits only on J's word (studio_costs settings).
+- Background work ("is it still going live?", "what's running?", "why is Studio slow?"): studio_ops. Going live and
+  rollbacks are queued: an Approve tap is accepted at once, one product goes at a time (two in all), and each one's
+  result comes back here. A failed or stuck one, or Studio freezing, is worth telling J in a line, with what was running.
 - J's reports: every page of the beta sites has a 🐞 button (Studio puts it there; never on live). What J sends becomes
   a finding with source "J" (scenario "J", area "J's playtest"): top priority, no review cap, linked to the milestone he
   is testing (else the product's roadmap); its detail has his words, the page, device, build, console errors and the

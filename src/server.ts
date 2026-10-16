@@ -105,7 +105,15 @@ const server = http.createServer(async (req, res) => {
     // The shared memory (memory.ts, memory-api.ts): the Memory tab, the memory_* tools.
     if (route === '/api/memory' || route.startsWith('/api/memory/')) return await (await import('./memory-api.ts')).handleMemory(req, res, url, send, readJson);
     if (route === '/api/config') return send(res, 200, { genUrl: process.env.GEN_PUBLIC_URL || 'http://127.0.0.1:8790' });
-    if (route === '/api/health') return send(res, 200, { ok: true, name: 'hawkesstudio', gen: await genUp(), run: activeRun()?.id ?? null });
+    if (route === '/api/health') {
+      const ops = await import('./ops.ts');
+      return send(res, 200, { ok: true, name: 'hawkesstudio', gen: await genUp(), run: activeRun()?.id ?? null, loop: ops.loopHealth(), ops: ops.listOps({ since: Date.now() }).filter((o) => o.status !== 'done' && o.status !== 'failed').length, commands: ops.runningCommands().length });
+    }
+    // Background operations (ops.ts): the go-live queue, rollbacks and merges, the commands running now, the event loop.
+    if (route === '/api/ops' && method === 'GET') {
+      const ops = await import('./ops.ts');
+      return send(res, 200, { ops: ops.listOps({ product: q('product'), limit: Number(q('limit')) || 100 }), commands: ops.runningCommands(), loop: ops.loopHealth() });
+    }
     if (route === '/api/self-deploys') return send(res, 200, { deploys: selfDeploys(Number(q('limit') ?? 30)), busy: selfBusy() });
     if (route === '/api/overview') return send(res, 200, await overview());
     // Everything running in the background (the dashboard's Activity panel).
@@ -191,15 +199,22 @@ const server = http.createServer(async (req, res) => {
 
     // Go live (gated): the plan, then "DEPLOY <product>" fast-forwards main to the playtested beta (deploy.ts).
     m = /^\/api\/deploy\/([\w-]+)$/.exec(route);
-    if (m && method === 'GET') return send(res, 200, deployPlan(m[1]));
-    if (m && method === 'POST') return send(res, 200, await deploy(m[1], { ...(await readJson(req)), origin }));
+    if (m && method === 'GET') return send(res, 200, await deployPlan(m[1]));
+    if (m && method === 'POST') {
+      // Queued like an Approve tap (one product at a time, Studio responsive); this request waits for the answer.
+      const b = await readJson(req);
+      return send(res, 200, await (await import('./deploy.ts')).runLive('golive', { product: m[1], confirm: b.confirm, by: b.by, mergeMain: b.mergeMain, beta: b.beta, origin }));
+    }
     m = /^\/api\/rollback\/([\w-]+)$/.exec(route);
-    if (m && method === 'GET') return send(res, 200, rollbackPlan(m[1]));
-    if (m && method === 'POST') return send(res, 200, await rollback(m[1], { ...(await readJson(req)), origin }));
+    if (m && method === 'GET') return send(res, 200, await rollbackPlan(m[1]));
+    if (m && method === 'POST') {
+      const b = await readJson(req);
+      return send(res, 200, await (await import('./deploy.ts')).runLive('rollback', { product: m[1], confirm: b.confirm, by: b.by, origin }));
+    }
     // Talk's workspace (a worktree of a product repo on beta) and its fast lane: a small change checked and pushed to
     // beta by Studio (fastlane.ts). Never main, never Studio or Gen.
     m = /^\/api\/workspace\/([\w-]+)$/.exec(route);
-    if (m && (method === 'GET' || method === 'POST')) return send(res, 200, (await import('./fastlane.ts')).workspace(m[1]));
+    if (m && (method === 'GET' || method === 'POST')) return send(res, 200, await (await import('./fastlane.ts')).workspace(m[1]));
     m = /^\/api\/fastlane\/([\w-]+)$/.exec(route);
     if (m && method === 'POST') { const b = await readJson(req); return send(res, 200, await (await import('./fastlane.ts')).fastlane(m[1], String(b.message ?? ''), { origin, by: origin ? 'Talk' : 'J' })); }
     // Beta brought up to date and played (pre-deploy build, Unity build, beta site, a local playtest). Nothing goes live.
@@ -463,7 +478,7 @@ const server = http.createServer(async (req, res) => {
 
     if (route === '/api/repos/sync' && method === 'POST') {
       const b = await readJson(req);
-      const repos = syncRepos(Array.isArray(b.only) ? b.only : undefined);
+      const repos = await syncRepos(Array.isArray(b.only) ? b.only : undefined);
       const { previewsAfterSync } = await import('./previews.ts');
       previewsAfterSync(repos);
       return send(res, 200, { repos });
@@ -565,6 +580,9 @@ server.listen(PORT, '127.0.0.1', () => {
   if (process.env.STUDIO_SMOKE === '1') return;
   // A restart (a deploy) ends nothing: runs, agent changes and Talk answers carry on from where they were, waiting on
   // the same Gen jobs and reading the same detached Claude Code processes (drain.ts, detach.ts).
+  // Queued go-lives and rollbacks carry on (ops.ts), and the event loop is watched for anything that blocks it.
+  void import('./ops.ts').then((ops) => { ops.startLoopMonitor(); const n = ops.resumeOps(); if (n) console.log(`[studio] ${n} background operation(s) back in the queue after the restart`); });
+  void import('./deploy.ts');
   const runs = resumeRuns();
   const changes = resumeChanges();
   const answers = resumeTalk();

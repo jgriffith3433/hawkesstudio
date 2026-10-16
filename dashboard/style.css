@@ -263,6 +263,7 @@ body.in-call .talk-input, body.in-call .talk-files, body.in-call #notifyBox { di
 .act-head .meta { flex: 1; }
 .activity h4 { margin: 12px 0 6px; font-size: 13px; }
 .act-item { background: var(--panel2); border: 1px solid var(--line); border-radius: 8px; padding: 7px 9px; margin-bottom: 6px; font-size: 12.5px; }
+.act-item.act-warn { border-color: rgba(255,190,85,.55); background: color-mix(in srgb, var(--amber) 8%, var(--panel2)); }
 .act-top { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .act-time { margin-left: auto; color: var(--dim); font-size: 11.5px; font-variant-numeric: tabular-nums; }
 .act-title { margin: 2px 0; }

@@ -44,19 +44,19 @@ const played = (sha: string, outcome = 'won') => db.prepare('INSERT INTO steps (
 
 test('beta lane: plan, go live, rollback, merge main back', async () => {
   // No beta yet: the plan says so; ensureBeta makes it from main.
-  assert.equal(beta.compareBeta(dir).beta, null);
-  assert.match(deployPlan('betatest').blockers.join(' '), /no beta branch yet/);
-  const made = beta.ensureBeta(dir);
+  assert.equal((await beta.compareBeta(dir)).beta, null);
+  assert.match((await deployPlan('betatest')).blockers.join(' '), /no beta branch yet/);
+  const made = await beta.ensureBeta(dir);
   assert.ok(made.created);
   assert.equal(remote('beta'), remote('main'));
-  assert.match(deployPlan('betatest').blockers.join(' '), /Nothing to go live/);
+  assert.match((await deployPlan('betatest')).blockers.join(' '), /Nothing to go live/);
 
   // Two approved changes land on beta.
   git(dir, 'checkout', '--quiet', '-b', 'beta', 'origin/beta');
   commit('index.html', 'v2', 'Fix: the title');
   commit('about.html', 'about', 'Add an about page');
   git(dir, 'push', '--quiet', 'origin', 'beta');
-  let plan = deployPlan('betatest');
+  let plan = await deployPlan('betatest');
   assert.deepEqual(plan.commits.map((c) => c!.title), ['Add an about page', 'Fix: the title']);
   assert.equal(plan.commits[0]!.author, 'Test');
   assert.equal(plan.beta!.sha, remote('beta'));
@@ -65,9 +65,9 @@ test('beta lane: plan, go live, rollback, merge main back', async () => {
 
   // An older playtest doesn't count; the playtest of the exact beta commit does.
   played(remote('main'));
-  assert.match(deployPlan('betatest').blockers.join(' '), /hasn't been playtested at/);
+  assert.match((await deployPlan('betatest')).blockers.join(' '), /hasn't been playtested at/);
   played(remote('beta'), 'won');
-  plan = deployPlan('betatest');
+  plan = await deployPlan('betatest');
   assert.deepEqual(plan.blockers, []);
   assert.equal(plan.tested.playtests[0].name, 'smoke@local');
   assert.match(plan.warnings.join(' '), /no review/);
@@ -78,7 +78,7 @@ test('beta lane: plan, go live, rollback, merge main back', async () => {
   const r = await deploy('betatest', { confirm: 'DEPLOY betatest', by: 'test' });
   assert.equal(remote('main'), remote('beta'));
   assert.equal(r.main, remote('main').slice(0, 7));
-  assert.match(deployPlan('betatest').blockers.join(' '), /Nothing to go live/);
+  assert.match((await deployPlan('betatest')).blockers.join(' '), /Nothing to go live/);
 
   // Beta moves again but isn't played: refused.
   commit('index.html', 'v3', 'Fix: a typo');
@@ -86,7 +86,7 @@ test('beta lane: plan, go live, rollback, merge main back', async () => {
   await assert.rejects(deploy('betatest', { confirm: 'DEPLOY betatest' }), /hasn't been playtested at/);
 
   // Rollback: a new commit on main with the files from before the go live (no force push).
-  const rp = rollbackPlan('betatest');
+  const rp = await rollbackPlan('betatest');
   assert.equal(rp.to!.sha, before);
   assert.deepEqual(rp.undo.map((c) => c!.title), ['Add an about page', 'Fix: the title']);
   await assert.rejects(rollback('betatest', { confirm: 'ROLLBACK' }), /ROLLBACK betatest/);
@@ -95,16 +95,16 @@ test('beta lane: plan, go live, rollback, merge main back', async () => {
   assert.equal(git(origin, 'rev-parse', 'main~1'), liveBefore);
   assert.equal(git(origin, 'show', 'main:index.html'), 'v1');
   assert.throws(() => git(origin, 'show', 'main:about.html'));
-  assert.match(rollbackPlan('betatest').blockers.join(' '), /No go live/);
+  assert.match((await rollbackPlan('betatest')).blockers.join(' '), /No go live/);
 
   // main now has a rollback beta lacks: going live is blocked until main is merged into beta, which keeps beta's files.
   played(remote('beta'));
-  assert.match(deployPlan('betatest').blockers.join(' '), /merge-main/);
+  assert.match((await deployPlan('betatest')).blockers.join(' '), /merge-main/);
   const m = await deploy('betatest', { mergeMain: true, by: 'test' }) as any;
   assert.ok(m.keptBeta);
   assert.equal(git(origin, 'show', 'beta:index.html'), 'v3');
   assert.equal(git(origin, 'show', 'beta:about.html'), 'about');
-  plan = deployPlan('betatest');
+  plan = await deployPlan('betatest');
   assert.deepEqual(plan.mainOnly, []);
   assert.match(plan.blockers.join(' '), /hasn't been playtested at/);
   played(remote('beta'));

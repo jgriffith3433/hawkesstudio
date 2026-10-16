@@ -23,6 +23,7 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { db, newId, J, parse } from './db.ts';
 import { ROOT, DATA, loadProducts, loadInfra, StudioError } from './config.ts';
+import { gitAsync } from './beta.ts';
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS memories (
@@ -615,18 +616,18 @@ export const MEMORY_BRANCH = 'memory';
  * Commits the export to the orphan branch "memory" of hawkesstudio and pushes it (server only: it has the push
  * credential). Its commits say [skip ci] and the branch has no code, so nothing runs or deploys from it.
  */
-export function publishMemory() {
+export async function publishMemory() {
   const repo = ROOT;
   const wt = path.join(DATA, 'memory-export');
   if (!fs.existsSync(path.join(wt, '.git'))) {
     fs.rmSync(wt, { recursive: true, force: true });
     git(repo, ['worktree', 'prune']);
-    git(repo, ['fetch', '--quiet', 'origin', MEMORY_BRANCH]);
+    await gitAsync(repo, ['fetch', '--quiet', 'origin', MEMORY_BRANCH]);
     const has = git(repo, ['rev-parse', '--verify', `origin/${MEMORY_BRANCH}`]).ok;
     const w = has ? git(repo, ['worktree', 'add', '--force', '-B', 'memory-export', wt, `origin/${MEMORY_BRANCH}`]) : git(repo, ['worktree', 'add', '--force', '--orphan', '-b', 'memory-export', wt]);
     if (!w.ok) throw new Error(`memory export worktree: ${w.err}`);
   } else {
-    git(wt, ['fetch', '--quiet', 'origin', MEMORY_BRANCH]);
+    await gitAsync(wt, ['fetch', '--quiet', 'origin', MEMORY_BRANCH]);
     if (git(wt, ['rev-parse', '--verify', `origin/${MEMORY_BRANCH}`]).ok) git(wt, ['reset', '--quiet', '--hard', `origin/${MEMORY_BRANCH}`]);
   }
   const files = exportMarkdown();
@@ -639,7 +640,7 @@ export function publishMemory() {
   if (!git(wt, ['status', '--porcelain']).out) return { changed: false, files: Object.keys(files).length };
   const c = git(wt, ['-c', 'user.name=Hawkes Studio', '-c', 'user.email=studio@hawkesgen.com', 'commit', '--quiet', '-m', `Memory export ${new Date().toISOString().slice(0, 10)} [skip ci]`]);
   if (!c.ok) throw new Error(`memory export commit: ${c.err}`);
-  const p = git(wt, ['push', '--quiet', 'origin', `HEAD:refs/heads/${MEMORY_BRANCH}`]);
+  const p = await gitAsync(wt, ['push', '--quiet', 'origin', `HEAD:refs/heads/${MEMORY_BRANCH}`]);
   if (!p.ok) throw new Error(`memory export push: ${p.err}`);
   return { changed: true, files: Object.keys(files).length, sha: git(wt, ['rev-parse', '--short', 'HEAD']).out };
 }
@@ -698,8 +699,7 @@ export function startMemory() {
         void import('./memory-curate.ts').then(({ autoCurate }) => autoCurate()).then((r) => { if (r.looked) console.log(`[memory] curation: ${JSON.stringify(r)}`); }).catch((e) => console.warn(`[memory] curation: ${e.message}`));
       }
       if (process.env.STUDIO_SERVER === '1' && process.env.STUDIO_MEMORY_PUBLISH !== 'off' && process.env.GITHUB_TOKEN) {
-        const r = publishMemory();
-        if (r.changed) console.log(`[memory] export pushed to ${MEMORY_BRANCH} (${r.sha})`);
+        void publishMemory().then((r) => { if (r.changed) console.log(`[memory] export pushed to ${MEMORY_BRANCH} (${r.sha})`); }).catch((e) => console.warn(`[memory] export: ${e.message}`));
       }
     } catch (e: any) {
       console.warn(`[memory] daily: ${e.message}`);

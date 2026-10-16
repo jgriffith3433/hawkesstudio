@@ -5,6 +5,7 @@
 import { db, parse } from './db.ts';
 import { GEN_PUBLIC_URL, getProduct, getInfra, isInfra } from './config.ts';
 import { gen, genUp } from './gen.ts';
+import { listOps, runningCommands, loopHealth } from './ops.ts';
 
 const name = (product: string) => {
   try {
@@ -94,9 +95,16 @@ export async function activity() {
   ].sort((a, b) => b.at - a.at);
   const stepJobs = new Set(runs.flatMap((r) => r.now.map((s: any) => s.job)).filter(Boolean));
   titles.clear();
+  // Background operations (ops.ts): going live, rollbacks, merges; queued and running ones, and the last day's finished.
+  const allOps = listOps({ since: Date.now() - 86_400_000, limit: 40 });
+  const ops = allOps.filter((o) => o.status === 'queued' || o.status === 'running');
+  const opsDone = allOps.filter((o) => o.status === 'done' || o.status === 'failed').slice(0, 10);
+  const loop = loopHealth();
   return {
-    at: Date.now(), gen: genOk, changes, runs, jobs, talk, recent,
+    at: Date.now(), gen: genOk, changes, runs, jobs, talk, recent, ops, opsDone, commands: runningCommands(),
+    // Moments in the last hour Studio couldn't answer for over a second (a blocking call), and what was running then.
+    loop: { lastMinute: loop.lastMinute, blocks: loop.blocks.filter((b) => b.at > Date.now() - 3600_000) },
     // The header badge: things working now (a Gen job a run's step is waiting on counts once, as its run).
-    count: changes.length + runs.length + talk.length + jobs.filter((j) => !stepJobs.has(j.id)).length,
+    count: changes.length + runs.length + talk.length + ops.length + jobs.filter((j) => !stepJobs.has(j.id)).length,
   };
 }

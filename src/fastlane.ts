@@ -15,7 +15,7 @@ import { critical } from './drain.ts';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { PROJECTS, getProduct, isInfra, StudioError, type Product } from './config.ts';
-import { BETA, ensureBeta, git } from './beta.ts';
+import { BETA, ensureBeta, git, gitAsync } from './beta.ts';
 import { spawnShell, assertWorktree } from './sandbox.ts';
 import { recordRun } from './memory.ts';
 import { warmDeps } from './warm.ts';
@@ -42,18 +42,18 @@ export function protectedFiles(files: { file: string; status: string }[]) {
 }
 
 /** Makes or refreshes Talk's worktree of a product repo on beta. A clean one is moved to beta's tip; work in it stays. */
-export function workspace(productId: string) {
+export async function workspace(productId: string) {
   if (isInfra(productId)) throw new StudioError('Studio and Gen have no fast lane: ask for the change with studio_task (a pull request into main, checked and approved by J).');
   const p = getProduct(productId);
   const repo = path.join(PROJECTS, top(p));
   const dir = workspaceDir(p);
-  git(repo, ['fetch', '--quiet', 'origin']);
-  ensureBeta(repo);
+  await gitAsync(repo, ['fetch', '--quiet', 'origin']);
+  await ensureBeta(repo);
   const base = git(repo, ['rev-parse', `origin/${BETA}`]).out;
   if (!fs.existsSync(path.join(dir, '.git'))) {
     fs.mkdirSync(path.dirname(dir), { recursive: true });
     git(repo, ['worktree', 'prune']);
-    const w = git(repo, ['worktree', 'add', '--force', '-B', branchOf(p), dir, `origin/${BETA}`]);
+    const w = await gitAsync(repo, ['worktree', 'add', '--force', '-B', branchOf(p), dir, `origin/${BETA}`]);
     if (!w.ok) throw new StudioError(`Couldn't make the workspace: ${w.err}`);
     warmDeps(dir, top(p));
   }
@@ -63,7 +63,7 @@ export function workspace(productId: string) {
   const behind = git(dir, ['rev-list', '--count', `HEAD..origin/${BETA}`]).out;
   let refreshed = false;
   if (!dirty && ahead === '0' && behind !== '0') {
-    git(dir, ['checkout', '--quiet', '-B', branchOf(p), `origin/${BETA}`]);
+    await gitAsync(dir, ['checkout', '--quiet', '-B', branchOf(p), `origin/${BETA}`]);
     refreshed = true;
   }
   return {
@@ -114,7 +114,7 @@ async function fastlaneNow(productId: string, message: string, { origin = null, 
   const repo = path.join(PROJECTS, top(p));
   // Talk can write its workspace: Studio's git runs there only while it still links to this repo (sandbox.ts).
   assertWorktree(dir, repo);
-  git(repo, ['fetch', '--quiet', 'origin']);
+  await gitAsync(repo, ['fetch', '--quiet', 'origin']);
   const out: FastResult = { ok: false, product: p.id, commits: [], files: [], lines: 0, checks: [] };
   const refuse = (why: string) => ({ ...out, why });
   // Uncommitted edits are committed with the message (the sandbox can commit too; this saves Talk a step).
@@ -156,11 +156,11 @@ async function fastlaneNow(productId: string, message: string, { origin = null, 
   }
   // A fast-forward of beta, never forced, never main.
   const sha = git(dir, ['rev-parse', 'HEAD']).out;
-  const push = git(dir, ['push', '--quiet', 'origin', `HEAD:refs/heads/${BETA}`]);
+  const push = await gitAsync(dir, ['push', '--quiet', 'origin', `HEAD:refs/heads/${BETA}`]);
   if (!push.ok) return refuse(`push to beta failed: ${push.err.split('\n').pop()}`);
   out.ok = true;
   out.pushed = sha.slice(0, 7);
-  git(repo, ['fetch', '--quiet', 'origin']);
+  await gitAsync(repo, ['fetch', '--quiet', 'origin']);
   // Beta's run (the beta site, a Unity build, a playtest of beta) reports back to the conversation.
   const { startBeta } = await import('./pipeline.ts');
   if (process.env.STUDIO_FASTLANE_BETA !== 'off') out.run = (() => { try { return startBeta(p.id, { origin, focus: `Just pushed to beta by Talk's fast lane: ${message}. Check it works and nothing regressed.` }).id; } catch { return null; } })();

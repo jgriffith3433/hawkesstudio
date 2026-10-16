@@ -81,7 +81,7 @@ async function describe(kind: Kind, target: string, params: Record<string, any>)
   }
   if (kind === 'deploy') {
     const { deployPlan } = await import('./deploy.ts');
-    const p = deployPlan(target);
+    const p = await deployPlan(target);
     const lines = [p.what, `Live (main): ${p.main ? `${p.main.short} ${p.main.title}` : 'none'} · beta: ${p.beta ? `${p.beta.short} ${p.beta.title}` : 'none'}`];
     lines.push(p.commits.length ? `${p.commits.length} commit(s) go live: ${p.commits.slice(0, 8).map((c) => `${c!.short} ${c!.title} (${c!.author})`).join('; ')}${p.commits.length > 8 ? '; …' : ''}` : 'No new commits.');
     lines.push(p.tested.playtests.length ? `Playtests of beta ${p.tested.sha}: ${p.tested.playtests.map((t) => `${t.name} ${t.outcome ?? t.status}${t.verdict ? `, review "${t.verdict}"` : ''}`).join(' · ')}` : `Beta ${p.tested.sha ?? ''} hasn't been playtested.`);
@@ -92,7 +92,7 @@ async function describe(kind: Kind, target: string, params: Record<string, any>)
   }
   if (kind === 'rollback') {
     const { rollbackPlan } = await import('./deploy.ts');
-    const p = rollbackPlan(target);
+    const p = await rollbackPlan(target);
     const lines = [p.what, `Live now: ${p.main ? `${p.main.short} ${p.main.title}` : '?'} · back to: ${p.to ? `${p.to.short} ${p.to.title}` : '?'}`];
     if (p.undo.length) lines.push(`Undoes ${p.undo.length} commit(s): ${p.undo.slice(0, 8).map((c) => `${c!.short} ${c!.title}`).join('; ')}`);
     return { bind: J([p.main?.sha ?? null, p.deploy?.id ?? null]), card: { title: `Roll back ${p.name}?`, lines, blockers: p.blockers, warnings: p.warnings, links: [{ label: 'Live site', url: p.live }], approve: 'Approve: roll back', deny: 'Deny' } };
@@ -233,6 +233,17 @@ export async function decideApproval(id: string, token: string, decision: string
   if (now.card.blockers.length) throw new StudioError(`Can't approve yet:\n- ${now.card.blockers.join('\n- ')}`, 409);
   // One time: only one tap moves it on.
   if (!claim(id, 'approving', by)) throw new StudioError('This card was just decided.', 409);
+  // Going live and rolling back are queued (deploy.ts, ops.ts): the tap is answered now, one product goes at a time,
+  // and the card (and the conversation) hears the result when it's done. Studio stays responsive meanwhile.
+  if (a.kind === 'deploy' || a.kind === 'rollback') {
+    const { queueLive } = await import('./deploy.ts');
+    const kind = a.kind === 'deploy' ? 'golive' : 'rollback';
+    const q = queueLive(kind, { product: a.target, confirm: `${a.kind === 'deploy' ? 'DEPLOY' : 'ROLLBACK'} ${a.target}`, by, origin: a.conversation, beta: a.kind === 'deploy' ? (parse(row(a.id).bind) as any[])[0] : undefined, approval: id });
+    const where = q.ahead > 1 ? `queued (${q.ahead - 1} ahead of it)` : 'starting now';
+    db.prepare(`UPDATE approvals SET result = ? WHERE id = ?`).run(`${q.op.title}: ${where}. Follow it in Activity.`, id);
+    await tell(a, `J approved: ${a.card.title} (${a.id}). ${q.op.title}: ${where}; the result follows here.`);
+    return getApproval(id)!;
+  }
   try {
     const result = await run(a, by);
     db.prepare(`UPDATE approvals SET status = 'approved', result = ? WHERE id = ?`).run(String(result).slice(0, 2000), id);

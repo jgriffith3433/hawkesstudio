@@ -48,7 +48,7 @@ export function betaFolderFor(slug: string) {
 
 /** A push to beta in one repo: sync it, rebuild web beta sites now and schedule Unity ones. */
 export async function onBetaPush(folder: string, sha?: string) {
-  const [result] = syncRepos([folder]);
+  const [result] = await syncRepos([folder]);
   const { previewsAfterSync } = await import('./previews.ts');
   const rebuilt = previewsAfterSync([result], { missing: false });
   const unity = loadProducts().filter((p) => p.build && p.repo.split('/')[0] === folder).map((p) => p.id);
@@ -56,7 +56,7 @@ export async function onBetaPush(folder: string, sha?: string) {
   // The checkout couldn't follow beta (uncommitted changes, local commits): Talk hears what's in the way (pipeline.ts).
   if (result.action === 'kept') {
     const { staleBeta } = await import('./pipeline.ts');
-    for (const p of loadProducts().filter((x) => !x.build && x.repo.split('/')[0] === folder)) staleBeta(p);
+    for (const p of loadProducts().filter((x) => !x.build && x.repo.split('/')[0] === folder)) await staleBeta(p);
   }
   const now = shaOf(path.join(PROJECTS, folder), `origin/${BETA}`)?.slice(0, 7);
   const summary = `${result.action}: ${result.detail}${rebuilt.length ? ` · rebuilding ${rebuilt.join(', ')}` : ''}${unity.length && pendingUnity.size ? ` · ${unity.join(', ')} builds in a minute` : ''}`;

@@ -22,9 +22,10 @@ import { git } from './local.ts';
 import { startPartial } from './pipeline.ts';
 import { db, newId, rowToStep, type Step } from './db.ts';
 import { previewUrl } from './previews.ts';
+import { opLog, registerOp, enqueue, queuePosition, getOp, type Op } from './ops.ts';
 import {
   BETA, MAIN, STUDIO_ROLLBACK, AUTHOR, must, repoDirs, compareBeta, fetchOrigin, shaOf, commitOf, commitsIn, betaBuild, saveBetaBuild,
-  betaSiteDir, scratch, listDeploys, mergeMainIntoBeta, prebuilt, git as gitIn, type Commit, type DeployRow,
+  betaSiteDir, scratch, listDeploys, mergeMainIntoBeta, prebuilt, git as gitIn, gitAsync, type Commit, type DeployRow,
 } from './beta.ts';
 
 const brief = (c: Commit | null) => c && { sha: c.sha, short: c.short, title: c.title, author: c.author, date: c.date };
@@ -47,15 +48,15 @@ function testedAt(productId: string, sha: string | undefined) {
   return { tested, last: last && { name: last.name, when: last.finished, played: last.data.played } };
 }
 
-export function deployPlan(productId: string) {
+export async function deployPlan(productId: string) {
   const p = getProduct(productId);
   const { source, site, unity } = repoDirs(p);
   const blockers: string[] = [];
   const warnings: string[] = [];
-  let cmp: ReturnType<typeof compareBeta> = { main: null, beta: null, ahead: [], behind: [] };
+  let cmp: Awaited<ReturnType<typeof compareBeta>> = { main: null, beta: null, ahead: [], behind: [] };
   try {
-    cmp = compareBeta(source);
-    if (unity && site !== source) fetchOrigin(site);
+    cmp = await compareBeta(source);
+    if (unity && site !== source) await fetchOrigin(site);
   } catch (e: any) {
     blockers.push(`git: ${e.message}`);
   }
@@ -121,8 +122,9 @@ export function deployPlan(productId: string) {
 export const deploy = (...a: Parameters<typeof deployNow>) => critical(`going live: ${a[0]}`, () => deployNow(...a));
 async function deployNow(productId: string, { confirm, by = 'J', mergeMain, origin, beta: expect }: { confirm?: string; by?: string; mergeMain?: boolean; message?: string; origin?: string | null; beta?: string }) {
   const p = getProduct(productId);
-  if (mergeMain) return { ok: true, product: p.id, ...mergeMainIntoBeta(p, by), note: `Nothing went live. Playtest ${BETA} again before going live.` };
-  const plan = deployPlan(p.id);
+  if (mergeMain) return { ok: true, product: p.id, ...(await mergeMainIntoBeta(p, by)), note: `Nothing went live. Playtest ${BETA} again before going live.` };
+  opLog(`making the plan for ${p.name}`);
+  const plan = await deployPlan(p.id);
   if (confirm !== plan.confirm) throw new StudioError(`Going live publishes ${plan.live}: ${plan.what} Show J the plan, then send confirm: "${plan.confirm}" (J's call).`);
   if (plan.blockers.length) throw new StudioError(`Not going live:\n- ${plan.blockers.join('\n- ')}`);
   // An Approve card (approvals.ts) is for one beta commit: a different one now isn't what J approved.
@@ -134,23 +136,30 @@ async function deployNow(productId: string, { confirm, by = 'J', mergeMain, orig
   let after: string;
   let sourceAfter: string | null = null;
   // Beta must still be the commit that was played (it could have moved while J read the plan).
-  fetchOrigin(source);
+  await fetchOrigin(source);
   if (shaOf(source, `origin/${BETA}`) !== beta.sha) throw new StudioError(`${BETA} moved since the plan was made; look at the plan again.`);
   if (!unity) {
     before = plan.main?.sha ?? null;
-    // A plain push of the commit: git refuses anything that isn't a fast-forward.
-    log.push(must(gitIn(source, ['push', 'origin', `${beta.sha}:refs/heads/${MAIN}`]), `pushing ${MAIN}`) || `${MAIN} -> ${beta.short}`);
+    // A plain push of the commit: git refuses anything that isn't a fast-forward (and pushing it again is a no-op).
+    opLog(`pushing ${p.site}'s ${MAIN} to ${beta.short}`);
+    log.push(must(await gitAsync(source, ['push', 'origin', `${beta.sha}:refs/heads/${MAIN}`]), `pushing ${MAIN}`) || `${MAIN} -> ${beta.short}`);
     after = beta.sha;
   } else {
     const copy = betaSiteDir(p);
-    fetchOrigin(site);
+    await fetchOrigin(site);
     before = shaOf(site, `origin/${MAIN}`);
     const b = betaBuild(p)!;
     must(gitIn(copy, ['add', '-A']), 'git add');
     if (!gitIn(copy, ['diff', '--cached', '--quiet']).ok) {
-      must(gitIn(copy, [...AUTHOR, 'commit', '--quiet', '-m', `Go live: ${p.name}${b.version ? ` Game/v${b.version}` : ''} (${BETA} ${beta.short}, by ${by})`]), 'committing the build');
-      must(gitIn(copy, ['push', 'origin', `HEAD:refs/heads/${MAIN}`]), `pushing ${p.site}'s ${MAIN}`);
-      after = shaOf(copy, 'HEAD')!;
+      opLog(`committing the build${b.version ? ` (Game/v${b.version})` : ''}`);
+      must(await gitAsync(copy, [...AUTHOR, 'commit', '--quiet', '-m', `Go live: ${p.name}${b.version ? ` Game/v${b.version}` : ''} (${BETA} ${beta.short}, by ${by})`]), 'committing the build');
+    }
+    const head = shaOf(copy, 'HEAD')!;
+    // A build commit not on main yet: just made, or made before a restart cut this short. Pushing it is the go live.
+    if (before && head !== before && gitIn(copy, ['merge-base', '--is-ancestor', before, head]).ok) {
+      opLog(`pushing ${p.site}'s ${MAIN} (the build: this can take a few minutes)`);
+      must(await gitAsync(copy, ['push', 'origin', `HEAD:refs/heads/${MAIN}`], 30 * 60_000), `pushing ${p.site}'s ${MAIN}`);
+      after = head;
       log.push(`${p.site}: ${MAIN} -> ${after.slice(0, 7)} (the beta build${b.version ? `, Game/v${b.version}` : ''})`);
       saveBetaBuild(p, { ...b, base: after });
     } else {
@@ -159,15 +168,16 @@ async function deployNow(productId: string, { confirm, by = 'J', mergeMain, orig
     }
     // The source's main follows (it doesn't publish anything); a failure here is reported, not fatal.
     if (plan.commits.length) {
-      const r = gitIn(source, ['push', 'origin', `${beta.sha}:refs/heads/${MAIN}`]);
+      const r = await gitAsync(source, ['push', 'origin', `${beta.sha}:refs/heads/${MAIN}`]);
       if (r.ok) sourceAfter = beta.sha;
       log.push(r.ok ? `${p.repo.split('/')[0]}: ${MAIN} -> ${beta.short}` : `warning: ${p.repo.split('/')[0]}'s ${MAIN} wasn't fast-forwarded: ${r.err.split('\n').pop()}`);
     }
   }
+  for (const l of log) opLog(l);
   const id = newId('d');
   db.prepare('INSERT INTO deploys (id, product, kind, repo, before, after, beta, source, source_before, source_after, version, by, detail, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
     .run(id, p.id, 'deploy', p.site, before, after, beta.sha, unity ? p.repo : null, unity ? plan.main?.sha ?? null : null, sourceAfter, plan.build?.version ?? null, by, `${plan.commits.length} commit(s): ${plan.commits.slice(0, 8).map((c) => c!.title).join('; ')}`.slice(0, 1000), Date.now());
-  fetchOrigin(site);
+  await fetchOrigin(site);
   if (after !== before) void verifyLive(p.id, after, `Just went live (${BETA} ${beta.short}: ${plan.commits.slice(0, 3).map((c) => c!.title).join('; ')})`, origin);
   return { ok: true, product: p.id, deploy: id, live: p.live, main: after.slice(0, 7), beta: beta.short, log, note: 'GitHub Pages publishes within a few minutes; Studio waits for it, then playtests the live site (a run appears in the dashboard). If it went wrong: the rollback plan.' };
 }
@@ -176,12 +186,12 @@ async function deployNow(productId: string, { confirm, by = 'J', mergeMain, orig
 
 const lastLive = (product: string) => db.prepare(`SELECT * FROM deploys WHERE product = ? AND kind = 'deploy' AND rolled_back IS NULL ORDER BY at DESC LIMIT 1`).get(product) as DeployRow | undefined;
 
-export function rollbackPlan(productId: string) {
+export async function rollbackPlan(productId: string) {
   const p = getProduct(productId);
   const { site } = repoDirs(p);
   const blockers: string[] = [];
   const warnings: string[] = [];
-  fetchOrigin(site);
+  await fetchOrigin(site);
   const main = shaOf(site, `origin/${MAIN}`);
   const d = lastLive(p.id);
   if (!d) blockers.push(`No go live by Studio is recorded for ${p.name} (or each one was rolled back already), so the previous live commit isn't known. Roll back by hand (git revert on ${p.site}).`);
@@ -202,24 +212,24 @@ export function rollbackPlan(productId: string) {
 /** A rollback (pushing main, recording it) is a critical section too. */
 export const rollback = (...a: Parameters<typeof rollbackNow>) => critical(`rolling back: ${a[0]}`, () => rollbackNow(...a));
 async function rollbackNow(productId: string, { confirm, by = 'J', origin }: { confirm?: string; by?: string; origin?: string | null }) {
-  const plan = rollbackPlan(productId);
+  const plan = await rollbackPlan(productId);
   if (confirm !== plan.confirm) throw new StudioError(`Rolling back publishes ${plan.live}: ${plan.what} Show J the rollback plan, then send confirm: "${plan.confirm}" (J's call).`);
   if (plan.blockers.length) throw new StudioError(`Not rolling back:\n- ${plan.blockers.join('\n- ')}`);
   const p = getProduct(productId);
   const { site } = repoDirs(p);
   const d = lastLive(p.id)!;
-  const wt = scratch(site, `${p.id}-rollback`, plan.main!.sha);
+  const wt = await scratch(site, `${p.id}-rollback`, plan.main!.sha);
   must(gitIn(wt, ['read-tree', '-u', '--reset', d.before!]), 'restoring the files');
   if (gitIn(wt, ['diff', '--cached', '--quiet']).ok) throw new StudioError(`${MAIN} already has the files of ${d.before!.slice(0, 7)}; nothing to roll back.`);
   must(gitIn(wt, [...AUTHOR, 'commit', '--quiet', '-m', `${STUDIO_ROLLBACK} ${p.name} to ${d.before!.slice(0, 7)} (undoes go live ${d.id}, ${d.after.slice(0, 7)}; by ${by})`]), 'committing the rollback');
-  must(gitIn(wt, ['push', 'origin', `HEAD:refs/heads/${MAIN}`]), `pushing ${MAIN}`);
+  must(await gitAsync(wt, ['push', 'origin', `HEAD:refs/heads/${MAIN}`]), `pushing ${MAIN}`);
   const after = shaOf(wt, 'HEAD')!;
   const id = newId('d');
   db.prepare('INSERT INTO deploys (id, product, kind, repo, before, after, by, detail, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
     .run(id, p.id, 'rollback', p.site, plan.main!.sha, after, by, `to ${d.before!.slice(0, 7)}, undoing ${d.id}`, Date.now());
   db.prepare('UPDATE deploys SET rolled_back = ? WHERE id = ?').run(id, d.id);
   gitIn(site, ['worktree', 'remove', '--force', wt]);
-  fetchOrigin(site);
+  await fetchOrigin(site);
   void verifyLive(p.id, after, `Just rolled back to ${d.before!.slice(0, 7)} (undoing ${d.after.slice(0, 7)}). Check the live site works.`, origin);
   return { ok: true, product: p.id, rollback: id, live: p.live, main: after.slice(0, 7), to: d.before!.slice(0, 7), note: `GitHub Pages publishes within a few minutes; Studio then playtests live. ${BETA} still has the rolled-back commits: fix forward there.` };
 }
@@ -281,3 +291,68 @@ export async function verifyLive(productId: string, sha: string, focus: string, 
   startPartial('playtest', p.id, { where: 'live', scenario: t?.scenario, mode: t?.mode, focus: `${focus} Check the live site works and nothing regressed.`, origin });
 }
 
+
+// ------------------------------------------------------------------- the queue
+
+/**
+ * Going live and rolling back run as queued operations (ops.ts): an Approve tap or an API call is accepted at once, one
+ * product goes at a time, two products at most in all, and Studio answers throughout (all git here is async). A restart
+ * puts a running one back in the queue: going live again is a no-op once main is the approved beta commit.
+ */
+type LiveJob = { product: string; confirm: string; by?: string; origin?: string | null; beta?: string; approval?: string; mergeMain?: boolean };
+
+/** The approval card an operation came from hears how it ended, and so does the conversation that asked. */
+async function settleApproval(op: Op, ok: boolean, text: string) {
+  const a = op.payload?.approval as string | undefined;
+  if (a) db.prepare(`UPDATE approvals SET status = ?, result = ? WHERE id = ?`).run(ok ? 'approved' : 'failed', text.slice(0, 2000), a);
+  const conv = op.origin ?? (a ? (db.prepare('SELECT conversation FROM approvals WHERE id = ?').get(a) as any)?.conversation : null);
+  if (conv) await import('./talk.ts').then((t) => t.studioSays(conv, `${op.title}: ${text}`)).catch(() => {});
+  // Going live failing is "something went wrong": J's phone hears it.
+  if (!ok) await import('./notify.ts').then((n) => n.notify(`${op.title} failed`, text.slice(0, 300), { tags: ['warning'], priority: 4 })).catch(() => {});
+}
+
+registerOp('golive', async (j: LiveJob, ctx) => {
+  ctx.step(j.mergeMain ? `merging main into ${j.product}'s beta` : `going live with ${j.product}`);
+  try {
+    return await deploy(j.product, { confirm: j.confirm, by: j.by, origin: j.origin, beta: j.beta, mergeMain: j.mergeMain });
+  } catch (e: any) {
+    // A second attempt after a restart that finds it already done: that's the first attempt's success.
+    if (ctx.op.attempts > 1 && /Nothing to go live/.test(String(e.message))) {
+      const d = db.prepare(`SELECT * FROM deploys WHERE product = ? AND kind = 'deploy' AND at >= ? ORDER BY at DESC LIMIT 1`).get(j.product, ctx.op.created) as DeployRow | undefined;
+      if (d && (!j.beta || d.beta === j.beta)) return { ok: true, product: j.product, deploy: d.id, main: d.after.slice(0, 7), beta: d.beta?.slice(0, 7) ?? null, note: 'went live before Studio restarted' };
+    }
+    throw e;
+  }
+}, {
+  done: (op) => settleApproval(op, true, op.result?.main ? `Live: main is ${op.result.main} (beta ${op.result.beta}). ${op.result.note ?? ''}`.trim() : String(op.result?.detail ?? 'done')),
+  failed: (op) => settleApproval(op, false, op.error ?? 'failed'),
+});
+
+registerOp('rollback', async (j: LiveJob, ctx) => {
+  ctx.step(`rolling back ${j.product}`);
+  return rollback(j.product, { confirm: j.confirm, by: j.by, origin: j.origin });
+}, {
+  done: (op) => settleApproval(op, true, `Rolled back: main is ${op.result?.main}. ${op.result?.note ?? ''}`.trim()),
+  failed: (op) => settleApproval(op, false, op.error ?? 'failed'),
+});
+
+/** Queues going live (or a rollback) and returns at once: the operation, and where it is in the queue. */
+export function queueLive(kind: 'golive' | 'rollback', j: LiveJob) {
+  const p = getProduct(j.product);
+  const title = kind === 'rollback' ? `Rolling back ${p.name}` : j.mergeMain ? `Merging main into ${p.name}'s beta` : `Going live with ${p.name}`;
+  const op = enqueue(kind, { product: p.id, title, payload: j, by: j.by ?? null, origin: j.origin ?? null });
+  return { op, ahead: queuePosition(op.id) };
+}
+
+/** Queues it and waits for it (the API and the CLI want the answer); Studio keeps answering meanwhile. */
+export async function runLive(kind: 'golive' | 'rollback', j: LiveJob, maxMs = 45 * 60_000) {
+  const { op } = queueLive(kind, j);
+  const end = Date.now() + maxMs;
+  for (;;) {
+    const now = getOp(op.id)!;
+    if (now.status === 'done') return now.result;
+    if (now.status === 'failed') throw new StudioError(now.error ?? 'failed', 409);
+    if (Date.now() > end) throw new StudioError(`${now.title} is still ${now.status} (${now.step ?? ''}); it carries on: see Activity.`, 202);
+    await new Promise((r) => setTimeout(r, 1000));
+  }
+}

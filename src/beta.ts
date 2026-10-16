@@ -20,6 +20,7 @@ import crypto from 'node:crypto';
 import { PROJECTS, abs, type Product } from './config.ts';
 import { db } from './db.ts';
 import { BRANCH, BETA, isServer } from './repos.ts';
+import { trackCommand, opLog } from './ops.ts';
 
 export { BETA };
 export const MAIN = BRANCH;
@@ -49,9 +50,45 @@ export const listDeploys = (product: string, limit = 20) => db.prepare('SELECT *
 
 // ------------------------------------------------------------------- git
 
+/**
+ * git, synchronously: only for local commands that answer in milliseconds (rev-parse, log, status, diff). Anything that
+ * talks to GitHub or rewrites a big tree (fetch, push, clone, checkout, worktree add, merge) goes through gitAsync, so
+ * Studio keeps answering while it runs (a synchronous push of a Unity build once froze Studio for minutes).
+ */
 export function git(cwd: string, args: string[], timeoutMs = 10 * 60_000) {
+  if (SLOW.has(args[0])) console.warn(`[studio] synchronous git ${args[0]} in ${path.basename(cwd)}: use gitAsync`);
   const r = spawnSync('git', args, { cwd, encoding: 'utf8', windowsHide: true, timeout: timeoutMs, maxBuffer: 64 * 1024 * 1024 });
   return { ok: r.status === 0, out: (r.stdout ?? '').trim(), err: (r.stderr ?? r.error?.message ?? '').trim() };
+}
+const SLOW = new Set(['fetch', 'push', 'clone', 'pull']);
+
+/** git without blocking Studio: listed while it runs (ops.ts commands), logged to the operation it runs in, timed out. */
+export function gitAsync(cwd: string, args: string[], timeoutMs = 10 * 60_000): Promise<{ ok: boolean; out: string; err: string }> {
+  const label = `git ${args.filter((a) => !a.startsWith('-c')).join(' ')}`.slice(0, 200);
+  const done = trackCommand(label, cwd);
+  if (SLOW.has(args[0]) || ['worktree', 'checkout', 'merge'].includes(args[0])) opLog(`$ ${label} (${path.basename(cwd)})`);
+  return new Promise((resolve) => {
+    let out = '';
+    let err = '';
+    let settled = false;
+    const finish = (r: { ok: boolean; out: string; err: string }) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      done();
+      resolve({ ok: r.ok, out: r.out.trim(), err: r.err.trim() });
+    };
+    const child = spawn('git', args, { cwd, windowsHide: true, env: { ...process.env, GIT_TERMINAL_PROMPT: '0' } });
+    child.stdout.on('data', (d) => { out += d; if (out.length > 64 * 1024 * 1024) out = out.slice(-32 * 1024 * 1024); });
+    child.stderr.on('data', (d) => { err += d; if (err.length > 1_000_000) err = err.slice(-500_000); });
+    child.on('error', (e) => finish({ ok: false, out, err: e.message }));
+    child.on('close', (code) => finish({ ok: code === 0, out, err }));
+    const timer = setTimeout(() => {
+      child.kill('SIGKILL');
+      finish({ ok: false, out, err: `${err}\ntimed out after ${Math.round(timeoutMs / 1000)} s` });
+    }, timeoutMs);
+    timer.unref();
+  });
 }
 export const must = (r: { ok: boolean; out: string; err: string }, what: string) => {
   if (!r.ok) throw new Error(`${what} failed: ${(r.err || r.out).split('\n').slice(-3).join(' | ')}`);
@@ -61,7 +98,7 @@ export const shaOf = (dir: string, ref: string) => {
   const r = git(dir, ['rev-parse', '--verify', '--quiet', `${ref}^{commit}`]);
   return r.ok && r.out ? r.out : null;
 };
-export const fetchOrigin = (dir: string) => must(git(dir, ['fetch', '--quiet', '--prune', 'origin']), `fetching ${path.basename(dir)}`);
+export const fetchOrigin = async (dir: string) => must(await gitAsync(dir, ['fetch', '--quiet', '--prune', 'origin']), `fetching ${path.basename(dir)}`);
 
 /** The folders (repo roots under PROJECTS) of a product: its source repo (agents and beta) and its website repo. */
 export function repoDirs(p: Product) {
@@ -71,14 +108,14 @@ export function repoDirs(p: Product) {
 }
 
 /** Makes sure origin has a beta branch (from main when missing). Returns its commit. */
-export function ensureBeta(dir: string) {
-  fetchOrigin(dir);
+export async function ensureBeta(dir: string) {
+  await fetchOrigin(dir);
   const have = shaOf(dir, `origin/${BETA}`);
   if (have) return { sha: have, created: false };
   const main = shaOf(dir, `origin/${MAIN}`);
   if (!main) throw new Error(`${path.basename(dir)} has no origin/${MAIN} to start ${BETA} from`);
-  must(git(dir, ['push', '--quiet', 'origin', `${main}:refs/heads/${BETA}`]), `creating ${BETA}`);
-  fetchOrigin(dir);
+  must(await gitAsync(dir, ['push', '--quiet', 'origin', `${main}:refs/heads/${BETA}`]), `creating ${BETA}`);
+  await fetchOrigin(dir);
   return { sha: main, created: true };
 }
 
@@ -97,8 +134,13 @@ export const commitOf = (dir: string, sha: string): Commit | null => commitsIn(d
  * beta vs main on origin (fetched first unless fetch is false): beta's and main's commits, what's on beta and not on
  * main (what going live ships) and what's on main and not on beta (it must be merged into beta first).
  */
-export function compareBeta(dir: string, { fetch = true } = {}) {
-  if (fetch) fetchOrigin(dir);
+export async function compareBeta(dir: string, { fetch = true } = {}) {
+  if (fetch) await fetchOrigin(dir);
+  return compareRefs(dir);
+}
+
+/** beta vs main as of the last fetch (no network: for pages and quick reads). */
+export function compareRefs(dir: string) {
   const main = shaOf(dir, `origin/${MAIN}`);
   const beta = shaOf(dir, `origin/${BETA}`);
   return {
@@ -114,15 +156,15 @@ export function compareBeta(dir: string, { fetch = true } = {}) {
 export const WORK = () => path.join(PROJECTS, '.work', 'beta');
 
 /** A worktree of `repoDir` at `.work/beta/<name>`, detached at `commit`, cleaned (ignored files like node_modules stay). */
-export function scratch(repoDir: string, name: string, commit: string) {
+export async function scratch(repoDir: string, name: string, commit: string) {
   const wt = path.join(WORK(), name);
   if (!fs.existsSync(path.join(wt, '.git'))) {
     fs.mkdirSync(WORK(), { recursive: true });
     git(repoDir, ['worktree', 'prune']);
-    must(git(repoDir, ['worktree', 'add', '--detach', '--force', wt, commit]), 'making a worktree');
+    must(await gitAsync(repoDir, ['worktree', 'add', '--detach', '--force', wt, commit]), 'making a worktree');
   } else {
-    must(git(wt, ['checkout', '--quiet', '--detach', '--force', commit]), 'checking out');
-    git(wt, ['clean', '-fdq']);
+    must(await gitAsync(wt, ['checkout', '--quiet', '--detach', '--force', commit]), 'checking out');
+    await gitAsync(wt, ['clean', '-fdq']);
   }
   return wt;
 }
@@ -147,13 +189,13 @@ export function saveBetaBuild(p: Product, b: BetaBuild | null) {
 }
 
 /** Resets the beta website copy to the website repo's origin/main (before a beta build lands in it). */
-export function resetBetaSite(p: Product) {
+export async function resetBetaSite(p: Product) {
   const { site } = repoDirs(p);
-  fetchOrigin(site);
+  await fetchOrigin(site);
   const base = shaOf(site, `origin/${MAIN}`);
   if (!base) throw new Error(`${p.site} has no origin/${MAIN}`);
   saveBetaBuild(p, null);
-  const dir = scratch(site, `${p.id}-site`, base);
+  const dir = await scratch(site, `${p.id}-site`, base);
   return { dir, folder: betaSiteFolder(p), base };
 }
 
@@ -228,12 +270,12 @@ async function prepareBetaNow(p: Product, log: (s: string) => void = () => {}) {
   if (!p.deploy?.prebuild) return { skipped: 'no pre-deploy build' };
   const { source } = repoDirs(p);
   // Never makes beta (that happens with the first agent change, or J's merge-main): no beta, nothing to build.
-  fetchOrigin(source);
+  await fetchOrigin(source);
   const sha = shaOf(source, `origin/${BETA}`);
   if (!sha) return { skipped: `no ${BETA} branch yet` };
   const head = commitOf(source, sha);
   if (head && prebuilt(p, sha, head.title)) return { skipped: `beta's newest commit already has its build (${sha.slice(0, 7)})`, sha };
-  const wt = scratch(source, p.id, sha);
+  const wt = await scratch(source, p.id, sha);
   const dir = path.join(wt, path.relative(p.repo.split('/')[0], p.site));
   await ensureDeps(dir, log);
   log(`$ ${p.deploy.prebuild}`);
@@ -242,8 +284,8 @@ async function prepareBetaNow(p: Product, log: (s: string) => void = () => {}) {
   must(git(wt, ['add', '-A']), 'git add');
   if (!git(wt, ['diff', '--cached', '--quiet']).ok) {
     must(git(wt, [...AUTHOR, 'commit', '--quiet', '-m', `${STUDIO_BUILD} ${p.deploy.prebuild} (beta ${sha.slice(0, 7)})`]), 'committing the build');
-    must(git(wt, ['push', '--quiet', 'origin', `HEAD:refs/heads/${BETA}`]), 'pushing beta');
-    fetchOrigin(source);
+    must(await gitAsync(wt, ['push', '--quiet', 'origin', `HEAD:refs/heads/${BETA}`]), 'pushing beta');
+    await fetchOrigin(source);
     const now = shaOf(wt, 'HEAD')!;
     log(`committed the build to beta: ${now.slice(0, 7)}`);
     return { committed: now, sha: now };
@@ -260,22 +302,22 @@ async function prepareBetaNow(p: Product, log: (s: string) => void = () => {}) {
  * stops it (resolve on a branch by hand).
  */
 /** Merging main into beta and pushing it is a critical section (drain.ts). */
-export const mergeMainIntoBeta = (...a: Parameters<typeof mergeMainIntoBetaNow>) => criticalSync(`merging main into ${a[0].id}'s beta`, () => mergeMainIntoBetaNow(...a));
-function mergeMainIntoBetaNow(p: Product, by = 'J') {
+export const mergeMainIntoBeta = (...a: Parameters<typeof mergeMainIntoBetaNow>) => critical(`merging main into ${a[0].id}'s beta`, () => mergeMainIntoBetaNow(...a));
+async function mergeMainIntoBetaNow(p: Product, by = 'J') {
   const { source } = repoDirs(p);
-  ensureBeta(source);
-  const cmp = compareBeta(source, { fetch: false });
+  await ensureBeta(source);
+  const cmp = await compareBeta(source, { fetch: false });
   if (!cmp.behind.length) return { merged: false, detail: `${BETA} already has everything on ${MAIN}` };
   const onlyRollbacks = cmp.behind.every((c) => c.title.startsWith(STUDIO_ROLLBACK));
-  const wt = scratch(source, `${p.id}-merge`, cmp.beta!.sha);
+  const wt = await scratch(source, `${p.id}-merge`, cmp.beta!.sha);
   const msg = `Merge ${MAIN} into ${BETA}${onlyRollbacks ? ' (rollbacks: keeps beta\'s files)' : ''} (by ${by})`;
-  const m = git(wt, [...AUTHOR, 'merge', '--no-ff', '--no-edit', '-m', msg, ...(onlyRollbacks ? ['-s', 'ours'] : []), cmp.main!.sha]);
+  const m = await gitAsync(wt, [...AUTHOR, 'merge', '--no-ff', '--no-edit', '-m', msg, ...(onlyRollbacks ? ['-s', 'ours'] : []), cmp.main!.sha]);
   if (!m.ok) {
     git(wt, ['merge', '--abort']);
     throw new Error(`Merging ${MAIN} into ${BETA} conflicts (${(m.out || m.err).split('\n').filter((l) => /CONFLICT/.test(l)).slice(0, 5).join('; ') || m.err}). Resolve it by hand on a branch.`);
   }
-  must(git(wt, ['push', '--quiet', 'origin', `HEAD:refs/heads/${BETA}`]), 'pushing beta');
-  fetchOrigin(source);
+  must(await gitAsync(wt, ['push', '--quiet', 'origin', `HEAD:refs/heads/${BETA}`]), 'pushing beta');
+  await fetchOrigin(source);
   return { merged: true, sha: shaOf(wt, 'HEAD'), detail: `${msg}: ${cmp.behind.length} commit(s) from ${MAIN}`, keptBeta: onlyRollbacks };
 }
 

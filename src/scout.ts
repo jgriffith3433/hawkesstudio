@@ -11,7 +11,7 @@ import { db, newId } from './db.ts';
 import { PROJECTS, getProduct, getInfra, isInfra, storyOf, StudioError } from './config.ts';
 import { repoMap } from './repos.ts';
 import { claudeEnv } from './claude.ts';
-import { BETA } from './beta.ts';
+import { BETA, gitAsync } from './beta.ts';
 import { briefSection, recordRun } from './memory.ts';
 import { roleArgs } from './roles.ts';
 import { spawnClaude } from './sandbox.ts';
@@ -57,7 +57,7 @@ async function run(id: string, top: string, base: string) {
   const repo = path.join(PROJECTS, top);
   const wt = path.join(PROJECTS, '.work', `scout-${id}`);
   try {
-    git(repo, ['fetch', '--quiet', 'origin']);
+    await gitAsync(repo, ['fetch', '--quiet', 'origin']);
     const ref = git(repo, ['rev-parse', '--verify', `origin/${base}`]).ok ? `origin/${base}` : 'origin/main';
     const w = git(repo, ['worktree', 'add', '--detach', wt, ref]);
     if (!w.ok) throw new Error(`worktree: ${w.err}`);

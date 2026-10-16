@@ -290,6 +290,12 @@ export function studioMcp({ studio, waitRun }: Client = { studio: defaultStudio,
       run: async ({ subject, text, by }) => (text ? studio('/api/comments', { method: 'POST', body: { subject, text, by } }) : (await studio(`/api/comments?subject=${encodeURIComponent(subject)}`)).comments),
     },
     {
+      name: 'studio_ops',
+      description: "Studio's background work right now and the last day: going live, rollbacks and merges of main into beta (queued, running with their current step and last log lines, done or failed with the reason; 'stuck' when one runs much longer than usual), every git or shell command Studio is waiting on, and the event loop (any moment in the last hour Studio froze for over a second, and what was running then). Use it for \"is it still going live?\", \"what's running?\", \"why is Studio slow?\". product: only that product's operations.",
+      inputSchema: obj({ product: str('A product id (optional)') }),
+      run: async ({ product }) => studio(`/api/ops${product ? `?product=${encodeURIComponent(product)}` : ''}`),
+    },
+    {
       name: 'studio_costs',
       description: "What the studio costs, as Markdown: AWS (Cost Explorer when allowed, else an estimate) by part (control server, build server, playtester, GPU servers, disks, S3, DNS), this month's forecast against J's budget, Hawkes Gen's usage (GPU hours, ElevenLabs, Claude API), Claude Code usage (on J's Max plan: usage, not billed), per product, servers left running and idle money (stopped servers' disks, unattached disks, unused IPs, snapshots). Use it for \"what did this week cost?\". settings: change the budget or alert limits (only on J's word).",
       inputSchema: obj({

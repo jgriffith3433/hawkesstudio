@@ -24,7 +24,7 @@ import { critical } from './drain.ts';
 import path from 'node:path';
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import { PROJECTS, DATA, GEN_URL, paths, getProduct, loadProducts, StudioError, type Product } from './config.ts';
-import { BETA, MAIN, ensureBeta, ensureDeps, compareBeta, repoDirs } from './beta.ts';
+import { BETA, MAIN, ensureBeta, ensureDeps, compareRefs, repoDirs } from './beta.ts';
 import { isServer } from './repos.ts';
 import { notify, PUBLIC_URL } from './notify.ts';
 
@@ -108,11 +108,11 @@ function gitA(cwd: string, args: string[], timeoutMs = 5 * 60_000): Promise<{ ok
 const short = (r: { out: string; err: string }) => (r.err || r.out).split('\n').filter(Boolean).slice(-3).join(' | ').slice(0, 400);
 
 /** Makes the beta working copy if it's missing (beta itself is made from main when the repo has none yet). */
-export function ensureWorkingCopy(p: Product) {
+export async function ensureWorkingCopy(p: Product) {
   const dir = devDir(p);
   if (hasWorkingCopy(p)) return dir;
   const { source } = repoDirs(p);
-  ensureBeta(source);
+  await ensureBeta(source);
   fs.mkdirSync(path.dirname(dir), { recursive: true });
   spawnSync('git', ['worktree', 'prune'], { cwd: source, windowsHide: true });
   const r = spawnSync('git', ['worktree', 'add', '--quiet', '-B', DEV_BRANCH, dir, `origin/${BETA}`], { cwd: source, encoding: 'utf8', windowsHide: true });
@@ -377,7 +377,7 @@ export function startDev(productId: string, { by = 'J' }: { by?: string } = {}):
     try {
       for (const id of lru(p.id)) await stopDev(id, { why: `${p.name} needed the room (at most ${MAX()} dev servers run at once)` });
       s.detail = 'preparing the beta working copy';
-      ensureWorkingCopy(p);
+      await ensureWorkingCopy(p);
       if (!wcOf(p.id).conflict) await locked(p.id, () => commitAndSync(p, 'opening devtools')).catch((e) => { wcOf(p.id).error = { at: Date.now(), detail: String(e.message ?? e) }; });
       if (wcOf(p.id).conflict) throw new StudioError(`beta conflicts with the working copy (${wcOf(p.id).conflict!.files.join(', ')})`, 409);
       const dir = devWebDir(p);
@@ -476,7 +476,8 @@ export const listDev = () => devProducts().map((p) => devStatus(p.id));
 export function sinceLive(productId: string) {
   const p = getProduct(productId);
   const { source } = repoDirs(p);
-  const cmp = compareBeta(source);
+  // As of the last fetch (beta's working copy and the agents fetch often): a page view never waits on GitHub.
+  const cmp = compareRefs(source);
   const stat = cmp.main && cmp.beta ? spawnSync('git', ['diff', '--stat=120', '--stat-count=40', cmp.main.sha, cmp.beta.sha], { cwd: source, encoding: 'utf8', windowsHide: true }).stdout?.trim() ?? '' : '';
   return { live: cmp.main, beta: cmp.beta, commits: cmp.ahead.map((c) => ({ sha: c.short, author: c.author, date: c.date, title: c.title })), liveOnly: cmp.behind.map((c) => c.title), files: stat };
 }

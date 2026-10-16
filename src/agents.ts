@@ -38,7 +38,7 @@ import { repoMap } from './repos.ts';
 import { serveDir, stopServed } from './local.ts';
 import { claudeEnv } from './claude.ts';
 import { buildPreview, removePreview, previewUrl, changeSiteDir, changeBuild, type ChangeBuild } from './previews.ts';
-import { BETA, ensureBeta } from './beta.ts';
+import { BETA, ensureBeta, gitAsync } from './beta.ts';
 import { deployPending, critical } from './drain.ts';
 import { notify, notifyOnce, PUBLIC_URL } from './notify.ts';
 import { threadFor } from './roadmap.ts';
@@ -578,7 +578,7 @@ async function pump() {
 async function publish(id: string, { force, title, body }: { force: boolean; title: string | null; body: string }) {
   return critical(`pushing ${id} and its pull request`, async () => {
     let c = getChange(id)!;
-    const push = git(c.worktree, ['push', '--quiet', '-u', 'origin', `HEAD:${c.branch}`, ...(force ? ['--force-with-lease'] : [])]);
+    const push = await gitAsync(c.worktree, ['push', '--quiet', '-u', 'origin', `HEAD:${c.branch}`, ...(force ? ['--force-with-lease'] : [])]);
     if (!push.ok) throw new Error(`push failed: ${push.err}`);
     // A pull request merged or closed outside Studio (GitHub's website, another tool) takes no more commits: pushing
     // to its branch would leave the new ones off beta. Open a new pull request for what isn't on beta yet.
@@ -629,13 +629,13 @@ async function work(id: string, note?: string, answer?: string, resumed?: Phase 
         fs.mkdirSync(WORK(), { recursive: true });
         // Agent branches start from beta (made from main the first time: pushing beta deploys nothing).
         await critical(`making the worktree of ${id}`, async () => {
-          const beta = ensureBeta(repoDir);
+          const beta = await ensureBeta(repoDir);
           if (beta.created) addLog(id, `made the ${BETA} branch from main (${beta.sha.slice(0, 7)})`);
           // Devtools saves still waiting in beta's working copy go to beta first, so the agent starts from them.
           const flushed = await import('./dev.ts').then(({ flushDev }) => flushDev(c.product, `before agent change ${id} started`)).catch((e) => ({ error: String(e.message ?? e) }));
           if ('pushed' in flushed && flushed.pushed) {
             addLog(id, `pushed devtools saves to ${BETA} first (${flushed.pushed.slice(0, 7)})`);
-            git(repoDir, ['fetch', '--quiet', 'origin']);
+            await gitAsync(repoDir, ['fetch', '--quiet', 'origin']);
           }
           // A worktree a restart cut off halfway is forgotten first; its branch is reused.
           git(repoDir, ['worktree', 'prune']);
@@ -759,16 +759,16 @@ async function buildChange(c: Change, p: Product, jobs?: JobMemo): Promise<Chang
   // A build started before a Studio restart: wait for that same job (its website copy is already set up, and may hold its output).
   const prior = jobs?.get('build');
   const siteRepo = path.join(PROJECTS, siteTop);
-  if (!prior) await critical(`making the website copy of ${c.id}`, () => {
-  const f = git(siteRepo, ['fetch', '--quiet', 'origin']);
+  if (!prior) await critical(`making the website copy of ${c.id}`, async () => {
+  const f = await gitAsync(siteRepo, ['fetch', '--quiet', 'origin']);
   if (!f.ok) throw new Error(`fetching ${siteTop} failed: ${f.err}`);
   const head = git(siteRepo, ['symbolic-ref', '--short', 'refs/remotes/origin/HEAD']).out || 'origin/main';
   if (!fs.existsSync(path.join(copy, '.git'))) {
     git(siteRepo, ['worktree', 'prune']);
-    const w = git(siteRepo, ['worktree', 'add', '--detach', '--force', copy, head]);
+    const w = await gitAsync(siteRepo, ['worktree', 'add', '--detach', '--force', copy, head]);
     if (!w.ok) throw new Error(`making the website copy failed: ${w.err}`);
   } else {
-    const r = git(copy, ['checkout', '--quiet', '--force', '--detach', head]);
+    const r = await gitAsync(copy, ['checkout', '--quiet', '--force', '--detach', head]);
     if (!r.ok) throw new Error(`resetting the website copy failed: ${r.err}`);
     git(copy, ['clean', '-fdq']);
   }
@@ -983,23 +983,23 @@ async function workInfra(id: string, note?: string, resumed?: Phase | null) {
 
     if (ph.step === 'prepare') {
       update(id, { detail: 'preparing the worktree' });
-      await critical(`making the worktree of ${id}`, () => {
+      await critical(`making the worktree of ${id}`, async () => {
         if (!fs.existsSync(c.worktree)) {
           fs.mkdirSync(WORK(), { recursive: true });
           // Only refs move in the server's checkout; its files only change through deploy/hawkes-pull.mjs.
-          const f = git(repoDir, ['fetch', '--quiet', 'origin']);
+          const f = await gitAsync(repoDir, ['fetch', '--quiet', 'origin']);
           if (!f.ok) throw new Error(`fetch failed: ${f.err}`);
           git(repoDir, ['worktree', 'prune']);
           const has = git(repoDir, ['rev-parse', '--verify', '--quiet', `refs/heads/${c.branch}`]).ok;
-          const w = git(repoDir, ['worktree', 'add', ...(has ? [c.worktree, c.branch] : ['-b', c.branch, c.worktree, `origin/${c.base}`])]);
+          const w = await gitAsync(repoDir, ['worktree', 'add', ...(has ? [c.worktree, c.branch] : ['-b', c.branch, c.worktree, `origin/${c.base}`])]);
           if (!w.ok) throw new Error(`worktree failed: ${w.err}`);
           // A warm start: node_modules from a checkout with the same lockfile (warm.ts), not a fresh npm ci.
           warmDeps(c.worktree, c.repo, (s) => addLog(id, s));
       lfsPull(c.worktree, (s) => addLog(id, s));
         } else if (note) {
           // Another pass: bring the branch up to date with main first (main may have moved, or the merge conflicted).
-          git(repoDir, ['fetch', '--quiet', 'origin']);
-          const m = git(c.worktree, ['merge', '--no-edit', `origin/${c.base}`]);
+          await gitAsync(repoDir, ['fetch', '--quiet', 'origin']);
+          const m = await gitAsync(c.worktree, ['merge', '--no-edit', `origin/${c.base}`]);
           if (!m.ok) git(c.worktree, ['merge', '--abort']);
           addLog(id, m.ok ? `merged origin/${c.base} into the branch` : `merging origin/${c.base} conflicted; the agent works from the branch as it was`);
         }
@@ -1225,7 +1225,7 @@ export async function approve(id: string, { confirm, by = 'J', origin }: { confi
     const sha = await verifiedHead(c);
     // Changes opened before the beta lane target main: point them at beta first, so approving never goes live.
     if (c.base !== BETA) {
-      ensureBeta(path.join(PROJECTS, c.repo));
+      await ensureBeta(path.join(PROJECTS, c.repo));
       await github(`/repos/${c.slug}/pulls/${c.pr}`, { method: 'PATCH', body: { base: BETA } });
       db.prepare('UPDATE changes SET base = ? WHERE id = ?').run(BETA, id);
       addLog(id, `pull request #${c.pr} now targets ${BETA} (was ${c.base})`);

@@ -20,7 +20,7 @@
 // Going live stays J's (DEPLOY <product>). Studio and Gen changes always need J's approval (they restart services).
 
 import fs from 'node:fs';
-import { criticalSync } from './drain.ts';
+import { critical, criticalSync } from './drain.ts';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { db, J, parse } from './db.ts';
@@ -33,7 +33,7 @@ import {
 import { gate, allMet } from './acceptance.ts';
 import { notify, PUBLIC_URL } from './notify.ts';
 import { fileUrl } from './gen.ts';
-import { BETA } from './beta.ts';
+import { BETA, gitAsync } from './beta.ts';
 import { curationLine } from './memory.ts';
 
 // ---------------------------------------------------------------- settings
@@ -157,7 +157,7 @@ export async function syncTasks() {
     const deploy = db.prepare(`SELECT * FROM deploys WHERE product = ? AND kind = 'deploy' AND rolled_back IS NULL AND at > ? ORDER BY at DESC LIMIT 1`).get(t.product, t.merged_at ?? 0) as any;
     if (deploy && c.pr && !liveChecked.has(`${t.id}:${deploy.id}`)) {
       liveChecked.add(`${t.id}:${deploy.id}`);
-      git(path.join(PROJECTS, c.repo), ['fetch', '--quiet', 'origin']);
+      await gitAsync(path.join(PROJECTS, c.repo), ['fetch', '--quiet', 'origin']);
       if (prCommit(c.repo, 'main', c.pr)) setTask(t.id, { status: getTask(t.id)!.status === 'verified' ? 'live' : getTask(t.id)!.status, live_at: Date.now() });
     }
   }
@@ -607,7 +607,7 @@ export async function undoDecision(id: string, by = 'J') {
     if (u.finding) db.prepare(`UPDATE findings SET status = 'open' WHERE id = ? AND status = 'fixing'`).run(u.finding);
     detail = `closed ${u.change}`;
   } else if (u.kind === 'merge') {
-    detail = revertOnBeta(u.repo, u.pr, by);
+    detail = await revertOnBeta(u.repo, u.pr, by);
     if (u.task) setTask(u.task, { status: 'idea', note: `merge undone by ${by} (reverted on beta)` });
   } else if (u.kind === 'settings') {
     fs.writeFileSync(FILE, JSON.stringify({ ...pmSettings(), ...u.before }, null, 2));
@@ -620,22 +620,22 @@ export async function undoDecision(id: string, by = 'J') {
 
 /** A revert of a pull request's squash commit on beta, pushed to beta (nothing goes live). */
 /** Reverting a merge on beta and pushing it is a critical section (drain.ts). */
-const revertOnBeta = (repo: string, pr: number, by: string) => criticalSync(`reverting #${pr} on ${repo}'s beta`, () => revertOnBetaNow(repo, pr, by));
-function revertOnBetaNow(repo: string, pr: number, by: string) {
+const revertOnBeta = (repo: string, pr: number, by: string) => critical(`reverting #${pr} on ${repo}'s beta`, () => revertOnBetaNow(repo, pr, by));
+async function revertOnBetaNow(repo: string, pr: number, by: string) {
   const dir = path.join(PROJECTS, repo);
-  git(dir, ['fetch', '--quiet', 'origin']);
+  await gitAsync(dir, ['fetch', '--quiet', 'origin']);
   const sha = prCommit(repo, BETA, pr);
   if (!sha) throw new StudioError(`Can't find pull request #${pr}'s commit on ${BETA}`);
   const wt = path.join(PROJECTS, '.work', `revert-${repo}-${pr}`);
   fs.rmSync(wt, { recursive: true, force: true });
   git(dir, ['worktree', 'prune']);
-  const w = git(dir, ['worktree', 'add', '--detach', wt, `origin/${BETA}`]);
+  const w = await gitAsync(dir, ['worktree', 'add', '--detach', wt, `origin/${BETA}`]);
   if (!w.ok) throw new StudioError(`worktree: ${w.err}`);
   try {
     const r = git(wt, ['-c', 'user.name=Hawkes Studio', '-c', 'user.email=studio@hawkesgen.com', 'revert', '--no-edit', sha]);
     if (!r.ok) throw new StudioError(`git revert failed (beta changed the same lines since?): ${r.err.slice(0, 300)}`);
     git(wt, ['commit', '--amend', '-m', `Revert #${pr} on ${BETA} (undone by ${by} in Studio)`, '-c', 'user.name=Hawkes Studio']);
-    const p = git(wt, ['push', '--quiet', 'origin', `HEAD:${BETA}`]);
+    const p = await gitAsync(wt, ['push', '--quiet', 'origin', `HEAD:${BETA}`]);
     if (!p.ok) throw new StudioError(`push failed: ${p.err.slice(0, 300)}`);
     return `reverted ${sha.slice(0, 7)} (#${pr}) on ${BETA}`;
   } finally {

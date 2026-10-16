@@ -72,9 +72,9 @@ test('anything live needs J\'s own latest words', () => {
 });
 
 test('the fast lane: a small checked change goes to beta, nothing else does', async () => {
-  const ws = fast.workspace('fasttest');
+  const ws = await fast.workspace('fasttest');
   assert.equal(ws.dir, path.join(process.env.STUDIO_PROJECTS!, '.talk', 'site'));
-  assert.throws(() => fast.workspace('hawkesstudio'), /no fast lane/);
+  await assert.rejects(fast.workspace('hawkesstudio'), /no fast lane/);
   // A typo fix, uncommitted: committed with the message, checked, pushed to beta.
   fs.writeFileSync(path.join(ws.dir, 'index.html'), '<h1>Hello</h1>\n');
   const r = await fast.fastlane('fasttest', 'Fix the title typo');
@@ -112,7 +112,7 @@ test('the fast lane: a small checked change goes to beta, nothing else does', as
   git(ws.dir, 'add', '-A');
   git(ws.dir, 'commit', '--quiet', '-m', 'Exclaim');
   assert.match((await fast.fastlane('fasttest', 'Exclaim')).why!, /beta moved/);
-  const w2 = fast.workspace('fasttest');
+  const w2 = await fast.workspace('fasttest');
   assert.equal(w2.ahead, 1);
   assert.match(w2.note!, /git merge origin\/beta/);
 });

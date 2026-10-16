@@ -15,10 +15,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { loadProducts, PROJECTS, type Product } from './config.ts';
 import { db, newId, J } from './db.ts';
-import { MAIN, AUTHOR, must, repoDirs, fetchOrigin, shaOf, betaBuild, betaSiteDir, scratch, WORK, git as gitIn } from './beta.ts';
+import { MAIN, AUTHOR, must, repoDirs, fetchOrigin, shaOf, betaBuild, betaSiteDir, scratch, WORK, git as gitIn, gitAsync } from './beta.ts';
 import { genRun } from './gen.ts';
 import { startStep, updateStep, resumedStep } from './pipeline.ts';
-import { criticalSync } from './drain.ts';
+import { critical } from './drain.ts';
 import { verifyLive, repoSlug } from './deploy.ts';
 
 const rel = (abs: string) => path.relative(PROJECTS, abs).replace(/\\/g, '/');
@@ -52,8 +52,8 @@ export async function publishUnity(p: Product, sha: string, { by = 'a push to ma
   // Resumed after a Studio restart (pipeline.ts resumeRuns): the same run, and its build job waited for again.
   const run = liveRun(p, sha, by, resumed);
   try {
-    fetchOrigin(source);
-    fetchOrigin(site);
+    await fetchOrigin(source);
+    await fetchOrigin(site);
     const before = shaOf(site, `origin/${MAIN}`)!;
     let copy: string;
     let version: string | null = null;
@@ -68,8 +68,8 @@ export async function publishUnity(p: Product, sha: string, { by = 'a push to ma
       const s = startStep(run.id, p.id, 'build', 'unity', `building ${sha.slice(0, 7)} for live`);
       // Resumed with its build running or done: the scratch copies hold its work (and maybe its output); not reset.
       const prior = resumedStep(s);
-      const src = prior?.job ? path.join(WORK(), `${p.id}-live-src`) : scratch(source, `${p.id}-live-src`, sha);
-      copy = prior?.job ? path.join(WORK(), `${p.id}-live-site`) : scratch(site, `${p.id}-live-site`, before);
+      const src = prior?.job ? path.join(WORK(), `${p.id}-live-src`) : await scratch(source, `${p.id}-live-src`, sha);
+      copy = prior?.job ? path.join(WORK(), `${p.id}-live-site`) : await scratch(site, `${p.id}-live-site`, before);
       const projectDir = rel(path.join(src, path.relative(p.repo.split('/')[0], p.build.project)));
       const siteDir = rel(path.join(copy, path.relative(p.site.split('/')[0], p.site)));
       const job = await genRun('unity.build', p.id, { project: p.build.project, site: p.build.site, method: p.build.method, projectDir, siteDir }, (j) => updateStep(s, { job: j.id, detail: j.detail }), undefined,
@@ -85,15 +85,15 @@ export async function publishUnity(p: Product, sha: string, { by = 'a push to ma
     }
     const s = startStep(run.id, p.id, 'deploy', p.site, `publishing ${what}`);
     // Pushing the website's main and recording it are one critical section (drain.ts): a deploy of Studio waits for it.
-    return criticalSync(`publishing ${p.name} live`, () => {
+    return critical(`publishing ${p.name} live`, async () => {
       must(gitIn(copy, ['add', '-A']), 'git add');
       let after = before;
       if (!gitIn(copy, ['diff', '--cached', '--quiet']).ok) {
-        must(gitIn(copy, [...AUTHOR, 'commit', '--quiet', '-m', `Go live: ${p.name}${version ? ` Game/v${version}` : ''} (${p.repo.split('/')[0]} ${sha.slice(0, 7)}, ${by})`]), 'committing the build');
+        must(await gitAsync(copy, [...AUTHOR, 'commit', '--quiet', '-m', `Go live: ${p.name}${version ? ` Game/v${version}` : ''} (${p.repo.split('/')[0]} ${sha.slice(0, 7)}, ${by})`]), 'committing the build');
         // The website's main may have moved since the copy was made: put the build on top of it.
-        must(gitIn(copy, ['fetch', '--quiet', 'origin', MAIN]), 'fetching the website');
-        must(gitIn(copy, ['rebase', '--quiet', `origin/${MAIN}`]), `rebasing onto ${p.site}'s ${MAIN}`);
-        must(gitIn(copy, ['push', '--quiet', 'origin', `HEAD:refs/heads/${MAIN}`]), `pushing ${p.site}'s ${MAIN}`);
+        must(await gitAsync(copy, ['fetch', '--quiet', 'origin', MAIN]), 'fetching the website');
+        must(await gitAsync(copy, ['rebase', '--quiet', `origin/${MAIN}`]), `rebasing onto ${p.site}'s ${MAIN}`);
+        must(await gitAsync(copy, ['push', '--quiet', 'origin', `HEAD:refs/heads/${MAIN}`], 30 * 60_000), `pushing ${p.site}'s ${MAIN}`);
         after = shaOf(copy, 'HEAD')!;
       }
       const id = newId('d');
@@ -101,7 +101,7 @@ export async function publishUnity(p: Product, sha: string, { by = 'a push to ma
         .run(id, p.id, 'deploy', p.site, before, after, sha, p.repo, null, sha, version, by, `published ${what}`, Date.now());
       updateStep(s, { status: 'done', detail: after === before ? 'the build was already on the website' : `${p.site} ${MAIN} -> ${after.slice(0, 7)}: ${what}`, finished: true });
       run.end('done', `live: ${p.name} ${what}`);
-      fetchOrigin(site);
+      await fetchOrigin(site);
       if (after !== before) void verifyLive(p.id, after, `Just went live (${p.repo.split('/')[0]} ${sha.slice(0, 7)}, ${by})`);
       return { deploy: id, website: p.site, before: before.slice(0, 7), after: after.slice(0, 7), what };
     });
@@ -147,7 +147,7 @@ export async function onMainPush(folder: string, sha: string) {
     if (liveAlready(p, sha)) { out[p.id] = { skipped: 'already recorded', pages }; continue; }
     const { site } = repoDirs(p);
     const before = shaOf(site, `origin/${MAIN}`);
-    fetchOrigin(site);
+    await fetchOrigin(site);
     const id = newId('d');
     db.prepare('INSERT INTO deploys (id, product, kind, repo, before, after, beta, source, source_before, source_after, version, by, detail, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
       .run(id, p.id, 'deploy', p.site, before === sha ? null : before, sha, null, null, null, null, null, 'a push to main', 'pushed to main; GitHub Pages publishes it', Date.now());

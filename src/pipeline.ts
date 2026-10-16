@@ -140,7 +140,7 @@ async function runAll(run: string, ids: string[], o: RunOptions) {
   // On the server, start from what's on GitHub (once: a resumed run plays what it synced before the restart).
   if (isServer() && !hadSteps(run, 'repo')) {
     db.prepare('UPDATE runs SET detail = ? WHERE id = ?').run('updating repos from GitHub', run);
-    const synced = syncRepos();
+    const synced = await syncRepos();
     // Product source repos are on beta (repos.ts); the staging sites (<sub>.hawkesgen.com) follow it.
     void import('./previews.ts').then(({ previewsAfterSync }) => previewsAfterSync(synced)).catch(() => {});
     for (const r of synced) {
@@ -297,11 +297,11 @@ const staleTold = new Set<string>();
  * beta's tip first; when it can't follow (uncommitted changes, local commits), the playtest doesn't play the old commit:
  * it fails with what's in the way, and Talk is told (Studio never throws away changes it didn't make). Null: up to date.
  */
-export function staleBeta(p: Product): string | null {
+export async function staleBeta(p: Product): Promise<string | null> {
   const top = p.repo.split('/')[0];
   if (!isServer() || p.build || !repoMap()[top] || !betaFolders().has(top)) return null;
   const dir = repoDirs(p).source;
-  const r = syncRepo(top, repoMap()[top], BRANCH, BETA);
+  const r = await syncRepo(top, repoMap()[top], BRANCH, BETA);
   const want = shaOf(dir, `origin/${BETA}`);
   if (!want) return null; // no beta branch yet: the checkout plays main
   const head = shaOf(dir, 'HEAD') ?? '';
@@ -326,7 +326,7 @@ async function prebuildBeta(run: string, p: Product) {
   try {
     const r: any = await prepareBeta(p, (d) => updateStep(s, { detail: d }));
     const top = p.repo.split('/')[0];
-    if (r.committed && repoMap()[top]) syncRepo(top, repoMap()[top], BRANCH, BETA);
+    if (r.committed && repoMap()[top]) await syncRepo(top, repoMap()[top], BRANCH, BETA);
     updateStep(s, { status: r.committed ? 'done' : 'skipped', detail: r.committed ? `committed the build to ${BETA}: ${String(r.committed).slice(0, 7)}` : r.skipped, data: r, finished: true });
   } catch (e: any) {
     updateStep(s, { status: 'failed', detail: String(e.message ?? e).slice(0, 1000), finished: true });
@@ -363,7 +363,7 @@ export async function buildProduct(run: string, p: Product, { force = false } = 
   let base = '';
   if (lane) {
     try {
-      const copy = resetBetaSite(p);
+      const copy = await resetBetaSite(p);
       siteDir = path.relative(PROJECTS, copy.folder).replace(/\\/g, '/');
       base = copy.base;
     } catch (e: any) {
@@ -446,7 +446,7 @@ export async function playtestProduct(run: string, p: Product, t: Playtest, { re
   }
   let url: string;
   // On the server a web product's local playtest plays its beta checkout, which must be beta's tip: never an old copy.
-  const stale = t.where === 'local' && !prior ? staleBeta(p) : null;
+  const stale = t.where === 'local' && !prior ? await staleBeta(p) : null;
   if (stale) {
     updateStep(s, { status: 'failed', detail: stale, data: { played: playedLocal(p), stale: true }, finished: true });
     return null;
@@ -603,7 +603,7 @@ async function betaBody(id: string, p: Product, { focus, criteria, scenario, opt
     const top = p.repo.split('/')[0];
     if (lane && repoMap()[top] && !hadSteps(id, 'repo')) {
       const g = startStep(id, p.id, 'repo', top);
-      const r = syncRepo(top, repoMap()[top], BRANCH, betaFolders().has(top) ? BETA : undefined);
+      const r = await syncRepo(top, repoMap()[top], BRANCH, betaFolders().has(top) ? BETA : undefined);
       updateStep(g, { status: r.action === 'failed' ? 'failed' : 'done', detail: `${r.detail}${r.head ? ` (${r.head})` : ''}`, data: r, finished: true });
     }
     if (p.deploy?.prebuild) await prebuildBeta(id, p);

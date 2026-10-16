@@ -64,7 +64,7 @@ export async function handleMemory(req: http.IncomingMessage, res: http.ServerRe
   }
   if (route === '/api/memory/publish' && method === 'POST') {
     if (c.who !== 'J' && c.who !== 'pm' && c.who !== 'talk') throw new StudioError('Only J, Talk or the PM publish the memory export', 403);
-    return send(res, 200, mem.publishMemory());
+    return send(res, 200, await mem.publishMemory());
   }
   if (route === '/api/memory/seed' && method === 'POST') {
     if (c.who !== 'J') throw new StudioError('Only J re-imports the seed', 403);
