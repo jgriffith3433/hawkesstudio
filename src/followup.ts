@@ -11,6 +11,11 @@ import { GEN_PUBLIC_URL, getProduct, getInfra, isInfra } from './config.ts';
 
 try { db.exec('ALTER TABLE runs ADD COLUMN origin TEXT'); } catch { /* already there */ }
 try { db.exec('ALTER TABLE runs ADD COLUMN told TEXT'); } catch { /* already there */ }
+// Changes of a roadmap task (changes.task) report through the PM, and PM conversations (conversations.kind 'pm') get no
+// result turns from here: the PM loop handles both.
+try { db.exec('ALTER TABLE changes ADD COLUMN task TEXT'); } catch { /* already there */ }
+try { db.exec('ALTER TABLE conversations ADD COLUMN kind TEXT'); } catch { /* already there */ }
+const notPm = `origin NOT IN (SELECT id FROM conversations WHERE kind = 'pm')`;
 
 /** The Talk conversation a request came from (Talk's MCP server sends it), if it still exists. */
 export function originOf(req: http.IncomingMessage) {
@@ -87,11 +92,11 @@ export async function checkFollowups() {
   // A change that went back to work (a revision) reports again when it's done.
   db.prepare(`UPDATE changes SET told = NULL WHERE told IS NOT NULL AND status IN ('queued', 'working', 'verifying', 'revising')`).run();
   const day = Date.now() - 86_400_000;
-  for (const c of db.prepare(`SELECT * FROM changes WHERE origin IS NOT NULL AND status IN ('ready', 'failed') AND told IS NULL AND COALESCE(updated, created) > ?`).all(day) as any[]) {
+  for (const c of db.prepare(`SELECT * FROM changes WHERE origin IS NOT NULL AND task IS NULL AND ${notPm} AND status IN ('ready', 'failed') AND told IS NULL AND COALESCE(updated, created) > ?`).all(day) as any[]) {
     db.prepare('UPDATE changes SET told = ? WHERE id = ?').run(c.status, c.id);
     studioSays(c.origin, changeNotice(c));
   }
-  for (const r of db.prepare(`SELECT * FROM runs WHERE origin IS NOT NULL AND status != 'running' AND told IS NULL AND started > ?`).all(day) as any[]) {
+  for (const r of db.prepare(`SELECT * FROM runs WHERE origin IS NOT NULL AND ${notPm} AND status != 'running' AND told IS NULL AND started > ?`).all(day) as any[]) {
     db.prepare('UPDATE runs SET told = ? WHERE id = ?').run(r.status, r.id);
     studioSays(r.origin, runNotice(r));
   }

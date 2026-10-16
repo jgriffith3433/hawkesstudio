@@ -102,6 +102,17 @@ How to work:
   slow down). Say it that way; don't call manual fixes over the daily budget a breach.
 - Won't-fix is sticky: a finding J marked won't-fix stays won't-fix when a review reports it again (its seen count still
   goes up); only a report of it as a blocker reopens it. Tell J when a won't-fix finding keeps being seen a lot.
+- Reviews converge: each review files at most 5 new findings (worst first; polish and ideas only when there is no bug),
+  is told the product's known findings (backlog, ideas, won't-fix) and reports only new ones, and says by id which known
+  ones look fixed (an open one of the same scenario is then marked fixed; one that comes back reopens) or are still
+  there. The backlog (studio_backlog, default open,fixing) is blockers and bugs. Polish and ideas go to the ideas list
+  (status idea): never auto-fixed, dropped (expired) after 14 days unseen; J can move one to the backlog
+  (studio_update_finding status open) or back (status idea). Review modes: the daily review is "full"; beta runs, agent
+  verifications and one-off local playtests are "verify" (did the change work, did anything regress); live checks and
+  the daily live desktop runs are "regression". Outside "full" only regressions and blockers reach the backlog.
+  Quality bars: products.json "quality" says what "done" means per product; once a full review says a scenario meets
+  it, that scenario's daily review is regression-only until the build changes meaningfully (10+ files or 300+ lines,
+  or 14 days). When J asks why few findings come in, that is why; studio_playtest with reviewMode "full" asks for one.
 - Making changes: you can't edit files; you make changes by starting an agent (studio_task for a request, studio_fix
   for a backlog finding). It works on its own branch, opens a pull request into beta, playtests it and shows a
   preview at https://<sub>.hawkesgen.com/c/<change id>/. When J approves it here it merges into beta, and the beta
@@ -177,6 +188,7 @@ export function deleteConversation(id: string) {
   partial.delete(id);
   clearTimeout(autoTimers.get(id));
   autoTimers.delete(id);
+  queuedTurns.delete(id);
   fs.rmSync(MCP_FILE(id), { force: true });
   db.prepare('DELETE FROM conversations WHERE id = ?').run(id);
 }
@@ -269,6 +281,26 @@ details up with the tools if that helps, but don't approve, merge, deploy, revis
   runTurn(id, prompt, Date.now(), { auto: true });
 }
 
+/** Prompts waiting for a conversation's running turn to end (studioTurn). */
+const queuedTurns = new Map<string, string[]>();
+
+/**
+ * A turn Studio starts with its own prompt (e.g. a PM turn): marked auto like the result turns. While a turn runs it
+ * waits for it to end (several waiting prompts go in one turn). False when there is no such conversation.
+ */
+export function studioTurn(id: string, prompt: string) {
+  const c = getConversation(id);
+  if (!c) return false;
+  if (running.has(id)) {
+    queuedTurns.set(id, [...(queuedTurns.get(id) ?? []), prompt]);
+    return true;
+  }
+  c.status = 'thinking';
+  save(c);
+  runTurn(id, prompt, Date.now(), { auto: true });
+  return true;
+}
+
 /** Runs one Claude Code turn in a conversation whose status is already "thinking". */
 function runTurn(id: string, prompt: string, userAt: number, { auto = false }: { auto?: boolean } = {}) {
   const c = getConversation(id)!;
@@ -357,7 +389,10 @@ function runTurn(id: string, prompt: string, userAt: number, { auto = false }: {
     save(conv);
     // Results that came in while this turn ran get their own turn now (unless this one already answered them).
     waitingAuto.delete(id);
-    if (unanswered(conv).some((m) => m.followup)) scheduleAuto(id, 5000);
+    const queued = queuedTurns.get(id);
+    queuedTurns.delete(id);
+    if (queued?.length) setTimeout(() => studioTurn(id, queued.join('\n\n---\n\n')), 2000).unref?.();
+    else if (unanswered(conv).some((m) => m.followup)) scheduleAuto(id, 5000);
   });
   child.on('error', (e) => {
     running.delete(id);
