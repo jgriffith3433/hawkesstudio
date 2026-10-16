@@ -44,12 +44,12 @@ export function activeRun() {
   return db.prepare(`SELECT * FROM runs WHERE status = 'running' ORDER BY started DESC LIMIT 1`).get() as any;
 }
 
-function startStep(run: string, product: string, kind: string, name: string, detail = '') {
+export function startStep(run: string, product: string, kind: string, name: string, detail = '') {
   const id = newId('s');
   db.prepare('INSERT INTO steps (id, run, product, kind, name, status, detail, started) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').run(id, run, product, kind, name, 'running', detail, Date.now());
   return id;
 }
-function updateStep(id: string, patch: { status?: string; detail?: string; job?: string; data?: unknown; cost?: number; finished?: boolean }) {
+export function updateStep(id: string, patch: { status?: string; detail?: string; job?: string; data?: unknown; cost?: number; finished?: boolean }) {
   const cur = db.prepare('SELECT * FROM steps WHERE id = ?').get(id) as any;
   db.prepare('UPDATE steps SET status = ?, detail = ?, job = ?, data = ?, cost = ?, finished = ? WHERE id = ?').run(
     patch.status ?? cur.status, patch.detail ?? cur.detail, patch.job ?? cur.job, patch.data !== undefined ? J(patch.data) : cur.data,

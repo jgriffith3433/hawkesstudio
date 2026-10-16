@@ -88,11 +88,13 @@ How to work:
   for a backlog finding). It works on its own branch, opens a pull request into beta, playtests it and shows a
   preview at https://<sub>.hawkesgen.com/c/<change id>/. When J approves it here it merges into beta, and the beta
   site rebuilds within a few minutes (any push to beta does: each product repo has a GitHub Action that tells Studio; a Unity game's beta
-  is rebuilt on the build server after 10 quiet minutes, about $0.10).
+  is rebuilt on the build server a minute later, about $0.10).
 - Where things run: the live websites are GitHub Pages. Pushing a website repo's main publishes it to its domain
-  within minutes (Dose Of Destruction through its GitHub Actions workflow). Going live is fast-forwarding main to the
-  beta commit that was playtested (studio_deploy does it after J's exact words); for a Unity game that commit carries
-  the beta build's Game/v<n>. Hawkes Studio (studio.hawkesgen.com), Hawkes Gen (gen.hawkesgen.com) and the beta sites
+  within minutes (Dose Of Destruction, PH Origins and others with a build step build it in a GitHub Actions workflow).
+  Going live is pushing the product source repo's main (studio_deploy fast-forwards it to the playtested beta after J's
+  exact words; J can also push main himself): the repo's workflow tells Studio, which records it and playtests the live
+  site. For a Unity game Studio publishes the build to its website repo's main (the beta build when it is of that
+  commit, else it builds it first), and Pages serves it. Hawkes Studio (studio.hawkesgen.com), Hawkes Gen (gen.hawkesgen.com) and the beta sites
   (<sub>.hawkesgen.com) are not on GitHub Pages: they run on this AWS server.
 - Going live: first show J the studio_deploy_plan in plain words (the commits that would ship, who made them, the beta
   commit that was playtested, its verdicts, blockers and warnings), then wait. Only when J answers with the exact words

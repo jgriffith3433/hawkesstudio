@@ -235,12 +235,28 @@ const gh = (args: string[]) => {
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms).unref());
 
 /** Waits for GitHub to publish a commit (its Pages or Actions runs, through gh when signed in), then playtests live. */
-async function verifyLive(productId: string, sha: string, focus: string) {
+export async function verifyLive(productId: string, sha: string, focus: string) {
   const p = getProduct(productId);
   const slug = repoSlug(p.site);
   const end = Date.now() + 15 * 60_000;
   let published = false;
-  if (slug && gh(['auth', 'status']).ok) {
+  // GitHub's API with the server's token (the gh CLI isn't on the server): Pages has built this commit, or (sites that
+  // publish through a workflow, like Dose Of Destruction's pages.yml) every workflow run for it finished.
+  const token = process.env.GITHUB_TOKEN;
+  if (slug && token) {
+    const api = async (route: string) => {
+      const r = await fetch(`https://api.github.com/repos/${slug}/${route}`, { headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json' }, signal: AbortSignal.timeout(20_000) }).catch(() => null);
+      return r?.ok ? r.json() : null;
+    };
+    while (Date.now() < end && !published) {
+      await sleep(20_000);
+      const build: any = await api('pages/builds/latest');
+      if (build?.commit === sha && build.status === 'built') published = true;
+      const runs: any = await api(`actions/runs?head_sha=${sha}&event=push`);
+      const pagesRuns = (runs?.workflow_runs ?? []).filter((r: any) => /pages/i.test(`${r.name} ${r.path}`));
+      if (pagesRuns.length && pagesRuns.every((r: any) => r.status === 'completed')) published = true;
+    }
+  } else if (slug && gh(['auth', 'status']).ok) {
     while (Date.now() < end && !published) {
       await sleep(20_000);
       const runs = gh(['api', `repos/${slug}/actions/runs?head_sha=${sha}`, '--jq', '[.workflow_runs[] | {status, conclusion}]']);
