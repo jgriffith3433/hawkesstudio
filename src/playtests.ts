@@ -22,9 +22,10 @@ const TERMINAL = new Set(['done', 'failed', 'cancelled']);
  * it are not a hang) and how long it may run once started. Past either, the job is cancelled and returned as failed.
  * Never throws for a failed job.
  */
-export async function runGenJob(tool: string, project: string, params: Record<string, unknown>, onUpdate: (job: any) => void, { runMs, queueMs = 6 * 3600_000 }: { runMs: number; queueMs?: number }) {
-  let job: any;
-  for (let i = 0; ; i++) {
+export async function runGenJob(tool: string, project: string, params: Record<string, unknown>, onUpdate: (job: any) => void, { runMs, queueMs = 6 * 3600_000, job: reuse }: { runMs: number; queueMs?: number; job?: string }) {
+  // A job submitted before a Studio restart (pipeline.ts resumes runs): waited on again, not submitted again.
+  let job: any = reuse ? { id: reuse } : null;
+  for (let i = 0; !job; i++) {
     try {
       job = await gen.submit(tool, { project, params });
       break;
@@ -34,6 +35,7 @@ export async function runGenJob(tool: string, project: string, params: Record<st
       await new Promise((r) => setTimeout(r, 3000));
     }
   }
+  onUpdate({ ...job, detail: job.detail ?? (reuse ? 'waiting for it again after a Studio restart' : 'queued') });
   const submitted = Date.now();
   let started = 0;
   let last = '';

@@ -20,6 +20,7 @@
 // Going live stays J's (DEPLOY <product>). Studio and Gen changes always need J's approval (they restart services).
 
 import fs from 'node:fs';
+import { criticalSync } from './drain.ts';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { db, J, parse } from './db.ts';
@@ -598,7 +599,9 @@ export async function undoDecision(id: string, by = 'J') {
 }
 
 /** A revert of a pull request's squash commit on beta, pushed to beta (nothing goes live). */
-function revertOnBeta(repo: string, pr: number, by: string) {
+/** Reverting a merge on beta and pushing it is a critical section (drain.ts). */
+const revertOnBeta = (repo: string, pr: number, by: string) => criticalSync(`reverting #${pr} on ${repo}'s beta`, () => revertOnBetaNow(repo, pr, by));
+function revertOnBetaNow(repo: string, pr: number, by: string) {
   const dir = path.join(PROJECTS, repo);
   git(dir, ['fetch', '--quiet', 'origin']);
   const sha = prCommit(repo, BETA, pr);

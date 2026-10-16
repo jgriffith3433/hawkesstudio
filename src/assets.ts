@@ -99,7 +99,7 @@ export function assetStatus(productId: string): { product: string; manifest: str
  * Makes one asset through Hawkes Gen and writes its files. A recipe Gen already made (any project run) is reused
  * from its library instead of generated again.
  */
-export async function makeAsset(productId: string, id: string, { force = false, onUpdate }: { force?: boolean; onUpdate?: (detail: string, job?: string) => void } = {}) {
+export async function makeAsset(productId: string, id: string, { force = false, onUpdate, job: prior }: { force?: boolean; onUpdate?: (detail: string, job?: string) => void; job?: string } = {}) {
   const p = getProduct(productId);
   const m = loadManifest(p);
   const a = m?.assets.find((x) => x.id === id);
@@ -112,7 +112,8 @@ export async function makeAsset(productId: string, id: string, { force = false, 
   const version = (await gen.tool('asset.make')).version;
   const params = paramsOf(a);
   const inputs = inputsOf(p, a);
-  const job = await gen.submit('asset.make', { project, params, inputs, labels: { manifest: p.id, asset: id }, key: force ? undefined : `assets:${project}:${id}:${recipe}:v${version}` });
+  // A job submitted before a Studio restart (a resumed run) is waited for again, not made twice.
+  const job = prior ? { id: prior } : await gen.submit('asset.make', { project, params, inputs, labels: { manifest: p.id, asset: id }, key: force ? undefined : `assets:${project}:${id}:${recipe}:v${version}` });
   onUpdate?.('queued', job.id);
   const done = await genWait(job.id, (j: any) => onUpdate?.(j.detail, j.id), 6 * 3600_000);
   if (done.status !== 'done') throw new Error(`asset.make ${done.status}: ${done.error ?? done.detail}`);

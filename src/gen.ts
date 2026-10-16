@@ -63,8 +63,12 @@ export async function genWait(id: string, onUpdate?: (job: any) => void, timeout
   }
 }
 
-/** Submits a Gen job (retrying a busy service) and waits for it. */
-export async function genRun(tool: string, project: string, params: Record<string, unknown>, onUpdate?: (job: any) => void, timeoutMs = 4 * 60 * 60 * 1000) {
+/**
+ * Submits a Gen job (retrying a busy service) and waits for it. job: one submitted before (a Studio restart), waited on
+ * instead of submitting again; onSubmit: the new job's id, as soon as Gen gives it (to record it for that).
+ */
+export async function genRun(tool: string, project: string, params: Record<string, unknown>, onUpdate?: (job: any) => void, timeoutMs = 4 * 60 * 60 * 1000, { job: reuse, onSubmit }: { job?: string; onSubmit?: (id: string) => void } = {}) {
+  if (reuse) return genWait(reuse, onUpdate, timeoutMs);
   let job: any;
   for (let i = 0; ; i++) {
     try {
@@ -76,6 +80,7 @@ export async function genRun(tool: string, project: string, params: Record<strin
       await new Promise((r) => setTimeout(r, 3000));
     }
   }
+  onSubmit?.(job.id);
   return genWait(job.id, onUpdate, timeoutMs);
 }
 

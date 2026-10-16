@@ -328,6 +328,9 @@ WantedBy=paths.target`),
     fs.rmSync(local);
     await ssh(`sudo mv /tmp/${u.name} /etc/systemd/system/${u.name}`, { quiet: true });
   }
+  // Lingering: Studio runs agents and Talk answers as units of the hawkes user's own systemd manager (src/detach.ts), outside
+  // hawkes-studio's cgroup, so restarting Studio (a deploy) doesn't stop them. hawkes-pull.mjs makes sure of it too.
+  await ssh('sudo loginctl enable-linger hawkes && echo linger-ok');
   await ssh('sudo systemctl daemon-reload && sudo systemctl enable --now hawkes-secrets hawkes-gen hawkes-studio hawkes-daily.timer hawkes-pull.service hawkes-pull.path && (sudo systemctl disable --now hawkes-pull.timer 2>/dev/null; sudo rm -f /etc/systemd/system/hawkes-pull.timer; true) && sudo systemctl restart hawkes-secrets hawkes-gen && sleep 6 && sudo systemctl restart hawkes-studio && echo services-ok');
 }
 

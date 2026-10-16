@@ -15,17 +15,18 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { loadProducts, PROJECTS, type Product } from './config.ts';
 import { db, newId, J } from './db.ts';
-import { MAIN, AUTHOR, must, repoDirs, fetchOrigin, shaOf, betaBuild, betaSiteDir, scratch, git as gitIn } from './beta.ts';
+import { MAIN, AUTHOR, must, repoDirs, fetchOrigin, shaOf, betaBuild, betaSiteDir, scratch, WORK, git as gitIn } from './beta.ts';
 import { genRun } from './gen.ts';
-import { startStep, updateStep } from './pipeline.ts';
+import { startStep, updateStep, resumedStep } from './pipeline.ts';
+import { criticalSync } from './drain.ts';
 import { verifyLive, repoSlug } from './deploy.ts';
 
 const rel = (abs: string) => path.relative(PROJECTS, abs).replace(/\\/g, '/');
 
 /** A run in the dashboard for one go live (its steps: build if needed, publish). */
-function liveRun(p: Product, sha: string) {
-  const id = newId('r');
-  db.prepare('INSERT INTO runs (id, kind, status, detail, products, options, started) VALUES (?, ?, ?, ?, ?, ?, ?)').run(id, 'live', 'running', `go live ${p.id} ${sha.slice(0, 7)}`, J([p.id]), J({ sha }), Date.now());
+function liveRun(p: Product, sha: string, by: string, resumed?: string) {
+  const id = resumed ?? newId('r');
+  if (!resumed) db.prepare('INSERT INTO runs (id, kind, status, detail, products, options, started) VALUES (?, ?, ?, ?, ?, ?, ?)').run(id, 'live', 'running', `go live ${p.id} ${sha.slice(0, 7)}`, J([p.id]), J({ sha, by }), Date.now());
   const end = (status: 'done' | 'failed', detail: string) => {
     const cost = (db.prepare('SELECT COALESCE(SUM(cost), 0) AS c FROM steps WHERE run = ?').get(id) as any).c;
     db.prepare('UPDATE runs SET status = ?, detail = ?, finished = ?, cost = ? WHERE id = ?').run(status, detail, Date.now(), cost, id);
@@ -40,12 +41,16 @@ const liveAlready = (p: Product, sha: string) =>
  * Publishes a Unity game's source commit: its build goes to the website repo's main (GitHub Pages serves it).
  * Uses the beta build when it is of this commit, else builds the commit first.
  */
-export async function publishUnity(p: Product, sha: string, { by = 'a push to main' } = {}) {
+export async function publishUnity(p: Product, sha: string, { by = 'a push to main', run: resumed }: { by?: string; run?: string } = {}) {
   if (!p.build) throw new Error(`${p.name} isn't a Unity product`);
-  const done = liveAlready(p, sha);
-  if (done) return { skipped: `${sha.slice(0, 7)} is already live (${done.id})` };
   const { source, site } = repoDirs(p);
-  const run = liveRun(p, sha);
+  const done = liveAlready(p, sha);
+  if (done) {
+    if (resumed) liveRun(p, sha, by, resumed).end('done', `live: ${p.name} ${sha.slice(0, 7)} (${done.id})`);
+    return { skipped: `${sha.slice(0, 7)} is already live (${done.id})` };
+  }
+  // Resumed after a Studio restart (pipeline.ts resumeRuns): the same run, and its build job waited for again.
+  const run = liveRun(p, sha, by, resumed);
   try {
     fetchOrigin(source);
     fetchOrigin(site);
@@ -60,12 +65,15 @@ export async function publishUnity(p: Product, sha: string, { by = 'a push to ma
       what = `the beta build of ${sha.slice(0, 7)}${version ? ` (Game/v${version})` : ''}`;
     } else {
       // Not built on beta (a commit pushed straight to main, or beta moved on): build this commit for live.
-      const src = scratch(source, `${p.id}-live-src`, sha);
-      copy = scratch(site, `${p.id}-live-site`, before);
+      const s = startStep(run.id, p.id, 'build', 'unity', `building ${sha.slice(0, 7)} for live`);
+      // Resumed with its build running or done: the scratch copies hold its work (and maybe its output); not reset.
+      const prior = resumedStep(s);
+      const src = prior?.job ? path.join(WORK(), `${p.id}-live-src`) : scratch(source, `${p.id}-live-src`, sha);
+      copy = prior?.job ? path.join(WORK(), `${p.id}-live-site`) : scratch(site, `${p.id}-live-site`, before);
       const projectDir = rel(path.join(src, path.relative(p.repo.split('/')[0], p.build.project)));
       const siteDir = rel(path.join(copy, path.relative(p.site.split('/')[0], p.site)));
-      const s = startStep(run.id, p.id, 'build', 'unity', `building ${sha.slice(0, 7)} for live`);
-      const job = await genRun('unity.build', p.id, { project: p.build.project, site: p.build.site, method: p.build.method, projectDir, siteDir }, (j) => updateStep(s, { job: j.id, detail: j.detail }));
+      const job = await genRun('unity.build', p.id, { project: p.build.project, site: p.build.site, method: p.build.method, projectDir, siteDir }, (j) => updateStep(s, { job: j.id, detail: j.detail }), undefined,
+        { job: prior?.job ?? undefined, onSubmit: (id) => updateStep(s, { job: id }) });
       const r = job.result ?? {};
       if (job.status !== 'done') {
         updateStep(s, { status: 'failed', detail: `failed: ${job.error ?? job.detail}`, job: job.id, cost: job.cost ?? 0, finished: true });
@@ -76,24 +84,27 @@ export async function publishUnity(p: Product, sha: string, { by = 'a push to ma
       what = `a build of ${sha.slice(0, 7)}${version ? ` (Game/v${version})` : ''}`;
     }
     const s = startStep(run.id, p.id, 'deploy', p.site, `publishing ${what}`);
-    must(gitIn(copy, ['add', '-A']), 'git add');
-    let after = before;
-    if (!gitIn(copy, ['diff', '--cached', '--quiet']).ok) {
-      must(gitIn(copy, [...AUTHOR, 'commit', '--quiet', '-m', `Go live: ${p.name}${version ? ` Game/v${version}` : ''} (${p.repo.split('/')[0]} ${sha.slice(0, 7)}, ${by})`]), 'committing the build');
-      // The website's main may have moved since the copy was made: put the build on top of it.
-      must(gitIn(copy, ['fetch', '--quiet', 'origin', MAIN]), 'fetching the website');
-      must(gitIn(copy, ['rebase', '--quiet', `origin/${MAIN}`]), `rebasing onto ${p.site}'s ${MAIN}`);
-      must(gitIn(copy, ['push', '--quiet', 'origin', `HEAD:refs/heads/${MAIN}`]), `pushing ${p.site}'s ${MAIN}`);
-      after = shaOf(copy, 'HEAD')!;
-    }
-    const id = newId('d');
-    db.prepare('INSERT INTO deploys (id, product, kind, repo, before, after, beta, source, source_before, source_after, version, by, detail, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
-      .run(id, p.id, 'deploy', p.site, before, after, sha, p.repo, null, sha, version, by, `published ${what}`, Date.now());
-    updateStep(s, { status: 'done', detail: after === before ? 'the build was already on the website' : `${p.site} ${MAIN} -> ${after.slice(0, 7)}: ${what}`, finished: true });
-    run.end('done', `live: ${p.name} ${what}`);
-    fetchOrigin(site);
-    if (after !== before) void verifyLive(p.id, after, `Just went live (${p.repo.split('/')[0]} ${sha.slice(0, 7)}, ${by})`);
-    return { deploy: id, website: p.site, before: before.slice(0, 7), after: after.slice(0, 7), what };
+    // Pushing the website's main and recording it are one critical section (drain.ts): a deploy of Studio waits for it.
+    return criticalSync(`publishing ${p.name} live`, () => {
+      must(gitIn(copy, ['add', '-A']), 'git add');
+      let after = before;
+      if (!gitIn(copy, ['diff', '--cached', '--quiet']).ok) {
+        must(gitIn(copy, [...AUTHOR, 'commit', '--quiet', '-m', `Go live: ${p.name}${version ? ` Game/v${version}` : ''} (${p.repo.split('/')[0]} ${sha.slice(0, 7)}, ${by})`]), 'committing the build');
+        // The website's main may have moved since the copy was made: put the build on top of it.
+        must(gitIn(copy, ['fetch', '--quiet', 'origin', MAIN]), 'fetching the website');
+        must(gitIn(copy, ['rebase', '--quiet', `origin/${MAIN}`]), `rebasing onto ${p.site}'s ${MAIN}`);
+        must(gitIn(copy, ['push', '--quiet', 'origin', `HEAD:refs/heads/${MAIN}`]), `pushing ${p.site}'s ${MAIN}`);
+        after = shaOf(copy, 'HEAD')!;
+      }
+      const id = newId('d');
+      db.prepare('INSERT INTO deploys (id, product, kind, repo, before, after, beta, source, source_before, source_after, version, by, detail, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+        .run(id, p.id, 'deploy', p.site, before, after, sha, p.repo, null, sha, version, by, `published ${what}`, Date.now());
+      updateStep(s, { status: 'done', detail: after === before ? 'the build was already on the website' : `${p.site} ${MAIN} -> ${after.slice(0, 7)}: ${what}`, finished: true });
+      run.end('done', `live: ${p.name} ${what}`);
+      fetchOrigin(site);
+      if (after !== before) void verifyLive(p.id, after, `Just went live (${p.repo.split('/')[0]} ${sha.slice(0, 7)}, ${by})`);
+      return { deploy: id, website: p.site, before: before.slice(0, 7), after: after.slice(0, 7), what };
+    });
   } catch (e: any) {
     run.end('failed', `go live ${p.id} ${sha.slice(0, 7)} failed: ${String(e.message ?? e).slice(0, 300)}`);
     throw e;

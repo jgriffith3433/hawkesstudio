@@ -11,6 +11,7 @@
 // Everything else is an agent's job (studio_task, studio_fix): a pull request, a verification playtest, a preview.
 
 import fs from 'node:fs';
+import { critical } from './drain.ts';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { PROJECTS, getProduct, isInfra, StudioError, type Product } from './config.ts';
@@ -103,7 +104,9 @@ async function deps(dir: string) {
 export type FastResult = { ok: boolean; product: string; pushed?: string; commits: string[]; files: string[]; lines: number; checks: { cmd: string; ok: boolean; seconds: number; out?: string }[]; canon?: any; run?: string | null; why?: string };
 
 /** Talk's small change: checked, then pushed to beta. Refusals say why and what to do instead. */
-export async function fastlane(productId: string, message: string, { origin = null, by = 'Talk' }: { origin?: string | null; by?: string } = {}): Promise<FastResult> {
+/** The fast lane's commit and push to beta is a critical section (drain.ts). */
+export const fastlane = (...a: Parameters<typeof fastlaneNow>) => critical(`fast lane to ${a[0]}'s beta`, () => fastlaneNow(...a));
+async function fastlaneNow(productId: string, message: string, { origin = null, by = 'Talk' }: { origin?: string | null; by?: string } = {}): Promise<FastResult> {
   if (isInfra(productId)) throw new StudioError('Studio and Gen have no fast lane: use studio_task.');
   const p = getProduct(productId);
   const dir = workspaceDir(p);

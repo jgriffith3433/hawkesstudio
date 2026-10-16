@@ -50,7 +50,37 @@ export function activeRun() {
   return db.prepare(`SELECT * FROM runs WHERE status = 'running' ORDER BY started DESC LIMIT 1`).get() as any;
 }
 
+// ------------------------------------------------------------ resuming after a restart
+//
+// A Studio restart (a deploy) doesn't end a run: resumeRuns() runs it again from the top with its steps so far. Each
+// startStep finds the step it made before (same product, kind and name, in order) instead of making a new one, and
+// resumedStep() says how it was: a finished step is kept and not done again (no second build, playtest or review, no
+// findings filed twice), and a step that was running waits for its Hawkes Gen job again (a playtest of a page Studio
+// served is played again: its page server stopped with Studio).
+
+/** Runs being resumed: their steps from before the restart, not matched yet. */
+const resuming = new Map<string, Step[]>();
+/** The steps matched so far: how each was before the restart. */
+const resumed = new Map<string, Step>();
+
+/** How a step was before Studio restarted (null: it is new). */
+export const resumedStep = (id: string) => resumed.get(id) ?? null;
+/** A step that finished before the restart: its work is done. */
+const finishedBefore = (id: string) => {
+  const was = resumed.get(id);
+  return was && was.status !== 'running' ? was : null;
+};
+/** Whether a run being resumed had made a step of this kind (e.g. its repo syncs). */
+const hadSteps = (run: string, kind: string) => (db.prepare('SELECT COUNT(*) AS n FROM steps WHERE run = ? AND kind = ?').get(run, kind) as any).n > 0 && resuming.has(run);
+
 export function startStep(run: string, product: string, kind: string, name: string, detail = '') {
+  const list = resuming.get(run);
+  const i = list?.findIndex((s) => s.product === product && s.kind === kind && s.name === name) ?? -1;
+  if (list && i >= 0) {
+    const [was] = list.splice(i, 1);
+    resumed.set(was.id, was);
+    return was.id;
+  }
   const id = newId('s');
   db.prepare('INSERT INTO steps (id, run, product, kind, name, status, detail, started) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').run(id, run, product, kind, name, 'running', detail, Date.now());
   return id;
@@ -107,8 +137,8 @@ export function startRun(kind: string, options: RunOptions = {}) {
 
 async function runAll(run: string, ids: string[], o: RunOptions) {
   if (!(await genUp()) && !(await ensureGen())) throw new Error('Hawkes Gen is not running and did not start (see hawkesgen/.data/server.err.log).');
-  // On the server, start from what's on GitHub.
-  if (isServer()) {
+  // On the server, start from what's on GitHub (once: a resumed run plays what it synced before the restart).
+  if (isServer() && !hadSteps(run, 'repo')) {
     db.prepare('UPDATE runs SET detail = ? WHERE id = ?').run('updating repos from GitHub', run);
     const synced = syncRepos();
     // Product source repos are on beta (repos.ts); the staging sites (<sub>.hawkesgen.com) follow it.
@@ -127,7 +157,7 @@ async function runAll(run: string, ids: string[], o: RunOptions) {
   if (isServer() && gpuMode !== 'off' && products.some((p) => p.engine !== 'static')) {
     const s = startStep(run, 'studio', 'gpu', 'playtests', gpuMode === 'fleet' ? 'checking for a ready GPU server' : 'starting the playtester (T4 GPU)');
     usedPlaytester = gpuMode !== 'fleet';
-    gpuGate = (gpuMode === 'fleet' ? ensureGpu((d) => updateStep(s, { detail: d })) : ensurePlaytester((d) => updateStep(s, { detail: d })))
+    if (!finishedBefore(s)) gpuGate = (gpuMode === 'fleet' ? ensureGpu((d) => updateStep(s, { detail: d })) : ensurePlaytester((d) => updateStep(s, { detail: d })))
       .then((detail) => updateStep(s, { status: 'done', detail, finished: true }))
       .catch((e: any) => updateStep(s, { status: 'failed', detail: `${e.message} (games are played in software instead)`, finished: true }));
   }
@@ -146,6 +176,8 @@ async function runAll(run: string, ids: string[], o: RunOptions) {
   if (gpuGate) {
     await gpuGate;
     gpuGate = null;
+  }
+  {
     if (usedPlaytester) await gen.request('/playtester/stop', { method: 'POST', body: { ifIdle: true } }).catch((e: any) => console.warn(`[studio] couldn't stop the playtester: ${e.message}`));
   }
   const cost = (db.prepare('SELECT COALESCE(SUM(cost), 0) AS c FROM steps WHERE run = ?').get(run) as any).c;
@@ -210,6 +242,7 @@ export async function runProduct(run: string, p: Product, o: RunOptions) {
   if (!o.noChecks) {
     for (const c of p.checks ?? []) {
       const s = startStep(run, p.id, 'check', c.cmd, c.dir);
+      if (finishedBefore(s)) continue;
       const r = await runCheck(c.dir, c.cmd);
       updateStep(s, { status: r.ok ? 'done' : 'failed', detail: r.ok ? `passed in ${r.seconds} s` : `failed (exit ${r.code}) after ${r.seconds} s`, data: r, finished: true });
     }
@@ -289,6 +322,7 @@ export const nameOf = (t: Playtest) => `${t.scenario ?? t.mode ?? 'auto'}@${t.wh
 /** Runs a product's pre-deploy build on beta and commits it there (beta.ts prepareBeta), then syncs the checkout. */
 async function prebuildBeta(run: string, p: Product) {
   const s = startStep(run, p.id, 'beta', 'prebuild', p.deploy?.prebuild ?? '');
+  if (finishedBefore(s)) return;
   try {
     const r: any = await prepareBeta(p, (d) => updateStep(s, { detail: d }));
     const top = p.repo.split('/')[0];
@@ -303,8 +337,16 @@ async function prebuildBeta(run: string, p: Product) {
  * Builds a Unity product on the build server if its source changed (or force). On the beta lane the source checkout is
  * on beta and the build lands in the beta website copy (beta.ts), not the real website folder; the beta site follows.
  */
-export async function buildProduct(run: string, p: Product, { force = false } = {}) {
+export async function buildProduct(run: string, p: Product, { force = false } = {}): Promise<any> {
   if (!p.build) throw new Error(`${p.name} isn't a Unity product`);
+  // Resumed after a restart: a build that finished is what it was; one that was running is waited for again.
+  const before = db.prepare(`SELECT * FROM steps WHERE run = ? AND product = ? AND kind = 'build' AND name = 'unity'`).get(run, p.id) as any;
+  if (before && resuming.has(run)) {
+    const s = startStep(run, p.id, 'build', 'unity');
+    const was = resumedStep(s)!;
+    if (was.status !== 'running') return was.status === 'done' ? { id: was.job, status: 'done', result: was.data } : was.status === 'skipped' ? null : { id: was.job, status: 'failed' };
+    if (was.job) return finishBuild(run, p, s, { fp: was.data?.fingerprint ?? treeFingerprint(p.build.project), head: was.data?.beta ?? '', base: was.data?.base ?? '', siteDir: was.data?.siteDir, job: was.job });
+  }
   const fp = treeFingerprint(p.build.project);
   const last = lastStep(p.id, 'build', 'unity');
   const lane = betaLane();
@@ -329,7 +371,16 @@ export async function buildProduct(run: string, p: Product, { force = false } = 
       return null;
     }
   }
-  const job = await genRun('unity.build', p.id, { project: p.build.project, site: p.build.site, method: p.build.method, ...(siteDir ? { siteDir } : {}) }, (j) => updateStep(s, { job: j.id, detail: j.detail }));
+  // What the build needs if Studio restarts while it runs (the beta website copy is not reset again then).
+  updateStep(s, { data: { fingerprint: fp, beta: head, base, siteDir } });
+  return finishBuild(run, p, s, { fp, head, base, siteDir });
+}
+
+/** Builds (or waits again for the build job of) a Unity product, and records the result. */
+async function finishBuild(run: string, p: Product, s: string, { fp, head, base, siteDir, job: prior }: { fp: string; head: string; base: string; siteDir?: string; job?: string }) {
+  const lane = betaLane();
+  const job = await genRun('unity.build', p.id, { project: p.build!.project, site: p.build!.site, method: p.build!.method, ...(siteDir ? { siteDir } : {}) }, (j) => updateStep(s, { job: j.id, detail: j.detail }), undefined,
+    { job: prior, onSubmit: (id) => updateStep(s, { job: id }) });
   const r = job.result ?? {};
   // A Hawkes Gen without siteDir would have built into the real website folder: that isn't a beta build.
   const stale = Boolean(siteDir && job.status === 'done' && r.site && r.site.folder !== siteDir);
@@ -351,7 +402,10 @@ export async function buildProduct(run: string, p: Product, { force = false } = 
 export async function testProduct(run: string, p: Product, platform: 'EditMode' | 'PlayMode', category?: string) {
   if (!p.build) throw new Error(`${p.name} isn't a Unity product`);
   const s = startStep(run, p.id, 'check', `unity ${platform}${category ? ` ${category}` : ''}`, 'queued on the build server');
-  const job = await genRun('unity.test', p.id, { project: p.build.project, platform, ...(category ? { category } : {}) }, (j) => updateStep(s, { job: j.id, detail: j.detail }));
+  const was = resumedStep(s);
+  if (was && was.status !== 'running') return { id: was.job, status: was.status === 'done' ? 'done' : 'failed', result: was.data };
+  const job = await genRun('unity.test', p.id, { project: p.build.project, platform, ...(category ? { category } : {}) }, (j) => updateStep(s, { job: j.id, detail: j.detail }), undefined,
+    { job: was?.job ?? undefined, onSubmit: (id) => updateStep(s, { job: id }) });
   const r = job.result ?? {};
   const ok = job.status === 'done' && !r.failed;
   updateStep(s, {
@@ -370,18 +424,39 @@ export async function testProduct(run: string, p: Product, platform: 'EditMode' 
 export async function playtestProduct(run: string, p: Product, t: Playtest, { review = true, focus, mode = 'full', criteria }: { review?: boolean; focus?: string; mode?: ReviewMode; criteria?: string[] } = {}) {
   const name = nameOf(t);
   const s = startStep(run, p.id, 'playtest', name, 'starting');
+  // Resumed after a restart: a playtest that finished is kept (its review carries on); one that was waiting in Gen's
+  // queue is waited for again. A local one that was playing lost its page server (it stopped with Studio): it's
+  // played again. A live one plays a site Studio doesn't serve: waited for again.
+  const was = resumedStep(s);
+  if (was && was.status !== 'running') {
+    if (was.status !== 'done' || !review || !was.job) return was.job ? { id: was.job, status: was.status } : null;
+    const job = await gen.job(was.job).catch(() => null);
+    if (!job || job.status !== 'done') return job;
+    if (job.result?.software && p.engine !== 'static') return job;
+    return reviewPlaytest(run, p, t, job, was.data?.played ?? null, { focus, mode, criteria });
+  }
+  let prior: any = null;
+  if (was?.job) {
+    prior = await gen.job(was.job).catch(() => null);
+    if (prior && t.where === 'local' && !['queued', 'done'].includes(prior.status)) {
+      if (prior.status === 'running') await gen.cancel(prior.id).catch(() => {});
+      updateStep(s, { detail: 'played again: its page server stopped when Studio restarted' });
+      prior = null;
+    }
+  }
   let url: string;
   // On the server a web product's local playtest plays its beta checkout, which must be beta's tip: never an old copy.
-  const stale = t.where === 'local' ? staleBeta(p) : null;
+  const stale = t.where === 'local' && !prior ? staleBeta(p) : null;
   if (stale) {
     updateStep(s, { status: 'failed', detail: stale, data: { played: playedLocal(p), stale: true }, finished: true });
     return null;
   }
   // Local: what's played (beta on the server) is recorded, so the report and the deploy plan know the commit.
-  const played = t.where === 'local' ? playedLocal(p) : null;
+  const played = t.where === 'local' ? (was?.data?.played ?? playedLocal(p)) : null;
   let port: number | null = null;
   try {
     if (t.where === 'live') url = p.live;
+    else if (prior?.status === 'done') url = was?.data?.url ?? localUrl(p);
     else if (p.build && betaLane()) {
       // Unity on the beta lane: the beta build, from its own website copy, on its own port.
       if (!played) throw new Error(`${BETA} isn't built yet (or its last build failed): nothing to play locally`);
@@ -393,16 +468,17 @@ export async function playtestProduct(run: string, p: Product, t: Playtest, { re
     updateStep(s, { status: 'failed', detail: e.message, data: { played }, finished: true });
     return null;
   }
+  updateStep(s, { data: { played, url } });
   // Live sites may not have the contract yet (it ships with the next deploy): auto falls back to a generic smoke test.
   const params: Record<string, unknown> = { url, mode: t.mode ?? (p.contract && t.where === 'local' ? 'contract' : 'auto'), ...(t.scenario ? { scenario: t.scenario } : {}), ...(t.timeout ? { timeout: t.timeout } : {}), ...(t.seed ? { seed: t.seed } : {}), ...(t.options ? { options: t.options } : {}) };
   if (t.mode === 'site') params.maxPages = 40;
   Object.assign(params, playtestExtras(p.id, name, t));
-  if (gpuGate && p.engine !== 'static') {
+  if (gpuGate && p.engine !== 'static' && !prior) {
     updateStep(s, { detail: 'waiting for the GPU machine' });
     await gpuGate;
   }
   // Timed out (and cancelled) if it hangs, so one stuck browser never holds up the run.
-  const job = await runGenJob('playtest.run', p.id, params, (j) => updateStep(s, { job: j.id, detail: j.detail }), { runMs: playtestRunMs(t) })
+  const job = await runGenJob('playtest.run', p.id, params, (j) => updateStep(s, { job: j.id, detail: j.detail }), { runMs: playtestRunMs(t), job: prior?.id })
     .finally(() => { if (port) stopServed(port); });
   const r = job.result ?? {};
   const ok = job.status === 'done';
@@ -423,7 +499,13 @@ export async function playtestProduct(run: string, p: Product, t: Playtest, { re
     updateStep(s, { status: 'skipped', detail: `inconclusive: no GPU server was free, the browser ran in software (${r.fps?.average ?? '?'} fps); not reviewed` });
     return job;
   }
+  return reviewPlaytest(run, p, t, job, played, { focus, mode, criteria });
+}
 
+/** Claude's review of a finished playtest (or, resumed after a restart, the review it already had or was waiting for). */
+async function reviewPlaytest(run: string, p: Product, t: Playtest, job: any, played: ReturnType<typeof playedLocal>, { focus, mode = 'full', criteria }: { focus?: string; mode?: ReviewMode; criteria?: string[] }) {
+  const name = nameOf(t);
+  const r = job.result ?? {};
   // Reviews cost money: skip one when nothing changed since the last review of this scenario (the same commit for local
   // runs, the same live site for live ones) and the playtest raised no new problem. The last review still stands.
   const sha = t.where === 'local' ? (played ? `${played.sha.slice(0, 12)}${played.dirty ? `+${played.dirty}` : ''}` : gitState(p.site).head?.split(' ')[0] ?? '') : '';
@@ -435,18 +517,22 @@ export async function playtestProduct(run: string, p: Product, t: Playtest, { re
   const sameKey = `${t.where}:${sha}:${r.outcome}:${problemsKey}:${reviewMode}`;
   const prev = lastStep(p.id, 'review', name, run);
   const ageDays = prev ? (Date.now() - (prev.finished ?? 0)) / 86_400_000 : 99;
-  if (prev?.data?.reviewKey === sameKey && ageDays < 7 && !focus && !criteria?.length) {
+  const resumedReview = db.prepare(`SELECT id FROM steps WHERE run = ? AND product = ? AND kind = 'review' AND name = ?`).get(run, p.id, name) && resuming.has(run);
+  if (!resumedReview && prev?.data?.reviewKey === sameKey && ageDays < 7 && !focus && !criteria?.length) {
     const rs0 = startStep(run, p.id, 'review', name, 'unchanged since the last review');
     updateStep(rs0, { status: 'skipped', detail: `unchanged since the last review (${prev.data.verdict}); not reviewed again`, data: { ...prev.data, reviewKey: sameKey, reused: prev.id }, finished: true });
     return job;
   }
   const rs = startStep(run, p.id, 'review', name, 'Claude is watching');
+  // Resumed: a finished review was filed already (its findings are in the backlog); a running one is waited for again.
+  const wasReview = resumedStep(rs);
+  if (wasReview && wasReview.status !== 'running') return job;
   const previous = lastStep(p.id, 'review', name, run)?.data ?? null;
   const rev = await runGenJob('playtest.review', p.id, reviewParams(p, job.id, reviewMode, {
     ...(focus ? { focus } : {}),
     ...(criteria?.length ? { criteria } : {}),
     ...(previous ? { previous: { summary: previous.summary, verdict: previous.verdict, scores: previous.scores, findings: (previous.findings ?? []).map((f: any) => ({ severity: f.severity, title: f.title })) } } : {}),
-  }), (j) => updateStep(rs, { job: j.id, detail: j.detail }), { runMs: REVIEW_RUN_MS });
+  }), (j) => updateStep(rs, { job: j.id, detail: j.detail }), { runMs: REVIEW_RUN_MS, job: wasReview?.job ?? undefined });
   if (rev.status !== 'done') {
     updateStep(rs, { status: 'failed', job: rev.id, detail: `failed: ${rev.error ?? rev.detail}`, finished: true });
     return job;
@@ -472,60 +558,66 @@ export async function playtestProduct(run: string, p: Product, t: Playtest, { re
   return job;
 }
 
+type PartialOptions = { scenario?: string; where?: 'local' | 'live'; device?: 'desktop' | 'phone'; mode?: string; force?: boolean; review?: boolean; focus?: string; reviewMode?: ReviewMode; platform?: 'EditMode' | 'PlayMode'; category?: string; origin?: string | null; seed?: number; options?: Record<string, unknown> };
+
 /** Runs the pipeline pieces on their own (from the API, CLI or MCP) as a small run. */
-export function startPartial(kind: 'build' | 'playtest' | 'test', productId: string, opts: { scenario?: string; where?: 'local' | 'live'; device?: 'desktop' | 'phone'; mode?: string; force?: boolean; review?: boolean; focus?: string; reviewMode?: ReviewMode; platform?: 'EditMode' | 'PlayMode'; category?: string; origin?: string | null; seed?: number; options?: Record<string, unknown> } = {}) {
+export function startPartial(kind: 'build' | 'playtest' | 'test', productId: string, opts: PartialOptions = {}) {
   const p = getProduct(productId);
   const id = newId('r');
   db.prepare('INSERT INTO runs (id, kind, status, detail, products, options, started) VALUES (?, ?, ?, ?, ?, ?, ?)').run(id, kind, 'running', `${kind} ${p.id}`, J([p.id]), J(opts), Date.now());
   tagRun(id, opts.origin);
-  const done = (async () => {
-    try {
-      if (kind === 'build') await buildProduct(id, p, { force: opts.force ?? true });
-      else if (kind === 'test') await testProduct(id, p, opts.platform ?? 'EditMode', opts.category);
-      else await playtestProduct(id, p, { scenario: opts.scenario ?? (opts.mode ? undefined : 'smoke'), mode: (opts.mode as any) ?? undefined, where: opts.where ?? 'local', device: opts.device, seed: opts.seed, options: opts.options }, { review: opts.review !== false, focus: opts.focus, mode: opts.reviewMode ?? (opts.where === 'live' ? 'regression' : 'verify') });
-      const cost = (db.prepare('SELECT COALESCE(SUM(cost), 0) AS c FROM steps WHERE run = ?').get(id) as any).c;
-      const failed = (db.prepare(`SELECT COUNT(*) AS n FROM steps WHERE run = ? AND status = 'failed'`).get(id) as any).n;
-      db.prepare(`UPDATE runs SET status = ?, detail = ?, finished = ?, cost = ? WHERE id = ?`).run(failed ? 'failed' : 'done', `${kind} ${p.id}${failed ? ' failed' : ''}`, Date.now(), cost, id);
-    } catch (e: any) {
-      db.prepare(`UPDATE runs SET status = 'failed', detail = ?, finished = ? WHERE id = ?`).run(String(e.message ?? e), Date.now(), id);
-    }
-  })();
-  return { id, done };
+  return { id, done: partialBody(id, kind, p, opts) };
 }
+
+async function partialBody(id: string, kind: string, p: Product, opts: PartialOptions) {
+  try {
+    if (kind === 'build') await buildProduct(id, p, { force: opts.force ?? true });
+    else if (kind === 'test') await testProduct(id, p, opts.platform ?? 'EditMode', opts.category);
+    else await playtestProduct(id, p, { scenario: opts.scenario ?? (opts.mode ? undefined : 'smoke'), mode: (opts.mode as any) ?? undefined, where: opts.where ?? 'local', device: opts.device, seed: opts.seed, options: opts.options }, { review: opts.review !== false, focus: opts.focus, mode: opts.reviewMode ?? (opts.where === 'live' ? 'regression' : 'verify') });
+    const cost = (db.prepare('SELECT COALESCE(SUM(cost), 0) AS c FROM steps WHERE run = ?').get(id) as any).c;
+    const failed = (db.prepare(`SELECT COUNT(*) AS n FROM steps WHERE run = ? AND status = 'failed'`).get(id) as any).n;
+    db.prepare(`UPDATE runs SET status = ?, detail = ?, finished = ?, cost = ? WHERE id = ?`).run(failed ? 'failed' : 'done', `${kind} ${p.id}${failed ? ' failed' : ''}`, Date.now(), cost, id);
+  } catch (e: any) {
+    db.prepare(`UPDATE runs SET status = 'failed', detail = ?, finished = ? WHERE id = ?`).run(String(e.message ?? e), Date.now(), id);
+  }
+}
+
+type BetaOptions = { focus?: string; origin?: string | null; criteria?: string[]; scenario?: string; options?: Record<string, unknown> };
 
 /**
  * After beta moves (an approved change): the product's beta is brought up to date and played, as a small run in the
  * background. Its pre-deploy build is committed to beta, Unity builds beta, the beta site is rebuilt, and (on the
  * server) the first local scenario is playtested and reviewed.
  */
-export function startBeta(productId: string, { focus, origin, criteria, scenario, options }: { focus?: string; origin?: string | null; criteria?: string[]; scenario?: string; options?: Record<string, unknown> } = {}) {
+export function startBeta(productId: string, o: BetaOptions = {}) {
   const p = getProduct(productId);
   const id = newId('r');
-  db.prepare('INSERT INTO runs (id, kind, status, detail, products, options, started) VALUES (?, ?, ?, ?, ?, ?, ?)').run(id, 'beta', 'running', `beta ${p.id}`, J([p.id]), J({ focus }), Date.now());
-  tagRun(id, origin);
-  const done = (async () => {
-    try {
-      const lane = betaLane();
-      const top = p.repo.split('/')[0];
-      if (lane && repoMap()[top]) {
-        const g = startStep(id, p.id, 'repo', top);
-        const r = syncRepo(top, repoMap()[top], BRANCH, betaFolders().has(top) ? BETA : undefined);
-        updateStep(g, { status: r.action === 'failed' ? 'failed' : 'done', detail: `${r.detail}${r.head ? ` (${r.head})` : ''}`, data: r, finished: true });
-      }
-      if (p.deploy?.prebuild) await prebuildBeta(id, p);
-      if (p.build && lane) await buildProduct(id, p);
-      else void import('./previews.ts').then(({ buildPreview }) => buildPreview(p.id)).catch(() => {});
-      // A merged roadmap task: the scenario its agent wrote for its criteria, and the criteria judged again.
-      const t: Playtest | undefined = scenario ? { scenario, where: 'local', ...(options ? { options } : {}) } : p.playtests.find((x) => x.where === 'local' && x.device !== 'phone');
-      if (lane && t) await playtestProduct(id, p, t, { focus, mode: 'verify', criteria });
-      const cost = (db.prepare('SELECT COALESCE(SUM(cost), 0) AS c FROM steps WHERE run = ?').get(id) as any).c;
-      const failed = (db.prepare(`SELECT COUNT(*) AS n FROM steps WHERE run = ? AND status = 'failed'`).get(id) as any).n;
-      db.prepare(`UPDATE runs SET status = ?, detail = ?, finished = ?, cost = ? WHERE id = ?`).run(failed ? 'failed' : 'done', `beta ${p.id}${failed ? ' failed' : ''}`, Date.now(), cost, id);
-    } catch (e: any) {
-      db.prepare(`UPDATE runs SET status = 'failed', detail = ?, finished = ? WHERE id = ?`).run(String(e.message ?? e), Date.now(), id);
+  db.prepare('INSERT INTO runs (id, kind, status, detail, products, options, started) VALUES (?, ?, ?, ?, ?, ?, ?)').run(id, 'beta', 'running', `beta ${p.id}`, J([p.id]), J({ focus: o.focus, criteria: o.criteria, scenario: o.scenario, options: o.options }), Date.now());
+  tagRun(id, o.origin);
+  return { id, done: betaBody(id, p, o) };
+}
+
+async function betaBody(id: string, p: Product, { focus, criteria, scenario, options }: BetaOptions) {
+  try {
+    const lane = betaLane();
+    const top = p.repo.split('/')[0];
+    if (lane && repoMap()[top] && !hadSteps(id, 'repo')) {
+      const g = startStep(id, p.id, 'repo', top);
+      const r = syncRepo(top, repoMap()[top], BRANCH, betaFolders().has(top) ? BETA : undefined);
+      updateStep(g, { status: r.action === 'failed' ? 'failed' : 'done', detail: `${r.detail}${r.head ? ` (${r.head})` : ''}`, data: r, finished: true });
     }
-  })();
-  return { id, done };
+    if (p.deploy?.prebuild) await prebuildBeta(id, p);
+    if (p.build && lane) await buildProduct(id, p);
+    else void import('./previews.ts').then(({ buildPreview }) => buildPreview(p.id)).catch(() => {});
+    // A merged roadmap task: the scenario its agent wrote for its criteria, and the criteria judged again.
+    const t: Playtest | undefined = scenario ? { scenario, where: 'local', ...(options ? { options } : {}) } : p.playtests.find((x) => x.where === 'local' && x.device !== 'phone');
+    if (lane && t) await playtestProduct(id, p, t, { focus, mode: 'verify', criteria });
+    const cost = (db.prepare('SELECT COALESCE(SUM(cost), 0) AS c FROM steps WHERE run = ?').get(id) as any).c;
+    const failed = (db.prepare(`SELECT COUNT(*) AS n FROM steps WHERE run = ? AND status = 'failed'`).get(id) as any).n;
+    db.prepare(`UPDATE runs SET status = ?, detail = ?, finished = ?, cost = ? WHERE id = ?`).run(failed ? 'failed' : 'done', `beta ${p.id}${failed ? ' failed' : ''}`, Date.now(), cost, id);
+  } catch (e: any) {
+    db.prepare(`UPDATE runs SET status = 'failed', detail = ?, finished = ? WHERE id = ?`).run(String(e.message ?? e), Date.now(), id);
+  }
 }
 
 /** Makes a product's missing or out-of-date assets (or only some, or forced) as a run. */
@@ -533,25 +625,66 @@ export function startAssets(productId: string, { only, force = false, origin }: 
   const p = getProduct(productId);
   const st = assetStatus(p.id);
   if (!st.manifest) throw new Error(`${p.name} has no hawkes.assets.json`);
-  const todo = st.assets.filter((a) => (only?.length ? only.includes(a.id) : force || a.status !== 'current'));
+  const todo = st.assets.filter((a) => (only?.length ? only.includes(a.id) : force || a.status !== 'current')).map((a) => ({ id: a.id, status: a.status }));
   const id = newId('r');
-  db.prepare('INSERT INTO runs (id, kind, status, detail, products, options, started) VALUES (?, ?, ?, ?, ?, ?, ?)').run(id, 'assets', 'running', `assets ${p.id}: ${todo.length}`, J([p.id]), J({ only, force }), Date.now());
+  db.prepare('INSERT INTO runs (id, kind, status, detail, products, options, started) VALUES (?, ?, ?, ?, ?, ?, ?)').run(id, 'assets', 'running', `assets ${p.id}: ${todo.length}`, J([p.id]), J({ only, force, todo }), Date.now());
   tagRun(id, origin);
-  const done = (async () => {
-    await Promise.all(todo.map(async (a) => {
-      const s = startStep(id, p.id, 'asset', a.id, a.status);
-      try {
-        const r: any = await makeAsset(p.id, a.id, { force: force || Boolean(only?.length), onUpdate: (detail, job) => updateStep(s, { detail, job }) });
-        updateStep(s, { status: r.skipped ? 'skipped' : 'done', detail: r.skipped ? `skipped: ${r.skipped}` : `made ${r.files.join(', ')}${r.picked ? ` (picked: ${r.picked.reason})` : ''}`, data: r, cost: r.cost ?? 0, finished: true });
-      } catch (e: any) {
-        updateStep(s, { status: 'failed', detail: e.message, finished: true });
-      }
-    }));
-    const failed = (db.prepare(`SELECT COUNT(*) AS n FROM steps WHERE run = ? AND status = 'failed'`).get(id) as any).n;
-    const cost = (db.prepare('SELECT COALESCE(SUM(cost), 0) AS c FROM steps WHERE run = ?').get(id) as any).c;
-    db.prepare('UPDATE runs SET status = ?, detail = ?, finished = ?, cost = ? WHERE id = ?').run(failed ? 'failed' : 'done', `assets ${p.id}: ${todo.length - failed} made${failed ? `, ${failed} failed` : ''}`, Date.now(), cost, id);
-  })();
-  return { id, todo: todo.map((a) => a.id), done };
+  return { id, todo: todo.map((a) => a.id), done: assetsBody(id, p, todo, { only, force }) };
+}
+
+async function assetsBody(id: string, p: Product, todo: { id: string; status: string }[], { only, force = false }: { only?: string[]; force?: boolean }) {
+  await Promise.all(todo.map(async (a) => {
+    const s = startStep(id, p.id, 'asset', a.id, a.status);
+    // Resumed: a made asset is kept; one being made waits for its Gen job again (not made twice: GPU money).
+    const was = resumedStep(s);
+    if (was && was.status !== 'running') return;
+    try {
+      const r: any = await makeAsset(p.id, a.id, { force: force || Boolean(only?.length), job: was?.job ?? undefined, onUpdate: (detail, job) => updateStep(s, { detail, job }) });
+      updateStep(s, { status: r.skipped ? 'skipped' : 'done', detail: r.skipped ? `skipped: ${r.skipped}` : `made ${r.files.join(', ')}${r.picked ? ` (picked: ${r.picked.reason})` : ''}`, data: r, cost: r.cost ?? 0, finished: true });
+    } catch (e: any) {
+      updateStep(s, { status: 'failed', detail: e.message, finished: true });
+    }
+  }));
+  const failed = (db.prepare(`SELECT COUNT(*) AS n FROM steps WHERE run = ? AND status = 'failed'`).get(id) as any).n;
+  const cost = (db.prepare('SELECT COALESCE(SUM(cost), 0) AS c FROM steps WHERE run = ?').get(id) as any).c;
+  db.prepare('UPDATE runs SET status = ?, detail = ?, finished = ?, cost = ? WHERE id = ?').run(failed ? 'failed' : 'done', `assets ${p.id}: ${todo.length - failed} made${failed ? `, ${failed} failed` : ''}`, Date.now(), cost, id);
+}
+
+/**
+ * After a Studio restart (a deploy): runs that were going carry on (resuming, above) instead of ending as
+ * interrupted. Returns the ids. Runs of a kind that can't carry on are marked interrupted, as before.
+ */
+export function resumeRuns() {
+  const out: string[] = [];
+  for (const r of db.prepare(`SELECT * FROM runs WHERE status = 'running' ORDER BY started`).all() as any[]) {
+    const options = parse(r.options) ?? {};
+    const products: string[] = parse(r.products) ?? [];
+    const steps = (db.prepare('SELECT * FROM steps WHERE run = ? ORDER BY started').all(r.id) as any[]).map(rowToStep);
+    let body: (() => Promise<unknown>) | null = null;
+    try {
+      if (r.kind === 'daily' || r.kind === 'manual') body = () => runAll(r.id, products, options).catch((e: any) => {
+        db.prepare(`UPDATE runs SET status = 'failed', detail = ?, finished = ? WHERE id = ?`).run(String(e.message ?? e), Date.now(), r.id);
+      });
+      else if (['build', 'test', 'playtest'].includes(r.kind)) body = () => partialBody(r.id, r.kind, getProduct(products[0]), options);
+      else if (r.kind === 'beta') body = () => betaBody(r.id, getProduct(products[0]), options);
+      else if (r.kind === 'assets' && Array.isArray(options.todo)) body = () => assetsBody(r.id, getProduct(products[0]), options.todo, options);
+      else if (r.kind === 'live' && options.sha) body = () => import('./golive.ts').then(({ publishUnity }) => publishUnity(getProduct(products[0]), options.sha, { by: options.by, run: r.id })).catch(() => {});
+    } catch {
+      body = null; // a product that's gone from products.json
+    }
+    if (!body) {
+      db.prepare(`UPDATE steps SET status = 'failed', detail = 'interrupted (Studio restarted)', finished = ? WHERE status = 'running' AND run = ?`).run(Date.now(), r.id);
+      db.prepare(`UPDATE runs SET status = 'interrupted' WHERE id = ?`).run(r.id);
+      continue;
+    }
+    resuming.set(r.id, steps);
+    out.push(r.id);
+    void body().finally(() => {
+      resuming.delete(r.id);
+      for (const s of steps) resumed.delete(s.id);
+    });
+  }
+  return out;
 }
 
 export { today, localUrl, gen };

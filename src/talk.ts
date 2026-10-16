@@ -16,6 +16,11 @@
 // most of a normal turn (about 9 s to the first word on the server, 1-2 s warm). Its system prompt asks for spoken,
 // short answers (CALL_PROMPT). The text streams to the call page as events (talkEvents, GET /api/talk/<id>/events),
 // stop interrupts the answer without ending the process (barge-in), and the call ends when J hangs up or goes quiet.
+//
+// A Studio restart (a deploy) doesn't cut an answer off: each turn's Claude Code runs outside Studio where it can
+// (detach.ts), its process is recorded on the conversation (proc), and the restarted Studio reads its output on from
+// where it got to (resumeTalk), so the answer keeps streaming into the conversation. A call's warm process (it reads
+// stdin) stays Studio's child: a restart ends the call.
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -27,7 +32,8 @@ import { claudeEnv, billing, usingSubscription } from './claude.ts';
 import { memoryBlock } from './memory.ts';
 import { roleArgs } from './roles.ts';
 import { PUBLIC_URL } from './notify.ts';
-import { spawnClaude as spawnSandboxed, sandboxOn, sandboxShare } from './sandbox.ts';
+import { claudeCommand, sandboxOn, sandboxShare } from './sandbox.ts';
+import { launch, DetachedChild, type ChildLike, type DetachRec } from './detach.ts';
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS conversations (
@@ -35,6 +41,10 @@ db.exec(`
     cost REAL DEFAULT 0, created INTEGER NOT NULL, updated INTEGER
   );
 `);
+// The detached Claude Code of the turn running now (detach.ts) and how far its output was read: found again after a restart.
+try { db.exec('ALTER TABLE conversations ADD COLUMN proc TEXT'); } catch { /* already there */ }
+type TurnProc = { rec: DetachRec; offset: number; userAt: number; auto: boolean; billing: Turn['billing'] };
+const setProc = (id: string, proc: TurnProc | null) => db.prepare('UPDATE conversations SET proc = ? WHERE id = ?').run(proc ? J(proc) : null, id);
 
 export type Attachment = { name: string; blob: string; type?: string; size?: number; path?: string | null };
 /** turn: on the last message of each answer, what it cost (USD, as Claude Code reports it) and who paid. auto: Studio
@@ -50,7 +60,7 @@ export type Conversation = { id: string; title: string | null; session: string |
 
 /** The text Claude is writing right now, per conversation (not saved: it becomes a message when the block ends). */
 const partial = new Map<string, string>();
-const toConv = (r: any): Conversation => ({ ...r, messages: parse(r.messages) ?? [], partial: partial.get(r.id) ?? null });
+const toConv = ({ proc: _proc, ...r }: any): Conversation => ({ ...r, messages: parse(r.messages) ?? [], partial: partial.get(r.id) ?? null });
 export const getConversation = (id: string) => {
   const r = db.prepare('SELECT * FROM conversations WHERE id = ?').get(id);
   return r ? toConv(r) : null;
@@ -230,7 +240,7 @@ function memoryStable() {
   return b.text ? `\n\nFrom the shared memory (studio-wide decisions and preferences):\n${b.text}` : '';
 }
 
-const running = new Map<string, ChildProcess>();
+const running = new Map<string, ChildLike>();
 const stopping = new Set<string>();
 
 export function startConversation(title?: string) {
@@ -423,18 +433,19 @@ function claudeArgs(c: Conversation, call: boolean) {
 }
 
 /**
- * Starts Claude Code. TALK_CLAUDE: the executable, when it isn't "claude" on the PATH; TALK_CLAUDE_ARGS: a JSON array of
- * arguments before Claude Code's own (tests run a stand-in script with node).
+ * The Claude Code command (sandbox.ts claudeCommand: in the agent sandbox, as its user with no secrets). TALK_CLAUDE:
+ * the executable, when it isn't "claude" on the PATH; TALK_CLAUDE_ARGS: a JSON array of arguments before Claude Code's
+ * own (tests run a stand-in script with node). Its working directory is the projects folder.
  */
+const talkCommand = (args: string[]) => claudeCommand(args, { cwd: PROJECTS, env: claudeEnv() });
+/** A call's warm process: Studio's own child (it reads stdin). */
 function spawnClaude(args: string[]) {
-  const pre: string[] = process.env.TALK_CLAUDE_ARGS ? JSON.parse(process.env.TALK_CLAUDE_ARGS) : [];
-  // In the agent sandbox, as its user with no secrets (sandbox.ts); its working directory stays the projects folder.
-  if (sandboxOn() && !pre.length) return spawnSandboxed(args, { cwd: PROJECTS, env: claudeEnv() });
-  return spawn(process.env.TALK_CLAUDE || 'claude', [...pre, ...args], { cwd: PROJECTS, env: claudeEnv(), windowsHide: true });
+  const c = talkCommand(args);
+  return spawn(c.file, c.args, { cwd: c.cwd, env: c.env, windowsHide: true });
 }
 
 /** Calls f with each JSON line of the process's stream-json output. */
-function readLines(child: ChildProcess, f: (m: any) => void) {
+function readLines(child: ChildLike, f: (m: any) => void) {
   let buf = '';
   child.stdout!.on('data', (d) => {
     buf += d;
@@ -484,18 +495,33 @@ function runTurn(id: string, prompt: string, userAt: number, { auto = false, fre
     return;
   }
   const c = getConversation(id)!;
-  const child = spawnClaude(['-p', prompt, ...claudeArgs(c, false)]);
+  // Outside Studio where it can be (detach.ts): a Studio restart doesn't cut the answer off (resumeTalk).
+  const { child, rec } = launch(`talk-${id}`, talkCommand(['-p', prompt, ...claudeArgs(c, false)]));
+  if (rec) setProc(id, { rec, offset: 0, userAt, auto, billing: ctx.billing });
+  followTurn(id, child, ctx, { prompt, fresh, session: c.session });
+}
+
+/**
+ * Reads a turn's process until it ends (its own, or one reattached after a restart). Each line that changes the
+ * conversation saves it, and the offset of a detached process's output with it, so a restart reads on from there.
+ */
+function followTurn(id: string, child: ChildLike, ctx: TurnCtx, { prompt, fresh, session, started = Date.now() }: { prompt?: string; fresh: boolean; session: string | null; started?: number }) {
+  const { userAt, auto } = ctx;
   running.set(id, child);
-  readLines(child, (m) => onLine(id, m, ctx));
+  readLines(child, (m) => {
+    onLine(id, m, ctx);
+    if (child instanceof DetachedChild && m.type !== 'stream_event') db.prepare(`UPDATE conversations SET proc = json_set(proc, '$.offset', ?, '$.billing', ?) WHERE id = ? AND proc IS NOT NULL`).run(child.offset, ctx.billing, id);
+  });
   child.stderr!.on('data', (d) => (ctx.err += d));
-  const timer = setTimeout(() => child.kill('SIGTERM'), 30 * 60_000);
-  child.on('close', (code) => {
+  const timer = setTimeout(() => child.kill('SIGTERM'), Math.max(5_000, 30 * 60_000 - (Date.now() - started)));
+  child.on('close', (code: number | null) => {
     clearTimeout(timer);
+    setProc(id, null);
     const stopped = stopping.delete(id);
     const conv = getConversation(id);
     // Its Claude Code session is gone (another home since the agent sandbox, a cleared cache): once, a new session
     // that gets the conversation so far.
-    if (conv && !stopped && code !== 0 && c.session && !fresh && /no conversation found|session.*not found/i.test(ctx.err) && !conv.messages.some((x) => x.role === 'assistant' && x.at >= userAt)) {
+    if (conv && prompt && !stopped && code !== 0 && session && !fresh && /no conversation found|session.*not found/i.test(ctx.err) && !conv.messages.some((x) => x.role === 'assistant' && x.at >= userAt)) {
       conv.session = null;
       save(conv);
       running.delete(id);
@@ -503,7 +529,26 @@ function runTurn(id: string, prompt: string, userAt: number, { auto = false, fre
     }
     finishTurn(id, ctx, { stopped, code });
   });
-  child.on('error', (e) => failedStart(id, e));
+  child.on('error', (e: Error) => failedStart(id, e));
+}
+
+/**
+ * After a restart: answers whose Claude Code ran outside Studio carry on streaming into their conversations (their
+ * output is read on from where it got to). Returns their ids. Other conversations that were thinking were reset at load.
+ */
+export function resumeTalk() {
+  const out: string[] = [];
+  for (const r of db.prepare(`SELECT id, proc FROM conversations WHERE status = 'thinking' AND proc IS NOT NULL`).all() as { id: string; proc: string }[]) {
+    if (running.has(r.id)) continue;
+    const proc = parse(r.proc) as TurnProc;
+    // Its result may have been read before the restart (the answer is complete; only the process's end was missed).
+    const last = getConversation(r.id)?.messages.at(-1);
+    const ctx: TurnCtx = { userAt: proc.userAt, auto: proc.auto, call: false, billing: proc.billing, done: Boolean(last?.turn && last.at >= proc.userAt), err: '' };
+    turnOwner.set(r.id, proc.auto ? 'Studio' : 'J');
+    followTurn(r.id, new DetachedChild(proc.rec, { offset: proc.offset }), ctx, { fresh: true, session: null, started: proc.rec.started });
+    out.push(r.id);
+  }
+  return out;
 }
 
 function failedStart(id: string, e: Error) {
@@ -675,9 +720,9 @@ export function stop(id: string) {
   if (!child) return false;
   stopping.add(id);
   const call = calls.get(id);
-  if (call?.child === child && call.turn) {
+  if (call?.child && call.child === child && call.turn) {
     const ctx = call.turn;
-    child.stdin!.write(`${JSON.stringify({ type: 'control_request', request_id: `stop-${Date.now()}`, request: { subtype: 'interrupt' } })}\n`);
+    call.child.stdin!.write(`${JSON.stringify({ type: 'control_request', request_id: `stop-${Date.now()}`, request: { subtype: 'interrupt' } })}\n`);
     // An interrupt that doesn't end the turn soon ends the process (the next turn starts a new one).
     setTimeout(() => {
       if (call.turn === ctx) child.kill('SIGTERM');
@@ -692,10 +737,13 @@ function describeTool(name: string, input: any) {
   return `${short}${arg ? ` ${String(arg).slice(0, 60)}` : ''}`;
 }
 
+/** Answers running inside Studio, which a restart would cut off (calls aside: a restart may end a call). */
+export const turnsInside = () => [...running.entries()].filter(([id, child]) => !(child instanceof DetachedChild) && calls.get(id)?.child !== child).length;
+
 export const talkInfo = () => ({ billing: billing(), subscription: usingSubscription(), model: process.env.TALK_MODEL ?? 'claude-opus-5-5' });
 
-// A conversation interrupted by a restart isn't thinking any more.
-db.prepare(`UPDATE conversations SET status = 'idle' WHERE status = 'thinking'`).run();
+// A conversation interrupted by a restart isn't thinking any more, unless its answer runs outside Studio (resumeTalk).
+db.prepare(`UPDATE conversations SET status = 'idle' WHERE status = 'thinking' AND proc IS NULL`).run();
 // Results posted before a restart that Claude hadn't answered yet still get their turn.
 for (const r of db.prepare('SELECT id FROM conversations WHERE updated > ?').all(Date.now() - 6 * 3600_000) as { id: string }[]) {
   const c = getConversation(r.id);

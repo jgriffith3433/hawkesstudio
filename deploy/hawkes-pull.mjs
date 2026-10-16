@@ -7,8 +7,11 @@
 // For each repo (Gen first), when origin/main has a new commit:
 //   - it deploys only a commit whose CI passed (GitHub check runs, with the server's token in /run/hawkes/github.env);
 //     a failing commit is logged once and never deployed; a pending one is looked at again a minute later
-//   - it waits (looking again every 5 minutes) while Studio is busy (a run, an agent fix, a Talk answer) or Gen is running a job (a Unity build, a GPU
-//     job, a playtest), up to HAWKES_PULL_MAX_WAIT_MIN (default 720), then deploys anyway
+//   - Studio: runs, agent changes and Talk answers carry on after a restart (they run outside its process and resume),
+//     so it waits only for short critical sections (a merge, a push, a worktree add: src/drain.ts), looking again every
+//     20 s, up to HAWKES_PULL_CRITICAL_MAX_MIN (default 5); and, on a Studio that can't detach its agents (no systemd
+//     user manager), for agents and Talk answers running inside it, up to HAWKES_PULL_MAX_WAIT_MIN (default 720)
+//   - Gen: it waits while a Unity build runs on the build server, up to HAWKES_PULL_MAX_WAIT_MIN
 //   - git merge --ff-only (refuses if the server's checkout has edits to tracked files, or main was rewritten)
 //   - npm ci only when package.json or package-lock.json changed (Gen: also Playwright's Chromium)
 //   - restarts the service and checks its health; if it doesn't come up, it goes back to the previous commit and
@@ -27,6 +30,8 @@ const OWNER = process.env.HAWKES_GITHUB_OWNER ?? 'jgriffith3433';
 // How long a deploy waits for a run, agent fix or Gen job before restarting anyway. Agents and runs have their own time
 // limits, so this is long: a restart stops agents mid-change (J may have a dozen queued).
 const MAX_WAIT_MIN = Number(process.env.HAWKES_PULL_MAX_WAIT_MIN ?? 720);
+// Studio's critical sections are seconds long; one still going after this is stuck, and the deploy goes ahead.
+const CRITICAL_MAX_MIN = Number(process.env.HAWKES_PULL_CRITICAL_MAX_MIN ?? 5);
 const STATE = process.env.HAWKES_PULL_STATE ?? '/var/lib/hawkes/pull.json';
 const LOG = path.join(ROOT, 'hawkesstudio', '.data', 'self-deploys.jsonl');
 const DRY = process.argv.includes('--dry-run');
@@ -120,30 +125,54 @@ async function getJson(url) {
 }
 
 /**
- * Why restarting this repo's service now would interrupt something, or null. Each service waits only for its own work:
- * Gen for Unity builds on the build server (its other jobs resume after a restart; an older Gen without the count
- * waits for any running job), Studio for a run, agent fixes and Talk answers (a Gen restart doesn't touch those).
+ * Why restarting this repo's service now would interrupt something ({ why, maxMin, retry }), or null. Each service
+ * waits only for its own work: Gen for Unity builds on the build server (its other jobs resume after a restart; an
+ * older Gen without the count waits for any running job); Studio only for its critical sections (seconds: a merge, a
+ * push), since its runs, agents and Talk answers carry on after a restart, plus agents and answers running inside its
+ * own process where it can't detach them. carrying: what goes on through the restart (for the log).
  */
 async function busyFor(repo) {
   if (repo === 'hawkesgen') {
     const gen = await getJson('http://127.0.0.1:8790/v1/health');
     if (!gen) return null;
     const n = typeof gen.building === 'number' ? gen.building : (gen.queue?.running ?? 0);
-    return n ? `${n} ${typeof gen.building === 'number' ? 'Unity build(s) on the build server' : 'Gen job(s) running'}` : null;
+    return n ? { why: `${n} ${typeof gen.building === 'number' ? 'Unity build(s) on the build server' : 'Gen job(s) running'}`, maxMin: MAX_WAIT_MIN, retry: 2 * 60 } : null;
   }
-  const why = [];
+  const hard = [];
+  const critical = [];
+  let carrying = '';
   const studio = await getJson('http://127.0.0.1:8791/api/self-deploys?limit=0');
   if (studio?.busy) {
     const b = studio.busy;
-    if (b.run) why.push(`Studio run ${b.run}`);
-    if (b.agents) why.push(`${b.agents} agent fix(es)`);
-    if (b.talk) why.push(`${b.talk} Talk answer(s)`);
+    if (b.run) hard.push(`Studio run ${b.run}`);
+    if (b.agents) hard.push(`${b.agents} agent(s) running inside Studio`);
+    if (b.talk) hard.push(`${b.talk} Talk answer(s) running inside Studio`);
+    for (const c of b.critical ?? []) critical.push(`${c.what} (${Math.round((Date.now() - c.since) / 1000)} s)`);
+    const k = b.carrying ?? {};
+    carrying = [k.run ? `run ${k.run}` : '', k.agents ? `${k.agents} agent change(s)` : '', k.talk ? `${k.talk} Talk answer(s)` : ''].filter(Boolean).join(', ');
   } else {
     // An older Studio (before /api/self-deploys): its health says whether a run is going.
     const h = await getJson('http://127.0.0.1:8791/api/health');
-    if (h?.run) why.push(`Studio run ${h.run}`);
+    if (h?.run) hard.push(`Studio run ${h.run}`);
   }
-  return why.length ? why.join(', ') : null;
+  const carry = carrying ? { carrying } : {};
+  if (hard.length) return { why: [...hard, ...critical].join(', '), maxMin: MAX_WAIT_MIN, retry: 2 * 60, ...carry };
+  if (critical.length) return { why: critical.join(', '), maxMin: CRITICAL_MAX_MIN, retry: 20, ...carry };
+  return carrying ? { why: null, ...carry } : null;
+}
+
+/**
+ * Agents and Talk answers run as units of the hawkes user's own systemd manager (Studio's src/detach.ts), which only
+ * runs without a login session when the user lingers. Cheap to check; done on every pass.
+ */
+function ensureLinger() {
+  if (DRY || !HAWKES || fs.existsSync('/var/lib/systemd/linger/hawkes')) return;
+  try {
+    execFileSync('loginctl', ['enable-linger', 'hawkes'], { stdio: 'ignore' });
+    say('enabled lingering for hawkes: Studio runs agents and Talk answers as its own systemd units, which survive a Studio restart');
+  } catch (e) {
+    say(`could not enable lingering for hawkes (${e.message.split('\n')[0]}): Studio keeps agents inside its own process, and deploys wait for them`);
+  }
 }
 
 /**
@@ -180,6 +209,7 @@ function install(r, dir) {
   for (const line of r.after) shell(dir, line);
 }
 
+ensureLinger();
 const state = loadState();
 const token = githubToken();
 if (!token) say('no GITHUB_TOKEN in /run/hawkes/github.env: fetching anonymously will fail for private repos');
@@ -219,17 +249,19 @@ for (const r of REPOS) {
 
 // 2. Per repo: wait while restarting its service would interrupt its own work (up to the limit), draining meanwhile.
 for (const t of [...todo]) {
-  const why = await busyFor(t.repo);
+  const busy = await busyFor(t.repo);
+  const why = busy?.why;
+  t.carrying = busy?.carrying;
   const s = state[t.repo];
   const waited = s.waitingSince ? (Date.now() - Date.parse(s.waitingSince)) / 60_000 : 0;
-  if (why && waited < MAX_WAIT_MIN) {
+  if (why && waited < busy.maxMin) {
     if (!s.waitingSince) { s.waitingSince = new Date().toISOString(); record({ repo: t.repo, from: t.head, to: t.tip, outcome: 'waiting', detail: why }); }
     setFlag(t.dir, why);
-    say(`[${t.repo}] waiting (${Math.round(waited)} of ${MAX_WAIT_MIN} min), draining: ${why}`);
-    retryLater(2 * 60, 'waiting for work in progress to finish');
+    say(`[${t.repo}] waiting (${Math.round(waited)} of ${busy.maxMin} min), draining: ${why}`);
+    retryLater(busy.retry, 'waiting for work in progress to finish');
     todo.splice(todo.indexOf(t), 1);
   } else if (why) {
-    say(`[${t.repo}] still busy after ${MAX_WAIT_MIN} minutes (${why}); deploying anyway`);
+    say(`[${t.repo}] still busy after ${busy.maxMin} minutes (${why}); deploying anyway`);
   }
 }
 
@@ -245,7 +277,7 @@ for (const t of todo) {
     if (pkgs) install(t, t.dir);
     execFileSync('systemctl', ['restart', t.service]);
     if (!(await healthy(t.health))) throw new Error(`${t.service} did not answer ${t.health} within 90 seconds`);
-    record({ repo: t.repo, from: t.head, to: t.tip, outcome: 'deployed', detail: t.subject, files: files.length, npm: pkgs, seconds: Math.round((Date.now() - started) / 1000) });
+    record({ repo: t.repo, from: t.head, to: t.tip, outcome: 'deployed', detail: t.subject, files: files.length, npm: pkgs, seconds: Math.round((Date.now() - started) / 1000), ...(t.carrying ? { carried: t.carrying } : {}) });
     delete s.waitingSince;
     clearFlag(t.dir);
   } catch (e) {

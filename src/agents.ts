@@ -39,14 +39,15 @@ import { serveDir, stopServed } from './local.ts';
 import { claudeEnv } from './claude.ts';
 import { buildPreview, removePreview, previewUrl, changeSiteDir, changeBuild, type ChangeBuild } from './previews.ts';
 import { BETA, ensureBeta } from './beta.ts';
-import { deployPending } from './drain.ts';
+import { deployPending, critical } from './drain.ts';
 import { notify, notifyOnce, PUBLIC_URL } from './notify.ts';
 import { threadFor } from './roadmap.ts';
 import { judgeCriteria } from './acceptance.ts';
 import { briefSection, learnFrom, recordRun, LEARNED_ASK } from './memory.ts';
 import { canonCheck, CONTENTISH } from './canon.ts';
 import { roleArgs, loadRole, type RoleName } from './roles.ts';
-import { spawnClaude, spawnShell, sandboxShare, assertWorktree } from './sandbox.ts';
+import { claudeCommand, spawnShell, sandboxShare, assertWorktree } from './sandbox.ts';
+import { launch, DetachedChild, type DetachRec } from './detach.ts';
 import { warmDeps } from './warm.ts';
 
 db.exec(`
@@ -62,6 +63,8 @@ try { db.exec('ALTER TABLE changes ADD COLUMN request TEXT'); } catch { /* alrea
 for (const col of ['origin', 'told', 'started_by']) try { db.exec(`ALTER TABLE changes ADD COLUMN ${col} TEXT`); } catch { /* already there */ }
 // A roadmap task's change (roadmap.ts): the task, its acceptance criteria, the agent's session (to resume after a question), what the PM saw.
 for (const col of ['task', 'criteria', 'session', 'pm_seen', 'gpu_budget']) try { db.exec(`ALTER TABLE changes ADD COLUMN ${col} TEXT`); } catch { /* already there */ }
+// Where a change's work is (Phase), so it carries on from there after a Studio restart.
+try { db.exec('ALTER TABLE changes ADD COLUMN phase TEXT'); } catch { /* already there */ }
 
 export type Change = {
   id: string; product: string; findings: string[]; status: string; detail: string | null; repo: string; slug: string; branch: string; base: string;
@@ -121,10 +124,34 @@ export function listChanges(q: { status?: string; product?: string; limit?: numb
 function update(id: string, patch: Partial<Record<string, any>>) {
   const cur = db.prepare('SELECT * FROM changes WHERE id = ?').get(id) as any;
   const next: any = { ...cur, ...patch, updated: Date.now() };
-  for (const k of ['findings', 'commits', 'verify', 'notes', 'log']) if (patch[k] !== undefined) next[k] = J(patch[k]);
-  db.prepare(`UPDATE changes SET status=?, detail=?, pr=?, pr_url=?, title=?, summary=?, commits=?, diffstat=?, verify=?, notes=?, log=?, cost=?, session=?, updated=? WHERE id=?`)
-    .run(next.status, next.detail, next.pr, next.pr_url, next.title, next.summary, next.commits, next.diffstat, next.verify, next.notes, next.log, next.cost, next.session ?? null, next.updated, id);
+  for (const k of ['findings', 'commits', 'verify', 'notes', 'log', 'phase']) if (patch[k] !== undefined) next[k] = patch[k] === null ? null : J(patch[k]);
+  db.prepare(`UPDATE changes SET status=?, detail=?, pr=?, pr_url=?, title=?, summary=?, commits=?, diffstat=?, verify=?, notes=?, log=?, cost=?, session=?, phase=?, updated=? WHERE id=?`)
+    .run(next.status, next.detail, next.pr, next.pr_url, next.title, next.summary, next.commits, next.diffstat, next.verify, next.notes, next.log, next.cost, next.session ?? null, next.phase ?? null, next.updated, id);
 }
+
+/**
+ * Where a change's work is, recorded as it goes so a Studio restart (a deploy) doesn't redo it: the steps in order
+ * (prepare: worktree and brief; agent: Claude Code, detached, with its process and how far its output was read;
+ * publish: push and pull request; verify: build, playtest and review, with their Gen jobs; finish: canon, preview,
+ * ready), and what the pass is (J's note, an answer). Null once the change isn't being worked on.
+ */
+export type Phase = {
+  step: 'prepare' | 'agent' | 'publish' | 'verify' | 'finish';
+  note?: string;
+  answer?: string;
+  /** The worktree's HEAD before the agent's pass. */
+  before?: string;
+  /** The agent's detached process (detach.ts) and the byte of its output Studio had logged up to. */
+  proc?: { rec: DetachRec; offset: number };
+  /** The agent's final words (the summary when it wrote none). */
+  result?: string;
+  /** The pushed commit under verification. */
+  tip?: string;
+  /** Verification's Hawkes Gen jobs (build, playtest, review): waited on again after a restart, not submitted again. */
+  jobs?: Record<string, string>;
+  verify?: any;
+};
+export const phaseOf = (id: string): Phase | null => parse((db.prepare('SELECT phase FROM changes WHERE id = ?').get(id) as any)?.phase ?? null);
 function addLog(id: string, line: string) {
   const c = getChange(id)!;
   const log = [...c.log, `${new Date().toISOString().slice(11, 19)} ${line}`].slice(-400);
@@ -153,7 +180,8 @@ const WORK = () => path.join(PROJECTS, '.work');
 async function github(route: string, init: { method?: string; body?: unknown } = {}) {
   const token = process.env.GITHUB_TOKEN;
   if (!token) throw new Error('No GitHub token on the server yet (node deploy/github-token.mjs, then restart hawkes-secrets and hawkes-studio).');
-  const r = await fetch(`https://api.github.com${route}`, {
+  // STUDIO_GITHUB_API: a stand-in for GitHub's API (tests).
+  const r = await fetch(`${process.env.STUDIO_GITHUB_API ?? 'https://api.github.com'}${route}`, {
     method: init.method ?? 'GET',
     headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json', 'User-Agent': 'hawkes-studio', 'X-GitHub-Api-Version': '2022-11-28', ...(init.body ? { 'Content-Type': 'application/json' } : {}) },
     body: init.body ? JSON.stringify(init.body) : undefined,
@@ -334,66 +362,115 @@ export function agentMcp(id: string) {
   return file;
 }
 
-function runAgent(c: Change, briefFile: string, s: AgentSettings, env = claudeEnv(), resume?: { session: string; prompt: string }): Promise<{ ok: boolean; cost: number; result: string }> {
+type AgentResult = { ok: boolean; cost: number; result: string; sawResult: boolean; lost: boolean };
+/** How an agent pass runs: as a new process (onStart records it), or reattached to one started before a restart. */
+type AgentRun = { reattach?: { rec: DetachRec; offset: number }; onStart?: (rec: DetachRec) => void; onProgress?: (offset: number) => void };
+
+const AGENT_LIMIT_MS = 60 * 60_000;
+
+function runAgent(c: Change, briefFile: string, s: AgentSettings, env = claudeEnv(), resume?: { session: string; prompt: string }, how: AgentRun = {}): Promise<AgentResult> {
   return new Promise((resolve) => {
-    const prompt = resume?.prompt ?? `Read ${path.relative(c.worktree, briefFile).replace(/\\/g, '/')} and do what it says. It's your whole task.`;
-    // The role (.claude/agents/<role>.md): its model, standing instructions (the stable, cached part of the prompt),
-    // tools and turn limit; the task itself is the brief.
-    const { args: roleFlags, role } = roleArgs(agentRole(c), {
-      extraAllowed: AGENT_MEMORY_TOOLS.map((t) => `mcp__hawkesstudio__${t}`),
-      maxTurns: s.maxTurns !== DEFAULTS.maxTurns ? s.maxTurns : undefined,
-    });
-    const args = [
-      ...(resume ? ['--resume', resume.session] : []),
-      '-p', prompt, '--output-format', 'stream-json', '--verbose', ...roleFlags,
-      '--permission-mode', 'acceptEdits',
-      // Its own Studio MCP server with only the shared-memory tools, writing as this change (X-Studio-Agent).
-      '--mcp-config', agentMcp(c.id), '--strict-mcp-config',
-    ];
-    addLog(c.id, `role ${role.name} (${role.model})`);
-    const child = spawnClaude(args, { cwd: c.worktree, env });
+    let child: ReturnType<typeof launch>['child'];
+    let started = Date.now();
+    // Reattached: its output is read again from the start (for the result), but lines logged before the restart aren't logged twice.
+    let quietUntil = 0;
+    if (how.reattach) {
+      child = new DetachedChild(how.reattach.rec, { reattached: true });
+      quietUntil = how.reattach.offset;
+      started = how.reattach.rec.started;
+    } else {
+      const prompt = resume?.prompt ?? `Read ${path.relative(c.worktree, briefFile).replace(/\\/g, '/')} and do what it says. It's your whole task.`;
+      // The role (.claude/agents/<role>.md): its model, standing instructions (the stable, cached part of the prompt),
+      // tools and turn limit; the task itself is the brief.
+      const { args: roleFlags, role } = roleArgs(agentRole(c), {
+        extraAllowed: AGENT_MEMORY_TOOLS.map((t) => `mcp__hawkesstudio__${t}`),
+        maxTurns: s.maxTurns !== DEFAULTS.maxTurns ? s.maxTurns : undefined,
+      });
+      const args = [
+        ...(resume ? ['--resume', resume.session] : []),
+        '-p', prompt, '--output-format', 'stream-json', '--verbose', ...roleFlags,
+        '--permission-mode', 'acceptEdits',
+        // Its own Studio MCP server with only the shared-memory tools, writing as this change (X-Studio-Agent).
+        '--mcp-config', agentMcp(c.id), '--strict-mcp-config',
+      ];
+      addLog(c.id, `role ${role.name} (${role.model})`);
+      // Outside Studio where it can be (detach.ts): a deploy restarting Studio doesn't stop it. Same user, same environment.
+      const l = launch(`agent-${c.id}`, claudeCommand(args, { cwd: c.worktree, env }));
+      child = l.child;
+      if (l.rec) {
+        addLog(c.id, `agent runs as ${l.rec.mode === 'systemd' ? 'the unit' : 'the process'} ${l.rec.unit} (it survives a Studio restart)`);
+        how.onStart?.(l.rec);
+      }
+    }
     let buf = '';
-    let cost = 0;
-    let result = '';
-    let ok = false;
-    const timer = setTimeout(() => child.kill('SIGTERM'), 60 * 60_000);
-    child.stdout.on('data', (d) => {
+    const out: AgentResult = { ok: false, cost: 0, result: '', sawResult: false, lost: false };
+    let saved = 0;
+    const timer = setTimeout(() => child.kill('SIGTERM'), Math.max(5_000, AGENT_LIMIT_MS - (Date.now() - started)));
+    child.stdout!.on('data', (d) => {
       buf += d;
       let i;
       while ((i = buf.indexOf('\n')) >= 0) {
         const line = buf.slice(0, i);
         buf = buf.slice(i + 1);
+        const quiet = child instanceof DetachedChild && child.offset <= quietUntil;
         try {
           const m = JSON.parse(line);
           // Its session id, so a question can be answered in the same session (claude --resume).
           if (m.type === 'system' && m.session_id && getChange(c.id)?.session !== m.session_id) update(c.id, { session: m.session_id });
-          if (m.type === 'assistant') {
+          if (m.type === 'assistant' && !quiet) {
             for (const part of m.message?.content ?? []) {
               if (part.type === 'text' && part.text.trim()) addLog(c.id, `agent: ${part.text.trim().slice(0, 300)}`);
               if (part.type === 'tool_use') addLog(c.id, `tool: ${part.name} ${JSON.stringify(part.input).slice(0, 160)}`);
             }
           }
           if (m.type === 'result') {
-            cost = Number(m.total_cost_usd) || 0;
-            result = String(m.result ?? '');
-            ok = !m.is_error;
+            out.cost = Number(m.total_cost_usd) || 0;
+            out.result = String(m.result ?? '');
+            out.ok = !m.is_error;
+            out.sawResult = true;
           }
         } catch {
           // Not JSON.
         }
       }
+      // How far the output was logged, every few seconds (lines after it may be logged again after a restart).
+      if (child instanceof DetachedChild && how.onProgress && Date.now() - saved > 3000) {
+        saved = Date.now();
+        how.onProgress(child.offset);
+      }
     });
-    child.stderr.on('data', (d) => addLog(c.id, `stderr: ${String(d).slice(0, 300)}`));
+    child.stderr!.on('data', (d) => addLog(c.id, `stderr: ${String(d).slice(0, 300)}`));
     child.on('close', () => {
       clearTimeout(timer);
-      resolve({ ok, cost, result });
+      out.lost = child instanceof DetachedChild && child.lost && !out.sawResult;
+      resolve(out);
     });
-    child.on('error', (e) => {
+    child.on('error', (e: Error) => {
       clearTimeout(timer);
       addLog(c.id, `couldn't start Claude Code: ${e.message}`);
-      resolve({ ok: false, cost: 0, result: e.message });
+      resolve({ ok: false, cost: 0, result: e.message, sawResult: false, lost: false });
     });
   });
+}
+
+/**
+ * The agent's pass in a change's "agent" step: reattached to its process when one was recorded (Studio restarted while
+ * it ran), else started (and recorded). A process that vanished without a result (the server rebooted) runs again.
+ */
+async function agentPass(id: string, ph: Phase, save: (patch: Partial<Phase>) => void, s: AgentSettings, env: NodeJS.ProcessEnv, resume?: { session: string; prompt: string }) {
+  const brief = path.join(getChange(id)!.worktree, '.hawkes', 'brief.md');
+  const fresh = (): AgentRun => ({
+    onStart: (rec) => save({ proc: { rec, offset: 0 } }),
+    onProgress: (offset) => save({ proc: { ...ph.proc!, offset } }),
+  });
+  if (ph.proc) {
+    addLog(id, `agent: reattached to ${ph.proc.rec.unit} after a Studio restart`);
+    const r = await runAgent(getChange(id)!, brief, s, env, resume, { ...fresh(), reattach: ph.proc });
+    if (!r.lost) return r;
+    addLog(id, `agent: ${ph.proc.rec.unit} is gone with no result (the server restarted?); starting the pass again`);
+    save({ proc: undefined });
+  }
+  return runAgent(getChange(id)!, brief, s, env, resume, fresh());
 }
 
 // ------------------------------------------------------------------ flow
@@ -470,78 +547,15 @@ async function pump() {
   }
 }
 
-async function work(id: string, note?: string, answer?: string) {
-  if (getChange(id)!.infra) return workInfra(id, note);
-  let c = getChange(id)!;
-  const p = getProduct(c.product);
-  const s = agentSettings();
-  const repoDir = path.join(PROJECTS, c.repo);
-  try {
-    update(id, { status: note || answer ? 'revising' : 'working', detail: 'preparing the worktree' });
-    if (!fs.existsSync(c.worktree)) {
-      fs.mkdirSync(WORK(), { recursive: true });
-      // Agent branches start from beta (made from main the first time: pushing beta deploys nothing).
-      const beta = ensureBeta(repoDir);
-      if (beta.created) addLog(id, `made the ${BETA} branch from main (${beta.sha.slice(0, 7)})`);
-      // Devtools saves still waiting in beta's working copy go to beta first, so the agent starts from them.
-      const flushed = await import('./dev.ts').then(({ flushDev }) => flushDev(c.product, `before agent change ${id} started`)).catch((e) => ({ error: String(e.message ?? e) }));
-      if ('pushed' in flushed && flushed.pushed) {
-        addLog(id, `pushed devtools saves to ${BETA} first (${flushed.pushed.slice(0, 7)})`);
-        git(repoDir, ['fetch', '--quiet', 'origin']);
-      }
-      const w = git(repoDir, ['worktree', 'add', '-b', c.branch, c.worktree, `origin/${c.base}`]);
-      if (!w.ok) throw new Error(`worktree failed: ${w.err}`);
-      // A warm start: node_modules from a checkout with the same lockfile (warm.ts), not a fresh npm ci.
-      warmDeps(c.worktree, c.repo, (s) => addLog(id, s));
-    }
-    const findings = c.findings.map((f) => getFinding(f)).filter((f): f is NonNullable<typeof f> => Boolean(f));
-    const brief = await writeBrief(c, p, findings, note);
-    update(id, { detail: 'Claude is working on it' });
-    const before = git(c.worktree, ['rev-parse', 'HEAD']).out;
-    // An answer to the agent's question continues its own session (claude --resume); anything else starts a new one.
-    const questionFile = path.join(c.worktree, '.hawkes', 'question.md');
-    fs.rmSync(questionFile, { force: true });
-    const resume = answer && c.session
-      ? { session: c.session, prompt: `The answer to your question:\n\n${answer}\n\nContinue the task in .hawkes/brief.md (rewritten with the latest thread) and finish it the way it says.` }
-      : undefined;
-    addLog(id, resume ? `agent resumed its session with the answer` : `agent started`);
-    const r = await runAgent(getChange(id)!, brief, s, claudeEnv(), resume);
-    c = getChange(id)!;
-    update(id, { cost: c.cost + r.cost });
-    // The agent could write its worktree: Studio's git runs there only while it still links to this repo.
-    assertWorktree(c.worktree, repoDir);
-    const summaryFile = path.join(c.worktree, '.hawkes', 'summary.md');
-    const summary = fs.existsSync(summaryFile) ? fs.readFileSync(summaryFile, 'utf8').trim() : r.result;
-    const commits = git(c.worktree, ['log', '--format=%h %s', `origin/${c.base}..HEAD`]).out.split('\n').filter(Boolean);
-    const changedNow = git(c.worktree, ['rev-parse', 'HEAD']).out !== before;
-    // The agent asked a question: the change waits ("needs answer"); Talk answers from what J decided, or asks J (pm.ts).
-    const question = fs.existsSync(questionFile) ? fs.readFileSync(questionFile, 'utf8').trim() : '';
-    if (question) {
-      update(id, { status: 'needs answer', detail: `the agent asks: ${question.split('\n')[0].slice(0, 200)}`, summary, commits });
-      addLog(id, `question: ${question.slice(0, 300)}`);
-      const { addQuestion, addComment } = await import('./roadmap.ts');
-      addComment(c.task ?? id, question.slice(0, 4000), 'agent', 'question');
-      addQuestion({ kind: 'agent', subject: id, product: c.product, text: question });
-      return;
-    }
-    if (!commits.length || (note && !changedNow && !c.task)) {
-      update(id, { status: 'failed', detail: 'the agent made no commit', summary, commits });
-      for (const f of findings) updateFinding(f.id, { status: 'open', note: `agent ${id} couldn't fix it: ${summary.slice(0, 200)}` });
-      return;
-    }
-    if ((note || answer) && !changedNow) addLog(id, 'no new commit this pass; checking the branch again');
-    const diffstat = git(c.worktree, ['diff', '--shortstat', `origin/${c.base}...HEAD`]).out;
-    update(id, { summary, commits, diffstat, detail: 'pushing and opening the pull request' });
-
-    // Push and open (or update) the pull request.
-    const push = git(c.worktree, ['push', '--quiet', '-u', 'origin', `HEAD:${c.branch}`, ...(note || answer ? ['--force-with-lease'] : [])]);
+/** Pushes a change's branch and opens its pull request (or updates the one it has); a critical section (drain.ts). */
+async function publish(id: string, { force, title, body }: { force: boolean; title: string | null; body: string }) {
+  return critical(`pushing ${id} and its pull request`, async () => {
+    let c = getChange(id)!;
+    const push = git(c.worktree, ['push', '--quiet', '-u', 'origin', `HEAD:${c.branch}`, ...(force ? ['--force-with-lease'] : [])]);
     if (!push.ok) throw new Error(`push failed: ${push.err}`);
-    // The branch tip that gets verified below; approving merges exactly this commit (approve() checks it).
-    const tip = git(c.worktree, ['rev-parse', 'HEAD']).out;
-    c = getChange(id)!;
     // A pull request merged or closed outside Studio (GitHub's website, another tool) takes no more commits: pushing
     // to its branch would leave the new ones off beta. Open a new pull request for what isn't on beta yet.
-    if (c.pr) {
+    if (c.pr && !c.infra) {
       const old = await github(`/repos/${c.slug}/pulls/${c.pr}`).catch(() => null);
       if (old && old.state !== 'open') {
         addLog(id, `pull request #${c.pr} was ${old.merged ? `merged outside Studio (${String(old.merged_at ?? '').slice(0, 16)}, head ${String(old.head?.sha ?? '').slice(0, 7)})` : 'closed'}; opening a new one for the commits not on ${c.base}`);
@@ -549,22 +563,128 @@ async function work(id: string, note?: string, answer?: string) {
         c = getChange(id)!;
       }
     }
-    const criteriaMd = c.criteria.length ? `\n\n**Acceptance criteria:**\n${c.criteria.map((k) => `- ${k}`).join('\n')}` : '';
-    const body = `${summary}${criteriaMd}\n\n---\n**Findings** (Hawkes Studio playtest review):\n${findings.map((f: any) => `- [${f.severity}] ${f.title} (${f.id}, seen ${f.seen}×)`).join('\n')}\n\nMade by a Hawkes Studio agent. Approving it in Studio merges it into ${c.base} (the beta site, not live); going live is a separate step.\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)`;
     if (!c.pr) {
-      const pr = await github(`/repos/${c.slug}/pulls`, { method: 'POST', body: { title: c.title, head: c.branch, base: c.base, body, draft: false } });
+      // One already open for this branch: Studio opened it and restarted before it recorded it.
+      const owner = c.slug.split('/')[0];
+      const open: any[] = await github(`/repos/${c.slug}/pulls?state=open&head=${encodeURIComponent(`${owner}:${c.branch}`)}`).catch(() => []);
+      const pr = open[0] ?? await github(`/repos/${c.slug}/pulls`, { method: 'POST', body: { title, head: c.branch, base: c.base, body, draft: false } });
+      if (open[0]) await github(`/repos/${c.slug}/pulls/${pr.number}`, { method: 'PATCH', body: { body } });
       update(id, { pr: pr.number, pr_url: pr.html_url });
-      addLog(id, `opened ${pr.html_url}`);
+      addLog(id, `${open[0] ? 'found' : 'opened'} ${pr.html_url}`);
     } else {
       await github(`/repos/${c.slug}/pulls/${c.pr}`, { method: 'PATCH', body: { body } });
       addLog(id, `updated pull request #${c.pr}`);
     }
+  });
+}
 
-    // Verify: play the finding's scenario on the fixed version (web: the worktree; Unity: a build of the branch).
-    update(id, { status: 'verifying', detail: 'playtesting the fix' });
-    const verify: any = await verifyChange(getChange(id)!, p, findings);
+async function work(id: string, note?: string, answer?: string, resumed?: Phase | null) {
+  if (getChange(id)!.infra) return workInfra(id, note, resumed);
+  let c = getChange(id)!;
+  const p = getProduct(c.product);
+  const s = agentSettings();
+  const repoDir = path.join(PROJECTS, c.repo);
+  // Where the work is; after a restart it carries on from the recorded step (same agent process, same Gen jobs).
+  const ph: Phase = resumed ?? { step: 'prepare', note, answer };
+  ({ note, answer } = ph);
+  const save = (patch: Partial<Phase>, extra: Record<string, any> = {}) => {
+    Object.assign(ph, patch);
+    update(id, { ...extra, phase: ph });
+  };
+  try {
+    if (resumed) addLog(id, `Studio restarted: carrying on from the ${ph.step} step`);
+    else save({}, { status: note || answer ? 'revising' : 'working', detail: 'preparing the worktree' });
+    const findings = c.findings.map((f) => getFinding(f)).filter((f): f is NonNullable<typeof f> => Boolean(f));
+
+    if (ph.step === 'prepare') {
+      update(id, { detail: 'preparing the worktree' });
+      if (!fs.existsSync(c.worktree)) {
+        fs.mkdirSync(WORK(), { recursive: true });
+        // Agent branches start from beta (made from main the first time: pushing beta deploys nothing).
+        await critical(`making the worktree of ${id}`, async () => {
+          const beta = ensureBeta(repoDir);
+          if (beta.created) addLog(id, `made the ${BETA} branch from main (${beta.sha.slice(0, 7)})`);
+          // Devtools saves still waiting in beta's working copy go to beta first, so the agent starts from them.
+          const flushed = await import('./dev.ts').then(({ flushDev }) => flushDev(c.product, `before agent change ${id} started`)).catch((e) => ({ error: String(e.message ?? e) }));
+          if ('pushed' in flushed && flushed.pushed) {
+            addLog(id, `pushed devtools saves to ${BETA} first (${flushed.pushed.slice(0, 7)})`);
+            git(repoDir, ['fetch', '--quiet', 'origin']);
+          }
+          // A worktree a restart cut off halfway is forgotten first; its branch is reused.
+          git(repoDir, ['worktree', 'prune']);
+          const has = git(repoDir, ['rev-parse', '--verify', '--quiet', `refs/heads/${c.branch}`]).ok;
+          const w = git(repoDir, ['worktree', 'add', ...(has ? [] : ['-b']), ...(has ? [c.worktree, c.branch] : [c.branch, c.worktree, `origin/${c.base}`])]);
+          if (!w.ok) throw new Error(`worktree failed: ${w.err}`);
+        });
+        // A warm start: node_modules from a checkout with the same lockfile (warm.ts), not a fresh npm ci.
+        warmDeps(c.worktree, c.repo, (s) => addLog(id, s));
+      }
+      await writeBrief(c, p, findings, note);
+      // A question from an earlier pass isn't asked again.
+      fs.rmSync(path.join(c.worktree, '.hawkes', 'question.md'), { force: true });
+      save({ step: 'agent', before: git(c.worktree, ['rev-parse', 'HEAD']).out, proc: undefined });
+    }
+
+    if (ph.step === 'agent') {
+      update(id, { detail: 'Claude is working on it' });
+      // An answer to the agent's question continues its own session (claude --resume); anything else starts a new one.
+      c = getChange(id)!;
+      const resume = answer && c.session
+        ? { session: c.session, prompt: `The answer to your question:\n\n${answer}\n\nContinue the task in .hawkes/brief.md (rewritten with the latest thread) and finish it the way it says.` }
+        : undefined;
+      if (!ph.proc) addLog(id, resumed ? 'agent: it ran inside Studio, which restarted; starting the pass again' : resume ? `agent resumed its session with the answer` : `agent started`);
+      const r = await agentPass(id, ph, save, s, claudeEnv(), resume);
+      // The cost and the next step are written together, so a restart never counts a pass twice.
+      save({ step: 'publish', result: r.result, proc: undefined }, { cost: getChange(id)!.cost + r.cost });
+    }
+
+    if (ph.step === 'publish') {
+      c = getChange(id)!;
+      // The agent could write its worktree: Studio's git runs there only while it still links to this repo.
+      assertWorktree(c.worktree, repoDir);
+      const summaryFile = path.join(c.worktree, '.hawkes', 'summary.md');
+      const summary = fs.existsSync(summaryFile) ? fs.readFileSync(summaryFile, 'utf8').trim() : ph.result ?? '';
+      const commits = git(c.worktree, ['log', '--format=%h %s', `origin/${c.base}..HEAD`]).out.split('\n').filter(Boolean);
+      const changedNow = git(c.worktree, ['rev-parse', 'HEAD']).out !== ph.before;
+      // The agent asked a question: the change waits ("needs answer"); Talk answers from what J decided, or asks J (pm.ts).
+      const questionFile = path.join(c.worktree, '.hawkes', 'question.md');
+      const question = fs.existsSync(questionFile) ? fs.readFileSync(questionFile, 'utf8').trim() : '';
+      if (question) {
+        update(id, { status: 'needs answer', detail: `the agent asks: ${question.split('\n')[0].slice(0, 200)}`, summary, commits, phase: null });
+        addLog(id, `question: ${question.slice(0, 300)}`);
+        const { addQuestion, addComment } = await import('./roadmap.ts');
+        addComment(c.task ?? id, question.slice(0, 4000), 'agent', 'question');
+        addQuestion({ kind: 'agent', subject: id, product: c.product, text: question });
+        return;
+      }
+      if (!commits.length || (note && !changedNow && !c.task)) {
+        update(id, { status: 'failed', detail: 'the agent made no commit', summary, commits, phase: null });
+        for (const f of findings) updateFinding(f.id, { status: 'open', note: `agent ${id} couldn't fix it: ${summary.slice(0, 200)}` });
+        return;
+      }
+      if ((note || answer) && !changedNow) addLog(id, 'no new commit this pass; checking the branch again');
+      const diffstat = git(c.worktree, ['diff', '--shortstat', `origin/${c.base}...HEAD`]).out;
+      update(id, { summary, commits, diffstat, detail: 'pushing and opening the pull request' });
+      const criteriaMd = c.criteria.length ? `\n\n**Acceptance criteria:**\n${c.criteria.map((k) => `- ${k}`).join('\n')}` : '';
+      const body = `${summary}${criteriaMd}\n\n---\n**Findings** (Hawkes Studio playtest review):\n${findings.map((f: any) => `- [${f.severity}] ${f.title} (${f.id}, seen ${f.seen}×)`).join('\n')}\n\nMade by a Hawkes Studio agent. Approving it in Studio merges it into ${c.base} (the beta site, not live); going live is a separate step.\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)`;
+      await publish(id, { force: Boolean(note || answer), title: c.title, body });
+      // The branch tip that gets verified below; approving merges exactly this commit (approve() checks it).
+      save({ step: 'verify', tip: git(c.worktree, ['rev-parse', 'HEAD']).out, jobs: {}, verify: undefined }, { status: 'verifying', detail: 'playtesting the fix' });
+    }
+
+    if (ph.step === 'verify') {
+      if (resumed) update(id, { status: 'verifying', detail: 'playtesting the fix' });
+      // Verify: play the finding's scenario on the fixed version (web: the worktree; Unity: a build of the branch).
+      const jobs: JobMemo = { get: (k) => ph.jobs?.[k], set: (k, job) => save({ jobs: { ...ph.jobs, [k]: job } }) };
+      const verify: any = await verifyChange(getChange(id)!, p, findings, jobs);
+      save({ step: 'finish', verify });
+    }
+
+    // Finish: the canon check, the preview, ready.
+    c = getChange(id)!;
+    const verify = ph.verify;
     // Content and story changes are checked against the canon (canon.ts); a contradiction fails the merge gate.
-    if (roleOf(getChange(id)!) === 'content') {
+    if (roleOf(c) === 'content') {
       update(id, { detail: 'checking the change against the canon' });
       const files = git(c.worktree, ['diff', '--name-only', `origin/${c.base}...HEAD`]).out.split('\n').filter((f) => CONTENTISH.test(f));
       const diff = files.length ? git(c.worktree, ['diff', `origin/${c.base}...HEAD`, '--', ...files.slice(0, 60)]).out : '';
@@ -573,27 +693,30 @@ async function work(id: string, note?: string, answer?: string) {
       if (verify) verify.canon = canon;
     }
     // A preview J can open: <product>.hawkesgen.com/c/<id>/
-    const pv = await buildPreview(p.id, { change: id, dir: c.worktree }).catch((e: any) => ({ status: 'failed', detail: e.message }) as any);
+    const pv = await Promise.resolve().then(() => buildPreview(p.id, { change: id, dir: c.worktree })).catch((e: any) => ({ status: 'failed', detail: e.message }) as any);
     const preview = pv?.status === 'ready' ? previewUrl(p.id, id) : null;
     if (preview) addLog(id, `preview: ${preview}`);
     const tryFile = path.join(c.worktree, '.hawkes', 'try.md');
     const howTo = fs.existsSync(tryFile) ? fs.readFileSync(tryFile, 'utf8').trim().slice(0, 2000) : null;
     const met = verify?.criteria?.length ? ` · criteria ${verify.criteria.filter((k: any) => k.met === 'yes').length}/${verify.criteria.length} met` : '';
-    update(id, { status: 'ready', detail: `${verify ? `${verify.outcome ?? '?'} · review: ${verify.verdict ?? 'n/a'}${met}` : 'ready (not playtested: needs a build)'}${preview ? ` · preview ${preview}` : ''}`, verify: { ...(verify ?? {}), sha: tip, preview, try: howTo } });
+    update(id, { status: 'ready', detail: `${verify ? `${verify.outcome ?? '?'} · review: ${verify.verdict ?? 'n/a'}${met}` : 'ready (not playtested: needs a build)'}${preview ? ` · preview ${preview}` : ''}`, verify: { ...(verify ?? {}), sha: ph.tip, preview, try: howTo }, phase: null });
     // No phone notification (J's rule: only when something went wrong or a milestone is reached): Talk reports it,
     // and a roadmap task's change is the PM's to review (pm.ts).
   } catch (e: any) {
     addLog(id, `error: ${e.message}`);
-    update(id, { status: 'failed', detail: String(e.message).slice(0, 300) });
+    update(id, { status: 'failed', detail: String(e.message).slice(0, 300), phase: null });
     for (const f of getChange(id)!.findings) updateFinding(f, { status: 'open' });
   }
 }
+
+/** A verification's Gen jobs, recorded on the change as they're submitted (and found again after a restart). */
+type JobMemo = { get: (k: string) => string | undefined; set: (k: string, job: string) => void };
 
 /**
  * Builds a Unity change's branch on the build server into its own website copy (changeSiteDir: a worktree of the
  * site repo at main), never the real website folder. A commit that was already built isn't built again.
  */
-async function buildChange(c: Change, p: Product): Promise<ChangeBuild> {
+async function buildChange(c: Change, p: Product, jobs?: JobMemo): Promise<ChangeBuild> {
   if (!p.build) throw new Error(`${p.name} has no build settings (products.json build)`);
   const sha = git(c.worktree, ['rev-parse', 'HEAD']).out;
   const siteTop = p.site.split('/')[0];
@@ -605,8 +728,10 @@ async function buildChange(c: Change, p: Product): Promise<ChangeBuild> {
   }
   const mark = `${copy}.json`;
   fs.rmSync(mark, { force: true });
-  // The website copy, fresh at the site repo's main (a previous build of this change is cleared).
+  // A build started before a Studio restart: wait for that same job (its website copy is already set up, and may hold its output).
+  const prior = jobs?.get('build');
   const siteRepo = path.join(PROJECTS, siteTop);
+  if (!prior) await critical(`making the website copy of ${c.id}`, () => {
   const f = git(siteRepo, ['fetch', '--quiet', 'origin']);
   if (!f.ok) throw new Error(`fetching ${siteTop} failed: ${f.err}`);
   const head = git(siteRepo, ['symbolic-ref', '--short', 'refs/remotes/origin/HEAD']).out || 'origin/main';
@@ -619,14 +744,15 @@ async function buildChange(c: Change, p: Product): Promise<ChangeBuild> {
     if (!r.ok) throw new Error(`resetting the website copy failed: ${r.err}`);
     git(copy, ['clean', '-fdq']);
   }
+  });
   const top = repoFor(p).top;
   const rel = (d: string) => path.relative(PROJECTS, d).replace(/\\/g, '/');
   const projectDir = path.join(c.worktree, path.relative(top, p.build.project));
   const siteDir = path.join(copy, path.relative(siteTop, p.site));
-  addLog(c.id, `build: ${sha.slice(0, 7)} on the build server (${p.build.method}) into ${rel(siteDir)}`);
+  addLog(c.id, prior ? `build: waiting for ${prior} again (started before Studio restarted)` : `build: ${sha.slice(0, 7)} on the build server (${p.build.method}) into ${rel(siteDir)}`);
   update(c.id, { detail: 'building the branch on the build server' });
   const job = await genRun('unity.build', p.id, { project: p.build.project, site: p.build.site, method: p.build.method, projectDir: rel(projectDir), siteDir: rel(siteDir) },
-    (j) => update(c.id, { detail: `build server: ${j.detail ?? j.status}` }));
+    (j) => update(c.id, { detail: `build server: ${j.detail ?? j.status}` }), undefined, { job: prior, onSubmit: (id) => jobs?.set('build', id) });
   const r = job.result ?? {};
   const cost = Number(job.cost ?? r.cost) || 0;
   update(c.id, { cost: getChange(c.id)!.cost + cost });
@@ -643,12 +769,12 @@ async function buildChange(c: Change, p: Product): Promise<ChangeBuild> {
   return b;
 }
 
-async function verifyChange(c: Change, p: Product, findings: any[]) {
+async function verifyChange(c: Change, p: Product, findings: any[], jobs?: JobMemo) {
   let dir: string;
   let build: ChangeBuild | null = null;
   if (p.engine === 'unity' || p.build) {
     // Unity: build the branch, then serve that build the way the site's local server would.
-    build = await buildChange(c, p).catch((e: any): ChangeBuild => ({ sha: '', ok: false, at: Date.now(), error: String(e.message ?? e).slice(0, 500), retry: true }));
+    build = await buildChange(c, p, jobs).catch((e: any): ChangeBuild => ({ sha: '', ok: false, at: Date.now(), error: String(e.message ?? e).slice(0, 500), retry: true }));
     if (!build.ok) return { outcome: 'build failed', error: build.error, build };
     dir = path.join(changeSiteDir(c.id), path.relative(p.site.split('/')[0], p.local.dir));
   } else {
@@ -674,16 +800,25 @@ async function verifyChange(c: Change, p: Product, findings: any[]) {
   const scenario = agentScenario ?? findings.map((f: any) => f.scenario).find((s: string) => s && s.endsWith('@local'))?.split('@')[0] ?? (p.playtests.find((t) => t.where === 'local')?.scenario ?? 'smoke');
   const mode = agentScenario ? undefined : p.playtests.find((t) => t.where === 'local' && (t.scenario ?? t.mode) === scenario)?.mode;
   const port = 8800 + (parseInt(c.id.slice(2, 6), 16) % 200);
-  const url = await serveDir(p, dir, port);
+  // After a Studio restart: a playtest that finished is kept and one still queued is waited for, but one that was
+  // playing lost the page Studio served (its server stopped with Studio), so it is played again.
+  let prior = jobs?.get('playtest') ? await gen.job(jobs.get('playtest')).catch(() => null) : null;
+  if (prior && !['done', 'queued'].includes(prior.status)) {
+    addLog(c.id, `playtest ${prior.id} was ${prior.status} when Studio restarted (its page server stopped); playing it again`);
+    if (prior.status === 'running') await gen.cancel(prior.id).catch(() => {});
+    prior = null;
+  }
+  const url = prior?.status === 'done' ? localUrl(p) : await serveDir(p, dir, port);
   try {
-    const run = await genRun('playtest.run', p.id, { url, mode: mode ?? (p.contract ? 'contract' : 'auto'), ...(mode ? {} : { scenario }), ...(mode === 'site' ? { maxPages: 40 } : {}), ...(agentScenario && agentOptions ? { options: agentOptions } : {}) });
+    const run = await genRun('playtest.run', p.id, { url, mode: mode ?? (p.contract ? 'contract' : 'auto'), ...(mode ? {} : { scenario }), ...(mode === 'site' ? { maxPages: 40 } : {}), ...(agentScenario && agentOptions ? { options: agentOptions } : {}) },
+      undefined, undefined, { job: prior?.id, onSubmit: (id) => { jobs?.set('playtest', id); jobs?.set('review', ''); } });
     if (run.status !== 'done') return { outcome: 'failed', error: run.error, playtest: run.id, build };
     // A verify review (review.ts): did the change work (it says by id whether the findings look fixed), did anything regress.
     // A roadmap task's acceptance criteria go with it and are judged one by one (acceptance.ts).
     const rev = await genRun('playtest.review', p.id, reviewParams(p, run.id, 'verify', {
       ...(c.criteria.length ? { criteria: c.criteria } : {}),
       focus: c.request ? `This is a proposed change J asked for: "${c.request.slice(0, 1500)}". Say clearly whether it does that well, and whether anything got worse.${c.criteria.length ? ` Judge each acceptance criterion: ${c.criteria.map((k, i) => `(${i + 1}) ${k}`).join(' ')}` : ''}` : `This is a proposed fix for: ${findings.map((f: any) => `"${f.title}" (${f.detail})`).join('; ')}. Say clearly whether it is fixed, and whether anything got worse.`,
-    }));
+    }), undefined, undefined, { job: jobs?.get('review') || undefined, onSubmit: (id) => jobs?.set('review', id) });
     const v = rev.result ?? {};
     const video = run.outputs?.find((o: any) => o.kind === 'video')?.asset ?? null;
     const criteria = c.criteria.length ? await judgeCriteria(c.criteria, v, run.result, c.summary) : undefined;
@@ -802,77 +937,92 @@ ${mem.text ? `\n${mem.text}` : ''}`;
   return path.join(dir, 'brief.md');
 }
 
-async function workInfra(id: string, note?: string) {
+async function workInfra(id: string, note?: string, resumed?: Phase | null) {
   let c = getChange(id)!;
   const t = getInfra(c.product);
   const s = agentSettings();
   const repoDir = path.join(PROJECTS, c.repo);
+  // The same steps as a product change (work()), so a Studio restart carries on from where it was.
+  const ph: Phase = resumed ?? { step: 'prepare', note };
+  ({ note } = ph);
+  const save = (patch: Partial<Phase>, extra: Record<string, any> = {}) => {
+    Object.assign(ph, patch);
+    update(id, { ...extra, phase: ph });
+  };
   try {
-    update(id, { status: note ? 'revising' : 'working', detail: 'preparing the worktree' });
-    if (!fs.existsSync(c.worktree)) {
-      fs.mkdirSync(WORK(), { recursive: true });
-      // Only refs move in the server's checkout; its files only change through deploy/hawkes-pull.mjs.
-      const f = git(repoDir, ['fetch', '--quiet', 'origin']);
-      if (!f.ok) throw new Error(`fetch failed: ${f.err}`);
-      const w = git(repoDir, ['worktree', 'add', '-b', c.branch, c.worktree, `origin/${c.base}`]);
-      if (!w.ok) throw new Error(`worktree failed: ${w.err}`);
-      // A warm start: node_modules from a checkout with the same lockfile (warm.ts), not a fresh npm ci.
-      warmDeps(c.worktree, c.repo, (s) => addLog(id, s));
-    } else if (note) {
-      // Another pass: bring the branch up to date with main first (main may have moved, or the merge conflicted).
-      git(repoDir, ['fetch', '--quiet', 'origin']);
-      const m = git(c.worktree, ['merge', '--no-edit', `origin/${c.base}`]);
-      if (!m.ok) git(c.worktree, ['merge', '--abort']);
-      addLog(id, m.ok ? `merged origin/${c.base} into the branch` : `merging origin/${c.base} conflicted; the agent works from the branch as it was`);
+    if (resumed) addLog(id, `Studio restarted: carrying on from the ${ph.step} step`);
+    else save({}, { status: note ? 'revising' : 'working', detail: 'preparing the worktree' });
+
+    if (ph.step === 'prepare') {
+      update(id, { detail: 'preparing the worktree' });
+      await critical(`making the worktree of ${id}`, () => {
+        if (!fs.existsSync(c.worktree)) {
+          fs.mkdirSync(WORK(), { recursive: true });
+          // Only refs move in the server's checkout; its files only change through deploy/hawkes-pull.mjs.
+          const f = git(repoDir, ['fetch', '--quiet', 'origin']);
+          if (!f.ok) throw new Error(`fetch failed: ${f.err}`);
+          git(repoDir, ['worktree', 'prune']);
+          const has = git(repoDir, ['rev-parse', '--verify', '--quiet', `refs/heads/${c.branch}`]).ok;
+          const w = git(repoDir, ['worktree', 'add', ...(has ? [c.worktree, c.branch] : ['-b', c.branch, c.worktree, `origin/${c.base}`])]);
+          if (!w.ok) throw new Error(`worktree failed: ${w.err}`);
+          // A warm start: node_modules from a checkout with the same lockfile (warm.ts), not a fresh npm ci.
+          warmDeps(c.worktree, c.repo, (s) => addLog(id, s));
+        } else if (note) {
+          // Another pass: bring the branch up to date with main first (main may have moved, or the merge conflicted).
+          git(repoDir, ['fetch', '--quiet', 'origin']);
+          const m = git(c.worktree, ['merge', '--no-edit', `origin/${c.base}`]);
+          if (!m.ok) git(c.worktree, ['merge', '--abort']);
+          addLog(id, m.ok ? `merged origin/${c.base} into the branch` : `merging origin/${c.base} conflicted; the agent works from the branch as it was`);
+        }
+      });
+      await npmCi(id, c.worktree);
+      writeInfraBrief(c, t, note);
+      save({ step: 'agent', before: git(c.worktree, ['rev-parse', 'HEAD']).out, proc: undefined });
     }
-    await npmCi(id, c.worktree);
-    const brief = writeInfraBrief(c, t, note);
-    update(id, { detail: 'Claude is working on it' });
-    addLog(id, `agent started`);
-    const before = git(c.worktree, ['rev-parse', 'HEAD']).out;
-    const r = await runAgent(getChange(id)!, brief, s, infraEnv({ agent: true }));
-    c = getChange(id)!;
-    update(id, { cost: c.cost + r.cost });
-    // The agent could write its worktree: Studio's git runs there only while it still links to this repo.
-    assertWorktree(c.worktree, repoDir);
-    const summaryFile = path.join(c.worktree, '.hawkes', 'summary.md');
-    const summary = fs.existsSync(summaryFile) ? fs.readFileSync(summaryFile, 'utf8').trim() : r.result;
-    const commits = git(c.worktree, ['log', '--format=%h %s', `origin/${c.base}..HEAD`]).out.split('\n').filter(Boolean);
-    const changedNow = git(c.worktree, ['rev-parse', 'HEAD']).out !== before;
-    if (!commits.length || (note && !changedNow)) {
-      update(id, { status: 'failed', detail: 'the agent made no commit', summary, commits });
-      return;
+
+    if (ph.step === 'agent') {
+      update(id, { detail: 'Claude is working on it' });
+      if (!ph.proc) addLog(id, resumed ? 'agent: it ran inside Studio, which restarted; starting the pass again' : `agent started`);
+      const r = await agentPass(id, ph, save, s, infraEnv({ agent: true }));
+      save({ step: 'publish', result: r.result, proc: undefined }, { cost: getChange(id)!.cost + r.cost });
     }
-    // Guard rails, before anything leaves the server.
-    const files = git(c.worktree, ['diff', '--name-only', `origin/${c.base}...HEAD`]).out.split('\n').filter(Boolean);
-    const bad = guardFiles(t.id, files, [c.request ?? '', ...c.notes.map((n) => n.text)].join('\n'));
-    if (bad.length) {
-      const list = bad.map((b) => `${b.file} (${b.why === 'forbidden' ? 'never changed by agents' : 'only when J names it'})`).join(', ');
-      addLog(id, `guard rails: ${list}`);
-      update(id, { status: 'failed', detail: `not pushed: it changes protected files: ${list}`.slice(0, 300), summary, commits });
-      return;
+
+    if (ph.step === 'publish') {
+      c = getChange(id)!;
+      // The agent could write its worktree: Studio's git runs there only while it still links to this repo.
+      assertWorktree(c.worktree, repoDir);
+      const summaryFile = path.join(c.worktree, '.hawkes', 'summary.md');
+      const summary = fs.existsSync(summaryFile) ? fs.readFileSync(summaryFile, 'utf8').trim() : ph.result ?? '';
+      const commits = git(c.worktree, ['log', '--format=%h %s', `origin/${c.base}..HEAD`]).out.split('\n').filter(Boolean);
+      const changedNow = git(c.worktree, ['rev-parse', 'HEAD']).out !== ph.before;
+      if (!commits.length || (note && !changedNow)) {
+        update(id, { status: 'failed', detail: 'the agent made no commit', summary, commits, phase: null });
+        return;
+      }
+      // Guard rails, before anything leaves the server.
+      const files = git(c.worktree, ['diff', '--name-only', `origin/${c.base}...HEAD`]).out.split('\n').filter(Boolean);
+      const bad = guardFiles(t.id, files, [c.request ?? '', ...c.notes.map((n) => n.text)].join('\n'));
+      if (bad.length) {
+        const list = bad.map((b) => `${b.file} (${b.why === 'forbidden' ? 'never changed by agents' : 'only when J names it'})`).join(', ');
+        addLog(id, `guard rails: ${list}`);
+        update(id, { status: 'failed', detail: `not pushed: it changes protected files: ${list}`.slice(0, 300), summary, commits, phase: null });
+        return;
+      }
+      const diffstat = git(c.worktree, ['diff', '--shortstat', `origin/${c.base}...HEAD`]).out;
+      update(id, { summary, commits, diffstat, detail: 'pushing and opening the pull request' });
+      const body = `${summary}\n\n---\n**J asked:** ${c.request ?? ''}\n\nMade by a Hawkes Studio agent. Approving it in Studio merges it into main, and ${t.name} deploys itself once CI passes (the control server pulls it, restarts the service and rolls back if it isn't healthy).\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)`;
+      await publish(id, { force: Boolean(note), title: c.title, body });
+      save({ step: 'verify', tip: git(c.worktree, ['rev-parse', 'HEAD']).out, verify: undefined }, { status: 'verifying', detail: 'checking: CI on the pull request, the checks, a smoke check' });
     }
-    const diffstat = git(c.worktree, ['diff', '--shortstat', `origin/${c.base}...HEAD`]).out;
-    update(id, { summary, commits, diffstat, detail: 'pushing and opening the pull request' });
-    const push = git(c.worktree, ['push', '--quiet', '-u', 'origin', `HEAD:${c.branch}`, ...(note ? ['--force-with-lease'] : [])]);
-    if (!push.ok) throw new Error(`push failed: ${push.err}`);
-    c = getChange(id)!;
-    const body = `${summary}\n\n---\n**J asked:** ${c.request ?? ''}\n\nMade by a Hawkes Studio agent. Approving it in Studio merges it into main, and ${t.name} deploys itself once CI passes (the control server pulls it, restarts the service and rolls back if it isn't healthy).\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)`;
-    if (!c.pr) {
-      const pr = await github(`/repos/${c.slug}/pulls`, { method: 'POST', body: { title: c.title, head: c.branch, base: c.base, body, draft: false } });
-      update(id, { pr: pr.number, pr_url: pr.html_url });
-      addLog(id, `opened ${pr.html_url}`);
-    } else {
-      await github(`/repos/${c.slug}/pulls/${c.pr}`, { method: 'PATCH', body: { body } });
-      addLog(id, `updated pull request #${c.pr}`);
-    }
-    update(id, { status: 'verifying', detail: 'checking: CI on the pull request, the checks, a smoke check' });
-    const v = await verifyInfra(getChange(id)!, t);
-    update(id, { status: 'ready', detail: `${v.outcome}: ${v.summary}`.slice(0, 300), verify: v });
+
+    // Verify (checked again from the start after a restart: CI is GitHub's, the checks and smoke check take minutes), then ready.
+    if (resumed && ph.step === 'verify') update(id, { status: 'verifying', detail: 'checking: CI on the pull request, the checks, a smoke check' });
+    const v = ph.step === 'finish' ? ph.verify : await verifyInfra(getChange(id)!, t);
+    update(id, { status: 'ready', detail: `${v.outcome}: ${v.summary}`.slice(0, 300), verify: v, phase: null });
     // Talk tells J in the chat; no phone notification (only failures and milestones go to the phone).
   } catch (e: any) {
     addLog(id, `error: ${e.message}`);
-    update(id, { status: 'failed', detail: String(e.message).slice(0, 300) });
+    update(id, { status: 'failed', detail: String(e.message).slice(0, 300), phase: null });
   }
 }
 
@@ -1037,42 +1187,45 @@ export async function approve(id: string, { confirm, by = 'J', origin }: { confi
   if (!c.pr) throw new Error('This change has no pull request');
   if (c.infra) {
     if (c.status !== 'ready') throw new Error(`The change is ${c.status}, not ready to approve.`);
-    return approveInfra(c, by);
+    return critical(`merging ${id} into main`, () => approveInfra(c, by));
   }
   // An agent still on it moves the branch: what would be merged isn't what was verified.
   if (['queued', 'working', 'revising', 'verifying'].includes(c.status)) throw new Error(`The change is ${c.status}: its branch is still moving. Approve it once it's ready (verified).`);
-  const sha = await verifiedHead(c);
-  // Changes opened before the beta lane target main: point them at beta first, so approving never goes live.
-  if (c.base !== BETA) {
-    ensureBeta(path.join(PROJECTS, c.repo));
-    await github(`/repos/${c.slug}/pulls/${c.pr}`, { method: 'PATCH', body: { base: BETA } });
-    db.prepare('UPDATE changes SET base = ? WHERE id = ?').run(BETA, id);
-    addLog(id, `pull request #${c.pr} now targets ${BETA} (was ${c.base})`);
-  }
-  // Devtools saves in beta's working copy (dev.ts) go in first, so the merge sees them; a conflict there stops it.
-  const { flushDev, pullDev } = await import('./dev.ts');
-  const flushed = await flushDev(c.product, `before merging ${id}`);
-  if ('conflict' in flushed && flushed.conflict) throw new Error(`Beta's working copy conflicts with beta (${flushed.conflict.join(', ')}); resolve that first (studio_dev_status).`);
-  let m: any;
-  try {
-    // `sha`: GitHub refuses the merge if the pull request's head moved since the check above.
-    m = await github(`/repos/${c.slug}/pulls/${c.pr}/merge`, { method: 'PUT', body: { merge_method: 'squash', sha, commit_title: `${c.title} (#${c.pr})` } });
-  } catch (e: any) {
-    // Usually a conflict with what's on beta now (devtools saves, another change). J hears it in Talk with the files.
-    const files = await github(`/repos/${c.slug}/pulls/${c.pr}/files?per_page=100`).then((fs: any[]) => fs.map((f) => f.filename)).catch(() => []);
-    const { postNotice } = await import('./talk.ts');
-    postNotice(`Merge stopped: ${c.title}`, `Merging ${id} (${c.pr_url}) into ${BETA} failed: ${e.message ?? e}\n\nThe change touches: ${files.slice(0, 30).join(', ') || '(unknown)'}\n\nIf beta changed those files since (devtools saves or another change), ask the agent to update its branch from ${BETA} (revise ${id}) and approve again.`);
-    throw e;
-  }
-  void pullDev(c.product, `after merging ${id}`).catch((e) => console.warn(`[studio] beta working copy after ${id}: ${e.message ?? e}`));
-  update(id, { status: 'merged', detail: `merged into ${BETA} by ${by}: ${String(m.sha ?? '').slice(0, 7)} (not live yet)`, notes: [...c.notes, { at: Date.now(), by, text: `approved and merged into ${BETA}` }] });
-  remember(id);
-  for (const f of c.findings) updateFinding(f, { status: 'fixed', note: `merged into ${BETA} in ${c.pr_url} (goes live with the next deploy)` });
-  await cleanup(id, { deleteBranch: true });
-  // Beta moved: its pre-deploy build, its build (Unity), the beta site and a local playtest of it follow, in the background.
-  // A roadmap task's criteria are judged again on beta, on the scenario its agent wrote for them.
-  void import('./pipeline.ts').then(({ startBeta }) => startBeta(c.product, { focus: `Just merged into beta: ${c.title}. Check it works and nothing regressed.`, origin, criteria: c.criteria, scenario: c.verify?.scenario, options: c.verify?.options })).catch((e) => console.warn(`[studio] beta after ${id}: ${e.message ?? e}`));
-  return getChange(id);
+  // A merge is a critical section (drain.ts): a deploy waits for it rather than cut it off between GitHub and Studio's records.
+  return critical(`merging ${id} into ${BETA}`, async () => {
+    const sha = await verifiedHead(c);
+    // Changes opened before the beta lane target main: point them at beta first, so approving never goes live.
+    if (c.base !== BETA) {
+      ensureBeta(path.join(PROJECTS, c.repo));
+      await github(`/repos/${c.slug}/pulls/${c.pr}`, { method: 'PATCH', body: { base: BETA } });
+      db.prepare('UPDATE changes SET base = ? WHERE id = ?').run(BETA, id);
+      addLog(id, `pull request #${c.pr} now targets ${BETA} (was ${c.base})`);
+    }
+    // Devtools saves in beta's working copy (dev.ts) go in first, so the merge sees them; a conflict there stops it.
+    const { flushDev, pullDev } = await import('./dev.ts');
+    const flushed = await flushDev(c.product, `before merging ${id}`);
+    if ('conflict' in flushed && flushed.conflict) throw new Error(`Beta's working copy conflicts with beta (${flushed.conflict.join(', ')}); resolve that first (studio_dev_status).`);
+    let m: any;
+    try {
+      // `sha`: GitHub refuses the merge if the pull request's head moved since the check above.
+      m = await github(`/repos/${c.slug}/pulls/${c.pr}/merge`, { method: 'PUT', body: { merge_method: 'squash', sha, commit_title: `${c.title} (#${c.pr})` } });
+    } catch (e: any) {
+      // Usually a conflict with what's on beta now (devtools saves, another change). J hears it in Talk with the files.
+      const files = await github(`/repos/${c.slug}/pulls/${c.pr}/files?per_page=100`).then((fs: any[]) => fs.map((f) => f.filename)).catch(() => []);
+      const { postNotice } = await import('./talk.ts');
+      postNotice(`Merge stopped: ${c.title}`, `Merging ${id} (${c.pr_url}) into ${BETA} failed: ${e.message ?? e}\n\nThe change touches: ${files.slice(0, 30).join(', ') || '(unknown)'}\n\nIf beta changed those files since (devtools saves or another change), ask the agent to update its branch from ${BETA} (revise ${id}) and approve again.`);
+      throw e;
+    }
+    void pullDev(c.product, `after merging ${id}`).catch((e) => console.warn(`[studio] beta working copy after ${id}: ${e.message ?? e}`));
+    update(id, { status: 'merged', detail: `merged into ${BETA} by ${by}: ${String(m.sha ?? '').slice(0, 7)} (not live yet)`, notes: [...c.notes, { at: Date.now(), by, text: `approved and merged into ${BETA}` }] });
+    remember(id);
+    for (const f of c.findings) updateFinding(f, { status: 'fixed', note: `merged into ${BETA} in ${c.pr_url} (goes live with the next deploy)` });
+    await cleanup(id, { deleteBranch: true });
+    // Beta moved: its pre-deploy build, its build (Unity), the beta site and a local playtest of it follow, in the background.
+    // A roadmap task's criteria are judged again on beta, on the scenario its agent wrote for them.
+    void import('./pipeline.ts').then(({ startBeta }) => startBeta(c.product, { focus: `Just merged into beta: ${c.title}. Check it works and nothing regressed.`, origin, criteria: c.criteria, scenario: c.verify?.scenario, options: c.verify?.options })).catch((e) => console.warn(`[studio] beta after ${id}: ${e.message ?? e}`));
+    return getChange(id);
+  });
 }
 
 /** J's note: the agent continues on the same branch. */
@@ -1110,6 +1263,10 @@ export function answerChange(id: string, answer: string, by = 'J') {
 export async function close(id: string, by = 'J') {
   const c = getChange(id);
   if (!c) throw new Error('No such change');
+  return critical(`closing ${id}`, () => closeNow(c, by));
+}
+async function closeNow(c: Change, by: string) {
+  const id = c.id;
   if (c.pr) await github(`/repos/${c.slug}/pulls/${c.pr}`, { method: 'PATCH', body: { state: 'closed' } }).catch(() => {});
   update(id, { status: 'closed', detail: `closed by ${by}`, notes: [...c.notes, { at: Date.now(), by, text: 'closed' }] });
   remember(id);
@@ -1156,8 +1313,30 @@ export function autoFix(runId: string) {
   return started;
 }
 
-// Changes interrupted by a restart go back to the queue.
-db.prepare(`UPDATE changes SET status = 'queued', detail = 'requeued after a restart' WHERE status IN ('working', 'verifying', 'revising')`).run();
+/**
+ * After a restart (a deploy): changes that were being worked on carry on from their recorded step, reattached to the
+ * same agent process and Gen jobs (work()). Ones with no step recorded (from before steps were) go back to the queue.
+ */
+export function resumeChanges() {
+  const out: string[] = [];
+  for (const c of listChanges({ status: 'working,verifying,revising', limit: 200 })) {
+    const ph = phaseOf(c.id);
+    if (!ph?.step) {
+      update(c.id, { status: 'queued', detail: 'requeued after a restart' });
+      continue;
+    }
+    if (running.has(c.id)) continue;
+    running.add(c.id);
+    out.push(c.id);
+    void work(c.id, undefined, undefined, ph).finally(() => {
+      running.delete(c.id);
+      remember(c.id);
+      void pump();
+    });
+  }
+  return out;
+}
+// The server calls it once it listens (server.ts); a process that only imports this module (the CLI, tests) doesn't.
 setTimeout(() => void pump(), 5000).unref();
 // A safety net for the local queue (no GitHub involved): queued changes never wait on a slot nobody frees.
 setInterval(() => void pump(), 60_000).unref();

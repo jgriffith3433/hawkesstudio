@@ -20,6 +20,7 @@
 // - Unity products have no dev server: /dev/ explains that their editor runs on the build server.
 
 import fs from 'node:fs';
+import { critical } from './drain.ts';
 import path from 'node:path';
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import { PROJECTS, DATA, GEN_URL, paths, getProduct, loadProducts, StudioError, type Product } from './config.ts';
@@ -159,7 +160,9 @@ const summarize = (files: string[]) => {
  * Commits whatever changed in the working copy, brings in beta's new commits (rebase) and pushes to beta. Returns what
  * happened; a conflict sets the conflict state (auto-commit stops) and tells J.
  */
-async function commitAndSync(p: Product, during: string): Promise<{ committed?: string; pushed?: string; pulled?: number; conflict?: string[]; nothing?: boolean }> {
+/** Committing devtools saves and pushing them to beta is a critical section (drain.ts). */
+const commitAndSync = (p: Product, during: string) => critical(`pushing ${p.id}'s devtools saves to beta`, () => commitAndSyncNow(p, during));
+async function commitAndSyncNow(p: Product, during: string): Promise<{ committed?: string; pushed?: string; pulled?: number; conflict?: string[]; nothing?: boolean }> {
   const dir = devDir(p);
   const wc = wcOf(p.id);
   if (wc.conflict) throw new StudioError(`${p.name}'s beta working copy has a conflict (${wc.conflict.files.join(', ')}). Resolve it first (studio_dev_resolve, or the dashboard).`, 409);

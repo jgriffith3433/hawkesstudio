@@ -70,14 +70,34 @@ Hawkes Gen and Hawkes Studio are private GitHub repos (`jgriffith3433/hawkesgen`
    - It asks GitHub for the commit's check runs (with the server's token, `/run/hawkes/github.env`). It deploys only
      when every check passed. A pending commit waits; a failing one is logged once and never deployed. Only the newest
      commit on main counts: fix forward, and the fix deploys when its CI passes.
-   - It waits while a restart would interrupt something: a Studio run, an agent fix, a Talk answer, or a running Gen
-     job (a Unity build, a GPU job, a playtest). After `HAWKES_PULL_MAX_WAIT_MIN` (720, 12 hours: a restart would stop agents mid-change) it deploys anyway.
+   - It waits only while a restart would cut something off halfway (see "Restarts end nothing" below). Studio: its
+     critical sections (a merge, a push, a worktree add, a go live being recorded), looking again every 20 s, at most
+     `HAWKES_PULL_CRITICAL_MAX_MIN` (5); a deploy usually goes through within seconds while agents, runs and Talk
+     answers carry on. Gen: a Unity build running on the build server, at most `HAWKES_PULL_MAX_WAIT_MIN` (720).
    - `git merge --ff-only`; `npm ci` only if `package.json` or `package-lock.json` changed (Gen: also Playwright's
      Chromium); then it restarts that service and checks its health for 90 seconds. If it doesn't come up, it goes
      back to the previous commit, restarts again, and doesn't retry that commit.
    - It refuses (and logs why) when the server's checkout has edits to tracked files, or main no longer contains the
      deployed commit (history rewritten).
-3. **Logs:** `journalctl -u hawkes-pull` and one JSON line per deploy, wait, refusal or failure in
+3. **Restarts end nothing** (since 2026-10-16). Studio's work carries on through a restart, so a deploy doesn't stall it:
+   - **Agents and Talk answers** run outside Studio: each Claude Code is a transient unit of the `hawkes` user's own
+     systemd manager (`systemd-run --user`, `src/detach.ts`; the user lingers: `loginctl enable-linger hawkes`, which
+     `deploy.mjs` and `hawkes-pull.mjs` make sure of). The unit runs `bin/detached-run.mjs`, which starts the same
+     command as before (the sandbox user and environment unchanged) with its output going to
+     `hawkesstudio/.data/detached/<unit>.log`. Restarting `hawkes-studio` doesn't touch those units (they aren't in its
+     cgroup). The restarted Studio reads the output on from where it got to: the agent's log and result, Talk's answer
+     streaming into its conversation. A unit gone with no result (a reboot) runs its pass again. Calls (voice) drop.
+     `systemctl --user list-units 'hawkes-*'` (as hawkes, with `XDG_RUNTIME_DIR=/run/user/$(id -u hawkes)`) lists them.
+   - **Agent changes** record their step (`changes.phase`: prepare, agent, publish, verify with its Gen jobs, finish)
+     and carry on from it, waiting on the same Gen jobs (a build isn't built twice). A verification playtest that was
+     playing a page Studio served is played again (its page server stopped with Studio).
+   - **Runs** carry on: finished steps stay, a running step waits for its Gen job again (no second build, playtest or
+     review; no findings filed twice), the rest proceed. Asset runs and go lives too.
+   - **Critical sections** (`src/drain.ts`): the short steps that must not be cut halfway. `GET /api/self-deploys` lists
+     them (`busy.critical`). While a deploy waits for them, new ones (and new agents) wait for the deploy.
+   - Without the user's systemd manager (J's PC, or before lingering is on), agents and Talk answers run inside Studio
+     as before, `busy.agents` / `busy.talk` count them, and a deploy waits for them (up to 12 hours).
+4. **Logs:** `journalctl -u hawkes-pull` and one JSON line per deploy, wait, refusal or failure in
    `hawkesstudio/.data/self-deploys.jsonl`. Studio shows them at `GET /api/self-deploys` (newest first, with what's
    keeping a deploy waiting right now).
 
@@ -207,7 +227,8 @@ steps 2 and 4 are Talk's: it starts roadmap tasks and the worst bugs within its 
 once, 8 starts a day, 3 tries), runs its turns in the day's "Studio PM" Talk conversation, and merges into beta the
 changes that pass their acceptance gate (delegated merges, on by default; never Studio or Gen, never live). Every
 decision is logged with undo (Roadmap tab). Pause it from the Roadmap tab or `POST /api/pm/settings { "enabled": false }`.
-It starts no agent while a Studio or Gen deploy is waiting (`/api/self-deploys`), so deploys get through. Logs: its
+It starts no agent while a Studio deploy is waiting for Studio's critical sections (seconds; `.data/deploy-pending`), so
+deploys get through; agents already working carry on through the restart. Logs: its
 warnings are `[pm]` lines in Studio's journal.
 
 ### Changing Studio and Gen through agents
@@ -228,9 +249,9 @@ J can ask Talk to fix or add something in Hawkes Studio or Hawkes Gen themselves
    worktree on a spare port with a scratch data folder (health `ok`, the dashboard page loads, `node --check` on every
    `dashboard/*.js`). The change shows **Checks: passed/failed** in the Changes tab and in `studio_change`.
 4. **Approve** (`MERGE <id>`, only after J says yes in Talk; refused unless CI on the pull request is green) squash-merges
-   into main. CI runs on main and tells the server, which deploys it as above: it waits for running runs, agents and
-   Talk answers, restarts the service, and rolls back if it isn't healthy. Approving a Studio change restarts Studio,
-   which runs Talk: an answer in progress may be cut off, and the conversation stays.
+   into main. CI runs on main and tells the server, which deploys it as above: it waits for Studio's critical sections
+   (seconds), restarts the service, and rolls back if it isn't healthy. Agents, runs and Talk answers carry on through
+   the restart; a voice call drops.
 
 The first agent change to Studio through this lane was a test of the lane itself (the lane's first test, 2026-10-16).
 

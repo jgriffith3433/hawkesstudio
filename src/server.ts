@@ -6,15 +6,16 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { PORT, DATA, paths, loadProducts, getProduct, StudioError, localUrl } from './config.ts';
 import { db, rowToStep } from './db.ts';
-import { startRun, startPartial, getRun, listRuns, activeRun, lastStep, nameOf, type RunOptions } from './pipeline.ts';
+import { startRun, startPartial, getRun, listRuns, activeRun, lastStep, nameOf, resumeRuns, type RunOptions } from './pipeline.ts';
+import { pruneDetached } from './detach.ts';
 import { listFindings, getFinding, updateFinding } from './backlog.ts';
 import { reportMarkdown, listReports } from './report.ts';
 import { deployPlan, deploy, rollbackPlan, rollback } from './deploy.ts';
 import { assetStatus } from './assets.ts';
 import { syncRepos } from './repos.ts';
-import { startConversation, say, getConversation, listConversations, stop as stopTalk, talkInfo, renameConversation, deleteConversation, startCall, endCall, callInfo, talkEvents } from './talk.ts';
+import { startConversation, say, getConversation, listConversations, stop as stopTalk, talkInfo, renameConversation, deleteConversation, startCall, endCall, callInfo, talkEvents, resumeTalk } from './talk.ts';
 import { notify, notifyInfo, saveNotifySettings, PUBLIC_URL } from './notify.ts';
-import { listChanges, getChange, startFix, startTask, approve, revise, close, agentSettings, saveAgentSettings, costToday } from './agents.ts';
+import { listChanges, getChange, startFix, startTask, approve, revise, close, agentSettings, saveAgentSettings, costToday, resumeChanges } from './agents.ts';
 import { startAssets } from './pipeline.ts';
 import { gitState, stopServers } from './local.ts';
 import { gen, genUp } from './gen.ts';
@@ -506,14 +507,16 @@ const server = http.createServer(async (req, res) => {
 });
 
 server.listen(PORT, '127.0.0.1', () => {
-  // A run whose process died is no longer running, and the Gen jobs it was waiting on would only clog the queue.
-  const orphans = db.prepare(`SELECT job FROM steps WHERE status = 'running' AND job IS NOT NULL AND run IN (SELECT id FROM runs WHERE status = 'running')`).all() as { job: string }[];
-  db.prepare(`UPDATE steps SET status = 'failed', detail = 'interrupted (Studio restarted)', finished = ? WHERE status = 'running' AND run IN (SELECT id FROM runs WHERE status = 'running')`).run(Date.now());
-  db.prepare(`UPDATE runs SET status = 'interrupted' WHERE status = 'running'`).run();
-  for (const { job } of orphans) gen.cancel(job).catch(() => {});
   console.log(`Hawkes Studio on http://127.0.0.1:${PORT}`);
   // An agent's smoke check of a changed Studio (agents.ts) starts the server and nothing else.
   if (process.env.STUDIO_SMOKE === '1') return;
+  // A restart (a deploy) ends nothing: runs, agent changes and Talk answers carry on from where they were, waiting on
+  // the same Gen jobs and reading the same detached Claude Code processes (drain.ts, detach.ts).
+  const runs = resumeRuns();
+  const changes = resumeChanges();
+  const answers = resumeTalk();
+  if (runs.length || changes.length || answers.length) console.log(`[studio] carrying on after the restart: ${runs.length} run(s), ${changes.length} agent change(s), ${answers.length} Talk answer(s)`);
+  pruneDetached();
   // The shared memory: its seed, and the daily fade and export (memory.ts).
   void import('./memory.ts').then(({ startMemory }) => startMemory());
   // /dev/ on each beta site: the front doors Caddy sends /dev/* to, and the beta working copies' auto-commit.

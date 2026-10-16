@@ -20,8 +20,11 @@ everything: keep changes small.
 - **Verification** of an agent change: CI on the pull request, the checks again, and a smoke check (the service from the
   worktree on a spare port with a scratch data folder and no keys: health ok, the dashboard loads, `node --check` on
   `dashboard/*.js`; Studio runs with `STUDIO_SMOKE=1`). A new dashboard script must be added to the typecheck script.
-- **Restarts:** a Studio deploy restarts Studio, which runs Talk and the agents (`hawkes-pull` waits for runs, agents and
-  Talk answers, up to 12 hours). In-memory waits are lost: keep long waits in the database.
+- **Restarts:** a Studio deploy restarts Studio within seconds (`hawkes-pull` waits only for critical sections). Agents
+  and Talk answers run outside it (`src/detach.ts`) and are reattached; agent changes carry on from their recorded step
+  (`changes.phase`) and runs from their steps, waiting on the same Gen jobs (docs/cloud.md, "Restarts end nothing").
+  In-memory state is lost: keep long work resumable (record its step and Gen job ids in the database), wrap a short
+  step that must not be cut halfway (a push followed by a database write, a merge) in `critical()` (`src/drain.ts`).
 - **Server setup** that a push doesn't deploy (systemd units, Caddy, DNS, keys, the agent sandbox user) is
   `deploy/deploy.mjs`, run by J.
 - Other sessions edit these repos too: commit only your own files; never stash, reset or switch branches in a shared

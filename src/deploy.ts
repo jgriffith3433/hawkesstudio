@@ -16,6 +16,7 @@
 // Only J gives the confirmations; agents (and Talk) show the plan and wait for his exact words.
 
 import { spawnSync } from 'node:child_process';
+import { critical } from './drain.ts';
 import { getProduct, StudioError } from './config.ts';
 import { git } from './local.ts';
 import { startPartial } from './pipeline.ts';
@@ -116,7 +117,9 @@ export function deployPlan(productId: string) {
   };
 }
 
-export async function deploy(productId: string, { confirm, by = 'J', mergeMain, origin }: { confirm?: string; by?: string; mergeMain?: boolean; message?: string; origin?: string | null }) {
+/** Going live (pushing main, recording it) is a critical section (drain.ts): a Studio deploy waits for it. */
+export const deploy = (...a: Parameters<typeof deployNow>) => critical(`going live: ${a[0]}`, () => deployNow(...a));
+async function deployNow(productId: string, { confirm, by = 'J', mergeMain, origin }: { confirm?: string; by?: string; mergeMain?: boolean; message?: string; origin?: string | null }) {
   const p = getProduct(productId);
   if (mergeMain) return { ok: true, product: p.id, ...mergeMainIntoBeta(p, by), note: `Nothing went live. Playtest ${BETA} again before going live.` };
   const plan = deployPlan(p.id);
@@ -194,7 +197,9 @@ export function rollbackPlan(productId: string) {
   };
 }
 
-export async function rollback(productId: string, { confirm, by = 'J', origin }: { confirm?: string; by?: string; origin?: string | null }) {
+/** A rollback (pushing main, recording it) is a critical section too. */
+export const rollback = (...a: Parameters<typeof rollbackNow>) => critical(`rolling back: ${a[0]}`, () => rollbackNow(...a));
+async function rollbackNow(productId: string, { confirm, by = 'J', origin }: { confirm?: string; by?: string; origin?: string | null }) {
   const plan = rollbackPlan(productId);
   if (confirm !== plan.confirm) throw new StudioError(`Rolling back publishes ${plan.live}: ${plan.what} Show J the rollback plan, then send confirm: "${plan.confirm}" (J's call).`);
   if (plan.blockers.length) throw new StudioError(`Not rolling back:\n- ${plan.blockers.join('\n- ')}`);

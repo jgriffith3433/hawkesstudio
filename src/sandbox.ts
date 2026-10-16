@@ -42,11 +42,22 @@ export function sandboxEnv(env: NodeJS.ProcessEnv) {
  * filtered environment. Elsewhere (J's PC, a server without the sandbox): as Studio's own user, like before.
  */
 export function spawnClaude(args: string[], { cwd, env }: { cwd: string; env: NodeJS.ProcessEnv }): ChildProcessWithoutNullStreams {
+  const c = claudeCommand(args, { cwd, env });
+  return spawn(c.file, c.args, { cwd: c.cwd, env: c.env, windowsHide: true });
+}
+
+/**
+ * The command spawnClaude runs (file, arguments, folder, environment), for starting it outside Studio (detach.ts) with
+ * the same user and environment. TALK_CLAUDE_ARGS (a JSON array before Claude Code's own arguments): tests run a
+ * stand-in script with node, never in the sandbox.
+ */
+export function claudeCommand(args: string[], { cwd, env }: { cwd: string; env: NodeJS.ProcessEnv }) {
   const exe = process.env.TALK_CLAUDE || 'claude';
-  if (!sandboxOn()) return spawn(exe, args, { cwd, env, windowsHide: true });
+  const pre: string[] = process.env.TALK_CLAUDE_ARGS ? JSON.parse(process.env.TALK_CLAUDE_ARGS) : [];
+  if (!sandboxOn() || pre.length) return { file: exe, args: [...pre, ...args], cwd, env };
   const clean = sandboxEnv(env);
   const keep = Object.keys(clean).filter((k) => k !== 'HOME' && k !== 'PATH');
-  return spawn('sudo', ['-n', '-u', process.env.HAWKES_AGENT_USER!, `--preserve-env=${keep.join(',')}`, WRAPPER, path.resolve(cwd), exe, ...args], { cwd, env: clean, windowsHide: true });
+  return { file: 'sudo', args: ['-n', '-u', process.env.HAWKES_AGENT_USER!, `--preserve-env=${keep.join(',')}`, WRAPPER, path.resolve(cwd), exe, ...args], cwd, env: clean };
 }
 
 /**

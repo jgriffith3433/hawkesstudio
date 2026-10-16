@@ -51,7 +51,8 @@ Do not commit unless asked. **Never go live or roll back without J's exact words
 
 **This repo itself** (`jgriffith3433/hawkesstudio`, like `hawkesgen`) deploys to the cloud on every push to `main`: CI
 (`.github/workflows/ci.yml`) runs typecheck and tests, and the control server pulls a passing commit
-(`deploy/hawkes-pull.mjs`, started by CI's "Tell the server" job, waiting out runs and agent fixes). Push to main only with J's OK, after
+(`deploy/hawkes-pull.mjs`, started by CI's "Tell the server" job, waiting only for Studio's short critical sections: runs,
+agents and Talk answers carry on through the restart, docs/cloud.md "Restarts end nothing"). Push to main only with J's OK, after
 `npm run typecheck` and `npm test`; commit only your own files (other sessions edit here too). Roll back with
 `git revert` + push. `deploy/deploy.mjs` is for server setup (units, Caddy, DNS, keys) and never copies this folder.
 See `docs/cloud.md` ("How code gets to the server").
@@ -142,6 +143,7 @@ a budget (`approveGpu`, `gpuCleared`, `tasksAwaitingGpu`; the PM asks him once);
 | `src/cli.ts`, `src/mcp.ts`, `src/client.ts` | CLI and MCP server (both talk to the running service) |
 | `src/mcp-tools.ts`, `src/mcp-http.ts`, `src/mcp-core.ts` | The MCP tools, shared by stdio and `/mcp` over HTTPS (Studio MCP key, `STUDIO_MCP_KEY`); `mcp-core.ts` is the same file as in hawkesgen. Setup: `docs/cloud.md` |
 | `src/selfdeploy.ts` | Studio and Gen deploying themselves from GitHub main: the `self-deploys.jsonl` log and what a restart would interrupt (`GET /api/self-deploys`, read by `deploy/hawkes-pull.mjs`) |
+| `src/detach.ts`, `bin/detached-run.mjs`, `src/drain.ts` | Work that survives a restart: agents' and Talk's Claude Code as `systemd-run --user` units (output in `.data/detached/`, reattached after a restart); critical sections (a merge, a push) that a deploy waits for; resumes are `resumeChanges` (agents.ts, `changes.phase`), `resumeRuns` (pipeline.ts), `resumeTalk` (talk.ts). docs/cloud.md, "Restarts end nothing" |
 | `deploy/` | Server setup (`provision.mjs`, `deploy.mjs`: units, Caddy, DNS, keys), `hawkes-pull.mjs` (the server's pull-deploy), secrets and token helpers |
 | `src/talk.ts`, `dashboard/talk.js` | Talk: Claude Code on the server; streaming, stop, rename/delete, attachments (Gen blobs), Max-plan vs API marker, Studio's notices and the turns Studio starts to explain them (`studioSays`) |
 | `dashboard/call.js` (+ `talk.ts` calls) | Calls: J talks to Talk by voice (📞). Browser speech recognition and voice (free), the answer spoken sentence by sentence from `GET /api/talk/<id>/events`, a warm Claude Code process per call (`startCall`), barge-in, push to talk, optional ElevenLabs Flash through Gen; docs/daily.md, "Talking to Talk by voice" |

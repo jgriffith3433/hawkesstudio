@@ -13,6 +13,7 @@
 // .work/beta/<product>-site (a worktree of the website repo at its main), never in the real website folder.
 
 import fs from 'node:fs';
+import { critical, criticalSync } from './drain.ts';
 import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 import crypto from 'node:crypto';
@@ -110,7 +111,7 @@ export function compareBeta(dir: string, { fetch = true } = {}) {
 
 // -------------------------------------------------------------- worktrees
 
-const WORK = () => path.join(PROJECTS, '.work', 'beta');
+export const WORK = () => path.join(PROJECTS, '.work', 'beta');
 
 /** A worktree of `repoDir` at `.work/beta/<name>`, detached at `commit`, cleaned (ignored files like node_modules stay). */
 export function scratch(repoDir: string, name: string, commit: string) {
@@ -221,7 +222,9 @@ export function prebuilt(p: Product, sha: string, title: string) {
  * version) get it run on beta and committed there ("Studio build: ..."), so the beta commit that's playtested is
  * exactly what goes live. Skipped when beta's newest commit is already such a build.
  */
-export async function prepareBeta(p: Product, log: (s: string) => void = () => {}) {
+/** Committing a pre-deploy build to beta and pushing it is a critical section (drain.ts). */
+export const prepareBeta = (...a: Parameters<typeof prepareBetaNow>) => critical(`committing ${a[0].id}'s pre-deploy build to beta`, () => prepareBetaNow(...a));
+async function prepareBetaNow(p: Product, log: (s: string) => void = () => {}) {
   if (!p.deploy?.prebuild) return { skipped: 'no pre-deploy build' };
   const { source } = repoDirs(p);
   // Never makes beta (that happens with the first agent change, or J's merge-main): no beta, nothing to build.
@@ -256,7 +259,9 @@ export async function prepareBeta(p: Product, log: (s: string) => void = () => {
  * keeps beta's files ("-s ours": beta is the version being fixed forward); otherwise it's a normal merge, and a conflict
  * stops it (resolve on a branch by hand).
  */
-export function mergeMainIntoBeta(p: Product, by = 'J') {
+/** Merging main into beta and pushing it is a critical section (drain.ts). */
+export const mergeMainIntoBeta = (...a: Parameters<typeof mergeMainIntoBetaNow>) => criticalSync(`merging main into ${a[0].id}'s beta`, () => mergeMainIntoBetaNow(...a));
+function mergeMainIntoBetaNow(p: Product, by = 'J') {
   const { source } = repoDirs(p);
   ensureBeta(source);
   const cmp = compareBeta(source, { fetch: false });
