@@ -48,6 +48,8 @@ chmod 750 "$AHOME"; chown "$AGENT:$GROUP" "$AHOME"
 
 # Studio's and Gen's data: Studio's user (and Caddy, through group hawkes) only.
 chmod 750 "$P/hawkesstudio/.data" "$P/hawkesgen/.data"
+# Nothing under /srv/hawkes is writable by everyone (the old tar deploys left Studio's and Gen's code 777).
+find "$P" -xdev -perm -o+w ! -type l ! -path "$P/.work/*" ! -path "$P/.talk/*" -exec chmod o-w {} + 2>/dev/null || true
 
 # The shared work folders.
 for d in "$P/.work" "$P/.talk" "$P/.work/.agent" "$P/.work/.npm-cache"; do mkdir -p "$d"; done
