@@ -448,7 +448,20 @@ async function installCaddy(domain) {
 	}
 }
 
+# Who reached Studio and Gen, and with what status (a failed login is a 401). Caddy never logs credentials: the
+# Authorization header shows as REDACTED, so a 401 says whether a login was sent, not what it was.
+(access) {
+	log {
+		output file /var/log/caddy/access.log {
+			roll_size 10MiB
+			roll_keep 5
+		}
+		format json
+	}
+}
+
 studio.${domain} {
+	import access
 	encode zstd gzip
 	# MCP for Claude anywhere (src/mcp-http.ts): the Studio MCP key instead of the login, as a bearer header or in the
 	# URL (/mcp/hs_...). Studio checks the key itself.
@@ -487,6 +500,7 @@ studio.${domain} {
 }
 
 gen.${domain} {
+	import access
 	encode zstd gzip
 	# Programs (Unity, scripts, other machines) use their own Hawkes Gen API key.
 	@apikey header_regexp Authorization ^Bearer\\s+hg_
