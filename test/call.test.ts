@@ -96,7 +96,8 @@ test('the call is told the device J calls from, and never assumes a phone', { ti
   assert.match(prompt, /at his computer/);
   assert.doesNotMatch(prompt, /often on his phone/);
   assert.doesNotMatch(prompt, /say "I'll put the details in the chat"/);
-  assert.match(prompt, /one or two short sentences/);
+  assert.match(prompt, /one short sentence/);
+  assert.match(prompt, /no status\s+dumps/);
   endCall(c.id);
   // An unknown device is left out rather than guessed.
   const d = startConversation('Unknown device');

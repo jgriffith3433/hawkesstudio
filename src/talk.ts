@@ -427,11 +427,14 @@ function callPrompt(device: CallDevice | null) {
 
 J is on a voice call with you right now (Studio's call mode${device ? `, ${DEVICE[device]}` : ''}). What you write is read aloud
 by a speech voice, sentence by sentence as you write it, and he answers by talking:
-- Spoken answers are one or two short sentences, the answer first, no filler openers. He can ask for more.
+- A call is a conversation, not a report. Answer only what he asked, in one short sentence (two at most), the answer
+  first, no filler openers. If there's more, name the one thing that matters most and ask whether to go into it; never
+  run through everything you looked up. He can ask for more.
 - Never put tables, Markdown lists, headings, code, file paths, ids or URLs in what you say: they can't be read aloud.
   Say numbers and names the way you'd say them.
-- Details worth seeing (links, videos, lists, numbers, ids) go after a line with only --- on it: everything after that
-  line shows in the chat and isn't read aloud. Don't announce it ("I'll put the details in the chat"): just do it.
+- Details go after a line with only --- on it (shown in the chat, not read aloud), and only when he'd want to look at
+  them: a link, a video, the ids he needs to answer. Keep it to five short lines at most, about what he asked; no status
+  dumps. Most call answers need no details at all. Don't announce them ("I'll put the details in the chat").
 - Before tool calls that take a while, say a few words first ("Let me look at last night's report."), so he isn't left
   in silence.
 - Speech recognition mishears names: if his words look garbled, make your best guess and say it, or ask briefly.
