@@ -5,6 +5,7 @@ import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 import { abs, localUrl, paths, DATA, type Product } from './config.ts';
 import { sandboxOn, sandboxSpawn } from './sandbox.ts';
+import { shareCmds } from './warm.ts';
 
 const WIN = process.platform === 'win32';
 /** A shell command, the platform's way (cmd on Windows, sh elsewhere). */
@@ -81,6 +82,7 @@ export async function serveDir(p: Product, dir: string, port: number) {
     if (fs.existsSync(main) && !sandboxOn()) fs.symlinkSync(main, path.join(dir, 'node_modules'), WIN ? 'junction' : 'dir');
     else await new Promise((resolve) => sandboxSpawn(...shell(installCmd(dir)),{ cwd: dir, stdio: 'ignore' }).on('close', resolve).on('error', resolve));
   }
+  if (p.local.serve === 'npm' && sandboxOn()) await shareDeps(dir);
   const out = fs.openSync(path.join(paths.logs, `serve-${p.id}-${port}.log`), 'a');
   const child = p.local.serve === 'npm'
     ? sandboxSpawn(...shell(`npm run dev -- --port ${port} --strictPort`), { cwd: dir, detached: true, stdio: ['ignore', out, out] })
@@ -94,6 +96,26 @@ export async function serveDir(p: Product, dir: string, port: number) {
   }
   stopServed(port);
   throw new Error(`The fixed version didn't start on :${port} (see .data/logs/serve-${p.id}-${port}.log)`);
+}
+
+/**
+ * A worktree's node_modules (and Vite's cache in it) belongs to the worktree's group before a sandboxed dev server
+ * starts, so Vite can rebuild its cache: worktrees warmed before the fix in warm.ts still have the donor's group.
+ * Quick when it's already right. Returns whether it changed anything.
+ */
+export async function shareDeps(dir: string) {
+  const nm = path.join(dir, 'node_modules');
+  let gid: number;
+  try {
+    if (fs.lstatSync(nm).isSymbolicLink()) return false;
+    gid = fs.statSync(dir).gid;
+    const wrong = (f: string) => { try { const st = fs.statSync(f); return st.gid !== gid || (st.mode & 0o070) !== 0o070; } catch { return false; } };
+    if (!wrong(nm) && !wrong(path.join(nm, '.vite')) && !wrong(path.join(nm, '.vite', 'deps'))) return false;
+  } catch {
+    return false;
+  }
+  for (const [cmd, args] of shareCmds(nm, gid)) await new Promise((resolve) => spawn(cmd, args, { stdio: 'ignore' }).on('close', resolve).on('error', resolve));
+  return true;
 }
 
 export function stopServed(port: number) {
