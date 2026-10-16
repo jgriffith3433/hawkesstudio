@@ -5,7 +5,8 @@ J's cockpit for every Hawkes product, and the daily loop:
 ```
 build (Unity, on the AWS build server) → playtest (a real browser, the game's own bot) → Claude reviews the footage
   → findings go to the backlog → the morning report → J and Claude talk it through → agents fix
-  → J approves into beta (the beta site, playtested) → J goes live (main = the live site)
+  → J approves into beta, or Talk's PM loop merges changes that pass their acceptance checks (J delegated it)
+  → J goes live (main = the live site)
 ```
 
 **The lanes** (`src/beta.ts`): agent branch → `beta` → `main`. Every repo agents change has a `beta` branch (made
@@ -91,6 +92,15 @@ the service detached; restart it after changing `src/`. The MCP server (`bin/stu
 - `studio_assets`, `studio_make_assets`
 - `studio_deploy_plan`, `studio_deploy` (also `action: merge-main | beta`), `studio_rollback`
 - `studio_dev_open`, `studio_dev_status` (also beta vs live), `studio_dev_stop`, `studio_dev_resolve`
+- `studio_roadmap`, `studio_roadmap_edit`, `studio_scout`, `studio_ready`, `studio_comments`, `studio_pm` (the PM loop)
+
+**Talk as J's PM** (`src/roadmap.ts`, `src/pm.ts`, `src/acceptance.ts`, `src/scout.ts`; docs/daily.md, "Running the
+studio with Talk"): J sets direction in Talk, Talk keeps the roadmap (items with acceptance criteria, tasks under them),
+and the PM loop works it with the agents: it starts tasks and the worst bugs within its caps, runs PM turns in the day's
+"Studio PM" conversation, merges into beta the changes that pass their acceptance gate (delegated merges, J's choice;
+never live, never Studio or Gen), revises the rest (3 tries, then J), resumes agents that asked a question with the
+answer, and marks a task verified only when its criteria pass on beta. Every decision is in the PM log with undo. Keep
+the gate (`gate()` in acceptance.ts) and "verified only on beta" intact when changing it; they are what lets J trust it.
 
 ## Layout
 
@@ -116,8 +126,13 @@ the service detached; restart it after changing `src/`. The MCP server (`bin/stu
 | `deploy/` | Server setup (`provision.mjs`, `deploy.mjs`: units, Caddy, DNS, keys), `hawkes-pull.mjs` (the server's pull-deploy), secrets and token helpers |
 | `src/talk.ts`, `dashboard/talk.js` | Talk: Claude Code on the server; streaming, stop, rename/delete, attachments (Gen blobs), Max-plan vs API marker, Studio's notices and the turns Studio starts to explain them (`studioSays`) |
 | `src/followup.ts` | Results back to Talk: the conversation a call came from (`X-Talk-Conversation`, sent by Talk's MCP server) is the origin of the changes and runs it starts; finished ones are posted into it (docs/cloud.md, "Talk") |
+| `src/roadmap.ts` | The roadmap (items, tasks, their statuses), comment threads, questions (agents' and J's decisions), the PM decision log |
+| `src/pm.ts` | The PM loop: task statuses from changes, beta checks and go lives; starting work within caps; PM turns; the merge gate, revisions, retries; questions for J; ready to test; undo |
+| `src/acceptance.ts` | Acceptance criteria judged from a playtest (yes/no/unclear with evidence) and the merge gate |
+| `src/scout.ts` | Scouts: a read-only Claude Code investigation in a worktree, reported back to Talk |
+| `dashboard/roadmap.js` | The Roadmap tab (items, tasks, threads, questions, PM switch, decision log) and Ready to test |
 | `src/activity.ts`, `dashboard/activity.js` | The Activity drawer (`GET /api/activity`): agents, runs and their steps, Gen jobs, Talk answers in progress |
-| `dashboard/` | Today (cards per product), Report, Playtests (`playtests.js`: every playtest with video, screenshots, timeline, review, visual changes, the previous run side by side, trends), Backlog, Runs |
+| `dashboard/` | Today (cards per product), Ready to test, Roadmap, Report, Playtests (`playtests.js`: every playtest with video, screenshots, timeline, review, visual changes, the previous run side by side, trends), Backlog, Runs |
 | `clients/web/hawkes-playtest.js` (+ `.d.ts`) | The contract helper web games copy |
 | `clients/unity/com.hawkes.playtest` | The contract for Unity games (runtime package + WebGL bridge) |
 | `.data/` | `studio.db` (runs, steps, findings), logs, local server state (gitignored) |

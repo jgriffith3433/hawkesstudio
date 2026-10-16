@@ -22,6 +22,7 @@ import { assetStatus, makeAsset } from './assets.ts';
 import { syncRepos, syncRepo, repoMap, betaFolders, isServer, BETA, BRANCH } from './repos.ts';
 import { betaLane, prepareBeta, playedLocal, resetBetaSite, saveBetaBuild, betaBuild, betaSiteDir, betaSiteFolder, betaPort, shaOf, repoDirs } from './beta.ts';
 import { notifyOnce } from './notify.ts';
+import { judgeCriteria } from './acceptance.ts';
 import { runGenJob, playtestExtras, playtestData, playtestRunMs, REVIEW_RUN_MS } from './playtests.ts';
 import { tagRun } from './followup.ts';
 
@@ -335,9 +336,9 @@ export async function testProduct(run: string, p: Product, platform: 'EditMode' 
 /**
  * Plays one scenario and (unless review is false) has Claude review it; adds findings to the backlog. mode (review.ts):
  * full (daily; regression-only once the scenario meets the product's quality bar), verify (beta runs, one-off checks),
- * regression (live checks).
+ * regression (live checks). criteria: a roadmap task's acceptance criteria, judged on this playtest.
  */
-export async function playtestProduct(run: string, p: Product, t: Playtest, { review = true, focus, mode = 'full' }: { review?: boolean; focus?: string; mode?: ReviewMode } = {}) {
+export async function playtestProduct(run: string, p: Product, t: Playtest, { review = true, focus, mode = 'full', criteria }: { review?: boolean; focus?: string; mode?: ReviewMode; criteria?: string[] } = {}) {
   const name = nameOf(t);
   const s = startStep(run, p.id, 'playtest', name, 'starting');
   let url: string;
@@ -399,7 +400,7 @@ export async function playtestProduct(run: string, p: Product, t: Playtest, { re
   const sameKey = `${t.where}:${sha}:${r.outcome}:${problemsKey}:${reviewMode}`;
   const prev = lastStep(p.id, 'review', name, run);
   const ageDays = prev ? (Date.now() - (prev.finished ?? 0)) / 86_400_000 : 99;
-  if (prev?.data?.reviewKey === sameKey && ageDays < 7 && !focus) {
+  if (prev?.data?.reviewKey === sameKey && ageDays < 7 && !focus && !criteria?.length) {
     const rs0 = startStep(run, p.id, 'review', name, 'unchanged since the last review');
     updateStep(rs0, { status: 'skipped', detail: `unchanged since the last review (${prev.data.verdict}); not reviewed again`, data: { ...prev.data, reviewKey: sameKey, reused: prev.id }, finished: true });
     return job;
@@ -408,6 +409,7 @@ export async function playtestProduct(run: string, p: Product, t: Playtest, { re
   const previous = lastStep(p.id, 'review', name, run)?.data ?? null;
   const rev = await runGenJob('playtest.review', p.id, reviewParams(p, job.id, reviewMode, {
     ...(focus ? { focus } : {}),
+    ...(criteria?.length ? { criteria } : {}),
     ...(previous ? { previous: { summary: previous.summary, verdict: previous.verdict, scores: previous.scores, findings: (previous.findings ?? []).map((f: any) => ({ severity: f.severity, title: f.title })) } } : {}),
   }), (j) => updateStep(rs, { job: j.id, detail: j.detail }), { runMs: REVIEW_RUN_MS });
   if (rev.status !== 'done') {
@@ -426,6 +428,11 @@ export async function playtestProduct(run: string, p: Product, t: Playtest, { re
     detail: `${v.verdict} · ${reviewMode}${bar?.met ? ' (meets its quality bar)' : ''} · ${(v.findings ?? []).length} findings (${parts.join(', ')})${p.quality ? ` · bar: ${v.meetsBar ?? '?'}` : ''}`,
     data: { ...v, added: merged.added, updated: merged.updated, ideas: merged.ideas, skipped: merged.skipped, knownFixed: known.fixed, knownPresent: known.present, reviewKey: sameKey, mode: reviewMode, sha: fullSha, barHash: barHash(p.quality), bar: bar?.why ?? null }, finished: true,
   });
+  // A roadmap task's acceptance criteria, judged on this playtest (the beta run after a merge; pm.ts reads them).
+  if (criteria?.length) {
+    const checks = await judgeCriteria(criteria, v, r);
+    db.prepare(`UPDATE steps SET data = json_set(data, '$.criteria', json(?)) WHERE id = ?`).run(J(checks), rs);
+  }
   // The playtest's own cost is tiny (local); attribute the review's.
   return job;
 }
@@ -456,7 +463,7 @@ export function startPartial(kind: 'build' | 'playtest' | 'test', productId: str
  * background. Its pre-deploy build is committed to beta, Unity builds beta, the beta site is rebuilt, and (on the
  * server) the first local scenario is playtested and reviewed.
  */
-export function startBeta(productId: string, { focus, origin }: { focus?: string; origin?: string | null } = {}) {
+export function startBeta(productId: string, { focus, origin, criteria, scenario }: { focus?: string; origin?: string | null; criteria?: string[]; scenario?: string } = {}) {
   const p = getProduct(productId);
   const id = newId('r');
   db.prepare('INSERT INTO runs (id, kind, status, detail, products, options, started) VALUES (?, ?, ?, ?, ?, ?, ?)').run(id, 'beta', 'running', `beta ${p.id}`, J([p.id]), J({ focus }), Date.now());
@@ -473,8 +480,9 @@ export function startBeta(productId: string, { focus, origin }: { focus?: string
       if (p.deploy?.prebuild) await prebuildBeta(id, p);
       if (p.build && lane) await buildProduct(id, p);
       else void import('./previews.ts').then(({ buildPreview }) => buildPreview(p.id)).catch(() => {});
-      const t = p.playtests.find((x) => x.where === 'local' && x.device !== 'phone');
-      if (lane && t) await playtestProduct(id, p, t, { focus, mode: 'verify' });
+      // A merged roadmap task: the scenario its agent wrote for its criteria, and the criteria judged again.
+      const t: Playtest | undefined = scenario ? { scenario, where: 'local' } : p.playtests.find((x) => x.where === 'local' && x.device !== 'phone');
+      if (lane && t) await playtestProduct(id, p, t, { focus, mode: 'verify', criteria });
       const cost = (db.prepare('SELECT COALESCE(SUM(cost), 0) AS c FROM steps WHERE run = ?').get(id) as any).c;
       const failed = (db.prepare(`SELECT COUNT(*) AS n FROM steps WHERE run = ? AND status = 'failed'`).get(id) as any).n;
       db.prepare(`UPDATE runs SET status = ?, detail = ?, finished = ?, cost = ? WHERE id = ?`).run(failed ? 'failed' : 'done', `beta ${p.id}${failed ? ' failed' : ''}`, Date.now(), cost, id);

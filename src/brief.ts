@@ -31,7 +31,17 @@ export async function morningBrief(runId: string, { force = false } = {}) {
   const changes = ready.length
     ? ready.map((c) => `- ${c.id} · ${c.product} · ${c.title}${c.verify?.verdict ? ` · verification: ${c.verify.verdict}` : ''}${c.verify?.preview ? ` · preview ${c.verify.preview}` : ''}`).join('\n')
     : '- none';
+  // The PM's side: roadmap items on beta for J to test, and the questions only he can answer.
+  const pm = await import('./pm.ts');
+  const { listQuestions } = await import('./roadmap.ts');
+  const readyNow = pm.readyReport();
+  const asks = listQuestions('asked J');
+  const readyLines = readyNow.length ? readyNow.map((r) => `- ${r.title} (${r.productName})${r.partly ? ', partly' : ''}: ${r.criteria.filter((c) => c.met === 'yes').length}/${r.criteria.length} criteria verified on beta, ${r.bugs.length} known bug(s)${r.beta ? `, try it: ${r.beta}` : ''}`).join('\n') : '- nothing yet';
   const prompt = `Morning brief for ${R.date} (daily run ${runId}). Headline: ${R.headline}.
+
+Ready for J to test (roadmap items on beta; details with studio_ready):
+${readyLines}
+Questions waiting for J: ${asks.length ? asks.map((q) => `${q.id}: ${q.text.slice(0, 160)}`).join(' | ') : 'none'}.
 
 Read the report with studio_report (run ${runId}); look at studio_changes if you need more on the changes below.
 Agent changes ready for J to approve:
@@ -42,7 +52,8 @@ J reads this on his phone. Reply with exactly five short bullets, under 130 word
 1. What broke (the worst problem, with the product).
 2. What else broke or got worse, or "nothing else".
 3. What got better.
-4. What's waiting for J: each ready agent change in a few words with its preview link, or "nothing to approve".
+4. What's waiting for J: what's ready for him to test (with the beta link) and any question only he can answer; then
+   ready agent changes the PM leaves to him, or "nothing waiting".
 5. One recommendation: the single most useful thing J could do today.
 ${cost ? `Then add this line exactly as written: ${cost}\n` : ''}No headings, no intro, no sign-off. Don't approve, merge, deploy or start anything.`;
 

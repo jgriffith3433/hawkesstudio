@@ -65,6 +65,81 @@ An uncapped reviewer with no memory finds new polish forever. So (Hawkes Gen `pl
   until the build changes meaningfully: 10+ files or 300+ changed lines in the source repo since (build output excluded),
   14 days, a review saying it no longer meets the bar, or J editing the bar. The review step's detail says which.
 
+## Running the studio with Talk
+
+J sets direction with Talk; Talk works it out with the agents; J comes back to test finished, verified work, with any
+bugs still open already listed. Code: `src/roadmap.ts` (the roadmap, comments, questions, the decision log),
+`src/pm.ts` (the PM loop), `src/acceptance.ts` (criteria judged from playtests), `src/scout.ts` (scouts),
+`dashboard/roadmap.js` (the Roadmap and Ready to test tabs).
+
+**1. J says "let's do X".** Talk answers from what it knows, or for "what would it take to...?" starts a **scout**
+(`studio_scout`: Claude Code, read-only, in a throwaway worktree of the product's beta; no edits, no pull request). The
+scout's report comes back into the conversation by itself. Talk proposes a **roadmap item** (goal, why, size S/M/L,
+acceptance criteria) with **tasks** in order (each one agent change, with its own criteria and what it depends on) and a
+rough cost. With J's yes it adds them (`studio_roadmap_edit`, status `planned`); they start by themselves.
+
+**2. The roadmap** (Roadmap tab, `studio_roadmap`):
+- item: `idea` (parked) → `planned` → `in progress` → `on beta` (every task verified on beta) → `live` → `done` | `dropped`
+- task: `idea` | `planned` → `working` (its agent change) → `needs answer` (the agent asked) → `review` (the change is
+  ready) → `merged` (into beta) → `verified` (its criteria pass on beta) → `live` | `failed` (after 3 tries) | `dropped`
+
+By hand an item is only idea, planned, done or dropped, and a task idea, planned (start, or retry from scratch) or
+dropped: everything else comes from the work and its checks.
+
+**3. Acceptance, not just merged.** Each task's criteria go into its agent's brief. Where the game has the playtest
+contract, the agent adds or extends a scenario that plays to them and names it in `.hawkes/scenario.txt`; Studio's
+verification playtest plays that scenario, the review judges the change, and each criterion is judged **yes / no /
+unclear** with evidence (Hawkes Gen's review when it judges `criteria`, else a Claude call over the review's frames, the
+playtest's events and log: about a cent). The agent also writes `.hawkes/try.md` (how J tries it). After the merge,
+beta's run plays the same scenario and judges the criteria again: the task is `verified` only when every one is met on
+beta. A criterion missed on beta starts a follow-up change on top of beta (it counts as a try).
+
+**4. The PM loop** (`src/pm.ts`, on the server; `STUDIO_PM=on` elsewhere). Every minute and right after anything finishes:
+- keeps task and item statuses current (from changes, beta checks and go lives)
+- starts the next planned tasks in roadmap order (dependencies merged first), then the worst open bugs (blockers, then
+  bugs seen most), within the caps: agents at once (`maxConcurrent`, default 2), agent starts per day
+  (`maxStartsPerDay`, 8), one change per product at a time. It starts nothing while a Studio or Gen deploy is waiting.
+- runs a **PM turn**: a Talk turn in the day's "Studio PM: <date>" conversation (`conversations.kind = 'pm'`) with what
+  came in (changes ready to review, agent questions, failures, beta checks, beta runs and go lives, the daily run) and
+  once a day after `dailyHour` (or the daily run) the triage. Claude acts through `studio_pm`: merges into beta what
+  meets its criteria, sends the rest back with specific notes (`maxTries`, default 3, then J), answers agents from what
+  J decided, triages the backlog (duplicates merged, polish below the bar won't-fix with a note, bugs linked to their
+  roadmap item), reorders the roadmap.
+- applies the **defaults** to whatever the turn left (or after `graceMinutes`, 15, with no turn): merge if the change
+  passes its **gate** (it was playtested, the review didn't call it broken, no criterion is "no"; "unclear" ones are
+  judged again on beta), else revise with the failures; a failed change restarts with what went wrong; an agent
+  question nobody answered goes to J.
+- The PM reviews roadmap tasks' changes and finding fixes. J's own requests (studio_task without a task), and every
+  Studio and Gen change, stay J's to approve.
+
+**5. Delegated merges** (`delegatedMerges`, default on: J chose it). The PM merges agent changes into beta itself
+(`approve` with `by: "Talk (PM)"`), only through the gate. Going live stays J's (`DEPLOY <product>`). Studio and Gen
+changes always need J's `MERGE <id>` (they restart the services).
+
+**6. Comments and questions.** Findings, items, tasks and changes have threads (`studio_comments`, the Thread buttons):
+J, Talk and agents write; an agent's brief includes its thread (its task, item, change and findings) when it starts and
+on every revision, and J's latest word wins. An agent that needs a real decision writes `.hawkes/question.md` and stops:
+its change goes to `needs answer` (its Claude Code session id is kept), Talk answers from what J decided or asks J, and
+the agent resumes the same session (`claude --resume`) with the answer.
+
+**7. Only real decisions reach J**: a direction choice, money (GPU servers, raising limits), something still failing
+after 3 tries, anything touching live. Each is one question (`askJ`) in the conversation where the work was planned
+(else a notice) and on his phone; it waits in the Roadmap tab's "Waiting for an answer" too. J answers in Talk (Talk
+records it with `studio_pm answer`, by "J") or in the box on the Roadmap tab.
+
+**8. Ready for you to test** (the Ready to test tab, `studio_ready`, `GET /api/ready`, and the morning brief): per
+roadmap item on beta, what changed (tasks, pull requests, the agents' summaries), which criteria were verified (with
+evidence and the beta playtest's video), how to try it (the beta link, the agents' steps) and the known open bugs (linked
+to the item, or new bugs of the product since its first merge). When an item reaches beta, J gets a phone notification
+and the conversation that planned it gets the report.
+
+**9. Guard rails.** The caps above (Max-plan usage), the **decision log** (Roadmap tab → "PM decision log",
+`studio_pm status`): every start, merge, revise, won't-fix, duplicate, link, answer, question for J, beta check and
+settings change, with **Undo** where possible (a merge is reverted on beta with a new commit; a start closes the change;
+triage restores the finding; settings go back). The **pause switch** (Roadmap tab, or `studio_pm settings { enabled:
+false }` on J's word) stops starts, merges and PM turns; statuses still follow what finishes. Settings: `.data/pm.json`
+(`POST /api/pm/settings`); state: `.data/pm-state.json`.
+
 ## The conversation (J and Claude, in the Claude app)
 
 1. Claude reads the report (`studio_report`) and the backlog and summarizes it: what broke, what's worth fixing,
@@ -180,8 +255,10 @@ J and agents build on beta together, live on the cloud server (`src/dev.ts`, `sr
 
 ## What only J does
 
-- Go live and roll back (they publish live sites, and need his typed words), approving agent changes into beta, and
-  money: launching servers, big generation batches.
+- Go live and roll back (they publish live sites, and need his typed words), and money: launching servers, big
+  generation batches, raising limits. Approving agent changes into beta is delegated to Talk's PM loop (through their
+  checks; J can turn that off); Studio and Gen changes stay his.
+- Direction: what goes on the roadmap (Talk proposes; J says yes), and the questions the PM passes to him.
 - Sign in to things: Unity Hub on the build server (once, over Remote Desktop), GitHub (`gh auth login`).
 - Taste: which findings matter, where each product is going.
 

@@ -217,6 +217,58 @@ const server = http.createServer(async (req, res) => {
     if (m && method === 'PATCH' && !m[2]) return send(res, 200, renameConversation(m[1], String((await readJson(req)).title ?? '')));
     if (m && method === 'DELETE' && !m[2]) { deleteConversation(m[1]); return send(res, 200, { ok: true }); }
 
+    // The roadmap, the PM loop, comments, questions, scouts and "ready for you to test" (roadmap.ts, pm.ts, scout.ts).
+    if (route.startsWith('/api/roadmap') || route.startsWith('/api/pm') || route.startsWith('/api/comments') || route.startsWith('/api/questions') || route.startsWith('/api/scouts') || route === '/api/ready') {
+      const rm = await import('./roadmap.ts');
+      const pm = await import('./pm.ts');
+      // Calls from Talk carry their conversation (X-Talk-Conversation): items remember where they were planned.
+      const talkFrom = /^t_[0-9a-f]{6,32}$/.test(String(req.headers['x-talk-conversation'] ?? '')) ? String(req.headers['x-talk-conversation']) : null;
+      const b = method === 'GET' ? {} : await readJson(req);
+      const by = typeof b.by === 'string' && b.by.trim() ? b.by.slice(0, 60) : talkFrom ? 'Talk' : 'J';
+      if (route === '/api/roadmap' && method === 'GET') return send(res, 200, { items: rm.listItems({ product: q('product'), status: q('status') }), statuses: { items: rm.ITEM_STATUSES, tasks: rm.TASK_STATUSES } });
+      if (route === '/api/roadmap/items' && method === 'POST') { const it = rm.addItem({ ...b, origin: b.origin ?? talkFrom, by }); pm.kick(); return send(res, 200, it); }
+      m = /^\/api\/roadmap\/items\/(i_[0-9a-f]+)$/.exec(route);
+      if (m && method === 'GET') return send(res, 200, rm.getItem(m[1]) ?? { error: 'no such item' });
+      if (m && method === 'PATCH') { const it = rm.updateItem(m[1], b); pm.kick(); return send(res, 200, it); }
+      if (route === '/api/roadmap/tasks' && method === 'POST') { const t = rm.addTask(b); pm.kick(); return send(res, 200, t); }
+      m = /^\/api\/roadmap\/tasks\/(k_[0-9a-f]+)$/.exec(route);
+      if (m && method === 'GET') return send(res, 200, rm.getTask(m[1]) ?? { error: 'no such task' });
+      if (m && method === 'PATCH') { const t = rm.updateTask(m[1], b); pm.kick(); return send(res, 200, t); }
+      if (route === '/api/comments' && method === 'GET') return send(res, 200, { comments: rm.commentsOn(...String(q('subject') ?? '').split(',')) });
+      if (route === '/api/comments' && method === 'POST') return send(res, 200, rm.addComment(String(b.subject), String(b.text ?? ''), by, b.kind === 'question' ? 'question' : 'comment'));
+      if (route === '/api/questions' && method === 'GET') return send(res, 200, { questions: rm.listQuestions(q('status') ?? 'open,asked J') });
+      m = /^\/api\/questions\/(q_[0-9a-f]+)\/(answer|ask-j)$/.exec(route);
+      if (m && m[2] === 'answer' && method === 'POST') return send(res, 200, await pm.answerQuestion(m[1], String(b.answer ?? ''), by));
+      if (m && m[2] === 'ask-j' && method === 'POST') {
+        const qn = rm.getQuestion(m[1]);
+        if (!qn) return send(res, 404, { error: 'no such question' });
+        rm.setQuestion(m[1], { status: 'asked J' });
+        const { getChange } = await import('./agents.ts');
+        const c = qn.subject?.startsWith('c_') ? getChange(qn.subject) : null;
+        return send(res, 200, pm.askJ(String(b.text || `An agent working on "${c?.title ?? qn.subject}" asks: ${qn.text}`), { subject: c?.task ?? qn.subject, product: qn.product, options: b.options, from: by }));
+      }
+      if (route === '/api/pm' && method === 'GET') return send(res, 200, await pm.pmStatus());
+      if (route === '/api/pm/settings' && method === 'POST') return send(res, 200, pm.savePmSettings(b, by));
+      if (route === '/api/pm/tick' && method === 'POST') { await pm.tick(); return send(res, 200, await pm.pmStatus()); }
+      if (route === '/api/pm/ask' && method === 'POST') return send(res, 200, pm.askJ(String(b.text ?? ''), { subject: b.subject, product: b.product, options: b.options, from: by }));
+      m = /^\/api\/pm\/(merge|revise)\/(c_[0-9a-f]+)$/.exec(route);
+      if (m && method === 'POST') return send(res, 200, m[1] === 'merge' ? await pm.pmMerge(m[2], String(b.why ?? ''), by === 'Talk' ? 'Talk (PM)' : by) : await pm.pmRevise(m[2], String(b.note ?? ''), by === 'Talk' ? 'Talk (PM)' : by));
+      m = /^\/api\/pm\/triage\/(f_[0-9a-f]+)$/.exec(route);
+      if (m && method === 'POST') return send(res, 200, pm.triageFinding(m[1], b.action, { note: b.note, of: b.of, item: b.item, by: by === 'Talk' ? 'Talk (PM)' : by }));
+      m = /^\/api\/pm\/undo\/(d_[0-9a-f]+)$/.exec(route);
+      if (m && method === 'POST') return send(res, 200, await pm.undoDecision(m[1], by));
+      if (route === '/api/ready' && method === 'GET') {
+        const ready = pm.readyReport({ product: q('product') });
+        return send(res, 200, { ready, markdown: ready.map(pm.readyMarkdown).join('\n\n---\n\n') || 'Nothing on beta waiting for J to test.' });
+      }
+      const sc = await import('./scout.ts');
+      if (route === '/api/scouts' && method === 'GET') return send(res, 200, { scouts: sc.listScouts() });
+      if (route === '/api/scouts' && method === 'POST') return send(res, 200, sc.startScout(String(b.product), String(b.question ?? ''), talkFrom));
+      m = /^\/api\/scouts\/(x_[0-9a-f]+)$/.exec(route);
+      if (m && method === 'GET') return send(res, 200, sc.getScout(m[1]) ?? { error: 'no such scout' });
+      return send(res, 404, { error: `No route ${method} ${route}` });
+    }
+
     // Agent changes (findings -> pull requests).
     if (route === '/api/changes' && method === 'GET') return send(res, 200, { changes: listChanges({ status: q('status'), product: q('product') }), today: costToday(), settings: agentSettings() });
     if (route === '/api/changes' && method === 'POST') {
@@ -225,6 +277,12 @@ const server = http.createServer(async (req, res) => {
       const change = b.request ? startTask(String(b.product), String(b.request)) : startFix(String(b.product), Array.isArray(b.findings) ? b.findings.map(String) : [String(b.finding)]);
       tagChange(change, origin, by);
       return send(res, 200, { ok: true, change });
+    }
+    m = /^\/api\/changes\/(c_[0-9a-f]+)\/answer$/.exec(route);
+    if (m && method === 'POST') {
+      const b = await readJson(req);
+      const { answerChange } = await import('./agents.ts');
+      return send(res, 200, answerChange(m[1], String(b.answer ?? ''), b.by ?? 'J'));
     }
     m = /^\/api\/changes\/(c_[0-9a-f]+)(?:\/(approve|revise|close))?$/.exec(route);
     if (m && method === 'GET' && !m[2]) return send(res, 200, getChange(m[1]) ?? { error: 'no such change' });
@@ -372,6 +430,8 @@ server.listen(PORT, '127.0.0.1', () => {
   startDevService();
   // Results of work Talk started go back into its conversation.
   startFollowups();
+  // The PM loop (pm.ts): on the server, or on J's PC with STUDIO_PM=on.
+  if ((process.platform !== 'win32' && process.env.STUDIO_SERVER === '1') || process.env.STUDIO_PM === 'on') void import('./pm.ts').then(({ startPm }) => startPm());
   // Findings recreated after J marked a matching one won't-fix (before the backlog matched those) go back to it.
   void import('./backlog.ts').then(({ foldIntoWontfix, moveOldPolishToIdeas, expireIdeas }) => {
     const n = foldIntoWontfix();

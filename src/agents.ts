@@ -40,6 +40,8 @@ import { claudeEnv } from './claude.ts';
 import { buildPreview, removePreview, previewUrl, changeSiteDir, changeBuild, type ChangeBuild } from './previews.ts';
 import { BETA, ensureBeta } from './beta.ts';
 import { notify, notifyOnce, PUBLIC_URL } from './notify.ts';
+import { threadFor } from './roadmap.ts';
+import { judgeCriteria } from './acceptance.ts';
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS changes (
@@ -52,11 +54,15 @@ db.exec(`
 try { db.exec('ALTER TABLE changes ADD COLUMN request TEXT'); } catch { /* already there */ }
 // The Talk conversation that started it (results report there, followup.ts), whether it was told, and who started it.
 for (const col of ['origin', 'told', 'started_by']) try { db.exec(`ALTER TABLE changes ADD COLUMN ${col} TEXT`); } catch { /* already there */ }
+// A roadmap task's change (roadmap.ts): the task, its acceptance criteria, the agent's session (to resume after a question), what the PM saw.
+for (const col of ['task', 'criteria', 'session', 'pm_seen']) try { db.exec(`ALTER TABLE changes ADD COLUMN ${col} TEXT`); } catch { /* already there */ }
 
 export type Change = {
   id: string; product: string; findings: string[]; status: string; detail: string | null; repo: string; slug: string; branch: string; base: string;
   worktree: string; request: string | null; pr: number | null; pr_url: string | null; title: string | null; summary: string | null; commits: string[]; diffstat: string | null;
   verify: any; notes: { at: number; by: string; text: string }[]; log: string[]; cost: number; created: number; updated: number | null;
+  /** The roadmap task it works on (roadmap.ts), its acceptance criteria, and the agent's Claude Code session (to resume after a question). */
+  task: string | null; criteria: string[]; session: string | null;
   /** A change to Hawkes Studio or Hawkes Gen (a pull request into main, which deploys itself), not a product. */
   infra: boolean;
 };
@@ -77,7 +83,7 @@ export function saveAgentSettings(patch: Partial<AgentSettings>) {
   return next;
 }
 
-const toChange = (r: any): Change => ({ ...r, infra: isInfra(r.product), findings: parse(r.findings) ?? [], commits: parse(r.commits) ?? [], verify: parse(r.verify), notes: parse(r.notes) ?? [], log: parse(r.log) ?? [] });
+const toChange = (r: any): Change => ({ ...r, infra: isInfra(r.product), criteria: parse(r.criteria) ?? [], findings: parse(r.findings) ?? [], commits: parse(r.commits) ?? [], verify: parse(r.verify), notes: parse(r.notes) ?? [], log: parse(r.log) ?? [] });
 export const getChange = (id: string) => {
   const r = db.prepare('SELECT * FROM changes WHERE id = ?').get(id);
   return r ? toChange(r) : null;
@@ -93,8 +99,8 @@ function update(id: string, patch: Partial<Record<string, any>>) {
   const cur = db.prepare('SELECT * FROM changes WHERE id = ?').get(id) as any;
   const next: any = { ...cur, ...patch, updated: Date.now() };
   for (const k of ['findings', 'commits', 'verify', 'notes', 'log']) if (patch[k] !== undefined) next[k] = J(patch[k]);
-  db.prepare(`UPDATE changes SET status=?, detail=?, pr=?, pr_url=?, title=?, summary=?, commits=?, diffstat=?, verify=?, notes=?, log=?, cost=?, updated=? WHERE id=?`)
-    .run(next.status, next.detail, next.pr, next.pr_url, next.title, next.summary, next.commits, next.diffstat, next.verify, next.notes, next.log, next.cost, next.updated, id);
+  db.prepare(`UPDATE changes SET status=?, detail=?, pr=?, pr_url=?, title=?, summary=?, commits=?, diffstat=?, verify=?, notes=?, log=?, cost=?, session=?, updated=? WHERE id=?`)
+    .run(next.status, next.detail, next.pr, next.pr_url, next.title, next.summary, next.commits, next.diffstat, next.verify, next.notes, next.log, next.cost, next.session ?? null, next.updated, id);
 }
 function addLog(id: string, line: string) {
   const c = getChange(id)!;
@@ -154,6 +160,7 @@ async function writeBrief(c: Change, p: Product, findings: any[], note?: string)
       }
     }
   }
+  const thread = threadFor(c);
   const checks = (p.checks ?? []).map((k) => `- \`${k.cmd}\` (in ${k.dir === p.repo ? 'the repo root' : k.dir})`).join('\n') || '- (none listed: at least make sure it builds or loads)';
   const sub = repoFor(p).sub;
   const brief = `# ${c.request ? 'Work' : 'Fix'} for ${p.name}
@@ -168,6 +175,25 @@ ${c.request}
 Work out what that means in this project (read the story doc and AGENTS.md), make it well, and keep it consistent with
 the product's tone and style. If it's too big for one change, do a solid first part and say what's left in the summary.
 
+` : ''}${c.criteria.length ? `## Acceptance criteria (how this is judged)
+
+The change is merged into beta only when a playtest of it shows every one of these, and it is done only when they also
+pass on beta:
+${c.criteria.map((k, i) => `${i + 1}. ${k}`).join('\n')}
+
+Where the game implements the playtest contract (\`window.hawkesPlaytest\`: see this project's AGENTS.md, and the spec
+at \`hawkesstudio/docs/playtest.md\` next to this repository), add or extend a scenario that plays to what the criteria
+describe (through real input, no teleporting; named setup shortcuts are fine) and logs events or checks that show each
+one, so the review can judge them from the footage and the timeline. Write that scenario's name (one line, e.g.
+\`checkout\`) in \`.hawkes/scenario.txt\`: Studio's verification playtest, and beta's, play it. Without a contract, make
+sure each criterion can be seen when the page is played.
+
+` : ''}${thread.length ? `## The thread (J, Talk and agents on this work; newest last)
+
+${thread.map((m) => `- ${m.by}${m.kind !== 'comment' ? ` (${m.kind})` : ''}, ${new Date(m.at).toISOString().slice(0, 16).replace('T', ' ')}: ${m.text}`).join('\n')}
+
+Follow what J said there; where it differs from the request, J's latest word wins.
+
 ` : ''}${findings.length ? `## The finding${findings.length > 1 ? 's' : ''}` : ''}
 
 ${findings.map((f) => `### [${f.severity}] ${f.title}
@@ -175,7 +201,7 @@ ${findings.map((f) => `### [${f.severity}] ${f.title}
 - What's wrong: ${f.detail ?? '-'}
 - Suggested fix: ${f.fix ?? '-'}
 - Screenshots: ${(shots.filter((s) => s.includes(f.id)).map((s) => `\`${s}\``).join(', ')) || 'none'}`).join('\n\n')}
-${note ? `\n## J's note on the last attempt\n\n${note}\n` : ''}
+${note ? `\n## Notes on the last attempt (J's or the PM's)\n\n${note}\n` : ''}
 ## How to work
 
 1. Read \`AGENTS.md\` (and any docs it points to) before changing anything. Follow its rules.
@@ -187,6 +213,12 @@ ${checks}
 5. Commit your change with a clear message (\`Fix: ...\`). Don't push; Studio does.
 6. Write \`.hawkes/summary.md\`: what was wrong, what you changed (files), how you checked it, and anything J should
    look at. If you couldn't fix it, explain why there instead, and don't commit.
+7. Write \`.hawkes/try.md\`: how J tries it on the beta site, in two to five short steps a player would follow (where to
+   go, what to press, what he should see).
+8. If you can't go on without a decision that the request, the criteria and the thread don't settle (a real direction
+   choice, not a detail you can decide well yourself), write ONE clear question to \`.hawkes/question.md\` (the options
+   you see and the one you'd pick), commit nothing, and stop. Studio gets you the answer and you continue in this same
+   session.
 
 ## The product's story (for tone and intent)
 
@@ -198,10 +230,11 @@ ${storyOf(p, 6000)}
 
 // ------------------------------------------------------------------ agent
 
-function runAgent(c: Change, briefFile: string, s: AgentSettings, env = claudeEnv()): Promise<{ ok: boolean; cost: number; result: string }> {
+function runAgent(c: Change, briefFile: string, s: AgentSettings, env = claudeEnv(), resume?: { session: string; prompt: string }): Promise<{ ok: boolean; cost: number; result: string }> {
   return new Promise((resolve) => {
-    const prompt = `Read ${path.relative(c.worktree, briefFile).replace(/\\/g, '/')} and do what it says. It's your whole task.`;
+    const prompt = resume?.prompt ?? `Read ${path.relative(c.worktree, briefFile).replace(/\\/g, '/')} and do what it says. It's your whole task.`;
     const args = [
+      ...(resume ? ['--resume', resume.session] : []),
       '-p', prompt, '--output-format', 'stream-json', '--verbose', '--model', s.model, '--max-turns', String(s.maxTurns),
       '--permission-mode', 'acceptEdits',
       '--allowedTools', 'Read,Edit,Write,Glob,Grep,TodoWrite,Bash(git status:*),Bash(git diff:*),Bash(git add:*),Bash(git commit:*),Bash(git log:*),Bash(npm:*),Bash(npx:*),Bash(node:*),Bash(ls:*),Bash(cat:*)',
@@ -220,6 +253,8 @@ function runAgent(c: Change, briefFile: string, s: AgentSettings, env = claudeEn
         buf = buf.slice(i + 1);
         try {
           const m = JSON.parse(line);
+          // Its session id, so a question can be answered in the same session (claude --resume).
+          if (m.type === 'system' && m.session_id && getChange(c.id)?.session !== m.session_id) update(c.id, { session: m.session_id });
           if (m.type === 'assistant') {
             for (const part of m.message?.content ?? []) {
               if (part.type === 'text' && part.text.trim()) addLog(c.id, `agent: ${part.text.trim().slice(0, 300)}`);
@@ -261,7 +296,7 @@ export function costToday() {
 }
 
 /** Starts an agent on something J asked for (a feature, a change, a tweak): a branch, a pull request, a preview. */
-export function startTask(productId: string, request: string) {
+export function startTask(productId: string, request: string, { criteria = [], task = null, title }: { criteria?: string[]; task?: string | null; title?: string } = {}) {
   const s = agentSettings();
   if (!s.enabled) throw new Error('Agent workers are turned off (settings).');
   // Studio and Gen themselves: a pull request into main (they have no beta lane).
@@ -275,7 +310,8 @@ export function startTask(productId: string, request: string) {
   const id = newId('c');
   const words = request.toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 40).replace(/^-|-$/g, '');
   db.prepare('INSERT INTO changes (id, product, findings, status, detail, repo, slug, branch, base, worktree, title, request, notes, log, created) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
-    .run(id, target.id, '[]', 'queued', 'queued (J asked)', top, slug, `task/${id.slice(2)}-${words}`, inf ? 'main' : BETA, path.join(WORK(), id), request.split(String.fromCharCode(10))[0].slice(0, 120), request, '[]', '[]', Date.now());
+    .run(id, target.id, '[]', 'queued', task ? 'queued by the PM (a roadmap task)' : 'queued (J asked)', top, slug, `task/${id.slice(2)}-${words}`, inf ? 'main' : BETA, path.join(WORK(), id), (title ?? request.split(String.fromCharCode(10))[0]).slice(0, 120), request, '[]', '[]', Date.now());
+  db.prepare('UPDATE changes SET task = ?, criteria = ? WHERE id = ?').run(task, J(criteria), id);
   void pump();
   return id;
 }
@@ -319,14 +355,14 @@ async function pump() {
   }
 }
 
-async function work(id: string, note?: string) {
+async function work(id: string, note?: string, answer?: string) {
   if (getChange(id)!.infra) return workInfra(id, note);
   let c = getChange(id)!;
   const p = getProduct(c.product);
   const s = agentSettings();
   const repoDir = path.join(PROJECTS, c.repo);
   try {
-    update(id, { status: note ? 'revising' : 'working', detail: 'preparing the worktree' });
+    update(id, { status: note || answer ? 'revising' : 'working', detail: 'preparing the worktree' });
     if (!fs.existsSync(c.worktree)) {
       fs.mkdirSync(WORK(), { recursive: true });
       // Agent branches start from beta (made from main the first time: pushing beta deploys nothing).
@@ -344,28 +380,46 @@ async function work(id: string, note?: string) {
     const findings = c.findings.map((f) => getFinding(f)).filter((f): f is NonNullable<typeof f> => Boolean(f));
     const brief = await writeBrief(c, p, findings, note);
     update(id, { detail: 'Claude is working on it' });
-    addLog(id, `agent started (${s.model})`);
     const before = git(c.worktree, ['rev-parse', 'HEAD']).out;
-    const r = await runAgent(getChange(id)!, brief, s);
+    // An answer to the agent's question continues its own session (claude --resume); anything else starts a new one.
+    const questionFile = path.join(c.worktree, '.hawkes', 'question.md');
+    fs.rmSync(questionFile, { force: true });
+    const resume = answer && c.session
+      ? { session: c.session, prompt: `The answer to your question:\n\n${answer}\n\nContinue the task in .hawkes/brief.md (rewritten with the latest thread) and finish it the way it says.` }
+      : undefined;
+    addLog(id, resume ? `agent resumed its session with the answer (${s.model})` : `agent started (${s.model})`);
+    const r = await runAgent(getChange(id)!, brief, s, claudeEnv(), resume);
     c = getChange(id)!;
     update(id, { cost: c.cost + r.cost });
     const summaryFile = path.join(c.worktree, '.hawkes', 'summary.md');
     const summary = fs.existsSync(summaryFile) ? fs.readFileSync(summaryFile, 'utf8').trim() : r.result;
     const commits = git(c.worktree, ['log', '--format=%h %s', `origin/${c.base}..HEAD`]).out.split('\n').filter(Boolean);
     const changedNow = git(c.worktree, ['rev-parse', 'HEAD']).out !== before;
-    if (!commits.length || (note && !changedNow)) {
+    // The agent asked a question: the change waits ("needs answer"); Talk answers from what J decided, or asks J (pm.ts).
+    const question = fs.existsSync(questionFile) ? fs.readFileSync(questionFile, 'utf8').trim() : '';
+    if (question) {
+      update(id, { status: 'needs answer', detail: `the agent asks: ${question.split('\n')[0].slice(0, 200)}`, summary, commits });
+      addLog(id, `question: ${question.slice(0, 300)}`);
+      const { addQuestion, addComment } = await import('./roadmap.ts');
+      addComment(c.task ?? id, question.slice(0, 4000), 'agent', 'question');
+      addQuestion({ kind: 'agent', subject: id, product: c.product, text: question });
+      return;
+    }
+    if (!commits.length || (note && !changedNow && !c.task)) {
       update(id, { status: 'failed', detail: 'the agent made no commit', summary, commits });
       for (const f of findings) updateFinding(f.id, { status: 'open', note: `agent ${id} couldn't fix it: ${summary.slice(0, 200)}` });
       return;
     }
+    if ((note || answer) && !changedNow) addLog(id, 'no new commit this pass; checking the branch again');
     const diffstat = git(c.worktree, ['diff', '--shortstat', `origin/${c.base}...HEAD`]).out;
     update(id, { summary, commits, diffstat, detail: 'pushing and opening the pull request' });
 
     // Push and open (or update) the pull request.
-    const push = git(c.worktree, ['push', '--quiet', '-u', 'origin', `HEAD:${c.branch}`, ...(note ? ['--force-with-lease'] : [])]);
+    const push = git(c.worktree, ['push', '--quiet', '-u', 'origin', `HEAD:${c.branch}`, ...(note || answer ? ['--force-with-lease'] : [])]);
     if (!push.ok) throw new Error(`push failed: ${push.err}`);
     c = getChange(id)!;
-    const body = `${summary}\n\n---\n**Findings** (Hawkes Studio playtest review):\n${findings.map((f: any) => `- [${f.severity}] ${f.title} (${f.id}, seen ${f.seen}×)`).join('\n')}\n\nMade by a Hawkes Studio agent. Approving it in Studio merges it into ${c.base} (the beta site, not live); going live is a separate step.\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)`;
+    const criteriaMd = c.criteria.length ? `\n\n**Acceptance criteria:**\n${c.criteria.map((k) => `- ${k}`).join('\n')}` : '';
+    const body = `${summary}${criteriaMd}\n\n---\n**Findings** (Hawkes Studio playtest review):\n${findings.map((f: any) => `- [${f.severity}] ${f.title} (${f.id}, seen ${f.seen}×)`).join('\n')}\n\nMade by a Hawkes Studio agent. Approving it in Studio merges it into ${c.base} (the beta site, not live); going live is a separate step.\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)`;
     if (!c.pr) {
       const pr = await github(`/repos/${c.slug}/pulls`, { method: 'POST', body: { title: c.title, head: c.branch, base: c.base, body, draft: false } });
       update(id, { pr: pr.number, pr_url: pr.html_url });
@@ -377,13 +431,17 @@ async function work(id: string, note?: string) {
 
     // Verify: play the finding's scenario on the fixed version (web: the worktree; Unity: a build of the branch).
     update(id, { status: 'verifying', detail: 'playtesting the fix' });
-    const verify = await verifyChange(getChange(id)!, p, findings);
+    const verify: any = await verifyChange(getChange(id)!, p, findings);
     // A preview J can open: <product>.hawkesgen.com/c/<id>/
     const pv = await buildPreview(p.id, { change: id, dir: c.worktree }).catch((e: any) => ({ status: 'failed', detail: e.message }) as any);
     const preview = pv?.status === 'ready' ? previewUrl(p.id, id) : null;
     if (preview) addLog(id, `preview: ${preview}`);
-    update(id, { status: 'ready', detail: `${verify ? `${verify.outcome ?? '?'} · review: ${verify.verdict ?? 'n/a'}` : 'ready (not playtested: needs a build)'}${preview ? ` · preview ${preview}` : ''}`, verify: { ...(verify ?? {}), preview } });
-    // No phone notification (J's rule: only when something went wrong or a milestone is reached): Talk reports it.
+    const tryFile = path.join(c.worktree, '.hawkes', 'try.md');
+    const howTo = fs.existsSync(tryFile) ? fs.readFileSync(tryFile, 'utf8').trim().slice(0, 2000) : null;
+    const met = verify?.criteria?.length ? ` · criteria ${verify.criteria.filter((k: any) => k.met === 'yes').length}/${verify.criteria.length} met` : '';
+    update(id, { status: 'ready', detail: `${verify ? `${verify.outcome ?? '?'} · review: ${verify.verdict ?? 'n/a'}${met}` : 'ready (not playtested: needs a build)'}${preview ? ` · preview ${preview}` : ''}`, verify: { ...(verify ?? {}), preview, try: howTo } });
+    // No phone notification (J's rule: only when something went wrong or a milestone is reached): Talk reports it,
+    // and a roadmap task's change is the PM's to review (pm.ts).
   } catch (e: any) {
     addLog(id, `error: ${e.message}`);
     update(id, { status: 'failed', detail: String(e.message).slice(0, 300) });
@@ -456,20 +514,31 @@ async function verifyChange(c: Change, p: Product, findings: any[]) {
   } else {
     dir = path.join(c.worktree, repoFor(p).sub, path.relative(p.repo, p.local.dir));
   }
-  const scenario = findings.map((f: any) => f.scenario).find((s: string) => s && s.endsWith('@local'))?.split('@')[0] ?? (p.playtests.find((t) => t.where === 'local')?.scenario ?? 'smoke');
-  const mode = p.playtests.find((t) => t.where === 'local' && (t.scenario ?? t.mode) === scenario)?.mode;
+  // The scenario the agent added or extended for its criteria (.hawkes/scenario.txt), else the finding's, else the first.
+  const agentScenario = (() => {
+    try {
+      return /^[\w.-]{1,60}$/.exec(fs.readFileSync(path.join(c.worktree, '.hawkes', 'scenario.txt'), 'utf8').trim().split('\n')[0].trim())?.[0];
+    } catch {
+      return undefined;
+    }
+  })();
+  const scenario = agentScenario ?? findings.map((f: any) => f.scenario).find((s: string) => s && s.endsWith('@local'))?.split('@')[0] ?? (p.playtests.find((t) => t.where === 'local')?.scenario ?? 'smoke');
+  const mode = agentScenario ? undefined : p.playtests.find((t) => t.where === 'local' && (t.scenario ?? t.mode) === scenario)?.mode;
   const port = 8800 + (parseInt(c.id.slice(2, 6), 16) % 200);
   const url = await serveDir(p, dir, port);
   try {
     const run = await genRun('playtest.run', p.id, { url, mode: mode ?? (p.contract ? 'contract' : 'auto'), ...(mode ? {} : { scenario }), ...(mode === 'site' ? { maxPages: 40 } : {}) });
     if (run.status !== 'done') return { outcome: 'failed', error: run.error, playtest: run.id, build };
     // A verify review (review.ts): did the change work (it says by id whether the findings look fixed), did anything regress.
+    // A roadmap task's acceptance criteria go with it and are judged one by one (acceptance.ts).
     const rev = await genRun('playtest.review', p.id, reviewParams(p, run.id, 'verify', {
-      focus: c.request ? `This is a proposed change J asked for: "${c.request.slice(0, 1500)}". Say clearly whether it does that well, and whether anything got worse.` : `This is a proposed fix for: ${findings.map((f: any) => `"${f.title}" (${f.detail})`).join('; ')}. Say clearly whether it is fixed, and whether anything got worse.`,
+      ...(c.criteria.length ? { criteria: c.criteria } : {}),
+      focus: c.request ? `This is a proposed change J asked for: "${c.request.slice(0, 1500)}". Say clearly whether it does that well, and whether anything got worse.${c.criteria.length ? ` Judge each acceptance criterion: ${c.criteria.map((k, i) => `(${i + 1}) ${k}`).join(' ')}` : ''}` : `This is a proposed fix for: ${findings.map((f: any) => `"${f.title}" (${f.detail})`).join('; ')}. Say clearly whether it is fixed, and whether anything got worse.`,
     }));
     const v = rev.result ?? {};
     const video = run.outputs?.find((o: any) => o.kind === 'video')?.asset ?? null;
-    return { outcome: run.result?.outcome, playtest: run.id, review: rev.id, verdict: v.verdict, changeWorked: v.changeWorked, known: v.known ?? [], summary: v.summary, scores: v.scores, findings: (v.findings ?? []).slice(0, 8), video, url: localUrl(p), build };
+    const criteria = c.criteria.length ? await judgeCriteria(c.criteria, v, run.result, c.summary) : undefined;
+    return { outcome: run.result?.outcome, scenario, playtest: run.id, review: rev.id, verdict: v.verdict, changeWorked: v.changeWorked, known: v.known ?? [], summary: v.summary, scores: v.scores, findings: (v.findings ?? []).slice(0, 8), video, url: localUrl(p), build, ...(criteria ? { criteria } : {}) };
   } finally {
     stopServed(port);
   }
@@ -819,7 +888,8 @@ export async function approve(id: string, { confirm, by = 'J', origin }: { confi
   for (const f of c.findings) updateFinding(f, { status: 'fixed', note: `merged into ${BETA} in ${c.pr_url} (goes live with the next deploy)` });
   await cleanup(id, { deleteBranch: true });
   // Beta moved: its pre-deploy build, its build (Unity), the beta site and a local playtest of it follow, in the background.
-  void import('./pipeline.ts').then(({ startBeta }) => startBeta(c.product, { focus: `Just merged into beta: ${c.title}. Check it works and nothing regressed.`, origin })).catch((e) => console.warn(`[studio] beta after ${id}: ${e.message ?? e}`));
+  // A roadmap task's criteria are judged again on beta, on the scenario its agent wrote for them.
+  void import('./pipeline.ts').then(({ startBeta }) => startBeta(c.product, { focus: `Just merged into beta: ${c.title}. Check it works and nothing regressed.`, origin, criteria: c.criteria, scenario: c.verify?.scenario })).catch((e) => console.warn(`[studio] beta after ${id}: ${e.message ?? e}`));
   return getChange(id);
 }
 
@@ -832,6 +902,21 @@ export function revise(id: string, note: string, by = 'J') {
   running.add(id);
   // When it's done, the queue goes on (a revision holds a slot like any change).
   void work(id, note).finally(() => {
+    running.delete(id);
+    void pump();
+  });
+  return getChange(id);
+}
+
+/** The answer to an agent's question (from J, or Talk from what J decided): the agent resumes its own session. */
+export function answerChange(id: string, answer: string, by = 'J') {
+  const c = getChange(id);
+  if (!c) throw new Error('No such change');
+  if (c.status !== 'needs answer') throw new Error(`The change is ${c.status}, not waiting for an answer`);
+  if (!answer.trim()) throw new Error('Say the answer');
+  update(id, { status: 'queued', detail: 'answered; the agent continues', notes: [...c.notes, { at: Date.now(), by, text: `answer: ${answer.slice(0, 500)}` }] });
+  running.add(id);
+  void work(id, undefined, `${by}: ${answer}`).finally(() => {
     running.delete(id);
     void pump();
   });

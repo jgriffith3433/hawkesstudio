@@ -164,11 +164,12 @@ export function studioMcp({ studio, waitRun }: Client = { studio: defaultStudio,
     {
       name: 'studio_change',
       description: 'One agent change in detail (summary, commits, verify playtest, notes, the last log lines), or act on it: revise (the agent tries again with a note), close (close the PR), approve (merge the PR into beta: the beta site, not live; ONLY after J approves in chat; confirm must be exactly "MERGE <change id>"). Going live is studio_deploy_plan, then studio_deploy. A Hawkes Studio or Hawkes Gen change (infra: true) has "Checks" instead of a playtest (CI on the pull request, the tests, a smoke check); approve merges it into main, which deploys that service itself once CI passes (a restart; refused unless CI is green).',
-      inputSchema: obj({ id: str('Change id (c_...)'), action: str('revise | close | approve (optional)'), note: str('For revise: what to change'), confirm: str('For approve: exactly "MERGE <id>" after J said yes') }, ['id']),
+      inputSchema: obj({ id: str('Change id (c_...)'), action: str('revise | close | approve | answer (optional)'), note: str('For revise: what to change; for answer: what J answered to the agent question'), confirm: str('For approve: exactly "MERGE <id>" after J said yes') }, ['id']),
       run: async ({ id, action, note, confirm }) => {
         if (action === 'approve') return studio(`/api/changes/${id}/approve`, { method: 'POST', body: { confirm, by: 'J (via Claude)' } });
         if (action === 'revise') return studio(`/api/changes/${id}/revise`, { method: 'POST', body: { note, by: 'J (via Claude)' } });
         if (action === 'close') return studio(`/api/changes/${id}/close`, { method: 'POST', body: { by: 'J (via Claude)' } });
+        if (action === 'answer') return studio(`/api/changes/${id}/answer`, { method: 'POST', body: { answer: note, by: 'J (via Claude)' } });
         const c = await studio(`/api/changes/${id}`);
         return { ...c, log: c.log?.slice(-30) };
       },
@@ -235,6 +236,77 @@ export function studioMcp({ studio, waitRun }: Client = { studio: defaultStudio,
       description: 'Rolls a product\'s live site back to what was live before its last go live: a new commit on main with that commit\'s files (never a force push); Studio then playtests live. Without confirm it returns the rollback plan (read-only): what\'s live now, what it goes back to, the commits undone. ONLY roll back after J has seen the plan and said yes in chat; confirm must be exactly "ROLLBACK <product id>".',
       inputSchema: obj({ product: str('Product id'), confirm: str('Exactly "ROLLBACK <product id>", after J approved (omit for the plan)') }, ['product']),
       run: async ({ product, confirm }) => (confirm ? studio(`/api/rollback/${product}`, { method: 'POST', body: { confirm, by: 'J (via Claude)' } }) : studio(`/api/rollback/${product}`)),
+    },
+    {
+      name: 'studio_roadmap',
+      description: 'The roadmap: per product, items (a goal J wants, with why, acceptance criteria, size S/M/L, status idea -> planned -> in progress -> on beta -> live -> done | dropped, order) and the tasks under each (one agent change each: request, acceptance criteria, depends on, status idea | planned | working | needs answer | review | merged | verified | live | failed | dropped, its change and pull request, tries, the latest per-criterion checks). Planned tasks of planned items start by themselves, in order. Read-only; edit with studio_roadmap_edit.',
+      inputSchema: obj({ product: str('Product id (optional)'), status: str('Item statuses, comma list (default all but dropped)'), item: str('One item (i_...) in detail') }),
+      run: async ({ product, status, item }) => {
+        if (item) return studio(`/api/roadmap/items/${item}`);
+        const r = await studio(`/api/roadmap?${new URLSearchParams({ ...(product ? { product } : {}), ...(status ? { status } : {}) })}`);
+        return r.items.map((it: any) => ({ ...it, tasks: it.tasks.map((t: any) => ({ id: t.id, title: t.title, status: t.status, criteria: t.criteria, depends: t.depends, change: t.change, pr: t.pr, tries: t.tries, checks: t.checks && { where: t.checks.where, results: t.checks.results }, note: t.note })) }));
+      },
+    },
+    {
+      name: 'studio_roadmap_edit',
+      description: 'Edit the roadmap, ONLY with J\'s OK in this conversation for anything new (propose first: the item, its tasks with acceptance criteria, order, size and rough cost; add when he says yes). actions: add_item { product, title, goal, why, criteria[], size, status } (status planned = work starts automatically; idea = parked); update_item { id, ...fields, status }; add_task { item, title, request, criteria[], depends[] (task ids), status planned|idea }; update_task { id, ...fields } (status planned again = retry from scratch, dropped = stop). Acceptance criteria must be things a playtest can show (what a player sees or can do).',
+      inputSchema: obj({
+        action: str('add_item | update_item | add_task | update_task'), id: str('Item (i_) or task (k_) id, for updates'), item: str('For add_task: the item (i_...)'), product: str('For add_item'),
+        title: str('Title'), goal: str('Item: the goal in one line'), why: str('Item: why J wants it'), criteria: strs('Acceptance criteria (observable in a playtest)'), size: str('Item: S, M or L'),
+        status: str('Status'), request: str('Task: what the agent should do, in plain words'), depends: strs('Task: task ids it needs merged first'), ord: { type: 'number', description: 'Order (lower first)' }, note: str('A note'),
+      }, ['action']),
+      run: async (a) => {
+        const { action, id, ...f } = a;
+        const body = Object.fromEntries(Object.entries(f).filter(([, v]) => v !== undefined));
+        if (action === 'add_item') return studio('/api/roadmap/items', { method: 'POST', body });
+        if (action === 'update_item') return studio(`/api/roadmap/items/${id}`, { method: 'PATCH', body });
+        if (action === 'add_task') return studio('/api/roadmap/tasks', { method: 'POST', body });
+        if (action === 'update_task') return studio(`/api/roadmap/tasks/${id}`, { method: 'PATCH', body });
+        throw new Error('action: add_item | update_item | add_task | update_task');
+      },
+    },
+    {
+      name: 'studio_scout',
+      description: 'For "what would it take to ...?" when you can\'t answer from what you know: a scout (Claude Code, read-only, in a worktree of the product\'s beta; no edits, no pull request) reads the code and reports what exists, what it would take, a proposed roadmap item with tasks, acceptance criteria, order, size and rough cost, and questions for J. Its report comes back into this conversation by itself (minutes). With id: that scout\'s status and report.',
+      inputSchema: obj({ product: str('Product id (or hawkesstudio / hawkesgen)'), question: str('What J wants to know'), id: str('A scout id (x_...) to read') }),
+      run: async ({ product, question, id }) => (id ? studio(`/api/scouts/${id}`) : studio('/api/scouts', { method: 'POST', body: { product, question } })),
+    },
+    {
+      name: 'studio_ready',
+      description: 'What\'s ready for J to test (answer "what\'s ready?" with this): per roadmap item on beta, what changed (tasks, pull requests), which acceptance criteria were verified on beta (with evidence and the playtest video), how to try it (the beta link and the agents\' steps), and the known open bugs. Items partly on beta are marked.',
+      inputSchema: obj({ product: str('Product id (optional)') }),
+      run: async ({ product }) => (await studio(`/api/ready${product ? `?product=${product}` : ''}`)).markdown,
+    },
+    {
+      name: 'studio_comments',
+      description: 'Comment threads on a finding (f_), roadmap item (i_), task (k_) or agent change (c_): J, Talk and agents. Agents read their thread when they start and on every revision, so J\'s decisions belong here. Without text: the thread; with text: adds a comment.',
+      inputSchema: obj({ subject: str('f_, i_, k_ or c_ id (comma list to read several)'), text: str('A comment to add (optional)'), by: str('Who says it, e.g. "J (via Talk)" when you write down J\'s words (default Talk)') }, ['subject']),
+      run: async ({ subject, text, by }) => (text ? studio('/api/comments', { method: 'POST', body: { subject, text, by } }) : (await studio(`/api/comments?subject=${encodeURIComponent(subject)}`)).comments),
+    },
+    {
+      name: 'studio_pm',
+      description: 'The PM loop (Talk as J\'s PM). actions: status (settings, limits, what is waiting for review, open questions, the decision log); merge { change, why } (merge a ready agent change into beta yourself: only when delegated merges are on, never Studio/Gen, refused unless it passes its gate: playtested, not broken, no criterion failed); revise { change, note } (send it back with specific notes; after the last try J is asked); answer { question, answer } (answer an agent\'s question, which resumes its session, or record J\'s answer to a decision: by "J" when it is J\'s words); ask_j { text, options[], subject, product } (one clear question only J can answer: direction, money, still failing after 3 tries, anything live; also question: an agent question to pass on); triage { finding, triage: wontfix | duplicate | link | reopen | idea, note, of (duplicate of), item (link to) }; undo { decision } (take back a merge, won\'t-fix, start, link or settings change); settings { settings: { enabled, delegatedMerges, maxStartsPerDay, maxConcurrent, maxTries, fixBugs, dailyHour } } (only on J\'s word); tick (run the loop now). Every action is logged.',
+      inputSchema: obj({
+        action: str('status | merge | revise | answer | ask_j | triage | undo | settings | tick'), change: str('c_...'), why: str('merge: why it passes'), note: str('revise/triage: the note'),
+        question: str('q_... (answer; ask_j for an agent question)'), answer: str('The answer'), by: str('Who answers ("J" for J\'s own words; default Talk (PM))'), text: str('ask_j: the question'), options: strs('ask_j: the options'),
+        subject: str('ask_j: the task, item or change it is about'), product: str('ask_j: product id'), finding: str('triage: f_...'), triage: str('triage: wontfix | duplicate | link | reopen | idea'), of: str('triage duplicate: the finding it duplicates'), item: str('triage link: the roadmap item'),
+        decision: str('undo: d_...'), settings: { type: 'object', description: 'settings: the fields to change' },
+      }, ['action']),
+      run: async (a) => {
+        const by = a.by;
+        switch (a.action) {
+          case 'status': return studio('/api/pm');
+          case 'merge': return studio(`/api/pm/merge/${a.change}`, { method: 'POST', body: { why: a.why, by: by ?? 'Talk (PM)' } });
+          case 'revise': return studio(`/api/pm/revise/${a.change}`, { method: 'POST', body: { note: a.note, by: by ?? 'Talk (PM)' } });
+          case 'answer': return studio(`/api/questions/${a.question}/answer`, { method: 'POST', body: { answer: a.answer, by: by ?? 'Talk (PM)' } });
+          case 'ask_j': return a.question ? studio(`/api/questions/${a.question}/ask-j`, { method: 'POST', body: { text: a.text, options: a.options, by: 'Talk (PM)' } }) : studio('/api/pm/ask', { method: 'POST', body: { text: a.text, options: a.options, subject: a.subject, product: a.product, by: 'Talk (PM)' } });
+          case 'triage': return studio(`/api/pm/triage/${a.finding}`, { method: 'POST', body: { action: a.triage, note: a.note, of: a.of, item: a.item, by: by ?? 'Talk (PM)' } });
+          case 'undo': return studio(`/api/pm/undo/${a.decision}`, { method: 'POST', body: { by: by ?? 'J (via Talk)' } });
+          case 'settings': return studio('/api/pm/settings', { method: 'POST', body: { ...(a.settings ?? {}), by: by ?? 'J (via Talk)' } });
+          case 'tick': return studio('/api/pm/tick', { method: 'POST', body: {} });
+          default: throw new Error('action: status | merge | revise | answer | ask_j | triage | undo | settings | tick');
+        }
+      },
     },
   ];
   return { name: 'hawkesstudio', version: '0.2.0', instructions: INSTRUCTIONS, tools };

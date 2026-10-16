@@ -196,6 +196,14 @@ The Changes tab refreshes itself every 5 s and keeps opened summaries and logs o
    GitHub Pages publishes, and Studio playtests live. "Rollback…" undoes the last go live with a new commit
    (`ROLLBACK <product>`). Details: `docs/daily.md`, "Beta and going live".
 
+**With the PM loop** (`src/pm.ts`, started by Studio on the server; docs/daily.md, "Running the studio with Talk"),
+steps 2 and 4 are Talk's: it starts roadmap tasks and the worst bugs within its caps (`.data/pm.json`: 2 agents at
+once, 8 starts a day, 3 tries), runs its turns in the day's "Studio PM" Talk conversation, and merges into beta the
+changes that pass their acceptance gate (delegated merges, on by default; never Studio or Gen, never live). Every
+decision is logged with undo (Roadmap tab). Pause it from the Roadmap tab or `POST /api/pm/settings { "enabled": false }`.
+It starts no agent while a Studio or Gen deploy is waiting (`/api/self-deploys`), so deploys get through. Logs: its
+warnings are `[pm]` lines in Studio's journal.
+
 ### Changing Studio and Gen through agents
 
 J can ask Talk to fix or add something in Hawkes Studio or Hawkes Gen themselves (`studio_task`, product

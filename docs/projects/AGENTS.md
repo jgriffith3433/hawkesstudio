@@ -105,8 +105,16 @@ Every day it runs these steps for every product (one at a time, through Hawkes G
    expired after 14 days unseen.
 5. Writes the morning report (`hawkesstudio/reports/`).
 
-- J reads the report with Claude in chat, picks what matters, and Claude starts one session per fix.
-- Each fixing session verifies with `studio_playtest` and marks the finding fixed.
+- **Talk is J's PM.** J sets direction in Talk ("let's do X"); Talk proposes a roadmap item with tasks and acceptance
+  criteria (a read-only scout looks at the code when needed) and adds them on his yes. The PM loop starts the tasks and
+  the worst bugs within its caps, merges into beta the changes whose playtests meet their criteria (J delegated that;
+  never live, never Studio or Gen), sends the rest back (3 tries, then J), answers agents' questions from what J
+  decided, and triages the backlog. Only real decisions reach J (direction, money, repeated failures, live). He tests
+  what the **Ready to test** tab (or "what's ready?") lists: per item, the criteria verified on beta with videos, how to
+  try it, and the known bugs. Roadmap tab: items, tasks, threads, questions, the decision log with undo, the pause
+  switch. See `hawkesstudio/docs/daily.md` ("Running the studio with Talk").
+- J can still read the report with Claude in chat and have it start fixes directly; each fix verifies with
+  `studio_playtest` and marks the finding fixed.
 - **Beta, then live.** Every repo agents change has a `beta` branch between agent changes and `main` (the live site).
   `https://<sub>.hawkesgen.com/` is beta (`/c/<id>/` is one agent change). Going live: `studio_deploy_plan` (the
   commits on beta not on main, and how that exact beta commit playtested), then J types `DEPLOY <product>`, then
