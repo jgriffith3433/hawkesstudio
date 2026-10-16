@@ -41,6 +41,18 @@
             <button id="talkAttach" title="Attach an image or file">📎</button><input type="file" id="talkFile" multiple hidden>
             <textarea id="talkInput" rows="2" placeholder="Talk about the products, ask for work, approve changes…"></textarea>
             <button class="primary" id="talkSend">Send</button><button id="talkStop" hidden>Stop</button>
+            <button id="talkCall" class="talk-call" title="Call Talk: talk out loud, Talk answers aloud">📞</button>
+          </div>
+          <div id="callPane" class="call" data-state="connecting" hidden>
+            <div class="call-top"><b>📞 On a call with Talk</b><button class="small" id="callSettingsBtn" title="Call settings">⚙</button></div>
+            <div id="callSettings" class="call-settings" hidden><div id="callSettingsBody"></div></div>
+            <button id="callOrb" class="call-orb" title="Tap to interrupt Talk, or to send what you said now"></button>
+            <div id="callState" class="call-state">Connecting…</div>
+            <div id="callYou" class="call-you"></div>
+            <div id="callNote" class="call-note"></div>
+            <button id="callPtt" class="call-ptt" hidden>Hold to talk</button>
+            <div class="call-buttons"><button id="callMute">Mute</button><button id="callHang" class="call-hang">Hang up</button></div>
+            <div id="callLatency" class="call-latency"></div>
           </div>
           <div class="meta" id="talkBilling"></div>
           <details id="notifyBox" class="meta"><summary>Phone notifications</summary><div id="notifyBody"></div></details>
@@ -113,6 +125,7 @@
   <div id="viewer" class="viewer" hidden><div class="inner"><button class="close">×</button><div class="content"></div></div></div>
   <script src="app.js"></script>
   <script src="talk.js"></script>
+  <script src="call.js"></script>
   <script src="playtests.js"></script>
   <script src="activity.js"></script>
   <script src="roadmap.js"></script>

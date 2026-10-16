@@ -10,10 +10,17 @@
 // J can stop an answer, rename or delete conversations, and attach files: the dashboard uploads them into Hawkes Gen
 // as blobs (through /gen), and Claude gets each file's path (to Read it) and blob id (for Gen inputs). Every answer
 // records what it cost and whether it ran on the Max subscription or the API key (apiKeySource in Claude Code's init).
+//
+// Calls (J talks, Talk answers aloud; dashboard/call.js): a call keeps one Claude Code process warm for the conversation
+// (--input-format stream-json: each message goes to its stdin), because starting Claude Code and its MCP servers takes
+// most of a normal turn (about 9 s to the first word on the server, 1-2 s warm). Its system prompt asks for spoken,
+// short answers (CALL_PROMPT). The text streams to the call page as events (talkEvents, GET /api/talk/<id>/events),
+// stop interrupts the answer without ending the process (barge-in), and the call ends when J hangs up or goes quiet.
 
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawn, type ChildProcess } from 'node:child_process';
+import { EventEmitter } from 'node:events';
 import { db, newId, J, parse } from './db.ts';
 import { PROJECTS, DATA, ROOT, loadProducts, loadInfra } from './config.ts';
 import { claudeEnv, billing, usingSubscription } from './claude.ts';
@@ -27,13 +34,14 @@ db.exec(`
 
 export type Attachment = { name: string; blob: string; type?: string; size?: number; path?: string | null };
 /** turn: on the last message of each answer, what it cost (USD, as Claude Code reports it) and who paid. auto: Studio
- * started the turn (a result came back), not J. */
-export type Turn = { cost: number; billing: 'subscription' | 'api'; ms?: number; stopped?: boolean; auto?: boolean };
+ * started the turn (a result came back), not J. call: answered during a call (spoken). */
+export type Turn = { cost: number; billing: 'subscription' | 'api'; ms?: number; stopped?: boolean; auto?: boolean; call?: boolean };
 /**
  * notice: posted by Studio itself (a beta conflict, a result), not by Claude; Claude sees it with J's next message.
  * followup: the result of work this conversation started (followup.ts): Claude answers it on its own (studioSays).
+ * voice: J said it on a call (speech recognition's words).
  */
-export type Message = { role: 'user' | 'assistant' | 'tool'; text: string; at: number; tool?: string; files?: Attachment[]; turn?: Turn; notice?: boolean; followup?: boolean };
+export type Message = { role: 'user' | 'assistant' | 'tool'; text: string; at: number; tool?: string; files?: Attachment[]; turn?: Turn; notice?: boolean; followup?: boolean; voice?: boolean };
 export type Conversation = { id: string; title: string | null; session: string | null; status: string; messages: Message[]; cost: number; created: number; updated: number | null; partial?: string | null };
 
 /** The text Claude is writing right now, per conversation (not saved: it becomes a message when the block ends). */
@@ -215,6 +223,7 @@ export function renameConversation(id: string, title: string) {
 }
 
 export function deleteConversation(id: string) {
+  endCall(id);
   stop(id);
   partial.delete(id);
   clearTimeout(autoTimers.get(id));
@@ -234,7 +243,7 @@ function blobFile(blob: string) {
 }
 
 /** Sends J's message (with files already uploaded to Hawkes Gen); Claude answers in the background (poll getConversation). */
-export function say(id: string, text: string, files: Attachment[] = []) {
+export function say(id: string, text: string, files: Attachment[] = [], { voice = false }: { voice?: boolean } = {}) {
   const c = getConversation(id);
   if (!c) throw new Error('No such conversation');
   if (running.has(id)) throw new Error('Claude is still answering');
@@ -242,7 +251,7 @@ export function say(id: string, text: string, files: Attachment[] = []) {
     .map((f) => ({ name: String(f.name ?? 'file').slice(0, 120), blob: String(f.blob), type: f.type ? String(f.type).slice(0, 80) : undefined, size: Number(f.size) || undefined, path: blobFile(String(f.blob)) }));
   if (!text.trim() && !files.length) throw new Error('Say something');
   const userAt = Date.now();
-  c.messages.push({ role: 'user', text, at: userAt, ...(files.length ? { files } : {}) });
+  c.messages.push({ role: 'user', text, at: userAt, ...(files.length ? { files } : {}), ...(voice ? { voice: true } : {}) });
   if (!c.title) c.title = (text.trim() || files.map((f) => f.name).join(', ')).slice(0, 80);
   c.status = 'thinking';
   save(c);
@@ -332,34 +341,59 @@ export function studioTurn(id: string, prompt: string) {
   return true;
 }
 
-/** Runs one Claude Code turn in a conversation whose status is already "thinking". */
-function runTurn(id: string, prompt: string, userAt: number, { auto = false }: { auto?: boolean } = {}) {
-  const c = getConversation(id)!;
-  const args = [
-    '-p', prompt, '--output-format', 'stream-json', '--verbose', '--include-partial-messages', '--model', process.env.TALK_MODEL ?? 'claude-opus-5-5',
-    '--mcp-config', mcpConfig(id), '--strict-mcp-config',
+/** What one turn needs while its output streams in (a turn of its own process, or of a call's warm process). */
+type TurnCtx = { userAt: number; auto: boolean; call: boolean; billing: Turn['billing']; done: boolean; finished?: boolean; err: string };
+
+/**
+ * Live text for call pages, per conversation id (GET /api/talk/<id>/events): { type: 'turn' } when a turn starts,
+ * 'start' / 'delta' (text) / 'end' for each text block as Claude writes it, 'tool' (text) when it calls a tool, 'idle'
+ * when the turn is over.
+ */
+export const talkEvents = new EventEmitter();
+talkEvents.setMaxListeners(100);
+const emit = (id: string, e: Record<string, unknown>) => talkEvents.emit(id, e);
+
+/** Spoken answers: appended to the system prompt of a call's process (only calls; the chat stays as it is). */
+const CALL_PROMPT = `
+
+J is on a voice call with you right now (Studio's call mode, often on his phone). What you write is read aloud by a
+speech voice, sentence by sentence as you write it, and he answers by talking:
+- Talk like a person on the phone: one to three short sentences, the answer first, no filler openers. He can ask for more.
+- Never put tables, Markdown lists, headings, code, file paths, ids or URLs in what you say: they can't be read aloud.
+  Say numbers and names the way you'd say them.
+- When there are details worth seeing (links, videos, lists, numbers), say "I'll put the details in the chat" and write
+  them after a line with only --- on it: everything after that line shows in the conversation and isn't read aloud.
+- Before tool calls that take a while, say a few words first ("Let me look at last night's report."), so he isn't left
+  in silence.
+- Speech recognition mishears names: if his words look garbled, make your best guess and say it, or ask briefly.
+- Spoken words never confirm anything irreversible: DEPLOY, ROLLBACK and MERGE confirmations have to be typed in the
+  chat. Say so, and put the exact words to type in the details.`;
+
+function claudeArgs(c: Conversation, call: boolean) {
+  return [
+    '--output-format', 'stream-json', '--verbose', '--include-partial-messages',
+    '--model', (call && process.env.TALK_CALL_MODEL) || (process.env.TALK_MODEL ?? 'claude-opus-5-5'),
+    '--mcp-config', mcpConfig(c.id), '--strict-mcp-config',
     '--allowedTools', 'mcp__hawkesstudio,mcp__hawkesgen,Read,Glob,Grep',
     '--disallowedTools', 'Bash,Edit,Write,NotebookEdit,WebFetch,WebSearch',
-    '--append-system-prompt', systemPrompt(),
+    '--append-system-prompt', systemPrompt() + (call ? CALL_PROMPT : ''),
     ...(c.session ? ['--resume', c.session] : []),
   ];
-  // TALK_CLAUDE: the Claude Code executable, when it isn't "claude" on the PATH.
-  const child = spawn(process.env.TALK_CLAUDE || 'claude', args, { cwd: PROJECTS, env: claudeEnv(), windowsHide: true });
-  running.set(id, child);
-  partial.delete(id);
-  // Who pays: Claude Code says which key it uses when it starts (apiKeySource "none" = the subscription login).
-  let billing: Turn['billing'] = usingSubscription() ? 'subscription' : 'api';
-  let turnDone = false;
-  /** The answer's cost and billing go on its last message. */
-  const endTurn = (conv: Conversation, turn: Turn) => {
-    turnDone = true;
-    const last = conv.messages.at(-1);
-    if (auto) turn.auto = true;
-    if (last && last.at >= userAt && last.role !== 'user' && !last.notice) last.turn = turn;
-    else conv.messages.push({ role: 'assistant', text: turn.stopped ? '(stopped)' : '(no answer)', at: Date.now(), turn });
-  };
+}
+
+/**
+ * Starts Claude Code. TALK_CLAUDE: the executable, when it isn't "claude" on the PATH; TALK_CLAUDE_ARGS: a JSON array of
+ * arguments before Claude Code's own (tests run a stand-in script with node).
+ */
+function spawnClaude(args: string[]) {
+  const pre: string[] = process.env.TALK_CLAUDE_ARGS ? JSON.parse(process.env.TALK_CLAUDE_ARGS) : [];
+  return spawn(process.env.TALK_CLAUDE || 'claude', [...pre, ...args], { cwd: PROJECTS, env: claudeEnv(), windowsHide: true });
+}
+
+/** Calls f with each JSON line of the process's stream-json output. */
+function readLines(child: ChildProcess, f: (m: any) => void) {
   let buf = '';
-  child.stdout.on('data', (d) => {
+  child.stdout!.on('data', (d) => {
     buf += d;
     let i;
     while ((i = buf.indexOf('\n')) >= 0) {
@@ -371,77 +405,217 @@ function runTurn(id: string, prompt: string, userAt: number, { auto = false }: {
       } catch {
         continue;
       }
-      // Partial text is kept in memory only, so streaming doesn't write the database on every token.
-      if (m.type === 'stream_event') {
-        const ev = m.event;
-        if (ev?.type === 'content_block_start' && ev.content_block?.type === 'text') partial.set(id, '');
-        else if (ev?.type === 'content_block_delta' && ev.delta?.type === 'text_delta') partial.set(id, (partial.get(id) ?? '') + ev.delta.text);
-        continue;
-      }
-      const conv = getConversation(id);
-      if (!conv) continue;
-      if (m.type === 'system' && m.subtype === 'init' && m.apiKeySource) billing = m.apiKeySource === 'none' ? 'subscription' : 'api';
-      if (m.type === 'system' && m.session_id && !conv.session) conv.session = m.session_id;
-      if (m.type === 'assistant') {
-        partial.delete(id);
-        for (const part of m.message?.content ?? []) {
-          if (part.type === 'text' && part.text.trim()) conv.messages.push({ role: 'assistant', text: part.text, at: Date.now() });
-          if (part.type === 'tool_use') conv.messages.push({ role: 'tool', text: describeTool(part.name, part.input), tool: part.name, at: Date.now() });
-        }
-      }
-      if (m.type === 'result') {
-        if (m.session_id) conv.session = m.session_id;
-        const cost = Number(m.total_cost_usd) || 0;
-        if (billing === 'api') conv.cost += cost;
-        if (m.is_error && !conv.messages.some((x) => x.role === 'assistant' && x.at >= userAt)) conv.messages.push({ role: 'assistant', text: `(Claude stopped: ${String(m.result ?? m.subtype ?? 'error').slice(0, 300)})`, at: Date.now() });
-        endTurn(conv, { cost, billing, ms: Number(m.duration_ms) || undefined });
-      }
-      save(conv);
+      f(m);
     }
-  });
-  let err = '';
-  child.stderr.on('data', (d) => (err += d));
-  const timer = setTimeout(() => child.kill('SIGTERM'), 30 * 60_000);
-  child.on('close', (code) => {
-    clearTimeout(timer);
-    running.delete(id);
-    const wasStopped = stopping.delete(id);
-    const text = partial.get(id);
-    partial.delete(id);
-    const conv = getConversation(id);
-    if (!conv) return;
-    // What Claude had written when J stopped it stays in the conversation.
-    if (text?.trim()) conv.messages.push({ role: 'assistant', text: `${text}${wasStopped ? ' …' : ''}`, at: Date.now() });
-    if (!wasStopped && code !== 0 && !conv.messages.some((x) => x.role === 'assistant' && x.at >= userAt)) {
-      conv.messages.push({ role: 'assistant', text: `(Claude couldn't answer: ${(err.trim().split('\n').pop() || `exit ${code}`).slice(0, 300)})`, at: Date.now() });
-    }
-    if (!turnDone) endTurn(conv, { cost: 0, billing, ...(wasStopped ? { stopped: true } : {}) });
-    conv.status = 'idle';
-    save(conv);
-    // Results that came in while this turn ran get their own turn now (unless this one already answered them).
-    waitingAuto.delete(id);
-    const queued = queuedTurns.get(id);
-    queuedTurns.delete(id);
-    if (queued?.length) setTimeout(() => studioTurn(id, queued.join('\n\n---\n\n')), 2000).unref?.();
-    else if (unanswered(conv).some((m) => m.followup)) scheduleAuto(id, 5000);
-  });
-  child.on('error', (e) => {
-    running.delete(id);
-    waitingAuto.delete(id);
-    const conv = getConversation(id);
-    if (!conv) return;
-    conv.messages.push({ role: 'assistant', text: `(Couldn't start Claude Code: ${e.message})`, at: Date.now() });
-    conv.status = 'idle';
-    save(conv);
   });
 }
 
-/** Stops Claude's answer (what it wrote so far is kept; the session can go on). */
+/** Runs one Claude Code turn in a conversation whose status is already "thinking" (in the call's process during a call). */
+function runTurn(id: string, prompt: string, userAt: number, { auto = false }: { auto?: boolean } = {}) {
+  // Who pays: Claude Code says which key it uses when it starts (apiKeySource "none" = the subscription login).
+  const ctx: TurnCtx = { userAt, auto, call: false, billing: usingSubscription() ? 'subscription' : 'api', done: false, err: '' };
+  partial.delete(id);
+  emit(id, { type: 'turn', auto });
+  const call = calls.get(id);
+  if (call) {
+    ctx.call = true;
+    const child = call.child ?? spawnCall(id, call);
+    call.turn = ctx;
+    call.seen = Date.now();
+    running.set(id, child);
+    child.stdin!.write(`${JSON.stringify({ type: 'user', message: { role: 'user', content: prompt } })}\n`);
+    return;
+  }
+  const c = getConversation(id)!;
+  const child = spawnClaude(['-p', prompt, ...claudeArgs(c, false)]);
+  running.set(id, child);
+  readLines(child, (m) => onLine(id, m, ctx));
+  child.stderr!.on('data', (d) => (ctx.err += d));
+  const timer = setTimeout(() => child.kill('SIGTERM'), 30 * 60_000);
+  child.on('close', (code) => {
+    clearTimeout(timer);
+    finishTurn(id, ctx, { stopped: stopping.delete(id), code });
+  });
+  child.on('error', (e) => failedStart(id, e));
+}
+
+function failedStart(id: string, e: Error) {
+  running.delete(id);
+  waitingAuto.delete(id);
+  const conv = getConversation(id);
+  if (!conv) return;
+  conv.messages.push({ role: 'assistant', text: `(Couldn't start Claude Code: ${e.message})`, at: Date.now() });
+  conv.status = 'idle';
+  save(conv);
+  emit(id, { type: 'idle' });
+}
+
+/** The answer's cost and billing go on its last message. */
+function endTurn(conv: Conversation, ctx: TurnCtx, turn: Turn) {
+  ctx.done = true;
+  const last = conv.messages.at(-1);
+  if (ctx.auto) turn.auto = true;
+  if (ctx.call) turn.call = true;
+  if (last && last.at >= ctx.userAt && last.role !== 'user' && !last.notice) last.turn = turn;
+  else conv.messages.push({ role: 'assistant', text: turn.stopped ? '(stopped)' : '(no answer)', at: Date.now(), turn });
+}
+
+function onLine(id: string, m: any, ctx: TurnCtx) {
+  // Partial text is kept in memory only, so streaming doesn't write the database on every token.
+  if (m.type === 'stream_event') {
+    const ev = m.event;
+    if (ev?.type === 'content_block_start' && ev.content_block?.type === 'text') {
+      partial.set(id, '');
+      emit(id, { type: 'start' });
+    } else if (ev?.type === 'content_block_delta' && ev.delta?.type === 'text_delta') {
+      partial.set(id, (partial.get(id) ?? '') + ev.delta.text);
+      emit(id, { type: 'delta', text: ev.delta.text });
+    } else if (ev?.type === 'content_block_stop') emit(id, { type: 'end' });
+    return;
+  }
+  const conv = getConversation(id);
+  if (!conv) return;
+  if (m.type === 'system' && m.subtype === 'init' && m.apiKeySource) ctx.billing = m.apiKeySource === 'none' ? 'subscription' : 'api';
+  if (m.type === 'system' && m.session_id && !conv.session) conv.session = m.session_id;
+  if (m.type === 'assistant') {
+    partial.delete(id);
+    for (const part of m.message?.content ?? []) {
+      if (part.type === 'text' && part.text.trim()) conv.messages.push({ role: 'assistant', text: part.text, at: Date.now() });
+      if (part.type === 'tool_use') {
+        conv.messages.push({ role: 'tool', text: describeTool(part.name, part.input), tool: part.name, at: Date.now() });
+        emit(id, { type: 'tool', text: describeTool(part.name, part.input) });
+      }
+    }
+  }
+  if (m.type === 'result') {
+    if (m.session_id) conv.session = m.session_id;
+    const cost = Number(m.total_cost_usd) || 0;
+    if (ctx.billing === 'api') conv.cost += cost;
+    const turn: Turn = { cost, billing: ctx.billing, ms: Number(m.duration_ms) || undefined };
+    // A call's process stays up: the turn ends with its result (stopping: J interrupted it, e.g. by talking).
+    const stopped = ctx.call && stopping.delete(id);
+    if (m.is_error && !stopped && !conv.messages.some((x) => x.role === 'assistant' && x.at >= ctx.userAt)) conv.messages.push({ role: 'assistant', text: `(Claude stopped: ${String(m.result ?? m.subtype ?? 'error').slice(0, 300)})`, at: Date.now() });
+    if (ctx.call) {
+      save(conv);
+      return finishTurn(id, ctx, { stopped, turn });
+    }
+    endTurn(conv, ctx, turn);
+  }
+  save(conv);
+}
+
+/** A turn is over (its process closed, or a call's turn got its result): the conversation is idle again. */
+function finishTurn(id: string, ctx: TurnCtx, { stopped = false, code = 0, turn }: { stopped?: boolean; code?: number | null; turn?: Turn }) {
+  if (ctx.finished) return;
+  ctx.finished = true;
+  running.delete(id);
+  const call = calls.get(id);
+  if (call?.turn === ctx) call.turn = null;
+  const text = partial.get(id);
+  partial.delete(id);
+  const conv = getConversation(id);
+  if (!conv) return;
+  // What Claude had written when J stopped it stays in the conversation.
+  if (text?.trim()) conv.messages.push({ role: 'assistant', text: `${text}${stopped ? ' …' : ''}`, at: Date.now() });
+  if (!stopped && code !== 0 && !conv.messages.some((x) => x.role === 'assistant' && x.at >= ctx.userAt)) {
+    conv.messages.push({ role: 'assistant', text: `(Claude couldn't answer: ${(ctx.err.trim().split('\n').pop() || `exit ${code}`).slice(0, 300)})`, at: Date.now() });
+  }
+  if (!ctx.done) endTurn(conv, ctx, { ...(turn ?? { cost: 0, billing: ctx.billing }), ...(stopped ? { stopped: true } : {}) });
+  conv.status = 'idle';
+  save(conv);
+  emit(id, { type: 'idle' });
+  // Results that came in while this turn ran get their own turn now (unless this one already answered them).
+  waitingAuto.delete(id);
+  const queued = queuedTurns.get(id);
+  queuedTurns.delete(id);
+  if (queued?.length) setTimeout(() => studioTurn(id, queued.join('\n\n---\n\n')), 2000).unref?.();
+  else if (unanswered(conv).some((m) => m.followup)) scheduleAuto(id, 5000);
+}
+
+// ------------------------------------------------------------ calls
+
+type Call = { child: ChildProcess | null; turn: TurnCtx | null; seen: number; started: number; err: string };
+const calls = new Map<string, Call>();
+/** A call ends by itself when the call page stops checking in (it pings every 20 s while the call is up). */
+const CALL_IDLE_MS = () => Number(process.env.TALK_CALL_IDLE_MS ?? 90_000);
+
+/** The call's warm Claude Code process: it reads one stream-json message per turn from stdin. */
+function spawnCall(id: string, call: Call) {
+  const c = getConversation(id)!;
+  const child = spawnClaude(['-p', '--input-format', 'stream-json', ...claudeArgs(c, true)]);
+  call.child = child;
+  call.err = '';
+  readLines(child, (m) => call.turn && !call.turn.finished && onLine(id, m, call.turn));
+  child.stderr!.on('data', (d) => (call.err = (call.err + d).slice(-4000)));
+  child.stdin!.on('error', () => {}); // a process that died is noticed on close
+  const gone = () => {
+    if (call.child === child) call.child = null;
+    const ctx = call.turn;
+    call.turn = null;
+    return ctx;
+  };
+  child.on('close', (code) => {
+    const ctx = gone();
+    if (!ctx || ctx.finished) return;
+    ctx.err = call.err;
+    finishTurn(id, ctx, { stopped: stopping.delete(id), code: code ?? 1 });
+  });
+  child.on('error', (e) => {
+    const ctx = gone();
+    if (ctx && !ctx.finished) failedStart(id, e);
+  });
+  return child;
+}
+
+/**
+ * J starts a call (or the call page checks in): the conversation gets a warm Claude Code process, started now so it is
+ * ready by the time J finishes his first sentence (if a text answer is still running, on the next turn instead).
+ */
+export function startCall(id: string) {
+  if (!getConversation(id)) throw new Error('No such conversation');
+  const call = calls.get(id);
+  if (call) {
+    call.seen = Date.now();
+    return callInfo(id);
+  }
+  const fresh: Call = { child: null, turn: null, seen: Date.now(), started: Date.now(), err: '' };
+  calls.set(id, fresh);
+  if (!running.has(id)) spawnCall(id, fresh);
+  return callInfo(id);
+}
+
+/** J hangs up: an answer in progress still finishes into the conversation, then the process ends. */
+export function endCall(id: string) {
+  const call = calls.get(id);
+  if (!call) return false;
+  calls.delete(id);
+  call.child?.stdin?.end();
+  return true;
+}
+
+export function callInfo(id: string) {
+  const call = calls.get(id);
+  return call ? { active: true, warm: !!call.child, since: call.started } : { active: false, warm: false, since: null };
+}
+
+setInterval(() => {
+  for (const [id, call] of calls) if (!call.turn && Date.now() - call.seen > CALL_IDLE_MS()) endCall(id);
+}, 15_000).unref?.();
+
+/** Stops Claude's answer (what it wrote so far is kept; the session can go on). In a call it interrupts the turn. */
 export function stop(id: string) {
   const child = running.get(id);
   if (!child) return false;
   stopping.add(id);
-  child.kill('SIGTERM');
+  const call = calls.get(id);
+  if (call?.child === child && call.turn) {
+    const ctx = call.turn;
+    child.stdin!.write(`${JSON.stringify({ type: 'control_request', request_id: `stop-${Date.now()}`, request: { subtype: 'interrupt' } })}\n`);
+    // An interrupt that doesn't end the turn soon ends the process (the next turn starts a new one).
+    setTimeout(() => {
+      if (call.turn === ctx) child.kill('SIGTERM');
+    }, 5000).unref?.();
+  } else child.kill('SIGTERM');
   return true;
 }
 

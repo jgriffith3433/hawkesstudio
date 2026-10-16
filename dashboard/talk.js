@@ -33,6 +33,7 @@
       if (list) { out.push(`<ul>${list.join('')}</ul>`); list = null; }
       const h = /^(#{1,4})\s+(.*)$/.exec(line);
       if (h) out.push(`<h4>${inline(h[2])}</h4>`);
+      else if (/^\s*---+\s*$/.test(line)) out.push('<hr>');
       else if (line.trim()) out.push(`<p>${inline(line)}</p>`);
     }
     if (list) out.push(`<ul>${list.join('')}</ul>`);
@@ -49,7 +50,7 @@
   const kb = (n) => (n >= 1048576 ? `${(n / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1024))} KB`);
   const secs = (ms) => (ms >= 60000 ? `${Math.round(ms / 60000)} min` : `${Math.round(ms / 1000)} s`);
   /** Who paid for an answer: the Max subscription (no extra cost) or the API key (per token). */
-  const turnMark = (t) => t && `<div class="talk-turn ${t.billing}" title="${t.auto ? 'Studio started this answer when results came in. ' : ''}"${t.billing === 'api' ? 'Billed to the API key, per token' : `Covered by the Claude Max subscription${t.cost ? ` (about $${t.cost.toFixed(2)} at API prices)` : ''}`}">${t.billing === 'api' ? `💳 $${t.cost.toFixed(3)} API` : '✓ Max plan'}${t.ms ? ` · ${secs(t.ms)}` : ''}${t.stopped ? ' · stopped' : ''}${t.auto ? ' · <span class="talk-who">Studio</span> asked for this answer' : ''}</div>`;
+  const turnMark = (t) => t && `<div class="talk-turn ${t.billing}" title="${t.auto ? 'Studio started this answer when results came in. ' : ''}"${t.billing === 'api' ? 'Billed to the API key, per token' : `Covered by the Claude Max subscription${t.cost ? ` (about $${t.cost.toFixed(2)} at API prices)` : ''}`}">${t.billing === 'api' ? `💳 $${t.cost.toFixed(3)} API` : '✓ Max plan'}${t.ms ? ` · ${secs(t.ms)}` : ''}${t.stopped ? ' · stopped' : ''}${t.call ? ' · 📞' : ''}${t.auto ? ' · <span class="talk-who">Studio</span> asked for this answer' : ''}</div>`;
   const fileChips = (files) => (files?.length ? `<div class="talk-chips">${files.map((f) => `<span class="talk-chip" title="${esc(f.blob)}">${/^image\//.test(f.type ?? '') ? '🖼' : '📄'} ${esc(f.name)}${f.size ? ` · ${kb(f.size)}` : ''}</span>`).join('')}</div>` : '');
 
   function renderHead(c) {
@@ -81,7 +82,7 @@
         ? `<div class="talk-tool">⚙ ${esc(m.text)}</div>`
         : m.notice
           ? `<div class="talk-msg assistant notice"><span class="talk-who">Studio</span>${md(m.text)}</div>`
-          : `<div class="talk-msg ${m.role}">${m.role === 'user' ? esc(m.text).replace(/\n/g, '<br>') + fileChips(m.files) : md(m.text)}</div>`) + (turnMark(m.turn) ?? '')).join('')
+          : `<div class="talk-msg ${m.role}">${m.role === 'user' ? (m.voice ? '<span class="talk-voice" title="Said on a call">🎙</span>' : '') + esc(m.text).replace(/\n/g, '<br>') + fileChips(m.files) : md(m.text)}</div>`) + (turnMark(m.turn) ?? '')).join('')
         + (thinking && c.partial ? `<div class="talk-msg assistant streaming">${md(c.partial)}<span class="talk-caret"></span></div>` : '')
         + (thinking && !c.partial ? `<div class="talk-tool">${c.messages.at(-1)?.notice ? 'Studio asked Claude to explain the result…' : 'Claude is thinking…'}</div>` : '');
       if (atBottom || thinking) log.scrollTop = log.scrollHeight;
@@ -217,6 +218,8 @@
   });
 
   window.loadTalk = async () => { await loadList(); await loadConversation(); };
+  /** The conversation on screen (a call started here continues it; call.js). */
+  window.talkConversation = () => current;
   /** Opens a conversation (the Activity panel's links). */
   window.openTalk = (id) => {
     current = id;

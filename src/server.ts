@@ -12,7 +12,7 @@ import { reportMarkdown, listReports } from './report.ts';
 import { deployPlan, deploy, rollbackPlan, rollback } from './deploy.ts';
 import { assetStatus } from './assets.ts';
 import { syncRepos } from './repos.ts';
-import { startConversation, say, getConversation, listConversations, stop as stopTalk, talkInfo, renameConversation, deleteConversation } from './talk.ts';
+import { startConversation, say, getConversation, listConversations, stop as stopTalk, talkInfo, renameConversation, deleteConversation, startCall, endCall, callInfo, talkEvents } from './talk.ts';
 import { notify, notifyInfo, saveNotifySettings, PUBLIC_URL } from './notify.ts';
 import { listChanges, getChange, startFix, startTask, approve, revise, close, agentSettings, saveAgentSettings, costToday } from './agents.ts';
 import { startAssets } from './pipeline.ts';
@@ -209,7 +209,34 @@ const server = http.createServer(async (req, res) => {
       const b = await readJson(req);
       const c = b.conversation ? getConversation(String(b.conversation)) : startConversation();
       if (!c) return send(res, 404, { error: 'no such conversation' });
-      return send(res, 200, say(c.id, String(b.message ?? ''), Array.isArray(b.files) ? b.files : []));
+      return send(res, 200, say(c.id, String(b.message ?? ''), Array.isArray(b.files) ? b.files : [], { voice: b.voice === true }));
+    }
+    // Calls (talk.ts, dashboard/call.js): start one (a new conversation without one), check in every 20 s, hang up;
+    // the answer's text streams as server-sent events.
+    if (route === '/api/talk/call' && method === 'POST') {
+      const b = await readJson(req);
+      const c = b.conversation ? getConversation(String(b.conversation)) : startConversation();
+      if (!c) return send(res, 404, { error: 'no such conversation' });
+      return send(res, 200, { id: c.id, call: startCall(c.id) });
+    }
+    m = /^\/api\/talk\/(t_[0-9a-f]+)\/(call|events)$/.exec(route);
+    if (m && m[2] === 'call' && method === 'POST') {
+      if (!getConversation(m[1])) return send(res, 404, { error: 'no such conversation' });
+      return send(res, 200, (await readJson(req)).end ? { ended: endCall(m[1]), call: callInfo(m[1]) } : { call: startCall(m[1]) });
+    }
+    if (m && m[2] === 'events' && method === 'GET') {
+      const c = getConversation(m[1]);
+      if (!c) return send(res, 404, { error: 'no such conversation' });
+      res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-store', 'X-Accel-Buffering': 'no' });
+      const out = (e: unknown) => res.write(`data: ${JSON.stringify(e)}\n\n`);
+      out({ type: 'hello', status: c.status, partial: c.partial ?? null, call: callInfo(c.id) });
+      const ping = setInterval(() => res.write(': ping\n\n'), 15_000);
+      talkEvents.on(c.id, out);
+      req.on('close', () => {
+        clearInterval(ping);
+        talkEvents.off(c.id, out);
+      });
+      return;
     }
     m = /^\/api\/talk\/(t_[0-9a-f]+)(\/stop)?$/.exec(route);
     if (m && method === 'GET' && !m[2]) return send(res, 200, getConversation(m[1]) ?? { error: 'no such conversation' });
