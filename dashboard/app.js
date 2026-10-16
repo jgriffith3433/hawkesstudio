@@ -28,9 +28,46 @@ function show(t, sub) {
   location.hash = sub ? `${t}/${sub}` : t;
   document.querySelectorAll('nav button').forEach((b) => b.classList.toggle('on', b.dataset.tab === t));
   document.querySelectorAll('.tab').forEach((s) => s.classList.toggle('on', s.id === t));
+  if (picked?.tab !== t) picked = null;
+  dispatchEvent(new CustomEvent('studio-tab', { detail: t })); // the Talk dock follows (talk.js)
   refresh();
 }
 document.querySelectorAll('nav button').forEach((b) => (b.onclick = () => show(b.dataset.tab)));
+
+// ------------------------------------------------- what J looks at
+// Sent with each message from the Talk dock (talk.js), so "this one" means the change, finding, report, playtest or
+// item J last clicked on the tab, or what the tab has open.
+let picked = null;
+const PICK = [['cid', 'change'], ['change', 'change'], ['fid', 'finding'], ['finding', 'finding'], ['ib', 'inbox card'], ['item', 'roadmap item'], ['thread', 'roadmap item'], ['task', 'task'], ['ms', 'milestone'], ['mem', 'memory entry'], ['run', 'run'], ['reportRun', 'run'], ['p', 'product']];
+const pickIn = (box) => {
+  for (const [a, kind] of PICK) {
+    const key = `[data-${a.replace(/[A-Z]/g, (c) => `-${c.toLowerCase()}`)}]`;
+    const n = box.matches(key) ? box : box.querySelector(key);
+    if (n) return { kind, id: n.dataset[a] };
+  }
+  return null;
+};
+document.querySelector('main').addEventListener('click', (e) => {
+  const boxes = '.finding, .card, .ib-card, .run-row, .test, .review';
+  let box = e.target.closest(boxes);
+  let p = null;
+  while (box && !(p = pickIn(box))) box = box.parentElement?.closest(boxes);
+  // The title only: without its pills and meta line.
+  const h = box.querySelector('h4, h3, b')?.cloneNode(true);
+  h?.querySelectorAll('.pill, .meta, small').forEach((n) => n.remove());
+  if (p) picked = { tab, ...p, label: (h?.textContent ?? '').replace(/\s+/g, ' ').trim().slice(0, 120) };
+}, true);
+function studioContext() {
+  if (tab === 'talk') return null;
+  const name = document.querySelector(`nav button[data-tab="${tab}"]`)?.firstChild?.textContent.trim() ?? tab;
+  const hashId = location.hash.split('/')[1];
+  let it = picked?.tab === tab ? picked : null;
+  if (tab === 'playtests' && typeof pt !== 'undefined' && pt.open) it = { kind: 'playtest', id: pt.open, label: $('#ptDetail .pt-title')?.textContent.replace(/\s+/g, ' ').trim().slice(0, 120) };
+  if (!it && tab === 'changes' && hashId) it = { kind: 'change', id: hashId };
+  if (!it && tab === 'report' && $('#reportRun').value) it = { kind: 'report of run', id: $('#reportRun').value };
+  if (!it && tab === 'runs' && openRun) it = { kind: 'run', id: openRun };
+  return { tab: name, kind: it?.kind, id: it?.id, label: it?.label };
+}
 
 // ----------------------------------------------------------- viewer
 function view(html) {
@@ -286,7 +323,7 @@ function findingHtml(f) {
   // J's reports from the beta sites: their screenshot is in Gen's library once imported, else Studio keeps it.
   const own = f.source === 'J' && !(f.shots ?? []).length ? `<img loading="lazy" src="/api/bugreports/${f.id}/shot" data-full="/api/bugreports/${f.id}/shot" onerror="this.remove()">` : '';
   const shots = own + (f.shots ?? []).slice(0, 4).map((a) => `<img loading="lazy" src="${file(a)}" data-full="${file(a)}">`).join('');
-  return `<div class="finding${f.source === 'J' ? ' from-j' : ''}"><div>
+  return `<div class="finding${f.source === 'J' ? ' from-j' : ''}"${f.id ? ` data-fid="${esc(f.id)}"` : ''}><div>
       <h4><span class="pill ${f.severity}">${esc(f.severity)}</span>${f.source === 'J' ? '<span class="pill j" title="J reported it from the beta site: top priority">J</span>' : ''}${esc(f.title)} ${f.area ? `<span class="meta">${esc(f.area)}</span>` : ''}${f.id ? `<span class="meta">${esc(f.id)} · seen ${f.seen}× · ${esc(f.product)} · ${esc(f.scenario ?? '')}</span>` : ''}</h4>
       <div class="meta"${f.source === 'J' ? ' style="white-space:pre-line"' : ''}>${esc(f.detail ?? '')}</div>
       <div class="fix"><b>Fix:</b> ${esc(f.fix ?? '')}</div>${f.note ? `<div class="meta">Note: ${esc(f.note)}</div>` : ''}
@@ -361,7 +398,7 @@ async function loadChanges() {
   $('#chInfo').textContent = `Today: ${r.today.count} fixes, $${r.today.cost.toFixed(2)} of $${r.settings.maxCostPerDay} · auto-fix ${r.settings.autoFix ? 'on' : 'off'} (${r.settings.severities.join(', ')}, up to ${r.settings.maxPerDay}/day)`;
   $('#chList').innerHTML = r.changes.length ? r.changes.map((c) => {
     const v = c.verify;
-    return `<div class="finding"><div>
+    return `<div class="finding" data-cid="${c.id}"><div>
       <h4>${CH_ICON[c.status] ?? ''} ${esc(c.title)} <span class="pill ${c.status === 'ready' ? 'ship' : c.status === 'failed' ? 'failed' : ''}">${esc(c.status)}</span><span class="meta">${esc(c.product)} · ${esc(c.id)} · $${(c.cost ?? 0).toFixed(2)}</span></h4>
       <div class="meta">${esc(c.detail ?? '')}${c.diffstat ? ` · ${esc(c.diffstat)}` : ''}${c.pr_url ? ` · <a href="${esc(c.pr_url)}" target="_blank">pull request #${c.pr}</a>` : ''}</div>
       ${c.summary ? `<details data-key="${c.id}:summary"><summary class="meta">What the agent did</summary><pre>${esc(c.summary)}</pre></details>` : ''}

@@ -55,7 +55,7 @@ export type Turn = { cost: number; billing: 'subscription' | 'api'; ms?: number;
  * followup: the result of work this conversation started (followup.ts): Claude answers it on its own (studioSays).
  * voice: J said it on a call (speech recognition's words).
  */
-export type Message = { role: 'user' | 'assistant' | 'tool'; text: string; at: number; tool?: string; files?: Attachment[]; turn?: Turn; notice?: boolean; followup?: boolean; voice?: boolean };
+export type Message = { role: 'user' | 'assistant' | 'tool'; text: string; at: number; tool?: string; files?: Attachment[]; turn?: Turn; notice?: boolean; followup?: boolean; voice?: boolean; context?: string };
 export type Conversation = { id: string; title: string | null; session: string | null; status: string; messages: Message[]; cost: number; created: number; updated: number | null; partial?: string | null };
 
 /** The text Claude is writing right now, per conversation (not saved: it becomes a message when the block ends). */
@@ -298,8 +298,26 @@ function blobFile(blob: string) {
   return copy;
 }
 
+/**
+ * What J is looking at in the dashboard when he sends a message (the Talk dock on every tab, dashboard/talk.js): the
+ * tab, and the item open on it (a change, finding, report, playtest, run, roadmap item), so "this one" means something.
+ * Untrusted input: plain strings, trimmed and capped. Null when there's nothing to tell.
+ */
+export function viewContext(v: unknown): string | null {
+  if (!v || typeof v !== 'object') return null;
+  const o = v as Record<string, unknown>;
+  const clean = (s: unknown, n: number) => (typeof s === 'string' ? s.replace(/[\r\n\t]+/g, ' ').replace(/[\[\]]/g, '').trim().slice(0, n) : '');
+  const tab = clean(o.tab, 40);
+  if (!tab || tab === 'talk') return null;
+  const kind = clean(o.kind, 30);
+  const item = clean(o.id, 80);
+  const label = clean(o.label, 160);
+  const what = item ? `${kind ? `${kind} ` : ''}${item}${label ? ` ("${label}")` : ''}` : label;
+  return `the ${tab} tab${what ? `, ${what}` : ''}`;
+}
+
 /** Sends J's message (with files already uploaded to Hawkes Gen); Claude answers in the background (poll getConversation). */
-export function say(id: string, text: string, files: Attachment[] = [], { voice = false }: { voice?: boolean } = {}) {
+export function say(id: string, text: string, files: Attachment[] = [], { voice = false, context }: { voice?: boolean; context?: unknown } = {}) {
   const c = getConversation(id);
   if (!c) throw new Error('No such conversation');
   if (running.has(id)) throw new Error('Claude is still answering');
@@ -307,7 +325,8 @@ export function say(id: string, text: string, files: Attachment[] = [], { voice 
     .map((f) => ({ name: String(f.name ?? 'file').slice(0, 120), blob: String(f.blob), type: f.type ? String(f.type).slice(0, 80) : undefined, size: Number(f.size) || undefined, path: blobFile(String(f.blob)) }));
   if (!text.trim() && !files.length) throw new Error('Say something');
   const userAt = Date.now();
-  c.messages.push({ role: 'user', text, at: userAt, ...(files.length ? { files } : {}), ...(voice ? { voice: true } : {}) });
+  const looking = viewContext(context);
+  c.messages.push({ role: 'user', text, at: userAt, ...(files.length ? { files } : {}), ...(voice ? { voice: true } : {}), ...(looking ? { context: looking } : {}) });
   if (!c.title) c.title = (text.trim() || files.map((f) => f.name).join(', ')).slice(0, 80);
   c.status = 'thinking';
   save(c);
@@ -320,7 +339,8 @@ export function say(id: string, text: string, files: Attachment[] = [], { voice 
   // What the shared memory knows about this message (after the stable system prompt, so the cached prefix holds).
   const known = memoryBlock({ role: 'talk', relevantOnly: true, text: `${text} ${notices.join(' ')}`.slice(0, 4000), maxChars: 2500, limit: 8, exclude: memoryBlock({ role: 'talk', stableOnly: true }).ids });
   const recall = known.text ? `\n\n[From the shared memory, matching this message (memory_get <id> for more)]\n${known.text}` : '';
-  const prompt = `${notices.length ? `${notices.join('\n\n')}\n\n[J's message]\n` : ''}${text.trim() || 'See the attached files.'}${attached}${recall}`;
+  const seen = looking ? `\n\n[J is looking at ${looking} in the Studio dashboard: "this one" or "this" means it]` : '';
+  const prompt = `${notices.length ? `${notices.join('\n\n')}\n\n[J's message]\n` : ''}${text.trim() || 'See the attached files.'}${seen}${attached}${recall}`;
   runTurn(id, prompt, userAt);
   return getConversation(id)!;
 }

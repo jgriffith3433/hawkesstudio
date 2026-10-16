@@ -43,6 +43,8 @@
   async function loadList() {
     const r = await api('/api/talk');
     el('#talkBilling').textContent = `${r.billing} · ${r.model}`;
+    el('#dockConv').innerHTML = `<option value="">New conversation</option>${r.conversations.slice(0, 15).map((c) => `<option value="${c.id}">${esc(c.title ?? 'New conversation')}</option>`).join('')}`;
+    el('#dockConv').value = r.conversations.slice(0, 15).some((c) => c.id === current) ? current : '';
     el('#talkList').innerHTML = `<button class="small primary" id="talkNew">New conversation</button>` + r.conversations.map((c) =>
       `<div class="talk-item ${c.id === current ? 'on' : ''}" data-conv="${c.id}"><b>${esc(c.title ?? 'New conversation')}</b><span class="meta">${new Date(c.updated ?? c.created).toLocaleString()}${c.status === 'thinking' ? ' · thinking…' : ''}${c.cost ? ` · $${c.cost.toFixed(2)} API` : ''}</span></div>`).join('');
   }
@@ -98,7 +100,7 @@
   function idlePoll() {
     clearTimeout(poll);
     poll = setTimeout(() => {
-      if (location.hash !== '#talk' || document.hidden) return idlePoll();
+      if (!onScreen() || document.hidden) return idlePoll();
       if (++idleTicks % 2 === 0) loadList().catch(() => {});
       if (!current) return idlePoll();
       loadConversation().catch(() => idlePoll());
@@ -138,7 +140,7 @@
     pending = [];
     renderPending();
     try {
-      const c = await api('/api/talk', { method: 'POST', body: { conversation: current, message: text, files } });
+      const c = await api('/api/talk', { method: 'POST', body: { conversation: current, message: text, files, context: window.studioContext?.() ?? undefined } });
       current = c.id;
       await loadList();
       await loadConversation();
@@ -191,10 +193,56 @@
   // The header's height (it wraps on a phone), so Talk fills the rest of the screen.
   const setHdr = () => document.documentElement.style.setProperty('--hdr', `${document.querySelector('header')?.offsetHeight ?? 0}px`);
   addEventListener('resize', setHdr);
+  // It also grows when its status line fills in (the Talk dock and Activity sit below it).
+  if (window.ResizeObserver) new ResizeObserver(setHdr).observe(document.querySelector('header'));
   setHdr();
   // Dropping files on the conversation attaches them.
   el('#talkLog').addEventListener('dragover', (e) => e.preventDefault());
   el('#talkLog').addEventListener('drop', (e) => { e.preventDefault(); attach([...(e.dataTransfer?.files ?? [])]); });
+
+  // ------------------------------------------------------- the dock
+  // Talk beside every other tab: the one chat (.talk-main, with the call pane) moves between the Talk tab and the dock,
+  // so it is the same conversation, and a call (call.js) keeps its mic and voice while J switches tabs. A call going
+  // when J leaves the Talk tab opens the dock; closing the dock hides it, the call goes on (the 💬 button shows it).
+  let docked = localStorage.getItem('studio.talkDock') === '1';
+  const onTalkTab = () => tab === 'talk';
+  const onScreen = () => onTalkTab() || (docked && !el('#talkDock').hidden);
+  const ctxText = (c) => (c ? `Talk sees: ${c.tab}${c.id ? ` · ${c.kind ? `${c.kind} ` : ''}${c.id}` : ''}${c.label ? ` · ${c.label}` : ''}` : '');
+  function placeTalk() {
+    const open = docked && !onTalkTab();
+    const main = el('.talk-main');
+    const to = open ? el('#dockBody') : el('.talk');
+    if (main.parentElement !== to) to.append(main);
+    el('#talkDock').hidden = !open;
+    document.body.classList.toggle('dock-open', open);
+    el('#dockBtn').hidden = onTalkTab();
+    el('#dockBtn').classList.toggle('on', open);
+    if (open) {
+      el('#dockCtx').textContent = ctxText(window.studioContext?.());
+      if (!window.__talkLoaded) { window.__talkLoaded = true; window.loadTalk().catch(() => {}); } else loadConversation().catch(() => {});
+    }
+  }
+  function setDocked(on, keep = true) {
+    docked = on;
+    if (keep) localStorage.setItem('studio.talkDock', on ? '1' : '0');
+    placeTalk();
+  }
+  addEventListener('studio-tab', (e) => {
+    // Leaving Talk during a call: the call comes along in the dock.
+    if (e.detail !== 'talk' && document.body.classList.contains('in-call') && !docked) setDocked(true, false);
+    document.body.classList.remove('hdr-shown');
+    placeTalk();
+  });
+  // What Talk sees follows J's clicks (app.js remembers them first).
+  document.querySelector('main').addEventListener('click', () => {
+    if (!el('#talkDock').hidden) setTimeout(() => (el('#dockCtx').textContent = ctxText(window.studioContext?.())), 0);
+  });
+  el('#dockBtn').addEventListener('click', () => setDocked(!docked));
+  el('#dockClose').addEventListener('click', () => setDocked(false));
+  el('#dockFull').addEventListener('click', () => show('talk'));
+  el('#dockConv').addEventListener('change', (e) => { current = e.target.value || null; loadConversation().catch(() => {}); });
+  // On a phone the call hides Studio's header: ☰ Tabs brings it back to switch tabs, the call goes on.
+  el('#callTabs').addEventListener('click', () => { document.body.classList.toggle('hdr-shown'); setHdr(); });
 
   window.loadTalk = async () => { await loadList(); await loadConversation(); };
   /** The conversation on screen (a call started here continues it; call.js). */
@@ -207,4 +255,5 @@
     show('talk');
     window.loadTalk().catch(() => {});
   };
+  placeTalk();
 })();

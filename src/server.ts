@@ -231,7 +231,7 @@ const server = http.createServer(async (req, res) => {
       const b = await readJson(req);
       const c = b.conversation ? getConversation(String(b.conversation)) : startConversation();
       if (!c) return send(res, 404, { error: 'no such conversation' });
-      return send(res, 200, say(c.id, String(b.message ?? ''), Array.isArray(b.files) ? b.files : [], { voice: b.voice === true }));
+      return send(res, 200, say(c.id, String(b.message ?? ''), Array.isArray(b.files) ? b.files : [], { voice: b.voice === true, context: b.context }));
     }
     // Calls (talk.ts, dashboard/call.js): start one (a new conversation without one), check in every 20 s, hang up;
     // the answer's text streams as server-sent events.
