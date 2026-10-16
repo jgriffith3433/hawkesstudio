@@ -214,3 +214,19 @@ for (const t of todo) {
   }
 }
 saveState(state);
+
+// 4. The map of every project (hawkesstudio/docs/projects/AGENTS.md, edited in git) is the folder's AGENTS.md, with a
+// CLAUDE.md that loads it, so every Claude on the server (Talk, the agents, devtools) reads it. Cheap; every run.
+if (!DRY) {
+  try {
+    const src = path.join(ROOT, 'hawkesstudio', 'docs', 'projects', 'AGENTS.md');
+    const dst = path.join(ROOT, 'AGENTS.md');
+    const claude = path.join(ROOT, 'CLAUDE.md');
+    const want = fs.readFileSync(src, 'utf8');
+    const own = (f) => { if (HAWKES) fs.chownSync(f, HAWKES.uid, HAWKES.gid); };
+    if (!fs.existsSync(dst) || fs.readFileSync(dst, 'utf8') !== want) { fs.writeFileSync(dst, want); own(dst); say('installed the projects map as AGENTS.md'); }
+    if (!fs.existsSync(claude)) { fs.writeFileSync(claude, '@AGENTS.md\n'); own(claude); }
+  } catch (e) {
+    say(`could not install the projects map: ${e.message}`);
+  }
+}
