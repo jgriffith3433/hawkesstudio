@@ -287,3 +287,28 @@ body.in-call .dock-btn:not(.on)::after { content: '📞'; animation: call-pulse 
   .talk-dock { top: auto; left: 0; width: auto; height: 55dvh; border-left: none; border-top: 1px solid var(--line); border-radius: 14px 14px 0 0; box-shadow: 0 -6px 18px rgba(0, 0, 0, .45); }
   body.dock-open main { padding-bottom: 57dvh; }
 }
+/* Guide and drive (guide.js): Talk's outline and label, its pointer, the "Claude is driving" banner, and on a phone or
+   tablet the dock shrunk to a strip (the hold-to-talk button stays) while Talk shows something. */
+.talk-tool.guide { color: var(--accent); }
+#guideLayer > * { position: fixed; z-index: 30; }
+.guide-box { pointer-events: none; border: 3px solid var(--amber); border-radius: 8px; box-shadow: 0 0 0 4px rgba(0, 0, 0, .45), 0 0 18px rgba(255, 190, 70, .55); transition: left .2s, top .2s, width .2s, height .2s; }
+.guide-label { display: flex; align-items: center; gap: 6px; max-width: min(340px, calc(100vw - 16px)); background: var(--amber); color: #1c1300; font-size: 14px; font-weight: 600; line-height: 1.3; padding: 6px 6px 6px 10px; border-radius: 8px; box-shadow: 0 4px 14px rgba(0, 0, 0, .5); overflow-wrap: anywhere; }
+.guide-label .guide-x { background: none; border: none; color: inherit; font-size: 18px; padding: 0 4px; line-height: 1; }
+.guide-cursor { left: 0; top: 0; pointer-events: none; filter: drop-shadow(0 2px 3px rgba(0, 0, 0, .6)); }
+.guide-cursor::after { content: ''; position: absolute; left: -10px; top: -10px; width: 20px; height: 20px; border-radius: 50%; border: 2px solid var(--accent); opacity: 0; }
+.guide-cursor.click::after { animation: guide-click .5s ease-out; }
+@keyframes guide-click { from { opacity: 1; transform: scale(.4); } to { opacity: 0; transform: scale(2.2); } }
+.guide-banner { top: 10px; left: 50%; transform: translateX(-50%); display: flex; align-items: center; gap: 10px; background: var(--accent); color: #062018; font-weight: 700; padding: 8px 10px 8px 14px; border-radius: 22px; box-shadow: 0 6px 18px rgba(0, 0, 0, .5); white-space: nowrap; }
+.guide-banner button { background: #062018; color: #fff; border: none; font-weight: 700; padding: 6px 14px; border-radius: 16px; }
+#guideLayer [hidden] { display: none; }
+body.guide-driving main { outline: 2px dashed var(--accent); outline-offset: -2px; }
+@media (max-width: 1099px) {
+  body.guide-on .talk-dock { top: auto; left: 0; right: 0; width: auto; height: auto; max-height: 45dvh; border-left: none; border-top: 1px solid var(--line); border-radius: 14px 14px 0 0; padding: 6px 10px 8px; }
+  body.guide-on .talk-dock :is(#dockCtx, .talk-head, .talk-log, .talk-files, .talk-input, #talkBilling) { display: none; }
+  body.guide-on .talk-dock .call:not([hidden]) { display: block; padding: 6px; }
+  body.guide-on .talk-dock .call > :not(.call-ptt) { display: none; }
+  body.guide-on .talk-dock .call-ptt { padding: 14px; font-size: 17px; }
+  body.guide-on .talk-dock .dock-head::after { content: 'Talk is showing you something: tap here for the chat'; font-size: 12px; color: var(--dim); flex: 2; }
+  body.guide-on.dock-open main { padding-bottom: 160px; }
+  .guide-banner { top: auto; bottom: calc(env(safe-area-inset-bottom, 0px) + 150px); font-size: 15px; }
+}

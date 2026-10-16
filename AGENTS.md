@@ -104,6 +104,8 @@ the service detached; restart it after changing `src/`. The MCP server (`bin/stu
 - `memory_search`, `memory_get`, `memory_write`, `memory_curate` (the shared memory; agents get a server with only search,
   get and write, as candidates)
 - `studio_workspace`, `studio_fastlane` (Talk's workspace and fast lane, in the agent sandbox)
+- `studio_guide` (Talk shows J around the dashboard he has open, and clicks or types for him when he asks; the page
+  refuses approve, merge, deploy, rollback, delete, settings, budgets: docs/daily.md, "Talk showing J around")
 
 **Talk as J's PM** (`src/roadmap.ts`, `src/pm.ts`, `src/acceptance.ts`, `src/scout.ts`; docs/daily.md, "Running the
 studio with Talk"): J sets direction in Talk, Talk keeps the roadmap (items with acceptance criteria, tasks under them),
@@ -148,6 +150,7 @@ a budget (`approveGpu`, `gpuCleared`, `tasksAwaitingGpu`; the PM asks him once);
 | `deploy/` | Server setup (`provision.mjs`, `deploy.mjs`: units, Caddy, DNS, keys), `hawkes-pull.mjs` (the server's pull-deploy), secrets and token helpers |
 | `src/talk.ts`, `dashboard/talk.js` | Talk: Claude Code on the server; streaming, stop, rename/delete, attachments (Gen blobs), Max-plan vs API marker, Studio's notices and the turns Studio starts to explain them (`studioSays`) |
 | `dashboard/call.js`, `dashboard/kokoro-worker.js` (+ `talk.ts` calls) | Calls: J talks to Talk by voice (📞). Browser speech recognition and voice (free, the default), the answer spoken sentence by sentence from `GET /api/talk/<id>/events`, a warm Claude Code process per call (`startCall`, told the device), push to talk (the button, Space) that cuts Talk off, hands-free with the mic off while Talk speaks and echo dropped, Kokoro in the browser (optional, free) and ElevenLabs Flash through Gen (optional, paid); docs/daily.md, "Talking to Talk by voice" |
+| `src/guide.ts`, `dashboard/guide.js` | Guide and drive: Talk's `studio_guide` actions wait as a batch for the conversation; the dashboard showing it claims and runs them (tabs, opening items, outline and label, `look`; clicks and typing only in J's turns), each result a line in the chat; the off-limits rules, re-finding elements and J's take-back live in the page (`HawkesGuide`, tested in `test/guide.test.ts`); docs/daily.md, "Talk showing J around" |
 | `src/settings.ts`, `dashboard/settings.js` | The ⚙ Settings tab and `/api/settings`: calls, agents, PM, notifications, budgets in one API, stored in Studio (follows J across devices); Talk's `studio_settings`, cost-raising changes need J's quoted yes; docs/daily.md, "Settings" |
 | `src/followup.ts` | Results back to Talk: the conversation a call came from (`X-Talk-Conversation`, sent by Talk's MCP server) is the origin of the changes and runs it starts; finished ones are posted into it (docs/cloud.md, "Talk") |
 | `src/roadmap.ts` | The roadmap (items, tasks, their statuses), comment threads, questions (agents' and J's decisions), the PM decision log |

@@ -279,6 +279,36 @@ tells Talk the device (phone, tablet or computer, from the page); Talk never ass
   finding, report, playtest, run, roadmap item: `studioContext()` in app.js, `viewContext()` in talk.ts), shown on the
   dock as "Talk sees: …", so "this one" means it.
 
+## Talk showing J around (guide and drive)
+
+In the chat and on a call, Talk can steer the dashboard J has open on that conversation (`studio_guide`; `src/guide.ts`,
+`dashboard/guide.js`), on a computer, tablet or phone.
+
+- **Guide** (whenever it helps, e.g. "where do I see last night's playtests?"): switch tabs, open a report, run, change,
+  finding or playtest, scroll to something and outline it with a short label (amber, with × to clear; it clears itself
+  after 45 s or with Esc), clear it. `look` tells Talk what is on screen: the tab, the open item, and the buttons, fields
+  and items with selectors it can point at. Nothing is clicked.
+- **Drive** (only when J asks: "do it for me", "take over", "fill it in"): Talk clicks buttons and types into fields.
+  A pointer moves to each target and a "Claude is driving" banner with Stop shows while it works. Any click, tap or key
+  of J's (Stop included) stops it at once, the rest of the batch is skipped, and driving stays off until J writes or
+  speaks again. Studio refuses driving in a turn Studio started (results, PM turns), and all steering there.
+- **What Talk never presses, enforced in the page** (`HawkesGuide.offLimits` in guide.js, whatever Talk sends):
+  approve, merge, deploy / go live, rollback, delete, drop, undo, close a change, the Inbox's answer buttons, everything
+  on Settings, the Costs tab's budget, alert and refresh buttons, the PM's switches and limits, beta-conflict
+  resolution, Talk's own controls (the chat, the call), and the go-live and rollback dialogs. Markup can mark more with
+  `data-guide="off"`; words on a control (approve, merge, deploy, go live, rollback, delete, drop, undo, budget, limit,
+  cost, alert) are enough on their own. `MERGE`, `DEPLOY` and `ROLLBACK` are never typed (refused by Studio and the
+  page). Talk can still point at those buttons for J to press.
+- **Safe on a changing page:** each target is found again right before the action (by selector and/or its visible
+  words, visible ones only, the innermost match); driving needs exactly one match; after the pointer moves the element
+  is found again, and if it went away, changed or J moved to another tab the action is skipped and Talk told why.
+- **J sees every action:** each one is a short line in the chat (🧭 guide, 🖱 click, ⌨ typing, ⚠ refused or failed),
+  and Talk gets the same results back. One page runs a batch: the visible dashboard showing that conversation claims it
+  (several open tabs or devices: the first one); if none takes it within 8 s, Talk hears so and says it in words.
+- **Phones and tablets:** while Talk shows or does something the dock shrinks to a strip at the bottom (the hold-to-talk
+  button stays in it during a call; a tap on the strip brings the chat back), the element is scrolled to the middle, and
+  the label stays on screen. Leaving the Talk tab to show something opens the dock.
+
 ## Settings
 
 The ⚙ Settings tab (`dashboard/settings.js`, `GET/POST /api/settings`, `src/settings.ts`) has everything J can set,

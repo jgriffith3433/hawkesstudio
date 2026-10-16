@@ -73,6 +73,8 @@
     }
     const c = await api(`/api/talk/${current}`);
     if (c.error) { current = null; return loadConversation(); }
+    // Talk showing J around (studio_guide): this page runs what waits for the conversation (guide.js).
+    if (c.guide?.length) window.studioGuide?.offer(c.id, c.guide);
     const thinking = c.status === 'thinking';
     const sig = `${c.id}|${c.title}|${c.messages.length}|${c.status}|${c.partial ?? ''}|${JSON.stringify(c.messages.at(-1)?.turn ?? null)}`;
     if (sig !== shown) {
@@ -81,7 +83,7 @@
       const log = el('#talkLog');
       const atBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 80;
       log.innerHTML = c.messages.map((m) => (m.role === 'tool'
-        ? `<div class="talk-tool">⚙ ${esc(m.text)}</div>`
+        ? m.tool === 'guide' ? `<div class="talk-tool guide">${esc(m.text)}</div>` : `<div class="talk-tool">⚙ ${esc(m.text)}</div>`
         : m.notice
           ? `<div class="talk-msg assistant notice"><span class="talk-who">Studio</span>${md(m.text)}</div>`
           : `<div class="talk-msg ${m.role}">${m.role === 'user' ? (m.voice ? '<span class="talk-voice" title="Said on a call">🎙</span>' : '') + esc(m.text).replace(/\n/g, '<br>') + fileChips(m.files) : md(m.text)}</div>`) + (turnMark(m.turn) ?? '')).join('')
@@ -244,6 +246,8 @@
   // On a phone the call hides Studio's header: ☰ Tabs brings it back to switch tabs, the call goes on.
   el('#callTabs').addEventListener('click', () => { document.body.classList.toggle('hdr-shown'); setHdr(); });
 
+  /** Opens the dock without remembering it (guide.js, when Talk takes J away from the Talk tab). */
+  window.talkDock = { open: () => { if (!docked) setDocked(true, false); } };
   window.loadTalk = async () => { await loadList(); await loadConversation(); };
   /** The conversation on screen (a call started here continues it; call.js). */
   window.talkConversation = () => current;
