@@ -72,6 +72,8 @@ export function warmDeps(worktree: string, repoTop: string, log: (s: string) => 
       ? (() => { try { fs.cpSync(path.join(donor, 'node_modules'), path.join(dest, 'node_modules'), { recursive: true, verbatimSymlinks: true }); return true; } catch { return false; } })()
       : spawnSync('cp', ['-a', path.join(donor, 'node_modules'), path.join(dest, 'node_modules')], { timeout: 5 * 60_000 }).status === 0;
     if (!ok) { fs.rmSync(path.join(dest, 'node_modules'), { recursive: true, force: true }); continue; }
+    // The agent sandbox's user (same group) writes there too: Vite's cache, an npm install.
+    if (process.platform !== 'win32') spawnSync('chmod', ['-R', 'g+rwX', path.join(dest, 'node_modules')], { timeout: 5 * 60_000 });
     for (const s of STAMPS) try { fs.writeFileSync(path.join(dest, 'node_modules', s), hash); } catch { /* fine */ }
     warmed.push(rel || '.');
     log(`warm start: node_modules${rel ? ` in ${rel}` : ''} copied from ${path.relative(PROJECTS, donor) || donor} (${Math.round((Date.now() - t0) / 1000)} s)`);
