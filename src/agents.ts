@@ -593,6 +593,12 @@ async function workInfra(id: string, note?: string) {
       if (!f.ok) throw new Error(`fetch failed: ${f.err}`);
       const w = git(repoDir, ['worktree', 'add', '-b', c.branch, c.worktree, `origin/${c.base}`]);
       if (!w.ok) throw new Error(`worktree failed: ${w.err}`);
+    } else if (note) {
+      // Another pass: bring the branch up to date with main first (main may have moved, or the merge conflicted).
+      git(repoDir, ['fetch', '--quiet', 'origin']);
+      const m = git(c.worktree, ['merge', '--no-edit', `origin/${c.base}`]);
+      if (!m.ok) git(c.worktree, ['merge', '--abort']);
+      addLog(id, m.ok ? `merged origin/${c.base} into the branch` : `merging origin/${c.base} conflicted; the agent works from the branch as it was`);
     }
     await npmCi(id, c.worktree);
     const brief = writeInfraBrief(c, t, note);
