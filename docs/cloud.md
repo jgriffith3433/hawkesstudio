@@ -165,6 +165,22 @@ path (to read it, images too) and blob id (for Gen inputs). Under each answer, *
 subscription (no extra cost), **💳 $0.042 API** means it was billed to the API key (when `CLAUDE_CODE_OAUTH_TOKEN`
 is missing). `TALK_MODEL` picks the model; `TALK_CLAUDE` the Claude Code executable.
 
+**Results come back to the conversation** (`src/followup.ts`). Each conversation's Studio MCP server gets
+`TALK_CONVERSATION` (its `.data/talk-mcp/<id>.json`) and sends it as `X-Talk-Conversation` on its calls; the API records
+it as the origin of what the call starts: agent changes (`studio_fix`, `studio_task`, revisions), the beta run after an
+approval, `studio_playtest` / `studio_build` / `studio_unity_test` / `studio_run`, beta runs, and the live playtest after a
+go live or rollback. Every 10 s Studio looks for finished ones (a change ready or failed, a run done or failed) and posts a
+notice into that conversation (labelled **Studio**), then starts a Talk turn by itself so Claude explains it ("Studio
+asked for this answer"). Results within a minute share one turn (`TALK_FOLLOWUP_BATCH_MS`); a conversation never runs two
+turns at once (results wait for the running turn, and J's own message answers them too). Work no conversation started
+(the daily run, dashboard buttons) only goes to J's phone. Infra merges into main aren't reported (watch `/api/self-deploys`).
+
+**Activity** (`dashboard/activity.js`, `GET /api/activity`, `src/activity.ts`): the header's Activity button (its badge
+counts what is running) opens a drawer of everything in the background: agent changes (status, what they're doing now,
+time so far, who started them, log, PR, preview), Studio runs with their current steps, Hawkes Gen jobs, Talk answers in
+progress, and what finished in the last 15 minutes. It refreshes every 3 s; on a wide screen it sits beside the page.
+The Changes tab refreshes itself every 5 s and keeps opened summaries and logs open.
+
 ## The agent loop
 
 1. The daily run finds bugs.

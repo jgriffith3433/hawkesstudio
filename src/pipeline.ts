@@ -22,6 +22,7 @@ import { syncRepos, syncRepo, repoMap, betaFolders, isServer, BETA, BRANCH } fro
 import { betaLane, prepareBeta, playedLocal, resetBetaSite, saveBetaBuild, betaBuild, betaSiteDir, betaSiteFolder, betaPort, shaOf, repoDirs } from './beta.ts';
 import { notifyOnce } from './notify.ts';
 import { runGenJob, playtestExtras, playtestData, playtestRunMs, REVIEW_RUN_MS } from './playtests.ts';
+import { tagRun } from './followup.ts';
 
 export type RunOptions = {
   products?: string[];
@@ -36,6 +37,8 @@ export type RunOptions = {
   noReview?: boolean;
   noChecks?: boolean;
   focus?: string;
+  /** The Talk conversation that started it: the result is reported there (followup.ts). */
+  origin?: string | null;
 };
 
 // -------------------------------------------------------------- run state
@@ -88,6 +91,7 @@ export function startRun(kind: string, options: RunOptions = {}) {
   const products = (options.products?.length ? options.products.map((p) => getProduct(p)) : loadProducts()).map((p) => p.id);
   const id = newId('r');
   db.prepare('INSERT INTO runs (id, kind, status, detail, products, options, started) VALUES (?, ?, ?, ?, ?, ?, ?)').run(id, kind, 'running', 'starting', J(products), J(options), Date.now());
+  tagRun(id, options.origin);
   const done = (async () => {
     try {
       await runAll(id, products, options);
@@ -408,10 +412,11 @@ export async function playtestProduct(run: string, p: Product, t: Playtest, { re
 }
 
 /** Runs the pipeline pieces on their own (from the API, CLI or MCP) as a small run. */
-export function startPartial(kind: 'build' | 'playtest' | 'test', productId: string, opts: { scenario?: string; where?: 'local' | 'live'; device?: 'desktop' | 'phone'; mode?: string; force?: boolean; review?: boolean; focus?: string; platform?: 'EditMode' | 'PlayMode'; category?: string } = {}) {
+export function startPartial(kind: 'build' | 'playtest' | 'test', productId: string, opts: { scenario?: string; where?: 'local' | 'live'; device?: 'desktop' | 'phone'; mode?: string; force?: boolean; review?: boolean; focus?: string; platform?: 'EditMode' | 'PlayMode'; category?: string; origin?: string | null } = {}) {
   const p = getProduct(productId);
   const id = newId('r');
   db.prepare('INSERT INTO runs (id, kind, status, detail, products, options, started) VALUES (?, ?, ?, ?, ?, ?, ?)').run(id, kind, 'running', `${kind} ${p.id}`, J([p.id]), J(opts), Date.now());
+  tagRun(id, opts.origin);
   const done = (async () => {
     try {
       if (kind === 'build') await buildProduct(id, p, { force: opts.force ?? true });
@@ -432,10 +437,11 @@ export function startPartial(kind: 'build' | 'playtest' | 'test', productId: str
  * background. Its pre-deploy build is committed to beta, Unity builds beta, the beta site is rebuilt, and (on the
  * server) the first local scenario is playtested and reviewed.
  */
-export function startBeta(productId: string, { focus }: { focus?: string } = {}) {
+export function startBeta(productId: string, { focus, origin }: { focus?: string; origin?: string | null } = {}) {
   const p = getProduct(productId);
   const id = newId('r');
   db.prepare('INSERT INTO runs (id, kind, status, detail, products, options, started) VALUES (?, ?, ?, ?, ?, ?, ?)').run(id, 'beta', 'running', `beta ${p.id}`, J([p.id]), J({ focus }), Date.now());
+  tagRun(id, origin);
   const done = (async () => {
     try {
       const lane = betaLane();
@@ -461,13 +467,14 @@ export function startBeta(productId: string, { focus }: { focus?: string } = {})
 }
 
 /** Makes a product's missing or out-of-date assets (or only some, or forced) as a run. */
-export function startAssets(productId: string, { only, force = false }: { only?: string[]; force?: boolean } = {}) {
+export function startAssets(productId: string, { only, force = false, origin }: { only?: string[]; force?: boolean; origin?: string | null } = {}) {
   const p = getProduct(productId);
   const st = assetStatus(p.id);
   if (!st.manifest) throw new Error(`${p.name} has no hawkes.assets.json`);
   const todo = st.assets.filter((a) => (only?.length ? only.includes(a.id) : force || a.status !== 'current'));
   const id = newId('r');
   db.prepare('INSERT INTO runs (id, kind, status, detail, products, options, started) VALUES (?, ?, ?, ?, ?, ?, ?)').run(id, 'assets', 'running', `assets ${p.id}: ${todo.length}`, J([p.id]), J({ only, force }), Date.now());
+  tagRun(id, origin);
   const done = (async () => {
     await Promise.all(todo.map(async (a) => {
       const s = startStep(id, p.id, 'asset', a.id, a.status);

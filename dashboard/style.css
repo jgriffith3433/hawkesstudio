@@ -190,3 +190,31 @@ pre { background: var(--panel2); padding: 10px; border-radius: 8px; overflow: au
 #notifyBox p { margin: 6px 0; }
 .notify-topic { word-break: break-all; user-select: all; }
 .golive table.commits { width: 100%; border-collapse: collapse; font-size: 13px; } .golive table.commits td { padding: 3px 6px; border-top: 1px solid var(--line); vertical-align: top; } .golive input { background: var(--panel2); color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; }
+
+/* Talk: Studio's notices (results of work this conversation started) and the answers Studio asked for. */
+.talk-msg.notice { border-left: 3px solid var(--violet); background: #191a26; }
+.talk-who { display: inline-block; font-size: 10.5px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; color: var(--violet); border: 1px solid #4a3f73; border-radius: 9px; padding: 0 7px; margin-bottom: 4px; }
+.talk-turn .talk-who { margin: 0; padding: 0 5px; }
+
+/* Activity: the drawer of everything running (activity.js), opened from the header; docked beside the page when wide. */
+.act-btn { display: flex; align-items: center; gap: 6px; }
+.act-btn.on { background: var(--panel2); border-color: #3a4552; }
+.act-count { background: var(--amber); color: #1b1300; font-weight: 700; font-size: 11px; border-radius: 9px; padding: 0 6px; min-width: 18px; text-align: center; }
+.act-count.zero { background: var(--panel2); color: var(--dim); }
+.activity { position: fixed; right: 0; top: var(--hdr, 56px); bottom: 0; width: 360px; background: var(--panel); border-left: 1px solid var(--line); overflow: auto; z-index: 4; padding: 10px 12px 40px; }
+.activity[hidden] { display: none; }
+.act-head { display: flex; align-items: center; gap: 8px; position: sticky; top: -10px; background: var(--panel); padding: 4px 0 8px; }
+.act-head .meta { flex: 1; }
+.activity h4 { margin: 12px 0 6px; font-size: 13px; }
+.act-item { background: var(--panel2); border: 1px solid var(--line); border-radius: 8px; padding: 7px 9px; margin-bottom: 6px; font-size: 12.5px; }
+.act-top { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.act-time { margin-left: auto; color: var(--dim); font-size: 11.5px; font-variant-numeric: tabular-nums; }
+.act-title { margin: 2px 0; }
+.act-now { color: var(--text); opacity: .85; margin: 2px 0; overflow-wrap: anywhere; }
+.act-step { color: var(--dim); margin: 2px 0 2px 4px; overflow-wrap: anywhere; }
+.act-log pre { max-height: 220px; overflow: auto; font-size: 11px; white-space: pre-wrap; }
+.act-none { padding: 0 2px 4px; }
+.act-recent { margin-top: 12px; }
+.act-recent summary { cursor: pointer; margin-bottom: 6px; }
+@media (min-width: 1200px) { body.act-open main { margin-right: 360px; } }
+@media (max-width: 760px) { .activity { width: 100%; border-left: none; } }

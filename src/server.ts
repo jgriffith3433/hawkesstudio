@@ -24,6 +24,8 @@ import { handleMcp } from './mcp-http.ts';
 import { listDev, devStatus, startDev, stopDev, flushDev, resolveDev, sinceLive, startDevService } from './dev.ts';
 import { startFronts } from './dev-front.ts';
 import { selfDeploys, selfBusy } from './selfdeploy.ts';
+import { originOf, tagChange, startFollowups } from './followup.ts';
+import { activity } from './activity.ts';
 
 const MIME: Record<string, string> = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.json': 'application/json', '.md': 'text/markdown; charset=utf-8' };
 
@@ -85,12 +87,16 @@ const server = http.createServer(async (req, res) => {
   const route = url.pathname;
   const method = req.method ?? 'GET';
   const q = (k: string) => url.searchParams.get(k) ?? undefined;
+  // The Talk conversation behind this call (Talk's MCP server sends it): what it starts reports back there.
+  const origin = originOf(req);
   try {
     if (route === '/mcp' || route.startsWith('/mcp/')) return await handleMcp(req, res, route);
     if (route === '/api/config') return send(res, 200, { genUrl: process.env.GEN_PUBLIC_URL || 'http://127.0.0.1:8790' });
     if (route === '/api/health') return send(res, 200, { ok: true, name: 'hawkesstudio', gen: await genUp(), run: activeRun()?.id ?? null });
     if (route === '/api/self-deploys') return send(res, 200, { deploys: selfDeploys(Number(q('limit') ?? 30)), busy: selfBusy() });
     if (route === '/api/overview') return send(res, 200, await overview());
+    // Everything running in the background (the dashboard's Activity panel).
+    if (route === '/api/activity') return send(res, 200, await cached('activity', 1500, activity));
     if (route === '/api/products' && method === 'GET') return send(res, 200, { products: loadProducts() });
     let m = /^\/api\/products\/([\w-]+)$/.exec(route);
     if (m && method === 'GET') return send(res, 200, { product: getProduct(m[1]), git: gitState(getProduct(m[1]).repo) });
@@ -101,7 +107,7 @@ const server = http.createServer(async (req, res) => {
       const b = await readJson(req);
       const opts: RunOptions = {
         products: Array.isArray(b.products) ? b.products : undefined, noBuild: !!b.noBuild, forceBuild: !!b.forceBuild,
-        scenarios: Array.isArray(b.scenarios) ? b.scenarios : undefined, where: b.where, noReview: !!b.noReview, noChecks: !!b.noChecks, focus: b.focus,
+        scenarios: Array.isArray(b.scenarios) ? b.scenarios : undefined, where: b.where, noReview: !!b.noReview, noChecks: !!b.noChecks, focus: b.focus, origin,
       };
       const { id } = startRun(b.kind === 'daily' ? 'daily' : 'manual', opts);
       return send(res, 200, { ok: true, run: id });
@@ -122,15 +128,15 @@ const server = http.createServer(async (req, res) => {
     }
     if (route === '/api/build' && method === 'POST') {
       const b = await readJson(req);
-      return send(res, 200, { ok: true, run: startPartial('build', String(b.product), { force: b.force !== false }).id });
+      return send(res, 200, { ok: true, run: startPartial('build', String(b.product), { force: b.force !== false, origin }).id });
     }
     if (route === '/api/test' && method === 'POST') {
       const b = await readJson(req);
-      return send(res, 200, { ok: true, run: startPartial('test', String(b.product), { platform: b.platform === 'PlayMode' ? 'PlayMode' : 'EditMode', category: b.category }).id });
+      return send(res, 200, { ok: true, run: startPartial('test', String(b.product), { platform: b.platform === 'PlayMode' ? 'PlayMode' : 'EditMode', category: b.category, origin }).id });
     }
     if (route === '/api/playtest' && method === 'POST') {
       const b = await readJson(req);
-      return send(res, 200, { ok: true, run: startPartial('playtest', String(b.product), { scenario: b.scenario, where: b.where, device: b.device === 'phone' ? 'phone' : undefined, mode: b.mode, review: b.review, focus: b.focus }).id });
+      return send(res, 200, { ok: true, run: startPartial('playtest', String(b.product), { scenario: b.scenario, where: b.where, device: b.device === 'phone' ? 'phone' : undefined, mode: b.mode, review: b.review, focus: b.focus, origin }).id });
     }
 
     // Playtests: every run with its video, screenshots and review (dashboard Playtests tab), trends.
@@ -157,23 +163,23 @@ const server = http.createServer(async (req, res) => {
     if (m && method === 'GET') return send(res, 200, assetStatus(m[1]));
     if (m && method === 'POST') {
       const b = await readJson(req);
-      const r = startAssets(m[1], { only: Array.isArray(b.only) ? b.only : undefined, force: !!b.force });
+      const r = startAssets(m[1], { only: Array.isArray(b.only) ? b.only : undefined, force: !!b.force, origin });
       return send(res, 200, { ok: true, run: r.id, todo: r.todo });
     }
 
     // Go live (gated): the plan, then "DEPLOY <product>" fast-forwards main to the playtested beta (deploy.ts).
     m = /^\/api\/deploy\/([\w-]+)$/.exec(route);
     if (m && method === 'GET') return send(res, 200, deployPlan(m[1]));
-    if (m && method === 'POST') return send(res, 200, await deploy(m[1], await readJson(req)));
+    if (m && method === 'POST') return send(res, 200, await deploy(m[1], { ...(await readJson(req)), origin }));
     m = /^\/api\/rollback\/([\w-]+)$/.exec(route);
     if (m && method === 'GET') return send(res, 200, rollbackPlan(m[1]));
-    if (m && method === 'POST') return send(res, 200, await rollback(m[1], await readJson(req)));
+    if (m && method === 'POST') return send(res, 200, await rollback(m[1], { ...(await readJson(req)), origin }));
     // Beta brought up to date and played (pre-deploy build, Unity build, beta site, a local playtest). Nothing goes live.
     m = /^\/api\/beta\/([\w-]+)$/.exec(route);
     if (m && method === 'POST') {
       const b = await readJson(req);
       const { startBeta } = await import('./pipeline.ts');
-      return send(res, 200, { ok: true, run: startBeta(m[1], { focus: b.focus }).id });
+      return send(res, 200, { ok: true, run: startBeta(m[1], { focus: b.focus, origin }).id });
     }
 
     // Developing on beta (dev.ts): <sub>.hawkesgen.com/dev/, the beta working copy and its dev server.
@@ -215,15 +221,21 @@ const server = http.createServer(async (req, res) => {
     if (route === '/api/changes' && method === 'GET') return send(res, 200, { changes: listChanges({ status: q('status'), product: q('product') }), today: costToday(), settings: agentSettings() });
     if (route === '/api/changes' && method === 'POST') {
       const b = await readJson(req);
-      if (b.request) return send(res, 200, { ok: true, change: startTask(String(b.product), String(b.request)) });
-      return send(res, 200, { ok: true, change: startFix(String(b.product), Array.isArray(b.findings) ? b.findings.map(String) : [String(b.finding)]) });
+      const by = origin ? 'Talk' : typeof b.by === 'string' ? b.by.slice(0, 60) : null;
+      const change = b.request ? startTask(String(b.product), String(b.request)) : startFix(String(b.product), Array.isArray(b.findings) ? b.findings.map(String) : [String(b.finding)]);
+      tagChange(change, origin, by);
+      return send(res, 200, { ok: true, change });
     }
     m = /^\/api\/changes\/(c_[0-9a-f]+)(?:\/(approve|revise|close))?$/.exec(route);
     if (m && method === 'GET' && !m[2]) return send(res, 200, getChange(m[1]) ?? { error: 'no such change' });
     if (m && method === 'POST' && m[2]) {
       const b = await readJson(req);
-      if (m[2] === 'approve') return send(res, 200, await approve(m[1], { confirm: b.confirm, by: b.by ?? 'J' }));
-      if (m[2] === 'revise') return send(res, 200, revise(m[1], String(b.note ?? ''), b.by ?? 'J'));
+      if (m[2] === 'approve') return send(res, 200, await approve(m[1], { confirm: b.confirm, by: b.by ?? 'J', origin }));
+      if (m[2] === 'revise') {
+        const r = revise(m[1], String(b.note ?? ''), b.by ?? 'J');
+        tagChange(m[1], origin);
+        return send(res, 200, r);
+      }
       if (m[2] === 'close') return send(res, 200, await close(m[1], b.by ?? 'J'));
     }
     if (route === '/api/agents/settings' && method === 'GET') return send(res, 200, agentSettings());
@@ -358,6 +370,8 @@ server.listen(PORT, '127.0.0.1', () => {
   // /dev/ on each beta site: the front doors Caddy sends /dev/* to, and the beta working copies' auto-commit.
   startFronts();
   startDevService();
+  // Results of work Talk started go back into its conversation.
+  startFollowups();
   // Findings recreated after J marked a matching one won't-fix (before the backlog matched those) go back to it.
   void import('./backlog.ts').then(({ foldIntoWontfix }) => {
     const n = foldIntoWontfix();

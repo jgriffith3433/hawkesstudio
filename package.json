@@ -9,7 +9,7 @@
     "start": "node --disable-warning=ExperimentalWarning src/server.ts",
     "daily": "node --disable-warning=ExperimentalWarning src/cli.ts daily",
     "studio": "node --disable-warning=ExperimentalWarning src/cli.ts",
-    "typecheck": "tsc -p . && node --check dashboard/app.js && node --check dashboard/talk.js && node --check dashboard/playtests.js",
+    "typecheck": "tsc -p . && node --check dashboard/app.js && node --check dashboard/talk.js && node --check dashboard/playtests.js && node --check dashboard/activity.js",
     "test": "node --disable-warning=ExperimentalWarning --test \"test/**/*.test.ts\""
   },
   "devDependencies": {

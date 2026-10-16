@@ -1,6 +1,8 @@
 // Talk: chat with Claude about the products (Studio's /api/talk). Loaded after app.js (uses its api, esc, view, GEN).
-// The answer streams in (the conversation's `partial` text, polled while Claude is thinking). Files are uploaded into
-// Hawkes Gen as blobs and sent with the message.
+// The answer streams in (the conversation's `partial` text, polled while Claude is thinking). While idle it is polled
+// every few seconds too, so Studio's notices (results of work this conversation started) and the turns Studio starts to
+// explain them appear without a reload, labelled "Studio". Files are uploaded into Hawkes Gen as blobs and sent with
+// the message.
 (() => {
   const el = (s) => document.querySelector(s);
   // A deep link (?conversation=<id>#talk, from the morning brief notification) opens that conversation.
@@ -47,7 +49,7 @@
   const kb = (n) => (n >= 1048576 ? `${(n / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1024))} KB`);
   const secs = (ms) => (ms >= 60000 ? `${Math.round(ms / 60000)} min` : `${Math.round(ms / 1000)} s`);
   /** Who paid for an answer: the Max subscription (no extra cost) or the API key (per token). */
-  const turnMark = (t) => t && `<div class="talk-turn ${t.billing}" title="${t.billing === 'api' ? 'Billed to the API key, per token' : `Covered by the Claude Max subscription${t.cost ? ` (about $${t.cost.toFixed(2)} at API prices)` : ''}`}">${t.billing === 'api' ? `💳 $${t.cost.toFixed(3)} API` : '✓ Max plan'}${t.ms ? ` · ${secs(t.ms)}` : ''}${t.stopped ? ' · stopped' : ''}</div>`;
+  const turnMark = (t) => t && `<div class="talk-turn ${t.billing}" title="${t.auto ? 'Studio started this answer when results came in. ' : ''}"${t.billing === 'api' ? 'Billed to the API key, per token' : `Covered by the Claude Max subscription${t.cost ? ` (about $${t.cost.toFixed(2)} at API prices)` : ''}`}">${t.billing === 'api' ? `💳 $${t.cost.toFixed(3)} API` : '✓ Max plan'}${t.ms ? ` · ${secs(t.ms)}` : ''}${t.stopped ? ' · stopped' : ''}${t.auto ? ' · <span class="talk-who">Studio</span> asked for this answer' : ''}</div>`;
   const fileChips = (files) => (files?.length ? `<div class="talk-chips">${files.map((f) => `<span class="talk-chip" title="${esc(f.blob)}">${/^image\//.test(f.type ?? '') ? '🖼' : '📄'} ${esc(f.name)}${f.size ? ` · ${kb(f.size)}` : ''}</span>`).join('')}</div>` : '');
 
   function renderHead(c) {
@@ -64,7 +66,7 @@
       el('#talkLog').innerHTML = `<div class="empty">Ask about the products: "What did last night's trial find?", "What are the agents working on?", "Make the Sick Of It shop screen feel more like Hell", "Is the PH Origins fix good to ship?"</div>`;
       el('#talkSend').disabled = false;
       el('#talkStop').hidden = true;
-      return;
+      return idlePoll();
     }
     const c = await api(`/api/talk/${current}`);
     if (c.error) { current = null; return loadConversation(); }
@@ -77,14 +79,29 @@
       const atBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 80;
       log.innerHTML = c.messages.map((m) => (m.role === 'tool'
         ? `<div class="talk-tool">⚙ ${esc(m.text)}</div>`
-        : `<div class="talk-msg ${m.role}">${m.role === 'user' ? esc(m.text).replace(/\n/g, '<br>') + fileChips(m.files) : md(m.text)}</div>`) + (turnMark(m.turn) ?? '')).join('')
+        : m.notice
+          ? `<div class="talk-msg assistant notice"><span class="talk-who">Studio</span>${md(m.text)}</div>`
+          : `<div class="talk-msg ${m.role}">${m.role === 'user' ? esc(m.text).replace(/\n/g, '<br>') + fileChips(m.files) : md(m.text)}</div>`) + (turnMark(m.turn) ?? '')).join('')
         + (thinking && c.partial ? `<div class="talk-msg assistant streaming">${md(c.partial)}<span class="talk-caret"></span></div>` : '')
-        + (thinking && !c.partial ? '<div class="talk-tool">Claude is thinking…</div>' : '');
+        + (thinking && !c.partial ? `<div class="talk-tool">${c.messages.at(-1)?.notice ? 'Studio asked Claude to explain the result…' : 'Claude is thinking…'}</div>` : '');
       if (atBottom || thinking) log.scrollTop = log.scrollHeight;
     }
     el('#talkSend').disabled = thinking;
     el('#talkStop').hidden = !thinking;
     if (thinking) poll = setTimeout(() => { loadConversation().catch(() => {}); loadList().catch(() => {}); }, 700);
+    else idlePoll();
+  }
+
+  /** While Talk is on screen, new notices and Studio's own turns show up by themselves (every 3 s; the list every 6 s). */
+  let idleTicks = 0;
+  function idlePoll() {
+    clearTimeout(poll);
+    poll = setTimeout(() => {
+      if (location.hash !== '#talk' || document.hidden) return idlePoll();
+      if (++idleTicks % 2 === 0) loadList().catch(() => {});
+      if (!current) return idlePoll();
+      loadConversation().catch(() => idlePoll());
+    }, 3000);
   }
 
   function renderPending() {
@@ -200,4 +217,12 @@
   });
 
   window.loadTalk = async () => { await loadList(); await loadConversation(); };
+  /** Opens a conversation (the Activity panel's links). */
+  window.openTalk = (id) => {
+    current = id;
+    el('.talk').classList.remove('lists');
+    window.__talkLoaded = true;
+    show('talk');
+    window.loadTalk().catch(() => {});
+  };
 })();

@@ -116,7 +116,7 @@ export function deployPlan(productId: string) {
   };
 }
 
-export async function deploy(productId: string, { confirm, by = 'J', mergeMain }: { confirm?: string; by?: string; mergeMain?: boolean; message?: string }) {
+export async function deploy(productId: string, { confirm, by = 'J', mergeMain, origin }: { confirm?: string; by?: string; mergeMain?: boolean; message?: string; origin?: string | null }) {
   const p = getProduct(productId);
   if (mergeMain) return { ok: true, product: p.id, ...mergeMainIntoBeta(p, by), note: `Nothing went live. Playtest ${BETA} again before going live.` };
   const plan = deployPlan(p.id);
@@ -163,7 +163,7 @@ export async function deploy(productId: string, { confirm, by = 'J', mergeMain }
   db.prepare('INSERT INTO deploys (id, product, kind, repo, before, after, beta, source, source_before, source_after, version, by, detail, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
     .run(id, p.id, 'deploy', p.site, before, after, beta.sha, unity ? p.repo : null, unity ? plan.main?.sha ?? null : null, sourceAfter, plan.build?.version ?? null, by, `${plan.commits.length} commit(s): ${plan.commits.slice(0, 8).map((c) => c!.title).join('; ')}`.slice(0, 1000), Date.now());
   fetchOrigin(site);
-  if (after !== before) void verifyLive(p.id, after, `Just went live (${BETA} ${beta.short}: ${plan.commits.slice(0, 3).map((c) => c!.title).join('; ')})`);
+  if (after !== before) void verifyLive(p.id, after, `Just went live (${BETA} ${beta.short}: ${plan.commits.slice(0, 3).map((c) => c!.title).join('; ')})`, origin);
   return { ok: true, product: p.id, deploy: id, live: p.live, main: after.slice(0, 7), beta: beta.short, log, note: 'GitHub Pages publishes within a few minutes; Studio waits for it, then playtests the live site (a run appears in the dashboard). If it went wrong: the rollback plan.' };
 }
 
@@ -194,7 +194,7 @@ export function rollbackPlan(productId: string) {
   };
 }
 
-export async function rollback(productId: string, { confirm, by = 'J' }: { confirm?: string; by?: string }) {
+export async function rollback(productId: string, { confirm, by = 'J', origin }: { confirm?: string; by?: string; origin?: string | null }) {
   const plan = rollbackPlan(productId);
   if (confirm !== plan.confirm) throw new StudioError(`Rolling back publishes ${plan.live}: ${plan.what} Show J the rollback plan, then send confirm: "${plan.confirm}" (J's call).`);
   if (plan.blockers.length) throw new StudioError(`Not rolling back:\n- ${plan.blockers.join('\n- ')}`);
@@ -213,7 +213,7 @@ export async function rollback(productId: string, { confirm, by = 'J' }: { confi
   db.prepare('UPDATE deploys SET rolled_back = ? WHERE id = ?').run(id, d.id);
   gitIn(site, ['worktree', 'remove', '--force', wt]);
   fetchOrigin(site);
-  void verifyLive(p.id, after, `Just rolled back to ${d.before!.slice(0, 7)} (undoing ${d.after.slice(0, 7)}). Check the live site works.`);
+  void verifyLive(p.id, after, `Just rolled back to ${d.before!.slice(0, 7)} (undoing ${d.after.slice(0, 7)}). Check the live site works.`, origin);
   return { ok: true, product: p.id, rollback: id, live: p.live, main: after.slice(0, 7), to: d.before!.slice(0, 7), note: `GitHub Pages publishes within a few minutes; Studio then playtests live. ${BETA} still has the rolled-back commits: fix forward there.` };
 }
 
@@ -235,7 +235,7 @@ const gh = (args: string[]) => {
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms).unref());
 
 /** Waits for GitHub to publish a commit (its Pages or Actions runs, through gh when signed in), then playtests live. */
-export async function verifyLive(productId: string, sha: string, focus: string) {
+export async function verifyLive(productId: string, sha: string, focus: string, origin?: string | null) {
   const p = getProduct(productId);
   const slug = repoSlug(p.site);
   const end = Date.now() + 15 * 60_000;
@@ -271,6 +271,6 @@ export async function verifyLive(productId: string, sha: string, focus: string) 
     await sleep(4 * 60_000);
   }
   const t = p.playtests.find((x) => x.where === 'live');
-  startPartial('playtest', p.id, { where: 'live', scenario: t?.scenario, mode: t?.mode, focus: `${focus} Check the live site works and nothing regressed.` });
+  startPartial('playtest', p.id, { where: 'live', scenario: t?.scenario, mode: t?.mode, focus: `${focus} Check the live site works and nothing regressed.`, origin });
 }
 

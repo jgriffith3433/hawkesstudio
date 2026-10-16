@@ -24,7 +24,8 @@ export const studioAt = (base: string, auth: string | null = null) => async func
   try {
     r = await fetch(`${base}${pathname}`, {
       method,
-      headers: { ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}), ...(auth ? { Authorization: auth } : {}) },
+      // In Talk, the conversation this MCP server belongs to: what the call starts reports back there (followup.ts).
+      headers: { ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}), ...(auth ? { Authorization: auth } : {}), ...(process.env.TALK_CONVERSATION ? { 'X-Talk-Conversation': process.env.TALK_CONVERSATION } : {}) },
       body: body !== undefined ? JSON.stringify(body) : undefined,
     });
   } catch {

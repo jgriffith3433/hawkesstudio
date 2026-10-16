@@ -20,10 +20,12 @@ async function api(path, opts = {}) {
 }
 
 // ------------------------------------------------------------- tabs
-let tab = location.hash.slice(1) || 'today';
-function show(t) {
+let tab = location.hash.slice(1).split('/')[0] || 'today';
+function show(t, sub) {
   tab = t;
-  location.hash = t;
+  // #changes/<id> (a link from the Activity panel) stays.
+  if (!sub && t === 'changes' && location.hash.startsWith('#changes/')) sub = location.hash.slice(t.length + 2);
+  location.hash = sub ? `${t}/${sub}` : t;
   document.querySelectorAll('nav button').forEach((b) => b.classList.toggle('on', b.dataset.tab === t));
   document.querySelectorAll('.tab').forEach((s) => s.classList.toggle('on', s.id === t));
   refresh();
@@ -345,16 +347,21 @@ const CH_ICON = { queued: '⏳', working: '🛠️', verifying: '🎮', revising
 async function loadChanges() {
   const qs = new URLSearchParams($('#chStatus').value ? { status: $('#chStatus').value } : {});
   const r = await api(`/api/changes?${qs}`);
+  // It refreshes every few seconds: it redraws only when something changed, and what J opened (a summary, a log) stays open.
+  const sig = JSON.stringify(r.changes.map((c) => [c.id, c.status, c.detail, c.updated])) + r.today.count;
+  if (sig === loadChanges.sig && $('#chList').children.length) return;
+  loadChanges.sig = sig;
+  const open = new Set([...$('#chList').querySelectorAll('details[open]')].map((d) => d.dataset.key));
   $('#chInfo').textContent = `Today: ${r.today.count} fixes, $${r.today.cost.toFixed(2)} of $${r.settings.maxCostPerDay} · auto-fix ${r.settings.autoFix ? 'on' : 'off'} (${r.settings.severities.join(', ')}, up to ${r.settings.maxPerDay}/day)`;
   $('#chList').innerHTML = r.changes.length ? r.changes.map((c) => {
     const v = c.verify;
     return `<div class="finding"><div>
       <h4>${CH_ICON[c.status] ?? ''} ${esc(c.title)} <span class="pill ${c.status === 'ready' ? 'ship' : c.status === 'failed' ? 'failed' : ''}">${esc(c.status)}</span><span class="meta">${esc(c.product)} · ${esc(c.id)} · $${(c.cost ?? 0).toFixed(2)}</span></h4>
       <div class="meta">${esc(c.detail ?? '')}${c.diffstat ? ` · ${esc(c.diffstat)}` : ''}${c.pr_url ? ` · <a href="${esc(c.pr_url)}" target="_blank">pull request #${c.pr}</a>` : ''}</div>
-      ${c.summary ? `<details><summary class="meta">What the agent did</summary><pre>${esc(c.summary)}</pre></details>` : ''}
+      ${c.summary ? `<details data-key="${c.id}:summary"><summary class="meta">What the agent did</summary><pre>${esc(c.summary)}</pre></details>` : ''}
       ${v && c.infra ? `<div class="summary"><b>Checks:</b> <span class="pill ${esc(v.verdict ?? '')}">${esc(v.outcome ?? '')}</span> ${esc(v.summary ?? '')}</div>` : v ? `<div class="summary"><b>Verify playtest:</b> ${esc(v.outcome ?? '')} · review <span class="pill ${esc(v.verdict ?? '')}">${esc(v.verdict ?? 'n/a')}</span> ${esc(v.summary ?? '')}</div>` : ''}
       ${c.notes?.length ? `<div class="meta">${c.notes.map((n) => `${esc(n.by)}: ${esc(n.text)}`).join(' · ')}</div>` : ''}
-      <details><summary class="meta">Log</summary><pre>${esc((c.log ?? []).slice(-40).join(String.fromCharCode(10)))}</pre></details>
+      <details data-key="${c.id}:log"><summary class="meta">Log</summary><pre>${esc((c.log ?? []).slice(-40).join(String.fromCharCode(10)))}</pre></details>
     </div><div class="side">
       ${v?.video ? `<a href="#" data-video="${file(v.video)}">▶ fixed version</a>` : ''}${v?.preview ? ` <a href="${esc(v.preview)}" target="_blank">🔗 try it</a>` : ''}
       <div class="actions">
@@ -363,8 +370,13 @@ async function loadChanges() {
         ${!['merged', 'closed'].includes(c.status) ? `<button class="small" data-change="${c.id}" data-act="close">Close</button>` : ''}
       </div></div></div>`;
   }).join('') : '<div class="empty">No changes here. Agents start on new bugs after each daily run, or use "Fix with agent" in the backlog.</div>';
+  for (const d of $('#chList').querySelectorAll('details[data-key]')) if (open.has(d.dataset.key)) d.open = true;
+  // #changes/<id> (the Activity panel's "log" link) opens that change's log once.
+  const want = /^#changes\/(c_[0-9a-f]+)/.exec(location.hash)?.[1];
+  const d = want && $(`#chList details[data-key="${want}:log"]`);
+  if (d && loadChanges.opened !== want) { loadChanges.opened = want; d.open = true; d.scrollIntoView({ block: 'center' }); }
 }
-$('#chStatus').onchange = loadChanges;
+$('#chStatus').onchange = () => { loadChanges.sig = null; loadChanges(); };
 document.addEventListener('click', async (e) => {
   const b = e.target.closest('button[data-change]');
   if (b) {
@@ -383,6 +395,7 @@ document.addEventListener('click', async (e) => {
         await api(`/api/changes/${id}/revise`, { method: 'POST', body: { note, by: 'J' } });
       }
       if (b.dataset.act === 'close' && confirm('Close this change and its pull request?')) await api(`/api/changes/${id}/close`, { method: 'POST', body: { by: 'J' } });
+      loadChanges.sig = null;
       loadChanges();
     } catch (err) { alert(err.message); }
   }

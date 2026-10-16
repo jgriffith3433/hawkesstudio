@@ -20,7 +20,12 @@
       <button data-tab="runs">Runs</button>
     </nav>
     <div class="status" id="status"></div>
+    <button id="actBtn" class="act-btn" title="Everything running in the background: agents, runs, Hawkes Gen jobs">Activity <span class="act-count zero" id="actCount">0</span></button>
   </header>
+  <aside id="activity" class="activity" hidden>
+    <div class="act-head"><b>Activity</b><span class="meta" id="actUpdated"></span><button class="small" id="actClose" title="Close">×</button></div>
+    <div id="actBody"><div class="meta">Loading…</div></div>
+  </aside>
   <main>
     <section id="talk" class="tab">
       <div class="talk">
@@ -78,5 +83,6 @@
   <script src="app.js"></script>
   <script src="talk.js"></script>
   <script src="playtests.js"></script>
+  <script src="activity.js"></script>
 </body>
 </html>

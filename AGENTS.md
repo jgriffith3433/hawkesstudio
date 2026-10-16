@@ -113,7 +113,9 @@ the service detached; restart it after changing `src/`. The MCP server (`bin/stu
 | `src/mcp-tools.ts`, `src/mcp-http.ts`, `src/mcp-core.ts` | The MCP tools, shared by stdio and `/mcp` over HTTPS (Studio MCP key, `STUDIO_MCP_KEY`); `mcp-core.ts` is the same file as in hawkesgen. Setup: `docs/cloud.md` |
 | `src/selfdeploy.ts` | Studio and Gen deploying themselves from GitHub main: the `self-deploys.jsonl` log and what a restart would interrupt (`GET /api/self-deploys`, read by `deploy/hawkes-pull.mjs`) |
 | `deploy/` | Server setup (`provision.mjs`, `deploy.mjs`: units, Caddy, DNS, keys), `hawkes-pull.mjs` (the server's pull-deploy), secrets and token helpers |
-| `src/talk.ts`, `dashboard/talk.js` | Talk: Claude Code on the server; streaming, stop, rename/delete, attachments (Gen blobs), Max-plan vs API marker |
+| `src/talk.ts`, `dashboard/talk.js` | Talk: Claude Code on the server; streaming, stop, rename/delete, attachments (Gen blobs), Max-plan vs API marker, Studio's notices and the turns Studio starts to explain them (`studioSays`) |
+| `src/followup.ts` | Results back to Talk: the conversation a call came from (`X-Talk-Conversation`, sent by Talk's MCP server) is the origin of the changes and runs it starts; finished ones are posted into it (docs/cloud.md, "Talk") |
+| `src/activity.ts`, `dashboard/activity.js` | The Activity drawer (`GET /api/activity`): agents, runs and their steps, Gen jobs, Talk answers in progress |
 | `dashboard/` | Today (cards per product), Report, Playtests (`playtests.js`: every playtest with video, screenshots, timeline, review, visual changes, the previous run side by side, trends), Backlog, Runs |
 | `clients/web/hawkes-playtest.js` (+ `.d.ts`) | The contract helper web games copy |
 | `clients/unity/com.hawkes.playtest` | The contract for Unity games (runtime package + WebGL bridge) |

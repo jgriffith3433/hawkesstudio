@@ -49,6 +49,8 @@ db.exec(`
 `);
 // J's own requests (not findings) are changes too.
 try { db.exec('ALTER TABLE changes ADD COLUMN request TEXT'); } catch { /* already there */ }
+// The Talk conversation that started it (results report there, followup.ts), whether it was told, and who started it.
+for (const col of ['origin', 'told', 'started_by']) try { db.exec(`ALTER TABLE changes ADD COLUMN ${col} TEXT`); } catch { /* already there */ }
 
 export type Change = {
   id: string; product: string; findings: string[]; status: string; detail: string | null; repo: string; slug: string; branch: string; base: string;
@@ -297,6 +299,7 @@ export function startFix(productId: string, findingIds: string[], { auto = false
   const branch = `fix/${id.slice(2)}-${findings[0].title.toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 40).replace(/-$/, '')}`;
   db.prepare('INSERT INTO changes (id, product, findings, status, detail, repo, slug, branch, base, worktree, title, notes, log, created) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
     .run(id, p.id, J(findings.map((f) => f.id)), 'queued', auto ? 'queued by the daily run' : 'queued', top, slug, branch, BETA, path.join(WORK(), id), `Fix: ${findings[0].title}`.slice(0, 120), '[]', '[]', Date.now());
+  if (auto) db.prepare('UPDATE changes SET started_by = ? WHERE id = ?').run('the daily run', id);
   for (const f of findings) updateFinding(f.id, { status: 'fixing', note: `agent change ${id}` });
   void pump();
   return id;
@@ -779,7 +782,7 @@ async function approveInfra(c: Change, by: string) {
  * J's approval: merge the pull request (squash) into beta. Nothing goes live: the beta site is rebuilt and beta is
  * playtested with the change in; going live is deploy() (the deploy plan, then "DEPLOY <product>").
  */
-export async function approve(id: string, { confirm, by = 'J' }: { confirm?: string; by?: string } = {}) {
+export async function approve(id: string, { confirm, by = 'J', origin }: { confirm?: string; by?: string; origin?: string | null } = {}) {
   const c = getChange(id);
   if (!c) throw new Error('No such change');
   if (confirm !== `MERGE ${id}`) throw new Error(c.infra
@@ -816,7 +819,7 @@ export async function approve(id: string, { confirm, by = 'J' }: { confirm?: str
   for (const f of c.findings) updateFinding(f, { status: 'fixed', note: `merged into ${BETA} in ${c.pr_url} (goes live with the next deploy)` });
   await cleanup(id, { deleteBranch: true });
   // Beta moved: its pre-deploy build, its build (Unity), the beta site and a local playtest of it follow, in the background.
-  void import('./pipeline.ts').then(({ startBeta }) => startBeta(c.product, { focus: `Just merged into beta: ${c.title}. Check it works and nothing regressed.` })).catch((e) => console.warn(`[studio] beta after ${id}: ${e.message ?? e}`));
+  void import('./pipeline.ts').then(({ startBeta }) => startBeta(c.product, { focus: `Just merged into beta: ${c.title}. Check it works and nothing regressed.`, origin })).catch((e) => console.warn(`[studio] beta after ${id}: ${e.message ?? e}`));
   return getChange(id);
 }
 
