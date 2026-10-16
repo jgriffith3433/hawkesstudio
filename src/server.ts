@@ -92,6 +92,9 @@ const server = http.createServer(async (req, res) => {
   const origin = originOf(req);
   try {
     if (route === '/mcp' || route.startsWith('/mcp/')) return await handleMcp(req, res, route);
+    // The agent sandbox's guards (guards.ts): from Talk's and the agents' Linux user, anything live needs J's own words.
+    const refused = (await import('./guards.ts')).guardRequest(req, route, method);
+    if (refused) return send(res, 403, { error: refused });
     // The shared memory (memory.ts, memory-api.ts): the Memory tab, the memory_* tools.
     if (route === '/api/memory' || route.startsWith('/api/memory/')) return await (await import('./memory-api.ts')).handleMemory(req, res, url, send, readJson);
     if (route === '/api/config') return send(res, 200, { genUrl: process.env.GEN_PUBLIC_URL || 'http://127.0.0.1:8790' });
@@ -186,6 +189,12 @@ const server = http.createServer(async (req, res) => {
     m = /^\/api\/rollback\/([\w-]+)$/.exec(route);
     if (m && method === 'GET') return send(res, 200, rollbackPlan(m[1]));
     if (m && method === 'POST') return send(res, 200, await rollback(m[1], { ...(await readJson(req)), origin }));
+    // Talk's workspace (a worktree of a product repo on beta) and its fast lane: a small change checked and pushed to
+    // beta by Studio (fastlane.ts). Never main, never Studio or Gen.
+    m = /^\/api\/workspace\/([\w-]+)$/.exec(route);
+    if (m && (method === 'GET' || method === 'POST')) return send(res, 200, (await import('./fastlane.ts')).workspace(m[1]));
+    m = /^\/api\/fastlane\/([\w-]+)$/.exec(route);
+    if (m && method === 'POST') { const b = await readJson(req); return send(res, 200, await (await import('./fastlane.ts')).fastlane(m[1], String(b.message ?? ''), { origin, by: origin ? 'Talk' : 'J' })); }
     // Beta brought up to date and played (pre-deploy build, Unity build, beta site, a local playtest). Nothing goes live.
     m = /^\/api\/beta\/([\w-]+)$/.exec(route);
     if (m && method === 'POST') {

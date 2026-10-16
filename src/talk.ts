@@ -26,6 +26,7 @@ import { PROJECTS, DATA, ROOT, loadProducts, loadInfra } from './config.ts';
 import { claudeEnv, billing, usingSubscription } from './claude.ts';
 import { memoryBlock } from './memory.ts';
 import { roleArgs } from './roles.ts';
+import { spawnClaude as spawnSandboxed, sandboxOn, sandboxShare } from './sandbox.ts';
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS conversations (
@@ -60,7 +61,9 @@ function save(c: Conversation) {
   db.prepare('UPDATE conversations SET title = ?, session = ?, status = ?, messages = ?, cost = ?, updated = ? WHERE id = ?').run(c.title, c.session, c.status, J(c.messages), c.cost, Date.now(), c.id);
 }
 
-const MCP_DIR = () => path.join(DATA, 'talk-mcp');
+// In the agent sandbox the config sits where Talk's user can read it, with Talk's own Gen key (TALK_GEN_KEY, role
+// "user": jobs, no fleet or keys; else the devtools' key), never Studio's.
+const MCP_DIR = () => (sandboxOn() ? sandboxShare('talk-mcp') : path.join(DATA, 'talk-mcp'));
 const MCP_FILE = (id: string) => path.join(MCP_DIR(), `${id}.json`);
 function mcpConfig(id: string) {
   // The two Hawkes MCP servers, talking to the services on this machine. Studio's knows the conversation
@@ -68,11 +71,11 @@ function mcpConfig(id: string) {
   const cfg = {
     mcpServers: {
       hawkesstudio: { command: process.execPath, args: [path.join(ROOT, 'bin', 'studio-mcp.mjs')], env: { STUDIO_SERVER: '1', TALK_CONVERSATION: id } },
-      hawkesgen: { command: process.execPath, args: [path.join(PROJECTS, 'hawkesgen', 'bin', 'hawkesgen-mcp.mjs')], env: { HAWKESGEN_URL: process.env.HAWKESGEN_URL ?? 'http://127.0.0.1:8790', HAWKESGEN_KEY: process.env.HAWKESGEN_KEY ?? '' } },
+      hawkesgen: { command: process.execPath, args: [path.join(PROJECTS, 'hawkesgen', 'bin', 'hawkesgen-mcp.mjs')], env: { HAWKESGEN_URL: process.env.HAWKESGEN_URL ?? 'http://127.0.0.1:8790', HAWKESGEN_KEY: sandboxOn() ? process.env.TALK_GEN_KEY ?? process.env.DEV_GEN_KEY ?? '' : process.env.HAWKESGEN_KEY ?? '' } },
     },
   };
   fs.mkdirSync(MCP_DIR(), { recursive: true });
-  fs.writeFileSync(MCP_FILE(id), JSON.stringify(cfg, null, 2), { mode: 0o600 });
+  fs.writeFileSync(MCP_FILE(id), JSON.stringify(cfg, null, 2), { mode: sandboxOn() ? 0o640 : 0o600 });
   return MCP_FILE(id);
 }
 
@@ -98,7 +101,7 @@ How to work:
   studio_deploy_plan, studio_rollback (without confirm: the plan). Use hawkesgen tools for generation (images, video,
   music, voice, 3D) and the library.
 - The repos and docs are in ${PROJECTS} (the same layout as J's C:\\Projects); read AGENTS.md files and story docs
-  when you need context. You can't edit files here: changes go through agents (studio_fix starts one for findings).
+  when you need context. ${sandboxOn() ? 'You can change files only in your workspace (see above); the server\'s own checkouts are read-only.' : 'You can\'t edit files here: changes go through agents (studio_fix starts one for findings).'}
 - J doesn't review code. Explain changes in plain words: what was wrong, what changed, how it was verified, the
   verdict of the verification playtest, and show the evidence. Screenshots and videos are library assets: link them as
   ${media}/v1/files/<asset id> (images as ![...](url), videos as plain links).
@@ -132,7 +135,7 @@ How to work:
   Quality bars: products.json "quality" says what "done" means per product; once a full review says a scenario meets
   it, that scenario's daily review is regression-only until the build changes meaningfully (10+ files or 300+ lines,
   or 14 days). When J asks why few findings come in, that is why; studio_playtest with reviewMode "full" asks for one.
-- Making changes: you can't edit files; you make changes by starting an agent (studio_task for a request, studio_fix
+- Making changes: ${sandboxOn() ? 'small ones yourself through the fast lane (above); everything else' : 'you can\'t edit files; you make changes'} by starting an agent (studio_task for a request, studio_fix
   for a backlog finding). It works on its own branch, opens a pull request into beta, playtests it and shows a
   preview at https://<sub>.hawkesgen.com/c/<change id>/. When J approves it here it merges into beta, and the beta
   site rebuilds within a few minutes (any push to beta does: each product repo has a GitHub Action that tells Studio; a Unity game's beta
@@ -254,7 +257,12 @@ function blobFile(blob: string) {
   if (!hash) return null;
   const dir = path.join(process.env.GEN_BLOBS ?? path.join(PROJECTS, 'hawkesgen', '.data', 'blobs'), hash.slice(0, 2));
   const name = fs.existsSync(dir) ? fs.readdirSync(dir).find((n) => n.startsWith(hash)) : undefined;
-  return name ? path.join(dir, name) : null;
+  if (!name) return null;
+  // The sandbox can't read Gen's data folder: Talk gets a copy in the shared work folder.
+  if (!sandboxOn()) return path.join(dir, name);
+  const copy = path.join(sandboxShare('attachments'), name);
+  if (!fs.existsSync(copy)) fs.copyFileSync(path.join(dir, name), copy);
+  return copy;
 }
 
 /** Sends J's message (with files already uploaded to Hawkes Gen); Claude answers in the background (poll getConversation). */
@@ -407,6 +415,8 @@ function claudeArgs(c: Conversation, call: boolean) {
  */
 function spawnClaude(args: string[]) {
   const pre: string[] = process.env.TALK_CLAUDE_ARGS ? JSON.parse(process.env.TALK_CLAUDE_ARGS) : [];
+  // In the agent sandbox, as its user with no secrets (sandbox.ts); its working directory stays the projects folder.
+  if (sandboxOn() && !pre.length) return spawnSandboxed(args, { cwd: PROJECTS, env: claudeEnv() });
   return spawn(process.env.TALK_CLAUDE || 'claude', [...pre, ...args], { cwd: PROJECTS, env: claudeEnv(), windowsHide: true });
 }
 
@@ -430,8 +440,16 @@ function readLines(child: ChildProcess, f: (m: any) => void) {
   });
 }
 
+/** The conversation so far, for a new Claude Code session (the old one is gone). */
+function recap(c: Conversation, before: number) {
+  const msgs = c.messages.filter((m) => m.at < before && m.role !== 'tool').slice(-30);
+  if (!msgs.length) return '';
+  const lines = msgs.map((m) => `${m.role === 'user' ? 'J' : m.notice ? 'Studio' : 'You'}: ${m.text.replace(/\s+/g, ' ').slice(0, 1200)}`);
+  return `[This conversation continues from an earlier session that is no longer available. What was said so far, newest last:]\n${lines.join('\n')}\n\n[Now:]\n`;
+}
+
 /** Runs one Claude Code turn in a conversation whose status is already "thinking" (in the call's process during a call). */
-function runTurn(id: string, prompt: string, userAt: number, { auto = false }: { auto?: boolean } = {}) {
+function runTurn(id: string, prompt: string, userAt: number, { auto = false, fresh = false }: { auto?: boolean; fresh?: boolean } = {}) {
   // Who pays: Claude Code says which key it uses when it starts (apiKeySource "none" = the subscription login).
   const ctx: TurnCtx = { userAt, auto, call: false, billing: usingSubscription() ? 'subscription' : 'api', done: false, err: '' };
   partial.delete(id);
@@ -454,7 +472,17 @@ function runTurn(id: string, prompt: string, userAt: number, { auto = false }: {
   const timer = setTimeout(() => child.kill('SIGTERM'), 30 * 60_000);
   child.on('close', (code) => {
     clearTimeout(timer);
-    finishTurn(id, ctx, { stopped: stopping.delete(id), code });
+    const stopped = stopping.delete(id);
+    const conv = getConversation(id);
+    // Its Claude Code session is gone (another home since the agent sandbox, a cleared cache): once, a new session
+    // that gets the conversation so far.
+    if (conv && !stopped && code !== 0 && c.session && !fresh && /no conversation found|session.*not found/i.test(ctx.err) && !conv.messages.some((x) => x.role === 'assistant' && x.at >= userAt)) {
+      conv.session = null;
+      save(conv);
+      running.delete(id);
+      return void runTurn(id, `${recap(conv, userAt)}${prompt}`, userAt, { auto, fresh: true });
+    }
+    finishTurn(id, ctx, { stopped, code });
   });
   child.on('error', (e) => failedStart(id, e));
 }

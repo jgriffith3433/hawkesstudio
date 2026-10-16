@@ -37,6 +37,10 @@ So everything also shows in Gen's dashboard, library and usage. Studio adds:
 
 - `docs/playtest.md`: **the playtest contract** every game implements (`window.hawkesPlaytest`).
 - `docs/daily.md`: how J and Claude use the daily loop.
+- `docs/memory.md`: **the shared memory** every agent, scout, reviewer and Talk reads and writes (decisions, preferences,
+  conventions, lessons, canon, work in progress; run history; the canon check).
+- `docs/agents.md`: **roles and skills in git** (`.claude/agents`, `.claude/skills`), a model per job, warm starts, Talk
+  at full power in the agent sandbox, its fast lane to beta, and the guards (sandbox user, J's typed words, rulesets).
 - `docs/cloud.md`: **where it runs now** (hawkesgen.com, the AWS control server), how to deploy changes, secrets, logs.
 - `src/agents.ts`: agent workers. A finding goes to Claude Code on a branch cut from beta, then a pull request into beta, then a verification playtest, then J approves, which merges it into beta (not live). Studio and Gen themselves: a pull request into main, checked by CI and a smoke check (below).
 - `products.json`: every product, how to serve it locally, what to playtest, its story docs and deploy steps.
@@ -94,6 +98,9 @@ the service detached; restart it after changing `src/`. The MCP server (`bin/stu
 - `studio_dev_open`, `studio_dev_status` (also beta vs live), `studio_dev_stop`, `studio_dev_resolve`
 - `studio_roadmap`, `studio_roadmap_edit`, `studio_scout`, `studio_ready`, `studio_comments`, `studio_pm` (the PM loop)
 - `studio_costs` (what the studio costs: AWS, generation, Claude, per product, idle money; the budget)
+- `memory_search`, `memory_get`, `memory_write`, `memory_curate` (the shared memory; agents get a server with only search,
+  get and write, as candidates)
+- `studio_workspace`, `studio_fastlane` (Talk's workspace and fast lane, in the agent sandbox)
 
 **Talk as J's PM** (`src/roadmap.ts`, `src/pm.ts`, `src/acceptance.ts`, `src/scout.ts`; docs/daily.md, "Running the
 studio with Talk"): J sets direction in Talk, Talk keeps the roadmap (items with acceptance criteria, tasks under them),
@@ -142,6 +149,11 @@ a budget (`approveGpu`, `gpuCleared`, `tasksAwaitingGpu`; the PM asks him once);
 | `src/pm.ts` | The PM loop: task statuses from changes, beta checks and go lives; starting work within caps; PM turns; the merge gate, revisions, retries; questions for J; ready to test; undo |
 | `src/acceptance.ts` | Acceptance criteria judged from a playtest (yes/no/unclear with evidence) and the merge gate |
 | `src/scout.ts` | Scouts: a read-only Claude Code investigation in a worktree, reported back to Talk |
+| `src/memory.ts`, `src/memory-api.ts`, `src/memory-curate.ts`, `dashboard/memory.js` | The shared memory: entries, full-text search, the prompt block, candidates and curation (Haiku's first pass), fading, run history, the Markdown export to the `memory` branch, the seed (`memory/seed/*.json`), the Memory tab (docs/memory.md) |
+| `src/canon.ts` | The canon check of a content change's diff (a contradiction fails the merge gate) |
+| `src/roles.ts`, `.claude/agents/`, `.claude/skills/` | Roles (model, tools, instructions per kind of run) and skills; `.claude` is the "hawkes" plugin every run loads (docs/agents.md) |
+| `src/sandbox.ts`, `src/guards.ts`, `deploy/agent-sandbox.mjs`, `deploy/github-rulesets.mjs` | The agent sandbox (its own Linux user, no secrets, no instance role), who's calling the API, what needs J's typed words, rulesets on main |
+| `src/fastlane.ts`, `src/warm.ts` | Talk's workspace and fast lane to beta; warm starts for agent worktrees |
 | `dashboard/roadmap.js` | The Roadmap tab (items, tasks, threads, questions, PM switch, decision log) and Ready to test |
 | `src/costs.ts`, `src/aws.ts`, `dashboard/costs.js` | What the studio costs (the Costs tab, `studio_costs`, the brief's cost line): AWS from Cost Explorer (else an estimate), idle money from EC2 Describe* (read-only), Hawkes Gen usage, Claude usage (Max plan: not billed), per product; the budget and the hourly check that tells J's phone only when something looks wrong (docs/cloud.md, "Costs") |
 | `src/activity.ts`, `dashboard/activity.js` | The Activity drawer (`GET /api/activity`): agents, runs and their steps, Gen jobs, Talk answers in progress |

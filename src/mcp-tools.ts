@@ -327,6 +327,18 @@ export function studioMcp({ studio, waitRun }: Client = { studio: defaultStudio,
       },
     },
     ...memoryTools(studio),
+    {
+      name: 'studio_workspace',
+      description: "Talk's own worktree of a product repo, on beta (<projects>/.talk/<repo>; only in the agent sandbox, where Talk has a shell): makes it, or moves a clean one to beta's tip. Says where it is, what's uncommitted or not pushed, whether beta moved, and the product's checks. Edit and commit there, then studio_fastlane.",
+      inputSchema: obj({ product: str('Product id (not hawkesstudio or hawkesgen)') }, ['product']),
+      run: async ({ product }) => studio(`/api/workspace/${product}`, { method: 'POST', body: {} }),
+    },
+    {
+      name: 'studio_fastlane',
+      description: "Talk's fast lane: a small change from its workspace straight to beta (never main). Studio commits what's uncommitted (with message), checks it is small (a few files and lines, no binaries), touches no protected or generated files, passes the product's checks and (content) the canon check, then pushes it to beta and starts beta's run, whose result comes back here. Refusals say why (too big: ask an agent with studio_task). Tell J what changed afterwards.",
+      inputSchema: obj({ product: str('Product id'), message: str('What changed, as a commit message') }, ['product', 'message']),
+      run: async ({ product, message }) => studio(`/api/fastlane/${product}`, { method: 'POST', body: { message } }),
+    },
   ];
   // An agent's or scout's own server lists only the tools it may use (STUDIO_MCP_TOOLS: names or prefixes, comma list).
   const only = (process.env.STUDIO_MCP_TOOLS ?? '').split(',').map((x) => x.trim()).filter(Boolean);
@@ -357,8 +369,8 @@ function memoryTools(studio: Client['studio']): McpTool[] {
     },
     {
       name: 'memory_curate',
-      description: "Curate the shared memory (the PM and Talk; agents can only propose). actions: list (candidates waiting, likely duplicates, disputed entries, counts); confirm { id } (a candidate becomes active); edit { id, title, body, kind, product, tags }; merge { id, from } (from folds into id); fade { id, note } (no longer relevant: it stays searchable); dispute { id, note } (it contradicts something: then ask J with studio_pm ask_j); delete { id } (a candidate that is wrong); publish (push the Markdown export to the hawkesstudio \"memory\" branch). J's decisions are his: dispute them, never fade or edit them.",
-      inputSchema: obj({ action: str('list | confirm | edit | merge | fade | dispute | delete | publish'), id: str('m_...'), from: str('merge: the m_... to fold in'), note: str('fade/dispute: why'), title: str('edit'), body: str('edit'), kind: str('edit'), product: str('edit'), tags: str('edit') }, ['action']),
+      description: "Curate the shared memory (the PM and Talk; agents can only propose). actions: list (candidates waiting, likely duplicates, disputed entries, counts); auto (Haiku's first pass: duplicates fold in, non-knowledge fades, contradictions of J's decisions or canon are disputed and asked of J; what's left waits for you); confirm { id } (a candidate becomes active); edit { id, title, body, kind, product, tags }; merge { id, from } (from folds into id); fade { id, note } (no longer relevant: it stays searchable); dispute { id, note } (it contradicts something: then ask J with studio_pm ask_j); delete { id } (a candidate that is wrong); publish (push the Markdown export to the hawkesstudio \"memory\" branch). J's decisions are his: dispute them, never fade or edit them.",
+      inputSchema: obj({ action: str('list | auto | confirm | edit | merge | fade | dispute | delete | publish'), id: str('m_...'), from: str('merge: the m_... to fold in'), note: str('fade/dispute: why'), title: str('edit'), body: str('edit'), kind: str('edit'), product: str('edit'), tags: str('edit') }, ['action']),
       run: async (a) => {
         switch (a.action) {
           case 'list': return studio('/api/memory/curation');
@@ -369,7 +381,8 @@ function memoryTools(studio: Client['studio']): McpTool[] {
           case 'dispute': return studio(`/api/memory/${a.id}`, { method: 'PATCH', body: { status: 'disputed', note: a.note } });
           case 'delete': return studio(`/api/memory/${a.id}`, { method: 'DELETE' });
           case 'publish': return studio('/api/memory/publish', { method: 'POST', body: {} });
-          default: throw new Error('action: list | confirm | edit | merge | fade | dispute | delete | publish');
+          case 'auto': return studio('/api/memory/curate', { method: 'POST', body: {} });
+          default: throw new Error('action: list | auto | confirm | edit | merge | fade | dispute | delete | publish');
         }
       },
     },

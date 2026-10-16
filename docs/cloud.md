@@ -165,6 +165,12 @@ path (to read it, images too) and blob id (for Gen inputs). Under each answer, *
 subscription (no extra cost), **💳 $0.042 API** means it was billed to the API key (when `CLAUDE_CODE_OAUTH_TOKEN`
 is missing). `TALK_MODEL` picks the model; `TALK_CLAUDE` the Claude Code executable.
 
+**Roles, memory, full power.** Each turn runs as the `talk` role (`.claude/agents/talk.md`; the PM's conversation as
+`pm`) with the skills plugin (`--plugin-dir .claude`), the shared memory's studio-wide decisions in its system prompt
+and the entries matching J's message under it (docs/memory.md). In the agent sandbox (`deploy/agent-sandbox.mjs`, J's OK
+first) Talk runs as `hawkes-agent` with a shell, an editor and the web, its own workspace (`/srv/hawkes/.talk`) and a
+fast lane to beta; going live and Studio/Gen merges need J's own typed words, which Studio checks (docs/agents.md).
+
 **Results come back to the conversation** (`src/followup.ts`). Each conversation's Studio MCP server gets
 `TALK_CONVERSATION` (its `.data/talk-mcp/<id>.json`) and sends it as `X-Talk-Conversation` on its calls; the API records
 it as the origin of what the call starts: agent changes (`studio_fix`, `studio_task`, revisions), the beta run after an

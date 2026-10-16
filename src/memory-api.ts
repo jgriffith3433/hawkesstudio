@@ -71,6 +71,10 @@ export async function handleMemory(req: http.IncomingMessage, res: http.ServerRe
     return send(res, 200, mem.importSeed());
   }
   if (route === '/api/memory/fade' && method === 'POST') return send(res, 200, { faded: mem.fadeUnused() });
+  if (route === '/api/memory/curate' && method === 'POST') {
+    if (c.who === 'agent' || c.who === 'scout') throw new StudioError('Agents propose; the PM and J curate', 403);
+    return send(res, 200, await (await import('./memory-curate.ts')).autoCurate());
+  }
   m = /^\/api\/memory\/(m_[0-9a-f]+)(?:\/(merge))?$/.exec(route);
   if (m) {
     if (m[2] === 'merge' && method === 'POST') {

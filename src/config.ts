@@ -21,7 +21,13 @@ export const paths = {
   /** STUDIO_PRODUCTS points at another products file (tests use a fixture). */
   products: process.env.STUDIO_PRODUCTS || path.join(ROOT, 'products.json'),
 };
-for (const d of [DATA, paths.logs, paths.reports]) fs.mkdirSync(d, { recursive: true });
+for (const d of [DATA, paths.logs, paths.reports]) {
+  try {
+    fs.mkdirSync(d, { recursive: true });
+  } catch {
+    // The agent sandbox's user can't see Studio's data (its MCP server only talks to Studio over HTTP).
+  }
+}
 
 /** device "phone": a 390x844 touch phone (the review also judges touch controls, text size and layout). */
 export type Playtest = { scenario?: string; mode?: 'auto' | 'contract' | 'generic' | 'site'; where: 'local' | 'live'; device?: 'desktop' | 'phone'; daily?: boolean; timeout?: number; seed?: number; options?: Record<string, unknown> };

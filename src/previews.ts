@@ -21,6 +21,7 @@ import { db } from './db.ts';
 import { BRANCH, BETA, isServer, type RepoResult } from './repos.ts';
 import { betaBuild, betaSiteFolder } from './beta.ts';
 import { injectReport, type PageInfo } from './bugreport.ts';
+import { sandboxOn, sandboxSpawn } from './sandbox.ts';
 
 export const DOMAIN = process.env.STUDIO_DOMAIN || 'hawkesgen.com';
 export const PREVIEWS = process.env.STUDIO_PREVIEWS || (isServer() ? path.join(PROJECTS, 'previews') : path.join(DATA, 'previews'));
@@ -93,7 +94,11 @@ function record(product: string, change: string | undefined, v: Preview | null) 
 
 function exec(cmd: string, args: string[], cwd: string, { shell = false, timeoutMs = 20 * 60_000 } = {}): Promise<{ ok: boolean; out: string; err: string }> {
   return new Promise((resolve) => {
-    const child = spawn(cmd, args, { cwd, shell, windowsHide: true, timeout: timeoutMs });
+    // Builds and installs run the checked-out code (an agent change's, or beta's): as the agent sandbox's user when
+    // it's on (sandbox.ts), never as Studio. git stays Studio's.
+    const child = shell && sandboxOn()
+      ? sandboxSpawn('/bin/sh', ['-c', [cmd, ...args].join(' ')], { cwd, timeout: timeoutMs })
+      : spawn(cmd, args, { cwd, shell, windowsHide: true, timeout: timeoutMs });
     let out = '';
     let err = '';
     child.stdout?.on('data', (d) => { out += d; if (out.length > 1e6) out = out.slice(-5e5); });

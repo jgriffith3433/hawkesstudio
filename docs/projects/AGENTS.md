@@ -134,6 +134,25 @@ Every day it runs these steps for every product (one at a time, through Hawkes G
   by Claude), and `studio.cmd assets <product> make` makes what's missing or out of date (`hawkes.assets.lock.json`
   records what made each file; hand edits are kept).
 
+## The shared memory and the agents (every Claude uses them)
+
+- **The shared memory** (Studio, on the cloud server; `hawkesstudio/docs/memory.md`): J's decisions and preferences,
+  how each codebase works (conventions), lessons (what broke, the fix), canon (story and IP facts across products:
+  characters, places, rules like "slimes are villagers, never enemies"), work in progress, and every agent run's
+  summary and lessons. Studio puts the relevant entries into every agent brief, scout, review and Talk turn.
+- **Any Claude uses it the same way** (Talk, agents, a session in the Claude app or on J's PC over Studio's MCP, local
+  or `https://studio.hawkesgen.com/mcp`): `memory_search` before planning or changing something (also "how did we fix
+  X last time?"), `memory_write` when something durable is learned (a decision only with J's own words), `memory_get`
+  for provenance. Agents' notes are candidates the PM curates. Read it in the Memory tab, or as Markdown on the
+  hawkesstudio branch `memory` (`canon.md` is the story bible, `learned/<product>.md` per product).
+- **Roles and skills** are in git: `hawkesstudio/.claude/agents/` (talk, pm, fixer, builder, content, scout, reviewer)
+  and `hawkesstudio/.claude/skills/` (Unity build debugging, playtest scenarios, the go-live checklist, Gen assets,
+  shell quirks, a how-to per product). On J's PC: `claude --plugin-dir C:/Projects/hawkesstudio/.claude`. See
+  `hawkesstudio/docs/agents.md`.
+- **Talk at full power** (once J turns on the agent sandbox): a shell, an editor, the web and subagents, as a Linux user
+  with no secrets; small changes go to beta through its fast lane, real work to agents; anything live still needs J's
+  typed words (`DEPLOY <product>`), which Studio checks itself.
+
 ## How the pieces connect
 
 ```

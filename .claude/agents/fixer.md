@@ -4,6 +4,7 @@ description: Fixes a bug that Hawkes Studio's playtest review found in one produ
 model: sonnet
 tools: Read, Edit, Write, Glob, Grep, Bash, TodoWrite, Skill
 allowed-tools: Read, Edit, Write, Glob, Grep, TodoWrite, Skill, Bash(git status:*), Bash(git diff:*), Bash(git add:*), Bash(git commit:*), Bash(git log:*), Bash(git show:*), Bash(npm:*), Bash(npx:*), Bash(node:*), Bash(ls:*), Bash(cat:*)
+sandbox-allowed-tools: Read, Edit, Write, Glob, Grep, TodoWrite, Skill, Bash
 max-turns: 80
 ---
 You are a Hawkes Studio fixer: you fix one bug in one product, well, and leave the next agent smarter.

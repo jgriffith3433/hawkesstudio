@@ -13,7 +13,8 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { ROOT, StudioError } from './config.ts';
+import { ROOT, PROJECTS, StudioError } from './config.ts';
+import { sandboxOn } from './sandbox.ts';
 
 export const ROLES = ['talk', 'pm', 'fixer', 'builder', 'content', 'scout', 'reviewer'] as const;
 export type RoleName = (typeof ROLES)[number];
@@ -60,6 +61,15 @@ export function parseAgentFile(text: string) {
   }
   return { meta, body: m[2].trim() };
 }
+/** Keeps the sandbox-only or the no-sandbox parts of a role's instructions. */
+export function sections(body: string, sandboxed: boolean) {
+  const drop = sandboxed ? 'no-sandbox' : 'sandbox';
+  const keep = sandboxed ? 'sandbox' : 'no-sandbox';
+  return body
+    .replace(new RegExp(String.raw`<!-- ${drop} -->[\s\S]*?<!-- /${drop} -->\r?\n?`, 'g'), '')
+    .replace(new RegExp(String.raw`<!-- /?${keep} -->\r?\n?`, 'g'), '')
+    .trim();
+}
 const list = (s?: string) => (s ?? '').split(',').map((x) => x.trim()).filter(Boolean);
 
 const cache = new Map<string, { mtime: number; role: Role }>();
@@ -72,9 +82,19 @@ export function loadRole(name: string): Role {
   } catch {
     throw new StudioError(`The role file ${path.relative(ROOT, file)} is missing`);
   }
-  const hit = cache.get(file);
+  // In the agent sandbox (sandbox.ts) a role gets its sandbox tools ("sandbox-allowed-tools", "sandbox-disallowed-tools")
+  // and the parts of its instructions between <!-- sandbox --> and <!-- /sandbox -->; outside it, the
+  // <!-- no-sandbox --> parts. The shell and the editor only come with the guards.
+  const sb = sandboxOn();
+  const key = `${file}:${sb}`;
+  const hit = cache.get(key);
   if (hit && hit.mtime === st.mtimeMs) return hit.role;
-  const { meta, body } = parseAgentFile(fs.readFileSync(file, 'utf8'));
+  const parsed = parseAgentFile(fs.readFileSync(file, 'utf8'));
+  const meta = parsed.meta;
+  const body = sections(parsed.body, sb).replaceAll('<projects>', PROJECTS.split(path.sep).join('/'));
+  if (sb && meta['sandbox-allowed-tools'] !== undefined) meta['allowed-tools'] = meta['sandbox-allowed-tools'];
+  if (sb && meta['sandbox-disallowed-tools'] !== undefined) meta['disallowed-tools'] = meta['sandbox-disallowed-tools'];
+  if (sb && meta['sandbox-tools'] !== undefined) meta.tools = meta['sandbox-tools'];
   const tools = list(meta.tools);
   const role: Role = {
     name: name as RoleName, description: meta.description ?? '', file,
@@ -84,7 +104,7 @@ export function loadRole(name: string): Role {
     maxTurns: meta['max-turns'] ? Number(meta['max-turns']) || null : null,
     body,
   };
-  cache.set(file, { mtime: st.mtimeMs, role });
+  cache.set(key, { mtime: st.mtimeMs, role });
   return role;
 }
 

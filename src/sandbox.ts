@@ -8,9 +8,10 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { spawn, type ChildProcess, type ChildProcessWithoutNullStreams, type SpawnOptions } from 'node:child_process';
 import type http from 'node:http';
 import type net from 'node:net';
+import { PROJECTS } from './config.ts';
 
 /** The wrapper deploy/agent-sandbox.mjs installs: it runs a command as the sandbox user with its own HOME and umask. */
 export const WRAPPER = '/usr/local/bin/hawkes-agent-run';
@@ -30,6 +31,8 @@ export function sandboxEnv(env: NodeJS.ProcessEnv) {
   // Claude Code prefers the API key when both are set (claude.ts); the subscription token wins.
   if (out.CLAUDE_CODE_OAUTH_TOKEN) delete out.ANTHROPIC_API_KEY;
   out.HOME = process.env.HAWKES_AGENT_HOME ?? `/srv/hawkes-agent`;
+  // One npm cache for every agent, check and workspace (deploy/agent-sandbox.mjs makes it), so installs are offline-fast.
+  if (process.env.STUDIO_NPM_CACHE) out.npm_config_cache = process.env.STUDIO_NPM_CACHE;
   return out as NodeJS.ProcessEnv;
 }
 
@@ -44,6 +47,55 @@ export function spawnClaude(args: string[], { cwd, env }: { cwd: string; env: No
   const clean = sandboxEnv(env);
   const keep = Object.keys(clean).filter((k) => k !== 'HOME' && k !== 'PATH');
   return spawn('sudo', ['-n', '-u', process.env.HAWKES_AGENT_USER!, `--preserve-env=${keep.join(',')}`, WRAPPER, path.resolve(cwd), exe, ...args], { cwd, env: clean, windowsHide: true });
+}
+
+/**
+ * A shell command (an agent change's checks, npm ci) as the sandbox user when it's on: agent-written code (tests,
+ * package scripts) never runs as Studio's user, which can read the keys. Elsewhere: a plain shell, like before.
+ */
+export function spawnShell(cmd: string, { cwd, env }: { cwd: string; env: NodeJS.ProcessEnv }): ChildProcessWithoutNullStreams {
+  if (!sandboxOn()) return spawn(cmd, { cwd, env, shell: true, windowsHide: true });
+  return sandboxSpawn('/bin/sh', ['-c', cmd], { cwd, env }) as ChildProcessWithoutNullStreams;
+}
+
+/**
+ * Any program that runs code from an agent's worktree (a dev server for its verification playtest, a preview build)
+ * as the sandbox user, with spawn's own options (detached, stdio). No Claude login, no secrets. Off: a plain spawn.
+ */
+export function sandboxSpawn(file: string, args: string[], opts: SpawnOptions & { cwd: string }): ChildProcess {
+  if (!sandboxOn()) return spawn(file, args, { windowsHide: true, ...opts });
+  const clean = sandboxEnv(opts.env ?? process.env);
+  delete clean.CLAUDE_CODE_OAUTH_TOKEN;
+  delete clean.ANTHROPIC_API_KEY;
+  const keep = Object.keys(clean).filter((k) => k !== 'HOME' && k !== 'PATH');
+  return spawn('sudo', ['-n', '-u', process.env.HAWKES_AGENT_USER!, `--preserve-env=${keep.join(',')}`, WRAPPER, path.resolve(opts.cwd), file, ...args], { ...opts, env: clean, windowsHide: true, shell: false });
+}
+
+/**
+ * Before Studio runs git in a worktree the sandbox could write: its ".git" file must still point into the repo's own
+ * worktrees (a ".git" repointed at a repository the agent made would run that repository's hooks and config as
+ * Studio). Throws otherwise.
+ */
+export function assertWorktree(worktree: string, repoDir: string) {
+  if (!sandboxOn()) return;
+  const gitFile = path.join(worktree, '.git');
+  let text = '';
+  try {
+    if (!fs.lstatSync(gitFile).isFile()) throw new Error('not a file');
+    text = fs.readFileSync(gitFile, 'utf8').trim();
+  } catch (e: any) {
+    throw new Error(`${worktree}: its .git is not a worktree link (${e.message}); not running git there`);
+  }
+  const gitdir = path.resolve(worktree, text.replace(/^gitdir:\s*/, ''));
+  const expected = path.join(fs.realpathSync(repoDir), '.git', 'worktrees') + path.sep;
+  if (!fs.realpathSync(gitdir).startsWith(expected)) throw new Error(`${worktree}: its .git points outside ${repoDir}'s worktrees; not running git there`);
+}
+
+/** Where files the sandbox must read live (MCP configs, Talk's attachments): inside the shared work folder. */
+export function sandboxShare(...parts: string[]) {
+  const dir = path.join(PROJECTS, '.work', '.agent', ...parts);
+  fs.mkdirSync(dir, { recursive: true });
+  return dir;
 }
 
 const agentUid = () => {

@@ -5,6 +5,7 @@
 
 import { genRun } from './gen.ts';
 import { canonLines, markUsed } from './memory.ts';
+import { jobModel } from './roles.ts';
 
 const SCHEMA = {
   type: 'object', additionalProperties: false, required: ['ok', 'conflicts', 'summary'],
@@ -39,7 +40,7 @@ ${canon.text}
 
 THE CHANGE (${what}), as a unified diff (trimmed):
 ${diff.slice(0, 40_000)}`;
-  const job = await genRun('llm.json', 'hawkesstudio', { prompt, schema: SCHEMA, model: process.env.STUDIO_CANON_MODEL ?? 'claude-sonnet-5-5', effort: 'low', maxTokens: 2000 }, undefined, 5 * 60_000);
+  const job = await genRun('llm.json', 'hawkesstudio', { prompt, schema: SCHEMA, model: process.env.STUDIO_CANON_MODEL ?? jobModel('canon'), effort: 'low', maxTokens: 2000 }, undefined, 5 * 60_000);
   if (job.status !== 'done') return { ok: true, summary: `couldn't check: ${String(job.error ?? job.detail ?? 'failed').slice(0, 200)}`, conflicts: [], checked: canon.ids.length, skipped: 'error' };
   const v = job.result?.value ?? {};
   const conflicts = (Array.isArray(v.conflicts) ? v.conflicts : []).slice(0, 10).map((c: any) => ({ entry: String(c.entry ?? ''), why: String(c.why ?? '').slice(0, 500) }));

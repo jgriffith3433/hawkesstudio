@@ -46,7 +46,8 @@ import { judgeCriteria } from './acceptance.ts';
 import { briefSection, learnFrom, recordRun, LEARNED_ASK } from './memory.ts';
 import { canonCheck, CONTENTISH } from './canon.ts';
 import { roleArgs, loadRole, type RoleName } from './roles.ts';
-import { spawnClaude } from './sandbox.ts';
+import { spawnClaude, spawnShell, sandboxShare, assertWorktree } from './sandbox.ts';
+import { warmDeps } from './warm.ts';
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS changes (
@@ -308,7 +309,7 @@ export const AGENT_MEMORY_TOOLS = ['memory_search', 'memory_get', 'memory_write'
 export const agentRole = (c: Change): RoleName => ({ infra: 'builder', content: 'content', builder: 'builder', fixer: 'fixer' } as const)[roleOf(c)];
 /** An agent's or scout's MCP config: Studio's server with the memory tools only, as that agent (writes are candidates). */
 export function agentMcp(id: string) {
-  const dir = path.join(DATA, 'agent-mcp');
+  const dir = sandboxShare('mcp');
   fs.mkdirSync(dir, { recursive: true });
   const file = path.join(dir, `${id}.json`);
   const cfg = { mcpServers: { hawkesstudio: { command: process.execPath, args: [path.join(ROOT, 'bin', 'studio-mcp.mjs')], env: { STUDIO_SERVER: '1', STUDIO_AGENT: id, STUDIO_MCP_TOOLS: AGENT_MEMORY_TOOLS.join(',') } } } };
@@ -473,6 +474,8 @@ async function work(id: string, note?: string, answer?: string) {
       }
       const w = git(repoDir, ['worktree', 'add', '-b', c.branch, c.worktree, `origin/${c.base}`]);
       if (!w.ok) throw new Error(`worktree failed: ${w.err}`);
+      // A warm start: node_modules from a checkout with the same lockfile (warm.ts), not a fresh npm ci.
+      warmDeps(c.worktree, c.repo, (s) => addLog(id, s));
     }
     const findings = c.findings.map((f) => getFinding(f)).filter((f): f is NonNullable<typeof f> => Boolean(f));
     const brief = await writeBrief(c, p, findings, note);
@@ -488,6 +491,8 @@ async function work(id: string, note?: string, answer?: string) {
     const r = await runAgent(getChange(id)!, brief, s, claudeEnv(), resume);
     c = getChange(id)!;
     update(id, { cost: c.cost + r.cost });
+    // The agent could write its worktree: Studio's git runs there only while it still links to this repo.
+    assertWorktree(c.worktree, repoDir);
     const summaryFile = path.join(c.worktree, '.hawkes', 'summary.md');
     const summary = fs.existsSync(summaryFile) ? fs.readFileSync(summaryFile, 'utf8').trim() : r.result;
     const commits = git(c.worktree, ['log', '--format=%h %s', `origin/${c.base}..HEAD`]).out.split('\n').filter(Boolean);
@@ -705,7 +710,7 @@ function infraEnv({ agent = false, keepGenKey = true } = {}) {
 function sh(cwd: string, cmd: string, env: NodeJS.ProcessEnv, timeoutMs = 15 * 60_000): Promise<{ ok: boolean; out: string; ms: number }> {
   return new Promise((resolve) => {
     const t0 = Date.now();
-    const child = spawn(cmd, { cwd, env, shell: true, windowsHide: true });
+    const child = spawnShell(cmd, { cwd, env });
     let out = '';
     const keep = (d: any) => { out = (out + d).slice(-20_000); };
     child.stdout.on('data', keep);
@@ -782,6 +787,8 @@ async function workInfra(id: string, note?: string) {
       if (!f.ok) throw new Error(`fetch failed: ${f.err}`);
       const w = git(repoDir, ['worktree', 'add', '-b', c.branch, c.worktree, `origin/${c.base}`]);
       if (!w.ok) throw new Error(`worktree failed: ${w.err}`);
+      // A warm start: node_modules from a checkout with the same lockfile (warm.ts), not a fresh npm ci.
+      warmDeps(c.worktree, c.repo, (s) => addLog(id, s));
     } else if (note) {
       // Another pass: bring the branch up to date with main first (main may have moved, or the merge conflicted).
       git(repoDir, ['fetch', '--quiet', 'origin']);
@@ -797,6 +804,8 @@ async function workInfra(id: string, note?: string) {
     const r = await runAgent(getChange(id)!, brief, s, infraEnv({ agent: true }));
     c = getChange(id)!;
     update(id, { cost: c.cost + r.cost });
+    // The agent could write its worktree: Studio's git runs there only while it still links to this repo.
+    assertWorktree(c.worktree, repoDir);
     const summaryFile = path.join(c.worktree, '.hawkes', 'summary.md');
     const summary = fs.existsSync(summaryFile) ? fs.readFileSync(summaryFile, 'utf8').trim() : r.result;
     const commits = git(c.worktree, ['log', '--format=%h %s', `origin/${c.base}..HEAD`]).out.split('\n').filter(Boolean);

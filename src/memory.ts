@@ -693,6 +693,10 @@ export function startMemory() {
     try {
       const f = fadeUnused();
       if (f.length) console.log(`[memory] faded ${f.length} unused entries`);
+      // Haiku's first pass over the candidates (memory-curate.ts): duplicates fold in, contradictions go to J.
+      if (process.env.STUDIO_SERVER === '1' && process.env.STUDIO_MEMORY_CURATE !== 'off') {
+        void import('./memory-curate.ts').then(({ autoCurate }) => autoCurate()).then((r) => { if (r.looked) console.log(`[memory] curation: ${JSON.stringify(r)}`); }).catch((e) => console.warn(`[memory] curation: ${e.message}`));
+      }
       if (process.env.STUDIO_SERVER === '1' && process.env.STUDIO_MEMORY_PUBLISH !== 'off' && process.env.GITHUB_TOKEN) {
         const r = publishMemory();
         if (r.changed) console.log(`[memory] export pushed to ${MEMORY_BRANCH} (${r.sha})`);

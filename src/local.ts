@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 import { abs, localUrl, paths, DATA, type Product } from './config.ts';
+import { sandboxOn, sandboxSpawn } from './sandbox.ts';
 
 const WIN = process.platform === 'win32';
 /** A shell command, the platform's way (cmd on Windows, sh elsewhere). */
@@ -64,14 +65,16 @@ const served = new Map<number, number>();
  * waits until it answers. npm projects reuse the main checkout's node_modules (a link) so this is quick.
  */
 export async function serveDir(p: Product, dir: string, port: number) {
+  // The worktree's own code (its dev server, its install scripts) runs as the agent sandbox's user when it's on
+  // (sandbox.ts): an agent's change never runs as Studio.
   if (p.local.serve === 'npm' && !fs.existsSync(path.join(dir, 'node_modules'))) {
     const main = path.join(abs(p.local.dir), 'node_modules');
-    if (fs.existsSync(main)) fs.symlinkSync(main, path.join(dir, 'node_modules'), WIN ? 'junction' : 'dir');
-    else await new Promise((resolve) => spawn(...shell('npm install'), { cwd: dir, stdio: 'ignore', windowsHide: true }).on('close', resolve).on('error', resolve));
+    if (fs.existsSync(main) && !sandboxOn()) fs.symlinkSync(main, path.join(dir, 'node_modules'), WIN ? 'junction' : 'dir');
+    else await new Promise((resolve) => sandboxSpawn(...shell('npm install'), { cwd: dir, stdio: 'ignore' }).on('close', resolve).on('error', resolve));
   }
   const out = fs.openSync(path.join(paths.logs, `serve-${p.id}-${port}.log`), 'a');
   const child = p.local.serve === 'npm'
-    ? spawn(...shell(`npm run dev -- --port ${port} --strictPort`), { cwd: dir, detached: true, stdio: ['ignore', out, out], windowsHide: true })
+    ? sandboxSpawn(...shell(`npm run dev -- --port ${port} --strictPort`), { cwd: dir, detached: true, stdio: ['ignore', out, out] })
     : spawn(PYTHON, ['-m', 'http.server', String(port), '--bind', '127.0.0.1'], { cwd: dir, detached: true, stdio: ['ignore', out, out], windowsHide: true });
   child.unref();
   served.set(port, child.pid!);
