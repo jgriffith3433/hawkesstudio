@@ -35,11 +35,14 @@ export function buildReport(run: string) {
     return { id, name: p.name, steps: mine, reviews, findings, avg, verdict, failed };
   });
   const open = listFindings({ status: 'open,fixing' });
-  const newToday = (db.prepare('SELECT COUNT(*) AS n FROM findings WHERE first_seen >= ?').get(r.started) as any).n;
+  // New in this run: backlog findings (blockers, bugs) and ideas (polish, ideas: the ideas list) counted apart.
+  const newToday = (db.prepare(`SELECT COUNT(*) AS n FROM findings WHERE first_seen >= ? AND status NOT IN ('idea', 'expired') AND severity IN ('blocker', 'bug')`).get(r.started) as any).n;
+  const newIdeas = (db.prepare(`SELECT COUNT(*) AS n FROM findings WHERE first_seen >= ? AND severity IN ('polish', 'idea')`).get(r.started) as any).n;
+  const ideas = (db.prepare(`SELECT COUNT(*) AS n FROM findings WHERE status = 'idea'`).get() as any).n;
   const cost = steps.reduce((n, s) => n + (s.cost ?? 0), 0);
   const broken = per.filter((x) => x.verdict === 'broken' || x.failed.length).map((x) => x.name);
-  const headline = `${per.length} products · ${per.filter((x) => x.verdict === 'ship').length} ship-ready · ${broken.length ? `needs attention: ${broken.join(', ')}` : 'nothing broken'} · ${newToday} new findings · $${cost.toFixed(2)}`;
-  return { run: r, per, open, newToday, cost, headline, date: today(new Date(r.started)) };
+  const headline = `${per.length} products · ${per.filter((x) => x.verdict === 'ship').length} ship-ready · ${broken.length ? `needs attention: ${broken.join(', ')}` : 'nothing broken'} · ${newToday} new findings${newIdeas ? `, ${newIdeas} new ideas` : ''} · $${cost.toFixed(2)}`;
+  return { run: r, per, open, newToday, newIdeas, ideas, cost, headline, date: today(new Date(r.started)) };
 }
 
 const fmtStep = (s: Step) => {
@@ -106,7 +109,7 @@ export function reportMarkdown(run: string) {
     }
   }
   L.push('## Backlog', '');
-  L.push(`${R.open.length} open findings (${R.newToday} new in this run).`, '');
+  L.push(`${R.open.length} open findings (${R.newToday} new in this run). Ideas list: ${R.ideas} (${R.newIdeas} new; polish and ideas, never auto-fixed, expire after 14 days unseen).`, '');
   for (const f of R.open.slice(0, 25)) L.push(`- ${SEV_ICON[f.severity] ?? '-'} \`${f.id}\` **${f.product}**: ${f.title} (seen ${f.seen}×${f.status === 'fixing' ? ', being fixed' : ''})`);
   L.push('');
   return { markdown: L.join('\n'), ...R };

@@ -12,10 +12,11 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { db, newId, J, rowToStep, parse, type Step } from './db.ts';
-import { loadProducts, getProduct, localUrl, storyOf, today, PROJECTS, type Product, type Playtest } from './config.ts';
+import { loadProducts, getProduct, localUrl, today, PROJECTS, type Product, type Playtest } from './config.ts';
 import { gen, genRun, genUp, ensureGen } from './gen.ts';
 import { ensureServer, gitState, treeFingerprint, runCheck, serveDir, stopServed } from './local.ts';
-import { absorb, notSeenIn } from './backlog.ts';
+import { absorb, applyKnown, expireIdeas, notSeenIn, type ReviewMode } from './backlog.ts';
+import { barState, barHash, reviewedSha, reviewParams } from './review.ts';
 import { writeReport } from './report.ts';
 import { assetStatus, makeAsset } from './assets.ts';
 import { syncRepos, syncRepo, repoMap, betaFolders, isServer, BETA, BRANCH } from './repos.ts';
@@ -133,6 +134,12 @@ async function runAll(run: string, ids: string[], o: RunOptions) {
     const s = startStep(run, p.id, 'error', 'pipeline');
     updateStep(s, { status: 'failed', detail: String(e.message ?? e), finished: true });
   })));
+  // Ideas (polish, ideas) not seen for 14 days drop off the ideas list (kept as expired).
+  const expired = expireIdeas();
+  if (expired) {
+    const s = startStep(run, 'studio', 'backlog', 'ideas expired');
+    updateStep(s, { status: 'done', detail: `${expired} ideas weren't seen for 14 days and expired`, finished: true });
+  }
   // The games are played: the playtester stops (unless a playtest outside this run is still on it; then its idle stop does).
   if (gpuGate) {
     await gpuGate;
@@ -235,7 +242,8 @@ export async function runProduct(run: string, p: Product, o: RunOptions) {
     .filter((t) => !o.scenarios?.length || o.scenarios.includes(t.scenario ?? t.mode ?? ''));
   const ran: string[] = [];
   for (const t of tests) {
-    const res = await playtestProduct(run, p, t, { review: !o.noReview, focus: o.focus });
+    // The daily review is full; live desktop runs check for regressions only (beta's full review sees the same code first).
+    const res = await playtestProduct(run, p, t, { review: !o.noReview, focus: o.focus, mode: t.where === 'live' && t.device !== 'phone' ? 'regression' : 'full' });
     if (res) ran.push(nameOf(t));
   }
   // Open findings from these scenarios that no review mentioned this time.
@@ -324,8 +332,12 @@ export async function testProduct(run: string, p: Product, platform: 'EditMode' 
   return job;
 }
 
-/** Plays one scenario and (unless review is false) has Claude review it; adds findings to the backlog. */
-export async function playtestProduct(run: string, p: Product, t: Playtest, { review = true, focus }: { review?: boolean; focus?: string } = {}) {
+/**
+ * Plays one scenario and (unless review is false) has Claude review it; adds findings to the backlog. mode (review.ts):
+ * full (daily; regression-only once the scenario meets the product's quality bar), verify (beta runs, one-off checks),
+ * regression (live checks).
+ */
+export async function playtestProduct(run: string, p: Product, t: Playtest, { review = true, focus, mode = 'full' }: { review?: boolean; focus?: string; mode?: ReviewMode } = {}) {
   const name = nameOf(t);
   const s = startStep(run, p.id, 'playtest', name, 'starting');
   let url: string;
@@ -380,7 +392,11 @@ export async function playtestProduct(run: string, p: Product, t: Playtest, { re
   // runs, the same live site for live ones) and the playtest raised no new problem. The last review still stands.
   const sha = t.where === 'local' ? (played ? `${played.sha.slice(0, 12)}${played.dirty ? `+${played.dirty}` : ''}` : gitState(p.site).head?.split(' ')[0] ?? '') : '';
   const problemsKey = (r.problems ?? []).map((x: any) => x.message).sort().join('|');
-  const sameKey = `${t.where}:${sha}:${r.outcome}:${problemsKey}`;
+  // A scenario that meets the product's quality bar gets a regression-only daily review until the build changes meaningfully.
+  const fullSha = reviewedSha(p, t.where, played);
+  const bar = mode === 'full' ? barState(p, name, fullSha) : null;
+  const reviewMode: ReviewMode = bar?.met ? 'regression' : mode;
+  const sameKey = `${t.where}:${sha}:${r.outcome}:${problemsKey}:${reviewMode}`;
   const prev = lastStep(p.id, 'review', name, run);
   const ageDays = prev ? (Date.now() - (prev.finished ?? 0)) / 86_400_000 : 99;
   if (prev?.data?.reviewKey === sameKey && ageDays < 7 && !focus) {
@@ -390,29 +406,32 @@ export async function playtestProduct(run: string, p: Product, t: Playtest, { re
   }
   const rs = startStep(run, p.id, 'review', name, 'Claude is watching');
   const previous = lastStep(p.id, 'review', name, run)?.data ?? null;
-  const rev = await runGenJob('playtest.review', p.id, {
-    model: process.env.STUDIO_REVIEW_MODEL ?? 'claude-sonnet-5-5',
-    job: job.id, product: `${p.name} (presented publicly as "${p.framing}"). ${p.about}`, story: storyOf(p),
+  const rev = await runGenJob('playtest.review', p.id, reviewParams(p, job.id, reviewMode, {
     ...(focus ? { focus } : {}),
     ...(previous ? { previous: { summary: previous.summary, verdict: previous.verdict, scores: previous.scores, findings: (previous.findings ?? []).map((f: any) => ({ severity: f.severity, title: f.title })) } } : {}),
-  }, (j) => updateStep(rs, { job: j.id, detail: j.detail }), { runMs: REVIEW_RUN_MS });
+  }), (j) => updateStep(rs, { job: j.id, detail: j.detail }), { runMs: REVIEW_RUN_MS });
   if (rev.status !== 'done') {
     updateStep(rs, { status: 'failed', job: rev.id, detail: `failed: ${rev.error ?? rev.detail}`, finished: true });
     return job;
   }
   const v = rev.result;
-  const merged = absorb(p.id, run, name, v.findings ?? []);
+  const merged = absorb(p.id, run, name, v.findings ?? [], { mode: reviewMode });
+  const known = applyKnown(p.id, run, name, v.known ?? []);
+  const parts = [
+    `${merged.added.length} new`, merged.ideas.length ? `${merged.ideas.length} to ideas` : '', merged.skipped ? `${merged.skipped} not regressions, not filed` : '',
+    known.fixed.length ? `${known.fixed.length} known look fixed` : '', known.present.length ? `${known.present.length} known still there` : '',
+  ].filter(Boolean);
   updateStep(rs, {
     status: 'done', job: rev.id, cost: rev.cost ?? 0,
-    detail: `${v.verdict} · ${(v.findings ?? []).length} findings (${merged.added.length} new)`,
-    data: { ...v, added: merged.added, updated: merged.updated, reviewKey: sameKey }, finished: true,
+    detail: `${v.verdict} · ${reviewMode}${bar?.met ? ' (meets its quality bar)' : ''} · ${(v.findings ?? []).length} findings (${parts.join(', ')})${p.quality ? ` · bar: ${v.meetsBar ?? '?'}` : ''}`,
+    data: { ...v, added: merged.added, updated: merged.updated, ideas: merged.ideas, skipped: merged.skipped, knownFixed: known.fixed, knownPresent: known.present, reviewKey: sameKey, mode: reviewMode, sha: fullSha, barHash: barHash(p.quality), bar: bar?.why ?? null }, finished: true,
   });
   // The playtest's own cost is tiny (local); attribute the review's.
   return job;
 }
 
 /** Runs the pipeline pieces on their own (from the API, CLI or MCP) as a small run. */
-export function startPartial(kind: 'build' | 'playtest' | 'test', productId: string, opts: { scenario?: string; where?: 'local' | 'live'; device?: 'desktop' | 'phone'; mode?: string; force?: boolean; review?: boolean; focus?: string; platform?: 'EditMode' | 'PlayMode'; category?: string; origin?: string | null } = {}) {
+export function startPartial(kind: 'build' | 'playtest' | 'test', productId: string, opts: { scenario?: string; where?: 'local' | 'live'; device?: 'desktop' | 'phone'; mode?: string; force?: boolean; review?: boolean; focus?: string; reviewMode?: ReviewMode; platform?: 'EditMode' | 'PlayMode'; category?: string; origin?: string | null } = {}) {
   const p = getProduct(productId);
   const id = newId('r');
   db.prepare('INSERT INTO runs (id, kind, status, detail, products, options, started) VALUES (?, ?, ?, ?, ?, ?, ?)').run(id, kind, 'running', `${kind} ${p.id}`, J([p.id]), J(opts), Date.now());
@@ -421,7 +440,7 @@ export function startPartial(kind: 'build' | 'playtest' | 'test', productId: str
     try {
       if (kind === 'build') await buildProduct(id, p, { force: opts.force ?? true });
       else if (kind === 'test') await testProduct(id, p, opts.platform ?? 'EditMode', opts.category);
-      else await playtestProduct(id, p, { scenario: opts.scenario ?? (opts.mode ? undefined : 'smoke'), mode: (opts.mode as any) ?? undefined, where: opts.where ?? 'local', device: opts.device }, { review: opts.review !== false, focus: opts.focus });
+      else await playtestProduct(id, p, { scenario: opts.scenario ?? (opts.mode ? undefined : 'smoke'), mode: (opts.mode as any) ?? undefined, where: opts.where ?? 'local', device: opts.device }, { review: opts.review !== false, focus: opts.focus, mode: opts.reviewMode ?? (opts.where === 'live' ? 'regression' : 'verify') });
       const cost = (db.prepare('SELECT COALESCE(SUM(cost), 0) AS c FROM steps WHERE run = ?').get(id) as any).c;
       const failed = (db.prepare(`SELECT COUNT(*) AS n FROM steps WHERE run = ? AND status = 'failed'`).get(id) as any).n;
       db.prepare(`UPDATE runs SET status = ?, detail = ?, finished = ?, cost = ? WHERE id = ?`).run(failed ? 'failed' : 'done', `${kind} ${p.id}${failed ? ' failed' : ''}`, Date.now(), cost, id);
@@ -455,7 +474,7 @@ export function startBeta(productId: string, { focus, origin }: { focus?: string
       if (p.build && lane) await buildProduct(id, p);
       else void import('./previews.ts').then(({ buildPreview }) => buildPreview(p.id)).catch(() => {});
       const t = p.playtests.find((x) => x.where === 'local' && x.device !== 'phone');
-      if (lane && t) await playtestProduct(id, p, t, { focus });
+      if (lane && t) await playtestProduct(id, p, t, { focus, mode: 'verify' });
       const cost = (db.prepare('SELECT COALESCE(SUM(cost), 0) AS c FROM steps WHERE run = ?').get(id) as any).c;
       const failed = (db.prepare(`SELECT COUNT(*) AS n FROM steps WHERE run = ? AND status = 'failed'`).get(id) as any).n;
       db.prepare(`UPDATE runs SET status = ?, detail = ?, finished = ?, cost = ? WHERE id = ?`).run(failed ? 'failed' : 'done', `beta ${p.id}${failed ? ' failed' : ''}`, Date.now(), cost, id);

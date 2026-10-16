@@ -289,7 +289,7 @@ function findingHtml(f) {
       <div class="meta">${esc(f.detail ?? '')}</div>
       <div class="fix"><b>Fix:</b> ${esc(f.fix ?? '')}</div>${f.note ? `<div class="meta">Note: ${esc(f.note)}</div>` : ''}
     </div><div class="side">${shots ? `<div class="thumbs">${shots}</div>` : ''}${f.id ? `<div class="actions">
-      ${f.status === 'open' ? `<button class="small primary" data-agentfix="${f.id}" data-product="${esc(f.product)}">Fix with agent</button>` : ''}${['fixing', 'fixed', 'wontfix', 'open'].filter((s) => s !== f.status).map((s) => `<button class="small" data-finding="${f.id}" data-status="${s}">${s}</button>`).join('')}</div>` : ''}</div></div>`;
+      ${f.status === 'open' ? `<button class="small primary" data-agentfix="${f.id}" data-product="${esc(f.product)}">Fix with agent</button>` : ''}${['fixing', 'fixed', 'wontfix', 'open', 'idea'].filter((s) => s !== f.status && !(s === 'fixing' && f.status === 'idea')).map((s) => `<button class="small" data-finding="${f.id}" data-status="${s}">${s === 'open' && ['idea', 'expired'].includes(f.status) ? 'to backlog' : s === 'idea' ? 'to ideas' : s}</button>`).join('')}</div>` : ''}</div></div>`;
 }
 
 // ---------------------------------------------------------- backlog
@@ -297,7 +297,7 @@ async function loadBacklog() {
   if ($('#blProduct').options.length <= 1 && overview) $('#blProduct').innerHTML += overview.products.map((p) => `<option value="${p.id}">${esc(p.name)}</option>`).join('');
   const qs = new URLSearchParams({ status: $('#blStatus').value, ...($('#blProduct').value ? { product: $('#blProduct').value } : {}) });
   const { findings } = await api(`/api/findings?${qs}`);
-  $('#blCount').textContent = `${findings.length} findings`;
+  $('#blCount').textContent = `${findings.length} ${$('#blStatus').value === 'idea' ? 'ideas (polish and ideas: never auto-fixed, expire after 14 days unseen)' : 'findings'}`;
   $('#blList').innerHTML = findings.length ? findings.map(findingHtml).join('') : '<div class="empty">Nothing here.</div>';
 }
 $('#blProduct').onchange = $('#blStatus').onchange = loadBacklog;

@@ -136,7 +136,7 @@ const server = http.createServer(async (req, res) => {
     }
     if (route === '/api/playtest' && method === 'POST') {
       const b = await readJson(req);
-      return send(res, 200, { ok: true, run: startPartial('playtest', String(b.product), { scenario: b.scenario, where: b.where, device: b.device === 'phone' ? 'phone' : undefined, mode: b.mode, review: b.review, focus: b.focus, origin }).id });
+      return send(res, 200, { ok: true, run: startPartial('playtest', String(b.product), { scenario: b.scenario, where: b.where, device: b.device === 'phone' ? 'phone' : undefined, mode: b.mode, review: b.review, focus: b.focus, reviewMode: ['full', 'verify', 'regression'].includes(b.reviewMode) ? b.reviewMode : undefined, origin }).id });
     }
 
     // Playtests: every run with its video, screenshots and review (dashboard Playtests tab), trends.
@@ -373,8 +373,13 @@ server.listen(PORT, '127.0.0.1', () => {
   // Results of work Talk started go back into its conversation.
   startFollowups();
   // Findings recreated after J marked a matching one won't-fix (before the backlog matched those) go back to it.
-  void import('./backlog.ts').then(({ foldIntoWontfix }) => {
+  void import('./backlog.ts').then(({ foldIntoWontfix, moveOldPolishToIdeas, expireIdeas }) => {
     const n = foldIntoWontfix();
     if (n) console.log(`[backlog] folded ${n} repeat finding(s) into their won't-fix ones`);
+    // Polish and ideas are the ideas list (once, for the ones from before it), and ideas unseen for 14 days expire.
+    const moved = moveOldPolishToIdeas();
+    if (moved) console.log(`[backlog] moved ${moved} open polish/idea finding(s) to the ideas list`);
+    const expired = expireIdeas();
+    if (expired) console.log(`[backlog] ${expired} idea(s) expired (not seen for 14 days)`);
   });
 });

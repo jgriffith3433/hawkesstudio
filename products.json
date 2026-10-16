@@ -1,5 +1,5 @@
 {
-  "$comment": "Every Hawkes product Studio builds, playtests and reports on. Paths are relative to C:\\Projects. local.serve: how Studio starts the product locally for playtests (npm: the dev server; static: python's http.server over a folder). playtests: what runs each day (where: local or live). Scenarios come from each game's playtest contract (docs/playtest.md). dev: developing on beta (src/dev.ts): front = the /dev/ front door port Caddy routes https://<sub>.hawkesgen.com/dev/* to, port = the dev server port in the beta working copy (web products), path = the devtools page.",
+  "$comment": "Every Hawkes product Studio builds, playtests and reports on. Paths are relative to C:\\Projects. local.serve: how Studio starts the product locally for playtests (npm: the dev server; static: python's http.server over a folder). playtests: what runs each day (where: local or live). quality: the quality bar, what \"done\" means for the product; reviews judge against it, and a scenario that meets it gets regression-only daily reviews until its build changes meaningfully (src/review.ts). Scenarios come from each game's playtest contract (docs/playtest.md). dev: developing on beta (src/dev.ts): front = the /dev/ front door port Caddy routes https://<sub>.hawkesgen.com/dev/* to, port = the dev server port in the beta working copy (web products), path = the devtools page.",
   "products": [
     {
       "id": "doseofdestruction",
@@ -52,6 +52,7 @@
         "doseofdestructionwebsite/content/campaign.json"
       ],
       "about": "A browser platform fighter (Babylon.js) with every main Hawkes IP character. The campaign is a TV show, from Open Mic (a walk-on with one skateboard, Exit Punk) to Encore. Fighters, poses and animations are AI-generated.",
+      "quality": "From the menu a fight starts and ends; every fighter can be picked, moves, attacks and gets KO'd with readable hit feedback; campaign chapters play in order with their story beats; no crash or soft-lock. AI-generated art with uneven style between fighters is accepted.",
       "contract": true,
       "dev": {
         "front": 8701,
@@ -106,6 +107,7 @@
         "phoriginsassets/Lore.txt"
       ],
       "about": "A third-person story game (Babylon.js): one night in Hawkes Tower. The board meets, B3 writes back, Pierce Hawkes goes down to the vat and transforms. Levels 1-6 are playable; dialogue, voice lines and cutscenes.",
+      "quality": "Levels 1-6 play start to finish with their cutscenes, dialogue and voice lines; the player always knows where to go and never gets stuck; the tone stays a corporate thriller turning to horror (per Lore.txt). Art fidelity beyond what the levels have now is not asked for.",
       "deploy": {
         "prebuild": "npm run build"
       },
@@ -165,6 +167,7 @@
         "sickofitgame-unity/Docs/Story.md"
       ],
       "about": "A 2D arcade bullet-dodger (Unity WebGL) with rewind: a sarcastic nobody chases the Overlord up 1,000 floors of Hell. Hell is repetition, so rewind is the hero's power. Slimes are villagers, never enemies. No office or work jokes.",
+      "quality": "Menus work; a run climbs floors with dodging and rewind working; death sends you back down (the roguelite loop); the HUD and floor count are readable; tone per the story bible (deadpan hero, slimes are villagers, no office jokes).",
       "contract": true,
       "dev": {
         "front": 8706
@@ -219,6 +222,7 @@
         "YoobaLand/AGENTS.md"
       ],
       "about": "A 3D game (Unity URP, WebGL) about where Yooba came from: eat, grow, and find the way home.",
+      "quality": "The game loads into the world; Yooba moves, eats and grows; the way home can be found; no crash, no falling through the world, no stuck camera. Prototype art and sparse content are accepted.",
       "contract": true,
       "dev": {
         "front": 8707
@@ -273,6 +277,7 @@
         "breakingthrough/AGENTS.md"
       ],
       "about": "A prototype roguelike wave-defense game (Unity WebGL): Warrok, a bow-wielding brute, defends a pirate pianist from waves of birds. \"Where things that should not exist are given an address.\"",
+      "quality": "Prototype. A run starts; waves of birds come; Warrok can aim and shoot; the pianist can be defended or lost; a run ends with a result and can restart. Prototype art and placeholder UI are accepted.",
       "contract": true,
       "dev": {
         "front": 8708
@@ -315,6 +320,7 @@
         "icanbeaiwebsite/day.config.js"
       ],
       "about": "A real-time simulation (Babylon.js) of a day in a developer's life; the character is \"AI\". Direction undecided.",
+      "quality": "Direction undecided, so the bar is only that it runs: it loads and the day simulation runs without errors or a blank screen. Don't judge or suggest a direction.",
       "deploy": {
         "prebuild": "node scripts/bump-version.mjs patch"
       },
@@ -366,6 +372,7 @@
         "TheFinalSpark/Decision tree.txt"
       ],
       "about": "A choose-your-path video story, The Final Spark: you wake in a sewer, found by a rat; each choice is a page with a video. Plus a blog.",
+      "quality": "Every branch page of The Final Spark loads its video and its choices go to the right next page (per the decision tree); the blog pages load; works on a phone.",
       "contract": true,
       "dev": {
         "front": 8704,
@@ -406,6 +413,7 @@
         "hawkesbiomedicalnew/AGENTS.md"
       ],
       "about": "The corporate front of Hawkes Biomedical, a fictional pharma megacorp. It lists the product line as medical products, never games; the footer says it's fiction. Never mention B3, the vat or the creature. \"We do not pitch a cure. We own the category.\"",
+      "quality": "Every page loads with no broken links or images; it reads as a pharma company (products never called games, the footer says it's fiction, nothing about B3, the vat or the creature); works on a phone.",
       "dev": {
         "front": 8705,
         "port": 8715,

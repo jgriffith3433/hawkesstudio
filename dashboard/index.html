@@ -65,7 +65,7 @@
     <section id="backlog" class="tab">
       <div class="bar">
         <select id="blProduct"><option value="">All products</option></select>
-        <select id="blStatus"><option value="open,fixing">Open</option><option value="fixed">Fixed</option><option value="wontfix">Won't fix</option><option value="open,fixing,fixed,wontfix">All</option></select>
+        <select id="blStatus" title="Backlog: blockers and bugs. Ideas: polish and ideas (never auto-fixed; expire after 14 days unseen)"><option value="open,fixing">Open</option><option value="idea">Ideas</option><option value="fixed">Fixed</option><option value="wontfix">Won't fix</option><option value="expired">Expired ideas</option><option value="open,fixing,fixed,wontfix,idea,expired">All</option></select>
         <span id="blCount"></span>
       </div>
       <div id="blList"></div>

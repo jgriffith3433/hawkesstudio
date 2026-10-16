@@ -2,7 +2,7 @@
 //
 //   studio status
 //   studio daily [--products a,b] [--scenarios smoke] [--where local|live] [--no-build] [--force-build] [--no-review] [--wait]
-//   studio playtest <product> [scenario] [--live] [--mode site] [--no-review] [--wait]
+//   studio playtest <product> [scenario] [--live] [--mode site] [--no-review] [--review-mode verify|regression|full] [--wait]
 //   studio build <product> [--wait]
 //   studio test <product> [EditMode|PlayMode] [--category Playtest] [--wait]   (Unity tests, on the build server)
 //   studio run <run id>              studio report [run id | latest]
@@ -78,7 +78,7 @@ async function main() {
     case 'playtest': {
       const [product, scenario] = rest;
       if (!product) throw new Error('studio playtest <product> [scenario]');
-      const { run } = await studio('/api/playtest', { method: 'POST', body: { product, scenario, where: flags.live ? 'live' : 'local', mode: flags.mode, review: !flags['no-review'], focus: flags.focus } });
+      const { run } = await studio('/api/playtest', { method: 'POST', body: { product, scenario, where: flags.live ? 'live' : 'local', mode: flags.mode, review: !flags['no-review'], focus: flags.focus, reviewMode: flags['review-mode'] } });
       if (flags.wait) return follow(run);
       return console.log(`started run ${run}`);
     }

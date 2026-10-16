@@ -16,12 +16,15 @@ testing.
    plays its beta build) and the live site. The report says which beta commit was played:
    - the game's own bot plays through real input
    - Playwright records the video, screenshots, console errors and frame rate
-6. **Reviews:** Claude watches each playtest against the product's story and art direction:
+6. **Reviews:** Claude (Sonnet, cents each) watches each playtest against the product's story, art direction and
+   quality bar:
    - a verdict (ship, fix-first or broken)
    - scores (stability, visuals, clarity, feel, polish)
-   - findings with screenshots and fixes
+   - at most 5 **new** findings with screenshots and fixes (see "Reviews converge" below)
+   - which known findings look fixed or are still there
    - what changed since yesterday
-7. **Backlog:** findings merge with what's already open (seen twice = the same finding, seen 2×).
+7. **Backlog:** findings merge with what's already open (seen twice = the same finding, seen 2×). Blockers and bugs go
+   to the backlog; polish and ideas go to the ideas list.
 8. **Report:** `reports/<date>-<run>.md` (and the dashboard's Report tab).
 9. **Morning brief** (`src/brief.ts`, on the server): a Talk conversation "Morning brief: <date>" where Claude sums the
    report up in five bullets (on Mondays plus the month's AWS cost: Cost Explorer if allowed, else an estimate), and a
@@ -30,6 +33,37 @@ testing.
 **Phone notifications** (`src/notify.ts`, ntfy.sh, free): the morning brief, an agent change ready to approve, a live
 site failing its check, and the day's agent budget used up. The topic is a secret random name in `.data/notify.json`;
 Talk tab → "Phone notifications" shows it, with a test button. J subscribes to it in the ntfy app.
+
+## Reviews converge
+
+An uncapped reviewer with no memory finds new polish forever. So (Hawkes Gen `playtest.review` v3, Studio
+`src/review.ts` and `src/backlog.ts`):
+- **Caps.** At most `STUDIO_REVIEW_MAX` (default 5) new findings per review, worst first. Polish and ideas only when
+  there is no blocker or bug. "Nothing new" is a valid answer; a "ship" verdict comes with at most 2 findings and never
+  a blocker. Gen enforces this on the answer (`settleReview`), not only in the prompt.
+- **Known findings in, new ones out.** Each review gets the product's open, fixing, idea and won't-fix findings (ids and
+  titles) and reports only problems not on that list. It says by id which known ones look fixed (an open finding or idea
+  of the same scenario is then marked fixed with a note; if it's reported again later it comes back) or are still
+  present (counted as seen).
+- **A mode per run kind.**
+
+  | Run | Mode | What reaches the backlog |
+  |---|---|---|
+  | Daily, local (beta) and live phone | `full` | new bugs and blockers; polish and ideas to the ideas list |
+  | Daily, live desktop | `regression` | regressions and blockers |
+  | Beta run after a merge, one-off local playtest (`studio_playtest`) | `verify` | regressions and blockers |
+  | Agent verification (`verifyChange`) | `verify` | nothing (shown on the change: verdict, changeWorked, known) |
+  | Live check after going live, one-off live playtest | `regression` | regressions and blockers |
+
+  `studio_playtest` / `studio playtest --review-mode full` asks for a full review by hand.
+- **Ideas list.** Polish and ideas get status `idea` (Backlog tab → Ideas; `studio_backlog status=idea`). Never
+  auto-fixed (the "Fix with agent" button and autoFix only take open bugs and blockers). An idea not seen for 14 days
+  expires (status `expired`, kept). "to backlog" moves one to the backlog; a review that calls it a bug does too. The
+  open polish and ideas from before the ideas list moved there once, at startup.
+- **Quality bars.** `products.json` `quality`: what "done" means per product (J's, 2026-10-16). Reviews judge against
+  it and answer `meetsBar`. Once a full review of a scenario says yes, that scenario's daily review is regression-only
+  until the build changes meaningfully: 10+ files or 300+ changed lines in the source repo since (build output excluded),
+  14 days, a review saying it no longer meets the bar, or J editing the bar. The review step's detail says which.
 
 ## The conversation (J and Claude, in the Claude app)
 

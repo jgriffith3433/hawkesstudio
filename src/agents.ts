@@ -32,6 +32,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { db, newId, J, parse } from './db.ts';
 import { getProduct, getInfra, isInfra, PROJECTS, DATA, storyOf, localUrl, type Product, type Infra } from './config.ts';
 import { getFinding, updateFinding } from './backlog.ts';
+import { reviewParams } from './review.ts';
 import { gen, genRun } from './gen.ts';
 import { repoMap } from './repos.ts';
 import { serveDir, stopServed } from './local.ts';
@@ -463,13 +464,13 @@ async function verifyChange(c: Change, p: Product, findings: any[]) {
   try {
     const run = await genRun('playtest.run', p.id, { url, mode: mode ?? (p.contract ? 'contract' : 'auto'), ...(mode ? {} : { scenario }), ...(mode === 'site' ? { maxPages: 40 } : {}) });
     if (run.status !== 'done') return { outcome: 'failed', error: run.error, playtest: run.id, build };
-    const rev = await genRun('playtest.review', p.id, {
-      job: run.id, product: `${p.name}. ${p.about}`, story: storyOf(p),
+    // A verify review (review.ts): did the change work (it says by id whether the findings look fixed), did anything regress.
+    const rev = await genRun('playtest.review', p.id, reviewParams(p, run.id, 'verify', {
       focus: c.request ? `This is a proposed change J asked for: "${c.request.slice(0, 1500)}". Say clearly whether it does that well, and whether anything got worse.` : `This is a proposed fix for: ${findings.map((f: any) => `"${f.title}" (${f.detail})`).join('; ')}. Say clearly whether it is fixed, and whether anything got worse.`,
-    });
+    }));
     const v = rev.result ?? {};
     const video = run.outputs?.find((o: any) => o.kind === 'video')?.asset ?? null;
-    return { outcome: run.result?.outcome, playtest: run.id, review: rev.id, verdict: v.verdict, summary: v.summary, scores: v.scores, findings: (v.findings ?? []).slice(0, 8), video, url: localUrl(p), build };
+    return { outcome: run.result?.outcome, playtest: run.id, review: rev.id, verdict: v.verdict, changeWorked: v.changeWorked, known: v.known ?? [], summary: v.summary, scores: v.scores, findings: (v.findings ?? []).slice(0, 8), video, url: localUrl(p), build };
   } finally {
     stopServed(port);
   }

@@ -58,15 +58,15 @@ export function studioMcp({ studio, waitRun }: Client = { studio: defaultStudio,
     },
     {
       name: 'studio_backlog',
-      description: 'Open findings from playtest reviews (merged across days), most severe first. Each has a fix suggestion and screenshot asset ids (Hawkes Gen library).',
-      inputSchema: obj({ product: str('Product id (optional)'), status: str('open, fixing, fixed, wontfix (comma list; default open,fixing)'), severity: str('blocker, bug, polish, idea (comma list, optional)') }),
+      description: 'Findings from playtest reviews (merged across days), most severe first. Each has a fix suggestion and screenshot asset ids (Hawkes Gen library). The backlog (open, fixing) is blockers and bugs; polish and ideas are the ideas list (status idea): never auto-fixed, expired after 14 days unseen. Reviews are capped (5 new findings each), are told the known findings and report only new ones, and say which known ones look fixed. Review modes: daily = full; beta runs and agent verifications = verify; live checks = regression (only regressions and blockers reach the backlog outside full). A product that meets its quality bar (products.json "quality") gets regression-only daily reviews until its build changes meaningfully.',
+      inputSchema: obj({ product: str('Product id (optional)'), status: str('open, fixing, fixed, wontfix, idea (the ideas list), expired (comma list; default open,fixing)'), severity: str('blocker, bug, polish, idea (comma list, optional)') }),
       run: async ({ product, status, severity }) => (await studio(`/api/findings?${new URLSearchParams({ ...(product ? { product } : {}), status: status ?? 'open,fixing', ...(severity ? { severity } : {}) })}`)).findings
         .map((f: any) => ({ id: f.id, product: f.product, severity: f.severity, area: f.area, title: f.title, detail: f.detail, fix: f.fix, status: f.status, seen: f.seen, scenario: f.scenario, shots: f.shots, note: f.note })),
     },
     {
       name: 'studio_update_finding',
-      description: 'Mark a finding: fixing (an agent is working on it), fixed, wontfix, or open again, with a note (what changed, which session).',
-      inputSchema: obj({ id: str('Finding id (f_...)'), status: str('open | fixing | fixed | wontfix'), note: str('Optional note') }, ['id']),
+      description: 'Mark a finding: fixing (an agent is working on it), fixed, wontfix, open (also moves an idea to the backlog), or idea (moves it to the ideas list), with a note (what changed, which session).',
+      inputSchema: obj({ id: str('Finding id (f_...)'), status: str('open | fixing | fixed | wontfix | idea'), note: str('Optional note') }, ['id']),
       run: async ({ id, status, note }) => studio(`/api/findings/${id}`, { method: 'PATCH', body: { status, note } }),
     },
     {
@@ -87,7 +87,7 @@ export function studioMcp({ studio, waitRun }: Client = { studio: defaultStudio,
     {
       name: 'studio_playtest',
       description: 'Playtest one product now (a scenario from its playtest contract, locally or on the live site) and have Claude review it. Returns a run id; with wait, the result.',
-      inputSchema: obj({ product: str('Product id'), scenario: str('Scenario (default smoke)'), where: str('local (default) or live'), mode: str('auto, contract, generic or site'), review: bool('Review with Claude (default true)'), wait: bool('Wait for the result'), focus: str('What to look at') }, ['product']),
+      inputSchema: obj({ product: str('Product id'), scenario: str('Scenario (default smoke)'), where: str('local (default) or live'), mode: str('auto, contract, generic or site'), review: bool('Review with Claude (default true)'), reviewMode: str('verify (default locally: did the change in focus work, did anything regress), regression (default live: only regressions and blockers) or full (a capped full review that can file new bugs and ideas)'), wait: bool('Wait for the result'), focus: str('What to look at') }, ['product']),
       run: async (a) => {
         const { run } = await studio('/api/playtest', { method: 'POST', body: a });
         if (!a.wait) return { run };

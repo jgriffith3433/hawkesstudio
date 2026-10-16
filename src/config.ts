@@ -50,6 +50,12 @@ export type Product = {
   playtests: Playtest[];
   story: string[];
   about: string;
+  /**
+   * The quality bar: what "done" means for this product, in a few sentences. Reviews judge against it; once a full
+   * review says the build meets it, the daily review of that scenario is regression-only until the build changes
+   * meaningfully (review.ts). Unset: no bar (full daily reviews, still capped).
+   */
+  quality?: string;
 };
 
 export function loadProducts(): Product[] {

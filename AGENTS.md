@@ -98,7 +98,8 @@ the service detached; restart it after changing `src/`. The MCP server (`bin/stu
 |---|---|
 | `src/server.ts` | HTTP API (`/api/...`) and the dashboard; runs execute in this process |
 | `src/pipeline.ts` | Runs: the daily pipeline per product (git → checks → asset status → build if changed → playtests → reviews → backlog), and one-off builds, playtests and asset runs |
-| `src/backlog.ts` | Findings merged across days (same or similar title = same finding; seen count, screenshots) |
+| `src/backlog.ts` | Findings merged across days (same or similar title = same finding; seen count, screenshots); bugs and blockers are the backlog, polish and ideas the ideas list (status `idea`, expired after 14 days unseen); what reviews are told is known, and their word on it |
+| `src/review.ts` | How reviews are asked so they converge: the mode per run kind (full, verify, regression), the cap, known findings, the product's quality bar and whether a scenario still meets it (docs/daily.md, "Reviews converge") |
 | `src/report.ts` | The Markdown/JSON report per run (`reports/`), with links to screenshots and videos in Gen's library, and regressions (fps down >20%, load time up, a score down 2+) |
 | `src/playtests.ts` | Playtests across runs: the list and detail behind the Playtests tab, the previous run side by side, trends, regressions, S3 video links, and how a playtest job is run with time limits (stuck jobs are cancelled, never block a run) |
 | `src/assets.ts` | Asset manifests: `hawkes.assets.json` + `hawkes.assets.lock.json` in a product repo |
@@ -134,6 +135,7 @@ the service detached; restart it after changing `src/`. The MCP server (`bin/stu
   - `dev` (front door port, dev server port, devtools path, extra env; Unity: the front door only)
   - story docs
   - `about`
+  - `quality`: the quality bar, what "done" means for it (J's words; don't invent direction for undecided products)
 - **The contract lives in each game's repo.** If the spec or helper needs a change, change `docs/playtest.md` and the
   helper here, then copy the helper into each game. They are copies: `doseofdestructionwebsite/src/game/playtest/`,
   `phoriginswebsite/src/`, `icanbeaiwebsite/js/`, `imaginelivetvwebsite/js/`. Bump the contract version only for
@@ -146,7 +148,7 @@ the service detached; restart it after changing `src/`. The MCP server (`bin/stu
   source changed (git HEAD + uncommitted files) unless forced.
 - **Costs:**
   - build server: about $0.77/hr while running; it stops itself after 30 idle minutes
-  - a review: about $0.10
+  - a review: a few cents (Sonnet, `STUDIO_REVIEW_MODEL`; keep reviews on it)
   - GPU generation: about $1.86/hr while a GPU server runs
 
   Ask J before big batches.
