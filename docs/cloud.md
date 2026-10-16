@@ -202,6 +202,8 @@ J can ask Talk to fix or add something in Hawkes Studio or Hawkes Gen themselves
    Talk answers, restarts the service, and rolls back if it isn't healthy. Approving a Studio change restarts Studio,
    which runs Talk: an answer in progress may be cut off, and the conversation stays.
 
+The first agent change to Studio through this lane was a test of the lane itself (the lane's first test, 2026-10-16).
+
 ### Pushes drive it (GitHub Actions)
 
 Every product source repo has `.github/workflows/hawkes-studio.yml`: on each push to `beta` or `main` it calls
