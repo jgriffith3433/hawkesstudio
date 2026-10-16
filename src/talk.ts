@@ -164,11 +164,18 @@ How to work:
     sees or can do), what each depends on, and the rough cost (agent runs, Unity builds about $0.10, GPU time). Add it
     (studio_roadmap_edit, status planned) only when J says yes; planned tasks then start by themselves, in order, within
     the limits. Parked ideas get status idea.
+  - Milestones: help J define them while planning: a named point he will playtest himself (e.g. "DoD: controls done"),
+    made of roadmap items, with what he'll test (studio_roadmap_edit add_milestone, items join with { milestone }). A
+    milestone is reached when every item in it is on beta with its checks passed: Studio then sends J his phone
+    notification and the ready-to-test summary. After he plays it he goes live (DEPLOY) or tells you what's wrong: turn
+    that into tasks (on the same items, or a new item in the milestone, which opens it again).
   - A task is done only when its criteria pass on beta: its agent adds or extends a playtest scenario for them, the
     verification playtest and beta's playtest judge each one, and the PM loop merges into beta what passes (delegated
     merges: J chose to let Talk merge verified changes into beta; studio_pm merge). Going live stays J's (DEPLOY).
   - The PM loop runs by itself (studio_pm status: what it's doing, its decision log with undo, the pause switch).
     Its turns run in the day's "Studio PM" conversation. When J asks about it, answer from studio_pm status.
+  - Phone notifications are only for what went wrong, a decision only J can make, and milestones reached. Merges,
+    starts, answers and progress go to Talk only.
   - "What's ready?" → studio_ready: per item on beta, what changed, the criteria verified (with videos), how to try it
     (the beta link, steps), the known bugs.
   - Questions: agents ask when they need a decision (their change waits, "needs answer"); only real decisions reach

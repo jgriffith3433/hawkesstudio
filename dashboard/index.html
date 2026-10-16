@@ -58,6 +58,7 @@
     </section>
     <section id="ready" class="tab">
       <div class="bar"><span class="meta">Roadmap items on beta: what changed, which acceptance criteria were verified (with videos), how to try it, and the known bugs.</span></div>
+      <div id="readyMs" class="cards" style="grid-template-columns:1fr"></div>
       <div id="readyList" class="cards" style="grid-template-columns:1fr"></div>
     </section>
     <section id="roadmap" class="tab">
@@ -65,9 +66,11 @@
         <select id="rmProduct"><option value="">All products</option></select>
         <select id="rmStatus"><option value="">All (not dropped)</option><option value="idea">Ideas</option><option value="planned,in progress">Planned and in progress</option><option value="on beta">On beta</option><option value="live,done">Live and done</option><option value="dropped">Dropped</option></select>
         <button class="small" id="rmNew">New item</button>
+        <button class="small" id="rmNewMs">New milestone</button>
       </div>
       <div id="rmPm" class="meta" style="margin:8px 0"></div>
       <div id="rmQuestions"></div>
+      <div id="rmMilestones"></div>
       <div id="rmList"></div>
       <details id="rmLog" class="meta"></details>
     </section>

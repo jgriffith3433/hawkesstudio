@@ -21,9 +21,25 @@ async function loadRoadmap() {
       <h4><span class="pill ${q.status === 'asked J' ? 'broken' : 'warn'}">${q.kind === 'agent' ? 'agent asks' : 'your call'}</span> ${esc(q.product ?? '')} <span class="meta">${esc(q.id)} · ${esc(q.subject ?? '')} · ${ago(q.at)}</span></h4>
       <div class="summary" style="white-space:pre-wrap">${esc(q.text)}</div>${q.options.length ? `<div class="meta">Options: ${q.options.map(esc).join(' · ')}</div>` : ''}
     </div><div class="side"><textarea rows="3" data-qa="${q.id}" placeholder="Your answer"></textarea><div class="actions"><button class="small primary" data-qsend="${q.id}">Answer</button></div></div></div>`).join('')}` : '';
+  rmMilestones = r.milestones;
+  $('#rmMilestones').innerHTML = r.milestones.length ? `<h3>Milestones</h3>${r.milestones.map(milestoneHtml).join('')}` : '';
   $('#rmList').innerHTML = r.items.length ? r.items.map(itemHtml).join('') : '<div class="empty">No roadmap items yet. Tell Talk what you want ("let\'s do X"): it proposes items and tasks with acceptance criteria, and adds them when you say yes.</div>';
   $('#rmLog').innerHTML = `<summary class="meta">PM decision log (${pm.log.length})</summary>${pm.log.map((d) => `<div class="test"><span class="name">${esc(d.action)}</span><span class="detail">${esc(d.detail ?? '')} · ${esc(d.product ?? '')} · ${ago(d.at)}${d.undone ? ' · <i>undone</i>' : ''}</span>${d.undo && !d.undone ? `<button class="small" data-undo="${d.id}">Undo</button>` : ''}</div>`).join('')}`;
   for (const id of rmOpen) loadThread(id);
+}
+
+let rmMilestones = [];
+function milestoneHtml(m) {
+  const pct = m.total ? Math.round((100 * m.done) / m.total) : 0;
+  return `<div class="finding"><div style="flex:1">
+    <h4><span class="pill ${m.status === 'reached' || m.status === 'live' ? 'ship' : ''}">${esc(m.status)}</span> 🏁 ${esc(m.title)} <span class="meta">${esc(m.product ?? 'all products')} · ${esc(m.id)} · ${m.done}/${m.total} items on beta${m.reached_at ? ` · reached ${ago(m.reached_at)}` : ''}</span></h4>
+    <div style="height:6px;background:var(--line, #333);border-radius:3px;overflow:hidden;margin:4px 0"><div style="height:6px;width:${pct}%;background:var(--accent, #33d6a6)"></div></div>
+    ${m.goal ? `<div class="summary">${esc(m.goal)}</div>` : ''}${m.test ? `<div class="meta">You'll test: ${esc(m.test)}</div>` : ''}
+    <div class="meta">${m.items.map((i) => `<span class="pill ${RM_PILL[i.status] ?? ''}">${esc(i.status)}</span> ${esc(i.title)}`).join(' · ') || 'No items yet: add items to it (Milestone… on an item).'}</div>
+  </div><div class="side"><div class="actions">
+    ${m.status === 'reached' ? `<a class="small" href="#ready">What to test</a>` : ''}
+    ${m.status !== 'live' && m.status !== 'dropped' ? `<button class="small" data-ms="${m.id}" data-st="live" title="You went live with it">Live</button><button class="small" data-ms="${m.id}" data-st="dropped">Drop</button>` : ''}
+  </div></div></div>`;
 }
 
 function itemHtml(it) {
@@ -35,7 +51,7 @@ function itemHtml(it) {
       <div style="flex-basis:100%">${checks}<div id="th-${t.id}"></div></div></div>`;
   }).join('');
   return `<div class="finding"><div style="flex:1">
-    <h4><span class="pill ${RM_PILL[it.status] ?? ''}">${esc(it.status)}</span> ${esc(it.title)} <span class="meta">${esc(it.product)} · ${esc(it.id)}${it.size ? ` · size ${esc(it.size)}` : ''} · ${ago(it.created)} by ${esc(it.by ?? '')}</span></h4>
+    <h4><span class="pill ${RM_PILL[it.status] ?? ''}">${esc(it.status)}</span> ${esc(it.title)} <span class="meta">${it.milestone ? `🏁 ${esc(rmMilestones.find((m) => m.id === it.milestone)?.title ?? it.milestone)} · ` : ''}${esc(it.product)} · ${esc(it.id)}${it.size ? ` · size ${esc(it.size)}` : ''} · ${ago(it.created)} by ${esc(it.by ?? '')}</span></h4>
     ${it.goal ? `<div class="summary">${esc(it.goal)}</div>` : ''}${it.why ? `<div class="meta">Why: ${esc(it.why)}</div>` : ''}
     ${it.criteria.length ? `<div class="meta">Done when: ${it.criteria.map(esc).join(' · ')}</div>` : ''}
     <div class="tests">${tasks || '<div class="meta">No tasks yet.</div>'}</div>
@@ -43,7 +59,7 @@ function itemHtml(it) {
   </div><div class="side"><div class="actions">
     ${it.status === 'idea' ? `<button class="small primary" data-item="${it.id}" data-st="planned" title="Its planned tasks start by themselves, in order">Plan it</button>` : ''}
     ${!['done', 'dropped'].includes(it.status) ? `<button class="small" data-item="${it.id}" data-st="${it.status === 'live' ? 'done' : 'idea'}">${it.status === 'live' ? 'Done' : 'Park'}</button><button class="small" data-item="${it.id}" data-st="dropped">Drop</button>` : ''}
-    <button class="small" data-addtask="${it.id}">Add task</button><button class="small" data-thread="${it.id}">Thread</button>
+    <button class="small" data-addtask="${it.id}">Add task</button><button class="small" data-setms="${it.id}" title="Put it in a milestone">Milestone…</button><button class="small" data-thread="${it.id}">Thread</button>
   </div></div></div>`;
 }
 
@@ -70,6 +86,19 @@ $('#roadmap').addEventListener('click', async (e) => {
         const [x, y, z] = a.trim().split(/\s+/).map(Number);
         await api('/api/pm/settings', { method: 'POST', body: { maxConcurrent: x || pm.settings.maxConcurrent, maxStartsPerDay: y || pm.settings.maxStartsPerDay, maxTries: z || pm.settings.maxTries } });
       }
+    }
+    if (t.dataset.ms) await api(`/api/roadmap/milestones/${t.dataset.ms}`, { method: 'PATCH', body: { status: t.dataset.st } });
+    if (t.dataset.setms) {
+      const list = rmMilestones.filter((m) => m.status === 'open').map((m) => `${m.id}: ${m.title}`).join('\n');
+      const id = prompt(`Milestone id for this item (empty to take it out):\n${list || '(no open milestones: make one with New milestone)'}`);
+      if (id === null) return;
+      await api(`/api/roadmap/items/${t.dataset.setms}`, { method: 'PATCH', body: { milestone: id.trim().split(':')[0] || null } });
+    }
+    if (t.id === 'rmNewMs') {
+      const title = prompt('Milestone (e.g. "DoD: controls done")');
+      if (!title) return;
+      const test = prompt('What will you playtest yourself when it is reached?') ?? '';
+      await api('/api/roadmap/milestones', { method: 'POST', body: { title, test, product: $('#rmProduct').value || null } });
     }
     if (t.dataset.item) await api(`/api/roadmap/items/${t.dataset.item}`, { method: 'PATCH', body: { status: t.dataset.st } });
     if (t.dataset.task) await api(`/api/roadmap/tasks/${t.dataset.task}`, { method: 'PATCH', body: { status: t.dataset.st } });
@@ -115,7 +144,9 @@ $('#roadmap').addEventListener('click', async (e) => {
 
 // ------------------------------------------------------------ ready to test
 async function loadReady() {
-  const { ready } = await api('/api/ready');
+  const [{ ready }, rmap] = await Promise.all([api('/api/ready'), api('/api/roadmap?milestones=reached')]);
+  $('#readyMs').innerHTML = rmap.milestones.map((m) => `<div class="card" style="max-width:none;border-color:var(--accent)"><h3>🏁 Milestone reached: ${esc(m.title)} <small>${esc(m.product ?? '')}</small></h3>
+    ${m.test ? `<div class="summary">You said you'd test: ${esc(m.test)}</div>` : ''}<div class="meta">${m.items.map((i) => esc(i.title)).join(' · ')} · reached ${ago(m.reached_at)}. When you've played it: go live from Today, or tell Talk what's wrong.</div></div>`).join('');
   $('#readyList').innerHTML = ready.length ? ready.map((r) => `<div class="card" style="max-width:none">
     <h3>${esc(r.title)} <small>${esc(r.productName)}</small><span class="pill ${r.partly ? 'warn' : 'ship'}">${r.partly ? 'partly on beta' : 'on beta'}</span></h3>
     ${r.goal ? `<div class="summary">${esc(r.goal)}</div>` : ''}

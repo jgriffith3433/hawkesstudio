@@ -33,7 +33,9 @@ export async function morningBrief(runId: string, { force = false } = {}) {
     : '- none';
   // The PM's side: roadmap items on beta for J to test, and the questions only he can answer.
   const pm = await import('./pm.ts');
-  const { listQuestions } = await import('./roadmap.ts');
+  const { listQuestions, listMilestones } = await import('./roadmap.ts');
+  const milestones = listMilestones({ status: 'open,reached' });
+  const msLines = milestones.length ? milestones.map((m) => `- ${m.title}: ${m.status === 'reached' ? 'REACHED, ready for J to playtest' : `${m.done}/${m.total} items on beta`}`).join('\n') : '- none defined';
   const readyNow = pm.readyReport();
   const asks = listQuestions('asked J');
   const readyLines = readyNow.length ? readyNow.map((r) => `- ${r.title} (${r.productName})${r.partly ? ', partly' : ''}: ${r.criteria.filter((c) => c.met === 'yes').length}/${r.criteria.length} criteria verified on beta, ${r.bugs.length} known bug(s)${r.beta ? `, try it: ${r.beta}` : ''}`).join('\n') : '- nothing yet';
@@ -41,6 +43,8 @@ export async function morningBrief(runId: string, { force = false } = {}) {
 
 Ready for J to test (roadmap items on beta; details with studio_ready):
 ${readyLines}
+Milestones:
+${msLines}
 Questions waiting for J: ${asks.length ? asks.map((q) => `${q.id}: ${q.text.slice(0, 160)}`).join(' | ') : 'none'}.
 
 Read the report with studio_report (run ${runId}); look at studio_changes if you need more on the changes below.

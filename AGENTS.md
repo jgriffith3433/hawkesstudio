@@ -99,7 +99,9 @@ studio with Talk"): J sets direction in Talk, Talk keeps the roadmap (items with
 and the PM loop works it with the agents: it starts tasks and the worst bugs within its caps, runs PM turns in the day's
 "Studio PM" conversation, merges into beta the changes that pass their acceptance gate (delegated merges, J's choice;
 never live, never Studio or Gen), revises the rest (3 tries, then J), resumes agents that asked a question with the
-answer, and marks a task verified only when its criteria pass on beta. Every decision is in the PM log with undo. Keep
+answer, and marks a task verified only when its criteria pass on beta. Milestones group items into a point J playtests
+himself: reaching one (every item on beta, checks passed) is one of the few things that notify his phone (with what
+went wrong and decisions only he can make). Every decision is in the PM log with undo. Keep
 the gate (`gate()` in acceptance.ts) and "verified only on beta" intact when changing it; they are what lets J trust it.
 
 ## Layout

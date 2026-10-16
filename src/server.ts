@@ -225,7 +225,11 @@ const server = http.createServer(async (req, res) => {
       const talkFrom = /^t_[0-9a-f]{6,32}$/.test(String(req.headers['x-talk-conversation'] ?? '')) ? String(req.headers['x-talk-conversation']) : null;
       const b = method === 'GET' ? {} : await readJson(req);
       const by = typeof b.by === 'string' && b.by.trim() ? b.by.slice(0, 60) : talkFrom ? 'Talk' : 'J';
-      if (route === '/api/roadmap' && method === 'GET') return send(res, 200, { items: rm.listItems({ product: q('product'), status: q('status') }), statuses: { items: rm.ITEM_STATUSES, tasks: rm.TASK_STATUSES } });
+      if (route === '/api/roadmap' && method === 'GET') return send(res, 200, { milestones: rm.listMilestones({ product: q('product'), status: q('milestones') }), items: rm.listItems({ product: q('product'), status: q('status') }), statuses: { items: rm.ITEM_STATUSES, tasks: rm.TASK_STATUSES, milestones: rm.MILESTONE_STATUSES } });
+      if (route === '/api/roadmap/milestones' && method === 'POST') { const ms = rm.addMilestone({ ...b, origin: b.origin ?? talkFrom, by }); pm.kick(); return send(res, 200, ms); }
+      m = /^\/api\/roadmap\/milestones\/(n_[0-9a-f]+)$/.exec(route);
+      if (m && method === 'GET') return send(res, 200, rm.getMilestone(m[1]) ? { ...rm.getMilestone(m[1]), ...rm.milestoneProgress(m[1]) } : { error: 'no such milestone' });
+      if (m && method === 'PATCH') { const ms = rm.updateMilestone(m[1], b); pm.kick(); return send(res, 200, ms); }
       if (route === '/api/roadmap/items' && method === 'POST') { const it = rm.addItem({ ...b, origin: b.origin ?? talkFrom, by }); pm.kick(); return send(res, 200, it); }
       m = /^\/api\/roadmap\/items\/(i_[0-9a-f]+)$/.exec(route);
       if (m && method === 'GET') return send(res, 200, rm.getItem(m[1]) ?? { error: 'no such item' });
@@ -258,7 +262,7 @@ const server = http.createServer(async (req, res) => {
       m = /^\/api\/pm\/undo\/(d_[0-9a-f]+)$/.exec(route);
       if (m && method === 'POST') return send(res, 200, await pm.undoDecision(m[1], by));
       if (route === '/api/ready' && method === 'GET') {
-        const ready = pm.readyReport({ product: q('product') });
+        const ready = pm.readyReport({ product: q('product'), milestone: q('milestone') });
         return send(res, 200, { ready, markdown: ready.map(pm.readyMarkdown).join('\n\n---\n\n') || 'Nothing on beta waiting for J to test.' });
       }
       const sc = await import('./scout.ts');

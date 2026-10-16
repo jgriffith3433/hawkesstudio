@@ -127,13 +127,23 @@ after 3 tries, anything touching live. Each is one question (`askJ`) in the conv
 (else a notice) and on his phone; it waits in the Roadmap tab's "Waiting for an answer" too. J answers in Talk (Talk
 records it with `studio_pm answer`, by "J") or in the box on the Roadmap tab.
 
-**8. Ready for you to test** (the Ready to test tab, `studio_ready`, `GET /api/ready`, and the morning brief): per
-roadmap item on beta, what changed (tasks, pull requests, the agents' summaries), which criteria were verified (with
-evidence and the beta playtest's video), how to try it (the beta link, the agents' steps) and the known open bugs (linked
-to the item, or new bugs of the product since its first merge). When an item reaches beta, J gets a phone notification
-and the conversation that planned it gets the report.
+**8. Milestones** (Roadmap tab, `studio_roadmap_edit add_milestone`): a named point J will playtest himself ("DoD:
+controls done"), made of roadmap items (`items.milestone`), with what he'll test. open -> **reached** when every item in
+it is on beta with its checks passed -> live (J went live with it) | dropped. Reaching one is J's moment: a **phone
+notification** and, in the conversation where it was planned (else a notice), the ready-to-test summary of its items.
+After playing it J goes live (`DEPLOY <product>`) or tells Talk what's wrong, which becomes tasks (a new item in the
+milestone opens it again). Progress shows in the Roadmap tab and the morning brief.
 
-**9. Guard rails.** The caps above (Max-plan usage), the **decision log** (Roadmap tab → "PM decision log",
+**Notifications** follow J's rule: the phone only for something that went wrong, a decision only J can make
+(`askJ`), and a milestone reached. Merges, starts, answers, items reaching beta and other progress go to Talk only.
+
+**9. Ready for you to test** (the Ready to test tab, `studio_ready`, `GET /api/ready?milestone=`, and the morning
+brief): reached milestones first, then per roadmap item on beta, what changed (tasks, pull requests, the agents'
+summaries), which criteria were verified (with evidence and the beta playtest's video), how to try it (the beta link, the
+agents' steps) and the known open bugs (linked to the item, or new bugs of the product since its first merge). When an
+item reaches beta, the conversation that planned it gets this report (no phone notification).
+
+**10. Guard rails.** The caps above (Max-plan usage), the **decision log** (Roadmap tab → "PM decision log",
 `studio_pm status`): every start, merge, revise, won't-fix, duplicate, link, answer, question for J, beta check and
 settings change, with **Undo** where possible (a merge is reverted on beta with a new commit; a start closes the change;
 triage restores the finding; settings go back). The **pause switch** (Roadmap tab, or `studio_pm settings { enabled:

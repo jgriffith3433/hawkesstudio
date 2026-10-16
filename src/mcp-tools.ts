@@ -239,19 +239,19 @@ export function studioMcp({ studio, waitRun }: Client = { studio: defaultStudio,
     },
     {
       name: 'studio_roadmap',
-      description: 'The roadmap: per product, items (a goal J wants, with why, acceptance criteria, size S/M/L, status idea -> planned -> in progress -> on beta -> live -> done | dropped, order) and the tasks under each (one agent change each: request, acceptance criteria, depends on, status idea | planned | working | needs answer | review | merged | verified | live | failed | dropped, its change and pull request, tries, the latest per-criterion checks). Planned tasks of planned items start by themselves, in order. Read-only; edit with studio_roadmap_edit.',
+      description: 'The roadmap: milestones (a named point J will playtest himself, made of items; open -> reached when every item in it is on beta with its checks passed -> live | dropped; with progress), and per product, items (a goal J wants, with why, acceptance criteria, size S/M/L, status idea -> planned -> in progress -> on beta -> live -> done | dropped, order) and the tasks under each (one agent change each: request, acceptance criteria, depends on, status idea | planned | working | needs answer | review | merged | verified | live | failed | dropped, its change and pull request, tries, the latest per-criterion checks). Planned tasks of planned items start by themselves, in order. Read-only; edit with studio_roadmap_edit.',
       inputSchema: obj({ product: str('Product id (optional)'), status: str('Item statuses, comma list (default all but dropped)'), item: str('One item (i_...) in detail') }),
       run: async ({ product, status, item }) => {
         if (item) return studio(`/api/roadmap/items/${item}`);
         const r = await studio(`/api/roadmap?${new URLSearchParams({ ...(product ? { product } : {}), ...(status ? { status } : {}) })}`);
-        return r.items.map((it: any) => ({ ...it, tasks: it.tasks.map((t: any) => ({ id: t.id, title: t.title, status: t.status, criteria: t.criteria, depends: t.depends, change: t.change, pr: t.pr, tries: t.tries, checks: t.checks && { where: t.checks.where, results: t.checks.results }, note: t.note })) }));
+        return { milestones: r.milestones, items: r.items.map((it: any) => ({ ...it, tasks: it.tasks.map((t: any) => ({ id: t.id, title: t.title, status: t.status, criteria: t.criteria, depends: t.depends, change: t.change, pr: t.pr, tries: t.tries, checks: t.checks && { where: t.checks.where, results: t.checks.results }, note: t.note })) })) };
       },
     },
     {
       name: 'studio_roadmap_edit',
-      description: 'Edit the roadmap, ONLY with J\'s OK in this conversation for anything new (propose first: the item, its tasks with acceptance criteria, order, size and rough cost; add when he says yes). actions: add_item { product, title, goal, why, criteria[], size, status } (status planned = work starts automatically; idea = parked); update_item { id, ...fields, status }; add_task { item, title, request, criteria[], depends[] (task ids), status planned|idea }; update_task { id, ...fields } (status planned again = retry from scratch, dropped = stop). Acceptance criteria must be things a playtest can show (what a player sees or can do).',
+      description: 'Edit the roadmap, ONLY with J\'s OK in this conversation for anything new (propose first: the item, its tasks with acceptance criteria, order, size and rough cost; add when he says yes). actions: add_item { product, title, goal, why, criteria[], size, status } (status planned = work starts automatically; idea = parked); update_item { id, ...fields, status }; add_task { item, title, request, criteria[], depends[] (task ids), status planned|idea }; update_task { id, ...fields } (status planned again = retry from scratch, dropped = stop); add_milestone { title, product (optional: a milestone can span products), goal, test (what J will playtest himself), items[] (item ids) }; update_milestone { id, title, goal, test, items[], status open|live|dropped }. Items join a milestone with add_item/update_item { milestone }. Acceptance criteria must be things a playtest can show (what a player sees or can do). A milestone is reached when all its items are on beta: J gets his phone notification and the ready-to-test summary then.',
       inputSchema: obj({
-        action: str('add_item | update_item | add_task | update_task'), id: str('Item (i_) or task (k_) id, for updates'), item: str('For add_task: the item (i_...)'), product: str('For add_item'),
+        action: str('add_item | update_item | add_task | update_task | add_milestone | update_milestone'), milestone: str('Item: the milestone it belongs to (n_...)'), test: str('Milestone: what J will playtest himself'), items: strs('Milestone: its item ids'), id: str('Item (i_) or task (k_) id, for updates'), item: str('For add_task: the item (i_...)'), product: str('For add_item'),
         title: str('Title'), goal: str('Item: the goal in one line'), why: str('Item: why J wants it'), criteria: strs('Acceptance criteria (observable in a playtest)'), size: str('Item: S, M or L'),
         status: str('Status'), request: str('Task: what the agent should do, in plain words'), depends: strs('Task: task ids it needs merged first'), ord: { type: 'number', description: 'Order (lower first)' }, note: str('A note'),
       }, ['action']),
@@ -262,7 +262,9 @@ export function studioMcp({ studio, waitRun }: Client = { studio: defaultStudio,
         if (action === 'update_item') return studio(`/api/roadmap/items/${id}`, { method: 'PATCH', body });
         if (action === 'add_task') return studio('/api/roadmap/tasks', { method: 'POST', body });
         if (action === 'update_task') return studio(`/api/roadmap/tasks/${id}`, { method: 'PATCH', body });
-        throw new Error('action: add_item | update_item | add_task | update_task');
+        if (action === 'add_milestone') return studio('/api/roadmap/milestones', { method: 'POST', body });
+        if (action === 'update_milestone') return studio(`/api/roadmap/milestones/${id}`, { method: 'PATCH', body });
+        throw new Error('action: add_item | update_item | add_task | update_task | add_milestone | update_milestone');
       },
     },
     {
@@ -274,8 +276,8 @@ export function studioMcp({ studio, waitRun }: Client = { studio: defaultStudio,
     {
       name: 'studio_ready',
       description: 'What\'s ready for J to test (answer "what\'s ready?" with this): per roadmap item on beta, what changed (tasks, pull requests), which acceptance criteria were verified on beta (with evidence and the playtest video), how to try it (the beta link and the agents\' steps), and the known open bugs. Items partly on beta are marked.',
-      inputSchema: obj({ product: str('Product id (optional)') }),
-      run: async ({ product }) => (await studio(`/api/ready${product ? `?product=${product}` : ''}`)).markdown,
+      inputSchema: obj({ product: str('Product id (optional)'), milestone: str('One milestone (n_...): its items only') }),
+      run: async ({ product, milestone }) => (await studio(`/api/ready?${new URLSearchParams({ ...(product ? { product } : {}), ...(milestone ? { milestone } : {}) })}`)).markdown,
     },
     {
       name: 'studio_comments',

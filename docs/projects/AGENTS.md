@@ -109,8 +109,10 @@ Every day it runs these steps for every product (one at a time, through Hawkes G
   criteria (a read-only scout looks at the code when needed) and adds them on his yes. The PM loop starts the tasks and
   the worst bugs within its caps, merges into beta the changes whose playtests meet their criteria (J delegated that;
   never live, never Studio or Gen), sends the rest back (3 tries, then J), answers agents' questions from what J
-  decided, and triages the backlog. Only real decisions reach J (direction, money, repeated failures, live). He tests
-  what the **Ready to test** tab (or "what's ready?") lists: per item, the criteria verified on beta with videos, how to
+  decided, and triages the backlog. Only real decisions reach J (direction, money, repeated failures, live). J defines
+  **milestones** with Talk (a named point made of items, e.g. "DoD: controls done"); when every item in one passes its
+  checks on beta, his phone tells him it's time to playtest. He tests what the **Ready to test** tab (or "what's
+  ready?") lists: per item, the criteria verified on beta with videos, how to
   try it, and the known bugs. Roadmap tab: items, tasks, threads, questions, the decision log with undo, the pause
   switch. See `hawkesstudio/docs/daily.md` ("Running the studio with Talk").
 - J can still read the report with Claude in chat and have it start fixes directly; each fix verifies with

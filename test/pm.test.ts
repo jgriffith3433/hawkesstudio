@@ -103,6 +103,26 @@ test('settings are checked and logged', () => {
   assert.equal(rm.listDecisions({ action: 'settings' }).length, 1);
 });
 
+test('a milestone is reached when all its items are on beta', () => {
+  const a = rm.addItem({ product: 'pmtest', title: 'Jump', status: 'planned' });
+  const b = rm.addItem({ product: 'pmtest', title: 'Dash', status: 'planned' });
+  const ms = rm.addMilestone({ product: 'pmtest', title: 'Controls done', test: 'Play level 1 with a pad', items: [a.id] });
+  rm.updateItem(b.id, { milestone: ms.id });
+  assert.equal(rm.milestoneProgress(ms.id).total, 2);
+  const ta = rm.addTask({ item: a.id, request: 'Jump' });
+  const tb = rm.addTask({ item: b.id, request: 'Dash' });
+  rm.setTask(ta.id, { status: 'verified' });
+  assert.equal(rm.milestoneProgress(ms.id).done, 1);
+  assert.ok(!rm.milestonesToReach().some((m) => m.id === ms.id), 'one item still in progress');
+  rm.setTask(tb.id, { status: 'verified' });
+  assert.ok(rm.milestonesToReach().some((m) => m.id === ms.id));
+  rm.markReached(ms.id);
+  assert.equal(rm.getMilestone(ms.id)!.status, 'reached');
+  assert.throws(() => rm.updateMilestone(ms.id, { status: 'reached' }), /by hand/);
+  assert.equal(pm.readyReport({ milestone: ms.id }).length, 2);
+  assert.equal(rm.listMilestones({ product: 'pmtest' })[0].done, 2);
+});
+
 test('the ready report shows verified criteria and known bugs', () => {
   const it = rm.addItem({ product: 'pmtest', title: 'Leaderboard', goal: 'See the best runs', status: 'planned' });
   const t = rm.addTask({ item: it.id, request: 'Add a leaderboard', criteria: ['the top 10 show'] });

@@ -26,7 +26,8 @@ import { db, J, parse } from './db.ts';
 import { DATA, PROJECTS, getProduct, isInfra, today, StudioError } from './config.ts';
 import {
   getTask, setTask, getItem, startableTasks, taskOfChange, addQuestion, listQuestions, getQuestion, setQuestion, addComment,
-  logDecision, listDecisions, getDecision, markUndone, countToday, listItems, threadFor, type Task, type Check,
+  logDecision, listDecisions, getDecision, markUndone, countToday, listItems, threadFor, milestonesToReach, markReached, getMilestone,
+  type Task, type Check,
 } from './roadmap.ts';
 import { gate, allMet } from './acceptance.ts';
 import { notify, PUBLIC_URL } from './notify.ts';
@@ -159,6 +160,8 @@ export async function syncTasks() {
   }
   // Items that just reached beta: J hears it's ready for him to test.
   for (const it of db.prepare(`SELECT id FROM items WHERE status = 'on beta' AND (note IS NULL OR note NOT LIKE '%[told ready]%')`).all() as any[]) announceReady(it.id);
+  // Milestones whose items are all on beta: J's moment to playtest by hand (his phone, and Talk).
+  for (const m of milestonesToReach()) announceMilestone(m.id);
 }
 
 /** Go lives already looked at per task (one git fetch each, not one a minute). */
@@ -410,9 +413,30 @@ function announceReady(itemId: string) {
   db.prepare(`UPDATE items SET note = COALESCE(note || ' ', '') || '[told ready]' WHERE id = ?`).run(itemId);
   const r = readyReport({ item: itemId })[0];
   const text = r ? readyMarkdown(r) : `"${it.title}" is on beta.`;
-  void postTo(it.origin, `Ready for you to test: ${it.title}`, `Ready for you to test (Studio PM):\n\n${text}`);
-  void notify(`Ready to test: ${it.title}`, `${name(it.product)} · ${r ? `${r.criteria.filter((c) => c.met === 'yes').length}/${r.criteria.length} criteria verified on beta${r.bugs.length ? ` · ${r.bugs.length} known bug(s)` : ''}` : 'on beta'}`, { url: `${PUBLIC_URL}/#ready`, tags: ['test_tube'] });
-  logDecision('ready', itemId, it.product, `"${it.title}" is on beta: told J it's ready to test`);
+  // Talk only: J's phone hears about milestones (and what went wrong), not every item.
+  void postTo(it.origin, `On beta: ${it.title}`, `On beta and verified (Studio PM):\n\n${text}`);
+  logDecision('ready', itemId, it.product, `"${it.title}" is on beta, its checks passed: told Talk`);
+}
+
+/** A milestone reached: every item in it passed its checks on beta. J's phone and Talk get its ready-to-test summary. */
+function announceMilestone(id: string) {
+  const m = getMilestone(id);
+  if (!m) return;
+  markReached(id);
+  const ready = readyReport({ milestone: id });
+  const verified = ready.flatMap((r) => r.criteria).filter((c) => c.met === 'yes').length;
+  const total = ready.flatMap((r) => r.criteria).length;
+  const bugs = ready.reduce((n, r) => n + r.bugs.length, 0);
+  const text = [
+    `Milestone reached: **${m.title}**${m.product ? ` (${name(m.product)})` : ''}. Everything in it passed its checks on beta, so it's yours to playtest.`,
+    m.goal ? `Goal: ${m.goal}` : '',
+    m.test ? `What you said you'd test: ${m.test}` : '',
+    ...ready.map(readyMarkdown),
+    'When you have played it: go live (DEPLOY <product>), or tell me what is wrong and I will make it tasks.',
+  ].filter(Boolean).join('\n\n---\n\n');
+  void postTo(m.origin, `Milestone reached: ${m.title}`, text);
+  void notify(`Milestone reached: ${m.title}`, `${verified}/${total} criteria verified on beta${bugs ? ` · ${bugs} known bug(s)` : ''}. Ready for you to playtest.`, { url: `${PUBLIC_URL}/#ready`, priority: 4, tags: ['checkered_flag'] });
+  logDecision('milestone', id, m.product, `milestone "${m.title}" reached (${ready.length} item(s), ${verified}/${total} criteria on beta): told J`);
 }
 
 export type Ready = {
@@ -427,10 +451,12 @@ export type Ready = {
  * criteria were verified (where, with the playtest video), how to try it (the beta link, the agents' steps), and the
  * open bugs known for it.
  */
-export function readyReport({ product, item }: { product?: string; item?: string } = {}): Ready[] {
+export function readyReport({ product, item, milestone }: { product?: string; item?: string; milestone?: string } = {}): Ready[] {
   const { listPreviews } = previews ?? { listPreviews: () => [] as any[] };
   const pv = listPreviews();
-  const items = item ? [getItem(item)].filter(Boolean) as any[] : listItems({ product, status: 'on beta,in progress' });
+  const items = item ? [getItem(item)].filter(Boolean) as any[]
+    : milestone ? (db.prepare(`SELECT id FROM items WHERE milestone = ? AND status != 'dropped' ORDER BY ord, created`).all(milestone) as any[]).map((r) => getItem(r.id)!)
+      : listItems({ product, status: 'on beta,in progress' });
   const out: Ready[] = [];
   for (const it of items) {
     const tasks = (it.tasks ?? []).filter((t: Task) => t.status !== 'dropped' && t.status !== 'idea');

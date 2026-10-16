@@ -42,9 +42,13 @@ db.exec(`
     id TEXT PRIMARY KEY, at INTEGER NOT NULL, action TEXT NOT NULL, subject TEXT, product TEXT, detail TEXT, undo TEXT, undone INTEGER
   );
   CREATE INDEX IF NOT EXISTS pm_log_at ON pm_log(at);
+  CREATE TABLE IF NOT EXISTS milestones (
+    id TEXT PRIMARY KEY, product TEXT, title TEXT NOT NULL, goal TEXT, test TEXT, status TEXT NOT NULL DEFAULT 'open',
+    ord REAL NOT NULL DEFAULT 0, origin TEXT, by TEXT, reached_at INTEGER, created INTEGER NOT NULL, updated INTEGER
+  );
 `);
 // Findings can belong to a roadmap item; the PM loop marks the runs it has seen. (Changes get their task columns in agents.ts.)
-for (const [table, col] of [['runs', 'pm_seen'], ['findings', 'item']]) {
+for (const [table, col] of [['runs', 'pm_seen'], ['findings', 'item'], ['items', 'milestone']]) {
   try { db.exec(`ALTER TABLE ${table} ADD COLUMN ${col} TEXT`); } catch { /* already there */ }
 }
 
@@ -63,7 +67,7 @@ export type Task = {
 };
 export type Item = {
   id: string; product: string; title: string; goal: string | null; why: string | null; criteria: string[]; size: string | null; status: string;
-  ord: number; origin: string | null; note: string | null; by: string | null; created: number; updated: number | null; tasks?: Task[];
+  ord: number; origin: string | null; note: string | null; by: string | null; milestone?: string | null; created: number; updated: number | null; tasks?: Task[];
 };
 
 const toItem = (r: any): Item => ({ ...r, criteria: parse(r.criteria) ?? [] });
@@ -103,7 +107,7 @@ export function listItems(q: { product?: string; status?: string } = {}) {
 
 const nextOrd = (table: 'items' | 'tasks', key: string, value: string) => ((db.prepare(`SELECT MAX(ord) AS m FROM ${table} WHERE ${key} = ?`).get(value) as any)?.m ?? 0) + 1;
 
-export function addItem(a: { product: string; title: string; goal?: string; why?: string; criteria?: unknown; size?: string; status?: string; origin?: string | null; by?: string; ord?: number }) {
+export function addItem(a: { product: string; title: string; goal?: string; why?: string; criteria?: unknown; size?: string; status?: string; origin?: string | null; by?: string; ord?: number; milestone?: string | null }) {
   if (!a.title?.trim()) throw new StudioError('An item needs a title');
   const product = productId(a.product);
   const status = a.status ?? 'idea';
@@ -112,10 +116,11 @@ export function addItem(a: { product: string; title: string; goal?: string; why?
   const id = newId('i');
   db.prepare('INSERT INTO items (id, product, title, goal, why, criteria, size, status, ord, origin, by, created) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
     .run(id, product, a.title.trim().slice(0, 200), a.goal ?? null, a.why ?? null, J(list(a.criteria)), a.size ?? null, status, a.ord ?? nextOrd('items', 'product', product), a.origin ?? null, a.by ?? 'J', Date.now());
+  if (a.milestone) setItemMilestone(id, a.milestone);
   return getItem(id)!;
 }
 
-export function updateItem(id: string, patch: Partial<{ title: string; goal: string; why: string; criteria: unknown; size: string; status: string; ord: number; note: string; origin: string }>) {
+export function updateItem(id: string, patch: Partial<{ title: string; goal: string; why: string; criteria: unknown; size: string; status: string; ord: number; note: string; origin: string; milestone: string | null }>) {
   const cur = getItem(id);
   if (!cur) throw new StudioError(`No item ${id}`, 404);
   // in progress, on beta and live follow the tasks (syncItem).
@@ -124,6 +129,7 @@ export function updateItem(id: string, patch: Partial<{ title: string; goal: str
   const n = { ...cur, ...patch, criteria: patch.criteria !== undefined ? list(patch.criteria) : cur.criteria };
   db.prepare('UPDATE items SET title = ?, goal = ?, why = ?, criteria = ?, size = ?, status = ?, ord = ?, note = ?, origin = ?, updated = ? WHERE id = ?')
     .run(n.title, n.goal, n.why, J(n.criteria), n.size, n.status, n.ord, n.note, n.origin, Date.now(), id);
+  if (patch.milestone !== undefined) setItemMilestone(id, patch.milestone);
   // Dropping an item drops the tasks not started yet.
   if (patch.status === 'dropped') db.prepare(`UPDATE tasks SET status = 'dropped', updated = ? WHERE item = ? AND status IN ('idea', 'planned')`).run(Date.now(), id);
   return getItem(id)!;
@@ -194,10 +200,70 @@ export function startableTasks() {
   return rows.filter((t) => t.depends.every(done));
 }
 
+// -------------------------------------------------------------- milestones
+
+/**
+ * A milestone: a named point J will playtest himself (e.g. "DoD: controls done"), made of roadmap items. status: open
+ * -> reached (every item in it is on beta, its checks passed: pm.ts tells J on his phone and in Talk) -> live (J went
+ * live with it) | dropped.
+ */
+export type Milestone = { id: string; product: string | null; title: string; goal: string | null; test: string | null; status: string; ord: number; origin: string | null; by: string | null; reached_at: number | null; created: number; updated: number | null };
+export const MILESTONE_STATUSES = ['open', 'reached', 'live', 'dropped'];
+export const getMilestone = (id: string) => (db.prepare('SELECT * FROM milestones WHERE id = ?').get(id) as Milestone | undefined) ?? null;
+export function listMilestones(q: { product?: string; status?: string } = {}) {
+  const st = (q.status ?? 'open,reached,live').split(',').map((x) => x.trim());
+  const rows = db.prepare(`SELECT * FROM milestones WHERE status IN (${st.map(() => '?').join(',')}) ORDER BY ord, created`).all(...st) as Milestone[];
+  const pid = q.product ? productId(q.product) : null;
+  return rows.filter((m) => !pid || m.product === pid || m.product === null).map((m) => ({ ...m, ...milestoneProgress(m.id) }));
+}
+/** Its items and how far along they are (items on beta, live or done count as there). */
+export function milestoneProgress(id: string) {
+  const items = (db.prepare(`SELECT * FROM items WHERE milestone = ? AND status != 'dropped' ORDER BY ord, created`).all(id) as any[]).map(toItem);
+  const done = items.filter((i) => ['on beta', 'live', 'done'].includes(i.status));
+  return { items: items.map((i) => ({ id: i.id, title: i.title, product: i.product, status: i.status })), done: done.length, total: items.length };
+}
+export function addMilestone(a: { product?: string | null; title: string; goal?: string; test?: string; items?: unknown; origin?: string | null; by?: string; ord?: number }) {
+  if (!a.title?.trim()) throw new StudioError('A milestone needs a title');
+  const product = a.product ? productId(a.product) : null;
+  const id = newId('n');
+  const ord = a.ord ?? (((db.prepare('SELECT MAX(ord) AS m FROM milestones').get() as any)?.m ?? 0) + 1);
+  db.prepare('INSERT INTO milestones (id, product, title, goal, test, status, ord, origin, by, created) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+    .run(id, product, a.title.trim().slice(0, 200), a.goal ?? null, a.test ?? null, 'open', ord, a.origin ?? null, a.by ?? 'J', Date.now());
+  for (const it of list(a.items)) setItemMilestone(it, id);
+  return { ...getMilestone(id)!, ...milestoneProgress(id) };
+}
+export function updateMilestone(id: string, patch: Partial<{ title: string; goal: string; test: string; status: string; ord: number; items: unknown }>) {
+  const cur = getMilestone(id);
+  if (!cur) throw new StudioError(`No milestone ${id}`, 404);
+  // reached comes from its items' checks; by hand a milestone is open, live (J went live with it) or dropped.
+  if (patch.status && !['open', 'live', 'dropped'].includes(patch.status)) throw new StudioError('A milestone is reached when its items pass on beta; by hand it can be open, live or dropped');
+  const n = { ...cur, ...patch };
+  db.prepare('UPDATE milestones SET title = ?, goal = ?, test = ?, status = ?, ord = ?, reached_at = ?, updated = ? WHERE id = ?')
+    .run(n.title, n.goal, n.test, n.status, n.ord, patch.status === 'open' ? null : n.reached_at, Date.now(), id);
+  if (patch.items !== undefined) {
+    db.prepare('UPDATE items SET milestone = NULL WHERE milestone = ?').run(id);
+    for (const it of list(patch.items)) setItemMilestone(it, id);
+  }
+  return { ...getMilestone(id)!, ...milestoneProgress(id) };
+}
+function setItemMilestone(item: string, milestone: string | null) {
+  if (milestone && !getMilestone(milestone)) throw new StudioError(`No milestone ${milestone}`);
+  if (!db.prepare('SELECT id FROM items WHERE id = ?').get(item)) throw new StudioError(`No item ${item}`);
+  db.prepare('UPDATE items SET milestone = ?, updated = ? WHERE id = ?').run(milestone || null, Date.now(), item);
+}
+/** Open milestones whose items (at least one) are all on beta: reached now. */
+export function milestonesToReach() {
+  return (db.prepare(`SELECT * FROM milestones WHERE status = 'open'`).all() as Milestone[]).filter((m) => {
+    const p = milestoneProgress(m.id);
+    return p.total > 0 && p.done === p.total;
+  });
+}
+export const markReached = (id: string) => db.prepare(`UPDATE milestones SET status = 'reached', reached_at = ?, updated = ? WHERE id = ?`).run(Date.now(), Date.now(), id);
+
 // ---------------------------------------------------------------- comments
 
 export type Comment = { id: string; subject: string; by: string; kind: string; text: string; at: number };
-const SUBJECT = /^(f|i|k|c)_[0-9a-f]+$/;
+const SUBJECT = /^(f|i|k|c|n)_[0-9a-f]+$/;
 
 export function addComment(subject: string, text: string, by = 'J', kind = 'comment') {
   if (!SUBJECT.test(subject)) throw new StudioError('subject: a finding (f_), item (i_), task (k_) or change (c_) id');
