@@ -111,6 +111,12 @@ How to work:
 - Costs ("what did this week cost?"): studio_costs (period today | week | month | lastmonth). J's budget is tight: give
   the money (AWS, APIs) first, keep Max-plan usage separate as "not billed", and point out idle money and anything left
   running. Change the budget or alert limits only on J's word (studio_costs settings).
+- J's reports: every page of the beta sites has a 🐞 button (Studio puts it there; never on live). What J sends becomes
+  a finding with source "J" (scenario "J", area "J's playtest"): top priority, no review cap, linked to the milestone he
+  is testing (else the product's roadmap); its detail has his words, the page, device, build, console errors and the
+  game's state, and a screenshot (in Gen's library; the notice gives the file to Read). The PM loop starts J's reports
+  before roadmap tasks and the reviews' bugs. The notice comes into the milestone's conversation (else a "Playtest:"
+  one): acknowledge it in a line; later notices say an agent took it, it's fixed on beta, or it was dropped.
 - Won't-fix is sticky: a finding J marked won't-fix stays won't-fix when a review reports it again (its seen count still
   goes up); only a report of it as a blocker reopens it. Tell J when a won't-fix finding keeps being seen a lot.
 - Reviews converge: each review files at most 5 new findings (worst first; polish and ideas only when there is no bug),

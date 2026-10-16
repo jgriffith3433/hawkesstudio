@@ -97,7 +97,7 @@ the service detached; restart it after changing `src/`. The MCP server (`bin/stu
 
 **Talk as J's PM** (`src/roadmap.ts`, `src/pm.ts`, `src/acceptance.ts`, `src/scout.ts`; docs/daily.md, "Running the
 studio with Talk"): J sets direction in Talk, Talk keeps the roadmap (items with acceptance criteria, tasks under them),
-and the PM loop works it with the agents: it starts tasks and the worst bugs within its caps, runs PM turns in the day's
+and the PM loop works it with the agents: it starts J's own reports from the beta sites' 🐞 button first, then tasks and the worst bugs, within its caps, runs PM turns in the day's
 "Studio PM" conversation, merges into beta the changes that pass their acceptance gate (delegated merges, J's choice;
 never live, never Studio or Gen), revises the rest (3 tries, then J), resumes agents that asked a question with the
 answer, and marks a task verified only when its criteria pass on beta. Milestones group items into a point J playtests
@@ -119,6 +119,7 @@ the gate (`gate()` in acceptance.ts) and "verified only on beta" intact when cha
 | `src/beta.ts` | The beta lane: the `beta` branch (made from main), beta vs main, pre-deploy builds committed to beta, the Unity beta website copy (`.work/beta/<product>-site`), what a local playtest played, merging main into beta, the `deploys` table |
 | `src/deploy.ts` | Go live and rollback: the plan (commits on beta not on main, the playtests of that beta commit, blockers), the gated fast-forward of main, Unity's build committed to the website's main, rollback as a new commit, the live check |
 | `src/previews.ts` | The beta sites `https://<sub>.hawkesgen.com/` (beta) and `/c/<change>/` (agent changes) |
+| `src/bugreport.ts`, `dashboard/report-widget.js` | J's 🐞 button on the beta sites: previews.ts injects it into every published HTML page (never a repo or a live site); it posts to the front door (`/dev/__studio/report`); a report becomes a source-J finding linked to the milestone he's testing, started by the PM loop first, told in Talk (docs/daily.md, "Playtesting a milestone") |
 | `src/dev.ts` | Developing on beta: the beta working copies (`.work/beta-<product>`), dev servers on demand (at most 2, 30 idle minutes), saves auto-committed and pushed to beta, flush/pull around agent merges, conflicts (told in Talk), beta vs live |
 | `src/dev-front.ts` | The `/dev/` front door per product (`products.json` `dev.front`): start page, service worker and page shim (devtools written for the root work under `/dev/`), proxy and HMR websocket, the `dev-<sub>` root-mode fallback, the Unity page |
 | `src/local.ts` | Local dev servers for playtests, git state, check commands |

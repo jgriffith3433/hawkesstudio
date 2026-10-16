@@ -22,7 +22,9 @@
 
 import http from 'node:http';
 import net from 'node:net';
+import fs from 'node:fs';
 import { getProduct, loadProducts, GEN_URL, type Product } from './config.ts';
+import { fileReport, WIDGET } from './bugreport.ts';
 import { devConf, devHostUrl, devStatus, startDev, stopDev, touchDev, devRunning, isUnity, unityInfo, sinceLive } from './dev.ts';
 
 const P = '/dev';
@@ -270,6 +272,9 @@ async function handle(p: Product, req: http.IncomingMessage, res: http.ServerRes
     const what = route.slice(`${P}/__studio/`.length);
     if (what === 'sw.js') return send(res, 200, 'text/javascript', SW, { 'Service-Worker-Allowed': `${P}/` });
     if (what === 'shim.js') return send(res, 200, 'text/javascript', SHIM);
+    // J's "report a bug" button on the beta site (bugreport.ts; previews.ts puts the script into every page).
+    if (what === 'report.js') return send(res, 200, 'text/javascript; charset=utf-8', fs.readFileSync(WIDGET));
+    if (what === 'report' && method === 'POST') return report(p, req, res);
     if (what === 'status') return json(res, 200, devStatus(p.id));
     if (what === 'info') return send(res, 200, 'text/html; charset=utf-8', unity ? unityPage(p) : infoPage(p));
     if (what === 'start' && method === 'POST') {
@@ -297,6 +302,26 @@ async function handle(p: Product, req: http.IncomingMessage, res: http.ServerRes
   }
   touchDev(p.id);
   proxy(p, req, res, rest, root);
+}
+
+/** POST /dev/__studio/report: J's report from a page of this product's beta site (JSON, same origin only). */
+async function report(p: Product, req: http.IncomingMessage, res: http.ServerResponse) {
+  const host = String(req.headers['x-forwarded-host'] ?? req.headers.host ?? '');
+  const origin = req.headers.origin;
+  const from = (() => { try { return origin ? new URL(origin).host : host; } catch { return ''; } })();
+  if (!String(req.headers['content-type'] ?? '').startsWith('application/json') || from !== host) return json(res, 403, { error: 'same-origin JSON only' });
+  const chunks: Buffer[] = [];
+  let size = 0;
+  for await (const c of req) {
+    size += c.length;
+    if (size > 10 * 1024 * 1024) return json(res, 413, { error: 'too big' });
+    chunks.push(c);
+  }
+  try {
+    return json(res, 200, await fileReport(p.id, JSON.parse(Buffer.concat(chunks).toString('utf8'))));
+  } catch (e: any) {
+    return json(res, e.status ?? 400, { error: String(e.message ?? e) });
+  }
 }
 
 /** Vite's HMR websocket (and any other websocket under /dev/): piped to the dev server. */

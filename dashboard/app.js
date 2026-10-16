@@ -283,10 +283,12 @@ $('#reportBody').addEventListener('click', (e) => {
 });
 
 function findingHtml(f) {
-  const shots = (f.shots ?? []).slice(0, 4).map((a) => `<img loading="lazy" src="${file(a)}" data-full="${file(a)}">`).join('');
-  return `<div class="finding"><div>
-      <h4><span class="pill ${f.severity}">${esc(f.severity)}</span>${esc(f.title)} ${f.area ? `<span class="meta">${esc(f.area)}</span>` : ''}${f.id ? `<span class="meta">${esc(f.id)} · seen ${f.seen}× · ${esc(f.product)} · ${esc(f.scenario ?? '')}</span>` : ''}</h4>
-      <div class="meta">${esc(f.detail ?? '')}</div>
+  // J's reports from the beta sites: their screenshot is in Gen's library once imported, else Studio keeps it.
+  const own = f.source === 'J' && !(f.shots ?? []).length ? `<img loading="lazy" src="/api/bugreports/${f.id}/shot" data-full="/api/bugreports/${f.id}/shot" onerror="this.remove()">` : '';
+  const shots = own + (f.shots ?? []).slice(0, 4).map((a) => `<img loading="lazy" src="${file(a)}" data-full="${file(a)}">`).join('');
+  return `<div class="finding${f.source === 'J' ? ' from-j' : ''}"><div>
+      <h4><span class="pill ${f.severity}">${esc(f.severity)}</span>${f.source === 'J' ? '<span class="pill j" title="J reported it from the beta site: top priority">J</span>' : ''}${esc(f.title)} ${f.area ? `<span class="meta">${esc(f.area)}</span>` : ''}${f.id ? `<span class="meta">${esc(f.id)} · seen ${f.seen}× · ${esc(f.product)} · ${esc(f.scenario ?? '')}</span>` : ''}</h4>
+      <div class="meta"${f.source === 'J' ? ' style="white-space:pre-line"' : ''}>${esc(f.detail ?? '')}</div>
       <div class="fix"><b>Fix:</b> ${esc(f.fix ?? '')}</div>${f.note ? `<div class="meta">Note: ${esc(f.note)}</div>` : ''}
     </div><div class="side">${shots ? `<div class="thumbs">${shots}</div>` : ''}${f.id ? `<div class="actions">
       ${f.status === 'open' ? `<button class="small primary" data-agentfix="${f.id}" data-product="${esc(f.product)}">Fix with agent</button>` : ''}${['fixing', 'fixed', 'wontfix', 'open', 'idea'].filter((s) => s !== f.status && !(s === 'fixing' && f.status === 'idea')).map((s) => `<button class="small" data-finding="${f.id}" data-status="${s}">${s === 'open' && ['idea', 'expired'].includes(f.status) ? 'to backlog' : s === 'idea' ? 'to ideas' : s}</button>`).join('')}</div>` : ''}</div></div>`;
@@ -297,6 +299,8 @@ async function loadBacklog() {
   if ($('#blProduct').options.length <= 1 && overview) $('#blProduct').innerHTML += overview.products.map((p) => `<option value="${p.id}">${esc(p.name)}</option>`).join('');
   const qs = new URLSearchParams({ status: $('#blStatus').value, ...($('#blProduct').value ? { product: $('#blProduct').value } : {}) });
   const { findings } = await api(`/api/findings?${qs}`);
+  // J's own reports first (the PM loop starts them first too).
+  findings.sort((a, b) => (b.source === 'J') - (a.source === 'J'));
   $('#blCount').textContent = `${findings.length} ${$('#blStatus').value === 'idea' ? 'ideas (polish and ideas: never auto-fixed, expire after 14 days unseen)' : 'findings'}`;
   $('#blList').innerHTML = findings.length ? findings.map(findingHtml).join('') : '<div class="empty">Nothing here.</div>';
 }

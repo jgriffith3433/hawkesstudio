@@ -26,6 +26,7 @@ import { startFronts } from './dev-front.ts';
 import { selfDeploys, selfBusy } from './selfdeploy.ts';
 import { originOf, tagChange, startFollowups } from './followup.ts';
 import { activity } from './activity.ts';
+import { listReports as listBugReports, reportShot, startReportFollowups } from './bugreport.ts';
 
 const MIME: Record<string, string> = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.json': 'application/json', '.md': 'text/markdown; charset=utf-8' };
 
@@ -157,6 +158,15 @@ const server = http.createServer(async (req, res) => {
     m = /^\/api\/findings\/(f_[0-9a-f]+)$/.exec(route);
     if (m && method === 'GET') return send(res, 200, getFinding(m[1]) ?? { error: 'no such finding' });
     if (m && method === 'PATCH') return send(res, 200, updateFinding(m[1], await readJson(req)));
+    // J's reports from the beta sites' "report a bug" button (bugreport.ts; the button posts to the /dev/ front door).
+    if (route === '/api/bugreports' && method === 'GET') return send(res, 200, { reports: listBugReports({ product: q('product'), milestone: q('milestone'), limit: Number(q('limit')) || 100 }) });
+    m = /^\/api\/bugreports\/(f_[0-9a-f]+)\/shot$/.exec(route);
+    if (m && method === 'GET') {
+      const shot = reportShot(m[1]);
+      if (!shot) return send(res, 404, { error: 'no screenshot' });
+      res.writeHead(200, { 'Content-Type': shot.endsWith('.png') ? 'image/png' : shot.endsWith('.webp') ? 'image/webp' : 'image/jpeg', 'Cache-Control': 'private, max-age=86400' });
+      return void fs.createReadStream(shot).pipe(res);
+    }
 
     // Asset manifests.
     m = /^\/api\/assets\/([\w-]+)$/.exec(route);
@@ -472,6 +482,7 @@ server.listen(PORT, '127.0.0.1', () => {
   startFollowups();
   // Costs: an hourly look for a forecast over budget or a server left running (phone only then).
   void import('./costs.ts').then(({ startCostWatch }) => startCostWatch());
+  startReportFollowups();
   // The PM loop (pm.ts): on the server, or on J's PC with STUDIO_PM=on.
   if ((process.platform !== 'win32' && process.env.STUDIO_SERVER === '1') || process.env.STUDIO_PM === 'on') void import('./pm.ts').then(({ startPm }) => startPm());
   // Findings recreated after J marked a matching one won't-fix (before the backlog matched those) go back to it.

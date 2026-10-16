@@ -20,6 +20,7 @@ import { PROJECTS, DATA, paths, getProduct, loadProducts, StudioError, type Prod
 import { db } from './db.ts';
 import { BRANCH, BETA, isServer, type RepoResult } from './repos.ts';
 import { betaBuild, betaSiteFolder } from './beta.ts';
+import { injectReport, type PageInfo } from './bugreport.ts';
 
 export const DOMAIN = process.env.STUDIO_DOMAIN || 'hawkesgen.com';
 export const PREVIEWS = process.env.STUDIO_PREVIEWS || (isServer() ? path.join(PROJECTS, 'previews') : path.join(DATA, 'previews'));
@@ -202,7 +203,8 @@ async function build(p: Product, o: { change?: string; dir?: string }): Promise<
       files = await collect(dir, r);
     }
     progress(`copying ${files.size} files`);
-    await place(files, target);
+    // Every page gets J's "report a bug" button (bugreport.ts); only here, never in a repo or on a live site.
+    await place(files, target, { product: p.id, sha, ref, ...(o.change ? { change: o.change } : {}), built: Date.now() });
     return record(p.id, o.change, { status: 'ready', at: Date.now(), sha, ref, files: files.size, ms: Date.now() - t0 });
   } catch (e: any) {
     const prev = readState()[p.id];
@@ -269,8 +271,8 @@ function walk(root: string, rel: string): string[] {
   return fs.readdirSync(abs).flatMap((n) => walk(root, rel ? `${rel}/${n}` : n));
 }
 
-/** Writes the files into a fresh folder, then swaps it in for the old one. */
-async function place(files: Map<string, { src: string; link: boolean }>, target: string) {
+/** Writes the files into a fresh folder, then swaps it in for the old one. HTML pages get the report button (copied, not linked). */
+async function place(files: Map<string, { src: string; link: boolean }>, target: string, page?: PageInfo) {
   const tmp = `${target}.new-${Date.now()}`;
   const made = new Set<string>();
   for (const [rel, { src, link }] of files) {
@@ -279,6 +281,10 @@ async function place(files: Map<string, { src: string; link: boolean }>, target:
     if (!made.has(d)) {
       await fs.promises.mkdir(d, { recursive: true });
       made.add(d);
+    }
+    if (page && /\.html?$/i.test(rel)) {
+      await fs.promises.writeFile(dest, injectReport(await fs.promises.readFile(src, 'utf8'), page));
+      continue;
     }
     if (link) {
       try {

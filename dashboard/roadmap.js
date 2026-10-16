@@ -143,10 +143,21 @@ $('#roadmap').addEventListener('click', async (e) => {
 });
 
 // ------------------------------------------------------------ ready to test
+// J's reports from the beta sites' "report a bug" button, with their screenshot and what became of them.
+const reportHtml = (r) => `<div class="test" style="align-items:flex-start">${r.shot ? `<img loading="lazy" src="${esc(r.shot)}" data-full="${esc(r.shot)}" style="width:96px;height:72px;object-fit:cover;object-position:top;border-radius:6px;flex:none;cursor:zoom-in" onerror="this.remove()">` : '<span>🐞</span>'}
+  <span class="name"><span class="pill ${esc(r.severity)}">${esc(r.severity)}</span> ${esc(r.text || r.title)}<br><span class="meta">${esc(r.id)} · ${esc(r.product)} · ${ago(r.at)} · ${esc(r.viewport ?? '')}${r.errors ? ` · ${r.errors} console error(s)` : ''}${r.build?.ref ? ` · ${esc(r.build.ref)}` : ''}</span></span>
+  <span class="pill ${RM_PILL[r.status] ?? ''}">${esc(r.status)}</span></div>`;
 async function loadReady() {
-  const [{ ready }, rmap] = await Promise.all([api('/api/ready'), api('/api/roadmap?milestones=reached')]);
-  $('#readyMs').innerHTML = rmap.milestones.map((m) => `<div class="card" style="max-width:none;border-color:var(--accent)"><h3>🏁 Milestone reached: ${esc(m.title)} <small>${esc(m.product ?? '')}</small></h3>
-    ${m.test ? `<div class="summary">You said you'd test: ${esc(m.test)}</div>` : ''}<div class="meta">${m.items.map((i) => esc(i.title)).join(' · ')} · reached ${ago(m.reached_at)}. When you've played it: go live from Today, or tell Talk what's wrong.</div></div>`).join('');
+  const [{ ready }, rmap, { reports }] = await Promise.all([api('/api/ready'), api('/api/roadmap?milestones=reached'), api('/api/bugreports?limit=200')]);
+  $('#readyMs').innerHTML = rmap.milestones.map((m) => {
+    const mine = reports.filter((r) => r.milestone === m.id);
+    return `<div class="card" style="max-width:none;border-color:var(--accent)"><h3>🏁 Milestone reached: ${esc(m.title)} <small>${esc(m.product ?? '')}</small></h3>
+    ${m.test ? `<div class="summary">You said you'd test: ${esc(m.test)}</div>` : ''}<div class="meta">${m.items.map((i) => esc(i.title)).join(' · ')} · reached ${ago(m.reached_at)}. When you've played it: go live from Today, or tap 🐞 on the beta site for each problem (or tell Talk).</div>
+    <h4>Your reports${mine.length ? ` (${mine.length})` : ''}</h4>${mine.length ? mine.map(reportHtml).join('') : '<div class="meta">None yet. The 🐞 button on the beta site sends one: it becomes a task for this milestone.</div>'}</div>`;
+  }).join('') + (() => {
+    const loose = reports.filter((r) => !r.milestone && ['open', 'fixing'].includes(r.status));
+    return loose.length ? `<div class="card" style="max-width:none"><h3>🐞 Your other open reports</h3>${loose.map(reportHtml).join('')}</div>` : '';
+  })();
   $('#readyList').innerHTML = ready.length ? ready.map((r) => `<div class="card" style="max-width:none">
     <h3>${esc(r.title)} <small>${esc(r.productName)}</small><span class="pill ${r.partly ? 'warn' : 'ship'}">${r.partly ? 'partly on beta' : 'on beta'}</span></h3>
     ${r.goal ? `<div class="summary">${esc(r.goal)}</div>` : ''}

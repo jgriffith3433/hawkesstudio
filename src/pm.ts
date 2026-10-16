@@ -249,6 +249,26 @@ export async function startWork() {
   if (sd?.outcome === 'waiting' && Date.now() - Date.parse(sd.at) < 3 * 3600_000) return [];
   const out: string[] = [];
   let cap = capacity();
+  // J's own reports from the beta sites (bugreport.ts) come first: before roadmap tasks and the reviews' bugs.
+  const startBug = (f: any, why: string) => {
+    const tries = (db.prepare(`SELECT COUNT(*) AS n FROM changes WHERE findings LIKE ?`).get(`%"${f.id}"%`) as any).n as number;
+    if (tries >= s.maxTries) return null;
+    const id = startFix(f.product, [f.id]);
+    db.prepare('UPDATE changes SET criteria = ? WHERE id = ?').run(J([`Fixed: ${f.title}`]), id);
+    logDecision('start', f.id, f.product, `started ${id} to fix ${why}[${f.severity}] ${f.title}`, { kind: 'start', change: id, finding: f.id });
+    return id;
+  };
+  const reports = db.prepare(`SELECT * FROM findings WHERE status = 'open' AND source = 'J' ORDER BY CASE severity WHEN 'blocker' THEN 0 ELSE 1 END, first_seen`).all() as any[];
+  for (const f of reports) {
+    if (cap.free <= 0) break;
+    if (busy(f.product) || isInfra(f.product)) continue;
+    try {
+      const id = startBug(f, "J's report ");
+      if (id) { out.push(id); cap = capacity(); }
+    } catch {
+      continue;
+    }
+  }
   const waiting = startableTasks();
   for (const t of waiting) {
     if (cap.free <= 0) break;
@@ -263,16 +283,13 @@ export async function startWork() {
   }
   if (s.fixBugs && cap.free > 0) {
     // The worst open bugs not tried 3 times, one per product, in products without a task waiting.
-    const bugs = db.prepare(`SELECT * FROM findings WHERE status = 'open' AND severity IN ('blocker', 'bug') ORDER BY CASE severity WHEN 'blocker' THEN 0 ELSE 1 END, seen DESC, last_seen DESC LIMIT 40`).all() as any[];
+    const bugs = db.prepare(`SELECT * FROM findings WHERE status = 'open' AND severity IN ('blocker', 'bug') AND COALESCE(source, '') != 'J' ORDER BY CASE severity WHEN 'blocker' THEN 0 ELSE 1 END, seen DESC, last_seen DESC LIMIT 40`).all() as any[];
     for (const f of bugs) {
       if (cap.free <= 0) break;
       if (busy(f.product) || isInfra(f.product) || waiting.some((t) => t.product === f.product)) continue;
-      const tries = (db.prepare(`SELECT COUNT(*) AS n FROM changes WHERE findings LIKE ?`).get(`%"${f.id}"%`) as any).n as number;
-      if (tries >= s.maxTries) continue;
       try {
-        const id = startFix(f.product, [f.id]);
-        db.prepare('UPDATE changes SET criteria = ? WHERE id = ?').run(J([`Fixed: ${f.title}`]), id);
-        logDecision('start', f.id, f.product, `started ${id} to fix [${f.severity}] ${f.title}`, { kind: 'start', change: id, finding: f.id });
+        const id = startBug(f, '');
+        if (!id) continue;
         out.push(id);
       } catch {
         continue;

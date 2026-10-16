@@ -48,7 +48,8 @@ db.exec(`
   );
 `);
 // Findings can belong to a roadmap item; the PM loop marks the runs it has seen. (Changes get their task columns in agents.ts.)
-for (const [table, col] of [['runs', 'pm_seen'], ['findings', 'item'], ['items', 'milestone']]) {
+// J's reports from the beta sites (bugreport.ts) are findings with source 'J', the milestone he was testing and the report.
+for (const [table, col] of [['runs', 'pm_seen'], ['findings', 'item'], ['items', 'milestone'], ['findings', 'source'], ['findings', 'milestone'], ['findings', 'report']]) {
   try { db.exec(`ALTER TABLE ${table} ADD COLUMN ${col} TEXT`); } catch { /* already there */ }
 }
 

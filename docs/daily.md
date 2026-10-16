@@ -143,6 +143,34 @@ summaries), which criteria were verified (with evidence and the beta playtest's 
 agents' steps) and the known open bugs (linked to the item, or new bugs of the product since its first merge). When an
 item reaches beta, the conversation that planned it gets this report (no phone notification).
 
+**Playtesting a milestone: the 🐞 button.** Every page of the beta sites (`https://<sub>.hawkesgen.com/`, and agent
+changes at `/c/<id>/`) has a small red dot on the right edge; live sites never do. Studio puts it in as it publishes a
+beta site (`previews.ts` → `injectReport` in `src/bugreport.ts`: a console hook at the top of `<head>`, the widget
+`dashboard/report-widget.js` before `</body>`); no product repo has it. One problem, one report:
+- Tap the dot. It takes the screenshot first (the moment you saw it: a canvas game's frame with the page's HTML over
+  it), then opens a panel. Type, or **hold to talk** (the browser's speech recognition, where there is one; else the
+  box, and the phone keyboard's dictation), tick "It blocks me" for a blocker, Send. "remove" drops the screenshot.
+- It answers **"Got it: becomes a task for <milestone>"** (the product's most recently reached milestone; else one still
+  open with items already on beta; else "<product>'s roadmap").
+- Drag the dot up or down so it isn't over the game's controls; "hide button" shrinks it to a sliver on the edge (tap
+  that to bring it back; both remembered per site). Nothing typed or tapped in the panel reaches the game.
+
+What it sends (to the product's `/dev/` front door, `POST /dev/__studio/report`: same origin, behind the login; Caddy
+already sends `/dev/*` there for every product, Unity ones too): your words, the screenshot, the URL and page title, the
+device and viewport, the beta commit and build (`Game/v<n>` for Unity) and the agent change if it was one, the last 25
+console errors and warnings, and the game's `hawkesPlaytest.state()` and `report()` when it has the contract.
+
+What becomes of it: a finding with **source J** (`findings.source`, scenario "J", area "J's playtest"), status open,
+severity bug or blocker, straight into the backlog (no review cap, never matched into an older finding), linked to the
+milestone (`findings.milestone`, and `item` when the milestone has one item of that product). Its detail holds all of the
+above, so the agent's brief has it. The screenshot is kept in `.data/bugreports/<id>.jpg` (`GET
+/api/bugreports/<id>/shot`) and put into Gen's library (`file.import`). The PM loop starts J's reports **before roadmap
+tasks and the reviews' bugs** (blockers first, oldest first; still one agent per product, within the caps). Talk gets a
+notice with the screenshot in the milestone's conversation (else one "Playtest: <milestone> (<date>)" conversation a day
+per product) and answers it; later notices there say an agent took it, it's fixed (with the beta link), or it was
+dropped. The reports show in the Backlog (first, marked **J**), and under the milestone in Ready to test ("Your
+reports", `GET /api/bugreports?milestone=`).
+
 **10. Guard rails.** The caps above (Max-plan usage), the **decision log** (Roadmap tab → "PM decision log",
 `studio_pm status`): every start, merge, revise, won't-fix, duplicate, link, answer, question for J, beta check and
 settings change, with **Undo** where possible (a merge is reverted on beta with a new commit; a start closes the change;
