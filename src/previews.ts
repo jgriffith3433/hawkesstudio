@@ -50,7 +50,7 @@ const RECIPES: Record<string, Recipe> = {
   doseofdestruction: { build: 'npm run build', site: ['index.html', 'characters.html', 'privacypolicy.html', 'favicon.svg', 'CNAME', 'site', 'characters', 'audio', 'stages'], out: { from: 'dist', to: '' } },
   // Pages serves the repo; the game is built into play/ (committed on deploy).
   phorigins: { build: 'npm run build', site: 'tracked', out: { from: 'play', to: 'play' } },
-  hawkesbiomedical: { build: 'npm run build', site: 'none', out: { from: 'dist', to: '' } },
+  // The corporate site isn't listed: Pages serves its repo root as committed (dist/ is only the old local build).
 };
 
 export type Preview = { status: 'building' | 'ready' | 'failed' | 'waiting'; at: number; sha?: string | null; ref?: string; detail?: string; files?: number; ms?: number };

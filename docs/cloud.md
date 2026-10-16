@@ -192,8 +192,9 @@ past the login. Studio answers:
 - A commit that already went live through Studio's "Go live" isn't published twice.
 - `GET /api/hooks/pushes` lists the last pushes Studio handled and what it did. A go live also shows as a `live` run.
 - The workflow can be re-run by hand (Actions tab, "Run workflow") to send the same push again.
-- The corporate repo (`hawkesbiomedicalnew`) isn't in the server's GitHub token yet: its pushes still reach Studio, but
-  Studio can't read its Pages status until J adds the repo to the token.
+- The corporate site, I Can Be and Imagine Live TV have no build on GitHub: Pages serves main as committed, and their
+  beta sites serve beta's files as committed too. I Can Be's version stamp (`deploy.prebuild`) is committed to beta by
+  `studio beta icanbe`, so it ships with the push.
 
 The server keeps each product's source repo on `beta` (`studio repos sync`, and before every daily run); website repos
 of Unity games stay on main, and their beta builds land in `/srv/hawkes/.work/beta/<product>-site`. The beta sites are
