@@ -18,7 +18,7 @@ import { db, newId, J } from './db.ts';
 import { MAIN, AUTHOR, must, repoDirs, fetchOrigin, shaOf, betaBuild, betaSiteDir, scratch, git as gitIn } from './beta.ts';
 import { genRun } from './gen.ts';
 import { startStep, updateStep } from './pipeline.ts';
-import { verifyLive } from './deploy.ts';
+import { verifyLive, repoSlug } from './deploy.ts';
 
 const rel = (abs: string) => path.relative(PROJECTS, abs).replace(/\\/g, '/');
 
@@ -100,6 +100,27 @@ export async function publishUnity(p: Product, sha: string, { by = 'a push to ma
   }
 }
 
+/**
+ * A site whose repo builds itself on GitHub (.github/workflows/pages.yml) but whose Pages still publishes the branch:
+ * switch Pages to "GitHub Actions" and run the workflow (the run the push started fails at its deploy step while Pages
+ * is set to the branch). Happens once per site, the first time the workflow reaches main. Needs GITHUB_TOKEN with
+ * Pages and Actions write on the repo.
+ */
+async function ensurePagesWorkflow(slug: string, sha: string) {
+  const token = process.env.GITHUB_TOKEN;
+  if (!token) return 'no GITHUB_TOKEN';
+  const api = (route: string, init: RequestInit = {}) =>
+    fetch(`https://api.github.com/repos/${slug}/${route}`, { ...init, headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json', 'Content-Type': 'application/json' }, signal: AbortSignal.timeout(20_000) });
+  const wf = await api(`contents/.github/workflows/pages.yml?ref=${sha}`);
+  if (!wf.ok) return 'no pages.yml: Pages publishes the branch';
+  const pages: any = await (await api('pages')).json().catch(() => ({}));
+  if (pages.build_type === 'workflow') return 'Pages already builds with GitHub Actions';
+  const put = await api('pages', { method: 'PUT', body: JSON.stringify({ build_type: 'workflow' }) });
+  if (!put.ok) return `couldn't switch Pages to GitHub Actions (HTTP ${put.status}): switch it in the repo's Settings > Pages`;
+  const run = await api('actions/workflows/pages.yml/dispatches', { method: 'POST', body: JSON.stringify({ ref: MAIN }) });
+  return run.ok ? 'switched Pages to GitHub Actions and started the build' : `switched Pages to GitHub Actions; starting the build failed (HTTP ${run.status}): run it from the Actions tab`;
+}
+
 /** A push to a product source repo's main (from its workflow): publish Unity games; record and check web products. */
 export async function onMainPush(folder: string, sha: string) {
   const products = loadProducts().filter((p) => p.repo.split('/')[0] === folder);
@@ -110,7 +131,9 @@ export async function onMainPush(folder: string, sha: string) {
       continue;
     }
     // A web product: Pages publishes it. Record it (rollback needs the previous commit) and playtest it once live.
-    if (liveAlready(p, sha)) { out[p.id] = { skipped: 'already recorded' }; continue; }
+    const slug = repoSlug(p.site);
+    const pages = slug ? await ensurePagesWorkflow(slug, sha).catch((e: any) => `checking Pages failed: ${e.message ?? e}`) : null;
+    if (liveAlready(p, sha)) { out[p.id] = { skipped: 'already recorded', pages }; continue; }
     const { site } = repoDirs(p);
     const before = shaOf(site, `origin/${MAIN}`);
     fetchOrigin(site);
@@ -118,7 +141,7 @@ export async function onMainPush(folder: string, sha: string) {
     db.prepare('INSERT INTO deploys (id, product, kind, repo, before, after, beta, source, source_before, source_after, version, by, detail, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
       .run(id, p.id, 'deploy', p.site, before === sha ? null : before, sha, null, null, null, null, null, 'a push to main', 'pushed to main; GitHub Pages publishes it', Date.now());
     void verifyLive(p.id, sha, `Just went live (pushed to main, ${sha.slice(0, 7)})`);
-    out[p.id] = { deploy: id, note: 'GitHub Pages publishes it; Studio playtests the live site when it is out' };
+    out[p.id] = { deploy: id, pages, note: 'GitHub Pages publishes it; Studio playtests the live site when it is out' };
   }
   return out;
 }

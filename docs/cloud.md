@@ -171,10 +171,29 @@ is missing). `TALK_MODEL` picks the model; `TALK_CLAUDE` the Claude Code executa
 4. J approves in Studio's **Changes** tab, which merges the pull request into beta (nothing goes live). Beta's
    pre-deploy build, Unity build, beta site (`https://<sub>.hawkesgen.com/`) and a playtest of beta follow.
    J can also ask for changes, or close the fix.
-5. **Going live** is separate: the Today card's "Go live…" (or `studio_deploy_plan` in Talk) shows the commits on beta
+5. **Going live** is separate (pushing main; see "Pushes drive it" below): the Today card's "Go live…" (or `studio_deploy_plan` in Talk) shows the commits on beta
    that aren't live and how that exact beta commit played. J types `DEPLOY <product>`, Studio fast-forwards main to it,
    GitHub Pages publishes, and Studio playtests live. "Rollback…" undoes the last go live with a new commit
    (`ROLLBACK <product>`). Details: `docs/daily.md`, "Beta and going live".
+
+### Pushes drive it (GitHub Actions)
+
+Every product source repo has `.github/workflows/hawkes-studio.yml`: on each push to `beta` or `main` it calls
+`POST https://studio.hawkesgen.com/api/hooks/github` with GitHub's OIDC token (`id-token: write`; no secrets).
+`src/github-oidc.ts` checks GitHub's signature, the owner (`jgriffith3433`) and the event; Caddy lets only that path
+past the login. Studio answers:
+
+| Push to | Web product | Unity game |
+|---|---|---|
+| `beta` | pull, rebuild the beta site (`src/betawatch.ts`) | a minute later, a beta run: build on the build server into the beta website copy, beta site, playtest |
+| `main` | GitHub Pages publishes (DoD and PH Origins build in `pages.yml`); Studio records the deploy, waits for Pages (API), playtests live (`src/golive.ts`) | Studio publishes the build to the website repo's main (the beta build if it's of that commit, else it builds it), records it, and playtests live |
+
+- The first time a repo's `pages.yml` reaches main, Studio switches its Pages source to GitHub Actions and runs it.
+- A commit that already went live through Studio's "Go live" isn't published twice.
+- `GET /api/hooks/pushes` lists the last pushes Studio handled and what it did. A go live also shows as a `live` run.
+- The workflow can be re-run by hand (Actions tab, "Run workflow") to send the same push again.
+- The corporate repo (`hawkesbiomedicalnew`) isn't in the server's GitHub token yet: its pushes still reach Studio, but
+  Studio can't read its Pages status until J adds the repo to the token.
 
 The server keeps each product's source repo on `beta` (`studio repos sync`, and before every daily run); website repos
 of Unity games stay on main, and their beta builds land in `/srv/hawkes/.work/beta/<product>-site`. The beta sites are
