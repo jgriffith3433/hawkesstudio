@@ -26,11 +26,17 @@
       <button data-tab="settings" title="Call voice and listening, agent and PM limits, notifications, budgets: stored in Studio, so they follow you across devices">⚙ Settings</button>
     </nav>
     <div class="status" id="status"></div>
+    <button id="dockBtn" class="act-btn dock-btn" title="Talk beside any tab: the same conversation, and a call keeps going while you switch tabs">💬 Talk</button>
     <button id="actBtn" class="act-btn" title="Everything running in the background: agents, runs, Hawkes Gen jobs">Activity <span class="act-count zero" id="actCount">0</span></button>
   </header>
   <aside id="activity" class="activity" hidden>
     <div class="act-head"><b>Activity</b><span class="meta" id="actUpdated"></span><button class="small" id="actClose" title="Close">×</button></div>
     <div id="actBody"><div class="meta">Loading…</div></div>
+  </aside>
+  <aside id="talkDock" class="talk-dock" hidden>
+    <div class="dock-head"><b>Talk</b><select id="dockConv" title="The conversation"></select><button class="small" id="dockFull" title="Open the Talk tab (every conversation)">⤢</button><button class="small" id="dockClose" title="Close (a call keeps going)">×</button></div>
+    <div class="meta dock-ctx" id="dockCtx"></div>
+    <div id="dockBody" class="dock-body"></div>
   </aside>
   <main>
     <section id="inbox" class="tab on">
@@ -52,7 +58,7 @@
             <button id="talkCall" class="talk-call" title="Call Talk: talk out loud, Talk answers aloud">📞</button>
           </div>
           <div id="callPane" class="call" data-state="connecting" hidden>
-            <div class="call-top"><b>📞 On a call with Talk</b><button class="small" id="callSettingsBtn" title="Voice and listening settings">⚙ Settings</button></div>
+            <div class="call-top"><b>📞 On a call with Talk</b><button class="small" id="callTabs" title="Show Studio's tabs: the call keeps going beside them">☰ Tabs</button><button class="small" id="callSettingsBtn" title="Voice and listening settings">⚙ Settings</button></div>
             <button id="callOrb" class="call-orb" title="Tap to interrupt Talk, or to send what you said now"></button>
             <div id="callState" class="call-state">Connecting…</div>
             <div id="callYou" class="call-you"></div>

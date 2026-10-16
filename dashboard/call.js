@@ -521,7 +521,7 @@
       this.sentAt = performance.now();
       this.firstDelta = null;
       try {
-        await api('/api/talk', { method: 'POST', body: { conversation: this.id, message: text, voice: true } });
+        await api('/api/talk', { method: 'POST', body: { conversation: this.id, message: text, voice: true, context: window.studioContext?.() ?? undefined } });
         window.loadTalk?.().catch(() => {});
       } catch (e) {
         this.note(`Couldn't send: ${e.message}`);
