@@ -161,3 +161,49 @@ test('a content task that spends GPU money waits for J\'s budget', async () => {
   assert.throws(() => rm.addTask({ item: it.id, request: 'x', gpu: [{ count: 2 }] }), /tool \| preset/);
   rm.updateItem(it.id, { status: 'dropped' });
 });
+
+test('an escalated change is asked about once: answered, the loop leaves it; "close" closes it', async () => {
+  process.env.STUDIO_PM_TALK = 'off';
+  fs.writeFileSync(path.join(process.env.STUDIO_DATA!, 'notify.json'), JSON.stringify({ enabled: false, server: 'http://127.0.0.1:9', topic: 'test' }));
+  const { getChange } = await import('../src/agents.ts'); // the changes table
+  pm.startPm();
+  const it = rm.addItem({ product: 'pmtest', title: 'Leaderboard', criteria: ['names fit'], size: 'S', status: 'planned' });
+  // A task on its last try whose ready change fails its gate, 20 minutes old (past the grace).
+  const readyChange = (id: string) => {
+    const t = rm.addTask({ item: it.id, request: `Fix the names (${id})`, criteria: ['names fit'] });
+    const verify = { outcome: 'completed', verdict: 'ok', criteria: [{ criterion: 'names fit', met: 'no', evidence: 'they overflow' }] };
+    db.prepare(`INSERT INTO changes (id, product, findings, status, detail, repo, slug, branch, base, worktree, title, verify, notes, log, created, updated, task, criteria)
+      VALUES (?, 'pmtest', '[]', 'ready', 'ready', 'site', 'x/site', ?, 'beta', ?, 'Fix the names', ?, '[]', '[]', ?, ?, ?, ?)`)
+      .run(id, `task/${id}`, path.join(tmp, 'none', id), JSON.stringify(verify), Date.now(), Date.now() - 20 * 60_000, t.id, JSON.stringify(['names fit']));
+    rm.setTask(t.id, { status: 'review', change: id, changes: [id], tries: 3 });
+    return t;
+  };
+  const escalations = () => (db.prepare(`SELECT COUNT(*) AS n FROM pm_log WHERE action = 'escalate'`).get() as any).n as number;
+  const questions = () => (db.prepare('SELECT COUNT(*) AS n FROM questions').get() as any).n as number;
+
+  const t = readyChange('c_esc000000001');
+  const e0 = escalations();
+  await pm.tick();
+  assert.equal(escalations(), e0 + 1, 'the last try failing asks J');
+  const q = rm.listQuestions().find((x) => x.subject === t.id)!;
+  assert.ok(q, 'his question is in the Inbox');
+  await pm.answerQuestion(q.id, 'try again', 'J');
+  const [e1, q1] = [escalations(), questions()];
+  for (let i = 0; i < 5; i++) await pm.tick();
+  assert.equal(escalations(), e1, 'no new escalations after J answered');
+  assert.equal(questions(), q1, 'no new questions after J answered');
+  // Revising it by hand doesn't ask again either.
+  assert.deepEqual(await pm.pmRevise('c_esc000000001', 'once more'), { escalated: true, already: true });
+  assert.equal(escalations(), e1);
+
+  // "Close it" closes the change and drops the task, without a PM turn; a change that isn't ready can't be revised.
+  const t2 = readyChange('c_esc000000002');
+  await pm.tick();
+  const q2 = rm.listQuestions().find((x) => x.subject === t2.id)!;
+  await pm.answerQuestion(q2.id, 'Close it', 'J');
+  assert.equal(getChange('c_esc000000002')!.status, 'closed');
+  assert.equal(rm.getTask(t2.id)!.status, 'dropped');
+  await assert.rejects(pm.pmRevise('c_esc000000002', 'again'), /closed, not ready/);
+  for (let i = 0; i < 3; i++) await pm.tick();
+  assert.equal(rm.listQuestions().filter((x) => x.subject === t2.id).length, 0, 'nothing more asked about it');
+});

@@ -63,6 +63,8 @@ try { db.exec('ALTER TABLE changes ADD COLUMN request TEXT'); } catch { /* alrea
 for (const col of ['origin', 'told', 'started_by']) try { db.exec(`ALTER TABLE changes ADD COLUMN ${col} TEXT`); } catch { /* already there */ }
 // A roadmap task's change (roadmap.ts): the task, its acceptance criteria, the agent's session (to resume after a question), what the PM saw.
 for (const col of ['task', 'criteria', 'session', 'pm_seen', 'gpu_budget']) try { db.exec(`ALTER TABLE changes ADD COLUMN ${col} TEXT`); } catch { /* already there */ }
+// When the PM used up its tries and asked J (pm.ts pmRevise): the loop leaves it alone from then on.
+try { db.exec('ALTER TABLE changes ADD COLUMN pm_escalated INTEGER'); } catch { /* already there */ }
 // Where a change's work is (Phase), so it carries on from there after a Studio restart.
 try { db.exec('ALTER TABLE changes ADD COLUMN phase TEXT'); } catch { /* already there */ }
 
@@ -74,6 +76,8 @@ export type Change = {
   task: string | null; criteria: string[]; session: string | null;
   /** Dollars J approved for GPU generation in this change (content work); null: no GPU approved. */
   gpu_budget: string | null;
+  /** When the PM used up its tries and asked J (pm.ts): the loop leaves it alone. */
+  pm_escalated?: number | null;
   /** A change to Hawkes Studio or Hawkes Gen (a pull request into main, which deploys itself), not a product. */
   infra: boolean;
   /** Absolute links for Talk and J: the change in Studio (its verification playtest, review and log), the playtest video, preview, pull request. */
