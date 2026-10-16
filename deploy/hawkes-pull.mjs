@@ -50,9 +50,11 @@ function record(entry) {
   }
 }
 
-/** Runs as the hawkes user (its git credential helper and its files). */
+/** Runs as the hawkes user (its git credential helper and its files); not through sudo, which logs every call. */
+const HAWKES = (() => { try { const { uid, gid } = fs.statSync('/home/hawkes'); return { uid, gid }; } catch { return null; } })();
 function asHawkes(cwd, cmd, args, { quiet = false } = {}) {
-  return execFileSync('sudo', ['-u', 'hawkes', '-H', '--', cmd, ...args], { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', quiet ? 'pipe' : 'inherit'], timeout: 15 * 60_000 }).trim();
+  const user = HAWKES ? { ...HAWKES, env: { ...process.env, HOME: '/home/hawkes', USER: 'hawkes', LOGNAME: 'hawkes' } } : {};
+  return execFileSync(cmd, args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', quiet ? 'pipe' : 'inherit'], timeout: 15 * 60_000, ...user }).trim();
 }
 const git = (dir, ...args) => asHawkes(dir, 'git', args, { quiet: true });
 const shell = (dir, line) => asHawkes(dir, 'bash', ['-lc', line]);
