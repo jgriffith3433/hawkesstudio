@@ -11,6 +11,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { spawnSync } from 'node:child_process';
 import { db, newId, J, rowToStep, parse, type Step } from './db.ts';
 import { loadProducts, getProduct, localUrl, today, PROJECTS, type Product, type Playtest } from './config.ts';
 import { gen, genRun, genUp, ensureGen } from './gen.ts';
@@ -255,6 +256,34 @@ export async function runProduct(run: string, p: Product, o: RunOptions) {
   }
 }
 
+/** Stale beta checkouts Talk was told about (once per state, not every playtest). */
+const staleTold = new Set<string>();
+
+/**
+ * On the server, a web product's local playtest serves its source checkout, kept on beta (repos.ts). It is brought to
+ * beta's tip first; when it can't follow (uncommitted changes, local commits), the playtest doesn't play the old commit:
+ * it fails with what's in the way, and Talk is told (Studio never throws away changes it didn't make). Null: up to date.
+ */
+export function staleBeta(p: Product): string | null {
+  const top = p.repo.split('/')[0];
+  if (!isServer() || p.build || !repoMap()[top] || !betaFolders().has(top)) return null;
+  const dir = repoDirs(p).source;
+  const r = syncRepo(top, repoMap()[top], BRANCH, BETA);
+  const want = shaOf(dir, `origin/${BETA}`);
+  if (!want) return null; // no beta branch yet: the checkout plays main
+  const head = shaOf(dir, 'HEAD') ?? '';
+  if (head === want && !r.dirty?.length) return null;
+  const why = r.dirty?.length ? `uncommitted changes in ${r.dirty.slice(0, 8).join(', ')}` : r.detail;
+  const msg = `Not playing an old copy: the server's ${BETA} checkout of ${top} is at ${head.slice(0, 7)} but ${BETA} is at ${want.slice(0, 7)} (${why}).`;
+  const key = `${top}:${head}:${want}:${r.dirty?.join(',') ?? ''}`;
+  if (!staleTold.has(key)) {
+    staleTold.add(key);
+    const diff = r.dirty?.length ? spawnSync('git', ['diff', '--stat', 'HEAD'], { cwd: dir, encoding: 'utf8' }).stdout?.trim().slice(0, 1500) : '';
+    void import('./talk.ts').then(({ postNotice }) => postNotice(`${p.name}: beta checkout is stuck`, `${msg}\n\nThe ${p.name} playtests on beta stop until it follows ${BETA} again.${diff ? `\n\n\`\`\`\n${diff}\n\`\`\`` : ''}\n\nOn the server, in /srv/hawkes/${top}: look at the change (git diff). If it is work worth keeping, commit it to ${BETA}; if it is Studio's own leftover (an install or a build), discard it (git checkout -- <files>). The next playtest picks ${BETA} up.`)).catch(() => {});
+  }
+  return msg;
+}
+
 export const nameOf = (t: Playtest) => `${t.scenario ?? t.mode ?? 'auto'}@${t.where}${t.device === 'phone' ? ':phone' : ''}`;
 
 /** Runs a product's pre-deploy build on beta and commits it there (beta.ts prepareBeta), then syncs the checkout. */
@@ -342,6 +371,12 @@ export async function playtestProduct(run: string, p: Product, t: Playtest, { re
   const name = nameOf(t);
   const s = startStep(run, p.id, 'playtest', name, 'starting');
   let url: string;
+  // On the server a web product's local playtest plays its beta checkout, which must be beta's tip: never an old copy.
+  const stale = t.where === 'local' ? staleBeta(p) : null;
+  if (stale) {
+    updateStep(s, { status: 'failed', detail: stale, data: { played: playedLocal(p), stale: true }, finished: true });
+    return null;
+  }
   // Local: what's played (beta on the server) is recorded, so the report and the deploy plan know the commit.
   const played = t.where === 'local' ? playedLocal(p) : null;
   let port: number | null = null;

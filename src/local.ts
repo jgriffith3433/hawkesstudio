@@ -29,6 +29,15 @@ async function answers(url: string) {
   }
 }
 
+/**
+ * Installs a checkout's packages without touching its tracked files. A plain "npm install" rewrites package-lock.json
+ * (e.g. its version after a pre-deploy build bumped package.json), and an uncommitted change there stops the server's
+ * beta checkout from following beta (repos.ts).
+ */
+export const installCmd = (dir: string) => fs.existsSync(path.join(dir, 'package-lock.json'))
+  ? 'npm ci --no-audit --no-fund || npm install --no-save --no-audit --no-fund'
+  : 'npm install --no-save --no-package-lock --no-audit --no-fund';
+
 /** Starts the product's local server if nothing answers on its port, and waits until it does. */
 export async function ensureServer(p: Product, log: (s: string) => void = () => {}) {
   const url = localUrl(p);
@@ -38,8 +47,8 @@ export async function ensureServer(p: Product, log: (s: string) => void = () => 
   let child;
   if (p.local.serve === 'npm') {
     if (!fs.existsSync(path.join(dir, 'node_modules'))) {
-      log(`${p.id}: npm install`);
-      await new Promise((resolve) => spawn(...shell('npm install'), { cwd: dir, stdio: 'ignore', windowsHide: true }).on('close', resolve).on('error', resolve));
+      log(`${p.id}: ${installCmd(dir)}`);
+      await new Promise((resolve) => spawn(...shell(installCmd(dir)),{ cwd: dir, stdio: 'ignore', windowsHide: true }).on('close', resolve).on('error', resolve));
     }
     child = spawn(...shell(`npm run dev -- --port ${p.local.port} --strictPort`), { cwd: dir, detached: true, stdio: ['ignore', out, out], windowsHide: true });
   } else {
@@ -70,7 +79,7 @@ export async function serveDir(p: Product, dir: string, port: number) {
   if (p.local.serve === 'npm' && !fs.existsSync(path.join(dir, 'node_modules'))) {
     const main = path.join(abs(p.local.dir), 'node_modules');
     if (fs.existsSync(main) && !sandboxOn()) fs.symlinkSync(main, path.join(dir, 'node_modules'), WIN ? 'junction' : 'dir');
-    else await new Promise((resolve) => sandboxSpawn(...shell('npm install'), { cwd: dir, stdio: 'ignore' }).on('close', resolve).on('error', resolve));
+    else await new Promise((resolve) => sandboxSpawn(...shell(installCmd(dir)),{ cwd: dir, stdio: 'ignore' }).on('close', resolve).on('error', resolve));
   }
   const out = fs.openSync(path.join(paths.logs, `serve-${p.id}-${port}.log`), 'a');
   const child = p.local.serve === 'npm'

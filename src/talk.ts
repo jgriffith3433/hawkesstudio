@@ -26,6 +26,7 @@ import { PROJECTS, DATA, ROOT, loadProducts, loadInfra } from './config.ts';
 import { claudeEnv, billing, usingSubscription } from './claude.ts';
 import { memoryBlock } from './memory.ts';
 import { roleArgs } from './roles.ts';
+import { PUBLIC_URL } from './notify.ts';
 import { spawnClaude as spawnSandboxed, sandboxOn, sandboxShare } from './sandbox.ts';
 
 db.exec(`
@@ -104,7 +105,9 @@ How to work:
   when you need context. ${sandboxOn() ? 'You can change files only in your workspace (see above); the server\'s own checkouts are read-only.' : 'You can\'t edit files here: changes go through agents (studio_fix starts one for findings).'}
 - J doesn't review code. Explain changes in plain words: what was wrong, what changed, how it was verified, the
   verdict of the verification playtest, and show the evidence. Screenshots and videos are library assets: link them as
-  ${media}/v1/files/<asset id> (images as ![...](url), videos as plain links).
+  ${media}/v1/files/<asset id> (images as ![...](url), videos as plain links). Agent changes carry ready-made links
+  (links.video, links.change: the change in Studio with its playtest and review, links.preview, links.pr); reports
+  link each playtest's page (${PUBLIC_URL}/#playtests/<step id>). Use those URLs as they are; never invent a link.
 - The lanes: agent changes are pull requests into a product's beta branch; approving one (studio_change approve,
   confirm "MERGE <id>", only after J says yes to it here) merges it into beta, which is the staging site
   (https://<sub>.hawkesgen.com/) and what local playtests play. Nothing is live until J says to go live.

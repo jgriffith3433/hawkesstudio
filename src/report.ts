@@ -7,6 +7,7 @@ import { db, rowToStep, parse, type Step } from './db.ts';
 import { getProduct, paths, today } from './config.ts';
 import { listFindings } from './backlog.ts';
 import { fileUrl } from './gen.ts';
+import { PUBLIC_URL } from './notify.ts';
 import { regressions } from './playtests.ts';
 
 const SEV_ICON: Record<string, string> = { blocker: '🛑', bug: '🐞', polish: '✨', idea: '💡' };
@@ -80,7 +81,7 @@ export function reportMarkdown(run: string) {
     if (played.length) L.push(`Local playtests played ${played.join(', ')}.`, '');
     for (const s of x.steps.filter((s) => s.kind !== 'review')) {
       L.push(`- ${fmtStep(s)}`);
-      if (s.kind === 'playtest' && s.data?.video) L.push(`  - [video](${fileUrl(s.data.video)})${s.data?.metrics && Object.keys(s.data.metrics).length ? ` · metrics: ${Object.entries(s.data.metrics).slice(0, 10).map(([k, v]) => `${k} ${v}`).join(', ')}` : ''}`);
+      if (s.kind === 'playtest' && s.data?.video) L.push(`  - [video](${fileUrl(s.data.video)}) · [playtest](${PUBLIC_URL}/#playtests/${s.id})${s.data?.metrics && Object.keys(s.data.metrics).length ? ` · metrics: ${Object.entries(s.data.metrics).slice(0, 10).map(([k, v]) => `${k} ${v}`).join(', ')}` : ''}`);
       if (s.kind === 'check' && s.status === 'failed') L.push('', '```', String(s.data?.tail ?? '').slice(-1500), '```');
     }
     for (const rv of x.reviews) {

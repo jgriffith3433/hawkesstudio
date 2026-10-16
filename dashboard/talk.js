@@ -17,8 +17,8 @@
   function md(text) {
     const inline = (s) => esc(s)
       .replace(/!\[([^\]]*)\]\(([^)\s]+)\)/g, (_, a, u) => `<img class="talk-img" src="${u}" alt="${a}" data-full="${u}">`)
-      .replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (_, t, u) => (/\/v1\/files\//.test(u) ? `<a href="#" data-media="${u}">${t}</a>` : `<a href="${u}" target="_blank" rel="noopener">${t}</a>`))
-      .replace(/(^|[\s(])(https?:\/\/[^\s<)]+\/v1\/files\/[A-Za-z0-9_]+)/g, (_, pre, u) => `${pre}<a href="#" data-media="${u}">▶ ${u.split('/').pop()}</a>`)
+      .replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (_, t, u) => (/\/v1\/files\//.test(u) ? `<a href="${u}" target="_blank" rel="noopener" data-media="${u}">${t}</a>` : `<a href="${u}" target="_blank" rel="noopener">${t}</a>`))
+      .replace(/(^|[\s(])(https?:\/\/[^\s<)]+\/v1\/files\/[A-Za-z0-9_]+)/g, (_, pre, u) => `${pre}<a href="${u}" target="_blank" rel="noopener" data-media="${u}">▶ ${u.split('/').pop()}</a>`)
       .replace(/`([^`]+)`/g, '<code>$1</code>')
       .replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>');
     const out = [];
@@ -172,7 +172,7 @@
       }
     } catch (err) { alert(err.message); }
     const media = e.target.closest('[data-media]');
-    if (media) {
+    if (media && !(e.ctrlKey || e.metaKey || e.shiftKey || e.button)) {
       e.preventDefault();
       const u = media.dataset.media;
       const r = await fetch(u, { method: 'HEAD' }).catch(() => null);

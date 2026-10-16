@@ -8,6 +8,7 @@
 import type http from 'node:http';
 import { db, parse } from './db.ts';
 import { GEN_PUBLIC_URL, getProduct, getInfra, isInfra } from './config.ts';
+import { PUBLIC_URL } from './notify.ts';
 
 try { db.exec('ALTER TABLE runs ADD COLUMN origin TEXT'); } catch { /* already there */ }
 try { db.exec('ALTER TABLE runs ADD COLUMN told TEXT'); } catch { /* already there */ }
@@ -60,6 +61,7 @@ export function changeNotice(c: any) {
   if (c.pr_url) lines.push(`Pull request: ${c.pr_url}`);
   if (v.preview) lines.push(`Preview: ${v.preview}`);
   if (v.video) lines.push(`Video of the verification playtest: ${media(v.video)}`);
+  lines.push(`In Studio (verification, review, log): ${PUBLIC_URL}/#changes/${c.id}`);
   if (c.status === 'ready') lines.push(`Approving needs J's yes (confirm "MERGE ${c.id}"); he can also ask for changes (revise).`);
   return lines.join('\n');
 }
@@ -79,7 +81,7 @@ export function runNotice(r: any) {
     lines.push(`- ${s.kind} ${s.name}: ${s.status}: ${cut(s.detail, 240)}`);
     if (s.kind === 'review' && s.data?.summary) lines.push(`  Review: ${cut(s.data.summary, 500)}`);
     if (s.kind === 'review' && s.data?.findings?.length) lines.push(`  Findings: ${s.data.findings.slice(0, 4).map((f: any) => `[${f.severity}] ${f.title}`).join('; ')}`);
-    if (s.kind === 'playtest' && s.data?.video) lines.push(`  Video: ${media(s.data.video)}`);
+    if (s.kind === 'playtest' && s.data?.video) lines.push(`  Video: ${media(s.data.video)} · playtest: ${PUBLIC_URL}/#playtests/${s.id}`);
     if (s.kind === 'playtest' && s.data?.played?.sha) lines.push(`  Played ${s.data.played.branch ?? ''} ${String(s.data.played.sha).slice(0, 7)}`);
   }
   if (r.kind !== 'beta' && r.kind !== 'build' && r.kind !== 'live') lines.push(`Report: studio_report { run: "${r.id}" }`);

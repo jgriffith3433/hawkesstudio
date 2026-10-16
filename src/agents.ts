@@ -33,7 +33,7 @@ import { db, newId, J, parse } from './db.ts';
 import { getProduct, getInfra, isInfra, PROJECTS, DATA, ROOT, storyOf, localUrl, type Product, type Infra } from './config.ts';
 import { getFinding, updateFinding } from './backlog.ts';
 import { reviewParams } from './review.ts';
-import { gen, genRun } from './gen.ts';
+import { gen, genRun, fileUrl } from './gen.ts';
 import { repoMap } from './repos.ts';
 import { serveDir, stopServed } from './local.ts';
 import { claudeEnv } from './claude.ts';
@@ -73,7 +73,19 @@ export type Change = {
   gpu_budget: string | null;
   /** A change to Hawkes Studio or Hawkes Gen (a pull request into main, which deploys itself), not a product. */
   infra: boolean;
+  /** Absolute links for Talk and J: the change in Studio (its verification playtest, review and log), the playtest video, preview, pull request. */
+  links: ChangeLinks;
 };
+export type ChangeLinks = { change: string; pr: string | null; preview: string | null; video: string | null };
+
+function changeLinks(r: any, verify: any): ChangeLinks {
+  return {
+    change: `${PUBLIC_URL}/#changes/${r.id}`,
+    pr: r.pr_url ?? null,
+    preview: verify?.preview ?? null,
+    video: verify?.video ? fileUrl(verify.video) : null,
+  };
+}
 
 const SETTINGS_FILE = path.join(DATA, 'agents.json');
 export type AgentSettings = { enabled: boolean; autoFix: boolean; maxConcurrent: number; maxPerDay: number; maxCostPerDay: number; severities: string[]; model: string; maxTurns: number };
@@ -91,7 +103,10 @@ export function saveAgentSettings(patch: Partial<AgentSettings>) {
   return next;
 }
 
-const toChange = (r: any): Change => ({ ...r, infra: isInfra(r.product), criteria: parse(r.criteria) ?? [], findings: parse(r.findings) ?? [], commits: parse(r.commits) ?? [], verify: parse(r.verify), notes: parse(r.notes) ?? [], log: parse(r.log) ?? [] });
+const toChange = (r: any): Change => {
+  const verify = parse(r.verify);
+  return { ...r, infra: isInfra(r.product), criteria: parse(r.criteria) ?? [], findings: parse(r.findings) ?? [], commits: parse(r.commits) ?? [], verify, notes: parse(r.notes) ?? [], log: parse(r.log) ?? [], links: changeLinks(r, verify) };
+};
 export const getChange = (id: string) => {
   const r = db.prepare('SELECT * FROM changes WHERE id = ?').get(id);
   return r ? toChange(r) : null;
@@ -521,7 +536,19 @@ async function work(id: string, note?: string, answer?: string) {
     // Push and open (or update) the pull request.
     const push = git(c.worktree, ['push', '--quiet', '-u', 'origin', `HEAD:${c.branch}`, ...(note || answer ? ['--force-with-lease'] : [])]);
     if (!push.ok) throw new Error(`push failed: ${push.err}`);
+    // The branch tip that gets verified below; approving merges exactly this commit (approve() checks it).
+    const tip = git(c.worktree, ['rev-parse', 'HEAD']).out;
     c = getChange(id)!;
+    // A pull request merged or closed outside Studio (GitHub's website, another tool) takes no more commits: pushing
+    // to its branch would leave the new ones off beta. Open a new pull request for what isn't on beta yet.
+    if (c.pr) {
+      const old = await github(`/repos/${c.slug}/pulls/${c.pr}`).catch(() => null);
+      if (old && old.state !== 'open') {
+        addLog(id, `pull request #${c.pr} was ${old.merged ? `merged outside Studio (${String(old.merged_at ?? '').slice(0, 16)}, head ${String(old.head?.sha ?? '').slice(0, 7)})` : 'closed'}; opening a new one for the commits not on ${c.base}`);
+        update(id, { pr: null, pr_url: null });
+        c = getChange(id)!;
+      }
+    }
     const criteriaMd = c.criteria.length ? `\n\n**Acceptance criteria:**\n${c.criteria.map((k) => `- ${k}`).join('\n')}` : '';
     const body = `${summary}${criteriaMd}\n\n---\n**Findings** (Hawkes Studio playtest review):\n${findings.map((f: any) => `- [${f.severity}] ${f.title} (${f.id}, seen ${f.seen}×)`).join('\n')}\n\nMade by a Hawkes Studio agent. Approving it in Studio merges it into ${c.base} (the beta site, not live); going live is a separate step.\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)`;
     if (!c.pr) {
@@ -552,7 +579,7 @@ async function work(id: string, note?: string, answer?: string) {
     const tryFile = path.join(c.worktree, '.hawkes', 'try.md');
     const howTo = fs.existsSync(tryFile) ? fs.readFileSync(tryFile, 'utf8').trim().slice(0, 2000) : null;
     const met = verify?.criteria?.length ? ` · criteria ${verify.criteria.filter((k: any) => k.met === 'yes').length}/${verify.criteria.length} met` : '';
-    update(id, { status: 'ready', detail: `${verify ? `${verify.outcome ?? '?'} · review: ${verify.verdict ?? 'n/a'}${met}` : 'ready (not playtested: needs a build)'}${preview ? ` · preview ${preview}` : ''}`, verify: { ...(verify ?? {}), preview, try: howTo } });
+    update(id, { status: 'ready', detail: `${verify ? `${verify.outcome ?? '?'} · review: ${verify.verdict ?? 'n/a'}${met}` : 'ready (not playtested: needs a build)'}${preview ? ` · preview ${preview}` : ''}`, verify: { ...(verify ?? {}), sha: tip, preview, try: howTo } });
     // No phone notification (J's rule: only when something went wrong or a milestone is reached): Talk reports it,
     // and a roadmap task's change is the PM's to review (pm.ts).
   } catch (e: any) {
@@ -957,7 +984,8 @@ async function approveInfra(c: Change, by: string) {
   const t = getInfra(c.product);
   const pr = await github(`/repos/${c.slug}/pulls/${c.pr}`);
   if (pr.state !== 'open') throw new Error(`Pull request #${c.pr} is ${pr.merged ? 'already merged' : pr.state}.`);
-  const ci = await ciChecks(c.slug, pr.head.sha, { waitMs: 0 });
+  if (c.verify?.sha && pr.head.sha !== c.verify.sha) throw new Error(`Pull request #${c.pr}'s head moved after the checks (checked ${String(c.verify.sha).slice(0, 7)}, now ${String(pr.head.sha).slice(0, 7)}). Revise ${c.id} so the new head is checked.`);
+  const ci =await ciChecks(c.slug, pr.head.sha, { waitMs: 0 });
   if (ci.state !== 'success') throw new Error(`CI on pull request #${c.pr} isn't green (${ci.state}: ${ci.detail}); not merging into main, which deploys ${t.name}.`);
   let m: any;
   try {
@@ -977,6 +1005,26 @@ async function approveInfra(c: Change, by: string) {
 }
 
 /**
+ * The commit an approval merges: the pull request's head, which must be the branch tip that was verified. Refuses when
+ * the pull request isn't open (merged or closed outside Studio: whatever came after that never reaches beta through it)
+ * or when its head moved after verification (a push nobody verified).
+ */
+async function verifiedHead(c: Change) {
+  const pr = await github(`/repos/${c.slug}/pulls/${c.pr}`);
+  const head = String(pr.head?.sha ?? '');
+  if (pr.state !== 'open') {
+    throw new Error(pr.merged
+      ? `Pull request #${c.pr} was already merged (${String(pr.merged_at ?? '').slice(0, 16)}, outside this approval) at ${head.slice(0, 7)}; commits the agent pushed after that are not on ${c.base}. Revise ${c.id} so Studio opens a new pull request for them.`
+      : `Pull request #${c.pr} is closed. Revise ${c.id} to open a new one, or close the change.`);
+  }
+  // Changes verified before Studio recorded the verified commit: the worktree's head is what was pushed and played.
+  const verified = c.verify?.sha || (fs.existsSync(c.worktree) ? git(c.worktree, ['rev-parse', 'HEAD']).out : '');
+  if (!verified) throw new Error(`${c.id} has no verified commit on record; revise it so it is verified again.`);
+  if (head !== verified) throw new Error(`Pull request #${c.pr}'s head moved after verification (verified ${verified.slice(0, 7)}, now ${head.slice(0, 7)}): not merging what wasn't played. Revise ${c.id} so the new head is verified.`);
+  return head;
+}
+
+/**
  * J's approval: merge the pull request (squash) into beta. Nothing goes live: the beta site is rebuilt and beta is
  * playtested with the change in; going live is deploy() (the deploy plan, then "DEPLOY <product>").
  */
@@ -991,6 +1039,9 @@ export async function approve(id: string, { confirm, by = 'J', origin }: { confi
     if (c.status !== 'ready') throw new Error(`The change is ${c.status}, not ready to approve.`);
     return approveInfra(c, by);
   }
+  // An agent still on it moves the branch: what would be merged isn't what was verified.
+  if (['queued', 'working', 'revising', 'verifying'].includes(c.status)) throw new Error(`The change is ${c.status}: its branch is still moving. Approve it once it's ready (verified).`);
+  const sha = await verifiedHead(c);
   // Changes opened before the beta lane target main: point them at beta first, so approving never goes live.
   if (c.base !== BETA) {
     ensureBeta(path.join(PROJECTS, c.repo));
@@ -1004,7 +1055,8 @@ export async function approve(id: string, { confirm, by = 'J', origin }: { confi
   if ('conflict' in flushed && flushed.conflict) throw new Error(`Beta's working copy conflicts with beta (${flushed.conflict.join(', ')}); resolve that first (studio_dev_status).`);
   let m: any;
   try {
-    m = await github(`/repos/${c.slug}/pulls/${c.pr}/merge`, { method: 'PUT', body: { merge_method: 'squash', commit_title: `${c.title} (#${c.pr})` } });
+    // `sha`: GitHub refuses the merge if the pull request's head moved since the check above.
+    m = await github(`/repos/${c.slug}/pulls/${c.pr}/merge`, { method: 'PUT', body: { merge_method: 'squash', sha, commit_title: `${c.title} (#${c.pr})` } });
   } catch (e: any) {
     // Usually a conflict with what's on beta now (devtools saves, another change). J hears it in Talk with the files.
     const files = await github(`/repos/${c.slug}/pulls/${c.pr}/files?per_page=100`).then((fs: any[]) => fs.map((f) => f.filename)).catch(() => []);

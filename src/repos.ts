@@ -21,7 +21,7 @@ export function repoMap(): Record<string, string> {
   return JSON.parse(fs.readFileSync(paths.products, 'utf8')).repos ?? {};
 }
 
-export type RepoResult = { folder: string; slug: string; action: 'cloned' | 'updated' | 'current' | 'kept' | 'failed'; detail: string; head?: string };
+export type RepoResult = { folder: string; slug: string; action: 'cloned' | 'updated' | 'current' | 'kept' | 'failed'; detail: string; head?: string; dirty?: string[] };
 
 /**
  * Brings one repo up to date: clone if missing; else fetch, and fast-forward the branch when the working tree is
@@ -42,7 +42,10 @@ export function syncRepo(folder: string, slug: string, branch = BRANCH, want?: s
   if (!f.ok) return { folder, slug, action: 'failed', detail: `fetch failed: ${f.err.split('\n').pop()}` };
   let cur = git(dir, ['rev-parse', '--abbrev-ref', 'HEAD']).out;
   const dirty = git(dir, ['status', '--porcelain']).out;
-  if (dirty) return { folder, slug, action: 'kept', detail: `${cur}: uncommitted changes, not updated`, head: git(dir, ['log', '-1', '--format=%h %s']).out };
+  if (dirty) {
+    const files = [...new Set([...git(dir, ['diff', '--name-only', 'HEAD']).out.split('\n'), ...git(dir, ['ls-files', '--others', '--exclude-standard']).out.split('\n')])].filter(Boolean);
+    return { folder, slug, action: 'kept', detail: `${cur}: uncommitted changes (${files.slice(0, 5).join(', ')}${files.length > 5 ? ', …' : ''}), not updated`, head: git(dir, ['log', '-1', '--format=%h %s']).out, dirty: files };
+  }
   let switched = '';
   if (want && cur !== want && git(dir, ['rev-parse', '--verify', '--quiet', `origin/${want}`]).ok) {
     const c = git(dir, ['checkout', '--quiet', want]);

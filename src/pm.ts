@@ -31,6 +31,7 @@ import {
 } from './roadmap.ts';
 import { gate, allMet } from './acceptance.ts';
 import { notify, PUBLIC_URL } from './notify.ts';
+import { fileUrl } from './gen.ts';
 import { BETA } from './beta.ts';
 import { curationLine } from './memory.ts';
 
@@ -504,12 +505,11 @@ export function readyReport({ product, item, milestone }: { product?: string; it
 }
 
 export function readyMarkdown(r: Ready) {
-  const media = (a: string) => `${process.env.GEN_PUBLIC_URL ?? 'https://studio.hawkesgen.com/gen'}/v1/files/${a}`;
   return [
     `**${r.title}** (${r.productName})${r.partly ? ' — partly on beta' : ''}${r.beta ? ` · try it: ${r.beta}` : ''}`,
     r.goal ? `Goal: ${r.goal}` : '',
     `What changed:\n${r.changes.map((c) => `- ${c.title} (${c.status})${c.pr ? ` ${c.pr}` : ''}`).join('\n')}`,
-    `Criteria:\n${r.criteria.map((c) => `- ${c.met === 'yes' ? '✅' : c.met === 'no' ? '❌' : '❔'} ${c.criterion}${c.evidence ? ` — ${c.evidence}` : ''}${c.video ? ` (video: ${media(c.video)})` : ''}`).join('\n')}`,
+    `Criteria:\n${r.criteria.map((c) => `- ${c.met === 'yes' ? '✅' : c.met === 'no' ? '❌' : '❔'} ${c.criterion}${c.evidence ? ` — ${c.evidence}` : ''}${c.video ? ` (video: ${fileUrl(c.video)})` : ''}`).join('\n')}`,
     r.try.length ? `How to try it:\n${r.try.join('\n')}` : '',
     `Known bugs: ${r.bugs.length ? r.bugs.map((b) => `[${b.severity}] ${b.title} (${b.id})`).join('; ') : 'none known'}`,
   ].filter(Boolean).join('\n\n');

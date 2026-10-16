@@ -53,6 +53,11 @@ export async function onBetaPush(folder: string, sha?: string) {
   const rebuilt = previewsAfterSync([result], { missing: false });
   const unity = loadProducts().filter((p) => p.build && p.repo.split('/')[0] === folder).map((p) => p.id);
   if (result.action === 'updated' || result.action === 'cloned') for (const id of unity) scheduleUnity(id);
+  // The checkout couldn't follow beta (uncommitted changes, local commits): Talk hears what's in the way (pipeline.ts).
+  if (result.action === 'kept') {
+    const { staleBeta } = await import('./pipeline.ts');
+    for (const p of loadProducts().filter((x) => !x.build && x.repo.split('/')[0] === folder)) staleBeta(p);
+  }
   const now = shaOf(path.join(PROJECTS, folder), `origin/${BETA}`)?.slice(0, 7);
   const summary = `${result.action}: ${result.detail}${rebuilt.length ? ` · rebuilding ${rebuilt.join(', ')}` : ''}${unity.length && pendingUnity.size ? ` · ${unity.join(', ')} builds in a minute` : ''}`;
   betaPushes.unshift({ at: Date.now(), repo: folder, sha: sha?.slice(0, 7) ?? now, result: summary });

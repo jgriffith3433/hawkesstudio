@@ -21,14 +21,14 @@
   const since = (t) => (t ? dur(Date.now() - t) : '');
   const ICON = { queued: '⏳', working: '🛠️', verifying: '🎮', revising: '🛠️', ready: '👀', merged: '✅', failed: '❌', closed: '🗑️', done: '✅', running: '⏳', interrupted: '⚠️' };
   const link = (href, text, ext = true) => `<a href="${esc(href)}"${ext ? ' target="_blank" rel="noopener"' : ''}>${text}</a>`;
-  const by = (x) => (x.origin ? `<a href="#" data-talk="${esc(x.origin)}">${esc(x.by)}</a>` : esc(x.by));
+  const by = (x) => (x.origin ? `<a href="?conversation=${esc(x.origin)}#talk" data-talk="${esc(x.origin)}">${esc(x.by)}</a>` : esc(x.by));
 
   function changeHtml(c, done = false) {
     return `<div class="act-item">
       <div class="act-top">${ICON[c.status] ?? '•'} <b>${esc(c.productName)}</b> <span class="pill ${c.status === 'ready' ? 'ship' : c.status === 'failed' ? 'failed' : ''}">${esc(c.status)}</span><span class="act-time">${done ? `${ago(c.at)}` : since(c.started)}</span></div>
       <div class="act-title">${esc(c.title)}</div>
       ${c.detail ? `<div class="act-now">${esc(c.detail)}</div>` : ''}
-      <div class="meta">by ${by(c)} · <a href="#" data-change-log="${esc(c.id)}">log</a>${c.pr ? ` · ${link(c.pr, 'PR')}` : ''}${c.preview ? ` · ${link(c.preview, 'preview')}` : ''}${c.cost ? ` · $${c.cost.toFixed(2)}` : ''}</div>
+      <div class="meta">by ${by(c)} · <a href="#changes/${esc(c.id)}" data-change-log="${esc(c.id)}">log</a>${c.pr ? ` · ${link(c.pr, 'PR')}` : ''}${c.preview ? ` · ${link(c.preview, 'preview')}` : ''}${c.cost ? ` · $${c.cost.toFixed(2)}` : ''}</div>
       ${!done && c.log?.length ? `<details class="act-log"><summary class="meta">last log lines</summary><pre>${esc(c.log.join('\n'))}</pre></details>` : ''}
     </div>`;
   }
@@ -56,7 +56,7 @@
       section('Agents', a.changes.length, a.changes.map((c) => changeHtml(c)).join('')),
       section('Studio runs', a.runs.length, a.runs.map((r) => runHtml(r)).join('')),
       section('Hawkes Gen jobs', a.gen ? a.jobs.length : '(unreachable)', a.jobs.map(jobHtml).join('')),
-      a.talk.length ? section('Talk', a.talk.length, a.talk.map((t) => `<div class="act-item"><div class="act-top">💬 <a href="#" data-talk="${esc(t.id)}">${esc(t.title ?? 'New conversation')}</a><span class="act-time">${since(t.since)}</span></div><div class="act-now">${t.auto ? 'Claude is explaining results Studio brought back' : 'Claude is answering'}</div></div>`).join('')) : '',
+      a.talk.length ? section('Talk', a.talk.length, a.talk.map((t) => `<div class="act-item"><div class="act-top">💬 <a href="?conversation=${esc(t.id)}#talk" data-talk="${esc(t.id)}">${esc(t.title ?? 'New conversation')}</a><span class="act-time">${since(t.since)}</span></div><div class="act-now">${t.auto ? 'Claude is explaining results Studio brought back' : 'Claude is answering'}</div></div>`).join('')) : '',
       a.recent.length ? `<details class="act-recent" ${el('.act-recent')?.open !== false ? 'open' : ''}><summary><b>Finished in the last 15 min</b> <span class="meta">${a.recent.length}</span></summary>${a.recent.map((x) => (x.type === 'change' ? changeHtml(x, true) : runHtml(x, true))).join('')}</details>` : '',
     ].join('');
     el('#actUpdated').textContent = `updated ${new Date(a.at).toLocaleTimeString()}`;
@@ -93,9 +93,9 @@
   document.addEventListener('visibilitychange', () => { if (!document.hidden) tick(); });
   el('#activity').addEventListener('click', (e) => {
     const t = e.target.closest('[data-talk]');
-    if (t) { e.preventDefault(); window.openTalk?.(t.dataset.talk); }
+    if (t && !(e.ctrlKey || e.metaKey || e.shiftKey)) { e.preventDefault(); window.openTalk?.(t.dataset.talk); }
     const c = e.target.closest('[data-change-log]');
-    if (c) {
+    if (c && !(e.ctrlKey || e.metaKey || e.shiftKey)) {
       e.preventDefault();
       $('#chStatus').value = '';
       loadChanges.sig = null;

@@ -42,7 +42,7 @@ document.addEventListener('click', (e) => {
   const img = e.target.closest('img[data-full]');
   if (img) view(`<img src="${img.dataset.full}">`);
   const vid = e.target.closest('[data-video]');
-  if (vid) { e.preventDefault(); view(`<video src="${vid.dataset.video}" controls autoplay></video>`); }
+  if (vid && !(e.ctrlKey || e.metaKey || e.shiftKey || e.button)) { e.preventDefault(); view(`<video src="${vid.dataset.video}" controls autoplay></video>`); }
 });
 
 // ------------------------------------------------------------ today
@@ -91,7 +91,7 @@ function card(p) {
   const tests = p.playtests.map((t) => {
     const s = t.playtest;
     const v = t.review?.data?.verdict;
-    return `<div class="test"><span>${s ? icon(s.status) : '·'}</span><span class="name">${esc(t.name)}</span><span class="detail" title="${esc(s?.detail ?? '')}">${s ? `${esc(s.detail ?? '')} · ${ago(s.finished)}` : 'not run yet'}</span>${v ? `<span class="pill ${v}">${v}</span>` : ''}${s?.data?.video ? `<a href="#" data-video="${file(s.data.video)}">▶</a>` : ''}</div>`;
+    return `<div class="test"><span>${s ? icon(s.status) : '·'}</span><span class="name">${esc(t.name)}</span><span class="detail" title="${esc(s?.detail ?? '')}">${s ? `${esc(s.detail ?? '')} · ${ago(s.finished)}` : 'not run yet'}</span>${v ? `<span class="pill ${v}">${v}</span>` : ''}${s?.data?.video ? `<a href="${file(s.data.video)}" target="_blank" rel="noopener" data-video="${file(s.data.video)}">▶</a>` : ''}</div>`;
   }).join('');
   const build = p.build ? `<div class="test"><span>${icon(p.build.status)}</span><span class="name">unity build</span><span class="detail">${esc(p.build.detail ?? '')} · ${ago(p.build.finished)}</span></div>` : '';
   const scores = r?.scores ? `<div class="scores">${Object.entries(r.scores).map(([k, n]) => `<div class="score"><b>${n}</b><span>${k}</span></div>`).join('')}</div>` : '';
@@ -162,7 +162,7 @@ async function goLive(p) {
     ${plan.mainOnly.length ? `<p style="color:var(--amber)">main has ${plan.mainOnly.length} commit(s) beta lacks: ${plan.mainOnly.map((x) => esc(x.title)).join('; ')} <button class="small" data-gl="merge" data-p="${esc(plan.product)}">Merge main into beta</button></p>` : ''}
     ${plan.build ? `<p><b>Beta build:</b> ${plan.build.ok ? `Game/v${esc(plan.build.version ?? '?')} of <code>${esc(plan.build.sha.slice(0, 7))}</code>, ${plan.build.files} file(s) differ from live` : `failed: ${esc(plan.build.error ?? '')}`} · ${esc(ago(plan.build.at))}</p>` : ''}
     <h4>Playtests of beta ${plan.tested.sha ? `<code>${esc(plan.tested.sha)}</code>` : ''}</h4>
-    ${t.length ? t.map((x) => `<div class="test"><span>${icon(x.status)}</span><span class="name">${esc(x.name)}</span><span class="detail">${esc(x.outcome ?? x.detail ?? '')} · ${ago(x.when)}</span>${x.verdict ? `<span class="pill ${esc(x.verdict)}">${esc(x.verdict)}</span>` : ''}${x.video ? `<a href="#" data-video="${file(x.video)}">▶</a>` : ''}</div>${x.summary ? `<div class="meta">${esc(x.summary)}</div>` : ''}`).join('') : `<p class="meta">None at this commit.${plan.lastPlayed ? ` The last local playtest played ${esc(plan.lastPlayed.played.branch)} <code>${esc(String(plan.lastPlayed.played.sha).slice(0, 7))}</code> ${ago(plan.lastPlayed.when)}.` : ''}</p>`}
+    ${t.length ? t.map((x) => `<div class="test"><span>${icon(x.status)}</span><span class="name">${esc(x.name)}</span><span class="detail">${esc(x.outcome ?? x.detail ?? '')} · ${ago(x.when)}</span>${x.verdict ? `<span class="pill ${esc(x.verdict)}">${esc(x.verdict)}</span>` : ''}${x.video ? `<a href="${file(x.video)}" target="_blank" rel="noopener" data-video="${file(x.video)}">▶</a>` : ''}</div>${x.summary ? `<div class="meta">${esc(x.summary)}</div>` : ''}`).join('') : `<p class="meta">None at this commit.${plan.lastPlayed ? ` The last local playtest played ${esc(plan.lastPlayed.played.branch)} <code>${esc(String(plan.lastPlayed.played.sha).slice(0, 7))}</code> ${ago(plan.lastPlayed.when)}.` : ''}</p>`}
     ${plan.blockers.length ? `<p style="color:var(--red, #e5484d)"><b>Can't go live yet:</b><br>${plan.blockers.map(esc).join('<br>')}</p>` : ''}
     ${plan.warnings.length ? `<p style="color:var(--amber)"><b>Warnings:</b><br>${plan.warnings.map(esc).join('<br>')}</p>` : ''}
     ${!plan.blockers.length && !plan.warnings.length ? '<p style="color:var(--accent)">No warnings.</p>' : ''}
@@ -265,7 +265,7 @@ async function loadReport() {
   $('#reportBody').innerHTML = `<p class="meta">${esc(run.detail ?? '')} · $${(run.cost ?? 0).toFixed(2)}</p>` + sinceHtml + [...byProduct.entries()].map(([pid, steps]) => {
     const reviews = steps.filter((s) => s.kind === 'review' && s.data);
     return `<div class="report-product"><h2>${esc(pid)}</h2>
-      ${steps.filter((s) => s.kind !== 'review').map((s) => `<div class="test"><span>${icon(s.status)}</span><span class="name">${esc(s.kind)} ${esc(s.name)}</span><span class="detail">${esc(s.detail ?? '')}</span>${s.data?.video ? `<a href="#" data-video="${file(s.data.video)}">▶ video</a>` : ''}</div>${s.kind === 'check' && s.status === 'failed' ? `<pre>${esc(s.data?.tail ?? '')}</pre>` : ''}`).join('')}
+      ${steps.filter((s) => s.kind !== 'review').map((s) => `<div class="test"><span>${icon(s.status)}</span><span class="name">${esc(s.kind)} ${esc(s.name)}</span><span class="detail">${esc(s.detail ?? '')}</span>${s.data?.video ? `<a href="${file(s.data.video)}" target="_blank" rel="noopener" data-video="${file(s.data.video)}">▶ video</a>` : ''}</div>${s.kind === 'check' && s.status === 'failed' ? `<pre>${esc(s.data?.tail ?? '')}</pre>` : ''}`).join('')}
       ${reviews.map((rv) => `<div class="review"><h4>${esc(rv.name)} <span class="pill ${rv.data.verdict}">${esc(rv.data.verdict)}</span></h4>
         <div class="scores">${Object.entries(rv.data.scores ?? {}).map(([k, n]) => `<div class="score"><b>${n}</b><span>${k}</span></div>`).join('')}</div>
         <p class="summary">${esc(rv.data.summary)}</p>${rv.data.changes?.length ? `<p class="meta">Since last time: ${rv.data.changes.map(esc).join('; ')}</p>` : ''}
@@ -368,7 +368,7 @@ async function loadChanges() {
       ${c.notes?.length ? `<div class="meta">${c.notes.map((n) => `${esc(n.by)}: ${esc(n.text)}`).join(' · ')}</div>` : ''}
       <details data-key="${c.id}:log"><summary class="meta">Log</summary><pre>${esc((c.log ?? []).slice(-40).join(String.fromCharCode(10)))}</pre></details>
     </div><div class="side">
-      ${v?.video ? `<a href="#" data-video="${file(v.video)}">▶ fixed version</a>` : ''}${v?.preview ? ` <a href="${esc(v.preview)}" target="_blank">🔗 try it</a>` : ''}
+      ${v?.video ? `<a href="${file(v.video)}" target="_blank" rel="noopener" data-video="${file(v.video)}">▶ fixed version</a>` : ''}${v?.preview ? ` <a href="${esc(v.preview)}" target="_blank">🔗 try it</a>` : ''}
       <div class="actions">
         ${c.status === 'ready' && c.infra ? `<button class="small primary" data-change="${c.id}" data-act="approve" data-infra="1" title="Merges it into main: ${esc(c.product)} deploys itself once CI passes (a restart).">Approve into main</button>` : c.status === 'ready' ? `<button class="small primary" data-change="${c.id}" data-act="approve" title="Merges it into the beta branch (the beta site). Nothing goes live until you go live from Today.">Approve into beta</button>` : ''}
         ${['ready', 'failed'].includes(c.status) ? `<button class="small" data-change="${c.id}" data-act="revise">Ask for changes</button>` : ''}
