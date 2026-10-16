@@ -98,6 +98,7 @@ the service detached; restart it after changing `src/`. The MCP server (`bin/stu
 - `studio_dev_open`, `studio_dev_status` (also beta vs live), `studio_dev_stop`, `studio_dev_resolve`
 - `studio_roadmap`, `studio_roadmap_edit`, `studio_scout`, `studio_ready`, `studio_comments`, `studio_pm` (the PM loop)
 - `studio_costs` (what the studio costs: AWS, generation, Claude, per product, idle money; the budget)
+- `studio_inbox` (J's Inbox: what's waiting on him, his answers given in Talk, filing a question instead of asking in prose)
 - `memory_search`, `memory_get`, `memory_write`, `memory_curate` (the shared memory; agents get a server with only search,
   get and write, as candidates)
 - `studio_workspace`, `studio_fastlane` (Talk's workspace and fast lane, in the agent sandbox)
@@ -154,6 +155,7 @@ a budget (`approveGpu`, `gpuCleared`, `tasksAwaitingGpu`; the PM asks him once);
 | `src/roles.ts`, `.claude/agents/`, `.claude/skills/` | Roles (model, tools, instructions per kind of run) and skills; `.claude` is the "hawkes" plugin every run loads (docs/agents.md) |
 | `src/sandbox.ts`, `src/guards.ts`, `deploy/agent-sandbox.mjs`, `deploy/github-rulesets.mjs` | The agent sandbox (its own Linux user, no secrets, no instance role), who's calling the API, what needs J's typed words, rulesets on main |
 | `src/fastlane.ts`, `src/warm.ts` | Talk's workspace and fast lane to beta; warm starts for agent worktrees |
+| `src/inbox.ts`, `dashboard/inbox.js` | The Inbox (first tab, badge): everything waiting on J (filed questions, agent questions on his requests, GPU budgets, merges only he may make, milestones reached), sorted by what it blocks, answered in one place and routed as before; `actor()`: who acted (J only from the dashboard or a Talk turn he started; the PM is "Talk (PM)"). docs/daily.md, "The Inbox" |
 | `dashboard/roadmap.js` | The Roadmap tab (items, tasks, threads, questions, PM switch, decision log) and Ready to test |
 | `src/costs.ts`, `src/aws.ts`, `dashboard/costs.js` | What the studio costs (the Costs tab, `studio_costs`, the brief's cost line): AWS from Cost Explorer (else an estimate), idle money from EC2 Describe* (read-only), Hawkes Gen usage, Claude usage (Max plan: not billed), per product; the budget and the hourly check that tells J's phone only when something looks wrong (docs/cloud.md, "Costs") |
 | `src/activity.ts`, `dashboard/activity.js` | The Activity drawer (`GET /api/activity`): agents, runs and their steps, Gen jobs, Talk answers in progress |

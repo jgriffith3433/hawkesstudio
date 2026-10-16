@@ -362,38 +362,99 @@ export function threadFor(change: { id: string; findings?: string[]; task?: stri
 
 // --------------------------------------------------------------- questions
 
+// What the Inbox (inbox.ts) shows with a question: who asked, what they recommend, what waits on it; a topic and the
+// question it passes on (an agent's, forwarded to J), so one subject is one question; how often it was asked again.
+for (const col of ['recommendation', 'context', 'blocks', 'asked_by', 'topic', 'forwards', 'asks', 'updated']) {
+  try { db.exec(`ALTER TABLE questions ADD COLUMN ${col} ${col === 'asks' || col === 'updated' ? 'INTEGER' : 'TEXT'}`); } catch { /* already there */ }
+}
+
 export type Question = {
   id: string; kind: 'agent' | 'decision'; subject: string | null; product: string | null; text: string; options: string[]; status: string;
   answer: string | null; answered_by: string | null; origin: string | null; at: number; answered_at: number | null;
+  /** What the asker would do (the Inbox's recommended button; "yes" means this). */
+  recommendation: string | null;
+  /** A line of context (what it is about), and what waits until J answers. */
+  context: string | null; blocks: string | null;
+  /** Who filed it: "Talk (PM)", "Talk", "agent c_...", "Studio". */
+  asked_by: string | null;
+  /** Its topic on that subject (e.g. "gpu" for a GPU budget): one open question per subject and topic. */
+  topic: string | null;
+  /** The agent question (q_...) this decision passes on to J: answering one answers both. */
+  forwards: string | null;
+  /** Times it was asked (a repeat merges into the open one). */
+  asks: number; updated: number | null;
 };
-const toQuestion = (r: any): Question => ({ ...r, options: parse(r.options) ?? [] });
+const toQuestion = (r: any): Question => ({ ...r, options: parse(r.options) ?? [], asks: r.asks ?? 1 });
 export const getQuestion = (id: string) => {
   const r = db.prepare('SELECT * FROM questions WHERE id = ?').get(id);
   return r ? toQuestion(r) : null;
 };
+
+const STOP = new Set('a an the to of in on for and or is it be we i you should do does did this that with at by from about now what which my your our its'.split(' '));
+/** The words that carry a question's meaning (ids, numbers and filler dropped), for spotting the same question asked twice. */
+export function questionWords(text: string) {
+  return new Set(String(text).toLowerCase().replace(/\b[a-z]_[0-9a-f]{6,}\b/g, ' ').replace(/[^a-z0-9\s]/g, ' ').split(/\s+/).filter((w) => w.length > 2 && !STOP.has(w) && !/^\d+$/.test(w)));
+}
+/** How alike two questions read (0..1): shared meaningful words over all of them. */
+export function similarity(a: string, b: string) {
+  const x = questionWords(a);
+  const y = questionWords(b);
+  if (!x.size || !y.size) return 0;
+  let both = 0;
+  for (const w of x) if (y.has(w)) both++;
+  return both / (x.size + y.size - both);
+}
+
+/** The open question this one repeats: same subject and topic, or (no subject) the same product and nearly the same words. */
+function sameQuestion(a: { kind: string; subject?: string | null; product?: string | null; text: string; topic?: string | null }) {
+  const open = (db.prepare(`SELECT * FROM questions WHERE status IN ('open', 'asked J') AND kind = ? ORDER BY at`).all(a.kind) as any[]).map(toQuestion);
+  if (a.subject) {
+    const same = open.filter((q) => q.subject === a.subject && (q.topic ?? '') === (a.topic ?? ''));
+    return same.find((q) => q.text === a.text) ?? same[0] ?? null;
+  }
+  return open.find((q) => q.text === a.text) ?? open.find((q) => !q.subject && (q.product ?? '') === (a.product ?? '') && similarity(q.text, a.text) >= 0.6) ?? null;
+}
+
 /**
  * kind agent: an agent asked (its change waits, "needs answer"); Talk answers from what J decided, or asks J
  * (status "asked J"). kind decision: only J can decide (direction, money, something failing after 3 tries, live).
+ * A question on a subject (and topic) that already has an open one merges into it: the newest wording, options and
+ * recommendation win, the first time asked stays, and asks counts the repeats.
  */
-export function addQuestion(a: { kind: 'agent' | 'decision'; subject?: string | null; product?: string | null; text: string; options?: unknown; origin?: string | null }) {
-  // The same open question isn't asked twice.
-  const dup = db.prepare(`SELECT id FROM questions WHERE status IN ('open', 'asked J') AND kind = ? AND COALESCE(subject, '') = ? AND text = ?`).get(a.kind, a.subject ?? '', a.text) as any;
-  if (dup) return getQuestion(dup.id)!;
+export function addQuestion(a: {
+  kind: 'agent' | 'decision'; subject?: string | null; product?: string | null; text: string; options?: unknown; origin?: string | null;
+  recommendation?: string | null; context?: string | null; blocks?: string | null; askedBy?: string | null; topic?: string | null; forwards?: string | null;
+}) {
+  const text = String(a.text ?? '').trim().slice(0, 4000);
+  if (!text) throw new StudioError('A question needs its text');
+  const options = list(a.options);
+  const dup = sameQuestion({ ...a, text });
+  if (dup) {
+    db.prepare(`UPDATE questions SET text = ?, options = ?, recommendation = COALESCE(?, recommendation), context = COALESCE(?, context), blocks = COALESCE(?, blocks),
+      forwards = COALESCE(forwards, ?), origin = COALESCE(origin, ?), asks = COALESCE(asks, 1) + ?, updated = ? WHERE id = ?`)
+      .run(text, J(options.length ? options : dup.options), a.recommendation ?? null, a.context ?? null, a.blocks ?? null, a.forwards ?? null, a.origin ?? null, dup.text === text ? 0 : 1, Date.now(), dup.id);
+    return getQuestion(dup.id)!;
+  }
   const id = newId('q');
-  db.prepare('INSERT INTO questions (id, kind, subject, product, text, options, status, origin, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
-    .run(id, a.kind, a.subject ?? null, a.product ?? null, a.text.trim().slice(0, 4000), J(list(a.options)), 'open', a.origin ?? null, Date.now());
+  db.prepare(`INSERT INTO questions (id, kind, subject, product, text, options, status, origin, at, recommendation, context, blocks, asked_by, topic, forwards, asks)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`)
+    .run(id, a.kind, a.subject ?? null, a.product ?? null, text, J(options), 'open', a.origin ?? null, Date.now(), a.recommendation?.trim().slice(0, 300) || null,
+      a.context?.trim().slice(0, 500) || null, a.blocks?.trim().slice(0, 300) || null, a.askedBy?.slice(0, 60) ?? null, a.topic ?? null, a.forwards ?? null);
   return getQuestion(id)!;
 }
 export function listQuestions(status = 'open,asked J') {
   const st = status.split(',').map((s) => s.trim());
   return (db.prepare(`SELECT * FROM questions WHERE status IN (${st.map(() => '?').join(',')}) ORDER BY at`).all(...st) as any[]).map(toQuestion);
 }
+/** Questions answered (or closed) since a time, newest first: the Inbox's "answered" list, with who answered. */
+export const answeredSince = (since: number, limit = 30) =>
+  (db.prepare(`SELECT * FROM questions WHERE status NOT IN ('open', 'asked J') AND answered_at >= ? ORDER BY answered_at DESC LIMIT ?`).all(since, limit) as any[]).map(toQuestion);
 export function setQuestion(id: string, patch: Partial<{ status: string; answer: string; answered_by: string }>) {
   const q = getQuestion(id);
   if (!q) throw new StudioError(`No question ${id}`, 404);
   const n = { ...q, ...patch };
   db.prepare('UPDATE questions SET status = ?, answer = ?, answered_by = ?, answered_at = ? WHERE id = ?')
-    .run(n.status, n.answer, n.answered_by, patch.answer ? Date.now() : q.answered_at, id);
+    .run(n.status, n.answer, n.answered_by, patch.answer || (patch.status && !['open', 'asked J'].includes(patch.status)) ? Date.now() : q.answered_at, id);
   return getQuestion(id)!;
 }
 

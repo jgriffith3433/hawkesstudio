@@ -122,10 +122,38 @@ on every revision, and J's latest word wins. An agent that needs a real decision
 its change goes to `needs answer` (its Claude Code session id is kept), Talk answers from what J decided or asks J, and
 the agent resumes the same session (`claude --resume`) with the answer.
 
-**7. Only real decisions reach J**: a direction choice, money (GPU servers, raising limits), something still failing
-after 3 tries, anything touching live. Each is one question (`askJ`) in the conversation where the work was planned
-(else a notice) and on his phone; it waits in the Roadmap tab's "Waiting for an answer" too. J answers in Talk (Talk
-records it with `studio_pm answer`, by "J") or in the box on the Roadmap tab.
+**7. Only real decisions reach J, and they all wait in his Inbox.** A direction choice, money (GPU servers, raising
+limits), something still failing after 3 tries, anything touching live. Each is one filed question (`askJ`; Talk and
+the PM file with `studio_inbox ask` / `studio_pm ask_j`: the question, options, their recommendation, what waits on it),
+never only a sentence in a PM log. The first time it is also said in the conversation where the work was planned (else
+a notice) and on his phone; asking again on the same subject (and topic), or in nearly the same words, merges into the
+open question (`asks` counts the repeats) instead of a new one.
+
+**The Inbox** (the dashboard's first tab, its badge is the count; `GET /api/inbox`, `studio_inbox`, `src/inbox.ts`) is
+the one place for everything waiting on J, across every conversation, agent and the PM loop:
+- questions: decisions filed for him, and agent questions on his own requests (the PM answers its agents' questions
+  first and passes on what it can't; the decision passing one on is one card with it, `questions.forwards`)
+- GPU budgets: content tasks waiting for his budget (`tasksAwaitingGpu`)
+- merges only he may make: Studio and Gen changes (into main, which deploys: he types `MERGE <id>`), changes the PM
+  doesn't review (his own requests, work from before the loop), everything while delegated merges are off
+- milestones reached: playtest it (the beta link), with Go live (the deploy plan and `DEPLOY <product>` on Today),
+  Something is wrong (his words go to the milestone's thread and the PM makes them tasks), or Later (a day)
+
+Each card: the one-line question, the product, what it's about (agent, change, task, finding), what it blocks and for how
+long, who asked, the recommendation (★), option buttons, a free-text answer, and links (preview, video, pull request,
+beta, the conversation). Sorted by what it blocks most: a paused agent, then a reached milestone, a failed task, a GPU
+budget, a merge (plus 10 per task waiting behind it, 10 for a milestone it holds up, 15 for a blocker), with waiting
+time adding up to 40. Answering routes it the way it always went (`POST /api/inbox/answer`): an agent's question
+resumes its session, a decision reaches the PM's next turn as a "decided" event, a budget is approved, a change merges
+(or goes back with his note, or closes), and the card goes. "yes" takes the recommendation. In Talk, J says "q_123:
+yes" (Talk calls `studio_inbox answer`), and "what's waiting on me?" lists the cards. Talk and the PM refer to the Inbox
+("3 decisions in your Inbox") instead of repeating the list. No phone notification is added for it: the badge is the
+signal. "Answered lately" lists each answer with who gave it.
+
+**Who answered** (`actor()` in inbox.ts, used by every answer, merge, revise and close): J on the dashboard; "J (via
+Talk)" only during a Talk turn J's own message started; otherwise "Talk", or "Talk (PM)" in the PM's conversation,
+whatever the caller claims. So the PM's own notes, closes and answers are never logged as J's, and a GPU budget, a
+merge only J may make, and a milestone answer are refused unless they are J's.
 
 **8. Milestones** (Roadmap tab, `studio_roadmap_edit add_milestone`): a named point J will playtest himself ("DoD:
 controls done"), made of roadmap items (`items.milestone`), with what he'll test. open -> **reached** when every item in
@@ -190,8 +218,8 @@ GPU costs money, so it is priced and approved.**
   `POST /v1/estimate` (from the history of real jobs: GPU work, model loads, boots, API costs, and the idle tail if
   servers aren't stopped) and keeps the estimate on the task (`gpu.estimate`).
 - A task whose estimate costs money **does not start until J approves a budget that covers it**: the PM asks him once
-  (a decision question with the numbers), and Talk records his answer with `studio_roadmap_edit gpu_budget { id,
-  budget }` (only on his words). A new estimate above the budget needs a new approval.
+  (a decision question with the numbers, topic `gpu`); it is a card in his Inbox (Approve $<estimate + 25%> / Not now,
+  which parks the task), and Talk records an answer he gives in Talk with `studio_inbox answer` (only on his words). A new estimate above the budget needs a new approval.
 - The agent's brief says its GPU budget. With none (a task without `gpu`, or `studio_task` without `gpu_budget`), the
   agent does everything that needs no GPU (design, data, specs, Claude steps; voice and sound effects are cents) and
   ends with the estimate in its summary. With one, it batches each kind of job (one model load), reuses the library

@@ -166,10 +166,11 @@ export function studioMcp({ studio, waitRun }: Client = { studio: defaultStudio,
       description: 'One agent change in detail (summary, commits, verify playtest, notes, the last log lines), or act on it: revise (the agent tries again with a note), close (close the PR), approve (merge the PR into beta: the beta site, not live; ONLY after J approves in chat; confirm must be exactly "MERGE <change id>"). Going live is studio_deploy_plan, then studio_deploy. A Hawkes Studio or Hawkes Gen change (infra: true) has "Checks" instead of a playtest (CI on the pull request, the tests, a smoke check); approve merges it into main, which deploys that service itself once CI passes (a restart; refused unless CI is green).',
       inputSchema: obj({ id: str('Change id (c_...)'), action: str('revise | close | approve | answer (optional)'), note: str('For revise: what to change; for answer: what J answered to the agent question'), confirm: str('For approve: exactly "MERGE <id>" after J said yes') }, ['id']),
       run: async ({ id, action, note, confirm }) => {
-        if (action === 'approve') return studio(`/api/changes/${id}/approve`, { method: 'POST', body: { confirm, by: 'J (via Claude)' } });
-        if (action === 'revise') return studio(`/api/changes/${id}/revise`, { method: 'POST', body: { note, by: 'J (via Claude)' } });
-        if (action === 'close') return studio(`/api/changes/${id}/close`, { method: 'POST', body: { by: 'J (via Claude)' } });
-        if (action === 'answer') return studio(`/api/changes/${id}/answer`, { method: 'POST', body: { answer: note, by: 'J (via Claude)' } });
+        // Who did it is Studio's call (inbox.ts actor): J only in a turn J started, else Talk or the PM.
+        if (action === 'approve') return studio(`/api/changes/${id}/approve`, { method: 'POST', body: { confirm } });
+        if (action === 'revise') return studio(`/api/changes/${id}/revise`, { method: 'POST', body: { note } });
+        if (action === 'close') return studio(`/api/changes/${id}/close`, { method: 'POST', body: {} });
+        if (action === 'answer') return studio(`/api/changes/${id}/answer`, { method: 'POST', body: { answer: note } });
         const c = await studio(`/api/changes/${id}`);
         return { ...c, log: c.log?.slice(-30) };
       },
@@ -303,27 +304,51 @@ export function studioMcp({ studio, waitRun }: Client = { studio: defaultStudio,
     },
     {
       name: 'studio_pm',
-      description: 'The PM loop (Talk as J\'s PM). actions: status (settings, limits, what is waiting for review, open questions, the decision log); merge { change, why } (merge a ready agent change into beta yourself: only when delegated merges are on, never Studio/Gen, refused unless it passes its gate: playtested, not broken, no criterion failed); revise { change, note } (send it back with specific notes; after the last try J is asked); answer { question, answer } (answer an agent\'s question, which resumes its session, or record J\'s answer to a decision: by "J" when it is J\'s words); ask_j { text, options[], subject, product } (one clear question only J can answer: direction, money, still failing after 3 tries, anything live; also question: an agent question to pass on); triage { finding, triage: wontfix | duplicate | link | reopen | idea, note, of (duplicate of), item (link to) }; undo { decision } (take back a merge, won\'t-fix, start, link or settings change); settings { settings: { enabled, delegatedMerges, maxStartsPerDay, maxConcurrent, maxTries, fixBugs, dailyHour } } (only on J\'s word); tick (run the loop now). Every action is logged.',
+      description: 'The PM loop (Talk as J\'s PM). actions: status (settings, limits, what is waiting for review, open questions, the decision log); merge { change, why } (merge a ready agent change into beta yourself: only when delegated merges are on, never Studio/Gen, refused unless it passes its gate: playtested, not broken, no criterion failed); revise { change, note } (send it back with specific notes; after the last try J is asked); answer { question, answer } (answer an agent\'s question, which resumes its session, or record J\'s answer to a decision: Studio records who answered: J only when J\'s own message started this turn); ask_j { text, options[], recommend, subject, product, blocks } (one clear question only J can answer: direction, money, still failing after 3 tries, anything live; it goes to his Inbox, and the same subject merges into the open question; also question: an agent question to pass on); triage { finding, triage: wontfix | duplicate | link | reopen | idea, note, of (duplicate of), item (link to) }; undo { decision } (take back a merge, won\'t-fix, start, link or settings change); settings { settings: { enabled, delegatedMerges, maxStartsPerDay, maxConcurrent, maxTries, fixBugs, dailyHour } } (only on J\'s word); tick (run the loop now). Every action is logged.',
       inputSchema: obj({
         action: str('status | merge | revise | answer | ask_j | triage | undo | settings | tick'), change: str('c_...'), why: str('merge: why it passes'), note: str('revise/triage: the note'),
-        question: str('q_... (answer; ask_j for an agent question)'), answer: str('The answer'), by: str('Who answers ("J" for J\'s own words; default Talk (PM))'), text: str('ask_j: the question'), options: strs('ask_j: the options'),
+        question: str('q_... (answer; ask_j for an agent question)'), answer: str('The answer'), by: str('"J" when these are J\'s own words in his message (Studio checks the turn is his)'), text: str('ask_j: the question'), options: strs('ask_j: the options'),
+        recommend: str('ask_j: the option you would pick'), blocks: str('ask_j: what waits until J answers'),
         subject: str('ask_j: the task, item or change it is about'), product: str('ask_j: product id'), finding: str('triage: f_...'), triage: str('triage: wontfix | duplicate | link | reopen | idea'), of: str('triage duplicate: the finding it duplicates'), item: str('triage link: the roadmap item'),
         decision: str('undo: d_...'), settings: { type: 'object', description: 'settings: the fields to change' },
       }, ['action']),
       run: async (a) => {
+        // Studio labels who acted (inbox.ts actor): the PM's turns as "Talk (PM)", J only in a turn his message started.
         const by = a.by;
         switch (a.action) {
           case 'status': return studio('/api/pm');
-          case 'merge': return studio(`/api/pm/merge/${a.change}`, { method: 'POST', body: { why: a.why, by: by ?? 'Talk (PM)' } });
-          case 'revise': return studio(`/api/pm/revise/${a.change}`, { method: 'POST', body: { note: a.note, by: by ?? 'Talk (PM)' } });
-          case 'answer': return studio(`/api/questions/${a.question}/answer`, { method: 'POST', body: { answer: a.answer, by: by ?? 'Talk (PM)' } });
-          case 'ask_j': return a.question ? studio(`/api/questions/${a.question}/ask-j`, { method: 'POST', body: { text: a.text, options: a.options, by: 'Talk (PM)' } }) : studio('/api/pm/ask', { method: 'POST', body: { text: a.text, options: a.options, subject: a.subject, product: a.product, by: 'Talk (PM)' } });
-          case 'triage': return studio(`/api/pm/triage/${a.finding}`, { method: 'POST', body: { action: a.triage, note: a.note, of: a.of, item: a.item, by: by ?? 'Talk (PM)' } });
-          case 'undo': return studio(`/api/pm/undo/${a.decision}`, { method: 'POST', body: { by: by ?? 'J (via Talk)' } });
-          case 'settings': return studio('/api/pm/settings', { method: 'POST', body: { ...(a.settings ?? {}), by: by ?? 'J (via Talk)' } });
+          case 'merge': return studio(`/api/pm/merge/${a.change}`, { method: 'POST', body: { why: a.why, by } });
+          case 'revise': return studio(`/api/pm/revise/${a.change}`, { method: 'POST', body: { note: a.note, by } });
+          case 'answer': return studio(`/api/questions/${a.question}/answer`, { method: 'POST', body: { answer: a.answer, by } });
+          case 'ask_j': return a.question ? studio(`/api/questions/${a.question}/ask-j`, { method: 'POST', body: { text: a.text, options: a.options, recommend: a.recommend, blocks: a.blocks } }) : studio('/api/pm/ask', { method: 'POST', body: { text: a.text, options: a.options, recommend: a.recommend, blocks: a.blocks, subject: a.subject, product: a.product } });
+          case 'triage': return studio(`/api/pm/triage/${a.finding}`, { method: 'POST', body: { action: a.triage, note: a.note, of: a.of, item: a.item, by } });
+          case 'undo': return studio(`/api/pm/undo/${a.decision}`, { method: 'POST', body: { by } });
+          case 'settings': return studio('/api/pm/settings', { method: 'POST', body: { ...(a.settings ?? {}), by } });
           case 'tick': return studio('/api/pm/tick', { method: 'POST', body: {} });
           default: throw new Error('action: status | merge | revise | answer | ask_j | triage | undo | settings | tick');
         }
+      },
+    },
+    {
+      name: 'studio_inbox',
+      description: 'J\'s Inbox: everything waiting on him in one place (decisions filed by you, the PM and agents; GPU budgets; changes only he may merge; milestones reached), sorted by what each blocks. list (default): the cards (id, question, context, what waits and since when, who asked, the recommendation, options, links) as a short list; for "what\'s waiting on me?". answer { id, answer }: J\'s answer to a card when he gives it in this conversation ("q_123: yes" → id q_123, answer yes; "yes" takes the recommendation); it routes like the Inbox buttons (an agent resumes, the PM hears it, a budget is approved, a change merges: a Studio/Gen merge needs J to type "MERGE <id>"). Studio records who answered: J only when his own message started this turn. ask { text, options[], recommend, subject, product, blocks }: file a question for J instead of asking only in prose (the same subject merges into the open one). Refer to the Inbox ("3 decisions in your Inbox") rather than repeating the list.',
+      inputSchema: obj({
+        action: str('list (default) | answer | ask'), id: str('answer: the card id (q_..., gpu:k_..., merge:c_..., milestone:n_...)'), answer: str('answer: J\'s answer (an option or his words)'),
+        text: str('ask: the one-line question'), options: strs('ask: the options (buttons)'), recommend: str('ask: the option you would pick'), subject: str('ask: what it is about (k_ task, i_ item, c_ change, f_ finding, n_ milestone)'),
+        product: str('ask: product id'), blocks: str('ask: what waits until J answers'),
+      }),
+      run: async (a) => {
+        if (a.action === 'answer') return studio('/api/inbox/answer', { method: 'POST', body: { id: a.id, answer: a.answer } });
+        if (a.action === 'ask') return studio('/api/pm/ask', { method: 'POST', body: { text: a.text, options: a.options, recommend: a.recommend, subject: a.subject, product: a.product, blocks: a.blocks } });
+        const r = await studio('/api/inbox');
+        if (!r.items.length) return 'J\'s Inbox is empty: nothing is waiting on him.';
+        const age = (t: number) => { const h = (Date.now() - t) / 3600_000; return h < 1 ? `${Math.max(1, Math.round(h * 60))} min` : h < 48 ? `${Math.round(h)} h` : `${Math.round(h / 24)} d`; };
+        return [`${r.items.length} waiting on J (most blocking first):`, ...r.items.map((x: any, i: number) => [
+          `${i + 1}. ${x.id} · ${x.productName ?? 'studio'} · ${x.title}`,
+          `   ${x.context ?? ''}${x.context ? ' · ' : ''}holding up: ${x.blocks} (for ${age(x.since)}) · asked by ${x.asker}${x.asks > 1 ? ` (${x.asks} times)` : ''}`,
+          `   options: ${x.options.join(' | ') || 'free text'}${x.recommendation ? ` · recommended: ${x.recommendation}` : ''}${x.confirm ? ` · J types "${x.confirm}"` : ''}`,
+          x.links.length ? `   links: ${x.links.map((l: any) => `${l.label} ${l.url ?? `video ${l.video}`}`).join(' · ')}` : '',
+        ].filter(Boolean).join('\n'))].join('\n');
       },
     },
     ...memoryTools(studio),

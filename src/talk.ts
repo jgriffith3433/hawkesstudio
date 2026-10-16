@@ -200,13 +200,23 @@ How to work:
   - The PM loop runs by itself (studio_pm status: what it's doing, its decision log with undo, the pause switch).
     Its turns run in the day's "Studio PM" conversation. When J asks about it, answer from studio_pm status.
   - Phone notifications are only for what went wrong, a decision only J can make, and milestones reached. Merges,
-    starts, answers and progress go to Talk only.
+    starts, answers and progress go to Talk only; the Inbox's badge is the signal for what waits on him.
   - "What's ready?" → studio_ready: per item on beta, what changed, the criteria verified (with videos), how to try it
     (the beta link, steps), the known bugs.
-  - Questions: agents ask when they need a decision (their change waits, "needs answer"); only real decisions reach
-    J (direction, money, something failing after 3 tries, anything live). When J answers one here, record it with
-    studio_pm answer { question, answer, by: "J" } (the agent resumes), and write J's decisions on a piece of work into
-    its thread (studio_comments) so agents follow them.
+  - J's Inbox (studio_inbox, the dashboard's first tab) is the ONE place for everything waiting on him: decisions
+    (yours, the PM's, agents' questions passed on), GPU budgets, changes only he may merge, milestones reached. Only real
+    decisions go there (direction, money, something failing after 3 tries, anything live); agents' other questions you
+    answer from what J decided (studio_pm answer).
+  - Anything you need J to decide that work waits on is FILED: studio_inbox ask { text, options, recommend, subject,
+    product, blocks }, never only asked in prose. In a turn J started you may also ask it in a sentence, with the id
+    ("q_123 is in your Inbox"); in a turn Studio started (a result, the PM), file it and say so in a line. Asking the
+    same subject again merges into the open question.
+  - Don't repeat the list of what's waiting: say "3 decisions in your Inbox" (studio_inbox shows them when J asks
+    "what's waiting on me?"; then give each one line with its id and your recommendation).
+  - When J answers here ("q_123: yes", "approve the budget", "merge it"), pass it on with studio_inbox answer { id,
+    answer } (it routes like the Inbox buttons: the agent resumes, the PM hears it, the budget is approved, the change
+    merges). Studio records who answered: J only when his own message started the turn, so never answer for him in a
+    turn Studio started. Write J's decisions on a piece of work into its thread (studio_comments) so agents follow them.
   - Never raise limits, launch GPU servers or change PM settings without J's word.
 - J can attach files: his message then lists each one's path (Read it; images too) and its blob id (blob:<sha>, usable
   as a hawkesgen input).
@@ -451,10 +461,16 @@ function recap(c: Conversation, before: number) {
   return `[This conversation continues from an earlier session that is no longer available. What was said so far, newest last:]\n${lines.join('\n')}\n\n[Now:]\n`;
 }
 
+/** Who started each running turn: J (his message) or Studio (a result, a PM turn). Attribution reads it (inbox.ts actor). */
+const turnOwner = new Map<string, 'J' | 'Studio'>();
+/** Who started the turn running in a conversation now ('J' or 'Studio'), or null when none runs. */
+export const turnBy = (id: string) => (running.has(id) ? turnOwner.get(id) ?? null : null);
+
 /** Runs one Claude Code turn in a conversation whose status is already "thinking" (in the call's process during a call). */
 function runTurn(id: string, prompt: string, userAt: number, { auto = false, fresh = false }: { auto?: boolean; fresh?: boolean } = {}) {
   // Who pays: Claude Code says which key it uses when it starts (apiKeySource "none" = the subscription login).
   const ctx: TurnCtx = { userAt, auto, call: false, billing: usingSubscription() ? 'subscription' : 'api', done: false, err: '' };
+  turnOwner.set(id, auto ? 'Studio' : 'J');
   partial.delete(id);
   emit(id, { type: 'turn', auto });
   const call = calls.get(id);

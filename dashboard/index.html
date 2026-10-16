@@ -11,8 +11,9 @@
   <header>
     <div class="brand"><span class="mark">H</span> Hawkes Studio <small>clinical trials, daily</small></div>
     <nav>
+      <button data-tab="inbox" class="on" title="Everything waiting on you: decisions, GPU budgets, merges only you make, milestones to playtest">Inbox <span class="ib-count zero" id="inboxCount">0</span></button>
       <button data-tab="talk">Talk</button>
-      <button data-tab="today" class="on">Today</button>
+      <button data-tab="today">Today</button>
       <button data-tab="ready">Ready to test</button>
       <button data-tab="roadmap">Roadmap</button>
       <button data-tab="report">Report</button>
@@ -31,6 +32,11 @@
     <div id="actBody"><div class="meta">Loading…</div></div>
   </aside>
   <main>
+    <section id="inbox" class="tab on">
+      <div class="bar"><span class="meta">Everything waiting on you, across Talk, the agents and the PM: most blocking first. Answering sends it where it goes (the agent resumes, the PM hears it, the budget is approved, the change merges) and the card goes.</span></div>
+      <div id="ibList"><div class="meta">Loading…</div></div>
+      <details id="ibAnswered" class="meta"></details>
+    </section>
     <section id="talk" class="tab">
       <div class="talk">
         <aside id="talkList"></aside>
@@ -60,7 +66,7 @@
         </div>
       </div>
     </section>
-    <section id="today" class="tab on">
+    <section id="today" class="tab">
       <div class="bar">
         <button class="primary" id="runDaily">Run daily trials</button>
         <button id="runSmoke">Smoke-test everything</button>
@@ -145,6 +151,7 @@
   <script src="playtests.js"></script>
   <script src="activity.js"></script>
   <script src="roadmap.js"></script>
+  <script src="inbox.js"></script>
   <script src="costs.js"></script>
   <script src="memory.js"></script>
 </body>

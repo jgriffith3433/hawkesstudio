@@ -17,10 +17,10 @@ async function loadRoadmap() {
     · agents ${c.active}/${s.maxConcurrent} · starts today ${c.started}/${s.maxStartsPerDay} <button class="small" data-pm="caps">Limits…</button>
     ${pm.turn ? ' · <span class="pill warn">PM turn running</span>' : ''}${pm.conversation ? ` · <a href="/?conversation=${esc(pm.conversation.id)}#talk">PM conversation</a>` : ''}
     ${pm.lastError ? `<div class="meta" style="color:var(--red)">${esc(pm.lastError)}</div>` : ''}`;
-  $('#rmQuestions').innerHTML = pm.questions.length ? `<h3>Waiting for an answer (${pm.questions.length})</h3>${pm.questions.map((q) => `<div class="finding"><div>
-      <h4><span class="pill ${q.status === 'asked J' ? 'broken' : 'warn'}">${q.kind === 'agent' ? 'agent asks' : 'your call'}</span> ${esc(q.product ?? '')} <span class="meta">${esc(q.id)} · ${esc(q.subject ?? '')} · ${ago(q.at)}</span></h4>
-      <div class="summary" style="white-space:pre-wrap">${esc(q.text)}</div>${q.options.length ? `<div class="meta">Options: ${q.options.map(esc).join(' · ')}</div>` : ''}
-    </div><div class="side"><textarea rows="3" data-qa="${q.id}" placeholder="Your answer"></textarea><div class="actions"><button class="small primary" data-qsend="${q.id}">Answer</button></div></div></div>`).join('')}` : '';
+  // Questions are answered in the Inbox (one place for everything waiting on J).
+  const asked = pm.questions.filter((q) => q.status === 'asked J').length;
+  const agents = pm.questions.length - asked;
+  $('#rmQuestions').innerHTML = pm.questions.length ? `<div class="meta" style="margin:4px 0 8px">${asked ? `<b>${asked} question(s) for you</b> are in your <a href="#inbox" onclick="show('inbox');return false">Inbox</a>.` : ''}${agents ? ` ${agents} agent question(s) the PM is answering.` : ''}</div>` : '';
   rmMilestones = r.milestones;
   $('#rmMilestones').innerHTML = r.milestones.length ? `<h3>Milestones</h3>${r.milestones.map(milestoneHtml).join('')}` : '';
   $('#rmList').innerHTML = r.items.length ? r.items.map(itemHtml).join('') : '<div class="empty">No roadmap items yet. Tell Talk what you want ("let\'s do X"): it proposes items and tasks with acceptance criteria, and adds them when you say yes.</div>';
@@ -118,11 +118,6 @@ $('#roadmap').addEventListener('click', async (e) => {
       if (!input.value.trim()) return;
       await api('/api/comments', { method: 'POST', body: { subject: t.dataset.csend, text: input.value, by: 'J' } });
       return loadThread(t.dataset.csend);
-    }
-    if (t.dataset.qsend) {
-      const answer = $(`textarea[data-qa="${t.dataset.qsend}"]`).value.trim();
-      if (!answer) return;
-      await api(`/api/questions/${t.dataset.qsend}/answer`, { method: 'POST', body: { answer, by: 'J' } });
     }
     if (t.dataset.undo) {
       if (!confirm('Undo this PM decision? (A merge is reverted on beta with a new commit; nothing live changes.)')) return;

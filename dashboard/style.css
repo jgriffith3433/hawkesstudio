@@ -240,6 +240,17 @@ body.in-call .talk-input, body.in-call .talk-files, body.in-call #notifyBox { di
 /* Activity: the drawer of everything running (activity.js), opened from the header; docked beside the page when wide. */
 .act-btn { display: flex; align-items: center; gap: 6px; }
 .act-btn.on { background: var(--panel2); border-color: #3a4552; }
+.ib-count { background: var(--red); color: #fff; font-weight: 700; font-size: 11px; border-radius: 9px; padding: 0 6px; margin-left: 2px; }
+.ib-count.zero { display: none; }
+.ib-card { border: 1px solid var(--line); border-radius: 10px; background: var(--panel); padding: 12px 14px; margin: 0 0 10px; transition: opacity .3s; }
+.ib-card h4 { margin: 6px 0 4px; font-size: 15px; }
+.ib-card .ib-head { display: flex; flex-wrap: wrap; gap: 6px; align-items: baseline; }
+.ib-card .ib-links, .ib-card .ib-actions { margin-top: 6px; }
+.ib-card .ib-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.ib-card .ib-free { display: flex; gap: 6px; margin-top: 8px; }
+.ib-card .ib-free input { flex: 1; min-width: 0; }
+.ib-card.ib-busy { opacity: .6; pointer-events: none; }
+.ib-card.ib-done { opacity: 0; }
 .act-count { background: var(--amber); color: #1b1300; font-weight: 700; font-size: 11px; border-radius: 9px; padding: 0 6px; min-width: 18px; text-align: center; }
 .act-count.zero { background: var(--panel2); color: var(--dim); }
 .activity { position: fixed; right: 0; top: var(--hdr, 56px); bottom: 0; width: 360px; background: var(--panel); border-left: 1px solid var(--line); overflow: auto; z-index: 4; padding: 10px 12px 40px; }

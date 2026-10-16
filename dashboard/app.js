@@ -20,7 +20,7 @@ async function api(path, opts = {}) {
 }
 
 // ------------------------------------------------------------- tabs
-let tab = location.hash.slice(1).split('/')[0] || 'today';
+let tab = location.hash.slice(1).split('/')[0] || 'inbox';
 function show(t, sub) {
   tab = t;
   // #changes/<id> (a link from the Activity panel) stays.

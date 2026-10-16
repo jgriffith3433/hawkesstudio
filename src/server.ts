@@ -265,6 +265,19 @@ const server = http.createServer(async (req, res) => {
     if (m && method === 'PATCH' && !m[2]) return send(res, 200, renameConversation(m[1], String((await readJson(req)).title ?? '')));
     if (m && method === 'DELETE' && !m[2]) { deleteConversation(m[1]); return send(res, 200, { ok: true }); }
 
+    // The Inbox (inbox.ts): everything waiting on J, sorted by what it blocks; answering routes it the way it always went.
+    if (route === '/api/inbox' && method === 'GET') {
+      const ib = await import('./inbox.ts');
+      const items = await ib.inbox();
+      return send(res, 200, q('count') === '1' ? { count: items.length } : { count: items.length, items, answered: ib.recentAnswers() });
+    }
+    if (route === '/api/inbox/answer' && method === 'POST') {
+      const ib = await import('./inbox.ts');
+      const b = await readJson(req);
+      const by = await ib.actor(req, b.by);
+      return send(res, 200, await ib.answerInbox(String(b.id ?? ''), String(b.answer ?? ''), by, { confirm: typeof b.confirm === 'string' ? b.confirm : undefined, conversation: origin }));
+    }
+
     // The roadmap, the PM loop, comments, questions, scouts and "ready for you to test" (roadmap.ts, pm.ts, scout.ts).
     if (route.startsWith('/api/roadmap') || route.startsWith('/api/pm') || route.startsWith('/api/comments') || route.startsWith('/api/questions') || route.startsWith('/api/scouts') || route === '/api/ready') {
       const rm = await import('./roadmap.ts');
@@ -272,7 +285,8 @@ const server = http.createServer(async (req, res) => {
       // Calls from Talk carry their conversation (X-Talk-Conversation): items remember where they were planned.
       const talkFrom = /^t_[0-9a-f]{6,32}$/.test(String(req.headers['x-talk-conversation'] ?? '')) ? String(req.headers['x-talk-conversation']) : null;
       const b = method === 'GET' ? {} : await readJson(req);
-      const by = typeof b.by === 'string' && b.by.trim() ? b.by.slice(0, 60) : talkFrom ? 'Talk' : 'J';
+      // Who acts (inbox.ts actor): J on the dashboard, J through Talk only in a turn he started, else Talk or the PM.
+      const by = await (await import('./inbox.ts')).actor(req, b.by);
       if (route === '/api/roadmap' && method === 'GET') return send(res, 200, { milestones: rm.listMilestones({ product: q('product'), status: q('milestones') }), items: rm.listItems({ product: q('product'), status: q('status') }), statuses: { items: rm.ITEM_STATUSES, tasks: rm.TASK_STATUSES, milestones: rm.MILESTONE_STATUSES } });
       if (route === '/api/roadmap/milestones' && method === 'POST') { const ms = rm.addMilestone({ ...b, origin: b.origin ?? talkFrom, by }); pm.kick(); return send(res, 200, ms); }
       m = /^\/api\/roadmap\/milestones\/(n_[0-9a-f]+)$/.exec(route);
@@ -305,16 +319,19 @@ const server = http.createServer(async (req, res) => {
         rm.setQuestion(m[1], { status: 'asked J' });
         const { getChange } = await import('./agents.ts');
         const c = qn.subject?.startsWith('c_') ? getChange(qn.subject) : null;
-        return send(res, 200, pm.askJ(String(b.text || `An agent working on "${c?.title ?? qn.subject}" asks: ${qn.text}`), { subject: c?.task ?? qn.subject, product: qn.product, options: b.options, from: by }));
+        return send(res, 200, pm.askJ(String(b.text || `An agent working on "${c?.title ?? qn.subject}" asks: ${qn.text}`), { subject: c?.task ?? qn.subject, product: qn.product, options: b.options, recommend: b.recommend, context: b.context, blocks: b.blocks ?? (qn.subject ? `the agent on ${qn.subject} (paused)` : null), forwards: qn.id, topic: 'agent question', from: by }));
       }
       if (route === '/api/pm' && method === 'GET') return send(res, 200, await pm.pmStatus());
       if (route === '/api/pm/settings' && method === 'POST') return send(res, 200, pm.savePmSettings(b, by));
       if (route === '/api/pm/tick' && method === 'POST') { await pm.tick(); return send(res, 200, await pm.pmStatus()); }
-      if (route === '/api/pm/ask' && method === 'POST') return send(res, 200, pm.askJ(String(b.text ?? ''), { subject: b.subject, product: b.product, options: b.options, from: by }));
+      if (route === '/api/pm/ask' && method === 'POST') {
+        if (!String(b.text ?? '').trim()) throw new StudioError('ask: the question (text)');
+        return send(res, 200, pm.askJ(String(b.text), { subject: b.subject || null, product: b.product || null, options: Array.isArray(b.options) ? b.options.map(String) : undefined, recommend: b.recommend ?? null, context: b.context ?? null, blocks: b.blocks ?? null, topic: b.topic ?? null, from: by }));
+      }
       m = /^\/api\/pm\/(merge|revise)\/(c_[0-9a-f]+)$/.exec(route);
-      if (m && method === 'POST') return send(res, 200, m[1] === 'merge' ? await pm.pmMerge(m[2], String(b.why ?? ''), by === 'Talk' ? 'Talk (PM)' : by) : await pm.pmRevise(m[2], String(b.note ?? ''), by === 'Talk' ? 'Talk (PM)' : by));
+      if (m && method === 'POST') return send(res, 200, m[1] === 'merge' ? await pm.pmMerge(m[2], String(b.why ?? ''), by) : await pm.pmRevise(m[2], String(b.note ?? ''), by));
       m = /^\/api\/pm\/triage\/(f_[0-9a-f]+)$/.exec(route);
-      if (m && method === 'POST') return send(res, 200, pm.triageFinding(m[1], b.action, { note: b.note, of: b.of, item: b.item, by: by === 'Talk' ? 'Talk (PM)' : by }));
+      if (m && method === 'POST') return send(res, 200, pm.triageFinding(m[1], b.action, { note: b.note, of: b.of, item: b.item, by }));
       m = /^\/api\/pm\/undo\/(d_[0-9a-f]+)$/.exec(route);
       if (m && method === 'POST') return send(res, 200, await pm.undoDecision(m[1], by));
       if (route === '/api/ready' && method === 'GET') {
@@ -342,19 +359,20 @@ const server = http.createServer(async (req, res) => {
     if (m && method === 'POST') {
       const b = await readJson(req);
       const { answerChange } = await import('./agents.ts');
-      return send(res, 200, answerChange(m[1], String(b.answer ?? ''), b.by ?? 'J'));
+      return send(res, 200, answerChange(m[1], String(b.answer ?? ''), await (await import('./inbox.ts')).actor(req, b.by)));
     }
     m = /^\/api\/changes\/(c_[0-9a-f]+)(?:\/(approve|revise|close))?$/.exec(route);
     if (m && method === 'GET' && !m[2]) return send(res, 200, getChange(m[1]) ?? { error: 'no such change' });
     if (m && method === 'POST' && m[2]) {
       const b = await readJson(req);
-      if (m[2] === 'approve') return send(res, 200, await approve(m[1], { confirm: b.confirm, by: b.by ?? 'J', origin }));
+      const by = await (await import('./inbox.ts')).actor(req, b.by);
+      if (m[2] === 'approve') return send(res, 200, await approve(m[1], { confirm: b.confirm, by, origin }));
       if (m[2] === 'revise') {
-        const r = revise(m[1], String(b.note ?? ''), b.by ?? 'J');
+        const r = revise(m[1], String(b.note ?? ''), by);
         tagChange(m[1], origin);
         return send(res, 200, r);
       }
-      if (m[2] === 'close') return send(res, 200, await close(m[1], b.by ?? 'J'));
+      if (m[2] === 'close') return send(res, 200, await close(m[1], by));
     }
     if (route === '/api/agents/settings' && method === 'GET') return send(res, 200, agentSettings());
     // The roles (.claude/agents/*.md) and skills (.claude/skills/) every Claude Code run uses (roles.ts).

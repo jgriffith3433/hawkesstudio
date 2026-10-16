@@ -256,7 +256,8 @@ export async function startWork() {
     const text = e && !e.error
       ? `"${t.title}" (${name(t.product)}) will generate on the GPU: about ${e.gpuHours} GPU-hours on ${e.servers} server(s), ~$${e.cost.toFixed(2)} ($${e.withIdleTail.toFixed(2)} if the servers idle out instead of being stopped), about ${e.wallMinutes} min. Approve a budget for it?`
       : `"${t.title}" (${name(t.product)}) will generate on the GPU, but it couldn't be priced${e?.error ? ` (${e.error})` : ''}. Price it again, or approve a budget anyway?`;
-    askJ(text, { subject: t.id, product: t.product, options: e && !e.error ? [`Approve $${Math.ceil(e.cost * 1.25 * 100) / 100}`, 'Not now'] : ['Price it again', 'Not now'], from: 'PM' });
+    const amount = e && !e.error ? `Approve $${(Math.ceil(e.cost * 1.25 * 100) / 100).toFixed(2)}` : null;
+    askJ(text, { subject: t.id, product: t.product, options: amount ? [amount, 'Not now'] : ['Price it again', 'Not now'], recommend: amount ?? 'Price it again', topic: 'gpu', blocks: `task "${t.title}" (can't start)`, from: 'PM' });
   }
   let cap = capacity();
   // J's own reports from the beta sites (bugreport.ts) come first: before roadmap tasks and the reviews' bugs.
@@ -314,7 +315,7 @@ export async function startWork() {
 // --------------------------------------------------------------- reviewing
 
 /** Changes the PM reviews: roadmap tasks' changes, and finding fixes (not J's own requests; never Studio or Gen). */
-function reviewable(c: any) {
+export function reviewable(c: any) {
   // Changes from before the loop first ran stay J's to approve, as they were.
   return c.status === 'ready' && !c.infra && c.created >= pmSince() && (c.task || (c.findings?.length && !c.request));
 }
@@ -379,48 +380,70 @@ async function defaultReview(changeId: string) {
 
 // --------------------------------------------------------------- questions
 
-/** Answers an agent's question (the agent resumes its session), or J's decision. */
+/**
+ * Answers a question: an agent's (the agent resumes its session), or a decision (the agent behind it resumes too; the
+ * PM's next turn hears it). "yes" to a question with a recommendation means the recommendation. A GPU budget question
+ * approves the budget (J only). by: who answered (inbox.ts actor), never "J" for the PM's own answers.
+ */
 export async function answerQuestion(id: string, answer: string, by = 'Talk (PM)') {
   const q = getQuestion(id);
   if (!q) throw new StudioError(`No question ${id}`, 404);
-  if (!['open', 'asked J'].includes(q.status)) throw new StudioError(`${id} is ${q.status}`);
+  if (!['open', 'asked J'].includes(q.status)) throw new StudioError(`${id} is ${q.status}${q.answered_by ? ` (answered by ${q.answered_by})` : ''}`);
+  if (!answer.trim()) throw new StudioError('Say the answer');
+  const { isYes, gpuAnswer } = await import('./inbox.ts');
+  const byJ = by === 'J' || by.startsWith('J ');
+  // "yes" takes the asker's recommendation.
+  if (q.recommendation && isYes(answer) && answer.trim().split(/\s+/).length <= 3 && answer.trim().toLowerCase() !== q.recommendation.trim().toLowerCase()) answer = `${q.recommendation} (${by}: "${answer.trim()}")`;
+  if (q.topic === 'gpu' && q.subject?.startsWith('k_')) {
+    if (!byJ) throw new StudioError(`A GPU budget is J's call (answered by ${by}). Leave it in his Inbox.`);
+    const t = getTask(q.subject);
+    if (t) await gpuAnswer(t, answer, by, q);
+  }
   setQuestion(id, { status: 'answered', answer, answered_by: by });
   if (q.subject) addComment(q.subject.startsWith('c_') ? (taskOfChange(q.subject)?.id ?? q.subject) : q.subject, answer, by, 'answer');
+  const resume = async (change: string) => {
+    const { getChange, answerChange } = await changes();
+    if (getChange(change)?.status === 'needs answer') answerChange(change, answer, by);
+  };
   if (q.kind === 'agent' && q.subject) {
-    const { answerChange } = await changes();
-    answerChange(q.subject, answer, by);
+    await resume(q.subject);
+    // The decision that passed it on to J is answered with it.
+    for (const d of listQuestions().filter((x) => x.forwards === id)) setQuestion(d.id, { status: 'answered', answer, answered_by: by });
   }
-  // J's decision on an agent's question passed on to him: the agent gets it too.
-  if (q.kind === 'decision' && q.subject) {
-    const { getChange } = await changes();
-    const t = q.subject.startsWith('k_') ? getTask(q.subject) : null;
-    const change = t?.change ?? (q.subject.startsWith('c_') ? q.subject : null);
-    const waiting = listQuestions('open,asked J').find((x) => x.kind === 'agent' && x.subject === change);
-    if (waiting && change && getChange(change)?.status === 'needs answer') {
+  // A decision passing on an agent's question: the agent gets the answer too.
+  if (q.kind === 'decision') {
+    const t = q.subject?.startsWith('k_') ? getTask(q.subject) : null;
+    const change = t?.change ?? (q.subject?.startsWith('c_') ? q.subject : null);
+    const waiting = q.forwards ? getQuestion(q.forwards) : listQuestions().find((x) => x.kind === 'agent' && x.subject === change) ?? null;
+    if (waiting && ['open', 'asked J'].includes(waiting.status)) {
       setQuestion(waiting.id, { status: 'answered', answer, answered_by: by });
-      const { answerChange } = await changes();
-      answerChange(change, answer, by);
+      if (waiting.subject) await resume(waiting.subject);
     }
   }
-  // J's decision on a failed task: the PM's next turn acts on it ("try again", "drop it").
-  if (q.kind === 'decision') pmEvent('decided', `J decided on ${q.subject ?? 'a question'}: "${answer}" (the question was: ${q.text.slice(0, 400)})`, q.subject, q.product);
-  if (by !== 'J' && !by.startsWith('J ')) logDecision('answer', q.subject, q.product, `answered ${id}: ${answer.slice(0, 500)}`);
+  // A decision on a failed task: the PM's next turn acts on it ("try again", "drop it").
+  if (q.kind === 'decision' && q.topic !== 'gpu') pmEvent('decided', `${byJ ? 'J' : by} decided on ${q.subject ?? 'a question'} (${id}): "${answer}" (the question was: ${q.text.slice(0, 400)})`, q.subject ?? id, q.product);
+  if (!byJ) logDecision('answer', q.subject, q.product, `${by} answered ${id}: ${answer.slice(0, 500)}`);
   return getQuestion(id);
 }
 
 /**
- * Asks J one clear question (a direction choice, money, something failing after 3 tries, anything touching live):
- * in Talk (the conversation that started the work, else the PM's) and on his phone.
+ * Files one clear question for J (a direction choice, money, something failing after 3 tries, anything touching live)
+ * in his Inbox, with the options and the asker's recommendation. A question on the same subject (and topic) merges into
+ * the open one. The first time, Talk hears it too (the conversation that started the work, else the PM's) and his phone
+ * (decisions only he can make); a repeat only updates the card.
  */
-export function askJ(text: string, { subject, product, options, from }: { subject?: string | null; product?: string | null; options?: string[]; from?: string } = {}) {
+export function askJ(text: string, { subject, product, options, from, recommend, context, blocks, topic, forwards }: {
+  subject?: string | null; product?: string | null; options?: string[]; from?: string; recommend?: string | null; context?: string | null; blocks?: string | null; topic?: string | null; forwards?: string | null;
+} = {}) {
   const item = subject?.startsWith('k_') ? getItem(getTask(subject)?.item ?? '') : subject?.startsWith('i_') ? getItem(subject) : null;
   const origin = item?.origin ?? null;
-  const q = addQuestion({ kind: 'decision', subject, product, text, options, origin });
+  const askedBy = !from ? 'Studio PM' : /^(Talk|J|agent)/.test(from) ? from : `Studio PM (${from})`;
+  const q = addQuestion({ kind: 'decision', subject, product, text, options, origin, recommendation: recommend ?? null, context, blocks, topic, forwards, askedBy });
   if (q.status !== 'open') return q;
   setQuestion(q.id, { status: 'asked J' });
-  const body = `Studio PM needs your call (${q.id})${product ? `, ${name(product)}` : ''}:\n\n${text}${options?.length ? `\n\nOptions: ${options.join(' · ')}` : ''}\n\nAnswer here in Talk; I'll pass it on.`;
+  const body = `Studio PM needs your call (${q.id})${product ? `, ${name(product)}` : ''}:\n\n${text}${options?.length ? `\n\nOptions: ${options.join(' · ')}` : ''}${recommend ? `\nRecommended: ${recommend}` : ''}\n\nIt's in your Inbox (${PUBLIC_URL}/#inbox); answer there, or here ("${q.id}: <answer>").`;
   void postTo(origin, `Question for you: ${text.slice(0, 60)}`, body);
-  void notify(`Studio needs your call${product ? `: ${name(product)}` : ''}`, text.slice(0, 400), { url: `${PUBLIC_URL}/#roadmap`, priority: 4, tags: ['raising_hand'] });
+  void notify(`Studio needs your call${product ? `: ${name(product)}` : ''}`, text.slice(0, 400), { url: `${PUBLIC_URL}/#inbox`, priority: 4, tags: ['raising_hand'] });
   if (from) logDecision('ask', subject ?? null, product ?? null, `asked J (${from}): ${text.slice(0, 400)}`);
   return getQuestion(q.id)!;
 }
@@ -614,7 +637,7 @@ export async function pmConversation() {
 }
 
 /** The PM's instructions, sent with each PM turn (the events go below them). */
-export function pmPrompt(evs: PmEvent[], daily: boolean) {
+export function pmPrompt(evs: PmEvent[], daily: boolean, inbox: string | null = null) {
   const s = pmSettings();
   const cap = capacity();
   return `[Studio PM loop: this turn was started by Studio, not J. You are J's producer/PM. J sets direction with you in
@@ -623,6 +646,7 @@ Talk; you work the roadmap and the backlog with the agents so he comes back to f
 What came in since your last PM turn:
 ${evs.length ? evs.map((e) => `- ${e.kind}${e.subject ? ` (${e.subject})` : ''}: ${e.text}`).join('\n') : '- nothing new'}
 ${daily ? '\nThis is also the daily PM turn: triage the backlog and look over the roadmap.\n' : ''}
+J's Inbox: ${inbox ?? 'empty'}.
 Limits now: ${cap.active} agents working (at most ${s.maxConcurrent}), ${cap.started} of ${s.maxStartsPerDay} starts used today, ${s.maxTries} tries per task. Delegated merges into beta: ${s.delegatedMerges ? 'ON' : 'OFF (J approves merges)'}.
 
 Do, with the studio_pm, studio_roadmap and studio tools:
@@ -645,9 +669,13 @@ Do, with the studio_pm, studio_roadmap and studio tools:
    (studio_pm ask_j) which holds; never edit or fade J's decisions yourself. When J decided something in a thread or an
    answer, record it as a decision quoting his words. Keep it short: entries are one line plus specifics.
 Never: go live or roll back, merge Studio or Gen changes, launch GPU servers, raise limits, or decide direction. Those
-are J's: ask him (studio_pm ask_j: one clear question with options). Anything you leave undecided gets Studio's default
-after this turn (merge if the change passes its gate, else revise with the failures; unanswered questions go to J).
-End with a short log of what you did (a few lines): it stays in this PM conversation for J.`;
+are J's. Anything you need from J is FILED, never only asked in prose: studio_inbox ask { text, options, recommend,
+subject, product, blocks } (one clear question, the options as buttons, the option you would pick, what waits on it).
+A question on the same subject merges into the open one, so filing again just updates it. Answers come back to you as
+"decided" events. Anything you leave undecided gets Studio's default after this turn (merge if the change passes its
+gate, else revise with the failures; unanswered agent questions go to J's Inbox).
+End with a short log of what you did (a few lines): it stays in this PM conversation for J. Don't list or repeat
+what is waiting on J: say "${inbox ?? 'N decisions in your Inbox'}" at most once, when it changed.`;
 }
 
 async function runPmTurn(daily: boolean) {
@@ -655,7 +683,8 @@ async function runPmTurn(daily: boolean) {
   events = [];
   const id = await pmConversation();
   const talk: any = await import('./talk.ts');
-  const prompt = pmPrompt(evs, daily);
+  const { inboxLine } = await import('./inbox.ts');
+  const prompt = pmPrompt(evs, daily, await inboxLine().catch(() => null));
   if (typeof talk.studioTurn === 'function') talk.studioTurn(id, prompt);
   else talk.say(id, prompt);
   turn = { conversation: id, subjects: evs.map((e) => e.subject).filter(Boolean) as string[], started: Date.now() };
@@ -728,7 +757,7 @@ async function applyDefaults(subjects: string[], olderThan?: number) {
     if (subjects.includes(q.subject ?? '') || (olderThan !== undefined && now - q.at > olderThan && !turnRunning())) {
       const c = q.subject ? getChange(q.subject) : null;
       setQuestion(q.id, { status: 'asked J' });
-      askJ(`An agent working on "${c?.title ?? q.subject}" asks: ${q.text.slice(0, 1200)}`, { subject: c?.task ?? q.subject, product: q.product, from: 'an agent question the PM could not answer' });
+      askJ(`An agent working on "${c?.title ?? q.subject}" asks: ${q.text.slice(0, 1200)}`, { subject: c?.task ?? q.subject, product: q.product, forwards: q.id, topic: 'agent question', blocks: `the agent on ${q.subject} (paused)`, from: 'an agent question the PM could not answer' });
     }
   }
 }
@@ -774,6 +803,8 @@ export async function pmStatus() {
 export const threadOf = (c: any) => threadFor(c);
 
 let started = false;
+/** Whether the loop runs in this process (the server, or STUDIO_PM=on). */
+export const pmRunning = () => started;
 /** The loop: every minute, and soon after anything finishes. Not on J's PC unless STUDIO_PM=on (the cloud runs it). */
 export function startPm() {
   if (started) return;

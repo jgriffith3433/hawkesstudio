@@ -27,11 +27,12 @@ export async function morningBrief(runId: string, { force = false } = {}) {
     : '- none';
   // The PM's side: roadmap items on beta for J to test, and the questions only he can answer.
   const pm = await import('./pm.ts');
-  const { listQuestions, listMilestones } = await import('./roadmap.ts');
+  const { listMilestones } = await import('./roadmap.ts');
   const milestones = listMilestones({ status: 'open,reached' });
   const msLines = milestones.length ? milestones.map((m) => `- ${m.title}: ${m.status === 'reached' ? 'REACHED, ready for J to playtest' : `${m.done}/${m.total} items on beta`}`).join('\n') : '- none defined';
   const readyNow = pm.readyReport();
-  const asks = listQuestions('asked J');
+  const { inbox } = await import('./inbox.ts');
+  const waiting = await inbox().catch(() => [] as Awaited<ReturnType<typeof inbox>>);
   const readyLines = readyNow.length ? readyNow.map((r) => `- ${r.title} (${r.productName})${r.partly ? ', partly' : ''}: ${r.criteria.filter((c) => c.met === 'yes').length}/${r.criteria.length} criteria verified on beta, ${r.bugs.length} known bug(s)${r.beta ? `, try it: ${r.beta}` : ''}`).join('\n') : '- nothing yet';
   const prompt = `Morning brief for ${R.date} (daily run ${runId}). Headline: ${R.headline}.
 
@@ -39,7 +40,7 @@ Ready for J to test (roadmap items on beta; details with studio_ready):
 ${readyLines}
 Milestones:
 ${msLines}
-Questions waiting for J: ${asks.length ? asks.map((q) => `${q.id}: ${q.text.slice(0, 160)}`).join(' | ') : 'none'}.
+J's Inbox: ${waiting.length ? `${waiting.length} waiting; the most blocking: ${waiting.slice(0, 3).map((x) => `${x.id}: ${x.title.slice(0, 120)} (blocks ${x.blocks})`).join(' | ')}` : 'empty'}.
 
 Read the report with studio_report (run ${runId}); look at studio_changes if you need more on the changes below.
 Agent changes ready for J to approve:
@@ -50,8 +51,8 @@ J reads this on his phone. Reply with exactly five short bullets, under 130 word
 1. What broke (the worst problem, with the product).
 2. What else broke or got worse, or "nothing else".
 3. What got better.
-4. What's waiting for J: what's ready for him to test (with the beta link) and any question only he can answer; then
-   ready agent changes the PM leaves to him, or "nothing waiting".
+4. What's waiting for J: what's ready for him to test (with the beta link), then "N decisions in your Inbox" and the
+   most blocking one in a few words (don't list them all), or "nothing waiting".
 5. One recommendation: the single most useful thing J could do today.
 ${cost ? `Then add this line exactly as written: ${cost}\n` : ''}No headings, no intro, no sign-off. Don't approve, merge, deploy or start anything.`;
 
