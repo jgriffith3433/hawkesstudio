@@ -193,9 +193,15 @@ export function followPicks() {
     clearTimeout(timers.get(id));
     timers.set(id, setTimeout(() => {
       timers.delete(id);
-      writeBack(id, { by: 'a pick in the library' })
+      // Gen restarting (a deploy) or a network blip: try again a few times, a minute apart.
+      const attempt = (n: number) => writeBack(id, { by: 'a pick in the library' })
         .then((r: any) => { if (r.written || r.error) console.log(`[library] ${id}: ${r.written ?? 0} file(s) written${r.published ? ', published through hawkes-assets' : ''}${r.pushed ? ', pushed to beta' : ''}${r.error ? `; ${r.error}` : ''}`); })
-        .catch((e: any) => console.warn(`[library] ${id}: ${e.message ?? e}`));
+        .catch((e: any) => {
+          const passing = /reach Hawkes Gen|fetch failed|ECONNREFUSED|HTTP 50[234]/.test(String(e.message ?? e));
+          if (passing && n < 5) setTimeout(() => void attempt(n + 1), 60_000).unref();
+          else console.warn(`[library] ${id}: ${e.message ?? e}`);
+        });
+      void attempt(1);
     }, 5000));
   });
 }
