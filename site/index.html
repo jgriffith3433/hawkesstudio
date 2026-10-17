@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hawkes Gen — generative AI and an automated game studio, by Hawkes Biomedical</title>
+<meta name="description" content="Hawkes Gen and Hawkes Studio: the generative-AI service and the daily build, playtest and review loop behind the Hawkes Biomedical games and sites.">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<header>
+  <p class="mark">HAWKES GEN</p>
+  <h1>Generative AI and an automated studio, behind every Hawkes game and site.</h1>
+  <p class="lede">Two services run the R&amp;D floor of <a href="https://hawkesbiomedical.com">Hawkes Biomedical</a>: one makes the art, video, 3D, music and voices; the other builds, plays and reviews every product every day.</p>
+</header>
+
+<main>
+  <section class="card" id="gen">
+    <h2>Hawkes Gen</h2>
+    <p class="what">The shared generative-AI service. Every game, site and agent asks it for assets, so no project deals with GPU servers, models or API keys.</p>
+    <h3>What it does today</h3>
+    <ul>
+      <li><b>Images:</b> text-to-image, seamless textures, editing, paint-over from sketches or grey-box renders, relighting, upscaling, 360° skies</li>
+      <li><b>Characters:</b> trains a character model on its poses, then draws it on-model in any pose or scene</li>
+      <li><b>Video:</b> image-to-video, text-to-video, motion transfer, talking and singing characters, frame interpolation</li>
+      <li><b>3D:</b> meshes from one image or several views, with PBR textures</li>
+      <li><b>Music, voice and sound effects:</b> songs and loops, voice lines, designed voices, SFX</li>
+      <li><b>Writing and vision:</b> text, JSON designs and art review</li>
+      <li><b>Pipelines:</b> chains of tools as one recipe, best-of-N takes picked against the art direction</li>
+      <li><b>A GPU fleet</b> started on demand and shared through one queue, a <b>library</b> of everything made with its recipe, and usage and cost per project</li>
+    </ul>
+    <h3>Powered by</h3>
+    <ul class="tags">
+      <li>ComfyUI on AWS GPUs</li><li>Z-Image Turbo</li><li>Qwen-Image-Edit</li><li>Wan 2.2</li><li>Wan Animate</li><li>InfiniteTalk</li>
+      <li>Hunyuan3D 2.1</li><li>TRELLIS 2</li><li>ACE-Step 1.5</li><li>ElevenLabs</li><li>Claude</li><li>SAM 3</li><li>Depth Anything 3</li><li>Real-ESRGAN</li>
+    </ul>
+    <p class="signin"><a href="https://gen.hawkesgen.com/">Sign in</a></p>
+  </section>
+
+  <section class="card" id="studio">
+    <h2>Hawkes Studio</h2>
+    <p class="what">An automated game studio. Every day it builds, playtests and reviews every product, and agents fix what it finds.</p>
+    <h3>What it does today</h3>
+    <ul>
+      <li><b>The daily loop:</b> build, playtest in a real browser, review the footage, and a morning report</li>
+      <li><b>Playtests:</b> each game's own bot plays through real input, on desktop and phone, with video, screenshots and frame rates</li>
+      <li><b>Reviews:</b> findings filed into one backlog, merged across days, with regressions called out</li>
+      <li><b>Agents:</b> fix bugs and build roadmap tasks, each as its own pull request</li>
+      <li><b>A beta lane:</b> every change lands on a beta site first, and going live is a person's call, with rollback</li>
+      <li><b>Talk:</b> plan the roadmap by chat or by voice, with a producer that keeps the work moving</li>
+    </ul>
+    <h3>Powered by</h3>
+    <ul class="tags">
+      <li>Claude</li><li>Claude Code agents</li><li>Playwright</li><li>Chromium</li><li>Unity WebGL builds on AWS</li><li>GitHub</li><li>Node.js</li>
+    </ul>
+    <p class="signin"><a href="https://studio.hawkesgen.com/">Sign in</a></p>
+  </section>
+</main>
+
+<footer>
+  <p>Hawkes Gen and Hawkes Studio are made by <a href="https://hawkesbiomedical.com">Hawkes Biomedical</a>.</p>
+</footer>
+</body>
+</html>
