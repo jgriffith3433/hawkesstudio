@@ -1,6 +1,6 @@
 # Learned: All of Hawkes
 
-Generated from Hawkes Studio's shared memory (2026-10-17 01:47 UTC). Edit entries in Studio's Memory tab, not here.
+Generated from Hawkes Studio's shared memory (2026-10-17 02:07 UTC). Edit entries in Studio's Memory tab, not here.
 
 ## J's decisions
 
@@ -53,8 +53,12 @@ Generated from Hawkes Studio's shared memory (2026-10-17 01:47 UTC). Edit entrie
 
 ## Lessons (what broke, and the fix)
 
+- **A Unity game's web page (Game/index.html: rotate overlay, resize, loader) changes through the Unity repo's deploy step, not the website repo**: The beta site of a Unity product is the website's origin/main plus the beta build (beta.ts resetBetaSite), so a website-repo branch never reaches beta, and changing website main is going live. Edit the page from the deploy step, the way the sound prompt (7b) and credit (7c) work in Sick Of It's GameDeployWindow. c_caedf52f8b48 committed 19670c4 in the site repo and it couldn't land; three Unity-repo fixes found nothing to change.  
+  <sub>m_720b84eb92e7 · Talk (PM) · 2026-10-17 · c_caedf52f8b48</sub>
 - **A hidden browser pane never fires requestAnimationFrame**: Contract bots then look stuck on the title screen. Use headless Playwright (hawkesgen/node_modules) or a visible page.  
   <sub>m_f07bf9f9768b · seed · 2026-10-16 · hawkesstudio/docs/projects/AGENTS.md, hawkesstudio/AGENTS.md, docs/cloud.md, J's notes (2026-10-16)</sub>
+- **Agent worktree commits fail: index.lock Permission denied (.git/worktrees/<id> is group hawkes, agent is hawkes-work)**: Seen 2026-10-17 in hawkesgen (c_da182fef16cd) and theplacedepartment (c_27824f1545ec): finished work left uncommitted, change failed as "no commit". Leave changes in the worktree and say so in the summary; the fix belongs in Studio's worktree setup (chgrp/g+w the worktree's git dir, like warm.ts does for node_modules, see m_e0a97f2a1361).  
+  <sub>m_621a6c315c7d · agent c_27824f1545ec · 2026-10-17 · c_27824f1545ec</sub>
 - **Contract bots click with element.click(), so audio never unlocks**: Playtests then play in silence. To check sound, make one real page.mouse.click first.  
   <sub>m_1db63c6d49c7 · seed · 2026-10-16 · hawkesstudio/docs/projects/AGENTS.md, hawkesstudio/AGENTS.md, docs/cloud.md, J's notes (2026-10-16)</sub>
 - **On the server, git as another user hits 'dubious ownership'**: /srv/hawkes repos belong to the hawkes user; run git as hawkes (sudo -u hawkes) or add safe.directory.  
