@@ -14,9 +14,9 @@
 // "blob:<sha256>". When the service is on another machine, local file paths
 // are uploaded first automatically (Node only).
 //
-// Source of truth: C:\Projects\hawkesgen\clients\js\hawkesgen.mjs. Version 4 (presets, builder, playtests; ~/.hawkes/client.json).
+// Source of truth: C:\Projects\hawkesgen\clients\js\hawkesgen.mjs. Version 6 (the library: entities, slots, versions, make, revise, watch, exportSlots).
 
-export const CLIENT_VERSION = 5;
+export const CLIENT_VERSION = 6;
 
 /** ~/.hawkes/client.json (Node only): where Hawkes Gen and Studio are, for every project on this PC. */
 function userConfig() {
@@ -45,6 +45,8 @@ export class HawkesGenError extends Error {
 
 const isNode = typeof process !== 'undefined' && !!process.versions?.node;
 const TERMINAL = new Set(['done', 'failed', 'cancelled']);
+/** The API path of an entity's slot (slot names can have slashes: pose/air). */
+const slotPath = (id, slot) => `/entities/${id}/slots/${String(slot).split('/').map(encodeURIComponent).join('/')}`;
 
 export class HawkesGen {
   /**
@@ -64,7 +66,7 @@ export class HawkesGen {
   }
 
   async request(path, { method = 'GET', body, headers = {}, raw = false, signal } = {}) {
-    const h = { ...headers };
+    const h = { 'X-Hawkes-Client': `js/${CLIENT_VERSION}`, ...headers };
     if (this.key) h.Authorization = `Bearer ${this.key}`;
     let payload = body;
     if (body !== undefined && !(body instanceof Uint8Array) && !(typeof Blob !== 'undefined' && body instanceof Blob)) {
@@ -212,6 +214,105 @@ export class HawkesGen {
     }
     const r = await this.request('/blobs', { method: 'POST', body: body instanceof Uint8Array ? body : body, headers: { 'X-Filename': String(filename ?? 'upload.bin').split(/[\\/]/).pop() } });
     return r.blob;
+  }
+
+  // ------------------------------------------------------------ the library (docs/library.md)
+  // Entities ("doseofdestruction/break"), their slots ("side", "pose/air", "clip/jab") and every version of each slot:
+  // takes, the current one, old and discarded ones. Jobs made for a slot file their outputs there as takes.
+
+  /** Entities: { project (default this.project), kind, q, tag, archived, limit, offset } -> { items, total }. */
+  entities(query = {}) {
+    const q = { ...(this.project && !('project' in query) ? { project: this.project } : {}), ...query };
+    return this.request(`/entities?${new URLSearchParams(Object.entries(q).filter(([, v]) => v !== undefined && v !== null))}`);
+  }
+  /** One entity with its slots: { slots: { side: { current, latest, takes, versions } } }. */
+  entity(id) { return this.request(`/entities/${id}`); }
+  /** { project, name, kind, slug?, data?, tags?, upsert? } */
+  createEntity(e) { return this.request('/entities', { method: 'POST', body: { project: this.project, ...e } }); }
+  /** { name, kind, data (merged one level; null removes a key), tags, archived } */
+  updateEntity(id, patch) { return this.request(`/entities/${id}`, { method: 'PATCH', body: patch }); }
+  /** A slot's versions, newest first: [{ id, n, status, note, by, made_from, file: { kind, url, prompt } }]. */
+  slot(id, slot, { discarded = true } = {}) { return this.request(`${slotPath(id, slot)}${discarded ? '' : '?discarded=0'}`); }
+  /** The current version of a slot, or null. */
+  async current(id, slot) { return (await this.entity(id)).slots?.[slot]?.current ?? null; }
+  /** Files something into a slot: a path or bytes (uploaded), "asset:<id>" or "blob:<sha>". { status, note, title, prompt, meta } (prompt and meta: what made an imported file). */
+  async addVersion(id, slot, file, { status, note, title, prompt, meta } = {}) {
+    const ref = typeof file === 'string' && /^(asset|blob):/.test(file) ? file : await this.upload(file, title ?? (typeof file === 'string' ? file : undefined));
+    return this.request(`${slotPath(id, slot)}/versions`, { method: 'POST', body: { file: ref, status, note, title, prompt, meta } });
+  }
+  /** Makes a version the slot's current one (the old current becomes old). */
+  pick(versionId, note) { return this.request(`/versions/${versionId}`, { method: 'PATCH', body: { status: 'current', ...(note !== undefined ? { note } : {}) } }); }
+  discard(versionId) { return this.request(`/versions/${versionId}`, { method: 'PATCH', body: { status: 'discarded' } }); }
+  restore(versionId) { return this.request(`/versions/${versionId}`, { method: 'PATCH', body: { status: 'take' } }); }
+  note(versionId, note) { return this.request(`/versions/${versionId}`, { method: 'PATCH', body: { note } }); }
+  /**
+   * Makes takes for a slot. With no make, the slot's own recipe is used (the entity's data.slots.<slot>.make, else the
+   * project's kinds in its presets file). make: { tool | preset | steps, params, inputs, candidates, pick, pickAt,
+   * saves }. Inputs may say "slot:./side" (this entity) or "slot:project/entity/slot". -> the job.
+   */
+  make(id, slot, { make, feedback, count, params, note, priority, reuse } = {}) {
+    return this.request(`${slotPath(id, slot)}/make`, { method: 'POST', body: { make, feedback, count, params, note, priority, reuse } });
+  }
+  /** "Make the visor bigger": edits the current (or given) version with the feedback; the result comes back as takes. */
+  revise(id, slot, feedback, { version, count, references } = {}) {
+    return this.request(`${slotPath(id, slot)}/revise`, { method: 'POST', body: { feedback, version, count, references } });
+  }
+  /**
+   * Live updates: onEvent({ type: 'job' | 'library', data }) for every job update and library change this key may
+   * see. Works in Node and browsers (an API key header, so not EventSource). Returns stop().
+   */
+  watch(onEvent, { signal } = {}) {
+    const ctrl = new AbortController();
+    signal?.addEventListener('abort', () => ctrl.abort(), { once: true });
+    (async () => {
+      while (!ctrl.signal.aborted) {
+        try {
+          const r = await this.request('/events', { raw: true, signal: ctrl.signal });
+          const reader = r.body.getReader();
+          const dec = new TextDecoder();
+          let buf = '';
+          for (;;) {
+            const { value, done } = await reader.read();
+            if (done) break;
+            buf += dec.decode(value, { stream: true });
+            let i;
+            while ((i = buf.indexOf('\n\n')) >= 0) {
+              const block = buf.slice(0, i);
+              buf = buf.slice(i + 2);
+              const type = /^event: (.+)$/m.exec(block)?.[1];
+              const data = /^data: (.+)$/m.exec(block)?.[1];
+              if (type && data) try { onEvent({ type, data: JSON.parse(data) }); } catch {}
+            }
+          }
+        } catch {
+          if (ctrl.signal.aborted) return;
+        }
+        await new Promise((res) => setTimeout(res, 3000)); // reconnect
+      }
+    })();
+    return () => ctrl.abort();
+  }
+  /**
+   * Node: writes an entity's current versions into a project's own folder layout, e.g.
+   * exportSlots('doseofdestruction/break', { side: 'C:/Projects/AllTheCharacters/Break/anims/_side.png', 'pose/*': '.../poses/{part}.png' })
+   * ({part} is the slot's last word). Skips files that already match. -> [{ slot, file, written }]
+   */
+  async exportSlots(id, mapping) {
+    const fs = await import('node:fs');
+    const crypto = await import('node:crypto');
+    const e = await this.entity(id);
+    const out = [];
+    for (const [slot, s] of Object.entries(e.slots ?? {})) {
+      if (!s.current) continue;
+      const pattern = mapping[slot] ?? Object.entries(mapping).find(([k]) => k.endsWith('/*') && slot.startsWith(k.slice(0, -1)))?.[1];
+      if (!pattern) continue;
+      const file = pattern.replace('{part}', slot.split('/').pop()).replace('{slot}', slot.replace(/\//g, '-'));
+      const a = await this.asset(s.current.asset);
+      const same = fs.existsSync(file) && crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex') === a.sha256;
+      if (!same) await this.download(s.current.asset, file);
+      out.push({ slot, file, written: !same });
+    }
+    return out;
   }
 
   // Fleet (owner/admin). Actions that cost money need confirm: true.
