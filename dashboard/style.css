@@ -139,9 +139,12 @@ body.in-call .talk-input, body.in-call .talk-files, body.in-call #notifyBox { di
   .talk.lists .talk-main { display: none; }
   .talk-head .talk-lists { display: inline-block; }
   .talk-msg { max-width: 100%; padding: 9px 11px; overflow-wrap: anywhere; }
-  /* On a phone the call gets the screen: Studio's header goes away until J hangs up. */
-  body.in-call:not(.hdr-shown):has(#talk.on) header { display: none; }
-  body:has(#talk.on) #callTabs { display: inline-block; }
+  /* On a phone during a call Studio's header is one row of tabs that stays on screen on every tab (swipe it for more):
+     a tap switches tabs and the call goes on in the dock; the Talk tab (or the dock's ⤢) brings the full call back. */
+  body.in-call header, body.in-call.dock-open header { position: sticky; flex-wrap: nowrap; gap: 8px; padding: 6px 10px; }
+  body.in-call header :is(.brand, .status, #actBtn) { display: none; }
+  body.in-call nav { flex: 1; min-width: 0; flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; }
+  body.in-call nav button { flex: none; white-space: nowrap; }
   .talk-main, .call { min-width: 0; }
   .call { padding: 8px 10px; gap: 4px; display: grid; grid-template-columns: 64px 1fr; align-items: center; column-gap: 12px; }
   .call > :not(.call-orb):not(.call-state):not(.call-you) { grid-column: 1 / -1; }
@@ -298,7 +301,6 @@ body.in-call .talk-input, body.in-call .talk-files, body.in-call #notifyBox { di
 .dock-body .talk-msg { max-width: 100%; overflow-wrap: anywhere; }
 .dock-body .talk-head .talk-lists { display: none; }
 .dock-body .talk-img { max-width: 100%; }
-#callTabs { display: none; }
 .dock-btn[hidden] { display: none; }
 body.in-call .dock-btn:not(.on)::after { content: '📞'; animation: call-pulse 1.2s ease-in-out infinite; }
 @media (min-width: 1100px) { body.dock-open main { margin-right: 420px; } body.dock-open .activity { right: 420px; } }

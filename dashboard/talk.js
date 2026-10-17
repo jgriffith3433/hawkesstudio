@@ -240,8 +240,9 @@
   addEventListener('studio-tab', (e) => {
     // Leaving Talk during a call: the call comes along in the dock.
     if (e.detail !== 'talk' && document.body.classList.contains('in-call') && !docked) setDocked(true, false);
-    document.body.classList.remove('hdr-shown');
     placeTalk();
+    // On a phone during a call the tabs are one row that scrolls sideways: keep the tab J is on in view.
+    if (document.body.classList.contains('in-call')) document.querySelector('nav button.on')?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
   });
   // What Talk sees follows J's clicks (app.js remembers them first).
   document.querySelector('main').addEventListener('click', () => {
@@ -251,8 +252,6 @@
   el('#dockClose').addEventListener('click', () => setDocked(false));
   el('#dockFull').addEventListener('click', () => show('talk'));
   el('#dockConv').addEventListener('change', (e) => { current = e.target.value || null; loadConversation().catch(() => {}); });
-  // On a phone the call hides Studio's header: ☰ Tabs brings it back to switch tabs, the call goes on.
-  el('#callTabs').addEventListener('click', () => { document.body.classList.toggle('hdr-shown'); setHdr(); });
 
   /** Opens the dock without remembering it (guide.js, when Talk takes J away from the Talk tab). */
   window.talkDock = { open: () => { if (!docked) setDocked(true, false); } };

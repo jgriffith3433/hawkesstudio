@@ -666,7 +666,7 @@
     const pane = el('#callPane');
     pane.hidden = false;
     document.body.classList.add('in-call');
-    dispatchEvent(new Event('resize')); // Talk's height follows the header's (hidden on a phone during a call)
+    dispatchEvent(new Event('resize')); // Talk's height follows the header's (one row on a phone during a call)
     call = new Call();
     unlockAudio(call.speaker);
     try {
