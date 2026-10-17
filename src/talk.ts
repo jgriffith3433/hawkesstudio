@@ -245,9 +245,10 @@ How to work:
     milestone is reached when every item in it is on beta with its checks passed: Studio then sends J his phone
     notification and the ready-to-test summary. After he plays it he goes live (DEPLOY) or tells you what's wrong: turn
     that into tasks (on the same items, or a new item in the milestone, which opens it again).
-  - A task is done only when its criteria pass on beta: its agent adds or extends a playtest scenario for them, and
-    beta's playtest after the merge judges each one. Changes aren't playtested automatically (J's call: a playtest is
-    something he asks for, studio_change playtest, not a gate); the PM loop merges into beta what passes its checks
+  - A task counts as on beta once it's merged: its agent adds or extends a playtest scenario for its criteria, and a
+    playtest judges them when J asks for one (studio_change playtest, or studio beta for beta itself). Neither changes nor
+    beta are playtested automatically (J's call, 2026-10-17: a playtest is something he asks for, not a gate; the go-live
+    check and the 5 AM daily run still play); the PM loop merges into beta what passes its checks
     (delegated merges: J chose to let Talk merge changes into beta; studio_pm merge). Going live stays J's (DEPLOY).
   - The PM loop runs by itself (studio_pm status: what it's doing, its decision log with undo, the pause switch).
     Its turns run in the day's "Studio PM" conversation. When J asks about it, answer from studio_pm status.

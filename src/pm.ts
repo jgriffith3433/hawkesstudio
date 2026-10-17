@@ -25,7 +25,7 @@ import { critical, criticalSync } from './drain.ts';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { db, J, parse } from './db.ts';
-import { DATA, PROJECTS, getProduct, isInfra, today, StudioError } from './config.ts';
+import { DATA, PROJECTS, getProduct, isInfra, today, StudioError, betaPlaytestsOn } from './config.ts';
 import {
   getTask, setTask, getItem, startableTasks, tasksAwaitingGpu, taskOfChange, addQuestion, listQuestions, getQuestion, setQuestion, addComment,
   logDecision, listDecisions, getDecision, markUndone, countToday, listItems, threadFor, milestonesToReach, markReached, getMilestone,
@@ -196,6 +196,8 @@ const liveChecked = new Set<string>();
 /** The beta check of a merged task: the newest beta review of its product since the merge that judged its criteria. */
 async function checkOnBeta(t: Task) {
   if (!hasBeta(t.product)) return; // Nothing to run a beta check on (startBeta would throw).
+  // Beta playtests are on request (J, 2026-10-17): no check is started; a merged task counts as on beta (roadmap.ts).
+  if (!betaPlaytestsOn()) return;
   const s = pmSettings();
   const steps = db.prepare(`SELECT s.*, r.kind AS run_kind, r.status AS run_status FROM steps s JOIN runs r ON r.id = s.run
     WHERE s.product = ? AND s.kind = 'review' AND r.kind = 'beta' AND s.started > ? ORDER BY s.started DESC LIMIT 10`).all(t.product, t.merged_at ?? 0) as any[];
@@ -706,8 +708,8 @@ Limits now: ${cap.active} agents working (at most ${s.maxConcurrent}), ${cap.sta
 Do, with the studio_pm, studio_roadmap and studio tools:
 1. Review each ready change (studio_change: the agent's summary, commits, diff size, preview; ready means its own checks
    passed and the pull request is open). Changes aren't playtested automatically: merge one into beta (studio_pm merge)
-   when its summary and diff do what its task asks; beta's own run after the merge playtests it and judges the criteria
-   (a miss there starts a follow-up). Ask for a playtest of the change first (studio_change playtest) only when it's
+   when its summary and diff do what its task asks; beta isn't played after merges (J's call), so a merged task counts
+   as on beta, and the go-live check or J's own playtest is what tests it. Ask for a playtest of the change first (studio_change playtest) only when it's
    risky or unclear and a playtest would settle it. A change that was playtested and failed: send it back (studio_pm
    revise) with specific notes (what failed, what the review saw, what to change). After ${s.maxTries} tries it goes to J.
 2. Answer agent questions (studio_pm answer) from what J already decided: the roadmap item's goal, why and criteria,

@@ -222,7 +222,8 @@ const server = http.createServer(async (req, res) => {
     if (m && method === 'POST') {
       const b = await readJson(req);
       const { startBeta } = await import('./pipeline.ts');
-      return send(res, 200, { ok: true, run: startBeta(m[1], { focus: b.focus, origin }).id });
+      // Asking for a beta run is asking for its playtest too (after merges, beta isn't played unless the setting says so).
+      return send(res, 200, { ok: true, run: startBeta(m[1], { focus: b.focus, origin, playtest: b.playtest !== false }).id });
     }
 
     // Developing on beta (dev.ts): <sub>.hawkesgen.com/dev/, the beta working copy and its dev server.

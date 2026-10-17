@@ -13,7 +13,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { db, newId, J, rowToStep, parse, type Step } from './db.ts';
-import { loadProducts, getProduct, localUrl, today, PROJECTS, type Product, type Playtest } from './config.ts';
+import { loadProducts, getProduct, localUrl, today, PROJECTS, betaPlaytestsOn, type Product, type Playtest } from './config.ts';
 import { gen, genRun, genUp, ensureGen } from './gen.ts';
 import { ensureServer, gitState, treeFingerprint, runCheck, serveDir, stopServed } from './local.ts';
 import { absorb, applyKnown, expireIdeas, notSeenIn, type ReviewMode } from './backlog.ts';
@@ -582,7 +582,8 @@ async function partialBody(id: string, kind: string, p: Product, opts: PartialOp
   }
 }
 
-type BetaOptions = { focus?: string; origin?: string | null; criteria?: string[]; scenario?: string; options?: Record<string, unknown> };
+/** playtest: play beta in this run (default: the betaPlaytests setting, off; asking for a beta run says true). */
+type BetaOptions = { focus?: string; origin?: string | null; criteria?: string[]; scenario?: string; options?: Record<string, unknown>; playtest?: boolean };
 
 /**
  * After beta moves (an approved change): the product's beta is brought up to date and played, as a small run in the
@@ -597,7 +598,7 @@ export function startBeta(productId: string, o: BetaOptions = {}) {
   return { id, done: betaBody(id, p, o) };
 }
 
-async function betaBody(id: string, p: Product, { focus, criteria, scenario, options }: BetaOptions) {
+async function betaBody(id: string, p: Product, { focus, criteria, scenario, options, playtest }: BetaOptions) {
   try {
     const lane = betaLane();
     const top = p.repo.split('/')[0];
@@ -611,7 +612,12 @@ async function betaBody(id: string, p: Product, { focus, criteria, scenario, opt
     else void import('./previews.ts').then(({ buildPreview }) => buildPreview(p.id)).catch(() => {});
     // A merged roadmap task: the scenario its agent wrote for its criteria, and the criteria judged again.
     const t: Playtest | undefined = scenario ? { scenario, where: 'local', ...(options ? { options } : {}) } : p.playtests.find((x) => x.where === 'local' && x.device !== 'phone');
-    if (lane && t) await playtestProduct(id, p, t, { focus, mode: 'verify', criteria });
+    // Beta is played only when asked (J, 2026-10-17): after a merge it is rebuilt, and that's it (Settings > Agents).
+    if (lane && t && (playtest ?? betaPlaytestsOn())) await playtestProduct(id, p, t, { focus, mode: 'verify', criteria });
+    else if (lane && t) {
+      const s = startStep(id, p.id, 'playtest', nameOf(t));
+      updateStep(s, { status: 'skipped', detail: 'not playtested: beta playtests run when asked for (studio beta, the Beta button), not after every merge', finished: true });
+    }
     const cost = (db.prepare('SELECT COALESCE(SUM(cost), 0) AS c FROM steps WHERE run = ?').get(id) as any).c;
     const failed = (db.prepare(`SELECT COUNT(*) AS n FROM steps WHERE run = ? AND status = 'failed'`).get(id) as any).n;
     db.prepare(`UPDATE runs SET status = ?, detail = ?, finished = ?, cost = ? WHERE id = ?`).run(failed ? 'failed' : 'done', `beta ${p.id}${failed ? ' failed' : ''}`, Date.now(), cost, id);

@@ -13,7 +13,7 @@
 // can make) and the PM decision log (every merge, won't-fix, start and answer Talk made, with undo where possible).
 
 import { db, newId, J, parse } from './db.ts';
-import { loadProducts, isInfra, StudioError } from './config.ts';
+import { loadProducts, isInfra, StudioError, betaPlaytestsOn } from './config.ts';
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS items (
@@ -231,7 +231,9 @@ export function syncItem(id: string) {
   const tasks = (it.tasks ?? []).filter((t) => t.status !== 'dropped' && t.status !== 'idea');
   if (!tasks.length) return it;
   const all = (...s: string[]) => tasks.every((t) => s.includes(t.status));
-  const status = all('live') ? 'live' : all('verified', 'live') ? 'on beta' : tasks.some((t) => t.status !== 'planned') ? 'in progress' : it.status;
+  // With beta playtests on request (config.ts betaPlaytestsOn), a merged task is on beta: nothing will check it there.
+  const onBeta = betaPlaytestsOn() ? all('verified', 'live') : all('merged', 'verified', 'live');
+  const status = all('live') ? 'live' : onBeta ? 'on beta' : tasks.some((t) => t.status !== 'planned') ? 'in progress' : it.status;
   if (status !== it.status) db.prepare('UPDATE items SET status = ?, updated = ? WHERE id = ?').run(status, Date.now(), id);
   return getItem(id);
 }

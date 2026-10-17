@@ -54,6 +54,11 @@ export function sandboxEnv(env: NodeJS.ProcessEnv) {
   out.HOME = process.env.HAWKES_AGENT_HOME ?? `/srv/hawkes-agent`;
   // One npm cache for every agent, check and workspace (deploy/agent-sandbox.mjs makes it), so installs are offline-fast.
   if (process.env.STUDIO_NPM_CACHE) out.npm_config_cache = process.env.STUDIO_NPM_CACHE;
+  // No browser on the control server (J, 2026-10-17): agents' own headless Chrome (about 300 MB each, plus CPU) helped
+  // take Studio and Gen down. Playwright finds no browser here and can't download one; a browser check of a game is a
+  // playtest on the T4 (studio_playtest), asked for. The roles say so too (.claude/agents).
+  out.PLAYWRIGHT_BROWSERS_PATH = '/proc/hawkes-no-browsers';
+  out.PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD = '1';
   return out as NodeJS.ProcessEnv;
 }
 

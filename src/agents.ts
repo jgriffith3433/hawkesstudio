@@ -107,8 +107,8 @@ function changeLinks(r: any, verify: any): ChangeLinks {
 
 const SETTINGS_FILE = path.join(DATA, 'agents.json');
 /** autoMergeBeta: ready product changes merge into beta by themselves (J, 2026-10-17); off: a person merges them. */
-export type AgentSettings = { enabled: boolean; autoFix: boolean; autoMergeBeta: boolean; maxConcurrent: number; maxPerDay: number; maxCostPerDay: number; severities: string[]; model: string; maxTurns: number };
-const DEFAULTS: AgentSettings = { enabled: true, autoFix: true, autoMergeBeta: true, maxConcurrent: 2, maxPerDay: 4, maxCostPerDay: 20, severities: ['blocker', 'bug'], model: 'claude-opus-5-5', maxTurns: 80 };
+export type AgentSettings = { enabled: boolean; autoFix: boolean; autoMergeBeta: boolean; betaPlaytests: boolean; maxConcurrent: number; maxPerDay: number; maxCostPerDay: number; severities: string[]; model: string; maxTurns: number };
+const DEFAULTS: AgentSettings = { enabled: true, autoFix: true, autoMergeBeta: true, betaPlaytests: false, maxConcurrent: 2, maxPerDay: 4, maxCostPerDay: 20, severities: ['blocker', 'bug'], model: 'claude-opus-5-5', maxTurns: 80 };
 export function agentSettings(): AgentSettings {
   try {
     return { ...DEFAULTS, ...JSON.parse(fs.readFileSync(SETTINGS_FILE, 'utf8')) };
