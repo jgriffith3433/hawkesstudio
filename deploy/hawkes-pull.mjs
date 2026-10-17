@@ -61,9 +61,13 @@ function record(entry) {
 
 /** Runs as the hawkes user (its git credential helper and its files); not through sudo, which logs every call. */
 const HAWKES = (() => { try { const { uid, gid } = fs.statSync('/home/hawkes'); return { uid, gid }; } catch { return null; } })();
+// Through setpriv --init-groups, not Node's uid/gid options: those drop the supplementary groups, so hawkes lost
+// hawkes-work and couldn't write into git object folders the agent sandbox (hawkes-agent) had created. Fetches then
+// failed ("fetch failed: git fetch --quiet origin main") and deploys stalled until someone fetched by hand.
 function asHawkes(cwd, cmd, args, { quiet = false } = {}) {
-  const user = HAWKES ? { ...HAWKES, env: { ...process.env, HOME: '/home/hawkes', USER: 'hawkes', LOGNAME: 'hawkes' } } : {};
-  return execFileSync(cmd, args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', quiet ? 'pipe' : 'inherit'], timeout: 15 * 60_000, ...user }).trim();
+  const env = { ...process.env, HOME: '/home/hawkes', USER: 'hawkes', LOGNAME: 'hawkes' };
+  const [file, argv] = HAWKES && process.getuid?.() === 0 ? ['setpriv', ['--reuid=hawkes', '--regid=hawkes', '--init-groups', '--', cmd, ...args]] : [cmd, args];
+  return execFileSync(file, argv, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', quiet ? 'pipe' : 'inherit'], timeout: 15 * 60_000, env }).trim();
 }
 const git = (dir, ...args) => asHawkes(dir, 'git', args, { quiet: true });
 const shell = (dir, line) => asHawkes(dir, 'bash', ['-lc', line]);
@@ -223,7 +227,7 @@ for (const r of REPOS) {
   try {
     git(dir, 'fetch', '--quiet', 'origin', 'main');
   } catch (e) {
-    say(`[${r.repo}] fetch failed: ${e.message.split('\n')[0]}`);
+    say(`[${r.repo}] fetch failed: ${String(e.stderr || e.message).trim().split('\n').slice(-2).join(' / ')}`);
     continue;
   }
   const head = git(dir, 'rev-parse', 'HEAD');
