@@ -86,6 +86,12 @@ rough cost. With J's yes it adds them (`studio_roadmap_edit`, status `planned`);
 By hand an item is only idea, planned, done or dropped, and a task idea, planned (start, or retry from scratch) or
 dropped: everything else comes from the work and its checks.
 
+Priorities: items and tasks are `high`, `normal` (the default, and what older rows are) or `low`; a task without its
+own takes its item's. The PM starts planned tasks across all products highest priority first, then in roadmap order,
+skipping blocked ones (a task it depends on isn't merged yet), within its limits and after J's own reports; the decision
+log says why ("priority high, not blocked"). The Roadmap tab shows a badge with a small select to change it, "blocked
+by" on blocked tasks, and a sort by priority.
+
 **3. Acceptance, not just merged.** Each task's criteria go into its agent's brief. Where the game has the playtest
 contract, the agent adds or extends a scenario that plays to them and names it in `.hawkes/scenario.txt`. The agent also
 writes `.hawkes/try.md` (how J tries it). The change is **not playtested automatically**: it is ready once the agent's
