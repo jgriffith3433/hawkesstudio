@@ -161,6 +161,11 @@
           "scenario": "smoke",
           "where": "live",
           "device": "phone"
+        },
+        {
+          "scenario": "layout",
+          "where": "local",
+          "device": "phone"
         }
       ],
       "story": [

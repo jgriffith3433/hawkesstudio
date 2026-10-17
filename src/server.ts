@@ -6,7 +6,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { PORT, DATA, paths, loadProducts, getProduct, StudioError, localUrl } from './config.ts';
 import { db, rowToStep } from './db.ts';
-import { startRun, startPartial, getRun, listRuns, activeRun, lastStep, nameOf, resumeRuns, type RunOptions } from './pipeline.ts';
+import { startRun, startPartial, playtestRequest, getRun, listRuns, activeRun, lastStep, nameOf, resumeRuns, type RunOptions } from './pipeline.ts';
 import { pruneDetached } from './detach.ts';
 import { listFindings, getFinding, updateFinding } from './backlog.ts';
 import { reportMarkdown, listReports } from './report.ts';
@@ -157,7 +157,7 @@ const server = http.createServer(async (req, res) => {
     }
     if (route === '/api/playtest' && method === 'POST') {
       const b = await readJson(req);
-      return send(res, 200, { ok: true, run: startPartial('playtest', String(b.product), { scenario: b.scenario, where: b.where, device: b.device === 'phone' ? 'phone' : undefined, mode: b.mode, review: b.review, focus: b.focus, reviewMode: ['full', 'verify', 'regression'].includes(b.reviewMode) ? b.reviewMode : undefined, seed: Number(b.seed) || undefined, options: b.options && typeof b.options === 'object' && !Array.isArray(b.options) ? b.options : undefined, origin }).id });
+      return send(res, 200, { ok: true, run: startPartial('playtest', String(b.product), { ...playtestRequest(b), origin }).id });
     }
 
     // Playtests: every run with its video, screenshots and review (dashboard Playtests tab), trends.
