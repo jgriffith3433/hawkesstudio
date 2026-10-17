@@ -1,6 +1,6 @@
 # Learned: Hawkes Studio
 
-Generated from Hawkes Studio's shared memory (2026-10-17 01:31 UTC). Edit entries in Studio's Memory tab, not here.
+Generated from Hawkes Studio's shared memory (2026-10-17 01:47 UTC). Edit entries in Studio's Memory tab, not here.
 
 ## J's decisions
 
@@ -28,6 +28,8 @@ Generated from Hawkes Studio's shared memory (2026-10-17 01:31 UTC). Edit entrie
   <sub>m_ed496bec32ff · agent c_b37837ab685b · 2026-10-16 · https://github.com/jgriffith3433/hawkesstudio/pull/4</sub>
 - **.claude/ is not writable from an agent session**: role files and skills (.claude/agents, .claude/skills) can't be edited there; say so in the summary instead of working around it.  
   <sub>m_71c07390cf64 · agent c_b37837ab685b · 2026-10-16 · https://github.com/jgriffith3433/hawkesstudio/pull/4</sub>
+- **A merged Studio/Gen roadmap task crashed the whole PM loop**: pm.ts syncTasks -> checkOnBeta called pipeline.ts startBeta('hawkesstudio') 45 min after merge; getProduct throws for infra (no beta lane), uncaught, so tick() aborted before startWork() every minute and no roadmap task started (2026-10-17, lastError 'No product "hawkesstudio"'). Fix in c_725b3c46047d: infra tasks skip beta checks, per-task try/catch. When the PM stops starting work, check studio_pm status lastError first.  
+  <sub>m_20265690dbbe · Talk · 2026-10-17 · c_725b3c46047d</sub>
 - **Kokoro TTS in the browser is too slow on J's laptop for Talk's calls; browser voice stays the default**: Measured Oct 2026 (Core Ultra 7 155U, Intel integrated graphics, kokoro-js 1.2.1): WebGPU fp32/fp16 1.2-2.5 s per short sentence and 3-5 s per long one once warm (RTF 0.5-1.4), 4-14 s for the first sentence after loading, 20-35 s to load (~330 MB the first time). WASM q8 RTF 2.3-2.9 (single-threaded: no COOP/COEP). Misses the 1.5 s first-audio bar, so calls default to the browser voice (Edge Natural first); Kokoro is opt-in in Settings with a 1.5 s per-sentence fallback. Settings > Calls > "Say a sentence" measures a device.  
   <sub>m_7540847397c1 · J · 2026-10-16 · branch call-settings (f0b49e8), dashboard/call.js</sub>
 - **`.call[hidden]` loses to more specific display rules**: any new `.talk-dock .call { display: ... }` must be `.call:not([hidden])` or the call pane shows with no call.  
