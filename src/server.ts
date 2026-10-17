@@ -190,7 +190,11 @@ const server = http.createServer(async (req, res) => {
     }
 
     // Backlog.
-    if (route === '/api/findings' && method === 'GET') return send(res, 200, { findings: listFindings({ product: q('product'), status: q('status'), severity: q('severity'), limit: Number(q('limit')) || 500 }) });
+    if (route === '/api/findings' && method === 'GET') {
+      const list = listFindings({ product: q('product'), status: q('status'), severity: q('severity'), limit: Number(q('limit')) || 500 });
+      // Each with the library entities it names (finding-entities.ts); without Gen, the findings alone.
+      return send(res, 200, { findings: await (await import('./finding-entities.ts')).withEntities(list).catch(() => list) });
+    }
     m = /^\/api\/findings\/(f_[0-9a-f]+)$/.exec(route);
     if (m && method === 'GET') return send(res, 200, getFinding(m[1]) ?? { error: 'no such finding' });
     if (m && method === 'PATCH') return send(res, 200, updateFinding(m[1], await readJson(req)));

@@ -330,7 +330,9 @@ export function remember(id: string) {
   }
 }
 
-async function writeBrief(c: Change, p: Product, findings: any[], note?: string) {
+async function writeBrief(c: Change, p: Product, findings0: any[], note?: string) {
+  // Each finding with the library entities it names (finding-entities.ts), so the agent can fix art there, not in code.
+  const findings: any[] = await import('./finding-entities.ts').then(({ withEntities }) => withEntities(findings0)).catch(() => findings0);
   const dir = path.join(c.worktree, '.hawkes');
   fs.mkdirSync(path.join(dir, 'shots'), { recursive: true });
   // Keep the brief out of commits.
@@ -390,7 +392,8 @@ ${findings.map((f) => `### [${f.severity}] ${f.title}
 - Area: ${f.area ?? '-'} · scenario: ${f.scenario ?? '-'} · seen ${f.seen} time(s)
 - What's wrong: ${f.detail ?? '-'}
 - Suggested fix: ${f.fix ?? '-'}
-- Screenshots: ${(shots.filter((s) => s.includes(f.id)).map((s) => `\`${s}\``).join(', ')) || 'none'}`).join('\n\n')}
+- Screenshots: ${(shots.filter((s) => s.includes(f.id)).map((s) => `\`${s}\``).join(', ')) || 'none'}${f.entities?.length ? `
+- In Hawkes Gen's library: ${f.entities.map((e: any) => `\`${e.id}\` (${e.kind})`).join(', ')}. When the problem is the art itself, fix it there (the hawkesgen MCP: hawkesgen_entities to see its versions, hawkesgen_entity_make with revise and feedback, hawkesgen_entity_judge to pick): a pick is written into this repo's files by Studio.` : ''}`).join('\n\n')}
 ${note ? `\n## Notes on the last attempt (J's or the PM's)\n\n${note}\n` : ''}${mem.text ? `\n${mem.text}` : ''}
 ## How to work
 

@@ -113,6 +113,11 @@ How to work:
   studio_changes / studio_change (agent pull requests), studio_playtest, studio_build, studio_assets, studio_previews,
   studio_deploy_plan, studio_rollback (without confirm: the plan). Use hawkesgen tools for generation (images, video,
   music, voice, 3D) and the library.
+- The library (Gen's entities: characters, props, stages, pages, each slot keeping every version) is how art is made
+  and changed. A finding's entities name the ones it's about: fix art there (hawkesgen_entities, hawkesgen_entity_make
+  with revise and feedback, hawkesgen_entity_judge to pick), not with an agent code change. A pick is written into the
+  product's files by Studio on its own. studio_content shows each product's library and what is unmade. GPU work waits
+  for a server: J starts servers (outside Talk); say when a job is waiting for one.
 - The repos and docs are in ${PROJECTS} (the same layout as J's C:\\Projects); read AGENTS.md files and story docs
   when you need context. ${sandboxOn() ? 'You change files only in your workspace (see above); the server\'s own checkouts are read-only.' : 'You change things by starting agents (below), not by editing files in this session.'}
 - J doesn't review code. Explain changes in plain words: what was wrong, what changed, how it was checked (agent
