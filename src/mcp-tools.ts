@@ -133,6 +133,18 @@ export function studioMcp({ studio, waitRun }: Client = { studio: defaultStudio,
       run: async ({ product }) => studio(`/api/assets/${product}`),
     },
     {
+      name: 'studio_content',
+      description: "Content health of every product (or one): whether it's wired to Hawkes Gen the standard way (a hawkes.library.json or hawkes.content.json mapping, the hawkesgen MCP server, an AGENTS.md section), its entities by kind, takes waiting for a pick, unmade slots its kinds' recipes could make, SDK copies behind Gen's version, and the issues to fix. folders: also what importing its folders would change (slower).",
+      inputSchema: obj({ product: str('Product id (optional; default every product)'), folders: bool('Also compare the folders with the library (slower)') }),
+      run: async ({ product, folders }) => studio(`/api/content/health?${new URLSearchParams({ ...(product ? { product: String(product) } : {}), ...(folders ? { folders: '1' } : {}) })}`),
+    },
+    {
+      name: 'studio_content_wire',
+      description: "Wires a product to Hawkes Gen the standard way, writing only what's missing into its checkout (never overwriting, never committing): the hawkesgen and hawkesstudio MCP servers in .mcp.json, a Hawkes Gen section in AGENTS.md, an empty presets file in hawkesgen/presets (the style stays empty until the product has chosen a look), and with kind and root a hawkes.library.json (each folder under root an entity). dry: say what it would write. Check with studio_content first.",
+      inputSchema: obj({ product: str('Product id'), kind: str('Entity kind for its folders (character, prop, stage...)'), root: str('Folder of entity folders, relative to the repo'), dry: bool('Only say what it would write') }, ['product']),
+      run: async ({ product, kind, root, dry }) => studio('/api/content/wire', { method: 'POST', body: { product, kind, root, dry } }),
+    },
+    {
       name: 'studio_make_assets',
       description: 'Makes the missing or out-of-date assets of a product through Hawkes Gen (asset.make: the chain of tools, best-of-N picked by Claude) and writes the files into the project. GPU steps cost money while servers run. only: just these ids (made even if current); force: remake all (including hand-edited).',
       inputSchema: obj({ product: str('Product id'), only: strs('Asset ids'), force: bool('Remake even current or hand-edited assets'), wait: bool('Wait for it') }, ['product']),

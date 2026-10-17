@@ -21,6 +21,9 @@
 // "inputs": ["relative/path.png"] (relative to the repo) are passed as $input:0, $input:1 ...
 // "pickAt": 2 makes the candidates at step 2 (the steps before it run once), e.g. a Blender render styled three ways.
 // "$step1:depth" passes on step 1's output titled "depth" (blender.render makes several).
+//
+// One manifest for everything a product generates: hawkes.content.json holds these assets under "assets" and the
+// library mapping under "library" (hawkesgen/docs/library.md). When it has "assets", it wins over hawkes.assets.json.
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -32,7 +35,15 @@ export type AssetSpec = { id: string; steps: any[]; candidates?: number; pick?: 
 type Manifest = { project?: string; assets: AssetSpec[] };
 type Lock = Record<string, { recipe: string; job: string; made: string; files: Record<string, string> }>;
 
-const manifestPath = (p: Product) => path.join(abs(p.repo), 'hawkes.assets.json');
+const manifestPath = (p: Product) => {
+  const content = path.join(abs(p.repo), 'hawkes.content.json');
+  try {
+    if (Array.isArray(JSON.parse(fs.readFileSync(content, 'utf8')).assets)) return content;
+  } catch {
+    /* no content manifest, or none with assets */
+  }
+  return path.join(abs(p.repo), 'hawkes.assets.json');
+};
 const lockPath = (p: Product) => path.join(abs(p.repo), 'hawkes.assets.lock.json');
 
 export function loadManifest(p: Product): Manifest | null {
@@ -41,8 +52,8 @@ export function loadManifest(p: Product): Manifest | null {
   const m = JSON.parse(fs.readFileSync(f, 'utf8')) as Manifest;
   const ids = new Set<string>();
   for (const a of m.assets ?? []) {
-    if (!a.id || !Array.isArray(a.steps) || !a.steps.length || !a.files || typeof a.files !== 'object') throw new Error(`${p.repo}/hawkes.assets.json: every asset needs id, steps and files (${a.id ?? '?'})`);
-    if (ids.has(a.id)) throw new Error(`${p.repo}/hawkes.assets.json: duplicate id ${a.id}`);
+    if (!a.id || !Array.isArray(a.steps) || !a.steps.length || !a.files || typeof a.files !== 'object') throw new Error(`${p.repo}/${path.basename(f)}: every asset needs id, steps and files (${a.id ?? '?'})`);
+    if (ids.has(a.id)) throw new Error(`${p.repo}/${path.basename(f)}: duplicate id ${a.id}`);
     ids.add(a.id);
   }
   return m;

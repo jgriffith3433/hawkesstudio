@@ -155,6 +155,24 @@ async function main() {
       for (const a of st.assets) console.log(`${a.status.padEnd(8)} ${a.id.padEnd(24)} ${a.detail}`);
       return;
     }
+    case 'content': {
+      // studio content [product] [--folders]                       content health
+      // studio content wire <product> [--kind character --root Art] [--dry]
+      if (rest[0] === 'wire') {
+        const r = await studio('/api/content/wire', { method: 'POST', body: { product: rest[1], kind: flags.kind, root: flags.root, dry: !!flags.dry } });
+        for (const w of r.wrote) console.log(`${w.action.padEnd(14)} ${w.file}`);
+        if (r.nothing) console.log(`${rest[1]} is already wired`);
+        return;
+      }
+      const q = new URLSearchParams({ ...(rest[0] ? { product: rest[0] } : {}), ...(flags.folders ? { folders: '1' } : {}) });
+      const r = await studio(`/api/content/health?${q}`);
+      for (const p of r.products) {
+        const kinds = Object.entries(p.library.byKind).map(([k, n]) => `${n} ${k}`).join(', ') || 'no entities';
+        console.log(`${p.ok ? 'ok    ' : 'ISSUES'} ${p.product.padEnd(20)} ${kinds}; ${p.library.takesWaiting} takes waiting; ${p.library.unmadeCount} unmade`);
+        for (const i of p.issues) console.log(`         ${i}`);
+      }
+      return;
+    }
     case 'changes': {
       const r = await studio('/api/changes');
       console.log(`today: ${r.today.count} fixes, $${r.today.cost.toFixed(2)} (limits: ${r.settings.maxPerDay}/day, $${r.settings.maxCostPerDay})`);

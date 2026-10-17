@@ -121,6 +121,15 @@ const server = http.createServer(async (req, res) => {
     if (route === '/api/products' && method === 'GET') return send(res, 200, { products: loadProducts() });
     // The Library tab (library.ts, dashboard/library.js): Gen's library through Studio, and picks into product repos.
     if (route.startsWith('/api/gen/v1/')) return await (await import('./library.ts')).relay(req, res, route.slice('/api/gen/v1/'.length) + url.search);
+    if (route === '/api/content/health' && method === 'GET') {
+      const product = url.searchParams.get('product') || undefined;
+      const folders = url.searchParams.get('folders') === '1';
+      return send(res, 200, await cached(`content-health ${product ?? '*'} ${folders}`, folders ? 600_000 : 30_000, async () => (await import('./content.ts')).contentHealth({ product, folders })));
+    }
+    if (route === '/api/content/wire' && method === 'POST') {
+      const b = await readJson(req);
+      return send(res, 200, (await import('./content.ts')).wire(String(b.product ?? ''), { kind: b.kind, root: b.root, slots: b.slots, dry: !!b.dry }));
+    }
     if (route === '/api/library/waiting' && method === 'GET') return send(res, 200, await cached('library-waiting', 15_000, async () => (await import('./library.ts')).waiting()));
     if (route === '/api/library/writeback' && method === 'POST') {
       const b = await readJson(req);
