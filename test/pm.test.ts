@@ -18,15 +18,15 @@ fs.writeFileSync(process.env.STUDIO_PRODUCTS, JSON.stringify({ products: [{
 }, {
   id: 'pmother', name: 'PM other', framing: 'test', engine: 'static', repo: 'other', site: 'other', live: 'http://127.0.0.1:9/',
   local: { serve: 'static', dir: 'other', port: 8798, path: '/' }, playtests: [{ scenario: 'smoke', where: 'local' }], story: [], about: 'A fixture.',
-}, ...['pmthird', 'pmfourth'].map((id) => ({
+}, ...['pmthird', 'pmfourth', 'pmfifth', 'pmsixth'].map((id) => ({
   id, name: id, framing: 'test', engine: 'static', repo: id, site: id, live: 'http://127.0.0.1:9/',
   local: { serve: 'static', dir: id, port: 8799, path: '/' }, playtests: [{ scenario: 'smoke', where: 'local' }], story: [], about: 'A fixture.',
-}))], repos: { other: 'x/other', pmthird: 'x/pmthird', pmfourth: 'x/pmfourth' }, infra: [{ id: 'pminfra', name: 'PM infra', repo: 'pminfra', slug: 'x/pminfra' }] }));
+}))], repos: { other: 'x/other', pmthird: 'x/pmthird', pmfourth: 'x/pmfourth', pmfifth: 'x/pmfifth', pmsixth: 'x/pmsixth' }, infra: [{ id: 'pminfra', name: 'PM infra', repo: 'pminfra', slug: 'x/pminfra' }] }));
 
 const rm = await import('../src/roadmap.ts');
 const { gate, allMet } = await import('../src/acceptance.ts');
 const pm = await import('../src/pm.ts');
-const { db } = await import('../src/db.ts');
+const { db, J } = await import('../src/db.ts');
 
 test('items, tasks, order and dependencies', () => {
   const it = rm.addItem({ product: 'PM test', title: 'Checkout', goal: 'Players can buy a shot', criteria: '- a buy button\n- the cart shows the price', size: 'M', status: 'planned' });
@@ -387,4 +387,98 @@ test('a finding is fixed as soon as an agent takes it; the PM leaves it; a revie
   db.prepare(`UPDATE findings SET status = 'fixed', note = 'merged' WHERE id = 'f_dddddddddddd'`).run();
   absorb('pmother', 'r_back', 'smoke@local', [{ severity: 'bug', title: 'Pause menu freezes the timer' }]);
   assert.equal(getFinding('f_dddddddddddd')!.status, 'open');
+});
+
+test('a task is started once: a failed try is retried, the retry merges, and nothing starts a third (k_da696e030f80)', async () => {
+  process.env.STUDIO_PM_TALK = 'off';
+  const agents = path.join(process.env.STUDIO_DATA!, 'agents.json');
+  // Beta playtests on: the PM's check of a merged task runs (it started the duplicate on 2026-10-17).
+  fs.writeFileSync(agents, JSON.stringify({ maxConcurrent: 0, betaPlaytests: true }));
+  const token = process.env.GITHUB_TOKEN;
+  process.env.GITHUB_TOKEN = 'test';
+  const before = pm.pmSettings();
+  pm.startPm();
+  const changesOf = (task: string) => db.prepare(`SELECT id, status FROM changes WHERE task = ? ORDER BY created`).all(task) as any[];
+  const old = Date.now() - 3600_000;
+  try {
+    pm.savePmSettings({ maxConcurrent: pm.capacity().active + 5, maxStartsPerDay: 1000 });
+    const it = rm.addItem({ product: 'pmfifth', title: 'Powered by', status: 'planned', ord: -900 });
+    const crit = ['Landing page shows Powered by HAWKES GEN', 'Landing page links to the parent'];
+    const t = rm.addTask({ item: it.id, request: 'Add the footer', criteria: crit });
+    // Two starts in the same moment (two ticks, a tick and a PM turn): one change.
+    await Promise.all([pm.startWork(), pm.startWork()]);
+    assert.equal(changesOf(t.id).length, 1, 'started once');
+    const [c1] = changesOf(t.id);
+    // Try 1 fails; past the grace period the default retries it.
+    db.prepare(`UPDATE changes SET status = 'failed', detail = 'the agent made no commit', updated = ? WHERE id = ?`).run(old, c1.id);
+    await pm.tick();
+    assert.equal(changesOf(t.id).length, 2, 'the failed try is retried');
+    const c2 = changesOf(t.id)[1];
+    assert.equal(rm.getTask(t.id)!.change, c2.id);
+    // Ticks while the retry works start nothing more.
+    await pm.tick();
+    await pm.startWork();
+    assert.equal(changesOf(t.id).length, 2, 'one attempt at a time');
+    // The retry merges.
+    db.prepare(`UPDATE changes SET status = 'merged', updated = ? WHERE id = ?`).run(Date.now(), c2.id);
+    await pm.tick();
+    assert.equal(rm.getTask(t.id)!.status, 'merged');
+    rm.setTask(t.id, { merged_at: old });
+    // Beta's run judged one criterion unclear (it never reached the page), and another task's criteria: no restart.
+    db.prepare(`INSERT INTO runs (id, kind, status, detail, products, started, finished) VALUES ('r_dup000000001', 'beta', 'passed', 'beta pmfifth', '["pmfifth"]', ?, ?)`).run(Date.now() - 60_000, Date.now());
+    const step = (id: string, at: number, criteria: any[], run = 'r_dup000000001') => db.prepare(`INSERT INTO steps (id, run, product, kind, name, status, data, started) VALUES (?, ?, 'pmfifth', 'review', 'smoke', 'done', ?, ?)`).run(id, run, J({ verdict: 'ship', criteria }), at);
+    step('s_dup000000001', Date.now() - 50_000, [{ criterion: crit[0], met: 'unclear', evidence: 'only one page checked' }, { criterion: crit[1], met: 'yes', evidence: 'linked' }]);
+    step('s_dup000000002', Date.now() - 40_000, [{ criterion: 'Fixed: something else', met: 'no', evidence: 'another task' }]);
+    await pm.tick();
+    await pm.tick();
+    await pm.startWork();
+    assert.equal(changesOf(t.id).length, 2, 'no third change for a merged task');
+    assert.equal(rm.getTask(t.id)!.status, 'merged', 'still merged');
+    assert.equal(rm.getTask(t.id)!.checks?.run, 'r_dup000000001', "judged by the review of its own criteria");
+    assert.equal(rm.listDecisions({ action: 'start' }).filter((d) => d.subject === t.id).length, 2);
+    // Nothing else may start it either (the PM turn's tools, a retry of the old failed try).
+    assert.match(pm.startBlocked(t.id) ?? '', /already merged/);
+    // A real miss on beta asks J instead of starting; his "try again" (back to planned) starts it fresh.
+    db.prepare(`INSERT INTO runs (id, kind, status, detail, products, started, finished) VALUES ('r_dup000000002', 'beta', 'passed', 'beta pmfifth', '["pmfifth"]', ?, ?)`).run(Date.now() - 35_000, Date.now());
+    step('s_dup000000003', Date.now() - 30_000, [{ criterion: crit[0], met: 'no', evidence: 'no footer' }, { criterion: crit[1], met: 'yes', evidence: 'linked' }], 'r_dup000000002');
+    await pm.tick();
+    assert.equal(rm.getTask(t.id)!.status, 'failed');
+    assert.equal(changesOf(t.id).length, 2, 'asked, not restarted');
+    rm.updateTask(t.id, { status: 'planned' });
+    assert.equal(pm.startBlocked(t.id), null, 'planned by hand may start again');
+    await pm.startWork();
+    assert.equal(changesOf(t.id).length, 3);
+    assert.equal(rm.getTask(t.id)!.status, 'working');
+  } finally {
+    pm.savePmSettings({ maxConcurrent: before.maxConcurrent, maxStartsPerDay: before.maxStartsPerDay });
+    fs.writeFileSync(agents, JSON.stringify({ maxConcurrent: 0 }));
+    if (token === undefined) delete process.env.GITHUB_TOKEN; else process.env.GITHUB_TOKEN = token;
+  }
+});
+
+test('a failed try is not retried while another try of the task is going or merged', async () => {
+  process.env.STUDIO_PM_TALK = 'off';
+  fs.writeFileSync(path.join(process.env.STUDIO_DATA!, 'agents.json'), JSON.stringify({ maxConcurrent: 0 }));
+  const token = process.env.GITHUB_TOKEN;
+  process.env.GITHUB_TOKEN = 'test';
+  pm.startPm();
+  try {
+    const it = rm.addItem({ product: 'pmsixth', title: 'Two tries', status: 'in progress', ord: -800 });
+    const t = rm.addTask({ item: it.id, request: 'Something' });
+    const old = Date.now() - 3600_000;
+    const add = (id: string, status: string, at: number) => db.prepare(`INSERT INTO changes (id, product, findings, status, detail, repo, slug, branch, base, worktree, title, notes, log, created, updated, task)
+      VALUES (?, 'pmsixth', '[]', ?, ?, 'pmsixth', 'x/pmsixth', 'task/z', 'beta', ?, 'Something', '[]', '[]', ?, ?, ?)`).run(id, status, status, path.join(tmp, 'none', id), at, at, t.id);
+    // The other try is fresh (an old ready one would get the default review, which merges through GitHub).
+    add('c_two00000001', 'ready', Date.now());
+    add('c_two00000002', 'failed', old);
+    // The task row still points at the failed one (a stale row): the ready one is the task now.
+    rm.setTask(t.id, { status: 'working', change: 'c_two00000002', changes: ['c_two00000001', 'c_two00000002'], tries: 2 });
+    for (const status of ['ready', 'needs answer', 'merged']) {
+      db.prepare(`UPDATE changes SET status = ? WHERE id = 'c_two00000001'`).run(status);
+      await pm.tick();
+      assert.equal((db.prepare(`SELECT COUNT(*) AS n FROM changes WHERE task = ?`).get(t.id) as any).n, 2, `no retry while the other try is ${status}`);
+    }
+  } finally {
+    if (token === undefined) delete process.env.GITHUB_TOKEN; else process.env.GITHUB_TOKEN = token;
+  }
 });

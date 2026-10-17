@@ -112,8 +112,11 @@ writes `.hawkes/try.md` (how J tries it). The change is **not playtested automat
 own checks pass and its pull request is open (J decided, 2026-10-16: a playtest is something he asks for, not a gate).
 After the merge, beta's run plays that scenario and each criterion is judged **yes / no / unclear** with evidence
 (Hawkes Gen's review when it judges `criteria`, else a Claude call over the review's frames, the playtest's events and
-log: about a cent): the task is `verified` only when every one is met on beta. A criterion missed on beta starts a
-follow-up change on top of beta (it counts as a try).
+log: about a cent): the task is `verified` only when every one is met on beta. Only a review that judged the task's
+own criteria counts. A merged task is never started again by the loop (two agents would land the same work twice): a
+criterion that is `no` on beta fails the task and asks J (his "try again" puts it back to planned, which starts it
+fresh); one that is only `unclear` tells the PM and nothing restarts. A task gets one attempt at a time: a failed attempt
+is retried only while no other attempt of it is working, ready, waiting on an answer or merged (`startBlocked` in pm.ts).
 
 **A change's playtest, on request.** "Playtest this change" on the change (Changes tab), or Talk's `studio_change { id,
 action: "playtest" }` (`POST /api/changes/<id>/playtest`, `playtestChange` in agents.ts): Unity builds the branch on

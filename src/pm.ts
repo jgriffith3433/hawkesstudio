@@ -201,7 +201,8 @@ async function checkOnBeta(t: Task) {
   const s = pmSettings();
   const steps = db.prepare(`SELECT s.*, r.kind AS run_kind, r.status AS run_status FROM steps s JOIN runs r ON r.id = s.run
     WHERE s.product = ? AND s.kind = 'review' AND r.kind = 'beta' AND s.started > ? ORDER BY s.started DESC LIMIT 10`).all(t.product, t.merged_at ?? 0) as any[];
-  const judged = steps.map((x) => ({ ...x, data: parse(x.data) })).find((x) => Array.isArray(x.data?.criteria) && x.data.criteria.length);
+  // Only a review that judged this task's own criteria (a beta run checks whatever its starter asked: another task's, a fix's).
+  const judged = steps.map((x) => ({ ...x, data: parse(x.data) })).find((x) => judgesAll(x.data?.criteria, t.criteria));
   if (!judged) {
     // No beta check yet: start one if nothing is running for this product and the merge is a while ago.
     const running = db.prepare(`SELECT id FROM runs WHERE kind = 'beta' AND status = 'running' AND products LIKE ?`).get(`%"${t.product}"%`);
@@ -222,7 +223,7 @@ async function checkOnBeta(t: Task) {
   }
   const play = db.prepare(`SELECT data FROM steps WHERE run = ? AND kind = 'playtest' AND product = ? ORDER BY started DESC LIMIT 1`).get(judged.run, t.product) as any;
   const video = parse(play?.data)?.video ?? null;
-  const results = judged.data.criteria as Check[];
+  const results = t.criteria.map((k) => (judged.data.criteria as Check[]).find((r) => r.criterion === k)!);
   const checks = { where: 'beta' as const, at: judged.started, run: judged.run, video, verdict: judged.data.verdict, results };
   if (allMet(results, t.criteria)) {
     setTask(t.id, { status: 'verified', verified_at: Date.now(), checks });
@@ -234,19 +235,48 @@ async function checkOnBeta(t: Task) {
   setTask(t.id, { checks });
   const missed = results.filter((r) => r.met !== 'yes');
   const why = missed.map((r) => `${r.criterion} (${r.met}: ${r.evidence ?? ''})`).join('; ');
-  if (t.tries >= s.maxTries) {
-    setTask(t.id, { status: 'failed', note: `on beta: ${why}`.slice(0, 1000) });
-    askJ(`"${t.title}" (${name(t.product)}) is on beta but still misses criteria after ${t.tries} tries: ${why}. Keep trying with a different approach, change the criteria, or drop it?`, { subject: t.id, product: t.product, options: ['try again', 'change the criteria', 'drop it'] });
+  // A merged task is never started again by the loop: a second agent redoes the merged work and both land on beta
+  // (k_da696e030f80, 2026-10-17: one "unclear" started a third change that merged a duplicate). Unclear isn't a miss:
+  // the PM hears it and can ask for a playtest that reaches it. A real miss is J's call; "try again" puts the task back
+  // to planned, which starts it fresh.
+  if (!missed.some((r) => r.met === 'no')) {
+    logDecision('beta-check', t.id, t.product, `"${t.title}": on beta, nothing failed but unclear (run ${judged.run}): ${why}`.slice(0, 1000));
+    pmEvent('beta check', `Task ${t.id} ("${t.title}", ${name(t.product)}) is merged; beta's run ${judged.run} couldn't tell for: ${why}. Nothing restarts; ask for a playtest that reaches it if it matters.`, t.id, t.product);
     return;
   }
-  if (!s.enabled) return;
-  // A follow-up change on top of beta, with what beta showed.
-  await startTaskChange(getTask(t.id)!, `It was merged into beta, but beta's playtest shows these criteria not met: ${why}. Fix that on top of what is on beta now.`);
+  setTask(t.id, { status: 'failed', note: `on beta: ${why}`.slice(0, 1000) });
+  askJ(`"${t.title}" (${name(t.product)}) is merged into beta but misses criteria there (try ${t.tries} of ${s.maxTries}): ${why}. Try again on top of beta, change the criteria, or drop it?`, { subject: t.id, product: t.product, options: ['try again', 'change the criteria', 'drop it'] });
 }
 
-/** Starts (or restarts) the agent change of a task. */
-async function startTaskChange(t: Task, note?: string, why?: string) {
+/** Every one of a task's criteria judged by name in these checks. */
+const judgesAll = (checks: unknown, criteria: string[]) => Array.isArray(checks) && criteria.length > 0 && criteria.every((k) => checks.some((r: any) => r?.criterion === k));
+
+/** A task's change still in flight: an agent on it, ready for review, or waiting on an answer. */
+const LIVE = [...ACTIVE, 'ready', 'needs answer'];
+
+/**
+ * Why a task can't get another agent change now, or null. One attempt at a time, and a merged one is the task done:
+ * only putting the task back to planned by hand (J, or Talk on his word) starts it again. Read from the changes table,
+ * not the task row, so a stale task (a failed change's retry, a second tick) can't miss an attempt that went on.
+ */
+export function startBlocked(taskId: string): string | null {
+  const t = getTask(taskId);
+  if (!t) return `no task ${taskId}`;
+  const rows = db.prepare(`SELECT id, status FROM changes WHERE task = ? ORDER BY created DESC`).all(t.id) as any[];
+  const live = rows.find((r) => LIVE.includes(r.status));
+  if (live) return `its change ${live.id} is ${live.status}`;
+  const merged = rows.find((r) => r.status === 'merged');
+  if (merged && t.status !== 'planned') return `its change ${merged.id} is already merged`;
+  return null;
+}
+
+/** Starts (or restarts) the agent change of a task, unless startBlocked says it has one going or merged. */
+async function startTaskChange(task: Task, note?: string, why?: string) {
   const { startTask } = await changes();
+  // Checked after the await and with nothing awaited before the insert: two callers in one tick, or two ticks, can't both pass.
+  const blocked = startBlocked(task.id);
+  if (blocked) throw new StudioError(`"${task.title}" isn't started again: ${blocked}`);
+  const t = getTask(task.id)!;
   const request = `${t.request}${note ? `\n\nFrom the PM (an earlier attempt): ${note}` : ''}`;
   const id = startTask(t.product, request, { criteria: t.criteria, task: t.id, title: t.title, gpuBudget: t.gpu?.items?.length ? t.gpu.budget ?? 0 : null });
   setTask(t.id, { status: 'working', change: id, changes: [...t.changes, id], tries: t.tries + 1, merged_at: null });
@@ -809,6 +839,8 @@ async function applyDefaults(subjects: string[], olderThan?: number) {
     if (!c.task) continue;
     const t = getTask(c.task);
     if (!t || t.change !== c.id || t.status === 'failed') continue;
+    // Another attempt of this task is going or merged: that one is the task now, nothing to retry.
+    if (startBlocked(t.id)) continue;
     if (subjects.includes(c.id) || (olderThan !== undefined && now - (c.updated ?? c.created) > olderThan && !turnRunning())) {
       if (t.tries >= pmSettings().maxTries) {
         setTask(t.id, { status: 'failed' });
