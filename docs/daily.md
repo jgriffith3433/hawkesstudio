@@ -44,7 +44,8 @@ An uncapped reviewer with no memory finds new polish forever. So (Hawkes Gen `pl
 - **Known findings in, new ones out.** Each review gets the product's open, fixing, idea and won't-fix findings (ids and
   titles) and reports only problems not on that list. It says by id which known ones look fixed (an open finding or idea
   of the same scenario is then marked fixed with a note; if it's reported again later it comes back) or are still
-  present (counted as seen).
+  present (counted as seen). A finding an agent took is fixed from the start (below): reported again while that change
+  is unmerged, it is only counted as seen; after the merge, reported again, it comes back.
 - **A mode per run kind.**
 
   | Run | Mode | What reaches the backlog |
@@ -79,7 +80,8 @@ acceptance criteria) with **tasks** in order (each one agent change, with its ow
 rough cost. With J's yes it adds them (`studio_roadmap_edit`, status `planned`); they start by themselves.
 
 **2. The roadmap** (Roadmap tab, `studio_roadmap`):
-- item: `idea` (parked) → `planned` → `in progress` → `on beta` (every task verified on beta) → `live` → `done` | `dropped`
+- item: `idea` (parked) → `planned` → `done` as soon as it has tasks | `dropped`. Items from before 2026-10-17 that were
+  already `in progress` still go → `on beta` (every task verified on beta) → `live`.
 - task: `idea` | `planned` → `working` (its agent change) → `needs answer` (the agent asked) → `review` (the change is
   ready) → `merged` (into beta) → `verified` (its criteria pass on beta) → `live` | `failed` (after 3 tries) | `dropped`
 
@@ -91,6 +93,18 @@ own takes its item's. The PM starts planned tasks across all products highest pr
 skipping blocked ones (a task it depends on isn't merged yet), within its limits and after J's own reports; the decision
 log says why ("priority high, not blocked"). The Roadmap tab shows a badge with a small select to change it, "blocked
 by" on blocked tasks, and a sort by priority.
+
+**Consumed as soon as there's a task** (J, 2026-10-17: "just want the bug and roadmap item to be consumed as soon as we
+create tasks for them and assume that it's done afterwards"):
+- A planned item with tasks is `done` right away (`items.consumed`, a note "[done: tasks created <date>]";
+  `syncItem` in roadmap.ts). Its tasks still start and run as before (`startableTasks` takes consumed items; one J marked
+  done by hand doesn't start its tasks). It shows in Ready to test once a task is verified on beta, and counts toward
+  its milestone once its tasks are merged into beta (a milestone is what J playtests himself).
+- A finding is `fixed` the moment an agent change takes it (studio_fix, the PM loop, the daily run's auto-fixes, Talk),
+  with the note `agent change <id>` (`startFix` in agents.ts); it no longer sits in `fixing`. The PM loop only starts
+  fixes for open findings, so it doesn't start another. A review reporting it again while that change is unmerged
+  doesn't reopen it (`takenBy` in backlog.ts). It opens again only when the change fails or is closed (or the start is
+  undone), or when it's reported again after the merge.
 
 **3. Acceptance, not just merged.** Each task's criteria go into its agent's brief. Where the game has the playtest
 contract, the agent adds or extends a scenario that plays to them and names it in `.hawkes/scenario.txt`. The agent also
@@ -122,7 +136,7 @@ rollbacks and Studio or Gen merges into main stay J's. Turned off, everything be
 merges ready changes.
 
 **4. The PM loop** (`src/pm.ts`, on the server; `STUDIO_PM=on` elsewhere). Every minute and right after anything finishes:
-- keeps task and item statuses current (from changes, beta checks and go lives)
+- keeps task statuses current (from changes, beta checks and go lives); items are done once they have tasks (above)
 - starts the next planned tasks in roadmap order (dependencies merged first), then the worst open bugs (blockers, then
   bugs seen most), within the caps: agents at once (`maxConcurrent`, default 2), agent starts per day
   (`maxStartsPerDay`, 8), one change per product at a time. It starts nothing while a Studio or Gen deploy is waiting.

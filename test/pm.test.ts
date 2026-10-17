@@ -33,18 +33,40 @@ test('items, tasks, order and dependencies', () => {
   assert.equal(it.product, 'pmtest');
   assert.deepEqual(it.criteria, ['a buy button', 'the cart shows the price']);
   const a = rm.addTask({ item: it.id, request: 'Add the cart', criteria: ['the cart opens'] });
+  // J (2026-10-17): an item is consumed (done) as soon as it has tasks; its tasks still start and run.
+  assert.equal(rm.getItem(it.id)!.status, 'done');
+  assert.ok(rm.getItem(it.id)!.consumed);
+  assert.match(rm.getItem(it.id)!.note ?? '', /tasks created/);
   const b = rm.addTask({ item: it.id, request: 'Add the buy button', depends: [a.id] });
   assert.deepEqual(rm.startableTasks().map((t) => t.id), [a.id], 'b waits for a');
   rm.setTask(a.id, { status: 'working', change: 'c_000000000001' });
-  assert.equal(rm.getItem(it.id)!.status, 'in progress');
+  assert.equal(rm.getItem(it.id)!.status, 'done', 'stays done while its tasks run');
   rm.setTask(a.id, { status: 'merged', merged_at: Date.now() });
   assert.deepEqual(rm.startableTasks().map((t) => t.id), [b.id], 'b can start once a is merged');
   rm.setTask(a.id, { status: 'verified' });
   rm.setTask(b.id, { status: 'verified' });
-  assert.equal(rm.getItem(it.id)!.status, 'on beta');
-  rm.setTask(a.id, { status: 'live' });
-  rm.setTask(b.id, { status: 'live' });
-  assert.equal(rm.getItem(it.id)!.status, 'live');
+  assert.equal(rm.getItem(it.id)!.status, 'done');
+  // An item from before (in progress) still follows its tasks.
+  const old = rm.addItem({ product: 'pmtest', title: 'Old', status: 'idea' });
+  const ot = rm.addTask({ item: old.id, request: 'Old work' });
+  db.prepare(`UPDATE items SET status = 'in progress' WHERE id = ?`).run(old.id);
+  rm.setTask(ot.id, { status: 'verified' });
+  assert.equal(rm.getItem(old.id)!.status, 'on beta');
+  rm.setTask(ot.id, { status: 'live' });
+  assert.equal(rm.getItem(old.id)!.status, 'live');
+  // Done by hand (not consumed): its planned tasks don't start.
+  const hand = rm.addItem({ product: 'pmtest', title: 'By hand', status: 'idea' });
+  const ht = rm.addTask({ item: hand.id, request: 'Not this' });
+  rm.updateItem(hand.id, { status: 'done' });
+  assert.ok(!rm.startableTasks().some((x) => x.id === ht.id));
+  // Parked, then planned: consumed then.
+  const later = rm.addItem({ product: 'pmtest', title: 'Parked', status: 'idea' });
+  const lt = rm.addTask({ item: later.id, request: 'Parked work' });
+  assert.equal(rm.getItem(later.id)!.status, 'idea');
+  rm.updateItem(later.id, { status: 'planned' });
+  assert.equal(rm.getItem(later.id)!.status, 'done');
+  assert.ok(rm.startableTasks().some((x) => x.id === lt.id));
+  rm.updateItem(later.id, { status: 'dropped' });
   assert.throws(() => rm.addItem({ product: 'nope', title: 'x' }), /No product/);
   assert.throws(() => rm.updateItem(it.id, { status: 'shipped' }), /by hand/);
   assert.throws(() => rm.updateTask(a.id, { status: 'verified' }), /by hand/, 'verified comes from the checks');
@@ -123,6 +145,7 @@ test('a milestone is reached when all its items are on beta', () => {
   assert.equal(rm.milestoneProgress(ms.id).total, 2);
   const ta = rm.addTask({ item: a.id, request: 'Jump' });
   const tb = rm.addTask({ item: b.id, request: 'Dash' });
+  assert.equal(rm.milestoneProgress(ms.id).done, 0, 'consumed items count once their tasks are on beta');
   rm.setTask(ta.id, { status: 'verified' });
   assert.equal(rm.milestoneProgress(ms.id).done, 1);
   assert.ok(!rm.milestonesToReach().some((m) => m.id === ms.id), 'one item still in progress');
@@ -135,7 +158,8 @@ test('a milestone is reached when all its items are on beta', () => {
   assert.equal(rm.listMilestones({ product: 'pmtest' })[0].done, 2);
 });
 
-test('the ready report shows verified criteria and known bugs', () => {
+test('the ready report shows verified criteria and known bugs', async () => {
+  await import('../src/agents.ts'); // the changes table (a product's list reads its changes' summaries)
   const it = rm.addItem({ product: 'pmtest', title: 'Leaderboard', goal: 'See the best runs', status: 'planned' });
   const t = rm.addTask({ item: it.id, request: 'Add a leaderboard', criteria: ['the top 10 show'] });
   rm.setTask(t.id, { status: 'merged', merged_at: Date.now() - 1000, try: '1. Open the menu\n2. Press Leaderboard' });
@@ -143,7 +167,9 @@ test('the ready report shows verified criteria and known bugs', () => {
   const now = Date.now();
   db.prepare(`INSERT INTO findings (id, product, key, title, severity, status, first_seen, last_seen, item) VALUES ('f_cccccccccccc', 'pmtest', 'k3', 'Names overflow', 'bug', 'open', ?, ?, ?)`).run(now, now, it.id);
   const r = pm.readyReport({ item: it.id })[0];
-  assert.equal(r.status, 'on beta');
+  assert.equal(r.status, 'done');
+  assert.equal(r.partly, false);
+  assert.ok(pm.readyReport({ product: 'pmtest' }).some((x) => x.item === it.id), 'a consumed item shows in Ready to test');
   assert.equal(r.criteria[0].met, 'yes');
   assert.equal(r.criteria[0].video, 'a_video');
   assert.deepEqual(r.bugs.map((b) => b.id), ['f_cccccccccccc']);
@@ -328,4 +354,37 @@ test('priorities: a blocked high-priority task waits for an unblocked normal one
     pm.savePmSettings({ maxConcurrent: before.maxConcurrent, maxStartsPerDay: before.maxStartsPerDay });
     if (token === undefined) delete process.env.GITHUB_TOKEN; else process.env.GITHUB_TOKEN = token;
   }
+});
+
+test('a finding is fixed as soon as an agent takes it; the PM leaves it; a review doesn\'t reopen it while unmerged', async () => {
+  fs.writeFileSync(path.join(process.env.STUDIO_DATA!, 'agents.json'), JSON.stringify({ maxConcurrent: 0 }));
+  const { startFix, close, getChange } = await import('../src/agents.ts');
+  const { absorb, getFinding } = await import('../src/backlog.ts');
+  const now = Date.now();
+  db.prepare(`INSERT INTO findings (id, product, key, title, severity, status, first_seen, last_seen) VALUES ('f_dddddddddddd', 'pmother', 'k4', 'Pause menu freezes the timer', 'bug', 'open', ?, ?)`).run(now, now);
+  const id = startFix('pmother', ['f_dddddddddddd']);
+  assert.equal(getFinding('f_dddddddddddd')!.status, 'fixed');
+  assert.equal(getFinding('f_dddddddddddd')!.note, `agent change ${id}`);
+  // The PM's bug pass only takes open findings.
+  const token = process.env.GITHUB_TOKEN;
+  process.env.GITHUB_TOKEN = 'test';
+  try {
+    db.prepare(`UPDATE changes SET status = 'ready' WHERE id = ?`).run(id); // not busy: the PM could start another fix
+    await pm.startWork();
+    assert.equal((db.prepare(`SELECT COUNT(*) AS n FROM changes WHERE findings LIKE '%"f_dddddddddddd"%'`).get() as any).n, 1, 'no second fix');
+  } finally {
+    if (token === undefined) delete process.env.GITHUB_TOKEN; else process.env.GITHUB_TOKEN = token;
+  }
+  // Reported again while its change is unmerged: seen again, still fixed.
+  absorb('pmother', 'r_again', 'smoke@local', [{ severity: 'bug', title: 'Pause menu freezes the timer' }]);
+  assert.equal(getFinding('f_dddddddddddd')!.status, 'fixed');
+  assert.equal(getFinding('f_dddddddddddd')!.seen, 2);
+  // Closed without merging: open again.
+  await close(id, 'test');
+  assert.equal(getChange(id)!.status, 'closed');
+  assert.equal(getFinding('f_dddddddddddd')!.status, 'open');
+  // Merged, then reported again: it came back.
+  db.prepare(`UPDATE findings SET status = 'fixed', note = 'merged' WHERE id = 'f_dddddddddddd'`).run();
+  absorb('pmother', 'r_back', 'smoke@local', [{ severity: 'bug', title: 'Pause menu freezes the timer' }]);
+  assert.equal(getFinding('f_dddddddddddd')!.status, 'open');
 });

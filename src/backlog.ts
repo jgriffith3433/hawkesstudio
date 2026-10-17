@@ -43,7 +43,8 @@ export const IDEA_DAYS = 14;
  * and ideas go to the ideas list (status idea: never auto-fixed, expired after IDEA_DAYS unseen). Outside a full review
  * only regressions and blockers are taken. A finding J marked won't-fix stays won't-fix when a review reports it again
  * (its seen count and screenshots still update, so it's visible that it keeps happening); only a report of it as a
- * blocker reopens it. One that was fixed and is reported again comes back.
+ * blocker reopens it. One that was fixed and is reported again comes back, unless the agent change that took it is still
+ * unmerged (takenBy).
  */
 export function absorb(product: string, run: string, scenario: string, findings: any[], { mode = 'full' as ReviewMode } = {}) {
   const now = Date.now();
@@ -76,7 +77,8 @@ export function absorb(product: string, run: string, scenario: string, findings:
       if (dropped && f.severity === 'blocker') [status, note] = ['open', `Reopened ${day}: reported again as a blocker (it was won't-fix).`];
       else if (idea && !isIdea(severity)) [status, note] = ['open', `Moved to the backlog ${day}: reported as a ${severity}.`];
       else if (idea && match.status === 'expired') [status, note] = ['idea', `Back on the ideas list ${day}: seen again.`];
-      else if (back) [status, note] = [isIdea(severity) ? 'idea' : 'open', `Came back ${day}: it was fixed, and a review of ${scenario} saw it again.`];
+      // Fixed because an agent took it (J, 2026-10-17): it stays fixed while that change is unmerged (only seen again).
+      else if (back && !takenBy(back.id)) [status, note] = [isIdea(severity) ? 'idea' : 'open', `Came back ${day}: it was fixed, and a review of ${scenario} saw it again.`];
       if (status) {
         db.prepare(`UPDATE findings SET status = ?, note = ?, updated = ? WHERE id = ?`).run(status, note, now, match.id);
         const row = toFinding(db.prepare('SELECT * FROM findings WHERE id = ?').get(match.id));
@@ -94,6 +96,16 @@ export function absorb(product: string, run: string, scenario: string, findings:
     }
   }
   return { added, updated, ideas: ideasAdded, skipped };
+}
+
+/** The unmerged agent change that took a finding (it's fixed from the start: agents.ts startFix), or null. */
+export function takenBy(finding: string): string | null {
+  try {
+    const c = db.prepare(`SELECT id FROM changes WHERE findings LIKE ? AND status IN ('queued', 'working', 'verifying', 'revising', 'needs answer', 'ready') ORDER BY created DESC LIMIT 1`).get(`%"${finding}"%`) as any;
+    return c?.id ?? null;
+  } catch {
+    return null; // no changes table (agents.ts not loaded)
+  }
 }
 
 /**
@@ -197,7 +209,7 @@ export function getFinding(id: string) {
   return r ? toFinding(r) : null;
 }
 
-/** status: open | fixing (an agent is on it) | fixed | wontfix | idea (the ideas list) | expired (an idea not seen for IDEA_DAYS). */
+/** status: open | fixing (an agent was on it, before 2026-10-17; now a taken finding is fixed at once) | fixed | wontfix | idea (the ideas list) | expired (an idea not seen for IDEA_DAYS). */
 export function updateFinding(id: string, patch: { status?: string; note?: string; severity?: string }) {
   const f = getFinding(id);
   if (!f) throw new Error(`No finding ${id}`);

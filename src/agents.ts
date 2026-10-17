@@ -566,7 +566,9 @@ export function startFix(productId: string, findingIds: string[], { auto = false
   db.prepare('INSERT INTO changes (id, product, findings, status, detail, repo, slug, branch, base, worktree, title, notes, log, created) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
     .run(id, p.id, J(findings.map((f) => f.id)), 'queued', auto ? 'queued by the daily run' : 'queued', top, slug, branch, BETA, path.join(WORK(), id), `Fix: ${findings[0].title}`.slice(0, 120), '[]', '[]', Date.now());
   if (auto) db.prepare('UPDATE changes SET started_by = ? WHERE id = ?').run('the daily run', id);
-  for (const f of findings) updateFinding(f.id, { status: 'fixing', note: `agent change ${id}` });
+  // J (2026-10-17): a finding is consumed as soon as an agent takes it: fixed now, assumed done by the change. A review
+  // reporting it again doesn't reopen it while this change is unmerged (backlog.ts absorb); closing the change does.
+  for (const f of findings) updateFinding(f.id, { status: 'fixed', note: `agent change ${id}` });
   void pump();
   return id;
 }
@@ -1447,7 +1449,8 @@ async function closeNow(c: Change, by: string) {
   remember(id);
   for (const f of c.findings) {
     const fd = getFinding(f);
-    if (fd?.status === 'fixing') updateFinding(f, { status: 'open' });
+    // Taken by this change (fixed with its note, or "fixing" from before 2026-10-17) and it won't land: open again.
+    if (fd?.status === 'fixing' || (fd?.status === 'fixed' && fd.note === `agent change ${id}`)) updateFinding(f, { status: 'open' });
   }
   await cleanup(id, { deleteBranch: true });
   return getChange(id);
