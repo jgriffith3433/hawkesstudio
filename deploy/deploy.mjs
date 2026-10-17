@@ -21,6 +21,7 @@ import crypto from 'node:crypto';
 import { spawn, spawnSync } from 'node:child_process';
 import { DatabaseSync } from 'node:sqlite';
 import { HERE, PROJECTS, KEYS, state, saveState, myIp, log } from './aws.mjs';
+import { perProductKeys } from './keys.mjs';
 
 const args = process.argv.slice(2);
 const flag = (k) => args.includes(`--${k}`);
@@ -200,6 +201,9 @@ async function ensureKeys() {
   // The Gen key for the beta dev servers (src/dev.ts; https://<sub>.<domain>/dev/): role "user", so devtools can generate
   // through Gen but can't launch, start or terminate machines. It reaches the dev servers as HAWKESGEN_KEY.
   await ssh(`sudo grep -q '^DEV_GEN_KEY=' /etc/hawkes/keys.env || ( cd /srv/hawkes/hawkesgen && sudo -u hawkes node --disable-warning=ExperimentalWarning -e "import('./src/auth.ts').then(({createClient})=>{process.stdout.write('DEV_GEN_KEY='+createClient('beta-devtools','user').key+'\\n')})" | sudo tee -a /etc/hawkes/keys.env > /dev/null && echo dev-gen-key-created )`);
+  // Each product's own dev key (client beta-<id>, role user, only that project), so a product's devtools see and spend only
+  // under their own project, and Gen's usage says which product it was. src/dev.ts prefers it over DEV_GEN_KEY.
+  await ssh(perProductKeys(), { quiet: true }).then((out) => out.trim() && log(out.trim()));
   const mcpKey = (await ssh(`sudo grep '^STUDIO_MCP_KEY=' /etc/hawkes/keys.env | cut -d= -f2`, { quiet: true })).trim();
   if (mcpKey) fs.writeFileSync(path.join(KEYS, 'studio-mcp-key.txt'), `${mcpKey}\n`, { mode: 0o600 });
 }

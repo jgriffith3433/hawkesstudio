@@ -309,8 +309,9 @@ commits saves to beta. How J uses it: `docs/daily.md`, "Developing on beta". The
 
   Caddy sends each beta host's `/dev/*`, and websockets with `Sec-WebSocket-Protocol: vite-hmr`, to the front door.
   Everything else on the host is still the built beta site.
-- **Keys:** `deploy.mjs` adds `DEV_GEN_KEY` (Gen client `beta-devtools`, role `user`) to `/etc/hawkes/keys.env` once.
-  Studio passes it to dev servers as `HAWKESGEN_KEY`, with `HAWKESGEN_URL=http://127.0.0.1:8790`. Every variable that
+- **Keys:** `deploy.mjs` adds `DEV_GEN_KEY` (Gen client `beta-devtools`, role `user`) to `/etc/hawkes/keys.env` once,
+  and a key per product, `DEV_GEN_KEY_<ID>` (client `beta-<id>`, role `user`, only that product's project). Studio passes
+  the product's own key (else the shared one) to its dev server as `HAWKESGEN_KEY`, with `HAWKESGEN_URL=http://127.0.0.1:8790`. Every variable that
   looks like a secret (`*KEY*`, `*TOKEN*`, `AWS_*`, `ANTHROPIC*`, `GITHUB*`…) is removed from a dev server's
   environment. Its `HOME` is `hawkesstudio/.data/dev-home`, so it can't read the service user's
   `~/.hawkes/client.json`.

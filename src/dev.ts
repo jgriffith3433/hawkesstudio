@@ -307,13 +307,18 @@ export function resolveDev(productId: string, action: 'retry' | 'keep-beta') {
 const children = new Map<string, ChildProcess>();
 const starting = new Map<string, Promise<Server>>();
 
+/** The environment variable holding a product's own dev Gen key: doseofdestruction -> DEV_GEN_KEY_DOSEOFDESTRUCTION. */
+export const devGenKeyVar = (id: string) => `DEV_GEN_KEY_${id.toUpperCase().replace(/[^A-Z0-9]+/g, '_')}`;
+
 /** Keys never reach a dev server: only Hawkes Gen's address and the dev key. */
 const SECRET = /(KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|AWS_|ANTHROPIC|ELEVENLABS|OPENAI|GITHUB|CLAUDE|STRIPE|SMTP|WEB_GEN)/i;
 export function devEnv(p: Product) {
   const env: Record<string, string> = {};
   for (const [k, v] of Object.entries(process.env)) if (v !== undefined && !SECRET.test(k)) env[k] = v;
   env.HAWKESGEN_URL = GEN_URL;
-  if (process.env.DEV_GEN_KEY) env.HAWKESGEN_KEY = process.env.DEV_GEN_KEY;
+  // The product's own Gen key (client beta-<id>, role user, only its own project: deploy.mjs makes them), else the shared one.
+  const own = process.env[devGenKeyVar(p.id)] ?? process.env.DEV_GEN_KEY;
+  if (own) env.HAWKESGEN_KEY = own;
   env.HAWKES_BETA_DEV = '1';
   // On the server, a home of its own: no ~/.hawkes/client.json (an owner key) or other dotfiles of the service user.
   if (isServer()) {
