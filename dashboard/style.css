@@ -255,6 +255,11 @@ body.in-call .talk-input, body.in-call .talk-files, body.in-call #notifyBox { di
 .approval .ap-block { color: var(--red, #e5484d); margin: 6px 0; } .approval .ap-warn { color: var(--amber); margin: 6px 0; }
 .approval .ap-actions { display: flex; flex-wrap: wrap; gap: 10px; margin: 10px 0 4px; }
 .approval .ap-actions button { min-height: 44px; min-width: 120px; font-size: 15px; flex: 1 1 140px; }
+.approval .ap-close { margin-left: auto; min-width: 36px; min-height: 36px; padding: 0 8px; font-size: 20px; line-height: 1; background: none; border: none; color: var(--dim); }
+/* Decided, expired or stale (or folded away in the chat): one line in the history, not a card. */
+.approval.ap-line { border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px; margin: 2px 0; opacity: 1; font-size: 13px; display: flex; flex-wrap: wrap; gap: 6px; align-items: baseline; }
+.approval.ap-line .meta { overflow-wrap: anywhere; }
+.talk-log > .approval { flex-shrink: 0; max-width: 100%; box-sizing: border-box; }
 .act-count { background: var(--amber); color: #1b1300; font-weight: 700; font-size: 11px; border-radius: 9px; padding: 0 6px; min-width: 18px; text-align: center; }
 .act-count.zero { background: var(--panel2); color: var(--dim); }
 .activity { position: fixed; right: 0; top: var(--hdr, 56px); bottom: 0; width: 360px; background: var(--panel); border-left: 1px solid var(--line); overflow: auto; z-index: 4; padding: 10px 12px 40px; }

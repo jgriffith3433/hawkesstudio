@@ -175,7 +175,11 @@ words; the Inbox asks for one when he presses "Merge into main"; the go-live and
 - **What it shows**, in plain words: the deploy plan (commits and authors, beta's playtests and verdicts, blockers and
   warnings), or the change, its checks or verification, where it merges and "this restarts Studio"; blockers disable
   Approve. It shows in the Talk conversation that asked (also during a call: the chat stays on screen) and in the
-  Inbox, on a phone with big buttons.
+  Inbox, on a phone with big buttons. In the chat a card sits in the message flow where it was asked (never pinned
+  over it): only the newest waiting card is shown in full, older waiting ones are a line with Show. Once approved,
+  denied, expired or stale (also when another device decided it) a card is one line ("Approved: Merge … into beta").
+  Its × closes it in the chat without deciding it (`POST /api/approvals/<id>/dismiss`, J's page only): it stays
+  pending in the Inbox until it expires, and Talk isn't told.
 - **Bound and one-time:** a card is for one action on one target as it was when made: the change's status and verified
   commit; for a deploy the exact beta commit (and main); for a rollback main and the go live it undoes; the patch and
   today's values for a setting. Its token works once, expires after 15 minutes, and the card goes **stale** (refused)
