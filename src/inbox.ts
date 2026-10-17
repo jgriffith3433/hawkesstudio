@@ -256,7 +256,11 @@ export async function inbox({ tokens = false }: { tokens?: boolean } = {}): Prom
     });
   }
 
+  // Product changes merge into beta by themselves (agents.ts autoMergeBeta): the Inbox asks only for Studio/Gen merges
+  // into main; one that couldn't auto-merge waits in the Changes tab, and Talk said why.
+  const autoBeta = (await import('./agents.ts')).agentSettings().autoMergeBeta;
   for (const c of readyChanges()) {
+    if (autoBeta && !c.infra) continue;
     const pmReviews = handled && settings.delegatedMerges && pm.reviewable(c);
     if (pmReviews || carded.has(`merge:${c.id}`)) continue;
     const g = c.infra ? null : gate(c.verify, c.criteria);

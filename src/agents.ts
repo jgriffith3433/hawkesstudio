@@ -10,8 +10,11 @@
 //        (playtestChange): web products are served from the worktree, Unity ones are built on the build server into a
 //        website copy (.work/<change>-site); then the change's scenario is playtested and reviewed. Beta's own run
 //        after the merge judges a task's acceptance criteria.
+//   autoMergeBeta(change) -> J's rule (2026-10-17): a ready product change merges into beta by itself, no Approve card
+//                        or PM gate (settings.agents.autoMergeBeta, on by default). One that can't (a canon conflict,
+//                        a merge conflict, a pull request GitHub won't merge) stays ready for a person; Talk says why.
 //   approve(change)   -> merges the pull request into beta (nothing goes live): the beta site and its playtest follow,
-//                        the findings are marked fixed. J's call only (the dashboard button, or confirm "MERGE <id>").
+//                        the findings are marked fixed. Also the Changes tab's button for ones that couldn't auto-merge.
 //                        Going live is a separate step (deploy.ts: the deploy plan, then "DEPLOY <product>").
 //   revise(change, note) -> the agent continues on the same branch with J's note; the PR updates.
 //
@@ -44,7 +47,7 @@ import { BETA, ensureBeta, gitAsync } from './beta.ts';
 import { deployPending, critical } from './drain.ts';
 import { notify, notifyOnce, PUBLIC_URL } from './notify.ts';
 import { threadFor } from './roadmap.ts';
-import { judgeCriteria } from './acceptance.ts';
+import { judgeCriteria, gate } from './acceptance.ts';
 import { briefSection, learnFrom, recordRun, LEARNED_ASK } from './memory.ts';
 import { canonCheck, CONTENTISH } from './canon.ts';
 import { roleArgs, loadRole, type RoleName } from './roles.ts';
@@ -69,6 +72,8 @@ for (const col of ['task', 'criteria', 'session', 'pm_seen', 'gpu_budget']) try 
 try { db.exec('ALTER TABLE changes ADD COLUMN pm_escalated INTEGER'); } catch { /* already there */ }
 // Where a change's work is (Phase), so it carries on from there after a Studio restart.
 try { db.exec('ALTER TABLE changes ADD COLUMN phase TEXT'); } catch { /* already there */ }
+// The automatic merge into beta (autoMergeBeta): 'trying', 'merged', or 'failed: <why>' (null: not tried).
+try { db.exec('ALTER TABLE changes ADD COLUMN auto_merge TEXT'); } catch { /* already there */ }
 
 export type Change = {
   id: string; product: string; findings: string[]; status: string; detail: string | null; repo: string; slug: string; branch: string; base: string;
@@ -80,6 +85,10 @@ export type Change = {
   gpu_budget: string | null;
   /** When the PM used up its tries and asked J (pm.ts): the loop leaves it alone. */
   pm_escalated?: number | null;
+  /** The automatic merge into beta: 'trying', 'merged', or 'failed: <why>'; null: not tried. */
+  auto_merge?: string | null;
+  /** The Talk conversation that started it (followup.ts). */
+  origin?: string | null;
   /** A change to Hawkes Studio or Hawkes Gen (a pull request into main, which deploys itself), not a product. */
   infra: boolean;
   /** Absolute links for Talk and J: the change in Studio (its playtest and review if one was asked for, its log), the playtest video, preview, pull request. */
@@ -97,8 +106,9 @@ function changeLinks(r: any, verify: any): ChangeLinks {
 }
 
 const SETTINGS_FILE = path.join(DATA, 'agents.json');
-export type AgentSettings = { enabled: boolean; autoFix: boolean; maxConcurrent: number; maxPerDay: number; maxCostPerDay: number; severities: string[]; model: string; maxTurns: number };
-const DEFAULTS: AgentSettings = { enabled: true, autoFix: true, maxConcurrent: 2, maxPerDay: 4, maxCostPerDay: 20, severities: ['blocker', 'bug'], model: 'claude-opus-5-5', maxTurns: 80 };
+/** autoMergeBeta: ready product changes merge into beta by themselves (J, 2026-10-17); off: a person merges them. */
+export type AgentSettings = { enabled: boolean; autoFix: boolean; autoMergeBeta: boolean; maxConcurrent: number; maxPerDay: number; maxCostPerDay: number; severities: string[]; model: string; maxTurns: number };
+const DEFAULTS: AgentSettings = { enabled: true, autoFix: true, autoMergeBeta: true, maxConcurrent: 2, maxPerDay: 4, maxCostPerDay: 20, severities: ['blocker', 'bug'], model: 'claude-opus-5-5', maxTurns: 80 };
 export function agentSettings(): AgentSettings {
   try {
     return { ...DEFAULTS, ...JSON.parse(fs.readFileSync(SETTINGS_FILE, 'utf8')) };
@@ -131,8 +141,8 @@ function update(id: string, patch: Partial<Record<string, any>>) {
   const cur = db.prepare('SELECT * FROM changes WHERE id = ?').get(id) as any;
   const next: any = { ...cur, ...patch, updated: Date.now() };
   for (const k of ['findings', 'commits', 'verify', 'notes', 'log', 'phase']) if (patch[k] !== undefined) next[k] = patch[k] === null ? null : J(patch[k]);
-  db.prepare(`UPDATE changes SET status=?, detail=?, pr=?, pr_url=?, title=?, summary=?, commits=?, diffstat=?, verify=?, notes=?, log=?, cost=?, session=?, phase=?, updated=? WHERE id=?`)
-    .run(next.status, next.detail, next.pr, next.pr_url, next.title, next.summary, next.commits, next.diffstat, next.verify, next.notes, next.log, next.cost, next.session ?? null, next.phase ?? null, next.updated, id);
+  db.prepare(`UPDATE changes SET status=?, detail=?, pr=?, pr_url=?, title=?, summary=?, commits=?, diffstat=?, verify=?, notes=?, log=?, cost=?, session=?, phase=?, auto_merge=?, updated=? WHERE id=?`)
+    .run(next.status, next.detail, next.pr, next.pr_url, next.title, next.summary, next.commits, next.diffstat, next.verify, next.notes, next.log, next.cost, next.session ?? null, next.phase ?? null, next.auto_merge ?? null, next.updated, id);
 }
 
 /**
@@ -741,9 +751,12 @@ async function work(id: string, note?: string, answer?: string, resumed?: Phase 
     const tryFile = path.join(c.worktree, '.hawkes', 'try.md');
     const howTo = fs.existsSync(tryFile) ? fs.readFileSync(tryFile, 'utf8').trim().slice(0, 2000) : null;
     const done = { ...verify, sha: ph.tip, preview, try: howTo };
-    update(id, { status: 'ready', detail: readyDetail(done), verify: done, phase: null });
-    // No phone notification (J's rule: only when something went wrong or a milestone is reached): Talk reports it,
-    // and a roadmap task's change is the PM's to review (pm.ts).
+    const auto = agentSettings().autoMergeBeta;
+    // 'trying' is written with 'ready', so Talk's "ready for J" notice (followup.ts) never races the merge.
+    update(id, { status: 'ready', detail: readyDetail(done), verify: done, phase: null, auto_merge: auto ? 'trying' : null });
+    // No phone notification (J's rule: only when something went wrong or a milestone is reached): Talk reports it.
+    // Ready means merged into beta now (autoMergeBeta); with it off, a person merges it (or the PM, pm.ts).
+    if (auto) await autoMergeBeta(id);
   } catch (e: any) {
     addLog(id, `error: ${e.message}`);
     // A playtest on request that went wrong leaves the change as it was: ready, with what happened.
@@ -1295,7 +1308,7 @@ async function verifiedHead(c: Change) {
  * J's approval: merge the pull request (squash) into beta. Nothing goes live: the beta site is rebuilt and beta is
  * playtested with the change in; going live is deploy() (the deploy plan, then "DEPLOY <product>").
  */
-export async function approve(id: string, { confirm, by = 'J', origin }: { confirm?: string; by?: string; origin?: string | null } = {}) {
+export async function approve(id: string, { confirm, by = 'J', origin, auto = false }: { confirm?: string; by?: string; origin?: string | null; auto?: boolean } = {}) {
   const c = getChange(id);
   if (!c) throw new Error('No such change');
   if (confirm !== `MERGE ${id}`) throw new Error(c.infra
@@ -1327,14 +1340,16 @@ export async function approve(id: string, { confirm, by = 'J', origin }: { confi
       // `sha`: GitHub refuses the merge if the pull request's head moved since the check above.
       m = await github(`/repos/${c.slug}/pulls/${c.pr}/merge`, { method: 'PUT', body: { merge_method: 'squash', sha, commit_title: `${c.title} (#${c.pr})` } });
     } catch (e: any) {
-      // Usually a conflict with what's on beta now (devtools saves, another change). J hears it in Talk with the files.
+      // Usually a conflict with what's on beta now (devtools saves, another change). J hears it in Talk with the files
+      // (an automatic merge says it in one line itself: autoMergeBeta).
+      if (auto) throw e;
       const files = await github(`/repos/${c.slug}/pulls/${c.pr}/files?per_page=100`).then((fs: any[]) => fs.map((f) => f.filename)).catch(() => []);
       const { postNotice } = await import('./talk.ts');
       postNotice(`Merge stopped: ${c.title}`, `Merging ${id} (${c.pr_url}) into ${BETA} failed: ${e.message ?? e}\n\nThe change touches: ${files.slice(0, 30).join(', ') || '(unknown)'}\n\nIf beta changed those files since (devtools saves or another change), ask the agent to update its branch from ${BETA} (revise ${id}) and approve again.`);
       throw e;
     }
     void pullDev(c.product, `after merging ${id}`).catch((e) => console.warn(`[studio] beta working copy after ${id}: ${e.message ?? e}`));
-    update(id, { status: 'merged', detail: `merged into ${BETA} by ${by}: ${String(m.sha ?? '').slice(0, 7)} (not live yet)`, notes: [...c.notes, { at: Date.now(), by, text: `approved and merged into ${BETA}` }] });
+    update(id, { status: 'merged', detail: `merged into ${BETA} by ${by}: ${String(m.sha ?? '').slice(0, 7)} (not live yet)`, notes: [...c.notes, { at: Date.now(), by, text: auto ? `merged into ${BETA} automatically (ready: the agent's checks passed)` : `approved and merged into ${BETA}` }], ...(auto ? { auto_merge: 'merged' } : {}) });
     remember(id);
     for (const f of c.findings) updateFinding(f, { status: 'fixed', note: `merged into ${BETA} in ${c.pr_url} (goes live with the next deploy)` });
     await cleanup(id, { deleteBranch: true });
@@ -1343,6 +1358,38 @@ export async function approve(id: string, { confirm, by = 'J', origin }: { confi
     void import('./pipeline.ts').then(({ startBeta }) => startBeta(c.product, { focus: `Just merged into beta: ${c.title}. Check it works and nothing regressed.`, origin, criteria: c.criteria, scenario: c.verify?.scenario, options: c.verify?.options })).catch((e) => console.warn(`[studio] beta after ${id}: ${e.message ?? e}`));
     return getChange(id);
   });
+}
+
+/**
+ * A ready product change goes into beta by itself (J, 2026-10-17: no Approve card, no PM gate), through approve()'s
+ * merge (the devtools flush and pull, the critical section, the beta run after it). One that can't stays ready for a
+ * person (the Changes tab's Merge button), with one line in Talk saying why; a merged one gets one line too. Never the
+ * phone, never Studio or Gen (their merges into main stay J's). The PM still judges a task's criteria on beta.
+ */
+export async function autoMergeBeta(id: string) {
+  const c = getChange(id);
+  if (!c || c.infra || c.status !== 'ready') return null;
+  const fail = async (why: string) => {
+    update(id, { auto_merge: `failed: ${why}`.slice(0, 500), detail: `couldn't merge into ${BETA} by itself: ${why}`.slice(0, 300) });
+    addLog(id, `not merged into ${BETA} automatically: ${why}`);
+    const { autoMergeFailedNotice, tellAbout } = await import('./followup.ts');
+    await tellAbout(getChange(id)!, `Couldn't merge: ${c.title ?? id}`, autoMergeFailedNotice(getChange(id)!, why)).catch((e) => console.warn(`[studio] auto-merge notice ${id}: ${e.message ?? e}`));
+    return null;
+  };
+  // A canon conflict never merges by itself (acceptance.ts gate); a requested playtest that failed doesn't either.
+  const g = gate(c.verify, c.criteria);
+  if (!g.pass) return fail(g.why.join('; ').slice(0, 300));
+  if (!c.pr) return fail('it has no pull request');
+  try {
+    const merged = await approve(id, { confirm: `MERGE ${id}`, by: 'Studio (auto-merge)', origin: c.origin ?? null, auto: true });
+    addLog(id, `merged into ${BETA} automatically`);
+    const { autoMergedNotice, tellAbout } = await import('./followup.ts');
+    const beta = await import('./dev.ts').then(({ betaUrl }) => betaUrl(getProduct(c.product))).catch(() => null);
+    await tellAbout(merged!, null, autoMergedNotice(merged!, beta)).catch((e) => console.warn(`[studio] auto-merge notice ${id}: ${e.message ?? e}`));
+    return merged;
+  } catch (e: any) {
+    return fail(String(e.message ?? e).slice(0, 300));
+  }
 }
 
 /** J's note: the agent continues on the same branch. */
@@ -1450,6 +1497,11 @@ export function resumeChanges() {
       remember(c.id);
       void pump();
     });
+  }
+  // A restart between "ready" and its automatic merge: the merge is tried again (approve() refuses a moved head).
+  for (const c of listChanges({ status: 'ready', limit: 100 })) {
+    if (c.auto_merge !== 'trying' || c.infra || running.has(c.id)) continue;
+    void autoMergeBeta(c.id).catch((e) => console.warn(`[studio] auto-merge ${c.id}: ${e.message ?? e}`));
   }
   return out;
 }

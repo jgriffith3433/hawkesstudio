@@ -21,7 +21,7 @@ fs.writeFileSync(process.env.STUDIO_PRODUCTS, JSON.stringify({ products: [{
 }] }));
 
 const { db } = await import('../src/db.ts');
-await import('../src/agents.ts');
+const agents = await import('../src/agents.ts');
 const talk = await import('../src/talk.ts');
 const pm = await import('../src/pm.ts');
 const rm = await import('../src/roadmap.ts');
@@ -101,7 +101,18 @@ test('a card expires after 15 minutes', async () => {
   assert.equal(rm.getQuestion(q.id)!.status === 'open' || rm.getQuestion(q.id)!.status === 'asked J', true, 'nothing was answered');
 });
 
+test('product changes merge into beta by themselves: no merge card for one, unless that is turned off', async () => {
+  change('c_aaaaaaaaaa00');
+  assert.equal(agents.agentSettings().autoMergeBeta, true);
+  await assert.rejects(ap.requestApproval('merge', 'c_aaaaaaaaaa00'), /merge into beta by themselves/);
+  db.prepare(`UPDATE changes SET auto_merge = ? WHERE id = ?`).run('failed: a merge conflict in a.json', 'c_aaaaaaaaaa00');
+  await assert.rejects(ap.requestApproval('merge', 'c_aaaaaaaaaa00'), /a merge conflict in a\.json.*Changes tab/);
+  agents.saveAgentSettings({ autoMergeBeta: false });
+  assert.match((await ap.requestApproval('merge', 'c_aaaaaaaaaa00')).card.title, /into beta/);
+});
+
 test('a card goes stale when its target changes: a revised change, a setting changed meanwhile', async () => {
+  // Merge cards for product changes are for when automatic merges into beta are off (the test above turned them off).
   change('c_aaaaaaaaaaa1');
   const a = await ap.requestApproval('merge', 'c_aaaaaaaaaaa1');
   assert.match(a.card.title, /Merge "Change c_aaaaaaaaaaa1" into beta/);

@@ -30,7 +30,7 @@ testing.
    report up in five bullets plus a cost line (AWS this month, the forecast against J's budget, idle money; `src/costs.ts`), and a
    phone notification that opens it (`/?conversation=<id>#talk`). `POST /api/brief` makes it again for the last run.
 
-**Phone notifications** (`src/notify.ts`, ntfy.sh, free): the morning brief, an agent change ready to approve, a live
+**Phone notifications** (`src/notify.ts`, ntfy.sh, free): the morning brief, a Studio or Gen change ready to approve, a live
 site failing its check, and the day's agent budget used up. The topic is a secret random name in `.data/notify.json`;
 Talk tab → "Phone notifications" shows it, with a test button. J subscribes to it in the ntfy app.
 
@@ -101,7 +101,19 @@ the build server first; then the change's scenario is played on its version with
 task's criteria are judged too. The change is `verifying` meanwhile (it carries on after a restart) and ready again with
 the results; the result goes back to the Talk conversation that asked. A playtest that can't run (no build, the page
 server didn't start) never fails the change: it says so on it. Not being playtested is plain information on Approve
-cards and in the Inbox, never a blocker or a warning.
+cards and in the Inbox, never a blocker or a warning. With automatic merges into beta on (below), a change is usually
+on beta before anyone asks: beta's own playtest is where it gets played.
+
+**Agent changes merge into beta by themselves** (J, 2026-10-17; `agents.autoMergeBeta` in ⚙ Settings, default on). A
+product change (studio_task, studio_fix, the daily run's auto-fixes, the PM's roadmap tasks) merges into beta as soon
+as it's ready (the agent finished, its checks passed, the pull request is open): `autoMergeBeta` in agents.ts, through
+the same merge as the Merge button (the devtools flush and pull around it, the critical section, the beta run after
+it). No Approve card, no Inbox item, no PM gate. The conversation that started it gets one line ("on beta, the beta
+site is rebuilding"). One that can't merge (a canon conflict, a merge conflict with beta, a pull request GitHub won't
+merge) stays ready for a person: the Changes tab's Merge button, or revise; Talk says why in one line (never the phone).
+`changes.auto_merge` records it: `trying`, `merged` or `failed: <why>`; a restart in between tries again. Going live,
+rollbacks and Studio or Gen merges into main stay J's. Turned off, everything below works as it did: J (or the PM)
+merges ready changes.
 
 **4. The PM loop** (`src/pm.ts`, on the server; `STUDIO_PM=on` elsewhere). Every minute and right after anything finishes:
 - keeps task and item statuses current (from changes, beta checks and go lives)
@@ -120,7 +132,9 @@ cards and in the Inbox, never a blocker or a warning.
   fine: beta's run judges the criteria), else revise with the failures; a failed change restarts with what went wrong; an agent
   question nobody answered goes to J.
 - The PM reviews roadmap tasks' changes and finding fixes. J's own requests (studio_task without a task), and every
-  Studio and Gen change, stay J's to approve.
+  Studio and Gen change, stay J's to approve. With automatic merges on, ready product changes are on beta before the PM
+  sees them: the PM revises the ones that couldn't merge (a canon conflict) and judges a task's criteria on beta after
+  the merge (a task is verified only when they pass there).
 
 **5. Delegated merges** (`delegatedMerges`, default on: J chose it). The PM merges agent changes into beta itself
 (`approve` with `by: "Talk (PM)"`), only through the gate. Going live stays J's (`DEPLOY <product>`). Studio and Gen
@@ -146,7 +160,7 @@ the one place for everything waiting on J, across every conversation, agent and 
 - GPU budgets: content tasks waiting for his budget (`tasksAwaitingGpu`)
 - Approve / Deny cards waiting for his tap (below), first: they expire in 15 minutes
 - merges only he may make: Studio and Gen changes (into main, which deploys: "Merge into main" brings up an Approve
-  card with the checks; typing `MERGE <id>` is the fallback), changes the PM
+  card with the checks; typing `MERGE <id>` is the fallback); with automatic merges into beta off, also changes the PM
   doesn't review (his own requests, work from before the loop), everything while delegated merges are off
 - milestones reached: playtest it (the beta link), with Go live (the deploy plan and `DEPLOY <product>` on Today),
   Something is wrong (his words go to the milestone's thread and the PM makes them tasks), or Later (a day)
@@ -373,7 +387,8 @@ own yes from that conversation. The notification topic is changed only on the da
    - fixes it
    - runs `studio_playtest` on the scenario to verify, when it's worth it (agent changes are playtested only on request)
    - marks the finding `fixed` (`studio_update_finding`)
-4. J approves agent changes into beta (Changes tab, or "approve it" in chat). Beta's site, build and a playtest follow.
+4. Agent changes merge into beta by themselves once ready (one that can't waits in the Changes tab). Beta's site,
+   build and a playtest follow.
 5. When beta looks right, J says "go live with Sick Of It". Claude shows `studio_deploy_plan` and puts an Approve card
    on his screen (`studio_approval` kind deploy); his tap goes live (see below). Typing `DEPLOY sickofit` still works.
 6. Studio waits for GitHub Pages and playtests the live site.
@@ -381,7 +396,7 @@ own yes from that conversation. The notification topic is changed only on the da
 ## Beta and going live
 
 ```
-agent branch (fix/..., task/...) --approve (a tap, or "MERGE <id>")--> beta --go live (a tap, or "DEPLOY <product>")--> main = live
+agent branch (fix/..., task/...) --ready: merged automatically (else the Merge button)--> beta --go live (a tap, or "DEPLOY <product>")--> main = live
 ```
 
 J's OK is an Approve / Deny card ("Approve / Deny cards" above), bound to the exact beta commit for a go live; the typed
@@ -389,7 +404,8 @@ words are the fallback.
 
 - **beta** is a branch in every repo agents change (the website repo for web products, the Unity source repo for Unity
   games). Studio makes it from main the first time an agent starts there. Pushing beta deploys nothing.
-- **Agent changes** are branches cut from beta, with pull requests into beta. Approving one merges it into beta; Studio
+- **Agent changes** are branches cut from beta, with pull requests into beta. A ready one merges into beta by itself
+  (`autoMergeBeta`; the Changes tab's Merge button for one that couldn't); Studio
   then commits beta's pre-deploy build, builds Unity beta, rebuilds the beta site and playtests it (`studio beta <p>`
   does the same by hand). The change itself is playtested only when J asks ("Playtest this change"). A pull request
   merged outside Studio (J merging on GitHub) is noticed within about 5 minutes (`syncMergedOutside`): the change is
@@ -484,8 +500,8 @@ J and agents build on beta together, live on the cloud server (`src/dev.ts`, `sr
 ## What only J does
 
 - Go live and roll back (they publish live sites, and need his tap on an Approve card, or his typed words), and money: launching servers, big
-  generation batches, raising limits. Approving agent changes into beta is delegated to Talk's PM loop (through their
-  checks; J can turn that off); Studio and Gen changes stay his.
+  generation batches, raising limits. Agent changes merge into beta by themselves once ready (J
+  can turn that off in Settings: then the PM loop merges them through their checks); Studio and Gen changes stay his.
 - Direction: what goes on the roadmap (Talk proposes; J says yes), and the questions the PM passes to him.
 - Sign in to things: Unity Hub on the build server (once, over Remote Desktop), GitHub (`gh auth login`).
 - Taste: which findings matter, where each product is going.

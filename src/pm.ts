@@ -319,7 +319,8 @@ export async function startWork() {
 /** Changes the PM reviews: roadmap tasks' changes, and finding fixes (not J's own requests; never Studio or Gen). */
 export function reviewable(c: any) {
   // Changes from before the loop first ran stay J's to approve, as they were.
-  return c.status === 'ready' && !c.infra && c.created >= pmSince() && (c.task || (c.findings?.length && !c.request)) && !c.pm_escalated && !waitingOnJ(c);
+  // One being merged into beta automatically (agents.ts autoMergeBeta) isn't the PM's to merge as well.
+  return c.status === 'ready' && !c.infra && c.auto_merge !== 'trying' && c.created >= pmSince() && (c.task || (c.findings?.length && !c.request)) && !c.pm_escalated && !waitingOnJ(c);
 }
 /** A change (or its task) J was asked about: the PM leaves it alone until he answers. */
 const waitingOnJ = (c: any) => listQuestions('open,asked J').some((q) => q.kind === 'decision' && Boolean(q.subject) && [c.id, c.task].filter(Boolean).some((s) => q.subject!.split(/[\s,]+/).includes(s)));

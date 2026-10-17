@@ -38,6 +38,9 @@ function repo(name: string, files: Record<string, string>) {
 }
 repo('game', { 'README.md': '# Game\n', 'AGENTS.md': 'A fixture game.\n' });
 repo('gamesite', { 'index.html': '<h1>Game</h1>\n' });
+// Ready changes stay ready here (no automatic merge into beta), so a playtest can be asked for one.
+fs.mkdirSync(path.join(tmp, 'data'), { recursive: true });
+fs.writeFileSync(path.join(tmp, 'data', 'agents.json'), JSON.stringify({ autoMergeBeta: false }));
 const productsFile = path.join(tmp, 'products.json');
 const LIVE = 'http://127.0.0.1:9/';
 fs.writeFileSync(productsFile, JSON.stringify({

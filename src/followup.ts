@@ -16,6 +16,8 @@ try { db.exec('ALTER TABLE runs ADD COLUMN told TEXT'); } catch { /* already the
 // result turns from here: the PM loop handles both.
 try { db.exec('ALTER TABLE changes ADD COLUMN task TEXT'); } catch { /* already there */ }
 try { db.exec('ALTER TABLE conversations ADD COLUMN kind TEXT'); } catch { /* already there */ }
+// A change being merged into beta automatically (agents.ts autoMergeBeta) isn't "ready for J": it reports when that's done.
+try { db.exec('ALTER TABLE changes ADD COLUMN auto_merge TEXT'); } catch { /* already there */ }
 const notPm = `origin NOT IN (SELECT id FROM conversations WHERE kind = 'pm')`;
 
 /** The Talk conversation a request came from (Talk's MCP server sends it), if it still exists. */
@@ -66,8 +68,31 @@ export function changeNotice(c: any) {
   if (v.preview) lines.push(`Preview: ${v.preview}`);
   if (v.video) lines.push(`Video of the playtest: ${media(v.video)}`);
   lines.push(`In Studio (playtest, review, log): ${PUBLIC_URL}/#changes/${c.id}`);
+  // Product changes merge into beta by themselves (agents.ts autoMergeBeta): this line is for Studio/Gen, or with that off.
   if (c.status === 'ready') lines.push(`Approving needs J's yes (confirm "MERGE ${c.id}"); he can also ask for changes (revise).`);
   return lines.join('\n');
+}
+
+/** One line for an automatic merge into beta (agents.ts autoMergeBeta). */
+export function autoMergedNotice(c: any, beta?: string | null) {
+  return `Agent change ${c.id} for ${name(c.product)} ("${c.title}") is on beta: merged automatically once its checks passed; the beta site is rebuilding${beta ? ` (${beta})` : ''} and beta's playtest follows. Nothing went live.`;
+}
+/** One line for a ready change that couldn't merge into beta by itself: it waits for a person (the Changes tab). */
+export function autoMergeFailedNotice(c: any, why: string) {
+  return `Agent change ${c.id} for ${name(c.product)} ("${c.title}") couldn't merge into beta by itself: ${cut(why, 300)}. It stays ready: merge it from ${PUBLIC_URL}/#changes/${c.id} or ask for changes (revise).`;
+}
+/**
+ * Says it in the conversation that started the change (not a roadmap task's or the PM's: the PM reports those), and
+ * records it as told; with nowhere to say it and a `title`, a notice of its own in Talk. Never the phone.
+ */
+export async function tellAbout(c: any, title: string | null, text: string) {
+  const { studioSays, postNotice } = await import('./talk.ts');
+  const pmConv = c.origin ? Boolean(db.prepare(`SELECT 1 FROM conversations WHERE id = ? AND kind = 'pm'`).get(c.origin)) : false;
+  if (c.origin && !c.task && !pmConv && studioSays(c.origin, text)) {
+    db.prepare('UPDATE changes SET told = ? WHERE id = ?').run(c.status, c.id);
+    return;
+  }
+  if (title) postNotice(title, text);
 }
 
 const STEP_KINDS = new Set(['build', 'playtest', 'review', 'beta', 'deploy', 'check', 'error', 'asset', 'gpu']);
@@ -98,7 +123,7 @@ export async function checkFollowups() {
   // A change that went back to work (a revision) reports again when it's done.
   db.prepare(`UPDATE changes SET told = NULL WHERE told IS NOT NULL AND status IN ('queued', 'working', 'verifying', 'revising')`).run();
   const day = Date.now() - 86_400_000;
-  for (const c of db.prepare(`SELECT * FROM changes WHERE origin IS NOT NULL AND task IS NULL AND ${notPm} AND status IN ('ready', 'failed') AND told IS NULL AND COALESCE(updated, created) > ?`).all(day) as any[]) {
+  for (const c of db.prepare(`SELECT * FROM changes WHERE origin IS NOT NULL AND task IS NULL AND ${notPm} AND status IN ('ready', 'failed') AND told IS NULL AND COALESCE(auto_merge, '') != 'trying' AND COALESCE(updated, created) > ?`).all(day) as any[]) {
     db.prepare('UPDATE changes SET told = ? WHERE id = ?').run(c.status, c.id);
     studioSays(c.origin, changeNotice(c));
   }
