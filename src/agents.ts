@@ -1294,7 +1294,14 @@ async function approveInfra(c: Change, by: string) {
  * or when its head moved after verification (a push nobody verified).
  */
 async function verifiedHead(c: Change) {
-  const pr = await github(`/repos/${c.slug}/pulls/${c.pr}`);
+  const verifiedSha = c.verify?.sha || (fs.existsSync(c.worktree) ? git(c.worktree, ['rev-parse', 'HEAD']).out : '');
+  let pr = await github(`/repos/${c.slug}/pulls/${c.pr}`);
+  // Right after Studio pushes, GitHub can report the old head for a few seconds: on 2026-10-17 an automatic merge read
+  // the previous commit a moment after the agent's push and refused. Read again before calling it moved (up to ~20 s).
+  for (let i = 0; i < 7 && verifiedSha && pr.state === 'open' && String(pr.head?.sha ?? '') !== verifiedSha; i++) {
+    await new Promise((r) => setTimeout(r, 3000));
+    pr = await github(`/repos/${c.slug}/pulls/${c.pr}`);
+  }
   const head = String(pr.head?.sha ?? '');
   if (pr.state !== 'open') {
     throw new Error(pr.merged
