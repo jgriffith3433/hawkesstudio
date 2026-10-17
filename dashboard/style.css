@@ -284,6 +284,10 @@ body.in-call .talk-input, body.in-call .talk-files, body.in-call #notifyBox { di
 .act-stages .stg.now { color: #062018; background: var(--accent); border-color: var(--accent); font-weight: 600; }
 .act-stages .stg.failed { color: #fff; background: var(--red); border-color: var(--red); font-weight: 600; }
 .act-stages .stg-arrow { color: var(--dim); }
+.act-bar { height: 4px; max-width: 100%; margin: 3px 0 4px; border-radius: 2px; background: var(--line); overflow: hidden; }
+.act-bar > span { display: block; height: 100%; border-radius: 2px; background: var(--blue); transition: width .6s ease; }
+.act-bar.ready > span { background: var(--accent); }
+.act-bar.failed > span { background: var(--red); }
 .act-log pre { max-height: 220px; overflow: auto; font-size: 11px; white-space: pre-wrap; }
 .act-none { padding: 0 2px 4px; }
 .act-recent { margin-top: 12px; }

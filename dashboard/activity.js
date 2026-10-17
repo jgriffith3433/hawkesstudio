@@ -4,7 +4,8 @@
 // Talk. Polled every 3 s while open, every 10 s for the badge. Loaded after app.js (uses its api, esc, show, ago).
 
 // An agent change's stages (coding → building → playtesting → review → ready; Studio and Gen: coding → checks →
-// ready), each todo, now, done or failed, from the change's status and its `stage` facts (src/activity.ts stageOf).
+// ready), each todo, now, done or failed, from the change's status and its `stage` facts (src/activity.ts stageOf),
+// and the thin progress bar under them (also on the Changes tab's cards).
 // Pure, so it is tested without a DOM (test/activity.test.ts).
 var ChangeStages = (() => {
   const names = (s) => (s.infra ? ['coding', 'checks', 'ready'] : s.unity ? ['coding', 'building', 'playtesting', 'review', 'ready'] : ['coding', 'playtesting', 'review', 'ready']);
@@ -39,7 +40,33 @@ var ChangeStages = (() => {
     // working, revising, verifying, needs answer
     return row(status === 'verifying' && !s.step ? (s.infra ? 'checks' : s.unity ? 'building' : 'playtesting') : stageAt(s), 'now');
   }
-  return { stages, stageAt };
+  /** About how long an agent's coding takes: the bar creeps towards the end of the coding stage over it, never past. */
+  const TYPICAL_CODING_MS = 20 * 60_000;
+  /**
+   * How far along the change is, for the thin bar under its stages: 0-100 by stage (each stage before ready an equal
+   * part), creeping within coding by the time this pass has run (`since`) against a typical run; full and green when
+   * ready or merged, red where a failed change stopped.
+   */
+  function progress(status, s = {}, now = Date.now()) {
+    const row = stages(status, s);
+    if (status === 'ready' || status === 'merged') return { pct: 100, state: 'ready', stage: 'ready' };
+    if (status === 'queued' || status === 'closed') return { pct: 0, state: 'todo', stage: row[0].name };
+    const i = Math.max(0, row.findIndex((x) => x.state === 'now' || x.state === 'failed'));
+    const name = row[i].name;
+    let within = 0.5;
+    if (status !== 'failed' && name === 'coding') {
+      within = s.step === 'publish' ? 0.95 : typeof s.since === 'number' ? 0.9 * (1 - Math.exp(-Math.max(0, now - s.since) / TYPICAL_CODING_MS)) : 0;
+    }
+    const pct = Math.min(99, Math.max(2, Math.round((100 * (i + within)) / (row.length - 1))));
+    return { pct, state: status === 'failed' ? 'failed' : 'now', stage: name };
+  }
+  /** The bar itself (numbers and stage names only, so nothing to escape). */
+  function barHtml(status, s = {}, now = Date.now()) {
+    const p = progress(status, s, now);
+    const what = p.state === 'ready' ? 'ready' : p.state === 'failed' ? `stopped at ${p.stage}` : p.state === 'todo' ? 'not started' : p.stage;
+    return `<div class="act-bar ${p.state}" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${p.pct}" title="${p.pct}% · ${what}"><span style="width:${p.pct}%"></span></div>`;
+  }
+  return { stages, stageAt, progress, barHtml };
 })();
 
 if (typeof document !== 'undefined') (() => {
@@ -64,7 +91,7 @@ if (typeof document !== 'undefined') (() => {
   const by = (x) => (x.origin ? `<a href="?conversation=${esc(x.origin)}#talk" data-talk="${esc(x.origin)}">${esc(x.by)}</a>` : esc(x.by));
 
   const stagesHtml = (c) => `<div class="act-stages">${ChangeStages.stages(c.status, c.stage ?? {})
-    .map((x) => `<span class="stg ${x.state}" title="${esc(`${x.name}: ${x.state}`)}">${x.state === 'done' ? '✓ ' : x.state === 'failed' ? '✗ ' : ''}${esc(x.name)}</span>`).join('<span class="stg-arrow">›</span>')}</div>`;
+    .map((x) => `<span class="stg ${x.state}" title="${esc(`${x.name}: ${x.state}`)}">${x.state === 'done' ? '✓ ' : x.state === 'failed' ? '✗ ' : ''}${esc(x.name)}</span>`).join('<span class="stg-arrow">›</span>')}</div>${ChangeStages.barHtml(c.status, c.stage ?? {})}`;
 
   function changeHtml(c, done = false) {
     return `<div class="act-item">

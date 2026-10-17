@@ -167,6 +167,8 @@ export type Phase = {
   /** Verification's Hawkes Gen jobs (build, playtest, review): waited on again after a restart, not submitted again. */
   jobs?: Record<string, string>;
   verify?: any;
+  /** When this pass started: how far the Activity panel's progress bar creeps through the coding stage. */
+  since?: number;
   /** On a failed change: the step it failed at, kept for the Activity panel's stages (nothing resumes it). */
   failed?: boolean;
   /** A playtest asked for (playtestChange): who asked. It ends the pass with the change ready again, never failed. */
@@ -628,7 +630,7 @@ async function work(id: string, note?: string, answer?: string, resumed?: Phase 
   const s = agentSettings();
   const repoDir = path.join(PROJECTS, c.repo);
   // Where the work is; after a restart it carries on from the recorded step (same agent process, same Gen jobs).
-  const ph: Phase = resumed ?? { step: 'prepare', note, answer };
+  const ph: Phase = resumed ?? { step: 'prepare', note, answer, since: Date.now() };
   ({ note, answer } = ph);
   const save = (patch: Partial<Phase>, extra: Record<string, any> = {}) => {
     Object.assign(ph, patch);
@@ -1077,7 +1079,7 @@ async function workInfra(id: string, note?: string, resumed?: Phase | null) {
   const s = agentSettings();
   const repoDir = path.join(PROJECTS, c.repo);
   // The same steps as a product change (work()), so a Studio restart carries on from where it was.
-  const ph: Phase = resumed ?? { step: 'prepare', note };
+  const ph: Phase = resumed ?? { step: 'prepare', note, since: Date.now() };
   ({ note } = ph);
   const save = (patch: Partial<Phase>, extra: Record<string, any> = {}) => {
     Object.assign(ph, patch);
