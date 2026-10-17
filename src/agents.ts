@@ -51,7 +51,7 @@ import { judgeCriteria, gate } from './acceptance.ts';
 import { briefSection, learnFrom, recordRun, LEARNED_ASK } from './memory.ts';
 import { canonCheck, CONTENTISH } from './canon.ts';
 import { roleArgs, loadRole, type RoleName } from './roles.ts';
-import { claudeCommand, spawnShell, sandboxShare, assertWorktree } from './sandbox.ts';
+import { claudeCommand, spawnShell, sandboxShare, assertWorktree, shareWorktree } from './sandbox.ts';
 import { launch, DetachedChild, type DetachRec } from './detach.ts';
 import { warmDeps } from './warm.ts';
 
@@ -657,6 +657,8 @@ async function work(id: string, note?: string, answer?: string, resumed?: Phase 
           const w = git(repoDir, ['worktree', 'add', ...(has ? [] : ['-b']), ...(has ? [c.worktree, c.branch] : [c.branch, c.worktree, `origin/${c.base}`])]);
           if (!w.ok) throw new Error(`worktree failed: ${w.err}`);
         });
+        // The agent (sandbox user) commits here: its git folder must be the agent group's.
+        shareWorktree(c.worktree);
         // A warm start: node_modules from a checkout with the same lockfile (warm.ts), not a fresh npm ci.
         warmDeps(c.worktree, c.repo, (s) => addLog(id, s));
       lfsPull(c.worktree, (s) => addLog(id, s));
@@ -882,6 +884,7 @@ async function buildChange(c: Change, p: Product, jobs?: JobMemo): Promise<Chang
     git(siteRepo, ['worktree', 'prune']);
     const w = await gitAsync(siteRepo, ['worktree', 'add', '--detach', '--force', copy, head]);
     if (!w.ok) throw new Error(`making the website copy failed: ${w.err}`);
+    shareWorktree(copy);
   } else {
     const r = await gitAsync(copy, ['checkout', '--quiet', '--force', '--detach', head]);
     if (!r.ok) throw new Error(`resetting the website copy failed: ${r.err}`);
@@ -1094,6 +1097,7 @@ async function workInfra(id: string, note?: string, resumed?: Phase | null) {
           const has = git(repoDir, ['rev-parse', '--verify', '--quiet', `refs/heads/${c.branch}`]).ok;
           const w = await gitAsync(repoDir, ['worktree', 'add', ...(has ? [c.worktree, c.branch] : ['-b', c.branch, c.worktree, `origin/${c.base}`])]);
           if (!w.ok) throw new Error(`worktree failed: ${w.err}`);
+          shareWorktree(c.worktree);
           // A warm start: node_modules from a checkout with the same lockfile (warm.ts), not a fresh npm ci.
           warmDeps(c.worktree, c.repo, (s) => addLog(id, s));
       lfsPull(c.worktree, (s) => addLog(id, s));
