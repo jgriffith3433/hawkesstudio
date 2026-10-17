@@ -21,6 +21,7 @@
       <div class="more" id="more">
         <button type="button" class="more-btn" id="moreBtn" aria-haspopup="true" aria-expanded="false" title="Reports, playtests, agent changes, runs, costs, memory, users, settings">More ▾</button>
         <div class="more-menu" id="moreMenu" hidden>
+          <button data-tab="sites" title="Every product's beta and live sites, plus Studio and Gen: one tap opens it in a new tab">Sites</button>
           <button data-tab="report">Report</button>
           <button data-tab="playtests">Playtests</button>
           <button data-tab="changes">Changes</button>
@@ -90,6 +91,12 @@
       </div>
       <div id="todayNow" class="today-now"></div>
       <div id="cards" class="cards"></div>
+    </section>
+    <section id="sites" class="tab">
+      <p class="intro"><b>Sites:</b> one tap to open any product's beta site (what going live would ship) or its live site, in a new tab.</p>
+      <div id="siList" class="si-list"><div class="meta">Loading…</div></div>
+      <div class="si-head">Studio and Gen</div>
+      <div id="siInfra" class="si-list"></div>
     </section>
     <section id="golive" class="tab">
       <p class="intro"><b>Go live:</b> what's on beta but not on the live site yet, and the button to ship it. Nothing goes live until you tap Approve.</p>
@@ -193,6 +200,7 @@
   <script src="inbox.js"></script>
   <script src="costs.js"></script>
   <script src="golive.js"></script>
+  <script src="sites.js"></script>
   <script src="memory.js"></script>
   <script src="settings.js"></script>
   <script src="users.js"></script>

@@ -9,7 +9,7 @@
     "start": "node --disable-warning=ExperimentalWarning src/server.ts",
     "daily": "node --disable-warning=ExperimentalWarning src/cli.ts daily",
     "studio": "node --disable-warning=ExperimentalWarning src/cli.ts",
-    "typecheck": "tsc -p . && node --check dashboard/app.js && node --check dashboard/approval.js && node --check dashboard/talk.js && node --check dashboard/call.js && node --check dashboard/kokoro-worker.js && node --check dashboard/settings.js && node --check dashboard/playtests.js && node --check dashboard/activity.js && node --check dashboard/roadmap.js && node --check dashboard/costs.js && node --check dashboard/golive.js && node --check dashboard/report-widget.js && node --check dashboard/memory.js && node --check dashboard/inbox.js && node --check dashboard/guide.js && node --check dashboard/users.js",
+    "typecheck": "tsc -p . && node --check dashboard/app.js && node --check dashboard/approval.js && node --check dashboard/talk.js && node --check dashboard/call.js && node --check dashboard/kokoro-worker.js && node --check dashboard/settings.js && node --check dashboard/playtests.js && node --check dashboard/activity.js && node --check dashboard/roadmap.js && node --check dashboard/costs.js && node --check dashboard/golive.js && node --check dashboard/sites.js && node --check dashboard/report-widget.js && node --check dashboard/memory.js && node --check dashboard/inbox.js && node --check dashboard/guide.js && node --check dashboard/users.js",
     "test": "node --disable-warning=ExperimentalWarning --test \"test/**/*.test.ts\""
   },
   "devDependencies": {
