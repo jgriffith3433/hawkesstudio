@@ -448,6 +448,16 @@ words are the fallback.
   or when main has commits beta lacks (`studio deploy <p> --merge-main` merges them into beta first; then play beta
   again). For Unity, the beta build's `Game/v<n>` is committed to the website repo's main, and the source repo's main
   follows beta. Studio then waits for GitHub Pages and playtests live.
+- **Clearing blockers with a tap:** a blocked card on the Go live page shows the one beta-only step that clears it (the
+  plan's `fix`, `planFix` in deploy.ts), J's to press: **Merge live into beta** ("main has commits beta lacks", or no
+  beta yet; it then plays beta), **Play beta** (not playtested at this commit, the pre-deploy build missing, the Unity
+  build missing, failed or of an older commit: the beta run, as `studio beta <p>`), **Rebuild beta** (Unity: the
+  website's main moved since the beta build; a forced Unity build, about $0.10). The card follows the run's steps and
+  checks the plan again when it ends, so it turns into "Ready to go live". "Play beta for all blocked" at the top does
+  each blocked card's step. They never go live or roll back (that stays the Approve card); members get the same role
+  check as other run starts (merging main into beta is admin-only). "Nothing to go live" gets no button. The beta run
+  also rebuilds Unity when the website's main moved under the last build (`betaBuildCurrent`), so Play beta clears
+  that blocker too. The go-live dialog shows the same button; a blocked go-live Approve card links to the Go live page.
 - **Rollback:** `studio_rollback` (or "Rollback…" in the Go live window) shows what's live and what it goes back to:
   what was live before the last go live. `ROLLBACK <product>` adds a commit on main with those files (never a force
   push). Beta keeps the rolled-back commits: fix forward on beta, `--merge-main` (it keeps beta's files, since main only

@@ -48,6 +48,29 @@ function testedAt(productId: string, sha: string | undefined) {
   return { tested, last: last && { name: last.name, when: last.finished, played: last.data.played } };
 }
 
+/**
+ * The beta-only step that clears a plan blocker (the Go live cards' button): "merge-main" merges live into beta (it
+ * also makes a missing beta) and then plays beta; "beta" is the beta run (pre-deploy build, Unity build, beta site, a
+ * local playtest); "rebuild" is a forced Unity build of beta on top of live. None of them goes live. null: no button.
+ */
+export type BlockerFix = 'merge-main' | 'beta' | 'rebuild';
+export function blockerFix(blocker: string): BlockerFix | null {
+  if (/^git:|^Nothing to go live/.test(blocker)) return null;
+  if (/ has no \S+ branch yet|commit\(s\) \S+ lacks/.test(blocker)) return 'merge-main';
+  if (/'s \S+ moved since the beta build/.test(blocker)) return 'rebuild';
+  if (/hasn't been playtested|isn't its pre-deploy build|The beta build is of|has no build yet|The last build of/.test(blocker)) return 'beta';
+  return null;
+}
+/**
+ * The one button for a plan's blockers: merging live in first (it plays beta after), then the beta run (it rebuilds
+ * too). None when there's nothing to go live.
+ */
+export function planFix(blockers: string[]): BlockerFix | null {
+  if (blockers.some((b) => b.startsWith('Nothing to go live'))) return null;
+  const fixes = new Set(blockers.map(blockerFix));
+  return (['merge-main', 'beta', 'rebuild'] as const).find((f) => fixes.has(f)) ?? null;
+}
+
 export async function deployPlan(productId: string) {
   const p = getProduct(productId);
   const { source, site, unity } = repoDirs(p);
@@ -110,7 +133,7 @@ export async function deployPlan(productId: string) {
     tested: { sha: beta?.short ?? null, playtests: tested }, lastPlayed: last,
     build,
     previous: previous.map((d) => ({ id: d.id, kind: d.kind, at: d.at, by: d.by, before: d.before?.slice(0, 7) ?? null, after: d.after.slice(0, 7), beta: d.beta?.slice(0, 7) ?? null, detail: d.detail, rolledBack: d.rolled_back })),
-    blockers, warnings, canDeploy: !blockers.length,
+    blockers, warnings, canDeploy: !blockers.length, fix: planFix(blockers),
     confirm: `DEPLOY ${p.id}`,
     what: unity
       ? `Commits ${BETA}'s build${build?.version ? ` (Game/v${build.version})` : ''} to ${p.site}'s ${MAIN} and fast-forwards ${p.repo.split('/')[0]}'s ${MAIN} to ${beta?.short ?? BETA}; GitHub Pages publishes ${p.live}.`
