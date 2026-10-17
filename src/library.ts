@@ -19,7 +19,7 @@ import { gen } from './gen.ts';
 import { getProduct, loadProducts, StudioError, type Product } from './config.ts';
 import { ensureWorkingCopy, flushDev } from './dev.ts';
 // @ts-ignore: plain JS module (a copy of hawkesgen/clients/js/hawkesgen-folders.mjs, synced by hawkesgen-sdk)
-import { loadMapping, exportFolders } from './hawkesgen-folders.mjs';
+import { parseMappings, exportFolders } from './hawkesgen-folders.mjs';
 
 /** Forwards /api/gen/v1/* to Gen. */
 export function relay(req: IncomingMessage, res: ServerResponse, rest: string) {
@@ -67,23 +67,20 @@ export async function waiting() {
   return { products: out };
 }
 
-/** The product's mapping file in a checkout, or null. */
-export function mappingIn(dir: string) {
+/** The product's mappings in a checkout (one per kind it keeps in folders), or []. */
+export function mappingsIn(dir: string): any[] {
   const f = ['hawkes.content.json', 'hawkes.library.json'].map((n) => path.join(dir, n)).find((x) => fs.existsSync(x));
-  if (!f) return null;
+  if (!f) return [];
   const raw = JSON.parse(fs.readFileSync(f, 'utf8'));
   // hawkes.content.json keeps the mapping under "library"; hawkes.library.json is the mapping.
-  if (path.basename(f) === 'hawkes.content.json') {
-    if (!raw.library) return null;
-    const tmp = path.join(dir, '.hawkes-library.tmp.json');
-    fs.writeFileSync(tmp, JSON.stringify(raw.library));
-    try {
-      return loadMapping(tmp);
-    } finally {
-      fs.rmSync(tmp, { force: true });
-    }
-  }
-  return loadMapping(f);
+  const m = path.basename(f) === 'hawkes.content.json' ? raw.library : raw;
+  return m ? parseMappings(m, f) : [];
+}
+
+/** The mapping for one kind (or the first), or null. */
+export function mappingIn(dir: string, kind?: string) {
+  const all = mappingsIn(dir);
+  return (kind && all.find((m) => m.kind === kind)) || all[0] || null;
 }
 
 /** Whether a mapping's folders are inside the repo checkout (so Studio may commit them). */
@@ -102,10 +99,12 @@ export async function writeBack(entityId: string, { by = 'J' }: { by?: string } 
     throw new StudioError(`No product ${project}`, 404);
   }
   const dir = await ensureWorkingCopy(p);
-  const m = mappingIn(dir);
-  if (!m) return { product: p.id, skipped: `${p.name} has no hawkes.library.json: its picks stay in the library` };
-  if (!insideRepo(dir, m.root)) return { product: p.id, skipped: `${p.name}'s folders (${path.basename(m.root)}) are outside its repo: its own tools write them` };
   const e = await gen.entity(entityId);
+  const all = mappingsIn(dir);
+  if (!all.length) return { product: p.id, skipped: `${p.name} has no hawkes.library.json: its picks stay in the library` };
+  const m = all.find((x) => x.kind === e.kind);
+  if (!m) return { product: p.id, skipped: `${p.name} keeps no ${e.kind} in folders: its picks stay in the library` };
+  if (!insideRepo(dir, m.root)) return { product: p.id, skipped: `${p.name}'s folders (${path.basename(m.root)}) are outside its repo: its own tools write them` };
   const report = await exportFolders(gen, m, { only: e.data?.folder ?? e.name });
   const written = report.filter((r: any) => r.action === 'written');
   if (!written.length) return { product: p.id, written: 0, nothing: true };

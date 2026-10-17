@@ -7,7 +7,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 process.env.STUDIO_DATA = fs.mkdtempSync(path.join(os.tmpdir(), 'studio-lib-'));
-const { mappingIn, insideRepo } = await import('../src/library.ts');
+const { mappingIn, mappingsIn, insideRepo } = await import('../src/library.ts');
 
 const slots = [{ slot: 'model', current: 'model.glb' }];
 
@@ -23,7 +23,16 @@ test('a mapping comes from hawkes.library.json, or the library section of hawkes
   const n = mappingIn(b);
   assert.equal(n.kind, 'fighter');
   assert.equal(n.root, path.resolve(b, '..', 'AllTheCharacters'));
-  assert.ok(!fs.existsSync(path.join(b, '.hawkes-library.tmp.json')));
+});
+
+test('one file can map several kinds; the kind of an entity picks its mapping', () => {
+  const c = fs.mkdtempSync(path.join(os.tmpdir(), 'repo-c-'));
+  const flat = [{ slot: 'model', current: '{entity}.glb' }];
+  fs.writeFileSync(path.join(c, 'hawkes.library.json'), JSON.stringify({ project: 'p', layout: 'files', root: 'assets/models', mappings: [{ kind: 'character', entities: ['ch*'], slots: flat }, { kind: 'prop', skip: ['ch*'], slots: flat }] }));
+  assert.equal(mappingsIn(c).length, 2);
+  assert.equal(mappingIn(c, 'prop').kind, 'prop');
+  assert.equal(mappingIn(c, 'prop').root, path.join(c, 'assets', 'models'));
+  assert.equal(mappingIn(c).kind, 'character');
 });
 
 test('Studio writes picks only into folders inside the repo', () => {
