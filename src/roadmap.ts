@@ -14,7 +14,7 @@
 // can make) and the PM decision log (every merge, won't-fix, start and answer Talk made, with undo where possible).
 
 import { db, newId, J, parse } from './db.ts';
-import { loadProducts, isInfra, StudioError, betaPlaytestsOn } from './config.ts';
+import { loadProducts, loadInfra, isInfra, StudioError, betaPlaytestsOn } from './config.ts';
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS items (
@@ -102,9 +102,13 @@ const list = (v: unknown) => (Array.isArray(v) ? v : typeof v === 'string' && v.
 const productId = (id: string) => {
   const p = loadProducts().find((x) => x.id === id || x.name.toLowerCase() === String(id).toLowerCase());
   if (p) return p.id;
-  if (isInfra(id)) return id;
+  // Studio and Gen themselves, by id or name ("Hawkes Studio").
+  const inf = loadInfra().find((x) => x.id === id || x.name.toLowerCase() === String(id).toLowerCase());
+  if (inf) return inf.id;
   throw new StudioError(`No product "${id}". Products: ${loadProducts().map((x) => x.id).join(', ')}`, 404);
 };
+/** What roadmap items can be for: the products, then Studio and Gen themselves (products.json infra). */
+export const roadmapProducts = () => [...loadProducts(), ...loadInfra()].map((x) => ({ id: x.id, name: x.name, infra: isInfra(x.id) }));
 
 export const getItem = (id: string) => {
   const r = db.prepare('SELECT * FROM items WHERE id = ?').get(id);

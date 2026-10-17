@@ -7,12 +7,15 @@ const RM_RANK = { high: 0, normal: 1, low: 2 };
 const prioBadge = (p, inherited) => `<span class="pill ${p === 'high' ? 'broken' : ''}" title="Priority${inherited ? " (its item's)" : ''}: the PM starts high first">${p === 'high' ? '▲ ' : p === 'low' ? '▼ ' : ''}${esc(p)}${inherited ? '*' : ''}</span>`;
 const prioSelect = (kind, id, own) => `<select class="small" data-prio="${kind}" data-id="${id}" title="Change the priority">${kind === 'task' ? `<option value=""${own ? '' : ' selected'}>item's</option>` : ''}${['high', 'normal', 'low'].map((p) => `<option value="${p}"${own === p ? ' selected' : ''}>${p}</option>`).join('')}</select>`;
 let rmOpen = new Set();
+let rmNames = {};
 
 async function loadRoadmap() {
   const sel = $('#rmProduct');
-  if (sel.options.length <= 1 && typeof overview !== 'undefined' && overview) sel.innerHTML += overview.products.map((p) => `<option value="${p.id}">${esc(p.name)}</option>`).join('');
   const qs = new URLSearchParams({ ...(sel.value ? { product: sel.value } : {}), ...($('#rmStatus').value ? { status: $('#rmStatus').value } : {}) });
   const [r, pm] = await Promise.all([api(`/api/roadmap?${qs}`), api('/api/pm')]);
+  // The products, then Hawkes Studio and Hawkes Gen themselves (their items are roadmap items too).
+  rmNames = Object.fromEntries((r.products ?? []).map((p) => [p.id, p.name]));
+  if (sel.options.length <= 1) sel.innerHTML += (r.products ?? []).map((p) => `<option value="${esc(p.id)}">${esc(p.name)}</option>`).join('');
   const s = pm.settings;
   const c = pm.capacity;
   $('#rmPm').innerHTML = `<b>PM loop:</b> ${s.enabled ? '<span class="pill ship">running</span>' : '<span class="pill failed">paused</span>'}
@@ -41,7 +44,7 @@ let rmMilestones = [];
 function milestoneHtml(m) {
   const pct = m.total ? Math.round((100 * m.done) / m.total) : 0;
   return `<div class="finding"><div style="flex:1">
-    <h4><span class="pill ${m.status === 'reached' || m.status === 'live' ? 'ship' : ''}">${esc(m.status)}</span> 🏁 ${esc(m.title)} <span class="meta">${esc(m.product ?? 'all products')} · ${esc(m.id)} · ${m.done}/${m.total} items on beta${m.reached_at ? ` · reached ${ago(m.reached_at)}` : ''}</span></h4>
+    <h4><span class="pill ${m.status === 'reached' || m.status === 'live' ? 'ship' : ''}">${esc(m.status)}</span> 🏁 ${esc(m.title)} <span class="meta">${esc(m.product ? rmNames[m.product] ?? m.product : 'all products')} · ${esc(m.id)} · ${m.done}/${m.total} items on beta${m.reached_at ? ` · reached ${ago(m.reached_at)}` : ''}</span></h4>
     <div style="height:6px;background:var(--line, #333);border-radius:3px;overflow:hidden;margin:4px 0"><div style="height:6px;width:${pct}%;background:var(--accent, #33d6a6)"></div></div>
     ${m.goal ? `<div class="summary">${esc(m.goal)}</div>` : ''}${m.test ? `<div class="meta">You'll test: ${esc(m.test)}</div>` : ''}
     <div class="meta">${m.items.map((i) => `<span class="pill ${RM_PILL[i.status] ?? ''}">${esc(i.status)}</span> ${esc(i.title)}`).join(' · ') || 'No items yet: add items to it (Milestone… on an item).'}</div>
@@ -61,7 +64,7 @@ function itemHtml(it) {
       <div style="flex-basis:100%">${checks}<div id="th-${t.id}"></div></div></div>`;
   }).join('');
   return `<div class="finding"><div style="flex:1">
-    <h4><span class="pill ${RM_PILL[it.status] ?? ''}">${esc(it.status)}</span> ${prioBadge(it.priority)} ${esc(it.title)} <span class="meta">${it.milestone ? `🏁 ${esc(rmMilestones.find((m) => m.id === it.milestone)?.title ?? it.milestone)} · ` : ''}${esc(it.product)} · ${esc(it.id)}${it.size ? ` · size ${esc(it.size)}` : ''} · ${ago(it.created)} by ${esc(it.by ?? '')}</span></h4>
+    <h4><span class="pill ${RM_PILL[it.status] ?? ''}">${esc(it.status)}</span> ${prioBadge(it.priority)} ${esc(it.title)} <span class="meta">${it.milestone ? `🏁 ${esc(rmMilestones.find((m) => m.id === it.milestone)?.title ?? it.milestone)} · ` : ''}${esc(rmNames[it.product] ?? it.product)} · ${esc(it.id)}${it.size ? ` · size ${esc(it.size)}` : ''} · ${ago(it.created)} by ${esc(it.by ?? '')}</span></h4>
     ${it.goal ? `<div class="summary">${esc(it.goal)}</div>` : ''}${it.why ? `<div class="meta">Why: ${esc(it.why)}</div>` : ''}
     ${it.criteria.length ? `<div class="meta">Done when: ${it.criteria.map(esc).join(' · ')}</div>` : ''}
     <div class="tests">${tasks || '<div class="meta">No tasks yet.</div>'}</div>

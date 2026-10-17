@@ -262,6 +262,24 @@ test('a merged Studio/Gen task is verified without a beta run', async () => {
   assert.ok(rm.listDecisions({ action: 'verified' }).some((d) => d.subject === t.id), 'logged');
 });
 
+test('the Roadmap tab loads Studio/Gen items: no "No product" error, their own names', async () => {
+  // What the tab asks for (GET /api/roadmap, /api/ready, /api/pm) with a Studio item, filtered to it or not.
+  const it = rm.addItem({ product: 'PM infra', title: 'A Studio panel', criteria: ['the panel shows'], size: 'S', status: 'planned' });
+  assert.equal(it.product, 'pminfra', 'found by its name too');
+  const t = rm.addTask({ item: it.id, request: 'Add the panel', criteria: ['the panel shows'] });
+  rm.setTask(t.id, { status: 'verified', merged_at: Date.now() });
+  const ms = rm.addMilestone({ title: 'Studio polish', product: 'pminfra' });
+  assert.ok(rm.listItems({ product: 'pminfra' }).some((x) => x.id === it.id));
+  assert.ok(rm.listMilestones({ product: 'pminfra' }).some((x) => x.id === ms.id));
+  const products = rm.roadmapProducts();
+  assert.deepEqual(products.find((p) => p.id === 'pminfra'), { id: 'pminfra', name: 'PM infra', infra: true }, 'the filter offers Studio/Gen');
+  assert.equal(products.find((p) => p.id === 'pmtest')?.infra, false);
+  const ready = pm.readyReport({ product: 'pminfra' }).find((r) => r.item === it.id);
+  assert.equal(ready?.productName, 'PM infra', 'its name, not its id');
+  const status = await pm.pmStatus();
+  assert.doesNotMatch(String(status.lastError ?? ''), /No product/);
+});
+
 test('a task that throws in a tick does not stop other planned tasks from starting', async () => {
   process.env.STUDIO_PM_TALK = 'off';
   // Agents never actually run here: queued changes stay queued (no agent slots).
