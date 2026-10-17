@@ -295,7 +295,8 @@ const staleTold = new Set<string>();
 /**
  * On the server, a web product's local playtest serves its source checkout, kept on beta (repos.ts). It is brought to
  * beta's tip first; when it can't follow (uncommitted changes, local commits), the playtest doesn't play the old commit:
- * it fails with what's in the way, and Talk is told (Studio never throws away changes it didn't make). Null: up to date.
+ * it fails with what's in the way, and Talk is told (Studio never throws away changes it didn't make; uncommitted
+ * changes only in generated build output are a leftover build, discarded by syncRepo). Null: up to date.
  */
 export async function staleBeta(p: Product): Promise<string | null> {
   const top = p.repo.split('/')[0];
