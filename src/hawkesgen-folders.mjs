@@ -31,10 +31,12 @@
 // (each inherits the top-level fields). loadMappings reads them all; loadMapping(file, kind) one.
 //
 // Patterns are paths inside the entity's folder: * is any characters but /, {a,b} is either, {name} is the slot's
-// variable part (one word: "air", "jab"). recipe is the sidecar with the prompt and seed of a take ({file} is the take's
+// variable part (one word: "air", "jab"). A file belongs to the first spec that matches it, so a narrower pattern goes
+// first (DoD's anims/_old/take-{name}-*.mp4 before anims/_old/{name}-*.mp4). recipe is the sidecar with the prompt and seed of a take ({file} is the take's
 // path without its extension; {path} with it). Import is safe to run again: a file already in its slot (same bytes) is
 // not added twice, and a current file that matches a take picks that take (only while the slot has no current version:
-// after that the library decides, and a different file is reported as "differs"; --adopt lets the folder win). Export writes each slot's current version to
+// after that the library decides, and a different file is reported as "differs"; --adopt lets the folder win). A take
+// that moved to an "old" path is made old in the library ("retired"). Export writes each slot's current version to
 // its "current" path (only files whose bytes differ), so the game and the product's tools keep working unchanged.
 
 import fs from 'node:fs';
@@ -132,18 +134,23 @@ export function scanFolder(m, folder) {
   const dir = dirOf(m, folder);
   const files = listFiles(dir);
   const slots = {};
+  // A file belongs to one slot: the first spec (in the mapping's order) that matches it.
+  const claimed = new Set();
   for (const spec of m.slots) {
     for (const role of ['current', 'takes', 'old']) {
       if (!spec[role]) continue;
       if (isFiles(m) && !spec[role].includes('{entity}')) continue;
       const re = patternRegex(fill(m, spec[role], folder));
       for (const f of files) {
+        if (claimed.has(f)) continue;
         const hit = re.exec(f);
         if (!hit) continue;
         const name = hit.groups?.name ? slugOf(hit.groups.name) : null;
         if (spec.slot.includes('{name}') && !name) continue;
         const slot = spec.slot.replace('{name}', name ?? '');
+        claimed.add(f);
         const s = (slots[slot] ??= { spec, takes: [], old: [], current: null });
+        if (spec.recipe && !s.spec.recipe) s.spec = spec;
         if (role === 'current') {
           // Several files for one current (concept: *.jpg and *.png): the newest.
           if (!s.current || fs.statSync(path.join(dir, f)).mtimeMs > fs.statSync(path.join(dir, s.current)).mtimeMs) s.current = f;
@@ -161,6 +168,26 @@ function sidecar(m, spec, dir, f) {
     return JSON.parse(fs.readFileSync(p, 'utf8'));
   } catch {
     return null;
+  }
+}
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * Adds a version, riding out a gateway error or a restart (502/503/504, or Gen briefly unreachable): before trying
+ * again it looks whether the version got stored anyway, so a long import never adds the same file twice.
+ */
+async function stored(gen, id, slot, hash, add) {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await add();
+    } catch (e) {
+      const passing = [0, 502, 503, 504].includes(e.status) || /HTTP 50[234]/.test(e.message);
+      if (!passing || attempt >= 4) throw e;
+      await sleep(5000 * (attempt + 1));
+      const there = (await gen.slot(id, slot).catch(() => ({ versions: [] }))).versions.find((v) => v.file?.sha256 === hash);
+      if (there) return there;
+    }
   }
 }
 
@@ -198,6 +225,12 @@ export async function importFolders(gen, m, { only, dry = false, adopt = false, 
           else return;
         }
         if (there) {
+          // A take moved to _old/ (the product's tools dropped it) is old in the library too.
+          if (status === 'old' && there.status === 'take') {
+            report.push({ entity: id, slot, file: f, action: dry ? 'would-retire' : 'retired' });
+            if (!dry) await gen.request(`/versions/${there.id}`, { method: 'PATCH', body: { status: 'old' } });
+            return;
+          }
           if (status === 'current' && there.status !== 'current') {
             report.push({ entity: id, slot, file: f, action: dry ? 'would-pick' : 'picked' });
             if (!dry) await gen.pick(there.id);
@@ -207,7 +240,7 @@ export async function importFolders(gen, m, { only, dry = false, adopt = false, 
         report.push({ entity: id, slot, file: f, status, action: dry ? 'would-add' : 'added' });
         if (dry) return;
         const r = sidecar(m, s.spec, dir, f);
-        const v = await gen.addVersion(id, slot, path.join(dir, f), { status, title: isFiles(m) ? f : `${folder}/${f}`, prompt: r?.prompt, meta: r ? { recipe: r, from: `${where}/${f}` } : { from: `${where}/${f}` } });
+        const v = await stored(gen, id, slot, h, () => gen.addVersion(id, slot, path.join(dir, f), { status, title: isFiles(m) ? f : `${folder}/${f}`, prompt: r?.prompt, meta: r ? { recipe: r, from: `${where}/${f}` } : { from: `${where}/${f}` } }));
         bySha.set(h, v);
         log(`${id} ${slot} v${v.n} ${status}: ${f}`);
       };
