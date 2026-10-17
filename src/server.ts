@@ -26,7 +26,7 @@ import { listDev, devStatus, startDev, stopDev, flushDev, resolveDev, sinceLive,
 import { startFronts } from './dev-front.ts';
 import { selfDeploys, selfBusy } from './selfdeploy.ts';
 import { originOf, tagChange, startFollowups } from './followup.ts';
-import { activity } from './activity.ts';
+import { activity, stageOf } from './activity.ts';
 import { listReports as listBugReports, reportShot, startReportFollowups } from './bugreport.ts';
 
 const MIME: Record<string, string> = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.json': 'application/json', '.md': 'text/markdown; charset=utf-8' };
@@ -407,7 +407,7 @@ const server = http.createServer(async (req, res) => {
     }
 
     // Agent changes (findings -> pull requests).
-    if (route === '/api/changes' && method === 'GET') return send(res, 200, { changes: listChanges({ status: q('status'), product: q('product') }), today: costToday(), settings: agentSettings() });
+    if (route === '/api/changes' && method === 'GET') return send(res, 200, { changes: listChanges({ status: q('status'), product: q('product') }).map((c) => ({ ...c, stage: stageOf(c, c.verify) })), today: costToday(), settings: agentSettings() });
     if (route === '/api/changes' && method === 'POST') {
       const b = await readJson(req);
       const by = origin ? 'Talk' : typeof b.by === 'string' ? b.by.slice(0, 60) : null;

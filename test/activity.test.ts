@@ -55,3 +55,55 @@ test('a failed change shows the stage it failed at in red', () => {
   assert.equal(row('failed', { step: 'finish', failed: true }), 'coding:done playtesting:done review:failed ready:todo');
   assert.equal(row('failed', { infra: true, step: 'verify', failed: true }), 'coding:done checks:failed ready:todo');
 });
+
+// The thin progress bar under the stages (ChangeStages.progress): equal parts per stage before ready, creeping within
+// coding by elapsed time, green at ready, red where a failed change stopped.
+const P = (status: string, stage: any = {}, now = 0) => {
+  const p = S.progress(status, stage, now);
+  return `${p.pct}:${p.state}:${p.stage}`;
+};
+const MIN = 60_000;
+
+test('the progress bar fills by stage', () => {
+  assert.equal(P('queued', { unity: true }), '0:todo:coding');
+  assert.equal(P('closed', {}), '0:todo:coding');
+  // A product change has three stages before ready, a Unity one four, Studio and Gen two.
+  assert.equal(P('verifying', { step: 'verify', jobs: jobs() }), '50:now:playtesting');
+  assert.equal(P('verifying', { step: 'finish', jobs: jobs({ playtest: true, review: true }) }), '83:now:review');
+  assert.equal(P('verifying', { unity: true, step: 'verify', jobs: jobs({ build: true }) }), '38:now:building');
+  assert.equal(P('verifying', { unity: true, step: 'verify', jobs: jobs({ build: true, playtest: true }) }), '63:now:playtesting');
+  assert.equal(P('verifying', { infra: true, step: 'verify' }), '75:now:checks');
+  assert.equal(P('ready', { outcome: 'passed' }), '100:ready:ready');
+  assert.equal(P('ready', { infra: true, outcome: 'failed' }), '100:ready:ready');
+  assert.equal(P('merged', { unity: true }), '100:ready:ready');
+});
+
+test('the progress bar creeps through coding as the agent works, never past it', () => {
+  const at = (ms: number, extra: any = {}) => S.progress('working', { step: 'agent', since: 0, ...extra }, ms).pct;
+  assert.equal(at(0), 2); // just started: a sliver, so the bar is visible
+  const steps = [1, 5, 10, 20, 40, 120, 600].map((m) => at(m * MIN));
+  for (let k = 1; k < steps.length; k++) assert.ok(steps[k] >= steps[k - 1], `never goes back: ${steps}`);
+  assert.ok(steps[3] > 10 && steps[3] < 25, `about halfway through coding after a typical run: ${steps[3]}`);
+  assert.ok(steps.at(-1)! <= 30, `stays inside coding (a third of a product change's bar): ${steps.at(-1)}`);
+  assert.ok(at(600 * MIN, { infra: true }) <= 45, 'Studio and Gen: inside coding (half the bar)');
+  // Pushing the branch: the end of coding.
+  assert.equal(at(0, { step: 'publish' }), 32);
+  // No start time (needs answer before steps were recorded): the start of coding.
+  assert.equal(P('needs answer', { step: null }), '2:now:coding');
+  // A clock behind the start time doesn't make it negative.
+  assert.equal(at(-5 * MIN), 2);
+});
+
+test('the progress bar is red where a failed change stopped', () => {
+  assert.equal(P('failed', {}), '17:failed:coding');
+  assert.equal(P('failed', { unity: true, step: 'verify', failed: true, jobs: jobs({ build: true }) }), '38:failed:building');
+  assert.equal(P('failed', { step: 'finish', failed: true }), '83:failed:review');
+  assert.equal(P('failed', { infra: true, step: 'verify', failed: true }), '75:failed:checks');
+});
+
+test('the bar html carries its percent and state', () => {
+  const h = S.barHtml('failed', { infra: true, step: 'verify', failed: true }, 0);
+  assert.match(h, /class="act-bar failed"/);
+  assert.match(h, /width:75%/);
+  assert.match(h, /stopped at checks/);
+});

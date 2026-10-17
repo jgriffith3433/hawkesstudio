@@ -36,13 +36,15 @@ const builds = (product: string) => {
  * What the Activity panel's stages are drawn from (dashboard/activity.js ChangeStages): the kind of change, the step
  * its work is at (or failed at: agents.ts keeps it), which verification jobs it got to, and its verification's outcome.
  */
-function stageOf(c: any, v: any) {
+export function stageOf(c: any, v: any) {
   const ph = parse(c.phase);
   const jobs = ph?.jobs ?? {};
   return {
     infra: isInfra(c.product), unity: builds(c.product), step: ph?.step ?? null, failed: Boolean(ph?.failed),
     jobs: { build: Boolean(jobs.build), playtest: Boolean(jobs.playtest), review: Boolean(jobs.review) },
     outcome: v?.outcome ?? null,
+    // When the current pass started (older phases have none: the change's creation), for the progress bar's creep.
+    since: ph?.since ?? c.created ?? null,
   };
 }
 
