@@ -8,7 +8,7 @@ import path from 'node:path';
 process.env.STUDIO_DATA = fs.mkdtempSync(path.join(os.tmpdir(), 'studio-fe-'));
 const { namedIn, phrase } = await import('../src/finding-entities.ts');
 
-const ent = (id: string, name: string) => ({ id, name, kind: 'x', words: [phrase(name), phrase(id.split('/')[1])].filter(Boolean) });
+const ent = (id: string, name: string) => ({ id, name, kind: 'x', words: [phrase(name), phrase(id.split('/')[1])].filter((w): w is RegExp => Boolean(w)) });
 
 test('a finding names an entity by its name or slug, as whole words', () => {
   const ents = [ent('doseofdestruction/spider-bot', 'Spider Bot'), ent('doseofdestruction/break', 'Break'), ent('theplacedepartment/hen', 'Hen')];
