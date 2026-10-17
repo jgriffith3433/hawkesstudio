@@ -1,15 +1,21 @@
 # Learned: All of Hawkes
 
-Generated from Hawkes Studio's shared memory (2026-10-16 23:55 UTC). Edit entries in Studio's Memory tab, not here.
+Generated from Hawkes Studio's shared memory (2026-10-17 00:52 UTC). Edit entries in Studio's Memory tab, not here.
 
 ## J's decisions
 
+- **A bug or roadmap item is consumed (done) as soon as a task is created for it**: 2026-10-17 (J on a call; "bread map" = roadmap). When an agent task/fix is started for a backlog finding, mark the finding fixed right away instead of leaving it in "fixing"; when a roadmap item's tasks are created, treat the item as done. Assume the agent's work finishes it; don't keep them open waiting for verification. All 16 open findings (DoD, Yooba Land, Sick Of It, Hawkes Biomedical) were closed as fixed that day. A Studio change was requested to do this automatically.  
+  <sub>m_7c8bf4f5b403 · Talk · 2026-10-17 · t_50c9777f299f</sub>
 - **Agent changes aren't auto-playtested; a playtest is something J asks for, not an acceptance gate**: 2026-10-16. Agent changes become ready on the agent's own checks; a change's playtest runs only on request. Merge cards and the PM's delegated beta merges no longer require a playtest. The daily run, the beta runs after a push and the live checks stay as they are.  
   <sub>m_4f34c00cfce3 · Talk · 2026-10-16 · t_0218cbf1dee7</sub>
+- **Agent changes merge into beta automatically, no approval**: 2026-10-17: product agent changes (tasks, fixes, PM tasks) merge into beta as soon as they're ready (the agent's checks passed), with no Approve card or PM gate. A change that can't merge (conflict, failed checks) waits for a person and Talk says why. Going live, rollbacks and Studio/Gen merges into main stay J's.  
+  <sub>m_702ff628b65d · Talk · 2026-10-17 · t_af5bd14c8b8e</sub>
 - **Approvals move from typed words to an Approve / Deny button**  
   <sub>m_286ae9f4cd83 · Talk · 2026-10-16 · t_d51e3c809c39</sub>
 - **At most 4 GPU servers, US regions only**: us-east-1, us-east-2, us-west-2 (cheapest). Launching, starting or terminating servers asks J first.  
   <sub>m_82439219e260 · seed · 2026-10-16 · hawkesstudio/docs/projects/AGENTS.md, hawkesstudio/AGENTS.md, docs/cloud.md, J's notes (2026-10-16)</sub>
+- **Every game: a standard tap-for-sound prompt on first visit and a Settings menu with sound, working on all devices**: The standard (2026-10-17): when the game page loads, a full-screen "Tap to play" prompt appears before the game starts. That tap unlocks the audio: it resumes the AudioContext and primes the audio elements, which iOS requires (see the PH Origins audioUnlock.ts pool). Audio also resumes when the tab comes back or iOS interrupts it. Every game has a Settings menu, opened from its main menu and pause, with Sound on/off and Music and Effects volume. The choice is saved in localStorage key "hawkes.sound" ({ on, music, sfx }, values 0-1). It must work on desktop, iPhone (Safari and Chrome), Android and tablets, in both orientations. Unity games: the prompt lives in the website's loader page, and the settings live in Unity's menu.  
+  <sub>m_d00535b22659 · Talk · 2026-10-17 · t_85ec67f7142e</sub>
 - **Going live is J's call: he types DEPLOY <product>**: Agents and Talk never push main or go live. Show studio_deploy_plan in plain words, then wait for the exact words. Rollbacks the same with ROLLBACK <product>. "Yes" or "ship it" are not enough.  
   <sub>m_e2137c917972 · seed · 2026-10-16 · hawkesstudio/docs/projects/AGENTS.md, hawkesstudio/AGENTS.md, docs/cloud.md, J's notes (2026-10-16)</sub>
 - **Phone notifications only for what went wrong, J-only decisions and milestones**: Merges, starts, answers and progress go to Talk only.  
