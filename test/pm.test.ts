@@ -15,7 +15,10 @@ fs.mkdirSync(process.env.STUDIO_PROJECTS, { recursive: true });
 fs.writeFileSync(process.env.STUDIO_PRODUCTS, JSON.stringify({ products: [{
   id: 'pmtest', name: 'PM test', framing: 'test', engine: 'static', repo: 'site', site: 'site', live: 'http://127.0.0.1:9/',
   local: { serve: 'static', dir: 'site', port: 8797, path: '/' }, playtests: [{ scenario: 'smoke', where: 'local' }], story: [], about: 'A fixture.',
-}] }));
+}, {
+  id: 'pmother', name: 'PM other', framing: 'test', engine: 'static', repo: 'other', site: 'other', live: 'http://127.0.0.1:9/',
+  local: { serve: 'static', dir: 'other', port: 8798, path: '/' }, playtests: [{ scenario: 'smoke', where: 'local' }], story: [], about: 'A fixture.',
+}], repos: { other: 'x/other' }, infra: [{ id: 'pminfra', name: 'PM infra', repo: 'pminfra', slug: 'x/pminfra' }] }));
 
 const rm = await import('../src/roadmap.ts');
 const { gate, allMet } = await import('../src/acceptance.ts');
@@ -212,4 +215,48 @@ test('an escalated change is asked about once: answered, the loop leaves it; "cl
   await assert.rejects(pm.pmRevise('c_esc000000002', 'again'), /closed, not ready/);
   for (let i = 0; i < 3; i++) await pm.tick();
   assert.equal(rm.listQuestions().filter((x) => x.subject === t2.id).length, 0, 'nothing more asked about it');
+});
+
+test('a merged Studio/Gen task is verified without a beta run', async () => {
+  const it = rm.addItem({ product: 'pminfra', title: 'A Studio button', criteria: ['the button shows'], size: 'S', status: 'planned' });
+  const t = rm.addTask({ item: it.id, request: 'Add the button', criteria: ['the button shows'] });
+  db.prepare(`INSERT INTO changes (id, product, findings, status, detail, repo, slug, branch, base, worktree, title, notes, log, created, updated, task)
+    VALUES ('c_infra0000001', 'pminfra', '[]', 'merged', 'merged into main', 'pminfra', 'x/pminfra', 'task/x', 'main', ?, 'Add the button', '[]', '[]', ?, ?, ?)`)
+    .run(path.join(tmp, 'none', 'infra'), Date.now(), Date.now(), t.id);
+  // Merged an hour ago: a product's task would start a beta run now (startBeta throws for Studio and Gen).
+  rm.setTask(t.id, { status: 'merged', change: 'c_infra0000001', changes: ['c_infra0000001'], tries: 1, merged_at: Date.now() - 3600_000 });
+  const runs = () => (db.prepare(`SELECT COUNT(*) AS n FROM runs WHERE kind = 'beta'`).get() as any).n as number;
+  const r0 = runs();
+  await pm.syncTasks();
+  assert.equal(rm.getTask(t.id)!.status, 'verified');
+  assert.equal(runs(), r0, 'no beta run');
+  assert.ok(rm.listDecisions({ action: 'verified' }).some((d) => d.subject === t.id), 'logged');
+});
+
+test('a task that throws in a tick does not stop other planned tasks from starting', async () => {
+  process.env.STUDIO_PM_TALK = 'off';
+  // Agents never actually run here: queued changes stay queued (no agent slots).
+  fs.writeFileSync(path.join(process.env.STUDIO_DATA!, 'agents.json'), JSON.stringify({ maxConcurrent: 0 }));
+  const token = process.env.GITHUB_TOKEN;
+  process.env.GITHUB_TOKEN = 'test';
+  pm.startPm();
+  try {
+    const bad = rm.addItem({ product: 'pmtest', title: 'Broken task', size: 'S', status: 'planned' });
+    const tb = rm.addTask({ item: bad.id, request: 'Something' });
+    db.prepare(`INSERT INTO changes (id, product, findings, status, detail, repo, slug, branch, base, worktree, title, notes, log, created, updated, task)
+      VALUES ('c_boom00000001', 'pmtest', '[]', 'ready', 'ready', 'site', 'x/site', 'task/y', 'beta', ?, 'Something', '[]', '[]', ?, ?, ?)`)
+      .run(path.join(tmp, 'none', 'boom'), Date.now(), Date.now(), tb.id);
+    rm.setTask(tb.id, { status: 'working', change: 'c_boom00000001', changes: ['c_boom00000001'], tries: 1 });
+    // Following this task up throws (its status can't change).
+    db.exec(`CREATE TRIGGER boom BEFORE UPDATE ON tasks WHEN NEW.id = '${tb.id}' AND NEW.status != OLD.status BEGIN SELECT RAISE(ABORT, 'boom'); END`);
+    const good = rm.addItem({ product: 'pmother', title: 'Next thing', size: 'S', status: 'planned', ord: -100 });
+    const tg = rm.addTask({ item: good.id, request: 'Do the next thing' });
+    await pm.tick();
+    assert.equal(rm.getTask(tg.id)!.status, 'working', 'the planned task started');
+    assert.ok(rm.getTask(tg.id)!.change);
+    assert.match(rm.getTask(tb.id)!.note ?? '', /boom/, 'the failing task says why');
+    db.exec('DROP TRIGGER boom');
+  } finally {
+    if (token === undefined) delete process.env.GITHUB_TOKEN; else process.env.GITHUB_TOKEN = token;
+  }
 });

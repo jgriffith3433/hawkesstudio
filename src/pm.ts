@@ -140,26 +140,12 @@ export async function syncTasks() {
   const { getChange } = await changes();
   const s = pmSettings();
   for (const t of (db.prepare(`SELECT id FROM tasks WHERE status IN ('working', 'needs answer', 'review', 'merged', 'verified')`).all() as any[]).map((r) => getTask(r.id)!)) {
-    const c = t.change ? getChange(t.change) : null;
-    if (!c) continue;
-    if (t.status !== 'merged' && t.status !== 'verified') {
-      const next = ACTIVE.includes(c.status) ? 'working' : c.status === 'needs answer' ? 'needs answer' : c.status === 'ready' ? 'review' : c.status === 'merged' ? 'merged' : null;
-      if (next && next !== t.status) {
-        setTask(t.id, { status: next, pr: c.pr_url, ...(next === 'merged' ? { merged_at: Date.now() } : {}), ...(c.verify?.criteria ? { checks: { where: 'change', at: Date.now(), change: c.id, video: c.verify.video ?? null, verdict: c.verify.verdict, results: c.verify.criteria } } : {}), ...(c.verify?.try ? { try: c.verify.try } : {}) });
-        if (next === 'merged') kick();
-      }
-      // A failed change is the PM's (watch() tells it; the defaults restart it or ask J). A closed one ends the task's run.
-      if (c.status === 'closed') setTask(t.id, { status: 'failed', note: `its change ${c.id} was closed (${c.detail ?? ''})` });
-      continue;
-    }
-    // Merged: beta's playtest of the criteria (the beta run after the merge, pipeline.ts startBeta) decides.
-    if (t.status === 'merged') await checkOnBeta(t);
-    // Verified (or merged): live once a go live after the merge has its commit on main.
-    const deploy = db.prepare(`SELECT * FROM deploys WHERE product = ? AND kind = 'deploy' AND rolled_back IS NULL AND at > ? ORDER BY at DESC LIMIT 1`).get(t.product, t.merged_at ?? 0) as any;
-    if (deploy && c.pr && !liveChecked.has(`${t.id}:${deploy.id}`)) {
-      liveChecked.add(`${t.id}:${deploy.id}`);
-      await gitAsync(path.join(PROJECTS, c.repo), ['fetch', '--quiet', 'origin']);
-      if (prCommit(c.repo, 'main', c.pr)) setTask(t.id, { status: getTask(t.id)!.status === 'verified' ? 'live' : getTask(t.id)!.status, live_at: Date.now() });
+    // One task going wrong never stops the loop (and the starts after it): its note says why.
+    try {
+      await syncTask(t, getChange);
+    } catch (e: any) {
+      console.warn(`[pm] task ${t.id}: ${e.message ?? e}`);
+      try { setTask(t.id, { note: `the PM couldn't follow it up: ${e.message ?? e}`.slice(0, 500) }); } catch {}
     }
   }
   // Items that just reached beta: J hears it's ready for him to test.
@@ -168,11 +154,48 @@ export async function syncTasks() {
   for (const m of milestonesToReach()) announceMilestone(m.id);
 }
 
+/** Studio and Gen have no beta lane: their changes merge into main, which deploys them. */
+const hasBeta = (product: string) => {
+  if (isInfra(product)) return false;
+  try { getProduct(product); return true; } catch { return false; }
+};
+
+async function syncTask(t: Task, getChange: (id: string) => any) {
+  const c = t.change ? getChange(t.change) : null;
+  if (!c) return;
+  if (t.status !== 'merged' && t.status !== 'verified') {
+    const next = ACTIVE.includes(c.status) ? 'working' : c.status === 'needs answer' ? 'needs answer' : c.status === 'ready' ? 'review' : c.status === 'merged' ? 'merged' : null;
+    if (next && next !== t.status) {
+      setTask(t.id, { status: next, pr: c.pr_url, ...(next === 'merged' ? { merged_at: Date.now() } : {}), ...(c.verify?.criteria ? { checks: { where: 'change', at: Date.now(), change: c.id, video: c.verify.video ?? null, verdict: c.verify.verdict, results: c.verify.criteria } } : {}), ...(c.verify?.try ? { try: c.verify.try } : {}) });
+      if (next === 'merged') kick();
+    }
+    // A failed change is the PM's (watch() tells it; the defaults restart it or ask J). A closed one ends the task's run.
+    if (c.status === 'closed') setTask(t.id, { status: 'failed', note: `its change ${c.id} was closed (${c.detail ?? ''})` });
+    return;
+  }
+  // Studio and Gen: merged into main is deployed, and its checks were CI, the tests and the smoke check.
+  if (t.status === 'merged' && isInfra(t.product)) {
+    setTask(t.id, { status: 'verified', verified_at: Date.now() });
+    logDecision('verified', t.id, t.product, `"${t.title}": merged into main (${name(t.product)} deploys itself; checked by CI, the tests and the smoke check), no beta run`);
+    return;
+  }
+  // Merged: beta's playtest of the criteria (the beta run after the merge, pipeline.ts startBeta) decides.
+  if (t.status === 'merged') await checkOnBeta(t);
+  // Verified (or merged): live once a go live after the merge has its commit on main.
+  const deploy = db.prepare(`SELECT * FROM deploys WHERE product = ? AND kind = 'deploy' AND rolled_back IS NULL AND at > ? ORDER BY at DESC LIMIT 1`).get(t.product, t.merged_at ?? 0) as any;
+  if (deploy && c.pr && !liveChecked.has(`${t.id}:${deploy.id}`)) {
+    liveChecked.add(`${t.id}:${deploy.id}`);
+    await gitAsync(path.join(PROJECTS, c.repo), ['fetch', '--quiet', 'origin']);
+    if (prCommit(c.repo, 'main', c.pr)) setTask(t.id, { status: getTask(t.id)!.status === 'verified' ? 'live' : getTask(t.id)!.status, live_at: Date.now() });
+  }
+}
+
 /** Go lives already looked at per task (one git fetch each, not one a minute). */
 const liveChecked = new Set<string>();
 
 /** The beta check of a merged task: the newest beta review of its product since the merge that judged its criteria. */
 async function checkOnBeta(t: Task) {
+  if (!hasBeta(t.product)) return; // Nothing to run a beta check on (startBeta would throw).
   const s = pmSettings();
   const steps = db.prepare(`SELECT s.*, r.kind AS run_kind, r.status AS run_status FROM steps s JOIN runs r ON r.id = s.run
     WHERE s.product = ? AND s.kind = 'review' AND r.kind = 'beta' AND s.started > ? ORDER BY s.started DESC LIMIT 10`).all(t.product, t.merged_at ?? 0) as any[];
@@ -490,7 +513,9 @@ function announceReady(itemId: string) {
   const r = readyReport({ item: itemId })[0];
   const text = r ? readyMarkdown(r) : `"${it.title}" is on beta.`;
   // Talk only: J's phone hears about milestones (and what went wrong), not every item.
-  void postTo(it.origin, `On beta: ${it.title}`, `On beta and verified (Studio PM):\n\n${text}`);
+  // Studio and Gen items are done once merged into main (it deploys them): there is no beta to try them on.
+  const where = isInfra(it.product) ? ['Done', 'Merged into main and deployed'] : ['On beta', 'On beta and verified'];
+  void postTo(it.origin, `${where[0]}: ${it.title}`, `${where[1]} (Studio PM):\n\n${text}`);
   logDecision('ready', itemId, it.product, `"${it.title}" is on beta, its checks passed: told Talk`);
 }
 
@@ -736,8 +761,17 @@ export async function tick() {
   if (ticking || !started) return;
   ticking = true;
   try {
-    await watch();
-    await syncTasks();
+    // Recording what happened can fail without stopping the starts below (it did: a Studio task's beta check threw).
+    let failed: string | null = null;
+    for (const [what, f] of [['watch', watch], ['syncTasks', syncTasks]] as const) {
+      try {
+        await f();
+      } catch (e: any) {
+        failed = `${what}: ${e.message ?? e}`;
+        console.warn(`[pm] ${failed}`);
+      }
+    }
+    lastError = failed;
     const s = pmSettings();
     if (!s.enabled) return;
     // A PM turn that just ended: its leftovers get the defaults.
@@ -750,7 +784,7 @@ export async function tick() {
     await startWork();
     const daily = state().daily !== today() && new Date().getHours() >= s.dailyHour;
     if ((events.length || daily) && !turnRunning() && process.env.STUDIO_PM_TALK !== 'off') await runPmTurn(daily);
-    lastError = null;
+    lastError = failed;
   } catch (e: any) {
     lastError = String(e.message ?? e);
     console.warn(`[pm] ${lastError}`);
