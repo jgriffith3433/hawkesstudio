@@ -14,6 +14,7 @@
       <button data-tab="inbox" class="on" title="Everything waiting on you: decisions, GPU budgets, merges only you make, milestones to playtest">Inbox <span class="ib-count zero" id="inboxCount">0</span></button>
       <button data-tab="talk">Talk</button>
       <button data-tab="today">Today</button>
+      <button data-tab="sites" title="Every product's beta and live sites, plus Studio and Gen: one tap opens it in a new tab">Sites</button>
       <button data-tab="golive" title="Every product: is beta ahead of live, is it ready, and the buttons to go live">Go live</button>
       <button data-tab="ready">Ready to test</button>
       <button data-tab="roadmap">Roadmap</button>
@@ -82,6 +83,12 @@
         <span id="runInfo"></span>
       </div>
       <div id="cards" class="cards"></div>
+    </section>
+    <section id="sites" class="tab">
+      <div class="bar"><span class="meta">Every product's beta site (what going live would ship) and its live site. Links open in a new tab.</span></div>
+      <div id="siList" class="si-list"><div class="meta">Loading…</div></div>
+      <div class="si-head">Studio and Gen</div>
+      <div id="siInfra" class="si-list"></div>
     </section>
     <section id="golive" class="tab">
       <div class="bar"><span class="meta" id="glInfo">Is beta ahead of live, is it ready, and one tap to ask for the go-live card. Your tap on Approve is what goes live.</span> <button class="small" id="glRefresh">Check again</button></div>
@@ -174,6 +181,7 @@
   <script src="inbox.js"></script>
   <script src="costs.js"></script>
   <script src="golive.js"></script>
+  <script src="sites.js"></script>
   <script src="memory.js"></script>
   <script src="settings.js"></script>
   <script src="users.js"></script>
