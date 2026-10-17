@@ -208,6 +208,7 @@ export async function inbox({ tokens = false }: { tokens?: boolean } = {}): Prom
   const out: InboxItem[] = [];
 
   // Approve / Deny cards waiting (they expire in 15 minutes: first). Their merge or budget card isn't shown twice.
+  // Ones whose action already happened (a merged or closed change, a go live since) were settled by listApprovals.
   const cards = listApprovals({ pending: true }, tokens).filter((a) => a.status === 'pending');
   const carded = new Set(cards.map((a) => `${a.kind}:${a.target}`));
   for (const a of cards) {

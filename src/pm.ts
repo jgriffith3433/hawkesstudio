@@ -297,6 +297,8 @@ export function capacity() {
   return { active, started, maxConcurrent: s.maxConcurrent, maxStartsPerDay: s.maxStartsPerDay, free: Math.max(0, Math.min(s.maxConcurrent - active, s.maxStartsPerDay - started)) };
 }
 
+// Agents queue a product's changes behind the running one (agents.ts pump); the PM still starts one at a time per
+// product, so its picks (priorities, retries) are made when the slot frees, not long before.
 const busy = (product: string) => Boolean(db.prepare(`SELECT id FROM changes WHERE product = ? AND status IN ('queued', 'working', 'verifying', 'revising')`).get(product));
 
 /** Starts what can start: J's reports, then roadmap tasks (highest priority first, then in order), then bugs, within the caps. Returns what it started. */

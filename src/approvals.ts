@@ -133,9 +133,29 @@ async function describe(kind: Kind, target: string, params: Record<string, any>)
   throw new StudioError(`kind: ${KINDS.join(' | ')}`);
 }
 
-/** Pending cards past their time are expired (read paths call this first). */
+/** Pending cards past their time are expired, and ones already done are settled (read paths call this first). */
 function expire() {
   db.prepare(`UPDATE approvals SET status = 'expired' WHERE status = 'pending' AND expires <= ?`).run(Date.now());
+  settleDone();
+}
+
+/**
+ * Pending cards whose action already happened, by whatever path (another card, typed MERGE, the Changes tab, the PM,
+ * the automatic merge, a merge on GitHub Studio noticed; a go live or rollback since the card was made): stale, with
+ * why, so they leave the Inbox and the chat. Read paths run it, so leftovers from before vanish too.
+ */
+export function settleDone() {
+  const now = Date.now();
+  try {
+    db.prepare(`UPDATE approvals SET status = 'stale', token = '', decided_by = 'Studio', decided_at = ?,
+        result = CASE (SELECT status FROM changes WHERE changes.id = approvals.target) WHEN 'merged' THEN 'already merged' ELSE 'closed' END
+      WHERE status = 'pending' AND kind = 'merge' AND target IN (SELECT id FROM changes WHERE status IN ('merged', 'closed'))`).run(now);
+  } catch { /* no changes table in this process yet */ }
+  try {
+    db.prepare(`UPDATE approvals SET status = 'stale', token = '', decided_by = 'Studio', decided_at = ?,
+        result = (SELECT CASE d.kind WHEN 'rollback' THEN 'already rolled back' ELSE 'already live' END FROM deploys d WHERE d.product = approvals.target AND d.at > approvals.created ORDER BY d.at DESC LIMIT 1)
+      WHERE status = 'pending' AND kind IN ('deploy', 'rollback') AND EXISTS (SELECT 1 FROM deploys d WHERE d.product = approvals.target AND d.at > approvals.created)`).run(now);
+  } catch { /* no deploys table in this process yet */ }
 }
 
 /**

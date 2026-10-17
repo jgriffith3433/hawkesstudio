@@ -518,3 +518,29 @@ test('a bug is consumed when an agent takes it, and opens again if that attempt 
   reopenTaken('c_000000000000', ['f_c0a5e0000f01'], 'x');
   assert.equal(getFinding('f_c0a5e0000f01')!.status, 'open');
 });
+
+test('a product with a change running queues the next one behind it; the queue starts one per product, oldest first', async () => {
+  fs.writeFileSync(path.join(process.env.STUDIO_DATA!, 'agents.json'), JSON.stringify({ maxConcurrent: 0 }));
+  const { startTask, startFix, getChange, pickQueued } = await import('../src/agents.ts');
+  const now = Date.now();
+  db.prepare(`INSERT INTO changes (id, product, findings, status, title, created) VALUES ('c_0000000000q1', 'pmother', '[]', 'working', 'Running', ?)`).run(now);
+  try {
+    // J's request and a fix are never refused: queued, behind the running one.
+    const t = startTask('pmother', 'Make the pause menu blue');
+    assert.equal(getChange(t)!.status, 'queued');
+    assert.match(getChange(t)!.detail!, /queued \(J asked\) behind c_0000000000q1/);
+    db.prepare(`INSERT INTO findings (id, product, key, title, severity, status, first_seen, last_seen) VALUES ('f_0000000000q2', 'pmother', 'kq', 'The timer drifts', 'bug', 'open', ?, ?)`).run(now, now);
+    const f = startFix('pmother', ['f_0000000000q2']);
+    assert.equal(getChange(f)!.status, 'queued');
+    assert.match(getChange(f)!.detail!, /^queued behind c_/);
+  } finally {
+    db.prepare(`UPDATE changes SET status = 'closed' WHERE product = 'pmother' AND status IN ('working', 'queued')`).run();
+  }
+  // The pick: a busy product waits, one per product per pass, oldest first, within the free slots.
+  const q = [{ id: 'c_1', product: 'a' }, { id: 'c_2', product: 'a' }, { id: 'c_3', product: 'b' }, { id: 'c_4', product: 'c' }];
+  assert.deepEqual(pickQueued(q, [], 5), ['c_1', 'c_3', 'c_4']);
+  assert.deepEqual(pickQueued(q, ['a'], 5), ['c_3', 'c_4']);
+  assert.deepEqual(pickQueued(q, ['b'], 2), ['c_1', 'c_4']);
+  assert.deepEqual(pickQueued(q, [], 0), []);
+  assert.deepEqual(pickQueued(q, [], -1), []);
+});
