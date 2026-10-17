@@ -33,7 +33,7 @@
 
   // ------------------------------------------------------------ settings
 
-  const DEFAULTS = { engine: 'browser', kokoroVoice: 'af_heart', elevenVoice: '', rate: 1.05, mode: { computer: 'push', phone: 'hands-free' }, bargeIn: false, pause: 800 };
+  const DEFAULTS = { engine: 'browser', kokoroVoice: 'af_heart', elevenVoice: '', rate: 1.05, mode: { computer: 'push', phone: 'push' }, bargeIn: false, pause: 800 };
   let S = { ...DEFAULTS };
   let prices = { elevenPerMinute: 0.14 };
   /** This device only: the browser voice's name (voices differ per browser and OS). */

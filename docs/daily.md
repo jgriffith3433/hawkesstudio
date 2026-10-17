@@ -278,7 +278,7 @@ tells Talk the device (phone, tablet or computer, from the page); Talk never ass
 - **Push to talk, front and center:** the big "Hold to talk" button is always on the call bar, and on a computer holding
   Space does the same. Pressing cuts Talk off at once (barge-in: its voice stops and the answer stops on the server;
   what it had written stays in the chat), and the mic listens only while it is held. Push to talk is the default on a
-  computer; hands-free is the default on a phone (Settings, per kind of device).
+  computer and on a phone; hands-free is an option per kind of device (Settings).
 - **Hands-free:** a pause sends what J said (short, normal, long). The mic is off while Talk speaks, and for a moment
   after, so it never hears Talk through the speakers, unless barge-in is on (Settings: "I use headphones"). Whatever
   the mic hears that matches what Talk said in the last 20 seconds (fuzzy: most of the words, in order) is dropped,

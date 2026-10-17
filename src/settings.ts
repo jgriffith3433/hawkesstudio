@@ -39,7 +39,7 @@ export type CallSettings = {
 };
 export const CALL_DEFAULTS: CallSettings = {
   engine: 'browser', kokoroVoice: 'af_heart', elevenVoice: '', rate: 1.05,
-  mode: { computer: 'push', phone: 'hands-free' }, bargeIn: false, pause: 800,
+  mode: { computer: 'push', phone: 'push' }, bargeIn: false, pause: 800,
 };
 /** ElevenLabs Flash: about 900 characters a spoken minute at half the standard voices' credits ($0.30 per 1,000). */
 export const ELEVEN_PER_MIN = (900 / 1000) * 0.3 * 0.5;
