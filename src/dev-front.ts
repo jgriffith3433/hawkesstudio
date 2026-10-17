@@ -191,7 +191,7 @@ and builds every Unity product), and you can open it there over Remote Desktop.<
 <div class="card"><b>What agents can do on beta instead</b><ul>
 <li>Ask Claude in Talk for a change ("make the slimes slower"): an agent edits the source on a branch from beta, the build server builds it, it's playtested, and you approve it into beta.</li>
 <li>Data edits (most of the game is JSON, e.g. Sick Of It's <code>Assets/GameConfig/</code>) go the same way and need no editor.</li>
-<li>Rebuild and playtest beta: <code>studio.cmd beta ${esc(p.id)}</code> (or "Update &amp; playtest beta" on Today).</li>
+<li>Rebuild and playtest beta: <code>studio.cmd beta ${esc(p.id)}</code> (or "Update &amp; playtest beta" under Details on the Go live tab).</li>
 <li>Unity tests on the build server: <code>studio_unity_test</code>.</li></ul></div>
 <p class="mut"><a href="/">Beta site</a> · <a href="${esc(p.live)}">Live</a></p>`);
 }

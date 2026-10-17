@@ -101,6 +101,7 @@
         ${p.commits.map((c) => `<div class="meta"><code>${esc(c.short)}</code> ${esc(c.title)} · ${esc(c.author)} · ${esc(when(c.date))}</div>`).join('')}
         ${p.mainOnly.length ? `<p class="meta">Live has ${p.mainOnly.length} commit(s) beta lacks: ${p.mainOnly.map((c) => esc(c.title)).join('; ')}</p>` : ''}
         <p class="meta">${esc(p.what)}</p>
+        <div class="actions"><button class="small" data-glplan="${esc(p.product)}" data-guide="off" title="The full go-live plan: update and playtest beta, merge live's commits into beta, previous go lives, the typed DEPLOY fallback">Full plan and more options…</button></div>
       </details>
     </div>`;
   }
@@ -154,6 +155,8 @@
 
   $('#glRefresh').onclick = () => { plans.clear(); load().catch((e) => alert(e.message)); };
   $('#glList').addEventListener('click', async (e) => {
+    const plan = e.target.closest('button[data-glplan]');
+    if (plan) return void goLive(plan.dataset.glplan).catch((err) => alert(err.message));
     const b = e.target.closest('button[data-glgo]');
     if (!b || !e.isTrusted) return;
     const c = b.closest('.gl-card');

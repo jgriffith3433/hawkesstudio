@@ -12,15 +12,18 @@ function ibCard(x) {
   const links = x.links.map((l) => (l.video ? `<a href="#" data-video="${file(l.video)}">▶ ${esc(l.label)}</a>` : `<a href="${esc(l.url)}"${l.url.startsWith('#') ? '' : ' target="_blank"'}>${esc(l.label)}</a>`));
   if (x.conversation) links.push(`<a href="/?conversation=${esc(x.conversation)}#talk">Conversation</a>`);
   return `<div class="ib-card" data-ib="${esc(x.id)}">
-    <div class="ib-head"><span class="pill ${pill}">${esc(label)}</span>${x.productName ? ` <b>${esc(x.productName)}</b>` : ''}
-      <span class="meta">holding up ${esc(x.blocks)} · waiting ${esc(ago(x.since).replace(' ago', '') || 'just now')} · asked by ${esc(x.asker)}${x.asks > 1 ? ` (${x.asks} times)` : ''} · ${esc(x.id)}</span></div>
+    <div class="ib-head"><span class="pill ${pill}">${esc(label)}</span>${x.productName ? ` <b>${esc(x.productName)}</b>` : ''}</div>
     <h4>${esc(x.title)}</h4>
+    <div class="status-line">Holding up ${esc(x.blocks)} · waiting ${esc(ago(x.since).replace(' ago', '') || 'just now')}</div>
     ${x.context ? `<div class="meta">${esc(x.context)}</div>` : ''}
-    ${x.text ? `<details><summary class="meta">The whole question</summary><div class="summary" style="white-space:pre-wrap">${esc(x.text)}</div></details>` : ''}
     ${x.recommendation ? `<div class="meta">Recommended: <b>${esc(x.recommendation)}</b></div>` : ''}
-    ${links.length ? `<div class="meta ib-links">${links.join(' · ')}</div>` : ''}
     <div class="actions ib-actions">${options.map((o) => `<button class="small${rec(o) ? ' primary' : ''}" data-ibopt="${esc(o)}">${esc(o)}${rec(o) ? ' ★' : ''}</button>`).join('')}</div>
     <div class="ib-free"><input data-ibtext placeholder="${x.kind === 'merge' ? 'What should the agent change? (sends it back)' : x.kind === 'milestone' ? "What's wrong? (the PM makes it tasks)" : 'Or answer in your own words'}"><button class="small" data-ibsend>Send</button></div>
+    ${links.length ? `<div class="meta ib-links">${links.join(' · ')}</div>` : ''}
+    <details class="more-details"><summary class="meta">Details</summary>
+      ${x.text ? `<div class="summary" style="white-space:pre-wrap">${esc(x.text)}</div>` : ''}
+      <div class="meta">Asked by ${esc(x.asker)}${x.asks > 1 ? ` (${x.asks} times)` : ''} · ${esc(x.id)}</div>
+    </details>
   </div>`;
 }
 
@@ -30,7 +33,7 @@ async function loadInbox() {
   setInboxCount(r.count);
   // A card J is typing in isn't redrawn under him.
   if (document.activeElement?.matches?.('#inbox .ib-card input') && document.activeElement.value) return;
-  $('#ibList').innerHTML = r.items.length ? r.items.map(ibCard).join('') : '<div class="empty">Nothing is waiting on you. Decisions from Talk, the PM and the agents, GPU budgets, merges only you can make and milestones to playtest all land here.</div>';
+  $('#ibList').innerHTML = r.items.length ? r.items.map(ibCard).join('') : '<div class="empty">Nothing is waiting on you. 🎉 Decisions from Talk, the PM and the agents, GPU budgets, merges only you can make and milestones to playtest all land here, the most blocking first.</div>';
   $('#ibAnswered').innerHTML = r.answered.length ? `<summary class="meta">Answered lately (${r.answered.length})</summary>${r.answered.map((a) => `<div class="test"><span class="name">${esc(a.title)}</span><span class="detail">${esc(String(a.answer ?? '').slice(0, 200))} · <b>by ${esc(a.by ?? '?')}</b> · ${ago(a.at)} · ${esc(a.id)}</span></div>`).join('')}` : '';
 }
 
@@ -57,7 +60,7 @@ async function ibAnswer(card, answer) {
         if (typed?.trim() !== x.confirm) return;
         confirmWords = typed.trim();
       }
-    } else if (!confirm(`${x.title} The beta site and a beta playtest follow; nothing goes live.`)) return;
+    } else if (!confirm(`${x.title} The beta site and a beta playtest follow; nothing goes live until you use Go live.`)) return;
   }
   if (x.kind === 'merge' && answer === 'Close' && !confirm('Close this change and its pull request?')) return;
   if ((x.kind === 'merge' && answer === 'Ask for changes') || (x.kind === 'milestone' && answer === 'Something is wrong')) {
@@ -69,9 +72,9 @@ async function ibAnswer(card, answer) {
   try {
     const r = await api('/api/inbox/answer', { method: 'POST', body: { id: x.id, answer, by: 'J', ...(confirmWords ? { confirm: confirmWords } : {}) } });
     if (r.next === 'deploy') {
-      // Going live is the deploy plan and the typed DEPLOY on Today; the card stays until it's live.
+      // Going live is the deploy plan and its Approve card, opened over the Go live tab; the card stays until it's live.
       card.classList.remove('ib-busy');
-      show('today');
+      show('golive');
       await loadToday();
       const p = overview.products.find((o) => r.products.includes(o.id));
       if (p) goLive(p);
