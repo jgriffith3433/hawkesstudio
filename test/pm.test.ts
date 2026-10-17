@@ -18,10 +18,10 @@ fs.writeFileSync(process.env.STUDIO_PRODUCTS, JSON.stringify({ products: [{
 }, {
   id: 'pmother', name: 'PM other', framing: 'test', engine: 'static', repo: 'other', site: 'other', live: 'http://127.0.0.1:9/',
   local: { serve: 'static', dir: 'other', port: 8798, path: '/' }, playtests: [{ scenario: 'smoke', where: 'local' }], story: [], about: 'A fixture.',
-}, ...['pmthird', 'pmfourth', 'pmfifth', 'pmsixth'].map((id) => ({
+}, ...['pmthird', 'pmfourth', 'pmfifth', 'pmsixth', 'pmseventh', 'pmeighth'].map((id) => ({
   id, name: id, framing: 'test', engine: 'static', repo: id, site: id, live: 'http://127.0.0.1:9/',
   local: { serve: 'static', dir: id, port: 8799, path: '/' }, playtests: [{ scenario: 'smoke', where: 'local' }], story: [], about: 'A fixture.',
-}))], repos: { other: 'x/other', pmthird: 'x/pmthird', pmfourth: 'x/pmfourth', pmfifth: 'x/pmfifth', pmsixth: 'x/pmsixth' }, infra: [{ id: 'pminfra', name: 'PM infra', repo: 'pminfra', slug: 'x/pminfra' }] }));
+}))], repos: { other: 'x/other', pmthird: 'x/pmthird', pmfourth: 'x/pmfourth', pmfifth: 'x/pmfifth', pmsixth: 'x/pmsixth', pmseventh: 'x/pmseventh', pmeighth: 'x/pmeighth' }, infra: [{ id: 'pminfra', name: 'PM infra', repo: 'pminfra', slug: 'x/pminfra' }] }));
 
 const rm = await import('../src/roadmap.ts');
 const { gate, allMet } = await import('../src/acceptance.ts');
@@ -543,4 +543,87 @@ test('a product with a change running queues the next one behind it; the queue s
   assert.deepEqual(pickQueued(q, ['b'], 2), ['c_1', 'c_4']);
   assert.deepEqual(pickQueued(q, [], 0), []);
   assert.deepEqual(pickQueued(q, [], -1), []);
+});
+
+test('a failed or closed change leaves a finding triaged while it ran as it is (f_6ba75c6c2ac8: won\'t-fix reset to open)', async () => {
+  fs.writeFileSync(path.join(process.env.STUDIO_DATA!, 'agents.json'), JSON.stringify({ maxConcurrent: 0 }));
+  const { startFix, reopenTaken, close, heldBy } = await import('../src/agents.ts');
+  const { getFinding } = await import('../src/backlog.ts');
+  const now = Date.now();
+  const add = (id: string) => db.prepare(`INSERT INTO findings (id, product, key, title, severity, status, first_seen, last_seen) VALUES (?, 'pmseventh', ?, ?, 'bug', 'open', ?, ?)`).run(id, id, `Bug ${id}`, now, now);
+  add('f_7a1000000001'); add('f_7a1000000002'); add('f_7a1000000003'); add('f_7a1000000004');
+  const id = startFix('pmseventh', ['f_7a1000000001', 'f_7a1000000002', 'f_7a1000000003', 'f_7a1000000004']);
+  assert.ok(heldBy(getFinding('f_7a1000000001'), id));
+  // While it runs: the PM marks one won't-fix, J makes one an idea, another is fixed by something else.
+  pm.triageFinding('f_7a1000000001', 'wontfix', { note: 'below the bar' });
+  pm.triageFinding('f_7a1000000002', 'idea', { by: 'J' });
+  db.prepare(`UPDATE findings SET note = 'fixed by hand' WHERE id = 'f_7a1000000003'`).run();
+  // The change fails ("the agent made no commit", a crash): only the one it still holds opens again.
+  reopenTaken(id, ['f_7a1000000001', 'f_7a1000000002', 'f_7a1000000003', 'f_7a1000000004'], 'the agent made no commit');
+  assert.equal(getFinding('f_7a1000000001')!.status, 'wontfix');
+  assert.match(getFinding('f_7a1000000001')!.note ?? '', /below the bar/);
+  assert.equal(getFinding('f_7a1000000002')!.status, 'idea');
+  assert.equal(getFinding('f_7a1000000003')!.status, 'fixed');
+  assert.equal(getFinding('f_7a1000000003')!.note, 'fixed by hand');
+  assert.equal(getFinding('f_7a1000000004')!.status, 'open');
+  // Closed: the same rule.
+  db.prepare(`UPDATE findings SET status = 'fixed', note = ? WHERE id = 'f_7a1000000004'`).run(`agent change ${id}`);
+  await close(id, 'test');
+  assert.equal(getFinding('f_7a1000000001')!.status, 'wontfix');
+  assert.equal(getFinding('f_7a1000000002')!.status, 'idea');
+  assert.equal(getFinding('f_7a1000000003')!.status, 'fixed');
+  assert.equal(getFinding('f_7a1000000004')!.status, 'open');
+  // An old "fixing" one is still this change's.
+  assert.ok(heldBy({ status: 'fixing' }, id));
+  assert.ok(!heldBy({ status: 'fixed', note: 'agent change c_other0000000' }, id));
+});
+
+test('an agent that changed nothing because J already decided it is not a failed try', async () => {
+  const { decidedNoChange, DECIDED } = await import('../src/agents.ts');
+  assert.ok(decidedNoChange('No change: J already decided this is intended (m_123).'));
+  assert.ok(decidedNoChange("I made no changes. J's decision (2026-10-16) was won't fix: the menu stays as it is."));
+  assert.ok(decidedNoChange('Nothing to change: J chose the darker palette on purpose.'));
+  assert.ok(!decidedNoChange('I could not find the cause; no change made.'), 'no decision named');
+  assert.ok(!decidedNoChange('J decided the timer should reset. Fixed it in timer.ts.'), 'a change was made');
+  assert.ok(!decidedNoChange(''));
+  process.env.STUDIO_PM_TALK = 'off';
+  fs.writeFileSync(path.join(process.env.STUDIO_DATA!, 'agents.json'), JSON.stringify({ maxConcurrent: 0 }));
+  const token = process.env.GITHUB_TOKEN;
+  process.env.GITHUB_TOKEN = 'test';
+  const before = pm.pmSettings();
+  const old = Date.now() - 3600_000;
+  const change = (id: string, product: string, findings: string[], detail: string, task: string | null = null, summary = '') => db.prepare(`INSERT INTO changes (id, product, findings, status, detail, summary, repo, slug, branch, base, worktree, title, notes, log, created, updated, task)
+    VALUES (?, ?, ?, 'failed', ?, ?, ?, ?, 'fix/z', 'beta', ?, 'Something', '[]', '[]', ?, ?, ?)`).run(id, product, J(findings), detail, summary, product, `x/${product}`, path.join(tmp, 'none', id), old, old, task);
+  try {
+    pm.savePmSettings({ maxConcurrent: pm.capacity().active + 5, maxStartsPerDay: 1000 });
+    // A bug: three earlier attempts, but they all said J already decided it: none is a try, so it can start.
+    const now = Date.now();
+    db.prepare(`INSERT INTO findings (id, product, key, title, severity, status, first_seen, last_seen, seen) VALUES ('f_7a2000000001', 'pmseventh', 'kd', 'The door is locked', 'bug', 'open', ?, ?, 99)`).run(now, now);
+    for (const n of [1, 2, 3]) change(`c_7a200000000${n}`, 'pmseventh', ['f_7a2000000001'], `${DECIDED} (the agent made no commit)`);
+    const started = await pm.startWork();
+    const fresh = (db.prepare(`SELECT id FROM changes WHERE findings LIKE '%"f_7a2000000001"%' AND status = 'queued'`).all() as any[]).map((r) => r.id);
+    assert.equal(fresh.length, 1, 'not out of tries');
+    assert.ok(started.includes(fresh[0]));
+    assert.equal(db.prepare(`SELECT 1 FROM questions WHERE subject = 'f_7a2000000001'`).get(), undefined, 'J is not asked');
+    db.prepare(`UPDATE changes SET status = 'closed' WHERE id = ?`).run(fresh[0]);
+    // Three real failures are: J is asked, nothing starts.
+    db.prepare(`UPDATE findings SET status = 'open' WHERE id = 'f_7a2000000001'`).run();
+    db.prepare(`UPDATE changes SET detail = 'the agent made no commit' WHERE id LIKE 'c_7a20000000%'`).run();
+    await pm.startWork();
+    assert.equal((db.prepare(`SELECT COUNT(*) AS n FROM changes WHERE findings LIKE '%"f_7a2000000001"%' AND status = 'queued'`).get() as any).n, 0);
+    assert.ok(db.prepare(`SELECT 1 FROM questions WHERE subject = 'f_7a2000000001'`).get(), 'out of tries: J is asked');
+    // A task: its try is given back and it isn't restarted (the next agent would reach the same answer).
+    const it = rm.addItem({ product: 'pmeighth', title: 'Decided', status: 'in progress', ord: -700 });
+    const t = rm.addTask({ item: it.id, request: 'Make the door open' });
+    change('c_7a3000000001', 'pmeighth', [], `${DECIDED} (the agent made no commit)`, t.id, 'No change: J already decided the door stays locked (m_abc).');
+    rm.setTask(t.id, { status: 'working', change: 'c_7a3000000001', changes: ['c_7a3000000001'], tries: 1 });
+    await pm.tick();
+    assert.equal((db.prepare(`SELECT COUNT(*) AS n FROM changes WHERE task = ?`).get(t.id) as any).n, 1, 'not restarted');
+    assert.equal(rm.getTask(t.id)!.status, 'failed');
+    assert.equal(rm.getTask(t.id)!.tries, 0, 'not counted as a try');
+    assert.match(rm.getTask(t.id)!.note ?? '', /J already decided/);
+  } finally {
+    pm.savePmSettings({ maxConcurrent: before.maxConcurrent, maxStartsPerDay: before.maxStartsPerDay });
+    if (token === undefined) delete process.env.GITHUB_TOKEN; else process.env.GITHUB_TOKEN = token;
+  }
 });

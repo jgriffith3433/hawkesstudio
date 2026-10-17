@@ -149,12 +149,29 @@ function update(id: string, patch: Partial<Record<string, any>>) {
   if (patch.status === 'failed' && cur?.status !== 'failed') reopenTaken(id, (parse(next.findings) ?? []) as string[], String(next.detail ?? ''));
 }
 
-/** The bugs a failed change had taken (fixed with its note) go back to open, for another attempt. */
+/**
+ * Whether change `id` still holds a finding: in the status it set itself (fixed with its note, the "consumed" rule, or
+ * "fixing" from before 2026-10-17). One changed since by a person or the PM (wontfix, idea, fixed with another note) isn't.
+ */
+export function heldBy(fd: { status?: string; note?: string | null } | null | undefined, id: string) {
+  return fd?.status === 'fixing' || (fd?.status === 'fixed' && fd.note === `agent change ${id}`);
+}
+
+/** The bugs a failed change still holds go back to open, for another attempt; ones triaged since stay as they are. */
 export function reopenTaken(id: string, findings: string[], why: string) {
   for (const f of findings) {
-    const fd = getFinding(f);
-    if (fd?.status === 'fixed' && fd.note === `agent change ${id}`) updateFinding(f, { status: 'open', note: `agent change ${id} failed (${why.slice(0, 160)}); open again for another attempt` });
+    if (heldBy(getFinding(f), id)) updateFinding(f, { status: 'open', note: `agent change ${id} failed (${why.slice(0, 160)}); open again for another attempt` });
   }
+}
+
+/** The detail of a change whose agent changed nothing because J already decided it: not a failed try (pm.ts). */
+export const DECIDED = 'nothing to change: J already decided';
+/** An agent's summary saying it changed nothing because of a decision J already made. */
+export function decidedNoChange(summary: string) {
+  const s = String(summary ?? '');
+  return /\bJ\b/.test(s)
+    && /\b(already decided|decided|decision|chose|ruled|won'?t[- ]?fix|wontfix|by design|as designed|intentional)\b/i.test(s)
+    && /\b(no change|no changes|nothing to (change|fix|do)|changed nothing|made no (change|commit)s?|no commit|committ?ed nothing|commit nothing|didn'?t change|did not change|not changing|unchanged|left (it )?as (it is|is))\b/i.test(s);
 }
 
 /**
@@ -771,8 +788,16 @@ async function work(id: string, note?: string, answer?: string, resumed?: Phase 
         return;
       }
       if (!commits.length || (note && !changedNow && !c.task)) {
+        // Nothing to change because J already decided it: not a failed try, and the bugs it holds stay done (not reopened
+        // for another agent to reach the same answer). Otherwise the bugs it still holds open again (reopenTaken):
+        // never one the PM or J triaged while it ran (f_6ba75c6c2ac8: won't-fix reset to open on 2026-10-17).
+        if (decidedNoChange(summary)) {
+          for (const f of findings) if (heldBy(getFinding(f.id), id)) updateFinding(f.id, { status: 'fixed', note: `agent ${id}: ${DECIDED}: ${summary.slice(0, 200)}` });
+          update(id, { status: 'failed', detail: `${DECIDED} (the agent made no commit)`, summary, commits, phase: null });
+          return;
+        }
+        reopenTaken(id, findings.map((f) => f.id), `the agent made no commit: ${summary.slice(0, 120)}`);
         update(id, { status: 'failed', detail: 'the agent made no commit', summary, commits, phase: null });
-        for (const f of findings) updateFinding(f.id, { status: 'open', note: `agent ${id} couldn't fix it: ${summary.slice(0, 200)}` });
         return;
       }
       if ((note || answer) && !changedNow) addLog(id, 'no new commit this pass; checking the branch again');
@@ -836,8 +861,8 @@ async function work(id: string, note?: string, answer?: string, resumed?: Phase 
       update(id, { status: 'ready', detail: readyDetail(v), verify: v, phase: null });
       return;
     }
+    // update() opens the bugs it still holds again (reopenTaken); ones triaged while it ran stay as they are.
     update(id, { status: 'failed', detail: String(e.message).slice(0, 300), phase: { step: ph.step, jobs: ph.jobs, failed: true } });
-    for (const f of getChange(id)!.findings) updateFinding(f, { status: 'open' });
   }
 }
 
@@ -1525,7 +1550,7 @@ async function closeNow(c: Change, by: string) {
   for (const f of c.findings) {
     const fd = getFinding(f);
     // Taken by this change (fixed with its note, or "fixing" from before 2026-10-17) and it won't land: open again.
-    if (fd?.status === 'fixing' || (fd?.status === 'fixed' && fd.note === `agent change ${id}`)) updateFinding(f, { status: 'open' });
+    if (heldBy(fd, id)) updateFinding(f, { status: 'open' });
   }
   await cleanup(id, { deleteBranch: true });
   return getChange(id);

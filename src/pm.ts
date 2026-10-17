@@ -305,7 +305,7 @@ const busy = (product: string) => Boolean(db.prepare(`SELECT id FROM changes WHE
 export async function startWork() {
   const s = pmSettings();
   if (!s.enabled || !process.env.GITHUB_TOKEN) return [];
-  const { agentSettings, startFix } = await changes();
+  const { agentSettings, startFix, DECIDED } = await changes();
   if (!agentSettings().enabled) return [];
   // A Studio or Gen deploy waiting for agents to finish: start nothing new until it's through.
   const { selfDeploys } = await import('./selfdeploy.ts');
@@ -324,7 +324,8 @@ export async function startWork() {
   let cap = capacity();
   // J's own reports from the beta sites (bugreport.ts) come first: before roadmap tasks and the reviews' bugs.
   const startBug = (f: any, why: string) => {
-    const tries = (db.prepare(`SELECT COUNT(*) AS n FROM changes WHERE findings LIKE ?`).get(`%"${f.id}"%`) as any).n as number;
+    // An agent that changed nothing because J already decided it (DECIDED, agents.ts) didn't fail a try.
+    const tries = (db.prepare(`SELECT COUNT(*) AS n FROM changes WHERE findings LIKE ? AND COALESCE(detail, '') NOT LIKE ?`).get(`%"${f.id}"%`, `${DECIDED}%`) as any).n as number;
     if (tries >= s.maxTries) {
       // Out of attempts: J decides, once per round of attempts (not again each minute after he has answered).
       const last = (db.prepare(`SELECT MAX(created) AS t FROM changes WHERE findings LIKE ?`).get(`%"${f.id}"%`) as any).t ?? 0;
@@ -840,7 +841,7 @@ export async function tick() {
 
 /** Defaults for subjects of the last turn, and for anything waiting longer than `olderThan`. */
 async function applyDefaults(subjects: string[], olderThan?: number) {
-  const { listChanges, getChange } = await changes();
+  const { listChanges, getChange, DECIDED } = await changes();
   const now = Date.now();
   for (const c of listChanges({ status: 'ready' })) {
     if (!reviewable(c)) continue;
@@ -853,7 +854,12 @@ async function applyDefaults(subjects: string[], olderThan?: number) {
     // Another attempt of this task is going or merged: that one is the task now, nothing to retry.
     if (startBlocked(t.id)) continue;
     if (subjects.includes(c.id) || (olderThan !== undefined && now - (c.updated ?? c.created) > olderThan && !turnRunning())) {
-      if (t.tries >= pmSettings().maxTries) {
+      if (String(c.detail ?? '').startsWith(DECIDED)) {
+        // Nothing to change because J already decided it: not a failed try (its try is given back), and no restart
+        // to reach the same answer again; the task stops here with the agent's reason.
+        setTask(t.id, { status: 'failed', tries: Math.max(0, t.tries - 1), note: `${c.id}: ${DECIDED}: ${String(c.summary ?? '').slice(0, 600)}` });
+        logDecision('decided', t.id, t.product, `"${t.title}": ${c.id} changed nothing, J already decided it (not counted as a try): ${String(c.summary ?? '').slice(0, 400)}`);
+      } else if (t.tries >= pmSettings().maxTries) {
         setTask(t.id, { status: 'failed' });
         askJ(`"${t.title}" (${name(t.product)}) failed ${t.tries} times. The last: ${c.detail ?? '?'}. Try another way, change the task, or drop it?`, { subject: t.id, product: t.product, options: ['try again', 'change it', 'drop it'], from: 'the default after 3 tries' });
       } else {
