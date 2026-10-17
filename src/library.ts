@@ -124,11 +124,11 @@ export async function writeBack(entityId: string, { by = 'J' }: { by?: string } 
 
 const ASSETS = () => path.join(PROJECTS, 'hawkes-assets');
 
-/** Whether a folder is one hawkes-assets tracks (mounts.json), and so lives in S3 and on every machine. */
+/** Whether a folder is (in) one hawkes-assets tracks (mounts.json), and so lives in S3 and on every machine. */
 export function sharedArt(root: string) {
   try {
     const mounts = JSON.parse(fs.readFileSync(path.join(ASSETS(), 'mounts.json'), 'utf8')) as Record<string, string>;
-    return Object.values(mounts).some((d) => path.resolve(ASSETS(), d) === path.resolve(root));
+    return Object.values(mounts).some((d) => insideRepo(path.resolve(ASSETS(), d), root));
   } catch {
     return false;
   }
@@ -178,4 +178,24 @@ function publishShared(p: Product, m: any, e: any, by: string) {
   });
   publishing = work.catch(() => {});
   return work;
+}
+
+/**
+ * Every pick, wherever it's made (Studio's Library tab, a product's tools, Claude through MCP, library.judge), is
+ * written into its product's files: Studio follows Gen's library events and runs writeBack for the entity a few seconds
+ * after its last pick (a burst of picks is one write). Started on the server only, so one machine writes.
+ */
+export function followPicks() {
+  const timers = new Map<string, NodeJS.Timeout>();
+  return gen.watch(({ type, data }: { type: string; data: any }) => {
+    if (type !== 'library' || data?.type !== 'version' || data.status !== 'current' || !data.entity) return;
+    const id = String(data.entity);
+    clearTimeout(timers.get(id));
+    timers.set(id, setTimeout(() => {
+      timers.delete(id);
+      writeBack(id, { by: 'a pick in the library' })
+        .then((r: any) => { if (r.written || r.error) console.log(`[library] ${id}: ${r.written ?? 0} file(s) written${r.published ? ', published through hawkes-assets' : ''}${r.pushed ? ', pushed to beta' : ''}${r.error ? `; ${r.error}` : ''}`); })
+        .catch((e: any) => console.warn(`[library] ${id}: ${e.message ?? e}`));
+    }, 5000));
+  });
 }

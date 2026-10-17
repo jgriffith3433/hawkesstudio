@@ -16,5 +16,6 @@ test('only folders hawkes-assets mounts are shared art', () => {
   fs.mkdirSync(path.join(projects, 'hawkes-assets'), { recursive: true });
   fs.writeFileSync(path.join(projects, 'hawkes-assets', 'mounts.json'), JSON.stringify({ 'art/dod-characters': '../AllTheCharacters' }));
   assert.equal(sharedArt(path.join(projects, 'AllTheCharacters')), true);
+  assert.equal(sharedArt(path.join(projects, 'AllTheCharacters', 'Generated')), true, 'a folder inside a mount');
   assert.equal(sharedArt(path.join(projects, 'AllTheMaps')), false);
 });

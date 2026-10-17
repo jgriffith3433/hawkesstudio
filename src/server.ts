@@ -623,6 +623,8 @@ server.listen(PORT, '127.0.0.1', () => {
   void import('./memory.ts').then(({ startMemory }) => startMemory());
   // /dev/ on each beta site: the front doors Caddy sends /dev/* to, and the beta working copies' auto-commit.
   startFronts();
+  // A pick anywhere in Gen's library is written into its product's files (library.ts), on the server only.
+  void import('./repos.ts').then(({ isServer }) => { if (isServer()) void import('./library.ts').then(({ followPicks }) => followPicks()); });
   startDevService();
   // Results of work Talk started go back into its conversation.
   startFollowups();
