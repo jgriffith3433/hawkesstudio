@@ -568,13 +568,13 @@ export function startTask(productId: string, request: string, { criteria = [], t
   const p = inf ? null : getProduct(productId);
   const target = inf ?? p!;
   if (!request.trim()) throw new Error('Say what to do');
-  const busy = listChanges({ status: 'working,verifying,revising', product: target.id });
-  if (busy.length) throw new Error(`${target.name} already has an agent working (${busy[0].id}); it can take the next one when that finishes.`);
+  // J (2026-10-17): queue, don't refuse. One change runs per product; this one waits for it (pump starts it after).
+  const ahead = aheadOf(target.id);
   const { top, slug } = inf ? { top: inf.repo, slug: inf.slug } : repoFor(p!);
   const id = newId('c');
   const words = request.toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 40).replace(/^-|-$/g, '');
   db.prepare('INSERT INTO changes (id, product, findings, status, detail, repo, slug, branch, base, worktree, title, request, notes, log, created) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
-    .run(id, target.id, '[]', 'queued', task ? 'queued by the PM (a roadmap task)' : 'queued (J asked)', top, slug, `task/${id.slice(2)}-${words}`, inf ? 'main' : BETA, path.join(WORK(), id), (title ?? request.split(String.fromCharCode(10))[0]).slice(0, 120), request, '[]', '[]', Date.now());
+    .run(id, target.id, '[]', 'queued', `${task ? 'queued by the PM (a roadmap task)' : 'queued (J asked)'}${ahead}`, top, slug, `task/${id.slice(2)}-${words}`, inf ? 'main' : BETA, path.join(WORK(), id), (title ?? request.split(String.fromCharCode(10))[0]).slice(0, 120), request, '[]', '[]', Date.now());
   db.prepare('UPDATE changes SET task = ?, criteria = ?, gpu_budget = ? WHERE id = ?').run(task, J(criteria), gpuBudget === null || !(gpuBudget >= 0) ? null : String(gpuBudget), id);
   void pump();
   return id;
@@ -588,8 +588,7 @@ export function startFix(productId: string, findingIds: string[], { auto = false
   const p = getProduct(productId);
   const findings = findingIds.map((id) => getFinding(id)).filter(Boolean) as any[];
   if (!findings.length) throw new Error('No such findings');
-  const busy = listChanges({ status: 'working,verifying,revising', product: p.id });
-  if (busy.length) throw new Error(`${p.name} already has a fix in progress (${busy[0].id}).`);
+  const ahead = aheadOf(p.id);
   const today = costToday();
   if (auto && (today.count >= s.maxPerDay || today.cost >= s.maxCostPerDay)) {
     throw new Error(`Today's agent budget is used (${today.count} fixes, $${today.cost.toFixed(2)}).`);
@@ -598,7 +597,7 @@ export function startFix(productId: string, findingIds: string[], { auto = false
   const id = newId('c');
   const branch = `fix/${id.slice(2)}-${findings[0].title.toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 40).replace(/-$/, '')}`;
   db.prepare('INSERT INTO changes (id, product, findings, status, detail, repo, slug, branch, base, worktree, title, notes, log, created) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
-    .run(id, p.id, J(findings.map((f) => f.id)), 'queued', auto ? 'queued by the daily run' : 'queued', top, slug, branch, BETA, path.join(WORK(), id), `Fix: ${findings[0].title}`.slice(0, 120), '[]', '[]', Date.now());
+    .run(id, p.id, J(findings.map((f) => f.id)), 'queued', `${auto ? 'queued by the daily run' : 'queued'}${ahead}`, top, slug, branch, BETA, path.join(WORK(), id), `Fix: ${findings[0].title}`.slice(0, 120), '[]', '[]', Date.now());
   if (auto) db.prepare('UPDATE changes SET started_by = ? WHERE id = ?').run('the daily run', id);
   // J (2026-10-17): a finding is consumed as soon as an agent takes it: fixed now, assumed done by the change. A review
   // reporting it again doesn't reopen it while this change is unmerged (backlog.ts absorb); closing the change does.
@@ -607,14 +606,41 @@ export function startFix(productId: string, findingIds: string[], { auto = false
   return id;
 }
 
-/** Runs queued changes up to the concurrency limit. */
+/** The statuses of a change that holds its product's one running slot. */
+const ACTIVE = 'working,verifying,revising';
+/** " behind c_..." when the product already has a change running or waiting ahead of a new one; else "". */
+function aheadOf(product: string) {
+  const busy = [...listChanges({ status: ACTIVE, product }), ...listChanges({ status: 'queued', product })];
+  return busy.length ? ` behind ${busy[0].id}` : '';
+}
+
+/**
+ * Which queued changes start now: oldest first, at most `free` of them, and one per product (a product with a change
+ * running, or one picked earlier in the pass, waits; it starts when that one finishes and pump runs again).
+ */
+export function pickQueued(queued: { id: string; product: string }[], busyProducts: Iterable<string>, free: number) {
+  const busy = new Set(busyProducts);
+  const out: string[] = [];
+  for (const c of queued) {
+    if (out.length >= free) break;
+    if (busy.has(c.product)) continue;
+    busy.add(c.product);
+    out.push(c.id);
+  }
+  return out;
+}
+
+/** Runs queued changes up to the concurrency limit, one per product at a time. */
 async function pump() {
   // A Studio deploy is waiting (drain.ts): start nothing new; the queue resumes after the deploy restarts Studio.
   if (deployPending()) return;
   const s = agentSettings();
-  for (const c of listChanges({ status: 'queued' }).reverse()) {
-    if (running.size >= s.maxConcurrent) return;
-    if (running.has(c.id)) continue;
+  // Busy: anything running in this process (a revision or an answer is queued while it runs) and whatever is active.
+  const busy = new Set<string>(listChanges({ status: ACTIVE, limit: 500 }).map((c) => c.product));
+  for (const id of running) { const r = getChange(id); if (r) busy.add(r.product); }
+  const queued = listChanges({ status: 'queued', limit: 500 }).reverse().filter((c) => !running.has(c.id));
+  for (const id of pickQueued(queued, busy, s.maxConcurrent - running.size)) {
+    const c = getChange(id)!;
     running.add(c.id);
     void work(c.id).finally(() => {
       running.delete(c.id);
@@ -1534,7 +1560,7 @@ export function autoFix(runId: string) {
     try {
       started.push(startFix(product, [f.id], { auto: true }));
     } catch {
-      // A product already being fixed, or the budget is used: skip.
+      // The budget is used (a product already being fixed queues the new one behind it): skip.
     }
   }
   return started;

@@ -142,7 +142,9 @@ merges ready changes.
 - keeps task statuses current (from changes, beta checks and go lives); items are done once they have tasks (above)
 - starts the next planned tasks in roadmap order (dependencies merged first), then the worst open bugs (blockers, then
   bugs seen most), within the caps: agents at once (`maxConcurrent`, default 2), agent starts per day
-  (`maxStartsPerDay`, 8), one change per product at a time. It starts nothing while a Studio or Gen deploy is waiting.
+  (`maxStartsPerDay`, 8), one change per product at a time. Anything else asked for a product that has a change running
+  (J's `studio_task`, a fix) is never refused: it queues behind the running one and starts when that one finishes
+  (`pump` in agents.ts: oldest first, one per product, within `maxConcurrent`). It starts nothing while a Studio or Gen deploy is waiting.
 - runs a **PM turn**: a Talk turn in the day's "Studio PM: <date>" conversation (`conversations.kind = 'pm'`) with what
   came in (changes ready to review, agent questions, failures, beta checks, beta runs and go lives, the daily run) and
   once a day after `dailyHour` (or the daily run) the triage. Claude acts through `studio_pm`: merges into beta what

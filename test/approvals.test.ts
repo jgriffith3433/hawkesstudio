@@ -190,6 +190,37 @@ test('× closes a card in the chat without deciding it: still pending, still in 
   assert.equal((await ap.decideApproval(a.id, t, 'approve', jPage())).status, 'approved');
 });
 
+test('a card whose action already happened leaves the Inbox: merged or closed by any path, live or rolled back since', async () => {
+  agents.saveAgentSettings({ autoMergeBeta: false });
+  change('c_aaaaaaaaaab1');
+  change('c_aaaaaaaaaab2');
+  const m = await ap.requestApproval('merge', 'c_aaaaaaaaaab1');
+  const c = await ap.requestApproval('merge', 'c_aaaaaaaaaab2');
+  assert.ok((await ib.inbox()).some((x) => x.id === `approval:${m.id}`), 'waiting while the change is ready');
+  // Merged some other way (typed MERGE, the Changes tab, the PM, GitHub), and closed: the cards go.
+  db.prepare(`UPDATE changes SET status = 'merged' WHERE id = ?`).run('c_aaaaaaaaaab1');
+  db.prepare(`UPDATE changes SET status = 'closed' WHERE id = ?`).run('c_aaaaaaaaaab2');
+  const items = await ib.inbox();
+  assert.ok(!items.some((x) => x.id === `approval:${m.id}` || x.id === `approval:${c.id}`), 'gone from the Inbox');
+  assert.ok(!items.some((x) => x.id === 'merge:c_aaaaaaaaaab1'), 'no merge item either');
+  assert.deepEqual([ap.getApproval(m.id)!.status, ap.getApproval(m.id)!.result], ['stale', 'already merged']);
+  assert.deepEqual([ap.getApproval(c.id)!.status, ap.getApproval(c.id)!.result], ['stale', 'closed']);
+  assert.equal(await status(ap.decideApproval(m.id, 'x', 'approve', jPage())), 409, 'and can\'t be approved');
+  // A go live (or rollback) since a deploy card was made settles it; an older go live doesn't.
+  const now = Date.now();
+  const ins = db.prepare(`INSERT INTO approvals (id, kind, target, params, bind, token, card, status, created, expires) VALUES (?, ?, 'aptest', '{}', 'b', 'tok', ?, 'pending', ?, ?)`);
+  const cardJ = JSON.stringify({ title: 'Go live?', lines: [], blockers: [], warnings: [], links: [], approve: 'Approve', deny: 'Deny' });
+  db.prepare(`INSERT INTO deploys (id, product, kind, repo, after, at) VALUES ('d_old', 'aptest', 'deploy', 'site', 'x', ?)`).run(now - 60_000);
+  ins.run('a_deploy0001', 'deploy', cardJ, now - 30_000, now + 600_000);
+  assert.equal(ap.getApproval('a_deploy0001')!.status, 'pending', 'an older go live leaves it');
+  db.prepare(`INSERT INTO deploys (id, product, kind, repo, after, at) VALUES ('d_new', 'aptest', 'deploy', 'site', 'y', ?)`).run(now - 10_000);
+  assert.deepEqual([ap.getApproval('a_deploy0001')!.status, ap.getApproval('a_deploy0001')!.result], ['stale', 'already live']);
+  ins.run('a_rollbk0001', 'rollback', cardJ, now - 5_000, now + 600_000);
+  db.prepare(`INSERT INTO deploys (id, product, kind, repo, after, at) VALUES ('d_rb', 'aptest', 'rollback', 'site', 'z', ?)`).run(now);
+  assert.equal(ap.getApproval('a_rollbk0001')!.result, 'already rolled back');
+  assert.ok(!(await ib.inbox()).some((x) => x.kind === 'approval' && ['a_deploy0001', 'a_rollbk0001'].includes(x.approval!.id)));
+});
+
 // The page's side (dashboard/approval.js), loaded the way the browser does, without a DOM.
 const vm = await import('node:vm');
 const page: any = vm.runInNewContext(`${fs.readFileSync(path.join(import.meta.dirname, '..', 'dashboard', 'approval.js'), 'utf8')}\napprovals`, {
