@@ -6,7 +6,7 @@
 //   contract  the standard integration (hawkesgen/docs/library.md): a mapping (hawkes.content.json or
 //             hawkes.library.json), the hawkesgen MCP server in .mcp.json, a "Hawkes Gen" section in AGENTS.md
 //   mappings  each kind kept in folders: its root, whether that is in the repo (Studio writes picks) and on this machine
-//   library   entities by kind, takes waiting for a pick, and unmade slots: a slot the kind's recipe can make
+//   library   entities by kind, takes waiting for a pick (made since the slot's pick), and unmade slots: a slot the kind's recipe can make
 //             (presets/<project>.json kinds) that an entity has no current version of
 //   sdk       every copy of the Gen SDK in the repo (hawkesgen.mjs, hawkesgen-ui.mjs, hawkesgen-folders.mjs) and its
 //             version, against Gen's current one; behind ones are listed
@@ -88,19 +88,33 @@ const enclosing = (p: Product) => {
   return out;
 };
 
-type Kinds = Record<string, { slots?: Record<string, { make?: unknown }> }>;
+type Kinds = Record<string, { slots?: Record<string, { make?: unknown; optional?: boolean }> }>;
 
-/** Slots a kind's recipe can make (no wildcards: pose/* is made per pose the entity has). */
+/** Slots a kind's recipe can make (no wildcards: pose/* is made per pose the entity has; optional ones left out). */
 export const makeable = (kinds: Kinds, kind: string) =>
   Object.entries(kinds?.[kind]?.slots ?? {})
-    .filter(([slot, s]) => s?.make && !slot.includes('*'))
+    .filter(([slot, s]) => s?.make && !s.optional && !slot.includes('*'))
     .map(([slot]) => slot);
 
-/** Per entity: makeable slots with no current version. */
+/** The slots of a kind whose recipe uses slot (slot:./<slot> in its make): a prop's model uses its reference. */
+export const usedBy = (kinds: Kinds, kind: string, slot: string) =>
+  Object.entries(kinds?.[kind]?.slots ?? {})
+    .filter(([, s]) => s?.make && JSON.stringify(s.make).includes(`"slot:./${slot}"`))
+    .map(([k]) => k);
+
+/**
+ * Per entity: makeable slots with no current version. A slot only there to make another one isn't missing once that
+ * one has a pick (a prop whose model is done doesn't need the reference it would be made from).
+ */
 export function unmade(entities: any[], kinds: Kinds) {
   const out: { entity: string; name: string; kind: string; slots: string[] }[] = [];
   for (const e of entities) {
-    const slots = makeable(kinds, e.kind).filter((s) => !e.slots?.[s]?.current);
+    const done = (slot: string) => !!e.slots?.[slot]?.current;
+    const slots = makeable(kinds, e.kind).filter((s) => {
+      if (done(s)) return false;
+      const users = usedBy(kinds, e.kind, s);
+      return !(users.length && users.every(done));
+    });
     if (slots.length) out.push({ entity: e.id, name: e.name, kind: e.kind, slots });
   }
   return out;
@@ -126,7 +140,7 @@ export async function productHealth(p: Product, { folders = false } = {}) {
   let takes = 0;
   for (const e of items) {
     byKind[e.kind] = (byKind[e.kind] ?? 0) + 1;
-    for (const s of Object.values<any>(e.slots ?? {})) takes += s.takes ?? 0;
+    for (const s of Object.values<any>(e.slots ?? {})) takes += s.waiting ?? s.takes ?? 0;
   }
 
   const current = health?.client?.current ?? {};

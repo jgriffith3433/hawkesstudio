@@ -61,6 +61,11 @@ test('unmade: slots the recipe can make that have no pick (wildcards are per ent
     { id: 'p/bird', name: 'bird', kind: 'enemy', slots: {} },
   ];
   assert.deepEqual(unmade(entities, kinds), [{ entity: 'p/desk', name: 'desk', kind: 'prop', slots: ['reference'] }]);
+
+  // A slot that only feeds another isn't missing once that one is picked; optional slots never are.
+  const chain = { prop: { slots: { reference: { make: { tool: 'image.generate' } }, model: { make: { tool: 'mesh.textured', inputs: { image: 'slot:./reference' } } } } }, character: { slots: { concept: { make: {}, optional: true } } } };
+  assert.deepEqual(unmade([{ id: 'p/desk', name: 'desk', kind: 'prop', slots: { model: { current: { n: 1 } } } }, { id: 'p/hero', name: 'hero', kind: 'character', slots: {} }], chain), []);
+  assert.deepEqual(unmade([{ id: 'p/lamp', name: 'lamp', kind: 'prop', slots: {} }], chain).map((x: any) => x.slots), [['reference', 'model']]);
 });
 
 test('wire writes only what is missing, and is a no-op the second time', () => {

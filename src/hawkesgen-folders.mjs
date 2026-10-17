@@ -194,10 +194,12 @@ async function stored(gen, id, slot, hash, add) {
 /**
  * Brings folders into the library. -> [{ entity, slot, file, action }] (action: created, added, picked, same, differs,
  * would-*). differs: the folder's current file isn't the slot's current version (the library's pick stands; adopt: true
- * makes the folder's file current instead).
+ * makes the folder's file current instead, and adopt: [slots] only for those slots).
  */
 export async function importFolders(gen, m, { only, dry = false, adopt = false, log = () => {} } = {}) {
   const report = [];
+  // adopt: true (every slot), or the slots whose folder file wins (the one a product's tool just changed).
+  const adopts = (slot) => adopt === true || (Array.isArray(adopt) && adopt.includes(slot));
   for (const folder of entityFolders(m, only)) {
     const dir = dirOf(m, folder);
     const where = isFiles(m) ? path.basename(m.root) : `${path.basename(m.root)}/${folder}`;
@@ -219,7 +221,7 @@ export async function importFolders(gen, m, { only, dry = false, adopt = false, 
         const there = bySha.get(h);
         // Once a slot has a current version, the library decides what's current: a different file in the folder is
         // reported (and kept as a take), not picked, unless adopt says the folder wins.
-        if (status === 'current' && hasCurrent && !adopt && there?.status !== 'current') {
+        if (status === 'current' && hasCurrent && !adopts(slot) && there?.status !== 'current') {
           report.push({ entity: id, slot, file: f, action: 'differs' });
           if (!there) status = 'take';
           else return;
