@@ -27,7 +27,7 @@ const approvals = (() => {
     return `<div class="approval st-pending" data-approval="${esc(a.id)}" data-token="${esc(a.token ?? '')}" data-guide="off">
       <div class="ap-head"><span class="pill warn">Needs your OK</span> <b>${esc(c.title)}</b>${chat ? '<button class="ap-close" data-apdismiss title="Close it here without deciding: it stays in your Inbox until it expires" aria-label="Close">×</button>' : ''}</div>
       ${c.lines.length ? `<ul>${c.lines.map((l) => `<li>${esc(l)}</li>`).join('')}</ul>` : ''}
-      ${c.blockers.length ? `<div class="ap-block"><b>Can't approve yet:</b><br>${c.blockers.map(esc).join('<br>')}</div>` : ''}
+      ${c.blockers.length ? `<div class="ap-block"><b>Can't approve yet:</b><br>${c.blockers.map(esc).join('<br>')}${a.kind === 'deploy' ? '<br><button class="small" data-apgolive title="The Go live page has the button that clears these on beta (nothing goes live)">Fix it on the Go live page</button>' : ''}</div>` : ''}
       ${c.warnings.length ? `<div class="ap-warn"><b>Warnings:</b><br>${c.warnings.map(esc).join('<br>')}</div>` : ''}
       ${c.links.length ? `<div class="meta">${c.links.map((l) => `<a href="${esc(l.url)}" target="_blank" rel="noopener">${esc(l.label)}</a>`).join(' · ')}</div>` : ''}
       <div class="actions ap-actions"><button class="primary" data-apdecide="approve"${c.blockers.length || !a.token ? ' disabled' : ''}>${esc(c.approve)}</button><button data-apdecide="deny"${a.token ? '' : ' disabled'}>${esc(c.deny)}</button></div>
@@ -61,6 +61,7 @@ const approvals = (() => {
   // J's tap (a real click: event.isTrusted). The card becomes the line saying what happened; × closes it in the chat.
   if (typeof document !== 'undefined') document.addEventListener('click', async (e) => {
     if (!e.isTrusted) return;
+    if (e.target.closest('button[data-apgolive]')) return void (typeof window.show === 'function' && window.show('golive'));
     const show = e.target.closest('button[data-apshow]');
     if (show) { expanded.add(show.closest('.approval').dataset.approval); return dispatchEvent(new CustomEvent('studio-approval')); }
     const close = e.target.closest('button[data-apdismiss]');

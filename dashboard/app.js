@@ -274,6 +274,7 @@ async function goLive(p) {
     <h4>Playtests of beta ${plan.tested.sha ? `<code>${esc(plan.tested.sha)}</code>` : ''}</h4>
     ${t.length ? t.map((x) => `<div class="test"><span>${icon(x.status)}</span><span class="name">${esc(x.name)}</span><span class="detail">${esc(x.outcome ?? x.detail ?? '')} · ${ago(x.when)}</span>${x.verdict ? `<span class="pill ${esc(x.verdict)}">${esc(x.verdict)}</span>` : ''}${x.video ? `<a href="${file(x.video)}" target="_blank" rel="noopener" data-video="${file(x.video)}">▶</a>` : ''}</div>${x.summary ? `<div class="meta">${esc(x.summary)}</div>` : ''}`).join('') : `<p class="meta">None at this commit.${plan.lastPlayed ? ` The last local playtest played ${esc(plan.lastPlayed.played.branch)} <code>${esc(String(plan.lastPlayed.played.sha).slice(0, 7))}</code> ${ago(plan.lastPlayed.when)}.` : ''}</p>`}
     ${plan.blockers.length ? `<p style="color:var(--red, #e5484d)"><b>Can't go live yet:</b><br>${plan.blockers.map(esc).join('<br>')}</p>` : ''}
+    ${plan.fix ? `<div class="actions"><button class="primary" data-gl="${{ 'merge-main': 'merge', beta: 'beta', rebuild: 'rebuild' }[plan.fix]}" data-p="${esc(plan.product)}" title="Clears the blockers on beta. Nothing goes live.">${{ 'merge-main': 'Merge live into beta', beta: 'Play beta', rebuild: 'Rebuild beta' }[plan.fix]}</button></div>` : ''}
     ${plan.warnings.length ? `<p style="color:var(--amber)"><b>Warnings:</b><br>${plan.warnings.map(esc).join('<br>')}</p>` : ''}
     ${!plan.blockers.length && !plan.warnings.length ? '<p style="color:var(--accent)">No warnings.</p>' : ''}
     <div class="actions">
@@ -322,6 +323,11 @@ $('#viewer').addEventListener('click', async (e) => {
     if (b.dataset.gl === 'merge') {
       const r = await api(`/api/deploy/${p}`, { method: 'POST', body: { mergeMain: true, by: 'J' } });
       out(`<p>${esc(r.detail)}. ${esc(r.note)}</p>`);
+      return;
+    }
+    if (b.dataset.gl === 'rebuild') {
+      const r = await api('/api/build', { method: 'POST', body: { product: p, force: true } });
+      out(`<p>Rebuilding beta on top of what's live (run ${esc(r.run)}). Nothing goes live. Open this again when it's done.</p>`);
       return;
     }
     if (b.dataset.gl === 'beta') {

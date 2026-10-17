@@ -192,6 +192,14 @@ export function saveBetaBuild(p: Product, b: BetaBuild | null) {
   else fs.rmSync(`${betaSiteDir(p)}.json`, { force: true });
 }
 
+/**
+ * Whether the beta build in the website copy is still what beta needs: it built `head`, and it sits on the website's
+ * main as it is now (`siteMain`; when live moved, the build must be redone on top of it or going live is blocked).
+ */
+export function betaBuildCurrent(b: BetaBuild | null, head: string, siteMain: string | null, folderExists: boolean) {
+  return Boolean(b?.ok && b.sha === head && folderExists && (!siteMain || b.base === siteMain));
+}
+
 /** Resets the beta website copy to the website repo's origin/main (before a beta build lands in it). */
 export async function resetBetaSite(p: Product) {
   const { site } = repoDirs(p);

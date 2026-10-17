@@ -21,7 +21,7 @@ import { barState, barHash, reviewedSha, reviewParams } from './review.ts';
 import { writeReport } from './report.ts';
 import { assetStatus, makeAsset } from './assets.ts';
 import { syncRepos, syncRepo, repoMap, betaFolders, isServer, BETA, BRANCH } from './repos.ts';
-import { betaLane, prepareBeta, playedLocal, resetBetaSite, saveBetaBuild, betaBuild, betaSiteDir, betaSiteFolder, betaPort, shaOf, repoDirs } from './beta.ts';
+import { betaLane, prepareBeta, playedLocal, resetBetaSite, saveBetaBuild, betaBuild, betaSiteDir, betaSiteFolder, betaPort, shaOf, repoDirs, fetchOrigin, betaBuildCurrent, MAIN } from './beta.ts';
 import { notifyOnce } from './notify.ts';
 import { judgeCriteria } from './acceptance.ts';
 import { runGenJob, playtestExtras, playtestData, playtestRunMs, REVIEW_RUN_MS } from './playtests.ts';
@@ -352,7 +352,14 @@ export async function buildProduct(run: string, p: Product, { force = false } = 
   const lane = betaLane();
   const head = shaOf(repoDirs(p).source, 'HEAD') ?? '';
   const bb = lane ? betaBuild(p) : null;
-  const current = !lane || Boolean(bb?.ok && bb.sha === head && fs.existsSync(betaSiteFolder(p)));
+  // The website's main the build sits on counts too: when live moved, beta is built again on top of it.
+  let siteMain: string | null = null;
+  if (lane && bb?.ok) {
+    const { site } = repoDirs(p);
+    try { await fetchOrigin(site); } catch {}
+    siteMain = shaOf(site, `origin/${MAIN}`);
+  }
+  const current = !lane || betaBuildCurrent(bb, head, siteMain, fs.existsSync(betaSiteFolder(p)));
   if (!force && last?.data?.fingerprint === fp && current) {
     const s = startStep(run, p.id, 'build', 'unity');
     updateStep(s, { status: 'skipped', detail: `no changes since the last build (${last.data?.version ? `Game/v${last.data.version}` : 'last time'})`, data: { fingerprint: fp, version: last.data?.version }, finished: true });

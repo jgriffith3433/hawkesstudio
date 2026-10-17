@@ -2,7 +2,10 @@
 // same plan as the go-live dialog (GET /api/deploy/<p>: commits on beta not on main, beta's playtests, blockers and
 // warnings) and the ops queue (GET /api/ops: a go live or rollback queued or running). "Go live" and "Roll back" never
 // act by themselves: they ask for the same Approve card (approval.js, kind deploy / rollback, bound to that plan) and
-// show it right there; J's tap on Approve is what goes live. Uses app.js's helpers ($, esc, api, ago) and approvals.
+// show it right there; J's tap on Approve is what goes live. A blocked card instead shows the one beta-only step that
+// clears its blockers (the plan's `fix`, deploy.ts planFix): "Merge live into beta" (then plays beta), "Play beta" (the
+// beta run) or "Rebuild beta" (a forced Unity build); the card follows that run and checks the plan again when it ends.
+// None of them goes live or rolls back. Uses app.js's helpers ($, esc, api, ago) and approvals.
 (() => {
   const css = document.createElement('style');
   css.textContent = `
@@ -21,7 +24,7 @@
     .gl-buttons button.big { font-size: 17px; padding: 12px 22px; border-radius: 12px; flex: 1 1 auto; min-height: 48px; }
     .gl-buttons button.roll { flex: 0 1 auto; min-height: 48px; }
     .gl-busy { background: rgba(255,190,85,.12); border: 1px solid rgba(255,190,85,.4); border-radius: 8px; padding: 8px 10px; margin: 8px 0; font-size: 14px; }
-    .gl-done { font-size: 13px; margin: 6px 0; }
+    .gl-done { font-size: 13px; margin: 6px 0; } .gl-fail { color: var(--red); }
     .gl-slot:not(:empty) { margin-top: 10px; }
     .gl-card details { margin-top: 8px; font-size: 13px; } .gl-card details code { font-size: 12px; }
     @media (max-width: 700px) { .gl-list { grid-template-columns: 1fr; } .gl-buttons button.big { width: 100%; } }`;
@@ -32,6 +35,17 @@
   let ops = [];
   let pending = []; // waiting deploy / rollback cards
   let busy = false;
+  const fixing = new Map(); // product -> { action, run?, step?, error?, done? }: the beta step J started from a card
+
+  /** The beta-only steps that clear blockers (deploy.ts blockerFix), in J's words. */
+  const FIX = {
+    'merge-main': { label: 'Merge live into beta', busy: 'Merging live into beta, then playing beta', title: 'Merges what is live into beta, then builds and playtests beta. Nothing goes live.' },
+    beta: { label: 'Play beta', busy: 'Playing beta', title: 'Brings beta up to date (pre-deploy build, Unity build, beta site) and playtests it. Nothing goes live.' },
+    rebuild: { label: 'Rebuild beta', busy: 'Rebuilding beta on top of what is live', title: 'Builds beta again on top of the live site (Unity, about $0.10). Nothing goes live.' },
+  };
+  /** A run's step in plain words: what it's doing now. */
+  const STEP = { repo: 'updating the code', prebuild: 'pre-deploy build', build: 'Unity build', playtest: 'playtest', review: 'review of the playtest', preview: 'beta site' };
+  const stepText = (s) => s && `${STEP[s.kind] ?? s.kind}${s.detail ? `: ${String(s.detail).slice(0, 120)}` : ''}`;
 
   const when = (d) => (d ? ago(typeof d === 'number' ? d : Date.parse(d)) : 'unknown');
   const n = (k, one, many = `${one}s`) => `${k} ${k === 1 ? one : many}`;
@@ -81,16 +95,22 @@
     const recent = last && Date.now() - (last.finished ?? last.created) < 6 * 3600_000 ? last : null;
     const canRoll = p.previous.some((d) => d.kind === 'deploy' && !d.rolledBack);
     const card = pending.find((a) => a.target === p.product && (a.kind === 'deploy' || a.kind === 'rollback'));
+    const fx = fixing.get(p.product);
+    const fix = L.color === 'red' && p.fix && FIX[p.fix] && !run.length ? p.fix : null;
+    const fixRunning = fx && !fx.done && !fx.error;
     return `<div class="gl-card ${L.color}" data-p="${esc(p.product)}">
       <h3><span class="gl-light ${L.color}" title="${esc(L.text)}"></span>${esc(p.name)}</h3>
       <div class="gl-status ${up ? 'ahead' : 'same'}">${esc(status)}</div>
       <div class="gl-when">Live updated ${esc(when(lastLive))} · beta changed ${esc(when(p.beta?.date))}</div>
       ${run.map((o) => `<div class="gl-busy">⏳ ${esc(o.title)}${o.status === 'queued' ? ' (waiting its turn)' : o.step ? `: ${esc(o.step)}` : '…'}</div>`).join('')}
+      ${fixRunning && !run.length ? `<div class="gl-busy">⏳ ${esc(FIX[fx.action].busy)}${fx.step ? `: ${esc(fx.step)}` : '…'}</div>` : ''}
+      ${fx?.error ? `<div class="gl-done gl-fail">❌ ${esc(FIX[fx.action].label)} failed: ${esc(String(fx.error).slice(0, 300))}</div>` : fx?.done ? `<div class="gl-done">${fx.done.ok ? `✅ ${esc(FIX[fx.action].label)} finished ${esc(ago(fx.done.at))}` : `<span class="gl-fail">❌ ${esc(FIX[fx.action].label)} failed: ${esc(String(fx.done.detail ?? '').slice(0, 300))}</span>`}</div>` : ''}
       ${!run.length && recent ? `<div class="gl-done">${recent.status === 'done' ? `✅ ${esc(recent.kind === 'rollback' ? 'Rolled back' : 'Went live')} ${esc(ago(recent.finished))}` : `❌ ${esc(recent.title)} failed ${esc(ago(recent.finished))}: ${esc(String(recent.error ?? '').slice(0, 200))}`}</div>` : ''}
       ${Object.entries(groups).map(([g, cs]) => `<div class="gl-group"><b>${esc(g)} (${cs.length})</b><ul>${cs.slice(0, 6).map((c) => `<li>${esc(plain(c.title))}</li>`).join('')}${cs.length > 6 ? `<li class="meta">and ${cs.length - 6} more</li>` : ''}</ul></div>`).join('')}
       ${up || p.mainOnly.length || L.played ? `<div class="gl-light-line"><b>${esc(L.text)}</b>${L.played ? `<br><span class="meta">${esc(L.played)}</span>` : ''}${L.why?.length ? `<ul>${L.why.map((w) => `<li>${esc(w)}</li>`).join('')}</ul>` : ''}</div>` : ''}
       <div class="gl-buttons">
-        ${up && !run.length ? `<button class="primary big" data-glgo="deploy" data-guide="off" title="Shows the Approve card for going live; your tap on Approve is what goes live">Go live</button>` : ''}
+        ${fix ? `<button class="primary big" data-glfix="${esc(fix)}" title="${esc(FIX[fix].title)}"${fixRunning ? ' disabled' : ''}>${esc(fixRunning ? `${FIX[fix].busy}…` : FIX[fix].label)}</button>` : ''}
+        ${up && !run.length && !fix ? `<button class="primary big" data-glgo="deploy" data-guide="off" title="Shows the Approve card for going live; your tap on Approve is what goes live">Go live</button>` : ''}
         ${canRoll && !run.length ? `<button class="roll" data-glgo="rollback" data-guide="off" title="Shows the Approve card for rolling back to what was live before">Roll back</button>` : ''}
         ${p.betaSite ? `<a class="meta" href="${esc(p.betaSite)}" target="_blank" rel="noopener" style="align-self:center">Try beta</a>` : ''}
         <a class="meta" href="${esc(p.live)}" target="_blank" rel="noopener" style="align-self:center">Live site</a>
@@ -118,7 +138,61 @@
       if (s && !s.innerHTML && slots.get(c.dataset.p)) s.innerHTML = slots.get(c.dataset.p);
     }
     const waiting = [...plans.values()].filter((p) => !p.error && ahead(p)).length;
+    const blocked = blockedNow();
+    $('#glFixAll').hidden = !blocked.length;
+    $('#glFixAll').textContent = `Play beta for all blocked (${blocked.length})`;
     $('#glInfo').textContent = plans.size < products.length ? 'Checking every product…' : waiting ? `${n(waiting, 'product')} with beta ahead of live.` : 'Every live site is up to date with beta.';
+  }
+
+  /** Products whose card shows a fix button and isn't running one. */
+  const blockedNow = () => products.map((x) => plans.get(x.id)).filter((p) => p && !p.error && p.beta && p.fix && FIX[p.fix] && light(p).color === 'red' && !liveOps(p.product).some((o) => o.status === 'queued' || o.status === 'running'))
+    .filter((p) => { const f = fixing.get(p.product); return !f || f.done || f.error; });
+
+  /** Starts the beta step that clears a product's blockers; the card follows its run. Never goes live. */
+  async function startFix(id, action) {
+    fixing.set(id, { action, step: action === 'merge-main' ? 'merging' : '' });
+    draw();
+    try {
+      if (action === 'merge-main') {
+        await api(`/api/deploy/${id}`, { method: 'POST', body: { mergeMain: true, by: 'J' } });
+        fixing.get(id).step = 'merged; playing beta';
+      }
+      const r = action === 'rebuild'
+        ? await api('/api/build', { method: 'POST', body: { product: id, force: true } })
+        : await api(`/api/beta/${id}`, { method: 'POST', body: {} });
+      fixing.get(id).run = r.run;
+    } catch (err) {
+      fixing.get(id).error = err.message;
+      loadPlan(id);
+    }
+    draw();
+  }
+
+  /** The runs the cards follow: their step now; when one ends, the product's plan again (it turns ready, or says why not). */
+  async function pollFixes() {
+    for (const [id, f] of fixing) {
+      if (!f.run || f.done || f.error) continue;
+      try {
+        const r = await api(`/api/runs/${f.run}`);
+        const s = r.steps.findLast((x) => x.status === 'running') ?? r.steps.at(-1);
+        f.step = stepText(s) ?? '';
+        if (r.status !== 'running') {
+          f.done = { ok: r.status === 'done', at: r.finished ?? Date.now(), detail: r.status === 'done' ? '' : r.steps.filter((x) => x.status === 'failed').map(stepText).join('; ') || r.detail };
+          await loadPlan(id);
+        }
+      } catch {}
+    }
+  }
+
+  /** Beta and build runs already going (started elsewhere, or before this page loaded): the cards follow them too. */
+  async function loadRuns() {
+    const { runs } = await api('/api/runs?limit=40');
+    for (const r of runs) {
+      if (r.status !== 'running' || !['beta', 'build'].includes(r.kind) || r.products?.length !== 1) continue;
+      const id = r.products[0];
+      const f = fixing.get(id);
+      if (!f || f.done || f.error) fixing.set(id, { action: r.kind === 'build' ? 'rebuild' : 'beta', run: r.id, step: '' });
+    }
   }
 
   async function loadOps() {
@@ -140,6 +214,7 @@
     try {
       products = (await api('/api/products')).products;
       await loadOps();
+      await loadRuns().catch(() => {});
       draw();
       await Promise.all(products.map((p) => loadPlan(p.id)));
     } finally { busy = false; }
@@ -149,12 +224,18 @@
   // While the tab is open: the queue every 5 s (cheap); when a go live starts or ends, the plans again.
   setInterval(async () => {
     if (tab !== 'golive' || busy || !products.length) return;
-    try { if (await loadOps()) await load(); else draw(); } catch {}
+    try { await pollFixes(); if (await loadOps()) await load(); else draw(); } catch {}
   }, 5000);
   addEventListener('studio-approval', () => { if (tab === 'golive') setTimeout(() => loadOps().then(draw).catch(() => {}), 800); });
 
   $('#glRefresh').onclick = () => { plans.clear(); load().catch((e) => alert(e.message)); };
+  $('#glFixAll').onclick = (e) => {
+    if (!e.isTrusted) return;
+    for (const p of blockedNow()) startFix(p.product, p.fix);
+  };
   $('#glList').addEventListener('click', async (e) => {
+    const fb = e.target.closest('button[data-glfix]');
+    if (fb) { if (e.isTrusted) startFix(fb.closest('.gl-card').dataset.p, fb.dataset.glfix); return; }
     const plan = e.target.closest('button[data-glplan]');
     if (plan) return void goLive(plan.dataset.glplan).catch((err) => alert(err.message));
     const b = e.target.closest('button[data-glgo]');
