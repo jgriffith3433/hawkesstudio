@@ -557,7 +557,8 @@ export function readyReport({ product, item, milestone }: { product?: string; it
   const pv = listPreviews();
   const items = item ? [getItem(item)].filter(Boolean) as any[]
     : milestone ? (db.prepare(`SELECT id FROM items WHERE milestone = ? AND status != 'dropped' ORDER BY ord, created`).all(milestone) as any[]).map((r) => getItem(r.id)!)
-      : listItems({ product, status: 'on beta,in progress' });
+      // Consumed items (done when their tasks were created) too: they show once a task is verified on beta.
+      : listItems({ product, status: 'on beta,in progress,done' }).filter((it) => it.status !== 'done' || it.consumed);
   const out: Ready[] = [];
   for (const it of items) {
     const tasks = (it.tasks ?? []).filter((t: Task) => t.status !== 'dropped' && t.status !== 'idea');
@@ -572,7 +573,7 @@ export function readyReport({ product, item, milestone }: { product?: string; it
       changes: tasks.map((t: Task) => ({ task: t.id, title: t.title, status: t.status, pr: t.pr, change: t.change, summary: summary(t.change)?.slice(0, 1500) ?? null })),
       criteria: tasks.flatMap((t: Task) => (t.checks?.results ?? t.criteria.map((k) => ({ criterion: k, met: 'unclear' as const, evidence: 'not checked on beta yet' }))).map((c) => ({ ...c, task: t.id, video: t.checks?.video ?? null, where: t.checks?.where ?? '-' }))),
       try: tasks.map((t: Task) => t.try).filter(Boolean) as string[],
-      bugs: linked, partly: it.status !== 'on beta',
+      bugs: linked, partly: it.status === 'done' && it.consumed ? done.length < tasks.length : it.status !== 'on beta',
     });
   }
   return out;
@@ -634,7 +635,7 @@ export async function undoDecision(id: string, by = 'J') {
     const { close, getChange } = await changes();
     if (getChange(u.change) && !['merged', 'closed'].includes(getChange(u.change)!.status)) await close(u.change, by);
     if (u.task) setTask(u.task, { status: 'idea', note: `start undone by ${by}` });
-    if (u.finding) db.prepare(`UPDATE findings SET status = 'open' WHERE id = ? AND status = 'fixing'`).run(u.finding);
+    if (u.finding) db.prepare(`UPDATE findings SET status = 'open' WHERE id = ? AND (status = 'fixing' OR (status = 'fixed' AND note = ?))`).run(u.finding, `agent change ${u.change}`);
     detail = `closed ${u.change}`;
   } else if (u.kind === 'merge') {
     detail = await revertOnBeta(u.repo, u.pr, by);

@@ -229,6 +229,8 @@ export async function reportFollowups() {
     const beta = (await import('./previews.ts')).previewUrl(f.product);
     const text = f.status === 'fixing'
       ? `An agent is on J's report ${f.id} ("${f.title}")${change ? `: change ${change.id}` : ''}.`
+      : f.status === 'fixed' && change && change.status !== 'merged' && f.note === `agent change ${change.id}`
+        ? `An agent took J's report ${f.id} ("${f.title}"): change ${change.id}. It counts as done; the change merges into beta when it's ready.`
       : f.status === 'fixed'
         ? `J's report ${f.id} ("${f.title}") is fixed${change ? ` (change ${change.id}${change.pr ? `, ${change.pr}` : ''})` : ''}${change?.status === 'merged' ? ' and merged into beta' : ''}.${beta ? ` Try it: ${beta}` : ''}`
         : `J's report ${f.id} ("${f.title}") was marked won't-fix: ${f.note ?? ''}. J can reopen it.`;

@@ -65,7 +65,7 @@ export function studioMcp({ studio, waitRun }: Client = { studio: defaultStudio,
     },
     {
       name: 'studio_update_finding',
-      description: 'Mark a finding: fixing (an agent is working on it), fixed, wontfix, open (also moves an idea to the backlog), or idea (moves it to the ideas list), with a note (what changed, which session).',
+      description: 'Mark a finding: fixing (an agent is working on it; agent fixes now mark it fixed when they start), fixed, wontfix, open (also moves an idea to the backlog), or idea (moves it to the ideas list), with a note (what changed, which session).',
       inputSchema: obj({ id: str('Finding id (f_...)'), status: str('open | fixing | fixed | wontfix | idea'), note: str('Optional note') }, ['id']),
       run: async ({ id, status, note }) => studio(`/api/findings/${id}`, { method: 'PATCH', body: { status, note } }),
     },
@@ -241,7 +241,7 @@ export function studioMcp({ studio, waitRun }: Client = { studio: defaultStudio,
     },
     {
       name: 'studio_roadmap',
-      description: 'The roadmap: milestones (a named point J will playtest himself, made of items; open -> reached when every item in it is on beta with its checks passed -> live | dropped; with progress), and per product, items (a goal J wants, with why, acceptance criteria, size S/M/L, status idea -> planned -> in progress -> on beta -> live -> done | dropped, order) and the tasks under each (one agent change each: request, acceptance criteria, depends on, status idea | planned | working | needs answer | review | merged | verified | live | failed | dropped, its change and pull request, tries, the latest per-criterion checks). Planned tasks of planned items start by themselves, in order. Read-only; edit with studio_roadmap_edit.',
+      description: 'The roadmap: milestones (a named point J will playtest himself, made of items; open -> reached when every item in it is on beta with its checks passed -> live | dropped; with progress), and per product, items (a goal J wants, with why, acceptance criteria, size S/M/L, status idea -> planned -> done as soon as it has tasks (J: consumed; its tasks still run) | dropped, order) and the tasks under each (one agent change each: request, acceptance criteria, depends on, status idea | planned | working | needs answer | review | merged | verified | live | failed | dropped, its change and pull request, tries, the latest per-criterion checks). Planned tasks of planned items start by themselves, in order. Read-only; edit with studio_roadmap_edit.',
       inputSchema: obj({ product: str('Product id (optional)'), status: str('Item statuses, comma list (default all but dropped)'), item: str('One item (i_...) in detail') }),
       run: async ({ product, status, item }) => {
         if (item) return studio(`/api/roadmap/items/${item}`);

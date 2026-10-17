@@ -2,7 +2,8 @@
 // (one agent change each). Talk plans it with J (studio_roadmap), the PM loop (pm.ts) works it with the agents, and a
 // task is done only when its acceptance criteria pass on beta.
 //
-//   item  status: idea -> planned -> in progress -> on beta (every task verified on beta) -> live -> done | dropped
+//   item  status: idea -> planned -> done (consumed: as soon as it has tasks, J 2026-10-17; its tasks still run) | dropped
+//                 (items from before: in progress -> on beta (every task verified on beta) -> live)
 //   task  status: idea | planned (starts by itself when its item is planned and what it depends on is on beta)
 //                 -> working (an agent change) -> review (the change is ready: the PM checks it against the criteria)
 //                 -> merged (into beta; beta's playtest checks the criteria) -> verified (they pass on beta) -> live
@@ -49,7 +50,8 @@ db.exec(`
 `);
 // Findings can belong to a roadmap item; the PM loop marks the runs it has seen. (Changes get their task columns in agents.ts.)
 // J's reports from the beta sites (bugreport.ts) are findings with source 'J', the milestone he was testing and the report.
-for (const [table, col] of [['runs', 'pm_seen'], ['findings', 'item'], ['items', 'milestone'], ['findings', 'source'], ['findings', 'milestone'], ['findings', 'report'], ['tasks', 'gpu']]) {
+// items.consumed: when the item counted as done because its tasks were created (syncItem); its tasks still start.
+for (const [table, col] of [['runs', 'pm_seen'], ['findings', 'item'], ['items', 'milestone'], ['findings', 'source'], ['findings', 'milestone'], ['findings', 'report'], ['tasks', 'gpu'], ['items', 'consumed']]) {
   try { db.exec(`ALTER TABLE ${table} ADD COLUMN ${col} TEXT`); } catch { /* already there */ }
 }
 
@@ -74,7 +76,7 @@ export type Task = {
 export type TaskGpu = { items?: any[]; estimate?: { gpuHours: number; cost: number; withIdleTail: number; servers: number; wallMinutes: number; at: number; error?: string }; budget?: number | null; approvedBy?: string | null; approvedAt?: number | null };
 export type Item = {
   id: string; product: string; title: string; goal: string | null; why: string | null; criteria: string[]; size: string | null; status: string;
-  ord: number; origin: string | null; note: string | null; by: string | null; milestone?: string | null; created: number; updated: number | null; tasks?: Task[];
+  ord: number; origin: string | null; note: string | null; by: string | null; milestone?: string | null; consumed?: string | null; created: number; updated: number | null; tasks?: Task[];
 };
 
 const toItem = (r: any): Item => ({ ...r, criteria: parse(r.criteria) ?? [] });
@@ -137,6 +139,8 @@ export function updateItem(id: string, patch: Partial<{ title: string; goal: str
   db.prepare('UPDATE items SET title = ?, goal = ?, why = ?, criteria = ?, size = ?, status = ?, ord = ?, note = ?, origin = ?, updated = ? WHERE id = ?')
     .run(n.title, n.goal, n.why, J(n.criteria), n.size, n.status, n.ord, n.note, n.origin, Date.now(), id);
   if (patch.milestone !== undefined) setItemMilestone(id, patch.milestone);
+  // Planned again (or for the first time) with tasks: consumed now.
+  if (patch.status === 'planned') syncItem(id);
   // Dropping an item drops the tasks not started yet.
   if (patch.status === 'dropped') db.prepare(`UPDATE tasks SET status = 'dropped', updated = ? WHERE item = ? AND status IN ('idea', 'planned')`).run(Date.now(), id);
   return getItem(id)!;
@@ -155,6 +159,7 @@ export function addTask(a: { item: string; title?: string; request: string; crit
     .run(id, item.id, item.product, (a.title ?? a.request.split('\n')[0]).trim().slice(0, 160), a.request.trim(), J(list(a.criteria)), J(depends), status, a.ord ?? nextOrd('tasks', 'item', item.id), Date.now());
   const gpu = gpuItems(a.gpu);
   if (gpu) db.prepare('UPDATE tasks SET gpu = ? WHERE id = ?').run(J({ items: gpu }), id);
+  syncItem(item.id);
   return getTask(id)!;
 }
 
@@ -193,23 +198,34 @@ export function setTask(id: string, patch: Record<string, any>) {
 }
 
 /**
- * An item's status follows its tasks once work started: in progress while any task is underway, on beta when every
- * task is verified on beta (or live), live when all are live. idea, planned, done and dropped are J's (and Talk's).
+ * A planned item is consumed (done) as soon as it has tasks (J, 2026-10-17: "consumed as soon as we create tasks for
+ * them and assume that it's done afterwards"); its tasks still start and run (startableTasks takes consumed items).
+ * Items from before that are in progress, on beta or live follow their tasks: in progress while any task is underway, on
+ * beta when every task is verified on beta (or live), live when all are live. idea, planned, done and dropped are J's.
  */
 export function syncItem(id: string) {
   const it = getItem(id);
   if (!it || ['idea', 'done', 'dropped'].includes(it.status)) return it;
   const tasks = (it.tasks ?? []).filter((t) => t.status !== 'dropped' && t.status !== 'idea');
   if (!tasks.length) return it;
+  if (it.status === 'planned') {
+    const now = Date.now();
+    db.prepare(`UPDATE items SET status = 'done', consumed = ?, note = COALESCE(note || ' ', '') || ?, updated = ? WHERE id = ?`)
+      .run(String(now), `[done: tasks created ${new Date(now).toISOString().slice(0, 10)}]`, now, id);
+    return getItem(id);
+  }
   const all = (...s: string[]) => tasks.every((t) => s.includes(t.status));
   const status = all('live') ? 'live' : all('verified', 'live') ? 'on beta' : tasks.some((t) => t.status !== 'planned') ? 'in progress' : it.status;
   if (status !== it.status) db.prepare('UPDATE items SET status = ?, updated = ? WHERE id = ?').run(status, Date.now(), id);
   return getItem(id);
 }
 
-/** Tasks that may start now, in roadmap order: planned, in a planned or in-progress item, with what they depend on merged. */
+/** Items whose planned tasks start: planned, in progress, or done because its tasks were created (consumed). */
+const WORKED = `(i.status IN ('planned', 'in progress') OR (i.status = 'done' AND i.consumed IS NOT NULL))`;
+
+/** Tasks that may start now, in roadmap order: planned, in a worked item (WORKED), with what they depend on merged. */
 export function startableTasks() {
-  const rows = (db.prepare(`SELECT t.* FROM tasks t JOIN items i ON i.id = t.item WHERE t.status = 'planned' AND i.status IN ('planned', 'in progress')
+  const rows = (db.prepare(`SELECT t.* FROM tasks t JOIN items i ON i.id = t.item WHERE t.status = 'planned' AND ${WORKED}
     ORDER BY i.ord, i.created, t.ord, t.created`).all() as any[]).map(toTask);
   const done = (d: string) => ['merged', 'verified', 'live'].includes(getTask(d)?.status ?? '');
   return rows.filter((t) => t.depends.every(done) && gpuCleared(t));
@@ -272,7 +288,7 @@ export function approveGpu(id: string, budget: number, by: string) {
 
 /** Planned tasks waiting only on J's GPU approval (the PM asks him once each). */
 export function tasksAwaitingGpu() {
-  return (db.prepare(`SELECT t.* FROM tasks t JOIN items i ON i.id = t.item WHERE t.status = 'planned' AND t.gpu IS NOT NULL AND i.status IN ('planned', 'in progress')`).all() as any[])
+  return (db.prepare(`SELECT t.* FROM tasks t JOIN items i ON i.id = t.item WHERE t.status = 'planned' AND t.gpu IS NOT NULL AND ${WORKED}`).all() as any[])
     .map(toTask).filter((t) => t.gpu?.items?.length && !gpuCleared(t));
 }
 
@@ -292,11 +308,15 @@ export function listMilestones(q: { product?: string; status?: string } = {}) {
   const pid = q.product ? productId(q.product) : null;
   return rows.filter((m) => !pid || m.product === pid || m.product === null).map((m) => ({ ...m, ...milestoneProgress(m.id) }));
 }
-/** Its items and how far along they are (items on beta, live or done count as there). */
+/**
+ * Its items and how far along they are (items on beta, live or done count as there). A consumed item (done when its
+ * tasks were created) counts once its tasks are merged into beta: a milestone is something J playtests himself.
+ */
 export function milestoneProgress(id: string) {
   const items = (db.prepare(`SELECT * FROM items WHERE milestone = ? AND status != 'dropped' ORDER BY ord, created`).all(id) as any[]).map(toItem);
-  const done = items.filter((i) => ['on beta', 'live', 'done'].includes(i.status));
-  return { items: items.map((i) => ({ id: i.id, title: i.title, product: i.product, status: i.status })), done: done.length, total: items.length };
+  const landed = (i: Item) => tasksOf(i.id).filter((t) => t.status !== 'dropped' && t.status !== 'idea').every((t) => ['merged', 'verified', 'live'].includes(t.status));
+  const done = items.filter((i) => ['on beta', 'live'].includes(i.status) || (i.status === 'done' && (!i.consumed || landed(i))));
+  return { items: items.map((i) => ({ id: i.id, title: i.title, product: i.product, status: i.status, consumed: Boolean(i.consumed) })), done: done.length, total: items.length };
 }
 export function addMilestone(a: { product?: string | null; title: string; goal?: string; test?: string; items?: unknown; origin?: string | null; by?: string; ord?: number }) {
   if (!a.title?.trim()) throw new StudioError('A milestone needs a title');

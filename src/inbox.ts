@@ -283,7 +283,8 @@ export async function inbox({ tokens = false }: { tokens?: boolean } = {}): Prom
     const key = `milestone:${m.id}:${m.reached_at ?? 0}`;
     if (acked(key)) continue;
     const p = milestoneProgress(m.id);
-    if (p.items.length && p.items.every((i) => ['live', 'done'].includes(i.status))) continue;
+    // Live, or done by hand (not consumed: done because its tasks were created, which is still to playtest).
+    if (p.items.length && p.items.every((i) => i.status === 'live' || (i.status === 'done' && !i.consumed))) continue;
     const products = [...new Set(p.items.map((i) => i.product))];
     const beta = products.map((x) => betaLink(x)).filter(Boolean) as string[];
     out.push({
