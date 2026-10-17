@@ -6,7 +6,7 @@
 //   POST /api/deploy/<product>           J's latest message contains "DEPLOY <product>"
 //   POST /api/rollback/<product>         J's latest message contains "ROLLBACK <product>"
 //   POST /api/changes/<id>/approve       a Studio or Gen change (it merges into main, which deploys): "MERGE <id>"
-//   POST /api/approvals/<id>/approve|deny never from the sandbox: J's tap on an Approve / Deny card (approvals.ts, which
+//   POST /api/approvals/<id>/approve|deny|dismiss never from the sandbox: J's tap on an Approve / Deny card (approvals.ts, which
 //                                        also refuses anything that isn't his dashboard page). The cards come first;
 //                                        the typed words above are the fallback.
 //   POST /api/agents/settings, /api/notify, /api/memory/seed: never from the sandbox (J's dashboard)
@@ -65,7 +65,7 @@ export function guardRoute(route: string, method: string, conv: string | null): 
     return infra ? need(`MERGE ${m[1]}`, `Merging ${m[1]} into main (it deploys ${c!.product})`) : null;
   }
   // Approve / Deny cards (approvals.ts): the sandbox may ask for one, never decide one (J's tap on the dashboard).
-  if (/^\/api\/approvals\/a_[0-9a-f]+\/(approve|deny)$/.test(route)) return 'Approving or denying is J\'s tap on the card in his dashboard, never Talk\'s, the PM\'s or an agent\'s.';
+  if (/^\/api\/approvals\/a_[0-9a-f]+\/(approve|deny|dismiss)$/.test(route)) return 'Approving, denying or closing a card is J\'s tap on the card in his dashboard, never Talk\'s, the PM\'s or an agent\'s.';
   if (route === '/api/agents/settings' || route === '/api/notify' || route === '/api/memory/seed') return `${route} is changed from Studio's dashboard by J, not from a sandboxed agent.`;
   if (route === '/api/pm/settings' && !conv) return 'PM settings change only from a Talk conversation, on J\'s word.';
   if (route === '/api/settings' && !conv) return 'Settings change from a Talk conversation (J\'s quoted yes for anything that raises costs) or on the dashboard.';

@@ -155,3 +155,76 @@ test('deny closes the card and tells the conversation; the Inbox shows cards but
   assert.ok(!(await ib.inbox()).some((x) => x.id === `approval:${a.id}`), 'gone from the Inbox');
   assert.ok(ib.recentAnswers().some((x) => x.id === a.id && x.by === 'J'), 'in "answered lately"');
 });
+
+test('× closes a card in the chat without deciding it: still pending, still in the Inbox, still answerable; never from Talk', async () => {
+  const conv = talk.startConversation('Dismiss');
+  const q = pm.askJ('Rename the shop?', { product: 'aptest', options: ['Yes', 'No'] });
+  const a = await ap.requestApproval('decision', q.id, {}, { by: 'Talk', conversation: conv.id });
+  const t = token(a.id);
+  const callers: Record<string, string>[] = [{ 'sec-fetch-site': 'same-origin', 'x-studio-click': '1', 'x-talk-conversation': conv.id }, { 'x-studio-click': '1' }, {}];
+  for (const h of callers) {
+    assert.throws(() => ap.dismissApproval(a.id, req(h)), (e: any) => e.status === 403, JSON.stringify(h));
+  }
+  assert.match(guardRoute(`/api/approvals/${a.id}/dismiss`, 'POST', conv.id)!, /J's tap/);
+  const told = talk.getConversation(conv.id)!.messages.length;
+  const d = ap.dismissApproval(a.id, jPage());
+  assert.equal(d.status, 'pending', 'closing is not a deny');
+  assert.ok(d.dismissed! > Date.now() - 5000);
+  assert.equal(d.decided_by, null);
+  assert.equal(rm.getQuestion(q.id)!.answer ?? null, null, 'nothing was answered');
+  assert.equal(talk.getConversation(conv.id)!.messages.length, told, 'Talk isn\'t told');
+  assert.ok(ap.listApprovals({ conversation: conv.id }).find((x) => x.id === a.id)!.dismissed, 'the chat knows it was closed');
+  assert.ok((await ib.inbox({ tokens: true })).some((x) => x.id === `approval:${a.id}`), 'still in the Inbox');
+  // J can still approve it from the Inbox, with the same token.
+  assert.equal((await ap.decideApproval(a.id, t, 'approve', jPage())).status, 'approved');
+});
+
+// The page's side (dashboard/approval.js), loaded the way the browser does, without a DOM.
+const vm = await import('node:vm');
+const page: any = vm.runInNewContext(`${fs.readFileSync(path.join(import.meta.dirname, '..', 'dashboard', 'approval.js'), 'utf8')}\napprovals`, {
+  esc: (s: unknown) => String(s ?? '').replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`),
+  ago: () => '1 min ago',
+});
+const card = (id: string, status: string, patch: Record<string, unknown> = {}) => ({
+  id, kind: 'merge', target: 'c_1', status, created: 1000, expires: Date.now() + 600_000, token: status === 'pending' ? 'tok' : undefined,
+  requested_by: 'Talk', decided_by: status === 'pending' || status === 'expired' || status === 'stale' ? null : 'J', decided_at: 2000, result: null, dismissed: null,
+  card: { title: 'Merge "Shop" into beta?', lines: ['Merges into beta.'], blockers: [], warnings: [], links: [], approve: 'Approve: merge into beta', deny: 'Deny' }, ...patch,
+});
+
+test('the page: approved, denied, expired and stale cards are one line without buttons; a waiting one has its buttons and × in the chat', () => {
+  for (const [status, label] of [['approved', 'Approved'], ['denied', 'Denied'], ['expired', 'Expired'], ['stale', 'Out of date']]) {
+    const h = page.html(card('a_1', status));
+    assert.match(h, /ap-line/, status);
+    assert.match(h, new RegExp(`${label}</span> <span class="ap-what">Merge &#34;Shop&#34; into beta</span>`), status);
+    assert.doesNotMatch(h, /data-apdecide|data-apdismiss|<ul>/, `${status}: no buttons, no details`);
+  }
+  const p = page.html(card('a_1', 'pending'), { chat: true });
+  assert.match(p, /data-apdecide="approve"/);
+  assert.match(p, /data-apdecide="deny"/);
+  assert.match(p, /data-apdismiss/);
+  assert.match(p, /data-guide="off"/, 'the guide can\'t press it');
+  assert.doesNotMatch(page.html(card('a_1', 'pending')), /data-apdismiss/, 'no × in the Inbox or the go-live dialog');
+});
+
+test('the page: cards sit in the chat where they were asked, one waiting card in full, closed ones hidden', () => {
+  const messages = [{ at: 500 }, { at: 1500 }, { at: 2500 }, { at: 3500 }];
+  const placed = page.place(messages, [
+    card('a_old', 'pending', { created: 1000 }),
+    card('a_done', 'approved', { created: 2000 }),
+    card('a_new', 'pending', { created: 3000 }),
+    card('a_shut', 'pending', { created: 3200, dismissed: 3300 }),
+  ]);
+  assert.deepEqual(placed.map((x: any) => x.after), [1, 2, 3], 'after the messages before each was asked; the closed one isn\'t shown');
+  assert.match(placed[0].html, /ap-line/, 'an older waiting card is a line');
+  assert.match(placed[0].html, /data-apshow/, 'that J can open');
+  assert.match(placed[1].html, /ap-line/, 'a decided one is a line');
+  assert.match(placed[2].html, /data-apdecide="approve"/, 'the newest waiting card is in full');
+  assert.equal(placed.filter((x: any) => /data-apdecide/.test(x.html)).length, 1, 'never stacked');
+});
+
+test('during a call the chat, with its cards, stays on screen (only the input row gives way to the call pane)', () => {
+  const css = fs.readFileSync(path.join(import.meta.dirname, '..', 'dashboard', 'style.css'), 'utf8');
+  const inCall = css.split('\n').filter((l) => /body\.in-call/.test(l) && /display:\s*none/.test(l));
+  assert.ok(inCall.length, 'the call rules are where this test looks');
+  for (const l of inCall) assert.doesNotMatch(l, /talk-log|\.approval|talk-main/, l);
+});

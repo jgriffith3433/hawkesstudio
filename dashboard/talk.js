@@ -78,19 +78,21 @@
     if (c.guide?.length) window.studioGuide?.offer(c.id, c.guide);
     const thinking = c.status === 'thinking';
     const cards = c.approvals ?? [];
-    const sig = `${c.id}|${c.title}|${c.messages.length}|${c.status}|${c.partial ?? ''}|${JSON.stringify(c.messages.at(-1)?.turn ?? null)}|${cards.map((a) => `${a.id}:${a.status}:${Math.round((a.expires - Date.now()) / 60000)}`).join(',')}`;
+    const sig = `${c.id}|${c.title}|${c.messages.length}|${c.status}|${c.partial ?? ''}|${JSON.stringify(c.messages.at(-1)?.turn ?? null)}|${cards.map((a) => `${a.id}:${a.status}:${a.dismissed ? 'x' : ''}:${Math.round((a.expires - Date.now()) / 60000)}`).join(',')}`;
     if (sig !== shown) {
       shown = sig;
       renderHead(c);
       const log = el('#talkLog');
       const atBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 80;
-      log.innerHTML = c.messages.map((m) => (m.role === 'tool'
+      // Approve / Deny cards Talk asked for in this conversation (pending, and decided in the last hour), in the flow
+      // where they were asked (approval.js place).
+      const at = new Map();
+      for (const p of approvals.place(c.messages, cards)) at.set(p.after, (at.get(p.after) ?? '') + p.html);
+      log.innerHTML = (at.get(0) ?? '') + c.messages.map((m, i) => (m.role === 'tool'
         ? m.tool === 'guide' ? `<div class="talk-tool guide">${esc(m.text)}</div>` : `<div class="talk-tool">⚙ ${esc(m.text)}</div>`
         : m.notice
           ? `<div class="talk-msg assistant notice"><span class="talk-who">Studio</span>${md(m.text)}</div>`
-          : `<div class="talk-msg ${m.role}">${m.role === 'user' ? (m.voice ? '<span class="talk-voice" title="Said on a call">🎙</span>' : '') + esc(m.text).replace(/\n/g, '<br>') + fileChips(m.files) : md(m.text)}</div>`) + (turnMark(m.turn) ?? '')).join('')
-        // Approve / Deny cards Talk asked for in this conversation (pending, and decided in the last hour).
-        + cards.map(approvals.html).join('')
+          : `<div class="talk-msg ${m.role}">${m.role === 'user' ? (m.voice ? '<span class="talk-voice" title="Said on a call">🎙</span>' : '') + esc(m.text).replace(/\n/g, '<br>') + fileChips(m.files) : md(m.text)}</div>`) + (turnMark(m.turn) ?? '') + (at.get(i + 1) ?? '')).join('')
         + (thinking && c.partial ? `<div class="talk-msg assistant streaming">${md(c.partial)}<span class="talk-caret"></span></div>` : '')
         + (thinking && !c.partial ? `<div class="talk-tool">${c.messages.at(-1)?.notice ? 'Studio asked Claude to explain the result…' : 'Claude is thinking…'}</div>` : '');
       if (atBottom || thinking) log.scrollTop = log.scrollHeight;

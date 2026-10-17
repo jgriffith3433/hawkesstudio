@@ -31,6 +31,8 @@ db.exec(`CREATE TABLE IF NOT EXISTS approvals (
   card TEXT NOT NULL, status TEXT NOT NULL, requested_by TEXT, conversation TEXT, created INTEGER NOT NULL,
   expires INTEGER NOT NULL, decided_by TEXT, decided_at INTEGER, result TEXT
 )`);
+// J's × on a card in the chat: hidden from the conversation, still pending (and answerable) in the Inbox.
+try { db.exec('ALTER TABLE approvals ADD COLUMN dismissed INTEGER'); } catch { /* already there */ }
 
 export const KINDS = ['merge', 'deploy', 'rollback', 'gpu', 'settings', 'decision'] as const;
 export type Kind = (typeof KINDS)[number];
@@ -42,7 +44,7 @@ export type Card = { title: string; lines: string[]; blockers: string[]; warning
 export type Approval = {
   id: string; kind: Kind; target: string; params: Record<string, any>; status: 'pending' | 'approving' | 'approved' | 'denied' | 'expired' | 'stale' | 'failed';
   card: Card; requested_by: string | null; conversation: string | null; created: number; expires: number;
-  decided_by: string | null; decided_at: number | null; result: string | null; token?: string;
+  decided_by: string | null; decided_at: number | null; result: string | null; dismissed: number | null; token?: string;
 };
 
 const toApproval = (r: any): Approval => ({ ...r, params: parse(r.params) ?? {}, card: parse(r.card) });
@@ -255,6 +257,20 @@ export async function decideApproval(id: string, token: string, decision: string
     throw e;
   }
   return getApproval(id)!;
+}
+
+/**
+ * J's × on a card in the Talk chat: the chat stops showing it while it waits; it stays pending in the Inbox, where he
+ * can still approve or deny it until it expires. Not a decision: nothing runs, nothing is recorded as denied, Talk isn't
+ * told. Only from J's page, like deciding (Talk can't hide his cards).
+ */
+export function dismissApproval(id: string, req: http.IncomingMessage) {
+  const why = notJClick(req);
+  if (why) throw new StudioError(`Only J closes a card, with a tap on it: ${why}.`, 403);
+  expire();
+  if (!row(id)) throw new StudioError(`No approval ${id}`, 404);
+  db.prepare(`UPDATE approvals SET dismissed = ? WHERE id = ? AND dismissed IS NULL`).run(Date.now(), id);
+  return getApproval(id, true)!;
 }
 
 const claim = (id: string, status: string, by: string) => Number(db.prepare(`UPDATE approvals SET status = ?, decided_by = ?, decided_at = ?, token = '' WHERE id = ? AND status = 'pending'`).run(status, by, Date.now(), id).changes) === 1;

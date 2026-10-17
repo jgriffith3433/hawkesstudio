@@ -317,8 +317,9 @@ const server = http.createServer(async (req, res) => {
         const by = await (await import('./inbox.ts')).actor(req, b.by);
         return send(res, 200, await ap.requestApproval(String(b.kind ?? ''), String(b.target ?? ''), { amount: b.amount, patch: b.patch }, { by, conversation: origin ?? (typeof b.conversation === 'string' && /^t_[0-9a-f]{6,32}$/.test(b.conversation) ? b.conversation : null) }).then((a) => ap.getApproval(a.id, jPage)));
       }
-      m = /^\/api\/approvals\/(a_[0-9a-f]+)(?:\/(approve|deny))?$/.exec(route);
+      m = /^\/api\/approvals\/(a_[0-9a-f]+)(?:\/(approve|deny|dismiss))?$/.exec(route);
       if (m && method === 'GET' && !m[2]) { const a = ap.getApproval(m[1], jPage); return a ? send(res, 200, a) : send(res, 404, { error: 'no such approval' }); }
+      if (m && method === 'POST' && m[2] === 'dismiss') return send(res, 200, ap.dismissApproval(m[1], req));
       if (m && method === 'POST' && m[2]) return send(res, 200, await ap.decideApproval(m[1], String((await readJson(req)).token ?? ''), m[2], req));
       return send(res, 404, { error: `No route ${method} ${route}` });
     }
