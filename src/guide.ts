@@ -19,7 +19,7 @@ export type GuideDo = (typeof GUIDE_ACTIONS)[number];
 /** The actions that work the page for J (only when he asked). */
 export const DRIVE: readonly string[] = ['click', 'type'];
 export const OPEN_KINDS = ['report', 'run', 'change', 'finding', 'playtest'];
-export const TABS = ['inbox', 'talk', 'today', 'ready', 'roadmap', 'report', 'playtests', 'backlog', 'changes', 'runs', 'costs', 'memory', 'settings'];
+export const TABS = ['inbox', 'talk', 'today', 'golive', 'ready', 'roadmap', 'report', 'playtests', 'backlog', 'changes', 'runs', 'costs', 'memory', 'settings'];
 /** The typed confirmations stay J's: never typed for him. */
 export const CONFIRM_WORDS = /\b(MERGE|DEPLOY|ROLLBACK)\b/;
 const MAX_ACTIONS = 8;
