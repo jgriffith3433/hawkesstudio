@@ -21,10 +21,10 @@ function convWith(text: string) {
   return c.id;
 }
 
-test('defaults: the browser voice, push to talk on a computer, hands-free on a phone, no barge-in', async () => {
+test('defaults: the browser voice, push to talk on a computer and a phone, no barge-in', async () => {
   const s = await allSettings();
   assert.equal(s.call.engine, 'browser');
-  assert.deepEqual(s.call.mode, { computer: 'push', phone: 'hands-free' });
+  assert.deepEqual(s.call.mode, { computer: 'push', phone: 'push' });
   assert.equal(s.call.bargeIn, false);
   assert.equal(s.call.saved, null);
   assert.ok(s.prices.elevenPerMinute > 0.1 && s.prices.elevenPerMinute < 0.2);
@@ -32,9 +32,9 @@ test('defaults: the browser voice, push to talk on a computer, hands-free on a p
 });
 
 test('call settings are saved in the database and validated', async () => {
-  const r = await saveSettings('call', { rate: 1.2, mode: { phone: 'push' }, engine: 'browser' }, { conversation: null });
+  const r = await saveSettings('call', { rate: 1.2, mode: { phone: 'hands-free' }, engine: 'browser' }, { conversation: null });
   assert.equal(r.rate, 1.2);
-  assert.deepEqual(r.mode, { computer: 'push', phone: 'push' });
+  assert.deepEqual(r.mode, { computer: 'push', phone: 'hands-free' });
   assert.ok(callSettings().saved);
   await assert.rejects(saveSettings('call', { rate: 3 }, { conversation: null }), /0\.8 to 1\.4/);
   await assert.rejects(saveSettings('call', { engine: 'openai' }, { conversation: null }), /kokoro \| browser \| eleven/);
