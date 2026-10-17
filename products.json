@@ -464,8 +464,7 @@
   },
   "repoSetup": {
     "$comment": "Run on the server after a repo is cloned or fast-forwarded (src/repos.ts), in the repo's folder. hawkes-assets: git keeps what the files are, S3 keeps the files (its README).",
-    "hawkes-assets": "npm ci --no-audit --no-fund --loglevel=error && node tools/sync.mjs pull",
-    "hawkes-video": "npm ci --no-audit --no-fund --loglevel=error"
+    "hawkes-assets": "npm ci --no-audit --no-fund --loglevel=error && node tools/sync.mjs pull"
   },
   "$comment_repos": "GitHub repo for each top-level folder (the server clones them into the same layout as C:\\Projects).",
   "previews": {
