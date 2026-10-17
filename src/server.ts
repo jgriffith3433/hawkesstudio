@@ -592,6 +592,8 @@ server.listen(PORT, '127.0.0.1', () => {
   // Queued go-lives and rollbacks carry on (ops.ts), and the event loop is watched for anything that blocks it.
   void import('./ops.ts').then((ops) => { ops.startLoopMonitor(); const n = ops.resumeOps(); if (n) console.log(`[studio] ${n} background operation(s) back in the queue after the restart`); });
   void import('./deploy.ts');
+  // The agent sandbox commits in its worktrees: every repo's and worktree's git folder is the agent group's (sandbox.ts).
+  void import('./sandbox.ts').then(({ shareAll }) => shareAll()).catch((e) => console.warn(`[sandbox] sharing git folders: ${e.message ?? e}`));
   const runs = resumeRuns();
   const changes = resumeChanges();
   // Pull requests J merged on GitHub: their changes are marked merged (agents.ts), every 5 minutes.

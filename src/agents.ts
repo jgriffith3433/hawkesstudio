@@ -200,6 +200,26 @@ function git(cwd: string, args: string[], timeoutMs = 10 * 60_000) {
   return { ok: r.status === 0, out: (r.stdout ?? '').trim(), err: (r.stderr ?? r.error?.message ?? '').trim() };
 }
 
+/** What an agent says when the sandbox's permissions refused its `git commit` (index.lock: Permission denied). */
+export const COMMIT_DENIED = /index\.lock|(commit|\.git)[^\n]{0,80}permission denied|permission denied[^\n]{0,80}(commit|\.git)|unable to (create|append|write)[^\n]*\.git/i;
+
+/**
+ * The safety net behind shareWorktree (sandbox.ts): an agent that finished but whose `git commit` was refused left its
+ * work uncommitted. Studio commits it as it is (its own hooks off), says so, and the change publishes as usual. Only
+ * when the agent said so and the tree has changes; the caller checked the worktree still links here (assertWorktree).
+ */
+async function commitForAgent(id: string, worktree: string, title: string, said: string) {
+  if (!COMMIT_DENIED.test(said) || !git(worktree, ['status', '--porcelain']).out) return false;
+  const add = await gitAsync(worktree, ['add', '-A']);
+  const commit = add.ok && await gitAsync(worktree, ['-c', 'core.hooksPath=/dev/null', 'commit', '--no-verify', '-m', `${title.slice(0, 72)}\n\nCommitted by Hawkes Studio: the agent's own git commit was refused (a permission error in the worktree's git folder).`]);
+  if (!add.ok || !commit || !commit.ok) {
+    addLog(id, `Studio couldn't commit the agent's work either: ${(add.ok ? commit && commit.err : add.err) ?? ''}`.slice(0, 300));
+    return false;
+  }
+  addLog(id, 'the agent couldn\'t commit (a permission error): Studio committed its work and publishes it');
+  return true;
+}
+
 /** The repo a product's fixes go to (its source repo), its folder and GitHub slug. */
 function repoFor(p: Product) {
   const top = p.repo.split('/')[0];
@@ -673,12 +693,13 @@ async function work(id: string, note?: string, answer?: string, resumed?: Phase 
           const w = git(repoDir, ['worktree', 'add', ...(has ? [] : ['-b']), ...(has ? [c.worktree, c.branch] : [c.branch, c.worktree, `origin/${c.base}`])]);
           if (!w.ok) throw new Error(`worktree failed: ${w.err}`);
         });
-        // The agent (sandbox user) commits here: its git folder must be the agent group's.
-        shareWorktree(c.worktree);
         // A warm start: node_modules from a checkout with the same lockfile (warm.ts), not a fresh npm ci.
         warmDeps(c.worktree, c.repo, (s) => addLog(id, s));
       lfsPull(c.worktree, (s) => addLog(id, s));
-      }
+      } else assertWorktree(c.worktree, repoDir);
+      // The agent (sandbox user) commits here: its git folder must be the agent group's, on every pass (a worktree made
+      // before, or files Studio's own git wrote there since).
+      shareWorktree(c.worktree);
       await writeBrief(c, p, findings, note);
       // A question from an earlier pass isn't asked again.
       fs.rmSync(path.join(c.worktree, '.hawkes', 'question.md'), { force: true });
@@ -704,11 +725,17 @@ async function work(id: string, note?: string, answer?: string, resumed?: Phase 
       assertWorktree(c.worktree, repoDir);
       const summaryFile = path.join(c.worktree, '.hawkes', 'summary.md');
       const summary = fs.existsSync(summaryFile) ? fs.readFileSync(summaryFile, 'utf8').trim() : ph.result ?? '';
-      const commits = git(c.worktree, ['log', '--format=%h %s', `origin/${c.base}..HEAD`]).out.split('\n').filter(Boolean);
-      const changedNow = git(c.worktree, ['rev-parse', 'HEAD']).out !== ph.before;
+      const listCommits = () => git(c.worktree, ['log', '--format=%h %s', `origin/${c.base}..HEAD`]).out.split('\n').filter(Boolean);
+      let commits = listCommits();
+      let changedNow = git(c.worktree, ['rev-parse', 'HEAD']).out !== ph.before;
       // The agent asked a question: the change waits ("needs answer"); Talk answers from what J decided, or asks J (pm.ts).
       const questionFile = path.join(c.worktree, '.hawkes', 'question.md');
       const question = fs.existsSync(questionFile) ? fs.readFileSync(questionFile, 'utf8').trim() : '';
+      // Its commit refused by a permission error: Studio commits the work (the safety net behind shareWorktree).
+      if (!question && (!commits.length || !changedNow) && await commitForAgent(id, c.worktree, c.title ?? id, `${ph.result ?? ''}\n${summary}`)) {
+        commits = listCommits();
+        changedNow = true;
+      }
       if (question) {
         update(id, { status: 'needs answer', detail: `the agent asks: ${question.split('\n')[0].slice(0, 200)}`, summary, commits, phase: null });
         addLog(id, `question: ${question.slice(0, 300)}`);
@@ -1113,7 +1140,6 @@ async function workInfra(id: string, note?: string, resumed?: Phase | null) {
           const has = git(repoDir, ['rev-parse', '--verify', '--quiet', `refs/heads/${c.branch}`]).ok;
           const w = await gitAsync(repoDir, ['worktree', 'add', ...(has ? [c.worktree, c.branch] : ['-b', c.branch, c.worktree, `origin/${c.base}`])]);
           if (!w.ok) throw new Error(`worktree failed: ${w.err}`);
-          shareWorktree(c.worktree);
           // A warm start: node_modules from a checkout with the same lockfile (warm.ts), not a fresh npm ci.
           warmDeps(c.worktree, c.repo, (s) => addLog(id, s));
       lfsPull(c.worktree, (s) => addLog(id, s));
@@ -1125,6 +1151,9 @@ async function workInfra(id: string, note?: string, resumed?: Phase | null) {
           addLog(id, m.ok ? `merged origin/${c.base} into the branch` : `merging origin/${c.base} conflicted; the agent works from the branch as it was`);
         }
       });
+      assertWorktree(c.worktree, repoDir);
+      // The agent commits here: its git folder must be the agent group's, on every pass (sandbox.ts).
+      shareWorktree(c.worktree);
       await npmCi(id, c.worktree);
       writeInfraBrief(c, t, note);
       save({ step: 'agent', before: git(c.worktree, ['rev-parse', 'HEAD']).out, proc: undefined });
@@ -1143,8 +1172,14 @@ async function workInfra(id: string, note?: string, resumed?: Phase | null) {
       assertWorktree(c.worktree, repoDir);
       const summaryFile = path.join(c.worktree, '.hawkes', 'summary.md');
       const summary = fs.existsSync(summaryFile) ? fs.readFileSync(summaryFile, 'utf8').trim() : ph.result ?? '';
-      const commits = git(c.worktree, ['log', '--format=%h %s', `origin/${c.base}..HEAD`]).out.split('\n').filter(Boolean);
-      const changedNow = git(c.worktree, ['rev-parse', 'HEAD']).out !== ph.before;
+      const listCommits = () => git(c.worktree, ['log', '--format=%h %s', `origin/${c.base}..HEAD`]).out.split('\n').filter(Boolean);
+      let commits = listCommits();
+      let changedNow = git(c.worktree, ['rev-parse', 'HEAD']).out !== ph.before;
+      // Its commit refused by a permission error: Studio commits the work (the safety net behind shareWorktree).
+      if ((!commits.length || !changedNow) && await commitForAgent(id, c.worktree, c.title ?? id, `${ph.result ?? ''}\n${summary}`)) {
+        commits = listCommits();
+        changedNow = true;
+      }
       if (!commits.length || (note && !changedNow)) {
         update(id, { status: 'failed', detail: 'the agent made no commit', summary, commits, phase: null });
         return;

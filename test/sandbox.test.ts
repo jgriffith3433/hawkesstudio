@@ -121,3 +121,65 @@ test('protected paths', () => {
   const bad = fast.protectedFiles([{ file: 'play/index.html', status: 'M' }, { file: 'Game/v12/a.unityweb', status: 'A' }, { file: 'Assets/x.png.meta', status: 'D' }, { file: 'src/a.ts', status: 'M' }, { file: '.env', status: 'A' }]);
   assert.deepEqual(bad, ['play/index.html', 'Game/v12/a.unityweb', 'Assets/x.png.meta (a deleted .meta)', '.env']);
 });
+
+test("a fresh agent worktree's git folder is the agent group's and group-writable, whatever Studio's umask", { skip: process.platform === 'win32' }, async () => {
+  const { shareRepo, shareWorktree, shareAll } = await import('../src/sandbox.ts');
+  const { COMMIT_DENIED } = await import('../src/agents.ts');
+  // The agent group here: the last group this user is in (on the server, hawkes-work).
+  const gid = Number(spawnSync('id', ['-G'], { encoding: 'utf8' }).stdout.trim().split(/\s+/).pop());
+  const r2 = path.join(process.env.STUDIO_PROJECTS!, 'shared');
+  git(tmp, 'clone', '--quiet', origin, r2);
+  // Studio (umask 022, as before) makes the worktree; nothing calls shareWorktree on it.
+  const studio = (cwd: string, cmd: string) => {
+    const r = spawnSync('sh', ['-c', `umask 022 && git -c user.name=Test -c user.email=t@example.com ${cmd}`], { cwd, encoding: 'utf8' });
+    assert.equal(r.status, 0, `${cmd}: ${r.stderr}`);
+  };
+  const shared = (p: string) => {
+    const st = fs.statSync(p);
+    assert.equal(st.gid, gid, `${p} is the agent group's`);
+    assert.ok(st.mode & 0o020, `${p} is group-writable`);
+    if (st.isDirectory()) assert.ok(st.mode & 0o2000, `${p} is setgid`);
+  };
+  shareRepo(r2, String(gid));
+  assert.equal(git(r2, 'config', 'core.sharedRepository'), 'group');
+  const wt = path.join(process.env.STUDIO_PROJECTS!, '.work', 'c_000000000001');
+  fs.mkdirSync(path.dirname(wt), { recursive: true });
+  studio(r2, `worktree add --quiet -b task/one ${wt} origin/main`);
+  const gitDir = path.join(r2, '.git', 'worktrees', 'c_000000000001');
+  // git (2.43) makes .git/worktrees/<name> itself 755 even in a shared repo: agents.ts shares it on every pass.
+  shared(path.join(r2, '.git', 'worktrees'));
+  for (const f of ['index', 'HEAD', 'logs', 'logs/HEAD']) shared(path.join(gitDir, f));
+  shareWorktree(wt, String(gid));
+  shared(gitDir);
+  // Studio's own git there later (a commit: index, HEAD, the reflog) keeps it shared.
+  fs.writeFileSync(path.join(wt, 'a.txt'), 'a\n');
+  studio(wt, 'add -A');
+  studio(wt, 'commit --quiet -m A');
+  for (const f of ['', 'index', 'HEAD', 'logs/HEAD']) shared(path.join(gitDir, f));
+  shared(path.join(r2, '.git', 'logs', 'refs', 'heads', 'task', 'one'));
+  // ...and what it didn't (COMMIT_EDITMSG, 644 under umask 022), the next pass's shareWorktree does.
+  shareWorktree(wt, String(gid));
+  shared(path.join(gitDir, 'COMMIT_EDITMSG'));
+  // The last worktree pruned, git deletes .git/worktrees; it comes back the agent group's, group-writable.
+  fs.rmSync(wt, { recursive: true, force: true });
+  git(r2, 'worktree', 'prune');
+  assert.equal(fs.existsSync(path.join(r2, '.git', 'worktrees')), false);
+  studio(r2, `worktree add --quiet -b task/two ${wt} origin/main`);
+  shared(path.join(r2, '.git', 'worktrees'));
+  shareWorktree(wt, String(gid));
+  for (const f of ['', 'index', 'HEAD']) shared(path.join(gitDir, f));
+  // A worktree made before any of this (a repo never shared): shareWorktree and the start-up sweep fix both.
+  const r3 = path.join(process.env.STUDIO_PROJECTS!, 'older');
+  git(tmp, 'clone', '--quiet', origin, r3);
+  const wt3 = path.join(process.env.STUDIO_PROJECTS!, '.work', 'c_000000000003');
+  studio(r3, `worktree add --quiet -b task/three ${wt3} origin/main`);
+  fs.chmodSync(path.join(r3, '.git', 'worktrees', 'c_000000000003'), 0o755);
+  await shareAll(String(gid));
+  for (const f of ['', 'index', 'HEAD']) shared(path.join(r3, '.git', 'worktrees', 'c_000000000003', f));
+  assert.equal(git(r3, 'config', 'core.sharedRepository'), 'group');
+  shareWorktree(wt3, String(gid));
+  // The safety net's trigger: what an agent says when its commit was refused, and not any "permission denied".
+  assert.match("git commit failed: Unable to create '/srv/hawkes/x/.git/worktrees/c_1/index.lock': Permission denied", COMMIT_DENIED);
+  assert.match('I couldn\'t commit: Permission denied on the git folder', COMMIT_DENIED);
+  assert.doesNotMatch('Playwright: permission denied for /proc/hawkes-no-browsers', COMMIT_DENIED);
+});
