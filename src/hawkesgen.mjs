@@ -77,6 +77,8 @@ export class HawkesGen {
     try {
       r = await fetch(`${this.url}/v1${path}`, { method, headers: h, body: payload, signal });
     } catch (e) {
+      // Only a network failure means Gen isn't there; anything else (a bad header, an aborted request) says what it was.
+      if (e?.name === 'AbortError' || !/fetch failed|ECONNREFUSED|ENOTFOUND|EAI_AGAIN|ETIMEDOUT|network/i.test(`${e?.message} ${e?.cause?.code ?? ''}`)) throw e;
       throw new HawkesGenError(`Can't reach Hawkes Gen at ${this.url} (${e.message}). Start it: C:\\Projects\\hawkesgen\\auto-start.bat`, { status: 0, kind: 'offline' });
     }
     if (raw) {
@@ -204,7 +206,8 @@ export class HawkesGen {
     return dest;
   }
 
-  /** Uploads a file (a path in Node, or bytes/Blob) and returns "blob:<sha256>" to use as an input. */
+  /** Uploads a file (a path in Node, or bytes/Blob) and returns "blob:<sha256>" to use as an input. The name only
+   * gives Gen the extension; it is sent as plain ASCII (an HTTP header can't carry "…" or accents). */
   async upload(fileOrBytes, filename) {
     let body = fileOrBytes;
     if (typeof fileOrBytes === 'string') {
@@ -212,7 +215,7 @@ export class HawkesGen {
       body = fs.readFileSync(fileOrBytes);
       filename ??= fileOrBytes;
     }
-    const r = await this.request('/blobs', { method: 'POST', body: body instanceof Uint8Array ? body : body, headers: { 'X-Filename': String(filename ?? 'upload.bin').split(/[\\/]/).pop() } });
+    const r = await this.request('/blobs', { method: 'POST', body: body instanceof Uint8Array ? body : body, headers: { 'X-Filename': String(filename ?? 'upload.bin').split(/[\\/]/).pop().replace(/[^ -~]/g, '_') } });
     return r.blob;
   }
 
