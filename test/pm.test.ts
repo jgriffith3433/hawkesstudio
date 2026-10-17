@@ -18,7 +18,10 @@ fs.writeFileSync(process.env.STUDIO_PRODUCTS, JSON.stringify({ products: [{
 }, {
   id: 'pmother', name: 'PM other', framing: 'test', engine: 'static', repo: 'other', site: 'other', live: 'http://127.0.0.1:9/',
   local: { serve: 'static', dir: 'other', port: 8798, path: '/' }, playtests: [{ scenario: 'smoke', where: 'local' }], story: [], about: 'A fixture.',
-}], repos: { other: 'x/other' }, infra: [{ id: 'pminfra', name: 'PM infra', repo: 'pminfra', slug: 'x/pminfra' }] }));
+}, ...['pmthird', 'pmfourth'].map((id) => ({
+  id, name: id, framing: 'test', engine: 'static', repo: id, site: id, live: 'http://127.0.0.1:9/',
+  local: { serve: 'static', dir: id, port: 8799, path: '/' }, playtests: [{ scenario: 'smoke', where: 'local' }], story: [], about: 'A fixture.',
+}))], repos: { other: 'x/other', pmthird: 'x/pmthird', pmfourth: 'x/pmfourth' }, infra: [{ id: 'pminfra', name: 'PM infra', repo: 'pminfra', slug: 'x/pminfra' }] }));
 
 const rm = await import('../src/roadmap.ts');
 const { gate, allMet } = await import('../src/acceptance.ts');
@@ -257,6 +260,72 @@ test('a task that throws in a tick does not stop other planned tasks from starti
     assert.match(rm.getTask(tb.id)!.note ?? '', /boom/, 'the failing task says why');
     db.exec('DROP TRIGGER boom');
   } finally {
+    if (token === undefined) delete process.env.GITHUB_TOKEN; else process.env.GITHUB_TOKEN = token;
+  }
+});
+
+test('priorities: old rows are normal, a task takes its item\'s unless it has its own', () => {
+  // Rows written before priorities existed (no priority given): items normal, tasks inherit.
+  db.prepare(`INSERT INTO items (id, product, title, status, ord, created) VALUES ('i_01d000000001', 'pmthird', 'Old item', 'idea', 0, ?)`).run(Date.now());
+  db.prepare(`INSERT INTO tasks (id, item, product, title, request, created) VALUES ('k_01d000000001', 'i_01d000000001', 'pmthird', 'Old task', 'x', ?)`).run(Date.now());
+  assert.equal(rm.getItem('i_01d000000001')!.priority, 'normal');
+  assert.equal(rm.getTask('k_01d000000001')!.priority, null);
+  assert.equal(rm.getTask('k_01d000000001')!.effective_priority, 'normal');
+  rm.updateItem('i_01d000000001', { priority: 'low' });
+  assert.equal(rm.getTask('k_01d000000001')!.effective_priority, 'low', "its item's");
+  rm.updateTask('k_01d000000001', { priority: 'high' });
+  assert.equal(rm.getTask('k_01d000000001')!.effective_priority, 'high', 'its own wins');
+  rm.updateTask('k_01d000000001', { priority: '' });
+  assert.equal(rm.getTask('k_01d000000001')!.effective_priority, 'low', "cleared: its item's again");
+  assert.throws(() => rm.updateItem('i_01d000000001', { priority: 'urgent' }), /priority/);
+  assert.throws(() => rm.updateItem('i_01d000000001', { priority: '' }), /priority/, "an item's can't be cleared");
+  rm.updateItem('i_01d000000001', { status: 'dropped' });
+});
+
+test('priorities: the highest effective priority starts first, then roadmap order', () => {
+  const lo = rm.addItem({ product: 'pmthird', title: 'Low', status: 'planned', priority: 'low', ord: -300 });
+  const no = rm.addItem({ product: 'pmthird', title: 'Normal', status: 'planned', ord: -299 });
+  const hi = rm.addItem({ product: 'pmfourth', title: 'High', status: 'planned', priority: 'high', ord: -298 });
+  const tl = rm.addTask({ item: lo.id, request: 'Low thing' });
+  const tn = rm.addTask({ item: no.id, request: 'Normal thing' });
+  const tnh = rm.addTask({ item: no.id, request: 'Urgent thing in a normal item', priority: 'high' });
+  const th = rm.addTask({ item: hi.id, request: 'High thing' });
+  const mine = new Set([tl.id, tn.id, tnh.id, th.id]);
+  assert.deepEqual(rm.startableTasks().filter((t) => mine.has(t.id)).map((t) => t.id), [tnh.id, th.id, tn.id, tl.id]);
+  for (const it of [lo, no, hi]) rm.updateItem(it.id, { status: 'dropped' });
+});
+
+test('priorities: a blocked high-priority task waits for an unblocked normal one, and starts once its blocker merges', async () => {
+  process.env.STUDIO_PM_TALK = 'off';
+  fs.writeFileSync(path.join(process.env.STUDIO_DATA!, 'agents.json'), JSON.stringify({ maxConcurrent: 0 }));
+  const token = process.env.GITHUB_TOKEN;
+  process.env.GITHUB_TOKEN = 'test';
+  const before = pm.pmSettings();
+  try {
+    const blocker = rm.addItem({ product: 'pmthird', title: 'Blocker', status: 'planned', ord: 500 });
+    const tb = rm.addTask({ item: blocker.id, request: 'The groundwork' });
+    const hi = rm.addItem({ product: 'pmfourth', title: 'Big thing', status: 'planned', priority: 'high', ord: -400 });
+    const thb = rm.addTask({ item: hi.id, request: 'Build on the groundwork', depends: [tb.id] });
+    const no = rm.addItem({ product: 'pmfourth', title: 'Small thing', status: 'planned', ord: -399 });
+    const tnu = rm.addTask({ item: no.id, request: 'Something independent' });
+    assert.ok(!rm.startableTasks().some((t) => t.id === thb.id), 'blocked: not startable');
+    const listed = rm.listItems({ product: 'pmfourth' }).flatMap((i) => i.tasks).find((t) => t.id === thb.id)!;
+    assert.deepEqual(listed.blocked_by.map((d) => d.title), ['The groundwork']);
+    // One free agent slot: the unblocked normal task takes it.
+    pm.savePmSettings({ maxConcurrent: pm.capacity().active + 1, maxStartsPerDay: 1000 });
+    await pm.startWork();
+    assert.equal(rm.getTask(tnu.id)!.status, 'working');
+    assert.equal(rm.getTask(thb.id)!.status, 'planned');
+    assert.match(rm.listDecisions({ action: 'start' }).find((d) => d.subject === tnu.id)!.detail!, /priority normal.*not blocked/);
+    // The blocker merges and the normal task's agent finishes: the high one starts.
+    rm.setTask(tb.id, { status: 'merged', merged_at: Date.now() });
+    db.prepare(`UPDATE changes SET status = 'merged' WHERE id = ?`).run(rm.getTask(tnu.id)!.change);
+    assert.deepEqual(rm.listItems({ product: 'pmfourth' }).flatMap((i) => i.tasks).find((t) => t.id === thb.id)!.blocked_by, []);
+    await pm.startWork();
+    assert.equal(rm.getTask(thb.id)!.status, 'working');
+    assert.match(rm.listDecisions({ action: 'start' }).find((d) => d.subject === thb.id)!.detail!, /priority high.*not blocked/);
+  } finally {
+    pm.savePmSettings({ maxConcurrent: before.maxConcurrent, maxStartsPerDay: before.maxStartsPerDay });
     if (token === undefined) delete process.env.GITHUB_TOKEN; else process.env.GITHUB_TOKEN = token;
   }
 });

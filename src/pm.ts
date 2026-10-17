@@ -243,12 +243,12 @@ async function checkOnBeta(t: Task) {
 }
 
 /** Starts (or restarts) the agent change of a task. */
-async function startTaskChange(t: Task, note?: string) {
+async function startTaskChange(t: Task, note?: string, why?: string) {
   const { startTask } = await changes();
   const request = `${t.request}${note ? `\n\nFrom the PM (an earlier attempt): ${note}` : ''}`;
   const id = startTask(t.product, request, { criteria: t.criteria, task: t.id, title: t.title, gpuBudget: t.gpu?.items?.length ? t.gpu.budget ?? 0 : null });
   setTask(t.id, { status: 'working', change: id, changes: [...t.changes, id], tries: t.tries + 1, merged_at: null });
-  logDecision('start', t.id, t.product, `started ${id} for "${t.title}" (try ${t.tries + 1})${note ? `: ${note.slice(0, 300)}` : ''}`, { kind: 'start', change: id, task: t.id });
+  logDecision('start', t.id, t.product, `started ${id} for "${t.title}" (try ${t.tries + 1}${why ? `; ${why}` : ''})${note ? `: ${note.slice(0, 300)}` : ''}`, { kind: 'start', change: id, task: t.id });
   return id;
 }
 
@@ -264,7 +264,7 @@ export function capacity() {
 
 const busy = (product: string) => Boolean(db.prepare(`SELECT id FROM changes WHERE product = ? AND status IN ('queued', 'working', 'verifying', 'revising')`).get(product));
 
-/** Starts what can start: roadmap tasks in order, then bugs, within the caps. Returns what it started. */
+/** Starts what can start: J's reports, then roadmap tasks (highest priority first, then in order), then bugs, within the caps. Returns what it started. */
 export async function startWork() {
   const s = pmSettings();
   if (!s.enabled || !process.env.GITHUB_TOKEN) return [];
@@ -305,12 +305,13 @@ export async function startWork() {
       continue;
     }
   }
+  // Not blocked (what they depend on is merged), highest effective priority first, then roadmap order (startableTasks).
   const waiting = startableTasks();
   for (const t of waiting) {
     if (cap.free <= 0) break;
     if (busy(t.product)) continue;
     try {
-      out.push(await startTaskChange(t));
+      out.push(await startTaskChange(t, undefined, `priority ${t.effective_priority}${t.priority ? '' : ' (its item\'s)'}, not blocked`));
     } catch (e: any) {
       setTask(t.id, { note: `couldn't start: ${e.message}`.slice(0, 500) });
       continue;

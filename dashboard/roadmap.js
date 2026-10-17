@@ -2,6 +2,10 @@
 // Uses app.js's helpers ($, esc, api, ago, file, view).
 const RM_PILL = { idea: '', planned: '', 'in progress': 'warn', 'on beta': 'ship', live: 'ship', done: 'ship', dropped: '', working: 'warn', 'needs answer': 'broken', review: 'warn', merged: 'warn', verified: 'ship', failed: 'failed' };
 const met = (m) => ({ yes: '✅', no: '❌' })[m] ?? '❔';
+// Priorities: the PM starts high first, then normal, then low (a task without its own takes its item's).
+const RM_RANK = { high: 0, normal: 1, low: 2 };
+const prioBadge = (p, inherited) => `<span class="pill ${p === 'high' ? 'broken' : ''}" title="Priority${inherited ? " (its item's)" : ''}: the PM starts high first">${p === 'high' ? '▲ ' : p === 'low' ? '▼ ' : ''}${esc(p)}${inherited ? '*' : ''}</span>`;
+const prioSelect = (kind, id, own) => `<select class="small" data-prio="${kind}" data-id="${id}" title="Change the priority">${kind === 'task' ? `<option value=""${own ? '' : ' selected'}>item's</option>` : ''}${['high', 'normal', 'low'].map((p) => `<option value="${p}"${own === p ? ' selected' : ''}>${p}</option>`).join('')}</select>`;
 let rmOpen = new Set();
 
 async function loadRoadmap() {
@@ -23,6 +27,11 @@ async function loadRoadmap() {
   $('#rmQuestions').innerHTML = pm.questions.length ? `<div class="meta" style="margin:4px 0 8px">${asked ? `<b>${asked} question(s) for you</b> are in your <a href="#inbox" onclick="show('inbox');return false">Inbox</a>.` : ''}${agents ? ` ${agents} agent question(s) the PM is answering.` : ''}</div>` : '';
   rmMilestones = r.milestones;
   $('#rmMilestones').innerHTML = r.milestones.length ? `<h3>Milestones</h3>${r.milestones.map(milestoneHtml).join('')}` : '';
+  // Sort by priority (stable: equal ones keep the roadmap order), items and the tasks in each.
+  if ($('#rmSort').value === 'priority') {
+    r.items.sort((a, b) => RM_RANK[a.priority] - RM_RANK[b.priority]);
+    for (const it of r.items) it.tasks.sort((a, b) => RM_RANK[a.effective_priority] - RM_RANK[b.effective_priority]);
+  }
   $('#rmList').innerHTML = r.items.length ? r.items.map(itemHtml).join('') : '<div class="empty">No roadmap items yet. Tell Talk what you want ("let\'s do X"): it proposes items and tasks with acceptance criteria, and adds them when you say yes.</div>';
   $('#rmLog').innerHTML = `<summary class="meta">PM decision log (${pm.log.length})</summary>${pm.log.map((d) => `<div class="test"><span class="name">${esc(d.action)}</span><span class="detail">${esc(d.detail ?? '')} · ${esc(d.product ?? '')} · ${ago(d.at)}${d.undone ? ' · <i>undone</i>' : ''}</span>${d.undo && !d.undone ? `<button class="small" data-undo="${d.id}">Undo</button>` : ''}</div>`).join('')}`;
   for (const id of rmOpen) loadThread(id);
@@ -45,13 +54,14 @@ function milestoneHtml(m) {
 function itemHtml(it) {
   const tasks = it.tasks.map((t) => {
     const checks = t.checks?.results?.length ? `<div class="meta">Checked on ${esc(t.checks.where)}: ${t.checks.results.map((k) => `<span title="${esc(k.evidence ?? '')}">${met(k.met)} ${esc(k.criterion)}</span>`).join(' · ')}${t.checks.video ? ` <a href="${file(t.checks.video)}" target="_blank" rel="noopener" data-video="${file(t.checks.video)}">▶</a>` : ''}</div>` : t.criteria.length ? `<div class="meta">Criteria: ${t.criteria.map(esc).join(' · ')}</div>` : '';
-    return `<div class="test" style="flex-wrap:wrap"><span class="pill ${RM_PILL[t.status] ?? ''}">${esc(t.status)}</span><span class="name">${esc(t.title)}</span>
-      <span class="detail">${esc(t.id)}${t.tries ? ` · try ${t.tries}` : ''}${t.change ? ` · ${esc(t.change)}` : ''}${t.pr ? ` · <a href="${esc(t.pr)}" target="_blank">PR</a>` : ''}${t.depends.length ? ` · after ${t.depends.map(esc).join(', ')}` : ''}${t.note ? ` · ${esc(t.note)}` : ''}</span>
-      <span>${['idea', 'failed'].includes(t.status) ? `<button class="small" data-task="${t.id}" data-st="planned">Plan</button>` : ''}${!['dropped', 'live', 'verified'].includes(t.status) ? `<button class="small" data-task="${t.id}" data-st="dropped">Drop</button>` : ''}<button class="small" data-thread="${t.id}">Thread</button></span>
+    const blocked = t.status === 'planned' && t.blocked_by?.length ? ` · <b style="color:var(--red)">blocked by ${t.blocked_by.map((d) => esc(d.title)).join(', ')}</b>` : '';
+    return `<div class="test" style="flex-wrap:wrap"><span class="pill ${RM_PILL[t.status] ?? ''}">${esc(t.status)}</span>${prioBadge(t.effective_priority, !t.priority)}<span class="name">${esc(t.title)}</span>
+      <span class="detail">${esc(t.id)}${t.tries ? ` · try ${t.tries}` : ''}${t.change ? ` · ${esc(t.change)}` : ''}${t.pr ? ` · <a href="${esc(t.pr)}" target="_blank">PR</a>` : ''}${t.depends.length ? ` · after ${t.depends.map(esc).join(', ')}` : ''}${blocked}${t.note ? ` · ${esc(t.note)}` : ''}</span>
+      <span>${prioSelect('task', t.id, t.priority)}${['idea', 'failed'].includes(t.status) ? `<button class="small" data-task="${t.id}" data-st="planned">Plan</button>` : ''}${!['dropped', 'live', 'verified'].includes(t.status) ? `<button class="small" data-task="${t.id}" data-st="dropped">Drop</button>` : ''}<button class="small" data-thread="${t.id}">Thread</button></span>
       <div style="flex-basis:100%">${checks}<div id="th-${t.id}"></div></div></div>`;
   }).join('');
   return `<div class="finding"><div style="flex:1">
-    <h4><span class="pill ${RM_PILL[it.status] ?? ''}">${esc(it.status)}</span> ${esc(it.title)} <span class="meta">${it.milestone ? `🏁 ${esc(rmMilestones.find((m) => m.id === it.milestone)?.title ?? it.milestone)} · ` : ''}${esc(it.product)} · ${esc(it.id)}${it.size ? ` · size ${esc(it.size)}` : ''} · ${ago(it.created)} by ${esc(it.by ?? '')}</span></h4>
+    <h4><span class="pill ${RM_PILL[it.status] ?? ''}">${esc(it.status)}</span> ${prioBadge(it.priority)} ${esc(it.title)} <span class="meta">${it.milestone ? `🏁 ${esc(rmMilestones.find((m) => m.id === it.milestone)?.title ?? it.milestone)} · ` : ''}${esc(it.product)} · ${esc(it.id)}${it.size ? ` · size ${esc(it.size)}` : ''} · ${ago(it.created)} by ${esc(it.by ?? '')}</span></h4>
     ${it.goal ? `<div class="summary">${esc(it.goal)}</div>` : ''}${it.why ? `<div class="meta">Why: ${esc(it.why)}</div>` : ''}
     ${it.criteria.length ? `<div class="meta">Done when: ${it.criteria.map(esc).join(' · ')}</div>` : ''}
     <div class="tests">${tasks || '<div class="meta">No tasks yet.</div>'}</div>
@@ -59,7 +69,7 @@ function itemHtml(it) {
   </div><div class="side"><div class="actions">
     ${it.status === 'idea' ? `<button class="small primary" data-item="${it.id}" data-st="planned" title="Its planned tasks start by themselves, in order">Plan it</button>` : ''}
     ${!['done', 'dropped'].includes(it.status) ? `<button class="small" data-item="${it.id}" data-st="${it.status === 'live' ? 'done' : 'idea'}">${it.status === 'live' ? 'Done' : 'Park'}</button><button class="small" data-item="${it.id}" data-st="dropped">Drop</button>` : ''}
-    <button class="small" data-addtask="${it.id}">Add task</button><button class="small" data-setms="${it.id}" title="Put it in a milestone">Milestone…</button><button class="small" data-thread="${it.id}">Thread</button>
+    ${prioSelect('item', it.id, it.priority)}<button class="small" data-addtask="${it.id}">Add task</button><button class="small" data-setms="${it.id}" title="Put it in a milestone">Milestone…</button><button class="small" data-thread="${it.id}">Thread</button>
   </div></div></div>`;
 }
 
@@ -71,7 +81,18 @@ async function loadThread(id) {
     <div class="actions"><input data-cin="${id}" placeholder="Add a comment (agents read this thread)" style="flex:1"><button class="small" data-csend="${id}">Add</button></div></div>`;
 }
 
-$('#rmProduct').onchange = $('#rmStatus').onchange = loadRoadmap;
+$('#rmProduct').onchange = $('#rmStatus').onchange = $('#rmSort').onchange = loadRoadmap;
+// The inline priority selects: an item's, or a task's own ('' = its item's).
+$('#roadmap').addEventListener('change', async (e) => {
+  const sel = e.target.closest('select[data-prio]');
+  if (!sel) return;
+  try {
+    await api(`/api/roadmap/${sel.dataset.prio === 'item' ? 'items' : 'tasks'}/${sel.dataset.id}`, { method: 'PATCH', body: { priority: sel.value } });
+  } catch (err) {
+    alert(err.message);
+  }
+  loadRoadmap();
+});
 $('#roadmap').addEventListener('click', async (e) => {
   const t = e.target.closest('button');
   if (!t) return;
@@ -172,4 +193,4 @@ function rmRefresh() {
 document.querySelectorAll('nav button[data-tab="roadmap"], nav button[data-tab="ready"]').forEach((b) => b.addEventListener('click', () => setTimeout(rmRefresh, 0)));
 rmRefresh();
 // Light polling while open (typing in an answer box isn't interrupted).
-setInterval(() => { if (location.hash === '#roadmap' && !document.activeElement?.matches?.('textarea, input')) rmRefresh(); }, 15000);
+setInterval(() => { if (location.hash === '#roadmap' && !document.activeElement?.matches?.('textarea, input, select[data-prio]')) rmRefresh(); }, 15000);
