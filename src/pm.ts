@@ -25,7 +25,7 @@ import { critical, criticalSync } from './drain.ts';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { db, J, parse } from './db.ts';
-import { DATA, PROJECTS, getProduct, isInfra, today, StudioError, betaPlaytestsOn } from './config.ts';
+import { DATA, PROJECTS, getProduct, getInfra, isInfra, today, StudioError, betaPlaytestsOn } from './config.ts';
 import {
   getTask, setTask, getItem, startableTasks, tasksAwaitingGpu, taskOfChange, addQuestion, listQuestions, getQuestion, setQuestion, addComment,
   logDecision, listDecisions, getDecision, markUndone, countToday, listItems, threadFor, milestonesToReach, markReached, getMilestone,
@@ -99,7 +99,7 @@ function git(cwd: string, args: string[]) {
   return { ok: r.status === 0, out: (r.stdout ?? '').trim(), err: (r.stderr ?? '').trim() };
 }
 const changes = () => import('./agents.ts');
-const name = (product: string) => { try { return getProduct(product).name; } catch { return product; } };
+const name = (product: string) => { try { return isInfra(product) ? getInfra(product).name : getProduct(product).name; } catch { return product; } };
 const ACTIVE = ['queued', 'working', 'verifying', 'revising'];
 
 /** The squash commit of a pull request on a branch of the repo (its title ends with "(#<pr>)"), if it's there. */
