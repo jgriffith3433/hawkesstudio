@@ -8,7 +8,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { spawn, type ChildProcess, type ChildProcessWithoutNullStreams, type SpawnOptions } from 'node:child_process';
+import { spawn, spawnSync, type ChildProcess, type ChildProcessWithoutNullStreams, type SpawnOptions } from 'node:child_process';
 import type http from 'node:http';
 import type net from 'node:net';
 import { PROJECTS } from './config.ts';
@@ -18,6 +18,27 @@ export const WRAPPER = '/usr/local/bin/hawkes-agent-run';
 /** The sandbox is on when the server has its user and wrapper (deploy/agent-sandbox.mjs) and nobody turned it off. */
 export function sandboxOn() {
   return process.platform === 'linux' && Boolean(process.env.HAWKES_AGENT_USER) && process.env.HAWKES_SANDBOX !== 'off' && fs.existsSync(WRAPPER);
+}
+
+/** The group the sandbox user shares with Studio (deploy/agent-sandbox.mjs): what agents may write is in it. */
+export const AGENT_GROUP = process.env.HAWKES_AGENT_GROUP || 'hawkes-work';
+
+/**
+ * Lets the sandbox user commit in a worktree Studio made for it: the worktree's git folder (<repo>/.git/worktrees/<name>,
+ * where index.lock and HEAD live) goes to the agent group, group-writable, setgid. Studio (user hawkes) creates it with
+ * the group of .git/worktrees, and git deletes and recreates that folder whenever the last worktree is pruned, so a
+ * one-time chgrp at setup doesn't last: on 2026-10-16 agents in breakingthrough, hawkesgen and YoobaLand finished their
+ * work and then couldn't commit (index.lock: Permission denied). Call it after every worktree an agent or Talk works in.
+ */
+export function shareWorktree(wt: string) {
+  if (!sandboxOn()) return;
+  const r = spawnSync('git', ['-C', wt, 'rev-parse', '--absolute-git-dir'], { encoding: 'utf8' });
+  const gitDir = (r.stdout ?? '').trim();
+  if (r.status !== 0 || !gitDir || !/[\\/]worktrees[\\/]/.test(gitDir)) return;
+  for (const [cmd, args] of [['chgrp', ['-R', AGENT_GROUP, gitDir]], ['chmod', ['-R', 'g+rwX', gitDir]], ['find', [gitDir, '-type', 'd', '-exec', 'chmod', 'g+s', '{}', '+']]] as const) {
+    const x = spawnSync(cmd, [...args], { encoding: 'utf8' });
+    if (x.status !== 0) console.warn(`[sandbox] ${cmd} on ${gitDir}: ${(x.stderr ?? '').trim().slice(0, 200)}`);
+  }
 }
 
 /**
@@ -33,6 +54,11 @@ export function sandboxEnv(env: NodeJS.ProcessEnv) {
   out.HOME = process.env.HAWKES_AGENT_HOME ?? `/srv/hawkes-agent`;
   // One npm cache for every agent, check and workspace (deploy/agent-sandbox.mjs makes it), so installs are offline-fast.
   if (process.env.STUDIO_NPM_CACHE) out.npm_config_cache = process.env.STUDIO_NPM_CACHE;
+  // No browser on the control server (J, 2026-10-17): agents' own headless Chrome (about 300 MB each, plus CPU) helped
+  // take Studio and Gen down. Playwright finds no browser here and can't download one; a browser check of a game is a
+  // playtest on the T4 (studio_playtest), asked for. The roles say so too (.claude/agents).
+  out.PLAYWRIGHT_BROWSERS_PATH = '/proc/hawkes-no-browsers';
+  out.PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD = '1';
   return out as NodeJS.ProcessEnv;
 }
 

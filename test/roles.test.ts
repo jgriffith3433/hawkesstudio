@@ -52,5 +52,8 @@ test('which role a change runs as', () => {
 
 test('the sandbox environment has no secrets but the Claude login', () => {
   const env = sandboxEnv({ PATH: '/usr/bin', GITHUB_TOKEN: 'x', AWS_ACCESS_KEY_ID: 'x', HAWKES_AWS_ROLE: '1', ELEVENLABS_API_KEY: 'x', HAWKESGEN_KEY: 'x', STUDIO_MCP_KEY: 'x', CLAUDE_CODE_OAUTH_TOKEN: 'tok', ANTHROPIC_API_KEY: 'k', TALK_CONVERSATION: 't_1' });
-  assert.deepEqual(Object.keys(env).sort(), ['CLAUDE_CODE_OAUTH_TOKEN', 'HOME', 'PATH', 'TALK_CONVERSATION']);
+  assert.deepEqual(Object.keys(env).sort(), ['CLAUDE_CODE_OAUTH_TOKEN', 'HOME', 'PATH', 'PLAYWRIGHT_BROWSERS_PATH', 'PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD', 'TALK_CONVERSATION']);
+  // No browser on the control server: Playwright finds none and can't download one (J, 2026-10-17).
+  assert.equal(env.PLAYWRIGHT_BROWSERS_PATH, '/proc/hawkes-no-browsers');
+  assert.equal(env.PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD, '1');
 });

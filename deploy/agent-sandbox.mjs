@@ -61,6 +61,10 @@ for g in "$P"/*/.git "$P"/*/*/.git; do
   [ -d "$g" ] || continue
   r=$(dirname "$g")
   sudo -u hawkes git -C "$r" config core.sharedRepository group
+  # worktrees/ may not exist yet (git deletes it when the last worktree is pruned): make it, so it's set up too. Git can
+  # still delete and remake it later, with .git's group; Studio puts each new agent worktree's git folder in the agent
+  # group itself (src/sandbox.ts shareWorktree), which is what keeps agents able to commit.
+  [ -d "$g/worktrees" ] || sudo -u hawkes mkdir "$g/worktrees"
   for sub in objects refs logs worktrees lfs; do
     [ -d "$g/$sub" ] || continue
     chgrp -R "$GROUP" "$g/$sub"; chmod -R g+rwX "$g/$sub"; find "$g/$sub" -type d -exec chmod g+s {} +

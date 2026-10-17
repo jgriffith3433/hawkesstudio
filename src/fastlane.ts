@@ -16,7 +16,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { PROJECTS, getProduct, isInfra, StudioError, type Product } from './config.ts';
 import { BETA, ensureBeta, git, gitAsync } from './beta.ts';
-import { spawnShell, assertWorktree } from './sandbox.ts';
+import { spawnShell, assertWorktree, shareWorktree } from './sandbox.ts';
 import { recordRun } from './memory.ts';
 import { warmDeps } from './warm.ts';
 
@@ -57,6 +57,8 @@ export async function workspace(productId: string) {
     if (!w.ok) throw new StudioError(`Couldn't make the workspace: ${w.err}`);
     warmDeps(dir, top(p));
   }
+  // Talk (the sandbox user) commits here: its git folder must be the agent group's (sandbox.ts shareWorktree).
+  shareWorktree(dir);
   assertWorktree(dir, repo);
   const dirty = git(dir, ['status', '--porcelain']).out;
   const ahead = git(dir, ['rev-list', '--count', `origin/${BETA}..HEAD`]).out;

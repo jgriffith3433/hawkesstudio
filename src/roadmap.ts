@@ -14,7 +14,7 @@
 // can make) and the PM decision log (every merge, won't-fix, start and answer Talk made, with undo where possible).
 
 import { db, newId, J, parse } from './db.ts';
-import { loadProducts, isInfra, StudioError } from './config.ts';
+import { loadProducts, isInfra, StudioError, betaPlaytestsOn } from './config.ts';
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS items (
@@ -54,14 +54,29 @@ db.exec(`
 for (const [table, col] of [['runs', 'pm_seen'], ['findings', 'item'], ['items', 'milestone'], ['findings', 'source'], ['findings', 'milestone'], ['findings', 'report'], ['tasks', 'gpu'], ['items', 'consumed']]) {
   try { db.exec(`ALTER TABLE ${table} ADD COLUMN ${col} TEXT`); } catch { /* already there */ }
 }
+// Priorities (high | normal | low): an item's is normal unless set (old rows too); a task's is null until set, and then
+// its item's applies (effectivePriority). The PM starts the highest first (pm.ts startWork).
+try { db.exec(`ALTER TABLE items ADD COLUMN priority TEXT NOT NULL DEFAULT 'normal'`); } catch { /* already there */ }
+try { db.exec('ALTER TABLE tasks ADD COLUMN priority TEXT'); } catch { /* already there */ }
 
 export const ITEM_STATUSES = ['idea', 'planned', 'in progress', 'on beta', 'live', 'done', 'dropped'];
 export const TASK_STATUSES = ['idea', 'planned', 'working', 'needs answer', 'review', 'merged', 'verified', 'live', 'failed', 'dropped'];
 export const SIZES = ['S', 'M', 'L'];
+export const PRIORITIES = ['high', 'normal', 'low'];
+const RANK: Record<string, number> = { high: 0, normal: 1, low: 2 };
+/** A priority from the API: one of PRIORITIES; for a task, '' or null clears it (its item's applies). */
+function priorityOf(v: unknown, task: boolean) {
+  if ((v === null || v === '') && task) return null;
+  const p = String(v ?? '').trim().toLowerCase();
+  if (!PRIORITIES.includes(p)) throw new StudioError(`priority must be ${PRIORITIES.join(', ')}${task ? " (or empty: the item's)" : ''}`);
+  return p;
+}
 
 export type Check = { criterion: string; met: 'yes' | 'no' | 'unclear'; evidence?: string };
 export type Task = {
   id: string; item: string; product: string; title: string; request: string; criteria: string[]; depends: string[]; status: string;
+  /** Its own priority, or null: its item's applies (effective_priority). */
+  priority: string | null; effective_priority: string;
   ord: number; change: string | null; changes: string[]; pr: string | null; tries: number;
   /** The latest acceptance results: where they were judged (the change's verification, or beta), per criterion. */
   checks: { where: 'change' | 'beta'; at: number; run?: string; change?: string; video?: string | null; verdict?: string; results: Check[] } | null;
@@ -76,11 +91,13 @@ export type Task = {
 export type TaskGpu = { items?: any[]; estimate?: { gpuHours: number; cost: number; withIdleTail: number; servers: number; wallMinutes: number; at: number; error?: string }; budget?: number | null; approvedBy?: string | null; approvedAt?: number | null };
 export type Item = {
   id: string; product: string; title: string; goal: string | null; why: string | null; criteria: string[]; size: string | null; status: string;
-  ord: number; origin: string | null; note: string | null; by: string | null; milestone?: string | null; consumed?: string | null; created: number; updated: number | null; tasks?: Task[];
+  priority: string; ord: number; origin: string | null; note: string | null; by: string | null; milestone?: string | null; consumed?: string | null; created: number; updated: number | null; tasks?: Task[];
 };
 
-const toItem = (r: any): Item => ({ ...r, criteria: parse(r.criteria) ?? [] });
-const toTask = (r: any): Task => ({ ...r, criteria: parse(r.criteria) ?? [], depends: parse(r.depends) ?? [], changes: parse(r.changes) ?? [], checks: parse(r.checks), gpu: parse(r.gpu) ?? null });
+const toItem = (r: any): Item => ({ ...r, priority: r.priority ?? 'normal', criteria: parse(r.criteria) ?? [] });
+// Task rows are read with their item's priority alongside (TASK_SELECT), for the effective priority.
+const TASK_SELECT = `SELECT t.*, COALESCE(t.priority, i.priority, 'normal') AS effective_priority FROM tasks t LEFT JOIN items i ON i.id = t.item`;
+const toTask = (r: any): Task => ({ ...r, priority: r.priority ?? null, effective_priority: r.effective_priority ?? r.priority ?? 'normal', criteria: parse(r.criteria) ?? [], depends: parse(r.depends) ?? [], changes: parse(r.changes) ?? [], checks: parse(r.checks), gpu: parse(r.gpu) ?? null });
 const list = (v: unknown) => (Array.isArray(v) ? v : typeof v === 'string' && v.trim() ? v.split('\n') : []).map((s) => String(s).replace(/^\s*[-*\d.)]+\s*/, '').trim()).filter(Boolean).slice(0, 20);
 const productId = (id: string) => {
   const p = loadProducts().find((x) => x.id === id || x.name.toLowerCase() === String(id).toLowerCase());
@@ -94,12 +111,12 @@ export const getItem = (id: string) => {
   return r ? { ...toItem(r), tasks: tasksOf(id) } : null;
 };
 export const getTask = (id: string) => {
-  const r = db.prepare('SELECT * FROM tasks WHERE id = ?').get(id);
+  const r = db.prepare(`${TASK_SELECT} WHERE t.id = ?`).get(id);
   return r ? toTask(r) : null;
 };
-export const tasksOf = (item: string) => (db.prepare('SELECT * FROM tasks WHERE item = ? ORDER BY ord, created').all(item) as any[]).map(toTask);
+export const tasksOf = (item: string) => (db.prepare(`${TASK_SELECT} WHERE t.item = ? ORDER BY t.ord, t.created`).all(item) as any[]).map(toTask);
 export const taskOfChange = (change: string) => {
-  const r = db.prepare(`SELECT * FROM tasks WHERE change = ? OR changes LIKE ?`).get(change, `%"${change}"%`);
+  const r = db.prepare(`${TASK_SELECT} WHERE t.change = ? OR t.changes LIKE ?`).get(change, `%"${change}"%`);
   return r ? toTask(r) : null;
 };
 
@@ -111,33 +128,39 @@ export function listItems(q: { product?: string; status?: string } = {}) {
   const st = q.status ? q.status.split(',').map((s) => s.trim()) : ITEM_STATUSES.filter((s) => s !== 'dropped');
   where.push(`status IN (${st.map(() => '?').join(',')})`);
   args.push(...st);
-  return (db.prepare(`SELECT * FROM items WHERE ${where.join(' AND ')} ORDER BY product, ord, created`).all(...args) as any[]).map((r) => ({ ...toItem(r), tasks: tasksOf(r.id) }));
+  return (db.prepare(`SELECT * FROM items WHERE ${where.join(' AND ')} ORDER BY product, ord, created`).all(...args) as any[]).map((r) => ({ ...toItem(r), tasks: tasksOf(r.id).map((t) => ({ ...t, blocked_by: blockedBy(t) })) }));
+}
+
+/** The tasks a task depends on that aren't merged into beta (or verified, or live) yet: while any are, it's blocked. */
+export function blockedBy(t: Pick<Task, 'depends'>) {
+  return t.depends.map((d) => getTask(d) ?? { id: d, title: d, status: 'missing' }).filter((d) => !['merged', 'verified', 'live'].includes(d.status)).map((d) => ({ id: d.id, title: d.title, status: d.status }));
 }
 
 const nextOrd = (table: 'items' | 'tasks', key: string, value: string) => ((db.prepare(`SELECT MAX(ord) AS m FROM ${table} WHERE ${key} = ?`).get(value) as any)?.m ?? 0) + 1;
 
-export function addItem(a: { product: string; title: string; goal?: string; why?: string; criteria?: unknown; size?: string; status?: string; origin?: string | null; by?: string; ord?: number; milestone?: string | null }) {
+export function addItem(a: { product: string; title: string; goal?: string; why?: string; criteria?: unknown; size?: string; status?: string; priority?: string; origin?: string | null; by?: string; ord?: number; milestone?: string | null }) {
   if (!a.title?.trim()) throw new StudioError('An item needs a title');
   const product = productId(a.product);
   const status = a.status ?? 'idea';
   if (!ITEM_STATUSES.includes(status)) throw new StudioError(`status must be one of ${ITEM_STATUSES.join(', ')}`);
   if (a.size && !SIZES.includes(a.size)) throw new StudioError('size must be S, M or L');
+  const priority = a.priority ? priorityOf(a.priority, false) : 'normal';
   const id = newId('i');
-  db.prepare('INSERT INTO items (id, product, title, goal, why, criteria, size, status, ord, origin, by, created) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
-    .run(id, product, a.title.trim().slice(0, 200), a.goal ?? null, a.why ?? null, J(list(a.criteria)), a.size ?? null, status, a.ord ?? nextOrd('items', 'product', product), a.origin ?? null, a.by ?? 'J', Date.now());
+  db.prepare('INSERT INTO items (id, product, title, goal, why, criteria, size, status, priority, ord, origin, by, created) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+    .run(id, product, a.title.trim().slice(0, 200), a.goal ?? null, a.why ?? null, J(list(a.criteria)), a.size ?? null, status, priority, a.ord ?? nextOrd('items', 'product', product), a.origin ?? null, a.by ?? 'J', Date.now());
   if (a.milestone) setItemMilestone(id, a.milestone);
   return getItem(id)!;
 }
 
-export function updateItem(id: string, patch: Partial<{ title: string; goal: string; why: string; criteria: unknown; size: string; status: string; ord: number; note: string; origin: string; milestone: string | null }>) {
+export function updateItem(id: string, patch: Partial<{ title: string; goal: string; why: string; criteria: unknown; size: string; status: string; priority: string; ord: number; note: string; origin: string; milestone: string | null }>) {
   const cur = getItem(id);
   if (!cur) throw new StudioError(`No item ${id}`, 404);
   // in progress, on beta and live follow the tasks (syncItem).
   if (patch.status && !['idea', 'planned', 'done', 'dropped'].includes(patch.status)) throw new StudioError(`An item's status follows its tasks; by hand it can be idea, planned, done or dropped`);
   if (patch.size && !SIZES.includes(patch.size)) throw new StudioError('size must be S, M or L');
-  const n = { ...cur, ...patch, criteria: patch.criteria !== undefined ? list(patch.criteria) : cur.criteria };
-  db.prepare('UPDATE items SET title = ?, goal = ?, why = ?, criteria = ?, size = ?, status = ?, ord = ?, note = ?, origin = ?, updated = ? WHERE id = ?')
-    .run(n.title, n.goal, n.why, J(n.criteria), n.size, n.status, n.ord, n.note, n.origin, Date.now(), id);
+  const n = { ...cur, ...patch, criteria: patch.criteria !== undefined ? list(patch.criteria) : cur.criteria, priority: patch.priority !== undefined ? priorityOf(patch.priority, false) : cur.priority };
+  db.prepare('UPDATE items SET title = ?, goal = ?, why = ?, criteria = ?, size = ?, status = ?, priority = ?, ord = ?, note = ?, origin = ?, updated = ? WHERE id = ?')
+    .run(n.title, n.goal, n.why, J(n.criteria), n.size, n.status, n.priority, n.ord, n.note, n.origin, Date.now(), id);
   if (patch.milestone !== undefined) setItemMilestone(id, patch.milestone);
   // Planned again (or for the first time) with tasks: consumed now.
   if (patch.status === 'planned') syncItem(id);
@@ -146,7 +169,7 @@ export function updateItem(id: string, patch: Partial<{ title: string; goal: str
   return getItem(id)!;
 }
 
-export function addTask(a: { item: string; title?: string; request: string; criteria?: unknown; depends?: unknown; status?: string; ord?: number; gpu?: unknown }) {
+export function addTask(a: { item: string; title?: string; request: string; criteria?: unknown; depends?: unknown; status?: string; priority?: string | null; ord?: number; gpu?: unknown }) {
   const item = getItem(a.item);
   if (!item) throw new StudioError(`No item ${a.item}`, 404);
   if (!a.request?.trim()) throw new StudioError('A task needs a request (what the agent should do)');
@@ -154,9 +177,10 @@ export function addTask(a: { item: string; title?: string; request: string; crit
   if (!['idea', 'planned'].includes(status)) throw new StudioError('A new task is idea or planned');
   const depends = list(a.depends);
   for (const d of depends) if (!getTask(d)) throw new StudioError(`depends: no task ${d}`);
+  const priority = a.priority === undefined ? null : priorityOf(a.priority, true);
   const id = newId('k');
-  db.prepare('INSERT INTO tasks (id, item, product, title, request, criteria, depends, status, ord, created) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
-    .run(id, item.id, item.product, (a.title ?? a.request.split('\n')[0]).trim().slice(0, 160), a.request.trim(), J(list(a.criteria)), J(depends), status, a.ord ?? nextOrd('tasks', 'item', item.id), Date.now());
+  db.prepare('INSERT INTO tasks (id, item, product, title, request, criteria, depends, status, priority, ord, created) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+    .run(id, item.id, item.product, (a.title ?? a.request.split('\n')[0]).trim().slice(0, 160), a.request.trim(), J(list(a.criteria)), J(depends), status, priority, a.ord ?? nextOrd('tasks', 'item', item.id), Date.now());
   const gpu = gpuItems(a.gpu);
   if (gpu) db.prepare('UPDATE tasks SET gpu = ? WHERE id = ?').run(J({ items: gpu }), id);
   syncItem(item.id);
@@ -164,7 +188,7 @@ export function addTask(a: { item: string; title?: string; request: string; crit
 }
 
 /** Fields Talk and J may set. Status changes the loop makes (working, review, merged, ...) go through setTask. */
-export function updateTask(id: string, patch: Partial<{ title: string; request: string; criteria: unknown; depends: unknown; status: string; ord: number; note: string; gpu: unknown }>) {
+export function updateTask(id: string, patch: Partial<{ title: string; request: string; criteria: unknown; depends: unknown; status: string; priority: string | null; ord: number; note: string; gpu: unknown }>) {
   const cur = getTask(id);
   if (!cur) throw new StudioError(`No task ${id}`, 404);
   // working, review, merged, verified and live come from the agents and the checks, never by hand.
@@ -176,6 +200,11 @@ export function updateTask(id: string, patch: Partial<{ title: string; request: 
     const items = gpuItems(patch.gpu);
     db.prepare('UPDATE tasks SET gpu = ? WHERE id = ?').run(items ? J({ ...(cur.gpu ?? {}), items, estimate: undefined }) : null, id);
     delete patch.gpu;
+  }
+  // Its own priority, or none (null or ''): its item's applies.
+  if (patch.priority !== undefined) {
+    db.prepare('UPDATE tasks SET priority = ? WHERE id = ?').run(priorityOf(patch.priority, true), id);
+    delete patch.priority;
   }
   return setTask(id, {
     ...patch, criteria: patch.criteria !== undefined ? list(patch.criteria) : undefined, depends: patch.depends !== undefined ? list(patch.depends) : undefined,
@@ -215,7 +244,9 @@ export function syncItem(id: string) {
     return getItem(id);
   }
   const all = (...s: string[]) => tasks.every((t) => s.includes(t.status));
-  const status = all('live') ? 'live' : all('verified', 'live') ? 'on beta' : tasks.some((t) => t.status !== 'planned') ? 'in progress' : it.status;
+  // With beta playtests on request (config.ts betaPlaytestsOn), a merged task is on beta: nothing will check it there.
+  const onBeta = betaPlaytestsOn() ? all('verified', 'live') : all('merged', 'verified', 'live');
+  const status = all('live') ? 'live' : onBeta ? 'on beta' : tasks.some((t) => t.status !== 'planned') ? 'in progress' : it.status;
   if (status !== it.status) db.prepare('UPDATE items SET status = ?, updated = ? WHERE id = ?').run(status, Date.now(), id);
   return getItem(id);
 }
@@ -223,12 +254,15 @@ export function syncItem(id: string) {
 /** Items whose planned tasks start: planned, in progress, or done because its tasks were created (consumed). */
 const WORKED = `(i.status IN ('planned', 'in progress') OR (i.status = 'done' AND i.consumed IS NOT NULL))`;
 
-/** Tasks that may start now, in roadmap order: planned, in a worked item (WORKED), with what they depend on merged. */
+/**
+ * Tasks that may start now: planned, in a worked item (WORKED), not blocked (what they depend on is merged) and
+ * GPU-cleared. Highest effective priority first (the task's own, else its item's), then roadmap order (item, task).
+ */
 export function startableTasks() {
-  const rows = (db.prepare(`SELECT t.* FROM tasks t JOIN items i ON i.id = t.item WHERE t.status = 'planned' AND ${WORKED}
-    ORDER BY i.ord, i.created, t.ord, t.created`).all() as any[]).map(toTask);
-  const done = (d: string) => ['merged', 'verified', 'live'].includes(getTask(d)?.status ?? '');
-  return rows.filter((t) => t.depends.every(done) && gpuCleared(t));
+  const rows = (db.prepare(`SELECT t.*, COALESCE(t.priority, i.priority, 'normal') AS effective_priority FROM tasks t JOIN items i ON i.id = t.item
+    WHERE t.status = 'planned' AND ${WORKED} ORDER BY i.ord, i.created, t.ord, t.created`).all() as any[]).map(toTask);
+  // Array sort is stable: equal priorities keep the roadmap order.
+  return rows.filter((t) => !blockedBy(t).length && gpuCleared(t)).sort((a, b) => (RANK[a.effective_priority] ?? 1) - (RANK[b.effective_priority] ?? 1));
 }
 
 // ------------------------------------------------------------- GPU budgets

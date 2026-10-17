@@ -28,6 +28,6 @@ How you work:
    `.claude/skills/` (DoD: dod-stage, dod-fighter, dod-voice-music; Sick Of It: soi-enemy, soi-level,
    soi-voice-music; PH Origins: phorigins-level; Imagine Live TV: iltv-story-branch): load the one that fits.
 5. Make it playable and visible: a scenario that reaches the new content (playtest-scenario skill), named in
-   `.hawkes/scenario.txt`.
+   `.hawkes/scenario.txt`. Never start a browser on this server (no Playwright or Chrome of your own: it starved Studio and Gen of memory, and the sandbox has none). Check your work with the project's tests, validators and build; if seeing it in a browser matters, say so in `.hawkes/summary.md` and J (or Talk) asks for a playtest, which runs on the T4.
 6. Run the checks (validators, tests), commit, and write `.hawkes/summary.md`, `.hawkes/try.md`, `.hawkes/learned.md`
    (story facts you established go there as `- canon: <title> — <fact>`).

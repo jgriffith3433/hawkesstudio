@@ -8,6 +8,20 @@ export const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '
 /** Every project lives next to Studio: C:\Projects. STUDIO_PROJECTS and STUDIO_DATA move them (tests use temp folders). */
 export const PROJECTS = process.env.STUDIO_PROJECTS ? path.resolve(process.env.STUDIO_PROJECTS) : path.resolve(ROOT, '..');
 export const DATA = process.env.STUDIO_DATA ? path.resolve(process.env.STUDIO_DATA) : path.join(ROOT, '.data');
+
+/**
+ * Whether beta is playtested after every change lands on it (agents' merges, Talk's fast lane, a Unity beta build,
+ * the PM's check of a merged task). Off by default (J, 2026-10-17): a beta playtest is something to ask for (studio beta,
+ * the Beta button, studio_playtest); the go-live check and the 5 AM daily run still play. Settings > Agents
+ * (agents.json betaPlaytests); read here so the pipeline, the PM and the roadmap agree without importing agents.ts.
+ */
+export function betaPlaytestsOn() {
+  try {
+    return JSON.parse(fs.readFileSync(path.join(DATA, 'agents.json'), 'utf8')).betaPlaytests === true;
+  } catch {
+    return false;
+  }
+}
 export const PORT = Number(process.env.STUDIO_PORT) || 8791;
 export const GEN_URL = process.env.HAWKESGEN_URL || 'http://127.0.0.1:8790';
 /** Where browsers reach Hawkes Gen (screenshots, videos): the public address on the server, else the same as GEN_URL. */

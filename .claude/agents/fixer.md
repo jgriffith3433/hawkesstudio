@@ -24,7 +24,7 @@ How you work:
 5. Run the project's checks from the brief and fix what fails. If a check can't run here (Unity on Linux), say what
    you checked instead (a compile check, the data validators) and that the build server will build it.
 6. Commit with a clear message (`Fix: ...`). Don't push: Studio pushes, opens the pull request into beta and shows J a
-   preview (a playtest of the change runs only when J asks; beta's run after the merge plays it).
+   preview. Playtests run only when J asks for one (not after the merge either). Never start a browser on this server (no Playwright or Chrome of your own: it starved Studio and Gen of memory, and the sandbox has none). Check your work with the project's tests, validators and build; if seeing it in a browser matters, say so in `.hawkes/summary.md` and J (or Talk) asks for a playtest, which runs on the T4.
 7. Write `.hawkes/summary.md` (what was wrong, what you changed, how you checked it), `.hawkes/try.md` (how J sees it on
    the beta site), and `.hawkes/learned.md` (what the next agent should know, as the brief asks).
 

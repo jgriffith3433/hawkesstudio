@@ -88,6 +88,12 @@ rough cost. With J's yes it adds them (`studio_roadmap_edit`, status `planned`);
 By hand an item is only idea, planned, done or dropped, and a task idea, planned (start, or retry from scratch) or
 dropped: everything else comes from the work and its checks.
 
+Priorities: items and tasks are `high`, `normal` (the default, and what older rows are) or `low`; a task without its
+own takes its item's. The PM starts planned tasks across all products highest priority first, then in roadmap order,
+skipping blocked ones (a task it depends on isn't merged yet), within its limits and after J's own reports; the decision
+log says why ("priority high, not blocked"). The Roadmap tab shows a badge with a small select to change it, "blocked
+by" on blocked tasks, and a sort by priority.
+
 **Consumed as soon as there's a task** (J, 2026-10-17: "just want the bug and roadmap item to be consumed as soon as we
 create tasks for them and assume that it's done afterwards"):
 - A planned item with tasks is `done` right away (`items.consumed`, a note "[done: tasks created <date>]";
