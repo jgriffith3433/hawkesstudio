@@ -42,7 +42,7 @@ So everything also shows in Gen's dashboard, library and usage. Studio adds:
 - `docs/agents.md`: **roles and skills in git** (`.claude/agents`, `.claude/skills`), a model per job, warm starts, Talk
   at full power in the agent sandbox, its fast lane to beta, and the guards (sandbox user, J's typed words, rulesets).
 - `docs/cloud.md`: **where it runs now** (hawkesgen.com, the AWS control server), how to deploy changes, secrets, logs.
-- `src/agents.ts`: agent workers. A finding goes to Claude Code on a branch cut from beta, then a pull request into beta, then a verification playtest, then J approves, which merges it into beta (not live). Studio and Gen themselves: a pull request into main, checked by CI and a smoke check (below).
+- `src/agents.ts`: agent workers. A finding goes to Claude Code on a branch cut from beta, then a pull request into beta (ready on the agent's own checks; a playtest of the change only on request: "Playtest this change", `studio_change` playtest), then J or the PM approves, which merges it into beta (not live); beta's run then playtests it. Studio and Gen themselves: a pull request into main, checked by CI and a smoke check (below).
 - `products.json`: every product, how to serve it locally, what to playtest, its story docs and deploy steps.
 - `CLAUDE.md` just imports this file.
 

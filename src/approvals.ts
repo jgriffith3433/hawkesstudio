@@ -73,7 +73,8 @@ async function describe(kind: Kind, target: string, params: Record<string, any>)
       const { gate } = await import('./acceptance.ts');
       const g = gate(c.verify, c.criteria);
       lines.push('Merges into beta: the beta site and a beta playtest follow. Nothing goes live.');
-      lines.push(`Verification: ${v.outcome ?? 'not playtested'} · review ${v.verdict ?? 'n/a'}`);
+      // Not being playtested is plain information (playtests of a change run only on request), never a warning.
+      lines.push(g.played ? `Playtest: ${v.outcome ?? '?'} · review ${v.verdict ?? 'n/a'}` : "Not playtested (the agent's checks passed; beta's playtest follows the merge).");
       if (!g.pass) warnings.push(`It doesn't pass its acceptance gate: ${g.why.join('; ').slice(0, 300)}`);
     }
     const links = [c.pr_url ? { label: `Pull request #${c.pr}`, url: c.pr_url } : null, v.preview ? { label: 'Preview', url: v.preview } : null].filter(Boolean) as Card['links'];

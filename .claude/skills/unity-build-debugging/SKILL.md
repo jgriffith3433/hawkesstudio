@@ -5,7 +5,7 @@ description: Diagnose a failed or wrong Unity WebGL build of a Hawkes game (Sick
 # Unity build debugging
 
 Unity games build on the **AWS build server** (Windows, us-east-1, about $0.77/hr, stops itself after 15 idle minutes)
-through Hawkes Gen's `unity.build` tool. Studio starts it (`studio_build`, a beta run, an agent change's verification);
+through Hawkes Gen's `unity.build` tool. Studio starts it (`studio_build`, a beta run, an agent change's playtest on request);
 nobody builds Unity on the control server (Linux) or on J's laptop (too slow).
 
 ## Read the failure first

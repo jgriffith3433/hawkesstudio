@@ -68,14 +68,14 @@ test('a failure is recorded with its reason; a restart puts a running one back, 
 test('gitAsync: listed while it runs, Studio keeps ticking, and the answer is right', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'studio-ops-git-'));
   spawnSync('git', ['init', '-q', dir]);
-  let ticks = 0;
-  const timer = setInterval(() => ticks++, 1);
-  const p = gitAsync(dir, ['status', '--porcelain']);
+  // No timing (a fast machine, CI, can finish `git status` before a 1 ms timer fires): what shows it doesn't block is
+  // that the call returns with git still running, listed and not answered yet (a synchronous git would be done).
+  let answered = false;
+  const p = gitAsync(dir, ['status', '--porcelain']).then((r) => { answered = true; return r; });
   assert.ok(ops.runningCommands().some((c) => /git status/.test(c.cmd)), 'not listed while running');
+  assert.equal(answered, false, 'it answered before returning: it blocked');
   const r = await p;
-  clearInterval(timer);
   assert.equal(r.ok, true);
-  assert.ok(ticks > 0, 'the event loop never ran while git did');
   assert.ok(!ops.runningCommands().some((c) => /git status/.test(c.cmd)), 'still listed after it ended');
   const bad = await gitAsync(dir, ['rev-parse', '--verify', 'no-such-ref']);
   assert.equal(bad.ok, false);

@@ -11,7 +11,8 @@
 //      triage. Claude acts through the studio_pm tools: merges into beta what passed its criteria, sends failures back
 //      with specific notes (3 tries, then J), answers agents from what J decided, triages the backlog
 //   4. applies the defaults to whatever the PM turn left (or when no turn could run): merge if the gate passes (the
-//      change was playtested, not "broken", no criterion failed), else revise with the unmet criteria; after 3 tries,
+//      agent's checks passed and nothing contradicts the canon; a change is playtested only on request, and then its
+//      playtest must not fail), else revise with what failed; beta's run judges the criteria after the merge; after 3 tries,
 //      or an agent question nobody answered, J is asked
 //
 // Only real decisions reach J (askJ): direction, money, something still failing after 3 tries, anything touching
@@ -325,7 +326,10 @@ const waitingOnJ = (c: any) => listQuestions('open,asked J').some((q) => q.kind 
 /** When the PM loop first ran here: it only takes over work from then on. */
 export const pmSince = () => state().since ?? Date.now();
 
-/** Merges a ready change into beta for the PM, when delegated merges are on and it passes its gate. */
+/**
+ * Merges a ready change into beta for the PM, when delegated merges are on and it passes its gate. A change needs no
+ * playtest for that (its agent's checks passed): beta's own run after the push playtests it and judges the criteria.
+ */
 export async function pmMerge(changeId: string, why = '', by = 'Talk (PM)') {
   const s = pmSettings();
   const { getChange, approve } = await changes();
@@ -383,7 +387,7 @@ async function defaultReview(changeId: string) {
   }
   if (g.pass) return; // Delegated merges off: J approves.
   const v = c.verify ?? {};
-  const note = [`The verification playtest didn't pass: ${g.why.join('; ')}.`, v.summary ? `The review said: ${String(v.summary).slice(0, 800)}` : '', ...(v.findings ?? []).slice(0, 5).map((f: any) => `- [${f.severity}] ${f.title}: ${f.detail ?? ''}`)].filter(Boolean).join('\n');
+  const note = [`It doesn't pass its checks: ${g.why.join('; ')}.`, v.summary ? `The review said: ${String(v.summary).slice(0, 800)}` : '', ...(v.findings ?? []).slice(0, 5).map((f: any) => `- [${f.severity}] ${f.title}: ${f.detail ?? ''}`)].filter(Boolean).join('\n');
   await pmRevise(changeId, note, 'Studio PM (default)').catch((e) => console.warn(`[pm] revise ${changeId}: ${e.message}`));
 }
 
@@ -673,10 +677,12 @@ J's Inbox: ${inbox ?? 'empty'}.
 Limits now: ${cap.active} agents working (at most ${s.maxConcurrent}), ${cap.started} of ${s.maxStartsPerDay} starts used today, ${s.maxTries} tries per task. Delegated merges into beta: ${s.delegatedMerges ? 'ON' : 'OFF (J approves merges)'}.
 
 Do, with the studio_pm, studio_roadmap and studio tools:
-1. Review each ready change (studio_change shows its verification: playtest outcome, review verdict and summary, the
-   per-criterion results, video, preview). Merge it into beta (studio_pm merge) when it does what its task asks and
-   meets its criteria; "unclear" criteria are judged again on beta. Otherwise send it back (studio_pm revise) with
-   specific notes: which criterion failed, what the review saw, what to change. After ${s.maxTries} tries it goes to J.
+1. Review each ready change (studio_change: the agent's summary, commits, diff size, preview; ready means its own checks
+   passed and the pull request is open). Changes aren't playtested automatically: merge one into beta (studio_pm merge)
+   when its summary and diff do what its task asks; beta's own run after the merge playtests it and judges the criteria
+   (a miss there starts a follow-up). Ask for a playtest of the change first (studio_change playtest) only when it's
+   risky or unclear and a playtest would settle it. A change that was playtested and failed: send it back (studio_pm
+   revise) with specific notes (what failed, what the review saw, what to change). After ${s.maxTries} tries it goes to J.
 2. Answer agent questions (studio_pm answer) from what J already decided: the roadmap item's goal, why and criteria,
    the thread (studio_comments), earlier answers. Only a real direction choice goes to J (studio_pm ask_j).
 3. Daily turn and after the daily run: triage the backlog (studio_backlog). Merge duplicates (studio_pm triage

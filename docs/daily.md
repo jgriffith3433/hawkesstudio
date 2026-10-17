@@ -52,7 +52,7 @@ An uncapped reviewer with no memory finds new polish forever. So (Hawkes Gen `pl
   | Daily, local (beta) and live phone | `full` | new bugs and blockers; polish and ideas to the ideas list |
   | Daily, live desktop | `regression` | regressions and blockers |
   | Beta run after a merge, one-off local playtest (`studio_playtest`) | `verify` | regressions and blockers |
-  | Agent verification (`verifyChange`) | `verify` | nothing (shown on the change: verdict, changeWorked, known) |
+  | A change's playtest, on request (`playtestChange`) | `verify` | nothing (shown on the change: verdict, changeWorked, known) |
   | Live check after going live, one-off live playtest | `regression` | regressions and blockers |
 
   `studio_playtest` / `studio playtest --review-mode full` asks for a full review by hand.
@@ -87,12 +87,21 @@ By hand an item is only idea, planned, done or dropped, and a task idea, planned
 dropped: everything else comes from the work and its checks.
 
 **3. Acceptance, not just merged.** Each task's criteria go into its agent's brief. Where the game has the playtest
-contract, the agent adds or extends a scenario that plays to them and names it in `.hawkes/scenario.txt`; Studio's
-verification playtest plays that scenario, the review judges the change, and each criterion is judged **yes / no /
-unclear** with evidence (Hawkes Gen's review when it judges `criteria`, else a Claude call over the review's frames, the
-playtest's events and log: about a cent). The agent also writes `.hawkes/try.md` (how J tries it). After the merge,
-beta's run plays the same scenario and judges the criteria again: the task is `verified` only when every one is met on
-beta. A criterion missed on beta starts a follow-up change on top of beta (it counts as a try).
+contract, the agent adds or extends a scenario that plays to them and names it in `.hawkes/scenario.txt`. The agent also
+writes `.hawkes/try.md` (how J tries it). The change is **not playtested automatically**: it is ready once the agent's
+own checks pass and its pull request is open (J decided, 2026-10-16: a playtest is something he asks for, not a gate).
+After the merge, beta's run plays that scenario and each criterion is judged **yes / no / unclear** with evidence
+(Hawkes Gen's review when it judges `criteria`, else a Claude call over the review's frames, the playtest's events and
+log: about a cent): the task is `verified` only when every one is met on beta. A criterion missed on beta starts a
+follow-up change on top of beta (it counts as a try).
+
+**A change's playtest, on request.** "Playtest this change" on the change (Changes tab), or Talk's `studio_change { id,
+action: "playtest" }` (`POST /api/changes/<id>/playtest`, `playtestChange` in agents.ts): Unity builds the branch on
+the build server first; then the change's scenario is played on its version with a video and a `verify` review, and a
+task's criteria are judged too. The change is `verifying` meanwhile (it carries on after a restart) and ready again with
+the results; the result goes back to the Talk conversation that asked. A playtest that can't run (no build, the page
+server didn't start) never fails the change: it says so on it. Not being playtested is plain information on Approve
+cards and in the Inbox, never a blocker or a warning.
 
 **4. The PM loop** (`src/pm.ts`, on the server; `STUDIO_PM=on` elsewhere). Every minute and right after anything finishes:
 - keeps task and item statuses current (from changes, beta checks and go lives)
@@ -106,8 +115,9 @@ beta. A criterion missed on beta starts a follow-up change on top of beta (it co
   J decided, triages the backlog (duplicates merged, polish below the bar won't-fix with a note, bugs linked to their
   roadmap item), reorders the roadmap.
 - applies the **defaults** to whatever the turn left (or after `graceMinutes`, 15, with no turn): merge if the change
-  passes its **gate** (it was playtested, the review didn't call it broken, no criterion is "no"; "unclear" ones are
-  judged again on beta), else revise with the failures; a failed change restarts with what went wrong; an agent
+  passes its **gate** (the agent's checks passed and nothing contradicts the canon; when it was playtested on
+  request, the playtest didn't fail, the review didn't call it broken and no criterion is "no"; not being playtested is
+  fine: beta's run judges the criteria), else revise with the failures; a failed change restarts with what went wrong; an agent
   question nobody answered goes to J.
 - The PM reviews roadmap tasks' changes and finding fixes. J's own requests (studio_task without a task), and every
   Studio and Gen change, stay J's to approve.
@@ -357,7 +367,7 @@ own yes from that conversation. The notification topic is changed only on the da
 3. Claude starts one session per product (or per fix). Each one:
    - reads the finding, its screenshots and the project's AGENTS.md
    - fixes it
-   - runs `studio_playtest` on the scenario to verify
+   - runs `studio_playtest` on the scenario to verify, when it's worth it (agent changes are playtested only on request)
    - marks the finding `fixed` (`studio_update_finding`)
 4. J approves agent changes into beta (Changes tab, or "approve it" in chat). Beta's site, build and a playtest follow.
 5. When beta looks right, J says "go live with Sick Of It". Claude shows `studio_deploy_plan` and puts an Approve card
@@ -377,7 +387,9 @@ words are the fallback.
   games). Studio makes it from main the first time an agent starts there. Pushing beta deploys nothing.
 - **Agent changes** are branches cut from beta, with pull requests into beta. Approving one merges it into beta; Studio
   then commits beta's pre-deploy build, builds Unity beta, rebuilds the beta site and playtests it (`studio beta <p>`
-  does the same by hand).
+  does the same by hand). The change itself is playtested only when J asks ("Playtest this change"). A pull request
+  merged outside Studio (J merging on GitHub) is noticed within about 5 minutes (`syncMergedOutside`): the change is
+  marked merged (no Approve card left) and beta's watcher plays beta as after any push.
 - **The beta site** is `https://<sub>.hawkesgen.com/` (Studio's login). Each agent change also has
   `https://<sub>.hawkesgen.com/c/<id>/` until it's approved or closed. Unity's beta site is the beta build from its own
   website copy (`.work/beta/<product>-site`).

@@ -177,7 +177,7 @@ after(async () => {
 
 await startStudio();
 
-test('an agent change carries on through restarts: its agent keeps working, its build is waited for again', { timeout: 120_000 }, async () => {
+test('an agent change carries on through restarts: its agent keeps working; a playtest asked for waits for the same build', { timeout: 150_000 }, async () => {
   held.add('unity.build');
   const { change } = await api('/api/changes', { product: 'game', request: 'Make the start button bigger' });
   assert.match(change, /^c_/);
@@ -189,26 +189,36 @@ test('an agent change carries on through restarts: its agent keeps working, its 
 
   // Restart while the agent works (it takes 5 s): it isn't started again; its result is read when it ends.
   await restartStudio();
-  await until(() => jobsOf('unity.build').length === 1, 60_000, 'the build to be submitted');
+  let last: any = null;
+  const ready = (what: string) => until(async () => (last = await api(`/api/changes/${change}`)).status === 'ready', 60_000, what)
+    .catch((e) => { throw new Error(`${e.message}\n--- the change ---\n${last?.status}: ${last?.detail}\n${last?.log?.slice(-25).join('\n')}`); });
+  // Ready on the agent's own checks and its pull request: no build, playtest or review unless asked for.
+  await ready('the change to be ready without a playtest');
+  let c = await api(`/api/changes/${change}`);
   assert.equal(logged().filter((l) => l.agent).length, 1, 'the agent ran once');
   assert.equal(logged().filter((l) => l.agentDone).length, 1);
-  let c = await api(`/api/changes/${change}`);
-  assert.equal(c.status, 'verifying');
   assert.equal(prs.length, 1, 'one pull request');
   assert.ok(c.log.some((l: string) => /reattached to hawkes-agent-/.test(l)), 'it says it reattached');
   assert.equal(c.cost, 0.25, 'the pass is counted once');
+  assert.equal(jobsOf('unity.build').length, 0, 'not built');
+  assert.equal(jobsOf('playtest.run').length, 0, 'not playtested');
+  assert.match(c.detail, /not playtested/);
+  assert.ok(c.verify.sha, 'the checked commit is on record (approve merges exactly it)');
 
+  // J asks for a playtest: the branch is built (Unity), then played and reviewed.
+  const asked = await api(`/api/changes/${change}/playtest`, { by: 'J' });
+  assert.equal(asked.status, 'verifying');
+  await until(() => jobsOf('unity.build').length === 1, 30_000, 'the build to be submitted');
   // Restart while the change waits on its build: the same Gen job is waited for, not a second build.
   await restartStudio();
   await sleep(2000);
+  assert.equal((await api(`/api/changes/${change}`)).status, 'verifying');
   assert.equal(jobsOf('unity.build').length, 1, 'not built again');
   release('unity.build');
-  let last: any = null;
-  await until(async () => (last = await api(`/api/changes/${change}`)).status === 'ready', 60_000, 'the change to be ready')
-    .catch((e) => { throw new Error(`${e.message}\n--- the change ---\n${last?.status}: ${last?.detail}\n${last?.log?.slice(-25).join('\n')}`); });
+  await ready('the change to be ready after its playtest');
   c = await api(`/api/changes/${change}`);
   assert.equal(jobsOf('unity.build').length, 1);
-  assert.equal(jobsOf('playtest.run').length, 1, 'one verification playtest');
+  assert.equal(jobsOf('playtest.run').length, 1, 'one playtest');
   assert.equal(jobsOf('playtest.review').length, 1, 'one review');
   assert.equal(c.verify.outcome, 'passed');
   assert.equal(c.verify.verdict, 'ship');

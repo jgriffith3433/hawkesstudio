@@ -129,6 +129,13 @@ test('a card goes stale when its target changes: a revised change, a setting cha
   assert.equal(await status(ap.decideApproval(e.id, token(e.id), 'approve', jPage())), 409);
 });
 
+test('a change that was not playtested: plain information on its merge card, no blocker or warning', async () => {
+  change('c_aaaaaaaaaaa3', { verify: JSON.stringify({ sha: 'ccccccc3', preview: null }) });
+  const a = await ap.requestApproval('merge', 'c_aaaaaaaaaaa3');
+  assert.deepEqual([a.card.blockers, a.card.warnings], [[], []]);
+  assert.match(a.card.lines.join(' '), /Not playtested/);
+});
+
 test('deny closes the card and tells the conversation; the Inbox shows cards but can\'t answer them', async () => {
   const conv = talk.startConversation('Approvals');
   const q = pm.askJ('Raise the shop prices?', { product: 'aptest', options: ['Yes', 'No'] });

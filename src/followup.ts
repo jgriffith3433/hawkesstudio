@@ -52,7 +52,11 @@ export function changeNotice(c: any) {
   if (c.status === 'failed') lines.push(`Why: ${cut(c.detail, 400)}`);
   if (c.status === 'ready' && v.kind === 'infra') lines.push(`Checks: ${v.outcome} (${cut(v.summary, 400)})`);
   else if (c.status === 'ready') {
-    lines.push(`Verification playtest: ${v.outcome ?? 'not played'}${v.verdict ? `, review verdict ${v.verdict}` : ''}${v.error ? ` (${cut(v.error, 200)})` : ''}.`);
+    // Playtests of a change run only on request (agents.ts playtestChange): without one, it's ready on the agent's checks.
+    const played = Boolean(v.playtest || (v.outcome && v.outcome !== 'not played'));
+    lines.push(played
+      ? `Playtest: ${v.outcome}${v.verdict ? `, review verdict ${v.verdict}` : ''}${v.error ? ` (${cut(v.error, 200)})` : ''}.`
+      : `Not playtested (a playtest runs only when asked for: studio_change { action: "playtest" })${v.error ? `; the last one asked for couldn't run: ${cut(v.error, 200)}` : ''}. Its criteria are judged by beta's playtest after the merge.`);
     if (v.summary) lines.push(`Review: ${cut(v.summary, 600)}`);
     if (v.build) lines.push(`Build: ${v.build.ok ? `Game/v${v.build.version ?? '?'} in ${v.build.minutes ?? '?'} min` : `failed: ${cut(v.build.error, 200)}`}`);
     if (v.findings?.length) lines.push(`Review findings: ${v.findings.slice(0, 4).map((f: any) => `[${f.severity}] ${f.title}`).join('; ')}`);
@@ -60,8 +64,8 @@ export function changeNotice(c: any) {
   if (c.summary) lines.push(`The agent's summary: ${cut(c.summary, 900)}`);
   if (c.pr_url) lines.push(`Pull request: ${c.pr_url}`);
   if (v.preview) lines.push(`Preview: ${v.preview}`);
-  if (v.video) lines.push(`Video of the verification playtest: ${media(v.video)}`);
-  lines.push(`In Studio (verification, review, log): ${PUBLIC_URL}/#changes/${c.id}`);
+  if (v.video) lines.push(`Video of the playtest: ${media(v.video)}`);
+  lines.push(`In Studio (playtest, review, log): ${PUBLIC_URL}/#changes/${c.id}`);
   if (c.status === 'ready') lines.push(`Approving needs J's yes (confirm "MERGE ${c.id}"); he can also ask for changes (revise).`);
   return lines.join('\n');
 }

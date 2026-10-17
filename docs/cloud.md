@@ -91,8 +91,8 @@ Hawkes Gen and Hawkes Studio are private GitHub repos (`jgriffith3433/hawkesgen`
      cgroup). The restarted Studio reads the output on from where it got to: the agent's log and result, Talk's answer
      streaming into its conversation. A unit gone with no result (a reboot) runs its pass again. Calls (voice) drop.
      `systemctl --user list-units 'hawkes-*'` (as hawkes, with `XDG_RUNTIME_DIR=/run/user/$(id -u hawkes)`) lists them.
-   - **Agent changes** record their step (`changes.phase`: prepare, agent, publish, verify with its Gen jobs, finish)
-     and carry on from it, waiting on the same Gen jobs (a build isn't built twice). A verification playtest that was
+   - **Agent changes** record their step (`changes.phase`: prepare, agent, publish, finish; verify with its Gen jobs
+     for a playtest J asked for) and carry on from it, waiting on the same Gen jobs (a build isn't built twice). A playtest that was
      playing a page Studio served is played again (its page server stopped with Studio).
    - **Runs** carry on: finished steps stay, a running step waits for its Gen job again (no second build, playtest or
      review; no findings filed twice), the rest proceed. Asset runs and go lives too.
@@ -215,7 +215,7 @@ The Changes tab refreshes itself every 5 s and keeps opened summaries and logs o
 1. The daily run finds bugs.
 2. Agents (Claude Code on the server, headless) fix the worst new ones, within the day's budget
    (`/api/agents/settings`: by default 4 fixes and $20 a day, blockers and bugs only).
-3. Each fix is a branch cut from `beta`, a pull request into `beta`, a verification playtest, and a preview at
+3. Each fix is a branch cut from `beta`, a pull request into `beta` (ready on the agent's checks; a playtest of it only on request), and a preview at
    `https://<sub>.hawkesgen.com/c/<id>/`.
 4. J approves in Studio's **Changes** tab, which merges the pull request into beta (nothing goes live). Beta's
    pre-deploy build, Unity build, beta site (`https://<sub>.hawkesgen.com/`) and a playtest of beta follow.

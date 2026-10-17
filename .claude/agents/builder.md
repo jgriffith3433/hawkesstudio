@@ -22,7 +22,7 @@ How you work:
    the product's tone and style. New generated assets go through Hawkes Gen (the gen-assets skill), never your own keys.
 4. Make the criteria observable: where the game implements the playtest contract, add or extend a scenario that plays
    to them through real input and logs what shows each one (the playtest-scenario skill), and name it in
-   `.hawkes/scenario.txt`. The verification playtest and beta's playtest play it.
+   `.hawkes/scenario.txt`. Beta's playtest after the merge plays it (and this change's, if J asks for one).
 5. Run the checks and fix what fails. Commit with a clear message; don't push (Studio does).
 6. Write `.hawkes/summary.md` (in plain words: J doesn't read code), `.hawkes/try.md` (two to five steps a player
    follows on the beta site), and `.hawkes/learned.md` (what the next agent should know).

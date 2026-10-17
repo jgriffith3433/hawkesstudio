@@ -266,7 +266,7 @@ export async function inbox({ tokens = false }: { tokens?: boolean } = {}): Prom
     const why = c.infra ? `a ${name(c.product)} change (merging into main deploys it)` : !pm.reviewable(c) ? (c.request ? 'your own request' : 'from before the PM loop') : 'delegated merges are off';
     out.push({
       id: `merge:${c.id}`, kind: 'merge', title: `Merge "${c.title ?? c.id}" into ${into}?`, text: null, product: c.product, productName: name(c.product),
-      context: `Change ${c.id}, ${why}. ${c.infra ? `Checks: ${v.outcome ?? '?'}${v.summary ? `, ${String(v.summary).slice(0, 200)}` : ''}` : `Verification: ${v.outcome ?? 'not playtested'} · review ${v.verdict ?? 'n/a'}${g && !g.pass ? ` · doesn't pass: ${g.why.join('; ').slice(0, 300)}` : ''}`}`,
+      context: `Change ${c.id}, ${why}. ${c.infra ? `Checks: ${v.outcome ?? '?'}${v.summary ? `, ${String(v.summary).slice(0, 200)}` : ''}` : `${g?.played ? `Playtest: ${v.outcome ?? '?'} · review ${v.verdict ?? 'n/a'}` : "Not playtested (the agent's checks passed)"}${g && !g.pass ? ` · doesn't pass: ${g.why.join('; ').slice(0, 300)}` : ''}`}`,
       asker: c.origin ? 'Talk' : 'Studio', recommendation: c.infra ? (/pass|success|ok/i.test(String(v.outcome ?? '')) ? `Merge into main` : null) : g?.pass ? 'Merge into beta' : 'Ask for changes',
       options: [`Merge into ${into}`, 'Ask for changes', 'Close'],
       blocks: c.task ? taskBlocks(getTask(c.task)!, `"${c.title}" reaching ${into}`).text : `"${c.title ?? c.id}" reaching ${into}`,

@@ -17,7 +17,8 @@ Look at, in this order:
 3. Correctness: the cause fixed, not a symptom; edge cases the playtest wouldn't reach; data files still valid.
 4. Conventions: how this codebase does it (its AGENTS.md, `memory_search` kind convention). Content changes: the canon
    (kind canon) and the product's tone.
-5. The verification: did the playtest exercise the change? An "unclear" criterion means nobody saw it work.
+5. The playtest, if one was asked for (changes aren't playtested automatically; beta's run after the merge judges the
+   criteria): did it exercise the change? An "unclear" criterion means nobody saw it work.
 
 Answer with: a verdict (merge, revise, or ask J), the reasons in a few bullets with file:line, and for revise, the
 specific notes the agent needs. No style nits.
