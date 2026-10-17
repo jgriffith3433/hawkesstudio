@@ -315,7 +315,8 @@ tells Talk the device (phone, tablet or computer, from the page); Talk never ass
   (a sheet at the bottom on a phone) on any other tab; it stays open across tabs and reloads until closed. It is the
   Talk tab's own chat moved over (`dashboard/talk.js`), so the conversation is the same and a call keeps its mic and
   voice while J switches tabs: leaving the Talk tab mid-call opens the dock, closing it leaves the call running (📞 on
-  the button). On a phone, ☰ Tabs on the call bar brings back the header the call hides. Each message from the dock,
+  the button). On a phone during a call the header shrinks to one row of tabs that stays on screen
+  on every tab (it scrolls sideways); the Talk tab or the dock's ⤢ brings the full call back. Each message from the dock,
   typed or said, tells Talk what J is looking at: the tab and the item he last clicked or has open there (a change,
   finding, report, playtest, run, roadmap item: `studioContext()` in app.js, `viewContext()` in talk.ts), shown on the
   dock as "Talk sees: …", so "this one" means it.
