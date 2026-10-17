@@ -1,6 +1,13 @@
 # Learned: Hawkes Studio
 
-Generated from Hawkes Studio's shared memory (2026-10-17 00:59 UTC). Edit entries in Studio's Memory tab, not here.
+Generated from Hawkes Studio's shared memory (2026-10-17 01:31 UTC). Edit entries in Studio's Memory tab, not here.
+
+## J's decisions
+
+- **A new agent task queues when the product already has an agent working; it's never refused**: 2026-10-17, J on a call ("cube" = queue). Today agents.ts startTask/startFix throw "already has an agent working" when the product has a change working/verifying/revising. Instead they should insert the change as queued, and pump() should start a queued change only when no other change of the same product is running (one per product, within maxConcurrent), picking it up when the running one finishes.  
+  <sub>m_6f2fabde677d · Talk · 2026-10-17 · t_69a62f0b13bd</sub>
+- **hawkesgen.com root is a static marketing page served by the server's Caddy (not nginx, not Pages)**: 2026-10-17 on a call: the apex hawkesgen.com gets a simple static landing page with cards for Hawkes Gen and Hawkes Studio (what they do now, the tech behind them), served as static files by the control server's Caddy via deploy/deploy.mjs (J named the deploy script). nginx was considered and dropped (Caddy already fronts studio/gen). The product sites' "Powered by HAWKES GEN" badges link there.  
+  <sub>m_db2305ad99fd · Talk · 2026-10-17 · t_67c6ff26a207</sub>
 
 ## How the code works
 
