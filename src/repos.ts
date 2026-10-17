@@ -85,12 +85,42 @@ export function betaFolders() {
   return new Set(products.map((p) => p.repo.split('/')[0]));
 }
 
+/** products.json "repoSetup": folder -> a shell command run in it after a clone or an update (on the server). */
+export function repoSetup(): Record<string, string> {
+  const all = JSON.parse(fs.readFileSync(paths.products, 'utf8')).repoSetup ?? {};
+  return Object.fromEntries(Object.entries(all).filter(([k, v]) => !k.startsWith('$') && typeof v === 'string')) as Record<string, string>;
+}
+
+/** Runs a repo's setup (hawkes-assets: install, then pull its files from S3) and notes how it went on the result. */
+async function setUp(r: RepoResult, cmd: string) {
+  const done = trackCommand(cmd, r.folder);
+  const res = await new Promise<{ ok: boolean; tail: string }>((resolve) => {
+    let log = '';
+    const child = spawn('bash', ['-lc', cmd], { cwd: path.join(PROJECTS, r.folder), windowsHide: true });
+    const timer = setTimeout(() => child.kill('SIGKILL'), 60 * 60_000);
+    timer.unref();
+    const keep = (d: Buffer) => { log = (log + d).slice(-4000); };
+    child.stdout.on('data', keep);
+    child.stderr.on('data', keep);
+    child.on('error', (e) => { clearTimeout(timer); resolve({ ok: false, tail: e.message }); });
+    child.on('close', (code) => { clearTimeout(timer); resolve({ ok: code === 0, tail: log.trim().split('\n').filter(Boolean).slice(-2).join(' | ') }); });
+  });
+  done();
+  r.detail += res.ok ? `; set up (${res.tail.slice(0, 160) || 'ok'})` : `; setup failed: ${res.tail.slice(0, 300)}`;
+  if (!res.ok) r.action = 'failed';
+}
+
 /** Every product repo. On the server, source repos are switched to beta (when it exists); website repos stay on main. */
 export async function syncRepos(only?: string[]) {
   const beta = isServer() ? betaFolders() : new Set<string>();
+  const setup = isServer() ? repoSetup() : {};
   const out: RepoResult[] = [];
   // One at a time: they share the network and the disk.
-  for (const [f, s] of Object.entries(repoMap()).filter(([f]) => !only?.length || only.includes(f))) out.push(await syncRepo(f, s, BRANCH, beta.has(f) ? BETA : undefined));
+  for (const [f, s] of Object.entries(repoMap()).filter(([f]) => !only?.length || only.includes(f))) {
+    const r = await syncRepo(f, s, BRANCH, beta.has(f) ? BETA : undefined);
+    if (setup[f] && (r.action === 'cloned' || r.action === 'updated')) await setUp(r, setup[f]);
+    out.push(r);
+  }
   return out;
 }
 

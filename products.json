@@ -458,7 +458,14 @@
     "theplacedepartmentwebsite": "jgriffith3433/theplacedepartmentwebsite",
     "icanbeaiwebsite": "jgriffith3433/icanbeaiwebsite",
     "imaginelivetvwebsite": "jgriffith3433/imaginelivetvwebsite",
-    "hawkesbiomedicalnew": "jgriffith3433/hawkesbiomedical"
+    "hawkesbiomedicalnew": "jgriffith3433/hawkesbiomedical",
+    "hawkes-assets": "jgriffith3433/hawkes-assets",
+    "hawkes-video": "jgriffith3433/hawkes-video"
+  },
+  "repoSetup": {
+    "$comment": "Run on the server after a repo is cloned or fast-forwarded (src/repos.ts), in the repo's folder. hawkes-assets: git keeps what the files are, S3 keeps the files (its README).",
+    "hawkes-assets": "npm ci --no-audit --no-fund --loglevel=error && node tools/sync.mjs pull",
+    "hawkes-video": "npm ci --no-audit --no-fund --loglevel=error"
   },
   "$comment_repos": "GitHub repo for each top-level folder (the server clones them into the same layout as C:\\Projects).",
   "previews": {
