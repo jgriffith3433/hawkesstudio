@@ -34,13 +34,36 @@ function show(t, sub) {
   // #changes/<id> (a link from the Activity panel) stays.
   if (!sub && t === 'changes' && location.hash.startsWith('#changes/')) sub = location.hash.slice(t.length + 2);
   location.hash = sub ? `${t}/${sub}` : t;
-  document.querySelectorAll('nav button').forEach((b) => b.classList.toggle('on', b.dataset.tab === t));
+  document.querySelectorAll('nav button[data-tab]').forEach((b) => b.classList.toggle('on', b.dataset.tab === t));
   document.querySelectorAll('.tab').forEach((s) => s.classList.toggle('on', s.id === t));
+  // A tab under More: the More button is lit and says which one.
+  const under = $(`#moreMenu button[data-tab="${t}"]`);
+  $('#moreBtn').classList.toggle('on', Boolean(under));
+  $('#moreBtn').textContent = under ? `More: ${under.textContent.replace('⚙', '').trim()} ▾` : 'More ▾';
+  moreMenu(false);
   if (picked?.tab !== t) picked = null;
   dispatchEvent(new CustomEvent('studio-tab', { detail: t })); // the Talk dock follows (talk.js)
   refresh();
 }
-document.querySelectorAll('nav button').forEach((b) => (b.onclick = () => show(b.dataset.tab)));
+document.querySelectorAll('nav button[data-tab]').forEach((b) => (b.onclick = () => show(b.dataset.tab)));
+// More: the tabs J looks at less often. Their buttons are still nav button[data-tab] (studio_guide clicks them), the menu
+// is fixed under its button so a nav that scrolls sideways (a phone during a call) doesn't clip it. The header's
+// backdrop-filter makes it the menu's containing block, so the place is measured from the header.
+function moreMenu(open) {
+  const m = $('#moreMenu');
+  const b = $('#moreBtn');
+  m.hidden = !open;
+  b.setAttribute('aria-expanded', String(open));
+  if (!open) return;
+  const r = b.getBoundingClientRect();
+  const h = $('header').getBoundingClientRect();
+  m.style.top = `${r.bottom - h.top + 4}px`;
+  m.style.left = `${Math.max(8, Math.min(r.left, innerWidth - m.offsetWidth - 8)) - h.left}px`;
+}
+$('#moreBtn').onclick = (e) => { e.stopPropagation(); moreMenu($('#moreMenu').hidden); };
+document.addEventListener('click', (e) => { if (!e.target.closest('#more')) moreMenu(false); });
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') moreMenu(false); });
+addEventListener('resize', () => moreMenu(false));
 
 // ------------------------------------------------- what J looks at
 // Sent with each message from the Talk dock (talk.js), so "this one" means the change, finding, report, playtest or
@@ -77,6 +100,14 @@ function studioContext() {
   return { tab: name, kind: it?.kind, id: it?.id, label: it?.label };
 }
 
+// A link to where something lives on another tab (data-goto="<tab>"), instead of showing it twice.
+document.addEventListener('click', (e) => {
+  const g = e.target.closest('a[data-goto]');
+  if (!g || e.ctrlKey || e.metaKey || e.shiftKey || e.button) return;
+  e.preventDefault();
+  show(g.dataset.goto);
+});
+
 // ----------------------------------------------------------- viewer
 function view(html) {
   $('#viewer .content').innerHTML = html;
@@ -109,7 +140,13 @@ async function loadToday() {
   ].join('');
   $('#runInfo').textContent = o.run ? `A run is going (${o.run.id}).` : o.runs[0] ? `Last run ${ago(o.runs[0].started)}: ${o.runs[0].status}${o.runs[0].detail ? ` · ${o.runs[0].detail}` : ''}` : 'No runs yet.';
   $('#runDaily').disabled = $('#runSmoke').disabled = Boolean(o.run);
-  $('#cards').innerHTML = o.products.map(card).join('');
+  // Problems first, then the rest in their usual order.
+  const ps = o.products.map((p, i) => ({ p, i, h: health(p) })).sort((x, y) => x.h.rank - y.h.rank || x.i - y.i);
+  const bad = ps.filter((x) => x.h.rank < 2);
+  const daily = o.runs.find((r) => r.kind === 'daily');
+  $('#todayNow').innerHTML = `<div class="summary">${daily ? `The last daily run was ${esc(ago(daily.started))} (${esc(daily.status)}${daily.detail ? `: ${esc(daily.detail)}` : ''}). <a href="#report" data-goto="report">Its full report</a>.` : 'No daily run yet.'}
+    ${bad.length ? `<b>${bad.length === 1 ? '1 product needs' : `${bad.length} products need`} a look:</b> ${bad.map((x) => esc(x.p.name)).join(', ')}.` : o.products.length ? '<b>Nothing is broken.</b>' : ''}</div>`;
+  $('#cards').innerHTML = ps.map((x) => card(x.p, x.h)).join('');
 }
 
 /** Beta, live and devtools links, and how developing on beta stands (dev.ts): the dev server and the working copy. */
@@ -129,9 +166,27 @@ function devLine(p) {
   return `<div class="meta">${links}${parts.length ? ` — ${parts.join(' · ')}` : ''}${stop}</div>${conflict}`;
 }
 
-function card(p) {
+const VERDICT = { ship: 'Looks good to ship', 'fix-first': 'Works, but has problems to fix first', broken: 'Broken: needs fixing' };
+/** How a product stands, in one plain line: rank 0 = broken, 1 = needs a look, 2 = fine, 3 = not played yet. */
+function health(p) {
   const r = p.lastReview?.data;
-  const open = Object.entries(p.open).map(([k, n]) => `<span class="pill ${k}">${n} ${k}</span>`).join(' ');
+  const failed = p.playtests.filter((t) => t.playtest?.status === 'failed');
+  const bugs = (p.open.blocker ?? 0) + (p.open.bug ?? 0);
+  const played = p.playtests.map((t) => t.playtest?.finished ?? 0).reduce((a, b) => Math.max(a, b), 0);
+  const when = played ? ` (played ${ago(played)})` : '';
+  if (p.dev?.conflict) return { rank: 0, text: 'Your devtools saves clash with beta: pick a fix below.' };
+  if (p.build?.status === 'failed') return { rank: 0, text: `The Unity build failed ${ago(p.build.finished)}.` };
+  if (failed.length) return { rank: 0, text: `${failed.length === 1 ? 'A playtest' : `${failed.length} playtests`} failed${when}: ${failed[0].playtest.detail ?? failed[0].name}` };
+  if (r?.verdict === 'broken') return { rank: 0, text: `${VERDICT.broken}${when}.` };
+  if (p.open.blocker) return { rank: 0, text: `${p.open.blocker} blocker${p.open.blocker === 1 ? '' : 's'} open.` };
+  if (r?.verdict === 'fix-first') return { rank: 1, text: `${VERDICT['fix-first']}${when}.` };
+  if (r) return { rank: bugs ? 1 : 2, text: `${VERDICT[r.verdict] ?? r.verdict}${when}.` };
+  return { rank: 3, text: played ? `Played${when}, no review yet.` : 'Not playtested yet.' };
+}
+
+function card(p, h = health(p)) {
+  const r = p.lastReview?.data;
+  const bugs = Object.values(p.open).reduce((a, b) => a + b, 0);
   const shots = (r?.frames ?? []).slice(0, 8).map((f) => `<img loading="lazy" src="${file(f.asset)}" data-full="${file(f.asset)}" title="${esc(f.t)}s ${esc(f.scene ?? '')}">`).join('');
   const tests = p.playtests.map((t) => {
     const s = t.playtest;
@@ -141,22 +196,31 @@ function card(p) {
   const build = p.build ? `<div class="test"><span>${icon(p.build.status)}</span><span class="name">unity build</span><span class="detail">${esc(p.build.detail ?? '')} · ${ago(p.build.finished)}</span></div>` : '';
   const scores = r?.scores ? `<div class="scores">${Object.entries(r.scores).map(([k, n]) => `<div class="score"><b>${n}</b><span>${k}</span></div>`).join('')}</div>` : '';
   const git = `${p.git.dirty} uncommitted · ${p.git.ahead} unpushed${p.site ? ` · site ${p.site.dirty}/${p.site.ahead}` : ''}`;
-  return `<div class="card">
-    <h3>${esc(p.name)} <small>${esc(p.framing)}</small>${r ? `<span class="pill verdict ${r.verdict}">${r.verdict}</span>` : ''}</h3>
-    <div class="meta">${esc(git)} · <a href="${esc(p.local)}" target="_blank">local</a>${p.preview ? p.preview.changes.filter((c) => c.status === 'ready').map((c) => ` · <a href="${esc(c.play)}" target="_blank" title="agent change ${esc(c.id)}">${esc(c.id)}</a>`).join('') : ''}</div>
-    ${devLine(p)}
-    ${scores}
+  const video = p.playtests.map((t) => t.playtest?.data?.video).find(Boolean);
+  const open = Object.entries(p.open).map(([k, n]) => `<span class="pill ${k}">${n} ${k}</span>`).join(' ');
+  return `<div class="card rank-${h.rank}" data-p="${esc(p.id)}">
+    <h3>${esc(p.name)}${r ? `<span class="pill verdict ${r.verdict}">${r.verdict}</span>` : ''}</h3>
+    <div class="status-line">${esc(h.text)}</div>
     ${r?.summary ? `<div class="summary">${esc(r.summary)}</div>` : ''}
-    <div class="tests">${build}${tests}</div>
-    ${shots ? `<div class="thumbs">${shots}</div>` : ''}
-    <div class="meta">${open || 'No open findings'}</div>
+    ${p.dev?.conflict ? devLine(p) : ''}
+    <div class="meta">${p.preview ? `<a href="${esc(p.preview.play)}" target="_blank">Beta</a> · ` : ''}<a href="${esc(p.live)}" target="_blank">Live</a>${video ? ` · <a href="${file(video)}" target="_blank" rel="noopener" data-video="${file(video)}">▶ last playtest</a>` : ''} · ${bugs ? `<a href="#backlog" data-act="backlog" data-p="${p.id}">${bugs} open bug${bugs === 1 ? '' : 's'} in Backlog</a>` : 'no open bugs'}</div>
     <div class="actions">
-      <button class="small" data-act="playtest" data-p="${p.id}">Smoke test</button>
-      <button class="small" data-act="all" data-p="${p.id}">Full trial</button>
-      ${p.engine === 'unity' ? `<button class="small" data-act="build" data-p="${p.id}">Build</button>` : ''}
-      <button class="small" data-act="backlog" data-p="${p.id}">Backlog</button>
-      <button class="small primary" data-act="deploy" data-p="${p.id}" data-guide="off">Go live…</button>
+      <button class="small primary" data-act="playtest" data-p="${p.id}" title="A quick playtest of the main scenario, with a video and a review (a few cents)">Smoke test</button>
     </div>
+    <details class="more-details"><summary class="meta">Details</summary>
+      <div class="meta">${esc(p.framing)}</div>
+      <div class="meta">${esc(git)} · <a href="${esc(p.local)}" target="_blank">local</a>${p.preview ? p.preview.changes.filter((c) => c.status === 'ready').map((c) => ` · <a href="${esc(c.play)}" target="_blank" title="agent change ${esc(c.id)}">${esc(c.id)}</a>`).join('') : ''}</div>
+      ${p.dev?.conflict ? '' : devLine(p)}
+      ${scores}
+      <div class="tests">${build}${tests}</div>
+      ${shots ? `<div class="thumbs">${shots}</div>` : ''}
+      <div class="meta">${open || 'No open findings'}</div>
+      <div class="actions">
+        <button class="small" data-act="all" data-p="${p.id}" title="Every scenario of this product, built first if it changed">Full trial</button>
+        ${p.engine === 'unity' ? `<button class="small" data-act="build" data-p="${p.id}">Build</button>` : ''}
+        <button class="small" data-act="golive" data-p="${p.id}" title="Is beta ahead of live, and the Go live button">Go live tab</button>
+      </div>
+    </details>
   </div>`;
 }
 
@@ -176,15 +240,16 @@ $('#cards').addEventListener('click', async (e) => {
     }
     return;
   }
-  const btn = e.target.closest('button[data-act]');
+  const btn = e.target.closest('[data-act]');
   if (!btn) return;
+  e.preventDefault();
   const p = btn.dataset.p;
   try {
     if (btn.dataset.act === 'playtest') await api('/api/playtest', { method: 'POST', body: { product: p, scenario: undefined } });
     if (btn.dataset.act === 'all') await api('/api/runs', { method: 'POST', body: { products: [p], noBuild: $('#optNoBuild').checked, where: $('#optLocal').checked ? 'local' : undefined } });
     if (btn.dataset.act === 'build') await api('/api/build', { method: 'POST', body: { product: p } });
     if (btn.dataset.act === 'backlog') { $('#blProduct').value = p; return show('backlog'); }
-    if (btn.dataset.act === 'deploy') return goLive(p);
+    if (btn.dataset.act === 'golive') return show('golive');
     await loadToday();
   } catch (err) {
     alert(err.message);
@@ -335,16 +400,28 @@ $('#reportBody').addEventListener('click', (e) => {
   loadReport();
 });
 
+const F_STATUS = { open: 'Not fixed yet', fixing: 'An agent is fixing it', fixed: 'Fixed', wontfix: "Set aside (won't fix)", idea: 'An idea: never fixed by itself', expired: 'An idea that expired (not seen for 14 days)' };
+const F_MOVE = { fixing: 'Mark fixing', fixed: 'Mark fixed', wontfix: "Won't fix", open: 'Back to the backlog', idea: 'Move to ideas' };
 function findingHtml(f) {
   // J's reports from the beta sites: their screenshot is in Gen's library once imported, else Studio keeps it.
   const own = f.source === 'J' && !(f.shots ?? []).length ? `<img loading="lazy" src="/api/bugreports/${f.id}/shot" data-full="/api/bugreports/${f.id}/shot" onerror="this.remove()">` : '';
   const shots = own + (f.shots ?? []).slice(0, 4).map((a) => `<img loading="lazy" src="${file(a)}" data-full="${file(a)}">`).join('');
+  // One clear action: an open bug goes to an agent, an idea back to the backlog; the rest are under Details.
+  const main = !f.id ? '' : f.status === 'open' ? `<button class="small primary" data-agentfix="${f.id}" data-product="${esc(f.product)}" title="An agent fixes it on its own branch; it merges into beta when its checks pass">Fix with agent</button>`
+    : ['idea', 'expired'].includes(f.status) ? `<button class="small" data-finding="${f.id}" data-status="open">${F_MOVE.open}</button>` : '';
+  const moves = f.id ? ['fixing', 'fixed', 'wontfix', 'open', 'idea'].filter((s) => s !== f.status && !(s === 'fixing' && f.status === 'idea') && !(s === 'open' && ['idea', 'expired'].includes(f.status))) : [];
+  const where = [f.product, f.scenario, f.area].filter(Boolean).map(esc).join(' · ');
   return `<div class="finding${f.source === 'J' ? ' from-j' : ''}"${f.id ? ` data-fid="${esc(f.id)}"` : ''}><div>
-      <h4><span class="pill ${f.severity}">${esc(f.severity)}</span>${f.source === 'J' ? '<span class="pill j" title="J reported it from the beta site: top priority">J</span>' : ''}${esc(f.title)} ${f.area ? `<span class="meta">${esc(f.area)}</span>` : ''}${f.id ? `<span class="meta">${esc(f.id)} · seen ${f.seen}× · ${esc(f.product)} · ${esc(f.scenario ?? '')}</span>` : ''}</h4>
+      <h4><span class="pill ${f.severity}">${esc(f.severity)}</span>${f.source === 'J' ? '<span class="pill j" title="J reported it from the beta site: top priority">J</span>' : ''}${esc(f.title)}</h4>
+      ${f.status ? `<div class="status-line">${esc(F_STATUS[f.status] ?? f.status)}${f.seen > 1 ? ` · seen ${f.seen} times` : ''}${where ? ` · ${where}` : ''}</div>` : f.area ? `<div class="meta">${esc(f.area)}</div>` : ''}
       <div class="meta"${f.source === 'J' ? ' style="white-space:pre-line"' : ''}>${esc(f.detail ?? '')}</div>
-      <div class="fix"><b>Fix:</b> ${esc(f.fix ?? '')}</div>${f.note ? `<div class="meta">Note: ${esc(f.note)}</div>` : ''}
-    </div><div class="side">${shots ? `<div class="thumbs">${shots}</div>` : ''}${f.id ? `<div class="actions">
-      ${f.status === 'open' ? `<button class="small primary" data-agentfix="${f.id}" data-product="${esc(f.product)}">Fix with agent</button>` : ''}${['fixing', 'fixed', 'wontfix', 'open', 'idea'].filter((s) => s !== f.status && !(s === 'fixing' && f.status === 'idea')).map((s) => `<button class="small" data-finding="${f.id}" data-status="${s}">${s === 'open' && ['idea', 'expired'].includes(f.status) ? 'to backlog' : s === 'idea' ? 'to ideas' : s}</button>`).join('')}</div>` : ''}</div></div>`;
+      ${f.id ? '' : `<div class="fix"><b>Fix:</b> ${esc(f.fix ?? '')}</div>`}
+      ${f.id ? `<details class="more-details"><summary class="meta">Details</summary>
+        <div class="fix"><b>Suggested fix:</b> ${esc(f.fix ?? '')}</div>${f.note ? `<div class="meta">Note: ${esc(f.note)}</div>` : ''}
+        <div class="meta">${esc(f.id)} · seen ${f.seen}×</div>
+        <div class="actions">${moves.map((s) => `<button class="small" data-finding="${f.id}" data-status="${s}">${F_MOVE[s]}</button>`).join('')}</div>
+      </details>` : ''}
+    </div><div class="side">${shots ? `<div class="thumbs">${shots}</div>` : ''}${main ? `<div class="actions">${main}</div>` : ''}</div></div>`;
 }
 
 // ---------------------------------------------------------- backlog
@@ -352,8 +429,9 @@ async function loadBacklog() {
   if ($('#blProduct').options.length <= 1 && overview) $('#blProduct').innerHTML += overview.products.map((p) => `<option value="${p.id}">${esc(p.name)}</option>`).join('');
   const qs = new URLSearchParams({ status: $('#blStatus').value, ...($('#blProduct').value ? { product: $('#blProduct').value } : {}) });
   const { findings } = await api(`/api/findings?${qs}`);
-  // J's own reports first (the PM loop starts them first too).
-  findings.sort((a, b) => (b.source === 'J') - (a.source === 'J'));
+  // J's own reports first (the PM loop starts them first too), then the worst first.
+  const SEV = { blocker: 0, bug: 1, polish: 2, idea: 3 };
+  findings.sort((a, b) => (b.source === 'J') - (a.source === 'J') || (SEV[a.severity] ?? 9) - (SEV[b.severity] ?? 9));
   $('#blCount').textContent = `${findings.length} ${$('#blStatus').value === 'idea' ? 'ideas (polish and ideas: never auto-fixed, expire after 14 days unseen)' : 'findings'}`;
   $('#blList').innerHTML = findings.length ? findings.map(findingHtml).join('') : '<div class="empty">Nothing here.</div>';
 }
@@ -404,6 +482,7 @@ show(tab);
 setInterval(() => { if (tab === 'today' || tab === 'runs' || tab === 'changes') refresh(); }, 5000);
 
 // ----------------------------------------------------------- changes
+const CH_WORDS = { queued: 'Waiting its turn', working: 'The agent is working on it', verifying: 'Checking its work', revising: 'Making the changes asked for', ready: 'Ready', merged: 'Merged', failed: "Didn't work", closed: 'Closed' };
 const CH_ICON = { queued: '⏳', working: '🛠️', verifying: '🎮', revising: '🛠️', ready: '👀', merged: '✅', failed: '❌', closed: '🗑️' };
 async function loadChanges() {
   const qs = new URLSearchParams($('#chStatus').value ? { status: $('#chStatus').value } : {});
@@ -414,32 +493,41 @@ async function loadChanges() {
   loadChanges.sig = sig;
   const open = new Set([...$('#chList').querySelectorAll('details[open]')].map((d) => d.dataset.key));
   $('#chInfo').textContent = `Today: ${r.today.count} fixes, $${r.today.cost.toFixed(2)} of $${r.settings.maxCostPerDay} · auto-fix ${r.settings.autoFix ? 'on' : 'off'} (${r.settings.severities.join(', ')}, up to ${r.settings.maxPerDay}/day)`;
-  $('#chList').innerHTML = r.changes.length ? r.changes.map((c) => {
+  // What waits on a person first (ready, failed), then what's running, then the rest.
+  const first = (c) => (['ready', 'failed'].includes(c.status) ? 0 : ['working', 'verifying', 'revising', 'queued'].includes(c.status) ? 1 : 2);
+  const list = r.changes.map((c, i) => ({ c, i })).sort((x, y) => first(x.c) - first(y.c) || x.i - y.i).map((x) => x.c);
+  $('#chList').innerHTML = list.length ? list.map((c) => {
     const v = c.verify;
     // A product change is playtested only on request ("Playtest this change"); not being playtested is plain info.
     const played = v && (v.playtest || (v.outcome && v.outcome !== 'not played'));
     return `<div class="finding" data-cid="${c.id}"><div>
-      <h4>${CH_ICON[c.status] ?? ''} ${esc(c.title)} <span class="pill ${c.status === 'ready' ? 'ship' : c.status === 'failed' ? 'failed' : ''}">${esc(c.status)}</span><span class="meta">${esc(c.product)} · ${esc(c.id)} · $${(c.cost ?? 0).toFixed(2)}</span></h4>
+      <h4>${CH_ICON[c.status] ?? ''} ${esc(c.title)} <span class="pill ${c.status === 'ready' ? 'ship' : c.status === 'failed' ? 'failed' : ''}">${esc(c.status)}</span></h4>
+      <div class="status-line">${esc(CH_WORDS[c.status] ?? c.status)}${c.product ? ` · ${esc(c.product)}` : ''}${c.detail ? `: ${esc(c.detail)}` : ''}</div>
       ${ChangeStages.barHtml(c.status, c.stage ?? {})}
-      <div class="meta">${esc(c.detail ?? '')}${c.diffstat ? ` · ${esc(c.diffstat)}` : ''}${c.pr_url ? ` · <a href="${esc(c.pr_url)}" target="_blank">pull request #${c.pr}</a>` : ''}</div>
-      ${c.summary ? `<details data-key="${c.id}:summary"><summary class="meta">What the agent did</summary><pre>${esc(c.summary)}</pre></details>` : ''}
-      ${v && c.infra ? `<div class="summary"><b>Checks:</b> <span class="pill ${esc(v.verdict ?? '')}">${esc(v.outcome ?? '')}</span> ${esc(v.summary ?? '')}</div>` : played ? `<div class="summary"><b>Playtest:</b> ${esc(v.outcome ?? '')} · review <span class="pill ${esc(v.verdict ?? '')}">${esc(v.verdict ?? 'n/a')}</span> ${esc(v.summary ?? '')}</div>` : c.status === 'ready' ? `<div class="meta">Not playtested${v?.error ? ` (the last playtest asked for couldn't run: ${esc(v.error)})` : ''}.</div>` : ''}
-      ${c.notes?.length ? `<div class="meta">${c.notes.map((n) => `${esc(n.by)}: ${esc(n.text)}`).join(' · ')}</div>` : ''}
-      <details data-key="${c.id}:log"><summary class="meta">Log</summary><pre>${esc((c.log ?? []).slice(-40).join(String.fromCharCode(10)))}</pre></details>
+      ${v && c.infra ? `<div class="summary"><b>Checks:</b> <span class="pill ${esc(v.verdict ?? '')}">${esc(v.outcome ?? '')}</span> ${esc(v.summary ?? '')}</div>` : played ? `<div class="summary"><b>Playtest:</b> ${esc(v.outcome ?? '')} · review <span class="pill ${esc(v.verdict ?? '')}">${esc(v.verdict ?? 'n/a')}</span> ${esc(v.summary ?? '')}</div>` : ''}
+      <details class="more-details" data-key="${c.id}:details"><summary class="meta">Details</summary>
+        <div class="meta">${esc(c.id)} · $${(c.cost ?? 0).toFixed(2)}${c.diffstat ? ` · ${esc(c.diffstat)}` : ''}${c.pr_url ? ` · <a href="${esc(c.pr_url)}" target="_blank">pull request #${c.pr}</a>` : ''}</div>
+        ${!played && !c.infra && c.status === 'ready' ? `<div class="meta">Not playtested${v?.error ? ` (the last playtest asked for couldn't run: ${esc(v.error)})` : ''}.</div>` : ''}
+        ${c.notes?.length ? `<div class="meta">${c.notes.map((n) => `${esc(n.by)}: ${esc(n.text)}`).join(' · ')}</div>` : ''}
+        ${c.summary ? `<details data-key="${c.id}:summary"><summary class="meta">What the agent did</summary><pre>${esc(c.summary)}</pre></details>` : ''}
+        <details data-key="${c.id}:log"><summary class="meta">Log</summary><pre>${esc((c.log ?? []).slice(-40).join(String.fromCharCode(10)))}</pre></details>
+        <div class="actions">
+          ${c.status === 'ready' && !c.infra ? `<button class="small" data-change="${c.id}" data-act="playtest" title="Plays the change's scenario on its version (a build first for Unity), with a video and a Claude review (a few cents).">${played ? 'Playtest again' : 'Playtest this change'}</button>` : ''}
+          ${!['merged', 'closed'].includes(c.status) ? `<button class="small" data-change="${c.id}" data-act="close">Close</button>` : ''}
+        </div>
+      </details>
     </div><div class="side">
       ${v?.video ? `<a href="${file(v.video)}" target="_blank" rel="noopener" data-video="${file(v.video)}">▶ fixed version</a>` : ''}${v?.preview ? ` <a href="${esc(v.preview)}" target="_blank">🔗 try it</a>` : ''}
       <div class="actions">
-        ${c.status === 'ready' && c.infra ? `<button class="small primary" data-change="${c.id}" data-act="approve" data-infra="1" data-guide="off" title="Merges it into main: ${esc(c.product)} deploys itself once CI passes (a restart).">Approve into main</button>` : c.status === 'ready' ? `<button class="small primary" data-change="${c.id}" data-act="approve" data-guide="off" title="Merges it into the beta branch (the beta site). Nothing goes live until you go live from Today.">Approve into beta</button>` : ''}
-        ${c.status === 'ready' && !c.infra ? `<button class="small" data-change="${c.id}" data-act="playtest" title="Plays the change's scenario on its version (a build first for Unity), with a video and a Claude review (a few cents).">${played ? 'Playtest again' : 'Playtest this change'}</button>` : ''}
+        ${c.status === 'ready' && c.infra ? `<button class="small primary" data-change="${c.id}" data-act="approve" data-infra="1" data-guide="off" title="Merges it into main: ${esc(c.product)} deploys itself once CI passes (a restart).">Approve into main</button>` : c.status === 'ready' ? `<button class="small primary" data-change="${c.id}" data-act="approve" data-guide="off" title="Merges it into the beta branch (the beta site). Nothing goes live until you use Go live.">Approve into beta</button>` : ''}
         ${['ready', 'failed'].includes(c.status) ? `<button class="small" data-change="${c.id}" data-act="revise">Ask for changes</button>` : ''}
-        ${!['merged', 'closed'].includes(c.status) ? `<button class="small" data-change="${c.id}" data-act="close">Close</button>` : ''}
       </div></div></div>`;
-  }).join('') : '<div class="empty">No changes here. Agents start on new bugs after each daily run, or use "Fix with agent" in the backlog.</div>';
+  }).join('') : '<div class="empty">No changes here. Agents start on new bugs after each daily run, or use "Fix with agent" in the Backlog.</div>';
   for (const d of $('#chList').querySelectorAll('details[data-key]')) if (open.has(d.dataset.key)) d.open = true;
   // #changes/<id> (the Activity panel's "log" link) opens that change's log once.
   const want = /^#changes\/(c_[0-9a-f]+)/.exec(location.hash)?.[1];
   const d = want && $(`#chList details[data-key="${want}:log"]`);
-  if (d && loadChanges.opened !== want) { loadChanges.opened = want; d.open = true; d.scrollIntoView({ block: 'center' }); }
+  if (d && loadChanges.opened !== want) { loadChanges.opened = want; d.open = true; d.parentElement.closest('details').open = true; d.scrollIntoView({ block: 'center' }); }
 }
 $('#chStatus').onchange = () => { loadChanges.sig = null; loadChanges(); };
 document.addEventListener('click', async (e) => {
@@ -450,7 +538,7 @@ document.addEventListener('click', async (e) => {
       if (b.dataset.act === 'approve') {
         const ask = b.dataset.infra
           ? 'Merge this pull request into main? It deploys itself once CI passes: the service restarts (after running work finishes) and rolls back if it is not healthy.'
-          : 'Merge this pull request into beta? The beta site and a beta playtest follow; nothing goes live until you use "Go live" on Today.';
+          : 'Merge this pull request into beta? The beta site follows; nothing goes live until you use the Go live tab.';
         if (!confirm(ask)) return;
         await api(`/api/changes/${id}/approve`, { method: 'POST', body: { confirm: `MERGE ${id}`, by: 'J' } });
       }
@@ -469,7 +557,7 @@ document.addEventListener('click', async (e) => {
   if (fx) {
     try {
       const r = await api('/api/changes', { method: 'POST', body: { product: fx.dataset.product, findings: [fx.dataset.agentfix] } });
-      alert(`An agent is on it (${r.change}). Follow it in Changes.`);
+      alert(`An agent is on it (${r.change}). Follow it in More → Changes.`);
       tab === 'backlog' ? loadBacklog() : loadReport();
     } catch (err) { alert(err.message); }
   }

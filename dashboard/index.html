@@ -14,18 +14,23 @@
       <button data-tab="inbox" class="on" title="Everything waiting on you: decisions, GPU budgets, merges only you make, milestones to playtest">Inbox <span class="ib-count zero" id="inboxCount">0</span></button>
       <button data-tab="talk">Talk</button>
       <button data-tab="today">Today</button>
-      <button data-tab="golive" title="Every product: is beta ahead of live, is it ready, and the buttons to go live">Go live</button>
       <button data-tab="ready">Ready to test</button>
+      <button data-tab="golive" title="Every product: is beta ahead of live, is it ready, and the buttons to go live">Go live</button>
       <button data-tab="roadmap">Roadmap</button>
-      <button data-tab="report">Report</button>
-      <button data-tab="playtests">Playtests</button>
       <button data-tab="backlog">Backlog</button>
-      <button data-tab="changes">Changes</button>
-      <button data-tab="runs">Runs</button>
-      <button data-tab="costs">Costs</button>
-      <button data-tab="memory">Memory</button>
-      <button data-tab="users" hidden title="Who can sign in: invites, roles, password resets, the sign-in log (admins)">Users</button>
-      <button data-tab="settings" title="Call voice and listening, agent and PM limits, notifications, budgets: stored in Studio, so they follow you across devices">⚙ Settings</button>
+      <div class="more" id="more">
+        <button type="button" class="more-btn" id="moreBtn" aria-haspopup="true" aria-expanded="false" title="Reports, playtests, agent changes, runs, costs, memory, users, settings">More ▾</button>
+        <div class="more-menu" id="moreMenu" hidden>
+          <button data-tab="report">Report</button>
+          <button data-tab="playtests">Playtests</button>
+          <button data-tab="changes">Changes</button>
+          <button data-tab="runs">Runs</button>
+          <button data-tab="costs">Costs</button>
+          <button data-tab="memory">Memory</button>
+          <button data-tab="users" hidden title="Who can sign in: invites, roles, password resets, the sign-in log (admins)">Users</button>
+          <button data-tab="settings" title="Call voice and listening, agent and PM limits, notifications, budgets: stored in Studio, so they follow you across devices">⚙ Settings</button>
+        </div>
+      </div>
     </nav>
     <div class="status" id="status"></div>
     <button id="dockBtn" class="act-btn dock-btn" title="Talk beside any tab: the same conversation, and a call keeps going while you switch tabs">💬 Talk</button>
@@ -42,11 +47,12 @@
   </aside>
   <main>
     <section id="inbox" class="tab on">
-      <div class="bar"><span class="meta">Everything waiting on you, across Talk, the agents and the PM: most blocking first. Answering sends it where it goes (the agent resumes, the PM hears it, the budget is approved, the change merges) and the card goes.</span></div>
+      <p class="intro"><b>Inbox:</b> only the things that need your yes or no. Answer here and it goes where it needs to; Talk is for conversation, this is the to-do list.</p>
       <div id="ibList"><div class="meta">Loading…</div></div>
       <details id="ibAnswered" class="meta"></details>
     </section>
     <section id="talk" class="tab">
+      <p class="intro"><b>Talk:</b> plan, ask questions and ask for work in plain words. Decisions it needs from you also land in the Inbox.</p>
       <div class="talk">
         <aside id="talkList"></aside>
         <div class="talk-main">
@@ -74,6 +80,7 @@
       </div>
     </section>
     <section id="today" class="tab">
+      <p class="intro"><b>Today:</b> what happened overnight and what's broken, product by product, problems first. To try new things use Ready to test; to ship use Go live.</p>
       <div class="bar">
         <button class="primary" id="runDaily">Run daily trials</button>
         <button id="runSmoke">Smoke-test everything</button>
@@ -81,18 +88,21 @@
         <label><input type="checkbox" id="optLocal"> local only</label>
         <span id="runInfo"></span>
       </div>
+      <div id="todayNow" class="today-now"></div>
       <div id="cards" class="cards"></div>
     </section>
     <section id="golive" class="tab">
-      <div class="bar"><span class="meta" id="glInfo">Is beta ahead of live, is it ready, and one tap to ask for the go-live card. Your tap on Approve is what goes live.</span> <button class="small" id="glRefresh">Check again</button></div>
+      <p class="intro"><b>Go live:</b> what's on beta but not on the live site yet, and the button to ship it. Nothing goes live until you tap Approve.</p>
+      <div class="bar"><span class="meta" id="glInfo">Checking every product…</span> <button class="small" id="glRefresh">Check again</button></div>
       <div id="glList" class="gl-list"><div class="meta">Loading…</div></div>
     </section>
     <section id="ready" class="tab">
-      <div class="bar"><span class="meta">Roadmap items on beta: what changed, which acceptance criteria were verified (with videos), how to try it, and the known bugs.</span></div>
+      <p class="intro"><b>Ready to test:</b> finished work that is on the beta site now, with how to try it. Play it, then ship it from Go live, or tap 🐞 on the beta site for problems.</p>
       <div id="readyMs" class="cards" style="grid-template-columns:1fr"></div>
       <div id="readyList" class="cards" style="grid-template-columns:1fr"></div>
     </section>
     <section id="roadmap" class="tab">
+      <p class="intro"><b>Roadmap:</b> what's planned next and how far along it is. Bugs live in Backlog; finished work shows up in Ready to test.</p>
       <div class="bar">
         <select id="rmProduct"><option value="">All products</option></select>
         <select id="rmStatus"><option value="">All (not dropped)</option><option value="idea">Ideas</option><option value="planned,in progress">Planned and in progress</option><option value="on beta">On beta</option><option value="live,done">Live and done</option><option value="dropped">Dropped</option></select>
@@ -107,14 +117,17 @@
       <details id="rmLog" class="meta"></details>
     </section>
     <section id="report" class="tab">
+      <p class="intro"><b>Report:</b> the full written report of one run: every step, review and finding. Today shows the short version.</p>
       <div class="bar"><select id="reportRun"></select> <a id="reportMd" target="_blank">Markdown</a></div>
       <div id="reportBody"></div>
     </section>
     <section id="playtests" class="tab">
+      <p class="intro"><b>Playtests:</b> every playtest with its video, screenshots and review, side by side with the one before.</p>
       <div id="ptListView"><div class="bar" id="ptBar"></div><div id="ptTrends"></div><div id="ptList"></div></div>
       <div id="ptDetail"></div>
     </section>
     <section id="backlog" class="tab">
+      <p class="intro"><b>Backlog:</b> bugs the playtests and you found, yours and the worst first. Hand one to an agent, or set it aside.</p>
       <div class="bar">
         <select id="blProduct"><option value="">All products</option></select>
         <select id="blStatus" title="Backlog: blockers and bugs. Ideas: polish and ideas (never auto-fixed; expire after 14 days unseen)"><option value="open,fixing">Open</option><option value="idea">Ideas</option><option value="fixed">Fixed</option><option value="wontfix">Won't fix</option><option value="expired">Expired ideas</option><option value="open,fixing,fixed,wontfix,idea,expired">All</option></select>
@@ -123,10 +136,12 @@
       <div id="blList"></div>
     </section>
     <section id="changes" class="tab">
+      <p class="intro"><b>Changes:</b> every change an agent made: what it is doing now and what is done. Ready ones merge into beta by themselves.</p>
       <div class="bar"><select id="chStatus"><option value="queued,working,verifying,revising,ready">Active</option><option value="ready">Ready for you</option><option value="merged">Merged</option><option value="failed,closed">Failed or closed</option><option value="">All</option></select> <span id="chInfo" class="meta"></span></div>
       <div id="chList"></div>
     </section>
     <section id="costs" class="tab">
+      <p class="intro"><b>Costs:</b> what the studio costs (servers, generation, Claude) against your budget.</p>
       <div class="bar">
         <select id="coPeriod"><option value="month">This month</option><option value="week">Last 7 days</option><option value="today">Today</option><option value="lastmonth">Last month</option><option value="30d">Last 30 days</option></select>
         <button class="small" id="coRefresh" title="Fetch fresh Cost Explorer numbers ($0.01 per request; anything under an hour old is reused)">Refresh</button>
@@ -137,10 +152,12 @@
       <div id="costsBody"></div>
     </section>
     <section id="runs" class="tab">
+      <p class="intro"><b>Runs:</b> the raw list of every run and its steps, for digging into what happened. Report tells the same runs in plain words.</p>
       <div id="runList"></div>
       <div id="runDetail"></div>
     </section>
     <section id="memory" class="tab">
+      <p class="intro"><b>Memory:</b> what every agent and Talk remembers: your decisions and preferences, conventions and lessons.</p>
       <div class="bar">
         <select id="memProduct"><option value="">All products</option></select>
         <select id="memKind"><option value="">Every kind</option><option value="decision">Decisions</option><option value="preference">Preferences</option><option value="convention">Conventions</option><option value="lesson">Lessons</option><option value="canon">Canon</option><option value="state">In progress</option></select>
@@ -156,10 +173,12 @@
       <div id="memRuns"></div>
     </section>
     <section id="users" class="tab" data-guide="off">
+      <p class="intro"><b>Users:</b> who can sign in and what they may do.</p>
       <div id="usBody"><div class="meta">Loading…</div></div>
     </section>
     <section id="settings" class="tab" data-guide="off">
-      <div class="bar"><span class="meta">Stored in Studio, so they follow you from your laptop to your phone. Talk can read and change them too ("make the voice a bit faster"); anything that can raise costs needs your yes.</span></div>
+      <p class="intro"><b>Settings:</b> call voice, agent and PM limits, notifications and budgets.</p>
+      <div class="bar"><span class="meta">They follow you from your laptop to your phone. Talk can read and change them too ("make the voice a bit faster"); anything that can raise costs needs your yes.</span></div>
       <div id="setBody"><div class="meta">Loading…</div></div>
     </section>
   </main>
