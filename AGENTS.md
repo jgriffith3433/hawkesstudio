@@ -5,12 +5,12 @@ J's cockpit for every Hawkes product, and the daily loop:
 ```
 build (Unity, on the AWS build server) → playtest (a real browser, the game's own bot) → Claude reviews the footage
   → findings go to the backlog → the morning report → J and Claude talk it through → agents fix
-  → J approves into beta, or Talk's PM loop merges changes that pass their acceptance checks (J delegated it)
+  → ready changes merge into beta by themselves (agents.autoMergeBeta; one that can't waits for a person)
   → J goes live (main = the live site)
 ```
 
 **The lanes** (`src/beta.ts`): agent branch → `beta` → `main`. Every repo agents change has a `beta` branch (made
-from main when missing). Agent pull requests target beta; approving merges into beta. `https://<sub>.hawkesgen.com/` is
+from main when missing). Agent pull requests target beta and merge into it by themselves once ready (`autoMergeBeta`, agents.ts). `https://<sub>.hawkesgen.com/` is
 beta, and the server's daily "local" playtests play beta. Going live fast-forwards main to the beta commit that was
 playtested; nothing else moves main. See `docs/daily.md` ("Beta and going live").
 
@@ -42,7 +42,7 @@ So everything also shows in Gen's dashboard, library and usage. Studio adds:
 - `docs/agents.md`: **roles and skills in git** (`.claude/agents`, `.claude/skills`), a model per job, warm starts, Talk
   at full power in the agent sandbox, its fast lane to beta, and the guards (sandbox user, J's typed words, rulesets).
 - `docs/cloud.md`: **where it runs now** (hawkesgen.com, the AWS control server), how to deploy changes, secrets, logs.
-- `src/agents.ts`: agent workers. A finding goes to Claude Code on a branch cut from beta, then a pull request into beta (ready on the agent's own checks; a playtest of the change only on request: "Playtest this change", `studio_change` playtest), then J or the PM approves, which merges it into beta (not live); beta's run then playtests it. Studio and Gen themselves: a pull request into main, checked by CI and a smoke check (below).
+- `src/agents.ts`: agent workers. A finding goes to Claude Code on a branch cut from beta, then a pull request into beta (ready on the agent's own checks; a playtest of the change only on request: "Playtest this change", `studio_change` playtest), then it merges into beta by itself once ready (`autoMergeBeta`, not live; one that can't stays ready for the Changes tab's Merge button, and Talk says why); beta's run then playtests it and the PM judges a task's criteria there. Studio and Gen themselves: a pull request into main, checked by CI and a smoke check (below).
 - `products.json`: every product, how to serve it locally, what to playtest, its story docs and deploy steps.
 - `CLAUDE.md` just imports this file.
 
@@ -112,8 +112,8 @@ the service detached; restart it after changing `src/`. The MCP server (`bin/stu
 **Talk as J's PM** (`src/roadmap.ts`, `src/pm.ts`, `src/acceptance.ts`, `src/scout.ts`; docs/daily.md, "Running the
 studio with Talk"): J sets direction in Talk, Talk keeps the roadmap (items with acceptance criteria, tasks under them),
 and the PM loop works it with the agents: it starts J's own reports from the beta sites' 🐞 button first, then tasks and the worst bugs, within its caps, runs PM turns in the day's
-"Studio PM" conversation, merges into beta the changes that pass their acceptance gate (delegated merges, J's choice;
-never live, never Studio or Gen), revises the rest (3 tries, then J), resumes agents that asked a question with the
+"Studio PM" conversation (ready product changes merge into beta by themselves, `autoMergeBeta`; with that off, the PM
+merges the ones that pass their acceptance gate: delegated merges, never live, never Studio or Gen), revises the rest (3 tries, then J), resumes agents that asked a question with the
 answer, and marks a task verified only when its criteria pass on beta. Milestones group items into a point J playtests
 himself: reaching one (every item on beta, checks passed) is one of the few things that notify his phone (with what
 went wrong and decisions only he can make). Every decision is in the PM log with undo. Keep

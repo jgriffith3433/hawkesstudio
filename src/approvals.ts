@@ -146,6 +146,13 @@ export async function requestApproval(kind: string, target: string, params: Reco
   if (!KINDS.includes(kind as Kind)) throw new StudioError(`kind: ${KINDS.join(' | ')}`);
   target = String(target ?? '').trim();
   if (!target) throw new StudioError('target: the change id, product, task id, settings section or question id');
+  // Product changes merge into beta by themselves (agents.ts autoMergeBeta): no card asks J for one. One that couldn't
+  // waits for a person in the Changes tab (its Merge button); Studio and Gen merges into main stay J's cards.
+  if (kind === 'merge') {
+    const { getChange, agentSettings } = await import('./agents.ts');
+    const c = getChange(target);
+    if (c && !c.infra && agentSettings().autoMergeBeta) throw new StudioError(`${target} is a product change: those merge into beta by themselves once ready (no Approve card). ${c.auto_merge?.startsWith('failed') ? `It couldn't (${c.auto_merge.slice(8, 300)}): merge it from the Changes tab, or revise it.` : c.status === 'merged' ? 'It is merged.' : `It is ${c.status}.`}`);
+  }
   const clean = kind === 'gpu' ? { amount: params.amount === undefined || params.amount === null || params.amount === '' ? undefined : Number(params.amount) } : kind === 'settings' ? { patch: params.patch } : {};
   const { bind, card } = await describe(kind as Kind, target, clean);
   expire();

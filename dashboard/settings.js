@@ -67,6 +67,7 @@
       <div class="meta">Limits for the fixes Studio starts by itself after the daily run. Fixes and tasks you ask for always start (they queue behind the concurrency limit). On the Max plan the dollars are what Claude Code reports, not money you pay.</div>
       ${row('Agents', bool('agents', 'enabled', a.enabled))}
       ${row('Auto-fix after the daily run', bool('agents', 'autoFix', a.autoFix))}
+      ${row('Merge into beta automatically', bool('agents', 'autoMergeBeta', a.autoMergeBeta), 'A product change goes into its beta branch as soon as the agent finishes and its checks pass (no Approve card). Off: you merge each one from Changes. Going live stays your call either way.')}
       ${row('Severities auto-fixed', SEVERITIES.map((s) => `<label style="margin-right:10px"><input type="checkbox" data-s="agents" data-k="severities" value="${s}" ${a.severities.includes(s) ? 'checked' : ''}> ${s}</label>`).join(''))}
       ${row('At once', num('agents', 'maxConcurrent', a.maxConcurrent, { min: 1, max: 8 }))}
       ${row('Auto-fixes per day', num('agents', 'maxPerDay', a.maxPerDay))}

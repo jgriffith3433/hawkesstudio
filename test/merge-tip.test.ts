@@ -105,3 +105,27 @@ test('a playtest is asked for, never automatic: only for a ready product change 
   const gone = change('ready', { sha: VERIFIED });
   assert.throws(() => playtestChange(gone), /worktree is gone/);
 });
+
+test('a ready product change merges into beta by itself; one that can\'t stays ready and Talk says why', async () => {
+  const { autoMergeBeta } = await import('../src/agents.ts');
+  const before = (db.prepare('SELECT COUNT(*) AS n FROM conversations').get() as any).n;
+  // GitHub refuses the merge (the fake answers 405): still ready, the reason on the change, one notice in Talk.
+  pr = { state: 'open', merged: false, head: { sha: VERIFIED } };
+  calls.length = 0;
+  const id = change('ready', { sha: VERIFIED });
+  assert.equal(await autoMergeBeta(id), null);
+  assert.ok(calls.some((c) => c.method === 'PUT' && c.url.endsWith('/pulls/7/merge')), 'the merge was tried, with no approval');
+  const c = getChange(id)!;
+  assert.equal(c.status, 'ready');
+  assert.match(c.auto_merge!, /^failed: .*stopped by the test/);
+  assert.match(c.detail!, /couldn't merge into beta by itself/);
+  const notices = db.prepare('SELECT messages FROM conversations ORDER BY created DESC LIMIT 1').get() as any;
+  assert.equal((db.prepare('SELECT COUNT(*) AS n FROM conversations').get() as any).n, before + 1);
+  assert.match(String(notices.messages), /couldn't merge into beta by itself.*stays ready/);
+  // A canon conflict never merges by itself: no merge is tried.
+  calls.length = 0;
+  const canon = change('ready', { sha: VERIFIED, canon: { ok: false, summary: 'Vel is not a pilot', conflicts: [] } });
+  await autoMergeBeta(canon);
+  assert.ok(!calls.some((x) => x.method === 'PUT'), 'nothing was merged');
+  assert.match(getChange(canon)!.auto_merge!, /contradicts the canon/);
+});

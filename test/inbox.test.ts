@@ -19,7 +19,7 @@ fs.writeFileSync(process.env.STUDIO_PRODUCTS, JSON.stringify({ products: [{
 }] }));
 
 const { db } = await import('../src/db.ts');
-await import('../src/agents.ts');
+const agents = await import('../src/agents.ts');
 const talk = await import('../src/talk.ts');
 const rm = await import('../src/roadmap.ts');
 const pm = await import('../src/pm.ts');
@@ -123,7 +123,13 @@ test('GPU budgets: a card per waiting task, J only, approving clears it', async 
 
 test('changes only J may merge, and milestones reached', async () => {
   change('c_bbbbbbbbbbbb', { title: 'Better jump' });
+  // Product changes merge into beta by themselves (agents.autoMergeBeta, on by default): the Inbox doesn't ask.
+  assert.equal(agents.agentSettings().autoMergeBeta, true);
+  assert.ok(!(await ib.inbox()).some((x) => x.id === 'merge:c_bbbbbbbbbbbb'), 'a product merge into beta is not J\'s to approve');
+  // With it off, a ready change of J's own request is his to merge, as before.
+  agents.saveAgentSettings({ autoMergeBeta: false });
   const m = (await ib.inbox()).find((x) => x.id === 'merge:c_bbbbbbbbbbbb')!;
+  agents.saveAgentSettings({ autoMergeBeta: true });
   assert.ok(m, 'J\'s own request, ready: his to merge');
   assert.equal(m.recommendation, 'Merge into beta');
   await assert.rejects(ib.answerInbox(m.id, 'Merge into beta', 'Talk (PM)'), /J's call/);
