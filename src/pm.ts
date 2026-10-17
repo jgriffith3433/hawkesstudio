@@ -186,7 +186,10 @@ async function syncTask(t: Task, getChange: (id: string) => any) {
   if (deploy && c.pr && !liveChecked.has(`${t.id}:${deploy.id}`)) {
     liveChecked.add(`${t.id}:${deploy.id}`);
     await gitAsync(path.join(PROJECTS, c.repo), ['fetch', '--quiet', 'origin']);
-    if (prCommit(c.repo, 'main', c.pr)) setTask(t.id, { status: getTask(t.id)!.status === 'verified' ? 'live' : getTask(t.id)!.status, live_at: Date.now() });
+    // Live once its commit is on main: from verified, or from merged when beta isn't played after merges (nothing
+    // verifies it there, config.ts betaPlaytestsOn).
+    const now = getTask(t.id)!.status;
+    if (prCommit(c.repo, 'main', c.pr)) setTask(t.id, { status: now === 'verified' || (now === 'merged' && !betaPlaytestsOn()) ? 'live' : now, live_at: Date.now() });
   }
 }
 
@@ -320,7 +323,13 @@ export async function startWork() {
   // J's own reports from the beta sites (bugreport.ts) come first: before roadmap tasks and the reviews' bugs.
   const startBug = (f: any, why: string) => {
     const tries = (db.prepare(`SELECT COUNT(*) AS n FROM changes WHERE findings LIKE ?`).get(`%"${f.id}"%`) as any).n as number;
-    if (tries >= s.maxTries) return null;
+    if (tries >= s.maxTries) {
+      // Out of attempts: J decides, once per round of attempts (not again each minute after he has answered).
+      const last = (db.prepare(`SELECT MAX(created) AS t FROM changes WHERE findings LIKE ?`).get(`%"${f.id}"%`) as any).t ?? 0;
+      const asked = db.prepare(`SELECT 1 FROM questions WHERE subject = ? AND at > ? LIMIT 1`).get(f.id, last);
+      if (!asked) askJ(`"${f.title}" (${name(f.product)}) failed ${tries} attempts by agents. Try another way, or drop it (won't fix)?`, { subject: f.id, product: f.product, options: ['try again', "won't fix"], from: `the default after ${s.maxTries} tries` });
+      return null;
+    }
     const id = startFix(f.product, [f.id]);
     db.prepare('UPDATE changes SET criteria = ? WHERE id = ?').run(J([`Fixed: ${f.title}`]), id);
     logDecision('start', f.id, f.product, `started ${id} to fix ${why}[${f.severity}] ${f.title}`, { kind: 'start', change: id, finding: f.id });

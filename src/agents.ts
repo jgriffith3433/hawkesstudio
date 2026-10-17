@@ -143,6 +143,18 @@ function update(id: string, patch: Partial<Record<string, any>>) {
   for (const k of ['findings', 'commits', 'verify', 'notes', 'log', 'phase']) if (patch[k] !== undefined) next[k] = patch[k] === null ? null : J(patch[k]);
   db.prepare(`UPDATE changes SET status=?, detail=?, pr=?, pr_url=?, title=?, summary=?, commits=?, diffstat=?, verify=?, notes=?, log=?, cost=?, session=?, phase=?, auto_merge=?, updated=? WHERE id=?`)
     .run(next.status, next.detail, next.pr, next.pr_url, next.title, next.summary, next.commits, next.diffstat, next.verify, next.notes, next.log, next.cost, next.session ?? null, next.phase ?? null, next.auto_merge ?? null, next.updated, id);
+  // A bug is consumed when an agent takes it (startFix marks it fixed). If that attempt fails, for whatever reason, the
+  // bug goes back to open so the PM picks it up again (at most maxTries attempts, then J is asked): consumed means it
+  // will get done, not that it's dropped when an attempt crashes.
+  if (patch.status === 'failed' && cur?.status !== 'failed') reopenTaken(id, (parse(next.findings) ?? []) as string[], String(next.detail ?? ''));
+}
+
+/** The bugs a failed change had taken (fixed with its note) go back to open, for another attempt. */
+export function reopenTaken(id: string, findings: string[], why: string) {
+  for (const f of findings) {
+    const fd = getFinding(f);
+    if (fd?.status === 'fixed' && fd.note === `agent change ${id}`) updateFinding(f, { status: 'open', note: `agent change ${id} failed (${why.slice(0, 160)}); open again for another attempt` });
+  }
 }
 
 /**

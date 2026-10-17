@@ -482,3 +482,21 @@ test('a failed try is not retried while another try of the task is going or merg
     if (token === undefined) delete process.env.GITHUB_TOKEN; else process.env.GITHUB_TOKEN = token;
   }
 });
+
+test('a bug is consumed when an agent takes it, and opens again if that attempt fails (so it does get done)', async () => {
+  const { startFix, reopenTaken } = await import('../src/agents.ts');
+  const { getFinding } = await import('../src/backlog.ts');
+  const now = Date.now();
+  db.prepare(`INSERT INTO findings (id, product, key, title, severity, status, first_seen, last_seen) VALUES ('f_c0a5e0000f01', 'pmthird', 'k4', 'Score never resets', 'bug', 'open', ?, ?)`).run(now, now);
+  const id = startFix('pmthird', ['f_c0a5e0000f01']);
+  // Consumed at once: fixed, with the change that took it.
+  assert.equal(getFinding('f_c0a5e0000f01')!.status, 'fixed');
+  assert.equal(getFinding('f_c0a5e0000f01')!.note, `agent change ${id}`);
+  // The attempt fails (any way: a crash, a push refused, no commit): the bug goes back to open for another attempt.
+  reopenTaken(id, ['f_c0a5e0000f01'], 'push failed');
+  assert.equal(getFinding('f_c0a5e0000f01')!.status, 'open');
+  assert.match(getFinding('f_c0a5e0000f01')!.note ?? '', /failed \(push failed\); open again/);
+  // A bug some other change took is left alone.
+  reopenTaken('c_000000000000', ['f_c0a5e0000f01'], 'x');
+  assert.equal(getFinding('f_c0a5e0000f01')!.status, 'open');
+});
