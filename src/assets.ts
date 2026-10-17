@@ -19,6 +19,8 @@
 //   }
 //
 // "inputs": ["relative/path.png"] (relative to the repo) are passed as $input:0, $input:1 ...
+// "pickAt": 2 makes the candidates at step 2 (the steps before it run once), e.g. a Blender render styled three ways.
+// "$step1:depth" passes on step 1's output titled "depth" (blender.render makes several).
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -26,7 +28,7 @@ import crypto from 'node:crypto';
 import { abs, getProduct, type Product } from './config.ts';
 import { gen, genWait } from './gen.ts';
 
-export type AssetSpec = { id: string; steps: any[]; candidates?: number; pick?: string; files: Record<string, string>; inputs?: string[]; note?: string };
+export type AssetSpec = { id: string; steps: any[]; candidates?: number; pick?: string; pickAt?: number; files: Record<string, string>; inputs?: string[]; note?: string };
 type Manifest = { project?: string; assets: AssetSpec[] };
 type Lock = Record<string, { recipe: string; job: string; made: string; files: Record<string, string> }>;
 
@@ -57,7 +59,8 @@ const writeLock = (p: Product, lock: Lock) => fs.writeFileSync(lockPath(p), JSON
 const sha = (file: string) => crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
 
 function paramsOf(a: AssetSpec) {
-  return { steps: a.steps, candidates: a.candidates ?? 1, ...(a.pick ? { pick: a.pick } : {}) };
+  // pickAt only when set, so recipes written before it keep their fingerprints.
+  return { steps: a.steps, candidates: a.candidates ?? 1, ...(a.pick ? { pick: a.pick } : {}), ...(a.pickAt ? { pickAt: a.pickAt } : {}) };
 }
 function inputsOf(p: Product, a: AssetSpec) {
   return a.inputs?.length ? { files: a.inputs.map((rel) => path.join(abs(p.repo), rel)) } : {};
