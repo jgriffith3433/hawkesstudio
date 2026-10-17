@@ -52,13 +52,19 @@ test('items, tasks, order and dependencies', () => {
 
 test('the merge gate and verified', () => {
   const crit = ['a', 'b'];
-  assert.equal(gate(null, crit).pass, false);
+  // Not playtested (J's call, 2026-10-16: a playtest is on request, not a gate): ready on the agent's checks passes.
+  assert.equal(gate(null, crit).pass, true);
+  const unplayed = gate({ sha: 'abc', preview: null, scenario: 'checkout' }, crit);
+  assert.deepEqual([unplayed.pass, unplayed.played, unplayed.why], [true, false, []]);
+  assert.equal(gate({ sha: 'abc', outcome: 'not played', error: "the playtest couldn't run: no page server" }, crit).pass, true, "a playtest that couldn't run is no reason");
+  assert.equal(gate({ sha: 'abc', canon: { ok: false, summary: 'x', conflicts: [{ entry: 'm_1', why: 'contradicts' }] } }, []).pass, false, 'a canon conflict still stops it');
   assert.equal(gate({ outcome: 'passed', verdict: 'ship', criteria: [{ criterion: 'a', met: 'yes' }, { criterion: 'b', met: 'unclear' }] }, crit).pass, true, 'unclear is judged again on beta');
   const no = gate({ outcome: 'passed', verdict: 'ship', criteria: [{ criterion: 'a', met: 'yes' }, { criterion: 'b', met: 'no', evidence: 'missing' }] }, crit);
   assert.equal(no.pass, false);
   assert.match(no.why.join(' '), /not met: b/);
   assert.equal(gate({ outcome: 'passed', verdict: 'broken', criteria: [] }, []).pass, false);
-  assert.equal(gate({ outcome: 'passed', verdict: 'ship' }, crit).pass, false, 'criteria must be judged');
+  assert.equal(gate({ outcome: 'passed', verdict: 'ship' }, crit).pass, true, 'criteria are judged on beta');
+  assert.equal(gate({ outcome: 'passed', verdict: 'ship', playtest: 'j_1' }, crit).played, true);
   assert.equal(gate({ outcome: 'passed', verdict: 'ship', changeWorked: 'partly' }, []).pass, false, 'a fix the review says only partly worked');
   assert.equal(gate({ outcome: 'timeout', verdict: 'ship' }, []).pass, false);
   assert.equal(allMet([{ criterion: 'a', met: 'yes' }, { criterion: 'b', met: 'yes' }], crit), true);

@@ -8,7 +8,7 @@
 //   checked:  the product's checks (products.json "checks", run as the sandbox user), a canon check for content
 //   pushed:   a fast-forward of beta (never main, never forced), then a beta run whose result goes back to Talk
 //
-// Everything else is an agent's job (studio_task, studio_fix): a pull request, a verification playtest, a preview.
+// Everything else is an agent's job (studio_task, studio_fix): a pull request, a preview (a playtest of it on request).
 
 import fs from 'node:fs';
 import { critical } from './drain.ts';

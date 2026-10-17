@@ -419,7 +419,7 @@ const server = http.createServer(async (req, res) => {
       const { answerChange } = await import('./agents.ts');
       return send(res, 200, answerChange(m[1], String(b.answer ?? ''), await (await import('./inbox.ts')).actor(req, b.by)));
     }
-    m = /^\/api\/changes\/(c_[0-9a-f]+)(?:\/(approve|revise|close))?$/.exec(route);
+    m = /^\/api\/changes\/(c_[0-9a-f]+)(?:\/(approve|revise|close|playtest))?$/.exec(route);
     if (m && method === 'GET' && !m[2]) return send(res, 200, getChange(m[1]) ?? { error: 'no such change' });
     if (m && method === 'POST' && m[2]) {
       const b = await readJson(req);
@@ -431,6 +431,13 @@ const server = http.createServer(async (req, res) => {
         return send(res, 200, r);
       }
       if (m[2] === 'close') return send(res, 200, await close(m[1], by));
+      // A playtest of the change, on request (agents.ts playtestChange): it isn't automatic, nor a gate.
+      if (m[2] === 'playtest') {
+        const { playtestChange } = await import('./agents.ts');
+        const r = playtestChange(m[1], by);
+        tagChange(m[1], origin);
+        return send(res, 200, r);
+      }
     }
     if (route === '/api/agents/settings' && method === 'GET') return send(res, 200, agentSettings());
     // The roles (.claude/agents/*.md) and skills (.claude/skills/) every Claude Code run uses (roles.ts).
@@ -585,6 +592,10 @@ server.listen(PORT, '127.0.0.1', () => {
   void import('./deploy.ts');
   const runs = resumeRuns();
   const changes = resumeChanges();
+  // Pull requests J merged on GitHub: their changes are marked merged (agents.ts), every 5 minutes.
+  const mergedOutside = () => void import('./agents.ts').then(({ syncMergedOutside }) => syncMergedOutside()).catch((e) => console.warn(`[studio] merged outside Studio: ${e.message ?? e}`));
+  setTimeout(mergedOutside, 60_000).unref();
+  setInterval(mergedOutside, 5 * 60_000).unref();
   const answers = resumeTalk();
   if (runs.length || changes.length || answers.length) console.log(`[studio] carrying on after the restart: ${runs.length} run(s), ${changes.length} agent change(s), ${answers.length} Talk answer(s)`);
   pruneDetached();

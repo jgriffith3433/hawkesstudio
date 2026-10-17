@@ -18,7 +18,7 @@ fs.writeFileSync(process.env.STUDIO_PRODUCTS, JSON.stringify({ repos: { site: 'o
 }] }));
 
 const { db, J } = await import('../src/db.ts');
-const { approve, getChange } = await import('../src/agents.ts');
+const { approve, getChange, syncMergedOutside, playtestChange } = await import('../src/agents.ts');
 
 const VERIFIED = 'a'.repeat(40);
 let pr: any;
@@ -29,6 +29,7 @@ globalThis.fetch = (async (url: string, init: any = {}) => {
   calls.push({ method, url, body });
   const json = (status: number, data: unknown) => new Response(JSON.stringify(data), { status, headers: { 'Content-Type': 'application/json' } });
   if (method === 'GET' && url.endsWith('/pulls/7')) return json(200, pr);
+  if (method === 'GET' && url.endsWith('/pulls/8')) return json(200, { state: 'open', merged: false, head: { sha: VERIFIED } });
   if (method === 'PUT' && url.endsWith('/pulls/7/merge')) return json(405, { message: 'stopped by the test' });
   if (url.includes('/pulls/7/files')) return json(200, []);
   return json(404, { message: 'not faked' });
@@ -77,4 +78,30 @@ test('changes carry real links (video, the change in Studio)', () => {
   assert.match(c.links.change, new RegExp(`^https?://[^#]+/#changes/${id}$`));
   assert.equal(c.links.pr, 'https://github.com/owner/site/pull/7');
   assert.equal(c.links.preview, 'https://x.hawkesgen.com/c/1/');
+});
+
+test('a pull request J merged on GitHub marks its change merged; one merged before later commits stays', async () => {
+  // Merged at the commit Studio has on record: merged, no Approve card left.
+  pr = { state: 'closed', merged: true, merged_at: '2026-10-16T18:00:00Z', merged_by: { login: 'jgriffith3433' }, merge_commit_sha: 'd'.repeat(40), head: { sha: VERIFIED } };
+  for (const c of db.prepare(`SELECT id FROM changes WHERE status = 'ready'`).all() as any[]) db.prepare(`UPDATE changes SET status = 'closed' WHERE id = ?`).run(c.id);
+  const merged = change('ready', { sha: VERIFIED });
+  const open = change('ready', { sha: VERIFIED });
+  db.prepare('UPDATE changes SET pr = 8 WHERE id = ?').run(open);
+  const marked = await syncMergedOutside();
+  assert.deepEqual(marked, [merged]);
+  assert.equal(getChange(merged)!.status, 'merged');
+  assert.match(getChange(merged)!.detail!, /outside Studio \(jgriffith3433 on GitHub/);
+  assert.equal(getChange(open)!.status, 'ready', 'an open pull request stays ready');
+  // Merged at an older head (the agent pushed more after): left for revise, as approve() says.
+  pr = { state: 'closed', merged: true, merged_at: '2026-10-16T18:00:00Z', head: { sha: 'b'.repeat(40) } };
+  const older = change('ready', { sha: VERIFIED });
+  assert.deepEqual(await syncMergedOutside(), []);
+  assert.equal(getChange(older)!.status, 'ready');
+});
+
+test('a playtest is asked for, never automatic: only for a ready product change with its worktree', () => {
+  const working = change('working', { sha: VERIFIED });
+  assert.throws(() => playtestChange(working), /working: a playtest can be asked for once it's ready/);
+  const gone = change('ready', { sha: VERIFIED });
+  assert.throws(() => playtestChange(gone), /worktree is gone/);
 });

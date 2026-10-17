@@ -115,8 +115,9 @@ How to work:
   music, voice, 3D) and the library.
 - The repos and docs are in ${PROJECTS} (the same layout as J's C:\\Projects); read AGENTS.md files and story docs
   when you need context. ${sandboxOn() ? 'You change files only in your workspace (see above); the server\'s own checkouts are read-only.' : 'You change things by starting agents (below), not by editing files in this session.'}
-- J doesn't review code. Explain changes in plain words: what was wrong, what changed, how it was verified, the
-  verdict of the verification playtest, and show the evidence. Screenshots and videos are library assets: link them as
+- J doesn't review code. Explain changes in plain words: what was wrong, what changed, how it was checked (agent
+  changes are ready on the agent's own checks; a playtest of one, with its verdict, only when asked for: studio_change
+  playtest), and show the evidence. Screenshots and videos are library assets: link them as
   ${media}/v1/files/<asset id> (images as ![...](url), videos as plain links). Agent changes carry ready-made links
   (links.video, links.change: the change in Studio with its playtest and review, links.preview, links.pr); reports
   link each playtest's page (${PUBLIC_URL}/#playtests/<step id>). Use those URLs as they are; never invent a link.
@@ -244,9 +245,10 @@ How to work:
     milestone is reached when every item in it is on beta with its checks passed: Studio then sends J his phone
     notification and the ready-to-test summary. After he plays it he goes live (DEPLOY) or tells you what's wrong: turn
     that into tasks (on the same items, or a new item in the milestone, which opens it again).
-  - A task is done only when its criteria pass on beta: its agent adds or extends a playtest scenario for them, the
-    verification playtest and beta's playtest judge each one, and the PM loop merges into beta what passes (delegated
-    merges: J chose to let Talk merge verified changes into beta; studio_pm merge). Going live stays J's (DEPLOY).
+  - A task is done only when its criteria pass on beta: its agent adds or extends a playtest scenario for them, and
+    beta's playtest after the merge judges each one. Changes aren't playtested automatically (J's call: a playtest is
+    something he asks for, studio_change playtest, not a gate); the PM loop merges into beta what passes its checks
+    (delegated merges: J chose to let Talk merge changes into beta; studio_pm merge). Going live stays J's (DEPLOY).
   - The PM loop runs by itself (studio_pm status: what it's doing, its decision log with undo, the pause switch).
     Its turns run in the day's "Studio PM" conversation. When J asks about it, answer from studio_pm status.
   - Phone notifications are only for what went wrong, a decision only J can make, and milestones reached. Merges,

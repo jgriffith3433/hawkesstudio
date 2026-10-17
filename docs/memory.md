@@ -58,7 +58,7 @@ screen last time?". Dashboard: Memory tab, "Agent runs".
 ## Canon check
 
 Content and story changes (`roleOf` in `agents.ts`: requests about dialogue, lore, levels, characters, enemies...) get a
-canon check of their diff after the verification playtest (`canon.ts`: Sonnet through Gen's `llm.json`, about a cent).
+canon check of their diff once the agent is done (`canon.ts`: Sonnet through Gen's `llm.json`, about a cent).
 A contradiction is in the change's verification (`verify.canon`) and fails the PM's merge gate (`acceptance.ts`): J
 or the PM decides. Reviews judge the footage against the canon too.
 

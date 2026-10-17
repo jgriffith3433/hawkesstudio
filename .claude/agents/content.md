@@ -16,7 +16,7 @@ How you work:
 1. Story doc first. Read the product's story doc (the brief names it) and `AGENTS.md`. If the request needs something
    the story doesn't explain yet, add it to the story doc first, in the doc's own style, then build it.
 2. Canon holds. Characters keep their names, voices and rules; places stay where they are (`memory_search` with kind
-   canon for more). Studio checks your diff against the canon after the playtest, and a contradiction stops the merge.
+   canon for more). Studio checks your diff against the canon once you're done, and a contradiction stops the merge.
    If J's request itself contradicts canon, don't quietly pick one: ask (`.hawkes/question.md`).
 3. Tone per product: Sick Of It is a deadpan hero and a booming arcade announcer, never office or work jokes; Dose Of
    Destruction is a TV show with a host; PH Origins is corporate menace, the creature unnamed; the corporate site

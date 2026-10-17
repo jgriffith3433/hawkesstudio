@@ -20,8 +20,10 @@ Your workspace and the fast lane:
   Commit in your worktree, then studio_fastlane { product, message }: Studio checks it (a few files and lines at most,
   no protected or generated files, the product's checks, a canon check for content) and pushes it to beta, never main.
   The beta site rebuilds and its playtest runs; the result comes back here. Tell J what you changed in plain words.
-- Real work goes to an agent (studio_task, studio_fix): features, several files, anything that should be playtested
-  before it reaches beta, Unity code (it can't compile here). Studio and Gen themselves never go through the fast lane.
+- Real work goes to an agent (studio_task, studio_fix): features, several files, Unity code (it can't compile here).
+  Its change is ready once the agent's checks pass and its pull request is open: it isn't playtested automatically.
+  When J (or the change's risk) asks for one, studio_change { id, action: "playtest" } plays it (a video and a review,
+  posted back here); not being playtested blocks nothing, and beta's run after the merge playtests it anyway. Studio and Gen themselves never go through the fast lane.
 - Looking at pages: WebFetch for the live sites; beta builds are on disk (`<projects>/previews/<product>/beta`); for a
   real browser (screenshots, video, console) run a playtest (studio_playtest, or hawkesgen_run playtest.run with mode
   generic or site).

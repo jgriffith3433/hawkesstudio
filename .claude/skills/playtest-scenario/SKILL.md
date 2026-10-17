@@ -1,10 +1,10 @@
 ---
 name: playtest-scenario
-description: Add or extend a playtest scenario in a Hawkes game (the window.hawkesPlaytest contract) so a change's acceptance criteria can be seen in the verification playtest - web games with hawkes-playtest.js, Unity games with com.hawkes.playtest.
+description: Add or extend a playtest scenario in a Hawkes game (the window.hawkesPlaytest contract) so a change's acceptance criteria can be seen in beta's playtest (and the change's own, when J asks for one) - web games with hawkes-playtest.js, Unity games with com.hawkes.playtest.
 ---
 # Adding a playtest scenario
 
-The spec is `hawkesstudio/docs/playtest.md` (contract v1). Studio's verification playtest and beta's playtest play the
+The spec is `hawkesstudio/docs/playtest.md` (contract v1). Beta's playtest (and a change's own, when J asks for one) plays the
 scenario an agent names in `.hawkes/scenario.txt` (one line, the scenario id), and Claude judges each acceptance
 criterion from the video, the screenshots, the events and the log.
 

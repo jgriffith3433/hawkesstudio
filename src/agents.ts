@@ -6,8 +6,10 @@
 //     2. the brief: the findings (with their screenshots from Hawkes Gen), the story doc, the project's checks
 //     3. Claude Code, headless, in the worktree: reads AGENTS.md, fixes, runs the checks, commits
 //     4. Studio pushes the branch and opens a pull request into beta (GitHub API, the hawkes/github token)
-//     5. verify: web products are served from the worktree, Unity ones are built on the build server into a website
-//        copy (.work/<change>-site); then the finding's scenario is playtested and reviewed
+//     5. ready once the agent's checks pass and the pull request is open: no playtest. One runs only when J asks
+//        (playtestChange): web products are served from the worktree, Unity ones are built on the build server into a
+//        website copy (.work/<change>-site); then the change's scenario is playtested and reviewed. Beta's own run
+//        after the merge judges a task's acceptance criteria.
 //   approve(change)   -> merges the pull request into beta (nothing goes live): the beta site and its playtest follow,
 //                        the findings are marked fixed. J's call only (the dashboard button, or confirm "MERGE <id>").
 //                        Going live is a separate step (deploy.ts: the deploy plan, then "DEPLOY <product>").
@@ -80,7 +82,7 @@ export type Change = {
   pm_escalated?: number | null;
   /** A change to Hawkes Studio or Hawkes Gen (a pull request into main, which deploys itself), not a product. */
   infra: boolean;
-  /** Absolute links for Talk and J: the change in Studio (its verification playtest, review and log), the playtest video, preview, pull request. */
+  /** Absolute links for Talk and J: the change in Studio (its playtest and review if one was asked for, its log), the playtest video, preview, pull request. */
   links: ChangeLinks;
 };
 export type ChangeLinks = { change: string; pr: string | null; preview: string | null; video: string | null };
@@ -157,6 +159,8 @@ export type Phase = {
   verify?: any;
   /** On a failed change: the step it failed at, kept for the Activity panel's stages (nothing resumes it). */
   failed?: boolean;
+  /** A playtest asked for (playtestChange): who asked. It ends the pass with the change ready again, never failed. */
+  requested?: string;
 };
 export const phaseOf = (id: string): Phase | null => parse((db.prepare('SELECT phase FROM changes WHERE id = ?').get(id) as any)?.phase ?? null);
 function addLog(id: string, line: string) {
@@ -301,15 +305,15 @@ the product's tone and style. If it's too big for one change, do a solid first p
 
 ${gpuBrief(c)}` : ''}${c.criteria.length ? `## Acceptance criteria (how this is judged)
 
-The change is merged into beta only when a playtest of it shows every one of these, and it is done only when they also
-pass on beta:
+The change is ready once your checks pass and its pull request is open; after it is merged into beta, beta's playtest
+judges these, and the work is done only when every one of them passes there:
 ${c.criteria.map((k, i) => `${i + 1}. ${k}`).join('\n')}
 
 Where the game implements the playtest contract (\`window.hawkesPlaytest\`: see this project's AGENTS.md, and the spec
 at \`hawkesstudio/docs/playtest.md\` next to this repository), add or extend a scenario that plays to what the criteria
 describe (through real input, no teleporting; named setup shortcuts are fine) and logs events or checks that show each
 one, so the review can judge them from the footage and the timeline. Write that scenario's name (one line, e.g.
-\`checkout\`) in \`.hawkes/scenario.txt\`: Studio's verification playtest, and beta's, play it. To play specific content
+\`checkout\`) in \`.hawkes/scenario.txt\`: beta's playtest plays it (and this change's, when J asks for one). To play specific content
 (a new stage, level or enemy), add a second line with the scenario's options as JSON, e.g. \`{"stage":"neon-pit"}\`. Without a contract, make
 sure each criterion can be seen when the page is played.
 
@@ -605,7 +609,7 @@ async function publish(id: string, { force, title, body }: { force: boolean; tit
   });
 }
 
-async function work(id: string, note?: string, answer?: string, resumed?: Phase | null) {
+async function work(id: string, note?: string, answer?: string, resumed?: Phase | null, asked = false) {
   if (getChange(id)!.infra) return workInfra(id, note, resumed);
   let c = getChange(id)!;
   const p = getProduct(c.product);
@@ -619,8 +623,8 @@ async function work(id: string, note?: string, answer?: string, resumed?: Phase 
     update(id, { ...extra, phase: ph });
   };
   try {
-    if (resumed) addLog(id, `Studio restarted: carrying on from the ${ph.step} step`);
-    else save({}, { status: note || answer ? 'revising' : 'working', detail: 'preparing the worktree' });
+    if (resumed && !asked) addLog(id, `Studio restarted: carrying on from the ${ph.step} step`);
+    else if (!resumed) save({}, { status: note || answer ? 'revising' : 'working', detail: 'preparing the worktree' });
     const findings = c.findings.map((f) => getFinding(f)).filter((f): f is NonNullable<typeof f> => Boolean(f));
 
     if (ph.step === 'prepare') {
@@ -696,21 +700,31 @@ async function work(id: string, note?: string, answer?: string, resumed?: Phase 
       const criteriaMd = c.criteria.length ? `\n\n**Acceptance criteria:**\n${c.criteria.map((k) => `- ${k}`).join('\n')}` : '';
       const body = `${summary}${criteriaMd}\n\n---\n**Findings** (Hawkes Studio playtest review):\n${findings.map((f: any) => `- [${f.severity}] ${f.title} (${f.id}, seen ${f.seen}×)`).join('\n')}\n\nMade by a Hawkes Studio agent. Approving it in Studio merges it into ${c.base} (the beta site, not live); going live is a separate step.\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)`;
       await publish(id, { force: Boolean(note || answer), title: c.title, body });
-      // The branch tip that gets verified below; approving merges exactly this commit (approve() checks it).
-      save({ step: 'verify', tip: git(c.worktree, ['rev-parse', 'HEAD']).out, jobs: {}, verify: undefined }, { status: 'verifying', detail: 'playtesting the fix' });
+      // The branch tip the agent's checks passed on; approving merges exactly this commit (approve() checks it). No
+      // playtest here: one runs only when J asks for it (playtestChange); beta's run after the merge judges the criteria.
+      save({ step: 'finish', tip: git(c.worktree, ['rev-parse', 'HEAD']).out, jobs: {}, verify: undefined });
     }
 
     if (ph.step === 'verify') {
-      if (resumed) update(id, { status: 'verifying', detail: 'playtesting the fix' });
-      // Verify: play the finding's scenario on the fixed version (web: the worktree; Unity: a build of the branch).
+      if (resumed) update(id, { status: 'verifying', detail: 'playtesting the change' });
+      // A playtest J asked for: the change's scenario on its version (web: the worktree; Unity: a build of the branch).
+      // It never fails the change: a playtest that couldn't run (no build, no page server) says so on the change.
       const jobs: JobMemo = { get: (k) => ph.jobs?.[k], set: (k, job) => save({ jobs: { ...ph.jobs, [k]: job } }) };
-      const verify: any = await verifyChange(getChange(id)!, p, findings, jobs);
+      const verify: any = await verifyChange(getChange(id)!, p, findings, jobs).catch((e: any) => ({ outcome: 'not played', error: `the playtest couldn't run: ${String(e.message ?? e).slice(0, 300)}` }));
       save({ step: 'finish', verify });
     }
 
-    // Finish: the canon check, the preview, ready.
     c = getChange(id)!;
-    const verify = ph.verify;
+    // A playtest on request: its results join what the change already had (sha, preview, canon), and it's ready again.
+    if (ph.requested) {
+      const keep = Object.fromEntries(['scenario', 'options', 'canon'].filter((k) => c.verify?.[k] !== undefined).map((k) => [k, c.verify[k]]));
+      const verify = { ...keep, ...ph.verify, sha: ph.tip ?? c.verify?.sha, preview: c.verify?.preview ?? null, try: c.verify?.try ?? null, asked: { at: Date.now(), by: ph.requested } };
+      addLog(id, `playtest (asked by ${ph.requested}): ${verify.outcome ?? '?'} · review: ${verify.verdict ?? 'n/a'}${verify.error ? ` · ${verify.error}` : ''}`);
+      update(id, { status: 'ready', detail: readyDetail(verify), verify, phase: null });
+      return;
+    }
+    // Finish: the canon check, the preview, ready.
+    const verify = ph.verify ?? { ...agentScenarioOf(c.worktree) };
     // Content and story changes are checked against the canon (canon.ts); a contradiction fails the merge gate.
     if (roleOf(c) === 'content') {
       update(id, { detail: 'checking the change against the canon' });
@@ -726,15 +740,103 @@ async function work(id: string, note?: string, answer?: string, resumed?: Phase 
     if (preview) addLog(id, `preview: ${preview}`);
     const tryFile = path.join(c.worktree, '.hawkes', 'try.md');
     const howTo = fs.existsSync(tryFile) ? fs.readFileSync(tryFile, 'utf8').trim().slice(0, 2000) : null;
-    const met = verify?.criteria?.length ? ` · criteria ${verify.criteria.filter((k: any) => k.met === 'yes').length}/${verify.criteria.length} met` : '';
-    update(id, { status: 'ready', detail: `${verify ? `${verify.outcome ?? '?'} · review: ${verify.verdict ?? 'n/a'}${met}` : 'ready (not playtested: needs a build)'}${preview ? ` · preview ${preview}` : ''}`, verify: { ...(verify ?? {}), sha: ph.tip, preview, try: howTo }, phase: null });
+    const done = { ...verify, sha: ph.tip, preview, try: howTo };
+    update(id, { status: 'ready', detail: readyDetail(done), verify: done, phase: null });
     // No phone notification (J's rule: only when something went wrong or a milestone is reached): Talk reports it,
     // and a roadmap task's change is the PM's to review (pm.ts).
   } catch (e: any) {
     addLog(id, `error: ${e.message}`);
+    // A playtest on request that went wrong leaves the change as it was: ready, with what happened.
+    if (ph.requested) {
+      const v = { ...(getChange(id)!.verify ?? {}), outcome: 'not played', error: `the playtest couldn't run: ${String(e.message).slice(0, 300)}` };
+      update(id, { status: 'ready', detail: readyDetail(v), verify: v, phase: null });
+      return;
+    }
     update(id, { status: 'failed', detail: String(e.message).slice(0, 300), phase: { step: ph.step, jobs: ph.jobs, failed: true } });
     for (const f of getChange(id)!.findings) updateFinding(f, { status: 'open' });
   }
+}
+
+/** A ready change's one line: whether it was playtested (only on request), its review and criteria, its preview. */
+export function readyDetail(v: any) {
+  const played = playtested(v);
+  const met = played && v.criteria?.length ? ` · criteria ${v.criteria.filter((k: any) => k.met === 'yes').length}/${v.criteria.length} met` : '';
+  const what = played ? `playtest ${v.outcome ?? '?'} · review: ${v.verdict ?? 'n/a'}${met}`
+    : v?.outcome === 'not played' ? `ready: agent's checks passed (the playtest asked for couldn't run: ${String(v.error ?? '').slice(0, 160)})`
+      : "ready: agent's checks passed, pull request open (not playtested)";
+  return `${what}${v?.preview ? ` · preview ${v.preview}` : ''}`;
+}
+/** Whether a change was playtested (on request, or by the old automatic verification): its result is on it. */
+export const playtested = (v: any) => Boolean(v && (v.playtest || (v.outcome && v.outcome !== 'not played')));
+
+/** The scenario the agent added or extended for its criteria (.hawkes/scenario.txt line 1) and its options (line 2, JSON). */
+function agentScenarioOf(worktree: string): { scenario?: string; options?: Record<string, unknown> } {
+  let lines: string[];
+  try {
+    lines = fs.readFileSync(path.join(worktree, '.hawkes', 'scenario.txt'), 'utf8').trim().split('\n');
+  } catch {
+    return {};
+  }
+  const scenario = /^[\w.-]{1,60}$/.exec(lines[0]?.trim() ?? '')?.[0];
+  if (!scenario) return {};
+  try {
+    const o = JSON.parse(lines.slice(1).join('\n').trim() || 'null');
+    return o && typeof o === 'object' && !Array.isArray(o) ? { scenario, options: o as Record<string, unknown> } : { scenario };
+  } catch {
+    return { scenario };
+  }
+}
+
+/**
+ * J's (or Talk's) request to playtest a ready change, with the same build, video and review the old automatic
+ * verification had. The change is "verifying" meanwhile (resumable after a restart: changes.phase), then ready again
+ * with the results; a playtest that can't run never fails it. Returns at once; the playtest goes on in the background.
+ */
+export function playtestChange(id: string, by = 'J') {
+  const c = getChange(id);
+  if (!c) throw new Error('No such change');
+  if (c.infra) throw new Error(`${getInfra(c.product).name} changes have checks (CI, the tests, a smoke check), not a playtest.`);
+  if (c.status !== 'ready') throw new Error(`The change is ${c.status}: a playtest can be asked for once it's ready.`);
+  if (!fs.existsSync(c.worktree)) throw new Error(`${id}'s worktree is gone; revise it to rebuild it.`);
+  if (running.has(id)) throw new Error(`${id} is busy`);
+  const ph: Phase = { step: 'verify', tip: c.verify?.sha ?? git(c.worktree, ['rev-parse', 'HEAD']).out, jobs: {}, requested: by };
+  update(id, { status: 'verifying', detail: 'playtesting the change', phase: ph, notes: [...c.notes, { at: Date.now(), by, text: 'asked for a playtest' }] });
+  addLog(id, `playtest asked for by ${by}`);
+  running.add(id);
+  void work(id, undefined, undefined, ph, true).finally(() => {
+    running.delete(id);
+    void pump();
+  });
+  return getChange(id);
+}
+
+/**
+ * Ready changes whose pull request was merged outside Studio (J merging on GitHub): marked merged, not left "ready"
+ * with an Approve card. Only when GitHub merged the commit Studio has on record; a pull request merged before the
+ * agent's later commits stays as it is (approve() says to revise it, publish() opens a new pull request).
+ */
+export async function syncMergedOutside() {
+  const out: string[] = [];
+  if (!process.env.GITHUB_TOKEN) return out;
+  for (const c of listChanges({ status: 'ready', limit: 100 })) {
+    if (!c.pr || running.has(c.id)) continue;
+    const pr = await github(`/repos/${c.slug}/pulls/${c.pr}`).catch(() => null);
+    if (!pr?.merged) continue;
+    const head = String(pr.head?.sha ?? '');
+    if (c.verify?.sha && head !== c.verify.sha) continue;
+    await critical(`recording ${c.id} as merged`, async () => {
+      if (getChange(c.id)?.status !== 'ready') return;
+      const at = String(pr.merged_at ?? '').slice(0, 16).replace('T', ' ');
+      const by = pr.merged_by?.login ? `${pr.merged_by.login} on GitHub` : 'GitHub';
+      update(c.id, { status: 'merged', detail: `merged into ${c.base} outside Studio (${by}, ${at}): ${String(pr.merge_commit_sha ?? '').slice(0, 7)}${c.infra ? '' : ' (not live yet)'}`, notes: [...c.notes, { at: Date.now(), by, text: `merged on GitHub (pull request #${c.pr})` }] });
+      addLog(c.id, `pull request #${c.pr} was merged outside Studio (${by}, ${at}): marked merged`);
+      remember(c.id);
+      for (const f of c.findings) updateFinding(f, { status: 'fixed', note: `merged into ${c.base} in ${c.pr_url} (outside Studio)` });
+      await cleanup(c.id, { deleteBranch: false });
+    });
+    out.push(c.id);
+  }
+  return out;
 }
 
 /** A verification's Gen jobs, recorded on the change as they're submitted (and found again after a restart). */
@@ -809,22 +911,8 @@ async function verifyChange(c: Change, p: Product, findings: any[], jobs?: JobMe
     dir = path.join(c.worktree, repoFor(p).sub, path.relative(p.repo, p.local.dir));
   }
   // The scenario the agent added or extended for its criteria (.hawkes/scenario.txt), else the finding's, else the first.
-  const agentScenario = (() => {
-    try {
-      return /^[\w.-]{1,60}$/.exec(fs.readFileSync(path.join(c.worktree, '.hawkes', 'scenario.txt'), 'utf8').trim().split('\n')[0].trim())?.[0];
-    } catch {
-      return undefined;
-    }
-  })();
   // A second line in scenario.txt may give the scenario's options as JSON ({"stage":"neon-pit"}): the new content to play.
-  const agentOptions = (() => {
-    try {
-      const o = JSON.parse(fs.readFileSync(path.join(c.worktree, '.hawkes', 'scenario.txt'), 'utf8').trim().split('\n').slice(1).join('\n').trim() || 'null');
-      return o && typeof o === 'object' && !Array.isArray(o) ? (o as Record<string, unknown>) : undefined;
-    } catch {
-      return undefined;
-    }
-  })();
+  const { scenario: agentScenario, options: agentOptions } = agentScenarioOf(c.worktree);
   const scenario = agentScenario ?? findings.map((f: any) => f.scenario).find((s: string) => s && s.endsWith('@local'))?.split('@')[0] ?? (p.playtests.find((t) => t.where === 'local')?.scenario ?? 'smoke');
   const mode = agentScenario ? undefined : p.playtests.find((t) => t.where === 'local' && (t.scenario ?? t.mode) === scenario)?.mode;
   const port = 8800 + (parseInt(c.id.slice(2, 6), 16) % 200);
@@ -1199,7 +1287,7 @@ async function verifiedHead(c: Change) {
   // Changes verified before Studio recorded the verified commit: the worktree's head is what was pushed and played.
   const verified = c.verify?.sha || (fs.existsSync(c.worktree) ? git(c.worktree, ['rev-parse', 'HEAD']).out : '');
   if (!verified) throw new Error(`${c.id} has no verified commit on record; revise it so it is verified again.`);
-  if (head !== verified) throw new Error(`Pull request #${c.pr}'s head moved after verification (verified ${verified.slice(0, 7)}, now ${head.slice(0, 7)}): not merging what wasn't played. Revise ${c.id} so the new head is verified.`);
+  if (head !== verified) throw new Error(`Pull request #${c.pr}'s head moved after verification (verified ${verified.slice(0, 7)}, now ${head.slice(0, 7)}): not merging what wasn't checked. Revise ${c.id} so the new head is checked.`);
   return head;
 }
 

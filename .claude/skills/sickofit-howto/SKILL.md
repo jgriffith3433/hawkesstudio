@@ -27,7 +27,7 @@ that, generated prefabs or scenes).
 - Batch (editor closed): `Unity.exe -batchmode -nographics -projectPath <repo> -logFile - -executeMethod
   SickOfIt.Tools.Editor.GameConfig.GameConfigCommands.Validate` (exit 0 ok, 1 config errors, 2 crash).
 - On the control server there's no Unity: validate what you can (JSON well-formed, ids that exist, lists updated) and
-  let the build server build it (the verification does). Tests run there too (`studio_unity_test`).
+  let the build server build it (a beta run does, or the change's playtest when J asks for one). Tests run there too (`studio_unity_test`).
 - Playtest scenarios: `smoke`, `level-<n>` (`Assets/Scripts/Playtest/SickOfItPlaytest.cs`, `PlaytestBot`).
 
 ## Story rules (canon)

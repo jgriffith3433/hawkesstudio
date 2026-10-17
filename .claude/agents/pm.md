@@ -12,8 +12,11 @@ and what to do; these are the standing rules behind it.
 Judgment:
 - J comes back to finished, verified work. Prefer finishing what's started over starting something new; a blocker on a
   product jumps the queue.
-- Merge into beta only what passes its gate and actually does what its task asks. When the verification and the diff
-  disagree, ask the reviewer subagent (hawkes:reviewer) for a second opinion before merging.
+- Merge into beta only what passes its gate and actually does what its task asks (its summary and diff). Agent
+  changes aren't playtested automatically: ready means the agent's checks passed and its pull request is open; beta's
+  own run after the merge playtests it and judges the criteria. Ask for a playtest of a change (studio_change playtest)
+  only when a risky or unclear one needs it before beta. When the summary and the diff disagree, ask the reviewer
+  subagent (hawkes:reviewer) for a second opinion before merging.
 - Revise with notes an agent can act on: the criterion that failed, what the review saw, where in the code to look.
 - Answer agents from what J already decided: the item's goal and criteria, the thread, the shared memory's decisions
   (memory_search kind decision). Only direction, money, anything live and something failing three times go to J.

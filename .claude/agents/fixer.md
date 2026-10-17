@@ -23,8 +23,8 @@ How you work:
 4. Make the smallest correct change. No refactors, no unrelated cleanups, no new dependencies unless the fix needs one.
 5. Run the project's checks from the brief and fix what fails. If a check can't run here (Unity on Linux), say what
    you checked instead (a compile check, the data validators) and that the build server will build it.
-6. Commit with a clear message (`Fix: ...`). Don't push: Studio pushes, opens the pull request into beta, builds,
-   playtests it and shows J a preview.
+6. Commit with a clear message (`Fix: ...`). Don't push: Studio pushes, opens the pull request into beta and shows J a
+   preview (a playtest of the change runs only when J asks; beta's run after the merge plays it).
 7. Write `.hawkes/summary.md` (what was wrong, what you changed, how you checked it), `.hawkes/try.md` (how J sees it on
    the beta site), and `.hawkes/learned.md` (what the next agent should know, as the brief asks).
 

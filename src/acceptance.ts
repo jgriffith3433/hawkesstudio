@@ -1,6 +1,6 @@
-// Acceptance: a roadmap task's criteria judged from a playtest. Used twice per task: on the agent's change (its
-// verification playtest; the PM merges into beta only when none fails) and on beta after the merge (the task is done,
-// "verified", only when every criterion is met there).
+// Acceptance: a roadmap task's criteria judged from a playtest. Beta's run after the merge judges them (the task is
+// done, "verified", only when every criterion is met there). A change itself is playtested only when J asks for it
+// (agents.ts playtestChange); then its criteria are judged too, and one that fails keeps it out of the PM's merges.
 //
 // When Hawkes Gen's playtest.review judges criteria itself (param `criteria`, result `criteria`), that answer is used.
 // Otherwise Claude judges them (llm.json, about a cent) from the review's frames, its summary and findings, the
@@ -74,23 +74,25 @@ Answer with one entry per criterion, in the same order, with the criterion's tex
   return criteria.map((k, i) => ({ criterion: k, met: norm(got[i]?.met), evidence: String(got[i]?.evidence ?? 'no answer').slice(0, 600) }));
 }
 
-/** The merge gate for a change: it was playtested, the review didn't call it broken, and no criterion failed. */
+/**
+ * The merge gate for a ready change (its agent's checks passed, its pull request is open): no contradiction of the
+ * canon, and, when it was playtested (only on request), the playtest didn't fail, the review didn't call it broken and
+ * no criterion failed. Not being playtested is no reason (`played` says whether it was): beta's run judges the criteria.
+ */
 export function gate(verify: any, criteria: string[]) {
   const why: string[] = [];
-  if (!verify) why.push('it was not playtested');
-  else {
+  const played = Boolean(verify && (verify.playtest || (verify.outcome && verify.outcome !== 'not played')));
+  if (verify && played) {
     if (verify.outcome && !['passed', 'done', 'ok', 'complete', 'completed'].includes(String(verify.outcome)) && /fail|error|stuck|crash|timeout|timed out/i.test(String(verify.outcome))) why.push(`the playtest ${verify.outcome}`);
     if (verify.verdict === 'broken') why.push('the review called it broken');
     if (verify.changeWorked === 'no' || verify.changeWorked === 'partly') why.push(`the review says the change worked: ${verify.changeWorked}`);
     if (verify.error) why.push(String(verify.error).slice(0, 200));
-    // The canon check of a content change (canon.ts): a contradiction of the story bible never merges by itself.
-    if (verify.canon?.ok === false) why.push(`it contradicts the canon: ${(verify.canon.conflicts ?? []).map((k: any) => `${k.entry} (${String(k.why).slice(0, 120)})`).join('; ') || verify.canon.summary}`);
-    const checks = (verify.criteria ?? []) as Check[];
-    if (criteria.length && !checks.length) why.push('the criteria were not judged');
-    for (const c of checks) if (c.met === 'no') why.push(`not met: ${c.criterion} (${c.evidence ?? ''})`);
+    for (const c of (verify.criteria ?? []) as Check[]) if (c.met === 'no') why.push(`not met: ${c.criterion} (${c.evidence ?? ''})`);
   }
-  const unclear = ((verify?.criteria ?? []) as Check[]).filter((c) => c.met === 'unclear');
-  return { pass: !why.length, why, unclear: unclear.map((c) => c.criterion) };
+  // The canon check of a content change (canon.ts): a contradiction of the story bible never merges by itself.
+  if (verify?.canon?.ok === false) why.push(`it contradicts the canon: ${(verify.canon.conflicts ?? []).map((k: any) => `${k.entry} (${String(k.why).slice(0, 120)})`).join('; ') || verify.canon.summary}`);
+  const unclear = played ? ((verify?.criteria ?? []) as Check[]).filter((c) => c.met === 'unclear') : [];
+  return { pass: !why.length, why, unclear: unclear.map((c) => c.criterion), played };
 }
 
 /** Every criterion met (the bar for "verified" on beta). */
