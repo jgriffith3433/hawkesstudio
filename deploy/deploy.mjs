@@ -6,7 +6,8 @@
 //                                         (keeps the server's data; never copies this PC's folders)
 //   node deploy/deploy.mjs --data         also copy this PC's data (databases, library, fleet and builder keys):
 //                                         once, when moving to the server (refuses if the server has data unless --force)
-//   node deploy/deploy.mjs --domain example.com    HTTPS with Caddy for studio.<domain> and gen.<domain>
+//   node deploy/deploy.mjs --domain example.com    HTTPS with Caddy for studio.<domain> and gen.<domain>, and the
+//                                         public landing page at <domain> (www.<domain> redirects to it; site/)
 //   node deploy/deploy.mjs --dev-hosts             also dev-<sub>.<domain> for each web product (devtools at the root, for
 //                                         browsers without service workers; remembered for later deploys)
 //
@@ -334,7 +335,6 @@ WantedBy=paths.target`),
   await ssh('sudo systemctl daemon-reload && sudo systemctl enable --now hawkes-secrets hawkes-gen hawkes-studio hawkes-daily.timer hawkes-pull.service hawkes-pull.path && (sudo systemctl disable --now hawkes-pull.timer 2>/dev/null; sudo rm -f /etc/systemd/system/hawkes-pull.timer; true) && sudo systemctl restart hawkes-secrets hawkes-gen && sleep 6 && sudo systemctl restart hawkes-studio && echo services-ok');
 }
 
-/** studio.<domain> and gen.<domain> point at the server's Elastic IP (Route 53, the domain's hosted zone). */
 /**
  * Email for Studio's invites and password resets (src/mail.ts): the domain as an SES identity in us-east-1 with DKIM
  * (the records go in Route 53), and permission for the server's role to send from it, and only from it. A new SES
@@ -372,6 +372,7 @@ async function setupEmail(domain) {
   if (sandbox) log('email: SES is in the sandbox (it only delivers to verified addresses). To invite anyone by email: AWS console > Amazon SES (us-east-1) > Account dashboard > "Request production access" (transactional, low volume). Until then the Users tab shows each invite link to send yourself.');
 }
 
+/** <domain>, www.<domain>, studio.<domain> and gen.<domain> point at the server's Elastic IP (Route 53, the domain's hosted zone). */
 async function ensureDns(domain) {
   const { Route53Client, ListHostedZonesByNameCommand, ChangeResourceRecordSetsCommand } = await import('@aws-sdk/client-route-53');
   const { cfg } = await import('./aws.mjs');
@@ -383,13 +384,13 @@ async function ensureDns(domain) {
     HostedZoneId: zone.Id,
     ChangeBatch: {
       Comment: 'Hawkes control server',
-      Changes: ['studio', 'gen'].map((sub) => ({ Action: 'UPSERT', ResourceRecordSet: { Name: `${sub}.${domain}`, Type: 'A', TTL: 300, ResourceRecords: [{ Value: st.ip }] } })),
+      Changes: [domain, ...['www', 'studio', 'gen'].map((sub) => `${sub}.${domain}`)].map((name) => ({ Action: 'UPSERT', ResourceRecordSet: { Name: name, Type: 'A', TTL: 300, ResourceRecords: [{ Value: st.ip }] } })),
     },
   }));
-  log(`DNS: studio.${domain} and gen.${domain} -> ${st.ip}`);
+  log(`DNS: ${domain}, www.${domain}, studio.${domain} and gen.${domain} -> ${st.ip}`);
   // Let's Encrypt checks the name over the internet: wait until it resolves.
   for (let i = 0; i < 40; i++) {
-    const ok = await ssh(`getent hosts studio.${domain} | grep -q ${st.ip} && getent hosts gen.${domain} | grep -q ${st.ip} && echo yes || echo no`, { quiet: true }).catch(() => 'no');
+    const ok = await ssh(`getent hosts studio.${domain} | grep -q ${st.ip} && getent hosts gen.${domain} | grep -q ${st.ip} && getent hosts ${domain} | grep -q ${st.ip} && echo yes || echo no`, { quiet: true }).catch(() => 'no');
     if (ok.includes('yes')) return;
     await new Promise((res) => setTimeout(res, 15_000));
   }
@@ -574,6 +575,30 @@ gen.${domain} {
 		}
 	}
 }
+
+# The public landing page (Hawkes Gen and Hawkes Studio, for people and the product sites' "Powered by HAWKES GEN"
+# badge): plain static files from this repo's site/ folder, no login, nothing behind it. A push to main updates it
+# (the server pulls main); only this block, the DNS and the certificate need deploy.mjs.
+${domain} {
+	import access
+	encode zstd gzip
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		Permissions-Policy "camera=(), microphone=(), geolocation=()"
+		Content-Security-Policy "default-src 'none'; style-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+		Cache-Control "public, max-age=300"
+		-Server
+	}
+	root * /srv/hawkes/hawkesstudio/site
+	file_server
+}
+
+www.${domain} {
+	redir https://${domain}{uri} permanent
+}
 `.trimStart();
   const local = path.join(os.tmpdir(), 'Caddyfile');
   fs.writeFileSync(local, caddy + (await previewSites(domain)));
@@ -583,7 +608,7 @@ gen.${domain} {
   // one, and the old one is kept as Caddyfile.prev: `node deploy/deploy.mjs --caddy-rollback` puts it back.
   await ssh(`sudo chown caddy:caddy /tmp/Caddyfile && sudo install -d -o caddy -g caddy /var/log/caddy && sudo touch /var/log/caddy/access.log && sudo chown caddy:caddy /var/log/caddy/access.log && sudo mkdir -p /etc/systemd/system/caddy.service.d && printf '[Service]\\nEnvironmentFile=/etc/hawkes/keys.env\\n' | sudo tee /etc/systemd/system/caddy.service.d/hawkes.conf >/dev/null && sudo usermod -aG hawkes caddy && sudo systemctl daemon-reload && sudo -u caddy caddy validate --config /tmp/Caddyfile --adapter caddyfile >/dev/null && sudo cp /etc/caddy/Caddyfile /etc/caddy/Caddyfile.prev && sudo mv /tmp/Caddyfile /etc/caddy/Caddyfile && sudo chown root:root /etc/caddy/Caddyfile && sudo systemctl restart caddy && sleep 2 && systemctl is-active caddy && echo caddy-ok`);
   saveState({ domain });
-  log(`HTTPS: https://studio.${domain} and https://gen.${domain} (sign in with an account; first run: ${'admin@hawkesgen.com'} / admin, then set a password)`);
+  log(`HTTPS: https://${domain} (public landing page), https://studio.${domain} and https://gen.${domain} (sign in with an account; first run: ${'admin@hawkesgen.com'} / admin, then set a password)`);
 }
 
 async function health() {
