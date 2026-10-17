@@ -121,6 +121,22 @@ Agent-written code never runs as Studio: the agent's own checks, Studio's checks
 fast lane's checks all run as the sandbox user. Before Studio runs git in a worktree the sandbox could write, it checks
 the worktree still links into that repo (`assertWorktree`).
 
+**Agents commit in their worktrees** (`sandbox.ts shareRepo`, `shareWorktree`, `shareAll`). Studio (user `hawkes`)
+makes each worktree, so its git folder (`<repo>/.git/worktrees/<id>`: index, index.lock, HEAD, logs, ORIG_HEAD,
+MERGE_*) would be `hawkes`' and unwritable to `hawkes-agent` (`index.lock: Permission denied`, 2026-10-16/17). So:
+- every repo has `core.sharedRepository=group` (files git creates in `.git` are group-writable whatever the umask), and
+  `.git` and `.git/worktrees` are the agent group's (`hawkes-work`) and setgid, so the `.git/worktrees` git deletes after
+  the last prune comes back right;
+- git (2.43) still makes `.git/worktrees/<id>` itself 755, and a Studio commit or merge there leaves files like
+  COMMIT_EDITMSG 644: `shareWorktree` (chgrp, g+rwX, setgid) runs on every pass of a change (agents.ts prepare, product
+  and infra), and on Talk's workspace (fastlane.ts);
+- at start Studio sweeps every repo in the projects folder and every worktree in `.work` (`shareAll`), so repos and
+  worktrees made before this are covered. None of it needs `deploy/agent-sandbox.mjs`.
+
+The safety net stays: an agent that finished but says its commit was refused (`COMMIT_DENIED` in agents.ts) and left
+changes gets them committed by Studio (hooks off), logged as "Studio committed its work and publishes it".
+`test/sandbox.test.ts` checks a fresh worktree's git folder is the agent group's and group-writable under umask 022.
+
 Known limits: the sandbox holds the Claude login (Claude Code needs it; it is only good for Claude); it can move local
 refs in the shared repos (the worst it reaches is beta, and Studio fetches before it builds); a process an agent leaves
 running in the background keeps its access until the next restart.

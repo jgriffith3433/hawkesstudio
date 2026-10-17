@@ -30,14 +30,56 @@ export const AGENT_GROUP = process.env.HAWKES_AGENT_GROUP || 'hawkes-work';
  * one-time chgrp at setup doesn't last: on 2026-10-16 agents in breakingthrough, hawkesgen and YoobaLand finished their
  * work and then couldn't commit (index.lock: Permission denied). Call it after every worktree an agent or Talk works in.
  */
-export function shareWorktree(wt: string) {
-  if (!sandboxOn()) return;
-  const r = spawnSync('git', ['-C', wt, 'rev-parse', '--absolute-git-dir'], { encoding: 'utf8' });
-  const gitDir = (r.stdout ?? '').trim();
+export function shareWorktree(wt: string, group: string | null = sandboxOn() ? AGENT_GROUP : null) {
+  if (!group || process.platform === 'win32') return;
+  const r = spawnSync('git', ['-C', wt, 'rev-parse', '--absolute-git-dir', '--git-common-dir'], { encoding: 'utf8' });
+  const [gitDir, common] = (r.stdout ?? '').trim().split('\n').map((s) => s.trim());
   if (r.status !== 0 || !gitDir || !/[\\/]worktrees[\\/]/.test(gitDir)) return;
-  for (const [cmd, args] of [['chgrp', ['-R', AGENT_GROUP, gitDir]], ['chmod', ['-R', 'g+rwX', gitDir]], ['find', [gitDir, '-type', 'd', '-exec', 'chmod', 'g+s', '{}', '+']]] as const) {
-    const x = spawnSync(cmd, [...args], { encoding: 'utf8' });
-    if (x.status !== 0) console.warn(`[sandbox] ${cmd} on ${gitDir}: ${(x.stderr ?? '').trim().slice(0, 200)}`);
+  // The repo first, so worktrees made later are right from the start; then this one, made before or by Studio's umask.
+  if (common) shareRepo(path.dirname(path.resolve(wt, common)), group);
+  run([['chgrp', ['-R', group, gitDir]], ['chmod', ['-R', 'g+rwX', gitDir]], ['find', [gitDir, '-type', 'd', '-exec', 'chmod', 'g+s', '{}', '+']]], gitDir);
+}
+
+/**
+ * The cause behind shareWorktree, for the whole repo: git's core.sharedRepository=group makes every file and folder git
+ * creates in .git group-writable (folders setgid) whatever the creating process's umask, and .git and .git/worktrees go
+ * to the agent group, setgid, so the .git/worktrees git recreates after the last worktree is pruned (and every
+ * worktree's own folder under it) is the agent group's too. Only git's own folder: the checkout's files are untouched.
+ */
+export function shareRepo(repoDir: string, group: string | null = sandboxOn() ? AGENT_GROUP : null) {
+  if (!group || process.platform === 'win32') return;
+  const dotGit = path.join(repoDir, '.git');
+  try { if (!fs.statSync(dotGit).isDirectory()) return; } catch { return; }
+  const cfg = spawnSync('git', ['-C', repoDir, 'config', '--local', '--get', 'core.sharedRepository'], { encoding: 'utf8' });
+  if ((cfg.stdout ?? '').trim() !== 'group') run([['git', ['-C', repoDir, 'config', '--local', 'core.sharedRepository', 'group']]], dotGit);
+  const wts = path.join(dotGit, 'worktrees');
+  const dirs = fs.existsSync(wts) ? [dotGit, wts] : [dotGit];
+  run([['chgrp', [group, ...dirs]], ['chmod', ['g+s', ...dirs]], ...(dirs.length > 1 ? [['chmod', ['g+rwx', wts]] as [string, string[]]] : [])], dotGit);
+}
+
+/**
+ * Every repo in the projects folder and every worktree in .work, once at start: repos and worktrees made before this.
+ * One at a time with a yield in between, so the server keeps answering.
+ */
+export async function shareAll(group: string | null = sandboxOn() ? AGENT_GROUP : null) {
+  if (!group) return;
+  const list = (dir: string) => { try { return fs.readdirSync(dir).filter((n) => !n.startsWith('.')).map((n) => path.join(dir, n)); } catch { return []; } };
+  for (const d of list(PROJECTS)) { shareRepo(d, group); await new Promise((r) => setImmediate(r)); }
+  // An agent can write its worktree's ".git" file: only one still linking into a repo here is touched (assertWorktree).
+  const repoOf = (d: string) => {
+    try {
+      const gitdir = fs.realpathSync(path.resolve(d, fs.readFileSync(path.join(d, '.git'), 'utf8').trim().replace(/^gitdir:\s*/, '')));
+      const m = gitdir.slice(fs.realpathSync(PROJECTS).length).match(/^[\\/]([^\\/]+)[\\/]\.git[\\/]worktrees[\\/][^\\/]+$/);
+      return gitdir.startsWith(fs.realpathSync(PROJECTS)) && m ? m[1] : null;
+    } catch { return null; }
+  };
+  for (const d of list(path.join(PROJECTS, '.work'))) if (repoOf(d)) { shareWorktree(d, group); await new Promise((r) => setImmediate(r)); }
+}
+
+function run(cmds: [string, string[]][], where: string) {
+  for (const [cmd, args] of cmds) {
+    const x = spawnSync(cmd, args, { encoding: 'utf8' });
+    if (x.status !== 0) console.warn(`[sandbox] ${cmd} on ${where}: ${(x.stderr ?? '').trim().slice(0, 200)}`);
   }
 }
 
