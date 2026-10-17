@@ -362,6 +362,8 @@ export function memberRefusal(req: http.IncomingMessage, route: string, method: 
     /^\/api\/deploy\//, /^\/api\/rollback\//, /^\/api\/changes\/c_[0-9a-f]+\/approve$/, /^\/api\/approvals\/a_[0-9a-f]+\/(approve|deny)$/,
     /^\/api\/agents\/settings$/, /^\/api\/pm\/settings$/, /^\/api\/settings$/, /^\/api\/costs\/settings$/, /^\/api\/notify$/,
     /^\/api\/inbox\/answer$/, /^\/api\/roadmap\/.*gpu/, /^\/api\/users/, /^\/api\/invites/, /^\/api\/memory\/seed$/,
+    // Through the library tab's Gen relay: making and revising takes, and any job, cost money.
+    /^\/api\/gen\/v1\/entities\/.+\/(make|revise)$/, /^\/api\/gen\/v1\/(jobs|run|fleet|builder|playtester|settings)/,
   ];
   return adminOnly.some((r) => r.test(route)) ? `Only an admin can do that (you're signed in as ${u.email}, a member).` : null;
 }

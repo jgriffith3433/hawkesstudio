@@ -478,6 +478,7 @@ async function refresh() {
     if (tab === 'costs' && window.loadCosts) await window.loadCosts();
     if (tab === 'golive' && window.loadGoLiveTab) await window.loadGoLiveTab();
     if (tab === 'sites' && window.loadSitesTab) await window.loadSitesTab();
+    if (tab === 'library' && window.loadLibraryTab) await window.loadLibraryTab();
     if (tab === 'settings' && window.loadSettingsTab) await window.loadSettingsTab();
     if (tab === 'users' && window.loadUsersTab) await window.loadUsersTab();
     if (tab === 'talk' && window.loadTalk && !window.__talkLoaded) { window.__talkLoaded = true; await window.loadTalk(); }

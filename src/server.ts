@@ -29,7 +29,7 @@ import { originOf, tagChange, startFollowups } from './followup.ts';
 import { activity, stageOf } from './activity.ts';
 import { listReports as listBugReports, reportShot, startReportFollowups } from './bugreport.ts';
 
-const MIME: Record<string, string> = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.json': 'application/json', '.md': 'text/markdown; charset=utf-8' };
+const MIME: Record<string, string> = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.mjs': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.json': 'application/json', '.md': 'text/markdown; charset=utf-8' };
 
 function send(res: http.ServerResponse, status: number, body: unknown) {
   res.writeHead(status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
@@ -119,6 +119,13 @@ const server = http.createServer(async (req, res) => {
     // Everything running in the background (the dashboard's Activity panel).
     if (route === '/api/activity') return send(res, 200, await cached('activity', 1500, activity));
     if (route === '/api/products' && method === 'GET') return send(res, 200, { products: loadProducts() });
+    // The Library tab (library.ts, dashboard/library.js): Gen's library through Studio, and picks into product repos.
+    if (route.startsWith('/api/gen/v1/')) return await (await import('./library.ts')).relay(req, res, route.slice('/api/gen/v1/'.length) + url.search);
+    if (route === '/api/library/waiting' && method === 'GET') return send(res, 200, await cached('library-waiting', 15_000, async () => (await import('./library.ts')).waiting()));
+    if (route === '/api/library/writeback' && method === 'POST') {
+      const b = await readJson(req);
+      return send(res, 200, await (await import('./library.ts')).writeBack(String(b.entity ?? ''), { by: b.by ? String(b.by) : 'J' }));
+    }
     let m = /^\/api\/products\/([\w-]+)$/.exec(route);
     if (m && method === 'GET') return send(res, 200, { product: getProduct(m[1]), git: gitState(getProduct(m[1]).repo) });
 

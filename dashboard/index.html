@@ -18,6 +18,7 @@
       <button data-tab="golive" title="Every product: is beta ahead of live, is it ready, and the buttons to go live">Go live</button>
       <button data-tab="roadmap">Roadmap</button>
       <button data-tab="backlog">Backlog</button>
+      <button data-tab="library" title="Every product's characters, stages and shots in Hawkes Gen's library: takes waiting for a pick, and every version">Library</button>
       <div class="more" id="more">
         <button type="button" class="more-btn" id="moreBtn" aria-haspopup="true" aria-expanded="false" title="Reports, playtests, agent changes, runs, costs, memory, users, settings">More ▾</button>
         <div class="more-menu" id="moreMenu" hidden>
@@ -91,6 +92,13 @@
       </div>
       <div id="todayNow" class="today-now"></div>
       <div id="cards" class="cards"></div>
+    </section>
+    <section id="library" class="tab">
+      <p class="intro"><b>Library:</b> every product's characters, stages and shots in Hawkes Gen's library. Pick a take and it is written into the product's beta (when its folders are in its repo).</p>
+      <div class="lb-head">Waiting for a pick</div>
+      <div id="lbWait" class="lb-wait"><div class="meta">Loading…</div></div>
+      <div class="lb-bar"><label>Product <select id="lbProduct"></select></label></div>
+      <div id="lbLib"></div>
     </section>
     <section id="sites" class="tab">
       <p class="intro"><b>Sites:</b> one tap to open any product's beta site (what going live would ship) or its live site, in a new tab.</p>
@@ -201,6 +209,7 @@
   <script src="costs.js"></script>
   <script src="golive.js"></script>
   <script src="sites.js"></script>
+  <script src="library.js"></script>
   <script src="memory.js"></script>
   <script src="settings.js"></script>
   <script src="users.js"></script>
