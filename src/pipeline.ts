@@ -567,6 +567,9 @@ async function reviewPlaytest(run: string, p: Product, t: Playtest, job: any, pl
 
 type PartialOptions = { scenario?: string; where?: 'local' | 'live'; device?: 'desktop' | 'phone'; mode?: string; force?: boolean; review?: boolean; focus?: string; reviewMode?: ReviewMode; platform?: 'EditMode' | 'PlayMode'; category?: string; origin?: string | null; seed?: number; options?: Record<string, unknown> };
 
+/** A playtest asked for over the API (studio_playtest, the CLI): device "phone" plays at 390x844 touch, as products.json's device does. */
+export const playtestRequest = (b: any): PartialOptions => ({ scenario: b.scenario, where: b.where, device: b.device === 'phone' ? 'phone' : undefined, mode: b.mode, review: b.review, focus: b.focus, reviewMode: ['full', 'verify', 'regression'].includes(b.reviewMode) ? b.reviewMode : undefined, seed: Number(b.seed) || undefined, options: b.options && typeof b.options === 'object' && !Array.isArray(b.options) ? b.options : undefined });
+
 /** Runs the pipeline pieces on their own (from the API, CLI or MCP) as a small run. */
 export function startPartial(kind: 'build' | 'playtest' | 'test', productId: string, opts: PartialOptions = {}) {
   const p = getProduct(productId);
