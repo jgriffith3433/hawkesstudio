@@ -122,11 +122,18 @@ test('protected paths', () => {
   assert.deepEqual(bad, ['play/index.html', 'Game/v12/a.unityweb', 'Assets/x.png.meta (a deleted .meta)', '.env']);
 });
 
-test("a fresh agent worktree's git folder is the agent group's and group-writable, whatever Studio's umask", { skip: process.platform === 'win32' }, async () => {
+// The server's setup: this user in the agent group (hawkes-work) and the server's git (2.43). GitHub's runner has
+// neither (other groups, a newer git that sets worktree permissions its own way), so the test runs on the server only.
+const { AGENT_GROUP } = await import('../src/sandbox.ts');
+const idOut = (flag: string) => process.platform === 'win32' ? [] : spawnSync('id', [flag], { encoding: 'utf8' }).stdout.trim().split(/\s+/);
+const agentGid = idOut('-G')[idOut('-Gn').indexOf(AGENT_GROUP)];
+const serverOnly = process.platform === 'win32' ? 'not on Windows'
+  : process.env.CI ? 'CI: not the server\'s groups and git'
+  : !agentGid ? `not in the agent group ${AGENT_GROUP}` : false;
+
+test("a fresh agent worktree's git folder is the agent group's and group-writable, whatever Studio's umask", { skip: serverOnly }, async () => {
   const { shareRepo, shareWorktree, shareAll } = await import('../src/sandbox.ts');
-  const { COMMIT_DENIED } = await import('../src/agents.ts');
-  // The agent group here: the last group this user is in (on the server, hawkes-work).
-  const gid = Number(spawnSync('id', ['-G'], { encoding: 'utf8' }).stdout.trim().split(/\s+/).pop());
+  const gid = Number(agentGid);
   const r2 = path.join(process.env.STUDIO_PROJECTS!, 'shared');
   git(tmp, 'clone', '--quiet', origin, r2);
   // Studio (umask 022, as before) makes the worktree; nothing calls shareWorktree on it.
@@ -178,7 +185,10 @@ test("a fresh agent worktree's git folder is the agent group's and group-writabl
   for (const f of ['', 'index', 'HEAD']) shared(path.join(r3, '.git', 'worktrees', 'c_000000000003', f));
   assert.equal(git(r3, 'config', 'core.sharedRepository'), 'group');
   shareWorktree(wt3, String(gid));
-  // The safety net's trigger: what an agent says when its commit was refused, and not any "permission denied".
+});
+
+test("the safety net's trigger: what an agent says when its commit was refused, and not any \"permission denied\"", async () => {
+  const { COMMIT_DENIED } = await import('../src/agents.ts');
   assert.match("git commit failed: Unable to create '/srv/hawkes/x/.git/worktrees/c_1/index.lock': Permission denied", COMMIT_DENIED);
   assert.match('I couldn\'t commit: Permission denied on the git folder', COMMIT_DENIED);
   assert.doesNotMatch('Playwright: permission denied for /proc/hawkes-no-browsers', COMMIT_DENIED);
