@@ -1,6 +1,6 @@
 # Learned: Hawkes Studio
 
-Generated from Hawkes Studio's shared memory (2026-10-17 02:07 UTC). Edit entries in Studio's Memory tab, not here.
+Generated from Hawkes Studio's shared memory (2026-10-17 02:19 UTC). Edit entries in Studio's Memory tab, not here.
 
 ## J's decisions
 
@@ -21,14 +21,24 @@ Generated from Hawkes Studio's shared memory (2026-10-17 02:07 UTC). Edit entrie
   <sub>m_6fef63501c73 · agent c_c6391dd3cf65 · 2026-10-17 · https://github.com/jgriffith3433/hawkesstudio/pull/8</sub>
 - **a failed change keeps its phase**: agents.ts sets `phase: { step, jobs, failed: true }` on failure (was null) so the Activity stages know where it stopped; resumeChanges skips phases with `failed`.  
   <sub>m_fb40c3d057e7 · agent c_a7d1f1ba0e95 · 2026-10-16 · https://github.com/jgriffith3433/hawkesstudio/pull/6</sub>
+- **a new dashboard tab = a section + nav button in index.html, a `window.load<Tab>` hook in app.js refresh(), the script in package.json's typecheck, and its id in src/guide.ts TABS.**  
+  <sub>m_189ccbb8950c · agent c_34079e1fcaee · 2026-10-17 · https://github.com/jgriffith3433/hawkesstudio/pull/13</sub>
 - **a ready product change's `verify` always exists now (sha, preview, try, scenario/options from .hawkes/scenario.txt), so `!c.verify` no longer means "not playtested"; use gate().played.**  
   <sub>m_892a0a3fcadf · agent c_c6391dd3cf65 · 2026-10-17 · https://github.com/jgriffith3433/hawkesstudio/pull/8</sub>
 - **askJ merges into an open question on the same subject+topic (roadmap.ts sameQuestion) and returns it; to know whether a new question was filed, compare the id against listQuestions() taken before the…**  
   <sub>m_9383319cda2c · agent c_02aee40d9a74 · 2026-10-16 · https://github.com/jgriffith3433/hawkesstudio/pull/5</sub>
+- **call defaults live twice**: `CALL_DEFAULTS` in src/settings.ts and `DEFAULTS` in dashboard/call.js (the page's fallback when /api/settings fails or hasn't loaded); change both.  
+  <sub>m_6ab3c737ebba · agent c_c48511c1e2a2 · 2026-10-17 · https://github.com/jgriffith3433/hawkesstudio/pull/10</sub>
+- **changes.update() writes an explicit column list**: a new changes column (like auto_merge) must be added to its UPDATE statement or patches to it are silently dropped.  
+  <sub>m_a4ac95f47363 · agent c_a57a21c5bc14 · 2026-10-17 · https://github.com/jgriffith3433/hawkesstudio/pull/12</sub>
 - **dashboard logic tested without a DOM**: put the pure rules in a top-level `var X = (() => {...})()` in the classic script and guard the DOM part with `if (typeof document !== 'undefined')`; the test loads the file with `vm.runInNewContext` and reads `ctx.X` (dashboard/guide.js, test/guide.test.ts).  
   <sub>m_47b812d3fd98 · agent c_0ebaff22df79 · 2026-10-16 · https://github.com/jgriffith3433/hawkesstudio/pull/3</sub>
 - **dashboard scripts share globals**: app.js's top-level `let tab`, `openRun`, `show()`, `studioContext()` and playtests.js's `pt` are visible to later classic scripts (talk.js, call.js); app.js fires `studio-tab` (CustomEvent on window) when the tab changes.  
   <sub>m_4a6234411fa1 · agent c_50b5737aff77 · 2026-10-16 · https://github.com/jgriffith3433/hawkesstudio/pull/2</sub>
+- **phone call layout**: during a call on a phone (≤760px) the header is one sticky, sideways-scrolling row of tabs (style.css, the Talk media block); `body.dock-open header { position: static }` comes later in the file, so call rules need `body.in-call.dock-open header` to win.  
+  <sub>m_4d419f4fc574 · agent c_2af947db4a2e · 2026-10-17 · https://github.com/jgriffith3433/hawkesstudio/pull/11</sub>
+- **public root site**: hawkesgen.com is served by Caddy file_server straight from /srv/hawkes/hawkesstudio/site (the main checkout), so editing site/ deploys with a push to main; only the Caddy block and DNS need `node deploy/deploy.mjs --caddy-only`.  
+  <sub>m_20320149ba8a · agent c_4548e5685311 · 2026-10-17 · https://github.com/jgriffith3433/hawkesstudio/pull/14</sub>
 - **switching tabs from code**: click the `nav button[data-tab]` rather than calling show(): roadmap.js and playtests.js hang their loading on the nav button's click, not on show().  
   <sub>m_b6df7690bc89 · agent c_0ebaff22df79 · 2026-10-16 · https://github.com/jgriffith3433/hawkesstudio/pull/3</sub>
 - **the Talk dock moves the one `.talk-main` node between `#talk .talk` and `#dockBody` (talk.js `placeTalk`); never clone it**: call.js holds the call in JS and finds its controls by id, so moving keeps the call alive across tabs.  
@@ -52,12 +62,22 @@ Generated from Hawkes Studio's shared memory (2026-10-17 02:07 UTC). Edit entrie
   <sub>m_29701a25d9cc · agent c_0ebaff22df79 · 2026-10-16 · https://github.com/jgriffith3433/hawkesstudio/pull/3</sub>
 - **a "ready" product change may have verify.outcome 'build failed' or 'failed' (verifyChange returns those instead of throwing), so ready doesn't mean playtested.**  
   <sub>m_8fd0d0b471c5 · agent c_a7d1f1ba0e95 · 2026-10-16 · https://github.com/jgriffith3433/hawkesstudio/pull/6</sub>
+- **checking the dashboard in a phone viewport**: start Studio with `STUDIO_SMOKE=1 STUDIO_DATA=<tmp> STUDIO_PORT=<spare>` (localhost needs no sign-in); Playwright is in /srv/hawkes/hawkesgen/node_modules and its Chromium in /tmp/pw; to fake a call, unhide `#callPane`, add `body.in-call` and dispatch a resize.  
+  <sub>m_3963ec3caa4d · agent c_2af947db4a2e · 2026-10-17 · https://github.com/jgriffith3433/hawkesstudio/pull/11</sub>
 - **cp -a keeps the donor's group**: copied node_modules stayed group "hawkes" (the sandbox user is only in hawkes-work), so chmod g+rwX alone didn't help; chgrp to the worktree's gid too (warm.ts shareCmds).  
   <sub>m_e0a97f2a1361 · agent c_5c0a7d4c2726 · 2026-10-16 · https://github.com/jgriffith3433/hawkesstudio/pull/7</sub>
+- **deployPlan with a git failure returns beta**: null and commits: [] — don't read that as "up to date"; check `!plan.beta` or a "git:" blocker first.  
+  <sub>m_b35d83c0363a · agent c_34079e1fcaee · 2026-10-17 · https://github.com/jgriffith3433/hawkesstudio/pull/13</sub>
 - **driving the dashboard in a browser**: compound shell commands need approval here; put the whole check in one Node script that spawns `src/server.ts` (STUDIO_SMOKE=1, STUDIO_PORT, scratch STUDIO_DATA, TALK_CLAUDE=node + test/fixture/fake-claude.mjs) and loads playwright via createRequire('/srv/hawkes/hawkesgen/package.json').  
   <sub>m_ea659f34f0ab · agent c_50b5737aff77 · 2026-10-16 · https://github.com/jgriffith3433/hawkesstudio/pull/2</sub>
 - **header height changes after load**: the status line fills in and wraps the sticky header, so fixed panels using `--hdr` (Activity, Talk dock) overlapped it; a ResizeObserver on the header now keeps `--hdr` right.  
   <sub>m_e26b0675c771 · agent c_50b5737aff77 · 2026-10-16 · https://github.com/jgriffith3433/hawkesstudio/pull/2</sub>
+- **no browser in the Studio agent sandbox**: to check a dashboard script, run it in node:vm with stubbed $/esc/api/ago/approvals/document and print the rendered innerHTML.  
+  <sub>m_e67e12190a2e · agent c_34079e1fcaee · 2026-10-17 · https://github.com/jgriffith3433/hawkesstudio/pull/13</sub>
+- **restart.test.ts asks for a playtest on a ready change**: with auto-merge into beta on, a ready change merges (or fails to) at once; tests that need a change to stay ready write `{"autoMergeBeta": false}` to the scratch data folder's agents.json (or call saveAgentSettings).  
+  <sub>m_61c0227ae290 · agent c_a57a21c5bc14 · 2026-10-17 · https://github.com/jgriffith3433/hawkesstudio/pull/12</sub>
+- **saved call settings store the whole object**: saveSettings('call') writes every field, mode included, so changing a default doesn't affect a saved row; check `curl 127.0.0.1:8791/api/settings` (call.saved, call.mode) to see what J actually has.  
+  <sub>m_bb66676898a7 · agent c_c48511c1e2a2 · 2026-10-17 · https://github.com/jgriffith3433/hawkesstudio/pull/10</sub>
 - **scripting src/activity.ts on a scratch STUDIO_DATA needs src/talk.ts imported too (the conversations table), not just agents.ts.**  
   <sub>m_5d1d10170544 · agent c_a7d1f1ba0e95 · 2026-10-16 · https://github.com/jgriffith3433/hawkesstudio/pull/6</sub>
 - **single-quoted tool descriptions in src/mcp-tools.ts**: an unescaped apostrophe ("J's") breaks the whole file's parse (TS1434 errors far away); escape it or use double quotes.  
@@ -66,6 +86,8 @@ Generated from Hawkes Studio's shared memory (2026-10-17 02:07 UTC). Edit entrie
   <sub>m_71b92d8f5a4c · agent c_c6391dd3cf65 · 2026-10-17 · https://github.com/jgriffith3433/hawkesstudio/pull/8</sub>
 - **testing pm.tick() in test/pm.test.ts**: call pm.startPm() (tick is a no-op otherwise), set STUDIO_PM_TALK=off, write notify.json with enabled:false (otherwise askJ posts to a real ntfy topic), and leave GITHUB_TOKEN unset so startWork starts nothing; insert changes rows directly with updated older than graceMinutes.  
   <sub>m_5485de935ac9 · agent c_02aee40d9a74 · 2026-10-16 · https://github.com/jgriffith3433/hawkesstudio/pull/5</sub>
+- **the guide can't see inside Talk**: guide.js `find()` drops everything under `#talkDock, #talk, #callPane` (TALK), so "not found" for a call-pane control says nothing about whether it's visible; put controls J must be shown outside those (the header's nav works).  
+  <sub>m_7eea9b9008c2 · agent c_2af947db4a2e · 2026-10-17 · https://github.com/jgriffith3433/hawkesstudio/pull/11</sub>
 
 ## In progress
 

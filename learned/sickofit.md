@@ -1,6 +1,6 @@
 # Learned: Sick Of It
 
-Generated from Hawkes Studio's shared memory (2026-10-17 02:07 UTC). Edit entries in Studio's Memory tab, not here.
+Generated from Hawkes Studio's shared memory (2026-10-17 02:19 UTC). Edit entries in Studio's Memory tab, not here.
 
 ## How the code works
 
@@ -19,5 +19,9 @@ Generated from Hawkes Studio's shared memory (2026-10-17 02:07 UTC). Edit entrie
   <sub>m_14fcf957bdb7 · agent c_7ae1f2fa113d · 2026-10-16 · https://github.com/jgriffith3433/sickofitgame-unity/pull/3</sub>
 - **Projectile hitboxes must match the drawn size**: body.radius is in world units no matter what visual.scale is; a 0.1-scale flame wants a radius of about 0.2.  
   <sub>m_a535817b4113 · agent c_7ae1f2fa113d · 2026-10-16 · https://github.com/jgriffith3433/sickofitgame-unity/pull/3</sub>
+- **Unity's WEBAudio is private**: WEBAudio.audioContext lives inside the framework closure, so a page can't resume it directly; wrap window.AudioContext (and Audio) before the loader runs to capture Unity's context (Tools/Web/hawkes-sound.js).  
+  <sub>m_c3500ab361dd · agent c_6460881b47fa · 2026-10-17 · https://github.com/jgriffith3433/sickofitgame-unity/pull/4</sub>
 - **art.mjs on the Linux server**: DoD's .venv isn't there, art.mjs falls back to system python3 (no PIL) and stops at the first sheets.py call; it also makes a relative "C:\Projects\SickOfItGameEnemies" folder in the repo (delete it). Run the art step on J's PC.  
   <sub>m_08072b58c516 · agent c_7ae1f2fa113d · 2026-10-16 · https://github.com/jgriffith3433/sickofitgame-unity/pull/3</sub>
+- **no browser or dotnet on the control server**: test page JS with node and stubs (node --check plus a fake DOM); C# compile is only checked by the build.  
+  <sub>m_d094370941ca · agent c_6460881b47fa · 2026-10-17 · https://github.com/jgriffith3433/sickofitgame-unity/pull/4</sub>

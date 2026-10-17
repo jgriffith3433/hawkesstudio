@@ -1,11 +1,13 @@
 # Learned: The Place Department
 
-Generated from Hawkes Studio's shared memory (2026-10-17 02:07 UTC). Edit entries in Studio's Memory tab, not here.
+Generated from Hawkes Studio's shared memory (2026-10-17 02:19 UTC). Edit entries in Studio's Memory tab, not here.
 
 ## How the code works
 
 - **Phone layouts in The Place Department**: every overlay canvas calls `UiFit.Apply(scaler)` and has a `Layout()` redone when `UiFit.Stamp` changes; Desktop branches keep the original 1920x1080 numbers, Wide/Tall use a 660-unit short side (20+ unit text, 88-unit buttons).  
   <sub>m_412b800ad68b · agent c_d5833a503f0e · 2026-10-16 · https://github.com/jgriffith3433/breakingthrough/pull/3</sub>
+- **The Place Department's website pages come from the game repo**: the Unity deploy (`WebGlBuild.InstallSiteFooter`) stamps `Tools/Web/site-footer.html` onto every .html outside Game/ between `<!-- hawkes-footer -->` markers; the build server pulls back any site file the deploy changes (Hawkes Gen builder diffs the site before/after), so site edits belong in the deploy, never in theplacedepartmentwebsite by hand.  
+  <sub>m_a3d436a83ed2 · agent c_ccb127c0190e · 2026-10-17 · item i_d99aacc026ff · c_ccb127c0190e</sub>
 
 ## Lessons (what broke, and the fix)
 
