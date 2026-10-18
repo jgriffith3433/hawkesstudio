@@ -368,8 +368,19 @@ GPU costs money, so it is priced and approved.**
   tries again while the change still needs it, after 2, 3, 5, then every 8 minutes, for about 45 minutes. Each round
   is one `gpu-start-waiting` line in the PM log (not one per server); Talk hears once: the `gpu-start` (with the
   budget) or the give-up (`gpu-start-failed`, no launch instead). The cap reached or nothing stopped is said at once.
-  The brief tells the agent a server is coming: it queues its jobs with `wait_for_server` and, if none is ready
-  within about 30 minutes, finishes the rest and says the GPU part is waiting. Launching a new server still asks J.
+  The brief tells the agent a server is coming: it queues its jobs with `wait_for_server`. Launching a new server
+  still asks J.
+- **Agents park while their Gen jobs wait** (J, 2026-10-18, q_dda086e2af58: "okay fix it"; before, a GPU agent sat in
+  its session until its time or turn limit, ended with "no commit" and the PM parked the task). The brief tells it:
+  queue the Gen jobs, commit the non-GPU work, write `.hawkes/waiting-jobs.txt` (one Gen job id per line, then a
+  note of what to do with that output) and end. Studio sets the change to **waiting on Gen**: not failed, not ready,
+  no try counted, and it holds no agent slot (the product's next change runs meanwhile). Studio polls each job
+  (`GET /v1/jobs/<id>`, every 3 minutes: `pollGenWaits` in agents.ts); once every one is done, failed or cancelled
+  (or unknown to Gen), the change queues again and its agent's own session (same worktree and branch) is resumed with
+  the results (ids, statuses, asset ids, its notes): it judges, bakes and commits, then the normal flow. The wait is
+  in the database (`changes.phase`, step `gen`), so a restart carries on. Jobs waiting longer than
+  `agents.genWaitHours` (Settings, Agents; default 6) are said once in Talk; that never fails the task. The roadmap
+  shows the task as waiting for GPU jobs (n of m done).
 - **Follow-ups keep their GPU items** (J, 2026-10-18). A task added without `gpu` (the PM's or Talk's follow-up, "Follow-up
   to PR #28 (c_…)") takes the items of the GPU task it follows up: from what it depends on, or the tasks (`k_…`) and
   changes (`c_…`) its request names, back along a chain of follow-ups (`roadmap.ts inheritedGpu`, a `gpu inherit`
@@ -545,12 +556,19 @@ words are the fallback.
   newest first) feeds its `whatsnew.html`, the game menus and the corporate site's products page (`releases[0].build`).
   Going live adds the new release on top and sets `current` to it (`src/release.ts`): the version is bumped (minor when
   the shipped commits include a feature or task, patch when they're only fixes; never a version used before), the date
-  is today, the build is the Unity `Game/v<n>` (else the short sha of the playtested commit), and a title with 2-5 notes
-  for players are written from the commit titles by a cheap model through Gen (`llm.json`), with a plain fallback from
-  the titles when Gen fails. Infra noise (Gen client/SDK syncs, devtools saves, Studio's own commits) is left out. The
-  notes cover everything since the newest release's build, not just the last go live, so a go live that shipped
-  without an entry (2026-10-18's) is caught up by the next one. The plan's "what" line says it ("Releases 1.1.0:
-  <title>", and how many commits since the last entry), the Go live card shows it and the result names it. Web
+  is today, the build is the Unity `Game/v<n>` (else the short sha of the playtested commit), and a title with 1-5 notes
+  are written by Claude through Gen (`llm.json`) in the product's public voice (`products.json` `releaseVoice`: the
+  corporate site's company voice and the words it never uses; games: a player's-eye line per change). The commits are
+  the writer's input only: a note quoting a commit subject, an id (`#12`, a sha) or a dev word (PR, commit, changelog,
+  agent, beta, …) is dropped, and when nothing is left or the writer fails the entry says "Improvements and fixes."
+  (never the commit text; 2026-10-18 two go lives put raw subjects, even "pharma framing", on hawkesbiomedical.com).
+  Notes already on beta are kept, never rewritten: beta's newest entry isn't live yet (an agent or J wrote it), or
+  everything going live only edits `releases.json` (an agent corrected old notes; no new entry). Infra noise (Gen
+  client/SDK syncs, devtools saves, Studio's own commits) is left out. The notes cover everything since the newest
+  release's build, not just the last go live, so a go live that shipped without an entry (2026-10-18's) is caught up
+  by the next one. The plan waits for the notes (up to 20 s; the Approve card up to 100 s) and its "what" line quotes
+  them exactly ("Releases 1.1.0 "<title>": "<note>" …", or "keeps the entry already on beta"), so J reads what ships
+  before he taps; the result names it. Web
   products: a commit `Release: <name> <version>: <title>` (only `releases.json`) on beta on top of the playtested
   commit, then main is fast-forwarded to it; such a commit doesn't count as beta moving (the plan, the Approve card's
   binding, the next plan: `playedCommit`). Unity: written into the beta website copy and committed with the build

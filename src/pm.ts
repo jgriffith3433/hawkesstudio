@@ -186,7 +186,8 @@ async function syncTask(t: Task, getChange: (id: string) => any) {
   const c = t.change ? getChange(t.change) : null;
   if (!c) return;
   if (t.status !== 'merged' && t.status !== 'verified') {
-    const next = ACTIVE.includes(c.status) ? 'working' : c.status === 'needs answer' ? 'needs answer' : c.status === 'ready' ? 'review' : c.status === 'merged' ? mergedStatus(t, c) : null;
+    // Parked on its Gen jobs (agents.ts WAITING_GEN): still working, without a slot (the roadmap says how far its jobs are).
+    const next = ACTIVE.includes(c.status) || c.status === 'waiting on Gen' ? 'working' : c.status === 'needs answer' ? 'needs answer' : c.status === 'ready' ? 'review' : c.status === 'merged' ? mergedStatus(t, c) : null;
     if (next && next !== t.status) {
       setTask(t.id, { status: next, pr: c.pr_url, ...(next === 'merged' || next === GPU_WAIT ? { merged_at: c.merged_at ?? Date.now(), build: null } : {}), ...(c.verify?.criteria ? { checks: { where: 'change', at: Date.now(), change: c.id, video: c.verify.video ?? null, verdict: c.verify.verdict, results: c.verify.criteria } } : {}), ...(c.verify?.try ? { try: c.verify.try } : {}) });
       if (next === 'merged') kick();
@@ -502,8 +503,8 @@ export async function milestoneCheck(id: string) {
 /** Every one of a task's criteria judged by name in these checks. */
 const judgesAll = (checks: unknown, criteria: string[]) => Array.isArray(checks) && criteria.length > 0 && criteria.every((k) => checks.some((r: any) => r?.criterion === k));
 
-/** A task's change still in flight: an agent on it, ready for review, or waiting on an answer. */
-const LIVE = [...ACTIVE, 'ready', 'needs answer'];
+/** A task's change still in flight: an agent on it, ready for review, waiting on an answer or on its Gen jobs. */
+const LIVE = [...ACTIVE, 'ready', 'needs answer', 'waiting on Gen'];
 
 /**
  * Why a task can't get another agent change now, or null. One attempt at a time, and a merged one is the task done:

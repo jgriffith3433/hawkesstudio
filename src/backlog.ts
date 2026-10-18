@@ -101,7 +101,7 @@ export function absorb(product: string, run: string, scenario: string, findings:
 /** The unmerged agent change that took a finding (it's fixed from the start: agents.ts startFix), or null. */
 export function takenBy(finding: string): string | null {
   try {
-    const c = db.prepare(`SELECT id FROM changes WHERE findings LIKE ? AND status IN ('queued', 'working', 'verifying', 'revising', 'needs answer', 'ready') ORDER BY created DESC LIMIT 1`).get(`%"${finding}"%`) as any;
+    const c = db.prepare(`SELECT id FROM changes WHERE findings LIKE ? AND status IN ('queued', 'working', 'verifying', 'revising', 'needs answer', 'waiting on Gen', 'ready') ORDER BY created DESC LIMIT 1`).get(`%"${finding}"%`) as any;
     return c?.id ?? null;
   } catch {
     return null; // no changes table (agents.ts not loaded)

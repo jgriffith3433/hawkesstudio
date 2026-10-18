@@ -168,6 +168,19 @@ const needsBetaBuild = (t: Pick<Task, 'product'>) => !isInfra(t.product);
 /** A task is on beta: verified or live, or merged and beta built it (Studio and Gen: merged into main). */
 export const landed = (t: Pick<Task, 'status' | 'product' | 'build'>) => ['verified', 'live'].includes(t.status) || (t.status === 'merged' && (!needsBetaBuild(t) || t.build?.ok === true));
 
+/** A task's change parked on its Gen jobs (agents.ts WAITING_GEN): how many of them are done; null when it isn't. */
+export function genWaitOf(change: string | null | undefined): { done: number; total: number } | null {
+  if (!change) return null;
+  try {
+    const r = db.prepare('SELECT status, phase FROM changes WHERE id = ?').get(change) as { status: string; phase: string | null } | undefined;
+    if (r?.status !== 'waiting on Gen') return null;
+    const jobs: { status?: string }[] = parse(r.phase)?.gen?.jobs ?? [];
+    return { done: jobs.filter((j) => ['done', 'failed', 'cancelled', 'missing'].includes(String(j.status))).length, total: jobs.length };
+  } catch {
+    return null; // no changes table (agents.ts not loaded)
+  }
+}
+
 /** What a task waits on, in plain words; null when nothing (it's on beta, verified or live). */
 export function taskWaits(t: Task, asked: Set<string> = askedJ()): string | null {
   if (asked.has(t.id) || (t.change && asked.has(t.change))) return 'you: a question in your Inbox';
@@ -177,7 +190,10 @@ export function taskWaits(t: Task, asked: Set<string> = askedJ()): string | null
     const b = blockedBy(t);
     return b.length ? `${b.map((x) => `"${x.title}"`).join(', ')} first` : 'a free agent (it starts by itself)';
   }
-  if (t.status === 'working') return 'its agent (working on it)';
+  if (t.status === 'working') {
+    const g = genWaitOf(t.change);
+    return g ? `GPU jobs (${g.done} of ${g.total} done; its agent resumes when they finish)` : 'its agent (working on it)';
+  }
   if (t.status === 'needs answer') return "an answer to its agent's question";
   if (t.status === 'review') return 'its merge into beta';
   if (t.status === 'failed') return 'you: it failed after its tries';
@@ -187,7 +203,7 @@ export function taskWaits(t: Task, asked: Set<string> = askedJ()): string | null
 }
 
 export type Progress = {
-  /** planned | working | waiting for your GPU budget | waiting for GPU | needs you | on beta | verified | live (or the item's own: idea, done by hand, dropped). */
+  /** planned | working | waiting for GPU jobs | waiting for your GPU budget | waiting for GPU | needs you | on beta | verified | live (or the item's own: idea, done by hand, dropped). */
   state: string;
   /** What J reads: the state, with "working (n of m merged)". */
   label: string;
@@ -220,8 +236,13 @@ export function itemProgress(it: Item, asked: Set<string> = askedJ()): Progress 
   else if (every(landed)) state = 'on beta';
   else if (every((t) => t.status === 'planned')) state = 'planned';
   else state = 'working';
+  // Working, but every task still being worked on is parked on its Gen jobs: J sees how far those are.
+  const gens = tasks.filter((t) => t.status === 'working').map((t) => genWaitOf(t.change));
+  const genLabel = state === 'working' && gens.length && gens.every(Boolean)
+    ? `waiting for GPU jobs (${gens.reduce((n, g) => n + g!.done, 0)} of ${gens.reduce((n, g) => n + g!.total, 0)} done)` : null;
+  if (genLabel) state = 'waiting for GPU jobs';
   return {
-    state, label: state === 'working' ? `working (${merged} of ${tasks.length} merged)` : state,
+    state, label: genLabel ?? (state === 'working' ? `working (${merged} of ${tasks.length} merged)` : state),
     total: tasks.length, merged, built, working, waiting,
     tasks: tasks.map((t) => ({ id: t.id, title: t.title, status: t.status, waits: taskWaits(t, asked), build: t.build ? t.build.detail : null })),
   };
