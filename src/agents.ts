@@ -893,7 +893,8 @@ async function work(id: string, note?: string, answer?: string, resumed?: Phase 
     if (resumed && !asked) addLog(id, `Studio restarted: carrying on from the ${ph.step} step`);
     else if (!resumed) save({}, { status: note || answer ? 'revising' : 'working', detail: 'preparing the worktree' });
     // An approved GPU budget: Studio starts a stopped GPU server for it now (gpustart.ts; never a launch), in the background.
-    if (!resumed && needsGpu(c)) void ensureGpuFor(c).then((r) => addLog(id, `GPU server: ${r}`)).catch(() => {});
+    // After a restart too, while the agent hasn't finished (its tries in between ended with the old process).
+    if ((!resumed || ph.step === 'prepare' || ph.step === 'agent') && needsGpu(c)) void ensureGpuFor(c).then((r) => addLog(id, `GPU server: ${r}`)).catch(() => {});
     const findings = c.findings.map((f) => getFinding(f)).filter((f): f is NonNullable<typeof f> => Boolean(f));
 
     if (ph.step === 'prepare') {
