@@ -66,6 +66,6 @@ test('a task whose change waits on Gen: working, its jobs counted, no second att
   assert.equal(view.label, 'waiting for GPU jobs (1 of 3 done)');
   assert.match(view.tasks[0].waits!, /^GPU jobs \(1 of 3 done/);
   assert.match(pm.startBlocked(t.id) ?? '', /is waiting on Gen/, 'no second attempt while it waits');
-  assert.equal(pm.slotHeld('gw'), false, "it doesn't hold the product's slot");
+  assert.equal(await pm.slotHeld('gw'), false, "it doesn't hold the product's slot");
   assert.equal(pm.capacity().active, 0, "nor an agent's");
 });

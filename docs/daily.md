@@ -168,11 +168,19 @@ stuck. A revision by a person starts the count over.
   later ones as tries (then J). No beta run at all 20 minutes after a merge: one is started.
 - starts the next planned tasks in roadmap order (dependencies merged first), then the worst open bugs (blockers, then
   bugs seen most), within the caps: agents at once (`maxConcurrent`, default 2), agent starts per day
-  (`maxStartsPerDay`, 8), one change per product at a time. For roadmap tasks and bugs a product's slot is also held by
-  a change of it that is ready but not merged yet, or being revised (a conflict pass too): the next task starts on top
-  of the last one's merge, so tasks rarely conflict (`slotHeld`). Anything else asked for a product that has a change running
-  (J's `studio_task`, a fix) is never refused: it queues behind the running one and starts when that one finishes
-  (`pump` in agents.ts: oldest first, one per product, within `maxConcurrent`). It starts nothing while a Studio or Gen deploy is waiting.
+  (`maxStartsPerDay`, 8), and per product `agents.perProduct` changes at a time (default 1; per-product overrides in
+  `agents.productLimits`, Sick Of It 2 since 2026-10-18; Studio and Gen always 1; Settings > Agents). A product's
+  second change starts only when it won't collide with the ones in flight (`src/parallel.ts`): never the same task,
+  never one its task depends on, and only in a different area (art, audio, levels, story, ui, engine, from the titles
+  and the files the running change and the task's earlier changes touched or its request names) or with known files
+  that share nothing; when that can't be told it waits. A conflict that happens anyway is resolved by its agent as
+  usual. For roadmap tasks and bugs a product's slots are also held by changes of it that are ready but not merged
+  yet, or being revised (a conflict pass too) (`slotHeld`). Anything else asked for a product whose slots are taken
+  (J's `studio_task`, a fix) is never refused: it queues and starts when there's room (`pump` in agents.ts: oldest
+  first, per product within its limit and the same overlap test, within `maxConcurrent`); its "behind c_..." detail
+  names what it waits for now (`behindDetail`, refreshed each pass). The PM's `maxConcurrent` counts only changes
+  actually running (working, verifying, revising), never queued ones waiting for their product's slot. It starts
+  nothing while a Studio or Gen deploy is waiting.
 - runs a **PM turn**: a Talk turn in the day's "Studio PM: <date>" conversation (`conversations.kind = 'pm'`) with what
   came in (changes ready to review, agent questions, failures, beta checks, beta runs and go lives, the daily run) and
   once a day after `dailyHour` (or the daily run) the triage. Claude acts through `studio_pm`: merges into beta what

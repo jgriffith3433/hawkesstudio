@@ -164,7 +164,8 @@ a budget (`approveGpu`, `gpuCleared`, `tasksAwaitingGpu`; the PM asks him once);
 | `src/acceptance.ts` | Acceptance criteria judged from a playtest (yes/no/unclear with evidence) and the merge gate |
 | `src/scout.ts` | Scouts: a read-only Claude Code investigation in a worktree, reported back to Talk |
 | `src/memory.ts`, `src/memory-api.ts`, `src/memory-curate.ts`, `dashboard/memory.js` | The shared memory: entries, full-text search, the prompt block, candidates and curation (Haiku's first pass), fading, run history, the Markdown export to the `memory` branch, the seed (`memory/seed/*.json`), the Memory tab (docs/memory.md) |
-| `src/canon.ts` | The canon check of a content change's diff (a contradiction fails the merge gate) |
+| `src/canon.ts` | The canon check of a content change's diff, given the task's request and J's decisions (only a clear, quoted, high-confidence contradiction fails the merge gate; the rest are notes) |
+| `src/parallel.ts` | More than one agent per product (`agents.perProduct`, `agents.productLimits`): whether a second change would collide with the ones running (same task, dependency, area, files) |
 | `src/roles.ts`, `.claude/agents/`, `.claude/skills/` | Roles (model, tools, instructions per kind of run) and skills; `.claude` is the "hawkes" plugin every run loads (docs/agents.md) |
 | `src/sandbox.ts`, `src/guards.ts`, `deploy/agent-sandbox.mjs`, `deploy/github-rulesets.mjs` | The agent sandbox (its own Linux user, no secrets, no instance role), who's calling the API, what needs J's typed words, rulesets on main |
 | `src/fastlane.ts`, `src/warm.ts` | Talk's workspace and fast lane to beta; warm starts for agent worktrees |

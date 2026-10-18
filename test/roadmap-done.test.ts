@@ -172,7 +172,7 @@ test("a product's slot is held by a change that is ready but not merged: no new 
     const b = rm.addTask({ item: it.id, request: 'Second' });
     const ca = change('rdslot', a.id, 'ready');
     rm.setTask(a.id, { status: 'review', change: ca, changes: [ca], tries: 1 });
-    assert.ok(pm.slotHeld('rdslot'));
+    assert.ok(await pm.slotHeld('rdslot'));
     await pm.startWork();
     assert.equal(rm.getTask(b.id)!.status, 'planned', 'waits while the first is ready but unmerged');
     // Being revised (a revision or a conflict pass) holds it too.
@@ -180,7 +180,7 @@ test("a product's slot is held by a change that is ready but not merged: no new 
     await pm.startWork();
     assert.equal(rm.getTask(b.id)!.status, 'planned', 'waits while the first is revised');
     db.prepare(`UPDATE changes SET status = 'merged' WHERE id = ?`).run(ca);
-    assert.ok(!pm.slotHeld('rdslot'));
+    assert.ok(!(await pm.slotHeld('rdslot')));
     await pm.startWork();
     assert.equal(rm.getTask(b.id)!.status, 'working', 'starts once it merged');
   } finally {

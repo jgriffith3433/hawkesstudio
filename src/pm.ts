@@ -41,6 +41,7 @@ import { fileUrl } from './gen.ts';
 import { BETA, gitAsync, repoDirs, shaOf } from './beta.ts';
 import { buildErrors, pickCulprit } from './buildblame.ts';
 import { curationLine } from './memory.ts';
+import { filesIn, type WorkShape } from './parallel.ts';
 import { WALK_DEFAULTS, WALK_AWAY_BY, walkAwayOn, type WalkAwaySettings } from './walkaway.ts';
 
 // ---------------------------------------------------------------- settings
@@ -107,6 +108,8 @@ function git(cwd: string, args: string[]) {
 const changes = () => import('./agents.ts');
 const name = (product: string) => { try { return isInfra(product) ? getInfra(product).name : getProduct(product).name; } catch { return product; } };
 const ACTIVE = ['queued', 'working', 'verifying', 'revising'];
+/** Changes an agent is actually running: capacity counts only these, never queued ones waiting for their product's slot. */
+const RUNNING = ['working', 'verifying', 'revising'];
 
 /** The squash commit of a pull request on a branch of the repo (its title ends with "(#<pr>)"), if it's there. */
 function prCommit(repo: string, branch: string, pr: number) {
@@ -553,20 +556,28 @@ async function startTaskChange(task: Task, note?: string, why?: string, countTry
 /** Agents working now, and the PM's starts today. */
 export function capacity() {
   const s = pmSettings();
-  const active = (db.prepare(`SELECT COUNT(*) AS n FROM changes WHERE status IN (${ACTIVE.map(() => '?').join(',')})`).get(...ACTIVE) as any).n as number;
+  const active = (db.prepare(`SELECT COUNT(*) AS n FROM changes WHERE status IN (${RUNNING.map(() => '?').join(',')})`).get(...RUNNING) as any).n as number;
   const started = countToday('start');
   return { active, started, maxConcurrent: s.maxConcurrent, maxStartsPerDay: s.maxStartsPerDay, free: Math.max(0, Math.min(s.maxConcurrent - active, s.maxStartsPerDay - started)) };
 }
 
-// Agents queue a product's changes behind the running one (agents.ts pump); the PM still starts one at a time per
-// product, so its picks (priorities, retries) are made when the slot frees, not long before.
-const busy = (product: string) => Boolean(db.prepare(`SELECT id FROM changes WHERE product = ? AND status IN ('queued', 'working', 'verifying', 'revising')`).get(product));
+// Agents queue a product's changes behind the running ones (agents.ts pump); the PM still starts them one slot at a
+// time per product, so its picks (priorities, retries) are made when a slot frees, not long before. With more than
+// one slot (settings agents.perProduct, productLimits) a second starts only when it won't collide (parallel.ts).
+const busy = async (product: string, next: WorkShape) => Boolean((await changes()).noRoomFor(product, next, 'queued,working,verifying,revising'));
 /**
- * The product's slot for new roadmap tasks and bugs (J, 2026-10-18: tasks finished, then conflicted because another
- * merged first): busy, or a change of it ready but not merged yet (merging, or waiting for a person). A revision or a
- * conflict pass holds it too (revising). J's own reports only wait for busy.
+ * Whether the product has no slot for new roadmap tasks and bugs (J, 2026-10-18: tasks finished, then conflicted
+ * because another merged first): its changes queued, working or ready but not merged yet (merging, or waiting for a
+ * person) fill its slots, or `next` would collide with one of them. A revision or a conflict pass holds a slot too
+ * (revising). Without `next` any change in flight holds it. J's own reports only wait for busy.
  */
-export const slotHeld = (product: string) => busy(product) || Boolean(db.prepare(`SELECT id FROM changes WHERE product = ? AND status = 'ready'`).get(product));
+export const slotHeld = async (product: string, next: WorkShape = { text: '' }) => Boolean((await changes()).noRoomFor(product, next, 'queued,working,verifying,revising,ready'));
+/** A roadmap task as parallel.ts sees it: its title, what it depends on, the files its earlier changes touched or its request names. */
+async function taskShape(t: Task): Promise<WorkShape> {
+  const { getChange, changedFiles } = await changes();
+  const files = t.changes.map((x) => getChange(x)).filter(Boolean).flatMap((c) => changedFiles(c!));
+  return { task: t.id, depends: t.depends, text: t.title, files: [...new Set([...files, ...filesIn(t.request)])] };
+}
 
 /** Starts what can start: J's reports, then roadmap tasks (highest priority first, then in order), then bugs, within the caps. Returns what it started. */
 export async function startWork() {
@@ -620,7 +631,7 @@ export async function startWork() {
   const reports = db.prepare(`SELECT * FROM findings WHERE status = 'open' AND source = 'J' ORDER BY CASE severity WHEN 'blocker' THEN 0 ELSE 1 END, first_seen`).all() as any[];
   for (const f of reports) {
     if (cap.free <= 0) break;
-    if (busy(f.product) || isInfra(f.product)) continue;
+    if (isInfra(f.product) || await busy(f.product, { text: f.title })) continue;
     try {
       const id = startBug(f, "J's report ");
       if (id) { out.push(id); cap = capacity(); }
@@ -635,10 +646,10 @@ export async function startWork() {
   const waiting = startableTasks();
   for (const t of waiting) {
     if (cap.free <= 0) break;
-    if (slotHeld(t.product) || taken.has(t.product)) continue;
+    // The change it starts is queued at once, so the next task of the product sees it here.
+    if (await slotHeld(t.product, await taskShape(t))) continue;
     try {
       out.push(await startTaskChange(t, undefined, `priority ${t.effective_priority}${t.priority ? '' : ' (its item\'s)'}, not blocked`));
-      taken.add(t.product);
     } catch (e: any) {
       setTask(t.id, { note: `couldn't start: ${e.message}`.slice(0, 500) });
       continue;
@@ -650,7 +661,7 @@ export async function startWork() {
     const bugs = db.prepare(`SELECT * FROM findings WHERE status = 'open' AND severity IN ('blocker', 'bug') AND COALESCE(source, '') != 'J' ORDER BY CASE severity WHEN 'blocker' THEN 0 ELSE 1 END, seen DESC, last_seen DESC LIMIT 40`).all() as any[];
     for (const f of bugs) {
       if (cap.free <= 0) break;
-      if (slotHeld(f.product) || isInfra(f.product) || waiting.some((t) => t.product === f.product)) continue;
+      if (isInfra(f.product) || waiting.some((t) => t.product === f.product) || await slotHeld(f.product, { text: f.title })) continue;
       try {
         const id = startBug(f, '');
         if (!id) continue;
@@ -743,7 +754,7 @@ export async function rerunGpuWaits(free: number, taken = new Set<string>(), dep
       }
       continue;
     }
-    if (free <= out.length || slotHeld(t.product) || taken.has(t.product)) continue;
+    if (free <= out.length || taken.has(t.product) || await slotHeld(t.product, await taskShape(t))) continue;
     try {
       const { getChange } = await changes();
       const prev = t.change ? getChange(t.change) : null;

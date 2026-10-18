@@ -117,7 +117,7 @@ export async function allSettings() {
 /** Numbers that spend more when they go up, and switches that spend more when they go on (per section). */
 const RAISES: Record<Section, { up?: string[]; on?: string[]; off?: string[]; any?: string[] }> = {
   call: {},
-  agents: { up: ['maxConcurrent', 'maxPerDay', 'maxCostPerDay', 'maxTurns'], on: ['enabled', 'autoFix'], any: ['model', 'severities'] },
+  agents: { up: ['maxConcurrent', 'perProduct', 'maxPerDay', 'maxCostPerDay', 'maxTurns'], on: ['enabled', 'autoFix'], any: ['model', 'severities'] },
   pm: { up: ['maxStartsPerDay', 'maxConcurrent', 'maxTries', 'walkAwayGpuPerDay'], on: ['enabled', 'fixBugs', 'walkAway'] },
   notify: {},
   costs: { up: ['budget', 'gpuHours', 'builderHours', 'playtesterHours', 'gpuAutoApprove'], off: ['alerts'] },
@@ -131,6 +131,13 @@ export function costRaising(section: Section, patch: Record<string, any>, cur: R
   for (const k of r.on ?? []) if (patch[k] === true && cur[k] !== true) out.push(`${k} on`);
   for (const k of r.off ?? []) if (patch[k] === false && cur[k] !== false) out.push(`${k} off`);
   for (const k of r.any ?? []) if (patch[k] !== undefined && J(patch[k]) !== J(cur[k])) out.push(`${k} → ${J(patch[k])}`);
+  // More agents on one product (agents.productLimits): any product's limit going up.
+  if (section === 'agents' && patch.productLimits && typeof patch.productLimits === 'object') {
+    for (const [p, n] of Object.entries(patch.productLimits)) {
+      const was = Number(cur.productLimits?.[p] ?? cur.perProduct ?? 1);
+      if (Number(n) > was) out.push(`productLimits.${p} ${was} → ${n}`);
+    }
+  }
   if (section === 'call' && patch.engine === 'eleven' && cur.engine !== 'eleven') out.push(`the ElevenLabs voice (about $${ELEVEN_PER_MIN.toFixed(2)} a minute Talk speaks)`);
   return out;
 }
@@ -174,6 +181,21 @@ export async function saveSettings(section: string, patch: Record<string, any>, 
     for (const [k, v] of Object.entries(patch)) {
       if (!(k in known)) throw new StudioError(`agents.${k}: not a setting (${Object.keys(known).join(', ')})`);
       if (k === 'severities') { if (!Array.isArray(v)) throw new StudioError('agents.severities: a list'); clean[k] = v.map(String); continue; }
+      if (k === 'productLimits') {
+        // Per-product overrides of perProduct: { sickofit: 2 }; null or 0 drops a product's override.
+        if (!v || typeof v !== 'object' || Array.isArray(v)) throw new StudioError('agents.productLimits: { product: number }');
+        const { getProduct } = await import('./config.ts');
+        const next: Record<string, number> = { ...known.productLimits };
+        for (const [p, n] of Object.entries(v as Record<string, any>)) {
+          try { getProduct(p); } catch { throw new StudioError(`agents.productLimits.${p}: not a product`); }
+          if (n === null || n === 0) { delete next[p]; continue; }
+          if (!(Number.isInteger(n) && n >= 1 && n <= 4)) throw new StudioError(`agents.productLimits.${p}: 1 to 4`);
+          next[p] = n;
+        }
+        clean[k] = next;
+        continue;
+      }
+      if (k === 'perProduct' && !(Number.isInteger(v) && (v as number) >= 1 && (v as number) <= 4)) throw new StudioError('agents.perProduct: 1 to 4');
       if (typeof v !== typeof known[k]) throw new StudioError(`agents.${k} must be a ${typeof known[k]}`);
       if (typeof v === 'number' && !(v >= 0)) throw new StudioError(`agents.${k}: 0 or more`);
       clean[k] = v;

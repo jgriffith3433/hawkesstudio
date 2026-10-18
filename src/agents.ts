@@ -52,10 +52,11 @@ import { buildPreview, removePreview, previewUrl, changeSiteDir, changeBuild, ty
 import { BETA, ensureBeta, gitAsync } from './beta.ts';
 import { deployPending, critical } from './drain.ts';
 import { notify, notifyOnce, PUBLIC_URL } from './notify.ts';
-import { threadFor } from './roadmap.ts';
+import { threadFor, getTask } from './roadmap.ts';
+import { overlapWith, filesIn, type WorkShape } from './parallel.ts';
 import { judgeCriteria, gate } from './acceptance.ts';
 import { briefSection, learnFrom, recordRun, LEARNED_ASK } from './memory.ts';
-import { canonCheck, CONTENTISH } from './canon.ts';
+import { canonCheck, CONTENTISH, type CanonCheck } from './canon.ts';
 import { roleArgs, loadRole, type RoleName } from './roles.ts';
 import { claudeCommand, spawnShell, sandboxShare, assertWorktree, shareWorktree } from './sandbox.ts';
 import { launch, DetachedChild, detachedActivity, type DetachRec } from './detach.ts';
@@ -132,16 +133,24 @@ const SETTINGS_FILE = path.join(DATA, 'agents.json');
 /**
  * autoMergeBeta: ready product changes merge into beta by themselves (J, 2026-10-17); off: a person merges them.
  * idleMinutes: an agent with no new output that long, its processes only sleeping, is ended (runAgent's watchdog; 0: off).
+ * perProduct: changes of one product that may run at once (a second only when it won't collide: parallel.ts);
+ * productLimits: per-product overrides of it (J, 2026-10-18: Sick Of It 2). Studio and Gen always run one at a time.
  */
-export type AgentSettings = { enabled: boolean; autoFix: boolean; autoMergeBeta: boolean; betaPlaytests: boolean; maxConcurrent: number; maxPerDay: number; maxCostPerDay: number; severities: string[]; model: string; maxTurns: number; idleMinutes: number; genWaitHours: number };
+export type AgentSettings = { enabled: boolean; autoFix: boolean; autoMergeBeta: boolean; betaPlaytests: boolean; maxConcurrent: number; perProduct: number; productLimits: Record<string, number>; maxPerDay: number; maxCostPerDay: number; severities: string[]; model: string; maxTurns: number; idleMinutes: number; genWaitHours: number };
 /** genWaitHours: a change parked on Gen jobs longer than this is told in Talk once (it isn't failed). */
-const DEFAULTS: AgentSettings = { enabled: true, autoFix: true, autoMergeBeta: true, betaPlaytests: false, maxConcurrent: 2, maxPerDay: 4, maxCostPerDay: 20, severities: ['blocker', 'bug'], model: 'claude-opus-5-5', maxTurns: 80, idleMinutes: 20, genWaitHours: 6 };
+const DEFAULTS: AgentSettings = { enabled: true, autoFix: true, autoMergeBeta: true, betaPlaytests: false, maxConcurrent: 2, perProduct: 1, productLimits: { sickofit: 2 }, maxPerDay: 4, maxCostPerDay: 20, severities: ['blocker', 'bug'], model: 'claude-opus-5-5', maxTurns: 80, idleMinutes: 20, genWaitHours: 6 };
 export function agentSettings(): AgentSettings {
   try {
     return { ...DEFAULTS, ...JSON.parse(fs.readFileSync(SETTINGS_FILE, 'utf8')) };
   } catch {
     return DEFAULTS;
   }
+}
+/** How many changes of this product may run at once (at least 1; Studio and Gen: 1). */
+export function perProductLimit(product: string, s: AgentSettings = agentSettings()) {
+  if (isInfra(product)) return 1;
+  const n = Number(s.productLimits?.[product] ?? s.perProduct);
+  return Number.isFinite(n) && n >= 1 ? Math.floor(n) : 1;
 }
 export function saveAgentSettings(patch: Partial<AgentSettings>) {
   const next = { ...agentSettings(), ...patch };
@@ -881,40 +890,101 @@ export function startFix(productId: string, findingIds: string[], { auto = false
   return id;
 }
 
-/** The statuses of a change that holds its product's one running slot. */
+/** The statuses of a change that holds one of its product's running slots. */
 const ACTIVE = 'working,verifying,revising';
-/** " behind c_..." when the product already has a change running or waiting ahead of a new one; else "". */
+/** " behind c_..." when the product's slots are taken by changes running or waiting ahead of a new one; else "". */
 function aheadOf(product: string) {
   const busy = [...listChanges({ status: ACTIVE, product }), ...listChanges({ status: 'queued', product })];
-  return busy.length ? ` behind ${busy[0].id}` : '';
+  return busy.length >= perProductLimit(product) ? ` behind ${busy[0].id}` : '';
+}
+
+/** A queued change's detail with its " behind c_..." brought up to date: the first of `ahead` when they fill its product's slots, else none. */
+export function behindDetail(detail: string, ahead: string[], limit: number) {
+  const m = detail.match(/ behind c_\w+/);
+  if (!m) return detail;
+  return detail.replace(m[0], ahead.length >= limit ? ` behind ${ahead[0]}` : '');
 }
 
 /**
- * Which queued changes start now: oldest first, at most `free` of them, and one per product (a product with a change
- * running, or one picked earlier in the pass, waits; it starts when that one finishes and pump runs again).
+ * Which queued changes start now: oldest first, at most `free` of them, and per product at most `limit(product)` at
+ * once (default 1: a product with a change running, or one picked earlier in the pass, waits; it starts when that one
+ * finishes and pump runs again). A product's second or later change also has to `fit` beside the others (parallel.ts):
+ * `fit(id, picked)` gets the ids picked for its product earlier in this pass (the caller adds the ones running).
  */
-export function pickQueued(queued: { id: string; product: string }[], busyProducts: Iterable<string>, free: number) {
-  const busy = new Set(busyProducts);
+export function pickQueued(queued: { id: string; product: string }[], busyProducts: Iterable<string>, free: number, { limit = () => 1, fit = () => false }: { limit?: (product: string) => number; fit?: (id: string, picked: string[]) => boolean } = {}) {
+  const count = new Map<string, number>();
+  for (const p of busyProducts) count.set(p, (count.get(p) ?? 0) + 1);
+  const picked = new Map<string, string[]>();
   const out: string[] = [];
   for (const c of queued) {
     if (out.length >= free) break;
-    if (busy.has(c.product)) continue;
-    busy.add(c.product);
+    const n = count.get(c.product) ?? 0;
+    if (n >= limit(c.product)) continue;
+    if (n > 0 && !fit(c.id, picked.get(c.product) ?? [])) continue;
+    count.set(c.product, n + 1);
+    picked.set(c.product, [...(picked.get(c.product) ?? []), c.id]);
     out.push(c.id);
   }
   return out;
 }
 
-/** Runs queued changes up to the concurrency limit, one per product at a time. */
+/** The files a change touched so far (its worktree: commits on its branch and what's uncommitted); [] without one. */
+export function changedFiles(c: Pick<Change, 'worktree' | 'base'>) {
+  if (!c.worktree || !fs.existsSync(path.join(c.worktree, '.git'))) return [];
+  const committed = git(c.worktree, ['diff', '--name-only', `origin/${c.base ?? BETA}...HEAD`], 10_000).out.split('\n');
+  const open = git(c.worktree, ['status', '--porcelain'], 10_000).out.split('\n').map((l) => l.slice(3).split(' -> ').pop()!);
+  return [...new Set([...committed, ...open].map((f) => f.trim()).filter((f) => f && !f.startsWith('.hawkes/')))];
+}
+
+/** A change as parallel.ts sees it: its task (and what that depends on), its title, the files it and its task's earlier changes touched. */
+export function shapeOf(c: Change): WorkShape {
+  const t = c.task ? getTask(c.task) : null;
+  const earlier = (t?.changes ?? []).filter((x) => x !== c.id).map((x) => getChange(x)).filter((x): x is Change => Boolean(x));
+  const findings = c.findings.map((f) => getFinding(f)?.title).filter(Boolean).join('; ');
+  const files = [...changedFiles(c), ...earlier.flatMap((x) => changedFiles(x)), ...filesIn(c.request ?? '')];
+  return { task: c.task ?? null, depends: t?.depends ?? [], text: [t?.title ?? c.title ?? '', findings].filter(Boolean).join('; '), files: [...new Set(files)] };
+}
+
+/**
+ * Why `next` can't start beside the product's changes in `statuses` now (its slots are full, or it would collide with
+ * one: parallel.ts), or null when it can.
+ */
+export function noRoomFor(product: string, next: WorkShape, statuses = `queued,${ACTIVE}`) {
+  const others = listChanges({ status: statuses, product, limit: 50 });
+  const limit = perProductLimit(product);
+  if (others.length >= limit) return limit === 1 ? `${others[0].id} is running` : `${limit} changes are running`;
+  return others.length ? overlapWith(next, others.map(shapeOf)) : null;
+}
+
+/** Runs queued changes up to the concurrency limit, per product up to its limit when they don't collide. */
 async function pump() {
   // A Studio deploy is waiting (drain.ts): start nothing new; the queue resumes after the deploy restarts Studio.
   if (deployPending()) return;
   const s = agentSettings();
   // Busy: anything running in this process (a revision or an answer is queued while it runs) and whatever is active.
-  const busy = new Set<string>(listChanges({ status: ACTIVE, limit: 500 }).map((c) => c.product));
-  for (const id of running) { const r = getChange(id); if (r) busy.add(r.product); }
+  const active = new Map(listChanges({ status: ACTIVE, limit: 500 }).map((c) => [c.id, c]));
+  for (const id of running) { const r = getChange(id); if (r) active.set(r.id, r); }
   const queued = listChanges({ status: 'queued', limit: 500 }).reverse().filter((c) => !running.has(c.id));
-  for (const id of pickQueued(queued, busy, s.maxConcurrent - running.size)) {
+  const fit = (id: string, picked: string[]) => {
+    const c = getChange(id)!;
+    const beside = [...[...active.values()].filter((r) => r.product === c.product), ...picked.map((x) => getChange(x)!)];
+    const why = overlapWith(shapeOf(c), beside.map(shapeOf));
+    if (why && !c.detail?.includes(why)) update(id, { detail: `queued: waits for ${beside[0]?.id ?? 'the running change'} (${why})`.slice(0, 300) });
+    return !why;
+  };
+  const busy = [...active.values()].map((c) => c.product);
+  const picks = pickQueued(queued, busy, s.maxConcurrent - running.size, { limit: (p) => perProductLimit(p, s), fit });
+  // A queued change's " behind c_..." names what it waits for now, not one that finished since (J, 2026-10-18).
+  const ahead = new Map<string, string[]>();
+  for (const c of [...active.values(), ...picks.map((x) => getChange(x)!)]) ahead.set(c.product, [...(ahead.get(c.product) ?? []), c.id]);
+  for (const c of queued) {
+    if (picks.includes(c.id)) continue;
+    const before = ahead.get(c.product) ?? [];
+    const detail = behindDetail(c.detail ?? '', before, perProductLimit(c.product, s));
+    if (detail !== (c.detail ?? '')) update(c.id, { detail });
+    ahead.set(c.product, [...before, c.id]);
+  }
+  for (const id of picks) {
     const c = getChange(id)!;
     running.add(c.id);
     // Back from waiting on Gen: its own session continues with the jobs' results (same worktree, same branch).
@@ -1123,8 +1193,11 @@ async function work(id: string, note?: string, answer?: string, resumed?: Phase 
       update(id, { detail: 'checking the change against the canon' });
       const files = git(c.worktree, ['diff', '--name-only', `origin/${c.base}...HEAD`]).out.split('\n').filter((f) => CONTENTISH.test(f));
       const diff = files.length ? git(c.worktree, ['diff', `origin/${c.base}...HEAD`, '--', ...files.slice(0, 60)]).out : '';
-      const canon = await canonCheck(p.id, diff, c.title ?? c.request ?? id).catch((e: any) => ({ ok: true, summary: `couldn't check: ${e.message}`, conflicts: [], checked: 0, skipped: 'error' }));
+      // The task's request and criteria go with it: what the task asked for is never a conflict (canon.ts).
+      const canon: CanonCheck = await canonCheck(p.id, diff, c.title ?? c.request ?? id, { request: c.request, criteria: c.criteria }).catch((e: any) => ({ ok: true, summary: `couldn't check: ${e.message}`, conflicts: [], checked: 0, skipped: 'error' }));
       addLog(id, `canon: ${canon.ok ? 'ok' : 'CONFLICT'}: ${canon.summary}${canon.conflicts.length ? ` (${canon.conflicts.map((k) => k.entry).join(', ')})` : ''}`);
+      // Flagged but not blocking (low confidence, ambiguous, requested, placeholder art, off the story path): notes.
+      for (const n of canon.notes ?? []) addLog(id, `canon note (not blocking: ${n.note}): ${n.entry} ${n.why}`.slice(0, 600));
       if (verify) verify.canon = canon;
     }
     // A preview J can open: <product>.hawkesgen.com/c/<id>/
@@ -1163,7 +1236,8 @@ export function readyDetail(v: any) {
   const what = played ? `playtest ${v.outcome ?? '?'} · review: ${v.verdict ?? 'n/a'}${met}`
     : v?.outcome === 'not played' ? `ready: agent's checks passed (the playtest asked for couldn't run: ${String(v.error ?? '').slice(0, 160)})`
       : "ready: agent's checks passed, pull request open (not playtested)";
-  return `${what}${v?.preview ? ` · preview ${v.preview}` : ''}`;
+  const notes = v?.canon?.notes?.length ? ` · ${v.canon.notes.length} canon note${v.canon.notes.length === 1 ? '' : 's'} (not blocking)` : '';
+  return `${what}${notes}${v?.preview ? ` · preview ${v.preview}` : ''}`;
 }
 /** Whether a change was playtested (on request, or by the old automatic verification): its result is on it. */
 export const playtested = (v: any) => Boolean(v && (v.playtest || (v.outcome && v.outcome !== 'not played')));

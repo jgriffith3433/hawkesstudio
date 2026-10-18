@@ -153,7 +153,7 @@ async function fastlaneNow(productId: string, message: string, { origin = null, 
   if (roleOf({ request: `${message} ${out.commits.join(' ')}` }) === 'content') {
     const { canonCheck, CONTENTISH } = await import('./canon.ts');
     const files = out.files.filter((f) => CONTENTISH.test(f));
-    out.canon = await canonCheck(p.id, files.length ? git(dir, ['diff', `${base}...HEAD`, '--', ...files]).out : '', message).catch((e: any) => ({ ok: true, summary: `couldn't check: ${e.message}`, conflicts: [] }));
+    out.canon = await canonCheck(p.id, files.length ? git(dir, ['diff', `${base}...HEAD`, '--', ...files]).out : '', message, { request: message }).catch((e: any) => ({ ok: true, summary: `couldn't check: ${e.message}`, conflicts: [] }));
     if (out.canon.ok === false) return refuse(`it contradicts the canon: ${out.canon.conflicts.map((c: any) => `${c.entry} (${c.why})`).join('; ')}`);
   }
   // A fast-forward of beta, never forced, never main.
