@@ -86,7 +86,8 @@ async function describe(kind: Kind, target: string, params: Record<string, any>)
   }
   if (kind === 'deploy') {
     const { deployPlan } = await import('./deploy.ts');
-    const p = await deployPlan(target);
+    // The card waits for the release notes: J sees exactly what the What's new will say before he taps.
+    const p = await deployPlan(target, { notesWaitMs: 100_000 });
     const lines = [p.what, `Live (main): ${p.main ? `${p.main.short} ${p.main.title}` : 'none'} · beta: ${p.beta ? `${p.beta.short} ${p.beta.title}` : 'none'}`];
     lines.push(p.commits.length ? `${p.commits.length} commit(s) go live: ${p.commits.slice(0, 8).map((c) => `${c!.short} ${c!.title} (${c!.author})`).join('; ')}${p.commits.length > 8 ? '; …' : ''}` : 'No new commits.');
     lines.push(p.tested.playtests.length ? `Playtests of beta ${p.tested.sha}: ${p.tested.playtests.map((t) => `${t.name} ${t.outcome ?? t.status}${t.verdict ? `, review "${t.verdict}"` : ''}`).join(' · ')}` : `Beta ${p.tested.sha ?? ''} hasn't been playtested.`);

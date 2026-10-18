@@ -28,7 +28,7 @@ import {
   BETA, MAIN, STUDIO_ROLLBACK, AUTHOR, must, repoDirs, compareBeta, fetchOrigin, shaOf, commitOf, commitsIn, betaBuild, saveBetaBuild,
   betaSiteDir, betaSiteFolder, scratch, listDeploys, mergeMainIntoBeta, prebuilt, git as gitIn, gitAsync, type Commit, type DeployRow,
 } from './beta.ts';
-import { STUDIO_RELEASE, RELEASES, playedCommit, releasesAt, releasesPath, readReleases, draftNow, addReleaseTo, releaseLine, type Draft } from './release.ts';
+import { STUDIO_RELEASE, RELEASES, playedCommit, releasesAt, releasesPath, readReleases, draftWithin, addReleaseTo, releaseLine, releaseNotesLine, type Draft } from './release.ts';
 
 const brief = (c: Commit | null) => c && { sha: c.sha, short: c.short, title: c.title, author: c.author, date: c.date };
 
@@ -73,7 +73,8 @@ export function planFix(blockers: string[]): BlockerFix | null {
   return (['merge-main', 'beta', 'rebuild'] as const).find((f) => fixes.has(f)) ?? null;
 }
 
-export async function deployPlan(productId: string) {
+/** notesWaitMs: how long to wait for the release notes being written (the Approve card waits longer, to show them). */
+export async function deployPlan(productId: string, { notesWaitMs = 20_000 }: { notesWaitMs?: number } = {}) {
   const p = getProduct(productId);
   const { source, site, unity } = repoDirs(p);
   const blockers: string[] = [];
@@ -128,20 +129,22 @@ export async function deployPlan(productId: string) {
     blockers.push(`Nothing to go live: ${MAIN} already is ${BETA} (${beta.short}).`);
   }
 
-  // The release going live adds to releases.json (release.ts): its version now, its title once Gen wrote the notes.
-  let release: ReturnType<typeof draftNow> | null = null;
+  // The release going live adds to releases.json (release.ts): its version and notes (waited for, so the plan shows
+  // what ships), or the entry already on beta, kept.
+  let release: Awaited<ReturnType<typeof draftWithin>> | null = null;
   if (beta && played && !blockers.some((b) => /^Nothing to go live|^git:/.test(b))) {
     try {
       const fallbackCommits = cmp.ahead.filter((c) => !c.title.startsWith(STUDIO_RELEASE));
-      const data = unity ? readReleases(path.join(betaSiteFolder(p), RELEASES)) ?? releasesAt(site, `origin/${MAIN}`, releasesPath(p)) : releasesAt(source, beta.sha, releasesPath(p));
-      if (data) release = draftNow(p, unity
-        ? { data, source, target: beta.sha, build: String(build?.version ?? beta.short), fallbackCommits }
-        : { data, source, target: played.sha, build: played.short, fallbackCommits });
+      const live = unity ? releasesAt(site, `origin/${MAIN}`, releasesPath(p)) : releasesAt(source, `origin/${MAIN}`, releasesPath(p));
+      const data = unity ? readReleases(path.join(betaSiteFolder(p), RELEASES)) ?? live : releasesAt(source, beta.sha, releasesPath(p));
+      if (data) release = await draftWithin(p, unity
+        ? { data, live, source, target: beta.sha, build: String(build?.version ?? beta.short), fallbackCommits }
+        : { data, live, source, target: played.sha, build: played.short, fallbackCommits }, notesWaitMs);
     } catch (e: any) {
       warnings.push(`The release notes couldn't be drafted (${e.message}); going live still works, without a new release entry.`);
     }
   }
-  const relNote = release && !release.existing ? ` ${releaseLine(release)}${release.since ? ` (notes cover ${release.commits} commit(s) since the last release entry, ${release.since.slice(0, 7)})` : ''}.` : '';
+  const relNote = release ? ` ${releaseNotesLine(release)}${release.since ? ` (notes cover ${release.commits} commit(s) since the last release entry, ${release.since.slice(0, 7)})` : ''}.` : '';
 
   const previous = listDeploys(p.id, 5);
   return {
@@ -155,7 +158,7 @@ export async function deployPlan(productId: string) {
     confirm: `DEPLOY ${p.id}`,
     what: unity
       ? `Commits ${BETA}'s build${build?.version ? ` (Game/v${build.version})` : ''} to ${p.site}'s ${MAIN} and fast-forwards ${p.repo.split('/')[0]}'s ${MAIN} to ${beta?.short ?? BETA}; GitHub Pages publishes ${p.live}.${relNote}`
-      : `Fast-forwards ${p.site}'s ${MAIN} to ${BETA}${played ? ` ${played.short}` : ''} (${cmp.ahead.length} commit(s))${relNote ? ', with a release entry on top' : ''}; GitHub Pages publishes ${p.live}.${relNote}`,
+      : `Fast-forwards ${p.site}'s ${MAIN} to ${BETA}${played ? ` ${played.short}` : ''} (${cmp.ahead.length} commit(s))${release && !release.existing ? ', with a release entry on top' : ''}; GitHub Pages publishes ${p.live}.${relNote}`,
   };
 }
 
@@ -209,7 +212,7 @@ async function deployNow(productId: string, { confirm, by = 'J', mergeMain, orig
     const b = betaBuild(p)!;
     // The release entry goes into the website copy, inside the build commit (never stops going live).
     try {
-      release = await addReleaseTo(p, betaSiteFolder(p), { source, target: beta.sha, build: String(b.version ?? beta.short), fallbackCommits });
+      release = await addReleaseTo(p, betaSiteFolder(p), { source, target: beta.sha, build: String(b.version ?? beta.short), fallbackCommits, live: releasesAt(site, `origin/${MAIN}`, releasesPath(p)) });
       if (release && release.source !== 'existing') log.push(`${p.site}: ${releaseLine(release)}`);
     } catch (e: any) {
       log.push(`warning: no release entry this time (${String(e.message ?? e).split('\n')[0]}); going live without it`);
@@ -254,7 +257,7 @@ async function deployNow(productId: string, { confirm, by = 'J', mergeMain, orig
  */
 async function commitRelease(p: ReturnType<typeof getProduct>, source: string, beta: Commit | { sha: string; short: string }, fallbackCommits: Commit[]) {
   const wt = await scratch(source, `${p.id}-release`, beta.sha);
-  const release = await addReleaseTo(p, path.join(wt, path.dirname(releasesPath(p))), { source, target: beta.sha, build: beta.short, fallbackCommits });
+  const release = await addReleaseTo(p, path.join(wt, path.dirname(releasesPath(p))), { source, target: beta.sha, build: beta.short, fallbackCommits, live: releasesAt(source, `origin/${MAIN}`, releasesPath(p)) });
   if (!release || release.source === 'existing') return { release, sha: null };
   must(await gitAsync(wt, ['add', releasesPath(p)]), 'git add');
   must(await gitAsync(wt, [...AUTHOR, 'commit', '--quiet', '-m', `${STUDIO_RELEASE} ${p.name} ${release.version}: ${release.title}`]), 'committing the release entry');
