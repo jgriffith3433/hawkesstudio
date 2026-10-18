@@ -359,6 +359,11 @@ tells Talk the device (phone, tablet or computer, from the page); Talk never ass
   typed or said, tells Talk what J is looking at: the tab and the item he last clicked or has open there (a change,
   finding, report, playtest, run, roadmap item: `studioContext()` in app.js, `viewContext()` in talk.ts), shown on the
   dock as "Talk sees: …", so "this one" means it.
+- **New messages:** Claude's and Studio's messages J hasn't had on screen show as a red count on the conversation in
+  the list (a ● in the dock's picker) and on the Talk tab (how many conversations have some), like the Inbox's badge.
+  A conversation is seen when it is open on the Talk tab or the dock with the page visible; Studio keeps the mark
+  (`seen` and `reply` on `conversations`, `POST /api/talk/<id>/seen`, `GET /api/talk?count=1`), so it follows him
+  across devices. His own messages and tool lines never count.
 
 ## Talk showing J around (guide and drive)
 
