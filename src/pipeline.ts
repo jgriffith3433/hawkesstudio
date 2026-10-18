@@ -481,6 +481,8 @@ export async function playtestProduct(run: string, p: Product, t: Playtest, { re
   // Local: what's played (beta on the server) is recorded, so the report and the deploy plan know the commit.
   const played = t.where === 'local' ? (was?.data?.played ?? playedLocal(p)) : null;
   let port: number | null = null;
+  // What installing the local server's packages logged ("dependencies changed: npm ci"): kept on the step.
+  const deps: string[] = [];
   try {
     if (t.where === 'live') url = p.live;
     else if (prior?.status === 'done') url = was?.data?.url ?? localUrl(p);
@@ -490,12 +492,12 @@ export async function playtestProduct(run: string, p: Product, t: Playtest, { re
       port = betaPort(p);
       stopServed(port);
       url = await serveDir(p, path.join(betaSiteDir(p), path.relative(p.site.split('/')[0], p.local.dir)), port);
-    } else url = await ensureServer(p);
+    } else url = await ensureServer(p, (m) => { deps.push(m); updateStep(s, { detail: m }); });
   } catch (e: any) {
-    updateStep(s, { status: 'failed', detail: e.message, data: { played }, finished: true });
+    updateStep(s, { status: 'failed', detail: e.message, data: { played, ...(deps.length ? { deps } : {}) }, finished: true });
     return null;
   }
-  updateStep(s, { data: { played, url } });
+  updateStep(s, { data: { played, url, ...(deps.length ? { deps } : {}) } });
   // Live sites may not have the contract yet (it ships with the next deploy): auto falls back to a generic smoke test.
   const params: Record<string, unknown> = { url, mode: t.mode ?? (p.contract && t.where === 'local' ? 'contract' : 'auto'), ...(t.scenario ? { scenario: t.scenario } : {}), ...(t.timeout ? { timeout: t.timeout } : {}), ...(t.seed ? { seed: t.seed } : {}), ...(t.options ? { options: t.options } : {}) };
   if (t.mode === 'site') params.maxPages = 40;

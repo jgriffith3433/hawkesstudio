@@ -101,7 +101,7 @@ test('a sync that brings a new package-lock.json runs npm ci and logs it with it
   assert.equal(r.install?.length, 1);
   assert.ok(r.install![0].ok);
   assert.equal(r.install![0].why, 'package-lock.json changed');
-  assert.match(r.detail, /beta: 1 new commits; npm ci in game \(package-lock\.json changed\): \d+ s$/);
+  assert.match(r.detail, /beta: 1 new commits; dependencies changed: npm ci in game \(package-lock\.json changed\): \d+ s$/);
   assert.equal(installed(), '{"lock":2}');
   assert.equal(installedFor(dir), lockHash(dir));
   assert.equal(git(dir, 'status', '--porcelain'), '', 'the install leaves the checkout clean');
