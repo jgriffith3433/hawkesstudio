@@ -1,6 +1,8 @@
 // Updating a beta source checkout on the server (repos.ts syncRepo) when it has uncommitted changes: changes only in
-// generated build output (a leftover build) are discarded, named and the checkout follows beta; anything else keeps it
-// where it is, untouched. Throwaway repos in a temp "Projects" folder with a bare origin.
+// generated build output (a leftover build) are discarded, named and the checkout follows beta; anything else is set
+// aside in a git stash (never deleted, Talk told how to get it back) and the checkout follows beta, unless the stash
+// fails (then it stays where it is, untouched). Off the beta lane nothing is touched. And asset making waits while an
+// agent works in the repo (it would write into this checkout). Throwaway repos in a temp "Projects" folder with a bare origin.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -49,7 +51,9 @@ git(other, 'commit', '--quiet', '-m', 'First');
 git(other, 'push', '--quiet', 'origin', 'HEAD:main', 'HEAD:beta');
 git(tmp, 'clone', '--quiet', '-b', 'beta', origin, dir);
 
-const { syncRepo, buildOutputs } = await import('../src/repos.ts');
+const { syncRepo, buildOutputs, repoNotices } = await import('../src/repos.ts');
+const notices: { title: string; text: string }[] = [];
+repoNotices.post = (title, text) => { notices.push({ title, text }); };
 const head = () => git(dir, 'rev-parse', 'HEAD');
 
 test('build output: play/, dist/, Game/v<n> and deploy.output, nothing else', () => {
@@ -76,25 +80,71 @@ test('a checkout dirty only in build output is cleaned, logged and follows beta'
   assert.equal(fs.readFileSync(path.join(dir, 'src/main.ts'), 'utf8'), 'v2');
 });
 
-test('changes outside build output keep the refusal and touch nothing', async () => {
-  write(dir, 'src/main.ts', 'work in progress');
-  write(dir, 'play/index.html', 'stray rebuild');
+test('other uncommitted changes are set aside in a stash, Talk is told, and the checkout follows beta', async () => {
+  write(dir, 'src/main.ts', 'work in progress'); // modified, tracked
+  write(dir, 'play/index.html', 'stray rebuild'); // build output, alongside
+  write(dir, 'hawkes.assets.lock.json', '{}'); // untracked, like the asset left in imaginelivetvwebsite
   push('src/other.ts', 'v3');
-  const before = head();
+  notices.length = 0;
   const r = await syncRepo('site', 'test/site', 'main', 'beta');
-  assert.equal(r.action, 'kept');
-  assert.match(r.detail, /uncommitted changes .* not updated/);
-  assert.deepEqual([...r.dirty!].sort(), ['play/index.html', 'src/main.ts']);
-  assert.equal(r.discarded, undefined);
-  assert.equal(head(), before);
+  assert.equal(r.action, 'updated', r.detail);
+  assert.match(r.detail, /^set aside uncommitted changes in stash [0-9a-f]{7} \(.*src\/main\.ts.*\); beta: 1 new commits/);
+  assert.deepEqual([...r.setAside!.files].sort(), ['hawkes.assets.lock.json', 'play/index.html', 'src/main.ts']);
+  assert.match(r.setAside!.label, /^studio: set aside before following beta [0-9a-f]{7,} \d{4}-\d\d-\d\d \d\d:\d\d$/);
+  assert.equal(r.dirty, undefined);
+  assert.equal(head(), git(origin, 'rev-parse', 'beta'));
+  assert.equal(git(dir, 'status', '--porcelain'), '');
+  assert.equal(fs.readFileSync(path.join(dir, 'src/other.ts'), 'utf8'), 'v3');
+  assert.equal(git(dir, 'rev-parse', 'stash@{0}'), r.setAside!.stash);
+  assert.match(git(dir, 'stash', 'list'), new RegExp(r.setAside!.label));
+  // One notice: the files, the stash, how to get them back.
+  assert.equal(notices.length, 1);
+  const [n] = notices;
+  assert.match(n.title, /site: stray files set aside/);
+  for (const want of ['src/main.ts', 'hawkes.assets.lock.json', r.setAside!.stash.slice(0, 7), r.setAside!.label, `git -C ${dir} stash list`, 'stash show -p', 'stash pop', 'follows beta again']) assert.ok(n.text.includes(want), want);
+  // Nothing was lost: popping it brings the work back on top of the new beta.
+  git(dir, 'stash', 'pop', '--quiet');
   assert.equal(fs.readFileSync(path.join(dir, 'src/main.ts'), 'utf8'), 'work in progress');
+  assert.equal(fs.readFileSync(path.join(dir, 'hawkes.assets.lock.json'), 'utf8'), '{}');
   assert.equal(fs.readFileSync(path.join(dir, 'play/index.html'), 'utf8'), 'stray rebuild');
+});
+
+test('a stash that fails keeps the refusal, touches nothing and posts no notice', async () => {
+  push('src/third.ts', 'v4');
+  const before = head();
+  notices.length = 0;
+  const lock = path.join(dir, '.git', 'index.lock'); // another git holds the index: stash push can't run
+  fs.writeFileSync(lock, '');
+  try {
+    const r = await syncRepo('site', 'test/site', 'main', 'beta');
+    assert.equal(r.action, 'kept');
+    assert.match(r.detail, /uncommitted changes .* not updated; setting them aside failed/);
+    assert.deepEqual([...r.dirty!].sort(), ['hawkes.assets.lock.json', 'play/index.html', 'src/main.ts']);
+    assert.equal(r.setAside, undefined);
+  } finally {
+    fs.rmSync(lock);
+  }
+  assert.equal(head(), before);
+  assert.equal(notices.length, 0);
+  assert.equal(fs.readFileSync(path.join(dir, 'src/main.ts'), 'utf8'), 'work in progress');
+  assert.equal(git(dir, 'stash', 'list'), '');
 });
 
 test('off the beta lane (no wanted branch) build output is kept too', async () => {
   git(dir, 'checkout', '--quiet', '--', 'src/main.ts');
+  fs.rmSync(path.join(dir, 'hawkes.assets.lock.json'));
   const r = await syncRepo('site', 'test/site', 'main');
   assert.equal(r.action, 'kept');
   assert.deepEqual(r.dirty, ['play/index.html']);
   assert.equal(fs.readFileSync(path.join(dir, 'play/index.html'), 'utf8'), 'stray rebuild');
+});
+
+test('asset making waits while an agent works in the repo, and says why', async () => {
+  const { db } = await import('../src/db.ts');
+  await import('../src/agents.ts'); // the changes table
+  const { startAssets } = await import('../src/pipeline.ts');
+  db.prepare(`INSERT INTO changes (id, product, findings, status, repo, slug, branch, base, worktree, notes, log, created) VALUES ('c_test1', 'site', '[]', 'working', 'site', 'test/site', 'task/x', 'beta', '/tmp/wt-c_test1', '[]', '[]', ?)`).run(Date.now());
+  assert.throws(() => startAssets('site'), /an agent is working on site \(change c_test1, working\).*\/tmp\/wt-c_test1/);
+  db.prepare(`UPDATE changes SET status = 'ready' WHERE id = 'c_test1'`).run();
+  assert.throws(() => startAssets('site'), /has no hawkes\.assets\.json/); // past the guard
 });
