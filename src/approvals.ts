@@ -22,6 +22,7 @@
 import crypto from 'node:crypto';
 import type http from 'node:http';
 import { db, newId, parse, J } from './db.ts';
+import { changed, poke } from './stream.ts';
 import { StudioError, getInfra, isInfra, getProduct } from './config.ts';
 import { requestUser } from './sandbox.ts';
 import { sessionUser, cookieToken } from './auth.ts';
@@ -180,6 +181,7 @@ export async function requestApproval(kind: string, target: string, params: Reco
   if (same) {
     // Shown where it was asked again too (the newest conversation), with today's words.
     db.prepare('UPDATE approvals SET card = ?, conversation = COALESCE(?, conversation) WHERE id = ?').run(J(card), conversation, same.id);
+    cardChanged(conversation ?? same.conversation);
     return getApproval(same.id)!;
   }
   // An older card for the same action and target no longer matches: it's stale.
@@ -188,6 +190,7 @@ export async function requestApproval(kind: string, target: string, params: Reco
   const now = Date.now();
   db.prepare('INSERT INTO approvals (id, kind, target, params, bind, token, card, status, requested_by, conversation, created, expires) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
     .run(id, kind, target, J(clean), bind, crypto.randomBytes(18).toString('hex'), J(card), 'pending', by, conversation, now, now + TTL_MS());
+  cardChanged(conversation);
   return getApproval(id)!;
 }
 
@@ -227,8 +230,22 @@ export function notJClick(req: http.IncomingMessage): string | null {
   return null;
 }
 
+/** Open dashboards redraw the card (its conversation) and the Inbox (stream.ts). */
+function cardChanged(conversation: string | null | undefined) {
+  if (conversation) changed('talk', conversation);
+  poke();
+}
+
 /** J's tap on Approve or Deny. Runs the bound action on approve; tells the conversation either way. */
 export async function decideApproval(id: string, token: string, decision: string, req: http.IncomingMessage) {
+  try {
+    return await decide(id, token, decision, req);
+  } finally {
+    cardChanged((row(id) as any)?.conversation);
+  }
+}
+
+async function decide(id: string, token: string, decision: string, req: http.IncomingMessage) {
   const why = notJClick(req);
   if (why) throw new StudioError(`Only J approves or denies, with a tap on the card: ${why}.`, 403);
   if (decision !== 'approve' && decision !== 'deny') throw new StudioError('decision: approve | deny');
@@ -297,6 +314,7 @@ export function dismissApproval(id: string, req: http.IncomingMessage) {
   expire();
   if (!row(id)) throw new StudioError(`No approval ${id}`, 404);
   db.prepare(`UPDATE approvals SET dismissed = ? WHERE id = ? AND dismissed IS NULL`).run(Date.now(), id);
+  cardChanged((row(id) as any)?.conversation);
   return getApproval(id, true)!;
 }
 

@@ -490,7 +490,8 @@ async function refresh() {
   }
 }
 show(tab);
-setInterval(() => { if (tab === 'today' || tab === 'runs' || tab === 'changes') refresh(); }, 5000);
+// Today, Runs and Changes refresh when the push stream says changes or runs moved (stream.js; also its slow safety tick).
+studioStream.on(['changes', 'runs'], () => { if (tab === 'today' || tab === 'runs' || tab === 'changes') refresh(); });
 
 // ----------------------------------------------------------- changes
 const CH_WORDS = { queued: 'Waiting its turn', working: 'The agent is working on it', verifying: 'Checking its work', revising: 'Making the changes asked for', ready: 'Ready', merged: 'Merged', failed: "Didn't work", closed: 'Closed' };

@@ -1,7 +1,8 @@
 // Talk: chat with Claude about the products (Studio's /api/talk). Loaded after app.js (uses its api, esc, view, GEN).
-// The answer streams in (the conversation's `partial` text, polled while Claude is thinking). While idle it is polled
-// every few seconds too, so Studio's notices (results of work this conversation started) and the turns Studio starts to
-// explain them appear without a reload, labelled "Studio". Files are uploaded into Hawkes Gen as blobs and sent with
+// The answer streams in from GET /api/talk/<id>/events (only the streaming bubble is redrawn). The push stream
+// (stream.js) says when a conversation changed, so Studio's notices (results of work this conversation started) and the
+// turns Studio starts to explain them appear without a reload, labelled "Studio"; then only the newer messages are
+// fetched (?after=) and only new or changed messages are drawn. Files are uploaded into Hawkes Gen as blobs and sent with
 // the message. Unseen messages (Claude's and Studio's that J hasn't had on screen; talk.ts markSeen) show as a badge on the
 // conversation and on the Talk tab, like the Inbox's.
 (() => {
@@ -10,8 +11,11 @@
   const params = new URLSearchParams(location.search);
   let current = params.get('conversation');
   if (current) history.replaceState(null, '', location.pathname + location.hash);
-  let poll = null;
-  let shown = ''; // what the log shows (redrawn only when it changes)
+  let conv = null; // the conversation on screen as last fetched (all its messages)
+  let rows = []; // the HTML of each row the log shows (a row: a message, its turn mark, the cards asked after it)
+  const msgHtml = []; // per message: { key, html } (Markdown is rendered once per message)
+  let head = ''; // what the header shows
+  let live = null; // the answer streaming in: { id, es, text, ended }
   let pending = []; // files uploaded to Hawkes Gen, sent with the next message
   const seenSent = {}; // per conversation: the newest message this page told Studio J has seen
 
@@ -84,60 +88,154 @@
       : '<b class="talk-title">New conversation</b>'}`;
   }
 
+  /** One message's HTML (with the turn mark after it), rendered once per version of the message. */
+  function messageHtml(m) {
+    return (m.role === 'tool'
+      ? m.tool === 'guide' ? `<div class="talk-tool guide">${esc(m.text)}</div>` : `<div class="talk-tool">⚙ ${esc(m.text)}</div>`
+      : m.notice
+        ? `<div class="talk-msg assistant notice"><span class="talk-who">Studio</span>${md(m.text)}</div>`
+        : `<div class="talk-msg ${m.role}">${m.role === 'user' ? (m.voice ? '<span class="talk-voice" title="Said on a call">🎙</span>' : '') + esc(m.text).replace(/\n/g, '<br>') + fileChips(m.files) : md(m.text)}</div>`) + (turnMark(m.turn) ?? '');
+  }
+
+  const empty = () => `<div class="empty">Ask about the products: "What did last night's trial find?", "What are the agents working on?", "Make the Sick Of It shop screen feel more like Hell", "Is the PH Origins fix good to ship?"</div>`;
+  const tail = () => el('#talkLog .talk-tail');
+
+  /** The bubble Claude is writing into, or "thinking…" (the only part redrawn while an answer streams). */
+  function renderTail() {
+    const t = tail();
+    if (!t) return;
+    const thinking = conv?.status === 'thinking';
+    const log = el('#talkLog');
+    const atBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 80;
+    t.innerHTML = !thinking ? '' : live?.text
+      ? `<div class="talk-msg assistant streaming">${md(live.text)}<span class="talk-caret"></span></div>`
+      : `<div class="talk-tool">${conv.messages.at(-1)?.notice ? 'Studio asked Claude to explain the result…' : 'Claude is thinking…'}</div>`;
+    if (atBottom) log.scrollTop = log.scrollHeight;
+  }
+  let tailFrame = 0;
+  const tailSoon = () => { if (!tailFrame) tailFrame = requestAnimationFrame(() => { tailFrame = 0; renderTail(); }); };
+
+  /** Follows the answer as Claude writes it (talk.ts talkEvents), while the conversation on screen is thinking. */
+  function follow(id) {
+    if (live?.id === id) return;
+    unfollow();
+    const es = new EventSource(`/api/talk/${id}/events`);
+    live = { id, es, text: '', ended: false };
+    es.onmessage = (m) => {
+      if (live?.es !== es) return;
+      let e;
+      try { e = JSON.parse(m.data); } catch { return; }
+      if (e.type === 'hello' && e.status !== 'thinking') { unfollow(); loadConversation().catch(() => {}); return; } // it just ended
+      if (e.type === 'hello') { live.text = e.partial ?? ''; live.ended = false; }
+      else if (e.type === 'start') { live.text = ''; live.ended = false; }
+      else if (e.type === 'delta') live.text += e.text ?? '';
+      else if (e.type === 'end') live.ended = true; // the block becomes a message: it comes with the next fetch
+      else if (e.type === 'idle') { unfollow(); loadConversation().catch(() => {}); loadList().catch(() => {}); return; }
+      if (!document.hidden) tailSoon();
+    };
+  }
+  function unfollow() {
+    try { live?.es.close(); } catch {}
+    live = null;
+  }
+
   async function loadConversation() {
-    clearTimeout(poll);
     if (!current) {
+      unfollow();
+      conv = null;
+      rows = [];
+      msgHtml.length = 0;
+      head = '';
       renderHead(null);
-      shown = '';
-      el('#talkLog').innerHTML = `<div class="empty">Ask about the products: "What did last night's trial find?", "What are the agents working on?", "Make the Sick Of It shop screen feel more like Hell", "Is the PH Origins fix good to ship?"</div>`;
+      el('#talkLog').innerHTML = empty();
       el('#talkSend').disabled = false;
       el('#talkStop').hidden = true;
-      return idlePoll();
+      return;
     }
-    // From the page itself (approval.js's call): Approve cards come with their token only to J's dashboard.
-    const c = await approvals.call(`/api/talk/${current}`);
-    if (c.error) { current = null; return loadConversation(); }
+    // Only the newer messages when this conversation is already on screen (the last one again: its turn mark is added
+    // to it when the answer ends). From the page itself (approval.js's call): Approve cards come with their token only
+    // to J's dashboard.
+    const id = current;
+    const have = conv?.id === id ? conv.messages.length : 0;
+    const after = Math.max(0, have - 1);
+    const r = await approvals.call(`/api/talk/${id}${after ? `?after=${after}` : ''}`);
+    if (id !== current) return; // J switched meanwhile
+    if (r.error) { current = null; return loadConversation(); }
+    const messages = r.from === after && after <= have ? [...(conv?.id === id ? conv.messages.slice(0, after) : []), ...r.messages] : r.from === 0 ? r.messages : null;
+    if (!messages || messages.length !== r.total) { conv = null; return loadConversation(); } // out of step: everything again
+    const c = { ...r, messages };
+    const switched = conv?.id !== c.id;
+    conv = c;
     // Talk showing J around (studio_guide): this page runs what waits for the conversation (guide.js).
     if (c.guide?.length) window.studioGuide?.offer(c.id, c.guide);
     const thinking = c.status === 'thinking';
-    const cards = c.approvals ?? [];
-    const sig = `${c.id}|${c.title}|${c.messages.length}|${c.status}|${c.partial ?? ''}|${JSON.stringify(c.messages.at(-1)?.turn ?? null)}|${cards.map((a) => `${a.id}:${a.status}:${a.dismissed ? 'x' : ''}:${Math.round((a.expires - Date.now()) / 60000)}`).join(',')}`;
-    if (sig !== shown) {
-      shown = sig;
-      renderHead(c);
-      const log = el('#talkLog');
-      const atBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 80;
-      // Approve / Deny cards Talk asked for in this conversation (pending, and decided in the last hour), in the flow
-      // where they were asked (approval.js place).
-      const at = new Map();
-      for (const p of approvals.place(c.messages, cards)) at.set(p.after, (at.get(p.after) ?? '') + p.html);
-      log.innerHTML = (at.get(0) ?? '') + c.messages.map((m, i) => (m.role === 'tool'
-        ? m.tool === 'guide' ? `<div class="talk-tool guide">${esc(m.text)}</div>` : `<div class="talk-tool">⚙ ${esc(m.text)}</div>`
-        : m.notice
-          ? `<div class="talk-msg assistant notice"><span class="talk-who">Studio</span>${md(m.text)}</div>`
-          : `<div class="talk-msg ${m.role}">${m.role === 'user' ? (m.voice ? '<span class="talk-voice" title="Said on a call">🎙</span>' : '') + esc(m.text).replace(/\n/g, '<br>') + fileChips(m.files) : md(m.text)}</div>`) + (turnMark(m.turn) ?? '') + (at.get(i + 1) ?? '')).join('')
-        + (thinking && c.partial ? `<div class="talk-msg assistant streaming">${md(c.partial)}<span class="talk-caret"></span></div>` : '')
-        + (thinking && !c.partial ? `<div class="talk-tool">${c.messages.at(-1)?.notice ? 'Studio asked Claude to explain the result…' : 'Claude is thinking…'}</div>` : '');
-      if (atBottom || thinking) log.scrollTop = log.scrollHeight;
-    }
+    if (thinking) follow(c.id); else unfollow();
+    if (live?.ended && messages.length > have) { live.text = ''; live.ended = false; } // the finished block is a message now
+    render(c, switched);
     markSeen(c);
     el('#talkSend').disabled = thinking;
     el('#talkStop').hidden = !thinking;
-    if (thinking) poll = setTimeout(() => { loadConversation().catch(() => {}); loadList().catch(() => {}); }, 700);
-    else idlePoll();
   }
 
-  /** While Talk is on screen, new notices and Studio's own turns show up by themselves (every 3 s; the list every 6 s). */
-  let idleTicks = 0;
-  function idlePoll() {
-    clearTimeout(poll);
-    poll = setTimeout(() => {
-      if (!onScreen() || document.hidden) return idlePoll();
-      if (++idleTicks % 2 === 0) loadList().catch(() => {});
-      if (!current) return idlePoll();
-      loadConversation().catch(() => idlePoll());
-    }, 3000);
+  /** Draws what changed: new messages are appended, changed ones (a turn mark, a card's status) redrawn in place. */
+  function render(c, all = false) {
+    const h = `${c.id}|${c.title}`;
+    if (h !== head) { head = h; renderHead(c); }
+    const log = el('#talkLog');
+    const atBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 80;
+    // Approve / Deny cards Talk asked for in this conversation (pending, and decided in the last hour), in the flow
+    // where they were asked (approval.js place).
+    const at = new Map();
+    for (const p of approvals.place(c.messages, c.approvals ?? [])) at.set(p.after, (at.get(p.after) ?? '') + p.html);
+    const next = [at.get(0) ?? ''];
+    c.messages.forEach((m, i) => {
+      const key = JSON.stringify(m);
+      if (msgHtml[i]?.key !== key) msgHtml[i] = { key, html: messageHtml(m) };
+      next.push(msgHtml[i].html + (at.get(i + 1) ?? ''));
+    });
+    msgHtml.length = c.messages.length;
+    if (all || !tail()) {
+      log.innerHTML = `${next.map((x) => `<div class="talk-row">${x}</div>`).join('')}<div class="talk-row talk-tail"></div>`;
+      rows = next;
+      renderTail();
+      log.scrollTop = log.scrollHeight;
+      return;
+    }
+    const nodes = log.querySelectorAll(':scope > .talk-row:not(.talk-tail)');
+    let added = false;
+    next.forEach((x, i) => {
+      if (i < nodes.length) { if (rows[i] !== x) nodes[i].innerHTML = x; return; }
+      const row = document.createElement('div');
+      row.className = 'talk-row';
+      row.innerHTML = x;
+      tail().before(row);
+      added = true;
+    });
+    for (let i = next.length; i < nodes.length; i++) nodes[i].remove();
+    rows = next;
+    renderTail();
+    if (atBottom || (added && c.status === 'thinking')) log.scrollTop = log.scrollHeight;
   }
+
+  // The push stream (stream.js): a conversation changed (or the safety tick, or a reconnect). The badge comes with the
+  // event; the conversation on screen is refetched when it is the one that changed, the list when Talk is on screen.
+  let listAt = 0;
+  let listTimer = null;
+  /** The list at most every 2 s (a busy answer saves often). */
+  function listSoon() {
+    if (listTimer) return;
+    listTimer = setTimeout(() => { listTimer = null; listAt = Date.now(); loadList().catch(() => {}); }, Math.max(0, listAt + 2000 - Date.now()));
+  }
+  studioStream.on('talk', (e) => {
+    if (typeof e.unseen === 'number') setTalkCount(e.unseen);
+    if (e.badge) return;
+    if (!window.__talkLoaded || !onScreen()) {
+      if (typeof e.unseen !== 'number') pollTalkCount();
+      return;
+    }
+    listSoon();
+    if (current && (!e.ids || e.ids.includes(current))) loadConversation().catch(() => {});
+  });
 
   function renderPending() {
     el('#talkFiles').innerHTML = pending.map((f, i) => `<span class="talk-chip ${f.blob ? '' : 'busy'}">${/^image\//.test(f.type) ? '🖼' : '📄'} ${esc(f.name)} · ${f.blob ? kb(f.size) : 'uploading…'} <a href="#" data-unattach="${i}">×</a></span>`).join('');
@@ -196,7 +294,7 @@
       if (e.target.id === 'talkStop' && current) { await api(`/api/talk/${current}/stop`, { method: 'POST', body: {} }); await loadConversation(); }
       if (e.target.id === 'talkRename' && current) {
         const title = prompt('Name this conversation', el('.talk-title')?.textContent ?? '');
-        if (title !== null) { await api(`/api/talk/${current}`, { method: 'PATCH', body: { title } }); shown = ''; await loadList(); await loadConversation(); }
+        if (title !== null) { await api(`/api/talk/${current}`, { method: 'PATCH', body: { title } }); head = ''; await loadList(); await loadConversation(); }
       }
       if (e.target.id === 'talkDelete' && current && confirm('Delete this conversation?')) {
         await api(`/api/talk/${current}`, { method: 'DELETE' });
@@ -215,7 +313,7 @@
     }
   });
   // J tapped Approve or Deny somewhere: the chat shows what happened.
-  addEventListener('studio-approval', () => { shown = ''; if (current) loadConversation().catch(() => {}); });
+  addEventListener('studio-approval', () => { rows = []; if (current) loadConversation().catch(() => {}); });
   el('#talkSend').addEventListener('click', send);
   el('#talkFile').addEventListener('change', (e) => { attach([...e.target.files]); e.target.value = ''; });
   el('#talkInput').addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey && !matchMedia('(pointer: coarse)').matches) { e.preventDefault(); send(); } });
@@ -294,12 +392,11 @@
   };
   placeTalk();
 
-  // The Talk tab's badge on every tab (the Inbox's style), kept fresh every 15 s; coming back to the page counts as
-  // seeing what's on screen.
+  // The Talk tab's badge on every tab (the Inbox's style), kept fresh by the push stream (above); coming back to the page
+  // counts as seeing what's on screen.
   el('nav button[data-tab="talk"]').insertAdjacentHTML('beforeend', ' <span class="ib-count zero" id="talkCount" title="Conversations with new messages you haven\'t seen">0</span>');
   const pollTalkCount = () => { if (!document.hidden) api('/api/talk?count=1').then((r) => setTalkCount(r.unseen)).catch(() => {}); };
   pollTalkCount();
-  setInterval(pollTalkCount, 15000);
   document.addEventListener('visibilitychange', () => {
     if (document.hidden) return;
     pollTalkCount();

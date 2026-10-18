@@ -1,7 +1,8 @@
 // Activity: everything running in the background (Studio's /api/activity): agent changes, Studio runs with their
 // current step, Hawkes Gen jobs, Talk answers in progress, and what finished in the last 15 minutes. A drawer on the
 // right, opened from the header's Activity button (its badge counts what's running); on a wide screen it sits beside
-// Talk. Polled every 3 s while open, every 10 s for the badge. Loaded after app.js (uses its api, esc, show, ago).
+// Talk. The push stream (stream.js) says when it changed, with the badge's count: the drawer is fetched only while
+// open, and redrawn only when what came back is different. Loaded after app.js (uses its api, esc, show, ago).
 
 // An agent change's stages (coding → building → playtesting → review → ready; Studio and Gen: coding → checks →
 // ready), each todo, now, done or failed, from the change's status and its `stage` facts (src/activity.ts stageOf),
@@ -76,8 +77,8 @@ if (typeof document !== 'undefined') (() => {
   const remember = (v) => { try { localStorage.setItem(KEY, v); } catch { /* private mode */ } };
   // Open by default on a wide screen (beside Talk); J's choice sticks. On a phone it covers the page: closed at first.
   let open = matchMedia('(max-width: 760px)').matches ? false : remembered() ? remembered() === 'open' : matchMedia('(min-width: 1200px)').matches;
-  let timer = null;
   let last = null;
+  let drawn = ''; // what the drawer shows (redrawn only when the payload changed)
 
   const dur = (ms) => {
     const s = Math.max(0, Math.round(ms / 1000));
@@ -128,11 +129,22 @@ if (typeof document !== 'undefined') (() => {
     return `<div class="act-item${o.stuck || o.status === 'failed' ? ' act-warn' : ''}"><div class="act-top">${icon} <b>${esc(o.title)}</b><span class="act-time">${esc(state)}</span></div><div class="act-now">${esc(o.status === 'failed' ? o.error ?? '' : o.step ?? '')}${o.by ? ` · by ${esc(o.by)}` : ''}${o.attempts > 1 ? ` · attempt ${o.attempts}` : ''}</div>${log ? `<details class="act-log"><summary class="meta">log</summary><pre>${log}</pre></details>` : ''}</div>`;
   }
 
-  function render(a) {
+  function setCount(n) {
+    if (typeof n !== 'number') return;
     const badge = el('#actCount');
-    badge.textContent = a.count;
-    badge.classList.toggle('zero', !a.count);
+    badge.textContent = n;
+    badge.classList.toggle('zero', !n);
+  }
+  /** The payload without what moves on its own (the time of the read, running seconds): src/stream.ts signature. */
+  const sig = (a) => JSON.stringify(a, (k, v) => (['at', 'seconds', 'lastMinute', 'slow', 'stuck'].includes(k) ? undefined : v));
+
+  function render(a, force = false) {
+    setCount(a.count);
     if (!open) return;
+    el('#actUpdated').textContent = `updated ${new Date(a.at).toLocaleTimeString()}`;
+    const s = sig(a);
+    if (s === drawn && !force) return;
+    drawn = s;
     const blocks = a.loop?.blocks ?? [];
     el('#actBody').innerHTML = [
       blocks.length ? `<div class="act-item act-warn"><div class="act-top">⚠ <b>Studio froze ${blocks.length} time(s) in the last hour</b></div><div class="act-now">${blocks.slice(0, 3).map((b) => `${new Date(b.at).toLocaleTimeString()}: ${(b.ms / 1000).toFixed(1)} s${b.running.length ? ` (during ${esc(b.running.join('; ').slice(0, 160))})` : ''}`).join('<br>')}</div></div>` : '',
@@ -144,24 +156,25 @@ if (typeof document !== 'undefined') (() => {
       a.talk.length ? section('Talk', a.talk.length, a.talk.map((t) => `<div class="act-item"><div class="act-top">💬 <a href="?conversation=${esc(t.id)}#talk" data-talk="${esc(t.id)}">${esc(t.title ?? 'New conversation')}</a><span class="act-time">${since(t.since)}</span></div><div class="act-now">${t.auto ? 'Claude is explaining results Studio brought back' : 'Claude is answering'}</div></div>`).join('')) : '',
       a.recent.length ? `<details class="act-recent" ${el('.act-recent')?.open !== false ? 'open' : ''}><summary><b>Finished in the last 15 min</b> <span class="meta">${a.recent.length}</span></summary>${a.recent.map((x) => (x.type === 'change' ? changeHtml(x, true) : runHtml(x, true))).join('')}</details>` : '',
     ].join('');
-    el('#actUpdated').textContent = `updated ${new Date(a.at).toLocaleTimeString()}`;
   }
 
+  /** The drawer's contents (only while it is open and the page visible; the badge comes with the stream's events). */
   async function tick() {
-    clearTimeout(timer);
     try {
-      if (!document.hidden) {
-        // Keep open <details> open across redraws.
-        const kept = new Set([...document.querySelectorAll('#actBody .act-log[open]')].map((d) => d.closest('.act-item')?.querySelector('[data-change-log]')?.dataset.changeLog));
-        last = await api('/api/activity');
-        render(last);
-        for (const d of document.querySelectorAll('#actBody .act-log')) if (kept.has(d.closest('.act-item')?.querySelector('[data-change-log]')?.dataset.changeLog)) d.open = true;
-      }
+      if (!open || document.hidden) return;
+      // Keep open <details> open across redraws.
+      const kept = new Set([...document.querySelectorAll('#actBody .act-log[open]')].map((d) => d.closest('.act-item')?.querySelector('[data-change-log]')?.dataset.changeLog));
+      last = await api('/api/activity');
+      render(last);
+      for (const d of document.querySelectorAll('#actBody .act-log')) if (kept.has(d.closest('.act-item')?.querySelector('[data-change-log]')?.dataset.changeLog)) d.open = true;
     } catch (e) {
       if (open) el('#actUpdated').textContent = `couldn't update: ${e.message}`;
     }
-    timer = setTimeout(tick, open ? 3000 : 10000);
   }
+  studioStream.on('activity', (e) => {
+    setCount(e.count);
+    if (!e.badge || (open && !last)) tick();
+  });
 
   function setOpen(v, { keep = true } = {}) {
     open = v;
@@ -169,13 +182,12 @@ if (typeof document !== 'undefined') (() => {
     el('#activity').hidden = !v;
     document.body.classList.toggle('act-open', v);
     el('#actBtn').classList.toggle('on', v);
-    if (v && last) render(last);
+    if (v && last) render(last, true);
     tick();
   }
 
   el('#actBtn').addEventListener('click', () => setOpen(!open));
   el('#actClose').addEventListener('click', () => setOpen(false));
-  document.addEventListener('visibilitychange', () => { if (!document.hidden) tick(); });
   el('#activity').addEventListener('click', (e) => {
     const t = e.target.closest('[data-talk]');
     if (t && !(e.ctrlKey || e.metaKey || e.shiftKey)) { e.preventDefault(); window.openTalk?.(t.dataset.talk); }

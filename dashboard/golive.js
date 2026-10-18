@@ -244,11 +244,12 @@
   }
   window.loadGoLiveTab = load;
 
-  // While the tab is open: the queue every 5 s (cheap); when a go live starts or ends, the plans again.
-  setInterval(async () => {
+  // While the tab is open: the queue when the push stream says operations, changes or runs moved (stream.js; also its
+  // slow safety tick); when a go live starts or ends, the plans again.
+  studioStream.on(['ops', 'changes', 'runs'], async () => {
     if (tab !== 'golive' || busy || !products.length) return;
     try { await pollFixes(); if (await loadOps()) await load(); else draw(); } catch {}
-  }, 5000);
+  });
   addEventListener('studio-approval', () => { if (tab === 'golive') setTimeout(() => loadOps().then(draw).catch(() => {}), 800); });
 
   $('#glRefresh').onclick = () => { plans.clear(); load().catch((e) => alert(e.message)); };

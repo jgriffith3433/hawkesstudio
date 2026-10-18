@@ -11,7 +11,7 @@
 // nothing at all in a turn Studio started, and never the typed confirmations (MERGE, DEPLOY, ROLLBACK).
 
 import { newId } from './db.ts';
-import { getConversation, saveConversation, turnBy } from './talk.ts';
+import { getConversation, saveConversation, turnBy, talkChanged } from './talk.ts';
 import { lastJMessage } from './guards.ts';
 
 export const GUIDE_ACTIONS = ['tab', 'open', 'highlight', 'clear', 'scroll', 'look', 'click', 'type'] as const;
@@ -153,6 +153,7 @@ export function requestGuide(conv: string | null, raw: unknown, { pickupMs = 800
     };
     const b: Batch = { id, conv, actions, drive, created: Date.now(), turnAt: lastJMessage(conv)?.at ?? 0, claimed: null, done: finish };
     batches.set(id, b);
+    talkChanged(conv); // the page showing the conversation picks it up now (stream.ts)
     timer = setTimeout(() => finish({ error: "No Studio page took it: J doesn't have the dashboard open on this conversation, or it's in the background. Tell him in words instead." }), pickupMs);
     // Once a page has it, it gets time for the actions (moving the pointer, typing) before giving up on it.
     const watch = setInterval(() => {

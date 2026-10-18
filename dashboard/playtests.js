@@ -80,7 +80,7 @@ $('#ptList').addEventListener('click', (e) => {
 function ptSchedule() {
   clearTimeout(pt.timer);
   // Keep a list with running playtests fresh.
-  if (tab === 'playtests' && !pt.open && pt.rows.some((r) => r.outcome === 'running')) pt.timer = setTimeout(() => tab === 'playtests' && !pt.open && loadPlaytests(), 8000);
+  if (tab === 'playtests' && !pt.open && pt.rows.some((r) => r.outcome === 'running')) pt.timer = setTimeout(() => (document.hidden ? ptSchedule() : tab === 'playtests' && !pt.open && loadPlaytests()), 8000);
 }
 
 // ------------------------------------------------------------ trends (plain SVG)
