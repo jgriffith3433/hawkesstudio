@@ -3,7 +3,7 @@
 // studioStream.on(topic, fn): fn gets the event ({ topic, ids?, count?, unseen? }), debounced per topic.
 // While the page is hidden events wait; coming back delivers each waiting topic once. A safety tick every 60 s (15 s
 // while the stream is down) delivers every topic with { safety: true }; after a reconnect every topic gets { resync: true }.
-// The stream reconnects with backoff (2 s doubling to a minute). Loaded right after app.js.
+// The stream reconnects with backoff (2 s doubling to a minute). Loaded first, before app.js (which uses it at its top level); it needs nothing from the other scripts.
 const studioStream = (() => {
   const handlers = new Map();
   const queued = new Map(); // topic -> merged event, waiting for the debounce or for the page to be visible
