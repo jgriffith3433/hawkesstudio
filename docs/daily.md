@@ -252,10 +252,14 @@ words; the Inbox asks for one when he presses "Merge into main"; the go-live and
   today's values for a setting. Its token works once, expires after 15 minutes, and the card goes **stale** (refused)
   when the target changed (beta moved, the change was revised, the setting changed meanwhile): ask for a new card.
   Asking again for the same thing returns the same pending card; a newer one replaces an older one for that target.
+  A card with nothing left to approve (a GPU budget already approved, a question already answered, a change merged, a
+  go live since) settles itself as "Out of date" with why, and asking for one is refused with that reason. A waiting
+  card with a blocker says "Can't approve yet" on its button, and a failed tap shows why on the card.
 - **Only J's tap:** approving or denying is refused from the agent sandbox's user (guards.ts), from any request with
   Talk's or an agent's headers or the MCP key, and from anything but the dashboard page itself (`Sec-Fetch-Site:
-  same-origin` and `X-Studio-Click`, which approval.js sends; its buttons also ignore synthetic clicks). The token only
-  goes to J's page. Talk's tools can ask for and read cards, never decide them, and the guide's driver refuses the card.
+  same-origin` and `X-Studio-Click`, which approval.js sends; a browser that sends no Sec-Fetch-Site, like older iOS
+  Safari, counts when its Origin, else Referer, is Studio's own host; its buttons also ignore synthetic clicks). The
+  token only goes to J's page. Talk's tools can ask for and read cards, never decide them, and the guide's driver refuses the card.
 - **Approve** runs the action as J through the same code as before, with the same refusals (CI green for a Studio or
   Gen merge, the deploy blockers, beta still the approved commit). **Deny** closes the card (for a decision it answers
   no). Either way the card records who and when (also in the Inbox's "Answered lately") and the conversation that
@@ -343,7 +347,17 @@ GPU costs money, so it is priced and approved.**
 - The agent's brief says its GPU budget. With none (a task without `gpu`, or `studio_task` without `gpu_budget`), the
   agent does everything that needs no GPU (design, data, specs, Claude steps; voice and sound effects are cents) and
   ends with the estimate in its summary. With one, it batches each kind of job (one model load), reuses the library
-  (`reuse`, asset manifests), stops the servers it started, and reports what it spent.
+  (`reuse`, asset manifests), and reports what it spent.
+- **Studio starts a stopped GPU server for it** (J, 2026-10-18; `src/gpustart.ts`). Agents can't (Gen's fleet start
+  needs the owner role), so when a change with an approved budget starts and no GPU server is running, Studio starts
+  one of the existing stopped servers through Gen's `POST /v1/fleet/start` (always with the server's id): never a new
+  launch, at most 4 servers up, US regions only (us-west-2, us-east-1, us-east-2), Gen's 60-minute idle stop
+  unchanged. It prefers a server whose install finished (its models are on disk), a kept disk over a disposable one,
+  then the cheapest region. One start per need (starts are serialized, so a second change sees the first's server
+  coming up). Each start is a `gpu-start` line in the PM log and one line in Talk; a failed one (no capacity in the
+  zone, the cap reached, nothing stopped) is `gpu-start-failed` and said in Talk, with no launch instead. The brief
+  tells the agent a server is coming: it queues its jobs with `wait_for_server` and, if none is ready within about
+  30 minutes, finishes the rest and says the GPU part is waiting. Launching a new server still asks J.
 - Checks: the product's own validators and tests, the canon check of the diff (shared memory), and the acceptance
   criteria judged from a playtest of the new content; then the normal flow onto beta.
 

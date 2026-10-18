@@ -259,7 +259,12 @@ body.in-call .talk-input, body.in-call .talk-files, body.in-call #notifyBox { di
 .approval .ap-block { color: var(--red, #e5484d); margin: 6px 0; } .approval .ap-warn { color: var(--amber); margin: 6px 0; }
 .approval .ap-actions { display: flex; flex-wrap: wrap; gap: 10px; margin: 10px 0 4px; }
 .approval .ap-actions button { min-height: 44px; min-width: 120px; font-size: 15px; flex: 1 1 140px; }
-.approval .ap-close { margin-left: auto; min-width: 36px; min-height: 36px; padding: 0 8px; font-size: 20px; line-height: 1; background: none; border: none; color: var(--dim); }
+.approval .ap-close { margin-left: auto; min-width: 44px; min-height: 44px; padding: 0 8px; font-size: 20px; line-height: 1; background: none; border: none; color: var(--dim); }
+/* A tap is a tap on a phone (no double-tap zoom swallowing it); "Can't approve yet" reads as a state, not a dead button. */
+.approval button { touch-action: manipulation; }
+.approval .ap-actions button:disabled { opacity: .6; cursor: not-allowed; }
+.approval .ap-error { color: var(--red, #e5484d); margin: 6px 0 2px; flex-basis: 100%; overflow-wrap: anywhere; }
+@media (pointer: coarse), (max-width: 760px) { .approval button.small { min-height: 44px; min-width: 64px; font-size: 14px; } }
 /* Decided, expired or stale (or folded away in the chat): one line in the history, not a card. */
 .approval.ap-line { border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px; margin: 2px 0; opacity: 1; font-size: 13px; display: flex; flex-wrap: wrap; gap: 6px; align-items: baseline; }
 .approval.ap-line .meta { overflow-wrap: anywhere; }

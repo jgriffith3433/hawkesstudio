@@ -27,13 +27,16 @@ function ibCard(x) {
   </div>`;
 }
 
+let ibDrawn = null;
 async function loadInbox() {
   const r = await approvals.call('/api/inbox');
   ibItems = r.items;
   setInboxCount(r.count);
   // A card J is typing in isn't redrawn under him.
   if (document.activeElement?.matches?.('#inbox .ib-card input') && document.activeElement.value) return;
-  $('#ibList').innerHTML = r.items.length ? r.items.map(ibCard).join('') : '<div class="empty">Nothing is waiting on you. 🎉 Decisions from Talk, the PM and the agents, GPU budgets, merges only you can make and milestones to playtest all land here, the most blocking first.</div>';
+  const list = r.items.length ? r.items.map(ibCard).join('') : '<div class="empty">Nothing is waiting on you. 🎉 Decisions from Talk, the PM and the agents, GPU budgets, merges only you can make and milestones to playtest all land here, the most blocking first.</div>';
+  // Unchanged: left alone, so a card isn't swapped out from under a thumb mid-tap (the stream refetches often).
+  if (list !== ibDrawn) { $('#ibList').innerHTML = list; ibDrawn = list; }
   $('#ibAnswered').innerHTML = r.answered.length ? `<summary class="meta">Answered lately (${r.answered.length})</summary>${r.answered.map((a) => `<div class="test"><span class="name">${esc(a.title)}</span><span class="detail">${esc(String(a.answer ?? '').slice(0, 200))} · <b>by ${esc(a.by ?? '?')}</b> · ${ago(a.at)} · ${esc(a.id)}</span></div>`).join('')}` : '';
 }
 
@@ -107,7 +110,7 @@ $('#inbox').addEventListener('keydown', (e) => {
 
 addEventListener('studio-approval', () => setTimeout(ibRefresh, 1500));
 function ibRefresh() {
-  if (location.hash.slice(1).split('/')[0] === 'inbox') loadInbox().catch((e) => ($('#ibList').innerHTML = `<div class="empty">${esc(e.message)}</div>`));
+  if (location.hash.slice(1).split('/')[0] === 'inbox') loadInbox().catch((e) => (ibDrawn = null, $('#ibList').innerHTML = `<div class="empty">${esc(e.message)}</div>`));
   else pollInboxCount();
 }
 document.querySelector('nav button[data-tab="inbox"]').addEventListener('click', () => setTimeout(ibRefresh, 0));
