@@ -115,6 +115,8 @@ const env: NodeJS.ProcessEnv = {
   STUDIO_DETACH: 'process', TALK_CLAUDE: process.execPath, TALK_CLAUDE_ARGS: JSON.stringify([path.join(ROOT, 'test', 'fixture', 'fake-claude.mjs')]),
   // One pass may run 5 s here (the floor of the limit): FAKE_HANG's agent is stopped by it.
   FAKE_CLAUDE_LOG: claudeLog, FAKE_AGENT_MS: '200', STUDIO_AGENT_LIMIT_MS: '4000', STUDIO_PM: 'off',
+  // A session still open this long after its result is ended (FAKE_LINGER).
+  STUDIO_AGENT_GRACE_MS: '1000',
 };
 for (const k of ['STUDIO_SERVER', 'HAWKESGEN_KEY', 'STUDIO_BETA_LANE', 'NTFY_TOPIC']) delete env[k];
 
@@ -204,4 +206,14 @@ test('a restart while the agent waits: Studio reattaches, its time limit still s
   assert.ok(c.log.some((l: string) => /stopped at its .+ limit for one pass/.test(l)), 'the limit is in the log');
   assert.ok(c.log.some((l: string) => /reached Studio's time limit for one pass, with its work uncommitted/.test(l)));
   assert.equal(c.commits.length, 1);
+});
+
+test('an agent that finished but whose background process keeps its session open is ended, and the change carries on', { timeout: 120_000 }, async () => {
+  const c = await settle('Make the start button bigger FAKE_LINGER');
+  assert.equal(c.status, 'ready', `${c.detail}\n${c.log.join('\n')}`);
+  assert.ok(c.log.some((l: string) => /finished, but its session was still open 1 s after its final result/.test(l)), 'the log says why');
+  assert.equal(passes(c.id).length, 1, 'not resumed: it had finished');
+  assert.equal(c.commits.length, 1);
+  const pid = Number(fs.readFileSync(path.join(projects, '.work', c.id, '.hawkes', 'linger.pid'), 'utf8'));
+  await until(() => { try { process.kill(pid, 0); return false; } catch { return true; } }, 30_000, 'its background process to be ended too');
 });

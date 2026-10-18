@@ -27,7 +27,9 @@
 // from main, npm ci, the agent (typecheck and tests against the running Gen), guard rails (protected files), a pull
 // request into main, then verifyInfra: CI on the pull request, the checks again, and a smoke check of the changed
 // service on a spare port. Approving merges into main; CI on main tells the server and it deploys itself
-// (deploy/hawkes-pull.mjs: waits for runs, agents and Talk answers; rolls back if unhealthy).
+// (deploy/hawkes-pull.mjs: waits for runs, agents and Talk answers; rolls back if unhealthy). Main moved since the
+// checks: approving brings the branch up to date first (updateFromBase) and J's approval stands (`approved`) until it
+// merges once CI is green (mergeApprovedInfra); a real conflict is a conflict pass of its agent first (not a try).
 //
 // Runs on the server (STUDIO_SERVER=1, repos cloned by repos.ts, GITHUB_TOKEN from /run/hawkes/github.env).
 // Caps (settings.agents): how many fixes run at once and per day, and a daily cost limit.
@@ -56,7 +58,7 @@ import { briefSection, learnFrom, recordRun, LEARNED_ASK } from './memory.ts';
 import { canonCheck, CONTENTISH } from './canon.ts';
 import { roleArgs, loadRole, type RoleName } from './roles.ts';
 import { claudeCommand, spawnShell, sandboxShare, assertWorktree, shareWorktree } from './sandbox.ts';
-import { launch, DetachedChild, type DetachRec } from './detach.ts';
+import { launch, DetachedChild, detachedActivity, type DetachRec } from './detach.ts';
 import { warmDeps } from './warm.ts';
 import { ensureGpuFor, needsGpu } from './gpustart.ts';
 
@@ -83,6 +85,9 @@ try { db.exec('ALTER TABLE changes ADD COLUMN auto_merge TEXT'); } catch { /* al
 // conflict passes its agent made since its branch last merged cleanly with its base (resolveConflicts).
 try { db.exec('ALTER TABLE changes ADD COLUMN merged_at INTEGER'); } catch { /* already there */ }
 try { db.exec('ALTER TABLE changes ADD COLUMN conflicts INTEGER'); } catch { /* already there */ }
+// J's approval of a Studio/Gen merge that main moving held up ({ by, origin, at } JSON): kept until it merges, CI or the
+// checks fail, or a person revises it (approveInfra, mergeApprovedInfra).
+try { db.exec('ALTER TABLE changes ADD COLUMN approved TEXT'); } catch { /* already there */ }
 
 export type Change = {
   id: string; product: string; findings: string[]; status: string; detail: string | null; repo: string; slug: string; branch: string; base: string;
@@ -98,6 +103,8 @@ export type Change = {
   auto_merge?: string | null;
   /** When it merged into its base; conflict passes since its branch last merged cleanly with its base. */
   merged_at?: number | null; conflicts?: number | null;
+  /** Studio/Gen: J's approval still waiting to merge it (main moved: CI on the updated branch, or a conflict pass). JSON. */
+  approved?: string | null;
   /** The Talk conversation that started it (followup.ts). */
   origin?: string | null;
   /** A change to Hawkes Studio or Hawkes Gen (a pull request into main, which deploys itself), not a product. */
@@ -117,9 +124,12 @@ function changeLinks(r: any, verify: any): ChangeLinks {
 }
 
 const SETTINGS_FILE = path.join(DATA, 'agents.json');
-/** autoMergeBeta: ready product changes merge into beta by themselves (J, 2026-10-17); off: a person merges them. */
-export type AgentSettings = { enabled: boolean; autoFix: boolean; autoMergeBeta: boolean; betaPlaytests: boolean; maxConcurrent: number; maxPerDay: number; maxCostPerDay: number; severities: string[]; model: string; maxTurns: number };
-const DEFAULTS: AgentSettings = { enabled: true, autoFix: true, autoMergeBeta: true, betaPlaytests: false, maxConcurrent: 2, maxPerDay: 4, maxCostPerDay: 20, severities: ['blocker', 'bug'], model: 'claude-opus-5-5', maxTurns: 80 };
+/**
+ * autoMergeBeta: ready product changes merge into beta by themselves (J, 2026-10-17); off: a person merges them.
+ * idleMinutes: an agent with no new output that long, its processes only sleeping, is ended (runAgent's watchdog; 0: off).
+ */
+export type AgentSettings = { enabled: boolean; autoFix: boolean; autoMergeBeta: boolean; betaPlaytests: boolean; maxConcurrent: number; maxPerDay: number; maxCostPerDay: number; severities: string[]; model: string; maxTurns: number; idleMinutes: number };
+const DEFAULTS: AgentSettings = { enabled: true, autoFix: true, autoMergeBeta: true, betaPlaytests: false, maxConcurrent: 2, maxPerDay: 4, maxCostPerDay: 20, severities: ['blocker', 'bug'], model: 'claude-opus-5-5', maxTurns: 80, idleMinutes: 20 };
 export function agentSettings(): AgentSettings {
   try {
     return { ...DEFAULTS, ...JSON.parse(fs.readFileSync(SETTINGS_FILE, 'utf8')) };
@@ -253,7 +263,7 @@ function nudgeResume(c: Change, ph: Phase) {
 }
 /** A conflict pass: the agent's own session (it knows its change) merges the base and resolves; a new one reads the brief first. */
 export function conflictPrompt(c: Pick<Change, 'base'>, files: string[]) {
-  return `Beta moved while your change waited to merge: another change merged into ${c.base} first, and your branch now conflicts with it${files.length ? ` in ${files.slice(0, 20).map((f) => `\`${f}\``).join(', ')}` : ''}.
+  return `${c.base === BETA ? 'Beta' : c.base} moved while your change waited to merge: another change merged into ${c.base} first, and your branch now conflicts with it${files.length ? ` in ${files.slice(0, 20).map((f) => `\`${f}\``).join(', ')}` : ''}.
 
 1. \`git merge origin/${c.base}\` (Studio already fetched it).
 2. Resolve the conflicts keeping both sides' intent: what ${c.base} has now (the other change's work) and what your change does.
@@ -554,6 +564,26 @@ export function agentLimitMs(c: { infra?: boolean; request?: string | null; find
   if (env > 0) return env;
   return roleOf(c) === 'content' ? 3 * 60 * 60_000 : 60 * 60_000;
 }
+/**
+ * How long a session may stay open after its final result before Studio ends it: on 2026-10-18 an agent's own
+ * background wait loop kept `claude -p` alive 70 minutes after it had finished, holding its product's slot.
+ * STUDIO_AGENT_GRACE_MS: tests.
+ */
+export const graceMs = () => Number(process.env.STUDIO_AGENT_GRACE_MS) > 0 ? Number(process.env.STUDIO_AGENT_GRACE_MS) : 60_000;
+
+/**
+ * The watchdog's call on an agent that has been quiet (no new output) for `quietMs`: why it's stuck (a line for the
+ * log), or null to leave it. Stuck only when quiet for the whole idle time, its processes used next to no CPU over it
+ * (under 2% of one CPU), none is running or waiting on disk, and it isn't waiting on a Gen (GPU) job.
+ */
+export function stuckWhy({ quietMs, idleMs, cpuMs, overMs, procs, genBusy }: { quietMs: number; idleMs: number; cpuMs: number; overMs: number; procs: { state: string; comm: string }[]; genBusy: boolean }): string | null {
+  if (!(idleMs > 0) || quietMs < idleMs || overMs < idleMs * 0.75 || genBusy) return null;
+  if (cpuMs > overMs * 0.02) return null;
+  if (procs.some((p) => p.state === 'R' || p.state === 'D')) return null;
+  const left = [...new Set(procs.map((p) => p.comm))].filter((n) => !['node', 'claude', 'sudo'].includes(n));
+  return `no new output for ${Math.round(quietMs / 60_000)} minutes and its processes only waiting${left.length ? ` (${left.slice(0, 6).join(', ')})` : ''}`;
+}
+
 /** A session that ended with its work uncommitted is resumed this many times to commit it (agents.ts nudge). */
 export const NUDGES = 2;
 
@@ -596,6 +626,40 @@ function runAgent(c: Change, briefFile: string, s: AgentSettings, env = claudeEn
     let saved = 0;
     const limit = agentLimitMs(c);
     let timedOut = false;
+    // Ending it on Studio's own call (done but still open, or stuck): kill() stops the whole unit (detached-run.mjs).
+    let ending = false;
+    const end = (line: string) => {
+      if (ending) return;
+      ending = true;
+      addLog(c.id, `agent: ${line}`);
+      child.kill('SIGTERM');
+    };
+    let grace: NodeJS.Timeout | undefined;
+    // The watchdog: quiet since `lastOut`; CPU counted from the first look after it went quiet.
+    let lastOut = Date.now();
+    let usedGen = false;
+    let base: { at: number; cpuUsec: number } | null = null;
+    const idleMs = (s.idleMinutes ?? DEFAULTS.idleMinutes) * 60_000;
+    const watch = setInterval(async () => {
+      const rec = child instanceof DetachedChild ? child.rec : null;
+      if (ending || !rec || !(idleMs > 0)) return;
+      if (Date.now() - lastOut < Math.min(idleMs / 4, 60_000)) return void (base = null);
+      const now = detachedActivity(rec);
+      if (!now) return;
+      if (!base) return void (base = { at: Date.now(), cpuUsec: now.cpuUsec });
+      const quietMs = Date.now() - lastOut;
+      if (quietMs < idleMs) return;
+      // A Gen job it may be waiting on (a GPU batch) keeps it: anything queued or running (or Gen not answering) counts.
+      let genBusy = false;
+      if (usedGen) genBusy = await gen.jobs({ status: 'queued,running', limit: 20 }).then((j: any[]) => j.length > 0, () => true);
+      const why = stuckWhy({ quietMs, idleMs, cpuMs: (now.cpuUsec - base.cpuUsec) / 1000, overMs: Date.now() - base.at, procs: now.procs, genBusy });
+      if (!why || ending || Date.now() - lastOut < quietMs) return;
+      end(`${why}: Studio ended it (the session and its background processes) and carries on with the change`);
+      const { tellAbout } = await import('./followup.ts');
+      const cur = getChange(c.id);
+      if (cur) await tellAbout(cur, `Agent ended: ${cur.title ?? c.id}`, `Agent change ${c.id} (${cur.title}) was stuck: ${why}. Studio ended its session and carries on with the change.`).catch((e) => console.warn(`[studio] stuck notice ${c.id}: ${e.message ?? e}`));
+    }, Math.max(1000, Math.min(60_000, idleMs / 8)));
+    watch.unref();
     const timer = setTimeout(() => {
       timedOut = true;
       addLog(c.id, `agent: stopped at its ${limit >= 60_000 ? `${Math.round(limit / 60_000)}-minute` : `${Math.round(limit / 1000)}-second`} limit for one pass`);
@@ -603,6 +667,7 @@ function runAgent(c: Change, briefFile: string, s: AgentSettings, env = claudeEn
     }, Math.max(5_000, limit - (Date.now() - started)));
     child.stdout!.on('data', (d) => {
       buf += d;
+      lastOut = Date.now();
       let i;
       while ((i = buf.indexOf('\n')) >= 0) {
         const line = buf.slice(0, i);
@@ -618,12 +683,15 @@ function runAgent(c: Change, briefFile: string, s: AgentSettings, env = claudeEn
               if (part.type === 'tool_use') addLog(c.id, `tool: ${part.name} ${JSON.stringify(part.input).slice(0, 160)}`);
             }
           }
+          if (m.type === 'assistant' && (m.message?.content ?? []).some((p: any) => p.type === 'tool_use' && String(p.name).startsWith('mcp__hawkesgen'))) usedGen = true;
           if (m.type === 'result') {
             out.cost = Number(m.total_cost_usd) || 0;
             out.result = String(m.result ?? '');
             out.ok = !m.is_error;
             out.sawResult = true;
             if (m.subtype === 'error_max_turns') out.stopped = 'turns';
+            // Done: a session still open after the grace (its background shells keep it alive) is ended.
+            grace ??= setTimeout(() => end(`finished, but its session was still open ${Math.round(graceMs() / 1000)} s after its final result (background processes keep it alive); ended it and its background processes, carrying on with the change`), graceMs());
           }
         } catch {
           // Not JSON.
@@ -638,6 +706,8 @@ function runAgent(c: Change, briefFile: string, s: AgentSettings, env = claudeEn
     child.stderr!.on('data', (d) => addLog(c.id, `stderr: ${String(d).slice(0, 300)}`));
     child.on('close', () => {
       clearTimeout(timer);
+      clearTimeout(grace);
+      clearInterval(watch);
       out.lost = child instanceof DetachedChild && child.lost && !out.sawResult;
       if (timedOut) out.stopped = 'time';
       else if (!out.sawResult && !out.lost) out.stopped ??= 'cut';
@@ -645,6 +715,8 @@ function runAgent(c: Change, briefFile: string, s: AgentSettings, env = claudeEn
     });
     child.on('error', (e: Error) => {
       clearTimeout(timer);
+      clearTimeout(grace);
+      clearInterval(watch);
       addLog(c.id, `couldn't start Claude Code: ${e.message}`);
       resolve({ ok: false, cost: 0, result: e.message, sawResult: false, lost: false });
     });
@@ -805,7 +877,7 @@ async function publish(id: string, { force, title, body }: { force: boolean; tit
 }
 
 async function work(id: string, note?: string, answer?: string, resumed?: Phase | null, asked = false) {
-  if (getChange(id)!.infra) return workInfra(id, note, resumed);
+  if (getChange(id)!.infra) return workInfra(id, note, resumed, false, asked);
   let c = getChange(id)!;
   const p = getProduct(c.product);
   const s = agentSettings();
@@ -1281,7 +1353,7 @@ ${mem.text ? `\n${mem.text}` : ''}`;
   return path.join(dir, 'brief.md');
 }
 
-async function workInfra(id: string, note?: string, resumed?: Phase | null, nudged = false) {
+async function workInfra(id: string, note?: string, resumed?: Phase | null, nudged = false, asked = false) {
   let c = getChange(id)!;
   const t = getInfra(c.product);
   const s = agentSettings();
@@ -1294,7 +1366,7 @@ async function workInfra(id: string, note?: string, resumed?: Phase | null, nudg
     update(id, { ...extra, phase: ph });
   };
   try {
-    if (resumed && !nudged) addLog(id, `Studio restarted: carrying on from the ${ph.step} step`);
+    if (resumed && !nudged && !asked) addLog(id, `Studio restarted: carrying on from the ${ph.step} step`);
     else if (!resumed) save({}, { status: note ? 'revising' : 'working', detail: 'preparing the worktree' });
 
     if (ph.step === 'prepare') {
@@ -1330,8 +1402,8 @@ async function workInfra(id: string, note?: string, resumed?: Phase | null, nudg
 
     if (ph.step === 'agent') {
       update(id, { detail: 'Claude is working on it' });
-      if (!ph.proc && !ph.nudge) addLog(id, resumed ? 'agent: it ran inside Studio, which restarted; starting the pass again' : `agent started`);
-      const r = await agentPass(id, ph, save, s, infraEnv({ agent: true }), ph.nudge ? nudgeResume(getChange(id)!, ph) : undefined);
+      if (!ph.proc && !ph.nudge) addLog(id, ph.conflict ? `agent resumed to resolve the conflicts with ${c.base}` : resumed ? 'agent: it ran inside Studio, which restarted; starting the pass again' : `agent started`);
+      const r = await agentPass(id, ph, save, s, infraEnv({ agent: true }), ph.nudge ? nudgeResume(getChange(id)!, ph) : ph.conflict ? conflictResume(getChange(id)!, ph.conflict) : undefined);
       save({ step: 'publish', result: r.result, stopped: r.stopped, nudge: false, proc: undefined }, { cost: getChange(id)!.cost + r.cost });
     }
 
@@ -1354,7 +1426,8 @@ async function workInfra(id: string, note?: string, resumed?: Phase | null, nudg
         nudge(id, ph, save);
         return workInfra(id, note, ph, true);
       }
-      if (!commits.length || (note && !changedNow)) {
+      // A conflict pass that committed nothing isn't a failure: ready again, it conflicts again (its next pass, or J).
+      if (!commits.length || (note && !changedNow && !ph.conflict)) {
         update(id, { status: 'failed', detail: noCommitWhy(c.worktree, ph), summary, commits, phase: null });
         return;
       }
@@ -1378,7 +1451,9 @@ async function workInfra(id: string, note?: string, resumed?: Phase | null, nudg
     if (resumed && ph.step === 'verify') update(id, { status: 'verifying', detail: 'checking: CI on the pull request, the checks, a smoke check' });
     const v = ph.step === 'finish' ? ph.verify : await verifyInfra(getChange(id)!, t);
     update(id, { status: 'ready', detail: `${v.outcome}: ${v.summary}`.slice(0, 300), verify: v, phase: null });
-    // Talk tells J in the chat; no phone notification (only failures and milestones go to the phone).
+    // Talk tells J in the chat; no phone notification (only failures and milestones go to the phone). A conflict pass
+    // after J's approval: it merges once green (his approval stands).
+    if (getChange(id)!.approved) void mergeApprovedInfra(id).catch((e) => console.warn(`[studio] approved merge ${id}: ${e.message ?? e}`));
   } catch (e: any) {
     addLog(id, `error: ${e.message}`);
     update(id, { status: 'failed', detail: String(e.message).slice(0, 300), phase: { step: ph.step, failed: true } });
@@ -1488,29 +1563,114 @@ async function verifyInfra(c: Change, t: Infra) {
   return { kind: 'infra', sha, outcome: ok ? 'passed' : 'failed', verdict: ok ? 'ship' : 'broken', summary, ci: ciResult, checks, smoke };
 }
 
-/** J's approval of a Studio or Gen change: merge into main (only with CI green on the pull request); the server deploys it itself. */
-async function approveInfra(c: Change, by: string) {
+/**
+ * J's approval of a Studio or Gen change: merge into main (only with CI green on the pull request); the server deploys
+ * it itself. Main moved since the checks (J, 2026-10-18: "405 Pull Request has merge conflicts" after PR #42 merged
+ * first): the branch is brought up to date first, as for a product change (updateFromBase). A clean merge is pushed and
+ * merges once CI on it is green; a real conflict resumes its agent (a conflict pass, not a try) and it merges once that
+ * is checked and green. Either way J's approval stands meanwhile (`approved`); red CI never merges.
+ */
+async function approveInfra(c: Change, by: string, origin?: string | null) {
   const t = getInfra(c.product);
   const pr = await github(`/repos/${c.slug}/pulls/${c.pr}`);
   if (pr.state !== 'open') throw new Error(`Pull request #${c.pr} is ${pr.merged ? 'already merged' : pr.state}.`);
   if (c.verify?.sha && pr.head.sha !== c.verify.sha) throw new Error(`Pull request #${c.pr}'s head moved after the checks (checked ${String(c.verify.sha).slice(0, 7)}, now ${String(pr.head.sha).slice(0, 7)}). Revise ${c.id} so the new head is checked.`);
-  const ci =await ciChecks(c.slug, pr.head.sha, { waitMs: 0 });
+  const up = await updateFromBase(c.id);
+  if (up.state === 'merged' || up.state === 'conflict') return holdForMain(c, up, by, origin);
+  const head = getChange(c.id)!.verify?.sha ?? pr.head.sha;
+  const ci = await ciChecks(c.slug, head, { waitMs: 0 });
   if (ci.state !== 'success') throw new Error(`CI on pull request #${c.pr} isn't green (${ci.state}: ${ci.detail}); not merging into main, which deploys ${t.name}.`);
   let m: any;
   try {
-    m = await github(`/repos/${c.slug}/pulls/${c.pr}/merge`, { method: 'PUT', body: { merge_method: 'squash', sha: pr.head.sha, commit_title: `${c.title} (#${c.pr})` } });
+    m = await github(`/repos/${c.slug}/pulls/${c.pr}/merge`, { method: 'PUT', body: { merge_method: 'squash', sha: head, commit_title: `${c.title} (#${c.pr})` } });
   } catch (e: any) {
+    // Main moved again between the update and the merge: up to date once more, and it merges once green.
+    const again = MERGE_REFUSED.test(String(e.message ?? e)) ? await updateFromBase(c.id) : null;
+    if (again && (again.state === 'merged' || again.state === 'conflict')) return holdForMain(c, again, by, origin);
     throw new Error(`Merging into main failed: ${e.message ?? e}. If main changed the same files, revise ${c.id} so the agent updates its branch from main.`);
   }
   const sha = String(m.sha ?? '').slice(0, 7);
+  db.prepare('UPDATE changes SET merged_at = ?, conflicts = NULL, approved = NULL WHERE id = ?').run(Date.now(), c.id);
   update(c.id, {
     status: 'merged',
     detail: `merged into main by ${by}: ${sha}. CI runs on main, then the server deploys ${t.name} itself (it waits for runs, agents and Talk answers, and rolls back if unhealthy): GET /api/self-deploys`,
-    notes: [...c.notes, { at: Date.now(), by, text: `approved and merged into main (${t.name} deploys itself)` }],
+    notes: [...getChange(c.id)!.notes, { at: Date.now(), by, text: `approved and merged into main (${t.name} deploys itself)` }],
   });
   remember(c.id);
   await cleanup(c.id, { deleteBranch: true });
   return getChange(c.id);
+}
+
+/** Main moved under an approved Studio/Gen change: J's approval is kept while the branch catches up (approveInfra). */
+function holdForMain(c: Change, up: { state: string; files?: string[]; sha?: string }, by: string, origin?: string | null) {
+  const keep = J({ by, origin: origin ?? c.origin ?? null, at: Date.now() });
+  db.prepare('UPDATE changes SET approved = ? WHERE id = ?').run(keep, c.id);
+  if (up.state === 'conflict') {
+    if (!resolveConflicts(c.id, up.files ?? [])) {
+      db.prepare('UPDATE changes SET approved = NULL WHERE id = ?').run(c.id);
+      throw conflictError(getChange(c.id)!, up.files ?? []);
+    }
+    update(c.id, { notes: [...getChange(c.id)!.notes, { at: Date.now(), by, text: `approved; ${c.base} moved and conflicts, so its agent resolves that first, then it merges once CI is green` }] });
+    return getChange(c.id);
+  }
+  update(c.id, {
+    detail: `${c.base} moved: merged it into the branch (no conflicts); merging into ${c.base} once CI on ${String(up.sha).slice(0, 7)} is green (approved by ${by})`,
+    notes: [...getChange(c.id)!.notes, { at: Date.now(), by, text: `approved; ${c.base} moved, so the branch was brought up to date and merges once CI is green` }],
+  });
+  void mergeApprovedInfra(c.id).catch((e) => console.warn(`[studio] approved merge ${c.id}: ${e.message ?? e}`));
+  return getChange(c.id);
+}
+
+/** Approved changes whose merge waits on CI here (one wait each). */
+const awaitingMerge = new Set<string>();
+/**
+ * An approved Studio/Gen change that main held up (approveInfra): once CI on its updated branch is green (and, after a
+ * conflict pass, its checks passed), it merges on J's approval, with one line to J. Red CI, failed checks, or a conflict
+ * its agent couldn't resolve: not merged, the approval dropped, one line saying why. Revised or closed meanwhile: nothing.
+ */
+export async function mergeApprovedInfra(id: string) {
+  const c = getChange(id);
+  if (!c?.infra || !c.approved || c.status !== 'ready' || awaitingMerge.has(id)) return null;
+  awaitingMerge.add(id);
+  const a = parse(c.approved) as { by: string; origin?: string | null };
+  const name = getInfra(c.product).name;
+  const drop = async (why: string) => {
+    db.prepare('UPDATE changes SET approved = NULL WHERE id = ?').run(id);
+    update(id, { detail: `not merged into ${c.base}: ${why}`.slice(0, 300) });
+    addLog(id, `approved merge into ${c.base} stopped: ${why}`);
+    const { tellAbout } = await import('./followup.ts');
+    await tellAbout(getChange(id)!, `Not merged: ${c.title ?? id}`, `${name} change ${id} ("${c.title}") was approved but didn't merge into ${c.base}: ${why.slice(0, 300)}. Nothing deployed. Revise it, or approve it again once it's fixed: ${PUBLIC_URL}/#changes/${id}`).catch(() => {});
+    return null;
+  };
+  try {
+    let merged: Change | null = null;
+    // Main moving again while it waits: up to date once more (approveInfra), and it waits for CI on that.
+    for (let cur = c; ; cur = getChange(id)!) {
+      if (cur.verify?.outcome === 'failed') return await drop(`its checks failed after ${c.base} moved (${String(cur.verify.summary ?? '').slice(0, 200)})`);
+      const sha = String(cur.verify?.sha ?? '');
+      const ci = await ciChecks(c.slug, sha, { onWait: (d) => update(id, { detail: `${d}: it merges into ${c.base} once CI is green (approved by ${a.by})` }) });
+      const now = getChange(id)!;
+      // Revised, closed or merged meanwhile: that's someone else's call now.
+      if (!now.approved || now.status !== 'ready' || now.verify?.sha !== sha) return null;
+      update(id, { verify: { ...now.verify, ci } });
+      if (ci.state !== 'success') return await drop(`CI on ${sha.slice(0, 7)} isn't green (${ci.state}: ${ci.detail}); red CI never merges`);
+      try {
+        merged = await critical(`merging ${id} into main`, () => approveInfra(getChange(id)!, a.by, a.origin));
+      } catch (e: any) {
+        return await drop(isConflict(e) ? `it still conflicts with ${c.base} after ${CONFLICT_PASSES} conflict passes by its agent` : String(e.message ?? e));
+      }
+      if (merged?.status === 'merged') break;
+      // A conflict this time: its agent's pass ends in a merge of its own (workInfra).
+      if (merged?.status !== 'ready') return merged;
+    }
+    const how = c.conflicts ? `its agent resolved the conflicts (${c.conflicts} conflict pass${c.conflicts === 1 ? '' : 'es'}, not counted as tries)` : `Studio brought its branch up to date (no conflicts)`;
+    addLog(id, `merged into ${c.base} on ${a.by}'s approval once CI was green`);
+    const { tellAbout } = await import('./followup.ts');
+    await tellAbout(merged, `Merged: ${c.title ?? id}`, `${name} change ${id} ("${c.title}") merged into ${c.base} on your approval: ${c.base} had moved, ${how}, and CI went green. ${name} deploys itself next.`).catch(() => {});
+    return merged;
+  } finally {
+    awaitingMerge.delete(id);
+  }
 }
 
 /**
@@ -1557,7 +1717,7 @@ const MERGE_REFUSED = /not mergeable|merge conflict|base branch was modified|405
  */
 export async function updateFromBase(id: string): Promise<{ state: 'current' | 'merged' | 'conflict' | 'skipped'; files?: string[]; sha?: string; why?: string }> {
   const c = getChange(id);
-  if (!c || c.infra || !c.worktree || !fs.existsSync(c.worktree)) return { state: 'skipped', why: 'no worktree' };
+  if (!c || !c.worktree || !fs.existsSync(c.worktree)) return { state: 'skipped', why: 'no worktree' };
   const repoDir = path.join(PROJECTS, c.repo);
   assertWorktree(c.worktree, repoDir);
   const f = await gitAsync(repoDir, ['fetch', '--quiet', 'origin']);
@@ -1594,7 +1754,7 @@ export async function updateFromBase(id: string): Promise<{ state: 'current' | '
  */
 export function resolveConflicts(id: string, files: string[]) {
   const c = getChange(id);
-  if (!c || c.infra || c.status !== 'ready' || !fs.existsSync(c.worktree)) return false;
+  if (!c || c.status !== 'ready' || !fs.existsSync(c.worktree)) return false;
   const n = (c.conflicts ?? 0) + 1;
   if (n > CONFLICT_PASSES) return false;
   db.prepare('UPDATE changes SET conflicts = ? WHERE id = ?').run(n, id);
@@ -1637,7 +1797,7 @@ export async function approve(id: string, { confirm, by = 'J', origin, auto = fa
   if (!c.pr) throw new Error('This change has no pull request');
   if (c.infra) {
     if (c.status !== 'ready') throw new Error(`The change is ${c.status}, not ready to approve.`);
-    return critical(`merging ${id} into main`, () => approveInfra(c, by));
+    return critical(`merging ${id} into main`, () => approveInfra(c, by, origin));
   }
   // An agent still on it moves the branch: what would be merged isn't what was verified.
   if (['queued', 'working', 'revising', 'verifying'].includes(c.status)) throw new Error(`The change is ${c.status}: its branch is still moving. Approve it once it's ready (verified).`);
@@ -1742,8 +1902,8 @@ export function revise(id: string, note: string, by = 'J') {
   const c = getChange(id);
   if (!c) throw new Error('No such change');
   if (!['ready', 'failed'].includes(c.status)) throw new Error(`The change is ${c.status}`);
-  // A person's revision: the conflict passes start over.
-  db.prepare('UPDATE changes SET conflicts = NULL WHERE id = ?').run(id);
+  // A person's revision: the conflict passes start over, and an approval waiting to merge (Studio/Gen) is for what was.
+  db.prepare('UPDATE changes SET conflicts = NULL, approved = NULL WHERE id = ?').run(id);
   update(id, { status: 'queued', detail: 'queued for another pass', notes: [...c.notes, { at: Date.now(), by, text: note }] });
   running.add(id);
   // When it's done, the queue goes on (a revision holds a slot like any change).
@@ -1850,6 +2010,10 @@ export function resumeChanges() {
   for (const c of listChanges({ status: 'ready', limit: 100 })) {
     if (c.auto_merge !== 'trying' || c.infra || running.has(c.id)) continue;
     void autoMergeBeta(c.id).catch((e) => console.warn(`[studio] auto-merge ${c.id}: ${e.message ?? e}`));
+  }
+  // A restart while an approved Studio/Gen change waited for CI: it waits again (mergeApprovedInfra).
+  for (const c of listChanges({ status: 'ready', limit: 100 })) {
+    if (c.infra && c.approved && !running.has(c.id)) void mergeApprovedInfra(c.id).catch((e) => console.warn(`[studio] approved merge ${c.id}: ${e.message ?? e}`));
   }
   return out;
 }
