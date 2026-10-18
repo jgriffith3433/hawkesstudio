@@ -59,8 +59,13 @@ screen last time?". Dashboard: Memory tab, "Agent runs".
 
 Content and story changes (`roleOf` in `agents.ts`: requests about dialogue, lore, levels, characters, enemies...) get a
 canon check of their diff once the agent is done (`canon.ts`: Sonnet through Gen's `llm.json`, about a cent).
-A contradiction is in the change's verification (`verify.canon`) and fails the PM's merge gate (`acceptance.ts`): J
-or the PM decides. Reviews judge the footage against the canon too.
+The check gets the task's request and criteria and J's decisions: what the task asked for is never a conflict. Each
+finding quotes the canon entry and the exact added diff line, with a confidence; only a high-confidence contradiction
+whose quote and line check out blocks (`verify.canon.conflicts`, `ok: false`), and fails the merge gate
+(`acceptance.ts`): J or the PM decides. Everything else is a note on the change (`verify.canon.notes`, in its log and
+ready line), never a block: low or medium confidence, ambiguous wording, requested by the task, placeholder or tinted
+stand-in art, off the story path (retired or arcade levels), an empty value, a line the change didn't add
+(`sortConflicts`, J 2026-10-18 after five misreads in a day). Reviews judge the footage against the canon too.
 
 ## Human-readable
 

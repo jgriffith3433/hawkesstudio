@@ -449,10 +449,13 @@ ${b.text}
 }
 
 /** The canon that holds for a product (its own and the studio-wide), as prompt lines. */
-export function canonLines(product: string | null, max = 6000) {
+export const canonLines = (product: string | null, max = 6000) => kindLines(product, 'canon', max);
+
+/** Active entries of one kind (canon, decision) for a product, its own and the studio-wide, as prompt lines. */
+export function kindLines(product: string | null, kind: 'canon' | 'decision', max = 6000) {
   let p: string | null = null;
   try { p = productId(product); } catch { p = null; }
-  const rows = (db.prepare(`SELECT * FROM memories WHERE status = 'active' AND kind = 'canon' AND (product IS NULL ${p ? 'OR product = ?' : ''}) ORDER BY product IS NULL, id`).all(...(p ? [p] : [])) as any[]).map(toMemory);
+  const rows = (db.prepare(`SELECT * FROM memories WHERE status = 'active' AND kind = ? AND (product IS NULL ${p ? 'OR product = ?' : ''}) ORDER BY product IS NULL, id`).all(kind, ...(p ? [p] : [])) as any[]).map(toMemory);
   const out: string[] = [];
   let size = 0;
   for (const m of rows) {

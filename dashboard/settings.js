@@ -71,6 +71,8 @@
       ${row('Merge into beta automatically', bool('agents', 'autoMergeBeta', a.autoMergeBeta), 'A product change goes into its beta branch as soon as the agent finishes and its checks pass (no Approve card). Off: you merge each one from Changes. Going live stays your call either way.')}
       ${row('Severities auto-fixed', SEVERITIES.map((s) => `<label style="margin-right:10px"><input type="checkbox" data-s="agents" data-k="severities" value="${s}" ${a.severities.includes(s) ? 'checked' : ''}> ${s}</label>`).join(''))}
       ${row('At once', num('agents', 'maxConcurrent', a.maxConcurrent, { min: 1, max: 8 }))}
+      ${row('At once per product', num('agents', 'perProduct', a.perProduct ?? 1, { min: 1, max: 4 }), 'A second change of the same product starts only when it won\'t step on the one running: a different task, not one it depends on, and a different area (art, levels, story, engine) or different files. More at once uses more of the Max plan.')}
+      ${row('Per product overrides', `<input type="text" data-s="agents" data-k="productLimits" value="${esc(Object.entries(a.productLimits ?? {}).map(([p, n]) => `${p}: ${n}`).join(', '))}" placeholder="sickofit: 2">`, 'Product ids with their own number, like "sickofit: 2, phorigins: 1". Leave a product out to use the number above.')}
       ${row('Auto-fixes per day', num('agents', 'maxPerDay', a.maxPerDay))}
       ${row('Dollars per day (reported)', num('agents', 'maxCostPerDay', a.maxCostPerDay, { step: 1 }))}
       ${row('Model', `<input type="text" data-s="agents" data-k="model" value="${esc(a.model)}">`)}
@@ -166,6 +168,15 @@
     if (!section || !k) return;
     let v = t.type === 'checkbox' ? t.checked : t.type === 'number' || t.type === 'range' || k === 'pause' ? Number(t.value) : t.value;
     if (section === 'agents' && k === 'severities') v = [...document.querySelectorAll('#setBody input[data-k="severities"]:checked')].map((x) => x.value);
+    if (section === 'agents' && k === 'productLimits') {
+      // "sickofit: 2, phorigins: 1"; a product left out drops its override (null).
+      v = Object.fromEntries(Object.keys(data.agents.productLimits ?? {}).map((p) => [p, null]));
+      for (const part of t.value.split(',').map((x) => x.trim()).filter(Boolean)) {
+        const m = /^([a-z0-9-]+)\s*[:=]\s*(\d+)$/i.exec(part);
+        if (!m) return mark(t, false, `"${part}": write it as product: number`);
+        v[m[1]] = Number(m[2]);
+      }
+    }
     const patch = k.startsWith('mode.') ? { mode: { [k.slice(5)]: v } } : { [k]: v };
     const saved = await save(section, patch, t);
     // Choosing a voice engine changes what the box shows (the ElevenLabs voices, Kokoro's state).
