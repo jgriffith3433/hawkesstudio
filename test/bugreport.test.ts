@@ -8,7 +8,10 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import vm from 'node:vm';
+import net from 'node:net';
 
+// Test files run in parallel (CI): the front door gets a free port of its own, not a fixed one.
+const FRONT = await new Promise<number>((resolve) => { const s = net.createServer().listen(0, '127.0.0.1', () => { const port = (s.address() as net.AddressInfo).port; s.close(() => resolve(port)); }); });
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'studio-bugreport-'));
 process.env.STUDIO_DATA = path.join(tmp, 'data');
 process.env.STUDIO_PROJECTS = path.join(tmp, 'Projects');
@@ -17,7 +20,7 @@ process.env.HAWKESGEN_URL = 'http://127.0.0.1:9';
 fs.mkdirSync(process.env.STUDIO_PROJECTS, { recursive: true });
 fs.writeFileSync(process.env.STUDIO_PRODUCTS, JSON.stringify({ previews: { brt: 'brtest' }, products: [{
   id: 'brtest', name: 'Report test', framing: 'test', engine: 'static', repo: 'site', site: 'site', live: 'http://127.0.0.1:9/',
-  local: { serve: 'static', dir: 'site', port: 8796, path: '/' }, dev: { front: 8797 }, playtests: [{ scenario: 'smoke', where: 'local' }], story: [], about: 'A fixture.',
+  local: { serve: 'static', dir: 'site', port: 8796, path: '/' }, dev: { front: FRONT }, playtests: [{ scenario: 'smoke', where: 'local' }], story: [], about: 'A fixture.',
 }] }));
 
 const br = await import('../src/bugreport.ts');
@@ -180,7 +183,9 @@ test('the /dev/__studio/error endpoint: same-origin JSON, rate-limited per IP', 
   const { startFronts, stopFronts } = await import('../src/dev-front.ts');
   startFronts();
   try {
-    const url = 'http://127.0.0.1:8797/dev/__studio/error';
+    const url = `http://127.0.0.1:${FRONT}/dev/__studio/error`;
+    // startFronts doesn't wait for listen: wait until the front door answers.
+    for (let i = 0; i < 50; i++) { try { await fetch(`http://127.0.0.1:${FRONT}/dev/__studio/status`); break; } catch { await new Promise((r) => setTimeout(r, 100)); } }
     const post = (body: any, ip: string, headers: any = {}) => fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Forwarded-For': `${ip}, 10.9.9.9`, ...headers }, body: JSON.stringify(body) });
     const body = { error: { kind: 'rejection', message: 'Error: save failed 503', stack: 'Error: save failed\n    at save (https://brt.hawkesgen.com/assets/save.js:3:3)' }, url: 'https://brt.hawkesgen.com/' };
     let r = await post(body, '192.0.2.7');
