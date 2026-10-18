@@ -3,9 +3,12 @@
 //
 // Every minute (and right after anything finishes) the loop:
 //   1. keeps every roadmap task's status current from its agent change (working, needs answer, review, merged) and,
-//      after a merge, from beta's playtest of its criteria (verified) and from go lives (live); items follow their tasks
+//      after a merge, beta's build of it (followBuilds: a failed build sends the task back to an agent, the first time
+//      without counting a try), beta's playtest of its criteria (verified) and go lives (live); items follow their tasks.
+//      A milestone whose tasks are all merged and built gets ONE beta run playing its tasks' scenarios (milestoneCheck);
+//      once that has judged their criteria, it's reached and J hears it (phone and Talk)
 //   2. starts the next tasks in roadmap order, then the worst open bugs, within its caps (starts per day, agents at once,
-//      one per product)
+//      one per product; a product's slot is also held by a change that is ready but not merged yet: fewer conflicts)
 //   3. hands what needs judgment to a PM turn: a Talk turn in the day's "Studio PM" conversation (talk.ts) with the
 //      events since the last one: changes to review, agent questions, failures, beta checks, the daily run, the daily
 //      triage. Claude acts through the studio_pm tools: merges into beta what passed its criteria, sends failures back
@@ -28,8 +31,8 @@ import { db, J, parse } from './db.ts';
 import { DATA, PROJECTS, getProduct, getInfra, isInfra, today, StudioError, betaPlaytestsOn } from './config.ts';
 import {
   getTask, setTask, getItem, startableTasks, tasksAwaitingGpu, taskOfChange, addQuestion, listQuestions, getQuestion, setQuestion, addComment, isCommentSubject,
-  logDecision, listDecisions, getDecision, markUndone, countToday, listItems, threadFor, milestonesToReach, markReached, getMilestone,
-  type Task, type Check,
+  logDecision, listDecisions, getDecision, markUndone, countToday, listItems, threadFor, milestonesToReach, markReached, getMilestone, milestoneTasks, setMilestoneChecks,
+  itemProgress, type Task, type Check, type TaskBuild,
 } from './roadmap.ts';
 import { gate, allMet } from './acceptance.ts';
 import { notify, PUBLIC_URL } from './notify.ts';
@@ -150,10 +153,23 @@ export async function syncTasks() {
       try { setTask(t.id, { note: `the PM couldn't follow it up: ${e.message ?? e}`.slice(0, 500) }); } catch {}
     }
   }
+  // Beta's build after each merge, on its task ("did it work"); a failed one goes back to an agent.
+  try {
+    await followBuilds();
+  } catch (e: any) {
+    console.warn(`[pm] beta builds: ${e.message ?? e}`);
+  }
   // Items that just reached beta: J hears it's ready for him to test.
   for (const it of db.prepare(`SELECT id FROM items WHERE status = 'on beta' AND (note IS NULL OR note NOT LIKE '%[told ready]%')`).all() as any[]) announceReady(it.id);
-  // Milestones whose items are all on beta: J's moment to playtest by hand (his phone, and Talk).
-  for (const m of milestonesToReach()) announceMilestone(m.id);
+  // Milestones whose tasks are all merged and built: one beta playtest judges their criteria, then J's moment to
+  // playtest by hand (his phone, and Talk).
+  for (const m of milestonesToReach()) {
+    try {
+      await milestoneCheck(m.id);
+    } catch (e: any) {
+      console.warn(`[pm] milestone ${m.id}: ${e.message ?? e}`);
+    }
+  }
 }
 
 /** Studio and Gen have no beta lane: their changes merge into main, which deploys them. */
@@ -168,7 +184,7 @@ async function syncTask(t: Task, getChange: (id: string) => any) {
   if (t.status !== 'merged' && t.status !== 'verified') {
     const next = ACTIVE.includes(c.status) ? 'working' : c.status === 'needs answer' ? 'needs answer' : c.status === 'ready' ? 'review' : c.status === 'merged' ? 'merged' : null;
     if (next && next !== t.status) {
-      setTask(t.id, { status: next, pr: c.pr_url, ...(next === 'merged' ? { merged_at: Date.now() } : {}), ...(c.verify?.criteria ? { checks: { where: 'change', at: Date.now(), change: c.id, video: c.verify.video ?? null, verdict: c.verify.verdict, results: c.verify.criteria } } : {}), ...(c.verify?.try ? { try: c.verify.try } : {}) });
+      setTask(t.id, { status: next, pr: c.pr_url, ...(next === 'merged' ? { merged_at: c.merged_at ?? Date.now(), build: null } : {}), ...(c.verify?.criteria ? { checks: { where: 'change', at: Date.now(), change: c.id, video: c.verify.video ?? null, verdict: c.verify.verdict, results: c.verify.criteria } } : {}), ...(c.verify?.try ? { try: c.verify.try } : {}) });
       if (next === 'merged') kick();
     }
     // A failed change is the PM's (watch() tells it; the defaults restart it or ask J). A closed one ends the task's run.
@@ -201,8 +217,9 @@ const liveChecked = new Set<string>();
 /** The beta check of a merged task: the newest beta review of its product since the merge that judged its criteria. */
 async function checkOnBeta(t: Task) {
   if (!hasBeta(t.product)) return; // Nothing to run a beta check on (startBeta would throw).
-  // Beta playtests are on request (J, 2026-10-17): no check is started; a merged task counts as on beta (roadmap.ts).
-  if (!betaPlaytestsOn()) return;
+  // Beta playtests are on request (J, 2026-10-17): no check is started for each merge here (a milestone's check plays
+  // its tasks once, milestoneCheck); a beta review that did judge this task's criteria still decides it.
+  const playsAfterMerges = betaPlaytestsOn();
   const s = pmSettings();
   const steps = db.prepare(`SELECT s.*, r.kind AS run_kind, r.status AS run_status FROM steps s JOIN runs r ON r.id = s.run
     WHERE s.product = ? AND s.kind = 'review' AND r.kind = 'beta' AND s.started > ? ORDER BY s.started DESC LIMIT 10`).all(t.product, t.merged_at ?? 0) as any[];
@@ -212,14 +229,14 @@ async function checkOnBeta(t: Task) {
     // No beta check yet: start one if nothing is running for this product and the merge is a while ago.
     const running = db.prepare(`SELECT id FROM runs WHERE kind = 'beta' AND status = 'running' AND products LIKE ?`).get(`%"${t.product}"%`);
     const asked = listDecisions({ since: Date.now() - 6 * 3600_000, action: 'beta-check' }).some((d) => d.subject === t.id);
-    if (!running && !asked && Date.now() - (t.merged_at ?? 0) > 45 * 60_000 && t.criteria.length && s.enabled) {
+    if (playsAfterMerges && !running && !asked && Date.now() - (t.merged_at ?? 0) > 45 * 60_000 && t.criteria.length && s.enabled) {
       const { getChange } = await changes();
       const c = getChange(t.change!);
       const { startBeta } = await import('./pipeline.ts');
       const r = startBeta(t.product, { focus: `Checking "${t.title}" on beta.`, criteria: t.criteria, scenario: c?.verify?.scenario, options: c?.verify?.options });
       logDecision('beta-check', t.id, t.product, `started beta run ${r.id} to check "${t.title}" against its criteria`);
     }
-    if (!t.criteria.length && Date.now() - (t.merged_at ?? 0) > 2 * 3600_000) {
+    if (playsAfterMerges && !t.criteria.length && Date.now() - (t.merged_at ?? 0) > 2 * 3600_000) {
       // Nothing to judge: the beta run passing without a blocker is the check.
       const last = steps.map((x) => ({ ...x, data: parse(x.data) }))[0];
       if (last?.data?.verdict && last.data.verdict !== 'broken') setTask(t.id, { status: 'verified', verified_at: Date.now(), checks: { where: 'beta', at: last.started, run: last.run, verdict: last.data.verdict, results: [] } });
@@ -253,6 +270,139 @@ async function checkOnBeta(t: Task) {
   askJ(`"${t.title}" (${name(t.product)}) is merged into beta but misses criteria there (try ${t.tries} of ${s.maxTries}): ${why}. Try again on top of beta, change the criteria, or drop it?`, { subject: t.id, product: t.product, options: ['try again', 'change the criteria', 'drop it'] });
 }
 
+// ------------------------------------------------------------ beta builds
+
+/** A beta run's result as a task's build: OK unless a step before the playtest failed (the repo, pre-deploy build, Unity build). */
+export function buildOf(product: string, r: { id: string; status: string; detail?: string | null; finished?: number | null }): TaskBuild {
+  const failed = db.prepare(`SELECT kind, name, detail FROM steps WHERE run = ? AND product = ? AND status = 'failed' AND kind NOT IN ('playtest', 'review')`).all(r.id, product) as any[];
+  let unity = false;
+  try { unity = Boolean(getProduct(product).build); } catch { /* gone from products.json */ }
+  // Failed only in its playtest (a milestone's check): built. Failed with no failed step (the run itself threw): not.
+  const steps = (db.prepare(`SELECT COUNT(*) AS n FROM steps WHERE run = ? AND status = 'failed'`).get(r.id) as any).n as number;
+  const ok = !failed.length && (r.status === 'done' || steps > 0);
+  const why = failed.map((x) => `${x.kind} ${x.name}: ${String(x.detail ?? '').slice(0, 400)}`).join('; ') || String(r.detail ?? 'the beta run failed');
+  return { ok, run: r.id, at: r.finished ?? Date.now(), unity, detail: ok ? `built OK${unity ? ' (the Unity build compiled)' : ''} in beta run ${r.id}` : `beta's build failed (run ${r.id}): ${why}`.slice(0, 1200) };
+}
+
+/**
+ * Beta's build after each merge, on its task ("did it work", J 2026-10-18): the newest beta run of the product that
+ * started after the task's change merged and finished (a superseded run is skipped: the newer one built it). OK: the
+ * task is on beta (Unity: it compiled). Failed: the error is on the task, and the task merged last before that run goes
+ * back to an agent with the build log (buildSendBack). No beta run at all after a merge: one is started.
+ */
+export async function followBuilds() {
+  const { getChange } = await changes();
+  const byProduct = new Map<string, { t: Task; at: number }[]>();
+  for (const r of db.prepare(`SELECT id FROM tasks WHERE status = 'merged'`).all() as any[]) {
+    const t = getTask(r.id)!;
+    if (!hasBeta(t.product)) continue;
+    // Changes merged before Studio recorded when: the PM's record of it, a little earlier (it notices within a tick).
+    const at = (t.change ? getChange(t.change)?.merged_at : null) ?? Math.max(0, (t.merged_at ?? 0) - 5 * 60_000);
+    byProduct.set(t.product, [...(byProduct.get(t.product) ?? []), { t, at }]);
+  }
+  for (const [product, list] of byProduct) {
+    const since = Math.min(...list.map((x) => x.at));
+    const runs = db.prepare(`SELECT id, status, detail, started, finished FROM runs WHERE kind = 'beta' AND products LIKE ? AND started >= ? ORDER BY started DESC, rowid DESC`).all(`%"${product}"%`, since) as any[];
+    const finished = runs.filter((x) => ['done', 'failed'].includes(x.status));
+    for (const { t, at } of list) {
+      const r = finished.find((x) => x.started >= at);
+      if (r && t.build?.run !== r.id) setTask(t.id, { build: buildOf(product, r) });
+    }
+    // Nothing built the newest merge (startBeta threw, a restart lost it): a beta build of its own, once.
+    const last = list.reduce((a, b) => (a.at >= b.at ? a : b));
+    if (!runs.some((x) => x.started >= last.at) && Date.now() - last.at > 20 * 60_000 && pmSettings().enabled && !listDecisions({ since: last.at, action: 'beta-build' }).some((d) => d.product === product)) {
+      const { startBeta } = await import('./pipeline.ts');
+      const r = startBeta(product, { focus: `Building beta after "${last.t.title}" merged.`, playtest: false });
+      logDecision('beta-build', last.t.id, product, `no beta run built "${last.t.title}" after its merge: started ${r.id}`);
+    }
+    // The newest finished run failed: the task merged last before it goes back to an agent (once per run).
+    const newest = finished[0];
+    if (!newest) continue;
+    const hit = list.map((x) => ({ ...x, t: getTask(x.t.id)! })).filter((x) => x.t.status === 'merged' && x.t.build?.run === newest.id && !x.t.build?.ok);
+    if (!hit.length || listDecisions({ since: newest.started, action: 'build-failed' }).some((d) => d.subject === newest.id)) continue;
+    const culprit = hit.reduce((a, b) => (a.at >= b.at ? a : b)).t;
+    logDecision('build-failed', newest.id, product, `beta's build failed after "${culprit.title}" (${culprit.id}) merged: ${culprit.build!.detail}`.slice(0, 1500));
+    await buildSendBack(culprit);
+  }
+}
+
+/**
+ * A task whose merge broke beta's build goes back to an agent with the build log: a new change from beta (the merged
+ * work is in it). The first time for a task it isn't a try; later ones are, and past maxTries J decides.
+ */
+async function buildSendBack(t: Task) {
+  const s = pmSettings();
+  const free = !listDecisions({ since: 0, action: 'build-sendback', limit: 10_000 }).some((d) => d.subject === t.id);
+  if (!s.enabled) return;
+  if (!free && t.tries >= s.maxTries) {
+    setTask(t.id, { status: 'failed', note: t.build?.detail.slice(0, 1000) ?? "beta's build failed" });
+    askJ(`"${t.title}" (${name(t.product)}) is merged into beta but beta's build fails after it, and its agents couldn't fix that in ${t.tries} tries: ${t.build?.detail.slice(0, 600)}. Try again, revert it on beta, or drop it?`, { subject: t.id, product: t.product, options: ['try again', 'revert it', 'drop it'], from: `the default after ${s.maxTries} tries` });
+    return;
+  }
+  const note = `Beta's build failed after your change ${t.change ?? ''} merged into beta: ${t.build?.detail ?? ''}\n\nYour change is already on beta (this branch starts from it). Make beta build again (for Unity: fix the compile errors), keep what the task asks for, and run the checks.`;
+  setTask(t.id, { status: 'planned' });
+  try {
+    await startTaskChange(getTask(t.id)!, note, `beta's build failed after its merge${free ? ' (the first time: not a try)' : ''}`, !free);
+    logDecision('build-sendback', t.id, t.product, `"${t.title}": beta's build failed after its merge; sent back to an agent${free ? ' (not counted as a try)' : ''}`);
+  } catch (e: any) {
+    setTask(t.id, { status: 'merged', note: `couldn't send it back after beta's build failed: ${e.message}`.slice(0, 500) });
+  }
+}
+
+// --------------------------------------------------------------- milestones
+
+/**
+ * A milestone whose tasks are all merged and built (milestonesToReach): ONE beta run per product plays its tasks'
+ * scenarios (verify mode) and judges every task's criteria (checkOnBeta reads them), so J's ready-to-test summary has
+ * a verdict and a video per criterion before his phone hears it's reached. Started once (milestones.checks); reached
+ * when those runs are over (a superseded run follows the newer one). Nothing to play (Studio/Gen, no criteria): reached.
+ */
+export async function milestoneCheck(id: string) {
+  const m = getMilestone(id);
+  if (!m || m.status !== 'open') return;
+  let runs: string[] = parse(m.checks ?? null) ?? [];
+  const tasks = milestoneTasks(id).filter((t) => t.status === 'merged' && hasBeta(t.product) && t.criteria.length);
+  if (!runs.length) {
+    if (!tasks.length || !pmSettings().enabled) return announceMilestone(id);
+    const { getChange } = await changes();
+    const { startBeta } = await import('./pipeline.ts');
+    for (const product of [...new Set(tasks.map((t) => t.product))]) {
+      // One play per scenario (the one each task's agent wrote for its criteria; none: the product's default), its tasks' criteria judged on it.
+      const plays = new Map<string, { scenario?: string; options?: Record<string, unknown>; criteria: string[] }>();
+      for (const t of tasks.filter((x) => x.product === product)) {
+        const v = t.change ? getChange(t.change)?.verify : null;
+        const key = v?.scenario ? `${v.scenario} ${JSON.stringify(v.options ?? null)}` : '';
+        const p = plays.get(key) ?? { ...(v?.scenario ? { scenario: v.scenario, ...(v.options ? { options: v.options } : {}) } : {}), criteria: [] as string[] };
+        for (const k of t.criteria) if (!p.criteria.includes(k)) p.criteria.push(k);
+        plays.set(key, p);
+      }
+      const r = startBeta(product, { focus: `Milestone "${m.title}": every task is on beta. Check each one works and nothing regressed.`, plays: [...plays.values()], playtest: true, quiet: 0, origin: m.origin });
+      runs.push(r.id);
+    }
+    setMilestoneChecks(id, runs);
+    logDecision('milestone-check', id, m.product, `milestone "${m.title}": every task merged and built; started ${runs.join(', ')} to playtest its tasks on beta and judge their criteria`);
+    return;
+  }
+  // A run a newer beta run took over: the newer one plays it (betaqueue.ts absorbed).
+  runs = runs.map((r) => {
+    let id2 = r;
+    for (let i = 0; i < 20; i++) {
+      const row = db.prepare('SELECT status, options FROM runs WHERE id = ?').get(id2) as any;
+      const next = row?.status === 'skipped' ? parse(row.options)?.supersededBy : null;
+      if (!next) break;
+      id2 = next;
+    }
+    return id2;
+  });
+  const going = runs.some((r) => (db.prepare('SELECT status, started FROM runs WHERE id = ?').get(r) as any)?.status === 'running');
+  // A check that hangs (a stuck build) doesn't hold J's milestone for ever.
+  const at = listDecisions({ since: 0, action: 'milestone-check', limit: 10_000 }).find((d) => d.subject === id)?.at ?? 0;
+  if (going && Date.now() - at < 4 * 3600_000) return;
+  // Its tasks judged from those runs first (checkOnBeta), then J hears.
+  for (const t of tasks) await syncTask(getTask(t.id)!, (await changes()).getChange).catch((e) => console.warn(`[pm] milestone task ${t.id}: ${e.message ?? e}`));
+  announceMilestone(id);
+}
+
 /** Every one of a task's criteria judged by name in these checks. */
 const judgesAll = (checks: unknown, criteria: string[]) => Array.isArray(checks) && criteria.length > 0 && criteria.every((k) => checks.some((r: any) => r?.criterion === k));
 
@@ -276,7 +426,7 @@ export function startBlocked(taskId: string): string | null {
 }
 
 /** Starts (or restarts) the agent change of a task, unless startBlocked says it has one going or merged. */
-async function startTaskChange(task: Task, note?: string, why?: string) {
+async function startTaskChange(task: Task, note?: string, why?: string, countTry = true) {
   const { startTask } = await changes();
   // Checked after the await and with nothing awaited before the insert: two callers in one tick, or two ticks, can't both pass.
   const blocked = startBlocked(task.id);
@@ -284,8 +434,9 @@ async function startTaskChange(task: Task, note?: string, why?: string) {
   const t = getTask(task.id)!;
   const request = `${t.request}${note ? `\n\nFrom the PM (an earlier attempt): ${note}` : ''}`;
   const id = startTask(t.product, request, { criteria: t.criteria, task: t.id, title: t.title, gpuBudget: t.gpu?.items?.length ? t.gpu.budget ?? 0 : null });
-  setTask(t.id, { status: 'working', change: id, changes: [...t.changes, id], tries: t.tries + 1, merged_at: null });
-  logDecision('start', t.id, t.product, `started ${id} for "${t.title}" (try ${t.tries + 1}${why ? `; ${why}` : ''})${note ? `: ${note.slice(0, 300)}` : ''}`, { kind: 'start', change: id, task: t.id });
+  const tries = countTry ? t.tries + 1 : t.tries;
+  setTask(t.id, { status: 'working', change: id, changes: [...t.changes, id], tries, merged_at: null, build: null });
+  logDecision('start', t.id, t.product, `started ${id} for "${t.title}" (${countTry ? `try ${tries}` : `not counted as a try, ${tries} used`}${why ? `; ${why}` : ''})${note ? `: ${note.slice(0, 300)}` : ''}`, { kind: 'start', change: id, task: t.id });
   return id;
 }
 
@@ -302,6 +453,12 @@ export function capacity() {
 // Agents queue a product's changes behind the running one (agents.ts pump); the PM still starts one at a time per
 // product, so its picks (priorities, retries) are made when the slot frees, not long before.
 const busy = (product: string) => Boolean(db.prepare(`SELECT id FROM changes WHERE product = ? AND status IN ('queued', 'working', 'verifying', 'revising')`).get(product));
+/**
+ * The product's slot for new roadmap tasks and bugs (J, 2026-10-18: tasks finished, then conflicted because another
+ * merged first): busy, or a change of it ready but not merged yet (merging, or waiting for a person). A revision or a
+ * conflict pass holds it too (revising). J's own reports only wait for busy.
+ */
+export const slotHeld = (product: string) => busy(product) || Boolean(db.prepare(`SELECT id FROM changes WHERE product = ? AND status = 'ready'`).get(product));
 
 /** Starts what can start: J's reports, then roadmap tasks (highest priority first, then in order), then bugs, within the caps. Returns what it started. */
 export async function startWork() {
@@ -353,11 +510,13 @@ export async function startWork() {
   }
   // Not blocked (what they depend on is merged), highest effective priority first, then roadmap order (startableTasks).
   const waiting = startableTasks();
+  const taken = new Set<string>();
   for (const t of waiting) {
     if (cap.free <= 0) break;
-    if (busy(t.product)) continue;
+    if (slotHeld(t.product) || taken.has(t.product)) continue;
     try {
       out.push(await startTaskChange(t, undefined, `priority ${t.effective_priority}${t.priority ? '' : ' (its item\'s)'}, not blocked`));
+      taken.add(t.product);
     } catch (e: any) {
       setTask(t.id, { note: `couldn't start: ${e.message}`.slice(0, 500) });
       continue;
@@ -369,7 +528,7 @@ export async function startWork() {
     const bugs = db.prepare(`SELECT * FROM findings WHERE status = 'open' AND severity IN ('blocker', 'bug') AND COALESCE(source, '') != 'J' ORDER BY CASE severity WHEN 'blocker' THEN 0 ELSE 1 END, seen DESC, last_seen DESC LIMIT 40`).all() as any[];
     for (const f of bugs) {
       if (cap.free <= 0) break;
-      if (busy(f.product) || isInfra(f.product) || waiting.some((t) => t.product === f.product)) continue;
+      if (slotHeld(f.product) || isInfra(f.product) || waiting.some((t) => t.product === f.product)) continue;
       try {
         const id = startBug(f, '');
         if (!id) continue;
@@ -411,9 +570,20 @@ export async function pmMerge(changeId: string, why = '', by = 'Talk (PM)') {
   if (c.status !== 'ready') throw new StudioError(`${changeId} is ${c.status}, not ready`);
   const g = gate(c.verify, c.criteria);
   if (!g.pass) throw new StudioError(`${changeId} doesn't pass its checks: ${g.why.join('; ')}. Revise it instead.`);
-  const merged = await approve(changeId, { confirm: `MERGE ${changeId}`, by });
+  let merged;
+  try {
+    merged = await approve(changeId, { confirm: `MERGE ${changeId}`, by });
+  } catch (e: any) {
+    // Beta moved and the branch conflicts: its agent resolves it (agents.ts resolveConflicts; not a try).
+    const { isConflict, resolveConflicts } = await changes();
+    if (isConflict(e) && resolveConflicts(changeId, e.conflict)) {
+      logDecision('conflict', c.task ?? changeId, c.product, `${changeId} conflicts with ${BETA}: its agent resolves it (not a try)`);
+      return getChange(changeId);
+    }
+    throw e;
+  }
   const t = c.task ? getTask(c.task) : null;
-  if (t) setTask(t.id, { status: 'merged', merged_at: Date.now(), pr: c.pr_url });
+  if (t) setTask(t.id, { status: 'merged', merged_at: merged?.merged_at ?? Date.now(), pr: c.pr_url, build: null });
   logDecision('merge', c.task ?? changeId, c.product, `merged ${changeId} (${c.title}) into ${BETA}${why ? `: ${why}` : ''}${g.unclear.length ? ` · unclear, judged again on beta: ${g.unclear.join('; ')}` : ''}`, { kind: 'merge', change: changeId, repo: c.repo, pr: c.pr, task: c.task, product: c.product });
   return merged;
 }
@@ -581,7 +751,7 @@ function announceMilestone(id: string) {
   const total = ready.flatMap((r) => r.criteria).length;
   const bugs = ready.reduce((n, r) => n + r.bugs.length, 0);
   const text = [
-    `Milestone reached: **${m.title}**${m.product ? ` (${name(m.product)})` : ''}. Everything in it passed its checks on beta, so it's yours to playtest.`,
+    `Milestone reached: **${m.title}**${m.product ? ` (${name(m.product)})` : ''}. Every task in it is merged and beta built it; one beta playtest checked their criteria (${verified} of ${total} met), so it's yours to playtest.`,
     m.goal ? `Goal: ${m.goal}` : '',
     m.test ? `What you said you'd test: ${m.test}` : '',
     ...ready.map(readyMarkdown),
@@ -594,7 +764,9 @@ function announceMilestone(id: string) {
 
 export type Ready = {
   item: string; product: string; productName: string; title: string; goal: string | null; status: string; beta: string | null;
-  changes: { task: string; title: string; status: string; pr: string | null; change: string | null; summary: string | null }[];
+  changes: { task: string; title: string; status: string; pr: string | null; change: string | null; summary: string | null; build: TaskBuild | null }[];
+  /** What J sees on the roadmap for it (roadmap.ts itemProgress). */
+  progress: string;
   criteria: (Check & { task: string; video?: string | null; where: string })[];
   try: string[]; bugs: { id: string; severity: string; title: string; status: string }[]; partly: boolean;
 };
@@ -622,7 +794,8 @@ export function readyReport({ product, item, milestone }: { product?: string; it
     out.push({
       item: it.id, product: it.product, productName: name(it.product), title: it.title, goal: it.goal, status: it.status,
       beta: pv.find((x: any) => x.product === it.product)?.play ?? null,
-      changes: tasks.map((t: Task) => ({ task: t.id, title: t.title, status: t.status, pr: t.pr, change: t.change, summary: summary(t.change)?.slice(0, 1500) ?? null })),
+      changes: tasks.map((t: Task) => ({ task: t.id, title: t.title, status: t.status, pr: t.pr, change: t.change, summary: summary(t.change)?.slice(0, 1500) ?? null, build: t.build ?? null })),
+      progress: itemProgress(it).label,
       criteria: tasks.flatMap((t: Task) => (t.checks?.results ?? t.criteria.map((k) => ({ criterion: k, met: 'unclear' as const, evidence: 'not checked on beta yet' }))).map((c) => ({ ...c, task: t.id, video: t.checks?.video ?? null, where: t.checks?.where ?? '-' }))),
       try: tasks.map((t: Task) => t.try).filter(Boolean) as string[],
       bugs: linked, partly: it.status === 'done' && it.consumed ? done.length < tasks.length : it.status !== 'on beta',
@@ -635,7 +808,7 @@ export function readyMarkdown(r: Ready) {
   return [
     `**${r.title}** (${r.productName})${r.partly ? ' — partly on beta' : ''}${r.beta ? ` · try it: ${r.beta}` : ''}`,
     r.goal ? `Goal: ${r.goal}` : '',
-    `What changed:\n${r.changes.map((c) => `- ${c.title} (${c.status})${c.pr ? ` ${c.pr}` : ''}`).join('\n')}`,
+    `What changed:\n${r.changes.map((c) => `- ${c.title} (${c.status}${c.build ? `; ${c.build.ok ? '✅' : '❌'} ${c.build.detail.slice(0, 200)}` : ''})${c.pr ? ` ${c.pr}` : ''}`).join('\n')}`,
     `Criteria:\n${r.criteria.map((c) => `- ${c.met === 'yes' ? '✅' : c.met === 'no' ? '❌' : '❔'} ${c.criterion}${c.evidence ? ` — ${c.evidence}` : ''}${c.video ? ` (video: ${fileUrl(c.video)})` : ''}`).join('\n')}`,
     r.try.length ? `How to try it:\n${r.try.join('\n')}` : '',
     `Known bugs: ${r.bugs.length ? r.bugs.map((b) => `[${b.severity}] ${b.title} (${b.id})`).join('; ') : 'none known'}`,
@@ -758,8 +931,11 @@ Limits now: ${cap.active} agents working (at most ${s.maxConcurrent}), ${cap.sta
 Do, with the studio_pm, studio_roadmap and studio tools:
 1. Review each ready change (studio_change: the agent's summary, commits, diff size, preview; ready means its own checks
    passed and the pull request is open). Changes aren't playtested automatically: merge one into beta (studio_pm merge)
-   when its summary and diff do what its task asks; beta isn't played after merges (J's call), so a merged task counts
-   as on beta, and the go-live check or J's own playtest is what tests it. Ask for a playtest of the change first (studio_change playtest) only when it's
+   when its summary and diff do what its task asks; beta isn't played after each merge (J's call): a merged task is on
+   beta once beta's build of it succeeds (a failed build sends it back to an agent by itself), and when a milestone's
+   tasks are all on beta, one beta playtest of their scenarios judges their criteria before J hears it's reached.
+   Merge conflicts with beta resolve themselves (Studio merges beta into the branch; a real conflict goes back to the
+   change's agent, not counted as a try): never revise a change just because it conflicts. Ask for a playtest of the change first (studio_change playtest) only when it's
    risky or unclear and a playtest would settle it. A change that was playtested and failed: send it back (studio_pm
    revise) with specific notes (what failed, what the review saw, what to change). After ${s.maxTries} tries it goes to J.
 2. Answer agent questions (studio_pm answer) from what J already decided: the roadmap item's goal, why and criteria,

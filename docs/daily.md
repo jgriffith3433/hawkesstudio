@@ -83,7 +83,16 @@ rough cost. With J's yes it adds them (`studio_roadmap_edit`, status `planned`);
 - item: `idea` (parked) → `planned` → `done` as soon as it has tasks | `dropped`. Items from before 2026-10-17 that were
   already `in progress` still go → `on beta` (every task verified on beta) → `live`.
 - task: `idea` | `planned` → `working` (its agent change) → `needs answer` (the agent asked) → `review` (the change is
-  ready) → `merged` (into beta) → `verified` (its criteria pass on beta) → `live` | `failed` (after 3 tries) | `dropped`
+  ready) → `merged` (into beta; beta's build of it is recorded on the task) → `verified` (its criteria pass on beta) →
+  `live` | `failed` (after 3 tries) | `dropped`
+
+**What J sees is honest** (J, 2026-10-18: "road map says it's done even though it's still being worked on"): the stored
+item status (`done` once consumed, below) is for scheduling only. The Roadmap tab, `studio_roadmap` (`progress` on each
+item) and the milestones show each item's progress from its tasks (`itemProgress` in roadmap.ts): `planned`, `working
+(n of m merged)`, `waiting for your GPU budget`, `needs you` (a question in his Inbox, a task failed after its tries),
+`on beta` (every task merged and beta built it), `verified` (criteria checked on beta), `live`. Each task line says what
+it waits on (an agent, beta's build, a task it depends on, J) and beta's build result after its merge (✅ built, or ❌
+with the error).
 
 By hand an item is only idea, planned, done or dropped, and a task idea, planned (start, or retry from scratch) or
 dropped: everything else comes from the work and its checks.
@@ -98,8 +107,8 @@ by" on blocked tasks, and a sort by priority.
 create tasks for them and assume that it's done afterwards"):
 - A planned item with tasks is `done` right away (`items.consumed`, a note "[done: tasks created <date>]";
   `syncItem` in roadmap.ts). Its tasks still start and run as before (`startableTasks` takes consumed items; one J marked
-  done by hand doesn't start its tasks). It shows in Ready to test once a task is verified on beta, and counts toward
-  its milestone once its tasks are merged into beta (a milestone is what J playtests himself).
+  done by hand doesn't start its tasks). J never sees that `done`: he sees its progress (above). It shows in Ready to
+  test once a task is verified on beta, and counts toward its milestone once every task is merged and beta built it.
 - A finding is `fixed` the moment an agent change takes it (studio_fix, the PM loop, the daily run's auto-fixes, Talk),
   with the note `agent change <id>` (`startFix` in agents.ts); it no longer sits in `fixing`. The PM loop only starts
   fixes for open findings, so it doesn't start another. A review reporting it again while that change is unmerged
@@ -138,11 +147,30 @@ merge) stays ready for a person: the Changes tab's Merge button, or revise; Talk
 rollbacks and Studio or Gen merges into main stay J's. Turned off, everything below works as it did: J (or the PM)
 merges ready changes.
 
+**Merge conflicts resolve themselves** (J, 2026-10-18: four Sick Of It tasks finished, then their pull requests hit
+"merge conflicts" because another task merged first, and each was sent back by hand, using up tries). Before any merge
+into beta, Studio brings the change's branch up to date with beta (`updateFromBase` in agents.ts, in the change's
+worktree): already up to date, nothing; a clean merge of `origin/beta` is pushed and that commit merges, no agent
+needed; a textual conflict resumes the change's own agent session with a short "beta moved: merge origin/beta, resolve
+the conflicts keeping both sides' intent, re-run the checks" pass (`resolveConflicts`, status `revising`). When it
+finishes the change is ready again and merges by itself. GitHub refusing a merge because of the base ("not mergeable")
+brings it up to date once more and retries once. Conflict passes are not tries (`maxTries` doesn't move) and don't
+reach J, unless the agent fails twice on the same conflict (`CONFLICT_PASSES`): then the change stays ready and J
+decides in his Inbox (try again, or close it). Talk gets one line only when it's resolved ("Conflict resolved: …") or
+stuck. A revision by a person starts the count over.
+
 **4. The PM loop** (`src/pm.ts`, on the server; `STUDIO_PM=on` elsewhere). Every minute and right after anything finishes:
 - keeps task statuses current (from changes, beta checks and go lives); items are done once they have tasks (above)
+- records **beta's build after each merge** on its task (`followBuilds`: the newest beta run of the product that started
+  after the change merged and finished; a superseded run is skipped, the newer one built it): built OK (for Unity: it
+  compiled), or failed with the error. A failed build sends the task merged last before it back to an agent with the
+  build log (a new change from beta, which has the merged work): the first time for a task without counting a try,
+  later ones as tries (then J). No beta run at all 20 minutes after a merge: one is started.
 - starts the next planned tasks in roadmap order (dependencies merged first), then the worst open bugs (blockers, then
   bugs seen most), within the caps: agents at once (`maxConcurrent`, default 2), agent starts per day
-  (`maxStartsPerDay`, 8), one change per product at a time. Anything else asked for a product that has a change running
+  (`maxStartsPerDay`, 8), one change per product at a time. For roadmap tasks and bugs a product's slot is also held by
+  a change of it that is ready but not merged yet, or being revised (a conflict pass too): the next task starts on top
+  of the last one's merge, so tasks rarely conflict (`slotHeld`). Anything else asked for a product that has a change running
   (J's `studio_task`, a fix) is never refused: it queues behind the running one and starts when that one finishes
   (`pump` in agents.ts: oldest first, one per product, within `maxConcurrent`). It starts nothing while a Studio or Gen deploy is waiting.
 - runs a **PM turn**: a Talk turn in the day's "Studio PM: <date>" conversation (`conversations.kind = 'pm'`) with what
@@ -235,9 +263,13 @@ words; the Inbox asks for one when he presses "Merge into main"; the go-live and
 - **Typed words stay as a fallback** for now (`MERGE <id>`, `DEPLOY <product>`, `ROLLBACK <product>`, a quoted yes).
 
 **8. Milestones** (Roadmap tab, `studio_roadmap_edit add_milestone`): a named point J will playtest himself ("DoD:
-controls done"), made of roadmap items (`items.milestone`), with what he'll test. open -> **reached** when every item in
-it is on beta with its checks passed -> live (J went live with it) | dropped. Reaching one is J's moment: a **phone
-notification** and, in the conversation where it was planned (else a notice), the ready-to-test summary of its items.
+controls done"), made of roadmap items (`items.milestone`), with what he'll test. open -> **reached** -> live (J went
+live with it) | dropped. When every task of its items is merged and beta built it, Studio runs ONE beta run per product
+that plays its tasks' scenarios (the ones their agents wrote, verify mode; `milestoneCheck` in pm.ts, `plays` in
+pipeline.ts startBeta) and judges every task's criteria from it (a task whose criteria all pass is `verified`; a "no"
+fails it and asks J). Once that run is over (at most 4 hours) the milestone is reached: J's moment, a **phone
+notification** and, in the conversation where it was planned (else a notice), the ready-to-test summary of its items
+with a verdict, evidence and the video per criterion and each task's build.
 After playing it J goes live (`DEPLOY <product>`) or tells Talk what's wrong, which becomes tasks (a new item in the
 milestone opens it again). Progress shows in the Roadmap tab and the morning brief.
 

@@ -1,6 +1,9 @@
 // Roadmap (items, tasks, their checks and threads, questions, the PM loop and its decision log) and "Ready to test".
 // Uses app.js's helpers ($, esc, api, ago, file, view).
-const RM_PILL = { idea: '', planned: '', 'in progress': 'warn', 'on beta': 'ship', live: 'ship', done: 'ship', dropped: '', working: 'warn', 'needs answer': 'broken', review: 'warn', merged: 'warn', verified: 'ship', failed: 'failed' };
+const RM_PILL = { idea: '', planned: '', 'in progress': 'warn', 'on beta': 'ship', live: 'ship', done: 'ship', dropped: '', working: 'warn', 'needs answer': 'broken', review: 'warn', merged: 'warn', verified: 'ship', failed: 'failed', 'needs you': 'broken', 'waiting for your GPU budget': 'broken' };
+// What J sees for an item: its progress from its tasks (roadmap.ts itemProgress), never the stored "done" of a consumed item.
+const itemState = (it) => it.progress?.state ?? it.status;
+const itemLabel = (it) => it.progress?.label ?? it.status;
 const met = (m) => ({ yes: '✅', no: '❌' })[m] ?? '❔';
 // Priorities: the PM starts high first, then normal, then low (a task without its own takes its item's).
 const RM_RANK = { high: 0, normal: 1, low: 2 };
@@ -46,10 +49,10 @@ let rmMilestones = [];
 function milestoneHtml(m) {
   const pct = m.total ? Math.round((100 * m.done) / m.total) : 0;
   return `<div class="finding"><div style="flex:1">
-    <h4><span class="pill ${m.status === 'reached' || m.status === 'live' ? 'ship' : ''}">${esc(m.status)}</span> 🏁 ${esc(m.title)} <span class="meta">${esc(m.product ? rmNames[m.product] ?? m.product : 'all products')} · ${esc(m.id)} · ${m.done}/${m.total} items on beta${m.reached_at ? ` · reached ${ago(m.reached_at)}` : ''}</span></h4>
+    <h4><span class="pill ${m.status === 'reached' || m.status === 'live' ? 'ship' : ''}">${esc(m.status)}</span> 🏁 ${esc(m.title)} <span class="meta">${esc(m.product ? rmNames[m.product] ?? m.product : 'all products')} · ${esc(m.id)} · ${m.done}/${m.total} items on beta${m.tasks ? ` · tasks: ${m.tasks.merged}/${m.tasks.total} merged, ${m.tasks.built}/${m.tasks.total} built on beta` : ''}${m.status === 'open' && m.checks ? ' · <b>playtesting its tasks on beta</b>' : ''}${m.reached_at ? ` · reached ${ago(m.reached_at)}` : ''}</span></h4>
     <div style="height:6px;background:var(--line, #333);border-radius:3px;overflow:hidden;margin:4px 0"><div style="height:6px;width:${pct}%;background:var(--accent, #33d6a6)"></div></div>
     ${m.goal ? `<div class="summary">${esc(m.goal)}</div>` : ''}${m.test ? `<div class="meta">You'll test: ${esc(m.test)}</div>` : ''}
-    <div class="meta">${m.items.map((i) => `<span class="pill ${RM_PILL[i.status] ?? ''}">${esc(i.status)}</span> ${esc(i.title)}`).join(' · ') || 'No items yet: add items to it (Milestone… on an item).'}</div>
+    <div class="meta">${m.items.map((i) => `<span class="pill ${RM_PILL[i.state ?? i.status] ?? 'warn'}">${esc(i.display ?? i.status)}</span> ${esc(i.title)}`).join(' · ') || 'No items yet: add items to it (Milestone… on an item).'}</div>
   </div><div class="side"><div class="actions">
     ${m.status === 'reached' ? `<a class="small" href="#ready" data-goto="ready">What to test</a>` : ''}
     ${m.status !== 'live' && m.status !== 'dropped' ? `<button class="small" data-ms="${m.id}" data-st="live" title="You went live with it">Live</button><button class="small" data-ms="${m.id}" data-st="dropped">Drop</button>` : ''}
@@ -68,8 +71,12 @@ function itemHtml(it) {
   const tasks = it.tasks.map((t) => {
     const checks = t.checks?.results?.length ? `<div class="meta">Checked on ${esc(t.checks.where)}: ${t.checks.results.map((k) => `<span title="${esc(k.evidence ?? '')}">${met(k.met)} ${esc(k.criterion)}</span>`).join(' · ')}${t.checks.video ? ` <a href="${file(t.checks.video)}" target="_blank" rel="noopener" data-video="${file(t.checks.video)}">▶</a>` : ''}</div>` : '';
     const blocked = t.status === 'planned' && t.blocked_by?.length ? `<b style="color:var(--red)">blocked by ${t.blocked_by.map((d) => esc(d.title)).join(', ')}</b>` : '';
+    // What it waits on, and beta's build after its merge ("did it work").
+    const p = it.progress?.tasks?.find((x) => x.id === t.id);
+    const waits = p?.waits && !blocked ? `waiting on ${esc(p.waits)}` : '';
+    const build = t.build ? `<span title="${esc(t.build.detail)}">${t.build.ok ? '✅ built on beta' : `<b style="color:var(--red)">❌ beta's build failed</b>`}</span>` : '';
     return `<div class="test" style="flex-wrap:wrap"><span class="pill ${RM_PILL[t.status] ?? ''}">${esc(t.status)}</span>${t.priority === 'high' || (!t.priority && t.effective_priority === 'high') ? prioBadge(t.effective_priority, !t.priority) : ''}<span class="name">${esc(t.title)}</span>
-      <span class="detail">${[blocked, t.note ? esc(t.note) : ''].filter(Boolean).join(' · ')}</span>
+      <span class="detail">${[blocked, build, waits, t.note ? esc(t.note) : ''].filter(Boolean).join(' · ')}</span>
       <span>${['idea', 'failed'].includes(t.status) ? `<button class="small" data-task="${t.id}" data-st="planned">Plan</button>` : ''}</span>
       <div style="flex-basis:100%">${checks}<div id="th-${t.id}"></div></div></div>`;
   }).join('');
@@ -80,9 +87,9 @@ function itemHtml(it) {
       ${!t.checks?.results?.length && t.criteria.length ? `<div class="meta" style="flex-basis:100%">Criteria: ${t.criteria.map(esc).join(' · ')}</div>` : ''}</div>`).join('');
   const main = it.status === 'idea' ? `<button class="small primary" data-item="${it.id}" data-st="planned" title="Its planned tasks start by themselves, in order">Plan it</button>`
     : it.status === 'live' ? `<button class="small" data-item="${it.id}" data-st="done">Done</button>`
-    : it.status === 'on beta' ? `<a class="small" href="#ready" data-goto="ready">Try it (Ready to test)</a>` : '';
+    : ['on beta', 'verified'].includes(itemState(it)) ? `<a class="small" href="#ready" data-goto="ready">Try it (Ready to test)</a>` : '';
   return `<div class="finding" data-item="${it.id}"><div style="flex:1">
-    <h4><span class="pill ${RM_PILL[it.status] ?? ''}">${esc(it.status)}</span>${it.priority === 'high' ? ` ${prioBadge(it.priority)}` : ''} ${esc(it.title)} <span class="meta">${esc(rmNames[it.product] ?? it.product)}${it.milestone ? ` · 🏁 ${esc(rmMilestones.find((m) => m.id === it.milestone)?.title ?? it.milestone)}` : ''}</span></h4>
+    <h4><span class="pill ${RM_PILL[itemState(it)] ?? 'warn'}">${esc(itemLabel(it))}</span>${it.priority === 'high' ? ` ${prioBadge(it.priority)}` : ''} ${esc(it.title)} <span class="meta">${esc(rmNames[it.product] ?? it.product)}${it.milestone ? ` · 🏁 ${esc(rmMilestones.find((m) => m.id === it.milestone)?.title ?? it.milestone)}` : ''}</span></h4>
     <div class="status-line">${esc(taskLine(it))}</div>
     ${it.goal ? `<div class="summary">${esc(it.goal)}</div>` : ''}
     ${it.criteria.length ? `<div class="meta">Done when: ${it.criteria.map(esc).join(' · ')}</div>` : ''}
@@ -204,7 +211,7 @@ async function loadReady() {
   $('#readyList').innerHTML = ready.length ? ready.map((r) => {
     const yes = r.criteria.filter((c) => c.met === 'yes').length;
     return `<div class="card" style="max-width:none" data-item="${esc(r.item)}">
-    <h3>${esc(r.title)} <small>${esc(r.productName)}</small><span class="pill ${r.partly ? 'warn' : 'ship'}">${r.partly ? 'partly on beta' : 'on beta'}</span></h3>
+    <h3>${esc(r.title)} <small>${esc(r.productName)}</small><span class="pill ${r.partly ? 'warn' : 'ship'}">${esc(r.partly ? r.progress ?? 'partly on beta' : 'on beta')}</span></h3>
     <div class="status-line">${r.criteria.length ? `${yes} of ${r.criteria.length} checks passed on beta` : 'No checks recorded'}${r.bugs.length ? ` · ${r.bugs.length} known bug${r.bugs.length === 1 ? '' : 's'}` : ''}${r.partly ? ' · some of its tasks are still being worked on' : ''}</div>
     ${r.goal ? `<div class="summary">${esc(r.goal)}</div>` : ''}
     <div class="actions">${r.beta ? `<a class="button primary" href="${esc(r.beta)}" target="_blank" rel="noopener">Try it on beta</a>` : '<span class="meta">No beta site</span>'}</div>
@@ -213,7 +220,7 @@ async function loadReady() {
     ${r.bugs.length ? `<h4>Known bugs</h4>${r.bugs.map((b) => `<div class="meta"><span class="pill ${esc(b.severity)}">${esc(b.severity)}</span> ${esc(b.title)} (${esc(b.status)})</div>`).join('')}` : ''}
     <details class="more-details"><summary class="meta">Details: what changed</summary>
       <div class="meta">${esc(r.item)}${r.criteria.length ? ` · checked on ${[...new Set(r.criteria.map((c) => c.where))].map(esc).join(', ')}` : ''}</div>
-      ${r.changes.map((c) => `<div class="test"><span class="pill ${RM_PILL[c.status] ?? ''}">${esc(c.status)}</span><span class="name">${esc(c.title)}</span><span class="detail">${c.pr ? `<a href="${esc(c.pr)}" target="_blank">pull request</a>` : ''}</span></div>${c.summary ? `<details><summary class="meta">What the agent did</summary><pre>${esc(c.summary)}</pre></details>` : ''}`).join('')}
+      ${r.changes.map((c) => `<div class="test"><span class="pill ${RM_PILL[c.status] ?? ''}">${esc(c.status)}</span><span class="name">${esc(c.title)}</span><span class="detail">${c.build ? `${c.build.ok ? '✅' : '❌'} ${esc(c.build.detail)} · ` : ''}${c.pr ? `<a href="${esc(c.pr)}" target="_blank">pull request</a>` : ''}</span></div>${c.summary ? `<details><summary class="meta">What the agent did</summary><pre>${esc(c.summary)}</pre></details>` : ''}`).join('')}
       ${r.bugs.length ? `<div class="meta">${r.bugs.map((b) => esc(b.id)).join(' · ')}</div>` : ''}
     </details>
   </div>`;

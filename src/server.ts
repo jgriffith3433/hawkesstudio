@@ -392,7 +392,7 @@ const server = http.createServer(async (req, res) => {
       if (m && method === 'PATCH') { const ms = rm.updateMilestone(m[1], b); pm.kick(); return send(res, 200, ms); }
       if (route === '/api/roadmap/items' && method === 'POST') { const it = rm.addItem({ ...b, origin: b.origin ?? talkFrom, by }); pm.kick(); return send(res, 200, it); }
       m = /^\/api\/roadmap\/items\/(i_[0-9a-f]+)$/.exec(route);
-      if (m && method === 'GET') return send(res, 200, rm.getItem(m[1]) ?? { error: 'no such item' });
+      if (m && method === 'GET') return send(res, 200, rm.getItemView(m[1]) ?? { error: 'no such item' });
       if (m && method === 'PATCH') { const it = rm.updateItem(m[1], b); pm.kick(); return send(res, 200, it); }
       if (route === '/api/roadmap/tasks' && method === 'POST') { let t: any = rm.addTask(b); if (t.gpu) t = await rm.estimateTask(t.id); pm.kick(); return send(res, 200, t); }
       m = /^\/api\/roadmap\/tasks\/(k_[0-9a-f]+)$/.exec(route);

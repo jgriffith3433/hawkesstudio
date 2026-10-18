@@ -613,7 +613,9 @@ async function partialBody(id: string, kind: string, p: Product, opts: PartialOp
  * quiet: ms a Unity beta run waits for more pushes before building (default STUDIO_BETA_QUIET_MS, 2 min; J's own Beta
  * button: 0). A newer beta run of the product supersedes one still waiting (betaqueue.ts).
  */
-type BetaOptions = { focus?: string; origin?: string | null; criteria?: string[]; scenario?: string; options?: Record<string, unknown>; playtest?: boolean; quiet?: number };
+type BetaOptions = { focus?: string; origin?: string | null; criteria?: string[]; scenario?: string; options?: Record<string, unknown>; playtest?: boolean; quiet?: number; plays?: BetaPlay[] };
+/** A reached milestone's check (pm.ts milestoneCheck): one scenario (none: the product's first local one) and the criteria judged on it. */
+export type BetaPlay = { scenario?: string; options?: Record<string, unknown>; criteria: string[] };
 
 /**
  * After beta moves (an approved change): the product's beta is brought up to date and played, as a small run in the
@@ -623,12 +625,12 @@ type BetaOptions = { focus?: string; origin?: string | null; criteria?: string[]
 export function startBeta(productId: string, o: BetaOptions = {}) {
   const p = getProduct(productId);
   const id = newId('r');
-  db.prepare('INSERT INTO runs (id, kind, status, detail, products, options, started) VALUES (?, ?, ?, ?, ?, ?, ?)').run(id, 'beta', 'running', `beta ${p.id}`, J([p.id]), J({ focus: o.focus, criteria: o.criteria, scenario: o.scenario, options: o.options, playtest: o.playtest, quiet: o.quiet }), Date.now());
+  db.prepare('INSERT INTO runs (id, kind, status, detail, products, options, started) VALUES (?, ?, ?, ?, ?, ?, ?)').run(id, 'beta', 'running', `beta ${p.id}`, J([p.id]), J({ focus: o.focus, criteria: o.criteria, scenario: o.scenario, options: o.options, playtest: o.playtest, quiet: o.quiet, plays: o.plays }), Date.now());
   tagRun(id, o.origin);
   return { id, done: betaBody(id, p, o) };
 }
 
-async function betaBody(id: string, p: Product, { focus, criteria, scenario, options, playtest, quiet }: BetaOptions) {
+async function betaBody(id: string, p: Product, { focus, criteria, scenario, options, playtest, quiet, plays }: BetaOptions) {
   try {
     const lane = betaLane();
     const top = p.repo.split('/')[0];
@@ -659,11 +661,18 @@ async function betaBody(id: string, p: Product, { focus, criteria, scenario, opt
       if (playtest === undefined && o.playtest !== undefined) playtest = o.playtest;
       for (const k of o.criteria ?? []) if (!(criteria ??= []).includes(k)) criteria.push(k);
       if (!scenario && o.scenario) ({ scenario, options } = o);
+      if (o.plays?.length) plays = [...(plays ?? []), ...o.plays];
     }
     // A merged roadmap task: the scenario its agent wrote for its criteria, and the criteria judged again.
     const t: Playtest | undefined = scenario ? { scenario, where: 'local', ...(options ? { options } : {}) } : p.playtests.find((x) => x.where === 'local' && x.device !== 'phone');
     // Beta is played only when asked (J, 2026-10-17): after a merge it is rebuilt, and that's it (Settings > Agents).
-    if (lane && t && (playtest ?? betaPlaytestsOn())) await playtestProduct(id, p, t, { focus, mode: 'verify', criteria });
+    // A milestone's check: each of its tasks' scenarios played once, its tasks' criteria judged on it (pm.ts).
+    if (lane && plays?.length) {
+      for (const x of plays) {
+        const pt: Playtest | undefined = x.scenario ? { scenario: x.scenario, where: 'local', ...(x.options ? { options: x.options } : {}) } : p.playtests.find((y) => y.where === 'local' && y.device !== 'phone');
+        if (pt) await playtestProduct(id, p, pt, { focus, mode: 'verify', criteria: x.criteria });
+      }
+    } else if (lane && t && (playtest ?? betaPlaytestsOn())) await playtestProduct(id, p, t, { focus, mode: 'verify', criteria });
     else if (lane && t) {
       const s = startStep(id, p.id, 'playtest', nameOf(t));
       updateStep(s, { status: 'skipped', detail: 'not playtested: beta playtests run when asked for (studio beta, the Beta button), not after every merge', finished: true });
