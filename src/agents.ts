@@ -338,15 +338,16 @@ async function github(route: string, init: { method?: string; body?: unknown } =
 
 // ----------------------------------------------------------------- brief
 
-/** What GPU generation this change may do (content work): J's approved budget, or none. */
+/** What GPU generation this change may do (content work): its approved budget (J's, or Studio's under the auto-approval threshold), or none. */
 function gpuBrief(c: Change) {
   const b = c.gpu_budget === null ? null : Number(c.gpu_budget);
   if (b !== null && b > 0) {
-    return `## GPU budget: $${b.toFixed(2)} (approved by J)
+    return `## GPU budget: $${b.toFixed(2)} (approved)
 
 You may generate through Hawkes Gen up to that: queue each kind of job as one batch (one model load), reuse what
 the library already has (\`reuse\`, asset manifests), and report the GPU minutes and dollars spent (\`hawkesgen_jobs\`).
-If it won't fit, make the most important part and say what the rest would cost.
+Never spend past it: if it won't fit, make the most important part and say what the rest would cost, or ask (a
+question) for more.
 
 You can't start GPU servers yourself (that needs Gen's owner role), and you don't need to: when no GPU server is
 running, Studio has started a stopped one for you as this change began (it takes a few minutes to boot, and stops

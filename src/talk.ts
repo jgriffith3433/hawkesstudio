@@ -452,6 +452,15 @@ export function studioSays(id: string, text: string) {
   return true;
 }
 
+/** A line from Studio for J to read in a conversation, with no turn of Claude's after it (nothing to explain). */
+export function studioNote(id: string, text: string) {
+  const c = getConversation(id);
+  if (!c) return false;
+  c.messages.push({ role: 'assistant', text, at: Date.now(), notice: true });
+  save(c);
+  return true;
+}
+
 function scheduleAuto(id: string, ms = BATCH_MS()) {
   if (autoTimers.has(id)) return;
   const t = setTimeout(() => {
