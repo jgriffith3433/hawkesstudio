@@ -128,8 +128,9 @@ const SETTINGS_FILE = path.join(DATA, 'agents.json');
  * autoMergeBeta: ready product changes merge into beta by themselves (J, 2026-10-17); off: a person merges them.
  * idleMinutes: an agent with no new output that long, its processes only sleeping, is ended (runAgent's watchdog; 0: off).
  */
-export type AgentSettings = { enabled: boolean; autoFix: boolean; autoMergeBeta: boolean; betaPlaytests: boolean; maxConcurrent: number; maxPerDay: number; maxCostPerDay: number; severities: string[]; model: string; maxTurns: number; idleMinutes: number };
-const DEFAULTS: AgentSettings = { enabled: true, autoFix: true, autoMergeBeta: true, betaPlaytests: false, maxConcurrent: 2, maxPerDay: 4, maxCostPerDay: 20, severities: ['blocker', 'bug'], model: 'claude-opus-5-5', maxTurns: 80, idleMinutes: 20 };
+export type AgentSettings = { enabled: boolean; autoFix: boolean; autoMergeBeta: boolean; betaPlaytests: boolean; maxConcurrent: number; maxPerDay: number; maxCostPerDay: number; severities: string[]; model: string; maxTurns: number; idleMinutes: number; genWaitHours: number };
+/** genWaitHours: a change parked on Gen jobs longer than this is told in Talk once (it isn't failed). */
+const DEFAULTS: AgentSettings = { enabled: true, autoFix: true, autoMergeBeta: true, betaPlaytests: false, maxConcurrent: 2, maxPerDay: 4, maxCostPerDay: 20, severities: ['blocker', 'bug'], model: 'claude-opus-5-5', maxTurns: 80, idleMinutes: 20, genWaitHours: 6 };
 export function agentSettings(): AgentSettings {
   try {
     return { ...DEFAULTS, ...JSON.parse(fs.readFileSync(SETTINGS_FILE, 'utf8')) };
@@ -203,7 +204,7 @@ export function decidedNoChange(summary: string) {
  * (a failed one keeps the step it failed at, with `failed`).
  */
 export type Phase = {
-  step: 'prepare' | 'agent' | 'publish' | 'verify' | 'finish';
+  step: 'prepare' | 'agent' | 'publish' | 'verify' | 'finish' | 'gen';
   note?: string;
   answer?: string;
   /** The worktree's HEAD before the agent's pass. */
@@ -230,7 +231,49 @@ export type Phase = {
   nudge?: boolean;
   /** A conflict pass (resolveConflicts): the files that conflict with the base; the agent's session merges and resolves. */
   conflict?: string[];
+  /** Parked on Gen (status WAITING_GEN, step 'gen'): the agent's queued jobs, polled until every one has finished. */
+  gen?: GenWait;
+  /** The next pass continues the agent's session with its finished Gen jobs (this prompt). */
+  genDone?: string;
 };
+
+/**
+ * A GPU agent that queued Gen jobs parks instead of waiting in its session (J, 2026-10-18, q_dda086e2af58): it writes
+ * .hawkes/waiting-jobs.txt and ends; the change is "waiting on Gen" (not failed, not ready, no try, no product slot)
+ * while Studio polls the jobs (pollGenWaits), and its session is resumed with their results once all have finished.
+ */
+export const WAITING_GEN = 'waiting on Gen';
+export type GenJobWait = { id: string; note: string; status?: string; assets?: string[]; error?: string };
+export type GenWait = { jobs: GenJobWait[]; since: number; checked?: number; told?: boolean };
+const GEN_TERMINAL = new Set(['done', 'failed', 'cancelled', 'missing']);
+export const genJobDone = (j: Pick<GenJobWait, 'status'>) => GEN_TERMINAL.has(String(j.status));
+/** .hawkes/waiting-jobs.txt: one Gen job id per line, then (after a space, ":" or a dash) what to do with its output. */
+export function parseWaitingJobs(text: string): GenJobWait[] {
+  const out: GenJobWait[] = [];
+  for (const raw of String(text ?? '').split('\n')) {
+    const line = raw.trim().replace(/^[-*]\s+/, '').replace(/`/g, '');
+    if (!line || line.startsWith('#')) continue;
+    const m = /^([A-Za-z0-9_-]{4,})\s*(?:[:—–-]\s*|\s+|$)(.*)$/.exec(line);
+    if (m && !out.some((j) => j.id === m[1])) out.push({ id: m[1], note: m[2].trim().slice(0, 500) });
+  }
+  return out.slice(0, 100);
+}
+/** "2 of 5 done" */
+export const genProgress = (w: Pick<GenWait, 'jobs'>) => `${w.jobs.filter(genJobDone).length} of ${w.jobs.length} done`;
+/** The prompt that resumes the agent's session once its jobs have finished. */
+export function genDonePrompt(w: Pick<GenWait, 'jobs'>) {
+  const lines = w.jobs.map((j) => `- \`${j.id}\`: ${j.status ?? '?'}${j.assets?.length ? `, assets ${j.assets.map((a) => `\`${a}\``).join(', ')}` : ''}${j.error ? ` (${j.error.slice(0, 200)})` : ''}${j.note ? `. Your note: ${j.note}` : ''}`);
+  return `Your Gen jobs finished:
+${lines.join('\n')}
+
+Continue the task in .hawkes/brief.md with them: judge the outputs, bake or wire in the ones that pass, commit, and
+write .hawkes/summary.md (and try.md, learned.md as the brief says). A failed or cancelled job: retry it within your
+budget or say what's missing. If you queue more Gen jobs, park again the same way (.hawkes/waiting-jobs.txt, then end).`;
+}
+/** How long parked jobs may wait before Talk hears of it, once (agents.genWaitHours, default 6). */
+const genWaitMs = (s = agentSettings()) => Number(process.env.STUDIO_GEN_WAIT_MS) > 0 ? Number(process.env.STUDIO_GEN_WAIT_MS) : (s.genWaitHours > 0 ? s.genWaitHours : 6) * 3600_000;
+/** How often parked jobs are polled (cheap: one GET per unfinished job). STUDIO_GEN_POLL_MS: tests. */
+const genPollMs = () => Number(process.env.STUDIO_GEN_POLL_MS) > 0 ? Number(process.env.STUDIO_GEN_POLL_MS) : 3 * 60_000;
 
 /** Uncommitted work in a worktree (Studio's .hawkes/ notes aside). */
 export function uncommitted(worktree: string) {
@@ -251,7 +294,8 @@ const nudgePrompt = (ph: Phase) => `You stopped before committing: ${ph.stopped 
 
 1. Commit what you have now, with a clear message (run the quick checks first if they take a minute or two).
 2. Then finish the task in .hawkes/brief.md the way it says, committing after each piece. Don't sit in a long wait:
-   check jobs that are still running, take what's done, and say in .hawkes/summary.md what's still running or left.
+   check jobs that are still running, take what's done, and say in .hawkes/summary.md what's still running or left
+   (Gen jobs still running: list them in .hawkes/waiting-jobs.txt as the brief says, and Studio resumes you after).
 3. Write .hawkes/summary.md (and try.md, learned.md as the brief says).
 
 If you left it uncommitted on purpose (the brief says not to commit when you couldn't do it), say why in
@@ -361,11 +405,20 @@ question) for more.
 
 You can't start GPU servers yourself (that needs Gen's owner role), and you don't need to: when no GPU server is
 running, Studio has started a stopped one for you as this change began (it takes a few minutes to boot, and stops
-itself after Gen's idle time). Do the parts that need no GPU first, then queue your jobs (\`hawkesgen_run\` with
-\`wait_for_server: true\`): Gen holds them until the server is ready, so wait for them instead of failing, and ignore
-its "only J can start one" note (Studio already did; don't ask J). If no server became ready within
-about 30 minutes (Studio couldn't start one: no capacity in its zone, or the cap of 4 is reached), finish everything
-else and say in your summary that the GPU part is still waiting. Never launch a server.
+itself after Gen's idle time). Ignore Gen's "only J can start one" note (Studio already did; don't ask J), and never
+launch a server.
+
+**Don't wait for GPU jobs in your session.** Do the parts that need no GPU first, then:
+1. Queue your Gen jobs (\`hawkesgen_run\` with \`wait_for_server: true\`; one batch per kind of job). Gen holds them
+   until a server is ready.
+2. Commit any work that doesn't need their outputs.
+3. Write \`.hawkes/waiting-jobs.txt\`: one Gen job id per line, each followed by a note of what to do with its output
+   (e.g. \`j_abc123 portal open clip: judge, then bake into Assets/Art/Portal\`).
+4. End your session (a short \`.hawkes/summary.md\` of what's done so far).
+
+Studio watches those jobs (they may take hours if servers are busy) and resumes this same session with their results
+(ids, statuses, asset ids) once every one has finished; then you judge, bake and commit. That isn't a failure and
+costs no try.
 
 `;
   }
@@ -837,7 +890,11 @@ async function pump() {
   for (const id of pickQueued(queued, busy, s.maxConcurrent - running.size)) {
     const c = getChange(id)!;
     running.add(c.id);
-    void work(c.id).finally(() => {
+    // Back from waiting on Gen: its own session continues with the jobs' results (same worktree, same branch).
+    const ph = phaseOf(c.id);
+    const back = ph?.genDone && !ph.failed ? ph : null;
+    if (back) update(c.id, { status: 'working', detail: 'its Gen jobs finished: Claude continues with them' });
+    void work(c.id, undefined, undefined, back, Boolean(back)).finally(() => {
       running.delete(c.id);
       remember(c.id);
       void pump();
@@ -936,13 +993,15 @@ async function work(id: string, note?: string, answer?: string, resumed?: Phase 
       c = getChange(id)!;
       const resume = ph.nudge ? nudgeResume(c, ph)
         : ph.conflict ? conflictResume(c, ph.conflict)
+        : ph.genDone ? (c.session ? { session: c.session, prompt: ph.genDone } : { prompt: `Read .hawkes/brief.md: it's your whole task. ${ph.genDone}` })
         : answer && c.session
           ? { session: c.session, prompt: `The answer to your question:\n\n${answer}\n\nContinue the task in .hawkes/brief.md (rewritten with the latest thread) and finish it the way it says.` }
           : undefined;
-      if (!ph.proc && !ph.nudge) addLog(id, resumed && !ph.conflict ? 'agent: it ran inside Studio, which restarted; starting the pass again' : resume?.session ? `agent resumed its session ${ph.conflict ? 'to resolve the conflicts with beta' : 'with the answer'}` : ph.conflict ? 'agent started: resolving the conflicts with beta' : `agent started`);
+      if (!ph.proc && ph.genDone) addLog(id, resume?.session ? 'agent resumed its session with its finished Gen jobs' : 'agent started again with its finished Gen jobs (no session recorded)');
+      else if (!ph.proc && !ph.nudge) addLog(id, resumed && !ph.conflict ?'agent: it ran inside Studio, which restarted; starting the pass again' : resume?.session ? `agent resumed its session ${ph.conflict ? 'to resolve the conflicts with beta' : 'with the answer'}` : ph.conflict ? 'agent started: resolving the conflicts with beta' : `agent started`);
       const r = await agentPass(id, ph, save, s, claudeEnv(), resume);
       // The cost and the next step are written together, so a restart never counts a pass twice.
-      save({ step: 'publish', result: r.result, stopped: r.stopped, nudge: false, proc: undefined }, { cost: getChange(id)!.cost + r.cost });
+      save({ step: 'publish', result: r.result, stopped: r.stopped, nudge: false, genDone: undefined, proc: undefined }, { cost: getChange(id)!.cost + r.cost });
     }
 
     if (ph.step === 'publish') {
@@ -961,6 +1020,17 @@ async function work(id: string, note?: string, answer?: string, resumed?: Phase 
       if (!question && (!commits.length || !changedNow) && await commitForAgent(id, c.worktree, c.title ?? id, `${ph.result ?? ''}\n${summary}`)) {
         commits = listCommits();
         changedNow = true;
+      }
+      // It queued Gen jobs and ended (.hawkes/waiting-jobs.txt): parked until they finish, holding no slot (pollGenWaits).
+      const waitingFile = path.join(c.worktree, '.hawkes', 'waiting-jobs.txt');
+      const parked = !question && fs.existsSync(waitingFile) ? parseWaitingJobs(fs.readFileSync(waitingFile, 'utf8')) : [];
+      if (fs.existsSync(waitingFile)) fs.renameSync(waitingFile, `${waitingFile}.${Date.now()}`);
+      if (parked.length) {
+        const w: GenWait = { jobs: parked, since: Date.now() };
+        update(id, { status: WAITING_GEN, detail: `waiting for GPU jobs (${genProgress(w)})`, summary, commits, phase: { step: 'gen', gen: w, since: ph.since } });
+        addLog(id, `parked: waiting on ${parked.length} Gen job(s) (${parked.map((j) => j.id).join(', ')}); its session resumes when they finish`);
+        setTimeout(() => void pollGenWaits(), 5_000).unref();
+        return;
       }
       // It stopped with its work uncommitted (a time or turn limit, a cut session): its session is resumed to commit it.
       if (needsNudge(ph, { dirty: Boolean(uncommitted(c.worktree)), newCommit: commits.length > 0 && changedNow, question: Boolean(question) })) {
@@ -2016,8 +2086,68 @@ export function resumeChanges() {
   for (const c of listChanges({ status: 'ready', limit: 100 })) {
     if (c.infra && c.approved && !running.has(c.id)) void mergeApprovedInfra(c.id).catch((e) => console.warn(`[studio] approved merge ${c.id}: ${e.message ?? e}`));
   }
+  // Changes parked on Gen jobs: their jobs are looked at again now (they may have finished while Studio was down).
+  void pollGenWaits();
   return out;
 }
+
+let polling = false;
+/**
+ * Changes waiting on Gen: each unfinished job is looked up (GET /v1/jobs/<id>); once every one is done, failed or
+ * cancelled (or unknown to Gen), the change is queued to resume its agent's session with the results (pump). Jobs
+ * waiting longer than agents.genWaitHours are told in Talk once; that never fails the change.
+ */
+export async function pollGenWaits() {
+  if (polling) return;
+  polling = true;
+  try {
+    for (const c of listChanges({ status: WAITING_GEN, limit: 100 })) {
+      const ph = phaseOf(c.id);
+      const w = ph?.gen;
+      if (!ph || !w) continue;
+      for (const j of w.jobs) {
+        if (genJobDone(j)) continue;
+        try {
+          const r: any = await gen.job(j.id);
+          j.status = String(r.status ?? j.status ?? 'queued');
+          j.assets = (r.outputs ?? []).map((o: any) => o.asset).filter(Boolean);
+          if (r.error) j.error = String(r.error).slice(0, 300);
+        } catch (e: any) {
+          // Gen doesn't know it (a wrong id): nothing to wait for. Gen not answering: next time.
+          if (e?.status === 404) Object.assign(j, { status: 'missing', error: 'Hawkes Gen has no such job' });
+        }
+      }
+      w.checked = Date.now();
+      // Closed (or otherwise moved on) while we asked Gen: leave it.
+      if (getChange(c.id)?.status !== WAITING_GEN) continue;
+      if (w.jobs.every(genJobDone)) {
+        const prompt = genDonePrompt(w);
+        update(c.id, {
+          status: 'queued', detail: `its Gen jobs finished (${w.jobs.map((j) => j.status).join(', ')}); the agent continues`,
+          phase: { step: 'agent', since: Date.now(), before: git(c.worktree, ['rev-parse', 'HEAD']).out, gen: w, genDone: prompt },
+        });
+        addLog(c.id, `Gen jobs finished: ${w.jobs.map((j) => `${j.id} ${j.status}${j.assets?.length ? ` (${j.assets.length} asset${j.assets.length === 1 ? '' : 's'})` : ''}`).join(', ')}; resuming its session`);
+        void pump();
+        continue;
+      }
+      let tell = false;
+      if (!w.told && Date.now() - w.since > genWaitMs()) tell = w.told = true;
+      update(c.id, { detail: `waiting for GPU jobs (${genProgress(w)})`, phase: { ...ph, gen: w } });
+      if (tell) {
+        const hours = Math.round((Date.now() - w.since) / 360_000) / 10;
+        const line = `Agent change ${c.id} ("${c.title}") has waited ${hours} h on its Gen jobs (${genProgress(w)}: ${w.jobs.filter((j) => !genJobDone(j)).map((j) => j.id).join(', ')}). Nothing failed: it resumes by itself when they finish. ${PUBLIC_URL}/#changes/${c.id}`;
+        addLog(c.id, `told Talk: waited ${hours} h on its Gen jobs`);
+        const { tellAbout } = await import('./followup.ts');
+        await tellAbout(getChange(c.id), `GPU jobs waiting: ${c.title ?? c.id}`, line).catch((e) => console.warn(`[studio] gen wait notice ${c.id}: ${e.message ?? e}`));
+      }
+    }
+  } catch (e: any) {
+    console.warn(`[studio] Gen waits: ${e.message ?? e}`);
+  } finally {
+    polling = false;
+  }
+}
+setInterval(() => void pollGenWaits(), genPollMs()).unref();
 // The server calls it once it listens (server.ts); a process that only imports this module (the CLI, tests) doesn't.
 setTimeout(() => void pump(), 5000).unref();
 // A safety net for the local queue (no GitHub involved): queued changes never wait on a slot nobody frees.

@@ -356,8 +356,18 @@ GPU costs money, so it is priced and approved.**
   then the cheapest region. One start per need (starts are serialized, so a second change sees the first's server
   coming up). Each start is a `gpu-start` line in the PM log and one line in Talk; a failed one (no capacity in the
   zone, the cap reached, nothing stopped) is `gpu-start-failed` and said in Talk, with no launch instead. The brief
-  tells the agent a server is coming: it queues its jobs with `wait_for_server` and, if none is ready within about
-  30 minutes, finishes the rest and says the GPU part is waiting. Launching a new server still asks J.
+  tells the agent a server is coming: it queues its jobs with `wait_for_server`. Launching a new server still asks J.
+- **Agents park while their Gen jobs wait** (J, 2026-10-18, q_dda086e2af58: "okay fix it"; before, a GPU agent sat in
+  its session until its time or turn limit, ended with "no commit" and the PM parked the task). The brief tells it:
+  queue the Gen jobs, commit the non-GPU work, write `.hawkes/waiting-jobs.txt` (one Gen job id per line, then a
+  note of what to do with that output) and end. Studio sets the change to **waiting on Gen**: not failed, not ready,
+  no try counted, and it holds no agent slot (the product's next change runs meanwhile). Studio polls each job
+  (`GET /v1/jobs/<id>`, every 3 minutes: `pollGenWaits` in agents.ts); once every one is done, failed or cancelled
+  (or unknown to Gen), the change queues again and its agent's own session (same worktree and branch) is resumed with
+  the results (ids, statuses, asset ids, its notes): it judges, bakes and commits, then the normal flow. The wait is
+  in the database (`changes.phase`, step `gen`), so a restart carries on. Jobs waiting longer than
+  `agents.genWaitHours` (Settings, Agents; default 6) are said once in Talk; that never fails the task. The roadmap
+  shows the task as waiting for GPU jobs (n of m done).
 - Checks: the product's own validators and tests, the canon check of the diff (shared memory), and the acceptance
   criteria judged from a playtest of the new content; then the normal flow onto beta.
 

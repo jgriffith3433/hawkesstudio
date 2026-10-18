@@ -1,6 +1,6 @@
 // Roadmap (items, tasks, their checks and threads, questions, the PM loop and its decision log) and "Ready to test".
 // Uses app.js's helpers ($, esc, api, ago, file, view).
-const RM_PILL = { idea: '', planned: '', 'in progress': 'warn', 'on beta': 'ship', live: 'ship', done: 'ship', dropped: '', working: 'warn', 'needs answer': 'broken', review: 'warn', merged: 'warn', verified: 'ship', failed: 'failed', 'needs you': 'broken', 'waiting for your GPU budget': 'broken' };
+const RM_PILL = { idea: '', planned: '', 'in progress': 'warn', 'on beta': 'ship', live: 'ship', done: 'ship', dropped: '', working: 'warn', 'needs answer': 'broken', review: 'warn', merged: 'warn', verified: 'ship', failed: 'failed', 'needs you': 'broken', 'waiting for your GPU budget': 'broken', 'waiting for GPU jobs': 'warn' };
 // What J sees for an item: its progress from its tasks (roadmap.ts itemProgress), never the stored "done" of a consumed item.
 const itemState = (it) => it.progress?.state ?? it.status;
 const itemLabel = (it) => it.progress?.label ?? it.status;
@@ -73,7 +73,7 @@ function itemHtml(it) {
     const blocked = t.status === 'planned' && t.blocked_by?.length ? `<b style="color:var(--red)">blocked by ${t.blocked_by.map((d) => esc(d.title)).join(', ')}</b>` : '';
     // What it waits on, and beta's build after its merge ("did it work").
     const p = it.progress?.tasks?.find((x) => x.id === t.id);
-    const waits = p?.waits && !blocked ? `waiting on ${esc(p.waits)}` : '';
+    const waits = p?.waits && !blocked ? `waiting ${/^GPU jobs/.test(p.waits) ? 'for' : 'on'} ${esc(p.waits)}` : '';
     const build = t.build ? `<span title="${esc(t.build.detail)}">${t.build.ok ? '✅ built on beta' : `<b style="color:var(--red)">❌ beta's build failed</b>`}</span>` : '';
     return `<div class="test" style="flex-wrap:wrap"><span class="pill ${RM_PILL[t.status] ?? ''}">${esc(t.status)}</span>${t.priority === 'high' || (!t.priority && t.effective_priority === 'high') ? prioBadge(t.effective_priority, !t.priority) : ''}<span class="name">${esc(t.title)}</span>
       <span class="detail">${[blocked, build, waits, t.note ? esc(t.note) : ''].filter(Boolean).join(' · ')}</span>
