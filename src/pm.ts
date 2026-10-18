@@ -106,6 +106,8 @@ function git(cwd: string, args: string[]) {
 const changes = () => import('./agents.ts');
 const name = (product: string) => { try { return isInfra(product) ? getInfra(product).name : getProduct(product).name; } catch { return product; } };
 const ACTIVE = ['queued', 'working', 'verifying', 'revising'];
+/** Changes an agent is actually running: capacity counts only these, never queued ones waiting for their product's slot. */
+const RUNNING = ['working', 'verifying', 'revising'];
 
 /** The squash commit of a pull request on a branch of the repo (its title ends with "(#<pr>)"), if it's there. */
 function prCommit(repo: string, branch: string, pr: number) {
@@ -540,7 +542,7 @@ async function startTaskChange(task: Task, note?: string, why?: string, countTry
 /** Agents working now, and the PM's starts today. */
 export function capacity() {
   const s = pmSettings();
-  const active = (db.prepare(`SELECT COUNT(*) AS n FROM changes WHERE status IN (${ACTIVE.map(() => '?').join(',')})`).get(...ACTIVE) as any).n as number;
+  const active = (db.prepare(`SELECT COUNT(*) AS n FROM changes WHERE status IN (${RUNNING.map(() => '?').join(',')})`).get(...RUNNING) as any).n as number;
   const started = countToday('start');
   return { active, started, maxConcurrent: s.maxConcurrent, maxStartsPerDay: s.maxStartsPerDay, free: Math.max(0, Math.min(s.maxConcurrent - active, s.maxStartsPerDay - started)) };
 }
@@ -726,7 +728,7 @@ export async function rerunGpuWaits(free: number, taken = new Set<string>(), dep
       }
       continue;
     }
-    if (free <= out.length || slotHeld(t.product) || taken.has(t.product)) continue;
+    if (free <= out.length || taken.has(t.product) || await slotHeld(t.product, await taskShape(t))) continue;
     try {
       const { getChange } = await changes();
       const prev = t.change ? getChange(t.change) : null;

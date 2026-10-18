@@ -8,7 +8,7 @@ import path from 'node:path';
 
 process.env.STUDIO_DATA = fs.mkdtempSync(path.join(os.tmpdir(), 'studio-parallel-'));
 const { overlapWith, areasOf, filesIn } = await import('../src/parallel.ts');
-const { pickQueued, perProductLimit, agentSettings, noRoomFor } = await import('../src/agents.ts');
+const { pickQueued, perProductLimit, agentSettings, noRoomFor, behindDetail } = await import('../src/agents.ts');
 const { saveSettings, costRaising } = await import('../src/settings.ts');
 const { db } = await import('../src/db.ts');
 
@@ -78,5 +78,28 @@ test('noRoomFor: a product\'s slots and what runs in them', () => {
     assert.match(noRoomFor('sickofit', { task: 't_sfx', text: 'Sound effects' })!, /2 changes are running/);
   } finally {
     db.prepare(`DELETE FROM changes WHERE id IN ('c_00000000par1', 'c_00000000par2')`).run();
+  }
+});
+
+test('a queued change\'s "behind c_..." stays current', () => {
+  assert.equal(behindDetail('queued by the PM (a roadmap task) behind c_old', ['c_new'], 1), 'queued by the PM (a roadmap task) behind c_new');
+  assert.equal(behindDetail('queued (J asked) behind c_old', [], 1), 'queued (J asked)', 'nothing ahead: no "behind"');
+  assert.equal(behindDetail('queued behind c_a', ['c_b'], 2), 'queued', 'a slot left: not behind anything');
+  assert.equal(behindDetail('queued behind c_a', ['c_a'], 1), 'queued behind c_a');
+  assert.equal(behindDetail('queued for another pass', ['c_a'], 1), 'queued for another pass', 'other details untouched');
+});
+
+test('the PM\'s capacity counts running changes, not queued ones waiting for a slot', async () => {
+  const pm = await import('../src/pm.ts');
+  const before = pm.capacity().active;
+  const now = Date.now();
+  const ins = db.prepare(`INSERT INTO changes (id, product, findings, status, title, created) VALUES (?, ?, '[]', ?, 'x', ?)`);
+  ins.run('c_00000000cap1', 'hawkesstudio', 'queued', now);
+  ins.run('c_00000000cap2', 'hawkesstudio', 'queued', now);
+  ins.run('c_00000000cap3', 'hawkesstudio', 'working', now);
+  try {
+    assert.equal(pm.capacity().active, before + 1);
+  } finally {
+    db.prepare(`DELETE FROM changes WHERE id IN ('c_00000000cap1', 'c_00000000cap2', 'c_00000000cap3')`).run();
   }
 });

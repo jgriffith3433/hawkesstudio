@@ -177,8 +177,10 @@ stuck. A revision by a person starts the count over.
   usual. For roadmap tasks and bugs a product's slots are also held by changes of it that are ready but not merged
   yet, or being revised (a conflict pass too) (`slotHeld`). Anything else asked for a product whose slots are taken
   (J's `studio_task`, a fix) is never refused: it queues and starts when there's room (`pump` in agents.ts: oldest
-  first, per product within its limit and the same overlap test, within `maxConcurrent`). It starts nothing while a
-  Studio or Gen deploy is waiting.
+  first, per product within its limit and the same overlap test, within `maxConcurrent`); its "behind c_..." detail
+  names what it waits for now (`behindDetail`, refreshed each pass). The PM's `maxConcurrent` counts only changes
+  actually running (working, verifying, revising), never queued ones waiting for their product's slot. It starts
+  nothing while a Studio or Gen deploy is waiting.
 - runs a **PM turn**: a Talk turn in the day's "Studio PM: <date>" conversation (`conversations.kind = 'pm'`) with what
   came in (changes ready to review, agent questions, failures, beta checks, beta runs and go lives, the daily run) and
   once a day after `dailyHour` (or the daily run) the triage. Claude acts through `studio_pm`: merges into beta what

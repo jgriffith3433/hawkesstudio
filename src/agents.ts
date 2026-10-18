@@ -840,6 +840,13 @@ function aheadOf(product: string) {
   return busy.length >= perProductLimit(product) ? ` behind ${busy[0].id}` : '';
 }
 
+/** A queued change's detail with its " behind c_..." brought up to date: the first of `ahead` when they fill its product's slots, else none. */
+export function behindDetail(detail: string, ahead: string[], limit: number) {
+  const m = detail.match(/ behind c_\w+/);
+  if (!m) return detail;
+  return detail.replace(m[0], ahead.length >= limit ? ` behind ${ahead[0]}` : '');
+}
+
 /**
  * Which queued changes start now: oldest first, at most `free` of them, and per product at most `limit(product)` at
  * once (default 1: a product with a change running, or one picked earlier in the pass, waits; it starts when that one
@@ -908,7 +915,18 @@ async function pump() {
     return !why;
   };
   const busy = [...active.values()].map((c) => c.product);
-  for (const id of pickQueued(queued, busy, s.maxConcurrent - running.size, { limit: (p) => perProductLimit(p, s), fit })) {
+  const picks = pickQueued(queued, busy, s.maxConcurrent - running.size, { limit: (p) => perProductLimit(p, s), fit });
+  // A queued change's " behind c_..." names what it waits for now, not one that finished since (J, 2026-10-18).
+  const ahead = new Map<string, string[]>();
+  for (const c of [...active.values(), ...picks.map((x) => getChange(x)!)]) ahead.set(c.product, [...(ahead.get(c.product) ?? []), c.id]);
+  for (const c of queued) {
+    if (picks.includes(c.id)) continue;
+    const before = ahead.get(c.product) ?? [];
+    const detail = behindDetail(c.detail ?? '', before, perProductLimit(c.product, s));
+    if (detail !== (c.detail ?? '')) update(c.id, { detail });
+    ahead.set(c.product, [...before, c.id]);
+  }
+  for (const id of picks) {
     const c = getChange(id)!;
     running.add(c.id);
     void work(c.id).finally(() => {
