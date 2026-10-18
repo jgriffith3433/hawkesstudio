@@ -28,8 +28,12 @@ async function api(path, opts = {}) {
 }
 
 // ------------------------------------------------------------- tabs
+// Old tabs folded into others: #sites (the beta and live links) is on Go live now.
+const MOVED = { sites: 'golive' };
 let tab = location.hash.slice(1).split('/')[0] || 'inbox';
+tab = MOVED[tab] ?? tab;
 function show(t, sub) {
+  t = MOVED[t] ?? t;
   tab = t;
   // #changes/<id> (a link from the Activity panel) stays.
   if (!sub && t === 'changes' && location.hash.startsWith('#changes/')) sub = location.hash.slice(t.length + 2);
@@ -477,7 +481,6 @@ async function refresh() {
     if (tab === 'changes') await loadChanges();
     if (tab === 'costs' && window.loadCosts) await window.loadCosts();
     if (tab === 'golive' && window.loadGoLiveTab) await window.loadGoLiveTab();
-    if (tab === 'sites' && window.loadSitesTab) await window.loadSitesTab();
     if (tab === 'library' && window.loadLibraryTab) await window.loadLibraryTab();
     if (tab === 'settings' && window.loadSettingsTab) await window.loadSettingsTab();
     if (tab === 'users' && window.loadUsersTab) await window.loadUsersTab();

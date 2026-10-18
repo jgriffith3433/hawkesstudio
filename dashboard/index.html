@@ -22,7 +22,6 @@
       <div class="more" id="more">
         <button type="button" class="more-btn" id="moreBtn" aria-haspopup="true" aria-expanded="false" title="Reports, playtests, agent changes, runs, costs, memory, users, settings">More ▾</button>
         <div class="more-menu" id="moreMenu" hidden>
-          <button data-tab="sites" title="Every product's beta and live sites, plus Studio and Gen: one tap opens it in a new tab">Sites</button>
           <button data-tab="report">Report</button>
           <button data-tab="playtests">Playtests</button>
           <button data-tab="changes">Changes</button>
@@ -101,16 +100,12 @@
       <div class="lb-bar"><label>Product <select id="lbProduct"></select></label></div>
       <div id="lbLib"></div>
     </section>
-    <section id="sites" class="tab">
-      <p class="intro"><b>Sites:</b> one tap to open any product's beta site (what going live would ship) or its live site, in a new tab.</p>
-      <div id="siList" class="si-list"><div class="meta">Loading…</div></div>
-      <div class="si-head">Studio and Gen</div>
-      <div id="siInfra" class="si-list"></div>
-    </section>
     <section id="golive" class="tab">
-      <p class="intro"><b>Go live:</b> what's on beta but not on the live site yet, and the button to ship it. Nothing goes live until you tap Approve.</p>
+      <p class="intro"><b>Go live:</b> what's on beta but not on the live site yet, and the button to ship it. Each product's Beta and Live links open its sites in a new tab. Nothing goes live until you tap Approve.</p>
       <div class="bar"><span class="meta" id="glInfo">Checking every product…</span> <button class="small" id="glRefresh">Check again</button> <button class="small" id="glFixAll" hidden title="Starts the step that clears each blocked product's blockers (merging live into beta, playing or rebuilding beta). Nothing goes live.">Play beta for all blocked</button></div>
       <div id="glList" class="gl-list"><div class="meta">Loading…</div></div>
+      <div class="gl-head">Studio and Gen</div>
+      <div id="glInfra" class="gl-list"></div>
     </section>
     <section id="ready" class="tab">
       <p class="intro"><b>Ready to test:</b> finished work that is on the beta site now, with how to try it. Play it, then ship it from Go live, or tap 🐞 on the beta site for problems.</p>
@@ -209,7 +204,6 @@
   <script src="inbox.js"></script>
   <script src="costs.js"></script>
   <script src="golive.js"></script>
-  <script src="sites.js"></script>
   <script src="library.js"></script>
   <script src="memory.js"></script>
   <script src="settings.js"></script>

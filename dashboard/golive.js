@@ -5,7 +5,8 @@
 // show it right there; J's tap on Approve is what goes live. A blocked card instead shows the one beta-only step that
 // clears its blockers (the plan's `fix`, deploy.ts planFix): "Merge live into beta" (then plays beta), "Play beta" (the
 // beta run) or "Rebuild beta" (a forced Unity build); the card follows that run and checks the plan again when it ends.
-// None of them goes live or rolls back. Uses app.js's helpers ($, esc, api, ago) and approvals.
+// None of them goes live or rolls back. Every card also has big Beta and Live links (they were the Sites tab; #sites
+// opens this tab), and Studio and Gen's addresses sit below. Uses app.js's helpers ($, esc, api, ago) and approvals.
 (() => {
   const css = document.createElement('style');
   css.textContent = `
@@ -27,11 +28,19 @@
     .gl-done { font-size: 13px; margin: 6px 0; } .gl-fail { color: var(--red); }
     .gl-slot:not(:empty) { margin-top: 10px; }
     .gl-card details { margin-top: 8px; font-size: 13px; } .gl-card details code { font-size: 12px; }
+    .gl-links { display: flex; gap: 10px; flex-wrap: wrap; margin: 8px 0; }
+    .gl-links a, .gl-links .gl-none { flex: 1 1 120px; display: flex; flex-direction: column; justify-content: center; min-height: 48px; padding: 8px 12px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel2); text-decoration: none; min-width: 0; }
+    .gl-links a b { color: var(--text); font-size: 15px; } .gl-links a.beta b { color: var(--amber); } .gl-links a.live b { color: var(--accent); }
+    .gl-links a small, .gl-links .gl-none small { color: var(--dim); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .gl-links a:hover { border-color: var(--dim); }
+    .gl-links .gl-none { color: var(--dim); font-size: 14px; }
+    .gl-head { margin: 18px 0 8px; font-size: 14px; color: var(--dim); font-weight: 600; }
     @media (max-width: 700px) { .gl-list { grid-template-columns: 1fr; } .gl-buttons button.big { width: 100%; } }`;
   document.head.appendChild(css);
 
   const plans = new Map(); // product -> plan (or { error })
   let products = [];
+  let betaSites = new Map(); // product -> its beta site (GET /api/previews), so the links show before the plan is in
   let ops = [];
   let pending = []; // waiting deploy / rollback cards
   let busy = false;
@@ -74,14 +83,26 @@
     return { color: 'green', text: 'Ready to go live: playtested with no problems.', played };
   }
 
+  // The beta and live links (they were the Sites tab): on every card, whatever its state, opening in a new tab.
+  // Studio and Gen have no beta lane, so only their live address.
+  const INFRA = [
+    { name: 'Hawkes Studio', live: 'https://studio.hawkesgen.com/' },
+    { name: 'Hawkes Gen', live: 'https://gen.hawkesgen.com/' },
+  ];
+  const short = (u) => u.replace(/^https?:\/\//, '').replace(/\/$/, '');
+  const siteLink = (kind, label, url) => (url
+    ? `<a class="${kind}" href="${esc(url)}" target="_blank" rel="noopener"><b>${label} ↗</b><small>${esc(short(url))}</small></a>`
+    : `<span class="gl-none">${label}<small>none</small></span>`);
+  const links = (prod, p) => `<div class="gl-links">${siteLink('beta', 'Beta', p?.betaSite ?? betaSites.get(prod.id))}${siteLink('live', 'Live', p?.live ?? prod.live)}</div>`;
+
   const liveOps = (id) => ops.filter((o) => o.product === id && (o.kind === 'golive' || o.kind === 'rollback'));
 
   function card(prod) {
     const p = plans.get(prod.id);
-    if (!p) return `<div class="gl-card" data-p="${esc(prod.id)}"><h3><span class="gl-light"></span>${esc(prod.name)}</h3><div class="meta">Checking beta and live…</div></div>`;
-    if (p.error) return `<div class="gl-card red" data-p="${esc(prod.id)}"><h3><span class="gl-light red"></span>${esc(prod.name)}</h3><div class="meta">Couldn't check: ${esc(p.error)}</div></div>`;
+    if (!p) return `<div class="gl-card" data-p="${esc(prod.id)}"><h3><span class="gl-light"></span>${esc(prod.name)}</h3>${links(prod)}<div class="meta">Checking beta and live…</div></div>`;
+    if (p.error) return `<div class="gl-card red" data-p="${esc(prod.id)}"><h3><span class="gl-light red"></span>${esc(prod.name)}</h3>${links(prod)}<div class="meta">Couldn't check: ${esc(p.error)}</div></div>`;
     // Beta couldn't be read (git failed, or no beta branch yet): say so, never "up to date".
-    if (!p.beta || p.blockers.some((b) => b.startsWith('git:'))) return `<div class="gl-card red" data-p="${esc(p.product)}"><h3><span class="gl-light red"></span>${esc(p.name)}</h3><div class="gl-status">Couldn't compare beta with live</div><ul class="meta">${p.blockers.map((b) => `<li>${esc(b)}</li>`).join('')}</ul></div>`;
+    if (!p.beta || p.blockers.some((b) => b.startsWith('git:'))) return `<div class="gl-card red" data-p="${esc(p.product)}"><h3><span class="gl-light red"></span>${esc(p.name)}</h3>${links(prod, p)}<div class="gl-status">Couldn't compare beta with live</div><ul class="meta">${p.blockers.map((b) => `<li>${esc(b)}</li>`).join('')}</ul></div>`;
     const L = light(p);
     const up = ahead(p);
     const status = up
@@ -102,6 +123,7 @@
       <h3><span class="gl-light ${L.color}" title="${esc(L.text)}"></span>${esc(p.name)}</h3>
       <div class="gl-status ${up ? 'ahead' : 'same'}">${esc(status)}</div>
       <div class="gl-when">Live updated ${esc(when(lastLive))} · beta changed ${esc(when(p.beta?.date))}</div>
+      ${links(prod, p)}
       ${run.map((o) => `<div class="gl-busy">⏳ ${esc(o.title)}${o.status === 'queued' ? ' (waiting its turn)' : o.step ? `: ${esc(o.step)}` : '…'}</div>`).join('')}
       ${fixRunning && !run.length ? `<div class="gl-busy">⏳ ${esc(FIX[fx.action].busy)}${fx.step ? `: ${esc(fx.step)}` : '…'}</div>` : ''}
       ${fx?.error ? `<div class="gl-done gl-fail">❌ ${esc(FIX[fx.action].label)} failed: ${esc(String(fx.error).slice(0, 300))}</div>` : fx?.done ? `<div class="gl-done">${fx.done.ok ? `✅ ${esc(FIX[fx.action].label)} finished ${esc(ago(fx.done.at))}` : `<span class="gl-fail">❌ ${esc(FIX[fx.action].label)} failed: ${esc(String(fx.done.detail ?? '').slice(0, 300))}</span>`}</div>` : ''}
@@ -112,8 +134,6 @@
         ${fix ? `<button class="primary big" data-glfix="${esc(fix)}" title="${esc(FIX[fix].title)}"${fixRunning ? ' disabled' : ''}>${esc(fixRunning ? `${FIX[fix].busy}…` : FIX[fix].label)}</button>` : ''}
         ${up && !run.length && !fix ? `<button class="primary big" data-glgo="deploy" data-guide="off" title="Shows the Approve card for going live; your tap on Approve is what goes live">Go live</button>` : ''}
         ${canRoll && !run.length ? `<button class="roll" data-glgo="rollback" data-guide="off" title="Shows the Approve card for rolling back to what was live before">Roll back</button>` : ''}
-        ${p.betaSite ? `<a class="meta" href="${esc(p.betaSite)}" target="_blank" rel="noopener" style="align-self:center">Try beta</a>` : ''}
-        <a class="meta" href="${esc(p.live)}" target="_blank" rel="noopener" style="align-self:center">Live site</a>
       </div>
       <div class="gl-slot">${card ? approvals.html(card) : ''}</div>
       <details><summary class="meta">Details</summary>
@@ -132,6 +152,7 @@
     const open = new Set([...box.querySelectorAll('.gl-card details[open]')].map((d) => d.closest('.gl-card').dataset.p));
     const slots = new Map([...box.querySelectorAll('.gl-card')].map((c) => [c.dataset.p, c.querySelector('.gl-slot')?.innerHTML ?? '']));
     box.innerHTML = products.map(card).join('') || '<div class="meta">No products.</div>';
+    $('#glInfra').innerHTML = INFRA.map((x) => `<div class="gl-card"><h3>${esc(x.name)}</h3><div class="gl-links">${siteLink('live', 'Live', x.live)}</div></div>`).join('');
     for (const c of box.querySelectorAll('.gl-card')) {
       if (open.has(c.dataset.p)) c.querySelector('details')?.setAttribute('open', '');
       const s = c.querySelector('.gl-slot');
@@ -212,7 +233,9 @@
     if (busy) return;
     busy = true;
     try {
-      products = (await api('/api/products')).products;
+      const [pr, pv] = await Promise.all([api('/api/products'), api('/api/previews').catch(() => ({ previews: [] }))]);
+      products = pr.products;
+      betaSites = new Map(pv.previews.map((x) => [x.product, x.url]));
       await loadOps();
       await loadRuns().catch(() => {});
       draw();
