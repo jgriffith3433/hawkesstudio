@@ -65,11 +65,13 @@ async function betaRun(product: string, builds: string[], gen: any, quiet = 60) 
 test('a burst of 3 pushes makes 1 build, of the newest run; the others are skipped as superseded', async () => {
   const builds: string[] = [];
   const gen = fakeGen({});
-  const done = [betaRun('burst', builds, gen)];
+  // A quiet time well past the gaps: on a loaded CI runner a 15 ms sleep can last longer than 60 ms, and the first run
+  // then builds before the others arrive (flaky on GitHub, 2026-10-18).
+  const done = [betaRun('burst', builds, gen, 300)];
   await sleep(15);
-  done.push(betaRun('burst', builds, gen));
+  done.push(betaRun('burst', builds, gen, 300));
   await sleep(15);
-  done.push(betaRun('burst', builds, gen));
+  done.push(betaRun('burst', builds, gen, 300));
   const results = await Promise.all(done);
   assert.equal(builds.length, 1, 'one build');
   const runs = db.prepare(`SELECT id, status, detail FROM runs WHERE products LIKE '%"burst"%' ORDER BY rowid`).all() as any[];
