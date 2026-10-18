@@ -16,7 +16,7 @@
 //
 // Source of truth: C:\Projects\hawkesgen\clients\js\hawkesgen.mjs. Version 6 (the library: entities, slots, versions, make, revise, watch, exportSlots).
 
-export const CLIENT_VERSION = 6;
+export const CLIENT_VERSION = 7;
 
 /** ~/.hawkes/client.json (Node only): where Hawkes Gen and Studio are, for every project on this PC. */
 function userConfig() {
@@ -144,9 +144,22 @@ export class HawkesGen {
     let cancelled = false;
     const onAbort = () => { cancelled = true; this.cancel(id).catch(() => {}); };
     signal?.addEventListener('abort', onAbort, { once: true });
+    // A dropped connection or Gen restarting is not the job failing: keep asking for up to two minutes of failures.
+    let offlineSince = 0;
     try {
       for (;;) {
-        const j = await this.job(id);
+        let j;
+        try {
+          j = await this.job(id);
+          offlineSince = 0;
+        } catch (e) {
+          const passing = e?.kind === 'offline' || [502, 503, 504].includes(e?.status);
+          if (!passing || cancelled) throw e;
+          offlineSince ||= Date.now();
+          if (Date.now() - offlineSince > 120_000) throw e;
+          await new Promise((r) => setTimeout(r, 5000));
+          continue;
+        }
         const sig = `${j.status}|${j.detail}|${j.outputs?.length}`;
         if (sig !== last) { last = sig; onUpdate?.(j); }
         if (TERMINAL.has(j.status)) {
