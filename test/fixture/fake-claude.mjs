@@ -11,6 +11,8 @@
 // - FAKE_HANG: the first pass writes work.txt, then waits until Studio's time limit stops it; a resumed pass commits.
 // - FAKE_NEVER: every pass writes work.txt and ends with no result and no commit.
 // - FAKE_NOTHING: changes nothing, writes a summary and ends with a result.
+// - FAKE_PARK: a GPU agent that queued Gen jobs: the first pass commits its non-GPU work, lists two jobs in
+//   .hawkes/waiting-jobs.txt and ends; resumed with "Your Gen jobs finished", it commits baked.txt (that prompt in it).
 // - FAKE_LINGER: works and commits like a good agent and prints its result, but a background process it started
 //   (its pid in .hawkes/linger.pid) keeps it open forever, like a wait loop on a run it had killed itself.
 // Told to merge its base (a conflict pass: "git merge origin/<base>" in its prompt), it merges keeping its own side of
@@ -54,7 +56,7 @@ async function agent() {
   out({ type: 'assistant', message: { content: [{ type: 'text', text: 'Looking at the brief.' }] } });
   let brief = '';
   try { brief = fs.readFileSync(path.join('.hawkes', 'brief.md'), 'utf8'); } catch { /* none */ }
-  const mode = /FAKE_(STOP|HANG|NEVER|NOTHING|LINGER)/.exec(brief)?.[1];
+  const mode = /FAKE_(STOP|HANG|NEVER|NOTHING|LINGER|PARK)/.exec(brief)?.[1];
   if (mode === 'NOTHING') {
     fs.mkdirSync('.hawkes', { recursive: true });
     fs.writeFileSync(path.join('.hawkes', 'summary.md'), 'I looked and it already works; I changed nothing.');
@@ -70,6 +72,25 @@ async function agent() {
     fs.writeFileSync(path.join('.hawkes', 'summary.md'), 'Merged beta and resolved the conflicts.');
     out({ type: 'result', subtype: 'success', result: 'Merged beta, resolved the conflicts.', session_id: 'fake-agent-session', total_cost_usd: 0.05, duration_ms: 5 });
     return log({ agentMerged: process.cwd(), base });
+  }
+  if (mode === 'PARK') {
+    const g = (...a) => spawnSync('git', ['-c', 'user.name=Agent', '-c', 'user.email=agent@example.com', ...a], { encoding: 'utf8' });
+    fs.mkdirSync('.hawkes', { recursive: true });
+    if (/Your Gen jobs finished/.test(prompt)) {
+      fs.writeFileSync('baked.txt', prompt);
+      g('add', '-A');
+      g('commit', '--quiet', '-m', 'Bake the Gen outputs');
+      fs.writeFileSync(path.join('.hawkes', 'summary.md'), 'Baked the portal clips.');
+      out({ type: 'result', subtype: 'success', result: 'Baked them.', session_id: 'fake-agent-session', total_cost_usd: 0.05, duration_ms: 5 });
+      return log({ agentBaked: process.cwd() });
+    }
+    fs.writeFileSync('spec.txt', 'portal spec\n');
+    g('add', '-A');
+    g('commit', '--quiet', '-m', 'Portal spec');
+    fs.writeFileSync(path.join('.hawkes', 'waiting-jobs.txt'), 'j_park1 portal open clip: judge, then bake\nj_park2 portal loop clip\n');
+    fs.writeFileSync(path.join('.hawkes', 'summary.md'), 'Spec done; clips queued.');
+    out({ type: 'result', subtype: 'success', result: 'Queued the clips.', session_id: 'fake-agent-session', total_cost_usd: 0.05, duration_ms: 5 });
+    return log({ agentParked: process.cwd() });
   }
   if (mode === 'NEVER' || (!resumed && (mode === 'STOP' || mode === 'HANG'))) {
     fs.appendFileSync('work.txt', `half done at ${new Date().toISOString()}\n`);
