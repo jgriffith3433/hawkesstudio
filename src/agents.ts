@@ -202,7 +202,53 @@ export type Phase = {
   failed?: boolean;
   /** A playtest asked for (playtestChange): who asked. It ends the pass with the change ready again, never failed. */
   requested?: string;
+  /** Why the last agent pass ended before finishing (AgentResult.stopped). */
+  stopped?: 'time' | 'turns' | 'cut';
+  /** How many times its session was resumed to commit work it left uncommitted (at most NUDGES); `nudge`: the next pass is one. */
+  nudges?: number;
+  nudge?: boolean;
 };
+
+/** Uncommitted work in a worktree (Studio's .hawkes/ notes aside). */
+export function uncommitted(worktree: string) {
+  return git(worktree, ['status', '--porcelain', '--', '.', ':(exclude).hawkes']).out;
+}
+const STOP_WHY = { time: "it reached Studio's time limit for one pass", turns: 'it reached its turn limit', cut: 'its session ended without finishing' } as const;
+const STOP_YOU = { time: "you reached Studio's time limit for one pass", turns: 'you reached your turn limit', cut: 'your session ended before you finished' } as const;
+/**
+ * Whether an agent pass that just ended gets its session resumed to commit (J, 2026-10-18: "handle whatever situation
+ * gracefully"): it left uncommitted work, and either made no new commit or was stopped before it finished, and it has
+ * tries left. Not when it asked a question. An agent that changed nothing fails as before.
+ */
+export function needsNudge(ph: Pick<Phase, 'stopped' | 'nudges'>, { dirty, newCommit, question }: { dirty: boolean; newCommit: boolean; question: boolean }) {
+  // One that ended on its own (it may have chosen not to commit) is asked once; one that was stopped, up to NUDGES times.
+  return !question && dirty && (!newCommit || Boolean(ph.stopped)) && (ph.nudges ?? 0) < (ph.stopped ? NUDGES : 1);
+}
+const nudgePrompt = (ph: Phase) => `You stopped before committing: ${ph.stopped ? STOP_YOU[ph.stopped] : 'you ended without committing'}. Your work is still in the worktree (\`git status\`).
+
+1. Commit what you have now, with a clear message (run the quick checks first if they take a minute or two).
+2. Then finish the task in .hawkes/brief.md the way it says, committing after each piece. Don't sit in a long wait:
+   check jobs that are still running, take what's done, and say in .hawkes/summary.md what's still running or left.
+3. Write .hawkes/summary.md (and try.md, learned.md as the brief says).
+
+If you left it uncommitted on purpose (the brief says not to commit when you couldn't do it), say why in
+.hawkes/summary.md and end without committing.`;
+/** The pass that commits it: the same session (claude --resume), or a new one told the same when none was recorded. */
+function nudgeResume(c: Change, ph: Phase) {
+  const prompt = nudgePrompt(ph);
+  return c.session ? { session: c.session, prompt } : { prompt: `Read .hawkes/brief.md: it's your whole task. ${prompt}` };
+}
+/** Records the next pass as a nudge (saved, so a restart carries on with it) and says why in the log. */
+function nudge(id: string, ph: Phase, save: (patch: Partial<Phase>) => void) {
+  const n = (ph.nudges ?? 0) + 1;
+  addLog(id, `agent: ${ph.stopped ? STOP_WHY[ph.stopped] : 'it ended without committing'}, with its work uncommitted in the worktree; resuming its session to commit it and finish (${n} of ${NUDGES})`);
+  save({ step: 'agent', nudges: n, nudge: true, result: undefined, stopped: undefined, proc: undefined, since: Date.now() });
+}
+/** A failed change's reason: today's words, plus what's left when its work stayed uncommitted after the resumes. */
+function noCommitWhy(worktree: string, ph: Phase) {
+  if (!ph.nudges || !uncommitted(worktree)) return 'the agent made no commit';
+  return `the agent made no commit: resumed ${ph.nudges}× to commit, it still left its work uncommitted (it is still in the worktree: revise to carry on)`;
+}
 export const phaseOf = (id: string): Phase | null => parse((db.prepare('SELECT phase FROM changes WHERE id = ?').get(id) as any)?.phase ?? null);
 function addLog(id: string, line: string) {
   const c = getChange(id)!;
@@ -403,7 +449,8 @@ ${note ? `\n## Notes on the last attempt (J's or the PM's)\n\n${note}\n` : ''}${
    secrets, CI, or deploy scripts.
 4. Run the project's checks:
 ${checks}
-5. Commit your change with a clear message (\`Fix: ...\`). Don't push; Studio does.
+5. Commit your change with a clear message (\`Fix: ...\`). Don't push; Studio does. Studio stops a pass after
+   ${Math.round(agentLimitMs(c) / 60_000)} minutes: commit as you go (after each working piece or finished batch), so a stop loses nothing.
 6. Write \`.hawkes/summary.md\`: what was wrong, what you changed (files), how you checked it, and anything J should
    look at. If you couldn't fix it, explain why there instead, and don't commit.
 7. Write \`.hawkes/try.md\`: how J tries it on the beta site, in two to five short steps a player would follow (where to
@@ -457,13 +504,25 @@ export function agentMcp(id: string) {
   return file;
 }
 
-type AgentResult = { ok: boolean; cost: number; result: string; sawResult: boolean; lost: boolean };
+/** An agent pass's end: `stopped` says why it ended before finishing ('time': Studio's time limit; 'turns': its turn limit; 'cut': no result). */
+type AgentResult = { ok: boolean; cost: number; result: string; sawResult: boolean; lost: boolean; stopped?: 'time' | 'turns' | 'cut' };
 /** How an agent pass runs: as a new process (onStart records it), or reattached to one started before a restart. */
 type AgentRun = { reattach?: { rec: DetachRec; offset: number }; onStart?: (rec: DetachRec) => void; onProgress?: (offset: number) => void };
 
-const AGENT_LIMIT_MS = 60 * 60_000;
+/**
+ * How long one agent pass may run before Studio stops it (counted from its unit's start, so a restart doesn't reset it).
+ * Content and GPU work waits on long Gen batches: on 2026-10-18 two such agents were stopped at the hour mid-wait with
+ * their work uncommitted. STUDIO_AGENT_LIMIT_MS: tests.
+ */
+export function agentLimitMs(c: { infra?: boolean; request?: string | null; findings?: string[]; title?: string | null; gpu_budget?: string | null }) {
+  const env = Number(process.env.STUDIO_AGENT_LIMIT_MS);
+  if (env > 0) return env;
+  return roleOf(c) === 'content' ? 3 * 60 * 60_000 : 60 * 60_000;
+}
+/** A session that ended with its work uncommitted is resumed this many times to commit it (agents.ts nudge). */
+export const NUDGES = 2;
 
-function runAgent(c: Change, briefFile: string, s: AgentSettings, env = claudeEnv(), resume?: { session: string; prompt: string }, how: AgentRun = {}): Promise<AgentResult> {
+function runAgent(c: Change, briefFile: string, s: AgentSettings, env = claudeEnv(), resume?: { session?: string; prompt: string }, how: AgentRun = {}): Promise<AgentResult> {
   return new Promise((resolve) => {
     let child: ReturnType<typeof launch>['child'];
     let started = Date.now();
@@ -482,7 +541,7 @@ function runAgent(c: Change, briefFile: string, s: AgentSettings, env = claudeEn
         maxTurns: s.maxTurns !== DEFAULTS.maxTurns ? s.maxTurns : undefined,
       });
       const args = [
-        ...(resume ? ['--resume', resume.session] : []),
+        ...(resume?.session ? ['--resume', resume.session] : []),
         '-p', prompt, '--output-format', 'stream-json', '--verbose', ...roleFlags,
         '--permission-mode', 'acceptEdits',
         // Its own Studio MCP server with only the shared-memory tools, writing as this change (X-Studio-Agent).
@@ -500,7 +559,13 @@ function runAgent(c: Change, briefFile: string, s: AgentSettings, env = claudeEn
     let buf = '';
     const out: AgentResult = { ok: false, cost: 0, result: '', sawResult: false, lost: false };
     let saved = 0;
-    const timer = setTimeout(() => child.kill('SIGTERM'), Math.max(5_000, AGENT_LIMIT_MS - (Date.now() - started)));
+    const limit = agentLimitMs(c);
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      addLog(c.id, `agent: stopped at its ${limit >= 60_000 ? `${Math.round(limit / 60_000)}-minute` : `${Math.round(limit / 1000)}-second`} limit for one pass`);
+      child.kill('SIGTERM');
+    }, Math.max(5_000, limit - (Date.now() - started)));
     child.stdout!.on('data', (d) => {
       buf += d;
       let i;
@@ -523,6 +588,7 @@ function runAgent(c: Change, briefFile: string, s: AgentSettings, env = claudeEn
             out.result = String(m.result ?? '');
             out.ok = !m.is_error;
             out.sawResult = true;
+            if (m.subtype === 'error_max_turns') out.stopped = 'turns';
           }
         } catch {
           // Not JSON.
@@ -538,6 +604,8 @@ function runAgent(c: Change, briefFile: string, s: AgentSettings, env = claudeEn
     child.on('close', () => {
       clearTimeout(timer);
       out.lost = child instanceof DetachedChild && child.lost && !out.sawResult;
+      if (timedOut) out.stopped = 'time';
+      else if (!out.sawResult && !out.lost) out.stopped ??= 'cut';
       resolve(out);
     });
     child.on('error', (e: Error) => {
@@ -552,7 +620,7 @@ function runAgent(c: Change, briefFile: string, s: AgentSettings, env = claudeEn
  * The agent's pass in a change's "agent" step: reattached to its process when one was recorded (Studio restarted while
  * it ran), else started (and recorded). A process that vanished without a result (the server rebooted) runs again.
  */
-async function agentPass(id: string, ph: Phase, save: (patch: Partial<Phase>) => void, s: AgentSettings, env: NodeJS.ProcessEnv, resume?: { session: string; prompt: string }) {
+async function agentPass(id: string, ph: Phase, save: (patch: Partial<Phase>) => void, s: AgentSettings, env: NodeJS.ProcessEnv, resume?: { session?: string; prompt: string }) {
   const brief = path.join(getChange(id)!.worktree, '.hawkes', 'brief.md');
   const fresh = (): AgentRun => ({
     onStart: (rec) => save({ proc: { rec, offset: 0 } }),
@@ -756,13 +824,14 @@ async function work(id: string, note?: string, answer?: string, resumed?: Phase 
       update(id, { detail: 'Claude is working on it' });
       // An answer to the agent's question continues its own session (claude --resume); anything else starts a new one.
       c = getChange(id)!;
-      const resume = answer && c.session
-        ? { session: c.session, prompt: `The answer to your question:\n\n${answer}\n\nContinue the task in .hawkes/brief.md (rewritten with the latest thread) and finish it the way it says.` }
-        : undefined;
-      if (!ph.proc) addLog(id, resumed ? 'agent: it ran inside Studio, which restarted; starting the pass again' : resume ? `agent resumed its session with the answer` : `agent started`);
+      const resume = ph.nudge ? nudgeResume(c, ph)
+        : answer && c.session
+          ? { session: c.session, prompt: `The answer to your question:\n\n${answer}\n\nContinue the task in .hawkes/brief.md (rewritten with the latest thread) and finish it the way it says.` }
+          : undefined;
+      if (!ph.proc && !ph.nudge) addLog(id, resumed ? 'agent: it ran inside Studio, which restarted; starting the pass again' : resume ? `agent resumed its session with the answer` : `agent started`);
       const r = await agentPass(id, ph, save, s, claudeEnv(), resume);
       // The cost and the next step are written together, so a restart never counts a pass twice.
-      save({ step: 'publish', result: r.result, proc: undefined }, { cost: getChange(id)!.cost + r.cost });
+      save({ step: 'publish', result: r.result, stopped: r.stopped, nudge: false, proc: undefined }, { cost: getChange(id)!.cost + r.cost });
     }
 
     if (ph.step === 'publish') {
@@ -782,6 +851,11 @@ async function work(id: string, note?: string, answer?: string, resumed?: Phase 
         commits = listCommits();
         changedNow = true;
       }
+      // It stopped with its work uncommitted (a time or turn limit, a cut session): its session is resumed to commit it.
+      if (needsNudge(ph, { dirty: Boolean(uncommitted(c.worktree)), newCommit: commits.length > 0 && changedNow, question: Boolean(question) })) {
+        nudge(id, ph, save);
+        return work(id, note, answer, ph, true);
+      }
       if (question) {
         update(id, { status: 'needs answer', detail: `the agent asks: ${question.split('\n')[0].slice(0, 200)}`, summary, commits, phase: null });
         addLog(id, `question: ${question.slice(0, 300)}`);
@@ -799,8 +873,9 @@ async function work(id: string, note?: string, answer?: string, resumed?: Phase 
           update(id, { status: 'failed', detail: `${DECIDED} (the agent made no commit)`, summary, commits, phase: null });
           return;
         }
-        reopenTaken(id, findings.map((f) => f.id), `the agent made no commit: ${summary.slice(0, 120)}`);
-        update(id, { status: 'failed', detail: 'the agent made no commit', summary, commits, phase: null });
+        const why = noCommitWhy(c.worktree, ph);
+        reopenTaken(id, findings.map((f) => f.id), `${why}: ${summary.slice(0, 120)}`);
+        update(id, { status: 'failed', detail: why, summary, commits, phase: null });
         return;
       }
       if ((note || answer) && !changedNow) addLog(id, 'no new commit this pass; checking the branch again');
@@ -1166,7 +1241,7 @@ ${mem.text ? `\n${mem.text}` : ''}`;
   return path.join(dir, 'brief.md');
 }
 
-async function workInfra(id: string, note?: string, resumed?: Phase | null) {
+async function workInfra(id: string, note?: string, resumed?: Phase | null, nudged = false) {
   let c = getChange(id)!;
   const t = getInfra(c.product);
   const s = agentSettings();
@@ -1179,8 +1254,8 @@ async function workInfra(id: string, note?: string, resumed?: Phase | null) {
     update(id, { ...extra, phase: ph });
   };
   try {
-    if (resumed) addLog(id, `Studio restarted: carrying on from the ${ph.step} step`);
-    else save({}, { status: note ? 'revising' : 'working', detail: 'preparing the worktree' });
+    if (resumed && !nudged) addLog(id, `Studio restarted: carrying on from the ${ph.step} step`);
+    else if (!resumed) save({}, { status: note ? 'revising' : 'working', detail: 'preparing the worktree' });
 
     if (ph.step === 'prepare') {
       update(id, { detail: 'preparing the worktree' });
@@ -1215,9 +1290,9 @@ async function workInfra(id: string, note?: string, resumed?: Phase | null) {
 
     if (ph.step === 'agent') {
       update(id, { detail: 'Claude is working on it' });
-      if (!ph.proc) addLog(id, resumed ? 'agent: it ran inside Studio, which restarted; starting the pass again' : `agent started`);
-      const r = await agentPass(id, ph, save, s, infraEnv({ agent: true }));
-      save({ step: 'publish', result: r.result, proc: undefined }, { cost: getChange(id)!.cost + r.cost });
+      if (!ph.proc && !ph.nudge) addLog(id, resumed ? 'agent: it ran inside Studio, which restarted; starting the pass again' : `agent started`);
+      const r = await agentPass(id, ph, save, s, infraEnv({ agent: true }), ph.nudge ? nudgeResume(getChange(id)!, ph) : undefined);
+      save({ step: 'publish', result: r.result, stopped: r.stopped, nudge: false, proc: undefined }, { cost: getChange(id)!.cost + r.cost });
     }
 
     if (ph.step === 'publish') {
@@ -1234,8 +1309,13 @@ async function workInfra(id: string, note?: string, resumed?: Phase | null) {
         commits = listCommits();
         changedNow = true;
       }
+      // It stopped with its work uncommitted: its session is resumed to commit it (as for a product change).
+      if (needsNudge(ph, { dirty: Boolean(uncommitted(c.worktree)), newCommit: commits.length > 0 && changedNow, question: false })) {
+        nudge(id, ph, save);
+        return workInfra(id, note, ph, true);
+      }
       if (!commits.length || (note && !changedNow)) {
-        update(id, { status: 'failed', detail: 'the agent made no commit', summary, commits, phase: null });
+        update(id, { status: 'failed', detail: noCommitWhy(c.worktree, ph), summary, commits, phase: null });
         return;
       }
       // Guard rails, before anything leaves the server.
