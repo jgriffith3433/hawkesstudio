@@ -18,7 +18,7 @@ import { PROJECTS, getProduct, isInfra, StudioError, type Product } from './conf
 import { BETA, ensureBeta, git, gitAsync } from './beta.ts';
 import { spawnShell, assertWorktree, shareWorktree } from './sandbox.ts';
 import { recordRun } from './memory.ts';
-import { warmDeps } from './warm.ts';
+import { warmDeps, markInstalled } from './warm.ts';
 
 export const FAST_FILES = () => Number(process.env.STUDIO_FAST_FILES ?? 8);
 export const FAST_LINES = () => Number(process.env.STUDIO_FAST_LINES ?? 200);
@@ -100,6 +100,7 @@ async function deps(dir: string) {
   if (fs.existsSync(stamp) && fs.readFileSync(stamp, 'utf8') === hash) return null;
   const r = await run(dir, 'npm ci --no-audit --no-fund --prefer-offline', 15 * 60_000);
   if (r.ok) try { fs.writeFileSync(stamp, hash); } catch { /* the sandbox owns it */ }
+  if (r.ok) markInstalled(dir, hash);
   return r;
 }
 

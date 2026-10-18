@@ -2,7 +2,9 @@
 // is the same (the beta working copy, the server's checkout, a recent worktree) instead of a fresh npm ci, and the
 // stamps that ensureDeps (beta.ts), npmCi (agents.ts) and the fast lane read, so nothing installs again. A copy, never
 // hard links: an agent's install must not write through into another tree. npm itself uses one shared cache
-// (STUDIO_NPM_CACHE, set by deploy/agent-sandbox.mjs) for whatever still installs.
+// (STUDIO_NPM_CACHE, set by deploy/agent-sandbox.mjs) for whatever still installs. A donor counts only when a real
+// install stamped it for its lockfile (INSTALLED): a checkout whose package-lock moved on without an npm ci (Dose Of
+// Destruction's PR #12, 2026-10-18) has the new lockfile and old packages, and copying those broke every worktree.
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -10,7 +12,7 @@ import crypto from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { PROJECTS } from './config.ts';
 
-const lockHash = (dir: string) => {
+export const lockHash = (dir: string) => {
   try {
     return crypto.createHash('sha1').update(fs.readFileSync(path.join(dir, 'package-lock.json'))).digest('hex');
   } catch {
@@ -18,6 +20,22 @@ const lockHash = (dir: string) => {
   }
 };
 const STAMPS = ['.studio-lock', '.hawkes-lock'];
+/** Written into node_modules after a real install (npm ci) only, with the lockfile's hash; a copy carries it along. */
+export const INSTALLED = '.hawkes-installed';
+
+/** The lockfile hash `dir`'s node_modules was installed for (INSTALLED), or null. */
+export function installedFor(dir: string) {
+  try { return fs.readFileSync(path.join(dir, 'node_modules', INSTALLED), 'utf8').trim() || null; } catch { return null; }
+}
+
+/** After an npm ci in `dir`: every stamp (ensureDeps, npmCi, the fast lane, warm starts) says it matches `hash`. */
+export function markInstalled(dir: string, hash: string | null = lockHash(dir)) {
+  if (!hash) return;
+  for (const s of [...STAMPS, INSTALLED]) try { fs.writeFileSync(path.join(dir, 'node_modules', s), hash); } catch { /* the sandbox owns it */ }
+}
+
+/** The shell command that installs `dir`'s packages and stamps them (so it works as the sandbox user too). */
+export const stampedCi = (hash: string) => `npm ci --no-audit --no-fund && for s in ${[...STAMPS, INSTALLED].join(' ')}; do printf %s ${hash} > node_modules/$s; done`;
 
 /** The folders under `root` (at most 2 levels down, no node_modules) that have a package-lock.json, relative. */
 function lockDirs(root: string) {
@@ -66,7 +84,13 @@ export function shareCmds(dir: string, gid: number): [string, string[]][] {
   return [['chgrp', ['-R', '-f', String(gid), dir]], ['chmod', ['-R', '-f', 'g+rwX', dir]]];
 }
 
-/** Copies node_modules into every lockfile folder of `worktree` that lacks it, from a donor with the same lockfile. */
+/** The lockfile folders of `worktree` (relative, "" for its root) that have no node_modules yet. */
+export const coldDirs = (worktree: string) => lockDirs(worktree).filter((rel) => !fs.existsSync(path.join(worktree, rel, 'node_modules')));
+
+/**
+ * Copies node_modules into every lockfile folder of `worktree` that lacks it, from a donor whose installed packages
+ * (INSTALLED) are for the same lockfile. Folders with no such donor are left for an npm ci (coldDirs).
+ */
 export function warmDeps(worktree: string, repoTop: string, log: (s: string) => void = () => {}) {
   const warmed: string[] = [];
   const from = donors(repoTop, worktree);
@@ -74,10 +98,9 @@ export function warmDeps(worktree: string, repoTop: string, log: (s: string) => 
     const dest = path.join(worktree, rel);
     const hash = lockHash(dest);
     if (!hash || fs.existsSync(path.join(dest, 'node_modules'))) continue;
-    // A donor installed for this lockfile: same lockfile, node_modules there, and its stamp (if any) for the same lock.
-    const installedFor = (d: string) => STAMPS.map((s) => { try { return fs.readFileSync(path.join(d, 'node_modules', s), 'utf8'); } catch { return null; } }).filter(Boolean);
-    const donor = from.map((d) => path.join(d, rel)).find((d) => lockHash(d) === hash && fs.existsSync(path.join(d, 'node_modules')) && installedFor(d).every((s) => s === hash));
-    if (!donor) continue;
+    // A donor installed for this lockfile: same lockfile, and a real install's stamp for it (not just a copy's).
+    const donor = from.map((d) => path.join(d, rel)).find((d) => lockHash(d) === hash && installedFor(d) === hash);
+    if (!donor) { log(`warm start: no checkout has node_modules installed for ${rel || 'the'} package-lock.json; npm ci instead`); continue; }
     const t0 = Date.now();
     const ok = process.platform === 'win32'
       ? (() => { try { fs.cpSync(path.join(donor, 'node_modules'), path.join(dest, 'node_modules'), { recursive: true, verbatimSymlinks: true }); return true; } catch { return false; } })()
@@ -90,4 +113,20 @@ export function warmDeps(worktree: string, repoTop: string, log: (s: string) => 
     log(`warm start: node_modules${rel ? ` in ${rel}` : ''} copied from ${path.relative(PROJECTS, donor) || donor} (${Math.round((Date.now() - t0) / 1000)} s)`);
   }
   return warmed;
+}
+
+/**
+ * npm ci in every lockfile folder of `worktree` that still has no node_modules after warmDeps (no donor installed for
+ * its lockfile). `run` is the caller's shell (the sandbox user's for agent worktrees). A failed install is logged and
+ * left to the agent's own checks.
+ */
+export async function installCold(worktree: string, run: (dir: string, cmd: string) => Promise<{ ok: boolean; out: string; ms: number }>, log: (s: string) => void = () => {}) {
+  for (const rel of coldDirs(worktree)) {
+    const dir = path.join(worktree, rel);
+    const hash = lockHash(dir);
+    if (!hash) continue;
+    const r = await run(dir, stampedCi(hash));
+    const where = rel ? ` in ${rel}` : '';
+    log(r.ok ? `npm ci${where} (${Math.round(r.ms / 1000)} s)` : `npm ci${where} failed (${Math.round(r.ms / 1000)} s): ${r.out.trim().split('\n').slice(-5).join('\n')}`);
+  }
 }

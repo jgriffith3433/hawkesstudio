@@ -61,7 +61,7 @@ import { canonCheck, CONTENTISH, type CanonCheck } from './canon.ts';
 import { roleArgs, loadRole, type RoleName } from './roles.ts';
 import { claudeCommand, spawnShell, sandboxShare, assertWorktree, shareWorktree } from './sandbox.ts';
 import { launch, DetachedChild, detachedActivity, type DetachRec } from './detach.ts';
-import { warmDeps } from './warm.ts';
+import { warmDeps, installCold, markInstalled } from './warm.ts';
 import { ensureGpuFor, needsGpu } from './gpustart.ts';
 import { walkAwayOn, WALK_AWAY_BY } from './walkaway.ts';
 
@@ -1072,8 +1072,9 @@ async function work(id: string, note?: string, answer?: string, resumed?: Phase 
           const w = git(repoDir, ['worktree', 'add', ...(has ? [] : ['-b']), ...(has ? [c.worktree, c.branch] : [c.branch, c.worktree, `origin/${c.base}`])]);
           if (!w.ok) throw new Error(`worktree failed: ${w.err}`);
         });
-        // A warm start: node_modules from a checkout with the same lockfile (warm.ts), not a fresh npm ci.
+        // A warm start: node_modules from a checkout installed for the same lockfile (warm.ts), else a fresh npm ci.
         warmDeps(c.worktree, c.repo, (s) => addLog(id, s));
+        await installCold(c.worktree, (dir, cmd) => sh(dir, cmd, { ...infraEnv({ keepGenKey: false }), PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1' }), (s) => addLog(id, s));
       lfsPull(c.worktree, (s) => addLog(id, s));
       } else assertWorktree(c.worktree, repoDir);
       // The agent (sandbox user) commits here: its git folder must be the agent group's, on every pass (a worktree made
@@ -1490,6 +1491,7 @@ async function npmCi(id: string, dir: string) {
   const r = await sh(dir, 'npm ci --no-audit --no-fund', { ...infraEnv(), PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1' });
   if (!r.ok) throw new Error(`npm ci failed: ${tail(r.out, 5)}`);
   fs.writeFileSync(stamp, hash);
+  markInstalled(dir, hash === 'none' ? null : hash);
   addLog(id, `npm ci (${Math.round(r.ms / 1000)} s)`);
 }
 
