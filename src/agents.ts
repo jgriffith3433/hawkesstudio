@@ -332,7 +332,7 @@ const WORK = () => path.join(PROJECTS, '.work');
 
 // --------------------------------------------------------------- GitHub
 
-async function github(route: string, init: { method?: string; body?: unknown } = {}) {
+export async function github(route: string, init: { method?: string; body?: unknown } = {}) {
   const token = process.env.GITHUB_TOKEN;
   if (!token) throw new Error('No GitHub token on the server yet (node deploy/github-token.mjs, then restart hawkes-secrets and hawkes-studio).');
   // STUDIO_GITHUB_API: a stand-in for GitHub's API (tests).

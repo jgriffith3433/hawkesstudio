@@ -37,7 +37,8 @@ import {
 import { gate, allMet } from './acceptance.ts';
 import { notify, PUBLIC_URL } from './notify.ts';
 import { fileUrl } from './gen.ts';
-import { BETA, gitAsync } from './beta.ts';
+import { BETA, gitAsync, repoDirs, shaOf } from './beta.ts';
+import { buildErrors, pickCulprit } from './buildblame.ts';
 import { curationLine } from './memory.ts';
 
 // ---------------------------------------------------------------- settings
@@ -287,8 +288,9 @@ export function buildOf(product: string, r: { id: string; status: string; detail
 /**
  * Beta's build after each merge, on its task ("did it work", J 2026-10-18): the newest beta run of the product that
  * started after the task's change merged and finished (a superseded run is skipped: the newer one built it). OK: the
- * task is on beta (Unity: it compiled). Failed: the error is on the task, and the task merged last before that run goes
- * back to an agent with the build log (buildSendBack). No beta run at all after a merge: one is started.
+ * task is on beta (Unity: it compiled). Failed: the error is on the task, and ONE task goes back to an agent with the
+ * build's error lines (decideFailedBuild: the one whose change touched the files they name, else the one merged last;
+ * nothing while beta has moved since that build or a fix for it is underway). No beta run after a merge: one is started.
  */
 export async function followBuilds() {
   const { getChange } = await changes();
@@ -315,14 +317,96 @@ export async function followBuilds() {
       const r = startBeta(product, { focus: `Building beta after "${last.t.title}" merged.`, playtest: false });
       logDecision('beta-build', last.t.id, product, `no beta run built "${last.t.title}" after its merge: started ${r.id}`);
     }
-    // The newest finished run failed: the task merged last before it goes back to an agent (once per run).
+    // The newest finished run failed: ONE task goes back to an agent (once per run): the one whose change touched the
+    // files the build's errors name, else the one merged last.
     const newest = finished[0];
     if (!newest) continue;
     const hit = list.map((x) => ({ ...x, t: getTask(x.t.id)! })).filter((x) => x.t.status === 'merged' && x.t.build?.run === newest.id && !x.t.build?.ok);
-    if (!hit.length || listDecisions({ since: newest.started, action: 'build-failed' }).some((d) => d.subject === newest.id)) continue;
-    const culprit = hit.reduce((a, b) => (a.at >= b.at ? a : b)).t;
-    logDecision('build-failed', newest.id, product, `beta's build failed after "${culprit.title}" (${culprit.id}) merged: ${culprit.build!.detail}`.slice(0, 1500));
-    await buildSendBack(culprit);
+    if (!hit.length || deciding.has(newest.id) || listDecisions({ since: newest.started, action: 'build-failed', limit: 10_000 }).some((d) => d.subject === newest.id)) continue;
+    deciding.add(newest.id);
+    try {
+      await decideFailedBuild(product, newest, runs, hit);
+    } finally {
+      deciding.delete(newest.id);
+    }
+  }
+}
+
+/** Failed beta runs being decided now (decideFailedBuild awaits GitHub and Gen: a second pass mustn't decide it too). */
+const deciding = new Set<string>();
+
+/**
+ * A failed beta build, decided once (its 'build-failed' decision): wait when beta moved since the commit it built (the
+ * newer commit's build decides: a later merge may have fixed it), or when a send-back for beta's build is still being
+ * worked on; else send ONE task back, with the build's error lines.
+ */
+async function decideFailedBuild(product: string, run: { id: string; started: number; finished?: number | null }, runs: any[], hit: { t: Task; at: number }[]) {
+  const step = db.prepare(`SELECT job, data FROM steps WHERE run = ? AND product = ? AND kind = 'build' ORDER BY started DESC LIMIT 1`).get(run.id, product) as any;
+  const data = parse(step?.data ?? null) ?? {};
+  const built = typeof data.beta === 'string' ? data.beta : '';
+  const now = betaHead(product);
+  if (built && now && !now.startsWith(built) && !built.startsWith(now)) {
+    const newer = runs.find((x) => x.status === 'running' && x.started > run.started);
+    logDecision('build-failed', run.id, product, `beta's build of ${built.slice(0, 7)} failed, but beta has moved to ${now.slice(0, 7)} since: nothing sent back; ${newer ? `beta run ${newer.id} builds it` : 'building it'}, and that build decides`);
+    if (!newer && pmSettings().enabled) {
+      const { startBeta } = await import('./pipeline.ts');
+      const r = startBeta(product, { focus: `Building beta's newest commit after the build of ${built.slice(0, 7)} failed.`, playtest: false });
+      logDecision('beta-build', run.id, product, `beta moved since the failed build of ${built.slice(0, 7)}: started ${r.id} for ${now.slice(0, 7)}`);
+    }
+    return;
+  }
+  // A task already sent back for beta's build (a failed build before this one) is still being fixed: its merge builds
+  // beta again; a second agent on the same error is what this prevents.
+  const fixing = listDecisions({ since: Date.now() - 14 * 86400_000, action: 'build-sendback', limit: 10_000 })
+    .filter((d) => d.product === product).map((d) => (d.subject ? getTask(d.subject) : null)).find((x) => x && ['planned', 'working', 'needs answer', 'review'].includes(x.status));
+  if (fixing) {
+    logDecision('build-failed', run.id, product, `beta's build failed again while "${fixing.title}" (${fixing.id}) is still fixing it: nothing more sent back; its merge builds beta again`);
+    return;
+  }
+  const log = await buildLog(step, data);
+  const errors = buildErrors(log);
+  const { getChange, github } = await changes();
+  // What each task's merged changes touched (asked only when the errors name files).
+  const filesOf = async (t: Task) => {
+    const out: string[] = [];
+    for (const id of new Set([...(t.changes ?? []), ...(t.change ? [t.change] : [])])) {
+      const c = getChange(id);
+      if (!c?.pr || !c.slug) continue;
+      const files: any[] = await github(`/repos/${c.slug}/pulls/${c.pr}/files?per_page=100`).catch(() => []);
+      out.push(...(Array.isArray(files) ? files.map((f) => String(f.filename)) : []));
+    }
+    return out;
+  };
+  const candidates = await Promise.all(hit.map(async (x) => ({ ...x, files: errors.files.length ? await filesOf(x.t) : [] })));
+  const { culprit: pick, matched } = pickCulprit(candidates, errors.files);
+  const culprit = pick.t;
+  const why = matched.length ? `its change touched ${matched.join(', ')}, named in the build's errors` : hit.length > 1 ? 'merged last (the errors name no file another change touched)' : 'the only change merged since the last build';
+  logDecision('build-failed', run.id, product, `beta's build failed after "${culprit.title}" (${culprit.id}) merged (${why}): ${culprit.build!.detail}`.slice(0, 1500));
+  await buildSendBack(culprit, { errors: errors.lines, matched });
+}
+
+/** Beta's newest commit for a product (its source checkout's origin/beta), or null. */
+function betaHead(product: string) {
+  try {
+    const dir = repoDirs(getProduct(product)).source;
+    return fs.existsSync(dir) ? shaOf(dir, `origin/${BETA}`) : null;
+  } catch {
+    return null;
+  }
+}
+
+/** A failed build's Unity log: the whole log from its Hawkes Gen job when there is one, else what the step kept. */
+async function buildLog(step: any, data: any) {
+  const kept = [...(Array.isArray(data.errors) ? data.errors : []), String(data.logTail ?? ''), String(data.error ?? '')].join('\n');
+  if (!step?.job) return kept;
+  try {
+    const { gen } = await import('./gen.ts');
+    const job = await gen.job(step.job);
+    const out = (job?.outputs ?? []).find((x: any) => /unity log/i.test(String(x.title ?? '')) || x.mime === 'text/plain');
+    if (!out?.asset) return kept;
+    return `${Buffer.from(await gen.bytes(out.asset)).toString('utf8')}\n${kept}`;
+  } catch {
+    return kept;
   }
 }
 
@@ -330,7 +414,7 @@ export async function followBuilds() {
  * A task whose merge broke beta's build goes back to an agent with the build log: a new change from beta (the merged
  * work is in it). The first time for a task it isn't a try; later ones are, and past maxTries J decides.
  */
-async function buildSendBack(t: Task) {
+async function buildSendBack(t: Task, { errors = [], matched = [] }: { errors?: string[]; matched?: string[] } = {}) {
   const s = pmSettings();
   const free = !listDecisions({ since: 0, action: 'build-sendback', limit: 10_000 }).some((d) => d.subject === t.id);
   if (!s.enabled) return;
@@ -339,7 +423,8 @@ async function buildSendBack(t: Task) {
     askJ(`"${t.title}" (${name(t.product)}) is merged into beta but beta's build fails after it, and its agents couldn't fix that in ${t.tries} tries: ${t.build?.detail.slice(0, 600)}. Try again, revert it on beta, or drop it?`, { subject: t.id, product: t.product, options: ['try again', 'revert it', 'drop it'], from: `the default after ${s.maxTries} tries` });
     return;
   }
-  const note = `Beta's build failed after your change ${t.change ?? ''} merged into beta: ${t.build?.detail ?? ''}\n\nYour change is already on beta (this branch starts from it). Make beta build again (for Unity: fix the compile errors), keep what the task asks for, and run the checks.`;
+  const lines = errors.length ? `\n\nThe errors in the build's Unity log${matched.length ? ` (in files your change touched: ${matched.join(', ')})` : ''}:\n\n\`\`\`\n${errors.join('\n').slice(0, 4000)}\n\`\`\`` : '';
+  const note = `Beta's build failed after your change ${t.change ?? ''} merged into beta: ${t.build?.detail ?? ''}${lines}\n\nYour change is already on beta (this branch starts from it). Make beta build again (for Unity: fix the compile errors), keep what the task asks for, and run the checks.`;
   setTask(t.id, { status: 'planned' });
   try {
     await startTaskChange(getTask(t.id)!, note, `beta's build failed after its merge${free ? ' (the first time: not a try)' : ''}`, !free);
