@@ -26,6 +26,7 @@ import { notifyOnce } from './notify.ts';
 import { judgeCriteria } from './acceptance.ts';
 import { runGenJob, playtestExtras, playtestData, playtestRunMs, REVIEW_RUN_MS } from './playtests.ts';
 import { tagRun } from './followup.ts';
+import { betaTurn, newerBetaRun, supersede, absorbed } from './betaqueue.ts';
 
 export type RunOptions = {
   products?: string[];
@@ -339,7 +340,7 @@ async function prebuildBeta(run: string, p: Product) {
  * Builds a Unity product on the build server if its source changed (or force). On the beta lane the source checkout is
  * on beta and the build lands in the beta website copy (beta.ts), not the real website folder; the beta site follows.
  */
-export async function buildProduct(run: string, p: Product, { force = false } = {}): Promise<any> {
+export async function buildProduct(run: string, p: Product, { force = false, beta = false } = {}): Promise<any> {
   if (!p.build) throw new Error(`${p.name} isn't a Unity product`);
   // Resumed after a restart: a build that finished is what it was; one that was running is waited for again.
   const before = db.prepare(`SELECT * FROM steps WHERE run = ? AND product = ? AND kind = 'build' AND name = 'unity'`).get(run, p.id) as any;
@@ -347,7 +348,7 @@ export async function buildProduct(run: string, p: Product, { force = false } = 
     const s = startStep(run, p.id, 'build', 'unity');
     const was = resumedStep(s)!;
     if (was.status !== 'running') return was.status === 'done' ? { id: was.job, status: 'done', result: was.data } : was.status === 'skipped' ? null : { id: was.job, status: 'failed' };
-    if (was.job) return finishBuild(run, p, s, { fp: was.data?.fingerprint ?? treeFingerprint(p.build.project), head: was.data?.beta ?? '', base: was.data?.base ?? '', siteDir: was.data?.siteDir, placeholder: was.data?.placeholder, job: was.job });
+    if (was.job) return finishBuild(run, p, s, { fp: was.data?.fingerprint ?? treeFingerprint(p.build.project), head: was.data?.beta ?? '', base: was.data?.base ?? '', siteDir: was.data?.siteDir, placeholder: was.data?.placeholder, job: was.job, beta });
   }
   const fp = treeFingerprint(p.build.project);
   const last = lastStep(p.id, 'build', 'unity');
@@ -368,6 +369,9 @@ export async function buildProduct(run: string, p: Product, { force = false } = 
     return null;
   }
   const s = startStep(run, p.id, 'build', 'unity', 'queued on the build server');
+  // A beta run (betaqueue.ts): a newer beta run of the product arrived meanwhile, so it builds instead, from scratch.
+  const newer = beta ? newerBetaRun(run, p.id) : null;
+  if (newer) return { superseded: newer };
   let siteDir: string | undefined;
   let base = '';
   let pin: ReturnType<typeof pinBetaVersion> | undefined;
@@ -385,14 +389,20 @@ export async function buildProduct(run: string, p: Product, { force = false } = 
   }
   // What the build needs if Studio restarts while it runs (the beta website copy is not reset again then).
   updateStep(s, { data: { fingerprint: fp, beta: head, base, siteDir, pinned: pin?.version, placeholder: pin?.placeholder } });
-  return finishBuild(run, p, s, { fp, head, base, siteDir, env: pin?.env, placeholder: pin?.placeholder });
+  return finishBuild(run, p, s, { fp, head, base, siteDir, env: pin?.env, placeholder: pin?.placeholder, beta });
 }
 
 /** Builds (or waits again for the build job of) a Unity product, and records the result. */
-async function finishBuild(run: string, p: Product, s: string, { fp, head, base, siteDir, env, placeholder, job: prior }: { fp: string; head: string; base: string; siteDir?: string; env?: Record<string, string>; placeholder?: boolean; job?: string }) {
+async function finishBuild(run: string, p: Product, s: string, { fp, head, base, siteDir, env, placeholder, job: prior, beta = false }: { fp: string; head: string; base: string; siteDir?: string; env?: Record<string, string>; placeholder?: boolean; job?: string; beta?: boolean }) {
   const lane = betaLane();
   const job = await genRun('unity.build', p.id, { project: p.build!.project, site: p.build!.site, method: p.build!.method, ...(siteDir ? { siteDir } : {}), ...(env ? { env } : {}) }, (j) => updateStep(s, { job: j.id, detail: j.detail }), undefined,
     { job: prior, onSubmit: (id) => updateStep(s, { job: id }) });
+  // Cancelled while queued by a newer beta run (betaqueue.ts): not a failed build. The last good beta build stays the
+  // beta build (nothing saved), and the run ends superseded (betaBody).
+  if (beta && job.status === 'cancelled') {
+    const newer = newerBetaRun(run, p.id);
+    if (newer) return { ...job, superseded: newer };
+  }
   const r = job.result ?? {};
   // A Hawkes Gen without siteDir would have built into the real website folder: that isn't a beta build.
   const stale = Boolean(siteDir && job.status === 'done' && r.site && r.site.folder !== siteDir);
@@ -598,8 +608,12 @@ async function partialBody(id: string, kind: string, p: Product, opts: PartialOp
   }
 }
 
-/** playtest: play beta in this run (default: the betaPlaytests setting, off; asking for a beta run says true). */
-type BetaOptions = { focus?: string; origin?: string | null; criteria?: string[]; scenario?: string; options?: Record<string, unknown>; playtest?: boolean };
+/**
+ * playtest: play beta in this run (default: the betaPlaytests setting, off; asking for a beta run says true).
+ * quiet: ms a Unity beta run waits for more pushes before building (default STUDIO_BETA_QUIET_MS, 2 min; J's own Beta
+ * button: 0). A newer beta run of the product supersedes one still waiting (betaqueue.ts).
+ */
+type BetaOptions = { focus?: string; origin?: string | null; criteria?: string[]; scenario?: string; options?: Record<string, unknown>; playtest?: boolean; quiet?: number };
 
 /**
  * After beta moves (an approved change): the product's beta is brought up to date and played, as a small run in the
@@ -609,12 +623,12 @@ type BetaOptions = { focus?: string; origin?: string | null; criteria?: string[]
 export function startBeta(productId: string, o: BetaOptions = {}) {
   const p = getProduct(productId);
   const id = newId('r');
-  db.prepare('INSERT INTO runs (id, kind, status, detail, products, options, started) VALUES (?, ?, ?, ?, ?, ?, ?)').run(id, 'beta', 'running', `beta ${p.id}`, J([p.id]), J({ focus: o.focus, criteria: o.criteria, scenario: o.scenario, options: o.options }), Date.now());
+  db.prepare('INSERT INTO runs (id, kind, status, detail, products, options, started) VALUES (?, ?, ?, ?, ?, ?, ?)').run(id, 'beta', 'running', `beta ${p.id}`, J([p.id]), J({ focus: o.focus, criteria: o.criteria, scenario: o.scenario, options: o.options, playtest: o.playtest, quiet: o.quiet }), Date.now());
   tagRun(id, o.origin);
   return { id, done: betaBody(id, p, o) };
 }
 
-async function betaBody(id: string, p: Product, { focus, criteria, scenario, options, playtest }: BetaOptions) {
+async function betaBody(id: string, p: Product, { focus, criteria, scenario, options, playtest, quiet }: BetaOptions) {
   try {
     const lane = betaLane();
     const top = p.repo.split('/')[0];
@@ -624,8 +638,28 @@ async function betaBody(id: string, p: Product, { focus, criteria, scenario, opt
       updateStep(g, { status: r.action === 'failed' ? 'failed' : 'done', detail: `${r.detail}${r.head ? ` (${r.head})` : ''}`, data: r, finished: true });
     }
     if (p.deploy?.prebuild) await prebuildBeta(id, p);
-    if (p.build && lane) await buildProduct(id, p);
-    else void import('./previews.ts').then(({ buildPreview }) => buildPreview(p.id)).catch(() => {});
+    if (p.build && lane) {
+      // Unity: one build for a burst of pushes (betaqueue.ts). Waiting, a newer beta run of the product takes over.
+      const q = startStep(id, p.id, 'beta', 'queue', 'waiting for more pushes');
+      const was = resumedStep(q);
+      const head = () => shaOf(repoDirs(p).source, 'HEAD');
+      if (!was || was.status === 'running') {
+        const turn = await betaTurn(id, p.id, {
+          ...(quiet !== undefined ? { quiet } : {}),
+          onWait: (detail) => updateStep(q, { detail }),
+          onGo: () => updateStep(q, { status: 'done', detail: 'its turn at the build server', finished: true }),
+        });
+        if ('superseded' in turn) return void supersede(id, p.id, turn.superseded, head());
+      }
+      const built = await buildProduct(id, p, { beta: true });
+      if (built?.superseded) return void supersede(id, p.id, built.superseded, head());
+    } else void import('./previews.ts').then(({ buildPreview }) => buildPreview(p.id)).catch(() => {});
+    // What the beta runs this one superseded asked for comes along: a playtest, their tasks' criteria (pm.ts reads them).
+    for (const o of absorbed(id)) {
+      if (playtest === undefined && o.playtest !== undefined) playtest = o.playtest;
+      for (const k of o.criteria ?? []) if (!(criteria ??= []).includes(k)) criteria.push(k);
+      if (!scenario && o.scenario) ({ scenario, options } = o);
+    }
     // A merged roadmap task: the scenario its agent wrote for its criteria, and the criteria judged again.
     const t: Playtest | undefined = scenario ? { scenario, where: 'local', ...(options ? { options } : {}) } : p.playtests.find((x) => x.where === 'local' && x.device !== 'phone');
     // Beta is played only when asked (J, 2026-10-17): after a merge it is rebuilt, and that's it (Settings > Agents).

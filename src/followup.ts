@@ -103,6 +103,8 @@ export function runNotice(r: any) {
   const opts = parse(r.options) ?? {};
   const steps = (db.prepare('SELECT * FROM steps WHERE run = ? ORDER BY started').all(r.id) as any[]).map((s) => ({ ...s, data: parse(s.data) }));
   const what = r.kind === 'beta' ? 'Beta run' : r.kind === 'live' ? 'Go-live publish' : r.kind === 'playtest' ? (opts.where === 'live' ? 'Live playtest' : 'Playtest') : r.kind === 'build' ? 'Build' : `${r.kind} run`;
+  // A beta run a newer one took over (betaqueue.ts) ended fine: nothing failed, and the newer run's result follows.
+  if (r.status === 'skipped' && opts.supersededBy) return `${what} ${r.id} (${products.map(name).join(', ')}) was ${cut(r.detail, 200)}. Nothing failed: a newer beta run took over and builds beta's newest commit, which includes this one; its result follows.`;
   const lines = [`${what} ${r.id} (${products.map(name).join(', ')}) ${r.status === 'done' ? 'finished' : r.status}: ${cut(r.detail, 200)}${r.cost ? ` · $${Number(r.cost).toFixed(2)}` : ''}.`];
   if (opts.focus) lines.push(`Why it ran: ${cut(opts.focus, 300)}`);
   for (const s of steps) {

@@ -273,7 +273,7 @@ past the login. Studio answers:
 
 | Push to | Web product | Unity game |
 |---|---|---|
-| `beta` | pull, rebuild the beta site (`src/betawatch.ts`) | a minute later, a beta run: build on the build server into the beta website copy, beta site, playtest |
+| `beta` | pull, rebuild the beta site (`src/betawatch.ts`) | a beta run: after 2 quiet minutes (each push restarts them), build on the build server into the beta website copy, beta site |
 | `main` | GitHub Pages publishes (DoD and PH Origins build in `pages.yml`); Studio records the deploy, waits for Pages (API), playtests live (`src/golive.ts`) | Studio publishes the build to the website repo's main (the beta build if it's of that commit, else it builds it), records it, and playtests live |
 
 - The first time a repo's `pages.yml` reaches main, Studio switches its Pages source to GitHub Actions and runs it.

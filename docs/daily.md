@@ -441,6 +441,12 @@ words are the fallback.
   does the same by hand). The change itself is playtested only when J asks ("Playtest this change"). A pull request
   merged outside Studio (J merging on GitHub) is noticed within about 5 minutes (`syncMergedOutside`): the change is
   marked merged (no Approve card left) and beta's watcher plays beta as after any push.
+- **Unity beta builds collapse** (`src/betaqueue.ts`): a beta run of a Unity game waits 2 quiet minutes first
+  (`STUDIO_BETA_QUIET_MS`; each push restarts them; J's Beta button builds at once). A newer beta run of the same game
+  takes over from one still waiting, which ends "skipped: superseded by r_... (beta <sha>)", never failed (Talk and the
+  PM treat it as fine; its criteria and playtest carry over to the newer run). A build already running on the build
+  server always finishes; an older beta build still queued in Hawkes Gen behind another build is cancelled (only if Gen
+  says it never started). Daily runs, go-live builds and agent change builds are never collapsed.
 - **The beta site** is `https://<sub>.hawkesgen.com/` (Studio's login). Each agent change also has
   `https://<sub>.hawkesgen.com/c/<id>/` until it's approved or closed. Unity's beta site is the beta build from its own
   website copy (`.work/beta/<product>-site`).

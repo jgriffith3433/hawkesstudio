@@ -906,6 +906,8 @@ async function watch() {
   // Studio and Gen changes stay J's; questions on them still go through the PM (it may ask J).
   for (const r of db.prepare(`SELECT id, kind, status, detail, products, pm_seen FROM runs WHERE status != 'running' AND COALESCE(finished, started) > ? AND pm_seen IS NULL AND kind IN ('daily', 'beta', 'live')`).all(since) as any[]) {
     db.prepare(`UPDATE runs SET pm_seen = 'yes' WHERE id = ?`).run(r.id);
+    // A beta run a newer one took over (betaqueue.ts) is nothing to act on: the newer run reports.
+    if (r.kind === 'beta' && r.status === 'skipped') continue;
     const products = (parse(r.products) ?? []).map(name).join(', ');
     if (r.kind === 'daily') pmEvent('daily run', `The daily run ${r.id} finished (${r.status}): ${r.detail ?? ''}. Read studio_report { run: "${r.id}" } and triage the new findings.`, r.id);
     else pmEvent(r.kind === 'beta' ? 'beta run' : 'live check', `${r.kind === 'beta' ? 'Beta run' : 'Go live'} ${r.id} (${products}) ${r.status}: ${r.detail ?? ''}`, r.id);
