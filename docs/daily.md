@@ -322,6 +322,21 @@ per product) and answers it; later notices there say an agent took it, it's fixe
 dropped. The reports show in the Backlog (first, marked **J**), and under the milestone in Ready to test ("Your
 reports", `GET /api/bugreports?milestone=`).
 
+**Errors the beta sites catch by themselves.** The same widget also reports the page's uncaught errors without anyone
+pressing anything: window `error` events, unhandled promise rejections and `console.error` (the early hook queues them in
+`window.__hawkesErrs` until the widget takes them). It skips noise (browser-extension frames, ResizeObserver loop
+warnings, a cross-origin "Script error." with no stack, known benign warnings such as an interrupted `play()`), sends each
+error signature once per tab session and at most 5 a session, a moment after it happens, to `POST /dev/__studio/error`
+(same origin, behind the login, rate-limited to 20 per IP in 10 minutes). It carries what a report does (page, device,
+viewport, build, the last 25 console lines, `hawkesPlaytest.state()` and `report()`), with the game's canvas frame as
+the screenshot when there is one (never html2canvas: nothing the player would notice). The only sign is a tiny
+"Error reported" toast in the bottom-left corner. On the server (`fileAutoError` in `src/bugreport.ts`) it becomes a
+finding with **source auto** (scenario "auto-error", area "beta errors", severity bug, marked **auto** in the Backlog),
+keyed by its **signature**: the message and top stack frame with numbers, ids, bundle hashes, hosts and query strings
+stripped (`errorSignature`; `isNoise` has the last word on noise). The same error again (another load, another phone)
+only adds to the seen count and keeps the latest sample; one fixed by a merged change that comes back reopens. These
+aren't J's lane: no Talk notice, no milestone, the PM loop takes them like the reviews' bugs.
+
 **10. Guard rails.** The caps above (Max-plan usage), the **decision log** (Roadmap tab → "PM decision log",
 `studio_pm status`): every start, merge, revise, won't-fix, duplicate, link, answer, question for J, beta check and
 settings change, with **Undo** where possible (a merge is reverted on beta with a new commit; a start closes the change;

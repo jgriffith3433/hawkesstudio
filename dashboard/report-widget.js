@@ -6,6 +6,11 @@
 // The button is a small dot on the right edge (drag it up or down; "hide" shrinks it to a sliver). Tapping it takes the
 // screenshot first (the moment J saw it), then opens the panel: type, or hold the mic to talk (the browser's speech
 // recognition, where there is one), then send. Events inside it never reach the game.
+//
+// It also reports the page's uncaught errors by itself (window errors, unhandled rejections, console.error) to
+// POST /dev/__studio/error: noise skipped, once per signature and at most 5 per tab session, with the same context as a
+// report and the game's frame as the screenshot when there is one (never the whole page: nothing the player would
+// notice). The only sign of it is a tiny "Error reported" toast.
 (() => {
   if (window.__hawkesReport) return;
   try { if (window.top !== window) return; } catch { return; }
@@ -14,6 +19,7 @@
   let cfg = {};
   try { cfg = JSON.parse((me && me.getAttribute('data-hawkes')) || '{}'); } catch {}
   const ENDPOINT = '/dev/__studio/report';
+  const ERRORS = '/dev/__studio/error';
   const H2C = 'https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js';
   const store = {
     get(k, d) { try { const v = localStorage.getItem('hawkesReport.' + k); return v == null ? d : JSON.parse(v); } catch { return d; } },
@@ -21,13 +27,24 @@
   };
 
   // Console: the early hook (window.__hawkesLog, put at the top of <head>) catches what happens before this loads.
+  // Uncaught errors go to autoError (below); the hook queues them in window.__hawkesErrs until then.
   const log = (window.__hawkesLog = window.__hawkesLog || []);
+  const errs = (window.__hawkesErrs = window.__hawkesErrs || []);
   if (!window.__hawkesLogHooked) {
     window.__hawkesLogHooked = true;
-    const push = (level, args) => { try { log.push({ level, at: Date.now(), text: [...args].map((a) => (a instanceof Error ? a.stack || a.message : typeof a === 'string' ? a : JSON.stringify(a))).join(' ').slice(0, 400) }); if (log.length > 60) log.splice(0, log.length - 60); } catch {} };
-    for (const level of ['error', 'warn']) { const o = console[level]; console[level] = function (...a) { push(level, a); return o.apply(this, a); }; }
-    addEventListener('error', (e) => push('error', [e.message || 'error', e.filename ? `${e.filename}:${e.lineno}` : '']));
-    addEventListener('unhandledrejection', (e) => push('error', ['unhandled rejection:', e.reason]));
+    const str = (a, m) => { try { return a instanceof Error ? (m ? a.message : a.stack || a.message) : typeof a === 'string' ? a : JSON.stringify(a); } catch { return String(a); } };
+    const push = (level, args) => { try { log.push({ level, at: Date.now(), text: [...args].map((a) => str(a)).join(' ').slice(0, 400) }); if (log.length > 60) log.splice(0, log.length - 60); } catch {} };
+    const caught = (kind, message, stack, source) => { const x = { kind, message: String(message || '').slice(0, 1000), stack: String(stack || '').slice(0, 3000), source: String(source || ''), at: Date.now() }; if (window.__hawkesOnError) window.__hawkesOnError(x); else errs.push(x); };
+    for (const level of ['error', 'warn']) {
+      const o = console[level];
+      console[level] = function (...a) {
+        push(level, a);
+        if (level === 'error') try { caught('console', a.map((x) => str(x, true)).join(' '), (a.find((x) => x instanceof Error) || {}).stack); } catch {}
+        return o.apply(this, a);
+      };
+    }
+    addEventListener('error', (e) => { push('error', [e.message || 'error', e.filename ? `${e.filename}:${e.lineno}` : '']); caught('error', e.message || (e.error && e.error.message), (e.error && e.error.stack) || (e.filename ? `at ${e.filename}:${e.lineno}:${e.colno}` : ''), e.filename); });
+    addEventListener('unhandledrejection', (e) => { push('error', ['unhandled rejection:', e.reason]); caught('rejection', str(e.reason, true), e.reason && e.reason.stack); });
   }
 
   // ------------------------------------------------------------- the button
@@ -63,7 +80,11 @@
   .msg.ok { color: #7ee2a1; } .msg.err { color: #ff8b8b; }
   .foot { margin-top: 6px; display: flex; justify-content: space-between; font-size: 12px; color: #6b7382; }
   .foot a { color: #9aa3b2; cursor: pointer; text-decoration: underline; }
+  .toast { position: fixed; left: 8px; bottom: 8px; padding: 3px 8px; border-radius: 6px; background: #000a; color: #e9ecf1; font-size: 11px;
+    pointer-events: none; opacity: 0; transition: opacity .3s; }
+  .toast.on { opacity: .8; }
   </style>
+  <div class="toast" aria-hidden="true">Error reported</div>
   <button class="dot" title="Report a bug (Hawkes Studio, beta only)" aria-label="Report a bug">🐞</button>
   <div class="panel" role="dialog" aria-label="Report a bug">
     <div class="row top"><b>Report a bug</b><button class="x" aria-label="Close">×</button></div>
@@ -146,15 +167,14 @@
     const once = () => { let f = null; try { f = toJpeg(game, game.width, game.height); } catch {} if (f || ++n >= 6) ok(f); else requestAnimationFrame(once); };
     requestAnimationFrame(once);
   });
-  async function capture() {
-    // A canvas game: its biggest visible canvas.
+  // A canvas game: its biggest visible canvas (at least a quarter of the screen), else null.
+  const gameCanvas = () => {
     const canvases = [...document.querySelectorAll('canvas')].map((c) => ({ c, r: c.getBoundingClientRect() })).filter((x) => x.c.width && x.c.height && area(x.r) > 0).sort((a, b) => area(b.r) - area(a.r));
-    let frame = null;
-    let game = null;
-    if (canvases[0] && area(canvases[0].r) >= 0.25 * innerWidth * innerHeight) {
-      game = canvases[0].c;
-      frame = await readFrame(game);
-    }
+    return canvases[0] && area(canvases[0].r) >= 0.25 * innerWidth * innerHeight ? canvases[0].c : null;
+  };
+  async function capture() {
+    const game = gameCanvas();
+    const frame = game ? await readFrame(game) : null;
     // No frame: the page alone, with a plain box where the game is (never an all-black picture), and a note in the report.
     const note = game && !frame ? "game frame couldn't be captured (its canvas read as one flat color); the screenshot is the page around it" : null;
     // The page as J sees it (html2canvas, loaded only now), with the game's frame in place of its canvas (a WebGL
@@ -243,6 +263,19 @@
 
   // ------------------------------------------------------------------ send
   const json = (v, n) => { try { const s = JSON.stringify(v); return s && s.length > n ? s.slice(0, n) + '…' : s; } catch { return null; } };
+  // What the page knows, for a report or an error: where, the device, the build, the console, the game's state.
+  const context = () => {
+    const pt = window.hawkesPlaytest;
+    let state = null, report = null;
+    try { if (pt && typeof pt.state === 'function') state = json(pt.state(), 4000); } catch (err) { state = `state() threw: ${err.message || err}`; }
+    try { if (pt && typeof pt.report === 'function') report = json(pt.report(), 4000); } catch (err) { report = `report() threw: ${err.message || err}`; }
+    return {
+      url: location.href, title: document.title,
+      viewport: { w: innerWidth, h: innerHeight, dpr: devicePixelRatio },
+      device: { ua: navigator.userAgent, touch: matchMedia('(pointer: coarse)').matches, touchPoints: navigator.maxTouchPoints || 0, platform: (navigator.userAgentData && navigator.userAgentData.platform) || navigator.platform, lang: navigator.language },
+      console: log.slice(-25), state, report, build: cfg,
+    };
+  };
   send.onclick = async () => {
     stopMic();
     const text = ta.value.trim();
@@ -250,16 +283,7 @@
     send.disabled = true;
     msg.className = 'msg';
     msg.textContent = 'Sending…';
-    const pt = window.hawkesPlaytest;
-    let state = null, report = null;
-    try { if (pt && typeof pt.state === 'function') state = json(pt.state(), 4000); } catch (err) { state = `state() threw: ${err.message || err}`; }
-    try { if (pt && typeof pt.report === 'function') report = json(pt.report(), 4000); } catch (err) { report = `report() threw: ${err.message || err}`; }
-    const body = {
-      text, blocker: $('.block').checked, url: location.href, title: document.title, shot, shotNote,
-      viewport: { w: innerWidth, h: innerHeight, dpr: devicePixelRatio },
-      device: { ua: navigator.userAgent, touch: matchMedia('(pointer: coarse)').matches, touchPoints: navigator.maxTouchPoints || 0,platform: (navigator.userAgentData && navigator.userAgentData.platform) || navigator.platform, lang: navigator.language },
-      console: log.slice(-25), state, report, build: cfg,
-    };
+    const body = { text, blocker: $('.block').checked, shot, shotNote, ...context() };
     try {
       const r = await fetch(ENDPOINT, { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
       const out = await r.json().catch(() => ({}));
@@ -277,6 +301,61 @@
       msg.textContent = `Not sent: ${err.message || err}. Your text is still here; try again.`;
     } finally { send.disabled = false; }
   };
+
+  // --------------------------------------------------- errors, reported by themselves
+  // Same rules as the server's (bugreport.ts isNoise, errorSignature), which has the last word.
+  const NOISE = [/(chrome|moz|safari|safari-web|ms-browser)-extension:\/\/|webkit-masked-url:|extensions::/i];
+  const BENIGN = /ResizeObserver loop|The play\(\) request was interrupted|play\(\) failed because the user didn't interact|Non-Error promise rejection captured|\[Violation\]/i;
+  const AUTO_MAX = 5;
+  const sess = {
+    get() { try { return JSON.parse(sessionStorage.getItem('hawkesReport.auto') || 'null') || { n: 0, sigs: [] }; } catch { return mem; } },
+    set(v) { try { sessionStorage.setItem('hawkesReport.auto', JSON.stringify(v)); } catch {} mem = v; },
+  };
+  let mem = { n: 0, sigs: [] };
+  const sigOf = (x) => {
+    const top = (x.stack || '').split('\n').map((l) => l.trim()).find((l) => /^at\s|@/.test(l) && !/__studio\/report\.js/.test(l)) || '';
+    return `${x.message.split('\n')[0]} | ${top}`.replace(/\?[^\s:)]*/g, '').replace(/\d+/g, '#').slice(0, 400);
+  };
+  const queue = [];
+  let sending = false;
+  let toastT = 0;
+  const toast = () => { const t = $('.toast'); t.classList.add('on'); clearTimeout(toastT); toastT = setTimeout(() => t.classList.remove('on'), 2200); };
+  function autoError(x) {
+    try {
+      if (!x || !x.message) return;
+      const where = `${x.stack} ${x.source}`;
+      if (NOISE.some((r) => r.test(where) || r.test(x.message)) || BENIGN.test(x.message) || /__studio\/report\.js/.test((x.stack || '').split('\n').slice(0, 2).join(' '))) return;
+      if (/^(uncaught )?script error\.?$/i.test(x.message.trim()) && !/\bat |@/.test(x.stack || '')) return;
+      const st = sess.get();
+      const sig = sigOf(x);
+      if (st.n >= AUTO_MAX || st.sigs.includes(sig)) return;
+      sess.set({ n: st.n + 1, sigs: [...st.sigs, sig] });
+      queue.push(x);
+      setTimeout(flush, 1200); // a moment, so the console has what followed it
+    } catch {}
+  }
+  async function flush() {
+    if (sending) return;
+    sending = true;
+    try {
+      while (queue.length) {
+        const x = queue.shift();
+        // The game's frame only (read right after it draws): no html2canvas, nothing the player would notice.
+        const game = gameCanvas();
+        let frame = null;
+        // (a hidden tab draws no frames: then none)
+        try { frame = game ? await Promise.race([readFrame(game), new Promise((ok) => setTimeout(() => ok(null), 1500))]) : null; } catch {}
+        const body = { error: { kind: x.kind, message: x.message, stack: x.stack, source: x.source }, shot: frame, shotNote: game && !frame ? "game frame couldn't be captured" : null, ...context() };
+        try {
+          const r = await fetch(ERRORS, { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+          const out = await r.json().catch(() => ({}));
+          if (r.ok && !out.ignored) toast();
+        } catch {}
+      }
+    } finally { sending = false; }
+  }
+  window.__hawkesOnError = autoError;
+  for (const x of errs.splice(0)) autoError(x);
 
   const mount = () => { (document.body || document.documentElement).appendChild(host); place(); };
   if (document.body) mount(); else addEventListener('DOMContentLoaded', mount);

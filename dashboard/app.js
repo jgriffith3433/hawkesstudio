@@ -413,8 +413,9 @@ $('#reportBody').addEventListener('click', (e) => {
 const F_STATUS = { open: 'Not fixed yet', fixing: 'An agent is fixing it', fixed: 'Fixed', wontfix: "Set aside (won't fix)", idea: 'An idea: never fixed by itself', expired: 'An idea that expired (not seen for 14 days)' };
 const F_MOVE = { fixing: 'Mark fixing', fixed: 'Mark fixed', wontfix: "Won't fix", open: 'Back to the backlog', idea: 'Move to ideas' };
 function findingHtml(f) {
-  // J's reports from the beta sites: their screenshot is in Gen's library once imported, else Studio keeps it.
-  const own = f.source === 'J' && !(f.shots ?? []).length ? `<img loading="lazy" src="/api/bugreports/${f.id}/shot" data-full="/api/bugreports/${f.id}/shot" onerror="this.remove()">` : '';
+  // J's reports from the beta sites (and the errors they report by themselves, source auto): their screenshot is in
+  // Gen's library once imported, else Studio keeps it.
+  const own = (f.source === 'J' || f.source === 'auto') && !(f.shots ?? []).length ? `<img loading="lazy" src="/api/bugreports/${f.id}/shot" data-full="/api/bugreports/${f.id}/shot" onerror="this.remove()">` : '';
   const shots = own + (f.shots ?? []).slice(0, 4).map((a) => `<img loading="lazy" src="${file(a)}" data-full="${file(a)}">`).join('');
   // One clear action: an open bug goes to an agent, an idea back to the backlog; the rest are under Details.
   const main = !f.id ? '' : f.status === 'open' ? `<button class="small primary" data-agentfix="${f.id}" data-product="${esc(f.product)}" title="An agent fixes it on its own branch; it merges into beta when its checks pass">Fix with agent</button>`
@@ -422,9 +423,9 @@ function findingHtml(f) {
   const moves = f.id ? ['fixing', 'fixed', 'wontfix', 'open', 'idea'].filter((s) => s !== f.status && !(s === 'fixing' && f.status === 'idea') && !(s === 'open' && ['idea', 'expired'].includes(f.status))) : [];
   const where = [f.product, f.scenario, f.area].filter(Boolean).map(esc).join(' · ');
   return `<div class="finding${f.source === 'J' ? ' from-j' : ''}"${f.id ? ` data-fid="${esc(f.id)}"` : ''}><div>
-      <h4><span class="pill ${f.severity}">${esc(f.severity)}</span>${f.source === 'J' ? '<span class="pill j" title="J reported it from the beta site: top priority">J</span>' : ''}${esc(f.title)}</h4>
+      <h4><span class="pill ${f.severity}">${esc(f.severity)}</span>${f.source === 'J' ? '<span class="pill j" title="J reported it from the beta site: top priority">J</span>' : f.source === 'auto' ? '<span class="pill auto" title="The beta site caught this error by itself">auto</span>' : ''}${esc(f.title)}</h4>
       ${f.status ? `<div class="status-line">${esc(F_STATUS[f.status] ?? f.status)}${f.seen > 1 ? ` · seen ${f.seen} times` : ''}${where ? ` · ${where}` : ''}</div>` : f.area ? `<div class="meta">${esc(f.area)}</div>` : ''}
-      <div class="meta"${f.source === 'J' ? ' style="white-space:pre-line"' : ''}>${esc(f.detail ?? '')}</div>
+      <div class="meta"${f.source === 'J' || f.source === 'auto' ? ' style="white-space:pre-line"' : ''}>${esc(f.detail ?? '')}</div>
       ${f.id ? '' : `<div class="fix"><b>Fix:</b> ${esc(f.fix ?? '')}</div>`}
       ${f.id ? `<details class="more-details"><summary class="meta">Details</summary>
         <div class="fix"><b>Suggested fix:</b> ${esc(f.fix ?? '')}</div>${f.note ? `<div class="meta">Note: ${esc(f.note)}</div>` : ''}
