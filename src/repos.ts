@@ -9,6 +9,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { PROJECTS, paths } from './config.ts';
 import { trackCommand } from './ops.ts';
 import { lockHash, installedFor, ensureInstalled, runShell } from './warm.ts';
+import { REF_LOCK, fetchLocked } from './gitlock.ts';
 
 export const BRANCH = process.env.STUDIO_BRANCH || 'main';
 /** The branch between agent changes and the live site (beta.ts). On the server, product source repos are kept on it. */
@@ -94,8 +95,11 @@ async function syncGit(folder: string, slug: string, branch: string, want?: stri
     if (pick) await gitA(dir, ['checkout', '--quiet', pick]);
     return { folder, slug, action: 'cloned', detail: `cloned (${pick ?? 'default branch'})`, head: git(dir, ['log', '-1', '--format=%h %s']).out };
   }
-  const f = await gitA(dir, ['fetch', '--quiet', '--prune', 'origin']);
-  if (!f.ok) return { folder, slug, action: 'failed', detail: `fetch failed: ${f.err.split('\n').pop()}` };
+  // Under the repo's lock with agents' and betawatch's fetches (gitlock.ts). A ref lock that outlasts the retries means
+  // another git just updated those refs: carry on with them rather than fail the run over a race.
+  const f = await fetchLocked(dir, ['fetch', '--quiet', '--prune', 'origin'], (a) => gitA(dir, a), (l) => console.log(`[repos] ${l}`));
+  if (!f.ok && !REF_LOCK.test(f.err)) return { folder, slug, action: 'failed', detail: `fetch failed: ${f.err.split('\n').pop()}` };
+  const raced = f.ok ? '' : `fetch kept hitting a ref lock (another fetch of this repo), used the refs it left; `;
   let cur = git(dir, ['rev-parse', '--abbrev-ref', 'HEAD']).out;
   const dirty = git(dir, ['status', '--porcelain']).out;
   let cleaned = '';
@@ -135,6 +139,7 @@ async function syncGit(folder: string, slug: string, branch: string, want?: stri
   }
   const done = (r: RepoResult): RepoResult => {
     if (setAside) tellSetAside(dir, folder, want!, setAside, r);
+    if (raced) r = { ...r, detail: raced + r.detail };
     return cleaned ? { ...r, detail: cleaned + r.detail, ...(discarded ? { discarded } : {}), ...(setAside ? { setAside } : {}) } : r;
   };
   let switched = '';

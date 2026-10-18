@@ -20,6 +20,7 @@ import { PROJECTS, DATA, paths, getProduct, loadProducts, StudioError, type Prod
 import { db } from './db.ts';
 import { BRANCH, BETA, isServer, type RepoResult } from './repos.ts';
 import { betaBuild, betaSiteFolder } from './beta.ts';
+import { fetchLocked } from './gitlock.ts';
 import { injectReport, type PageInfo } from './bugreport.ts';
 import { sandboxOn, sandboxSpawn } from './sandbox.ts';
 
@@ -107,7 +108,8 @@ function exec(cmd: string, args: string[], cwd: string, { shell = false, timeout
     child.on('close', (code) => resolve({ ok: code === 0, out: out.trim(), err: err.trim() }));
   });
 }
-const git = (cwd: string, args: string[]) => exec('git', args, cwd);
+// Fetches take turns with Studio's others on the same repo (gitlock.ts).
+const git = (cwd: string, args: string[]) => args[0] === 'fetch' ? fetchLocked(cwd, args, (a) => exec('git', a, cwd)) : exec('git', args, cwd);
 const tail = (s: string) => s.split('\n').filter(Boolean).slice(-3).join(' | ').slice(0, 400);
 
 /** One build at a time per product. */

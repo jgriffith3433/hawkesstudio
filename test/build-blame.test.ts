@@ -155,3 +155,14 @@ test('beta moved since the failed build: nothing goes back; the newer commit dec
   await pm.followBuilds();
   assert.equal(sendbacks(a), 0);
 });
+
+test("a fetch race in the beta run's repo step isn't a failed build (nothing goes back for it)", () => {
+  const run = 'r_fetchrace';
+  db.prepare("INSERT INTO runs (id, kind, status, detail, products, options, started, finished) VALUES (?, 'beta', 'failed', 'beta bbfile', '[]', '{}', ?, ?)").run(run, Date.now(), Date.now());
+  const step = (id: string, kind: string, status: string, detail: string) => db.prepare('INSERT INTO steps (id, run, product, kind, name, status, detail, started, finished) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)').run(id, run, 'bbfile', kind, kind, status, detail, Date.now(), Date.now());
+  step('s_fr1', 'repo', 'failed', "fetch failed: error: cannot lock ref 'refs/remotes/origin/beta': is at 1111 but expected 2222");
+  step('s_fr2', 'build', 'done', 'v153');
+  assert.equal(pm.buildOf('bbfile', { id: run, status: 'failed' }).ok, true);
+  step('s_fr3', 'repo', 'failed', 'fetch failed: fatal: could not read from remote repository');
+  assert.equal(pm.buildOf('bbfile', { id: run, status: 'failed' }).ok, false);
+});

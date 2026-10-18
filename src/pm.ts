@@ -39,6 +39,7 @@ import { gate, allMet } from './acceptance.ts';
 import { notify, PUBLIC_URL } from './notify.ts';
 import { fileUrl } from './gen.ts';
 import { BETA, gitAsync, repoDirs, shaOf } from './beta.ts';
+import { REF_LOCK } from './gitlock.ts';
 import { buildErrors, pickCulprit } from './buildblame.ts';
 import { curationLine } from './memory.ts';
 import { filesIn, type WorkShape } from './parallel.ts';
@@ -300,7 +301,9 @@ async function checkOnBeta(t: Task) {
 
 /** A beta run's result as a task's build: OK unless a step before the playtest failed (the repo, pre-deploy build, Unity build). */
 export function buildOf(product: string, r: { id: string; status: string; detail?: string | null; finished?: number | null }): TaskBuild {
-  const failed = db.prepare(`SELECT kind, name, detail FROM steps WHERE run = ? AND product = ? AND status = 'failed' AND kind NOT IN ('playtest', 'review')`).all(r.id, product) as any[];
+  const failed = (db.prepare(`SELECT kind, name, detail FROM steps WHERE run = ? AND product = ? AND status = 'failed' AND kind NOT IN ('playtest', 'review')`).all(r.id, product) as any[])
+    // A fetch race in Studio's own repo step (two fetches of one repo) says nothing about the build: never a failure.
+    .filter((x) => !(x.kind === 'repo' && REF_LOCK.test(String(x.detail ?? ''))));
   let unity = false;
   try { unity = Boolean(getProduct(product).build); } catch { /* gone from products.json */ }
   // Failed only in its playtest (a milestone's check): built. Failed with no failed step (the run itself threw): not.
