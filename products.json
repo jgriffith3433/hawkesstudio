@@ -130,6 +130,7 @@
         "project": "sickofitgame-unity",
         "site": "sickofitgamewebsite",
         "method": "SickOfIt.Tools.Editor.GameDeployWindow.FullDeployBatch",
+        "versionEnv": "BUILD_VERSION",
         "tests": [
           "EditMode"
         ]
@@ -190,6 +191,7 @@
         "project": "YoobaLand/YoobaLand",
         "site": "YoobaLandGame",
         "method": "YoobaWebBuild.FullDeploy",
+        "versionEnv": "BUILD_VERSION",
         "tests": [
           "EditMode"
         ]
