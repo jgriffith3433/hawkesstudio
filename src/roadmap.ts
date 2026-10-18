@@ -12,6 +12,8 @@
 //                 -> merged (into beta; beta's build of it is recorded on the task: build) -> verified (its criteria pass
 //                 on beta: the milestone's playtest, or a beta playtest J asked for) -> live
 //                 | failed (3 tries, then J is asked) | dropped
+//                 | waiting for GPU (its change merged stand-ins because no GPU server ran: not done; pm.ts runs it again,
+//                   not as a try, when a server is up, until the real art lands)
 //
 // Also here, because every part of the loop uses them: comment threads (on findings, items, tasks and changes; J, Talk
 // and agents write them, agents read them), questions (an agent's question pausing its change, or a decision only J
@@ -64,7 +66,9 @@ try { db.exec(`ALTER TABLE items ADD COLUMN priority TEXT NOT NULL DEFAULT 'norm
 try { db.exec('ALTER TABLE tasks ADD COLUMN priority TEXT'); } catch { /* already there */ }
 
 export const ITEM_STATUSES = ['idea', 'planned', 'in progress', 'on beta', 'live', 'done', 'dropped'];
-export const TASK_STATUSES = ['idea', 'planned', 'working', 'needs answer', 'review', 'merged', 'verified', 'live', 'failed', 'dropped'];
+export const TASK_STATUSES = ['idea', 'planned', 'working', 'needs answer', 'review', 'merged', 'waiting for GPU', 'verified', 'live', 'failed', 'dropped'];
+/** A task whose change merged stand-in art or fallback code because no GPU server ran (J, 2026-10-18): not done. */
+export const GPU_WAIT = 'waiting for GPU';
 export const SIZES = ['S', 'M', 'L'];
 export const PRIORITIES = ['high', 'normal', 'low'];
 const RANK: Record<string, number> = { high: 0, normal: 1, low: 2 };
@@ -193,12 +197,13 @@ export function taskWaits(t: Task, asked: Set<string> = askedJ()): string | null
   if (t.status === 'needs answer') return "an answer to its agent's question";
   if (t.status === 'review') return 'its merge into beta';
   if (t.status === 'failed') return 'you: it failed after its tries';
+  if (t.status === GPU_WAIT) return 'a GPU server: stand-ins are on beta; Studio runs it again for the real art when one is up';
   if (t.status === 'merged' && !landed(t)) return t.build && !t.build.ok ? `a fix: beta's build failed (${t.build.detail.slice(0, 160)})` : "beta's build";
   return null;
 }
 
 export type Progress = {
-  /** planned | working | waiting for GPU jobs | waiting for your GPU budget | needs you | on beta | verified | live (or the item's own: idea, done by hand, dropped). */
+  /** planned | working | waiting for GPU jobs | waiting for your GPU budget | waiting for GPU | needs you | on beta | verified | live (or the item's own: idea, done by hand, dropped). */
   state: string;
   /** What J reads: the state, with "working (n of m merged)". */
   label: string;
@@ -224,6 +229,8 @@ export function itemProgress(it: Item, asked: Set<string> = askedJ()): Progress 
   else if (!tasks.length) state = it.status === 'done' ? 'planned' : it.status;
   else if (tasks.some((t) => t.status === 'failed' || asked.has(t.id) || (t.change && asked.has(t.change)))) state = 'needs you';
   else if (tasks.some((t) => t.status === 'planned' && t.gpu?.items?.length && !gpuCleared(t))) state = 'waiting for your GPU budget';
+  // Stand-ins merged for its GPU art: not on beta for real (and not merged in the count) until the art lands.
+  else if (tasks.some((t) => t.status === GPU_WAIT)) state = GPU_WAIT;
   else if (every((t) => t.status === 'live')) state = 'live';
   else if (every((t) => ['verified', 'live'].includes(t.status))) state = 'verified';
   else if (every(landed)) state = 'on beta';
@@ -292,9 +299,55 @@ export function addTask(a: { item: string; title?: string; request: string; crit
   db.prepare('INSERT INTO tasks (id, item, product, title, request, criteria, depends, status, priority, ord, created) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
     .run(id, item.id, item.product, (a.title ?? a.request.split('\n')[0]).trim().slice(0, 160), a.request.trim(), J(list(a.criteria)), J(depends), status, priority, a.ord ?? nextOrd('tasks', 'item', item.id), Date.now());
   const gpu = gpuItems(a.gpu);
-  if (gpu) db.prepare('UPDATE tasks SET gpu = ? WHERE id = ?').run(J({ items: gpu }), id);
+  // A follow-up of GPU work added without its own items (the PM's, 2026-10-18: four were added with none, so no budget,
+  // no server, and three agents in a row made nothing) keeps the items of the work it follows up.
+  const from = gpu ? null : inheritedGpu({ product: item.product, request: a.request, depends });
+  if (gpu || from) db.prepare('UPDATE tasks SET gpu = ? WHERE id = ?').run(J({ items: gpu ?? from!.items }), id);
+  if (from) logDecision('gpu inherit', id, item.product, `"${(a.title ?? a.request.split('\n')[0]).trim().slice(0, 160)}" was added without GPU items: it keeps ${from.from}'s (${from.items.length}), priced again for its budget`);
   syncItem(item.id);
   return getTask(id)!;
+}
+
+/**
+ * The GPU items a task added without its own should have: those of the first GPU task it follows up, found from what
+ * it depends on and the tasks (k_...) and changes (c_...) its request names, following a chain of follow-ups (each
+ * added before this fix without items) back to the task that had them. Same product only. null: none found.
+ */
+export function inheritedGpu(a: { product: string; request: string; depends?: string[] }): { items: any[]; from: string } | null {
+  const refs = (text: string, deps: string[] = []) => {
+    const out = [...deps, ...(text.match(/\bk_[0-9a-f]{12}\b/g) ?? [])].map((k) => getTask(k));
+    for (const c of text.match(/\bc_[0-9a-f]{12}\b/g) ?? []) out.push(taskOfChange(c));
+    return out.filter((t): t is Task => Boolean(t) && t!.product === a.product);
+  };
+  const queue = refs(a.request, a.depends ?? []);
+  const seen = new Set<string>();
+  while (queue.length && seen.size < 12) {
+    const t = queue.shift()!;
+    if (seen.has(t.id)) continue;
+    seen.add(t.id);
+    if (t.gpu?.items?.length) return { items: t.gpu.items, from: t.id };
+    queue.push(...refs(t.request, t.depends));
+  }
+  return null;
+}
+
+/**
+ * Planned tasks without GPU items that follow up GPU work (inheritedGpu): given its items and priced (estimateTask: the
+ * under-$5 auto approval may then budget them). For the follow-ups added before addTask did this; once after a restart.
+ */
+export async function backfillGpu() {
+  const out: string[] = [];
+  // All given their items first (with nothing awaited: none can start unpriced meanwhile), then priced.
+  for (const r of db.prepare(`SELECT t.id FROM tasks t JOIN items i ON i.id = t.item WHERE t.status = 'planned' AND t.gpu IS NULL AND ${WORKED}`).all() as any[]) {
+    const t = getTask(r.id)!;
+    const from = inheritedGpu(t);
+    if (!from) continue;
+    db.prepare('UPDATE tasks SET gpu = ?, updated = ? WHERE id = ?').run(J({ items: from.items }), Date.now(), t.id);
+    logDecision('gpu inherit', t.id, t.product, `"${t.title}" had no GPU items: it keeps ${from.from}'s (${from.items.length}), priced again for its budget`);
+    out.push(t.id);
+  }
+  for (const id of out) await estimateTask(id).catch((e: any) => console.warn(`[roadmap] pricing ${id} failed: ${e.message}`));
+  return out;
 }
 
 /** Fields Talk and J may set. Status changes the loop makes (working, review, merged, ...) go through setTask. */

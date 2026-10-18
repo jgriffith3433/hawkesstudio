@@ -1,6 +1,6 @@
 // Roadmap (items, tasks, their checks and threads, questions, the PM loop and its decision log) and "Ready to test".
 // Uses app.js's helpers ($, esc, api, ago, file, view).
-const RM_PILL = { idea: '', planned: '', 'in progress': 'warn', 'on beta': 'ship', live: 'ship', done: 'ship', dropped: '', working: 'warn', 'needs answer': 'broken', review: 'warn', merged: 'warn', verified: 'ship', failed: 'failed', 'needs you': 'broken', 'waiting for your GPU budget': 'broken', 'waiting for GPU jobs': 'warn' };
+const RM_PILL = { idea: '', planned: '', 'in progress': 'warn', 'on beta': 'ship', live: 'ship', done: 'ship', dropped: '', working: 'warn', 'needs answer': 'broken', review: 'warn', merged: 'warn', verified: 'ship', failed: 'failed', 'needs you': 'broken', 'waiting for your GPU budget': 'broken', 'waiting for GPU': 'warn', 'waiting for GPU jobs': 'warn' };
 // What J sees for an item: its progress from its tasks (roadmap.ts itemProgress), never the stored "done" of a consumed item.
 const itemState = (it) => it.progress?.state ?? it.status;
 const itemLabel = (it) => it.progress?.label ?? it.status;
