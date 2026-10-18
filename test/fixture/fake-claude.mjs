@@ -4,7 +4,13 @@
 // FAKE_CLAUDE_LOG: a file each start (its arguments) and each message is appended to, one JSON line each.
 // FAKE_CLAUDE_SLOW_MS: how long each part of a "slow" answer takes (default 150).
 // As an agent (--permission-mode, in a change's worktree): works for FAKE_AGENT_MS (default 200), then commits a file,
-// writes .hawkes/summary.md and ends with a result, like an agent that fixed something.
+// writes .hawkes/summary.md and ends with a result, like an agent that fixed something. A word in its brief (the
+// request) makes it misbehave (agents.ts resumes a session that left its work uncommitted):
+// - FAKE_STOP: the first pass writes work.txt and ends with no result and no commit (a session cut off); a resumed
+//   pass (--resume) commits it.
+// - FAKE_HANG: the first pass writes work.txt, then waits until Studio's time limit stops it; a resumed pass commits.
+// - FAKE_NEVER: every pass writes work.txt and ends with no result and no commit.
+// - FAKE_NOTHING: changes nothing, writes a summary and ends with a result.
 import fs from 'node:fs';
 import path from 'node:path';
 import readline from 'node:readline';
@@ -38,13 +44,30 @@ async function answer(text) {
 }
 
 async function agent() {
-  log({ agent: process.cwd() });
+  const resumed = args.includes('--resume');
+  log({ agent: process.cwd(), resumed, prompt: args[args.indexOf('-p') + 1] });
   out({ type: 'system', subtype: 'init', session_id: 'fake-agent-session', apiKeySource: 'none' });
   out({ type: 'assistant', message: { content: [{ type: 'text', text: 'Looking at the brief.' }] } });
+  let brief = '';
+  try { brief = fs.readFileSync(path.join('.hawkes', 'brief.md'), 'utf8'); } catch { /* none */ }
+  const mode = /FAKE_(STOP|HANG|NEVER|NOTHING)/.exec(brief)?.[1];
+  if (mode === 'NOTHING') {
+    fs.mkdirSync('.hawkes', { recursive: true });
+    fs.writeFileSync(path.join('.hawkes', 'summary.md'), 'I looked and it already works; I changed nothing.');
+    out({ type: 'result', subtype: 'success', result: 'It already works.', session_id: 'fake-agent-session', total_cost_usd: 0.05, duration_ms: 5 });
+    return log({ agentDone: process.cwd() });
+  }
+  if (mode === 'NEVER' || (!resumed && (mode === 'STOP' || mode === 'HANG'))) {
+    fs.appendFileSync('work.txt', `half done at ${new Date().toISOString()}\n`);
+    out({ type: 'assistant', message: { content: [{ type: 'text', text: 'Waiting on the batch.' }] } });
+    if (mode === 'HANG') await sleep(10 * 60_000);
+    log({ agentCut: process.cwd() });
+    process.exit(1);
+  }
   await sleep(Number(process.env.FAKE_AGENT_MS ?? 200));
   fs.writeFileSync('fixed.txt', `fixed at ${new Date().toISOString()}\n`);
   const git = (...a) => spawnSync('git', ['-c', 'user.name=Agent', '-c', 'user.email=agent@example.com', ...a], { encoding: 'utf8' });
-  git('add', 'fixed.txt');
+  git('add', '-A');
   git('commit', '--quiet', '-m', 'Fix: the start button');
   fs.mkdirSync('.hawkes', { recursive: true });
   fs.writeFileSync(path.join('.hawkes', 'summary.md'), 'Made the start button bigger.');

@@ -86,7 +86,13 @@ export function startDetached(name: string, spec: DetachSpec, mode: DetachMode):
 
 /** Whether a detached process is still running. */
 export function detachedAlive(rec: DetachRec) {
-  if (rec.mode === 'systemd') return ['active', 'activating', 'deactivating', 'reloading'].includes(systemctl('is-active', `${rec.unit}.service`).stdout.trim());
+  if (rec.mode === 'systemd') {
+    const r = systemctl('is-active', `${rec.unit}.service`);
+    // No answer (systemctl timed out on a busy server, or couldn't run): it can't be called gone, so it's alive. Calling
+    // it gone would start the agent's pass again beside the one still running.
+    if (r.error || r.status === null) return true;
+    return ['active', 'activating', 'deactivating', 'reloading'].includes(r.stdout.trim());
+  }
   if (!rec.pid) return false;
   try {
     process.kill(rec.pid, 0);
@@ -150,6 +156,7 @@ export class DetachedChild extends EventEmitter implements ChildLike {
   private errOffset: number;
   private closed = false;
   private checked = 0;
+  private misses = 0;
   private timer: NodeJS.Timeout;
 
   rec: DetachRec;
@@ -200,8 +207,13 @@ export class DetachedChild extends EventEmitter implements ChildLike {
     if (exit) return this.finish(exit.error ? 1 : exit.code ?? 1);
     if (Date.now() - this.checked < 3000) return;
     this.checked = Date.now();
-    if (detachedAlive(this.rec) || detachedExit(this.rec)) return;
-    // Gone without an exit: the runner was killed (a reboot). What it wrote is all there is.
+    if (detachedAlive(this.rec) || detachedExit(this.rec)) {
+      this.misses = 0;
+      return;
+    }
+    // Gone without an exit, seen twice 3 s apart (once can be a unit between states): the runner was killed (a
+    // reboot). What it wrote is all there is.
+    if (++this.misses < 2) return;
     this.lines(true);
     this.lost = true;
     this.finish(null);

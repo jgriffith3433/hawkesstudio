@@ -95,6 +95,11 @@ Hawkes Gen and Hawkes Studio are private GitHub repos (`jgriffith3433/hawkesgen`
    - **Agent changes** record their step (`changes.phase`: prepare, agent, publish, finish; verify with its Gen jobs
      for a playtest J asked for) and carry on from it, waiting on the same Gen jobs (a build isn't built twice). A playtest that was
      playing a page Studio served is played again (its page server stopped with Studio).
+   - **A pass's time limit** counts from its unit's start, so a restart doesn't reset it: an hour, three for content
+     and GPU work (`agentLimitMs`). A unit is only taken as gone when `systemctl` says so twice; no answer (a busy
+     server) counts as running. An agent that stops (that limit, its turn limit, a cut session) with its work
+     uncommitted has its session resumed to commit it and finish, at most twice (`needsNudge`); only then, or when it
+     changed nothing, does the change fail with "the agent made no commit".
    - **Runs** carry on: finished steps stay, a running step waits for its Gen job again (no second build, playtest or
      review; no findings filed twice), the rest proceed. Asset runs and go lives too.
    - **Critical sections** (`src/drain.ts`): the short steps that must not be cut halfway. `GET /api/self-deploys` lists
