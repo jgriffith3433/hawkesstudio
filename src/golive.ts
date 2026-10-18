@@ -15,7 +15,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { loadProducts, PROJECTS, type Product } from './config.ts';
 import { db, newId, J } from './db.ts';
-import { MAIN, AUTHOR, must, repoDirs, fetchOrigin, shaOf, betaBuild, betaSiteDir, scratch, WORK, git as gitIn, gitAsync } from './beta.ts';
+import { MAIN, AUTHOR, must, repoDirs, fetchOrigin, shaOf, betaBuild, betaSiteDir, scratch, WORK, commitsIn, git as gitIn, gitAsync } from './beta.ts';
+import { addReleaseTo, releaseLine, STUDIO_RELEASE } from './release.ts';
 import { genRun } from './gen.ts';
 import { startStep, updateStep, resumedStep } from './pipeline.ts';
 import { critical } from './drain.ts';
@@ -83,6 +84,16 @@ export async function publishUnity(p: Product, sha: string, { by = 'a push to ma
       version = r.version ?? null;
       what = `a build of ${sha.slice(0, 7)}${version ? ` (Game/v${version})` : ''}`;
     }
+    // The release entry in the website's releases.json, inside the build commit (never stops going live).
+    let release: Awaited<ReturnType<typeof addReleaseTo>> | null = null;
+    try {
+      const last = db.prepare(`SELECT source_after FROM deploys WHERE product = ? AND kind = 'deploy' AND source_after IS NOT NULL AND rolled_back IS NULL ORDER BY at DESC LIMIT 1`).get(p.id) as { source_after: string } | undefined;
+      const fallbackCommits = (last ? commitsIn(source, `${last.source_after}..${sha}`) : commitsIn(source, sha, 20)).filter((c) => !c.title.startsWith(STUDIO_RELEASE));
+      release = await addReleaseTo(p, path.join(copy, path.relative(p.site.split('/')[0], p.site)), { source, target: sha, build: String(version ?? sha.slice(0, 7)), fallbackCommits });
+      if (release) what += ` · ${releaseLine(release)}`;
+    } catch (e: any) {
+      console.warn(`[studio] ${p.id}: no release entry for ${sha.slice(0, 7)}: ${e.message ?? e}`);
+    }
     const s = startStep(run.id, p.id, 'deploy', p.site, `publishing ${what}`);
     // Pushing the website's main and recording it are one critical section (drain.ts): a deploy of Studio waits for it.
     return critical(`publishing ${p.name} live`, async () => {
@@ -103,7 +114,7 @@ export async function publishUnity(p: Product, sha: string, { by = 'a push to ma
       run.end('done', `live: ${p.name} ${what}`);
       await fetchOrigin(site);
       if (after !== before) void verifyLive(p.id, after, `Just went live (${p.repo.split('/')[0]} ${sha.slice(0, 7)}, ${by})`);
-      return { deploy: id, website: p.site, before: before.slice(0, 7), after: after.slice(0, 7), what };
+      return { deploy: id, website: p.site, before: before.slice(0, 7), after: after.slice(0, 7), what, release: release && { version: release.version, title: release.title } };
     });
   } catch (e: any) {
     run.end('failed', `go live ${p.id} ${sha.slice(0, 7)} failed: ${String(e.message ?? e).slice(0, 300)}`);

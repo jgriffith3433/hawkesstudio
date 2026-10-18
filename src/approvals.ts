@@ -90,7 +90,8 @@ async function describe(kind: Kind, target: string, params: Record<string, any>)
     lines.push(p.commits.length ? `${p.commits.length} commit(s) go live: ${p.commits.slice(0, 8).map((c) => `${c!.short} ${c!.title} (${c!.author})`).join('; ')}${p.commits.length > 8 ? '; …' : ''}` : 'No new commits.');
     lines.push(p.tested.playtests.length ? `Playtests of beta ${p.tested.sha}: ${p.tested.playtests.map((t) => `${t.name} ${t.outcome ?? t.status}${t.verdict ? `, review "${t.verdict}"` : ''}`).join(' · ')}` : `Beta ${p.tested.sha ?? ''} hasn't been playtested.`);
     return {
-      bind: J([p.beta?.sha ?? null, p.main?.sha ?? null]),
+      // Bound to the playtested commit: a Studio release commit on top of it (only releases.json) isn't beta moving.
+      bind: J([p.played?.sha ?? p.beta?.sha ?? null, p.main?.sha ?? null]),
       card: { title: `Go live with ${p.name}?`, lines, blockers: p.blockers, warnings: p.warnings, links: [p.betaSite ? { label: 'Beta site', url: p.betaSite } : null, { label: 'Live site', url: p.live }].filter(Boolean) as Card['links'], approve: `Approve: go live`, deny: 'Deny' },
     };
   }
@@ -336,7 +337,7 @@ async function run(a: Approval, by: string): Promise<string> {
   if (a.kind === 'deploy') {
     const { deploy } = await import('./deploy.ts');
     const r: any = await deploy(a.target, { confirm: `DEPLOY ${a.target}`, by, origin, beta: (parse(row(a.id).bind) as any[])[0] });
-    return `Live: main is ${r.main} (beta ${r.beta}). ${r.note}`;
+    return `Live: main is ${r.main} (beta ${r.beta}).${r.release ? ` Releases ${r.release.version}: ${r.release.title}.` : ''} ${r.note}`;
   }
   if (a.kind === 'rollback') {
     const { rollback } = await import('./deploy.ts');

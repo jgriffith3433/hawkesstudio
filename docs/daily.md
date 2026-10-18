@@ -453,6 +453,22 @@ words are the fallback.
   or when main has commits beta lacks (`studio deploy <p> --merge-main` merges them into beta first; then play beta
   again). For Unity, the beta build's `Game/v<n>` is committed to the website repo's main, and the source repo's main
   follows beta. Studio then waits for GitHub Pages and playtests live.
+- **Release notes (What's new):** every product site's `releases.json` (`product`, `name`, `current`, `releases[]`,
+  newest first) feeds its `whatsnew.html`, the game menus and the corporate site's products page (`releases[0].build`).
+  Going live adds the new release on top and sets `current` to it (`src/release.ts`): the version is bumped (minor when
+  the shipped commits include a feature or task, patch when they're only fixes; never a version used before), the date
+  is today, the build is the Unity `Game/v<n>` (else the short sha of the playtested commit), and a title with 2-5 notes
+  for players are written from the commit titles by a cheap model through Gen (`llm.json`), with a plain fallback from
+  the titles when Gen fails. Infra noise (Gen client/SDK syncs, devtools saves, Studio's own commits) is left out. The
+  notes cover everything since the newest release's build, not just the last go live, so a go live that shipped
+  without an entry (2026-10-18's) is caught up by the next one. The plan's "what" line says it ("Releases 1.1.0:
+  <title>", and how many commits since the last entry), the Go live card shows it and the result names it. Web
+  products: a commit `Release: <name> <version>: <title>` (only `releases.json`) on beta on top of the playtested
+  commit, then main is fast-forwarded to it; such a commit doesn't count as beta moving (the plan, the Approve card's
+  binding, the next plan: `playedCommit`). Unity: written into the beta website copy and committed with the build
+  (Yooba Land's and The Place Department's deploy methods keep a site `releases.json` with newer releases). A site
+  without a `releases.json` gets none. Writing it never stops going live: a failure is a warning in the result.
+  Rollback brings the previous file back with the previous build. `STUDIO_RELEASE_NOTES=off` skips the model.
 - **Clearing blockers with a tap:** a blocked card on the Go live page shows the one beta-only step that clears it (the
   plan's `fix`, `planFix` in deploy.ts), J's to press: **Merge live into beta** ("main has commits beta lacks", or no
   beta yet; it then plays beta), **Play beta** (not playtested at this commit, the pre-deploy build missing, the Unity
