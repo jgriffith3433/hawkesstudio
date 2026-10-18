@@ -56,17 +56,54 @@ test('the version: minor for a feature, patch for fixes only, never one used bef
   assert.equal(rel.bumpVersion([], ['Anything']), '1.0.0');
 });
 
-test('the notes fallback: player-facing titles, no infra noise', async () => {
-  const f = rel.fallbackNotes(['Hawkes Gen SDK v6 (synced by hawkesgen/bin/hawkesgen-sdk.mjs)', 'devtools: content/modes.json', 'Fix: Audio doesn\'t work on mobile? (#6)', 'Tap-to-play sound unlock and Settings menu (#7)']);
-  assert.deepEqual(f.notes, ['Fixed: Audio doesn\'t work on mobile?', 'Tap-to-play sound unlock and Settings menu']);
-  assert.equal(f.title, 'New in this update');
-  assert.equal(rel.fallbackNotes(['Fix: a', 'Fix: b']).title, 'Fixes and polish');
-  assert.equal(rel.fallbackNotes(['devtools: x']).notes.length, 1, 'never an empty list');
+test('the notes fallback is the neutral line, never the commit text', async () => {
+  const titles = ['Hawkes Gen SDK v6 (synced by hawkesgen/bin/hawkesgen-sdk.mjs)', 'devtools: content/modes.json', 'Fix: Audio doesn\'t work on mobile? (#6)', 'Tap-to-play sound unlock and Settings menu (#7)'];
+  assert.deepEqual(rel.fallbackNotes(titles), { title: 'Improvements and fixes', notes: ['Improvements and fixes.'] });
   const p = { id: 'reltest', name: 'Release test', about: 'A fixture.' } as any;
   const n = await rel.writeNotes(p, ['Add a boss'], undefined);
   assert.equal(n.source, 'fallback');
-  assert.deepEqual(n.notes, ['Add a boss']);
+  assert.deepEqual(n.notes, ['Improvements and fixes.']);
   assert.ok(rel.isNoise('Release: Release test 1.1.0: New'));
+});
+
+test('the writer: Claude errors or says nothing usable -> the fallback; notes quoting a commit, an id or a forbidden word are dropped', async () => {
+  delete process.env.STUDIO_RELEASE_NOTES;
+  try {
+    const p = { id: 'reltest', name: 'Release test', about: 'A fixture.' } as any;
+    const titles = ['Fix: What\'s new v1.1.1 note names the dev changelog and the "pharma framing" out loud (#10)', 'Products: the formulation line shows each product\'s lot (its latest build) with the version and date'];
+    let asked = '';
+    const fails = await rel.writeNotes(p, titles, undefined, { ask: async (prompt) => { asked = prompt; throw new Error('Gen is down'); } });
+    assert.deepEqual({ ...fails }, { title: 'Improvements and fixes', notes: ['Improvements and fixes.'], source: 'fallback' });
+    assert.match(asked, /never quote them/, 'the commits are for the writer only');
+    assert.equal((await rel.writeNotes(p, titles, undefined, { ask: async () => null })).source, 'fallback');
+    assert.equal((await rel.writeNotes(p, titles, undefined, { ask: () => new Promise(() => {}), timeoutMs: 10 })).source, 'fallback', 'a writer that never answers');
+
+    // Every way a commit leaks: quoted whole, 6 of its words in a row, an id, dev words.
+    const leaky = await rel.writeNotes(p, titles, undefined, { ask: async () => ({ title: 'Fixes (#10)', notes: [
+      'Products: the formulation line shows each product\'s lot (its latest build) with the version and date',
+      'The formulation line shows each product\'s lot now.',
+      'Resolved in 718690a.',
+      'The changelog from the last pull request is tidier.',
+    ] }) });
+    assert.equal(leaky.source, 'fallback', 'nothing usable left');
+    assert.deepEqual(leaky.notes, ['Improvements and fixes.']);
+
+    // The corporate voice: its own forbidden words (products.json releaseVoice.never) go too; good notes stay.
+    const corp = { id: 'hawkesbiomedical', name: 'Hawkes Biomedical', about: 'x', releaseVoice: { voice: 'Company notices.', never: ['B3', 'vat', 'creature', 'pharma', 'framing', 'fiction', 'game', 'fix'] } } as any;
+    let corpPrompt = '';
+    const c = await rel.writeNotes(corp, titles, undefined, { ask: async (prompt) => { corpPrompt = prompt; return { title: 'Every lot, on the record', notes: [
+      'Notices keep the pharma framing intact.',
+      'We fixed the notices page.',
+      'Every formulation now lists its lot and revision date.',
+      'New samples from the vat on B3.',
+    ] }; } });
+    assert.deepEqual({ ...c }, { title: 'Every lot, on the record', notes: ['Every formulation now lists its lot and revision date.'], source: 'gen' });
+    assert.match(corpPrompt, /Company notices\./);
+    assert.doesNotMatch(corpPrompt, /About it:/, 'the corporate voice, not the "fictional pharma" about line');
+    for (const n of [...c.notes, c.title]) for (const t of titles) assert.ok(!n.includes(t.replace(/\s*\(#\d+\)$/, '')));
+  } finally {
+    process.env.STUDIO_RELEASE_NOTES = 'off';
+  }
 });
 
 test('going live adds a release on beta on top of the tested commit, and it doesn\'t count as beta moving', async () => {
@@ -78,7 +115,8 @@ test('going live adds a release on beta on top of the tested commit, and it does
   let plan = await deployPlan('reltest');
   assert.deepEqual(plan.blockers, []);
   assert.equal(plan.release?.version, '1.1.0');
-  assert.match(plan.what, /Releases 1\.1\.0/);
+  assert.match(plan.what, /Releases 1\.1\.0 "Improvements and fixes": "Improvements and fixes\."/, 'the plan shows the exact notes');
+  assert.deepEqual(plan.release?.notes, ['Improvements and fixes.']);
 
   const r: any = await deploy('reltest', { confirm: 'DEPLOY reltest', by: 'test', beta: tested });
   assert.equal(r.release.version, '1.1.0');
@@ -89,8 +127,9 @@ test('going live adds a release on beta on top of the tested commit, and it does
   assert.equal(file.current, '1.1.0');
   assert.equal(file.releases.length, 2);
   assert.deepEqual(Object.keys(file), ['product', 'name', 'current', 'releases'], 'the file keeps its shape');
-  assert.deepEqual({ ...file.releases[0], notes: undefined }, { version: '1.1.0', date: rel.today(), build: tested.slice(0, 7), title: 'New in this update', notes: undefined });
-  assert.deepEqual(file.releases[0].notes, ['Add an about page', 'Fixed: the title']);
+  assert.deepEqual(file.releases[0], { version: '1.1.0', date: rel.today(), build: tested.slice(0, 7), title: 'Improvements and fixes', notes: ['Improvements and fixes.'] });
+  const shipped = JSON.stringify(file.releases[0]);
+  for (const t of ['Fix: the title', 'the title', 'Add an about page', 'about page', '#1', '#2']) assert.ok(!shipped.includes(t), `no commit subject in the notes: ${t}`);
   assert.match((await deployPlan('reltest')).blockers.join(' '), /Nothing to go live/);
   assert.equal(db.prepare(`SELECT beta FROM deploys WHERE product = 'reltest' ORDER BY at DESC LIMIT 1`).get()!.beta, tested, 'the deploy records the tested commit');
 });
@@ -103,9 +142,9 @@ test('a go live cut short after the release commit: the plan still counts the te
   played(tested);
   // As if Studio pushed the release commit to beta and restarted before main moved.
   const f = JSON.parse(fs.readFileSync(path.join(dir, 'releases.json'), 'utf8'));
-  f.releases.unshift({ version: '1.1.1', date: rel.today(), build: tested.slice(0, 7), title: 'Fixes and polish', notes: ['Fixed: the boss door'] });
+  f.releases.unshift({ version: '1.1.1', date: rel.today(), build: tested.slice(0, 7), title: 'Improvements and fixes', notes: ['Improvements and fixes.'] });
   f.current = '1.1.1';
-  commit('releases.json', JSON.stringify(f, null, 2), 'Release: Release test 1.1.1: Fixes and polish');
+  commit('releases.json', JSON.stringify(f, null, 2), 'Release: Release test 1.1.1: Improvements and fixes');
   git(dir, 'push', '--quiet', 'origin', 'beta');
   const plan = await deployPlan('reltest');
   assert.deepEqual(plan.blockers, [], 'a release-only commit on top is not "untested"');
@@ -121,6 +160,42 @@ test('a go live cut short after the release commit: the plan still counts the te
 
   // A release commit that also touches another file isn't one.
   assert.equal(rel.isReleaseCommit(dir, { sha: tested, short: '', title: 'Release: x', author: '', date: '' }), false);
+});
+
+test('notes already on beta are kept: an agent rewrote old notes, or wrote the new entry itself', async () => {
+  git(dir, 'pull', '--quiet', 'origin', 'beta');
+  // An agent rewrites the live entry's notes on beta (only releases.json changes): no new entry, beta's notes ship.
+  const f = JSON.parse(fs.readFileSync(path.join(dir, 'releases.json'), 'utf8'));
+  f.releases[0].notes = ['The boss door opens again.'];
+  commit('releases.json', JSON.stringify(f, null, 2), 'Fix: What\'s new v1.1.1 note is raw dev text (#9)');
+  git(dir, 'push', '--quiet', 'origin', 'beta');
+  let tested = remote('beta');
+  played(tested);
+  let plan = await deployPlan('reltest');
+  assert.deepEqual(plan.blockers, []);
+  assert.equal(plan.release?.existing, true);
+  assert.match(plan.what, /keeps the entry already on beta, 1\.1\.1 "Improvements and fixes": "The boss door opens again\."/);
+  await deploy('reltest', { confirm: 'DEPLOY reltest', by: 'test', beta: tested });
+  assert.equal(remote('main'), tested, 'no release commit on top');
+  assert.deepEqual(releasesOn('main'), f, 'beta\'s notes, untouched');
+  assert.ok(!JSON.stringify(releasesOn('main')).includes('raw dev text'));
+
+  // An agent writes the next entry on beta along with a feature: it ships as written (not live yet), nothing rewritten.
+  git(dir, 'pull', '--quiet', 'origin', 'beta');
+  fs.writeFileSync(path.join(dir, 'map.html'), 'map');
+  f.releases.unshift({ version: '1.2.0', date: '2026-10-18', build: '', title: 'A map', notes: ['There is a map now.'] });
+  f.current = '1.2.0';
+  commit('releases.json', JSON.stringify(f, null, 2), 'Add the map page (#11)');
+  git(dir, 'push', '--quiet', 'origin', 'beta');
+  tested = remote('beta');
+  played(tested);
+  plan = await deployPlan('reltest');
+  assert.equal(plan.release?.existing, true);
+  assert.equal(plan.release?.version, '1.2.0');
+  assert.deepEqual(plan.release?.notes, ['There is a map now.']);
+  await deploy('reltest', { confirm: 'DEPLOY reltest', by: 'test', beta: tested });
+  assert.equal(remote('main'), tested);
+  assert.deepEqual(releasesOn('main').releases[0], f.releases[0]);
 });
 
 test('writing the release fails: going live still works, without the entry', async () => {

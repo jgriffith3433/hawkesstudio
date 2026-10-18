@@ -77,6 +77,8 @@ export type Product = {
    * meaningfully (review.ts). Unset: no bar (full daily reviews, still capped).
    */
   quality?: string;
+  /** The public voice of its "What's new" (release.ts): voice, and words its notes never use. Unset: a game's player's-eye voice. */
+  releaseVoice?: { voice: string; never?: string[] };
 };
 
 export function loadProducts(): Product[] {
