@@ -11,6 +11,8 @@
 // - FAKE_HANG: the first pass writes work.txt, then waits until Studio's time limit stops it; a resumed pass commits.
 // - FAKE_NEVER: every pass writes work.txt and ends with no result and no commit.
 // - FAKE_NOTHING: changes nothing, writes a summary and ends with a result.
+// Told to merge its base (a conflict pass: "git merge origin/<base>" in its prompt), it merges keeping its own side of
+// each conflict and commits, unless its brief says FAKE_NOTHING (then it changes nothing: still conflicting).
 import fs from 'node:fs';
 import path from 'node:path';
 import readline from 'node:readline';
@@ -56,6 +58,16 @@ async function agent() {
     fs.writeFileSync(path.join('.hawkes', 'summary.md'), 'I looked and it already works; I changed nothing.');
     out({ type: 'result', subtype: 'success', result: 'It already works.', session_id: 'fake-agent-session', total_cost_usd: 0.05, duration_ms: 5 });
     return log({ agentDone: process.cwd() });
+  }
+  const prompt = args[args.indexOf('-p') + 1] ?? '';
+  const base = /git merge origin\/([\w.-]+)/.exec(prompt)?.[1];
+  if (base && mode !== 'NOTHING') {
+    const g = (...a) => spawnSync('git', ['-c', 'user.name=Agent', '-c', 'user.email=agent@example.com', ...a], { encoding: 'utf8' });
+    g('merge', '--no-edit', '-X', 'ours', `origin/${base}`);
+    fs.mkdirSync('.hawkes', { recursive: true });
+    fs.writeFileSync(path.join('.hawkes', 'summary.md'), 'Merged beta and resolved the conflicts.');
+    out({ type: 'result', subtype: 'success', result: 'Merged beta, resolved the conflicts.', session_id: 'fake-agent-session', total_cost_usd: 0.05, duration_ms: 5 });
+    return log({ agentMerged: process.cwd(), base });
   }
   if (mode === 'NEVER' || (!resumed && (mode === 'STOP' || mode === 'HANG'))) {
     fs.appendFileSync('work.txt', `half done at ${new Date().toISOString()}\n`);

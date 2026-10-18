@@ -16,6 +16,10 @@
 //   approve(change)   -> merges the pull request into beta (nothing goes live): the beta site and its playtest follow,
 //                        the findings are marked fixed. Also the Changes tab's button for ones that couldn't auto-merge.
 //                        Going live is a separate step (deploy.ts: the deploy plan, then "DEPLOY <product>").
+//                        Before merging, the branch is brought up to date with beta (updateFromBase, J 2026-10-18: tasks
+//                        hit "merge conflicts" when another task merged first): a clean merge is pushed and merged with no
+//                        agent; a conflict resumes the agent's own session to resolve it (resolveConflicts: not a try,
+//                        and J hears of it only when the agent fails twice on it).
 //   revise(change, note) -> the agent continues on the same branch with J's note; the PR updates.
 //
 // Hawkes Studio and Hawkes Gen themselves (products.json "infra") take requests too (startTask), but they have no beta
@@ -74,6 +78,10 @@ try { db.exec('ALTER TABLE changes ADD COLUMN pm_escalated INTEGER'); } catch { 
 try { db.exec('ALTER TABLE changes ADD COLUMN phase TEXT'); } catch { /* already there */ }
 // The automatic merge into beta (autoMergeBeta): 'trying', 'merged', or 'failed: <why>' (null: not tried).
 try { db.exec('ALTER TABLE changes ADD COLUMN auto_merge TEXT'); } catch { /* already there */ }
+// When it merged into its base (before beta's run after it starts: pm.ts matches beta's build to it), and how many
+// conflict passes its agent made since its branch last merged cleanly with its base (resolveConflicts).
+try { db.exec('ALTER TABLE changes ADD COLUMN merged_at INTEGER'); } catch { /* already there */ }
+try { db.exec('ALTER TABLE changes ADD COLUMN conflicts INTEGER'); } catch { /* already there */ }
 
 export type Change = {
   id: string; product: string; findings: string[]; status: string; detail: string | null; repo: string; slug: string; branch: string; base: string;
@@ -87,6 +95,8 @@ export type Change = {
   pm_escalated?: number | null;
   /** The automatic merge into beta: 'trying', 'merged', or 'failed: <why>'; null: not tried. */
   auto_merge?: string | null;
+  /** When it merged into its base; conflict passes since its branch last merged cleanly with its base. */
+  merged_at?: number | null; conflicts?: number | null;
   /** The Talk conversation that started it (followup.ts). */
   origin?: string | null;
   /** A change to Hawkes Studio or Hawkes Gen (a pull request into main, which deploys itself), not a product. */
@@ -207,6 +217,8 @@ export type Phase = {
   /** How many times its session was resumed to commit work it left uncommitted (at most NUDGES); `nudge`: the next pass is one. */
   nudges?: number;
   nudge?: boolean;
+  /** A conflict pass (resolveConflicts): the files that conflict with the base; the agent's session merges and resolves. */
+  conflict?: string[];
 };
 
 /** Uncommitted work in a worktree (Studio's .hawkes/ notes aside). */
@@ -237,6 +249,20 @@ If you left it uncommitted on purpose (the brief says not to commit when you cou
 function nudgeResume(c: Change, ph: Phase) {
   const prompt = nudgePrompt(ph);
   return c.session ? { session: c.session, prompt } : { prompt: `Read .hawkes/brief.md: it's your whole task. ${prompt}` };
+}
+/** A conflict pass: the agent's own session (it knows its change) merges the base and resolves; a new one reads the brief first. */
+export function conflictPrompt(c: Pick<Change, 'base'>, files: string[]) {
+  return `Beta moved while your change waited to merge: another change merged into ${c.base} first, and your branch now conflicts with it${files.length ? ` in ${files.slice(0, 20).map((f) => `\`${f}\``).join(', ')}` : ''}.
+
+1. \`git merge origin/${c.base}\` (Studio already fetched it).
+2. Resolve the conflicts keeping both sides' intent: what ${c.base} has now (the other change's work) and what your change does.
+   Don't drop either side, and don't redo your task.
+3. Re-run the checks the brief names, fix what fails, and commit the merge.
+4. Update .hawkes/summary.md only if what your change does is different now.`;
+}
+function conflictResume(c: Change, files: string[]) {
+  const prompt = conflictPrompt(c, files);
+  return c.session ? { session: c.session, prompt } : { prompt: `Read .hawkes/brief.md for what your change is. ${prompt}` };
 }
 /** Records the next pass as a nudge (saved, so a restart carries on with it) and says why in the log. */
 function nudge(id: string, ph: Phase, save: (patch: Partial<Phase>) => void) {
@@ -825,10 +851,11 @@ async function work(id: string, note?: string, answer?: string, resumed?: Phase 
       // An answer to the agent's question continues its own session (claude --resume); anything else starts a new one.
       c = getChange(id)!;
       const resume = ph.nudge ? nudgeResume(c, ph)
+        : ph.conflict ? conflictResume(c, ph.conflict)
         : answer && c.session
           ? { session: c.session, prompt: `The answer to your question:\n\n${answer}\n\nContinue the task in .hawkes/brief.md (rewritten with the latest thread) and finish it the way it says.` }
           : undefined;
-      if (!ph.proc && !ph.nudge) addLog(id, resumed ? 'agent: it ran inside Studio, which restarted; starting the pass again' : resume ? `agent resumed its session with the answer` : `agent started`);
+      if (!ph.proc && !ph.nudge) addLog(id, resumed && !ph.conflict ? 'agent: it ran inside Studio, which restarted; starting the pass again' : resume?.session ? `agent resumed its session ${ph.conflict ? 'to resolve the conflicts with beta' : 'with the answer'}` : ph.conflict ? 'agent started: resolving the conflicts with beta' : `agent started`);
       const r = await agentPass(id, ph, save, s, claudeEnv(), resume);
       // The cost and the next step are written together, so a restart never counts a pass twice.
       save({ step: 'publish', result: r.result, stopped: r.stopped, nudge: false, proc: undefined }, { cost: getChange(id)!.cost + r.cost });
@@ -864,7 +891,8 @@ async function work(id: string, note?: string, answer?: string, resumed?: Phase 
         addQuestion({ kind: 'agent', subject: id, product: c.product, text: question });
         return;
       }
-      if (!commits.length || (note && !changedNow && !c.task)) {
+      // A conflict pass that committed nothing isn't a failure: ready again, it conflicts again (its next pass, or J).
+      if (!commits.length || (note && !changedNow && !c.task && !ph.conflict)) {
         // Nothing to change because J already decided it: not a failed try, and the bugs it holds stay done (not reopened
         // for another agent to reach the same answer). Otherwise the bugs it still holds open again (reopenTaken):
         // never one the PM or J triaged while it ran (f_6ba75c6c2ac8: won't-fix reset to open on 2026-10-17).
@@ -1015,6 +1043,7 @@ export async function syncMergedOutside() {
       if (getChange(c.id)?.status !== 'ready') return;
       const at = String(pr.merged_at ?? '').slice(0, 16).replace('T', ' ');
       const by = pr.merged_by?.login ? `${pr.merged_by.login} on GitHub` : 'GitHub';
+      db.prepare('UPDATE changes SET merged_at = ? WHERE id = ?').run(Date.parse(pr.merged_at ?? '') || Date.now(), c.id);
       update(c.id, { status: 'merged', detail: `merged into ${c.base} outside Studio (${by}, ${at}): ${String(pr.merge_commit_sha ?? '').slice(0, 7)}${c.infra ? '' : ' (not live yet)'}`, notes: [...c.notes, { at: Date.now(), by, text: `merged on GitHub (pull request #${c.pr})` }] });
       addLog(c.id, `pull request #${c.pr} was merged outside Studio (${by}, ${at}): marked merged`);
       remember(c.id);
@@ -1500,6 +1529,90 @@ async function verifiedHead(c: Change) {
   return head;
 }
 
+/** Conflict passes an agent gets on one conflict before J hears of it (resolveConflicts). */
+export const CONFLICT_PASSES = 2;
+/** An error from approve(): the branch conflicts with its base; `conflict` names the files (the agent resolves them). */
+const conflictError = (c: Change, files: string[]) => Object.assign(new Error(`${c.base} moved and the branch conflicts with it${files.length ? ` in ${files.slice(0, 10).join(', ')}` : ''}`), { conflict: files });
+export const isConflict = (e: unknown): e is Error & { conflict: string[] } => Array.isArray((e as any)?.conflict);
+/** GitHub refusing a merge because of the base (a conflict, "not mergeable", the base modified meanwhile). */
+const MERGE_REFUSED = /not mergeable|merge conflict|base branch was modified|405|409/i;
+
+/**
+ * Brings a ready product change's branch up to date with its base before it merges (J, 2026-10-18: four Sick Of It
+ * tasks hit "Pull request has merge conflicts" because another task merged into beta first). Up to date already:
+ * nothing. Behind: origin/<base> is merged into the worktree; a clean merge is pushed, and that commit is what merges
+ * (verify.sha: the agent's checks passed on its side, the base's on the other). A conflict is aborted, the files
+ * named: resolveConflicts gives it to the agent. Skipped (no worktree, git trouble): the merge goes on as before.
+ */
+export async function updateFromBase(id: string): Promise<{ state: 'current' | 'merged' | 'conflict' | 'skipped'; files?: string[]; sha?: string; why?: string }> {
+  const c = getChange(id);
+  if (!c || c.infra || !c.worktree || !fs.existsSync(c.worktree)) return { state: 'skipped', why: 'no worktree' };
+  const repoDir = path.join(PROJECTS, c.repo);
+  assertWorktree(c.worktree, repoDir);
+  const f = await gitAsync(repoDir, ['fetch', '--quiet', 'origin']);
+  if (!f.ok) return { state: 'skipped', why: `fetch failed: ${f.err.slice(0, 200)}` };
+  if (!git(c.worktree, ['rev-parse', '--verify', '--quiet', `origin/${c.base}`]).ok) return { state: 'skipped', why: `no origin/${c.base}` };
+  if (git(c.worktree, ['merge-base', '--is-ancestor', `origin/${c.base}`, 'HEAD']).ok) return { state: 'current' };
+  const before = git(c.worktree, ['rev-parse', 'HEAD']).out;
+  const m = await gitAsync(c.worktree, ['-c', 'user.name=Hawkes Studio', '-c', 'user.email=studio@hawkesgen.com', 'merge', '--no-edit', '-m', `Merge ${c.base} into ${c.branch} (Hawkes Studio: ${c.base} moved)`, `origin/${c.base}`]);
+  if (!m.ok) {
+    const files = git(c.worktree, ['diff', '--name-only', '--diff-filter=U']).out.split('\n').filter(Boolean);
+    git(c.worktree, ['merge', '--abort']);
+    git(c.worktree, ['reset', '--hard', before]);
+    addLog(id, `${c.base} moved: merging origin/${c.base} into the branch conflicts${files.length ? ` in ${files.join(', ')}` : ` (${(m.err || m.out).slice(0, 200)})`}`);
+    return { state: 'conflict', files };
+  }
+  const sha = git(c.worktree, ['rev-parse', 'HEAD']).out;
+  const p = await gitAsync(c.worktree, ['push', '--quiet', 'origin', `HEAD:${c.branch}`]);
+  if (!p.ok) {
+    git(c.worktree, ['reset', '--hard', before]);
+    return { state: 'skipped', why: `push failed: ${p.err.slice(0, 200)}` };
+  }
+  // The agent's group keeps writing here (a later pass): what Studio's git just wrote is shared again (sandbox.ts).
+  shareWorktree(c.worktree);
+  update(id, { verify: { ...(c.verify ?? {}), sha } });
+  addLog(id, `${c.base} moved: merged origin/${c.base} into the branch (no conflicts) and pushed ${sha.slice(0, 7)}`);
+  return { state: 'merged', sha };
+}
+
+/**
+ * A conflict with the base goes back to the change's own agent: its session is resumed to merge the base and resolve
+ * the conflicts keeping both sides' intent, then re-run its checks (a "conflict pass"). Not a try (the PM's tries are
+ * for the work itself), and nobody is asked: when the pass finishes the change is ready again and merges by itself.
+ * After CONFLICT_PASSES on the same conflict, false: it's stuck (the caller tells J). Revising by hand starts over.
+ */
+export function resolveConflicts(id: string, files: string[]) {
+  const c = getChange(id);
+  if (!c || c.infra || c.status !== 'ready' || !fs.existsSync(c.worktree)) return false;
+  const n = (c.conflicts ?? 0) + 1;
+  if (n > CONFLICT_PASSES) return false;
+  db.prepare('UPDATE changes SET conflicts = ? WHERE id = ?').run(n, id);
+  const note = conflictPrompt(c, files);
+  const ph: Phase = { step: 'prepare', note, conflict: files, since: Date.now() };
+  update(id, { status: 'revising', detail: `${c.base} moved: its agent is resolving the conflicts (pass ${n} of ${CONFLICT_PASSES}, not a try)`, auto_merge: null, phase: ph, notes: [...c.notes, { at: Date.now(), by: 'Studio', text: `${c.base} moved: conflict pass ${n} (${files.join(', ') || 'conflicting files'})` }] });
+  addLog(id, `conflict pass ${n} of ${CONFLICT_PASSES}: the agent merges origin/${c.base} and resolves the conflicts`);
+  // Called from the end of its own pass (work() merging it): the conflict pass starts once that one has let go.
+  const go = () => {
+    if (running.has(id)) return void setTimeout(go, 200).unref();
+    running.add(id);
+    void work(id, note, undefined, ph, true).finally(() => {
+      running.delete(id);
+      remember(id);
+      void pump();
+    });
+  };
+  go();
+  return true;
+}
+
+/** Truly stuck on a conflict (its agent failed CONFLICT_PASSES times): one line in Talk, and J decides in his Inbox. */
+async function conflictStuck(id: string, why: string) {
+  const c = getChange(id)!;
+  const { askJ } = await import('./pm.ts');
+  askJ(`"${c.title ?? id}" can't merge into ${c.base}: its agent tried ${CONFLICT_PASSES} times to resolve the conflicts with ${c.base} (${why.slice(0, 300)}) and it still conflicts. Try again, or close it?`,
+    { subject: c.task ?? id, product: c.product, options: ['try again', 'close it'], recommend: 'try again', blocks: `merging ${id} into ${c.base}`, from: 'conflict passes used up' });
+}
+
 /**
  * J's approval: merge the pull request (squash) into beta. Nothing goes live: the beta site is rebuilt and beta is
  * playtested with the change in; going live is deploy() (the deploy plan, then "DEPLOY <product>").
@@ -1519,7 +1632,6 @@ export async function approve(id: string, { confirm, by = 'J', origin, auto = fa
   if (['queued', 'working', 'revising', 'verifying'].includes(c.status)) throw new Error(`The change is ${c.status}: its branch is still moving. Approve it once it's ready (verified).`);
   // A merge is a critical section (drain.ts): a deploy waits for it rather than cut it off between GitHub and Studio's records.
   return critical(`merging ${id} into ${BETA}`, async () => {
-    const sha = await verifiedHead(c);
     // Changes opened before the beta lane target main: point them at beta first, so approving never goes live.
     if (c.base !== BETA) {
       await ensureBeta(path.join(PROJECTS, c.repo));
@@ -1531,6 +1643,11 @@ export async function approve(id: string, { confirm, by = 'J', origin, auto = fa
     const { flushDev, pullDev } = await import('./dev.ts');
     const flushed = await flushDev(c.product, `before merging ${id}`);
     if ('conflict' in flushed && flushed.conflict) throw new Error(`Beta's working copy conflicts with beta (${flushed.conflict.join(', ')}); resolve that first (studio_dev_status).`);
+    // Beta moved since the agent's pass: the branch is brought up to date first (a clean merge pushed; a conflict thrown).
+    const up = await updateFromBase(id);
+    if (up.state === 'conflict') throw conflictError(getChange(id)!, up.files ?? []);
+    // The pull request's head is checked before the merge (a verified commit: the agent's, or Studio's merge of beta).
+    const sha = await verifiedHead(getChange(id)!);
     let m: any;
     try {
       // `sha`: GitHub refuses the merge if the pull request's head moved since the check above.
@@ -1538,13 +1655,15 @@ export async function approve(id: string, { confirm, by = 'J', origin, auto = fa
     } catch (e: any) {
       // Usually a conflict with what's on beta now (devtools saves, another change). J hears it in Talk with the files
       // (an automatic merge says it in one line itself: autoMergeBeta).
-      if (auto) throw e;
+      if (auto || isConflict(e)) throw e;
       const files = await github(`/repos/${c.slug}/pulls/${c.pr}/files?per_page=100`).then((fs: any[]) => fs.map((f) => f.filename)).catch(() => []);
       const { postNotice } = await import('./talk.ts');
       postNotice(`Merge stopped: ${c.title}`, `Merging ${id} (${c.pr_url}) into ${BETA} failed: ${e.message ?? e}\n\nThe change touches: ${files.slice(0, 30).join(', ') || '(unknown)'}\n\nIf beta changed those files since (devtools saves or another change), ask the agent to update its branch from ${BETA} (revise ${id}) and approve again.`);
       throw e;
     }
     void pullDev(c.product, `after merging ${id}`).catch((e) => console.warn(`[studio] beta working copy after ${id}: ${e.message ?? e}`));
+    // Before beta's run starts: the PM matches beta's build after this time to the task (pm.ts followBuilds).
+    db.prepare('UPDATE changes SET merged_at = ?, conflicts = NULL WHERE id = ?').run(Date.now(), id);
     update(id, { status: 'merged', detail: `merged into ${BETA} by ${by}: ${String(m.sha ?? '').slice(0, 7)} (not live yet)`, notes: [...c.notes, { at: Date.now(), by, text: auto ? `merged into ${BETA} automatically (ready: the agent's checks passed)` : `approved and merged into ${BETA}` }], ...(auto ? { auto_merge: 'merged' } : {}) });
     remember(id);
     for (const f of c.findings) updateFinding(f, { status: 'fixed', note: `merged into ${BETA} in ${c.pr_url} (goes live with the next deploy)` });
@@ -1576,14 +1695,33 @@ export async function autoMergeBeta(id: string) {
   const g = gate(c.verify, c.criteria);
   if (!g.pass) return fail(g.why.join('; ').slice(0, 300));
   if (!c.pr) return fail('it has no pull request');
+  const merge = () => approve(id, { confirm: `MERGE ${id}`, by: 'Studio (auto-merge)', origin: c.origin ?? null, auto: true });
   try {
-    const merged = await approve(id, { confirm: `MERGE ${id}`, by: 'Studio (auto-merge)', origin: c.origin ?? null, auto: true });
+    let merged;
+    try {
+      merged = await merge();
+    } catch (e: any) {
+      // GitHub refused because of beta (it moved again, or its mergeability lagged): up to date once more, one retry.
+      if (isConflict(e) || !MERGE_REFUSED.test(String(e.message ?? e))) throw e;
+      addLog(id, `GitHub wouldn't merge it (${String(e.message ?? e).slice(0, 160)}): bringing it up to date with ${BETA} and trying once more`);
+      await new Promise((r) => setTimeout(r, Number(process.env.STUDIO_MERGE_RETRY_MS ?? 5000)));
+      merged = await merge();
+    }
     addLog(id, `merged into ${BETA} automatically`);
     const { autoMergedNotice, tellAbout } = await import('./followup.ts');
     const beta = await import('./dev.ts').then(({ betaUrl }) => betaUrl(getProduct(c.product))).catch(() => null);
-    await tellAbout(merged!, null, autoMergedNotice(merged!, beta)).catch((e) => console.warn(`[studio] auto-merge notice ${id}: ${e.message ?? e}`));
+    // A conflict its agent resolved: one line in Talk that it did (J, 2026-10-18: "I have no idea if it even worked").
+    const title = c.conflicts ? `Conflict resolved: ${c.title ?? id}` : null;
+    await tellAbout(merged!, title, `${autoMergedNotice(merged!, beta)}${c.conflicts ? ` Its branch conflicted with ${BETA}; its agent resolved it (${c.conflicts} conflict pass${c.conflicts === 1 ? '' : 'es'}, not counted as tries).` : ''}`).catch((e) => console.warn(`[studio] auto-merge notice ${id}: ${e.message ?? e}`));
     return merged;
   } catch (e: any) {
+    // A conflict with beta: its own agent resolves it (no try, nobody asked); stuck after CONFLICT_PASSES, J decides.
+    if (isConflict(e)) {
+      if (resolveConflicts(id, e.conflict)) return null;
+      const r = await fail(`it still conflicts with ${BETA} after ${CONFLICT_PASSES} conflict passes by its agent: ${String(e.message).slice(0, 200)}`);
+      await conflictStuck(id, e.message).catch((x) => console.warn(`[studio] conflict question ${id}: ${x.message ?? x}`));
+      return r;
+    }
     return fail(String(e.message ?? e).slice(0, 300));
   }
 }
@@ -1593,6 +1731,8 @@ export function revise(id: string, note: string, by = 'J') {
   const c = getChange(id);
   if (!c) throw new Error('No such change');
   if (!['ready', 'failed'].includes(c.status)) throw new Error(`The change is ${c.status}`);
+  // A person's revision: the conflict passes start over.
+  db.prepare('UPDATE changes SET conflicts = NULL WHERE id = ?').run(id);
   update(id, { status: 'queued', detail: 'queued for another pass', notes: [...c.notes, { at: Date.now(), by, text: note }] });
   running.add(id);
   // When it's done, the queue goes on (a revision holds a slot like any change).

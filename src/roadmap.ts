@@ -4,9 +4,13 @@
 //
 //   item  status: idea -> planned -> done (consumed: as soon as it has tasks, J 2026-10-17; its tasks still run) | dropped
 //                 (items from before: in progress -> on beta (every task verified on beta) -> live)
+//         What J sees is never that stored status but its progress (itemProgress, from its tasks; J 2026-10-18: "road map
+//         says it's done even though it's still being worked on"): planned, working (n of m merged), waiting for your GPU
+//         budget, needs you, on beta (every task merged and beta built it), verified, live.
 //   task  status: idea | planned (starts by itself when its item is planned and what it depends on is on beta)
 //                 -> working (an agent change) -> review (the change is ready: the PM checks it against the criteria)
-//                 -> merged (into beta; beta's playtest checks the criteria) -> verified (they pass on beta) -> live
+//                 -> merged (into beta; beta's build of it is recorded on the task: build) -> verified (its criteria pass
+//                 on beta: the milestone's playtest, or a beta playtest J asked for) -> live
 //                 | failed (3 tries, then J is asked) | dropped
 //
 // Also here, because every part of the loop uses them: comment threads (on findings, items, tasks and changes; J, Talk
@@ -51,7 +55,7 @@ db.exec(`
 // Findings can belong to a roadmap item; the PM loop marks the runs it has seen. (Changes get their task columns in agents.ts.)
 // J's reports from the beta sites (bugreport.ts) are findings with source 'J', the milestone he was testing and the report.
 // items.consumed: when the item counted as done because its tasks were created (syncItem); its tasks still start.
-for (const [table, col] of [['runs', 'pm_seen'], ['findings', 'item'], ['items', 'milestone'], ['findings', 'source'], ['findings', 'milestone'], ['findings', 'report'], ['tasks', 'gpu'], ['items', 'consumed']]) {
+for (const [table, col] of [['runs', 'pm_seen'], ['findings', 'item'], ['items', 'milestone'], ['findings', 'source'], ['findings', 'milestone'], ['findings', 'report'], ['tasks', 'gpu'], ['items', 'consumed'], ['tasks', 'build'], ['milestones', 'checks']]) {
   try { db.exec(`ALTER TABLE ${table} ADD COLUMN ${col} TEXT`); } catch { /* already there */ }
 }
 // Priorities (high | normal | low): an item's is normal unless set (old rows too); a task's is null until set, and then
@@ -87,7 +91,10 @@ export type Task = {
    * budget J approved. A task whose estimate costs money waits until J approves a budget that covers it.
    */
   gpu: TaskGpu | null;
+  /** Beta's build after it merged (pm.ts followBuilds): did it build (for Unity: did it compile), in which beta run. */
+  build: TaskBuild | null;
 };
+export type TaskBuild = { ok: boolean; run: string; at: number; detail: string; unity?: boolean };
 export type TaskGpu = { items?: any[]; estimate?: { gpuHours: number; cost: number; withIdleTail: number; servers: number; wallMinutes: number; at: number; error?: string }; budget?: number | null; approvedBy?: string | null; approvedAt?: number | null };
 export type Item = {
   id: string; product: string; title: string; goal: string | null; why: string | null; criteria: string[]; size: string | null; status: string;
@@ -97,7 +104,7 @@ export type Item = {
 const toItem = (r: any): Item => ({ ...r, priority: r.priority ?? 'normal', criteria: parse(r.criteria) ?? [] });
 // Task rows are read with their item's priority alongside (TASK_SELECT), for the effective priority.
 const TASK_SELECT = `SELECT t.*, COALESCE(t.priority, i.priority, 'normal') AS effective_priority FROM tasks t LEFT JOIN items i ON i.id = t.item`;
-const toTask = (r: any): Task => ({ ...r, priority: r.priority ?? null, effective_priority: r.effective_priority ?? r.priority ?? 'normal', criteria: parse(r.criteria) ?? [], depends: parse(r.depends) ?? [], changes: parse(r.changes) ?? [], checks: parse(r.checks), gpu: parse(r.gpu) ?? null });
+const toTask = (r: any): Task => ({ ...r, priority: r.priority ?? null, effective_priority: r.effective_priority ?? r.priority ?? 'normal', criteria: parse(r.criteria) ?? [], depends: parse(r.depends) ?? [], changes: parse(r.changes) ?? [], checks: parse(r.checks), gpu: parse(r.gpu) ?? null, build: parse(r.build) ?? null });
 const list = (v: unknown) => (Array.isArray(v) ? v : typeof v === 'string' && v.trim() ? v.split('\n') : []).map((s) => String(s).replace(/^\s*[-*\d.)]+\s*/, '').trim()).filter(Boolean).slice(0, 20);
 const productId = (id: string) => {
   const p = loadProducts().find((x) => x.id === id || x.name.toLowerCase() === String(id).toLowerCase());
@@ -113,6 +120,11 @@ export const roadmapProducts = () => [...loadProducts(), ...loadInfra()].map((x)
 export const getItem = (id: string) => {
   const r = db.prepare('SELECT * FROM items WHERE id = ?').get(id);
   return r ? { ...toItem(r), tasks: tasksOf(id) } : null;
+};
+/** An item with its progress (what J sees: itemProgress), for the API and studio_roadmap. */
+export const getItemView = (id: string) => {
+  const it = getItem(id);
+  return it ? { ...it, progress: itemProgress(it) } : null;
 };
 export const getTask = (id: string) => {
   const r = db.prepare(`${TASK_SELECT} WHERE t.id = ?`).get(id);
@@ -132,7 +144,80 @@ export function listItems(q: { product?: string; status?: string } = {}) {
   const st = q.status ? q.status.split(',').map((s) => s.trim()) : ITEM_STATUSES.filter((s) => s !== 'dropped');
   where.push(`status IN (${st.map(() => '?').join(',')})`);
   args.push(...st);
-  return (db.prepare(`SELECT * FROM items WHERE ${where.join(' AND ')} ORDER BY product, ord, created`).all(...args) as any[]).map((r) => ({ ...toItem(r), tasks: tasksOf(r.id).map((t) => ({ ...t, blocked_by: blockedBy(t) })) }));
+  const asked = askedJ();
+  return (db.prepare(`SELECT * FROM items WHERE ${where.join(' AND ')} ORDER BY product, ord, created`).all(...args) as any[]).map((r) => {
+    const it = { ...toItem(r), tasks: tasksOf(r.id).map((t) => ({ ...t, blocked_by: blockedBy(t) })) };
+    return { ...it, progress: itemProgress(it, asked) };
+  });
+}
+
+// ------------------------------------------------------------ progress
+
+/** Subjects (task and change ids) of the questions waiting on J ("asked J"): those tasks need him. */
+export function askedJ() {
+  const out = new Set<string>();
+  for (const r of db.prepare(`SELECT subject FROM questions WHERE status = 'asked J' AND subject IS NOT NULL`).all() as any[]) for (const s of String(r.subject).split(/[\s,]+/)) if (s) out.add(s);
+  return out;
+}
+/** Studio and Gen merge into main (it deploys them): no beta build to wait for. */
+const needsBetaBuild = (t: Pick<Task, 'product'>) => !isInfra(t.product);
+/** A task is on beta: verified or live, or merged and beta built it (Studio and Gen: merged into main). */
+export const landed = (t: Pick<Task, 'status' | 'product' | 'build'>) => ['verified', 'live'].includes(t.status) || (t.status === 'merged' && (!needsBetaBuild(t) || t.build?.ok === true));
+
+/** What a task waits on, in plain words; null when nothing (it's on beta, verified or live). */
+export function taskWaits(t: Task, asked: Set<string> = askedJ()): string | null {
+  if (asked.has(t.id) || (t.change && asked.has(t.change))) return 'you: a question in your Inbox';
+  if (t.status === 'idea') return 'being planned (an idea)';
+  if (t.status === 'planned') {
+    if (t.gpu?.items?.length && !gpuCleared(t)) return 'your GPU budget';
+    const b = blockedBy(t);
+    return b.length ? `${b.map((x) => `"${x.title}"`).join(', ')} first` : 'a free agent (it starts by itself)';
+  }
+  if (t.status === 'working') return 'its agent (working on it)';
+  if (t.status === 'needs answer') return "an answer to its agent's question";
+  if (t.status === 'review') return 'its merge into beta';
+  if (t.status === 'failed') return 'you: it failed after its tries';
+  if (t.status === 'merged' && !landed(t)) return t.build && !t.build.ok ? `a fix: beta's build failed (${t.build.detail.slice(0, 160)})` : "beta's build";
+  return null;
+}
+
+export type Progress = {
+  /** planned | working | waiting for your GPU budget | needs you | on beta | verified | live (or the item's own: idea, done by hand, dropped). */
+  state: string;
+  /** What J reads: the state, with "working (n of m merged)". */
+  label: string;
+  total: number; merged: number; built: number; working: number; waiting: number;
+  tasks: { id: string; title: string; status: string; waits: string | null; build: string | null }[];
+};
+
+/**
+ * Where an item really is, from its tasks (never "done" while its tasks are being worked on): needs you (a question
+ * for J, a task failed after its tries) and waiting for your GPU budget first, then live, verified, on beta (every
+ * task merged and beta built it), planned (nothing started), else working (n of m merged).
+ */
+export function itemProgress(it: Item, asked: Set<string> = askedJ()): Progress {
+  const tasks = (it.tasks ?? tasksOf(it.id)).filter((t) => t.status !== 'dropped' && t.status !== 'idea');
+  const merged = tasks.filter((t) => ['merged', 'verified', 'live'].includes(t.status)).length;
+  const built = tasks.filter(landed).length;
+  const working = tasks.filter((t) => ['working', 'needs answer', 'review'].includes(t.status)).length;
+  const waiting = tasks.filter((t) => t.status === 'planned').length;
+  const every = (f: (t: Task) => boolean) => tasks.length > 0 && tasks.every(f);
+  let state: string;
+  if (['idea', 'dropped'].includes(it.status)) state = it.status;
+  else if (it.status === 'done' && !it.consumed) state = 'done'; // J's own "done"
+  else if (!tasks.length) state = it.status === 'done' ? 'planned' : it.status;
+  else if (tasks.some((t) => t.status === 'failed' || asked.has(t.id) || (t.change && asked.has(t.change)))) state = 'needs you';
+  else if (tasks.some((t) => t.status === 'planned' && t.gpu?.items?.length && !gpuCleared(t))) state = 'waiting for your GPU budget';
+  else if (every((t) => t.status === 'live')) state = 'live';
+  else if (every((t) => ['verified', 'live'].includes(t.status))) state = 'verified';
+  else if (every(landed)) state = 'on beta';
+  else if (every((t) => t.status === 'planned')) state = 'planned';
+  else state = 'working';
+  return {
+    state, label: state === 'working' ? `working (${merged} of ${tasks.length} merged)` : state,
+    total: tasks.length, merged, built, working, waiting,
+    tasks: tasks.map((t) => ({ id: t.id, title: t.title, status: t.status, waits: taskWaits(t, asked), build: t.build ? t.build.detail : null })),
+  };
 }
 
 /** The tasks a task depends on that aren't merged into beta (or verified, or live) yet: while any are, it's blocked. */
@@ -223,9 +308,9 @@ export function setTask(id: string, patch: Record<string, any>) {
   const n: any = { ...cur };
   for (const [k, v] of Object.entries(patch)) if (v !== undefined) n[k] = v;
   db.prepare(`UPDATE tasks SET title = ?, request = ?, criteria = ?, depends = ?, status = ?, ord = ?, change = ?, changes = ?, pr = ?, tries = ?, checks = ?, try = ?, note = ?,
-    merged_at = ?, verified_at = ?, live_at = ?, updated = ? WHERE id = ?`)
+    merged_at = ?, verified_at = ?, live_at = ?, build = ?, updated = ? WHERE id = ?`)
     .run(n.title, n.request, J(n.criteria), J(n.depends), n.status, n.ord, n.change, J(n.changes), n.pr, n.tries, n.checks ? J(n.checks) : null, n.try, n.note,
-      n.merged_at, n.verified_at, n.live_at, Date.now(), id);
+      n.merged_at, n.verified_at, n.live_at, n.build ? J(n.build) : null, Date.now(), id);
   syncItem(cur.item);
   return getTask(id)!;
 }
@@ -337,7 +422,9 @@ export function tasksAwaitingGpu() {
  * -> reached (every item in it is on beta, its checks passed: pm.ts tells J on his phone and in Talk) -> live (J went
  * live with it) | dropped.
  */
-export type Milestone = { id: string; product: string | null; title: string; goal: string | null; test: string | null; status: string; ord: number; origin: string | null; by: string | null; reached_at: number | null; created: number; updated: number | null };
+export type Milestone = { id: string; product: string | null; title: string; goal: string | null; test: string | null; status: string; ord: number; origin: string | null; by: string | null; reached_at: number | null; created: number; updated: number | null;
+  /** The beta runs playing its tasks' scenarios once every task landed (JSON list of run ids; pm.ts milestoneCheck). */
+  checks?: string | null };
 export const MILESTONE_STATUSES = ['open', 'reached', 'live', 'dropped'];
 export const getMilestone = (id: string) => (db.prepare('SELECT * FROM milestones WHERE id = ?').get(id) as Milestone | undefined) ?? null;
 export function listMilestones(q: { product?: string; status?: string } = {}) {
@@ -347,15 +434,22 @@ export function listMilestones(q: { product?: string; status?: string } = {}) {
   return rows.filter((m) => !pid || m.product === pid || m.product === null).map((m) => ({ ...m, ...milestoneProgress(m.id) }));
 }
 /**
- * Its items and how far along they are (items on beta, live or done count as there). A consumed item (done when its
- * tasks were created) counts once its tasks are merged into beta: a milestone is something J playtests himself.
+ * Its items and how far along they are, from their tasks (itemProgress): an item counts once every task of it is on
+ * beta (merged and built by beta), verified or live, or J marked it done himself. A milestone is something J playtests
+ * himself: never "reached" while a task is still being worked on or beta hasn't built it.
  */
 export function milestoneProgress(id: string) {
-  const items = (db.prepare(`SELECT * FROM items WHERE milestone = ? AND status != 'dropped' ORDER BY ord, created`).all(id) as any[]).map(toItem);
-  const landed = (i: Item) => tasksOf(i.id).filter((t) => t.status !== 'dropped' && t.status !== 'idea').every((t) => ['merged', 'verified', 'live'].includes(t.status));
-  const done = items.filter((i) => ['on beta', 'live'].includes(i.status) || (i.status === 'done' && (!i.consumed || landed(i))));
-  return { items: items.map((i) => ({ id: i.id, title: i.title, product: i.product, status: i.status, consumed: Boolean(i.consumed) })), done: done.length, total: items.length };
+  const asked = askedJ();
+  const items = (db.prepare(`SELECT * FROM items WHERE milestone = ? AND status != 'dropped' ORDER BY ord, created`).all(id) as any[]).map(toItem).map((i) => ({ ...i, progress: itemProgress(i, asked) }));
+  const done = items.filter((i) => ['on beta', 'verified', 'live', 'done'].includes(i.progress.state));
+  const tasks = { total: 0, merged: 0, built: 0, working: 0, waiting: 0 };
+  for (const i of items) for (const k of Object.keys(tasks) as (keyof typeof tasks)[]) tasks[k] += i.progress[k];
+  return { items: items.map((i) => ({ id: i.id, title: i.title, product: i.product, status: i.status, display: i.progress.label, state: i.progress.state, consumed: Boolean(i.consumed) })), done: done.length, total: items.length, tasks };
 }
+/** Every task of the milestone's items (not dropped or ideas). */
+export const milestoneTasks = (id: string) => (db.prepare(`SELECT id FROM items WHERE milestone = ? AND status != 'dropped' ORDER BY ord, created`).all(id) as any[])
+  .flatMap((r) => tasksOf(r.id)).filter((t) => t.status !== 'dropped' && t.status !== 'idea');
+export const setMilestoneChecks = (id: string, runs: string[]) => db.prepare('UPDATE milestones SET checks = ?, updated = ? WHERE id = ?').run(J(runs), Date.now(), id);
 export function addMilestone(a: { product?: string | null; title: string; goal?: string; test?: string; items?: unknown; origin?: string | null; by?: string; ord?: number }) {
   if (!a.title?.trim()) throw new StudioError('A milestone needs a title');
   const product = a.product ? productId(a.product) : null;
@@ -372,8 +466,8 @@ export function updateMilestone(id: string, patch: Partial<{ title: string; goal
   // reached comes from its items' checks; by hand a milestone is open, live (J went live with it) or dropped.
   if (patch.status && !['open', 'live', 'dropped'].includes(patch.status)) throw new StudioError('A milestone is reached when its items pass on beta; by hand it can be open, live or dropped');
   const n = { ...cur, ...patch };
-  db.prepare('UPDATE milestones SET title = ?, goal = ?, test = ?, status = ?, ord = ?, reached_at = ?, updated = ? WHERE id = ?')
-    .run(n.title, n.goal, n.test, n.status, n.ord, patch.status === 'open' ? null : n.reached_at, Date.now(), id);
+  db.prepare('UPDATE milestones SET title = ?, goal = ?, test = ?, status = ?, ord = ?, reached_at = ?, checks = ?, updated = ? WHERE id = ?')
+    .run(n.title, n.goal, n.test, n.status, n.ord, patch.status === 'open' ? null : n.reached_at, patch.status === 'open' ? null : n.checks ?? null, Date.now(), id);
   if (patch.items !== undefined) {
     db.prepare('UPDATE items SET milestone = NULL WHERE milestone = ?').run(id);
     for (const it of list(patch.items)) setItemMilestone(it, id);
@@ -385,7 +479,7 @@ function setItemMilestone(item: string, milestone: string | null) {
   if (!db.prepare('SELECT id FROM items WHERE id = ?').get(item)) throw new StudioError(`No item ${item}`);
   db.prepare('UPDATE items SET milestone = ?, updated = ? WHERE id = ?').run(milestone || null, Date.now(), item);
 }
-/** Open milestones whose items (at least one) are all on beta: reached now. */
+/** Open milestones whose items (at least one) are all on beta (merged and built): their check runs, then reached (pm.ts). */
 export function milestonesToReach() {
   return (db.prepare(`SELECT * FROM milestones WHERE status = 'open'`).all() as Milestone[]).filter((m) => {
     const p = milestoneProgress(m.id);
