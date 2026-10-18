@@ -123,6 +123,40 @@ export function stopDetached(rec: DetachRec) {
   }, 15_000).unref();
 }
 
+/**
+ * What a detached unit is doing (the agents' watchdog, agents.ts): the CPU its cgroup has used in all (microseconds,
+ * processes that already exited included) and the processes in it with their state (R running, S sleeping, D waiting
+ * on disk...). Null when it can't be seen (not a systemd unit, gone, not Linux).
+ */
+const cgroups = new Map<string, string>();
+export function detachedActivity(rec: DetachRec): { cpuUsec: number; procs: { pid: number; state: string; comm: string }[] } | null {
+  if (rec.mode !== 'systemd' || process.platform !== 'linux') return null;
+  // Asked once per unit (systemctl waits on the user manager; the cgroup of a running unit doesn't move).
+  let cg = cgroups.get(rec.unit);
+  if (!cg) {
+    const r = systemctl('show', '-p', 'ControlGroup', '--value', `${rec.unit}.service`);
+    cg = r.status === 0 ? r.stdout.trim() : '';
+    if (!cg) return null;
+    cgroups.set(rec.unit, cg);
+  }
+  try {
+    const dir = path.join('/sys/fs/cgroup', cg);
+    const cpuUsec = Number(/usage_usec (\d+)/.exec(fs.readFileSync(path.join(dir, 'cpu.stat'), 'utf8'))?.[1] ?? NaN);
+    const procs: { pid: number; state: string; comm: string }[] = [];
+    for (const pid of fs.readFileSync(path.join(dir, 'cgroup.procs'), 'utf8').split('\n').filter(Boolean).map(Number)) {
+      try {
+        // "<pid> (<comm>) <state> ...": comm can hold spaces and parentheses, so the state follows the last ")".
+        const stat = fs.readFileSync(`/proc/${pid}/stat`, 'utf8');
+        const close = stat.lastIndexOf(')');
+        procs.push({ pid, comm: stat.slice(stat.indexOf('(') + 1, close), state: stat.slice(close + 2, close + 3) });
+      } catch { /* exited meanwhile */ }
+    }
+    return Number.isFinite(cpuUsec) ? { cpuUsec, procs } : null;
+  } catch {
+    return null;
+  }
+}
+
 /** Reads bytes from a file starting at an offset (empty when there's nothing new). */
 function readFrom(f: string, from: number) {
   let fd: number;

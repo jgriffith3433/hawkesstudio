@@ -11,12 +11,14 @@
 // - FAKE_HANG: the first pass writes work.txt, then waits until Studio's time limit stops it; a resumed pass commits.
 // - FAKE_NEVER: every pass writes work.txt and ends with no result and no commit.
 // - FAKE_NOTHING: changes nothing, writes a summary and ends with a result.
+// - FAKE_LINGER: works and commits like a good agent and prints its result, but a background process it started
+//   (its pid in .hawkes/linger.pid) keeps it open forever, like a wait loop on a run it had killed itself.
 // Told to merge its base (a conflict pass: "git merge origin/<base>" in its prompt), it merges keeping its own side of
 // each conflict and commits, unless its brief says FAKE_NOTHING (then it changes nothing: still conflicting).
 import fs from 'node:fs';
 import path from 'node:path';
 import readline from 'node:readline';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 
 const args = process.argv.slice(2);
 const log = (o) => process.env.FAKE_CLAUDE_LOG && fs.appendFileSync(process.env.FAKE_CLAUDE_LOG, `${JSON.stringify(o)}\n`);
@@ -52,7 +54,7 @@ async function agent() {
   out({ type: 'assistant', message: { content: [{ type: 'text', text: 'Looking at the brief.' }] } });
   let brief = '';
   try { brief = fs.readFileSync(path.join('.hawkes', 'brief.md'), 'utf8'); } catch { /* none */ }
-  const mode = /FAKE_(STOP|HANG|NEVER|NOTHING)/.exec(brief)?.[1];
+  const mode = /FAKE_(STOP|HANG|NEVER|NOTHING|LINGER)/.exec(brief)?.[1];
   if (mode === 'NOTHING') {
     fs.mkdirSync('.hawkes', { recursive: true });
     fs.writeFileSync(path.join('.hawkes', 'summary.md'), 'I looked and it already works; I changed nothing.');
@@ -86,6 +88,11 @@ async function agent() {
   out({ type: 'assistant', message: { content: [{ type: 'text', text: 'Done: committed the fix.' }] } });
   out({ type: 'result', subtype: 'success', result: 'Made the start button bigger.', session_id: 'fake-agent-session', total_cost_usd: 0.25, duration_ms: 5 });
   log({ agentDone: process.cwd() });
+  if (mode === 'LINGER') {
+    const bg = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });
+    fs.writeFileSync(path.join('.hawkes', 'linger.pid'), String(bg.pid));
+    await new Promise((r) => bg.on('exit', r));
+  }
 }
 
 if (args.includes('--permission-mode')) {

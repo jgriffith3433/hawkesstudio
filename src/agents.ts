@@ -56,7 +56,7 @@ import { briefSection, learnFrom, recordRun, LEARNED_ASK } from './memory.ts';
 import { canonCheck, CONTENTISH } from './canon.ts';
 import { roleArgs, loadRole, type RoleName } from './roles.ts';
 import { claudeCommand, spawnShell, sandboxShare, assertWorktree, shareWorktree } from './sandbox.ts';
-import { launch, DetachedChild, type DetachRec } from './detach.ts';
+import { launch, DetachedChild, detachedActivity, type DetachRec } from './detach.ts';
 import { warmDeps } from './warm.ts';
 
 db.exec(`
@@ -116,9 +116,12 @@ function changeLinks(r: any, verify: any): ChangeLinks {
 }
 
 const SETTINGS_FILE = path.join(DATA, 'agents.json');
-/** autoMergeBeta: ready product changes merge into beta by themselves (J, 2026-10-17); off: a person merges them. */
-export type AgentSettings = { enabled: boolean; autoFix: boolean; autoMergeBeta: boolean; betaPlaytests: boolean; maxConcurrent: number; maxPerDay: number; maxCostPerDay: number; severities: string[]; model: string; maxTurns: number };
-const DEFAULTS: AgentSettings = { enabled: true, autoFix: true, autoMergeBeta: true, betaPlaytests: false, maxConcurrent: 2, maxPerDay: 4, maxCostPerDay: 20, severities: ['blocker', 'bug'], model: 'claude-opus-5-5', maxTurns: 80 };
+/**
+ * autoMergeBeta: ready product changes merge into beta by themselves (J, 2026-10-17); off: a person merges them.
+ * idleMinutes: an agent with no new output that long, its processes only sleeping, is ended (runAgent's watchdog; 0: off).
+ */
+export type AgentSettings = { enabled: boolean; autoFix: boolean; autoMergeBeta: boolean; betaPlaytests: boolean; maxConcurrent: number; maxPerDay: number; maxCostPerDay: number; severities: string[]; model: string; maxTurns: number; idleMinutes: number };
+const DEFAULTS: AgentSettings = { enabled: true, autoFix: true, autoMergeBeta: true, betaPlaytests: false, maxConcurrent: 2, maxPerDay: 4, maxCostPerDay: 20, severities: ['blocker', 'bug'], model: 'claude-opus-5-5', maxTurns: 80, idleMinutes: 20 };
 export function agentSettings(): AgentSettings {
   try {
     return { ...DEFAULTS, ...JSON.parse(fs.readFileSync(SETTINGS_FILE, 'utf8')) };
@@ -545,6 +548,26 @@ export function agentLimitMs(c: { infra?: boolean; request?: string | null; find
   if (env > 0) return env;
   return roleOf(c) === 'content' ? 3 * 60 * 60_000 : 60 * 60_000;
 }
+/**
+ * How long a session may stay open after its final result before Studio ends it: on 2026-10-18 an agent's own
+ * background wait loop kept `claude -p` alive 70 minutes after it had finished, holding its product's slot.
+ * STUDIO_AGENT_GRACE_MS: tests.
+ */
+export const graceMs = () => Number(process.env.STUDIO_AGENT_GRACE_MS) > 0 ? Number(process.env.STUDIO_AGENT_GRACE_MS) : 60_000;
+
+/**
+ * The watchdog's call on an agent that has been quiet (no new output) for `quietMs`: why it's stuck (a line for the
+ * log), or null to leave it. Stuck only when quiet for the whole idle time, its processes used next to no CPU over it
+ * (under 2% of one CPU), none is running or waiting on disk, and it isn't waiting on a Gen (GPU) job.
+ */
+export function stuckWhy({ quietMs, idleMs, cpuMs, overMs, procs, genBusy }: { quietMs: number; idleMs: number; cpuMs: number; overMs: number; procs: { state: string; comm: string }[]; genBusy: boolean }): string | null {
+  if (!(idleMs > 0) || quietMs < idleMs || overMs < idleMs * 0.75 || genBusy) return null;
+  if (cpuMs > overMs * 0.02) return null;
+  if (procs.some((p) => p.state === 'R' || p.state === 'D')) return null;
+  const left = [...new Set(procs.map((p) => p.comm))].filter((n) => !['node', 'claude', 'sudo'].includes(n));
+  return `no new output for ${Math.round(quietMs / 60_000)} minutes and its processes only waiting${left.length ? ` (${left.slice(0, 6).join(', ')})` : ''}`;
+}
+
 /** A session that ended with its work uncommitted is resumed this many times to commit it (agents.ts nudge). */
 export const NUDGES = 2;
 
@@ -587,6 +610,40 @@ function runAgent(c: Change, briefFile: string, s: AgentSettings, env = claudeEn
     let saved = 0;
     const limit = agentLimitMs(c);
     let timedOut = false;
+    // Ending it on Studio's own call (done but still open, or stuck): kill() stops the whole unit (detached-run.mjs).
+    let ending = false;
+    const end = (line: string) => {
+      if (ending) return;
+      ending = true;
+      addLog(c.id, `agent: ${line}`);
+      child.kill('SIGTERM');
+    };
+    let grace: NodeJS.Timeout | undefined;
+    // The watchdog: quiet since `lastOut`; CPU counted from the first look after it went quiet.
+    let lastOut = Date.now();
+    let usedGen = false;
+    let base: { at: number; cpuUsec: number } | null = null;
+    const idleMs = (s.idleMinutes ?? DEFAULTS.idleMinutes) * 60_000;
+    const watch = setInterval(async () => {
+      const rec = child instanceof DetachedChild ? child.rec : null;
+      if (ending || !rec || !(idleMs > 0)) return;
+      if (Date.now() - lastOut < Math.min(idleMs / 4, 60_000)) return void (base = null);
+      const now = detachedActivity(rec);
+      if (!now) return;
+      if (!base) return void (base = { at: Date.now(), cpuUsec: now.cpuUsec });
+      const quietMs = Date.now() - lastOut;
+      if (quietMs < idleMs) return;
+      // A Gen job it may be waiting on (a GPU batch) keeps it: anything queued or running (or Gen not answering) counts.
+      let genBusy = false;
+      if (usedGen) genBusy = await gen.jobs({ status: 'queued,running', limit: 20 }).then((j: any[]) => j.length > 0, () => true);
+      const why = stuckWhy({ quietMs, idleMs, cpuMs: (now.cpuUsec - base.cpuUsec) / 1000, overMs: Date.now() - base.at, procs: now.procs, genBusy });
+      if (!why || ending || Date.now() - lastOut < quietMs) return;
+      end(`${why}: Studio ended it (the session and its background processes) and carries on with the change`);
+      const { tellAbout } = await import('./followup.ts');
+      const cur = getChange(c.id);
+      if (cur) await tellAbout(cur, `Agent ended: ${cur.title ?? c.id}`, `Agent change ${c.id} (${cur.title}) was stuck: ${why}. Studio ended its session and carries on with the change.`).catch((e) => console.warn(`[studio] stuck notice ${c.id}: ${e.message ?? e}`));
+    }, Math.max(1000, Math.min(60_000, idleMs / 8)));
+    watch.unref();
     const timer = setTimeout(() => {
       timedOut = true;
       addLog(c.id, `agent: stopped at its ${limit >= 60_000 ? `${Math.round(limit / 60_000)}-minute` : `${Math.round(limit / 1000)}-second`} limit for one pass`);
@@ -594,6 +651,7 @@ function runAgent(c: Change, briefFile: string, s: AgentSettings, env = claudeEn
     }, Math.max(5_000, limit - (Date.now() - started)));
     child.stdout!.on('data', (d) => {
       buf += d;
+      lastOut = Date.now();
       let i;
       while ((i = buf.indexOf('\n')) >= 0) {
         const line = buf.slice(0, i);
@@ -609,12 +667,15 @@ function runAgent(c: Change, briefFile: string, s: AgentSettings, env = claudeEn
               if (part.type === 'tool_use') addLog(c.id, `tool: ${part.name} ${JSON.stringify(part.input).slice(0, 160)}`);
             }
           }
+          if (m.type === 'assistant' && (m.message?.content ?? []).some((p: any) => p.type === 'tool_use' && String(p.name).startsWith('mcp__hawkesgen'))) usedGen = true;
           if (m.type === 'result') {
             out.cost = Number(m.total_cost_usd) || 0;
             out.result = String(m.result ?? '');
             out.ok = !m.is_error;
             out.sawResult = true;
             if (m.subtype === 'error_max_turns') out.stopped = 'turns';
+            // Done: a session still open after the grace (its background shells keep it alive) is ended.
+            grace ??= setTimeout(() => end(`finished, but its session was still open ${Math.round(graceMs() / 1000)} s after its final result (background processes keep it alive); ended it and its background processes, carrying on with the change`), graceMs());
           }
         } catch {
           // Not JSON.
@@ -629,6 +690,8 @@ function runAgent(c: Change, briefFile: string, s: AgentSettings, env = claudeEn
     child.stderr!.on('data', (d) => addLog(c.id, `stderr: ${String(d).slice(0, 300)}`));
     child.on('close', () => {
       clearTimeout(timer);
+      clearTimeout(grace);
+      clearInterval(watch);
       out.lost = child instanceof DetachedChild && child.lost && !out.sawResult;
       if (timedOut) out.stopped = 'time';
       else if (!out.sawResult && !out.lost) out.stopped ??= 'cut';
@@ -636,6 +699,8 @@ function runAgent(c: Change, briefFile: string, s: AgentSettings, env = claudeEn
     });
     child.on('error', (e: Error) => {
       clearTimeout(timer);
+      clearTimeout(grace);
+      clearInterval(watch);
       addLog(c.id, `couldn't start Claude Code: ${e.message}`);
       resolve({ ok: false, cost: 0, result: e.message, sawResult: false, lost: false });
     });

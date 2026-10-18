@@ -100,6 +100,11 @@ Hawkes Gen and Hawkes Studio are private GitHub repos (`jgriffith3433/hawkesgen`
      server) counts as running. An agent that stops (that limit, its turn limit, a cut session) with its work
      uncommitted has its session resumed to commit it and finish, at most twice (`needsNudge`); only then, or when it
      changed nothing, does the change fail with "the agent made no commit".
+   - **A finished agent ends**: a session still open 60 s after its final result (a background shell keeps it alive)
+     is stopped and the change carries on; so is one with no new output for `agents.idleMinutes` (default 20) whose
+     processes only sleep (under 2% CPU, nothing running, no Gen job queued or running), told in a line in the change
+     and in Talk (`stuckWhy`). When its command exits, `detached-run.mjs` ends everything left in the unit's cgroup
+     (`cgroup.kill`: the sandbox user's background shells, which systemd's own stop can't signal).
    - **Runs** carry on: finished steps stay, a running step waits for its Gen job again (no second build, playtest or
      review; no findings filed twice), the rest proceed. Asset runs and go lives too.
    - **Critical sections** (`src/drain.ts`): the short steps that must not be cut halfway. `GET /api/self-deploys` lists

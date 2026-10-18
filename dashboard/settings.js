@@ -75,6 +75,7 @@
       ${row('Dollars per day (reported)', num('agents', 'maxCostPerDay', a.maxCostPerDay, { step: 1 }))}
       ${row('Model', `<input type="text" data-s="agents" data-k="model" value="${esc(a.model)}">`)}
       ${row('Turns per run', num('agents', 'maxTurns', a.maxTurns, { min: 10 }))}
+      ${row('End a stuck agent after (minutes)', num('agents', 'idleMinutes', a.idleMinutes ?? 20), 'An agent with no new output this long, whose processes are only waiting or sleeping (no GPU job running), is ended and its change carries on. 0: never.')}
     </div>`;
   }
 
