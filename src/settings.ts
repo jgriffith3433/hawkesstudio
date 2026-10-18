@@ -5,7 +5,7 @@
 //   agents   agent limits (agents.ts, .data/agents.json)
 //   pm       the PM loop (pm.ts, .data/pm.json)
 //   notify   phone notifications (notify.ts; the topic and server are the dashboard's only)
-//   costs    the budget and alert limits (costs.ts)
+//   costs    the budget, alert limits and the GPU auto-approval threshold (costs.ts)
 //
 // Changes that can raise what Studio spends (more agents or starts, higher limits or budget, the paid voice) need J's
 // own yes when they come from Talk: the request quotes his words and Studio checks they are in his messages there.
@@ -120,7 +120,7 @@ const RAISES: Record<Section, { up?: string[]; on?: string[]; off?: string[]; an
   agents: { up: ['maxConcurrent', 'maxPerDay', 'maxCostPerDay', 'maxTurns'], on: ['enabled', 'autoFix'], any: ['model', 'severities'] },
   pm: { up: ['maxStartsPerDay', 'maxConcurrent', 'maxTries'], on: ['enabled', 'fixBugs'] },
   notify: {},
-  costs: { up: ['budget', 'gpuHours', 'builderHours', 'playtesterHours'], off: ['alerts'] },
+  costs: { up: ['budget', 'gpuHours', 'builderHours', 'playtesterHours', 'gpuAutoApprove'], off: ['alerts'] },
 };
 
 /** What in this patch could raise costs (empty: nothing). */
