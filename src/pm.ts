@@ -21,7 +21,8 @@
 // Only real decisions reach J (askJ): direction, money, something still failing after 3 tries, anything touching
 // live. Each is one question in Talk (the conversation that started the work, else the PM's) and on his phone.
 // Every merge, won't-fix, start and answer is in the decision log (roadmap.ts pm_log), with undo where possible.
-// Going live stays J's (DEPLOY <product>). Studio and Gen changes always need J's approval (they restart services).
+// Going live stays J's (DEPLOY <product>). Studio and Gen changes need J's approval (they restart services), except in
+// walk-away mode (walkaway.ts), where they merge by themselves once green and the PM decides routine calls itself.
 
 import fs from 'node:fs';
 import { critical, criticalSync } from './drain.ts';
@@ -32,7 +33,7 @@ import { DATA, PROJECTS, getProduct, getInfra, isInfra, today, StudioError, beta
 import {
   getTask, setTask, getItem, startableTasks, tasksAwaitingGpu, taskOfChange, addQuestion, listQuestions, getQuestion, setQuestion, addComment, isCommentSubject,
   logDecision, listDecisions, getDecision, markUndone, countToday, listItems, threadFor, milestonesToReach, markReached, getMilestone, milestoneTasks, setMilestoneChecks,
-  itemProgress, GPU_WAIT, type Task, type Check, type TaskBuild,
+  itemProgress, GPU_WAIT, type Task, type Check, type TaskBuild, type Question,
 } from './roadmap.ts';
 import { gate, allMet } from './acceptance.ts';
 import { notify, PUBLIC_URL } from './notify.ts';
@@ -41,6 +42,7 @@ import { BETA, gitAsync, repoDirs, shaOf } from './beta.ts';
 import { buildErrors, pickCulprit } from './buildblame.ts';
 import { curationLine } from './memory.ts';
 import { filesIn, type WorkShape } from './parallel.ts';
+import { WALK_DEFAULTS, WALK_AWAY_BY, walkAwayOn, type WalkAwaySettings } from './walkaway.ts';
 
 // ---------------------------------------------------------------- settings
 
@@ -62,8 +64,8 @@ export type PmSettings = {
   dailyHour: number;
   /** Minutes a ready change waits for a PM turn before the defaults apply. */
   graceMinutes: number;
-};
-const DEFAULTS: PmSettings = { enabled: true, delegatedMerges: true, maxStartsPerDay: 8, maxConcurrent: 2, maxTries: 3, fixBugs: true, dailyHour: 9, graceMinutes: 15 };
+} & WalkAwaySettings;
+const DEFAULTS: PmSettings = { enabled: true, delegatedMerges: true, maxStartsPerDay: 8, maxConcurrent: 2, maxTries: 3, fixBugs: true, dailyHour: 9, graceMinutes: 15, ...WALK_DEFAULTS };
 export function pmSettings(): PmSettings {
   try {
     return { ...DEFAULTS, ...JSON.parse(fs.readFileSync(FILE, 'utf8')) };
@@ -162,6 +164,12 @@ export async function syncTasks() {
     await followBuilds();
   } catch (e: any) {
     console.warn(`[pm] beta builds: ${e.message ?? e}`);
+  }
+  // Walk-away mode: investigations that finished let their held tasks go (judged again, or decided one by one).
+  try {
+    await releaseInvestigations();
+  } catch (e: any) {
+    console.warn(`[pm] investigations: ${e.message ?? e}`);
   }
   // Items that just reached beta: J hears it's ready for him to test.
   for (const it of db.prepare(`SELECT id FROM items WHERE status = 'on beta' AND (note IS NULL OR note NOT LIKE '%[told ready]%')`).all() as any[]) announceReady(it.id);
@@ -277,6 +285,11 @@ async function checkOnBeta(t: Task) {
   if (!missed.some((r) => r.met === 'no')) {
     logDecision('beta-check', t.id, t.product, `"${t.title}": on beta, nothing failed but unclear (run ${judged.run}): ${why}`.slice(0, 1000));
     pmEvent('beta check', `Task ${t.id} ("${t.title}", ${name(t.product)}) is merged; beta's run ${judged.run} couldn't tell for: ${why}. Nothing restarts; ask for a playtest that reaches it if it matters.`, t.id, t.product);
+    return;
+  }
+  // Walk-away mode: the PM decides it (try again, park, or one investigation for many), never a question per task.
+  if (walkAwayOn()) {
+    await decideMiss(getTask(t.id)!, { where: 'beta', at: judged.started, run: judged.run, video, verdict: judged.data.verdict }, judged.data.criteria as Check[]);
     return;
   }
   setTask(t.id, { status: 'failed', note: `on beta: ${why}`.slice(0, 1000) });
@@ -577,8 +590,20 @@ export async function startWork() {
   const sd = selfDeploys(1)[0];
   if (sd?.outcome === 'waiting' && Date.now() - Date.parse(sd.at) < 3 * 3600_000) return [];
   const out: string[] = [];
-  // Content tasks that would spend GPU money wait for J's budget: ask him once each, with the estimate.
-  for (const t of tasksAwaitingGpu()) {
+  // Content tasks that would spend GPU money wait for J's budget: ask him once each, with the estimate. Walk-away mode:
+  // Studio approved what fits its caps (roadmap.ts autoApproveGpu); the rest is one digest card in his Inbox and one
+  // phone line a day, not a question per task.
+  const gpuWaits = tasksAwaitingGpu();
+  if (walkAwayOn() && gpuWaits.length) {
+    const st = state() as any;
+    if (st.gpuDigest !== today()) {
+      saveState({ gpuDigest: today() });
+      const sum = gpuWaits.reduce((a, t) => a + (t.gpu?.estimate && !t.gpu.estimate.error ? t.gpu.estimate.cost : 0), 0);
+      logDecision('gpu digest', null, null, `${gpuWaits.length} GPU budget(s) above walk-away's caps (about $${sum.toFixed(2)}): one card in J's Inbox`);
+      void notify('GPU budgets wait for you', `${gpuWaits.length} task(s) need GPU budgets above Studio's own limits (about $${sum.toFixed(2)} in all): one card in your Inbox.`, { url: `${PUBLIC_URL}/#inbox`, priority: 3, tags: ['moneybag'] });
+    }
+  }
+  for (const t of walkAwayOn() ? [] : gpuWaits) {
     const e = t.gpu?.estimate;
     const text = e && !e.error
       ? `"${t.title}" (${name(t.product)}) will generate on the GPU: about ${e.gpuHours} GPU-hours on ${e.servers} server(s), ~$${e.cost.toFixed(2)} ($${e.withIdleTail.toFixed(2)} if the servers idle out instead of being stopped), about ${e.wallMinutes} min. Approve a budget for it?`
@@ -1053,6 +1078,217 @@ export function triageFinding(id: string, action: 'wontfix' | 'duplicate' | 'lin
   return db.prepare('SELECT * FROM findings WHERE id = ?').get(id);
 }
 
+// ------------------------------------------------------------ walk-away mode
+
+// Walk-away mode (walkaway.ts): the PM decides routine calls itself, each in its decision log with undo, never one
+// question per task. What stays J's: going live, rollbacks, new GPU servers, spend above the caps, protected files,
+// failures after all tries, milestones, real direction questions.
+
+/** One investigation per product holding the tasks that missed their criteria on beta the same way (pm-state.json). */
+type Investigation = { change: string; tasks: string[]; run: string; at: number };
+const investigations = (): Record<string, Investigation> => (state() as any).investigations ?? {};
+const saveInvestigations = (v: Record<string, Investigation>) => saveState({ investigations: v });
+/** The open investigation holding a task (tests, the Roadmap's note), or null. */
+export const heldFor = (taskId: string) => Object.values(investigations()).find((i) => i.tasks.includes(taskId)) ?? null;
+
+/** How to take back a decision about tasks: their fields before it, and a change it started (closed on undo). */
+const tasksUndo = (ids: string[], change: string | null = null) => ({
+  kind: 'tasks', change, tasks: ids.map((id) => { const x = getTask(id)!; return { id, status: x.status, tries: x.tries, note: x.note, checks: x.checks }; }),
+});
+
+/** A task that missed its criteria, decided alone: try again (a try) while it has tries, else parked as an idea. */
+function retryOrPark(t: Task, why: string) {
+  const s = pmSettings();
+  const undo = tasksUndo([t.id]);
+  if (t.tries < s.maxTries) {
+    setTask(t.id, { status: 'planned', checks: null, note: `trying again (the PM decided): ${why}`.slice(0, 1000) });
+    try { addComment(t.id, `On beta it missed its criteria: ${why}. Try again on top of beta (the earlier attempt is merged there).`.slice(0, 4000), WALK_AWAY_BY); } catch { /* not a thread subject */ }
+    logDecision('retry', t.id, t.product, `"${t.title}" misses criteria on beta: trying again (${t.tries} of ${s.maxTries} tries used): ${why}`.slice(0, 1500), undo);
+    return 'retry';
+  }
+  setTask(t.id, { status: 'idea', note: `parked by the PM after ${t.tries} tries: ${why}`.slice(0, 1000) });
+  logDecision('park', t.id, t.product, `"${t.title}" still misses criteria on beta after ${t.tries} tries: parked as an idea: ${why}`.slice(0, 1500), undo);
+  return 'park';
+}
+
+/**
+ * A merged task missing criteria on beta, decided by the PM in walk-away mode (no question for J). When beta itself
+ * looks broken (two or more of the product's tasks missed in the same beta run, beta's build failed after it, or an
+ * investigation is already open), ONE investigation change is filed for the product and the tasks are held until it
+ * merges (then judged again on beta: releaseInvestigations). Otherwise: try again, or parked after maxTries.
+ * checks: beta's check of this task (its run, verdict); results: everything that run judged.
+ */
+export async function decideMiss(t: Task, checks: { where: 'beta'; at: number; run: string; video?: string | null; verdict?: string }, results: Check[]) {
+  const all = investigations();
+  const open = all[t.product];
+  if (open?.tasks.includes(t.id)) return 'held';
+  const missed = (x: Task) => x.criteria.filter((k) => results.find((r) => r.criterion === k)?.met === 'no');
+  const why = (x: Task) => missed(x).map((k) => `${k} (${results.find((r) => r.criterion === k)?.evidence ?? 'no'})`).join('; ') || 'missed on beta';
+  // Others of the product this same run judged and missed (merged, or already failed by it).
+  const same = (db.prepare(`SELECT id FROM tasks WHERE product = ? AND status IN ('merged', 'failed')`).all(t.product) as any[])
+    .map((r) => getTask(r.id)!).filter((x) => x.id === t.id || missed(x).length > 0);
+  if (!same.some((x) => x.id === t.id)) same.push(t);
+  const brokenBuild = Boolean(t.build && !t.build.ok);
+  if (same.length < 2 && !brokenBuild && !open) {
+    setTask(t.id, { checks });
+    return retryOrPark(getTask(t.id)!, why(t));
+  }
+  const fresh = same.filter((x) => !open?.tasks.includes(x.id));
+  const undo = tasksUndo(fresh.map((x) => x.id));
+  let change = open?.change ?? null;
+  if (!change) {
+    const list = fresh.map((x) => `- ${x.id} "${x.title}": ${why(x)}`).join('\n');
+    const request = `Investigate beta (filed by the Studio PM in walk-away mode): beta run ${checks.run} missed the acceptance criteria of ${fresh.length} task(s) at once${brokenBuild ? `, and beta's build failed after "${t.title}" merged (${String(t.build?.detail ?? '').slice(0, 300)})` : ''}. That usually means beta's build or data is broken or stale, not each task's work.\n\n${list}\n\nFind the shared cause on beta (a build that didn't pick up the merges, stale generated data, a broken scene or config) and fix it. Don't redo the tasks' own work. Say in .hawkes/summary.md what was wrong.`;
+    try {
+      const { startTask } = await changes();
+      change = startTask(t.product, request, { title: `Investigate: ${fresh.length} task(s) miss their criteria on beta (run ${checks.run})` });
+    } catch (e: any) {
+      // No agents here: each task is decided on its own.
+      console.warn(`[pm] investigation for ${t.product}: ${e.message ?? e}`);
+      setTask(t.id, { checks });
+      return retryOrPark(getTask(t.id)!, why(t));
+    }
+  }
+  for (const x of fresh) setTask(x.id, { status: 'failed', checks: { ...checks, results: x.criteria.map((k) => results.find((r) => r.criterion === k)).filter(Boolean) }, note: `held: beta looks broken for several tasks; investigation ${change} fixes it, then this is judged again on beta (the PM decided)` });
+  all[t.product] = { change: change!, tasks: [...(open?.tasks ?? []), ...fresh.map((x) => x.id)], run: open?.run ?? checks.run, at: open?.at ?? Date.now() };
+  saveInvestigations(all);
+  logDecision('investigate', t.id, t.product, `${fresh.length} task(s) of ${name(t.product)} miss their criteria on beta run ${checks.run}${brokenBuild ? ' after a failed build' : ''} (${fresh.map((x) => `"${x.title}"`).join(', ')}): ${open ? `held with the open investigation ${change}` : `filed ONE investigation ${change}`} and held them until it merges`.slice(0, 1500), { ...undo, change: open ? null : change });
+  if (!open) void postTo(null, `Investigating beta: ${name(t.product)}`, `Studio PM (walk-away): ${fresh.length} ${name(t.product)} task(s) miss their criteria on beta run ${checks.run} the same way, so beta itself looks broken. I filed one investigation (${change}) and hold the tasks until it merges; then they're judged again on beta. Nothing for you to decide.`).catch(() => {});
+  return 'investigate';
+}
+
+/** Investigations that finished: merged, their tasks judged again on beta (one beta run); failed or closed, each task decided alone. */
+export async function releaseInvestigations() {
+  const all = investigations();
+  if (!Object.keys(all).length) return [];
+  const { getChange } = await changes();
+  const out: string[] = [];
+  for (const [product, inv] of Object.entries(all)) {
+    const c = getChange(inv.change);
+    if (c && !['merged', 'closed', 'failed'].includes(c.status)) continue;
+    delete all[product];
+    saveInvestigations(all);
+    out.push(inv.change);
+    const tasks = inv.tasks.map((id) => getTask(id)).filter((x): x is Task => Boolean(x) && x!.status === 'failed');
+    if (c?.status === 'merged') {
+      for (const x of tasks) setTask(x.id, { status: 'merged', merged_at: Date.now(), checks: null, note: `judged again on beta after investigation ${inv.change} merged` });
+      const criteria = [...new Set(tasks.flatMap((x) => x.criteria))];
+      let run = '';
+      if (criteria.length && hasBeta(product)) {
+        try {
+          const { startBeta } = await import('./pipeline.ts');
+          run = startBeta(product, { focus: `Re-checking ${tasks.length} task(s) after investigation ${inv.change} fixed beta.`, criteria, playtest: true }).id;
+        } catch (e: any) {
+          console.warn(`[pm] re-check after ${inv.change}: ${e.message ?? e}`);
+        }
+      }
+      logDecision('recheck', inv.change, product, `investigation ${inv.change} merged: ${tasks.length} held task(s) judged again on beta${run ? ` (run ${run})` : ''}`);
+    } else {
+      for (const x of tasks) retryOrPark(x, `its investigation ${inv.change} ${c?.status ?? 'is gone'}; on beta it missed: ${String(x.note ?? '').slice(0, 300)}`);
+      logDecision('recheck', inv.change, product, `investigation ${inv.change} ${c?.status ?? 'is gone'}: its ${tasks.length} held task(s) decided one by one`);
+    }
+  }
+  return out;
+}
+
+/** The text checkOnBeta asked J with before walk-away mode ("... is merged into beta but misses criteria there ..."). */
+const MISS_QUESTION = /is merged into beta but misses criteria there/;
+/** A change already fixing beta for a product (not a task's): stale build or data, an investigation. */
+const FIXING_BETA = /\b(stale|investigat\w*|build data|beta'?s build|rebuild)\b/i;
+
+/**
+ * Walk-away mode taking over the "misses criteria" questions already in J's Inbox: grouped by product, two or more (or
+ * a change already fixing beta's build or data) are held under one investigation (that change, else a new one); a lone
+ * one is tried again or parked. Each question is closed with what the PM decided. Returns the questions it settled.
+ */
+export async function settleMissQuestions() {
+  const qs = listQuestions().filter((q) => q.kind === 'decision' && q.subject?.startsWith('k_') && MISS_QUESTION.test(q.text));
+  if (!qs.length) return [];
+  const byProduct = new Map<string, { q: Question; t: Task }[]>();
+  for (const q of qs) {
+    const t = getTask(q.subject!);
+    if (!t) continue;
+    byProduct.set(t.product, [...(byProduct.get(t.product) ?? []), { q, t }]);
+  }
+  const out: string[] = [];
+  for (const [product, list] of byProduct) {
+    const all = investigations();
+    let inv = all[product];
+    if (!inv) {
+      const fixing = (db.prepare(`SELECT id, title, request FROM changes WHERE product = ? AND task IS NULL AND status NOT IN ('merged', 'closed', 'failed') ORDER BY created DESC`).all(product) as any[])
+        .find((c) => FIXING_BETA.test(`${c.title ?? ''} ${c.request ?? ''}`));
+      if (fixing) inv = { change: fixing.id, tasks: [], run: 'earlier beta runs', at: Date.now() };
+    }
+    const decided = new Map<string, string>();
+    if (inv || list.length >= 2) {
+      const undo = tasksUndo(list.map((x) => x.t.id));
+      if (!inv) {
+        const { startTask } = await changes();
+        try {
+          const change = startTask(product, `Investigate beta (filed by the Studio PM in walk-away mode): ${list.length} task(s) are merged into beta but miss their acceptance criteria there, which usually means beta's build or data is broken or stale, not each task's work.\n\n${list.map((x) => `- ${x.t.id} "${x.t.title}": ${String(x.t.note ?? '').slice(0, 300)}`).join('\n')}\n\nFind the shared cause on beta and fix it. Don't redo the tasks' own work. Say in .hawkes/summary.md what was wrong.`, { title: `Investigate: ${list.length} task(s) miss their criteria on beta` });
+          inv = { change, tasks: [], run: 'earlier beta runs', at: Date.now() };
+        } catch (e: any) {
+          console.warn(`[pm] investigation for ${product}: ${e.message ?? e}`);
+        }
+      }
+      if (inv) {
+        for (const { t } of list) {
+          if (!inv.tasks.includes(t.id)) inv.tasks.push(t.id);
+          setTask(t.id, { status: 'failed', note: `held: investigation ${inv.change} fixes beta, then this is judged again on beta (the PM decided)` });
+          decided.set(t.id, `held until ${inv.change} (fixing beta) merges, then judged again on beta`);
+        }
+        all[product] = inv;
+        saveInvestigations(all);
+        logDecision('investigate', list[0].t.id, product, `took over ${list.length} "misses criteria" question(s) of ${name(product)}: held the tasks under ${inv.change}, which fixes beta; they're judged again once it merges`, { ...undo, change: null });
+      }
+    }
+    for (const { q, t } of list) {
+      const what = decided.get(t.id) ?? (retryOrPark(t, String(t.note ?? 'missed its criteria on beta').replace(/^on beta: /, '')) === 'retry' ? 'trying again' : 'parked as an idea');
+      setQuestion(q.id, { status: 'resolved', answer: `(the PM decided in walk-away mode: ${what})`, answered_by: WALK_AWAY_BY });
+      out.push(q.id);
+    }
+  }
+  return out;
+}
+
+/** Decisions walk-away mode and the PM made on their own (the daily digest). */
+const SELF_DECIDED = ['walk-away', 'retry', 'park', 'investigate', 'recheck', 'gpu auto-approve', 'merge', 'revise', 'answer', 'start', 'wontfix', 'duplicate', 'link', 'conflict'];
+
+/**
+ * Once a day (after dailyHour) in walk-away mode: one line per kind of what the PM decided by itself in the last day,
+ * in the day's PM conversation (Talk). Also the phone, once, for a Studio or Gen deploy that rolled back.
+ */
+async function walkAwayDaily() {
+  const st = state() as any;
+  const now = Date.now();
+  const s = pmSettings();
+  if (st.digest !== today() && new Date().getHours() >= s.dailyHour) {
+    saveState({ digest: today() });
+    const ds = listDecisions({ since: now - 86_400_000, limit: 500 }).filter((d) => SELF_DECIDED.includes(d.action) && !d.undone);
+    if (ds.length) {
+      const by = new Map<string, typeof ds>();
+      for (const d of ds) by.set(d.action, [...(by.get(d.action) ?? []), d]);
+      const lines = [...by].map(([a, list]) => `- ${a} (${list.length}): ${list.slice(0, 4).map((d) => d.detail?.slice(0, 160)).join(' · ')}${list.length > 4 ? ' …' : ''}`);
+      const text = `What I decided on my own in the last day (walk-away mode; every one is in the PM log with undo, ${PUBLIC_URL}/#roadmap):\n\n${lines.join('\n')}`;
+      try {
+        const talk = await import('./talk.ts');
+        if (!talk.studioNote(await pmConversation(), text)) talk.postNotice('Walk-away: the day', text);
+      } catch (e: any) {
+        console.warn(`[pm] walk-away digest: ${e.message ?? e}`);
+      }
+    }
+  }
+  // A Studio or Gen deploy that rolled back: the phone, once each (hawkes-pull records it in self-deploys.jsonl).
+  const { selfDeploys } = await import('./selfdeploy.ts');
+  const seen = Number(st.rollbackSeen ?? 0);
+  const back = selfDeploys(10).filter((d) => d.outcome === 'failed' && Date.parse(d.at) > seen);
+  if (back.length) {
+    saveState({ rollbackSeen: Math.max(...back.map((d) => Date.parse(d.at))) });
+    // The first look after this starts only records where things are (old rollbacks aren't news).
+    if (seen) for (const d of back) void notify(`${d.repo} deploy rolled back`, `${String(d.detail ?? '').slice(0, 300)} (${String(d.to ?? '').slice(0, 7)})`, { url: `${PUBLIC_URL}/#changes`, priority: 4, tags: ['warning'] });
+  } else if (!seen) saveState({ rollbackSeen: now });
+}
+
 // ---------------------------------------------------------------------- undo
 
 /** Takes a PM decision back where that's possible. */
@@ -1075,6 +1311,17 @@ export async function undoDecision(id: string, by = 'J') {
   } else if (u.kind === 'merge') {
     detail = await revertOnBeta(u.repo, u.pr, by);
     if (u.task) setTask(u.task, { status: 'idea', note: `merge undone by ${by} (reverted on beta)` });
+  } else if (u.kind === 'tasks') {
+    // A walk-away decision (retry, park, investigate): the tasks as they were; an investigation it started is closed.
+    const { close, getChange } = await changes();
+    if (u.change && getChange(u.change) && !['merged', 'closed'].includes(getChange(u.change)!.status)) await close(u.change, by);
+    if (u.change) {
+      const all = investigations();
+      for (const [k, v] of Object.entries(all)) if (v.change === u.change) delete all[k];
+      saveInvestigations(all);
+    }
+    for (const x of u.tasks ?? []) if (getTask(x.id)) setTask(x.id, { status: x.status, tries: x.tries, note: x.note, checks: x.checks });
+    detail = `${(u.tasks ?? []).length} task(s) back as they were${u.change ? `; closed ${u.change}` : ''}`;
   } else if (u.kind === 'settings') {
     fs.writeFileSync(FILE, JSON.stringify({ ...pmSettings(), ...u.before }, null, 2));
     detail = `settings back: ${JSON.stringify(u.before)}`;
@@ -1137,7 +1384,11 @@ ${evs.length ? evs.map((e) => `- ${e.kind}${e.subject ? ` (${e.subject})` : ''}:
 ${daily ? '\nThis is also the daily PM turn: triage the backlog and look over the roadmap.\n' : ''}
 J's Inbox: ${inbox ?? 'empty'}.
 Limits now: ${cap.active} agents working (at most ${s.maxConcurrent}), ${cap.started} of ${s.maxStartsPerDay} starts used today, ${s.maxTries} tries per task. Delegated merges into beta: ${s.delegatedMerges ? 'ON' : 'OFF (J approves merges)'}.
-
+${s.walkAway ? `Walk-away mode: ON (J, 2026-10-18: "I just want this system to build build build"). Decide routine calls yourself and
+log them; J's Inbox is only for going live, rollbacks, launching new GPU servers, spending above the caps, protected
+files, failures after all tries, milestones and real direction choices. Studio and Gen changes merge into main by
+themselves once green; criteria misses on beta are decided by Studio (retry, park, or one investigation).
+` : ''}
 Do, with the studio_pm, studio_roadmap and studio tools:
 1. Review each ready change (studio_change: the agent's summary, commits, diff size, preview; ready means its own checks
    passed and the pull request is open). Changes aren't playtested automatically: merge one into beta (studio_pm merge)
@@ -1162,7 +1413,7 @@ Do, with the studio_pm, studio_roadmap and studio tools:
    holds, delete what is wrong. A candidate that contradicts one of J's decisions or the canon: dispute it and ask J
    (studio_pm ask_j) which holds; never edit or fade J's decisions yourself. When J decided something in a thread or an
    answer, record it as a decision quoting his words. Keep it short: entries are one line plus specifics.
-Never: go live or roll back, merge Studio or Gen changes, launch GPU servers, raise limits, or decide direction. Those
+Never: go live or roll back, merge Studio or Gen changes yourself (walk-away mode does it when they're green), launch GPU servers, raise limits, or decide direction. Those
 are J's. Anything you need from J is FILED, never only asked in prose: studio_inbox ask { text, options, recommend,
 subject, product, blocks } (one clear question, the options as buttons, the option you would pick, what waits on it).
 A question on the same subject merges into the open one, so filing again just updates it. Answers come back to you as
@@ -1212,6 +1463,16 @@ export async function tick() {
     }
     lastError = failed;
     const s = pmSettings();
+    // Walk-away mode: ready Studio/Gen changes merge by themselves once green, and the daily digest (agents.ts, above).
+    if (s.walkAway) {
+      try {
+        (await changes()).walkAwayPending();
+        await settleMissQuestions();
+        await walkAwayDaily();
+      } catch (e: any) {
+        console.warn(`[pm] walk-away: ${e.message ?? e}`);
+      }
+    }
     if (!s.enabled) return;
     // A PM turn that just ended: its leftovers get the defaults.
     if (turn && !turnRunning()) {

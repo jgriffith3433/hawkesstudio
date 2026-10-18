@@ -158,6 +158,7 @@ a budget (`approveGpu`, `gpuCleared`, `tasksAwaitingGpu`; the PM asks him once);
 | `src/guide.ts`, `dashboard/guide.js` | Guide and drive: Talk's `studio_guide` actions wait as a batch for the conversation; the dashboard showing it claims and runs them (tabs, opening items, outline and label, `look`; clicks and typing only in J's turns), each result a line in the chat; the off-limits rules, re-finding elements and J's take-back live in the page (`HawkesGuide`, tested in `test/guide.test.ts`); docs/daily.md, "Talk showing J around" |
 | `src/settings.ts`, `dashboard/settings.js` | The ⚙ Settings tab and `/api/settings`: calls, agents, PM, notifications, budgets in one API, stored in Studio (follows J across devices); Talk's `studio_settings`, cost-raising changes need J's quoted yes; docs/daily.md, "Settings" |
 | `src/followup.ts` | Results back to Talk: the conversation a call came from (`X-Talk-Conversation`, sent by Talk's MCP server) is the origin of the changes and runs it starts; finished ones are posted into it (docs/cloud.md, "Talk") |
+| `src/walkaway.ts` | Walk-away mode's switch (`pm.walkAway`, `walkAwayGpuPerDay`), read without importing pm.ts; the work is in agents.ts (`walkAwayMerge`, `walkAwayFix`), pm.ts (`decideMiss`, `releaseInvestigations`, `settleMissQuestions`, the daily digest), roadmap.ts (the GPU daily cap), approvals.ts and inbox.ts |
 | `src/roadmap.ts` | The roadmap (items, tasks, their statuses), comment threads, questions (agents' and J's decisions), the PM decision log |
 | `src/pm.ts` | The PM loop: task statuses from changes, beta checks and go lives; starting work within caps; PM turns; the merge gate, revisions, retries; questions for J; ready to test; undo |
 | `src/acceptance.ts` | Acceptance criteria judged from a playtest (yes/no/unclear with evidence) and the merge gate |
@@ -209,6 +210,12 @@ a budget (`approveGpu`, `gpuCleared`, `tasksAwaitingGpu`; the PM asks him once);
   - GPU generation: about $1.86/hr while a GPU server runs
 
   Ask J before big batches.
+- **Walk-away mode** (`src/walkaway.ts`, `pm.walkAway`, on by default; docs/daily.md "Walk-away mode"): ready Studio
+  and Gen changes merge into main by themselves once their checks and CI are green (`walkAwayMerge`, by "Studio
+  (walk-away)"; red CI goes back to the agent, protected files wait for J), the PM decides criteria misses itself (one
+  investigation when several tasks miss the same way), GPU budgets are approved within a daily cap, and the Inbox keeps
+  only J-only things. Keep "red CI never merges", the protected-file hold and the deploy's rollback intact; with it off,
+  everything behaves as before.
 - **Going live:** show `studio_deploy_plan` in plain words (the commits, their authors, the playtested beta commit and
   its verdicts, blockers, warnings) and put an Approve card on J's screen (`studio_approval` kind deploy); his tap goes
   live. The fallback: he types exactly `DEPLOY <product>`, then `studio_deploy`. Rollbacks the same way (kind rollback,

@@ -101,6 +101,8 @@ test('who acts: J on the dashboard, never the PM conversation, Talk only as J in
 });
 
 test('GPU budgets: a card per waiting task, J only, approving clears it', async () => {
+  // Walk-away mode off: the old behaviour (on, they are one digest card: walkaway.test.ts).
+  pm.savePmSettings({ walkAway: false });
   const it = rm.addItem({ product: 'ibtest', title: 'Stage', status: 'planned' });
   const t = rm.addTask({ item: it.id, request: 'Make the stage', gpu: [{ tool: 'image.edit', count: 10 }] });
   db.prepare('UPDATE tasks SET gpu = ? WHERE id = ?').run(JSON.stringify({ items: t.gpu!.items, estimate: { gpuHours: 0.5, cost: 1, withIdleTail: 2, servers: 1, wallMinutes: 30, at: Date.now() } }), t.id);
@@ -119,6 +121,7 @@ test('GPU budgets: a card per waiting task, J only, approving clears it', async 
   assert.equal((await ib.inbox()).find((x) => x.subject === t2.id)!.id, q.id, 'the card is the question');
   await ib.answerInbox(q.id, 'not now', 'J');
   assert.equal(rm.getTask(t2.id)!.status, 'idea', 'not now parks the task');
+  pm.savePmSettings({ walkAway: true });
 });
 
 test('changes only J may merge, and milestones reached', async () => {
