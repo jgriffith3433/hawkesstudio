@@ -5,8 +5,11 @@
 // - version: bumped from the newest one (minor when the shipped commits include a feature or task, patch when they're
 //   only fixes); never a version used before
 // - date: today; build: the Unity Game/v<n> number, else the short sha of the playtested commit
-// - title and 2-5 notes for players in the product's voice, from the commit titles (Hawkes Gen llm.json on a cheap model;
-//   a plain fallback from the titles when Gen fails). Infra noise (Gen client/SDK syncs, devtools saves) is left out.
+// - title and 1-5 notes written by Claude (Hawkes Gen llm.json, a cheap model) in the product's public voice
+//   (products.json releaseVoice; games: a player's-eye line per change). Commit subjects, ids and dev words never ship
+//   (leak() drops such a note); when the writer fails: "Improvements and fixes." Infra noise is left out.
+// - notes already on beta (an entry not live yet, or commits that only edit releases.json) are kept, never rewritten.
+// - the plan and the Approve card wait for the notes (draftWithin), so J sees exactly what ships.
 // - the commits covered: everything since the newest release's build (not just the last go live), so a go live that
 //   shipped without an entry is caught up by the next one.
 //
@@ -52,47 +55,83 @@ export function today(now = new Date()) {
   return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
 }
 
-/** Notes without a model: the player-facing commit titles, tidied. */
-export function fallbackNotes(titles: string[]) {
-  const shown = titles.filter((t) => !isNoise(t)).map((t) => t.replace(/\s*\(#\d+\)\s*$/, '').replace(/^J:\s*/, '').replace(/^fix(es|ed)?:?\s*/i, 'Fixed: ').trim()).filter(Boolean);
-  const notes = [...new Set(shown)].slice(0, 5).map((t) => (t.length > 140 ? `${t.slice(0, 137)}…` : t));
-  const fixes = titles.filter((t) => !isNoise(t)).every(isFix);
-  return { title: !notes.length || fixes ? 'Fixes and polish' : 'New in this update', notes: notes.length ? notes : ['Small fixes and improvements behind the scenes.'] };
+/** The line shipped when the writer fails (or says nothing usable): never the commit text. */
+export const FALLBACK = { title: 'Improvements and fixes', notes: ['Improvements and fixes.'] };
+/** Notes without a model: the neutral line (commit subjects never reach a product's What's new). */
+export const fallbackNotes = (_titles?: string[]) => ({ title: FALLBACK.title, notes: [...FALLBACK.notes] });
+
+/** A game's voice when products.json has no releaseVoice. */
+const GAME_VOICE = 'A game\'s update notes, from the player\'s side: one plain line per change a player would notice ("Bosses now telegraph their big attack", "The pause menu works on phones"). Friendly, concrete, no hype.';
+/** Words that never belong in a What's new: development talk, and ids. */
+const DEV_WORDS = /\b(PRs?|pull requests?|commits?|changelogs?|agents?|beta|devtools|merged?|repo|branch(es)?|issues?|tickets?|backlog|playtests?|SDK)\b/i;
+const IDS = /#\d+|\b[0-9a-f]{7,40}\b|\b[a-z]_[0-9a-f]{6,}\b/i;
+const words = (t: string) => t.toLowerCase().replace(/\(#\d+\)/g, '').replace(/[^a-z0-9 ]+/g, ' ').split(/\s+/).filter((w) => w.length > 2);
+
+/**
+ * Why a note (or title) can't ship, or null: an id, a dev word, a word the product's voice forbids, or a commit subject
+ * (one quoted whole, or 6 of its words in a row).
+ */
+export function leak(text: string, titles: string[], p: Pick<Product, 'releaseVoice'>): string | null {
+  if (IDS.test(text)) return 'an id';
+  const dev = DEV_WORDS.exec(text);
+  if (dev) return `a dev word ("${dev[0]}")`;
+  for (const w of p.releaseVoice?.never ?? []) if (new RegExp(`\\b${w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`, 'i').test(text)) return `"${w}"`;
+  const mine = ` ${words(text).join(' ')} `;
+  for (const t of titles) {
+    const tw = words(t);
+    if (tw.length && tw.length <= 6 && mine.includes(` ${tw.join(' ')} `) && tw.join(' ').length >= 12) return 'a commit subject';
+    for (let i = 0; i + 6 <= tw.length; i++) if (mine.includes(` ${tw.slice(i, i + 6).join(' ')} `)) return 'a commit subject';
+  }
+  return null;
 }
 
 const SCHEMA = {
   type: 'object',
-  properties: { title: { type: 'string' }, notes: { type: 'array', items: { type: 'string' }, minItems: 2, maxItems: 5 } },
+  properties: { title: { type: 'string' }, notes: { type: 'array', items: { type: 'string' }, minItems: 1, maxItems: 5 } },
   required: ['title', 'notes'],
 };
 
-/** Title and notes from Gen (a cheap model), else the fallback. Never throws. */
-export async function writeNotes(p: Product, titles: string[], prev: Release | undefined, { timeoutMs = 90_000 } = {}): Promise<{ title: string; notes: string[]; source: 'gen' | 'fallback' }> {
+/** Claude through Hawkes Gen: the { title, notes } it wrote, or null. */
+async function askGen(prompt: string, timeoutMs: number) {
+  const job: any = await genRun('llm.json', 'hawkesstudio', { prompt, schema: SCHEMA, model: jobModel('summary'), effort: 'low', maxTokens: 800 }, undefined, timeoutMs);
+  return job?.status === 'done' ? job.result?.value : null;
+}
+
+/**
+ * Title and notes written by Claude (Hawkes Gen llm.json, a cheap model) in the product's public voice; notes that leak
+ * a commit subject, an id or a forbidden word are dropped; nothing left (or the writer failed): the neutral fallback.
+ * Never throws.
+ */
+export async function writeNotes(p: Product, titles: string[], prev: Release | undefined, { timeoutMs = 90_000, ask = askGen }: { timeoutMs?: number; ask?: (prompt: string, timeoutMs: number) => Promise<any> } = {}): Promise<{ title: string; notes: string[]; source: 'gen' | 'fallback' }> {
   const shown = titles.filter((t) => !isNoise(t));
   // STUDIO_RELEASE_NOTES=off: never ask a model (tests, or to save the cent).
-  if (!shown.length || process.env.STUDIO_RELEASE_NOTES === 'off') return { ...fallbackNotes(titles), source: 'fallback' };
-  const prompt = `You write the "What's new" entry for ${p.name}, shown to players on its website.
-About it: ${p.about ?? p.name}
+  if (!shown.length || process.env.STUDIO_RELEASE_NOTES === 'off') return { ...fallbackNotes(), source: 'fallback' };
+  const v = p.releaseVoice;
+  const prompt = `You write the "What's new" entry for ${p.name}, shown to the public on its website.
+${v ? `Its public voice: ${v.voice}` : `About it: ${p.about ?? p.name}\nIts voice: ${GAME_VOICE}`}
+${v?.never?.length ? `Never use these words or anything about them: ${v.never.join(', ')}.` : ''}
 ${prev ? `The previous entry, for its voice: "${prev.title}": ${prev.notes.map((n) => `- ${n}`).join(' ')}` : ''}
 
-The changes going live (developer commit titles, newest first):
+What changed (the developers' own notes, for you only, newest first; never quote them):
 ${shown.slice(0, 60).map((t) => `- ${t}`).join('\n')}
 
-Write a short title (under 50 characters) and 2-5 notes, one sentence each, for players in the product's own voice.
-Only what a player would notice (new things, fixes they'd feel); leave out tooling, devtools, pipelines and internals.
-No version numbers, no commit jargon, no pull request numbers.`;
+Write a short title (under 50 characters) and 1-5 notes, one sentence each, in that voice: what the public would notice
+(new things, things that now work better), each in your own words.
+Never copy or quote the developers' notes, never name an issue, a version or a number like #12, and never use
+development words (fix, bug, pull request, PR, commit, changelog, agent, beta, merge, devtools, playtest).
+Leave out tooling, pipelines and internals. If nothing in it is visible to the public, write one note: "${FALLBACK.notes[0]}"`;
   try {
-    const job: any = await Promise.race([
-      genRun('llm.json', 'hawkesstudio', { prompt, schema: SCHEMA, model: jobModel('summary'), effort: 'low', maxTokens: 800 }, undefined, timeoutMs),
+    const out = await Promise.race([
+      ask(prompt, timeoutMs),
       new Promise((_, rej) => setTimeout(() => rej(new Error('timed out')), timeoutMs + 5000).unref()),
-    ]);
-    const v = job?.status === 'done' ? job.result?.value : null;
-    const notes = (Array.isArray(v?.notes) ? v.notes : []).map((n: any) => String(n).trim()).filter(Boolean).slice(0, 5);
-    if (v?.title && notes.length >= 2) return { title: String(v.title).trim().slice(0, 80), notes, source: 'gen' };
+    ]) as any;
+    const notes = [...new Set((Array.isArray(out?.notes) ? out.notes : []).map((n: any) => String(n).trim()).filter((n: string) => n && n.length <= 200 && !leak(n, titles, p)))].slice(0, 5) as string[];
+    const title = String(out?.title ?? '').trim().slice(0, 80);
+    if (notes.length) return { title: title && !leak(title, titles, p) ? title : FALLBACK.title, notes, source: 'gen' };
   } catch {
     // The fallback below.
   }
-  return { ...fallbackNotes(titles), source: 'fallback' };
+  return { ...fallbackNotes(), source: 'fallback' };
 }
 
 // ------------------------------------------------------------- the file
@@ -171,15 +210,31 @@ export function releaseSince(p: Product, dir: string, build: string | undefined,
 const drafts = new Map<string, Promise<Draft>>();
 const settled = new Map<string, Draft>();
 
-type DraftArgs = { data: Releases | null; source: string; target: string; build: string; fallbackCommits: Commit[] };
+/** live: the releases.json that is live now (main's; undefined/null: not known), to tell notes already written on beta. */
+type DraftArgs = { data: Releases | null; source: string; target: string; build: string; fallbackCommits: Commit[]; live?: Releases | null };
+
+/**
+ * Notes already on beta, kept as they are (never written again): beta's newest entry isn't live yet (an agent or J wrote
+ * it), or everything going live only edits releases.json (an agent rewrote old notes: no new entry for that).
+ */
+export function notesOnBeta(dir: string, data: Releases | null, live: Releases | null | undefined, commits: Commit[]) {
+  const prev = data?.releases[0];
+  if (!prev) return false;
+  if (live && !live.releases.some((r) => r.version === prev.version)) return true;
+  const shown = commits.filter((c) => !isNoise(c.title));
+  return shown.length > 0 && shown.every((c) => {
+    const files = git(dir, ['diff-tree', '--no-commit-id', '--name-only', '-r', c.sha]).out.split('\n').filter(Boolean);
+    return files.length > 0 && files.every((f) => path.posix.basename(f) === RELEASES);
+  });
+}
 
 /** What the release covers and its version (no model call): the commits since the newest release's build. */
-export function releaseBasics(p: Product, { data, source, target, build, fallbackCommits }: DraftArgs) {
+export function releaseBasics(p: Product, { data, source, target, build, fallbackCommits, live }: DraftArgs) {
   const prev = data?.releases[0];
   const since = releaseSince(p, source, prev?.build, target);
   const commits = since ? commitsIn(source, `${since}..${target}`, 300) : fallbackCommits;
   const version = bumpVersion([data?.current ?? '', ...(data?.releases ?? []).map((r) => r.version)].filter(Boolean), commits.map((c) => c.title));
-  return { prev, since, commits, version, existing: sameRelease(prev, build), key: `${p.id}:${since ?? ''}:${target}:${build}:${version}` };
+  return { prev, since, commits, version, existing: sameRelease(prev, build) || notesOnBeta(source, data, live, commits), key: `${p.id}:${since ?? ''}:${target}:${build}:${version}` };
 }
 
 /**
@@ -214,6 +269,16 @@ export function draftNow(p: Product, a: DraftArgs): { version: string; title: st
   return { version: b.version, title: d?.title ?? null, notes: d?.notes ?? [], since: b.since, commits: b.commits.length, existing: false };
 }
 
+/** draftNow, after waiting up to waitMs for the notes: what the plan and the Approve card show is what ships. */
+export async function draftWithin(p: Product, a: DraftArgs, waitMs: number) {
+  const now = draftNow(p, a);
+  if (now.existing || now.title !== null || waitMs <= 0) return now;
+  let timer: NodeJS.Timeout | undefined;
+  await Promise.race([draftRelease(p, a).catch(() => {}), new Promise((r) => { timer = setTimeout(r, waitMs); })]);
+  clearTimeout(timer);
+  return draftNow(p, a);
+}
+
 const asRelease = (d: Release): Release => ({ version: d.version, date: d.date, build: d.build, title: d.title, notes: d.notes });
 
 /**
@@ -233,3 +298,11 @@ export async function addReleaseTo(p: Product, folder: string, a: Omit<DraftArgs
 
 /** One line for plans, results and cards: "Releases 1.1.0: <title>". */
 export const releaseLine = (r: { version: string; title: string | null } | null | undefined) => (r ? `Releases ${r.version}: ${r.title ?? '(notes being written)'}` : '');
+
+/** The notes in plain words for the plan and the Approve card: exactly what the What's new will say. */
+export const releaseNotesLine = (r: { version: string; title: string | null; notes: string[]; existing?: boolean }) =>
+  r.existing
+    ? `What's new: keeps the entry already on beta, ${r.version} "${r.title ?? ''}": ${r.notes.map((n) => `"${n}"`).join(' ')}`
+    : r.title === null
+      ? `Releases ${r.version}: (the notes are still being written)`
+      : `Releases ${r.version} "${r.title}": ${r.notes.map((n) => `"${n}"`).join(' ')}`;

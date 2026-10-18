@@ -421,6 +421,10 @@
       ],
       "about": "The corporate front of Hawkes Biomedical, a fictional pharma megacorp. It lists the product line as medical products, never games; the footer says it's fiction. Never mention B3, the vat or the creature. \"We do not pitch a cure. We own the category.\"",
       "quality": "Every page loads with no broken links or images; it reads as a pharma company (products never called games, the footer says it's fiction, nothing about B3, the vat or the creature); works on a phone.",
+      "releaseVoice": {
+        "voice": "Hawkes Biomedical's own company notices, as on its site: a spare, confident corporate register (laboratory notices, formulation lines, the product line). Its products are medical products (PH Origins: pH balance; Sick of It: single-use fever shots; Imagine Live TV: live medical education; The Place Department: HIPAA-compliant document storage; Yooba Land: hyporexia support; I Can Be: AI-assisted full-body assessment; Dose Of Destruction: cytotoxic dose; Hawkes Gen: laboratory services), never games. Notes read like \"Products: each formulation line now shows its current lot, version and revision date.\"",
+        "never": ["B3", "vat", "creature", "basement", "pharma", "framing", "fiction", "fictional", "game", "games", "gameplay", "player", "players", "fix", "fixed", "fixes", "bug", "bugs"]
+      },
       "dev": {
         "front": 8705,
         "port": 8715,
