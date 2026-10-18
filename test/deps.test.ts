@@ -9,13 +9,15 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
+import net from 'node:net';
 
 const posix = process.platform !== 'win32';
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'studio-deps-'));
 process.env.STUDIO_PROJECTS = path.join(tmp, 'Projects');
 process.env.STUDIO_DATA = path.join(tmp, 'data');
 process.env.STUDIO_PRODUCTS = path.join(tmp, 'products.json');
-const PORT = 8797;
+// A free port of its own: test files run in parallel (CI), and the other fixtures' 8797 may be served by then.
+const PORT = await new Promise<number>((ok) => { const s = net.createServer().listen(0, '127.0.0.1', () => { const { port } = s.address() as net.AddressInfo; s.close(() => ok(port)); }); });
 fs.mkdirSync(path.join(process.env.STUDIO_PROJECTS, 'game'), { recursive: true });
 fs.writeFileSync(process.env.STUDIO_PRODUCTS, JSON.stringify({ products: [{
   id: 'game', name: 'Game', framing: 'test', engine: 'web', repo: 'game', site: 'game', live: 'http://127.0.0.1:9/',
