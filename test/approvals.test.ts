@@ -221,6 +221,49 @@ test('a card whose action already happened leaves the Inbox: merged or closed by
   assert.ok(!(await ib.inbox()).some((x) => x.kind === 'approval' && ['a_deploy0001', 'a_rollbk0001'].includes(x.approval!.id)));
 });
 
+test('a phone that sends no Sec-Fetch-Site: the page\'s own Origin (or Referer) on Studio\'s host stands in for it, nothing else', () => {
+  const site = { host: 'studio.hawkesgen.com', 'x-studio-click': '1' };
+  assert.equal(ap.notJClick(req({ ...site, origin: 'https://studio.hawkesgen.com' })), null, 'a POST from the page (Origin)');
+  assert.equal(ap.notJClick(req({ ...site, referer: 'https://studio.hawkesgen.com/?conversation=t_1#talk' })), null, 'a GET from the page (Referer)');
+  assert.equal(ap.notJClick(req({ host: '127.0.0.1:8791', 'x-studio-click': '1', origin: 'http://127.0.0.1:8791' })), null, 'Studio on the PC');
+  const refused: Record<string, string>[] = [
+    { ...site },
+    { ...site, origin: 'https://evil.example' },
+    { ...site, origin: 'https://evil.example', referer: 'https://studio.hawkesgen.com/' },
+    { ...site, origin: 'null' },
+    { ...site, origin: 'https://studio.hawkesgen.com.evil.example' },
+    { ...site, origin: 'https://doseofdestruction.hawkesgen.com' },
+    { host: 'studio.hawkesgen.com', origin: 'https://studio.hawkesgen.com' },
+    { ...site, origin: 'https://studio.hawkesgen.com', 'sec-fetch-site': 'same-site' },
+    { ...site, origin: 'https://studio.hawkesgen.com', 'x-talk-conversation': 't_123456' },
+    { ...site, origin: 'https://studio.hawkesgen.com', 'x-studio-agent': 'c_123456789abc' },
+    { ...site, origin: 'https://studio.hawkesgen.com', authorization: 'Bearer hs_key' },
+  ];
+  for (const h of refused) assert.match(ap.notJClick(req(h)) ?? 'allowed', /Talk|agent|API key|isn't a click/, JSON.stringify(h));
+});
+
+test('nothing left to approve: no card for a budget already approved or a question already answered, and old ones settle', async () => {
+  const it = rm.addItem({ product: 'aptest', title: 'Stage', status: 'planned' });
+  const t = rm.addTask({ item: it.id, request: 'Make the stage', gpu: [{ tool: 'image.edit', count: 40 }] });
+  db.prepare('UPDATE tasks SET gpu = ? WHERE id = ?').run(JSON.stringify({ items: t.gpu!.items, estimate: { gpuHours: 4, cost: 8, withIdleTail: 9, servers: 1, wallMinutes: 240, at: Date.now() } }), t.id);
+  const a = await ap.requestApproval('gpu', t.id);
+  assert.deepEqual(a.card.blockers, [], 'a task waiting for its budget: a card that can be approved');
+  // Approved some other way (another card, the under-$5 auto approval, the Inbox): the card settles itself.
+  rm.approveGpu(t.id, 10, 'Studio (auto)');
+  const s = ap.getApproval(a.id, true)!;
+  assert.deepEqual([s.status, s.decided_by, s.token], ['stale', 'Studio', undefined]);
+  assert.match(s.result!, /already approved \(\$10\.00 by Studio \(auto\)\)/);
+  assert.ok(!(await ib.inbox()).some((x) => x.id === `approval:${a.id}`), 'gone from the Inbox');
+  // And asking again says so instead of making a card whose Approve could never work.
+  await assert.rejects(ap.requestApproval('gpu', t.id), (e: any) => e.status === 409 && /Nothing to approve.*already approved/.test(e.message));
+  const q = pm.askJ('Add a second boss?', { product: 'aptest', options: ['Yes', 'No'] });
+  const d = await ap.requestApproval('decision', q.id);
+  await pm.answerQuestion(q.id, 'No', 'J');
+  assert.equal(ap.getApproval(d.id)!.status, 'stale');
+  assert.match(ap.getApproval(d.id)!.result!, /^already /);
+  await assert.rejects(ap.requestApproval('decision', q.id), /Nothing to approve/);
+});
+
 // The page's side (dashboard/approval.js), loaded the way the browser does, without a DOM.
 const vm = await import('node:vm');
 const page: any = vm.runInNewContext(`${fs.readFileSync(path.join(import.meta.dirname, '..', 'dashboard', 'approval.js'), 'utf8')}\napprovals`, {
@@ -269,4 +312,24 @@ test('during a call the chat, with its cards, stays on screen (only the input ro
   const inCall = css.split('\n').filter((l) => /body\.in-call/.test(l) && /display:\s*none/.test(l));
   assert.ok(inCall.length, 'the call rules are where this test looks');
   for (const l of inCall) assert.doesNotMatch(l, /talk-log|\.approval|talk-main/, l);
+});
+
+test('the page: Approve with a blocker says so on the button; without the token the buttons stay tappable (the tap fetches it); a failed tap shows why on the card', () => {
+  const blocked = page.html(card('a_b', 'pending', { card: { ...card('a_b', 'pending').card, blockers: ['CI is red.'] } }));
+  assert.match(blocked, /<button class="primary" data-apdecide="approve" disabled>Can't approve yet<\/button>/);
+  assert.match(blocked, /CI is red\./);
+  const noToken = page.html(card('a_t', 'pending', { token: undefined }));
+  assert.doesNotMatch(noToken, /disabled/, 'nothing dead to a thumb');
+  assert.match(noToken, /data-apdecide="approve">Approve: merge into beta</);
+  const failed = page.html(card('a_f', 'pending'), { error: 'Only J approves or denies, with a tap on the card.' });
+  assert.match(failed, /<div class="ap-error" role="alert">Only J approves or denies, with a tap on the card\.<\/div>/);
+  assert.match(page.html(card('a_f', 'stale', { result: 'already approved' }), { error: 'This card is stale.' }), /ap-line.*ap-error/s, 'a settled card too');
+});
+
+test('on a phone (390x844): the card\'s buttons and × are at least 44 px and a tap isn\'t a double-tap zoom', () => {
+  const css = fs.readFileSync(path.join(import.meta.dirname, '..', 'dashboard', 'style.css'), 'utf8');
+  assert.match(css, /\.approval \.ap-actions button \{ min-height: 44px;/);
+  assert.match(css, /\.approval \.ap-close \{[^}]*min-width: 44px; min-height: 44px;/);
+  assert.match(css, /\.approval button \{ touch-action: manipulation; \}/);
+  assert.match(css, /@media \(pointer: coarse\), \(max-width: 760px\) \{ \.approval button\.small \{ min-height: 44px;/);
 });
