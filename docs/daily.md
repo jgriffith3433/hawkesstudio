@@ -343,7 +343,17 @@ GPU costs money, so it is priced and approved.**
 - The agent's brief says its GPU budget. With none (a task without `gpu`, or `studio_task` without `gpu_budget`), the
   agent does everything that needs no GPU (design, data, specs, Claude steps; voice and sound effects are cents) and
   ends with the estimate in its summary. With one, it batches each kind of job (one model load), reuses the library
-  (`reuse`, asset manifests), stops the servers it started, and reports what it spent.
+  (`reuse`, asset manifests), and reports what it spent.
+- **Studio starts a stopped GPU server for it** (J, 2026-10-18; `src/gpustart.ts`). Agents can't (Gen's fleet start
+  needs the owner role), so when a change with an approved budget starts and no GPU server is running, Studio starts
+  one of the existing stopped servers through Gen's `POST /v1/fleet/start` (always with the server's id): never a new
+  launch, at most 4 servers up, US regions only (us-west-2, us-east-1, us-east-2), Gen's 60-minute idle stop
+  unchanged. It prefers a server whose install finished (its models are on disk), a kept disk over a disposable one,
+  then the cheapest region. One start per need (starts are serialized, so a second change sees the first's server
+  coming up). Each start is a `gpu-start` line in the PM log and one line in Talk; a failed one (no capacity in the
+  zone, the cap reached, nothing stopped) is `gpu-start-failed` and said in Talk, with no launch instead. The brief
+  tells the agent a server is coming: it queues its jobs with `wait_for_server` and, if none is ready within about
+  30 minutes, finishes the rest and says the GPU part is waiting. Launching a new server still asks J.
 - Checks: the product's own validators and tests, the canon check of the diff (shared memory), and the acceptance
   criteria judged from a playtest of the new content; then the normal flow onto beta.
 
