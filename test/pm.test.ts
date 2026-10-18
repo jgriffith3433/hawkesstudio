@@ -246,6 +246,21 @@ test('an escalated change is asked about once: answered, the loop leaves it; "cl
   assert.equal(rm.listQuestions().filter((x) => x.subject === t2.id).length, 0, 'nothing more asked about it');
 });
 
+test('a question on a slug subject (not a thread id) is answered: no error, routed, the PM hears it (q_b4b1b8e307fe)', async () => {
+  fs.writeFileSync(path.join(process.env.STUDIO_DATA!, 'notify.json'), JSON.stringify({ enabled: false, server: 'http://127.0.0.1:9', topic: 'test' }));
+  const q = pm.askJ('Start the Studio fix for the fetch ref lock?', { subject: 'some-slug', options: ['yes', 'no'], recommend: 'yes' });
+  const m = pm.askJ('Keep this memory?', { subject: 'm_0754baa8d780' });
+  const a = await pm.answerQuestion(q.id, 'Yes, start the Studio fix', 'J');
+  assert.equal(a!.status, 'answered');
+  assert.equal(a!.answer, 'Yes, start the Studio fix');
+  assert.equal((await pm.answerQuestion(m.id, 'keep it', 'J'))!.status, 'answered');
+  assert.equal(rm.commentsOn('some-slug').length, 0, 'no thread on a slug');
+  const heard = pm.pendingPmEvents().filter((e) => e.kind === 'decided');
+  assert.ok(heard.some((e) => e.subject === q.id && /Yes, start the Studio fix/.test(e.text)), 'the PM\'s next turn hears it');
+  assert.ok(heard.some((e) => e.subject === m.id), 'two slug answers are two events');
+  assert.ok(rm.isCommentSubject('k_ab12') && !rm.isCommentSubject('some-slug') && !rm.isCommentSubject(null));
+});
+
 test('a merged Studio/Gen task is verified without a beta run', async () => {
   const it = rm.addItem({ product: 'pminfra', title: 'A Studio button', criteria: ['the button shows'], size: 'S', status: 'planned' });
   const t = rm.addTask({ item: it.id, request: 'Add the button', criteria: ['the button shows'] });

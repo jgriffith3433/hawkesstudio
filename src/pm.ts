@@ -27,7 +27,7 @@ import { spawnSync } from 'node:child_process';
 import { db, J, parse } from './db.ts';
 import { DATA, PROJECTS, getProduct, getInfra, isInfra, today, StudioError, betaPlaytestsOn } from './config.ts';
 import {
-  getTask, setTask, getItem, startableTasks, tasksAwaitingGpu, taskOfChange, addQuestion, listQuestions, getQuestion, setQuestion, addComment,
+  getTask, setTask, getItem, startableTasks, tasksAwaitingGpu, taskOfChange, addQuestion, listQuestions, getQuestion, setQuestion, addComment, isCommentSubject,
   logDecision, listDecisions, getDecision, markUndone, countToday, listItems, threadFor, milestonesToReach, markReached, getMilestone,
   type Task, type Check,
 } from './roadmap.ts';
@@ -114,6 +114,8 @@ function prCommit(repo: string, branch: string, pr: number) {
 
 export type PmEvent = { kind: string; subject?: string | null; product?: string | null; text: string; at: number };
 let events: PmEvent[] = [];
+/** What the PM's next turn will hear (tests). */
+export const pendingPmEvents = () => events.slice();
 /** Something the PM should look at in its next turn. */
 export function pmEvent(kind: string, text: string, subject?: string | null, product?: string | null) {
   if (events.some((e) => e.kind === kind && e.subject && e.subject === subject)) return;
@@ -482,7 +484,12 @@ export async function answerQuestion(id: string, answer: string, by = 'Talk (PM)
     if (t) await gpuAnswer(t, answer, by, q);
   }
   setQuestion(id, { status: 'answered', answer, answered_by: by });
-  if (q.subject) addComment(q.subject.startsWith('c_') ? (taskOfChange(q.subject)?.id ?? q.subject) : q.subject, answer, by, 'answer');
+  // The answer on the subject's thread, when it has one: the PM files questions on slugs too ("deploy-safety-net"), and a
+  // thread comment never fails an answer that is already recorded (the routing below still runs).
+  const thread = q.subject?.startsWith('c_') ? (taskOfChange(q.subject)?.id ?? q.subject) : q.subject;
+  if (isCommentSubject(thread)) {
+    try { addComment(thread, answer, by, 'answer'); } catch (e: any) { console.warn(`[pm] answer ${id} on ${thread}: ${e.message}`); }
+  }
   const resume = async (change: string) => {
     const { getChange, answerChange } = await changes();
     if (getChange(change)?.status === 'needs answer') answerChange(change, answer, by);
@@ -515,7 +522,7 @@ export async function answerQuestion(id: string, answer: string, by = 'Talk (PM)
     if (t && !['merged', 'verified', 'live', 'dropped'].includes(t.status)) setTask(t.id, { status: stop === 'park' ? 'idea' : 'dropped', note: `${stop === 'park' ? 'parked' : 'dropped'} on ${byJ ? 'J' : by}'s answer to ${id}` });
   }
   // A decision on a failed task: the PM's next turn acts on it ("try again", "drop it").
-  if (q.kind === 'decision' && q.topic !== 'gpu') pmEvent('decided', `${byJ ? 'J' : by} decided on ${q.subject ?? 'a question'} (${id}): "${answer}" (the question was: ${q.text.slice(0, 400)})`, q.subject ?? id, q.product);
+  if (q.kind === 'decision' && q.topic !== 'gpu') pmEvent('decided', `${byJ ? 'J' : by} decided on ${q.subject ?? 'a question'} (${id}): "${answer}" (the question was: ${q.text.slice(0, 400)})`, isCommentSubject(q.subject) ? q.subject : id, q.product);
   if (!byJ) logDecision('answer', q.subject, q.product, `${by} answered ${id}: ${answer.slice(0, 500)}`);
   return getQuestion(id);
 }
