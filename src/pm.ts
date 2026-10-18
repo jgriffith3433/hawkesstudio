@@ -32,7 +32,7 @@ import { DATA, PROJECTS, getProduct, getInfra, isInfra, today, StudioError, beta
 import {
   getTask, setTask, getItem, startableTasks, tasksAwaitingGpu, taskOfChange, addQuestion, listQuestions, getQuestion, setQuestion, addComment, isCommentSubject,
   logDecision, listDecisions, getDecision, markUndone, countToday, listItems, threadFor, milestonesToReach, markReached, getMilestone, milestoneTasks, setMilestoneChecks,
-  itemProgress, type Task, type Check, type TaskBuild,
+  itemProgress, GPU_WAIT, type Task, type Check, type TaskBuild,
 } from './roadmap.ts';
 import { gate, allMet } from './acceptance.ts';
 import { notify, PUBLIC_URL } from './notify.ts';
@@ -183,10 +183,18 @@ async function syncTask(t: Task, getChange: (id: string) => any) {
   const c = t.change ? getChange(t.change) : null;
   if (!c) return;
   if (t.status !== 'merged' && t.status !== 'verified') {
-    const next = ACTIVE.includes(c.status) ? 'working' : c.status === 'needs answer' ? 'needs answer' : c.status === 'ready' ? 'review' : c.status === 'merged' ? 'merged' : null;
+    const next = ACTIVE.includes(c.status) ? 'working' : c.status === 'needs answer' ? 'needs answer' : c.status === 'ready' ? 'review' : c.status === 'merged' ? mergedStatus(t, c) : null;
     if (next && next !== t.status) {
-      setTask(t.id, { status: next, pr: c.pr_url, ...(next === 'merged' ? { merged_at: c.merged_at ?? Date.now(), build: null } : {}), ...(c.verify?.criteria ? { checks: { where: 'change', at: Date.now(), change: c.id, video: c.verify.video ?? null, verdict: c.verify.verdict, results: c.verify.criteria } } : {}), ...(c.verify?.try ? { try: c.verify.try } : {}) });
+      setTask(t.id, { status: next, pr: c.pr_url, ...(next === 'merged' || next === GPU_WAIT ? { merged_at: c.merged_at ?? Date.now(), build: null } : {}), ...(c.verify?.criteria ? { checks: { where: 'change', at: Date.now(), change: c.id, video: c.verify.video ?? null, verdict: c.verify.verdict, results: c.verify.criteria } } : {}), ...(c.verify?.try ? { try: c.verify.try } : {}) });
       if (next === 'merged') kick();
+      if (next === GPU_WAIT) waitForGpu(t, c);
+    }
+    // A run for the real GPU art that failed (no server after all, nothing made): the stand-ins stay on beta, and the
+    // task waits for GPU again, not a try.
+    if (c.status === 'failed' && gpuRerunOf(c.id)) {
+      setTask(t.id, { status: GPU_WAIT, merged_at: Date.now(), note: `the run for the GPU art (${c.id}) failed: ${String(c.detail ?? '').slice(0, 300)}` });
+      logDecision('gpu-wait', t.id, t.product, `"${t.title}": ${c.id} (the run for its GPU art) failed: ${String(c.detail ?? '').slice(0, 300)}; it waits for a GPU server again (not a try)`);
+      return;
     }
     // A failed change is the PM's (watch() tells it; the defaults restart it or ask J). A closed one ends the task's run.
     if (c.status === 'closed') setTask(t.id, { status: 'failed', note: `its change ${c.id} was closed (${c.detail ?? ''})` });
@@ -506,7 +514,8 @@ export function startBlocked(taskId: string): string | null {
   const live = rows.find((r) => LIVE.includes(r.status));
   if (live) return `its change ${live.id} is ${live.status}`;
   const merged = rows.find((r) => r.status === 'merged');
-  if (merged && t.status !== 'planned') return `its change ${merged.id} is already merged`;
+  // Merged with stand-ins (waiting for GPU): it runs again for the real art (rerunGpuWaits).
+  if (merged && t.status !== 'planned' && t.status !== GPU_WAIT) return `its change ${merged.id} is already merged`;
   return null;
 }
 
@@ -593,9 +602,11 @@ export async function startWork() {
       continue;
     }
   }
+  // Tasks whose stand-ins are on beta: run again for the real art once a GPU server is up (not a try).
+  const taken = new Set<string>();
+  for (const id of await rerunGpuWaits(cap.free, taken).catch((e) => { console.warn(`[pm] GPU waits: ${e.message ?? e}`); return []; })) { out.push(id); cap = capacity(); }
   // Not blocked (what they depend on is merged), highest effective priority first, then roadmap order (startableTasks).
   const waiting = startableTasks();
-  const taken = new Set<string>();
   for (const t of waiting) {
     if (cap.free <= 0) break;
     if (slotHeld(t.product) || taken.has(t.product)) continue;
@@ -625,6 +636,101 @@ export async function startWork() {
     }
   }
   // The daily cap is visible in the Roadmap tab and studio_pm status (no phone notification: nothing went wrong).
+  return out;
+}
+
+// --------------------------------------------------------- waiting for GPU
+
+/** Runs for a task's real GPU art after stand-ins, before J is asked (each is not a try). */
+export const MAX_GPU_RERUNS = 3;
+
+/**
+ * What a task's merged change makes it: merged, or waiting for GPU when the change shipped stand-ins because no GPU
+ * server ran (J, 2026-10-18: "stand-ins don't count as done"; agents.ts pendingGpuOf, `.hawkes/pending-gpu.txt`).
+ */
+export function mergedStatus(t: Pick<Task, 'gpu'>, c: { verify?: any }): string {
+  // Only a task with a GPU budget can run again for its art (one without stays merged, as before).
+  return c.verify?.pendingGpu && t.gpu?.items?.length && (t.gpu.budget ?? 0) > 0 ? GPU_WAIT : 'merged';
+}
+
+/** The change was a run for a task's real GPU art (rerunGpuWaits). */
+const gpuRerunOf = (change: string) => Boolean(db.prepare(`SELECT 1 FROM pm_log WHERE action = 'gpu-rerun' AND detail LIKE ?`).get(`%${change}%`));
+const gpuReruns = (task: string) => (db.prepare(`SELECT COUNT(*) AS n FROM pm_log WHERE action = 'gpu-rerun' AND subject = ?`).get(task) as any).n as number;
+
+// When Studio last tried to start a GPU server for a task waiting for GPU.
+const ensuredAt = new Map<string, number>();
+
+/** A task just merged with stand-ins: the PM log, Talk, and Studio starting a stopped GPU server for its rerun. */
+function waitForGpu(t: Task, c: { id: string; verify?: any }) {
+  const what = String(c.verify?.pendingGpu ?? '').split('\n').filter(Boolean).slice(0, 4).join('; ').slice(0, 400);
+  logDecision('gpu-wait', t.id, t.product, `"${t.title}": ${c.id} merged stand-ins (still to make on the GPU: ${what}); it waits for a GPU server and runs again, not as a try`);
+  void import('./followup.ts').then(({ tellAbout }) => tellAbout({ ...c, task: t.id }, 'Waiting for GPU', `"${t.title}" (${name(t.product)}) merged stand-ins into beta because no GPU server ran; it isn't done: Studio runs it again for the real art as soon as a GPU server is up. Still to make: ${what}`)).catch(() => {});
+  kick();
+}
+
+// The fleet, read at most every 2 minutes while tasks wait for GPU.
+let fleetSeen: { at: number; running: boolean } | null = null;
+async function gpuRunning() {
+  if (fleetSeen && Date.now() - fleetSeen.at < 2 * 60_000) return fleetSeen.running;
+  const { gen } = await import('./gen.ts');
+  const { generatorRunning } = await import('./gpustart.ts');
+  const f: any = await gen.fleet();
+  fleetSeen = { at: Date.now(), running: !f?.error && generatorRunning(f?.servers ?? []) };
+  return fleetSeen.running;
+}
+
+/**
+ * Tasks waiting for GPU: with a GPU server running, each gets a new agent change for the real art (on top of beta,
+ * where its stand-ins are; not a try), within the free slots, one per product. With none running, Studio starts a
+ * stopped one for them (gpustart.ts: never a launch; its tries, PM-log and Talk lines). After MAX_GPU_RERUNS, J decides.
+ * deps are for tests.
+ */
+export async function rerunGpuWaits(free: number, taken = new Set<string>(), deps: { running?: () => Promise<boolean>; ensure?: (c: any) => Promise<string> } = {}) {
+  const out: string[] = [];
+  const waits = (db.prepare(`SELECT id FROM tasks WHERE status = ?`).all(GPU_WAIT) as any[]).map((r) => getTask(r.id)!);
+  if (!waits.length) return out;
+  let running: boolean;
+  try {
+    running = await (deps.running ?? gpuRunning)();
+  } catch (e: any) {
+    console.warn(`[pm] the GPU fleet: ${e.message ?? e}`);
+    return out;
+  }
+  for (const t of waits) {
+    const n = gpuReruns(t.id);
+    if (n >= MAX_GPU_RERUNS) {
+      const last = (db.prepare(`SELECT MAX(at) AS at FROM pm_log WHERE action = 'gpu-rerun' AND subject = ?`).get(t.id) as any)?.at ?? 0;
+      if (!db.prepare(`SELECT 1 FROM questions WHERE subject = ? AND at > ? LIMIT 1`).get(t.id, last)) {
+        askJ(`"${t.title}" (${name(t.product)}) still has stand-in art on beta: its real GPU art didn't land in ${n} runs. Try again, keep the stand-ins (count it as done), or drop it?`, { subject: t.id, product: t.product, options: ['try again', 'keep the stand-ins', 'drop it'], recommend: 'try again', from: `the default after ${n} runs for its GPU art` });
+      }
+      continue;
+    }
+    if (!running) {
+      // A stopped server started for it (once at a time per task: gpustart's own tries for about 45 minutes).
+      const budget = t.gpu?.budget ?? null;
+      // gpustart tries for about 45 minutes; after it gives up, again two hours later.
+      if (budget && budget > 0 && Date.now() - (ensuredAt.get(t.id) ?? 0) > 2 * 3600_000) {
+        ensuredAt.set(t.id, Date.now());
+        const ensure = deps.ensure ?? (async (c: any) => (await import('./gpustart.ts')).ensureGpuFor(c));
+        void ensure({ id: `gpu-wait-${t.id}`, product: t.product, task: t.id, title: t.title, gpu_budget: String(budget), stillNeeds: () => getTask(t.id)?.status === GPU_WAIT })
+          .then((r) => { if (/^started|already (running|pending)/.test(r)) { fleetSeen = null; kick(); } }).catch(() => {});
+      }
+      continue;
+    }
+    if (free <= out.length || slotHeld(t.product) || taken.has(t.product)) continue;
+    try {
+      const { getChange } = await changes();
+      const prev = t.change ? getChange(t.change) : null;
+      const left = String(prev?.verify?.pendingGpu ?? '').slice(0, 1500);
+      const note = `Your earlier change ${t.change ?? ''} merged stand-ins into beta because no GPU server ran. A GPU server is up now: make the real art, replace the stand-ins (they're on beta, where this branch starts), and delete .hawkes/pending-gpu.txt when nothing is left (else list what still is).${left ? ` Still to make:\n${left}` : ''}`;
+      const id = await startTaskChange(t, note, `a GPU server is up: the real art for its stand-ins (run ${n + 1} of ${MAX_GPU_RERUNS})`, false);
+      logDecision('gpu-rerun', t.id, t.product, `"${t.title}": a GPU server is up, ${id} makes the real art for its stand-ins (run ${n + 1} of ${MAX_GPU_RERUNS}, not a try)`);
+      taken.add(t.product);
+      out.push(id);
+    } catch (e: any) {
+      setTask(t.id, { note: `couldn't run it again for its GPU art: ${e.message}`.slice(0, 500) });
+    }
+  }
   return out;
 }
 
@@ -668,7 +774,9 @@ export async function pmMerge(changeId: string, why = '', by = 'Talk (PM)') {
     throw e;
   }
   const t = c.task ? getTask(c.task) : null;
-  if (t) setTask(t.id, { status: 'merged', merged_at: merged?.merged_at ?? Date.now(), pr: c.pr_url, build: null });
+  const st = t ? mergedStatus(t, c) : null;
+  if (t) setTask(t.id, { status: st!, merged_at: merged?.merged_at ?? Date.now(), pr: c.pr_url, build: null });
+  if (t && st === GPU_WAIT) waitForGpu(t, c);
   logDecision('merge', c.task ?? changeId, c.product, `merged ${changeId} (${c.title}) into ${BETA}${why ? `: ${why}` : ''}${g.unclear.length ? ` · unclear, judged again on beta: ${g.unclear.join('; ')}` : ''}`, { kind: 'merge', change: changeId, repo: c.repo, pr: c.pr, task: c.task, product: c.product });
   return merged;
 }
@@ -775,6 +883,11 @@ export async function answerQuestion(id: string, answer: string, by = 'Talk (PM)
       logDecision('close', t?.id ?? c.id, c.product, `closed ${c.id} (${c.title}) on ${byJ ? 'J' : by}'s answer to ${id}: ${answer.slice(0, 300)}`);
     }
     if (t && !['merged', 'verified', 'live', 'dropped'].includes(t.status)) setTask(t.id, { status: stop === 'park' ? 'idea' : 'dropped', note: `${stop === 'park' ? 'parked' : 'dropped'} on ${byJ ? 'J' : by}'s answer to ${id}` });
+  }
+  // Keep the stand-ins (a task waiting for GPU): it counts as merged now.
+  if (q.kind === 'decision' && q.subject?.startsWith('k_') && /^keep/i.test(answer.trim()) && getTask(q.subject)?.status === GPU_WAIT) {
+    setTask(q.subject, { status: 'merged', note: `stand-ins kept on ${byJ ? 'J' : by}'s answer to ${id}` });
+    logDecision('gpu-keep', q.subject, q.product, `"${getTask(q.subject)!.title}": its stand-ins kept as the art (${byJ ? 'J' : by}'s answer to ${id})`);
   }
   // A decision on a failed task: the PM's next turn acts on it ("try again", "drop it").
   if (q.kind === 'decision' && q.topic !== 'gpu') pmEvent('decided', `${byJ ? 'J' : by} decided on ${q.subject ?? 'a question'} (${id}): "${answer}" (the question was: ${q.text.slice(0, 400)})`, isCommentSubject(q.subject) ? q.subject : id, q.product);
@@ -1118,7 +1231,7 @@ async function applyDefaults(subjects: string[], olderThan?: number) {
   for (const c of listChanges({ status: 'failed' })) {
     if (!c.task) continue;
     const t = getTask(c.task);
-    if (!t || t.change !== c.id || t.status === 'failed') continue;
+    if (!t || t.change !== c.id || t.status === 'failed' || t.status === GPU_WAIT) continue;
     // Another attempt of this task is going or merged: that one is the task now, nothing to retry.
     if (startBlocked(t.id)) continue;
     if (subjects.includes(c.id) || (olderThan !== undefined && now - (c.updated ?? c.created) > olderThan && !turnRunning())) {

@@ -348,6 +348,23 @@ export async function github(route: string, init: { method?: string; body?: unkn
 
 // ----------------------------------------------------------------- brief
 
+/** The marker a GPU change leaves when it merged stand-ins (J, 2026-10-18): what's still to make, with its Gen job ids. */
+export const PENDING_GPU = '.hawkes/pending-gpu.txt';
+const STAND_IN = /\b(stand-?ins?|interim (art|sheets?|pass|version)|placeholders?|fallback (art|code|only)|no-GPU (first )?pass)\b/i;
+const NO_GPU = /\b(no GPU server (was |came |is )?(running|up|ready|available)|GPU (server )?(wasn'?t|was not|never|didn'?t|did not) (running|up|come up|came up|start|available|ready)|without (a |the )?GPU|no GPU (was )?available|GPU part is still waiting|still waiting (for|on) (a |the )?GPU)/i;
+/**
+ * What a GPU task's change left to make on the GPU: its marker file, else its summary when it says it shipped stand-ins
+ * because no GPU server ran (the agents before the marker). null: the real thing is in.
+ */
+export function pendingGpuOf(worktree: string, summary: string): string | null {
+  try {
+    const marked = fs.readFileSync(path.join(worktree, PENDING_GPU), 'utf8').trim();
+    if (marked) return marked.slice(0, 2000);
+  } catch { /* no marker */ }
+  const s = String(summary ?? '');
+  return STAND_IN.test(s) && NO_GPU.test(s) ? `its summary says it shipped stand-ins because no GPU server ran: ${s.slice(0, 600)}` : null;
+}
+
 /** What GPU generation this change may do (content work): its approved budget (J's, or Studio's under the auto-approval threshold), or none. */
 function gpuBrief(c: Change) {
   const b = c.gpu_budget === null ? null : Number(c.gpu_budget);
@@ -366,6 +383,11 @@ itself after Gen's idle time). Do the parts that need no GPU first, then queue y
 its "only J can start one" note (Studio already did; don't ask J). If no server became ready within
 about 30 minutes (Studio couldn't start one: no capacity in its zone, or the cap of 4 is reached), finish everything
 else and say in your summary that the GPU part is still waiting. Never launch a server.
+
+If you ship stand-in or interim art, or fallback code, because the GPU art isn't made yet, list what is still to make
+in \`${PENDING_GPU}\` (one line each: the piece, what it needs, and its Hawkes Gen job ids). Then the task doesn't
+count as done: Studio runs it again (not as a try) once a GPU server is up, until the real art lands. Delete that file
+when nothing is left to make.
 
 `;
   }
@@ -1013,7 +1035,7 @@ async function work(id: string, note?: string, answer?: string, resumed?: Phase 
     c = getChange(id)!;
     // A playtest on request: its results join what the change already had (sha, preview, canon), and it's ready again.
     if (ph.requested) {
-      const keep = Object.fromEntries(['scenario', 'options', 'canon'].filter((k) => c.verify?.[k] !== undefined).map((k) => [k, c.verify[k]]));
+      const keep = Object.fromEntries(['scenario', 'options', 'canon', 'pendingGpu'].filter((k) => c.verify?.[k] !== undefined).map((k) => [k, c.verify[k]]));
       const verify = { ...keep, ...ph.verify, sha: ph.tip ?? c.verify?.sha, preview: c.verify?.preview ?? null, try: c.verify?.try ?? null, asked: { at: Date.now(), by: ph.requested } };
       addLog(id, `playtest (asked by ${ph.requested}): ${verify.outcome ?? '?'} · review: ${verify.verdict ?? 'n/a'}${verify.error ? ` · ${verify.error}` : ''}`);
       update(id, { status: 'ready', detail: readyDetail(verify), verify, phase: null });
@@ -1036,7 +1058,10 @@ async function work(id: string, note?: string, answer?: string, resumed?: Phase 
     if (preview) addLog(id, `preview: ${preview}`);
     const tryFile = path.join(c.worktree, '.hawkes', 'try.md');
     const howTo = fs.existsSync(tryFile) ? fs.readFileSync(tryFile, 'utf8').trim().slice(0, 2000) : null;
-    const done = { ...verify, sha: ph.tip, preview, try: howTo };
+    // A GPU task's change that shipped stand-ins: merged, but its task waits for GPU (pm.ts) and runs again.
+    const pendingGpu = c.task && (needsGpu(c) || roleOf(c) === 'content') ? pendingGpuOf(c.worktree, c.summary ?? '') : null;
+    if (pendingGpu) addLog(id, `stand-ins: still to make on the GPU: ${pendingGpu.split('\n')[0].slice(0, 200)}`);
+    const done = { ...verify, sha: ph.tip, preview, try: howTo, ...(pendingGpu ? { pendingGpu } : {}) };
     const auto = agentSettings().autoMergeBeta;
     // 'trying' is written with 'ready', so Talk's "ready for J" notice (followup.ts) never races the merge.
     update(id, { status: 'ready', detail: readyDetail(done), verify: done, phase: null, auto_merge: auto ? 'trying' : null });

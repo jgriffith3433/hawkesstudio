@@ -665,7 +665,12 @@ server.listen(PORT, '127.0.0.1', () => {
   // The PM loop (pm.ts): on the server, or on J's PC with STUDIO_PM=on.
   if ((process.platform !== 'win32' && process.env.STUDIO_SERVER === '1') || process.env.STUDIO_PM === 'on') void import('./pm.ts').then(({ startPm }) => startPm());
   // GPU budgets under the auto-approval threshold that were waiting for J (from before it, or a restart): approved now.
-  void import('./roadmap.ts').then(({ autoApproveWaiting }) => autoApproveWaiting()).then((ids) => { if (ids.length) console.log(`[roadmap] auto-approved ${ids.length} small GPU budget(s): ${ids.join(', ')}`); }).catch((e) => console.warn(`[roadmap] GPU auto-approval failed: ${e.message}`));
+  void import('./roadmap.ts').then(async ({ autoApproveWaiting, backfillGpu }) => {
+    // GPU follow-ups added without their items get them (and a price) first, so the auto approval sees them too.
+    const filled = await backfillGpu().catch((e) => { console.warn(`[roadmap] GPU follow-ups: ${e.message}`); return []; });
+    if (filled.length) console.log(`[roadmap] GPU follow-ups given their items: ${filled.join(', ')}`);
+    return autoApproveWaiting();
+  }).then((ids) => { if (ids.length) console.log(`[roadmap] auto-approved ${ids.length} small GPU budget(s): ${ids.join(', ')}`); }).catch((e) => console.warn(`[roadmap] GPU auto-approval failed: ${e.message}`));
   // Findings recreated after J marked a matching one won't-fix (before the backlog matched those) go back to it.
   void import('./backlog.ts').then(({ foldIntoWontfix, moveOldPolishToIdeas, expireIdeas }) => {
     const n = foldIntoWontfix();
