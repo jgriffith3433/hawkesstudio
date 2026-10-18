@@ -27,6 +27,7 @@ import { StudioError, getInfra, isInfra, getProduct } from './config.ts';
 import { requestUser } from './sandbox.ts';
 import { sessionUser, cookieToken } from './auth.ts';
 import { getTask, getQuestion, tasksAwaitingGpu } from './roadmap.ts';
+import { walkAwayOn } from './walkaway.ts';
 
 db.exec(`CREATE TABLE IF NOT EXISTS approvals (
   id TEXT PRIMARY KEY, kind TEXT NOT NULL, target TEXT NOT NULL, params TEXT, bind TEXT NOT NULL, token TEXT NOT NULL,
@@ -155,6 +156,19 @@ export function settleDone() {
         result = CASE (SELECT status FROM changes WHERE changes.id = approvals.target) WHEN 'merged' THEN 'already merged' ELSE 'closed' END
       WHERE status = 'pending' AND kind = 'merge' AND target IN (SELECT id FROM changes WHERE status IN ('merged', 'closed'))`).run(now);
   } catch { /* no changes table in this process yet */ }
+  // Walk-away mode: a merge card whose change isn't ready (being revised, failed, waiting on an answer) can never be
+  // approved as it stands: stale at once, never "Can't approve yet". Studio/Gen changes merge by themselves, so their
+  // cards go too, unless the change waits for J (auto_merge 'held: ...': protected files, failed after its tries).
+  if (walkAwayOn()) try {
+    db.prepare(`UPDATE approvals SET status = 'stale', token = '', decided_by = 'Studio', decided_at = ?,
+        result = 'the change is ' || (SELECT status FROM changes WHERE changes.id = approvals.target) || ' now, not ready to merge'
+      WHERE status = 'pending' AND kind = 'merge' AND target IN (SELECT id FROM changes WHERE status NOT IN ('ready', 'merged', 'closed'))`).run(now);
+    {
+      const infra = (db.prepare(`SELECT a.id, c.product, c.auto_merge FROM approvals a JOIN changes c ON c.id = a.target WHERE a.status = 'pending' AND a.kind = 'merge' AND c.status = 'ready'`).all() as any[])
+        .filter((r) => isInfra(r.product) && !String(r.auto_merge ?? '').startsWith('held'));
+      for (const r of infra) db.prepare(`UPDATE approvals SET status = 'stale', token = '', decided_by = 'Studio', decided_at = ?, result = ? WHERE id = ? AND status = 'pending'`).run(now, 'walk-away mode: Studio merges it by itself once CI is green', r.id);
+    }
+  } catch { /* no changes table in this process yet */ }
   try {
     db.prepare(`UPDATE approvals SET status = 'stale', token = '', decided_by = 'Studio', decided_at = ?,
         result = (SELECT CASE d.kind WHEN 'rollback' THEN 'already rolled back' ELSE 'already live' END FROM deploys d WHERE d.product = approvals.target AND d.at > approvals.created ORDER BY d.at DESC LIMIT 1)
@@ -203,6 +217,7 @@ export async function requestApproval(kind: string, target: string, params: Reco
   if (kind === 'merge') {
     const { getChange, agentSettings } = await import('./agents.ts');
     const c = getChange(target);
+    if (c?.infra && walkAwayOn() && !String(c.auto_merge ?? '').startsWith('held')) throw new StudioError(`${target} is a ${getInfra(c.product).name} change: in walk-away mode those merge into main by themselves once their checks pass and CI is green (no Approve card). It is ${c.status}${c.auto_merge ? ` (${c.auto_merge})` : ''}.`);
     if (c && !c.infra && agentSettings().autoMergeBeta) throw new StudioError(`${target} is a product change: those merge into beta by themselves once ready (no Approve card). ${c.auto_merge?.startsWith('failed') ? `It couldn't (${c.auto_merge.slice(8, 300)}): merge it from the Changes tab, or revise it.` : c.status === 'merged' ? 'It is merged.' : `It is ${c.status}.`}`);
   }
   // Already approved or answered: no card (it could only sit there with an Approve that never works).
@@ -324,6 +339,11 @@ async function decide(id: string, token: string, decision: string, req: http.Inc
   if (now.bind !== r.bind) {
     db.prepare(`UPDATE approvals SET status = 'stale', result = 'what it was about changed since the card was made', card = ? WHERE id = ? AND status = 'pending'`).run(J(now.card), id);
     throw new StudioError('What this card was about changed since it was made (stale). Look at the new card.', 409);
+  }
+  // Walk-away mode: a merge that can't happen as things stand: the card is stale now (it never sits there as "Can't approve yet").
+  if (now.card.blockers.length && a.kind === 'merge' && walkAwayOn()) {
+    db.prepare(`UPDATE approvals SET status = 'stale', token = '', decided_by = 'Studio', decided_at = ?, result = ? WHERE id = ? AND status = 'pending'`).run(Date.now(), now.card.blockers.join(' ').slice(0, 500), id);
+    throw new StudioError(`This card no longer applies: ${now.card.blockers.join(' ')}`, 409);
   }
   if (now.card.blockers.length) throw new StudioError(`Can't approve yet:\n- ${now.card.blockers.join('\n- ')}`, 409);
   // One time: only one tap moves it on.

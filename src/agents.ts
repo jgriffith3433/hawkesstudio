@@ -61,6 +61,7 @@ import { claudeCommand, spawnShell, sandboxShare, assertWorktree, shareWorktree 
 import { launch, DetachedChild, detachedActivity, type DetachRec } from './detach.ts';
 import { warmDeps } from './warm.ts';
 import { ensureGpuFor, needsGpu } from './gpustart.ts';
+import { walkAwayOn, WALK_AWAY_BY } from './walkaway.ts';
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS changes (
@@ -88,6 +89,8 @@ try { db.exec('ALTER TABLE changes ADD COLUMN conflicts INTEGER'); } catch { /* 
 // J's approval of a Studio/Gen merge that main moving held up ({ by, origin, at } JSON): kept until it merges, CI or the
 // checks fail, or a person revises it (approveInfra, mergeApprovedInfra).
 try { db.exec('ALTER TABLE changes ADD COLUMN approved TEXT'); } catch { /* already there */ }
+// Walk-away mode's fix passes of a Studio/Gen change whose CI or checks failed (walkAwayFix).
+try { db.exec('ALTER TABLE changes ADD COLUMN auto_fixes INTEGER'); } catch { /* already there */ }
 
 export type Change = {
   id: string; product: string; findings: string[]; status: string; detail: string | null; repo: string; slug: string; branch: string; base: string;
@@ -105,6 +108,8 @@ export type Change = {
   merged_at?: number | null; conflicts?: number | null;
   /** Studio/Gen: J's approval still waiting to merge it (main moved: CI on the updated branch, or a conflict pass). JSON. */
   approved?: string | null;
+  /** Studio/Gen in walk-away mode: fix passes its agent made because CI or the checks failed (walkAwayFix). */
+  auto_fixes?: number | null;
   /** The Talk conversation that started it (followup.ts). */
   origin?: string | null;
   /** A change to Hawkes Studio or Hawkes Gen (a pull request into main, which deploys itself), not a product. */
@@ -1546,10 +1551,19 @@ async function workInfra(id: string, note?: string, resumed?: Phase | null, nudg
     // Verify (checked again from the start after a restart: CI is GitHub's, the checks and smoke check take minutes), then ready.
     if (resumed && ph.step === 'verify') update(id, { status: 'verifying', detail: 'checking: CI on the pull request, the checks, a smoke check' });
     const v = ph.step === 'finish' ? ph.verify : await verifyInfra(getChange(id)!, t);
-    update(id, { status: 'ready', detail: `${v.outcome}: ${v.summary}`.slice(0, 300), verify: v, phase: null });
+    // auto_merge starts over: walk-away mode decides this new head afresh (walkAwayMerge).
+    update(id, { status: 'ready', detail: `${v.outcome}: ${v.summary}`.slice(0, 300), verify: v, phase: null, auto_merge: null });
     // Talk tells J in the chat; no phone notification (only failures and milestones go to the phone). A conflict pass
-    // after J's approval: it merges once green (his approval stands).
+    // after J's approval: it merges once green (his approval stands). Walk-away mode: it merges by itself once green.
     if (getChange(id)!.approved) void mergeApprovedInfra(id).catch((e) => console.warn(`[studio] approved merge ${id}: ${e.message ?? e}`));
+    else {
+      // Once this pass has let go of the change (a fix pass it may start takes it over).
+      const go = () => {
+        if (running.has(id)) return void setTimeout(go, 200).unref();
+        void walkAwayMerge(id).catch((e) => console.warn(`[studio] walk-away merge ${id}: ${e.message ?? e}`));
+      };
+      setTimeout(go, 0).unref();
+    }
   } catch (e: any) {
     addLog(id, `error: ${e.message}`);
     update(id, { status: 'failed', detail: String(e.message).slice(0, 300), phase: { step: ph.step, failed: true } });
@@ -1730,10 +1744,13 @@ export async function mergeApprovedInfra(id: string) {
   awaitingMerge.add(id);
   const a = parse(c.approved) as { by: string; origin?: string | null };
   const name = getInfra(c.product).name;
-  const drop = async (why: string) => {
+  const walking = a.by === WALK_AWAY_BY;
+  const drop = async (why: string, red = false) => {
     db.prepare('UPDATE changes SET approved = NULL WHERE id = ?').run(id);
     update(id, { detail: `not merged into ${c.base}: ${why}`.slice(0, 300) });
     addLog(id, `approved merge into ${c.base} stopped: ${why}`);
+    // Walk-away mode's own merge: red CI or failed checks go back to its agent (a fix pass), anything else waits for J.
+    if (walking) return red ? walkAwayFix(id, why) : walkAwayStuck(id, why);
     const { tellAbout } = await import('./followup.ts');
     await tellAbout(getChange(id)!, `Not merged: ${c.title ?? id}`, `${name} change ${id} ("${c.title}") was approved but didn't merge into ${c.base}: ${why.slice(0, 300)}. Nothing deployed. Revise it, or approve it again once it's fixed: ${PUBLIC_URL}/#changes/${id}`).catch(() => {});
     return null;
@@ -1742,14 +1759,14 @@ export async function mergeApprovedInfra(id: string) {
     let merged: Change | null = null;
     // Main moving again while it waits: up to date once more (approveInfra), and it waits for CI on that.
     for (let cur = c; ; cur = getChange(id)!) {
-      if (cur.verify?.outcome === 'failed') return await drop(`its checks failed after ${c.base} moved (${String(cur.verify.summary ?? '').slice(0, 200)})`);
+      if (cur.verify?.outcome === 'failed') return await drop(`its checks failed after ${c.base} moved (${String(cur.verify.summary ?? '').slice(0, 200)})`, true);
       const sha = String(cur.verify?.sha ?? '');
       const ci = await ciChecks(c.slug, sha, { onWait: (d) => update(id, { detail: `${d}: it merges into ${c.base} once CI is green (approved by ${a.by})` }) });
       const now = getChange(id)!;
       // Revised, closed or merged meanwhile: that's someone else's call now.
       if (!now.approved || now.status !== 'ready' || now.verify?.sha !== sha) return null;
       update(id, { verify: { ...now.verify, ci } });
-      if (ci.state !== 'success') return await drop(`CI on ${sha.slice(0, 7)} isn't green (${ci.state}: ${ci.detail}); red CI never merges`);
+      if (ci.state !== 'success') return await drop(`CI on ${sha.slice(0, 7)} isn't green (${ci.state}: ${ci.detail}); red CI never merges`, ci.state === 'failure');
       try {
         merged = await critical(`merging ${id} into main`, () => approveInfra(getChange(id)!, a.by, a.origin));
       } catch (e: any) {
@@ -1762,11 +1779,147 @@ export async function mergeApprovedInfra(id: string) {
     const how = c.conflicts ? `its agent resolved the conflicts (${c.conflicts} conflict pass${c.conflicts === 1 ? '' : 'es'}, not counted as tries)` : `Studio brought its branch up to date (no conflicts)`;
     addLog(id, `merged into ${c.base} on ${a.by}'s approval once CI was green`);
     const { tellAbout } = await import('./followup.ts');
-    await tellAbout(merged, `Merged: ${c.title ?? id}`, `${name} change ${id} ("${c.title}") merged into ${c.base} on your approval: ${c.base} had moved, ${how}, and CI went green. ${name} deploys itself next.`).catch(() => {});
+    await tellAbout(merged, `Merged: ${c.title ?? id}`, `${name} change ${id} ("${c.title}") merged into ${c.base} ${walking ? 'by itself (walk-away mode)' : 'on your approval'}: ${c.base} had moved, ${how}, and CI went green. ${name} deploys itself next.`).catch(() => {});
+    if (walking) {
+      update(id, { auto_merge: 'merged' });
+      walkAwayLog(merged!, `merged ${id} (${c.title}) into ${c.base} by itself after bringing it up to date: CI green`);
+    }
     return merged;
   } finally {
     awaitingMerge.delete(id);
   }
+}
+
+// ------------------------------------------------------------ walk-away mode (Studio and Gen)
+
+/** Protected files (GUARDED, named by J or not, and FORBIDDEN) a Studio/Gen change touches: those always wait for J. */
+export function protectedTouched(target: string, files: string[]) {
+  const guarded = [...(GUARDED[target] ?? []), '.github/workflows/'];
+  return files.filter((f) => FORBIDDEN.some((r) => r.test(f)) || guarded.some((g) => (g.endsWith('/') ? f.startsWith(g) : f === g)));
+}
+
+/** A line in the PM's decision log for what walk-away mode did on its own. */
+function walkAwayLog(c: Pick<Change, 'id' | 'task' | 'product'>, detail: string) {
+  void import('./roadmap.ts').then(({ logDecision }) => logDecision('walk-away', c.task ?? c.id, c.product, detail)).catch(() => {});
+}
+
+/** Walk-away merges being decided now (one at a time per change). */
+const walking = new Set<string>();
+
+/**
+ * Walk-away mode (walkaway.ts): a ready Studio/Gen change merges into main by itself, as product changes merge into
+ * beta (J, 2026-10-18: "just merge okay?"). Only when its checks passed (typecheck, tests, the smoke check) and CI on its
+ * head is green; through approveInfra (brought up to date with main first; a moved main waits for CI on the updated
+ * head, mergeApprovedInfra; a conflict is its agent's conflict pass), by WALK_AWAY_BY. The server's deploy keeps its
+ * health check and rollback. Red CI or failed checks: a fix pass of its agent (walkAwayFix), never a merge. Protected
+ * files: it waits for J (his Inbox card). One Talk line per merge. Off, or anything else: nothing happens here.
+ * auto_merge on an infra change: null (not decided), 'trying', 'merged', 'held: <why>' (waits for J).
+ */
+export async function walkAwayMerge(id: string) {
+  if (!walkAwayOn()) return null;
+  const c = getChange(id);
+  if (!c?.infra || c.status !== 'ready' || !c.pr || c.approved || running.has(id) || walking.has(id) || awaitingMerge.has(id)) return null;
+  if (c.auto_merge && c.auto_merge !== 'trying') return null;
+  walking.add(id);
+  const name = getInfra(c.product).name;
+  try {
+    const v = c.verify ?? {};
+    const sha = String(v.sha ?? '');
+    const files = fs.existsSync(c.worktree) ? git(c.worktree, ['diff', '--name-only', `origin/${c.base}...HEAD`]).out.split('\n').filter(Boolean) : [];
+    if (!files.length) return await walkAwayHold(c, `Studio can't see which files it changes (its worktree is gone): you decide`);
+    const prot = protectedTouched(c.product, files);
+    if (prot.length) return await walkAwayHold(c, `it changes protected files (${prot.join(', ')}): those always wait for you`);
+    const checksOk = sha && (v.checks ?? []).every((k: any) => k.ok) && v.smoke?.ok !== false && (v.checks ?? []).length > 0;
+    if (!checksOk) return await walkAwayFix(id, `its checks failed: ${String(v.summary ?? 'no checks on record').slice(0, 600)}`);
+    const ci = await ciChecks(c.slug, sha, { waitMs: 0 }).catch((e: any) => ({ state: 'error', detail: String(e.message ?? e), runs: [] as any[] }));
+    if (ci.state === 'success' || ci.state === 'failure') update(id, { verify: { ...(getChange(id)!.verify ?? {}), ci } });
+    if (ci.state === 'failure') return await walkAwayFix(id, `CI on ${sha.slice(0, 7)} is red: ${ci.detail}`);
+    // Still running, not started, or GitHub not answering: looked at again on the PM's next pass.
+    if (ci.state !== 'success') {
+      const detail = `walk-away: merges into ${c.base} by itself once CI on ${sha.slice(0, 7)} is green (${ci.detail})`.slice(0, 300);
+      if (getChange(id)!.detail !== detail || c.auto_merge) update(id, { auto_merge: null, detail });
+      return null;
+    }
+    update(id, { auto_merge: 'trying' });
+    addLog(id, `walk-away: checks passed and CI green on ${sha.slice(0, 7)}: merging into ${c.base} by itself`);
+    let r: Change | null;
+    try {
+      r = await critical(`merging ${id} into main`, () => approveInfra(getChange(id)!, WALK_AWAY_BY, c.origin ?? null));
+    } catch (e: any) {
+      const msg = String(e.message ?? e);
+      if (/isn't green/.test(msg)) return await walkAwayFix(id, msg);
+      return await walkAwayStuck(id, isConflict(e) ? `it still conflicts with ${c.base} after ${CONFLICT_PASSES} conflict passes by its agent` : msg);
+    }
+    if (r?.status === 'merged') {
+      update(id, { auto_merge: 'merged' });
+      walkAwayLog(r, `merged ${id} (${c.title}) into ${c.base} by itself: checks passed, CI green on ${sha.slice(0, 7)}`);
+      const { tellAbout } = await import('./followup.ts');
+      await tellAbout(r, `Merged: ${c.title ?? id}`, `${name} change ${id} ("${c.title}") merged into ${c.base} by itself (walk-away mode): typecheck, tests and the smoke check passed and CI is green. ${name} deploys itself next (it rolls back if it isn't healthy). ${PUBLIC_URL}/#changes/${id}`).catch(() => {});
+    }
+    // Otherwise main moved: it merges once CI on the updated head is green (mergeApprovedInfra), or its agent resolves a conflict first.
+    return r;
+  } finally {
+    walking.delete(id);
+  }
+}
+
+/** Waits for J (his Inbox's merge card says why): protected files, or something Studio can't settle itself. */
+async function walkAwayHold(c: Change, why: string) {
+  update(c.id, { auto_merge: `held: ${why}`.slice(0, 500), detail: `waits for you: ${why}`.slice(0, 300) });
+  addLog(c.id, `walk-away: not merged by itself: ${why}`);
+  walkAwayLog(c, `left ${c.id} (${c.title}) for J: ${why}`);
+  const { tellAbout } = await import('./followup.ts');
+  await tellAbout(getChange(c.id)!, `Waits for you: ${c.title ?? c.id}`, `${getInfra(c.product).name} change ${c.id} ("${c.title}") didn't merge by itself: ${why}. It's in your Inbox. ${PUBLIC_URL}/#changes/${c.id}`).catch(() => {});
+  return null;
+}
+
+/**
+ * Red CI or failed checks in walk-away mode: its agent gets a fix pass with what failed (revise; the first isn't counted
+ * as a try, then up to the PM's maxTries). Out of passes: walkAwayStuck (J's Inbox and phone).
+ */
+export async function walkAwayFix(id: string, why: string) {
+  const c = getChange(id);
+  if (!c) return null;
+  const { pmSettings } = await import('./pm.ts');
+  const max = pmSettings().maxTries;
+  const n = (c.auto_fixes ?? 0) + 1;
+  if (n - 1 > max) return walkAwayStuck(id, `still failing after ${n - 1} fix passes: ${why}`);
+  if (!['ready', 'failed'].includes(c.status) || running.has(id)) return null;
+  db.prepare('UPDATE changes SET auto_fixes = ? WHERE id = ?').run(n, id);
+  const v = c.verify ?? {};
+  const failed = [
+    ...(v.checks ?? []).filter((k: any) => !k.ok).map((k: any) => `\`${k.cmd}\` failed:\n${String(k.out ?? '').slice(-1500)}`),
+    v.smoke && !v.smoke.ok ? `The smoke check failed: ${v.smoke.detail}${v.smoke.log ? `\n${String(v.smoke.log).slice(-1000)}` : ''}` : '',
+    v.ci?.state === 'failure' ? `CI failed: ${v.ci.detail}${(v.ci.runs ?? []).filter((r: any) => r.conclusion && r.conclusion !== 'success').map((r: any) => ` (${r.url})`).join('')}` : '',
+  ].filter(Boolean).join('\n\n');
+  const note = `Walk-away mode: this change didn't merge because ${why}. Fix what fails, run the checks again (npm run typecheck, npm test) and commit; it merges into ${c.base} by itself once everything is green.${failed ? `\n\n${failed}` : ''}`;
+  addLog(id, `walk-away: fix pass ${n} (${n === 1 ? 'not counted as a try' : `try ${n - 1} of ${max}`}): ${why.slice(0, 200)}`);
+  walkAwayLog(c, `sent ${id} (${c.title}) back to its agent, fix pass ${n}${n === 1 ? ' (not a try)' : ` (try ${n - 1} of ${max})`}: ${why.slice(0, 400)}`);
+  return revise(id, note, WALK_AWAY_BY);
+}
+
+/** Failed after all its fix passes (or a merge Studio can't make): J's call, in his Inbox and on his phone (askJ). */
+async function walkAwayStuck(id: string, why: string) {
+  const c = getChange(id)!;
+  update(id, { auto_merge: `held: ${why}`.slice(0, 500), detail: `waits for you: ${why}`.slice(0, 300) });
+  addLog(id, `walk-away: stopped: ${why}`);
+  walkAwayLog(c, `gave ${id} (${c.title}) to J: ${why.slice(0, 400)}`);
+  const { askJ } = await import('./pm.ts');
+  askJ(`${getInfra(c.product).name} change "${c.title ?? id}" couldn't merge into ${c.base} by itself: ${why.slice(0, 500)}. Try again, or close it?`,
+    { subject: id, product: c.product, options: ['try again', 'close it'], recommend: 'try again', blocks: `merging ${id} into ${c.base}`, from: 'walk-away: failed after its tries' });
+  return null;
+}
+
+/** Ready Studio/Gen changes walk-away mode hasn't decided yet (the PM's pass, and after a restart). */
+export function walkAwayPending() {
+  if (!walkAwayOn()) return [];
+  const out: string[] = [];
+  for (const c of listChanges({ status: 'ready', limit: 100 })) {
+    if (!c.infra || c.approved || running.has(c.id) || (c.auto_merge && c.auto_merge !== 'trying')) continue;
+    out.push(c.id);
+    void walkAwayMerge(c.id).catch((e) => console.warn(`[studio] walk-away merge ${c.id}: ${e.message ?? e}`));
+  }
+  return out;
 }
 
 /**
@@ -2111,6 +2264,8 @@ export function resumeChanges() {
   for (const c of listChanges({ status: 'ready', limit: 100 })) {
     if (c.infra && c.approved && !running.has(c.id)) void mergeApprovedInfra(c.id).catch((e) => console.warn(`[studio] approved merge ${c.id}: ${e.message ?? e}`));
   }
+  // Walk-away mode: ready Studio/Gen changes not decided yet (or cut off mid-merge) are looked at again.
+  walkAwayPending();
   // Changes parked on Gen jobs: their jobs are looked at again now (they may have finished while Studio was down).
   void pollGenWaits();
   return out;

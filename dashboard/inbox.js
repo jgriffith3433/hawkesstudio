@@ -31,7 +31,7 @@ let ibDrawn = null;
 async function loadInbox() {
   const r = await approvals.call('/api/inbox');
   ibItems = r.items;
-  setInboxCount(r.count);
+  setInboxCount(r.count, r.walkAway);
   // A card J is typing in isn't redrawn under him.
   if (document.activeElement?.matches?.('#inbox .ib-card input') && document.activeElement.value) return;
   const list = r.items.length ? r.items.map(ibCard).join('') : '<div class="empty">Nothing is waiting on you. 🎉 Decisions from Talk, the PM and the agents, GPU budgets, merges only you can make and milestones to playtest all land here, the most blocking first.</div>';
@@ -40,13 +40,16 @@ async function loadInbox() {
   $('#ibAnswered').innerHTML = r.answered.length ? `<summary class="meta">Answered lately (${r.answered.length})</summary>${r.answered.map((a) => `<div class="test"><span class="name">${esc(a.title)}</span><span class="detail">${esc(String(a.answer ?? '').slice(0, 200))} · <b>by ${esc(a.by ?? '?')}</b> · ${ago(a.at)} · ${esc(a.id)}</span></div>`).join('')}` : '';
 }
 
-function setInboxCount(n) {
+function setInboxCount(n, walkAway) {
   const el = $('#inboxCount');
   el.textContent = n;
   el.classList.toggle('zero', !n);
   document.title = n ? `(${n}) Hawkes Studio` : 'Hawkes Studio';
+  // The header's walk-away badge: Studio merges and decides routine calls by itself (Settings > PM loop).
+  const b = $('#walkAwayBadge');
+  if (b && walkAway !== undefined) b.hidden = !walkAway;
 }
-const pollInboxCount = () => api('/api/inbox?count=1').then((r) => setInboxCount(r.count)).catch(() => {});
+const pollInboxCount = () => api('/api/inbox?count=1').then((r) => setInboxCount(r.count, r.walkAway)).catch(() => {});
 
 async function ibAnswer(card, answer) {
   const x = ibItems.find((i) => i.id === card.dataset.ib);
