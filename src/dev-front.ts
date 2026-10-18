@@ -24,7 +24,7 @@ import http from 'node:http';
 import net from 'node:net';
 import fs from 'node:fs';
 import { getProduct, loadProducts, GEN_URL, type Product } from './config.ts';
-import { fileReport, WIDGET } from './bugreport.ts';
+import { fileReport, fileAutoError, WIDGET } from './bugreport.ts';
 import { devConf, devHostUrl, devStatus, startDev, stopDev, touchDev, devRunning, isUnity, unityInfo, sinceLive } from './dev.ts';
 
 const P = '/dev';
@@ -275,6 +275,8 @@ async function handle(p: Product, req: http.IncomingMessage, res: http.ServerRes
     // J's "report a bug" button on the beta site (bugreport.ts; previews.ts puts the script into every page).
     if (what === 'report.js') return send(res, 200, 'text/javascript; charset=utf-8', fs.readFileSync(WIDGET));
     if (what === 'report' && method === 'POST') return report(p, req, res);
+    // ...and the errors the page catches by itself (source "auto", rate-limited per IP).
+    if (what === 'error' && method === 'POST') return report(p, req, res, true);
     if (what === 'status') return json(res, 200, devStatus(p.id));
     if (what === 'info') return send(res, 200, 'text/html; charset=utf-8', unity ? unityPage(p) : infoPage(p));
     if (what === 'start' && method === 'POST') {
@@ -304,8 +306,11 @@ async function handle(p: Product, req: http.IncomingMessage, res: http.ServerRes
   proxy(p, req, res, rest, root);
 }
 
-/** POST /dev/__studio/report: J's report from a page of this product's beta site (JSON, same origin only). */
-async function report(p: Product, req: http.IncomingMessage, res: http.ServerResponse) {
+/**
+ * POST /dev/__studio/report: J's report from a page of this product's beta site (JSON, same origin only); with auto,
+ * POST /dev/__studio/error: an error the page caught by itself.
+ */
+async function report(p: Product, req: http.IncomingMessage, res: http.ServerResponse, auto = false) {
   const host = String(req.headers['x-forwarded-host'] ?? req.headers.host ?? '');
   const origin = req.headers.origin;
   const from = (() => { try { return origin ? new URL(origin).host : host; } catch { return ''; } })();
@@ -314,11 +319,14 @@ async function report(p: Product, req: http.IncomingMessage, res: http.ServerRes
   let size = 0;
   for await (const c of req) {
     size += c.length;
-    if (size > 10 * 1024 * 1024) return json(res, 413, { error: 'too big' });
+    if (size > (auto ? 4 : 10) * 1024 * 1024) return json(res, 413, { error: 'too big' });
     chunks.push(c);
   }
   try {
-    return json(res, 200, await fileReport(p.id, JSON.parse(Buffer.concat(chunks).toString('utf8'))));
+    const body = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+    // Caddy puts the client first in X-Forwarded-For.
+    const ip = String(req.headers['x-forwarded-for'] ?? '').split(',')[0].trim() || req.socket.remoteAddress || '';
+    return json(res, 200, auto ? await fileAutoError(p.id, body, ip) : await fileReport(p.id, body));
   } catch (e: any) {
     return json(res, e.status ?? 400, { error: String(e.message ?? e) });
   }

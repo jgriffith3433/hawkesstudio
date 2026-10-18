@@ -11,12 +11,15 @@
 // it. The PM loop starts J's reports before anything else (pm.ts startWork), Talk hears about it in the milestone's
 // conversation (else the day's playtest conversation) and again when an agent takes it, when it's fixed on beta, or
 // when it's dropped (reportFollowups).
+//
+// The page's own uncaught errors are reported too, without J pressing anything: fileAutoError below (source "auto").
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { createHash } from 'node:crypto';
 import { db, newId, J, parse } from './db.ts';
 import { DATA, getProduct, today, StudioError } from './config.ts';
-import { keyOf } from './backlog.ts';
+import { keyOf, takenBy } from './backlog.ts';
 import { gen, genWait, fileUrl } from './gen.ts';
 import { PUBLIC_URL } from './notify.ts';
 import './roadmap.ts'; // milestones, items, and the findings columns source, milestone, report
@@ -85,13 +88,14 @@ export const WIDGET = path.join(import.meta.dirname, '..', 'dashboard', 'report-
 /** What a beta page knows about itself: the product, the commit and what was built (Game/v<n> for Unity), the change. */
 export type PageInfo = { product: string; sha?: string | null; ref?: string; change?: string; built?: number };
 
-// Errors from before the widget loads: a tiny hook at the top of <head> (the widget reads window.__hawkesLog). It also
+// Errors from before the widget loads: a tiny hook at the top of <head> (the widget reads window.__hawkesLog, and the
+// uncaught errors it queues in window.__hawkesErrs until the widget's window.__hawkesOnError takes them). It also
 // makes every WebGL context keep its drawing buffer (preserveDrawingBuffer, forced on even when the game's loader asks
 // for false, as Unity's does), so the widget's screenshot can read the game's frame: on iOS Safari the buffer is gone
 // by the time anything outside the game's own draw reads it, and the picture came out black. It runs before any game
 // script creates its context (beta pages only); window.__hawkesGl marks it.
 const GL = `(function(P){if(!P||window.__hawkesGl)return;var g=P.getContext;P.getContext=function(t,a){if(/^(webgl2?|experimental-webgl)$/.test(t)){try{a=Object.assign({},a,{preserveDrawingBuffer:true})}catch(e){}}return g.call(this,t,a)};window.__hawkesGl=1})(window.HTMLCanvasElement&&HTMLCanvasElement.prototype);`;
-const HOOK = `<script data-hawkes-report>${GL}window.__hawkesLog=window.__hawkesLog||[];(function(l){function p(v,a){try{l.push({level:v,at:Date.now(),text:[].map.call(a,function(x){return x instanceof Error?(x.stack||x.message):typeof x=='string'?x:JSON.stringify(x)}).join(' ').slice(0,400)});if(l.length>60)l.splice(0,l.length-60)}catch(e){}}['error','warn'].forEach(function(v){var o=console[v];console[v]=function(){p(v,arguments);return o.apply(this,arguments)}});addEventListener('error',function(e){p('error',[e.message||'error',e.filename?e.filename+':'+e.lineno:''])});addEventListener('unhandledrejection',function(e){p('error',['unhandled rejection:',e.reason])});window.__hawkesLogHooked=1})(window.__hawkesLog)</script>`;
+const HOOK = `<script data-hawkes-report>${GL}window.__hawkesLog=window.__hawkesLog||[];window.__hawkesErrs=window.__hawkesErrs||[];(function(l,q){function T(x,m){try{return x instanceof Error?(m?x.message:x.stack||x.message):typeof x=='string'?x:JSON.stringify(x)}catch(e){return String(x)}}function p(v,a){try{l.push({level:v,at:Date.now(),text:[].map.call(a,function(x){return T(x)}).join(' ').slice(0,400)});if(l.length>60)l.splice(0,l.length-60)}catch(e){}}function E(k,m,s,f){try{var x={kind:k,message:String(m||'').slice(0,1000),stack:String(s||'').slice(0,3000),source:String(f||''),at:Date.now()};if(window.__hawkesOnError)window.__hawkesOnError(x);else{q.push(x);if(q.length>20)q.shift()}}catch(e){}}['error','warn'].forEach(function(v){var o=console[v];console[v]=function(){p(v,arguments);if(v=='error'){var a=arguments,s='';for(var i=0;i<a.length;i++)if(a[i]instanceof Error){s=a[i].stack||'';break}E('console',[].map.call(a,function(x){return T(x,1)}).join(' '),s)}return o.apply(this,arguments)}});addEventListener('error',function(e){p('error',[e.message||'error',e.filename?e.filename+':'+e.lineno:'']);var r=e.error;E('error',e.message||(r&&r.message),(r&&r.stack)||(e.filename?'at '+e.filename+':'+e.lineno+':'+e.colno:''),e.filename)});addEventListener('unhandledrejection',function(e){p('error',['unhandled rejection:',e.reason]);var r=e.reason;E('rejection',T(r,1),r&&r.stack)});window.__hawkesLogHooked=1})(window.__hawkesLog,window.__hawkesErrs)</script>`;
 
 /** A beta page with the button in it: the console hook first in <head>, the widget before </body>. */
 export function injectReport(html: string, info: PageInfo) {
@@ -181,8 +185,8 @@ function detailOf(r: Report, t: ReturnType<typeof testing>) {
   ].filter(Boolean).join('\n');
 }
 
-async function importShot(id: string, product: string, file: string, title: string) {
-  const job = await gen.submit('file.import', { project: product, params: { title: `J's report: ${title}`.slice(0, 200), meta: { report: id, source: 'J' } }, inputs: { file } });
+async function importShot(id: string, product: string, file: string, title: string, source: 'J' | 'auto' = 'J') {
+  const job = await gen.submit('file.import', { project: product, params: { title: `${source === 'J' ? "J's report" : 'Beta error'}: ${title}`.slice(0, 200), meta: { report: id, source } }, inputs: { file } });
   const done: any = await genWait(job.id, undefined, 60_000);
   const asset = done?.outputs?.[0]?.asset;
   if (done?.status !== 'done' && !asset) throw new Error(done?.error ?? done?.status ?? 'no output');
@@ -190,8 +194,162 @@ async function importShot(id: string, product: string, file: string, title: stri
   setReport(id, { asset });
 }
 
+// ------------------------------------------------------------ automatic error reports
+//
+// The widget also reports the page's uncaught errors by itself (window error events, unhandled rejections,
+// console.error) to POST /dev/__studio/error: once per signature per page session, at most 5 a session. Here each one
+// becomes a finding with source "auto" (scenario "auto-error", severity bug, area "beta errors"): not J's top-priority
+// lane, the PM loop takes them like the reviews' bugs (pm.ts startWork, fixBugs). Its key is the error's signature
+// (the message and top stack frame, numbers and ids stripped), so the same error again (another page load, another
+// device) only counts as seen again and keeps the latest sample. Noise (browser extensions, ResizeObserver loops,
+// cross-origin "Script error." with nothing in it, known benign warnings) is dropped, and the endpoint is rate-limited
+// per IP.
+
+/** What the page sends for an error it caught: the report's fields (no text), plus the error. */
+export type ErrorIn = Omit<ReportIn, 'text' | 'blocker'> & { error?: { kind?: string; message?: string; stack?: string; source?: string } };
+
+// Errors nobody needs to fix: extension code, browser chatter, and opaque cross-origin errors.
+const EXT = /(chrome|moz|safari|safari-web|ms-browser)-extension:\/\/|webkit-masked-url:|extensions::|@user-script|__firefox__/i;
+const BENIGN = [
+  /ResizeObserver loop/i,
+  /^(uncaught )?script error\.?$/i,
+  /The play\(\) request was interrupted/i,
+  /play\(\) failed because the user didn't interact/i,
+  /The (AudioContext|request) (was not allowed to start|is not allowed by the user agent)/i,
+  /Non-Error promise rejection captured/i,
+  /^(Uncaught )?AbortError\b.*\babort/i,
+  /\[Violation\]/i,
+  /Download the (React|Vue|Babylon\.js) DevTools/i,
+];
+
+/** True when an error isn't worth a finding (see above). */
+export function isNoise(message: string, stack = '', source = '') {
+  const m = String(message ?? '').trim();
+  if (!m) return true;
+  if (EXT.test(stack) || EXT.test(source) || EXT.test(m)) return true;
+  // "Script error." is all a cross-origin script's error says: nothing to go on.
+  if (/^(uncaught )?script error\.?$/i.test(m) && !/\bat |@/.test(stack)) return true;
+  return BENIGN.some((r) => r.test(m));
+}
+
+/** The first stack frame that's the page's own (not the widget or its hook), as file and function. */
+function topFrame(stack: string) {
+  for (const line of String(stack ?? '').split('\n')) {
+    const l = line.trim();
+    // Chrome "at fn (url:1:2)" / "at url:1:2"; Firefox and Safari "fn@url:1:2".
+    if (!/^at\s|@/.test(l) || /__studio\/report\.js|data-hawkes-report/.test(l)) continue;
+    return l.replace(/^at\s+/, '')
+      .replace(/\?[^\s:)]*/g, '') // query strings (cache busters)
+      .replace(/https?:\/\/[^/\s)]+/g, '') // the host (beta, a change's /c/<id>/)
+      .replace(/\/c\/c_[0-9a-f]+\//g, '/');
+  }
+  return '';
+}
+
+const strip = (s: string) => s
+  .replace(/\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi, '#') // uuids
+  .replace(/\b[0-9a-z_-]{6,}\b/gi, (w) => (/[a-z]/i.test(w) && (w.match(/\d/g)?.length ?? 0) >= 2 ? '#' : w)) // ids and bundle hashes
+  .replace(/\d+(\.\d+)?/g, '#')
+  .replace(/\s+/g, ' ').trim();
+
+/** An error's signature: its message and top stack frame, numbers and ids stripped (same error, same signature). */
+export function errorSignature(message: string, stack = '') {
+  const m = strip(String(message ?? '').replace(/^Uncaught\s+(?:\(in promise\)\s*)?/i, '').replace(/^unhandled rejection:\s*/i, '').split('\n')[0].slice(0, 300));
+  const f = strip(topFrame(stack));
+  return f ? `${m} | ${f}` : m;
+}
+
+// Per IP: at most 20 error reports in 10 minutes (a page sends at most 5 a session).
+const RATE = { n: 20, ms: 10 * 60_000 };
+const hits = new Map<string, number[]>();
+/** Counts a report from this IP; false when it's over the limit. */
+export function rateOk(ip: string, now = Date.now()) {
+  const list = (hits.get(ip) ?? []).filter((t) => t > now - RATE.ms);
+  if (list.length >= RATE.n) { hits.set(ip, list); return false; }
+  list.push(now);
+  hits.set(ip, list);
+  if (hits.size > 2000) for (const [k, v] of hits) if (!v.some((t) => t > now - RATE.ms)) hits.delete(k);
+  return true;
+}
+
+/** Stores an error the page caught by itself: a new source-"auto" finding, or the open one with its signature seen again. */
+export async function fileAutoError(productId: string, b: ErrorIn, ip = '') {
+  const p = getProduct(productId);
+  if (!rateOk(ip || '?')) throw Object.assign(new StudioError('Too many error reports from here; try again later'), { status: 429 });
+  const e = b.error ?? {};
+  const message = cut(e.message, 1000).trim();
+  const stack = cut(e.stack, 3000);
+  if (isNoise(message, stack, cut(e.source, 500))) return { ok: true, ignored: true };
+  const sig = errorSignature(message, stack);
+  const key = `auto:${createHash('sha1').update(`${p.id}\n${sig}`).digest('hex').slice(0, 16)}`;
+  const now = Date.now();
+  const sample = sampleOf(b, message, stack, now);
+  const day = today();
+  // The same error (open, being fixed, won't-fix, or fixed by a change not merged yet): seen again, latest sample kept.
+  const old = db.prepare(`SELECT id, status, report, shots FROM findings WHERE product = ? AND key = ? AND source = 'auto' ORDER BY last_seen DESC LIMIT 1`).get(p.id, key) as any;
+  if (old && (old.status !== 'fixed' || takenBy(old.id))) {
+    const prev = (parse(old.report) ?? {}) as Report;
+    const r: Report = { ...sample, shot: prev.shot ?? null, asset: prev.asset ?? null, shotNote: prev.shotNote ?? null };
+    db.prepare(`UPDATE findings SET seen = seen + 1, last_seen = ?, detail = ?, report = ? WHERE id = ?`).run(now, autoDetail(r, kindOf(e), sig), J(r), old.id);
+    return { ok: true, id: old.id, seen: true };
+  }
+  const id = old?.id ?? newId('f');
+  const shot = saveShot(id, b.shot);
+  const r: Report = { ...sample, shot };
+  const title = `Error on beta: ${cut(message.split('\n')[0], 80)}`;
+  const fix = 'Find the cause from the error, its stack, the console and the game state; fix it so the error no longer happens on beta (not by hiding it).';
+  if (old) {
+    // It was fixed and came back.
+    db.prepare(`UPDATE findings SET status = 'open', seen = seen + 1, last_seen = ?, detail = ?, report = ?, note = ?, updated = ? WHERE id = ?`)
+      .run(now, autoDetail(r, kindOf(e), sig), J(r), `Came back ${day}: it was fixed, and the beta site caught it again.`, now, id);
+  } else {
+    db.prepare(`INSERT INTO findings (id, product, key, title, severity, area, detail, fix, status, scenario, shots, first_seen, last_seen, seen, last_run, note, source, milestone, item, report)
+      VALUES (?, ?, ?, ?, 'bug', 'beta errors', ?, ?, 'open', 'auto-error', '[]', ?, ?, 1, NULL, ?, 'auto', NULL, NULL, ?)`)
+      .run(id, p.id, key, title, autoDetail(r, kindOf(e), sig), fix, now, now, `Caught by itself on the beta site ${day}.`, J(r));
+  }
+  if (shot) void importShot(id, p.id, shot, title, 'auto').catch((err) => console.warn(`[bugreport] Gen import for ${id}: ${err.message ?? err}`));
+  return { ok: true, id, seen: Boolean(old) };
+}
+
+const kindOf = (e: NonNullable<ErrorIn['error']>) => (['error', 'rejection', 'console'].includes(String(e.kind)) ? String(e.kind) : 'error');
+
+function sampleOf(b: ErrorIn, message: string, stack: string, now: number): Report {
+  const vp = b.viewport ?? {};
+  const dev = b.device ?? {};
+  return {
+    text: stack ? `${message}\n${stack}` : message, url: b.url ? cut(b.url, 500) : null, page: b.title ? cut(b.title, 200) : null,
+    device: `${dev.touch ? 'touch' : 'mouse'} · ${cut(dev.platform, 40) || '?'} · ${cut(dev.ua, 300)}`,
+    viewport: `${Number(vp.w) || '?'}x${Number(vp.h) || '?'}${vp.dpr ? ` @${Number(vp.dpr)}x` : ''}`,
+    build: b.build ? { product: cut(b.build.product, 40), sha: cut(b.build.sha, 40), ref: cut(b.build.ref, 120), change: b.build.change ? cut(b.build.change, 40) : undefined, built: Number(b.build.built) || undefined } : null,
+    console: (Array.isArray(b.console) ? b.console : []).slice(-25).map((c) => ({ level: cut(c?.level, 10) || 'log', text: cut(c?.text, 400) })),
+    state: b.state == null ? null : cut(b.state, 4000), game: b.report == null ? null : cut(b.report, 4000),
+    shot: null, shotNote: b.shotNote ? cut(b.shotNote, 300) : null, asset: null, conversation: null, milestone: null, told: null, at: now,
+  };
+}
+
+function autoDetail(r: Report, kind: string, sig: string) {
+  const what = kind === 'rejection' ? 'An unhandled promise rejection' : kind === 'console' ? 'console.error' : 'An uncaught error';
+  return [
+    `${what}, caught by the beta site itself (no player action; latest sample below).`,
+    `Error: ${r.text}`,
+    `Signature: ${sig}`,
+    detailOf({ ...r, text: '' }, null).split('\n').slice(1).join('\n'),
+  ].filter(Boolean).join('\n');
+}
+
+function saveShot(id: string, data: string | null | undefined) {
+  const m = /^data:image\/(jpeg|png|webp);base64,([A-Za-z0-9+/=]+)$/.exec(String(data ?? ''));
+  if (!m) return null;
+  const buf = Buffer.from(m[2], 'base64');
+  if (buf.length > MAX_SHOT) return null;
+  fs.mkdirSync(DIR, { recursive: true });
+  const file = path.join(DIR, `${id}.${m[1] === 'jpeg' ? 'jpg' : m[1]}`);
+  fs.writeFileSync(file, buf);
+  return file;
+}
+
 export function getReport(id: string): Report | null {
-  const r = db.prepare(`SELECT report FROM findings WHERE id = ? AND source = 'J'`).get(id) as any;
+  const r = db.prepare(`SELECT report FROM findings WHERE id = ? AND source IN ('J', 'auto')`).get(id) as any;
   return r ? (parse(r.report) as Report) : null;
 }
 function setReport(id: string, patch: Partial<Report>) {
