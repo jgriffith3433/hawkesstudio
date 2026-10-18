@@ -83,6 +83,8 @@
   function pmBox(p) {
     return `<div class="set-box"><h3>🗂 PM loop</h3>
       <div class="meta">Talk as your PM: it starts roadmap tasks and the worst bugs within these limits, and merges into beta what passes its checks (never live). Every change here is in the PM log, with undo.</div>
+      ${row('Walk-away mode', bool('pm', 'walkAway', p.walkAway, 'on: Studio decides routine calls'), 'On: Studio and Gen changes merge into main by themselves once typecheck, tests, the smoke check and CI are green (red CI goes back to its agent; protected files still wait for you), the PM decides criteria misses itself, and your Inbox keeps only going live, rollbacks, new GPU servers, spend above the caps, protected files, failures after all tries, milestones and real direction questions. Off: everything waits for you as before.')}
+      ${row('Walk-away GPU budgets per day ($)', num('pm', 'walkAwayGpuPerDay', p.walkAwayGpuPerDay ?? 25, { step: 5 }), 'In walk-away mode Studio approves GPU budgets under the per-task limit (Budgets) up to this much a day; above it, one card a day in your Inbox.')}
       ${row('PM loop', bool('pm', 'enabled', p.enabled, 'running'))}
       ${row('Delegated merges into beta', bool('pm', 'delegatedMerges', p.delegatedMerges))}
       ${row('Starts per day', num('pm', 'maxStartsPerDay', p.maxStartsPerDay))}
@@ -118,6 +120,8 @@
   async function loadSettingsTab() {
     data = await api('/api/settings');
     window.callVoice?.apply(data.call);
+    const badge = $('#walkAwayBadge');
+    if (badge) badge.hidden = !data.pm.walkAway;
     $('#setBody').innerHTML = `<div class="set-grid">${callBox(data.call)}${agentsBox(data.agents)}${pmBox(data.pm)}${notifyBox(data.notify)}${costsBox(data.costs)}</div>`;
     if (data.call.engine === 'eleven') loadElevenVoices();
   }
@@ -150,6 +154,7 @@
     try {
       const r = await api('/api/settings', { method: 'POST', body: { section, patch } });
       data[section] = r.settings;
+      if (section === 'pm' && $('#walkAwayBadge')) $('#walkAwayBadge').hidden = !r.settings.walkAway;
       if (section === 'call') window.callVoice?.apply(r.settings);
       mark(target, true, 'Saved');
       return r.settings;

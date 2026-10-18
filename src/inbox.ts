@@ -18,8 +18,9 @@ import { db, parse } from './db.ts';
 import { getProduct, getInfra, isInfra, StudioError } from './config.ts';
 import {
   listQuestions, getQuestion, setQuestion, answeredSince, getTask, getItem, getMilestone, listMilestones, milestoneProgress, milestoneTasks, tasksAwaitingGpu,
-  approveGpu, updateTask, estimateTask, addComment, type Question, type Task,
+  approveGpu, updateTask, estimateTask, addComment, gpuBudgetFor, gpuAutoApprovedToday, type Question, type Task,
 } from './roadmap.ts';
+import { walkAwayOn, walkAwaySettings } from './walkaway.ts';
 import { gate } from './acceptance.ts';
 import { listApprovals, type Approval } from './approvals.ts';
 
@@ -240,7 +241,25 @@ export async function inbox({ tokens = false }: { tokens?: boolean } = {}): Prom
     });
   }
 
-  for (const t of tasksAwaitingGpu()) {
+  // Walk-away mode: Studio approved what fits its caps; what's above them is ONE digest card (not a card per task).
+  const walk = walkAwayOn();
+  const gpuWaits = tasksAwaitingGpu();
+  if (walk && gpuWaits.length) {
+    const priced = gpuWaits.map((t) => ({ t, amount: t.gpu?.estimate && !t.gpu.estimate.error ? gpuBudgetFor(t.gpu.estimate.cost) : null }));
+    const total = priced.reduce((a, x) => a + (x.amount ?? 0), 0);
+    const wa = walkAwaySettings();
+    const threshold = (await import('./costs.ts')).costSettings().gpuAutoApprove;
+    out.push({
+      id: 'gpu:digest', kind: 'gpu', title: `Approve GPU budgets for ${gpuWaits.length} task(s), $${total.toFixed(2)} in all?`,
+      text: priced.map((x) => `- "${x.t.title}" (${name(x.t.product)}): ${x.amount !== null ? `$${x.amount.toFixed(2)}` : "couldn't be priced"}`).join('\n'),
+      product: null, productName: null,
+      context: `Above what Studio approves by itself in walk-away mode ($${threshold} a task, $${wa.walkAwayGpuPerDay} a day; $${gpuAutoApprovedToday().toFixed(2)} approved today)`,
+      asker: 'Studio PM', recommendation: `Approve all ($${total.toFixed(2)})`, options: [`Approve all ($${total.toFixed(2)})`, 'Not now'],
+      blocks: `${gpuWaits.length} task(s) can't start`, since: Math.min(...gpuWaits.map((t) => t.updated ?? t.created)), weight: 25 + gpuWaits.length * 5, links: [],
+      subject: null, conversation: null, asks: 1,
+    });
+  }
+  for (const t of walk ? [] : gpuWaits) {
     if (carded.has(`gpu:${t.id}`)) continue;
     const q = gpuQ.get(t.id);
     const e = t.gpu?.estimate;
@@ -264,13 +283,17 @@ export async function inbox({ tokens = false }: { tokens?: boolean } = {}): Prom
     if (autoBeta && !c.infra) continue;
     // J approved it already; main moved and it merges once CI is green (agents.ts mergeApprovedInfra).
     if (c.infra && (c as any).approved) continue;
+    // Walk-away mode: Studio/Gen changes merge by themselves once green; only one held for J shows (protected files,
+    // failed after its tries).
+    if (c.infra && walk && !String((c as any).auto_merge ?? '').startsWith('held')) continue;
     const pmReviews = handled && settings.delegatedMerges && pm.reviewable(c);
     if (pmReviews || carded.has(`merge:${c.id}`)) continue;
     const g = c.infra ? null : gate(c.verify, c.criteria);
     const v = c.verify ?? {};
     const into = c.infra ? 'main' : 'beta';
     const blocker = c.findings.some((f) => (db.prepare('SELECT severity FROM findings WHERE id = ?').get(f) as any)?.severity === 'blocker');
-    const why = c.infra ? `a ${name(c.product)} change (merging into main deploys it)` : !pm.reviewable(c) ? (c.request ? 'your own request' : 'from before the PM loop') : 'delegated merges are off';
+    const held = String((c as any).auto_merge ?? '').startsWith('held') ? String((c as any).auto_merge).slice(6) : null;
+    const why = c.infra ? `a ${name(c.product)} change (merging into main deploys it)${held ? `; it waits for you: ${held}` : ''}` : !pm.reviewable(c) ? (c.request ? 'your own request' : 'from before the PM loop') : 'delegated merges are off';
     out.push({
       id: `merge:${c.id}`, kind: 'merge', title: `Merge "${c.title ?? c.id}" into ${into}?`, text: null, product: c.product, productName: name(c.product),
       context: `Change ${c.id}, ${why}. ${c.infra ? `Checks: ${v.outcome ?? '?'}${v.summary ? `, ${String(v.summary).slice(0, 200)}` : ''}` : `${g?.played ? `Playtest: ${v.outcome ?? '?'} · review ${v.verdict ?? 'n/a'}` : "Not playtested (the agent's checks passed)"}${g && !g.pass ? ` · doesn't pass: ${g.why.join('; ').slice(0, 300)}` : ''}`}`,
@@ -365,6 +388,19 @@ export async function answerInbox(id: string, answer: string, by: string, opts: 
   const jOnly = (what: string) => {
     if (!isJ(by)) throw new StudioError(`${what} is J's call (answered by ${by}). Ask J; he answers in the Inbox or in his own words in Talk.`);
   };
+  if (id === 'gpu:digest') {
+    jOnly('GPU budgets');
+    const waits = tasksAwaitingGpu();
+    const out: unknown[] = [];
+    for (const t of waits) {
+      const est = t.gpu?.estimate;
+      if (NO.test(text)) out.push(await gpuAnswer(t, text, by, null));
+      else if (est && !est.error) out.push(await gpuAnswer(t, `Approve $${gpuBudgetFor(est.cost).toFixed(2)}`, by, null));
+      else out.push(await gpuAnswer(t, 'Price it again', by, null));
+    }
+    record(id, by, text, `GPU budgets for ${waits.length} task(s)`);
+    return { answered: id, by, tasks: out.length };
+  }
   let m = /^gpu:(k_[0-9a-f]+)$/.exec(id);
   if (m) {
     jOnly('A GPU budget');

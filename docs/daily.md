@@ -493,6 +493,43 @@ the one API. Talk reads and changes them with `studio_settings` when J asks; fro
 Talk puts an Approve card on his screen (`studio_approval` kind settings), or, as the fallback, the request quotes his
 own yes from that conversation. The notification topic is changed only on the dashboard.
 
+## Walk-away mode
+
+J, 2026-10-18: "there's WAYYY too much going into my inbox ... just merge okay? ... I just want this system to build
+build build." Walk-away mode (`src/walkaway.ts`; the switch is `pm.walkAway` in Settings and `studio_settings`, **on by
+default**; the header shows a 🚶 Walk-away badge while it's on) lets Studio and the PM make the routine calls:
+
+- **Studio and Gen changes merge into main by themselves** (`agents.ts walkAwayMerge`), like product changes merge into
+  beta: once ready with typecheck, tests and the smoke check passed and CI green on the pull request's head, through the
+  same merge as J's approval (`approveInfra`, by "Studio (walk-away)"): brought up to date with main first, a moved main
+  waits for CI on the updated head (`mergeApprovedInfra`), a conflict is its agent's conflict pass. The server's deploy
+  keeps its health check and automatic rollback. One Talk line per merge. Red CI or failed checks never merge: its agent
+  gets a fix pass with what failed (`walkAwayFix`: the first isn't a try, then up to `pm.maxTries`); out of passes, J is
+  asked (Inbox and phone). A change touching protected files (`guardFiles`' list, CI workflows) or one Studio can't
+  read waits for J (`auto_merge: 'held: <why>'`, his Inbox's merge card). The guards on J's own path (typed `MERGE`,
+  Approve cards, `studio_change approve`) are unchanged; only this automatic path skips them.
+- **The PM decides criteria misses on beta** (`pm.ts decideMiss`), never one question per task: when beta itself looks
+  broken (two or more of a product's tasks miss in the same beta run, beta's build failed, or an investigation is
+  already open) it files ONE investigation change and holds those tasks (status failed, note "held") until it's done
+  (`releaseInvestigations`: merged, the tasks are judged again in one beta run; closed or failed, each is decided alone);
+  otherwise the task tries again (a try) or, after `maxTries`, is parked as an idea with a note. Each is in the PM log
+  with undo (`tasks`). The "misses criteria" questions from before are taken over the same way (`settleMissQuestions`:
+  held under a change already fixing beta's build or data when there is one).
+- **GPU budgets**: Studio approves up to `costs.gpuAutoApprove` a task ($5) within `pm.walkAwayGpuPerDay` a day ($25;
+  `roadmap.ts autoApproveGpu`); above that, ONE digest card in the Inbox (`gpu:digest`, "Approve all") and one phone
+  line a day.
+- **Agent questions** are answered by the PM from J's decisions and the canon, as before; only real direction choices go
+  to J.
+- **Cards settle**: a merge card whose change isn't ready, or a Studio/Gen change walk-away merges itself, is stale at
+  once (`approvals.ts settleDone`), never "Can't approve yet".
+- **The Inbox keeps only J-only things**: going live, rollbacks, launching new GPU servers, spending above the caps,
+  protected files, failures after all tries, milestones reached, real direction questions. The rest is a line in Talk
+  and the PM log, and once a day (after `pm.dailyHour`) one digest in the day's "Studio PM" conversation of what the PM
+  decided on its own. J's phone hears only failures after their tries, a Studio or Gen deploy that rolled back, the GPU
+  digest and milestones.
+
+Off: everything is exactly as before (Studio and Gen merges wait for J's tap, misses ask J, a GPU card per task).
+
 ## The conversation (J and Claude, in the Claude app)
 
 1. Claude reads the report (`studio_report`) and the backlog and summarizes it: what broke, what's worth fixing,
@@ -656,7 +693,8 @@ J and agents build on beta together, live on the cloud server (`src/dev.ts`, `sr
 
 - Go live and roll back (they publish live sites, and need his tap on an Approve card, or his typed words), and money: launching servers, big
   generation batches, raising limits. Agent changes merge into beta by themselves once ready (J
-  can turn that off in Settings: then the PM loop merges them through their checks); Studio and Gen changes stay his.
+  can turn that off in Settings: then the PM loop merges them through their checks); Studio and Gen changes stay his,
+  except in walk-away mode (on by default), where green ones merge by themselves and protected files still wait for him.
 - Direction: what goes on the roadmap (Talk proposes; J says yes), and the questions the PM passes to him.
 - Sign in to things: Unity Hub on the build server (once, over Remote Desktop), GitHub (`gh auth login`).
 - Taste: which findings matter, where each product is going.

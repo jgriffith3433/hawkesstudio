@@ -21,6 +21,7 @@
 
 import { db, newId, J, parse } from './db.ts';
 import { loadProducts, loadInfra, isInfra, StudioError, betaPlaytestsOn } from './config.ts';
+import { walkAwaySettings, type WalkAwaySettings } from './walkaway.ts';
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS items (
@@ -486,7 +487,7 @@ export const gpuBudgetFor = (cost: number) => Math.ceil(cost * 1.25 * 100) / 100
  * monthly budget (J is asked, as for anything at or over the threshold). Returns the task when it approved, else null.
  * threshold, spend and tell are for tests.
  */
-export async function autoApproveGpu(id: string, opts: { threshold?: number; spend?: () => Promise<{ spent: number; budget: number; over: boolean }>; tell?: boolean } = {}) {
+export async function autoApproveGpu(id: string, opts: { threshold?: number; spend?: () => Promise<{ spent: number; budget: number; over: boolean }>; tell?: boolean; walkAway?: WalkAwaySettings } = {}) {
   const t = getTask(id);
   const e = t?.gpu?.estimate;
   if (!t || !t.gpu?.items?.length || !e || e.error || gpuCleared(t) || ['dropped', 'live'].includes(t.status)) return null;
@@ -500,6 +501,12 @@ export async function autoApproveGpu(id: string, opts: { threshold?: number; spe
     return null;
   }
   const budget = gpuBudgetFor(e.cost);
+  // Walk-away mode: within a daily cap of what Studio approves by itself (the rest is one digest card for J, pm.ts).
+  const wa = opts.walkAway ?? walkAwaySettings();
+  if (wa.walkAway && gpuAutoApprovedToday() + budget > wa.walkAwayGpuPerDay) {
+    logDecision('gpu ask', id, t.product, `"${t.title}": not approved automatically: $${budget.toFixed(2)} would pass walk-away's $${wa.walkAwayGpuPerDay}/day for GPU budgets ($${gpuAutoApprovedToday().toFixed(2)} approved today): J decides.`);
+    return null;
+  }
   const done = approveGpu(id, budget, `Studio (auto, < $${threshold})`);
   const line = `GPU budget $${budget.toFixed(2)} approved automatically for "${t.title}" (${t.product}): about $${price.toFixed(2)} with the idle tail, under your $${threshold} limit.`;
   logDecision('gpu auto-approve', id, t.product, line);
@@ -513,6 +520,18 @@ export async function autoApproveGpu(id: string, opts: { threshold?: number; spe
     }
   }
   return done;
+}
+
+/** GPU budgets Studio approved by itself today (dollars): the walk-away daily cap counts these. */
+export function gpuAutoApprovedToday() {
+  const since = new Date();
+  since.setHours(0, 0, 0, 0);
+  let sum = 0;
+  for (const r of db.prepare(`SELECT gpu FROM tasks WHERE gpu IS NOT NULL`).all() as any[]) {
+    const g = parse(r.gpu);
+    if (typeof g?.budget === 'number' && /^Studio/.test(String(g.approvedBy ?? '')) && (g.approvedAt ?? 0) >= since.getTime()) sum += g.budget;
+  }
+  return Math.round(sum * 100) / 100;
 }
 
 /** Tasks already waiting for a GPU budget that Studio may approve itself (once after a restart: a deploy). */

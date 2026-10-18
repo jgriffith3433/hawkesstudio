@@ -485,7 +485,8 @@ test('a task is started once: a failed try is retried, the retry merges, and not
   const changesOf = (task: string) => db.prepare(`SELECT id, status FROM changes WHERE task = ? ORDER BY created`).all(task) as any[];
   const old = Date.now() - 3600_000;
   try {
-    pm.savePmSettings({ maxConcurrent: pm.capacity().active + 5, maxStartsPerDay: 1000 });
+    // Walk-away mode off: a real miss asks J (on, the PM decides it: walkaway.test.ts).
+    pm.savePmSettings({ maxConcurrent: pm.capacity().active + 5, maxStartsPerDay: 1000, walkAway: false });
     const it = rm.addItem({ product: 'pmfifth', title: 'Powered by', status: 'planned', ord: -900 });
     const crit = ['Landing page shows Powered by HAWKES GEN', 'Landing page links to the parent'];
     const t = rm.addTask({ item: it.id, request: 'Add the footer', criteria: crit });
@@ -534,7 +535,7 @@ test('a task is started once: a failed try is retried, the retry merges, and not
     assert.equal(changesOf(t.id).length, 3);
     assert.equal(rm.getTask(t.id)!.status, 'working');
   } finally {
-    pm.savePmSettings({ maxConcurrent: before.maxConcurrent, maxStartsPerDay: before.maxStartsPerDay });
+    pm.savePmSettings({ maxConcurrent: before.maxConcurrent, maxStartsPerDay: before.maxStartsPerDay, walkAway: before.walkAway });
     fs.writeFileSync(agents, JSON.stringify({ maxConcurrent: 0 }));
     if (token === undefined) delete process.env.GITHUB_TOKEN; else process.env.GITHUB_TOKEN = token;
   }

@@ -118,7 +118,7 @@ export async function allSettings() {
 const RAISES: Record<Section, { up?: string[]; on?: string[]; off?: string[]; any?: string[] }> = {
   call: {},
   agents: { up: ['maxConcurrent', 'maxPerDay', 'maxCostPerDay', 'maxTurns'], on: ['enabled', 'autoFix'], any: ['model', 'severities'] },
-  pm: { up: ['maxStartsPerDay', 'maxConcurrent', 'maxTries'], on: ['enabled', 'fixBugs'] },
+  pm: { up: ['maxStartsPerDay', 'maxConcurrent', 'maxTries', 'walkAwayGpuPerDay'], on: ['enabled', 'fixBugs', 'walkAway'] },
   notify: {},
   costs: { up: ['budget', 'gpuHours', 'builderHours', 'playtesterHours', 'gpuAutoApprove'], off: ['alerts'] },
 };
