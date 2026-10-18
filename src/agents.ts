@@ -58,6 +58,7 @@ import { roleArgs, loadRole, type RoleName } from './roles.ts';
 import { claudeCommand, spawnShell, sandboxShare, assertWorktree, shareWorktree } from './sandbox.ts';
 import { launch, DetachedChild, type DetachRec } from './detach.ts';
 import { warmDeps } from './warm.ts';
+import { ensureGpuFor, needsGpu } from './gpustart.ts';
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS changes (
@@ -344,9 +345,16 @@ function gpuBrief(c: Change) {
     return `## GPU budget: $${b.toFixed(2)} (approved by J)
 
 You may generate through Hawkes Gen up to that: queue each kind of job as one batch (one model load), reuse what
-the library already has (\`reuse\`, asset manifests), stop the servers you started when the batch is done, and report
-the GPU minutes and dollars spent (\`hawkesgen_jobs\`). If it won't fit, make the most important part and say what the
-rest would cost.
+the library already has (\`reuse\`, asset manifests), and report the GPU minutes and dollars spent (\`hawkesgen_jobs\`).
+If it won't fit, make the most important part and say what the rest would cost.
+
+You can't start GPU servers yourself (that needs Gen's owner role), and you don't need to: when no GPU server is
+running, Studio has started a stopped one for you as this change began (it takes a few minutes to boot, and stops
+itself after Gen's idle time). Do the parts that need no GPU first, then queue your jobs (\`hawkesgen_run\` with
+\`wait_for_server: true\`): Gen holds them until the server is ready, so wait for them instead of failing, and ignore
+its "only J can start one" note (Studio already did; don't ask J). If no server became ready within
+about 30 minutes (Studio couldn't start one: no capacity in its zone, or the cap of 4 is reached), finish everything
+else and say in your summary that the GPU part is still waiting. Never launch a server.
 
 `;
   }
@@ -811,6 +819,8 @@ async function work(id: string, note?: string, answer?: string, resumed?: Phase 
   try {
     if (resumed && !asked) addLog(id, `Studio restarted: carrying on from the ${ph.step} step`);
     else if (!resumed) save({}, { status: note || answer ? 'revising' : 'working', detail: 'preparing the worktree' });
+    // An approved GPU budget: Studio starts a stopped GPU server for it now (gpustart.ts; never a launch), in the background.
+    if (!resumed && needsGpu(c)) void ensureGpuFor(c).then((r) => addLog(id, `GPU server: ${r}`)).catch(() => {});
     const findings = c.findings.map((f) => getFinding(f)).filter((f): f is NonNullable<typeof f> => Boolean(f));
 
     if (ph.step === 'prepare') {
