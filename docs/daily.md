@@ -299,6 +299,15 @@ GPU costs money, so it is priced and approved.**
 - A task whose estimate costs money **does not start until J approves a budget that covers it**: the PM asks him once
   (a decision question with the numbers, topic `gpu`); it is a card in his Inbox (Approve $<estimate + 25%> / Not now,
   which parks the task), and Talk records an answer he gives in Talk with `studio_inbox answer` (only on his words). A new estimate above the budget needs a new approval.
+- **Small budgets approve themselves** (J, 2026-10-18: "<5 dollars auto approve"). When a task is priced or priced
+  again and its estimate with the idle tail (else its cost) is under `costs.gpuAutoApprove` (Settings, Budgets; default
+  $5, 0 = always ask), Studio approves the same budget J's card would (estimate +25%) as "Studio (auto, < $5)": a
+  line in the PM log and in Talk (the item's conversation, else the day's PM one), no Inbox card, no phone. Not while
+  this month's spend (AWS + APIs so far, `costs.monthSpend`) is already over the monthly budget: then J is asked as
+  usual. At or over the threshold: J's Approve card, unchanged. When Studio starts (a deploy), tasks already waiting
+  under the threshold are approved (`roadmap.ts autoApproveGpu`, `autoApproveWaiting`). Raising the threshold is a
+  cost-raising setting (J's yes from Talk). An auto budget is a budget: the brief states it, and an agent that needs
+  more asks.
 - The agent's brief says its GPU budget. With none (a task without `gpu`, or `studio_task` without `gpu_budget`), the
   agent does everything that needs no GPU (design, data, specs, Claude steps; voice and sound effects are cents) and
   ends with the estimate in its summary. With one, it batches each kind of job (one model load), reuses the library

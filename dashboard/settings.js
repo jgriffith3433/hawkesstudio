@@ -103,9 +103,10 @@
 
   function costsBox(c) {
     return `<div class="set-box"><h3>💵 Budgets</h3>
-      <div class="meta">The month's budget for AWS and pay-per-use APIs, and when a server counts as left running. Spending and subscriptions are on the <a href="#costs" data-go="costs">Costs</a> tab.</div>
+      <div class="meta">The month's budget for AWS and pay-per-use APIs, the GPU budgets Studio approves by itself, and when a server counts as left running. Spending and subscriptions are on the <a href="#costs" data-go="costs">Costs</a> tab.</div>
       ${row('Monthly budget ($)', num('costs', 'budget', c.budget, { step: 5 }))}
       ${row('Cost alerts to your phone', bool('costs', 'alerts', c.alerts))}
+      ${row('Approve GPU tasks under ($, 0 = always ask)', num('costs', 'gpuAutoApprove', c.gpuAutoApprove, { step: 1 }))}
       ${row('GPU server left running after (h)', num('costs', 'gpuHours', c.gpuHours, { step: 0.5 }))}
       ${row('Build server left running after (h)', num('costs', 'builderHours', c.builderHours, { step: 0.5 }))}
       ${row('Playtester left running after (h)', num('costs', 'playtesterHours', c.playtesterHours, { step: 0.5 }))}

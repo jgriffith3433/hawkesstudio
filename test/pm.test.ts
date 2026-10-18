@@ -200,6 +200,57 @@ test('a content task that spends GPU money waits for J\'s budget', async () => {
   rm.updateItem(it.id, { status: 'dropped' });
 });
 
+test('small GPU budgets are approved by Studio itself, under the threshold and the monthly budget', async () => {
+  const costs = await import('../src/costs.ts');
+  const { costRaising } = await import('../src/settings.ts');
+  const it = rm.addItem({ product: 'pmtest', title: 'Small art', goal: 'Some art', criteria: ['it shows'], size: 'S', status: 'planned' });
+  const priced = (cost: number, withIdleTail: number) => {
+    const t = rm.addTask({ item: it.id, request: `Paint ${cost}`, gpu: [{ tool: 'image.edit', count: 2 }] });
+    db.prepare('UPDATE tasks SET gpu = ? WHERE id = ?').run(JSON.stringify({ items: t.gpu!.items, estimate: { gpuHours: 0.2, cost, withIdleTail, servers: 1, wallMinutes: 10, at: Date.now() } }), t.id);
+    return t.id;
+  };
+  const under = async () => ({ spent: 40, budget: 150, over: false });
+  // Under $5 with the idle tail: approved at the estimate +25%, by Studio, logged; it can start.
+  const a = priced(1, 3.2);
+  const done = await rm.autoApproveGpu(a, { spend: under, tell: false });
+  assert.equal(done!.gpu!.budget, 1.25);
+  assert.equal(done!.gpu!.approvedBy, 'Studio (auto, < $5)');
+  assert.ok(rm.startableTasks().some((x) => x.id === a));
+  assert.ok(rm.listDecisions({ action: 'gpu auto-approve' }).some((d) => d.subject === a));
+  // The idle tail is what counts: cost $2 but $6 with the tail waits for J (his card).
+  const b = priced(2, 6);
+  assert.equal(await rm.autoApproveGpu(b, { spend: under, tell: false }), null);
+  assert.ok(rm.tasksAwaitingGpu().some((x) => x.id === b));
+  // At the threshold: J's.
+  const c = priced(4, 5);
+  assert.equal(await rm.autoApproveGpu(c, { spend: under, tell: false }), null);
+  // This month already over the budget: J is asked, even for a small one.
+  const d = priced(0.5, 1);
+  assert.equal(await rm.autoApproveGpu(d, { spend: async () => ({ spent: 160, budget: 150, over: true }), tell: false }), null);
+  assert.ok(rm.tasksAwaitingGpu().some((x) => x.id === d));
+  assert.ok(rm.listDecisions({ action: 'gpu ask' }).some((x) => x.subject === d && /over the \$150\.00 budget/.test(x.detail ?? '')));
+  // After a deploy (Studio's start), tasks already waiting under the threshold are approved; the others still wait.
+  const swept = await rm.autoApproveWaiting({ spend: under, tell: false });
+  assert.ok(swept.includes(d) && !swept.includes(b) && !swept.includes(c));
+  // Re-priced higher than the auto budget: the budget goes (estimateTask's rule), and a new one under the threshold comes back.
+  db.prepare('UPDATE tasks SET gpu = ? WHERE id = ?').run(JSON.stringify({ ...rm.getTask(a)!.gpu, estimate: { gpuHours: 0.3, cost: 2, withIdleTail: 4, servers: 1, wallMinutes: 12, at: Date.now() }, budget: null, approvedBy: null, approvedAt: null }), a);
+  assert.ok(!rm.gpuCleared(rm.getTask(a)!));
+  assert.equal((await rm.autoApproveGpu(a, { spend: under, tell: false }))!.gpu!.budget, 2.5);
+  // Re-priced over the threshold: J's again.
+  db.prepare('UPDATE tasks SET gpu = ? WHERE id = ?').run(JSON.stringify({ ...rm.getTask(a)!.gpu, estimate: { gpuHours: 2, cost: 8, withIdleTail: 10, servers: 1, wallMinutes: 60, at: Date.now() }, budget: null, approvedBy: null, approvedAt: null }), a);
+  assert.equal(await rm.autoApproveGpu(a, { spend: under, tell: false }), null);
+  // The setting: default 5, saved, 0 turns it off, and raising it is a cost-raising change.
+  assert.equal(costs.costSettings().gpuAutoApprove, 5);
+  assert.equal(costs.saveCostSettings({ gpuAutoApprove: 10 }).gpuAutoApprove, 10);
+  assert.equal((await rm.autoApproveGpu(b, { spend: under, tell: false }))!.gpu!.approvedBy, 'Studio (auto, < $10)');
+  costs.saveCostSettings({ gpuAutoApprove: 0 });
+  assert.equal(await rm.autoApproveGpu(c, { spend: under, tell: false }), null);
+  costs.saveCostSettings({ gpuAutoApprove: 5 });
+  assert.deepEqual(costRaising('costs', { gpuAutoApprove: 20 }, { gpuAutoApprove: 5 }), ['gpuAutoApprove 5 → 20']);
+  assert.deepEqual(costRaising('costs', { gpuAutoApprove: 2 }, { gpuAutoApprove: 5 }), []);
+  rm.updateItem(it.id, { status: 'dropped' });
+});
+
 test('an escalated change is asked about once: answered, the loop leaves it; "close" closes it', async () => {
   process.env.STUDIO_PM_TALK = 'off';
   fs.writeFileSync(path.join(process.env.STUDIO_DATA!, 'notify.json'), JSON.stringify({ enabled: false, server: 'http://127.0.0.1:9', topic: 'test' }));

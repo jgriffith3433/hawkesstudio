@@ -84,7 +84,7 @@ export type Task = {
   try: string | null; note: string | null; merged_at: number | null; verified_at: number | null; live_at: number | null; created: number; updated: number | null;
   /**
    * Content tasks that generate on the GPU: what they will make (Hawkes Gen estimate items), the estimate, and the
-   * budget J approved. A task whose estimate costs money waits until J approves a budget that covers it.
+   * budget approved (J's, or Studio's under costs.gpuAutoApprove: autoApproveGpu). A task whose estimate costs money waits until a budget covers it.
    */
   gpu: TaskGpu | null;
 };
@@ -312,10 +312,58 @@ export async function estimateTask(id: string) {
   const keep = typeof t.gpu.budget === 'number' && t.gpu.budget >= estimate.cost;
   db.prepare('UPDATE tasks SET gpu = ?, updated = ? WHERE id = ?')
     .run(J({ ...t.gpu, estimate, ...(keep ? {} : { budget: null, approvedBy: null, approvedAt: null }) }), Date.now(), id);
+  // Small ones Studio approves itself (J, 2026-10-18: "<5 dollars auto approve").
+  await autoApproveGpu(id).catch((e: any) => console.warn(`[roadmap] GPU auto-approval of ${id} failed: ${e.message}`));
   return getTask(id);
 }
 
-/** J's approval of a GPU budget for a task (dollars). Only on J's own word. */
+/** The budget an approval of an estimate sets: the estimate +25%, rounded up to the cent (the Inbox card's amount). */
+export const gpuBudgetFor = (cost: number) => Math.ceil(cost * 1.25 * 100) / 100;
+
+/**
+ * Studio's own approval of a small GPU budget (J, 2026-10-18): a priced task waiting for a budget whose estimate with
+ * the idle tail (else its cost) is under costs.gpuAutoApprove gets the budget J's approval would set, by "Studio (auto,
+ * < $X)", with a line in the PM log and Talk (no Inbox card, no phone). Not while this month's spend is over the
+ * monthly budget (J is asked, as for anything at or over the threshold). Returns the task when it approved, else null.
+ * threshold, spend and tell are for tests.
+ */
+export async function autoApproveGpu(id: string, opts: { threshold?: number; spend?: () => Promise<{ spent: number; budget: number; over: boolean }>; tell?: boolean } = {}) {
+  const t = getTask(id);
+  const e = t?.gpu?.estimate;
+  if (!t || !t.gpu?.items?.length || !e || e.error || gpuCleared(t) || ['dropped', 'live'].includes(t.status)) return null;
+  const costs = await import('./costs.ts');
+  const threshold = opts.threshold ?? costs.costSettings().gpuAutoApprove;
+  const price = e.withIdleTail > 0 ? e.withIdleTail : e.cost;
+  if (!(threshold > 0) || !(price < threshold)) return null;
+  const m = await (opts.spend ?? costs.monthSpend)();
+  if (m.over) {
+    logDecision('gpu ask', id, t.product, `"${t.title}": not approved automatically ($${price.toFixed(2)} is under $${threshold}, but this month's spend $${m.spent.toFixed(2)} is over the $${m.budget.toFixed(2)} budget): J decides.`);
+    return null;
+  }
+  const budget = gpuBudgetFor(e.cost);
+  const done = approveGpu(id, budget, `Studio (auto, < $${threshold})`);
+  const line = `GPU budget $${budget.toFixed(2)} approved automatically for "${t.title}" (${t.product}): about $${price.toFixed(2)} with the idle tail, under your $${threshold} limit.`;
+  logDecision('gpu auto-approve', id, t.product, line);
+  if (opts.tell !== false) {
+    try {
+      const talk = await import('./talk.ts');
+      const origin = getItem(t.item)?.origin ?? null;
+      if (!(origin && talk.studioNote(origin, line))) talk.studioNote(await (await import('./pm.ts')).pmConversation(), line);
+    } catch (err: any) {
+      console.warn(`[roadmap] telling Talk about ${id}'s GPU budget failed: ${err.message}`);
+    }
+  }
+  return done;
+}
+
+/** Tasks already waiting for a GPU budget that Studio may approve itself (once after a restart: a deploy). */
+export async function autoApproveWaiting(opts: Parameters<typeof autoApproveGpu>[1] = {}) {
+  const out: string[] = [];
+  for (const t of tasksAwaitingGpu()) if (await autoApproveGpu(t.id, opts).catch(() => null)) out.push(t.id);
+  return out;
+}
+
+/** An approval of a GPU budget for a task (dollars). Only on J's own word, or Studio's under the threshold (autoApproveGpu). */
 export function approveGpu(id: string, budget: number, by: string) {
   const t = getTask(id);
   if (!t) throw new StudioError(`No task ${id}`, 404);

@@ -48,10 +48,15 @@ export type CostSettings = {
   alerts: boolean;
   /** Hours a server may run before it counts as left running. */
   gpuHours: number; builderHours: number; playtesterHours: number;
+  /**
+   * GPU budgets Studio approves itself (dollars): a roadmap task whose estimate with the idle tail is under this gets its
+   * budget without asking J (roadmap.ts autoApproveGpu), unless this month's spend is already over the budget. 0: never.
+   */
+  gpuAutoApprove: number;
   /** Monthly subscriptions Studio can't see (Claude Max, ElevenLabs…), shown with the totals: { name: USD per month }. */
   subscriptions: Record<string, number>;
 };
-const DEFAULTS: CostSettings = { budget: 150, alerts: true, gpuHours: 3, builderHours: 2, playtesterHours: 3, subscriptions: {} };
+const DEFAULTS: CostSettings = { budget: 150, alerts: true, gpuHours: 3, builderHours: 2, playtesterHours: 3, gpuAutoApprove: 5, subscriptions: {} };
 
 type State = { settings?: Partial<CostSettings>; cache?: Record<string, { at: number; data: any }>; ce?: { month: string; requests: number; denied?: { at: number; message: string } }; sent?: Record<string, number> };
 const FILE = () => path.join(DATA, 'costs.json');
@@ -79,7 +84,7 @@ export function saveCostSettings(patch: Partial<CostSettings>) {
   s.settings = {
     budget: num(patch.budget, cur.budget), alerts: patch.alerts ?? cur.alerts,
     gpuHours: num(patch.gpuHours, cur.gpuHours), builderHours: num(patch.builderHours, cur.builderHours), playtesterHours: num(patch.playtesterHours, cur.playtesterHours),
-    subscriptions: subs,
+    gpuAutoApprove: num(patch.gpuAutoApprove, cur.gpuAutoApprove), subscriptions: subs,
   };
   save(s);
   return costSettings();
@@ -585,6 +590,20 @@ export async function costReport(periodKey = 'month', { force = false } = {}) {
   };
 }
 export type CostReport = Awaited<ReturnType<typeof costReport>>;
+
+/**
+ * This month's money so far (AWS + pay-per-use APIs, as in costReport) against the budget: over it, Studio stops
+ * approving small GPU budgets itself (roadmap.ts autoApproveGpu) and J is asked.
+ */
+export async function monthSpend() {
+  const p = periodOf('month');
+  const settings = costSettings();
+  const g = await genUsage(p);
+  const aws = await awsCosts(p, { gu: g });
+  const api = g.byProvider.filter((x) => !x.provider.startsWith('aws-')).reduce((n, x) => n + x.cost, 0) + claudeCosts(p).billed;
+  const spent = r2(aws.month.soFar + api);
+  return { spent, budget: settings.budget, over: settings.budget > 0 && spent >= settings.budget };
+}
 
 // ------------------------------------------------------------- words (brief, Talk)
 

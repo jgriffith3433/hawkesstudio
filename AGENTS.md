@@ -124,7 +124,7 @@ music are made by agents with each product's content skills (`.claude/skills/` i
 carry `gpu` (Hawkes Gen estimate items); `src/roadmap.ts` prices them (`estimateTask`) and holds them until J approves
 a budget (`approveGpu`, `gpuCleared`, `tasksAwaitingGpu`; the PM asks him once); the change's brief states the budget
 (`gpu_budget` on changes, `gpuBrief` in agents.ts). Content playtests pass scenario `options` (`studio_playtest`,
-`.hawkes/scenario.txt` line 2) through to `playtest.run`. Keep "no budget, no GPU" intact.
+`.hawkes/scenario.txt` line 2) through to `playtest.run`. Keep "no budget, no GPU" intact (budgets under `costs.gpuAutoApprove`, default $5, Studio approves itself: `autoApproveGpu`).
 
 ## Layout
 
