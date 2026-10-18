@@ -15,6 +15,7 @@
 // Every go live and rollback is a row in `deploys` (beta.ts), so "the previous live commit" is known.
 // Only J gives the confirmations; agents (and Talk) show the plan and wait for his exact words.
 
+import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { critical } from './drain.ts';
 import { getProduct, StudioError } from './config.ts';
@@ -25,8 +26,9 @@ import { previewUrl } from './previews.ts';
 import { opLog, registerOp, enqueue, queuePosition, getOp, type Op } from './ops.ts';
 import {
   BETA, MAIN, STUDIO_ROLLBACK, AUTHOR, must, repoDirs, compareBeta, fetchOrigin, shaOf, commitOf, commitsIn, betaBuild, saveBetaBuild,
-  betaSiteDir, scratch, listDeploys, mergeMainIntoBeta, prebuilt, git as gitIn, gitAsync, type Commit, type DeployRow,
+  betaSiteDir, betaSiteFolder, scratch, listDeploys, mergeMainIntoBeta, prebuilt, git as gitIn, gitAsync, type Commit, type DeployRow,
 } from './beta.ts';
+import { STUDIO_RELEASE, RELEASES, playedCommit, releasesAt, releasesPath, readReleases, draftNow, addReleaseTo, releaseLine, type Draft } from './release.ts';
 
 const brief = (c: Commit | null) => c && { sha: c.sha, short: c.short, title: c.title, author: c.author, date: c.date };
 
@@ -90,10 +92,11 @@ export async function deployPlan(productId: string) {
     blockers.push(`${MAIN} has ${cmp.behind.length} commit(s) ${BETA} lacks (${cmp.behind.slice(0, 5).map((c) => `"${c.title}"`).join(', ')}), so ${MAIN} can't be fast-forwarded. Merge ${MAIN} into ${BETA} first (studio deploy ${p.id} --merge-main${rollbacks ? `; they're rollbacks, so the merge keeps ${BETA}'s files` : ''}), then playtest ${BETA}.`);
   }
 
-  // The playtests of the exact beta commit.
-  const { tested, last } = testedAt(p.id, beta?.sha);
-  if (beta && !tested.length) {
-    blockers.push(last ? `${BETA} hasn't been playtested at ${beta.short} (the last local playtest played ${last.played.branch} ${String(last.played.sha).slice(0, 7)}${last.played.dirty ? ' with uncommitted changes' : ''}). Playtest ${BETA} first (the daily run, or "studio beta ${p.id}").` : `${BETA} hasn't been playtested yet (the daily run on the server plays it, or "studio beta ${p.id}").`);
+  // The playtests of the exact beta commit (a Studio release commit on top, only releases.json, doesn't count as moving it).
+  const played = beta ? playedCommit(source, beta) : null;
+  const { tested, last } = testedAt(p.id, played?.sha);
+  if (played && !tested.length) {
+    blockers.push(last ? `${BETA} hasn't been playtested at ${played.short} (the last local playtest played ${last.played.branch} ${String(last.played.sha).slice(0, 7)}${last.played.dirty ? ' with uncommitted changes' : ''}). Playtest ${BETA} first (the daily run, or "studio beta ${p.id}").` : `${BETA} hasn't been playtested yet (the daily run on the server plays it, or "studio beta ${p.id}").`);
   }
   for (const t of tested) {
     if (t.status !== 'done' || !['won', 'done'].includes(t.outcome)) warnings.push(`Playtest ${t.name} on ${beta?.short} ${t.status === 'done' ? `ended "${t.outcome}"` : t.status === 'skipped' ? 'was inconclusive' : 'failed'}${t.detail ? ` (${t.detail})` : ''}.`);
@@ -103,7 +106,7 @@ export async function deployPlan(productId: string) {
   }
 
   // The pre-deploy build lives on beta (beta.ts prepareBeta), so the playtested commit is exactly what ships.
-  if (beta && p.deploy?.prebuild && !prebuilt(p, beta.sha, beta.title)) {
+  if (played && p.deploy?.prebuild && !prebuilt(p, played.sha, played.title)) {
     blockers.push(`${BETA}'s newest commit isn't its pre-deploy build (${p.deploy.prebuild}). Run "studio beta ${p.id}" (it builds, commits to ${BETA} and playtests it).`);
   }
 
@@ -125,10 +128,25 @@ export async function deployPlan(productId: string) {
     blockers.push(`Nothing to go live: ${MAIN} already is ${BETA} (${beta.short}).`);
   }
 
+  // The release going live adds to releases.json (release.ts): its version now, its title once Gen wrote the notes.
+  let release: ReturnType<typeof draftNow> | null = null;
+  if (beta && played && !blockers.some((b) => /^Nothing to go live|^git:/.test(b))) {
+    try {
+      const fallbackCommits = cmp.ahead.filter((c) => !c.title.startsWith(STUDIO_RELEASE));
+      const data = unity ? readReleases(path.join(betaSiteFolder(p), RELEASES)) ?? releasesAt(site, `origin/${MAIN}`, releasesPath(p)) : releasesAt(source, beta.sha, releasesPath(p));
+      if (data) release = draftNow(p, unity
+        ? { data, source, target: beta.sha, build: String(build?.version ?? beta.short), fallbackCommits }
+        : { data, source, target: played.sha, build: played.short, fallbackCommits });
+    } catch (e: any) {
+      warnings.push(`The release notes couldn't be drafted (${e.message}); going live still works, without a new release entry.`);
+    }
+  }
+  const relNote = release && !release.existing ? ` ${releaseLine(release)}${release.since ? ` (notes cover ${release.commits} commit(s) since the last release entry, ${release.since.slice(0, 7)})` : ''}.` : '';
+
   const previous = listDeploys(p.id, 5);
   return {
     product: p.id, name: p.name, live: p.live, betaSite: previewUrl(p.id), repo: p.repo, site: p.site, unity,
-    main: brief(cmp.main), beta: brief(beta),
+    main: brief(cmp.main), beta: brief(beta), played: brief(played), release,
     commits: cmp.ahead.map(brief), mainOnly: cmp.behind.map(brief),
     tested: { sha: beta?.short ?? null, playtests: tested }, lastPlayed: last,
     build,
@@ -136,8 +154,8 @@ export async function deployPlan(productId: string) {
     blockers, warnings, canDeploy: !blockers.length, fix: planFix(blockers),
     confirm: `DEPLOY ${p.id}`,
     what: unity
-      ? `Commits ${BETA}'s build${build?.version ? ` (Game/v${build.version})` : ''} to ${p.site}'s ${MAIN} and fast-forwards ${p.repo.split('/')[0]}'s ${MAIN} to ${beta?.short ?? BETA}; GitHub Pages publishes ${p.live}.`
-      : `Fast-forwards ${p.site}'s ${MAIN} to ${BETA}${beta ? ` ${beta.short}` : ''} (${cmp.ahead.length} commit(s)); GitHub Pages publishes ${p.live}.`,
+      ? `Commits ${BETA}'s build${build?.version ? ` (Game/v${build.version})` : ''} to ${p.site}'s ${MAIN} and fast-forwards ${p.repo.split('/')[0]}'s ${MAIN} to ${beta?.short ?? BETA}; GitHub Pages publishes ${p.live}.${relNote}`
+      : `Fast-forwards ${p.site}'s ${MAIN} to ${BETA}${played ? ` ${played.short}` : ''} (${cmp.ahead.length} commit(s))${relNote ? ', with a release entry on top' : ''}; GitHub Pages publishes ${p.live}.${relNote}`,
   };
 }
 
@@ -151,31 +169,55 @@ async function deployNow(productId: string, { confirm, by = 'J', mergeMain, orig
   if (confirm !== plan.confirm) throw new StudioError(`Going live publishes ${plan.live}: ${plan.what} Show J the plan, then send confirm: "${plan.confirm}" (J's call).`);
   if (plan.blockers.length) throw new StudioError(`Not going live:\n- ${plan.blockers.join('\n- ')}`);
   // An Approve card (approvals.ts) is for one beta commit: a different one now isn't what J approved.
-  if (expect && plan.beta?.sha !== expect) throw new StudioError(`${BETA} is ${plan.beta?.short ?? '?'} now, not ${expect.slice(0, 7)} that J approved; look at the plan again.`);
+  if (expect && plan.beta?.sha !== expect && plan.played?.sha !== expect) throw new StudioError(`${BETA} is ${plan.beta?.short ?? '?'} now, not ${expect.slice(0, 7)} that J approved; look at the plan again.`);
   const { source, site, unity } = repoDirs(p);
   const beta = plan.beta!;
   const log: string[] = [];
   let before: string | null;
   let after: string;
   let sourceAfter: string | null = null;
+  let release: Draft | null = null;
+  const fallbackCommits = (plan.commits as Commit[]).filter((c) => !c.title.startsWith(STUDIO_RELEASE));
   // Beta must still be the commit that was played (it could have moved while J read the plan).
   await fetchOrigin(source);
   if (shaOf(source, `origin/${BETA}`) !== beta.sha) throw new StudioError(`${BETA} moved since the plan was made; look at the plan again.`);
   if (!unity) {
     before = plan.main?.sha ?? null;
+    // The release entry: a commit on beta on top of the playtested commit (already there when a restart cut this short).
+    let target = beta.sha;
+    if (plan.played && plan.played.sha === beta.sha) {
+      try {
+        opLog('writing the release notes');
+        const r = await commitRelease(p, source, beta, fallbackCommits);
+        release = r.release;
+        if (r.sha && release) {
+          target = r.sha;
+          log.push(`${BETA}: ${releaseLine(release)} (${r.sha.slice(0, 7)}, on top of ${beta.short})`);
+        }
+      } catch (e: any) {
+        log.push(`warning: no release entry this time (${String(e.message ?? e).split('\n')[0]}); going live without it`);
+      }
+    }
     // A plain push of the commit: git refuses anything that isn't a fast-forward (and pushing it again is a no-op).
-    opLog(`pushing ${p.site}'s ${MAIN} to ${beta.short}`);
-    log.push(must(await gitAsync(source, ['push', 'origin', `${beta.sha}:refs/heads/${MAIN}`]), `pushing ${MAIN}`) || `${MAIN} -> ${beta.short}`);
-    after = beta.sha;
+    opLog(`pushing ${p.site}'s ${MAIN} to ${target.slice(0, 7)}`);
+    log.push(must(await gitAsync(source, ['push', 'origin', `${target}:refs/heads/${MAIN}`]), `pushing ${MAIN}`) || `${MAIN} -> ${target.slice(0, 7)}`);
+    after = target;
   } else {
     const copy = betaSiteDir(p);
     await fetchOrigin(site);
     before = shaOf(site, `origin/${MAIN}`);
     const b = betaBuild(p)!;
+    // The release entry goes into the website copy, inside the build commit (never stops going live).
+    try {
+      release = await addReleaseTo(p, betaSiteFolder(p), { source, target: beta.sha, build: String(b.version ?? beta.short), fallbackCommits });
+      if (release && release.source !== 'existing') log.push(`${p.site}: ${releaseLine(release)}`);
+    } catch (e: any) {
+      log.push(`warning: no release entry this time (${String(e.message ?? e).split('\n')[0]}); going live without it`);
+    }
     must(await gitAsync(copy, ['add', '-A']), 'git add');
     if (!(await gitAsync(copy, ['diff', '--cached', '--quiet'])).ok) {
       opLog(`committing the build${b.version ? ` (Game/v${b.version})` : ''}`);
-      must(await gitAsync(copy, [...AUTHOR, 'commit', '--quiet', '-m', `Go live: ${p.name}${b.version ? ` Game/v${b.version}` : ''} (${BETA} ${beta.short}, by ${by})`]), 'committing the build');
+      must(await gitAsync(copy, [...AUTHOR, 'commit', '--quiet', '-m', `Go live: ${p.name}${b.version ? ` Game/v${b.version}` : ''}${release ? ` ${release.version}` : ''} (${BETA} ${beta.short}, by ${by})`]), 'committing the build');
     }
     const head = shaOf(copy, 'HEAD')!;
     // A build commit not on main yet: just made, or made before a restart cut this short. Pushing it is the go live.
@@ -199,10 +241,28 @@ async function deployNow(productId: string, { confirm, by = 'J', mergeMain, orig
   for (const l of log) opLog(l);
   const id = newId('d');
   db.prepare('INSERT INTO deploys (id, product, kind, repo, before, after, beta, source, source_before, source_after, version, by, detail, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
-    .run(id, p.id, 'deploy', p.site, before, after, beta.sha, unity ? p.repo : null, unity ? plan.main?.sha ?? null : null, sourceAfter, plan.build?.version ?? null, by, `${plan.commits.length} commit(s): ${plan.commits.slice(0, 8).map((c) => c!.title).join('; ')}`.slice(0, 1000), Date.now());
+    .run(id, p.id, 'deploy', p.site, before, after, plan.played?.sha ?? beta.sha, unity ? p.repo : null, unity ? plan.main?.sha ?? null : null, sourceAfter, plan.build?.version ?? null, by, `${plan.commits.length} commit(s): ${plan.commits.slice(0, 8).map((c) => c!.title).join('; ')}`.slice(0, 1000), Date.now());
   await fetchOrigin(site);
   if (after !== before) void verifyLive(p.id, after, `Just went live (${BETA} ${beta.short}: ${plan.commits.slice(0, 3).map((c) => c!.title).join('; ')})`, origin);
-  return { ok: true, product: p.id, deploy: id, live: p.live, main: after.slice(0, 7), beta: beta.short, log, note: 'GitHub Pages publishes within a few minutes; Studio waits for it, then playtests the live site (a run appears in the dashboard). If it went wrong: the rollback plan.' };
+  const rel = release && { version: release.version, title: release.title, notes: release.notes, build: release.build };
+  return { ok: true, product: p.id, deploy: id, live: p.live, main: after.slice(0, 7), beta: beta.short, release: rel, log, note: 'GitHub Pages publishes within a few minutes; Studio waits for it, then playtests the live site (a run appears in the dashboard). If it went wrong: the rollback plan.' };
+}
+
+/**
+ * Web: the release entry as a commit on beta on top of the playtested commit, pushed (a fast-forward of beta: refused if
+ * beta moved). sha: the new commit, or null when the entry was already there.
+ */
+async function commitRelease(p: ReturnType<typeof getProduct>, source: string, beta: Commit | { sha: string; short: string }, fallbackCommits: Commit[]) {
+  const wt = await scratch(source, `${p.id}-release`, beta.sha);
+  const release = await addReleaseTo(p, path.join(wt, path.dirname(releasesPath(p))), { source, target: beta.sha, build: beta.short, fallbackCommits });
+  if (!release || release.source === 'existing') return { release, sha: null };
+  must(await gitAsync(wt, ['add', releasesPath(p)]), 'git add');
+  must(await gitAsync(wt, [...AUTHOR, 'commit', '--quiet', '-m', `${STUDIO_RELEASE} ${p.name} ${release.version}: ${release.title}`]), 'committing the release entry');
+  must(await gitAsync(wt, ['push', '--quiet', 'origin', `HEAD:refs/heads/${BETA}`]), `pushing ${BETA}`);
+  await fetchOrigin(source);
+  // The beta working copy (devtools saves) catches up, as after any merge into beta.
+  void import('./dev.ts').then(({ pullDev }) => pullDev(p.id, 'after the release entry')).catch(() => {});
+  return { release, sha: shaOf(wt, 'HEAD')! };
 }
 
 // ----------------------------------------------------------------- rollback
@@ -347,7 +407,7 @@ registerOp('golive', async (j: LiveJob, ctx) => {
     throw e;
   }
 }, {
-  done: (op) => settleApproval(op, true, op.result?.main ? `Live: main is ${op.result.main} (beta ${op.result.beta}). ${op.result.note ?? ''}`.trim() : String(op.result?.detail ?? 'done')),
+  done: (op) => settleApproval(op, true, op.result?.main ? `Live: main is ${op.result.main} (beta ${op.result.beta}).${op.result.release ? ` ${releaseLine(op.result.release)}.` : ''} ${op.result.note ?? ''}`.trim() : String(op.result?.detail ?? 'done')),
   failed: (op) => settleApproval(op, false, op.error ?? 'failed'),
 });
 
