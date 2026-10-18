@@ -5,7 +5,7 @@ import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 import { abs, localUrl, paths, DATA, loadProducts, type Product } from './config.ts';
 import { sandboxOn, sandboxSpawn } from './sandbox.ts';
-import { shareCmds } from './warm.ts';
+import { shareCmds, ensureInstalled, installedFor, depsHash } from './warm.ts';
 
 const WIN = process.platform === 'win32';
 /** A shell command, the platform's way (cmd on Windows, sh elsewhere). */
@@ -42,15 +42,19 @@ export const installCmd = (dir: string) => fs.existsSync(path.join(dir, 'package
 /** Starts the product's local server if nothing answers on its port, and waits until it does. */
 export async function ensureServer(p: Product, log: (s: string) => void = () => {}) {
   const url = localUrl(p);
-  if (await answers(`http://127.0.0.1:${p.local.port}/`)) return url;
   const dir = abs(p.local.dir);
+  if (p.local.serve === 'npm') {
+    // Packages follow the lockfile (warm.ts ensureInstalled): a checkout whose last install was for another one is
+    // reinstalled, and the server Studio started on the old packages is started again (Vite answered 500 for modules
+    // it didn't have: Dose Of Destruction, 2026-10-18).
+    const r = await ensureInstalled(dir, { log: (s) => log(`${p.id}: ${s}`) });
+    if (!r.ok) throw new Error(`${p.name}'s packages didn't install in ${p.local.dir} (${r.why}): ${r.error}`);
+    if (r.installed && stopServerIn(p.local.dir).length) await portFree(p.local.port);
+  }
+  if (await answers(`http://127.0.0.1:${p.local.port}/`)) return url;
   const out = fs.openSync(path.join(paths.logs, `server-${p.id}.log`), 'a');
   let child;
   if (p.local.serve === 'npm') {
-    if (!fs.existsSync(path.join(dir, 'node_modules'))) {
-      log(`${p.id}: ${installCmd(dir)}`);
-      await new Promise((resolve) => spawn(...shell(installCmd(dir)),{ cwd: dir, stdio: 'ignore', windowsHide: true }).on('close', resolve).on('error', resolve));
-    }
     child = spawn(...shell(`npm run dev -- --port ${p.local.port} --strictPort`), { cwd: dir, detached: true, stdio: ['ignore', out, out], windowsHide: true });
   } else {
     child = spawn(PYTHON, ['-m', 'http.server', String(p.local.port), '--bind', '127.0.0.1'], { cwd: dir, detached: true, stdio: ['ignore', out, out], windowsHide: true });
@@ -68,6 +72,12 @@ export async function ensureServer(p: Product, log: (s: string) => void = () => 
   throw new Error(`${p.name}'s local server didn't answer on :${p.local.port} (see .data/logs/server-${p.id}.log)`);
 }
 
+/** Waits (up to 15 s) until nothing answers on `port`: a stopped server has let it go. */
+async function portFree(port: number) {
+  const end = Date.now() + 15_000;
+  while (Date.now() < end && await answers(`http://127.0.0.1:${port}/`)) await new Promise((r) => setTimeout(r, 500));
+}
+
 const served = new Map<number, number>();
 
 /**
@@ -79,7 +89,8 @@ export async function serveDir(p: Product, dir: string, port: number) {
   // (sandbox.ts): an agent's change never runs as Studio.
   if (p.local.serve === 'npm' && !fs.existsSync(path.join(dir, 'node_modules'))) {
     const main = path.join(abs(p.local.dir), 'node_modules');
-    if (fs.existsSync(main) && !sandboxOn()) fs.symlinkSync(main, path.join(dir, 'node_modules'), WIN ? 'junction' : 'dir');
+    // Only packages installed for this worktree's own lockfile: never a checkout's stale ones.
+    if (fs.existsSync(main) && !sandboxOn() && installedFor(abs(p.local.dir)) === depsHash(dir)) fs.symlinkSync(main, path.join(dir, 'node_modules'), WIN ? 'junction' : 'dir');
     else await new Promise((resolve) => sandboxSpawn(...shell(installCmd(dir)),{ cwd: dir, stdio: 'ignore' }).on('close', resolve).on('error', resolve));
   }
   if (p.local.serve === 'npm' && sandboxOn()) await shareDeps(dir);

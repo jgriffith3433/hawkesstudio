@@ -9,7 +9,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { PROJECTS } from './config.ts';
 
 export const lockHash = (dir: string) => {
@@ -32,6 +32,79 @@ export function installedFor(dir: string) {
 export function markInstalled(dir: string, hash: string | null = lockHash(dir)) {
   if (!hash) return;
   for (const s of [...STAMPS, INSTALLED]) try { fs.writeFileSync(path.join(dir, 'node_modules', s), hash); } catch { /* the sandbox owns it */ }
+}
+
+/** What `dir`'s node_modules must be installed for: its lockfile's hash, else (no lockfile) package.json's; else null. */
+export function depsHash(dir: string) {
+  const lock = lockHash(dir);
+  if (lock) return lock;
+  try { return `package.json:${crypto.createHash('sha1').update(fs.readFileSync(path.join(dir, 'package.json'))).digest('hex')}`; } catch { return null; }
+}
+
+/** Why `dir` needs an install (no node_modules, no stamp, a stamp for other packages), or null when it matches. */
+export function staleDeps(dir: string) {
+  const want = depsHash(dir);
+  if (!want) return null;
+  if (!fs.existsSync(path.join(dir, 'node_modules'))) return 'no node_modules';
+  const was = installedFor(dir);
+  if (was === want) return null;
+  const file = want.startsWith('package.json:') ? 'package.json' : 'package-lock.json';
+  return was ? `installed for another ${file}` : `no record of an install for this ${file}`;
+}
+
+/** npm ci, or (no lockfile) an npm install that writes no lockfile: neither touches the checkout's tracked files. */
+export const depsCmd = (dir: string) => fs.existsSync(path.join(dir, 'package-lock.json'))
+  ? 'npm ci --no-audit --no-fund'
+  : 'npm install --no-save --no-package-lock --no-audit --no-fund';
+
+export type ShellRun = (dir: string, cmd: string) => Promise<{ ok: boolean; out: string; ms: number }>;
+
+/** Runs `cmd` in `dir` (a shell), keeping the output's tail; killed after `timeoutMs`. */
+export const runShell = (dir: string, cmd: string, timeoutMs = 20 * 60_000): Promise<{ ok: boolean; out: string; ms: number }> => new Promise((resolve) => {
+  const t0 = Date.now();
+  let out = '';
+  const child = spawn(cmd, [], { cwd: dir, shell: true, windowsHide: true });
+  const timer = setTimeout(() => { out += `\n(timed out after ${Math.round(timeoutMs / 60_000)} min)`; child.kill('SIGKILL'); }, timeoutMs);
+  timer.unref();
+  const keep = (d: Buffer) => { out = (out + d).slice(-20_000); };
+  child.stdout.on('data', keep);
+  child.stderr.on('data', keep);
+  child.on('error', (e) => { clearTimeout(timer); resolve({ ok: false, out: e.message, ms: Date.now() - t0 }); });
+  child.on('close', (code) => { clearTimeout(timer); resolve({ ok: code === 0, out, ms: Date.now() - t0 }); });
+});
+
+export type DepsResult = { installed: boolean; ok: boolean; why?: string; ms: number; error?: string };
+/** One install at a time per folder: a call waits for the one running there, then looks at the stamp again. */
+const installs = new Map<string, Promise<DepsResult>>();
+
+/**
+ * The one way a checkout's packages are brought up to date (local servers, beta's builds and dev servers, syncs):
+ * when the stamp of the last install (INSTALLED) isn't for its lockfile (or package.json), npm ci (npm install with
+ * no lockfile) and stamp it. Serialized per folder, so concurrent callers install once. `why` forces an install (a
+ * sync saw package.json change); `run` is the caller's shell (tracking, another user).
+ */
+export function ensureInstalled(dir: string, { log = () => {}, run = runShell, why: forced }: { log?: (s: string) => void; run?: ShellRun; why?: string } = {}): Promise<DepsResult> {
+  const key = path.resolve(dir);
+  const job = (installs.get(key) ?? Promise.resolve(null)).then(async (): Promise<DepsResult> => {
+    const hash = depsHash(dir);
+    const why = hash ? forced ?? staleDeps(dir) : null;
+    if (!hash || !why) return { installed: false, ok: true, ms: 0 };
+    const cmd = depsCmd(dir);
+    const name = cmd.startsWith('npm ci') ? 'npm ci' : 'npm install';
+    log(`dependencies changed: ${name} (${why})`);
+    const r = await run(dir, cmd).catch((e: any) => ({ ok: false, out: String(e?.message ?? e), ms: 0 }));
+    if (!r.ok) {
+      const error = r.out.trim().split('\n').filter(Boolean).slice(-8).join('\n') || `${name} failed`;
+      log(`${name} failed (${Math.round(r.ms / 1000)} s): ${error}`);
+      return { installed: false, ok: false, why, ms: r.ms, error };
+    }
+    markInstalled(dir, hash);
+    log(`${name} done (${Math.round(r.ms / 1000)} s)`);
+    return { installed: true, ok: true, why, ms: r.ms };
+  });
+  installs.set(key, job);
+  void job.finally(() => { if (installs.get(key) === job) installs.delete(key); });
+  return job;
 }
 
 /** The shell command that installs `dir`'s packages and stamps them (so it works as the sandbox user too). */

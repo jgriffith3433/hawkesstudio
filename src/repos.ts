@@ -8,7 +8,7 @@ import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 import { PROJECTS, paths } from './config.ts';
 import { trackCommand } from './ops.ts';
-import { lockHash, installedFor, markInstalled } from './warm.ts';
+import { lockHash, installedFor, ensureInstalled, runShell } from './warm.ts';
 import { REF_LOCK, fetchLocked } from './gitlock.ts';
 
 export const BRANCH = process.env.STUDIO_BRANCH || 'main';
@@ -192,31 +192,17 @@ export function installIn(rel: string, why: string): Promise<Install> {
   const busy = installing.get(rel);
   if (busy) return busy;
   const job = (async (): Promise<Install> => {
-    const cmd = 'npm ci --no-audit --no-fund';
-    const done = trackCommand(cmd, rel);
-    const t0 = Date.now();
-    const res = await new Promise<{ ok: boolean; out: string }>((resolve) => {
-      let out = '';
-      const child = spawn(cmd, [], { cwd: dir, shell: true, windowsHide: true });
-      const timer = setTimeout(() => { out += '\n(timed out after 20 min)'; child.kill('SIGKILL'); }, 20 * 60_000);
-      timer.unref();
-      const keep = (d: Buffer) => { out = (out + d).slice(-20_000); };
-      child.stdout.on('data', keep);
-      child.stderr.on('data', keep);
-      child.on('error', (e) => { clearTimeout(timer); resolve({ ok: false, out: e.message }); });
-      child.on('close', (code) => { clearTimeout(timer); resolve({ ok: code === 0, out }); });
-    });
-    done();
-    const seconds = Math.round((Date.now() - t0) / 1000);
-    if (!res.ok) {
-      const error = res.out.trim().split('\n').filter(Boolean).slice(-8).join('\n') || 'npm ci failed';
+    // Through warm.ts's ensureInstalled: one install at a time per checkout, whoever asks (a local server, a sync).
+    const r = await ensureInstalled(dir, { why, run: (d, cmd) => { const done = trackCommand(cmd, rel); return runShell(d, cmd).finally(done); } });
+    const seconds = Math.round(r.ms / 1000);
+    if (!r.ok) {
+      const error = r.error ?? 'npm ci failed';
       failedInstall.set(rel, { hash, error, at: Date.now() });
       console.warn(`[repos] ${rel}: npm ci failed (${why}, ${seconds} s): ${error}`);
       return { dir: rel, why, ok: false, seconds, error };
     }
     failedInstall.delete(rel);
-    markInstalled(dir, hash);
-    console.log(`[repos] ${rel}: npm ci (${why}, ${seconds} s)`);
+    console.log(`[repos] ${rel}: dependencies changed: npm ci (${why}, ${seconds} s)`);
     // A local server started before has the old packages loaded: the next playtest starts it again.
     await import('./local.ts').then(({ stopServerIn }) => stopServerIn(rel)).catch(() => {});
     return { dir: rel, why, ok: true, seconds };
@@ -240,7 +226,7 @@ async function installAfterSync(r: RepoResult, before: string): Promise<RepoResu
     if (!why) continue;
     const i = await installIn(rel, why);
     (r.install ??= []).push(i);
-    r.detail += i.ok ? `; npm ci in ${rel} (${why}): ${i.seconds} s` : `; npm ci in ${rel} failed (${why}): ${i.error}`;
+    r.detail += i.ok ? `; dependencies changed: npm ci in ${rel} (${why}): ${i.seconds} s` : `; npm ci in ${rel} failed (${why}): ${i.error}`;
     if (!i.ok) r.action = 'failed';
   }
   return r;
