@@ -21,7 +21,7 @@ import { barState, barHash, reviewedSha, reviewParams } from './review.ts';
 import { writeReport } from './report.ts';
 import { assetStatus, makeAsset } from './assets.ts';
 import { syncRepos, syncRepo, repoMap, betaFolders, isServer, BETA, BRANCH } from './repos.ts';
-import { betaLane, prepareBeta, playedLocal, resetBetaSite, saveBetaBuild, betaBuild, betaSiteDir, betaSiteFolder, betaPort, shaOf, repoDirs, fetchOrigin, betaBuildCurrent, MAIN } from './beta.ts';
+import { betaLane, prepareBeta, playedLocal, resetBetaSite, pinBetaVersion, pruneGameVersions, saveBetaBuild, betaBuild, betaSiteDir, betaSiteFolder, betaPort, shaOf, repoDirs, fetchOrigin, betaBuildCurrent, MAIN } from './beta.ts';
 import { notifyOnce } from './notify.ts';
 import { judgeCriteria } from './acceptance.ts';
 import { runGenJob, playtestExtras, playtestData, playtestRunMs, REVIEW_RUN_MS } from './playtests.ts';
@@ -346,7 +346,7 @@ export async function buildProduct(run: string, p: Product, { force = false } = 
     const s = startStep(run, p.id, 'build', 'unity');
     const was = resumedStep(s)!;
     if (was.status !== 'running') return was.status === 'done' ? { id: was.job, status: 'done', result: was.data } : was.status === 'skipped' ? null : { id: was.job, status: 'failed' };
-    if (was.job) return finishBuild(run, p, s, { fp: was.data?.fingerprint ?? treeFingerprint(p.build.project), head: was.data?.beta ?? '', base: was.data?.base ?? '', siteDir: was.data?.siteDir, job: was.job });
+    if (was.job) return finishBuild(run, p, s, { fp: was.data?.fingerprint ?? treeFingerprint(p.build.project), head: was.data?.beta ?? '', base: was.data?.base ?? '', siteDir: was.data?.siteDir, placeholder: was.data?.placeholder, job: was.job });
   }
   const fp = treeFingerprint(p.build.project);
   const last = lastStep(p.id, 'build', 'unity');
@@ -369,31 +369,35 @@ export async function buildProduct(run: string, p: Product, { force = false } = 
   const s = startStep(run, p.id, 'build', 'unity', 'queued on the build server');
   let siteDir: string | undefined;
   let base = '';
+  let pin: ReturnType<typeof pinBetaVersion> | undefined;
   if (lane) {
     try {
       const copy = await resetBetaSite(p);
       siteDir = path.relative(PROJECTS, copy.folder).replace(/\\/g, '/');
       base = copy.base;
+      // Every beta build gets a Game/v<n> never used before (a reused one plays from the browser's cache).
+      pin = pinBetaVersion(p, copy.folder);
     } catch (e: any) {
       updateStep(s, { status: 'failed', detail: `the beta website copy: ${e.message}`, finished: true });
       return null;
     }
   }
   // What the build needs if Studio restarts while it runs (the beta website copy is not reset again then).
-  updateStep(s, { data: { fingerprint: fp, beta: head, base, siteDir } });
-  return finishBuild(run, p, s, { fp, head, base, siteDir });
+  updateStep(s, { data: { fingerprint: fp, beta: head, base, siteDir, pinned: pin?.version, placeholder: pin?.placeholder } });
+  return finishBuild(run, p, s, { fp, head, base, siteDir, env: pin?.env, placeholder: pin?.placeholder });
 }
 
 /** Builds (or waits again for the build job of) a Unity product, and records the result. */
-async function finishBuild(run: string, p: Product, s: string, { fp, head, base, siteDir, job: prior }: { fp: string; head: string; base: string; siteDir?: string; job?: string }) {
+async function finishBuild(run: string, p: Product, s: string, { fp, head, base, siteDir, env, placeholder, job: prior }: { fp: string; head: string; base: string; siteDir?: string; env?: Record<string, string>; placeholder?: boolean; job?: string }) {
   const lane = betaLane();
-  const job = await genRun('unity.build', p.id, { project: p.build!.project, site: p.build!.site, method: p.build!.method, ...(siteDir ? { siteDir } : {}) }, (j) => updateStep(s, { job: j.id, detail: j.detail }), undefined,
+  const job = await genRun('unity.build', p.id, { project: p.build!.project, site: p.build!.site, method: p.build!.method, ...(siteDir ? { siteDir } : {}), ...(env ? { env } : {}) }, (j) => updateStep(s, { job: j.id, detail: j.detail }), undefined,
     { job: prior, onSubmit: (id) => updateStep(s, { job: id }) });
   const r = job.result ?? {};
   // A Hawkes Gen without siteDir would have built into the real website folder: that isn't a beta build.
   const stale = Boolean(siteDir && job.status === 'done' && r.site && r.site.folder !== siteDir);
   const ok = job.status === 'done' && !stale;
   const error = stale ? `Hawkes Gen's unity.build ignored siteDir (update Hawkes Gen); the build went to ${r.site.folder}` : ok ? null : String(job.error ?? job.detail ?? 'build failed');
+  if (lane && ok && placeholder && siteDir && Number(r.version) > 0) pruneGameVersions(path.join(PROJECTS, siteDir), Number(r.version));
   if (lane) {
     saveBetaBuild(p, { sha: head, base, ok, at: Date.now(), job: job.id, version: r.version ?? null, cost: job.cost ?? r.cost ?? 0, minutes: Math.round((r.seconds ?? 0) / 60), ...(error ? { error: error.slice(0, 500) } : {}) });
     void import('./previews.ts').then(({ buildPreview }) => buildPreview(p.id)).catch(() => {});

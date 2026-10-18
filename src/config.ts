@@ -56,7 +56,8 @@ export type Product = {
   live: string;
   local: { serve: 'npm' | 'static'; dir: string; port: number; path: string };
   /** Unity: the project, its website folder, the batch deploy method, and test platforms to run on the build server when the source changes. */
-  build?: { project: string; site: string; method: string; tests?: ('EditMode' | 'PlayMode')[] };
+  /** versionEnv: the environment variable the deploy method takes its Game/v<n> number from (beta.ts pinBetaVersion). */
+  build?: { project: string; site: string; method: string; tests?: ('EditMode' | 'PlayMode')[]; versionEnv?: string };
   /** The product implements the playtest contract (docs/playtest.md): playtests wait for it instead of falling back to a generic smoke test. */
   contract?: boolean;
   checks?: { dir: string; cmd: string }[];

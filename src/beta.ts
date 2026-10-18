@@ -252,6 +252,42 @@ export async function resetBetaSite(p: Product) {
   return { dir, folder: betaSiteFolder(p), base };
 }
 
+/** The Game/v<n> numbers in a website folder (v0000000-style templates aren't versions). */
+export function gameVersions(folder: string): number[] {
+  try {
+    return fs.readdirSync(path.join(folder, 'Game')).map((n) => /^v([1-9]\d*)$/.exec(n)?.[1]).filter(Boolean).map(Number);
+  } catch {
+    return [];
+  }
+}
+
+const PLACEHOLDER = 'studio-placeholder.txt';
+
+/**
+ * Pins the Game/v<n> a beta build makes, so no two beta builds share a folder (a browser would play its cached old
+ * build). The beta website copy only holds live's Game/v<n>, so a deploy method's "latest + 1" would pick live + 1
+ * every time: n is one past the highest Studio ever built for the product (or live's). Products whose deploy method
+ * reads the number from the environment (products.json build.versionEnv) get it there; for the others a placeholder
+ * Game/v<n-1> in the copy makes their latest + 1 come out as n (they delete it as "the old version"; pruneGameVersions
+ * then removes live's folder, as a normal deploy does).
+ */
+export function pinBetaVersion(p: Product, folder = betaSiteFolder(p)): { version: number; env?: Record<string, string>; placeholder?: boolean } {
+  const built = db.prepare(`SELECT MAX(CAST(json_extract(data, '$.version') AS INTEGER)) AS v FROM steps WHERE product = ? AND kind = 'build' AND name = 'unity' AND status = 'done'`).get(p.id) as any;
+  const live = Math.max(0, ...gameVersions(folder));
+  const version = Math.max(live, Number(built?.v) || 0) + 1;
+  if (p.build?.versionEnv) return { version, env: { [p.build.versionEnv]: String(version) } };
+  if (version - 1 <= live) return { version };
+  const dir = path.join(folder, 'Game', `v${version - 1}`);
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, PLACEHOLDER), `Hawkes Studio: makes the beta build Game/v${version} (never a number used before). Not a build.\n`);
+  return { version, placeholder: true };
+}
+
+/** After a placeholder-pinned build: removes the older Game/v<n> folders left in the copy (live's, a placeholder). */
+export function pruneGameVersions(folder: string, built: number) {
+  for (const v of gameVersions(folder)) if (v < built) fs.rmSync(path.join(folder, 'Game', `v${v}`), { recursive: true, force: true });
+}
+
 /** The port the beta website copy is served on for local playtests (next to the product's own port). */
 export const betaPort = (p: Product) => 9000 + (p.local.port % 1000);
 
