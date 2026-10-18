@@ -26,6 +26,7 @@ import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import { PROJECTS, DATA, GEN_URL, paths, getProduct, loadProducts, StudioError, type Product } from './config.ts';
 import { BETA, MAIN, ensureBeta, ensureDeps, compareRefs, repoDirs } from './beta.ts';
 import { isServer } from './repos.ts';
+import { fetchLocked } from './gitlock.ts';
 import { notify, PUBLIC_URL } from './notify.ts';
 
 const WIN = process.platform === 'win32';
@@ -181,7 +182,7 @@ async function commitAndSyncNow(p: Product, during: string): Promise<{ committed
       out.committed = sha;
     }
   }
-  const f = await gitA(dir, ['fetch', '--quiet', 'origin', `+refs/heads/${BETA}:refs/remotes/origin/${BETA}`]);
+  const f = await fetchLocked(dir, ['fetch', '--quiet', 'origin', `+refs/heads/${BETA}:refs/remotes/origin/${BETA}`], (a) => gitA(dir, a));
   if (!f.ok) throw new Error(`git fetch: ${short(f)}`);
   let d = await divergence(dir);
   if (d.behind) {
@@ -285,7 +286,7 @@ export function resolveDev(productId: string, action: 'retry' | 'keep-beta') {
         await gitA(dir, ['add', '-A']);
         await gitA(dir, [...DEV_AUTHOR, 'commit', '--quiet', '-m', `devtools: ${summarize(files)} (unsaved when beta was kept)`]);
       }
-      await gitA(dir, ['fetch', '--quiet', 'origin', `+refs/heads/${BETA}:refs/remotes/origin/${BETA}`]);
+      await fetchLocked(dir, ['fetch', '--quiet', 'origin', `+refs/heads/${BETA}:refs/remotes/origin/${BETA}`], (a) => gitA(dir, a));
       if ((await divergence(dir)).ahead) {
         saved = `devtools-conflict-${new Date().toISOString().slice(0, 16).replace(/[-:T]/g, '')}`;
         const push = await gitA(dir, ['push', '--quiet', 'origin', `HEAD:refs/heads/${saved}`]);
