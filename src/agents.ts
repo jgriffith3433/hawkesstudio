@@ -44,6 +44,7 @@ import { db, newId, J, parse } from './db.ts';
 import { getProduct, getInfra, isInfra, PROJECTS, DATA, ROOT, storyOf, localUrl, type Product, type Infra } from './config.ts';
 import { getFinding, updateFinding } from './backlog.ts';
 import { reviewParams } from './review.ts';
+import { reviewJob } from './review-cc.ts';
 import { gen, genRun, fileUrl } from './gen.ts';
 import { repoMap } from './repos.ts';
 import { serveDir, stopServed } from './local.ts';
@@ -1406,14 +1407,16 @@ async function verifyChange(c: Change, p: Product, findings: any[], jobs?: JobMe
     if (run.status !== 'done') return { outcome: 'failed', error: run.error, playtest: run.id, build };
     // A verify review (review.ts): did the change work (it says by id whether the findings look fixed), did anything regress.
     // A roadmap task's acceptance criteria go with it and are judged one by one (acceptance.ts).
-    const rev = await genRun('playtest.review', p.id, reviewParams(p, run.id, 'verify', {
+    const revParams = reviewParams(p, run.id, 'verify', {
       ...(c.criteria.length ? { criteria: c.criteria } : {}),
       focus: c.request ? `This is a proposed change J asked for: "${c.request.slice(0, 1500)}". Say clearly whether it does that well, and whether anything got worse.${c.criteria.length ? ` Judge each acceptance criterion: ${c.criteria.map((k, i) => `(${i + 1}) ${k}`).join(' ')}` : ''}` : `This is a proposed fix for: ${findings.map((f: any) => `"${f.title}" (${f.detail})`).join('; ')}. Say clearly whether it is fixed, and whether anything got worse.`,
-    }), undefined, undefined, { job: jobs?.get('review') || undefined, onSubmit: (id) => jobs?.set('review', id) });
+    });
+    // Gen's review, or Claude Code on the Max plan while Gen's Claude is out of credit (review-cc.ts).
+    const rev = await reviewJob(p.id, revParams, () => genRun('playtest.review', p.id, revParams, undefined, undefined, { job: jobs?.get('review') || undefined, onSubmit: (id) => jobs?.set('review', id) }));
     const v = rev.result ?? {};
     const video = run.outputs?.find((o: any) => o.kind === 'video')?.asset ?? null;
     const criteria = c.criteria.length ? await judgeCriteria(c.criteria, v, run.result, c.summary) : undefined;
-    return { outcome: run.result?.outcome, scenario, ...(agentScenario && agentOptions ? { options: agentOptions } : {}), playtest: run.id, review: rev.id, verdict: v.verdict, changeWorked: v.changeWorked, known: v.known ?? [], summary: v.summary, scores: v.scores, findings: (v.findings ?? []).slice(0, 8), video, url: localUrl(p), build, ...(criteria ? { criteria } : {}) };
+    return { outcome: run.result?.outcome, scenario, ...(agentScenario && agentOptions ? { options: agentOptions } : {}), playtest: run.id, review: rev.id, verdict: v.verdict, changeWorked: v.changeWorked, known: v.known ?? [], summary: v.summary, scores: v.scores, findings: (v.findings ?? []).slice(0, 8), video, url: localUrl(p), build, ...(criteria ? { criteria } : {}), ...(rev.via === 'claude-code' ? { reviewVia: `Claude Code, ${rev.billing}` } : {}) };
   } finally {
     stopServed(port);
   }

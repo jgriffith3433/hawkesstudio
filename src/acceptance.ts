@@ -3,10 +3,10 @@
 // (agents.ts playtestChange); then its criteria are judged too, and one that fails keeps it out of the PM's merges.
 //
 // When Hawkes Gen's playtest.review judges criteria itself (param `criteria`, result `criteria`), that answer is used.
-// Otherwise Claude judges them (llm.json, about a cent) from the review's frames, its summary and findings, the
+// Otherwise Claude judges them (llm.json through llm.ts, about a cent; Claude Code on the Max plan when Gen is out of credit) from the review's frames, its summary and findings, the
 // playtest's events and log, and the agent's summary. "unclear" is not a pass.
 
-import { gen, genRun, genWait } from './gen.ts';
+import { askClaude } from './llm.ts';
 import type { Check } from './roadmap.ts';
 
 const norm = (m: unknown): Check['met'] => (m === 'yes' || m === true ? 'yes' : m === 'no' || m === false ? 'no' : 'unclear');
@@ -52,11 +52,9 @@ Findings: ${JSON.stringify((review?.findings ?? []).map((f: any) => ({ severity:
 
 ${agentSummary ? `WHAT THE AGENT SAYS IT DID (a claim, not evidence):\n${agentSummary.slice(0, 2500)}\n` : ''}
 Answer with one entry per criterion, in the same order, with the criterion's text.`;
-  const params = { prompt, schema: SCHEMA, model: process.env.STUDIO_REVIEW_MODEL ?? 'claude-sonnet-5-5', effort: 'medium', maxTokens: 4000 };
+  const params = { prompt, schema: SCHEMA, model: process.env.STUDIO_REVIEW_MODEL ?? 'claude-sonnet-5-5', effort: 'medium', maxTokens: 4000, timeoutMs: 10 * 60_000, purpose: 'acceptance' };
   const ask = async (images: string[]) => {
-    const j: any = images.length
-      ? await gen.submit('llm.json', { project: 'hawkesstudio', params, inputs: { images } }).then((s: any) => genWait(s.id, undefined, 10 * 60_000))
-      : await genRun('llm.json', 'hawkesstudio', params, undefined, 10 * 60_000);
+    const j: any = await askClaude({ ...params, images });
     if (j.status !== 'done') throw new Error(j.error ?? j.detail ?? 'failed');
     return j;
   };

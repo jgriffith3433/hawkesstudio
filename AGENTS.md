@@ -148,6 +148,7 @@ a budget (`approveGpu`, `gpuCleared`, `tasksAwaitingGpu`; the PM asks him once);
 | `src/dev-front.ts` | The `/dev/` front door per product (`products.json` `dev.front`): start page, service worker and page shim (devtools written for the root work under `/dev/`), proxy and HMR websocket, the `dev-<sub>` root-mode fallback, the Unity page |
 | `src/local.ts` | Local dev servers for playtests, git state, check commands |
 | `src/gen.ts`, `src/hawkesgen.mjs` | Hawkes Gen client (a copy of `hawkesgen/clients/js/hawkesgen.mjs`) |
+| `src/llm.ts`, `src/review-cc.ts` | Studio's own Claude calls (acceptance, canon, release notes, curation, playtest reviews): Gen first, and Claude Code on J's Max plan when Gen's API key is out of credit or rejected (remembered 10 minutes; `STUDIO_LLM_VIA=claude-code\|gen` forces it), 2 at a time; `review-cc.ts` is a copy of Gen's playtest review for that; fallback calls are logged in `llm_fallbacks` and shown in the costs as "Max plan (not billed)" |
 | `src/cli.ts`, `src/mcp.ts`, `src/client.ts` | CLI and MCP server (both talk to the running service) |
 | `src/mcp-tools.ts`, `src/mcp-http.ts`, `src/mcp-core.ts` | The MCP tools, shared by stdio and `/mcp` over HTTPS (Studio MCP key, `STUDIO_MCP_KEY`); `mcp-core.ts` is the same file as in hawkesgen. Setup: `docs/cloud.md` |
 | `src/selfdeploy.ts` | Studio and Gen deploying themselves from GitHub main: the `self-deploys.jsonl` log and what a restart would interrupt (`GET /api/self-deploys`, read by `deploy/hawkes-pull.mjs`) |

@@ -22,6 +22,7 @@ import { DATA, loadProducts, loadInfra } from './config.ts';
 import { db, parse } from './db.ts';
 import { gen } from './gen.ts';
 import { usingSubscription } from './claude.ts';
+import { fallbackUsage } from './llm.ts';
 import { notify, PUBLIC_URL } from './notify.ts';
 import { isServer } from './repos.ts';
 import { costExplorer, ec2, xitems, xtext, xtags, xget } from './aws.ts';
@@ -460,6 +461,8 @@ export type ClaudeCosts = {
   plan: 'subscription' | 'api'; billed: number; usage: number;
   talk: { usage: number; billed: number; turns: number }; agents: { usage: number; billed: number; runs: number }; scouts: { usage: number; billed: number; runs: number };
   perDay: { date: string; usage: number; billed: number }[]; perProduct: Record<string, { usage: number; billed: number; runs: number }>;
+  /** Studio's own Claude calls (reviews, acceptance, canon...) run through Claude Code while Gen's API key had no credit (llm.ts). */
+  fallback?: { calls: number; failed: number; usage: number; billed: number };
 };
 
 export function claudeCosts(p: Period): ClaudeCosts {
@@ -519,6 +522,7 @@ export function claudeCosts(p: Period): ClaudeCosts {
     talk: round(talk), agents: round(agents), scouts: round(scouts),
     perDay: [...perDay].sort(([a], [b]) => a.localeCompare(b)).map(([date, v]) => ({ date, usage: r2(v.usage), billed: r2(v.billed) })),
     perProduct: Object.fromEntries(Object.entries(perProduct).map(([k, v]) => [k, round(v)])),
+    fallback: fallbackUsage(p.start, p.end),
   };
 }
 
@@ -640,6 +644,7 @@ export function costMarkdown(r: CostReport) {
     : `Claude Code is on the API key (no subscription token): ${$(c.billed)} billed (Talk ${$(c.talk.billed)}, agents ${$(c.agents.billed)}).`);
   const api = r.gen.byProvider.find((x) => x.provider === 'anthropic');
   if (api) L.push(`Claude API through Hawkes Gen (reviews, llm tools): ${$(api.cost)}, billed.`);
+  if (c.fallback?.calls) L.push(`Studio's reviews and checks through Claude Code while Gen's API key was out of credit: ${c.fallback.calls} call(s)${c.fallback.failed ? ` (${c.fallback.failed} failed)` : ''}, ${c.fallback.billed ? `${$(c.fallback.billed)} billed` : `${$(c.fallback.usage)} of usage, Max plan (not billed)`}.`);
   if (r.products.length) {
     L.push('', '## Per product (money; agents\' Claude usage not billed)');
     for (const x of r.products) L.push(`- ${x.name}: ${$(x.money)}${[x.gpu && `GPU ${$(x.gpu)}`, x.builder && `builds ${$(x.builder)}`, x.playtester && `playtester ${$(x.playtester)} (${x.playtesterMinutes} min)`, x.claudeApi && `reviews/Claude API ${$(x.claudeApi)}`, x.voice && `ElevenLabs ${$(x.voice)}`].filter(Boolean).map((s) => `, ${s}`).join('')}${x.agentRuns ? `; agents ${x.agentRuns} run(s), ${$(x.agentUsage)} usage` : ''}`);

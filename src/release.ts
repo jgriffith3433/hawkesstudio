@@ -22,7 +22,7 @@ import path from 'node:path';
 import { type Product } from './config.ts';
 import { db } from './db.ts';
 import { git, commitsIn, commitOf, type Commit } from './beta.ts';
-import { genRun } from './gen.ts';
+import { askClaude } from './llm.ts';
 import { jobModel } from './roles.ts';
 
 export const STUDIO_RELEASE = 'Release:';
@@ -93,7 +93,7 @@ const SCHEMA = {
 
 /** Claude through Hawkes Gen: the { title, notes } it wrote, or null. */
 async function askGen(prompt: string, timeoutMs: number) {
-  const job: any = await genRun('llm.json', 'hawkesstudio', { prompt, schema: SCHEMA, model: jobModel('summary'), effort: 'low', maxTokens: 800 }, undefined, timeoutMs);
+  const job: any = await askClaude({ prompt, schema: SCHEMA, model: jobModel('summary'), effort: 'low', maxTokens: 800, timeoutMs, purpose: 'release' });
   return job?.status === 'done' ? job.result?.value : null;
 }
 

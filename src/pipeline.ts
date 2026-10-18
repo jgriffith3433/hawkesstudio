@@ -18,6 +18,7 @@ import { gen, genRun, genUp, ensureGen } from './gen.ts';
 import { ensureServer, gitState, treeFingerprint, runCheck, serveDir, stopServed } from './local.ts';
 import { absorb, applyKnown, expireIdeas, notSeenIn, type ReviewMode } from './backlog.ts';
 import { barState, barHash, reviewedSha, reviewParams } from './review.ts';
+import { reviewJob, viaNote } from './review-cc.ts';
 import { writeReport } from './report.ts';
 import { assetStatus, makeAsset } from './assets.ts';
 import { syncRepos, syncRepo, repoMap, betaFolders, isServer, BETA, BRANCH } from './repos.ts';
@@ -551,11 +552,13 @@ async function reviewPlaytest(run: string, p: Product, t: Playtest, job: any, pl
   const wasReview = resumedStep(rs);
   if (wasReview && wasReview.status !== 'running') return job;
   const previous = lastStep(p.id, 'review', name, run)?.data ?? null;
-  const rev = await runGenJob('playtest.review', p.id, reviewParams(p, job.id, reviewMode, {
+  const revParams = reviewParams(p, job.id, reviewMode, {
     ...(focus ? { focus } : {}),
     ...(criteria?.length ? { criteria } : {}),
     ...(previous ? { previous: { summary: previous.summary, verdict: previous.verdict, scores: previous.scores, findings: (previous.findings ?? []).map((f: any) => ({ severity: f.severity, title: f.title })) } } : {}),
-  }), (j) => updateStep(rs, { job: j.id, detail: j.detail }), { runMs: REVIEW_RUN_MS, job: wasReview?.job ?? undefined });
+  });
+  // Gen's review, or the same review through Claude Code on the Max plan while Gen's Claude is out of credit (review-cc.ts).
+  const rev = await reviewJob(p.id, revParams, () => runGenJob('playtest.review', p.id, revParams, (j) => updateStep(rs, { job: j.id, detail: j.detail }), { runMs: REVIEW_RUN_MS, job: wasReview?.job ?? undefined }));
   if (rev.status !== 'done') {
     updateStep(rs, { status: 'failed', job: rev.id, detail: `failed: ${rev.error ?? rev.detail}`, finished: true });
     return job;
@@ -569,7 +572,7 @@ async function reviewPlaytest(run: string, p: Product, t: Playtest, job: any, pl
   ].filter(Boolean);
   updateStep(rs, {
     status: 'done', job: rev.id, cost: rev.cost ?? 0,
-    detail: `${v.verdict} · ${reviewMode}${bar?.met ? ' (meets its quality bar)' : ''} · ${(v.findings ?? []).length} findings (${parts.join(', ')})${p.quality ? ` · bar: ${v.meetsBar ?? '?'}` : ''}`,
+    detail: `${v.verdict} · ${reviewMode}${bar?.met ? ' (meets its quality bar)' : ''} · ${(v.findings ?? []).length} findings (${parts.join(', ')})${p.quality ? ` · bar: ${v.meetsBar ?? '?'}` : ''}${viaNote(rev)}`,
     data: { ...v, added: merged.added, updated: merged.updated, ideas: merged.ideas, skipped: merged.skipped, knownFixed: known.fixed, knownPresent: known.present, reviewKey: sameKey, mode: reviewMode, sha: fullSha, barHash: barHash(p.quality), bar: bar?.why ?? null }, finished: true,
   });
   // A roadmap task's acceptance criteria, judged on this playtest (the beta run after a merge; pm.ts reads them).
