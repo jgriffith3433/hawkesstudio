@@ -113,6 +113,37 @@ test('beta lane: plan, go live, rollback, merge main back', async () => {
   assert.equal(beta.listDeploys('betatest').length, 3);
 });
 
+test('fetches and pushes take turns per repo; a fetch that hits a ref lock is tried again', async () => {
+  // One at a time on a key, and a failure doesn't hold up the next.
+  const seen: string[] = [];
+  const slow = (name: string, fail = false) => () => new Promise<string>((ok, no) => {
+    seen.push(`${name} start`);
+    setTimeout(() => { seen.push(`${name} end`); if (fail) no(new Error(name)); else ok(name); }, 30);
+  });
+  const a = beta.withRepoLock('k', slow('a', true));
+  const b = beta.withRepoLock('k', slow('b'));
+  await assert.rejects(a);
+  assert.equal(await b, 'b');
+  assert.deepEqual(seen, ['a start', 'a end', 'b start', 'b end']);
+  // A worktree and its checkout are one repo.
+  const wt = path.join(tmp, 'lock-wt');
+  git(dir, 'worktree', 'add', '--quiet', '--detach', wt);
+  assert.equal(beta.repoKey(wt), beta.repoKey(dir));
+
+  // Another clone's fetch finds origin/locktest locked (another git updating it), then the lock goes away.
+  const other = path.join(tmp, 'lock-other');
+  git(tmp, 'clone', '--quiet', origin, other);
+  git(dir, 'push', '--quiet', 'origin', 'HEAD:refs/heads/locktest');
+  const lock = path.join(other, '.git', 'refs', 'remotes', 'origin', 'locktest.lock');
+  fs.writeFileSync(lock, '');
+  beta.fetchBackoff.ms = 100;
+  setTimeout(() => fs.rmSync(lock, { force: true }), 150);
+  const r = await beta.gitAsync(other, ['fetch', '--quiet', 'origin']);
+  assert.ok(r.ok, r.err);
+  assert.equal(git(other, 'rev-parse', 'origin/locktest'), remote('locktest'));
+  assert.match('error: cannot lock ref \'refs/remotes/origin/beta\': is at 1 but expected 2', beta.REF_LOCK);
+});
+
 test.after(() => {
   db.close();
   fs.rmSync(tmp, { recursive: true, force: true, maxRetries: 5 });

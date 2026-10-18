@@ -398,9 +398,11 @@ export const markReached = (id: string) => db.prepare(`UPDATE milestones SET sta
 
 export type Comment = { id: string; subject: string; by: string; kind: string; text: string; at: number };
 const SUBJECT = /^(f|i|k|c|n)_[0-9a-f]+$/;
+/** Whether a thread can hang on this subject (a finding, item, task, change or milestone id); questions can have others (slugs, m_ ids). */
+export const isCommentSubject = (subject: string | null | undefined): subject is string => !!subject && SUBJECT.test(subject);
 
 export function addComment(subject: string, text: string, by = 'J', kind = 'comment') {
-  if (!SUBJECT.test(subject)) throw new StudioError('subject: a finding (f_), item (i_), task (k_) or change (c_) id');
+  if (!isCommentSubject(subject)) throw new StudioError('subject: a finding (f_), item (i_), task (k_) or change (c_) id');
   if (!String(text ?? '').trim()) throw new StudioError('Say something');
   const id = newId('m');
   db.prepare('INSERT INTO comments (id, subject, by, kind, text, at) VALUES (?, ?, ?, ?, ?, ?)').run(id, subject, String(by).slice(0, 60), kind, String(text).trim().slice(0, 8000), Date.now());

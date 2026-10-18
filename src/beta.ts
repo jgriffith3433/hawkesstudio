@@ -66,8 +66,49 @@ export function git(cwd: string, args: string[], timeoutMs = 10 * 60_000) {
 }
 const SLOW = new Set(['fetch', 'push', 'clone', 'pull']);
 
-/** git without blocking Studio: listed while it runs (ops.ts commands), logged to the operation it runs in, timed out. */
-export function gitAsync(cwd: string, args: string[], timeoutMs = 10 * 60_000): Promise<{ ok: boolean; out: string; err: string }> {
+/**
+ * git without blocking Studio: listed while it runs (ops.ts commands), logged to the operation it runs in, timed out.
+ * Fetches and pushes take turns per repository (its worktrees share refs: two at once fail with "cannot lock ref
+ * origin/beta"), and a fetch that still hits a ref lock (git outside Studio) is tried again after a short wait.
+ */
+export async function gitAsync(cwd: string, args: string[], timeoutMs = 10 * 60_000): Promise<{ ok: boolean; out: string; err: string }> {
+  if (!['fetch', 'push'].includes(args[0])) return runGit(cwd, args, timeoutMs);
+  return withRepoLock(repoKey(cwd), async () => {
+    for (let attempt = 1; ; attempt++) {
+      const r = await runGit(cwd, args, timeoutMs);
+      if (r.ok || args[0] !== 'fetch' || !REF_LOCK.test(r.err) || attempt >= FETCH_TRIES) return r;
+      opLog(`fetch in ${path.basename(cwd)} hit a ref lock (try ${attempt} of ${FETCH_TRIES}), trying again`);
+      await new Promise((ok) => setTimeout(ok, fetchBackoff.ms * attempt));
+    }
+  });
+}
+export const REF_LOCK = /cannot lock ref|unable to update local ref|Unable to create '[^']*\.lock'/i;
+const FETCH_TRIES = 4;
+/** The wait before a fetch's next try, times the try (tests shorten it). */
+export const fetchBackoff = { ms: 2000 };
+
+const repoKeys = new Map<string, string>();
+/** The repository a folder belongs to (its common git dir: a worktree and its main checkout are one), else the folder. */
+export function repoKey(cwd: string) {
+  const known = repoKeys.get(cwd);
+  if (known) return known;
+  const r = spawnSync('git', ['rev-parse', '--git-common-dir'], { cwd, encoding: 'utf8', windowsHide: true, timeout: 10_000 });
+  const key = r.status === 0 && r.stdout.trim() ? path.resolve(cwd, r.stdout.trim()) : path.resolve(cwd);
+  if (r.status === 0) repoKeys.set(cwd, key);
+  return key;
+}
+const repoLocks = new Map<string, Promise<unknown>>();
+/** Runs fn after every earlier one on the same key has finished (a failure doesn't hold up the next). */
+export function withRepoLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
+  const prev = repoLocks.get(key) ?? Promise.resolve();
+  const run = prev.catch(() => {}).then(fn);
+  const tail = run.catch(() => {});
+  repoLocks.set(key, tail);
+  void tail.then(() => { if (repoLocks.get(key) === tail) repoLocks.delete(key); });
+  return run;
+}
+
+function runGit(cwd: string, args: string[], timeoutMs: number): Promise<{ ok: boolean; out: string; err: string }> {
   const label = `git ${args.filter((a) => !a.startsWith('-c')).join(' ')}`.slice(0, 200);
   const done = trackCommand(label, cwd);
   if (SLOW.has(args[0]) || ['worktree', 'checkout', 'merge'].includes(args[0])) opLog(`$ ${label} (${path.basename(cwd)})`);
