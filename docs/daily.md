@@ -354,10 +354,29 @@ GPU costs money, so it is priced and approved.**
   launch, at most 4 servers up, US regions only (us-west-2, us-east-1, us-east-2), Gen's 60-minute idle stop
   unchanged. It prefers a server whose install finished (its models are on disk), a kept disk over a disposable one,
   then the cheapest region. One start per need (starts are serialized, so a second change sees the first's server
-  coming up). Each start is a `gpu-start` line in the PM log and one line in Talk; a failed one (no capacity in the
-  zone, the cap reached, nothing stopped) is `gpu-start-failed` and said in Talk, with no launch instead. The brief
-  tells the agent a server is coming: it queues its jobs with `wait_for_server` and, if none is ready within about
-  30 minutes, finishes the rest and says the GPU part is waiting. Launching a new server still asks J.
+  coming up). A start that fails moves on to the next stopped server, other zones and regions first (AWS often has
+  no machine free in one zone: 2026-10-18, six of seven starts failed on one us-east-1c server while a us-east-2 one
+  sat stopped); a region whose GPU quota is full is skipped until the next round. When every server failed, Studio
+  tries again while the change still needs it, after 2, 3, 5, then every 8 minutes, for about 45 minutes. Each round
+  is one `gpu-start-waiting` line in the PM log (not one per server); Talk hears once: the `gpu-start` (with the
+  budget) or the give-up (`gpu-start-failed`, no launch instead). The cap reached or nothing stopped is said at once.
+  The brief tells the agent a server is coming: it queues its jobs with `wait_for_server` and, if none is ready
+  within about 30 minutes, finishes the rest and says the GPU part is waiting. Launching a new server still asks J.
+- **Follow-ups keep their GPU items** (J, 2026-10-18). A task added without `gpu` (the PM's or Talk's follow-up, "Follow-up
+  to PR #28 (c_…)") takes the items of the GPU task it follows up: from what it depends on, or the tasks (`k_…`) and
+  changes (`c_…`) its request names, back along a chain of follow-ups (`roadmap.ts inheritedGpu`, a `gpu inherit`
+  line in the PM log). It is then priced like any GPU task, so the under-$5 auto approval gives it a budget and Studio
+  starts a server for it. Planned follow-ups from before are given theirs when Studio starts (`backfillGpu`). Without
+  this, four follow-ups had no budget, and three agents in a row ended with "no commit".
+- **Stand-ins don't count as done** (J, 2026-10-18). An agent with a GPU budget that ships stand-in or interim art, or
+  fallback code, because the GPU art isn't made lists what's left (with its Gen job ids) in `.hawkes/pending-gpu.txt`
+  (its brief asks; a summary saying it shipped stand-ins because no GPU server ran counts too, `agents.ts
+  pendingGpuOf`). The change still merges into beta, but its task becomes **waiting for GPU**, not merged: the item
+  shows "waiting for GPU", the stand-ins aren't counted as merged, what depends on it waits. Studio starts a stopped
+  server for it (as above; again two hours after a give-up), and once a GPU server is running the PM loop runs the task
+  again (`pm.ts rerunGpuWaits`, a `gpu-rerun` line; not a try), on top of beta with the list of what's left. A run that
+  fails puts it back to waiting; a run without stand-ins makes it merged. After 3 runs J is asked: try again, keep the
+  stand-ins (it counts as merged), or drop it. A task without a GPU budget is merged as before.
 - Checks: the product's own validators and tests, the canon check of the diff (shared memory), and the acceptance
   criteria judged from a playtest of the new content; then the normal flow onto beta.
 
