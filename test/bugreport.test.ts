@@ -6,6 +6,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import vm from 'node:vm';
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'studio-bugreport-'));
 process.env.STUDIO_DATA = path.join(tmp, 'data');
@@ -41,6 +42,28 @@ test('the button goes into whole pages only, once', () => {
   assert.ok(fs.existsSync(br.WIDGET), 'the widget file is there');
 });
 
+test('the early hook makes WebGL keep its drawing buffer (screenshots on phones)', () => {
+  const out = br.injectReport('<html><head></head><body></body></html>', { product: 'brtest' });
+  const code = /<script data-hawkes-report>([\s\S]*?)<\/script>/.exec(out)![1];
+  const calls: any[] = [];
+  // Attributes as JSON: the hook's objects come from the vm's realm.
+  class HTMLCanvasElement { getContext(type: string, attrs?: any) { calls.push({ type, attrs: attrs && JSON.parse(JSON.stringify(attrs)) }); return { type }; } }
+  const ctx: any = { HTMLCanvasElement, console: { error() {}, warn() {} }, addEventListener() {}, Object, JSON, Date };
+  ctx.window = ctx;
+  vm.runInNewContext(code, ctx);
+  vm.runInNewContext(code, ctx); // twice (a second copy of the hook): patched once
+  const c = new HTMLCanvasElement();
+  const unity = { alpha: false, preserveDrawingBuffer: false };
+  assert.deepEqual(c.getContext('webgl2', unity), { type: 'webgl2' });
+  assert.deepEqual(calls[0].attrs, { alpha: false, preserveDrawingBuffer: true }, "forced on, even when the loader asks for false (Unity)");
+  assert.equal(unity.preserveDrawingBuffer, false, "the game's own object is left as it was");
+  c.getContext('webgl');
+  assert.deepEqual(calls[1].attrs, { preserveDrawingBuffer: true });
+  c.getContext('2d', { alpha: false });
+  assert.deepEqual(calls[2].attrs, { alpha: false }, '2d canvases are left alone');
+  assert.equal(calls.length, 3, 'one call through per getContext');
+});
+
 test('a report becomes a top-priority finding for the milestone being tested', async () => {
   const it = rm.addItem({ product: 'brtest', title: 'Controls', criteria: ['jump works'], status: 'planned' });
   const ms = rm.addMilestone({ product: 'brtest', title: 'Controls done', items: [it.id] });
@@ -51,7 +74,7 @@ test('a report becomes a top-priority finding for the milestone being tested', a
   assert.deepEqual(br.testing('brtest'), { milestone: ms.id, title: 'Controls done', origin: null, item: it.id });
 
   const r = await br.fileReport('brtest', {
-    text: 'Jump does nothing on the second level. It worked on the first.', url: 'https://brt.hawkesgen.com/Game/', shot: PNG,
+    text: 'Jump does nothing on the second level. It worked on the first.', url: 'https://brt.hawkesgen.com/Game/', shot: PNG, shotNote: "game frame couldn't be captured",
     viewport: { w: 390, h: 844, dpr: 3 }, device: { ua: 'Mobile Safari', touch: true, platform: 'iPhone' },
     console: [{ level: 'error', text: 'TypeError: x is undefined' }], state: '{"scene":"level2"}', build: { product: 'brtest', sha: 'abc1234', ref: 'beta' },
   });
@@ -66,6 +89,7 @@ test('a report becomes a top-priority finding for the milestone being tested', a
   assert.match(f.detail, /TypeError: x is undefined/);
   assert.match(f.detail, /390x844 @3x · touch/);
   assert.match(f.detail, /"scene":"level2"/);
+  assert.match(f.detail, /Screenshot note: game frame couldn't be captured/, 'the agent hears the picture has no game frame');
   const shot = br.reportShot(r.id);
   assert.ok(shot && fs.readFileSync(shot).length > 0, 'the screenshot is kept');
   // Talk: a "Playtest:" conversation (the milestone has no conversation of its own) with the notice.

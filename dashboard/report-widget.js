@@ -116,6 +116,7 @@
 
   // ------------------------------------------------------------ screenshot
   let shot = null;
+  let shotNote = null;
   const area = (r) => Math.max(0, r.width) * Math.max(0, r.height);
   const toJpeg = (src, w, h) => {
     const k = Math.min(1, 1280 / Math.max(w, h));
@@ -137,15 +138,25 @@
     s.onerror = bad;
     document.head.appendChild(s);
   });
+  // The game's frame, read right after the game draws (our frame callback runs after its). The page's early hook
+  // (bugreport.ts) makes WebGL keep its drawing buffer; a context it missed can read blank on a phone (iOS drops the
+  // buffer once the frame is shown), so a few more frames before giving up.
+  const readFrame = (game) => new Promise((ok) => {
+    let n = 0;
+    const once = () => { let f = null; try { f = toJpeg(game, game.width, game.height); } catch {} if (f || ++n >= 6) ok(f); else requestAnimationFrame(once); };
+    requestAnimationFrame(once);
+  });
   async function capture() {
-    // A canvas game: its biggest visible canvas, read right after the game draws (our frame callback runs after its).
+    // A canvas game: its biggest visible canvas.
     const canvases = [...document.querySelectorAll('canvas')].map((c) => ({ c, r: c.getBoundingClientRect() })).filter((x) => x.c.width && x.c.height && area(x.r) > 0).sort((a, b) => area(b.r) - area(a.r));
     let frame = null;
     let game = null;
     if (canvases[0] && area(canvases[0].r) >= 0.25 * innerWidth * innerHeight) {
       game = canvases[0].c;
-      frame = await new Promise((ok) => requestAnimationFrame(() => { try { ok(toJpeg(game, game.width, game.height)); } catch { ok(null); } }));
+      frame = await readFrame(game);
     }
+    // No frame: the page alone, with a plain box where the game is (never an all-black picture), and a note in the report.
+    const note = game && !frame ? "game frame couldn't be captured (its canvas read as one flat color); the screenshot is the page around it" : null;
     // The page as J sees it (html2canvas, loaded only now), with the game's frame in place of its canvas (a WebGL
     // canvas reads blank outside its frame), so HUDs and menus drawn in HTML are in the picture too.
     try {
@@ -157,19 +168,28 @@
         ignoreElements: (el) => el === host,
         onclone: (doc) => {
           const cv = doc.querySelector('canvas[data-hawkes-shot]');
-          if (!cv || !frame) return;
-          const img = doc.createElement('img');
-          img.src = frame;
+          if (!cv) return;
+          const img = doc.createElement(frame ? 'img' : 'div');
+          if (frame) img.src = frame;
           img.style.cssText = cv.style.cssText;
           img.className = cv.className;
           const r = game.getBoundingClientRect();
           img.style.width = r.width + 'px';
           img.style.height = r.height + 'px';
+          if (!frame) {
+            img.style.background = '#2a2f38';
+            img.style.color = '#c9d1dc';
+            img.style.display = 'flex';
+            img.style.alignItems = 'center';
+            img.style.justifyContent = 'center';
+            img.style.font = '16px system-ui, sans-serif';
+            img.textContent = "Game frame couldn't be captured";
+          }
           cv.replaceWith(img);
         },
       })]);
-      return (c && toJpeg(c, c.width, c.height)) || frame;
-    } catch { return frame; } finally { if (game) game.removeAttribute('data-hawkes-shot'); }
+      return { shot: (c && toJpeg(c, c.width, c.height)) || frame, note };
+    } catch { return { shot: frame, note }; } finally { if (game) game.removeAttribute('data-hawkes-shot'); }
   }
   const showShot = () => {
     shotBox.innerHTML = '';
@@ -179,16 +199,16 @@
     img.alt = 'screenshot';
     const rm = document.createElement('button');
     rm.textContent = 'remove';
-    rm.onclick = () => { shot = null; showShot(); };
+    rm.onclick = () => { shot = null; shotNote = null; showShot(); };
     shotBox.append(img, rm);
   };
 
   async function open() {
     msg.className = 'msg';
     msg.textContent = 'Taking a screenshot…';
-    shot = await capture();
+    ({ shot, note: shotNote } = await capture());
     showShot();
-    msg.textContent = shot ? '' : 'No screenshot (sending without one).';
+    msg.textContent = !shot ? 'No screenshot (sending without one).' : shotNote ? "The game's picture couldn't be captured; the screenshot shows the page around it." : '';
     panel.classList.add('open');
     place();
     if (!matchMedia('(pointer: coarse)').matches) ta.focus();
@@ -235,7 +255,7 @@
     try { if (pt && typeof pt.state === 'function') state = json(pt.state(), 4000); } catch (err) { state = `state() threw: ${err.message || err}`; }
     try { if (pt && typeof pt.report === 'function') report = json(pt.report(), 4000); } catch (err) { report = `report() threw: ${err.message || err}`; }
     const body = {
-      text, blocker: $('.block').checked, url: location.href, title: document.title, shot,
+      text, blocker: $('.block').checked, url: location.href, title: document.title, shot, shotNote,
       viewport: { w: innerWidth, h: innerHeight, dpr: devicePixelRatio },
       device: { ua: navigator.userAgent, touch: matchMedia('(pointer: coarse)').matches, touchPoints: navigator.maxTouchPoints || 0,platform: (navigator.userAgentData && navigator.userAgentData.platform) || navigator.platform, lang: navigator.language },
       console: log.slice(-25), state, report, build: cfg,
@@ -249,6 +269,7 @@
       ta.value = '';
       $('.block').checked = false;
       shot = null;
+      shotNote = null;
       showShot();
       setTimeout(() => { if (!ta.value) close(); }, 3500);
     } catch (err) {
