@@ -21,6 +21,7 @@ import { PROJECTS, abs, type Product } from './config.ts';
 import { db } from './db.ts';
 import { BRANCH, BETA, isServer } from './repos.ts';
 import { trackCommand, opLog } from './ops.ts';
+import { markInstalled } from './warm.ts';
 
 export { BETA };
 export const MAIN = BRANCH;
@@ -334,6 +335,7 @@ export async function ensureDeps(dir: string, log: (s: string) => void = () => {
   const r = await sh('npm ci --no-audit --no-fund --loglevel=error', dir);
   if (!r.ok) throw new Error(`npm ci failed: ${r.tail}`);
   fs.writeFileSync(mark, lock);
+  markInstalled(dir, lock);
 }
 
 /** The beta commit whose pre-deploy build changed no tracked files (so it needs no build commit). */

@@ -306,6 +306,9 @@ export async function staleBeta(p: Product): Promise<string | null> {
   if (!isServer() || p.build || !repoMap()[top] || !betaFolders().has(top)) return null;
   const dir = repoDirs(p).source;
   const r = await syncRepo(top, repoMap()[top], BRANCH, BETA);
+  // Packages that didn't install would only serve a page that never loads: the playtest fails with npm's error.
+  const broken = r.install?.find((i) => !i.ok);
+  if (broken) return `Not playing: npm ci failed in the server's ${BETA} checkout ${broken.dir} (${broken.why}): ${broken.error}`;
   const want = shaOf(dir, `origin/${BETA}`);
   if (!want) return null; // no beta branch yet: the checkout plays main
   const head = shaOf(dir, 'HEAD') ?? '';
@@ -641,6 +644,8 @@ async function betaBody(id: string, p: Product, { focus, criteria, scenario, opt
       const g = startStep(id, p.id, 'repo', top);
       const r = await syncRepo(top, repoMap()[top], BRANCH, betaFolders().has(top) ? BETA : undefined);
       updateStep(g, { status: r.action === 'failed' ? 'failed' : 'done', detail: `${r.detail}${r.head ? ` (${r.head})` : ''}`, data: r, finished: true });
+      const broken = r.install?.find((i) => !i.ok);
+      if (broken) throw new Error(`npm ci failed in ${broken.dir} (${broken.why}): ${broken.error}`);
     }
     if (p.deploy?.prebuild) await prebuildBeta(id, p);
     if (p.build && lane) {

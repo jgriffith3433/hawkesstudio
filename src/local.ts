@@ -3,7 +3,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
-import { abs, localUrl, paths, DATA, type Product } from './config.ts';
+import { abs, localUrl, paths, DATA, loadProducts, type Product } from './config.ts';
 import { sandboxOn, sandboxSpawn } from './sandbox.ts';
 import { shareCmds } from './warm.ts';
 
@@ -124,6 +124,19 @@ export function stopServed(port: number) {
   served.delete(port);
   if (WIN) spawnSync('taskkill', ['/PID', String(pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true });
   else try { process.kill(-pid, 'SIGTERM'); } catch { /* gone */ }
+}
+
+/** Stops the local servers Studio started for the products served from `dir` (after their packages were reinstalled). */
+export function stopServerIn(dir: string) {
+  const servers = readServers();
+  const ids = loadProducts().filter((p) => p.local.dir === dir && servers[p.id]).map((p) => p.id);
+  for (const id of ids) {
+    if (WIN) spawnSync('taskkill', ['/PID', String(servers[id].pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true });
+    else try { process.kill(-servers[id].pid, 'SIGTERM'); } catch { /* already gone */ }
+    delete servers[id];
+  }
+  if (ids.length) fs.writeFileSync(SERVERS, JSON.stringify(servers, null, 2));
+  return ids;
 }
 
 /** Stops the local servers Studio started. */

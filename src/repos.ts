@@ -8,6 +8,7 @@ import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 import { PROJECTS, paths } from './config.ts';
 import { trackCommand } from './ops.ts';
+import { lockHash, installedFor, markInstalled } from './warm.ts';
 
 export const BRANCH = process.env.STUDIO_BRANCH || 'main';
 /** The branch between agent changes and the live site (beta.ts). On the server, product source repos are kept on it. */
@@ -41,6 +42,8 @@ export function repoMap(): Record<string, string> {
 }
 
 export type RepoResult = { folder: string; slug: string; action: 'cloned' | 'updated' | 'current' | 'kept' | 'failed'; detail: string; head?: string; dirty?: string[]; discarded?: string[];
+  /** npm ci runs in the repo's web checkouts after the sync (installAfterSync): where, why, how long, the error. */
+  install?: Install[];
   /** Uncommitted changes set aside (git stash) so a beta checkout could follow beta: the stash's commit, its message, the files. */
   setAside?: { stash: string; label: string; files: string[] } };
 
@@ -76,6 +79,12 @@ export function buildOutputs(folder: string): (file: string) => boolean {
  * origin has it (the server keeps product source repos on beta).
  */
 export async function syncRepo(folder: string, slug: string, branch = BRANCH, want?: string): Promise<RepoResult> {
+  const dir = path.join(PROJECTS, folder);
+  const before = fs.existsSync(path.join(dir, '.git')) ? git(dir, ['rev-parse', 'HEAD']).out : '';
+  return installAfterSync(await syncGit(folder, slug, branch, want), before);
+}
+
+async function syncGit(folder: string, slug: string, branch: string, want?: string): Promise<RepoResult> {
   const dir = path.join(PROJECTS, folder);
   if (!fs.existsSync(path.join(dir, '.git'))) {
     if (fs.existsSync(dir) && fs.readdirSync(dir).length) return { folder, slug, action: 'failed', detail: `${dir} exists and isn't a git repo` };
@@ -140,6 +149,111 @@ export async function syncRepo(folder: string, slug: string, branch = BRANCH, wa
   const m = await gitA(dir, ['merge', '--ff-only', '--quiet', `origin/${cur}`]);
   if (!m.ok) return done({ folder, slug, action: 'kept', detail: `${switched}${cur} has local commits; not fast-forwarded`, head: git(dir, ['log', '-1', '--format=%h %s']).out });
   return done({ folder, slug, action: 'updated', detail: `${switched}${cur}: ${behind} new commits`, head: git(dir, ['log', '-1', '--format=%h %s']).out });
+}
+
+export type Install = { dir: string; why: string; ok: boolean; seconds: number; error?: string };
+
+/** The web products' checkouts (products.json local.serve "npm"), relative to PROJECTS; only `folder`'s when given. */
+export function webCheckouts(folder?: string) {
+  const products = (JSON.parse(fs.readFileSync(paths.products, 'utf8')).products ?? []) as any[];
+  const dirs = new Set<string>();
+  for (const p of products) if (p.local?.serve === 'npm' && typeof p.local.dir === 'string' && (!folder || p.local.dir.split('/')[0] === folder)) dirs.add(p.local.dir);
+  return [...dirs].filter((d) => fs.existsSync(path.join(PROJECTS, d, 'package-lock.json')));
+}
+
+/** Why `rel`'s node_modules needs an npm ci (`changed`: files the sync brought in, repo-relative), or null. */
+function installReason(rel: string, changed: string[] = []) {
+  const dir = path.join(PROJECTS, rel);
+  const sub = rel.split('/').slice(1).join('/');
+  const touched = (f: string) => changed.includes(sub ? `${sub}/${f}` : f);
+  const was = installedFor(dir);
+  if (!fs.existsSync(path.join(dir, 'node_modules'))) return 'no node_modules';
+  if (touched('package-lock.json')) return 'package-lock.json changed';
+  if (touched('package.json')) return 'package.json changed';
+  if (was !== lockHash(dir)) return was ? 'installed for another package-lock.json' : 'no record of an install for this package-lock.json';
+  return null;
+}
+
+const installing = new Map<string, Promise<Install>>();
+/** The last failed install per checkout (its lockfile hash): not retried for 10 minutes unless the lockfile changes. */
+const failedInstall = new Map<string, { hash: string | null; error: string; at: number }>();
+
+/** npm ci in a web checkout (one at a time per checkout), stamped (warm.ts) so warm starts may copy it. */
+export function installIn(rel: string, why: string): Promise<Install> {
+  const dir = path.join(PROJECTS, rel);
+  const hash = lockHash(dir);
+  const failed = failedInstall.get(rel);
+  if (failed && failed.hash === hash && Date.now() - failed.at < 10 * 60_000) return Promise.resolve({ dir: rel, why, ok: false, seconds: 0, error: `${failed.error} (failed ${Math.round((Date.now() - failed.at) / 60_000)} min ago; retried when package-lock.json changes or after 10 minutes)` });
+  const busy = installing.get(rel);
+  if (busy) return busy;
+  const job = (async (): Promise<Install> => {
+    const cmd = 'npm ci --no-audit --no-fund';
+    const done = trackCommand(cmd, rel);
+    const t0 = Date.now();
+    const res = await new Promise<{ ok: boolean; out: string }>((resolve) => {
+      let out = '';
+      const child = spawn(cmd, [], { cwd: dir, shell: true, windowsHide: true });
+      const timer = setTimeout(() => { out += '\n(timed out after 20 min)'; child.kill('SIGKILL'); }, 20 * 60_000);
+      timer.unref();
+      const keep = (d: Buffer) => { out = (out + d).slice(-20_000); };
+      child.stdout.on('data', keep);
+      child.stderr.on('data', keep);
+      child.on('error', (e) => { clearTimeout(timer); resolve({ ok: false, out: e.message }); });
+      child.on('close', (code) => { clearTimeout(timer); resolve({ ok: code === 0, out }); });
+    });
+    done();
+    const seconds = Math.round((Date.now() - t0) / 1000);
+    if (!res.ok) {
+      const error = res.out.trim().split('\n').filter(Boolean).slice(-8).join('\n') || 'npm ci failed';
+      failedInstall.set(rel, { hash, error, at: Date.now() });
+      console.warn(`[repos] ${rel}: npm ci failed (${why}, ${seconds} s): ${error}`);
+      return { dir: rel, why, ok: false, seconds, error };
+    }
+    failedInstall.delete(rel);
+    markInstalled(dir, hash);
+    console.log(`[repos] ${rel}: npm ci (${why}, ${seconds} s)`);
+    // A local server started before has the old packages loaded: the next playtest starts it again.
+    await import('./local.ts').then(({ stopServerIn }) => stopServerIn(rel)).catch(() => {});
+    return { dir: rel, why, ok: true, seconds };
+  })().finally(() => installing.delete(rel));
+  installing.set(rel, job);
+  return job;
+}
+
+/**
+ * On the server, after a sync: npm ci in the repo's web checkouts whose packages don't match (the sync changed
+ * package-lock.json or package.json, or the stamp of the last install is for another lockfile or missing), before a
+ * build or a local playtest uses them. Each install is on the result (detail, `install`); a failed one fails it.
+ */
+async function installAfterSync(r: RepoResult, before: string): Promise<RepoResult> {
+  if (!isServer() || r.action === 'failed' || r.action === 'kept') return r;
+  const dir = path.join(PROJECTS, r.folder);
+  const after = git(dir, ['rev-parse', 'HEAD']).out;
+  const changed = before && after && before !== after ? git(dir, ['diff', '--name-only', before, after]).out.split('\n').filter(Boolean) : [];
+  for (const rel of webCheckouts(r.folder)) {
+    const why = installReason(rel, changed);
+    if (!why) continue;
+    const i = await installIn(rel, why);
+    (r.install ??= []).push(i);
+    r.detail += i.ok ? `; npm ci in ${rel} (${why}): ${i.seconds} s` : `; npm ci in ${rel} failed (${why}): ${i.error}`;
+    if (!i.ok) r.action = 'failed';
+  }
+  return r;
+}
+
+/**
+ * Once at start on the server: every web checkout whose packages weren't installed for its lockfile (the stamp
+ * differs or is missing: a checkout synced before Studio installed after syncs) gets an npm ci, one at a time.
+ */
+export async function reinstallStale() {
+  const out: Install[] = [];
+  if (!isServer()) return out;
+  for (const rel of webCheckouts()) {
+    if (!fs.existsSync(path.join(PROJECTS, rel.split('/')[0], '.git'))) continue;
+    const why = installReason(rel);
+    if (why) out.push(await installIn(rel, why));
+  }
+  return out;
 }
 
 /** Where syncRepo's notices go: a Talk notice (tests replace it). */

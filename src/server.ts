@@ -658,6 +658,8 @@ server.listen(PORT, '127.0.0.1', () => {
   startFronts();
   // A pick anywhere in Gen's library is written into its product's files (library.ts), on the server only.
   void import('./repos.ts').then(({ isServer }) => { if (isServer()) void import('./library.ts').then(({ followPicks }) => followPicks()); });
+  // Web checkouts whose packages weren't installed for their lockfile (synced before installs followed syncs): npm ci now.
+  void import('./repos.ts').then(({ reinstallStale }) => reinstallStale()).then((done) => { if (done.length) console.log(`[repos] reinstalled packages at start: ${done.map((i) => `${i.dir} ${i.ok ? `(${i.seconds} s)` : 'failed'}`).join(', ')}`); }).catch((e) => console.warn(`[repos] reinstalling packages: ${e.message ?? e}`));
   startDevService();
   // Results of work Talk started go back into its conversation.
   startFollowups();

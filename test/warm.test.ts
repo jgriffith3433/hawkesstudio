@@ -11,7 +11,7 @@ process.env.STUDIO_PROJECTS = path.join(tmp, 'Projects');
 process.env.STUDIO_DATA = path.join(tmp, 'data');
 fs.mkdirSync(process.env.STUDIO_PROJECTS, { recursive: true });
 
-const { warmDeps } = await import('../src/warm.ts');
+const { warmDeps, markInstalled } = await import('../src/warm.ts');
 const { shareDeps } = await import('../src/local.ts');
 
 const posix = process.platform !== 'win32';
@@ -41,6 +41,7 @@ test('a warm start gives the copied node_modules to the worktree group, writable
   fs.mkdirSync(repo, { recursive: true });
   fs.writeFileSync(path.join(repo, 'package-lock.json'), '{"lockfileVersion":3}');
   nodeModules(repo);
+  markInstalled(repo); // a real install's stamp: only those are warm-start donors
   const wt = path.join(process.env.STUDIO_PROJECTS!, '.work', 'c_1');
   fs.mkdirSync(wt, { recursive: true });
   fs.writeFileSync(path.join(wt, '.git'), `gitdir: ${path.join(repo, '.git', 'worktrees', 'c_1')}\n`);
