@@ -296,7 +296,8 @@ const staleTold = new Set<string>();
  * On the server, a web product's local playtest serves its source checkout, kept on beta (repos.ts). It is brought to
  * beta's tip first; when it can't follow (uncommitted changes, local commits), the playtest doesn't play the old commit:
  * it fails with what's in the way, and Talk is told (Studio never throws away changes it didn't make; uncommitted
- * changes only in generated build output are a leftover build, discarded by syncRepo). Null: up to date.
+ * changes only in generated build output are a leftover build, discarded by syncRepo; other uncommitted changes are set
+ * aside in a stash by syncRepo, so this fires when that fails or for local commits). Null: up to date.
  */
 export async function staleBeta(p: Product): Promise<string | null> {
   const top = p.repo.split('/')[0];
@@ -641,9 +642,24 @@ async function betaBody(id: string, p: Product, { focus, criteria, scenario, opt
   }
 }
 
+/**
+ * On the server, an agent change working in a product's repo (its own worktree of /srv/hawkes/<repo>): asset making
+ * writes into the server checkout itself, so it waits (startAssets refuses). Null: none, or not on the server.
+ */
+export function agentWorkingIn(p: Product): { id: string; status: string; repo: string; worktree: string } | null {
+  if (!isServer()) return null;
+  try {
+    return (db.prepare(`SELECT id, status, repo, worktree FROM changes WHERE repo = ? AND status IN ('working', 'revising') ORDER BY created LIMIT 1`).get(p.repo.split('/')[0]) as any) ?? null;
+  } catch {
+    return null; // no changes table (agents.ts not loaded)
+  }
+}
+
 /** Makes a product's missing or out-of-date assets (or only some, or forced) as a run. */
 export function startAssets(productId: string, { only, force = false, origin }: { only?: string[]; force?: boolean; origin?: string | null } = {}) {
   const p = getProduct(productId);
+  const busy = agentWorkingIn(p);
+  if (busy) throw new Error(`Not making ${p.name}'s assets now: an agent is working on ${busy.repo} (change ${busy.id}, ${busy.status}). Studio would write them into the server's ${BETA} checkout (${PROJECTS}/${busy.repo}), not the agent's worktree (${busy.worktree}), and stray files there keep ${BETA} from updating (2026-10-18). Let the agent make them in its worktree (Hawkes Gen), or try again once it's done.`);
   const st = assetStatus(p.id);
   if (!st.manifest) throw new Error(`${p.name} has no hawkes.assets.json`);
   const todo = st.assets.filter((a) => (only?.length ? only.includes(a.id) : force || a.status !== 'current')).map((a) => ({ id: a.id, status: a.status }));
