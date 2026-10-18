@@ -11,7 +11,7 @@
 // confidence, ambiguous, requested, placeholder or stand-in art, off the story path: retired or arcade levels, a line
 // that isn't in the diff, an empty value) become notes on the change, which never block a merge.
 
-import { genRun } from './gen.ts';
+import { askClaude } from './llm.ts';
 import { canonLines, kindLines, markUsed } from './memory.ts';
 import { jobModel } from './roles.ts';
 
@@ -128,7 +128,7 @@ export async function canonCheck(product: string, diff: string, what: string, ct
   if (!canon.text) return { ok: true, summary: 'no canon recorded for this product yet', conflicts: [], checked: 0, skipped: 'no canon' };
   if (!diff.trim()) return { ok: true, summary: 'nothing to check', conflicts: [], checked: 0, skipped: 'empty diff' };
   const prompt = canonPrompt(canon.text, diff, what, ctx, kindLines(product, 'decision', 3000).text);
-  const job = await genRun('llm.json', 'hawkesstudio', { prompt, schema: SCHEMA, model: process.env.STUDIO_CANON_MODEL ?? jobModel('canon'), effort: 'low', maxTokens: 3000 }, undefined, 5 * 60_000);
+  const job = await askClaude({ prompt, schema: SCHEMA, model: process.env.STUDIO_CANON_MODEL ?? jobModel('canon'), effort: 'low', maxTokens: 3000, timeoutMs: 5 * 60_000, purpose: 'canon', product });
   if (job.status !== 'done') return { ok: true, summary: `couldn't check: ${String(job.error ?? job.detail ?? 'failed').slice(0, 200)}`, conflicts: [], checked: canon.ids.length, skipped: 'error' };
   const v = job.result?.value ?? {};
   const { blocking, notes } = sortConflicts(v.conflicts, diff, canon.text);

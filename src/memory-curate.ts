@@ -5,7 +5,7 @@
 // the server, and on demand (POST /api/memory/curate, memory_curate auto).
 
 import { db } from './db.ts';
-import { genRun } from './gen.ts';
+import { askClaude } from './llm.ts';
 import { jobModel } from './roles.ts';
 import { getMemory, mergeMemories, updateMemory, ftsQuery, type Memory, type Caller } from './memory.ts';
 
@@ -52,7 +52,7 @@ Each CANDIDATE below is a note an agent left for the next agent. For each one, d
 Be conservative: "keep" when unsure.
 
 ${items.map(({ c, near: n }) => `CANDIDATE ${show(c)}\nEXISTING:\n${n.length ? n.map((m) => `  - ${show(m)}`).join('\n') : '  (none close)'}`).join('\n\n')}`;
-  const job = await genRun('llm.json', 'hawkesstudio', { prompt, schema: SCHEMA, model: jobModel('dedupe'), effort: 'low', maxTokens: 3000 }, undefined, 5 * 60_000);
+  const job = await askClaude({ prompt, schema: SCHEMA, model: jobModel('dedupe'), effort: 'low', maxTokens: 3000, timeoutMs: 5 * 60_000, purpose: 'curation' });
   if (job.status !== 'done') throw new Error(`curation: ${job.error ?? job.detail ?? 'failed'}`);
   const out = { looked: candidates.length, merged: 0, faded: 0, disputed: 0, kept: 0 };
   for (const v of (job.result?.value?.verdicts ?? []) as { id: string; action: string; of: string; why: string }[]) {
