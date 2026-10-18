@@ -16,12 +16,11 @@ import fs from 'node:fs';
 import { critical, criticalSync } from './drain.ts';
 import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
-import crypto from 'node:crypto';
 import { PROJECTS, abs, type Product } from './config.ts';
 import { db } from './db.ts';
 import { BRANCH, BETA, isServer } from './repos.ts';
 import { trackCommand, opLog } from './ops.ts';
-import { markInstalled } from './warm.ts';
+import { ensureInstalled } from './warm.ts';
 
 export { BETA };
 export const MAIN = BRANCH;
@@ -324,18 +323,10 @@ function sh(cmd: string, cwd: string, timeoutMs = 20 * 60_000): Promise<{ ok: bo
   });
 }
 
-/** npm ci in a worktree, only when its package-lock changed since the last time. */
+/** npm ci in a worktree when its packages weren't installed for its lockfile (warm.ts ensureInstalled). */
 export async function ensureDeps(dir: string, log: (s: string) => void = () => {}) {
-  const lockFile = path.join(dir, 'package-lock.json');
-  if (!fs.existsSync(lockFile)) return;
-  const lock = crypto.createHash('sha1').update(fs.readFileSync(lockFile)).digest('hex');
-  const mark = path.join(dir, 'node_modules', '.studio-lock');
-  if (fs.existsSync(mark) && fs.readFileSync(mark, 'utf8') === lock) return;
-  log('npm ci');
-  const r = await sh('npm ci --no-audit --no-fund --loglevel=error', dir);
-  if (!r.ok) throw new Error(`npm ci failed: ${r.tail}`);
-  fs.writeFileSync(mark, lock);
-  markInstalled(dir, lock);
+  const r = await ensureInstalled(dir, { log });
+  if (!r.ok) throw new Error(`npm ci failed: ${r.error}`);
 }
 
 /** The beta commit whose pre-deploy build changed no tracked files (so it needs no build commit). */
