@@ -28,7 +28,7 @@ const MAX_SHOT = 6 * 1024 * 1024;
 
 /** What the page sends (dashboard-free: the injected script, report-widget below). */
 export type ReportIn = {
-  text?: string; blocker?: boolean; url?: string; title?: string; shot?: string | null;
+  text?: string; blocker?: boolean; url?: string; title?: string; shot?: string | null; shotNote?: string | null;
   viewport?: { w?: number; h?: number; dpr?: number }; device?: { ua?: string; touch?: boolean; platform?: string; lang?: string };
   console?: { level?: string; text?: string; at?: number }[]; state?: unknown; report?: unknown;
   build?: { product?: string; sha?: string; ref?: string; change?: string; built?: number };
@@ -38,6 +38,8 @@ export type ReportIn = {
 export type Report = {
   text: string; url: string | null; page: string | null; device: string; viewport: string; build: ReportIn['build'] | null;
   console: { level: string; text: string }[]; state: string | null; game: string | null; shot: string | null; asset: string | null;
+  /** What the widget says about its screenshot (e.g. the game's frame couldn't be read, so it's the page alone). */
+  shotNote?: string | null;
   conversation: string | null; milestone: string | null; told: string | null; at: number;
 };
 
@@ -83,8 +85,13 @@ export const WIDGET = path.join(import.meta.dirname, '..', 'dashboard', 'report-
 /** What a beta page knows about itself: the product, the commit and what was built (Game/v<n> for Unity), the change. */
 export type PageInfo = { product: string; sha?: string | null; ref?: string; change?: string; built?: number };
 
-// Errors from before the widget loads: a tiny hook at the top of <head> (the widget reads window.__hawkesLog).
-const HOOK = `<script data-hawkes-report>window.__hawkesLog=window.__hawkesLog||[];(function(l){function p(v,a){try{l.push({level:v,at:Date.now(),text:[].map.call(a,function(x){return x instanceof Error?(x.stack||x.message):typeof x=='string'?x:JSON.stringify(x)}).join(' ').slice(0,400)});if(l.length>60)l.splice(0,l.length-60)}catch(e){}}['error','warn'].forEach(function(v){var o=console[v];console[v]=function(){p(v,arguments);return o.apply(this,arguments)}});addEventListener('error',function(e){p('error',[e.message||'error',e.filename?e.filename+':'+e.lineno:''])});addEventListener('unhandledrejection',function(e){p('error',['unhandled rejection:',e.reason])});window.__hawkesLogHooked=1})(window.__hawkesLog)</script>`;
+// Errors from before the widget loads: a tiny hook at the top of <head> (the widget reads window.__hawkesLog). It also
+// makes every WebGL context keep its drawing buffer (preserveDrawingBuffer, forced on even when the game's loader asks
+// for false, as Unity's does), so the widget's screenshot can read the game's frame: on iOS Safari the buffer is gone
+// by the time anything outside the game's own draw reads it, and the picture came out black. It runs before any game
+// script creates its context (beta pages only); window.__hawkesGl marks it.
+const GL = `(function(P){if(!P||window.__hawkesGl)return;var g=P.getContext;P.getContext=function(t,a){if(/^(webgl2?|experimental-webgl)$/.test(t)){try{a=Object.assign({},a,{preserveDrawingBuffer:true})}catch(e){}}return g.call(this,t,a)};window.__hawkesGl=1})(window.HTMLCanvasElement&&HTMLCanvasElement.prototype);`;
+const HOOK = `<script data-hawkes-report>${GL}window.__hawkesLog=window.__hawkesLog||[];(function(l){function p(v,a){try{l.push({level:v,at:Date.now(),text:[].map.call(a,function(x){return x instanceof Error?(x.stack||x.message):typeof x=='string'?x:JSON.stringify(x)}).join(' ').slice(0,400)});if(l.length>60)l.splice(0,l.length-60)}catch(e){}}['error','warn'].forEach(function(v){var o=console[v];console[v]=function(){p(v,arguments);return o.apply(this,arguments)}});addEventListener('error',function(e){p('error',[e.message||'error',e.filename?e.filename+':'+e.lineno:''])});addEventListener('unhandledrejection',function(e){p('error',['unhandled rejection:',e.reason])});window.__hawkesLogHooked=1})(window.__hawkesLog)</script>`;
 
 /** A beta page with the button in it: the console hook first in <head>, the widget before </body>. */
 export function injectReport(html: string, info: PageInfo) {
@@ -132,7 +139,7 @@ export async function fileReport(productId: string, b: ReportIn) {
     device: `${dev.touch ? 'touch' : 'mouse'} · ${cut(dev.platform, 40) || '?'} · ${cut(dev.ua, 300)}`,
     viewport: `${Number(vp.w) || '?'}x${Number(vp.h) || '?'}${vp.dpr ? ` @${Number(vp.dpr)}x` : ''}`,
     build, console: consoleLines, state: b.state == null ? null : cut(b.state, 4000), game: b.report == null ? null : cut(b.report, 4000),
-    shot, asset: null, conversation: null, milestone: t?.milestone ?? null, told: null, at: now,
+    shot, shotNote: b.shotNote ? cut(b.shotNote, 300) : null, asset: null, conversation: null, milestone: t?.milestone ?? null, told: null, at: now,
   };
   const detail = detailOf(report, t);
   db.prepare(`INSERT INTO findings (id, product, key, title, severity, area, detail, fix, status, scenario, shots, first_seen, last_seen, seen, last_run, note, source, milestone, item, report)
@@ -151,7 +158,7 @@ export async function fileReport(productId: string, b: ReportIn) {
       `J reported a ${b.blocker ? 'blocker' : 'bug'} from ${p.name}'s beta site${t ? ` while testing **${t.title}**` : ''}: "${cut(text, 600) || '(no words, see the screenshot)'}"`,
       `Finding ${id} (source J: top priority; the PM loop starts an agent on it before anything else).${r.build?.ref ? ` Build: ${r.build.ref}${r.build.sha ? ` ${r.build.sha}` : ''}.` : ''} Page: ${r.url ?? '-'} · ${r.viewport} · ${r.device.split(' · ').slice(0, 2).join(', ')}`,
       r.console.filter((c) => c.level === 'error').length ? `Console errors: ${r.console.filter((c) => c.level === 'error').slice(-3).map((c) => c.text).join(' | ')}` : '',
-      shot ? `![screenshot](${shotUrl(r, id)})${r.shot ? `\nScreenshot file (Read it): ${r.shot}` : ''}` : '',
+      shot ? `![screenshot](${shotUrl(r, id)})${r.shot ? `\nScreenshot file (Read it): ${r.shot}` : ''}${r.shotNote ? `\n(${r.shotNote})` : ''}` : '',
     ].filter(Boolean).join('\n\n'));
   }
   const pm = await import('./pm.ts');
@@ -170,6 +177,7 @@ function detailOf(r: Report, t: ReturnType<typeof testing>) {
     r.state ? `Game state (hawkesPlaytest.state()): ${r.state}` : '',
     r.game ? `Game report (hawkesPlaytest.report()): ${r.game}` : '',
     r.shot ? `Screenshot: ${r.shot}` : '',
+    r.shotNote ? `Screenshot note: ${r.shotNote}` : '',
   ].filter(Boolean).join('\n');
 }
 
