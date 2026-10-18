@@ -85,14 +85,13 @@ async function agent() {
   git('commit', '--quiet', '-m', 'Fix: the start button');
   fs.mkdirSync('.hawkes', { recursive: true });
   fs.writeFileSync(path.join('.hawkes', 'summary.md'), 'Made the start button bigger.');
+  // Its background process starts (and its pid is written) before the result: Studio may end it right after that.
+  const bg = mode === 'LINGER' ? spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' }) : null;
+  if (bg) fs.writeFileSync(path.join('.hawkes', 'linger.pid'), String(bg.pid));
   out({ type: 'assistant', message: { content: [{ type: 'text', text: 'Done: committed the fix.' }] } });
   out({ type: 'result', subtype: 'success', result: 'Made the start button bigger.', session_id: 'fake-agent-session', total_cost_usd: 0.25, duration_ms: 5 });
   log({ agentDone: process.cwd() });
-  if (mode === 'LINGER') {
-    const bg = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });
-    fs.writeFileSync(path.join('.hawkes', 'linger.pid'), String(bg.pid));
-    await new Promise((r) => bg.on('exit', r));
-  }
+  if (bg) await new Promise((r) => bg.on('exit', r));
 }
 
 if (args.includes('--permission-mode')) {

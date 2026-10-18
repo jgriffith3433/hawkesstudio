@@ -64,7 +64,8 @@ running Gen); Studio opens a pull request into main and verifies it: CI on the p
 checks again, and a smoke check (the changed service from the worktree on a spare port with a scratch data folder and
 no keys: health ok, the dashboard page loads, `node --check` on `dashboard/*.js`; Studio runs with `STUDIO_SMOKE=1`,
 which skips the `/dev/` front doors). Approving (J's tap on an Approve card, or `MERGE <id>`; J's call, refused unless CI is green) merges into main,
-and the server deploys it like any push. Guard rails (`guardFiles`): a change touching `.data/`, `.env`, keys or `*.pem`
+and the server deploys it like any push. If main moved since the checks, approving brings the branch up to date first and his
+approval stands until CI on it is green (a real conflict: its agent's conflict pass first, not a try); red CI never merges. Guard rails (`guardFiles`): a change touching `.data/`, `.env`, keys or `*.pem`
 fails unpushed; so does one touching the deploy scripts (`deploy/hawkes-pull.mjs`, `deploy/deploy.mjs` with Caddy,
 provisioning), secrets handling (`deploy/secrets.mjs`, `deploy/*-token.mjs`, `src/claude.ts`, `bin/git-credential-hawkes`;
 Gen: `bin/fetch-secrets.mjs`, `src/auth.ts`), CI workflows or the hooks' token check (`src/github-oidc.ts`), unless J's

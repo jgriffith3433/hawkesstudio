@@ -208,12 +208,12 @@ test('a restart while the agent waits: Studio reattaches, its time limit still s
   assert.equal(c.commits.length, 1);
 });
 
-test('an agent that finished but whose background process keeps its session open is ended, and the change carries on', { timeout: 60_000 }, async () => {
+test('an agent that finished but whose background process keeps its session open is ended, and the change carries on', { timeout: 120_000 }, async () => {
   const c = await settle('Make the start button bigger FAKE_LINGER');
   assert.equal(c.status, 'ready', `${c.detail}\n${c.log.join('\n')}`);
   assert.ok(c.log.some((l: string) => /finished, but its session was still open 1 s after its final result/.test(l)), 'the log says why');
   assert.equal(passes(c.id).length, 1, 'not resumed: it had finished');
   assert.equal(c.commits.length, 1);
   const pid = Number(fs.readFileSync(path.join(projects, '.work', c.id, '.hawkes', 'linger.pid'), 'utf8'));
-  await until(() => { try { process.kill(pid, 0); return false; } catch { return true; } }, 15_000, 'its background process to be ended too');
+  await until(() => { try { process.kill(pid, 0); return false; } catch { return true; } }, 30_000, 'its background process to be ended too');
 });

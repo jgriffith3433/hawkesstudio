@@ -262,6 +262,8 @@ export async function inbox({ tokens = false }: { tokens?: boolean } = {}): Prom
   const autoBeta = (await import('./agents.ts')).agentSettings().autoMergeBeta;
   for (const c of readyChanges()) {
     if (autoBeta && !c.infra) continue;
+    // J approved it already; main moved and it merges once CI is green (agents.ts mergeApprovedInfra).
+    if (c.infra && (c as any).approved) continue;
     const pmReviews = handled && settings.delegatedMerges && pm.reviewable(c);
     if (pmReviews || carded.has(`merge:${c.id}`)) continue;
     const g = c.infra ? null : gate(c.verify, c.criteria);
