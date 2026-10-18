@@ -6,7 +6,8 @@
 // It is J's partner, not a code reviewer: it explains changes in plain words with videos and screenshots, starts
 // agents for what J asks, and only merges or deploys after J says yes in the conversation.
 //
-// While Claude answers, the text streams in (Claude Code's --include-partial-messages; the dashboard polls `partial`).
+// While Claude answers, the text streams in (Claude Code's --include-partial-messages; the dashboard reads it from
+// GET /api/talk/<id>/events, and hears of saved changes from the push stream, stream.ts).
 // J can stop an answer, rename or delete conversations, and attach files: the dashboard uploads them into Hawkes Gen
 // as blobs (through /gen), and Claude gets each file's path (to Read it) and blob id (for Gen inputs). Every answer
 // records what it cost and whether it ran on the Max subscription or the API key (apiKeySource in Claude Code's init).
@@ -34,6 +35,7 @@ import { roleArgs } from './roles.ts';
 import { PUBLIC_URL } from './notify.ts';
 import { claudeCommand, sandboxOn, sandboxShare } from './sandbox.ts';
 import { launch, DetachedChild, type ChildLike, type DetachRec } from './detach.ts';
+import { changed, streamClients } from './stream.ts';
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS conversations (
@@ -96,11 +98,15 @@ export const unseenConversations = () => (db.prepare(`SELECT COUNT(*) AS n FROM 
 /** J has seen the conversation up to `at` (the newest message his screen showed; never moves back). */
 export function markSeen(id: string, at: number) {
   db.prepare('UPDATE conversations SET seen = MAX(COALESCE(seen, 0), ?) WHERE id = ?').run(Math.min(Number(at) || 0, Date.now()), id);
+  talkChanged(id);
   return { unseen: unseenIn(id), conversations: unseenConversations() };
 }
 function save(c: Conversation) {
   db.prepare('UPDATE conversations SET title = ?, session = ?, status = ?, messages = ?, cost = ?, updated = ?, reply = ? WHERE id = ?').run(c.title, c.session, c.status, J(c.messages), c.cost, Date.now(), lastReply(c.messages), c.id);
+  talkChanged(c.id);
 }
+/** Open dashboards refetch the conversation and the list (stream.ts), with the Talk tab's badge. */
+export const talkChanged = (id: string) => { if (streamClients()) changed('talk', id, { unseen: unseenConversations() }); };
 /** Saves a conversation read with getConversation (guide.ts adds its lines this way: read and save in one go). */
 export const saveConversation = save;
 
@@ -324,6 +330,7 @@ const stopping = new Set<string>();
 export function startConversation(title?: string) {
   const id = newId('t');
   db.prepare('INSERT INTO conversations (id, title, status, messages, created) VALUES (?, ?, ?, ?, ?)').run(id, title ?? null, 'idle', '[]', Date.now());
+  talkChanged(id);
   return getConversation(id)!;
 }
 
@@ -338,6 +345,7 @@ export function postNotice(title: string, text: string) {
 export function renameConversation(id: string, title: string) {
   if (!getConversation(id)) throw new Error('No such conversation');
   db.prepare('UPDATE conversations SET title = ? WHERE id = ?').run(String(title).trim().slice(0, 120) || null, id);
+  talkChanged(id);
   return getConversation(id)!;
 }
 
@@ -350,6 +358,7 @@ export function deleteConversation(id: string) {
   queuedTurns.delete(id);
   fs.rmSync(MCP_FILE(id), { force: true });
   db.prepare('DELETE FROM conversations WHERE id = ?').run(id);
+  talkChanged(id);
 }
 
 /** Where Hawkes Gen keeps a blob on this machine (Studio and Gen share the disk), so Claude can Read it. */

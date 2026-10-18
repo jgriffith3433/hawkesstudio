@@ -112,4 +112,10 @@ function ibRefresh() {
 }
 document.querySelector('nav button[data-tab="inbox"]').addEventListener('click', () => setTimeout(ibRefresh, 0));
 ibRefresh();
-setInterval(ibRefresh, 20000);
+// The badge and the open Inbox follow the push stream (stream.js): the event carries the count; the list is fetched only
+// when the Inbox is on screen. Its slow safety tick refreshes too.
+studioStream.on('inbox', (e) => {
+  if (typeof e.count === 'number') setInboxCount(e.count);
+  if (location.hash.slice(1).split('/')[0] === 'inbox') { if (!e.badge) ibRefresh(); }
+  else if (typeof e.count !== 'number') pollInboxCount();
+});

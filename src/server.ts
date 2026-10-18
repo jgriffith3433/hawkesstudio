@@ -118,6 +118,8 @@ const server = http.createServer(async (req, res) => {
     if (route === '/api/overview') return send(res, 200, await overview());
     // Everything running in the background (the dashboard's Activity panel).
     if (route === '/api/activity') return send(res, 200, await cached('activity', 1500, activity));
+    // The dashboard's one push stream (stream.ts): "something changed" events instead of polling.
+    if (route === '/api/stream' && method === 'GET') return (await import('./stream.ts')).handleStream(req, res, { talkUnseen: unseenConversations() });
     if (route === '/api/products' && method === 'GET') return send(res, 200, { products: loadProducts() });
     // The Library tab (library.ts, dashboard/library.js): Gen's library through Studio, and picks into product repos.
     if (route.startsWith('/api/gen/v1/')) return await (await import('./library.ts')).relay(req, res, route.slice('/api/gen/v1/'.length) + url.search);
@@ -331,7 +333,10 @@ const server = http.createServer(async (req, res) => {
     if (m && method === 'GET' && !m[2]) {
       const c = getConversation(m[1]);
       const ap = await import('./approvals.ts');
-      return send(res, 200, c ? { ...c, guide: (await import('./guide.ts')).pendingGuide(c.id), approvals: ap.listApprovals({ conversation: c.id }, !ap.notJClick(req)) } : { error: 'no such conversation' });
+      if (!c) return send(res, 200, { error: 'no such conversation' });
+      // ?after=<n>: only messages n and later (the page has the earlier ones); total says how many there are.
+      const from = Math.min(Math.max(0, Number(q('after')) || 0), c.messages.length);
+      return send(res, 200, { ...c, messages: c.messages.slice(from), from, total: c.messages.length, guide: (await import('./guide.ts')).pendingGuide(c.id), approvals: ap.listApprovals({ conversation: c.id }, !ap.notJClick(req)) });
     }
     if (m && method === 'POST' && m[2]) return send(res, 200, { ok: true, stopped: stopTalk(m[1]) });
     if (m && method === 'PATCH' && !m[2]) return send(res, 200, renameConversation(m[1], String((await readJson(req)).title ?? '')));
@@ -365,7 +370,9 @@ const server = http.createServer(async (req, res) => {
       const ib = await import('./inbox.ts');
       const b = await readJson(req);
       const by = await ib.actor(req, b.by);
-      return send(res, 200, await ib.answerInbox(String(b.id ?? ''), String(b.answer ?? ''), by, { confirm: typeof b.confirm === 'string' ? b.confirm : undefined, conversation: origin }));
+      const answered = await ib.answerInbox(String(b.id ?? ''), String(b.answer ?? ''), by, { confirm: typeof b.confirm === 'string' ? b.confirm : undefined, conversation: origin });
+      (await import('./stream.ts')).poke(); // open pages' Inbox badges now
+      return send(res, 200, answered);
     }
 
     // The roadmap, the PM loop, comments, questions, scouts and "ready for you to test" (roadmap.ts, pm.ts, scout.ts).
@@ -610,6 +617,15 @@ const server = http.createServer(async (req, res) => {
     return send(res, e instanceof StudioError ? e.status : 400, { error: e.message ?? String(e) });
   }
 });
+
+// What the push stream's watcher looks at while a page is connected (stream.ts): the activity panel and the Inbox.
+void import('./stream.ts').then(({ setProbes }) => setProbes({
+  activity: () => cached('activity', 1500, activity),
+  inbox: async () => {
+    const items = await (await import('./inbox.ts')).inbox();
+    return { count: items.length, ids: items.map((i) => i.id) };
+  },
+}));
 
 server.listen(PORT, '127.0.0.1', () => {
   console.log(`Hawkes Studio on http://127.0.0.1:${PORT}`);

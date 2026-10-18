@@ -227,5 +227,6 @@ function rmRefresh() {
 }
 document.querySelectorAll('nav button[data-tab="roadmap"], nav button[data-tab="ready"]').forEach((b) => b.addEventListener('click', () => setTimeout(rmRefresh, 0)));
 rmRefresh();
-// Light polling while open (typing in an answer box isn't interrupted).
-setInterval(() => { if (location.hash === '#roadmap' && !document.activeElement?.matches?.('textarea, input, select[data-prio]')) rmRefresh(); }, 15000);
+// Fresh while open when changes or the Inbox move (the push stream, stream.js, and its slow safety tick); typing in an
+// answer box isn't interrupted.
+studioStream.on(['changes', 'inbox'], () => { if (location.hash === '#roadmap' && !document.activeElement?.matches?.('textarea, input, select[data-prio]')) rmRefresh(); });
