@@ -252,10 +252,14 @@ words; the Inbox asks for one when he presses "Merge into main"; the go-live and
   today's values for a setting. Its token works once, expires after 15 minutes, and the card goes **stale** (refused)
   when the target changed (beta moved, the change was revised, the setting changed meanwhile): ask for a new card.
   Asking again for the same thing returns the same pending card; a newer one replaces an older one for that target.
+  A card with nothing left to approve (a GPU budget already approved, a question already answered, a change merged, a
+  go live since) settles itself as "Out of date" with why, and asking for one is refused with that reason. A waiting
+  card with a blocker says "Can't approve yet" on its button, and a failed tap shows why on the card.
 - **Only J's tap:** approving or denying is refused from the agent sandbox's user (guards.ts), from any request with
   Talk's or an agent's headers or the MCP key, and from anything but the dashboard page itself (`Sec-Fetch-Site:
-  same-origin` and `X-Studio-Click`, which approval.js sends; its buttons also ignore synthetic clicks). The token only
-  goes to J's page. Talk's tools can ask for and read cards, never decide them, and the guide's driver refuses the card.
+  same-origin` and `X-Studio-Click`, which approval.js sends; a browser that sends no Sec-Fetch-Site, like older iOS
+  Safari, counts when its Origin, else Referer, is Studio's own host; its buttons also ignore synthetic clicks). The
+  token only goes to J's page. Talk's tools can ask for and read cards, never decide them, and the guide's driver refuses the card.
 - **Approve** runs the action as J through the same code as before, with the same refusals (CI green for a Studio or
   Gen merge, the deploy blockers, beta still the approved commit). **Deny** closes the card (for a decision it answers
   no). Either way the card records who and when (also in the Inbox's "Answered lately") and the conversation that

@@ -26,6 +26,7 @@ import { changed, poke } from './stream.ts';
 import { StudioError, getInfra, isInfra, getProduct } from './config.ts';
 import { requestUser } from './sandbox.ts';
 import { sessionUser, cookieToken } from './auth.ts';
+import { getTask, getQuestion, tasksAwaitingGpu } from './roadmap.ts';
 
 db.exec(`CREATE TABLE IF NOT EXISTS approvals (
   id TEXT PRIMARY KEY, kind TEXT NOT NULL, target TEXT NOT NULL, params TEXT, bind TEXT NOT NULL, token TEXT NOT NULL,
@@ -158,6 +159,34 @@ export function settleDone() {
         result = (SELECT CASE d.kind WHEN 'rollback' THEN 'already rolled back' ELSE 'already live' END FROM deploys d WHERE d.product = approvals.target AND d.at > approvals.created ORDER BY d.at DESC LIMIT 1)
       WHERE status = 'pending' AND kind IN ('deploy', 'rollback') AND EXISTS (SELECT 1 FROM deploys d WHERE d.product = approvals.target AND d.at > approvals.created)`).run(now);
   } catch { /* no deploys table in this process yet */ }
+  // GPU budgets already approved (another card, the under-$5 auto approval) and questions already answered: nothing
+  // left to approve, so the card doesn't sit in the Inbox with an Approve that can never work.
+  const settle = db.prepare(`UPDATE approvals SET status = 'stale', token = '', decided_by = 'Studio', decided_at = ?, result = ? WHERE id = ? AND status = 'pending'`);
+  try {
+    const open = db.prepare(`SELECT id, kind, target FROM approvals WHERE status = 'pending' AND kind IN ('gpu', 'decision')`).all() as any[];
+    const waiting = open.some((a) => a.kind === 'gpu') ? new Set(tasksAwaitingGpu().map((t) => t.id)) : new Set<string>();
+    for (const a of open) {
+      const why = a.kind === 'gpu' ? gpuMoot(a.target, waiting) : decisionMoot(a.target);
+      if (why) settle.run(now, why, a.id);
+    }
+  } catch { /* no roadmap tables in this process yet */ }
+}
+
+/** Why a GPU budget card has nothing left to approve (the task no longer waits for one), or null while it waits. */
+function gpuMoot(task: string, waiting = new Set(tasksAwaitingGpu().map((t) => t.id))): string | null {
+  if (waiting.has(task)) return null;
+  const t = getTask(task);
+  if (!t) return 'the task is gone';
+  const g = t.gpu as any;
+  if (typeof g?.budget === 'number') return `already approved ($${g.budget.toFixed(2)}${g.approvedBy ? ` by ${g.approvedBy}` : ''})`;
+  return `the task no longer waits for a GPU budget (it is ${t.status})`;
+}
+
+/** Why a decision card has nothing left to decide (the question was answered or closed), or null while it is open. */
+function decisionMoot(question: string): string | null {
+  const q = getQuestion(question);
+  if (!q) return 'the question is gone';
+  return ['open', 'asked J'].includes(q.status) ? null : `already ${q.status}${q.answered_by ? ` by ${q.answered_by}` : ''}`;
 }
 
 /**
@@ -175,6 +204,9 @@ export async function requestApproval(kind: string, target: string, params: Reco
     const c = getChange(target);
     if (c && !c.infra && agentSettings().autoMergeBeta) throw new StudioError(`${target} is a product change: those merge into beta by themselves once ready (no Approve card). ${c.auto_merge?.startsWith('failed') ? `It couldn't (${c.auto_merge.slice(8, 300)}): merge it from the Changes tab, or revise it.` : c.status === 'merged' ? 'It is merged.' : `It is ${c.status}.`}`);
   }
+  // Already approved or answered: no card (it could only sit there with an Approve that never works).
+  const moot = kind === 'gpu' && getTask(target) ? gpuMoot(target) : kind === 'decision' && getQuestion(target) ? decisionMoot(target) : null;
+  if (moot) throw new StudioError(`Nothing to approve for ${target}: ${moot}.`, 409);
   const clean = kind === 'gpu' ? { amount: params.amount === undefined || params.amount === null || params.amount === '' ? undefined : Number(params.amount) } : kind === 'settings' ? { patch: params.patch } : {};
   const { bind, card } = await describe(kind as Kind, target, clean);
   expire();
@@ -224,11 +256,25 @@ export function notJClick(req: http.IncomingMessage): string | null {
   if (requestUser(req) === 'agent') return 'it comes from the agent sandbox (Talk, the PM or an agent)';
   if (h['x-talk-conversation'] || h['x-studio-agent']) return 'it comes from Talk, the PM or an agent';
   if (/^\s*bearer\s/i.test(String(h.authorization ?? ''))) return 'it comes with an API key, not J\'s login';
-  if (h['sec-fetch-site'] !== 'same-origin' || h['x-studio-click'] !== '1') return 'it isn\'t a click on Studio\'s dashboard';
+  if (h['x-studio-click'] !== '1' || !(h['sec-fetch-site'] ? h['sec-fetch-site'] === 'same-origin' : ownPage(req))) return 'it isn\'t a click on Studio\'s dashboard';
   // A signed-in member's click isn't J's: approving is an admin's (auth.ts).
   const u = sessionUser(cookieToken(req));
   if (u && u.role !== 'admin') return `${u.email} is a member, not an admin`;
   return null;
+}
+
+/**
+ * For browsers that don't send Sec-Fetch-Site (Safari before 16.4, some home-screen apps): the page's own address
+ * (Origin, else Referer) is on Studio's host. A header that is there decides; neither means no.
+ */
+function ownPage(req: http.IncomingMessage) {
+  const h = req.headers;
+  const from = h.origin ?? h.referer;
+  if (!from) return false;
+  try {
+    const host = new URL(String(from)).host.toLowerCase();
+    return [h.host, h['x-forwarded-host']].some((x) => typeof x === 'string' && x.toLowerCase() === host);
+  } catch { return false; }
 }
 
 /** Open dashboards redraw the card (its conversation) and the Inbox (stream.ts). */
