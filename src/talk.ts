@@ -65,11 +65,41 @@ export const getConversation = (id: string) => {
   const r = db.prepare('SELECT * FROM conversations WHERE id = ?').get(id);
   return r ? toConv(r) : null;
 };
+// Unseen messages: `reply` is when Claude or Studio last wrote (an assistant message; J's own and tool lines don't
+// count), `seen` the newest one J has had on screen (the Talk tab or the dock: POST /api/talk/<id>/seen). Stored here,
+// so the badges follow him across devices. Conversations from before this were all seen.
+try {
+  db.exec('ALTER TABLE conversations ADD COLUMN reply INTEGER');
+  db.exec('ALTER TABLE conversations ADD COLUMN seen INTEGER');
+  for (const r of db.prepare('SELECT id, messages FROM conversations').all() as any[]) {
+    const at = lastReply(parse(r.messages) ?? []);
+    if (at) db.prepare('UPDATE conversations SET reply = ?, seen = ? WHERE id = ?').run(at, at, r.id);
+  }
+} catch { /* already there */ }
+function lastReply(messages: Message[]) {
+  let at = 0;
+  for (const m of messages) if (m.role === 'assistant' && m.at > at) at = m.at;
+  return at || null;
+}
+const UNSEEN = 'reply > COALESCE(seen, 0)';
+/** The conversations, newest first; `unseen`: how many of Claude's and Studio's messages J hasn't seen yet. */
 export function listConversations(limit = 50) {
-  return (db.prepare('SELECT id, title, status, cost, created, updated FROM conversations ORDER BY COALESCE(updated, created) DESC LIMIT ?').all(limit) as any[]);
+  const rows = db.prepare(`SELECT id, title, status, cost, created, updated, (${UNSEEN}) AS fresh FROM conversations ORDER BY COALESCE(updated, created) DESC LIMIT ?`).all(limit) as any[];
+  return rows.map(({ fresh, ...r }) => ({ ...r, unseen: fresh ? unseenIn(r.id) : 0 }));
+}
+function unseenIn(id: string) {
+  const r = db.prepare('SELECT messages, seen FROM conversations WHERE id = ?').get(id) as { messages: string; seen: number | null } | undefined;
+  return r ? ((parse(r.messages) ?? []) as Message[]).filter((m) => m.role === 'assistant' && m.at > (r.seen ?? 0)).length : 0;
+}
+/** How many conversations have messages J hasn't seen (the Talk tab's badge). */
+export const unseenConversations = () => (db.prepare(`SELECT COUNT(*) AS n FROM conversations WHERE ${UNSEEN}`).get() as { n: number }).n;
+/** J has seen the conversation up to `at` (the newest message his screen showed; never moves back). */
+export function markSeen(id: string, at: number) {
+  db.prepare('UPDATE conversations SET seen = MAX(COALESCE(seen, 0), ?) WHERE id = ?').run(Math.min(Number(at) || 0, Date.now()), id);
+  return { unseen: unseenIn(id), conversations: unseenConversations() };
 }
 function save(c: Conversation) {
-  db.prepare('UPDATE conversations SET title = ?, session = ?, status = ?, messages = ?, cost = ?, updated = ? WHERE id = ?').run(c.title, c.session, c.status, J(c.messages), c.cost, Date.now(), c.id);
+  db.prepare('UPDATE conversations SET title = ?, session = ?, status = ?, messages = ?, cost = ?, updated = ?, reply = ? WHERE id = ?').run(c.title, c.session, c.status, J(c.messages), c.cost, Date.now(), lastReply(c.messages), c.id);
 }
 /** Saves a conversation read with getConversation (guide.ts adds its lines this way: read and save in one go). */
 export const saveConversation = save;

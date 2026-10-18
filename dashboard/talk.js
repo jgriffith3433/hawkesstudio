@@ -2,7 +2,8 @@
 // The answer streams in (the conversation's `partial` text, polled while Claude is thinking). While idle it is polled
 // every few seconds too, so Studio's notices (results of work this conversation started) and the turns Studio starts to
 // explain them appear without a reload, labelled "Studio". Files are uploaded into Hawkes Gen as blobs and sent with
-// the message.
+// the message. Unseen messages (Claude's and Studio's that J hasn't had on screen; talk.ts markSeen) show as a badge on the
+// conversation and on the Talk tab, like the Inbox's.
 (() => {
   const el = (s) => document.querySelector(s);
   // A deep link (?conversation=<id>#talk, from the morning brief notification) opens that conversation.
@@ -12,6 +13,7 @@
   let poll = null;
   let shown = ''; // what the log shows (redrawn only when it changes)
   let pending = []; // files uploaded to Hawkes Gen, sent with the next message
+  const seenSent = {}; // per conversation: the newest message this page told Studio J has seen
 
   /** A small, safe Markdown renderer: headings, lists, bold, code, links, images (library files open in the viewer). */
   function md(text) {
@@ -42,11 +44,32 @@
 
   async function loadList() {
     const r = await api('/api/talk');
+    setTalkCount(r.unseen);
     el('#talkBilling').textContent = `${r.billing} · ${r.model}`;
-    el('#dockConv').innerHTML = `<option value="">New conversation</option>${r.conversations.slice(0, 15).map((c) => `<option value="${c.id}">${esc(c.title ?? 'New conversation')}</option>`).join('')}`;
+    // The one on screen is being seen right now (loadConversation tells Studio).
+    const unseen = (c) => (c.id === current && onScreen() && !document.hidden ? 0 : c.unseen);
+    el('#dockConv').innerHTML = `<option value="">New conversation</option>${r.conversations.slice(0, 15).map((c) => `<option value="${c.id}">${unseen(c) ? `● (${unseen(c)}) ` : ''}${esc(c.title ?? 'New conversation')}</option>`).join('')}`;
     el('#dockConv').value = r.conversations.slice(0, 15).some((c) => c.id === current) ? current : '';
     el('#talkList').innerHTML = `<button class="small primary" id="talkNew">New conversation</button>` + r.conversations.map((c) =>
-      `<div class="talk-item ${c.id === current ? 'on' : ''}" data-conv="${c.id}"><b>${esc(c.title ?? 'New conversation')}</b><span class="meta">${new Date(c.updated ?? c.created).toLocaleString()}${c.status === 'thinking' ? ' · thinking…' : ''}${c.cost ? ` · $${c.cost.toFixed(2)} API` : ''}</span></div>`).join('');
+      `<div class="talk-item ${c.id === current ? 'on' : ''}" data-conv="${c.id}"><b>${esc(c.title ?? 'New conversation')}${unseen(c) ? ` <span class="ib-count" title="New messages you haven't seen">${unseen(c)}</span>` : ''}</b><span class="meta">${new Date(c.updated ?? c.created).toLocaleString()}${c.status === 'thinking' ? ' · thinking…' : ''}${c.cost ? ` · $${c.cost.toFixed(2)} API` : ''}</span></div>`).join('');
+  }
+
+  /** The Talk tab's badge: conversations with messages J hasn't seen. */
+  function setTalkCount(n) {
+    const b = el('#talkCount');
+    if (!b || typeof n !== 'number') return;
+    b.textContent = n;
+    b.classList.toggle('zero', !n);
+  }
+  /** J sees this conversation (on screen, the page visible): Studio remembers its newest message as seen. */
+  function markSeen(c) {
+    if (!onScreen() || document.hidden) return;
+    const at = c.messages.reduce((a, m) => (m.role === 'assistant' && m.at > a ? m.at : a), 0);
+    if (!at || at <= Math.max(c.seen ?? 0, seenSent[c.id] ?? 0)) return;
+    seenSent[c.id] = at;
+    api(`/api/talk/${c.id}/seen`, { method: 'POST', body: { at } })
+      .then((r) => { setTalkCount(r.conversations); document.querySelector(`#talkList [data-conv="${c.id}"] .ib-count`)?.remove(); })
+      .catch(() => { delete seenSent[c.id]; });
   }
 
   const kb = (n) => (n >= 1048576 ? `${(n / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1024))} KB`);
@@ -97,6 +120,7 @@
         + (thinking && !c.partial ? `<div class="talk-tool">${c.messages.at(-1)?.notice ? 'Studio asked Claude to explain the result…' : 'Claude is thinking…'}</div>` : '');
       if (atBottom || thinking) log.scrollTop = log.scrollHeight;
     }
+    markSeen(c);
     el('#talkSend').disabled = thinking;
     el('#talkStop').hidden = !thinking;
     if (thinking) poll = setTimeout(() => { loadConversation().catch(() => {}); loadList().catch(() => {}); }, 700);
@@ -241,6 +265,8 @@
     // Leaving Talk during a call: the call comes along in the dock.
     if (e.detail !== 'talk' && document.body.classList.contains('in-call') && !docked) setDocked(true, false);
     placeTalk();
+    // Back on the Talk tab: what came in meanwhile is seen now (the dock does this in placeTalk).
+    if (e.detail === 'talk' && window.__talkLoaded) window.loadTalk().catch(() => {});
     // On a phone during a call the tabs are one row that scrolls sideways: keep the tab J is on in view.
     if (document.body.classList.contains('in-call')) document.querySelector('nav button.on')?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
   });
@@ -267,4 +293,16 @@
     window.loadTalk().catch(() => {});
   };
   placeTalk();
+
+  // The Talk tab's badge on every tab (the Inbox's style), kept fresh every 15 s; coming back to the page counts as
+  // seeing what's on screen.
+  el('nav button[data-tab="talk"]').insertAdjacentHTML('beforeend', ' <span class="ib-count zero" id="talkCount" title="Conversations with new messages you haven\'t seen">0</span>');
+  const pollTalkCount = () => { if (!document.hidden) api('/api/talk?count=1').then((r) => setTalkCount(r.unseen)).catch(() => {}); };
+  pollTalkCount();
+  setInterval(pollTalkCount, 15000);
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) return;
+    pollTalkCount();
+    if (current && onScreen() && window.__talkLoaded) loadConversation().catch(() => {});
+  });
 })();

@@ -13,7 +13,7 @@ import { reportMarkdown, listReports } from './report.ts';
 import { deployPlan, deploy, rollbackPlan, rollback } from './deploy.ts';
 import { assetStatus } from './assets.ts';
 import { syncRepos } from './repos.ts';
-import { startConversation, say, getConversation, listConversations, stop as stopTalk, talkInfo, renameConversation, deleteConversation, startCall, endCall, callInfo, talkEvents, resumeTalk } from './talk.ts';
+import { startConversation, say, getConversation, listConversations, stop as stopTalk, talkInfo, renameConversation, deleteConversation, startCall, endCall, callInfo, talkEvents, resumeTalk, markSeen, unseenConversations } from './talk.ts';
 import { notify, notifyInfo, saveNotifySettings, PUBLIC_URL } from './notify.ts';
 import { listChanges, getChange, startFix, startTask, approve, revise, close, agentSettings, saveAgentSettings, costToday, resumeChanges } from './agents.ts';
 import { startAssets } from './pipeline.ts';
@@ -268,7 +268,11 @@ const server = http.createServer(async (req, res) => {
     }
 
     // Talk (chat with Claude about the products).
-    if (route === '/api/talk' && method === 'GET') return send(res, 200, { conversations: listConversations(), ...talkInfo() });
+    if (route === '/api/talk' && method === 'GET') {
+      // ?count=1: just the Talk tab's badge (conversations with messages J hasn't seen), polled from every tab.
+      if (url.searchParams.get('count')) return send(res, 200, { unseen: unseenConversations() });
+      return send(res, 200, { conversations: listConversations(), unseen: unseenConversations(), ...talkInfo() });
+    }
     if (route === '/api/talk' && method === 'POST') {
       const b = await readJson(req);
       const c = b.conversation ? getConversation(String(b.conversation)) : startConversation();
@@ -282,6 +286,12 @@ const server = http.createServer(async (req, res) => {
       const c = b.conversation ? getConversation(String(b.conversation)) : startConversation();
       if (!c) return send(res, 404, { error: 'no such conversation' });
       return send(res, 200, { id: c.id, call: startCall(c.id, { device: b.device }) });
+    }
+    // The dashboard had the conversation on screen up to `at` (the newest message it showed): talk.ts markSeen.
+    m = /^\/api\/talk\/(t_[0-9a-f]+)\/seen$/.exec(route);
+    if (m && method === 'POST') {
+      if (!getConversation(m[1])) return send(res, 404, { error: 'no such conversation' });
+      return send(res, 200, markSeen(m[1], Number((await readJson(req)).at)));
     }
     m = /^\/api\/talk\/(t_[0-9a-f]+)\/(call|events)$/.exec(route);
     if (m && m[2] === 'call' && method === 'POST') {
