@@ -26,6 +26,8 @@ fs.writeFileSync(process.env.STUDIO_PRODUCTS, JSON.stringify({ products: [{
 const rm = await import('../src/roadmap.ts');
 const { gate, allMet } = await import('../src/acceptance.ts');
 const pm = await import('../src/pm.ts');
+/** pm.tick() once the loop's own pass (1 s after startPm) is done: a tick meanwhile does nothing, and a slow CI machine got there. */
+const tick = async () => { while (pm.pmTicking()) await new Promise((r) => setTimeout(r, 20)); await pm.tick(); };
 const { db, J } = await import('../src/db.ts');
 
 test('items, tasks, order and dependencies', () => {
@@ -319,13 +321,13 @@ test('an escalated change is asked about once: answered, the loop leaves it; "cl
 
   const t = readyChange('c_esc000000001');
   const e0 = escalations();
-  await pm.tick();
+  await tick();
   assert.equal(escalations(), e0 + 1, 'the last try failing asks J');
   const q = rm.listQuestions().find((x) => x.subject === t.id)!;
   assert.ok(q, 'his question is in the Inbox');
   await pm.answerQuestion(q.id, 'try again', 'J');
   const [e1, q1] = [escalations(), questions()];
-  for (let i = 0; i < 5; i++) await pm.tick();
+  for (let i = 0; i < 5; i++) await tick();
   assert.equal(escalations(), e1, 'no new escalations after J answered');
   assert.equal(questions(), q1, 'no new questions after J answered');
   // Revising it by hand doesn't ask again either.
@@ -334,13 +336,13 @@ test('an escalated change is asked about once: answered, the loop leaves it; "cl
 
   // "Close it" closes the change and drops the task, without a PM turn; a change that isn't ready can't be revised.
   const t2 = readyChange('c_esc000000002');
-  await pm.tick();
+  await tick();
   const q2 = rm.listQuestions().find((x) => x.subject === t2.id)!;
   await pm.answerQuestion(q2.id, 'Close it', 'J');
   assert.equal(getChange('c_esc000000002')!.status, 'closed');
   assert.equal(rm.getTask(t2.id)!.status, 'dropped');
   await assert.rejects(pm.pmRevise('c_esc000000002', 'again'), /closed, not ready/);
-  for (let i = 0; i < 3; i++) await pm.tick();
+  for (let i = 0; i < 3; i++) await tick();
   assert.equal(rm.listQuestions().filter((x) => x.subject === t2.id).length, 0, 'nothing more asked about it');
 });
 
@@ -411,7 +413,7 @@ test('a task that throws in a tick does not stop other planned tasks from starti
     db.exec(`CREATE TRIGGER boom BEFORE UPDATE ON tasks WHEN NEW.id = '${tb.id}' AND NEW.status != OLD.status BEGIN SELECT RAISE(ABORT, 'boom'); END`);
     const good = rm.addItem({ product: 'pmother', title: 'Next thing', size: 'S', status: 'planned', ord: -100 });
     const tg = rm.addTask({ item: good.id, request: 'Do the next thing' });
-    await pm.tick();
+    await tick();
     assert.equal(rm.getTask(tg.id)!.status, 'working', 'the planned task started');
     assert.ok(rm.getTask(tg.id)!.change);
     assert.match(rm.getTask(tb.id)!.note ?? '', /boom/, 'the failing task says why');
@@ -543,17 +545,17 @@ test('a task is started once: a failed try is retried, the retry merges, and not
     const [c1] = changesOf(t.id);
     // Try 1 fails; past the grace period the default retries it.
     db.prepare(`UPDATE changes SET status = 'failed', detail = 'the agent made no commit', updated = ? WHERE id = ?`).run(old, c1.id);
-    await pm.tick();
+    await tick();
     assert.equal(changesOf(t.id).length, 2, 'the failed try is retried');
     const c2 = changesOf(t.id)[1];
     assert.equal(rm.getTask(t.id)!.change, c2.id);
     // Ticks while the retry works start nothing more.
-    await pm.tick();
+    await tick();
     await pm.startWork();
     assert.equal(changesOf(t.id).length, 2, 'one attempt at a time');
     // The retry merges.
     db.prepare(`UPDATE changes SET status = 'merged', updated = ? WHERE id = ?`).run(Date.now(), c2.id);
-    await pm.tick();
+    await tick();
     assert.equal(rm.getTask(t.id)!.status, 'merged');
     rm.setTask(t.id, { merged_at: old });
     // Beta's run judged one criterion unclear (it never reached the page), and another task's criteria: no restart.
@@ -561,8 +563,8 @@ test('a task is started once: a failed try is retried, the retry merges, and not
     const step = (id: string, at: number, criteria: any[], run = 'r_dup000000001') => db.prepare(`INSERT INTO steps (id, run, product, kind, name, status, data, started) VALUES (?, ?, 'pmfifth', 'review', 'smoke', 'done', ?, ?)`).run(id, run, J({ verdict: 'ship', criteria }), at);
     step('s_dup000000001', Date.now() - 50_000, [{ criterion: crit[0], met: 'unclear', evidence: 'only one page checked' }, { criterion: crit[1], met: 'yes', evidence: 'linked' }]);
     step('s_dup000000002', Date.now() - 40_000, [{ criterion: 'Fixed: something else', met: 'no', evidence: 'another task' }]);
-    await pm.tick();
-    await pm.tick();
+    await tick();
+    await tick();
     await pm.startWork();
     assert.equal(changesOf(t.id).length, 2, 'no third change for a merged task');
     assert.equal(rm.getTask(t.id)!.status, 'merged', 'still merged');
@@ -573,7 +575,7 @@ test('a task is started once: a failed try is retried, the retry merges, and not
     // A real miss on beta asks J instead of starting; his "try again" (back to planned) starts it fresh.
     db.prepare(`INSERT INTO runs (id, kind, status, detail, products, started, finished) VALUES ('r_dup000000002', 'beta', 'passed', 'beta pmfifth', '["pmfifth"]', ?, ?)`).run(Date.now() - 35_000, Date.now());
     step('s_dup000000003', Date.now() - 30_000, [{ criterion: crit[0], met: 'no', evidence: 'no footer' }, { criterion: crit[1], met: 'yes', evidence: 'linked' }], 'r_dup000000002');
-    await pm.tick();
+    await tick();
     assert.equal(rm.getTask(t.id)!.status, 'failed');
     assert.equal(changesOf(t.id).length, 2, 'asked, not restarted');
     rm.updateTask(t.id, { status: 'planned' });
@@ -607,7 +609,7 @@ test('a failed try is not retried while another try of the task is going or merg
     rm.setTask(t.id, { status: 'working', change: 'c_two00000002', changes: ['c_two00000001', 'c_two00000002'], tries: 2 });
     for (const status of ['ready', 'needs answer', 'merged']) {
       db.prepare(`UPDATE changes SET status = ? WHERE id = 'c_two00000001'`).run(status);
-      await pm.tick();
+      await tick();
       assert.equal((db.prepare(`SELECT COUNT(*) AS n FROM changes WHERE task = ?`).get(t.id) as any).n, 2, `no retry while the other try is ${status}`);
     }
   } finally {
@@ -731,7 +733,7 @@ test('an agent that changed nothing because J already decided it is not a failed
     const t = rm.addTask({ item: it.id, request: 'Make the door open' });
     change('c_7a3000000001', 'pmeighth', [], `${DECIDED} (the agent made no commit)`, t.id, 'No change: J already decided the door stays locked (m_abc).');
     rm.setTask(t.id, { status: 'working', change: 'c_7a3000000001', changes: ['c_7a3000000001'], tries: 1 });
-    await pm.tick();
+    await tick();
     assert.equal((db.prepare(`SELECT COUNT(*) AS n FROM changes WHERE task = ?`).get(t.id) as any).n, 1, 'not restarted');
     assert.equal(rm.getTask(t.id)!.status, 'failed');
     assert.equal(rm.getTask(t.id)!.tries, 0, 'not counted as a try');

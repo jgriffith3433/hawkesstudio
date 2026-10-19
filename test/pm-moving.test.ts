@@ -37,6 +37,8 @@ after(() => { if (token === undefined) delete process.env.GITHUB_TOKEN; else pro
 
 const rm = await import('../src/roadmap.ts');
 const pm = await import('../src/pm.ts');
+/** pm.tick() once the loop's own pass (1 s after startPm) is done: a tick meanwhile does nothing, and a slow CI machine got there. */
+const tick = async () => { while (pm.pmTicking()) await new Promise((r) => setTimeout(r, 20)); await pm.tick(); };
 const { db, J } = await import('../src/db.ts');
 const ag = await import('../src/agents.ts');
 
@@ -76,7 +78,7 @@ test('a build blocker in another repo: the PM starts that change, the blocked ta
   add('c_b10c00000003', 'mvyooba', a.id, 'failed', { detail: 'the agent made no commit', summary: GEN_WORDS, request: "Send events\n\nFrom the PM (an earlier attempt): Beta's build failed after your change c_b10c00000001 merged into beta: CS0246" });
   rm.setTask(a.id, { status: 'working', change: 'c_b10c00000003', changes: ['c_b10c00000001', 'c_b10c00000003'], tries: 2 });
   rm.setTask(b.id, { status: 'merged', change: 'c_b10c00000002', changes: ['c_b10c00000002'], tries: 1, merged_at: old, build: failedBuild });
-  await pm.tick();
+  await tick();
   const blockers = (await pm.pmStatus()).blockers;
   const [fix, bl] = Object.entries(blockers).find(([, x]) => x.product === 'mvyooba')!;
   const k = rm.getTask(fix)!;
@@ -97,12 +99,12 @@ test('a build blocker in another repo: the PM starts that change, the blocked ta
   // It merges into main: Yooba Test's beta is built again, once.
   db.prepare(`UPDATE changes SET status = 'merged', merged_at = ? WHERE task = ?`).run(Date.now(), fix);
   rm.setTask(fix, { status: 'merged', merged_at: Date.now() });
-  await pm.tick();
+  await tick();
   assert.ok(!(await pm.pmStatus()).blockers[fix], 'released');
   const built = decisions('beta-build', fix);
   assert.equal(built.length, 1, 'beta built again');
   assert.ok(db.prepare(`SELECT 1 FROM runs WHERE kind = 'beta' AND products LIKE '%"mvyooba"%' AND options LIKE '%Hawkes Gen%'`).get());
-  await pm.tick();
+  await tick();
   assert.equal(decisions('beta-build', fix).length, 1, 'once');
 });
 
@@ -114,14 +116,14 @@ test('failed after its tries (walk-away): a scout investigates, a fresh round wi
   const t = rm.addTask({ item: it.id, request: 'Make level 3 spawn enemies', title: 'Level 3 spawns', criteria: ['Enemies spawn in level 3'] });
   add('c_5c0070000001', 'mvsick', t.id, 'failed', { detail: 'the agent made no commit', summary: 'I could not find where spawns are read.' });
   rm.setTask(t.id, { status: 'working', change: 'c_5c0070000001', changes: ['c_5c0070000001'], tries: pm.pmSettings().maxTries });
-  await pm.tick();
+  await tick();
   assert.equal(rm.getTask(t.id)!.status, 'failed');
   assert.ok(decisions('rescue', t.id).length, 'an investigation, decided by the PM');
   assert.equal(questionsOn(t.id).length, 0, 'J is not asked yet');
   await new Promise((r) => setTimeout(r, 50));
   assert.match(scouted[0] ?? '', /c_5c0070000001[\s\S]*could not find where spawns are read/, 'the scout reads the attempts');
   // The scout reported: a fresh round of tries, its diagnosis in the brief.
-  await pm.tick();
+  await tick();
   assert.ok(decisions('rescue-retry', t.id).length);
   const fresh = changesOf(t.id).at(-1);
   assert.notEqual(fresh.id, 'c_5c0070000001', 'a fresh attempt started');
@@ -130,7 +132,7 @@ test('failed after its tries (walk-away): a scout investigates, a fresh round wi
   // That round fails too: now J, in his Inbox (asked J), not a silent "needs you".
   db.prepare(`UPDATE changes SET status = 'failed', detail = 'the agent made no commit', updated = ?, created = ? WHERE id = ?`).run(old, old + 1000, fresh.id);
   rm.setTask(t.id, { tries: pm.pmSettings().maxTries });
-  await pm.tick();
+  await tick();
   assert.equal(rm.getTask(t.id)!.status, 'failed');
   assert.ok(questionsOn(t.id).some((q) => q.status === 'asked J'), 'filed in his Inbox');
   assert.equal(decisions('rescue', t.id).length, 1, 'one rescue per task');
@@ -141,7 +143,7 @@ test('a task whose change the PM closed is tried again, not left failed; a faile
   const u = rm.addTask({ item: it.id, request: 'Add the credits page', title: 'Credits' });
   add('c_c105ed000001', 'mvmisc', u.id, 'closed', { detail: 'closed by Talk (PM)' });
   rm.setTask(u.id, { status: 'working', change: 'c_c105ed000001', changes: ['c_c105ed000001'], tries: 1 });
-  await pm.tick();
+  await tick();
   assert.ok(decisions('retry', u.id).length, 'planned again');
   assert.notEqual(rm.getTask(u.id)!.status, 'failed');
   // Walk-away off: a failed task with no question gets one (never a silent "failed, needs you").
@@ -187,7 +189,7 @@ test('stale statuses: the latest merged change wins, "working" with nothing runn
   assert.ok(decisions('reconcile', w.id).length);
   assert.equal(rm.getTask(y.id)!.status, 'planned');
   assert.equal(rm.getTask(x.id)!.change, 'c_57a1e0000004', 'it follows its newest change');
-  await pm.tick();
+  await tick();
   assert.equal(changesOf(x.id).length, 3, 'the failed one is retried (not held by the older merge)');
   assert.equal(rm.getTask(x.id)!.status, 'working');
   assert.match(changesOf(x.id).at(-1).request, /ran out of time/);
@@ -215,7 +217,7 @@ test('"already done": checked and merged (no try), what needs J is one Inbox que
   add('c_a1ead0000001', 'mvmisc', y.id, 'merged', { merged_at: old - 3600_000, created: old - 7200_000 });
   add('c_a1ead0000002', 'mvmisc', y.id, 'failed', { detail: `${ag.ALREADY} (the agent made no commit)`, summary: "The work is already merged (c_a1ead0000001). What's left needs J: he must run node deploy/deploy.mjs --caddy-only on his PC." });
   rm.setTask(y.id, { status: 'working', change: 'c_a1ead0000002', changes: ['c_a1ead0000001', 'c_a1ead0000002'], tries: 2 });
-  await pm.tick();
+  await tick();
   assert.equal(rm.getTask(y.id)!.status, 'merged');
   assert.equal(rm.getTask(y.id)!.tries, 1, 'not a try');
   assert.equal(changesOf(y.id).length, 2, 'no third agent');
@@ -228,7 +230,7 @@ test('"already done": checked and merged (no try), what needs J is one Inbox que
   const z = rm.addTask({ item: it.id, request: 'Add the sitemap', title: 'Sitemap' });
   add('c_a1ead0000003', 'mvmisc', z.id, 'failed', { detail: `${ag.ALREADY} (the agent made no commit)`, summary: 'The sitemap is already there.' });
   rm.setTask(z.id, { status: 'working', change: 'c_a1ead0000003', changes: ['c_a1ead0000003'], tries: 1 });
-  await pm.tick();
+  await tick();
   assert.equal(changesOf(z.id).length, 2);
   assert.match(changesOf(z.id).at(-1).request, /found no merged change or pull request/);
 });

@@ -35,6 +35,8 @@ after(() => { if (token === undefined) delete process.env.GITHUB_TOKEN; else pro
 
 const rm = await import('../src/roadmap.ts');
 const pm = await import('../src/pm.ts');
+/** pm.tick() once the loop's own pass (1 s after startPm) is done: a tick meanwhile does nothing, and a slow CI machine got there. */
+const tick = async () => { while (pm.pmTicking()) await new Promise((r) => setTimeout(r, 20)); await pm.tick(); };
 const { db, J } = await import('../src/db.ts');
 const ag = await import('../src/agents.ts');
 pm.savePmSettings({ maxConcurrent: 50, maxStartsPerDay: 1000 });
@@ -177,7 +179,7 @@ test("a task's change Studio failed to run: not a try, planned again and started
   const c = change('skbug', { task: t.id, status: 'failed', detail: 'push failed: could not read Username', phase: { step: 'publish', failed: true } });
   rm.setTask(t.id, { status: 'working', change: c, changes: [c], tries: 1 });
   db.prepare(`UPDATE changes SET status = 'closed' WHERE product = 'skbug' AND task IS NULL`).run(); // the bug's, above: out of the way
-  await pm.tick();
+  await tick();
   assert.ok(rm.listDecisions({ action: 'retry' }).some((d) => d.subject === t.id && /not counted as a try/.test(d.detail ?? '')));
   const now = rm.getTask(t.id)!;
   assert.equal(now.status, 'working', 'started again in the same pass');
