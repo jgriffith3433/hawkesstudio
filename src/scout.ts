@@ -38,7 +38,11 @@ const git = (cwd: string, args: string[]) => {
 };
 let active = 0;
 
-export function startScout(product: string, question: string, origin: string | null = null) {
+/**
+ * opts.brief: the scout's instructions instead of "what would it take" (the PM's diagnosis of a task that failed its
+ * tries, pm.ts rescue); opts.quiet: its report is read by the PM (getScout), not posted to Talk.
+ */
+export function startScout(product: string, question: string, origin: string | null = null, opts: { brief?: string; quiet?: boolean } = {}) {
   if (!question?.trim()) throw new StudioError('Say what to find out');
   if (active >= 2) throw new StudioError('Two scouts are already running; ask again when one reports back.');
   const inf = isInfra(product) ? getInfra(product) : null;
@@ -48,11 +52,11 @@ export function startScout(product: string, question: string, origin: string | n
   const id = newId('x');
   db.prepare('INSERT INTO scouts (id, product, question, status, detail, origin, created) VALUES (?, ?, ?, ?, ?, ?, ?)').run(id, inf?.id ?? p!.id, question.trim().slice(0, 4000), 'running', 'starting', origin, Date.now());
   active++;
-  void run(id, top, inf ? 'main' : BETA).finally(() => active--);
+  void run(id, top, inf ? 'main' : BETA, opts).finally(() => active--);
   return getScout(id)!;
 }
 
-async function run(id: string, top: string, base: string) {
+async function run(id: string, top: string, base: string, opts: { brief?: string; quiet?: boolean } = {}) {
   const s = getScout(id)!;
   const repo = path.join(PROJECTS, top);
   const wt = path.join(PROJECTS, '.work', `scout-${id}`);
@@ -64,7 +68,7 @@ async function run(id: string, top: string, base: string) {
     set(id, { detail: `reading ${top} (${ref})` });
     const story = isInfra(s.product) ? '' : storyOf(getProduct(s.product), 4000);
     const mem = briefSection({ product: s.product, role: 'scout', text: s.question });
-    const prompt = `You are a scout for Hawkes Studio. J asked: "${s.question}"
+    const prompt = opts.brief ? `${opts.brief}\n\nYou are reading ${top} at ${ref} (read AGENTS.md first). You can't change anything: don't edit, don't commit.${mem.text ? `\n\n${mem.text}` : ''}` : `You are a scout for Hawkes Studio. J asked: "${s.question}"
 
 Find out what it would take, by reading this repository (${top}, at ${ref}; read AGENTS.md first). You can't change
 anything: don't edit, don't commit. Be concrete and short. Reply with a Markdown report:
@@ -123,6 +127,7 @@ ${mem.text ? `\n${mem.text}` : ''}${story ? `\nThe product's story, for tone:\n$
   const text = done.status === 'done'
     ? `Scout ${id} reported on "${done.question}" (${done.product}):\n\n${done.report}\n\nTurn this into a proposal for J: the roadmap item and tasks with acceptance criteria, order, size and rough cost. Add them (studio_roadmap) only after J says yes.`
     : `Scout ${id} on "${done.question}" (${done.product}) failed: ${done.detail}`;
+  if (opts.quiet) return;
   const talk: any = await import('./talk.ts');
   if (done.origin && typeof talk.studioSays === 'function' && talk.studioSays(done.origin, text)) return;
   talk.postNotice(`Scout: ${done.question.slice(0, 60)}`, text);
