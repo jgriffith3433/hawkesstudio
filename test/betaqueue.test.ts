@@ -86,14 +86,16 @@ test('a burst of 3 pushes makes 1 build, of the newest run; the others are skipp
 });
 
 test('each push restarts the quiet time of the run that is waiting', async () => {
+  // A quiet time well past the sleep: on a loaded CI runner a 50 ms sleep can outlast an 80 ms quiet time, and the run
+  // then goes before the push.
   const id = run('pushy');
-  const t0 = Date.now();
-  const p = betaTurn(id, 'pushy', { quiet: 80, gen: fakeGen({}) });
+  const p = betaTurn(id, 'pushy', { quiet: 400, gen: fakeGen({}) });
   await sleep(50);
+  const pushed = Date.now();
   notePush('pushy');
   assert.equal(waitingBetaRun('pushy'), id, 'a push finds the waiting run (no new run needed)');
   assert.deepEqual(await p, { go: true });
-  assert.ok(Date.now() - t0 >= 125, 'waited 80 ms after the push, not after the start');
+  assert.ok(Date.now() - pushed >= 390, 'waited the quiet time after the push, not after the start');
 });
 
 test('a build running on the build server is never cancelled; the newer run waits for it', async () => {
@@ -121,7 +123,8 @@ test('an older beta build still queued behind another build is cancelled, only i
   const b = step(old, 'queued', 'build', 'unity', 'running', 'j_q');
   const neu = run('queued');
   const p = betaTurn(neu, 'queued', { quiet: 0, gen });
-  await sleep(40);
+  // Waited for, not timed: a loaded CI runner may take longer than a fixed sleep to get there.
+  for (let i = 0; i < 500 && !gen.cancels.length; i++) await sleep(10);
   assert.deepEqual(gen.cancels, ['j_q']);
   assert.equal(jobs.j_q.status, 'cancelled');
   // Its own run sees the cancel (pipeline.ts finishBuild) and ends superseded; then the newer run builds.
