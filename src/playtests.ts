@@ -17,17 +17,28 @@ import { PROJECTS, GEN_PUBLIC_URL, today, type Playtest } from './config.ts';
 
 const TERMINAL = new Set(['done', 'failed', 'cancelled']);
 
+/** A playtest whose progress (Gen's detail) hasn't changed this long while it plays is stuck (J, 2026-10-19). */
+export const PLAYTEST_IDLE_MS = () => Number(process.env.STUDIO_PLAYTEST_IDLE_MS ?? 10 * 60_000);
+// Phases that legitimately sit on one detail for a long time (waiting for a browser slot, the video, the upload).
+const QUIET_PHASE = /^(waiting for this machine|saving the recording|encoding|stacking|comparing screenshots|uploading)/i;
+
+type GenApi = { submit(tool: string, body: any): Promise<any>; job(id: string): Promise<any>; cancel(id: string): Promise<any> };
+
 /**
- * Submits a Gen job and waits for it, with two limits: how long it may wait in Gen's queue (other playtests ahead of
- * it are not a hang) and how long it may run once started. Past either, the job is cancelled and returned as failed.
- * Never throws for a failed job.
+ * Submits a Gen job and waits for it, with limits: how long it may wait in Gen's queue (other playtests ahead of it are
+ * not a hang), how long it may run once started, and (idleMs) how long its progress may stand still while it runs. Past
+ * any, the job is cancelled and returned as failed ("stuck: ..."). The run time counts from the earliest start known:
+ * Gen's own `started`, or `since` (when the step's job first ran, from before a Studio restart, onStart records it), so
+ * neither a Studio restart nor a Gen restart (it puts a running job back in line and starts it again) extends it.
+ * abandon: checked while it waits; a reason cancels the job and returns it cancelled with `abandoned` (a newer beta
+ * build waits on it). Never throws for a failed job.
  */
-export async function runGenJob(tool: string, project: string, params: Record<string, unknown>, onUpdate: (job: any) => void, { runMs, queueMs = 6 * 3600_000, job: reuse }: { runMs: number; queueMs?: number; job?: string }) {
+export async function runGenJob(tool: string, project: string, params: Record<string, unknown>, onUpdate: (job: any) => void, { runMs, queueMs = 6 * 3600_000, job: reuse, since, onStart, idleMs, abandon, api = gen, pollMs = 2000 }: { runMs: number; queueMs?: number; job?: string; since?: number; onStart?: (at: number) => void; idleMs?: number; abandon?: () => string | null; api?: GenApi; pollMs?: number }) {
   // A job submitted before a Studio restart (pipeline.ts resumes runs): waited on again, not submitted again.
   let job: any = reuse ? { id: reuse } : null;
   for (let i = 0; !job; i++) {
     try {
-      job = await gen.submit(tool, { project, params });
+      job = await api.submit(tool, { project, params });
       break;
     } catch (e: any) {
       if ((e.kind !== 'offline' && !/reach|fetch failed|ECONN/i.test(String(e.message))) || i >= 20) throw e;
@@ -37,13 +48,14 @@ export async function runGenJob(tool: string, project: string, params: Record<st
   }
   onUpdate({ ...job, detail: job.detail ?? (reuse ? 'waiting for it again after a Studio restart' : 'queued') });
   const submitted = Date.now();
-  let started = 0;
+  let started = since && since > 0 ? since : 0;
   let last = '';
+  let moved = Date.now();
   let misses = 0;
   for (;;) {
     let j: any;
     try {
-      j = await gen.job(job.id);
+      j = await api.job(job.id);
       misses = 0;
     } catch (e: any) {
       // Gen restarting (jobs resume) or busy: keep trying for a few minutes.
@@ -55,16 +67,33 @@ export async function runGenJob(tool: string, project: string, params: Record<st
     const sig = `${j.status}|${j.detail}`;
     if (sig !== last) {
       last = sig;
+      moved = Date.now();
       onUpdate(j);
     }
     if (TERMINAL.has(j.status)) return j;
-    if (j.status === 'running' && !started) started = Date.now();
-    const over = started ? (Date.now() - started > runMs ? `ran for over ${Math.round(runMs / 60000)} min` : '') : Date.now() - submitted > queueMs ? `waited in the queue for over ${Math.round(queueMs / 60000)} min` : '';
+    const why = abandon?.();
+    if (why) {
+      await api.cancel(job.id).catch(() => {});
+      return { ...j, status: 'cancelled', error: why, abandoned: true };
+    }
+    if (j.status === 'running') {
+      // Gen's start time (a job started again after a Gen restart has a later one: the earlier start counts).
+      const at = Number(j.started) > 0 && Number(j.started) <= Date.now() ? Number(j.started) : Date.now();
+      if (!started || at < started) {
+        started = at;
+        onStart?.(at);
+      }
+    }
+    const mins = (ms: number) => Math.round(ms / 60000);
+    const over = started
+      ? Date.now() - started > runMs ? `ran for over ${mins(runMs)} min (since ${new Date(started).toISOString().slice(11, 16)} UTC, counted across restarts)`
+        : idleMs && j.status === 'running' && !QUIET_PHASE.test(String(j.detail ?? '')) && Date.now() - moved > idleMs ? `no progress for ${mins(Date.now() - moved)} min (still at "${String(j.detail ?? '').slice(0, 160)}")` : ''
+      : Date.now() - submitted > queueMs ? `waited in the queue for over ${mins(queueMs)} min` : '';
     if (over) {
-      await gen.cancel(job.id).catch(() => {});
+      await api.cancel(job.id).catch(() => {});
       return { ...j, status: 'failed', error: `stuck: ${over}, so it was cancelled` };
     }
-    await new Promise((r) => setTimeout(r, 2000));
+    await new Promise((r) => setTimeout(r, pollMs));
   }
 }
 

@@ -9,6 +9,9 @@
 //   website copy at once). An older beta run's build job that is still *queued* in Hawkes Gen behind another build is
 //   cancelled (Gen's state checked before and after: a job that started is never touched); a running build always
 //   finishes. Daily runs, go-live builds (golive.ts) and agent change builds (agents.ts) are never cancelled or skipped.
+// - An older beta run still playing the old build (a milestone check) while a newer one waits to build: its playtest is
+//   cancelled, the rest not played, and it ends superseded; the newer run plays its checks on the new build
+//   (supersedingBuild, pipeline.ts betaBody, J 2026-10-19).
 //
 // Steps: the beta run's "beta queue" step is running while it waits and done once it has its turn (pipeline.ts betaBody).
 
@@ -50,6 +53,19 @@ export function newerBetaRun(run: string, product: string): string | null {
   const m = me(run);
   if (!m) return null;
   const r = db.prepare(`SELECT id FROM runs WHERE kind = 'beta' AND status = 'running' AND products LIKE ? AND rowid > ? ORDER BY rowid DESC LIMIT 1`).get(like(product), m.n) as { id: string } | undefined;
+  return r?.id ?? null;
+}
+
+/**
+ * A newer beta run of the product whose Unity build is waiting (its build step is going) while this run still plays the
+ * old beta build: this run's remaining playtests are cancelled and it ends superseded, so the new build isn't held up
+ * by checks of a stale one (J, 2026-10-19). Its plays and criteria carry over to the newer run (absorbed). Null: none.
+ */
+export function supersedingBuild(run: string, product: string): string | null {
+  const m = me(run);
+  if (!m) return null;
+  const r = db.prepare(`SELECT r.id FROM runs r JOIN steps s ON s.run = r.id WHERE r.kind = 'beta' AND r.status = 'running' AND r.products LIKE ? AND r.rowid > ? AND r.started > ?
+    AND s.product = ? AND s.kind = 'build' AND s.name = 'unity' AND s.status = 'running' ORDER BY r.rowid DESC LIMIT 1`).get(like(product), m.n, Date.now() - STALE_MS, product) as { id: string } | undefined;
   return r?.id ?? null;
 }
 
