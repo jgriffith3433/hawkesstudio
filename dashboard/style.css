@@ -298,6 +298,20 @@ body.in-call .talk-input, body.in-call .talk-files, body.in-call #notifyBox { di
 .act-bar.failed > span { background: var(--red); }
 .act-log pre { max-height: 220px; overflow: auto; font-size: 11px; white-space: pre-wrap; }
 .act-none { padding: 0 2px 4px; }
+.act-frames { margin-top: 4px; }
+.act-frames > summary { cursor: pointer; padding: 2px 0; }
+.fr-slot { margin: 6px 0; }
+.fr-view { background: #000; border-radius: 6px; overflow: hidden; display: flex; align-items: center; justify-content: center; min-height: 60px; margin: 3px 0; }
+.fr-view img { display: block; width: 100%; max-height: 60vh; object-fit: contain; cursor: zoom-in; }
+.fr-view img[hidden] { display: none; }
+.fr-empty { padding: 14px 10px; text-align: center; }
+.fr-bar { display: flex; align-items: center; gap: 6px; }
+.fr-bar input[type=range] { flex: 1; min-width: 0; margin: 0; }
+.fr-bar button { padding: 2px 8px; min-width: 32px; min-height: 28px; }
+.fr-time { font-variant-numeric: tabular-nums; white-space: nowrap; }
+.fr-live { color: var(--dim); }
+.fr-live.on { color: var(--red); border-color: var(--red); }
+.fr-cap { color: var(--text); opacity: .85; margin: 2px 0; overflow-wrap: anywhere; min-height: 1.3em; }
 .act-recent { margin-top: 12px; }
 .act-recent summary { cursor: pointer; margin-bottom: 6px; }
 @media (min-width: 1200px) { body.act-open main { margin-right: 360px; } }

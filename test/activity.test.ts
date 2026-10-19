@@ -107,3 +107,20 @@ test('the bar html carries its percent and state', () => {
   assert.match(h, /width:75%/);
   assert.match(h, /stopped at checks/);
 });
+
+// The screenshots player in an expanded run card (dashboard/activity.js FramePlayer).
+const FP = ctx.FramePlayer;
+const pos = (p: any) => `${p.idx}:${p.playing ? 'playing' : 'paused'}${p.follow ? ':live' : ''}`;
+
+test('the frame player follows the newest frame live, plays through, and stops at the end of a finished one', () => {
+  assert.equal(FP.merge([{ i: 0 }, { i: 2 }], [{ i: 1 }, { i: 2, t: 5 }]).map((f: any) => `${f.i}:${f.t ?? ''}`).join(' '), '0: 1: 2:5');
+  assert.equal(pos(FP.advance({ idx: 0, playing: false, follow: true, running: true }, 5)), '4:paused:live');
+  assert.equal(pos(FP.advance({ idx: 2, playing: true, follow: false, running: true }, 5)), '3:playing');
+  // Playing a running one catches up and goes live; a finished one stops on its last frame.
+  assert.equal(pos(FP.advance({ idx: 4, playing: true, follow: false, running: true }, 5)), '4:paused:live');
+  assert.equal(pos(FP.advance({ idx: 4, playing: true, follow: false, running: false }, 5)), '4:paused');
+  assert.equal(pos(FP.advance({ idx: 3, playing: false, follow: false, running: false }, 2)), '1:paused');
+  assert.equal(FP.clock(65.4), '1:05');
+  assert.equal(FP.caption({ reason: 'every 3s', scene: 'Level 2' }, { follow: false, running: true }, 'jumping'), 'every 3s · Level 2');
+  assert.equal(FP.caption({ reason: 'every 3s' }, { follow: true, running: true }, 'jumping'), 'jumping');
+});
