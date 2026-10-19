@@ -99,13 +99,14 @@ the service detached; restart it after changing `src/`. The MCP server (`bin/stu
 - `studio_deploy_plan`, `studio_deploy` (also `action: merge-main | beta`), `studio_rollback`
 - `studio_dev_open`, `studio_dev_status` (also beta vs live), `studio_dev_stop`, `studio_dev_resolve`
 - `studio_roadmap`, `studio_roadmap_edit`, `studio_scout`, `studio_ready`, `studio_comments`, `studio_pm` (the PM loop)
+- `studio_analytics` (how real players do: drop-offs, levels, feedback, errors, builds, as sentences with sample sizes; agents and scouts get it too)
 - `studio_costs` (what the studio costs: AWS, generation, Claude, per product, idle money; the budget)
 - `studio_settings` (J's settings: calls, agents, PM, notifications, budgets; cost-raising changes need his quoted yes)
 - `studio_inbox` (J's Inbox: what's waiting on him, his answers given in Talk, filing a question instead of asking in prose)
 - `studio_approval` (an Approve / Deny card for anything needing J's OK: merges only he may make, go live, rollback,
   GPU budgets, cost-raising settings, yes/no decisions; Talk asks for one, only J's tap decides it)
 - `memory_search`, `memory_get`, `memory_write`, `memory_curate` (the shared memory; agents get a server with only search,
-  get and write, as candidates)
+  get and write, as candidates, plus `studio_analytics`)
 - `studio_workspace`, `studio_fastlane` (Talk's workspace and fast lane, in the agent sandbox)
 - `studio_guide` (Talk shows J around the dashboard he has open, and clicks or types for him when he asks; the page
   refuses approve, merge, deploy, rollback, delete, settings, budgets: docs/daily.md, "Talk showing J around")
@@ -174,6 +175,7 @@ a budget (`approveGpu`, `gpuCleared`, `tasksAwaitingGpu`; the PM asks him once);
 | `src/approvals.ts`, `dashboard/approval.js` | Approve / Deny cards: J's OK as a tap instead of typed words; a card is bound to one action and target (the change's verified commit, beta's exact commit for a go live), one-time, 15 minutes, stale when the target changes; only J's dashboard page decides (never the sandbox, Talk's or agents' headers, the MCP key); shown in Talk's chat, the Inbox and the go-live dialog; the typed words stay as a fallback (docs/daily.md, "Approve / Deny cards") |
 | `dashboard/roadmap.js` | The Roadmap tab (items, tasks, threads, questions, PM switch, decision log) and Ready to test |
 | `src/analytics.ts`, `dashboard/analytics.js` | The Analytics tab (`#analytics`, `#analytics/<product>`): how the games are doing, from Hawkes Gen's player analytics (hawkesgen `docs/analytics.md`). `GET /api/analytics/...` asks Gen's read routes server-side with Studio's key, passing only Gen's filters (`genPath`); the overview adds a studio-wide total and `hasData` per product (`withTotals`). Charts are hand-made SVG; it refreshes on the stream's 60 s tick only while the tab is on screen; Talk opens a game's page with `studio_guide` open `{ kind: analytics, id: <product> }` |
+| `src/players.ts` | Player analytics as feedback (docs/daily.md, "Player analytics"): Gen's analytics of real players (live, no bots or internal) as sentences with sample sizes and minimum samples (`MIN`); `studio_analytics` (Talk, the PM, agents' and scouts' MCP servers: `AGENT_STUDIO_TOOLS`), the daily report's "Players" section (a `players` step per product, `pipeline.ts recordPlayers`), work from player data (`pm.ts workFromPlayers` → `backlog.ts filePlayerWork`: errors as bugs, drop-offs, hard levels, ratings and complaints as ideas, source "players"), an agent brief's "Players" section, the go-live plan's `players` line |
 | `src/costs.ts`, `src/aws.ts`, `dashboard/costs.js` | What the studio costs (the Costs tab, `studio_costs`, the brief's cost line): AWS from Cost Explorer (else an estimate), idle money from EC2 Describe* (read-only), Hawkes Gen usage, Claude usage (Max plan: not billed), per product; the budget and the hourly check that tells J's phone only when something looks wrong (docs/cloud.md, "Costs") |
 | `src/activity.ts`, `dashboard/activity.js` | The Activity drawer (`GET /api/activity`): agents, runs and their steps, Gen jobs, Talk answers in progress |
 | `src/stream.ts`, `dashboard/stream.js` | The dashboard's one push stream (`GET /api/stream`, server-sent events): "talk <id> changed" from talk.ts, guide.ts and approvals.ts; activity, inbox (with counts), changes, runs and ops from a watcher that runs only while a page is connected. Pages refetch only what an event names (`studioStream.on`), with a 60 s safety tick; nothing polls while the page is hidden |

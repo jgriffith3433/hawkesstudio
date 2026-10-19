@@ -534,6 +534,23 @@ export function remember(id: string) {
   }
 }
 
+/**
+ * A brief's "Players" section: how real players do on the live site (players.ts briefLine: top drop-off, hardest level,
+ * rating, each over its minimum sample), and studio_analytics to check before and after. Empty when there's no data
+ * or Gen doesn't answer in a few seconds (a brief never waits on it).
+ */
+async function playersBrief(product: string) {
+  try {
+    const { snapshot, briefLine } = await import('./players.ts');
+    const snap = await Promise.race([snapshot(product), new Promise<null>((ok) => setTimeout(() => ok(null), 8000).unref())]);
+    const line = briefLine(snap);
+    if (!line) return '';
+    return `\n## Players\n\n${line} studio_analytics { product: "${product}", view: dropoff | levels | feedback | errors } has the detail with sample sizes: check it before and after your change, and quote the numbers in your summary when they bear on it.\n`;
+  } catch {
+    return '';
+  }
+}
+
 async function writeBrief(c: Change, p: Product, findings0: any[], note?: string) {
   // Each finding with the library entities it names (finding-entities.ts), so the agent can fix art there, not in code.
   const findings: any[] = await import('./finding-entities.ts').then(({ withEntities }) => withEntities(findings0)).catch(() => findings0);
@@ -562,6 +579,7 @@ async function writeBrief(c: Change, p: Product, findings0: any[], note?: string
   const checks = onSite ? '- (static pages: open the pages you changed and the links between them, and check the HTML is well formed)'
     : (p.checks ?? []).map((k) => `- \`${k.cmd}\` (in ${k.dir === p.repo ? 'the repo root' : k.dir})`).join('\n') || '- (none listed: at least make sure it builds or loads)';
   const sub = onSite ? site!.sub : repoFor(p).sub;
+  const players = await playersBrief(p.id);
   const brief = `# ${c.request ? 'Work' : 'Fix'} for ${p.name}
 
 You are fixing a problem Hawkes Studio's automated playtest found in ${p.name} (${p.about}).
@@ -614,7 +632,7 @@ ${findings.map((f) => `### [${f.severity}] ${f.title}
 - Suggested fix: ${f.fix ?? '-'}
 - Screenshots: ${(shots.filter((s) => s.includes(f.id)).map((s) => `\`${s}\``).join(', ')) || 'none'}${f.entities?.length ? `
 - In Hawkes Gen's library: ${f.entities.map((e: any) => `\`${e.id}\` (${e.kind})`).join(', ')}. When the problem is the art itself, fix it there (the hawkesgen MCP: hawkesgen_entities to see its versions, hawkesgen_entity_make with revise and feedback, hawkesgen_entity_judge to pick): a pick is written into this repo's files by Studio.` : ''}`).join('\n\n')}
-${note ? `\n## Notes on the last attempt (J's or the PM's)\n\n${note}\n` : ''}${mem.text ? `\n${mem.text}` : ''}
+${note ? `\n## Notes on the last attempt (J's or the PM's)\n\n${note}\n` : ''}${players}${mem.text ? `\n${mem.text}` : ''}
 ## How to work
 
 1. Read \`AGENTS.md\` (and any docs it points to) before changing anything. Follow its rules.
@@ -658,10 +676,12 @@ function lfsPull(worktree: string, log: (s: string) => void) {
 }
 
 export const AGENT_MEMORY_TOOLS = ['memory_search', 'memory_get', 'memory_write'];
+/** The Studio tools on an agent's or scout's own MCP server: the shared memory, and real players' data (read-only). */
+export const AGENT_STUDIO_TOOLS = [...AGENT_MEMORY_TOOLS, 'studio_analytics'];
 /** The role an agent change runs as: content work, a build (requests, roadmap tasks, Studio and Gen), or a fix. */
 export const agentRole = (c: Change): RoleName => ({ infra: 'builder', content: 'content', builder: 'builder', fixer: 'fixer' } as const)[roleOf(c)];
 /**
- * An agent's or scout's MCP config: Studio's server with the memory tools only, as that agent (writes are candidates),
+ * An agent's or scout's MCP config: Studio's server with the memory tools and studio_analytics only, as that agent (writes are candidates),
  * and Hawkes Gen's with a "user" role key (generate, estimate, read jobs and the library; no fleet launches, no keys):
  * AGENT_GEN_KEY, else Talk's, else the devtools' key. Never Studio's own (owner) key.
  */
@@ -671,7 +691,7 @@ export function agentMcp(id: string) {
   const file = path.join(dir, `${id}.json`);
   const genKey = process.env.AGENT_GEN_KEY ?? process.env.TALK_GEN_KEY ?? process.env.DEV_GEN_KEY ?? '';
   const cfg = { mcpServers: {
-    hawkesstudio: { command: process.execPath, args: [path.join(ROOT, 'bin', 'studio-mcp.mjs')], env: { STUDIO_SERVER: '1', STUDIO_AGENT: id, STUDIO_MCP_TOOLS: AGENT_MEMORY_TOOLS.join(',') } },
+    hawkesstudio: { command: process.execPath, args: [path.join(ROOT, 'bin', 'studio-mcp.mjs')], env: { STUDIO_SERVER: '1', STUDIO_AGENT: id, STUDIO_MCP_TOOLS: AGENT_STUDIO_TOOLS.join(',') } },
     ...(genKey ? { hawkesgen: { command: process.execPath, args: [path.join(PROJECTS, 'hawkesgen', 'bin', 'hawkesgen-mcp.mjs')], env: { HAWKESGEN_URL: process.env.HAWKESGEN_URL ?? 'http://127.0.0.1:8790', HAWKESGEN_KEY: genKey } } } : {}),
   } };
   fs.writeFileSync(file, JSON.stringify(cfg, null, 2));
@@ -731,7 +751,7 @@ function runAgent(c: Change, briefFile: string, s: AgentSettings, env = claudeEn
       // The role (.claude/agents/<role>.md): its model, standing instructions (the stable, cached part of the prompt),
       // tools and turn limit; the task itself is the brief.
       const { args: roleFlags, role } = roleArgs(agentRole(c), {
-        extraAllowed: [...AGENT_MEMORY_TOOLS.map((t) => `mcp__hawkesstudio__${t}`), 'mcp__hawkesgen'],
+        extraAllowed: [...AGENT_STUDIO_TOOLS.map((t) => `mcp__hawkesstudio__${t}`), 'mcp__hawkesgen'],
         maxTurns: s.maxTurns !== DEFAULTS.maxTurns ? s.maxTurns : undefined,
       });
       const args = [

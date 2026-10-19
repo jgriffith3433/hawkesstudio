@@ -174,6 +174,8 @@ async function runAll(run: string, ids: string[], o: RunOptions) {
     const s = startStep(run, 'studio', 'backlog', 'ideas expired');
     updateStep(s, { status: 'done', detail: `${expired} ideas weren't seen for 14 days and expired`, finished: true });
   }
+  // Daily runs: how real players do on each live site (the report's "Players" section; the PM files work from it).
+  if ((db.prepare('SELECT kind FROM runs WHERE id = ?').get(run) as any)?.kind === 'daily') await recordPlayers(run, ids);
   // The games are played: the playtester stops (unless a playtest outside this run is still on it; then its idle stop does).
   if (gpuGate) {
     await gpuGate;
@@ -194,6 +196,25 @@ async function runAll(run: string, ids: string[], o: RunOptions) {
   }
   // The morning brief (daily runs): a Talk conversation summarizing the report, and a notification linking to it.
   void import('./brief.ts').then(({ morningBrief }) => morningBrief(run)).catch((e) => console.warn(`[studio] morning brief: ${e.message ?? e}`));
+}
+
+/**
+ * A "players" step per product: Hawkes Gen's analytics of its real players (live, bots and internal left out:
+ * players.ts snapshot) in the step's data. Gen not answering or no players is "skipped", never a failed run.
+ */
+async function recordPlayers(run: string, ids: string[]) {
+  const { snapshot, weekLine } = await import('./players.ts');
+  // One product at a time: Gen answers analytics queries synchronously on a small server.
+  for (const id of ids) {
+    const s = startStep(run, id, 'players', 'live', 'asking Hawkes Gen');
+    if (finishedBefore(s)) continue;
+    try {
+      const snap = await Promise.race([snapshot(id), new Promise<never>((_, no) => setTimeout(() => no(new Error('no answer in 2 minutes')), 120_000).unref())]);
+      updateStep(s, { status: snap?.hasData ? 'done' : 'skipped', detail: !snap ? 'no player analytics for it in Hawkes Gen' : snap.hasData ? weekLine(snap) : 'no real players on the live site in 30 days', data: snap, finished: true });
+    } catch (e: any) {
+      updateStep(s, { status: 'skipped', detail: `Hawkes Gen didn't answer: ${String(e.message ?? e).slice(0, 200)}`, finished: true });
+    }
+  }
 }
 
 /** Set while a run is getting a GPU machine ready: game playtests wait for it (it boots while Unity builds). */

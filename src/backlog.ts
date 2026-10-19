@@ -188,6 +188,44 @@ export function foldIntoWontfix() {
   return folded;
 }
 
+/**
+ * Work from real players (players.ts playerWork) as findings with source "players", deduped by key: errors are backlog
+ * bugs (open), drop-offs, hard levels, ratings and complaints go on the ideas list (status idea, never auto-fixed; J
+ * moves them to the backlog). One seen again is updated (seen count, its numbers): an expired idea comes back, a fixed
+ * bug that players still hit reopens (unless the change that took it is unmerged), a won't-fix stays won't-fix, and an
+ * idea J moved to the backlog stays there. Returns which were new and which reopened.
+ */
+export function filePlayerWork(product: string, items: { kind: 'bug' | 'idea'; key: string; title: string; detail: string; fix: string; area: string }[], now = Date.now()) {
+  const added: string[] = [];
+  const updated: string[] = [];
+  const reopened: string[] = [];
+  const day = new Date(now).toISOString().slice(0, 10);
+  try { db.exec('ALTER TABLE findings ADD COLUMN source TEXT'); } catch { /* already there (roadmap.ts adds it) */ }
+  for (const w of items) {
+    const old = db.prepare(`SELECT id, status FROM findings WHERE product = ? AND key = ? AND source = 'players' ORDER BY last_seen DESC LIMIT 1`).get(product, w.key) as any;
+    if (old) {
+      // Seen again at most once a day (the daily run files it).
+      db.prepare(`UPDATE findings SET seen = seen + (CASE WHEN last_seen >= ? THEN 0 ELSE 1 END), last_seen = ?, detail = ?, title = ? WHERE id = ?`).run(now - 20 * 3600_000, now, w.detail, w.title, old.id);
+      let status: string | null = null;
+      let note = '';
+      if (old.status === 'expired') [status, note] = ['idea', `Back on the ideas list ${day}: players show it again.`];
+      else if (old.status === 'fixed' && w.kind === 'bug' && !takenBy(old.id)) [status, note] = ['open', `Came back ${day}: it was fixed, and real players still hit it.`];
+      else if (old.status === 'fixed' && w.kind === 'idea') [status, note] = ['idea', `Back on the ideas list ${day}: players still show it.`];
+      if (status) {
+        db.prepare(`UPDATE findings SET status = ?, note = ?, updated = ? WHERE id = ?`).run(status, note, now, old.id);
+        reopened.push(old.id);
+      } else updated.push(old.id);
+      continue;
+    }
+    const id = newId('f');
+    db.prepare(`INSERT INTO findings (id, product, key, title, severity, area, detail, fix, status, scenario, shots, first_seen, last_seen, seen, last_run, note, source)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'players', '[]', ?, ?, 1, NULL, ?, 'players')`)
+      .run(id, product, w.key, w.title, w.kind === 'bug' ? 'bug' : 'idea', w.area, w.detail, w.fix, w.kind === 'bug' ? 'open' : 'idea', now, now, `From real players' data (Hawkes Analytics) ${day}.`);
+    added.push(id);
+  }
+  return { added, updated, reopened };
+}
+
 const RANK: Record<string, number> = { blocker: 4, bug: 3, polish: 2, idea: 1 };
 const worse = (a: string, b: string) => ((RANK[b] ?? 0) > (RANK[a] ?? 0) ? b : a);
 

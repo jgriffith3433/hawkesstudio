@@ -158,6 +158,7 @@ export async function deployPlan(productId: string, { notesWaitMs = 20_000 }: { 
   const relNote = release ? ` ${releaseNotesLine(release)}${release.since ? ` (notes cover ${release.commits} commit(s) since the last release entry, ${release.since.slice(0, 7)})` : ''}.` : '';
 
   const previous = listDeploys(p.id, 5);
+  const players = await livePlayers(p.id);
   return {
     product: p.id, name: p.name, live: p.live, betaSite: previewUrl(p.id), repo: p.repo, site: p.site, unity,
     main: brief(cmp.main), beta: brief(beta), played: brief(played), release,
@@ -167,6 +168,8 @@ export async function deployPlan(productId: string, { notesWaitMs = 20_000 }: { 
     tested: { sha: beta?.short ?? null, playtests: tested }, lastPlayed: last,
     build,
     previous: previous.map((d) => ({ id: d.id, kind: d.kind, at: d.at, by: d.by, before: d.before?.slice(0, 7) ?? null, after: d.after.slice(0, 7), beta: d.beta?.slice(0, 7) ?? null, detail: d.detail, rolledBack: d.rolled_back })),
+    // How the build that's live now does with real players (players.ts), so the next release can be compared.
+    players,
     blockers, warnings, canDeploy: !blockers.length, fix: planFix(blockers),
     confirm: `DEPLOY ${p.id}`,
     what: unity
@@ -269,6 +272,18 @@ async function deployNow(productId: string, { confirm, by = 'J', mergeMain, orig
   if (after !== before) void verifyLive(p.id, after, `Just went live (${BETA} ${beta.short}: ${plan.commits.slice(0, 3).map((c) => c!.title).join('; ')})`, origin);
   const rel = release && { version: release.version, title: release.title, notes: release.notes, build: release.build };
   return { ok: true, product: p.id, deploy: id, live: p.live, main: after.slice(0, 7), beta: beta.short, release: rel, log, note: 'GitHub Pages publishes within a few minutes; Studio waits for it, then playtests the live site (a run appears in the dashboard). If it went wrong: the rollback plan.' };
+}
+
+/** The go-live plan's players line: the live build's numbers from Hawkes Gen (builds, last 30 days), or null within 5 s. */
+async function livePlayers(product: string): Promise<string | null> {
+  try {
+    const { liveBuildLine } = await import('./players.ts');
+    const { gen } = await import('./gen.ts');
+    const b = await Promise.race([gen.request(`/analytics/${encodeURIComponent(product)}/builds?range=30d`), new Promise<null>((ok) => setTimeout(() => ok(null), 5000).unref())]);
+    return liveBuildLine(b);
+  } catch {
+    return null;
+  }
 }
 
 /**

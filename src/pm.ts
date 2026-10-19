@@ -1407,6 +1407,9 @@ Do, with the studio_pm, studio_roadmap and studio tools:
 3. Daily turn and after the daily run: triage the backlog (studio_backlog). Merge duplicates (studio_pm triage
    duplicate), mark polish that's below the product's bar won't-fix with a one-line note (triage wontfix), link bugs to
    the roadmap item they belong to (triage link). Leave blockers open. Don't churn: skip what's fine.
+   Real players' data is already filed by Studio after the daily run, over minimum samples (source "players": errors
+   they hit are backlog bugs; drop-offs, hard levels, low ratings and repeated complaints are ideas, never auto-fixed:
+   J moves them). Weigh bugs and tasks by how many players they touch (studio_analytics), and say the sample.
 4. Failures (an agent errored or made nothing): look at studio_change's log and summary; revise with a better note,
    or ask J if it's really his call.
 5. Starting work is automatic (roadmap order, then the worst bugs, within the limits). Change the order or statuses
@@ -1559,9 +1562,39 @@ async function watch() {
     // A beta run a newer one took over (betaqueue.ts) is nothing to act on: the newer run reports.
     if (r.kind === 'beta' && r.status === 'skipped') continue;
     const products = (parse(r.products) ?? []).map(name).join(', ');
-    if (r.kind === 'daily') pmEvent('daily run', `The daily run ${r.id} finished (${r.status}): ${r.detail ?? ''}. Read studio_report { run: "${r.id}" } and triage the new findings.`, r.id);
+    if (r.kind === 'daily') {
+      const filed = await workFromPlayers(r.id).catch((e: any) => { console.warn(`[pm] work from players: ${e.message ?? e}`); return []; });
+      pmEvent('daily run', `The daily run ${r.id} finished (${r.status}): ${r.detail ?? ''}. Read studio_report { run: "${r.id}" } (each product's "Players" section is its real players) and triage the new findings.${filed.length ? ` From player data: ${filed.join('; ')}.` : ''}`, r.id);
+    }
     else pmEvent(r.kind === 'beta' ? 'beta run' : 'live check', `${r.kind === 'beta' ? 'Beta run' : 'Go live'} ${r.id} (${products}) ${r.status}: ${r.detail ?? ''}`, r.id);
   }
+}
+
+/**
+ * A daily run's player data (its "players" steps: pipeline.ts recordPlayers) becomes work, over the minimum samples
+ * (players.ts MIN): errors real players hit become backlog bugs (source "players"), drop-offs, hard levels, low ratings
+ * and repeated complaints go on the ideas list (never auto-fixed: J moves them). Deduped by key (backlog.ts
+ * filePlayerWork). Each new one is in the PM log; undo marks it won't-fix (so it isn't filed again). Returns a line per
+ * product that got new work.
+ */
+export async function workFromPlayers(run: string) {
+  const { playerWork } = await import('./players.ts');
+  const { filePlayerWork } = await import('./backlog.ts');
+  const { isNoise } = await import('./bugreport.ts');
+  const out: string[] = [];
+  for (const st of db.prepare(`SELECT product, data FROM steps WHERE run = ? AND kind = 'players' AND status = 'done'`).all(run) as any[]) {
+    const items = playerWork(parse(st.data), (m, s) => isNoise(m, s));
+    if (!items.length) continue;
+    const r = filePlayerWork(st.product, items);
+    const kinds = new Map(items.map((w) => [w.key, w.kind]));
+    const rows = [...r.added, ...r.reopened].map((id) => db.prepare('SELECT id, key, title, severity FROM findings WHERE id = ?').get(id) as any).filter(Boolean);
+    for (const f of rows) {
+      const bug = kinds.get(f.key) === 'bug';
+      logDecision(bug ? 'players bug' : 'players idea', f.id, st.product, `${bug ? 'Backlog bug' : 'Ideas list'} from real players: "${f.title}"`, { kind: 'finding', id: f.id, status: 'wontfix', note: 'Filed from player data; undone in the PM log.' });
+    }
+    if (rows.length) out.push(`${name(st.product)}: ${rows.map((f) => `${f.id} "${f.title}" (${f.severity === 'bug' ? 'bug' : 'idea'})`).join(', ')}`);
+  }
+  return out;
 }
 
 /** What the dashboard and studio_pm status show. */

@@ -9,6 +9,7 @@ import { listFindings } from './backlog.ts';
 import { fileUrl } from './gen.ts';
 import { PUBLIC_URL } from './notify.ts';
 import { regressions } from './playtests.ts';
+import { playersSection } from './players.ts';
 
 const SEV_ICON: Record<string, string> = { blocker: '🛑', bug: '🐞', polish: '✨', idea: '💡' };
 
@@ -79,7 +80,7 @@ export function reportMarkdown(run: string) {
       return [`${pl.branch}@${pl.sha}`, `${pl.branch} \`${String(pl.sha).slice(0, 7)}\`${pl.title ? ` "${pl.title}"` : ''}${pl.build ? ` (build Game/v${pl.build})` : ''}${pl.dirty ? ` + ${pl.dirty} uncommitted` : ''}`];
     })).values()];
     if (played.length) L.push(`Local playtests played ${played.join(', ')}.`, '');
-    for (const s of x.steps.filter((s) => s.kind !== 'review')) {
+    for (const s of x.steps.filter((s) => s.kind !== 'review' && s.kind !== 'players')) {
       L.push(`- ${fmtStep(s)}`);
       if (s.kind === 'playtest' && s.data?.video) L.push(`  - [video](${fileUrl(s.data.video)}) · [playtest](${PUBLIC_URL}/#playtests/${s.id})${s.data?.metrics && Object.keys(s.data.metrics).length ? ` · metrics: ${Object.entries(s.data.metrics).slice(0, 10).map(([k, v]) => `${k} ${v}`).join(', ')}` : ''}`);
       if (s.kind === 'check' && s.status === 'failed') L.push('', '```', String(s.data?.tail ?? '').slice(-1500), '```');
@@ -93,6 +94,12 @@ export function reportMarkdown(run: string) {
         const shots = (f.shots ?? []).slice(0, 3).map((a: string, i: number) => `[shot ${i + 1}](${fileUrl(a)})`).join(' ');
         L.push(`- ${SEV_ICON[f.severity] ?? '-'} **${f.title}** (${f.area}). ${f.detail} *Fix:* ${f.fix} ${shots}`);
       }
+    }
+    // Real players on the live site (daily runs: pipeline.ts recordPlayers; bots and J's own devices left out).
+    const players = x.steps.find((s) => s.kind === 'players');
+    if (players) {
+      L.push('', '### Players (live site)', '');
+      L.push(...(players.data ? playersSection(players.data) : [`- ${players.detail ?? 'No player data.'}`]));
     }
     L.push('');
   }
