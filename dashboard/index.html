@@ -18,13 +18,14 @@
       <button data-tab="golive" title="Every product: is beta ahead of live, is it ready, and the buttons to go live">Go live</button>
       <button data-tab="roadmap">Roadmap</button>
       <button data-tab="backlog">Backlog</button>
+      <button data-tab="live" title="Every playtest playing now, live: its video, step, what the bot is doing, problems. Click one to watch it big">Playtests</button>
       <button data-tab="analytics" title="How the games are doing: players, retention, where they drop off, what they like, from Hawkes Analytics">Analytics</button>
       <button data-tab="library" title="Every product's characters, stages and shots in Hawkes Gen's library: takes waiting for a pick, and every version">Library</button>
       <div class="more" id="more">
         <button type="button" class="more-btn" id="moreBtn" aria-haspopup="true" aria-expanded="false" title="Reports, playtests, agent changes, runs, costs, resources, memory, users, settings">More ▾</button>
         <div class="more-menu" id="moreMenu" hidden>
           <button data-tab="report">Report</button>
-          <button data-tab="playtests">Playtests</button>
+          <button data-tab="playtests" title="Every playtest that ran: video, screenshots, review, trends, side by side with the one before">Playtest history</button>
           <button data-tab="changes">Changes</button>
           <button data-tab="runs">Runs</button>
           <button data-tab="costs">Costs</button>
@@ -134,8 +135,12 @@
       <div class="bar"><select id="reportRun"></select> <a id="reportMd" target="_blank">Markdown</a></div>
       <div id="reportBody"></div>
     </section>
+    <section id="live" class="tab">
+      <p class="intro"><b>Playtests:</b> every playtest playing right now, live, and the ones that just finished. Click one to watch it big, with every step, what the bot is doing and what went wrong.</p>
+      <div id="ltBody"><div class="meta">loading…</div></div>
+    </section>
     <section id="playtests" class="tab">
-      <p class="intro"><b>Playtests:</b> every playtest with its video, screenshots and review, side by side with the one before.</p>
+      <p class="intro"><b>Playtest history:</b> every playtest with its video, screenshots and review, side by side with the one before.</p>
       <div id="ptListView"><div class="bar" id="ptBar"></div><div id="ptTrends"></div><div id="ptList"></div></div>
       <div id="ptDetail"></div>
     </section>
@@ -211,6 +216,7 @@
   <script src="call.js"></script>
   <script src="playtests.js"></script>
   <script src="activity.js"></script>
+  <script src="live.js"></script>
   <script src="roadmap.js"></script>
   <script src="inbox.js"></script>
   <script src="costs.js"></script>

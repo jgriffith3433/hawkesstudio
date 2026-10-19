@@ -488,6 +488,7 @@ async function refresh() {
     if (tab === 'costs' && window.loadCosts) await window.loadCosts();
     if (tab === 'resources' && window.loadResourcesTab) await window.loadResourcesTab();
     if (tab === 'analytics' && window.loadAnalyticsTab) await window.loadAnalyticsTab();
+    if (tab === 'live' && window.loadLiveTab) await window.loadLiveTab();
     if (tab === 'golive' && window.loadGoLiveTab) await window.loadGoLiveTab();
     if (tab === 'library' && window.loadLibraryTab) await window.loadLibraryTab();
     if (tab === 'settings' && window.loadSettingsTab) await window.loadSettingsTab();
@@ -497,7 +498,8 @@ async function refresh() {
     $('#status').innerHTML = `<span><span class="dot bad"></span>${esc(e.message)}</span>`;
   }
 }
-show(tab);
+// #live/<job> on the first load: that playtest opens big (live.js).
+show(tab, tab === 'live' ? /^#live\/(j_[0-9a-f]+)/.exec(location.hash)?.[1] : undefined);
 // Today, Runs and Changes refresh when the push stream says changes or runs moved (stream.js; also its slow safety tick).
 studioStream.on(['changes', 'runs'], () => { if (tab === 'today' || tab === 'runs' || tab === 'changes') refresh(); });
 

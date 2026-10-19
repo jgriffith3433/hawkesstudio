@@ -141,7 +141,7 @@ if (typeof document !== 'undefined') (() => {
     return `<div class="act-item">
       <div class="act-top">${ICON[r.status] ?? '•'} <b>${esc(r.kind)}${r.where === 'live' ? ' (live)' : ''}</b> ${esc(r.products.join(', '))}<span class="act-time">${done ? ago(r.at) : since(r.started)}</span></div>
       <div class="act-now">${esc(r.detail ?? '')}${r.steps.total ? ` · ${r.steps.done}/${r.steps.total} steps${r.steps.failed ? `, ${r.steps.failed} failed` : ''}` : ''}</div>
-      ${(r.now ?? []).map((s) => `<div class="act-step">▸ ${esc(s.kind)} ${esc(s.name)}${s.detail ? `: ${esc(s.detail)}` : ''} <span class="meta">${since(s.started)}${s.job ? ` · ${link(`${GEN}/#job/${s.job}`, 'job')}` : ''}</span></div>`).join('')}
+      ${(r.now ?? []).map((s) => `<div class="act-step">▸ ${esc(s.kind)} ${esc(s.name)}${s.detail ? `: ${esc(s.detail)}` : ''} <span class="meta">${since(s.started)}${s.job && s.kind === 'playtest' ? ` · ${watch(s.job)}` : ''}${s.job ? ` · ${link(`${GEN}/#job/${s.job}`, 'job')}` : ''}</span></div>`).join('')}
       <div class="meta">by ${by(r)} · <a href="#" data-run-open="${esc(r.id)}">${esc(r.id)}</a>${r.cost ? ` · $${r.cost.toFixed(2)}` : ''}</div>
       ${r.playtests?.length ? `<details class="act-frames" data-frames-run="${esc(r.id)}"${openRuns.has(r.id) ? ' open' : ''}><summary class="meta">🎞 screenshots · ${r.playtests.length} playtest${r.playtests.length === 1 ? '' : 's'}</summary>${r.playtests.map((p) => `<div class="fr-slot" data-frames="${esc(p.id)}"><div class="meta">${esc(p.product)} · ${esc(p.name)} · ${esc(p.status)}</div></div>`).join('')}</details>` : ''}
     </div>`;
@@ -260,10 +260,12 @@ if (typeof document !== 'undefined') (() => {
     for (const [id, p] of players) if (!p.el.isConnected) players.delete(id);
     kick();
   }
-  const jobHtml = (j) => `<div class="act-item">
+  // A playtest's card opens it big on the Playtests page (live.js): the card is the link.
+  const watch = (job) => `<a href="#live/${esc(job)}" data-live-job="${esc(job)}" class="act-watch">▶ Watch live</a>`;
+  const jobHtml = (j) => `<div class="act-item${j.tool === 'playtest.run' ? ' act-playtest' : ''}"${j.tool === 'playtest.run' ? ` data-live-job="${esc(j.id)}" title="Watch it on the Playtests page"` : ''}>
       <div class="act-top">${ICON[j.status] ?? '•'} <b>${esc(j.tool)}</b> ${esc(j.project)} <span class="pill">${esc(j.status)}</span><span class="act-time">${since(j.started ?? j.created)}</span></div>
       ${j.detail ? `<div class="act-now">${esc(j.detail)}</div>` : ''}
-      <div class="meta">${link(j.link, esc(j.id))}${j.server ? ` · ${esc(j.server)}` : ''}</div>
+      <div class="meta">${j.tool === 'playtest.run' && j.status === 'running' ? `${watch(j.id)} · ` : ''}${link(j.link, esc(j.id))}${j.server ? ` · ${esc(j.server)}` : ''}</div>
     </div>`;
   const section = (title, n, html) => `<h4>${title} <span class="meta">${n}</span></h4>${html || '<div class="meta act-none">nothing</div>'}`;
 
@@ -359,8 +361,11 @@ if (typeof document !== 'undefined') (() => {
     }
     const r = e.target.closest('[data-run-open]');
     if (r) { e.preventDefault(); openRun = r.dataset.runOpen; show('runs'); }
+    // A playtest: the Playtests page with it maximized (other links in the card keep their own way).
+    const w = !r && !c && !t && (e.target.closest('a[data-live-job]') || (!e.target.closest('a') && e.target.closest('[data-live-job]')));
+    if (w && !(e.ctrlKey || e.metaKey || e.shiftKey)) { e.preventDefault(); show('live', w.dataset.liveJob); }
     // On a phone the drawer covers the page: following a link closes it.
-    if ((t || c || r) && matchMedia('(max-width: 760px)').matches) setOpen(false, { keep: false });
+    if ((t || c || r || w) && matchMedia('(max-width: 760px)').matches) setOpen(false, { keep: false });
   });
   setOpen(open, { keep: false });
 })();
