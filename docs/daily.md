@@ -337,7 +337,12 @@ finding with **source auto** (scenario "auto-error", area "beta errors", severit
 keyed by its **signature**: the message and top stack frame with numbers, ids, bundle hashes, hosts and query strings
 stripped (`errorSignature`; `isNoise` has the last word on noise). The same error again (another load, another phone)
 only adds to the seen count and keeps the latest sample; one fixed by a merged change that comes back reopens. These
-aren't J's lane: no Talk notice, no milestone, the PM loop takes them like the reviews' bugs.
+aren't J's lane: no Talk notice, no milestone, the PM loop takes them like the reviews' bugs. One whose latest sample
+came from a beta build older than the one beta serves now, with a change merged in between, **waits to be seen on the
+current build** instead of starting an agent (`waitsForCurrentBuild`, a "hold" in the PM log); it starts once the
+current build catches the same signature again. A fix whose agent made no commit because it was already done
+(`fixAlreadyDone` in `src/agents.ts`) marks its bugs fixed and isn't a try; a question about a bug that is fixed since
+settles itself (`settleFindingQuestions` in `src/pm.ts`).
 
 **10. Guard rails.** The caps above (Max-plan usage), the **decision log** (Roadmap tab → "PM decision log",
 `studio_pm status`): every start, merge, revise, won't-fix, duplicate, link, answer, question for J, beta check and

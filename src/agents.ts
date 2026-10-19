@@ -217,6 +217,17 @@ export const ALREADY = 'nothing to do: already done';
 export function alreadyDone(summary: string) {
   return /\b(already (been )?(done|merged|landed|shipped|implemented|in place|on (beta|main)|there|present|fixed|exists?|works?)|nothing (left|more|else) to (do|change|implement)|(work|task|change) (is|was) (already )?(done|merged|complete))\b/i.test(String(summary ?? ''));
 }
+/**
+ * A fix (no task) whose agent made no commit because it found the bug already fixed (e.g. the error came from a beta
+ * build older than the fix): its bugs are fixed with the agent's word, not opened again for the next agent to reach
+ * the same answer, and pm.ts doesn't count it as a try. A task's claim is checked by the PM instead. True when it was.
+ */
+export function fixAlreadyDone(id: string, c: Pick<Change, 'task'>, findings: string[], summary: string, commits: unknown[]) {
+  if (c.task || commits.length || !alreadyDone(summary)) return false;
+  for (const f of findings) if (heldBy(getFinding(f), id)) updateFinding(f, { status: 'fixed', note: `agent ${id}: ${ALREADY}: ${summary.slice(0, 200)}` });
+  update(id, { status: 'failed', detail: `${ALREADY} (the agent made no commit)`, summary, commits, phase: null });
+  return true;
+}
 /** Why a change with no commit failed: already done (ALREADY), else `why`. */
 const noCommitDetail = (summary: string, why: string) => (alreadyDone(summary) ? `${ALREADY} (the agent made no commit)` : why);
 
@@ -1228,6 +1239,7 @@ async function work(id: string, note?: string, answer?: string, resumed?: Phase 
           update(id, { status: 'failed', detail: `${DECIDED} (the agent made no commit)`, summary, commits, phase: null });
           return;
         }
+        if (fixAlreadyDone(id, c, findings.map((f) => f.id), summary, commits)) return;
         const why = noCommitWhy(c.worktree, ph);
         reopenTaken(id, findings.map((f) => f.id), `${why}: ${summary.slice(0, 120)}`);
         update(id, { status: 'failed', detail: noCommitDetail(summary, why), summary, commits, phase: null });

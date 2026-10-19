@@ -18,10 +18,10 @@ fs.writeFileSync(process.env.STUDIO_PRODUCTS, JSON.stringify({ products: [{
 }, {
   id: 'pmother', name: 'PM other', framing: 'test', engine: 'static', repo: 'other', site: 'other', live: 'http://127.0.0.1:9/',
   local: { serve: 'static', dir: 'other', port: 8798, path: '/' }, playtests: [{ scenario: 'smoke', where: 'local' }], story: [], about: 'A fixture.',
-}, ...['pmthird', 'pmfourth', 'pmfifth', 'pmsixth', 'pmseventh', 'pmeighth'].map((id) => ({
+}, ...['pmthird', 'pmfourth', 'pmfifth', 'pmsixth', 'pmseventh', 'pmeighth', 'pmninth'].map((id) => ({
   id, name: id, framing: 'test', engine: 'static', repo: id, site: id, live: 'http://127.0.0.1:9/',
   local: { serve: 'static', dir: id, port: 8799, path: '/' }, playtests: [{ scenario: 'smoke', where: 'local' }], story: [], about: 'A fixture.',
-}))], repos: { other: 'x/other', pmthird: 'x/pmthird', pmfourth: 'x/pmfourth', pmfifth: 'x/pmfifth', pmsixth: 'x/pmsixth', pmseventh: 'x/pmseventh', pmeighth: 'x/pmeighth' }, infra: [{ id: 'pminfra', name: 'PM infra', repo: 'pminfra', slug: 'x/pminfra' }] }));
+}))], repos: { other: 'x/other', pmthird: 'x/pmthird', pmfourth: 'x/pmfourth', pmfifth: 'x/pmfifth', pmsixth: 'x/pmsixth', pmseventh: 'x/pmseventh', pmeighth: 'x/pmeighth', pmninth: 'x/pmninth' }, infra: [{ id: 'pminfra', name: 'PM infra', repo: 'pminfra', slug: 'x/pminfra' }] }));
 
 const rm = await import('../src/roadmap.ts');
 const { gate, allMet } = await import('../src/acceptance.ts');
@@ -693,6 +693,87 @@ test('an agent that changed nothing because J already decided it is not a failed
     assert.equal(rm.getTask(t.id)!.status, 'failed');
     assert.equal(rm.getTask(t.id)!.tries, 0, 'not counted as a try');
     assert.match(rm.getTask(t.id)!.note ?? '', /J already decided/);
+  } finally {
+    pm.savePmSettings({ maxConcurrent: before.maxConcurrent, maxStartsPerDay: before.maxStartsPerDay });
+    if (token === undefined) delete process.env.GITHUB_TOKEN; else process.env.GITHUB_TOKEN = token;
+  }
+});
+
+test('an automatic error from a beta build older than a fix waits; "already done" is fixed, not a try; its question settles', async () => {
+  const { waitsForCurrentBuild } = await import('../src/bugreport.ts');
+  const { startFix, fixAlreadyDone, ALREADY, getChange } = await import('../src/agents.ts');
+  const { getFinding } = await import('../src/backlog.ts');
+  process.env.STUDIO_PM_TALK = 'off';
+  const token = process.env.GITHUB_TOKEN;
+  process.env.GITHUB_TOKEN = 'test';
+  const before = pm.pmSettings();
+  const t0 = Date.now() - 5 * 3600_000; // the old build the error was caught on
+  const t1 = t0 + 3600_000; // the fix merged into beta
+  const t2 = t0 + 2 * 3600_000; // beta's current build published
+  const report = (sha: string, built: number, more: object = {}) => J({ text: 'NullReferenceException', build: { product: 'pmninth', sha, ref: 'beta (build Game/v165)', built, ...more }, at: built });
+  const beta = { status: 'ready', sha: 'bbbbbbb', at: t2 };
+  const queued = (f: string) => (db.prepare(`SELECT id FROM changes WHERE findings LIKE ? AND status = 'queued'`).all(`%"${f}"%`) as any[]).map((r) => r.id);
+  try {
+    pm.savePmSettings({ maxConcurrent: pm.capacity().active + 5, maxStartsPerDay: 1000 });
+    db.prepare(`INSERT INTO changes (id, product, findings, status, detail, repo, slug, branch, base, worktree, title, notes, log, created, updated, merged_at)
+      VALUES ('c_9a0000000001', 'pmninth', '[]', 'merged', 'merged into beta', 'pmninth', 'x/pmninth', 'fix/r', 'beta', ?, 'Restart restarts', '[]', '[]', ?, ?, ?)`).run(path.join(tmp, 'none', 'c_9a0000000001'), t1, t1, t1);
+    const f = { product: 'pmninth', source: 'auto', report: report('aaaaaaa', t0) };
+    assert.match(waitsForCurrentBuild(f, beta) ?? '', /waiting to see it on the current build.*c_9a0000000001/);
+    assert.equal(waitsForCurrentBuild({ ...f, source: 'J' }, beta), null, "J's reports never wait");
+    assert.equal(waitsForCurrentBuild({ ...f, report: report('bbbbbbb1234', t2) }, beta), null, 'caught on the current build');
+    assert.equal(waitsForCurrentBuild({ ...f, report: report('aaaaaaa', t0, { change: 'c_x' }) }, beta), null, "a change's preview");
+    assert.equal(waitsForCurrentBuild({ ...f, report: report('aaaaaaa', t1 + 60_000) }, beta), null, 'nothing merged since that build');
+    assert.equal(waitsForCurrentBuild(f, { ...beta, status: 'building' }), null);
+
+    // In the PM loop: held (note, no agent, nobody asked) until the current build catches it again.
+    fs.writeFileSync(path.join(process.env.STUDIO_DATA!, 'previews.json'), JSON.stringify({ pmninth: { beta } }));
+    const now = Date.now();
+    db.prepare(`INSERT INTO findings (id, product, key, title, severity, area, status, scenario, first_seen, last_seen, seen, source, report)
+      VALUES ('f_9a0000000001', 'pmninth', 'auto:x', 'Error on beta: NullReferenceException', 'bug', 'beta errors', 'open', 'auto-error', ?, ?, 50, 'auto', ?)`).run(now, now, report('aaaaaaa', t0));
+    await pm.startWork();
+    assert.deepEqual(queued('f_9a0000000001'), [], 'held');
+    assert.match(getFinding('f_9a0000000001')!.note ?? '', /waiting to see it on the current build/);
+    assert.equal(db.prepare(`SELECT 1 FROM questions WHERE subject = 'f_9a0000000001'`).get(), undefined);
+    db.prepare(`UPDATE findings SET report = ? WHERE id = 'f_9a0000000001'`).run(report('bbbbbbb', t2 + 1000));
+    await pm.startWork();
+    const [c] = queued('f_9a0000000001');
+    assert.ok(c, 'caught on the current build: an agent starts');
+
+    // Its agent finds it already done (no commit): the bug is fixed with its word, and it isn't a try.
+    assert.equal(getFinding('f_9a0000000001')!.status, 'fixed');
+    assert.ok(!fixAlreadyDone(c, { task: 'k_x' }, ['f_9a0000000001'], 'Already fixed by #79.', []), "a task's claim is the PM's");
+    assert.ok(!fixAlreadyDone(c, { task: null }, ['f_9a0000000001'], 'Already fixed by #79.', ['abc']), 'it committed');
+    assert.ok(fixAlreadyDone(c, { task: null }, ['f_9a0000000001'], 'Already fixed: the error came from beta build v165, before #79. No change.', []));
+    assert.equal(getChange(c)!.status, 'failed');
+    assert.ok(getChange(c)!.detail!.startsWith(ALREADY));
+    assert.equal(getFinding('f_9a0000000001')!.status, 'fixed');
+    assert.match(getFinding('f_9a0000000001')!.note ?? '', /already done/);
+    // Came back: three such attempts don't use up its tries.
+    db.prepare(`UPDATE findings SET status = 'open' WHERE id = 'f_9a0000000001'`).run();
+    for (const n of [2, 3]) db.prepare(`INSERT INTO changes (id, product, findings, status, detail, repo, slug, branch, base, worktree, title, notes, log, created, updated)
+      VALUES (?, 'pmninth', '["f_9a0000000001"]', 'failed', ?, 'pmninth', 'x/pmninth', 'fix/z', 'beta', ?, 'Something', '[]', '[]', ?, ?)`).run(`c_9a000000000${n}`, `${ALREADY} (the agent made no commit)`, path.join(tmp, 'none', `c_${n}`), now, now);
+    await pm.startWork();
+    const [again] = queued('f_9a0000000001');
+    assert.ok(again, 'not out of tries');
+    assert.equal(db.prepare(`SELECT 1 FROM questions WHERE subject = 'f_9a0000000001'`).get(), undefined, 'J is not asked');
+    db.prepare(`UPDATE changes SET status = 'failed', detail = ? WHERE id = ?`).run(`${ALREADY} (the agent made no commit)`, again);
+
+    // A "failed 3 attempts" question from before (q_ef8448c712e3): every attempt said already done, so the bug is fixed
+    // and the question settles itself.
+    db.prepare(`UPDATE findings SET status = 'open' WHERE id = 'f_9a0000000001'`).run();
+    const q = rm.addQuestion({ kind: 'decision', subject: 'f_9a0000000001', product: 'pmninth', text: '"Error on beta" failed 3 attempts by agents. Try another way, or drop it?', options: ['try again', "won't fix"] });
+    const settled = await pm.settleFindingQuestions();
+    assert.ok(settled.includes(q.id));
+    assert.equal(rm.getQuestion(q.id)!.status, 'resolved');
+    assert.match(rm.getQuestion(q.id)!.answer ?? '', /no longer needed: f_9a0000000001 is fixed/);
+    assert.equal(getFinding('f_9a0000000001')!.status, 'fixed');
+    // One about a bug still open with a real failed attempt stays.
+    db.prepare(`INSERT INTO findings (id, product, key, title, severity, status, first_seen, last_seen, seen) VALUES ('f_9a0000000002', 'pmninth', 'k9', 'Still broken', 'bug', 'open', ?, ?, 1)`).run(now, now);
+    db.prepare(`INSERT INTO changes (id, product, findings, status, detail, repo, slug, branch, base, worktree, title, notes, log, created, updated)
+      VALUES ('c_9a0000000009', 'pmninth', '["f_9a0000000002"]', 'failed', 'the agent made no commit', 'pmninth', 'x/pmninth', 'fix/z', 'beta', ?, 'Something', '[]', '[]', ?, ?)`).run(path.join(tmp, 'none', 'c_9'), now, now);
+    const q2 = rm.addQuestion({ kind: 'decision', subject: 'f_9a0000000002', product: 'pmninth', text: 'failed 3 attempts', options: [] });
+    assert.ok(!(await pm.settleFindingQuestions()).includes(q2.id));
+    assert.equal(rm.getQuestion(q2.id)!.status, 'open');
   } finally {
     pm.savePmSettings({ maxConcurrent: before.maxConcurrent, maxStartsPerDay: before.maxStartsPerDay });
     if (token === undefined) delete process.env.GITHUB_TOKEN; else process.env.GITHUB_TOKEN = token;
