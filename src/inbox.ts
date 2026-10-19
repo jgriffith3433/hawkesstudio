@@ -318,8 +318,11 @@ export async function inbox({ tokens = false }: { tokens?: boolean } = {}): Prom
     if (p.items.length && p.items.every((i) => i.state === 'live' || (i.status === 'done' && !i.consumed))) continue;
     const products = [...new Set(p.items.map((i) => i.product))];
     const beta = products.map((x) => betaLink(x)).filter(Boolean) as string[];
+    // Reached with criteria still missed (only after its tries, pm.ts milestoneCheck): the card says what's left.
+    const left = milestoneTasks(m.id).flatMap((t) => (t.checks?.where === 'beta' ? t.checks.results : [])).filter((r) => r.met !== 'yes');
     out.push({
-      id: `milestone:${m.id}`, kind: 'milestone', title: `Milestone reached: "${m.title}". Playtest it?`, text: null,
+      id: `milestone:${m.id}`, kind: 'milestone', title: left.length ? `Milestone "${m.title}": ${left.length} criteria still not met on beta after its tries. Playtest it?` : `Milestone reached: "${m.title}". Playtest it?`,
+      text: left.length ? `What's left: ${left.map((r) => `${r.criterion} (${r.met}${r.evidence ? `: ${r.evidence}` : ''})`).join('; ')}`.slice(0, 1500) : null,
       product: m.product ?? (products.length === 1 ? products[0] : null), productName: name(m.product ?? (products.length === 1 ? products[0] : null)),
       context: `${p.done}/${p.total} items on beta (every task merged and built)${(() => {
         // The milestone's beta playtest (pm.ts milestoneCheck): how many of its tasks' criteria it saw met.

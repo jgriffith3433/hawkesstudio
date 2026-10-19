@@ -265,7 +265,8 @@ async function checkOnBeta(t: Task) {
   const steps = db.prepare(`SELECT s.*, r.kind AS run_kind, r.status AS run_status FROM steps s JOIN runs r ON r.id = s.run
     WHERE s.product = ? AND s.kind = 'review' AND r.kind = 'beta' AND s.started > ? ORDER BY s.started DESC LIMIT 10`).all(t.product, t.merged_at ?? 0) as any[];
   // Only a review that judged this task's own criteria (a beta run checks whatever its starter asked: another task's, a fix's).
-  const judged = steps.map((x) => ({ ...x, data: parse(x.data) })).find((x) => judgesAll(x.data?.criteria, t.criteria));
+  // Never from a run that broke (stuck, a missing scenario, not built: brokenCheck): that's played again, not a miss.
+  const judged = steps.map((x) => ({ ...x, data: parse(x.data) })).find((x) => judgesAll(x.data?.criteria, t.criteria) && !brokenCheck(x.run, t.product));
   if (!judged) {
     // No beta check yet: start one if nothing is running for this product and the merge is a while ago.
     const running = db.prepare(`SELECT id FROM runs WHERE kind = 'beta' AND status = 'running' AND products LIKE ?`).get(`%"${t.product}"%`);
@@ -503,6 +504,8 @@ export async function milestoneCheck(id: string) {
   let runs: string[] = parse(m.checks ?? null) ?? [];
   const tasks = milestoneTasks(id).filter((t) => t.status === 'merged' && hasBeta(t.product) && t.criteria.length);
   if (!runs.length) {
+    // Checked again after a miss: once beta built again (the misses' fixes, or the next merge).
+    if (!recheckDue(id, [...new Set(tasks.map((t) => t.product))])) return;
     if (!tasks.length || !pmSettings().enabled) return announceMilestone(id);
     const { getChange } = await changes();
     const { startBeta } = await import('./pipeline.ts');
@@ -536,11 +539,54 @@ export async function milestoneCheck(id: string) {
   });
   const going = runs.some((r) => (db.prepare('SELECT status, started FROM runs WHERE id = ?').get(r) as any)?.status === 'running');
   // A check that hangs (a stuck build) doesn't hold J's milestone for ever.
-  const at = listDecisions({ since: 0, action: 'milestone-check', limit: 10_000 }).find((d) => d.subject === id)?.at ?? 0;
+  const at = lastDecision('milestone-check', id);
   if (going && Date.now() - at < 4 * 3600_000) return;
-  // Its tasks judged from those runs first (checkOnBeta), then J hears.
+  const s = pmSettings();
+  const tries = milestoneTries(id);
+  // A run that broke (stuck at one spot, a missing scenario, beta not built) says nothing about the criteria: it's played
+  // again, never counted as missed (J, 2026-10-19).
+  const broken = tries < s.maxTries && s.enabled ? runs.map((r) => brokenCheck(r)).find(Boolean) : null;
+  if (broken) {
+    setMilestoneChecks(id, []);
+    logDecision('milestone-rerun', id, m.product, `milestone "${m.title}": its beta check broke (${broken}), so its criteria aren't counted as missed: playing it again (${tries + 1} of ${s.maxTries})`.slice(0, 1500));
+    return;
+  }
+  // Its tasks judged from those runs first (checkOnBeta: a "no" goes to decideMiss in walk-away mode), then J hears, but
+  // only when every criterion is met, or misses remain after the tries (J, 2026-10-19: "0 of 2 criteria met" was announced).
   for (const t of tasks) await syncTask(getTask(t.id)!, (await changes()).getChange).catch((e) => console.warn(`[pm] milestone task ${t.id}: ${e.message ?? e}`));
-  announceMilestone(id);
+  const left = milestoneTasks(id).filter((t) => hasBeta(t.product) && t.criteria.length && !['verified', 'live', DONE].includes(t.status));
+  if (!left.length || tries >= s.maxTries || !s.enabled) return announceMilestone(id);
+  setMilestoneChecks(id, []);
+  const what = left.map((t) => `"${t.title}" (${t.status}${t.checks?.results?.length ? `: ${t.checks.results.filter((r) => r.met !== 'yes').map((r) => `${r.criterion} ${r.met}`).join('; ')}` : ''})`).join(', ');
+  logDecision('milestone-recheck', id, m.product, `milestone "${m.title}" not reached: ${left.length} task(s) not verified on beta (${what}); misses go to their agents, and the milestone is checked again after beta's next build (${tries + 1} of ${s.maxTries})`.slice(0, 1500));
+}
+
+/** A milestone check waiting after a miss: due once each product's beta built again since (or RECHECK_WAIT_MS passed). */
+const RECHECK_WAIT_MS = 2 * 3600_000;
+const lastDecision = (action: string, subject: string) => listDecisions({ since: 0, action, limit: 10_000 }).find((d) => d.subject === subject)?.at ?? 0;
+/** A milestone's checks played again so far (broken runs and misses). */
+const milestoneTries = (id: string) => ['milestone-rerun', 'milestone-recheck'].reduce((n, a) => n + listDecisions({ since: 0, action: a, limit: 10_000 }).filter((d) => d.subject === id).length, 0);
+function recheckDue(id: string, products: string[]) {
+  const at = lastDecision('milestone-recheck', id);
+  if (!at || at < lastDecision('milestone-check', id) || Date.now() - at > RECHECK_WAIT_MS) return true;
+  return products.every((p) => db.prepare(`SELECT 1 FROM runs WHERE kind = 'beta' AND products LIKE ? AND started > ? AND status IN ('done', 'failed')`).get(`%"${p}"%`, at));
+}
+
+/**
+ * Why a beta run says nothing about criteria (it broke), or null: still running, a playtest that failed, was skipped (a
+ * missing scenario, no GPU, "beta isn't built yet") or got stuck, or beta's build failed in it.
+ */
+export function brokenCheck(run: string, product?: string): string | null {
+  const r = db.prepare('SELECT id, status, detail, products, finished FROM runs WHERE id = ?').get(run) as any;
+  if (!r) return `run ${run} is gone`;
+  if (r.status === 'running') return `run ${run} is still running`;
+  const p = product ?? (parse(r.products) ?? [])[0];
+  const play = (db.prepare(`SELECT name, status, detail, data FROM steps WHERE run = ? AND product = ? AND kind = 'playtest'`).all(run, p) as any[])
+    .find((x) => x.status === 'failed' || x.status === 'skipped' || /\bstuck\b/i.test(String(x.detail ?? '')) || parse(x.data)?.outcome === 'stuck');
+  if (play) return `playtest ${play.name} ${play.status === 'done' ? 'got stuck' : play.status}: ${String(play.detail ?? '').slice(0, 300)}`;
+  // Over and not failed counts as done here (buildOf reads any other status as a run that threw).
+  const build = buildOf(p, { ...r, status: r.status === 'failed' ? 'failed' : 'done' });
+  return build.ok ? null : build.detail;
 }
 
 /** Every one of a task's criteria judged by name in these checks. */
@@ -1089,16 +1135,22 @@ function announceMilestone(id: string) {
   const verified = ready.flatMap((r) => r.criteria).filter((c) => c.met === 'yes').length;
   const total = ready.flatMap((r) => r.criteria).length;
   const bugs = ready.reduce((n, r) => n + r.bugs.length, 0);
+  // Reached with misses only after its tries (milestoneCheck): ONE card saying what's left.
+  const left = ready.flatMap((r) => r.criteria).filter((c) => c.met !== 'yes');
+  const leftLine = left.map((c) => `${c.criterion} (${c.met}${c.evidence ? `: ${c.evidence}` : ''})`).join('; ').slice(0, 1500);
   const text = [
-    `Milestone reached: **${m.title}**${m.product ? ` (${name(m.product)})` : ''}. Every task in it is merged and beta built it; one beta playtest checked their criteria (${verified} of ${total} met), so it's yours to playtest.`,
+    left.length
+      ? `Milestone checked: **${m.title}**${m.product ? ` (${name(m.product)})` : ''}. Every task in it is merged and beta built it, but after its checks and tries ${left.length} of ${total} criteria still aren't met on beta. What's left: ${leftLine}`
+      : `Milestone reached: **${m.title}**${m.product ? ` (${name(m.product)})` : ''}. Every task in it is merged and beta built it; ${total ? `beta's playtest met all ${total} of its criteria` : 'it had no criteria to check'}, so it's yours to playtest.`,
     m.goal ? `Goal: ${m.goal}` : '',
     m.test ? `What you said you'd test: ${m.test}` : '',
     ...ready.map(readyMarkdown),
     'When you have played it: go live (DEPLOY <product>), or tell me what is wrong and I will make it tasks.',
   ].filter(Boolean).join('\n\n---\n\n');
-  void postTo(m.origin, `Milestone reached: ${m.title}`, text);
-  void notify(`Milestone reached: ${m.title}`, `${verified}/${total} criteria verified on beta${bugs ? ` · ${bugs} known bug(s)` : ''}. Ready for you to playtest.`, { url: `${PUBLIC_URL}/#ready`, priority: 4, tags: ['checkered_flag'] });
-  logDecision('milestone', id, m.product, `milestone "${m.title}" reached (${ready.length} item(s), ${verified}/${total} criteria on beta): told J`);
+  const title = left.length ? `Milestone needs a look: ${m.title}` : `Milestone reached: ${m.title}`;
+  void postTo(m.origin, title, text);
+  void notify(title, left.length ? `${verified}/${total} criteria met on beta after its tries. Still not met: ${leftLine}`.slice(0, 400) : `${total ? `All ${total} criteria verified on beta` : 'On beta'}${bugs ? ` · ${bugs} known bug(s)` : ''}. Ready for you to playtest.`, { url: `${PUBLIC_URL}/#${left.length ? 'inbox' : 'ready'}`, priority: 4, tags: [left.length ? 'warning' : 'checkered_flag'] });
+  logDecision('milestone', id, m.product, `milestone "${m.title}" ${left.length ? 'checked with misses left after its tries' : 'reached'} (${ready.length} item(s), ${verified}/${total} criteria on beta)${left.length ? `; what's left: ${leftLine}` : ''}: told J`.slice(0, 1500));
 }
 
 export type Ready = {

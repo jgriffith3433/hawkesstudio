@@ -281,8 +281,12 @@ controls done"), made of roadmap items (`items.milestone`), with what he'll test
 live with it) | dropped. When every task of its items is merged and beta built it, Studio runs ONE beta run per product
 that plays its tasks' scenarios (the ones their agents wrote, verify mode; `milestoneCheck` in pm.ts, `plays` in
 pipeline.ts startBeta) and judges every task's criteria from it (a task whose criteria all pass is `verified`; a "no"
-fails it and asks J). Once that run is over (at most 4 hours) the milestone is reached: J's moment, a **phone
-notification** and, in the conversation where it was planned (else a notice), the ready-to-test summary of its items
+fails it and asks J; in walk-away mode `decideMiss` takes it). Once that run is over (at most 4 hours) and every
+criterion is met, the milestone is reached. A run that broke (a playtest stuck, failed or skipped for a missing
+scenario, beta not built: `brokenCheck`) is played again, never counted as missed; with criteria missed or unclear, J
+hears nothing and the milestone is checked again after beta's next build of the product (or 2 hours). Only after
+`maxTries` such re-plays does a milestone with misses left reach J, as one card saying what's left. Reached: J's
+moment, a **phone notification** and, in the conversation where it was planned (else a notice), the ready-to-test summary of its items
 with a verdict, evidence and the video per criterion and each task's build.
 After playing it J goes live (`DEPLOY <product>`) or tells Talk what's wrong, which becomes tasks (a new item in the
 milestone opens it again). Progress shows in the Roadmap tab and the morning brief.
