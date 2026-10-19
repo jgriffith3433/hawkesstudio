@@ -147,7 +147,7 @@ export function costRaising(section: Section, patch: Record<string, any>, cur: R
     }
   }
   if (section === 'call' && patch.engine === 'eleven' && cur.engine !== 'eleven') out.push(`the ElevenLabs voice (about $${ELEVEN_PER_MIN.toFixed(2)} a minute Talk speaks)`);
-  if (section === 'brain' && patch.id === 'grok' && cur.id !== 'grok') out.push('brain → Grok (xAI, billed per token)');
+  if (section === 'brain' && (patch.harness === 'cursor' || patch.id === 'cursor' || patch.id === 'grok') && cur.harness !== 'cursor') out.push('harness → Cursor (the Cursor plan)');
   return out;
 }
 
@@ -179,8 +179,8 @@ export async function saveSettings(section: string, patch: Record<string, any>, 
   }
   if (s === 'brain') {
     let saved;
-    try { saved = saveBrain(String(patch.id), by); } catch (e: any) { throw new StudioError(e.message); }
-    await syncBrain(saved.id);
+    try { saved = saveBrain({ harness: patch.harness ?? patch.id, model: patch.model }, by); } catch (e: any) { throw new StudioError(e.message); }
+    await syncBrain(saved.harness);
     return saved;
   }
   if (s === 'call') {

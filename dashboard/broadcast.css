@@ -1,0 +1,63 @@
+/* 1920×1080 show. The stage scales to the window so OBS and a headless browser both fill the frame. */
+:root {
+  --bg: #0b0e12;
+  --panel: #141a22;
+  --line: #243041;
+  --text: #eef3f7;
+  --dim: #8ea0b5;
+  --mint: #3dffb0;
+  --amber: #ffb020;
+  --hot: #ff4d6a;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; background: #000; color: var(--text); font: 22px/1.35 "Segoe UI", system-ui, sans-serif; }
+#stage {
+  width: 1920px; height: 1080px; background: var(--bg);
+  display: flex; flex-direction: column; padding: 28px 36px 18px;
+  transform-origin: top left;
+}
+header, footer { display: flex; align-items: center; gap: 22px; }
+header { height: 64px; }
+.brand { font-weight: 750; letter-spacing: 0.14em; font-size: 20px; }
+.live-dot { display: inline-block; width: 12px; height: 12px; border-radius: 50%; background: var(--hot); margin-right: 8px; box-shadow: 0 0 12px var(--hot); }
+.dim { color: var(--dim); letter-spacing: 0; font-weight: 500; }
+#chips { display: flex; gap: 10px; flex: 1; }
+.chip { border: 1px solid var(--line); background: transparent; color: var(--dim); border-radius: 999px; padding: 6px 14px; font: inherit; font-size: 16px; cursor: pointer; }
+.chip.on { color: #042; background: var(--mint); border-color: var(--mint); font-weight: 700; }
+body.clean .chip { cursor: default; }
+.body { flex: 1; display: flex; gap: 22px; min-height: 0; margin-top: 12px; }
+.screen { flex: 1; position: relative; background: #05070a; border-radius: 18px; overflow: hidden; border: 1px solid var(--line); }
+#live, #replay { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; background: #000; }
+#idle { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; padding: 80px; }
+#idle[hidden], #live[hidden], #replay[hidden], #stinger[hidden] { display: none; }
+.idle-kicker { letter-spacing: 0.22em; color: var(--mint); font-size: 16px; font-weight: 700; }
+#idle-title { font-size: 64px; font-weight: 750; margin-top: 12px; max-width: 16ch; }
+#idle-sub { color: var(--dim); font-size: 28px; margin-top: 12px; max-width: 36ch; }
+#pips { position: absolute; top: 16px; right: 16px; display: flex; flex-direction: column; gap: 8px; }
+.pip { width: 240px; height: 135px; object-fit: cover; border-radius: 8px; border: 2px solid var(--mint); background: #000; }
+#lower { position: absolute; left: 0; right: 0; bottom: 0; padding: 18px 24px 16px; background: linear-gradient(transparent, rgba(0,0,0,.82)); }
+#lower-title { font-size: 32px; font-weight: 750; }
+#lower-sub { color: #d5dee8; font-size: 20px; min-height: 1.2em; }
+#host { position: absolute; left: 20px; bottom: 108px; display: flex; gap: 14px; align-items: center; max-width: 720px; background: rgba(12,16,22,.88); border: 1px solid var(--line); border-radius: 16px; padding: 12px 16px; }
+.puppet { width: 64px; height: 64px; border-radius: 50% 50% 46% 46%; background: radial-gradient(circle at 35% 30%, #b8ffdf, var(--mint) 42%, #149a62); position: relative; flex: none; }
+.mouth { position: absolute; left: 22px; bottom: 16px; width: 20px; height: 8px; border-radius: 0 0 12px 12px; background: #063; transform-origin: center top; }
+.puppet.talk .mouth { animation: flap 0.28s ease-in-out infinite; }
+@keyframes flap { 50% { transform: scaleY(2.4); } }
+.who { font-size: 13px; letter-spacing: 0.16em; color: var(--mint); font-weight: 750; }
+#host-line { font-size: 20px; }
+aside { width: 460px; background: var(--panel); border-radius: 18px; border: 1px solid var(--line); padding: 22px 22px 8px; overflow: hidden; }
+.kicker { letter-spacing: 0.18em; font-size: 13px; color: var(--dim); font-weight: 700; }
+aside h2 { margin: 6px 0 18px; font-size: 32px; line-height: 1.15; }
+.bar { margin: 0 0 16px; }
+.bar b { display: block; font-size: 18px; font-weight: 650; }
+.bar .meta { color: var(--dim); font-size: 14px; }
+.track { height: 10px; background: #0c1118; border-radius: 99px; margin-top: 6px; overflow: hidden; }
+.track span { display: block; height: 100%; background: linear-gradient(90deg, #149a62, var(--mint)); border-radius: 99px; }
+footer { height: 72px; margin-top: 12px; }
+#ticker { flex: 1; white-space: nowrap; overflow: hidden; mask-image: linear-gradient(90deg, transparent, #000 4%, #000 96%, transparent); }
+#ticker span { display: inline-block; animation: marquee 32s linear infinite; font-size: 22px; }
+@keyframes marquee { from { transform: translateX(0); } to { transform: translateX(-50%); } }
+#disclose { position: absolute; right: 36px; bottom: 22px; color: var(--dim); font-size: 13px; }
+#stage { position: relative; }
+#stinger { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; background: rgba(0,0,0,.55); font-size: 92px; font-weight: 800; letter-spacing: 0.06em; color: var(--amber); text-shadow: 0 8px 40px #000; }
+#stinger.bug { color: var(--hot); }

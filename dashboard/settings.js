@@ -63,10 +63,14 @@
   }
 
   function brainBox(b) {
-    const key = b.key ? 'XAI_API_KEY is set on this server.' : 'XAI_API_KEY is not set on this server yet. Grok cannot answer until it is in the hawkes/gen secret.';
-    return `<div class="set-box"><h3>🧠 Brain</h3>
-      <div class="meta">Who runs Talk, the PM, the agents and Gen's writing and review calls. Claude is Claude Code (the Max plan, or the API key). Grok is Grok 4.7 on xAI, billed per token. Switching takes effect on the next turn and the next agent; a session already running finishes on the brain that started it, unless Studio restarts onto the other one.</div>
-      ${row('Brain', select('brain', 'id', b.id, [['claude', 'Claude'], ['grok', 'Grok 4.7']]), b.id === 'grok' ? `Model ${esc(b.model)}. ${key}` : 'Claude Code, on the model each role names.')}
+    const key = b.key ? 'The Cursor key is on this server.' : 'CURSOR_API_KEY is not on this server yet. Cursor cannot run until it is in the hawkes/cursor secret.';
+    const models = b.harness === 'cursor'
+      ? [['grok-4.7', 'Grok 4.7'], ['composer-2.5', 'Composer 2.5']]
+      : [['', 'Each role’s model'], ['claude-opus-5-5', 'Opus'], ['claude-sonnet-5-5', 'Sonnet'], ['claude-haiku-5-5', 'Haiku']];
+    return `<div class="set-box"><h3>🧠 Harness and model</h3>
+      <div class="meta">What runs Talk, the PM, the agents and Gen's writing and review calls. Claude Code is the original harness. Cursor is the Cursor plan (no separate model API bill). Switching takes effect on the next turn and the next agent; a session already running is restarted on the harness you pick.</div>
+      ${row('Harness', select('brain', 'harness', b.harness, [['claude', 'Claude Code'], ['cursor', 'Cursor']]), b.harness === 'cursor' ? key : 'Claude Code, signed in with the Claude account.')}
+      ${row('Model', select('brain', 'model', b.model, models), b.harness === 'cursor' ? 'The model the Cursor harness uses.' : 'Leave this on each role’s model, or pick one for every role.')}
     </div>`;
   }
 

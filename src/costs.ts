@@ -396,7 +396,7 @@ async function estimateAws(p: Period, why: string, g?: GenUsage): Promise<AwsCos
 // ------------------------------------------------------------- Hawkes Gen
 
 export const PROVIDER_NAMES: Record<string, string> = {
-  'aws-gpu': 'GPU servers (AWS)', 'aws-builder': 'Build server (AWS)', anthropic: 'Claude API (billed)', xai: 'Grok (xAI)', elevenlabs: 'ElevenLabs (voice, SFX)',
+  'aws-gpu': 'GPU servers (AWS)', 'aws-builder': 'Build server (AWS)', anthropic: 'Claude API (billed)', xai: 'Grok (xAI)', cursor: 'Cursor plan', elevenlabs: 'ElevenLabs (voice, SFX)',
   comfy: 'ComfyUI', local: 'This server (free)', playtest: 'Playtests', pipeline: 'Pipelines',
 };
 const UNIT_NAMES: Record<string, string> = { gpu_seconds: 'GPU hours', seconds: 'hours', characters: 'characters', tokens: 'tokens' };

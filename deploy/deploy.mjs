@@ -230,6 +230,8 @@ Environment=AWS_DEFAULT_REGION=us-east-1
 ExecStart=/usr/bin/node /srv/hawkes/hawkesgen/bin/fetch-secrets.mjs /run/hawkes/gen.env hawkes/gen
 ExecStart=/usr/bin/node /srv/hawkes/hawkesgen/bin/fetch-secrets.mjs /run/hawkes/github.env hawkes/github --optional
 ExecStart=/usr/bin/node /srv/hawkes/hawkesgen/bin/fetch-secrets.mjs /run/hawkes/claude.env hawkes/claude --optional
+ExecStart=/usr/bin/node /srv/hawkes/hawkesgen/bin/fetch-secrets.mjs /run/hawkes/twitch.env hawkes/twitch --optional
+ExecStart=/usr/bin/node /srv/hawkes/hawkesgen/bin/fetch-secrets.mjs /run/hawkes/cursor.env hawkes/cursor --optional
 
 [Install]
 WantedBy=multi-user.target`),
@@ -245,6 +247,7 @@ WorkingDirectory=/srv/hawkes/hawkesgen
 EnvironmentFile=/run/hawkes/gen.env
 EnvironmentFile=/etc/hawkes/keys.env
 EnvironmentFile=-/run/hawkes/github.env
+EnvironmentFile=-/run/hawkes/cursor.env
 Environment=HAWKES_AWS_ROLE=1
 Environment=AWS_DEFAULT_REGION=us-east-1
 Environment=HAWKESGEN_HOST=127.0.0.1
@@ -269,6 +272,7 @@ EnvironmentFile=/etc/hawkes/keys.env
 EnvironmentFile=/run/hawkes/gen.env
 EnvironmentFile=-/run/hawkes/github.env
 EnvironmentFile=-/run/hawkes/claude.env
+EnvironmentFile=-/run/hawkes/cursor.env
 Environment=HAWKESGEN_URL=http://127.0.0.1:8790
 Environment=STUDIO_SERVER=1
 Environment=STUDIO_GPU_PLAYTESTS=playtester
@@ -326,6 +330,21 @@ Unit=hawkes-pull.service
 
 [Install]
 WantedBy=paths.target`),
+    unit('hawkes-broadcast.service', `
+[Unit]
+Description=Hawkes: the broadcast page to Twitch (separate from Studio)
+After=hawkes-studio.service hawkes-secrets.service
+
+[Service]
+User=hawkes
+WorkingDirectory=/srv/hawkes/hawkesstudio
+EnvironmentFile=-/run/hawkes/twitch.env
+ExecStart=/usr/bin/node bin/broadcast-stream.mjs --go
+Restart=on-failure
+RestartSec=15
+
+[Install]
+WantedBy=multi-user.target`),
   ];
   for (const u of units) {
     const local = path.join(os.tmpdir(), u.name);

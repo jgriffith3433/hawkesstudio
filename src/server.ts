@@ -186,6 +186,8 @@ const server = http.createServer(async (req, res) => {
     if (route === '/api/playtests/trends' && method === 'GET') return send(res, 200, trends({ product: q('product'), days: Number(q('days')) || 30 }));
     // The Playtests page's grid: playing, waiting and just finished, with each one's Studio context (livetests.ts).
     if (route === '/api/playtests/live' && method === 'GET') return send(res, 200, await (await import('./livetests.ts')).livePlaytests());
+    // The Twitch show (broadcast.ts, dashboard/broadcast.html): curated playtest, roadmap and agent titles.
+    if (route === '/api/broadcast' && method === 'GET') return send(res, 200, await (await import('./broadcast.ts')).broadcastNow({ product: q('product') || undefined }));
     // One playtest's full live state (every step, the timeline) for the maximized view, from Gen.
     m = /^\/api\/playtests\/live\/(j_[0-9a-f]+)$/.exec(route);
     if (m && method === 'GET') return send(res, 200, await gen.request(`/jobs/${m[1]}/live`));

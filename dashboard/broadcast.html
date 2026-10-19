@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hawkes Studio — on air</title>
+<link rel="stylesheet" href="/broadcast.css">
+</head>
+<body>
+<div id="stage">
+  <header>
+    <div class="brand"><span class="live-dot"></span> ON AIR <span class="dim">Hawkes Studio</span></div>
+    <div id="chips"></div>
+    <div id="clock" class="dim"></div>
+  </header>
+  <div class="body">
+    <section class="screen">
+      <img id="live" alt="" hidden>
+      <video id="replay" hidden muted playsinline></video>
+      <div id="idle">
+        <div class="idle-kicker">Between takes</div>
+        <div id="idle-title">The floor is quiet</div>
+        <div id="idle-sub"></div>
+      </div>
+      <div id="pips"></div>
+      <div id="lower">
+        <div id="lower-title"></div>
+        <div id="lower-sub"></div>
+      </div>
+      <div id="stinger" hidden></div>
+      <div id="host">
+        <div class="puppet" aria-hidden="true"><span class="mouth"></span></div>
+        <div>
+          <div class="who">Yooba</div>
+          <div id="host-line"></div>
+        </div>
+      </div>
+    </section>
+    <aside>
+      <div class="kicker" id="ms-kicker">Roadmap</div>
+      <h2 id="ms-title">What's being made</h2>
+      <div id="bars"></div>
+    </aside>
+  </div>
+  <footer>
+    <div class="kicker">On the floor</div>
+    <div id="ticker"></div>
+  </footer>
+  <div id="disclose"></div>
+</div>
+<script src="/broadcast.js"></script>
+</body>
+</html>

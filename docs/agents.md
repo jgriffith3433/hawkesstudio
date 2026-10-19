@@ -19,7 +19,7 @@ them too.
 | `scout` | `studio_scout` (read-only investigation) | Opus | read, git log/show |
 | `reviewer` | a subagent for a second opinion on a change | Sonnet | read, git diff |
 
-**Brain** (Settings, `src/brains.ts`): Claude or Grok 4.7. Grok runs `bin/grok-agent.mjs` (xAI, `XAI_API_KEY` from the hawkes/gen secret) and speaks the same stream-json, so the roles, tools and MCP servers stay. On the control server, a Studio that has never stored a brain uses Grok (Claude usage ran out, J 2026-10-19) and tells Gen, whose writing and review calls follow (`settings.brain`). The role's model name still applies when the brain is Claude.
+**Harness** (Settings, `src/brains.ts`): Claude Code or Cursor, and the model. Cursor runs `bin/cursor-agent.mjs`, which launches Cursor's `agent` on the Cursor plan (`CURSOR_API_KEY` from the hawkes/cursor secret) and speaks the same stream-json, so the roles, tools and MCP servers stay. On the control server, a Studio that has never stored a harness uses Cursor on Grok 4.7 when that key is present (Claude usage ran out, J 2026-10-19) and tells Gen, whose writing and review calls follow (`settings.brain`). Claude Code still uses the model each role names, unless Settings picks one.
 
 `src/roles.ts` turns a role into flags: `--model`, `--append-system-prompt` (the role's instructions, then Studio's
 context for that run), `--allowedTools` / `--disallowedTools`, `--max-turns`, and `--plugin-dir hawkesstudio/.claude`.

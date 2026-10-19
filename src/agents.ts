@@ -800,7 +800,7 @@ export function stuckWhy({ quietMs, idleMs, cpuMs, overMs, procs, genBusy }: { q
   if (!(idleMs > 0) || quietMs < idleMs || overMs < idleMs * 0.75 || genBusy) return null;
   if (cpuMs > overMs * 0.02) return null;
   if (procs.some((p) => p.state === 'R' || p.state === 'D')) return null;
-  const left = [...new Set(procs.map((p) => p.comm))].filter((n) => !['node', 'claude', 'sudo'].includes(n));
+  const left = [...new Set(procs.map((p) => p.comm))].filter((n) => !['node', 'claude', 'agent', 'sudo'].includes(n));
   return `no new output for ${Math.round(quietMs / 60_000)} minutes and its processes only waiting${left.length ? ` (${left.slice(0, 6).join(', ')})` : ''}`;
 }
 
