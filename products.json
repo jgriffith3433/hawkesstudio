@@ -333,7 +333,7 @@
       "about": "A real-time simulation (Babylon.js) of a day in a developer's life; the character is \"AI\". Direction undecided.",
       "quality": "Direction undecided, so the bar is only that it runs: it loads and the day simulation runs without errors or a blank screen. Don't judge or suggest a direction.",
       "deploy": {
-        "prebuild": "node scripts/bump-version.mjs patch"
+        "prebuild": "node scripts/stamp-build.mjs"
       },
       "contract": true,
       "dev": {

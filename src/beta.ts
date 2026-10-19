@@ -336,8 +336,8 @@ export function prebuilt(p: Product, sha: string, title: string) {
 }
 
 /**
- * Products with a pre-deploy build (products.json deploy.prebuild: PH Origins builds play/, I Can Be bumps its
- * version) get it run on beta and committed there ("Studio build: ..."), so the beta commit that's playtested is
+ * Products with a pre-deploy build (products.json deploy.prebuild: PH Origins builds play/, I Can Be stamps its build
+ * and version) get it run on beta and committed there ("Studio build: ..."), so the beta commit that's playtested is
  * exactly what goes live. Skipped when beta's newest commit is already such a build.
  */
 /** Committing a pre-deploy build to beta and pushing it is a critical section (drain.ts). */
