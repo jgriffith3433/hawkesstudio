@@ -86,7 +86,7 @@ async function conversationFor(product: string, t: ReturnType<typeof testing>) {
 export const WIDGET = path.join(import.meta.dirname, '..', 'dashboard', 'report-widget.js');
 
 /** What a beta page knows about itself: the product, the commit and what was built (Game/v<n> for Unity), the change. */
-export type PageInfo = { product: string; sha?: string | null; ref?: string; change?: string; built?: number };
+export type PageInfo = { product: string; sha?: string | null; ref?: string; change?: string; built?: number; version?: string };
 
 // Errors from before the widget loads: a tiny hook at the top of <head> (the widget reads window.__hawkesLog, and the
 // uncaught errors it queues in window.__hawkesErrs until the widget's window.__hawkesOnError takes them). It also
@@ -280,6 +280,9 @@ export async function fileAutoError(productId: string, b: ErrorIn, ip = '') {
   const message = cut(e.message, 1000).trim();
   const stack = cut(e.stack, 3000);
   if (isNoise(message, stack, cut(e.source, 500))) return { ok: true, ignored: true };
+  // (a change's own preview, /c/<id>/, is its build, not beta's)
+  const gone = b.build?.change ? null : stalePage(`${message}\n${stack}\n${cut(e.source, 500)}`, await betaVersion(p.id));
+  if (gone) return fileStalePage(p.id, b, message, stack, gone);
   const sig = errorSignature(message, stack);
   const key = `auto:${createHash('sha1').update(`${p.id}\n${sig}`).digest('hex').slice(0, 16)}`;
   const now = Date.now();
@@ -309,6 +312,55 @@ export async function fileAutoError(productId: string, b: ErrorIn, ip = '') {
   }
   if (shot) void importShot(id, p.id, shot, title, 'auto').catch((err) => console.warn(`[bugreport] Gen import for ${id}: ${err.message ?? err}`));
   return { ok: true, id, seen: Boolean(old) };
+}
+
+// ------------------------------------------------------------ stale pages
+//
+// A page left open on an older Unity beta build (J's iPhone on Game/v54 after beta moved to v55) fails to load that
+// build's files once they're gone. That's not a game bug: it's filed as one "stale page" finding per product (seen
+// counts up), won't-fix, so no agent ever starts on it. previews.ts keeps the previous build published to make it rare,
+// and the page's report button offers "New build: reload".
+
+const LOAD_FAILED = /\b404\b|not found|unable to load|failed to (load|fetch|download)|could not (load|download)|RemoteProviderException|network ?error/i;
+
+/** The build beta's site serves now (its Game/v<n>), or null (not a Unity product, nothing published). */
+async function betaVersion(product: string) {
+  const b = (await import('./previews.ts')).betaPreview(product);
+  return Number(b?.version ?? /Game\/v(\d+)/.exec(b?.ref ?? '')?.[1]) || null;
+}
+
+/** The older Game/v<n> an error failed to load, when beta serves a newer build (`current`); else null. */
+export function stalePage(text: string, current: number | null) {
+  if (!current || !LOAD_FAILED.test(text)) return null;
+  const versions = [...String(text).matchAll(/\/Game\/v([1-9]\d*)\//g)].map((m) => Number(m[1]));
+  return versions.length && versions.every((v) => v < current) ? { version: Math.max(...versions), current } : null;
+}
+
+/** An open automatic report whose latest sample is a stale page (for the ones filed before this check). */
+export async function staleReport(f: { product: string; source?: string | null; report?: string | null }) {
+  if (f.source !== 'auto') return null;
+  const r = parse(f.report ?? null) as Report | null;
+  return r?.text && !r.build?.change ? stalePage(r.text, await betaVersion(f.product)) : null;
+}
+
+export const staleNote = (s: { version: number; current: number }) =>
+  `Stale page, not a game bug: a page still open on beta's older build Game/v${s.version} couldn't load its files after beta moved to Game/v${s.current}. Reloading fixes it (the page offers "New build: reload"); no agent starts on it.`;
+
+function fileStalePage(product: string, b: ErrorIn, message: string, stack: string, s: { version: number; current: number }) {
+  const now = Date.now();
+  const key = `stale:${product}`;
+  const r = sampleOf(b, message, stack, now);
+  const detail = [staleNote(s), `Error: ${r.text}`, detailOf({ ...r, text: '' }, null).split('\n').slice(1).join('\n')].filter(Boolean).join('\n');
+  const old = db.prepare(`SELECT id FROM findings WHERE product = ? AND key = ? LIMIT 1`).get(product, key) as any;
+  if (old) {
+    db.prepare(`UPDATE findings SET seen = seen + 1, last_seen = ?, detail = ?, report = ?, note = ?, status = 'wontfix' WHERE id = ?`).run(now, detail, J(r), staleNote(s), old.id);
+    return { ok: true, id: old.id, seen: true, stale: true };
+  }
+  const id = newId('f');
+  db.prepare(`INSERT INTO findings (id, product, key, title, severity, area, detail, fix, status, scenario, shots, first_seen, last_seen, seen, last_run, note, source, milestone, item, report)
+    VALUES (?, ?, ?, ?, 'polish', 'stale page', ?, ?, 'wontfix', 'stale-page', '[]', ?, ?, 1, NULL, ?, 'auto', NULL, NULL, ?)`)
+    .run(id, product, key, 'Stale page: an open page of an older beta build failed to load its files', detail, 'Nothing to fix in the game: reload the page.', now, now, staleNote(s), J(r));
+  return { ok: true, id, stale: true };
 }
 
 /** A short and a full sha of the same commit match. */

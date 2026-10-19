@@ -11,6 +11,10 @@
 // POST /dev/__studio/error: noise skipped, once per signature and at most 5 per tab session, with the same context as a
 // report and the game's frame as the screenshot when there is one (never the whole page: nothing the player would
 // notice). The only sign of it is a tiny "Error reported" toast.
+//
+// And it asks the front door which build beta serves now (GET /dev/__studio/build: on load, when the tab comes back,
+// every 2 minutes while it's on screen): a page of an older build shows a small "New build: reload" prompt (Studio
+// keeps the previous Unity build published, so the old page keeps working until J taps it).
 (() => {
   if (window.__hawkesReport) return;
   try { if (window.top !== window) return; } catch { return; }
@@ -83,8 +87,15 @@
   .toast { position: fixed; left: 8px; bottom: 8px; padding: 3px 8px; border-radius: 6px; background: #000a; color: #e9ecf1; font-size: 11px;
     pointer-events: none; opacity: 0; transition: opacity .3s; }
   .toast.on { opacity: .8; }
+  .fresh { position: fixed; left: 50%; top: 8px; transform: translateX(-50%); display: none; align-items: center; gap: 2px; border-radius: 999px;
+    background: #16181dee; color: #e9ecf1; box-shadow: 0 2px 10px #0008; font-size: 13px; }
+  .fresh.on { display: flex; }
+  .fresh button { background: none; border: 0; color: inherit; cursor: pointer; padding: 6px 10px; font-size: 13px; }
+  .fresh .go { font-weight: 600; color: #8fc1ff; padding-right: 4px; }
+  .fresh .no { color: #9aa3b2; padding-left: 4px; }
   </style>
   <div class="toast" aria-hidden="true">Error reported</div>
+  <div class="fresh" role="status"><button class="go" type="button">New build: reload</button><button class="no" type="button" aria-label="Not now">×</button></div>
   <button class="dot" title="Report a bug (Hawkes Studio, beta only)" aria-label="Report a bug">🐞</button>
   <div class="panel" role="dialog" aria-label="Report a bug">
     <div class="row top"><b>Report a bug</b><button class="x" aria-label="Close">×</button></div>
@@ -354,6 +365,31 @@
       }
     } finally { sending = false; }
   }
+  // --------------------------------------------------- a newer build on beta
+  // Not on a change's preview (/c/<id>/: that's the change, not beta) or a page that doesn't know its build.
+  const fresh = $('.fresh');
+  const same = (a, b) => { a = String(a || '').toLowerCase(); b = String(b || '').toLowerCase(); return Boolean(a && b) && (a.startsWith(b) || b.startsWith(a)); };
+  let dismissed = '';
+  async function checkBuild() {
+    if (cfg.change || !cfg.sha || document.visibilityState === 'hidden') return;
+    try {
+      const r = await fetch('/dev/__studio/build', { credentials: 'same-origin', cache: 'no-store' });
+      const b = r.ok ? await r.json() : null;
+      if (!b || !b.sha) return;
+      const newer = (b.version && cfg.version) ? String(b.version) !== String(cfg.version) : !same(b.sha, cfg.sha);
+      fresh.classList.toggle('on', newer && dismissed !== `${b.sha}/${b.version || ''}`);
+      fresh.dataset.build = `${b.sha}/${b.version || ''}`;
+    } catch {}
+  }
+  $('.go').onclick = () => location.reload();
+  $('.no').onclick = () => { dismissed = fresh.dataset.build || ''; fresh.classList.remove('on'); };
+  if (!cfg.change && cfg.sha) {
+    setTimeout(checkBuild, 3000);
+    setInterval(checkBuild, 120_000);
+    addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') checkBuild(); });
+    addEventListener('pageshow', (e) => { if (e.persisted) checkBuild(); });
+  }
+
   window.__hawkesOnError = autoError;
   for (const x of errs.splice(0)) autoError(x);
 

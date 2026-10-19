@@ -56,9 +56,12 @@ const RECIPES: Record<string, Recipe> = {
   // The corporate site isn't listed: Pages serves its repo root as committed (dist/ is only the old local build).
 };
 
-export type Preview = { status: 'building' | 'ready' | 'failed' | 'waiting'; at: number; sha?: string | null; ref?: string; detail?: string; files?: number; ms?: number };
-/** beta: the staging root (it was "main" before the beta lane; that entry is ignored and rebuilt). */
-type State = Record<string, { beta?: Preview; changes?: Record<string, Preview> }>;
+export type Preview = { status: 'building' | 'ready' | 'failed' | 'waiting'; at: number; sha?: string | null; ref?: string; detail?: string; files?: number; ms?: number; version?: string | null };
+/**
+ * beta: the staging root (it was "main" before the beta lane; that entry is ignored and rebuilt). kept: a Unity beta
+ * site's older Game/v<n> folders still published (keepOldBuilds), with when each stopped being beta's build.
+ */
+type State = Record<string, { beta?: Preview; changes?: Record<string, Preview>; kept?: Record<string, number> }>;
 
 /** Subdomain -> product id (products.json "previews"). */
 export function previewHosts(): Record<string, string> {
@@ -141,9 +144,10 @@ async function build(p: Product, o: { change?: string; dir?: string }): Promise<
   const target = o.change ? path.join(PREVIEWS, p.id, 'c', o.change) : path.join(PREVIEWS, p.id, 'beta');
   const progress = (detail: string) => record(p.id, o.change, { status: 'building', at: t0, detail });
   try {
-    let files: Map<string, { src: string; link: boolean }>;
+    let files: Files;
     let sha: string | null;
     let ref: string;
+    let version: string | null | undefined;
     if (p.engine === 'unity' || p.build) {
       let site = path.join(PROJECTS, p.site);
       const siteTop = p.site.split('/')[0];
@@ -172,9 +176,12 @@ async function build(p: Product, o: { change?: string; dir?: string }): Promise<
         }
         sha = b.sha.slice(0, 7);
         ref = `${BETA} (build${b.version ? ` Game/v${b.version}` : ''})`;
+        version = b.version ?? null;
       }
       progress('collecting the website folder');
       files = await collect(site, { site: 'tracked' });
+      // A page still open on the previous build keeps loading its files (J's iPhone on Game/v54 after v55 landed).
+      if (!o.change) keepOldBuilds(p.id, files, target);
     } else {
       const top = p.repo.split('/')[0];
       const repoDir = path.join(PROJECTS, top);
@@ -220,8 +227,8 @@ async function build(p: Product, o: { change?: string; dir?: string }): Promise<
     }
     progress(`copying ${files.size} files`);
     // Every page gets J's "report a bug" button (bugreport.ts); only here, never in a repo or on a live site.
-    await place(files, target, { product: p.id, sha, ref, ...(o.change ? { change: o.change } : {}), built: Date.now() });
-    return record(p.id, o.change, { status: 'ready', at: Date.now(), sha, ref, files: files.size, ms: Date.now() - t0 });
+    await place(files, target, { product: p.id, sha, ref, ...(o.change ? { change: o.change } : {}), ...(version ? { version: String(version) } : {}), built: Date.now() });
+    return record(p.id, o.change, { status: 'ready', at: Date.now(), sha, ref, files: files.size, ms: Date.now() - t0, ...(version ? { version: String(version) } : {}) });
   } catch (e: any) {
     const prev = readState()[p.id];
     const last = o.change ? prev?.changes?.[o.change] : prev?.beta;
@@ -257,9 +264,13 @@ async function worktree(repoDir: string, id: string, commit: string) {
 const skip = (rel: string) => rel.split('/').some((s) => (s.startsWith('.') && s !== '.well-known' && s !== '.nojekyll') || s === 'node_modules')
   || /\.(pem|key)$/i.test(rel) || /(^|\/)\.env/.test(rel);
 
-/** dest path -> source file. Sources from git are hard-linked (git replaces files, never rewrites them); build output is copied. */
+/**
+ * dest path -> source file. Sources from git are hard-linked (git replaces files, never rewrites them); build output is
+ * copied. raw: published as it is (a kept old build's pages already have the report button).
+ */
+type Files = Map<string, { src: string; link: boolean; raw?: boolean }>;
 async function collect(dir: string, r: Recipe) {
-  const files = new Map<string, { src: string; link: boolean }>();
+  const files: Files = new Map();
   const add = (rel: string, src: string, link: boolean) => { if (!skip(rel)) files.set(rel, { src, link }); };
   if (r.site === 'tracked') {
     const ls = await git(dir, ['ls-files', '-co', '--exclude-standard', '-z']);
@@ -288,17 +299,17 @@ function walk(root: string, rel: string): string[] {
 }
 
 /** Writes the files into a fresh folder, then swaps it in for the old one. HTML pages get the report button (copied, not linked). */
-async function place(files: Map<string, { src: string; link: boolean }>, target: string, page?: PageInfo) {
+async function place(files: Files, target: string, page?: PageInfo) {
   const tmp = `${target}.new-${Date.now()}`;
   const made = new Set<string>();
-  for (const [rel, { src, link }] of files) {
+  for (const [rel, { src, link, raw }] of files) {
     const dest = path.join(tmp, rel);
     const d = path.dirname(dest);
     if (!made.has(d)) {
       await fs.promises.mkdir(d, { recursive: true });
       made.add(d);
     }
-    if (page && /\.html?$/i.test(rel)) {
+    if (page && !raw && /\.html?$/i.test(rel)) {
       await fs.promises.writeFile(dest, injectReport(await fs.promises.readFile(src, 'utf8'), page));
       continue;
     }
@@ -316,6 +327,57 @@ async function place(files: Map<string, { src: string; link: boolean }>, target:
   if (fs.existsSync(target)) await fs.promises.rename(target, old);
   await fs.promises.rename(tmp, target);
   await fs.promises.rm(old, { recursive: true, force: true });
+}
+
+// ------------------------------------------------------- old Unity builds
+
+/** How long an older build stays published after beta moved past it (the one just before the current always stays). */
+export const KEEP_OLD_BUILD_MS = 24 * 60 * 60_000;
+
+const versionsIn = (rels: Iterable<string>) => [...new Set([...rels].map((r) => /^Game\/v([1-9]\d*)\//.exec(r)?.[1]).filter(Boolean).map(Number))];
+
+/**
+ * Which older Game/v<n> folders a Unity beta site keeps publishing next to its new build, and since when each is old:
+ * the newest one older than the new build always (so the last 2 builds are both there), the rest only for a day after
+ * beta moved past them (`since`: when each stopped being beta's build; one that just did is old from `now`).
+ */
+export function keptGameVersions(published: number[], old: number[], since: Record<string, number>, now = Date.now()): Record<string, number> {
+  const newest = Math.max(0, ...published);
+  const gone = old.filter((v) => v < newest && !published.includes(v)).sort((a, b) => b - a);
+  const out: Record<string, number> = {};
+  gone.forEach((v, i) => {
+    const at = since[v] ?? now;
+    if (i === 0 || now - at < KEEP_OLD_BUILD_MS) out[v] = at;
+  });
+  return out;
+}
+
+/**
+ * A new Unity beta build replaces the published site, and the beta website copy only has the new Game/v<n>: a page
+ * still open on the previous build would 404 on its next asset bundle. So the folders keptGameVersions keeps are
+ * carried over from the site being replaced (hard links, as published: their pages keep their own report button,
+ * which offers "New build: reload"). Only the beta site; a change's preview and the live sites never get this.
+ */
+function keepOldBuilds(product: string, files: Files, target: string) {
+  const published = versionsIn(files.keys());
+  if (!published.length) return;
+  let old: number[] = [];
+  try {
+    old = fs.readdirSync(path.join(target, 'Game')).map((n) => /^v([1-9]\d*)$/.exec(n)?.[1]).filter(Boolean).map(Number);
+  } catch { /* nothing published yet */ }
+  const s = readState();
+  const kept = keptGameVersions(published, old, s[product]?.kept ?? {});
+  for (const v of Object.keys(kept)) {
+    for (const rel of walk(target, `Game/v${v}`)) if (!files.has(rel) && !skip(rel)) files.set(rel, { src: path.join(target, rel), link: true, raw: true });
+  }
+  (s[product] ??= {}).kept = kept;
+  fs.writeFileSync(STATE, JSON.stringify(s, null, 2));
+}
+
+/** What beta serves now, for a beta page asking whether it's out of date (GET /dev/__studio/build). */
+export function betaNow(product: string) {
+  const b = betaPreview(product);
+  return b?.sha ? { sha: b.sha, version: b.version ?? null, at: b.at } : null;
 }
 
 /** Removes a change's preview (when it's merged or closed). */

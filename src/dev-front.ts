@@ -277,6 +277,8 @@ async function handle(p: Product, req: http.IncomingMessage, res: http.ServerRes
     if (what === 'report' && method === 'POST') return report(p, req, res);
     // ...and the errors the page catches by itself (source "auto", rate-limited per IP).
     if (what === 'error' && method === 'POST') return report(p, req, res, true);
+    // What beta serves now: a beta page asks, and offers "New build: reload" when it's an older build (report-widget.js).
+    if (what === 'build') return json(res, 200, (await import('./previews.ts')).betaNow(p.id) ?? {});
     if (what === 'status') return json(res, 200, devStatus(p.id));
     if (what === 'info') return send(res, 200, 'text/html; charset=utf-8', unity ? unityPage(p) : infoPage(p));
     if (what === 'start' && method === 'POST') {
