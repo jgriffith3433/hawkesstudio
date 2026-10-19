@@ -23,12 +23,14 @@ import { reviewJob, viaNote } from './review-cc.ts';
 import { writeReport } from './report.ts';
 import { assetStatus, makeAsset } from './assets.ts';
 import { syncRepos, syncRepo, repoMap, betaFolders, isServer, BETA, BRANCH } from './repos.ts';
-import { betaLane, prepareBeta, playedLocal, resetBetaSite, pinBetaVersion, pruneGameVersions, saveBetaBuild, betaBuild, betaSiteDir, betaSiteFolder, betaPort, shaOf, repoDirs, fetchOrigin, betaBuildCurrent, siteBaseOf, refreshBetaSite } from './beta.ts';
+import { betaLane, prepareBeta, playedLocal, gameVersions, resetBetaSite, pinBetaVersion, pruneGameVersions, saveBetaBuild, betaBuild, betaSiteDir, betaSiteFolder, betaPort, shaOf, repoDirs, fetchOrigin, betaBuildCurrent, siteBaseOf, refreshBetaSite } from './beta.ts';
 import { notifyOnce } from './notify.ts';
 import { judgeCriteria } from './acceptance.ts';
 import { runGenJob, playtestExtras, playtestData, playtestRunMs, REVIEW_RUN_MS } from './playtests.ts';
 import { tagRun } from './followup.ts';
 import { betaTurn, newerBetaRun, supersede, absorbed } from './betaqueue.ts';
+import { holdBeta, waitForBetaPlays, serveBeta, runBetaBuild, servedMismatch } from './betaplay.ts';
+import { resolveScenario, missingScenario, noteScenarios, knownScenarios } from './scenarios.ts';
 
 export type RunOptions = {
   products?: string[];
@@ -300,10 +302,16 @@ export async function runProduct(run: string, p: Product, o: RunOptions) {
   const tests = p.playtests.filter((t) => (o.where === 'local' ? t.where === 'local' : o.where === 'live' ? t.where === 'live' : true))
     .filter((t) => !o.scenarios?.length || o.scenarios.includes(t.scenario ?? t.mode ?? ''));
   const ran: string[] = [];
-  for (const t of tests) {
-    // The daily review is full; live desktop runs check for regressions only (beta's full review sees the same code first).
-    const res = await playtestProduct(run, p, t, { review: !o.noReview, focus: o.focus, mode: t.where === 'live' && t.device !== 'phone' ? 'regression' : 'full' });
-    if (res) ran.push(nameOf(t));
+  // Every local playtest of the run plays the beta build it built or kept: a newer build waits for them (betaplay.ts).
+  const release = p.build && betaLane() && tests.some((t) => t.where === 'local') ? holdBeta(p.id, run) : null;
+  try {
+    for (const t of tests) {
+      // The daily review is full; live desktop runs check for regressions only (beta's full review sees the same code first).
+      const res = await playtestProduct(run, p, t, { review: !o.noReview, focus: o.focus, mode: t.where === 'live' && t.device !== 'phone' ? 'regression' : 'full' });
+      if (res) ran.push(nameOf(t));
+    }
+  } finally {
+    release?.();
   }
   // Open findings from these scenarios that no review mentioned this time.
   const quiet = notSeenIn(run, p.id, ran);
@@ -398,7 +406,9 @@ export async function buildProduct(run: string, p: Product, { force = false, bet
   const current = !lane || betaBuildCurrent(bb, head, siteBase, fs.existsSync(betaSiteFolder(p)));
   if (!force && last?.data?.fingerprint === fp && current) {
     const s = startStep(run, p.id, 'build', 'unity');
-    updateStep(s, { status: 'skipped', detail: `no changes since the last build (${last.data?.version ? `Game/v${last.data.version}` : 'last time'})`, data: { fingerprint: fp, version: last.data?.version }, finished: true });
+    // The build this run's playtests must play (betaplay.ts servedMismatch): the one in the beta website copy.
+    const version = lane && bb?.version ? bb.version : last.data?.version;
+    updateStep(s, { status: 'skipped', detail: `no changes since the last build (${version ? `Game/v${version}` : 'last time'})`, data: { fingerprint: fp, version, ...(lane && bb?.ok ? { served: { sha: bb.sha, version: bb.version ?? null } } : {}) }, finished: true });
     return null;
   }
   const s = startStep(run, p.id, 'build', 'unity', 'queued on the build server');
@@ -409,6 +419,13 @@ export async function buildProduct(run: string, p: Product, { force = false, bet
   let base = '';
   let pin: ReturnType<typeof pinBetaVersion> | undefined;
   if (lane) {
+    // Resetting the copy takes the current beta build away: runs still playing it finish first (betaplay.ts).
+    const waited = await waitForBetaPlays(p.id, run, (d) => updateStep(s, { detail: d }));
+    if (waited.length) {
+      updateStep(s, { detail: 'queued on the build server' });
+      const later = beta ? newerBetaRun(run, p.id) : null;
+      if (later) return { superseded: later };
+    }
     try {
       const copy = await resetBetaSite(p);
       siteDir = path.relative(PROJECTS, copy.folder).replace(/\\/g, '/');
@@ -449,7 +466,7 @@ async function finishBuild(run: string, p: Product, s: string, { fp, head, base,
   updateStep(s, {
     status: ok ? 'done' : 'failed', job: job.id, cost: job.cost ?? r.cost ?? 0,
     detail: ok ? `built ${lane ? `${BETA} ${head.slice(0, 7)} ` : ''}${r.version ? `Game/v${r.version}` : ''} in ${Math.round((r.seconds ?? 0) / 60)} min ($${(r.cost ?? 0).toFixed(2)})` : `failed: ${error}`,
-    data: { ...r, fingerprint: ok ? fp : null, error, ...(lane ? { beta: head, siteDir } : {}) }, finished: true,
+    data: { ...r, fingerprint: ok ? fp : null, error, ...(lane ? { beta: head, siteDir } : {}), ...(lane && ok ? { served: { sha: head, version: r.version ?? null } } : {}) }, finished: true,
   });
   return ok ? job : { ...job, status: 'failed' };
 }
@@ -477,9 +494,12 @@ export async function testProduct(run: string, p: Product, platform: 'EditMode' 
  * full (daily; regression-only once the scenario meets the product's quality bar), verify (beta runs, one-off checks),
  * regression (live checks). criteria: a roadmap task's acceptance criteria, judged on this playtest.
  */
-export async function playtestProduct(run: string, p: Product, t: Playtest, { review = true, focus, mode = 'full', criteria }: { review?: boolean; focus?: string; mode?: ReviewMode; criteria?: string[] } = {}) {
+export async function playtestProduct(run: string, p: Product, asked: Playtest, { review = true, focus, mode = 'full', criteria }: { review?: boolean; focus?: string; mode?: ReviewMode; criteria?: string[] } = {}) {
+  // A renamed scenario (an older task's name) plays under the game's current name (products.json scenarioAliases).
+  const renamed = asked.scenario ? resolveScenario(p, asked.scenario) : undefined;
+  const t: Playtest = renamed && renamed !== asked.scenario ? { ...asked, scenario: renamed } : asked;
   const name = nameOf(t);
-  const s = startStep(run, p.id, 'playtest', name, 'starting');
+  const s = startStep(run, p.id, 'playtest', name, renamed !== asked.scenario ? `starting (asked for "${asked.scenario}", now "${renamed}")` : 'starting');
   // Resumed after a restart: a playtest that finished is kept (its review carries on); one that was waiting in Gen's
   // queue is waited for again. A local one that was playing lost its page server (it stopped with Studio): it's
   // played again. A live one plays a site Studio doesn't serve: waited for again.
@@ -507,37 +527,76 @@ export async function playtestProduct(run: string, p: Product, t: Playtest, { re
     updateStep(s, { status: 'failed', detail: stale, data: { played: playedLocal(p), stale: true }, finished: true });
     return null;
   }
-  // Local: what's played (beta on the server) is recorded, so the report and the deploy plan know the commit.
-  const played = t.where === 'local' ? (was?.data?.played ?? playedLocal(p)) : null;
-  let port: number | null = null;
-  // What installing the local server's packages logged ("dependencies changed: npm ci"): kept on the step.
-  const deps: string[] = [];
+  // Unity on the beta lane plays the beta website copy: held while it plays (a newer build waits), one playtest of it at
+  // a time (they share its port), and only the build this run built or kept (betaplay.ts).
+  const unityBeta = Boolean(p.build && betaLane() && t.where === 'local' && prior?.status !== 'done');
+  const release = unityBeta ? holdBeta(p.id, run) : null;
+  const unlock = unityBeta ? await serveBeta(p.id) : null;
+  const free = () => { unlock?.(); release?.(); };
+  let job: any;
+  let played: ReturnType<typeof playedLocal> = null;
   try {
-    if (t.where === 'live') url = p.live;
-    else if (prior?.status === 'done') url = was?.data?.url ?? localUrl(p);
-    else if (p.build && betaLane()) {
-      // Unity on the beta lane: the beta build, from its own website copy, on its own port.
-      if (!played) throw new Error(`${BETA} isn't built yet (or its last build failed): nothing to play locally`);
-      port = betaPort(p);
-      stopServed(port);
-      url = await serveDir(p, path.join(betaSiteDir(p), path.relative(p.site.split('/')[0], p.local.dir)), port);
-    } else url = await ensureServer(p, (m) => { deps.push(m); updateStep(s, { detail: m }); });
-  } catch (e: any) {
-    updateStep(s, { status: 'failed', detail: e.message, data: { played, ...(deps.length ? { deps } : {}) }, finished: true });
-    return null;
+    const now = unityBeta ? playedLocal(p) : null;
+    // Local: what's played (beta on the server) is recorded, so the report and the deploy plan know the commit.
+    played = t.where === 'local' ? (was?.data?.played ?? (unityBeta ? now : playedLocal(p))) : null;
+    const build = played ? String(played.build ?? played.sha) : null;
+    // A scenario this build is known not to have is skipped, not played (scenarios.ts).
+    const has = t.where === 'local' && t.scenario && !prior ? knownScenarios(p.id, build) : null;
+    if (has && !has.includes(t.scenario!)) return skipMissing(run, p, s, asked, t.scenario!, has, played);
+    const serveDirOf = path.join(betaSiteDir(p), path.relative(p.site.split('/')[0], p.local.dir));
+    const wrong = unityBeta ? servedMismatch(runBetaBuild(run, p.id), now, gameVersions(serveDirOf)) : null;
+    if (wrong) {
+      console.warn(`[studio] ${p.id} ${name} (${run}): ${wrong}`);
+      updateStep(s, { status: 'failed', detail: wrong, data: { played: now, expected: runBetaBuild(run, p.id), wrongBuild: true }, finished: true });
+      return null;
+    }
+    let port: number | null = null;
+    // What installing the local server's packages logged ("dependencies changed: npm ci"): kept on the step.
+    const deps: string[] = [];
+    try {
+      if (t.where === 'live') url = p.live;
+      else if (prior?.status === 'done') url = was?.data?.url ?? localUrl(p);
+      else if (p.build && betaLane()) {
+        // Unity on the beta lane: the beta build, from its own website copy, on its own port.
+        if (!played) throw new Error(`${BETA} isn't built yet (or its last build failed): nothing to play locally`);
+        port = betaPort(p);
+        stopServed(port);
+        url = await serveDir(p, serveDirOf, port);
+      } else url = await ensureServer(p, (m) => { deps.push(m); updateStep(s, { detail: m }); });
+    } catch (e: any) {
+      updateStep(s, { status: 'failed', detail: e.message, data: { played, ...(deps.length ? { deps } : {}) }, finished: true });
+      return null;
+    }
+    updateStep(s, { data: { played, url, ...(deps.length ? { deps } : {}) } });
+    // Live sites may not have the contract yet (it ships with the next deploy): auto falls back to a generic smoke test.
+    const params: Record<string, unknown> = { url, mode: t.mode ?? (p.contract && t.where === 'local' ? 'contract' : 'auto'), ...(t.scenario ? { scenario: t.scenario } : {}), ...(t.timeout ? { timeout: t.timeout } : {}), ...(t.seed ? { seed: t.seed } : {}), ...(t.options ? { options: t.options } : {}) };
+    if (t.mode === 'site') params.maxPages = 40;
+    Object.assign(params, playtestExtras(p.id, name, t));
+    if (gpuGate && p.engine !== 'static' && !prior) {
+      updateStep(s, { detail: 'waiting for the GPU machine' });
+      await gpuGate;
+    }
+    // Timed out (and cancelled) if it hangs, so one stuck browser never holds up the run.
+    job = await runGenJob('playtest.run', p.id, params, (j) => updateStep(s, { job: j.id, detail: j.detail }), { runMs: playtestRunMs(t), job: prior?.id })
+      .finally(() => { if (port) stopServed(port); });
+    // The game's own scenario list, for the next playtest of this build; a scenario it doesn't have is skipped, not failed.
+    if (t.where === 'local') noteScenarios(p.id, build, job.result?.scenarios);
+    const missing = t.where === 'local' && job.status !== 'done' ? missingScenario(job.error ?? job.detail) : null;
+    if (missing) {
+      noteScenarios(p.id, build, missing.has);
+      return skipMissing(run, p, s, asked, missing.scenario, missing.has, played, job.id);
+    }
+    // The copy must still hold the build that was served when it started (a newer build waits for this run, unless it waited too long).
+    const after = unityBeta && job.status === 'done' ? playedLocal(p) : null;
+    if (unityBeta && job.status === 'done' && (!after || after.sha !== now?.sha || String(after.build ?? '') !== String(now?.build ?? ''))) {
+      const why = `The beta build changed while this played: it started on ${now?.build ? `Game/v${now.build}` : 'a build'} of beta ${now?.sha.slice(0, 7)}, the copy now holds ${after ? `${after.build ? `Game/v${after.build}` : 'a build'} of beta ${after.sha.slice(0, 7)}` : 'no beta build'}. Not reviewed.`;
+      console.warn(`[studio] ${p.id} ${name} (${run}): ${why}`);
+      updateStep(s, { status: 'failed', job: job.id, detail: why, data: { error: why, url, played, wrongBuild: true }, finished: true });
+      return null;
+    }
+  } finally {
+    free();
   }
-  updateStep(s, { data: { played, url, ...(deps.length ? { deps } : {}) } });
-  // Live sites may not have the contract yet (it ships with the next deploy): auto falls back to a generic smoke test.
-  const params: Record<string, unknown> = { url, mode: t.mode ?? (p.contract && t.where === 'local' ? 'contract' : 'auto'), ...(t.scenario ? { scenario: t.scenario } : {}), ...(t.timeout ? { timeout: t.timeout } : {}), ...(t.seed ? { seed: t.seed } : {}), ...(t.options ? { options: t.options } : {}) };
-  if (t.mode === 'site') params.maxPages = 40;
-  Object.assign(params, playtestExtras(p.id, name, t));
-  if (gpuGate && p.engine !== 'static' && !prior) {
-    updateStep(s, { detail: 'waiting for the GPU machine' });
-    await gpuGate;
-  }
-  // Timed out (and cancelled) if it hangs, so one stuck browser never holds up the run.
-  const job = await runGenJob('playtest.run', p.id, params, (j) => updateStep(s, { job: j.id, detail: j.detail }), { runMs: playtestRunMs(t), job: prior?.id })
-    .finally(() => { if (port) stopServed(port); });
   const r = job.result ?? {};
   const ok = job.status === 'done';
   updateStep(s, {
@@ -558,6 +617,18 @@ export async function playtestProduct(run: string, p: Product, t: Playtest, { re
     return job;
   }
   return reviewPlaytest(run, p, t, job, played, { focus, mode, criteria });
+}
+
+/**
+ * A scenario the build doesn't have (renamed or dropped since its task's agent wrote it): the step is skipped with one
+ * note, and one PM-log line says so. Never a failed step.
+ */
+function skipMissing(run: string, p: Product, s: string, asked: Playtest, scenario: string, has: string[], played: ReturnType<typeof playedLocal>, job?: string) {
+  const what = played?.build ? `Game/v${played.build}` : played ? `beta ${played.sha.slice(0, 7)}` : 'the build';
+  const note = `skipped: ${what} has no scenario "${scenario}"${asked.scenario && asked.scenario !== scenario ? ` (asked for "${asked.scenario}")` : ''}. It has: ${has.join(', ') || 'none'}. Add an alias in products.json (scenarioAliases) if it was renamed.`;
+  updateStep(s, { status: 'skipped', detail: note, ...(job ? { job } : {}), data: { played, missingScenario: scenario, asked: asked.scenario ?? null, has }, finished: true });
+  void import('./roadmap.ts').then(({ logDecision }) => logDecision('scenario skipped', run, p.id, `${p.name}: ${note}`)).catch(() => {});
+  return null;
 }
 
 /** Claude's review of a finished playtest (or, resumed after a restart, the review it already had or was waiting for). */
@@ -706,10 +777,16 @@ async function betaBody(id: string, p: Product, { focus, criteria, scenario, opt
     const t: Playtest | undefined = scenario ? { scenario, where: 'local', ...(options ? { options } : {}) } : p.playtests.find((x) => x.where === 'local' && x.device !== 'phone');
     // Beta is played only when asked (J, 2026-10-17): after a merge it is rebuilt, and that's it (Settings > Agents).
     // A milestone's check: each of its tasks' scenarios played once, its tasks' criteria judged on it (pm.ts).
+    // Every play of the run plays the build it built or kept: a newer beta build waits until they're over (betaplay.ts).
     if (lane && plays?.length) {
-      for (const x of plays) {
-        const pt: Playtest | undefined = x.scenario ? { scenario: x.scenario, where: 'local', ...(x.options ? { options: x.options } : {}) } : p.playtests.find((y) => y.where === 'local' && y.device !== 'phone');
-        if (pt) await playtestProduct(id, p, pt, { focus, mode: 'verify', criteria: x.criteria });
+      const release = p.build ? holdBeta(p.id, id) : null;
+      try {
+        for (const x of plays) {
+          const pt: Playtest | undefined = x.scenario ? { scenario: x.scenario, where: 'local', ...(x.options ? { options: x.options } : {}) } : p.playtests.find((y) => y.where === 'local' && y.device !== 'phone');
+          if (pt) await playtestProduct(id, p, pt, { focus, mode: 'verify', criteria: x.criteria });
+        }
+      } finally {
+        release?.();
       }
     } else if (lane && t && (playtest ?? betaPlaytestsOn())) await playtestProduct(id, p, t, { focus, mode: 'verify', criteria });
     else if (lane && t) {
