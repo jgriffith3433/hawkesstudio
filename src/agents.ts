@@ -228,6 +228,13 @@ export function fixAlreadyDone(id: string, c: Pick<Change, 'task'>, findings: st
   update(id, { status: 'failed', detail: `${ALREADY} (the agent made no commit)`, summary, commits, phase: null });
   return true;
 }
+/**
+ * A failed change whose agent never finished: Studio's own error around it (the worktree, an install, a push, a crash;
+ * work()'s catch keeps the step it failed at, with `failed`). Not the agent's try (pm.ts; f_7f4ff7149602 burned its 3
+ * tries in 2 minutes on such failures). STUDIO_FAILED_SQL is the same test on the changes table.
+ */
+export const studioFailed = (c: { status: string; phase?: unknown }) => c.status === 'failed' && Boolean((typeof c.phase === 'string' ? parse(c.phase) : (c.phase as any))?.failed);
+export const STUDIO_FAILED_SQL = `(status = 'failed' AND COALESCE(phase, '') LIKE '%"failed":true%')`;
 /** Why a change with no commit failed: already done (ALREADY), else `why`. */
 const noCommitDetail = (summary: string, why: string) => (alreadyDone(summary) ? `${ALREADY} (the agent made no commit)` : why);
 

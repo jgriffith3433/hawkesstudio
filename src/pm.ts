@@ -34,7 +34,7 @@ import {
   getTask, setTask, getItem, startableTasks, tasksAwaitingGpu, taskOfChange, addQuestion, listQuestions, getQuestion, setQuestion, addComment, isCommentSubject,
   logDecision, listDecisions, getDecision, markUndone, countToday, listItems, threadFor, milestonesToReach, markReached, getMilestone, milestoneTasks, setMilestoneChecks,
   itemProgress, GPU_WAIT, type Task, type Check, type TaskBuild, type Question,
-  addItem, addTask, askedJ, landed, blockedBy, updateTask, taskWaits,
+  addItem, addTask, askedJ, landed, blockedBy, updateTask, taskWaits, DONE, adoptDoneDrops, tasksOf,
 } from './roadmap.ts';
 import { gate, allMet } from './acceptance.ts';
 import { notify, PUBLIC_URL } from './notify.ts';
@@ -208,6 +208,7 @@ const hasBeta = (product: string) => {
 };
 
 async function syncTask(t: Task, getChange: (id: string) => any) {
+  if (t.status === DONE) return; // already done: nothing to follow (a milestone's check passes every task here)
   const c = t.change ? getChange(t.change) : null;
   if (!c) return;
   if (t.status !== 'merged' && t.status !== 'verified') {
@@ -547,6 +548,9 @@ const judgesAll = (checks: unknown, criteria: string[]) => Array.isArray(checks)
 
 /** A task's change still in flight: an agent on it, ready for review, waiting on an answer or on its Gen jobs. */
 const LIVE = [...ACTIVE, 'ready', 'needs answer', 'waiting on Gen'];
+/** After a change Studio itself failed to run (agents.ts studioFailed): the wait before the next attempt, and how many in a row before J hears. */
+export const INFRA_WAIT_MS = 10 * 60_000;
+export const INFRA_LIMIT = 4;
 
 /**
  * Why a task can't get another agent change now, or null. One attempt at a time, and a merged one is the task done:
@@ -612,7 +616,7 @@ async function taskShape(t: Task): Promise<WorkShape> {
 export async function startWork() {
   const s = pmSettings();
   if (!s.enabled || !process.env.GITHUB_TOKEN) return [];
-  const { agentSettings, startFix, DECIDED, ALREADY } = await changes();
+  const { agentSettings, startFix, DECIDED, ALREADY, STUDIO_FAILED_SQL } = await changes();
   if (!agentSettings().enabled) return [];
   // A Studio or Gen deploy waiting for agents to finish: start nothing new until it's through.
   const { selfDeploys } = await import('./selfdeploy.ts');
@@ -643,9 +647,27 @@ export async function startWork() {
   let cap = capacity();
   // J's own reports from the beta sites (bugreport.ts) come first: before roadmap tasks and the reviews' bugs.
   const startBug = (f: any, why: string) => {
+    // One attempt at a time: a change of this finding still queued, working, ready or waiting is the attempt.
+    if (db.prepare(`SELECT 1 FROM changes WHERE findings LIKE ? AND status IN (${LIVE.map(() => '?').join(',')}) LIMIT 1`).get(`%"${f.id}"%`, ...LIVE)) return null;
+    // Studio's own failures (the worktree, an install, a push: STUDIO_FAILED_SQL) aren't the agent's tries, but the next
+    // attempt waits a while after one, and after INFRA_LIMIT of them in a row J hears what keeps failing.
+    const last = db.prepare(`SELECT id, detail, updated, created, ${STUDIO_FAILED_SQL} AS infra FROM changes WHERE findings LIKE ? ORDER BY created DESC, rowid DESC LIMIT 1`).get(`%"${f.id}"%`) as any;
+    if (last?.infra) {
+      if (Date.now() - (last.updated ?? last.created) < INFRA_WAIT_MS) return null;
+      const rows = db.prepare(`SELECT ${STUDIO_FAILED_SQL} AS infra FROM changes WHERE findings LIKE ? ORDER BY created DESC, rowid DESC LIMIT ?`).all(`%"${f.id}"%`, INFRA_LIMIT) as any[];
+      if (rows.length >= INFRA_LIMIT && rows.every((r) => r.infra)) {
+        // J's answer (try again) lets the next one start.
+        const q = db.prepare(`SELECT status FROM questions WHERE subject = ? AND at > ? ORDER BY at DESC LIMIT 1`).get(f.id, last.created) as any;
+        if (!q) {
+          askJ(`"${f.title}" (${name(f.product)}): Studio couldn't run its agent ${INFRA_LIMIT} times in a row (not the agent's tries). The last error (${last.id}): ${String(last.detail ?? '?').slice(0, 400)}. Try again, or drop it (won't fix)?`, { subject: f.id, product: f.product, options: ['try again', "won't fix"], recommend: 'try again', from: 'Studio errors around an agent' });
+          return null;
+        }
+        if (q.status !== 'answered') return null;
+      }
+    }
     // An agent that changed nothing because J already decided it (DECIDED, agents.ts), or because it was already done
-    // (ALREADY: e.g. the error came from a build older than the fix), didn't fail a try.
-    const tries = (db.prepare(`SELECT COUNT(*) AS n FROM changes WHERE findings LIKE ? AND COALESCE(detail, '') NOT LIKE ? AND COALESCE(detail, '') NOT LIKE ?`).get(`%"${f.id}"%`, `${DECIDED}%`, `${ALREADY}%`) as any).n as number;
+    // (ALREADY: e.g. the error came from a build older than the fix), didn't fail a try; nor did one Studio failed to run.
+    const tries = (db.prepare(`SELECT COUNT(*) AS n FROM changes WHERE findings LIKE ? AND COALESCE(detail, '') NOT LIKE ? AND COALESCE(detail, '') NOT LIKE ? AND NOT ${STUDIO_FAILED_SQL}`).get(`%"${f.id}"%`, `${DECIDED}%`, `${ALREADY}%`) as any).n as number;
     if (tries >= s.maxTries) {
       // Out of attempts: J decides, once per round of attempts (not again each minute after he has answered).
       const last = (db.prepare(`SELECT MAX(created) AS t FROM changes WHERE findings LIKE ?`).get(`%"${f.id}"%`) as any).t ?? 0;
@@ -970,7 +992,20 @@ export async function answerQuestion(id: string, answer: string, by = 'Talk (PM)
       await close(c.id, by);
       logDecision('close', t?.id ?? c.id, c.product, `closed ${c.id} (${c.title}) on ${byJ ? 'J' : by}'s answer to ${id}: ${answer.slice(0, 300)}`);
     }
-    if (t && !['merged', 'verified', 'live', 'dropped'].includes(t.status)) setTask(t.id, { status: stop === 'park' ? 'idea' : 'dropped', note: `${stop === 'park' ? 'parked' : 'dropped'} on ${byJ ? 'J' : by}'s answer to ${id}` });
+    if (t && !['merged', 'verified', 'live', 'dropped', DONE].includes(t.status)) setTask(t.id, { status: stop === 'park' ? 'idea' : 'dropped', note: `${stop === 'park' ? 'parked' : 'dropped'} on ${byJ ? 'J' : by}'s answer to ${id}` });
+  }
+  // The stall watch's question: "try" plans again the failed or parked tasks it names (and what they wait on); "drop"
+  // drops the stuck ones (its context); anything else leaves them.
+  if (q.kind === 'decision' && q.topic === 'stall') {
+    const a = answer.trim().toLowerCase();
+    const ids = /^(try|retry|again|yes)/.test(a) ? [...new Set(q.text.match(/\bk_[0-9a-f]{12}\b/g) ?? [])] : /^drop/.test(a) ? String(q.context ?? '').split(/\s+/).filter(Boolean) : [];
+    for (const k of ids) {
+      const t = getTask(k);
+      if (!t) continue;
+      if (/^drop/.test(a) && !['merged', 'verified', 'live', 'dropped', DONE].includes(t.status)) updateTask(k, { status: 'dropped', note: `dropped on ${byJ ? 'J' : by}'s answer to ${id}` });
+      else if (!/^drop/.test(a) && ['failed', 'idea'].includes(t.status)) updateTask(k, { status: 'planned', note: `planned again on ${byJ ? 'J' : by}'s answer to ${id}` });
+    }
+    if (ids.length) logDecision('stall', null, null, `${byJ ? 'J' : by} answered ${id} "${answer.slice(0, 80)}": ${ids.join(', ')}`);
   }
   // Keep the stand-ins (a task waiting for GPU): it counts as merged now.
   if (q.kind === 'decision' && q.subject?.startsWith('k_') && /^keep/i.test(answer.trim()) && getTask(q.subject)?.status === GPU_WAIT) {
@@ -1607,7 +1642,7 @@ export async function followBlockers() {
   const out: string[] = [];
   for (const [fix, b] of Object.entries(all)) {
     const k = getTask(fix);
-    if (k && !['merged', 'verified', 'live', 'dropped'].includes(k.status)) continue;
+    if (k && !['merged', 'verified', 'live', 'dropped', DONE].includes(k.status)) continue;
     delete all[fix];
     saveBlockers(all);
     out.push(fix);
@@ -1626,9 +1661,9 @@ export async function followBlockers() {
 }
 
 /** What shows a task's "already done" is true: a merged change of it, or a change or pull request the agent named that is merged. */
-async function doneProof(t: Task, c: any): Promise<{ change: string | null; why: string } | null> {
+async function doneProof(t: Task, c: any): Promise<{ change: string | null; why: string; own?: boolean } | null> {
   const own = db.prepare(`SELECT id FROM changes WHERE task = ? AND status = 'merged' ORDER BY created DESC LIMIT 1`).get(t.id) as any;
-  if (own) return { change: own.id, why: `its change ${own.id} is merged` };
+  if (own) return { change: own.id, why: `its change ${own.id} is merged`, own: true };
   const text = `${c.summary ?? ''}\n${c.detail ?? ''}`;
   for (const id of new Set(text.match(/\bc_[0-9a-f]{12}\b/g) ?? [])) {
     const x = db.prepare(`SELECT id, product FROM changes WHERE id = ? AND status = 'merged'`).get(id) as any;
@@ -1639,6 +1674,24 @@ async function doneProof(t: Task, c: any): Promise<{ change: string | null; why:
   }
   return null;
 }
+/**
+ * A task whose every attempt (two or more, Studio's own failures aside) made no commit and said the work was already
+ * done: done, not failed (k_9a7fab7e3d75: three tries each said PR #57 already did it, and it had). doneProof couldn't
+ * show it, but every agent finding the same is the evidence. True when it marked the task done.
+ */
+async function everyTrySaidDone(t: Task) {
+  const { ALREADY, alreadyDone, studioFailed } = await changes();
+  const cs = (db.prepare(`SELECT id, status, detail, summary, commits, phase FROM changes WHERE task = ? ORDER BY created, rowid`).all(t.id) as any[]).filter((c) => !studioFailed(c));
+  const said = (c: any) => c.status === 'failed' && !(parse(c.commits) ?? []).length && (String(c.detail ?? '').startsWith(ALREADY) || alreadyDone(String(c.summary ?? '')));
+  if (cs.length < 2 || !cs.every(said)) return false;
+  const undo = tasksUndo([t.id]);
+  // Its questions (try again? drop it?) no longer wait on J.
+  for (const q of listQuestions().filter((x) => x.subject === t.id && x.topic !== 'needs J')) setQuestion(q.id, { status: 'resolved', answer: '(no longer waiting: every attempt found it already done, so it is done)', answered_by: 'Studio' });
+  setTask(t.id, { status: DONE, note: `every attempt (${cs.map((c) => c.id).join(', ')}) found it already done, with nothing to commit: done` });
+  logDecision('already-done', t.id, t.product, `"${t.title}": all ${cs.length} attempts (${cs.map((c) => c.id).join(', ')}) found it already done and made no commit: done, not failed. The last said: ${String(cs[cs.length - 1].summary ?? '').slice(0, 400)}`, undo);
+  return true;
+}
+
 /** What's left needs J (his PC, his OK, something only he can run). */
 const NEEDS_J = /\b(needs? J|J (needs to|must|has to|should|will need to|can)|J'?s (own )?(PC|laptop|machine|hands?|OK|approval|login)|on (his|J'?s) (PC|laptop|machine)|by hand|only J)\b/i;
 
@@ -1659,6 +1712,20 @@ async function afterFailed(t: Task, c: any) {
   const noCommit = !(c.commits ?? []).length;
   const back = Math.max(0, t.tries - 1);
   const merged = db.prepare(`SELECT id, merged_at, created FROM changes WHERE task = ? AND status = 'merged' ORDER BY created DESC LIMIT 1`).get(t.id) as any;
+  // Studio couldn't run its agent (the worktree, an install, a push): not a try; planned again, it starts in a free slot
+  // (this runs after the grace period, so not in a loop a minute apart). After INFRA_LIMIT in a row, J hears.
+  const { studioFailed } = await changes();
+  if (studioFailed(c)) {
+    const recent = db.prepare(`SELECT status, phase FROM changes WHERE task = ? ORDER BY created DESC, rowid DESC LIMIT ?`).all(t.id, INFRA_LIMIT) as any[];
+    if (recent.length >= INFRA_LIMIT && recent.every(studioFailed)) {
+      setTask(t.id, { status: 'failed', tries: back, note: `Studio couldn't run its agent ${INFRA_LIMIT} times in a row; the last (${c.id}): ${detail}`.slice(0, 1000) });
+      askJ(`"${t.title}" (${name(t.product)}): Studio couldn't run its agent ${INFRA_LIMIT} times in a row (not the agent's tries). The last error (${c.id}): ${detail.slice(0, 400)}. Try again, change it, or drop it?`, { subject: t.id, product: t.product, options: ['try again', 'change it', 'drop it'], recommend: 'try again', from: 'Studio errors around an agent' });
+      return;
+    }
+    setTask(t.id, merged ? { status: 'merged', change: merged.id, tries: back } : { status: 'planned', tries: back, note: `${c.id}: Studio couldn't run its agent (${detail.slice(0, 300)}); not counted as a try, it starts again in a free slot` });
+    logDecision('retry', t.id, t.product, `"${t.title}": ${c.id} failed in Studio, not in its agent (${detail.slice(0, 300)}): not counted as a try${merged ? '' : ', planned again'}`);
+    return;
+  }
   if (detail.startsWith(DECIDED)) {
     // Nothing to change because J already decided it: not a failed try (its try is given back), and no restart to
     // reach the same answer again; the task stops here with the agent's reason (sweepFailed asks J once).
@@ -1683,8 +1750,11 @@ async function afterFailed(t: Task, c: any) {
     const proof = await doneProof(t, c);
     if (proof) {
       const sendBack = /Beta's build failed after your change/.test(String(c.request ?? ''));
-      setTask(t.id, { status: 'merged', ...(proof.change ? { change: proof.change } : {}), merged_at: Date.now(), tries: back, build: null, note: `${c.id}: already done (${proof.why}); not counted as a try` });
-      logDecision('already-done', t.id, t.product, `"${t.title}": ${c.id} found it already done, and it is (${proof.why}): merged, not counted as a try`);
+      // Done by other work (a change or pull request the agent named): done, on beta. Its own change merged (or a
+      // send-back for beta's build): merged, and beta's build of it decides.
+      const status = sendBack || proof.own ? 'merged' : DONE;
+      setTask(t.id, { status, ...(proof.change ? { change: proof.change } : {}), merged_at: Date.now(), tries: back, build: null, note: `${c.id}: already done (${proof.why}); not counted as a try` });
+      logDecision('already-done', t.id, t.product, `"${t.title}": ${c.id} found it already done, and it is (${proof.why}): ${status}, not counted as a try`);
       if (NEEDS_J.test(summary)) {
         askJ(`"${t.title}" (${name(t.product)}) is done as far as agents can take it; its agent says what's left needs you: ${summary.slice(0, 900)}`, { subject: t.id, product: t.product, options: ['done', 'drop that part'], topic: 'needs J', blocks: `"${t.title}" being finished`, from: 'an agent found the work already done' });
       }
@@ -1698,6 +1768,8 @@ async function afterFailed(t: Task, c: any) {
     }
   }
   if (t.tries >= s.maxTries) {
+    // Every attempt said it was already done (k_9a7fab7e3d75: three tries each said PR #57 did it): done, not failed.
+    if (claimed && await everyTrySaidDone(t)) return;
     setTask(t.id, { status: 'failed', note: `failed ${t.tries} times; the last (${c.id}): ${detail}`.slice(0, 1000) });
     outOfTries(getTask(t.id)!, `failed ${t.tries} times; the last (${c.id}): ${detail}. ${summary.slice(0, 400)}`, () => askJ(`"${t.title}" (${name(t.product)}) failed ${t.tries} times. The last: ${detail || '?'}. Try another way, change the task, or drop it?`, { subject: t.id, product: t.product, options: ['try again', 'change it', 'drop it'], from: `the default after ${s.maxTries} tries` }));
     return;
@@ -1841,6 +1913,8 @@ export async function sweepFailed() {
   const { DECIDED } = await changes();
   for (const r of db.prepare(`SELECT id FROM tasks WHERE status = 'failed'`).all() as any[]) {
     const t = getTask(r.id)!;
+    // Every attempt found it already done: done (a question asked about it is settled in the Inbox: inbox.ts tidy).
+    if (!heldFor(t.id) && await everyTrySaidDone(t)) { out.push(t.id); continue; }
     if (heldFor(t.id) || asked.has(t.id) || (t.change && asked.has(t.change)) || rescues()[t.id]?.state === 'scouting') continue;
     const since = (db.prepare(`SELECT MAX(created) AS at FROM changes WHERE task = ?`).get(t.id) as any)?.at ?? t.created;
     const q = (db.prepare(`SELECT * FROM questions WHERE subject IN (?, ?) AND at >= ? ORDER BY at DESC LIMIT 1`).get(t.id, t.change ?? t.id, since) as any) ?? null;
@@ -1863,6 +1937,60 @@ export async function sweepFailed() {
   return out;
 }
 
+/** An item is on beta (itemProgress), or will never be (gone, dropped, every task dropped): nothing to hold for. */
+const itemSettled = (id: string) => {
+  const it = getItem(id);
+  return !it || it.status === 'dropped' || ['on beta', 'verified', 'live', 'done', 'dropped'].includes(itemProgress(it).state);
+};
+
+/**
+ * Tasks parked as ideas until other work is on beta (their note: "held until i_... is on beta", "waits for k_...",
+ * "after \"The Shaft\" lands"): planned again, with a log line, once everything the note names is on beta (or dropped).
+ * Items and tasks by id, or an item of the same product by its quoted title. In planned (or consumed) items only: an
+ * item J parked stays parked. Returns the tasks it released.
+ */
+export function releaseHeldIdeas() {
+  const out: string[] = [];
+  const HELD = /\b(held|hold|holds|holding|park(ed)?|wait(s|ing)?|until|after|once)\b/i;
+  const rows = db.prepare(`SELECT t.id FROM tasks t JOIN items i ON i.id = t.item WHERE t.status = 'idea' AND t.note IS NOT NULL
+    AND i.status NOT IN ('idea', 'dropped') AND NOT (i.status = 'done' AND i.consumed IS NULL)`).all() as any[];
+  for (const r of rows) {
+    const t = getTask(r.id)!;
+    const note = String(t.note);
+    if (!HELD.test(note)) continue;
+    const items = new Set(note.match(/\bi_[0-9a-f]{12}\b/g) ?? []);
+    const tasks = new Set((note.match(/\bk_[0-9a-f]{12}\b/g) ?? []).filter((k) => k !== t.id));
+    for (const m of note.matchAll(/["“]([^"”]{3,120})["”]/g)) {
+      const hit = db.prepare(`SELECT id FROM items WHERE product = ? AND lower(title) = lower(?)`).get(t.product, m[1].trim()) as any;
+      if (hit) items.add(hit.id);
+    }
+    items.delete(t.item);
+    if (!items.size && !tasks.size) continue;
+    const waiting = [...[...items].filter((x) => !itemSettled(x)), ...[...tasks].filter((k) => { const x = getTask(k); return Boolean(x) && !landed(x!) && x!.status !== 'dropped'; })];
+    if (waiting.length) continue;
+    const names = [...items, ...tasks];
+    setTask(t.id, { status: 'planned', note: `released: ${names.join(', ')} ${names.length === 1 ? 'is' : 'are'} on beta (it was held: ${note.slice(0, 300)})` });
+    logDecision('release', t.id, t.product, `"${t.title}" was held as an idea until ${names.join(', ')} ${names.length === 1 ? 'was' : 'were'} on beta, and ${names.length === 1 ? 'it is' : 'they are'}: planned, it starts in a free slot`, { kind: 'tasks', change: null, tasks: [{ id: t.id, status: 'idea', tries: t.tries, note: t.note, checks: t.checks }] });
+    out.push(t.id);
+  }
+  return out;
+}
+
+/**
+ * The stall reasons nothing in Studio will resolve by itself: failed with nobody deciding, blocked by a task that
+ * failed, is an idea or is gone, or planned and startable but not starting. The rest wait on an agent, a build, a
+ * GPU budget, J's open question, or Studio's own next pass.
+ */
+function stuckOf(reasons: StallReason[]) {
+  return reasons.filter((r) => {
+    if (r.why.startsWith('failed:')) return true;
+    if (r.why.startsWith('blocked by')) return blockedBy(getTask(r.task)!).some((b) => ['failed', 'idea', 'missing'].includes(b.status));
+    // Startable, yet nothing of its product is in flight to wait for.
+    return r.status === 'planned' && r.why.startsWith('a free agent')
+      && !db.prepare(`SELECT 1 FROM changes WHERE product = ? AND status IN (${LIVE.map(() => '?').join(',')}) LIMIT 1`).get(r.product, ...LIVE);
+  });
+}
+
 /** Minutes with nothing started or finished before the stall watch looks into it. */
 export const STALL_MINUTES = 30;
 export type StallReason = { task: string; title: string; product: string; status: string; why: string };
@@ -1873,7 +2001,7 @@ export function stallReasons(): StallReason[] {
   const out: StallReason[] = [];
   let rows: any[];
   try {
-    rows = db.prepare(`SELECT t.id FROM tasks t JOIN items i ON i.id = t.item WHERE t.status NOT IN ('idea', 'dropped', 'verified', 'live')
+    rows = db.prepare(`SELECT t.id FROM tasks t JOIN items i ON i.id = t.item WHERE t.status NOT IN ('idea', 'dropped', 'verified', 'live', 'done')
       AND i.status NOT IN ('idea', 'dropped') AND NOT (i.status = 'done' AND i.consumed IS NULL) ORDER BY i.ord, t.ord`).all() as any[];
   } catch {
     return out;
@@ -1905,6 +2033,10 @@ export async function stallWatch(now = Date.now()) {
   const s = pmSettings();
   const reasons = stallReasons();
   lastStall = { at: now, stalled: false, reasons };
+  // Its question about stuck tasks is settled once none are stuck.
+  if (!stuckOf(reasons).length) {
+    for (const q of listQuestions().filter((x) => x.topic === 'stall')) setQuestion(q.id, { status: 'resolved', answer: '(no longer waiting: the roadmap moves again)', answered_by: 'Studio' });
+  }
   if (!s.enabled || !reasons.length || capacity().free <= 0) return lastStall;
   const moved = Math.max(
     (db.prepare(`SELECT MAX(created) AS at FROM changes`).get() as any)?.at ?? 0,
@@ -1931,6 +2063,14 @@ export async function stallWatch(now = Date.now()) {
     const last = list.reduce((a, b) => ((a.merged_at ?? 0) >= (b.merged_at ?? 0) ? a : b));
     await buildSendBack(last);
     if (getTask(last.id)!.status !== 'merged') fixed.push(`${name(product)}: "${last.title}" ${getTask(last.id)!.status === 'failed' ? 'is out of tries for beta\'s build' : 'sent back for beta\'s build'}`);
+  }
+  // What nothing here resolves by itself: ONE question in J's Inbox (filed again, it merges into the open one); his
+  // answer acts on the tasks it names (answerQuestion, topic "stall").
+  const stuck = stuckOf(stallReasons());
+  if (stuck.length) {
+    askJ(`Roadmap work isn't moving and Studio can't move it by itself (${stuck.length} task(s)): ${stuck.slice(0, 8).map((r) => `${r.task} "${r.title}" (${name(r.product)}): ${r.why}`).join('; ')}. Try them again (and what they wait on), drop them, or leave them for now?`.slice(0, 3500),
+      { subject: 'stall', topic: 'stall', options: ['try them again', 'drop them', 'leave them'], recommend: 'try them again', context: stuck.map((r) => r.task).join(' '), blocks: `${stuck.length} roadmap task(s)`, from: 'the stall watch' });
+    fixed.push(`asked J about ${stuck.length} task(s) nothing else moves`);
   }
   {
     const kinds = new Map<string, number>();
@@ -1995,6 +2135,8 @@ Do, with the studio_pm, studio_roadmap and studio tools:
    or ask J if it's really his call.
 5. Starting work is automatic (roadmap order, then the worst bugs, within the limits). Change the order or statuses
    with studio_roadmap when what came in says so (a blocker on a product jumps the queue: make or reorder a task).
+   A task whose work is already on beta (another change did it) is status done (update_task, with a note saying
+   which change), never dropped: done counts as on beta, dropped means it will never be done.
 6. The shared memory${daily ? ' (daily turn)' : ' (when there are candidates)'}: ${curationLine() || 'nothing waiting.'} Curate with memory_curate:
    confirm a candidate that is true and useful, merge near-duplicates (list shows likely pairs), fade what no longer
    holds, delete what is wrong. A candidate that contradicts one of J's decisions or the canon: dispute it and ask J
@@ -2071,6 +2213,13 @@ export async function tick() {
     await applyDefaults([], s.graceMinutes * 60_000);
     // Failed tasks nobody was asked about: an investigation (walk-away) or one question in J's Inbox.
     await sweepFailed().catch((e: any) => console.warn(`[pm] failed tasks: ${e.message ?? e}`));
+    // Tasks dropped as already done count as done; ideas held until other work is on beta are released once it is.
+    try {
+      adoptDoneDrops();
+      releaseHeldIdeas();
+    } catch (e: any) {
+      console.warn(`[pm] done and held tasks: ${e.message ?? e}`);
+    }
     await startWork();
     // Nothing moving with free agents and work left: why, per task, and what it can fix (one "stall" decision).
     await stallWatch().catch((e: any) => console.warn(`[pm] stall watch: ${e.message ?? e}`));

@@ -12,6 +12,8 @@
 //                 -> merged (into beta; beta's build of it is recorded on the task: build) -> verified (its criteria pass
 //                 on beta: the milestone's playtest, or a beta playtest J asked for) -> live
 //                 | failed (3 tries, then J is asked) | dropped
+//                 | done (already done: its work is on beta from other changes, nothing for an agent to do; counts as on
+//                   beta, J 2026-10-19: items whose tasks were all "dropped as already done" showed "planned")
 //                 | waiting for GPU (its change merged stand-ins because no GPU server ran: not done; pm.ts runs it again,
 //                   not as a try, when a server is up, until the real art lands)
 //
@@ -69,7 +71,11 @@ try { db.exec('ALTER TABLE tasks ADD COLUMN priority TEXT'); } catch { /* alread
 try { db.exec('ALTER TABLE tasks ADD COLUMN target TEXT'); } catch { /* already there */ }
 
 export const ITEM_STATUSES = ['idea', 'planned', 'in progress', 'on beta', 'live', 'done', 'dropped'];
-export const TASK_STATUSES = ['idea', 'planned', 'working', 'needs answer', 'review', 'merged', 'waiting for GPU', 'verified', 'live', 'failed', 'dropped'];
+export const TASK_STATUSES = ['idea', 'planned', 'working', 'needs answer', 'review', 'merged', 'waiting for GPU', 'verified', 'live', 'failed', 'dropped', 'done'];
+/** A task already done (its work is on beta from other changes): terminal, and on beta like a merged one beta built. */
+export const DONE = 'done';
+/** What a dependency may be for the task after it to start: its work is on beta, or it will never come (dropped). */
+export const SATISFIED = ['merged', 'verified', 'live', DONE, 'dropped'];
 /** A task whose change merged stand-in art or fallback code because no GPU server ran (J, 2026-10-18): not done. */
 export const GPU_WAIT = 'waiting for GPU';
 export const SIZES = ['S', 'M', 'L'];
@@ -179,8 +185,8 @@ export function askedJ() {
 }
 /** Studio and Gen merge into main (it deploys them): no beta build to wait for. */
 const needsBetaBuild = (t: Pick<Task, 'product'>) => !isInfra(t.product);
-/** A task is on beta: verified or live, or merged and beta built it (Studio and Gen: merged into main). */
-export const landed = (t: Pick<Task, 'status' | 'product' | 'build'>) => ['verified', 'live'].includes(t.status) || (t.status === 'merged' && (!needsBetaBuild(t) || t.build?.ok === true));
+/** A task is on beta: verified, live or already done, or merged and beta built it (Studio and Gen: merged into main). */
+export const landed = (t: Pick<Task, 'status' | 'product' | 'build'>) => ['verified', 'live', DONE].includes(t.status) ||(t.status === 'merged' && (!needsBetaBuild(t) || t.build?.ok === true));
 
 /** A task's change parked on its Gen jobs (agents.ts WAITING_GEN): how many of them are done; null when it isn't. */
 export function genWaitOf(change: string | null | undefined): { done: number; total: number } | null {
@@ -231,8 +237,9 @@ export type Progress = {
  * task merged and beta built it), planned (nothing started), else working (n of m merged).
  */
 export function itemProgress(it: Item, asked: Set<string> = askedJ()): Progress {
-  const tasks = (it.tasks ?? tasksOf(it.id)).filter((t) => t.status !== 'dropped' && t.status !== 'idea');
-  const merged = tasks.filter((t) => ['merged', 'verified', 'live'].includes(t.status)).length;
+  const all = it.tasks ?? tasksOf(it.id);
+  const tasks = all.filter((t) => t.status !== 'dropped' && t.status !== 'idea');
+  const merged = tasks.filter((t) => ['merged', 'verified', 'live', DONE].includes(t.status)).length;
   const built = tasks.filter(landed).length;
   const working = tasks.filter((t) => ['working', 'needs answer', 'review'].includes(t.status)).length;
   const waiting = tasks.filter((t) => t.status === 'planned').length;
@@ -240,6 +247,8 @@ export function itemProgress(it: Item, asked: Set<string> = askedJ()): Progress 
   let state: string;
   if (['idea', 'dropped'].includes(it.status)) state = it.status;
   else if (it.status === 'done' && !it.consumed) state = 'done'; // J's own "done"
+  // Every task dropped (none done): nothing to do, never "planned" waiting for ever.
+  else if (!tasks.length && all.length && all.every((t) => t.status === 'dropped')) state = 'dropped';
   else if (!tasks.length) state = it.status === 'done' ? 'planned' : it.status;
   else if (tasks.some((t) => t.status === 'failed' || asked.has(t.id) || (t.change && asked.has(t.change)))) state = 'needs you';
   else if (tasks.some((t) => t.status === 'planned' && t.gpu?.items?.length && !gpuCleared(t))) state = 'waiting for your GPU budget';
@@ -256,15 +265,18 @@ export function itemProgress(it: Item, asked: Set<string> = askedJ()): Progress 
     ? `waiting for GPU jobs (${gens.reduce((n, g) => n + g!.done, 0)} of ${gens.reduce((n, g) => n + g!.total, 0)} done)` : null;
   if (genLabel) state = 'waiting for GPU jobs';
   return {
-    state, label: genLabel ?? (state === 'working' ? `working (${merged} of ${tasks.length} merged)` : state),
+    state, label: genLabel ?? (state === 'working' ? `working (${merged} of ${tasks.length} merged)` : state === 'dropped' && it.status !== 'dropped' ? 'dropped (nothing to do)' : state),
     total: tasks.length, merged, built, working, waiting,
     tasks: tasks.map((t) => ({ id: t.id, title: t.title, status: t.status, waits: taskWaits(t, asked), build: t.build ? t.build.detail : null })),
   };
 }
 
-/** The tasks a task depends on that aren't merged into beta (or verified, or live) yet: while any are, it's blocked. */
+/**
+ * The tasks a task depends on that aren't merged into beta (or verified, live or already done) yet: while any are, it's
+ * blocked. A dropped one never blocks (k_e16304d7a504 waited for ever on a dropped task).
+ */
 export function blockedBy(t: Pick<Task, 'depends'>) {
-  return t.depends.map((d) => getTask(d) ?? { id: d, title: d, status: 'missing' }).filter((d) => !['merged', 'verified', 'live'].includes(d.status)).map((d) => ({ id: d.id, title: d.title, status: d.status }));
+  return t.depends.map((d) => getTask(d) ?? { id: d, title: d, status: 'missing' }).filter((d) => !SATISFIED.includes(d.status)).map((d) => ({ id: d.id, title: d.title, status: d.status }));
 }
 
 const nextOrd = (table: 'items' | 'tasks', key: string, value: string) => ((db.prepare(`SELECT MAX(ord) AS m FROM ${table} WHERE ${key} = ?`).get(value) as any)?.m ?? 0) + 1;
@@ -370,8 +382,9 @@ export async function backfillGpu() {
 export function updateTask(id: string, patch: Partial<{ title: string; request: string; criteria: unknown; depends: unknown; status: string; priority: string | null; ord: number; note: string; gpu: unknown; target: string | null }>) {
   const cur = getTask(id);
   if (!cur) throw new StudioError(`No task ${id}`, 404);
-  // working, review, merged, verified and live come from the agents and the checks, never by hand.
-  if (patch.status && !['idea', 'planned', 'dropped'].includes(patch.status)) throw new StudioError(`A task's status is set by its work and its checks; by hand it can be idea, planned (start or retry) or dropped`);
+  // working, review, merged, verified and live come from the agents and the checks, never by hand. done: already done
+  // (its work is on beta from other changes), which counts as on beta; dropped: stopped, never done.
+  if (patch.status && !['idea', 'planned', 'dropped', DONE].includes(patch.status)) throw new StudioError(`A task's status is set by its work and its checks; by hand it can be idea, planned (start or retry), done (already done on beta) or dropped`);
   // Back to planned (to try again from scratch) resets the tries and the change.
   const fresh = patch.status === 'planned' && !['idea', 'planned'].includes(cur.status);
   // New GPU items: estimated again by the caller (estimateTask); an approval stays only while it covers the estimate.
@@ -428,7 +441,7 @@ export function syncItem(id: string) {
   }
   const all = (...s: string[]) => tasks.every((t) => s.includes(t.status));
   // With beta playtests on request (config.ts betaPlaytestsOn), a merged task is on beta: nothing will check it there.
-  const onBeta = betaPlaytestsOn() ? all('verified', 'live') : all('merged', 'verified', 'live');
+  const onBeta = betaPlaytestsOn() ? all('verified', 'live', DONE) : all('merged', 'verified', 'live', DONE);
   const status = all('live') ? 'live' : onBeta ? 'on beta' : tasks.some((t) => t.status !== 'planned') ? 'in progress' : it.status;
   if (status !== it.status) db.prepare('UPDATE items SET status = ?, updated = ? WHERE id = ?').run(status, Date.now(), id);
   return getItem(id);
@@ -600,8 +613,10 @@ export function listMilestones(q: { product?: string; status?: string } = {}) {
  */
 export function milestoneProgress(id: string) {
   const asked = askedJ();
-  const items = (db.prepare(`SELECT * FROM items WHERE milestone = ? AND status != 'dropped' ORDER BY ord, created`).all(id) as any[]).map(toItem).map((i) => ({ ...i, progress: itemProgress(i, asked) }));
-  const done = items.filter((i) => ['on beta', 'verified', 'live', 'done'].includes(i.progress.state));
+  // An item whose every task was dropped has nothing to do: it no longer counts, like a dropped item.
+  const items = (db.prepare(`SELECT * FROM items WHERE milestone = ? AND status != 'dropped' ORDER BY ord, created`).all(id) as any[]).map(toItem)
+    .map((i) => ({ ...i, progress: itemProgress(i, asked) })).filter((i) => i.progress.state !== 'dropped');
+  const done =items.filter((i) => ['on beta', 'verified', 'live', 'done'].includes(i.progress.state));
   const tasks = { total: 0, merged: 0, built: 0, working: 0, waiting: 0 };
   for (const i of items) for (const k of Object.keys(tasks) as (keyof typeof tasks)[]) tasks[k] += i.progress[k];
   return { items: items.map((i) => ({ id: i.id, title: i.title, product: i.product, status: i.status, display: i.progress.label, state: i.progress.state, consumed: Boolean(i.consumed) })), done: done.length, total: items.length, tasks };
@@ -797,3 +812,26 @@ export const countToday = (action: string) => {
   since.setHours(0, 0, 0, 0);
   return (db.prepare('SELECT COUNT(*) AS n FROM pm_log WHERE action = ? AND at >= ? AND undone IS NULL').get(action, since.getTime()) as any).n as number;
 };
+
+// --------------------------------------------------------- already done
+
+/**
+ * Tasks dropped because they were already done ("Expired: already done on beta ...", "Already done ...", "Superseded
+ * ..."): done, which counts as on beta (J, 2026-10-19: The Shaft, The path into Hell and The Magma King showed
+ * "planned" though their work was merged). At startup (the migration of the old rows) and on each PM pass, so a drop
+ * written that way later still counts. Returns the tasks it changed.
+ */
+export function adoptDoneDrops() {
+  const rows = db.prepare(`SELECT id FROM tasks WHERE status = 'dropped' AND (note LIKE 'Expired: already done%' OR note LIKE 'Already done%' OR note LIKE 'Superseded%')`).all() as any[];
+  for (const r of rows) {
+    const t = setTask(r.id, { status: DONE });
+    logDecision('already-done', t.id, t.product, `"${t.title}" was dropped as already done (${String(t.note ?? '').slice(0, 300)}): done, on beta`);
+  }
+  return rows.map((r) => r.id as string);
+}
+try {
+  const n = adoptDoneDrops();
+  if (n.length) console.log(`[roadmap] ${n.length} task(s) dropped as already done are done now: ${n.join(', ')}`);
+} catch (e: any) {
+  console.warn(`[roadmap] already-done tasks: ${e.message ?? e}`);
+}

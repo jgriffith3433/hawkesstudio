@@ -83,7 +83,7 @@ function itemHtml(it) {
   // Ids, changes, tries, priorities and the less common buttons, behind Details.
   const taskDetails = it.tasks.map((t) => `<div class="test" style="flex-wrap:wrap"><span class="name">${esc(t.title)}</span>
       <span class="detail">${esc(t.id)}${t.tries ? ` · try ${t.tries}` : ''}${t.change ? ` · ${esc(t.change)}` : ''}${t.pr ? ` · <a href="${esc(t.pr)}" target="_blank">PR</a>` : ''}${t.depends.length ? ` · after ${t.depends.map(esc).join(', ')}` : ''}</span>
-      <span>${prioBadge(t.effective_priority, !t.priority)}${prioSelect('task', t.id, t.priority)}${!['dropped', 'live', 'verified'].includes(t.status) ? `<button class="small" data-task="${t.id}" data-st="dropped">Drop</button>` : ''}<button class="small" data-thread="${t.id}">Thread</button></span>
+      <span>${prioBadge(t.effective_priority, !t.priority)}${prioSelect('task', t.id, t.priority)}${!['dropped', 'live', 'verified', 'done'].includes(t.status) ? `<button class="small" data-task="${t.id}" data-st="dropped">Drop</button>` : ''}<button class="small" data-thread="${t.id}">Thread</button></span>
       ${!t.checks?.results?.length && t.criteria.length ? `<div class="meta" style="flex-basis:100%">Criteria: ${t.criteria.map(esc).join(' · ')}</div>` : ''}</div>`).join('');
   const main = it.status === 'idea' ? `<button class="small primary" data-item="${it.id}" data-st="planned" title="Its planned tasks start by themselves, in order">Plan it</button>`
     : it.status === 'live' ? `<button class="small" data-item="${it.id}" data-st="done">Done</button>`

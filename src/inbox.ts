@@ -176,6 +176,8 @@ function tidy() {
       if (c && c.status !== 'needs answer') why = `the change is ${c.status} now`;
     }
     if (q.topic === 'gpu' && q.subject && !awaiting.has(q.subject)) why = 'the task no longer waits for a GPU budget';
+    // A task found already done (pm.ts everyTrySaidDone, or by hand) has nothing left to decide; what's left that needs J stays.
+    if (q.subject?.startsWith('k_') && q.topic !== 'needs J' && getTask(q.subject)?.status === 'done') why = 'the task is already done';
     if (q.forwards) {
       const f = getQuestion(q.forwards);
       if (f && !['open', 'asked J'].includes(f.status)) why = `the agent's question was ${f.status}${f.answered_by ? ` by ${f.answered_by}` : ''}`;
