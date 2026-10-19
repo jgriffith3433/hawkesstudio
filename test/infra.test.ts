@@ -10,7 +10,7 @@ import { fileURLToPath } from 'node:url';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 // A scratch database: agents.ts requeues interrupted changes when it loads.
 process.env.STUDIO_DATA = fs.mkdtempSync(path.join(os.tmpdir(), 'studio-infra-'));
-const { guardFiles, smokeCheck } = await import('../src/agents.ts');
+const { guardFiles, smokeCheck, infraEnv } = await import('../src/agents.ts');
 const { getInfra, isInfra } = await import('../src/config.ts');
 
 test('infra targets are Studio and Gen, not products', () => {
@@ -29,6 +29,26 @@ test('guard rails: forbidden files always, guarded ones only when J names them',
   const named = guardFiles('hawkesstudio', files, 'Change hawkes-pull.mjs to wait 10 minutes, and .github/workflows/ci.yml too. Also .env');
   assert.deepEqual(named.map((b) => b.file), ['.data/studio.db', 'deploy/.keys/web-password.txt', '.env']);
   assert.deepEqual(guardFiles('hawkesgen', ['src/auth.ts', 'src/jobs.ts'], 'faster queue').map((b) => b.file), ['src/auth.ts']);
+});
+
+test('infra agents keep the Cursor login and drop other secrets', () => {
+  const prevCursor = process.env.CURSOR_API_KEY;
+  const prevAws = process.env.AWS_SECRET_ACCESS_KEY;
+  process.env.CURSOR_API_KEY = 'cursor-test-key';
+  process.env.AWS_SECRET_ACCESS_KEY = 'aws-test';
+  try {
+    const agent = infraEnv({ agent: true });
+    const check = infraEnv();
+    assert.equal(agent.CURSOR_API_KEY, 'cursor-test-key');
+    assert.equal(check.CURSOR_API_KEY, undefined);
+    assert.equal(agent.AWS_SECRET_ACCESS_KEY, undefined);
+    assert.equal(check.AWS_SECRET_ACCESS_KEY, undefined);
+  } finally {
+    if (prevCursor === undefined) delete process.env.CURSOR_API_KEY;
+    else process.env.CURSOR_API_KEY = prevCursor;
+    if (prevAws === undefined) delete process.env.AWS_SECRET_ACCESS_KEY;
+    else process.env.AWS_SECRET_ACCESS_KEY = prevAws;
+  }
 });
 
 test('smoke check: the service starts on a spare port, health ok, dashboard loads, scripts parse', { timeout: 90_000 }, async () => {

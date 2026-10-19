@@ -48,6 +48,7 @@ import { WALK_DEFAULTS, WALK_AWAY_BY, walkAwayOn, type WalkAwaySettings } from '
 import { getFinding, updateFinding, takenBy } from './backlog.ts';
 import { waitsForCurrentBuild, staleReport, staleNote } from './bugreport.ts';
 import { notReached, slowNote, playTime, samplePace, whereTimeGoes, idleWatch, idleState, IDLE_SUBJECT } from './pace.ts';
+import { harnessBlocked } from './brains.ts';
 
 // ---------------------------------------------------------------- settings
 
@@ -2007,6 +2008,12 @@ export async function followRescues() {
     if (!scout && Date.now() - r.at < 30 * 60_000) continue;
     const x = scout ? await rescueDeps.report(scout).catch(() => null) : null;
     if (x?.status === 'running' && Date.now() - r.at < 60 * 60_000) continue;
+    // A scout that only hit the usage cap or a login error has no diagnosis. Don't reset the tries or paste it into the next brief.
+    if (harnessBlocked(`${x?.report ?? ''}\n${x?.detail ?? ''}`)) {
+      saveRescue(id, null);
+      logDecision('rescue', id, t.product, `"${t.title}": scout ${scout ?? '(none)'} was stopped by the harness, so that is not a diagnosis and the tries are not reset`.slice(0, 1500));
+      continue;
+    }
     const diagnosis = x?.status === 'done' && x.report ? x.report.slice(0, 6000) : `(the scout couldn't report: ${x?.detail ?? 'it is gone'})`;
     saveRescue(id, { ...r, scout, state: 'retrying', diagnosis });
     setTask(id, { status: 'planned', tries: 0, checks: null, note: `retrying from scratch${scout ? ` with scout ${scout}'s diagnosis` : ''}: one more round of tries (the PM decided)` });
