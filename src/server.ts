@@ -13,6 +13,7 @@ import { reportMarkdown, listReports } from './report.ts';
 import { deployPlan, deploy, rollbackPlan, rollback } from './deploy.ts';
 import { assetStatus } from './assets.ts';
 import { syncRepos } from './repos.ts';
+import { chooseBrain, ensureBrain } from './brains.ts';
 import { startConversation, say, getConversation, listConversations, stop as stopTalk, talkInfo, renameConversation, deleteConversation, startCall, endCall, callInfo, talkEvents, resumeTalk, markSeen, unseenConversations } from './talk.ts';
 import { notify, notifyInfo, saveNotifySettings, PUBLIC_URL } from './notify.ts';
 import { listChanges, getChange, startFix, startTask, approve, revise, close, agentSettings, saveAgentSettings, costToday, resumeChanges } from './agents.ts';
@@ -676,6 +677,7 @@ server.listen(PORT, '127.0.0.1', () => {
     if (renamed.length) console.log(`[studio] renamed scenarios on ${renamed.length} change(s): ${renamed.map((r) => `${r.id} ${r.from} → ${r.to}`).join(', ')}`);
   }).catch((e) => console.warn(`[studio] renaming scenarios: ${e.message ?? e}`));
   const runs = resumeRuns();
+  chooseBrain();
   const changes = resumeChanges();
   // Pull requests J merged on GitHub: their changes are marked merged (agents.ts), every 5 minutes.
   const mergedOutside = () => void import('./agents.ts').then(({ syncMergedOutside }) => syncMergedOutside()).catch((e) => console.warn(`[studio] merged outside Studio: ${e.message ?? e}`));
@@ -702,6 +704,7 @@ server.listen(PORT, '127.0.0.1', () => {
   startReportFollowups();
   // The PM loop (pm.ts): on the server, or on J's PC with STUDIO_PM=on.
   if ((process.platform !== 'win32' && process.env.STUDIO_SERVER === '1') || process.env.STUDIO_PM === 'on') void import('./pm.ts').then(({ startPm }) => startPm());
+  void ensureBrain().catch((e) => console.warn(`[studio] brain: ${e.message ?? e}`));
   // GPU budgets under the auto-approval threshold that were waiting for J (from before it, or a restart): approved now.
   void import('./roadmap.ts').then(async ({ autoApproveWaiting, backfillGpu }) => {
     // GPU follow-ups added without their items get them (and a price) first, so the auto approval sees them too.

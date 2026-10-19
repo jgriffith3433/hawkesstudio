@@ -62,6 +62,14 @@
     </div>`;
   }
 
+  function brainBox(b) {
+    const key = b.key ? 'XAI_API_KEY is set on this server.' : 'XAI_API_KEY is not set on this server yet. Grok cannot answer until it is in the hawkes/gen secret.';
+    return `<div class="set-box"><h3>🧠 Brain</h3>
+      <div class="meta">Who runs Talk, the PM, the agents and Gen's writing and review calls. Claude is Claude Code (the Max plan, or the API key). Grok is Grok 4.7 on xAI, billed per token. Switching takes effect on the next turn and the next agent; a session already running finishes on the brain that started it, unless Studio restarts onto the other one.</div>
+      ${row('Brain', select('brain', 'id', b.id, [['claude', 'Claude'], ['grok', 'Grok 4.7']]), b.id === 'grok' ? `Model ${esc(b.model)}. ${key}` : 'Claude Code, on the model each role names.')}
+    </div>`;
+  }
+
   function agentsBox(a) {
     return `<div class="set-box"><h3>🤖 Agents</h3>
       <div class="meta">Limits for the fixes Studio starts by itself after the daily run. Fixes and tasks you ask for always start (they queue behind the concurrency limit). On the Max plan the dollars are what Claude Code reports, not money you pay.</div>
@@ -136,7 +144,7 @@
     window.callVoice?.apply(data.call);
     const badge = $('#walkAwayBadge');
     if (badge) badge.hidden = !data.pm.walkAway;
-    $('#setBody').innerHTML = `<div class="set-grid">${callBox(data.call)}${agentsBox(data.agents)}${pmBox(data.pm)}${notifyBox(data.notify)}${costsBox(data.costs)}${resourcesBox(data.resources)}</div>`;
+    $('#setBody').innerHTML = `<div class="set-grid">${brainBox(data.brain)}${callBox(data.call)}${agentsBox(data.agents)}${pmBox(data.pm)}${notifyBox(data.notify)}${costsBox(data.costs)}${resourcesBox(data.resources)}</div>`;
     if (data.call.engine === 'eleven') loadElevenVoices();
   }
   window.loadSettingsTab = loadSettingsTab;
@@ -199,6 +207,7 @@
     const saved = await save(section, patch, t);
     // Choosing a voice engine changes what the box shows (the ElevenLabs voices, Kokoro's state).
     if (saved && section === 'call' && (k === 'engine' || k === 'rate')) loadSettingsTab();
+    if (saved && section === 'brain') loadSettingsTab();
   });
   document.addEventListener('input', (e) => {
     if (e.target.matches?.('#setBody input[type=range]')) e.target.nextElementSibling.textContent = `${Number(e.target.value).toFixed(2)}×`;

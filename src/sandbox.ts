@@ -13,6 +13,7 @@ import type http from 'node:http';
 import type net from 'node:net';
 import { PROJECTS } from './config.ts';
 import { runCommand } from './ops.ts';
+import { brainId, GROK_AGENT, GROK_MODEL } from './brains.ts';
 
 /** The wrapper deploy/agent-sandbox.mjs installs: it runs a command as the sandbox user with its own HOME and umask. */
 export const WRAPPER = '/usr/local/bin/hawkes-agent-run';
@@ -144,7 +145,7 @@ export async function shareAll(group: string | null = sandboxOn() ? AGENT_GROUP 
  * What a sandboxed Claude Code gets from Studio's environment: nothing secret but its own Claude login (it can't run
  * without it), no AWS role marker, no GitHub token, no service keys. Its Gen key is in its MCP config, not here.
  */
-const PASS = /^(PATH|LANG|LC_\w+|TZ|TERM|NODE_OPTIONS|NODE_EXTRA_CA_CERTS|HAWKESGEN_URL|GEN_PUBLIC_URL|STUDIO_PORT|STUDIO_SERVER|STUDIO_PUBLIC_URL|TALK_\w+|CLAUDE_CODE_OAUTH_TOKEN|ANTHROPIC_API_KEY|CLAUDE_CODE_\w+|DISABLE_\w+|npm_config_cache)$/;
+const PASS = /^(PATH|LANG|LC_\w+|TZ|TERM|NODE_OPTIONS|NODE_EXTRA_CA_CERTS|HAWKESGEN_URL|GEN_PUBLIC_URL|STUDIO_PORT|STUDIO_SERVER|STUDIO_PUBLIC_URL|TALK_\w+|CLAUDE_CODE_OAUTH_TOKEN|ANTHROPIC_API_KEY|XAI_API_KEY|GROK_SESSION_DIR|HAWKES_BRAIN|CLAUDE_CODE_\w+|DISABLE_\w+|npm_config_cache)$/;
 export function sandboxEnv(env: NodeJS.ProcessEnv) {
   const out: Record<string, string> = {};
   for (const [k, v] of Object.entries(env)) if (v !== undefined && PASS.test(k)) out[k] = v;
@@ -176,13 +177,21 @@ export function spawnClaude(args: string[], { cwd, env }: { cwd: string; env: No
  * the same user and environment. TALK_CLAUDE_ARGS (a JSON array before Claude Code's own arguments): tests run a
  * stand-in script with node, never in the sandbox.
  */
-export function claudeCommand(args: string[], { cwd, env }: { cwd: string; env: NodeJS.ProcessEnv }) {
+/** Grok replaces the Claude Code executable. Tests that set TALK_CLAUDE or TALK_CLAUDE_ARGS keep their stand-in. */
+function brainCommand(args: string[]) {
   const exe = process.env.TALK_CLAUDE || 'claude';
   const pre: string[] = process.env.TALK_CLAUDE_ARGS ? JSON.parse(process.env.TALK_CLAUDE_ARGS) : [];
-  if (!sandboxOn() || pre.length) return { file: exe, args: [...pre, ...args], cwd, env };
+  if (pre.length || process.env.TALK_CLAUDE || brainId() !== 'grok') return { file: exe, args: [...pre, ...args] };
+  const mapped = args.map((a, i, all) => (all[i - 1] === '--model' ? GROK_MODEL : a));
+  return { file: process.execPath, args: [GROK_AGENT, ...mapped] };
+}
+
+export function claudeCommand(args: string[], { cwd, env }: { cwd: string; env: NodeJS.ProcessEnv }) {
+  const cmd = brainCommand(args);
+  if (!sandboxOn() || process.env.TALK_CLAUDE_ARGS) return { file: cmd.file, args: cmd.args, cwd, env };
   const clean = sandboxEnv(env);
   const keep = Object.keys(clean).filter((k) => k !== 'HOME' && k !== 'PATH');
-  return { file: 'sudo', args: ['-n', '-u', process.env.HAWKES_AGENT_USER!, `--preserve-env=${keep.join(',')}`, WRAPPER, path.resolve(cwd), exe, ...args], cwd, env: clean };
+  return { file: 'sudo', args: ['-n', '-u', process.env.HAWKES_AGENT_USER!, `--preserve-env=${keep.join(',')}`, WRAPPER, path.resolve(cwd), cmd.file, ...cmd.args], cwd, env: clean };
 }
 
 /**

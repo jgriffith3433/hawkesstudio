@@ -19,6 +19,8 @@ them too.
 | `scout` | `studio_scout` (read-only investigation) | Opus | read, git log/show |
 | `reviewer` | a subagent for a second opinion on a change | Sonnet | read, git diff |
 
+**Brain** (Settings, `src/brains.ts`): Claude or Grok 4.7. Grok runs `bin/grok-agent.mjs` (xAI, `XAI_API_KEY` from the hawkes/gen secret) and speaks the same stream-json, so the roles, tools and MCP servers stay. On the control server, a Studio that has never stored a brain uses Grok (Claude usage ran out, J 2026-10-19) and tells Gen, whose writing and review calls follow (`settings.brain`). The role's model name still applies when the brain is Claude.
+
 `src/roles.ts` turns a role into flags: `--model`, `--append-system-prompt` (the role's instructions, then Studio's
 context for that run), `--allowedTools` / `--disallowedTools`, `--max-turns`, and `--plugin-dir hawkesstudio/.claude`.
 `STUDIO_MODEL_<ROLE>` overrides a role's model (`TALK_MODEL` and `SCOUT_MODEL` still work); `STUDIO_MODEL_OPUS`,

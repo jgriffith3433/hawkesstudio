@@ -13,6 +13,7 @@
 
 import { db, J, parse } from './db.ts';
 import { StudioError } from './config.ts';
+import { brainSettings, saveBrain, syncBrain } from './brains.ts';
 
 db.exec(`CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated INTEGER NOT NULL, by TEXT)`);
 
@@ -97,7 +98,7 @@ const notifyMod = () => import('./notify.ts');
 const costsMod = () => import('./costs.ts');
 const resourcesMod = () => import('./resources.ts');
 
-export const SECTIONS = ['call', 'agents', 'pm', 'notify', 'costs', 'resources'] as const;
+export const SECTIONS = ['brain', 'call', 'agents', 'pm', 'notify', 'costs', 'resources'] as const;
 export type Section = (typeof SECTIONS)[number];
 
 /** Everything, for the Settings tab and Talk. */
@@ -108,6 +109,7 @@ export async function allSettings() {
   const { costSettings } = await costsMod();
   const { resourceSettings } = await resourcesMod();
   return {
+    brain: brainSettings(),
     call: callSettings(),
     agents: agentSettings(),
     pm: pmSettings(),
@@ -120,6 +122,7 @@ export async function allSettings() {
 
 /** Numbers that spend more when they go up, and switches that spend more when they go on (per section). */
 const RAISES: Record<Section, { up?: string[]; on?: string[]; off?: string[]; any?: string[] }> = {
+  brain: {},
   call: {},
   agents: { up: ['maxConcurrent', 'perProduct', 'maxPerDay', 'maxCostPerDay', 'maxTurns'], on: ['enabled', 'autoFix'], any: ['model', 'severities'] },
   pm: { up: ['maxStartsPerDay', 'maxConcurrent', 'maxTries', 'walkAwayGpuPerDay'], on: ['enabled', 'fixBugs', 'walkAway'] },
@@ -144,6 +147,7 @@ export function costRaising(section: Section, patch: Record<string, any>, cur: R
     }
   }
   if (section === 'call' && patch.engine === 'eleven' && cur.engine !== 'eleven') out.push(`the ElevenLabs voice (about $${ELEVEN_PER_MIN.toFixed(2)} a minute Talk speaks)`);
+  if (section === 'brain' && patch.id === 'grok' && cur.id !== 'grok') out.push('brain → Grok (xAI, billed per token)');
   return out;
 }
 
@@ -172,6 +176,12 @@ export async function saveSettings(section: string, patch: Record<string, any>, 
       }
     }
     if (s === 'notify' && (patch.rotate || patch.server !== undefined)) throw new StudioError('The notification topic and server are changed on the dashboard (Settings), not from Talk.', 403);
+  }
+  if (s === 'brain') {
+    let saved;
+    try { saved = saveBrain(String(patch.id), by); } catch (e: any) { throw new StudioError(e.message); }
+    await syncBrain(saved.id);
+    return saved;
   }
   if (s === 'call') {
     const next = cleanCall(patch, callSettings());

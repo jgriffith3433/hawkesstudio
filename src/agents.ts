@@ -61,10 +61,11 @@ import { briefSection, learnFrom, recordRun, LEARNED_ASK } from './memory.ts';
 import { canonCheck, CONTENTISH, type CanonCheck } from './canon.ts';
 import { roleArgs, loadRole, type RoleName } from './roles.ts';
 import { claudeCommand, spawnShell, sandboxShare, assertWorktree, shareWorktree } from './sandbox.ts';
-import { launch, DetachedChild, detachedActivity, type DetachRec } from './detach.ts';
+import { launch, DetachedChild, detachedActivity, stopDetached, type DetachRec } from './detach.ts';
 import { warmDeps, installCold, markInstalled } from './warm.ts';
 import { ensureGpuFor, needsGpu } from './gpustart.ts';
 import { walkAwayOn, WALK_AWAY_BY } from './walkaway.ts';
+import { brainId, brainLabel } from './brains.ts';
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS changes (
@@ -253,6 +254,8 @@ export type Phase = {
   before?: string;
   /** The agent's detached process (detach.ts) and the byte of its output Studio had logged up to. */
   proc?: { rec: DetachRec; offset: number };
+  /** Which brain ran this pass (claude or grok), so a restart after a switch starts a new session. */
+  brain?: string;
   /** The agent's final words (the summary when it wrote none). */
   result?: string;
   /** The pushed commit under verification. */
@@ -947,9 +950,15 @@ function runAgent(c: Change, briefFile: string, s: AgentSettings, env = claudeEn
 async function agentPass(id: string, ph: Phase, save: (patch: Partial<Phase>) => void, s: AgentSettings, env: NodeJS.ProcessEnv, resume?: { session?: string; prompt: string }) {
   const brief = path.join(getChange(id)!.worktree, '.hawkes', 'brief.md');
   const fresh = (): AgentRun => ({
-    onStart: (rec) => save({ proc: { rec, offset: 0 } }),
+    onStart: (rec) => save({ proc: { rec, offset: 0 }, brain: brainId() }),
     onProgress: (offset) => save({ proc: { ...ph.proc!, offset } }),
   });
+  if (ph.proc && (ph.brain ?? 'claude') !== brainId()) {
+    addLog(id, `agent: stopping the ${ph.brain ?? 'claude'} session; the brain is ${brainLabel()} now, so this pass starts again`);
+    stopDetached(ph.proc.rec);
+    ph.proc = undefined;
+    save({ proc: undefined, brain: brainId() });
+  }
   if (ph.proc) {
     addLog(id, `agent: reattached to ${ph.proc.rec.unit} after a Studio restart`);
     const r = await runAgent(getChange(id)!, brief, s, env, resume, { ...fresh(), reattach: ph.proc });
@@ -1228,7 +1237,7 @@ async function work(id: string, note?: string, answer?: string, resumed?: Phase 
     }
 
     if (ph.step === 'agent') {
-      update(id, { detail: 'Claude is working on it' });
+      update(id, { detail: `${brainLabel()} is working on it` });
       // An answer to the agent's question continues its own session (claude --resume); anything else starts a new one.
       c = getChange(id)!;
       const resume = ph.nudge ? nudgeResume(c, ph)
@@ -1731,7 +1740,7 @@ async function workInfra(id: string, note?: string, resumed?: Phase | null, nudg
     }
 
     if (ph.step === 'agent') {
-      update(id, { detail: 'Claude is working on it' });
+      update(id, { detail: `${brainLabel()} is working on it` });
       if (!ph.proc && !ph.nudge) addLog(id, ph.conflict ? `agent resumed to resolve the conflicts with ${c.base}` : resumed ? 'agent: it ran inside Studio, which restarted; starting the pass again' : `agent started`);
       const r = await agentPass(id, ph, save, s, infraEnv({ agent: true }), ph.nudge ? nudgeResume(getChange(id)!, ph) : ph.conflict ? conflictResume(getChange(id)!, ph.conflict) : undefined);
       save({ step: 'publish', result: r.result, stopped: r.stopped, nudge: false, proc: undefined }, { cost: getChange(id)!.cost + r.cost });
