@@ -46,7 +46,7 @@ import { curationLine } from './memory.ts';
 import { filesIn, type WorkShape } from './parallel.ts';
 import { WALK_DEFAULTS, WALK_AWAY_BY, walkAwayOn, type WalkAwaySettings } from './walkaway.ts';
 import { getFinding, updateFinding, takenBy } from './backlog.ts';
-import { waitsForCurrentBuild } from './bugreport.ts';
+import { waitsForCurrentBuild, staleReport, staleNote } from './bugreport.ts';
 
 // ---------------------------------------------------------------- settings
 
@@ -717,6 +717,13 @@ export async function startWork() {
       if (isInfra(f.product) || waiting.some((t) => t.product === f.product) || await slotHeld(f.product, { text: f.title })) continue;
       // An automatic error report from a beta build older than a fix waits for the current build to catch it again.
       if (f.source === 'auto') {
+        // A page left open on an older Unity build (filed before stale pages were told apart): not a game bug.
+        const stale = await staleReport(f);
+        if (stale) {
+          updateFinding(f.id, { status: 'wontfix', note: staleNote(stale) });
+          logDecision('wontfix', f.id, f.product, `"${f.title}": ${staleNote(stale)}`.slice(0, 1500));
+          continue;
+        }
         const beta = betaPreview(f.product);
         if (beta?.status === 'building') continue; // which build beta serves is known once it's published
         const held = waitsForCurrentBuild(f, beta);
