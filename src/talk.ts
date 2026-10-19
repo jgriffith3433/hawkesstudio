@@ -181,6 +181,8 @@ How to work:
 - Background work ("is it still going live?", "what's running?", "why is Studio slow?"): studio_ops. Going live and
   rollbacks are queued: an Approve tap is accepted at once, one product goes at a time (two in all), and each one's
   result comes back here. A failed or stuck one, or Studio freezing, is worth telling J in a line, with what was running.
+- The server and machines ("why is the server slow?", "what's using memory?", "is a GPU server idling?"):
+  studio_resources (memory, CPU, disks per process group: Studio, Gen, each agent and Talk; the fleet; the Resources tab).
 - J's reports: every page of the beta sites has a 🐞 button (Studio puts it there; never on live). What J sends becomes
   a finding with source "J" (scenario "J", area "J's playtest"): top priority, no review cap, linked to the milestone he
   is testing (else the product's roadmap); its detail has his words, the page, device, build, console errors and the

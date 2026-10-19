@@ -21,13 +21,14 @@
       <button data-tab="analytics" title="How the games are doing: players, retention, where they drop off, what they like, from Hawkes Analytics">Analytics</button>
       <button data-tab="library" title="Every product's characters, stages and shots in Hawkes Gen's library: takes waiting for a pick, and every version">Library</button>
       <div class="more" id="more">
-        <button type="button" class="more-btn" id="moreBtn" aria-haspopup="true" aria-expanded="false" title="Reports, playtests, agent changes, runs, costs, memory, users, settings">More ▾</button>
+        <button type="button" class="more-btn" id="moreBtn" aria-haspopup="true" aria-expanded="false" title="Reports, playtests, agent changes, runs, costs, resources, memory, users, settings">More ▾</button>
         <div class="more-menu" id="moreMenu" hidden>
           <button data-tab="report">Report</button>
           <button data-tab="playtests">Playtests</button>
           <button data-tab="changes">Changes</button>
           <button data-tab="runs">Runs</button>
           <button data-tab="costs">Costs</button>
+          <button data-tab="resources" title="The resource monitor: this server's memory, CPU and disks per agent, Talk and service; the GPU servers, build server and playtester; history">Resources</button>
           <button data-tab="memory">Memory</button>
           <button data-tab="users" hidden title="Who can sign in: invites, roles, password resets, the sign-in log (admins)">Users</button>
           <button data-tab="settings" title="Call voice and listening, agent and PM limits, notifications, budgets: stored in Studio, so they follow you across devices">⚙ Settings</button>
@@ -167,6 +168,10 @@
       </div>
       <div id="costsBody"></div>
     </section>
+    <section id="resources" class="tab">
+      <p class="intro"><b>Resources:</b> what the studio runs on: this server's memory, CPU and disks, who uses them, and the machines in Hawkes Gen.</p>
+      <div id="rsBody"></div>
+    </section>
     <section id="runs" class="tab">
       <p class="intro"><b>Runs:</b> the raw list of every run and its steps, for digging into what happened. Report tells the same runs in plain words.</p>
       <div id="runList"></div>
@@ -209,6 +214,7 @@
   <script src="roadmap.js"></script>
   <script src="inbox.js"></script>
   <script src="costs.js"></script>
+  <script src="resources.js"></script>
   <script src="analytics.js"></script>
   <script src="golive.js"></script>
   <script src="library.js"></script>
