@@ -8,11 +8,16 @@ export interface Scenario {
   title: string;
   seconds: number;
   tags?: string[];
+  description?: string;
+  /** The start points this scenario takes in options.at (a place, chapter or level). */
+  starts?: string[];
 }
 
 export interface RunOptions {
   seed: number;
   speed: number;
+  /** A named start point (place, chapter, level); absent: play from the start. */
+  at?: string;
   [k: string]: unknown;
 }
 
@@ -31,6 +36,8 @@ export interface Tracker {
   finish(outcome?: Outcome): void;
   readonly seed: number;
   readonly speed: number;
+  /** options.at, or null: play from the start. */
+  readonly at: string | null;
   /** Real time (not scaled by speed). */
   wait(ms: number): Promise<void>;
   until(test: () => unknown, timeoutMs?: number, what?: string): Promise<void>;

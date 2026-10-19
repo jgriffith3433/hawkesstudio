@@ -31,6 +31,7 @@ import { tagRun } from './followup.ts';
 import { betaTurn, newerBetaRun, supersede, absorbed, supersedingBuild } from './betaqueue.ts';
 import { holdBeta, waitForBetaPlays, serveBeta, runBetaBuild, servedMismatch } from './betaplay.ts';
 import { resolveScenario, missingScenario, noteScenarios, knownScenarios } from './scenarios.ts';
+import { slowNote, playTime } from './pace.ts';
 
 export type RunOptions = {
   products?: string[];
@@ -494,7 +495,7 @@ export async function testProduct(run: string, p: Product, platform: 'EditMode' 
  * full (daily; regression-only once the scenario meets the product's quality bar), verify (beta runs, one-off checks),
  * regression (live checks). criteria: a roadmap task's acceptance criteria, judged on this playtest.
  */
-export async function playtestProduct(run: string, p: Product, asked: Playtest, { review = true, focus, mode = 'full', criteria, abandon }: { review?: boolean; focus?: string; mode?: ReviewMode; criteria?: string[]; abandon?: () => string | null } = {}) {
+export async function playtestProduct(run: string, p: Product, asked: Playtest, { review = true, focus, mode = 'full', criteria, abandon, slot = 0 }: { review?: boolean; focus?: string; mode?: ReviewMode; criteria?: string[]; abandon?: () => string | null; slot?: number } = {}) {
   // A renamed scenario (an older task's name) plays under the game's current name (products.json scenarioAliases).
   const renamed = asked.scenario ? resolveScenario(p, asked.scenario) : undefined;
   const t: Playtest = renamed && renamed !== asked.scenario ? { ...asked, scenario: renamed } : asked;
@@ -531,7 +532,8 @@ export async function playtestProduct(run: string, p: Product, asked: Playtest, 
   // a time (they share its port), and only the build this run built or kept (betaplay.ts).
   const unityBeta = Boolean(p.build && betaLane() && t.where === 'local' && prior?.status !== 'done');
   const release = unityBeta ? holdBeta(p.id, run) : null;
-  const unlock = unityBeta ? await serveBeta(p.id) : null;
+  // Parallel plays of one run (slot 1, 2…: betaBody) serve the same copy on their own ports, so they don't take turns.
+  const unlock = unityBeta ? await serveBeta(slot ? `${p.id}#${slot}` : p.id) : null;
   const free = () => { unlock?.(); release?.(); };
   let job: any;
   let played: ReturnType<typeof playedLocal> = null;
@@ -561,7 +563,7 @@ export async function playtestProduct(run: string, p: Product, asked: Playtest, 
       else if (p.build && betaLane()) {
         // Unity on the beta lane: the beta build, from its own website copy, on its own port.
         if (!played) throw new Error(`${BETA} isn't built yet (or its last build failed): nothing to play locally`);
-        port = betaPort(p);
+        port = betaPort(p) + 1000 * slot;
         stopServed(port);
         url = await serveDir(p, serveDirOf, port);
       } else url = await ensureServer(p, (m) => { deps.push(m); updateStep(s, { detail: m }); });
@@ -571,7 +573,7 @@ export async function playtestProduct(run: string, p: Product, asked: Playtest, 
     }
     updateStep(s, { data: { played, url, ...(deps.length ? { deps } : {}), ...(since ? { runningSince: since } : {}) } });
     // Live sites may not have the contract yet (it ships with the next deploy): auto falls back to a generic smoke test.
-    const params: Record<string, unknown> = { url, mode: t.mode ?? (p.contract && t.where === 'local' ? 'contract' : 'auto'), ...(t.scenario ? { scenario: t.scenario } : {}), ...(t.timeout ? { timeout: t.timeout } : {}), ...(t.seed ? { seed: t.seed } : {}), ...(t.options ? { options: t.options } : {}) };
+    const params: Record<string, unknown> = { url, mode: t.mode ?? (p.contract && t.where === 'local' ? 'contract' : 'auto'), ...(t.scenario ? { scenario: t.scenario } : {}), ...(t.timeout ? { timeout: t.timeout } : {}), ...(t.seed ? { seed: t.seed } : {}), ...(playOptions(t) ? { options: playOptions(t) } : {}) };
     if (t.mode === 'site') params.maxPages = 40;
     Object.assign(params, playtestExtras(p.id, name, t));
     if (gpuGate && p.engine !== 'static' && !prior) {
@@ -609,10 +611,14 @@ export async function playtestProduct(run: string, p: Product, asked: Playtest, 
   }
   const r = job.result ?? {};
   const ok = job.status === 'done';
+  // A task's check (criteria judged) against the scenario budget (pace.ts): over it, the run card warns and the task's
+  // agent hears it (pm.ts). Daily "full" runs are long on purpose: not flagged.
+  const at = playOptions(t)?.at;
+  const slow = ok && criteria?.length ? slowNote(r.seconds) : null;
   updateStep(s, {
     status: ok ? 'done' : 'failed', job: job.id,
-    detail: ok ? `${r.outcome} in ${Math.round(r.seconds ?? 0)} s · ${r.problems?.length ?? 0} problems · ${r.fps?.average ?? '?'} fps${r.mode === 'generic' ? ' · no playtest contract' : ''}` : `failed: ${job.error ?? job.detail}`,
-    data: ok ? { ...playtestData(job, url), played } : { error: job.error, url, played },
+    detail: ok ? `${r.outcome} in ${playTime(r.seconds ?? 0)}${at ? ` (from "${at}")` : ''} · ${r.problems?.length ?? 0} problems · ${r.fps?.average ?? '?'} fps${r.mode === 'generic' ? ' · no playtest contract' : ''}${slow ? ` · ⚠ ${slow}` : ''}` : `failed: ${job.error ?? job.detail}`,
+    data: ok ? { ...playtestData(job, url), played, ...(at ? { at } : {}), ...(slow ? { slow } : {}) } : { error: job.error, url, played },
     finished: true,
   });
   // A live site failing its check may be down: tell J's phone (once per product and scenario every 6 hours).
@@ -627,6 +633,38 @@ export async function playtestProduct(run: string, p: Product, asked: Playtest, 
     return job;
   }
   return reviewPlaytest(run, p, t, job, played, { focus, mode, criteria });
+}
+
+/**
+ * The options a playtest passes to the game: its own, with its start point (`at`, docs/playtest.md) when it names one.
+ * No `at`: today's behaviour, the scenario plays from its start.
+ */
+export function playOptions(t: Pick<Playtest, 'options' | 'at'>): Record<string, unknown> | undefined {
+  const at = typeof t.at === 'string' && t.at.trim() ? t.at.trim() : null;
+  return at ? { ...(t.options ?? {}), at } : t.options;
+}
+
+/** Plays of one beta run at once (the playtester's slots: Hawkes Gen runs 2 playtests at a time on its GPU machine). */
+export const BETA_PLAYS_PARALLEL = () => Math.max(1, Number(process.env.STUDIO_BETA_PLAYS_PARALLEL ?? 2) || 1);
+
+/**
+ * Runs `each` over `list` with at most `width` at once; each worker gets its slot (0, 1…). `stop` ends the workers
+ * before their next item. An error in one item doesn't stop the others: the first is thrown once all are over.
+ */
+export async function inSlots<T>(list: T[], width: number, each: (x: T, slot: number) => Promise<unknown>, stop: () => unknown = () => null) {
+  let next = 0;
+  let error: unknown = null;
+  await Promise.all(Array.from({ length: Math.max(1, Math.min(width, list.length)) }, async (_, slot) => {
+    while (next < list.length && !stop()) {
+      const x = list[next++];
+      try {
+        await each(x, slot);
+      } catch (e) {
+        error ??= e;
+      }
+    }
+  }));
+  if (error) throw error;
 }
 
 /**
@@ -699,10 +737,10 @@ async function reviewPlaytest(run: string, p: Product, t: Playtest, job: any, pl
   return job;
 }
 
-type PartialOptions = { scenario?: string; where?: 'local' | 'live'; device?: 'desktop' | 'phone'; mode?: string; force?: boolean; review?: boolean; focus?: string; reviewMode?: ReviewMode; platform?: 'EditMode' | 'PlayMode'; category?: string; origin?: string | null; seed?: number; options?: Record<string, unknown> };
+type PartialOptions = { at?: string; scenario?: string; where?: 'local' | 'live'; device?: 'desktop' | 'phone'; mode?: string; force?: boolean; review?: boolean; focus?: string; reviewMode?: ReviewMode; platform?: 'EditMode' | 'PlayMode'; category?: string; origin?: string | null; seed?: number; options?: Record<string, unknown> };
 
 /** A playtest asked for over the API (studio_playtest, the CLI): device "phone" plays at 390x844 touch, as products.json's device does. */
-export const playtestRequest = (b: any): PartialOptions => ({ scenario: b.scenario, where: b.where, device: b.device === 'phone' ? 'phone' : undefined, mode: b.mode, review: b.review, focus: b.focus, reviewMode: ['full', 'verify', 'regression'].includes(b.reviewMode) ? b.reviewMode : undefined, seed: Number(b.seed) || undefined, options: b.options && typeof b.options === 'object' && !Array.isArray(b.options) ? b.options : undefined });
+export const playtestRequest = (b: any): PartialOptions => ({ ...(typeof b.at === 'string' && b.at.trim() ? { at: b.at.trim() } : {}), scenario: b.scenario, where: b.where, device: b.device === 'phone' ? 'phone' : undefined, mode: b.mode, review: b.review, focus: b.focus, reviewMode: ['full', 'verify', 'regression'].includes(b.reviewMode) ? b.reviewMode : undefined, seed: Number(b.seed) || undefined, options: b.options && typeof b.options === 'object' && !Array.isArray(b.options) ? b.options : undefined });
 
 /** Runs the pipeline pieces on their own (from the API, CLI or MCP) as a small run. */
 export function startPartial(kind: 'build' | 'playtest' | 'test', productId: string, opts: PartialOptions = {}) {
@@ -717,7 +755,7 @@ async function partialBody(id: string, kind: string, p: Product, opts: PartialOp
   try {
     if (kind === 'build') await buildProduct(id, p, { force: opts.force ?? true });
     else if (kind === 'test') await testProduct(id, p, opts.platform ?? 'EditMode', opts.category);
-    else await playtestProduct(id, p, { scenario: opts.scenario ?? (opts.mode ? undefined : 'smoke'), mode: (opts.mode as any) ?? undefined, where: opts.where ?? 'local', device: opts.device, seed: opts.seed, options: opts.options }, { review: opts.review !== false, focus: opts.focus, mode: opts.reviewMode ?? (opts.where === 'live' ? 'regression' : 'verify') });
+    else await playtestProduct(id, p, { scenario: opts.scenario ?? (opts.mode ? undefined : 'smoke'), mode: (opts.mode as any) ?? undefined, where: opts.where ?? 'local', device: opts.device, seed: opts.seed, options: opts.options, ...(opts.at ? { at: opts.at } : {}) }, { review: opts.review !== false, focus: opts.focus, mode: opts.reviewMode ?? (opts.where === 'live' ? 'regression' : 'verify') });
     const cost = (db.prepare('SELECT COALESCE(SUM(cost), 0) AS c FROM steps WHERE run = ?').get(id) as any).c;
     const failed = (db.prepare(`SELECT COUNT(*) AS n FROM steps WHERE run = ? AND status = 'failed'`).get(id) as any).n;
     db.prepare(`UPDATE runs SET status = ?, detail = ?, finished = ?, cost = ? WHERE id = ?`).run(failed ? 'failed' : 'done', `${kind} ${p.id}${failed ? ' failed' : ''}`, Date.now(), cost, id);
@@ -798,11 +836,11 @@ async function betaBody(id: string, p: Product, { focus, criteria, scenario, opt
     if (lane && plays?.length) {
       const release = p.build ? holdBeta(p.id, id) : null;
       try {
-        for (const x of plays) {
-          if (newerBuild()) break;
+        // Only the scenarios of the tasks it judges (pm.ts playsFor), independent ones in parallel across the playtester's slots.
+        await inSlots(plays, BETA_PLAYS_PARALLEL(), async (x, slot) => {
           const pt: Playtest | undefined = x.scenario ? { scenario: x.scenario, where: 'local', ...(x.options ? { options: x.options } : {}) } : p.playtests.find((y) => y.where === 'local' && y.device !== 'phone');
-          if (pt) await playtestProduct(id, p, pt, { focus, mode: 'verify', criteria: x.criteria, abandon: newerBuild });
-        }
+          if (pt) await playtestProduct(id, p, pt, { focus, mode: 'verify', criteria: x.criteria, abandon: newerBuild, slot });
+        }, newerBuild);
         if (by) return void supersede(id, p.id, by, shaOf(repoDirs(p).source, 'HEAD'));
       } finally {
         release?.();

@@ -20,7 +20,7 @@ fs.mkdirSync(process.env.STUDIO_PROJECTS, { recursive: true });
 fs.mkdirSync(process.env.STUDIO_DATA, { recursive: true });
 fs.writeFileSync(path.join(process.env.STUDIO_DATA, 'notify.json'), JSON.stringify({ enabled: false, topic: 'test' }));
 fs.writeFileSync(path.join(process.env.STUDIO_DATA, 'agents.json'), JSON.stringify({ maxConcurrent: 0 }));
-const ids = ['rdslot', 'rdstatus', 'rdbuild', 'rdmile', 'rdunclear', 'rdbroken'];
+const ids = ['rdslot', 'rdstatus', 'rdbuild', 'rdmile', 'rdunclear', 'rdbroken', 'rdreach'];
 fs.writeFileSync(process.env.STUDIO_PRODUCTS, JSON.stringify({
   repos: Object.fromEntries(ids.map((id) => [id, `x/${id}`])),
   products: ids.map((id) => ({
@@ -261,7 +261,7 @@ test("a milestone check with criteria unclear tells J nothing: it's checked agai
   try {
     const { ms, tasks, run: r1 } = await checkedMilestone('rdunclear', [['the gate opens'], ['the boss roars']]);
     step(r1, 'rdunclear', 'playtest', 'done', {}, 'passed in 60 s · 0 problems');
-    step(r1, 'rdunclear', 'review', 'done', { verdict: 'ship', criteria: [{ criterion: 'the gate opens', met: 'yes', evidence: 'at 4 s' }, { criterion: 'the boss roars', met: 'unclear', evidence: 'never reached the boss' }] });
+    step(r1, 'rdunclear', 'review', 'done', { verdict: 'ship', criteria: [{ criterion: 'the gate opens', met: 'yes', evidence: 'at 4 s' }, { criterion: 'the boss roars', met: 'unclear', evidence: 'the frames are too dark to tell' }] });
     finish(r1);
     await pm.milestoneCheck(ms.id);
     assert.equal(rm.getMilestone(ms.id)!.status, 'open', 'not reached with a criterion unclear');
@@ -282,7 +282,7 @@ test("a milestone check with criteria unclear tells J nothing: it's checked agai
     // Still unclear, and out of tries: ONE card saying what's left.
     pm.savePmSettings({ maxTries: 1 });
     step(r2, 'rdunclear', 'playtest', 'done', {}, 'passed in 60 s · 0 problems');
-    step(r2, 'rdunclear', 'review', 'done', { verdict: 'ship', criteria: [{ criterion: 'the boss roars', met: 'unclear', evidence: 'still never reached' }] });
+    step(r2, 'rdunclear', 'review', 'done', { verdict: 'ship', criteria: [{ criterion: 'the boss roars', met: 'unclear', evidence: 'still too dark to tell' }] });
     finish(r2);
     await pm.milestoneCheck(ms.id);
     assert.equal(rm.getMilestone(ms.id)!.status, 'reached');
@@ -290,10 +290,42 @@ test("a milestone check with criteria unclear tells J nothing: it's checked agai
     assert.match(told.detail!, /misses left after its tries.*the boss roars/);
     const card = await milestoneCard(ms.id);
     assert.match(card!.title, /1 criteria still not met on beta after its tries/);
-    assert.match(card!.text!, /the boss roars \(unclear: still never reached\)/);
+    assert.match(card!.text!, /the boss roars \(unclear: still too dark to tell\)/);
   } finally {
     pm.savePmSettings({ maxTries: before.maxTries });
   }
+});
+
+test('"unclear: not reached" is not a free retry: sent back ONCE as a scenario fix (not a try), and a slow scenario is told to its task', async () => {
+  const { ms, tasks, run: r1 } = await checkedMilestone('rdreach', [['the gate opens'], ['the boss roars']]);
+  step(r1, 'rdreach', 'playtest', 'done', { seconds: 900, slow: 'over the 10-minute budget' }, 'passed in 15 min · 0 problems');
+  step(r1, 'rdreach', 'review', 'done', { verdict: 'ship', criteria: [{ criterion: 'the gate opens', met: 'yes', evidence: 'at 4 s' }, { criterion: 'the boss roars', met: 'unclear', evidence: 'the playtest never reached the boss' }] });
+  finish(r1);
+  await pm.milestoneCheck(ms.id);
+  const t = rm.getTask(tasks[1].id)!;
+  assert.equal(t.status, 'working', 'sent back');
+  assert.equal(t.tries, 1, 'not counted as a try');
+  const fix = db.prepare('SELECT id, request FROM changes WHERE task = ? ORDER BY created DESC, rowid DESC LIMIT 1').get(t.id) as any;
+  assert.notEqual(fix.id, t.changes[0]);
+  assert.match(fix.request, /never reached these criteria/);
+  assert.match(fix.request, /don't redo or change the feature/);
+  assert.match(fix.request, /"at"/, 'told how to start nearer');
+  assert.match(fix.request, /took 15 min/, 'and that its scenario was too slow');
+  assert.ok(rm.listDecisions({ action: 'scenario-fix' }).some((d) => d.subject === t.id));
+  assert.ok(rm.listDecisions({ action: 'slow-scenario' }).some((d) => d.subject === t.id), 'the slow scenario is logged');
+  assert.match(rm.threadFor({ id: 'c_none', task: t.id }).map((m: any) => m.text).join('\n'), /Too slow to check/, 'and on its thread, which its agents read');
+  assert.equal(rm.getTask(tasks[0].id)!.status, 'verified');
+  // The scenario fix merges; beta still never reaches it: no second fix, no try spent, it stays merged.
+  db.prepare(`UPDATE changes SET status = 'merged', merged_at = ? WHERE id = ?`).run(Date.now() - 1000, fix.id);
+  rm.setTask(t.id, { status: 'merged', merged_at: Date.now() - 1000, checks: null });
+  const r2 = run('rdreach', 'done', Date.now());
+  step(r2, 'rdreach', 'playtest', 'done', {}, 'passed in 60 s · 0 problems');
+  step(r2, 'rdreach', 'review', 'done', { verdict: 'ship', criteria: [{ criterion: 'the boss roars', met: 'unclear', evidence: 'still never reached the boss' }] });
+  await pm.syncTasks();
+  assert.equal(rm.getTask(t.id)!.status, 'merged', 'once only');
+  assert.equal(rm.getTask(t.id)!.tries, 1);
+  assert.equal(rm.listDecisions({ action: 'scenario-fix' }).filter((d) => d.subject === t.id).length, 1);
+  rm.updateMilestone(ms.id, { status: 'dropped' });
 });
 
 test('a milestone check that broke (a missing scenario, stuck, beta not built) is played again, never counted as missed', async () => {

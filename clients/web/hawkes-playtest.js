@@ -5,9 +5,11 @@
 //   import { installPlaytest } from './hawkes-playtest.js';
 //   installPlaytest({
 //     product: 'doseofdestruction',
-//     scenarios: [{ id: 'smoke', title: 'Boot, menu, one fight', seconds: 45, tags: ['smoke'] }],
+//     scenarios: [{ id: 'smoke', title: 'Boot, menu, one fight', seconds: 45, tags: ['smoke'] },
+//                 { id: 'story', title: 'The story', seconds: 300, starts: ['chapter-2', 'chapter-3'] }],
 //     isReady: () => game.loaded,
 //     async start(id, options, t) {
+//       if (t.at) await game.loadChapter(t.at);  // a named start point (options.at); none: from the start
 //       t.scene('Main Menu');
 //       await bot.pressStart();            // real input, like a player
 //       t.event('match-start');
@@ -18,7 +20,7 @@
 //     stop() { bot.stop(); },
 //   });
 //
-// Nothing runs until the runner calls start() or the URL has ?playtest=<id>.
+// Nothing runs until the runner calls start() or the URL has ?playtest=<id> (&seed=, &speed=, &at=).
 
 export const CONTRACT_VERSION = 1;
 
@@ -61,6 +63,8 @@ export function installPlaytest(opts) {
     },
     get seed() { return run?.options.seed ?? 0; },
     get speed() { return run?.options.speed ?? 1; },
+    /** The named start point (options.at: a place, chapter or level), or null: play from the start. */
+    get at() { const a = run?.options.at; return a == null || a === '' ? null : String(a); },
     /** Resolves after ms of real time (games that honor speed can divide by t.speed themselves); rejects if the run was stopped. */
     wait(ms) {
       return new Promise((resolve, reject) => {
@@ -104,6 +108,8 @@ export function installPlaytest(opts) {
       };
       const mine = run;
       tracker.event('start', id);
+      // A start point (options.at): where the scenario starts; the game loads it in start() (t.at).
+      if (mine.options.at != null && mine.options.at !== '') tracker.event('start-at', mine.options.at);
       try {
         await start(id, mine.options, tracker);
         if (mine === run && !mine.done) tracker.finish('done');
@@ -149,7 +155,8 @@ export function installPlaytest(opts) {
   const q = new URLSearchParams(location.search);
   const auto = q.get('playtest');
   if (auto) {
-    const go = () => (isReadySafe(isReady) ? api.start(auto, { seed: num(q.get('seed'), 1), speed: num(q.get('speed'), 1) }) : setTimeout(go, 250));
+    const at = q.get('at');
+    const go = () => (isReadySafe(isReady) ? api.start(auto, { seed: num(q.get('seed'), 1), speed: num(q.get('speed'), 1), ...(at ? { at } : {}) }) : setTimeout(go, 250));
     go();
   }
   return api;

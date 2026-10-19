@@ -120,7 +120,8 @@ test('failed after its tries (walk-away): a scout investigates, a fresh round wi
   assert.equal(rm.getTask(t.id)!.status, 'failed');
   assert.ok(decisions('rescue', t.id).length, 'an investigation, decided by the PM');
   assert.equal(questionsOn(t.id).length, 0, 'J is not asked yet');
-  await new Promise((r) => setTimeout(r, 50));
+  // The scout starts in the background: wait for it (a fixed short sleep flaked on slow CI machines).
+  for (let i = 0; i < 100 && !scouted.length; i++) await new Promise((r) => setTimeout(r, 50));
   assert.match(scouted[0] ?? '', /c_5c0070000001[\s\S]*could not find where spawns are read/, 'the scout reads the attempts');
   // The scout reported: a fresh round of tries, its diagnosis in the brief.
   await tick();

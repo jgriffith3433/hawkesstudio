@@ -11,6 +11,8 @@ const ago = (t) => {
   return m < 1 ? 'just now' : m < 60 ? `${m} min ago` : m < 1440 ? `${Math.round(m / 60)} h ago` : `${Math.round(m / 1440)} d ago`;
 };
 const icon = (s) => ({ done: '✅', failed: '❌', skipped: '⏭️', running: '⏳' })[s] ?? '•';
+// A playtest step over its scenario's time budget (pace.ts): the agents are told to start it nearer.
+const slowPill = (s) => (s.kind === 'playtest' && s.data?.slow ? `<span class="pill fix-first" title="${esc(s.data.slow)}">over 10 min</span> ` : '');
 
 async function api(path, opts = {}) {
   const r = await fetch(path, { ...opts, headers: opts.body ? { 'Content-Type': 'application/json' } : {}, body: opts.body ? JSON.stringify(opts.body) : undefined });
@@ -396,7 +398,7 @@ async function loadReport() {
   $('#reportBody').innerHTML = `<p class="meta">${esc(run.detail ?? '')} · $${(run.cost ?? 0).toFixed(2)}</p>` + sinceHtml + [...byProduct.entries()].map(([pid, steps]) => {
     const reviews = steps.filter((s) => s.kind === 'review' && s.data);
     return `<div class="report-product"><h2>${esc(pid)}</h2>
-      ${steps.filter((s) => s.kind !== 'review').map((s) => `<div class="test"><span>${icon(s.status)}</span><span class="name">${esc(s.kind)} ${esc(s.name)}</span><span class="detail">${esc(s.detail ?? '')}</span>${s.data?.video ? `<a href="${file(s.data.video)}" target="_blank" rel="noopener" data-video="${file(s.data.video)}">▶ video</a>` : ''}</div>${s.kind === 'check' && s.status === 'failed' ? `<pre>${esc(s.data?.tail ?? '')}</pre>` : ''}`).join('')}
+      ${steps.filter((s) => s.kind !== 'review').map((s) => `<div class="test"><span>${icon(s.status)}</span><span class="name">${esc(s.kind)} ${esc(s.name)}</span><span class="detail">${esc(s.detail ?? '')}</span>${slowPill(s)}${s.data?.video ? `<a href="${file(s.data.video)}" target="_blank" rel="noopener" data-video="${file(s.data.video)}">▶ video</a>` : ''}</div>${s.kind === 'check' && s.status === 'failed' ? `<pre>${esc(s.data?.tail ?? '')}</pre>` : ''}`).join('')}
       ${reviews.map((rv) => `<div class="review"><h4>${esc(rv.name)} <span class="pill ${rv.data.verdict}">${esc(rv.data.verdict)}</span></h4>
         <div class="scores">${Object.entries(rv.data.scores ?? {}).map(([k, n]) => `<div class="score"><b>${n}</b><span>${k}</span></div>`).join('')}</div>
         <p class="summary">${esc(rv.data.summary)}</p>${rv.data.changes?.length ? `<p class="meta">Since last time: ${rv.data.changes.map(esc).join('; ')}</p>` : ''}
@@ -465,7 +467,7 @@ async function loadRuns() {
   $('#runList').innerHTML = runs.map((r) => `<div class="run-row" data-run="${r.id}"><span>${icon(['done', 'running', 'skipped'].includes(r.status) ? r.status : 'failed')}</span><b>${esc(r.kind)}</b><span class="meta">${new Date(r.started).toLocaleString()}</span><span>${esc(r.detail ?? '')}</span><span class="meta" style="margin-left:auto">$${(r.cost ?? 0).toFixed(2)}</span></div>`).join('') || '<div class="empty">No runs yet.</div>';
   if (openRun) {
     const r = await api(`/api/runs/${openRun}`);
-    $('#runDetail').innerHTML = `<div class="steps"><h3>${esc(r.id)} · ${esc(r.status)}</h3>${r.steps.map((s) => `<div class="step"><span>${icon(s.status)}</span><span>${esc(s.product)}</span><span>${esc(s.kind)}</span><span>${esc(s.name)}</span><span class="detail">${esc(s.detail ?? '')}${s.job ? ` · <a href="${GEN}/#job/${s.job}" target="_blank">${esc(s.job)}</a>` : ''}</span></div>`).join('')}</div>`;
+    $('#runDetail').innerHTML = `<div class="steps"><h3>${esc(r.id)} · ${esc(r.status)}</h3>${r.steps.map((s) => `<div class="step"><span>${icon(s.status)}</span><span>${esc(s.product)}</span><span>${esc(s.kind)}</span><span>${esc(s.name)}</span><span class="detail">${slowPill(s)}${esc(s.detail ?? '')}${s.job ? ` · <a href="${GEN}/#job/${s.job}" target="_blank">${esc(s.job)}</a>` : ''}</span></div>`).join('')}</div>`;
   }
 }
 $('#runList').onclick = (e) => {

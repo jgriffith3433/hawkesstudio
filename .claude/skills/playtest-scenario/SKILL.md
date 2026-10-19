@@ -20,6 +20,11 @@ criterion from the video, the screenshots, the events and the log.
   stuck. Readings (`metric`) don't count.
 - **Report what the game sees**: `problem('bug' | 'warning' | 'polish', message)` for missing assets, errors, NaNs.
 - Honor `options.seed`; keep it under its `seconds` estimate (the runner allows 2x).
+- **Under 10 minutes, and start near what it checks.** A beta check that replays the game from the start (story
+  scenarios) is slow and often never gets there ("unclear: not reached"). Give the scenario named start points
+  (`starts: ['chapter-3']`; the game loads or warps there when `options.at` names one, logs `start-at`, then the bot
+  plays through real input) and put the one your criteria need on line 2 of `.hawkes/scenario.txt`:
+  `{"at":"chapter-3"}`. A game that doesn't know `at` ignores it. Studio's run step warns past 10 minutes.
 - Clicking with `element.click()` doesn't unlock audio: if a criterion is about sound, make one real pointer press first.
 
 ## Web games

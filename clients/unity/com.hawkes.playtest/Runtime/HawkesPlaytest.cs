@@ -8,6 +8,7 @@
 //   }, Bot, isReady: () => GameBoot.Ready);
 //
 //   static IEnumerator Bot(string id, PlaytestOptions options, PlaytestRun run) {
+//       if (options.HasStart) yield return Warp.To(options.at);   // a named start point (options.at); none: from the start
 //       run.Scene("Main Menu");
 //       yield return MenuBot.PressPlay();
 //       run.Event("level-start", "1");
@@ -42,6 +43,8 @@ namespace Hawkes.Playtest
         public string title;
         public float seconds;
         public string[] tags;
+        /// <summary>Optional: the start points this scenario takes in options.at ("chapter-3", "level-7").</summary>
+        public string[] starts;
 
         public PlaytestScenario() { }
 
@@ -58,6 +61,11 @@ namespace Hawkes.Playtest
     {
         public int seed = 1;
         public float speed = 1f;
+        /// <summary>A named start point (a place, chapter or level) to load before playing; empty: from the start.</summary>
+        public string at = "";
+        /// <summary>Every option the runner passed, as JSON (scenario-specific keys such as a level or stage).</summary>
+        public string json = "";
+        public bool HasStart => !string.IsNullOrEmpty(at);
     }
 
     public delegate IEnumerator PlaytestBot(string scenario, PlaytestOptions options, PlaytestRun run);
@@ -298,6 +306,7 @@ namespace Hawkes.Playtest
                 return run;
             }
             run.Event("start", id);
+            if (run.Options.HasStart) run.Event("start-at", run.Options.at);
             EnsureDriver();
             _driver.Begin(run, _bot(id, run.Options, run));
             return run;
@@ -360,6 +369,8 @@ namespace Hawkes.Playtest
             public string id;
             public int seed = 1;
             public float speed = 1f;
+            public string at;
+            public string options;
             public string action;
             public bool down;
         }
@@ -439,7 +450,7 @@ namespace Hawkes.Playtest
                     Command c;
                     try { c = JsonUtility.FromJson<Command>(raw); }
                     catch { continue; }
-                    if (c.cmd == "start") StartScenario(c.id, new PlaytestOptions { seed = c.seed, speed = c.speed });
+                    if (c.cmd == "start") StartScenario(c.id, new PlaytestOptions { seed = c.seed, speed = c.speed, at = c.at ?? "", json = c.options ?? "" });
                     else if (c.cmd == "stop") Stop();
                     else if (c.cmd == "input") _input?.Invoke(c.action, c.down);
                 }
