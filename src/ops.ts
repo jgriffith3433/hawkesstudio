@@ -9,8 +9,10 @@
 //   second, and what was running then. GET /api/ops, the Activity drawer, Talk's studio_ops.
 
 import { AsyncLocalStorage } from 'node:async_hooks';
+import { spawn } from 'node:child_process';
 import { monitorEventLoopDelay } from 'node:perf_hooks';
 import { db, newId, J, parse } from './db.ts';
+import { startProfiler, captureBlock, describe, profiling, type BlockCause } from './loopprof.ts';
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS ops (
@@ -149,6 +151,9 @@ async function runOp(id: string) {
   }
 }
 
+/** The gap between agent changes and runs resumed after a restart (agents.ts, pipeline.ts). STUDIO_RESUME_GAP_MS: tests. */
+export const resumeGapMs = () => process.env.STUDIO_RESUME_GAP_MS !== undefined && Number(process.env.STUDIO_RESUME_GAP_MS) >= 0 ? Number(process.env.STUDIO_RESUME_GAP_MS) : 2000;
+
 /** After a restart: running operations go back in the queue (handlers are idempotent), up to MAX_ATTEMPTS. */
 export function resumeOps() {
   const rows = db.prepare(`SELECT id, attempts FROM ops WHERE status = 'running'`).all() as any[];
@@ -179,18 +184,51 @@ export function trackCommand(cmd: string, cwd: string) {
   return () => void commands.delete(id);
 }
 
+/**
+ * A command (not git: beta.ts gitAsync) without blocking Studio: listed while it runs, timed out, output kept (capped).
+ * What spawnSync did for cp, chgrp, node --check and the like.
+ */
+export function runCommand(file: string, args: string[], { cwd = process.cwd(), timeoutMs = 10 * 60_000, env }: { cwd?: string; timeoutMs?: number; env?: NodeJS.ProcessEnv } = {}): Promise<{ ok: boolean; code: number | null; out: string; err: string }> {
+  const done = trackCommand(`${file} ${args.join(' ')}`, cwd);
+  return new Promise((resolve) => {
+    let out = '';
+    let err = '';
+    let settled = false;
+    const finish = (code: number | null, extra = '') => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      done();
+      resolve({ ok: code === 0, code, out: out.trim(), err: (err + extra).trim() });
+    };
+    const child = spawn(file, args, { cwd, env, windowsHide: true });
+    child.stdout.on('data', (d) => { if (out.length < 4_000_000) out += d; });
+    child.stderr.on('data', (d) => { if (err.length < 200_000) err += d; });
+    child.on('error', (e) => finish(null, `\n${e.message}`));
+    child.on('close', (code) => finish(code));
+    const timer = setTimeout(() => { child.kill('SIGKILL'); finish(null, `\ntimed out after ${Math.round(timeoutMs / 1000)} s`); }, timeoutMs);
+    timer.unref();
+  });
+}
+
 export const runningCommands = () => [...commands.values()].map((c) => ({ ...c, seconds: Math.round((Date.now() - c.started) / 1000), slow: Date.now() - c.started > 5 * 60_000 }));
 
 // ------------------------------------------------------------- the event loop
 
 const BLOCK_MS = 1000;
-const blocks: { at: number; ms: number; running: string[] }[] = [];
+/** A block: when, how long, what tracked work was running, and (the profiler on) the code it was in. */
+type Block = { at: number; ms: number; running: string[]; where?: string; cause?: BlockCause };
+const blocks: Block[] = [];
 let histogram: ReturnType<typeof monitorEventLoopDelay> | null = null;
 let lastTick = 0;
 
-/** Watches for moments Studio can't answer (a synchronous call holding the event loop): logged and kept (last 50). */
+/**
+ * Watches for moments Studio can't answer (a synchronous call holding the event loop): logged and kept (last 50), each
+ * with the code it was in (loopprof.ts: a rolling CPU profile, kept in .data/profiles/ when a block lands in it).
+ */
 export function startLoopMonitor() {
   if (histogram) return;
+  void startProfiler();
   histogram = monitorEventLoopDelay({ resolution: 20 });
   histogram.enable();
   lastTick = Date.now();
@@ -200,9 +238,14 @@ export function startLoopMonitor() {
     lastTick = now;
     if (late < BLOCK_MS) return;
     const running = [...runningCommands().map((c) => `${c.cmd} (${c.seconds}s)`), ...listOps({ since: now }).filter((o) => o.status === 'running').map((o) => `${o.title}: ${o.step ?? ''}`)];
-    blocks.push({ at: now, ms: late, running });
+    const block: Block = { at: now, ms: late, running };
+    blocks.push(block);
     if (blocks.length > 50) blocks.shift();
-    console.warn(`[studio] the event loop was blocked for ${late} ms${running.length ? ` (running: ${running.join('; ').slice(0, 300)})` : ''}`);
+    const warn = () => console.warn(`[studio] the event loop was blocked for ${late} ms${block.where ? ` ${block.where}` : ''}${running.length ? ` (running: ${running.join('; ').slice(0, 300)})` : ''}${block.cause?.profile ? ` [profile ${block.cause.profile}]` : ''}`);
+    if (!profiling()) return warn();
+    void captureBlock(late).then((cause) => {
+      if (cause) Object.assign(block, { cause, where: describe(cause) });
+    }).catch(() => {}).finally(warn);
   }, 500).unref();
   // Percentiles per minute: the last full minute is what health shows.
   setInterval(() => {

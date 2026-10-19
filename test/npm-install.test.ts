@@ -149,9 +149,9 @@ function worktree(name: string, lock = fs.readFileSync(path.join(dir, 'package-l
   return wt;
 }
 
-test('warm start: node_modules is copied from a checkout installed for the same lockfile', { skip: !posix }, () => {
+test('warm start: node_modules is copied from a checkout installed for the same lockfile', { skip: !posix }, async () => {
   const wt = worktree('c_same');
-  assert.deepEqual(warmDeps(wt, 'game'), ['.']);
+  assert.deepEqual(await warmDeps(wt, 'game'), ['.']);
   assert.equal(fs.readFileSync(path.join(wt, 'node_modules', 'installed.txt'), 'utf8'), '{"lock":4}');
   assert.equal(installedFor(wt), lockHash(wt), 'the copy carries the install stamp');
   fs.rmSync(wt, { recursive: true, force: true });
@@ -163,7 +163,7 @@ test('warm start: a donor with the lockfile but no install stamp is not copied; 
   for (const s of ['.studio-lock', '.hawkes-lock']) fs.rmSync(path.join(dir, 'node_modules', s), { force: true });
   const wt = worktree('c_stale');
   const logs: string[] = [];
-  assert.deepEqual(warmDeps(wt, 'game', (s) => logs.push(s)), []);
+  assert.deepEqual(await warmDeps(wt, 'game', (s) => logs.push(s)), []);
   assert.match(logs.join('\n'), /no checkout has node_modules installed for the package-lock\.json; npm ci instead/);
   assert.deepEqual(coldDirs(wt), ['']);
   const ran: string[] = [];
@@ -180,10 +180,10 @@ test('warm start: a donor with the lockfile but no install stamp is not copied; 
   assert.deepEqual(coldDirs(wt), []);
 });
 
-test('warm start: a donor installed for another lockfile is not copied', { skip: !posix }, () => {
+test('warm start: a donor installed for another lockfile is not copied', { skip: !posix }, async () => {
   fs.writeFileSync(path.join(dir, 'node_modules', INSTALLED), 'some-older-hash');
   const wt = worktree('c_other', '{"lock":99}');
   fs.rmSync(path.join(process.env.STUDIO_PROJECTS!, '.work', 'c_stale'), { recursive: true, force: true });
-  assert.deepEqual(warmDeps(wt, 'game'), []);
+  assert.deepEqual(await warmDeps(wt, 'game'), []);
   assert.ok(!fs.existsSync(path.join(wt, 'node_modules')));
 });

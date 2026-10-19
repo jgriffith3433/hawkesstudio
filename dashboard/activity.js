@@ -147,7 +147,7 @@ if (typeof document !== 'undefined') (() => {
     drawn = s;
     const blocks = a.loop?.blocks ?? [];
     el('#actBody').innerHTML = [
-      blocks.length ? `<div class="act-item act-warn"><div class="act-top">⚠ <b>Studio froze ${blocks.length} time(s) in the last hour</b></div><div class="act-now">${blocks.slice(0, 3).map((b) => `${new Date(b.at).toLocaleTimeString()}: ${(b.ms / 1000).toFixed(1)} s${b.running.length ? ` (during ${esc(b.running.join('; ').slice(0, 160))})` : ''}`).join('<br>')}</div></div>` : '',
+      blocks.length ? `<div class="act-item act-warn"><div class="act-top">⚠ <b>Studio froze ${blocks.length} time(s) in the last hour</b></div><div class="act-now">${blocks.slice(0, 3).map((b) => `${new Date(b.at).toLocaleTimeString()}: ${(b.ms / 1000).toFixed(1)} s${b.where ? ` ${esc(b.where.slice(0, 200))}` : ''}${b.running.length ? ` (during ${esc(b.running.join('; ').slice(0, 160))})` : ''}`).join('<br>')}</div></div>` : '',
       (a.ops?.length || a.opsDone?.length) ? section('Going live, rollbacks, merges', a.ops.length, a.ops.map(opHtml).join('') + (a.opsDone.length ? `<details class="act-recent"><summary class="meta">finished today (${a.opsDone.length})</summary>${a.opsDone.map(opHtml).join('')}</details>` : '')) : '',
       section('Agents', a.changes.length, a.changes.map((c) => changeHtml(c)).join('')),
       section('Studio runs', a.runs.length, a.runs.map((r) => runHtml(r)).join('')),
