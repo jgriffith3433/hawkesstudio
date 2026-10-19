@@ -1,7 +1,7 @@
 // The roadmap and the PM loop's own logic on a scratch database: items and tasks, statuses following tasks, what can
 // start (order, dependencies), the merge gate and "verified", comments and questions, triage with undo, the ready
 // report. No agents, GitHub or Claude are involved.
-import { test } from 'node:test';
+import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -256,6 +256,10 @@ test('an escalated change is asked about once: answered, the loop leaves it; "cl
   fs.writeFileSync(path.join(process.env.STUDIO_DATA!, 'notify.json'), JSON.stringify({ enabled: false, server: 'http://127.0.0.1:9', topic: 'test' }));
   const { getChange } = await import('../src/agents.ts'); // the changes table
   pm.startPm();
+  // Walk-away mode investigates first (a scout, a fresh round: pm-moving.test.ts); off, J is asked at once.
+  const walk = pm.pmSettings().walkAway;
+  pm.savePmSettings({ walkAway: false });
+  after(() => pm.savePmSettings({ walkAway: walk }));
   const it = rm.addItem({ product: 'pmtest', title: 'Leaderboard', criteria: ['names fit'], size: 'S', status: 'planned' });
   // A task on its last try whose ready change fails its gate, 20 minutes old (past the grace).
   const readyChange = (id: string) => {
