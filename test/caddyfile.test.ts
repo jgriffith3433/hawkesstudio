@@ -1,6 +1,6 @@
-// The Caddyfile deploy/deploy.mjs writes (installCaddy): the only public doors on gen.<domain> are Hawkes Analytics'
-// collect and SDK routes and the hg_ key paths; everything else is behind the sign-in. deploy.mjs runs against the
-// server when imported, so the template is read from its source and filled in here.
+// The Caddyfile (deploy/caddyfile.mjs: installed by deploy.mjs, applied by hawkes-pull.mjs after a pull): the only
+// public doors on gen.<domain> are Hawkes Analytics' collect and SDK routes and the hg_ key paths; everything else is
+// behind the sign-in.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -10,10 +10,10 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const src = fs.readFileSync(path.join(root, 'deploy', 'deploy.mjs'), 'utf8');
-const m = src.match(/const caddy = (`[\s\S]*?`)\.trimStart\(\);/);
-assert.ok(m, 'installCaddy builds the Caddyfile as one template literal');
-const caddyfile: string = new Function('domain', 'opt', `return ${m[1]};`)('hawkesgen.com', () => undefined).trimStart();
+// @ts-ignore: a plain .mjs module without types
+const { caddyfile: build } = await import('../deploy/caddyfile.mjs');
+const products = JSON.parse(fs.readFileSync(path.join(root, 'products.json'), 'utf8'));
+const caddyfile: string = build({ domain: 'hawkesgen.com', email: 'test@example.com', products });
 
 /** The site block for a host: from its opening line to the closing brace at column 0. */
 function site(host: string): string {

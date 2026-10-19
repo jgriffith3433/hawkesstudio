@@ -22,6 +22,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { DatabaseSync } from 'node:sqlite';
 import { HERE, PROJECTS, KEYS, state, saveState, myIp, log } from './aws.mjs';
 import { perProductKeys } from './keys.mjs';
+import { caddyfile, previewHosts } from './caddyfile.mjs';
 
 const args = process.argv.slice(2);
 const flag = (k) => args.includes(`--${k}`);
@@ -402,20 +403,15 @@ async function ensureDns(domain) {
 }
 
 /**
- * Staging sites (src/previews.ts): <sub>.<domain> for each products.json "previews" entry, behind the same login.
- * / is the product built from its beta branch (previews/<product>/beta), /c/<change>/ an agent change, and /dev/ the
- * product's devtools running on this server (src/dev.ts, dev-front.ts): Studio's front door for the product
- * (products.json dev.front), which also takes Vite's HMR websocket. Returns the Caddy blocks.
+ * Staging sites (src/previews.ts, the Caddy blocks are in caddyfile.mjs): DNS for <sub>.<domain> (and dev-<sub> with
+ * --dev-hosts) and a placeholder page until Studio builds the first preview.
  */
 async function previewSites(domain) {
   const products = JSON.parse(fs.readFileSync(path.join(PROJECTS, 'hawkesstudio', 'products.json'), 'utf8'));
-  const previews = products.previews ?? {};
-  const subs = Object.keys(previews);
-  if (!subs.length) return '';
-  const fronts = Object.fromEntries(products.products.filter((p) => p.dev?.front).map((p) => [p.id, p.dev.front]));
   // dev-<sub>: the web products' devtools at the root of their own host (src/dev-front.ts "root mode").
-  const devHosts = flag('dev-hosts') || st.devHosts ? subs.filter((sub) => products.products.find((p) => p.id === previews[sub])?.dev?.port) : [];
   if (flag('dev-hosts')) saveState({ devHosts: true });
+  const { previews, subs, devHosts } = previewHosts(products, !!(flag('dev-hosts') || st.devHosts));
+  if (!subs.length) return;
   const { Route53Client, ListHostedZonesByNameCommand, ChangeResourceRecordSetsCommand } = await import('@aws-sdk/client-route-53');
   const { cfg } = await import('./aws.mjs');
   const r53 = new Route53Client(cfg);
@@ -430,46 +426,6 @@ async function previewSites(domain) {
   const placeholder = '<!doctype html><meta charset=utf-8><title>Not built yet</title><p>This staging site has not been built yet. Studio builds it after the next repos sync, or from the dashboard.</p>';
   const ids = [...new Set(Object.values(previews))];
   await ssh(`sudo -u hawkes bash -c ${JSON.stringify(ids.map((id) => `mkdir -p /srv/hawkes/previews/${id}/c && ( test -e /srv/hawkes/previews/${id}/beta || ( mkdir /srv/hawkes/previews/${id}/beta && printf '%s' '${placeholder}' > /srv/hawkes/previews/${id}/beta/index.html ) ) && rm -rf /srv/hawkes/previews/${id}/main`).join(' && '))} && echo previews-ok`, { quiet: true });
-  const devBlocks = devHosts.map((sub) => `
-dev-${sub}.${domain} {
-	import login
-	encode zstd gzip
-	# The devtools at the root (no service worker needed); the same front door as ${sub}.${domain}/dev/.
-	reverse_proxy 127.0.0.1:${fronts[previews[sub]]} {
-		flush_interval -1
-	}
-}
-`).join('');
-  return devBlocks + subs.map((sub) => {
-    const front = fronts[previews[sub]];
-    const dev = front ? `
-	# /dev/: the product's devtools on this server, in beta's working copy (Studio's front door; saves commit to beta).
-	# Vite's HMR websocket connects to the site root with the vite-hmr protocol: it goes there too.
-	@dev path /dev /dev/*
-	@hmr header Sec-WebSocket-Protocol vite-hmr
-	handle @dev {
-		reverse_proxy 127.0.0.1:${front} {
-			flush_interval -1
-		}
-	}
-	handle @hmr {
-		reverse_proxy 127.0.0.1:${front}
-	}` : '';
-    return `
-${sub}.${domain} {
-	import login
-	encode zstd gzip${dev}
-	handle {
-		header Cache-Control "no-cache"
-		root * /srv/hawkes/previews/${previews[sub]}
-		# /c/<change>/ is an agent change; everything else is beta.
-		@beta not path /c/*
-		rewrite @beta /beta{uri}
-		file_server
-	}
-}
-`;
-  }).join('');
 }
 
 async function installCaddy(domain) {
@@ -485,164 +441,18 @@ async function installCaddy(domain) {
     await ssh(`sudo sed -i '/^WEB_LOGIN_SHA256=/d' /etc/hawkes/keys.env && echo 'WEB_LOGIN_SHA256=${loginSha}' | sudo tee -a /etc/hawkes/keys.env > /dev/null && sudo systemctl restart hawkes-studio && sleep 4 && echo studio-restarted`, { quiet: true });
     log('web login: the script login (j) is checked by Studio now; restarted Studio to read it');
   }
-  const caddy = `
-{
-	email ${opt('email') ?? 'jgriffith3433@gmail.com'}
-}
-
-# The sign-in (src/auth.ts): Caddy asks Studio's /auth/check on every protected request. A signed-in session cookie
-# (or the old j:<password> login from J's scripts) passes with X-Hawkes-User / X-Hawkes-Role; a browser without one is
-# sent to https://studio.${domain}/auth/signin and back after signing in.
-(login) {
-	forward_auth 127.0.0.1:8791 {
-		uri /auth/check
-		copy_headers X-Hawkes-User X-Hawkes-Role
-	}
-}
-
-# Who reached Studio and Gen, and with what status (a failed login is a 401). Caddy never logs credentials: the
-# Authorization header shows as REDACTED, so a 401 says whether a login was sent, not what it was.
-(access) {
-	log {
-		output file /var/log/caddy/access.log {
-			roll_size 10MiB
-			roll_keep 5
-		}
-		format json
-	}
-}
-
-studio.${domain} {
-	import access
-	encode zstd gzip
-	# MCP for Claude anywhere (src/mcp-http.ts): the Studio MCP key instead of the login, as a bearer header or in the
-	# URL (/mcp/hs_...). Studio checks the key itself.
-	@mcp {
-		path /mcp /mcp/*
-		header_regexp Authorization ^Bearer\\s+hs_
-	}
-	@mcpurl path_regexp ^/mcp/hs_[\\w-]+/?$
-	# Pushes from the product repos (hawkes-studio.yml) and CI on main of hawkesstudio/hawkesgen: no login; Studio checks
-	# GitHub's signed OIDC token itself (src/github-oidc.ts).
-	@githook path /api/hooks/github /api/hooks/github-beta /api/hooks/self-deploy
-	handle @githook {
-		reverse_proxy 127.0.0.1:8791
-	}
-	# The sign-in pages themselves (no session needed to reach them).
-	handle /auth/* {
-		reverse_proxy 127.0.0.1:8791
-	}
-	handle @mcp {
-		reverse_proxy 127.0.0.1:8791 {
-			flush_interval -1
-		}
-	}
-	handle @mcpurl {
-		reverse_proxy 127.0.0.1:8791 {
-			flush_interval -1
-		}
-	}
-	# Hawkes Gen's files and API for Studio's pages (same origin, so one login covers screenshots and videos).
-	handle_path /gen/* {
-		import login
-		reverse_proxy 127.0.0.1:8790 {
-			header_up Authorization "Bearer {$WEB_GEN_KEY}"
-		}
-	}
-	handle {
-		import login
-		reverse_proxy 127.0.0.1:8791
-	}
-}
-
-gen.${domain} {
-	import access
-	encode zstd gzip
-	# Programs (Unity, scripts, other machines) use their own Hawkes Gen API key.
-	@apikey header_regexp Authorization ^Bearer\\s+hg_
-	handle @apikey {
-		reverse_proxy 127.0.0.1:8790 {
-			flush_interval -1
-		}
-	}
-	# MCP with the key in the URL (/mcp/hg_..., for claude.ai connectors); Gen checks the key (src/mcp-http.ts).
-	@mcpurl path_regexp ^/mcp/hg_[\\w-]+/?$
-	handle @mcpurl {
-		reverse_proxy 127.0.0.1:8790 {
-			flush_interval -1
-		}
-	}
-	# Hawkes Analytics (hawkesgen docs/analytics.md): players' browsers send events with no login, so only these two
-	# are public. Gen checks the origin against its product registry, the body (64 KB) and the rate per address; its
-	# GeoIP reads the last X-Forwarded-For entry, set here to the address Caddy saw. No key is added, and any sent is dropped.
-	@collect {
-		method POST OPTIONS
-		path /v1/analytics/collect
-	}
-	handle @collect {
-		request_body {
-			max_size 64KB
-		}
-		reverse_proxy 127.0.0.1:8790 {
-			header_up -Authorization
-			header_up -Cookie
-			header_up X-Forwarded-For {remote_host}
-		}
-	}
-	# The analytics SDK script the pages load (cacheable; Gen's own Cache-Control wins when it sends one).
-	@sdk {
-		method GET HEAD
-		path /sdk/*
-	}
-	handle @sdk {
-		request_body {
-			max_size 1KB
-		}
-		header ?Cache-Control "public, max-age=3600"
-		reverse_proxy 127.0.0.1:8790 {
-			header_up -Authorization
-			header_up -Cookie
-		}
-	}
-	handle {
-		import login
-		reverse_proxy 127.0.0.1:8790 {
-			header_up Authorization "Bearer {$WEB_GEN_KEY}"
-		}
-	}
-}
-
-# The public landing page (Hawkes Gen and Hawkes Studio, for people and the product sites' "Powered by HAWKES GEN"
-# badge): plain static files from this repo's site/ folder, no login, nothing behind it. A push to main updates it
-# (the server pulls main); only this block, the DNS and the certificate need deploy.mjs.
-${domain} {
-	import access
-	encode zstd gzip
-	header {
-		Strict-Transport-Security "max-age=31536000"
-		X-Content-Type-Options "nosniff"
-		X-Frame-Options "DENY"
-		Referrer-Policy "strict-origin-when-cross-origin"
-		Permissions-Policy "camera=(), microphone=(), geolocation=()"
-		Content-Security-Policy "default-src 'none'; style-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
-		Cache-Control "public, max-age=300"
-		-Server
-	}
-	root * /srv/hawkes/hawkesstudio/site
-	file_server
-}
-
-www.${domain} {
-	redir https://${domain}{uri} permanent
-}
-`.trimStart();
+  // The text is caddyfile.mjs; its inputs go to /etc/hawkes/caddy.json so the server's pull-deploy (hawkes-pull.mjs)
+  // rebuilds the same file after every pull and applies a changed one itself.
+  const inputs = { domain, email: opt('email') ?? 'jgriffith3433@gmail.com', devHosts: !!(flag('dev-hosts') || st.devHosts) };
+  await previewSites(domain);
+  const caddy = caddyfile({ ...inputs, products: JSON.parse(fs.readFileSync(path.join(PROJECTS, 'hawkesstudio', 'products.json'), 'utf8')) });
   const local = path.join(os.tmpdir(), 'Caddyfile');
-  fs.writeFileSync(local, caddy + (await previewSites(domain)));
+  fs.writeFileSync(local, caddy);
   await scp(local, '/tmp/Caddyfile');
   fs.rmSync(local);
   // Caddy reads WEB_GEN_KEY from the keys file. The new file is checked (as the caddy user) before it replaces the old
   // one, and the old one is kept as Caddyfile.prev: `node deploy/deploy.mjs --caddy-rollback` puts it back.
-  await ssh(`sudo chown caddy:caddy /tmp/Caddyfile && sudo install -d -o caddy -g caddy /var/log/caddy && sudo touch /var/log/caddy/access.log && sudo chown caddy:caddy /var/log/caddy/access.log && sudo mkdir -p /etc/systemd/system/caddy.service.d && printf '[Service]\\nEnvironmentFile=/etc/hawkes/keys.env\\n' | sudo tee /etc/systemd/system/caddy.service.d/hawkes.conf >/dev/null && sudo usermod -aG hawkes caddy && sudo systemctl daemon-reload && sudo -u caddy caddy validate --config /tmp/Caddyfile --adapter caddyfile >/dev/null && sudo cp /etc/caddy/Caddyfile /etc/caddy/Caddyfile.prev && sudo mv /tmp/Caddyfile /etc/caddy/Caddyfile && sudo chown root:root /etc/caddy/Caddyfile && sudo systemctl restart caddy && sleep 2 && systemctl is-active caddy && echo caddy-ok`);
+  await ssh(`printf '%s\\n' '${JSON.stringify(inputs)}' | sudo tee /etc/hawkes/caddy.json >/dev/null && sudo chmod 644 /etc/hawkes/caddy.json && sudo chown caddy:caddy /tmp/Caddyfile &&sudo install -d -o caddy -g caddy /var/log/caddy && sudo touch /var/log/caddy/access.log && sudo chown caddy:caddy /var/log/caddy/access.log && sudo mkdir -p /etc/systemd/system/caddy.service.d && printf '[Service]\\nEnvironmentFile=/etc/hawkes/keys.env\\n' | sudo tee /etc/systemd/system/caddy.service.d/hawkes.conf >/dev/null && sudo usermod -aG hawkes caddy && sudo systemctl daemon-reload && sudo -u caddy caddy validate --config /tmp/Caddyfile --adapter caddyfile >/dev/null && sudo cp /etc/caddy/Caddyfile /etc/caddy/Caddyfile.prev && sudo mv /tmp/Caddyfile /etc/caddy/Caddyfile && sudo chown root:root /etc/caddy/Caddyfile && sudo systemctl restart caddy && sleep 2 && systemctl is-active caddy && echo caddy-ok`);
   saveState({ domain });
   log(`HTTPS: https://${domain} (public landing page), https://studio.${domain} and https://gen.${domain} (sign in with an account; first run: ${'admin@hawkesgen.com'} / admin, then set a password)`);
 }
