@@ -142,6 +142,7 @@ a budget (`approveGpu`, `gpuCleared`, `tasksAwaitingGpu`; the PM asks him once);
 | `src/assets.ts` | Asset manifests: `hawkes.assets.json` + `hawkes.assets.lock.json` in a product repo |
 | `src/beta.ts` | The beta lane: the `beta` branch (made from main), beta vs main, pre-deploy builds committed to beta, the Unity beta website copy (`.work/beta/<product>-site`, on the website repo's own beta: agents change it with `target: "site"`), what a local playtest played, merging main into beta, the `deploys` table |
 | `src/deploy.ts` | Go live and rollback: the plan (commits on beta not on main, the playtests of that beta commit, blockers), the gated fast-forward of main, Unity's build committed to the website's main, rollback as a new commit, the live check |
+| `src/betaplay.ts` | One build per run: a run holds a Unity product's beta website copy while it plays; a build that would reset it waits; each playtest checks the copy still holds the build its run built or kept (build step data `served`) and fails loudly otherwise |
 | `src/previews.ts` | The beta sites `https://<sub>.hawkesgen.com/` (beta) and `/c/<change>/` (agent changes) |
 | `src/ops.ts` | Background operations: going live, rollbacks and merges of main into beta run as a persisted queue (an Approve tap answers at once; one product at a time, two in all; a restart puts a running one back, idempotently), each with its step and log; every git or shell command Studio waits on (`trackCommand`); the event-loop monitor (any block over 1 s is logged with what ran). `GET /api/ops`, Activity, `studio_ops`. **Never block Studio:** network or heavy git goes through `beta.ts gitAsync` (sync `git()` is for millisecond local reads, and warns on fetch/push/clone) |
 | `src/auth.ts`, `src/auth-pages.ts`, `src/mail.ts`, `dashboard/users.js` | Accounts: the sign-in page Caddy sends every hawkesgen.com host to (forward_auth to `/auth/check`), the first admin (`admin@hawkesgen.com` / `admin` until a password is set), sessions, invites and resets by email (SES) with a link fallback, roles (admins alone go live, merge into main, spend, manage users: `memberRefusal`), the sign-in log, the Users tab; J's scripts keep the old `j` login (docs/cloud.md) |
@@ -198,6 +199,8 @@ a budget (`approveGpu`, `gpuCleared`, `tasksAwaitingGpu`; the PM asks him once);
   - `deploy.prebuild`
   - `dev` (front door port, dev server port, devtools path, extra env; Unity: the front door only)
   - story docs
+  - `scenarioAliases`: renamed scenarios (old → new; older tasks' changes keep the old name). A scenario the build
+    doesn't have is skipped with a note, never a failed step (`src/scenarios.ts`)
   - `about`
   - `quality`: the quality bar, what "done" means for it (J's words; don't invent direction for undecided products)
 - **The contract lives in each game's repo.** If the spec or helper needs a change, change `docs/playtest.md` and the

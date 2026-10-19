@@ -651,6 +651,11 @@ server.listen(PORT, '127.0.0.1', () => {
   // The agent sandbox commits in its worktrees: every repo's and worktree's git folder is the agent group's (sandbox.ts).
   // In the background once start-up has settled (async, already-shared ones skipped): it used to freeze Studio after boot.
   setTimeout(() => void import('./sandbox.ts').then(({ shareAll }) => shareAll()).then((r) => { if (r.shared) console.log(`[sandbox] shared ${r.shared} git folder(s) with the agent group (${r.already} already were)`); }).catch((e) => console.warn(`[sandbox] sharing git folders: ${e.message ?? e}`)), 30_000).unref();
+  // Scenarios a game renamed (products.json scenarioAliases): older tasks' changes ask for the new names (scenarios.ts).
+  void import('./scenarios.ts').then(({ migrateScenarioAliases }) => {
+    const renamed = migrateScenarioAliases();
+    if (renamed.length) console.log(`[studio] renamed scenarios on ${renamed.length} change(s): ${renamed.map((r) => `${r.id} ${r.from} → ${r.to}`).join(', ')}`);
+  }).catch((e) => console.warn(`[studio] renaming scenarios: ${e.message ?? e}`));
   const runs = resumeRuns();
   const changes = resumeChanges();
   // Pull requests J merged on GitHub: their changes are marked merged (agents.ts), every 5 minutes.

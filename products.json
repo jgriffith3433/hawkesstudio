@@ -135,6 +135,10 @@
           "EditMode"
         ]
       },
+      "scenarioAliases": {
+        "gloob": "yooba",
+        "gloob-shop": "yooba-shop"
+      },
       "local": {
         "serve": "static",
         "dir": "sickofitgamewebsite",

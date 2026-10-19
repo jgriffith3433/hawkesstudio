@@ -69,6 +69,8 @@ export type Product = {
    */
   dev?: { front: number; port?: number; path?: string; env?: Record<string, string> };
   playtests: Playtest[];
+  /** Renamed scenarios: an old name (stored on older tasks' changes) → the game's current one (scenarios.ts). */
+  scenarioAliases?: Record<string, string>;
   story: string[];
   about: string;
   /**
