@@ -527,11 +527,6 @@ export async function autoApproveGpu(id: string, opts: { threshold?: number; spe
   const threshold = opts.threshold ?? costs.costSettings().gpuAutoApprove;
   const price = e.withIdleTail > 0 ? e.withIdleTail : e.cost;
   if (!(threshold > 0) || !(price < threshold)) return null;
-  const m = await (opts.spend ?? costs.monthSpend)();
-  if (m.over) {
-    logDecision('gpu ask', id, t.product, `"${t.title}": not approved automatically ($${price.toFixed(2)} is under $${threshold}, but this month's spend $${m.spent.toFixed(2)} is over the $${m.budget.toFixed(2)} budget): J decides.`);
-    return null;
-  }
   const budget = gpuBudgetFor(e.cost);
   // Walk-away mode: within a daily cap of what Studio approves by itself (the rest is one digest card for J, pm.ts).
   const wa = opts.walkAway ?? walkAwaySettings();
@@ -539,6 +534,13 @@ export async function autoApproveGpu(id: string, opts: { threshold?: number; spe
     logDecision('gpu ask', id, t.product, `"${t.title}": not approved automatically: $${budget.toFixed(2)} would pass walk-away's $${wa.walkAwayGpuPerDay}/day for GPU budgets ($${gpuAutoApprovedToday().toFixed(2)} approved today): J decides.`);
     return null;
   }
+  const m = await (opts.spend ?? costs.monthSpend)();
+  if (m.over) {
+    gpuOverMonth.add(id);
+    logDecision('gpu ask', id, t.product, `"${t.title}": not approved automatically ($${price.toFixed(2)} is under $${threshold}, but this month's spend $${m.spent.toFixed(2)} is over the $${m.budget.toFixed(2)} budget): J decides.`);
+    return null;
+  }
+  gpuOverMonth.delete(id);
   const done = approveGpu(id, budget, `Studio (auto, < $${threshold})`);
   const line = `GPU budget $${budget.toFixed(2)} approved automatically for "${t.title}" (${t.product}): about $${price.toFixed(2)} with the idle tail, under your $${threshold} limit.`;
   logDecision('gpu auto-approve', id, t.product, line);
@@ -570,6 +572,53 @@ export function gpuAutoApprovedToday() {
 export async function autoApproveWaiting(opts: Parameters<typeof autoApproveGpu>[1] = {}) {
   const out: string[] = [];
   for (const t of tasksAwaitingGpu()) if (await autoApproveGpu(t.id, opts).catch(() => null)) out.push(t.id);
+  return out;
+}
+
+/** Tasks Studio declined to approve only because this month's spend is over the budget (autoApproveGpu): J's. */
+const gpuOverMonth = new Set<string>();
+const HOUR_MS = 3600_000;
+
+/**
+ * Tasks waiting for a GPU budget that were never priced, or whose pricing failed over an hour ago, are priced again
+ * (estimateTask, which also approves what fits Studio's caps). An unpriced task is Studio's to price, not J's to
+ * approve: it never goes in the walk-away digest for that alone. Returns the ids it priced.
+ */
+export async function priceUnpriced(now = Date.now()) {
+  const out: string[] = [];
+  for (const t of tasksAwaitingGpu()) {
+    const e = t.gpu?.estimate;
+    if (e && !(e.error && now - (e.at ?? 0) > HOUR_MS)) continue;
+    await estimateTask(t.id).then(() => out.push(t.id), (err: any) => console.warn(`[roadmap] pricing ${t.id} failed: ${err.message}`));
+  }
+  return out;
+}
+
+/**
+ * Walk-away's GPU digest (J, 2026-10-19: "A $0.00 budget is never above the caps"): the waiting tasks only J can
+ * clear. A priced task is in it when its budget passes the per-task threshold (with the idle tail), Studio's own
+ * approvals today plus it pass the daily cap, auto approval is off (threshold 0), or the month is over the budget.
+ * $0 budgets and what fits the caps are Studio's (autoApproveGpu), never the digest. A task whose pricing kept failing
+ * for a day is in it too, as "couldn't be priced" (the one question a stall gets). threshold and walkAway are for tests.
+ */
+export function gpuDigestTasks(opts: { threshold: number; walkAway?: WalkAwaySettings; now?: number }) {
+  const wa = opts.walkAway ?? walkAwaySettings();
+  const now = opts.now ?? Date.now();
+  let room = wa.walkAwayGpuPerDay - gpuAutoApprovedToday();
+  const out: { task: Task; amount: number | null }[] = [];
+  for (const t of tasksAwaitingGpu()) {
+    const e = t.gpu?.estimate;
+    if (!e || e.error) {
+      if (e?.error && now - (e.at ?? 0) > 24 * HOUR_MS) out.push({ task: t, amount: null });
+      continue;
+    }
+    const amount = gpuBudgetFor(e.cost);
+    if (!(amount > 0)) continue;
+    const price = e.withIdleTail > 0 ? e.withIdleTail : e.cost;
+    const studios = opts.threshold > 0 && price < opts.threshold && amount <= room + 1e-9 && !gpuOverMonth.has(t.id);
+    if (studios) room -= amount;
+    else out.push({ task: t, amount });
+  }
   return out;
 }
 

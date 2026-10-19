@@ -18,7 +18,7 @@ import { db, parse } from './db.ts';
 import { getProduct, getInfra, isInfra, StudioError } from './config.ts';
 import {
   listQuestions, getQuestion, setQuestion, answeredSince, getTask, getItem, getMilestone, listMilestones, milestoneProgress, milestoneTasks, tasksAwaitingGpu,
-  approveGpu, updateTask, estimateTask, addComment, gpuBudgetFor, gpuAutoApprovedToday, type Question, type Task,
+  approveGpu, updateTask, estimateTask, addComment, gpuBudgetFor, gpuAutoApprovedToday, gpuDigestTasks, type Question, type Task,
 } from './roadmap.ts';
 import { walkAwayOn, walkAwaySettings } from './walkaway.ts';
 import { gate } from './acceptance.ts';
@@ -246,18 +246,21 @@ export async function inbox({ tokens = false }: { tokens?: boolean } = {}): Prom
   // Walk-away mode: Studio approved what fits its caps; what's above them is ONE digest card (not a card per task).
   const walk = walkAwayOn();
   const gpuWaits = tasksAwaitingGpu();
-  if (walk && gpuWaits.length) {
-    const priced = gpuWaits.map((t) => ({ t, amount: t.gpu?.estimate && !t.gpu.estimate.error ? gpuBudgetFor(t.gpu.estimate.cost) : null }));
-    const total = priced.reduce((a, x) => a + (x.amount ?? 0), 0);
+  // Only what's really above the caps (roadmap.ts gpuDigestTasks): $0 and what fits are Studio's, unpriced ones it prices.
+  const threshold = (await import('./costs.ts')).costSettings().gpuAutoApprove;
+  const digest = walk && gpuWaits.length ? gpuDigestTasks({ threshold }) : [];
+  if (digest.length) {
+    const total = digest.reduce((a, x) => a + (x.amount ?? 0), 0);
     const wa = walkAwaySettings();
-    const threshold = (await import('./costs.ts')).costSettings().gpuAutoApprove;
+    const ask = total > 0 ? `Approve all ($${total.toFixed(2)})` : 'Price them again';
     out.push({
-      id: 'gpu:digest', kind: 'gpu', title: `Approve GPU budgets for ${gpuWaits.length} task(s), $${total.toFixed(2)} in all?`,
-      text: priced.map((x) => `- "${x.t.title}" (${name(x.t.product)}): ${x.amount !== null ? `$${x.amount.toFixed(2)}` : "couldn't be priced"}`).join('\n'),
+      id: 'gpu:digest', kind: 'gpu',
+      title: total > 0 ? `Approve GPU budgets for ${digest.length} task(s), $${total.toFixed(2)} in all?` : `${digest.length} task(s) generate on the GPU but couldn't be priced. Price them again?`,
+      text: digest.map((x) => `- "${x.task.title}" (${name(x.task.product)}): ${x.amount !== null ? `$${x.amount.toFixed(2)}` : "couldn't be priced"}`).join('\n'),
       product: null, productName: null,
       context: `Above what Studio approves by itself in walk-away mode ($${threshold} a task, $${wa.walkAwayGpuPerDay} a day; $${gpuAutoApprovedToday().toFixed(2)} approved today)`,
-      asker: 'Studio PM', recommendation: `Approve all ($${total.toFixed(2)})`, options: [`Approve all ($${total.toFixed(2)})`, 'Not now'],
-      blocks: `${gpuWaits.length} task(s) can't start`, since: Math.min(...gpuWaits.map((t) => t.updated ?? t.created)), weight: 25 + gpuWaits.length * 5, links: [],
+      asker: 'Studio PM', recommendation: ask, options: [ask, 'Not now'],
+      blocks: `${digest.length} task(s) can't start`, since: Math.min(...digest.map((x) => x.task.updated ?? x.task.created)), weight: 25 + digest.length * 5, links: [],
       subject: null, conversation: null, asks: 1,
     });
   }
@@ -392,7 +395,8 @@ export async function answerInbox(id: string, answer: string, by: string, opts: 
   };
   if (id === 'gpu:digest') {
     jOnly('GPU budgets');
-    const waits = tasksAwaitingGpu();
+    // What the card showed: the tasks above the caps (roadmap.ts gpuDigestTasks), not every waiting one.
+    const waits = gpuDigestTasks({ threshold: (await import('./costs.ts')).costSettings().gpuAutoApprove }).map((x) => x.task);
     const out: unknown[] = [];
     for (const t of waits) {
       const est = t.gpu?.estimate;

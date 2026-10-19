@@ -33,7 +33,7 @@ import { DATA, PROJECTS, getProduct, getInfra, isInfra, today, StudioError, beta
 import {
   getTask, setTask, getItem, startableTasks, tasksAwaitingGpu, taskOfChange, addQuestion, listQuestions, getQuestion, setQuestion, addComment, isCommentSubject,
   logDecision, listDecisions, getDecision, markUndone, countToday, listItems, threadFor, milestonesToReach, markReached, getMilestone, milestoneTasks, setMilestoneChecks,
-  itemProgress, GPU_WAIT, type Task, type Check, type TaskBuild, type Question,
+  itemProgress, GPU_WAIT, priceUnpriced, autoApproveWaiting, gpuDigestTasks, type Task, type Check, type TaskBuild, type Question,
   addItem, addTask, askedJ, landed, blockedBy, updateTask, taskWaits, DONE, adoptDoneDrops, tasksOf,
 } from './roadmap.ts';
 import { gate, allMet } from './acceptance.ts';
@@ -612,6 +612,9 @@ async function taskShape(t: Task): Promise<WorkShape> {
   return { task: t.id, depends: t.depends, text: t.title, files: [...new Set([...files, ...filesIn(t.request)])] };
 }
 
+/** When the PM last priced unpriced GPU tasks and swept Studio's own approvals (every 10 minutes at most). */
+let lastGpuSweep = 0;
+
 /** Starts what can start: J's reports, then roadmap tasks (highest priority first, then in order), then bugs, within the caps. Returns what it started. */
 export async function startWork() {
   const s = pmSettings();
@@ -626,14 +629,22 @@ export async function startWork() {
   // Content tasks that would spend GPU money wait for J's budget: ask him once each, with the estimate. Walk-away mode:
   // Studio approved what fits its caps (roadmap.ts autoApproveGpu); the rest is one digest card in his Inbox and one
   // phone line a day, not a question per task.
+  // Tasks never priced (or whose pricing failed) are priced, and what fits Studio's caps approved, before J hears of any.
+  if (tasksAwaitingGpu().length && Date.now() - lastGpuSweep > 10 * 60_000) {
+    lastGpuSweep = Date.now();
+    await priceUnpriced().catch((e: any) => console.warn(`[pm] pricing GPU tasks: ${e.message}`));
+    await autoApproveWaiting().catch((e: any) => console.warn(`[pm] GPU auto-approval: ${e.message}`));
+  }
   const gpuWaits = tasksAwaitingGpu();
-  if (walkAwayOn() && gpuWaits.length) {
+  // Walk-away's digest holds only what's above the caps (roadmap.ts gpuDigestTasks): never one within them, or $0.
+  const digest = walkAwayOn() && gpuWaits.length ? gpuDigestTasks({ threshold: (await import('./costs.ts')).costSettings().gpuAutoApprove }) : [];
+  if (digest.length) {
     const st = state() as any;
     if (st.gpuDigest !== today()) {
       saveState({ gpuDigest: today() });
-      const sum = gpuWaits.reduce((a, t) => a + (t.gpu?.estimate && !t.gpu.estimate.error ? t.gpu.estimate.cost : 0), 0);
-      logDecision('gpu digest', null, null, `${gpuWaits.length} GPU budget(s) above walk-away's caps (about $${sum.toFixed(2)}): one card in J's Inbox`);
-      void notify('GPU budgets wait for you', `${gpuWaits.length} task(s) need GPU budgets above Studio's own limits (about $${sum.toFixed(2)} in all): one card in your Inbox.`, { url: `${PUBLIC_URL}/#inbox`, priority: 3, tags: ['moneybag'] });
+      const sum = digest.reduce((a, x) => a + (x.amount ?? 0), 0);
+      logDecision('gpu digest', null, null, `${digest.length} GPU budget(s) above walk-away's caps (about $${sum.toFixed(2)}): one card in J's Inbox`);
+      void notify('GPU budgets wait for you', `${digest.length} task(s) need GPU budgets above Studio's own limits (about $${sum.toFixed(2)} in all): one card in your Inbox.`, { url: `${PUBLIC_URL}/#inbox`, priority: 3, tags: ['moneybag'] });
     }
   }
   for (const t of walkAwayOn() ? [] : gpuWaits) {
