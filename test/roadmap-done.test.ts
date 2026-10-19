@@ -20,7 +20,7 @@ fs.mkdirSync(process.env.STUDIO_PROJECTS, { recursive: true });
 fs.mkdirSync(process.env.STUDIO_DATA, { recursive: true });
 fs.writeFileSync(path.join(process.env.STUDIO_DATA, 'notify.json'), JSON.stringify({ enabled: false, topic: 'test' }));
 fs.writeFileSync(path.join(process.env.STUDIO_DATA, 'agents.json'), JSON.stringify({ maxConcurrent: 0 }));
-const ids = ['rdslot', 'rdstatus', 'rdbuild', 'rdmile'];
+const ids = ['rdslot', 'rdstatus', 'rdbuild', 'rdmile', 'rdunclear', 'rdbroken'];
 fs.writeFileSync(process.env.STUDIO_PRODUCTS, JSON.stringify({
   repos: Object.fromEntries(ids.map((id) => [id, `x/${id}`])),
   products: ids.map((id) => ({
@@ -229,4 +229,92 @@ test("a milestone with every task merged and built gets ONE beta playtest of its
   const ready = pm.readyReport({ milestone: ms.id });
   assert.deepEqual(ready.flatMap((r) => r.criteria.map((c) => c.met)), ['yes', 'yes', 'yes']);
   assert.ok(rm.listDecisions({ action: 'milestone' }).some((d) => d.subject === ms.id), 'J was told');
+  const { inbox } = await import('../src/inbox.ts');
+  const card = (await inbox()).find((x) => x.id === `milestone:${ms.id}`);
+  assert.ok(card, 'every criterion met: the card is in his Inbox');
+  assert.match(card!.title, /^Milestone reached/);
+});
+
+/** A milestone of one product with one merged, built task per criteria list, its check started; returns the check run. */
+async function checkedMilestone(product: string, crits: string[][]) {
+  const it = rm.addItem({ product, title: `${product} ring`, status: 'planned' });
+  const ms = rm.addMilestone({ product, title: `${product} milestone`, items: [it.id] });
+  const merged = Date.now() - 60_000;
+  const tasks = crits.map((crit) => {
+    const t = rm.addTask({ item: it.id, request: crit[0], criteria: crit });
+    const c = change(product, t.id, 'merged', { merged_at: merged, verify: { scenario: 'smoke' } });
+    rm.setTask(t.id, { status: 'merged', change: c, changes: [c], tries: 1, merged_at: merged, build: { ok: true, run: 'r_x', at: Date.now(), detail: 'built OK' } });
+    return t;
+  });
+  await pm.milestoneCheck(ms.id);
+  const checks = JSON.parse(rm.getMilestone(ms.id)!.checks!);
+  assert.equal(checks.length, 1);
+  return { ms, tasks, run: checks[0] as string };
+}
+const step = (run: string, product: string, kind: string, status: string, data: any = {}, detail: string | null = null) =>
+  db.prepare(`INSERT INTO steps (id, run, product, kind, name, status, detail, data, started) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(`s_d0e${String(++n).padStart(9, '0')}`, run, product, kind, kind, status, detail, J(data), Date.now());
+const finish = (run: string) => db.prepare(`UPDATE runs SET status = 'done', finished = ? WHERE id = ?`).run(Date.now(), run);
+const milestoneCard = async (id: string) => (await (await import('../src/inbox.ts')).inbox()).find((x) => x.id === `milestone:${id}`);
+
+test("a milestone check with criteria unclear tells J nothing: it's checked again after beta's next build, and only after its tries is there one card saying what's left", async () => {
+  const before = pm.pmSettings();
+  try {
+    const { ms, tasks, run: r1 } = await checkedMilestone('rdunclear', [['the gate opens'], ['the boss roars']]);
+    step(r1, 'rdunclear', 'playtest', 'done', {}, 'passed in 60 s · 0 problems');
+    step(r1, 'rdunclear', 'review', 'done', { verdict: 'ship', criteria: [{ criterion: 'the gate opens', met: 'yes', evidence: 'at 4 s' }, { criterion: 'the boss roars', met: 'unclear', evidence: 'never reached the boss' }] });
+    finish(r1);
+    await pm.milestoneCheck(ms.id);
+    assert.equal(rm.getMilestone(ms.id)!.status, 'open', 'not reached with a criterion unclear');
+    assert.ok(!rm.listDecisions({ action: 'milestone' }).some((d) => d.subject === ms.id), 'J was not told');
+    assert.equal(await milestoneCard(ms.id), undefined, 'no card in his Inbox');
+    assert.equal(rm.getTask(tasks[0].id)!.status, 'verified');
+    assert.equal(rm.getTask(tasks[1].id)!.status, 'merged', 'unclear: not restarted (a merged task is never redone for an unclear)');
+    assert.ok(rm.listDecisions({ action: 'milestone-recheck' }).some((d) => d.subject === ms.id), 'a re-check is queued');
+    // It waits for beta's next build of the product.
+    await pm.milestoneCheck(ms.id);
+    assert.deepEqual(JSON.parse(rm.getMilestone(ms.id)!.checks!), [], 'nothing played before beta built again');
+    run('rdunclear', 'done', Date.now() + 1);
+    await pm.milestoneCheck(ms.id);
+    const r2 = JSON.parse(rm.getMilestone(ms.id)!.checks!)[0];
+    assert.ok(r2 && r2 !== r1, 'checked again after the build');
+    const opts = JSON.parse((db.prepare('SELECT options FROM runs WHERE id = ?').get(r2) as any).options);
+    assert.deepEqual(opts.plays.flatMap((p: any) => p.criteria), ['the boss roars'], 'only what is still unverified is played');
+    // Still unclear, and out of tries: ONE card saying what's left.
+    pm.savePmSettings({ maxTries: 1 });
+    step(r2, 'rdunclear', 'playtest', 'done', {}, 'passed in 60 s · 0 problems');
+    step(r2, 'rdunclear', 'review', 'done', { verdict: 'ship', criteria: [{ criterion: 'the boss roars', met: 'unclear', evidence: 'still never reached' }] });
+    finish(r2);
+    await pm.milestoneCheck(ms.id);
+    assert.equal(rm.getMilestone(ms.id)!.status, 'reached');
+    const told = rm.listDecisions({ action: 'milestone' }).find((d) => d.subject === ms.id)!;
+    assert.match(told.detail!, /misses left after its tries.*the boss roars/);
+    const card = await milestoneCard(ms.id);
+    assert.match(card!.title, /1 criteria still not met on beta after its tries/);
+    assert.match(card!.text!, /the boss roars \(unclear: still never reached\)/);
+  } finally {
+    pm.savePmSettings({ maxTries: before.maxTries });
+  }
+});
+
+test('a milestone check that broke (a missing scenario, stuck, beta not built) is played again, never counted as missed', async () => {
+  const { ms, tasks, run: r1 } = await checkedMilestone('rdbroken', [['the lava glows']]);
+  step(r1, 'rdbroken', 'playtest', 'skipped', { missingScenario: 'lava' }, 'skipped: beta abc1234 has no scenario "lava". It has: smoke');
+  // A review from a broken run judges nothing either.
+  step(r1, 'rdbroken', 'review', 'done', { verdict: 'broken', criteria: [{ criterion: 'the lava glows', met: 'no', evidence: 'never got there' }] });
+  finish(r1);
+  assert.match(pm.brokenCheck(r1)!, /no scenario "lava"/);
+  await pm.milestoneCheck(ms.id);
+  assert.equal(rm.getMilestone(ms.id)!.status, 'open');
+  assert.equal(rm.getTask(tasks[0].id)!.status, 'merged', 'not judged from the broken run');
+  assert.ok(rm.listDecisions({ action: 'milestone-rerun' }).some((d) => d.subject === ms.id));
+  // Played again at once (no wait for a build).
+  await pm.milestoneCheck(ms.id);
+  const r2 = JSON.parse(rm.getMilestone(ms.id)!.checks!)[0];
+  assert.ok(r2 && r2 !== r1, 're-run');
+  // A playtest stuck at one spot is broken too; so is a run still going.
+  step(r2, 'rdbroken', 'playtest', 'failed', {}, 'failed: the bot is stuck at one spot');
+  assert.match(pm.brokenCheck(r2)!, /still running|stuck/);
+  finish(r2);
+  assert.match(pm.brokenCheck(r2)!, /stuck at one spot/);
+  assert.equal(await milestoneCard(ms.id), undefined);
 });
