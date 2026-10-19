@@ -65,6 +65,8 @@ for (const [table, col] of [['runs', 'pm_seen'], ['findings', 'item'], ['items',
 // its item's applies (effectivePriority). The PM starts the highest first (pm.ts startWork).
 try { db.exec(`ALTER TABLE items ADD COLUMN priority TEXT NOT NULL DEFAULT 'normal'`); } catch { /* already there */ }
 try { db.exec('ALTER TABLE tasks ADD COLUMN priority TEXT'); } catch { /* already there */ }
+// The repo a task's agent works in: null (the product's source repo) or 'site' (a Unity game's website repo).
+try { db.exec('ALTER TABLE tasks ADD COLUMN target TEXT'); } catch { /* already there */ }
 
 export const ITEM_STATUSES = ['idea', 'planned', 'in progress', 'on beta', 'live', 'done', 'dropped'];
 export const TASK_STATUSES = ['idea', 'planned', 'working', 'needs answer', 'review', 'merged', 'waiting for GPU', 'verified', 'live', 'failed', 'dropped'];
@@ -73,6 +75,15 @@ export const GPU_WAIT = 'waiting for GPU';
 export const SIZES = ['S', 'M', 'L'];
 export const PRIORITIES = ['high', 'normal', 'low'];
 const RANK: Record<string, number> = { high: 0, normal: 1, low: 2 };
+/** A task's target from the API: 'site' (only a Unity game with a website repo of its own), or null for the source repo. */
+function targetOf(v: unknown, product: string): string | null {
+  const t = String(v ?? '').trim().toLowerCase();
+  if (!t || t === 'source' || t === 'game') return null;
+  if (t !== 'site' && t !== 'website') throw new StudioError(`target is "site" (the website repo) or empty (the game's source repo), not "${v}"`);
+  const p = loadProducts().find((x) => x.id === product);
+  if (!p?.build || p.site.split('/')[0] === p.repo.split('/')[0]) throw new StudioError(`${p?.name ?? product} has no website repo of its own (leave target empty)`);
+  return 'site';
+}
 /** A priority from the API: one of PRIORITIES; for a task, '' or null clears it (its item's applies). */
 function priorityOf(v: unknown, task: boolean) {
   if ((v === null || v === '') && task) return null;
@@ -87,6 +98,8 @@ export type Task = {
   /** Its own priority, or null: its item's applies (effective_priority). */
   priority: string | null; effective_priority: string;
   ord: number; change: string | null; changes: string[]; pr: string | null; tries: number;
+  /** 'site': its agent works in the Unity game's website repo; null: the source repo. */
+  target: string | null;
   /** The latest acceptance results: where they were judged (the change's verification, or beta), per criterion. */
   checks: { where: 'change' | 'beta'; at: number; run?: string; change?: string; video?: string | null; verdict?: string; results: Check[] } | null;
   /** How J can try it (the agent's words). */
@@ -109,7 +122,7 @@ export type Item = {
 const toItem = (r: any): Item => ({ ...r, priority: r.priority ?? 'normal', criteria: parse(r.criteria) ?? [] });
 // Task rows are read with their item's priority alongside (TASK_SELECT), for the effective priority.
 const TASK_SELECT = `SELECT t.*, COALESCE(t.priority, i.priority, 'normal') AS effective_priority FROM tasks t LEFT JOIN items i ON i.id = t.item`;
-const toTask = (r: any): Task => ({ ...r, priority: r.priority ?? null, effective_priority: r.effective_priority ?? r.priority ?? 'normal', criteria: parse(r.criteria) ?? [], depends: parse(r.depends) ?? [], changes: parse(r.changes) ?? [], checks: parse(r.checks), gpu: parse(r.gpu) ?? null, build: parse(r.build) ?? null });
+const toTask = (r: any): Task => ({ ...r, priority: r.priority ?? null, target: r.target ?? null, effective_priority: r.effective_priority ?? r.priority ?? 'normal', criteria: parse(r.criteria) ?? [], depends: parse(r.depends) ?? [], changes: parse(r.changes) ?? [], checks: parse(r.checks), gpu: parse(r.gpu) ?? null, build: parse(r.build) ?? null });
 const list = (v: unknown) => (Array.isArray(v) ? v : typeof v === 'string' && v.trim() ? v.split('\n') : []).map((s) => String(s).replace(/^\s*[-*\d.)]+\s*/, '').trim()).filter(Boolean).slice(0, 20);
 const productId = (id: string) => {
   const p = loadProducts().find((x) => x.id === id || x.name.toLowerCase() === String(id).toLowerCase());
@@ -287,7 +300,7 @@ export function updateItem(id: string, patch: Partial<{ title: string; goal: str
   return getItem(id)!;
 }
 
-export function addTask(a: { item: string; title?: string; request: string; criteria?: unknown; depends?: unknown; status?: string; priority?: string | null; ord?: number; gpu?: unknown }) {
+export function addTask(a: { item: string; title?: string; request: string; criteria?: unknown; depends?: unknown; status?: string; priority?: string | null; ord?: number; gpu?: unknown; target?: string | null }) {
   const item = getItem(a.item);
   if (!item) throw new StudioError(`No item ${a.item}`, 404);
   if (!a.request?.trim()) throw new StudioError('A task needs a request (what the agent should do)');
@@ -296,9 +309,11 @@ export function addTask(a: { item: string; title?: string; request: string; crit
   const depends = list(a.depends);
   for (const d of depends) if (!getTask(d)) throw new StudioError(`depends: no task ${d}`);
   const priority = a.priority === undefined ? null : priorityOf(a.priority, true);
+  const target = targetOf(a.target, item.product);
   const id = newId('k');
   db.prepare('INSERT INTO tasks (id, item, product, title, request, criteria, depends, status, priority, ord, created) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
     .run(id, item.id, item.product, (a.title ?? a.request.split('\n')[0]).trim().slice(0, 160), a.request.trim(), J(list(a.criteria)), J(depends), status, priority, a.ord ?? nextOrd('tasks', 'item', item.id), Date.now());
+  if (target) db.prepare('UPDATE tasks SET target = ? WHERE id = ?').run(target, id);
   const gpu = gpuItems(a.gpu);
   // A follow-up of GPU work added without its own items (the PM's, 2026-10-18: four were added with none, so no budget,
   // no server, and three agents in a row made nothing) keeps the items of the work it follows up.
@@ -352,7 +367,7 @@ export async function backfillGpu() {
 }
 
 /** Fields Talk and J may set. Status changes the loop makes (working, review, merged, ...) go through setTask. */
-export function updateTask(id: string, patch: Partial<{ title: string; request: string; criteria: unknown; depends: unknown; status: string; priority: string | null; ord: number; note: string; gpu: unknown }>) {
+export function updateTask(id: string, patch: Partial<{ title: string; request: string; criteria: unknown; depends: unknown; status: string; priority: string | null; ord: number; note: string; gpu: unknown; target: string | null }>) {
   const cur = getTask(id);
   if (!cur) throw new StudioError(`No task ${id}`, 404);
   // working, review, merged, verified and live come from the agents and the checks, never by hand.
@@ -364,6 +379,10 @@ export function updateTask(id: string, patch: Partial<{ title: string; request: 
     const items = gpuItems(patch.gpu);
     db.prepare('UPDATE tasks SET gpu = ? WHERE id = ?').run(items ? J({ ...(cur.gpu ?? {}), items, estimate: undefined }) : null, id);
     delete patch.gpu;
+  }
+  if (patch.target !== undefined) {
+    db.prepare('UPDATE tasks SET target = ? WHERE id = ?').run(targetOf(patch.target, cur.product), id);
+    delete patch.target;
   }
   // Its own priority, or none (null or ''): its item's applies.
   if (patch.priority !== undefined) {

@@ -41,7 +41,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { spawn, spawnSync } from 'node:child_process';
 import { db, newId, J, parse } from './db.ts';
-import { getProduct, getInfra, isInfra, PROJECTS, DATA, ROOT, storyOf, localUrl, type Product, type Infra } from './config.ts';
+import { getProduct, getInfra, isInfra, PROJECTS, DATA, ROOT, storyOf, localUrl, StudioError, type Product, type Infra } from './config.ts';
 import { getFinding, updateFinding } from './backlog.ts';
 import { reviewParams } from './review.ts';
 import { reviewJob } from './review-cc.ts';
@@ -387,6 +387,29 @@ function repoFor(p: Product) {
   return { top, slug, sub: p.repo.split('/').slice(1).join('/') };
 }
 
+/**
+ * A Unity product's website repo (home page, blog, privacy, the game page: sickofitgamewebsite, YoobaLandGame,
+ * theplacedepartmentwebsite), where its site is a repo of its own; null otherwise. A change with target "site" works
+ * there: its branch is cut from the website's beta and its pull request merges into it (beta.ts).
+ */
+export function siteRepoFor(p: Product) {
+  const top = p.site.split('/')[0];
+  if (!p.build || top === p.repo.split('/')[0]) return null;
+  const slug = repoMap()[top];
+  return slug ? { top, slug, sub: p.site.split('/').slice(1).join('/') } : null;
+}
+/** True for a change that works in its product's website repo (target "site"), not the source repo. */
+export const isSiteChange = (c: { repo: string; infra?: boolean | number | null }, p: Product) => !c.infra && c.repo !== p.repo.split('/')[0] && c.repo === siteRepoFor(p)?.top;
+/** The repo a new change of a product works in: its source repo, or (target "site") its website repo. */
+function repoForTarget(p: Product, target?: string | null) {
+  const t = String(target ?? '').trim().toLowerCase();
+  if (!t || t === 'source' || t === 'game') return repoFor(p);
+  if (t !== 'site' && t !== 'website') throw new StudioError(`target is "site" (the website repo) or empty (the game's source repo), not "${target}"`);
+  const site = siteRepoFor(p);
+  if (!site) throw new StudioError(`${p.name} has no website repo of its own: its pages are in ${p.repo.split('/')[0]} (leave target empty).`);
+  return site;
+}
+
 const WORK = () => path.join(PROJECTS, '.work');
 
 // --------------------------------------------------------------- GitHub
@@ -517,7 +540,7 @@ async function writeBrief(c: Change, p: Product, findings0: any[], note?: string
   const dir = path.join(c.worktree, '.hawkes');
   fs.mkdirSync(path.join(dir, 'shots'), { recursive: true });
   // Keep the brief out of commits.
-  const exclude = path.join(PROJECTS, repoFor(p).top, '.git', 'info', 'exclude');
+  const exclude = path.join(PROJECTS, c.repo, '.git', 'info', 'exclude');
   if (!fs.existsSync(exclude) || !fs.readFileSync(exclude, 'utf8').includes('.hawkes/')) fs.appendFileSync(exclude, '\n.hawkes/\n');
   const shots: string[] = [];
   for (const f of findings) {
@@ -533,13 +556,29 @@ async function writeBrief(c: Change, p: Product, findings0: any[], note?: string
   }
   const thread = threadFor(c);
   const mem = briefSection({ product: p.id, item: taskItem(c), role: roleOf(c), text: [c.request, c.title, ...findings.map((f) => `${f.title} ${f.area ?? ''} ${f.detail ?? ''}`)].filter(Boolean).join(' ') });
-  const checks = (p.checks ?? []).map((k) => `- \`${k.cmd}\` (in ${k.dir === p.repo ? 'the repo root' : k.dir})`).join('\n') || '- (none listed: at least make sure it builds or loads)';
-  const sub = repoFor(p).sub;
+  // A Unity product's website repo (target "site") or its source repo; each has its own beta (beta.ts).
+  const site = siteRepoFor(p);
+  const onSite = isSiteChange(c, p);
+  const checks = onSite ? '- (static pages: open the pages you changed and the links between them, and check the HTML is well formed)'
+    : (p.checks ?? []).map((k) => `- \`${k.cmd}\` (in ${k.dir === p.repo ? 'the repo root' : k.dir})`).join('\n') || '- (none listed: at least make sure it builds or loads)';
+  const sub = onSite ? site!.sub : repoFor(p).sub;
   const brief = `# ${c.request ? 'Work' : 'Fix'} for ${p.name}
 
 You are fixing a problem Hawkes Studio's automated playtest found in ${p.name} (${p.about}).
 ${sub ? `The project lives in \`${sub}/\` inside this repository.` : ''}
+${onSite ? `
+## This is the website repo (${site!.top})
 
+You are working in ${p.name}'s website repository (the home page, blog, privacy page and the game page), not the
+game's source (${p.repo.split('/')[0]}). Your branch was cut from the website's beta and its pull request merges into
+it; the beta site https://<sub>.hawkesgen.com/ then shows your pages with beta's game build, and going live brings them
+to the live site together with the build. Never touch \`Game/v*\` (Studio's Unity builds put the game there) or push
+main. If the work also needs the game itself changed, say so in the summary: that is a change in the source repo.
+` : site ? `
+The website (home page, blog, privacy page, the game page) is a separate repo, ${site.top}, with its own beta. This change
+works in the game's source only; if the request is really about those pages, say so in the summary (a task with target
+"site" works there).
+` : ''}
 ${c.request ? `## What J asked for
 
 ${c.request}
@@ -845,7 +884,7 @@ export function costToday() {
 }
 
 /** Starts an agent on something J asked for (a feature, a change, a tweak): a branch, a pull request, a preview. */
-export function startTask(productId: string, request: string, { criteria = [], task = null, title, gpuBudget = null }: { criteria?: string[]; task?: string | null; title?: string; gpuBudget?: number | null } = {}) {
+export function startTask(productId: string, request: string, { criteria = [], task = null, title, gpuBudget = null, target: repoTarget = null }: { criteria?: string[]; task?: string | null; title?: string; gpuBudget?: number | null; target?: string | null } = {}) {
   const s = agentSettings();
   if (!s.enabled) throw new Error('Agent workers are turned off (settings).');
   // Studio and Gen themselves: a pull request into main (they have no beta lane).
@@ -855,7 +894,9 @@ export function startTask(productId: string, request: string, { criteria = [], t
   if (!request.trim()) throw new Error('Say what to do');
   // J (2026-10-17): queue, don't refuse. One change runs per product; this one waits for it (pump starts it after).
   const ahead = aheadOf(target.id);
-  const { top, slug } = inf ? { top: inf.repo, slug: inf.slug } : repoFor(p!);
+  if (inf && repoTarget) throw new StudioError(`${inf.name} has no website repo (leave target empty)`);
+  // target "site": a Unity product's website repo (its own beta, merged into it like the source repo's).
+  const { top, slug } = inf ? { top: inf.repo, slug: inf.slug } : repoForTarget(p!, repoTarget);
   const id = newId('c');
   const words = request.toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 40).replace(/^-|-$/g, '');
   db.prepare('INSERT INTO changes (id, product, findings, status, detail, repo, slug, branch, base, worktree, title, request, notes, log, created) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
@@ -1379,7 +1420,10 @@ async function buildChange(c: Change, p: Product, jobs?: JobMemo): Promise<Chang
 async function verifyChange(c: Change, p: Product, findings: any[], jobs?: JobMemo) {
   let dir: string;
   let build: ChangeBuild | null = null;
-  if (p.engine === 'unity' || p.build) {
+  if (isSiteChange(c, p)) {
+    // A website change: its worktree is the site as it would be (with live's Game/v<n>): served as it is, no build.
+    dir = path.join(c.worktree, path.relative(c.repo, p.local.dir));
+  } else if (p.engine === 'unity' || p.build) {
     // Unity: build the branch, then serve that build the way the site's local server would.
     build = await buildChange(c, p, jobs).catch((e: any): ChangeBuild => ({ sha: '', ok: false, at: Date.now(), error: String(e.message ?? e).slice(0, 500), retry: true }));
     if (!build.ok) return { outcome: 'build failed', error: build.error, build };

@@ -6,8 +6,9 @@
 //   deploy(product, { confirm: "DEPLOY <product>" })
 //                        fast-forwards main to the playtested beta commit (never a merge, never a force push). Refused
 //                        when beta moved since it was played, or main has commits beta lacks (mergeMain() first).
-//                        Unity: the beta build's Game/v<n> (its beta website copy) is committed to the website repo's
-//                        main, and the source repo's main is fast-forwarded to beta. Studio then playtests live.
+//                        Unity: the beta website copy (the website's beta, its page changes, plus the beta build's
+//                        Game/v<n>) is committed and fast-forwards the website repo's main (and its beta follows), and the
+//                        source repo's main is fast-forwarded to beta. Studio then playtests live.
 //   rollbackPlan / rollback(product, { confirm: "ROLLBACK <product>" })
 //                        puts main back to what was live before the last go live: a new commit with that commit's
 //                        files (never a force push). Beta keeps its commits: fix forward there.
@@ -60,7 +61,7 @@ export function blockerFix(blocker: string): BlockerFix | null {
   if (/^git:|^Nothing to go live/.test(blocker)) return null;
   if (/ has no \S+ branch yet|commit\(s\) \S+ lacks/.test(blocker)) return 'merge-main';
   if (/'s \S+ moved since the beta build/.test(blocker)) return 'rebuild';
-  if (/hasn't been playtested|isn't its pre-deploy build|The beta build is of|has no build yet|The last build of/.test(blocker)) return 'beta';
+  if (/hasn't been playtested|isn't its pre-deploy build|The beta build is of|has no build yet|The last build of|The beta website copy sits on/.test(blocker)) return 'beta';
   return null;
 }
 /**
@@ -80,9 +81,11 @@ export async function deployPlan(productId: string, { notesWaitMs = 20_000 }: { 
   const blockers: string[] = [];
   const warnings: string[] = [];
   let cmp: Awaited<ReturnType<typeof compareBeta>> = { main: null, beta: null, ahead: [], behind: [] };
+  // Unity: the website repo's own beta (page changes by agents) vs its main.
+  let web: typeof cmp = { main: null, beta: null, ahead: [], behind: [] };
   try {
     cmp = await compareBeta(source);
-    if (unity && site !== source) await fetchOrigin(site);
+    if (unity && site !== source) web = await compareBeta(site);
   } catch (e: any) {
     blockers.push(`git: ${e.message}`);
   }
@@ -91,6 +94,10 @@ export async function deployPlan(productId: string, { notesWaitMs = 20_000 }: { 
   if (cmp.behind.length) {
     const rollbacks = cmp.behind.every((c) => c.title.startsWith(STUDIO_ROLLBACK));
     blockers.push(`${MAIN} has ${cmp.behind.length} commit(s) ${BETA} lacks (${cmp.behind.slice(0, 5).map((c) => `"${c.title}"`).join(', ')}), so ${MAIN} can't be fast-forwarded. Merge ${MAIN} into ${BETA} first (studio deploy ${p.id} --merge-main${rollbacks ? `; they're rollbacks, so the merge keeps ${BETA}'s files` : ''}), then playtest ${BETA}.`);
+  }
+  if (web.behind.length) {
+    const rollbacks = web.behind.every((c) => c.title.startsWith(STUDIO_ROLLBACK));
+    blockers.push(`${p.site}'s ${MAIN} has ${web.behind.length} commit(s) ${BETA} lacks (${web.behind.slice(0, 5).map((c) => `"${c.title}"`).join(', ')}), so the website's ${MAIN} can't be fast-forwarded. Merge ${MAIN} into ${BETA} first (studio deploy ${p.id} --merge-main${rollbacks ? `; they're rollbacks, so the merge keeps ${BETA}'s files` : ''}), then playtest ${BETA}.`);
   }
 
   // The playtests of the exact beta commit (a Studio release commit on top, only releases.json, doesn't count as moving it).
@@ -116,14 +123,18 @@ export async function deployPlan(productId: string, { notesWaitMs = 20_000 }: { 
   if (unity) {
     const b = betaBuild(p);
     const siteMain = shaOf(site, `origin/${MAIN}`);
+    const siteBeta = web.beta?.sha ?? null;
     const files = b?.ok ? (await gitAsync(betaSiteDir(p), ['status', '--porcelain'])).out.split('\n').filter(Boolean) : [];
     build = b && { ...b, files: files.length, sample: files.slice(0, 20) };
     if (!b) blockers.push(`${BETA} has no build yet (the daily run on the server builds it, or "studio build ${p.id}").`);
     else if (!b.ok) blockers.push(`The last build of ${BETA} failed: ${b.error ?? '?'}`);
     else {
       if (beta && b.sha !== beta.sha) blockers.push(`The beta build is of ${b.sha.slice(0, 7)}, but ${BETA} is ${beta.short}: build ${BETA} again ("studio beta ${p.id}").`);
-      if (siteMain && b.base !== siteMain) blockers.push(`${p.site}'s ${MAIN} moved since the beta build (${b.base.slice(0, 7)} -> ${siteMain.slice(0, 7)}): build ${BETA} again so it sits on what's live.`);
-      if (!files.length && !cmp.ahead.length) blockers.push(`Nothing to go live: the beta build matches what's live and ${BETA} has no new commits.`);
+      // The copy sits on the website's beta (its page changes); before the website had a beta, on its main.
+      // (A copy ahead of the website's beta is a go live whose beta update a restart cut off: merging main into beta fixes it.)
+      if (siteBeta && b.base !== siteBeta && !gitIn(site, ['merge-base', '--is-ancestor', siteBeta, b.base]).ok) blockers.push(`The beta website copy sits on ${b.base.slice(0, 7)}, but ${p.site}'s ${BETA} is ${siteBeta.slice(0, 7)} now: run ${BETA} again ("studio beta ${p.id}": it moves the build onto the new pages, or builds again).`);
+      else if (!siteBeta && siteMain && b.base !== siteMain) blockers.push(`${p.site}'s ${MAIN} moved since the beta build (${b.base.slice(0, 7)} -> ${siteMain.slice(0, 7)}): build ${BETA} again so it sits on what's live.`);
+      if (!files.length && !cmp.ahead.length && !web.ahead.length) blockers.push(`Nothing to go live: the beta build matches what's live and ${BETA} has no new commits.`);
     }
   } else if (beta && !cmp.ahead.length && !cmp.behind.length) {
     blockers.push(`Nothing to go live: ${MAIN} already is ${BETA} (${beta.short}).`);
@@ -134,7 +145,7 @@ export async function deployPlan(productId: string, { notesWaitMs = 20_000 }: { 
   let release: Awaited<ReturnType<typeof draftWithin>> | null = null;
   if (beta && played && !blockers.some((b) => /^Nothing to go live|^git:/.test(b))) {
     try {
-      const fallbackCommits = cmp.ahead.filter((c) => !c.title.startsWith(STUDIO_RELEASE));
+      const fallbackCommits = [...cmp.ahead, ...web.ahead].filter((c) => !c.title.startsWith(STUDIO_RELEASE));
       const live = unity ? releasesAt(site, `origin/${MAIN}`, releasesPath(p)) : releasesAt(source, `origin/${MAIN}`, releasesPath(p));
       const data = unity ? readReleases(path.join(betaSiteFolder(p), RELEASES)) ?? live : releasesAt(source, beta.sha, releasesPath(p));
       if (data) release = await draftWithin(p, unity
@@ -151,13 +162,15 @@ export async function deployPlan(productId: string, { notesWaitMs = 20_000 }: { 
     product: p.id, name: p.name, live: p.live, betaSite: previewUrl(p.id), repo: p.repo, site: p.site, unity,
     main: brief(cmp.main), beta: brief(beta), played: brief(played), release,
     commits: cmp.ahead.map(brief), mainOnly: cmp.behind.map(brief),
+    // Unity: the website's page changes going live with the build (its beta's commits), and its main's commits beta lacks.
+    siteCommits: web.ahead.map(brief), siteMainOnly: web.behind.map(brief),
     tested: { sha: beta?.short ?? null, playtests: tested }, lastPlayed: last,
     build,
     previous: previous.map((d) => ({ id: d.id, kind: d.kind, at: d.at, by: d.by, before: d.before?.slice(0, 7) ?? null, after: d.after.slice(0, 7), beta: d.beta?.slice(0, 7) ?? null, detail: d.detail, rolledBack: d.rolled_back })),
     blockers, warnings, canDeploy: !blockers.length, fix: planFix(blockers),
     confirm: `DEPLOY ${p.id}`,
     what: unity
-      ? `Commits ${BETA}'s build${build?.version ? ` (Game/v${build.version})` : ''} to ${p.site}'s ${MAIN} and fast-forwards ${p.repo.split('/')[0]}'s ${MAIN} to ${beta?.short ?? BETA}; GitHub Pages publishes ${p.live}.${relNote}`
+      ? `Commits ${BETA}'s build${build?.version ? ` (Game/v${build.version})` : ''} to ${p.site}'s ${MAIN}${web.ahead.length ? ` together with ${web.ahead.length} website commit(s) from its ${BETA} (${web.ahead.slice(0, 3).map((c) => `"${c.title}"`).join(', ')})` : ''} and fast-forwards ${p.repo.split('/')[0]}'s ${MAIN} to ${beta?.short ?? BETA}; GitHub Pages publishes ${p.live}.${relNote}`
       : `Fast-forwards ${p.site}'s ${MAIN} to ${BETA}${played ? ` ${played.short}` : ''} (${cmp.ahead.length} commit(s))${release && !release.existing ? ', with a release entry on top' : ''}; GitHub Pages publishes ${p.live}.${relNote}`,
   };
 }
@@ -180,7 +193,7 @@ async function deployNow(productId: string, { confirm, by = 'J', mergeMain, orig
   let after: string;
   let sourceAfter: string | null = null;
   let release: Draft | null = null;
-  const fallbackCommits = (plan.commits as Commit[]).filter((c) => !c.title.startsWith(STUDIO_RELEASE));
+  const fallbackCommits = [...(plan.commits as Commit[]), ...(plan.siteCommits as Commit[])].filter((c) => !c.title.startsWith(STUDIO_RELEASE));
   // Beta must still be the commit that was played (it could have moved while J read the plan).
   await fetchOrigin(source);
   if (shaOf(source, `origin/${BETA}`) !== beta.sha) throw new StudioError(`${BETA} moved since the plan was made; look at the plan again.`);
@@ -210,6 +223,9 @@ async function deployNow(productId: string, { confirm, by = 'J', mergeMain, orig
     await fetchOrigin(site);
     before = shaOf(site, `origin/${MAIN}`);
     const b = betaBuild(p)!;
+    // The website's beta must still be what the copy sits on (a page change could have merged while J read the plan).
+    const siteBeta = shaOf(site, `origin/${BETA}`);
+    if (siteBeta && siteBeta !== b.base && !gitIn(site, ['merge-base', '--is-ancestor', siteBeta, shaOf(copy, 'HEAD') ?? b.base]).ok) throw new StudioError(`${p.site}'s ${BETA} moved since the plan was made; look at the plan again.`);
     // The release entry goes into the website copy, inside the build commit (never stops going live).
     try {
       release = await addReleaseTo(p, betaSiteFolder(p), { source, target: beta.sha, build: String(b.version ?? beta.short), fallbackCommits, live: releasesAt(site, `origin/${MAIN}`, releasesPath(p)) });
@@ -228,8 +244,12 @@ async function deployNow(productId: string, { confirm, by = 'J', mergeMain, orig
       opLog(`pushing ${p.site}'s ${MAIN} (the build: this can take a few minutes)`);
       must(await gitAsync(copy, ['push', 'origin', `HEAD:refs/heads/${MAIN}`], 30 * 60_000), `pushing ${p.site}'s ${MAIN}`);
       after = head;
-      log.push(`${p.site}: ${MAIN} -> ${after.slice(0, 7)} (the beta build${b.version ? `, Game/v${b.version}` : ''})`);
+      log.push(`${p.site}: ${MAIN} -> ${after.slice(0, 7)} (the beta build${b.version ? `, Game/v${b.version}` : ''}${plan.siteCommits.length ? ` and ${plan.siteCommits.length} website commit(s) from ${BETA}` : ''})`);
       saveBetaBuild(p, { ...b, base: after });
+      // The website's beta follows (a fast-forward: it then has the build too, so its main has nothing beta lacks). When
+      // a page change merged meanwhile it can't: merging main into beta (the plan's fix) brings it in.
+      const fb = await gitAsync(copy, ['push', '--quiet', 'origin', `HEAD:refs/heads/${BETA}`]);
+      log.push(fb.ok ? `${p.site}: ${BETA} -> ${after.slice(0, 7)}` : `warning: ${p.site}'s ${BETA} wasn't fast-forwarded to the go live (${fb.err.split('\n').pop()}): merge ${MAIN} into ${BETA} before the next go live`);
     } else {
       after = before!;
       log.push(`${p.site}: the build is already live`);
@@ -244,7 +264,7 @@ async function deployNow(productId: string, { confirm, by = 'J', mergeMain, orig
   for (const l of log) opLog(l);
   const id = newId('d');
   db.prepare('INSERT INTO deploys (id, product, kind, repo, before, after, beta, source, source_before, source_after, version, by, detail, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
-    .run(id, p.id, 'deploy', p.site, before, after, plan.played?.sha ?? beta.sha, unity ? p.repo : null, unity ? plan.main?.sha ?? null : null, sourceAfter, plan.build?.version ?? null, by, `${plan.commits.length} commit(s): ${plan.commits.slice(0, 8).map((c) => c!.title).join('; ')}`.slice(0, 1000), Date.now());
+    .run(id, p.id, 'deploy', p.site, before, after, plan.played?.sha ?? beta.sha, unity ? p.repo : null, unity ? plan.main?.sha ?? null : null, sourceAfter, plan.build?.version ?? null, by, `${plan.commits.length} commit(s): ${plan.commits.slice(0, 8).map((c) => c!.title).join('; ')}${plan.siteCommits.length ? ` · website ${plan.siteCommits.length} commit(s): ${plan.siteCommits.slice(0, 8).map((c) => c!.title).join('; ')}` : ''}`.slice(0, 1000), Date.now());
   await fetchOrigin(site);
   if (after !== before) void verifyLive(p.id, after, `Just went live (${BETA} ${beta.short}: ${plan.commits.slice(0, 3).map((c) => c!.title).join('; ')})`, origin);
   const rel = release && { version: release.version, title: release.title, notes: release.notes, build: release.build };
@@ -291,7 +311,7 @@ export async function rollbackPlan(productId: string) {
     deploy: d ? { id: d.id, at: d.at, by: d.by, after: d.after.slice(0, 7), beta: d.beta?.slice(0, 7) ?? null, detail: d.detail } : null,
     undo: undo.map(brief), blockers, warnings, canRollback: !blockers.length,
     confirm: `ROLLBACK ${p.id}`,
-    what: `A new commit on ${p.site}'s ${MAIN} with the files of ${d?.before?.slice(0, 7) ?? '?'} (what was live before the last go live); never a force push. ${BETA} keeps its commits: fix forward there, merge ${MAIN} into ${BETA} (it keeps ${BETA}'s files), playtest, and go live again.`,
+    what: `A new commit on ${p.site}'s ${MAIN} with the files of ${d?.before?.slice(0, 7) ?? '?'} (what was live before the last go live: its build and its pages); never a force push. ${BETA} keeps its commits: fix forward there, merge ${MAIN} into ${BETA} (it keeps ${BETA}'s files), playtest, and go live again.`,
   };
 }
 

@@ -9,8 +9,10 @@
 // - Going live (deploy.ts) fast-forwards main to the beta commit that was playtested. Unity products commit that beta
 //   build's Game/v<n> to the website repo's main. Every go live and rollback is recorded in the db (deploys).
 //
-// Unity products: beta lives in the source repo (where agents work). The beta build lands in a scratch website copy,
-// .work/beta/<product>-site (a worktree of the website repo at its main), never in the real website folder.
+// Unity products: the source repo and the website repo (home page, blog, privacy, the game page) each have a beta.
+// Agents work in either (a change with target "site" works in the website repo). The beta build lands in a scratch
+// website copy, .work/beta/<product>-site (a worktree of the website repo at its beta), never in the real website
+// folder, so the beta site is website beta's pages plus beta's build. Going live puts both on the website's main.
 
 import fs from 'node:fs';
 import { critical, criticalSync } from './drain.ts';
@@ -205,22 +207,43 @@ export function saveBetaBuild(p: Product, b: BetaBuild | null) {
 }
 
 /**
- * Whether the beta build in the website copy is still what beta needs: it built `head`, and it sits on the website's
- * main as it is now (`siteMain`; when live moved, the build must be redone on top of it or going live is blocked).
+ * Whether the beta build in the website copy is still what beta needs: it built `head`, and it sits on the website
+ * commit it should (`siteBase`: the website's beta, or its main where it has no beta yet; when that moved, the copy is
+ * moved onto it (refreshBetaSite) or the build redone, else going live is blocked).
  */
-export function betaBuildCurrent(b: BetaBuild | null, head: string, siteMain: string | null, folderExists: boolean) {
-  return Boolean(b?.ok && b.sha === head && folderExists && (!siteMain || b.base === siteMain));
+export function betaBuildCurrent(b: BetaBuild | null, head: string, siteBase: string | null, folderExists: boolean) {
+  return Boolean(b?.ok && b.sha === head && folderExists && (!siteBase || b.base === siteBase));
 }
 
-/** Resets the beta website copy to the website repo's origin/main (before a beta build lands in it). */
+/** The website commit a Unity product's beta build sits on: the website repo's beta, or its main where it has none yet (no fetch). */
+export const siteBaseOf = (p: Product) => {
+  const { site } = repoDirs(p);
+  return shaOf(site, `origin/${BETA}`) ?? shaOf(site, `origin/${MAIN}`);
+};
+
+/** Resets the beta website copy to the website repo's origin/beta (made from main the first time) before a beta build lands in it. */
 export async function resetBetaSite(p: Product) {
   const { site } = repoDirs(p);
-  await fetchOrigin(site);
-  const base = shaOf(site, `origin/${MAIN}`);
-  if (!base) throw new Error(`${p.site} has no origin/${MAIN}`);
+  const { sha: base } = await ensureBeta(site);
   saveBetaBuild(p, null);
   const dir = await scratch(site, `${p.id}-site`, base);
   return { dir, folder: betaSiteFolder(p), base };
+}
+
+/**
+ * A page change merged into the website's beta: the beta website copy moves onto it and keeps its build (no new Unity
+ * build). git carries the build's files along; when the new pages touch the same files it refuses (moved: false), and
+ * the next beta build is made on top of them. No fetch (the caller fetched the website repo).
+ */
+export async function refreshBetaSite(p: Product): Promise<{ moved: boolean; base?: string; why?: string }> {
+  const b = betaBuild(p);
+  if (!b?.ok || !fs.existsSync(path.join(betaSiteDir(p), '.git'))) return { moved: false, why: 'no beta build' };
+  const want = shaOf(repoDirs(p).site, `origin/${BETA}`);
+  if (!want || want === b.base) return { moved: false, why: 'the copy already sits on the website\'s beta' };
+  const r = await gitAsync(betaSiteDir(p), ['checkout', '--quiet', '--detach', want]);
+  if (!r.ok) return { moved: false, why: (r.err || r.out).split('\n').slice(-2).join(' ') };
+  saveBetaBuild(p, { ...b, base: want });
+  return { moved: true, base: want };
 }
 
 /** The Game/v<n> numbers in a website folder (v0000000-style templates aren't versions). */
@@ -350,27 +373,35 @@ async function prepareBetaNow(p: Product, log: (s: string) => void = () => {}) {
 // ------------------------------------------------------ main into beta
 
 /**
- * Brings main's extra commits into beta (they would block a fast-forward). When they're all Studio rollbacks, the merge
- * keeps beta's files ("-s ours": beta is the version being fixed forward); otherwise it's a normal merge, and a conflict
- * stops it (resolve on a branch by hand).
+ * Brings main's extra commits into beta (they would block a fast-forward), in the source repo and, for Unity products,
+ * in the website repo too (a rollback or a go live whose beta update didn't land). When they're all Studio rollbacks, the
+ * merge keeps beta's files ("-s ours": beta is the version being fixed forward); otherwise it's a normal merge, and a
+ * conflict stops it (resolve on a branch by hand).
  */
 /** Merging main into beta and pushing it is a critical section (drain.ts). */
 export const mergeMainIntoBeta = (...a: Parameters<typeof mergeMainIntoBetaNow>) => critical(`merging main into ${a[0].id}'s beta`, () => mergeMainIntoBetaNow(...a));
 async function mergeMainIntoBetaNow(p: Product, by = 'J') {
-  const { source } = repoDirs(p);
-  await ensureBeta(source);
-  const cmp = await compareBeta(source, { fetch: false });
+  const { source, site, unity } = repoDirs(p);
+  const out = await mergeMainIn(source, `${p.id}-merge`, by);
+  if (!unity || site === source) return out;
+  const web = await mergeMainIn(site, `${p.id}-site-merge`, by);
+  return { ...out, merged: out.merged || web.merged, detail: `${path.basename(source)}: ${out.detail}. ${path.basename(site)}: ${web.detail}`, site: web };
+}
+
+async function mergeMainIn(dir: string, name: string, by: string) {
+  await ensureBeta(dir);
+  const cmp = await compareBeta(dir, { fetch: false });
   if (!cmp.behind.length) return { merged: false, detail: `${BETA} already has everything on ${MAIN}` };
   const onlyRollbacks = cmp.behind.every((c) => c.title.startsWith(STUDIO_ROLLBACK));
-  const wt = await scratch(source, `${p.id}-merge`, cmp.beta!.sha);
+  const wt = await scratch(dir, name, cmp.beta!.sha);
   const msg = `Merge ${MAIN} into ${BETA}${onlyRollbacks ? ' (rollbacks: keeps beta\'s files)' : ''} (by ${by})`;
   const m = await gitAsync(wt, [...AUTHOR, 'merge', '--no-ff', '--no-edit', '-m', msg, ...(onlyRollbacks ? ['-s', 'ours'] : []), cmp.main!.sha]);
   if (!m.ok) {
     git(wt, ['merge', '--abort']);
-    throw new Error(`Merging ${MAIN} into ${BETA} conflicts (${(m.out || m.err).split('\n').filter((l) => /CONFLICT/.test(l)).slice(0, 5).join('; ') || m.err}). Resolve it by hand on a branch.`);
+    throw new Error(`Merging ${MAIN} into ${BETA} in ${path.basename(dir)} conflicts (${(m.out || m.err).split('\n').filter((l) => /CONFLICT/.test(l)).slice(0, 5).join('; ') || m.err}). Resolve it by hand on a branch.`);
   }
   must(await gitAsync(wt, ['push', '--quiet', 'origin', `HEAD:refs/heads/${BETA}`]), 'pushing beta');
-  await fetchOrigin(source);
+  await fetchOrigin(dir);
   return { merged: true, sha: shaOf(wt, 'HEAD'), detail: `${msg}: ${cmp.behind.length} commit(s) from ${MAIN}`, keptBeta: onlyRollbacks };
 }
 

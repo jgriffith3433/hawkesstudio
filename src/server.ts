@@ -451,7 +451,7 @@ const server = http.createServer(async (req, res) => {
     if (route === '/api/changes' && method === 'POST') {
       const b = await readJson(req);
       const by = origin ? 'Talk' : typeof b.by === 'string' ? b.by.slice(0, 60) : null;
-      const change = b.request ? startTask(String(b.product), String(b.request), { gpuBudget: b.gpuBudget === undefined || b.gpuBudget === null ? null : Number(b.gpuBudget) }) : startFix(String(b.product), Array.isArray(b.findings) ? b.findings.map(String) : [String(b.finding)]);
+      const change = b.request ? startTask(String(b.product), String(b.request), { gpuBudget: b.gpuBudget === undefined || b.gpuBudget === null ? null : Number(b.gpuBudget), target: b.target ? String(b.target) : null }) : startFix(String(b.product), Array.isArray(b.findings) ? b.findings.map(String) : [String(b.finding)]);
       tagChange(change, origin, by);
       return send(res, 200, { ok: true, change });
     }

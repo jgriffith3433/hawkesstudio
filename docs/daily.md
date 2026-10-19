@@ -578,8 +578,15 @@ agent branch (fix/..., task/...) --ready: merged automatically (else the Merge b
 J's OK is an Approve / Deny card ("Approve / Deny cards" above), bound to the exact beta commit for a go live; the typed
 words are the fallback.
 
-- **beta** is a branch in every repo agents change (the website repo for web products, the Unity source repo for Unity
-  games). Studio makes it from main the first time an agent starts there. Pushing beta deploys nothing.
+- **beta** is a branch in every repo agents change (the website repo for web products; for Unity games both the source
+  repo and the website repo: sickofitgamewebsite, YoobaLandGame, theplacedepartmentwebsite). Studio makes it from main
+  the first time an agent starts there (or the first beta build, for a website repo). Pushing beta deploys nothing.
+- **A Unity game's website** (home page, blog, privacy page, the game page) is a change target of its own: `studio_task`
+  with `target: "site"`, or a roadmap task with `target: "site"` (`studio_roadmap_edit` add_task / update_task). That
+  change's branch is cut from the website's beta, its pull request merges into it (by itself, like any beta merge), and
+  its preview and playtest serve its worktree as it is (live's `Game/v<n>` is in it: no Unity build). A task that needs
+  both the game and its pages is two tasks, one per repo. Agents never touch `Game/v*` (Studio's builds put it there)
+  and never push a website's main: only going live does.
 - **Agent changes** are branches cut from beta, with pull requests into beta. A ready one merges into beta by itself
   (`autoMergeBeta`; the Changes tab's Merge button for one that couldn't); Studio
   then commits beta's pre-deploy build, builds Unity beta, rebuilds the beta site and playtests it (`studio beta <p>`
@@ -593,8 +600,10 @@ words are the fallback.
   server always finishes; an older beta build still queued in Hawkes Gen behind another build is cancelled (only if Gen
   says it never started). Daily runs, go-live builds and agent change builds are never collapsed.
 - **The beta site** is `https://<sub>.hawkesgen.com/` (Studio's login). Each agent change also has
-  `https://<sub>.hawkesgen.com/c/<id>/` until it's approved or closed. Unity's beta site is the beta build from its own
-  website copy (`.work/beta/<product>-site`).
+  `https://<sub>.hawkesgen.com/c/<id>/` until it's approved or closed. Unity's beta site is its own website copy
+  (`.work/beta/<product>-site`): the website's beta (its page changes) plus beta's Unity build. When a page change
+  merges into the website's beta, the beta run moves the copy onto it and keeps the build (`refreshBetaSite`; a new Unity
+  build only when the new pages touch the build's files).
 - **Playtests:** on the server, "local" playtests play beta (its exact commit is recorded); "live" ones play the live
   domains. On J's PC, local playtests play his checkout as it is.
 - **Go live:** `studio_deploy_plan` (dashboard: the Today card's "Go live…") lists the commits on beta that main lacks
@@ -602,8 +611,12 @@ words are the fallback.
   blockers and warnings. `DEPLOY <product>` fast-forwards main to that tested commit (never a merge, never a force
   push). It is refused when beta moved since it was played, when beta's pre-deploy build or Unity build is missing,
   or when main has commits beta lacks (`studio deploy <p> --merge-main` merges them into beta first; then play beta
-  again). For Unity, the beta build's `Game/v<n>` is committed to the website repo's main, and the source repo's main
-  follows beta. Studio then waits for GitHub Pages and playtests live.
+  again). For Unity, the beta website copy (the website's beta with its page changes, plus the beta build's
+  `Game/v<n>`) is committed and fast-forwards the website repo's main, the website's beta follows it (so it has the
+  build too), and the source repo's main follows beta. The plan lists the website's commits too ("website commit(s)
+  that go live with it"), and is blocked when the website's main has commits its beta lacks (merge main into beta
+  merges both repos) or the copy isn't on the website's beta (run beta). Rollback puts the website's main back to what
+  was live before: its build and its pages. Studio then waits for GitHub Pages and playtests live.
 - **Release notes (What's new):** every product site's `releases.json` (`product`, `name`, `current`, `releases[]`,
   newest first) feeds its `whatsnew.html`, the game menus and the corporate site's products page (`releases[0].build`).
   Going live adds the new release on top and sets `current` to it (`src/release.ts`): the version is bumped (minor when
