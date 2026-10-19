@@ -56,12 +56,18 @@ test('a task missing its criteria on beta: the PM tries again (no question for J
   // Undo puts it back as it was.
   await pm.undoDecision(d.id);
   assert.equal(rm.getTask(t.id)!.status, 'merged');
-  // Out of tries: parked as an idea with a note, still no question.
+  // Out of tries: first a scout's investigation and a fresh round (pm-moving.test.ts), still no question.
+  pm.rescueDeps.scout = async () => 'x_wa0000000001';
   const u = mergedTask('Lamp lights', ['The lamp lights'], pm.pmSettings().maxTries);
-  assert.equal(await pm.decideMiss(u, checks('r_wa0000000002'), [no('The lamp lights')]), 'park');
+  assert.equal(await pm.decideMiss(u, checks('r_wa0000000002'), [no('The lamp lights')]), 'rescue');
+  assert.equal(rm.getTask(u.id)!.status, 'failed');
+  assert.equal(rm.listQuestions().length, before);
+  // That round used up too: parked as an idea with a note, and J asked (in his Inbox).
+  rm.setTask(u.id, { status: 'merged' });
+  assert.equal(await pm.decideMiss(rm.getTask(u.id)!, checks('r_wa0000000002'), [no('The lamp lights')]), 'park');
   assert.equal(rm.getTask(u.id)!.status, 'idea');
   assert.match(rm.getTask(u.id)!.note ?? '', /parked by the PM/);
-  assert.equal(rm.listQuestions().length, before);
+  assert.equal(rm.listQuestions().filter((q) => q.subject === u.id && q.status === 'asked J').length, 1);
 });
 
 test('several tasks missing on the same beta run: ONE investigation, the tasks held until it is done', async () => {

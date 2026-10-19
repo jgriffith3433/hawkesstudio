@@ -180,7 +180,8 @@ test('an agent cut off with its work uncommitted is resumed in its own session, 
 test('an agent that changed nothing fails as before, with no resume', { timeout: 60_000 }, async () => {
   const c = await settle('Make the start button bigger FAKE_NOTHING');
   assert.equal(c.status, 'failed');
-  assert.equal(c.detail, 'the agent made no commit');
+  // Its summary says it already works: marked so the PM checks that (pm.ts afterFailed) instead of spending a try.
+  assert.equal(c.detail, 'nothing to do: already done (the agent made no commit)');
   assert.equal(passes(c.id).length, 1, 'never resumed');
   assert.ok(!c.log.some((l: string) => /resuming its session/.test(l)));
 });

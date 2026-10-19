@@ -29,11 +29,12 @@ import { critical, criticalSync } from './drain.ts';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { db, J, parse } from './db.ts';
-import { DATA, PROJECTS, getProduct, getInfra, isInfra, today, StudioError, betaPlaytestsOn } from './config.ts';
+import { DATA, PROJECTS, getProduct, getInfra, isInfra, today, StudioError, betaPlaytestsOn, loadInfra, loadProducts } from './config.ts';
 import {
   getTask, setTask, getItem, startableTasks, tasksAwaitingGpu, taskOfChange, addQuestion, listQuestions, getQuestion, setQuestion, addComment, isCommentSubject,
   logDecision, listDecisions, getDecision, markUndone, countToday, listItems, threadFor, milestonesToReach, markReached, getMilestone, milestoneTasks, setMilestoneChecks,
   itemProgress, GPU_WAIT, type Task, type Check, type TaskBuild, type Question,
+  addItem, addTask, askedJ, landed, blockedBy, updateTask, taskWaits,
 } from './roadmap.ts';
 import { gate, allMet } from './acceptance.ts';
 import { notify, PUBLIC_URL } from './notify.ts';
@@ -150,7 +151,12 @@ export function kick(ms = 3000) {
  */
 export async function syncTasks() {
   const { getChange } = await changes();
-  const s = pmSettings();
+  // Every task's status from its changes first (a stale "working" or "failed" would hide what to do next).
+  try {
+    reconcileTasks();
+  } catch (e: any) {
+    console.warn(`[pm] reconcile: ${e.message ?? e}`);
+  }
   for (const t of (db.prepare(`SELECT id FROM tasks WHERE status IN ('working', 'needs answer', 'review', 'merged', 'verified')`).all() as any[]).map((r) => getTask(r.id)!)) {
     // One task going wrong never stops the loop (and the starts after it): its note says why.
     try {
@@ -171,6 +177,14 @@ export async function syncTasks() {
     await releaseInvestigations();
   } catch (e: any) {
     console.warn(`[pm] investigations: ${e.message ?? e}`);
+  }
+  // Fixes in another repo that merged: the product they blocked builds beta again. Rescues whose scout reported: retried.
+  for (const [what, f] of [['blockers', followBlockers], ['rescues', followRescues]] as const) {
+    try {
+      await f();
+    } catch (e: any) {
+      console.warn(`[pm] ${what}: ${e.message ?? e}`);
+    }
   }
   // Items that just reached beta: J hears it's ready for him to test.
   for (const it of db.prepare(`SELECT id FROM items WHERE status = 'on beta' AND (note IS NULL OR note NOT LIKE '%[told ready]%')`).all() as any[]) announceReady(it.id);
@@ -209,8 +223,10 @@ async function syncTask(t: Task, getChange: (id: string) => any) {
       logDecision('gpu-wait', t.id, t.product, `"${t.title}": ${c.id} (the run for its GPU art) failed: ${String(c.detail ?? '').slice(0, 300)}; it waits for a GPU server again (not a try)`);
       return;
     }
-    // A failed change is the PM's (watch() tells it; the defaults restart it or ask J). A closed one ends the task's run.
-    if (c.status === 'closed') setTask(t.id, { status: 'failed', note: `its change ${c.id} was closed (${c.detail ?? ''})` });
+    // A failed change is the PM's (watch() tells it; the defaults restart it or ask J). A closed one is retried (closed by
+    // the PM or walk-away) or asked of J (he closed it), never left failed (a couple of minutes first: J's "drop it"
+    // closes the change, then drops the task).
+    if (c.status === 'closed' && Date.now() - (c.updated ?? 0) > 2 * 60_000) afterClosed(t, c);
     return;
   }
   // Studio and Gen: merged into main is deployed, and its checks were CI, the tests and the smoke check.
@@ -383,10 +399,18 @@ async function decideFailedBuild(product: string, run: { id: string; started: nu
     }
     return;
   }
+  // The fix is in another repo (an agent said so, fileBlocker): beta builds again once that merges (followBlockers).
+  const blocker = blockerOf(product);
+  if (blocker) {
+    logDecision('build-failed', run.id, product, `beta's build failed while the fix in ${name(blocker.b.target)} ("${getTask(blocker.fix)?.title ?? blocker.fix}", ${blocker.fix}) is underway: nothing more sent back; beta builds again once it merges`);
+    return;
+  }
   // A task already sent back for beta's build (a failed build before this one) is still being fixed: its merge builds
-  // beta again; a second agent on the same error is what this prevents.
+  // beta again; a second agent on the same error is what this prevents. Only while an agent really is on it: a task
+  // that sits with no change going fixes nothing (J, 2026-10-19: Yooba Land's tasks waited for a build that never came).
   const fixing = listDecisions({ since: Date.now() - 14 * 86400_000, action: 'build-sendback', limit: 10_000 })
-    .filter((d) => d.product === product).map((d) => (d.subject ? getTask(d.subject) : null)).find((x) => x && ['planned', 'working', 'needs answer', 'review'].includes(x.status));
+    .filter((d) => d.product === product).map((d) => (d.subject ? getTask(d.subject) : null))
+    .find((x) => x && ['planned', 'working', 'needs answer', 'review'].includes(x.status) && hasLiveChange(x.id));
   if (fixing) {
     logDecision('build-failed', run.id, product, `beta's build failed again while "${fixing.title}" (${fixing.id}) is still fixing it: nothing more sent back; its merge builds beta again`);
     return;
@@ -448,7 +472,7 @@ async function buildSendBack(t: Task, { errors = [], matched = [] }: { errors?: 
   if (!s.enabled) return;
   if (!free && t.tries >= s.maxTries) {
     setTask(t.id, { status: 'failed', note: t.build?.detail.slice(0, 1000) ?? "beta's build failed" });
-    askJ(`"${t.title}" (${name(t.product)}) is merged into beta but beta's build fails after it, and its agents couldn't fix that in ${t.tries} tries: ${t.build?.detail.slice(0, 600)}. Try again, revert it on beta, or drop it?`, { subject: t.id, product: t.product, options: ['try again', 'revert it', 'drop it'], from: `the default after ${s.maxTries} tries` });
+    outOfTries(getTask(t.id)!, `beta's build fails after it: ${t.build?.detail.slice(0, 600) ?? ''}`, () => askJ(`"${t.title}" (${name(t.product)}) is merged into beta but beta's build fails after it, and its agents couldn't fix that in ${t.tries} tries: ${t.build?.detail.slice(0, 600)}. Try again, revert it on beta, or drop it?`, { subject: t.id, product: t.product, options: ['try again', 'revert it', 'drop it'], from: `the default after ${s.maxTries} tries` }));
     return;
   }
   const lines = errors.length ? `\n\nThe errors in the build's Unity log${matched.length ? ` (in files your change touched: ${matched.join(', ')})` : ''}:\n\n\`\`\`\n${errors.join('\n').slice(0, 4000)}\n\`\`\`` : '';
@@ -652,7 +676,7 @@ export async function startWork() {
     // The change it starts is queued at once, so the next task of the product sees it here.
     if (await slotHeld(t.product, await taskShape(t))) continue;
     try {
-      out.push(await startTaskChange(t, undefined, `priority ${t.effective_priority}${t.priority ? '' : ' (its item\'s)'}, not blocked`));
+      out.push(await startTaskChange(t, rescueNote(t.id), `priority ${t.effective_priority}${t.priority ? '' : ' (its item\'s)'}, not blocked${rescueNote(t.id) ? '; with a scout\'s diagnosis' : ''}`));
     } catch (e: any) {
       setTask(t.id, { note: `couldn't start: ${e.message}`.slice(0, 500) });
       continue;
@@ -834,6 +858,13 @@ export async function pmRevise(changeId: string, note: string, by = 'Talk (PM)')
   if (tries >= s.maxTries) {
     // Already with J: his answer decides (a fresh start is the task back to planned), never another question.
     if (c.pm_escalated) return { escalated: true, already: true };
+    // Walk-away mode: one investigation and a fresh round first (the change closed: the retry starts from beta).
+    if (t && walkAwayOn() && !rescues()[t.id]) {
+      setTask(t.id, { status: 'failed', note: note.slice(0, 1000) });
+      await (await changes()).close(changeId, WALK_AWAY_BY).catch((e: any) => console.warn(`[pm] close ${changeId}: ${e.message ?? e}`));
+      startRescue(getTask(t.id)!, `still not right after ${tries} tries: ${note}`);
+      return { escalated: false, rescue: true };
+    }
     if (t) setTask(t.id, { status: 'failed', note: note.slice(0, 1000) });
     const before = new Set(listQuestions().map((q) => q.id));
     const q = askJ(`"${c.title}" (${name(c.product)}) still isn't right after ${tries} tries: ${note.slice(0, 600)} Try another way, change what it should do, or drop it?`, { subject: c.task ?? changeId, product: c.product, options: ['try again', 'change it', 'drop it'] });
@@ -1100,17 +1131,23 @@ const tasksUndo = (ids: string[], change: string | null = null) => ({
 });
 
 /** A task that missed its criteria, decided alone: try again (a try) while it has tries, else parked as an idea. */
-function retryOrPark(t: Task, why: string) {
+function retryOrPark(t: Task, why: string): 'retry' | 'rescue' | 'park' {
   const s = pmSettings();
   const undo = tasksUndo([t.id]);
+  // Out of tries: one investigation and a fresh round first (rescue); only after that is it parked, and J asked.
+  if (t.tries >= s.maxTries && !rescues()[t.id]) {
+    startRescue(t, `missed its criteria on beta after ${t.tries} tries: ${why}`);
+    return 'rescue';
+  }
   if (t.tries < s.maxTries) {
     setTask(t.id, { status: 'planned', checks: null, note: `trying again (the PM decided): ${why}`.slice(0, 1000) });
     try { addComment(t.id, `On beta it missed its criteria: ${why}. Try again on top of beta (the earlier attempt is merged there).`.slice(0, 4000), WALK_AWAY_BY); } catch { /* not a thread subject */ }
     logDecision('retry', t.id, t.product, `"${t.title}" misses criteria on beta: trying again (${t.tries} of ${s.maxTries} tries used): ${why}`.slice(0, 1500), undo);
     return 'retry';
   }
-  setTask(t.id, { status: 'idea', note: `parked by the PM after ${t.tries} tries: ${why}`.slice(0, 1000) });
-  logDecision('park', t.id, t.product, `"${t.title}" still misses criteria on beta after ${t.tries} tries: parked as an idea: ${why}`.slice(0, 1500), undo);
+  setTask(t.id, { status: 'idea', note: `parked by the PM after ${t.tries} tries and an investigation: ${why}`.slice(0, 1000) });
+  logDecision('park', t.id, t.product, `"${t.title}" still misses criteria on beta after ${t.tries} tries and an investigation: parked as an idea, J asked: ${why}`.slice(0, 1500), undo);
+  askJ(`"${t.title}" (${name(t.product)}) still misses its criteria on beta after its tries and a scout's investigation, so it's parked as an idea: ${why.slice(0, 600)}. Try again, change what it should do, or drop it?`, { subject: t.id, product: t.product, options: ['try again', 'change it', 'drop it'], from: 'walk-away: after its tries and an investigation' });
   return 'park';
 }
 
@@ -1246,7 +1283,7 @@ export async function settleMissQuestions() {
       }
     }
     for (const { q, t } of list) {
-      const what = decided.get(t.id) ?? (retryOrPark(t, String(t.note ?? 'missed its criteria on beta').replace(/^on beta: /, '')) === 'retry' ? 'trying again' : 'parked as an idea');
+      const what = decided.get(t.id) ?? ({ retry: 'trying again', rescue: 'a scout investigates, then a fresh round of tries', park: 'parked as an idea' } as const)[retryOrPark(t, String(t.note ?? 'missed its criteria on beta').replace(/^on beta: /, ''))];
       setQuestion(q.id, { status: 'resolved', answer: `(the PM decided in walk-away mode: ${what})`, answered_by: WALK_AWAY_BY });
       out.push(q.id);
     }
@@ -1255,7 +1292,7 @@ export async function settleMissQuestions() {
 }
 
 /** Decisions walk-away mode and the PM made on their own (the daily digest). */
-const SELF_DECIDED = ['walk-away', 'retry', 'park', 'investigate', 'recheck', 'gpu auto-approve', 'merge', 'revise', 'answer', 'start', 'wontfix', 'duplicate', 'link', 'conflict'];
+const SELF_DECIDED = ['walk-away', 'retry', 'park', 'investigate', 'recheck', 'gpu auto-approve', 'merge', 'revise', 'answer', 'start', 'wontfix', 'duplicate', 'link', 'conflict', 'rescue', 'rescue-retry', 'already-done', 'blocker', 'reconcile', 'stall'];
 
 /**
  * Once a day (after dailyHour) in walk-away mode: one line per kind of what the PM decided by itself in the last day,
@@ -1357,6 +1394,504 @@ async function revertOnBetaNow(repo: string, pr: number, by: string) {
   } finally {
     git(dir, ['worktree', 'remove', '--force', wt]);
   }
+}
+
+// ----------------------------------------------------- keeping it moving
+
+// J (2026-10-19): "so it keeps working on items that are in the road map until it's done". Tonight's stalls, each
+// handled here: a build blocker in another repo (blockers), tasks failed after their tries with nobody asked (rescues,
+// sweepFailed), stale task statuses (reconcileTasks), "already done" loops (afterFailed), and a watchdog that says why
+// nothing moves (stallWatch).
+
+/** Task statuses that follow their changes (reconcileTasks). */
+const FOLLOWED = ['working', 'needs answer', 'review', 'merged', 'failed'];
+/** A task's status from a change still in flight. */
+const statusOfLive = (s: string) => (s === 'needs answer' ? 'needs answer' : s === 'ready' ? 'review' : 'working');
+/** An agent is on the task now (or its change is ready, asks, or waits on Gen). */
+const hasLiveChange = (task: string) => Boolean(db.prepare(`SELECT 1 FROM changes WHERE task = ? AND status IN (${LIVE.map(() => '?').join(',')}) LIMIT 1`).get(task, ...LIVE));
+
+/**
+ * Every task's status from its own changes (newest first), on each pass and right after a restart: the change it
+ * follows is the one in flight, else the newest (a merged task: the newest merged one); the latest change merged wins
+ * over a stale "working" or "failed"; with no change in flight a task isn't "working" (it follows its newest change,
+ * which the defaults then retry, re-plan or ask about: afterFailed, afterClosed); never started at all: planned again.
+ * A failed task stays failed when that came after the merge: missed on beta, broke beta's build, held by an
+ * investigation or a rescue, or asked of J. Returns the tasks whose status it changed.
+ */
+export function reconcileTasks() {
+  const out: string[] = [];
+  let rows: any[];
+  try {
+    rows = db.prepare(`SELECT id FROM tasks WHERE status IN (${FOLLOWED.map(() => '?').join(',')})`).all(...FOLLOWED) as any[];
+    db.prepare('SELECT 1 FROM changes LIMIT 1').get();
+  } catch {
+    return out; // no changes table here (agents.ts not loaded)
+  }
+  const asked = askedJ();
+  for (const r of rows) {
+    try {
+      const t = getTask(r.id)!;
+      const cs = db.prepare(`SELECT id, status, created, merged_at, pr_url, verify FROM changes WHERE task = ? ORDER BY created DESC, rowid DESC`).all(t.id) as any[];
+      if (!cs.length) {
+        if (!t.change && ['working', 'needs answer', 'review'].includes(t.status)) {
+          setTask(t.id, { status: 'planned', note: 'no agent change was ever running for it: planned again (reconciled)' });
+          out.push(t.id);
+        }
+        continue;
+      }
+      const live = cs.find((c) => LIVE.includes(c.status));
+      const merged = cs.find((c) => c.status === 'merged');
+      const changes = [...new Set([...t.changes, ...cs.map((c) => c.id).reverse()])];
+      // The change it follows is right: syncTask keeps its status (and records its checks).
+      if (live) {
+        // Failed and asked of J (an escalated change still open): his answer decides.
+        if (t.status === 'failed' && (asked.has(t.id) || asked.has(live.id))) continue;
+        const next = statusOfLive(live.status);
+        if (t.change !== live.id) {
+          setTask(t.id, { change: live.id, changes, status: next, pr: live.pr_url ?? t.pr });
+          if (t.status !== next) out.push(t.id);
+        }
+        continue;
+      }
+      if (merged && merged === cs[0]) {
+        if (t.status === 'merged') {
+          if (t.change !== merged.id) setTask(t.id, { change: merged.id, changes });
+          continue;
+        }
+        if (t.status !== 'failed' && t.change === merged.id) continue; // syncTask's (the usual merge)
+        const at = merged.merged_at ?? merged.created;
+        const rescue = rescues()[t.id];
+        if (t.status === 'failed' && ((t.checks?.where === 'beta' && t.checks.at >= at) || (t.build && !t.build.ok) || heldFor(t.id) || asked.has(t.id) || (rescue && rescue.at >= at))) continue;
+        const next = mergedStatus(t, { verify: parse(merged.verify) });
+        setTask(t.id, { status: next, change: merged.id, changes, pr: merged.pr_url ?? t.pr, merged_at: at, build: null, note: `reconciled: its latest change ${merged.id} merged (it showed ${t.status})` });
+        logDecision('reconcile', t.id, t.product, `"${t.title}" showed ${t.status}, but its latest change ${merged.id} merged: ${next} now`);
+        if (next === GPU_WAIT) waitForGpu(getTask(t.id)!, { id: merged.id, verify: parse(merged.verify) });
+        out.push(t.id);
+        continue;
+      }
+      // Nothing in flight; the newest change failed or was closed.
+      if (t.status === 'merged') {
+        if (merged && t.change !== merged.id) setTask(t.id, { change: merged.id, changes });
+        continue;
+      }
+      if (t.status === 'failed') continue; // sweepFailed's
+      if (t.change !== cs[0].id) setTask(t.id, { change: cs[0].id, changes });
+    } catch (e: any) {
+      console.warn(`[pm] reconcile ${r.id}: ${e.message ?? e}`);
+    }
+  }
+  return out;
+}
+
+/** Another repo an agent's words say the fix belongs in ("the broken file is in Hawkes Gen; PM: please start a Gen change"), or null. */
+export function crossRepoFix(text: string, own: string): string | null {
+  const s = String(text ?? '');
+  if (!s.trim()) return null;
+  const esc = (x: string) => x.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const targets = [
+    ...loadInfra().map((x) => ({ id: x.id, names: [x.id, x.name, x.repo, x.name.replace(/^Hawkes\s+/i, '')] })),
+    ...loadProducts().map((p) => ({ id: p.id, names: [p.id, p.name, p.repo.split('/')[0]] })),
+  ];
+  for (const t of targets) {
+    if (t.id === own) continue;
+    for (const n of [...new Set(t.names.filter((x) => x && x.length >= 3))]) {
+      const a = esc(n);
+      const asks = new RegExp(`\\b(start|open|file|make|need|needs|requires?|wants?|create)\\s+(a|an|the)?\\s*(new\\s+|separate\\s+)?${a}\\s+(change|fix|task|pull request|PR)\\b`, 'i');
+      const lives = new RegExp(`\\b(fix|cause|bug|broken files?|broken code|culprit)\\b[^.;\\n]{0,80}\\b(is|are|lives?|belongs?|sits?|has to be made|must be made|needs to be made)\\s+in\\s+(the\\s+)?${a}\\b`, 'i');
+      if (asks.test(s) || lives.test(s)) return t.id;
+    }
+  }
+  return null;
+}
+
+/** Fixes in another repo the PM filed, by their task: the product they block and its tasks waiting on them (pm-state.json). */
+type Blocker = { product: string; target: string; from: string; tasks: string[]; at: number };
+const blockers = (): Record<string, Blocker> => (state() as any).blockers ?? {};
+const saveBlockers = (v: Record<string, Blocker>) => saveState({ blockers: v });
+/** The open fix elsewhere that blocks a product's beta, or null. */
+const blockerOf = (product: string) => {
+  const e = Object.entries(blockers()).find(([, b]) => b.product === product);
+  return e ? { fix: e[0], b: e[1] } : null;
+};
+
+/**
+ * An agent found its fix belongs in another repo: the PM files that change itself, as a high-priority roadmap task in
+ * the other repo (one per blocked product and repo; more blocked tasks join it), so it starts in the next pass (walk-away
+ * merges it by the usual rules). The blocked tasks depend on it; once it merges, the blocked product's beta builds again
+ * (followBlockers). Returns the fix's task.
+ */
+export function fileBlocker(a: { from: string; product: string; target: string; text: string; tasks: string[] }) {
+  const all = blockers();
+  let fix = Object.entries(all).find(([, b]) => b.product === a.product && b.target === a.target)?.[0] ?? null;
+  if (!fix || !getTask(fix)) {
+    const it = addItem({ product: a.target, title: `Unblock ${name(a.product)}: a fix in ${name(a.target)}`, status: 'planned', priority: 'high', by: 'Studio PM', goal: `${name(a.product)}'s work waits on this` });
+    const k = addTask({
+      item: it.id, priority: 'high', title: `Fix what blocks ${name(a.product)} (found by ${a.from})`.slice(0, 160),
+      request: `${name(a.product)} is blocked by something in ${name(a.target)}: its agent (change ${a.from}) found the fix belongs here and made no commit there. Its words:\n\n${a.text.slice(0, 3000)}\n\nFix it here in ${name(a.target)} (keep the change small) and run the checks. Once this merges, Studio builds ${name(a.product)}'s beta again.`,
+    });
+    fix = k.id;
+    all[fix] = { product: a.product, target: a.target, from: a.from, tasks: [], at: Date.now() };
+    logDecision('blocker', fix, a.target, `${a.from} (${name(a.product)}) found the fix is in ${name(a.target)}: filed "${k.title}" (${fix}, high priority); ${name(a.product)}'s blocked work waits on it and its beta builds again once it merges`);
+    void postTo(null, `Unblocking ${name(a.product)}`, `Studio PM: ${name(a.product)}'s agent (${a.from}) found the fix is in ${name(a.target)}, so I filed that change (${fix}, high priority). ${name(a.product)}'s blocked work waits on it, and its beta builds again once it merges. Nothing for you to decide.`).catch(() => {});
+  }
+  const b = all[fix];
+  b.tasks = [...new Set([...b.tasks, ...a.tasks])];
+  saveBlockers(all);
+  for (const id of a.tasks) {
+    const t = getTask(id);
+    if (t && !t.depends.includes(fix)) setTask(id, { depends: [...t.depends, fix] });
+  }
+  return fix;
+}
+
+/** A failed finding fix (no task) whose agent named another repo: that fix is filed (fileBlocker). */
+async function blockerFromFix(changeId: string) {
+  const c = (await changes()).getChange(changeId);
+  if (!c || c.task || (c.commits ?? []).length || isInfra(c.product)) return null;
+  const target = crossRepoFix(`${c.summary ?? ''}\n${c.detail ?? ''}`, c.product);
+  if (!target) return null;
+  // The product's merged tasks waiting on beta's build wait on the fix too.
+  const waiting = (db.prepare(`SELECT id FROM tasks WHERE product = ? AND status = 'merged'`).all(c.product) as any[]).map((r) => getTask(r.id)!).filter((t) => t.build && !t.build.ok).map((t) => t.id);
+  return fileBlocker({ from: c.id, product: c.product, target, text: String(c.summary ?? c.detail ?? ''), tasks: waiting });
+}
+
+/** Fixes elsewhere that merged: the product they blocked builds beta again. Dropped ones release their tasks. */
+export async function followBlockers() {
+  const all = blockers();
+  const out: string[] = [];
+  for (const [fix, b] of Object.entries(all)) {
+    const k = getTask(fix);
+    if (k && !['merged', 'verified', 'live', 'dropped'].includes(k.status)) continue;
+    delete all[fix];
+    saveBlockers(all);
+    out.push(fix);
+    if (!k || k.status === 'dropped') {
+      for (const id of b.tasks) { const t = getTask(id); if (t?.depends.includes(fix)) setTask(id, { depends: t.depends.filter((d) => d !== fix) }); }
+      logDecision('blocker', fix, b.target, `the fix in ${name(b.target)} for ${name(b.product)} was dropped: its ${b.tasks.length} blocked task(s) no longer wait on it`);
+      continue;
+    }
+    if (hasBeta(b.product) && pmSettings().enabled) {
+      const { startBeta } = await import('./pipeline.ts');
+      const r = startBeta(b.product, { focus: `Building beta again after the fix in ${name(b.target)} ("${k.title}") merged.`, playtest: false });
+      logDecision('beta-build', fix, b.product, `the fix in ${name(b.target)} ("${k.title}", ${fix}) merged: started ${r.id} to build ${name(b.product)}'s beta again`);
+    }
+  }
+  return out;
+}
+
+/** What shows a task's "already done" is true: a merged change of it, or a change or pull request the agent named that is merged. */
+async function doneProof(t: Task, c: any): Promise<{ change: string | null; why: string } | null> {
+  const own = db.prepare(`SELECT id FROM changes WHERE task = ? AND status = 'merged' ORDER BY created DESC LIMIT 1`).get(t.id) as any;
+  if (own) return { change: own.id, why: `its change ${own.id} is merged` };
+  const text = `${c.summary ?? ''}\n${c.detail ?? ''}`;
+  for (const id of new Set(text.match(/\bc_[0-9a-f]{12}\b/g) ?? [])) {
+    const x = db.prepare(`SELECT id, product FROM changes WHERE id = ? AND status = 'merged'`).get(id) as any;
+    if (x && x.product === t.product) return { change: x.id, why: `${x.id} (named by the agent) is merged` };
+  }
+  for (const n of new Set([...text.matchAll(/(?:#|\/pull\/)(\d{1,6})\b/g)].map((m) => Number(m[1])))) {
+    if (prCommit(c.repo, c.base ?? BETA, n)) return { change: null, why: `pull request #${n} (named by the agent) is on ${c.base ?? BETA}` };
+  }
+  return null;
+}
+/** What's left needs J (his PC, his OK, something only he can run). */
+const NEEDS_J = /\b(needs? J|J (needs to|must|has to|should|will need to|can)|J'?s (own )?(PC|laptop|machine|hands?|OK|approval|login)|on (his|J'?s) (PC|laptop|machine)|by hand|only J)\b/i;
+
+/** The PM's note an attempt was started with (startTaskChange), carried to the next one. */
+const pmNoteOf = (c: any) => String(c.request ?? '').split('\n\nFrom the PM (an earlier attempt): ')[1] ?? '';
+
+/**
+ * A task's change failed (the defaults, after the grace period): J already decided it (stops, no try); the fix is in
+ * another repo (that change is filed, the task waits on it, no try); the work is already done (checked: merged or
+ * verified, no try; one Inbox question if what remains needs J); out of tries (outOfTries); else a fresh attempt
+ * with what went wrong (and what the PM told the last one).
+ */
+async function afterFailed(t: Task, c: any) {
+  const { DECIDED, ALREADY } = await changes();
+  const s = pmSettings();
+  const detail = String(c.detail ?? '');
+  const summary = String(c.summary ?? '');
+  const noCommit = !(c.commits ?? []).length;
+  const back = Math.max(0, t.tries - 1);
+  const merged = db.prepare(`SELECT id, merged_at, created FROM changes WHERE task = ? AND status = 'merged' ORDER BY created DESC LIMIT 1`).get(t.id) as any;
+  if (detail.startsWith(DECIDED)) {
+    // Nothing to change because J already decided it: not a failed try (its try is given back), and no restart to
+    // reach the same answer again; the task stops here with the agent's reason (sweepFailed asks J once).
+    setTask(t.id, { status: 'failed', tries: back, note: `${c.id}: ${DECIDED}: ${summary.slice(0, 600)}` });
+    logDecision('decided', t.id, t.product, `"${t.title}": ${c.id} changed nothing, J already decided it (not counted as a try): ${summary.slice(0, 400)}`);
+    return;
+  }
+  const target = noCommit ? crossRepoFix(`${summary}\n${detail}`, t.product) : null;
+  if (target) {
+    // The product's other merged tasks waiting on a broken beta build wait on the fix too.
+    const waiting = (db.prepare(`SELECT id FROM tasks WHERE product = ? AND status = 'merged' AND id != ?`).all(t.product, t.id) as any[]).map((r) => getTask(r.id)!).filter((x) => x.build && !x.build.ok).map((x) => x.id);
+    const fix = fileBlocker({ from: c.id, product: t.product, target, text: summary || detail, tasks: [t.id, ...waiting] });
+    // Its work already on beta (a send-back for beta's build): merged again, waiting for the fix and beta's build.
+    setTask(t.id, merged
+      ? { status: 'merged', change: merged.id, merged_at: merged.merged_at ?? merged.created, tries: back, note: `waits on the fix in ${name(target)} (${fix}); beta builds again once it merges` }
+      : { status: 'planned', tries: back, note: `waits on the fix in ${name(target)} (${fix}); it starts again once that merges` });
+    logDecision('blocker', t.id, t.product, `"${t.title}": ${c.id} found the fix is in ${name(target)}: it waits on ${fix} (not counted as a try)`);
+    return;
+  }
+  const claimed = noCommit && (detail.startsWith(ALREADY) || (await changes()).alreadyDone(summary));
+  if (claimed) {
+    const proof = await doneProof(t, c);
+    if (proof) {
+      const sendBack = /Beta's build failed after your change/.test(String(c.request ?? ''));
+      setTask(t.id, { status: 'merged', ...(proof.change ? { change: proof.change } : {}), merged_at: Date.now(), tries: back, build: null, note: `${c.id}: already done (${proof.why}); not counted as a try` });
+      logDecision('already-done', t.id, t.product, `"${t.title}": ${c.id} found it already done, and it is (${proof.why}): merged, not counted as a try`);
+      if (NEEDS_J.test(summary)) {
+        askJ(`"${t.title}" (${name(t.product)}) is done as far as agents can take it; its agent says what's left needs you: ${summary.slice(0, 900)}`, { subject: t.id, product: t.product, options: ['done', 'drop that part'], topic: 'needs J', blocks: `"${t.title}" being finished`, from: 'an agent found the work already done' });
+      }
+      // A send-back for beta's build that found nothing to fix: beta builds again (the newer build decides).
+      if (sendBack && hasBeta(t.product) && !db.prepare(`SELECT 1 FROM runs WHERE kind = 'beta' AND status = 'running' AND products LIKE ?`).get(`%"${t.product}"%`)) {
+        const { startBeta } = await import('./pipeline.ts');
+        const r = startBeta(t.product, { focus: `Building beta again: "${t.title}"'s agent found nothing left to fix.`, playtest: false });
+        logDecision('beta-build', t.id, t.product, `"${t.title}": its build fix found nothing to change: started ${r.id} to build beta again`);
+      }
+      return;
+    }
+  }
+  if (t.tries >= s.maxTries) {
+    setTask(t.id, { status: 'failed', note: `failed ${t.tries} times; the last (${c.id}): ${detail}`.slice(0, 1000) });
+    outOfTries(getTask(t.id)!, `failed ${t.tries} times; the last (${c.id}): ${detail}. ${summary.slice(0, 400)}`, () => askJ(`"${t.title}" (${name(t.product)}) failed ${t.tries} times. The last: ${detail || '?'}. Try another way, change the task, or drop it?`, { subject: t.id, product: t.product, options: ['try again', 'change it', 'drop it'], from: `the default after ${s.maxTries} tries` }));
+    return;
+  }
+  // The branch may be gone or empty: a fresh change with what went wrong.
+  const earlier = pmNoteOf(c);
+  const unproven = claimed ? ' Its agent said the work was already done, but Studio found no merged change or pull request for it: check beta, then do what is missing (or name the change or pull request that did it).' : '';
+  const note = `The last attempt (${c.id}) failed: ${detail}. ${summary.slice(0, 600)}${unproven}${earlier ? `\n\nWhat the PM told that attempt:\n${earlier.slice(0, 3000)}` : ''}`;
+  // Its earlier work merged (a send-back for beta's build): planned, so it may start again on top of beta.
+  if (merged) setTask(t.id, { status: 'planned' });
+  try {
+    await startTaskChange(getTask(t.id)!, note);
+  } catch (e: any) {
+    if (merged) setTask(t.id, { status: 'merged', change: merged.id });
+    console.warn(`[pm] restart ${t.id}: ${e.message}`);
+  }
+}
+
+/** A task's change was closed: by the PM or walk-away, tried again (planned); by J, one question; out of tries, outOfTries. */
+function afterClosed(t: Task, c: any) {
+  const s = pmSettings();
+  const why = `its change ${c.id} was closed (${c.detail ?? ''})`;
+  if (/^closed by J\b/.test(String(c.detail ?? ''))) {
+    setTask(t.id, { status: 'failed', note: why });
+    askJ(`You closed ${c.id} ("${t.title}", ${name(t.product)}). Try the task again from scratch, change what it should do, or drop it?`, { subject: t.id, product: t.product, options: ['try again', 'change it', 'drop it'], from: 'a change J closed' });
+    return;
+  }
+  if (t.tries < s.maxTries) {
+    setTask(t.id, { status: 'planned', note: `${why}: planned again (the PM decided)` });
+    logDecision('retry', t.id, t.product, `"${t.title}": ${why}; planned again, it starts in a free slot (${t.tries} of ${s.maxTries} tries used)`, tasksUndo([t.id]));
+    return;
+  }
+  setTask(t.id, { status: 'failed', note: why });
+  outOfTries(getTask(t.id)!, why, () => askJ(`"${t.title}" (${name(t.product)}) used its ${t.tries} tries and ${why}. Try again, change it, or drop it?`, { subject: t.id, product: t.product, options: ['try again', 'change it', 'drop it'], from: `the default after ${s.maxTries} tries` }));
+}
+
+/** Walk-away rescues by task: a scout's diagnosis, then one more round of tries (pm-state.json). */
+type Rescue = { scout: string | null; at: number; state: 'scouting' | 'retrying'; why: string; diagnosis?: string };
+const rescues = (): Record<string, Rescue> => (state() as any).rescues ?? {};
+const saveRescue = (id: string, r: Rescue | null) => {
+  const all = rescues();
+  if (r) all[id] = r; else delete all[id];
+  saveState({ rescues: all });
+};
+/** How a rescue's scout is started and read (tests replace them). */
+export const rescueDeps = {
+  scout: async (product: string, question: string, brief: string) => (await import('./scout.ts')).startScout(product, question, null, { brief, quiet: true }).id,
+  report: async (id: string) => (await import('./scout.ts')).getScout(id),
+};
+
+/**
+ * A task out of tries: in walk-away mode, the first time, a rescue (a scout's diagnosis, then a fresh round of tries
+ * with it in the brief); otherwise (or after that round) `ask` files J's question in his Inbox.
+ */
+function outOfTries(t: Task, why: string, ask: () => unknown): 'rescue' | 'asked' {
+  if (walkAwayOn() && !rescues()[t.id]) {
+    startRescue(t, why);
+    return 'rescue';
+  }
+  ask();
+  return 'asked';
+}
+
+function startRescue(t: Task, why: string) {
+  const undo = tasksUndo([t.id]);
+  setTask(t.id, { status: 'failed', note: `investigating (walk-away): a scout reads what went wrong, then one more round of tries: ${why}`.slice(0, 1000) });
+  saveRescue(t.id, { scout: null, at: Date.now(), state: 'scouting', why: why.slice(0, 1500) });
+  logDecision('rescue', t.id, t.product, `"${t.title}" is out of tries: a scout reads its misses, pull requests and beta, then a fresh retry with its diagnosis (one more round; the PM decided): ${why}`.slice(0, 1500), undo);
+  void scoutFor(t.id).catch((e: any) => console.warn(`[pm] rescue scout ${t.id}: ${e.message ?? e}`));
+}
+
+/** What a rescue's scout is told: the task, every attempt and how it ended, beta's checks and build. */
+function rescueBrief(t: Task, why: string) {
+  const cs = (db.prepare(`SELECT id, status, detail, summary, pr_url FROM changes WHERE task = ? ORDER BY created DESC LIMIT 6`).all(t.id) as any[]);
+  return [
+    `You are a scout for the Hawkes Studio PM. Roadmap task ${t.id} "${t.title}" (${name(t.product)}) used all its tries and still isn't done. Find out why, so ONE fresh attempt can succeed.`,
+    `Why it stopped: ${why}`,
+    `The task's request:\n${t.request.slice(0, 3000)}`,
+    t.criteria.length ? `Its acceptance criteria:\n${t.criteria.map((k) => `- ${k}`).join('\n')}` : '',
+    cs.length ? `Its attempts, newest first:\n${cs.map((c) => `- ${c.id} (${c.status}${c.pr_url ? `, ${c.pr_url}` : ''}): ${String(c.detail ?? '').slice(0, 300)}${c.summary ? `\n  The agent said: ${String(c.summary).slice(0, 700)}` : ''}`).join('\n')}` : '',
+    t.checks?.results?.length ? `Beta's check (${t.checks.where}, run ${t.checks.run ?? '?'}):\n${t.checks.results.map((r) => `- ${r.met}: ${r.criterion}${r.evidence ? ` (${r.evidence})` : ''}`).join('\n')}` : '',
+    t.build ? `Beta's build: ${t.build.detail}` : '',
+    `This checkout is beta (where merged attempts are). Read the code and data the task touches and what the attempts did. Reply with a short Markdown report:\n## What went wrong\n(the real cause, with file paths)\n## What the next attempt must do\n(concrete steps)\n## What an agent can't do\n(anything that needs J, or a fix in another repo: name it; "nothing" if none)`,
+  ].filter(Boolean).join('\n\n');
+}
+
+async function scoutFor(id: string) {
+  const r = rescues()[id];
+  const t = getTask(id);
+  if (!r || !t || r.scout) return;
+  let scout: string;
+  try {
+    scout = await rescueDeps.scout(t.product, `Why did "${t.title}" fail its tries?`, rescueBrief(t, r.why));
+  } catch (e: any) {
+    console.warn(`[pm] rescue scout for ${id} (tried again next pass): ${e.message ?? e}`);
+    return;
+  }
+  const now = rescues()[id];
+  if (now) saveRescue(id, { ...now, scout });
+}
+
+/** Rescues whose scout reported (or gave up): the task planned again with a fresh round of tries and the diagnosis. */
+export async function followRescues() {
+  const out: string[] = [];
+  for (const [id, r] of Object.entries(rescues())) {
+    if (r.state !== 'scouting') continue;
+    const t = getTask(id);
+    if (!t) { saveRescue(id, null); continue; }
+    // Moved by J or the PM meanwhile: the rescue counts as used.
+    if (t.status !== 'failed') { saveRescue(id, { ...r, state: 'retrying' }); continue; }
+    if (!r.scout) await scoutFor(id);
+    const scout = rescues()[id]?.scout ?? null;
+    // No scout could start for half an hour (two running all along, no repo for it): the fresh round goes ahead without.
+    if (!scout && Date.now() - r.at < 30 * 60_000) continue;
+    const x = scout ? await rescueDeps.report(scout).catch(() => null) : null;
+    if (x?.status === 'running' && Date.now() - r.at < 60 * 60_000) continue;
+    const diagnosis = x?.status === 'done' && x.report ? x.report.slice(0, 6000) : `(the scout couldn't report: ${x?.detail ?? 'it is gone'})`;
+    saveRescue(id, { ...r, scout, state: 'retrying', diagnosis });
+    setTask(id, { status: 'planned', tries: 0, checks: null, note: `retrying from scratch${scout ? ` with scout ${scout}'s diagnosis` : ''}: one more round of tries (the PM decided)` });
+    logDecision('rescue-retry', id, t.product, `"${t.title}": scout ${scout ?? '(none could start)'} ${x?.status === 'done' ? 'reported' : 'gave no report'}; planned again with a fresh round of ${pmSettings().maxTries} tries and its diagnosis in the brief: ${diagnosis.slice(0, 600)}`.slice(0, 1500));
+    out.push(id);
+  }
+  return out;
+}
+
+/** The brief note of a task being retried after a rescue: the scout's diagnosis. */
+export function rescueNote(id: string) {
+  const r = rescues()[id];
+  return r?.state === 'retrying' && r.diagnosis ? `Every earlier attempt failed, so a scout investigated why (${r.scout}). Its diagnosis; follow it:\n\n${r.diagnosis}` : undefined;
+}
+
+/**
+ * Failed tasks nobody is deciding: no question waiting on J, not held by an investigation, no rescue under way. J's
+ * "try again" that nothing acted on (15 minutes): planned again. J already decided it (its agent changed nothing): one
+ * question. Otherwise outOfTries: a rescue (walk-away, the first time), else one question in J's Inbox. An answer of the
+ * last day is the PM's to act on (a "decided" event) and left alone. Returns the tasks it acted on.
+ */
+export async function sweepFailed() {
+  const out: string[] = [];
+  const asked = askedJ();
+  const { DECIDED } = await changes();
+  for (const r of db.prepare(`SELECT id FROM tasks WHERE status = 'failed'`).all() as any[]) {
+    const t = getTask(r.id)!;
+    if (heldFor(t.id) || asked.has(t.id) || (t.change && asked.has(t.change)) || rescues()[t.id]?.state === 'scouting') continue;
+    const since = (db.prepare(`SELECT MAX(created) AS at FROM changes WHERE task = ?`).get(t.id) as any)?.at ?? t.created;
+    const q = (db.prepare(`SELECT * FROM questions WHERE subject IN (?, ?) AND at >= ? ORDER BY at DESC LIMIT 1`).get(t.id, t.change ?? t.id, since) as any) ?? null;
+    if (q && q.status === 'answered' && /^(try|retry|again|yes)/i.test(String(q.answer ?? '').trim())) {
+      if (Date.now() - (q.answered_at ?? 0) < 15 * 60_000) continue;
+      updateTask(t.id, { status: 'planned' });
+      logDecision('retry', t.id, t.product, `"${t.title}": ${q.answered_by ?? 'J'} answered ${q.id} "${String(q.answer).slice(0, 120)}" and nothing started it: planned again from scratch`, tasksUndo([t.id]));
+      out.push(t.id);
+      continue;
+    }
+    if (q && Date.now() - (q.answered_at ?? q.at) < 86_400_000) continue;
+    if (String(t.note ?? '').includes(DECIDED)) {
+      askJ(`"${t.title}" (${name(t.product)}): its agent changed nothing because you already decided it (${String(t.note).slice(0, 500)}). Drop the task, or change what it should do?`, { subject: t.id, product: t.product, options: ['drop it', 'change it'], recommend: 'drop it', from: 'a failed task nobody was asked about' });
+    } else {
+      const s = pmSettings();
+      outOfTries(t, `it was failed and nobody was asked: ${String(t.note ?? '').slice(0, 600)}`, () => askJ(`"${t.title}" (${name(t.product)}) failed (${t.tries} of ${s.maxTries} tries used): ${String(t.note ?? '?').slice(0, 600)}. Try again, change it, or drop it?`, { subject: t.id, product: t.product, options: ['try again', 'change it', 'drop it'], recommend: 'try again', from: 'a failed task nobody was asked about' }));
+    }
+    out.push(t.id);
+  }
+  return out;
+}
+
+/** Minutes with nothing started or finished before the stall watch looks into it. */
+export const STALL_MINUTES = 30;
+export type StallReason = { task: string; title: string; product: string; status: string; why: string };
+let lastStall: { at: number; stalled: boolean; reasons: StallReason[] } | null = null;
+
+/** Why each unfinished roadmap task isn't moving, in plain words (studio_pm status, the stall decision). */
+export function stallReasons(): StallReason[] {
+  const out: StallReason[] = [];
+  let rows: any[];
+  try {
+    rows = db.prepare(`SELECT t.id FROM tasks t JOIN items i ON i.id = t.item WHERE t.status NOT IN ('idea', 'dropped', 'verified', 'live')
+      AND i.status NOT IN ('idea', 'dropped') AND NOT (i.status = 'done' AND i.consumed IS NULL) ORDER BY i.ord, t.ord`).all() as any[];
+  } catch {
+    return out;
+  }
+  const asked = askedJ();
+  for (const r of rows) {
+    const t = getTask(r.id)!;
+    if (landed(t)) continue;
+    const blocker = blockerOf(t.product);
+    let why: string;
+    if (asked.has(t.id) || (t.change && asked.has(t.change))) why = 'needs J: a question in his Inbox';
+    else if (['working', 'needs answer', 'review'].includes(t.status) && !hasLiveChange(t.id)) why = 'stale status: no agent change is running for it (reconciled next pass)';
+    else if (t.status === 'failed') why = heldFor(t.id) ? `held: investigation ${heldFor(t.id)!.change} fixes beta first` : rescues()[t.id]?.state === 'scouting' ? 'out of tries: a scout is investigating, then a fresh round' : `failed: ${String(t.note ?? '').slice(0, 200)}`;
+    else if (t.status === 'merged' && t.build && !t.build.ok) why = `broken build: ${t.build.detail.slice(0, 200)}${blocker ? `; the fix in ${name(blocker.b.target)} (${blocker.fix}) is under way` : ''}`;
+    else if (t.status === 'planned' && blockedBy(t).length) why = `blocked by ${blockedBy(t).map((b) => `${b.id} "${b.title}" (${b.status})`).join(', ')}`;
+    else why = taskWaits(t, asked) ?? t.status;
+    out.push({ task: t.id, title: t.title, product: t.product, status: t.status, why });
+  }
+  return out;
+}
+
+/**
+ * The stall watch, each pass: unfinished roadmap work, free agents, and nothing started or finished for STALL_MINUTES.
+ * Then it says why per task (stallReasons) and fixes what it can: reconciling and failed tasks happen every pass
+ * already; a product whose beta build is broken with nobody on it gets a task sent back (top priority). One "stall"
+ * decision per stall. Only what really needs J reaches his Inbox (outOfTries, the questions above).
+ */
+export async function stallWatch(now = Date.now()) {
+  const s = pmSettings();
+  const reasons = stallReasons();
+  lastStall = { at: now, stalled: false, reasons };
+  if (!s.enabled || !reasons.length || capacity().free <= 0) return lastStall;
+  const moved = Math.max(
+    (db.prepare(`SELECT MAX(created) AS at FROM changes`).get() as any)?.at ?? 0,
+    (db.prepare(`SELECT MAX(updated) AS at FROM changes WHERE status IN ('ready', 'merged', 'failed', 'closed')`).get() as any)?.at ?? 0,
+    (db.prepare(`SELECT MAX(at) AS at FROM pm_log WHERE action = 'start'`).get() as any)?.at ?? 0,
+  );
+  if (now - moved < STALL_MINUTES * 60_000) return lastStall;
+  lastStall.stalled = true;
+  // Once per stall (until something starts or finishes again).
+  if (((state() as any).stallAt ?? 0) >= moved) return lastStall;
+  saveState({ stallAt: now });
+  const fixed: string[] = [];
+  // Broken beta builds nobody is fixing: the newest merged task goes back to an agent.
+  const broken = new Map<string, Task[]>();
+  for (const r of db.prepare(`SELECT id FROM tasks WHERE status = 'merged'`).all() as any[]) {
+    const t = getTask(r.id)!;
+    if (t.build && !t.build.ok && hasBeta(t.product)) broken.set(t.product, [...(broken.get(t.product) ?? []), t]);
+  }
+  for (const [product, list] of broken) {
+    if (blockerOf(product)) continue;
+    const productTasks = (db.prepare(`SELECT id FROM tasks WHERE product = ?`).all(product) as any[]).map((x) => x.id as string);
+    if (productTasks.some(hasLiveChange)) continue;
+    if (db.prepare(`SELECT 1 FROM runs WHERE kind = 'beta' AND status = 'running' AND products LIKE ?`).get(`%"${product}"%`)) continue;
+    const last = list.reduce((a, b) => ((a.merged_at ?? 0) >= (b.merged_at ?? 0) ? a : b));
+    await buildSendBack(last);
+    if (getTask(last.id)!.status !== 'merged') fixed.push(`${name(product)}: "${last.title}" ${getTask(last.id)!.status === 'failed' ? 'is out of tries for beta\'s build' : 'sent back for beta\'s build'}`);
+  }
+  {
+    const kinds = new Map<string, number>();
+    for (const r of reasons) { const k = r.why.split(':')[0]; kinds.set(k, (kinds.get(k) ?? 0) + 1); }
+    logDecision('stall', null, null, `nothing started or finished for ${Math.round((now - moved) / 60_000)} min with ${capacity().free} free agent(s) and ${reasons.length} unfinished task(s): ${[...kinds].map(([k, n]) => `${n} ${k}`).join(', ')}${fixed.length ? `. Fixed: ${fixed.join('; ')}` : ''}`.slice(0, 1500));
+  }
+  return lastStall;
 }
 
 // ---------------------------------------------------------------- PM turns
@@ -1487,7 +2022,11 @@ export async function tick() {
       await applyDefaults(done.subjects);
     }
     await applyDefaults([], s.graceMinutes * 60_000);
+    // Failed tasks nobody was asked about: an investigation (walk-away) or one question in J's Inbox.
+    await sweepFailed().catch((e: any) => console.warn(`[pm] failed tasks: ${e.message ?? e}`));
     await startWork();
+    // Nothing moving with free agents and work left: why, per task, and what it can fix (one "stall" decision).
+    await stallWatch().catch((e: any) => console.warn(`[pm] stall watch: ${e.message ?? e}`));
     const daily = state().daily !== today() && new Date().getHours() >= s.dailyHour;
     if ((events.length || daily) && !turnRunning() && process.env.STUDIO_PM_TALK !== 'off') await runPmTurn(daily);
     lastError = failed;
@@ -1501,30 +2040,25 @@ export async function tick() {
 
 /** Defaults for subjects of the last turn, and for anything waiting longer than `olderThan`. */
 async function applyDefaults(subjects: string[], olderThan?: number) {
-  const { listChanges, getChange, DECIDED } = await changes();
+  const { listChanges, getChange } = await changes();
   const now = Date.now();
   for (const c of listChanges({ status: 'ready' })) {
     if (!reviewable(c)) continue;
     if (subjects.includes(c.id) || (olderThan !== undefined && now - (c.updated ?? c.created) > olderThan && !turnRunning())) await defaultReview(c.id);
   }
-  for (const c of listChanges({ status: 'failed' })) {
-    if (!c.task) continue;
-    const t = getTask(c.task);
-    if (!t || t.change !== c.id || t.status === 'failed' || t.status === GPU_WAIT) continue;
-    // Another attempt of this task is going or merged: that one is the task now, nothing to retry.
-    if (startBlocked(t.id)) continue;
+  // Tasks whose change failed (read from the tasks, not the newest 100 changes: an older failure was never retried and
+  // its task showed "working" for ever).
+  for (const r of db.prepare(`SELECT t.id AS task, c.id AS change FROM tasks t JOIN changes c ON c.id = t.change WHERE c.status = 'failed' AND t.status IN ('working', 'needs answer', 'review')`).all() as any[]) {
+    const c = getChange(r.change);
+    const t = getTask(r.task);
+    if (!c || !t) continue;
+    // Another attempt of this task is going, or a newer one merged: that one is the task now, nothing to retry.
+    if (db.prepare(`SELECT 1 FROM changes WHERE task = ? AND id != ? AND (status IN (${LIVE.map(() => '?').join(',')}) OR (status = 'merged' AND created > ?)) LIMIT 1`).get(t.id, c.id, ...LIVE, c.created)) continue;
     if (subjects.includes(c.id) || (olderThan !== undefined && now - (c.updated ?? c.created) > olderThan && !turnRunning())) {
-      if (String(c.detail ?? '').startsWith(DECIDED)) {
-        // Nothing to change because J already decided it: not a failed try (its try is given back), and no restart
-        // to reach the same answer again; the task stops here with the agent's reason.
-        setTask(t.id, { status: 'failed', tries: Math.max(0, t.tries - 1), note: `${c.id}: ${DECIDED}: ${String(c.summary ?? '').slice(0, 600)}` });
-        logDecision('decided', t.id, t.product, `"${t.title}": ${c.id} changed nothing, J already decided it (not counted as a try): ${String(c.summary ?? '').slice(0, 400)}`);
-      } else if (t.tries >= pmSettings().maxTries) {
-        setTask(t.id, { status: 'failed' });
-        askJ(`"${t.title}" (${name(t.product)}) failed ${t.tries} times. The last: ${c.detail ?? '?'}. Try another way, change the task, or drop it?`, { subject: t.id, product: t.product, options: ['try again', 'change it', 'drop it'], from: 'the default after 3 tries' });
-      } else {
-        // The branch may be gone or empty: a fresh change with what went wrong.
-        await startTaskChange(t, `The last attempt (${c.id}) failed: ${c.detail ?? ''}. ${String(c.summary ?? '').slice(0, 600)}`).catch((e) => console.warn(`[pm] restart ${t.id}: ${e.message}`));
+      try {
+        await afterFailed(t, c);
+      } catch (e: any) {
+        console.warn(`[pm] after ${c.id} failed: ${e.message ?? e}`);
       }
     }
   }
@@ -1552,6 +2086,8 @@ async function watch() {
       pmEvent('question', `The agent on ${c.id} ("${c.title}") asks (${q?.id ?? '?'}): ${String(q?.text ?? c.detail).slice(0, 1500)}`, c.id, c.product);
     } else {
       const t = c.task ? getTask(c.task) : null;
+      // A fix whose agent found the cause in another repo (Gen, Studio, another product): that change is started.
+      if (c.status === 'failed' && !t) await blockerFromFix(c.id).catch((e: any) => console.warn(`[pm] blocker from ${c.id}: ${e.message ?? e}`));
       const what = t ? `Task ${t.id} ("${t.title}", ${name(c.product)}, try ${t.tries} of ${pmSettings().maxTries}): change ${c.id}` : `Fix ${c.id} ("${c.title}", ${name(c.product)})`;
       pmEvent(c.status === 'ready' ? 'ready' : 'failed', `${what} is ${c.status === 'ready' ? 'ready to review' : 'failed'}: ${c.detail ?? ''}`, c.id, c.product);
     }
@@ -1605,6 +2141,9 @@ export async function pmStatus() {
     conversation: state().conversation ?? null, daily: state().daily ?? null,
     questions: listQuestions(), reviewing: listChanges({ status: 'ready' }).filter(reviewable).map((c) => ({ id: c.id, product: c.product, title: c.title, detail: c.detail, task: c.task })),
     log: listDecisions({ limit: 60 }),
+    // Why each unfinished roadmap task isn't moving (the stall watch), and the PM's own unblocking work.
+    stall: { stalled: lastStall?.stalled ?? false, at: lastStall?.at ?? null, reasons: stallReasons() },
+    rescues: rescues(), blockers: blockers(),
   };
 }
 
@@ -1619,7 +2158,15 @@ export function startPm() {
   if (started) return;
   started = true;
   if (!state().since) saveState({ since: Date.now() });
-  setTimeout(() => void tick(), 15_000).unref();
+  // After a restart: every task reconciled from its changes at once, then a pass that starts what's startable (not a
+  // minute later, nor on the next event).
+  try {
+    const n = reconcileTasks();
+    if (n.length) logDecision('reconcile', null, null, `Studio started: ${n.length} task(s) reconciled from their changes (${n.slice(0, 12).join(', ')})`);
+  } catch (e: any) {
+    console.warn(`[pm] reconcile at start: ${e.message ?? e}`);
+  }
+  setTimeout(() => void tick(), 1000).unref();
   setInterval(() => void tick(), 60_000).unref();
 }
 

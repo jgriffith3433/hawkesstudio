@@ -537,7 +537,8 @@ default**; the header shows a 🚶 Walk-away badge while it's on) lets Studio an
   broken (two or more of a product's tasks miss in the same beta run, beta's build failed, or an investigation is
   already open) it files ONE investigation change and holds those tasks (status failed, note "held") until it's done
   (`releaseInvestigations`: merged, the tasks are judged again in one beta run; closed or failed, each is decided alone);
-  otherwise the task tries again (a try) or, after `maxTries`, is parked as an idea with a note. Each is in the PM log
+  otherwise the task tries again (a try) or, after `maxTries`, gets a rescue (below); after that round it is parked as an
+  idea and J is asked. Each is in the PM log
   with undo (`tasks`). The "misses criteria" questions from before are taken over the same way (`settleMissQuestions`:
   held under a change already fixing beta's build or data when there is one).
 - **GPU budgets**: Studio approves up to `costs.gpuAutoApprove` a task ($5) within `pm.walkAwayGpuPerDay` a day ($25;
@@ -553,7 +554,34 @@ default**; the header shows a 🚶 Walk-away badge while it's on) lets Studio an
   decided on its own. J's phone hears only failures after their tries, a Studio or Gen deploy that rolled back, the GPU
   digest and milestones.
 
+- **Out of tries, a rescue first** (`pm.ts outOfTries`, `startRescue`, `followRescues`): a task that fails its tries
+  (failed changes, revisions, beta's build, misses) gets ONE read-only scout (scout.ts, `brief` and `quiet`) that reads
+  its attempts, their pull requests and beta; then it is planned again with a fresh round of tries and the scout's
+  diagnosis in the brief (`rescueNote`). Only after that round is J asked, always as an Inbox question.
+
 Off: everything is exactly as before (Studio and Gen merges wait for J's tap, misses ask J, a GPU card per task).
+
+### Keeping the roadmap moving
+
+J, 2026-10-19: "so it keeps working on items that are in the road map until it's done". Every PM pass (and at once
+after a restart, `startPm`):
+
+- **Statuses come from the changes** (`reconcileTasks`): the change in flight, else the newest; the latest merged change
+  wins over a stale "failed" (unless it failed after that merge: a beta miss, a broken build, held, asked of J); with no
+  change running a task isn't "working" (the defaults retry it: `afterFailed`, found from the tasks, not the newest 100
+  changes); never started: planned again. A change the PM closed is tried again; one J closed is one question.
+- **A fix in another repo** (`crossRepoFix`, `fileBlocker`): an agent that made no commit because the fix belongs in Gen,
+  Studio or another product ("the broken file is in Hawkes Gen; please start a Gen change") makes the PM file that change
+  as a high-priority roadmap task there; the blocked tasks depend on it (not a try), beta's failed builds wait for it
+  instead of "nothing more sent back", and once it merges the blocked product's beta builds again (`followBlockers`).
+- **"Already done"** (`agents.ts ALREADY`, `alreadyDone`): no commit because the work is there is checked (a merged change
+  of the task, or a change or pull request the agent named that is merged): merged, its try given back, and one Inbox
+  question when what's left needs J. Unproven, it's a normal retry that says so.
+- **Failed tasks nobody was asked about** (`sweepFailed`): a rescue (walk-away) or one Inbox question; J's "try again"
+  that nothing acted on in 15 minutes plans it again.
+- **The stall watch** (`stallWatch`): unfinished work, free agents and nothing started or finished for 30 minutes: the
+  reasons per task (`stallReasons`: blocked by, GPU, needs J, broken build, stale status, failed), a broken beta build
+  nobody is on sent back to an agent, and ONE "stall" decision. `studio_pm status` shows `stall`, `rescues`, `blockers`.
 
 ## Player analytics
 

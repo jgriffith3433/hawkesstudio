@@ -211,6 +211,14 @@ export function decidedNoChange(summary: string) {
     && /\b(already decided|decided|decision|chose|ruled|won'?t[- ]?fix|wontfix|by design|as designed|intentional)\b/i.test(s)
     && /\b(no change|no changes|nothing to (change|fix|do)|changed nothing|made no (change|commit)s?|no commit|committ?ed nothing|commit nothing|didn'?t change|did not change|not changing|unchanged|left (it )?as (it is|is))\b/i.test(s);
 }
+/** The detail of a change whose agent made no commit because the work is already done: the PM checks it (pm.ts), not a try. */
+export const ALREADY = 'nothing to do: already done';
+/** An agent's summary (of a change with no commit) saying the work is already there. */
+export function alreadyDone(summary: string) {
+  return /\b(already (been )?(done|merged|landed|shipped|implemented|in place|on (beta|main)|there|present|fixed|exists?|works?)|nothing (left|more|else) to (do|change|implement)|(work|task|change) (is|was) (already )?(done|merged|complete))\b/i.test(String(summary ?? ''));
+}
+/** Why a change with no commit failed: already done (ALREADY), else `why`. */
+const noCommitDetail = (summary: string, why: string) => (alreadyDone(summary) ? `${ALREADY} (the agent made no commit)` : why);
 
 /**
  * Where a change's work is, recorded as it goes so a Studio restart (a deploy) doesn't redo it: the steps in order
@@ -1222,7 +1230,7 @@ async function work(id: string, note?: string, answer?: string, resumed?: Phase 
         }
         const why = noCommitWhy(c.worktree, ph);
         reopenTaken(id, findings.map((f) => f.id), `${why}: ${summary.slice(0, 120)}`);
-        update(id, { status: 'failed', detail: why, summary, commits, phase: null });
+        update(id, { status: 'failed', detail: noCommitDetail(summary, why), summary, commits, phase: null });
         return;
       }
       if ((note || answer) && !changedNow) addLog(id, 'no new commit this pass; checking the branch again');
@@ -1677,7 +1685,7 @@ async function workInfra(id: string, note?: string, resumed?: Phase | null, nudg
       }
       // A conflict pass that committed nothing isn't a failure: ready again, it conflicts again (its next pass, or J).
       if (!commits.length || (note && !changedNow && !ph.conflict)) {
-        update(id, { status: 'failed', detail: noCommitWhy(c.worktree, ph), summary, commits, phase: null });
+        update(id, { status: 'failed', detail: noCommitDetail(summary, noCommitWhy(c.worktree, ph)), summary, commits, phase: null });
         return;
       }
       // Guard rails, before anything leaves the server.
