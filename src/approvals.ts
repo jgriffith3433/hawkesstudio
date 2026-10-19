@@ -92,6 +92,7 @@ async function describe(kind: Kind, target: string, params: Record<string, any>)
     const lines = [p.what, `Live (main): ${p.main ? `${p.main.short} ${p.main.title}` : 'none'} · beta: ${p.beta ? `${p.beta.short} ${p.beta.title}` : 'none'}`];
     lines.push(p.commits.length ? `${p.commits.length} commit(s) go live: ${p.commits.slice(0, 8).map((c) => `${c!.short} ${c!.title} (${c!.author})`).join('; ')}${p.commits.length > 8 ? '; …' : ''}` : 'No new commits.');
     if (p.siteCommits.length) lines.push(`${p.siteCommits.length} website commit(s) go live with it (${p.site}): ${p.siteCommits.slice(0, 8).map((c) => `${c!.short} ${c!.title} (${c!.author})`).join('; ')}${p.siteCommits.length > 8 ? '; …' : ''}`);
+    if (p.players) lines.push(p.players);
     lines.push(p.tested.playtests.length ? `Playtests of beta ${p.tested.sha}: ${p.tested.playtests.map((t) => `${t.name} ${t.outcome ?? t.status}${t.verdict ? `, review "${t.verdict}"` : ''}`).join(' · ')}` : `Beta ${p.tested.sha ?? ''} hasn't been playtested.`);
     return {
       // Bound to the playtested commit: a Studio release commit on top of it (only releases.json) isn't beta moving.

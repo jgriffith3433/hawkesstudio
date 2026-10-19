@@ -35,7 +35,7 @@ characters. Using an entry counts it as used.
 
 Tools (Studio MCP, also over https://studio.hawkesgen.com/mcp): `memory_search` (entries and past agent runs),
 `memory_get`, `memory_write`, `memory_curate` (list, confirm, edit, merge, fade, dispute, delete, publish). Agents and
-scouts get their own Studio MCP server with only search, get and write (`STUDIO_MCP_TOOLS`), which writes as them
+scouts get their own Studio MCP server with only search, get and write (and `studio_analytics`, read-only: `STUDIO_MCP_TOOLS`), which writes as them
 (`X-Studio-Agent`): their entries are candidates.
 
 ## Write path

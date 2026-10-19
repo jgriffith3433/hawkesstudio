@@ -231,7 +231,7 @@ export function studioMcp({ studio, waitRun }: Client = { studio: defaultStudio,
     },
     {
       name: 'studio_deploy_plan',
-      description: 'The go-live plan for a product: the commits on beta that main (the live site) lacks, with titles and authors; the beta commit that was playtested and each playtest\'s outcome and review verdict; Unity: the beta build (Game/v<n>); the previous go lives; blockers (going live is refused) and warnings. Read-only. Show it to J before studio_deploy.',
+      description: 'The go-live plan for a product: the commits on beta that main (the live site) lacks, with titles and authors; the beta commit that was playtested and each playtest\'s outcome and review verdict; Unity: the beta build (Game/v<n>); the previous go lives; players: how the build live now does with real players (sessions, median session, level completion, errors, rating, against the build before it), so the next release can be compared; blockers (going live is refused) and warnings. Read-only. Show it to J before studio_deploy.',
       inputSchema: obj({ product: str('Product id') }, ['product']),
       run: async ({ product }) => studio(`/api/deploy/${product}`),
     },
@@ -319,6 +319,22 @@ export function studioMcp({ studio, waitRun }: Client = { studio: defaultStudio,
       run: async ({ period, refresh, settings }) => {
         if (settings) return studio('/api/costs/settings', { method: 'POST', body: settings });
         return (await studio(`/api/costs?${new URLSearchParams({ period: period ?? 'month', format: 'md', ...(refresh ? { refresh: '1' } : {}) })}`)).markdown;
+      },
+    },
+    {
+      name: 'studio_analytics',
+      description: "How real players do (Hawkes Analytics, Gen's player analytics of every product's pages): compact JSON plus plain sentences with their sample sizes. Live site, bots and J's own devices left out, last 30 days unless you say otherwise. view: overview (every product: sessions and players this week vs the week before, D1, rating, error rate), product (one product's headline numbers), dropoff (where sessions end: before the game was ready, by level, screen, last event), levels (attempts, completion, quits, deaths, retries before the first win), feedback (ratings and the latest comments), errors (grouped by signature with sessions, players, browsers, builds), builds (two builds' KPIs side by side: by default the two newest; a, b to pick), insights (Gen's biggest changes and worst drop-offs, only over minimum samples), session (one session's timeline: session id). Check \"players die here 70% of the time\" before and after a change; don't call a change from small samples (under 30 sessions or 20 attempts is noise).",
+      inputSchema: obj({
+        view: str('overview | product | dropoff | levels | feedback | errors | builds | insights | session (default: product with a product, else overview)'), product: str('Product id (every view but overview)'),
+        range: str('today | 24h | 7d | 14d | 30d (default) | 90d | 180d | 365d'), from: str('ISO date or ms (overrides range)'), to: str('ISO date or ms'), env: str('live (default) | beta | preview | local | a comma list | all'),
+        build: str('Only this build (its version string)'), device: str('desktop | phone | tablet'), browser: str('e.g. Chrome'), country: str('ISO code, e.g. US'),
+        a: str('builds: the older build'), b: str('builds: the newer build'), session: str('session: its id (s_...)'),
+      }),
+      run: async (a) => {
+        const { viewRoute, compactView } = await import('./players.ts');
+        const { view, path: route } = viewRoute(a);
+        const scope = `${a.env || 'live'}${a.range || a.from ? `, ${a.range || `${a.from} to ${a.to || 'now'}`}` : ', last 30 days'}${a.build ? `, build ${a.build}` : ''}${a.device ? `, ${a.device}` : ''}${a.browser ? `, ${a.browser}` : ''}${a.country ? `, ${a.country}` : ''}; bots and J's own devices left out`;
+        return compactView(view, await studio(route), scope);
       },
     },
     {

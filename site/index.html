@@ -20,6 +20,7 @@
     <li><a href="#how">How it works</a></li>
     <li><a href="#tools">Tools</a></li>
     <li><a href="#code">Developers</a></li>
+    <li><a href="#analytics">Analytics</a></li>
   </ul>
   <a class="btn small ghost" href="https://gen.hawkesgen.com/">Sign in</a>
 </nav>
@@ -164,6 +165,7 @@
       <li><b>Unity</b> an editor window and package</li>
       <li><b>CLI</b> for scripts and batch jobs</li>
       <li><b>MCP</b> so Claude and other agents can make assets themselves</li>
+      <li><b>Analytics</b> one script tag: how players play your game</li>
     </ul>
   </div>
   <pre class="code"><code><span class="c">// an enemy concept, in Sick Of It's art direction</span>
@@ -175,6 +177,31 @@
   params: { prompt: <span class="s">'a hell imp with an ember'</span> },
 });
 <span class="k">await</span> gen.download(job.outputs[<span class="n">0</span>].asset, <span class="s">'imp.png'</span>);</code></pre>
+</section>
+
+<section id="analytics" class="section split">
+  <div>
+    <p class="eyebrow">Hawkes Analytics</p>
+    <h2>See where players quit, and why.</h2>
+    <p class="sub">Anonymous player analytics for web and Unity WebGL games, part of the same SDK and API. No cookies, no third parties, and bots and your own playtests are kept out of the numbers.</p>
+    <ul class="checks">
+      <li>Drop-offs: before the game loads, by level, by screen</li>
+      <li>Retention, sessions and where players come from</li>
+      <li>Levels: completion, deaths, retries before the first win</li>
+      <li>Ratings and comments from an in-game feedback card</li>
+      <li>Errors real players hit, grouped, by browser and build</li>
+      <li>Performance and load times, and build against build</li>
+    </ul>
+  </div>
+  <pre class="code"><code><span class="c">&lt;!-- one line, in every page of the game --&gt;</span>
+&lt;<span class="k">script</span> src=<span class="s">"https://gen.hawkesgen.com/sdk/analytics@1.js"</span>
+        data-product=<span class="s">"sickofit"</span> data-build=<span class="s">"1.4.2"</span> defer&gt;&lt;/<span class="k">script</span>&gt;
+
+<span class="c">// then, optionally, what the game knows</span>
+hawkesAnalytics.levelStart(<span class="n">2</span>);
+hawkesAnalytics.death(<span class="s">'imp'</span>);
+hawkesAnalytics.levelEnd(<span class="n">2</span>, <span class="s">'complete'</span>);
+hawkesAnalytics.ask({ id: <span class="s">'after-level-2'</span>, question: <span class="s">'How was that level?'</span> });</code></pre>
 </section>
 
 <section class="section">

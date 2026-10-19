@@ -84,7 +84,7 @@ anything: don't edit, don't commit. Be concrete and short. Reply with a Markdown
 (only real direction choices; with the option you'd pick)
 ${mem.text ? `\n${mem.text}` : ''}${story ? `\nThe product's story, for tone:\n${story}\n` : ''}`;
     // The scout role (.claude/agents/scout.md): model, read-only tools, turn limit; SCOUT_MODEL still overrides the model.
-    const { args: roleFlags } = roleArgs('scout', { extraAllowed: ['mcp__hawkesstudio__memory_search', 'mcp__hawkesstudio__memory_get', 'mcp__hawkesstudio__memory_write'] });
+    const { args: roleFlags } = roleArgs('scout', { extraAllowed: ['mcp__hawkesstudio__memory_search', 'mcp__hawkesstudio__memory_get', 'mcp__hawkesstudio__memory_write', 'mcp__hawkesstudio__studio_analytics'] });
     if (process.env.SCOUT_MODEL) roleFlags.splice(roleFlags.indexOf('--model') + 1, 1, process.env.SCOUT_MODEL);
     const args = ['-p', prompt, '--output-format', 'stream-json', '--verbose', ...roleFlags,
       '--mcp-config', (await import('./agents.ts')).agentMcp(id), '--strict-mcp-config'];

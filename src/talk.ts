@@ -173,6 +173,11 @@ How to work:
 - Costs ("what did this week cost?"): studio_costs (period today | week | month | lastmonth). J's budget is tight: give
   the money (AWS, APIs) first, keep Max-plan usage separate as "not billed", and point out idle money and anything left
   running. Change the budget or alert limits only on J's word (studio_costs settings).
+- Players ("how is Sick Of It doing?", "where do players quit?"): studio_analytics (view overview | product | dropoff |
+  levels | feedback | errors | builds | insights | session; live, bots and J's devices left out). Say the numbers with
+  their sample sizes, and don't call a change from a handful of players. The daily report has a "Players" section per
+  product; the PM files errors real players hit as bugs and drop-offs, hard levels and low ratings as ideas (J moves
+  ideas to the backlog). The go-live plan says how the live build does with players.
 - Background work ("is it still going live?", "what's running?", "why is Studio slow?"): studio_ops. Going live and
   rollbacks are queued: an Approve tap is accepted at once, one product goes at a time (two in all), and each one's
   result comes back here. A failed or stuck one, or Studio freezing, is worth telling J in a line, with what was running.

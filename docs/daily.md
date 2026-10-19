@@ -25,8 +25,10 @@ testing.
    - what changed since yesterday
 7. **Backlog:** findings merge with what's already open (seen twice = the same finding, seen 2×). Blockers and bugs go
    to the backlog; polish and ideas go to the ideas list.
-8. **Report:** `reports/<date>-<run>.md` (and the dashboard's Report tab).
-9. **Morning brief** (`src/brief.ts`, on the server): a Talk conversation "Morning brief: <date>" where Claude sums the
+8. **Players:** how real players do on each live site (Hawkes Analytics; see "Player analytics" below): the report's
+   "Players" section per product, and the PM files work from it.
+9. **Report:** `reports/<date>-<run>.md` (and the dashboard's Report tab).
+10. **Morning brief** (`src/brief.ts`, on the server): a Talk conversation "Morning brief: <date>" where Claude sums the
    report up in five bullets plus a cost line (AWS this month, the forecast against J's budget, idle money; `src/costs.ts`), and a
    phone notification that opens it (`/?conversation=<id>#talk`). `POST /api/brief` makes it again for the last run.
 
@@ -552,6 +554,42 @@ default**; the header shows a 🚶 Walk-away badge while it's on) lets Studio an
   digest and milestones.
 
 Off: everything is exactly as before (Studio and Gen merges wait for J's tap, misses ask J, a GPU card per task).
+
+## Player analytics
+
+J's goal (m_e4959acc8abd): games that get better and stickier from what real players do. Hawkes Gen collects anonymous
+player analytics from every product's pages (Hawkes Analytics: hawkesgen `docs/analytics.md`); Studio turns it into
+feedback for J, Talk, the PM and the agents (`src/players.ts`). Always the live site, with bots (playtests included) and
+J's own devices left out, and never a change stated under its minimum sample (`MIN` in players.ts: 30 sessions a
+period, 20 new players for D1, 20 attempts at a level, 10 ratings, 30 sessions per build; errors 5 sessions and 2% of
+all). Numbers are said with their sample sizes.
+
+- **studio_analytics** (Talk, the PM, and every agent's and scout's own MCP server): `{ product?, view, range, env,
+  build, device, browser, country, from, to, a, b, session }`, views overview | product | dropoff | levels | feedback |
+  errors | builds | insights | session. It reads Studio's `/api/analytics/...` (the Analytics tab's proxy, Studio's Gen
+  key stays on the server) and answers compact JSON plus plain sentences. An agent checks "players die here 70% of the
+  time" before and after its change.
+- **The daily report** has a "Players" section per product (daily runs only: a `players` step per product holds Gen's
+  answers, `pipeline.ts recordPlayers`): players and sessions this week against the week before, D1 retention, the
+  biggest drop-off, the hardest level, new errors from real players (first seen this week), the rating and the latest
+  comments, and the newest build against the one before. Gen not answering is a skipped step, never a failed run.
+- **Work from player data** (`pm.ts workFromPlayers`, after the daily run; `backlog.ts filePlayerWork`): findings with
+  source "players", one per key (`players:error:<signature hash>`, `players:dropoff:level:<n>`, `players:level:<n>`,
+  `players:rating`, `players:complaints:<what>`), so the same thing seen again updates the same finding.
+  - An error real players hit in 5+ sessions and 2%+ of all sessions becomes a backlog **bug** (open: agents may take
+    it like any bug) with the error, browsers, builds and sessions affected. Browser-extension noise is dropped
+    (`bugreport.ts isNoise`). A fixed one that players still hit reopens.
+  - A drop-off (25%+ of sessions end in one level, or 15%+ before the game was ready), a difficulty spike (a level with
+    20+ attempts and 35% or less completed, or 40%+ quits), low ratings (3 stars or less from 10+, or half thumbs down)
+    and repeated complaints (3+ low-rated comments about the same thing) go on the **ideas list** with the evidence and
+    numbers. They are never auto-fixed: J moves them to the backlog.
+  - Each new one is in the PM log ("players bug" / "players idea"); undo marks it won't-fix, so it isn't filed again.
+- **Agent briefs** for a product get a "Players" section when there's data over the samples (top drop-off, hardest
+  level, rating) and are told to use studio_analytics and quote the numbers in their summaries.
+- **Going live:** the plan (`studio_deploy_plan` `players`, the Approve card and the Go live card) says how the build
+  live now does with players (sessions, median session, level completion, errors, rating, against the build before
+  it), so the next release can be compared.
+- **hawkesgen.com** (`site/`) shows Hawkes Analytics as part of Gen's SDK and API, with the one-line script tag.
 
 ## The conversation (J and Claude, in the Claude app)
 
