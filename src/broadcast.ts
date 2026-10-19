@@ -204,7 +204,8 @@ export function composeBroadcast(input: {
   }
 
   const pid = focus?.product || lock;
-  const ms = (input.milestones ?? []).find((m) => !pid || m.product === pid || m.product == null);
+  const milestones = input.milestones ?? [];
+  const ms = milestones.find((m) => pid ? m.product === pid : true) ?? milestones.find((m) => m.product == null);
   const fromMs: Bar[] = (ms?.items ?? []).slice(0, 6).map((i: any) => ({
     title: safeLine(i.title, 80),
     label: safeLine(i.display || i.state || '', 40),

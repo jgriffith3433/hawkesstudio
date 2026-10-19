@@ -338,6 +338,7 @@ After=hawkes-studio.service hawkes-secrets.service
 [Service]
 User=hawkes
 WorkingDirectory=/srv/hawkes/hawkesstudio
+Environment=BROADCAST_URL=http://127.0.0.1:8791/broadcast.html?product=yoobaland&clean=1
 EnvironmentFile=-/run/hawkes/twitch.env
 ExecStart=/usr/bin/node bin/broadcast-stream.mjs --go
 Restart=on-failure

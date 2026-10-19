@@ -11,7 +11,7 @@
 import { spawn } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 
-const PAGE = process.env.BROADCAST_URL || 'http://127.0.0.1:8791/broadcast.html?clean=1';
+const PAGE = process.env.BROADCAST_URL || 'http://127.0.0.1:8791/broadcast.html?product=yoobaland&clean=1';
 function streamKey() {
   if (process.env.TWITCH_STREAM_KEY) return process.env.TWITCH_STREAM_KEY;
   try {
@@ -83,7 +83,10 @@ process.on('SIGTERM', stop);
 if (process.platform === 'linux') {
   const xvfb = spawn('Xvfb', [':99', '-screen', '0', '1920x1080x24'], { stdio: 'ignore' });
   children.push(xvfb);
-  const browser = spawn(chromium, ['--no-sandbox', '--disable-gpu', '--window-size=1920,1080', '--app=' + PAGE], {
+  const browser = spawn(chromium, [
+    '--no-sandbox', '--test-type', '--no-first-run', '--disable-fre', '--no-default-browser-check',
+    '--disable-gpu', '--window-size=1920,1080', '--app=' + PAGE,
+  ], {
     env: { ...process.env, DISPLAY: ':99' }, stdio: 'ignore',
   });
   children.push(browser);

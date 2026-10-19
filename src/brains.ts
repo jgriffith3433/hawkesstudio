@@ -56,15 +56,17 @@ export function saveBrain(patch: string | { harness?: string; model?: string; id
   return brainSettings();
 }
 
-/** Tells Hawkes Gen to use the same harness (its settings.brain). Best effort. */
+/** Tells Hawkes Gen to use the same harness (its settings.brain). Best effort. Gen requires the owner key. */
 export async function syncBrain(harness: Harness = brainId()): Promise<boolean> {
   try {
+    const key = process.env.HAWKESGEN_KEY || process.env.DEV_GEN_KEY || '';
     const r = await fetch(`${GEN_URL}/v1/settings`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...(key ? { Authorization: `Bearer ${key}` } : {}) },
       body: JSON.stringify({ brain: harness, model: brainSettings().model || undefined }),
       signal: AbortSignal.timeout(8000),
     });
+    if (!r.ok) console.warn(`[studio] Gen did not take the harness (HTTP ${r.status}).`);
     return r.ok;
   } catch {
     return false;
