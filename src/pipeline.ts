@@ -22,7 +22,7 @@ import { reviewJob, viaNote } from './review-cc.ts';
 import { writeReport } from './report.ts';
 import { assetStatus, makeAsset } from './assets.ts';
 import { syncRepos, syncRepo, repoMap, betaFolders, isServer, BETA, BRANCH } from './repos.ts';
-import { betaLane, prepareBeta, playedLocal, resetBetaSite, pinBetaVersion, pruneGameVersions, saveBetaBuild, betaBuild, betaSiteDir, betaSiteFolder, betaPort, shaOf, repoDirs, fetchOrigin, betaBuildCurrent, MAIN } from './beta.ts';
+import { betaLane, prepareBeta, playedLocal, resetBetaSite, pinBetaVersion, pruneGameVersions, saveBetaBuild, betaBuild, betaSiteDir, betaSiteFolder, betaPort, shaOf, repoDirs, fetchOrigin, betaBuildCurrent, siteBaseOf, refreshBetaSite } from './beta.ts';
 import { notifyOnce } from './notify.ts';
 import { judgeCriteria } from './acceptance.ts';
 import { runGenJob, playtestExtras, playtestData, playtestRunMs, REVIEW_RUN_MS } from './playtests.ts';
@@ -358,15 +358,22 @@ export async function buildProduct(run: string, p: Product, { force = false, bet
   const last = lastStep(p.id, 'build', 'unity');
   const lane = betaLane();
   const head = shaOf(repoDirs(p).source, 'HEAD') ?? '';
-  const bb = lane ? betaBuild(p) : null;
-  // The website's main the build sits on counts too: when live moved, beta is built again on top of it.
-  let siteMain: string | null = null;
+  let bb = lane ? betaBuild(p) : null;
+  // The website commit the build sits on counts too (the website's beta, else its main): when a page change merged into
+  // the website's beta, the copy moves onto it keeping the build (no new Unity build); when it can't, beta is built again.
+  let siteBase: string | null = null;
   if (lane && bb?.ok) {
-    const { site } = repoDirs(p);
-    try { await fetchOrigin(site); } catch {}
-    siteMain = shaOf(site, `origin/${MAIN}`);
+    try { await fetchOrigin(repoDirs(p).site); } catch {}
+    siteBase = siteBaseOf(p);
+    if (siteBase && bb.base !== siteBase && bb.sha === head) {
+      const moved = await refreshBetaSite(p).catch((e: any) => ({ moved: false, why: String(e.message ?? e) }));
+      if (moved.moved) {
+        bb = betaBuild(p);
+        void import('./previews.ts').then(({ buildPreview }) => buildPreview(p.id)).catch(() => {});
+      } else console.warn(`[studio] ${p.id}: the beta website copy couldn't move onto the website's ${BETA} (${moved.why}): building again`);
+    }
   }
-  const current = !lane || betaBuildCurrent(bb, head, siteMain, fs.existsSync(betaSiteFolder(p)));
+  const current = !lane || betaBuildCurrent(bb, head, siteBase, fs.existsSync(betaSiteFolder(p)));
   if (!force && last?.data?.fingerprint === fp && current) {
     const s = startStep(run, p.id, 'build', 'unity');
     updateStep(s, { status: 'skipped', detail: `no changes since the last build (${last.data?.version ? `Game/v${last.data.version}` : 'last time'})`, data: { fingerprint: fp, version: last.data?.version }, finished: true });

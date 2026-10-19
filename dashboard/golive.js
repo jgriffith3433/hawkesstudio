@@ -68,8 +68,10 @@
   }
   const plain = (t) => String(t).replace(/\s*\(#\d+\)\s*$/, '').replace(/^J(?:'s words)?:\s*"?([^"]*)"?\s*$/, '$1').replace(/^devtools:\s*/, 'Saved ').slice(0, 140);
 
-  /** Beta is ahead of live: new commits, or (Unity) a new build that differs from what's live. */
-  const ahead = (p) => p.commits.length > 0 || !!(p.unity && p.build?.ok && p.build.files > 0);
+  /** Beta is ahead of live: new commits (Unity: the website's too), or a new build that differs from what's live. */
+  const site = (p) => p.siteCommits ?? [];
+  const siteOnly = (p) => p.siteMainOnly ?? [];
+  const ahead = (p) => p.commits.length > 0 || site(p).length > 0 || !!(p.unity && p.build?.ok && p.build.files > 0);
   const nothingToDo = (b) => /^Nothing to go live/.test(b);
 
   /** The light: red = can't go live yet, yellow = can, with warnings, green = ready (or nothing to do). */
@@ -77,7 +79,7 @@
     const blockers = p.blockers.filter((b) => !nothingToDo(b));
     const t = p.tested.playtests;
     const played = t.length ? `Beta was playtested ${when(Math.max(...t.map((x) => x.when ?? 0)))}: ${t.map((x) => `${x.name} ${x.outcome ?? x.status}${x.verdict ? ` (review: ${x.verdict})` : ''}`).join(', ')}.` : 'This version of beta hasn\'t been playtested yet.';
-    if (!ahead(p) && !p.mainOnly.length) return { color: 'green', text: 'Nothing waiting.', played: t.length ? played : '' };
+    if (!ahead(p) && !p.mainOnly.length && !siteOnly(p).length) return { color: 'green', text: 'Nothing waiting.', played: t.length ? played : '' };
     if (blockers.length) return { color: 'red', text: 'Not ready to go live yet.', played, why: blockers };
     if (p.warnings.length) return { color: 'yellow', text: 'Ready, but look at the warnings first.', played, why: p.warnings };
     return { color: 'green', text: 'Ready to go live: playtested with no problems.', played };
@@ -106,11 +108,11 @@
     const L = light(p);
     const up = ahead(p);
     const status = up
-      ? (p.commits.length ? `Beta is ${n(p.commits.length, 'change')} ahead of live` : 'Beta has a new build that isn\'t live')
-      : p.mainOnly.length ? 'Live has changes beta doesn\'t have' : 'Live is up to date';
+      ? (p.commits.length || site(p).length ? `Beta is ${n(p.commits.length + site(p).length, 'change')} ahead of live` : 'Beta has a new build that isn\'t live')
+      : p.mainOnly.length || siteOnly(p).length ? 'Live has changes beta doesn\'t have' : 'Live is up to date';
     const lastLive = Math.max(p.previous[0]?.at ?? 0, p.main ? Date.parse(p.main.date) : 0) || null;
     const groups = {};
-    for (const c of p.commits) (groups[who(c)] ??= []).push(c);
+    for (const c of [...p.commits, ...site(p)]) (groups[who(c)] ??= []).push(c);
     const run = liveOps(p.product).filter((o) => o.status === 'queued' || o.status === 'running');
     const last = liveOps(p.product).find((o) => o.status === 'done' || o.status === 'failed');
     const recent = last && Date.now() - (last.finished ?? last.created) < 6 * 3600_000 ? last : null;
@@ -141,6 +143,8 @@
         <p>Live: ${p.main ? `<code>${esc(p.main.short)}</code> ${esc(p.main.title)}` : '<i>none</i>'}<br>Beta: ${p.beta ? `<code>${esc(p.beta.short)}</code> ${esc(p.beta.title)}` : '<i>none</i>'}</p>
         ${p.commits.map((c) => `<div class="meta"><code>${esc(c.short)}</code> ${esc(c.title)} · ${esc(c.author)} · ${esc(when(c.date))}</div>`).join('')}
         ${p.mainOnly.length ? `<p class="meta">Live has ${p.mainOnly.length} commit(s) beta lacks: ${p.mainOnly.map((c) => esc(c.title)).join('; ')}</p>` : ''}
+        ${site(p).length ? `<p class="meta">Website pages (${esc(p.site)}):</p>${site(p).map((c) => `<div class="meta"><code>${esc(c.short)}</code> ${esc(c.title)} · ${esc(c.author)} · ${esc(when(c.date))}</div>`).join('')}` : ''}
+        ${siteOnly(p).length ? `<p class="meta">The live website has ${siteOnly(p).length} commit(s) its beta lacks: ${siteOnly(p).map((c) => esc(c.title)).join('; ')}</p>` : ''}
         <p class="meta">${esc(p.what)}</p>
         <div class="actions"><button class="small" data-glplan="${esc(p.product)}" data-guide="off" title="The full go-live plan: update and playtest beta, merge live's commits into beta, previous go lives, the typed DEPLOY fallback">Full plan and more options…</button></div>
       </details>

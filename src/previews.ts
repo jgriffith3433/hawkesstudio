@@ -144,7 +144,14 @@ async function build(p: Product, o: { change?: string; dir?: string }): Promise<
     let ref: string;
     if (p.engine === 'unity' || p.build) {
       let site = path.join(PROJECTS, p.site);
-      if (o.change) {
+      const siteTop = p.site.split('/')[0];
+      const row = o.change ? changeRow(o.change) : null;
+      if (o.change && row?.repo === siteTop && siteTop !== p.repo.split('/')[0] && row.worktree && fs.existsSync(row.worktree)) {
+        // A change in the website repo (target "site"): its worktree is the site, with live's Game/v<n> in it.
+        site = path.join(row.worktree, path.relative(siteTop, p.site));
+        sha = (await git(row.worktree, ['rev-parse', 'HEAD'])).out.slice(0, 7);
+        ref = `change ${o.change} (website)`;
+      } else if (o.change) {
         // The change's website copy, once the build server has built the branch into it (agents.ts).
         const b = changeBuild(o.change);
         const copy = path.join(changeSiteDir(o.change), path.relative(p.site.split('/')[0], p.site));
@@ -220,9 +227,9 @@ async function build(p: Product, o: { change?: string; dir?: string }): Promise<
   }
 }
 
-function changeRow(id: string): { worktree: string | null; branch: string } | null {
+function changeRow(id: string): { worktree: string | null; branch: string; repo?: string } | null {
   try {
-    return (db.prepare('SELECT worktree, branch FROM changes WHERE id = ?').get(id) as any) ?? null;
+    return (db.prepare('SELECT worktree, branch, repo FROM changes WHERE id = ?').get(id) as any) ?? null;
   } catch {
     return null;
   }

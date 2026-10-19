@@ -547,7 +547,7 @@ async function startTaskChange(task: Task, note?: string, why?: string, countTry
   if (blocked) throw new StudioError(`"${task.title}" isn't started again: ${blocked}`);
   const t = getTask(task.id)!;
   const request = `${t.request}${note ? `\n\nFrom the PM (an earlier attempt): ${note}` : ''}`;
-  const id = startTask(t.product, request, { criteria: t.criteria, task: t.id, title: t.title, gpuBudget: t.gpu?.items?.length ? t.gpu.budget ?? 0 : null });
+  const id = startTask(t.product, request, { criteria: t.criteria, task: t.id, title: t.title, gpuBudget: t.gpu?.items?.length ? t.gpu.budget ?? 0 : null, target: t.target });
   const tries = countTry ? t.tries + 1 : t.tries;
   setTask(t.id, { status: 'working', change: id, changes: [...t.changes, id], tries, merged_at: null, build: null });
   logDecision('start', t.id, t.product, `started ${id} for "${t.title}" (${countTry ? `try ${tries}` : `not counted as a try, ${tries} used`}${why ? `; ${why}` : ''})${note ? `: ${note.slice(0, 300)}` : ''}`, { kind: 'start', change: id, task: t.id });
