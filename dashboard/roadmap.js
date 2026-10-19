@@ -26,7 +26,8 @@ async function loadRoadmap() {
     · delegated merges into beta: <b>${s.delegatedMerges ? 'on' : 'off'}</b> <button class="small" data-pm="merges">${s.delegatedMerges ? 'Turn off' : 'Turn on'}</button>
     · agents ${c.active}/${s.maxConcurrent} · starts today ${c.started}/${s.maxStartsPerDay} <button class="small" data-pm="caps">Limits…</button>
     ${pm.turn ? ' · <span class="pill warn">PM turn running</span>' : ''}${pm.conversation ? ` · <a href="/?conversation=${esc(pm.conversation.id)}#talk">PM conversation</a>` : ''}
-    ${pm.lastError ? `<div class="meta" style="color:var(--red)">${esc(pm.lastError)}</div>` : ''}`;
+    ${pm.lastError ? `<div class="meta" style="color:var(--red)">${esc(pm.lastError)}</div>` : ''}
+    ${pm.time?.lines?.length ? `<details class="more-details"><summary class="meta">Where the time goes today</summary>${pm.time.lines.map((l) => `<div class="meta">${esc(l)}</div>`).join('')}</details>` : ''}`;
   // Questions are answered in the Inbox (one place for everything waiting on J).
   const asked = pm.questions.filter((q) => q.status === 'asked J').length;
   const agents = pm.questions.length - asked;

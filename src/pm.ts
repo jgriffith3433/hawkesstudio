@@ -47,6 +47,7 @@ import { filesIn, type WorkShape } from './parallel.ts';
 import { WALK_DEFAULTS, WALK_AWAY_BY, walkAwayOn, type WalkAwaySettings } from './walkaway.ts';
 import { getFinding, updateFinding, takenBy } from './backlog.ts';
 import { waitsForCurrentBuild, staleReport, staleNote } from './bugreport.ts';
+import { notReached, slowNote, playTime, samplePace, whereTimeGoes, idleWatch, idleState, IDLE_SUBJECT } from './pace.ts';
 
 // ---------------------------------------------------------------- settings
 
@@ -303,7 +304,18 @@ async function checkOnBeta(t: Task) {
   // (k_da696e030f80, 2026-10-17: one "unclear" started a third change that merged a duplicate). Unclear isn't a miss:
   // the PM hears it and can ask for a playtest that reaches it. A real miss is J's call; "try again" puts the task back
   // to planned, which starts it fresh.
+  // The scenario took longer than its budget: its agent is told (in a scenario fix or a retry's note) to start it nearer.
+  const playData = parse(play?.data);
+  const slow = playData?.slow ? ` Beta's playtest of it took ${playTime(Number(playData.seconds) || 0)}, ${slowNote(Number(playData.seconds) || 0) ?? 'over its budget'}.` : '';
+  if (slow && !listDecisions({ since: 0, action: 'slow-scenario', limit: 10_000 }).some((d) => d.subject === t.id)) {
+    // On the task's thread, so its next agent reads it in the brief.
+    try { addComment(t.id, `Too slow to check:${slow} Start the scenario nearer what the criteria need (a named start point, "at").`, 'Studio PM'); } catch { /* not a thread subject */ }
+    logDecision('slow-scenario', t.id, t.product, `"${t.title}":${slow}`.slice(0, 1000));
+  }
   if (!missed.some((r) => r.met === 'no')) {
+    // Unclear because the bot never got there (not reached, not seen): sent back ONCE as a scenario fix, not a try.
+    const unseen = notReached(missed);
+    if (unseen.length && await scenarioFix(t, unseen, judged.run, checks, slow)) return;
     logDecision('beta-check', t.id, t.product, `"${t.title}": on beta, nothing failed but unclear (run ${judged.run}): ${why}`.slice(0, 1000));
     pmEvent('beta check', `Task ${t.id} ("${t.title}", ${name(t.product)}) is merged; beta's run ${judged.run} couldn't tell for: ${why}. Nothing restarts; ask for a playtest that reaches it if it matters.`, t.id, t.product);
     return;
@@ -316,6 +328,32 @@ async function checkOnBeta(t: Task) {
   setTask(t.id, { status: 'failed', note: `on beta: ${why}`.slice(0, 1000) });
   askJ(`"${t.title}" (${name(t.product)}) is merged into beta but misses criteria there (try ${t.tries} of ${s.maxTries}): ${why}. Try again on top of beta, change the criteria, or drop it?`, { subject: t.id, product: t.product, options: ['try again', 'change the criteria', 'drop it'] });
 }
+
+/**
+ * A merged task whose criteria came back unclear because the bot never reached them (pace.ts notReached): sent back
+ * ONCE as a scenario fix (J, 2026-10-19: "unclear is not a free retry"): a change from beta whose agent makes the
+ * scenario reach each criterion and log it, without touching the feature. Not a try. A second "not reached" is left
+ * to the PM and the milestone's checks as before. Returns whether it was sent.
+ */
+async function scenarioFix(t: Task, unseen: Check[], run: string, checks: TaskChecks, slow = '') {
+  if (!pmSettings().enabled) return false;
+  if (listDecisions({ since: 0, action: 'scenario-fix', limit: 10_000 }).some((d) => d.subject === t.id)) return false;
+  const { getChange } = await changes();
+  const v = t.change ? getChange(t.change)?.verify : null;
+  const what = unseen.map((r) => `${r.criterion} (${r.evidence ?? 'unclear'})`).join('; ');
+  const note = `Beta's playtest (run ${run}) never reached these criteria, so it couldn't judge them: ${what}.${slow}\n\nYour task's work is already merged on beta (this branch starts from it) and nothing says it is wrong: don't redo or change the feature. Fix the playtest scenario${v?.scenario ? ` "${v.scenario}"` : ''} so the bot gets to each of these through real input and logs an event that shows it, and name it in .hawkes/scenario.txt. If it replays a long way from the start, start it nearer: a named start point the game takes ("at" in the scenario's options, hawkesstudio docs/playtest.md), e.g. a second line {"at":"<place>"} in .hawkes/scenario.txt. Keep it under 10 minutes.`;
+  setTask(t.id, { status: 'planned', checks });
+  try {
+    await startTaskChange(getTask(t.id)!, note, `a scenario fix: beta's playtest never reached ${unseen.length} criteria (not a try)`, false);
+  } catch (e: any) {
+    setTask(t.id, { status: 'merged', note: `couldn't send it back for a scenario fix: ${e.message}`.slice(0, 500) });
+    return false;
+  }
+  logDecision('scenario-fix', t.id, t.product, `"${t.title}": beta run ${run} never reached ${unseen.map((r) => `"${r.criterion}"`).join(', ')}: sent back once to fix its scenario (not a try)`.slice(0, 1500));
+  pmEvent('scenario fix', `Task ${t.id} ("${t.title}", ${name(t.product)}): beta's run ${run} never reached: ${what}. Sent back once to fix its playtest scenario (not a try).`, t.id, t.product);
+  return true;
+}
+type TaskChecks = NonNullable<Task['checks']>;
 
 // ------------------------------------------------------------ beta builds
 
@@ -507,19 +545,10 @@ export async function milestoneCheck(id: string) {
     // Checked again after a miss: once beta built again (the misses' fixes, or the next merge).
     if (!recheckDue(id, [...new Set(tasks.map((t) => t.product))])) return;
     if (!tasks.length || !pmSettings().enabled) return announceMilestone(id);
-    const { getChange } = await changes();
     const { startBeta } = await import('./pipeline.ts');
     for (const product of [...new Set(tasks.map((t) => t.product))]) {
-      // One play per scenario (the one each task's agent wrote for its criteria; none: the product's default), its tasks' criteria judged on it.
-      const plays = new Map<string, { scenario?: string; options?: Record<string, unknown>; criteria: string[] }>();
-      for (const t of tasks.filter((x) => x.product === product)) {
-        const v = t.change ? getChange(t.change)?.verify : null;
-        const key = v?.scenario ? `${v.scenario} ${JSON.stringify(v.options ?? null)}` : '';
-        const p = plays.get(key) ?? { ...(v?.scenario ? { scenario: v.scenario, ...(v.options ? { options: v.options } : {}) } : {}), criteria: [] as string[] };
-        for (const k of t.criteria) if (!p.criteria.includes(k)) p.criteria.push(k);
-        plays.set(key, p);
-      }
-      const r = startBeta(product, { focus: `Milestone "${m.title}": every task is on beta. Check each one works and nothing regressed.`, plays: [...plays.values()], playtest: true, quiet: 0, origin: m.origin });
+      const plays = await playsFor(tasks.filter((x) => x.product === product));
+      const r = startBeta(product, { focus: `Milestone "${m.title}": every task is on beta. Check each one works and nothing regressed.`, plays, playtest: true, quiet: 0, origin: m.origin });
       runs.push(r.id);
     }
     setMilestoneChecks(id, runs);
@@ -559,6 +588,25 @@ export async function milestoneCheck(id: string) {
   setMilestoneChecks(id, []);
   const what = left.map((t) => `"${t.title}" (${t.status}${t.checks?.results?.length ? `: ${t.checks.results.filter((r) => r.met !== 'yes').map((r) => `${r.criterion} ${r.met}`).join('; ')}` : ''})`).join(', ');
   logDecision('milestone-recheck', id, m.product, `milestone "${m.title}" not reached: ${left.length} task(s) not verified on beta (${what}); misses go to their agents, and the milestone is checked again after beta's next build (${tries + 1} of ${s.maxTries})`.slice(0, 1500));
+}
+
+/**
+ * A beta check of these tasks plays only their own scenarios (J, 2026-10-19: checks replayed long story scenarios):
+ * one play per scenario and options (the one each task's agent wrote for its criteria, with its start point "at" when
+ * it gave one; none: the product's default, its first local one), its tasks' criteria judged on it. pipeline.ts plays
+ * them in parallel across the playtester's slots.
+ */
+export async function playsFor(tasks: Task[]) {
+  const { getChange } = await changes();
+  const plays = new Map<string, { scenario?: string; options?: Record<string, unknown>; criteria: string[] }>();
+  for (const t of tasks) {
+    const v = t.change ? getChange(t.change)?.verify : null;
+    const key = v?.scenario ? `${v.scenario} ${JSON.stringify(v.options ?? null)}` : '';
+    const p = plays.get(key) ?? { ...(v?.scenario ? { scenario: v.scenario, ...(v.options ? { options: v.options } : {}) } : {}), criteria: [] as string[] };
+    for (const k of t.criteria) if (!p.criteria.includes(k)) p.criteria.push(k);
+    plays.set(key, p);
+  }
+  return [...plays.values()].filter((p) => p.criteria.length);
 }
 
 /** A milestone check waiting after a miss: due once each product's beta built again since (or RECHECK_WAIT_MS passed). */
@@ -1020,6 +1068,8 @@ export async function answerQuestion(id: string, answer: string, by = 'Talk (PM)
     const t = getTask(q.subject);
     if (t) await gpuAnswer(t, answer, by, q);
   }
+  // New roadmap work for idle products (pace.ts idleWatch): nothing is added without J's yes.
+  if (q.topic === 'idle' && !byJ) throw new StudioError(`New roadmap work for idle products is J's call (answered by ${by}). Leave it in his Inbox.`);
   setQuestion(id, { status: 'answered', answer, answered_by: by });
   // The answer on the subject's thread, when it has one: the PM files questions on slugs too ("deploy-safety-net"), and a
   // thread comment never fails an answer that is already recorded (the routing below still runs).
@@ -1339,7 +1389,8 @@ export async function releaseInvestigations() {
       if (criteria.length && hasBeta(product)) {
         try {
           const { startBeta } = await import('./pipeline.ts');
-          run = startBeta(product, { focus: `Re-checking ${tasks.length} task(s) after investigation ${inv.change} fixed beta.`, criteria, playtest: true }).id;
+          // Each task's own scenario, not one default for all their criteria.
+          run = startBeta(product, { focus: `Re-checking ${tasks.length} task(s) after investigation ${inv.change} fixed beta.`, plays: await playsFor(tasks.filter((x) => x.criteria.length)), playtest: true }).id;
         } catch (e: any) {
           console.warn(`[pm] re-check after ${inv.change}: ${e.message ?? e}`);
         }
@@ -2292,7 +2343,14 @@ export async function tick() {
     } catch (e: any) {
       console.warn(`[pm] done and held tasks: ${e.message ?? e}`);
     }
-    await startWork();
+    const startedNow = await startWork();
+    // Where the time goes (pace.ts): idle slots and work parked on Gen/GPU, sampled each tick; idle slots with nothing
+    // the PM may start get ONE question for J with scouts' proposals for the idle products.
+    try {
+      await pace(startedNow.length);
+    } catch (e: any) {
+      console.warn(`[pm] pace: ${e.message ?? e}`);
+    }
     // Nothing moving with free agents and work left: why, per task, and what it can fix (one "stall" decision).
     await stallWatch().catch((e: any) => console.warn(`[pm] stall watch: ${e.message ?? e}`));
     const daily = state().daily !== today() && new Date().getHours() >= s.dailyHour;
@@ -2305,6 +2363,36 @@ export async function tick() {
     ticking = false;
   }
 }
+
+/** Products with no planned or running work: no roadmap task to do, no change in flight, no open bug or report. */
+export function idleProducts() {
+  const busyStatuses = ['planned', 'working', 'needs answer', 'review'];
+  return loadProducts().map((p) => p.id).filter((id) => !isInfra(id)
+    && !db.prepare(`SELECT 1 FROM tasks WHERE product = ? AND status IN (${busyStatuses.map(() => '?').join(',')}) LIMIT 1`).get(id, ...busyStatuses)
+    && !db.prepare(`SELECT 1 FROM changes WHERE product = ? AND status IN (${LIVE.map(() => '?').join(',')}) LIMIT 1`).get(id, ...LIVE)
+    && !db.prepare(`SELECT 1 FROM findings WHERE product = ? AND status = 'open' AND severity IN ('blocker', 'bug') LIMIT 1`).get(id));
+}
+
+/** One pace sample, and the idle-slot watch (pace.ts). startedNow: what this tick's startWork started. */
+async function pace(startedNow: number, deps: Partial<IdleDepsLike> = {}) {
+  const s = pmSettings();
+  const cap = capacity();
+  const { WAITING_GEN, agentSettings } = await changes();
+  const parked = (db.prepare('SELECT COUNT(*) AS n FROM changes WHERE status = ?').get(WAITING_GEN) as any).n + (db.prepare('SELECT COUNT(*) AS n FROM tasks WHERE status = ?').get(GPU_WAIT) as any).n;
+  samplePace({ freeSlots: Math.max(0, s.maxConcurrent - cap.active), parked });
+  const { startScout, getScout } = await import('./scout.ts');
+  return idleWatch({ free: agentSettings().enabled ? cap.free : 0, started: startedNow }, {
+    idleProducts, name,
+    startScout: (product, question) => startScout(product, question, null, { quiet: true }),
+    getScout,
+    askJ: (text, o) => askJ(text, o),
+    log: (detail) => logDecision('idle', IDLE_SUBJECT, null, detail.slice(0, 1500)),
+    ...deps,
+  });
+}
+type IdleDepsLike = Parameters<typeof idleWatch>[1];
+/** For tests: one pace pass with stand-ins for the scouts and the products. */
+export const paceForTest = pace;
 
 /** Defaults for subjects of the last turn, and for anything waiting longer than `olderThan`. */
 async function applyDefaults(subjects: string[], olderThan?: number) {
@@ -2412,6 +2500,8 @@ export async function pmStatus() {
     // Why each unfinished roadmap task isn't moving (the stall watch), and the PM's own unblocking work.
     stall: { stalled: lastStall?.stalled ?? false, at: lastStall?.at ?? null, reasons: stallReasons() },
     rescues: rescues(), blockers: blockers(),
+    // Where today's time went (pace.ts), and the idle-slot watch's state.
+    time: whereTimeGoes(Date.now(), isInfra), idle: idleState(),
   };
 }
 

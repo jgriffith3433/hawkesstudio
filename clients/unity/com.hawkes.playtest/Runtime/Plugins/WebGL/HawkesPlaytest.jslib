@@ -25,7 +25,8 @@ mergeInto(LibraryManager.library, {
         options = options || {};
         w.__hawkesPlaytestReport = null;
         w.__hawkesPlaytestState = { ready: true, status: 'running', progress: 0 };
-        w.__hawkesPlaytestQueue.push({ cmd: 'start', id: String(id), seed: Number(options.seed || 1), speed: Number(options.speed || 1) });
+        // at: a named start point (docs/playtest.md); options: every option as JSON, for scenario-specific keys.
+        w.__hawkesPlaytestQueue.push({ cmd: 'start', id: String(id), seed: Number(options.seed || 1), speed: Number(options.speed || 1), at: options.at == null ? '' : String(options.at), options: JSON.stringify(options) });
       },
       stop: function () { w.__hawkesPlaytestQueue.push({ cmd: 'stop' }); },
       input: function (action, down) { w.__hawkesPlaytestQueue.push({ cmd: 'input', action: String(action), down: !!down }); },
@@ -50,7 +51,9 @@ mergeInto(LibraryManager.library, {
     var auto = q.get('playtest');
     if (auto && !w.__hawkesPlaytestAutoStarted) {
       w.__hawkesPlaytestAutoStarted = true;
-      w.hawkesPlaytest.start(auto, { seed: Number(q.get('seed') || 1), speed: Number(q.get('speed') || 1) });
+      var opts = { seed: Number(q.get('seed') || 1), speed: Number(q.get('speed') || 1) };
+      if (q.get('at')) opts.at = q.get('at');
+      w.hawkesPlaytest.start(auto, opts);
     }
   },
 

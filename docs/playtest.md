@@ -18,8 +18,8 @@ window.hawkesPlaytest = {
 }
 ```
 
-The page can also start a scenario itself: `?playtest=<scenario id>` (plus `&seed=`, `&speed=`) runs it as soon as
-the game is ready. That's how the runner starts games whose bridge loads late (Unity).
+The page can also start a scenario itself: `?playtest=<scenario id>` (plus `&seed=`, `&speed=`, `&at=`) runs it as
+soon as the game is ready. That's how the runner starts games whose bridge loads late (Unity).
 
 ## Types
 
@@ -30,6 +30,7 @@ type Scenario = {
   seconds: number;       // how long it usually takes (the runner allows 2x, then calls it stuck)
   tags?: string[];       // "smoke" (fast, run on every build), "full" (daily), "balance" (many runs), "menus"
   description?: string;  // optional: what it does, and the content options it takes ("options: stage, fighter")
+  starts?: string[];     // optional: the start points it takes in options.at ("chapter-3", "level-7", "boss")
 };
 
 type State = {
@@ -76,6 +77,15 @@ type Report = {
   `options`, or the second line of an agent's `.hawkes/scenario.txt`) so a playtest plays new content: Dose Of
   Destruction takes `{ "stage": "<id>", "fighter": "<id>" }` (Sick Of It needs none: `level-<n>` per level). Ignore keys you don't
   know; list the ones you take in the scenario's `description`. Not a contract version change.
+- **Start points (`at`, optional):** `options.at` names where the scenario starts: a place, chapter or level
+  (`"chapter-3"`, `"level-7"`, `"gloob-house"`). The game loads or warps to that state (a named setup shortcut, like
+  "start at level 7"), logs `event('start-at', at)`, then the bot plays from there through real input. List the
+  names a scenario takes in its `starts`. A scenario that doesn't know the name (or a game without start points)
+  ignores it and plays from its start, exactly as without `at`. Agents give one on the second line of
+  `.hawkes/scenario.txt` (`{"at":"chapter-3"}`), so beta's check of a task plays only what its criteria need instead of
+  replaying the game from the beginning. Not a contract version change.
+- **Ten minutes at most for a check:** a scenario a beta check plays should finish within 10 minutes. Studio's run
+  step warns when one takes longer (and the task's agent is told): start it nearer with `at`.
 - **Never let the playtest code change what a player sees** when it isn't running.
 
 ## What the runner records
