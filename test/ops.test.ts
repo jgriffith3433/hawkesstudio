@@ -36,9 +36,9 @@ test('the queue: a burst is accepted at once; one per product, two in all; each 
     running--;
     return { n: p.n };
   });
-  const t0 = Date.now();
   const queued = ['a', 'a', 'b', 'c', 'c'].map((product, n) => ops.enqueue('test-live', { product, title: `test ${product} ${n}`, payload: { product, n } }));
-  assert.ok(Date.now() - t0 < 200, 'accepting five took too long');
+  // No timing (a busy machine, CI, can take a while over five inserts): accepted at once means none has run yet.
+  assert.ok(queued.every((q) => ops.getOp(q.id)!.status !== 'done'), 'enqueue waited for the work');
   await until(() => queued.every((q) => ops.getOp(q.id)!.status === 'done'));
   assert.ok(most <= 2, `ran ${most} at once`);
   assert.deepEqual(queued.map((q) => ops.getOp(q.id)!.result.n), [0, 1, 2, 3, 4]);
