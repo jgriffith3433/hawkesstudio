@@ -104,6 +104,7 @@ const server = http.createServer(async (req, res) => {
     if ((route === '/api/me' || route.startsWith('/api/users') || route.startsWith('/api/invites')) && (await (await import('./auth-pages.ts')).handleUsersApi(req, res, url))) return;
     // The shared memory (memory.ts, memory-api.ts): the Memory tab, the memory_* tools.
     if (route === '/api/memory' || route.startsWith('/api/memory/')) return await (await import('./memory-api.ts')).handleMemory(req, res, url, send, readJson);
+    if (route.startsWith('/api/analytics/')) return await (await import('./analytics.ts')).handleAnalyticsApi(req, res, url, send);
     if (route === '/api/config') return send(res, 200, { genUrl: process.env.GEN_PUBLIC_URL || 'http://127.0.0.1:8790' });
     if (route === '/api/health') {
       const ops = await import('./ops.ts');

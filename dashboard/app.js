@@ -35,8 +35,8 @@ tab = MOVED[tab] ?? tab;
 function show(t, sub) {
   t = MOVED[t] ?? t;
   tab = t;
-  // #changes/<id> (a link from the Activity panel) stays.
-  if (!sub && t === 'changes' && location.hash.startsWith('#changes/')) sub = location.hash.slice(t.length + 2);
+  // #changes/<id> (a link from the Activity panel) and #analytics/<product> (a game's page) stay.
+  if (!sub && (t === 'changes' || t === 'analytics') && location.hash.startsWith(`#${t}/`)) sub = location.hash.slice(t.length + 2);
   location.hash = sub ? `${t}/${sub}` : t;
   document.querySelectorAll('nav button[data-tab]').forEach((b) => b.classList.toggle('on', b.dataset.tab === t));
   document.querySelectorAll('.tab').forEach((s) => s.classList.toggle('on', s.id === t));
@@ -99,6 +99,7 @@ function studioContext() {
   let it = picked?.tab === tab ? picked : null;
   if (tab === 'playtests' && typeof pt !== 'undefined' && pt.open) it = { kind: 'playtest', id: pt.open, label: $('#ptDetail .pt-title')?.textContent.replace(/\s+/g, ' ').trim().slice(0, 120) };
   if (!it && tab === 'changes' && hashId) it = { kind: 'change', id: hashId };
+  if (!it && tab === 'analytics' && hashId) it = { kind: 'analytics of product', id: hashId };
   if (!it && tab === 'report' && $('#reportRun').value) it = { kind: 'report of run', id: $('#reportRun').value };
   if (!it && tab === 'runs' && openRun) it = { kind: 'run', id: openRun };
   return { tab: name, kind: it?.kind, id: it?.id, label: it?.label };
@@ -483,6 +484,7 @@ async function refresh() {
     if (tab === 'runs') await loadRuns();
     if (tab === 'changes') await loadChanges();
     if (tab === 'costs' && window.loadCosts) await window.loadCosts();
+    if (tab === 'analytics' && window.loadAnalyticsTab) await window.loadAnalyticsTab();
     if (tab === 'golive' && window.loadGoLiveTab) await window.loadGoLiveTab();
     if (tab === 'library' && window.loadLibraryTab) await window.loadLibraryTab();
     if (tab === 'settings' && window.loadSettingsTab) await window.loadSettingsTab();
