@@ -77,6 +77,8 @@ function readState(): State {
     return {};
   }
 }
+/** What the beta site of a product serves now (its sha and when it was published), or is being rebuilt. */
+export const betaPreview = (product: string): Preview | null => readState()[product]?.beta ?? null;
 function record(product: string, change: string | undefined, v: Preview | null) {
   const s = readState();
   const e = (s[product] ??= {});

@@ -45,6 +45,8 @@ import { buildErrors, pickCulprit } from './buildblame.ts';
 import { curationLine } from './memory.ts';
 import { filesIn, type WorkShape } from './parallel.ts';
 import { WALK_DEFAULTS, WALK_AWAY_BY, walkAwayOn, type WalkAwaySettings } from './walkaway.ts';
+import { getFinding, updateFinding, takenBy } from './backlog.ts';
+import { waitsForCurrentBuild } from './bugreport.ts';
 
 // ---------------------------------------------------------------- settings
 
@@ -610,7 +612,7 @@ async function taskShape(t: Task): Promise<WorkShape> {
 export async function startWork() {
   const s = pmSettings();
   if (!s.enabled || !process.env.GITHUB_TOKEN) return [];
-  const { agentSettings, startFix, DECIDED } = await changes();
+  const { agentSettings, startFix, DECIDED, ALREADY } = await changes();
   if (!agentSettings().enabled) return [];
   // A Studio or Gen deploy waiting for agents to finish: start nothing new until it's through.
   const { selfDeploys } = await import('./selfdeploy.ts');
@@ -641,8 +643,9 @@ export async function startWork() {
   let cap = capacity();
   // J's own reports from the beta sites (bugreport.ts) come first: before roadmap tasks and the reviews' bugs.
   const startBug = (f: any, why: string) => {
-    // An agent that changed nothing because J already decided it (DECIDED, agents.ts) didn't fail a try.
-    const tries = (db.prepare(`SELECT COUNT(*) AS n FROM changes WHERE findings LIKE ? AND COALESCE(detail, '') NOT LIKE ?`).get(`%"${f.id}"%`, `${DECIDED}%`) as any).n as number;
+    // An agent that changed nothing because J already decided it (DECIDED, agents.ts), or because it was already done
+    // (ALREADY: e.g. the error came from a build older than the fix), didn't fail a try.
+    const tries = (db.prepare(`SELECT COUNT(*) AS n FROM changes WHERE findings LIKE ? AND COALESCE(detail, '') NOT LIKE ? AND COALESCE(detail, '') NOT LIKE ?`).get(`%"${f.id}"%`, `${DECIDED}%`, `${ALREADY}%`) as any).n as number;
     if (tries >= s.maxTries) {
       // Out of attempts: J decides, once per round of attempts (not again each minute after he has answered).
       const last = (db.prepare(`SELECT MAX(created) AS t FROM changes WHERE findings LIKE ?`).get(`%"${f.id}"%`) as any).t ?? 0;
@@ -686,9 +689,23 @@ export async function startWork() {
   if (s.fixBugs && cap.free > 0) {
     // The worst open bugs not tried 3 times, one per product, in products without a task waiting.
     const bugs = db.prepare(`SELECT * FROM findings WHERE status = 'open' AND severity IN ('blocker', 'bug') AND COALESCE(source, '') != 'J' ORDER BY CASE severity WHEN 'blocker' THEN 0 ELSE 1 END, seen DESC, last_seen DESC LIMIT 40`).all() as any[];
+    const { betaPreview } = await import('./previews.ts');
     for (const f of bugs) {
       if (cap.free <= 0) break;
       if (isInfra(f.product) || waiting.some((t) => t.product === f.product) || await slotHeld(f.product, { text: f.title })) continue;
+      // An automatic error report from a beta build older than a fix waits for the current build to catch it again.
+      if (f.source === 'auto') {
+        const beta = betaPreview(f.product);
+        if (beta?.status === 'building') continue; // which build beta serves is known once it's published
+        const held = waitsForCurrentBuild(f, beta);
+        if (held) {
+          if (f.note !== held) {
+            updateFinding(f.id, { note: held });
+            logDecision('hold', f.id, f.product, `"${f.title}": ${held}`.slice(0, 1500));
+          }
+          continue;
+        }
+      }
       try {
         const id = startBug(f, '');
         if (!id) continue;
@@ -1291,8 +1308,37 @@ export async function settleMissQuestions() {
   return out;
 }
 
+/**
+ * Questions about a bug that no longer need J (q_ef8448c712e3, 2026-10-19: "failed 3 attempts" for an error already
+ * fixed): an open bug whose every attempt said it was already done (ALREADY, agents.ts; from before such attempts
+ * marked it fixed themselves) is fixed with the last one's word; then a question about a bug that is fixed, won't-fix
+ * or an idea, with no agent on it, is settled. Returns the questions it settled.
+ */
+export async function settleFindingQuestions() {
+  const { ALREADY } = await changes();
+  const out: string[] = [];
+  for (const q of listQuestions().filter((x) => x.subject?.startsWith('f_'))) {
+    let f = getFinding(q.subject!);
+    if (!f || takenBy(f.id)) continue;
+    if (f.status === 'open') {
+      const cs = db.prepare(`SELECT id, detail, summary FROM changes WHERE findings LIKE ? ORDER BY created DESC`).all(`%"${f.id}"%`) as any[];
+      if (cs.length && cs.every((c) => String(c.detail ?? '').startsWith(ALREADY))) {
+        updateFinding(f.id, { status: 'fixed', note: `agent ${cs[0].id}: ${ALREADY}: ${String(cs[0].summary ?? '').slice(0, 200)}` });
+        logDecision('already-done', f.id, f.product, `"${f.title}": all ${cs.length} attempt(s) found it already done (${cs.map((c) => c.id).join(', ')}): marked fixed`);
+        f = getFinding(f.id)!;
+      }
+    }
+    if (!['fixed', 'wontfix', 'idea'].includes(f.status)) continue;
+    const what = f.status === 'fixed' ? 'fixed' : f.status === 'wontfix' ? "won't fix" : 'an idea now';
+    setQuestion(q.id, { status: 'resolved', answer: `(no longer needed: ${f.id} is ${what}${f.note ? `: ${String(f.note).slice(0, 300)}` : ''})`, answered_by: 'Studio' });
+    logDecision('settle', f.id, f.product, `settled ${q.id} ("${q.text.slice(0, 120)}"): no longer needed, ${f.id} is ${what}`);
+    out.push(q.id);
+  }
+  return out;
+}
+
 /** Decisions walk-away mode and the PM made on their own (the daily digest). */
-const SELF_DECIDED = ['walk-away', 'retry', 'park', 'investigate', 'recheck', 'gpu auto-approve', 'merge', 'revise', 'answer', 'start', 'wontfix', 'duplicate', 'link', 'conflict', 'rescue', 'rescue-retry', 'already-done', 'blocker', 'reconcile', 'stall'];
+const SELF_DECIDED = ['hold', 'settle', 'walk-away', 'retry', 'park', 'investigate', 'recheck', 'gpu auto-approve', 'merge', 'revise', 'answer', 'start', 'wontfix', 'duplicate', 'link', 'conflict', 'rescue', 'rescue-retry', 'already-done', 'blocker', 'reconcile', 'stall'];
 
 /**
  * Once a day (after dailyHour) in walk-away mode: one line per kind of what the PM decided by itself in the last day,
@@ -2003,6 +2049,7 @@ export async function tick() {
       }
     }
     lastError = failed;
+    await settleFindingQuestions().catch((e) => console.warn(`[pm] settling bug questions: ${e.message ?? e}`));
     const s = pmSettings();
     // Walk-away mode: ready Studio/Gen changes merge by themselves once green, and the daily digest (agents.ts, above).
     if (s.walkAway) {

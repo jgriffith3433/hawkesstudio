@@ -311,6 +311,33 @@ export async function fileAutoError(productId: string, b: ErrorIn, ip = '') {
   return { ok: true, id, seen: Boolean(old) };
 }
 
+/** A short and a full sha of the same commit match. */
+const sameSha = (a: string, b: string) => { const x = a.toLowerCase(), y = b.toLowerCase(); return x.startsWith(y) || y.startsWith(x); };
+
+/**
+ * Why an automatic error report waits instead of starting an agent, or null to start one (J, 2026-10-19: three agents
+ * in a row found f_7f4ff7149602 came from a build before the fix). It waits when its latest sample was caught on a
+ * beta build older than the one beta serves now (`beta`: previews.ts betaPreview) and a change merged in between, so
+ * the fix may already be on beta: an agent starts only once the current build catches the same signature again
+ * (fileAutoError keeps the latest sample). A change's own preview (/c/<id>/) or a sample without a build never waits.
+ */
+export function waitsForCurrentBuild(f: { product: string; source?: string | null; report?: string | null }, beta: { sha?: string | null; at: number; status?: string } | null): string | null {
+  if (f.source !== 'auto' || !beta?.sha || beta.status !== 'ready') return null;
+  const r = parse(f.report ?? null) as Report | null;
+  const b = r?.build;
+  if (!b?.sha || b.change || sameSha(b.sha, beta.sha)) return null;
+  const built = Number(b.built) || r!.at || 0;
+  if (!built || built >= beta.at) return null;
+  let merged: { id: string } | undefined;
+  try {
+    merged = db.prepare(`SELECT id FROM changes WHERE product = ? AND status = 'merged' AND merged_at > ? AND merged_at <= ? ORDER BY merged_at DESC LIMIT 1`).get(f.product, built, beta.at) as any;
+  } catch {
+    return null; // no changes table (agents.ts not loaded)
+  }
+  if (!merged) return null;
+  return `waiting to see it on the current build: caught on ${b.ref || 'beta'} (${b.sha.slice(0, 7)}), older than beta's build ${beta.sha.slice(0, 7)}, and ${merged.id} merged since; an agent starts if the current build catches it again`;
+}
+
 const kindOf = (e: NonNullable<ErrorIn['error']>) => (['error', 'rejection', 'console'].includes(String(e.kind)) ? String(e.kind) : 'error');
 
 function sampleOf(b: ErrorIn, message: string, stack: string, now: number): Report {
