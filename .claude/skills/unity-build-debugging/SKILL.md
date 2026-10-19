@@ -36,3 +36,7 @@ nobody builds Unity on the control server (Linux) or on J's laptop (too slow).
   isn't built again (`.work/<change>-site.json` records it).
 
 Never edit `Library/`, `Temp/`, `obj/` or `Game/v*` by hand, and keep `.meta` files with their assets.
+
+A build that fails right after a merge into beta: look for a broken merge before anything else (conflict markers in a
+`.unity`, `.prefab`, `.asset` or `.cs` file, a `.meta` left behind or duplicated GUIDs, an LFS pointer committed as
+text). The unity-web-games-howto and sickofit-howto skills have the rules for several agents in one repo.

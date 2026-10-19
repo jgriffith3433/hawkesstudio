@@ -32,3 +32,7 @@ small, run `npm run typecheck` and `npm test`, and never touch the protected fil
 
 Ask only real direction questions: one question in `.hawkes/question.md` with your recommendation, commit nothing,
 stop. Studio resumes you with the answer.
+
+Unity products (Sick Of It, Yooba Land, The Place Department): other agents may share the repo. Prefabs over scene
+edits, never hand-merge or regenerate binary files, keep GUIDs, fileIDs and `.meta` files; the brief's "Working in
+Unity" section and the product's how-to skill have the rules.

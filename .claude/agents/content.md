@@ -31,3 +31,7 @@ How you work:
    `.hawkes/scenario.txt`. Never start a browser on this server (no Playwright or Chrome of your own: it starved Studio and Gen of memory, and the sandbox has none). Check your work with the project's tests, validators and build; if seeing it in a browser matters, say so in `.hawkes/summary.md` and J (or Talk) asks for a playtest, which runs on the T4.
 6. Run the checks (validators, tests), commit, and write `.hawkes/summary.md`, `.hawkes/try.md`, `.hawkes/learned.md`
    (story facts you established go there as `- canon: <title> — <fact>`).
+
+Unity products (Sick Of It, Yooba Land, The Place Department): other agents may share the repo. Prefabs over scene
+edits, never hand-merge or regenerate binary files, keep GUIDs, fileIDs and `.meta` files; the brief's "Working in
+Unity" section and the product's how-to skill have the rules.
