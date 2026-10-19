@@ -70,6 +70,39 @@ var ChangeStages = (() => {
   return { stages, stageAt, progress, barHtml };
 })();
 
+// A playtest's screenshots as a choppy video in an expanded run card (frames from src/frames.ts, GET /api/frames/<step>):
+// the rules of the player, pure so they are tested without a DOM (test/activity.test.ts). The DOM part is below.
+var FramePlayer = (() => {
+  /** About 3 frames a second. */
+  const FRAME_MS = 350;
+  /** New frames added to the ones the player has, by their number, in order. */
+  function merge(have, more) {
+    const by = new Map(have.map((f) => [f.i, f]));
+    for (const f of more ?? []) by.set(f.i, f);
+    return [...by.values()].sort((a, b) => a.i - b.i);
+  }
+  /**
+   * One tick of the player { idx, playing, follow, running } over n frames: following (live) shows the newest; playing
+   * steps on and, at the end, follows a running playtest or stops on a finished one.
+   */
+  function advance(p, n) {
+    if (!n) return { ...p, idx: 0 };
+    if (p.follow) return { ...p, idx: n - 1, playing: false };
+    if (!p.playing) return { ...p, idx: Math.min(p.idx, n - 1) };
+    if (p.idx < n - 1) return { ...p, idx: p.idx + 1 };
+    return p.running ? { ...p, idx: n - 1, playing: false, follow: true } : { ...p, idx: n - 1, playing: false };
+  }
+  /** "1:05" from seconds. */
+  const clock = (t) => (typeof t === 'number' ? `${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart(2, '0')}` : '');
+  /** What a frame says under it: the bot's progress line while following a running playtest, else why it was taken. */
+  function caption(f, p, progress) {
+    if (!f) return '';
+    if (p.follow && p.running && progress) return progress;
+    return f.caption || [f.reason, f.scene, f.peer].filter(Boolean).join(' · ');
+  }
+  return { FRAME_MS, merge, advance, clock, caption };
+})();
+
 if (typeof document !== 'undefined') (() => {
   const el = (s) => document.querySelector(s);
   const KEY = 'studio.activity';
@@ -110,7 +143,122 @@ if (typeof document !== 'undefined') (() => {
       <div class="act-now">${esc(r.detail ?? '')}${r.steps.total ? ` · ${r.steps.done}/${r.steps.total} steps${r.steps.failed ? `, ${r.steps.failed} failed` : ''}` : ''}</div>
       ${(r.now ?? []).map((s) => `<div class="act-step">▸ ${esc(s.kind)} ${esc(s.name)}${s.detail ? `: ${esc(s.detail)}` : ''} <span class="meta">${since(s.started)}${s.job ? ` · ${link(`${GEN}/#job/${s.job}`, 'job')}` : ''}</span></div>`).join('')}
       <div class="meta">by ${by(r)} · <a href="#" data-run-open="${esc(r.id)}">${esc(r.id)}</a>${r.cost ? ` · $${r.cost.toFixed(2)}` : ''}</div>
+      ${r.playtests?.length ? `<details class="act-frames" data-frames-run="${esc(r.id)}"${openRuns.has(r.id) ? ' open' : ''}><summary class="meta">🎞 screenshots · ${r.playtests.length} playtest${r.playtests.length === 1 ? '' : 's'}</summary>${r.playtests.map((p) => `<div class="fr-slot" data-frames="${esc(p.id)}"><div class="meta">${esc(p.product)} · ${esc(p.name)} · ${esc(p.status)}</div></div>`).join('')}</details>` : ''}
     </div>`;
+  }
+
+  // ---- the screenshots player (FramePlayer above): one per playtest step, kept across the drawer's redraws.
+  const openRuns = new Set(); // run cards J expanded
+  const players = new Map(); // step id -> player
+  let ticker = null;
+
+  function newPlayer(step) {
+    const p = { step, idx: 0, playing: false, follow: true, running: true, live: false, frames: [], progress: null, next: 0, busy: false, error: '', seen: false };
+    const box = document.createElement('div');
+    box.className = 'fr-player';
+    box.innerHTML = `<div class="fr-label meta"></div><div class="fr-view"><img alt="" hidden><div class="fr-empty meta"></div></div>
+      <div class="fr-bar"><button type="button" class="fr-play" title="Play / pause">▶</button><input type="range" min="0" max="0" value="0" aria-label="Frame"><span class="fr-time meta"></span><button type="button" class="fr-live" title="Follow the newest frame" hidden>● live</button></div>
+      <div class="fr-cap"></div>`;
+    p.el = box;
+    p.img = box.querySelector('img');
+    const range = box.querySelector('input');
+    box.querySelector('.fr-play').addEventListener('click', () => {
+      if (!p.frames.length) return;
+      if (!p.playing && p.idx >= p.frames.length - 1) p.idx = 0;
+      p.playing = !p.playing;
+      p.follow = false;
+      draw(p);
+      kick();
+    });
+    range.addEventListener('input', () => { p.idx = Number(range.value); p.playing = false; p.follow = false; draw(p); });
+    box.querySelector('.fr-live').addEventListener('click', () => { p.follow = true; p.playing = false; Object.assign(p, FramePlayer.advance(p, p.frames.length)); draw(p); });
+    return p;
+  }
+
+  async function fetchFrames(p) {
+    p.busy = true;
+    try {
+      const since = p.live && p.frames.length ? p.frames[p.frames.length - 1].i : null;
+      const r = await api(`/api/frames/${encodeURIComponent(p.step)}${since !== null ? `?since=${since}` : ''}`);
+      if (r.error) throw new Error(r.error);
+      // Gen's live route came (or went): start over from what it has.
+      const had = r.live === p.live ? p.frames.length : 0;
+      p.frames = FramePlayer.merge(since !== null && r.live === p.live ? p.frames : [], r.frames);
+      const wasRunning = p.running;
+      p.live = r.live;
+      p.running = r.running;
+      p.progress = r.progress;
+      p.error = '';
+      // Opened after it ended (or its screenshots only came at the end): play them from the start. Watched live to
+      // its end: stay on the last frame.
+      if (!p.running && (!p.seen || wasRunning)) {
+        p.follow = false;
+        if (!p.seen || !had) { p.idx = 0; p.playing = p.frames.length > 1; }
+        else p.idx = p.frames.length - 1;
+      }
+      p.seen = true;
+      p.next = p.running ? Date.now() + (p.live ? 2000 : 8000) : Infinity;
+    } catch (e) {
+      p.error = `couldn't load the screenshots: ${e.message}`;
+      p.next = Date.now() + 10_000;
+    }
+    p.busy = false;
+    draw(p);
+  }
+
+  function draw(p) {
+    const n = p.frames.length;
+    const f = p.frames[Math.min(p.idx, n - 1)];
+    const q = (s) => p.el.querySelector(s);
+    q('.fr-empty').textContent = n ? '' : p.error || (!p.seen ? 'loading…' : p.running ? (p.live ? "The bot's first screenshot comes in a few seconds." : 'Its screenshots show here when this playtest ends (Hawkes Gen does not stream them yet).') : 'No screenshots in this playtest.');
+    q('.fr-empty').hidden = Boolean(n);
+    p.img.hidden = !n;
+    if (f) {
+      const src = f.src ?? file(f.asset);
+      if (p.img.dataset.full !== src) { p.img.src = src; p.img.dataset.full = src; }
+      const after = p.frames[p.idx + 1];
+      if (p.playing && after) new Image().src = after.src ?? file(after.asset); // the next frame ready before its turn
+    }
+    const range = q('input');
+    range.max = String(Math.max(0, n - 1));
+    range.value = String(Math.min(p.idx, Math.max(0, n - 1)));
+    range.disabled = n < 2;
+    q('.fr-play').textContent = p.playing ? '⏸' : '▶';
+    q('.fr-play').disabled = n < 2;
+    q('.fr-time').textContent = f ? `${FramePlayer.clock(f.t)} · ${Math.min(p.idx, n - 1) + 1}/${n}` : '';
+    const live = q('.fr-live');
+    live.hidden = !(p.running && p.live);
+    live.classList.toggle('on', p.follow);
+    q('.fr-cap').textContent = p.error && n ? p.error : FramePlayer.caption(f, p, p.progress);
+  }
+
+  /** The players J can see now: in an expanded card of the open drawer, on a visible page. */
+  const shown = () => (open && !document.hidden ? [...players.values()].filter((p) => p.el.isConnected && p.el.closest('details')?.open) : []);
+  function frameTick() {
+    const list = shown();
+    if (!list.length) { clearInterval(ticker); ticker = null; return; }
+    for (const p of list) {
+      if (!p.busy && Date.now() >= p.next) fetchFrames(p);
+      const was = `${p.idx}|${p.playing}|${p.follow}`;
+      Object.assign(p, FramePlayer.advance(p, p.frames.length));
+      if (`${p.idx}|${p.playing}|${p.follow}` !== was) draw(p);
+    }
+  }
+  function kick() {
+    if (!ticker && shown().length) { ticker = setInterval(frameTick, FramePlayer.FRAME_MS); frameTick(); }
+  }
+  /** After a redraw: each expanded card's slots get their players back (made on first sight); gone ones are dropped. */
+  function mountPlayers() {
+    for (const slot of document.querySelectorAll('#actBody .act-frames[open] .fr-slot')) {
+      const id = slot.dataset.frames;
+      let p = players.get(id);
+      if (!p) { p = newPlayer(id); players.set(id, p); }
+      p.el.querySelector('.fr-label').textContent = slot.textContent;
+      slot.replaceChildren(p.el);
+      draw(p);
+    }
+    for (const [id, p] of players) if (!p.el.isConnected) players.delete(id);
+    kick();
   }
   const jobHtml = (j) => `<div class="act-item">
       <div class="act-top">${ICON[j.status] ?? '•'} <b>${esc(j.tool)}</b> ${esc(j.project)} <span class="pill">${esc(j.status)}</span><span class="act-time">${since(j.started ?? j.created)}</span></div>
@@ -156,6 +304,7 @@ if (typeof document !== 'undefined') (() => {
       a.talk.length ? section('Talk', a.talk.length, a.talk.map((t) => `<div class="act-item"><div class="act-top">💬 <a href="?conversation=${esc(t.id)}#talk" data-talk="${esc(t.id)}">${esc(t.title ?? 'New conversation')}</a><span class="act-time">${since(t.since)}</span></div><div class="act-now">${t.auto ? 'Claude is explaining results Studio brought back' : 'Claude is answering'}</div></div>`).join('')) : '',
       a.recent.length ? `<details class="act-recent" ${el('.act-recent')?.open !== false ? 'open' : ''}><summary><b>Finished in the last 15 min</b> <span class="meta">${a.recent.length}</span></summary>${a.recent.map((x) => (x.type === 'change' ? changeHtml(x, true) : runHtml(x, true))).join('')}</details>` : '',
     ].join('');
+    mountPlayers();
   }
 
   /** The drawer's contents (only while it is open and the page visible; the badge comes with the stream's events). */
@@ -185,6 +334,16 @@ if (typeof document !== 'undefined') (() => {
     if (v && last) render(last, true);
     tick();
   }
+
+  // Expanding a run card starts its players; collapsing it (or hiding the page) stops them asking.
+  el('#activity').addEventListener('toggle', (e) => {
+    const d = e.target;
+    if (!d.matches?.('.act-frames')) return;
+    if (d.open) openRuns.add(d.dataset.framesRun);
+    else openRuns.delete(d.dataset.framesRun);
+    mountPlayers();
+  }, true);
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) kick(); });
 
   el('#actBtn').addEventListener('click', () => setOpen(!open));
   el('#actClose').addEventListener('click', () => setOpen(false));

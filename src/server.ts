@@ -21,6 +21,7 @@ import { gitState, stopServers } from './local.ts';
 import { gen, genUp } from './gen.ts';
 import { listPreviews, buildPreview, previewUrl } from './previews.ts';
 import { listPlaytests, getPlaytest, fileLink, trends } from './playtests.ts';
+import { stepFrames, frameImage } from './frames.ts';
 import { handleMcp } from './mcp-http.ts';
 import { listDev, devStatus, startDev, stopDev, flushDev, resolveDev, sinceLive, startDevService } from './dev.ts';
 import { startFronts } from './dev-front.ts';
@@ -190,6 +191,19 @@ const server = http.createServer(async (req, res) => {
       if (!link) return send(res, 404, { error: `no ${m[2]} for this playtest` });
       res.writeHead(302, { Location: link, 'Cache-Control': 'no-store' });
       return res.end();
+    }
+    // A playtest step's screenshots as frames (frames.ts): the Activity run card's choppy-video player.
+    m = /^\/api\/frames\/(s_[0-9a-f]+)(?:\/(\d+))?$/.exec(route);
+    if (m && method === 'GET' && !m[2]) {
+      const since = Number(q('since') ?? NaN);
+      return send(res, 200, (await stepFrames(m[1], Number.isInteger(since) ? since : undefined)) ?? { error: 'no such playtest' });
+    }
+    if (m && method === 'GET') {
+      const img = await frameImage(m[1], Number(m[2]));
+      if (!img) return send(res, 404, { error: 'no such frame' });
+      // A frame never changes once taken (a temporary file while the job runs, the filed asset after).
+      res.writeHead(200, { 'Content-Type': img.type, 'Content-Length': img.body.length, 'Cache-Control': 'private, max-age=86400' });
+      return res.end(img.body);
     }
 
     // Backlog.

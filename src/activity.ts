@@ -68,6 +68,8 @@ function runRow(r: any) {
     cost: r.cost ?? 0, origin: r.origin ?? null, by, where: opts.where ?? null,
     steps: { total: steps.length, done: steps.filter((s) => s.status !== 'running').length, failed: steps.filter((s) => s.status === 'failed').length },
     now: steps.filter((s) => s.status === 'running').map((s) => ({ product: s.product, kind: s.kind, name: s.name, detail: s.detail, job: s.job, started: s.started })),
+    // Its playtests, for the screenshots player when J expands the card (frames.ts, GET /api/frames/<id>).
+    playtests: steps.filter((s) => s.kind === 'playtest').map((s) => ({ id: s.id, product: name(s.product), name: s.name, status: s.status, job: Boolean(s.job) })),
   };
 }
 
