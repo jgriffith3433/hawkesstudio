@@ -2246,6 +2246,8 @@ function turnRunning() {
 
 let ticking = false;
 let lastError: string | null = null;
+/** Whether a pass is running now (a tick() meanwhile does nothing): tests wait for the loop's own pass to end. */
+export const pmTicking = () => ticking;
 export async function tick() {
   if (ticking || !started) return;
   ticking = true;

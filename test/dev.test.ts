@@ -23,7 +23,18 @@ process.env.DEV_GEN_KEY = 'hg_test_dev_key';
 process.env.SOME_API_KEY = 'must-not-reach-the-dev-server';
 fs.mkdirSync(PROJECTS, { recursive: true });
 
-const base = 47100 + Math.floor(Math.random() * 400) * 2;
+// Ports below Linux's ephemeral range (32768+: a busy run's outgoing connections take those) and checked free, so a
+// front door never meets EADDRINUSE: base..base+5 (fronts, dev servers), base+900..902 (local serve).
+const free = (port: number) => new Promise<boolean>((resolve) => {
+  const s = net.createServer().once('error', () => resolve(false)).listen(port, '127.0.0.1', () => s.close(() => resolve(true)));
+});
+let base = 0;
+for (let tries = 0; !base && tries < 50; tries++) {
+  const b = 21000 + Math.floor(Math.random() * 5000) * 2;
+  const ports = [0, 1, 2, 3, 4, 5, 900, 901, 902].map((o) => b + o);
+  if ((await Promise.all(ports.map(free))).every(Boolean)) base = b;
+}
+assert.ok(base, 'free ports for the dev fixtures');
 const product = (id: string, i: number) => ({
   id, name: `Dev ${id}`, framing: 'test', engine: 'web', repo: id, site: id, live: 'http://127.0.0.1:9/',
   local: { serve: 'npm', dir: id, port: base + 900 + i, path: '/' }, playtests: [], story: [], about: 'A fixture.',

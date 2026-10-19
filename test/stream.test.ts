@@ -88,7 +88,8 @@ test('hello, talk changes and the watcher reach a connected page', async () => {
     assert.equal(stream.streamClients(), 1);
   } finally {
     page.close();
-    await new Promise((r) => setTimeout(r, 100));
+    // The server hears the page go away on its own time (slower on a busy CI machine).
+    for (let i = 0; i < 60 && stream.streamClients() > 0; i++) await new Promise((r) => setTimeout(r, 50));
     server.close();
   }
   assert.equal(stream.streamClients(), 0, 'the page went away');
