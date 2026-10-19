@@ -153,6 +153,14 @@ the URL instead: `https://studio.hawkesgen.com/mcp/hs_...` and `https://gen.hawk
 **is** the password: don't paste it anywhere shared. To revoke a Gen key, disable it (Gen dashboard → Keys); for the
 Studio key, delete the `STUDIO_MCP_KEY` line on the server, run `deploy.mjs` again (it makes a new one) and update clients.
 
+**Public on gen.hawkesgen.com (Hawkes Analytics):** two paths skip the login so players' browsers can use them:
+`POST /v1/analytics/collect` (and its `OPTIONS` preflight; bodies over 64 KB get 413 from Caddy) and `GET /sdk/*`
+(the SDK script; `Cache-Control: public, max-age=3600` unless Gen sends its own). Caddy sets `X-Forwarded-For` to
+the address it saw (Gen's GeoIP and rate limit read it) and drops any `Authorization` or `Cookie` header, so the web
+key never reaches those routes. Gen does the rest (allowed origins per product, validation; hawkesgen
+`docs/analytics.md`). Everything else on gen still needs the login or an `hg_` key; `test/caddyfile.test.ts` checks
+both. Changing them needs `node deploy/deploy.mjs --caddy-only` from J's PC.
+
 Give each place its own Gen key (`hawkesgen.cmd key claude-ai --role owner`), so one can be turned off alone.
 Over HTTP, Gen outputs come back as `https://gen.hawkesgen.com/v1/files/<asset>` links (they need the key or the login),
 and inputs must be `asset:<id>` or `blob:<sha>` (`save_to` and `workflow_file` only work with the local server).

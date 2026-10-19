@@ -572,6 +572,38 @@ gen.${domain} {
 			flush_interval -1
 		}
 	}
+	# Hawkes Analytics (hawkesgen docs/analytics.md): players' browsers send events with no login, so only these two
+	# are public. Gen checks the origin against its product registry, the body (64 KB) and the rate per address; its
+	# GeoIP reads the last X-Forwarded-For entry, set here to the address Caddy saw. No key is added, and any sent is dropped.
+	@collect {
+		method POST OPTIONS
+		path /v1/analytics/collect
+	}
+	handle @collect {
+		request_body {
+			max_size 64KB
+		}
+		reverse_proxy 127.0.0.1:8790 {
+			header_up -Authorization
+			header_up -Cookie
+			header_up X-Forwarded-For {remote_host}
+		}
+	}
+	# The analytics SDK script the pages load (cacheable; Gen's own Cache-Control wins when it sends one).
+	@sdk {
+		method GET HEAD
+		path /sdk/*
+	}
+	handle @sdk {
+		request_body {
+			max_size 1KB
+		}
+		header ?Cache-Control "public, max-age=3600"
+		reverse_proxy 127.0.0.1:8790 {
+			header_up -Authorization
+			header_up -Cookie
+		}
+	}
 	handle {
 		import login
 		reverse_proxy 127.0.0.1:8790 {
