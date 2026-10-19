@@ -12,7 +12,7 @@ delete process.env.TALK_CLAUDE_ARGS;
 delete process.env.HAWKES_BRAIN;
 
 const { claudeCommand } = await import('../src/sandbox.ts');
-const { brainSettings, saveBrain } = await import('../src/brains.ts');
+const { brainSettings, saveBrain, harnessBlocked } = await import('../src/brains.ts');
 const { saveSettings, allSettings } = await import('../src/settings.ts');
 const { parseClaudeArgs, cursorArgs, translate } = await import('../bin/cursor-agent.mjs');
 
@@ -38,6 +38,12 @@ test('an old grok setting is the Cursor harness on Grok 4.7', () => {
   assert.equal(brainSettings().harness, 'cursor');
   assert.equal(brainSettings().model, 'grok-4.7');
   saveBrain('claude');
+});
+
+test('a usage cap or a missing login is a harness stop, not a diagnosis', () => {
+  assert.equal(harnessBlocked("You've hit your weekly limit · resets Oct 23, 1pm (UTC)"), true);
+  assert.equal(harnessBlocked('Error: Authentication required. Please run \'agent login\' or set CURSOR_API_KEY'), true);
+  assert.equal(harnessBlocked('The bridge cutscene is already on beta and the boss scenario covers it.'), false);
 });
 
 test('Cursor events become Claude Code events', () => {

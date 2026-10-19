@@ -45,6 +45,14 @@ export function brainSettings(): { harness: Harness; model: string; id: Harness;
 export const brainId = (): Harness => brainSettings().harness;
 export const brainLabel = () => (brainId() === 'cursor' ? 'Cursor' : 'Claude');
 
+/**
+ * The harness refused to run: a usage cap or no login. That is not a diagnosis and not the agent's try
+ * (a scout report that is only this must not be pasted into the next brief).
+ */
+export function harnessBlocked(text: string) {
+  return /weekly limit|Authentication required|agent login|CURSOR_API_KEY|hit your (usage|rate) limit/i.test(String(text ?? ''));
+}
+
 export function saveBrain(patch: string | { harness?: string; model?: string; id?: string }, by = 'J') {
   const asked = typeof patch === 'string' ? patch : (patch.harness ?? patch.id);
   if (asked !== undefined && asked !== 'claude' && asked !== 'cursor' && asked !== 'grok') throw new Error('harness: claude | cursor');

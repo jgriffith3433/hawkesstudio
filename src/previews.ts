@@ -351,8 +351,12 @@ export function keptGameVersions(published: number[], old: number[], since: Reco
   const gone = old.filter((v) => v < newest && !published.includes(v)).sort((a, b) => b - a);
   const out: Record<string, number> = {};
   gone.forEach((v, i) => {
-    const at = since[v] ?? now;
-    if (i === 0 || now - at < KEEP_OLD_BUILD_MS) out[v] = at;
+    const recorded = since[v];
+    // The build beta just left always stays. Older ones stay only for a day after they were recorded as old.
+    // A version with no record was never "just retired": leasing it `now` kept every historical Game/v for a day
+    // (Sick Of It v171–v191 and Yooba v10–v83 on 2026-10-19).
+    if (i === 0) out[v] = recorded ?? now;
+    else if (recorded != null && now - recorded < KEEP_OLD_BUILD_MS) out[v] = recorded;
   });
   return out;
 }

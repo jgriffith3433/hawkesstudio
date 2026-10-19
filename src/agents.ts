@@ -65,7 +65,7 @@ import { launch, DetachedChild, detachedActivity, stopDetached, type DetachRec }
 import { warmDeps, installCold, markInstalled } from './warm.ts';
 import { ensureGpuFor, needsGpu } from './gpustart.ts';
 import { walkAwayOn, WALK_AWAY_BY } from './walkaway.ts';
-import { brainId, brainLabel } from './brains.ts';
+import { brainId, brainLabel, harnessBlocked } from './brains.ts';
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS changes (
@@ -238,6 +238,28 @@ export const studioFailed = (c: { status: string; phase?: unknown }) => c.status
 export const STUDIO_FAILED_SQL = `(status = 'failed' AND COALESCE(phase, '') LIKE '%"failed":true%')`;
 /** Why a change with no commit failed: already done (ALREADY), else `why`. */
 const noCommitDetail = (summary: string, why: string) => (alreadyDone(summary) ? `${ALREADY} (the agent made no commit)` : why);
+/**
+ * A usage cap or a missing login, when the agent did not find the work already done. Studio's failure
+ * (phase.failed): not a try, and not a scout diagnosis.
+ */
+function harnessStop(result: string, summary: string) {
+  if (alreadyDone(summary) || decidedNoChange(summary)) return null;
+  if (!harnessBlocked(`${result}\n${summary}`)) return null;
+  const line = `${result}\n${summary}`.split('\n').map((l) => l.trim()).find((l) => harnessBlocked(l)) || 'the harness stopped the agent';
+  return `the harness stopped the agent: ${line.slice(0, 180)}`;
+}
+/** A failed change with no commits and a clean tree: the worktree is only a copy of the base. Remove it. */
+async function dropEmptyWorktree(id: string, commits: string[]) {
+  if (commits.length) return;
+  const c = getChange(id);
+  if (!c?.worktree || !fs.existsSync(c.worktree)) return;
+  try {
+    if (uncommitted(c.worktree)) return;
+  } catch {
+    return;
+  }
+  await cleanup(id).catch((e) => addLog(id, `worktree cleanup: ${String(e?.message ?? e).slice(0, 200)}`));
+}
 
 /**
  * Where a change's work is, recorded as it goes so a Studio restart (a deploy) doesn't redo it: the steps in order
@@ -1307,12 +1329,24 @@ async function work(id: string, note?: string, answer?: string, resumed?: Phase 
         if (decidedNoChange(summary)) {
           for (const f of findings) if (heldBy(getFinding(f.id), id)) updateFinding(f.id, { status: 'fixed', note: `agent ${id}: ${DECIDED}: ${summary.slice(0, 200)}` });
           update(id, { status: 'failed', detail: `${DECIDED} (the agent made no commit)`, summary, commits, phase: null });
+          await dropEmptyWorktree(id, commits);
           return;
         }
-        if (fixAlreadyDone(id, c, findings.map((f) => f.id), summary, commits)) return;
+        if (fixAlreadyDone(id, c, findings.map((f) => f.id), summary, commits)) {
+          await dropEmptyWorktree(id, commits);
+          return;
+        }
+        const stopped = harnessStop(ph.result ?? '', summary);
+        if (stopped) {
+          reopenTaken(id, findings.map((f) => f.id), stopped);
+          update(id, { status: 'failed', detail: stopped, summary, commits, phase: { step: 'agent', failed: true } });
+          await dropEmptyWorktree(id, commits);
+          return;
+        }
         const why = noCommitWhy(c.worktree, ph);
         reopenTaken(id, findings.map((f) => f.id), `${why}: ${summary.slice(0, 120)}`);
         update(id, { status: 'failed', detail: noCommitDetail(summary, why), summary, commits, phase: null });
+        await dropEmptyWorktree(id, commits);
         return;
       }
       if ((note || answer) && !changedNow) addLog(id, 'no new commit this pass; checking the branch again');
@@ -1610,14 +1644,15 @@ export function guardFiles(target: string, files: string[], words: string) {
   return out;
 }
 
-/** The environment of an infra agent and its checks: no GitHub, AWS or other service keys (Claude's own login stays for the agent). */
+/** The environment of an infra agent and its checks: no GitHub, AWS or other service keys (the harness login stays for the agent). */
 const SECRET = /(KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|AWS_|ANTHROPIC|ELEVENLABS|OPENAI|GITHUB|CLAUDE|STRIPE|SMTP)/i;
-function infraEnv({ agent = false, keepGenKey = true } = {}) {
+export function infraEnv({ agent = false, keepGenKey = true } = {}) {
   const env: Record<string, string> = {};
   for (const [k, v] of Object.entries(agent ? claudeEnv() : process.env)) {
     if (v === undefined) continue;
-    const claude = agent && /^(CLAUDE_CODE_OAUTH_TOKEN|ANTHROPIC_API_KEY)$/.test(k);
-    if (!SECRET.test(k) || claude || (keepGenKey && k === 'HAWKESGEN_KEY')) env[k] = v;
+    // CURSOR_API_KEY matches SECRET (KEY). Product agents keep it via sandbox.ts; Studio and Gen agents go through here.
+    const login = agent && /^(CLAUDE_CODE_OAUTH_TOKEN|ANTHROPIC_API_KEY|CURSOR_API_KEY)$/.test(k);
+    if (!SECRET.test(k) || login || (keepGenKey && k === 'HAWKESGEN_KEY')) env[k] = v;
   }
   // Not the server: a worktree must never act like the running Studio (repo syncs) or Gen (fleet access).
   delete env.STUDIO_SERVER;
@@ -1767,7 +1802,14 @@ async function workInfra(id: string, note?: string, resumed?: Phase | null, nudg
       }
       // A conflict pass that committed nothing isn't a failure: ready again, it conflicts again (its next pass, or J).
       if (!commits.length || (note && !changedNow && !ph.conflict)) {
-        update(id, { status: 'failed', detail: noCommitDetail(summary, noCommitWhy(c.worktree, ph)), summary, commits, phase: null });
+        const stopped = harnessStop(ph.result ?? '', summary);
+        update(id, {
+          status: 'failed',
+          detail: stopped ?? noCommitDetail(summary, noCommitWhy(c.worktree, ph)),
+          summary, commits,
+          phase: stopped ? { step: 'agent', failed: true } : null,
+        });
+        await dropEmptyWorktree(id, commits);
         return;
       }
       // Guard rails, before anything leaves the server.
@@ -2463,6 +2505,12 @@ export async function close(id: string, by = 'J') {
 }
 async function closeNow(c: Change, by: string) {
   const id = c.id;
+  // Closing while the agent is still in the worktree deletes the tree under it (ENOENT on .git). Stop it first.
+  const ph = phaseOf(id);
+  if (ph?.proc) {
+    stopDetached(ph.proc.rec);
+    addLog(id, 'stopping the agent before the worktree is removed');
+  }
   if (c.pr) await github(`/repos/${c.slug}/pulls/${c.pr}`, { method: 'PATCH', body: { state: 'closed' } }).catch(() => {});
   update(id, { status: 'closed', detail: `closed by ${by}`, notes: [...c.notes, { at: Date.now(), by, text: 'closed' }] });
   remember(id);

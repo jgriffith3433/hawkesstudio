@@ -11,6 +11,7 @@ import { db, newId } from './db.ts';
 import { PROJECTS, getProduct, getInfra, isInfra, storyOf, StudioError } from './config.ts';
 import { repoMap } from './repos.ts';
 import { claudeEnv } from './claude.ts';
+import { harnessBlocked } from './brains.ts';
 import { BETA, gitAsync } from './beta.ts';
 import { briefSection, recordRun } from './memory.ts';
 import { roleArgs } from './roles.ts';
@@ -114,8 +115,11 @@ ${mem.text ? `\n${mem.text}` : ''}${story ? `\nThe product's story, for tone:\n$
       child.on('close', () => { clearTimeout(timer); resolve({ result, cost }); });
       child.on('error', (e) => { clearTimeout(timer); resolve({ result: `(couldn't start Claude Code: ${e.message})`, cost: 0 }); });
     });
-    const ok = r.result.trim().length > 40;
-    set(id, { status: ok ? 'done' : 'failed', detail: ok ? 'reported' : 'no report', report: r.result.trim() || null, cost: r.cost, finished: Date.now() });
+    const text = r.result.trim();
+    // A usage cap or a login error is not a report. Leaving it as done pasted the cap into the next brief as a diagnosis.
+    const blocked = harnessBlocked(text);
+    const ok = !blocked && text.length > 40;
+    set(id, { status: ok ? 'done' : 'failed', detail: blocked ? 'the harness stopped the scout' : ok ? 'reported' : 'no report', report: ok ? text : null, cost: r.cost, finished: Date.now() });
   } catch (e: any) {
     set(id, { status: 'failed', detail: String(e.message ?? e).slice(0, 300), finished: Date.now() });
   } finally {

@@ -56,6 +56,7 @@ test('which old builds stay: always the one before the current, older ones for a
   assert.deepEqual(previews.keptGameVersions([55], [55], {}, now), {}, 'nothing old');
   assert.deepEqual(previews.keptGameVersions([55], [60], {}, now), {}, 'never a newer one');
   assert.deepEqual(previews.keptGameVersions([], [54], {}, now), {}, 'nothing published: nothing to keep next to');
+  assert.deepEqual(previews.keptGameVersions([191], [190, 189, 10], {}, now), { 190: now }, 'versions with no recorded time are not leased a fresh day');
 });
 
 test('a new beta build keeps the previous build published, cleaned after a day', async () => {
