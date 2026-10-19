@@ -5,6 +5,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import vm from 'node:vm';
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'studio-golive-fix-'));
 process.env.STUDIO_PROJECTS = path.join(tmp, 'Projects');
@@ -61,4 +62,35 @@ test('the beta build is rebuilt when the website main moved under it', () => {
   assert.equal(betaBuildCurrent({ ...b, ok: false }, 'h1', 'm1', true), false);
   assert.equal(betaBuildCurrent(null, 'h1', 'm1', true), false);
   assert.equal(betaBuildCurrent(b, 'h1', null, true), true, 'the website main unknown: the source decides');
+});
+
+// The cards' finished fix line (dashboard/golive.js FixResult), loaded the way the browser does, without a DOM.
+const page: any = {};
+vm.runInNewContext(fs.readFileSync(path.join(import.meta.dirname, '..', 'dashboard', 'golive.js'), 'utf8'), page);
+const F = page.FixResult;
+
+test('an old Play beta failure leaves the card once it no longer matters', () => {
+  const now = Date.parse('2026-10-19T12:00:00Z');
+  const h = 3600_000;
+  const failed = { action: 'beta', run: 'r_1', done: { ok: false, at: now - 2 * h, detail: 'playtest: failed' } };
+  const red = { now, red: true, fix: 'beta' };
+  assert.equal(F.show(failed, red), true, 'still red with the same fix: shown');
+  assert.equal(F.show(failed, { ...red, okSince: now - h }), false, 'a newer beta run or playtest passed');
+  assert.equal(F.show(failed, { ...red, okSince: now - 3 * h }), true, 'an older pass changes nothing');
+  assert.equal(F.show(failed, { now, red: false, fix: null }), false, 'the card has nothing to do (J\'s "Live is up to date")');
+  assert.equal(F.show(failed, { now, red: true, fix: null }), false, 'red, but no fix to offer');
+  assert.equal(F.show(failed, { ...red, now: now + 5 * h }), false, 'after 6 hours');
+  // Starting it failed: the same rules, from when it failed.
+  const error = { action: 'merge-main', error: 'merge failed', errorAt: now - h };
+  assert.equal(F.show(error, red), true);
+  assert.equal(F.show(error, { ...red, now: now + 6 * h }), false);
+  assert.equal(F.show(error, { ...red, okSince: now }), false);
+  assert.equal(F.show({ action: 'beta', error: 'x' }, red), false, 'no time: not shown');
+  // A ✅ shows whatever the card says now, and fades after an hour.
+  const ok = { action: 'beta', run: 'r_2', done: { ok: true, at: now - 10 * 60_000 } };
+  assert.equal(F.show(ok, { now }), true);
+  assert.equal(F.show(ok, { now: now + h }), false);
+  // Still running: that's the busy line, not a result.
+  assert.equal(F.show({ action: 'beta', run: 'r_3', step: '' }, red), false);
+  assert.equal(F.show(undefined, red), false);
 });

@@ -7,7 +7,28 @@
 // beta run) or "Rebuild beta" (a forced Unity build); the card follows that run and checks the plan again when it ends.
 // None of them goes live or rolls back. Every card also has big Beta and Live links (they were the Sites tab; #sites
 // opens this tab), and Studio and Gen's addresses sit below. Uses app.js's helpers ($, esc, api, ago) and approvals.
-(() => {
+
+// Whether a card's finished fix line (✅ / ❌ "Play beta …") is still worth showing. The results live in page memory,
+// so without this an old failure stayed on the card for as long as the page was open. A ✅ fades after an hour; a ❌
+// goes once a newer beta run or playtest of the product finished OK (`okSince`), once the card is no longer red with
+// a fix to offer, or after 6 hours (like a go live's last line). Pure, so it is tested without a DOM
+// (test/golive-fix.test.ts).
+var FixResult = (() => {
+  const OK_FOR = 3600_000;
+  const FAIL_FOR = 6 * 3600_000;
+  /** When the result came in: the run's end, or when starting it failed. */
+  const at = (fx) => (fx?.error ? fx.errorAt : fx?.done?.at) ?? 0;
+  function show(fx, { now = Date.now(), red = false, fix = null, okSince = 0 } = {}) {
+    if (!fx || (!fx.error && !fx.done)) return false;
+    const t = at(fx);
+    if (!t) return false;
+    if (!fx.error && fx.done.ok) return now - t < OK_FOR;
+    return now - t < FAIL_FOR && red && !!fix && !(okSince > t);
+  }
+  return { show, at, OK_FOR, FAIL_FOR };
+})();
+
+if (typeof document !== 'undefined') (() => {
   const css = document.createElement('style');
   css.textContent = `
     .gl-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 14px; }
@@ -44,7 +65,8 @@
   let ops = [];
   let pending = []; // waiting deploy / rollback cards
   let busy = false;
-  const fixing = new Map(); // product -> { action, run?, step?, error?, done? }: the beta step J started from a card
+  const fixing = new Map(); // product -> { action, run?, step?, error?, errorAt?, done? }: the beta step J started from a card
+  const lastOk = new Map(); // product -> when its newest beta, daily or playtest run finished OK (loadRuns)
 
   /** The beta-only steps that clear blockers (deploy.ts blockerFix), in J's words. */
   const FIX = {
@@ -121,6 +143,9 @@
     const fx = fixing.get(p.product);
     const fix = L.color === 'red' && p.fix && FIX[p.fix] && !run.length ? p.fix : null;
     const fixRunning = fx && !fx.done && !fx.error;
+    const okSince = Math.max(lastOk.get(p.product) ?? 0, ...p.tested.playtests.filter((t) => t.status === 'done' && t.outcome !== 'error').map((t) => t.when ?? 0));
+    const showFx = FixResult.show(fx, { red: L.color === 'red', fix: p.fix && FIX[p.fix] ? p.fix : null, okSince });
+    const fxRun = fx?.run ? ` · <a href="#runs" data-glrun="${esc(fx.run)}">the run</a>` : '';
     return `<div class="gl-card ${L.color}" data-p="${esc(p.product)}">
       <h3><span class="gl-light ${L.color}" title="${esc(L.text)}"></span>${esc(p.name)}</h3>
       <div class="gl-status ${up ? 'ahead' : 'same'}">${esc(status)}</div>
@@ -128,7 +153,7 @@
       ${links(prod, p)}
       ${run.map((o) => `<div class="gl-busy">⏳ ${esc(o.title)}${o.status === 'queued' ? ' (waiting its turn)' : o.step ? `: ${esc(o.step)}` : '…'}</div>`).join('')}
       ${fixRunning && !run.length ? `<div class="gl-busy">⏳ ${esc(FIX[fx.action].busy)}${fx.step ? `: ${esc(fx.step)}` : '…'}</div>` : ''}
-      ${fx?.error ? `<div class="gl-done gl-fail">❌ ${esc(FIX[fx.action].label)} failed: ${esc(String(fx.error).slice(0, 300))}</div>` : fx?.done ? `<div class="gl-done">${fx.done.ok ? `✅ ${esc(FIX[fx.action].label)} finished ${esc(ago(fx.done.at))}` : `<span class="gl-fail">❌ ${esc(FIX[fx.action].label)} failed: ${esc(String(fx.done.detail ?? '').slice(0, 300))}</span>`}</div>` : ''}
+      ${!showFx ? '' : fx.error ? `<div class="gl-done gl-fail">❌ ${esc(FIX[fx.action].label)} failed ${esc(ago(fx.errorAt))}: ${esc(String(fx.error).slice(0, 300))}</div>` : `<div class="gl-done">${fx.done.ok ? `✅ ${esc(FIX[fx.action].label)} finished ${esc(ago(fx.done.at))}${fxRun}` : `<span class="gl-fail">❌ ${esc(FIX[fx.action].label)} failed ${esc(ago(fx.done.at))}: ${esc(String(fx.done.detail ?? '').slice(0, 300))}</span>${fxRun}`}</div>`}
       ${!run.length && recent ? `<div class="gl-done">${recent.status === 'done' ? `✅ ${esc(recent.kind === 'rollback' ? 'Rolled back' : 'Went live')} ${esc(ago(recent.finished))}${recent.result?.release ? ` · v${esc(recent.result.release.version)}: ${esc(recent.result.release.title ?? '')}` : ''}` : `❌ ${esc(recent.title)} failed ${esc(ago(recent.finished))}: ${esc(String(recent.error ?? '').slice(0, 200))}`}</div>` : ''}
       ${p.players ? `<div class="gl-players meta" title="Real players on the live site (Hawkes Analytics; bots and your own devices left out)">👥 ${esc(p.players)}</div>` : ''}
       ${up && p.release ? `<div class="gl-release meta">${p.release.existing ? 'What\'s new (already on beta, kept)' : 'Releases'} v${esc(p.release.version)}: ${esc(p.release.title ?? '(the notes are being written)')}${p.release.notes?.length ? `<ul>${p.release.notes.map((x) => `<li>${esc(x)}</li>`).join('')}</ul>` : ''}</div>` : ''}
@@ -189,7 +214,7 @@
         : await api(`/api/beta/${id}`, { method: 'POST', body: {} });
       fixing.get(id).run = r.run;
     } catch (err) {
-      fixing.get(id).error = err.message;
+      Object.assign(fixing.get(id), { error: err.message, errorAt: Date.now() });
       loadPlan(id);
     }
     draw();
@@ -215,6 +240,9 @@
   async function loadRuns() {
     const { runs } = await api('/api/runs?limit=40');
     for (const r of runs) {
+      if (r.status === 'done' && r.finished && ['beta', 'daily', 'manual', 'playtest'].includes(r.kind)) {
+        for (const id of r.products ?? []) if (r.finished > (lastOk.get(id) ?? 0)) lastOk.set(id, r.finished);
+      }
       if (r.status !== 'running' || !['beta', 'build'].includes(r.kind) || r.products?.length !== 1) continue;
       const id = r.products[0];
       const f = fixing.get(id);
@@ -266,6 +294,8 @@
   $('#glList').addEventListener('click', async (e) => {
     const fb = e.target.closest('button[data-glfix]');
     if (fb) { if (e.isTrusted) startFix(fb.closest('.gl-card').dataset.p, fb.dataset.glfix); return; }
+    const rl = e.target.closest('a[data-glrun]');
+    if (rl) { e.preventDefault(); openRun = rl.dataset.glrun; show('runs'); return; }
     const plan = e.target.closest('button[data-glplan]');
     if (plan) return void goLive(plan.dataset.glplan).catch((err) => alert(err.message));
     const b = e.target.closest('button[data-glgo]');
