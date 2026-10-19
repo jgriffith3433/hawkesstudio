@@ -119,6 +119,8 @@ test('GPU budgets: Studio approves within the daily cap; above it, one digest ca
   };
   const under = async () => ({ spent: 10, budget: 150, over: false });
   const wa = { walkAway: true, walkAwayGpuPerDay: 3 };
+  // The Inbox reads the cap from the settings: only what passes it is J's (a digest within the caps is never filed).
+  pm.savePmSettings({ walkAwayGpuPerDay: 3 });
   const a = priced(1);
   assert.equal((await rm.autoApproveGpu(a, { spend: under, tell: false, walkAway: wa }))!.gpu!.budget, 1.25);
   assert.equal(rm.gpuAutoApprovedToday(), 1.25);
@@ -134,6 +136,11 @@ test('GPU budgets: Studio approves within the daily cap; above it, one digest ca
   assert.equal(rm.getTask(b)!.gpu!.budget, 1.88);
   assert.equal(rm.getTask(c)!.gpu!.budget, 2.5);
   assert.ok(!(await ib.inbox()).some((x) => x.kind === 'gpu'));
+  // Within the caps (a $0.50 task, room left today at $25 a day): Studio's, no digest card.
+  pm.savePmSettings({ walkAwayGpuPerDay: 25 });
+  const d = priced(0.5);
+  assert.ok(!(await ib.inbox()).some((x) => x.kind === 'gpu'), 'a digest within the caps is never filed');
+  assert.equal((await rm.autoApproveGpu(d, { spend: under, tell: false }))!.gpu!.budget, 0.63);
 });
 
 test("merge cards that can't be approved settle at once (walk-away); off, they stay as before", async () => {

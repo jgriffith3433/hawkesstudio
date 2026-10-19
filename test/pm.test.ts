@@ -251,6 +251,49 @@ test('small GPU budgets are approved by Studio itself, under the threshold and t
   rm.updateItem(it.id, { status: 'dropped' });
 });
 
+test('walk-away\'s GPU digest holds only what is above the caps: never $0, never what fits', async () => {
+  const it = rm.addItem({ product: 'pmtest', title: 'Digest art', goal: 'Some art', criteria: ['it shows'], size: 'S', status: 'planned' });
+  const task = (gpu: Record<string, unknown>) => {
+    const t = rm.addTask({ item: it.id, request: `Paint ${Math.random()}`, gpu: [{ tool: 'image.edit', count: 2 }] });
+    db.prepare('UPDATE tasks SET gpu = ? WHERE id = ?').run(JSON.stringify({ items: t.gpu!.items, ...gpu }), t.id);
+    return t.id;
+  };
+  const est = (cost: number, withIdleTail: number, at = Date.now()) => ({ estimate: { gpuHours: 0.1, cost, withIdleTail, servers: 1, wallMinutes: 5, at } });
+  const room = (n: number) => ({ walkAway: true, walkAwayGpuPerDay: rm.gpuAutoApprovedToday() + n });
+  const ids = (d: { task: { id: string } }[]) => d.map((x) => x.task.id);
+  // A $0 task never waits, so it is never in the digest (and Studio has nothing to approve).
+  const zero = task(est(0, 0));
+  assert.equal(rm.gpuCleared(rm.getTask(zero)!), true);
+  assert.ok(!rm.tasksAwaitingGpu().some((x) => x.id === zero));
+  assert.ok(!ids(rm.gpuDigestTasks({ threshold: 5, walkAway: room(25) })).includes(zero));
+  // Never priced (J's budget but no estimate: the $0.00 card of 2026-10-19), or a failed pricing under a day old:
+  // Studio prices it again, J isn't asked.
+  const unpriced = task({ budget: 2.32, approvedBy: 'J', approvedAt: Date.now() });
+  const failed = task({ estimate: { gpuHours: 0, cost: 0, withIdleTail: 0, servers: 0, wallMinutes: 0, at: Date.now(), error: 'Gen down' } });
+  assert.ok(rm.tasksAwaitingGpu().some((x) => x.id === unpriced));
+  let d = ids(rm.gpuDigestTasks({ threshold: 5, walkAway: room(25) }));
+  assert.ok(!d.includes(unpriced) && !d.includes(failed));
+  // Within the per-task threshold and the day's room: Studio's, no digest.
+  const small = task(est(1, 2));
+  const small2 = task(est(2, 3));
+  assert.ok(!ids(rm.gpuDigestTasks({ threshold: 5, walkAway: room(25) })).some((x) => [small, small2].includes(x)));
+  // Above the per-task threshold (the idle tail counts): J's.
+  const big = task(est(3, 6));
+  d = ids(rm.gpuDigestTasks({ threshold: 5, walkAway: room(25) }));
+  assert.ok(d.includes(big) && !d.includes(small) && !d.includes(small2));
+  // The day's room fits the first small one ($1.25) but not both ($1.25 + $2.50): the second is J's.
+  d = ids(rm.gpuDigestTasks({ threshold: 5, walkAway: room(2) }));
+  assert.ok(!d.includes(small) && d.includes(small2));
+  // Auto approval off (threshold 0): every priced budget is J's; $0 still isn't.
+  d = ids(rm.gpuDigestTasks({ threshold: 0, walkAway: room(25) }));
+  assert.ok(d.includes(small) && d.includes(small2) && !d.includes(zero));
+  // Pricing kept failing for a day: one question ("couldn't be priced").
+  const stale = task({ estimate: { gpuHours: 0, cost: 0, withIdleTail: 0, servers: 0, wallMinutes: 0, at: Date.now() - 25 * 3600_000, error: 'Gen down' } });
+  const s = rm.gpuDigestTasks({ threshold: 5, walkAway: room(25) }).find((x) => x.task.id === stale);
+  assert.equal(s?.amount, null);
+  rm.updateItem(it.id, { status: 'dropped' });
+});
+
 test('an escalated change is asked about once: answered, the loop leaves it; "close" closes it', async () => {
   process.env.STUDIO_PM_TALK = 'off';
   fs.writeFileSync(path.join(process.env.STUDIO_DATA!, 'notify.json'), JSON.stringify({ enabled: false, server: 'http://127.0.0.1:9', topic: 'test' }));
