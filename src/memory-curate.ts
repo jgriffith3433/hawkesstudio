@@ -139,7 +139,7 @@ export function contradictionSettled(q: { id: string; topic?: string | null; tex
   }
   if (a!.status !== 'disputed' && b!.status !== 'disputed') return 'neither entry is disputed now';
   const key = pair.join('+');
-  const twin = (db.prepare(`SELECT id, topic, text, asked_by FROM questions WHERE id != ? AND status = 'answered' AND (topic LIKE '${PAIR}%' OR asked_by LIKE '%memory curation%')`).all(q.id) as any[])
+  const twin = (db.prepare(`SELECT id, topic, text, asked_by FROM questions WHERE id != ? AND status = 'answered' AND (topic LIKE ? OR asked_by LIKE '%memory curation%')`).all(q.id, `${PAIR}%`) as any[])
     .find((x) => pairOf(x)?.join('+') === key);
   return twin ? `the same pair was answered in ${twin.id}` : '';
 }
