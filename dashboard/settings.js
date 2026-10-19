@@ -119,12 +119,24 @@
     </div>`;
   }
 
+  function resourcesBox(r) {
+    if (!r) return '';
+    return `<div class="set-box"><h3>🖥️ Server alerts</h3>
+      <div class="meta">When your phone hears about the control server or an idle machine. Everything else is on the <a href="#resources" data-go="resources">Resources</a> tab.</div>
+      ${row('Server alerts to your phone', bool('resources', 'alerts', r.alerts))}
+      ${row('Memory over (%)', num('resources', 'memoryPct', r.memoryPct, { min: 50, max: 99 }))}
+      ${row('Disk over (%)', num('resources', 'diskPct', r.diskPct, { min: 50, max: 99 }))}
+      ${row('…for at least (minutes)', num('resources', 'minutes', r.minutes, { min: 1, max: 120 }))}
+      ${row('A machine idle past its stop time by (minutes)', num('resources', 'pastStopMinutes', r.pastStopMinutes, { min: 0, max: 240 }), 'A GPU server, the build server or the playtester that should have stopped itself and is still running.')}
+    </div>`;
+  }
+
   async function loadSettingsTab() {
     data = await api('/api/settings');
     window.callVoice?.apply(data.call);
     const badge = $('#walkAwayBadge');
     if (badge) badge.hidden = !data.pm.walkAway;
-    $('#setBody').innerHTML = `<div class="set-grid">${callBox(data.call)}${agentsBox(data.agents)}${pmBox(data.pm)}${notifyBox(data.notify)}${costsBox(data.costs)}</div>`;
+    $('#setBody').innerHTML = `<div class="set-grid">${callBox(data.call)}${agentsBox(data.agents)}${pmBox(data.pm)}${notifyBox(data.notify)}${costsBox(data.costs)}${resourcesBox(data.resources)}</div>`;
     if (data.call.engine === 'eleven') loadElevenVoices();
   }
   window.loadSettingsTab = loadSettingsTab;

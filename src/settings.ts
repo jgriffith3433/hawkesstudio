@@ -6,6 +6,7 @@
 //   pm       the PM loop (pm.ts, .data/pm.json)
 //   notify   phone notifications (notify.ts; the topic and server are the dashboard's only)
 //   costs    the budget, alert limits and the GPU auto-approval threshold (costs.ts)
+//   resources  when the server's memory, disk or an idle machine is real trouble (resources.ts, the Resources tab)
 //
 // Changes that can raise what Studio spends (more agents or starts, higher limits or budget, the paid voice) need J's
 // own yes when they come from Talk: the request quotes his words and Studio checks they are in his messages there.
@@ -94,8 +95,9 @@ const agentsMod = () => import('./agents.ts');
 const pmMod = () => import('./pm.ts');
 const notifyMod = () => import('./notify.ts');
 const costsMod = () => import('./costs.ts');
+const resourcesMod = () => import('./resources.ts');
 
-export const SECTIONS = ['call', 'agents', 'pm', 'notify', 'costs'] as const;
+export const SECTIONS = ['call', 'agents', 'pm', 'notify', 'costs', 'resources'] as const;
 export type Section = (typeof SECTIONS)[number];
 
 /** Everything, for the Settings tab and Talk. */
@@ -104,12 +106,14 @@ export async function allSettings() {
   const { pmSettings } = await pmMod();
   const { notifyInfo } = await notifyMod();
   const { costSettings } = await costsMod();
+  const { resourceSettings } = await resourcesMod();
   return {
     call: callSettings(),
     agents: agentSettings(),
     pm: pmSettings(),
     notify: notifyInfo(),
     costs: costSettings(),
+    resources: resourceSettings(),
     prices: { elevenPerMinute: Math.round(ELEVEN_PER_MIN * 100) / 100 },
   };
 }
@@ -121,6 +125,7 @@ const RAISES: Record<Section, { up?: string[]; on?: string[]; off?: string[]; an
   pm: { up: ['maxStartsPerDay', 'maxConcurrent', 'maxTries', 'walkAwayGpuPerDay'], on: ['enabled', 'fixBugs', 'walkAway'] },
   notify: {},
   costs: { up: ['budget', 'gpuHours', 'builderHours', 'playtesterHours', 'gpuAutoApprove'], off: ['alerts'] },
+  resources: {},
 };
 
 /** What in this patch could raise costs (empty: nothing). */
@@ -206,6 +211,13 @@ export async function saveSettings(section: string, patch: Record<string, any>, 
   if (s === 'notify') {
     const { saveNotifySettings } = await notifyMod();
     return saveNotifySettings({ enabled: typeof patch.enabled === 'boolean' ? patch.enabled : undefined, server: patch.server, rotate: patch.rotate === true });
+  }
+  if (s === 'resources') {
+    try {
+      return (await resourcesMod()).saveResourceSettings(patch, by);
+    } catch (e: any) {
+      throw new StudioError(e.message);
+    }
   }
   return (await costsMod()).saveCostSettings(patch);
 }

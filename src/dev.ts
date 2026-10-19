@@ -455,6 +455,9 @@ export async function stopDev(productId: string, { flush = true, why = 'stopped'
 
 // ------------------------------------------------------------------- status
 
+/** The dev servers running now and their process ids (the Resources tab counts their processes' memory and CPU). */
+export const devPids = () => Object.entries(state).flatMap(([product, v]) => (v.server?.pid && (v.server.status === 'running' || v.server.status === 'starting') ? [{ product, pid: v.server.pid }] : []));
+
 /** What the dashboard, the MCP tools and the /dev/ pages show. */
 export function devStatus(productId: string) {
   const p = getProduct(productId);

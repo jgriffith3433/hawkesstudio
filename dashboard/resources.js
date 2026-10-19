@@ -1,0 +1,207 @@
+// The Resources tab (GET /api/resources, src/resources.ts): what the studio runs on. One sentence and what needs action
+// first, then tiles with the last hour's sparklines, and details on demand: memory and CPU per process group, the
+// fleet (GPU servers, build server, playtester from Hawkes Gen), agents and the PM against their limits, Studio's event
+// loop, and charts for the last hour, 24 h or 7 days. Redrawn when the stream says "resources" (every 30 s) and only
+// while the tab is on screen. Uses app.js's helpers ($, esc, api, ago, tab, show).
+(() => {
+  const css = document.createElement('style');
+  css.textContent = `
+    .rs-head { font-size: 16px; margin: 0 0 10px; } .rs-head.bad { color: var(--red); } .rs-head.warn { color: var(--amber); }
+    .rs-att { margin: 0 0 14px; padding: 0; list-style: none; } .rs-att li { padding: 4px 0; }
+    .rs-tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 10px; margin-bottom: 14px; }
+    .rs-tile { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 10px 12px; min-width: 0; }
+    .rs-tile .k { color: var(--dim); font-size: 12px; } .rs-tile .v { font-size: 22px; font-weight: 700; margin: 2px 0; } .rs-tile .s { color: var(--dim); font-size: 12px; }
+    .rs-tile.bad { border-color: rgba(255,107,107,.5); } .rs-tile.warn { border-color: rgba(255,190,85,.5); }
+    .rs-tile svg { display: block; width: 100%; height: 28px; margin-top: 4px; }
+    .rs-box { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 4px 14px; margin-bottom: 10px; min-width: 0; }
+    .rs-box > summary { cursor: pointer; padding: 8px 0; font-weight: 600; } .rs-box > summary .meta { font-weight: 400; }
+    .rs-box table { width: 100%; border-collapse: collapse; font-size: 13px; margin-bottom: 8px; }
+    .rs-box td, .rs-box th { padding: 4px 6px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+    .rs-box th { color: var(--dim); font-weight: 500; font-size: 12px; } .rs-box td.n, .rs-box th.n { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+    .rs-bar { height: 6px; background: var(--panel2); border-radius: 3px; margin-top: 3px; } .rs-bar > div { height: 6px; background: var(--accent); border-radius: 3px; }
+    .rs-wrap { overflow-x: auto; }
+    .rs-charts { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 12px; padding-bottom: 10px; }
+    .rs-chart { position: relative; } .rs-chart h4 { margin: 0 0 2px; font-size: 13px; font-weight: 600; } .rs-chart .now { color: var(--dim); font-weight: 400; }
+    .rs-chart svg { display: block; width: 100%; height: 120px; touch-action: none; }
+    .rs-chart .tip { position: absolute; top: 18px; right: 0; font-size: 12px; color: var(--text); background: var(--panel2); border: 1px solid var(--line); border-radius: 6px; padding: 1px 6px; pointer-events: none; }
+    .rs-red { color: var(--red); } .rs-amber { color: var(--amber); }
+    @media (max-width: 700px) { .rs-charts { grid-template-columns: 1fr; } .rs-tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); } .rs-hide-phone { display: none; } }`;
+  document.head.appendChild(css);
+
+  const MB = 1024 * 1024;
+  const gb = (b) => (b == null ? '?' : b >= 10 * 1024 ** 3 ? `${Math.round(b / 1024 ** 3)} GB` : `${(b / 1024 ** 3).toFixed(1)} GB`);
+  const mb = (b) => (b >= 1024 * MB ? gb(b) : `${Math.round(b / MB)} MB`);
+  const rate = (b) => (b == null ? '…' : b < 1024 ? `${b} B/s` : b < MB ? `${Math.round(b / 1024)} KB/s` : `${(b / MB).toFixed(1)} MB/s`);
+  const pc = (n) => (n == null ? '…' : `${Math.round(n)}%`);
+  const dur = (s) => (s < 3600 ? `${Math.round(s / 60)} min` : s < 2 * 86400 ? `${Math.round(s / 3600)} h` : `${Math.round(s / 86400)} days`);
+  const level = (v, warn, bad) => (v == null ? '' : v >= bad ? 'bad' : v >= warn ? 'warn' : '');
+  let range = '1h';
+  let last = null;
+
+  /** A line of values over time in an SVG (0..max), the area under it faint. Single series: the title names it. */
+  function line(points, key, { max = 100, h = 120, w = 600, area = true } = {}) {
+    const pts = points.filter((p) => p[key] != null);
+    if (pts.length < 2) return `<svg viewBox="0 0 ${w} ${h}" preserveAspectRatio="none"></svg>`;
+    const t0 = points[0].at, t1 = points.at(-1).at || t0 + 1;
+    const top = Math.max(max, ...pts.map((p) => p[key]));
+    const x = (t) => ((t - t0) / Math.max(1, t1 - t0)) * w;
+    const y = (v) => h - 2 - (v / top) * (h - 4);
+    const d = pts.map((p, i) => `${i ? 'L' : 'M'}${x(p.at).toFixed(1)},${y(p[key]).toFixed(1)}`).join('');
+    return `<svg viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" aria-hidden="true">
+      <line x1="0" x2="${w}" y1="${y(top) + 1}" y2="${y(top) + 1}" stroke="var(--line)" stroke-width="1" vector-effect="non-scaling-stroke"/>
+      <line x1="0" x2="${w}" y1="${h - 1}" y2="${h - 1}" stroke="var(--line)" stroke-width="1" vector-effect="non-scaling-stroke"/>
+      ${area ? `<path d="${d}L${x(pts.at(-1).at).toFixed(1)},${h}L${x(pts[0].at).toFixed(1)},${h}Z" fill="var(--accent)" opacity=".12"/>` : ''}
+      <path d="${d}" fill="none" stroke="var(--accent)" stroke-width="2" vector-effect="non-scaling-stroke" stroke-linejoin="round"/>
+      <line class="cross" x1="0" x2="0" y1="0" y2="${h}" stroke="var(--dim)" stroke-width="1" vector-effect="non-scaling-stroke" visibility="hidden"/>
+    </svg>`;
+  }
+
+  const CHARTS = [
+    ['cpu', 'CPU', (v) => pc(v), 100], ['mem', 'Memory used', (v) => pc(v), 100], ['disk', 'Fullest disk', (v) => pc(v), 100],
+    ['load1', 'Load (1 min)', (v) => (v == null ? '…' : v.toFixed(2)), 1], ['swap', 'Swap used', (v) => pc(v), 10],
+    ['agents', 'Agents’ memory (MB)', (v) => (v == null ? '…' : `${Math.round(v)} MB`), 100], ['studio', 'Studio’s memory (MB)', (v) => (v == null ? '…' : `${Math.round(v)} MB`), 100],
+    ['gen', 'Hawkes Gen’s memory (MB)', (v) => (v == null ? '…' : `${Math.round(v)} MB`), 100],
+    ['net_in', 'Network in', rate, 1024], ['net_out', 'Network out', rate, 1024],
+  ];
+  const when = (t) => new Date(t).toLocaleString([], range === '7d' ? { weekday: 'short', hour: '2-digit', minute: '2-digit' } : { hour: '2-digit', minute: '2-digit' });
+
+  function tiles(r) {
+    const h = r.host, sp = (r.spark ?? r.history).points;
+    const spark = (k, max) => line(sp, k, { max, h: 28, w: 200 });
+    const out = [];
+    if (h) {
+      const disk = [...h.disks].sort((a, b) => b.pct - a.pct)[0];
+      out.push(
+        `<div class="rs-tile ${level(h.mem.pct, r.settings.memoryPct - 10, r.settings.memoryPct)}"><div class="k">Memory</div><div class="v">${pc(h.mem.pct)}</div><div class="s">${gb(h.mem.used)} of ${gb(h.mem.total)} · swap ${pc(h.swap.pct)}</div>${spark('mem', 100)}</div>`,
+        `<div class="rs-tile ${level(h.cpu, 80, 95)}"><div class="k">CPU</div><div class="v">${pc(h.cpu)}</div><div class="s">load ${h.load.map((x) => x.toFixed(2)).join(' ')} · ${h.cpus} CPUs</div>${spark('cpu', 100)}</div>`,
+        disk ? `<div class="rs-tile ${level(disk.pct, r.settings.diskPct - 10, r.settings.diskPct)}"><div class="k">Disk ${esc(disk.mount)}</div><div class="v">${pc(disk.pct)}</div><div class="s">${gb(disk.free)} free of ${gb(disk.size)}</div>${spark('disk', 100)}</div>` : '',
+        `<div class="rs-tile"><div class="k">Network</div><div class="v" style="font-size:16px">↓ ${rate(h.net.inPerSec)}<br>↑ ${rate(h.net.outPerSec)}</div><div class="s">up ${dur(h.uptime)}</div></div>`,
+      );
+    }
+    const w = r.work;
+    if (w) out.push(`<div class="rs-tile ${w.agents.queued && w.agents.running >= w.agents.maxConcurrent ? 'warn' : ''}"><div class="k">Agents</div><div class="v">${w.agents.running} / ${w.agents.maxConcurrent}</div><div class="s">${w.agents.queued} queued · ${w.agents.waitingOnGen} waiting on Gen</div></div>`);
+    const up = r.fleet.machines.filter((m) => m.state === 'running');
+    const perHour = up.reduce((n, m) => n + (m.pricePerHour || 0), 0);
+    out.push(`<div class="rs-tile ${r.fleet.alerts.length ? 'warn' : ''}"><div class="k">Machines running</div><div class="v">${r.fleet.ok ? up.length : '?'}</div><div class="s">${r.fleet.ok ? (up.length ? `$${perHour.toFixed(2)}/hr now` : 'nothing costing money') : 'Gen not answering'}</div></div>`);
+    const lm = r.loop.lastMinute;
+    out.push(`<div class="rs-tile ${r.loop.blocksLastHour ? 'warn' : ''}"><div class="k">Studio's event loop</div><div class="v">${lm ? `${lm.p99ms} ms` : '…'}</div><div class="s">p99 delay · ${r.loop.blocksLastHour} freeze(s) this hour</div></div>`);
+    return `<div class="rs-tiles">${out.join('')}</div>`;
+  }
+
+  function groups(h) {
+    if (!h) return '';
+    const top = Math.max(1, ...h.groups.map((g) => g.mem));
+    const rows = h.groups.map((g) => `<tr><td>${esc(g.name)}${g.detail ? `<div class="meta">${esc(g.detail)}</div>` : ''}<div class="rs-bar"><div style="width:${(100 * g.mem / top).toFixed(1)}%"></div></div></td>
+      <td class="n">${mb(g.mem)}</td><td class="n">${pc(g.cpu)}</td><td class="n rs-hide-phone">${g.procs ?? ''}</td></tr>`).join('');
+    const total = h.groups.reduce((n, g) => n + g.mem, 0);
+    return `<details class="rs-box more-details" data-k="groups" open><summary>What uses memory and CPU <span class="meta">· ${h.groups.length} groups, ${mb(total)} of ${gb(h.mem.used)} used</span></summary>
+      <table><tr><th>Group</th><th class="n">Memory</th><th class="n">CPU</th><th class="n rs-hide-phone">Processes</th></tr>${rows}</table>
+      <div class="meta" style="margin-bottom:8px">Memory without the page cache (the kernel gives that back when asked). CPU is the share of one CPU over the last 30 s. The rest of the used memory is the system itself.</div></details>`;
+  }
+
+  function fleet(r) {
+    const f = r.fleet;
+    if (!f.ok) return `<details class="rs-box more-details" data-k="fleet"><summary>Machines <span class="meta">· Hawkes Gen not answering</span></summary><p class="rs-amber">${esc(f.error)}</p></details>`;
+    const left = (m) => {
+      if (!m.idle) return '';
+      if (m.idle.busy) return 'busy';
+      const s = m.idle.stopsAt ? Math.round((m.idle.stopsAt - Date.now()) / 60000) : null;
+      return `idle ${m.idle.minutes} min${s == null ? '' : s > 0 ? ` · ${m.idle.action} in ${s} min` : ' · <span class="rs-amber">past its stop time</span>'}`;
+    };
+    const rows = f.machines.map((m) => `<tr><td>${esc(m.name)}<div class="meta">${esc([m.type, m.region].filter(Boolean).join(' · '))}</div></td>
+      <td><span class="pill ${m.state === 'running' ? 'warn' : ''}">${esc(m.state)}</span><div class="meta">${left(m)}</div></td>
+      <td>${m.jobs.length ? m.jobs.map((j) => `${esc(j.tool)} <span class="meta">${esc(j.project)}</span>`).join('<br>') : '<span class="meta">nothing</span>'}</td>
+      <td class="n">${m.pricePerHour ? `$${m.pricePerHour.toFixed(2)}/hr` : ''}</td></tr>`).join('');
+    const up = f.machines.filter((m) => m.state === 'running').length;
+    return `<details class="rs-box more-details" data-k="fleet"${up ? ' open' : ''}><summary>Machines <span class="meta">· GPU servers, build server, playtester: ${up} running</span></summary>
+      <div class="rs-wrap"><table><tr><th>Machine</th><th>State</th><th>Doing</th><th class="n">Costs</th></tr>${rows || '<tr><td colspan="4" class="meta">None found.</td></tr>'}</table></div>
+      <div class="meta" style="margin-bottom:8px">From Hawkes Gen's last reading (its Machines page measures them every minute). Each one stops itself when idle; Gen starts and stops them.</div></details>`;
+  }
+
+  function work(r) {
+    const w = r.work;
+    if (!w) return '';
+    const a = w.agents;
+    const limits = Object.entries(a.productLimits ?? {}).map(([p, n]) => `${esc(p)} ${n}`).join(', ');
+    const list = a.list.map((c) => `<tr><td>${esc(c.title)}<div class="meta">${esc(c.product)} · ${esc(c.id)}</div></td><td>${esc(c.status)}</td></tr>`).join('');
+    return `<details class="rs-box more-details" data-k="work"><summary>Agents, the PM and Gen's queue <span class="meta">· ${a.running} of ${a.maxConcurrent} agents working</span></summary>
+      <p style="margin:4px 0">Agents: <b>${a.running}</b> working of <b>${a.maxConcurrent}</b> at once (${a.perProduct} per product${limits ? `; ${limits}` : ''}), ${a.queued} queued, ${a.waitingOnGen} waiting on Gen${a.enabled ? '' : ' · <span class="rs-amber">agents are off</span>'}.</p>
+      ${w.pm ? `<p style="margin:4px 0">The PM: ${w.pm.enabled ? 'on' : '<span class="rs-amber">paused</span>'}, ${w.pm.active} working of ${w.pm.maxConcurrent}, ${w.pm.started} of ${w.pm.maxStartsPerDay} starts used today.</p>` : ''}
+      <p style="margin:4px 0">Hawkes Gen's jobs: ${w.jobs.ok ? `${w.jobs.running} running, ${w.jobs.queued} queued` : 'unknown (Gen not answering)'}.</p>
+      ${list ? `<table><tr><th>Change</th><th>Status</th></tr>${list}</table>` : ''}</details>`;
+  }
+
+  function loop(r) {
+    const l = r.loop, lm = l.lastMinute;
+    const blocks = l.blocks.map((b) => `<tr><td>${esc(ago(b.at))}</td><td class="n">${b.ms} ms</td><td>${esc(b.running.join('; ') || 'nothing tracked')}</td></tr>`).join('');
+    const cmds = r.commands.map((c) => `<tr><td>${esc(c.cmd)}<div class="meta">${esc(c.cwd)}</div></td><td class="n">${c.seconds} s</td></tr>`).join('');
+    return `<details class="rs-box more-details" data-k="loop"><summary>Studio's own health <span class="meta">· ${l.blocksLastHour} freeze(s) over a second this hour</span></summary>
+      <p style="margin:4px 0">${lm ? `Last minute: delay p50 ${lm.p50ms} ms, p99 ${lm.p99ms} ms, worst ${lm.maxms} ms.` : 'Not measured yet.'}</p>
+      ${blocks ? `<table><tr><th>When</th><th class="n">Froze</th><th>Running then</th></tr>${blocks}</table>` : ''}
+      ${cmds ? `<table><tr><th>Command Studio is waiting on</th><th class="n">For</th></tr>${cmds}</table>` : '<p class="meta">No commands running.</p>'}</details>`;
+  }
+
+  function charts(r) {
+    const pts = r.history.points;
+    const box = CHARTS.map(([k, name, fmt, max]) => {
+      const lastV = [...pts].reverse().find((p) => p[k] != null)?.[k];
+      return `<div class="rs-chart" data-key="${k}"><h4>${esc(name)} <span class="now">${fmt(lastV)}</span></h4>${line(pts, k, { max })}<span class="tip" hidden></span></div>`;
+    }).join('');
+    return `<details class="rs-box more-details" data-k="charts"><summary>History <span class="meta">· the last ${range === '1h' ? 'hour' : range === '24h' ? '24 hours' : '7 days'}</span></summary>
+      <div class="bar" style="margin:0 0 8px">${['1h', '24h', '7d'].map((x) => `<button class="small${x === range ? ' on' : ''}" data-rs-range="${x}">${x === '1h' ? 'Hour' : x === '24h' ? '24 h' : '7 days'}</button>`).join(' ')}
+        <span class="meta">${pts.length ? `${pts.length} points, ${r.history.bucketSeconds >= 60 ? `${Math.round(r.history.bucketSeconds / 60)} min` : `${r.history.bucketSeconds} s`} each` : 'No samples yet: one is taken every 30 s.'}</span></div>
+      <div class="rs-charts">${box}</div></details>`;
+  }
+
+  async function loadResources() {
+    const el = $('#rsBody');
+    if (!el.innerHTML) el.innerHTML = '<div class="meta">Reading the server…</div>';
+    const r = await api(`/api/resources?range=${range}`);
+    last = r;
+    // What J opened stays open across redraws (every 30 s).
+    const open = new Map([...el.querySelectorAll('details[data-k]')].map((d) => [d.dataset.k, d.open]));
+    const worst = r.attention[0]?.level ?? '';
+    el.innerHTML = `<p class="rs-head ${worst}">${worst === 'bad' ? '⚠ ' : ''}${esc(r.headline)}</p>
+      ${r.attention.length > 1 ? `<ul class="rs-att">${r.attention.slice(1).map((a) => `<li class="${a.level === 'bad' ? 'rs-red' : 'rs-amber'}">${a.level === 'bad' ? '⚠' : '•'} ${esc(a.text)}</li>`).join('')}</ul>` : ''}
+      ${tiles(r)}${groups(r.host)}${fleet(r)}${work(r)}${loop(r)}${charts(r)}
+      <div class="meta">Read ${ago(r.at)}${r.host ? ` in ${r.host.sampleMs} ms` : ''}. Phone alerts: ${r.settings.alerts ? `memory or disk over ${r.settings.memoryPct}% / ${r.settings.diskPct}% for ${r.settings.minutes} min, a machine idle ${r.settings.pastStopMinutes} min past its stop time` : 'off'} (<a href="#settings" data-rs-go="settings">Settings</a>).</div>`;
+    for (const [k, o] of open) { const d = el.querySelector(`details[data-k="${k}"]`); if (d) d.open = o; }
+  }
+
+  // The charts' hover: a crosshair and the value at that time.
+  function hover(e) {
+    const c = e.target.closest?.('.rs-chart');
+    if (!c || !last) return;
+    const svg = c.querySelector('svg'), tip = c.querySelector('.tip'), cross = svg.querySelector('.cross');
+    const pts = last.history.points;
+    if (!pts.length || !cross) return;
+    const box = svg.getBoundingClientRect();
+    const f = Math.max(0, Math.min(1, (e.clientX - box.left) / box.width));
+    const t = pts[0].at + f * (pts.at(-1).at - pts[0].at);
+    const p = pts.reduce((a, b) => (Math.abs(b.at - t) < Math.abs(a.at - t) ? b : a));
+    const [, , fmt] = CHARTS.find((x) => x[0] === c.dataset.key);
+    const x = ((p.at - pts[0].at) / Math.max(1, pts.at(-1).at - pts[0].at)) * 600;
+    cross.setAttribute('x1', x); cross.setAttribute('x2', x); cross.setAttribute('visibility', 'visible');
+    tip.hidden = false;
+    tip.textContent = `${when(p.at)}: ${fmt(p[c.dataset.key])}`;
+  }
+  document.addEventListener('pointermove', (e) => { if (tab === 'resources') hover(e); });
+  document.addEventListener('pointerleave', (e) => {
+    const c = e.target.closest?.('.rs-chart');
+    if (!c) return;
+    c.querySelector('.tip').hidden = true;
+    c.querySelector('.cross')?.setAttribute('visibility', 'hidden');
+  }, true);
+  document.addEventListener('click', (e) => {
+    const b = e.target.closest?.('[data-rs-range]');
+    if (b) { range = b.dataset.rsRange; window.loadResourcesTab(); }
+    const g = e.target.closest?.('[data-rs-go]');
+    if (g) { e.preventDefault(); show(g.dataset.rsGo); }
+  });
+
+  window.loadResourcesTab = () => loadResources().catch((err) => ($('#rsBody').innerHTML = `<div class="rs-red">${esc(err.message)}</div>`));
+  // A new sample every 30 s (stream.js), redrawn only while the tab is on screen.
+  studioStream.on('resources', () => { if (tab === 'resources') window.loadResourcesTab(); });
+  // Opened straight on #resources: app.js's first refresh ran before this file loaded.
+  if (tab === 'resources') window.loadResourcesTab();
+})();

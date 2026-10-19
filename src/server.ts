@@ -508,6 +508,12 @@ const server = http.createServer(async (req, res) => {
     }
     // The month's AWS cost line (one Cost Explorer request, $0.01), and the brief again for a finished daily run.
     // Costs (costs.ts): AWS (Cost Explorer or an estimate), idle money, Claude usage, Hawkes Gen, per product.
+    // The Resources tab (resources.ts): this server, its process groups, the event loop, the fleet, agents, history.
+    if (route === '/api/resources' && method === 'GET') {
+      const res2 = await import('./resources.ts');
+      const r = await res2.resources({ range: q('range') || '1h' });
+      return send(res, 200, q('format') === 'md' ? { markdown: res2.resourcesMarkdown(r) } : r);
+    }
     if (route === '/api/costs' && method === 'GET') {
       const { costReport, costMarkdown } = await import('./costs.ts');
       const r = await costReport(q('period') ?? 'month', { force: q('refresh') === '1' });
@@ -666,6 +672,8 @@ server.listen(PORT, '127.0.0.1', () => {
   startFollowups();
   // Costs: an hourly look for a forecast over budget or a server left running (phone only then).
   void import('./costs.ts').then(({ startCostWatch }) => startCostWatch());
+  // Resources: a reading of this server every 30 s (history, the Resources tab, alerts for real trouble).
+  void import('./resources.ts').then(({ startResourceSampler }) => startResourceSampler());
   startReportFollowups();
   // The PM loop (pm.ts): on the server, or on J's PC with STUDIO_PM=on.
   if ((process.platform !== 'win32' && process.env.STUDIO_SERVER === '1') || process.env.STUDIO_PM === 'on') void import('./pm.ts').then(({ startPm }) => startPm());
