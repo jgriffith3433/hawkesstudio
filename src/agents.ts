@@ -51,6 +51,7 @@ import { serveDir, stopServed } from './local.ts';
 import { claudeEnv } from './claude.ts';
 import { buildPreview, removePreview, previewUrl, changeSiteDir, changeBuild, type ChangeBuild } from './previews.ts';
 import { BETA, ensureBeta, gitAsync } from './beta.ts';
+import { runCommand, resumeGapMs } from './ops.ts';
 import { deployPending, critical } from './drain.ts';
 import { notify, notifyOnce, PUBLIC_URL } from './notify.ts';
 import { threadFor, getTask } from './roadmap.ts';
@@ -355,7 +356,11 @@ function addLog(id: string, line: string) {
 // ------------------------------------------------------------------- git
 
 function git(cwd: string, args: string[], timeoutMs = 10 * 60_000) {
+  const t0 = Date.now();
   const r = spawnSync('git', args, { cwd, encoding: 'utf8', windowsHide: true, timeout: timeoutMs, maxBuffer: 64 * 1024 * 1024 });
+  // Only for millisecond reads (beta.ts git): a slow one is named, so it moves to gitAsync.
+  const ms = Date.now() - t0;
+  if (ms > 300) console.warn(`[studio] synchronous git ${args.slice(0, 3).join(' ')} in ${path.basename(cwd)} held Studio for ${ms} ms: use gitAsync`);
   return { ok: r.status === 0, out: (r.stdout ?? '').trim(), err: (r.stderr ?? r.error?.message ?? '').trim() };
 }
 
@@ -664,14 +669,14 @@ ${storyOf(p, 6000)}
 // ------------------------------------------------------------------ agent
 
 /** Git LFS files in a new worktree (Sick Of It keeps its art there): real files, not pointers. Fast when the repo has them. */
-function lfsPull(worktree: string, log: (s: string) => void) {
+async function lfsPull(worktree: string, log: (s: string) => void) {
   try {
     if (!/filter=lfs/.test(fs.readFileSync(path.join(worktree, '.gitattributes'), 'utf8'))) return;
   } catch {
     return;
   }
   const t0 = Date.now();
-  const r = git(worktree, ['lfs', 'pull'], 20 * 60_000);
+  const r = await gitAsync(worktree, ['lfs', 'pull'], 20 * 60_000);
   log(r.ok ? `git lfs pull (${Math.round((Date.now() - t0) / 1000)} s)` : `git lfs pull failed: ${r.err.split('\n').pop()}`);
 }
 
@@ -1130,17 +1135,17 @@ async function work(id: string, note?: string, answer?: string, resumed?: Phase 
           // A worktree a restart cut off halfway is forgotten first; its branch is reused.
           git(repoDir, ['worktree', 'prune']);
           const has = git(repoDir, ['rev-parse', '--verify', '--quiet', `refs/heads/${c.branch}`]).ok;
-          const w = git(repoDir, ['worktree', 'add', ...(has ? [] : ['-b']), ...(has ? [c.worktree, c.branch] : [c.branch, c.worktree, `origin/${c.base}`])]);
+          const w = await gitAsync(repoDir, ['worktree', 'add', ...(has ? [] : ['-b']), ...(has ? [c.worktree, c.branch] : [c.branch, c.worktree, `origin/${c.base}`])]);
           if (!w.ok) throw new Error(`worktree failed: ${w.err}`);
         });
         // A warm start: node_modules from a checkout installed for the same lockfile (warm.ts), else a fresh npm ci.
-        warmDeps(c.worktree, c.repo, (s) => addLog(id, s));
+        await warmDeps(c.worktree, c.repo, (s) => addLog(id, s));
         await installCold(c.worktree, (dir, cmd) => sh(dir, cmd, { ...infraEnv({ keepGenKey: false }), PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1' }), (s) => addLog(id, s));
-      lfsPull(c.worktree, (s) => addLog(id, s));
+      await lfsPull(c.worktree, (s) => addLog(id, s));
       } else assertWorktree(c.worktree, repoDir);
       // The agent (sandbox user) commits here: its git folder must be the agent group's, on every pass (a worktree made
       // before, or files Studio's own git wrote there since).
-      shareWorktree(c.worktree);
+      await shareWorktree(c.worktree);
       await writeBrief(c, p, findings, note);
       // A question from an earlier pass isn't asked again.
       fs.rmSync(path.join(c.worktree, '.hawkes', 'question.md'), { force: true });
@@ -1406,11 +1411,11 @@ async function buildChange(c: Change, p: Product, jobs?: JobMemo): Promise<Chang
     git(siteRepo, ['worktree', 'prune']);
     const w = await gitAsync(siteRepo, ['worktree', 'add', '--detach', '--force', copy, head]);
     if (!w.ok) throw new Error(`making the website copy failed: ${w.err}`);
-    shareWorktree(copy);
+    await shareWorktree(copy);
   } else {
     const r = await gitAsync(copy, ['checkout', '--quiet', '--force', '--detach', head]);
     if (!r.ok) throw new Error(`resetting the website copy failed: ${r.err}`);
-    git(copy, ['clean', '-fdq']);
+    await gitAsync(copy, ['clean', '-fdq']);
   }
   });
   const top = repoFor(p).top;
@@ -1626,8 +1631,8 @@ async function workInfra(id: string, note?: string, resumed?: Phase | null, nudg
           const w = await gitAsync(repoDir, ['worktree', 'add', ...(has ? [c.worktree, c.branch] : ['-b', c.branch, c.worktree, `origin/${c.base}`])]);
           if (!w.ok) throw new Error(`worktree failed: ${w.err}`);
           // A warm start: node_modules from a checkout with the same lockfile (warm.ts), not a fresh npm ci.
-          warmDeps(c.worktree, c.repo, (s) => addLog(id, s));
-      lfsPull(c.worktree, (s) => addLog(id, s));
+          await warmDeps(c.worktree, c.repo, (s) => addLog(id, s));
+      await lfsPull(c.worktree, (s) => addLog(id, s));
         } else if (note) {
           // Another pass: bring the branch up to date with main first (main may have moved, or the merge conflicted).
           await gitAsync(repoDir, ['fetch', '--quiet', 'origin']);
@@ -1638,7 +1643,7 @@ async function workInfra(id: string, note?: string, resumed?: Phase | null, nudg
       });
       assertWorktree(c.worktree, repoDir);
       // The agent commits here: its git folder must be the agent group's, on every pass (sandbox.ts).
-      shareWorktree(c.worktree);
+      await shareWorktree(c.worktree);
       await npmCi(id, c.worktree);
       writeInfraBrief(c, t, note);
       save({ step: 'agent', before: git(c.worktree, ['rev-parse', 'HEAD']).out, proc: undefined });
@@ -1773,10 +1778,11 @@ export async function smokeCheck(dir: string, t: Infra) {
     const page = health ? await get('/') : null;
     const dashboard = Boolean(page && page.status === 200 && /<html/i.test(page.text));
     const scriptDir = path.join(dir, t.smoke.scripts);
-    const scripts = (fs.existsSync(scriptDir) ? fs.readdirSync(scriptDir).filter((f) => f.endsWith('.js')) : []).map((f) => {
-      const r = spawnSync(process.execPath, ['--check', path.join(scriptDir, f)], { encoding: 'utf8', windowsHide: true });
-      return { file: `${t.smoke.scripts}/${f}`, ok: r.status === 0, error: r.status === 0 ? undefined : tail(r.stderr ?? '', 5) };
-    });
+    const scripts: { file: string; ok: boolean; error?: string }[] = [];
+    for (const f of fs.existsSync(scriptDir) ? fs.readdirSync(scriptDir).filter((f) => f.endsWith('.js')) : []) {
+      const r = await runCommand(process.execPath, ['--check', path.join(scriptDir, f)], { timeoutMs: 60_000 });
+      scripts.push({ file: `${t.smoke.scripts}/${f}`, ok: r.ok, error: r.ok ? undefined : tail(r.err, 5) });
+    }
     const ok = Boolean(health?.ok) && dashboard && scripts.every((x) => x.ok);
     const detail = !health ? (exited !== null ? `the server exited (code ${exited})` : 'no health answer in 60 s')
       : !health.ok ? 'health is not ok'
@@ -2121,18 +2127,18 @@ export async function updateFromBase(id: string): Promise<{ state: 'current' | '
   if (!m.ok) {
     const files = git(c.worktree, ['diff', '--name-only', '--diff-filter=U']).out.split('\n').filter(Boolean);
     git(c.worktree, ['merge', '--abort']);
-    git(c.worktree, ['reset', '--hard', before]);
+    await gitAsync(c.worktree, ['reset', '--hard', before]);
     addLog(id, `${c.base} moved: merging origin/${c.base} into the branch conflicts${files.length ? ` in ${files.join(', ')}` : ` (${(m.err || m.out).slice(0, 200)})`}`);
     return { state: 'conflict', files };
   }
   const sha = git(c.worktree, ['rev-parse', 'HEAD']).out;
   const p = await gitAsync(c.worktree, ['push', '--quiet', 'origin', `HEAD:${c.branch}`]);
   if (!p.ok) {
-    git(c.worktree, ['reset', '--hard', before]);
+    await gitAsync(c.worktree, ['reset', '--hard', before]);
     return { state: 'skipped', why: `push failed: ${p.err.slice(0, 200)}` };
   }
   // The agent's group keeps writing here (a later pass): what Studio's git just wrote is shared again (sandbox.ts).
-  shareWorktree(c.worktree);
+  await shareWorktree(c.worktree);
   update(id, { verify: { ...(c.verify ?? {}), sha } });
   addLog(id, `${c.base} moved: merged origin/${c.base} into the branch (no conflicts) and pushed ${sha.slice(0, 7)}`);
   return { state: 'merged', sha };
@@ -2346,14 +2352,14 @@ async function cleanup(id: string, { deleteBranch = false } = {}) {
   const c = getChange(id)!;
   if (!c.infra) await removePreview(c.product, id).catch(() => {});
   const repoDir = path.join(PROJECTS, c.repo);
-  git(repoDir, ['worktree', 'remove', '--force', c.worktree]);
+  await gitAsync(repoDir, ['worktree', 'remove', '--force', c.worktree]);
   git(repoDir, ['branch', '-D', c.branch]);
   // A Unity change's website copy (its build).
   const copy = changeSiteDir(id);
   if (fs.existsSync(copy)) {
     const p = getProduct(c.product);
-    git(path.join(PROJECTS, p.site.split('/')[0]), ['worktree', 'remove', '--force', copy]);
-    fs.rmSync(copy, { recursive: true, force: true });
+    await gitAsync(path.join(PROJECTS, p.site.split('/')[0]), ['worktree', 'remove', '--force', copy]);
+    await fs.promises.rm(copy, { recursive: true, force: true });
   }
   fs.rmSync(`${copy}.json`, { force: true });
   if (deleteBranch) await github(`/repos/${c.slug}/git/refs/heads/${c.branch}`, { method: 'DELETE' }).catch(() => {});
@@ -2391,8 +2397,10 @@ export function resumeChanges() {
     }
     if (running.has(c.id)) continue;
     running.add(c.id);
+    // One every RESUME_GAP_MS, not all at once: each picks up with git and file work, which together froze Studio's start.
+    const wait = out.length * resumeGapMs();
     out.push(c.id);
-    void work(c.id, undefined, undefined, ph).finally(() => {
+    void new Promise((r) => setTimeout(r, wait)).then(() => work(c.id, undefined, undefined, ph)).finally(() => {
       running.delete(c.id);
       remember(c.id);
       void pump();

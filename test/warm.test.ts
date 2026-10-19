@@ -36,7 +36,7 @@ const groupWritable = (dir: string, gid: number) => {
   }
 };
 
-test('a warm start gives the copied node_modules to the worktree group, writable', { skip: !posix }, () => {
+test('a warm start gives the copied node_modules to the worktree group, writable', { skip: !posix }, async () => {
   const repo = path.join(process.env.STUDIO_PROJECTS!, 'app');
   fs.mkdirSync(repo, { recursive: true });
   fs.writeFileSync(path.join(repo, 'package-lock.json'), '{"lockfileVersion":3}');
@@ -46,7 +46,7 @@ test('a warm start gives the copied node_modules to the worktree group, writable
   fs.mkdirSync(wt, { recursive: true });
   fs.writeFileSync(path.join(wt, '.git'), `gitdir: ${path.join(repo, '.git', 'worktrees', 'c_1')}\n`);
   fs.writeFileSync(path.join(wt, 'package-lock.json'), '{"lockfileVersion":3}');
-  assert.deepEqual(warmDeps(wt, 'app'), ['.']);
+  assert.deepEqual(await warmDeps(wt, 'app'), ['.']);
   groupWritable(wt, fs.statSync(wt).gid);
 });
 

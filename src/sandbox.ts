@@ -8,10 +8,11 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { spawn, spawnSync, type ChildProcess, type ChildProcessWithoutNullStreams, type SpawnOptions } from 'node:child_process';
+import { spawn, type ChildProcess, type ChildProcessWithoutNullStreams, type SpawnOptions } from 'node:child_process';
 import type http from 'node:http';
 import type net from 'node:net';
 import { PROJECTS } from './config.ts';
+import { runCommand } from './ops.ts';
 
 /** The wrapper deploy/agent-sandbox.mjs installs: it runs a command as the sandbox user with its own HOME and umask. */
 export const WRAPPER = '/usr/local/bin/hawkes-agent-run';
@@ -29,15 +30,22 @@ export const AGENT_GROUP = process.env.HAWKES_AGENT_GROUP || 'hawkes-work';
  * the group of .git/worktrees, and git deletes and recreates that folder whenever the last worktree is pruned, so a
  * one-time chgrp at setup doesn't last: on 2026-10-16 agents in breakingthrough, hawkesgen and YoobaLand finished their
  * work and then couldn't commit (index.lock: Permission denied). Call it after every worktree an agent or Talk works in.
+ *
+ * Without blocking Studio (async fs and git), and only what needs it: Studio's own files that aren't shared yet (the
+ * sandbox user's files are already the group's, and Studio may not change them: the "Operation not permitted" flood a
+ * chgrp -R at every start used to log). "already": nothing needed changing; "skipped": not a worktree, or no sandbox.
  */
-export function shareWorktree(wt: string, group: string | null = sandboxOn() ? AGENT_GROUP : null) {
-  if (!group || process.platform === 'win32') return;
-  const r = spawnSync('git', ['-C', wt, 'rev-parse', '--absolute-git-dir', '--git-common-dir'], { encoding: 'utf8' });
-  const [gitDir, common] = (r.stdout ?? '').trim().split('\n').map((s) => s.trim());
-  if (r.status !== 0 || !gitDir || !/[\\/]worktrees[\\/]/.test(gitDir)) return;
+export async function shareWorktree(wt: string, group: string | null = sandboxOn() ? AGENT_GROUP : null): Promise<'shared' | 'already' | 'skipped'> {
+  if (!group || process.platform === 'win32') return 'skipped';
+  const gid = gidOf(group);
+  if (gid === null) return 'skipped';
+  const r = await runCommand('git', ['-C', wt, 'rev-parse', '--absolute-git-dir', '--git-common-dir'], { timeoutMs: 30_000 });
+  const [gitDir, common] = r.out.split('\n').map((s) => s.trim());
+  if (!r.ok || !gitDir || !/[\\/]worktrees[\\/]/.test(gitDir)) return 'skipped';
   // The repo first, so worktrees made later are right from the start; then this one, made before or by Studio's umask.
-  if (common) shareRepo(path.dirname(path.resolve(wt, common)), group);
-  run([['chgrp', ['-R', group, gitDir]], ['chmod', ['-R', 'g+rwX', gitDir]], ['find', [gitDir, '-type', 'd', '-exec', 'chmod', 'g+s', '{}', '+']]], gitDir);
+  const repo = common ? await shareRepo(path.dirname(path.resolve(wt, common)), group) : 'already';
+  const changed = await shareTree(gitDir, gid);
+  return repo === 'shared' || changed ? 'shared' : 'already';
 }
 
 /**
@@ -46,41 +54,90 @@ export function shareWorktree(wt: string, group: string | null = sandboxOn() ? A
  * to the agent group, setgid, so the .git/worktrees git recreates after the last worktree is pruned (and every
  * worktree's own folder under it) is the agent group's too. Only git's own folder: the checkout's files are untouched.
  */
-export function shareRepo(repoDir: string, group: string | null = sandboxOn() ? AGENT_GROUP : null) {
-  if (!group || process.platform === 'win32') return;
+export async function shareRepo(repoDir: string, group: string | null = sandboxOn() ? AGENT_GROUP : null): Promise<'shared' | 'already' | 'skipped'> {
+  if (!group || process.platform === 'win32') return 'skipped';
+  const gid = gidOf(group);
+  if (gid === null) return 'skipped';
   const dotGit = path.join(repoDir, '.git');
-  try { if (!fs.statSync(dotGit).isDirectory()) return; } catch { return; }
-  const cfg = spawnSync('git', ['-C', repoDir, 'config', '--local', '--get', 'core.sharedRepository'], { encoding: 'utf8' });
-  if ((cfg.stdout ?? '').trim() !== 'group') run([['git', ['-C', repoDir, 'config', '--local', 'core.sharedRepository', 'group']]], dotGit);
-  const wts = path.join(dotGit, 'worktrees');
-  const dirs = fs.existsSync(wts) ? [dotGit, wts] : [dotGit];
-  run([['chgrp', [group, ...dirs]], ['chmod', ['g+s', ...dirs]], ...(dirs.length > 1 ? [['chmod', ['g+rwx', wts]] as [string, string[]]] : [])], dotGit);
+  try { if (!(await fs.promises.stat(dotGit)).isDirectory()) return 'skipped'; } catch { return 'skipped'; }
+  let changed = false;
+  const cfg = await runCommand('git', ['-C', repoDir, 'config', '--local', '--get', 'core.sharedRepository'], { timeoutMs: 30_000 });
+  if (cfg.out !== 'group') {
+    const set = await runCommand('git', ['-C', repoDir, 'config', '--local', 'core.sharedRepository', 'group'], { timeoutMs: 30_000 });
+    if (!set.ok) console.warn(`[sandbox] git config on ${dotGit}: ${set.err.slice(0, 200)}`);
+    changed = true;
+  }
+  if (await shareEntry(dotGit, gid, 0o2000)) changed = true;
+  if (await shareEntry(path.join(dotGit, 'worktrees'), gid, 0o2070)) changed = true;
+  return changed ? 'shared' : 'already';
+}
+
+/** The numeric id of a group (a number, or a name in /etc/group); null when it's unknown here. */
+export function gidOf(group: string): number | null {
+  if (/^\d+$/.test(group)) return Number(group);
+  try {
+    const row = fs.readFileSync('/etc/group', 'utf8').split('\n').find((l) => l.split(':')[0] === group);
+    const id = row?.split(':')[2];
+    return id && /^\d+$/.test(id) ? Number(id) : null;
+  } catch {
+    return null;
+  }
 }
 
 /**
- * Every repo in the projects folder and every worktree in .work, once at start: repos and worktrees made before this.
- * One at a time with a yield in between, so the server keeps answering.
+ * One file or folder to the group with `bits` (folders: setgid, group rwx; files: group rw) if Studio owns it and it
+ * isn't already; true when it changed something. Anything Studio can't change is left alone, quietly.
  */
-export async function shareAll(group: string | null = sandboxOn() ? AGENT_GROUP : null) {
-  if (!group) return;
-  const list = (dir: string) => { try { return fs.readdirSync(dir).filter((n) => !n.startsWith('.')).map((n) => path.join(dir, n)); } catch { return []; } };
-  for (const d of list(PROJECTS)) { shareRepo(d, group); await new Promise((r) => setImmediate(r)); }
-  // An agent can write its worktree's ".git" file: only one still linking into a repo here is touched (assertWorktree).
-  const repoOf = (d: string) => {
-    try {
-      const gitdir = fs.realpathSync(path.resolve(d, fs.readFileSync(path.join(d, '.git'), 'utf8').trim().replace(/^gitdir:\s*/, '')));
-      const m = gitdir.slice(fs.realpathSync(PROJECTS).length).match(/^[\\/]([^\\/]+)[\\/]\.git[\\/]worktrees[\\/][^\\/]+$/);
-      return gitdir.startsWith(fs.realpathSync(PROJECTS)) && m ? m[1] : null;
-    } catch { return null; }
-  };
-  for (const d of list(path.join(PROJECTS, '.work'))) if (repoOf(d)) { shareWorktree(d, group); await new Promise((r) => setImmediate(r)); }
+async function shareEntry(p: string, gid: number, bits?: number): Promise<boolean> {
+  let st: fs.Stats;
+  try { st = await fs.promises.lstat(p); } catch { return false; }
+  if (st.isSymbolicLink() || st.uid !== process.getuid?.()) return false;
+  const want = bits ?? (st.isDirectory() ? 0o2070 : 0o060 | (st.mode & 0o100 ? 0o010 : 0));
+  let changed = false;
+  try {
+    if (st.gid !== gid) { await fs.promises.lchown(p, st.uid, gid); changed = true; }
+    // chown clears setgid on some systems: the mode is set after it, from what it was.
+    if ((st.mode & want) !== want || changed) { await fs.promises.chmod(p, (st.mode & 0o7777) | want); changed = true; }
+  } catch { /* not ours to change after all */ }
+  return changed;
 }
 
-function run(cmds: [string, string[]][], where: string) {
-  for (const [cmd, args] of cmds) {
-    const x = spawnSync(cmd, args, { encoding: 'utf8' });
-    if (x.status !== 0) console.warn(`[sandbox] ${cmd} on ${where}: ${(x.stderr ?? '').trim().slice(0, 200)}`);
+/** A git folder and everything in it (a worktree's: a few dozen files), entry by entry; true when anything changed. */
+async function shareTree(dir: string, gid: number): Promise<boolean> {
+  let changed = await shareEntry(dir, gid);
+  let names: fs.Dirent[] = [];
+  try { names = await fs.promises.readdir(dir, { withFileTypes: true }); } catch { return changed; }
+  for (const d of names) {
+    const p = path.join(dir, d.name);
+    if (d.isDirectory()) { if (await shareTree(p, gid)) changed = true; }
+    else if (await shareEntry(p, gid)) changed = true;
   }
+  return changed;
+}
+
+/**
+ * Every repo in the projects folder and every worktree in .work, once after start (server.ts, in the background):
+ * repos and worktrees made before this. One at a time, async: the server keeps answering, and ones already shared
+ * cost a stat or two each. Returns how many were changed and how many were already shared.
+ */
+export async function shareAll(group: string | null = sandboxOn() ? AGENT_GROUP : null) {
+  const out = { shared: 0, already: 0 };
+  if (!group) return out;
+  const count = (r: string) => { if (r === 'shared') out.shared++; else if (r === 'already') out.already++; };
+  const list = async (dir: string) => { try { return (await fs.promises.readdir(dir)).filter((n) => !n.startsWith('.')).map((n) => path.join(dir, n)); } catch { return []; } };
+  for (const d of await list(PROJECTS)) count(await shareRepo(d, group));
+  // An agent can write its worktree's ".git" file: only one still linking into a repo here is touched (assertWorktree).
+  const projects = await fs.promises.realpath(PROJECTS).catch(() => PROJECTS);
+  const repoOf = async (d: string) => {
+    try {
+      const link = (await fs.promises.readFile(path.join(d, '.git'), 'utf8')).trim().replace(/^gitdir:\s*/, '');
+      const gitdir = await fs.promises.realpath(path.resolve(d, link));
+      const m = gitdir.slice(projects.length).match(/^[\\/]([^\\/]+)[\\/]\.git[\\/]worktrees[\\/][^\\/]+$/);
+      return gitdir.startsWith(projects) && m ? m[1] : null;
+    } catch { return null; }
+  };
+  for (const d of await list(path.join(PROJECTS, '.work'))) if (await repoOf(d)) count(await shareWorktree(d, group));
+  return out;
 }
 
 /**

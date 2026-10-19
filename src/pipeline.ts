@@ -13,6 +13,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { db, newId, J, rowToStep, parse, type Step } from './db.ts';
+import { resumeGapMs } from './ops.ts';
 import { loadProducts, getProduct, localUrl, today, PROJECTS, betaPlaytestsOn, type Product, type Playtest } from './config.ts';
 import { gen, genRun, genUp, ensureGen } from './gen.ts';
 import { ensureServer, gitState, treeFingerprint, runCheck, serveDir, stopServed } from './local.ts';
@@ -796,8 +797,11 @@ export function resumeRuns() {
       continue;
     }
     resuming.set(r.id, steps);
+    // One every couple of seconds, not all at once (ops.ts resumeGapMs): start-up stays responsive.
+    const wait = out.length * resumeGapMs();
     out.push(r.id);
-    void body().finally(() => {
+    const run = body;
+    void new Promise((ok) => setTimeout(ok, wait)).then(() => run()).finally(() => {
       resuming.delete(r.id);
       for (const s of steps) resumed.delete(s.id);
     });
