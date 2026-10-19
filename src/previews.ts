@@ -47,14 +47,19 @@ export function changeBuild(change: string): ChangeBuild | null {
  * How a web product deploys. site: what goes in besides the build ("tracked" = the files git would publish, a list =
  * just those paths, "none"); out: the build output and where it lands. Products not listed: "tracked", no build.
  */
-type Recipe = { build?: string; site: 'tracked' | 'none' | string[]; out?: { from: string; to: string } };
+export type Recipe = { build?: string; site: 'tracked' | 'none' | string[]; out?: { from: string; to: string } };
 const RECIPES: Record<string, Recipe> = {
   // .github/workflows/pages.yml "Assemble site": the static pages and content, then the bundled game over them.
   doseofdestruction: { build: 'npm run build', site: ['index.html', 'characters.html', 'privacypolicy.html', 'favicon.svg', 'CNAME', 'site', 'characters', 'audio', 'stages'], out: { from: 'dist', to: '' } },
   // Pages serves the repo; the game is built into play/ (committed on deploy).
   phorigins: { build: 'npm run build', site: 'tracked', out: { from: 'play', to: 'play' } },
+  // Babylon 9 from npm with Vite (#6): its pages.yml publishes dist/ alone (vite.config.js copies the other pages,
+  // releases.json and the CNAME into it), so the source as committed has bare imports a browser can't load.
+  icanbe: { build: 'npm run build', site: 'none', out: { from: 'dist', to: '' } },
   // The corporate site isn't listed: Pages serves its repo root as committed (dist/ is only the old local build).
 };
+/** How a web product's beta site is built (products not listed: the files git would publish, no build). */
+export const recipeOf = (id: string): Recipe => RECIPES[id] ?? { site: 'tracked' };
 
 export type Preview = { status: 'building' | 'ready' | 'failed' | 'waiting'; at: number; sha?: string | null; ref?: string; detail?: string; files?: number; ms?: number; version?: string | null };
 /**
@@ -207,7 +212,7 @@ async function build(p: Product, o: { change?: string; dir?: string }): Promise<
       progress(`checking out ${ref} (${sha})`);
       const wt = await worktree(repoDir, p.id, commit);
       const dir = path.join(wt, sub);
-      const r = RECIPES[p.id] ?? { site: 'tracked' };
+      const r = recipeOf(p.id);
       if (r.build) {
         if (fs.existsSync(path.join(dir, 'package-lock.json'))) {
           const lock = crypto.createHash('sha1').update(fs.readFileSync(path.join(dir, 'package-lock.json'))).digest('hex');
@@ -269,7 +274,7 @@ const skip = (rel: string) => rel.split('/').some((s) => (s.startsWith('.') && s
  * copied. raw: published as it is (a kept old build's pages already have the report button).
  */
 type Files = Map<string, { src: string; link: boolean; raw?: boolean }>;
-async function collect(dir: string, r: Recipe) {
+export async function collect(dir: string, r: Recipe) {
   const files: Files = new Map();
   const add = (rel: string, src: string, link: boolean) => { if (!skip(rel)) files.set(rel, { src, link }); };
   if (r.site === 'tracked') {
