@@ -55,7 +55,7 @@ import { runCommand, resumeGapMs } from './ops.ts';
 import { deployPending, critical } from './drain.ts';
 import { notify, notifyOnce, PUBLIC_URL } from './notify.ts';
 import { threadFor, getTask } from './roadmap.ts';
-import { overlapWith, filesIn, type WorkShape } from './parallel.ts';
+import { overlapWith, filesIn, othersSection, sortConflicts, UNITY_RULES, type WorkShape } from './parallel.ts';
 import { judgeCriteria, gate } from './acceptance.ts';
 import { briefSection, learnFrom, recordRun, LEARNED_ASK } from './memory.ts';
 import { canonCheck, CONTENTISH, type CanonCheck } from './canon.ts';
@@ -347,18 +347,52 @@ function nudgeResume(c: Change, ph: Phase) {
   const prompt = nudgePrompt(ph);
   return c.session ? { session: c.session, prompt } : { prompt: `Read .hawkes/brief.md: it's your whole task. ${prompt}` };
 }
-/** A conflict pass: the agent's own session (it knows its change) merges the base and resolves; a new one reads the brief first. */
-export function conflictPrompt(c: Pick<Change, 'base'>, files: string[]) {
-  return `${c.base === BETA ? 'Beta' : c.base} moved while your change waited to merge: another change merged into ${c.base} first, and your branch now conflicts with it${files.length ? ` in ${files.slice(0, 20).map((f) => `\`${f}\``).join(', ')}` : ''}.
+/** Where an agent says which conflicted files it couldn't resolve safely (a conflict pass): they go back to the PM. */
+export const UNRESOLVED = '.hawkes/unresolved.md';
+/**
+ * A conflict pass: the agent's own session (it knows its change) merges the base and resolves; a new one reads the brief
+ * first. `unity`: the conflicted files sorted into binary, Unity YAML, code and data, with the Unity rules (J,
+ * 2026-10-19); `lfs`: the ones in Git LFS (binary, whatever their extension).
+ */
+export function conflictPrompt(c: Pick<Change, 'base'> & { infra?: boolean }, files: string[], { unity = false, lfs = new Set<string>() }: { unity?: boolean; lfs?: Set<string> } = {}) {
+  const base = c.base ?? BETA;
+  const q = (xs: string[]) => xs.slice(0, 20).map((f) => `\`${f}\``).join(', ') + (xs.length > 20 ? ` and ${xs.length - 20} more` : '');
+  const k = sortConflicts(files, lfs);
+  const sorted = unity && files.length ? `
 
-1. \`git merge origin/${c.base}\` (Studio already fetched it).
-2. Resolve the conflicts keeping both sides' intent: what ${c.base} has now (the other change's work) and what your change does.
+The conflicted files, by kind:
+${k.binary.length ? `- **Binary** (never hand-merged, never regenerated): ${q(k.binary)}. Take ${base}'s version
+  (\`git checkout --theirs -- <file>\` while merging), then redo your own edit on top; if your change needs a different
+  version, add it as a new file with its own .meta and point your work at that.
+` : ''}${k.unity.length ? `- **Unity YAML**: ${q(k.unity)}. Merge by hand keeping both sides' objects; every GUID and fileID stays as it is
+  (none duplicated or renumbered), each asset keeps its .meta. After: \`grep -nE '^(<<<<<<<|=======|>>>>>>>)'\` finds
+  nothing, and the \`--- !u!\` document headers are all there.
+` : ''}${k.code.length ? `- **Code**: ${q(k.code)}. Keep both sides' logic; it must still compile and pass the checks.
+` : ''}${k.data.length ? `- **Data** (JSON, text): ${q(k.data)}. Keep both sides' entries; run the project's validators.
+` : ''}
+The rules for this project:
+${UNITY_RULES}` : '';
+  const giveUp = c.infra ? '' : `
+5. A file you can't resolve safely (the same binary changed on both sides, a scene or prefab both sides restructured):
+   don't commit a broken merge. \`git merge --abort\`, list each such file and why in \`${UNRESOLVED}\`, and end.
+   Studio hands it to the PM with that list.`;
+  return `${base === BETA ? 'Beta' : base} moved while your change waited to merge: another change merged into ${base} first, and your branch now conflicts with it${files.length ? ` in ${q(files)}` : ''}.
+
+1. \`git merge origin/${base}\` (Studio already fetched it).
+2. Resolve the conflicts keeping both sides' intent: what ${base} has now (the other change's work) and what your change does.
    Don't drop either side, and don't redo your task.
 3. Re-run the checks the brief names, fix what fails, and commit the merge.
-4. Update .hawkes/summary.md only if what your change does is different now.`;
+4. Update .hawkes/summary.md${unity ? ': say which files conflicted and how you resolved each one' : ' only if what your change does is different now'}.${giveUp}${sorted}`;
 }
+/** The files of `files` that are in Git LFS in a worktree (binary for a merge, whatever their extension). */
+function lfsFiles(worktree: string, files: string[]) {
+  if (!files.length || !fs.existsSync(worktree)) return new Set<string>();
+  const out = git(worktree, ['check-attr', 'filter', '--', ...files.slice(0, 200)], 10_000).out;
+  return new Set(out.split('\n').map((l) => l.match(/^(.*): filter: lfs$/)?.[1]).filter((f): f is string => Boolean(f)));
+}
+const conflictOpts = (c: Change, files: string[]) => (c.infra ? {} : { unity: isUnity(c.product), lfs: lfsFiles(c.worktree, files) });
 function conflictResume(c: Change, files: string[]) {
-  const prompt = conflictPrompt(c, files);
+  const prompt = conflictPrompt(c, files, conflictOpts(c, files));
   return c.session ? { session: c.session, prompt } : { prompt: `Read .hawkes/brief.md for what your change is. ${prompt}` };
 }
 /** Records the next pass as a nudge (saved, so a restart carries on with it) and says why in the log. */
@@ -611,6 +645,9 @@ async function writeBrief(c: Change, p: Product, findings0: any[], note?: string
     : (p.checks ?? []).map((k) => `- \`${k.cmd}\` (in ${k.dir === p.repo ? 'the repo root' : k.dir})`).join('\n') || '- (none listed: at least make sure it builds or loads)';
   const sub = onSite ? site!.sub : repoFor(p).sub;
   const players = await playersBrief(p.id);
+  // Up to 3 agents per product (J, 2026-10-19): what the others are doing, and the Unity rules (parallel.ts).
+  const others = onSite ? '' : othersSection(p.name, neighboursOf(c), perProductLimit(p.id));
+  const unity = !onSite && isUnity(p.id) ? `\n## Working in Unity (several agents share this repo)\n\n${UNITY_RULES}\n` : '';
   const brief = `# ${c.request ? 'Work' : 'Fix'} for ${p.name}
 
 You are fixing a problem Hawkes Studio's automated playtest found in ${p.name} (${p.about}).
@@ -663,7 +700,7 @@ ${findings.map((f) => `### [${f.severity}] ${f.title}
 - Suggested fix: ${f.fix ?? '-'}
 - Screenshots: ${(shots.filter((s) => s.includes(f.id)).map((s) => `\`${s}\``).join(', ')) || 'none'}${f.entities?.length ? `
 - In Hawkes Gen's library: ${f.entities.map((e: any) => `\`${e.id}\` (${e.kind})`).join(', ')}. When the problem is the art itself, fix it there (the hawkesgen MCP: hawkesgen_entities to see its versions, hawkesgen_entity_make with revise and feedback, hawkesgen_entity_judge to pick): a pick is written into this repo's files by Studio.` : ''}`).join('\n\n')}
-${note ? `\n## Notes on the last attempt (J's or the PM's)\n\n${note}\n` : ''}${players}${mem.text ? `\n${mem.text}` : ''}
+${note ? `\n## Notes on the last attempt (J's or the PM's)\n\n${note}\n` : ''}${others ? `\n${others}` : ''}${unity}${players}${mem.text ? `\n${mem.text}` : ''}
 ## How to work
 
 1. Read \`AGENTS.md\` (and any docs it points to) before changing anything. Follow its rules.
@@ -1029,6 +1066,18 @@ export function changedFiles(c: Pick<Change, 'worktree' | 'base'>) {
   return [...new Set([...committed, ...open].map((f) => f.trim()).filter((f) => f && !f.startsWith('.hawkes/')))];
 }
 
+/** A Unity product (Sick Of It, Yooba Land, The Place Department): its scenes and binaries need the Unity rules (parallel.ts). */
+export function isUnity(product: string) {
+  try { const p = getProduct(product); return p.engine === 'unity' || Boolean(p.build); } catch { return false; }
+}
+
+/** The product's other changes with work in a worktree (running, waiting, or ready to merge): the brief's "Other agents". */
+function neighboursOf(c: Change) {
+  return listChanges({ status: `${ACTIVE},ready,needs answer,${WAITING_GEN}`, product: c.product, limit: 20 })
+    .filter((o) => o.id !== c.id)
+    .map((o) => ({ id: o.id, status: o.status, title: o.title, request: o.request, files: changedFiles(o) }));
+}
+
 /** A change as parallel.ts sees it: its task (and what that depends on), its title, the files it and its task's earlier changes touched. */
 export function shapeOf(c: Change): WorkShape {
   const t = c.task ? getTask(c.task) : null;
@@ -1046,7 +1095,7 @@ export function noRoomFor(product: string, next: WorkShape, statuses = `queued,$
   const others = listChanges({ status: statuses, product, limit: 50 });
   const limit = perProductLimit(product);
   if (others.length >= limit) return limit === 1 ? `${others[0].id} is running` : `${limit} changes are running`;
-  return others.length ? overlapWith(next, others.map(shapeOf)) : null;
+  return others.length ? overlapWith(next, others.map(shapeOf), { unity: isUnity(product) }) : null;
 }
 
 /** Runs queued changes up to the concurrency limit, per product up to its limit when they don't collide. */
@@ -1061,7 +1110,7 @@ async function pump() {
   const fit = (id: string, picked: string[]) => {
     const c = getChange(id)!;
     const beside = [...[...active.values()].filter((r) => r.product === c.product), ...picked.map((x) => getChange(x)!)];
-    const why = overlapWith(shapeOf(c), beside.map(shapeOf));
+    const why = overlapWith(shapeOf(c), beside.map(shapeOf), { unity: isUnity(c.product) });
     if (why && !c.detail?.includes(why)) update(id, { detail: `queued: waits for ${beside[0]?.id ?? 'the running change'} (${why})`.slice(0, 300) });
     return !why;
   };
@@ -1235,6 +1284,11 @@ async function work(id: string, note?: string, answer?: string, resumed?: Phase 
         addComment(c.task ?? id, question.slice(0, 4000), 'agent', 'question');
         addQuestion({ kind: 'agent', subject: id, product: c.product, text: question });
         return;
+      }
+      // A conflict pass that couldn't resolve safely (its list, or markers left in): never a broken merge; the PM decides.
+      if (ph.conflict) {
+        const left = unresolvedConflicts(c.worktree, ph.conflict, changedNow);
+        if (left) return conflictBack(id, ph, left);
       }
       // A conflict pass that committed nothing isn't a failure: ready again, it conflicts again (its next pass, or J).
       if (!commits.length || (note && !changedNow && !c.task && !ph.conflict)) {
@@ -2183,7 +2237,7 @@ export function resolveConflicts(id: string, files: string[]) {
   const n = (c.conflicts ?? 0) + 1;
   if (n > CONFLICT_PASSES) return false;
   db.prepare('UPDATE changes SET conflicts = ? WHERE id = ?').run(n, id);
-  const note = conflictPrompt(c, files);
+  const note = conflictPrompt(c, files, conflictOpts(c, files));
   const ph: Phase = { step: 'prepare', note, conflict: files, since: Date.now() };
   update(id, { status: 'revising', detail: `${c.base} moved: its agent is resolving the conflicts (pass ${n} of ${CONFLICT_PASSES}, not a try)`, auto_merge: null, phase: ph, notes: [...c.notes, { at: Date.now(), by: 'Studio', text: `${c.base} moved: conflict pass ${n} (${files.join(', ') || 'conflicting files'})` }] });
   addLog(id, `conflict pass ${n} of ${CONFLICT_PASSES}: the agent merges origin/${c.base} and resolves the conflicts`);
@@ -2201,11 +2255,48 @@ export function resolveConflicts(id: string, files: string[]) {
   return true;
 }
 
+/**
+ * What a conflict pass left unresolved: the agent's own list (UNRESOLVED: files it couldn't resolve safely, e.g. the
+ * same binary changed on both sides), else conflict markers its commit left in the conflicted files; null when clean.
+ */
+export function unresolvedConflicts(worktree: string, files: string[], committed = true) {
+  const file = path.join(worktree, UNRESOLVED);
+  if (fs.existsSync(file)) {
+    const said = fs.readFileSync(file, 'utf8').trim();
+    fs.renameSync(file, `${file}.${Date.now()}`);
+    return `its agent couldn't resolve them safely: ${said.replace(/\s+/g, ' ').slice(0, 600) || files.join(', ')}`;
+  }
+  if (!committed || !files.length) return null;
+  const marked = git(worktree, ['grep', '-lE', '^(<<<<<<<|>>>>>>>)( |$)', 'HEAD', '--', ...files.slice(0, 200)], 10_000).out
+    .split('\n').filter(Boolean).map((l) => l.replace(/^HEAD:/, ''));
+  return marked.length ? `its merge left conflict markers in ${marked.slice(0, 10).join(', ')}` : null;
+}
+
+/**
+ * A conflict pass that didn't resolve safely: the branch goes back to where it was before the pass (nothing pushed, no
+ * broken merge), no more passes, and the PM gets the files to decide (conflictStuck), like passes used up.
+ */
+async function conflictBack(id: string, ph: Phase, why: string) {
+  const c = getChange(id)!;
+  if (fs.existsSync(path.join(c.worktree, '.git'))) {
+    git(c.worktree, ['merge', '--abort']);
+    if (ph.before) await gitAsync(c.worktree, ['reset', '--hard', ph.before]);
+    await shareWorktree(c.worktree);
+  }
+  db.prepare('UPDATE changes SET conflicts = ? WHERE id = ?').run(CONFLICT_PASSES, id);
+  const files = ph.conflict ?? [];
+  const text = `${why} (conflicted with ${c.base}: ${files.slice(0, 20).join(', ') || 'files not named'})`;
+  update(id, { status: 'ready', phase: null, auto_merge: `failed: ${text}`.slice(0, 500), detail: `couldn't merge into ${c.base}: ${text}`.slice(0, 300) });
+  addLog(id, `conflict pass: ${text}; the branch is back where it was (nothing pushed), and the PM decides`);
+  await conflictStuck(id, text, true).catch((x) => console.warn(`[studio] conflict question ${id}: ${x.message ?? x}`));
+}
+
 /** Truly stuck on a conflict (its agent failed CONFLICT_PASSES times): one line in Talk, and J decides in his Inbox. */
-async function conflictStuck(id: string, why: string) {
+async function conflictStuck(id: string, why: string, unsafe = false) {
   const c = getChange(id)!;
   const { askJ } = await import('./pm.ts');
-  askJ(`"${c.title ?? id}" can't merge into ${c.base}: its agent tried ${CONFLICT_PASSES} times to resolve the conflicts with ${c.base} (${why.slice(0, 300)}) and it still conflicts. Try again, or close it?`,
+  askJ(unsafe ? `"${c.title ?? id}" can't merge into ${c.base}: ${why.slice(0, 700)}. Its branch is as it was before (nothing broken pushed). Try again, or close it?`
+    : `"${c.title ?? id}" can't merge into ${c.base}: its agent tried ${CONFLICT_PASSES} times to resolve the conflicts with ${c.base} (${why.slice(0, 300)}) and it still conflicts. Try again, or close it?`,
     { subject: c.task ?? id, product: c.product, options: ['try again', 'close it'], recommend: 'try again', blocks: `merging ${id} into ${c.base}`, from: 'conflict passes used up' });
 }
 

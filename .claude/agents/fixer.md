@@ -34,3 +34,7 @@ static-sites-howto).
 
 If you are stuck on a decision the brief and the thread don't settle, write one question to `.hawkes/question.md`
 (options, and the one you'd pick), commit nothing and stop. Never ask about details you can decide well yourself.
+
+Unity products (Sick Of It, Yooba Land, The Place Department): other agents may share the repo. Prefabs over scene
+edits, never hand-merge or regenerate binary files, keep GUIDs, fileIDs and `.meta` files; the brief's "Working in
+Unity" section and the product's how-to skill have the rules.

@@ -103,3 +103,91 @@ test('the PM\'s capacity counts running changes, not queued ones waiting for a s
     db.prepare(`DELETE FROM changes WHERE id IN ('c_00000000cap1', 'c_00000000cap2', 'c_00000000cap3')`).run();
   }
 });
+
+// Up to 3 agents per product, Unity especially (J, 2026-10-19): one-at-a-time Unity files, binaries, the brief, conflicts.
+test('Unity: scenes, ProjectSettings, the package manifest and Addressables groups run one change at a time', async () => {
+  const { serialOf } = await import('../src/parallel.ts');
+  const scene = { task: 't_a', text: 'Boss intro', files: ['Assets/Scenes/Level.unity'] };
+  // Different scenes, different files: still one at a time.
+  assert.match(overlapWith({ task: 't_b', text: 'Menu music', files: ['Assets/Scenes/MainMenu.unity'] }, [scene])!, /a Unity scene.*one change at a time/);
+  assert.match(overlapWith({ task: 't_b', text: 'x', files: ['ProjectSettings/QualitySettings.asset'] }, [{ text: 'y', files: ['ProjectSettings/TagManager.asset'] }])!, /ProjectSettings/);
+  assert.match(overlapWith({ text: 'x', files: ['YoobaLand/Packages/manifest.json'] }, [{ text: 'y', files: ['YoobaLand/Packages/packages-lock.json'] }])!, /manifest/);
+  assert.match(overlapWith({ text: 'x', files: ['Assets/AddressableAssetsData/AssetGroups/Enemies.asset'] }, [{ text: 'y', files: ['Assets/AddressableAssetsData/AssetGroups/Music.asset'] }])!, /Addressables/);
+  // In a Unity product, a title that names one counts; elsewhere (a web "scene") it doesn't.
+  assert.match(overlapWith({ task: 't_c', text: 'Rework the shop scene lighting', files: ['Assets/Prefabs/Shop.prefab'] }, [scene], { unity: true })!, /Unity scene/);
+  assert.equal(overlapWith({ task: 't_c', text: 'Rework the shop scene lighting', files: ['src/shop.ts'] }, [{ text: 'Boss intro', files: ['src/boss.ts'] }]), null);
+  assert.deepEqual([...serialOf({ text: 'Add the Addressables group and a package' }, true)], ['Packages/manifest.json', 'an Addressables group']);
+  // Prefabs and data beside each other run in parallel; the same binary never does.
+  assert.equal(overlapWith({ text: 'Imp prefab', files: ['Assets/Prefabs/Imp.prefab'] }, [{ text: 'Gloob prefab', files: ['Assets/Prefabs/Gloob.prefab'] }], { unity: true }), null);
+  assert.match(overlapWith({ text: 'a', files: ['Assets/Art/imp.png'] }, [{ text: 'b', files: ['Assets/Art/imp.png'] }])!, /binary/);
+});
+
+test('conflicted files sorted into binary, Unity YAML, code and data (LFS is binary)', async () => {
+  const { sortConflicts, kindOf } = await import('../src/parallel.ts');
+  const k = sortConflicts(['Assets/Art/imp.png', 'Assets/Scenes/Level.unity', 'Assets/Prefabs/Imp.prefab.meta', 'Assets/Scripts/Imp.cs', 'Assets/GameConfig/enemies.json', 'Assets/Prefabs/Gloob.prefab'], new Set(['Assets/Prefabs/Gloob.prefab']));
+  assert.deepEqual(k.binary, ['Assets/Art/imp.png', 'Assets/Prefabs/Gloob.prefab']);
+  assert.deepEqual(k.unity, ['Assets/Scenes/Level.unity', 'Assets/Prefabs/Imp.prefab.meta']);
+  assert.deepEqual(k.code, ['Assets/Scripts/Imp.cs']);
+  assert.deepEqual(k.data, ['Assets/GameConfig/enemies.json']);
+  assert.equal(kindOf('Models/boss.glb'), 'binary');
+});
+
+test('the brief\'s "Other agents" section: who else works on the product, and on which files', async () => {
+  const { othersSection } = await import('../src/parallel.ts');
+  assert.equal(othersSection('PH Origins', [], 1), '', 'one agent per product: nothing to say');
+  const alone = othersSection('Sick Of It', [], 3);
+  assert.match(alone, /Up to 3 agents/);
+  assert.match(alone, /may merge into beta\s+while you work, so keep your change narrow/);
+  assert.match(alone, /None is running beside you/);
+  const s = othersSection('Sick Of It', [
+    { id: 'c_1', status: 'working', title: 'Circle IX levels', request: 'Make the Circle IX levels, one per floor', files: ['Assets/GameConfig/levels/level9.json'] },
+    { id: 'c_2', status: 'ready', title: 'Imp portraits', request: null, files: [] },
+  ], 3);
+  assert.match(s, /c_1 \(working\): Circle IX levels\. Asked: "Make the Circle IX levels, one per floor"/);
+  assert.match(s, /Files touched so far: `Assets\/GameConfig\/levels\/level9\.json`/);
+  assert.match(s, /c_2 \(ready\): Imp portraits\n  Files touched so far: none yet/);
+});
+
+test('the conflict pass: Unity-aware brief, and what it left unresolved goes back with the files', async () => {
+  const { conflictPrompt, unresolvedConflicts, UNRESOLVED } = await import('../src/agents.ts');
+  const files = ['Assets/Art/imp.png', 'Assets/Scenes/Level.unity', 'Assets/Scripts/Imp.cs'];
+  const p = conflictPrompt({ base: 'beta' }, files, { unity: true });
+  assert.match(p, /\*\*Binary\*\* \(never hand-merged, never regenerated\): `Assets\/Art\/imp\.png`/);
+  assert.match(p, /git checkout --theirs/);
+  assert.match(p, /\*\*Unity YAML\*\*: `Assets\/Scenes\/Level\.unity`.*GUID and fileID/s);
+  assert.match(p, /\*\*Code\*\*: `Assets\/Scripts\/Imp\.cs`/);
+  assert.match(p, /Prefabs first/);
+  assert.match(p, /\.hawkes\/unresolved\.md/);
+  assert.match(p, /say which files conflicted and how you resolved each one/);
+  const web = conflictPrompt({ base: 'beta' }, ['src/shop.ts']);
+  assert.doesNotMatch(web, /Binary|Prefabs first/, 'web products: as before');
+  assert.doesNotMatch(conflictPrompt({ base: 'main', infra: true }, ['src/a.ts']), /unresolved/);
+
+  // A scratch repo: a clean merge commit is fine; markers left in, or the agent's own list, are not.
+  const { execFileSync } = await import('node:child_process');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'studio-unresolved-'));
+  const g = (...a: string[]) => execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', ...a], { cwd: dir });
+  g('init', '-q');
+  fs.writeFileSync(path.join(dir, 'Level.unity'), '--- !u!1 &100\nGameObject:\n  m_Name: A\n');
+  g('add', '.'); g('commit', '-qm', 'one');
+  assert.equal(unresolvedConflicts(dir, ['Level.unity']), null);
+  fs.writeFileSync(path.join(dir, 'Level.unity'), '--- !u!1 &100\n<<<<<<< HEAD\n  m_Name: A\n=======\n  m_Name: B\n>>>>>>> origin/beta\n');
+  g('commit', '-qam', 'broken');
+  assert.match(unresolvedConflicts(dir, ['Level.unity'])!, /conflict markers in Level\.unity/);
+  fs.mkdirSync(path.join(dir, '.hawkes'));
+  fs.writeFileSync(path.join(dir, UNRESOLVED), 'Assets/Art/imp.png: both sides repainted it\n');
+  assert.match(unresolvedConflicts(dir, ['Assets/Art/imp.png'], false)!, /couldn't resolve them safely: Assets\/Art\/imp\.png: both sides repainted it/);
+  assert.equal(fs.existsSync(path.join(dir, UNRESOLVED)), false, 'read once');
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('noRoomFor: a Unity product\'s second change waits when both would touch a scene', () => {
+  const now = Date.now();
+  db.prepare(`INSERT INTO changes (id, product, findings, status, title, request, created) VALUES ('c_00000000uni1', 'sickofit', '[]', 'working', 'Main menu polish', 'Tidy Assets/Scenes/MainMenu.unity', ?)`).run(now);
+  try {
+    assert.match(noRoomFor('sickofit', { task: 't_shop', text: 'Shop scene lighting' })!, /Unity scene/);
+    assert.equal(noRoomFor('sickofit', { task: 't_imp', text: 'Imp prefab', files: ['Assets/Prefabs/Imp.prefab'] }), null, 'a prefab beside it runs');
+  } finally {
+    db.prepare(`DELETE FROM changes WHERE id = 'c_00000000uni1'`).run();
+  }
+});

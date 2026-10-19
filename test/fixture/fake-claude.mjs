@@ -56,6 +56,8 @@ async function agent() {
   out({ type: 'assistant', message: { content: [{ type: 'text', text: 'Looking at the brief.' }] } });
   let brief = '';
   try { brief = fs.readFileSync(path.join('.hawkes', 'brief.md'), 'utf8'); } catch { /* none */ }
+  // Its own task only: the "Other agents" section quotes the other changes' requests (their FAKE_ words).
+  brief = brief.replace(/\n## Other agents[\s\S]*?(?=\n## )/, '\n');
   const mode = /FAKE_(STOP|HANG|NEVER|NOTHING|LINGER|PARK)/.exec(brief)?.[1];
   if (mode === 'NOTHING') {
     fs.mkdirSync('.hawkes', { recursive: true });

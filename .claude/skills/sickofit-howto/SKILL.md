@@ -37,3 +37,23 @@ power. Floors count down from 1,000 to the Overlord at Floor 1; the floor number
 reason to be on its floor; one Circle, one family; a new enemy arrives alone. The hero speaks in one-liners, never
 speeches. Pacing: a quiet first 5 seconds, one new enemy type per stage, a breather between pushes, hazards
 telegraphed 1 second ahead.
+
+## Several agents at once (J, 2026-10-19: up to 3 per product)
+
+Other agents may be working in this repo on their own branches, and may merge into beta while you work. The brief's
+"Other agents" section lists them and the files they've touched: stay out of those where you can.
+
+- **Prefabs first.** New or changed content goes in prefabs (or the project's data files and runtime-built content),
+  not straight into a scene. Keep scene edits small and rare: Studio runs only one change at a time that touches a
+  `.unity` scene, `ProjectSettings/`, `Packages/manifest.json` or an Addressables group.
+- **Binary files never merge** (textures, audio, FBX/GLB, binary `.asset`s, anything in Git LFS). Never hand-merge one
+  or regenerate someone else's; on a conflict keep beta's version (`git checkout --theirs -- <file>` while merging
+  origin/beta) and redo your edit on top, or add yours as a new file with its own `.meta`.
+- **Unity YAML** (`.unity`, `.prefab`, `.asset`, `.mat`, `.meta`): keep GUIDs and fileIDs, never duplicate or renumber
+  them, keep each asset's `.meta` with it. After resolving: no conflict markers, every `--- !u!` header intact.
+- Can't resolve a file safely? `git merge --abort`, list it and why in `.hawkes/unresolved.md`, and end: Studio puts
+  the branch back and the PM decides. Never commit a broken merge. Say in your summary which conflicts happened and how
+  you resolved them.
+
+Here scenes, prefabs, materials and even `.asset` files are in Git LFS (`.gitattributes`): git can't merge any of them,
+so two edits to the same prefab or scene always conflict. Prefer the JSON in `Assets/GameConfig/`; it merges.
