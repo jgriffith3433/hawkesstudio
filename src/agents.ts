@@ -1493,11 +1493,11 @@ async function verifyChange(c: Change, p: Product, findings: any[], jobs?: JobMe
 const FORBIDDEN = [/^\.data\//, /(^|\/)\.env(\.|$)/, /^deploy\/\.keys\//, /\.pem$/, /(^|\/)keys\.env$/];
 /**
  * Changed only when J names the file in his request (or a note on it): how the server deploys and checks itself,
- * Caddy (in deploy.mjs), secrets, and the GitHub hooks' token checks. A change that touches one otherwise isn't pushed.
+ * Caddy (deploy/caddyfile.mjs: applied on the server by itself after a merge), secrets, and the GitHub hooks' token checks. A change that touches one otherwise isn't pushed.
  */
 const GUARDED: Record<string, string[]> = {
   hawkesstudio: [
-    'deploy/hawkes-pull.mjs', 'deploy/deploy.mjs', 'deploy/provision.mjs', 'deploy/cloud-init.sh', 'deploy/secrets.mjs', 'deploy/github-token.mjs',
+    'deploy/hawkes-pull.mjs', 'deploy/deploy.mjs', 'deploy/caddyfile.mjs', 'deploy/provision.mjs', 'deploy/cloud-init.sh', 'deploy/secrets.mjs', 'deploy/github-token.mjs',
     'deploy/claude-token.mjs', 'bin/git-credential-hawkes', 'src/github-oidc.ts', 'src/claude.ts', '.github/workflows/',
   ],
   hawkesgen: ['bin/fetch-secrets.mjs', 'src/auth.ts', '.github/workflows/'],

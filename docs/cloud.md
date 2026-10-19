@@ -7,7 +7,7 @@ talk to the cloud, and `auto-start.bat` opens the cloud dashboards. (`auto-start
 |---|---|
 | **Studio** (dashboard, reports, backlog, changes) | https://studio.hawkesgen.com |
 | **Hawkes Gen** (dashboard, and the API for programs) | https://gen.hawkesgen.com |
-| **The public landing page** (no sign-in; what Gen and Studio do, for people and the product sites' "Powered by HAWKES GEN" badge) | https://hawkesgen.com (https://www.hawkesgen.com redirects to it). Plain HTML/CSS in this repo's `site/`, served by Caddy's `file_server` straight from `/srv/hawkes/hawkesstudio/site` with security headers (HSTS, a strict CSP, no framing); nothing runs behind it. Editing `site/` and pushing to main updates it (the server pulls main). The Caddy block and the apex and `www` DNS records come from `deploy/deploy.mjs` (`ensureDns`, `installCaddy`): after changing them, run `node deploy/deploy.mjs --caddy-only` (the first time too, to create them; `--caddy-rollback` undoes it) |
+| **The public landing page** (no sign-in; what Gen and Studio do, for people and the product sites' "Powered by HAWKES GEN" badge) | https://hawkesgen.com (https://www.hawkesgen.com redirects to it). Plain HTML/CSS in this repo's `site/`, served by Caddy's `file_server` straight from `/srv/hawkes/hawkesstudio/site` with security headers (HSTS, a strict CSP, no framing); nothing runs behind it. Editing `site/` and pushing to main updates it (the server pulls main). The Caddy block is in `deploy/caddyfile.mjs` (applied by the server after a push); the apex and `www` DNS records come from `deploy/deploy.mjs` (`ensureDns`): `node deploy/deploy.mjs --caddy-only` creates them (`--caddy-rollback` undoes a Caddyfile) |
 | **Sign in** | Your own account at https://studio.hawkesgen.com/auth/signin (one session covers Studio, Gen and the beta sites). First run: `admin@hawkesgen.com` / `admin`, then set a password (after that "admin" never works). Invite people, reset passwords and see the sign-in log in Studio's **Users** tab (admins). Members use Studio, Talk and the beta sites; going live, merging into main, money and users are admins'. `src/auth.ts`, `src/auth-pages.ts`; Caddy asks `/auth/check` (forward_auth) |
 | **Script login** | user `j`, password in `hawkesstudio/deploy/.keys/web-password.txt`: J's scripts (`src/client.ts`) still send it; Studio checks its SHA-256 (`WEB_LOGIN_SHA256` in keys.env) and counts it as J |
 | **Email** | invites and resets go through Amazon SES from `noreply@hawkesgen.com` (`src/mail.ts`; set up with `node deploy/deploy.mjs --caddy-only --email`). In the SES sandbox only verified addresses get mail; the Users tab always shows the link too |
@@ -118,8 +118,14 @@ Hawkes Gen and Hawkes Studio are private GitHub repos (`jgriffith3433/hawkesgen`
 Nothing reaches in from GitHub, and GitHub holds no AWS or SSH keys. `node deploy/hawkes-pull.mjs --dry-run` on the
 server says what the next pass would do.
 
-What isn't deployed by a push: systemd units, the Caddyfile, DNS, the keys in `/etc/hawkes/keys.env`, the Python
-`.venv`, and the story docs outside the repos. Change those in `deploy/deploy.mjs` and run it. It never copies this
+The web server's config is deployed by a push too: after each pass, `hawkes-pull.mjs` builds the Caddyfile from
+`deploy/caddyfile.mjs` and `products.json` (the domain and email it can't know are in `/etc/hawkes/caddy.json`, written
+by `deploy.mjs`). When it differs from `/etc/caddy/Caddyfile` it is validated as the caddy user, swapped in (the old one
+kept as `Caddyfile.prev`), Caddy reloaded, and Studio, Gen and the landing page checked through Caddy; if they don't
+answer, the old file goes back and that text isn't tried again. Each apply is a `caddy` line in the self-deploy log.
+
+What isn't deployed by a push: systemd units, DNS (a new staging site's record; its certificate waits for it), the keys
+in `/etc/hawkes/keys.env`, the Python `.venv`, and the story docs outside the repos. Change those in `deploy/deploy.mjs` and run it. It never copies this
 PC's folders: its code step clones `main` (or fast-forwards an existing checkout) on the server, so only committed,
 pushed work reaches it. Where the folders were copied by the old tar deploys, it turns them into checkouts in place,
 keeping `.data/`, `reports/` and keys (ignored by git).
@@ -159,7 +165,7 @@ Studio key, delete the `STUDIO_MCP_KEY` line on the server, run `deploy.mjs` aga
 the address it saw (Gen's GeoIP and rate limit read it) and drops any `Authorization` or `Cookie` header, so the web
 key never reaches those routes. Gen does the rest (allowed origins per product, validation; hawkesgen
 `docs/analytics.md`). Everything else on gen still needs the login or an `hg_` key; `test/caddyfile.test.ts` checks
-both. Changing them needs `node deploy/deploy.mjs --caddy-only` from J's PC.
+both. A merged change to them reaches the server on its own (`hawkes-pull.mjs` applies `deploy/caddyfile.mjs`, above).
 
 Give each place its own Gen key (`hawkesgen.cmd key claude-ai --role owner`), so one can be turned off alone.
 Over HTTP, Gen outputs come back as `https://gen.hawkesgen.com/v1/files/<asset>` links (they need the key or the login),

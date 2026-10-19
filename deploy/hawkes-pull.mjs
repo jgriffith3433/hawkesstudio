@@ -16,6 +16,9 @@
 //   - npm ci only when package.json or package-lock.json changed (Gen: also Playwright's Chromium)
 //   - restarts the service and checks its health; if it doesn't come up, it goes back to the previous commit and
 //     doesn't try that commit again
+// Then the web server: the Caddyfile built from deploy/caddyfile.mjs (applyCaddy), applied when it changed, with a
+// rollback if the sites stop answering. So a merged change to Caddy needs nothing run from J's PC (DNS for a new
+// host still does: deploy.mjs).
 // Every deploy (and refusal) is a line in the journal (journalctl -u hawkes-pull) and in
 // hawkesstudio/.data/self-deploys.jsonl, which Studio shows (GET /api/self-deploys).
 //
@@ -24,6 +27,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
+import { pathToFileURL } from 'node:url';
 
 const ROOT = process.env.HAWKES_ROOT ?? '/srv/hawkes';
 const OWNER = process.env.HAWKES_GITHUB_OWNER ?? 'jgriffith3433';
@@ -301,9 +305,87 @@ for (const t of todo) {
     record({ repo: t.repo, from: t.head, to: t.tip, outcome: 'failed', detail: `${e.message.split('\n')[0]}; ${back}` });
   }
 }
+// 4. The web server: the Caddyfile is built from Studio's deploy/caddyfile.mjs and products.json (inputs that live
+// outside git, the domain and email, are in /etc/hawkes/caddy.json, written by deploy.mjs). Applied when it differs.
+await applyCaddy(state);
 saveState(state);
 
-// 4. The map of every project (hawkesstudio/docs/projects/AGENTS.md, edited in git) is the folder's AGENTS.md, with a
+/**
+ * Applies a changed Caddyfile: validated as the caddy user, the old one kept as Caddyfile.prev, Caddy reloaded (no
+ * dropped connections), then the sites checked through Caddy itself; if they don't answer, the old file goes back and
+ * this text is not tried again (state.caddy.bad, its hash) until caddyfile.mjs or products.json change it. DNS for a new
+ * staging site still comes from deploy.mjs on J's PC (the server has no Route 53 access); its certificate waits for it.
+ */
+async function applyCaddy(st) {
+  const CONF = '/etc/hawkes/caddy.json';
+  const LIVE = '/etc/caddy/Caddyfile';
+  const s = (st.caddy ??= {});
+  let text;
+  try {
+    if (!fs.existsSync(CONF)) return;
+    const inputs = JSON.parse(fs.readFileSync(CONF, 'utf8'));
+    const studio = path.join(ROOT, 'hawkesstudio');
+    const { caddyfile } = await import(`${pathToFileURL(path.join(studio, 'deploy', 'caddyfile.mjs')).href}?v=${Date.now()}`);
+    text = caddyfile({ ...inputs, products: JSON.parse(fs.readFileSync(path.join(studio, 'products.json'), 'utf8')) });
+  } catch (e) {
+    say(`[caddy] could not build the Caddyfile: ${e.message}`);
+    return;
+  }
+  const live = fs.existsSync(LIVE) ? fs.readFileSync(LIVE, 'utf8') : '';
+  if (text === live) return;
+  const hash = (await import('node:crypto')).createHash('sha256').update(text).digest('hex').slice(0, 12);
+  if (s.bad === hash) return;
+  const domain = JSON.parse(fs.readFileSync(CONF, 'utf8')).domain;
+  if (DRY) { say(`[caddy] would apply a changed Caddyfile (${hash}, ${text.length} bytes)`); return; }
+  const sh = (cmd, args) => execFileSync(cmd, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 60_000 });
+  const next = '/etc/caddy/Caddyfile.next';
+  try {
+    fs.writeFileSync(next, text);
+    sh('chown', ['caddy:caddy', next]);
+    sh('setpriv', ['--reuid=caddy', '--regid=caddy', '--init-groups', '--', 'caddy', 'validate', '--config', next, '--adapter', 'caddyfile']);
+  } catch (e) {
+    fs.rmSync(next, { force: true });
+    s.bad = hash;
+    record({ repo: 'caddy', outcome: 'refused', detail: `the new Caddyfile (${hash}) does not validate: ${String(e.stderr || e.message).trim().split('\n').filter((l) => /error|Error/.test(l)).slice(-1)[0] ?? 'see journalctl -u hawkes-pull'}` });
+    return;
+  }
+  const swap = (from) => { fs.copyFileSync(from, LIVE); fs.chownSync(LIVE, 0, 0); sh('systemctl', ['reload', 'caddy']); };
+  if (live) fs.writeFileSync(`${LIVE}.prev`, live);
+  try {
+    swap(next);
+    fs.rmSync(next, { force: true });
+    const bad = await caddyAnswers(domain);
+    if (bad) throw new Error(bad);
+    delete s.bad;
+    record({ repo: 'caddy', outcome: 'deployed', detail: `web server config ${hash} applied (${text.length} bytes)` });
+  } catch (e) {
+    let back = 'the previous one is back';
+    try { if (live) swap(`${LIVE}.prev`); } catch (e2) { back = `putting the previous one back failed too (${e2.message.split('\n')[0]}): look at the server`; }
+    s.bad = hash;
+    record({ repo: 'caddy', outcome: 'failed', detail: `web server config ${hash}: ${e.message.split('\n')[0]}; ${back}` });
+  }
+}
+
+/** null when Studio, Gen and the landing page answer through Caddy (a 401 from the sign-in counts: Caddy is up). */
+async function caddyAnswers(domain) {
+  const probe = (host, p) => {
+    try {
+      return Number(execFileSync('curl', ['-s', '-o', '/dev/null', '-w', '%{http_code}', '-m', '10', '--resolve', `${host}:443:127.0.0.1`, `https://${host}${p}`], { encoding: 'utf8' }).trim());
+    } catch {
+      return 0;
+    }
+  };
+  const checks = [[`studio.${domain}`, '/auth/signin'], [`gen.${domain}`, '/v1/health'], [domain, '/']];
+  for (let i = 0; i < 10; i++) {
+    await new Promise((r) => setTimeout(r, 2_000));
+    const codes = checks.map(([h, p]) => probe(h, p));
+    if (codes.every((c) => c >= 200 && c < 500)) return null;
+    if (i === 9) return `not answering through Caddy: ${checks.map(([h, p], j) => `${h}${p} ${codes[j] || 'no answer'}`).join(', ')}`;
+  }
+  return null;
+}
+
+// 5. The map of every project (hawkesstudio/docs/projects/AGENTS.md, edited in git) is the folder's AGENTS.md, with a
 // CLAUDE.md that loads it, so every Claude on the server (Talk, the agents, devtools) reads it. Cheap; every run.
 if (!DRY) {
   try {
