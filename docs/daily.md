@@ -175,8 +175,14 @@ stuck. A revision by a person starts the count over.
   second change starts only when it won't collide with the ones in flight (`src/parallel.ts`): never the same task,
   never one its task depends on, and only in a different area (art, audio, levels, story, ui, engine, from the titles
   and the files the running change and the task's earlier changes touched or its request names) or with known files
-  that share nothing; when that can't be told it waits. A conflict that happens anyway is resolved by its agent as
-  usual. For roadmap tasks and bugs a product's slots are also held by changes of it that are ready but not merged
+  that share nothing; when that can't be told it waits. In Unity products (J, 2026-10-19) two changes that would both
+  touch a `.unity` scene, `ProjectSettings/`, `Packages/manifest.json` or an Addressables group also wait (from their
+  files, or a title naming one), and the same binary file is never touched by two. Every brief lists the product's
+  other changes in flight (title, request, files touched so far) and, for Unity, the rules (prefabs first, never
+  hand-merge binaries, keep GUIDs, fileIDs and `.meta` files). A conflict that happens anyway is resolved by its agent
+  as usual; for Unity its conflict pass gets the files sorted into binary (LFS counts), Unity YAML, code and data. A
+  pass that can't resolve safely (`.hawkes/unresolved.md`, or conflict markers left in) puts the branch back as it was
+  and goes to the PM with the files, never a broken merge. For roadmap tasks and bugs a product's slots are also held by changes of it that are ready but not merged
   yet, or being revised (a conflict pass too) (`slotHeld`). Anything else asked for a product whose slots are taken
   (J's `studio_task`, a fix) is never refused: it queues and starts when there's room (`pump` in agents.ts: oldest
   first, per product within its limit and the same overlap test, within `maxConcurrent`); its "behind c_..." detail
