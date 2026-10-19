@@ -303,6 +303,12 @@ if (typeof document !== 'undefined') (() => {
       if (!el('#ptDetail .pt-title')) throw new Error(`no playtest ${id}`);
       return { line: `Opened playtest ${id}`, n: el('#ptDetail') };
     }
+    if (kind === 'analytics') {
+      show('analytics', id);
+      const n = await waitFor(() => el(`#anBody [data-an-product="${CSS.escape(id)}"]`));
+      if (!n) throw new Error(`no analytics for ${id}`);
+      return { line: `Opened ${id}'s analytics`, n };
+    }
     throw new Error(`can't open a ${kind}`);
   }
 

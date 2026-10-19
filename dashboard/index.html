@@ -18,6 +18,7 @@
       <button data-tab="golive" title="Every product: is beta ahead of live, is it ready, and the buttons to go live">Go live</button>
       <button data-tab="roadmap">Roadmap</button>
       <button data-tab="backlog">Backlog</button>
+      <button data-tab="analytics" title="How the games are doing: players, retention, where they drop off, what they like, from Hawkes Analytics">Analytics</button>
       <button data-tab="library" title="Every product's characters, stages and shots in Hawkes Gen's library: takes waiting for a pick, and every version">Library</button>
       <div class="more" id="more">
         <button type="button" class="more-btn" id="moreBtn" aria-haspopup="true" aria-expanded="false" title="Reports, playtests, agent changes, runs, costs, memory, users, settings">More ▾</button>
@@ -151,6 +152,10 @@
       <div class="bar"><select id="chStatus"><option value="queued,working,verifying,revising,ready">Active</option><option value="ready">Ready for you</option><option value="merged">Merged</option><option value="failed,closed">Failed or closed</option><option value="">All</option></select> <span id="chInfo" class="meta"></span></div>
       <div id="chList"></div>
     </section>
+    <section id="analytics" class="tab">
+      <p class="intro"><b>Analytics:</b> how our games are doing with real players (from Hawkes Analytics in Hawkes Gen). Tap a game to see more about it.</p>
+      <div id="anBody"></div>
+    </section>
     <section id="costs" class="tab">
       <p class="intro"><b>Costs:</b> what the studio costs (servers, generation, Claude) against your budget.</p>
       <div class="bar">
@@ -204,6 +209,7 @@
   <script src="roadmap.js"></script>
   <script src="inbox.js"></script>
   <script src="costs.js"></script>
+  <script src="analytics.js"></script>
   <script src="golive.js"></script>
   <script src="library.js"></script>
   <script src="memory.js"></script>
