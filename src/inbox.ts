@@ -23,6 +23,7 @@ import {
 import { walkAwayOn, walkAwaySettings } from './walkaway.ts';
 import { gate } from './acceptance.ts';
 import { listApprovals, type Approval } from './approvals.ts';
+import { contradictionSettled } from './memory-curate.ts';
 
 // Answers to the cards that aren't questions (budgets, merges, milestones): what was answered, by whom, and for a
 // milestone how long its card stays away (until; null: for good).
@@ -182,6 +183,8 @@ function tidy() {
       const f = getQuestion(q.forwards);
       if (f && !['open', 'asked J'].includes(f.status)) why = `the agent's question was ${f.status}${f.answered_by ? ` by ${f.answered_by}` : ''}`;
     }
+    // Memory curation's contradiction cards: one side deleted, faded or settled, or its twin answered.
+    if (!why) why = contradictionSettled(q);
     if (why) setQuestion(q.id, { status: 'resolved', answer: `(no longer waiting: ${why})`, answered_by: 'Studio' });
   }
 }

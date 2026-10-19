@@ -67,10 +67,7 @@ ${items.map(({ c, near: n }) => `CANDIDATE ${show(c)}\nEXISTING:\n${n.length ? n
         updateMemory(it.c.id, { status: 'disputed', note: `contradicts ${of.id}: ${v.why}`.slice(0, 500) }, STUDIO);
         out.disputed++;
         // J's decisions and the canon are his to keep or change.
-        if (of.kind === 'decision' || of.kind === 'canon') {
-          const pm: any = await import('./pm.ts');
-          pm.askJ?.(`An agent's note in the shared memory contradicts ${of.kind === 'decision' ? 'one of your decisions' : 'the canon'}.\n\nYours (${of.id}): ${of.title}${of.body ? ` — ${of.body.slice(0, 300)}` : ''}\nThe note (${it.c.id}, ${it.c.by}): ${it.c.title}${it.c.body ? ` — ${it.c.body.slice(0, 300)}` : ''}\n\nWhich holds?`, { subject: it.c.id, product: it.c.product, options: ['mine holds (drop the note)', 'the note is right (update mine)'], from: 'memory curation' });
-        }
+        if (of.kind === 'decision' || of.kind === 'canon') await askContradiction(it.c, of);
       } else if (v.action === 'drop') {
         updateMemory(it.c.id, { status: 'faded', note: `faded by curation: ${v.why}`.slice(0, 500) }, STUDIO);
         out.faded++;
@@ -83,4 +80,66 @@ ${items.map(({ c, near: n }) => `CANDIDATE ${show(c)}\nEXISTING:\n${n.length ? n
     }
   }
   return out;
+}
+
+// ------------------------------------------------- contradictions for J
+
+/** Who wrote an entry, in J's words: "J's decision" only when it really is his; an agent by its change and pull request. */
+export function authorOf(m: Pick<Memory, 'by' | 'kind' | 'source'>) {
+  if (/^J\b/.test(m.by)) return `J's ${m.kind}`;
+  const pr = /\/pull\/(\d+)/.exec(m.source ?? '')?.[1];
+  const who = /^(agent|scout) (\S+)/.exec(m.by);
+  if (who) return `${who[1]} ${who[2]}${pr ? ` (PR #${pr})` : ''}`;
+  if (m.by === 'seed') return `the seed${m.source ? ` (${m.source})` : ''}`;
+  return m.by;
+}
+
+const PAIR = 'memory-contradiction:';
+/** The unordered pair two contradicting entries make: one question per pair, whichever side curation saw first. */
+export const pairTopic = (a: string, b: string) => PAIR + [a, b].sort().join('+');
+
+/** The pair a question asks about: its topic, or (cards filed before the topic) the two ids in curation's text. */
+export function pairOf(q: { topic?: string | null; text: string; asked_by?: string | null }): [string, string] | null {
+  if (q.topic?.startsWith(PAIR)) {
+    const [a, b] = q.topic.slice(PAIR.length).split('+');
+    return a && b ? [a, b] : null;
+  }
+  if (!/memory curation/.test(q.asked_by ?? '')) return null;
+  const ids = [...new Set([...q.text.matchAll(/\((m_[0-9a-f]+)/g)].map((x) => x[1]))].sort();
+  return ids.length === 2 ? [ids[0], ids[1]] : null;
+}
+
+const clipTitle = (s: string) => (s.length > 100 ? `${s.slice(0, 99)}…` : s);
+
+/** Asks J which of two contradicting entries holds, once per pair; options name the entries. Null when already asked. */
+export async function askContradiction(note: Memory, of: Memory) {
+  const topic = pairTopic(note.id, of.id);
+  const asked = (db.prepare(`SELECT id, topic, text, asked_by FROM questions WHERE topic = ? OR (topic IS NULL AND asked_by LIKE '%memory curation%')`).all(topic) as any[])
+    .some((q) => q.topic === topic || (!q.topic && pairOf(q)?.join('+') === [note.id, of.id].sort().join('+')));
+  if (asked) return null;
+  const line = (m: Memory) => `${authorOf(m)} (${m.id}): ${m.title}${m.body ? ` — ${m.body.slice(0, 300)}` : ''}`;
+  const keep = (m: Memory, other: Memory) => `Keep: ${clipTitle(m.title)}${m.title === other.title ? ` (${m.id})` : ''}`;
+  const what = of.kind === 'decision' && /^J\b/.test(of.by) ? 'one of your decisions' : of.kind === 'canon' ? 'the canon' : `a ${of.kind}`;
+  const text = `Two entries in the shared memory contradict each other (${what}).\n\n${line(of)}\n${line(note)}\n\nWhich holds? The other one is dropped.`;
+  const pm: any = await import('./pm.ts');
+  return pm.askJ?.(text, { subject: note.id, product: note.product, options: [keep(of, note), keep(note, of)], from: 'memory curation', topic }) ?? null;
+}
+
+/**
+ * Why a contradiction card has nothing left to decide, or '' when it still waits: one side was deleted (or merged
+ * away) or faded, neither side is disputed any more (settled by hand), or its twin on the same pair was answered.
+ */
+export function contradictionSettled(q: { id: string; topic?: string | null; text: string; asked_by?: string | null }) {
+  const pair = pairOf(q);
+  if (!pair) return '';
+  const [a, b] = pair.map((id) => getMemory(id));
+  for (const [id, m] of [[pair[0], a], [pair[1], b]] as const) {
+    if (!m) return `${id} was deleted`;
+    if (m.status === 'faded') return `${id} faded`;
+  }
+  if (a!.status !== 'disputed' && b!.status !== 'disputed') return 'neither entry is disputed now';
+  const key = pair.join('+');
+  const twin = (db.prepare(`SELECT id, topic, text, asked_by FROM questions WHERE id != ? AND status = 'answered' AND (topic LIKE '${PAIR}%' OR asked_by LIKE '%memory curation%')`).all(q.id) as any[])
+    .find((x) => pairOf(x)?.join('+') === key);
+  return twin ? `the same pair was answered in ${twin.id}` : '';
 }
