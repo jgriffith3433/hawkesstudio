@@ -91,3 +91,58 @@ test('the event-loop monitor records a block over a second, with what was runnin
   assert.ok(h.blocks.length >= 1, 'no block recorded');
   assert.ok(h.blocks[0].ms >= 1000);
 });
+
+/** A named function that holds the event loop, so the profile has something of ours to find. */
+function holdTheLoop(ms: number) {
+  const end = Date.now() + ms;
+  let x = 0;
+  while (Date.now() < end) x += Math.sqrt(x + 1);
+  return x;
+}
+
+test('a block names the code it was in (the rolling CPU profile), and its profile is kept on disk, capped', async () => {
+  const { PROFILE_DIR } = await import('../src/loopprof.ts');
+  ops.startLoopMonitor();
+  // An old profile beyond the cap goes when a new one is kept.
+  fs.mkdirSync(PROFILE_DIR(), { recursive: true });
+  for (let i = 0; i < 25; i++) fs.writeFileSync(path.join(PROFILE_DIR(), `block-2000-01-01T00-00-${String(i).padStart(2, '0')}-000Z-1000ms.cpuprofile`), '{}');
+  await sleep(600);
+  const t0 = Date.now();
+  holdTheLoop(1500);
+  const mine = () => ops.loopHealth().blocks.find((x: any) => x.at > t0 && x.where) as any;
+  await until(() => Boolean(mine()), 5000);
+  const b = mine();
+  assert.match(b.where, /holdTheLoop \(test\/ops\.test\.ts:\d+\)/, b.where);
+  assert.ok(b.cause.samples > 50, `samples: ${b.cause.samples}`);
+  assert.ok(b.cause.profile, 'its profile was kept');
+  const kept = fs.readdirSync(PROFILE_DIR());
+  assert.ok(kept.includes(b.cause.profile));
+  assert.ok(kept.length <= 20, `${kept.length} profiles kept`);
+  assert.equal(kept.includes('block-2000-01-01T00-00-00-000Z-1000ms.cpuprofile'), false, 'the oldest went');
+  const profile = JSON.parse(fs.readFileSync(path.join(PROFILE_DIR(), b.cause.profile), 'utf8'));
+  assert.ok(Array.isArray(profile.nodes) && profile.samples.length > 0, 'a real .cpuprofile');
+});
+
+test("a profile's tail: self time and the deepest Studio frame, idle left out", async () => {
+  const { analyze, describe } = await import('../src/loopprof.ts');
+  const { ROOT } = await import('../src/config.ts');
+  const frame = (functionName: string, url: string, lineNumber = 0) => ({ functionName, url, lineNumber, columnNumber: 0 });
+  const profile = {
+    nodes: [
+      { id: 1, callFrame: frame('(root)', ''), children: [2, 5] },
+      { id: 2, callFrame: frame('work', `file://${ROOT}/src/agents.ts`, 1136), children: [3] },
+      { id: 3, callFrame: frame('warmDeps', `file://${ROOT}/src/warm.ts`, 179), children: [4] },
+      { id: 4, callFrame: frame('spawnSync', 'node:child_process', 800) },
+      { id: 5, callFrame: frame('(idle)', '') },
+    ],
+    // 10 ms apart: 100 idle samples long ago, then 200 in spawnSync (the block), then 5 idle.
+    startTime: 0, endTime: 3_050_000,
+    samples: [...Array(100).fill(5), ...Array(200).fill(4), ...Array(5).fill(5)],
+    timeDeltas: Array(305).fill(10_000),
+  };
+  const c = analyze(profile, 2000, { slackMs: 100 });
+  assert.equal(c.samples, 200);
+  assert.deepEqual(c.top[0], { fn: 'spawnSync', file: 'node:child_process', line: 801, ms: 2000 });
+  assert.deepEqual(c.studio[0], { fn: 'warmDeps', file: 'src/warm.ts', line: 180, ms: 2000 });
+  assert.match(describe(c), /^in warmDeps \(src\/warm\.ts:180\) 2000 ms; top: spawnSync \(node:child_process:801\)/);
+});

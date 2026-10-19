@@ -304,7 +304,7 @@ export function studioMcp({ studio, waitRun }: Client = { studio: defaultStudio,
     },
     {
       name: 'studio_ops',
-      description: "Studio's background work right now and the last day: going live, rollbacks and merges of main into beta (queued, running with their current step and last log lines, done or failed with the reason; 'stuck' when one runs much longer than usual), every git or shell command Studio is waiting on, and the event loop (any moment in the last hour Studio froze for over a second, and what was running then). Use it for \"is it still going live?\", \"what's running?\", \"why is Studio slow?\". product: only that product's operations.",
+      description: "Studio's background work right now and the last day: going live, rollbacks and merges of main into beta (queued, running with their current step and last log lines, done or failed with the reason; 'stuck' when one runs much longer than usual), every git or shell command Studio is waiting on, and the event loop (any moment in the last hour Studio froze for over a second, what was running then, and 'where': the functions and files the freeze was in, from a CPU profile kept in .data/profiles). Use it for \"is it still going live?\", \"what's running?\", \"why is Studio slow?\". product: only that product's operations.",
       inputSchema: obj({ product: str('A product id (optional)') }),
       run: async ({ product }) => studio(`/api/ops${product ? `?product=${encodeURIComponent(product)}` : ''}`),
     },

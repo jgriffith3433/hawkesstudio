@@ -9,8 +9,9 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { spawn, spawnSync } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { PROJECTS } from './config.ts';
+import { runCommand } from './ops.ts';
 
 export const lockHash = (dir: string) => {
   try {
@@ -164,7 +165,7 @@ export const coldDirs = (worktree: string) => lockDirs(worktree).filter((rel) =>
  * Copies node_modules into every lockfile folder of `worktree` that lacks it, from a donor whose installed packages
  * (INSTALLED) are for the same lockfile. Folders with no such donor are left for an npm ci (coldDirs).
  */
-export function warmDeps(worktree: string, repoTop: string, log: (s: string) => void = () => {}) {
+export async function warmDeps(worktree: string, repoTop: string, log: (s: string) => void = () => {}) {
   const warmed: string[] = [];
   const from = donors(repoTop, worktree);
   for (const rel of lockDirs(worktree)) {
@@ -177,10 +178,11 @@ export function warmDeps(worktree: string, repoTop: string, log: (s: string) => 
     const t0 = Date.now();
     const ok = process.platform === 'win32'
       ? (() => { try { fs.cpSync(path.join(donor, 'node_modules'), path.join(dest, 'node_modules'), { recursive: true, verbatimSymlinks: true }); return true; } catch { return false; } })()
-      : spawnSync('cp', ['-a', path.join(donor, 'node_modules'), path.join(dest, 'node_modules')], { timeout: 5 * 60_000 }).status === 0;
+      // Async: a copy of node_modules takes seconds, and a synchronous one froze Studio while agents started.
+      : (await runCommand('cp', ['-a', path.join(donor, 'node_modules'), path.join(dest, 'node_modules')], { timeoutMs: 5 * 60_000 })).ok;
     if (!ok) { fs.rmSync(path.join(dest, 'node_modules'), { recursive: true, force: true }); continue; }
     // The agent sandbox's user writes there too (Vite's cache, an npm install): see shareCmds.
-    for (const [cmd, args] of shareCmds(path.join(dest, 'node_modules'), fs.statSync(worktree).gid)) spawnSync(cmd, args, { timeout: 5 * 60_000 });
+    for (const [cmd, args] of shareCmds(path.join(dest, 'node_modules'), fs.statSync(worktree).gid)) await runCommand(cmd, args, { timeoutMs: 5 * 60_000 });
     for (const s of STAMPS) try { fs.writeFileSync(path.join(dest, 'node_modules', s), hash); } catch { /* fine */ }
     warmed.push(rel || '.');
     log(`warm start: node_modules${rel ? ` in ${rel}` : ''} copied from ${path.relative(PROJECTS, donor) || donor} (${Math.round((Date.now() - t0) / 1000)} s)`);

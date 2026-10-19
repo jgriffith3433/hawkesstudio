@@ -74,8 +74,9 @@ function runRow(r: any) {
 export async function activity() {
   const changes = (db.prepare(`SELECT * FROM changes WHERE status IN ('queued', 'working', 'verifying', 'revising') ORDER BY created`).all() as any[]).map(changeRow);
   const runs = (db.prepare(`SELECT * FROM runs WHERE status = 'running' ORDER BY started`).all() as any[]).map(runRow);
-  const talk = (db.prepare(`SELECT id, title, messages, updated FROM conversations WHERE status = 'thinking'`).all() as any[]).map((c) => {
-    const last = ((parse(c.messages) ?? []) as any[]).findLast((m) => m.role === 'user' || m.notice);
+  // Only the last message J (or a notice) sent, picked out by SQLite: a long conversation's whole history isn't parsed every poll.
+  const talk = (db.prepare(`SELECT id, title, updated, (SELECT m.value FROM json_each(c.messages) m WHERE json_extract(m.value, '$.role') = 'user' OR json_extract(m.value, '$.notice') ORDER BY m.key DESC LIMIT 1) AS last FROM conversations c WHERE status = 'thinking'`).all() as any[]).map((c) => {
+    const last = parse(c.last) as any;
     return { id: c.id, title: c.title, since: last?.at ?? c.updated, auto: Boolean(last?.notice) };
   });
   // Hawkes Gen's queue: what Studio's steps are waiting on, and anything else (other projects, agents' verifications).

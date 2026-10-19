@@ -55,10 +55,10 @@ export async function workspace(productId: string) {
     git(repo, ['worktree', 'prune']);
     const w = await gitAsync(repo, ['worktree', 'add', '--force', '-B', branchOf(p), dir, `origin/${BETA}`]);
     if (!w.ok) throw new StudioError(`Couldn't make the workspace: ${w.err}`);
-    warmDeps(dir, top(p));
+    await warmDeps(dir, top(p));
   }
   // Talk (the sandbox user) commits here: its git folder must be the agent group's (sandbox.ts shareWorktree).
-  shareWorktree(dir);
+  await shareWorktree(dir);
   assertWorktree(dir, repo);
   const dirty = git(dir, ['status', '--porcelain']).out;
   const ahead = git(dir, ['rev-list', '--count', `origin/${BETA}..HEAD`]).out;

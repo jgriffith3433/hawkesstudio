@@ -649,7 +649,8 @@ server.listen(PORT, '127.0.0.1', () => {
   void import('./ops.ts').then((ops) => { ops.startLoopMonitor(); const n = ops.resumeOps(); if (n) console.log(`[studio] ${n} background operation(s) back in the queue after the restart`); });
   void import('./deploy.ts');
   // The agent sandbox commits in its worktrees: every repo's and worktree's git folder is the agent group's (sandbox.ts).
-  void import('./sandbox.ts').then(({ shareAll }) => shareAll()).catch((e) => console.warn(`[sandbox] sharing git folders: ${e.message ?? e}`));
+  // In the background once start-up has settled (async, already-shared ones skipped): it used to freeze Studio after boot.
+  setTimeout(() => void import('./sandbox.ts').then(({ shareAll }) => shareAll()).then((r) => { if (r.shared) console.log(`[sandbox] shared ${r.shared} git folder(s) with the agent group (${r.already} already were)`); }).catch((e) => console.warn(`[sandbox] sharing git folders: ${e.message ?? e}`)), 30_000).unref();
   const runs = resumeRuns();
   const changes = resumeChanges();
   // Pull requests J merged on GitHub: their changes are marked merged (agents.ts), every 5 minutes.

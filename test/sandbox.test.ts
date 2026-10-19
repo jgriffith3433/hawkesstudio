@@ -147,7 +147,7 @@ test("a fresh agent worktree's git folder is the agent group's and group-writabl
     assert.ok(st.mode & 0o020, `${p} is group-writable`);
     if (st.isDirectory()) assert.ok(st.mode & 0o2000, `${p} is setgid`);
   };
-  shareRepo(r2, String(gid));
+  await shareRepo(r2, String(gid));
   assert.equal(git(r2, 'config', 'core.sharedRepository'), 'group');
   const wt = path.join(process.env.STUDIO_PROJECTS!, '.work', 'c_000000000001');
   fs.mkdirSync(path.dirname(wt), { recursive: true });
@@ -156,7 +156,7 @@ test("a fresh agent worktree's git folder is the agent group's and group-writabl
   // git (2.43) makes .git/worktrees/<name> itself 755 even in a shared repo: agents.ts shares it on every pass.
   shared(path.join(r2, '.git', 'worktrees'));
   for (const f of ['index', 'HEAD', 'logs', 'logs/HEAD']) shared(path.join(gitDir, f));
-  shareWorktree(wt, String(gid));
+  await shareWorktree(wt, String(gid));
   shared(gitDir);
   // Studio's own git there later (a commit: index, HEAD, the reflog) keeps it shared.
   fs.writeFileSync(path.join(wt, 'a.txt'), 'a\n');
@@ -165,7 +165,7 @@ test("a fresh agent worktree's git folder is the agent group's and group-writabl
   for (const f of ['', 'index', 'HEAD', 'logs/HEAD']) shared(path.join(gitDir, f));
   shared(path.join(r2, '.git', 'logs', 'refs', 'heads', 'task', 'one'));
   // ...and what it didn't (COMMIT_EDITMSG, 644 under umask 022), the next pass's shareWorktree does.
-  shareWorktree(wt, String(gid));
+  await shareWorktree(wt, String(gid));
   shared(path.join(gitDir, 'COMMIT_EDITMSG'));
   // The last worktree pruned, git deletes .git/worktrees; it comes back the agent group's, group-writable.
   fs.rmSync(wt, { recursive: true, force: true });
@@ -173,7 +173,7 @@ test("a fresh agent worktree's git folder is the agent group's and group-writabl
   assert.equal(fs.existsSync(path.join(r2, '.git', 'worktrees')), false);
   studio(r2, `worktree add --quiet -b task/two ${wt} origin/main`);
   shared(path.join(r2, '.git', 'worktrees'));
-  shareWorktree(wt, String(gid));
+  await shareWorktree(wt, String(gid));
   for (const f of ['', 'index', 'HEAD']) shared(path.join(gitDir, f));
   // A worktree made before any of this (a repo never shared): shareWorktree and the start-up sweep fix both.
   const r3 = path.join(process.env.STUDIO_PROJECTS!, 'older');
@@ -184,7 +184,46 @@ test("a fresh agent worktree's git folder is the agent group's and group-writabl
   await shareAll(String(gid));
   for (const f of ['', 'index', 'HEAD']) shared(path.join(r3, '.git', 'worktrees', 'c_000000000003', f));
   assert.equal(git(r3, 'config', 'core.sharedRepository'), 'group');
-  shareWorktree(wt3, String(gid));
+  await shareWorktree(wt3, String(gid));
+});
+
+// Anywhere with POSIX permissions: Studio's own primary group stands in for the agent group (chgrp to it is allowed).
+test('shareWorktree skips a worktree that is already shared, fixes what Studio wrote since, and never blocks', { skip: process.platform === 'win32' ? 'not on Windows' : false }, async () => {
+  const { shareWorktree, shareAll } = await import('../src/sandbox.ts');
+  const group = String(process.getgid!());
+  const r4 = path.join(process.env.STUDIO_PROJECTS!, 'skipper');
+  git(tmp, 'clone', '--quiet', origin, r4);
+  const wt = path.join(process.env.STUDIO_PROJECTS!, '.work', 'c_000000000004');
+  fs.mkdirSync(path.dirname(wt), { recursive: true });
+  git(r4, 'worktree', 'add', '--quiet', '-b', 'task/four', wt, 'origin/main');
+  const gitDir = path.join(r4, '.git', 'worktrees', 'c_000000000004');
+  fs.chmodSync(gitDir, 0o755);
+  fs.chmodSync(path.join(gitDir, 'HEAD'), 0o644);
+  // Async: Studio keeps ticking while it runs.
+  let ticked = false;
+  setImmediate(() => { ticked = true; });
+  const first = shareWorktree(wt, group);
+  assert.equal(ticked, false, 'it returned a promise without doing the work in line');
+  assert.equal(await first, 'shared');
+  assert.ok(fs.statSync(gitDir).mode & 0o2000, 'setgid');
+  assert.ok(fs.statSync(gitDir).mode & 0o020, 'group-writable');
+  assert.ok(fs.statSync(path.join(gitDir, 'HEAD')).mode & 0o020, 'its files group-writable');
+  // Already shared: nothing to change, nothing done.
+  const before = fs.statSync(gitDir).ctimeMs;
+  assert.equal(await shareWorktree(wt, group), 'already');
+  assert.equal(fs.statSync(gitDir).ctimeMs, before, 'left alone');
+  // A file Studio's git wrote since (644 under umask 022) is the only thing the next pass changes.
+  fs.writeFileSync(path.join(gitDir, 'COMMIT_EDITMSG'), 'x\n', { mode: 0o644 });
+  fs.chmodSync(path.join(gitDir, 'COMMIT_EDITMSG'), 0o644);
+  assert.equal(await shareWorktree(wt, group), 'shared');
+  assert.ok(fs.statSync(path.join(gitDir, 'COMMIT_EDITMSG')).mode & 0o020);
+  // The start-up sweep: once it has run (other repos here), the next one changes nothing.
+  await shareAll(group);
+  const r = await shareAll(group);
+  assert.equal(r.shared, 0, JSON.stringify(r));
+  assert.ok(r.already >= 1);
+  // Not a worktree: skipped, no error.
+  assert.equal(await shareWorktree(tmp, group), 'skipped');
 });
 
 test("the safety net's trigger: what an agent says when its commit was refused, and not any \"permission denied\"", async () => {
