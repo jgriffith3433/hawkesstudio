@@ -156,6 +156,8 @@ test("the Claude Code review is held to Gen's limits", () => {
 test('billing errors are told apart from other failures', () => {
   assert.ok(llm.isBillingError('Claude API error 400: Your credit balance is too low to access the Anthropic API.'));
   assert.ok(llm.isBillingError('The ANTHROPIC_API_KEY in .env was rejected.'));
-  assert.ok(!llm.isBillingError('Claude is rate limited right now; try again in a minute.'));
+  // Any provider-down state falls back to Claude Code now (d357645): a rate limit, Cursor's unpaid invoice.
+  assert.ok(llm.isBillingError('Claude is rate limited right now; try again in a minute.'));
+  assert.ok(llm.isBillingError('ActionRequiredError: You have an unpaid invoice'));
   assert.ok(!llm.isBillingError('timed out after 10 min'));
 });
