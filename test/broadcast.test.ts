@@ -251,3 +251,10 @@ test('the Twitch capture path never draws the X11 mouse cursor', () => {
   const css = fs.readFileSync(new URL('../dashboard/broadcast.css', import.meta.url), 'utf8');
   assert.match(css, /body\.clean\s*\{\s*cursor:\s*none/);
 });
+
+test('the encoder never prints the stream key (ffmpeg banner off)', () => {
+  const src = fs.readFileSync(new URL('../bin/broadcast-stream.mjs', import.meta.url), 'utf8');
+  for (const m of src.matchAll(/spawn\(ffmpeg, \[([\s\S]*?)rtmp:\/\/live\.twitch\.tv/g)) {
+    assert.match(m[1], /'-hide_banner', '-loglevel', 'warning'/);
+  }
+});

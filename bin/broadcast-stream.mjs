@@ -226,9 +226,12 @@ if (process.platform === 'linux') {
   // capture that shows up as a white X on an otherwise black Twitch frame when
   // Chromium has crashed or the stage has not painted yet.
   setTimeout(() => {
+    // -hide_banner -loglevel warning: ffmpeg's banner prints the output URL, which holds the stream key, into the
+    // journal. -stats keeps the frame= progress lines (they carry no URL).
     const enc = spawn(ffmpeg, [
+      '-hide_banner', '-loglevel', 'warning', '-stats',
       '-f', 'x11grab', '-video_size', '1920x1080', '-framerate', '30', '-draw_mouse', '0', '-i', ':99',
-      '-f', 's16le', '-ar', String(RATE), '-ac', String(CHANNELS), '-i', fifo,
+      '-thread_queue_size', '1024', '-f', 's16le', '-ar', String(RATE), '-ac', String(CHANNELS), '-i', fifo,
       '-c:v', 'libx264', '-preset', 'veryfast', '-b:v', '4500k', '-pix_fmt', 'yuv420p',
       '-c:a', 'aac', '-b:a', '128k', '-ar', String(RATE),
       '-f', 'flv', `rtmp://live.twitch.tv/app/${KEY}`,
@@ -239,6 +242,7 @@ if (process.platform === 'linux') {
 } else {
   console.log('Open the page full screen, then this grabs the desktop. Host voice mix is Linux-only (FIFO).');
   const enc = spawn(ffmpeg, [
+    '-hide_banner', '-loglevel', 'warning', '-stats',
     '-f', 'gdigrab', '-framerate', '30', '-i', 'desktop',
     '-f', 'lavfi', '-i', 'anullsrc=channel_layout=stereo:sample_rate=44100',
     '-c:v', 'libx264', '-preset', 'veryfast', '-b:v', '4500k', '-pix_fmt', 'yuv420p',
