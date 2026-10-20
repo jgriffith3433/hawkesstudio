@@ -15,6 +15,7 @@ import { db, J, parse } from './db.ts';
 import { gen } from './gen.ts';
 import { livePlaytests } from './livetests.ts';
 import { listItems, listMilestones } from './roadmap.ts';
+import { HOST_IDS, HOSTS, hostById, hostCard } from './hosts.ts';
 
 const SECRET = /\b(?:sk-|hg_|AKIA|ghp_|github_pat_|xai-)[A-Za-z0-9_-]{6,}\b/g;
 const WINPATH = /[A-Za-z]:\\[^\s'"]+/g;
@@ -109,6 +110,8 @@ export type Broadcast = {
   disclose: string;
   /** The show (show.ts): the rung on now, its card, Yooba's line and voice, the song playing, what's up next. */
   show?: any;
+  /** Every host (hosts.ts), for the Director panel. */
+  hostsAll?: { id: string; name: string; tagline: string; image: string; cutout: boolean }[];
   /** Going live (onair.ts): the switch, the quality, what the encoder is doing. */
   onAir?: any;
 };
@@ -120,7 +123,7 @@ export type Desk = {
   /** Auto mode prefers live takes and reel clips in this order (yoobaland first by default). */
   priority: string[];
   /** auto runs the ladder (show.ts); take, work, roadmap and reel (the showcase) hold one rung; quiet holds still. */
-  screen: 'auto' | 'take' | 'reel' | 'quiet' | 'work' | 'roadmap';
+  screen: 'auto' | 'take' | 'reel' | 'quiet' | 'work' | 'roadmap' | 'lore';
   take: string;
   clip: string;
   paused: boolean;
@@ -144,15 +147,79 @@ export type Desk = {
   showcaseKinds: ShowKind[];
   /** Seconds each rung holds one subject (songs and clips hold for their own length). */
   dwell: Record<Rung, number>;
-  /** Wordings Yooba keeps per subject before he repeats one (each voiced once, then free from the cache). */
+  /** Wordings the host keeps per subject before repeating one (each voiced once, then free from the cache). */
   variety: number;
+  /**
+   * How the show picks what's next. shuffle (the default): a weighted random pick among the rungs that are on and have
+   * something, never the same rung many times running; a live playtest still cuts in when `cutIn` is on. ladder: the
+   * highest rung with something always wins (the old behaviour: an agent at work kept the showcase off for hours).
+   */
+  mix: 'shuffle' | 'ladder';
+  /** shuffle: how often each rung comes up, 0 (never) to 10. */
+  weights: Record<Rung, number>;
+  /** A playtest starting interrupts whatever is on. */
+  cutIn: boolean;
+  /** When and how much the host talks. */
+  talk: Talk;
+  /** The hosts who take turns (show order). */
+  hosts: string[];
+  /** One host for the whole show; '' takes turns every `rotateMin` minutes. */
+  host: string;
+  /** Minutes between hosts taking over (0: the host never changes on its own). */
+  rotateMin: number;
+  /** The rungs this desk has known: a rung added later turns on in an older stored ladder once. */
+  rungsSeen: Rung[];
 };
 
-export type Rung = 'playtest' | 'work' | 'roadmap' | 'showcase';
+export type Rung = 'playtest' | 'work' | 'roadmap' | 'showcase' | 'lore';
 export type ShowKind = 'song' | 'video' | 'image';
-export const RUNGS: Rung[] = ['playtest', 'work', 'roadmap', 'showcase'];
+export const RUNGS: Rung[] = ['playtest', 'work', 'roadmap', 'showcase', 'lore'];
 export const SHOW_KINDS: ShowKind[] = ['song', 'video', 'image'];
-export const DWELL_DEFAULT: Record<Rung, number> = { playtest: 45, work: 35, roadmap: 28, showcase: 14 };
+export const DWELL_DEFAULT: Record<Rung, number> = { playtest: 45, work: 35, roadmap: 28, showcase: 14, lore: 30 };
+export const WEIGHTS_DEFAULT: Record<Rung, number> = { playtest: 5, work: 2, roadmap: 2, showcase: 3, lore: 3 };
+
+/**
+ * When the host talks (J, 2026-10-20: "he speaks way too much"). A moment is a kind of segment, or a playtest's wrap,
+ * a playtest cutting in, a new host taking over. Even when a moment is on, the host waits `gapSec` after last talking and
+ * then speaks on `chance` percent of segments, at most `maxLines` lines. J's Say always speaks.
+ */
+export type Moment = 'playtest' | 'wrap' | 'cutIn' | 'work' | 'roadmap' | 'showcase' | 'lore' | 'handoff';
+export const MOMENTS: Moment[] = ['playtest', 'wrap', 'cutIn', 'work', 'roadmap', 'showcase', 'lore', 'handoff'];
+export type Talk = { moments: Record<Moment, boolean>; gapSec: number; chance: number; maxLines: number };
+export const TALK_DEFAULT: Talk = {
+  moments: { playtest: true, wrap: true, cutIn: true, work: true, roadmap: false, showcase: false, lore: true, handoff: true },
+  gapSec: 90,
+  chance: 50,
+  maxLines: 2,
+};
+
+export function normalizeTalk(raw: unknown, cur: Talk = TALK_DEFAULT): Talk {
+  const out: Talk = { ...cur, moments: { ...TALK_DEFAULT.moments, ...cur.moments } };
+  if (!raw || typeof raw !== 'object') return out;
+  const r = raw as any;
+  if (r.moments && typeof r.moments === 'object') for (const m of MOMENTS) if (typeof r.moments[m] === 'boolean') out.moments[m] = r.moments[m];
+  const int = (v: unknown, lo: number, hi: number) => { const n = Number(v); return Number.isFinite(n) && n >= lo && n <= hi ? Math.round(n) : null; };
+  out.gapSec = int(r.gapSec, 0, 3600) ?? out.gapSec;
+  out.chance = int(r.chance, 0, 100) ?? out.chance;
+  out.maxLines = int(r.maxLines, 1, 3) ?? out.maxLines;
+  return out;
+}
+
+export function normalizeWeights(raw: unknown, cur: Record<Rung, number> = WEIGHTS_DEFAULT): Record<Rung, number> {
+  const out = { ...WEIGHTS_DEFAULT, ...cur };
+  if (!raw || typeof raw !== 'object') return out;
+  for (const k of RUNGS) {
+    const n = Number((raw as any)[k]);
+    if (Number.isFinite(n) && n >= 0 && n <= 10) out[k] = Math.round(n);
+  }
+  return out;
+}
+
+/** Known host ids, each once, in the order given; never empty (all of them). */
+export function normalizeHosts(raw: unknown): string[] {
+  const list = Array.isArray(raw) ? [...new Set(raw.map(String))].filter((h) => HOST_IDS.includes(h)) : [];
+  return list.length ? list : [...HOST_IDS];
+}
 
 /** A ladder from a request or the store: known rungs, each once, in the order given. Empty is allowed (Hold still). */
 export function normalizeLadder(raw: unknown): Rung[] {
@@ -196,6 +263,14 @@ export const DESK_DEFAULT: Desk = {
   showcaseKinds: [...SHOW_KINDS],
   dwell: { ...DWELL_DEFAULT },
   variety: 3,
+  mix: 'shuffle',
+  weights: { ...WEIGHTS_DEFAULT },
+  cutIn: true,
+  talk: { ...TALK_DEFAULT, moments: { ...TALK_DEFAULT.moments } },
+  hosts: [...HOST_IDS],
+  host: '',
+  rotateMin: 15,
+  rungsSeen: [...RUNGS],
 };
 
 /** Yooba Land first (the show opened on it), then the rest in products.json order. */
@@ -468,8 +543,8 @@ function hostOf(focus: Take | null, ticker: Tick[], reel: ReelItem[]): string {
 }
 
 const TAKE_ID = /^(?:j_[0-9a-f]+|wait-[a-z0-9-]+)$/;
-const SHOW_FLAGS = ['showRoadmap', 'showTicker', 'showHost', 'showPips', 'showFlash', 'voice', 'brain'] as const;
-const SCREENS = ['auto', 'take', 'reel', 'quiet', 'work', 'roadmap'];
+const SHOW_FLAGS = ['showRoadmap', 'showTicker', 'showHost', 'showPips', 'showFlash', 'voice', 'brain', 'cutIn'] as const;
+const SCREENS = ['auto', 'take', 'reel', 'quiet', 'work', 'roadmap', 'lore'];
 
 /** Force a director cue into Yooba's voice (paths and keys stripped). */
 export function cueLine(cue: string): string {
@@ -479,7 +554,31 @@ export function cueLine(cue: string): string {
 }
 
 function blankDesk(products: string[]): Desk {
-  return { ...DESK_DEFAULT, priority: defaultPriority(products), voice: true, ladder: [...RUNGS], showcaseKinds: [...SHOW_KINDS], dwell: { ...DWELL_DEFAULT } };
+  return {
+    ...DESK_DEFAULT, priority: defaultPriority(products), voice: true, ladder: [...RUNGS], showcaseKinds: [...SHOW_KINDS], dwell: { ...DWELL_DEFAULT },
+    weights: { ...WEIGHTS_DEFAULT }, talk: normalizeTalk(null), hosts: [...HOST_IDS], rungsSeen: [...RUNGS],
+  };
+}
+
+/** The show's settings that the director sets (talk, mix, hosts); shared by deskFrom and patchDesk. */
+function applyShowSettings(d: Desk, r: any, strict: boolean) {
+  if (r.mix !== undefined) {
+    if (r.mix === 'shuffle' || r.mix === 'ladder') d.mix = r.mix;
+    else if (strict) throw new StudioError('mix: shuffle or ladder');
+  }
+  if (r.weights !== undefined) d.weights = normalizeWeights(r.weights, d.weights);
+  if (r.talk !== undefined) d.talk = normalizeTalk(r.talk, d.talk);
+  if (r.hosts !== undefined) d.hosts = normalizeHosts(r.hosts);
+  if (r.host !== undefined) {
+    const h = String(r.host ?? '');
+    if (h === '' || HOST_IDS.includes(h)) d.host = h;
+    else if (strict) throw new StudioError(`host: one of ${HOST_IDS.join(', ')}, or '' to take turns`);
+  }
+  if (r.rotateMin !== undefined) {
+    const n = Number(r.rotateMin);
+    if (Number.isInteger(n) && n >= 0 && n <= 240) d.rotateMin = n;
+    else if (strict) throw new StudioError('rotateMin: 0 to 240 minutes');
+  }
 }
 
 /** A stored desk. Unknown or removed products are dropped rather than thrown. */
@@ -499,10 +598,17 @@ export function deskFrom(raw: unknown, products: string[]): Desk {
   for (const k of SHOW_FLAGS) if (typeof r[k] === 'boolean') d[k] = r[k];
   if (typeof r.cue === 'string') d.cue = safeLine(r.cue, 180);
   if (typeof r.banner === 'string') d.banner = safeLine(r.banner, 80);
-  if (Array.isArray(r.ladder)) d.ladder = normalizeLadder(r.ladder);
+  if (Array.isArray(r.ladder)) {
+    d.ladder = normalizeLadder(r.ladder);
+    // A rung added since this desk was stored (lore) starts on, at the end; one J turned off stays off.
+    const seen = Array.isArray(r.rungsSeen) ? r.rungsSeen.map(String) : ['playtest', 'work', 'roadmap', 'showcase'];
+    for (const k of RUNGS) if (!seen.includes(k) && !d.ladder.includes(k)) d.ladder.push(k);
+  }
   if (Array.isArray(r.showcaseKinds)) d.showcaseKinds = normalizeKinds(r.showcaseKinds);
   d.dwell = normalizeDwell(r.dwell);
   if (Number.isInteger(r.variety) && r.variety >= 1 && r.variety <= 8) d.variety = r.variety;
+  applyShowSettings(d, r, false);
+  d.rungsSeen = [...RUNGS];
   return d;
 }
 
@@ -510,7 +616,11 @@ export function deskFrom(raw: unknown, products: string[]): Desk {
 export function patchDesk(cur: Desk, patch: any, products: string[], pool: { asset: string }[] = []): Desk {
   if (!patch || typeof patch !== 'object') return { ...cur, priority: [...cur.priority] };
   if (patch.reset === true) return blankDesk(products);
-  const next: Desk = { ...cur, priority: [...cur.priority], ladder: [...cur.ladder], showcaseKinds: [...cur.showcaseKinds], dwell: { ...cur.dwell } };
+  const next: Desk = {
+    ...cur, priority: [...cur.priority], ladder: [...cur.ladder], showcaseKinds: [...cur.showcaseKinds], dwell: { ...cur.dwell },
+    weights: { ...cur.weights }, talk: { ...cur.talk, moments: { ...cur.talk.moments } }, hosts: [...cur.hosts],
+  };
+  applyShowSettings(next, patch, true);
   if (patch.ladder !== undefined) {
     if (!Array.isArray(patch.ladder)) throw new StudioError(`ladder: a list of ${RUNGS.join(', ')}`);
     next.ladder = normalizeLadder(patch.ladder);
@@ -549,7 +659,7 @@ export function patchDesk(cur: Desk, patch: any, products: string[], pool: { ass
     }
   }
   if (patch.screen !== undefined) {
-    if (!SCREENS.includes(patch.screen)) throw new StudioError('screen: auto, take, work, roadmap, reel or quiet');
+    if (!SCREENS.includes(patch.screen)) throw new StudioError('screen: auto, take, work, roadmap, reel, lore or quiet');
     next.screen = patch.screen;
   }
   if (patch.take !== undefined) {
@@ -993,10 +1103,12 @@ export function voiceMs(bytes: number): number {
  * One of the show's lines in Yooba's voice (show.ts paces them and keeps the daily budget). A cache hit is free and
  * `paid` is false; a new line is one Gen audio.voice job (not with cachedOnly). Null when Gen can't.
  */
-export async function speakLine(text: string, opts: { cachedOnly?: boolean } = {}): Promise<{ url: string; ms: number; paid: boolean } | null> {
+export async function speakLine(text: string, opts: { cachedOnly?: boolean; host?: string } = {}): Promise<{ url: string; ms: number; paid: boolean } | null> {
   const line = safeLine(text, 220);
   if (!line) return null;
-  const key = voiceCacheKey(line);
+  // Each host's voice is cached apart; Yooba's keys stay the sentence alone (the cache he built before other hosts).
+  const host = hostById(opts.host);
+  const key = host.voice === YOOBA_VOICE_ID ? voiceCacheKey(line) : voiceCacheKey(`${host.voice}|${line}`);
   const file = voiceFilePath(key);
   const url = `/api/broadcast/voice/${key}.mp3`;
   const ready = () => (fs.existsSync(file) && fs.statSync(file).size > 64 ? fs.statSync(file).size : 0);
@@ -1006,8 +1118,8 @@ export async function speakLine(text: string, opts: { cachedOnly?: boolean } = {
     fs.mkdirSync(VOICE_DIR, { recursive: true });
     const job = await gen.run('audio.voice', {
       project: 'hawkesstudio',
-      params: { text: line, voice: YOOBA_VOICE_ID, model: YOOBA_VOICE_MODEL, format: 'mp3_44100_128' },
-      labels: { from: 'broadcast', kind: 'host' },
+      params: { text: line, voice: host.voice, model: host.model || YOOBA_VOICE_MODEL, format: 'mp3_44100_128' },
+      labels: { from: 'broadcast', kind: 'host', host: host.id },
       key: `broadcast-voice-${key}`,
       timeoutMs: 45_000,
     });
@@ -1095,6 +1207,7 @@ async function buildFrame(q: { product?: string }): Promise<Broadcast> {
     const sd = {
       screen: desk.screen, take: desk.take, clip: desk.clip, paused: desk.paused, voice: desk.voice, brain: desk.brain, cue: desk.cue, skip: desk.skip, product: desk.product, priority: desk.priority,
       ladder: desk.ladder, dwell: desk.dwell, variety: desk.variety,
+      mix: desk.mix, weights: desk.weights, cutIn: desk.cutIn, talk: desk.talk, hosts: desk.hosts, host: desk.host, rotateMin: desk.rotateMin,
     };
     show.tick(r, sd, live, say);
     frame.show = show.showNow(r, sd);
@@ -1102,9 +1215,12 @@ async function buildFrame(q: { product?: string }): Promise<Broadcast> {
     frame.show = { error: safeLine(e?.message ?? e, 160) };
   }
   const line = frame.show?.line;
-  frame.say = line?.text || frame.host;
-  frame.host = line?.text || frame.host;
+  // The show running: the host's line or nothing (a quiet segment stays quiet). The old one-liner only when it's down.
+  const running = frame.show && !frame.show.error;
+  frame.say = line?.text || (running ? '' : frame.host);
+  frame.host = line?.text || (running ? '' : frame.host);
   frame.hostAudio = desk.voice && line?.speaking ? line.voice : null;
   frame.onAir = (await import('./onair.ts')).onAirNow();
+  frame.hostsAll = HOSTS.map(hostCard);
   return frame;
 }

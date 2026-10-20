@@ -278,7 +278,7 @@ test('the encoder\'s prerequisites live in code: one setup module that deploys i
 
 test('the desk keeps the ladder, the showcase kinds, segment lengths and line variety;reset brings them back', () => {
   const d = deskFrom({}, PRODUCTS);
-  assert.deepEqual(d.ladder, ['playtest', 'work', 'roadmap', 'showcase']);
+  assert.deepEqual(d.ladder, ['playtest', 'work', 'roadmap', 'showcase', 'lore']);
   const next = patchDesk(d, { ladder: ['roadmap', 'bogus', 'roadmap', 'showcase'], showcaseKinds: ['song'], dwell: { roadmap: 60, work: 2 }, variety: 1 }, PRODUCTS);
   assert.deepEqual(next.ladder, ['roadmap', 'showcase']);
   assert.deepEqual(next.showcaseKinds, ['song']);
@@ -289,5 +289,5 @@ test('the desk keeps the ladder, the showcase kinds, segment lengths and line va
   assert.deepEqual(patchDesk(next, { ladder: [] }, PRODUCTS).ladder, []);
   assert.throws(() => patchDesk(d, { variety: 20 }, PRODUCTS), /variety/);
   assert.throws(() => patchDesk(d, { ladder: 'roadmap' }, PRODUCTS), /ladder/);
-  assert.deepEqual(patchDesk(next, { reset: true }, PRODUCTS).ladder, ['playtest', 'work', 'roadmap', 'showcase']);
+  assert.deepEqual(patchDesk(next, { reset: true }, PRODUCTS).ladder, ['playtest', 'work', 'roadmap', 'showcase', 'lore']);
 });

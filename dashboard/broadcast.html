@@ -15,6 +15,7 @@
       <span data-k="work">Agents <b></b></span>
       <span data-k="roadmap">Roadmap <b></b></span>
       <span data-k="showcase">Showcase</span>
+      <span data-k="lore">Lore</span>
     </nav>
     <div id="clock"></div>
   </header>
@@ -83,6 +84,20 @@
       <div class="badge show">FROM THE STUDIO</div>
       <div class="sh-label"><div id="sh-product"></div><div id="sh-what"></div></div>
     </div>
+    <!-- lore -->
+    <div class="scene" id="sc-lore">
+      <div class="backdrop" id="lo-bg"></div>
+      <div class="badge lore">THE LORE</div>
+      <div class="lo-card">
+        <div class="lo-product" id="lo-product"></div>
+        <h1 id="lo-title"></h1>
+        <p class="lo-body" id="lo-body"></p>
+        <div class="lo-now" id="lo-now-box">
+          <div class="kicker">Being built for it right now</div>
+          <ul id="lo-now"></ul>
+        </div>
+      </div>
+    </div>
     <!-- quiet -->
     <div class="scene" id="sc-quiet">
       <div class="quiet-k">Hawkes Studio</div>
@@ -96,7 +111,7 @@
     <div id="host-cam">
       <div class="cam-k">HOST CAM</div>
       <img id="yooba" src="/onair/yooba.png" alt="">
-      <div class="nameplate">YOOBA <span>your host</span></div>
+      <div class="nameplate"><b id="host-name">YOOBA</b> <span id="host-tag">your host</span></div>
     </div>
     <div class="rail-k" id="rail-k">Also on the floor</div>
     <div id="also"></div>
@@ -105,7 +120,7 @@
   </aside>
 
   <footer>
-    <div id="caption"><span class="who">YOOBA</span><span id="caption-text"></span></div>
+    <div id="caption"><span class="who" id="caption-who">YOOBA</span><span id="caption-text"></span></div>
     <div id="ticker"></div>
   </footer>
   <div id="disclose"></div>
@@ -155,6 +170,7 @@
       <option value="work">Agents at work</option>
       <option value="roadmap">Roadmap</option>
       <option value="reel">Showcase</option>
+      <option value="lore">Lore</option>
       <option value="quiet">Hold still</option>
     </select></label>
     <label>Take <select id="desk-take"></select></label>
@@ -184,8 +200,14 @@
   </section>
 
   <section class="desk-sec">
-    <h2>The ladder</h2>
-    <div class="desk-note">What runs, highest first. With no playtest on, the next rung down fills the screen. Seconds: how long each subject holds.</div>
+    <h2>What's on</h2>
+    <label title="Shuffle: a random pick each time, by how often you set each one. Ladder: the highest one with something always wins.">Pick <select id="desk-mix">
+      <option value="shuffle">Shuffle (by how often)</option>
+      <option value="ladder">Ladder (highest first)</option>
+    </select></label>
+    <label title="A playtest that just started interrupts whatever is on."><input type="checkbox" id="desk-cutIn"> A new playtest cuts in</label>
+    <div class="desk-note">Tick what runs. How often: 0 never, 10 a lot (shuffle). Seconds: how long each subject holds. ↑ orders the ladder.</div>
+    <div class="lad lad-head"><span></span><span>Segment</span><span>How often</span><span>Seconds</span><span></span></div>
     <div id="ladder-rows"></div>
     <div class="desk-checks"><span>Showcase plays:</span>
       <label><input type="checkbox" data-kind="song"> Songs</label>
@@ -195,15 +217,40 @@
   </section>
 
   <section class="desk-sec">
-    <h2>Yooba</h2>
-    <div class="desk-checks">
-      <label title="Yooba speaks on the stream (Gen voice, mixed by the encoder). Captions still show when off."><input type="checkbox" id="desk-voice"> Voice</label>
-      <label title="Claude writes Yooba's lines from what's on. Off: simple template lines."><input type="checkbox" id="desk-brain"> Claude writes lines</label>
+    <h2>Host</h2>
+    <div class="host-now" id="host-now"></div>
+    <label>Host <select id="desk-host"><option value="">Take turns</option></select></label>
+    <label title="0: the host never changes on its own.">New host every <select id="desk-rotateMin">
+      <option value="0">never</option><option value="5">5 min</option><option value="10">10 min</option><option value="15">15 min</option><option value="20">20 min</option><option value="30">30 min</option><option value="60">60 min</option>
+    </select></label>
+    <div class="desk-checks host-roster" id="host-roster"></div>
+
+    <h3>When the host talks</h3>
+    <div class="desk-checks" id="talk-moments">
+      <label><input type="checkbox" data-moment="playtest"> Playtests</label>
+      <label><input type="checkbox" data-moment="wrap"> A playtest ends</label>
+      <label><input type="checkbox" data-moment="cutIn"> A playtest cuts in</label>
+      <label><input type="checkbox" data-moment="work"> Agents at work</label>
+      <label><input type="checkbox" data-moment="roadmap"> Roadmap</label>
+      <label><input type="checkbox" data-moment="showcase"> Showcase</label>
+      <label><input type="checkbox" data-moment="lore"> Lore</label>
+      <label title="A new host says hello when they take over."><input type="checkbox" data-moment="handoff"> New host</label>
     </div>
-    <label title="How many wordings Yooba keeps for the same subject before he repeats one. Each is voiced once; a repeat is free (cached).">Wordings per subject <select id="desk-variety">
+    <label title="The host stays quiet at least this long after talking.">Quiet at least <select id="talk-gapSec">
+      <option value="0">no gap</option><option value="30">30 s</option><option value="60">1 min</option><option value="90">1.5 min</option><option value="120">2 min</option><option value="180">3 min</option><option value="300">5 min</option><option value="600">10 min</option>
+    </select></label>
+    <label title="After the gap, the share of those segments the host talks on.">Talks on <select id="talk-chance">
+      <option value="100">every one</option><option value="75">3 in 4</option><option value="50">half</option><option value="33">1 in 3</option><option value="25">1 in 4</option><option value="10">1 in 10</option>
+    </select></label>
+    <label>Lines each time <select id="talk-maxLines"><option value="1">1</option><option value="2">2</option><option value="3">3</option></select></label>
+    <div class="desk-checks">
+      <label title="The host speaks on the stream (Gen voice, mixed by the encoder). Captions still show when off."><input type="checkbox" id="desk-voice"> Voice</label>
+      <label title="Claude writes the lines from what's on, the lore and what the host said before. Off: simple template lines."><input type="checkbox" id="desk-brain"> Claude writes lines</label>
+    </div>
+    <label title="How many wordings a host keeps for the same subject before repeating one. Each is voiced once; a repeat is free (cached).">Wordings per subject <select id="desk-variety">
       <option value="1">1 (always the same)</option><option value="2">2</option><option value="3">3</option><option value="4">4</option><option value="6">6</option><option value="8">8</option>
     </select></label>
-    <label>Yooba says <input id="desk-cue" type="text" maxlength="160" placeholder="a line, said right away"></label>
+    <label>Host says <input id="desk-cue" type="text" maxlength="160" placeholder="a line, said right away"></label>
     <div class="desk-btns">
       <button type="button" id="desk-say">Say</button>
       <button type="button" id="desk-clear">Clear</button>

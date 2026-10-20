@@ -8,8 +8,8 @@
   const clean = q.get('clean') === '1';
   const $ = (id) => document.getElementById(id);
   const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
-  const KIND_LABEL = { playtest: 'LIVE PLAYTEST', work: 'IN THE WORKSHOP', roadmap: 'ON THE ROADMAP', showcase: 'FROM THE STUDIO', quiet: 'HAWKES STUDIO' };
-  const KIND_COLOR = { playtest: 'var(--live)', work: 'var(--work)', roadmap: 'var(--road)', showcase: 'var(--show)', quiet: 'var(--mint)' };
+  const KIND_LABEL = { playtest: 'LIVE PLAYTEST', work: 'IN THE WORKSHOP', roadmap: 'ON THE ROADMAP', showcase: 'FROM THE STUDIO', lore: 'THE LORE', quiet: 'HAWKES STUDIO' };
+  const KIND_COLOR = { playtest: 'var(--live)', work: 'var(--work)', roadmap: 'var(--road)', showcase: 'var(--show)', lore: 'var(--lore)', quiet: 'var(--mint)' };
   let latest = {};
   let segId = '';
   let lineId = '';
@@ -35,7 +35,7 @@
   const bg = (el, url) => { const v = url ? `url("${url}")` : 'none'; if (el.style.backgroundImage !== v) el.style.backgroundImage = v; };
 
   function scene(kind) {
-    for (const k of ['playtest', 'work', 'roadmap', 'showcase', 'quiet']) $(`sc-${k}`).classList.toggle('on', k === kind);
+    for (const k of ['playtest', 'work', 'roadmap', 'showcase', 'lore', 'quiet']) $(`sc-${k}`).classList.toggle('on', k === kind);
   }
 
   function stinger(kind) {
@@ -85,6 +85,27 @@
     // Each item: its state and real task count, what an agent is on now (else why it's planned), its bar of tasks merged.
     const html = (c.items || []).map((i, n) => `<div class="rm-item" style="animation-delay:${n * 0.12}s"><b>${esc(i.title)}</b><span class="st">${esc([i.state, i.tasks].filter(Boolean).join(' · '))}</span>${i.inMilestone && c.milestone ? '<span class="ms">milestone</span>' : ''}${i.now ? `<small class="now">Now: ${esc(i.now)}</small>` : i.why ? `<small>${esc(i.why)}</small>` : ''}<div class="track"><span style="width:${Math.round((i.pct || 0) * 100)}%"></span></div></div>`).join('');
     if ($('rm-items').dataset.v !== html) { $('rm-items').dataset.v = html; $('rm-items').innerHTML = html; }
+  }
+
+  function paintLore(c) {
+    bg($('lo-bg'), c.still);
+    $('lo-product').textContent = c.productName || '';
+    $('lo-title').textContent = c.title || '';
+    $('lo-body').textContent = c.body || '';
+    const now = (c.related || []).map((t) => `<li>${esc(t)}</li>`).join('');
+    $('lo-now-box').hidden = !now;
+    if ($('lo-now').dataset.v !== now) { $('lo-now').dataset.v = now; $('lo-now').innerHTML = now; }
+  }
+
+  // The host on air: their portrait (a cutout figure, or a photo filling the cam), name and tagline.
+  function paintHost(h) {
+    if (!h) return;
+    const img = $('yooba');
+    setSrc(img, h.image);
+    img.classList.toggle('photo', !h.cutout);
+    $('host-name').textContent = (h.name || '').toUpperCase();
+    $('host-tag').textContent = h.tagline || '';
+    $('caption-who').textContent = (h.name || '').toUpperCase();
   }
 
   function paintShowcase(c, show) {
@@ -141,6 +162,8 @@
       const el = $('caption-text');
       el.textContent = text;
       el.style.animation = 'none'; void el.offsetWidth; el.style.animation = '';
+      // A quiet segment: no caption bar (the host sat it out).
+      document.body.classList.toggle('silent', !text);
       if (!clean && line?.voice && latest.desk?.voice !== false) {
         const a = $('host-audio');
         setSrc(a, line.voice);
@@ -161,6 +184,8 @@
     else { setSrc($('pt-live'), ''); }
     if (c && kind === 'work') paintWork(c);
     if (c && kind === 'roadmap') paintRoadmap(c);
+    if (c && kind === 'lore') paintLore(c);
+    paintHost(s.host);
     if (c && kind === 'showcase') paintShowcase(c, s); else { playSong(null); $('sh-video').pause(); }
     for (const el of document.querySelectorAll('#ladder span')) {
       const k = el.dataset.k;
@@ -207,6 +232,9 @@
     setText('desk-cue', desk.cue || '');
     $('desk-pause').textContent = desk.paused ? 'Resume' : 'Pause';
     setSelect($('desk-variety'), 'variety', $('desk-variety').innerHTML, desk.variety || 3);
+    setSelect($('desk-mix'), 'mix', $('desk-mix').innerHTML, desk.mix || 'shuffle');
+    setCheck('desk-cutIn', desk.cutIn !== false);
+    paintHostDesk(d);
     setSelect($('pt-product-pick'), lineup.map((p) => p.id).join('|'), lineup.map((p) => `<option value="${esc(p.id)}">${esc(p.name)}</option>`).join(''), $('pt-product-pick').value || desk.product || lineup[0]?.id || '');
     paintLadder(desk);
     paintAir(d.onAir);
@@ -223,10 +251,42 @@
     fit();
   }
 
-  // ---------------------------------------------------------------- the ladder: what runs, in what order, for how long
+  // ---------------------------------------------------------------- the host: who, how often they change, when they talk
 
-  const RUNG_LABEL = { playtest: 'Playtests', work: 'Agents at work', roadmap: 'Roadmap', showcase: 'Showcase' };
-  const RUNGS = ['playtest', 'work', 'roadmap', 'showcase'];
+  /** A select's options, keeping a value that isn't one of them (set elsewhere) as its own option. */
+  function selectWith(el, value) {
+    const v = String(value);
+    if (![...el.options].some((o) => o.value === v)) el.add(new Option(v, v));
+    if (document.activeElement !== el && el.value !== v) el.value = v;
+  }
+
+  function paintHostDesk(d) {
+    const desk = d.desk || {};
+    const all = d.hostsAll || [];
+    const s = d.show || {};
+    setSelect($('desk-host'), all.map((h) => h.id).join('|'), ['<option value="">Take turns</option>', ...all.map((h) => `<option value="${esc(h.id)}">${esc(h.name)}</option>`)].join(''), desk.host || '');
+    selectWith($('desk-rotateMin'), desk.rotateMin ?? 15);
+    const on = desk.hosts || all.map((h) => h.id);
+    const roster = all.map((h) => `<label title="${esc(h.tagline)}"><input type="checkbox" data-host="${esc(h.id)}" ${on.includes(h.id) ? 'checked' : ''}> ${esc(h.name)}</label>`).join('');
+    const box = $('host-roster');
+    if (box.dataset.v !== roster && !box.contains(document.activeElement)) { box.dataset.v = roster; box.innerHTML = `<span>Takes turns:</span>${roster}`; }
+    const t = desk.talk || {};
+    for (const el of document.querySelectorAll('[data-moment]')) if (document.activeElement !== el) el.checked = !!t.moments?.[el.dataset.moment];
+    selectWith($('talk-gapSec'), t.gapSec ?? 90);
+    selectWith($('talk-chance'), t.chance ?? 50);
+    selectWith($('talk-maxLines'), t.maxLines ?? 2);
+    const quietFor = s.lastSpoke ? Math.round((Date.now() - s.lastSpoke) / 1000) : null;
+    $('host-now').textContent = [
+      s.host ? `On air: ${s.host.name}` : '',
+      s.hostFor != null ? `next host in ${s.hostFor} min` : desk.host ? 'held' : '',
+      quietFor != null ? `last talked ${quietFor < 90 ? `${quietFor}s` : `${Math.round(quietFor / 60)} min`} ago` : '',
+    ].filter(Boolean).join(' · ');
+  }
+
+  // ---------------------------------------------------------------- what's on: which segments, how often, how long
+
+  const RUNG_LABEL = { playtest: 'Playtests', work: 'Agents at work', roadmap: 'Roadmap', showcase: 'Showcase', lore: 'Lore' };
+  const RUNGS = ['playtest', 'work', 'roadmap', 'showcase', 'lore'];
   /** All four rungs in the director's order: the ones on first (their order), then the ones off. */
   const ladderRows = (desk) => {
     const on = desk.ladder || RUNGS;
@@ -236,13 +296,16 @@
   function paintLadder(desk) {
     const rows = ladderRows(desk);
     const dwell = desk.dwell || {};
-    const sig = JSON.stringify([rows, dwell]);
+    const weights = desk.weights || {};
+    const counts = latest.show?.counts || {};
+    const sig = JSON.stringify([rows, dwell, weights, counts]);
     const box = $('ladder-rows');
     if (box.dataset.v !== sig && !box.contains(document.activeElement)) {
       box.dataset.v = sig;
       box.innerHTML = rows.map((r, i) => `<div class="lad${r.on ? '' : ' off'}" data-k="${r.k}">
         <input type="checkbox" data-lad="on" ${r.on ? 'checked' : ''} title="Runs on the show">
-        <span>${esc(RUNG_LABEL[r.k])}</span>
+        <span>${esc(RUNG_LABEL[r.k])}${counts[r.k] ? ` <small>${counts[r.k]}</small>` : ''}</span>
+        <input type="number" data-lad="weight" min="0" max="10" value="${Number(weights[r.k] ?? '')}" title="How often it comes up when shuffling: 0 never, 10 a lot">
         <input type="number" data-lad="dwell" min="5" max="600" value="${Number(dwell[r.k]) || ''}" title="Seconds each subject holds">
         <button type="button" data-lad="up" ${i === 0 || !r.on ? 'disabled' : ''} title="Higher on the ladder">↑</button>
       </div>`).join('');
@@ -361,6 +424,14 @@
       const lad = t.closest?.('.lad');
       if (lad && t.dataset.lad === 'on') { post({ ladder: ladderPatch((rows) => { rows.find((r) => r.k === lad.dataset.k).on = t.checked; }) }); return; }
       if (lad && t.dataset.lad === 'dwell') { post({ dwell: { [lad.dataset.k]: Number(t.value) } }); return; }
+      if (lad && t.dataset.lad === 'weight') { post({ weights: { [lad.dataset.k]: Number(t.value) } }); return; }
+      // The host.
+      if (t.dataset.host) { post({ hosts: [...document.querySelectorAll('[data-host]')].filter((el) => el.checked).map((el) => el.dataset.host) }); return; }
+      if (t.dataset.moment) { post({ talk: { moments: { [t.dataset.moment]: t.checked } } }); return; }
+      if (t.id?.startsWith('talk-')) { post({ talk: { [t.id.slice(5)]: Number(t.value) } }); return; }
+      if (t.id === 'desk-host') { post({ host: t.value, next: true }); return; }
+      if (t.id === 'desk-rotateMin') { post({ rotateMin: Number(t.value) }); return; }
+      if (t.id === 'desk-mix') { post({ mix: t.value }); return; }
       if (t.dataset.kind) {
         const kinds = [...document.querySelectorAll('[data-kind]')].filter((el) => el.checked).map((el) => el.dataset.kind);
         post({ showcaseKinds: kinds });

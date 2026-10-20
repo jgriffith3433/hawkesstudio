@@ -26,12 +26,14 @@ import { gen } from './gen.ts';
 import { askClaude } from './llm.ts';
 import { jobModel } from './roles.ts';
 import { listItems, listMilestones } from './roadmap.ts';
-import { safeLine, speakLine, takeOf, type Take } from './broadcast.ts';
+import { listMemories } from './memory.ts';
+import { safeLine, speakLine, takeOf, TALK_DEFAULT, WEIGHTS_DEFAULT, type Moment, type Take, type Talk } from './broadcast.ts';
+import { HOST_IDS, hostById, hostCard, type Host } from './hosts.ts';
 
 // ------------------------------------------------------------------ types
 
-export type Kind = 'playtest' | 'work' | 'roadmap' | 'showcase';
-export const LADDER: Kind[] = ['playtest', 'work', 'roadmap', 'showcase'];
+export type Kind = 'playtest' | 'work' | 'roadmap' | 'showcase' | 'lore';
+export const LADDER: Kind[] = ['playtest', 'work', 'roadmap', 'showcase', 'lore'];
 
 /** Recent work that went into a product: what a playtest is checking. */
 export type Landed = { title: string; note: string; ago: string };
@@ -70,7 +72,13 @@ export type ShowItem = {
   src: string; seconds: number; cover: string | null; bpm?: number | null; key?: string | null;
 };
 
-export type Rungs = { playtest: PlaytestCard[]; work: WorkCard[]; roadmap: RoadCard[]; showcase: ShowItem[] };
+/**
+ * A piece of a product's lore, from the shared memory's canon (the story bible agents, Talk and J keep: docs/memory.md),
+ * with what the studio is building for that product now, so the host can say why the work matters to the world.
+ */
+export type LoreCard = { id: string; product: string; productName: string; title: string; body: string; related: string[]; still: string | null };
+
+export type Rungs = { playtest: PlaytestCard[]; work: WorkCard[]; roadmap: RoadCard[]; showcase: ShowItem[]; lore: LoreCard[] };
 
 export type Line = { text: string; voice: string | null; ms: number };
 
@@ -85,15 +93,25 @@ export type Segment = {
   /** The line being said now, and when it started. -1 before the first. */
   at: number;
   lineStarted: number;
-  /** Where the lines came from: Claude, the templates, or a cue J typed. */
-  by: 'brain' | 'template' | 'cue';
+  /** Where the lines came from: Claude, the templates, a cue J typed, or nobody (the host sat this one out). */
+  by: 'brain' | 'template' | 'cue' | 'silent';
+  /** The host on air for this segment. */
+  host: string;
   /** The take ended while on screen: its outcome, said once before moving on. */
   wrap?: string;
   /** The card as it was when the segment began (what the screen shows once its subject is gone). */
   card: any;
 };
 
-export type ShowState = { seg: Segment | null; cursor: Record<Kind, number>; skip: number; history: string[] };
+export type ShowState = {
+  seg: Segment | null; cursor: Record<Kind, number>; skip: number; history: string[];
+  /** Playtests already seen on the board: only a new one cuts in under the shuffle. */
+  seenTakes?: string[];
+  /** The host on air, since when, and who handed over (the next segment says hello). */
+  host?: string; hostSince?: number; handoffFrom?: string;
+  /** When the host last started talking (the gap between talking). */
+  lastSpoke?: number;
+};
 
 export type ShowDesk = {
   screen: string; take: string; clip: string; paused: boolean; voice: boolean; brain: boolean; cue: string; skip: number; product: string | null; priority: string[];
@@ -103,12 +121,21 @@ export type ShowDesk = {
   dwell?: Partial<Record<Kind, number>>;
   /** Wordings Yooba keeps per subject before he repeats them (each one voiced once, then free). */
   variety?: number;
+  /** shuffle (weighted random pick, the default on the desk) or ladder (the highest rung with something wins). */
+  mix?: 'shuffle' | 'ladder';
+  weights?: Partial<Record<Kind, number>>;
+  /** A new playtest interrupts (shuffle). */
+  cutIn?: boolean;
+  talk?: Talk;
+  hosts?: string[];
+  host?: string;
+  rotateMin?: number;
 };
 
 // ------------------------------------------------------------------ pacing (pure)
 
 /** How long each rung holds one subject, at least. A song or a clip holds for its own length (capped). */
-export const DWELL: Record<Kind, number> = { playtest: 45_000, work: 35_000, roadmap: 28_000, showcase: 14_000 };
+export const DWELL: Record<Kind, number> = { playtest: 45_000, work: 35_000, roadmap: 28_000, showcase: 14_000, lore: 30_000 };
 const GAP_MS = 700;
 const SONG_CAP_MS = 75_000;
 
@@ -128,17 +155,17 @@ export function dwellFor(kind: Kind, card: any, dwell: Partial<Record<Kind, numb
 
 /** The highest rung with something on it (or the one the director holds, when it has something). */
 export function topRung(r: Rungs, hold?: Kind | null, order: Kind[] = LADDER): Kind {
-  if (hold && r[hold].length) return hold;
-  for (const k of order) if (r[k].length) return k;
-  return order[order.length - 1] ?? 'showcase';
+  if (hold && r[hold]?.length) return hold;
+  for (const k of order) if (r[k]?.length) return k;
+  return order.includes('showcase') || !order.length ? 'showcase' : order[order.length - 1];
 }
 
 export const subjectOf = (kind: Kind, card: any): string =>
-  kind === 'playtest' ? String(card?.job ?? '') : kind === 'work' ? String(card?.id ?? '') : kind === 'roadmap' ? String(card?.product ?? '') : String(card?.asset ?? '');
+  kind === 'playtest' ? String(card?.job ?? '') : kind === 'work' || kind === 'lore' ? String(card?.id ?? '') : kind === 'roadmap' ? String(card?.product ?? '') : String(card?.asset ?? '');
 
 export function cardFor(r: Rungs, seg: Pick<Segment, 'kind' | 'subject'> | null): any {
   if (!seg) return null;
-  return (r[seg.kind] as any[]).find((c) => subjectOf(seg.kind, c) === seg.subject) ?? null;
+  return ((r[seg.kind] ?? []) as any[]).find((c) => subjectOf(seg.kind, c) === seg.subject) ?? null;
 }
 
 /**
@@ -146,31 +173,120 @@ export function cardFor(r: Rungs, seg: Pick<Segment, 'kind' | 'subject'> | null)
  * something (it cuts in), the subject is gone (a take ended: one wrap line first), or the director skipped. Moving on
  * goes round the rung's subjects in order, so every live take and every agent gets its turn.
  */
-export function decide(state: ShowState, r: Rungs, now: number, opt: { hold?: Kind | null; holdSubject?: string; skip?: number; order?: Kind[] } = {}): { kind: Kind; card: any; reason: string } | null {
+export type DecideOpt = {
+  hold?: Kind | null; holdSubject?: string; skip?: number; order?: Kind[];
+  /** shuffle: a weighted random rung each time (J, 2026-10-20: "it should be some sort of random pick between them all"). */
+  mix?: 'shuffle' | 'ladder';
+  weights?: Partial<Record<Kind, number>>;
+  /** shuffle: a playtest that just appeared interrupts (default on). */
+  cutIn?: boolean;
+  /** 0..1, for tests. */
+  rng?: () => number;
+};
+
+export function decide(state: ShowState, r: Rungs, now: number, opt: DecideOpt = {}): { kind: Kind; card: any; reason: string } | null {
   const seg = state.seg;
   const order = opt.order?.length ? opt.order : LADDER;
   const top = topRung(r, opt.hold ?? null, order);
   const rank = (k: Kind) => (order.includes(k) ? order.indexOf(k) : order.length);
   const skipped = (opt.skip ?? 0) !== state.skip;
+  const shuffle = opt.mix === 'shuffle' && !opt.hold;
+  const choose = (reason: string) => pick(state, r, shuffle ? shuffleRung(state, r, order, opt.weights, opt.rng) : top, seg, reason);
   if (opt.holdSubject && opt.hold) {
-    const held = (r[opt.hold] as any[]).find((c) => subjectOf(opt.hold!, c) === opt.holdSubject);
+    const held = ((r[opt.hold] ?? []) as any[]).find((c) => subjectOf(opt.hold!, c) === opt.holdSubject);
     if (held && (!seg || seg.subject !== opt.holdSubject)) return { kind: opt.hold, card: held, reason: 'held' };
     if (held && !skipped) return null;
   }
-  if (!seg) return pick(state, r, top, null, 'start');
+  const midSentence = !!seg && seg.at >= 0 && now < seg.lineStarted + (seg.lines[seg.at]?.ms ?? 0);
+  // Under the shuffle only a playtest that wasn't on the board before cuts in (one already running comes up by its
+  // weight), so a long playtest doesn't pin the screen to itself.
+  const takes = r.playtest.map((c) => c.job);
+  const fresh = r.playtest.filter((c) => !(state.seenTakes ?? []).includes(c.job));
+  const seenAll = () => { state.seenTakes = takes; };
+  if (!seg) { seenAll(); return choose('start'); }
   const card = cardFor(r, seg);
-  const speaking = seg.at < seg.lines.length - 1 || (seg.at >= 0 && now < seg.lineStarted + (seg.lines[seg.at]?.ms ?? 0));
-  if (skipped) return pick(state, r, top, seg, 'skip');
-  // A higher rung came back: cut in after the current sentence.
-  if (rank(top) < rank(seg.kind) && !(seg.at >= 0 && now < seg.lineStarted + (seg.lines[seg.at]?.ms ?? 0))) return pick(state, r, top, seg, 'cut-in');
-  if (!card) return seg.wrap && speaking ? null : pick(state, r, top, seg, 'gone');
+  const speaking = seg.at < seg.lines.length - 1 || midSentence;
+  if (skipped) { seenAll(); return choose('skip'); }
+  if (shuffle) {
+    if (fresh.length && opt.cutIn !== false && seg.kind !== 'playtest' && order.includes('playtest')) {
+      if (midSentence) return null;
+      seenAll();
+      state.cursor.playtest = r.playtest.indexOf(fresh[0]);
+      return pick(state, r, 'playtest', null, 'cut-in');
+    }
+    if (seg.kind === 'playtest' || opt.cutIn === false) seenAll();
+  } else if (rank(top) < rank(seg.kind) && !midSentence) {
+    // A higher rung came back: cut in after the current sentence.
+    return pick(state, r, top, seg, 'cut-in');
+  }
+  if (!card) return seg.wrap && speaking ? null : choose('gone');
   if (now < seg.until || speaking) return null;
-  // Time's up. Same rung, next subject (or the same one again when it's the only one: fresh lines).
-  return pick(state, r, top, seg, 'next');
+  // Time's up: the ladder stays on the rung (next subject); the shuffle picks again.
+  return choose('next');
+}
+
+/**
+ * The shuffle's pick: rungs that are on and have something, by weight (the desk's 0-10, else WEIGHTS_DEFAULT), with
+ * the rung just shown at a third of its weight and one shown twice in the last three at a quarter, so the screen keeps
+ * changing even when one rung is heavy. Nothing with weight: the ladder's top.
+ */
+export function shuffleRung(state: Pick<ShowState, 'history'>, r: Rungs, order: Kind[], weights: Partial<Record<Kind, number>> = {}, rng: () => number = Math.random): Kind {
+  const recent = state.history.slice(-3).map((h) => h.split(':')[0]);
+  const last = recent[recent.length - 1];
+  const scored = order
+    .filter((k) => ((r[k] ?? []) as any[]).length)
+    .map((k) => {
+      let w = Math.max(0, Number(weights[k] ?? WEIGHTS_DEFAULT[k] ?? 0));
+      if (k === last) w *= 1 / 3;
+      if (recent.filter((x) => x === k).length >= 2) w *= 1 / 4;
+      return { k, w };
+    })
+    .filter((x) => x.w > 0);
+  if (!scored.length) return topRung(r, null, order);
+  let roll = rng() * scored.reduce((n, x) => n + x.w, 0);
+  for (const x of scored) { roll -= x.w; if (roll < 0) return x.k; }
+  return scored[scored.length - 1].k;
+}
+
+/**
+ * Whether the host talks in a segment (pure): the moment must be on; a new host always says hello; otherwise they wait
+ * `gapSec` since they last talked, then speak on `chance` percent of segments.
+ */
+export function talkNow(talk: Talk | undefined, moment: Moment, lastSpoke: number, now: number, roll: number): boolean {
+  const t = talk ?? TALK_DEFAULT;
+  if (!t.moments?.[moment]) return false;
+  if (moment === 'handoff') return true;
+  if (lastSpoke && now - lastSpoke < t.gapSec * 1000) return false;
+  return roll * 100 < t.chance;
+}
+
+/** The moment a segment is: a wrap, a new host's hello, a cut-in, else its rung. */
+export const momentOf = (kind: Kind, o: { wrap?: string; cutIn?: boolean; handoff?: boolean }): Moment =>
+  o.wrap ? 'wrap' : o.handoff ? 'handoff' : o.cutIn ? 'cutIn' : kind;
+
+/**
+ * Who hosts the next segment. One pinned host holds; else the roster takes turns every `rotateMin` minutes (0: never).
+ * Changes only at a segment boundary; the newcomer's first segment says hello (`handoffFrom`).
+ */
+export function nextHost(state: ShowState, desk: Pick<ShowDesk, 'hosts' | 'host' | 'rotateMin'>, now: number): string {
+  const roster = (desk.hosts?.length ? desk.hosts : HOST_IDS).filter((h) => HOST_IDS.includes(h));
+  const list = roster.length ? roster : HOST_IDS;
+  let want = state.host ?? '';
+  if (desk.host && HOST_IDS.includes(desk.host)) want = desk.host;
+  else if (!want || !list.includes(want)) want = list[0];
+  else if ((desk.rotateMin ?? 0) > 0 && list.length > 1 && now - (state.hostSince ?? now) >= (desk.rotateMin ?? 0) * 60_000) {
+    want = list[(list.indexOf(want) + 1) % list.length];
+  }
+  if (want !== state.host) {
+    state.handoffFrom = state.host || undefined;
+    state.host = want;
+    state.hostSince = now;
+  }
+  return want;
 }
 
 function pick(state: ShowState, r: Rungs, kind: Kind, seg: Segment | null, reason: string) {
-  const list = r[kind] as any[];
+  const list = (r[kind] ?? []) as any[];
   if (!list.length) return { kind, card: null, reason };
   let i = state.cursor[kind] ?? 0;
   if (seg && seg.kind === kind && list.length > 1) {
@@ -197,14 +313,20 @@ export function advanceLines(seg: Segment, now: number): boolean {
 
 // ------------------------------------------------------------------ Yooba's lines
 
-export const HOST_SYSTEM = [
-  "You are Yooba, the host of Hawkes Studio's live stream on Twitch. You're a gooey green creature with eyes on stalks",
-  'and a mouth that takes up your whole torso, from the game Yooba Land. The studio is run by AI agents that build and',
-  'playtest games around the clock, and you narrate it live like a warm, excited, slightly goofy streamer talking to chat.',
-  'Rules: write 2 or 3 spoken lines, each under 22 words, in your own voice. Use only the facts given; never invent',
-  'features, numbers, names or results. When something failed, be honest and upbeat about it. No file paths, URLs, code,',
-  'keys, model names or prompts. Keep it PG. Do not name real people. Vary how you open; never start with "Yooba here".',
-].join(' ');
+/**
+ * The host's instructions (J, 2026-10-20: "instead of just reading the notes it should be more conversational"). The
+ * screen already shows titles and numbers, so the host reacts: their take, what it means for the game and its world
+ * (the canon given), why it matters to players, a question to chat now and then, a callback to what they said.
+ */
+export function hostSystem(host: Host, maxLines = 2): string {
+  const n = Math.max(1, Math.min(3, maxLines));
+  return [
+    `${host.persona} You're hosting Hawkes Studio's live stream on Twitch. The studio is run by AI agents that build and playtest the games of the Hawkes universe around the clock, and you're talking with chat about it.`,
+    'Talk about it; never read the screen out. The screen already shows the titles, steps and numbers, so react: give your take, say what it means for the game and its world, why it matters to players, and now and then ask chat something or call back to what you said earlier. One idea, said well, beats a list.',
+    `Say ${n === 1 ? 'one short spoken line' : `at most ${n} short spoken lines`}, each under 25 words, in your own voice. Sound like a person talking, not a report.`,
+    'Use only the facts and the lore you are given; the lore is canon, so never add to it or change it. Never invent features, numbers, names, dates or results. When something failed, be honest and upbeat. No file paths, URLs, code, keys, model names or prompts. Keep it PG. Do not name real people. Vary how you open, and never introduce yourself unless you are taking over the show.',
+  ].join(' ');
+}
 
 const SCHEMA = {
   type: 'object',
@@ -213,10 +335,21 @@ const SCHEMA = {
   additionalProperties: false,
 };
 
+export type Extra = {
+  wrap?: string; cutIn?: boolean; others?: number;
+  /** Canon about this product, for context (a lore segment carries its own). */
+  lore?: string[];
+  /** What the host said in the last few segments: continuity, and no repeats. */
+  said?: string[];
+  /** The host taking over from this one. */
+  handoff?: string;
+};
+
 /** The facts for one segment, as plain text for the prompt (and the cache key's signature). */
-export function factsOf(kind: Kind, card: any, extra: { wrap?: string; cutIn?: boolean; others?: number } = {}): string {
+export function factsOf(kind: Kind, card: any, extra: Extra = {}): string {
   const out: string[] = [];
-  if (extra.cutIn) out.push('This interrupts what was on before: something higher priority just started.');
+  if (extra.handoff) out.push(`You are taking over the show from ${extra.handoff}. Say hello to chat briefly, then talk about what's on.`);
+  if (extra.cutIn) out.push('This interrupts what was on before: a playtest just started.');
   if (kind === 'playtest' && card) {
     out.push(`On screen: a live playtest of ${card.productName}. A bot is playing the game through real input.`);
     if (card.scenario) out.push(`What it tests: ${card.scenario}.`);
@@ -246,15 +379,24 @@ export function factsOf(kind: Kind, card: any, extra: { wrap?: string; cutIn?: b
     if (card.kind === 'song') out.push(`A song made for ${card.productName}${card.what ? `, used as ${card.what}` : ''}${card.bpm ? `, ${card.bpm} BPM` : ''}${card.key ? ` in ${card.key}` : ''}. It is playing now.`);
     else if (card.kind === 'video') out.push(`A ${card.what || 'clip'} of ${card.title || 'a character'} from ${card.productName}.`);
     else out.push(`Art from ${card.productName}: ${card.title || card.what || 'a picture'}.`);
+  } else if (kind === 'lore' && card) {
+    out.push(`On screen: a piece of ${card.productName}'s lore, from the studio's story bible.`);
+    out.push(`The lore: ${card.title}. ${card.body}`);
+    if (card.related?.length) out.push(`What the studio is building for ${card.productName} right now: ${card.related.join('; ')}.`);
+    out.push('Tell chat about this piece of the world in your own words, like a fan who knows it well, and if it fits, why the work going on now matters to it.');
   }
   if (extra.wrap) out.push(`That playtest just finished: ${extra.wrap}. Wrap it up in one line.`);
-  return out.map((l) => safeLine(l, 400)).filter(Boolean).join('\n');
+  if (extra.lore?.length && kind !== 'lore') out.push(`Lore of this game (canon, for context; bring it in only where it fits): ${extra.lore.join(' / ')}`);
+  if (extra.said?.length) out.push(`You said recently: ${extra.said.map((s) => `"${s}"`).join(' ')} Don't repeat yourself.`);
+  return out.map((l) => safeLine(l, 600)).filter(Boolean).join('\n');
 }
 
 /** Lines that need no Claude: always available, used first and whenever the brain is off or over budget. */
-export function templateLines(kind: Kind, card: any, extra: { wrap?: string; cutIn?: boolean; others?: number } = {}): string[] {
+export function templateLines(kind: Kind, card: any, extra: Extra = {}): string[] {
   if (extra.wrap) return [`And that run's done: ${extra.wrap}.`];
   if (!card) return ['The studio is catching its breath. Stick around, something always starts.'];
+  if (extra.handoff) return [`Hey chat, I'm taking it from here.`];
+  if (kind === 'lore') return [`A bit of ${card.productName} lore: ${card.title}.`];
   const hey = extra.cutIn ? 'Oh! Hold on, ' : '';
   if (kind === 'playtest') {
     const lines = [`${hey}${extra.cutIn ? 'a' : 'Live now: a'} bot is playing ${card.productName}${card.scenario ? `, testing ${card.scenario}` : ''}.`];
@@ -287,17 +429,29 @@ export function scriptKey(kind: Kind, card: any): string {
   const sig = kind === 'playtest' ? [card?.job, card?.step, card?.problems, card?.landed?.[0]?.title]
     : kind === 'work' ? [card?.id, card?.status, card?.notes?.[card?.notes?.length - 1]]
       : kind === 'roadmap' ? [card?.product, card?.milestone, card?.done, card?.items?.map((i: any) => `${i.title}:${i.state}:${i.tasks}:${i.now}`).join(','), card?.recent?.[0]?.title]
-        : [card?.asset];
+        : kind === 'lore' ? [card?.id, card?.related?.[0]]
+          : [card?.asset];
   return `${kind}:${sig.map((s) => String(s ?? '')).join('|')}`;
 }
 
+/** Canon text as said on air: no file names, internal ids or "J (…):" quotes from the memory's sources. */
+export function cleanLore(s: unknown, n = 360): string {
+  return safeLine(String(s ?? '')
+    .replace(/\([^)]*(?:\/|\\|\.(?:json|md|txt|cs|ts|js|mjs))[^)]*\)/g, '')
+    .replace(/\bJ\s*\([^)]*\):\s*/g, '')
+    .replace(/\b[qm]_[0-9a-f]{6,}\b/g, '')
+    .replace(/\bFighter id [\w-]+\.?\s*/gi, '')
+    .replace(/\(\s*\)/g, '')
+    .replace(/\s+([,.;:])/g, '$1'), n);
+}
+
 /** Strips what a model shouldn't put on a public stream, and the line it should never open with. */
-export function cleanLines(lines: unknown): string[] {
+export function cleanLines(lines: unknown, max = 3): string[] {
   if (!Array.isArray(lines)) return [];
   return lines
     .map((l) => safeLine(String(l ?? '').replace(/https?:\/\/\S+/g, '').replace(/^yooba here[.!,]?\s*/i, ''), 200))
     .filter((l) => l.length >= 3)
-    .slice(0, 3);
+    .slice(0, Math.max(1, Math.min(3, max)));
 }
 
 // ------------------------------------------------------------------ budgets
@@ -488,6 +642,65 @@ export function wrapOf(live: any, job: string): string {
   return safeLine(`${out === 'pass' || out === 'passed' ? 'it passed' : out === 'error' || f.status === 'failed' ? 'it hit an error' : `it ended: ${out}`}${n ? `, ${n} problem${n === 1 ? '' : 's'} logged` : ', no problems logged'}`, 120);
 }
 
+// ------------------------------------------------------------------ lore (the shared memory's canon)
+
+type LoreEntry = { id: string; product: string; title: string; body: string };
+let loreMemo: { at: number; book: LoreEntry[] } | null = null;
+
+/** The canon as the show uses it, read every 5 minutes: agents, Talk and J keep it (docs/memory.md), so it stays current. */
+export function loreBook(read: () => any[] = () => listMemories({ kind: 'canon', status: 'active', limit: 500 })): LoreEntry[] {
+  if (loreMemo && Date.now() - loreMemo.at < 5 * 60_000) return loreMemo.book;
+  let rows: any[] = [];
+  try { rows = read(); } catch { rows = []; }
+  const book = rows
+    .map((m) => ({ id: String(m.id), product: String(m.product ?? ''), title: cleanLore(m.title, 100), body: cleanLore(m.body, 360) }))
+    .filter((e) => e.title && e.body.length >= 20);
+  loreMemo = { at: Date.now(), book };
+  return book;
+}
+
+const wordsOf = (s: string) => new Set(String(s).toLowerCase().match(/[a-z][a-z']{3,}/g) ?? []);
+
+/** A couple of canon lines for a product that share the most words with `about` (else its first ones), for context. */
+export function loreHints(book: LoreEntry[], product: string, about: string, n = 2): string[] {
+  const own = book.filter((e) => e.product === product);
+  if (!own.length) return [];
+  const want = wordsOf(about);
+  const scored = own.map((e, i) => ({ e, i, s: [...wordsOf(`${e.title} ${e.body}`)].filter((w) => want.has(w)).length }));
+  scored.sort((a, b) => b.s - a.s || a.i - b.i);
+  return scored.slice(0, n).map(({ e }) => cleanLore(`${e.title}: ${e.body}`, 240));
+}
+
+/**
+ * One card per canon entry, products taking turns (so the lore rung isn't fifty Yooba Land facts in a row), each with
+ * what the studio is building for that product now: its agents' tasks and the roadmap items in progress.
+ */
+export function loreCards(book: LoreEntry[], work: WorkCard[], road: RoadCard[], pics: Map<string, string>): LoreCard[] {
+  const n = names();
+  const related = (p: string) => [
+    ...work.filter((w) => w.product === p).map((w) => w.title),
+    ...(road.find((c) => c.product === p)?.items ?? []).filter((i) => i.state !== 'idea').map((i) => i.title),
+  ].filter(Boolean).slice(0, 3);
+  const by = new Map<string, LoreEntry[]>();
+  for (const e of book) by.set(e.product, [...(by.get(e.product) ?? []), e]);
+  const out: LoreCard[] = [];
+  const lanes = [...by.values()];
+  while (out.length < book.length && out.length < 80) {
+    let moved = false;
+    for (const lane of lanes) {
+      const e = lane.shift();
+      if (!e) continue;
+      moved = true;
+      out.push({
+        id: e.id, product: e.product, productName: e.product ? n.get(e.product) ?? e.product : 'the Hawkes universe',
+        title: e.title, body: e.body, related: e.product ? related(e.product) : [], still: e.product ? pics.get(e.product) ?? null : null,
+      });
+    }
+    if (!moved) break;
+  }
+  return out;
+}
+
 // The library's showcase (songs, art, clips), refreshed every 10 minutes; stills (a product's newest playtest
 // screenshot) every 5. None of it starts a job.
 let shelf: { at: number; items: ShowItem[] } | null = null;
@@ -570,7 +783,9 @@ export function interleave(items: ShowItem[]): ShowItem[] {
 
 // ------------------------------------------------------------------ the running show
 
-const state: ShowState = { seg: null, cursor: { playtest: 0, work: 0, roadmap: 0, showcase: 0 }, skip: 0, history: [] };
+const state: ShowState = { seg: null, cursor: { playtest: 0, work: 0, roadmap: 0, showcase: 0, lore: 0 }, skip: 0, history: [] };
+/** What the hosts said lately (newest last), for continuity in the next prompt. */
+let said: string[] = [];
 /**
  * Yooba's lines per subject and facts (scriptKey), kept on disk so a restart or a deploy doesn't make him rewrite (and
  * pay to voice) the roadmap he already said. Each key keeps up to `variety` wordings; once it has them they take turns,
@@ -621,22 +836,26 @@ export function keepScript(key: string, lines: string[], variety: number, map = 
 }
 let seq = 0;
 
-const HOLD: Record<string, Kind> = { take: 'playtest', work: 'work', roadmap: 'roadmap', reel: 'showcase', showcase: 'showcase' };
+const HOLD: Record<string, Kind> = { take: 'playtest', work: 'work', roadmap: 'roadmap', reel: 'showcase', showcase: 'showcase', lore: 'lore' };
 
-/** Writes Yooba's lines for a segment: the cache, else Claude within budget, else the templates. */
-async function writeLines(kind: Kind, card: any, extra: { wrap?: string; cutIn?: boolean; others?: number }, brainOn: boolean, variety = VARIETY_DEFAULT): Promise<{ lines: string[]; by: Segment['by'] }> {
-  const key = scriptKey(kind, card) + (extra.wrap ? `|wrap:${extra.wrap}` : '') + (extra.cutIn ? '|cut' : '');
+/**
+ * Writes the host's lines for a segment: a saved wording, else Claude within budget, else the templates. Saved wordings
+ * are per host (Yooba's keys stay as they were, so his saved lines carry over).
+ */
+async function writeLines(kind: Kind, card: any, extra: Extra, brainOn: boolean, variety = VARIETY_DEFAULT, host: Host = hostById('yooba'), maxLines = 2): Promise<{ lines: string[]; by: Segment['by'] }> {
+  const key = scriptKey(kind, card) + (extra.wrap ? `|wrap:${extra.wrap}` : '') + (extra.cutIn ? '|cut' : '') + (extra.handoff ? '|hello' : '') + (host.id === 'yooba' ? '' : `|host:${host.id}`);
+  const fit = (l: string[]) => l.slice(0, Math.max(1, maxLines));
   const saved = takeScript(key, variety);
-  if (saved) { spend({ reused: 1 }); return { lines: saved, by: 'brain' }; }
+  if (saved) { spend({ reused: 1 }); return { lines: fit(saved), by: 'brain' }; }
   if (brainOn && usage().brainCalls < BUDGET.brainCalls) {
     spend({ brainCalls: 1 });
     try {
       const job: any = await askClaude({
-        system: HOST_SYSTEM,
+        system: hostSystem(host, maxLines),
         prompt: `${factsOf(kind, card, extra)}\n\nWrite what you say now, as JSON {"lines": [...]}.`,
         schema: SCHEMA, model: jobModel('host'), effort: 'low', maxTokens: 400, timeoutMs: 20_000, purpose: 'broadcast',
       });
-      const lines = cleanLines(job?.result?.value?.lines);
+      const lines = cleanLines(job?.result?.value?.lines, maxLines);
       if (job?.status === 'done' && lines.length) {
         keepScript(key, lines, variety);
         saveScripts();
@@ -646,22 +865,22 @@ async function writeLines(kind: Kind, card: any, extra: { wrap?: string; cutIn?:
   }
   // Out of budget or Claude down: any wording already said for this subject (voiced, so free) beats a template.
   const any = scripts.get(key)?.variants;
-  if (any?.length) return { lines: any[Math.floor(Math.random() * any.length)], by: 'brain' };
-  return { lines: templateLines(kind, card, extra), by: 'template' };
+  if (any?.length) return { lines: fit(any[Math.floor(Math.random() * any.length)]), by: 'brain' };
+  return { lines: fit(templateLines(kind, card, extra)), by: 'template' };
 }
 
-/** Voices each line within the day's character budget; over it (or with voice off), lines are captions only. */
-async function voice(lines: string[], on: boolean): Promise<Line[]> {
+/** Voices each line in the host's voice within the day's character budget; over it (or with voice off), captions only. */
+async function voice(lines: string[], on: boolean, host = 'yooba'): Promise<Line[]> {
   const out: Line[] = [];
   for (const text of lines) {
     let v: { url: string; ms: number; paid: boolean } | null = null;
     if (on && usage().voiceChars + text.length <= BUDGET.voiceChars) {
-      v = await speakLine(text);
+      v = await speakLine(text, { host });
       if (v?.paid) spend({ voiceChars: text.length });
       else if (v) spend({ voiceCached: text.length });
     } else if (on) {
       // Over budget: a line already in the cache is still free.
-      v = await speakLine(text, { cachedOnly: true });
+      v = await speakLine(text, { cachedOnly: true, host });
       if (v) spend({ voiceCached: text.length });
     }
     out.push({ text, voice: v?.url ?? null, ms: v?.ms ?? speakMs(text) });
@@ -671,26 +890,50 @@ async function voice(lines: string[], on: boolean): Promise<Line[]> {
 
 let flight: Promise<void> | null = null;
 
-/** Starts a new segment now with template lines, then swaps in Claude's (voiced) lines when they're ready. */
+/** The product a card is about (for its lore). */
+const productOf = (kind: Kind, card: any): string => String(kind === 'showcase' ? card?.product ?? '' : card?.product ?? '');
+const aboutOf = (card: any): string => [card?.title, card?.why, card?.scenario, card?.milestone, card?.what, ...(card?.items ?? []).map((i: any) => i.title)].filter(Boolean).join(' ');
+
+/**
+ * Starts a new segment. The host on air may change here (rotation). Whether they talk is the desk's talk settings
+ * (talkNow); a quiet segment costs nothing: no Claude call, no voice. When they talk, Claude's lines (or a saved wording)
+ * are voiced and swapped in when ready.
+ */
 function begin(kind: Kind, card: any, reason: string, desk: ShowDesk, r: Rungs, wrap?: string) {
   const now = Date.now();
-  const extra = { wrap, cutIn: reason === 'cut-in', others: Math.max(0, (r[kind]?.length ?? 1) - 1) };
+  const hostId = nextHost(state, desk, now);
+  const host = hostById(hostId);
+  const handoff = state.handoffFrom ? hostById(state.handoffFrom).name : undefined;
+  state.handoffFrom = undefined;
+  const cutIn = reason === 'cut-in';
   const seg: Segment = {
     id: `seg_${(++seq).toString(36)}_${now.toString(36)}`, kind, subject: subjectOf(kind, card), started: now,
-    until: now + (wrap ? 6_000 : dwellFor(kind, card, desk.dwell)), lines: [], at: -1, lineStarted: now, by: 'template', wrap, card,
+    until: now + (wrap ? 6_000 : dwellFor(kind, card, desk.dwell)), lines: [], at: -1, lineStarted: now, by: 'silent', wrap, card, host: hostId,
   };
   state.seg = seg;
   state.history = [...state.history.slice(-19), `${kind}:${seg.subject}`];
+  const talk = desk.talk ?? TALK_DEFAULT;
+  if (!talkNow(talk, momentOf(kind, { wrap, cutIn, handoff: !!handoff }), state.lastSpoke ?? 0, now, Math.random())) return;
+  state.lastSpoke = now;
+  seg.by = 'template';
+  const product = productOf(kind, card);
+  const extra: Extra = {
+    wrap, cutIn, handoff, others: Math.max(0, (r[kind]?.length ?? 1) - 1),
+    lore: kind === 'lore' || !product ? undefined : loreHints(loreBook(), product, aboutOf(card)),
+    said: said.slice(-3),
+  };
   flight = (async () => {
-    const { lines, by } = await writeLines(kind, card, extra, desk.brain, desk.variety);
-    const voiced = await voice(lines, desk.voice);
+    const { lines, by } = await writeLines(kind, card, extra, desk.brain, desk.variety, host, talk.maxLines);
+    const voiced = await voice(lines, desk.voice, host.id);
     if (state.seg !== seg) return;
     seg.lines = voiced;
     seg.by = by;
     seg.at = -1;
-    // A segment's time counts from when Yooba starts talking, so the lines get said.
+    said = [...said, ...lines].slice(-6);
+    // A segment's time counts from when the host starts talking, so the lines get said.
     const spoken = voiced.reduce((n, l) => n + l.ms + GAP_MS, 0);
     seg.until = Math.max(seg.until, Date.now() + spoken + 1500);
+    state.lastSpoke = Date.now();
   })().finally(() => { flight = null; });
 }
 
@@ -709,7 +952,7 @@ export function tick(r: Rungs, desk: ShowDesk, live: any, say = false): void {
   if (cue && (cue !== lastCue || say)) {
     lastCue = cue;
     if (seg) {
-      flight = voice([cue], desk.voice).then((lines) => {
+      flight = voice([cue], desk.voice, seg.host).then((lines) => {
         if (state.seg !== seg) return;
         seg.lines = lines; seg.at = -1; seg.by = 'cue';
         seg.until = Math.max(seg.until, Date.now() + lines[0].ms + 1500);
@@ -727,7 +970,7 @@ export function tick(r: Rungs, desk: ShowDesk, live: any, say = false): void {
     if (w) { begin('playtest', seg.card, 'wrap', desk, r, w); return; }
   }
   const skip = desk.skip !== state.skip;
-  const next = decide(state, r, now, { hold, holdSubject, skip: desk.skip, order: desk.ladder });
+  const next = decide(state, r, now, { hold, holdSubject, skip: desk.skip, order: desk.ladder, mix: desk.mix, weights: desk.weights, cutIn: desk.cutIn });
   state.skip = desk.skip;
   if (next && (!desk.paused || !seg || skip)) {
     begin(next.kind, next.card, next.reason, desk, r);
@@ -743,8 +986,9 @@ export function showNow(r: Rungs, desk: ShowDesk) {
   const line = seg && seg.at >= 0 ? seg.lines[seg.at] : null;
   const now = Date.now();
   const speaking = !!(line && now < seg!.lineStarted + line.ms);
-  const counts = { playtest: r.playtest.length, work: r.work.length, roadmap: r.roadmap.length, showcase: r.showcase.length };
+  const counts = { playtest: r.playtest.length, work: r.work.length, roadmap: r.roadmap.length, showcase: r.showcase.length, lore: r.lore?.length ?? 0 };
   const song = seg?.kind === 'showcase' && card?.kind === 'song' ? card : null;
+  const host = hostById(seg?.host ?? state.host ?? desk.host ?? 'yooba');
   return {
     id: seg?.id ?? null,
     kind: desk.screen === 'quiet' ? 'quiet' : seg?.kind ?? 'showcase',
@@ -753,6 +997,11 @@ export function showNow(r: Rungs, desk: ShowDesk) {
     caption: line?.text ?? '',
     line: seg && seg.at >= 0 ? { id: `${seg.id}:${seg.at}`, text: line?.text ?? '', voice: line?.voice ?? null, ms: line?.ms ?? 0, started: seg.lineStarted, speaking } : null,
     by: seg?.by ?? 'template',
+    host: hostCard(host),
+    /** Minutes until the next host takes over (null: no rotation). */
+    hostFor: !desk.host && (desk.rotateMin ?? 0) > 0 && (desk.hosts?.length ?? HOST_IDS.length) > 1 && state.hostSince
+      ? Math.max(0, Math.ceil(((desk.rotateMin ?? 0) * 60_000 - (now - state.hostSince)) / 60_000)) : null,
+    lastSpoke: state.lastSpoke ?? 0,
     music: song ? { id: seg!.id, src: song.src, started: seg!.started } : null,
     counts,
     upNext: upNext(r, seg),
@@ -778,6 +1027,7 @@ export function directed(r: Rungs, opt: { ladder?: Kind[]; showcaseKinds?: strin
     work: on('work') ? r.work : [],
     roadmap: on('roadmap') ? r.roadmap : [],
     showcase: on('showcase') ? (kinds ? r.showcase.filter((i) => kinds.includes(i.kind)) : r.showcase) : [],
+    lore: on('lore') ? r.lore ?? [] : [],
   };
 }
 
@@ -788,22 +1038,32 @@ export async function rungs(live: any, reelVideos: { asset: string; product: str
   const items = listItems();
   const milestones = listMilestones({ status: 'open,reached' });
   const lock = (x: { product: string }) => !product || !x.product || x.product === product;
+  const work = workCards(changes, pics);
+  const road = roadCards(items, milestones, pics);
   return {
     playtest: playtestCards(live, changes).filter(lock),
-    work: workCards(changes, pics).filter(lock),
-    roadmap: roadCards(items, milestones, pics).filter(lock),
+    work: work.filter(lock),
+    roadmap: road.filter(lock),
     showcase: (await showcase(reelVideos).catch(() => [] as ShowItem[])).filter(lock),
+    lore: loreCards(loreBook(), work, road, pics).filter(lock),
   };
 }
 
 /** For tests. */
 export function resetShow() {
   state.seg = null;
-  state.cursor = { playtest: 0, work: 0, roadmap: 0, showcase: 0 };
+  state.cursor = { playtest: 0, work: 0, roadmap: 0, showcase: 0, lore: 0 };
   state.skip = 0;
   state.history = [];
+  state.seenTakes = undefined;
+  state.host = undefined;
+  state.hostSince = undefined;
+  state.handoffFrom = undefined;
+  state.lastSpoke = undefined;
+  said = [];
   scripts.clear();
   shelf = null;
   stillMemo = null;
+  loreMemo = null;
 }
 export const showState = () => state;
