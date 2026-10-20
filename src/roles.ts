@@ -43,7 +43,7 @@ export const MODEL_IDS: Record<string, string> = {
 export const modelId = (m: string) => MODEL_IDS[m.trim().toLowerCase()] ?? m.trim();
 
 /** Small model calls through Gen's llm.* tools: the cheapest model that does the job well. */
-const JOBS: Record<string, string> = { triage: 'haiku', dedupe: 'haiku', summary: 'haiku', canon: 'sonnet', review: 'sonnet', criteria: 'sonnet' };
+const JOBS: Record<string, string> = { triage: 'haiku', dedupe: 'haiku', summary: 'haiku', host: 'haiku', canon: 'sonnet', review: 'sonnet', criteria: 'sonnet' };
 export const jobModel = (job: keyof typeof JOBS | string) => modelId(process.env[`STUDIO_MODEL_JOB_${job.toUpperCase()}`] ?? JOBS[job] ?? 'sonnet');
 
 export const AGENTS_DIR = () => process.env.STUDIO_AGENTS_DIR ?? path.join(ROOT, '.claude', 'agents');

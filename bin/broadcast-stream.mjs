@@ -8,9 +8,9 @@
 // The key lives in Secrets Manager as hawkes/twitch (deploy/twitch-key.mjs). hawkes-secrets writes it to
 // /run/hawkes/twitch.env. It is not a Gen key and it is not stored on a laptop.
 //
-// Audio: this machine has no sound card. We mix Yooba's cached host mp3 into the RTMP AAC send by feeding
-// PCM into a FIFO (silence when there is no line). The clean page still plays hostAudio for the mouth;
-// the mixer does not need PulseAudio or ALSA hardware.
+// Audio: this machine has no sound card. The encoder follows the show (src/show.ts, through /api/broadcast): each of
+// Yooba's lines and the showcase's song are decoded to PCM, mixed here (the song ducked under his voice) and fed to
+// ffmpeg through a FIFO (silence when nothing plays). No PulseAudio or ALSA hardware needed.
 
 import { spawn } from 'node:child_process';
 import { createWriteStream, existsSync, mkdirSync, readFileSync, unlinkSync } from 'node:fs';
@@ -92,56 +92,93 @@ process.on('SIGINT', stop);
 process.on('SIGTERM', stop);
 
 const silence = Buffer.alloc(CHUNK);
-let voiceQueue = []; // Buffer chunks of s16le PCM waiting to play
-let lastVoiceUrl = '';
+let voiceQueue = []; // s16le chunks of Yooba's current line
+let lastLineId = '';
+let music = null; // { id, pcm: Buffer, pos: byte offset } — the showcase song, if one is on
+let lastMusicId = '';
 
-async function fetchVoicePath() {
-  try {
-    const r = await fetch(`${STUDIO}/api/broadcast`);
-    if (!r.ok) return null;
-    const d = await r.json();
-    if (d?.desk?.voice === false) return null;
-    return d?.hostAudio || null;
-  } catch {
-    return null;
-  }
-}
-
-/** Decode an mp3 URL into s16le stereo chunks queued for the FIFO. */
-function enqueueMp3(url) {
-  if (!url || url === lastVoiceUrl) return;
-  lastVoiceUrl = url;
-  const abs = url.startsWith('http') ? url : `${STUDIO}${url}`;
-  const dec = spawn(ffmpeg, [
-    '-hide_banner', '-loglevel', 'error',
-    '-i', abs,
-    '-f', 's16le', '-acodec', 'pcm_s16le', '-ac', String(CHANNELS), '-ar', String(RATE),
-    'pipe:1',
-  ], { stdio: ['ignore', 'pipe', 'ignore'] });
-  children.push(dec);
-  const chunks = [];
-  dec.stdout.on('data', (c) => chunks.push(c));
-  dec.on('close', () => {
-    const buf = Buffer.concat(chunks);
-    for (let i = 0; i < buf.length; i += CHUNK) {
-      const slice = buf.subarray(i, Math.min(i + CHUNK, buf.length));
-      if (slice.length < CHUNK) {
-        const pad = Buffer.alloc(CHUNK);
-        slice.copy(pad);
-        voiceQueue.push(pad);
-      } else voiceQueue.push(Buffer.from(slice));
-    }
+/** Decodes an audio URL from Studio into one s16le stereo buffer. */
+function decode(url) {
+  return new Promise((resolve) => {
+    const abs = url.startsWith('http') ? url : `${STUDIO}${url}`;
+    const dec = spawn(ffmpeg, ['-hide_banner', '-loglevel', 'error', '-i', abs, '-f', 's16le', '-acodec', 'pcm_s16le', '-ac', String(CHANNELS), '-ar', String(RATE), 'pipe:1'], { stdio: ['ignore', 'pipe', 'ignore'] });
+    const chunks = [];
+    dec.stdout.on('data', (c) => chunks.push(c));
+    dec.on('close', () => resolve(Buffer.concat(chunks)));
+    dec.on('error', () => resolve(Buffer.alloc(0)));
   });
 }
 
-function startVoicePoll() {
-  const tick = async () => {
-    const url = await fetchVoicePath();
-    if (url) enqueueMp3(url);
-    else lastVoiceUrl = '';
-  };
-  tick();
-  setInterval(tick, 2000);
+const toChunks = (buf) => {
+  const out = [];
+  for (let i = 0; i < buf.length; i += CHUNK) {
+    const pad = Buffer.alloc(CHUNK);
+    buf.copy(pad, 0, i, Math.min(i + CHUNK, buf.length));
+    out.push(pad);
+  }
+  return out;
+};
+
+/**
+ * Follows the show (src/show.ts through /api/broadcast): a new line of Yooba's replaces whatever he was saying, and a
+ * song starts at the point the show is at (so a restart joins in the middle, like the page does).
+ */
+async function follow() {
+  let d;
+  try {
+    const r = await fetch(`${STUDIO}/api/broadcast`);
+    if (!r.ok) return;
+    d = await r.json();
+  } catch { return; }
+  const show = d?.show || {};
+  const line = show.line;
+  if (line?.id && line.id !== lastLineId) {
+    lastLineId = line.id;
+    if (line.voice && line.speaking && d?.desk?.voice !== false) {
+      const id = line.id;
+      const pcm = await decode(line.voice);
+      if (lastLineId === id) voiceQueue = toChunks(pcm);
+    } else voiceQueue = [];
+  }
+  const m = show.music;
+  if ((m?.id || '') !== lastMusicId) {
+    lastMusicId = m?.id || '';
+    if (!m) music = null;
+    else {
+      const pcm = await decode(m.src);
+      if (lastMusicId !== m.id || !pcm.length) return;
+      const at = Math.max(0, Date.now() - Number(m.started || Date.now()));
+      const pos = Math.floor((at / 1000) * RATE) * CHANNELS * 2;
+      music = { id: m.id, pcm, pos: pos < pcm.length ? pos : 0 };
+    }
+  }
+}
+
+function startFollowing() {
+  let busy = false;
+  setInterval(async () => {
+    if (busy) return;
+    busy = true;
+    try { await follow(); } finally { busy = false; }
+  }, 700);
+}
+
+/** One 100 ms chunk: Yooba over the song, the song ducked while he talks. */
+function nextChunk() {
+  const v = voiceQueue.shift() || null;
+  if (!music) return v || silence;
+  const m = Buffer.alloc(CHUNK);
+  if (music.pos < music.pcm.length) {
+    music.pcm.copy(m, 0, music.pos, Math.min(music.pos + CHUNK, music.pcm.length));
+    music.pos += CHUNK;
+  }
+  const gain = v ? 0.22 : 0.75;
+  const out = Buffer.alloc(CHUNK);
+  for (let i = 0; i < CHUNK; i += 2) {
+    const x = (v ? v.readInt16LE(i) : 0) + m.readInt16LE(i) * gain;
+    out.writeInt16LE(Math.max(-32768, Math.min(32767, Math.round(x))), i);
+  }
+  return out;
 }
 
 function startFifoFeeder(fifoPath) {
@@ -154,7 +191,7 @@ function startFifoFeeder(fifoPath) {
     const out = createWriteStream(fifoPath);
     const pump = () => {
       if (out.destroyed) return;
-      const next = voiceQueue.shift() || silence;
+      const next = nextChunk();
       if (!out.write(next)) out.once('drain', () => setTimeout(pump, CHUNK_MS));
       else setTimeout(pump, CHUNK_MS);
     };
@@ -182,12 +219,15 @@ if (process.platform === 'linux') {
 
   const fifo = path.join(tmpdir(), 'hawkes-broadcast-voice.pcm');
   startFifoFeeder(fifo);
-  startVoicePoll();
+  startFollowing();
 
   // Give the FIFO a moment to exist before ffmpeg opens it.
+  // -draw_mouse 0: x11grab paints the X11 pointer by default; on a headless
+  // capture that shows up as a white X on an otherwise black Twitch frame when
+  // Chromium has crashed or the stage has not painted yet.
   setTimeout(() => {
     const enc = spawn(ffmpeg, [
-      '-f', 'x11grab', '-video_size', '1920x1080', '-framerate', '30', '-i', ':99',
+      '-f', 'x11grab', '-video_size', '1920x1080', '-framerate', '30', '-draw_mouse', '0', '-i', ':99',
       '-f', 's16le', '-ar', String(RATE), '-ac', String(CHANNELS), '-i', fifo,
       '-c:v', 'libx264', '-preset', 'veryfast', '-b:v', '4500k', '-pix_fmt', 'yuv420p',
       '-c:a', 'aac', '-b:a', '128k', '-ar', String(RATE),
