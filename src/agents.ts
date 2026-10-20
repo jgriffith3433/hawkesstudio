@@ -65,7 +65,8 @@ import { launch, DetachedChild, detachedActivity, stopDetached, type DetachRec }
 import { warmDeps, installCold, markInstalled } from './warm.ts';
 import { ensureGpuFor, needsGpu } from './gpustart.ts';
 import { walkAwayOn, WALK_AWAY_BY } from './walkaway.ts';
-import { brainId, brainLabel, harnessBlocked } from './brains.ts';
+import { brainId, brainLabel, harnessStopOf, type HarnessStop } from './brains.ts';
+import { harnessHeld, holdHarness, holdDetail, activeHold, onHoldLifted } from './harness-hold.ts';
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS changes (
@@ -239,15 +240,41 @@ export const STUDIO_FAILED_SQL = `(status = 'failed' AND COALESCE(phase, '') LIK
 /** Why a change with no commit failed: already done (ALREADY), else `why`. */
 const noCommitDetail = (summary: string, why: string) => (alreadyDone(summary) ? `${ALREADY} (the agent made no commit)` : why);
 /**
- * A usage cap or a missing login, when the agent did not find the work already done. Studio's failure
- * (phase.failed): not a try, and not a scout diagnosis.
+ * The harness (not the agent) stopped the pass: a usage cap, billing, no login, an outage (brains.ts harnessStopOf, read
+ * from the result, the summary and stderr), when the agent did not find the work already done.
  */
-function harnessStop(result: string, summary: string) {
+function harnessStop(result: string, summary: string): HarnessStop | null {
   if (alreadyDone(summary) || decidedNoChange(summary)) return null;
-  if (!harnessBlocked(`${result}\n${summary}`)) return null;
-  const line = `${result}\n${summary}`.split('\n').map((l) => l.trim()).find((l) => harnessBlocked(l)) || 'the harness stopped the agent';
-  return `the harness stopped the agent: ${line.slice(0, 180)}`;
+  return harnessStopOf(`${result}\n${summary}`, { kinds: ['usage', 'billing', 'auth', 'transient'] });
 }
+/**
+ * A change the harness stopped is never failed: it parks "queued" with its worktree, session and step kept (the hold,
+ * harness-hold.ts, keeps every start away), and when the hold lifts it resumes its own session. Not a try, no rescue.
+ */
+function parkForHarness(id: string, ph: Phase, stop: HarnessStop, extra: Record<string, any> = {}) {
+  const { hold } = holdHarness(stop, { source: `change ${id}` });
+  addLog(id, `the harness stopped the agent: ${stop.line.slice(0, 200)}; parked until it answers again (${holdDetail(hold)})`);
+  update(id, { ...extra, status: 'queued', detail: holdDetail(hold), phase: { ...ph, step: 'agent', harness: true, proc: undefined, failed: undefined, nudge: ph.nudge } });
+}
+/** Brings back a failed change whose worktree still holds work (uncommitted, or commits not on its base): queued to resume its session. */
+export function reviveChange(id: string): boolean {
+  const c = getChange(id);
+  if (!c || c.status !== 'failed' || !c.worktree || !fs.existsSync(c.worktree)) return false;
+  try {
+    const work = uncommitted(c.worktree) || git(c.worktree, ['log', '--format=%h', `origin/${c.base}..HEAD`]).out;
+    if (!work) return false;
+    addLog(id, 'brought back: its worktree holds work, so its session continues it instead of a new branch');
+    update(id, { status: 'queued', detail: 'queued: continuing its earlier work', phase: { step: 'agent', harness: true, since: Date.now(), before: git(c.worktree, ['rev-parse', 'HEAD']).out } });
+    void pump();
+    return true;
+  } catch {
+    return false;
+  }
+}
+const harnessResume = (c: Change) => {
+  const prompt = 'The harness stopped you (a usage limit or an outage) and is answering again. Your work is still in the worktree (`git status`, `git log`). Commit what you have, then finish the task in .hawkes/brief.md the way it says.';
+  return c.session ? { session: c.session, prompt } : { prompt: `Read .hawkes/brief.md: it's your whole task. ${prompt}` };
+};
 /** A failed change with no commits and a clean tree: the worktree is only a copy of the base. Remove it. */
 async function dropEmptyWorktree(id: string, commits: string[]) {
   if (commits.length) return;
@@ -280,6 +307,8 @@ export type Phase = {
   brain?: string;
   /** The agent's final words (the summary when it wrote none). */
   result?: string;
+  /** The tail of its stderr (harness messages that never reach the result). */
+  stderr?: string;
   /** The pushed commit under verification. */
   tip?: string;
   /** Verification's Hawkes Gen jobs (build, playtest, review): waited on again after a restart, not submitted again. */
@@ -293,6 +322,8 @@ export type Phase = {
   requested?: string;
   /** Why the last agent pass ended before finishing (AgentResult.stopped). */
   stopped?: 'time' | 'turns' | 'cut';
+  /** Parked by the harness hold (not a try): the next pass continues its session. */
+  harness?: boolean;
   /** How many times its session was resumed to commit work it left uncommitted (at most NUDGES); `nudge`: the next pass is one. */
   nudges?: number;
   nudge?: boolean;
@@ -792,7 +823,7 @@ export function agentMcp(id: string) {
 }
 
 /** An agent pass's end: `stopped` says why it ended before finishing ('time': Studio's time limit; 'turns': its turn limit; 'cut': no result). */
-type AgentResult = { ok: boolean; cost: number; result: string; sawResult: boolean; lost: boolean; stopped?: 'time' | 'turns' | 'cut' };
+type AgentResult = { ok: boolean; cost: number; result: string; stderr?: string; sawResult: boolean; lost: boolean; stopped?: 'time' | 'turns' | 'cut' };
 /** How an agent pass runs: as a new process (onStart records it), or reattached to one started before a restart. */
 type AgentRun = { reattach?: { rec: DetachRec; offset: number }; onStart?: (rec: DetachRec) => void; onProgress?: (offset: number) => void };
 
@@ -945,7 +976,7 @@ function runAgent(c: Change, briefFile: string, s: AgentSettings, env = claudeEn
         how.onProgress(child.offset);
       }
     });
-    child.stderr!.on('data', (d) => addLog(c.id, `stderr: ${String(d).slice(0, 300)}`));
+    child.stderr!.on('data', (d) => { out.stderr = `${out.stderr ?? ''}${d}`.slice(-3000); addLog(c.id, `stderr: ${String(d).slice(0, 300)}`); });
     child.on('close', () => {
       clearTimeout(timer);
       clearTimeout(grace);
@@ -1272,7 +1303,7 @@ async function work(id: string, note?: string, answer?: string, resumed?: Phase 
       else if (!ph.proc && !ph.nudge) addLog(id, resumed && !ph.conflict ?'agent: it ran inside Studio, which restarted; starting the pass again' : resume?.session ? `agent resumed its session ${ph.conflict ? 'to resolve the conflicts with beta' : 'with the answer'}` : ph.conflict ? 'agent started: resolving the conflicts with beta' : `agent started`);
       const r = await agentPass(id, ph, save, s, claudeEnv(), resume);
       // The cost and the next step are written together, so a restart never counts a pass twice.
-      save({ step: 'publish', result: r.result, stopped: r.stopped, nudge: false, genDone: undefined, proc: undefined }, { cost: getChange(id)!.cost + r.cost });
+      save({ step: 'publish', result: r.result, stderr: r.stderr, stopped: r.stopped, nudge: false, genDone: undefined, proc: undefined }, { cost: getChange(id)!.cost + r.cost });
     }
 
     if (ph.step === 'publish') {
@@ -1336,11 +1367,9 @@ async function work(id: string, note?: string, answer?: string, resumed?: Phase 
           await dropEmptyWorktree(id, commits);
           return;
         }
-        const stopped = harnessStop(ph.result ?? '', summary);
+        const stopped = harnessStop(`${ph.result ?? ''}\n${ph.stderr ?? ''}`, summary);
         if (stopped) {
-          reopenTaken(id, findings.map((f) => f.id), stopped);
-          update(id, { status: 'failed', detail: stopped, summary, commits, phase: { step: 'agent', failed: true } });
-          await dropEmptyWorktree(id, commits);
+          parkForHarness(id, ph, stopped, { summary, commits });
           return;
         }
         const why = noCommitWhy(c.worktree, ph);
@@ -1780,7 +1809,7 @@ async function workInfra(id: string, note?: string, resumed?: Phase | null, nudg
       update(id, { detail: `${brainLabel()} is working on it` });
       if (!ph.proc && !ph.nudge) addLog(id, ph.conflict ? `agent resumed to resolve the conflicts with ${c.base}` : resumed ? 'agent: it ran inside Studio, which restarted; starting the pass again' : `agent started`);
       const r = await agentPass(id, ph, save, s, infraEnv({ agent: true }), ph.nudge ? nudgeResume(getChange(id)!, ph) : ph.conflict ? conflictResume(getChange(id)!, ph.conflict) : undefined);
-      save({ step: 'publish', result: r.result, stopped: r.stopped, nudge: false, proc: undefined }, { cost: getChange(id)!.cost + r.cost });
+      save({ step: 'publish', result: r.result, stderr: r.stderr, stopped: r.stopped, nudge: false, proc: undefined }, { cost: getChange(id)!.cost + r.cost });
     }
 
     if (ph.step === 'publish') {
@@ -1804,13 +1833,12 @@ async function workInfra(id: string, note?: string, resumed?: Phase | null, nudg
       }
       // A conflict pass that committed nothing isn't a failure: ready again, it conflicts again (its next pass, or J).
       if (!commits.length || (note && !changedNow && !ph.conflict)) {
-        const stopped = harnessStop(ph.result ?? '', summary);
-        update(id, {
-          status: 'failed',
-          detail: stopped ?? noCommitDetail(summary, noCommitWhy(c.worktree, ph)),
-          summary, commits,
-          phase: stopped ? { step: 'agent', failed: true } : null,
-        });
+        const stopped = harnessStop(`${ph.result ?? ''}\n${ph.stderr ?? ''}`, summary);
+        if (stopped) {
+          parkForHarness(id, ph, stopped, { summary, commits });
+          return;
+        }
+        update(id, { status: 'failed', detail: noCommitDetail(summary, noCommitWhy(c.worktree, ph)), summary, commits, phase: null });
         await dropEmptyWorktree(id, commits);
         return;
       }
