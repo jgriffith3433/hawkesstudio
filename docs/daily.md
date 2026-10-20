@@ -533,6 +533,17 @@ the one API. Talk reads and changes them with `studio_settings` when J asks; fro
 Talk puts an Approve card on his screen (`studio_approval` kind settings), or, as the fallback, the request quotes his
 own yes from that conversation. The notification topic is changed only on the dashboard.
 
+## Harness hold (usage limits, billing, outages)
+
+J (2026-10-20): "This system needs to work without me manually recovering it." When the harness (Claude Code or Cursor) refuses to run, Studio holds it studio-wide instead of burning tries (`src/harness-hold.ts`, classifier `harnessStopOf` in `src/brains.ts`).
+
+- **Classifier**: reads the result, the summary and stderr; kinds `usage` (resets: "resets 8:40am (UTC)", "resets Oct 23, 1pm (UTC)"), `billing`, `auth`, `transient` (429, overloaded, 5xx).
+- **Hold** (table `harness_holds`, survives restarts): until the parsed reset time, else a backoff of 10, 20, 40, then 60 minutes (billing and auth: every 30). While on: the agents' pump, the PM's starts, auto-fix, scouts and rescues start nothing; nudges aren't spent.
+- **Lifting**: once the time passes, a cheap probe (Claude with saved accounts: `checkAccount`). It answers: the hold lifts; otherwise it is extended. Another saved Claude account that checks ok is switched to by itself and logged.
+- **Changes** the harness stopped are never failed: they park `queued` ("waiting for Claude usage: resets 08:40 UTC") with worktree, session and step kept, then resume the same session when the hold lifts. Not a try, no rescue. A scout it stopped runs again after.
+- **Self-repair** (every PM tick): tasks failed only by harness stops (old rows too, by their log text) go back to planned with tries reset, logged in the decision log; a task's next start continues the latest change's worktree when it holds uncommitted or unpushed work.
+- **Visibility**: `studio_pm` status has `hold` (harness, why, resets at, what waits). J's phone hears only for billing or no login, once per hold; a usage reset is a Talk line when work pauses and one when it resumes.
+
 ## Walk-away mode
 
 J, 2026-10-18: "there's WAYYY too much going into my inbox ... just merge okay? ... I just want this system to build
