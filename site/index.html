@@ -3,69 +3,101 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Hawkes Gen: generative AI for game teams</title>
-<meta name="description" content="Hawkes Gen makes your game's images, characters, video, 3D, music and voices in your art direction, prices every batch before it runs, and keeps the recipe for everything it makes.">
-<meta property="og:title" content="Hawkes Gen">
-<meta property="og:description" content="Describe the asset. Get it on-model, with the recipe that made it.">
+<title>Hawkes Gen and Hawkes Studio: generative AI that makes and ships your game</title>
+<meta name="description" content="Hawkes Gen makes your game's images, characters, video, 3D, music and voices in your art direction. Hawkes Studio builds, playtests and reviews the game every day. Coming soon as a service.">
+<meta property="og:title" content="Hawkes Gen and Hawkes Studio">
+<meta property="og:type" content="website">
+<meta property="og:description" content="Generative AI that makes your game's assets on-model, and a studio that builds, playtests and reviews it every day.">
 <meta property="og:image" content="https://hawkesgen.com/img/relight.jpg">
 <meta name="theme-color" content="#07090d">
 <link rel="stylesheet" href="/style.css">
 </head>
 <body>
 
-<nav class="top">
-  <a class="brand" href="/"><span class="glyph">H</span> Hawkes Gen</a>
+<a class="skip" href="#main">Skip to content</a>
+
+<nav class="top" aria-label="Main">
+  <a class="brand" href="/"><span class="glyph">H</span> Hawkes Gen <span class="amp">+</span> Studio</a>
   <ul>
-    <li><a href="#live">Live</a></li>
-    <li><a href="#showcase">Showcase</a></li>
+    <li><a href="#products">Products</a></li>
+    <li><a href="#gen">Gen</a></li>
+    <li><a href="#studio">Studio</a></li>
     <li><a href="#how">How it works</a></li>
-    <li><a href="#tools">Tools</a></li>
+    <li><a href="#live">Live</a></li>
     <li><a href="#code">Developers</a></li>
-    <li><a href="#analytics">Analytics</a></li>
   </ul>
   <a class="btn small ghost" href="https://gen.hawkesgen.com/">Sign in</a>
 </nav>
 
+<main id="main">
+
 <header class="hero">
   <div class="hero-copy">
     <p class="eyebrow">Generative AI for game teams</p>
-    <h1>Describe the asset.<br><span class="grad">Get it on-model.</span></h1>
-    <p class="lede">Hawkes Gen makes the images, characters, video, 3D, music and voices for your game, in your art direction. It runs the GPUs, picks the best take, and keeps the recipe for everything it makes.</p>
+    <h1>Make the game.<br><span class="grad">Ship it on-model.</span></h1>
+    <p class="lede">Hawkes Gen makes your game's images, characters, video, 3D, music and voices in your art direction. Hawkes Studio builds the game, plays it, reviews the footage and turns what it finds into fixes, every day.</p>
     <div class="ctas">
-      <a class="btn" href="#showcase">See what it makes</a>
-      <a class="btn ghost" href="#how">How it works</a>
+      <a class="btn" href="#soon">Coming soon as a service</a>
+      <a class="btn ghost" href="#products">Meet the two products</a>
     </div>
-    <ul class="facts">
-      <li><b>30+</b> tools</li>
-      <li><b>245</b> ComfyUI workflows ready to import</li>
-      <li><b>$0</b> while the GPUs sleep</li>
-    </ul>
   </div>
-  <figure class="hero-art">
-    <img src="/img/relight.jpg" width="560" height="1036" alt="A character in dark armour lit by cold blue moonlight, with shadowy tendrils around her">
-    <figcaption><code>image.relight</code> “cold blue moonlight from the right, dark night, rim light”</figcaption>
-  </figure>
+
+  <div class="hero-video">
+    <a class="video-card" href="https://youtu.be/gT3VqH2-cw0" target="_blank" rel="noopener noreferrer"
+       aria-label="Watch the Hawkes Gen and Hawkes Studio product video on YouTube (opens in a new tab)">
+      <span class="poster" aria-hidden="true">
+        <span class="poster-mark"><span class="glyph">H</span> Hawkes Gen <span class="amp">+</span> Hawkes Studio</span>
+        <span class="play"></span>
+        <span class="poster-title">The product video</span>
+      </span>
+      <span class="video-meta">
+        <span><b>Watch the product video</b> See Gen and Studio at work, from a sentence to a shipped game.</span>
+        <span class="video-open">Opens on YouTube ↗</span>
+      </span>
+    </a>
+  </div>
+
+  <ul class="facts">
+    <li><b>30+</b> generative tools</li>
+    <li><b>245</b> ComfyUI workflows ready to import</li>
+    <li><b>Daily</b> build, playtest and review</li>
+    <li><b>$0</b> while the GPUs sleep</li>
+  </ul>
 </header>
 
 <section class="band">
-  <p>Making the art, video and sound for every Hawkes Biomedical game: <b>Dose Of Destruction</b>, <b>PH Origins</b>, <b>Sick Of It</b>, <b>Yooba Land</b> and more.</p>
+  <p>Already making the art, video, sound and daily builds for every Hawkes Biomedical game: <b>Dose Of Destruction</b>, <b>PH Origins</b>, <b>Sick Of It</b>, <b>Yooba Land</b> and more.</p>
 </section>
 
-<section id="live" class="section">
-  <p class="eyebrow">Live</p>
-  <h2>The studio, on the air.</h2>
-  <p class="sub">The public channel. When the studio is live, the picture is here.</p>
-  <div class="player">
-    <iframe
-      src="https://player.twitch.tv/?channel=jgriffith3433&amp;parent=hawkesgen.com"
-      title="jgriffith3433 on Twitch"
-      width="1280"
-      height="720"
-      allowfullscreen
-      allow="autoplay; fullscreen; encrypted-media; picture-in-picture"
-      loading="lazy"></iframe>
+<section id="products" class="section">
+  <p class="eyebrow">Two products, one studio</p>
+  <h2>One makes the game's assets. One runs the game's days.</h2>
+  <div class="products">
+    <article class="product">
+      <p class="eyebrow">Hawkes Gen</p>
+      <h3>The generative AI engine</h3>
+      <p>Describe an asset in plain words and get it back on-model, with the recipe that made it. Gen runs the GPU fleet, picks the best take, prices every batch before it starts, and keeps a searchable library.</p>
+      <p><a href="#gen">What Gen does →</a></p>
+    </article>
+    <article class="product">
+      <p class="eyebrow">Hawkes Studio</p>
+      <h3>The daily loop, automated</h3>
+      <p>Studio builds your game, plays it in a real browser with the game's own bot, has Claude review the footage, files what it finds, and hands fixes to AI agents. You decide what goes live.</p>
+      <p><a href="#studio">What Studio does →</a></p>
+    </article>
   </div>
-  <p class="player-link"><a href="https://www.twitch.tv/jgriffith3433">jgriffith3433 on Twitch</a></p>
+</section>
+
+<section id="gen" class="section">
+  <p class="eyebrow">Hawkes Gen</p>
+  <h2>What Gen does.</h2>
+  <p class="sub">Images, characters, video, 3D, music and voices, in your art direction, from one queue and one library.</p>
+  <ul class="checks wide-checks">
+    <li>Draws characters on-model in any pose, outfit or scene</li>
+    <li>Turns one image into video, meshes, maps and layers</li>
+    <li>Prices the batch from real past jobs before a server starts</li>
+    <li>Keeps every asset with its recipe, and never pays twice for the same one</li>
+  </ul>
 </section>
 
 <section id="showcase" class="section">
@@ -105,8 +137,21 @@
   </div>
 </section>
 
+<section id="studio" class="section">
+  <p class="eyebrow">Hawkes Studio</p>
+  <h2>What Studio does.</h2>
+  <p class="sub">Studio is the cockpit for a game team: it runs the daily loop so problems are found overnight, and you spend the day deciding.</p>
+  <ol class="loop">
+    <li><h3>Build</h3><p>Builds every game, including Unity WebGL on a cloud build server that stops itself when idle.</p></li>
+    <li><h3>Playtest</h3><p>Plays each build in a real browser through the game's own bot, with real input and video.</p></li>
+    <li><h3>Review</h3><p>Claude watches the footage and files bugs and ideas into one backlog, with screenshots.</p></li>
+    <li><h3>Fix</h3><p>AI agents pick up findings and roadmap tasks and open changes for you to try on a beta site.</p></li>
+    <li><h3>Go live</h3><p>Nothing reaches players until you approve it, and every go-live can be rolled back.</p></li>
+  </ol>
+</section>
+
 <section id="how" class="section">
-  <p class="eyebrow">How it works</p>
+  <p class="eyebrow">How Gen works</p>
   <h2>You say what. It works out how.</h2>
   <p class="sub">Your project asks for an asset in plain words. Hawkes Gen picks the workflow, the models and the machine, and hands back a file with its recipe.</p>
   <ol class="steps">
@@ -157,7 +202,7 @@
 </section>
 
 <section id="tools" class="section">
-  <p class="eyebrow">Tools</p>
+  <p class="eyebrow">Gen tools</p>
   <h2>Everything a game needs made.</h2>
   <div class="cards">
     <article><h3>Images</h3><p>Generate, edit, paint over a sketch or grey-box render, relight, change the camera angle, upscale, restore, 360° skies, seamless textures.</p></article>
@@ -222,9 +267,10 @@ hawkesAnalytics.levelEnd(<span class="n">2</span>, <span class="s">'complete'</s
 hawkesAnalytics.ask({ id: <span class="s">'after-level-2'</span>, question: <span class="s">'How was that level?'</span> });</code></pre>
 </section>
 
-<section class="section">
-  <p class="eyebrow">Under the hood</p>
+<section id="tech" class="section">
+  <p class="eyebrow">Tech</p>
   <h2>The best open models, kept up to date for you.</h2>
+  <p class="sub">Gen runs ComfyUI on NVIDIA GPUs it starts and stops itself. Studio is Node.js and TypeScript, with Playwright for playtests and Claude for review and agents.</p>
   <ul class="tags">
     <li>Qwen-Image-Edit</li><li>Z-Image Turbo</li><li>Wan 2.2</li><li>Wan Animate</li><li>InfiniteTalk</li>
     <li>Hunyuan3D 2.1</li><li>TRELLIS 2</li><li>ACE-Step 1.5</li><li>SAM 3</li><li>Depth Anything 3</li>
@@ -232,17 +278,38 @@ hawkesAnalytics.ask({ id: <span class="s">'after-level-2'</span>, question: <spa
   </ul>
 </section>
 
-<section class="cta">
+<section id="live" class="section">
+  <p class="eyebrow">Live</p>
+  <h2>Watch it being built live.</h2>
+  <p class="sub">The studio streams its own work on a public channel. When it is live, the picture is here.</p>
+  <div class="player">
+    <iframe
+      src="https://player.twitch.tv/?channel=jgriffith3433&amp;parent=hawkesgen.com"
+      title="jgriffith3433 on Twitch"
+      width="1280"
+      height="720"
+      allowfullscreen
+      allow="autoplay; fullscreen; encrypted-media; picture-in-picture"
+      loading="lazy"></iframe>
+  </div>
+  <p class="player-link"><a href="https://www.twitch.tv/jgriffith3433">jgriffith3433 on Twitch</a></p>
+</section>
+
+<section id="soon" class="cta">
+  <p class="eyebrow">Coming soon as a service</p>
   <h2>Private today. Opening up next.</h2>
-  <p>Hawkes Gen runs the generative work for Hawkes Biomedical's own products. A hosted version for other studios is on the way.</p>
+  <p>Hawkes Gen and Hawkes Studio run the generative work and the daily loop for Hawkes Biomedical's own games. A hosted generative-AI service for other studios is on the way.</p>
   <div class="ctas center">
-    <a class="btn" href="https://gen.hawkesgen.com/">Sign in</a>
-    <a class="btn ghost" href="https://hawkesbiomedical.com">Meet Hawkes Biomedical</a>
+    <a class="btn" href="https://hawkesbiomedical.com">Talk to Hawkes Biomedical</a>
+    <a class="btn ghost" href="https://gen.hawkesgen.com/">Sign in</a>
   </div>
 </section>
 
+</main>
+
 <footer>
-  <p><span class="glyph">H</span> Hawkes Gen is made by <a href="https://hawkesbiomedical.com">Hawkes Biomedical</a>. Every image on this page was generated by it.</p>
+  <p><span class="glyph">H</span> Hawkes Gen and Hawkes Studio are made by <a href="https://hawkesbiomedical.com">Hawkes Biomedical</a>. Every image on this page was generated by Hawkes Gen.</p>
+  <p class="foot-links"><a href="#products">Products</a> · <a href="#live">Live</a> · <a href="https://gen.hawkesgen.com/">Sign in</a> · <a href="https://www.twitch.tv/jgriffith3433">Twitch</a></p>
 </footer>
 </body>
 </html>
