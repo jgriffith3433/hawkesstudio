@@ -13,7 +13,7 @@ import type http from 'node:http';
 import type net from 'node:net';
 import { PROJECTS } from './config.ts';
 import { runCommand } from './ops.ts';
-import { brainId, brainSettings, COPILOT_AGENT, CURSOR_AGENT } from './brains.ts';
+import { brainId, brainSettings, COPILOT_AGENT, CURSOR_AGENT, GEMINI_AGENT } from './brains.ts';
 
 /** The wrapper deploy/agent-sandbox.mjs installs: it runs a command as the sandbox user with its own HOME and umask. */
 export const WRAPPER = '/usr/local/bin/hawkes-agent-run';
@@ -145,7 +145,7 @@ export async function shareAll(group: string | null = sandboxOn() ? AGENT_GROUP 
  * What a sandboxed Claude Code gets from Studio's environment: nothing secret but its own Claude login (it can't run
  * without it), no AWS role marker, no GitHub token, no service keys. Its Gen key is in its MCP config, not here.
  */
-const PASS = /^(PATH|LANG|LC_\w+|TZ|TERM|NODE_OPTIONS|NODE_EXTRA_CA_CERTS|HAWKESGEN_URL|GEN_PUBLIC_URL|STUDIO_PORT|STUDIO_SERVER|STUDIO_PUBLIC_URL|TALK_\w+|CLAUDE_CODE_OAUTH_TOKEN|ANTHROPIC_API_KEY|XAI_API_KEY|CURSOR_API_KEY|CURSOR_AGENT|COPILOT_GITHUB_TOKEN|COPILOT_HOME|COPILOT_BIN|COPILOT_MODEL|COPILOT_EFFORT|COPILOT_MAX_CREDITS|COPILOT_CONTEXT|GROK_SESSION_DIR|HAWKES_BRAIN|CLAUDE_CODE_\w+|DISABLE_\w+|npm_config_cache)$/;
+const PASS = /^(PATH|LANG|LC_\w+|TZ|TERM|NODE_OPTIONS|NODE_EXTRA_CA_CERTS|HAWKESGEN_URL|GEN_PUBLIC_URL|STUDIO_PORT|STUDIO_SERVER|STUDIO_PUBLIC_URL|TALK_\w+|CLAUDE_CODE_OAUTH_TOKEN|ANTHROPIC_API_KEY|XAI_API_KEY|CURSOR_API_KEY|CURSOR_AGENT|COPILOT_GITHUB_TOKEN|COPILOT_HOME|COPILOT_BIN|COPILOT_MODEL|COPILOT_EFFORT|COPILOT_MAX_CREDITS|COPILOT_CONTEXT|GEMINI_API_KEY|GEMINI_OAUTH_CREDS|GEMINI_BIN|GEMINI_CLI_HOME|GOOGLE_GENAI_USE_VERTEXAI|GOOGLE_CLOUD_PROJECT|GOOGLE_CLOUD_LOCATION|GROK_SESSION_DIR|HAWKES_BRAIN|CLAUDE_CODE_\w+|DISABLE_\w+|npm_config_cache)$/;
 export function sandboxEnv(env: NodeJS.ProcessEnv) {
   const out: Record<string, string> = {};
   for (const [k, v] of Object.entries(env)) if (v !== undefined && PASS.test(k)) out[k] = v;
@@ -188,7 +188,7 @@ function brainCommand(args: string[], forceClaude = false) {
   const model = brainSettings().model;
   const mapped = model ? args.map((a, i, all) => (all[i - 1] === '--model' ? model : a)) : args;
   if (pre.length || process.env.TALK_CLAUDE || brain === 'claude') return { file: exe, args: [...pre, ...mapped] };
-  return { file: process.execPath, args: [brain === 'copilot' ? COPILOT_AGENT : CURSOR_AGENT, ...mapped] };
+  return { file: process.execPath, args: [brain === 'copilot' ? COPILOT_AGENT : brain === 'gemini' ? GEMINI_AGENT : CURSOR_AGENT, ...mapped] };
 }
 
 export function claudeCommand(args: string[], { cwd, env, brain }: { cwd: string; env: NodeJS.ProcessEnv; brain?: 'claude' }) {

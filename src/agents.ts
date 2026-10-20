@@ -1776,7 +1776,7 @@ export function infraEnv({ agent = false, keepGenKey = true } = {}) {
   for (const [k, v] of Object.entries(agent ? claudeEnv() : process.env)) {
     if (v === undefined) continue;
     // CURSOR_API_KEY matches SECRET (KEY). Product agents keep it via sandbox.ts; Studio and Gen agents go through here.
-    const login = agent && /^(CLAUDE_CODE_OAUTH_TOKEN|ANTHROPIC_API_KEY|CURSOR_API_KEY|COPILOT_GITHUB_TOKEN)$/.test(k);
+    const login = agent && /^(CLAUDE_CODE_OAUTH_TOKEN|ANTHROPIC_API_KEY|CURSOR_API_KEY|COPILOT_GITHUB_TOKEN|GEMINI_API_KEY|GEMINI_OAUTH_CREDS)$/.test(k);
     if (!SECRET.test(k) || login || (keepGenKey && k === 'HAWKESGEN_KEY')) env[k] = v;
   }
   // Not the server: a worktree must never act like the running Studio (repo syncs) or Gen (fleet access).

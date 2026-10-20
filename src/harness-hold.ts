@@ -17,7 +17,7 @@
 import os from 'node:os';
 import { spawn } from 'node:child_process';
 import { db, J, parse } from './db.ts';
-import { brainId, brainSettings, COPILOT_AGENT, CURSOR_AGENT, failover, fallbackChain, harnessConfigured, harnessStopOf, setFailover, syncBrain, type Harness, type HarnessKind, type HarnessStop } from './brains.ts';
+import { brainId, brainSettings, COPILOT_AGENT, CURSOR_AGENT, GEMINI_AGENT, failover, fallbackChain, harnessConfigured, harnessStopOf, setFailover, syncBrain, type Harness, type HarnessKind, type HarnessStop } from './brains.ts';
 
 db.exec(`CREATE TABLE IF NOT EXISTS harness_holds (
   harness TEXT PRIMARY KEY, kind TEXT NOT NULL, why TEXT NOT NULL, line TEXT, account TEXT, since INTEGER NOT NULL,
@@ -46,7 +46,7 @@ export const activeHolds = () => (db.prepare('SELECT * FROM harness_holds WHERE 
 /** Whether the harness in use is held: nothing new starts on it. */
 export const harnessHeld = (harness: Harness = brainId()) => Boolean(activeHold(harness));
 
-export const LABEL: Record<Harness, string> = { claude: 'Claude', cursor: 'Cursor', copilot: 'Copilot' };
+export const LABEL: Record<Harness, string> = { claude: 'Claude', cursor: 'Cursor', copilot: 'Copilot', gemini: 'Gemini' };
 /** A minute, in ms (STUDIO_HARNESS_MINUTE_MS: tests run the backoff in milliseconds). */
 const minute = () => (Number(process.env.STUDIO_HARNESS_MINUTE_MS) > 0 ? Number(process.env.STUDIO_HARNESS_MINUTE_MS) : 60_000);
 const BACKOFF = [10, 20, 40, 60];
@@ -322,7 +322,7 @@ async function defaultProbe(harness: Harness): Promise<{ ok: boolean; note: stri
     ...(harness === 'claude' ? ['--model', 'claude-haiku-5-5', '--tools', '', '--setting-sources', ''] : [])];
   const pre: string[] = process.env.TALK_CLAUDE_ARGS ? JSON.parse(process.env.TALK_CLAUDE_ARGS) : [];
   const stand = Boolean(process.env.TALK_CLAUDE || pre.length);
-  const adapter = harness === 'cursor' ? CURSOR_AGENT : harness === 'copilot' ? COPILOT_AGENT : '';
+  const adapter = harness === 'cursor' ? CURSOR_AGENT : harness === 'copilot' ? COPILOT_AGENT : harness === 'gemini' ? GEMINI_AGENT : '';
   const file = stand ? (process.env.TALK_CLAUDE || 'claude') : adapter ? process.execPath : 'claude';
   const argv = stand ? [...pre, ...args] : adapter ? [adapter, ...args] : args;
   const env = harness === 'claude' ? claudeEnv() : { ...process.env };

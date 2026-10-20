@@ -47,6 +47,8 @@ export const MODELS: Tuning['models'] = {
   claude: { fast: 'claude-haiku-5-5', standard: 'claude-sonnet-5-5', deep: 'claude-opus-5-5' },
   copilot: { fast: 'claude-haiku-5.5', standard: 'claude-sonnet-5.5', deep: 'claude-sonnet-5.5' },
   cursor: { fast: '', standard: '', deep: '' },
+  // Gemini CLI's own aliases: Flash for quick jobs, Auto (its router) for most work, Pro where a mistake is expensive.
+  gemini: { fast: 'flash', standard: '', deep: 'pro' },
 };
 
 const r = (tier: Tier, effort: Effort, maxTurns: number): RoleTune => ({ tier, effort, maxTurns });

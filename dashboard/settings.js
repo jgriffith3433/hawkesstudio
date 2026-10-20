@@ -68,16 +68,19 @@
   function brainBox(b) {
     const key = b.key ? 'The Cursor key is on this server.' : 'CURSOR_API_KEY is not on this server yet. Cursor cannot run until it is in the hawkes/cursor secret.';
     const cop = b.copilot ? 'A Copilot token or login is on this server.' : 'No Copilot login on this server yet: put a fine-grained token (Copilot Requests permission) in COPILOT_GITHUB_TOKEN, or run copilot login there. See docs/copilot.md.';
+    const gem = b.gemini ? 'A Gemini sign-in or API key is on this server.' : 'No Gemini sign-in on this server yet: run gemini once and choose Sign in with Google (Google AI Ultra), then copy ~/.gemini/oauth_creds.json to the server, or set GEMINI_API_KEY. See docs/gemini.md.';
     const models = b.harness === 'cursor'
       ? [['auto', 'Auto'], ['grok-4.7', 'Grok 4.7'], ['composer-2.5', 'Composer 2.5']]
-      : b.harness === 'copilot'
+      : b.harness === 'gemini'
+        ? [['', 'Auto (Gemini picks)'], ['pro', 'Pro'], ['flash', 'Flash'], ['flash-lite', 'Flash-Lite']]
+        : b.harness === 'copilot'
         ? [['', 'Copilot’s default'], ['claude-sonnet-4.5', 'Claude Sonnet 4.5'], ['claude-haiku-4.5', 'Claude Haiku 4.5'], ['gpt-5.4', 'GPT-5.4']]
         : [['', 'Each role’s model'], ['claude-opus-5-5', 'Opus'], ['claude-sonnet-5-5', 'Sonnet'], ['claude-haiku-5-5', 'Haiku']];
-    const note = b.harness === 'cursor' ? key : b.harness === 'copilot' ? cop : 'Claude Code, signed in with the Claude account.';
+    const note = b.harness === 'cursor' ? key : b.harness === 'copilot' ? cop : b.harness === 'gemini' ? gem : 'Claude Code, signed in with the Claude account.';
     const stand = b.failover ? ` <b>${b.harness} is standing in</b> for ${b.chosen} until it answers again.` : '';
     return `<div class="set-box"><h3>🧠 Harness and model</h3>
-      <div class="meta">What runs Talk, the PM, the agents and Gen's writing and review calls. Claude Code is the original harness. Cursor and GitHub Copilot run on their plans. If the one you pick is out of usage, has a billing error or is down, Studio tries the others in turn (Claude, Cursor, Copilot) and goes back by itself. Switching takes effect on the next turn and the next agent; a session already running is restarted on the harness you pick.${stand}</div>
-      ${row('Harness', select('brain', 'harness', b.harness, [['claude', 'Claude Code'], ['cursor', 'Cursor'], ['copilot', 'GitHub Copilot']]), note)}
+      <div class="meta">What runs Talk, the PM, the agents and Gen's writing and review calls. Claude Code is the original harness.       Cursor, GitHub Copilot and Google Gemini run on their plans. If the one you pick is out of usage, has a billing error or is down, Studio tries the others in turn (Claude, Cursor, Copilot, Gemini) and goes back by itself. Switching takes effect on the next turn and the next agent; a session already running is restarted on the harness you pick.${stand}</div>
+            ${row('Harness', select('brain', 'harness', b.harness, [['claude', 'Claude Code'], ['cursor', 'Cursor'], ['copilot', 'GitHub Copilot'], ['gemini', 'Google Gemini']]), note)}
       ${row('Model', select('brain', 'model', b.model, models), b.harness === 'cursor' ? 'Auto is Cursor’s router (keeps going when premium usage is out). Grok and Composer are pinned models.' : b.harness === 'copilot' ? 'Copilot’s own model ids; the default is what your plan picks.' : 'Leave this on each role’s model, or pick one for every role.')}
     </div>`;
   }
@@ -117,7 +120,7 @@
           <div id="caMsg" class="meta">${si?.state === 'failed' && si.error ? `<span class="set-err">${esc(si.error)}</span>` : ''}</div>
           <div class="meta">Runs Claude&#39;s own sign-in on the server and gives you its link. Each sign-in is a 1-year login, kept here so you can switch back to it.</div></div>`;
     return `<div class="set-box"><h3>🔑 Claude accounts</h3>
-      <div class="meta">The Claude login that Talk, the PM, agents, scouts and Gen's Claude calls run on. Switching takes effect on the next turn, agent and Gen call; work already running finishes on the account it started with.${brain.harness !== 'claude' ? ` <b>The harness is ${brain.harness === 'copilot' ? 'Copilot' : 'Cursor'} now:</b> using or adding an account switches it to Claude Code.` : ''}</div>
+      <div class="meta">The Claude login that Talk, the PM, agents, scouts and Gen's Claude calls run on. Switching takes effect on the next turn, agent and Gen call; work already running finishes on the account it started with.${brain.harness !== 'claude' ? ` <b>The harness is ${brain.harness === 'copilot' ? 'Copilot' : brain.harness === 'gemini' ? 'Gemini' : 'Cursor'} now:</b> using or adding an account switches it to Claude Code.` : ''}</div>
       ${rows || '<div class="meta" style="padding:6px 0">No Claude account on this server yet.</div>'}
       ${signinRow}
     </div>`;
@@ -201,7 +204,7 @@
       const r = t.roles[n];
       return `<div class="set-row"><div>${roleHelp[n]}</div><div>${select('tuning', `roles.${n}.tier`, r.tier, tiers)} ${select('tuning', `roles.${n}.effort`, r.effort, efforts)} ${num('tuning', `roles.${n}.maxTurns`, r.maxTurns, { min: 0, max: 500 })}</div></div>`;
     }).join('');
-    const models = ['claude', 'copilot', 'cursor'].map((h) => row(`${h === 'claude' ? 'Claude Code' : h === 'copilot' ? 'Copilot' : 'Cursor'} models`,
+    const models = ['claude', 'copilot', 'cursor', 'gemini'].map((h) => row(`${h === 'claude' ? 'Claude Code' : h === 'copilot' ? 'Copilot' : h === 'gemini' ? 'Gemini' : 'Cursor'} models`,
       ['fast', 'standard', 'deep'].map((k) => `<input type="text" data-s="tuning" data-k="models.${h}.${k}" value="${esc(t.models[h][k])}" placeholder="${k}: default" size="18" title="${k}">`).join(' '))).join('');
     const jobs = Object.keys(t.jobs).map((j) => `${j} ${select('tuning', `jobs.${j}`, t.jobs[j], tiers)}`).join(' &nbsp; ');
     return `<div class="set-box"><h3>🎚️ Agent tuning: cost, speed, quality</h3>
