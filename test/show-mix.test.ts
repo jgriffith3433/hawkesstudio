@@ -61,6 +61,13 @@ test('under the shuffle only a new playtest cuts in, and the shuffle picks again
   const next = decide(st3, r2, now + 31_000, { mix: 'shuffle', rng: () => 0.99 })!;
   assert.equal(next.reason, 'next');
   assert.equal(next.kind, 'showcase');
+  // Playtests held with none running (left on after "Start playtest"): the shuffle still runs, not the ladder's top.
+  const st5 = fresh();
+  st5.seg = seg('showcase', 'a_1', now);
+  const r5 = rungs({ showcase: [song('a_1')], lore: [lore('m_1')] });
+  assert.equal(decide(st5, r5, now + 31_000, { mix: 'shuffle', hold: 'playtest', rng: () => 0.99 })!.kind, 'lore');
+  // A held rung with something on it holds.
+  assert.equal(decide(fresh(), rungs({ playtest: [take('j_1')], lore: [lore('m_1')] }), now, { mix: 'shuffle', hold: 'playtest', rng: () => 0.99 })!.kind, 'playtest');
   // The ladder (the old way) still holds the top rung.
   const st4 = fresh();
   st4.seg = seg('roadmap', 'a', now);

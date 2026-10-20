@@ -190,7 +190,8 @@ export function decide(state: ShowState, r: Rungs, now: number, opt: DecideOpt =
   const top = topRung(r, opt.hold ?? null, order);
   const rank = (k: Kind) => (order.includes(k) ? order.indexOf(k) : order.length);
   const skipped = (opt.skip ?? 0) !== state.skip;
-  const shuffle = opt.mix === 'shuffle' && !opt.hold;
+  // A hold on a rung with nothing on it (Playtests held after the take ended) holds nothing: the mix runs as usual.
+  const shuffle = opt.mix === 'shuffle' && !(opt.hold && r[opt.hold]?.length);
   const choose = (reason: string) => pick(state, r, shuffle ? shuffleRung(state, r, order, opt.weights, opt.rng) : top, seg, reason);
   if (opt.holdSubject && opt.hold) {
     const held = ((r[opt.hold] ?? []) as any[]).find((c) => subjectOf(opt.hold!, c) === opt.holdSubject);
