@@ -182,6 +182,9 @@ export async function saveSettings(section: string, patch: Record<string, any>, 
     let saved;
     try { saved = saveBrain({ harness: patch.harness ?? patch.id, model: patch.model }, by); } catch (e: any) { throw new StudioError(e.message); }
     await syncBrain(saved.harness);
+    // J picking a harness gives it a fresh try: a hold from before it was set up (or fixed) would otherwise wait out its timer.
+    const { liftHold } = await import('./harness-hold.ts');
+    liftHold('J chose it in Settings', saved.harness);
     return saved;
   }
   if (s === 'call') {
