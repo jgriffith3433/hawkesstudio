@@ -193,7 +193,7 @@ export const betaSiteDir = (p: Product) => path.join(WORK(), `${p.id}-site`);
 export const betaSiteFolder = (p: Product, sub = p.site) => path.join(betaSiteDir(p), path.relative(p.site.split('/')[0], sub));
 
 /** What's in the beta website copy: the source commit built, and the website commit it sits on. */
-export type BetaBuild = { sha: string; base: string; ok: boolean; at: number; job?: string; version?: string | null; error?: string; cost?: number; minutes?: number };
+export type BetaBuild = { sha: string; base: string; ok: boolean; at: number; job?: string; version?: string | null; error?: string; cost?: number; minutes?: number; packages?: Record<string, { sha: string; behind: number }> };
 export function betaBuild(p: Product): BetaBuild | null {
   try {
     return JSON.parse(fs.readFileSync(`${betaSiteDir(p)}.json`, 'utf8'));

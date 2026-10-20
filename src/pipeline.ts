@@ -15,6 +15,7 @@ import { spawnSync } from 'node:child_process';
 import { db, newId, J, rowToStep, parse, type Step } from './db.ts';
 import { resumeGapMs } from './ops.ts';
 import { loadProducts, getProduct, localUrl, today, PROJECTS, betaPlaytestsOn, type Product, type Playtest } from './config.ts';
+import { unityBuild } from './buildpkgs.ts';
 import { gen, genRun, genUp, ensureGen } from './gen.ts';
 import { ensureServer, gitState, treeFingerprint, runCheck, serveDir, stopServed } from './local.ts';
 import { absorb, applyKnown, expireIdeas, notSeenIn, type ReviewMode } from './backlog.ts';
@@ -449,8 +450,8 @@ export async function buildProduct(run: string, p: Product, { force = false, bet
 /** Builds (or waits again for the build job of) a Unity product, and records the result. */
 async function finishBuild(run: string, p: Product, s: string, { fp, head, base, siteDir, env, placeholder, job: prior, beta = false }: { fp: string; head: string; base: string; siteDir?: string; env?: Record<string, string>; placeholder?: boolean; job?: string; beta?: boolean }) {
   const lane = betaLane();
-  const job = await genRun('unity.build', p.id, { project: p.build!.project, site: p.build!.site, method: p.build!.method, ...(siteDir ? { siteDir } : {}), ...(env ? { env } : {}) }, (j) => updateStep(s, { job: j.id, detail: j.detail }), undefined,
-    { job: prior, onSubmit: (id) => updateStep(s, { job: id }) });
+  const job = await unityBuild(p.id, { project: p.build!.project, site: p.build!.site, method: p.build!.method, ...(siteDir ? { siteDir } : {}), ...(env ? { env } : {}) }, (j) => updateStep(s, { job: j.id, detail: j.detail }),
+    { job: prior, onSubmit: (id) => updateStep(s, { job: id }), log: (m) => updateStep(s, { detail: m }) });
   // Cancelled while queued by a newer beta run (betaqueue.ts): not a failed build. The last good beta build stays the
   // beta build (nothing saved), and the run ends superseded (betaBody).
   if (beta && job.status === 'cancelled') {
@@ -464,7 +465,7 @@ async function finishBuild(run: string, p: Product, s: string, { fp, head, base,
   const error = stale ? `Hawkes Gen's unity.build ignored siteDir (update Hawkes Gen); the build went to ${r.site.folder}` : ok ? null : String(job.error ?? job.detail ?? 'build failed');
   if (lane && ok && placeholder && siteDir && Number(r.version) > 0) pruneGameVersions(path.join(PROJECTS, siteDir), Number(r.version));
   if (lane) {
-    saveBetaBuild(p, { sha: head, base, ok, at: Date.now(), job: job.id, version: r.version ?? null, cost: job.cost ?? r.cost ?? 0, minutes: Math.round((r.seconds ?? 0) / 60), ...(error ? { error: error.slice(0, 500) } : {}) });
+    saveBetaBuild(p, { sha: head, base, ok, at: Date.now(), job: job.id, version: r.version ?? null, cost: job.cost ?? r.cost ?? 0, minutes: Math.round((r.seconds ?? 0) / 60), ...(r.packages ? { packages: r.packages } : {}), ...(error ? { error: error.slice(0, 500) } : {}) });
     void import('./previews.ts').then(({ buildPreview }) => buildPreview(p.id)).catch(() => {});
   }
   updateStep(s, {

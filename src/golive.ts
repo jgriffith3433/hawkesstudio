@@ -17,7 +17,7 @@ import { loadProducts, PROJECTS, type Product } from './config.ts';
 import { db, newId, J } from './db.ts';
 import { MAIN, AUTHOR, must, repoDirs, fetchOrigin, shaOf, betaBuild, betaSiteDir, scratch, WORK, commitsIn, git as gitIn, gitAsync } from './beta.ts';
 import { addReleaseTo, releaseLine, STUDIO_RELEASE } from './release.ts';
-import { genRun } from './gen.ts';
+import { unityBuild } from './buildpkgs.ts';
 import { startStep, updateStep, resumedStep } from './pipeline.ts';
 import { critical } from './drain.ts';
 import { verifyLive, repoSlug } from './deploy.ts';
@@ -73,7 +73,7 @@ export async function publishUnity(p: Product, sha: string, { by = 'a push to ma
       copy = prior?.job ? path.join(WORK(), `${p.id}-live-site`) : await scratch(site, `${p.id}-live-site`, before);
       const projectDir = rel(path.join(src, path.relative(p.repo.split('/')[0], p.build.project)));
       const siteDir = rel(path.join(copy, path.relative(p.site.split('/')[0], p.site)));
-      const job = await genRun('unity.build', p.id, { project: p.build.project, site: p.build.site, method: p.build.method, projectDir, siteDir }, (j) => updateStep(s, { job: j.id, detail: j.detail }), undefined,
+      const job = await unityBuild(p.id, { project: p.build.project, site: p.build.site, method: p.build.method, projectDir, siteDir }, (j) => updateStep(s, { job: j.id, detail: j.detail }),
         { job: prior?.job ?? undefined, onSubmit: (id) => updateStep(s, { job: id }) });
       const r = job.result ?? {};
       if (job.status !== 'done') {
