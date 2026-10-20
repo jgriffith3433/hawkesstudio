@@ -9,7 +9,8 @@ import { GEN_URL, ROOT } from './config.ts';
 import path from 'node:path';
 
 export type Harness = 'claude' | 'cursor';
-export const CURSOR_MODEL = 'grok-4.7';
+/** Default Cursor model when none is saved. `auto` is Cursor's router (the "Switch to Auto" pool when premium usage is out). */
+export const CURSOR_MODEL = 'auto';
 export const CURSOR_AGENT = path.join(ROOT, 'bin', 'cursor-agent.mjs');
 
 db.exec(`CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated INTEGER NOT NULL, by TEXT)`);
@@ -18,7 +19,7 @@ export const HARNESSES: { id: Harness; label: string }[] = [
   { id: 'claude', label: 'Claude Code' },
   { id: 'cursor', label: 'Cursor' },
 ];
-export const CURSOR_MODELS = [CURSOR_MODEL, 'composer-2.5'];
+export const CURSOR_MODELS = ['auto', 'grok-4.7', 'composer-2.5'];
 export const CLAUDE_MODELS = ['', 'claude-opus-5-5', 'claude-sonnet-5-5', 'claude-haiku-5-5'];
 
 function row() {
@@ -89,7 +90,7 @@ export function chooseBrain() {
   if (process.env.STUDIO_SERVER !== '1' || process.env.HAWKES_BRAIN) return brainSettings();
   if (!row() && process.env.CURSOR_API_KEY) {
     saveBrain({ harness: 'cursor', model: CURSOR_MODEL }, 'Studio');
-    console.log('[studio] Harness set to Cursor, model Grok 4.7. Claude usage is out.');
+    console.log('[studio] Harness set to Cursor, model Auto. Claude usage is out.');
   }
   const s = brainSettings();
   if (s.harness === 'cursor' && !s.key) console.warn('[studio] Harness is Cursor but CURSOR_API_KEY is not in the environment. Add it to the hawkes/cursor secret and restart hawkes-secrets, hawkes-gen and hawkes-studio.');

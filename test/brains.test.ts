@@ -19,24 +19,24 @@ const { parseClaudeArgs, cursorArgs, translate } = await import('../bin/cursor-a
 test('Cursor launches cursor-agent, and Settings stores the harness and the model', async () => {
   process.env.HAWKES_BRAIN = 'cursor';
   assert.equal(brainSettings().harness, 'cursor');
-  assert.equal(brainSettings().model, 'grok-4.7');
+  assert.equal(brainSettings().model, 'auto');
   const c = claudeCommand(['-p', 'hi', '--model', 'claude-opus-5-5', '--output-format', 'stream-json'], { cwd: process.cwd(), env: process.env });
   assert.equal(c.file, process.execPath);
   assert.match(String(c.args[0]), /cursor-agent\.mjs$/);
-  assert.equal(c.args[c.args.indexOf('--model') + 1], 'grok-4.7');
+  assert.equal(c.args[c.args.indexOf('--model') + 1], 'auto');
   delete process.env.HAWKES_BRAIN;
   assert.equal((await allSettings()).brain.harness, 'claude');
-  const saved = await saveSettings('brain', { harness: 'cursor', model: 'composer-2.5' }, { conversation: null });
+  const saved = await saveSettings('brain', { harness: 'cursor', model: 'auto' }, { conversation: null });
   assert.equal(saved.harness, 'cursor');
-  assert.equal(saved.model, 'composer-2.5');
+  assert.equal(saved.model, 'auto');
   assert.equal(saveBrain('claude').harness, 'claude');
   await assert.rejects(saveSettings('brain', { harness: 'gpt' }, { conversation: null }), /claude \| cursor/);
 });
 
-test('an old grok setting is the Cursor harness on Grok 4.7', () => {
+test('an old grok setting is the Cursor harness on Auto', () => {
   saveBrain({ id: 'grok', model: '' });
   assert.equal(brainSettings().harness, 'cursor');
-  assert.equal(brainSettings().model, 'grok-4.7');
+  assert.equal(brainSettings().model, 'auto');
   saveBrain('claude');
 });
 
