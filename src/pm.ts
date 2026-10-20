@@ -48,7 +48,8 @@ import { WALK_DEFAULTS, WALK_AWAY_BY, walkAwayOn, type WalkAwaySettings } from '
 import { getFinding, updateFinding, takenBy } from './backlog.ts';
 import { waitsForCurrentBuild, staleReport, staleNote } from './bugreport.ts';
 import { notReached, slowNote, playTime, samplePace, whereTimeGoes, idleWatch, idleState, IDLE_SUBJECT } from './pace.ts';
-import { harnessBlocked } from './brains.ts';
+import { harnessStopOf } from './brains.ts';
+import { harnessHeld, holdStatus, reviewHold } from './harness-hold.ts';
 
 // ---------------------------------------------------------------- settings
 
@@ -713,6 +714,8 @@ let lastGpuSweep = 0;
 /** Starts what can start: J's reports, then roadmap tasks (highest priority first, then in order), then bugs, within the caps. Returns what it started. */
 export async function startWork() {
   const s = pmSettings();
+  // The harness is on hold (harness-hold.ts): no agents, scouts or rescues start until it answers again.
+  if (harnessHeld()) return [];
   if (!s.enabled || !process.env.GITHUB_TOKEN) return [];
   const { agentSettings, startFix, DECIDED, ALREADY, STUDIO_FAILED_SQL } = await changes();
   if (!agentSettings().enabled) return [];
@@ -1979,6 +1982,7 @@ function rescueBrief(t: Task, why: string) {
 }
 
 async function scoutFor(id: string) {
+  if (harnessHeld()) return;
   const r = rescues()[id];
   const t = getTask(id);
   if (!r || !t || r.scout) return;
@@ -1996,6 +2000,7 @@ async function scoutFor(id: string) {
 /** Rescues whose scout reported (or gave up): the task planned again with a fresh round of tries and the diagnosis. */
 export async function followRescues() {
   const out: string[] = [];
+  if (harnessHeld()) return out;
   for (const [id, r] of Object.entries(rescues())) {
     if (r.state !== 'scouting') continue;
     const t = getTask(id);
@@ -2008,10 +2013,10 @@ export async function followRescues() {
     if (!scout && Date.now() - r.at < 30 * 60_000) continue;
     const x = scout ? await rescueDeps.report(scout).catch(() => null) : null;
     if (x?.status === 'running' && Date.now() - r.at < 60 * 60_000) continue;
-    // A scout that only hit the usage cap or a login error has no diagnosis. Don't reset the tries or paste it into the next brief.
-    if (harnessBlocked(`${x?.report ?? ''}\n${x?.detail ?? ''}`)) {
-      saveRescue(id, null);
-      logDecision('rescue', id, t.product, `"${t.title}": scout ${scout ?? '(none)'} was stopped by the harness, so that is not a diagnosis and the tries are not reset`.slice(0, 1500));
+    // A scout the harness stopped has no diagnosis, and that is not the task's try: it runs again once the hold lifts.
+    if (harnessStopOf(`${x?.report ?? ''}\n${x?.detail ?? ''}`, { kinds: ['usage', 'billing', 'auth', 'transient'] }) || (x?.detail ?? '').includes('the harness stopped the scout')) {
+      saveRescue(id, { ...r, scout: null, at: Date.now() });
+      logDecision('rescue', id, t.product, `"${t.title}": scout ${scout ?? '(none)'} was stopped by the harness, so that is not a diagnosis; it runs again when the harness answers (not counted)`.slice(0, 1500));
       continue;
     }
     const diagnosis = x?.status === 'done' && x.report ? x.report.slice(0, 6000) : `(the scout couldn't report: ${x?.detail ?? 'it is gone'})`;
@@ -2509,6 +2514,7 @@ export async function pmStatus() {
     rescues: rescues(), blockers: blockers(),
     // Where today's time went (pace.ts), and the idle-slot watch's state.
     time: whereTimeGoes(Date.now(), isInfra), idle: idleState(),
+    hold: holdStatus(),
   };
 }
 

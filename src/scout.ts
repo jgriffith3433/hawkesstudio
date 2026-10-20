@@ -11,7 +11,8 @@ import { db, newId } from './db.ts';
 import { PROJECTS, getProduct, getInfra, isInfra, storyOf, StudioError } from './config.ts';
 import { repoMap } from './repos.ts';
 import { claudeEnv } from './claude.ts';
-import { harnessBlocked } from './brains.ts';
+import { harnessStopOf } from './brains.ts';
+import { holdHarness, harnessHeld } from './harness-hold.ts';
 import { BETA, gitAsync } from './beta.ts';
 import { briefSection, recordRun } from './memory.ts';
 import { roleArgs } from './roles.ts';
@@ -45,6 +46,7 @@ let active = 0;
  */
 export function startScout(product: string, question: string, origin: string | null = null, opts: { brief?: string; quiet?: boolean } = {}) {
   if (!question?.trim()) throw new StudioError('Say what to find out');
+  if (harnessHeld()) throw new StudioError('The harness is on hold (usage, billing or an outage); scouts start again when it answers.');
   if (active >= 2) throw new StudioError('Two scouts are already running; ask again when one reports back.');
   const inf = isInfra(product) ? getInfra(product) : null;
   const p = inf ? null : getProduct(product);
@@ -93,6 +95,7 @@ ${mem.text ? `\n${mem.text}` : ''}${story ? `\nThe product's story, for tone:\n$
     if (process.env.SCOUT_MODEL) roleFlags.splice(roleFlags.indexOf('--model') + 1, 1, process.env.SCOUT_MODEL);
     const args = ['-p', prompt, '--output-format', 'stream-json', '--verbose', ...roleFlags,
       '--mcp-config', (await import('./agents.ts')).agentMcp(id), '--strict-mcp-config'];
+    let errText = '';
     const r = await new Promise<{ result: string; cost: number }>((resolve) => {
       const child = spawnClaude(args, { cwd: wt, env: claudeEnv() });
       let buf = '';
@@ -112,12 +115,14 @@ ${mem.text ? `\n${mem.text}` : ''}${story ? `\nThe product's story, for tone:\n$
           } catch { /* not JSON */ }
         }
       });
+      child.stderr.on('data', (d) => { errText = `${errText}${d}`.slice(-3000); });
       child.on('close', () => { clearTimeout(timer); resolve({ result, cost }); });
       child.on('error', (e) => { clearTimeout(timer); resolve({ result: `(couldn't start Claude Code: ${e.message})`, cost: 0 }); });
     });
     const text = r.result.trim();
     // A usage cap or a login error is not a report. Leaving it as done pasted the cap into the next brief as a diagnosis.
-    const blocked = harnessBlocked(text);
+    const blocked = harnessStopOf(`${text}\n${errText}`, { kinds: ['usage', 'billing', 'auth', 'transient'] });
+    if (blocked) holdHarness(blocked, { source: `scout ${id}` });
     const ok = !blocked && text.length > 40;
     set(id, { status: ok ? 'done' : 'failed', detail: blocked ? 'the harness stopped the scout' : ok ? 'reported' : 'no report', report: ok ? text : null, cost: r.cost, finished: Date.now() });
   } catch (e: any) {
