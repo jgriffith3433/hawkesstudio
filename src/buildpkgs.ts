@@ -51,11 +51,113 @@ export async function syncBuildPackages(log: (s: string) => void = () => {}, { w
   return out;
 }
 
-/** Runs Gen's unity.build after syncing the package checkouts; the commits it built against ride in the job's result as `packages`. */
-export async function unityBuild(project: string, params: Record<string, unknown>, onUpdate?: (job: any) => void, opts: { job?: string; onSubmit?: (id: string) => void; log?: (s: string) => void } = {}) {
+export type BuildServerState = { sha: string };
+export type BuildServerRun = (command: string, timeoutMs: number) => Promise<string>;
+
+/** The sync of the build server's own checkouts failed; `states` holds the commits it did see, for the build's result. */
+export class BuildServerSyncError extends Error {
+  states: Record<string, BuildServerState | { error: string }>;
+  constructor(message: string, states: Record<string, BuildServerState | { error: string }>) { super(message); this.states = states; }
+}
+
+const redact = (text: string, token?: string) => (token ? text.split(token).join('***') : text).replace(/Basic [A-Za-z0-9+/=]{20,}/g, 'Basic ***');
+
+/** The PowerShell that fetches origin/main in one checkout on the build server, hard-resets to it and prints the commit. */
+export function buildServerSyncScript(repo: string, token?: string): string {
+  const dir = `C:\\Projects\\${repo}`;
+  const auth = token ? ` -c 'http.extraHeader=Authorization: Basic ${Buffer.from(`x-access-token:${token}`).toString('base64')}'` : '';
+  return [
+    `$ErrorActionPreference = 'Stop'`,
+    `$env:GIT_TERMINAL_PROMPT = '0'; $env:GCM_INTERACTIVE = 'never'`,
+    `$g = 'C:\\Program Files\\Git\\cmd\\git.exe'`,
+    `$d = '${dir}'`,
+    `if (-not (Test-Path "$d\\.git")) { throw "no checkout at $d" }`,
+    `& $g -C $d${auth} fetch -q origin main; if ($LASTEXITCODE) { throw 'git fetch origin main failed' }`,
+    `& $g -C $d reset -q --hard origin/main; if ($LASTEXITCODE) { throw 'git reset --hard origin/main failed' }`,
+    `& $g -C $d rev-parse HEAD`,
+  ].join('; ');
+}
+
+/**
+ * Brings the build server's own C:\Projects checkouts to origin/main (the ones Unity compiles the packages from) and
+ * returns the commit each ends on. Any failure throws a BuildServerSyncError naming the commits seen: a build on stale
+ * packages is never started silently.
+ */
+export async function syncBuildServerCheckouts(run: BuildServerRun, log: (s: string) => void = () => {}, { repos = PACKAGE_REPOS as readonly string[], token }: { repos?: readonly string[]; token?: string } = {}): Promise<Record<string, BuildServerState>> {
+  const states: Record<string, BuildServerState | { error: string }> = {};
+  for (const repo of repos) {
+    try {
+      const out = await run(buildServerSyncScript(repo, token), 10 * 60_000);
+      const sha = out.trim().split(/\r?\n/).pop()?.trim() ?? '';
+      if (!/^[0-9a-f]{40}$/.test(sha)) throw new Error(`unexpected output: ${redact(out, token).slice(-200)}`);
+      states[repo] = { sha: sha.slice(0, 12) };
+      log(`build server: C:\\Projects\\${repo} is at origin/main ${sha.slice(0, 12)}`);
+    } catch (e: any) {
+      states[repo] = { error: redact(String(e.message ?? e), token).slice(0, 300) };
+    }
+  }
+  const bad = Object.entries(states).filter(([, s]) => 'error' in s);
+  if (bad.length) {
+    const seen = Object.entries(states).filter(([, s]) => 'sha' in s).map(([n, s]) => `${n} ${(s as BuildServerState).sha}`);
+    throw new BuildServerSyncError(`the build server's checkout couldn't be brought to origin/main: ${bad.map(([n, s]) => `${n}: ${(s as { error: string }).error}`).join('; ')}${seen.length ? ` (synced: ${seen.join(', ')})` : ''}`, states);
+  }
+  return states as Record<string, BuildServerState>;
+}
+
+/** Runs PowerShell on the build server through Gen (starting it first when stopped, retrying while Windows boots). */
+async function buildServerShell(command: string, timeoutMs: number): Promise<string> {
+  const { gen } = await import('./gen.ts');
+  const status = await gen.request('/builder').catch((e: any) => { throw new Error(`Hawkes Gen can't report the build server (${e.message})`); });
+  if (!status.exists) throw new Error('there is no build server');
+  if (status.state !== 'running') await gen.request('/builder/start', { method: 'POST', body: { confirm: true } });
+  for (const start = Date.now(); ; ) {
+    try {
+      const r = await gen.request('/builder/ssh', { method: 'POST', body: { command, confirm: true, timeoutMs } });
+      return String(r.output ?? '');
+    } catch (e: any) {
+      // Only "not reachable yet" is retried; a refusal or a git failure is final.
+      if (!/is (pending|stopped|stopping)|start it first|Connection (refused|timed out)|Could not resolve|waiting for SSH|ssh failed: .*(timed out|refused)/i.test(String(e.message)) || Date.now() - start > 10 * 60_000) throw e;
+      await sleep(15_000);
+    }
+  }
+}
+
+const DETAIL_RE = /error CS\d+|Assembly has|Scripts have compiler errors/i;
+
+/** The compiler-error lines of a failed build's log tail, so the cause shows without opening the log. */
+export function buildErrorLines(logTail: unknown, max = 6): string[] {
+  const seen = new Set<string>();
+  for (const l of String(logTail ?? '').split(/\r?\n/)) {
+    const t = l.trim();
+    if (t && DETAIL_RE.test(t)) seen.add(t.slice(0, 220));
+    if (seen.size >= max) break;
+  }
+  return [...seen];
+}
+
+/** Runs Gen's unity.build after syncing the package checkouts (the control server's and the build server's own); the commits it built against ride in the job's result as `packages` and `buildServer`. */
+export async function unityBuild(project: string, params: Record<string, unknown>, onUpdate?: (job: any) => void, opts: { job?: string; onSubmit?: (id: string) => void; log?: (s: string) => void; serverShell?: BuildServerRun } = {}) {
   const { genRun } = await import('./gen.ts');
-  const packages = opts.job ? {} : await syncBuildPackages(opts.log ?? ((s) => console.log(`[build] ${s}`))).catch((e) => { console.warn(`[build] package sync failed: ${e.message ?? e}`); return {} as BuildPackages; });
+  const log = opts.log ?? ((s) => console.log(`[build] ${s}`));
+  const packages = opts.job ? {} : await syncBuildPackages(log).catch((e) => { console.warn(`[build] package sync failed: ${e.message ?? e}`); return {} as BuildPackages; });
+  let buildServer: Record<string, unknown> | undefined;
+  if (!opts.job && (opts.serverShell || isServer())) {
+    try {
+      buildServer = await syncBuildServerCheckouts(opts.serverShell ?? buildServerShell, log, { token: process.env.GITHUB_TOKEN });
+    } catch (e: any) {
+      const error = String(e.message ?? e);
+      log(`build server sync failed: ${error}`);
+      return { id: null, status: 'failed', error, detail: error, result: { ok: false, packages, buildServer: e instanceof BuildServerSyncError ? e.states : { error } } } as any;
+    }
+  }
   const job = await genRun('unity.build', project, params, onUpdate, undefined, { job: opts.job, onSubmit: opts.onSubmit });
-  if (Object.keys(packages).length) job.result = { ...(job.result ?? {}), packages };
+  if (Object.keys(packages).length || buildServer) job.result = { ...(job.result ?? {}), ...(Object.keys(packages).length ? { packages } : {}), ...(buildServer ? { buildServer } : {}) };
+  if (job.status !== 'done') {
+    const lines = buildErrorLines(job.result?.logTail);
+    if (lines.length) {
+      const base = String(job.error ?? job.detail ?? 'build failed');
+      job.error = `${base}: ${lines.join(' | ')}`;
+    }
+  }
   return job;
 }
