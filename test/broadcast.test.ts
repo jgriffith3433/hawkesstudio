@@ -259,7 +259,24 @@ test('the encoder never prints the stream key (ffmpeg banner off)', () => {
   }
 });
 
-test('the desk keeps the ladder, the showcase kinds, segment lengths and line variety; reset brings them back', () => {
+test('the encoder\'s prerequisites live in code: one setup module that deploys import fresh, and the encoder\'s browser list', async () => {
+  const unit = await import('../deploy/broadcast-unit.mjs');
+  assert.match(unit.BROADCAST_UNIT, /ExecStart=\/usr\/bin\/node bin\/broadcast-stream\.mjs --go/);
+  assert.match(unit.BROADCAST_UNIT, /Restart=always/);
+  for (const p of ['xvfb', 'ffmpeg']) assert.ok(unit.BROADCAST_APT.includes(p), p);
+  assert.ok(unit.BROADCAST_CHROMIUM.includes('/snap/bin/chromium'));
+  assert.equal(typeof unit.ensureBroadcast, 'function');
+  const read = (f: string) => fs.readFileSync(new URL(f, import.meta.url), 'utf8');
+  assert.match(read('../bin/broadcast-stream.mjs'), /import \{ BROADCAST_CHROMIUM \} from '\.\.\/deploy\/broadcast-unit\.mjs'/);
+  // hawkes-pull is in memory before it pulls: the work must come from the freshly imported module, not its own code.
+  const pull = read('../deploy/hawkes-pull.mjs');
+  assert.match(pull, /ensureBroadcast: ensure \} = await import\(.*broadcast-unit\.mjs.*\?v=\$\{Date\.now\(\)\}/);
+  assert.doesNotMatch(pull, /BROADCAST_UNIT/);
+  assert.match(read('../deploy/deploy.mjs'), /sudo node deploy\/broadcast-unit\.mjs/);
+  assert.match(read('../deploy/cloud-init.sh'), /xvfb[\s\S]*snap install chromium/);
+});
+
+test('the desk keeps the ladder, the showcase kinds, segment lengths and line variety;reset brings them back', () => {
   const d = deskFrom({}, PRODUCTS);
   assert.deepEqual(d.ladder, ['playtest', 'work', 'roadmap', 'showcase']);
   const next = patchDesk(d, { ladder: ['roadmap', 'bogus', 'roadmap', 'showcase'], showcaseKinds: ['song'], dwell: { roadmap: 60, work: 2 }, variety: 1 }, PRODUCTS);

@@ -344,6 +344,8 @@ WantedBy=paths.target`),
   // hawkes-studio's cgroup, so restarting Studio (a deploy) doesn't stop them. hawkes-pull.mjs makes sure of it too.
   await ssh('sudo loginctl enable-linger hawkes && echo linger-ok');
   await ssh('sudo systemctl daemon-reload && sudo systemctl enable --now hawkes-secrets hawkes-gen hawkes-studio hawkes-daily.timer hawkes-pull.service hawkes-pull.path hawkes-broadcast && (sudo systemctl disable --now hawkes-pull.timer 2>/dev/null; sudo rm -f /etc/systemd/system/hawkes-pull.timer; true) && sudo systemctl restart hawkes-secrets hawkes-gen && sleep 6 && sudo systemctl restart hawkes-studio && echo services-ok');
+  // The Twitch encoder's prerequisites (Xvfb, ffmpeg, fonts, Chromium) and its unit: the same step every deploy runs.
+  await ssh('cd /srv/hawkes/hawkesstudio && sudo node deploy/broadcast-unit.mjs && echo broadcast-ok');
 }
 
 /**

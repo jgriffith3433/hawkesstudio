@@ -23,6 +23,7 @@ import { createWriteStream, existsSync, mkdirSync, readFileSync, renameSync, unl
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { BROADCAST_CHROMIUM } from '../deploy/broadcast-unit.mjs';
 
 const PAGE = process.env.BROADCAST_URL || 'http://127.0.0.1:8791/broadcast.html?product=yoobaland&clean=1';
 const STUDIO = process.env.STUDIO_URL || 'http://127.0.0.1:8791';
@@ -73,7 +74,7 @@ const chromium = which(
     `${process.env['PROGRAMFILES(X86)'] || ''}\\Google\\Chrome\\Application\\chrome.exe`,
     `${process.env['PROGRAMFILES(X86)'] || ''}\\Microsoft\\Edge\\Application\\msedge.exe`,
     `${process.env.PROGRAMFILES || ''}\\Microsoft\\Edge\\Application\\msedge.exe`,
-  ] : ['/usr/bin/google-chrome', '/usr/bin/google-chrome-stable', '/usr/bin/chromium', '/usr/bin/chromium-browser'],
+  ] : BROADCAST_CHROMIUM,
 );
 
 /** What stops a stream from starting right now. */
@@ -83,6 +84,8 @@ function missing() {
   if (!chromium) out.push('Chromium or Chrome (the page)');
   if (!streamKey()) out.push('TWITCH_STREAM_KEY (Secrets Manager hawkes/twitch, via node deploy/twitch-key.mjs)');
   if (process.platform === 'linux' && !which(['Xvfb'])) out.push('Xvfb (a virtual screen, so encoding does not need a monitor)');
+  // Everything but the key is installed by deploy/broadcast-unit.mjs, which every deploy runs.
+  if (process.platform === 'linux' && (!ffmpeg || !chromium || !which(['Xvfb']))) out.push('(on the server: sudo node deploy/broadcast-unit.mjs)');
   return out;
 }
 

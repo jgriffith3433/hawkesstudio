@@ -7,6 +7,9 @@ exec > >(tee -a /var/log/hawkes-init.log) 2>&1
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -y
 apt-get install -y ca-certificates curl gnupg git ffmpeg python3-venv python3-pip unzip jq debian-keyring debian-archive-keyring apt-transport-https rsync sqlite3
+# The Twitch encoder (On Air): a virtual screen, fonts and Chromium. deploy/broadcast-unit.mjs checks these on every deploy.
+apt-get install -y --no-install-recommends xvfb fonts-dejavu-core fonts-noto-color-emoji
+snap install chromium
 
 # Node 24
 curl -fsSL https://deb.nodesource.com/setup_24.x | bash -

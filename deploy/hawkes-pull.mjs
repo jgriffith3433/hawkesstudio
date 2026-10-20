@@ -405,24 +405,15 @@ if (!DRY) {
   }
 }
 
+// The work is in deploy/broadcast-unit.mjs (packages, Chromium, unit, running), imported fresh: this script is already
+// in memory when it pulls, so logic kept here would only apply one deploy late (that left the encoder on its old script).
 async function ensureBroadcast(deployed) {
   if (DRY) return;
   const studio = path.join(ROOT, 'hawkesstudio');
-  const UNIT = '/etc/systemd/system/hawkes-broadcast.service';
   try {
-    const { BROADCAST_UNIT } = await import(`${pathToFileURL(path.join(studio, 'deploy', 'broadcast-unit.mjs')).href}?v=${Date.now()}`);
-    let cur = '';
-    try { cur = fs.readFileSync(UNIT, 'utf8'); } catch { /* not installed */ }
-    const newUnit = cur !== BROADCAST_UNIT;
-    if (newUnit) {
-      fs.writeFileSync(UNIT, BROADCAST_UNIT);
-      execFileSync('systemctl', ['daemon-reload']);
-      execFileSync('systemctl', ['enable', 'hawkes-broadcast'], { stdio: 'ignore' });
-    }
+    const { ensureBroadcast: ensure } = await import(`${pathToFileURL(path.join(studio, 'deploy', 'broadcast-unit.mjs')).href}?v=${Date.now()}`);
     const files = deployed ? changed(studio, deployed.head, deployed.tip) : [];
-    const active = (() => { try { return execFileSync('systemctl', ['is-active', 'hawkes-broadcast'], { encoding: 'utf8' }).trim() === 'active'; } catch { return false; } })();
-    if (!active) { execFileSync('systemctl', ['start', 'hawkes-broadcast']); say('started hawkes-broadcast (the Twitch encoder, idle until Go live)'); }
-    else if (newUnit || files.includes('bin/broadcast-stream.mjs')) { execFileSync('systemctl', ['restart', 'hawkes-broadcast']); say('restarted hawkes-broadcast: its unit or script changed'); }
+    ensure({ restart: files.includes('bin/broadcast-stream.mjs') || files.includes('deploy/broadcast-unit.mjs'), say });
   } catch (e) {
     say(`hawkes-broadcast: ${String(e.message).split('\n')[0]}`);
   }
