@@ -1164,6 +1164,8 @@ export function noRoomFor(product: string, next: WorkShape, statuses = `queued,$
 async function pump() {
   // A Studio deploy is waiting (drain.ts): start nothing new; the queue resumes after the deploy restarts Studio.
   if (deployPending()) return;
+  // The harness is held (harness-hold.ts): nothing starts or resumes until it answers again.
+  if (harnessHeld()) return;
   const s = agentSettings();
   // Busy: anything running in this process (a revision or an answer is queued while it runs) and whatever is active.
   const active = new Map(listChanges({ status: ACTIVE, limit: 500 }).map((c) => [c.id, c]));
@@ -1193,8 +1195,8 @@ async function pump() {
     running.add(c.id);
     // Back from waiting on Gen: its own session continues with the jobs' results (same worktree, same branch).
     const ph = phaseOf(c.id);
-    const back = ph?.genDone && !ph.failed ? ph : null;
-    if (back) update(c.id, { status: 'working', detail: 'its Gen jobs finished: Claude continues with them' });
+    const back = (ph?.genDone || ph?.harness) && !ph.failed ? ph : null;
+    if (back) update(c.id, { status: 'working', detail: ph!.harness ? 'the harness answers again: its session continues' : 'its Gen jobs finished: Claude continues with them' });
     void work(c.id, undefined, undefined, back, Boolean(back)).finally(() => {
       running.delete(c.id);
       remember(c.id);
@@ -1293,7 +1295,9 @@ async function work(id: string, note?: string, answer?: string, resumed?: Phase 
       update(id, { detail: `${brainLabel()} is working on it` });
       // An answer to the agent's question continues its own session (claude --resume); anything else starts a new one.
       c = getChange(id)!;
-      const resume = ph.nudge ? nudgeResume(c, ph)
+      const afterHold = Boolean(ph.harness);
+      if (afterHold) { ph.harness = undefined; save({ harness: undefined }); addLog(id, 'the harness answers again: its session continues'); }
+      const resume = afterHold ? harnessResume(c) : ph.nudge ? nudgeResume(c, ph)
         : ph.conflict ? conflictResume(c, ph.conflict)
         : ph.genDone ? (c.session ? { session: c.session, prompt: ph.genDone } : { prompt: `Read .hawkes/brief.md: it's your whole task. ${ph.genDone}` })
         : answer && c.session
@@ -1334,6 +1338,9 @@ async function work(id: string, note?: string, answer?: string, resumed?: Phase 
         setTimeout(() => void pollGenWaits(), 5_000).unref();
         return;
       }
+      // The harness stopped it (a usage cap, an outage): parked with its work, never nudged or counted (the hold lifts, then it resumes).
+      const hs = !question && (!commits.length || !changedNow) ? harnessStop(`${ph.result ?? ''}\n${ph.stderr ?? ''}`, summary) : null;
+      if (hs) return parkForHarness(id, ph, hs, { summary, commits });
       // It stopped with its work uncommitted (a time or turn limit, a cut session): its session is resumed to commit it.
       if (needsNudge(ph, { dirty: Boolean(uncommitted(c.worktree)), newCommit: commits.length > 0 && changedNow, question: Boolean(question) })) {
         nudge(id, ph, save);
@@ -1807,8 +1814,10 @@ async function workInfra(id: string, note?: string, resumed?: Phase | null, nudg
 
     if (ph.step === 'agent') {
       update(id, { detail: `${brainLabel()} is working on it` });
+      const afterHold = Boolean(ph.harness);
+      if (afterHold) { ph.harness = undefined; save({ harness: undefined }); addLog(id, 'the harness answers again: its session continues'); }
       if (!ph.proc && !ph.nudge) addLog(id, ph.conflict ? `agent resumed to resolve the conflicts with ${c.base}` : resumed ? 'agent: it ran inside Studio, which restarted; starting the pass again' : `agent started`);
-      const r = await agentPass(id, ph, save, s, infraEnv({ agent: true }), ph.nudge ? nudgeResume(getChange(id)!, ph) : ph.conflict ? conflictResume(getChange(id)!, ph.conflict) : undefined);
+      const r = await agentPass(id, ph, save, s, infraEnv({ agent: true }), afterHold ? harnessResume(getChange(id)!) : ph.nudge ? nudgeResume(getChange(id)!, ph) : ph.conflict ? conflictResume(getChange(id)!, ph.conflict) : undefined);
       save({ step: 'publish', result: r.result, stderr: r.stderr, stopped: r.stopped, nudge: false, proc: undefined }, { cost: getChange(id)!.cost + r.cost });
     }
 
@@ -1826,6 +1835,8 @@ async function workInfra(id: string, note?: string, resumed?: Phase | null, nudg
         commits = listCommits();
         changedNow = true;
       }
+      const hs = !commits.length || !changedNow ? harnessStop(`${ph.result ?? ''}\n${ph.stderr ?? ''}`, summary) : null;
+      if (hs) return parkForHarness(id, ph, hs, { summary, commits });
       // It stopped with its work uncommitted: its session is resumed to commit it (as for a product change).
       if (needsNudge(ph, { dirty: Boolean(uncommitted(c.worktree)), newCommit: commits.length > 0 && changedNow, question: false })) {
         nudge(id, ph, save);
@@ -2589,7 +2600,7 @@ async function cleanup(id: string, { deleteBranch = false } = {}) {
 /** After a daily run: start fixes for new findings worth fixing, within the day's budget. */
 export function autoFix(runId: string) {
   const s = agentSettings();
-  if (!s.enabled || !s.autoFix || !process.env.GITHUB_TOKEN) return [];
+  if (!s.enabled || !s.autoFix || !process.env.GITHUB_TOKEN || harnessHeld()) return [];
   const started: string[] = [];
   const fresh = db.prepare(`SELECT * FROM findings WHERE status = 'open' AND last_run = ? ORDER BY CASE severity WHEN 'blocker' THEN 0 WHEN 'bug' THEN 1 ELSE 2 END, seen DESC`).all(runId) as any[];
   const byProduct = new Map<string, any>();
@@ -2701,6 +2712,7 @@ export async function pollGenWaits() {
 }
 setInterval(() => void pollGenWaits(), genPollMs()).unref();
 // The server calls it once it listens (server.ts); a process that only imports this module (the CLI, tests) doesn't.
+onHoldLifted(() => void pump());
 setTimeout(() => void pump(), 5000).unref();
 // A safety net for the local queue (no GitHub involved): queued changes never wait on a slot nobody frees.
 setInterval(() => void pump(), 60_000).unref();
