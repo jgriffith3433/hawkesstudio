@@ -22,6 +22,14 @@ import path from 'node:path';
 import readline from 'node:readline';
 import { spawn, spawnSync } from 'node:child_process';
 
+/** Drop partial GIT_CONFIG_* so `git -c user.name=…` still works. */
+function gitEnv() {
+  const env = { ...process.env };
+  for (const k of Object.keys(env)) if (k.startsWith('GIT_CONFIG_')) delete env[k];
+  return env;
+}
+const gitAgent = (...a) => spawnSync('git', ['-c', 'user.name=Agent', '-c', 'user.email=agent@example.com', ...a], { encoding: 'utf8', env: gitEnv() });
+
 const args = process.argv.slice(2);
 const log = (o) => process.env.FAKE_CLAUDE_LOG && fs.appendFileSync(process.env.FAKE_CLAUDE_LOG, `${JSON.stringify(o)}\n`);
 const out = (o) => process.stdout.write(`${JSON.stringify(o)}\n`);
@@ -68,27 +76,25 @@ async function agent() {
   const prompt = args[args.indexOf('-p') + 1] ?? '';
   const base = /git merge origin\/([\w.-]+)/.exec(prompt)?.[1];
   if (base && mode !== 'NOTHING') {
-    const g = (...a) => spawnSync('git', ['-c', 'user.name=Agent', '-c', 'user.email=agent@example.com', ...a], { encoding: 'utf8' });
-    g('merge', '--no-edit', '-X', 'ours', `origin/${base}`);
+    gitAgent('merge', '--no-edit', '-X', 'ours', `origin/${base}`);
     fs.mkdirSync('.hawkes', { recursive: true });
     fs.writeFileSync(path.join('.hawkes', 'summary.md'), 'Merged beta and resolved the conflicts.');
     out({ type: 'result', subtype: 'success', result: 'Merged beta, resolved the conflicts.', session_id: 'fake-agent-session', total_cost_usd: 0.05, duration_ms: 5 });
     return log({ agentMerged: process.cwd(), base });
   }
   if (mode === 'PARK') {
-    const g = (...a) => spawnSync('git', ['-c', 'user.name=Agent', '-c', 'user.email=agent@example.com', ...a], { encoding: 'utf8' });
     fs.mkdirSync('.hawkes', { recursive: true });
     if (/Your Gen jobs finished/.test(prompt)) {
       fs.writeFileSync('baked.txt', prompt);
-      g('add', '-A');
-      g('commit', '--quiet', '-m', 'Bake the Gen outputs');
+      gitAgent('add', '-A');
+      gitAgent('commit', '--quiet', '-m', 'Bake the Gen outputs');
       fs.writeFileSync(path.join('.hawkes', 'summary.md'), 'Baked the portal clips.');
       out({ type: 'result', subtype: 'success', result: 'Baked them.', session_id: 'fake-agent-session', total_cost_usd: 0.05, duration_ms: 5 });
       return log({ agentBaked: process.cwd() });
     }
     fs.writeFileSync('spec.txt', 'portal spec\n');
-    g('add', '-A');
-    g('commit', '--quiet', '-m', 'Portal spec');
+    gitAgent('add', '-A');
+    gitAgent('commit', '--quiet', '-m', 'Portal spec');
     fs.writeFileSync(path.join('.hawkes', 'waiting-jobs.txt'), 'j_park1 portal open clip: judge, then bake\nj_park2 portal loop clip\n');
     fs.writeFileSync(path.join('.hawkes', 'summary.md'), 'Spec done; clips queued.');
     out({ type: 'result', subtype: 'success', result: 'Queued the clips.', session_id: 'fake-agent-session', total_cost_usd: 0.05, duration_ms: 5 });
@@ -103,9 +109,8 @@ async function agent() {
   }
   await sleep(Number(process.env.FAKE_AGENT_MS ?? 200));
   fs.writeFileSync('fixed.txt', `fixed at ${new Date().toISOString()}\n`);
-  const git = (...a) => spawnSync('git', ['-c', 'user.name=Agent', '-c', 'user.email=agent@example.com', ...a], { encoding: 'utf8' });
-  git('add', '-A');
-  git('commit', '--quiet', '-m', 'Fix: the start button');
+  gitAgent('add', '-A');
+  gitAgent('commit', '--quiet', '-m', 'Fix: the start button');
   fs.mkdirSync('.hawkes', { recursive: true });
   fs.writeFileSync(path.join('.hawkes', 'summary.md'), 'Made the start button bigger.');
   // Its background process starts (and its pid is written) before the result: Studio may end it right after that.

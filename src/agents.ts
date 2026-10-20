@@ -1657,6 +1657,8 @@ export function infraEnv({ agent = false, keepGenKey = true } = {}) {
   // Not the server: a worktree must never act like the running Studio (repo syncs) or Gen (fleet access).
   delete env.STUDIO_SERVER;
   delete env.HAWKES_AWS_ROLE;
+  // Partial GIT_CONFIG_* (e.g. COUNT without KEY_0) breaks `git -c user.name=…` in the agent.
+  for (const k of Object.keys(env)) if (k.startsWith('GIT_CONFIG_')) delete env[k];
   return env as NodeJS.ProcessEnv;
 }
 
@@ -1761,7 +1763,7 @@ async function workInfra(id: string, note?: string, resumed?: Phase | null, nudg
         } else if (note) {
           // Another pass: bring the branch up to date with main first (main may have moved, or the merge conflicted).
           await gitAsync(repoDir, ['fetch', '--quiet', 'origin']);
-          const m = await gitAsync(c.worktree, ['merge', '--no-edit', `origin/${c.base}`]);
+          const m = await gitAsync(c.worktree, ['-c', 'user.name=Hawkes Studio', '-c', 'user.email=studio@hawkesgen.com', 'merge', '--no-edit', `origin/${c.base}`]);
           if (!m.ok) git(c.worktree, ['merge', '--abort']);
           addLog(id, m.ok ? `merged origin/${c.base} into the branch` : `merging origin/${c.base} conflicted; the agent works from the branch as it was`);
         }
