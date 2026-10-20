@@ -1,7 +1,21 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 // @ts-ignore plain ESM
-import { agyModel, agyArgs, agyMcpServers, toolName, translate, finish } from '../bin/antigravity-agent.mjs';
+import { agyModel, agyArgs, agyMcpServers, toolName, translate, finish, seedCreds } from '../bin/antigravity-agent.mjs';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+
+test('AGY_CREDS seeds the login file once and never overwrites it', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-'));
+  const creds = Buffer.from(JSON.stringify({ token: { refresh_token: 'r' } })).toString('base64');
+  assert.equal(seedCreds({ AGY_CREDS: creds }, home), true);
+  const file = path.join(home, '.gemini', 'antigravity-cli', 'antigravity-oauth-token');
+  assert.match(fs.readFileSync(file, 'utf8'), /refresh_token/);
+  assert.equal(seedCreds({ AGY_CREDS: creds }, home), false);
+  assert.equal(seedCreds({ AGY_CREDS: 'bm90anNvbg==' }, fs.mkdtempSync(path.join(os.tmpdir(), 'agy-'))), false);
+  assert.equal(seedCreds({}, home), false);
+});
 
 const fresh = () => ({ seen: new Set(), text: '', last: '', began: Date.now() });
 const run = (events: any[]) => {
