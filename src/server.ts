@@ -599,6 +599,11 @@ const server = http.createServer(async (req, res) => {
       const r = await res2.resources({ range: q('range') || '1h' });
       return send(res, 200, q('format') === 'md' ? { markdown: res2.resourcesMarkdown(r) } : r);
     }
+    if (route === '/api/ledger' && method === 'GET') {
+      const { ledgerSummary, ledgerReport } = await import('./ledger.ts');
+      const days = Number(q('days')) || 7;
+      return send(res, 200, q('format') === 'md' ? { markdown: ledgerReport(days) } : { days, rows: ledgerSummary(days) });
+    }
     if (route === '/api/costs' && method === 'GET') {
       const { costReport, costMarkdown } = await import('./costs.ts');
       const r = await costReport(q('period') ?? 'month', { force: q('refresh') === '1' });

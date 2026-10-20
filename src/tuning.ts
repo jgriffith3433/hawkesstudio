@@ -12,6 +12,7 @@
 import { db, J, parse } from './db.ts';
 import { StudioError } from './config.ts';
 import { brainId, type Harness } from './brains.ts';
+import { modelUnavailable } from './models.ts';
 
 export const TIERS = ['fast', 'standard', 'deep'] as const;
 export type Tier = (typeof TIERS)[number];
@@ -212,7 +213,13 @@ export function roleTune(role: string, { harness = brainId(), retry = 1 }: { har
   if (!base) return { tier: 'standard' as Tier, model: '', effort: '' as Effort, maxTurns: 0 };
   let tier = base.tier;
   if (t.escalateOnRetry && retry >= 2 && tier !== 'deep' && role !== 'talk') tier = TIERS[Math.min(2, TIERS.indexOf(tier) + 1)];
-  return { tier, model: t.models[harness]?.[tier] ?? '', effort: base.effort, maxTurns: base.maxTurns };
+  // A model this harness refused steps down a tier, then to the harness's own default (''), so a wrong id never blocks work.
+  let model = '';
+  for (let i = TIERS.indexOf(tier); i >= 0; i--) {
+    const m = t.models[harness]?.[TIERS[i]] ?? '';
+    if (!modelUnavailable(harness, m)) { model = m; tier = TIERS[i]; break; }
+  }
+  return { tier, model, effort: base.effort, maxTurns: base.maxTurns };
 }
 
 /** The model for one of Studio's small model calls through Gen (triage, dedupe...). */

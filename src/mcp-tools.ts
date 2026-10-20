@@ -328,6 +328,12 @@ export function studioMcp({ studio, waitRun }: Client = { studio: defaultStudio,
       },
     },
     {
+      name: 'studio_ledger',
+      description: "The agent run ledger, as Markdown: every agent pass by role, harness and model with passes, changes, merged, failed, cost, minutes, harness stops, cost per merged change and merge rate. Use it to tune the agent settings (which tier pays off) and for \"what did the agents cost and land this week?\".",
+      inputSchema: obj({ days: { type: 'number', description: 'How many days back (default 7)' } }),
+      run: async ({ days }) => (await studio(`/api/ledger?${new URLSearchParams({ format: 'md', days: String(days ?? 7) })}`)).markdown,
+    },
+    {
       name: 'studio_analytics',
       description: "How real players do (Hawkes Analytics, Gen's player analytics of every product's pages): compact JSON plus plain sentences with their sample sizes. Live site, bots and J's own devices left out, last 30 days unless you say otherwise. view: overview (every product: sessions and players this week vs the week before, D1, rating, error rate), product (one product's headline numbers), dropoff (where sessions end: before the game was ready, by level, screen, last event), levels (attempts, completion, quits, deaths, retries before the first win), feedback (ratings and the latest comments), errors (grouped by signature with sessions, players, browsers, builds), builds (two builds' KPIs side by side: by default the two newest; a, b to pick), insights (Gen's biggest changes and worst drop-offs, only over minimum samples), session (one session's timeline: session id). Check \"players die here 70% of the time\" before and after a change; don't call a change from small samples (under 30 sessions or 20 attempts is noise).",
       inputSchema: obj({

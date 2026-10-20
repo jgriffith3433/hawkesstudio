@@ -60,7 +60,9 @@ import { judgeCriteria, gate } from './acceptance.ts';
 import { briefSection, learnFrom, recordRun, LEARNED_ASK } from './memory.ts';
 import { canonCheck, CONTENTISH, type CanonCheck } from './canon.ts';
 import { roleArgs, loadRole, type RoleName } from './roles.ts';
-import { passLimitMs } from './tuning.ts';
+import { passLimitMs, roleTune } from './tuning.ts';
+import { recordPass, type PassOutcome } from './ledger.ts';
+import { markModelUnavailable, refusedModelOf } from './models.ts';
 import { claudeCommand, spawnShell, sandboxShare, assertWorktree, shareWorktree } from './sandbox.ts';
 import { launch, DetachedChild, detachedActivity, stopDetached, type DetachRec } from './detach.ts';
 import { warmDeps, installCold, markInstalled } from './warm.ts';
@@ -270,6 +272,22 @@ function parkForHarness(id: string, ph: Phase, save: (patch: Partial<Phase>, ext
   const { hold } = holdHarness(stop, { source: `agent change ${id}`, harness });
   addLog(id, `${HARNESS_LABEL[harness]} stopped the agent (${stop.kind}): ${stop.line.slice(0, 200)}. Parked with its worktree and session: not a try; it resumes by itself (${holdDetail(hold)})`);
   save({ step: 'agent', proc: undefined, result: undefined, stopped: undefined, nudge: false, harness: { kind: stop.kind, line: stop.line.slice(0, 300), at: Date.now(), on: harness } }, { status: 'queued', detail: holdDetail(hold) });
+}
+/**
+ * The harness refused the model this pass asked for (the account's plan doesn't have it): remember it (models.ts) and
+ * run the pass again on the next tier down. Not a try, not a hold. Null when it wasn't that, or the model was already
+ * known as refused (so a requeue never loops).
+ */
+function modelRefused(r: { ok: boolean; sawResult: boolean; result: string; stderr?: string }, ph: Phase) {
+  if (r.ok && r.sawResult) return null;
+  const model = refusedModelOf(`${r.result ?? ''}\n${r.stderr ?? ''}`);
+  const harness = (isHarness(ph.brain) ? ph.brain : brainId()) as Harness;
+  return model && markModelUnavailable(harness, model) ? { model, harness } : null;
+}
+function requeueForModel(id: string, save: (patch: Partial<Phase>, extra?: Record<string, any>) => void, gone: { model: string; harness: Harness }) {
+  addLog(id, `${HARNESS_LABEL[gone.harness]} doesn't have the model ${gone.model} on this account: it is skipped from now on and the pass runs again on the next one down (not a try)`);
+  save({ step: 'agent', proc: undefined, result: undefined, stopped: undefined }, { status: 'queued', detail: `${gone.model} isn't available: trying the next model` });
+  setTimeout(() => void pump(), 0).unref();
 }
 const HARNESS_RESUME = `Your last pass was cut off because the AI harness stopped answering (a usage limit, billing or an outage), not because of anything you did. Your work so far is in the worktree (\`git status\`, \`git log\`): don't start over. Carry on with the task in .hawkes/brief.md from where you were, commit as you go, and finish it the way it says (.hawkes/summary.md and the rest).`;
 const REVIVE_RESUME = (why: string) => `Your earlier pass ended before it finished (${why.slice(0, 600)}). Your work so far is still in the worktree (\`git status\`, \`git log\`): don't start over. Carry on with the task in .hawkes/brief.md from where it is, commit as you go, and finish it the way it says (.hawkes/summary.md and the rest).`;
@@ -1049,6 +1067,23 @@ function runAgent(c: Change, briefFile: string, s: AgentSettings, env = claudeEn
  * it ran), else started (and recorded). A process that vanished without a result (the server rebooted) runs again.
  */
 async function agentPass(id: string, ph: Phase, save: (patch: Partial<Phase>) => void, s: AgentSettings, env: NodeJS.ProcessEnv, resume?: { session?: string; prompt: string }) {
+  const t0 = Date.now();
+  const r = await agentPassRaw(id, ph, save, s, env, resume);
+  try {
+    const c = getChange(id)!;
+    const role = agentRole(c);
+    const harness = (isHarness(ph.brain) ? ph.brain : brainId()) as Harness;
+    const retry = (c.task ? getTask(c.task)?.tries : 0) || 1;
+    const t = roleTune(role, { harness, retry });
+    const text = `${r.result ?? ''}\n${r.stderr ?? ''}`;
+    const outcome: PassOutcome = refusedModelOf(text) && !(r.ok && r.sawResult) ? 'model-refused'
+      : passStop(r) ? 'harness-stop'
+      : r.stopped ?? (r.ok && r.sawResult ? 'done' : 'failed');
+    recordPass({ change: id, product: c.product, task: c.task, role, harness, model: t.model, tier: t.tier, effort: t.effort, retry, ms: Date.now() - t0, cost: r.cost, outcome });
+  } catch { /* the ledger never stops a pass */ }
+  return r;
+}
+async function agentPassRaw(id: string, ph: Phase, save: (patch: Partial<Phase>) => void, s: AgentSettings, env: NodeJS.ProcessEnv, resume?: { session?: string; prompt: string }) {
   const brief = path.join(getChange(id)!.worktree, '.hawkes', 'brief.md');
   const fresh = (): AgentRun => ({
     onStart: (rec) => save({ proc: { rec, offset: 0 }, brain: brainId() }),
@@ -1355,6 +1390,8 @@ async function work(id: string, note?: string, answer?: string, resumed?: Phase 
       else if (!ph.proc && ph.genDone) addLog(id, resume?.session ? 'agent resumed its session with its finished Gen jobs' : 'agent started again with its finished Gen jobs (no session recorded)');
       else if (!ph.proc && !ph.nudge) addLog(id, resumed && !ph.conflict ?'agent: it ran inside Studio, which restarted; starting the pass again' : resume?.session ? `agent resumed its session ${ph.conflict ? 'to resolve the conflicts with beta' : 'with the answer'}` : ph.conflict ? 'agent started: resolving the conflicts with beta' : `agent started`);
       const r = await agentPass(id, ph, save, s, claudeEnv(), resume);
+      const gone = modelRefused(r, ph);
+      if (gone) return requeueForModel(id, save, gone);
       const stop = passStop(r, readSummary(getChange(id)!.worktree));
       if (stop) {
         save({}, { cost: getChange(id)!.cost + r.cost });
@@ -1866,6 +1903,8 @@ async function workInfra(id: string, note?: string, resumed?: Phase | null, nudg
       if (!ph.proc && !ph.nudge) addLog(id, ph.conflict ? `agent resumed to resolve the conflicts with ${c.base}` : resumed ? 'agent: it ran inside Studio, which restarted; starting the pass again' : `agent started`);
       if (!ph.proc && ph.harness) addLog(id, `agent carries on after the harness hold (${ph.harness.kind})`);
       const r = await agentPass(id, ph, save, s, infraEnv({ agent: true }), forHarness(ph, ph.nudge ? nudgeResume(getChange(id)!, ph) : ph.conflict ? conflictResume(getChange(id)!, ph.conflict) : ph.harness ? harnessResume(getChange(id)!, ph) : undefined));
+      const gone = modelRefused(r, ph);
+      if (gone) return requeueForModel(id, save, gone);
       const stop = passStop(r, readSummary(getChange(id)!.worktree));
       if (stop) {
         save({}, { cost: getChange(id)!.cost + r.cost });
