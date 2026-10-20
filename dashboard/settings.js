@@ -1,6 +1,6 @@
 // The ⚙ Settings tab: every setting in one place (GET/POST /api/settings, src/settings.ts), stored in Studio so it
-// follows J from his laptop to his phone. Calls (voice and listening), agents, the PM loop, phone notifications,
-// budgets. Only the browser voice's name is kept in this browser (voices differ per device). Uses app.js's helpers
+// follows J from his laptop to his phone. The harness, Claude accounts (signing in and switching), calls (voice and
+// listening), agents, the PM loop, phone notifications, budgets. Only the browser voice's name is kept in this browser (voices differ per device). Uses app.js's helpers
 // ($, esc, api) and call.js's window.callVoice.
 (() => {
   const css = document.createElement('style');
@@ -17,6 +17,9 @@
     .set-engines label { display: block; margin: 3px 0; }
     .set-saved { color: var(--accent); font-size: 12px; margin-left: 6px; } .set-err { color: var(--red); font-size: 12px; margin-left: 6px; }
     .set-test pre { white-space: pre-wrap; font-size: 12px; margin: 6px 0 0; }
+    .ca-add { padding: 8px 0 2px; display: grid; gap: 6px; }
+    .ca-line { display: flex; gap: 8px; flex-wrap: wrap; } .ca-line input { flex: 1 1 180px; min-width: 0; }
+    .set-box input#caLabel, .set-box input#caCode { background: var(--panel2); border: 1px solid var(--line); border-radius: 6px; padding: 5px 7px; color: inherit; }
     @media (max-width: 700px) { .set-grid { grid-template-columns: 1fr; } .set-row { grid-template-columns: 1fr; } }`;
   document.head.appendChild(css);
 
@@ -72,6 +75,60 @@
       ${row('Harness', select('brain', 'harness', b.harness, [['claude', 'Claude Code'], ['cursor', 'Cursor']]), b.harness === 'cursor' ? key : 'Claude Code, signed in with the Claude account.')}
       ${row('Model', select('brain', 'model', b.model, models), b.harness === 'cursor' ? 'Auto is Cursor’s router (keeps going when premium usage is out). Grok and Composer are pinned models.' : 'Leave this on each role’s model, or pick one for every role.')}
     </div>`;
+  }
+
+  // Claude accounts (src/claude-accounts.ts): the logins Claude Code runs with. Signing in runs `claude setup-token` on
+  // the server; J opens its link, signs in, and pastes the code back here. Changes send X-Studio-Click (J's click only).
+  let claude = null;
+  const claudeCall = async (path, opts = {}) => {
+    const r = await fetch(path, { ...opts, headers: { 'X-Studio-Click': '1', ...(opts.body ? { 'Content-Type': 'application/json' } : {}) }, body: opts.body ? JSON.stringify(opts.body) : undefined });
+    const d = await r.json().catch(() => ({ error: `Studio answered ${r.status}` }));
+    if (!r.ok || d.error) throw new Error(d.error ?? `Studio answered ${r.status}`);
+    return d;
+  };
+  const day = (t) => new Date(t).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
+
+  function claudeBox(c, brain) {
+    if (!c) return '';
+    const si = c.signin;
+    const rows = c.accounts.map((a) => {
+      const left = a.expires ? Math.round((a.expires - Date.now()) / 86_400_000) : null;
+      const exp = left === null ? '' : left < 0 ? ' · <span class="set-err">expired</span>' : left < 30 ? ` · <span class="set-err">expires in ${left} d</span>` : ` · good until ${day(a.expires)}`;
+      const chk = a.check ? `${a.check.ok ? '✓' : '⚠'} ${esc(a.check.note)} (checked ${ago(a.check.at)})` : '';
+      return `<div class="set-row" data-ca="${a.id}"><div><b>${esc(a.label)}</b>${a.active ? ' <span class="set-saved" style="margin:0">● in use</span>' : ''}<div class="meta">…${esc(a.tail)} · added ${day(a.added)}${exp}</div></div>
+        <div>${a.active ? '' : '<button class="small" data-caact="use">Use this account</button> '}<button class="small" data-caact="check">Check</button> <button class="small" data-caact="rename">Rename</button>${a.active ? '' : ' <button class="small" data-caact="remove">Remove</button>'}</div>
+        ${chk ? `<div class="help">${chk}</div>` : ''}</div>`;
+    }).join('');
+    const waiting = si && si.state === 'waiting';
+    const signinRow = waiting
+      ? `<div class="ca-add"><b>Signing in${si.label ? `: ${esc(si.label)}` : ''}</b>
+          <div>1. <a href="${esc(si.url)}" target="_blank" rel="noopener"><b>Open Claude's sign-in page</b></a> and sign in with that account.</div>
+          <div>2. Claude shows a code. Paste it here:</div>
+          <div class="ca-line"><input type="text" id="caCode" placeholder="the code from Claude" autocomplete="off" spellcheck="false"><button class="small" id="caFinish">Finish signing in</button><button class="small" id="caCancel">Cancel</button></div>
+          <div id="caMsg" class="meta"></div>
+          <div class="meta">The new account is used as soon as it is saved. Signed in to the wrong account in your browser? Sign out on claude.ai first, or open the link in a private window.</div></div>`
+      : `<div class="ca-add"><b>Add an account</b>
+          <div class="ca-line"><input type="text" id="caLabel" placeholder="A name for it, e.g. your email"><button class="small" id="caStart">Sign in to a Claude account</button></div>
+          <div id="caMsg" class="meta">${si?.state === 'failed' && si.error ? `<span class="set-err">${esc(si.error)}</span>` : ''}</div>
+          <div class="meta">Runs Claude&#39;s own sign-in on the server and gives you its link. Each sign-in is a 1-year login, kept here so you can switch back to it.</div></div>`;
+    return `<div class="set-box"><h3>🔑 Claude accounts</h3>
+      <div class="meta">The Claude login that Talk, the PM, agents, scouts and Gen's Claude calls run on. Switching takes effect on the next turn, agent and Gen call; work already running finishes on the account it started with.${brain.harness !== 'claude' ? ' <b>The harness is Cursor now:</b> using or adding an account switches it to Claude Code.' : ''}</div>
+      ${rows || '<div class="meta" style="padding:6px 0">No Claude account on this server yet.</div>'}
+      ${signinRow}
+    </div>`;
+  }
+
+  async function claudeAction(fn, target) {
+    const msg = $('#caMsg');
+    try {
+      if (target) target.disabled = true;
+      await fn();
+      await loadSettingsTab();
+    } catch (err) {
+      if (msg) msg.innerHTML = `<span class="set-err">${esc(err.message)}</span>`;
+      else alert(err.message);
+      if (target) target.disabled = false;
+    }
   }
 
   function agentsBox(a) {
@@ -144,11 +201,11 @@
   }
 
   async function loadSettingsTab() {
-    data = await api('/api/settings');
+    [data, claude] = await Promise.all([api('/api/settings'), api('/api/claude/accounts').catch(() => null)]);
     window.callVoice?.apply(data.call);
     const badge = $('#walkAwayBadge');
     if (badge) badge.hidden = !data.pm.walkAway;
-    $('#setBody').innerHTML = `<div class="set-grid">${brainBox(data.brain)}${callBox(data.call)}${agentsBox(data.agents)}${pmBox(data.pm)}${notifyBox(data.notify)}${costsBox(data.costs)}${resourcesBox(data.resources)}</div>`;
+    $('#setBody').innerHTML = `<div class="set-grid">${brainBox(data.brain)}${claudeBox(claude, data.brain)}${callBox(data.call)}${agentsBox(data.agents)}${pmBox(data.pm)}${notifyBox(data.notify)}${costsBox(data.costs)}${resourcesBox(data.resources)}</div>`;
     if (data.call.engine === 'eleven') loadElevenVoices();
   }
   window.loadSettingsTab = loadSettingsTab;
@@ -236,6 +293,27 @@
       } finally {
         t.disabled = false;
       }
+    }
+    if (t.id === 'caStart') return claudeAction(async () => {
+      $('#caMsg').textContent = 'Starting Claude’s sign-in on the server…';
+      await claudeCall('/api/claude/signin', { method: 'POST', body: { label: $('#caLabel').value } });
+    }, t);
+    if (t.id === 'caFinish') return claudeAction(async () => {
+      $('#caMsg').textContent = 'Signing in…';
+      const r = await claudeCall('/api/claude/signin/code', { method: 'POST', body: { code: $('#caCode').value } });
+      // A first check of the new account (a one-line answer from Haiku), shown when it comes back.
+      claudeCall(`/api/claude/accounts/${r.account.id}/check`, { method: 'POST', body: {} }).then(() => tab === 'settings' && loadSettingsTab()).catch(() => {});
+    }, t);
+    if (t.id === 'caCancel') return claudeAction(() => claudeCall('/api/claude/signin/cancel', { method: 'POST', body: {} }), t);
+    const act = t.dataset?.caact;
+    const ca = act && t.closest('[data-ca]')?.dataset.ca;
+    if (ca) {
+      const a = claude?.accounts.find((x) => x.id === ca);
+      if (act === 'use') return claudeAction(() => claudeCall(`/api/claude/accounts/${ca}/use`, { method: 'POST', body: {} }), t);
+      if (act === 'check') { t.textContent = 'Checking…'; return claudeAction(() => claudeCall(`/api/claude/accounts/${ca}/check`, { method: 'POST', body: {} }), t); }
+      if (act === 'rename') { const label = prompt('Name for this Claude account', a?.label ?? ''); if (label) return claudeAction(() => claudeCall(`/api/claude/accounts/${ca}`, { method: 'PATCH', body: { label } }), t); return; }
+      if (act === 'remove' && confirm(`Remove "${a?.label}"? Its login is forgotten here (signing in again makes a new one).`)) return claudeAction(() => claudeCall(`/api/claude/accounts/${ca}`, { method: 'DELETE' }), t);
+      return;
     }
     const msg = (x) => { const m = $('#notifyMsg'); if (m) m.textContent = x; };
     try {

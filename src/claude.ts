@@ -1,13 +1,20 @@
-// Running Claude Code on the server (Talk and the agent workers). With J's subscription token
-// (CLAUDE_CODE_OAUTH_TOKEN, from "claude setup-token", secret hawkes/claude) it uses his Claude Max plan; without it,
-// the API key (ANTHROPIC_API_KEY) is billed per token. Claude Code prefers the API key when both are set, so the
-// key is removed from the environment whenever the subscription token is there.
+// Running Claude Code on the server (Talk and the agent workers). With a subscription token (CLAUDE_CODE_OAUTH_TOKEN,
+// from "claude setup-token") it uses that Claude account's plan; without it, the API key (ANTHROPIC_API_KEY) is billed
+// per token. The token is the account chosen in Settings (claude-accounts.ts), else the environment's (the AWS secret
+// hawkes/claude). Claude Code prefers the API key when both are set, so the key is removed from the environment
+// whenever there is a subscription token.
 
-export const usingSubscription = () => Boolean(process.env.CLAUDE_CODE_OAUTH_TOKEN);
+import { activeToken } from './claude-accounts.ts';
+
+export const usingSubscription = () => Boolean(activeToken());
 
 export function claudeEnv(extra: Record<string, string> = {}) {
   const env: Record<string, string | undefined> = { ...process.env, ...extra };
-  if (env.CLAUDE_CODE_OAUTH_TOKEN) delete env.ANTHROPIC_API_KEY;
+  const token = extra.CLAUDE_CODE_OAUTH_TOKEN ?? activeToken();
+  if (token) {
+    env.CLAUDE_CODE_OAUTH_TOKEN = token;
+    delete env.ANTHROPIC_API_KEY;
+  }
   return env as NodeJS.ProcessEnv;
 }
 

@@ -4,6 +4,9 @@
 //
 //   claude setup-token                       (signs in with J's Claude account in the browser, prints a token)
 //   node deploy/claude-token.mjs             (paste it here)
+//
+// Usually easier: Studio's Settings → 🔑 Claude accounts signs in from the web app and switches with no restart
+// (src/claude-accounts.ts). This secret is the fallback when no account is saved there.
 import readline from 'node:readline';
 import { SecretsManagerClient, CreateSecretCommand, PutSecretValueCommand } from '@aws-sdk/client-secrets-manager';
 import { cfg } from './aws.mjs';

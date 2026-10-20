@@ -213,6 +213,13 @@ path (to read it, images too) and blob id (for Gen inputs). Under each answer, *
 subscription (no extra cost), **💳 $0.042 API** means it was billed to the API key (when `CLAUDE_CODE_OAUTH_TOKEN`
 is missing). `TALK_MODEL` picks the model; `TALK_CLAUDE` the Claude Code executable.
 
+**Which Claude account** (Settings → 🔑 Claude accounts, `src/claude-accounts.ts`): "Sign in to a Claude account" runs
+`claude setup-token` on the server and shows its link; J signs in, pastes the code Claude shows him, and the new 1-year
+login is saved and used at once (Talk, agents, scouts, and Gen's Claude calls through `.data/claude/active.env`), with
+no restart. Every login stays in the list to switch back to; Check asks it for one word (is it signed in, is usage left).
+The token in AWS (`hawkes/claude`, `node deploy/claude-token.mjs` then restart `hawkes-secrets hawkes-gen hawkes-studio`)
+is the fallback, and shows in the list as "From the server".
+
 **Roles, memory, full power.** Each turn runs as the `talk` role (`.claude/agents/talk.md`; the PM's conversation as
 `pm`) with the skills plugin (`--plugin-dir .claude`), the shared memory's studio-wide decisions in its system prompt
 and the entries matching J's message under it (docs/memory.md). In the agent sandbox (`deploy/agent-sandbox.mjs`, J's OK

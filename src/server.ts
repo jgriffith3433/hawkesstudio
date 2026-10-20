@@ -536,6 +536,34 @@ const server = http.createServer(async (req, res) => {
     if (route === '/api/agents/roles' && method === 'GET') { const r = await import('./roles.ts'); return send(res, 200, { roles: r.listRoles(), skills: r.listSkills() }); }
     if (route === '/api/agents/settings' && method === 'POST') return send(res, 200, saveAgentSettings(await readJson(req)));
 
+    // Claude accounts (claude-accounts.ts): the logins Claude Code runs with. Anyone may list them (labels, never tokens);
+    // signing in, switching, renaming, checking and removing are J's click on the dashboard only.
+    if (route === '/api/claude/accounts' && method === 'GET') return send(res, 200, (await import('./claude-accounts.ts')).listAccounts());
+    if (route.startsWith('/api/claude/') && method !== 'GET') {
+      const why = (await import('./approvals.ts')).notJClick(req);
+      if (why) return send(res, 403, { error: `Claude accounts change only from J's own click in Settings: ${why}.` });
+      const ca = await import('./claude-accounts.ts');
+      const b = await readJson(req);
+      if (route === '/api/claude/signin' && method === 'POST') return send(res, 200, await ca.startSignin(String(b.label ?? ''), 'J'));
+      if (route === '/api/claude/signin/code' && method === 'POST') {
+        const r = await ca.finishSignin(String(b.code ?? ''), { use: b.use !== false });
+        if (b.use !== false) { const br = await import('./brains.ts'); br.saveBrain({ harness: 'claude' }, 'J'); await br.syncBrain('claude'); }
+        return send(res, 200, r);
+      }
+      if (route === '/api/claude/signin/cancel' && method === 'POST') return send(res, 200, ca.cancelSignin());
+      const am = /^\/api\/claude\/accounts\/(ca_[0-9a-f]+)(?:\/(use|check))?$/.exec(route);
+      if (am && method === 'POST' && am[2] === 'use') {
+        const r = ca.useAccount(am[1]);
+        const br = await import('./brains.ts');
+        br.saveBrain({ harness: 'claude' }, 'J');
+        await br.syncBrain('claude');
+        return send(res, 200, r);
+      }
+      if (am && method === 'POST' && am[2] === 'check') return send(res, 200, { check: await ca.checkAccount(am[1]), ...ca.listAccounts() });
+      if (am && method === 'PATCH' && !am[2]) return send(res, 200, ca.renameAccount(am[1], String(b.label ?? '')));
+      if (am && method === 'DELETE' && !am[2]) return send(res, 200, ca.removeAccount(am[1]));
+    }
+
     // Settings (settings.ts): every setting in one place, for the Settings tab and Talk (studio_settings).
     if (route === '/api/settings' && method === 'GET') return send(res, 200, await (await import('./settings.ts')).allSettings());
     if (route === '/api/settings' && method === 'POST') {
