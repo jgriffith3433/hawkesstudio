@@ -30,12 +30,12 @@ import { costExplorer, ec2, xitems, xtext, xtags, xget } from './aws.ts';
 // ------------------------------------------------------------- prices, settings
 
 /** On-demand US prices, for estimates and attribution (the bill itself comes from Cost Explorer). */
-export const PRICES = { gpu: 1.861, playtester: 0.526, builder: 0.77, control: 0.0416, gp3: 0.08, gp2: 0.1, snapshot: 0.05, ipv4Month: 3.65, ceRequest: 0.01 };
+export const PRICES = { gpu: 1.861, playtester: 0.526, builder: 0.77, control: 0.4032, gp3: 0.08, gp2: 0.1, snapshot: 0.05, ipv4Month: 3.65, ceRequest: 0.01 };
 
 /** The fixed monthly costs (docs/cloud.md, "Costs"), for the estimate when Cost Explorer isn't allowed. */
 export const FIXED = [
-  { name: 'Control server', perMonth: 30 },
-  { name: 'Disks', perMonth: 16 + 24 + 20 + 6 },
+  { name: 'Control server', perMonth: 294 },
+  { name: 'Disks', perMonth: 36 + 24 + 20 + 6 },
   { name: 'Route 53, Secrets Manager, S3', perMonth: 3 },
 ];
 export const FIXED_MONTHLY = FIXED.reduce((n, f) => n + f.perMonth, 0);
@@ -148,7 +148,12 @@ export function regionOfUsage(usageType: string) {
 /** Which part of the studio a Cost Explorer line is: a server role, disks, snapshots, IPs, S3, DNS… */
 export function componentOf(service: string, usageType: string) {
   const ut = usageType.replace(/^[A-Z]{2,4}\d?-/, '');
-  if (/BoxUsage|SpotUsage|DedicatedUsage|HostUsage/.test(ut)) return ROLE_NAMES[roleOf('', ut.split(':')[1] ?? '')];
+  if (/BoxUsage|SpotUsage|DedicatedUsage|HostUsage/.test(ut)) {
+    const type = ut.split(':')[1] ?? '';
+    // The control server and the build server are both m7i since 2026-10-20: a usage type can't tell them apart.
+    if (/^m7i\./.test(type)) return 'Control and build servers';
+    return ROLE_NAMES[roleOf('', type)];
+  }
   if (/^EBS:Snapshot/.test(ut)) return 'Snapshots';
   if (/^EBS:/.test(ut)) return 'Disks';
   if (/PublicIPv4|ElasticIP/.test(ut)) return 'Public IP addresses';
@@ -253,7 +258,9 @@ async function ceForecast(now: Date, force: boolean) {
 export type Server = { id: string; region: string; name: string; role: Role; type: string; state: string; launched: number | null; hours: number | null; perHour: number; diskGb: number; diskPerMonth: number };
 export type Idle = { kind: 'stopped-disk' | 'unattached-volume' | 'unused-ip' | 'snapshot'; id: string; region: string; what: string; perMonth: number; note?: string };
 
-const perHourOf = (role: Role, type: string) => (role === 'gpu' ? (type === 'g6e.2xlarge' ? 2.242 : type === 'g7e.2xlarge' ? 3.36 : PRICES.gpu) : role === 'playtester' ? PRICES.playtester : role === 'builder' ? PRICES.builder : role === 'control' ? (type === 't3.large' ? 0.0832 : PRICES.control) : 0);
+const perHourOf = (role: Role, type: string) => (role === 'gpu' ? (type === 'g6e.2xlarge' ? 2.242 : type === 'g7e.2xlarge' ? 3.36 : PRICES.gpu) : role === 'playtester' ? PRICES.playtester : role === 'builder' ? PRICES.builder : role === 'control' ? (CONTROL_PER_HOUR[type] ?? PRICES.control) : 0);
+/** The control server's on-demand price by type (us-east-1): it was a t3, then m7i.xlarge, m7i.2xlarge since 2026-10-20. */
+const CONTROL_PER_HOUR: Record<string, number> = { 't3.medium': 0.0416, 't3.large': 0.0832, 'm7i.xlarge': 0.2016, 'm7i.2xlarge': 0.4032 };
 const diskPrice = (type: string) => (type === 'gp2' ? PRICES.gp2 : type === 'st1' ? 0.045 : type === 'sc1' ? 0.015 : type === 'standard' ? 0.05 : PRICES.gp3);
 
 let scanCache: { at: number; data: Awaited<ReturnType<typeof scanNow>> } | null = null;

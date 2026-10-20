@@ -42,6 +42,7 @@ test('Cost Explorer lines become parts of the studio, and regions', () => {
   assert.equal(costs.componentOf(ec2, 'USE2-BoxUsage:g6e.xlarge'), 'GPU servers');
   assert.equal(costs.componentOf(ec2, 'BoxUsage:t3.large'), 'Control server');
   assert.equal(costs.componentOf(ec2, 'BoxUsage:g4dn.xlarge'), 'Playtester (T4)');
+  assert.equal(costs.componentOf(ec2, 'BoxUsage:m7i.2xlarge'), 'Control and build servers');
   assert.equal(costs.componentOf('EC2 - Other', 'EBS:VolumeUsage.gp3'), 'Disks');
   assert.equal(costs.componentOf('EC2 - Other', 'USW2-EBS:SnapshotUsage'), 'Snapshots');
   assert.equal(costs.componentOf('Amazon Virtual Private Cloud', 'USE1-PublicIPv4:InUseAddress'), 'Public IP addresses');
