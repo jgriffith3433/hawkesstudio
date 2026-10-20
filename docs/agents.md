@@ -42,6 +42,7 @@ gets its skills, procedures loaded only when needed, and the roles as subagents 
 | `playtest-scenario` | adding a scenario so acceptance criteria show in a playtest |
 | `go-live-checklist` | DEPLOY / ROLLBACK, what to show J, what happens after |
 | `gen-assets` | generation through Hawkes Gen: tools, presets, manifests, costs |
+| `gen-3d-characters` | rigged characters via Gen (`character3d`: image → clips → FBX/GLB → Unity prefab) |
 | `github-pages` | static hosting, pages.yml, the Pages source switch, beta vs live |
 | `windows-shell-quirks` | CRLF working trees, heredoc and Python escaping, paths, git on the server |
 | `shared-memory` | reading and writing the memory |

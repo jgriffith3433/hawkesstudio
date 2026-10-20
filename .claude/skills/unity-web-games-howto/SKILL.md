@@ -29,6 +29,9 @@ website repos on GitHub Pages. Read each project's `AGENTS.md` first.
 
 Both: keep `.meta` files with their assets; never edit `Library/`, `Temp/`, `obj/`.
 
+**Generated 3D characters** (Gen `character3d` → FBX Humanoid / Generic, import under `Assets/HawkesGen/`, prefab):
+gen-3d-characters skill. Prefer a prefab over dropping the model into a shared scene.
+
 ## Several agents at once (J, 2026-10-19: up to 3 per product)
 
 Other agents may be working in this repo on their own branches, and may merge into beta while you work. The brief's
