@@ -185,9 +185,12 @@ if (process.platform === 'linux') {
   startVoicePoll();
 
   // Give the FIFO a moment to exist before ffmpeg opens it.
+  // -draw_mouse 0: x11grab defaults to drawing the X11 cursor; on a black stage (startup,
+  // waiting take, empty reel) that shows on Twitch as a white X in the middle of a black frame
+  // while the desk browser still looks fine. Never put the cursor on the RTMP send.
   setTimeout(() => {
     const enc = spawn(ffmpeg, [
-      '-f', 'x11grab', '-video_size', '1920x1080', '-framerate', '30', '-i', ':99',
+      '-f', 'x11grab', '-video_size', '1920x1080', '-framerate', '30', '-draw_mouse', '0', '-i', ':99',
       '-f', 's16le', '-ar', String(RATE), '-ac', String(CHANNELS), '-i', fifo,
       '-c:v', 'libx264', '-preset', 'veryfast', '-b:v', '4500k', '-pix_fmt', 'yuv420p',
       '-c:a', 'aac', '-b:a', '128k', '-ar', String(RATE),
