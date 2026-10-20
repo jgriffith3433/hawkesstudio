@@ -240,3 +240,14 @@ test('normalizePriority drops unknown ids and fills the rest', () => {
   assert.ok(normalizePriority(null, PRODUCTS).includes('sickofit'));
   assert.equal(DESK_DEFAULT.voice, true);
 });
+
+// Twitch black-frame + white X: ffmpeg x11grab draws the X11 mouse by default (-draw_mouse 1).
+// On a black On Air stage the cursor lands as a small X on the RTMP send while the desk browser
+// still looks full. Keep -draw_mouse 0 on the grab and cursor:none on body.clean as a belt-and-braces.
+test('the Twitch capture path never draws the X11 mouse cursor', () => {
+  const streamSrc = fs.readFileSync(new URL('../bin/broadcast-stream.mjs', import.meta.url), 'utf8');
+  assert.match(streamSrc, /-draw_mouse['"\s,]+0/);
+  assert.match(streamSrc, /x11grab/);
+  const css = fs.readFileSync(new URL('../dashboard/broadcast.css', import.meta.url), 'utf8');
+  assert.match(css, /body\.clean\s*\{\s*cursor:\s*none/);
+});
