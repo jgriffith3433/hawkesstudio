@@ -12,7 +12,7 @@ delete process.env.TALK_CLAUDE_ARGS;
 delete process.env.HAWKES_BRAIN;
 
 const { claudeCommand } = await import('../src/sandbox.ts');
-const { brainSettings, saveBrain, harnessBlocked } = await import('../src/brains.ts');
+const { brainSettings, saveBrain, harnessBlocked, fallbackChain } = await import('../src/brains.ts');
 const { saveSettings, allSettings } = await import('../src/settings.ts');
 const { parseClaudeArgs, cursorArgs, translate } = await import('../bin/cursor-agent.mjs');
 
@@ -38,6 +38,26 @@ test('an old grok setting is the Cursor harness on Auto', () => {
   assert.equal(brainSettings().harness, 'cursor');
   assert.equal(brainSettings().model, 'auto');
   saveBrain('claude');
+});
+
+test('Copilot is a third harness: it launches copilot-agent, and the fallback chain skips the one that failed', async () => {
+  process.env.HAWKES_BRAIN = 'copilot';
+  assert.equal(brainSettings().harness, 'copilot');
+  const c = claudeCommand(['-p', 'hi', '--model', 'claude-opus-5-5', '--output-format', 'stream-json'], { cwd: process.cwd(), env: process.env });
+  assert.equal(c.file, process.execPath);
+  assert.match(String(c.args[0]), /copilot-agent\.mjs$/);
+  delete process.env.HAWKES_BRAIN;
+  assert.equal(saveBrain('copilot').harness, 'copilot');
+  assert.equal(saveBrain('claude').harness, 'claude');
+  assert.deepEqual(fallbackChain('claude'), ['cursor', 'copilot']);
+  assert.deepEqual(fallbackChain('cursor'), ['claude', 'copilot']);
+  assert.deepEqual(fallbackChain('copilot'), ['claude', 'cursor']);
+});
+
+test('Copilot quota, billing and login errors are harness stops', () => {
+  assert.equal(harnessBlocked('You have no premium requests remaining'), true);
+  assert.equal(harnessBlocked('No authentication information found. Set COPILOT_GITHUB_TOKEN'), true);
+  assert.equal(harnessBlocked('Quota exceeded for this month'), true);
 });
 
 test('a usage cap or a missing login is a harness stop, not a diagnosis', () => {

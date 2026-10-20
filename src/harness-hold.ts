@@ -17,7 +17,7 @@
 import os from 'node:os';
 import { spawn } from 'node:child_process';
 import { db, J, parse } from './db.ts';
-import { brainId, brainSettings, CURSOR_AGENT, failover, harnessStopOf, setFailover, syncBrain, type Harness, type HarnessKind, type HarnessStop } from './brains.ts';
+import { brainId, brainSettings, COPILOT_AGENT, CURSOR_AGENT, failover, fallbackChain, harnessConfigured, harnessStopOf, setFailover, syncBrain, type Harness, type HarnessKind, type HarnessStop } from './brains.ts';
 
 db.exec(`CREATE TABLE IF NOT EXISTS harness_holds (
   harness TEXT PRIMARY KEY, kind TEXT NOT NULL, why TEXT NOT NULL, line TEXT, account TEXT, since INTEGER NOT NULL,
@@ -46,8 +46,7 @@ export const activeHolds = () => (db.prepare('SELECT * FROM harness_holds WHERE 
 /** Whether the harness in use is held: nothing new starts on it. */
 export const harnessHeld = (harness: Harness = brainId()) => Boolean(activeHold(harness));
 
-export const LABEL: Record<Harness, string> = { claude: 'Claude', cursor: 'Cursor' };
-const OTHER: Record<Harness, Harness> = { claude: 'cursor', cursor: 'claude' };
+export const LABEL: Record<Harness, string> = { claude: 'Claude', cursor: 'Cursor', copilot: 'Copilot' };
 /** A minute, in ms (STUDIO_HARNESS_MINUTE_MS: tests run the backoff in milliseconds). */
 const minute = () => (Number(process.env.STUDIO_HARNESS_MINUTE_MS) > 0 ? Number(process.env.STUDIO_HARNESS_MINUTE_MS) : 60_000);
 const BACKOFF = [10, 20, 40, 60];
@@ -99,8 +98,8 @@ const addLine = (harness: Harness, line: string) => {
 export const holdDeps = {
   /** One tiny run of a harness: does it answer? */
   probe: (harness: Harness): Promise<{ ok: boolean; note: string }> => defaultProbe(harness),
-  /** Whether a harness can run here at all (Cursor needs its key; Claude Code a login). */
-  configured: (harness: Harness) => (harness === 'cursor' ? Boolean(process.env.CURSOR_API_KEY) : true),
+  /** Whether a harness can run here at all (Cursor needs its key, Copilot a token or login; Claude Code a login). */
+  configured: (harness: Harness) => harnessConfigured(harness),
   /** Saved Claude accounts other than the one in use, and checking / switching to one. */
   otherAccounts: async (): Promise<{ id: string; label: string }[]> => {
     const { listAccounts } = await import('./claude-accounts.ts');
@@ -220,22 +219,26 @@ export function liftHold(why: string, harness: Harness = brainId()) {
  * Returns what took over, or null.
  */
 async function standIn(h: Hold): Promise<string | null> {
-  if (h.harness !== brainSettings().chosen && h.harness !== brainId()) return null;
-  const other = OTHER[h.harness];
-  if (process.env.STUDIO_HARNESS_FAILOVER !== 'off' && holdDeps.configured(other) && !activeHold(other) && brainId() === h.harness) {
-    const p = await holdDeps.probe(other).catch((e: any) => ({ ok: false, note: String(e?.message ?? e) }));
-    if (p.ok && activeHold(h.harness) && !activeHold(other)) {
-      setFailover({ harness: other, from: h.harness, since: Date.now(), why: h.why });
-      addLine(h.harness, `${LABEL[other]} answers: it stands in until ${LABEL[h.harness]} does`);
-      void holdDeps.syncGen().catch(() => {});
-      void holdDeps.talk(`${LABEL[other]} stands in for ${LABEL[h.harness]}`, `${h.why} (${h.line ?? '?'}), so Studio runs the agents, scouts and reviews on ${LABEL[other]} until ${LABEL[h.harness]} answers again; your choice stays ${LABEL[brainSettings().chosen]} and comes back by itself. Parked changes continue on ${LABEL[other]} now.`).catch(() => {});
-      resume();
-      return LABEL[other];
-    }
-    if (!p.ok) {
-      const stop = harnessStopOf(p.note);
-      if (stop) holdHarness(stop, { source: `a probe of ${LABEL[other]}`, harness: other });
-      addLine(h.harness, `${LABEL[other]} can't stand in: ${p.note.slice(0, 160)}`);
+  const chosen = brainSettings().chosen;
+  if (h.harness !== chosen && h.harness !== brainId()) return null;
+  if (process.env.STUDIO_HARNESS_FAILOVER !== 'off' && brainId() === h.harness) {
+    // The chosen harness's others, in order (brains.ts fallbackChain): the first that is set up, not held, and answers.
+    for (const other of fallbackChain(chosen).filter((x) => x !== h.harness)) {
+      if (!holdDeps.configured(other) || activeHold(other)) continue;
+      const p = await holdDeps.probe(other).catch((e: any) => ({ ok: false, note: String(e?.message ?? e) }));
+      if (p.ok && activeHold(h.harness) && !activeHold(other) && brainId() === h.harness) {
+        setFailover({ harness: other, from: chosen, since: Date.now(), why: h.why });
+        addLine(h.harness, `${LABEL[other]} answers: it stands in until ${LABEL[chosen]} does`);
+        void holdDeps.syncGen().catch(() => {});
+        void holdDeps.talk(`${LABEL[other]} stands in for ${LABEL[chosen]}`, `${h.why} (${h.line ?? '?'}), so Studio runs the agents, scouts and reviews on ${LABEL[other]} until ${LABEL[chosen]} answers again; your choice stays ${LABEL[chosen]} and comes back by itself. Parked changes continue on ${LABEL[other]} now.`).catch(() => {});
+        resume();
+        return LABEL[other];
+      }
+      if (!p.ok) {
+        const stop = harnessStopOf(p.note);
+        if (stop) holdHarness(stop, { source: `a probe of ${LABEL[other]}`, harness: other });
+        addLine(h.harness, `${LABEL[other]} can't stand in: ${p.note.slice(0, 160)}`);
+      }
     }
   }
   if (h.harness === 'claude' && brainId() === 'claude') {
@@ -319,8 +322,9 @@ async function defaultProbe(harness: Harness): Promise<{ ok: boolean; note: stri
     ...(harness === 'claude' ? ['--model', 'claude-haiku-5-5', '--tools', '', '--setting-sources', ''] : [])];
   const pre: string[] = process.env.TALK_CLAUDE_ARGS ? JSON.parse(process.env.TALK_CLAUDE_ARGS) : [];
   const stand = Boolean(process.env.TALK_CLAUDE || pre.length);
-  const file = stand ? (process.env.TALK_CLAUDE || 'claude') : harness === 'cursor' ? process.execPath : 'claude';
-  const argv = stand ? [...pre, ...args] : harness === 'cursor' ? [CURSOR_AGENT, ...args] : args;
+  const adapter = harness === 'cursor' ? CURSOR_AGENT : harness === 'copilot' ? COPILOT_AGENT : '';
+  const file = stand ? (process.env.TALK_CLAUDE || 'claude') : adapter ? process.execPath : 'claude';
+  const argv = stand ? [...pre, ...args] : adapter ? [adapter, ...args] : args;
   const env = harness === 'claude' ? claudeEnv() : { ...process.env };
   if (stand) env.HAWKES_PROBE_HARNESS = harness;
   return new Promise((resolve) => {

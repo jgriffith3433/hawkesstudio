@@ -65,7 +65,7 @@ import { launch, DetachedChild, detachedActivity, stopDetached, type DetachRec }
 import { warmDeps, installCold, markInstalled } from './warm.ts';
 import { ensureGpuFor, needsGpu } from './gpustart.ts';
 import { walkAwayOn, WALK_AWAY_BY } from './walkaway.ts';
-import { brainId, brainLabel, harnessStopOf, type Harness, type HarnessStop } from './brains.ts';
+import { brainId, brainLabel, harnessStopOf, isHarness, type Harness, type HarnessStop } from './brains.ts';
 import { harnessHeld, holdDetail, holdHarness, onHoldLifted, reviewHolds, LABEL as HARNESS_LABEL } from './harness-hold.ts';
 
 db.exec(`
@@ -265,7 +265,7 @@ export function passStop(r: { ok: boolean; sawResult: boolean; result: string; s
  * harness stands in) pump resumes it where it was (harnessResume). J, 2026-10-20: "It should just recover itself."
  */
 function parkForHarness(id: string, ph: Phase, save: (patch: Partial<Phase>, extra?: Record<string, any>) => void, stop: HarnessStop) {
-  const harness = ((ph.brain === 'cursor' || ph.brain === 'claude') ? ph.brain : brainId()) as Harness;
+  const harness = (isHarness(ph.brain) ? ph.brain : brainId()) as Harness;
   const { hold } = holdHarness(stop, { source: `agent change ${id}`, harness });
   addLog(id, `${HARNESS_LABEL[harness]} stopped the agent (${stop.kind}): ${stop.line.slice(0, 200)}. Parked with its worktree and session: not a try; it resumes by itself (${holdDetail(hold)})`);
   save({ step: 'agent', proc: undefined, result: undefined, stopped: undefined, nudge: false, harness: { kind: stop.kind, line: stop.line.slice(0, 300), at: Date.now(), on: harness } }, { status: 'queued', detail: holdDetail(hold) });
@@ -1734,7 +1734,7 @@ export function infraEnv({ agent = false, keepGenKey = true } = {}) {
   for (const [k, v] of Object.entries(agent ? claudeEnv() : process.env)) {
     if (v === undefined) continue;
     // CURSOR_API_KEY matches SECRET (KEY). Product agents keep it via sandbox.ts; Studio and Gen agents go through here.
-    const login = agent && /^(CLAUDE_CODE_OAUTH_TOKEN|ANTHROPIC_API_KEY|CURSOR_API_KEY)$/.test(k);
+    const login = agent && /^(CLAUDE_CODE_OAUTH_TOKEN|ANTHROPIC_API_KEY|CURSOR_API_KEY|COPILOT_GITHUB_TOKEN)$/.test(k);
     if (!SECRET.test(k) || login || (keepGenKey && k === 'HAWKESGEN_KEY')) env[k] = v;
   }
   // Not the server: a worktree must never act like the running Studio (repo syncs) or Gen (fleet access).
