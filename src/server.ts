@@ -188,6 +188,33 @@ const server = http.createServer(async (req, res) => {
     if (route === '/api/playtests/live' && method === 'GET') return send(res, 200, await (await import('./livetests.ts')).livePlaytests());
     // The Twitch show (broadcast.ts, dashboard/broadcast.html): curated playtest, roadmap and agent titles.
     if (route === '/api/broadcast' && method === 'GET') return send(res, 200, await (await import('./broadcast.ts')).broadcastNow({ product: q('product') || undefined }));
+    // Director desk (the bar under the page, hidden on ?clean=1). Same show for every viewer. J's dashboard only.
+    if (route === '/api/broadcast/desk' && method === 'POST') {
+      const { updateDesk } = await import('./broadcast.ts');
+      return send(res, 200, await updateDesk(await readJson(req), q('product') || undefined));
+    }
+    // Cached Yooba host line (mp3). Hash only — no paths on screen.
+    m = /^\/api\/broadcast\/voice\/([a-f0-9]{16,64})(?:\.mp3)?$/.exec(route);
+    if (m && method === 'GET') {
+      const { readVoiceFile } = await import('./broadcast.ts');
+      const file = readVoiceFile(m[1]);
+      if (!file) return send(res, 404, { error: 'no voice clip' });
+      res.writeHead(200, { 'Content-Type': 'audio/mpeg', 'Cache-Control': 'public, max-age=86400' });
+      return fs.createReadStream(file).pipe(res);
+    }
+    // Absolute path of the current host mp3 for bin/broadcast-stream.mjs (local only).
+    if (route === '/api/broadcast/voice-current' && method === 'GET') {
+      const { currentVoicePath } = await import('./broadcast.ts');
+      const file = currentVoicePath();
+      return send(res, 200, { path: file, url: file ? '/api/broadcast/voice-current.mp3' : null });
+    }
+    if (route === '/api/broadcast/voice-current.mp3' && method === 'GET') {
+      const { currentVoicePath } = await import('./broadcast.ts');
+      const file = currentVoicePath();
+      if (!file) return send(res, 404, { error: 'silent' });
+      res.writeHead(200, { 'Content-Type': 'audio/mpeg', 'Cache-Control': 'no-store' });
+      return fs.createReadStream(file).pipe(res);
+    }
     // One playtest's full live state (every step, the timeline) for the maximized view, from Gen.
     m = /^\/api\/playtests\/live\/(j_[0-9a-f]+)$/.exec(route);
     if (m && method === 'GET') return send(res, 200, await gen.request(`/jobs/${m[1]}/live`));

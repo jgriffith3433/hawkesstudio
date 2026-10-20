@@ -1657,6 +1657,8 @@ export function infraEnv({ agent = false, keepGenKey = true } = {}) {
   // Not the server: a worktree must never act like the running Studio (repo syncs) or Gen (fleet access).
   delete env.STUDIO_SERVER;
   delete env.HAWKES_AWS_ROLE;
+  // Partial GIT_CONFIG_* (e.g. COUNT without KEY_0) breaks `git -c user.name=…` in the agent.
+  for (const k of Object.keys(env)) if (k.startsWith('GIT_CONFIG_')) delete env[k];
   return env as NodeJS.ProcessEnv;
 }
 
@@ -1761,7 +1763,7 @@ async function workInfra(id: string, note?: string, resumed?: Phase | null, nudg
         } else if (note) {
           // Another pass: bring the branch up to date with main first (main may have moved, or the merge conflicted).
           await gitAsync(repoDir, ['fetch', '--quiet', 'origin']);
-          const m = await gitAsync(c.worktree, ['merge', '--no-edit', `origin/${c.base}`]);
+          const m = await gitAsync(c.worktree, ['-c', 'user.name=Hawkes Studio', '-c', 'user.email=studio@hawkesgen.com', 'merge', '--no-edit', `origin/${c.base}`]);
           if (!m.ok) git(c.worktree, ['merge', '--abort']);
           addLog(id, m.ok ? `merged origin/${c.base} into the branch` : `merging origin/${c.base} conflicted; the agent works from the branch as it was`);
         }
@@ -1850,16 +1852,32 @@ async function workInfra(id: string, note?: string, resumed?: Phase | null, nudg
   }
 }
 
+/**
+ * Push and pull_request both post a job named "test" on the same SHA. Keep the newest run per name
+ * ("Tell the server" never counts: it only starts the deploy on main).
+ */
+export function latestChecks(runs: { name: string; status?: string; conclusion?: string | null; html_url?: string; completed_at?: string | null; started_at?: string | null }[]) {
+  const byName = new Map<string, (typeof runs)[number]>();
+  for (const x of runs) {
+    if (x.name === 'Tell the server') continue;
+    const prev = byName.get(x.name);
+    const t = Date.parse(x.completed_at || x.started_at || '') || 0;
+    const pt = prev ? (Date.parse(prev.completed_at || prev.started_at || '') || 0) : -1;
+    if (!prev || t >= pt) byName.set(x.name, x);
+  }
+  return [...byName.values()];
+}
+
 /** GitHub's check runs of a commit ("Tell the server" doesn't count: it only runs on main). waitMs 0: one look. */
 export async function ciChecks(slug: string, sha: string, { waitMs = 30 * 60_000, onWait }: { waitMs?: number; onWait?: (detail: string) => void } = {}) {
   const t0 = Date.now();
   for (;;) {
     const r = await github(`/repos/${slug}/commits/${sha}/check-runs?per_page=100`);
-    const runs = ((r.check_runs ?? []) as any[]).filter((x) => x.name !== 'Tell the server');
+    const runs = latestChecks((r.check_runs ?? []) as any[]);
     const list = runs.map((x) => ({ name: x.name, status: x.status, conclusion: x.conclusion, url: x.html_url }));
     const open = runs.filter((x) => x.status !== 'completed');
     if (runs.length && !open.length) {
-      const bad = runs.filter((x) => !['success', 'skipped', 'neutral'].includes(x.conclusion));
+      const bad = runs.filter((x) => !['success', 'skipped', 'neutral'].includes(x.conclusion as string));
       return { state: bad.length ? 'failure' : 'success', detail: bad.length ? bad.map((x) => `${x.name}: ${x.conclusion}`).join(', ') : `${runs.length} check(s) passed`, runs: list };
     }
     const waited = Date.now() - t0;

@@ -164,9 +164,18 @@ async function restartStudio() {
   if (s.exitCode === null) await once(s, 'exit');
   await startStudio();
 }
+/** Fetch that retries while Studio is mid-restart (undici's bare "fetch failed" otherwise kills the wait). */
 const api = async (route: string, post?: unknown) => {
-  const r = await fetch(`http://127.0.0.1:${port}${route}`, post === undefined ? undefined : { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(post) });
-  return r.json() as Promise<any>;
+  const end = Date.now() + 30_000;
+  for (;;) {
+    try {
+      const r = await fetch(`http://127.0.0.1:${port}${route}`, post === undefined ? undefined : { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(post) });
+      return r.json() as Promise<any>;
+    } catch (e: any) {
+      if (Date.now() >= end) throw e;
+      await sleep(150);
+    }
+  }
 };
 const logged = () => (fs.existsSync(claudeLog) ? fs.readFileSync(claudeLog, 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l)) : []);
 
