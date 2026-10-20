@@ -1,13 +1,17 @@
 // The live show (dashboard/broadcast.html): one 1920×1080 page a headless browser can send to Twitch.
 // It is built only from titles, steps and notes Studio already shows on the Playtests page and the roadmap.
 // Between takes it plays a reel of videos already in the Hawkes Gen library (no new GPU job).
+// The director desk (settings key broadcast.desk) steers product priority, screen mode and Yooba's line;
+// ?clean=1 hides the desk (that is what bin/broadcast-stream.mjs captures). Yooba speaks via Gen audio.voice
+// (Sick Of It Yooba, cached per sentence); the streamer mixes the mp3 into RTMP (no sound card on this machine).
 // Raw agent logs, diffs, terminals, prompts, file paths and URLs with query strings never leave this module.
-//
-// bin/broadcast-stream.mjs is the sender. It does not start until a stream key is set, and it does not
-// encode on this process: a separate ffmpeg reads the page.
 
+import crypto from 'node:crypto';
+import fs from 'node:fs';
+import path from 'node:path';
 import { listChanges } from './agents.ts';
-import { loadProducts } from './config.ts';
+import { DATA, loadProducts, StudioError } from './config.ts';
+import { db, J, parse } from './db.ts';
 import { gen } from './gen.ts';
 import { livePlaytests } from './livetests.ts';
 import { listItems, listMilestones } from './roadmap.ts';
@@ -83,9 +87,96 @@ export type Broadcast = {
    * Labels are safeLine text. Prompts, paths and keys are not copied here.
    */
   reel: ReelItem[];
+  /** The reel before the director rotates it, so the picker can list every clip. */
+  reelAll?: ReelItem[];
+  /** What the director asked the screen to show. Absent on a frame that has not been directed. */
+  picture?: 'live' | 'replay' | 'reel' | 'quiet';
+  /** Takes the director can hold on screen, newest rank first. */
+  takes?: Take[];
+  desk?: Desk;
+  /** Every product, for the director's product list. */
+  lineup?: { id: string; name: string }[];
   host: string;
+  /**
+   * Same-origin mp3 of the current host line when voice is on and a clip is ready.
+   * Never a path, key or Gen recipe. The clean page and ffmpeg both use this.
+   */
+  hostAudio?: string | null;
+  /** Exact sentence that hostAudio speaks (for the mouth and the cache). */
+  say?: string;
+  /** One-line status for the director strip: picture, product, clip/take. */
+  status?: string;
   disclose: string;
 };
+
+/** What the On air director has set. The stream page and this browser both follow it. */
+export type Desk = {
+  /** null keeps each page's own ?product= link. '' is every product. A product id locks to one. */
+  product: string | null;
+  /** Auto mode prefers live takes and reel clips in this order (yoobaland first by default). */
+  priority: string[];
+  screen: 'auto' | 'take' | 'reel' | 'quiet';
+  take: string;
+  clip: string;
+  paused: boolean;
+  reelAt: number;
+  showRoadmap: boolean;
+  showTicker: boolean;
+  showHost: boolean;
+  showPips: boolean;
+  showFlash: boolean;
+  /** Host voice for the show (Gen + ffmpeg mix). Off = silent stream, captions still show. */
+  voice: boolean;
+  cue: string;
+  banner: string;
+};
+
+export const DESK_DEFAULT: Desk = {
+  product: null,
+  priority: [],
+  screen: 'auto',
+  take: '',
+  clip: '',
+  paused: false,
+  reelAt: 0,
+  showRoadmap: true,
+  showTicker: true,
+  showHost: true,
+  showPips: true,
+  showFlash: true,
+  voice: true,
+  cue: '',
+  banner: '',
+};
+
+/** Yooba Land first (the show opened on it), then the rest in products.json order. */
+export function defaultPriority(products: string[]): string[] {
+  const ids = products.filter(Boolean);
+  if (!ids.includes('yoobaland')) return [...ids];
+  return ['yoobaland', ...ids.filter((p) => p !== 'yoobaland')];
+}
+
+/** Keep known ids, fill missing ones after, yoobaland-first when empty. */
+export function normalizePriority(raw: unknown, products: string[]): string[] {
+  const base = defaultPriority(products);
+  if (!Array.isArray(raw)) return base;
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const x of raw) {
+    const id = String(x ?? '');
+    if (!products.includes(id) || seen.has(id)) continue;
+    seen.add(id);
+    out.push(id);
+  }
+  for (const id of base) if (!seen.has(id)) out.push(id);
+  return out;
+}
+
+export function priorityIndex(priority: string[], product: string): number {
+  if (!priority.length) return 0;
+  const i = priority.indexOf(product);
+  return i < 0 ? priority.length + 1 : i;
+}
 
 /** One library video the reel may consider. `prompt` and `path` are never copied onto the reel. */
 export type ReelSource = {
@@ -172,12 +263,13 @@ function productLabel(h: ReelSource): string {
 }
 
 /**
- * The quiet-floor reel. Turntables first (newest), then one current clip per entity and clip name.
+ * The quiet-floor reel. Turntables first (priority, then newest), then one current clip per entity and clip name.
  * Rejected takes, test slots, `_takes` files and playtest.run never get in. About 12.
  */
-export function selectReel(hits: ReelSource[], opts: { product?: string; cap?: number } = {}): ReelItem[] {
+export function selectReel(hits: ReelSource[], opts: { product?: string; priority?: string[]; cap?: number } = {}): ReelItem[] {
   const cap = opts.cap ?? REEL_CAP;
   const lock = opts.product ? String(opts.product) : '';
+  const priority = opts.priority ?? [];
   const pool = (hits ?? []).filter((h) => {
     if (!h || !ASSET.test(String(h.asset ?? ''))) return false;
     if (!videoFile(h)) return false;
@@ -189,7 +281,11 @@ export function selectReel(hits: ReelSource[], opts: { product?: string; cap?: n
   });
 
   const fresh = (a: ReelSource, b: ReelSource) => (b.created ?? 0) - (a.created ?? 0);
-  const turntables = pool.filter((h) => isTurntable(h) && h.status !== 'discarded' && !blocked(String(h.slot ?? ''), String(h.title ?? ''))).sort(fresh);
+  const byPri = (a: ReelSource, b: ReelSource) => {
+    const d = priorityIndex(priority, String(a.project ?? '')) - priorityIndex(priority, String(b.project ?? ''));
+    return d || fresh(a, b);
+  };
+  const turntables = pool.filter((h) => isTurntable(h) && h.status !== 'discarded' && !blocked(String(h.slot ?? ''), String(h.title ?? ''))).sort(byPri);
   const seenTurn = new Set<string>();
   const turns: ReelSource[] = [];
   for (const h of turntables) {
@@ -206,7 +302,7 @@ export function selectReel(hits: ReelSource[], opts: { product?: string; cap?: n
     if (h.status !== 'current') return false;
     if (blocked(String(h.slot ?? ''), String(h.title ?? ''))) return false;
     return true;
-  }).sort(fresh);
+  }).sort(byPri);
   const seenClip = new Set<string>();
   const picked: ReelSource[] = [];
   for (const h of clips) {
@@ -322,9 +418,191 @@ function hostOf(focus: Take | null, ticker: Tick[], reel: ReelItem[]): string {
   return 'Yooba here. The studio is between takes. The roadmap is still on the wall.';
 }
 
+const TAKE_ID = /^(?:j_[0-9a-f]+|wait-[a-z0-9-]+)$/;
+const SHOW_FLAGS = ['showRoadmap', 'showTicker', 'showHost', 'showPips', 'showFlash', 'voice'] as const;
+
+/** Force a director cue into Yooba's voice (paths and keys stripped). */
+export function cueLine(cue: string): string {
+  const clean = safeLine(cue, 180);
+  if (!clean) return '';
+  return safeLine(/^yooba\b/i.test(clean) ? clean : `Yooba here. ${clean}`, 220);
+}
+
+function blankDesk(products: string[]): Desk {
+  return { ...DESK_DEFAULT, priority: defaultPriority(products), voice: true };
+}
+
+/** A stored desk. Unknown or removed products are dropped rather than thrown. */
+export function deskFrom(raw: unknown, products: string[]): Desk {
+  const d = blankDesk(products);
+  if (!raw || typeof raw !== 'object') return d;
+  const r = raw as any;
+  if (r.product === null) d.product = null;
+  else if (typeof r.product === 'string' && (r.product === '' || products.includes(r.product))) d.product = r.product;
+  d.priority = normalizePriority(r.priority, products);
+  if (r.screen === 'auto' || r.screen === 'take' || r.screen === 'reel' || r.screen === 'quiet') d.screen = r.screen;
+  if (typeof r.take === 'string' && (!r.take || TAKE_ID.test(r.take))) d.take = r.take;
+  if (typeof r.clip === 'string' && (!r.clip || ASSET.test(r.clip))) d.clip = r.clip;
+  if (typeof r.paused === 'boolean') d.paused = r.paused;
+  if (Number.isInteger(r.reelAt) && r.reelAt >= 0 && r.reelAt <= 500) d.reelAt = r.reelAt;
+  for (const k of SHOW_FLAGS) if (typeof r[k] === 'boolean') d[k] = r[k];
+  if (typeof r.cue === 'string') d.cue = safeLine(r.cue, 180);
+  if (typeof r.banner === 'string') d.banner = safeLine(r.banner, 80);
+  return d;
+}
+
+/** One director change. `pool` is the reel in show order, used by next, previous and advance. */
+export function patchDesk(cur: Desk, patch: any, products: string[], pool: { asset: string }[] = []): Desk {
+  if (!patch || typeof patch !== 'object') return { ...cur, priority: [...cur.priority] };
+  if (patch.reset === true) return blankDesk(products);
+  const next: Desk = { ...cur, priority: [...cur.priority] };
+  if (patch.product === null) next.product = null;
+  else if (patch.product !== undefined) {
+    const p = String(patch.product);
+    if (p !== '' && !products.includes(p)) throw new StudioError(`No product "${p}"`);
+    next.product = p;
+  }
+  if (patch.priority !== undefined) next.priority = normalizePriority(patch.priority, products);
+  if (patch.movePriority && typeof patch.movePriority === 'object') {
+    const id = String(patch.movePriority.id ?? '');
+    const dir = Number(patch.movePriority.dir);
+    if (!products.includes(id) || (dir !== 1 && dir !== -1)) throw new StudioError('movePriority: { id, dir: 1|-1 }');
+    const list = [...next.priority];
+    const i = list.indexOf(id);
+    if (i >= 0) {
+      const j = i + dir;
+      if (j >= 0 && j < list.length) {
+        const tmp = list[i];
+        list[i] = list[j];
+        list[j] = tmp;
+        next.priority = list;
+      }
+    }
+  }
+  if (patch.screen !== undefined) {
+    if (!['auto', 'take', 'reel', 'quiet'].includes(patch.screen)) throw new StudioError('screen: auto, take, reel or quiet');
+    next.screen = patch.screen;
+  }
+  if (patch.take !== undefined) {
+    const t = String(patch.take);
+    if (t && !TAKE_ID.test(t)) throw new StudioError('take: a playtest on the board');
+    next.take = t;
+    if (t) next.screen = 'take';
+  }
+  if (patch.clip !== undefined) {
+    const c = String(patch.clip);
+    if (c && !ASSET.test(c)) throw new StudioError('clip: a library video');
+    next.clip = c;
+    if (c) {
+      next.screen = 'reel';
+      const i = pool.findIndex((r) => r.asset === c);
+      if (i >= 0) next.reelAt = i;
+    }
+  }
+  if (patch.paused !== undefined) next.paused = Boolean(patch.paused);
+  if (patch.reelAt !== undefined && patch.advance !== true && patch.nudge === undefined) {
+    const n = Number(patch.reelAt);
+    if (!Number.isInteger(n) || n < 0 || n > 500) throw new StudioError('reelAt: 0 to 500');
+    next.reelAt = n;
+  }
+  for (const k of SHOW_FLAGS) if (patch[k] !== undefined) next[k] = Boolean(patch[k]);
+  if (patch.cue !== undefined) next.cue = safeLine(patch.cue, 180);
+  if (patch.banner !== undefined) next.banner = safeLine(patch.banner, 80);
+  if (patch.nudge === 1 || patch.nudge === -1) {
+    if (pool.length) {
+      let i = next.clip ? pool.findIndex((r) => r.asset === next.clip) : next.reelAt % pool.length;
+      if (i < 0) i = 0;
+      i = (i + patch.nudge + pool.length) % pool.length;
+      next.screen = 'reel';
+      next.clip = pool[i].asset;
+      next.reelAt = i;
+      next.paused = false;
+    }
+  } else if (patch.nudge !== undefined) throw new StudioError('nudge: 1 or -1');
+  if (patch.advance === true && next.screen === 'reel' && pool.length) {
+    const from = Number(patch.from);
+    if (Number.isInteger(from) && from === cur.reelAt) {
+      const i = (from + 1) % pool.length;
+      next.reelAt = i;
+      next.clip = pool[i].asset;
+    }
+  }
+  if (patch.screen === 'auto') {
+    next.clip = '';
+    next.reelAt = 0;
+    next.paused = false;
+    next.take = '';
+  }
+  return next;
+}
+
+function orderReel(reel: ReelItem[], desk: Desk): ReelItem[] {
+  if (!reel.length) return [];
+  let i = desk.reelAt % reel.length;
+  if (desk.clip) {
+    const found = reel.findIndex((r) => r.asset === desk.clip);
+    if (found >= 0) i = found;
+  }
+  return [...reel.slice(i), ...reel.slice(0, i)];
+}
+
+function pictureOf(focus: Take | null, reel: ReelItem[]): NonNullable<Broadcast['picture']> {
+  if (focus?.phase === 'playing' && focus.stream) return 'live';
+  if (focus?.replay) return 'replay';
+  if (!focus && reel.length) return 'reel';
+  return 'quiet';
+}
+
+/** Plain status for the director strip (and tests). No paths. */
+export function statusLine(frame: Broadcast): string {
+  const pic = frame.picture || pictureOf(frame.focus, frame.reel ?? []);
+  if (pic === 'live' && frame.focus) return `Live · ${frame.focus.productName} · ${frame.focus.scenario || frame.focus.step || 'take'}`;
+  if (pic === 'replay' && frame.focus) return `Replay · ${frame.focus.productName} · ${frame.focus.outcome || 'wrapped'}`;
+  if (pic === 'reel' && frame.reel?.[0]) return `Reel · ${frame.reel[0].label}`;
+  if (pic === 'quiet') return 'Quiet card';
+  return frame.focus ? `${frame.focus.productName} · ${frame.focus.phase}` : 'Between takes';
+}
+
+/**
+ * Applies the director on top of a frame. The default desk leaves the frame as compose built it.
+ * A cue replaces Yooba's line. Paths and keys in that cue are stripped.
+ */
+export function applyDesk(frame: Broadcast, desk: Desk, lineup: { id: string; name: string }[] = []): Broadcast {
+  const reelAll = frame.reel ?? [];
+  const next: Broadcast = {
+    ...frame,
+    also: desk.showPips ? frame.also : [],
+    reel: reelAll,
+    reelAll,
+    takes: frame.takes ?? [],
+    desk,
+    lineup,
+    flash: desk.showFlash ? frame.flash : null,
+  };
+  if (desk.screen === 'quiet') {
+    next.focus = null;
+    next.reel = [];
+    next.picture = 'quiet';
+  } else if (desk.screen === 'take') {
+    const hit = (frame.takes ?? []).find((t) => t.job === desk.take) ?? null;
+    next.focus = hit;
+    next.picture = pictureOf(hit, []);
+  } else if (desk.screen === 'reel') {
+    next.focus = null;
+    next.reel = orderReel(reelAll, desk);
+    next.picture = next.reel.length ? 'reel' : 'quiet';
+  } else {
+    next.picture = pictureOf(frame.focus, reelAll);
+  }
+  if (desk.cue) next.host = cueLine(desk.cue);
+  else if (desk.screen !== 'auto') next.host = hostOf(next.focus, frame.ticker, next.picture === 'reel' ? next.reel : []);
+  next.status = statusLine(next);
+  return next;
+}
+
 /**
  * The whole frame. `product` locks the show to one product; otherwise a live take beats a waiting one,
- * which beats a replay.
+ * which beats a replay. `priority` breaks ties (and biases the reel) toward earlier products.
  */
 export function composeBroadcast(input: {
   playing?: any[];
@@ -336,6 +614,7 @@ export function composeBroadcast(input: {
   /** Library videos already made. Nothing here starts a job. */
   library?: ReelSource[];
   product?: string;
+  priority?: string[];
   now?: number;
 }): Broadcast {
   const now = input.now ?? Date.now();
@@ -346,11 +625,17 @@ export function composeBroadcast(input: {
   const names = new Map<string, string>();
   for (const t of all) if (t.product) names.set(t.product, t.productName);
   const lock = input.product ? String(input.product) : '';
+  const priority = input.priority ?? [];
   const pool = lock ? all.filter((t) => t.product === lock) : all;
   const rank = (t: Take) => (t.phase === 'playing' ? 3 : t.phase === 'waiting' ? 2 : 1);
-  const ordered = [...pool].sort((a, b) => rank(b) - rank(a));
+  const ordered = [...pool].sort((a, b) => {
+    const r = rank(b) - rank(a);
+    if (r) return r;
+    return priorityIndex(priority, a.product) - priorityIndex(priority, b.product);
+  });
   const focus = ordered[0] ?? null;
   const also = playing.filter((t) => t.job !== focus?.job && (!lock || t.product === lock)).slice(0, 3);
+  const takes = ordered.slice(0, 12);
 
   const products: { id: string; name: string }[] = [];
   for (const t of all) {
@@ -379,9 +664,9 @@ export function composeBroadcast(input: {
   const ticker = tickerOf(input.changes ?? [], names, now);
   const hot = ticker.find((t) => (t.kind === 'merged' || t.kind === 'bug') && now - t.at < 20_000);
   const flash = hot ? { id: hot.id, kind: hot.kind === 'bug' ? 'BUG' : 'MERGED', text: hot.text } : null;
-  const reel = selectReel(input.library ?? [], { product: lock || undefined });
+  const reel = selectReel(input.library ?? [], { product: lock || undefined, priority });
 
-  return {
+  const frame: Broadcast = {
     at: now,
     focus,
     also,
@@ -391,9 +676,14 @@ export function composeBroadcast(input: {
     ticker,
     flash,
     reel,
+    reelAll: reel,
+    takes,
     host: hostOf(focus, ticker, reel),
     disclose: 'Made by AI agents. The host is generated.',
   };
+  frame.picture = pictureOf(focus, reel);
+  frame.status = statusLine(frame);
+  return frame;
 }
 
 /** Where a mesh.rig / clip job filed this output (saves map by title), else the job's own slot. */
@@ -516,8 +806,151 @@ async function showcaseSources(): Promise<ReelSource[]> {
   return within(reelFlight, 4_000, []);
 }
 
+db.exec(`CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated INTEGER NOT NULL, by TEXT)`);
+const DESK_KEY = 'broadcast.desk';
+
+/** Sick Of It Yooba (decision m_da90c727873c). */
+export const YOOBA_VOICE_ID = 'EdDvd8GSdCyZwUcsPawi';
+export const YOOBA_VOICE_MODEL = 'eleven_flash_v2_5';
+const VOICE_DIR = path.join(DATA, 'broadcast', 'voice');
+const VOICE_CURRENT = path.join(DATA, 'broadcast', 'voice-current.mp3');
+const VOICE_META = path.join(DATA, 'broadcast', 'voice-current.json');
+const VOICE_HASH = /^[a-f0-9]{16,64}$/;
+const VOICE_GAP_MS = 60_000;
+
+/** Exact-sentence cache key (sha256 hex, short). */
+export function voiceCacheKey(text: string): string {
+  return crypto.createHash('sha256').update(String(text ?? ''), 'utf8').digest('hex').slice(0, 24);
+}
+
+export function voiceFilePath(key: string): string {
+  if (!VOICE_HASH.test(key)) throw new StudioError('voice key');
+  return path.join(VOICE_DIR, `${key}.mp3`);
+}
+
+function productIds(): string[] {
+  return loadProducts().map((p) => p.id);
+}
+
+export function readDesk(products = productIds()): Desk {
+  try {
+    const r = db.prepare('SELECT value FROM settings WHERE key = ?').get(DESK_KEY) as { value: string } | undefined;
+    return deskFrom(parse(r?.value), products);
+  } catch {
+    return blankDesk(products);
+  }
+}
+
+function writeDesk(desk: Desk): Desk {
+  db.prepare('INSERT INTO settings (key, value, updated, by) VALUES (?, ?, ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated = excluded.updated, by = excluded.by')
+    .run(DESK_KEY, J(desk), Date.now(), 'desk');
+  return desk;
+}
+
+/** Set when J presses Say: next broadcast synthesizes immediately. */
+let pendingSay = false;
+/** Last unique line we paid Gen to speak (rate limit). */
+let lastSynthAt = 0;
+let lastSynthKey = '';
+/** Detect live landing / bug flash for urgent speech. */
+let lastFocusJob = '';
+let lastFlashId = '';
+let lastHostAudio: { key: string; url: string; text: string } | null = null;
+let voiceFlight: Promise<string | null> | null = null;
+
+function pointCurrentVoice(key: string, text: string): void {
+  try {
+    fs.mkdirSync(path.dirname(VOICE_CURRENT), { recursive: true });
+    const src = voiceFilePath(key);
+    if (!fs.existsSync(src)) return;
+    fs.copyFileSync(src, VOICE_CURRENT);
+    fs.writeFileSync(VOICE_META, J({ key, text: safeLine(text, 220), at: Date.now(), url: `/api/broadcast/voice/${key}.mp3` }));
+  } catch { /* streamer just stays silent */ }
+}
+
+/**
+ * On-demand Yooba line. Cache hit is free. New unique lines wait ~1 minute unless urgent
+ * (live take landing, BUG/MERGED stinger, or director Say). Never batch-generates.
+ */
+export async function ensureHostAudio(text: string, opts: { urgent?: boolean; voiceOn?: boolean } = {}): Promise<string | null> {
+  const line = safeLine(text, 220);
+  if (!opts.voiceOn || !line) return null;
+  const key = voiceCacheKey(line);
+  const file = voiceFilePath(key);
+  const url = `/api/broadcast/voice/${key}.mp3`;
+  if (fs.existsSync(file) && fs.statSync(file).size > 0) {
+    pointCurrentVoice(key, line);
+    lastHostAudio = { key, url, text: line };
+    return url;
+  }
+  if (lastHostAudio?.key === key && lastHostAudio.url) return lastHostAudio.url;
+  const urgent = opts.urgent === true;
+  if (!urgent && lastSynthKey && lastSynthKey !== key && Date.now() - lastSynthAt < VOICE_GAP_MS) {
+    return lastHostAudio?.url ?? null;
+  }
+  if (voiceFlight) return voiceFlight;
+  voiceFlight = (async () => {
+    try {
+      fs.mkdirSync(VOICE_DIR, { recursive: true });
+      const job = await gen.run('audio.voice', {
+        project: 'hawkesstudio',
+        params: { text: line, voice: YOOBA_VOICE_ID, model: YOOBA_VOICE_MODEL, format: 'mp3_44100_128' },
+        labels: { from: 'broadcast', kind: 'host' },
+        key: `broadcast-voice-${key}`,
+        timeoutMs: 45_000,
+      });
+      const asset = String(job?.outputs?.[0]?.asset ?? job?.outputs?.[0]?.id ?? '');
+      if (!ASSET.test(asset)) return lastHostAudio?.url ?? null;
+      await gen.download(asset, file);
+      if (!fs.existsSync(file) || fs.statSync(file).size < 64) return lastHostAudio?.url ?? null;
+      lastSynthAt = Date.now();
+      lastSynthKey = key;
+      pointCurrentVoice(key, line);
+      lastHostAudio = { key, url, text: line };
+      return url;
+    } catch {
+      return lastHostAudio?.url ?? null;
+    } finally {
+      voiceFlight = null;
+    }
+  })();
+  return voiceFlight;
+}
+
+/** Serves a cached host mp3 (same-origin for the page and the streamer). */
+export function readVoiceFile(key: string): string | null {
+  const k = String(key ?? '').replace(/\.mp3$/i, '');
+  if (!VOICE_HASH.test(k)) return null;
+  const file = voiceFilePath(k);
+  return fs.existsSync(file) ? file : null;
+}
+
+/** Absolute path of the latest host mp3 for ffmpeg (empty when silent). */
+export function currentVoicePath(): string | null {
+  try {
+    if (fs.existsSync(VOICE_CURRENT) && fs.statSync(VOICE_CURRENT).size > 64) return VOICE_CURRENT;
+  } catch { /* ignore */ }
+  return null;
+}
+
+/** Saves a director change. Next and previous use the reel for the product the desk is about to show. */
+export async function updateDesk(patch: any, productHint?: string): Promise<Desk> {
+  const ids = productIds();
+  const cur = readDesk(ids);
+  if (patch?.say === true) pendingSay = true;
+  const draft = patch?.reset === true ? blankDesk(ids) : patchDesk(cur, { ...patch, nudge: undefined, advance: undefined, say: undefined }, ids);
+  const product = draft.product === null ? (productHint || undefined) : (draft.product || undefined);
+  const library = await showcaseSources().catch(() => [] as ReelSource[]);
+  const pool = selectReel(library, { product, priority: draft.priority });
+  const next = patch?.reset === true ? blankDesk(ids) : patchDesk(cur, { ...patch, say: undefined }, ids, pool);
+  return writeDesk(next);
+}
+
 /** Live frame for the page. Gen being down still returns the roadmap and the ticker. */
 export async function broadcastNow(q: { product?: string } = {}): Promise<Broadcast> {
+  const lineup = loadProducts().map((p) => ({ id: p.id, name: p.name }));
+  const desk = readDesk(lineup.map((p) => p.id));
+  const product = desk.product === null ? (q.product || undefined) : (desk.product || undefined);
   let live: any = { playing: [], waiting: [], finished: [] };
   try { live = await livePlaytests(); } catch { /* the show keeps the roadmap up */ }
   const milestones = listMilestones({ status: 'open,reached' }).map((m) => ({
@@ -531,5 +964,25 @@ export async function broadcastNow(q: { product?: string } = {}): Promise<Broadc
     id: c.id, product: c.product, title: c.title, status: c.status, updated: c.updated, created: c.created,
   }));
   const library = await showcaseSources().catch(() => [] as ReelSource[]);
-  return composeBroadcast({ ...live, changes, milestones, items, product: q.product, library });
+  const frame = applyDesk(
+    composeBroadcast({ ...live, changes, milestones, items, product, library, priority: desk.priority }),
+    desk,
+    lineup,
+  );
+  const focusJob = frame.focus?.phase === 'playing' ? frame.focus.job : '';
+  const flashId = frame.flash?.id || '';
+  const urgent = pendingSay
+    || (Boolean(focusJob) && focusJob !== lastFocusJob)
+    || (Boolean(flashId) && flashId !== lastFlashId);
+  pendingSay = false;
+  if (focusJob) lastFocusJob = focusJob;
+  if (flashId) lastFlashId = flashId;
+  frame.say = frame.host;
+  if (desk.voice) {
+    // Cap wait so a slow Gen does not stall the 2 s poll; a later poll picks up the cache.
+    frame.hostAudio = await within(ensureHostAudio(frame.host, { urgent, voiceOn: true }), urgent ? 8_000 : 1_500, lastHostAudio?.url ?? null);
+  } else {
+    frame.hostAudio = null;
+  }
+  return frame;
 }

@@ -1,6 +1,15 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { safeLine, buildLabel, composeBroadcast, type ReelSource } from '../src/broadcast.ts';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+
+process.env.STUDIO_DATA = fs.mkdtempSync(path.join(os.tmpdir(), 'studio-broadcast-'));
+const {
+  safeLine, buildLabel, composeBroadcast, selectReel,
+  deskFrom, patchDesk, applyDesk, cueLine, voiceCacheKey,
+  defaultPriority, normalizePriority, priorityIndex, DESK_DEFAULT,
+} = await import('../src/broadcast.ts');
 
 test('on-screen text drops paths and keys', () => {
   const line = safeLine('hopping to the castle C:\\keys\\secret.pem and sk-abc123456789 plus /home/ubuntu/.ssh/id_ed25519 token=hg_live_secret');
@@ -99,7 +108,7 @@ test('the reel is newest turntables, then one current clip, and stays safe', () 
 });
 
 test('the reel stops at about 12, turntables before clips', () => {
-  const many: ReelSource[] = [];
+  const many: import('../src/broadcast.ts').ReelSource[] = [];
   for (let i = 0; i < 14; i++) {
     const n = i.toString(16).padStart(16, '0');
     many.push({ asset: `a_${n}`, tool: 'mesh.rig', title: 'turntable', kind: 'video', created: 1000 + i, project: 'yoobaland', projectName: 'Yooba Land', entity: `yoobaland/m${i}`, entityName: `Model ${i}`, slot: 'preview/turntable', status: 'take' });
@@ -130,4 +139,104 @@ test('roadmap bars come from the open milestone', () => {
   assert.equal(frame.bars[0].pct, 1);
   assert.ok(frame.bars[1].pct > 0 && frame.bars[1].pct < 1);
   assert.match(frame.host, /between takes/);
+});
+
+const PRODUCTS = ['doseofdestruction', 'phorigins', 'yoobaland', 'sickofit'];
+
+test('default priority puts yoobaland first', () => {
+  assert.deepEqual(defaultPriority(PRODUCTS)[0], 'yoobaland');
+  assert.equal(defaultPriority(PRODUCTS).length, PRODUCTS.length);
+  assert.equal(priorityIndex(['yoobaland', 'dod'], 'yoobaland'), 0);
+  assert.equal(priorityIndex(['yoobaland', 'dod'], 'missing'), 3);
+});
+
+test('deskFrom and patchDesk round-trip, reset and priority moves', () => {
+  const d = deskFrom({}, PRODUCTS);
+  assert.equal(d.product, null);
+  assert.equal(d.voice, true);
+  assert.deepEqual(d.priority[0], 'yoobaland');
+  const locked = patchDesk(d, { product: 'yoobaland', screen: 'reel' }, PRODUCTS);
+  assert.equal(locked.product, 'yoobaland');
+  assert.equal(locked.screen, 'reel');
+  const moved = patchDesk(locked, { movePriority: { id: 'yoobaland', dir: 1 } }, PRODUCTS);
+  assert.notEqual(moved.priority[0], 'yoobaland');
+  assert.equal(moved.priority[1], 'yoobaland');
+  const reset = patchDesk(moved, { reset: true }, PRODUCTS);
+  assert.deepEqual(reset.priority[0], 'yoobaland');
+  assert.equal(reset.voice, true);
+  assert.equal(reset.screen, 'auto');
+});
+
+test('cueLine prefixes Yooba and strips paths', () => {
+  assert.match(cueLine('hopping to the castle'), /^Yooba here\. hopping/);
+  assert.match(cueLine('Yooba here. already'), /^Yooba here\. already/);
+  assert.doesNotMatch(cueLine('see /srv/hawkes/secret.pem sk-abc123456789'), /\/srv\/|sk-/);
+  assert.equal(cueLine(''), '');
+});
+
+test('voiceCacheKey is stable per exact sentence', () => {
+  assert.equal(voiceCacheKey('Yooba here. Hi.'), voiceCacheKey('Yooba here. Hi.'));
+  assert.notEqual(voiceCacheKey('Yooba here. Hi.'), voiceCacheKey('Yooba here. Bye.'));
+  assert.match(voiceCacheKey('x'), /^[a-f0-9]{24}$/);
+});
+
+test('applyDesk forces quiet, reel rotate, cue and overlay flags', () => {
+  const base = composeBroadcast({ library, now: 1_000 });
+  assert.ok(base.reel.length > 0);
+  const desk = deskFrom({ screen: 'quiet', showPips: false, showFlash: false, cue: 'Cut to black.' }, PRODUCTS);
+  const quiet = applyDesk(base, desk, PRODUCTS.map((id) => ({ id, name: id })));
+  assert.equal(quiet.picture, 'quiet');
+  assert.equal(quiet.focus, null);
+  assert.deepEqual(quiet.reel, []);
+  assert.match(quiet.host, /Cut to black/);
+  assert.deepEqual(quiet.also, []);
+  const reelDesk = deskFrom({
+    screen: 'reel',
+    clip: base.reel[1]?.asset || base.reel[0].asset,
+    priority: defaultPriority(PRODUCTS),
+  }, PRODUCTS);
+  const held = applyDesk(base, reelDesk);
+  assert.equal(held.picture, 'reel');
+  assert.equal(held.focus, null);
+  assert.equal(held.reel[0].asset, reelDesk.clip);
+  assert.match(held.status || '', /Reel/);
+});
+
+test('priority orders live takes and biases the reel', () => {
+  const playing = [
+    { job: 'j_aaa', ctx: { product: 'doseofdestruction', productName: 'DoD', name: 'Match' }, step: 'fight', url: 'https://dod.example/', players: [{ state: { note: 'round 1' } }] },
+    { job: 'j_bbb', ctx: { product: 'yoobaland', productName: 'Yooba Land', name: 'Castle' }, step: 'hop', url: 'https://yooba.example/', players: [{ state: { note: 'waystone' } }] },
+  ];
+  const yoobaFirst = composeBroadcast({ playing, priority: ['yoobaland', 'doseofdestruction'], now: 1_000 });
+  assert.equal(yoobaFirst.focus?.product, 'yoobaland');
+  const dodFirst = composeBroadcast({ playing, priority: ['doseofdestruction', 'yoobaland'], now: 1_000 });
+  assert.equal(dodFirst.focus?.product, 'doseofdestruction');
+
+  const reel = selectReel(library, { priority: ['phorigins', 'yoobaland', 'doseofdestruction'] });
+  assert.ok(reel.length >= 2);
+  // PH Origins wave is older but higher priority than DoD jab when both are clips; turntables still lead.
+  assert.equal(reel[0].what, 'turntable');
+  assert.equal(reel[0].product, 'Yooba Land');
+  const clipProducts = reel.filter((r) => r.what !== 'turntable').map((r) => r.product);
+  assert.ok(clipProducts.indexOf('PH Origins') < clipProducts.indexOf('Dose Of Destruction'));
+});
+
+test('patchDesk next/previous advances the reel without looping the same clip first', () => {
+  const pool = [{ asset: 'a_aaaaaaaaaaaaaaaa' }, { asset: 'a_8888888888888888' }, { asset: 'a_7777777777777777' }];
+  const desk = deskFrom({ screen: 'reel', clip: pool[0].asset, reelAt: 0 }, PRODUCTS);
+  const next = patchDesk(desk, { nudge: 1 }, PRODUCTS, pool);
+  assert.equal(next.clip, pool[1].asset);
+  assert.equal(next.reelAt, 1);
+  assert.equal(next.paused, false);
+  const prev = patchDesk(next, { nudge: -1 }, PRODUCTS, pool);
+  assert.equal(prev.clip, pool[0].asset);
+  const advanced = patchDesk(next, { advance: true, from: 1 }, PRODUCTS, pool);
+  assert.equal(advanced.reelAt, 2);
+  assert.equal(advanced.clip, pool[2].asset);
+});
+
+test('normalizePriority drops unknown ids and fills the rest', () => {
+  assert.deepEqual(normalizePriority(['yoobaland', 'nope', 'phorigins'], PRODUCTS).slice(0, 2), ['yoobaland', 'phorigins']);
+  assert.ok(normalizePriority(null, PRODUCTS).includes('sickofit'));
+  assert.equal(DESK_DEFAULT.voice, true);
 });

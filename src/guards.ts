@@ -9,7 +9,7 @@
 //   POST /api/approvals/<id>/approve|deny|dismiss never from the sandbox: J's tap on an Approve / Deny card (approvals.ts, which
 //                                        also refuses anything that isn't his dashboard page). The cards come first;
 //                                        the typed words above are the fallback.
-//   POST /api/agents/settings, /api/notify, /api/memory/seed: never from the sandbox (J's dashboard)
+//   POST /api/agents/settings, /api/notify, /api/memory/seed, /api/broadcast/desk: never from the sandbox (J's dashboard)
 //   POST /api/pm/settings                only from a Talk conversation (attributable), on J's word (Talk's rules)
 //   POST /api/settings                   only from a Talk conversation; raising costs needs J's quoted yes (settings.ts)
 //
@@ -66,7 +66,7 @@ export function guardRoute(route: string, method: string, conv: string | null): 
   }
   // Approve / Deny cards (approvals.ts): the sandbox may ask for one, never decide one (J's tap on the dashboard).
   if (/^\/api\/approvals\/a_[0-9a-f]+\/(approve|deny|dismiss)$/.test(route)) return 'Approving, denying or closing a card is J\'s tap on the card in his dashboard, never Talk\'s, the PM\'s or an agent\'s.';
-  if (route === '/api/agents/settings' || route === '/api/notify' || route === '/api/memory/seed') return `${route} is changed from Studio's dashboard by J, not from a sandboxed agent.`;
+  if (route === '/api/agents/settings' || route === '/api/notify' || route === '/api/memory/seed' || route === '/api/broadcast/desk') return `${route} is changed from Studio's dashboard by J, not from a sandboxed agent.`;
   if (route === '/api/pm/settings' && !conv) return 'PM settings change only from a Talk conversation, on J\'s word.';
   if (route === '/api/settings' && !conv) return 'Settings change from a Talk conversation (J\'s quoted yes for anything that raises costs) or on the dashboard.';
   return null;

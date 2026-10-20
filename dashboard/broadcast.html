@@ -48,6 +48,41 @@
   </footer>
   <div id="disclose"></div>
 </div>
+<audio id="host-audio" preload="auto"></audio>
+<form id="desk">
+  <span class="desk-kicker">Director</span>
+  <span class="desk-note">This bar stays off the stream (?clean=1).</span>
+  <label>Product <select id="desk-product"></select></label>
+  <div class="desk-priority" title="Auto prefers higher products">
+    <span class="desk-note">Priority</span>
+    <select id="desk-pri-pick"></select>
+    <button type="button" id="desk-pri-up" title="Higher priority">↑</button>
+    <button type="button" id="desk-pri-down" title="Lower priority">↓</button>
+  </div>
+  <label>On screen <select id="desk-screen">
+    <option value="auto">Auto</option>
+    <option value="reel">Library reel</option>
+    <option value="take">Hold a take</option>
+    <option value="quiet">Quiet card</option>
+  </select></label>
+  <label>Take <select id="desk-take"></select></label>
+  <label>Clip <select id="desk-clip"></select></label>
+  <button type="button" id="desk-prev">Previous</button>
+  <button type="button" id="desk-pause">Pause</button>
+  <button type="button" id="desk-next">Next</button>
+  <label><input type="checkbox" id="desk-showRoadmap"> Roadmap</label>
+  <label><input type="checkbox" id="desk-showTicker"> Ticker</label>
+  <label><input type="checkbox" id="desk-showHost"> Yooba</label>
+  <label><input type="checkbox" id="desk-showPips"> Other cameras</label>
+  <label><input type="checkbox" id="desk-showFlash"> Stingers</label>
+  <label title="Yooba speaks on the encoded stream (Gen voice + ffmpeg mix). Captions still show when off."><input type="checkbox" id="desk-voice"> Host voice</label>
+  <label>Lower third <input id="desk-banner" type="text" maxlength="80" placeholder="optional caption"></label>
+  <label>Yooba says <input id="desk-cue" type="text" maxlength="160" placeholder="his own line, until you clear it"></label>
+  <button type="button" id="desk-say">Say</button>
+  <button type="button" id="desk-clear">His own line</button>
+  <button type="button" id="desk-reset">Reset</button>
+  <span id="desk-now"></span>
+</form>
 <script src="/broadcast.js"></script>
 </body>
 </html>

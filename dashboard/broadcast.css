@@ -61,3 +61,28 @@ footer { height: 72px; margin-top: 12px; }
 #stage { position: relative; }
 #stinger { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; background: rgba(0,0,0,.55); font-size: 92px; font-weight: 800; letter-spacing: 0.06em; color: var(--amber); text-shadow: 0 8px 40px #000; }
 #stinger.bug { color: var(--hot); }
+body.hide-roadmap aside { display: none; }
+body.hide-ticker footer { visibility: hidden; }
+body.hide-host #host { display: none; }
+body.hide-pips #pips { display: none; }
+#desk { display: none; }
+body.desk #desk {
+  display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center;
+  position: fixed; left: 0; right: 0; bottom: 0; z-index: 5;
+  padding: 10px 14px; background: #10151c; border-top: 1px solid var(--line);
+  color: var(--text); font: 14px/1.3 "Segoe UI", system-ui, sans-serif;
+}
+#desk label { display: flex; align-items: center; gap: 6px; color: var(--dim); }
+#desk select, #desk input[type="text"] {
+  background: #0c1118; color: var(--text); border: 1px solid var(--line); border-radius: 8px;
+  padding: 4px 8px; font: inherit; max-width: 28ch;
+}
+#desk button {
+  background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 8px;
+  padding: 4px 10px; font: inherit; cursor: pointer;
+}
+.desk-kicker { letter-spacing: 0.14em; font-size: 12px; font-weight: 750; color: var(--mint); }
+.desk-note, #desk-now { color: var(--dim); }
+.desk-priority { display: flex; align-items: center; gap: 6px; }
+.desk-priority select { max-width: 18ch; }
+body.clean #desk { display: none !important; }
