@@ -14,6 +14,9 @@ clients). Products never hold AWS or API keys; the job, its recipe and its cost 
 `audio.voice` and `audio.voice-design` (ElevenLabs), `audio.sfx`, `audio.music` (ACE-Step), `llm.text` / `llm.json`
 (Claude). ComfyUI workflows become tools without code (Gen dashboard, Workflows).
 
+**Rigged characters** (from an image through clips, FBX/GLB, Unity Humanoid): kind `character3d`, preset
+`shared/character3d` — gen-3d-characters skill (full reference `hawkesgen/docs/3d-characters.md`).
+
 ## Art direction
 
 `hawkesgen_presets { project }` first: `hawkesgen/presets/<project>.json` holds the product's style line and named
