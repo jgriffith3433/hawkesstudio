@@ -21,19 +21,22 @@ conversation id from the first turn (`--conversation`). Each tool is one step wi
 Models are `agy models` slugs with a level: `gemini-3.8-flash-medium` (fast), `gemini-4-argon-medium` (standard),
 `gemini-4-argon-high` (deep); Claude Code's own ids are dropped. Change them in Settings, Tuning.
 
-### Logging in (once)
+### Logging in
 
-On Linux `agy` stores its login in `~/.gemini/antigravity-cli/antigravity-oauth-token` (it holds a refresh token).
+Settings → **🔑 Antigravity login** → **Sign in with Google** (`src/antigravity-login.ts`). Studio runs `agy` on the
+server in a pseudo-terminal, picks Google OAuth and shows Google's link; you sign in with the Ultra account and paste the
+code Google shows back into Settings. That is all: there is no terminal step and no secret to store.
 
-1. `ssh ubuntu@<server>` then `sudo -iu hawkes agy`, sign in with Google, paste the code, `/quit`. If it asks to trust
-   `/home/hawkes`, say yes.
-2. Copy that file off, then `node deploy/antigravity-key.mjs <file>`; it stores `hawkes/antigravity`. The server writes
-   `AGY_CREDS`, and each sandboxed agent user gets the file in its own home on first use. The Studio service itself uses the
-   `hawkes` login.
-3. `node deploy/deploy.mjs` installs `agy` to `/usr/local/bin` and wires the secret. Then choose Google Antigravity in
-   Settings, Harness.
-
-If the refresh token is ever revoked, repeat steps 1 and 2.
+- On Linux `agy` stores its login in `~/.gemini/antigravity-cli/antigravity-oauth-token` (it holds a refresh token).
+  Studio keeps it in its own user's home and shares it with every `agy` it starts as `AGY_CREDS` (passed into the agent
+  sandbox, `sandbox.ts`); `bin/antigravity-agent.mjs` writes it into the sandboxed user's home. A file with the same
+  refresh token is left alone (agy refreshes it itself); a new sign-in replaces it. It is shared at start-up and every
+  10 minutes, so a sign-in made in a terminal (`sudo -iu hawkes agy`) is picked up too.
+- Signing in again (a revoked login, another Google account) is the same button. It lifts a hold on Antigravity at once.
+- When `agy` loses its login, the turn is a harness stop (auth): Antigravity is held, another harness stands in, and Talk
+  says to sign in from Settings instead of showing agy's one-time link (dead by then).
+- The AWS secret `hawkes/antigravity` (`deploy/antigravity-key.mjs <file | ->`) still works: with no login in Studio's
+  home, it seeds that home. `node deploy/deploy.mjs` installs `agy` to `/usr/local/bin`.
 
 ## Gemini API key
 

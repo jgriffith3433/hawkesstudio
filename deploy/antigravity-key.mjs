@@ -2,6 +2,9 @@
 // writes it to /run/hawkes/antigravity.env as AGY_CREDS; bin/antigravity-agent.mjs puts it in each agent user's home.
 //
 //   node deploy/antigravity-key.mjs <path to antigravity-oauth-token>
+//   ssh ubuntu@<server> "sudo cat /home/hawkes/.gemini/antigravity-cli/antigravity-oauth-token" | node deploy/antigravity-key.mjs -
+//
+// `-` reads stdin, so the login never lands on this PC's disk. A UTF-16 file (Windows PowerShell's `>`) is read too.
 //
 // On Linux `agy` writes that file at ~/.gemini/antigravity-cli/antigravity-oauth-token after you sign in once
 // (ssh in, `sudo -iu hawkes agy`). Windows and macOS keep the login in the keychain, so sign in on the server.
@@ -10,11 +13,13 @@ import { SecretsManagerClient, CreateSecretCommand, PutSecretValueCommand } from
 import { cfg } from './aws.mjs';
 
 const file = process.argv[2];
-if (!file || !fs.existsSync(file)) {
-  console.error('Usage: node deploy/antigravity-key.mjs <path to antigravity-oauth-token>. Nothing stored.');
+if (!file || (file !== '-' && !fs.existsSync(file))) {
+  console.error('Usage: node deploy/antigravity-key.mjs <path to antigravity-oauth-token | ->. Nothing stored.');
   process.exit(1);
 }
-const raw = fs.readFileSync(file, 'utf8');
+const bytes = fs.readFileSync(file === '-' ? 0 : file);
+const utf16 = (bytes[0] === 0xff && bytes[1] === 0xfe) || (bytes.length > 1 && bytes[1] === 0);
+const raw = (utf16 ? bytes.toString('utf16le') : bytes.toString('utf8')).replace(/^﻿/, '').trim();
 try {
   if (!JSON.parse(raw)?.token?.refresh_token) throw new Error('no refresh token');
 } catch {

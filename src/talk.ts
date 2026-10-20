@@ -78,6 +78,16 @@ try {
     if (at) db.prepare('UPDATE conversations SET reply = ?, seen = ? WHERE id = ?').run(at, at, r.id);
   }
 } catch { /* already there */ }
+/**
+ * A stopped turn's error as Talk shows it. A CLI's own sign-in link is dead by the time J reads it (its one-time code
+ * belongs to a process that has exited, and the cut used to drop half of it), so it becomes where to sign in instead.
+ */
+export function stopText(result: unknown) {
+  let s = String(result ?? 'error');
+  if (/accounts\.google\.com\/o\/oauth2/.test(s)) s = s.replace(/Please visit the URL to log in:?\s*https:\/\/accounts\.google\.com\S*/i, '').replace(/https:\/\/accounts\.google\.com\S*/g, '').trim() + '\nSign Antigravity in from Settings → Antigravity login ("Sign in with Google").';
+  return s.slice(0, 600);
+}
+
 function lastReply(messages: Message[]) {
   let at = 0;
   for (const m of messages) if (m.role === 'assistant' && m.at > at) at = m.at;
@@ -750,7 +760,7 @@ function onLine(id: string, m: any, ctx: TurnCtx) {
     const turn: Turn = { cost, billing: ctx.billing, ms: Number(m.duration_ms) || undefined };
     // A call's process stays up: the turn ends with its result (stopping: J interrupted it, e.g. by talking).
     const stopped = ctx.call && stopping.delete(id);
-    if (m.is_error && !stopped && !conv.messages.some((x) => x.role === 'assistant' && x.at >= ctx.userAt)) conv.messages.push({ role: 'assistant', text: `(Claude stopped: ${String(m.result ?? m.subtype ?? 'error').slice(0, 300)})`, at: Date.now() });
+    if (m.is_error && !stopped && !conv.messages.some((x) => x.role === 'assistant' && x.at >= ctx.userAt)) conv.messages.push({ role: 'assistant', text: `(Claude stopped: ${stopText(m.result ?? m.subtype)})`, at: Date.now() });
     if (ctx.call) {
       save(conv);
       return finishTurn(id, ctx, { stopped, turn });

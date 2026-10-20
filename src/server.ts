@@ -30,6 +30,7 @@ import { selfDeploys, selfBusy } from './selfdeploy.ts';
 import { originOf, tagChange, startFollowups } from './followup.ts';
 import { activity, stageOf } from './activity.ts';
 import { listReports as listBugReports, reportShot, startReportFollowups } from './bugreport.ts';
+import { shareAgyLogin } from './antigravity-login.ts';
 
 const MIME: Record<string, string> = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.mjs': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.png': 'image/png', '.json': 'application/json', '.md': 'text/markdown; charset=utf-8' };
 
@@ -544,6 +545,18 @@ const server = http.createServer(async (req, res) => {
     if (route === '/api/agents/roles' && method === 'GET') { const r = await import('./roles.ts'); return send(res, 200, { roles: r.listRoles(), skills: r.listSkills() }); }
     if (route === '/api/agents/settings' && method === 'POST') return send(res, 200, saveAgentSettings(await readJson(req)));
 
+    // Antigravity's Google login (antigravity-login.ts): anyone may see whether it's signed in; signing in is J's click.
+    if (route === '/api/antigravity/login' && method === 'GET') return send(res, 200, (await import('./antigravity-login.ts')).agyLogin());
+    if (route.startsWith('/api/antigravity/') && method !== 'GET') {
+      const why = (await import('./approvals.ts')).notJClick(req);
+      if (why) return send(res, 403, { error: `Antigravity signs in only from J's own click in Settings: ${why}.` });
+      const al = await import('./antigravity-login.ts');
+      const b = await readJson(req);
+      if (route === '/api/antigravity/signin' && method === 'POST') return send(res, 200, await al.startAgySignin());
+      if (route === '/api/antigravity/signin/code' && method === 'POST') return send(res, 200, await al.finishAgySignin(String(b.code ?? '')));
+      if (route === '/api/antigravity/signin/cancel' && method === 'POST') return send(res, 200, al.cancelAgySignin());
+    }
+
     // Claude accounts (claude-accounts.ts): the logins Claude Code runs with. Anyone may list them (labels, never tokens);
     // signing in, switching, renaming, checking and removing are J's click on the dashboard only.
     if (route === '/api/claude/accounts' && method === 'GET') return send(res, 200, (await import('./claude-accounts.ts')).listAccounts());
@@ -746,6 +759,10 @@ server.listen(PORT, '127.0.0.1', () => {
     const renamed = migrateScenarioAliases();
     if (renamed.length) console.log(`[studio] renamed scenarios on ${renamed.length} change(s): ${renamed.map((r) => `${r.id} ${r.from} → ${r.to}`).join(', ')}`);
   }).catch((e) => console.warn(`[studio] renaming scenarios: ${e.message ?? e}`));
+  // Antigravity's login for every agy Studio starts, the sandboxed agent user's too (antigravity-login.ts); again every
+  // 10 minutes, so a sign-in made in a terminal is picked up.
+  shareAgyLogin();
+  setInterval(shareAgyLogin, 10 * 60_000).unref();
   const runs = resumeRuns();
   chooseBrain();
   const changes = resumeChanges();

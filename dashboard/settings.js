@@ -69,7 +69,7 @@
     const key = b.key ? 'The Cursor key is on this server.' : 'CURSOR_API_KEY is not on this server yet. Cursor cannot run until it is in the hawkes/cursor secret.';
     const cop = b.copilot ? 'A Copilot token or login is on this server.' : 'No Copilot login on this server yet: put a fine-grained token (Copilot Requests permission) in COPILOT_GITHUB_TOKEN, or run copilot login there. See docs/copilot.md.';
     const gem = b.gemini ? 'A Gemini API key is on this server (billed on that key, not the Google AI plan).' : 'No Gemini API key on this server yet: set GEMINI_API_KEY (deploy/gemini-key.mjs). Google AI Pro/Ultra sign-ins use the Antigravity harness instead. See docs/gemini.md.';
-    const agy = b.antigravity ? 'Antigravity is signed in with a Google account on this server.' : 'Antigravity (agy) is not signed in on this server yet: run agy once as the agent user and sign in with the Google AI Ultra account. See docs/gemini.md.';
+    const agy = b.antigravity ? 'Antigravity is signed in with a Google account on this server.' : 'Antigravity (agy) is not signed in on this server yet: use "Sign in with Google" in the Antigravity login box below.';
     const models = b.harness === 'cursor'
       ? [['auto', 'Auto'], ['grok-4.7', 'Grok 4.7'], ['composer-2.5', 'Composer 2.5']]
       : b.harness === 'antigravity'
@@ -126,6 +126,28 @@
       <div class="meta">The Claude login that Talk, the PM, agents, scouts and Gen's Claude calls run on. Switching takes effect on the next turn, agent and Gen call; work already running finishes on the account it started with.${brain.harness !== 'claude' ? ` <b>The harness is ${brain.harness === 'copilot' ? 'Copilot' : brain.harness === 'gemini' ? 'Gemini' : 'Cursor'} now:</b> using or adding an account switches it to Claude Code.` : ''}</div>
       ${rows || '<div class="meta" style="padding:6px 0">No Claude account on this server yet.</div>'}
       ${signinRow}
+    </div>`;
+  }
+
+  // Antigravity's Google login (src/antigravity-login.ts): `agy` runs on the server, J opens Google's link, signs in and
+  // pastes the code back here. Studio shares the login with the agent user. Changes send X-Studio-Click (J's click only).
+  let agyLogin = null;
+  function agyBox(l) {
+    if (!l) return '';
+    const si = l.signin;
+    const waiting = si && si.state === 'waiting';
+    const state = l.signedIn ? `✓ Signed in${l.email ? ` as <b>${esc(l.email)}</b>` : ''}. Talk, agents and scouts all use this login.` : '<span class="set-err">Not signed in.</span> Antigravity can\'t run until you sign in.';
+    const body = waiting
+      ? `<div class="ca-add"><b>Signing in</b>
+          <div>1. <a href="${esc(si.url)}" target="_blank" rel="noopener"><b>Open Google's sign-in page</b></a> and sign in with your Google AI Ultra account.</div>
+          <div>2. Google shows a code. Paste it here:</div>
+          <div class="ca-line"><input type="text" id="agyCode" placeholder="the code from Google" autocomplete="off" spellcheck="false"><button class="small" id="agyFinish">Finish signing in</button><button class="small" id="agyCancel">Cancel</button></div>
+          <div id="agyMsg" class="meta"></div></div>`
+      : `<div class="ca-add"><div class="ca-line"><button class="small" id="agyStart">${l.signedIn ? 'Sign in again (another Google account)' : 'Sign in with Google'}</button></div>
+          <div id="agyMsg" class="meta">${si?.state === 'failed' && si.error ? `<span class="set-err">${esc(si.error)}</span>` : ''}</div></div>`;
+    return `<div class="set-box"><h3>🔑 Antigravity login</h3>
+      <div class="meta">${state}</div>
+      ${body}
     </div>`;
   }
 
@@ -240,11 +262,11 @@
   }
 
   async function loadSettingsTab() {
-    [data, claude] = await Promise.all([api('/api/settings'), api('/api/claude/accounts').catch(() => null)]);
+    [data, claude, agyLogin] = await Promise.all([api('/api/settings'), api('/api/claude/accounts').catch(() => null), api('/api/antigravity/login').catch(() => null)]);
     window.callVoice?.apply(data.call);
     const badge = $('#walkAwayBadge');
     if (badge) badge.hidden = !data.pm.walkAway;
-    $('#setBody').innerHTML = `<div class="set-grid">${brainBox(data.brain)}${tuningBox(data.tuning)}${claudeBox(claude, data.brain)}${callBox(data.call)}${agentsBox(data.agents)}${pmBox(data.pm)}${notifyBox(data.notify)}${costsBox(data.costs)}${resourcesBox(data.resources)}</div>`;
+    $('#setBody').innerHTML = `<div class="set-grid">${brainBox(data.brain)}${tuningBox(data.tuning)}${claudeBox(claude, data.brain)}${agyBox(agyLogin)}${callBox(data.call)}${agentsBox(data.agents)}${pmBox(data.pm)}${notifyBox(data.notify)}${costsBox(data.costs)}${resourcesBox(data.resources)}</div>`;
     if (data.call.engine === 'eleven') loadElevenVoices();
   }
   window.loadSettingsTab = loadSettingsTab;
@@ -346,6 +368,11 @@
       // A first check of the new account (a one-line answer from Haiku), shown when it comes back.
       claudeCall(`/api/claude/accounts/${r.account.id}/check`, { method: 'POST', body: {} }).then(() => tab === 'settings' && loadSettingsTab()).catch(() => {});
     }, t);
+    const agyMsg = (x) => { const m = $('#agyMsg'); if (m) m.innerHTML = x; };
+    const agyAction = async (fn) => { try { t.disabled = true; await fn(); await loadSettingsTab(); } catch (err) { agyMsg(`<span class="set-err">${esc(err.message)}</span>`); t.disabled = false; } };
+    if (t.id === 'agyStart') return agyAction(async () => { agyMsg('Starting Antigravity’s sign-in on the server…'); await claudeCall('/api/antigravity/signin', { method: 'POST', body: {} }); });
+    if (t.id === 'agyFinish') return agyAction(async () => { agyMsg('Signing in…'); await claudeCall('/api/antigravity/signin/code', { method: 'POST', body: { code: $('#agyCode').value } }); });
+    if (t.id === 'agyCancel') return agyAction(() => claudeCall('/api/antigravity/signin/cancel', { method: 'POST', body: {} }));
     if (t.id === 'caCancel') return claudeAction(() => claudeCall('/api/claude/signin/cancel', { method: 'POST', body: {} }), t);
     const act = t.dataset?.caact;
     const ca = act && t.closest('[data-ca]')?.dataset.ca;

@@ -6,13 +6,20 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-test('AGY_CREDS seeds the login file once and never overwrites it', () => {
+test('AGY_CREDS seeds the login file, keeps agy\'s refreshed one, and replaces it after a new sign-in', () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-'));
   const creds = Buffer.from(JSON.stringify({ token: { refresh_token: 'r' } })).toString('base64');
   assert.equal(seedCreds({ AGY_CREDS: creds }, home), true);
   const file = path.join(home, '.gemini', 'antigravity-cli', 'antigravity-oauth-token');
   assert.match(fs.readFileSync(file, 'utf8'), /refresh_token/);
   assert.equal(seedCreds({ AGY_CREDS: creds }, home), false);
+  // agy refreshed its access token: same refresh token, kept.
+  fs.writeFileSync(file, JSON.stringify({ token: { refresh_token: 'r', access_token: 'newer' } }));
+  assert.equal(seedCreds({ AGY_CREDS: creds }, home), false);
+  assert.match(fs.readFileSync(file, 'utf8'), /newer/);
+  // J signed in again: a new refresh token replaces it.
+  assert.equal(seedCreds({ AGY_CREDS: Buffer.from(JSON.stringify({ token: { refresh_token: 'r2' } })).toString('base64') }, home), true);
+  assert.match(fs.readFileSync(file, 'utf8'), /r2/);
   assert.equal(seedCreds({ AGY_CREDS: 'bm90anNvbg==' }, fs.mkdtempSync(path.join(os.tmpdir(), 'agy-'))), false);
   assert.equal(seedCreds({}, home), false);
 });

@@ -238,14 +238,21 @@ function userText(message) {
   return '';
 }
 
-/** On a headless server `agy` keeps its login in a file; AGY_CREDS (base64 of antigravity-oauth-token) puts it in this user's home. It holds a refresh token, so an existing file is never overwritten. */
+/**
+ * On a headless server `agy` keeps its login in a file; AGY_CREDS (base64 of antigravity-oauth-token, Studio's login:
+ * src/antigravity-login.ts) puts it in this user's home. agy refreshes the file itself, so one with the same refresh
+ * token is kept; a different refresh token is a new sign-in and replaces it.
+ */
 export function seedCreds(env = process.env, home = os.homedir()) {
   if (!env.AGY_CREDS) return false;
   const file = path.join(home, '.gemini', 'antigravity-cli', 'antigravity-oauth-token');
-  if (fs.existsSync(file)) return false;
   try {
     const raw = Buffer.from(env.AGY_CREDS.trim(), 'base64').toString('utf8');
-    JSON.parse(raw);
+    const refresh = JSON.parse(raw)?.token?.refresh_token;
+    if (!refresh) return false;
+    let have = null;
+    try { have = JSON.parse(fs.readFileSync(file, 'utf8'))?.token?.refresh_token ?? null; } catch { /* none yet */ }
+    if (have === refresh) return false;
     fs.mkdirSync(path.dirname(file), { recursive: true });
     fs.writeFileSync(file, raw, { mode: 0o600 });
     return true;
