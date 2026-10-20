@@ -667,12 +667,19 @@ export function startBlocked(taskId: string): string | null {
 
 /** Starts (or restarts) the agent change of a task, unless startBlocked says it has one going or merged. */
 async function startTaskChange(task: Task, note?: string, why?: string, countTry = true) {
-  const { startTask } = await changes();
+  const { startTask, reviveChange } = await changes();
   // Checked after the await and with nothing awaited before the insert: two callers in one tick, or two ticks, can't both pass.
   const blocked = startBlocked(task.id);
   if (blocked) throw new StudioError(`"${task.title}" isn't started again: ${blocked}`);
   const t = getTask(task.id)!;
   const request = `${t.request}${note ? `\n\nFrom the PM (an earlier attempt): ${note}` : ''}`;
+  // The latest change left work in its worktree (uncommitted or unpushed): it continues that, not a new branch.
+  const prior = t.changes.length ? t.changes[t.changes.length - 1] : null;
+  if (prior && !note && reviveChange(prior)) {
+    setTask(t.id, { status: 'working', change: prior, merged_at: null, build: null });
+    logDecision('start', t.id, t.product, `"${t.title}": continued ${prior} (its worktree holds work), not counted as a try`);
+    return prior;
+  }
   const id = startTask(t.product, request, { criteria: t.criteria, task: t.id, title: t.title, gpuBudget: t.gpu?.items?.length ? t.gpu.budget ?? 0 : null, target: t.target });
   const tries = countTry ? t.tries + 1 : t.tries;
   setTask(t.id, { status: 'working', change: id, changes: [...t.changes, id], tries, merged_at: null, build: null });
@@ -2040,6 +2047,30 @@ export function rescueNote(id: string) {
  * question. Otherwise outOfTries: a rescue (walk-away, the first time), else one question in J's Inbox. An answer of the
  * last day is the PM's to act on (a "decided" event) and left alone. Returns the tasks it acted on.
  */
+/**
+ * Self-repair (J, 2026-10-20): tasks that failed or ran out of tries only because the harness stopped their agents
+ * (usage, billing, login, outage: read from the changes' details, summaries and logs, old rows too) go back to planned
+ * with their tries reset. Not while the hold is on (they would only fail again).
+ */
+export async function sweepHarnessFailed() {
+  if (harnessHeld()) return [];
+  const out: string[] = [];
+  const rows = db.prepare(`SELECT id FROM tasks WHERE status = 'failed'`).all() as any[];
+  for (const r of rows) {
+    const t = getTask(r.id);
+    if (!t || rescues()[t.id]?.state === 'scouting') continue;
+    const cs = db.prepare(`SELECT id, status, detail, summary, log FROM changes WHERE task = ? ORDER BY created DESC LIMIT 3`).all(t.id) as any[];
+    const last = cs[0];
+    if (!last || last.status !== 'failed') continue;
+    const text = (c: any) => `${c.detail ?? ''}\n${c.summary ?? ''}\n${String(c.log ?? '').slice(-3000)}`;
+    if (!harnessStopOf(text(last), { kinds: ['usage', 'billing', 'auth', 'transient'] })) continue;
+    setTask(t.id, { status: 'planned', tries: 0, checks: null, note: 'back to planned: its agents were stopped by the harness (usage, billing or an outage), not by the work' });
+    logDecision('harness-replan', t.id, t.product, `"${t.title}": its failed attempts were harness stops (${last.id}); planned again with its tries reset`);
+    out.push(t.id);
+  }
+  return out;
+}
+
 export async function sweepFailed() {
   const out: string[] = [];
   const asked = askedJ();
@@ -2347,6 +2378,8 @@ export async function tick() {
     }
     await applyDefaults([], s.graceMinutes * 60_000);
     // Failed tasks nobody was asked about: an investigation (walk-away) or one question in J's Inbox.
+    await reviewHold().catch((e: any) => console.warn(`[pm] harness hold: ${e.message ?? e}`));
+    await sweepHarnessFailed().catch((e: any) => console.warn(`[pm] harness sweep: ${e.message ?? e}`));
     await sweepFailed().catch((e: any) => console.warn(`[pm] failed tasks: ${e.message ?? e}`));
     // Tasks dropped as already done count as done; ideas held until other work is on beta are released once it is.
     try {
