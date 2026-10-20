@@ -49,6 +49,8 @@ export const MODELS: Tuning['models'] = {
   cursor: { fast: '', standard: '', deep: '' },
   // Gemini CLI's own aliases: Flash for quick jobs, Auto (its router) for most work, Pro where a mistake is expensive.
   gemini: { fast: 'flash', standard: '', deep: 'pro' },
+  // Antigravity CLI slugs (`agy models`): the Flash tier for quick jobs, Gemini 4 for the rest.
+  antigravity: { fast: 'gemini-3.8-flash-medium', standard: 'gemini-4-argon-medium', deep: 'gemini-4-argon-high' },
 };
 
 const r = (tier: Tier, effort: Effort, maxTurns: number): RoleTune => ({ tier, effort, maxTurns });
