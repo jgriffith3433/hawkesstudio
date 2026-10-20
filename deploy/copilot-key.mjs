@@ -5,7 +5,7 @@
 // The token must be a fine-grained personal access token with the "Copilot Requests" permission (or an OAuth
 // token). Classic tokens (ghp_...) are refused by the Copilot CLI.
 //
-//   node deploy/copilot-key.mjs        paste it at the prompt
+//   node deploy/copilot-key.mjs        paste it at the prompt (or have COPILOT_GITHUB_TOKEN in the environment)
 import readline from 'node:readline';
 import { SecretsManagerClient, CreateSecretCommand, PutSecretValueCommand } from '@aws-sdk/client-secrets-manager';
 import { cfg } from './aws.mjs';
@@ -18,7 +18,7 @@ function ask(question) {
   });
 }
 
-const token = (await ask('Copilot token, a fine-grained PAT with Copilot Requests (input hidden): ')).replace(/\s+/g, '');
+const token = (process.env.COPILOT_GITHUB_TOKEN || await ask('Copilot token, a fine-grained PAT with Copilot Requests (input hidden): ')).replace(/\s+/g, '');
 if (token.length < 20) {
   console.error(`That doesn't look like a whole token: got ${token.length} characters. Nothing stored.`);
   process.exit(1);
