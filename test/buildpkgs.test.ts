@@ -55,3 +55,45 @@ test('a checkout behind origin/main is fetched and reported as behind (not silen
   assert.equal(r.pkgrepo.latest, second.slice(0, 12));
   assert.match(logs.join('\n'), /NOT in this build/);
 });
+
+const sha40 = 'a'.repeat(40);
+const { buildServerSyncScript, syncBuildServerCheckouts, buildErrorLines, unityBuild, BuildServerSyncError } = await import('../src/buildpkgs.ts');
+
+test('the build server sync fetches and hard-resets each checkout and reports its commit', async () => {
+  const ran: string[] = [];
+  const r = await syncBuildServerCheckouts(async (cmd) => { ran.push(cmd); return `noise\n${sha40}\n`; }, () => {}, { repos: ['hawkesgen', 'hawkesstudio'] });
+  assert.deepEqual(r, { hawkesgen: { sha: 'a'.repeat(12) }, hawkesstudio: { sha: 'a'.repeat(12) } });
+  assert.match(ran[0], /C:\\Projects\\hawkesgen/);
+  assert.match(ran[1], /C:\\Projects\\hawkesstudio/);
+  assert.match(ran[0], /fetch -q origin main/);
+  assert.match(ran[0], /Git\\cmd\\git.exe/);
+  assert.match(ran[0], /reset -q --hard origin\/main/);
+});
+
+test('the sync script carries the token only as a git header', () => {
+  assert.doesNotMatch(buildServerSyncScript('hawkesgen'), /extraHeader/);
+  const s = buildServerSyncScript('hawkesgen', 'tok123');
+  assert.match(s, /http\.extraHeader=Authorization: Basic /);
+  assert.ok(!s.includes('tok123'));
+});
+
+test('a failed build server sync fails loudly with the commits seen and no token', async () => {
+  await assert.rejects(
+    syncBuildServerCheckouts(async (cmd) => { if (cmd.includes('hawkesstudio')) throw new Error('git fetch origin main failed tok123'); return sha40; }, () => {}, { token: 'tok123' }),
+    (e: any) => e instanceof BuildServerSyncError && /hawkesstudio: git fetch origin main failed \*\*\*/.test(e.message) && /hawkesgen aaaaaaaaaaaa/.test(e.message) && (e.states.hawkesgen as any).sha === 'a'.repeat(12) && !e.message.includes('tok123'),
+  );
+});
+
+test('unityBuild returns a failed job, without building, when the build server cannot sync', async () => {
+  const job = await unityBuild('nope', {}, undefined, { log: () => {}, serverShell: async () => { throw new Error('ssh failed: no route'); } });
+  assert.equal(job.status, 'failed');
+  assert.match(job.error, /couldn't be brought to origin\/main/);
+  assert.equal(job.result.ok, false);
+  assert.ok((job.result.buildServer as any).hawkesgen.error);
+});
+
+test('compiler lines from the log tail are picked out for the failed detail', () => {
+  const tail = ['Reimporting', 'Assets/A.cs(3,5): error CS0246: type not found', 'Assembly has duplicate references: Packages/com.hawkes.gen/Editor/Tests/X.asmdef', 'Assets/A.cs(3,5): error CS0246: type not found', 'Scripts have compiler errors.', 'other'].join('\n');
+  assert.deepEqual(buildErrorLines(tail), ['Assets/A.cs(3,5): error CS0246: type not found', 'Assembly has duplicate references: Packages/com.hawkes.gen/Editor/Tests/X.asmdef', 'Scripts have compiler errors.']);
+  assert.deepEqual(buildErrorLines(undefined), []);
+});
