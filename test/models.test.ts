@@ -1,7 +1,15 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { refusedModelOf, markModelUnavailable, modelUnavailable, clearUnavailable } from '../src/models.ts';
-import { recordPass, ledgerSummary } from '../src/ledger.ts';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+
+process.env.STUDIO_DATA = fs.mkdtempSync(path.join(os.tmpdir(), 'studio-models-'));
+await import('../src/db.ts');
+await import('../src/settings.ts');
+await import('../src/agents.ts');
+const { refusedModelOf, markModelUnavailable, modelUnavailable, clearUnavailable } = await import('../src/models.ts');
+const { recordPass, ledgerSummary } = await import('../src/ledger.ts');
 
 test('a refused model is parsed, remembered once, and cleared', () => {
   assert.equal(refusedModelOf('Error: Model "claude-opus-5.5" from --model flag is not available.'), 'claude-opus-5.5');
