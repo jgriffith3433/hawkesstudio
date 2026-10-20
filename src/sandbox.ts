@@ -145,7 +145,7 @@ export async function shareAll(group: string | null = sandboxOn() ? AGENT_GROUP 
  * What a sandboxed Claude Code gets from Studio's environment: nothing secret but its own Claude login (it can't run
  * without it), no AWS role marker, no GitHub token, no service keys. Its Gen key is in its MCP config, not here.
  */
-const PASS = /^(PATH|LANG|LC_\w+|TZ|TERM|NODE_OPTIONS|NODE_EXTRA_CA_CERTS|HAWKESGEN_URL|GEN_PUBLIC_URL|STUDIO_PORT|STUDIO_SERVER|STUDIO_PUBLIC_URL|TALK_\w+|CLAUDE_CODE_OAUTH_TOKEN|ANTHROPIC_API_KEY|XAI_API_KEY|CURSOR_API_KEY|CURSOR_AGENT|COPILOT_GITHUB_TOKEN|COPILOT_HOME|COPILOT_BIN|COPILOT_MODEL|COPILOT_EFFORT|GROK_SESSION_DIR|HAWKES_BRAIN|CLAUDE_CODE_\w+|DISABLE_\w+|npm_config_cache)$/;
+const PASS = /^(PATH|LANG|LC_\w+|TZ|TERM|NODE_OPTIONS|NODE_EXTRA_CA_CERTS|HAWKESGEN_URL|GEN_PUBLIC_URL|STUDIO_PORT|STUDIO_SERVER|STUDIO_PUBLIC_URL|TALK_\w+|CLAUDE_CODE_OAUTH_TOKEN|ANTHROPIC_API_KEY|XAI_API_KEY|CURSOR_API_KEY|CURSOR_AGENT|COPILOT_GITHUB_TOKEN|COPILOT_HOME|COPILOT_BIN|COPILOT_MODEL|COPILOT_EFFORT|COPILOT_MAX_CREDITS|COPILOT_CONTEXT|GROK_SESSION_DIR|HAWKES_BRAIN|CLAUDE_CODE_\w+|DISABLE_\w+|npm_config_cache)$/;
 export function sandboxEnv(env: NodeJS.ProcessEnv) {
   const out: Record<string, string> = {};
   for (const [k, v] of Object.entries(env)) if (v !== undefined && PASS.test(k)) out[k] = v;

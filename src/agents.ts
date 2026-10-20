@@ -60,6 +60,7 @@ import { judgeCriteria, gate } from './acceptance.ts';
 import { briefSection, learnFrom, recordRun, LEARNED_ASK } from './memory.ts';
 import { canonCheck, CONTENTISH, type CanonCheck } from './canon.ts';
 import { roleArgs, loadRole, type RoleName } from './roles.ts';
+import { passLimitMs } from './tuning.ts';
 import { claudeCommand, spawnShell, sandboxShare, assertWorktree, shareWorktree } from './sandbox.ts';
 import { launch, DetachedChild, detachedActivity, stopDetached, type DetachRec } from './detach.ts';
 import { warmDeps, installCold, markInstalled } from './warm.ts';
@@ -877,7 +878,7 @@ type AgentRun = { reattach?: { rec: DetachRec; offset: number }; onStart?: (rec:
 export function agentLimitMs(c: { infra?: boolean; request?: string | null; findings?: string[]; title?: string | null; gpu_budget?: string | null }) {
   const env = Number(process.env.STUDIO_AGENT_LIMIT_MS);
   if (env > 0) return env;
-  return roleOf(c) === 'content' ? 3 * 60 * 60_000 : 60 * 60_000;
+  return passLimitMs(roleOf(c) === 'content');
 }
 /**
  * How long a session may stay open after its final result before Studio ends it: on 2026-10-18 an agent's own
@@ -919,6 +920,7 @@ function runAgent(c: Change, briefFile: string, s: AgentSettings, env = claudeEn
       const { args: roleFlags, role } = roleArgs(agentRole(c), {
         extraAllowed: [...AGENT_STUDIO_TOOLS.map((t) => `mcp__hawkesstudio__${t}`), 'mcp__hawkesgen'],
         maxTurns: s.maxTurns !== DEFAULTS.maxTurns ? s.maxTurns : undefined,
+        retry: (c.task ? getTask(c.task)?.tries : 0) || 1,
       });
       const args = [
         ...(resume?.session ? ['--resume', resume.session] : []),

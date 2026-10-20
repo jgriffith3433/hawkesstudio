@@ -47,7 +47,8 @@ export function parseClaudeArgs(argv) {
     else if (a === '--input-format') out.streamIn = next() === 'stream-json';
     else if (a === '--include-partial-messages') out.partial = true;
     else if (a === '--effort') out.effort = next();
-    else if (a === '--output-format' || a === '--plugin-dir' || a === '--max-turns' || a === '--allowedTools' || a === '--disallowedTools' || a === '--permission-mode' || a === '--tools' || a === '--setting-sources') next();
+    else if (a === '--max-turns') out.maxTurns = Number(next()) || 0;
+    else if (a === '--output-format' || a === '--plugin-dir' || a === '--allowedTools' || a === '--disallowedTools' || a === '--permission-mode' || a === '--tools' || a === '--setting-sources') next();
   }
   return out;
 }
@@ -68,6 +69,9 @@ export function copilotArgs(parsed, prompt, session) {
   if (model && model !== 'auto') args.push('--model', model);
   const effort = parsed.effort || process.env.COPILOT_EFFORT;
   if (effort) args.push('--reasoning-effort', effort);
+  const credits = Number(process.env.COPILOT_MAX_CREDITS);
+  if (credits >= 30) args.push('--max-ai-credits', String(Math.floor(credits)));
+  if (process.env.COPILOT_CONTEXT === 'long_context') args.push('--context', 'long_context');
   if (parsed.stream !== false) args.push('--stream', 'on');
   if (parsed.mcp && fs.existsSync(parsed.mcp)) args.push('--additional-mcp-config', `@${parsed.mcp}`);
   return args;
@@ -178,16 +182,16 @@ export function finish(state, code, stderr) {
     out.push({ type: 'assistant', session_id: state.session, message: { role: 'assistant', content: [{ type: 'text', text: state.text }] } });
     state.last = state.text;
   }
-  const failed = Boolean(state.error) || code !== 0;
+  const failed = Boolean(state.error) || (code !== 0 && !state.capped);
   const tail = String(stderr || '').trim().split('\n').slice(-12).join('\n');
   const result = failed ? (state.error || tail || `copilot exited with ${code}`) : (state.last || '');
-  out.push({ type: 'result', subtype: failed ? 'error' : 'success', is_error: failed, result: String(result).slice(0, 4000), session_id: state.session, duration_ms: Date.now() - state.began, total_cost_usd: 0 });
+  out.push({ type: 'result', subtype: state.capped ? 'error_max_turns' : failed ? 'error' : 'success', is_error: failed, result: String(result).slice(0, 4000), session_id: state.session, duration_ms: Date.now() - state.began, total_cost_usd: 0 });
   return out;
 }
 
 let current = null;
 function runAgent(parsed, prompt, session, fresh) {
-  const state = { session, sessionLocked: true, text: '', started: false, deltas: false, announced: new Set(), began: Date.now(), error: '' };
+  const state = { session, sessionLocked: true, text: '', started: false, deltas: false, announced: new Set(), began: Date.now(), error: '', turns: 0, capped: false };
   return new Promise((resolve) => {
     let stderr = '';
     let child;
@@ -208,6 +212,12 @@ function runAgent(parsed, prompt, session, fresh) {
       if (!line.trim()) return;
       let ev;
       try { ev = JSON.parse(line); } catch { return; }
+      // The role's turn cap (--max-turns): one assistant message is a turn. Claude Code ends such a run with error_max_turns.
+      if (ev?.type === 'assistant.message' && parsed.maxTurns > 0 && ++state.turns > parsed.maxTurns && !state.capped) {
+        state.capped = true;
+        child.kill('SIGTERM');
+      }
+      if (state.capped) return;
       for (const o of translate(state, ev)) process.stdout.write(`${JSON.stringify(o)}\n`);
     };
     child.stdout.on('data', (d) => {

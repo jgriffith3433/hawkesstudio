@@ -5,11 +5,12 @@
 // whenever there is a subscription token.
 
 import { activeToken } from './claude-accounts.ts';
+import { copilotEnv } from './tuning.ts';
 
 export const usingSubscription = () => Boolean(activeToken());
 
 export function claudeEnv(extra: Record<string, string> = {}) {
-  const env: Record<string, string | undefined> = { ...process.env, ...extra };
+  const env: Record<string, string | undefined> = { ...copilotEnv(), ...process.env, ...extra };
   const token = extra.CLAUDE_CODE_OAUTH_TOKEN ?? activeToken();
   if (token) {
     env.CLAUDE_CODE_OAUTH_TOKEN = token;

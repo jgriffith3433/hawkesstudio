@@ -193,6 +193,34 @@
     </div>`;
   }
 
+  function tuningBox(t) {
+    const tiers = [['fast', 'fast (small model)'], ['standard', 'standard'], ['deep', 'deep (largest model)']];
+    const efforts = [['', 'default'], ['low', 'low'], ['medium', 'medium'], ['high', 'high'], ['xhigh', 'extra high'], ['max', 'max']];
+    const roleHelp = { talk: 'Talk (chat and calls)', pm: 'PM (plans and decides)', scout: 'Scout (read-only research)', reviewer: 'Reviewer (second opinions)', fixer: 'Fixer (bug fixes)', builder: 'Builder (features)', content: 'Content (art and assets)' };
+    const roles = Object.keys(roleHelp).map((n) => {
+      const r = t.roles[n];
+      return `<div class="set-row"><div>${roleHelp[n]}</div><div>${select('tuning', `roles.${n}.tier`, r.tier, tiers)} ${select('tuning', `roles.${n}.effort`, r.effort, efforts)} ${num('tuning', `roles.${n}.maxTurns`, r.maxTurns, { min: 0, max: 500 })}</div></div>`;
+    }).join('');
+    const models = ['claude', 'copilot', 'cursor'].map((h) => row(`${h === 'claude' ? 'Claude Code' : h === 'copilot' ? 'Copilot' : 'Cursor'} models`,
+      ['fast', 'standard', 'deep'].map((k) => `<input type="text" data-s="tuning" data-k="models.${h}.${k}" value="${esc(t.models[h][k])}" placeholder="${k}: default" size="18" title="${k}">`).join(' '))).join('');
+    const jobs = Object.keys(t.jobs).map((j) => `${j} ${select('tuning', `jobs.${j}`, t.jobs[j], tiers)}`).join(' &nbsp; ');
+    return `<div class="set-box"><h3>🎚️ Agent tuning: cost, speed, quality</h3>
+      <div class="meta">How much model each job gets. Each role has a tier (which model), an effort (how hard it thinks) and a turn cap (0: the role file's own). The tiers map to real models per harness below. Raising anything here spends more.</div>
+      ${row('Preset', select('tuning', 'preset', t.preset, [['economy', 'Economy: least spend, small models, low effort'], ['balanced', 'Balanced (default): mid model, deep only where it counts'], ['quality', 'Quality: deep model for building and judging'], ['custom', 'Custom (your own mix)']]), 'Choosing one sets every field below. Editing a field makes it Custom.')}
+      <div class="meta" style="padding-top:8px"><b>Roles</b>: tier · effort · turn cap</div>
+      ${roles}
+      ${row('Retry on a deeper model', bool('tuning', 'escalateOnRetry', t.escalateOnRetry, 'a change on its second try or later uses the next tier up'), 'Cheap first, deeper only when the first try did not land. Never applied to Talk.')}
+      ${row('One agent pass lasts at most (minutes)', `${num('tuning', 'passMinutes.standard', t.passMinutes.standard, { min: 5, max: 600 })} <span class="meta">content:</span> ${num('tuning', 'passMinutes.content', t.passMinutes.content, { min: 5, max: 720 })}`, 'A pass that runs out is stopped and resumed, not failed.')}
+      <div class="meta" style="padding-top:8px"><b>Copilot</b>: billed per prompt times the model's multiplier (tool calls inside a run are free), so the model tier and the number of resumed passes cost, turns mostly don't.</div>
+      ${row('Spend stop per run (AI credits)', num('tuning', 'copilot.maxCredits', t.copilot.maxCredits, { min: 0, max: 5000 }), 'The Copilot CLI stops a run that passes this (minimum 30, 0: no stop). One model call can overshoot it.')}
+      ${row('Context window', select('tuning', 'copilot.contextTier', t.copilot.contextTier, [['default', 'default'], ['long_context', 'long (costs more per prompt)']]))}
+      <div class="meta" style="padding-top:8px"><b>Models</b>: the model for each tier (empty: that harness's own default; Claude Code uses its tier ids, Copilot its dotted ids)</div>
+      ${models}
+      <div class="meta" style="padding-top:8px"><b>Small jobs</b> (triage, dedupe, summaries, reviews, canon checks through Gen)</div>
+      <div class="set-row"><div>${jobs}</div><div></div></div>
+    </div>`;
+  }
+
   function resourcesBox(r) {
     if (!r) return '';
     return `<div class="set-box"><h3>🖥️ Server alerts</h3>
@@ -210,7 +238,7 @@
     window.callVoice?.apply(data.call);
     const badge = $('#walkAwayBadge');
     if (badge) badge.hidden = !data.pm.walkAway;
-    $('#setBody').innerHTML = `<div class="set-grid">${brainBox(data.brain)}${claudeBox(claude, data.brain)}${callBox(data.call)}${agentsBox(data.agents)}${pmBox(data.pm)}${notifyBox(data.notify)}${costsBox(data.costs)}${resourcesBox(data.resources)}</div>`;
+    $('#setBody').innerHTML = `<div class="set-grid">${brainBox(data.brain)}${tuningBox(data.tuning)}${claudeBox(claude, data.brain)}${callBox(data.call)}${agentsBox(data.agents)}${pmBox(data.pm)}${notifyBox(data.notify)}${costsBox(data.costs)}${resourcesBox(data.resources)}</div>`;
     if (data.call.engine === 'eleven') loadElevenVoices();
   }
   window.loadSettingsTab = loadSettingsTab;
@@ -269,8 +297,11 @@
         v[m[1]] = Number(m[2]);
       }
     }
-    const patch = k.startsWith('mode.') ? { mode: { [k.slice(5)]: v } } : { [k]: v };
+    // Dotted keys nest: mode.computer, roles.fixer.tier, models.copilot.deep, copilot.maxCredits.
+    const nest = (path, val) => path.reduceRight((acc, key) => ({ [key]: acc }), val);
+    const patch = k.includes('.') ? nest(k.split('.'), v) : { [k]: v };
     const saved = await save(section, patch, t);
+    if (saved && section === 'tuning') loadSettingsTab();
     // Choosing a voice engine changes what the box shows (the ElevenLabs voices, Kokoro's state).
     if (saved && section === 'call' && (k === 'engine' || k === 'rate')) loadSettingsTab();
     if (saved && section === 'brain') loadSettingsTab();

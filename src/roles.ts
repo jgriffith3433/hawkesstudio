@@ -15,6 +15,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { ROOT, PROJECTS, StudioError } from './config.ts';
 import { sandboxOn } from './sandbox.ts';
+import { roleTune, jobTune } from './tuning.ts';
 
 export const ROLES = ['talk', 'pm', 'fixer', 'builder', 'content', 'scout', 'reviewer'] as const;
 export type RoleName = (typeof ROLES)[number];
@@ -44,7 +45,7 @@ export const modelId = (m: string) => MODEL_IDS[m.trim().toLowerCase()] ?? m.tri
 
 /** Small model calls through Gen's llm.* tools: the cheapest model that does the job well. */
 const JOBS: Record<string, string> = { triage: 'haiku', dedupe: 'haiku', summary: 'haiku', host: 'haiku', canon: 'sonnet', review: 'sonnet', criteria: 'sonnet' };
-export const jobModel = (job: keyof typeof JOBS | string) => modelId(process.env[`STUDIO_MODEL_JOB_${job.toUpperCase()}`] ?? JOBS[job] ?? 'sonnet');
+export const jobModel = (job: keyof typeof JOBS | string) => modelId(process.env[`STUDIO_MODEL_JOB_${job.toUpperCase()}`] ?? (JOBS[job] ? jobTune(job).model : 'sonnet'));
 
 export const AGENTS_DIR = () => process.env.STUDIO_AGENTS_DIR ?? path.join(ROOT, '.claude', 'agents');
 /** The plugin root Studio passes as --plugin-dir (skills and the roles as subagents). */
@@ -112,13 +113,18 @@ export function loadRole(name: string): Role {
  * The Claude Code arguments for a role: model, its instructions after the default system prompt, the tools it may use
  * without asking (plus `extraAllowed`, e.g. its MCP tools), what it may never use, and the plugin (skills, subagents).
  */
-export function roleArgs(name: RoleName, { extraAllowed = [] as string[], extraPrompt = '', maxTurns }: { extraAllowed?: string[]; extraPrompt?: string; maxTurns?: number } = {}) {
-  const r = loadRole(name);
+export function roleArgs(name: RoleName, { extraAllowed = [] as string[], extraPrompt = '', maxTurns, retry = 1 }: { extraAllowed?: string[]; extraPrompt?: string; maxTurns?: number; retry?: number } = {}) {
+  const base = loadRole(name);
+  // Settings → Tuning: the model, effort and turn cap for this role on the harness in use (an env override still wins).
+  const tune = roleTune(name, { retry });
+  const envModel = process.env[`STUDIO_MODEL_${name.toUpperCase()}`];
+  const r = { ...base, model: envModel ? base.model : tune.model || base.model };
   const allowed = [...r.allowed, ...extraAllowed];
   const args = ['--model', r.model, '--append-system-prompt', extraPrompt ? `${r.body}\n\n${extraPrompt}` : r.body];
+  if (tune.effort) args.push('--effort', tune.effort);
   if (allowed.length) args.push('--allowedTools', allowed.join(','));
   if (r.disallowed.length) args.push('--disallowedTools', r.disallowed.join(','));
-  const turns = maxTurns ?? r.maxTurns;
+  const turns = maxTurns ?? (tune.maxTurns || r.maxTurns);
   if (turns) args.push('--max-turns', String(turns));
   if (fs.existsSync(path.join(PLUGIN_DIR(), '.claude-plugin', 'plugin.json')) && process.env.STUDIO_PLUGIN !== 'off') args.push('--plugin-dir', PLUGIN_DIR());
   return { args, role: r };

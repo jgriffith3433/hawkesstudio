@@ -31,7 +31,7 @@ test('role flags: model, the stable instructions, the plugin with the skills', (
   assert.ok(at('--append-system-prompt').startsWith(role.body), 'the role first (it caches), then the extra');
   assert.ok(at('--append-system-prompt').endsWith('EXTRA'));
   assert.match(at('--allowedTools'), /mcp__hawkesstudio__memory_search/);
-  assert.equal(at('--max-turns'), '80');
+  assert.equal(at('--max-turns'), '60', 'the balanced preset caps a fixer at 60 turns');
   assert.match(at('--plugin-dir'), /\.claude$/);
   assert.equal(roles.roleArgs('fixer').args.join('\u0000'), roles.roleArgs('fixer').args.join('\u0000'), 'stable between runs');
 });
