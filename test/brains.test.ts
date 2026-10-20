@@ -49,10 +49,14 @@ test('Copilot is a third harness: it launches copilot-agent, and the fallback ch
   delete process.env.HAWKES_BRAIN;
   assert.equal(saveBrain('copilot').harness, 'copilot');
   assert.equal(saveBrain('claude').harness, 'claude');
-  assert.deepEqual(fallbackChain('claude'), ['cursor', 'copilot', 'gemini']);
-  assert.deepEqual(fallbackChain('cursor'), ['claude', 'copilot', 'gemini']);
-  assert.deepEqual(fallbackChain('copilot'), ['claude', 'cursor', 'gemini']);
-  assert.deepEqual(fallbackChain('gemini'), ['claude', 'cursor', 'copilot']);
+  assert.deepEqual(fallbackChain('claude'), ['cursor', 'copilot', 'antigravity', 'gemini']);
+  assert.deepEqual(fallbackChain('cursor'), ['claude', 'copilot', 'antigravity', 'gemini']);
+  assert.deepEqual(fallbackChain('copilot'), ['claude', 'cursor', 'antigravity', 'gemini']);
+  assert.deepEqual(fallbackChain('antigravity'), ['claude', 'cursor', 'copilot', 'gemini']);
+  assert.deepEqual(fallbackChain('gemini'), ['claude', 'cursor', 'copilot', 'antigravity']);
+  process.env.HAWKES_BRAIN = 'antigravity';
+  const a = claudeCommand(['-p', 'hi'], { cwd: process.cwd(), env: process.env });
+  assert.match(String(a.args[0]), /antigravity-agent\.mjs$/);
   process.env.HAWKES_BRAIN = 'gemini';
   const g = claudeCommand(['-p', 'hi'], { cwd: process.cwd(), env: process.env });
   assert.match(String(g.args[0]), /gemini-agent\.mjs$/);

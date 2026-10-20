@@ -10,7 +10,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-export type Harness = 'claude' | 'cursor' | 'copilot' | 'gemini';
+export type Harness = 'claude' | 'cursor' | 'copilot' | 'gemini' | 'antigravity';
 /** Default Cursor model when none is saved. `auto` is Cursor's router (the "Switch to Auto" pool when premium usage is out). */
 export const CURSOR_MODEL = 'auto';
 /** Default Copilot model: none, so the Copilot CLI picks its own default for the plan. */
@@ -20,6 +20,9 @@ export const COPILOT_AGENT = path.join(ROOT, 'bin', 'copilot-agent.mjs');
 /** Default Gemini model: none, so Gemini CLI's Auto routing (Pro for hard work, Flash for easy) answers. */
 export const GEMINI_MODEL = '';
 export const GEMINI_AGENT = path.join(ROOT, 'bin', 'gemini-agent.mjs');
+/** Antigravity CLI (`agy`): what Google AI Pro/Ultra sign-ins use now. No model saved means its own default. */
+export const ANTIGRAVITY_MODEL = '';
+export const ANTIGRAVITY_AGENT = path.join(ROOT, 'bin', 'antigravity-agent.mjs');
 
 db.exec(`CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated INTEGER NOT NULL, by TEXT)`);
 
@@ -27,7 +30,8 @@ export const HARNESSES: { id: Harness; label: string }[] = [
   { id: 'claude', label: 'Claude Code' },
   { id: 'cursor', label: 'Cursor' },
   { id: 'copilot', label: 'GitHub Copilot' },
-  { id: 'gemini', label: 'Google Gemini' },
+  { id: 'gemini', label: 'Gemini API key' },
+  { id: 'antigravity', label: 'Google Antigravity' },
 ];
 export const HARNESS_IDS: Harness[] = HARNESSES.map((h) => h.id);
 export const isHarness = (v: unknown): v is Harness => HARNESS_IDS.includes(v as Harness);
@@ -35,9 +39,24 @@ export const CURSOR_MODELS = ['auto', 'grok-4.7', 'composer-2.5'];
 export const COPILOT_MODELS = ['', 'claude-sonnet-4.5', 'claude-haiku-4.5', 'gpt-5.4'];
 /** '' is Auto; the aliases are Gemini CLI's own (pro, flash, flash-lite). */
 export const GEMINI_MODELS = ['', 'pro', 'flash', 'flash-lite'];
+/** Slugs from `agy models`; '' is the CLI's default. Claude models are in the list too, on the same plan quota. */
+export const ANTIGRAVITY_MODELS = ['', 'gemini-4-argon-high', 'gemini-4-argon-medium', 'gemini-3.8-flash-medium', 'gemini-3.8-flash-low', 'claude-opus-5-5-medium', 'claude-sonnet-5-5-medium'];
 
-/** Where Gemini CLI keeps its Google sign-in (`gemini` once, "Sign in with Google"). */
+/** Where the Google CLIs keep their config and sign-in. */
 export const geminiHome = () => process.env.GEMINI_CLI_HOME ? path.join(process.env.GEMINI_CLI_HOME, '.gemini') : path.join(process.env.HOME || os.homedir(), '.gemini');
+
+/**
+ * Whether `agy` has a Google sign-in here. On Windows and macOS it sits in the system keychain, which a file check can't
+ * see, so ~/.gemini/google_accounts.json (written at sign-in, `active` set) stands in; the first run reports a bad one.
+ */
+export function antigravitySignedIn(): boolean {
+  try {
+    const j = JSON.parse(fs.readFileSync(path.join(geminiHome(), 'google_accounts.json'), 'utf8')) as { active?: unknown };
+    return Boolean(j.active);
+  } catch {
+    return false;
+  }
+}
 
 /**
  * Whether a harness can run here at all: Claude Code always (its login is in the service's home), Cursor with its API
@@ -52,21 +71,21 @@ export function harnessConfigured(h: Harness): boolean {
     return ['config.json', 'apps.json', 'hosts.json'].some((f) => fs.existsSync(path.join(home, f)) && /oauth|token|login|user/i.test(fs.readFileSync(path.join(home, f), 'utf8').slice(0, 4000)));
   }
   if (h === 'gemini') {
-    // A Gemini API key, Vertex AI, or the cached Google sign-in (Google AI Pro/Ultra) in ~/.gemini.
-    if (process.env.GEMINI_API_KEY || process.env.GEMINI_OAUTH_CREDS || process.env.GOOGLE_GENAI_USE_VERTEXAI) return true;
-    return fs.existsSync(path.join(geminiHome(), 'oauth_creds.json'));
+    // Gemini CLI no longer takes personal Google sign-ins (Pro/Ultra: that is Antigravity): a paid API key or Vertex only.
+    return Boolean(process.env.GEMINI_API_KEY || process.env.GOOGLE_GENAI_USE_VERTEXAI);
   }
+  if (h === 'antigravity') return antigravitySignedIn();
   return true;
 }
 
-/** The harnesses to try, in order, when `from` can't run: the others, Claude Code first, then Cursor, Copilot, Gemini. */
+/** The harnesses to try, in order, when `from` can't run: the others, Claude Code first, then Cursor, Copilot, Antigravity, Gemini. */
 export const fallbackChain = (from: Harness): Harness[] => {
-  const order = (process.env.STUDIO_HARNESS_ORDER ?? 'claude,cursor,copilot,gemini').split(',').map((s) => s.trim()).filter(isHarness);
+  const order = (process.env.STUDIO_HARNESS_ORDER ?? 'claude,cursor,copilot,antigravity,gemini').split(',').map((s) => s.trim()).filter(isHarness);
   return [...new Set([...order, ...HARNESS_IDS])].filter((h) => h !== from);
 };
 
 /** The model a harness uses when none is chosen. */
-export const defaultModel = (h: Harness) => (h === 'cursor' ? CURSOR_MODEL : h === 'copilot' ? COPILOT_MODEL : h === 'gemini' ? GEMINI_MODEL : '');
+export const defaultModel = (h: Harness) => (h === 'cursor' ? CURSOR_MODEL : h === 'copilot' ? COPILOT_MODEL : h === 'gemini' ? GEMINI_MODEL : h === 'antigravity' ? ANTIGRAVITY_MODEL : '');
 export const CLAUDE_MODELS = ['', 'claude-opus-5-5', 'claude-sonnet-5-5', 'claude-haiku-5-5'];
 
 function row() {
@@ -76,7 +95,7 @@ function row() {
 
 function normalize(value: { id?: string; harness?: string; model?: string } | null | undefined): { harness: Harness; model: string } {
   const raw = value?.harness ?? value?.id ?? 'claude';
-  const harness: Harness = raw === 'cursor' || raw === 'grok' ? 'cursor' : raw === 'copilot' ? 'copilot' : raw === 'gemini' ? 'gemini' : 'claude';
+  const harness: Harness = raw === 'cursor' || raw === 'grok' ? 'cursor' : raw === 'copilot' ? 'copilot' : raw === 'gemini' ? 'gemini' : raw === 'antigravity' ? 'antigravity' : 'claude';
   const model = typeof value?.model === 'string' ? value.model : defaultModel(harness);
   return { harness, model: harness === 'cursor' && !model ? CURSOR_MODEL : model };
 }
@@ -101,7 +120,7 @@ export function setFailover(f: Failover | null) {
  * The harness in use: J's choice (Settings, or HAWKES_BRAIN), or the failover standing in for it. `chosen` is J's
  * choice either way; `model` is the chosen model, or the stand-in's default (Claude: each role's own; Cursor: Auto).
  */
-export function brainSettings(): { harness: Harness; model: string; id: Harness; saved: number | null; key: boolean; copilot: boolean; gemini: boolean; chosen: Harness; failover: Failover | null } {
+export function brainSettings(): { harness: Harness; model: string; id: Harness; saved: number | null; key: boolean; copilot: boolean; gemini: boolean; antigravity: boolean; chosen: Harness; failover: Failover | null } {
   const env = process.env.HAWKES_BRAIN;
   const saved = row();
   const forced: Harness | null = env === 'grok' ? 'cursor' : isHarness(env) ? env : null;
@@ -111,11 +130,11 @@ export function brainSettings(): { harness: Harness; model: string; id: Harness;
   const f = failover();
   const stand = f && f.from === base.harness && f.harness !== base.harness ? f : null;
   const eff = stand ? { harness: stand.harness, model: defaultModel(stand.harness) } : base;
-  return { ...eff, id: eff.harness, saved: saved?.updated ?? null, key: Boolean(process.env.CURSOR_API_KEY), copilot: harnessConfigured('copilot'), gemini: harnessConfigured('gemini'), chosen: base.harness, failover: stand };
+  return { ...eff, id: eff.harness, saved: saved?.updated ?? null, key: Boolean(process.env.CURSOR_API_KEY), copilot: harnessConfigured('copilot'), gemini: harnessConfigured('gemini'), antigravity: harnessConfigured('antigravity'), chosen: base.harness, failover: stand };
 }
 
 export const brainId = (): Harness => brainSettings().harness;
-export const brainLabel = () => { const id = brainId(); return id === 'cursor' ? 'Cursor' : id === 'copilot' ? 'Copilot' : id === 'gemini' ? 'Gemini' : 'Claude'; };
+export const brainLabel = () => { const id = brainId(); return id === 'cursor' ? 'Cursor' : id === 'copilot' ? 'Copilot' : id === 'gemini' ? 'Gemini' : id === 'antigravity' ? 'Antigravity' : 'Claude'; };
 
 /**
  * The harness refused to run: a usage cap or no login. That is not a diagnosis and not the agent's try
@@ -135,7 +154,7 @@ export type HarnessKind = 'usage' | 'billing' | 'auth' | 'transient';
 export type HarnessStop = { kind: HarnessKind; line: string; resetsAt: number | null };
 const STOPS: [HarnessKind, RegExp][] = [
   ['billing', /unpaid invoice|pay your (unpaid )?invoice|credit balance is too low|insufficient (credit|credits|balance|funds)|billing (issue|error|problem)|payment (required|failed)|\b402\b.{0,40}(payment|billing)|ActionRequiredError|no (remaining )?premium requests|Copilot (subscription|license|plan).{0,40}(expired|inactive|suspended|not active|required)|(no|don'?t have (an )?active) Copilot (access|subscription|license|seat)/i],
-  ['auth', /Authentication required|agent login|run [`'"]?(claude|agent) login|CURSOR_API_KEY|not logged in|please log ?in|invalid (api key|x-api-key|bearer token)|OAuth token (has )?(expired|revoked)|authentication_error|\b401\b.{0,30}(unauthori[sz]ed|auth)|No authentication information found|Classic Personal Access Tokens?|COPILOT_GITHUB_TOKEN|copilot[` '"]*\/?login  |not authenticated|Bad credentials|Please set an Auth method|GEMINI_API_KEY|GOOGLE_GENAI_USE_|gemini[` '"]*\/?(auth|login)|Failed to login|API key not valid/i],
+  ['auth', /Authentication required|agent login|run [`'"]?(claude|agent) login|CURSOR_API_KEY|not logged in|please log ?in|invalid (api key|x-api-key|bearer token)|OAuth token (has )?(expired|revoked)|authentication_error|\b401\b.{0,30}(unauthori[sz]ed|auth)|No authentication information found|Classic Personal Access Tokens?|COPILOT_GITHUB_TOKEN|copilot[` '"]*\/?login  |not authenticated|Bad credentials|Please set an Auth method|GEMINI_API_KEY|GOOGLE_GENAI_USE_|gemini[` '"]*\/?(auth|login)|Failed to login|API key not valid|authentication failed or timed out/i],
     ['usage', /weekly limit|hit your (\w+ )?limit|out of usage|usage limits? (will )?resets?|usage limit|limit to continue|Switch to Auto|(usage|rate) limit (reached|exceeded)|resets (at )?\d{1,2}(:\d\d)?\s*(am|pm)|Claude AI usage limit|quota (has been )?(exceeded|exhausted|reached)|premium requests?.{0,40}(limit|quota|exhausted|exceeded)|exceeded your .{0,30}(quota|limit|allowance)|exhausted your (capacity|quota)|RESOURCE_EXHAUSTED|MODEL_CAPACITY_EXHAUSTED|quota will reset after/i],
   // Only a harness's own error wording: an agent's summary about rate limiting in a game is not this.
   ['transient', /overloaded_error|"type":\s*"overloaded|\bOverloaded\b|rate_limit_error|API Error:?\s*(429|5\d\d)|\b(429|500|502|503|504|529)\b\s*(Too Many Requests|Internal Server Error|Bad Gateway|Service Unavailable|Gateway Time-?out|overloaded)|Internal server error|Service Unavailable|ECONNRESET|socket hang up|fetch failed|Request timed out|api_error/i],
@@ -198,10 +217,10 @@ export function resetTime(text: string, now = Date.now()): number | null {
 
 export function saveBrain(patch: string | { harness?: string; model?: string; id?: string }, by = 'J') {
   const asked = typeof patch === 'string' ? patch : (patch.harness ?? patch.id);
-  if (asked !== undefined && asked !== 'grok' && !isHarness(asked)) throw new Error('harness: claude | cursor | copilot | gemini');
+  if (asked !== undefined && asked !== 'grok' && !isHarness(asked)) throw new Error('harness: claude | cursor | copilot | gemini | antigravity');
   const cur = normalize(row()?.value);
   const next = typeof patch === 'string' ? normalize({ ...cur, id: patch, harness: patch }) : normalize({ ...cur, ...patch, harness: patch.harness ?? patch.id ?? cur.harness });
-  if (!isHarness(next.harness)) throw new Error('harness: claude | cursor | copilot | gemini');
+  if (!isHarness(next.harness)) throw new Error('harness: claude | cursor | copilot | gemini | antigravity');
   db.prepare('INSERT INTO settings (key, value, updated, by) VALUES (?, ?, ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated = excluded.updated, by = excluded.by')
     .run('brain', J({ harness: next.harness, model: next.model }), Date.now(), by);
   // A harness picked on purpose ends any stand-in (harness-hold.ts holds it again if it can't run).
@@ -242,7 +261,8 @@ export function chooseBrain() {
   const s = brainSettings();
   if (s.harness === 'cursor' && !s.key) console.warn('[studio] Harness is Cursor but CURSOR_API_KEY is not in the environment. Add it to the hawkes/cursor secret and restart hawkes-secrets, hawkes-gen and hawkes-studio.');
   if (s.harness === 'copilot' && !harnessConfigured('copilot')) console.warn('[studio] Harness is Copilot but there is no COPILOT_GITHUB_TOKEN (a fine-grained PAT with "Copilot Requests") or copilot login. See docs/copilot.md.');
-  if (s.harness === 'gemini' && !harnessConfigured('gemini')) console.warn('[studio] Harness is Gemini but there is no GEMINI_API_KEY and no Google sign-in in ~/.gemini. See docs/gemini.md.');
+  if (s.harness === 'gemini' && !harnessConfigured('gemini')) console.warn('[studio] Harness is Gemini API key but there is no GEMINI_API_KEY. See docs/gemini.md.');
+  if (s.harness === 'antigravity' && !harnessConfigured('antigravity')) console.warn('[studio] Harness is Antigravity but `agy` has no Google sign-in here. See docs/gemini.md.');
   return s;
 }
 
