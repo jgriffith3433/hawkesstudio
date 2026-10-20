@@ -19,7 +19,7 @@ talk to the cloud, and `auto-start.bat` opens the cloud dashboards. (`auto-start
 ```
                  hawkesgen.com (Route 53)
                         |
-        control server (EC2 t3.large, us-east-1, Elastic IP 52.0.19.230)
+        control server (EC2 m7i.2xlarge, us-east-1, Elastic IP 52.0.19.230)
           Caddy (HTTPS, Let's Encrypt, login) -> Studio :8791, Gen :8790
           hawkes-secrets (API keys and the GitHub token from Secrets Manager into /run, in memory)
           hawkes-daily.timer (5 AM Pacific: the daily trial)
@@ -392,17 +392,17 @@ results for about a day (three requests per refresh, a forced Refresh reuses any
 month. The tab shows how many requests ran this month.
 
 
-Fixed, per month (since 2026-10-16):
+Fixed, per month (since 2026-10-20: the control server moved to m7i.2xlarge, 8 CPUs and 32 GB, with a 400 GB disk):
 
 | Item | Cost |
 |---|---|
-| Control server (t3.medium) | about $30 |
-| Its disk (150 GB) and address | about $16 |
+| Control server (m7i.2xlarge) | about $294 |
+| Its disk (400 GB) and address | about $36 |
 | Build server disk (300 GB, server stopped) | about $24 |
 | One GPU server disk (250 GB, server stopped; it keeps the models) | about $20 |
 | Playtester disk (75 GB, server stopped) | about $6 |
 | Route 53, Secrets Manager, S3 | about $3 |
-| **Total** | **about $99** |
+| **Total** | **about $383** |
 
 Pay-per-use:
 - **GPU server:** about $1.86/hr, only while a job or playtest runs; it stops after 20 idle minutes.
