@@ -189,11 +189,20 @@ function startFifoFeeder(fifoPath) {
   children.push(mk);
   mk.on('close', () => {
     const out = createWriteStream(fifoPath);
+    // Paced by the wall clock, not by chained timers. ffmpeg times the whole stream by these samples: a feed that
+    // runs slow (setTimeout drifts ~2%) puts the x11grab frames minutes ahead of the audio, ffmpeg pulls fewer and
+    // fewer of them (4 fps after an hour), and Twitch shows black under the voice.
+    let t0 = 0;
+    let sent = 0;
     const pump = () => {
       if (out.destroyed) return;
-      const next = nextChunk();
-      if (!out.write(next)) out.once('drain', () => setTimeout(pump, CHUNK_MS));
-      else setTimeout(pump, CHUNK_MS);
+      if (!t0) t0 = Date.now();
+      const due = Math.floor((Date.now() - t0) / CHUNK_MS) + 1;
+      while (sent < due) {
+        sent++;
+        if (!out.write(nextChunk())) { out.once('drain', pump); return; }
+      }
+      setTimeout(pump, CHUNK_MS / 2);
     };
     out.on('open', pump);
     out.on('error', () => setTimeout(() => startFifoFeeder(fifoPath), 1000));
@@ -230,9 +239,11 @@ if (process.platform === 'linux') {
     // journal. -stats keeps the frame= progress lines (they carry no URL).
     const enc = spawn(ffmpeg, [
       '-hide_banner', '-loglevel', 'warning', '-stats',
-      '-f', 'x11grab', '-video_size', '1920x1080', '-framerate', '30', '-draw_mouse', '0', '-i', ':99',
+      '-thread_queue_size', '512', '-f', 'x11grab', '-video_size', '1920x1080', '-framerate', '30', '-draw_mouse', '0', '-i', ':99',
       '-thread_queue_size', '1024', '-f', 's16le', '-ar', String(RATE), '-ac', String(CHANNELS), '-i', fifo,
-      '-c:v', 'libx264', '-preset', 'veryfast', '-b:v', '4500k', '-pix_fmt', 'yuv420p',
+      // Twitch wants a keyframe every 2 s and a steady bitrate; x264's default is one per 250 frames.
+      '-c:v', 'libx264', '-preset', 'veryfast', '-b:v', '4500k', '-maxrate', '4500k', '-bufsize', '9000k',
+      '-g', '60', '-keyint_min', '60', '-sc_threshold', '0', '-pix_fmt', 'yuv420p',
       '-c:a', 'aac', '-b:a', '128k', '-ar', String(RATE),
       '-f', 'flv', `rtmp://live.twitch.tv/app/${KEY}`,
     ], { env: { ...process.env, DISPLAY: ':99' }, stdio: 'inherit' });
@@ -245,7 +256,8 @@ if (process.platform === 'linux') {
     '-hide_banner', '-loglevel', 'warning', '-stats',
     '-f', 'gdigrab', '-framerate', '30', '-i', 'desktop',
     '-f', 'lavfi', '-i', 'anullsrc=channel_layout=stereo:sample_rate=44100',
-    '-c:v', 'libx264', '-preset', 'veryfast', '-b:v', '4500k', '-pix_fmt', 'yuv420p',
+    '-c:v', 'libx264', '-preset', 'veryfast', '-b:v', '4500k', '-maxrate', '4500k', '-bufsize', '9000k',
+    '-g', '60', '-keyint_min', '60', '-sc_threshold', '0', '-pix_fmt', 'yuv420p',
     '-c:a', 'aac', '-b:a', '128k', '-shortest',
     '-f', 'flv', `rtmp://live.twitch.tv/app/${KEY}`,
   ], { stdio: 'inherit' });
