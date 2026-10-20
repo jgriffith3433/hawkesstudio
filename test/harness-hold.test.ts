@@ -99,6 +99,9 @@ test('a pass the harness ended is told apart from an agent that finished', () =>
   const long = 'Fixed the shop. '.repeat(30) + 'The fetch failed on the old endpoint, and an Internal server error showed on 500s.';
   assert.equal(agents.passStop({ ok: true, sawResult: true, result: long, stderr: 'warning: something on stderr\n' }), null);
   assert.equal(agents.passStop({ ok: true, sawResult: true, result: 'done' }, 'Already done: the bridge cutscene is on beta.'), null);
+  const analysis = `Nothing was committed.\n${'The scout looked at the failing runs and found the tasks all stopped early. '.repeat(8)}\n- The scout's diagnosis ("weekly limit reached") is a usage cap, not a game problem. Nothing to fix in the project for it.`;
+  assert.equal(agents.passStop({ ok: false, sawResult: true, result: '' }, analysis), null);
+  assert.equal(agents.passStop({ ok: false, sawResult: true, result: '' }, "You've hit your limit · resets 8:40am (UTC)")?.kind, 'usage');
   // A review that failed on Cursor's invoice waits for the AI (pipeline.ts), one that failed on the playtest doesn't.
   assert.equal(aiStop('not JSON (Claude Code fallback, Gen: Cursor: ActionRequiredError: You have an unpaid invoice Pay your unpaid invoice at [cursor.com/dashboard/billing](h')?.kind, 'billing');
   assert.equal(aiStop('the playtest job is gone'), null);

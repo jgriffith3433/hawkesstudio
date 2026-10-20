@@ -2567,7 +2567,8 @@ export function harnessFailed(c: { status: string; detail?: string | null; log?:
   if (c.status !== 'failed') return false;
   const log = c.log ?? [];
   const err = log.filter((l) => /^\d\d:\d\d:\d\d stderr:/.test(l)).slice(-20).join('\n');
-  const said = [c.detail ?? '', ...log.filter((l) => /^\d\d:\d\d:\d\d agent: /.test(l)).slice(-6)].join('\n');
+  const said = [c.detail ?? '', ...log.filter((l) => /^\d\d:\d\d:\d\d agent: /.test(l)).slice(-6)]
+    .filter((l) => l.length < 300).join('\n');
   return Boolean(harnessStopOf(err, { kinds: ['usage', 'billing', 'auth'] }) || harnessStopOf(said, { kinds: ['usage', 'billing'] }));
 }
 

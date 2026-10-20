@@ -259,8 +259,10 @@ export function passStop(r: { ok: boolean; sawResult: boolean; result: string; s
     : harnessStopOf(`${result}\n${r.stderr ?? ''}`, r.sawResult ? { kinds: ['usage', 'billing', 'auth'] } : {});
   if (own) return own;
   if (clean) return null;
-  return harnessStopOf(summary, { kinds: ['usage', 'billing'] });
+  // Only a short summary can be the harness's own message; a long one that mentions a limit is the agent's analysis.
+  return summary.trim().length < SUMMARY_STOP_MAX ? harnessStopOf(summary, { kinds: ['usage', 'billing'] }) : null;
 }
+export const SUMMARY_STOP_MAX = 400;
 
 /**
  * The harness stopped this pass: the change parks (queued, its worktree, branch, session and step kept) and the harness
