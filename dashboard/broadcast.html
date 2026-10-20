@@ -9,77 +9,132 @@
 <body>
 <div id="stage">
   <header>
-    <div class="brand"><span class="live-dot"></span> ON AIR <span class="dim">Hawkes Studio</span></div>
-    <div id="chips"></div>
-    <div id="clock" class="dim"></div>
+    <div class="brand"><span class="live-dot"></span> LIVE <span class="brand-name">HAWKES STUDIO</span></div>
+    <nav id="ladder">
+      <span data-k="playtest">Playtests <b></b></span>
+      <span data-k="work">Agents <b></b></span>
+      <span data-k="roadmap">Roadmap <b></b></span>
+      <span data-k="showcase">Showcase</span>
+    </nav>
+    <div id="clock"></div>
   </header>
-  <div class="body">
-    <section class="screen">
-      <img id="live" alt="" hidden>
-      <video id="replay" hidden muted playsinline></video>
-      <div id="idle">
-        <div class="idle-kicker">Between takes</div>
-        <div id="idle-title">The floor is quiet</div>
-        <div id="idle-sub"></div>
+
+  <section id="screen">
+    <!-- playtest -->
+    <div class="scene" id="sc-playtest">
+      <img id="pt-live" alt="">
+      <div class="badge live"><span class="live-dot"></span> LIVE PLAYTEST</div>
+      <div class="pt-info">
+        <div class="pt-product" id="pt-product"></div>
+        <div class="pt-scenario" id="pt-scenario"></div>
+        <div class="pt-now"><span class="tag">BOT</span> <span id="pt-now"></span></div>
       </div>
-      <div id="pips"></div>
-      <div id="lower">
-        <div id="lower-title"></div>
-        <div id="lower-sub"></div>
-      </div>
-      <div id="stinger" hidden></div>
-      <div id="host">
-        <div class="puppet" aria-hidden="true"><span class="mouth"></span></div>
-        <div>
-          <div class="who">Yooba</div>
-          <div id="host-line"></div>
+      <div class="pt-problems" id="pt-problems" hidden></div>
+      <div class="pt-wrap" id="pt-wrap" hidden></div>
+    </div>
+    <!-- work -->
+    <div class="scene" id="sc-work">
+      <div class="backdrop" id="wk-bg"></div>
+      <div class="badge work">IN THE WORKSHOP</div>
+      <div class="wk-card">
+        <div class="wk-product" id="wk-product"></div>
+        <h1 id="wk-title"></h1>
+        <div class="wk-meta" id="wk-meta"></div>
+        <p class="wk-why" id="wk-why"></p>
+        <div class="wk-cols">
+          <div>
+            <div class="kicker">Agent's notes</div>
+            <ol id="wk-notes"></ol>
+          </div>
+          <div>
+            <div class="kicker">Done means</div>
+            <ul id="wk-criteria"></ul>
+            <div class="kicker tools-k">Tools in use</div>
+            <div id="wk-tools"></div>
+          </div>
         </div>
       </div>
-    </section>
-    <aside>
-      <div class="kicker" id="ms-kicker">Roadmap</div>
-      <h2 id="ms-title">What's being made</h2>
-      <div id="bars"></div>
-    </aside>
-  </div>
+    </div>
+    <!-- roadmap -->
+    <div class="scene" id="sc-roadmap">
+      <div class="backdrop" id="rm-bg"></div>
+      <div class="badge road">ON THE ROADMAP</div>
+      <div class="rm-card">
+        <div class="rm-product" id="rm-product"></div>
+        <h1 id="rm-milestone"></h1>
+        <div class="rm-ring"><svg viewBox="0 0 120 120"><circle cx="60" cy="60" r="52" class="ring-bg"/><circle cx="60" cy="60" r="52" class="ring-fg" id="rm-ring"/></svg><span id="rm-count"></span></div>
+        <div id="rm-items"></div>
+      </div>
+    </div>
+    <!-- showcase -->
+    <div class="scene" id="sc-showcase">
+      <img id="sh-img" alt="">
+      <video id="sh-video" muted playsinline loop></video>
+      <div class="sh-song" id="sh-song">
+        <div class="sh-cover" id="sh-cover"></div>
+        <div class="sh-song-text">
+          <div class="kicker">Now playing · made by the studio</div>
+          <h1 id="sh-song-title"></h1>
+          <div id="sh-song-meta"></div>
+          <div class="eq" id="sh-eq"></div>
+        </div>
+      </div>
+      <div class="badge show">FROM THE STUDIO</div>
+      <div class="sh-label"><div id="sh-product"></div><div id="sh-what"></div></div>
+    </div>
+    <!-- quiet -->
+    <div class="scene" id="sc-quiet">
+      <div class="quiet-k">Hawkes Studio</div>
+      <h1>Back in a moment</h1>
+    </div>
+    <div id="stinger"><span></span></div>
+    <div id="banner" hidden></div>
+  </section>
+
+  <aside id="rail">
+    <div id="host-cam">
+      <div class="cam-k">HOST CAM</div>
+      <img id="yooba" src="/onair/yooba.png" alt="">
+      <div class="nameplate">YOOBA <span>your host</span></div>
+    </div>
+    <div class="rail-k" id="rail-k">Also on the floor</div>
+    <div id="also"></div>
+    <div class="rail-k" id="landed-k">Just landed</div>
+    <div id="landed"></div>
+  </aside>
+
   <footer>
-    <div class="kicker">On the floor</div>
+    <div id="caption"><span class="who">YOOBA</span><span id="caption-text"></span></div>
     <div id="ticker"></div>
   </footer>
   <div id="disclose"></div>
 </div>
 <audio id="host-audio" preload="auto"></audio>
+<audio id="song-audio" preload="auto"></audio>
 <form id="desk">
   <span class="desk-kicker">Director</span>
   <span class="desk-note">This bar stays off the stream (?clean=1).</span>
-  <label>Product <select id="desk-product"></select></label>
-  <div class="desk-priority" title="Auto prefers higher products">
-    <span class="desk-note">Priority</span>
-    <select id="desk-pri-pick"></select>
-    <button type="button" id="desk-pri-up" title="Higher priority">↑</button>
-    <button type="button" id="desk-pri-down" title="Lower priority">↓</button>
-  </div>
   <label>On screen <select id="desk-screen">
-    <option value="auto">Auto</option>
-    <option value="reel">Library reel</option>
-    <option value="take">Hold a take</option>
-    <option value="quiet">Quiet card</option>
+    <option value="auto">Auto (the ladder)</option>
+    <option value="take">Playtests</option>
+    <option value="work">Agents at work</option>
+    <option value="roadmap">Roadmap</option>
+    <option value="reel">Showcase</option>
+    <option value="quiet">Hold still</option>
   </select></label>
   <label>Take <select id="desk-take"></select></label>
-  <label>Clip <select id="desk-clip"></select></label>
-  <button type="button" id="desk-prev">Previous</button>
+  <button type="button" id="desk-next" title="Move the show on now">Next</button>
   <button type="button" id="desk-pause">Pause</button>
-  <button type="button" id="desk-next">Next</button>
-  <label><input type="checkbox" id="desk-showRoadmap"> Roadmap</label>
+  <label>Product <select id="desk-product"></select></label>
+  <label title="Yooba speaks on the stream (Gen voice, mixed by the encoder). Captions still show when off."><input type="checkbox" id="desk-voice"> Voice</label>
+  <label title="Claude writes Yooba's lines from what's on. Off: simple template lines."><input type="checkbox" id="desk-brain"> Claude writes lines</label>
+  <label><input type="checkbox" id="desk-showHost"> Host cam</label>
+  <label><input type="checkbox" id="desk-showPips"> Also live</label>
   <label><input type="checkbox" id="desk-showTicker"> Ticker</label>
-  <label><input type="checkbox" id="desk-showHost"> Yooba</label>
-  <label><input type="checkbox" id="desk-showPips"> Other cameras</label>
-  <label><input type="checkbox" id="desk-showFlash"> Stingers</label>
-  <label title="Yooba speaks on the encoded stream (Gen voice + ffmpeg mix). Captions still show when off."><input type="checkbox" id="desk-voice"> Host voice</label>
-  <label>Lower third <input id="desk-banner" type="text" maxlength="80" placeholder="optional caption"></label>
-  <label>Yooba says <input id="desk-cue" type="text" maxlength="160" placeholder="his own line, until you clear it"></label>
+  <label>Banner <input id="desk-banner" type="text" maxlength="80" placeholder="optional"></label>
+  <label>Yooba says <input id="desk-cue" type="text" maxlength="160" placeholder="a line, said right away"></label>
   <button type="button" id="desk-say">Say</button>
-  <button type="button" id="desk-clear">His own line</button>
+  <button type="button" id="desk-clear">Clear</button>
   <button type="button" id="desk-reset">Reset</button>
   <span id="desk-now"></span>
 </form>

@@ -107,6 +107,8 @@ export type Broadcast = {
   /** One-line status for the director strip: picture, product, clip/take. */
   status?: string;
   disclose: string;
+  /** The show (show.ts): the rung on now, its card, Yooba's line and voice, the song playing, what's up next. */
+  show?: any;
 };
 
 /** What the On air director has set. The stream page and this browser both follow it. */
@@ -115,7 +117,8 @@ export type Desk = {
   product: string | null;
   /** Auto mode prefers live takes and reel clips in this order (yoobaland first by default). */
   priority: string[];
-  screen: 'auto' | 'take' | 'reel' | 'quiet';
+  /** auto runs the ladder (show.ts); take, work, roadmap and reel (the showcase) hold one rung; quiet holds still. */
+  screen: 'auto' | 'take' | 'reel' | 'quiet' | 'work' | 'roadmap';
   take: string;
   clip: string;
   paused: boolean;
@@ -129,6 +132,10 @@ export type Desk = {
   voice: boolean;
   cue: string;
   banner: string;
+  /** Yooba's lines written by Claude from what's on (off: the templates only). */
+  brain: boolean;
+  /** Bumped by the director's Next: the show moves on now. */
+  skip: number;
 };
 
 export const DESK_DEFAULT: Desk = {
@@ -147,6 +154,8 @@ export const DESK_DEFAULT: Desk = {
   voice: true,
   cue: '',
   banner: '',
+  brain: true,
+  skip: 0,
 };
 
 /** Yooba Land first (the show opened on it), then the rest in products.json order. */
@@ -419,7 +428,8 @@ function hostOf(focus: Take | null, ticker: Tick[], reel: ReelItem[]): string {
 }
 
 const TAKE_ID = /^(?:j_[0-9a-f]+|wait-[a-z0-9-]+)$/;
-const SHOW_FLAGS = ['showRoadmap', 'showTicker', 'showHost', 'showPips', 'showFlash', 'voice'] as const;
+const SHOW_FLAGS = ['showRoadmap', 'showTicker', 'showHost', 'showPips', 'showFlash', 'voice', 'brain'] as const;
+const SCREENS = ['auto', 'take', 'reel', 'quiet', 'work', 'roadmap'];
 
 /** Force a director cue into Yooba's voice (paths and keys stripped). */
 export function cueLine(cue: string): string {
@@ -440,7 +450,8 @@ export function deskFrom(raw: unknown, products: string[]): Desk {
   if (r.product === null) d.product = null;
   else if (typeof r.product === 'string' && (r.product === '' || products.includes(r.product))) d.product = r.product;
   d.priority = normalizePriority(r.priority, products);
-  if (r.screen === 'auto' || r.screen === 'take' || r.screen === 'reel' || r.screen === 'quiet') d.screen = r.screen;
+  if (SCREENS.includes(r.screen)) d.screen = r.screen;
+  if (Number.isInteger(r.skip) && r.skip >= 0) d.skip = r.skip;
   if (typeof r.take === 'string' && (!r.take || TAKE_ID.test(r.take))) d.take = r.take;
   if (typeof r.clip === 'string' && (!r.clip || ASSET.test(r.clip))) d.clip = r.clip;
   if (typeof r.paused === 'boolean') d.paused = r.paused;
@@ -480,7 +491,7 @@ export function patchDesk(cur: Desk, patch: any, products: string[], pool: { ass
     }
   }
   if (patch.screen !== undefined) {
-    if (!['auto', 'take', 'reel', 'quiet'].includes(patch.screen)) throw new StudioError('screen: auto, take, reel or quiet');
+    if (!SCREENS.includes(patch.screen)) throw new StudioError('screen: auto, take, work, roadmap, reel or quiet');
     next.screen = patch.screen;
   }
   if (patch.take !== undefined) {
@@ -500,6 +511,7 @@ export function patchDesk(cur: Desk, patch: any, products: string[], pool: { ass
     }
   }
   if (patch.paused !== undefined) next.paused = Boolean(patch.paused);
+  if (patch.next === true) next.skip = (cur.skip || 0) + 1;
   if (patch.reelAt !== undefined && patch.advance !== true && patch.nudge === undefined) {
     const n = Number(patch.reelAt);
     if (!Number.isInteger(n) || n < 0 || n > 500) throw new StudioError('reelAt: 0 to 500');
@@ -852,9 +864,6 @@ let pendingSay = false;
 /** Last unique line we paid Gen to speak (rate limit). */
 let lastSynthAt = 0;
 let lastSynthKey = '';
-/** Detect live landing / bug flash for urgent speech. */
-let lastFocusJob = '';
-let lastFlashId = '';
 let lastHostAudio: { key: string; url: string; text: string } | null = null;
 let voiceFlight: Promise<string | null> | null = null;
 
@@ -917,6 +926,42 @@ export async function ensureHostAudio(text: string, opts: { urgent?: boolean; vo
   return voiceFlight;
 }
 
+/** How long a cached host mp3 plays: Gen's ElevenLabs output is mp3_44100_128, so bytes × 8 / 128 kbit/s. */
+export function voiceMs(bytes: number): number {
+  return Math.max(600, Math.round((bytes * 8) / 128));
+}
+
+/**
+ * One of the show's lines in Yooba's voice (show.ts paces them and keeps the daily budget). A cache hit is free and
+ * `paid` is false; a new line is one Gen audio.voice job (not with cachedOnly). Null when Gen can't.
+ */
+export async function speakLine(text: string, opts: { cachedOnly?: boolean } = {}): Promise<{ url: string; ms: number; paid: boolean } | null> {
+  const line = safeLine(text, 220);
+  if (!line) return null;
+  const key = voiceCacheKey(line);
+  const file = voiceFilePath(key);
+  const url = `/api/broadcast/voice/${key}.mp3`;
+  const ready = () => (fs.existsSync(file) && fs.statSync(file).size > 64 ? fs.statSync(file).size : 0);
+  if (ready()) return { url, ms: voiceMs(ready()), paid: false };
+  if (opts.cachedOnly) return null;
+  try {
+    fs.mkdirSync(VOICE_DIR, { recursive: true });
+    const job = await gen.run('audio.voice', {
+      project: 'hawkesstudio',
+      params: { text: line, voice: YOOBA_VOICE_ID, model: YOOBA_VOICE_MODEL, format: 'mp3_44100_128' },
+      labels: { from: 'broadcast', kind: 'host' },
+      key: `broadcast-voice-${key}`,
+      timeoutMs: 45_000,
+    });
+    const asset = String(job?.outputs?.[0]?.asset ?? job?.outputs?.[0]?.id ?? '');
+    if (!ASSET.test(asset)) return null;
+    await gen.download(asset, file);
+    return ready() ? { url, ms: voiceMs(ready()), paid: true } : null;
+  } catch {
+    return null;
+  }
+}
+
 /** Serves a cached host mp3 (same-origin for the page and the streamer). */
 export function readVoiceFile(key: string): string | null {
   const k = String(key ?? '').replace(/\.mp3$/i, '');
@@ -947,7 +992,19 @@ export async function updateDesk(patch: any, productHint?: string): Promise<Desk
 }
 
 /** Live frame for the page. Gen being down still returns the roadmap and the ticker. */
-export async function broadcastNow(q: { product?: string } = {}): Promise<Broadcast> {
+/** Every viewer (the director's page, the clean capture, the encoder) polls about once a second: one frame serves them all. */
+// The show ignores a page's ?product= link (only the desk locks it), so the encoder's link and the director's page
+// share the frame too.
+let framed: { at: number; frame: Promise<Broadcast> } | null = null;
+export function broadcastNow(q: { product?: string } = {}): Promise<Broadcast> {
+  if (!pendingSay && framed && Date.now() - framed.at < 700) return framed.frame;
+  const frame = buildFrame(q);
+  framed = { at: Date.now(), frame };
+  frame.catch(() => { framed = null; });
+  return frame;
+}
+
+async function buildFrame(q: { product?: string }): Promise<Broadcast> {
   const lineup = loadProducts().map((p) => ({ id: p.id, name: p.name }));
   const desk = readDesk(lineup.map((p) => p.id));
   const product = desk.product === null ? (q.product || undefined) : (desk.product || undefined);
@@ -969,20 +1026,23 @@ export async function broadcastNow(q: { product?: string } = {}): Promise<Broadc
     desk,
     lineup,
   );
-  const focusJob = frame.focus?.phase === 'playing' ? frame.focus.job : '';
-  const flashId = frame.flash?.id || '';
-  const urgent = pendingSay
-    || (Boolean(focusJob) && focusJob !== lastFocusJob)
-    || (Boolean(flashId) && flashId !== lastFlashId);
+  // The show runs the ladder and Yooba's lines (show.ts); the old one-line host is only its fallback caption.
+  const show = await import('./show.ts');
+  const say = pendingSay;
   pendingSay = false;
-  if (focusJob) lastFocusJob = focusJob;
-  if (flashId) lastFlashId = flashId;
-  frame.say = frame.host;
-  if (desk.voice) {
-    // Cap wait so a slow Gen does not stall the 2 s poll; a later poll picks up the cache.
-    frame.hostAudio = await within(ensureHostAudio(frame.host, { urgent, voiceOn: true }), urgent ? 8_000 : 1_500, lastHostAudio?.url ?? null);
-  } else {
-    frame.hostAudio = null;
+  try {
+    // One show for every viewer: only the director's product lock narrows it, never a page's ?product= link.
+    const clips = selectReel(library, { product: desk.product || undefined, priority: desk.priority, cap: 24 });
+    const r = await show.rungs(live, clips, desk.product || undefined);
+    const sd = { screen: desk.screen, take: desk.take, clip: desk.clip, paused: desk.paused, voice: desk.voice, brain: desk.brain, cue: desk.cue, skip: desk.skip, product: desk.product, priority: desk.priority };
+    show.tick(r, sd, live, say);
+    frame.show = show.showNow(r, sd);
+  } catch (e: any) {
+    frame.show = { error: safeLine(e?.message ?? e, 160) };
   }
+  const line = frame.show?.line;
+  frame.say = line?.text || frame.host;
+  frame.host = line?.text || frame.host;
+  frame.hostAudio = desk.voice && line?.speaking ? line.voice : null;
   return frame;
 }
