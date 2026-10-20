@@ -149,7 +149,10 @@ ${domain} {
 		X-Frame-Options "DENY"
 		Referrer-Policy "strict-origin-when-cross-origin"
 		Permissions-Policy "camera=(), microphone=(), geolocation=()"
-		Content-Security-Policy "default-src 'none'; style-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+		# The page is still locked down. The one exception is the Twitch player in site/index.html: a frame
+		# of https://player.twitch.tv (channel jgriffith3433, parent hawkesgen.com). The iframe asks the
+		# parent page for nothing else, so script, image and connect stay closed.
+		Content-Security-Policy "default-src 'none'; style-src 'self'; img-src 'self' data:; frame-src https://player.twitch.tv; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
 		Cache-Control "public, max-age=300"
 		-Server
 	}

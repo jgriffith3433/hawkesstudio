@@ -71,6 +71,27 @@ test('studio: the analytics routes are not added there', () => {
   assert.doesNotMatch(site('studio.hawkesgen.com'), /analytics|@sdk/);
 });
 
+test('apex: locked down, except one frame for the Twitch player', () => {
+  const apex = site('hawkesgen.com');
+  const csp = /Content-Security-Policy "([^"]+)"/.exec(apex);
+  assert.ok(csp, 'a CSP on the apex');
+  const policy = csp[1];
+  assert.match(policy, /default-src 'none'/);
+  assert.match(policy, /style-src 'self'/);
+  assert.match(policy, /img-src 'self' data:/);
+  assert.match(policy, /frame-src https:\/\/player\.twitch\.tv(?![\w./])/);
+  assert.match(policy, /base-uri 'none'/);
+  assert.match(policy, /form-action 'none'/);
+  assert.match(policy, /frame-ancestors 'none'/);
+  assert.doesNotMatch(policy, /script-src|connect-src|media-src|object-src|worker-src/);
+  assert.match(apex, /X-Frame-Options "DENY"/);
+  assert.doesNotMatch(site('gen.hawkesgen.com'), /player\.twitch\.tv/);
+  assert.doesNotMatch(site('studio.hawkesgen.com'), /player\.twitch\.tv/);
+  const page = fs.readFileSync(path.join(root, 'site', 'index.html'), 'utf8');
+  assert.match(page, /src="https:\/\/player\.twitch\.tv\/\?channel=jgriffith3433&amp;parent=hawkesgen\.com"/);
+  assert.doesNotMatch(page, /stream.?key|client_secret|oauth/i);
+});
+
 test('the Caddyfile is valid (when caddy is installed)', (t) => {
   if (spawnSync('caddy', ['version']).status !== 0) return t.skip('caddy not installed');
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'studio-caddy-'));
