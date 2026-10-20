@@ -33,7 +33,7 @@ const STATE = path.join(DATA, 'previews.json');
  * A Unity change's website copy: a worktree of the site repo at its main (.work/<change>-site) that the build server's
  * build of the change lands in (agents.ts), so the real website folder never gets it. `<dir>.json` says what's in it.
  */
-export type ChangeBuild = { sha: string; ok: boolean; at: number; job?: string; version?: string | null; error?: string; retry?: boolean; cost?: number; minutes?: number };
+export type ChangeBuild = { sha: string; ok: boolean; at: number; job?: string; version?: string | null; error?: string; retry?: boolean; cost?: number; minutes?: number; packages?: Record<string, { sha: string; behind: number }> };
 export const changeSiteDir = (change: string) => path.join(PROJECTS, '.work', `${change}-site`);
 export function changeBuild(change: string): ChangeBuild | null {
   try {

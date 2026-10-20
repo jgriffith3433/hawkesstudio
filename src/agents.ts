@@ -46,6 +46,7 @@ import { getFinding, updateFinding } from './backlog.ts';
 import { reviewParams } from './review.ts';
 import { reviewJob } from './review-cc.ts';
 import { gen, genRun, fileUrl } from './gen.ts';
+import { unityBuild } from './buildpkgs.ts';
 import { repoMap } from './repos.ts';
 import { serveDir, stopServed } from './local.ts';
 import { claudeEnv } from './claude.ts';
@@ -1672,8 +1673,8 @@ async function buildChange(c: Change, p: Product, jobs?: JobMemo): Promise<Chang
   const siteDir = path.join(copy, path.relative(siteTop, p.site));
   addLog(c.id, prior ? `build: waiting for ${prior} again (started before Studio restarted)` : `build: ${sha.slice(0, 7)} on the build server (${p.build.method}) into ${rel(siteDir)}`);
   update(c.id, { detail: 'building the branch on the build server' });
-  const job = await genRun('unity.build', p.id, { project: p.build.project, site: p.build.site, method: p.build.method, projectDir: rel(projectDir), siteDir: rel(siteDir) },
-    (j) => update(c.id, { detail: `build server: ${j.detail ?? j.status}` }), undefined, { job: prior, onSubmit: (id) => jobs?.set('build', id) });
+  const job = await unityBuild(p.id, { project: p.build.project, site: p.build.site, method: p.build.method, projectDir: rel(projectDir), siteDir: rel(siteDir) },
+    (j) => update(c.id, { detail: `build server: ${j.detail ?? j.status}` }), { job: prior, onSubmit: (id) => jobs?.set('build', id), log: (m) => addLog(c.id, `build: ${m}`) });
   const r = job.result ?? {};
   const cost = Number(job.cost ?? r.cost) || 0;
   update(c.id, { cost: getChange(c.id)!.cost + cost });
@@ -1682,7 +1683,7 @@ async function buildChange(c: Change, p: Product, jobs?: JobMemo): Promise<Chang
   const error = stale ? `Hawkes Gen's unity.build ignored siteDir (update Hawkes Gen); the build went to ${r.site.folder}` : job.status === 'done' ? undefined : String(job.error ?? job.detail ?? 'build failed');
   // Unity's own errors come back the same for the same commit; the server being busy, unlicensed or unreachable doesn't.
   const b: ChangeBuild = {
-    sha, ok: !error, at: Date.now(), job: job.id, version: r.version ?? null, cost, minutes: Math.round((r.seconds ?? 0) / 60),
+    sha, ok: !error, at: Date.now(), job: job.id, version: r.version ?? null, cost, ...(r.packages ? { packages: r.packages } : {}), minutes: Math.round((r.seconds ?? 0) / 60),
     ...(error ? { error: error.slice(0, 500), retry: !/Unity exited with code|error CS\d+|Build ?Failed/i.test(error) } : {}),
   };
   fs.writeFileSync(mark, JSON.stringify(b, null, 2));
