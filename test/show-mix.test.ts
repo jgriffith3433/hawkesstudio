@@ -61,6 +61,19 @@ test('under the shuffle only a new playtest cuts in, and the shuffle picks again
   const next = decide(st3, r2, now + 31_000, { mix: 'shuffle', rng: () => 0.99 })!;
   assert.equal(next.reason, 'next');
   assert.equal(next.kind, 'showcase');
+  // Coming back to a rung from another one moves on to its next subject (it showed the same lore card every time).
+  const st6 = fresh();
+  const r6 = rungs({ showcase: [song('a_1')], lore: [lore('m_1'), lore('m_2'), lore('m_3')] });
+  const shown: string[] = [];
+  let t = now;
+  st6.seg = seg('showcase', 'a_1', t);
+  for (let n = 0; n < 4; n++) {
+    t += 31_000;
+    const l = decide(st6, r6, t, { mix: 'shuffle', weights: { showcase: 0 } })!;
+    shown.push(l.card.id);
+    st6.seg = seg('showcase', 'a_1', t); // a showcase segment in between
+  }
+  assert.deepEqual(shown, ['m_2', 'm_3', 'm_1', 'm_2']);
   // Playtests held with none running (left on after "Start playtest"): the shuffle still runs, not the ladder's top.
   const st5 = fresh();
   st5.seg = seg('showcase', 'a_1', now);

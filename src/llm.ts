@@ -53,7 +53,9 @@ export type AskParams = {
 export function isBillingError(e: unknown) {
   const kind = (e as any)?.kind;
   const msg = typeof e === 'string' ? e : String((e as any)?.message ?? (e as any)?.error ?? e ?? '');
-  return kind === 'auth' || /credit balance|billing|payment required|ANTHROPIC_API_KEY|key .*was rejected|authentication_error|invalid x-api-key/i.test(msg);
+  // Any "the provider won't serve us right now" (J, 2026-10-20: recover from these states): credit, billing, an unpaid
+  // invoice (Cursor's ActionRequiredError), a usage or quota limit, overloaded, a rejected key.
+  return kind === 'auth' || /credit balance|billing|payment required|unpaid invoice|ActionRequiredError|usage limit|quota|rate.?limit|overloaded|ANTHROPIC_API_KEY|key .*was rejected|authentication_error|invalid x-api-key/i.test(msg);
 }
 
 const DOWN_MS = 10 * 60_000;
@@ -175,7 +177,7 @@ export function jsonIn(text: string) {
 /** One `claude -p` run: { ok, text, structured, usage, error }. The prompt goes in on stdin (prompts can be long). */
 function runClaude(args: string[], input: string, cwd: string, timeoutMs: number): Promise<{ ok: boolean; text: string; structured: unknown; usage: number; error?: string }> {
   return new Promise((resolve) => {
-    const c = claudeCommand(args, { cwd, env: claudeEnv() });
+    const c = claudeCommand(args, { cwd, env: claudeEnv(), brain: 'claude' });
     const child = spawn(c.file, c.args, { cwd: c.cwd, env: c.env, windowsHide: true });
     let out = '';
     let err = '';

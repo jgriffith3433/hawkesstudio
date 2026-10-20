@@ -111,6 +111,8 @@ export type ShowState = {
   host?: string; hostSince?: number; handoffFrom?: string;
   /** When the host last started talking (the gap between talking). */
   lastSpoke?: number;
+  /** Each rung's last subject on screen: coming back to a rung moves on from it. */
+  lastShown?: Partial<Record<Kind, string>>;
 };
 
 export type ShowDesk = {
@@ -286,16 +288,23 @@ export function nextHost(state: ShowState, desk: Pick<ShowDesk, 'hosts' | 'host'
   return want;
 }
 
+/**
+ * The next subject on a rung: the one after the subject on now (same rung), or after the last one this rung showed
+ * (coming back to it from another rung under the shuffle: it used to show that rung's same card every time). `seg`
+ * null is an exact pick at the cursor (the start, a cut-in).
+ */
 function pick(state: ShowState, r: Rungs, kind: Kind, seg: Segment | null, reason: string) {
   const list = (r[kind] ?? []) as any[];
   if (!list.length) return { kind, card: null, reason };
   let i = state.cursor[kind] ?? 0;
-  if (seg && seg.kind === kind && list.length > 1) {
-    const cur = list.findIndex((c) => subjectOf(kind, c) === seg.subject);
-    i = cur >= 0 ? cur + 1 : i;
+  if (seg && list.length > 1) {
+    const last = seg.kind === kind ? seg.subject : state.lastShown?.[kind];
+    const at = last ? list.findIndex((c) => subjectOf(kind, c) === last) : -1;
+    i = at >= 0 ? at + 1 : seg.kind === kind ? i : i + 1;
   }
   i = ((i % list.length) + list.length) % list.length;
   state.cursor[kind] = i;
+  state.lastShown = { ...state.lastShown, [kind]: subjectOf(kind, list[i]) };
   return { kind, card: list[i], reason };
 }
 
@@ -1061,6 +1070,7 @@ export function resetShow() {
   state.hostSince = undefined;
   state.handoffFrom = undefined;
   state.lastSpoke = undefined;
+  state.lastShown = undefined;
   said = [];
   scripts.clear();
   shelf = null;

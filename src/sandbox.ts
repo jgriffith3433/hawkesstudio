@@ -178,9 +178,12 @@ export function spawnClaude(args: string[], { cwd, env }: { cwd: string; env: No
  * stand-in script with node, never in the sandbox.
  */
 /** Cursor replaces the Claude Code executable. Tests that set TALK_CLAUDE or TALK_CLAUDE_ARGS keep their stand-in. */
-function brainCommand(args: string[]) {
+function brainCommand(args: string[], forceClaude = false) {
   const exe = process.env.TALK_CLAUDE || 'claude';
   const pre: string[] = process.env.TALK_CLAUDE_ARGS ? JSON.parse(process.env.TALK_CLAUDE_ARGS) : [];
+  // The fallback (llm.ts) is real Claude Code on J's Max plan whatever the brain is: when the brain is Cursor and
+  // Cursor is down (an unpaid invoice, 2026-10-20), falling back to "the brain" just failed the same way again.
+  if (forceClaude) return { file: exe, args: [...pre, ...args] };
   const cursor = brainId() === 'cursor';
   const model = brainSettings().model;
   const mapped = model ? args.map((a, i, all) => (all[i - 1] === '--model' ? model : a)) : args;
@@ -188,8 +191,8 @@ function brainCommand(args: string[]) {
   return { file: process.execPath, args: [CURSOR_AGENT, ...mapped] };
 }
 
-export function claudeCommand(args: string[], { cwd, env }: { cwd: string; env: NodeJS.ProcessEnv }) {
-  const cmd = brainCommand(args);
+export function claudeCommand(args: string[], { cwd, env, brain }: { cwd: string; env: NodeJS.ProcessEnv; brain?: 'claude' }) {
+  const cmd = brainCommand(args, brain === 'claude');
   if (!sandboxOn() || process.env.TALK_CLAUDE_ARGS) return { file: cmd.file, args: cmd.args, cwd, env };
   const clean = sandboxEnv(env);
   const keep = Object.keys(clean).filter((k) => k !== 'HOME' && k !== 'PATH');
