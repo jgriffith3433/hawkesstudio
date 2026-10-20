@@ -133,6 +133,7 @@
     const f = d.focus;
     const img = $('live');
     const vid = $('replay');
+    const idle = $('idle');
     let onReel = null;
     if (f?.phase === 'playing' && f.stream) {
       if (img.dataset.src !== f.stream) { img.dataset.src = f.stream; img.src = f.stream; }
