@@ -48,7 +48,8 @@ import { WALK_DEFAULTS, WALK_AWAY_BY, walkAwayOn, type WalkAwaySettings } from '
 import { getFinding, updateFinding, takenBy } from './backlog.ts';
 import { waitsForCurrentBuild, staleReport, staleNote } from './bugreport.ts';
 import { notReached, slowNote, playTime, samplePace, whereTimeGoes, idleWatch, idleState, IDLE_SUBJECT } from './pace.ts';
-import { harnessBlocked } from './brains.ts';
+import { harnessBlocked, harnessStopOf } from './brains.ts';
+import { harnessHeld, holdStatus, onHoldLifted } from './harness-hold.ts';
 
 // ---------------------------------------------------------------- settings
 
@@ -666,11 +667,19 @@ export function startBlocked(taskId: string): string | null {
 
 /** Starts (or restarts) the agent change of a task, unless startBlocked says it has one going or merged. */
 async function startTaskChange(task: Task, note?: string, why?: string, countTry = true) {
-  const { startTask } = await changes();
+  const { startTask, reviveForTask } = await changes();
   // Checked after the await and with nothing awaited before the insert: two callers in one tick, or two ticks, can't both pass.
   const blocked = startBlocked(task.id);
   if (blocked) throw new StudioError(`"${task.title}" isn't started again: ${blocked}`);
   const t = getTask(task.id)!;
+  // The latest attempt left work in its worktree (uncommitted or unpushed): it carries on there, not a fresh branch.
+  const revived = reviveForTask(t.id, note);
+  if (revived) {
+    const tries = countTry ? t.tries + 1 : t.tries;
+    setTask(t.id, { status: 'working', change: revived, tries, merged_at: null, build: null });
+    logDecision('start', t.id, t.product, `carried on with ${revived} for "${t.title}" in its own worktree, which still had its work (${countTry ? `try ${tries}` : `not counted as a try, ${tries} used`}${why ? `; ${why}` : ''})`, { kind: 'start', change: revived, task: t.id });
+    return revived;
+  }
   const request = `${t.request}${note ? `\n\nFrom the PM (an earlier attempt): ${note}` : ''}`;
   const id = startTask(t.product, request, { criteria: t.criteria, task: t.id, title: t.title, gpuBudget: t.gpu?.items?.length ? t.gpu.budget ?? 0 : null, target: t.target });
   const tries = countTry ? t.tries + 1 : t.tries;
@@ -714,6 +723,8 @@ let lastGpuSweep = 0;
 export async function startWork() {
   const s = pmSettings();
   if (!s.enabled || !process.env.GITHUB_TOKEN) return [];
+  // The harness in use refuses to run (harness-hold.ts): starting would only burn tries. The hold resumes the loop.
+  if (harnessHeld()) return [];
   const { agentSettings, startFix, DECIDED, ALREADY, STUDIO_FAILED_SQL } = await changes();
   if (!agentSettings().enabled) return [];
   // A Studio or Gen deploy waiting for agents to finish: start nothing new until it's through.
@@ -1996,6 +2007,8 @@ async function scoutFor(id: string) {
 /** Rescues whose scout reported (or gave up): the task planned again with a fresh round of tries and the diagnosis. */
 export async function followRescues() {
   const out: string[] = [];
+  // Scouts can't run while the harness is held: the rescues wait (their scouts start when it lifts).
+  if (harnessHeld()) return out;
   for (const [id, r] of Object.entries(rescues())) {
     if (r.state !== 'scouting') continue;
     const t = getTask(id);
@@ -2009,9 +2022,10 @@ export async function followRescues() {
     const x = scout ? await rescueDeps.report(scout).catch(() => null) : null;
     if (x?.status === 'running' && Date.now() - r.at < 60 * 60_000) continue;
     // A scout that only hit the usage cap or a login error has no diagnosis. Don't reset the tries or paste it into the next brief.
+    // The rescue round is given back: its scout runs again once the harness answers (not counted, no diagnosis-less retry).
     if (harnessBlocked(`${x?.report ?? ''}\n${x?.detail ?? ''}`)) {
-      saveRescue(id, null);
-      logDecision('rescue', id, t.product, `"${t.title}": scout ${scout ?? '(none)'} was stopped by the harness, so that is not a diagnosis and the tries are not reset`.slice(0, 1500));
+      saveRescue(id, { ...r, scout: null, at: Date.now() });
+      logDecision('rescue', id, t.product, `"${t.title}": scout ${scout ?? '(none)'} was stopped by the harness, which is not a diagnosis: it runs again once the harness answers`.slice(0, 1500));
       continue;
     }
     const diagnosis = x?.status === 'done' && x.report ? x.report.slice(0, 6000) : `(the scout couldn't report: ${x?.detail ?? 'it is gone'})`;
@@ -2341,6 +2355,8 @@ export async function tick() {
       await applyDefaults(done.subjects);
     }
     await applyDefaults([], s.graceMinutes * 60_000);
+    // Tasks that only failed because the harness stopped their agents: planned again with fresh tries (harness-hold.ts).
+    await repairHarnessFailures().catch((e: any) => console.warn(`[pm] harness repair: ${e.message ?? e}`));
     // Failed tasks nobody was asked about: an investigation (walk-away) or one question in J's Inbox.
     await sweepFailed().catch((e: any) => console.warn(`[pm] failed tasks: ${e.message ?? e}`));
     // Tasks dropped as already done count as done; ideas held until other work is on beta are released once it is.
@@ -2351,15 +2367,17 @@ export async function tick() {
       console.warn(`[pm] done and held tasks: ${e.message ?? e}`);
     }
     const startedNow = await startWork();
+    // A harness hold isn't idle slots or a stall: nothing may start, and it resumes by itself (studio_pm status "hold").
+    const held = harnessHeld();
     // Where the time goes (pace.ts): idle slots and work parked on Gen/GPU, sampled each tick; idle slots with nothing
     // the PM may start get ONE question for J with scouts' proposals for the idle products.
     try {
-      await pace(startedNow.length);
+      if (!held) await pace(startedNow.length);
     } catch (e: any) {
       console.warn(`[pm] pace: ${e.message ?? e}`);
     }
     // Nothing moving with free agents and work left: why, per task, and what it can fix (one "stall" decision).
-    await stallWatch().catch((e: any) => console.warn(`[pm] stall watch: ${e.message ?? e}`));
+    if (!held) await stallWatch().catch((e: any) => console.warn(`[pm] stall watch: ${e.message ?? e}`));
     const daily = state().daily !== today() && new Date().getHours() >= s.dailyHour;
     if ((events.length || daily) && !turnRunning() && process.env.STUDIO_PM_TALK !== 'off') await runPmTurn(daily);
     lastError = failed;
@@ -2501,6 +2519,8 @@ export async function pmStatus() {
   const { listChanges } = await changes();
   return {
     settings: pmSettings(), capacity: capacity(), lastError, turn: turn && turnRunning() ? turn : null, pending: events,
+    // The harness hold (harness-hold.ts): what refuses to run, until when, the stand-in, and what is parked on it.
+    hold: holdStatus(),
     conversation: state().conversation ?? null, daily: state().daily ?? null,
     questions: listQuestions(), reviewing: listChanges({ status: 'ready' }).filter(reviewable).map((c) => ({ id: c.id, product: c.product, title: c.title, detail: c.detail, task: c.task })),
     log: listDecisions({ limit: 60 }),
@@ -2533,5 +2553,49 @@ export function startPm() {
   }
   setTimeout(() => void tick(), 1000).unref();
   setInterval(() => void tick(), 60_000).unref();
+  // A hold lifted or a stand-in took over: start what waited now (rescues' scouts, planned tasks).
+  onHoldLifted(() => setTimeout(() => void tick(), 2000).unref());
+}
+
+// ---------------------------------------------------------------- harness repair
+
+/**
+ * Whether a failed change was stopped by the harness, not the agent: its detail, or the harness's own lines in its log
+ * (stderr, and the agent lines that are its last words). Old rows too (from before harness-hold.ts parked them).
+ */
+export function harnessFailed(c: { status: string; detail?: string | null; log?: string[] }) {
+  if (c.status !== 'failed') return false;
+  const log = c.log ?? [];
+  const err = log.filter((l) => /^\d\d:\d\d:\d\d stderr:/.test(l)).slice(-20).join('\n');
+  const said = [c.detail ?? '', ...log.filter((l) => /^\d\d:\d\d:\d\d agent: /.test(l)).slice(-6)].join('\n');
+  return Boolean(harnessStopOf(err, { kinds: ['usage', 'billing', 'auth'] }) || harnessStopOf(said, { kinds: ['usage', 'billing'] }));
+}
+
+/**
+ * The self-repair sweep (J, 2026-10-20: "It should just recover itself"): a failed task whose recent attempts were all
+ * stopped by the harness (a usage cap, billing, no login), or by Studio itself, is planned again with fresh tries, its
+ * open "failed 3 times" question closed and a rescue round given back. Its next start carries on in the last attempt's
+ * worktree when that still has work (startTaskChange, agents.ts reviveForTask). Logged as harness-repair (undo).
+ */
+export async function repairHarnessFailures() {
+  const { getChange, studioFailed } = await changes();
+  const out: string[] = [];
+  for (const r of db.prepare(`SELECT id FROM tasks WHERE status = 'failed'`).all() as any[]) {
+    const t = getTask(r.id);
+    if (!t) continue;
+    const cs = [...t.changes].reverse().map((x) => getChange(x)).filter(Boolean).slice(0, 3) as any[];
+    if (!cs.length || !harnessFailed(cs[0])) continue;
+    if (cs.some((c) => c.status === 'failed' && !harnessFailed(c) && !studioFailed(c))) continue;
+    if (cs.some((c) => ['queued', 'working', 'verifying', 'revising', 'ready', 'needs answer'].includes(c.status))) continue;
+    const undo = tasksUndo([t.id]);
+    setTask(t.id, { status: 'planned', tries: 0, checks: null, note: 'planned again: its tries were stopped by the AI harness (usage, billing or login), not by the work' });
+    for (const q of listQuestions().filter((x) => String(x.subject ?? '').split(/[\s,]+/).includes(t.id))) {
+      setQuestion(q.id, { status: 'answered', answer: 'Studio: its tries were stopped by the AI harness (a usage limit or billing), not by the work, so it was planned again with fresh tries. Nothing for you to decide.', answered_by: 'Studio' });
+    }
+    if (rescues()[t.id]) saveRescue(t.id, null);
+    logDecision('harness-repair', t.id, t.product, `"${t.title}": its last attempts (${cs.map((c) => c.id).join(', ')}) were stopped by the AI harness, not the work; planned again with a fresh round of ${pmSettings().maxTries} tries`.slice(0, 1500), undo);
+    out.push(t.id);
+  }
+  return out;
 }
 

@@ -598,6 +598,48 @@ after a restart, `startPm`):
   reasons per task (`stallReasons`: blocked by, GPU, needs J, broken build, stale status, failed), a broken beta build
   nobody is on sent back to an agent, and ONE "stall" decision. `studio_pm status` shows `stall`, `rescues`, `blockers`.
 
+### When the AI harness runs out (usage, billing, a login)
+
+J, 2026-10-20: "every time I hit usage limits the agents all get canceled out and I lose work and they never start
+again ... It should just recover itself." On 2026-10-20, Cursor's unpaid invoice and a Claude session limit failed 100
+changes in a row as "the agent made no commit". Each one counted as a try, rescue scouts died the same way, and 12 tasks
+ended up as "failed 3 times" cards. Now (`src/harness-hold.ts`):
+
+- **One classifier** (`brains.ts harnessStopOf`) reads the harness's result and its stderr (Cursor prints the invoice
+  only there). It returns `usage` (a cap that resets), `billing` (pay), `auth` (sign in) or `transient` (overloaded, a
+  5xx), plus the reset time when the message names one ("resets 8:40am (UTC)", "resets Oct 23, 1pm (UTC)"). An agent's
+  own words count only for usage and billing, and only when its pass didn't end cleanly (`agents.ts passStop`).
+- **A stopped change parks, never fails** (`parkForHarness`). It stays `queued` with its worktree, branch, session and
+  step, with the detail "waiting for Cursor billing: tries again at 16:30 UTC". It is not a try, no nudge is spent, and
+  no rescue starts. When work can run again, pump resumes it: the same session when the same harness runs it, else a
+  fresh one told to carry on from the worktree (`harnessResume`).
+- **The hold** (table `harness_holds`, kept across restarts). Holds are per harness. While the harness in use is held:
+  - pump starts no agent, `startWork` starts no task, scouts are refused, and rescues wait;
+  - the idle watch and the stall watch keep quiet.
+
+  The hold lasts until the named reset time, otherwise it backs off 10, 20, 40, then 60 minutes (billing and login: every
+  30). Then a probe runs (one tiny `-p`). If it answers, the hold lifts and everything parked resumes; if not, the hold
+  is extended.
+- **The other harness stands in** (`brains.ts failover`). If J's harness is held and the other one answers a probe
+  (Cursor needs `CURSOR_API_KEY`), Studio runs agents, scouts, Talk and Gen's reviews on the other one until J's harness
+  answers again, then switches back by itself. J's choice stays saved; picking a harness in Settings ends the stand-in.
+  For Claude, another saved account that answers is switched to the same way. `STUDIO_HARNESS_FAILOVER=off` turns
+  stand-ins off.
+- **The self-repair sweep** (`pm.ts repairHarnessFailures`, every PM pass and at start) finds failed tasks whose recent
+  attempts were all harness stops. That includes old rows, read from their log text (`harnessFailed`). Each one goes
+  back to planned with fresh tries, its "failed 3 times" card is answered by Studio, its rescue round is given back, and
+  a `harness-repair` decision is logged (with undo).
+- **No work is lost.** A task's next start carries on in its last attempt's worktree when that worktree still has
+  uncommitted or unpushed work (`agents.ts reviveForTask`), instead of cutting a fresh branch from beta.
+- **Playtests don't need the AI.** A build and a playtest never ask Claude. A review that can't run because the AI
+  doesn't answer (`pipeline.ts aiStop`) leaves its step `skipped` with `data.pending`, never `failed`, so the run isn't
+  failed and the playtest stands. `catchUpReviews` (every 5 minutes, and when a hold lifts) reviews it later from the
+  playtest that already played. It takes the newest one per scenario, judges a task's criteria (so the PM's beta check
+  goes on), and marks older or 3-day-old ones as not reviewed.
+- **Who hears.** J's phone hears only when the hold needs him (billing, a login), once per hold, with the exact error.
+  A usage reset is a Talk line when work pauses and another when it resumes. `studio_pm status` shows `hold`: what is
+  held and why, until when, the stand-in, and what is parked on it.
+
 ## Player analytics
 
 J's goal (m_e4959acc8abd): games that get better and stickier from what real players do. Hawkes Gen collects anonymous

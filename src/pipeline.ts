@@ -32,6 +32,9 @@ import { betaTurn, newerBetaRun, supersede, absorbed, supersedingBuild } from '.
 import { holdBeta, waitForBetaPlays, serveBeta, runBetaBuild, servedMismatch } from './betaplay.ts';
 import { resolveScenario, missingScenario, noteScenarios, knownScenarios } from './scenarios.ts';
 import { slowNote, playTime } from './pace.ts';
+import { harnessStopOf } from './brains.ts';
+import { harnessHeld, holdHarness, onHoldLifted } from './harness-hold.ts';
+import { isBillingError } from './llm.ts';
 
 export type RunOptions = {
   products?: string[];
@@ -712,30 +715,117 @@ async function reviewPlaytest(run: string, p: Product, t: Playtest, job: any, pl
   });
   // Gen's review, or the same review through Claude Code on the Max plan while Gen's Claude is out of credit (review-cc.ts).
   const rev = await reviewJob(p.id, revParams, () => runGenJob('playtest.review', p.id, revParams, (j) => updateStep(rs, { job: j.id, detail: j.detail }), { runMs: REVIEW_RUN_MS, job: wasReview?.job ?? undefined }));
+  const pending: PendingReview = { job: job.id, params: revParams, criteria: criteria?.length ? criteria : null, mode: reviewMode, reviewKey: sameKey, sha: fullSha, barMet: Boolean(bar?.met), barWhy: bar?.why ?? null, at: Date.now(), tries: 0 };
   if (rev.status !== 'done') {
+    if (waitForAi(rs, rev, pending, `${p.name} ${name}`)) return job;
     updateStep(rs, { status: 'failed', job: rev.id, detail: `failed: ${rev.error ?? rev.detail}`, finished: true });
     return job;
   }
+  await fileReview(rs, p, run, name, rev, pending, r);
+  // The playtest's own cost is tiny (local); attribute the review's.
+  return job;
+}
+
+/**
+ * A review that waits for the AI (J, 2026-10-20: "make sure playtests will work even if we don't have usage or
+ * credits"): what it needs to run later on the playtest that already played. Kept in its step's data (status skipped);
+ * catchUpReviews runs it once Claude or Cursor answers, and pm.ts reads its criteria then.
+ */
+type PendingReview = { job: string; params: any; criteria: string[] | null; mode: ReviewMode; reviewKey: string; sha: string | null; barMet: boolean; barWhy: string | null; at: number; tries: number; superseded?: string };
+
+/** Whether a failed review failed on the AI (usage, billing, a login, an outage), not on the playtest. */
+export function aiStop(error: string) {
+  const stop = harnessStopOf(error);
+  if (stop) return stop;
+  // Anything else llm.ts calls the provider being down (a quota, a rate limit): the review waits, the harness isn't held.
+  return isBillingError(error) ? { kind: 'transient' as const, line: error.slice(0, 300), resetsAt: null } : null;
+}
+
+/**
+ * A review that couldn't run because the AI didn't answer: the step waits (skipped, not failed: the build and the
+ * playtest stand, and the run isn't failed), the harness is held (harness-hold.ts), and catchUpReviews runs it later.
+ */
+function waitForAi(rs: string, rev: any, pending: PendingReview, what: string) {
+  const err = String(rev.error ?? rev.detail ?? '');
+  const stop = aiStop(err);
+  if (!stop) return false;
+  if (stop.kind !== 'transient') holdHarness(stop, { source: `the review of ${what}` });
+  updateStep(rs, { status: 'skipped', job: rev.id ?? null, detail: `review waits for the AI (${stop.kind}: ${stop.line.slice(0, 160)}): the playtest itself is done, and the review runs by itself once it answers`, data: { pending }, finished: true });
+  return true;
+}
+
+/** A finished review filed: findings into the backlog, the step done, a task's criteria judged (pm.ts reads them). */
+async function fileReview(rs: string, p: Product, run: string, name: string, rev: any, x: PendingReview, playResult: any) {
   const v = rev.result;
-  const merged = absorb(p.id, run, name, v.findings ?? [], { mode: reviewMode });
+  const merged = absorb(p.id, run, name, v.findings ?? [], { mode: x.mode });
   const known = applyKnown(p.id, run, name, v.known ?? []);
   const parts = [
     `${merged.added.length} new`, merged.ideas.length ? `${merged.ideas.length} to ideas` : '', merged.skipped ? `${merged.skipped} not regressions, not filed` : '',
     known.fixed.length ? `${known.fixed.length} known look fixed` : '', known.present.length ? `${known.present.length} known still there` : '',
   ].filter(Boolean);
+  const late = x.tries > 0 || Date.now() - x.at > 60_000 ? ' · reviewed late (it waited for the AI)' : '';
   updateStep(rs, {
     status: 'done', job: rev.id, cost: rev.cost ?? 0,
-    detail: `${v.verdict} · ${reviewMode}${bar?.met ? ' (meets its quality bar)' : ''} · ${(v.findings ?? []).length} findings (${parts.join(', ')})${p.quality ? ` · bar: ${v.meetsBar ?? '?'}` : ''}${viaNote(rev)}`,
-    data: { ...v, added: merged.added, updated: merged.updated, ideas: merged.ideas, skipped: merged.skipped, knownFixed: known.fixed, knownPresent: known.present, reviewKey: sameKey, mode: reviewMode, sha: fullSha, barHash: barHash(p.quality), bar: bar?.why ?? null }, finished: true,
+    detail: `${v.verdict} · ${x.mode}${x.barMet ? ' (meets its quality bar)' : ''} · ${(v.findings ?? []).length} findings (${parts.join(', ')})${p.quality ? ` · bar: ${v.meetsBar ?? '?'}` : ''}${viaNote(rev)}${late}`,
+    data: { ...v, added: merged.added, updated: merged.updated, ideas: merged.ideas, skipped: merged.skipped, knownFixed: known.fixed, knownPresent: known.present, reviewKey: x.reviewKey, mode: x.mode, sha: x.sha, barHash: barHash(p.quality), bar: x.barWhy }, finished: true,
   });
   // A roadmap task's acceptance criteria, judged on this playtest (the beta run after a merge; pm.ts reads them).
-  if (criteria?.length) {
-    const checks = await judgeCriteria(criteria, v, r);
+  if (x.criteria?.length) {
+    const checks = await judgeCriteria(x.criteria, v, playResult);
     db.prepare(`UPDATE steps SET data = json_set(data, '$.criteria', json(?)) WHERE id = ?`).run(J(checks), rs);
   }
-  // The playtest's own cost is tiny (local); attribute the review's.
-  return job;
 }
+
+/** Reviews that wait for the AI are run for this long after their playtest (older ones are only marked stale). */
+const PENDING_DAYS = 3;
+let catchingUp = false;
+/**
+ * Reviews that waited for the AI, run now that it may answer: the newest per product and scenario (an older one of the
+ * same scenario is superseded: a newer playtest replaced it), a few per pass, never while the harness is held. Each
+ * reviews the playtest that already played (its Gen job), so nothing is built or played again.
+ */
+export async function catchUpReviews({ max = 4 }: { max?: number } = {}) {
+  if (catchingUp || harnessHeld()) return [];
+  catchingUp = true;
+  const out: string[] = [];
+  try {
+    const rows = (db.prepare(`SELECT * FROM steps WHERE kind = 'review' AND status = 'skipped' AND data LIKE '%"pending":%' ORDER BY started DESC LIMIT 200`).all() as any[]).map(rowToStep);
+    const seen = new Set<string>();
+    for (const st of rows) {
+      const x: PendingReview | undefined = (st.data as any)?.pending;
+      if (!x || x.superseded) continue;
+      const key = `${st.product}:${st.name}`;
+      const newer = seen.has(key) || Boolean(db.prepare(`SELECT 1 FROM steps WHERE product = ? AND kind = 'review' AND name = ? AND status = 'done' AND started > ? LIMIT 1`).get(st.product, st.name, st.started));
+      seen.add(key);
+      if (newer || Date.now() - x.at > PENDING_DAYS * 86_400_000) {
+        updateStep(st.id, { detail: `not reviewed: ${newer ? 'a newer playtest of this scenario replaced it' : `it waited over ${PENDING_DAYS} days for the AI`}`, data: { pending: { ...x, superseded: newer ? 'newer' : 'stale' } } });
+        continue;
+      }
+      if (out.length >= max || harnessHeld()) break;
+      let p: Product;
+      try { p = getProduct(st.product); } catch { continue; }
+      out.push(st.id);
+      updateStep(st.id, { detail: 'reviewing now (it waited for the AI)' });
+      const play: any = await gen.job(x.job).catch(() => null);
+      const rev = await reviewJob(p.id, x.params, () => runGenJob('playtest.review', p.id, x.params, (j) => updateStep(st.id, { job: j.id }), { runMs: REVIEW_RUN_MS }));
+      const next = { ...x, tries: x.tries + 1 };
+      if (rev.status === 'done') {
+        await fileReview(st.id, p, st.run, st.name, rev, next, play?.result ?? {}).catch((e) => console.warn(`[studio] late review ${st.id}: ${e.message ?? e}`));
+        continue;
+      }
+      if (waitForAi(st.id, rev, next, `${p.name} ${st.name}`)) break;
+      updateStep(st.id, { status: 'failed', job: rev.id ?? null, detail: `failed (late review): ${rev.error ?? rev.detail}`, data: { pending: { ...next, superseded: 'failed' } } });
+    }
+  } catch (e: any) {
+    console.warn(`[studio] late reviews: ${e.message ?? e}`);
+  } finally {
+    catchingUp = false;
+  }
+  return out;
+}
+// Every 5 minutes, and when a hold lifts (a stand-in took over, or the harness answers again).
+setInterval(() => void catchUpReviews(), 5 * 60_000).unref();
+onHoldLifted(() => void setTimeout(() => void catchUpReviews(), 5_000).unref());
 
 type PartialOptions = { at?: string; scenario?: string; where?: 'local' | 'live'; device?: 'desktop' | 'phone'; mode?: string; force?: boolean; review?: boolean; focus?: string; reviewMode?: ReviewMode; platform?: 'EditMode' | 'PlayMode'; category?: string; origin?: string | null; seed?: number; options?: Record<string, unknown> };
 

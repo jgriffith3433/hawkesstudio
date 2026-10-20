@@ -15,6 +15,9 @@
 //   .hawkes/waiting-jobs.txt and ends; resumed with "Your Gen jobs finished", it commits baked.txt (that prompt in it).
 // - FAKE_LINGER: works and commits like a good agent and prints its result, but a background process it started
 //   (its pid in .hawkes/linger.pid) keeps it open forever, like a wait loop on a run it had killed itself.
+// - FAKE_LIMIT: while the file FAKE_LIMIT_FILE exists, a pass writes work.txt (uncommitted), prints Cursor's unpaid-invoice
+//   error on stderr and ends with no result, like a harness that refuses to run; once it's gone, it works like a good
+//   agent. A plain -p call (a harness probe) answers the same way: the error while the file exists, else a result.
 // Told to merge its base (a conflict pass: "git merge origin/<base>" in its prompt), it merges keeping its own side of
 // each conflict and commits, unless its brief says FAKE_NOTHING (then it changes nothing: still conflicting).
 import fs from 'node:fs';
@@ -36,6 +39,14 @@ const out = (o) => process.stdout.write(`${JSON.stringify(o)}\n`);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const session = 'fake-session';
 log({ start: args });
+
+const INVOICE = 'ActionRequiredError: You have an unpaid invoice Pay your unpaid invoice at [cursor.com/dashboard/billing](https://cursor.com/dashboard/billing) to resume requests.';
+const limited = () => Boolean(process.env.FAKE_LIMIT_FILE && fs.existsSync(process.env.FAKE_LIMIT_FILE));
+function refuse() {
+  process.stderr.write(`${INVOICE}
+`);
+  process.exit(1);
+}
 
 let interrupted = false;
 async function answer(text) {
@@ -66,7 +77,13 @@ async function agent() {
   try { brief = fs.readFileSync(path.join('.hawkes', 'brief.md'), 'utf8'); } catch { /* none */ }
   // Its own task only: the "Other agents" section quotes the other changes' requests (their FAKE_ words).
   brief = brief.replace(/\n## Other agents[\s\S]*?(?=\n## )/, '\n');
-  const mode = /FAKE_(STOP|HANG|NEVER|NOTHING|LINGER|PARK)/.exec(brief)?.[1];
+  const mode = /FAKE_(STOP|HANG|NEVER|NOTHING|LINGER|PARK|LIMIT)/.exec(brief)?.[1];
+  if (mode === 'LIMIT' && limited()) {
+    fs.appendFileSync('work.txt', `half done at ${new Date().toISOString()}
+`);
+    log({ agentLimited: process.cwd(), resumed });
+    refuse();
+  }
   if (mode === 'NOTHING') {
     fs.mkdirSync('.hawkes', { recursive: true });
     fs.writeFileSync(path.join('.hawkes', 'summary.md'), 'I looked and it already works; I changed nothing.');
@@ -137,5 +154,9 @@ if (args.includes('--permission-mode')) {
   });
   rl.on('close', () => turn.then(() => process.exit(0)));
 } else {
+  if (limited()) {
+    log({ probeRefused: process.env.HAWKES_PROBE_HARNESS ?? null });
+    refuse();
+  }
   await answer(args[args.indexOf('-p') + 1] ?? '');
 }

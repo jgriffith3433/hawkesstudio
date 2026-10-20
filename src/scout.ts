@@ -11,7 +11,8 @@ import { db, newId } from './db.ts';
 import { PROJECTS, getProduct, getInfra, isInfra, storyOf, StudioError } from './config.ts';
 import { repoMap } from './repos.ts';
 import { claudeEnv } from './claude.ts';
-import { harnessBlocked } from './brains.ts';
+import { brainId, harnessStopOf } from './brains.ts';
+import { harnessHeld, holdHarness } from './harness-hold.ts';
 import { BETA, gitAsync } from './beta.ts';
 import { briefSection, recordRun } from './memory.ts';
 import { roleArgs } from './roles.ts';
@@ -46,6 +47,8 @@ let active = 0;
 export function startScout(product: string, question: string, origin: string | null = null, opts: { brief?: string; quiet?: boolean } = {}) {
   if (!question?.trim()) throw new StudioError('Say what to find out');
   if (active >= 2) throw new StudioError('Two scouts are already running; ask again when one reports back.');
+  // The harness in use refuses to run (harness-hold.ts): a scout now would only fail. Asked again after the hold.
+  if (harnessHeld()) throw new StudioError('The AI harness is on hold (a usage limit or billing): scouts start again once it answers.');
   const inf = isInfra(product) ? getInfra(product) : null;
   const p = inf ? null : getProduct(product);
   const top = inf ? inf.repo : p!.repo.split('/')[0];
@@ -93,11 +96,15 @@ ${mem.text ? `\n${mem.text}` : ''}${story ? `\nThe product's story, for tone:\n$
     if (process.env.SCOUT_MODEL) roleFlags.splice(roleFlags.indexOf('--model') + 1, 1, process.env.SCOUT_MODEL);
     const args = ['-p', prompt, '--output-format', 'stream-json', '--verbose', ...roleFlags,
       '--mcp-config', (await import('./agents.ts')).agentMcp(id), '--strict-mcp-config'];
-    const r = await new Promise<{ result: string; cost: number }>((resolve) => {
+    const harness = brainId();
+    const r = await new Promise<{ result: string; cost: number; ok: boolean; err: string }>((resolve) => {
       const child = spawnClaude(args, { cwd: wt, env: claudeEnv() });
       let buf = '';
       let result = '';
       let cost = 0;
+      let ok = false;
+      let err = '';
+      child.stderr.on('data', (d) => (err = `${err}${d}`.slice(-8000)));
       const timer = setTimeout(() => child.kill('SIGTERM'), 30 * 60_000);
       child.stdout.on('data', (d) => {
         buf += d;
@@ -108,18 +115,20 @@ ${mem.text ? `\n${mem.text}` : ''}${story ? `\nThe product's story, for tone:\n$
           try {
             const m = JSON.parse(line);
             if (m.type === 'assistant') for (const part of m.message?.content ?? []) if (part.type === 'tool_use') set(id, { detail: `${part.name} ${JSON.stringify(part.input).slice(0, 100)}` });
-            if (m.type === 'result') { result = String(m.result ?? ''); cost = Number(m.total_cost_usd) || 0; }
+            if (m.type === 'result') { result = String(m.result ?? ''); cost = Number(m.total_cost_usd) || 0; ok = !m.is_error; }
           } catch { /* not JSON */ }
         }
       });
-      child.on('close', () => { clearTimeout(timer); resolve({ result, cost }); });
-      child.on('error', (e) => { clearTimeout(timer); resolve({ result: `(couldn't start Claude Code: ${e.message})`, cost: 0 }); });
+      child.on('close', () => { clearTimeout(timer); resolve({ result, cost, ok, err }); });
+      child.on('error', (e) => { clearTimeout(timer); resolve({ result: `(couldn't start Claude Code: ${e.message})`, cost: 0, ok: false, err }); });
     });
     const text = r.result.trim();
-    // A usage cap or a login error is not a report. Leaving it as done pasted the cap into the next brief as a diagnosis.
-    const blocked = harnessBlocked(text);
-    const ok = !blocked && text.length > 40;
-    set(id, { status: ok ? 'done' : 'failed', detail: blocked ? 'the harness stopped the scout' : ok ? 'reported' : 'no report', report: ok ? text : null, cost: r.cost, finished: Date.now() });
+    // A usage cap, billing or a login error is not a report (it pasted the cap into the next brief as a diagnosis), and
+    // the harness is held (harness-hold.ts). Its line stays in the detail, so pm.ts followRescues gives the round back.
+    const stop = r.ok && text.length > 400 ? null : harnessStopOf(r.ok ? text : `${text}\n${r.err}`, r.ok ? { kinds: ['usage', 'billing', 'auth'] } : {});
+    if (stop && stop.kind !== 'transient') holdHarness(stop, { source: `scout ${id}`, harness });
+    const ok = !stop && text.length > 40;
+    set(id, { status: ok ? 'done' : 'failed', detail: stop ? `the harness stopped the scout: ${stop.line.slice(0, 200)}` : ok ? 'reported' : 'no report', report: ok ? text : null, cost: r.cost, finished: Date.now() });
   } catch (e: any) {
     set(id, { status: 'failed', detail: String(e.message ?? e).slice(0, 300), finished: Date.now() });
   } finally {

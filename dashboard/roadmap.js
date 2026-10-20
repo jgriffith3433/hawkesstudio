@@ -27,6 +27,7 @@ async function loadRoadmap() {
     · agents ${c.active}/${s.maxConcurrent} · starts today ${c.started}/${s.maxStartsPerDay} <button class="small" data-pm="caps">Limits…</button>
     ${pm.turn ? ' · <span class="pill warn">PM turn running</span>' : ''}${pm.conversation ? ` · <a href="/?conversation=${esc(pm.conversation.id)}#talk">PM conversation</a>` : ''}
     ${pm.lastError ? `<div class="meta" style="color:var(--red)">${esc(pm.lastError)}</div>` : ''}
+    ${holdHtml(pm.hold)}
     ${pm.time?.lines?.length ? `<details class="more-details"><summary class="meta">Where the time goes today</summary>${pm.time.lines.map((l) => `<div class="meta">${esc(l)}</div>`).join('')}</details>` : ''}`;
   // Questions are answered in the Inbox (one place for everything waiting on J).
   const asked = pm.questions.filter((q) => q.status === 'asked J').length;
@@ -44,6 +45,15 @@ async function loadRoadmap() {
   for (const d of $('#rmList').querySelectorAll('details[data-key]')) if (open.has(d.dataset.key)) d.open = true;
   $('#rmLog').innerHTML = `<summary class="meta">PM decision log (${pm.log.length})</summary>${pm.log.map((d) => `<div class="test"><span class="name">${esc(d.action)}</span><span class="detail">${esc(d.detail ?? '')} · ${esc(d.product ?? '')} · ${ago(d.at)}${d.undone ? ' · <i>undone</i>' : ''}</span>${d.undo && !d.undone ? `<button class="small" data-undo="${d.id}">Undo</button>` : ''}</div>`).join('')}`;
   for (const id of rmOpen) loadThread(id);
+}
+
+/** The harness hold (harness-hold.ts): what refuses to run and why, until when, the stand-in, and what waits on it. */
+function holdHtml(h) {
+  if (!h) return '';
+  const lines = h.holds.map((x) => `<div class="meta"><span class="pill ${x.needsJ ? 'failed' : 'warn'}">${esc(x.label)}: ${esc(x.kind)}</span> ${esc(x.why)} · ${esc(x.next)}${x.needsJ ? ' · <b>needs you</b>' : ''}${x.line ? `<br><span style="opacity:.8">${esc(x.line)}</span>` : ''}</div>`);
+  const stand = h.standIn ? `<div class="meta"><span class="pill ship">${esc(h.standIn.label)} stands in</span> for ${esc(h.standIn.for)} since ${ago(h.standIn.since)}: work goes on, and switches back by itself</div>` : '';
+  const parked = h.parked?.length ? `<div class="meta">${h.parked.length} change(s) parked with their work, resuming by themselves: ${h.parked.slice(0, 6).map((c) => esc(c.title ?? c.id)).join(' · ')}</div>` : '';
+  return `<div style="margin-top:6px"><b>AI harness:</b> ${h.held ? 'on hold, nothing new starts until it answers' : 'running on the stand-in'}${lines.join('')}${stand}${parked}</div>`;
 }
 
 let rmMilestones = [];
