@@ -150,6 +150,10 @@ async function installPackages() {
   await ssh('sudo npm install -g @github/copilot --loglevel=error > /tmp/copilot-cli.log 2>&1 && echo copilot-cli-ok');
   // The Gemini CLI: the fourth harness (bin/gemini-agent.mjs). Needs hawkes/gemini (deploy/gemini-key.mjs) to run.
   await ssh('sudo npm install -g @google/gemini-cli --loglevel=error > /tmp/gemini-cli.log 2>&1 && echo gemini-cli-ok');
+  // Antigravity (`agy`): the fifth harness (bin/antigravity-agent.mjs), for a Google AI Pro/Ultra plan. One static binary, copied
+  // to /usr/local/bin so the sandboxed agent user can run it. Needs hawkes/antigravity (deploy/antigravity-key.mjs) to run.
+  await ssh(asHawkes('test -x ~/.local/bin/agy || curl -fsSL https://antigravity.google/cli/install.sh | bash > /tmp/agy-install.log 2>&1'));
+  await ssh('sudo install -m 0755 /home/hawkes/.local/bin/agy /usr/local/bin/agy && echo agy-ok');
   await ssh(asHawkes('cd /srv/hawkes/hawkesgen && npm ci --no-audit --no-fund --loglevel=error && cd /srv/hawkes/hawkesstudio && npm ci --no-audit --no-fund --loglevel=error'));
   await ssh('cd /srv/hawkes/hawkesgen && sudo npx --yes playwright install-deps chromium > /tmp/pw-deps.log 2>&1 && echo deps-ok');
   await ssh(asHawkes('cd /srv/hawkes/hawkesgen && npx playwright install chromium > /tmp/pw.log 2>&1 && echo chromium-ok'));
@@ -239,6 +243,7 @@ ExecStart=/usr/bin/node /srv/hawkes/hawkesgen/bin/fetch-secrets.mjs /run/hawkes/
 ExecStart=/usr/bin/node /srv/hawkes/hawkesgen/bin/fetch-secrets.mjs /run/hawkes/cursor.env hawkes/cursor --optional
 ExecStart=/usr/bin/node /srv/hawkes/hawkesgen/bin/fetch-secrets.mjs /run/hawkes/copilot.env hawkes/copilot --optional
 ExecStart=/usr/bin/node /srv/hawkes/hawkesgen/bin/fetch-secrets.mjs /run/hawkes/gemini.env hawkes/gemini --optional
+ExecStart=/usr/bin/node /srv/hawkes/hawkesgen/bin/fetch-secrets.mjs /run/hawkes/antigravity.env hawkes/antigravity --optional
 
 [Install]
 WantedBy=multi-user.target`),
@@ -257,6 +262,7 @@ EnvironmentFile=-/run/hawkes/github.env
 EnvironmentFile=-/run/hawkes/cursor.env
 EnvironmentFile=-/run/hawkes/copilot.env
 EnvironmentFile=-/run/hawkes/gemini.env
+EnvironmentFile=-/run/hawkes/antigravity.env
 Environment=HAWKES_AWS_ROLE=1
 Environment=AWS_DEFAULT_REGION=us-east-1
 Environment=HAWKESGEN_HOST=127.0.0.1
@@ -284,6 +290,7 @@ EnvironmentFile=-/run/hawkes/claude.env
 EnvironmentFile=-/run/hawkes/cursor.env
 EnvironmentFile=-/run/hawkes/copilot.env
 EnvironmentFile=-/run/hawkes/gemini.env
+EnvironmentFile=-/run/hawkes/antigravity.env
 Environment=HAWKESGEN_URL=http://127.0.0.1:8790
 Environment=STUDIO_SERVER=1
 Environment=STUDIO_GPU_PLAYTESTS=playtester

@@ -50,6 +50,9 @@ export const geminiHome = () => process.env.GEMINI_CLI_HOME ? path.join(process.
  * see, so ~/.gemini/google_accounts.json (written at sign-in, `active` set) stands in; the first run reports a bad one.
  */
 export function antigravitySignedIn(): boolean {
+  if (process.env.AGY_CREDS) return true;
+  // Linux keeps the login in a file; Windows and macOS keep it in the keychain and only record the account.
+  if (fs.existsSync(path.join(geminiHome(), 'antigravity-cli', 'antigravity-oauth-token'))) return true;
   try {
     const j = JSON.parse(fs.readFileSync(path.join(geminiHome(), 'google_accounts.json'), 'utf8')) as { active?: unknown };
     return Boolean(j.active);
