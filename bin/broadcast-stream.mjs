@@ -174,6 +174,11 @@ if (process.platform === 'linux') {
     env: { ...process.env, DISPLAY: ':99' }, stdio: 'ignore',
   });
   children.push(browser);
+  // If Chromium dies (OOM, snap crash), ffmpeg keeps pushing a black X11 screen. Exit so systemd restarts the unit.
+  browser.on('exit', (code, signal) => {
+    console.error(`Chromium left (code ${code}, signal ${signal}); stopping the encoder so the service can restart.`);
+    stop();
+  });
 
   const fifo = path.join(tmpdir(), 'hawkes-broadcast-voice.pcm');
   startFifoFeeder(fifo);
