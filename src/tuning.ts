@@ -44,7 +44,7 @@ export type Tuning = {
 
 export const MODELS: Tuning['models'] = {
   claude: { fast: 'claude-haiku-5-5', standard: 'claude-sonnet-5-5', deep: 'claude-opus-5-5' },
-  copilot: { fast: 'claude-haiku-5.5', standard: 'claude-sonnet-5.5', deep: 'claude-opus-5.5' },
+  copilot: { fast: 'claude-haiku-5.5', standard: 'claude-sonnet-5.5', deep: 'claude-sonnet-5.5' },
   cursor: { fast: '', standard: '', deep: '' },
 };
 
