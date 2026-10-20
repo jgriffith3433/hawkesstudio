@@ -154,3 +154,74 @@ test('script keys change when what Yooba would say changes', () => {
   assert.notEqual(a, scriptKey('playtest', { ...take('j_1'), step: 'landing' }));
   assert.ok(speakMs('a'.repeat(140)) >= 10_000);
 });
+
+test("the director's ladder: its order, rungs left off, the showcase's kinds, segment lengths", () => {
+  const r = rungs({ playtest: [take('j_1')], work: [work('c_1')], roadmap: [road('a')], showcase: [song('a_1'), { ...song('a_2'), kind: 'image' }] });
+  // Roadmap first, playtests off: the take never goes on, the roadmap leads.
+  const order = ['roadmap', 'work', 'showcase'] as any;
+  const d = show.directed(r, { ladder: order, showcaseKinds: ['image'] });
+  assert.equal(d.playtest.length, 0);
+  assert.deepEqual(d.showcase.map((i: any) => i.asset), ['a_2']);
+  assert.equal(topRung(d, null, order), 'roadmap');
+  assert.equal(topRung(show.directed(r, { ladder: [] }), null, []), 'showcase');
+  // A rung higher in the director's order cuts in on a lower one.
+  const now = 5_000_000;
+  const st = { ...fresh(), seg: seg('work', 'c_1', now - 1_000, { card: work('c_1') }) };
+  const next = decide(st, d, now, { order });
+  assert.equal(next?.kind, 'roadmap');
+  assert.equal(next?.reason, 'cut-in');
+  assert.equal(dwellFor('roadmap', road('a'), { roadmap: 90 }), 90_000);
+  assert.equal(dwellFor('roadmap', road('a'), {}), 28_000);
+  // A song still holds for its own length.
+  assert.equal(dwellFor('showcase', song('a_1'), { showcase: 5 }), 75_000);
+});
+
+test('saved wordings take turns once there are enough, so a repeat costs no new line or voice', () => {
+  const map = new Map();
+  assert.equal(show.takeScript('roadmap:a', 2, map), null);
+  show.keepScript('roadmap:a', ['One.'], 2, map);
+  assert.equal(show.takeScript('roadmap:a', 2, map), null, 'one wording of two: write another');
+  show.keepScript('roadmap:a', ['Two.'], 2, map);
+  const said = [show.takeScript('roadmap:a', 2, map), show.takeScript('roadmap:a', 2, map), show.takeScript('roadmap:a', 2, map)];
+  assert.deepEqual(said, [['One.'], ['Two.'], ['One.']]);
+  // Variety 1: always the same line.
+  assert.deepEqual(show.takeScript('roadmap:a', 1, map), ['One.']);
+  // Past the cap the oldest goes.
+  show.keepScript('roadmap:b', ['A.'], 2, map);
+  show.keepScript('roadmap:b', ['B.'], 2, map);
+  show.keepScript('roadmap:b', ['C.'], 2, map);
+  assert.deepEqual(map.get('roadmap:b').variants, [['B.'], ['C.']]);
+});
+
+test('the roadmap card is the real board: the open milestone, its items first, real task counts, public states only', () => {
+  const now = 10 * 24 * 3600_000;
+  const task = (title: string, status: string, merged_at: number | null = null) => ({ title, status, merged_at });
+  const items = [
+    { id: 'i_other', product: 'sickofit', title: 'Leaderboard', status: 'planned', priority: 'high', ord: 1, why: 'Players asked for it. More text.', progress: { state: 'planned', merged: 0, total: 0 }, tasks: [] },
+    { id: 'i_ms', product: 'sickofit', title: 'Touch controls', status: 'planned', priority: 'normal', ord: 2, progress: { state: 'working', merged: 1, total: 4 }, tasks: [task('Joystick', 'merged', now - 3600_000), task('Jump button', 'working'), task('A', 'planned'), task('B', 'planned')] },
+    { id: 'i_gpu', product: 'sickofit', title: 'Boss art', status: 'planned', priority: 'normal', ord: 3, progress: { state: 'waiting for your GPU budget', merged: 0, total: 1 }, tasks: [task('Paint', 'planned')] },
+    { id: 'i_idea', product: 'sickofit', title: 'Pets', status: 'idea', priority: 'normal', ord: 4, progress: { state: 'idea', merged: 0, total: 0 }, tasks: [] },
+    { id: 'i_live', product: 'sickofit', title: 'Shipped thing', status: 'planned', priority: 'normal', ord: 0, progress: { state: 'live', merged: 2, total: 2 }, tasks: [] },
+  ];
+  const milestones = [
+    { id: 'm_done', product: 'sickofit', title: 'Old one', status: 'reached', done: 3, total: 3, items: [] },
+    { id: 'm_open', product: 'sickofit', title: 'Phone ready', goal: 'Play the whole game on a phone. Then more.', status: 'open', done: 0, total: 1, items: [{ id: 'i_ms' }] },
+  ];
+  const [card] = show.roadCards(items, milestones, new Map(), now);
+  assert.equal(card.milestone, 'Phone ready');
+  assert.equal(card.goal, 'Play the whole game on a phone.');
+  assert.deepEqual(card.items.map((i: any) => i.title), ['Touch controls', 'Boss art', 'Leaderboard'], 'milestone first, live and ideas left off');
+  const touch = card.items[0];
+  assert.equal(touch.state, 'in progress');
+  assert.equal(touch.tasks, '1 of 4 tasks done');
+  assert.equal(touch.pct, 0.25);
+  assert.equal(touch.now, 'Jump button');
+  assert.equal(card.items[1].state, 'making the art', 'no "waiting for your GPU budget" on air');
+  assert.equal(card.items[2].pct, 0, 'no placeholder progress');
+  assert.equal(card.items[2].why, 'Players asked for it.');
+  assert.deepEqual(card.recent.map((r: any) => r.title), ['Joystick']);
+  const facts = factsOf('roadmap', card);
+  assert.match(facts, /working on "Jump button" right now/);
+  assert.match(facts, /Do not invent/);
+  assert.match(templateLines('roadmap', card).join(' '), /Jump button/);
+});

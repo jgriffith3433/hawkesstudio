@@ -17,10 +17,13 @@
 
   document.body.classList.add(clean ? 'clean' : 'desk');
 
+  // The director's panel is a column on the right; on a narrow window it sits under the stage instead.
   function fit() {
-    const bar = clean ? 0 : ($('desk')?.offsetHeight || 0);
-    const z = Math.min(window.innerWidth / 1920, Math.max(1, window.innerHeight - bar) / 1080);
+    const narrow = !clean && window.innerWidth <= 900;
+    const side = clean || narrow ? 0 : ($('desk')?.offsetWidth || 0);
+    const z = narrow ? window.innerWidth / 1920 : Math.min(Math.max(1, window.innerWidth - side) / 1920, window.innerHeight / 1080);
     $('stage').style.transform = `scale(${z})`;
+    if (!clean) $('desk').style.top = narrow ? `${Math.round(1080 * z)}px` : '';
   }
   addEventListener('resize', fit);
   fit();
@@ -78,7 +81,9 @@
     const pct = c.total ? c.done / c.total : 0;
     $('rm-ring').style.strokeDashoffset = String(327 * (1 - pct));
     $('rm-count').textContent = c.total ? `${c.done}/${c.total}` : '—';
-    const html = (c.items || []).map((i, n) => `<div class="rm-item" style="animation-delay:${n * 0.12}s"><b>${esc(i.title)}</b><span class="st">${esc(i.state)}</span><div class="track"><span style="width:${Math.round((i.pct || 0) * 100)}%"></span></div></div>`).join('');
+    $('rm-goal').textContent = c.goal || '';
+    // Each item: its state and real task count, what an agent is on now (else why it's planned), its bar of tasks merged.
+    const html = (c.items || []).map((i, n) => `<div class="rm-item" style="animation-delay:${n * 0.12}s"><b>${esc(i.title)}</b><span class="st">${esc([i.state, i.tasks].filter(Boolean).join(' · '))}</span>${i.inMilestone && c.milestone ? '<span class="ms">milestone</span>' : ''}${i.now ? `<small class="now">Now: ${esc(i.now)}</small>` : i.why ? `<small>${esc(i.why)}</small>` : ''}<div class="track"><span style="width:${Math.round((i.pct || 0) * 100)}%"></span></div></div>`).join('');
     if ($('rm-items').dataset.v !== html) { $('rm-items').dataset.v = html; $('rm-items').innerHTML = html; }
   }
 
@@ -121,9 +126,9 @@
       : `<div class="also text"><div><b>${esc(x.title)}</b><small>${esc(x.sub || '')}</small></div></div>`).join('');
     if ($('also').dataset.v !== also) { $('also').dataset.v = also; $('also').innerHTML = also; }
     $('rail-k').style.display = also ? '' : 'none';
-    const landed = s.kind === 'playtest' ? (s.card?.landed || []) : [];
+    const landed = s.kind === 'playtest' ? (s.card?.landed || []) : s.kind === 'roadmap' ? (s.card?.recent || []) : [];
     const items = landed.length ? landed.map((l) => ({ t: l.title, s: l.ago })) : (d.ticker || []).slice(0, 4).map((t) => ({ t: t.text, s: '' }));
-    $('landed-k').textContent = landed.length ? `Just landed in ${s.card.productName}` : 'On the floor';
+    $('landed-k').textContent = landed.length ? `${s.kind === 'roadmap' ? 'Merged this week in' : 'Just landed in'} ${s.card.productName}` : 'On the floor';
     const html = items.map((i) => `<div class="landed">${esc(i.t)}${i.s ? `<small>${esc(i.s)}</small>` : ''}</div>`).join('');
     if ($('landed').dataset.v !== html) { $('landed').dataset.v = html; $('landed').innerHTML = html; }
   }
@@ -201,15 +206,129 @@
     setText('desk-banner', desk.banner || '');
     setText('desk-cue', desk.cue || '');
     $('desk-pause').textContent = desk.paused ? 'Resume' : 'Pause';
+    setSelect($('desk-variety'), 'variety', $('desk-variety').innerHTML, desk.variety || 3);
+    setSelect($('pt-product-pick'), lineup.map((p) => p.id).join('|'), lineup.map((p) => `<option value="${esc(p.id)}">${esc(p.name)}</option>`).join(''), $('pt-product-pick').value || desk.product || lineup[0]?.id || '');
+    paintLadder(desk);
+    paintAir(d.onAir);
     const s = d.show || {};
     const u = s.usage || {};
     $('desk-now').textContent = [
       s.error ? `Show error: ${s.error}` : `On now: ${KIND_LABEL[s.kind] || '—'}${s.card ? ` · ${s.card.productName || ''} ${s.card.title || s.card.scenario || ''}` : ''}`,
       `lines by ${s.by || '—'}`,
       `next in ${Math.round((s.remaining || 0) / 1000)}s`,
-      u.budget ? `today: ${u.brainCalls}/${u.budget.brainCalls} lines written, ${u.voiceChars}/${u.budget.voiceChars} characters spoken` : '',
     ].filter(Boolean).join('   ·   ');
+    $('desk-usage').textContent = u.budget
+      ? `Today: ${u.brainCalls}/${u.budget.brainCalls} lines written, ${u.reused || 0} reused. Voice: ${u.voiceChars}/${u.budget.voiceChars} new characters paid, ${u.voiceCached || 0} replayed free from the cache.`
+      : '';
     fit();
+  }
+
+  // ---------------------------------------------------------------- the ladder: what runs, in what order, for how long
+
+  const RUNG_LABEL = { playtest: 'Playtests', work: 'Agents at work', roadmap: 'Roadmap', showcase: 'Showcase' };
+  const RUNGS = ['playtest', 'work', 'roadmap', 'showcase'];
+  /** All four rungs in the director's order: the ones on first (their order), then the ones off. */
+  const ladderRows = (desk) => {
+    const on = desk.ladder || RUNGS;
+    return [...on, ...RUNGS.filter((k) => !on.includes(k))].map((k) => ({ k, on: on.includes(k) }));
+  };
+
+  function paintLadder(desk) {
+    const rows = ladderRows(desk);
+    const dwell = desk.dwell || {};
+    const sig = JSON.stringify([rows, dwell]);
+    const box = $('ladder-rows');
+    if (box.dataset.v !== sig && !box.contains(document.activeElement)) {
+      box.dataset.v = sig;
+      box.innerHTML = rows.map((r, i) => `<div class="lad${r.on ? '' : ' off'}" data-k="${r.k}">
+        <input type="checkbox" data-lad="on" ${r.on ? 'checked' : ''} title="Runs on the show">
+        <span>${esc(RUNG_LABEL[r.k])}</span>
+        <input type="number" data-lad="dwell" min="5" max="600" value="${Number(dwell[r.k]) || ''}" title="Seconds each subject holds">
+        <button type="button" data-lad="up" ${i === 0 || !r.on ? 'disabled' : ''} title="Higher on the ladder">↑</button>
+      </div>`).join('');
+    }
+    const kinds = desk.showcaseKinds || ['song', 'video', 'image'];
+    for (const el of document.querySelectorAll('[data-kind]')) if (document.activeElement !== el) el.checked = kinds.includes(el.dataset.kind);
+  }
+
+  function ladderPatch(change) {
+    const rows = ladderRows(latest.desk || {});
+    change(rows);
+    return rows.filter((r) => r.on).map((r) => r.k);
+  }
+
+  // ---------------------------------------------------------------- the stream: Go live / Stop, quality, the encoder
+
+  const STATE_LABEL = { off: 'OFF', starting: 'STARTING', live: 'LIVE', waiting: 'WAITING', retrying: 'RETRYING', down: 'ENCODER DOWN' };
+  const hms = (ms) => { const t = Math.max(0, Math.floor(ms / 1000)); return `${Math.floor(t / 3600)}:${String(Math.floor(t / 60) % 60).padStart(2, '0')}:${String(t % 60).padStart(2, '0')}`; };
+
+  function paintAir(air) {
+    if (!air) return;
+    const enc = air.encoder || {};
+    const st = air.on ? enc.state || 'down' : (enc.state === 'down' ? 'down' : 'off');
+    const pill = $('air-pill');
+    pill.className = `pill ${st}`;
+    pill.textContent = air.on && st === 'off' ? 'STARTING' : (STATE_LABEL[st] || st.toUpperCase());
+    $('sec-stream').classList.toggle('is-live', air.on);
+    const go = $('air-go');
+    go.textContent = air.on ? 'Stop stream' : (air.quality?.rehearsal ? 'Start rehearsal' : 'Go live');
+    go.classList.toggle('stop', !!air.on);
+    $('air-clock').textContent = st === 'live' && enc.since ? hms(Date.now() - enc.since) : '';
+    const notes = [];
+    if (enc.note) notes.push(enc.note);
+    else if (!air.on && st === 'down') notes.push('The encoder service is not running, so Go live will wait for it (it starts with the next Studio deploy, or: sudo systemctl enable --now hawkes-broadcast).');
+    if (air.pending) notes.push('Quality changed: the encoder restarts with it in a few seconds.');
+    if (air.on && air.by) notes.push(`Started by ${air.by}.`);
+    $('air-note').textContent = notes.join(' ');
+    const stats = st === 'live' || st === 'starting'
+      ? [['fps', enc.fps], ['kbps', enc.kbps], ['dropped', enc.dropped], ['speed', enc.speed != null ? `${enc.speed}x` : null]]
+      : [];
+    const html = stats.map(([k, v]) => `<div><b>${v ?? '—'}</b>${k}</div>`).join('');
+    if ($('air-stats').innerHTML !== html) $('air-stats').innerHTML = html;
+    const q = air.quality || {};
+    const presets = air.presets || {};
+    setSelect($('q-preset'), Object.keys(presets).join('|'), ['<option value="">Custom</option>', ...Object.entries(presets).map(([k, l]) => `<option value="${esc(k)}">${esc(l)}</option>`)].join(''), '');
+    setSelect($('q-resolution'), 'res', $('q-resolution').innerHTML, q.resolution);
+    setSelect($('q-x264'), 'x264', $('q-x264').innerHTML, q.x264);
+    setSelect($('q-keyframeSec'), 'kf', $('q-keyframeSec').innerHTML, q.keyframeSec);
+    setSelect($('q-audioKbps'), 'ab', $('q-audioKbps').innerHTML, q.audioKbps);
+    setText('q-videoKbps', String(q.videoKbps ?? ''));
+    setCheck('q-rehearsal', q.rehearsal);
+    const e = air.encode || {};
+    $('air-qsum').textContent = e.width ? `${e.height}p${e.fps} · ${(e.videoKbps / 1000).toFixed(1)} Mbps · ${e.x264}${e.rehearsal ? ' · rehearsal' : ''}` : '';
+  }
+
+  async function postLive(patch) {
+    try {
+      const r = await fetch('/api/broadcast/live', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(patch) });
+      const body = await r.json().catch(() => ({}));
+      if (!r.ok) { $('air-note').textContent = body.error || 'Could not change the stream'; return; }
+      paintAir(body);
+      load();
+    } catch (e) {
+      $('air-note').textContent = e.message || 'Could not change the stream';
+    }
+  }
+
+  async function startPlaytest() {
+    const product = $('pt-product-pick').value;
+    if (!product) return;
+    const btn = $('pt-start');
+    btn.disabled = true;
+    $('pt-started').textContent = 'Starting…';
+    try {
+      const body = { product, scenario: $('pt-scenario-pick').value.trim() || undefined, device: $('pt-device-pick').value || undefined };
+      const r = await fetch('/api/playtest', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+      const out = await r.json().catch(() => ({}));
+      if (!r.ok) { $('pt-started').textContent = out.error || 'Could not start the playtest'; return; }
+      const name = (latest.lineup || []).find((p) => p.id === product)?.name || product;
+      $('pt-started').textContent = `Playtest of ${name} started (run ${out.run}). It goes on the ladder when a browser is playing it, usually within a minute or two.`;
+      if ($('pt-hold').checked) await post({ screen: 'take', take: '' });
+    } catch (e) {
+      $('pt-started').textContent = e.message || 'Could not start the playtest';
+    } finally {
+      btn.disabled = false;
+    }
   }
 
   async function post(patch) {
@@ -231,7 +350,25 @@
     $('desk').addEventListener('submit', (e) => e.preventDefault());
     $('desk').addEventListener('change', (e) => {
       const t = e.target;
-      if (t.id === 'desk-product') post({ product: t.value });
+      // The stream's quality.
+      if (t.id === 'q-preset') { if (t.value) postLive({ quality: { preset: t.value } }); return; }
+      if (t.id?.startsWith('q-')) {
+        const k = t.id.slice(2);
+        postLive({ quality: { [k]: t.type === 'checkbox' ? t.checked : (t.type === 'number' || k !== 'resolution' && k !== 'x264' ? Number(t.value) : t.value) } });
+        return;
+      }
+      // The ladder.
+      const lad = t.closest?.('.lad');
+      if (lad && t.dataset.lad === 'on') { post({ ladder: ladderPatch((rows) => { rows.find((r) => r.k === lad.dataset.k).on = t.checked; }) }); return; }
+      if (lad && t.dataset.lad === 'dwell') { post({ dwell: { [lad.dataset.k]: Number(t.value) } }); return; }
+      if (t.dataset.kind) {
+        const kinds = [...document.querySelectorAll('[data-kind]')].filter((el) => el.checked).map((el) => el.dataset.kind);
+        post({ showcaseKinds: kinds });
+        return;
+      }
+      if (t.id?.startsWith('pt-')) return;
+      if (t.id === 'desk-variety') post({ variety: Number(t.value) });
+      else if (t.id === 'desk-product') post({ product: t.value });
       else if (t.id === 'desk-screen') post(t.value === 'take' ? { screen: 'take', take: $('desk-take').value || '' } : { screen: t.value });
       else if (t.id === 'desk-take') post(t.value ? { screen: 'take', take: t.value } : { screen: 'take', take: '' });
       else if (t.id === 'desk-banner') post({ banner: t.value });
@@ -239,6 +376,20 @@
     });
     $('desk').addEventListener('click', (e) => {
       const id = e.target.id;
+      const lad = e.target.closest?.('.lad');
+      if (lad && e.target.dataset.lad === 'up') {
+        post({ ladder: ladderPatch((rows) => { const i = rows.findIndex((r) => r.k === lad.dataset.k); if (i > 0) [rows[i - 1], rows[i]] = [rows[i], rows[i - 1]]; }) });
+        return;
+      }
+      if (id === 'air-go') {
+        const on = !!latest.onAir?.on;
+        const rehearsal = !!latest.onAir?.quality?.rehearsal;
+        if (!on && !confirm(rehearsal ? 'Start a rehearsal stream? Twitch receives it but the channel does not show it.' : 'Go live on Twitch now? The show goes out publicly on the channel.')) return;
+        if (on && !confirm('Stop the Twitch stream?')) return;
+        postLive({ on: !on });
+        return;
+      }
+      if (id === 'pt-start') { startPlaytest(); return; }
       if (id === 'desk-next') post({ next: true });
       else if (id === 'desk-pause') post({ paused: !latest.desk?.paused });
       else if (id === 'desk-say') post({ cue: $('desk-cue').value, say: true });

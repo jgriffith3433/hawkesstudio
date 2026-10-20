@@ -305,6 +305,10 @@ for (const t of todo) {
     record({ repo: t.repo, from: t.head, to: t.tip, outcome: 'failed', detail: `${e.message.split('\n')[0]}; ${back}` });
   }
 }
+// The Twitch encoder (bin/broadcast-stream.mjs): its unit kept current, running (idle until Go live), and restarted
+// when Studio's deploy changed its script. A restart while live drops the stream for about 20 s; it comes back by itself.
+await ensureBroadcast(todo.find((t) => t.repo === 'hawkesstudio' && state.hawkesstudio?.badCommit !== t.tip));
+
 // 4. The web server: the Caddyfile is built from Studio's deploy/caddyfile.mjs and products.json (inputs that live
 // outside git, the domain and email, are in /etc/hawkes/caddy.json, written by deploy.mjs). Applied when it differs.
 await applyCaddy(state);
@@ -398,5 +402,28 @@ if (!DRY) {
     if (!fs.existsSync(claude)) { fs.writeFileSync(claude, '@AGENTS.md\n'); own(claude); }
   } catch (e) {
     say(`could not install the projects map: ${e.message}`);
+  }
+}
+
+async function ensureBroadcast(deployed) {
+  if (DRY) return;
+  const studio = path.join(ROOT, 'hawkesstudio');
+  const UNIT = '/etc/systemd/system/hawkes-broadcast.service';
+  try {
+    const { BROADCAST_UNIT } = await import(`${pathToFileURL(path.join(studio, 'deploy', 'broadcast-unit.mjs')).href}?v=${Date.now()}`);
+    let cur = '';
+    try { cur = fs.readFileSync(UNIT, 'utf8'); } catch { /* not installed */ }
+    const newUnit = cur !== BROADCAST_UNIT;
+    if (newUnit) {
+      fs.writeFileSync(UNIT, BROADCAST_UNIT);
+      execFileSync('systemctl', ['daemon-reload']);
+      execFileSync('systemctl', ['enable', 'hawkes-broadcast'], { stdio: 'ignore' });
+    }
+    const files = deployed ? changed(studio, deployed.head, deployed.tip) : [];
+    const active = (() => { try { return execFileSync('systemctl', ['is-active', 'hawkes-broadcast'], { encoding: 'utf8' }).trim() === 'active'; } catch { return false; } })();
+    if (!active) { execFileSync('systemctl', ['start', 'hawkes-broadcast']); say('started hawkes-broadcast (the Twitch encoder, idle until Go live)'); }
+    else if (newUnit || files.includes('bin/broadcast-stream.mjs')) { execFileSync('systemctl', ['restart', 'hawkes-broadcast']); say('restarted hawkes-broadcast: its unit or script changed'); }
+  } catch (e) {
+    say(`hawkes-broadcast: ${String(e.message).split('\n')[0]}`);
   }
 }

@@ -258,3 +258,19 @@ test('the encoder never prints the stream key (ffmpeg banner off)', () => {
     assert.match(m[1], /'-hide_banner', '-loglevel', 'warning'/);
   }
 });
+
+test('the desk keeps the ladder, the showcase kinds, segment lengths and line variety; reset brings them back', () => {
+  const d = deskFrom({}, PRODUCTS);
+  assert.deepEqual(d.ladder, ['playtest', 'work', 'roadmap', 'showcase']);
+  const next = patchDesk(d, { ladder: ['roadmap', 'bogus', 'roadmap', 'showcase'], showcaseKinds: ['song'], dwell: { roadmap: 60, work: 2 }, variety: 1 }, PRODUCTS);
+  assert.deepEqual(next.ladder, ['roadmap', 'showcase']);
+  assert.deepEqual(next.showcaseKinds, ['song']);
+  assert.equal(next.dwell.roadmap, 60);
+  assert.equal(next.dwell.work, 35, 'under 5 s is ignored');
+  assert.equal(next.variety, 1);
+  assert.deepEqual(deskFrom(JSON.parse(JSON.stringify(next)), PRODUCTS).ladder, ['roadmap', 'showcase']);
+  assert.deepEqual(patchDesk(next, { ladder: [] }, PRODUCTS).ladder, []);
+  assert.throws(() => patchDesk(d, { variety: 20 }, PRODUCTS), /variety/);
+  assert.throws(() => patchDesk(d, { ladder: 'roadmap' }, PRODUCTS), /ladder/);
+  assert.deepEqual(patchDesk(next, { reset: true }, PRODUCTS).ladder, ['playtest', 'work', 'roadmap', 'showcase']);
+});

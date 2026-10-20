@@ -62,6 +62,7 @@
       <div class="rm-card">
         <div class="rm-product" id="rm-product"></div>
         <h1 id="rm-milestone"></h1>
+        <p class="rm-goal" id="rm-goal"></p>
         <div class="rm-ring"><svg viewBox="0 0 120 120"><circle cx="60" cy="60" r="52" class="ring-bg"/><circle cx="60" cy="60" r="52" class="ring-fg" id="rm-ring"/></svg><span id="rm-count"></span></div>
         <div id="rm-items"></div>
       </div>
@@ -112,31 +113,105 @@
 <audio id="host-audio" preload="auto"></audio>
 <audio id="song-audio" preload="auto"></audio>
 <form id="desk">
-  <span class="desk-kicker">Director</span>
-  <span class="desk-note">This bar stays off the stream (?clean=1).</span>
-  <label>On screen <select id="desk-screen">
-    <option value="auto">Auto (the ladder)</option>
-    <option value="take">Playtests</option>
-    <option value="work">Agents at work</option>
-    <option value="roadmap">Roadmap</option>
-    <option value="reel">Showcase</option>
-    <option value="quiet">Hold still</option>
-  </select></label>
-  <label>Take <select id="desk-take"></select></label>
-  <button type="button" id="desk-next" title="Move the show on now">Next</button>
-  <button type="button" id="desk-pause">Pause</button>
-  <label>Product <select id="desk-product"></select></label>
-  <label title="Yooba speaks on the stream (Gen voice, mixed by the encoder). Captions still show when off."><input type="checkbox" id="desk-voice"> Voice</label>
-  <label title="Claude writes Yooba's lines from what's on. Off: simple template lines."><input type="checkbox" id="desk-brain"> Claude writes lines</label>
-  <label><input type="checkbox" id="desk-showHost"> Host cam</label>
-  <label><input type="checkbox" id="desk-showPips"> Also live</label>
-  <label><input type="checkbox" id="desk-showTicker"> Ticker</label>
-  <label>Banner <input id="desk-banner" type="text" maxlength="80" placeholder="optional"></label>
-  <label>Yooba says <input id="desk-cue" type="text" maxlength="160" placeholder="a line, said right away"></label>
-  <button type="button" id="desk-say">Say</button>
-  <button type="button" id="desk-clear">Clear</button>
-  <button type="button" id="desk-reset">Reset</button>
-  <span id="desk-now"></span>
+  <div class="desk-head">
+    <span class="desk-kicker">Director</span>
+    <span class="desk-note">This panel stays off the stream (?clean=1).</span>
+  </div>
+
+  <section class="desk-sec" id="sec-stream">
+    <h2>Stream</h2>
+    <div class="air-row">
+      <button type="button" id="air-go" class="air-go">Go live</button>
+      <div class="air-state"><span id="air-pill" class="pill off">OFF</span> <span id="air-clock"></span></div>
+    </div>
+    <div id="air-note" class="air-note"></div>
+    <div id="air-stats" class="air-stats"></div>
+    <details id="air-quality">
+      <summary>Quality <span id="air-qsum"></span></summary>
+      <label>Preset <select id="q-preset"><option value="">Custom</option></select></label>
+      <label>Resolution <select id="q-resolution">
+        <option value="1080p60">1080p 60 fps</option>
+        <option value="1080p30">1080p 30 fps</option>
+        <option value="720p60">720p 60 fps</option>
+        <option value="720p30">720p 30 fps</option>
+        <option value="480p30">480p 30 fps</option>
+      </select></label>
+      <label>Video bitrate (kbps) <input id="q-videoKbps" type="number" min="500" max="8000" step="100"></label>
+      <label title="Slower presets look better at the same bitrate and use more of the server's CPU.">Encoder speed <select id="q-x264">
+        <option>ultrafast</option><option>superfast</option><option>veryfast</option><option>faster</option><option>fast</option><option>medium</option>
+      </select></label>
+      <label title="Twitch wants 2 s.">Keyframe every <select id="q-keyframeSec"><option value="1">1 s</option><option value="2">2 s</option><option value="3">3 s</option><option value="4">4 s</option></select></label>
+      <label>Audio <select id="q-audioKbps"><option value="96">96 kbps</option><option value="128">128 kbps</option><option value="160">160 kbps</option><option value="192">192 kbps</option></select></label>
+      <label title="Twitch's bandwidth test: the stream reaches Twitch (check it in the Twitch Inspector) but the channel doesn't show it."><input type="checkbox" id="q-rehearsal"> Rehearsal (not public)</label>
+      <div class="desk-note">A change while live restarts the encoder: a few seconds of black on the stream.</div>
+    </details>
+  </section>
+
+  <section class="desk-sec">
+    <h2>On screen</h2>
+    <label>Show <select id="desk-screen">
+      <option value="auto">Auto (the ladder)</option>
+      <option value="take">Playtests</option>
+      <option value="work">Agents at work</option>
+      <option value="roadmap">Roadmap</option>
+      <option value="reel">Showcase</option>
+      <option value="quiet">Hold still</option>
+    </select></label>
+    <label>Take <select id="desk-take"></select></label>
+    <label>Product <select id="desk-product"></select></label>
+    <div class="desk-btns">
+      <button type="button" id="desk-next" title="Move the show on now">Next</button>
+      <button type="button" id="desk-pause">Pause</button>
+      <button type="button" id="desk-reset" title="This panel's show settings back to the defaults (the stream switch and quality stay)">Reset</button>
+    </div>
+    <div class="desk-checks">
+      <label><input type="checkbox" id="desk-showHost"> Host cam</label>
+      <label><input type="checkbox" id="desk-showPips"> Also live</label>
+      <label><input type="checkbox" id="desk-showTicker"> Ticker</label>
+    </div>
+    <label>Banner <input id="desk-banner" type="text" maxlength="80" placeholder="optional"></label>
+  </section>
+
+  <section class="desk-sec">
+    <h2>Start a playtest</h2>
+    <label>Product <select id="pt-product-pick"></select></label>
+    <label>Scenario <input id="pt-scenario-pick" type="text" maxlength="80" placeholder="the product's default"></label>
+    <label>Device <select id="pt-device-pick"><option value="">Desktop</option><option value="phone">Phone</option></select></label>
+    <label title="Holds the Playtests rung, so the take goes on screen as soon as a browser is playing it."><input type="checkbox" id="pt-hold" checked> Put it on screen when it starts</label>
+    <button type="button" id="pt-start">Start playtest</button>
+    <div class="desk-note">Uses a playtester (about $0.53/hr while it runs). It shows up once a browser is playing.</div>
+    <div id="pt-started" class="air-note"></div>
+  </section>
+
+  <section class="desk-sec">
+    <h2>The ladder</h2>
+    <div class="desk-note">What runs, highest first. With no playtest on, the next rung down fills the screen. Seconds: how long each subject holds.</div>
+    <div id="ladder-rows"></div>
+    <div class="desk-checks"><span>Showcase plays:</span>
+      <label><input type="checkbox" data-kind="song"> Songs</label>
+      <label><input type="checkbox" data-kind="video"> Clips</label>
+      <label><input type="checkbox" data-kind="image"> Art</label>
+    </div>
+  </section>
+
+  <section class="desk-sec">
+    <h2>Yooba</h2>
+    <div class="desk-checks">
+      <label title="Yooba speaks on the stream (Gen voice, mixed by the encoder). Captions still show when off."><input type="checkbox" id="desk-voice"> Voice</label>
+      <label title="Claude writes Yooba's lines from what's on. Off: simple template lines."><input type="checkbox" id="desk-brain"> Claude writes lines</label>
+    </div>
+    <label title="How many wordings Yooba keeps for the same subject before he repeats one. Each is voiced once; a repeat is free (cached).">Wordings per subject <select id="desk-variety">
+      <option value="1">1 (always the same)</option><option value="2">2</option><option value="3">3</option><option value="4">4</option><option value="6">6</option><option value="8">8</option>
+    </select></label>
+    <label>Yooba says <input id="desk-cue" type="text" maxlength="160" placeholder="a line, said right away"></label>
+    <div class="desk-btns">
+      <button type="button" id="desk-say">Say</button>
+      <button type="button" id="desk-clear">Clear</button>
+    </div>
+    <div id="desk-usage" class="desk-note"></div>
+  </section>
+
+  <div id="desk-now"></div>
 </form>
 <script src="/broadcast.js"></script>
 </body>

@@ -11,7 +11,8 @@
 // so the desk page, the clean capture and the encoder all follow one show. Yooba's lines are written by Claude (Haiku,
 // through llm.ts) from the segment's facts, cached per subject, with templates as the fallback; each is spoken through
 // Gen audio.voice and paced by its length. Two daily budgets keep it cheap: new lines written, characters spoken.
-// Over a budget the show goes on with templates or captions only.
+// Over a budget the show goes on with templates or captions only. Lines are kept on disk per subject and facts (a few
+// wordings each, taking turns) and every sentence's mp3 is cached, so the same roadmap aired again costs nothing.
 //
 // Only titles, steps, statuses and the agents' own notes reach the screen or the prompt, through safeLine (no paths,
 // URLs with tokens, keys, prompts or recipes).
@@ -40,9 +41,29 @@ export type WorkCard = {
   id: string; product: string; productName: string; title: string; status: string; why: string;
   notes: string[]; tools: string[]; criteria: string[]; minutes: number; size: string; still: string | null;
 };
+export type RoadItem = {
+  title: string;
+  /** Said on air: in progress, making the art, on beta, verified, planned, idea. Never Studio's internal states. */
+  state: string;
+  /** Tasks merged of its tasks (0 when none are planned yet): the bar is real, never a placeholder. */
+  pct: number;
+  /** "2 of 5 tasks done", or '' before it has tasks. */
+  tasks: string;
+  /** Why it's on the roadmap: the first sentence of the item's why (or goal). */
+  why: string;
+  /** The task an agent is on right now, if one is. */
+  now: string;
+  /** Part of the milestone on screen. */
+  inMilestone: boolean;
+};
 export type RoadCard = {
-  product: string; productName: string; milestone: string | null; done: number; total: number;
-  items: { title: string; state: string; pct: number }[]; still: string | null;
+  product: string; productName: string; milestone: string | null; goal: string; done: number; total: number;
+  items: RoadItem[];
+  /** Tasks merged in the last week, newest first. */
+  recent: Landed[];
+  /** Items with an agent on them now. */
+  working: number;
+  still: string | null;
 };
 export type ShowItem = {
   asset: string; kind: 'song' | 'video' | 'image'; product: string; productName: string; title: string; what: string;
@@ -74,7 +95,15 @@ export type Segment = {
 
 export type ShowState = { seg: Segment | null; cursor: Record<Kind, number>; skip: number; history: string[] };
 
-export type ShowDesk = { screen: string; take: string; clip: string; paused: boolean; voice: boolean; brain: boolean; cue: string; skip: number; product: string | null; priority: string[] };
+export type ShowDesk = {
+  screen: string; take: string; clip: string; paused: boolean; voice: boolean; brain: boolean; cue: string; skip: number; product: string | null; priority: string[];
+  /** The director's ladder: the rungs that run, highest first (absent: LADDER). A rung left out never goes on screen. */
+  ladder?: Kind[];
+  /** Seconds each rung holds a subject (absent: DWELL). Songs and clips still hold for their own length. */
+  dwell?: Partial<Record<Kind, number>>;
+  /** Wordings Yooba keeps per subject before he repeats them (each one voiced once, then free). */
+  variety?: number;
+};
 
 // ------------------------------------------------------------------ pacing (pure)
 
@@ -86,21 +115,22 @@ const SONG_CAP_MS = 75_000;
 /** Speech length when there's no mp3 to measure: about 14 characters a second. */
 export const speakMs = (text: string) => Math.max(1500, Math.round((text.length / 14) * 1000) + 400);
 
-export function dwellFor(kind: Kind, card: any): number {
+export function dwellFor(kind: Kind, card: any, dwell: Partial<Record<Kind, number>> = {}): number {
+  const set = Number(dwell[kind]) > 0 ? Number(dwell[kind]) * 1000 : 0;
   if (kind === 'showcase' && card) {
     const s = Number(card.seconds) || 0;
     if (card.kind === 'song') return Math.min(SONG_CAP_MS, Math.max(30_000, s * 1000));
     if (card.kind === 'video') return Math.max(10_000, Math.min(30_000, s * 1000 || 12_000));
-    return DWELL.showcase;
+    return set || DWELL.showcase;
   }
-  return DWELL[kind];
+  return set || DWELL[kind];
 }
 
 /** The highest rung with something on it (or the one the director holds, when it has something). */
-export function topRung(r: Rungs, hold?: Kind | null): Kind {
+export function topRung(r: Rungs, hold?: Kind | null, order: Kind[] = LADDER): Kind {
   if (hold && r[hold].length) return hold;
-  for (const k of LADDER) if (r[k].length) return k;
-  return 'showcase';
+  for (const k of order) if (r[k].length) return k;
+  return order[order.length - 1] ?? 'showcase';
 }
 
 export const subjectOf = (kind: Kind, card: any): string =>
@@ -116,9 +146,11 @@ export function cardFor(r: Rungs, seg: Pick<Segment, 'kind' | 'subject'> | null)
  * something (it cuts in), the subject is gone (a take ended: one wrap line first), or the director skipped. Moving on
  * goes round the rung's subjects in order, so every live take and every agent gets its turn.
  */
-export function decide(state: ShowState, r: Rungs, now: number, opt: { hold?: Kind | null; holdSubject?: string; skip?: number } = {}): { kind: Kind; card: any; reason: string } | null {
+export function decide(state: ShowState, r: Rungs, now: number, opt: { hold?: Kind | null; holdSubject?: string; skip?: number; order?: Kind[] } = {}): { kind: Kind; card: any; reason: string } | null {
   const seg = state.seg;
-  const top = topRung(r, opt.hold ?? null);
+  const order = opt.order?.length ? opt.order : LADDER;
+  const top = topRung(r, opt.hold ?? null, order);
+  const rank = (k: Kind) => (order.includes(k) ? order.indexOf(k) : order.length);
   const skipped = (opt.skip ?? 0) !== state.skip;
   if (opt.holdSubject && opt.hold) {
     const held = (r[opt.hold] as any[]).find((c) => subjectOf(opt.hold!, c) === opt.holdSubject);
@@ -130,7 +162,7 @@ export function decide(state: ShowState, r: Rungs, now: number, opt: { hold?: Ki
   const speaking = seg.at < seg.lines.length - 1 || (seg.at >= 0 && now < seg.lineStarted + (seg.lines[seg.at]?.ms ?? 0));
   if (skipped) return pick(state, r, top, seg, 'skip');
   // A higher rung came back: cut in after the current sentence.
-  if (LADDER.indexOf(top) < LADDER.indexOf(seg.kind) && !(seg.at >= 0 && now < seg.lineStarted + (seg.lines[seg.at]?.ms ?? 0))) return pick(state, r, top, seg, 'cut-in');
+  if (rank(top) < rank(seg.kind) && !(seg.at >= 0 && now < seg.lineStarted + (seg.lines[seg.at]?.ms ?? 0))) return pick(state, r, top, seg, 'cut-in');
   if (!card) return seg.wrap && speaking ? null : pick(state, r, top, seg, 'gone');
   if (now < seg.until || speaking) return null;
   // Time's up. Same rung, next subject (or the same one again when it's the only one: fresh lines).
@@ -202,9 +234,13 @@ export function factsOf(kind: Kind, card: any, extra: { wrap?: string; cutIn?: b
     if (card.size) out.push(`So far it changed: ${card.size}.`);
     if (extra.others) out.push(`${extra.others} other agent${extra.others === 1 ? ' is' : 's are'} working too.`);
   } else if (kind === 'roadmap' && card) {
-    out.push(`On screen: the roadmap for ${card.productName}. Nothing is being built or played this minute.`);
-    if (card.milestone) out.push(`Next milestone: "${card.milestone}" (${card.done} of ${card.total} done).`);
-    if (card.items?.length) out.push(`Planned: ${card.items.map((i: any) => `"${i.title}" (${i.state})`).join('; ')}.`);
+    out.push(`On screen: the roadmap for ${card.productName}, straight from the studio's planning board. No playtest is running this minute.`);
+    if (card.milestone) out.push(`Next milestone: "${card.milestone}" (${card.done} of ${card.total} items done)${card.goal ? `. Its goal: ${card.goal}` : ''}.`);
+    for (const i of card.items ?? []) {
+      out.push(`- "${i.title}": ${i.state}${i.tasks ? `, ${i.tasks}` : ''}${i.now ? `; an agent is working on "${i.now}" right now` : ''}${i.why ? `. Why: ${i.why}` : ''}${i.inMilestone ? ' (part of the milestone)' : ''}`);
+    }
+    if (card.recent?.length) out.push(`Merged this week: ${card.recent.map((r: Landed) => `"${r.title}" (${r.ago})`).join('; ')}.`);
+    out.push('Only talk about what is listed here. Do not invent dates, features or numbers.');
   } else if (kind === 'showcase' && card) {
     out.push('On screen: something the studio made with its generative tools. Nothing is planned or running right now, so you are showing off.');
     if (card.kind === 'song') out.push(`A song made for ${card.productName}${card.what ? `, used as ${card.what}` : ''}${card.bpm ? `, ${card.bpm} BPM` : ''}${card.key ? ` in ${card.key}` : ''}. It is playing now.`);
@@ -232,10 +268,13 @@ export function templateLines(kind: Kind, card: any, extra: { wrap?: string; cut
     return lines;
   }
   if (kind === 'roadmap') {
+    const active = (card.items ?? []).find((i: RoadItem) => i.now);
     const first = card.items?.[0];
+    const fresh = card.recent?.[0];
     return [
       `Here's what's coming for ${card.productName}${card.milestone ? `: the "${card.milestone}" milestone, ${card.done} of ${card.total} done` : ''}.`,
-      ...(first ? [`Next up on the list: "${first.title}".`] : []),
+      ...(active ? [`Right now an agent is on "${active.now}", part of "${active.title}".`] : first ? [`Next up on the list: "${first.title}"${first.tasks ? `, ${first.tasks}` : ''}.`] : []),
+      ...(fresh ? [`And "${fresh.title}" just merged, ${fresh.ago}.`] : []),
     ];
   }
   if (card.kind === 'song') return [`Quiet floor, so here's a song the studio made for ${card.productName}${card.what ? `, the ${card.what}` : ''}. Turn it up!`];
@@ -247,7 +286,7 @@ export function templateLines(kind: Kind, card: any, extra: { wrap?: string; cut
 export function scriptKey(kind: Kind, card: any): string {
   const sig = kind === 'playtest' ? [card?.job, card?.step, card?.problems, card?.landed?.[0]?.title]
     : kind === 'work' ? [card?.id, card?.status, card?.notes?.[card?.notes?.length - 1]]
-      : kind === 'roadmap' ? [card?.product, card?.milestone, card?.done, card?.items?.map((i: any) => i.state).join(',')]
+      : kind === 'roadmap' ? [card?.product, card?.milestone, card?.done, card?.items?.map((i: any) => `${i.title}:${i.state}:${i.tasks}:${i.now}`).join(','), card?.recent?.[0]?.title]
         : [card?.asset];
   return `${kind}:${sig.map((s) => String(s ?? '')).join('|')}`;
 }
@@ -266,18 +305,20 @@ export function cleanLines(lines: unknown): string[] {
 const USAGE = path.join(DATA, 'broadcast', 'usage.json');
 /** Defaults: about 400 new lines written a day (Haiku, cents) and 12,000 new characters spoken (ElevenLabs Flash). */
 export const BUDGET = { brainCalls: Number(process.env.STUDIO_SHOW_BRAIN_PER_DAY ?? 400), voiceChars: Number(process.env.STUDIO_SHOW_VOICE_CHARS_PER_DAY ?? 12_000) };
-type Usage = { day: string; brainCalls: number; voiceChars: number };
+/** reused: segments that took a saved wording (no Claude call); voiceCached: characters spoken from the voice cache (free). */
+type Usage = { day: string; brainCalls: number; voiceChars: number; reused: number; voiceCached: number };
 const today = () => new Date().toISOString().slice(0, 10);
 function usage(): Usage {
   try {
     const u = JSON.parse(fs.readFileSync(USAGE, 'utf8'));
-    if (u?.day === today()) return { day: u.day, brainCalls: Number(u.brainCalls) || 0, voiceChars: Number(u.voiceChars) || 0 };
+    if (u?.day === today()) return { day: u.day, brainCalls: Number(u.brainCalls) || 0, voiceChars: Number(u.voiceChars) || 0, reused: Number(u.reused) || 0, voiceCached: Number(u.voiceCached) || 0 };
   } catch { /* new day or first run */ }
-  return { day: today(), brainCalls: 0, voiceChars: 0 };
+  return { day: today(), brainCalls: 0, voiceChars: 0, reused: 0, voiceCached: 0 };
 }
-function spend(patch: Partial<Usage>) {
+function spend(patch: Partial<Omit<Usage, 'day'>>) {
   const u = usage();
-  const next = { ...u, brainCalls: u.brainCalls + (patch.brainCalls ?? 0), voiceChars: u.voiceChars + (patch.voiceChars ?? 0) };
+  const next: Usage = { ...u };
+  for (const k of ['brainCalls', 'voiceChars', 'reused', 'voiceCached'] as const) next[k] = u[k] + (patch[k] ?? 0);
   try { fs.mkdirSync(path.dirname(USAGE), { recursive: true }); fs.writeFileSync(USAGE, J(next)); } catch { /* the show goes on */ }
   return next;
 }
@@ -353,26 +394,76 @@ export function workCards(changes: any[], stills: Map<string, string>, now = Dat
     });
 }
 
-export function roadCards(items: any[], milestones: any[], stills: Map<string, string>): RoadCard[] {
+/** Studio's item states as said on a public stream (the ones about J's queue or budget stay off air). */
+export function publicState(state: string): string {
+  if (['working', 'needs you'].includes(state)) return 'in progress';
+  if (/gpu/i.test(state)) return 'making the art';
+  if (state === 'on beta') return 'on beta';
+  if (['verified', 'idea', 'planned'].includes(state)) return state;
+  return 'planned';
+}
+const STATE_RANK: Record<string, number> = { 'in progress': 0, 'making the art': 1, 'on beta': 2, verified: 3, planned: 4, idea: 5 };
+const PRIORITY_RANK: Record<string, number> = { high: 0, normal: 1, low: 2 };
+
+/**
+ * One roadmap card per product, from Studio's roadmap as it is: the product's next open milestone (its goal and how many
+ * of its items are done) and the items that belong to it first, then the rest of what's planned (work in progress first,
+ * then by priority and order; ideas only when there's little else). Each item's bar is its tasks merged; "now" is the
+ * task an agent is on. `recent` is what merged for the product this week.
+ */
+export function roadCards(items: any[], milestones: any[], stills: Map<string, string>, now = Date.now()): RoadCard[] {
   const n = names();
-  const by = new Map<string, RoadCard>();
+  const byProduct = new Map<string, any[]>();
   for (const i of items) {
     const st = String(i.progress?.state ?? i.status ?? '');
-    if (['dropped', 'live', 'done', 'verified'].includes(st) || i.status === 'dropped') continue;
+    if (['dropped', 'live', 'done'].includes(st) || i.status === 'dropped') continue;
     const p = String(i.product ?? '');
-    if (!p) continue;
-    const card = by.get(p) ?? { product: p, productName: n.get(p) ?? p, milestone: null, done: 0, total: 0, items: [], still: stills.get(p) ?? null };
-    if (card.items.length < 5) {
-      const merged = num(i.progress?.merged), total = num(i.progress?.total);
-      card.items.push({ title: safeLine(i.title, 80), state: safeLine(i.progress?.label || st || 'planned', 40), pct: total ? merged / total : st === 'on beta' ? 1 : st === 'working' ? 0.45 : 0.08 });
-    }
-    by.set(p, card);
+    if (p) byProduct.set(p, [...(byProduct.get(p) ?? []), i]);
   }
-  for (const m of milestones) {
-    const card = by.get(String(m.product ?? ''));
-    if (card && !card.milestone) { card.milestone = safeLine(m.title, 80); card.done = num(m.done); card.total = num(m.total); }
+  const cards: RoadCard[] = [];
+  for (const [p, list] of byProduct) {
+    // The next milestone: the first open one (a reached one is J's to playtest, not what's next).
+    const m = milestones.find((x) => x.product === p && x.status === 'open') ?? null;
+    const inM = new Set<string>((m?.items ?? []).map((x: any) => String(x.id)));
+    const tasksOf = (i: any) => (i.tasks ?? []).filter((t: any) => !['dropped', 'idea'].includes(t.status));
+    const rows = list.map((i) => {
+      const state = publicState(String(i.progress?.state ?? i.status ?? 'planned'));
+      const tasks = tasksOf(i);
+      const merged = num(i.progress?.merged);
+      const total = num(i.progress?.total) || tasks.length;
+      const on = tasks.find((t: any) => t.status === 'working');
+      const item: RoadItem = {
+        title: safeLine(i.title, 80), state,
+        pct: total ? Math.min(1, merged / total) : ['on beta', 'verified'].includes(state) ? 1 : 0,
+        tasks: total ? `${merged} of ${total} task${total === 1 ? '' : 's'} done` : '',
+        why: firstSentence(i.why || i.goal, 140),
+        now: on ? safeLine(on.title, 90) : '',
+        inMilestone: inM.has(String(i.id)),
+      };
+      return { raw: i, item };
+    });
+    const committed = rows.filter((r) => r.item.state !== 'idea');
+    const pool = committed.length >= 2 ? committed : rows;
+    pool.sort((a, b) => Number(b.item.inMilestone) - Number(a.item.inMilestone)
+      || (STATE_RANK[a.item.state] ?? 9) - (STATE_RANK[b.item.state] ?? 9)
+      || (PRIORITY_RANK[a.raw.priority] ?? 1) - (PRIORITY_RANK[b.raw.priority] ?? 1)
+      || num(a.raw.ord) - num(b.raw.ord));
+    const recent: Landed[] = list.flatMap((i) => (i.tasks ?? []).filter((t: any) => t.merged_at && now - num(t.merged_at) < 7 * 24 * 3600_000))
+      .sort((a: any, b: any) => num(b.merged_at) - num(a.merged_at))
+      .slice(0, 3)
+      .map((t: any) => ({ title: safeLine(t.title, 90), note: '', ago: ago(num(t.merged_at), now) }))
+      .filter((l: Landed) => l.title);
+    const shown = pool.slice(0, 5).map((r) => r.item);
+    if (!shown.length) continue;
+    cards.push({
+      product: p, productName: n.get(p) ?? p,
+      milestone: m ? safeLine(m.title, 80) : null, goal: m ? firstSentence(m.goal, 160) : '',
+      done: m ? num(m.done) : 0, total: m ? num(m.total) : 0,
+      items: shown, recent, working: rows.filter((r) => r.item.state === 'in progress').length,
+      still: stills.get(p) ?? null,
+    });
   }
-  return [...by.values()].filter((c) => c.items.length);
+  return cards;
 }
 
 /** The take cards: live takes with who asked for them and what just landed in that product. */
@@ -480,17 +571,63 @@ export function interleave(items: ShowItem[]): ShowItem[] {
 // ------------------------------------------------------------------ the running show
 
 const state: ShowState = { seg: null, cursor: { playtest: 0, work: 0, roadmap: 0, showcase: 0 }, skip: 0, history: [] };
-const scripts = new Map<string, { at: number; lines: string[] }>();
-const SCRIPT_TTL = 30 * 60_000;
+/**
+ * Yooba's lines per subject and facts (scriptKey), kept on disk so a restart or a deploy doesn't make him rewrite (and
+ * pay to voice) the roadmap he already said. Each key keeps up to `variety` wordings; once it has them they take turns,
+ * and every sentence is already in the voice cache (broadcast.ts speakLine), so a repeat costs nothing. A changed fact
+ * (a roadmap item done, a new step) is a new key.
+ */
+type Script = { at: number; variants: string[][]; next: number };
+const SCRIPTS_FILE = path.join(DATA, 'broadcast', 'scripts.json');
+const SCRIPTS_MAX = 600;
+export const VARIETY_DEFAULT = 3;
+const scripts = new Map<string, Script>();
+try {
+  const saved = JSON.parse(fs.readFileSync(SCRIPTS_FILE, 'utf8'));
+  for (const [k, v] of Object.entries(saved ?? {}) as [string, any][]) {
+    const variants = (Array.isArray(v?.variants) ? v.variants : []).map(cleanLines).filter((l: string[]) => l.length);
+    if (variants.length) scripts.set(k, { at: Number(v.at) || 0, variants, next: Number(v.next) || 0 });
+  }
+} catch { /* first run */ }
+let saveTimer: ReturnType<typeof setTimeout> | null = null;
+function saveScripts() {
+  if (saveTimer) return;
+  saveTimer = setTimeout(() => {
+    saveTimer = null;
+    while (scripts.size > SCRIPTS_MAX) scripts.delete(scripts.keys().next().value as string);
+    try { fs.mkdirSync(path.dirname(SCRIPTS_FILE), { recursive: true }); fs.writeFileSync(SCRIPTS_FILE, J(Object.fromEntries(scripts))); } catch { /* the show goes on */ }
+  }, 2_000);
+  saveTimer.unref?.();
+}
+
+/** The next saved wording for a key, taking turns (and marking it used, newest last for the cap). */
+export function takeScript(key: string, variety: number, map = scripts): string[] | null {
+  const hit = map.get(key);
+  if (!hit || hit.variants.length < Math.max(1, variety)) return null;
+  const n = Math.min(hit.variants.length, Math.max(1, variety));
+  const lines = hit.variants[hit.next % n];
+  hit.next = (hit.next + 1) % n;
+  map.delete(key);
+  map.set(key, { ...hit, at: Date.now() });
+  return lines;
+}
+
+/** Keeps a new wording for a key (up to `variety`; past that the oldest goes). */
+export function keepScript(key: string, lines: string[], variety: number, map = scripts): void {
+  const hit = map.get(key) ?? { at: 0, variants: [], next: 0 };
+  const variants = [...hit.variants, lines].slice(-Math.max(1, variety));
+  map.delete(key);
+  map.set(key, { at: Date.now(), variants, next: hit.next });
+}
 let seq = 0;
 
 const HOLD: Record<string, Kind> = { take: 'playtest', work: 'work', roadmap: 'roadmap', reel: 'showcase', showcase: 'showcase' };
 
 /** Writes Yooba's lines for a segment: the cache, else Claude within budget, else the templates. */
-async function writeLines(kind: Kind, card: any, extra: { wrap?: string; cutIn?: boolean; others?: number }, brainOn: boolean): Promise<{ lines: string[]; by: Segment['by'] }> {
+async function writeLines(kind: Kind, card: any, extra: { wrap?: string; cutIn?: boolean; others?: number }, brainOn: boolean, variety = VARIETY_DEFAULT): Promise<{ lines: string[]; by: Segment['by'] }> {
   const key = scriptKey(kind, card) + (extra.wrap ? `|wrap:${extra.wrap}` : '') + (extra.cutIn ? '|cut' : '');
-  const hit = scripts.get(key);
-  if (hit && Date.now() - hit.at < SCRIPT_TTL) return { lines: hit.lines, by: 'brain' };
+  const saved = takeScript(key, variety);
+  if (saved) { spend({ reused: 1 }); return { lines: saved, by: 'brain' }; }
   if (brainOn && usage().brainCalls < BUDGET.brainCalls) {
     spend({ brainCalls: 1 });
     try {
@@ -501,12 +638,15 @@ async function writeLines(kind: Kind, card: any, extra: { wrap?: string; cutIn?:
       });
       const lines = cleanLines(job?.result?.value?.lines);
       if (job?.status === 'done' && lines.length) {
-        scripts.set(key, { at: Date.now(), lines });
-        if (scripts.size > 500) scripts.delete(scripts.keys().next().value as string);
+        keepScript(key, lines, variety);
+        saveScripts();
         return { lines, by: 'brain' };
       }
-    } catch { /* templates below */ }
+    } catch { /* a saved wording, else the templates */ }
   }
+  // Out of budget or Claude down: any wording already said for this subject (voiced, so free) beats a template.
+  const any = scripts.get(key)?.variants;
+  if (any?.length) return { lines: any[Math.floor(Math.random() * any.length)], by: 'brain' };
   return { lines: templateLines(kind, card, extra), by: 'template' };
 }
 
@@ -518,9 +658,11 @@ async function voice(lines: string[], on: boolean): Promise<Line[]> {
     if (on && usage().voiceChars + text.length <= BUDGET.voiceChars) {
       v = await speakLine(text);
       if (v?.paid) spend({ voiceChars: text.length });
+      else if (v) spend({ voiceCached: text.length });
     } else if (on) {
       // Over budget: a line already in the cache is still free.
       v = await speakLine(text, { cachedOnly: true });
+      if (v) spend({ voiceCached: text.length });
     }
     out.push({ text, voice: v?.url ?? null, ms: v?.ms ?? speakMs(text) });
   }
@@ -535,12 +677,12 @@ function begin(kind: Kind, card: any, reason: string, desk: ShowDesk, r: Rungs, 
   const extra = { wrap, cutIn: reason === 'cut-in', others: Math.max(0, (r[kind]?.length ?? 1) - 1) };
   const seg: Segment = {
     id: `seg_${(++seq).toString(36)}_${now.toString(36)}`, kind, subject: subjectOf(kind, card), started: now,
-    until: now + (wrap ? 6_000 : dwellFor(kind, card)), lines: [], at: -1, lineStarted: now, by: 'template', wrap, card,
+    until: now + (wrap ? 6_000 : dwellFor(kind, card, desk.dwell)), lines: [], at: -1, lineStarted: now, by: 'template', wrap, card,
   };
   state.seg = seg;
   state.history = [...state.history.slice(-19), `${kind}:${seg.subject}`];
   flight = (async () => {
-    const { lines, by } = await writeLines(kind, card, extra, desk.brain);
+    const { lines, by } = await writeLines(kind, card, extra, desk.brain, desk.variety);
     const voiced = await voice(lines, desk.voice);
     if (state.seg !== seg) return;
     seg.lines = voiced;
@@ -585,7 +727,7 @@ export function tick(r: Rungs, desk: ShowDesk, live: any, say = false): void {
     if (w) { begin('playtest', seg.card, 'wrap', desk, r, w); return; }
   }
   const skip = desk.skip !== state.skip;
-  const next = decide(state, r, now, { hold, holdSubject, skip: desk.skip });
+  const next = decide(state, r, now, { hold, holdSubject, skip: desk.skip, order: desk.ladder });
   state.skip = desk.skip;
   if (next && (!desk.paused || !seg || skip)) {
     begin(next.kind, next.card, next.reason, desk, r);
@@ -625,6 +767,18 @@ function upNext(r: Rungs, seg: Segment | null) {
   const others = r.playtest.filter((c) => c.job !== seg?.subject).slice(0, 3).map(take);
   const work = r.work.filter((c) => c.id !== seg?.subject).slice(0, 3).map((c) => ({ kind: 'work', id: c.id, title: c.productName, sub: c.title, stream: null }));
   return [...others, ...work].slice(0, 4);
+}
+
+/** The director's lineup on top of the rungs: a rung left off the ladder has nothing, the showcase only the kinds asked for. */
+export function directed(r: Rungs, opt: { ladder?: Kind[]; showcaseKinds?: string[] } = {}): Rungs {
+  const on = (k: Kind) => !opt.ladder || opt.ladder.includes(k);
+  const kinds = opt.showcaseKinds;
+  return {
+    playtest: on('playtest') ? r.playtest : [],
+    work: on('work') ? r.work : [],
+    roadmap: on('roadmap') ? r.roadmap : [],
+    showcase: on('showcase') ? (kinds ? r.showcase.filter((i) => kinds.includes(i.kind)) : r.showcase) : [],
+  };
 }
 
 /** Every rung's cards, for one poll. Gen being down still leaves the work and the roadmap. */

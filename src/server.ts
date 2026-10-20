@@ -193,6 +193,14 @@ const server = http.createServer(async (req, res) => {
       const { updateDesk } = await import('./broadcast.ts');
       return send(res, 200, await updateDesk(await readJson(req), q('product') || undefined));
     }
+    // Going live on Twitch, and the stream's quality (onair.ts): the encoder service follows the switch. J's dashboard only.
+    if (route === '/api/broadcast/live' && method === 'POST') {
+      const { updateLive, onAirNow } = await import('./onair.ts');
+      const { sessionUser, cookieToken } = await import('./auth.ts');
+      const who = sessionUser(cookieToken(req))?.email ?? 'dashboard';
+      updateLive(await readJson(req), who);
+      return send(res, 200, onAirNow());
+    }
     // Cached Yooba host line (mp3). Hash only — no paths on screen.
     m = /^\/api\/broadcast\/voice\/([a-f0-9]{16,64})(?:\.mp3)?$/.exec(route);
     if (m && method === 'GET') {

@@ -109,6 +109,8 @@ export type Broadcast = {
   disclose: string;
   /** The show (show.ts): the rung on now, its card, Yooba's line and voice, the song playing, what's up next. */
   show?: any;
+  /** Going live (onair.ts): the switch, the quality, what the encoder is doing. */
+  onAir?: any;
 };
 
 /** What the On air director has set. The stream page and this browser both follow it. */
@@ -136,7 +138,41 @@ export type Desk = {
   brain: boolean;
   /** Bumped by the director's Next: the show moves on now. */
   skip: number;
+  /** The ladder: the rungs that run, highest first. One left out never goes on screen (no playtests: the filler only). */
+  ladder: Rung[];
+  /** What the showcase plays. */
+  showcaseKinds: ShowKind[];
+  /** Seconds each rung holds one subject (songs and clips hold for their own length). */
+  dwell: Record<Rung, number>;
+  /** Wordings Yooba keeps per subject before he repeats one (each voiced once, then free from the cache). */
+  variety: number;
 };
+
+export type Rung = 'playtest' | 'work' | 'roadmap' | 'showcase';
+export type ShowKind = 'song' | 'video' | 'image';
+export const RUNGS: Rung[] = ['playtest', 'work', 'roadmap', 'showcase'];
+export const SHOW_KINDS: ShowKind[] = ['song', 'video', 'image'];
+export const DWELL_DEFAULT: Record<Rung, number> = { playtest: 45, work: 35, roadmap: 28, showcase: 14 };
+
+/** A ladder from a request or the store: known rungs, each once, in the order given. Empty is allowed (Hold still). */
+export function normalizeLadder(raw: unknown): Rung[] {
+  if (!Array.isArray(raw)) return [...RUNGS];
+  return [...new Set(raw.map(String))].filter((k): k is Rung => (RUNGS as string[]).includes(k));
+}
+export function normalizeKinds(raw: unknown): ShowKind[] {
+  if (!Array.isArray(raw)) return [...SHOW_KINDS];
+  return [...new Set(raw.map(String))].filter((k): k is ShowKind => (SHOW_KINDS as string[]).includes(k));
+}
+/** Segment lengths, 5 s to 10 minutes; anything else keeps the current one. */
+export function normalizeDwell(raw: unknown, cur: Record<Rung, number> = DWELL_DEFAULT): Record<Rung, number> {
+  const out = { ...cur };
+  if (!raw || typeof raw !== 'object') return out;
+  for (const k of RUNGS) {
+    const n = Number((raw as any)[k]);
+    if (Number.isFinite(n) && n >= 5 && n <= 600) out[k] = Math.round(n);
+  }
+  return out;
+}
 
 export const DESK_DEFAULT: Desk = {
   product: null,
@@ -156,6 +192,10 @@ export const DESK_DEFAULT: Desk = {
   banner: '',
   brain: true,
   skip: 0,
+  ladder: [...RUNGS],
+  showcaseKinds: [...SHOW_KINDS],
+  dwell: { ...DWELL_DEFAULT },
+  variety: 3,
 };
 
 /** Yooba Land first (the show opened on it), then the rest in products.json order. */
@@ -439,7 +479,7 @@ export function cueLine(cue: string): string {
 }
 
 function blankDesk(products: string[]): Desk {
-  return { ...DESK_DEFAULT, priority: defaultPriority(products), voice: true };
+  return { ...DESK_DEFAULT, priority: defaultPriority(products), voice: true, ladder: [...RUNGS], showcaseKinds: [...SHOW_KINDS], dwell: { ...DWELL_DEFAULT } };
 }
 
 /** A stored desk. Unknown or removed products are dropped rather than thrown. */
@@ -459,6 +499,10 @@ export function deskFrom(raw: unknown, products: string[]): Desk {
   for (const k of SHOW_FLAGS) if (typeof r[k] === 'boolean') d[k] = r[k];
   if (typeof r.cue === 'string') d.cue = safeLine(r.cue, 180);
   if (typeof r.banner === 'string') d.banner = safeLine(r.banner, 80);
+  if (Array.isArray(r.ladder)) d.ladder = normalizeLadder(r.ladder);
+  if (Array.isArray(r.showcaseKinds)) d.showcaseKinds = normalizeKinds(r.showcaseKinds);
+  d.dwell = normalizeDwell(r.dwell);
+  if (Number.isInteger(r.variety) && r.variety >= 1 && r.variety <= 8) d.variety = r.variety;
   return d;
 }
 
@@ -466,7 +510,21 @@ export function deskFrom(raw: unknown, products: string[]): Desk {
 export function patchDesk(cur: Desk, patch: any, products: string[], pool: { asset: string }[] = []): Desk {
   if (!patch || typeof patch !== 'object') return { ...cur, priority: [...cur.priority] };
   if (patch.reset === true) return blankDesk(products);
-  const next: Desk = { ...cur, priority: [...cur.priority] };
+  const next: Desk = { ...cur, priority: [...cur.priority], ladder: [...cur.ladder], showcaseKinds: [...cur.showcaseKinds], dwell: { ...cur.dwell } };
+  if (patch.ladder !== undefined) {
+    if (!Array.isArray(patch.ladder)) throw new StudioError(`ladder: a list of ${RUNGS.join(', ')}`);
+    next.ladder = normalizeLadder(patch.ladder);
+  }
+  if (patch.showcaseKinds !== undefined) {
+    if (!Array.isArray(patch.showcaseKinds)) throw new StudioError(`showcaseKinds: a list of ${SHOW_KINDS.join(', ')}`);
+    next.showcaseKinds = normalizeKinds(patch.showcaseKinds);
+  }
+  if (patch.dwell !== undefined) next.dwell = normalizeDwell(patch.dwell, cur.dwell);
+  if (patch.variety !== undefined) {
+    const n = Number(patch.variety);
+    if (!Number.isInteger(n) || n < 1 || n > 8) throw new StudioError('variety: 1 to 8');
+    next.variety = n;
+  }
   if (patch.product === null) next.product = null;
   else if (patch.product !== undefined) {
     const p = String(patch.product);
@@ -1033,8 +1091,11 @@ async function buildFrame(q: { product?: string }): Promise<Broadcast> {
   try {
     // One show for every viewer: only the director's product lock narrows it, never a page's ?product= link.
     const clips = selectReel(library, { product: desk.product || undefined, priority: desk.priority, cap: 24 });
-    const r = await show.rungs(live, clips, desk.product || undefined);
-    const sd = { screen: desk.screen, take: desk.take, clip: desk.clip, paused: desk.paused, voice: desk.voice, brain: desk.brain, cue: desk.cue, skip: desk.skip, product: desk.product, priority: desk.priority };
+    const r = show.directed(await show.rungs(live, clips, desk.product || undefined), { ladder: desk.ladder, showcaseKinds: desk.showcaseKinds });
+    const sd = {
+      screen: desk.screen, take: desk.take, clip: desk.clip, paused: desk.paused, voice: desk.voice, brain: desk.brain, cue: desk.cue, skip: desk.skip, product: desk.product, priority: desk.priority,
+      ladder: desk.ladder, dwell: desk.dwell, variety: desk.variety,
+    };
     show.tick(r, sd, live, say);
     frame.show = show.showNow(r, sd);
   } catch (e: any) {
@@ -1044,5 +1105,6 @@ async function buildFrame(q: { product?: string }): Promise<Broadcast> {
   frame.say = line?.text || frame.host;
   frame.host = line?.text || frame.host;
   frame.hostAudio = desk.voice && line?.speaking ? line.voice : null;
+  frame.onAir = (await import('./onair.ts')).onAirNow();
   return frame;
 }

@@ -18,6 +18,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import crypto from 'node:crypto';
+import { BROADCAST_UNIT } from './broadcast-unit.mjs';
 import { spawn, spawnSync } from 'node:child_process';
 import { DatabaseSync } from 'node:sqlite';
 import { HERE, PROJECTS, KEYS, state, saveState, myIp, log } from './aws.mjs';
@@ -330,22 +331,7 @@ Unit=hawkes-pull.service
 
 [Install]
 WantedBy=paths.target`),
-    unit('hawkes-broadcast.service', `
-[Unit]
-Description=Hawkes: the broadcast page to Twitch (separate from Studio)
-After=hawkes-studio.service hawkes-secrets.service
-
-[Service]
-User=hawkes
-WorkingDirectory=/srv/hawkes/hawkesstudio
-Environment=BROADCAST_URL=http://127.0.0.1:8791/broadcast.html?product=yoobaland&clean=1
-EnvironmentFile=-/run/hawkes/twitch.env
-ExecStart=/usr/bin/node bin/broadcast-stream.mjs --go
-Restart=on-failure
-RestartSec=15
-
-[Install]
-WantedBy=multi-user.target`),
+    unit('hawkes-broadcast.service', BROADCAST_UNIT),
   ];
   for (const u of units) {
     const local = path.join(os.tmpdir(), u.name);
@@ -357,7 +343,7 @@ WantedBy=multi-user.target`),
   // Lingering: Studio runs agents and Talk answers as units of the hawkes user's own systemd manager (src/detach.ts), outside
   // hawkes-studio's cgroup, so restarting Studio (a deploy) doesn't stop them. hawkes-pull.mjs makes sure of it too.
   await ssh('sudo loginctl enable-linger hawkes && echo linger-ok');
-  await ssh('sudo systemctl daemon-reload && sudo systemctl enable --now hawkes-secrets hawkes-gen hawkes-studio hawkes-daily.timer hawkes-pull.service hawkes-pull.path && (sudo systemctl disable --now hawkes-pull.timer 2>/dev/null; sudo rm -f /etc/systemd/system/hawkes-pull.timer; true) && sudo systemctl restart hawkes-secrets hawkes-gen && sleep 6 && sudo systemctl restart hawkes-studio && echo services-ok');
+  await ssh('sudo systemctl daemon-reload && sudo systemctl enable --now hawkes-secrets hawkes-gen hawkes-studio hawkes-daily.timer hawkes-pull.service hawkes-pull.path hawkes-broadcast && (sudo systemctl disable --now hawkes-pull.timer 2>/dev/null; sudo rm -f /etc/systemd/system/hawkes-pull.timer; true) && sudo systemctl restart hawkes-secrets hawkes-gen && sleep 6 && sudo systemctl restart hawkes-studio && echo services-ok');
 }
 
 /**
