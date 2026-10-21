@@ -612,8 +612,9 @@
       const l = this.lastLatency;
       const med = this.latencies.length ? [...this.latencies].sort((a, b) => a - b)[Math.floor(this.latencies.length / 2)] : null;
       const voice = S.engine === 'kokoro' ? kokoro.label() : S.engine === 'eleven' ? 'ElevenLabs Flash' : 'browser voice';
+      const who = window.talkBrain?.label || 'Claude';
       el('#callLatency').textContent = [
-        l ? `Last reply: ${(l.ms / 1000).toFixed(1)} s from your last word to Talk's first (pause ${(l.pause / 1000).toFixed(1)} s${l.claude ? `, Claude ${(l.claude / 1000).toFixed(1)} s` : ''}, voice ${(l.voiceMs / 1000).toFixed(1)} s)${this.latencies.length > 1 ? ` · median ${(med / 1000).toFixed(1)} s over ${this.latencies.length}` : ''}` : '',
+        l ? `Last reply: ${(l.ms / 1000).toFixed(1)} s from your last word to Talk's first (pause ${(l.pause / 1000).toFixed(1)} s${l.claude ? `, ${who} ${(l.claude / 1000).toFixed(1)} s` : ''}, voice ${(l.voiceMs / 1000).toFixed(1)} s)${this.latencies.length > 1 ? ` · median ${(med / 1000).toFixed(1)} s over ${this.latencies.length}` : ''}` : '',
         `Voice: ${voice}${this.dropped ? ` · ${this.dropped} echo${this.dropped > 1 ? 'es' : ''} ignored` : ''}`,
       ].filter(Boolean).join(' · ');
       el('#callMute').textContent = this.muted ? 'Unmute' : 'Mute';

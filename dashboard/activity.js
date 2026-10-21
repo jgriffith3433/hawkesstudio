@@ -128,8 +128,11 @@ if (typeof document !== 'undefined') (() => {
     .map((x) => `<span class="stg ${x.state}" title="${esc(`${x.name}: ${x.state}`)}">${x.state === 'done' ? '✓ ' : x.state === 'failed' ? '✗ ' : ''}${esc(x.name)}</span>`).join('<span class="stg-arrow">›</span>')}</div>${ChangeStages.barHtml(c.status, c.stage ?? {})}`;
 
   function changeHtml(c, done = false) {
+    const brain = c.harness_label || c.harness
+      ? ` <span class="pill" title="${esc([c.role, c.harness_label || c.harness, c.model].filter(Boolean).join(' · '))}">${esc(c.harness_label || c.harness)}${c.model ? ` · ${esc(c.model)}` : ''}</span>`
+      : '';
     return `<div class="act-item">
-      <div class="act-top">${ICON[c.status] ?? '•'} <b>${esc(c.productName)}</b> <span class="pill ${c.status === 'ready' ? 'ship' : c.status === 'failed' ? 'failed' : ''}">${esc(c.status)}</span><span class="act-time">${done ? `${ago(c.at)}` : since(c.started)}</span></div>
+      <div class="act-top">${ICON[c.status] ?? '•'} <b>${esc(c.productName)}</b> <span class="pill ${c.status === 'ready' ? 'ship' : c.status === 'failed' ? 'failed' : ''}">${esc(c.status)}</span>${brain}<span class="act-time">${done ? `${ago(c.at)}` : since(c.started)}</span></div>
       <div class="act-title">${esc(c.title)}</div>
       ${stagesHtml(c)}
       ${c.detail ? `<div class="act-now">${esc(c.detail)}</div>` : ''}
@@ -303,7 +306,10 @@ if (typeof document !== 'undefined') (() => {
       section('Studio runs', a.runs.length, a.runs.map((r) => runHtml(r)).join('')),
       section('Hawkes Gen jobs', a.gen ? a.jobs.length : '(unreachable)', a.jobs.map(jobHtml).join('')),
       a.commands?.length ? section('Commands running now', a.commands.length, a.commands.map((c) => `<div class="act-item${c.slow ? ' act-warn' : ''}"><div class="act-top"><code>${esc(c.cmd.slice(0, 90))}</code><span class="act-time">${c.seconds} s</span></div><div class="act-now">${esc(c.cwd.split(/[\/]/).pop())}</div></div>`).join('')) : '',
-      a.talk.length ? section('Talk', a.talk.length, a.talk.map((t) => `<div class="act-item"><div class="act-top">💬 <a href="?conversation=${esc(t.id)}#talk" data-talk="${esc(t.id)}">${esc(t.title ?? 'New conversation')}</a><span class="act-time">${since(t.since)}</span></div><div class="act-now">${t.auto ? 'Claude is explaining results Studio brought back' : 'Claude is answering'}</div></div>`).join('')) : '',
+      a.talk.length ? section('Talk', a.talk.length, a.talk.map((t) => {
+        const who = `${esc(t.label || 'Claude')}${t.model ? ` (${esc(t.model)})` : ''}`;
+        return `<div class="act-item"><div class="act-top">💬 <a href="?conversation=${esc(t.id)}#talk" data-talk="${esc(t.id)}">${esc(t.title ?? 'New conversation')}</a><span class="act-time">${since(t.since)}</span></div><div class="act-now">${t.auto ? `${who} is explaining results Studio brought back` : `${who} is answering`}</div></div>`;
+      }).join('')) : '',
       a.recent.length ? `<details class="act-recent" ${el('.act-recent')?.open !== false ? 'open' : ''}><summary><b>Finished in the last 15 min</b> <span class="meta">${a.recent.length}</span></summary>${a.recent.map((x) => (x.type === 'change' ? changeHtml(x, true) : runHtml(x, true))).join('')}</details>` : '',
     ].join('');
     mountPlayers();

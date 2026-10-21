@@ -35,6 +35,11 @@ export function recordPass(p: PassRecord, now = Date.now()) {
     .run(now, p.change, p.product ?? null, p.task ?? null, p.role, p.harness, p.model, p.tier, p.effort, p.retry, Math.round(p.ms), p.cost, p.outcome);
 }
 
+const lastPassStmt = db.prepare('SELECT role, harness, model, tier, effort, retry FROM pass_ledger WHERE change_id = ? ORDER BY id DESC LIMIT 1');
+export function lastPassFor(changeId: string): { role: string; harness: string; model: string; tier: string; effort: string; retry: number } | null {
+  return (lastPassStmt.get(changeId) as any) ?? null;
+}
+
 export type LedgerRow = {
   role: string; harness: string; model: string; passes: number; changes: number; merged: number; failed: number;
   cost: number; minutes: number; harnessStops: number; costPerMerged: number | null; mergeRate: number | null;

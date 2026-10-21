@@ -522,19 +522,22 @@ async function loadChanges() {
     const v = c.verify;
     // A product change is playtested only on request ("Playtest this change"); not being playtested is plain info.
     const played = v && (v.playtest || (v.outcome && v.outcome !== 'not played'));
+    const brainPill = c.harness_label || c.harness
+      ? ` <span class="pill" title="${esc([c.role, c.harness_label || c.harness, c.model].filter(Boolean).join(' · '))}">${esc(c.harness_label || c.harness)}${c.model ? ` · ${esc(c.model)}` : ''}</span>`
+      : '';
     return `<div class="finding" data-cid="${c.id}"><div>
-      <h4>${CH_ICON[c.status] ?? ''} ${esc(c.title)} <span class="pill ${c.status === 'ready' ? 'ship' : c.status === 'failed' ? 'failed' : ''}">${esc(c.status)}</span></h4>
+      <h4>${CH_ICON[c.status] ?? ''} ${esc(c.title)} <span class="pill ${c.status === 'ready' ? 'ship' : c.status === 'failed' ? 'failed' : ''}">${esc(c.status)}</span>${brainPill}</h4>
       <div class="status-line">${esc(CH_WORDS[c.status] ?? c.status)}${c.product ? ` · ${esc(c.product)}` : ''}${c.detail ? `: ${esc(c.detail)}` : ''}</div>
       ${ChangeStages.barHtml(c.status, c.stage ?? {})}
       ${v && c.infra ? `<div class="summary"><b>Checks:</b> <span class="pill ${esc(v.verdict ?? '')}">${esc(v.outcome ?? '')}</span> ${esc(v.summary ?? '')}</div>` : played ? `<div class="summary"><b>Playtest:</b> ${esc(v.outcome ?? '')} · review <span class="pill ${esc(v.verdict ?? '')}">${esc(v.verdict ?? 'n/a')}</span> ${esc(v.summary ?? '')}</div>` : ''}
       <details class="more-details" data-key="${c.id}:details"><summary class="meta">Details</summary>
-        <div class="meta">${esc(c.id)} · $${(c.cost ?? 0).toFixed(2)}${c.diffstat ? ` · ${esc(c.diffstat)}` : ''}${c.pr_url ? ` · <a href="${esc(c.pr_url)}" target="_blank">pull request #${c.pr}</a>` : ''}</div>
+        <div class="meta">${esc(c.id)} · $${(c.cost ?? 0).toFixed(2)}${c.harness_label ? ` · ${esc([c.role, c.harness_label, c.model].filter(Boolean).join(' · '))}` : ''}${c.diffstat ? ` · ${esc(c.diffstat)}` : ''}${c.pr_url ? ` · <a href="${esc(c.pr_url)}" target="_blank">pull request #${c.pr}</a>` : ''}</div>
         ${!played && !c.infra && c.status === 'ready' ? `<div class="meta">Not playtested${v?.error ? ` (the last playtest asked for couldn't run: ${esc(v.error)})` : ''}.</div>` : ''}
         ${c.notes?.length ? `<div class="meta">${c.notes.map((n) => `${esc(n.by)}: ${esc(n.text)}`).join(' · ')}</div>` : ''}
         ${c.summary ? `<details data-key="${c.id}:summary"><summary class="meta">What the agent did</summary><pre>${esc(c.summary)}</pre></details>` : ''}
         <details data-key="${c.id}:log"><summary class="meta">Log</summary><pre>${esc((c.log ?? []).slice(-40).join(String.fromCharCode(10)))}</pre></details>
         <div class="actions">
-          ${c.status === 'ready' && !c.infra ? `<button class="small" data-change="${c.id}" data-act="playtest" title="Plays the change's scenario on its version (a build first for Unity), with a video and a Claude review (a few cents).">${played ? 'Playtest again' : 'Playtest this change'}</button>` : ''}
+          ${c.status === 'ready' && !c.infra ? `<button class="small" data-change="${c.id}" data-act="playtest" title="Plays the change's scenario on its version (a build first for Unity), with a video and a review (a few cents).">${played ? 'Playtest again' : 'Playtest this change'}</button>` : ''}
           ${!['merged', 'closed'].includes(c.status) ? `<button class="small" data-change="${c.id}" data-act="close">Close</button>` : ''}
         </div>
       </details>

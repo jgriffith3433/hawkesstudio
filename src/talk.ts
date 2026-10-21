@@ -30,6 +30,7 @@ import { EventEmitter } from 'node:events';
 import { db, newId, J, parse } from './db.ts';
 import { PROJECTS, DATA, ROOT, loadProducts, loadInfra } from './config.ts';
 import { claudeEnv, billing, usingSubscription } from './claude.ts';
+import { brainId, brainLabel, brainSettings, type Harness } from './brains.ts';
 import { memoryBlock } from './memory.ts';
 import { roleArgs } from './roles.ts';
 import { PUBLIC_URL } from './notify.ts';
@@ -45,24 +46,56 @@ db.exec(`
 `);
 // The detached Claude Code of the turn running now (detach.ts) and how far its output was read: found again after a restart.
 try { db.exec('ALTER TABLE conversations ADD COLUMN proc TEXT'); } catch { /* already there */ }
-type TurnProc = { rec: DetachRec; offset: number; userAt: number; auto: boolean; billing: Turn['billing'] };
+type TurnProc = { rec: DetachRec; offset: number; userAt: number; auto: boolean; billing: Turn['billing']; harness?: Harness; model?: string };
 const setProc = (id: string, proc: TurnProc | null) => db.prepare('UPDATE conversations SET proc = ? WHERE id = ?').run(proc ? J(proc) : null, id);
 
 export type Attachment = { name: string; blob: string; type?: string; size?: number; path?: string | null };
-/** turn: on the last message of each answer, what it cost (USD, as Claude Code reports it) and who paid. auto: Studio
+/** turn: on the last message of each answer, what it cost (USD, as Claude Code reports it), who paid, and which harness/model answered. auto: Studio
  * started the turn (a result came back), not J. call: answered during a call (spoken). */
-export type Turn = { cost: number; billing: 'subscription' | 'api'; ms?: number; stopped?: boolean; auto?: boolean; call?: boolean };
+export type Turn = { cost: number; billing: 'subscription' | 'api'; ms?: number; stopped?: boolean; auto?: boolean; call?: boolean; harness?: Harness; model?: string };
 /**
  * notice: posted by Studio itself (a beta conflict, a result), not by Claude; Claude sees it with J's next message.
  * followup: the result of work this conversation started (followup.ts): Claude answers it on its own (studioSays).
  * voice: J said it on a call (speech recognition's words).
  */
 export type Message = { role: 'user' | 'assistant' | 'tool'; text: string; at: number; tool?: string; files?: Attachment[]; turn?: Turn; notice?: boolean; followup?: boolean; voice?: boolean; context?: string };
-export type Conversation = { id: string; title: string | null; session: string | null; status: string; messages: Message[]; cost: number; created: number; updated: number | null; partial?: string | null };
+export type Conversation = { id: string; title: string | null; session: string | null; status: string; messages: Message[]; cost: number; created: number; updated: number | null; partial?: string | null; harness?: Harness; label?: string; model?: string };
+
+/** Effective model for Talk (Settings brain override, env override, or the role's tuned model on the active harness). */
+export function talkModel(kind: 'talk' | 'pm' = 'talk', call = false): string {
+  const b = brainSettings();
+  if (b.model) return b.model;
+  const env = (call && process.env.TALK_CALL_MODEL) || process.env.TALK_MODEL;
+  if (env) return env;
+  return roleArgs(kind).role.model;
+}
+
+/** Plan / billing label for the given harness. */
+export function talkBilling(h: Harness = brainId()): string {
+  if (h === 'cursor') return 'Cursor plan';
+  if (h === 'copilot') return 'GitHub Copilot plan';
+  if (h === 'antigravity') return 'Google AI plan';
+  if (h === 'gemini') return 'Gemini API (per token)';
+  return billing();
+}
 
 /** The text Claude is writing right now, per conversation (not saved: it becomes a message when the block ends). */
 const partial = new Map<string, string>();
-const toConv = ({ proc: _proc, ...r }: any): Conversation => ({ ...r, messages: parse(r.messages) ?? [], partial: partial.get(r.id) ?? null });
+const runningCtx = new Map<string, TurnCtx>();
+const toConv = ({ proc, ...r }: any): Conversation => {
+  const messages: Message[] = parse(r.messages) ?? [];
+  const active = runningCtx.get(r.id) ?? (proc ? (parse(proc) as TurnProc | null) : null);
+  const lastTurn = messages.findLast((m) => m.turn)?.turn;
+  const harness: Harness | undefined = active?.harness ?? (r.status === 'thinking' ? brainId() : lastTurn?.harness);
+  const model: string | undefined = active?.model ?? (r.status === 'thinking' ? talkModel() : lastTurn?.model);
+  return {
+    ...r,
+    messages,
+    partial: partial.get(r.id) ?? null,
+    ...(harness ? { harness, label: brainLabel(harness) } : {}),
+    ...(model ? { model } : {}),
+  };
+};
 export const getConversation = (id: string) => {
   const r = db.prepare('SELECT * FROM conversations WHERE id = ?').get(id);
   return r ? toConv(r) : null;
@@ -96,8 +129,19 @@ function lastReply(messages: Message[]) {
 const UNSEEN = 'reply > COALESCE(seen, 0)';
 /** The conversations, newest first; `unseen`: how many of Claude's and Studio's messages J hasn't seen yet. */
 export function listConversations(limit = 50) {
-  const rows = db.prepare(`SELECT id, title, status, cost, created, updated, (${UNSEEN}) AS fresh FROM conversations ORDER BY COALESCE(updated, created) DESC LIMIT ?`).all(limit) as any[];
-  return rows.map(({ fresh, ...r }) => ({ ...r, unseen: fresh ? unseenIn(r.id) : 0 }));
+  const rows = db.prepare(`SELECT id, title, status, cost, created, updated, proc, (${UNSEEN}) AS fresh FROM conversations ORDER BY COALESCE(updated, created) DESC LIMIT ?`).all(limit) as any[];
+  return rows.map(({ fresh, proc, ...r }) => {
+    const active = runningCtx.get(r.id) ?? (proc ? (parse(proc) as TurnProc | null) : null);
+    const harness = r.status === 'thinking' ? (active?.harness ?? brainId()) : undefined;
+    const model = r.status === 'thinking' ? (active?.model ?? talkModel()) : undefined;
+    return {
+      ...r,
+      unseen: fresh ? unseenIn(r.id) : 0,
+      ...(r.status === 'thinking' && active?.auto ? { auto: true } : {}),
+      ...(harness ? { harness, label: brainLabel(harness) } : {}),
+      ...(model ? { model } : {}),
+    };
+  });
 }
 function unseenIn(id: string) {
   const r = db.prepare('SELECT messages, seen FROM conversations WHERE id = ?').get(id) as { messages: string; seen: number | null } | undefined;
@@ -416,7 +460,7 @@ export function viewContext(v: unknown): string | null {
 export function say(id: string, text: string, files: Attachment[] = [], { voice = false, context }: { voice?: boolean; context?: unknown } = {}) {
   const c = getConversation(id);
   if (!c) throw new Error('No such conversation');
-  if (running.has(id)) throw new Error('Claude is still answering');
+  if (running.has(id)) throw new Error(`${brainLabel(runningCtx.get(id)?.harness)} is still answering`);
   files = files.filter((f) => f && /^blob:[0-9a-f]{64}$/.test(String(f.blob))).slice(0, 10)
     .map((f) => ({ name: String(f.name ?? 'file').slice(0, 120), blob: String(f.blob), type: f.type ? String(f.type).slice(0, 80) : undefined, size: Number(f.size) || undefined, path: blobFile(String(f.blob)) }));
   if (!text.trim() && !files.length) throw new Error('Say something');
@@ -526,7 +570,7 @@ export function studioTurn(id: string, prompt: string) {
 }
 
 /** What one turn needs while its output streams in (a turn of its own process, or of a call's warm process). */
-type TurnCtx = { userAt: number; auto: boolean; call: boolean; billing: Turn['billing']; done: boolean; finished?: boolean; err: string };
+type TurnCtx = { userAt: number; auto: boolean; call: boolean; billing: Turn['billing']; harness: Harness; model: string; done: boolean; finished?: boolean; err: string };
 
 /**
  * Live text for call pages, per conversation id (GET /api/talk/<id>/events): { type: 'turn' } when a turn starts,
@@ -633,12 +677,17 @@ export const turnBy = (id: string) => (running.has(id) ? turnOwner.get(id) ?? nu
 
 /** Runs one Claude Code turn in a conversation whose status is already "thinking" (in the call's process during a call). */
 function runTurn(id: string, prompt: string, userAt: number, { auto = false, fresh = false }: { auto?: boolean; fresh?: boolean } = {}) {
+  const call = calls.get(id);
+  const c = getConversation(id)!;
+  const harness = brainId();
+  const model = talkModel((c as any).kind === 'pm' ? 'pm' : 'talk', Boolean(call));
+  const billingKind: Turn['billing'] = harness === 'claude' ? (usingSubscription() ? 'subscription' : 'api') : harness === 'gemini' ? 'api' : 'subscription';
   // Who pays: Claude Code says which key it uses when it starts (apiKeySource "none" = the subscription login).
-  const ctx: TurnCtx = { userAt, auto, call: false, billing: usingSubscription() ? 'subscription' : 'api', done: false, err: '' };
+  const ctx: TurnCtx = { userAt, auto, call: false, billing: billingKind, harness, model, done: false, err: '' };
+  runningCtx.set(id, ctx);
   turnOwner.set(id, auto ? 'Studio' : 'J');
   partial.delete(id);
   emit(id, { type: 'turn', auto });
-  const call = calls.get(id);
   if (call) {
     ctx.call = true;
     const child = call.child ?? spawnCall(id, call);
@@ -648,10 +697,9 @@ function runTurn(id: string, prompt: string, userAt: number, { auto = false, fre
     child.stdin!.write(`${JSON.stringify({ type: 'user', message: { role: 'user', content: prompt } })}\n`);
     return;
   }
-  const c = getConversation(id)!;
   // Outside Studio where it can be (detach.ts): a Studio restart doesn't cut the answer off (resumeTalk).
   const { child, rec } = launch(`talk-${id}`, talkCommand(['-p', prompt, ...claudeArgs(c, false)]));
-  if (rec) setProc(id, { rec, offset: 0, userAt, auto, billing: ctx.billing });
+  if (rec) setProc(id, { rec, offset: 0, userAt, auto, billing: ctx.billing, harness: ctx.harness, model: ctx.model });
   followTurn(id, child, ctx, { prompt, fresh, session: c.session });
 }
 
@@ -697,7 +745,17 @@ export function resumeTalk() {
     const proc = parse(r.proc) as TurnProc;
     // Its result may have been read before the restart (the answer is complete; only the process's end was missed).
     const last = getConversation(r.id)?.messages.at(-1);
-    const ctx: TurnCtx = { userAt: proc.userAt, auto: proc.auto, call: false, billing: proc.billing, done: Boolean(last?.turn && last.at >= proc.userAt), err: '' };
+    const ctx: TurnCtx = {
+      userAt: proc.userAt,
+      auto: proc.auto,
+      call: false,
+      billing: proc.billing,
+      harness: proc.harness ?? brainId(),
+      model: proc.model ?? talkModel(),
+      done: Boolean(last?.turn && last.at >= proc.userAt),
+      err: '',
+    };
+    runningCtx.set(r.id, ctx);
     turnOwner.set(r.id, proc.auto ? 'Studio' : 'J');
     followTurn(r.id, new DetachedChild(proc.rec, { offset: proc.offset }), ctx, { fresh: true, session: null, started: proc.rec.started });
     out.push(r.id);
@@ -706,19 +764,25 @@ export function resumeTalk() {
 }
 
 function failedStart(id: string, e: Error) {
+  const ctx = runningCtx.get(id);
   running.delete(id);
+  runningCtx.delete(id);
   waitingAuto.delete(id);
   const conv = getConversation(id);
   if (!conv) return;
-  conv.messages.push({ role: 'assistant', text: `(Couldn't start Claude Code: ${e.message})`, at: Date.now() });
+  const h = ctx?.harness ?? brainId();
+  const who = h === 'claude' ? 'Claude Code' : brainLabel(h);
+  conv.messages.push({ role: 'assistant', text: `(Couldn't start ${who}: ${e.message})`, at: Date.now() });
   conv.status = 'idle';
   save(conv);
   emit(id, { type: 'idle' });
 }
 
-/** The answer's cost and billing go on its last message. */
+/** The answer's cost, billing, harness and model go on its last message. */
 function endTurn(conv: Conversation, ctx: TurnCtx, turn: Turn) {
   ctx.done = true;
+  turn.harness = turn.harness ?? ctx.harness;
+  turn.model = turn.model ?? ctx.model;
   const last = conv.messages.at(-1);
   if (ctx.auto) turn.auto = true;
   if (ctx.call) turn.call = true;
@@ -741,7 +805,10 @@ function onLine(id: string, m: any, ctx: TurnCtx) {
   }
   const conv = getConversation(id);
   if (!conv) return;
-  if (m.type === 'system' && m.subtype === 'init' && m.apiKeySource) ctx.billing = m.apiKeySource === 'none' ? 'subscription' : 'api';
+  if (m.type === 'system' && m.subtype === 'init') {
+    if (m.apiKeySource) ctx.billing = m.apiKeySource === 'none' ? 'subscription' : 'api';
+    if (typeof m.model === 'string' && m.model && (ctx.model === 'auto' || !['antigravity', 'copilot', 'gemini', 'grok'].includes(m.model))) ctx.model = m.model;
+  }
   if (m.type === 'system' && m.session_id && !conv.session) conv.session = m.session_id;
   if (m.type === 'assistant') {
     partial.delete(id);
@@ -757,10 +824,10 @@ function onLine(id: string, m: any, ctx: TurnCtx) {
     if (m.session_id) conv.session = m.session_id;
     const cost = Number(m.total_cost_usd) || 0;
     if (ctx.billing === 'api') conv.cost += cost;
-    const turn: Turn = { cost, billing: ctx.billing, ms: Number(m.duration_ms) || undefined };
+    const turn: Turn = { cost, billing: ctx.billing, ms: Number(m.duration_ms) || undefined, harness: ctx.harness, model: ctx.model };
     // A call's process stays up: the turn ends with its result (stopping: J interrupted it, e.g. by talking).
     const stopped = ctx.call && stopping.delete(id);
-    if (m.is_error && !stopped && !conv.messages.some((x) => x.role === 'assistant' && x.at >= ctx.userAt)) conv.messages.push({ role: 'assistant', text: `(Claude stopped: ${stopText(m.result ?? m.subtype)})`, at: Date.now() });
+    if (m.is_error && !stopped && !conv.messages.some((x) => x.role === 'assistant' && x.at >= ctx.userAt)) conv.messages.push({ role: 'assistant', text: `(${brainLabel(ctx.harness)} stopped: ${stopText(m.result ?? m.subtype)})`, at: Date.now() });
     if (ctx.call) {
       save(conv);
       return finishTurn(id, ctx, { stopped, turn });
@@ -775,6 +842,7 @@ function finishTurn(id: string, ctx: TurnCtx, { stopped = false, code = 0, turn 
   if (ctx.finished) return;
   ctx.finished = true;
   running.delete(id);
+  runningCtx.delete(id);
   const call = calls.get(id);
   if (call?.turn === ctx) call.turn = null;
   const text = partial.get(id);
@@ -784,9 +852,9 @@ function finishTurn(id: string, ctx: TurnCtx, { stopped = false, code = 0, turn 
   // What Claude had written when J stopped it stays in the conversation.
   if (text?.trim()) conv.messages.push({ role: 'assistant', text: `${text}${stopped ? ' …' : ''}`, at: Date.now() });
   if (!stopped && code !== 0 && !conv.messages.some((x) => x.role === 'assistant' && x.at >= ctx.userAt)) {
-    conv.messages.push({ role: 'assistant', text: `(Claude couldn't answer: ${(ctx.err.trim().split('\n').pop() || `exit ${code}`).slice(0, 300)})`, at: Date.now() });
+    conv.messages.push({ role: 'assistant', text: `(${brainLabel(ctx.harness)} couldn't answer: ${(ctx.err.trim().split('\n').pop() || `exit ${code}`).slice(0, 300)})`, at: Date.now() });
   }
-  if (!ctx.done) endTurn(conv, ctx, { ...(turn ?? { cost: 0, billing: ctx.billing }), ...(stopped ? { stopped: true } : {}) });
+  if (!ctx.done) endTurn(conv, ctx, { ...(turn ?? { cost: 0, billing: ctx.billing, harness: ctx.harness, model: ctx.model }), ...(stopped ? { stopped: true } : {}) });
   conv.status = 'idle';
   save(conv);
   emit(id, { type: 'idle' });
@@ -897,7 +965,17 @@ function describeTool(name: string, input: any) {
 /** Answers running inside Studio, which a restart would cut off (calls aside: a restart may end a call). */
 export const turnsInside = () => [...running.entries()].filter(([id, child]) => !(child instanceof DetachedChild) && calls.get(id)?.child !== child).length;
 
-export const talkInfo = () => ({ billing: billing(), subscription: usingSubscription(), model: process.env.TALK_MODEL ?? 'claude-opus-5-5' });
+export const talkInfo = () => {
+  const b = brainSettings();
+  return {
+    harness: b.harness,
+    label: brainLabel(b.harness),
+    billing: talkBilling(b.harness),
+    subscription: b.harness === 'claude' ? usingSubscription() : b.harness !== 'gemini',
+    model: talkModel(),
+    failover: b.failover ? { ...b.failover, label: brainLabel(b.harness), fromLabel: brainLabel(b.failover.from) } : null,
+  };
+};
 
 // A conversation interrupted by a restart isn't thinking any more, unless its answer runs outside Studio (resumeTalk).
 db.prepare(`UPDATE conversations SET status = 'idle' WHERE status = 'thinking' AND proc IS NULL`).run();

@@ -128,7 +128,7 @@ if (typeof document !== 'undefined') (() => {
   layer.id = 'guideLayer';
   layer.innerHTML = `<div class="guide-box" hidden></div><div class="guide-label" hidden><span></span><button class="guide-x" title="Clear">×</button></div>
     <div class="guide-cursor" hidden><svg viewBox="0 0 24 24" width="26" height="26"><path d="M4 2l16 10-7 1.5L9.5 21z" fill="#fff" stroke="#062018" stroke-width="1.5" stroke-linejoin="round"/></svg></div>
-    <div class="guide-banner" hidden><span>🖱 Claude is driving</span><button id="guideStop" class="small">Stop</button></div>`;
+    <div class="guide-banner" hidden><span id="guideBannerText">🖱 Talk is driving</span><button id="guideStop" class="small">Stop</button></div>`;
   document.body.append(layer);
   const box = layer.querySelector('.guide-box');
   const label = layer.querySelector('.guide-label');
@@ -194,6 +194,7 @@ if (typeof document !== 'undefined') (() => {
   }
 
   function driving(on) {
+    if (on) banner.querySelector('span').textContent = `🖱 ${window.talkBrain?.label || 'Talk'} is driving`;
     banner.hidden = !on;
     document.body.classList.toggle('guide-driving', on);
     if (!on) cursor.hidden = true;

@@ -137,7 +137,8 @@ export function brainSettings(): { harness: Harness; model: string; id: Harness;
 }
 
 export const brainId = (): Harness => brainSettings().harness;
-export const brainLabel = () => { const id = brainId(); return id === 'cursor' ? 'Cursor' : id === 'copilot' ? 'Copilot' : id === 'gemini' ? 'Gemini' : id === 'antigravity' ? 'Antigravity' : 'Claude'; };
+export const brainLabel = (id: Harness = brainId()) =>
+  id === 'cursor' ? 'Cursor' : id === 'copilot' ? 'Copilot' : id === 'gemini' ? 'Gemini' : id === 'antigravity' ? 'Antigravity' : 'Claude';
 
 /**
  * The harness refused to run: a usage cap or no login. That is not a diagnosis and not the agent's try

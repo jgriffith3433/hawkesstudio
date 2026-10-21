@@ -12,8 +12,11 @@ delete process.env.TALK_CLAUDE_ARGS;
 delete process.env.HAWKES_BRAIN;
 
 const { claudeCommand } = await import('../src/sandbox.ts');
-const { brainSettings, saveBrain, harnessBlocked, fallbackChain } = await import('../src/brains.ts');
+const { brainSettings, brainLabel, saveBrain, harnessBlocked, fallbackChain } = await import('../src/brains.ts');
 const { saveSettings, allSettings } = await import('../src/settings.ts');
+const { talkInfo } = await import('../src/talk.ts');
+const { brainOfChange } = await import('../src/agents.ts');
+const { recordPass } = await import('../src/ledger.ts');
 const { parseClaudeArgs, cursorArgs, translate } = await import('../bin/cursor-agent.mjs');
 
 test('Cursor launches cursor-agent, and Settings stores the harness and the model', async () => {
@@ -97,4 +100,33 @@ test('Cursor events become Claude Code events', () => {
   const done = translate(state, { type: 'result', subtype: 'success', is_error: false, result: 'done', session_id: 's1', duration_ms: 10 });
   assert.equal(done.at(-1).total_cost_usd, 0);
   assert.equal(done.at(-1).result, 'done');
+});
+
+test('talkInfo and brainOfChange report the active harness, model and billing across brains', () => {
+  saveBrain({ harness: 'antigravity', model: '' });
+  let info = talkInfo();
+  assert.equal(info.harness, 'antigravity');
+  assert.equal(info.label, 'Antigravity');
+  assert.equal(info.billing, 'Google AI plan');
+  assert.equal(info.model, 'gemini-4-argon-medium');
+
+  const queued = brainOfChange({ id: 'c_braintest_q', product: 'sickofit', status: 'queued', request: 'Add a pause button' });
+  assert.equal(queued.harness, 'antigravity');
+  assert.equal(queued.harness_label, 'Antigravity');
+  assert.equal(queued.model, 'gemini-4-argon-medium');
+  assert.equal(queued.role, 'builder');
+
+  recordPass({ change: 'c_braintest_done', product: 'sickofit', role: 'fixer', harness: 'copilot', model: 'claude-sonnet-5.5', tier: 'standard', effort: 'medium', retry: 1, ms: 5000, cost: 0, outcome: 'done' });
+  const finished = brainOfChange({ id: 'c_braintest_done', product: 'sickofit', status: 'ready', findings: ['f_1'], title: 'Fix shop' });
+  assert.equal(finished.harness, 'copilot');
+  assert.equal(finished.harness_label, 'Copilot');
+  assert.equal(finished.model, 'claude-sonnet-5.5');
+  assert.equal(finished.role, 'fixer');
+
+  assert.equal(brainLabel('antigravity'), 'Antigravity');
+  assert.equal(brainLabel('copilot'), 'Copilot');
+  assert.equal(brainLabel('cursor'), 'Cursor');
+  assert.equal(brainLabel('gemini'), 'Gemini');
+  assert.equal(brainLabel('claude'), 'Claude');
+  saveBrain('claude');
 });

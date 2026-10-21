@@ -197,7 +197,7 @@ async function loadPlaytest() {
     <h3>Backlog</h3>
     ${d.findings.length ? `<div class="pt-findings">${d.findings.map((f) => `<div class="test"><span class="pill ${f.severity}">${esc(f.severity)}</span><span>${esc(f.title)}</span><span class="meta">${esc(f.id)} · ${esc(f.status)} · seen ${f.seen}×${f.isNew ? ' · new in this run' : ''}</span><button class="small" data-ptbacklog="${esc(p.product)}">Backlog</button></div>`).join('')}</div>` : '<p class="meta">No backlog findings from this playtest.</p>'}
 
-    ${rv?.findings?.length ? `<h3>Claude's findings</h3>${rv.findings.map(findingHtml).join('')}` : ''}
+    ${rv?.findings?.length ? `<h3>Review findings</h3>${rv.findings.map(findingHtml).join('')}` : ''}
 
     ${compareHtml(d)}
 
