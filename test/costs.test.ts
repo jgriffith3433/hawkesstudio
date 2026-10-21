@@ -75,7 +75,8 @@ test("agents' Claude usage leaves out their builds; Max-plan usage isn't billed"
     { role: 'assistant', text: 'a', at: t, turn: { cost: 0.4, billing: 'subscription' } },
     { role: 'assistant', text: 'b', at: t, turn: { cost: 0.3, billing: 'api' } },
   ]), t);
-  const c = costs.claudeCosts(costs.periodOf('today'));
+  // The period ends at "now", exclusive: a fast machine inserts and asks in the same millisecond.
+  const c = costs.claudeCosts(costs.periodOf('today', new Date(t + 1000)));
   assert.equal(c.agents.usage, 1);
   assert.equal(c.talk.usage, 0.7);
   assert.equal(c.talk.billed, 0.3);
