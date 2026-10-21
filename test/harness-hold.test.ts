@@ -36,7 +36,7 @@ const hold = await import('../src/harness-hold.ts');
 const agents = await import('../src/agents.ts');
 const pm = await import('../src/pm.ts');
 const rm = await import('../src/roadmap.ts');
-const { aiStop } = await import('../src/pipeline.ts');
+const { aiHarnessOf, aiStop, startStep, waitForAi } = await import('../src/pipeline.ts');
 const { db, J } = await import('../src/db.ts');
 
 // Nothing reaches Talk, the phone or Gen; what was said is kept.
@@ -202,6 +202,28 @@ test('the sweep plans again a task whose tries were harness stops, closes its qu
   assert.equal(t.tries, 0);
   assert.equal(rm.getQuestion(q.id)!.status, 'answered', 'its "failed 3 times" card leaves the Inbox');
   assert.equal(rm.getTask(real.id)!.status, 'failed', 'a real failure stays for the PM and J');
-  assert.ok(rm.listDecisions({ action: 'harness-repair' }).some((d) => d.subject === stopped.id));
+  assert.equal(rm.listDecisions({ action: 'harness-repair' }).some((d) => d.subject === stopped.id), true);
   assert.deepEqual(await pm.repairHarnessFailures(), [], 'once');
+});
+
+test('waitForAi holds the harness named in the review error instead of the active brainId', () => {
+  clear();
+  brains.saveBrain('antigravity');
+  assert.equal(brains.brainId(), 'antigravity');
+  assert.equal(aiHarnessOf("Claude Code: You've hit your session limit · resets 1:40pm (UTC)"), 'claude');
+  assert.equal(aiHarnessOf("Claude (Max plan): You've hit your session limit · resets 1:40pm (UTC)"), 'claude');
+  assert.equal(aiHarnessOf('not JSON (Claude Code fallback, Gen: Cursor: ActionRequiredError: You have an unpaid invoice)'), 'cursor');
+  assert.equal(aiHarnessOf('Copilot: You have no premium requests remaining'), 'copilot');
+  assert.equal(aiHarnessOf('AGY_ERROR: authentication failed or timed out'), 'antigravity');
+  assert.equal(aiHarnessOf('Antigravity: authentication failed or timed out'), 'antigravity');
+  assert.equal(aiHarnessOf('Gemini: RESOURCE_EXHAUSTED: You have exhausted your capacity'), 'gemini');
+  assert.equal(aiHarnessOf("You've hit your limit · resets 8:40am (UTC)"), 'antigravity', 'falls back to brainId() when no harness is named');
+
+  const rs = startStep('r_test', 'hh', 'review', 'smoke', 'Claude is watching');
+  const pending: any = { job: 'j_1', params: {}, criteria: null, mode: 'full', reviewKey: 'k', sha: null, barMet: false, barWhy: null, at: Date.now(), tries: 0 };
+  const rev = { id: 'j_rev', status: 'failed', error: "Claude Code: You've hit your session limit · resets 1:40pm (UTC) (Claude Code fallback, Gen: credit balance is too low)" };
+  assert.equal(waitForAi(rs, rev, pending, 'hh smoke'), true);
+  assert.equal(hold.harnessHeld('antigravity'), false, 'active antigravity brain is not falsely held');
+  assert.equal(hold.harnessHeld('claude'), true, 'claude is held instead');
+  brains.saveBrain('claude');
 });
