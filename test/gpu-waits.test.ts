@@ -136,3 +136,39 @@ test('a merge without a GPU budget, or without stand-ins, is merged as before', 
   assert.equal(pm.mergedStatus(gpu, { verify: {} }), 'merged');
   assert.equal(pm.mergedStatus(gpu, { verify: { pendingGpu: 'x' } }), rm.GPU_WAIT);
 });
+
+test('gpuReruns ignores STUDIO_FAILED_SQL runs, and answerQuestion("try again") resets the round and ensuredAt', async () => {
+  const it = rm.addItem({ product: 'gwart', title: 'Wallit', size: 'M', status: 'planned' });
+  const t = rm.approveGpu(rm.addTask({ item: it.id, request: 'Wallit 3D character (GPU)', gpu: ITEMS }).id, 1.5, 'J');
+  change('c_wallit000001', t.id, 'merged', { pendingGpu: 'Wallit mesh: j_w1' });
+  rm.setTask(t.id, { status: rm.GPU_WAIT, change: 'c_wallit000001', changes: ['c_wallit000001'], tries: 1 });
+
+  // Runs that died with STUDIO_FAILED_SQL (e.g. harness/billing error) do not burn MAX_GPU_RERUNS slots.
+  for (let i = 0; i < pm.MAX_GPU_RERUNS; i++) {
+    const cid = `c_wfail000000${i}`;
+    change(cid, t.id, 'failed');
+    db.prepare(`UPDATE changes SET phase = ? WHERE id = ?`).run(JSON.stringify({ step: 'agent', failed: true }), cid);
+    rm.logDecision('gpu-rerun', t.id, 'gwart', `run ${cid}`);
+  }
+  assert.equal(pm.gpuReruns(t.id), 0);
+
+  // First ensure call records ensuredAt for t.id; then 3 real gpu-rerun attempts burn MAX_GPU_RERUNS and ask J.
+  const ensured: any[] = [];
+  await pm.rerunGpuWaits(2, new Set(), { running: async () => false, ensure: async (c) => { ensured.push(c); return 'started GPU server i-1'; } });
+  assert.equal(ensured.length, 1);
+  for (let i = 0; i < pm.MAX_GPU_RERUNS; i++) rm.logDecision('gpu-rerun', t.id, 'gwart', `run c_wreal${i}`);
+  assert.equal(pm.gpuReruns(t.id), pm.MAX_GPU_RERUNS);
+  assert.deepEqual(await pm.rerunGpuWaits(2, new Set(), { running: async () => true }), []);
+  const q = rm.listQuestions().find((x) => x.subject === t.id)!;
+  assert.ok(q, 'asked J after MAX_GPU_RERUNS');
+
+  // J answers "try again": gpuReruns resets to 0, ensuredAt is cleared so a stopped server starts if needed, and a new rerun starts once running.
+  await pm.answerQuestion(q.id, 'try again', 'J');
+  assert.equal(pm.gpuReruns(t.id), 0);
+  await pm.rerunGpuWaits(2, new Set(), { running: async () => false, ensure: async (c) => { ensured.push(c); return 'started GPU server i-1'; } });
+  assert.equal(ensured.length, 2, 'ensuredAt cleared so a stopped GPU server is started');
+
+  const [rerunId] = await pm.rerunGpuWaits(2, new Set(), { running: async () => true });
+  assert.ok(rerunId, 'starts a fresh gpu-rerun change after try again');
+  assert.equal(pm.gpuReruns(t.id), 1);
+});

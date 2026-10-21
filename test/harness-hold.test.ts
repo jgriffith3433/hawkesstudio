@@ -136,8 +136,8 @@ test('a hold blocks starts, is extended while the probe fails, and lifts when it
   assert.equal(brains.brainId(), 'claude', 'no stand-in: Cursor answered with its invoice');
   assert.ok(hold.activeHold('cursor'), 'the stand-in that failed is held too');
   assert.deepEqual(said.phone, [], 'quietly: Cursor is not the harness in use nor the one J chose');
-  await new Promise((r) => setTimeout(r, Math.max(0, hold.activeHold('claude')!.until - Date.now()) + 10));
   probes.claude = { ok: true, note: 'answering' };
+  await new Promise((r) => setTimeout(r, Math.max(0, hold.activeHold('claude')!.until - Date.now()) + 10));
   await hold.reviewHolds();
   assert.equal(hold.harnessHeld('claude'), false, 'lifted');
   assert.ok(resumed >= 1, 'the queue was told');
