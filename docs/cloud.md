@@ -57,6 +57,31 @@ ssh -i hawkesstudio/deploy/.keys/control_ed25519 ubuntu@52.0.19.230
 - `deploy/provision.mjs` created the server, its role, firewall and address, and is safe to run again.
 - `deploy/aws-policy.json` is the policy J attached to the `claw` user for this.
 
+## Standalone public Hawkes Gen Cloud server (`hawkes-gen-public`)
+
+The public commercial Hawkes Gen Cloud (`hawkesgen.com`, running Hawkes Gen with `HAWKESGEN_PUBLIC_SAAS=1`) has its own standalone EC2 server, IAM role, SSH key, SQLite database, S3 backup bucket and Secrets Manager secret, completely separate from the internal Hawkes Studio control server:
+
+```bash
+# 1. Store Stripe + API keys in AWS Secrets Manager (hawkes/gen-public)
+node deploy/gen-public-secrets.mjs --stripe-key sk_... --stripe-webhook whsec_...
+
+# 2. Provision the standalone EC2 server, IAM role (/hawkes/hawkes-gen-public), security group and Elastic IP
+#    (state saved in deploy/.keys/gen-public.json, SSH key in deploy/.keys/gen_public_ed25519)
+node deploy/provision-gen-public.mjs
+node deploy/provision-gen-public.mjs --role    # update only the IAM role policy
+
+# 3. Deploy hawkesgen (main), systemd services (hawkes-secrets, hawkes-gen), Caddy and Route 53 DNS
+node deploy/deploy-gen-public.mjs --domain hawkesgen.com
+node deploy/deploy-gen-public.mjs --caddy-only --domain hawkesgen.com
+node deploy/deploy-gen-public.mjs --caddy-rollback
+```
+
+- **State & SSH key:** `deploy/.keys/gen-public.json` and `deploy/.keys/gen_public_ed25519` (tagged `Project=hawkes-gen-public`, `Name=hawkes-gen-public`; default instance type `t3.large`, configurable via `GEN_PUBLIC_TYPE`, with a 150 GB gp3 volume).
+- **IAM role & instance profile:** `/hawkes/hawkes-gen-public`, scoped to EC2 GPU fleet management, `arn:aws:secretsmanager:*:028793236279:secret:hawkes/gen-public*` (plus `hawkes/github*` for cloning), and `arn:aws:s3:::hawkes-gen-public-*`.
+- **Secrets & environment:** `hawkes-secrets.service` fetches `hawkes/gen-public` (`STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `ANTHROPIC_API_KEY`, `ELEVENLABS_API_KEY`) into `/run/hawkes/gen-public.env`, and `/srv/hawkes/hawkesgen/.env` enables `HAWKESGEN_PUBLIC_SAAS=1`.
+- **Isolated data & fleet:** `/srv/hawkes/hawkesgen/.data/hawkesgen.db`, S3 backup bucket `hawkes-gen-public-028793236279`, and `settings.json` configured with `fleet.auto = true` and `fleet.autoLaunch = false`.
+- **Caddy & DNS** (`deploy/caddyfile-gen-public.mjs`): serves `https://hawkesgen.com` (redirecting `www.hawkesgen.com` to `https://hawkesgen.com`), proxies `/`, `/app/*`, `/v1/*`, `/mcp/*`, `/client/*`, `/sdk/*` to `127.0.0.1:8790` with a `64MB` upload limit, SSE streaming (`flush_interval -1`) on `/v1/events`, and `Strict-Transport-Security`, `X-Content-Type-Options` and `Referrer-Policy` headers. Passing `--domain hawkesgen.com` updates only the `hawkesgen.com` and `www.hawkesgen.com` Route 53 `A` records (`studio.hawkesgen.com` and `gen.hawkesgen.com` stay on the control server).
+
 ## How code gets to the server
 
 Hawkes Gen and Hawkes Studio are private GitHub repos (`jgriffith3433/hawkesgen`, `jgriffith3433/hawkesstudio`), and
