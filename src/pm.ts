@@ -880,9 +880,20 @@ export function mergedStatus(t: Pick<Task, 'gpu'>, c: { verify?: any }): string 
   return c.verify?.pendingGpu && t.gpu?.items?.length && (t.gpu.budget ?? 0) > 0 ? GPU_WAIT : 'merged';
 }
 
+const STUDIO_FAILED_SQL = `(status = 'failed' AND COALESCE(phase, '') LIKE '%"failed":true%')`;
 /** The change was a run for a task's real GPU art (rerunGpuWaits). */
 const gpuRerunOf = (change: string) => Boolean(db.prepare(`SELECT 1 FROM pm_log WHERE action = 'gpu-rerun' AND detail LIKE ?`).get(`%${change}%`));
-const gpuReruns = (task: string) => (db.prepare(`SELECT COUNT(*) AS n FROM pm_log WHERE action = 'gpu-rerun' AND subject = ?`).get(task) as any).n as number;
+export function gpuReruns(task: string): number {
+  const since = (db.prepare(`SELECT answer, at, answered_at FROM questions WHERE subject = ? AND status = 'answered'`).all(task) as any[])
+    .filter((q) => /^(try|retry|again|yes)/i.test(String(q.answer ?? '').trim()))
+    .reduce((m, q) => Math.max(m, q.answered_at ?? q.at ?? 0), 0);
+  try {
+    return (db.prepare(`SELECT COUNT(*) AS n FROM pm_log WHERE action = 'gpu-rerun' AND subject = ? AND at > ?
+      AND NOT EXISTS (SELECT 1 FROM changes WHERE pm_log.detail LIKE '%' || changes.id || '%' AND ${STUDIO_FAILED_SQL})`).get(task, since) as any).n as number;
+  } catch {
+    return (db.prepare(`SELECT COUNT(*) AS n FROM pm_log WHERE action = 'gpu-rerun' AND subject = ? AND at > ?`).get(task, since) as any).n as number;
+  }
+}
 
 // When Studio last tried to start a GPU server for a task waiting for GPU.
 const ensuredAt = new Map<string, number>();
@@ -1133,10 +1144,16 @@ export async function answerQuestion(id: string, answer: string, by = 'Talk (PM)
     }
     if (ids.length) logDecision('stall', null, null, `${byJ ? 'J' : by} answered ${id} "${answer.slice(0, 80)}": ${ids.join(', ')}`);
   }
-  // Keep the stand-ins (a task waiting for GPU): it counts as merged now.
-  if (q.kind === 'decision' && q.subject?.startsWith('k_') && /^keep/i.test(answer.trim()) && getTask(q.subject)?.status === GPU_WAIT) {
-    setTask(q.subject, { status: 'merged', note: `stand-ins kept on ${byJ ? 'J' : by}'s answer to ${id}` });
-    logDecision('gpu-keep', q.subject, q.product, `"${getTask(q.subject)!.title}": its stand-ins kept as the art (${byJ ? 'J' : by}'s answer to ${id})`);
+  // Keep the stand-ins (a task waiting for GPU): it counts as merged now. "Try again" gives it a fresh round of GPU reruns.
+  if (q.kind === 'decision' && q.subject?.startsWith('k_') && getTask(q.subject)?.status === GPU_WAIT) {
+    if (/^keep/i.test(answer.trim())) {
+      setTask(q.subject, { status: 'merged', note: `stand-ins kept on ${byJ ? 'J' : by}'s answer to ${id}` });
+      logDecision('gpu-keep', q.subject, q.product, `"${getTask(q.subject)!.title}": its stand-ins kept as the art (${byJ ? 'J' : by}'s answer to ${id})`);
+    } else if (/^(try|retry|again|yes)/i.test(answer.trim())) {
+      ensuredAt.delete(q.subject);
+      while (Date.now() <= (getQuestion(id)?.answered_at ?? 0)) await new Promise((r) => setTimeout(r, 1));
+      kick();
+    }
   }
   // A decision on a failed task: the PM's next turn acts on it ("try again", "drop it").
   if (q.kind === 'decision' && q.topic !== 'gpu') pmEvent('decided', `${byJ ? 'J' : by} decided on ${q.subject ?? 'a question'} (${id}): "${answer}" (the question was: ${q.text.slice(0, 400)})`, isCommentSubject(q.subject) ? q.subject : id, q.product);
