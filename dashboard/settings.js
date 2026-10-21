@@ -123,7 +123,7 @@
           <div id="caMsg" class="meta">${si?.state === 'failed' && si.error ? `<span class="set-err">${esc(si.error)}</span>` : ''}</div>
           <div class="meta">Runs Claude&#39;s own sign-in on the server and gives you its link. Each sign-in is a 1-year login, kept here so you can switch back to it.</div></div>`;
     return `<div class="set-box"><h3>🔑 Claude accounts</h3>
-      <div class="meta">The Claude login that Talk, the PM, agents, scouts and Gen's Claude calls run on. Switching takes effect on the next turn, agent and Gen call; work already running finishes on the account it started with.${brain.harness !== 'claude' ? ` <b>The harness is ${brain.harness === 'copilot' ? 'Copilot' : brain.harness === 'gemini' ? 'Gemini' : 'Cursor'} now:</b> using or adding an account switches it to Claude Code.` : ''}</div>
+      <div class="meta">The Claude login that Talk, the PM, agents, scouts and Gen's Claude calls run on. Switching takes effect on the next turn, agent and Gen call; work already running finishes on the account it started with.${brain.harness !== 'claude' ? ` <b>The harness is ${brain.harness === 'copilot' ? 'Copilot' : brain.harness === 'gemini' ? 'Gemini' : brain.harness === 'antigravity' ? 'Antigravity' : 'Cursor'} now:</b> using or adding an account switches it to Claude Code.` : ''}</div>
       ${rows || '<div class="meta" style="padding:6px 0">No Claude account on this server yet.</div>'}
       ${signinRow}
     </div>`;

@@ -6,6 +6,9 @@ import { db, parse } from './db.ts';
 import { GEN_PUBLIC_URL, getProduct, getInfra, isInfra } from './config.ts';
 import { gen, genUp } from './gen.ts';
 import { listOps, runningCommands, loopHealth } from './ops.ts';
+import { brainOfChange } from './agents.ts';
+import { talkInfo } from './talk.ts';
+import { brainLabel } from './brains.ts';
 
 const name = (product: string) => {
   try {
@@ -51,11 +54,13 @@ export function stageOf(c: any, v: any) {
 function changeRow(c: any) {
   const log = (parse(c.log) ?? []) as string[];
   const v = parse(c.verify);
+  const b = brainOfChange(c);
   return {
     stage: stageOf(c, v),
     id: c.id, product: c.product, productName: name(c.product), title: c.title, status: c.status, detail: c.detail,
     started: c.created, updated: c.updated, cost: c.cost ?? 0, pr: c.pr_url ?? null, preview: v?.preview ?? null,
     origin: c.origin ?? null, by: c.origin ? `Talk: ${convTitle(c.origin)}` : c.started_by ?? 'J', log: log.slice(-12),
+    ...b,
   };
 }
 
@@ -77,9 +82,14 @@ export async function activity() {
   const changes = (db.prepare(`SELECT * FROM changes WHERE status IN ('queued', 'working', 'verifying', 'revising') ORDER BY created`).all() as any[]).map(changeRow);
   const runs = (db.prepare(`SELECT * FROM runs WHERE status = 'running' ORDER BY started`).all() as any[]).map(runRow);
   // Only the last message J (or a notice) sent, picked out by SQLite: a long conversation's whole history isn't parsed every poll.
-  const talk = (db.prepare(`SELECT id, title, updated, (SELECT m.value FROM json_each(c.messages) m WHERE json_extract(m.value, '$.role') = 'user' OR json_extract(m.value, '$.notice') ORDER BY m.key DESC LIMIT 1) AS last FROM conversations c WHERE status = 'thinking'`).all() as any[]).map((c) => {
+  const info = talkInfo();
+  const talk = (db.prepare(`SELECT id, title, updated, proc, (SELECT m.value FROM json_each(c.messages) m WHERE json_extract(m.value, '$.role') = 'user' OR json_extract(m.value, '$.notice') ORDER BY m.key DESC LIMIT 1) AS last FROM conversations c WHERE status = 'thinking'`).all() as any[]).map((c) => {
     const last = parse(c.last) as any;
-    return { id: c.id, title: c.title, since: last?.at ?? c.updated, auto: Boolean(last?.notice) };
+    const proc = c.proc ? parse(c.proc) : null;
+    const harness = proc?.harness ?? info.harness;
+    const label = brainLabel(harness);
+    const model = proc?.model ?? info.model;
+    return { id: c.id, title: c.title, since: last?.at ?? c.updated, auto: Boolean(proc?.auto ?? last?.notice), harness, label, model };
   });
   // Hawkes Gen's queue: what Studio's steps are waiting on, and anything else (other projects, agents' verifications).
   let jobs: any[] = [];

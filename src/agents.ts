@@ -62,14 +62,14 @@ import { briefSection, learnFrom, recordRun, LEARNED_ASK } from './memory.ts';
 import { canonCheck, CONTENTISH, type CanonCheck } from './canon.ts';
 import { roleArgs, loadRole, type RoleName } from './roles.ts';
 import { passLimitMs, roleTune } from './tuning.ts';
-import { recordPass, type PassOutcome } from './ledger.ts';
+import { recordPass, lastPassFor, type PassOutcome } from './ledger.ts';
 import { markModelUnavailable, refusedModelOf } from './models.ts';
 import { claudeCommand, spawnShell, sandboxShare, assertWorktree, shareWorktree } from './sandbox.ts';
 import { launch, DetachedChild, detachedActivity, stopDetached, type DetachRec } from './detach.ts';
 import { warmDeps, installCold, markInstalled } from './warm.ts';
 import { ensureGpuFor, needsGpu } from './gpustart.ts';
 import { walkAwayOn, WALK_AWAY_BY } from './walkaway.ts';
-import { brainId, brainLabel, harnessStopOf, isHarness, type Harness, type HarnessStop } from './brains.ts';
+import { brainId, brainLabel, brainSettings, harnessStopOf, isHarness, type Harness, type HarnessStop } from './brains.ts';
 import { harnessHeld, holdDetail, holdHarness, onHoldLifted, reviewHolds, LABEL as HARNESS_LABEL } from './harness-hold.ts';
 
 db.exec(`
@@ -123,6 +123,11 @@ export type Change = {
   origin?: string | null;
   /** A change to Hawkes Studio or Hawkes Gen (a pull request into main, which deploys itself), not a product. */
   infra: boolean;
+  /** The role, harness and model that ran (or will run) this change. */
+  role?: string | null;
+  harness?: Harness | null;
+  harness_label?: string | null;
+  model?: string | null;
   /** Absolute links for Talk and J: the change in Studio (its playtest and review if one was asked for, its log), the playtest video, preview, pull request. */
   links: ChangeLinks;
 };
@@ -166,9 +171,38 @@ export function saveAgentSettings(patch: Partial<AgentSettings>) {
   return next;
 }
 
+/** The role, harness and model for a change: from its running phase, its latest pass_ledger entry, or the active brain when queued/working. */
+export function brainOfChange(r: any) {
+  const ph = (typeof r.phase === 'string' ? parse(r.phase) : r.phase) as Phase | null;
+  const findings: string[] = Array.isArray(r.findings) ? r.findings : parse(r.findings) ?? [];
+  const infra = typeof r.infra === 'boolean' ? r.infra : isInfra(r.product);
+  const pass = r.id ? lastPassFor(r.id) : null;
+  const role = pass?.role ?? roleOf({ infra, request: r.request, findings, title: r.title });
+  const roleArg = (role === 'infra' ? 'builder' : role) as RoleName;
+  const phaseHarness = isHarness(ph?.brain) ? ph.brain : null;
+  const active = ['queued', 'working', 'revising'].includes(r.status);
+  const harness: Harness | null = phaseHarness ?? (pass?.harness as Harness | undefined) ?? (active ? brainId() : null);
+  const model: string | null = phaseHarness
+    ? (brainSettings().model || roleArgs(roleArg).role.model)
+    : pass?.model ?? (active ? (brainSettings().model || roleArgs(roleArg).role.model) : null);
+  return {
+    role,
+    harness,
+    harness_label: harness ? brainLabel(harness) : null,
+    model,
+  };
+}
+
+function prGeneratedBy(id: string) {
+  const b = brainOfChange(db.prepare('SELECT id, product, status, phase, request, findings, title FROM changes WHERE id = ?').get(id) ?? { id, status: 'working' });
+  if (b.harness && b.harness !== 'claude') return `🤖 Generated with ${b.harness_label}${b.model ? ` (${b.model})` : ''}`;
+  return `🤖 Generated with [Claude Code](https://claude.com/claude-code)${b.model ? ` (${b.model})` : ''}`;
+}
+
 const toChange = (r: any): Change => {
   const verify = parse(r.verify);
-  return { ...r, infra: isInfra(r.product), criteria: parse(r.criteria) ?? [], findings: parse(r.findings) ?? [], commits: parse(r.commits) ?? [], verify, notes: parse(r.notes) ?? [], log: parse(r.log) ?? [], links: changeLinks(r, verify) };
+  const b = brainOfChange(r);
+  return { ...r, infra: isInfra(r.product), criteria: parse(r.criteria) ?? [], findings: parse(r.findings) ?? [], commits: parse(r.commits) ?? [], verify, notes: parse(r.notes) ?? [], log: parse(r.log) ?? [], ...b, links: changeLinks(r, verify) };
 };
 export const getChange = (id: string) => {
   const r = db.prepare('SELECT * FROM changes WHERE id = ?').get(id);
@@ -1059,7 +1093,8 @@ function runAgent(c: Change, briefFile: string, s: AgentSettings, env = claudeEn
       clearTimeout(timer);
       clearTimeout(grace);
       clearInterval(watch);
-      addLog(c.id, `couldn't start Claude Code: ${e.message}`);
+      const h = brainId();
+      addLog(c.id, `couldn't start ${h === 'claude' ? 'Claude Code' : brainLabel(h)}: ${e.message}`);
       resolve({ ok: false, cost: 0, result: e.message, sawResult: false, lost: false, stderr: out.stderr });
     });
   });
@@ -1283,7 +1318,7 @@ async function pump() {
     const ph = phaseOf(c.id);
     // Back from a harness hold: the same, from the step it parked at (harnessResume).
     const back = (ph?.genDone || ph?.harness) && !ph.failed ? ph : null;
-    if (back) update(c.id, { status: 'working', detail: ph!.harness ? `${brainLabel()} carries on after the harness hold` : 'its Gen jobs finished: Claude continues with them' });
+    if (back) update(c.id, { status: 'working', detail: ph!.harness ? `${brainLabel()} carries on after the harness hold` : `its Gen jobs finished: ${brainLabel()} continues with them` });
     void work(c.id, undefined, undefined, back, Boolean(back)).finally(() => {
       running.delete(c.id);
       remember(c.id);
@@ -1478,7 +1513,7 @@ async function work(id: string, note?: string, answer?: string, resumed?: Phase 
       const diffstat = git(c.worktree, ['diff', '--shortstat', `origin/${c.base}...HEAD`]).out;
       update(id, { summary, commits, diffstat, detail: 'pushing and opening the pull request' });
       const criteriaMd = c.criteria.length ? `\n\n**Acceptance criteria:**\n${c.criteria.map((k) => `- ${k}`).join('\n')}` : '';
-      const body = `${summary}${criteriaMd}\n\n---\n**Findings** (Hawkes Studio playtest review):\n${findings.map((f: any) => `- [${f.severity}] ${f.title} (${f.id}, seen ${f.seen}×)`).join('\n')}\n\nMade by a Hawkes Studio agent. Approving it in Studio merges it into ${c.base} (the beta site, not live); going live is a separate step.\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)`;
+      const body = `${summary}${criteriaMd}\n\n---\n**Findings** (Hawkes Studio playtest review):\n${findings.map((f: any) => `- [${f.severity}] ${f.title} (${f.id}, seen ${f.seen}×)`).join('\n')}\n\nMade by a Hawkes Studio agent. Approving it in Studio merges it into ${c.base} (the beta site, not live); going live is a separate step.\n\n${prGeneratedBy(id)}`;
       await publish(id, { force: Boolean(note || answer), title: c.title, body });
       // The branch tip the agent's checks passed on; approving merges exactly this commit (approve() checks it). No
       // playtest here: one runs only when J asks for it (playtestChange); beta's run after the merge judges the criteria.
@@ -1954,7 +1989,7 @@ async function workInfra(id: string, note?: string, resumed?: Phase | null, nudg
       }
       const diffstat = git(c.worktree, ['diff', '--shortstat', `origin/${c.base}...HEAD`]).out;
       update(id, { summary, commits, diffstat, detail: 'pushing and opening the pull request' });
-      const body = `${summary}\n\n---\n**J asked:** ${c.request ?? ''}\n\nMade by a Hawkes Studio agent. Approving it in Studio merges it into main, and ${t.name} deploys itself once CI passes (the control server pulls it, restarts the service and rolls back if it isn't healthy).\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)`;
+      const body = `${summary}\n\n---\n**J asked:** ${c.request ?? ''}\n\nMade by a Hawkes Studio agent. Approving it in Studio merges it into main, and ${t.name} deploys itself once CI passes (the control server pulls it, restarts the service and rolls back if it isn't healthy).\n\n${prGeneratedBy(id)}`;
       await publish(id, { force: Boolean(note), title: c.title, body });
       save({ step: 'verify', tip: git(c.worktree, ['rev-parse', 'HEAD']).out, verify: undefined }, { status: 'verifying', detail: 'checking: CI on the pull request, the checks, a smoke check' });
     }

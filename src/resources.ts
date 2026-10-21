@@ -183,12 +183,26 @@ async function readUnit(dir: string) {
   };
 }
 
-/** Names for agents' and Talk's units (their change's or conversation's title). */
+/** Names and brain info for agents' and Talk's units (their change's or conversation's title and harness/model). */
 function titleOf(kind: string, id: string | null) {
   if (!id) return null;
   try {
-    if (kind === 'agent') return (db.prepare('SELECT title, product FROM changes WHERE id = ?').get(id) as any) ?? null;
-    if (kind === 'talk') return (db.prepare('SELECT title FROM conversations WHERE id = ?').get(id) as any) ?? null;
+    if (kind === 'agent') {
+      const r = db.prepare('SELECT id, title, product, status, phase FROM changes WHERE id = ?').get(id) as any;
+      if (!r) return null;
+      const ph = r.phase ? parse(r.phase) : null;
+      const h = typeof ph?.brain === 'string' ? ph.brain : null;
+      const brain = h ? (h === 'cursor' ? 'Cursor' : h === 'copilot' ? 'Copilot' : h === 'gemini' ? 'Gemini' : h === 'antigravity' ? 'Antigravity' : 'Claude') : '';
+      return { title: r.title, product: [r.product, brain].filter(Boolean).join(' · ') };
+    }
+    if (kind === 'talk') {
+      const r = db.prepare('SELECT title, proc FROM conversations WHERE id = ?').get(id) as any;
+      if (!r) return null;
+      const p = r.proc ? parse(r.proc) : null;
+      const h = p?.harness;
+      const brain = h ? `${ h === 'cursor' ? 'Cursor' : h === 'copilot' ? 'Copilot' : h === 'gemini' ? 'Gemini' : h === 'antigravity' ? 'Antigravity' : 'Claude' }${p.model ? ` (${p.model})` : ''}` : '';
+      return { title: r.title, product: brain || null };
+    }
   } catch { /* a table not made yet */ }
   return null;
 }
@@ -371,9 +385,9 @@ export async function fleet(maxAge = SAMPLE_MS) {
 
 /** Agents (running, queued, waiting on Gen) against their limits, the PM's capacity, Gen's job queue. */
 async function work() {
-  const { agentSettings, perProductLimit } = await import('./agents.ts');
+  const { agentSettings, perProductLimit, brainOfChange } = await import('./agents.ts');
   const s = agentSettings();
-  const rows = db.prepare(`SELECT id, product, title, status FROM changes WHERE status IN ('queued', 'working', 'verifying', 'revising', 'waiting on Gen')`).all() as any[];
+  const rows = db.prepare(`SELECT id, product, title, status, phase, request, findings FROM changes WHERE status IN ('queued', 'working', 'verifying', 'revising', 'waiting on Gen')`).all() as any[];
   const running = rows.filter((r) => ['working', 'verifying', 'revising'].includes(r.status));
   const perProduct: Record<string, { running: number; limit: number }> = {};
   for (const r of running) (perProduct[r.product] ??= { running: 0, limit: perProductLimit(r.product, s) }).running++;
@@ -392,7 +406,7 @@ async function work() {
     agents: {
       running: running.length, queued: rows.filter((r) => r.status === 'queued').length, waitingOnGen: rows.filter((r) => r.status === 'waiting on Gen').length,
       maxConcurrent: s.maxConcurrent, perProduct: s.perProduct, productLimits: s.productLimits, byProduct: perProduct, enabled: s.enabled,
-      list: rows.map((r) => ({ id: r.id, product: r.product, title: r.title, status: r.status })),
+      list: rows.map((r) => ({ id: r.id, product: r.product, title: r.title, status: r.status, ...brainOfChange(r) })),
     },
     pm, jobs,
   };

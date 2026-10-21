@@ -46,10 +46,16 @@
     return out.join('');
   }
 
+  const HARNESS_NAMES = { claude: 'Claude', cursor: 'Cursor', copilot: 'Copilot', gemini: 'Gemini', antigravity: 'Antigravity' };
+  const harnessName = (h) => HARNESS_NAMES[h] || h || window.talkBrain?.label || 'Claude';
+  window.talkBrain = { harness: 'claude', label: 'Claude', model: 'claude-opus-5-5', billing: 'Claude Max subscription', failover: null };
+
   async function loadList() {
     const r = await api('/api/talk');
     setTalkCount(r.unseen);
-    el('#talkBilling').textContent = `${r.billing} · ${r.model}`;
+    window.talkBrain = { ...window.talkBrain, harness: r.harness || 'claude', label: r.label || harnessName(r.harness), model: r.model, billing: r.billing, failover: r.failover || null };
+    const standIn = r.failover ? ` · standing in for ${r.failover.fromLabel || r.failover.from}` : '';
+    el('#talkBilling').textContent = `${r.billing} · ${r.model}${standIn}`;
     // The one on screen is being seen right now (loadConversation tells Studio).
     const unseen = (c) => (c.id === current && onScreen() && !document.hidden ? 0 : c.unseen);
     el('#dockConv').innerHTML = `<option value="">New conversation</option>${r.conversations.slice(0, 15).map((c) => `<option value="${c.id}">${unseen(c) ? `● (${unseen(c)}) ` : ''}${esc(c.title ?? 'New conversation')}</option>`).join('')}`;
@@ -78,8 +84,36 @@
 
   const kb = (n) => (n >= 1048576 ? `${(n / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1024))} KB`);
   const secs = (ms) => (ms >= 60000 ? `${Math.round(ms / 60000)} min` : `${Math.round(ms / 1000)} s`);
-  /** Who paid for an answer: the Max subscription (no extra cost) or the API key (per token). */
-  const turnMark = (t) => t && `<div class="talk-turn ${t.billing}" title="${t.auto ? 'Studio started this answer when results came in. ' : ''}"${t.billing === 'api' ? 'Billed to the API key, per token' : `Covered by the Claude Max subscription${t.cost ? ` (about $${t.cost.toFixed(2)} at API prices)` : ''}`}">${t.billing === 'api' ? `💳 $${t.cost.toFixed(3)} API` : '✓ Max plan'}${t.ms ? ` · ${secs(t.ms)}` : ''}${t.stopped ? ' · stopped' : ''}${t.call ? ' · 📞' : ''}${t.auto ? ' · <span class="talk-who">Studio</span> asked for this answer' : ''}</div>`;
+  /** Who answered and how it was billed: the harness, model, and plan or API cost. */
+  function turnMark(t) {
+    if (!t) return '';
+    const h = t.harness || 'claude';
+    const hName = harnessName(h);
+    const brainTag = t.harness || t.model ? ` · ${esc(hName)}${t.model ? ` (${esc(t.model)})` : ''}` : '';
+    const planTitle = h === 'cursor'
+      ? 'Covered by the Cursor subscription'
+      : h === 'copilot'
+        ? 'Covered by the GitHub Copilot plan'
+        : h === 'antigravity'
+          ? 'Covered by the Google AI subscription'
+          : h === 'gemini'
+            ? 'Billed to the Gemini API key, per token'
+            : t.billing === 'api'
+              ? 'Billed to the API key, per token'
+              : `Covered by the Claude Max subscription${t.cost ? ` (about $${t.cost.toFixed(2)} at API prices)` : ''}`;
+    const planText = h === 'cursor'
+      ? '✓ Cursor plan'
+      : h === 'copilot'
+        ? '✓ Copilot plan'
+        : h === 'antigravity'
+          ? '✓ Google AI plan'
+          : h === 'gemini'
+            ? `💳 ${t.cost ? `$${t.cost.toFixed(3)} ` : ''}Gemini API`
+            : t.billing === 'api'
+              ? `💳 $${t.cost.toFixed(3)} API`
+              : '✓ Max plan';
+    return `<div class="talk-turn ${t.billing}" title="${t.auto ? 'Studio started this answer when results came in. ' : ''}${planTitle}">${planText}${brainTag}${t.ms ? ` · ${secs(t.ms)}` : ''}${t.stopped ? ' · stopped' : ''}${t.call ? ' · 📞' : ''}${t.auto ? ' · <span class="talk-who">Studio</span> asked for this answer' : ''}</div>`;
+  }
   const fileChips = (files) => (files?.length ? `<div class="talk-chips">${files.map((f) => `<span class="talk-chip" title="${esc(f.blob)}">${/^image\//.test(f.type ?? '') ? '🖼' : '📄'} ${esc(f.name)}${f.size ? ` · ${kb(f.size)}` : ''}</span>`).join('')}</div>` : '');
 
   function renderHead(c) {
@@ -100,16 +134,19 @@
   const empty = () => `<div class="empty">Ask about the products: "What did last night's trial find?", "What are the agents working on?", "Make the Sick Of It shop screen feel more like Hell", "Is the PH Origins fix good to ship?"</div>`;
   const tail = () => el('#talkLog .talk-tail');
 
-  /** The bubble Claude is writing into, or "thinking…" (the only part redrawn while an answer streams). */
+  /** The bubble the active brain is writing into, or "thinking…" (the only part redrawn while an answer streams). */
   function renderTail() {
     const t = tail();
     if (!t) return;
     const thinking = conv?.status === 'thinking';
     const log = el('#talkLog');
     const atBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 80;
+    const hName = esc(conv?.label || harnessName(conv?.harness || window.talkBrain?.harness));
+    const mName = conv?.model || window.talkBrain?.model;
+    const who = mName ? `${hName} (${esc(mName)})` : hName;
     t.innerHTML = !thinking ? '' : live?.text
       ? `<div class="talk-msg assistant streaming">${md(live.text)}<span class="talk-caret"></span></div>`
-      : `<div class="talk-tool">${conv.messages.at(-1)?.notice ? 'Studio asked Claude to explain the result…' : 'Claude is thinking…'}</div>`;
+      : `<div class="talk-tool">${conv.messages.at(-1)?.notice ? `Studio asked ${who} to explain the result…` : `${who} is thinking…`}</div>`;
     if (atBottom) log.scrollTop = log.scrollHeight;
   }
   let tailFrame = 0;

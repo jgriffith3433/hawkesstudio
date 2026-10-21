@@ -16,6 +16,7 @@ import path from 'node:path';
 import { ROOT, PROJECTS, StudioError } from './config.ts';
 import { sandboxOn } from './sandbox.ts';
 import { roleTune, jobTune } from './tuning.ts';
+import { brainId } from './brains.ts';
 
 export const ROLES = ['talk', 'pm', 'fixer', 'builder', 'content', 'scout', 'reviewer'] as const;
 export type RoleName = (typeof ROLES)[number];
@@ -118,7 +119,7 @@ export function roleArgs(name: RoleName, { extraAllowed = [] as string[], extraP
   // Settings → Tuning: the model, effort and turn cap for this role on the harness in use (an env override still wins).
   const tune = roleTune(name, { retry });
   const envModel = process.env[`STUDIO_MODEL_${name.toUpperCase()}`];
-  const r = { ...base, model: envModel ? base.model : tune.model || base.model };
+  const r = { ...base, model: envModel ? base.model : tune.model || (brainId() === 'claude' ? base.model : 'auto') };
   const allowed = [...r.allowed, ...extraAllowed];
   const args = ['--model', r.model, '--append-system-prompt', extraPrompt ? `${r.body}\n\n${extraPrompt}` : r.body];
   if (tune.effort) args.push('--effort', tune.effort);

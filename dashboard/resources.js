@@ -123,7 +123,10 @@
     if (!w) return '';
     const a = w.agents;
     const limits = Object.entries(a.productLimits ?? {}).map(([p, n]) => `${esc(p)} ${n}`).join(', ');
-    const list = a.list.map((c) => `<tr><td>${esc(c.title)}<div class="meta">${esc(c.product)} · ${esc(c.id)}</div></td><td>${esc(c.status)}</td></tr>`).join('');
+    const list = a.list.map((c) => {
+      const b = c.harness_label || c.harness ? ` · ${esc(c.harness_label || c.harness)}${c.model ? ` (${esc(c.model)})` : ''}` : '';
+      return `<tr><td>${esc(c.title)}<div class="meta">${esc(c.product)} · ${esc(c.id)}${b}</div></td><td>${esc(c.status)}</td></tr>`;
+    }).join('');
     return `<details class="rs-box more-details" data-k="work"><summary>Agents, the PM and Gen's queue <span class="meta">· ${a.running} of ${a.maxConcurrent} agents working</span></summary>
       <p style="margin:4px 0">Agents: <b>${a.running}</b> working of <b>${a.maxConcurrent}</b> at once (${a.perProduct} per product${limits ? `; ${limits}` : ''}), ${a.queued} queued, ${a.waitingOnGen} waiting on Gen${a.enabled ? '' : ' · <span class="rs-amber">agents are off</span>'}.</p>
       ${w.pm ? `<p style="margin:4px 0">The PM: ${w.pm.enabled ? 'on' : '<span class="rs-amber">paused</span>'}, ${w.pm.active} working of ${w.pm.maxConcurrent}, ${w.pm.started} of ${w.pm.maxStartsPerDay} starts used today.</p>` : ''}
