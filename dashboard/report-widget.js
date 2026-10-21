@@ -51,6 +51,354 @@
     addEventListener('unhandledrejection', (e) => { push('error', ['unhandled rejection:', e.reason]); caught('rejection', str(e.reason, true), e.reason && e.reason.stack); });
   }
 
+  // ------------------------------------------------------------- Babylon perf probe
+  // Auto-attaches a Babylon.js performance & leak root-cause monitor if the game hasn't installed window.hawkesPerf yet,
+  // so every Babylon beta page (icanbe, phorigins, doseofdestruction) gets diagnostics automatically.
+  const r1 = (n) => Math.round((Number(n) || 0) * 10) / 10;
+  const fmtK = (n) => (n >= 1e6 ? `${r1(n / 1e6)}M` : n >= 1000 ? `${r1(n / 1000)}k` : String(Math.round(n || 0)));
+  const isScene = (s) => Boolean(s && typeof s === 'object' && !s.isDisposed && (Array.isArray(s.meshes) || typeof s.getEngine === 'function'));
+  const findBabylonScene = () => {
+    try {
+      const engines = window.BABYLON && window.BABYLON.Engine && window.BABYLON.Engine.Instances;
+      if (Array.isArray(engines)) {
+        for (let i = engines.length - 1; i >= 0; i--) {
+          const scenes = engines[i] && engines[i].scenes;
+          if (Array.isArray(scenes)) {
+            for (let j = scenes.length - 1; j >= 0; j--) if (isScene(scenes[j])) return scenes[j];
+          }
+        }
+      }
+      const last = window.BABYLON && window.BABYLON.Engine && window.BABYLON.Engine.LastCreatedScene;
+      if (isScene(last)) return last;
+      const dayScene = window.day && (typeof window.day.world === 'function' ? window.day.world() && window.day.world().scene : window.day.world && window.day.world.scene);
+      if (isScene(dayScene)) return dayScene;
+      for (const c of [window.__babylonScene, window.scene, window.game && window.game.scene]) if (isScene(c)) return c;
+    } catch {}
+    return null;
+  };
+  function installAutoPerf(initialScene) {
+    if (window.hawkesPerf) return window.hawkesPerf;
+    let scene = initialScene || null;
+    let sceneInst = null, engineInst = null;
+    let baseline = null, baselineAt = 0;
+    const marks = {};
+    const frameTimes = [], fpsSamples = [];
+    let rafFrames = 0, rafLast = performance.now(), lastFrame = rafLast, curFps = 60, jankFrames = 0;
+    let dirtyWin = 0, dirtyT0 = rafLast, dirtyPerSec = 0;
+    const hookedMats = typeof WeakSet !== 'undefined' ? new WeakSet() : null;
+    let hookedIpc = null, hookedIpcObs = null;
+    const obsT = { frameMs: 0, activeMeshesEvalMs: 0, renderTargetsMs: 0, mainRenderMs: 0, animationsMs: 0, particlesMs: 0 };
+    let tf0 = 0, te0 = 0, tr0 = 0, td0 = 0, ta0 = 0, tp0 = 0;
+    let hudEl = null, hudTimer = 0;
+
+    const tick = (t) => {
+      const dt = t - lastFrame;
+      lastFrame = t;
+      if (dt > 0 && dt < 5000) { frameTimes.push(dt); if (frameTimes.length > 120) frameTimes.shift(); if (dt > 33.3) jankFrames++; }
+      rafFrames++;
+      if (t - rafLast >= 1000) {
+        curFps = Math.round((rafFrames * 1000) / (t - rafLast));
+        fpsSamples.push(curFps); if (fpsSamples.length > 300) fpsSamples.shift();
+        rafFrames = 0; rafLast = t;
+        dirtyPerSec = r1(dirtyWin / Math.max(0.2, (t - dirtyT0) / 1000));
+        dirtyWin = 0; dirtyT0 = t;
+      }
+      if (typeof requestAnimationFrame === 'function') requestAnimationFrame(tick);
+    };
+    if (typeof requestAnimationFrame === 'function') requestAnimationFrame(tick);
+
+    const meshTris = (m) => { try { const i = typeof m.getTotalIndices === 'function' ? m.getTotalIndices() : (m._totalIndices || 0); return i > 0 ? Math.round(i / 3) : 0; } catch { return 0; } };
+    const meshVerts = (m) => { try { return typeof m.getTotalVertices === 'function' ? m.getTotalVertices() : (m._totalVertices || 0); } catch { return 0; } };
+    const meshOn = (m) => { try { return m && (typeof m.isEnabled !== 'function' || m.isEnabled()) && m.isVisible !== false; } catch { return true; } };
+    const countRes = (sc) => {
+      const docAud = typeof document !== 'undefined' && document.querySelectorAll ? document.querySelectorAll('audio').length : 0;
+      if (!sc) return { meshes: 0, geometries: 0, materials: 0, textures: 0, estimatedTextureMB: 0, animationGroups: 0, skeletons: 0, particleSystems: 0, lights: 0, transformNodes: 0, renderTargets: 0, observers: 0, audioElements: docAud };
+      const texs = Array.isArray(sc.textures) ? sc.textures : [];
+      let bytes = 0;
+      const seenT = new Set();
+      for (const tx of texs) {
+        if (!tx) continue;
+        const k = tx._texture || tx.uniqueId || tx;
+        if (seenT.has(k)) continue;
+        seenT.add(k);
+        const sz = typeof tx.getSize === 'function' ? tx.getSize() : tx._size;
+        const w = Number((sz && sz.width) || (tx._texture && tx._texture._width) || 0);
+        const h = Number((sz && sz.height) || (tx._texture && tx._texture._height) || 0);
+        if (w > 0 && h > 0) bytes += w * h * 4 * 1.33;
+      }
+      let obs = 0;
+      for (const k of ['onBeforeRenderObservable', 'onAfterRenderObservable', 'onPointerObservable', 'onKeyboardObservable', 'onBeforeAnimationsObservable']) {
+        const a = sc[k] && (sc[k].observers || sc[k]._observers);
+        if (Array.isArray(a)) obs += a.length;
+      }
+      return {
+        meshes: (sc.meshes && sc.meshes.length) || 0,
+        geometries: (sc.geometries && sc.geometries.length) || 0,
+        materials: (sc.materials && sc.materials.length) || 0,
+        textures: texs.length,
+        estimatedTextureMB: r1(bytes / (1024 * 1024)),
+        animationGroups: (sc.animationGroups && sc.animationGroups.length) || 0,
+        skeletons: (sc.skeletons && sc.skeletons.length) || 0,
+        particleSystems: (sc.particleSystems && sc.particleSystems.length) || 0,
+        lights: (sc.lights && sc.lights.length) || 0,
+        transformNodes: (sc.transformNodes && sc.transformNodes.length) || 0,
+        renderTargets: Math.max((sc.customRenderTargets && sc.customRenderTargets.length) || 0, texs.filter((t) => t && t.isRenderTarget).length),
+        observers: obs,
+        audioElements: docAud + ((sc.mainSoundTrack && sc.mainSoundTrack.soundCollection && sc.mainSoundTrack.soundCollection.length) || 0),
+      };
+    };
+    const hookDirty = (sc) => {
+      if (!sc) return;
+      try {
+        const ipc = sc.imageProcessingConfiguration;
+        if (ipc && ipc !== hookedIpc && ipc.onUpdateParameters && ipc.onUpdateParameters.add) {
+          hookedIpc = ipc;
+          hookedIpcObs = ipc.onUpdateParameters.add(() => { dirtyWin++; });
+        }
+        for (const m of sc.materials || []) {
+          if (!m || !hookedMats || hookedMats.has(m)) continue;
+          hookedMats.add(m);
+          if (typeof m.markAsDirty === 'function') {
+            const o = m.markAsDirty;
+            m.markAsDirty = function (...a) { dirtyWin++; return o.apply(this, a); };
+          }
+        }
+      } catch {}
+    };
+    const attach = (sc) => {
+      if (!isScene(sc)) return false;
+      if (scene === sc && (sceneInst || baseline)) return true;
+      scene = sc;
+      const B = window.BABYLON;
+      const eng = typeof sc.getEngine === 'function' ? sc.getEngine() : sc._engine;
+      try {
+        if (B && typeof B.SceneInstrumentation === 'function') {
+          sceneInst = new B.SceneInstrumentation(sc);
+          sceneInst.captureFrameTime = true;
+          sceneInst.captureActiveMeshesEvaluationTime = true;
+          sceneInst.captureRenderTargetsRenderTime = true;
+          sceneInst.captureAnimationsTime = true;
+          sceneInst.captureParticlesRenderTime = true;
+        }
+      } catch {}
+      try {
+        if (B && typeof B.EngineInstrumentation === 'function' && eng) {
+          engineInst = new B.EngineInstrumentation(eng);
+          engineInst.captureGPUFrameTime = true;
+          engineInst.captureShaderCompilationTime = true;
+        }
+      } catch {}
+      const addO = (ob, fn) => { try { if (ob && typeof ob.add === 'function') ob.add(fn); } catch {} };
+      addO(sc.onBeforeRenderObservable, () => { tf0 = performance.now(); obsT.renderTargetsMs = 0; obsT.mainRenderMs = 0; });
+      addO(sc.onAfterRenderObservable, () => { if (tf0) obsT.frameMs = r1(performance.now() - tf0); });
+      addO(sc.onBeforeActiveMeshesEvaluationObservable, () => { te0 = performance.now(); });
+      addO(sc.onAfterActiveMeshesEvaluationObservable, () => { if (te0) obsT.activeMeshesEvalMs = r1(performance.now() - te0); });
+      addO(sc.onBeforeRenderTargetsRenderObservable, () => { tr0 = performance.now(); });
+      addO(sc.onAfterRenderTargetsRenderObservable, () => { if (tr0) obsT.renderTargetsMs = r1(obsT.renderTargetsMs + (performance.now() - tr0)); });
+      addO(sc.onBeforeDrawPhaseObservable, () => { td0 = performance.now(); });
+      addO(sc.onAfterDrawPhaseObservable, () => { if (td0) obsT.mainRenderMs = r1(obsT.mainRenderMs + (performance.now() - td0)); });
+      addO(sc.onBeforeAnimationsObservable, () => { ta0 = performance.now(); });
+      addO(sc.onAfterAnimationsObservable, () => { if (ta0) obsT.animationsMs = r1(performance.now() - ta0); });
+      addO(sc.onBeforeParticlesRenderingObservable, () => { tp0 = performance.now(); });
+      addO(sc.onAfterParticlesRenderingObservable, () => { if (tp0) obsT.particlesMs = r1(performance.now() - tp0); });
+      hookDirty(sc);
+      baseline = countRes(sc);
+      baselineAt = Date.now();
+      return true;
+    };
+    if (scene) attach(scene);
+
+    const checkLeaks = (fromLabel) => {
+      const sc = isScene(scene) ? scene : findBabylonScene();
+      if (sc && sc !== scene) attach(sc);
+      const cur = countRes(scene);
+      const ref = (fromLabel && marks[fromLabel] && marks[fromLabel].counts) || baseline || cur;
+      const refAt = (fromLabel && marks[fromLabel] && marks[fromLabel].at) || baselineAt || Date.now();
+      const delta = {};
+      for (const k of Object.keys(cur)) delta[k] = r1((cur[k] || 0) - (ref[k] || 0));
+      const notes = [];
+      if (delta.meshes >= 25) notes.push(`Mesh leak: +${delta.meshes} meshes (${ref.meshes} -> ${cur.meshes})`);
+      if (delta.geometries >= 20) notes.push(`Geometry leak: +${delta.geometries} geometries`);
+      if (delta.materials >= 15) notes.push(`Material leak: +${delta.materials} materials`);
+      if (delta.textures >= 10 || delta.estimatedTextureMB >= 16) notes.push(`Texture/VRAM growth: +${delta.textures} textures (+${delta.estimatedTextureMB} MB)`);
+      if (delta.particleSystems >= 5) notes.push(`ParticleSystem leak: +${delta.particleSystems} systems`);
+      if (delta.observers >= 15) notes.push(`Observer leak: +${delta.observers} scene observers`);
+      if (delta.audioElements >= 8) notes.push(`Audio leak: +${delta.audioElements} audio instances`);
+      return { leaked: notes.length > 0, from: fromLabel || 'baseline', baselineAgeSec: r1(Math.max(0, (Date.now() - refAt) / 1000)), current: cur, baseline: ref, delta, notes };
+    };
+
+    const snapshot = () => {
+      const sc = isScene(scene) ? scene : findBabylonScene();
+      if (sc && sc !== scene) attach(sc);
+      hookDirty(sc);
+      const eng = sc && (typeof sc.getEngine === 'function' ? sc.getEngine() : sc._engine);
+      const engFps = eng && typeof eng.getFps === 'function' ? Math.round(eng.getFps()) : curFps;
+      const avgDt = frameTimes.length ? frameTimes.reduce((a, b) => a + b, 0) / frameTimes.length : (1000 / Math.max(1, engFps));
+      const fps = {
+        current: engFps || curFps,
+        avg: fpsSamples.length ? Math.round(fpsSamples.reduce((a, b) => a + b, 0) / fpsSamples.length) : (engFps || curFps),
+        worst: fpsSamples.length ? Math.min(...fpsSamples, engFps || curFps) : (engFps || curFps),
+        jankFrames: Math.max(jankFrames, frameTimes.filter((d) => d > 33.3).length),
+        frameMs: r1(avgDt),
+      };
+      const cMs = (c, fb) => r1((c && (c.average || c.current)) || fb || 0);
+      const timing = {
+        frameMs: cMs(sceneInst && sceneInst.frameTimeCounter, obsT.frameMs || avgDt),
+        activeMeshesEvalMs: cMs(sceneInst && sceneInst.activeMeshesEvaluationTimeCounter, obsT.activeMeshesEvalMs),
+        renderTargetsMs: cMs(sceneInst && sceneInst.renderTargetsRenderTimeCounter, obsT.renderTargetsMs),
+        mainRenderMs: r1(obsT.mainRenderMs),
+        animationsMs: cMs(sceneInst && sceneInst.animationsTimeCounter, obsT.animationsMs),
+        particlesMs: cMs(sceneInst && sceneInst.particlesRenderTimeCounter, obsT.particlesMs),
+        gpuFrameMs: r1(engineInst && engineInst.gpuFrameTimeCounter ? (engineInst.gpuFrameTimeCounter.average || engineInst.gpuFrameTimeCounter.current || 0) * 1e-6 : 0),
+        shaderCompiles: Math.round((engineInst && engineInst.shaderCompilationTimeCounter && engineInst.shaderCompilationTimeCounter.count) || 0),
+      };
+      const meshes = (sc && Array.isArray(sc.meshes)) ? sc.meshes : [];
+      const actRaw = sc && (typeof sc.getActiveMeshes === 'function' ? (sc.getActiveMeshes() && (sc.getActiveMeshes().data || sc.getActiveMeshes())) : (sc._activeMeshes && (sc._activeMeshes.data || sc._activeMeshes)));
+      const actArr = Array.isArray(actRaw) ? actRaw.filter(Boolean) : [];
+      const actSet = new Set(actArr);
+      const shadowCasters = new Set();
+      let shadowTris = 0;
+      const renderPasses = [];
+      const seenRt = new Set();
+      for (const l of (sc && sc.lights) || []) {
+        if (!l) continue;
+        const sg = typeof l.getShadowGenerator === 'function' ? l.getShadowGenerator() : null;
+        if (!sg) continue;
+        const map = typeof sg.getShadowMap === 'function' ? sg.getShadowMap() : sg._shadowMap;
+        if (map) seenRt.add(map);
+        const rl = map ? map.renderList : sg.renderList;
+        const full = rl == null;
+        let pTris = 0;
+        for (const cm of (Array.isArray(rl) ? rl : (full ? meshes : []))) {
+          if (!cm) continue;
+          shadowCasters.add(cm);
+          pTris += meshTris(cm) * Math.max(1, cm.thinInstanceCount || 1);
+        }
+        shadowTris += pTris;
+        const sz = map && typeof map.getSize === 'function' ? map.getSize() : null;
+        renderPasses.push({ name: sg.id || l.name || 'ShadowGenerator', kind: 'ShadowGenerator', resolution: sz ? `${sz.width}x${sz.height}` : '?', renderListCount: Array.isArray(rl) ? rl.length : meshes.length, fullScene: full, tris: pTris });
+      }
+      for (const el of (sc && sc.effectLayers) || []) {
+        if (!el) continue;
+        const tx = el._mainTexture || el.mainTexture;
+        if (tx) seenRt.add(tx);
+        const cn = (typeof el.getClassName === 'function' && el.getClassName()) || 'EffectLayer';
+        const custom = Boolean(Array.isArray(el._includedOnlyMeshes) && el._includedOnlyMeshes.length > 0);
+        renderPasses.push({ name: el.name || cn, kind: /glow/i.test(cn) ? 'GlowLayer' : cn, resolution: 'auto', renderListCount: custom ? el._includedOnlyMeshes.length : meshes.length, fullScene: !custom });
+      }
+      for (const rt of [...((sc && sc.customRenderTargets) || []), ...(((sc && sc.textures) || []).filter((t) => t && t.isRenderTarget))]) {
+        if (!rt || seenRt.has(rt)) continue;
+        seenRt.add(rt);
+        const cn = (typeof rt.getClassName === 'function' && rt.getClassName()) || 'RenderTargetTexture';
+        const kind = /mirror/i.test(cn) || rt.mirrorPlane ? 'MirrorTexture' : 'RenderTargetTexture';
+        const rl = rt.renderList;
+        const sz = typeof rt.getSize === 'function' ? rt.getSize() : rt._size;
+        renderPasses.push({ name: rt.name || kind, kind, resolution: sz ? `${sz.width || sz}x${sz.height || sz}` : '?', renderListCount: Array.isArray(rl) ? rl.length : meshes.length, fullScene: rl == null });
+      }
+      let totalTris = 0, compActTris = 0, skinnedMeshes = 0, compBones = 0, thinInstanceMeshes = 0, thinInstancesTotal = 0, unfrozenMeshes = 0;
+      const skels = new Set(), heavy = [], matGroups = new Map();
+      for (let i = 0; i < meshes.length; i++) {
+        const m = meshes[i];
+        if (!m) continue;
+        const bt = meshTris(m), thin = Number(m.thinInstanceCount) || 0, et = bt * Math.max(1, thin);
+        totalTris += et;
+        const on = meshOn(m);
+        if (actSet.size ? actSet.has(m) : on) compActTris += et;
+        if (on && !m.isWorldMatrixFrozen && !m._isWorldMatrixFrozen) unfrozenMeshes++;
+        const sk = m.skeleton, isSk = Boolean(sk && (m.numBoneInfluencers ?? 4) > 0), bCount = (sk && Array.isArray(sk.bones)) ? sk.bones.length : 0;
+        if (isSk) { skinnedMeshes++; if (!skels.has(sk)) { skels.add(sk); compBones += bCount; } }
+        if (thin > 0) { thinInstanceMeshes++; thinInstancesTotal += thin; }
+        if (et > 0 || meshVerts(m) > 0) heavy.push({ name: m.name || m.id || `mesh_${i}`, tris: et, verts: meshVerts(m), skinned: isSk, bones: bCount, thin, castsShadow: shadowCasters.has(m) });
+        const inst = Boolean((m.instances && m.instances.length > 0) || thin > 0 || m.isAnInstance);
+        if (m.material && !inst && !isSk && on && bt > 0) {
+          const mk = m.material.name || m.material.id || 'unnamed';
+          const g = matGroups.get(mk) || { material: mk, meshCount: 0, tris: 0 };
+          g.meshCount++; g.tris += bt; matGroups.set(mk, g);
+        }
+      }
+      heavy.sort((a, b) => b.tris - a.tris);
+      const topHeavyMeshes = heavy.slice(0, 5);
+      const unmergedMaterialGroups = [...matGroups.values()].filter((g) => g.meshCount >= 10).sort((a, b) => b.meshCount - a.meshCount);
+      const unfrozenMaterials = ((sc && sc.materials) || []).filter((m) => m && !m.isFrozen && !m._isFrozen).length;
+      let enabledLights = 0, zeroIntensityEnabledLights = 0;
+      for (const l of (sc && sc.lights) || []) {
+        if (!l) continue;
+        if (typeof l.isEnabled !== 'function' || l.isEnabled()) { enabledLights++; if ((l.intensity ?? 1) <= 0.001) zeroIntensityEnabledLights++; }
+      }
+      const rawActIdx = sc && typeof sc.getActiveIndices === 'function' ? sc.getActiveIndices() : 0;
+      const activeTris = rawActIdx > 0 ? Math.round(rawActIdx / 3) : compActTris;
+      const activeBones = (sc && typeof sc.getActiveBones === 'function' && sc.getActiveBones() > 0) ? sc.getActiveBones() : compBones;
+      const drawCalls = Math.round((sceneInst && sceneInst.drawCallsCounter && sceneInst.drawCallsCounter.current) ?? (eng && eng._drawCalls && eng._drawCalls.current) ?? (actArr.length || 0));
+      const activeMeshes = actArr.length || meshes.filter(meshOn).length;
+      const liveDirty = Math.max(dirtyPerSec, dirtyWin > 0 ? r1(dirtyWin / Math.max(0.25, (performance.now() - dirtyT0) / 1000)) : 0);
+      const leaks = checkLeaks();
+      const suspects = [];
+      if (fps.current > 0 && fps.current < 45) suspects.push(`Low FPS (${fps.current} fps, worst ${fps.worst} fps, ${fps.jankFrames} jank frames >33.3ms)`);
+      if (timing.activeMeshesEvalMs >= 4) suspects.push(`CPU bottleneck in active-mesh evaluation (${timing.activeMeshesEvalMs}ms/frame across ${meshes.length} meshes)`);
+      if (timing.renderTargetsMs >= 4) suspects.push(`Extra render passes taking ${timing.renderTargetsMs}ms/frame (${renderPasses.length} passes)`);
+      if (topHeavyMeshes[0] && topHeavyMeshes[0].tris >= 40000) suspects.push(`High-poly mesh "${topHeavyMeshes[0].name}" has ${fmtK(topHeavyMeshes[0].tris)} tris (${fmtK(topHeavyMeshes[0].verts)} verts)`);
+      if (activeTris >= 250000) suspects.push(`High active triangle count: ${fmtK(activeTris)} active tris`);
+      if (shadowTris >= 80000) suspects.push(`Shadow-map triangle bloat: ${fmtK(shadowTris)} shadow caster tris`);
+      for (const p of renderPasses) if (p.fullScene) suspects.push(`Full-scene ${p.kind} "${p.name}" (${p.resolution}) has no restricted renderList`);
+      if (drawCalls >= 150) suspects.push(`High draw call count: ${drawCalls} draw calls`);
+      if (unmergedMaterialGroups[0]) suspects.push(`Unmerged static meshes: "${unmergedMaterialGroups[0].material}" drawn by ${unmergedMaterialGroups[0].meshCount} separate meshes`);
+      if (unfrozenMeshes >= 80 && (drawCalls >= 80 || fps.current < 55)) suspects.push(`${unfrozenMeshes} enabled meshes have unfrozen world matrices`);
+      if (liveDirty >= 10) suspects.push(`Per-frame material/imageProcessing dirtying (${liveDirty}/sec)`);
+      if (enabledLights > 4) suspects.push(`Excess active lights: ${enabledLights} enabled lights`);
+      if (zeroIntensityEnabledLights > 0) suspects.push(`${zeroIntensityEnabledLights} enabled light(s) have 0 intensity`);
+      for (const n of leaks.notes) suspects.push(n);
+      const summaryText = `${fps.current} fps · ${drawCalls} draws · ${fmtK(activeTris)} tris${suspects.length ? ` · ⚠ ${suspects[0]}` : ''}`;
+      return {
+        version: 1, at: Date.now(), sceneAttached: Boolean(sc), fps, timing,
+        drawCalls, activeMeshes, totalMeshes: meshes.length, activeTris, totalTris, shadowTris,
+        skinnedMeshes, activeBones, thinInstanceMeshes, thinInstancesTotal,
+        renderPasses, topHeavyMeshes, unfrozenMeshes, unfrozenMaterials, enabledLights, zeroIntensityEnabledLights,
+        unmergedMaterialGroups, materialDirtyPerSec: liveDirty,
+        resources: { current: leaks.current, baseline: leaks.baseline, delta: leaks.delta, baselineAgeSec: leaks.baselineAgeSec },
+        leaks: { leaked: leaks.leaked, notes: leaks.notes }, suspects, summary: summaryText,
+      };
+    };
+    const toggleHud = (force) => {
+      const want = force !== undefined ? Boolean(force) : !hudEl;
+      if (!want) { if (hudTimer) { clearInterval(hudTimer); hudTimer = 0; } if (hudEl) { hudEl.remove(); hudEl = null; } return false; }
+      if (!hudEl) {
+        hudEl = document.createElement('pre');
+        hudEl.style.cssText = 'position:fixed;left:8px;top:8px;z-index:2147483645;margin:0;padding:8px 10px;border-radius:8px;background:#0e1014dd;color:#e9ecf1;border:1px solid #333a46;font:11px/1.4 ui-monospace,SFMono-Regular,Consolas,monospace;pointer-events:none;max-width:min(520px,calc(100vw - 16px));white-space:pre-wrap;box-shadow:0 4px 16px #0008;';
+        (document.body || document.documentElement).appendChild(hudEl);
+      }
+      const paint = () => {
+        if (!hudEl) return;
+        const s = snapshot();
+        hudEl.textContent = [
+          `FPS: ${s.fps.current} (avg ${s.fps.avg}, worst ${s.fps.worst}, jank ${s.fps.jankFrames}) | CPU ${s.timing.frameMs}ms`,
+          `Draws: ${s.drawCalls} | Meshes: ${s.activeMeshes}/${s.totalMeshes} | Tris: ${fmtK(s.activeTris)}/${fmtK(s.totalTris)} (shadow ${fmtK(s.shadowTris)})`,
+          `Unfrozen: ${s.unfrozenMeshes}m/${s.unfrozenMaterials}mat | Lights: ${s.enabledLights} | Dirty/s: ${s.materialDirtyPerSec} | VRAM: ${s.resources.current.estimatedTextureMB}MB`,
+          ...(s.suspects.slice(0, 4).map((x) => `⚠ ${x}`)),
+        ].join('\n');
+      };
+      paint();
+      if (!hudTimer) hudTimer = setInterval(paint, 500);
+      return true;
+    };
+    const api = {
+      version: 1, attach, snapshot,
+      summary: () => snapshot().summary,
+      mark: (label = 'mark') => { const c = countRes(scene || findBabylonScene()); marks[String(label)] = { at: Date.now(), counts: c }; return c; },
+      checkLeaks, toggleHud,
+    };
+    window.hawkesPerf = api;
+    return api;
+  }
+  const ensurePerfProbe = () => {
+    if (window.hawkesPerf) return window.hawkesPerf;
+    const sc = findBabylonScene();
+    return sc ? installAutoPerf(sc) : null;
+  };
+  let probeTries = 0;
+  const probeTimer = setInterval(() => {
+    if (ensurePerfProbe() || ++probeTries >= 60) clearInterval(probeTimer);
+  }, 1000);
+
   // ------------------------------------------------------------- the button
   const host = document.createElement('div');
   host.setAttribute('data-hawkes-report', '');
@@ -93,6 +441,15 @@
   .fresh button { background: none; border: 0; color: inherit; cursor: pointer; padding: 6px 10px; font-size: 13px; }
   .fresh .go { font-weight: 600; color: #8fc1ff; padding-right: 4px; }
   .fresh .no { color: #9aa3b2; padding-left: 4px; }
+  .perf { display: none; margin: 8px 0; padding: 6px 8px; border-radius: 8px; background: #0e1014; border: 1px solid #28303d; font-size: 12px; color: #c9d1dc; }
+  .perf.on { display: block; }
+  .perf-bar { display: flex; justify-content: space-between; align-items: center; gap: 6px; }
+  .perf-sum { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 11px; }
+  .perf-warn { color: #fbbf24; margin-top: 4px; font-size: 11px; line-height: 1.3; }
+  .perf-acts { display: flex; gap: 4px; flex-shrink: 0; }
+  .perf-acts button { background: #232934; border: 1px solid #333a46; color: #c9d1dc; border-radius: 5px; padding: 2px 6px; font-size: 11px; cursor: pointer; }
+  .perf-pre { display: none; margin: 6px 0 0; padding: 6px; border-radius: 6px; background: #16181d; border: 1px solid #28303d; font: 10.5px/1.35 ui-monospace, SFMono-Regular, Consolas, monospace; color: #9aa3b2; max-height: 140px; overflow: auto; white-space: pre-wrap; }
+  .perf-pre.on { display: block; }
   </style>
   <div class="toast" aria-hidden="true">Error reported</div>
   <div class="fresh" role="status"><button class="go" type="button">New build: reload</button><button class="no" type="button" aria-label="Not now">×</button></div>
@@ -101,6 +458,7 @@
     <div class="row top"><b>Report a bug</b><button class="x" aria-label="Close">×</button></div>
     <textarea placeholder="What's wrong? (what you did, what you expected)"></textarea>
     <div class="shot"></div>
+    <div class="perf"><div class="perf-bar"><span class="perf-sum"></span><span class="perf-acts"><button type="button" class="perf-inspect">Inspect</button><button type="button" class="perf-copy">Copy</button><button type="button" class="perf-hud">HUD</button></span></div><div class="perf-warn"></div><pre class="perf-pre"></pre></div>
     <label><input type="checkbox" class="block"> It blocks me (can't go on)</label>
     <div class="row"><button class="btn mic" type="button">🎙 Hold to talk</button><button class="btn send" type="button">Send</button></div>
     <div class="msg"></div>
@@ -108,7 +466,58 @@
   </div>`;
   const $ = (s) => root.querySelector(s);
   const dot = $('.dot'), panel = $('.panel'), ta = $('textarea'), shotBox = $('.shot'), msg = $('.msg'), send = $('.send'), mic = $('.mic');
+  const perfBox = $('.perf'), perfSum = $('.perf-sum'), perfWarn = $('.perf-warn'), perfPre = $('.perf-pre');
   $('.info').textContent = [cfg.ref, cfg.sha].filter(Boolean).join(' ') || 'beta';
+
+  let perfUiTimer = 0;
+  const formatPerfPre = (s) => {
+    if (!s) return '';
+    const lines = [
+      `FPS: ${s.fps?.current ?? '?'} (avg ${s.fps?.avg ?? '?'}, worst ${s.fps?.worst ?? '?'}, jank ${s.fps?.jankFrames ?? 0})`,
+      `Timings: frame ${s.timing?.frameMs ?? 0}ms · eval ${s.timing?.activeMeshesEvalMs ?? 0}ms · RT ${s.timing?.renderTargetsMs ?? 0}ms · draw ${s.timing?.mainRenderMs ?? 0}ms · anim ${s.timing?.animationsMs ?? 0}ms`,
+      `Draws: ${s.drawCalls ?? 0} · Meshes: ${s.activeMeshes ?? 0}/${s.totalMeshes ?? 0} · Tris: ${fmtK(s.activeTris)}/${fmtK(s.totalTris)} (shadow ${fmtK(s.shadowTris)})`,
+      `Unfrozen: ${s.unfrozenMeshes ?? 0} meshes, ${s.unfrozenMaterials ?? 0} mats · Lights: ${s.enabledLights ?? 0} · Dirty/s: ${s.materialDirtyPerSec ?? 0}`,
+    ];
+    if (Array.isArray(s.topHeavyMeshes) && s.topHeavyMeshes.length) {
+      lines.push(`Heavy meshes: ${s.topHeavyMeshes.map((m) => `${m.name} (${fmtK(m.tris)} tris)`).join(', ')}`);
+    }
+    if (Array.isArray(s.suspects) && s.suspects.length) {
+      lines.push(`Suspects:\n  - ${s.suspects.join('\n  - ')}`);
+    }
+    return lines.join('\n');
+  };
+  const updatePerfBadge = () => {
+    const p = ensurePerfProbe();
+    if (!p || typeof p.snapshot !== 'function') { perfBox.classList.remove('on'); return; }
+    try {
+      const s = p.snapshot();
+      if (!s || (!s.sceneAttached && !s.totalMeshes && !s.drawCalls)) { perfBox.classList.remove('on'); return; }
+      perfBox.classList.add('on');
+      perfSum.textContent = `${s.fps?.current ?? '?'} fps · ${s.drawCalls ?? 0} draws · ${fmtK(s.activeTris)} tris`;
+      perfWarn.textContent = Array.isArray(s.suspects) && s.suspects.length ? `⚠ ${s.suspects[0]}` : '';
+      perfWarn.style.display = perfWarn.textContent ? 'block' : 'none';
+      if (perfPre.classList.contains('on')) perfPre.textContent = formatPerfPre(s);
+    } catch { perfBox.classList.remove('on'); }
+  };
+  $('.perf-inspect').onclick = () => {
+    const on = perfPre.classList.toggle('on');
+    if (on) updatePerfBadge();
+    place();
+  };
+  $('.perf-copy').onclick = () => {
+    const p = ensurePerfProbe();
+    if (!p || typeof p.snapshot !== 'function') return;
+    try {
+      const txt = JSON.stringify(p.snapshot(), null, 2);
+      if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(txt);
+      $('.perf-copy').textContent = 'Copied';
+      setTimeout(() => { $('.perf-copy').textContent = 'Copy'; }, 1200);
+    } catch {}
+  };
+  $('.perf-hud').onclick = () => {
+    const p = ensurePerfProbe();
+    if (p && typeof p.toggleHud === 'function') p.toggleHud();
+  };
 
   // Nothing typed or tapped in here reaches the game (its listeners are on window/document).
   for (const t of ['keydown', 'keyup', 'keypress', 'pointerdown', 'pointerup', 'pointermove', 'mousedown', 'mouseup', 'click', 'touchstart', 'touchend', 'touchmove', 'wheel', 'contextmenu']) {
@@ -241,10 +650,16 @@
     showShot();
     msg.textContent = !shot ? 'No screenshot (sending without one).' : shotNote ? "The game's picture couldn't be captured; the screenshot shows the page around it." : '';
     panel.classList.add('open');
+    updatePerfBadge();
+    if (!perfUiTimer) perfUiTimer = setInterval(updatePerfBadge, 1000);
     place();
     if (!matchMedia('(pointer: coarse)').matches) ta.focus();
   }
-  function close() { panel.classList.remove('open'); stopMic(); }
+  function close() {
+    panel.classList.remove('open');
+    if (perfUiTimer) { clearInterval(perfUiTimer); perfUiTimer = 0; }
+    stopMic();
+  }
 
   // ------------------------------------------------------------ hold to talk
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
@@ -274,17 +689,19 @@
 
   // ------------------------------------------------------------------ send
   const json = (v, n) => { try { const s = JSON.stringify(v); return s && s.length > n ? s.slice(0, n) + '…' : s; } catch { return null; } };
-  // What the page knows, for a report or an error: where, the device, the build, the console, the game's state.
+  // What the page knows, for a report or an error: where, the device, the build, the console, the game's state, and Babylon perf.
   const context = () => {
     const pt = window.hawkesPlaytest;
-    let state = null, report = null;
+    const pf = ensurePerfProbe();
+    let state = null, report = null, perf = null;
     try { if (pt && typeof pt.state === 'function') state = json(pt.state(), 4000); } catch (err) { state = `state() threw: ${err.message || err}`; }
     try { if (pt && typeof pt.report === 'function') report = json(pt.report(), 4000); } catch (err) { report = `report() threw: ${err.message || err}`; }
+    try { if (pf && typeof pf.snapshot === 'function') perf = pf.snapshot(); } catch (err) { perf = `snapshot() threw: ${err.message || err}`; }
     return {
       url: location.href, title: document.title,
       viewport: { w: innerWidth, h: innerHeight, dpr: devicePixelRatio },
       device: { ua: navigator.userAgent, touch: matchMedia('(pointer: coarse)').matches, touchPoints: navigator.maxTouchPoints || 0, platform: (navigator.userAgentData && navigator.userAgentData.platform) || navigator.platform, lang: navigator.language },
-      console: log.slice(-25), state, report, build: cfg,
+      console: log.slice(-25), state, report, perf, build: cfg,
     };
   };
   send.onclick = async () => {

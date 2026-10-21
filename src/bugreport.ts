@@ -33,14 +33,14 @@ const MAX_SHOT = 6 * 1024 * 1024;
 export type ReportIn = {
   text?: string; blocker?: boolean; url?: string; title?: string; shot?: string | null; shotNote?: string | null;
   viewport?: { w?: number; h?: number; dpr?: number }; device?: { ua?: string; touch?: boolean; platform?: string; lang?: string };
-  console?: { level?: string; text?: string; at?: number }[]; state?: unknown; report?: unknown;
+  console?: { level?: string; text?: string; at?: number }[]; state?: unknown; report?: unknown; perf?: unknown;
   build?: { product?: string; sha?: string; ref?: string; change?: string; built?: number };
 };
 
 /** Kept with the finding (findings.report). */
 export type Report = {
   text: string; url: string | null; page: string | null; device: string; viewport: string; build: ReportIn['build'] | null;
-  console: { level: string; text: string }[]; state: string | null; game: string | null; shot: string | null; asset: string | null;
+  console: { level: string; text: string }[]; state: string | null; game: string | null; perf?: string | null; shot: string | null; asset: string | null;
   /** What the widget says about its screenshot (e.g. the game's frame couldn't be read, so it's the page alone). */
   shotNote?: string | null;
   conversation: string | null; milestone: string | null; told: string | null; at: number;
@@ -143,6 +143,7 @@ export async function fileReport(productId: string, b: ReportIn) {
     device: `${dev.touch ? 'touch' : 'mouse'} · ${cut(dev.platform, 40) || '?'} · ${cut(dev.ua, 300)}`,
     viewport: `${Number(vp.w) || '?'}x${Number(vp.h) || '?'}${vp.dpr ? ` @${Number(vp.dpr)}x` : ''}`,
     build, console: consoleLines, state: b.state == null ? null : cut(b.state, 4000), game: b.report == null ? null : cut(b.report, 4000),
+    perf: b.perf == null ? null : cut(b.perf, 8000),
     shot, shotNote: b.shotNote ? cut(b.shotNote, 300) : null, asset: null, conversation: null, milestone: t?.milestone ?? null, told: null, at: now,
   };
   const detail = detailOf(report, t);
@@ -171,6 +172,45 @@ export async function fileReport(productId: string, b: ReportIn) {
   return { ok: true, id, title, milestone: t ? { id: t.milestone, title: t.title } : null, message: `Got it: becomes a task for ${where}.`, conversation };
 }
 
+function formatPerf(raw: string | null | undefined): string {
+  if (!raw) return '';
+  let p: any = null;
+  try { p = JSON.parse(raw); } catch { return `Performance & scene diagnostics: ${raw}`; }
+  if (!p || typeof p !== 'object') return `Performance & scene diagnostics: ${raw}`;
+  const lines = ['Performance & scene diagnostics:'];
+  if (p.fps && typeof p.fps === 'object') {
+    lines.push(`  FPS: ${p.fps.current ?? '?'} current · ${p.fps.avg ?? '?'} avg · ${p.fps.worst ?? '?'} worst · ${p.fps.jankFrames ?? 0} jank frames (>33.3ms)`);
+  }
+  if (p.timing && typeof p.timing === 'object') {
+    lines.push(`  Frame timings: frame ${p.timing.frameMs ?? 0}ms · activeMeshesEval ${p.timing.activeMeshesEvalMs ?? 0}ms · renderTargets ${p.timing.renderTargetsMs ?? 0}ms · mainRender ${p.timing.mainRenderMs ?? 0}ms · animations ${p.timing.animationsMs ?? 0}ms · particles ${p.timing.particlesMs ?? 0}ms · gpu ${p.timing.gpuFrameMs ?? 0}ms · shaderCompiles ${p.timing.shaderCompiles ?? 0}`);
+  }
+  if (p.drawCalls !== undefined || p.activeTris !== undefined || p.totalMeshes !== undefined) {
+    lines.push(`  Scene & draws: ${p.drawCalls ?? 0} draw calls · ${p.activeMeshes ?? 0}/${p.totalMeshes ?? 0} meshes · ${p.activeTris ?? 0}/${p.totalTris ?? 0} tris (${p.shadowTris ?? 0} shadow tris) · ${p.skinnedMeshes ?? 0} skinned (${p.activeBones ?? 0} bones) · ${p.thinInstanceMeshes ?? 0} thin-instanced (${p.thinInstancesTotal ?? 0} instances)`);
+  }
+  if (p.unfrozenMeshes !== undefined || p.enabledLights !== undefined || p.materialDirtyPerSec !== undefined) {
+    lines.push(`  Batching & audit: ${p.unfrozenMeshes ?? 0} unfrozen meshes · ${p.unfrozenMaterials ?? 0} unfrozen materials · ${p.enabledLights ?? 0} enabled lights (${p.zeroIntensityEnabledLights ?? 0} zero-intensity) · ${p.materialDirtyPerSec ?? 0} material dirty/sec`);
+  }
+  if (Array.isArray(p.renderPasses) && p.renderPasses.length) {
+    lines.push(`  Render passes: ${p.renderPasses.map((rp: any) => `${rp.kind || 'Pass'} "${rp.name}" (${rp.resolution || '?'}, ${rp.renderListCount ?? '?'} meshes${rp.fullScene ? ', FULL SCENE' : ''})`).join('; ')}`);
+  }
+  if (Array.isArray(p.topHeavyMeshes) && p.topHeavyMeshes.length) {
+    lines.push(`  Top heavy meshes: ${p.topHeavyMeshes.map((m: any) => `${m.name} (${m.tris ?? 0} tris, ${m.verts ?? '?'} verts${m.skinned ? `, skinned ${m.bones ?? 0}b` : ''}${m.thin ? `, thin x${m.thin}` : ''}${m.castsShadow ? ', shadow' : ''})`).join('; ')}`);
+  }
+  const delta = p.resources?.delta;
+  const cur = p.resources?.current;
+  if (delta && typeof delta === 'object') {
+    const parts = Object.entries(delta)
+      .filter(([, v]) => Number(v) !== 0)
+      .map(([k, v]) => `${k} ${Number(v) > 0 ? `+${v}` : v}`);
+    const vram = cur?.estimatedTextureMB !== undefined ? ` (VRAM est ${cur.estimatedTextureMB} MB)` : '';
+    lines.push(`  Leak deltas${vram}: ${parts.length ? parts.join(', ') : 'none'}`);
+  }
+  if (Array.isArray(p.suspects) && p.suspects.length) {
+    lines.push(`  Root-cause suspects:\n${p.suspects.map((s: any) => `    - ${s}`).join('\n')}`);
+  }
+  return lines.length > 1 ? lines.join('\n') : `Performance & scene diagnostics: ${raw}`;
+}
+
 function detailOf(r: Report, t: ReturnType<typeof testing>) {
   return [
     `J's words: ${r.text || '(none: see the screenshot)'}`,
@@ -180,6 +220,7 @@ function detailOf(r: Report, t: ReturnType<typeof testing>) {
     r.console.length ? `Console (latest last):\n${r.console.map((c) => `  [${c.level}] ${c.text}`).join('\n')}` : 'Console: no errors or warnings',
     r.state ? `Game state (hawkesPlaytest.state()): ${r.state}` : '',
     r.game ? `Game report (hawkesPlaytest.report()): ${r.game}` : '',
+    r.perf ? formatPerf(r.perf) : '',
     r.shot ? `Screenshot: ${r.shot}` : '',
     r.shotNote ? `Screenshot note: ${r.shotNote}` : '',
   ].filter(Boolean).join('\n');
@@ -402,6 +443,7 @@ function sampleOf(b: ErrorIn, message: string, stack: string, now: number): Repo
     build: b.build ? { product: cut(b.build.product, 40), sha: cut(b.build.sha, 40), ref: cut(b.build.ref, 120), change: b.build.change ? cut(b.build.change, 40) : undefined, built: Number(b.build.built) || undefined } : null,
     console: (Array.isArray(b.console) ? b.console : []).slice(-25).map((c) => ({ level: cut(c?.level, 10) || 'log', text: cut(c?.text, 400) })),
     state: b.state == null ? null : cut(b.state, 4000), game: b.report == null ? null : cut(b.report, 4000),
+    perf: b.perf == null ? null : cut(b.perf, 8000),
     shot: null, shotNote: b.shotNote ? cut(b.shotNote, 300) : null, asset: null, conversation: null, milestone: null, told: null, at: now,
   };
 }
