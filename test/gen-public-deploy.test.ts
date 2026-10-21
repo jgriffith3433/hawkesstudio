@@ -8,23 +8,36 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+process.env.STUDIO_DATA = fs.mkdtempSync(path.join(os.tmpdir(), 'studio-gen-public-test-'));
 // @ts-ignore: plain .mjs module without types
 const { genPublicCaddyfile } = await import('../deploy/caddyfile-gen-public.mjs');
+const { guardFiles, protectedTouched } = await import('../src/agents.ts');
 
-test('deploy/*-gen-public*.mjs and deploy/gen-public-secrets.mjs scripts pass node --check', () => {
+test('all deploy/*.mjs scripts pass node --check', () => {
   const deployDir = path.join(root, 'deploy');
-  const scripts = fs.readdirSync(deployDir).filter((f) => /gen-public.*\.mjs$/.test(f)).sort();
-  assert.deepEqual(scripts, [
+  const pubScripts = fs.readdirSync(deployDir).filter((f) => /gen-public.*\.mjs$/.test(f)).sort();
+  assert.deepEqual(pubScripts, [
     'caddyfile-gen-public.mjs',
     'deploy-gen-public.mjs',
     'gen-public-secrets.mjs',
     'provision-gen-public.mjs',
+    'sync-gen-public.mjs',
   ]);
-  for (const name of scripts) {
+  const allScripts = fs.readdirSync(deployDir).filter((f) => f.endsWith('.mjs')).sort();
+  for (const name of allScripts) {
     const abs = path.join(deployDir, name);
     const r = spawnSync(process.execPath, ['--check', abs], { encoding: 'utf8' });
     assert.equal(r.status, 0, `deploy/${name} failed node --check: ${r.stderr || r.stdout}`);
   }
+});
+
+test('protectedTouched honors J naming guarded files while keeping unapproved guarded and forbidden files protected', () => {
+  const files = ['deploy/caddyfile.mjs', 'deploy/hawkes-pull.mjs', 'src/server.ts'];
+  assert.deepEqual(protectedTouched('hawkesstudio', files), ['deploy/caddyfile.mjs', 'deploy/hawkes-pull.mjs']);
+  const jWords = 'You can edit deploy/caddyfile.mjs and deploy/hawkes-pull.mjs, and launch the hawkes-gen-public EC2 server. Merge everything yourself';
+  assert.deepEqual(guardFiles('hawkesstudio', files, jWords), []);
+  assert.deepEqual(protectedTouched('hawkesstudio', files, jWords), []);
+  assert.deepEqual(protectedTouched('hawkesstudio', [...files, '.env'], jWords), ['.env']);
 });
 
 test('genPublicCaddyfile("hawkesgen.com") configures HTTPS, www redirect, 64MB uploads, /v1/events SSE, and security headers', () => {

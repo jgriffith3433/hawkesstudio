@@ -16,7 +16,9 @@ export function readEnvFile(file) {
 
 const genEnv = readEnvFile(path.join(PROJECTS, 'hawkesgen', '.env'));
 export const REGION = 'us-east-1';
-export const cfg = { region: REGION, credentials: { accessKeyId: genEnv.AWS_ACCESS_KEY_ID, secretAccessKey: genEnv.AWS_SECRET_ACCESS_KEY } };
+export const cfg = genEnv.AWS_ACCESS_KEY_ID && genEnv.AWS_SECRET_ACCESS_KEY
+  ? { region: REGION, credentials: { accessKeyId: genEnv.AWS_ACCESS_KEY_ID, secretAccessKey: genEnv.AWS_SECRET_ACCESS_KEY } }
+  : { region: REGION };
 export const ACCOUNT = '028793236279';
 
 export const state = () => { try { return JSON.parse(fs.readFileSync(STATE_FILE, 'utf8')); } catch { return {}; } };

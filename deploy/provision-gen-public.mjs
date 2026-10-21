@@ -41,6 +41,14 @@ export const readPublicState = () => {
 export const savePublicState = (patch) => {
   const s = { ...readPublicState(), ...patch };
   fs.writeFileSync(STATE_FILE, JSON.stringify(s, null, 2));
+  try {
+    if (process.getuid?.() === 0 && fs.existsSync('/home/hawkes')) {
+      const { uid, gid } = fs.statSync('/home/hawkes');
+      fs.chownSync(STATE_FILE, uid, gid);
+      if (fs.existsSync(KEY_FILE)) fs.chownSync(KEY_FILE, uid, gid);
+      if (fs.existsSync(`${KEY_FILE}.pub`)) fs.chownSync(`${KEY_FILE}.pub`, uid, gid);
+    }
+  } catch {}
   return s;
 };
 
@@ -138,6 +146,7 @@ async function ensureSecurityGroup(ip) {
     { port: 80, cidr: '0.0.0.0/0', d: 'HTTP (Caddy redirects to HTTPS)' },
     { port: 443, cidr: '0.0.0.0/0', d: 'HTTPS' },
     { port: 22, cidr: `${ip}/32`, d: 'SSH from J' },
+    { port: 8790, cidr: `${ip}/32`, d: 'Hawkes Gen upstream from control server Caddy' },
   ];
   for (const p of perms) {
     const has = (sg.IpPermissions ?? []).some((x) => x.FromPort === p.port && (x.IpRanges ?? []).some((r) => r.CidrIp === p.cidr));
@@ -196,7 +205,16 @@ async function findInstance() {
 
 export async function main() {
   const ip = await myIp();
-  const role = await ensureRole();
+  let role = null;
+  try {
+    role = await ensureRole();
+  } catch (e) {
+    if (/AccessDenied/i.test(`${e.name} ${e.Code} ${e.message}`)) {
+      log(`note: skipping IAM role creation (${e.name}: running without instance profile)`);
+    } else {
+      throw e;
+    }
+  }
   const sg = await ensureSecurityGroup(ip);
   const key = await ensureKey();
   let inst = await findInstance();
@@ -204,19 +222,32 @@ export async function main() {
     const img = await ubuntuImage();
     log(`launching ${TYPE} (${img.Name}) for ${NAME}`);
     const userData = fs.readFileSync(path.join(HERE, 'cloud-init.sh'), 'utf8').replace(/\r\n/g, '\n');
-    const res = await ec2.send(new RunInstancesCommand({
+    const runParams = {
       ImageId: img.ImageId,
       InstanceType: TYPE,
       MinCount: 1,
       MaxCount: 1,
       KeyName: key,
       SecurityGroupIds: [sg],
-      IamInstanceProfile: { Name: role },
+      ...(role ? { IamInstanceProfile: { Name: role } } : {}),
       UserData: Buffer.from(userData).toString('base64'),
       BlockDeviceMappings: [{ DeviceName: img.RootDeviceName, Ebs: { VolumeSize: 150, VolumeType: 'gp3', DeleteOnTermination: false, Encrypted: true } }],
       MetadataOptions: { HttpTokens: 'required', HttpPutResponseHopLimit: 2 },
       TagSpecifications: [...tags('instance'), ...tags('volume')],
-    }));
+    };
+    let res;
+    try {
+      res = await ec2.send(new RunInstancesCommand(runParams));
+    } catch (e) {
+      if (role && /AccessDenied|UnauthorizedOperation|InvalidParameterValue/i.test(`${e.name} ${e.Code} ${e.message}`)) {
+        log(`note: launching without IamInstanceProfile (${e.name}: ${e.message})`);
+        const { IamInstanceProfile: _, ...withoutRole } = runParams;
+        role = null;
+        res = await ec2.send(new RunInstancesCommand(withoutRole));
+      } else {
+        throw e;
+      }
+    }
     inst = res.Instances[0];
   }
   let addr = (await ec2.send(new DescribeAddressesCommand({ Filters: [{ Name: 'tag:Name', Values: [NAME] }] }))).Addresses?.[0];
@@ -224,8 +255,9 @@ export async function main() {
     addr = await ec2.send(new AllocateAddressCommand({ Domain: 'vpc', TagSpecifications: tags('elastic-ip') }));
     log(`allocated Elastic IP ${addr.PublicIp}`);
   }
+  let cur = inst;
   for (let i = 0; i < 30; i++) {
-    const cur = await findInstance();
+    cur = await findInstance();
     if (cur?.State?.Name === 'running') break;
     await new Promise((r) => setTimeout(r, 5000));
   }
@@ -235,6 +267,7 @@ export async function main() {
   const s = savePublicState({
     instanceId: inst.InstanceId,
     ip: addr.PublicIp,
+    privateIp: cur?.PrivateIpAddress || inst.PrivateIpAddress,
     allocationId: addr.AllocationId,
     securityGroup: sg,
     role,
