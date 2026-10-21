@@ -176,7 +176,9 @@ export function holdHarness(stop: HarnessStop, { source, harness = brainId(), no
   }
   announce(h, true);
   // A stand-in now, not at the next minute's look: the queue may resume on it straight away.
-  setTimeout(() => void reviewHolds().catch((e) => console.warn(`[studio] harness hold: ${e?.message ?? e}`)), 0).unref?.();
+  if (!reviewing && (harness === brainId() || harness === brainSettings().chosen)) {
+    setTimeout(() => void reviewHolds().catch((e) => console.warn(`[studio] harness hold: ${e?.message ?? e}`)), 0).unref?.();
+  }
   return { hold: getHold(harness)!, fresh: true };
 }
 
