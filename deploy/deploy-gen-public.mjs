@@ -12,7 +12,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { PROJECTS, KEYS, ACCOUNT, myIp, log } from './aws.mjs';
+import { PROJECTS, KEYS, ACCOUNT, myIp, log, readEnvFile } from './aws.mjs';
 import { genPublicCaddyfile } from './caddyfile-gen-public.mjs';
 
 export const STATE_FILE = path.join(KEYS, 'gen-public.json');
@@ -30,6 +30,12 @@ export function readPublicState() {
 export function savePublicState(patch) {
   const s = { ...readPublicState(), ...patch };
   fs.writeFileSync(STATE_FILE, JSON.stringify(s, null, 2));
+  try {
+    if (process.getuid?.() === 0 && fs.existsSync('/home/hawkes')) {
+      const { uid, gid } = fs.statSync('/home/hawkes');
+      fs.chownSync(STATE_FILE, uid, gid);
+    }
+  } catch {}
   return s;
 }
 
@@ -49,8 +55,8 @@ Wants=network-online.target
 Type=oneshot
 RemainAfterExit=yes
 Environment=AWS_DEFAULT_REGION=us-east-1
-ExecStart=/usr/bin/node /srv/hawkes/hawkesgen/bin/fetch-secrets.mjs /run/hawkes/gen-public.env hawkes/gen-public
-ExecStart=/usr/bin/node /srv/hawkes/hawkesgen/bin/fetch-secrets.mjs /run/hawkes/github.env hawkes/github --optional
+ExecStart=/bin/bash -c 'test -s /run/hawkes/gen-public.env || /usr/bin/node /srv/hawkes/hawkesgen/bin/fetch-secrets.mjs /run/hawkes/gen-public.env hawkes/gen-public --optional'
+ExecStart=/bin/bash -c 'test -s /run/hawkes/github.env || /usr/bin/node /srv/hawkes/hawkesgen/bin/fetch-secrets.mjs /run/hawkes/github.env hawkes/github --optional'
 
 [Install]
 WantedBy=multi-user.target`),
@@ -63,14 +69,15 @@ Requires=hawkes-secrets.service
 [Service]
 User=hawkes
 WorkingDirectory=/srv/hawkes/hawkesgen
-EnvironmentFile=/run/hawkes/gen-public.env
+EnvironmentFile=-/run/hawkes/gen-public.env
+EnvironmentFile=-/srv/hawkes/hawkesgen/.env
 EnvironmentFile=-/run/hawkes/github.env
 Environment=HAWKESGEN_PUBLIC_SAAS=1
 Environment=HAWKESGEN_DATA_DIR=/srv/hawkes/hawkesgen/.data
 Environment=HAWKESGEN_LIBRARY_BUCKET=${bucket}
 Environment=HAWKES_AWS_ROLE=1
 Environment=AWS_DEFAULT_REGION=us-east-1
-Environment=HAWKESGEN_HOST=127.0.0.1
+Environment=HAWKESGEN_HOST=0.0.0.0
 Environment=HAWKES_ALLOW_IPS=${laptopIp}
 Environment=HAWKES_REGIONS=us-east-1,us-east-2,us-west-2
 ExecStart=/usr/bin/node --disable-warning=ExperimentalWarning src/server.ts
@@ -153,12 +160,16 @@ export async function runDeploy(argv = process.argv.slice(2)) {
   async function ensureGithubEnv() {
     const have = await ssh('sudo test -s /run/hawkes/github.env && echo yes || echo no', { quiet: true });
     if (have.includes('yes')) return;
-    log('fetching the GitHub token (hawkes/github) for the first clone');
-    const { SecretsManagerClient, GetSecretValueCommand } = await import('@aws-sdk/client-secrets-manager');
-    const { cfg } = await import('./aws.mjs');
-    const secret = JSON.parse((await new SecretsManagerClient(cfg).send(new GetSecretValueCommand({ SecretId: 'hawkes/github' }))).SecretString ?? '{}');
-    if (!secret.GITHUB_TOKEN) throw new Error('No GITHUB_TOKEN in hawkes/github: run node deploy/github-token.mjs first');
-    await run('ssh', [...SSH, `ubuntu@${st.ip}`, 'sudo mkdir -p /run/hawkes && sudo install -m 640 -g hawkes /dev/stdin /run/hawkes/github.env && echo github-env-ok'], { input: `GITHUB_TOKEN=${secret.GITHUB_TOKEN}\n` });
+    let ghToken = readEnvFile('/run/hawkes/github.env').GITHUB_TOKEN || process.env.GITHUB_TOKEN;
+    if (!ghToken) {
+      log('fetching the GitHub token (hawkes/github) for the first clone');
+      const { SecretsManagerClient, GetSecretValueCommand } = await import('@aws-sdk/client-secrets-manager');
+      const { cfg } = await import('./aws.mjs');
+      const secret = JSON.parse((await new SecretsManagerClient(cfg).send(new GetSecretValueCommand({ SecretId: 'hawkes/github' }))).SecretString ?? '{}');
+      ghToken = secret.GITHUB_TOKEN;
+    }
+    if (!ghToken) throw new Error('No GITHUB_TOKEN in /run/hawkes/github.env or hawkes/github: run node deploy/github-token.mjs first');
+    await run('ssh', [...SSH, `ubuntu@${st.ip}`, 'sudo mkdir -p /run/hawkes && sudo install -m 640 -g hawkes /dev/stdin /run/hawkes/github.env && echo github-env-ok'], { input: `GITHUB_TOKEN=${ghToken}\n` });
   }
 
   async function gitCode() {
@@ -179,6 +190,8 @@ fi`;
     await scp(local, `/tmp/hawkes-public-git-${repo}.sh`);
     fs.rmSync(local, { force: true });
     await ssh(`sudo chown hawkes:hawkes /srv/hawkes && sudo -u hawkes -H bash /tmp/hawkes-public-git-${repo}.sh; s=$?; rm -f /tmp/hawkes-public-git-${repo}.sh; exit $s`);
+    const deployedCommit = (await ssh(`git -C ${dir} rev-parse HEAD`, { quiet: true })).trim();
+    if (deployedCommit) savePublicState({ deployedCommit });
   }
 
   async function installPackages() {
@@ -189,9 +202,41 @@ fi`;
   }
 
   async function configurePublicEnvAndData() {
-    // Write /srv/hawkes/hawkesgen/.env with HAWKESGEN_PUBLIC_SAAS=1 and isolated S3 backup bucket
-    const envBody = `HAWKESGEN_PUBLIC_SAAS=1\nHAWKESGEN_DATA_DIR=/srv/hawkes/hawkesgen/.data\nHAWKESGEN_LIBRARY_BUCKET=${DEFAULT_BUCKET}\n`;
+    let genSecrets = readEnvFile('/run/hawkes/gen.env');
+    if (!genSecrets.ANTHROPIC_API_KEY && !genSecrets.ELEVENLABS_API_KEY) {
+      try {
+        const { SecretsManagerClient, GetSecretValueCommand } = await import('@aws-sdk/client-secrets-manager');
+        const { cfg } = await import('./aws.mjs');
+        const raw = (await new SecretsManagerClient(cfg).send(new GetSecretValueCommand({ SecretId: 'hawkes/gen' }))).SecretString;
+        if (raw) genSecrets = { ...JSON.parse(raw), ...genSecrets };
+      } catch {}
+    }
+    const stripeEnvPath = fs.existsSync('/srv/hawkes/hawkesstudio/.data/gen-public-stripe.env')
+      ? '/srv/hawkes/hawkesstudio/.data/gen-public-stripe.env'
+      : path.join(PROJECTS, 'hawkesstudio', '.data', 'gen-public-stripe.env');
+    const stripeSecrets = readEnvFile(stripeEnvPath);
+    const mergedKeys = { ...genSecrets, ...stripeSecrets };
+    const keyLines = [
+      'ANTHROPIC_API_KEY',
+      'ELEVENLABS_API_KEY',
+      'XAI_API_KEY',
+      'STRIPE_SECRET_KEY',
+      'STRIPE_PUBLISHABLE_KEY',
+      'STRIPE_WEBHOOK_SECRET',
+    ]
+      .filter((k) => mergedKeys[k])
+      .map((k) => `${k}=${mergedKeys[k]}`);
+
+    // Write /srv/hawkes/hawkesgen/.env and /run/hawkes/gen-public.env with HAWKESGEN_PUBLIC_SAAS=1, isolated S3 backup bucket, and API/Stripe keys
+    const envBody = [
+      'HAWKESGEN_PUBLIC_SAAS=1',
+      'HAWKESGEN_DATA_DIR=/srv/hawkes/hawkesgen/.data',
+      `HAWKESGEN_LIBRARY_BUCKET=${DEFAULT_BUCKET}`,
+      ...keyLines,
+      '',
+    ].join('\n');
     await run('ssh', [...SSH, `ubuntu@${st.ip}`, 'sudo -u hawkes install -m 600 /dev/stdin /srv/hawkes/hawkesgen/.env && echo env-ok'], { input: envBody });
+    await run('ssh', [...SSH, `ubuntu@${st.ip}`, 'sudo mkdir -p /run/hawkes && sudo install -m 600 -o hawkes -g hawkes /dev/stdin /run/hawkes/gen-public.env && echo gen-public-env-ok'], { input: envBody });
 
     // Configure isolated /srv/hawkes/hawkesgen/.data (for hawkesgen.db) and settings.json (S3 backup bucket, fleet.auto=true, fleet.autoLaunch=false)
     const settingsScript = `
@@ -226,28 +271,36 @@ fs.writeFileSync(file, JSON.stringify(next, null, 2) + '\\n');
   }
 
   async function ensureDns(domain) {
-    const { Route53Client, ListHostedZonesByNameCommand, ChangeResourceRecordSetsCommand } = await import('@aws-sdk/client-route-53');
-    const { cfg } = await import('./aws.mjs');
-    const r53 = new Route53Client(cfg);
-    const zones = await r53.send(new ListHostedZonesByNameCommand({ DNSName: domain }));
-    const zone = zones.HostedZones?.find((z) => z.Name === `${domain}.`);
-    if (!zone) throw new Error(`No Route 53 hosted zone for ${domain}`);
-    await r53.send(new ChangeResourceRecordSetsCommand({
-      HostedZoneId: zone.Id,
-      ChangeBatch: {
-        Comment: 'Hawkes Gen Public commercial server',
-        Changes: [domain, `www.${domain}`].map((name) => ({
-          Action: 'UPSERT',
-          ResourceRecordSet: {
-            Name: name,
-            Type: 'A',
-            TTL: 300,
-            ResourceRecords: [{ Value: st.ip }],
-          },
-        })),
-      },
-    }));
-    log(`DNS: ${domain} and www.${domain} -> ${st.ip}`);
+    try {
+      const { Route53Client, ListHostedZonesByNameCommand, ChangeResourceRecordSetsCommand } = await import('@aws-sdk/client-route-53');
+      const { cfg } = await import('./aws.mjs');
+      const r53 = new Route53Client(cfg);
+      const zones = await r53.send(new ListHostedZonesByNameCommand({ DNSName: domain }));
+      const zone = zones.HostedZones?.find((z) => z.Name === `${domain}.`);
+      if (!zone) throw new Error(`No Route 53 hosted zone for ${domain}`);
+      await r53.send(new ChangeResourceRecordSetsCommand({
+        HostedZoneId: zone.Id,
+        ChangeBatch: {
+          Comment: 'Hawkes Gen Public commercial server',
+          Changes: [domain, `www.${domain}`].map((name) => ({
+            Action: 'UPSERT',
+            ResourceRecordSet: {
+              Name: name,
+              Type: 'A',
+              TTL: 300,
+              ResourceRecords: [{ Value: st.ip }],
+            },
+          })),
+        },
+      }));
+      log(`DNS: ${domain} and www.${domain} -> ${st.ip}`);
+    } catch (e) {
+      if (/AccessDenied/i.test(`${e.name} ${e.Code} ${e.message}`)) {
+        log(`note: skipping Route 53 DNS update (${e.name}: control server proxies ${domain} to ${st.ip})`);
+        return;
+      }
+      throw e;
+    }
   }
 
   async function installCaddy(domain) {

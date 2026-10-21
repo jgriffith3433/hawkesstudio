@@ -4,7 +4,7 @@
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
-import { PORT, DATA, paths, loadProducts, getProduct, StudioError, localUrl } from './config.ts';
+import { PORT, DATA, ROOT, paths, loadProducts, getProduct, StudioError, localUrl } from './config.ts';
 import { db, rowToStep } from './db.ts';
 import { startRun, startPartial, playtestRequest, getRun, listRuns, activeRun, lastStep, nameOf, resumeRuns, type RunOptions } from './pipeline.ts';
 import { pruneDetached } from './detach.ts';
@@ -119,6 +119,96 @@ const server = http.createServer(async (req, res) => {
       return send(res, 200, { ops: ops.listOps({ product: q('product'), limit: Number(q('limit')) || 100 }), commands: ops.runningCommands(), loop: ops.loopHealth() });
     }
     if (route === '/api/self-deploys') return send(res, 200, { deploys: selfDeploys(Number(q('limit') ?? 30)), busy: selfBusy() });
+    if (route === '/api/gen-public/status' && method === 'GET') {
+      const pubStateFile = path.join(ROOT, 'deploy', '.keys', 'gen-public.json');
+      const stripeEnvFile = path.join(DATA, 'gen-public-stripe.env');
+      let pubState: Record<string, any> = {};
+      try { pubState = JSON.parse(fs.readFileSync(pubStateFile, 'utf8')); } catch {}
+      let stripeConfigured = false;
+      try {
+        const raw = fs.readFileSync(stripeEnvFile, 'utf8');
+        stripeConfigured = /^STRIPE_SECRET_KEY=\S+/m.test(raw);
+      } catch {}
+      return send(res, 200, {
+        instanceId: pubState.instanceId ?? null,
+        ip: pubState.ip ?? null,
+        privateIp: pubState.privateIp ?? null,
+        deployedCommit: pubState.deployedCommit ?? null,
+        stripeConfigured,
+      });
+    }
+    if (route === '/api/gen-public/stripe' && method === 'POST') {
+      const b = await readJson(req);
+      const secretKey = String(b.secretKey ?? b.STRIPE_SECRET_KEY ?? '').trim();
+      const publishableKey = String(b.publishableKey ?? b.STRIPE_PUBLISHABLE_KEY ?? '').trim();
+      const webhookSecret = String(b.webhookSecret ?? b.STRIPE_WEBHOOK_SECRET ?? '').trim();
+      if (!secretKey && !publishableKey && !webhookSecret) throw new StudioError('Provide Stripe keys (secretKey, publishableKey, webhookSecret)');
+      const stripeEnvFile = path.join(DATA, 'gen-public-stripe.env');
+      const cur: Record<string, string> = {};
+      try {
+        for (const line of fs.readFileSync(stripeEnvFile, 'utf8').split(/\r?\n/)) {
+          const m2 = /^\s*([A-Z0-9_]+)\s*=\s*(.*?)\s*$/.exec(line);
+          if (m2) cur[m2[1]] = m2[2];
+        }
+      } catch {}
+      if (secretKey) cur.STRIPE_SECRET_KEY = secretKey;
+      if (publishableKey) cur.STRIPE_PUBLISHABLE_KEY = publishableKey;
+      if (webhookSecret) cur.STRIPE_WEBHOOK_SECRET = webhookSecret;
+      fs.mkdirSync(path.dirname(stripeEnvFile), { recursive: true });
+      const envText = Object.entries(cur).filter(([, v]) => v).map(([k, v]) => `${k}=${v}`).join('\n') + '\n';
+      fs.writeFileSync(stripeEnvFile, envText, { mode: 0o600 });
+      await gen.request('/billing/config', {
+        method: 'POST',
+        body: {
+          secretKey: cur.STRIPE_SECRET_KEY ?? '',
+          publishableKey: cur.STRIPE_PUBLISHABLE_KEY ?? '',
+          webhookSecret: cur.STRIPE_WEBHOOK_SECRET ?? '',
+        },
+      }).catch(() => null);
+      const pubStateFile = path.join(ROOT, 'deploy', '.keys', 'gen-public.json');
+      let pubState: Record<string, any> = {};
+      try { pubState = JSON.parse(fs.readFileSync(pubStateFile, 'utf8')); } catch {}
+      if (pubState.ip) {
+        await fetch(`http://${pubState.ip}:8790/v1/billing/config`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            secretKey: cur.STRIPE_SECRET_KEY ?? '',
+            publishableKey: cur.STRIPE_PUBLISHABLE_KEY ?? '',
+            webhookSecret: cur.STRIPE_WEBHOOK_SECRET ?? '',
+          }),
+          signal: AbortSignal.timeout(5_000),
+        }).catch(() => null);
+      }
+      const syncScript = path.join(ROOT, 'deploy', 'sync-gen-public.mjs');
+      if (fs.existsSync(syncScript) && process.env.STUDIO_SMOKE !== '1') {
+        const { spawn } = await import('node:child_process');
+        const pubKey = pubState.key || path.join(ROOT, 'deploy', '.keys', 'gen_public_ed25519');
+        if (pubState.ip && fs.existsSync(pubKey)) {
+          try {
+            const sshChild = spawn('ssh', [
+              '-i', pubKey,
+              '-o', 'StrictHostKeyChecking=accept-new',
+              '-o', `UserKnownHostsFile=${path.join(ROOT, 'deploy', '.keys', 'known_hosts')}`,
+              '-o', 'ConnectTimeout=10',
+              '-o', 'BatchMode=yes',
+              `ubuntu@${pubState.ip}`,
+              'sudo mkdir -p /run/hawkes && sudo tee -a /run/hawkes/gen-public.env /srv/hawkes/hawkesgen/.env >/dev/null && sudo chown hawkes:hawkes /run/hawkes/gen-public.env /srv/hawkes/hawkesgen/.env && sudo chmod 600 /run/hawkes/gen-public.env /srv/hawkes/hawkesgen/.env && sudo systemctl restart hawkes-gen',
+            ], { detached: true, stdio: ['pipe', 'ignore', 'ignore'] });
+            sshChild.stdin?.end(envText);
+            sshChild.unref();
+          } catch {}
+        }
+        try {
+          const child = spawn(process.execPath, [syncScript], { cwd: ROOT, detached: true, stdio: 'ignore' });
+          child.unref();
+        } catch {}
+      }
+      return send(res, 200, {
+        ok: true,
+        stripeConfigured: Boolean(cur.STRIPE_SECRET_KEY),
+      });
+    }
     if (route === '/api/overview') return send(res, 200, await overview());
     // Everything running in the background (the dashboard's Activity panel).
     if (route === '/api/activity') return send(res, 200, await cached('activity', 1500, activity));

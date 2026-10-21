@@ -5,11 +5,14 @@
 // WEB_GEN_KEY from /etc/hawkes/keys.env itself). Agents may change this file only when J names it (src/agents.ts GUARDED).
 
 /**
- * @param {{ domain: string, email: string, products: any, devHosts?: boolean }} o
+ * @param {{ domain: string, email: string, products: any, devHosts?: boolean, genPublicUpstream?: string }} o
  *   products: hawkesstudio/products.json, parsed; devHosts: also dev-<sub>.<domain> for the web products' devtools
  * @returns {string}
  */
-export function caddyfile({ domain, email, products, devHosts: withDev = false }) {
+export function caddyfile({ domain, email, products, devHosts: withDev = false, genPublicUpstream }) {
+  const hasPublicUpstream = Boolean(genPublicUpstream && genPublicUpstream !== '127.0.0.1:8790');
+  const pubUpstreams = hasPublicUpstream ? `${genPublicUpstream} 127.0.0.1:8790` : '127.0.0.1:8790';
+  const pubLb = hasPublicUpstream ? `\n\t\tlb_policy first\n\t\tfail_duration 10s` : '';
   const caddy = `
 {
 	email ${email}
@@ -137,26 +140,27 @@ gen.${domain} {
 	}
 }
 
-# The public landing page (Hawkes Gen and Hawkes Studio, for people and the product sites' "Powered by HAWKES GEN"
-# badge): plain static files from this repo's site/ folder, no login, nothing behind it. A push to main updates it
-# (the server pulls main); only this block, the DNS and the certificate need deploy.mjs.
+# The public commercial Hawkes Gen Cloud SaaS (hawkesgen.com: landing page at /, self-serve app at /app, public /v1/*
+# API, Stripe billing, MCP): routed to the standalone hawkes-gen-public EC2 server when provisioned, with fallback to
+# local :8790 in public SaaS mode (X-Hawkes-Public-Saas: 1, no internal WEB_GEN_KEY).
 ${domain} {
 	import access
 	encode zstd gzip
+	request_body {
+		max_size 64MB
+	}
 	header {
 		Strict-Transport-Security "max-age=31536000"
 		X-Content-Type-Options "nosniff"
-		X-Frame-Options "DENY"
 		Referrer-Policy "strict-origin-when-cross-origin"
 		Permissions-Policy "camera=(), microphone=(), geolocation=()"
-		# The page is locked down: its own style, images and /analytics.js, the Hawkes Analytics SDK and collect
-		# beacon on gen.<domain>, and the Twitch player frame in site/index.html.
-		Content-Security-Policy "default-src 'none'; script-src 'self' https://gen.${domain}; connect-src https://gen.${domain}; style-src 'self'; img-src 'self' data:; frame-src https://player.twitch.tv; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
-		Cache-Control "public, max-age=300"
 		-Server
 	}
-	root * /srv/hawkes/hawkesstudio/site
-	file_server
+	reverse_proxy ${pubUpstreams} {${pubLb}
+		header_up X-Hawkes-Public-Saas "1"
+		header_up -Authorization
+		header_up X-Forwarded-For {remote_host}
+	}
 }
 
 www.${domain} {

@@ -1796,13 +1796,16 @@ const GUARDED: Record<string, string[]> = {
 export function guardFiles(target: string, files: string[], words: string) {
   const said = words.toLowerCase();
   const named = (f: string) => said.includes(f.toLowerCase()) || said.includes(path.posix.basename(f).toLowerCase());
+  const guarded = [...(GUARDED[target] ?? []), '.github/workflows/'];
   const out: { file: string; why: 'forbidden' | 'guarded' }[] = [];
   for (const f of files) {
     if (FORBIDDEN.some((r) => r.test(f))) out.push({ file: f, why: 'forbidden' });
-    else if ((GUARDED[target] ?? []).some((g) => (g.endsWith('/') ? f.startsWith(g) : f === g)) && !named(f)) out.push({ file: f, why: 'guarded' });
+    else if (guarded.some((g) => (g.endsWith('/') ? f.startsWith(g) : f === g)) && !named(f)) out.push({ file: f, why: 'guarded' });
   }
   return out;
 }
+
+const requestAndNotes = (c: Pick<Change, 'request' | 'notes'>) => [c.request ?? '', ...(c.notes ?? []).map((n) => n.text)].join('\n');
 
 /** The environment of an infra agent and its checks: no GitHub, AWS or other service keys (the harness login stays for the agent). */
 const SECRET = /(KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|AWS_|ANTHROPIC|ELEVENLABS|OPENAI|GITHUB|CLAUDE|STRIPE|SMTP)/i;
@@ -1980,7 +1983,7 @@ async function workInfra(id: string, note?: string, resumed?: Phase | null, nudg
       }
       // Guard rails, before anything leaves the server.
       const files = git(c.worktree, ['diff', '--name-only', `origin/${c.base}...HEAD`]).out.split('\n').filter(Boolean);
-      const bad = guardFiles(t.id, files, [c.request ?? '', ...c.notes.map((n) => n.text)].join('\n'));
+      const bad = guardFiles(t.id, files, requestAndNotes(c));
       if (bad.length) {
         const list = bad.map((b) => `${b.file} (${b.why === 'forbidden' ? 'never changed by agents' : 'only when J names it'})`).join(', ');
         addLog(id, `guard rails: ${list}`);
@@ -2255,10 +2258,9 @@ export async function mergeApprovedInfra(id: string) {
 
 // ------------------------------------------------------------ walk-away mode (Studio and Gen)
 
-/** Protected files (GUARDED, named by J or not, and FORBIDDEN) a Studio/Gen change touches: those always wait for J. */
-export function protectedTouched(target: string, files: string[]) {
-  const guarded = [...(GUARDED[target] ?? []), '.github/workflows/'];
-  return files.filter((f) => FORBIDDEN.some((r) => r.test(f)) || guarded.some((g) => (g.endsWith('/') ? f.startsWith(g) : f === g)));
+/** Protected files (FORBIDDEN always, and GUARDED unless J named them in `words`) a Studio/Gen change touches: those wait for J. */
+export function protectedTouched(target: string, files: string[], words = '') {
+  return guardFiles(target, files, words).map((b) => b.file);
 }
 
 /** A line in the PM's decision log for what walk-away mode did on its own. */
@@ -2290,7 +2292,7 @@ export async function walkAwayMerge(id: string) {
     const sha = String(v.sha ?? '');
     const files = fs.existsSync(c.worktree) ? git(c.worktree, ['diff', '--name-only', `origin/${c.base}...HEAD`]).out.split('\n').filter(Boolean) : [];
     if (!files.length) return await walkAwayHold(c, `Studio can't see which files it changes (its worktree is gone): you decide`);
-    const prot = protectedTouched(c.product, files);
+    const prot = protectedTouched(c.product, files, requestAndNotes(c));
     if (prot.length) return await walkAwayHold(c, `it changes protected files (${prot.join(', ')}): those always wait for you`);
     const checksOk = sha && (v.checks ?? []).every((k: any) => k.ok) && v.smoke?.ok !== false && (v.checks ?? []).length > 0;
     if (!checksOk) return await walkAwayFix(id, `its checks failed: ${String(v.summary ?? 'no checks on record').slice(0, 600)}`);
