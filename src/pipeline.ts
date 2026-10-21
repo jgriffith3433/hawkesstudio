@@ -33,7 +33,7 @@ import { betaTurn, newerBetaRun, supersede, absorbed, supersedingBuild } from '.
 import { holdBeta, waitForBetaPlays, serveBeta, runBetaBuild, servedMismatch } from './betaplay.ts';
 import { resolveScenario, missingScenario, noteScenarios, knownScenarios } from './scenarios.ts';
 import { slowNote, playTime } from './pace.ts';
-import { harnessStopOf } from './brains.ts';
+import { brainId, harnessStopOf, type Harness } from './brains.ts';
 import { harnessHeld, holdHarness, onHoldLifted } from './harness-hold.ts';
 import { isBillingError } from './llm.ts';
 
@@ -742,15 +742,26 @@ export function aiStop(error: string) {
   return isBillingError(error) ? { kind: 'transient' as const, line: error.slice(0, 300), resetsAt: null } : null;
 }
 
+/** Which harness a failed review error came from (so a Claude Code fallback error doesn't hold the active brain). */
+export function aiHarnessOf(error: string, fallback: Harness = brainId()): Harness {
+  const s = String(error ?? '').replace(/\(Claude Code fallback,\s*Gen:\s*/i, '(');
+  if (/Claude Code|Claude\s*\(Max plan\)/i.test(s)) return 'claude';
+  if (/\bCursor\b/i.test(s)) return 'cursor';
+  if (/\bCopilot\b/i.test(s)) return 'copilot';
+  if (/\bAntigravity\b|AGY_ERROR/i.test(s)) return 'antigravity';
+  if (/\bGemini\b/i.test(s)) return 'gemini';
+  return fallback;
+}
+
 /**
  * A review that couldn't run because the AI didn't answer: the step waits (skipped, not failed: the build and the
  * playtest stand, and the run isn't failed), the harness is held (harness-hold.ts), and catchUpReviews runs it later.
  */
-function waitForAi(rs: string, rev: any, pending: PendingReview, what: string) {
+export function waitForAi(rs: string, rev: any, pending: PendingReview, what: string) {
   const err = String(rev.error ?? rev.detail ?? '');
   const stop = aiStop(err);
   if (!stop) return false;
-  if (stop.kind !== 'transient') holdHarness(stop, { source: `the review of ${what}` });
+  if (stop.kind !== 'transient') holdHarness(stop, { source: `the review of ${what}`, harness: aiHarnessOf(err) });
   updateStep(rs, { status: 'skipped', job: rev.id ?? null, detail: `review waits for the AI (${stop.kind}: ${stop.line.slice(0, 160)}): the playtest itself is done, and the review runs by itself once it answers`, data: { pending }, finished: true });
   return true;
 }
