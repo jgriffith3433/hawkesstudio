@@ -6,6 +6,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import vm from 'node:vm';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
@@ -71,25 +72,99 @@ test('studio: the analytics routes are not added there', () => {
   assert.doesNotMatch(site('studio.hawkesgen.com'), /analytics|@sdk/);
 });
 
-test('apex: locked down, except one frame for the Twitch player', () => {
+test('apex: locked down, except Hawkes Analytics on gen.<domain> and one frame for the Twitch player', () => {
   const apex = site('hawkesgen.com');
   const csp = /Content-Security-Policy "([^"]+)"/.exec(apex);
   assert.ok(csp, 'a CSP on the apex');
   const policy = csp[1];
   assert.match(policy, /default-src 'none'/);
+  assert.match(policy, /script-src 'self' https:\/\/gen\.hawkesgen\.com(?![\w./])/);
+  assert.match(policy, /connect-src https:\/\/gen\.hawkesgen\.com(?![\w./])/);
   assert.match(policy, /style-src 'self'/);
   assert.match(policy, /img-src 'self' data:/);
   assert.match(policy, /frame-src https:\/\/player\.twitch\.tv(?![\w./])/);
   assert.match(policy, /base-uri 'none'/);
   assert.match(policy, /form-action 'none'/);
   assert.match(policy, /frame-ancestors 'none'/);
-  assert.doesNotMatch(policy, /script-src|connect-src|media-src|object-src|worker-src/);
+  assert.doesNotMatch(policy, /media-src|object-src|worker-src|unsafe-inline|unsafe-eval/);
   assert.match(apex, /X-Frame-Options "DENY"/);
   assert.doesNotMatch(site('gen.hawkesgen.com'), /player\.twitch\.tv/);
   assert.doesNotMatch(site('studio.hawkesgen.com'), /player\.twitch\.tv/);
   const page = fs.readFileSync(path.join(root, 'site', 'index.html'), 'utf8');
+  assert.match(page, /<script src="https:\/\/gen\.hawkesgen\.com\/sdk\/analytics@1\.js" data-product="hawkesgen" defer><\/script>/);
+  assert.match(page, /<script src="\/analytics\.js"><\/script>/);
+  assert.match(page, /We keep anonymous site statistics\. No cookies\. No personal data\./);
   assert.match(page, /src="https:\/\/player\.twitch\.tv\/\?channel=jgriffith3433&amp;parent=hawkesgen\.com"/);
   assert.doesNotMatch(page, /stream.?key|client_secret|oauth/i);
+  const analyticsJs = fs.readFileSync(path.join(root, 'site', 'analytics.js'), 'utf8');
+  assert.match(analyticsJs, /setAttribute\('data-debug', '1'\)/);
+  assert.match(analyticsJs, /track\('progress'/);
+  assert.match(analyticsJs, /youtu\.be/);
+  assert.match(analyticsJs, /twitch\.tv/);
+  assert.match(analyticsJs, /hawkesbiomedical\.com/);
+  assert.match(analyticsJs, /gen\.hawkesgen\.com/);
+});
+
+test('site/analytics.js: enables debug on playtests, tracks read depth and tags key CTA/outbound clicks', () => {
+  const code = fs.readFileSync(path.join(root, 'site', 'analytics.js'), 'utf8');
+  const attrs: Record<string, string> = {};
+  const sdkEl = { setAttribute: (k: string, v: string) => { attrs[k] = v; } };
+  const tracked: { name: string; props: any }[] = [];
+  const features: { name: string; props: any }[] = [];
+  const contexts: any[] = [];
+  const winListeners: Record<string, Function[]> = {};
+  const heads = [
+    { textContent: 'Make the game. Ship it on-model.', getBoundingClientRect: () => ({ top: 100 }) },
+    { textContent: 'What Gen does.', getBoundingClientRect: () => ({ top: 400 }) },
+  ];
+  const win: any = {
+    location: { search: '?hawkesPlaytest', href: 'https://hawkesgen.com/' },
+    navigator: { webdriver: false },
+    sessionStorage: { getItem: () => null },
+    scrollY: 0,
+    innerHeight: 500,
+    requestAnimationFrame: (fn: Function) => fn(),
+    addEventListener: (ev: string, fn: Function) => { (winListeners[ev] ??= []).push(fn); },
+    hawkesAnalytics: {
+      track: (name: string, props: any) => tracked.push({ name, props: { ...props } }),
+      feature: (name: string, props: any) => features.push({ name, props: { ...props } }),
+      setContext: (ctx: any) => contexts.push({ ...ctx }),
+    },
+  };
+  const doc: any = {
+    readyState: 'complete',
+    documentElement: { scrollHeight: 2000 },
+    body: { scrollHeight: 2000 },
+    querySelector: (sel: string) => (sel.includes('analytics') ? sdkEl : null),
+    querySelectorAll: (sel: string) => (sel === 'main h1, main h2' ? heads : []),
+    addEventListener: () => {},
+  };
+  vm.runInNewContext(code, { window: win, document: doc, location: win.location, navigator: win.navigator, sessionStorage: win.sessionStorage, URL, URLSearchParams, requestAnimationFrame: win.requestAnimationFrame, setTimeout: (fn: Function) => fn() });
+
+  assert.equal(attrs['data-debug'], '1', 'sets data-debug="1" when ?hawkesPlaytest is present');
+  assert.equal(tracked.length, 1);
+  assert.deepEqual(tracked[0], { name: 'progress', props: { step: 25, of: 100, label: 'read 25%', section: 'What Gen does.' } });
+
+  win.scrollY = 1500;
+  for (const fn of winListeners['scroll'] ?? []) fn();
+  assert.deepEqual(tracked.map((t) => t.props.step), [25, 50, 75, 100]);
+
+  const clickLink = (href: string, sectionSel: string) => {
+    const link = { href, closest: (s: string) => (s === 'a[href]' ? link : s === sectionSel ? {} : null) };
+    for (const fn of winListeners['click'] ?? []) fn({ target: link });
+  };
+  clickLink('https://youtu.be/gT3VqH2-cw0', '.hero');
+  clickLink('https://www.twitch.tv/jgriffith3433', '#live');
+  clickLink('https://hawkesbiomedical.com', '#soon');
+  clickLink('https://gen.hawkesgen.com/', 'nav');
+
+  assert.deepEqual(features, [
+    { name: 'cta:product_video', props: { target: 'Product video (YouTube)', where: 'hero' } },
+    { name: 'cta:twitch', props: { target: 'Twitch', where: 'live' } },
+    { name: 'cta:hawkes_biomedical', props: { target: 'Hawkes Biomedical', where: 'cta' } },
+    { name: 'cta:sign_in', props: { target: 'Sign in', where: 'nav' } },
+  ]);
+  assert.deepEqual(contexts[0], { cta: 'product_video', target: 'Product video (YouTube)', where: 'hero' });
 });
 
 test('the Caddyfile is valid (when caddy is installed)', (t) => {
