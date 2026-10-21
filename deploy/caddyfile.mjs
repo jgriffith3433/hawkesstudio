@@ -5,14 +5,11 @@
 // WEB_GEN_KEY from /etc/hawkes/keys.env itself). Agents may change this file only when J names it (src/agents.ts GUARDED).
 
 /**
- * @param {{ domain: string, email: string, products: any, devHosts?: boolean, genPublicUpstream?: string }} o
+ * @param {{ domain: string, email: string, products: any, devHosts?: boolean }} o
  *   products: hawkesstudio/products.json, parsed; devHosts: also dev-<sub>.<domain> for the web products' devtools
  * @returns {string}
  */
-export function caddyfile({ domain, email, products, devHosts: withDev = false, genPublicUpstream }) {
-  const hasPublicUpstream = Boolean(genPublicUpstream && genPublicUpstream !== '127.0.0.1:8790');
-  const pubUpstreams = hasPublicUpstream ? `${genPublicUpstream} 127.0.0.1:8790` : '127.0.0.1:8790';
-  const pubLb = hasPublicUpstream ? `\n\t\tlb_policy first\n\t\tfail_duration 10s` : '';
+export function caddyfile({ domain, email, products, devHosts: withDev = false }) {
   const caddy = `
 {
 	email ${email}
@@ -140,32 +137,7 @@ gen.${domain} {
 	}
 }
 
-# The public commercial Hawkes Gen Cloud SaaS (hawkesgen.com: landing page at /, self-serve app at /app, public /v1/*
-# API, Stripe billing, MCP): routed to the standalone hawkes-gen-public EC2 server when provisioned, with fallback to
-# local :8790 in public SaaS mode (X-Hawkes-Public-Saas: 1, no internal WEB_GEN_KEY).
-${domain} {
-	import access
-	encode zstd gzip
-	request_body {
-		max_size 64MB
-	}
-	header {
-		Strict-Transport-Security "max-age=31536000"
-		X-Content-Type-Options "nosniff"
-		Referrer-Policy "strict-origin-when-cross-origin"
-		Permissions-Policy "camera=(), microphone=(), geolocation=()"
-		-Server
-	}
-	reverse_proxy ${pubUpstreams} {${pubLb}
-		header_up X-Hawkes-Public-Saas "1"
-		header_up -Authorization
-		header_up X-Forwarded-For {remote_host}
-	}
-}
-
-www.${domain} {
-	redir https://${domain}{uri} permanent
-}
+# ${domain} itself (and www) is not served here: it is the customer portal on its own box (jgriffith3433/hawkesgenwebsite).
 `.trimStart();
   return caddy + previewBlocks(domain, products, withDev);
 }

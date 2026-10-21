@@ -26,7 +26,7 @@
 //   node deploy/hawkes-pull.mjs --dry-run  says what it would do
 import fs from 'node:fs';
 import path from 'node:path';
-import { execFileSync, spawn } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 
 const ROOT = process.env.HAWKES_ROOT ?? '/srv/hawkes';
@@ -309,49 +309,10 @@ for (const t of todo) {
 // when Studio's deploy changed its script. A restart while live drops the stream for about 20 s; it comes back by itself.
 await ensureBroadcast(todo.find((t) => t.repo === 'hawkesstudio' && state.hawkesstudio?.badCommit !== t.tip));
 
-// Standalone public Hawkes Gen Cloud server (hawkes-gen-public, hawkesgen.com): provisioned and updated in the background.
-await ensureGenPublic(todo, state);
-
 // 4. The web server: the Caddyfile is built from Studio's deploy/caddyfile.mjs and products.json (inputs that live
 // outside git, the domain and email, are in /etc/hawkes/caddy.json, written by deploy.mjs). Applied when it differs.
 await applyCaddy(state);
 saveState(state);
-
-function readGenPublicState() {
-  try {
-    return JSON.parse(fs.readFileSync(path.join(ROOT, 'hawkesstudio', 'deploy', '.keys', 'gen-public.json'), 'utf8'));
-  } catch {
-    return {};
-  }
-}
-
-async function ensureGenPublic(todoList, st) {
-  const studio = path.join(ROOT, 'hawkesstudio');
-  const syncScript = path.join(studio, 'deploy', 'sync-gen-public.mjs');
-  if (!fs.existsSync(syncScript)) return;
-  const pubState = readGenPublicState();
-  const genDir = path.join(ROOT, 'hawkesgen');
-  let originMainShaOfHawkesgen = '';
-  try {
-    if (fs.existsSync(path.join(genDir, '.git'))) originMainShaOfHawkesgen = git(genDir, 'rev-parse', 'origin/main');
-  } catch {}
-  if (pubState?.instanceId && pubState?.ip && (!originMainShaOfHawkesgen || pubState.deployedCommit === originMainShaOfHawkesgen)) return;
-  if (DRY) {
-    say(`[gen-public] would spawn sync-gen-public.mjs (instanceId=${pubState?.instanceId ?? 'none'}, deployedCommit=${pubState?.deployedCommit ?? 'none'} -> ${originMainShaOfHawkesgen.slice(0, 7)})`);
-    return;
-  }
-  try {
-    const logPath = path.join(studio, '.data', 'sync-gen-public.log');
-    fs.mkdirSync(path.dirname(logPath), { recursive: true });
-    const out = fs.openSync(logPath, 'a');
-    const child = spawn(process.execPath, [syncScript], { cwd: studio, detached: true, stdio: ['ignore', out, out] });
-    child.unref();
-    fs.closeSync(out);
-    say(`[gen-public] started background sync (pid ${child.pid})`);
-  } catch (e) {
-    say(`[gen-public] could not start sync-gen-public.mjs: ${e.message}`);
-  }
-}
 
 /**
  * Applies a changed Caddyfile: validated as the caddy user, the old one kept as Caddyfile.prev, Caddy reloaded (no
@@ -368,10 +329,8 @@ async function applyCaddy(st) {
     if (!fs.existsSync(CONF)) return;
     const inputs = JSON.parse(fs.readFileSync(CONF, 'utf8'));
     const studio = path.join(ROOT, 'hawkesstudio');
-    const pubState = readGenPublicState();
-    const genPublicUpstream = pubState?.ip ? `${pubState.ip}:8790` : undefined;
     const { caddyfile } = await import(`${pathToFileURL(path.join(studio, 'deploy', 'caddyfile.mjs')).href}?v=${Date.now()}`);
-    text = caddyfile({ ...inputs, products: JSON.parse(fs.readFileSync(path.join(studio, 'products.json'), 'utf8')), genPublicUpstream });
+    text = caddyfile({ ...inputs, products: JSON.parse(fs.readFileSync(path.join(studio, 'products.json'), 'utf8')) });
   } catch (e) {
     say(`[caddy] could not build the Caddyfile: ${e.message}`);
     return;

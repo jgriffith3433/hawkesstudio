@@ -1,16 +1,12 @@
-// Creates the standalone public commercial Hawkes Gen Cloud server (hawkesgen.com) on AWS,
-// completely separate from the internal Hawkes Studio control server.
+// Creates the box that serves hawkesgen.com: the customer portal (jgriffith3433/hawkesgenwebsite; its deploy/setup.mjs
+// installs it, and it deploys itself from main). Run from J's PC: it already exists (i-0ab9cd6b671092e9d, 54.163.56.66).
 //
 //   node deploy/provision-gen-public.mjs          create what's missing, print the state
-//   node deploy/provision-gen-public.mjs --role   only update the role's policy
 //
-// What it makes (all tagged Project=hawkes-gen-public, Name=hawkes-gen-public):
-//   - IAM role /hawkes/hawkes-gen-public + instance profile: EC2 GPU fleet management, Secrets Manager
-//     (hawkes/gen-public* and hawkes/github*), S3 (hawkes-gen-public-*), and CloudWatch logs.
-//   - Security group hawkes-gen-public: 80/443 open to 0.0.0.0/0, SSH (22) only from J's IP.
-//   - SSH key (deploy/.keys/gen_public_ed25519), a dedicated Elastic IP, and the instance:
-//     Ubuntu 24.04, t3.large (or GEN_PUBLIC_TYPE), 150 GB gp3, set up by cloud-init.sh.
-//   - State saved in deploy/.keys/gen-public.json.
+// What it makes (all tagged Project=hawkes-gen-public, Name=hawkes-gen-public): a security group (80/443 open, SSH from
+// J's IP), the SSH key (deploy/.keys/gen_public_ed25519), an Elastic IP and the instance (Ubuntu 24.04, t3.large, 150 GB
+// gp3, set up by cloud-init.sh); state in deploy/.keys/gen-public.json. It also makes an IAM role, but the portal never
+// touches AWS: the role is detached from the instance (2026-10-21) and should stay that way.
 
 import fs from 'node:fs';
 import path from 'node:path';

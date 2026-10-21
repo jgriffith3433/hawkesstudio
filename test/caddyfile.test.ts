@@ -72,27 +72,13 @@ test('studio: the analytics routes are not added there', () => {
   assert.doesNotMatch(site('studio.hawkesgen.com'), /analytics|@sdk/);
 });
 
-test('apex: routes hawkesgen.com to Hawkes Gen SaaS (with genPublicUpstream fallback to 127.0.0.1:8790) and keeps security headers without restrictive CSP', () => {
-  const apex = site('hawkesgen.com');
-  assert.doesNotMatch(apex, /default-src 'none'/, 'no restrictive default-src none CSP blocking /app or Stripe');
-  assert.match(apex, /Strict-Transport-Security "max-age=31536000"/);
-  assert.match(apex, /X-Content-Type-Options "nosniff"/);
-  assert.match(apex, /Referrer-Policy "strict-origin-when-cross-origin"/);
-  assert.match(apex, /reverse_proxy 127\.0\.0\.1:8790/);
-  assert.match(apex, /header_up X-Hawkes-Public-Saas "1"/);
-  assert.match(apex, /header_up -Authorization/);
-  assert.doesNotMatch(apex, /WEB_GEN_KEY/);
-  assert.doesNotMatch(apex, /import login/);
+test("apex: hawkesgen.com and www are the portal's own box, not served here", () => {
+  assert.ok(!caddyfile.includes('\nhawkesgen.com {\n'));
+  assert.ok(!caddyfile.includes('\nwww.hawkesgen.com {\n'));
+  assert.doesNotMatch(caddyfile, /X-Hawkes-Public-Saas/);
+});
 
-  const withPub: string = build({ domain: 'hawkesgen.com', email: 'test@example.com', products, genPublicUpstream: '10.0.1.25:8790' });
-  const pubStart = withPub.indexOf('\nhawkesgen.com {\n');
-  const pubApex = withPub.slice(pubStart + 1, withPub.indexOf('\n}\n', pubStart) + 2);
-  assert.match(pubApex, /reverse_proxy 10\.0\.1\.25:8790 127\.0\.0\.1:8790/);
-  assert.match(pubApex, /lb_policy first/);
-  assert.match(pubApex, /fail_duration 10s/);
-  assert.match(pubApex, /header_up X-Hawkes-Public-Saas "1"/);
-  assert.match(pubApex, /header_up -Authorization/);
-
+test('site/: the old landing page keeps its analytics (no longer served at the apex)', () => {
   assert.doesNotMatch(site('gen.hawkesgen.com'), /player\.twitch\.tv/);
   assert.doesNotMatch(site('studio.hawkesgen.com'), /player\.twitch\.tv/);
   const page = fs.readFileSync(path.join(root, 'site', 'index.html'), 'utf8');
@@ -176,7 +162,7 @@ test('the Caddyfile is valid (when caddy is installed)', (t) => {
   if (spawnSync('caddy', ['version']).status !== 0) return t.skip('caddy not installed');
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'studio-caddy-'));
   try {
-    for (const text of [caddyfile, build({ domain: 'hawkesgen.com', email: 'test@example.com', products, genPublicUpstream: '10.0.1.25:8790' })]) {
+    for (const text of [caddyfile]) {
       const file = path.join(dir, 'Caddyfile');
       fs.writeFileSync(file, text.replace('/var/log/caddy/access.log', path.join(dir, 'access.log')));
       const r = spawnSync('caddy', ['validate', '--config', file, '--adapter', 'caddyfile'], { encoding: 'utf8', env: { ...process.env, WEB_GEN_KEY: 'hg_test', XDG_DATA_HOME: dir, XDG_CONFIG_HOME: dir, HOME: dir } });

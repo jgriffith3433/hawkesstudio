@@ -414,10 +414,10 @@ async function ensureDns(domain) {
     HostedZoneId: zone.Id,
     ChangeBatch: {
       Comment: 'Hawkes control server',
-      Changes: [domain, ...['www', 'studio', 'gen'].map((sub) => `${sub}.${domain}`)].map((name) => ({ Action: 'UPSERT', ResourceRecordSet: { Name: name, Type: 'A', TTL: 300, ResourceRecords: [{ Value: st.ip }] } })),
+      Changes: ['studio', 'gen'].map((sub) => `${sub}.${domain}`).map((name) => ({ Action: 'UPSERT', ResourceRecordSet: { Name: name, Type: 'A', TTL: 300, ResourceRecords: [{ Value: st.ip }] } })),
     },
   }));
-  log(`DNS: ${domain}, www.${domain}, studio.${domain} and gen.${domain} -> ${st.ip}`);
+  log(`DNS: studio.${domain} and gen.${domain} -> ${st.ip} (${domain} itself is the portal's box)`);
   // Let's Encrypt checks the name over the internet: wait until it resolves.
   for (let i = 0; i < 40; i++) {
     const ok = await ssh(`getent hosts studio.${domain} | grep -q ${st.ip} && getent hosts gen.${domain} | grep -q ${st.ip} && getent hosts ${domain} | grep -q ${st.ip} && echo yes || echo no`, { quiet: true }).catch(() => 'no');
