@@ -223,3 +223,150 @@ test('the early hook hands caught errors to the widget, and queues them before i
   assert.equal(got[0].message, 'nope');
   assert.equal(ctx.__hawkesLog.length, 3, 'the console log still has all three');
 });
+
+test('hawkes-perf diagnoses Babylon scenes, leaks, passes and root-cause suspects, and hooks hawkes-playtest + bugreport', async () => {
+  const g = globalThis as any;
+  const saved = { window: g.window, location: g.location, addEventListener: g.addEventListener, requestAnimationFrame: g.requestAnimationFrame };
+  try {
+    const sharedMat = { name: 'RockMat', isFrozen: false, markAsDirty() {} };
+    const bossMesh = {
+      name: 'BossMesh',
+      getTotalIndices: () => 60_000 * 3,
+      getTotalVertices: () => 45_000,
+      skeleton: { bones: new Array(64).fill({}) },
+      numBoneInfluencers: 4,
+      thinInstanceCount: 0,
+      isWorldMatrixFrozen: false,
+      isEnabled: () => true,
+      isVisible: true,
+    };
+    const grassThin = {
+      name: 'GrassPatch',
+      getTotalIndices: () => 100 * 3,
+      getTotalVertices: () => 200,
+      thinInstanceCount: 500,
+      isWorldMatrixFrozen: true,
+      isEnabled: () => true,
+      isVisible: true,
+    };
+    const rocks = Array.from({ length: 12 }, (_, i) => ({
+      name: `Rock_${i}`,
+      getTotalIndices: () => 500 * 3,
+      getTotalVertices: () => 400,
+      material: sharedMat,
+      isWorldMatrixFrozen: false,
+      isEnabled: () => true,
+      isVisible: true,
+    }));
+    const meshes: any[] = [bossMesh, grassThin, ...rocks];
+    const shadowGen = {
+      id: 'SunShadows',
+      getShadowMap: () => ({ getSize: () => ({ width: 2048, height: 2048 }), renderList: [bossMesh] }),
+    };
+    const lights = [
+      { name: 'Sun', isEnabled: () => true, intensity: 1.2, getShadowGenerator: () => shadowGen },
+      { name: 'Fill1', isEnabled: () => true, intensity: 0.5 },
+      { name: 'Fill2', isEnabled: () => true, intensity: 0.4 },
+      { name: 'Fill3', isEnabled: () => true, intensity: 0.3 },
+      { name: 'UnusedZeroLight', isEnabled: () => true, intensity: 0 },
+    ];
+    const textures: any[] = [
+      { uniqueId: 1, getSize: () => ({ width: 2048, height: 2048 }) },
+      { name: 'MirrorRT', isRenderTarget: true, mirrorPlane: {}, getSize: () => ({ width: 1024, height: 1024 }), renderList: null },
+    ];
+    const mockEngine = {
+      getFps: () => 34,
+      getDeltaTime: () => 29.4,
+      _drawCalls: { current: 185 },
+      scenes: [] as any[],
+    };
+    const mockScene: any = {
+      getEngine: () => mockEngine,
+      meshes,
+      materials: [sharedMat],
+      geometries: [{}, {}],
+      textures,
+      lights,
+      effectLayers: [{ name: 'MainGlow', getClassName: () => 'GlowLayer', _includedOnlyMeshes: [] }],
+      customRenderTargets: [],
+      animationGroups: [{}],
+      skeletons: [bossMesh.skeleton],
+      particleSystems: [],
+      transformNodes: [{}],
+      getActiveMeshes: () => meshes,
+      imageProcessingConfiguration: { onUpdateParameters: { add() { return {}; }, remove() {} } },
+      onBeforeRenderObservable: { observers: [{}], add() { return {}; }, remove() {} },
+    };
+    mockEngine.scenes.push(mockScene);
+
+    g.window = { BABYLON: { Engine: { Instances: [mockEngine] } } };
+    g.location = { search: '' };
+    g.addEventListener = () => {};
+    g.requestAnimationFrame = () => 0;
+
+    const { installPerfMonitor } = await import('../clients/web/hawkes-perf.js' as string);
+    const perf = installPerfMonitor( null, { forceNew: true });
+    assert.equal(g.window.hawkesPerf, perf);
+
+    // Dirty material several times to trigger dirty/sec tracking
+    for (let i = 0; i < 15; i++) sharedMat.markAsDirty();
+    perf.mark('before-spawn');
+
+    // Simulate a mesh & texture leak after baseline/mark
+    for (let i = 0; i < 30; i++) {
+      meshes.push({ name: `Leaked_${i}`, getTotalIndices: () => 300, getTotalVertices: () => 100, isEnabled: () => true });
+    }
+
+    const snap = perf.snapshot();
+    assert.equal(snap.sceneAttached, true);
+    assert.equal(snap.fps.current, 34);
+    assert.equal(snap.drawCalls, 185);
+    assert.equal(snap.skinnedMeshes, 1);
+    assert.equal(snap.activeBones, 64);
+    assert.equal(snap.thinInstanceMeshes, 1);
+    assert.equal(snap.thinInstancesTotal, 500);
+    assert.equal(snap.topHeavyMeshes[0].name, 'BossMesh');
+    assert.equal(snap.topHeavyMeshes[0].tris, 60_000);
+    assert.equal(snap.topHeavyMeshes[0].castsShadow, true);
+    assert.equal(snap.unmergedMaterialGroups[0].material, 'RockMat');
+    assert.equal(snap.unmergedMaterialGroups[0].meshCount, 12);
+    assert.equal(snap.enabledLights, 5);
+    assert.equal(snap.zeroIntensityEnabledLights, 1);
+    assert.equal(snap.resources.delta.meshes, 30);
+    assert.equal(snap.leaks.leaked, true);
+    assert.ok(snap.renderPasses.some((p: any) => p.kind === 'GlowLayer' && p.fullScene));
+    assert.ok(snap.renderPasses.some((p: any) => p.kind === 'MirrorTexture' && p.fullScene));
+    assert.ok(snap.suspects.some((s: string) => /Low FPS/.test(s)));
+    assert.ok(snap.suspects.some((s: string) => /BossMesh/.test(s)));
+    assert.ok(snap.suspects.some((s: string) => /Full-scene GlowLayer/.test(s)));
+    assert.ok(snap.suspects.some((s: string) => /Unmerged static meshes/.test(s)));
+    assert.ok(snap.suspects.some((s: string) => /Mesh leak: \+30 meshes/.test(s)));
+
+    // Verify hawkes-playtest.js attaches perf automatically on state() and report()
+    const { installPlaytest } = await import('../clients/web/hawkes-playtest.js' as string);
+    const pt = installPlaytest({
+      product: 'brtest',
+      scenarios: [{ id: 'smoke', title: 'Smoke', seconds: 10 }],
+      start: async (_id: string, _o: any, t: any) => { t.finish('done'); },
+    });
+    assert.equal((pt.state() as any).perf.drawCalls, 185);
+    await pt.start('smoke');
+    assert.equal((pt.report() as any).perf.topHeavyMeshes[0].name, 'BossMesh');
+
+    // Verify fileReport and fileAutoError format Performance & scene diagnostics into finding detail
+    const rep = await br.fileReport('brtest', {
+      text: 'Frame rate drops hard during the boss fight.',
+      perf: snap,
+    });
+    const f = db.prepare('SELECT * FROM findings WHERE id = ?').get(rep.id) as any;
+    assert.match(f.detail, /Performance & scene diagnostics:/);
+    assert.match(f.detail, /FPS: 34 current/);
+    assert.match(f.detail, /185 draw calls/);
+    assert.match(f.detail, /BossMesh \(60000 tris/);
+    assert.match(f.detail, /Leak deltas.*meshes \+30/);
+    assert.match(f.detail, /Root-cause suspects:/);
+    assert.match(f.detail, /Full-scene GlowLayer/);
+  } finally {
+    Object.assign(g, saved);
+  }
+});

@@ -22,6 +22,8 @@
 //
 // Nothing runs until the runner calls start() or the URL has ?playtest=<id> (&seed=, &speed=, &at=).
 
+import { installPerfMonitor, discoverBabylonScene } from './hawkes-perf.js';
+
 export const CONTRACT_VERSION = 1;
 
 export function installPlaytest(opts) {
@@ -128,15 +130,17 @@ export function installPlaytest(opts) {
     state() {
       let ready = false;
       try { ready = !!isReady(); } catch {}
-      if (!run) return { ready, status: 'idle', fps: fps.value() };
+      const perf = readPerf();
+      if (!run) return { ready, status: 'idle', fps: fps.value(), ...(perf ? { perf } : {}) };
       if (!run.done && performance.now() - run.moved > stallSeconds * 1000) {
         tracker.problem('bug', `no progress for ${stallSeconds} s (softlock?)`);
         tracker.finish('stuck');
       }
-      return { ...run.state, ready, fps: fps.value(), metrics: { ...run.metrics } };
+      return { ...run.state, ready, fps: fps.value(), metrics: { ...run.metrics }, ...(perf ? { perf } : {}) };
     },
     report() {
       if (!run) return null;
+      const perf = readPerf();
       return {
         scenario: run.id,
         outcome: run.done ? run.state.status : 'stuck',
@@ -145,6 +149,7 @@ export function installPlaytest(opts) {
         events: run.events.slice(),
         problems: run.problems.slice(),
         log: run.log.slice(),
+        ...(perf ? { perf } : {}),
       };
     },
     ...(input ? { input } : {}),
@@ -189,3 +194,12 @@ function makeFpsMeter() {
 const round = (n) => Math.round(n * 10) / 10;
 const num = (v, d) => (v == null || v === '' || Number.isNaN(Number(v)) ? d : Number(v));
 const isReadySafe = (f) => { try { return !!f(); } catch { return false; } };
+function readPerf() {
+  try {
+    if (typeof window === 'undefined') return null;
+    if (window.hawkesPerf && typeof window.hawkesPerf.snapshot === 'function') return window.hawkesPerf.snapshot();
+    const scene = discoverBabylonScene(window);
+    if (scene) return installPerfMonitor(scene).snapshot();
+  } catch {}
+  return null;
+}
