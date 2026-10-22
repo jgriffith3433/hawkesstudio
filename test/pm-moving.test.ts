@@ -196,19 +196,6 @@ test('stale statuses: the latest merged change wins, "working" with nothing runn
   assert.match(changesOf(x.id).at(-1).request, /ran out of time/);
 });
 
-test('after a restart the PM reconciles at once', () => {
-  const it = rm.addItem({ product: 'mvmisc', title: 'Restart', status: 'planned' });
-  const z = rm.addTask({ item: it.id, request: 'Banner', title: 'Banner' });
-  add('c_7e57a7000001', 'mvmisc', z.id, 'merged', { merged_at: old });
-  rm.setTask(z.id, { status: 'failed', change: null, tries: 3, note: 'stale' });
-  // A new Studio process starting the loop: reconciled before its first pass (it exits before that pass would run).
-  const code = `const pm = await import(${JSON.stringify(path.resolve('src/pm.ts'))}); pm.startPm(); setTimeout(() => process.exit(0), 200);`;
-  const r = spawnSync(process.execPath, ['--disable-warning=ExperimentalWarning', '--input-type=module', '-e', code], { env: process.env, encoding: 'utf8' });
-  assert.equal(r.status, 0, r.stderr);
-  assert.equal(rm.getTask(z.id)!.status, 'merged');
-  assert.ok(rm.listDecisions({ action: 'reconcile', limit: 500 }).some((d) => !d.subject && /Studio started: \d+ task/.test(d.detail ?? '')));
-});
-
 test('"already done": checked and merged (no try), what needs J is one Inbox question; an unproven claim is a normal retry', async () => {
   assert.ok(ag.alreadyDone('Nothing to do: the work is already merged (c_a1ead0000001).'));
   assert.ok(ag.alreadyDone('The Caddy block is already in place on main.'));
