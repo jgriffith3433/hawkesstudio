@@ -9,6 +9,8 @@ import { cfg, PROJECTS, readEnvFile, log } from './aws.mjs';
 const env = readEnvFile(path.join(PROJECTS, 'hawkesgen', '.env'));
 const value = { ELEVENLABS_API_KEY: env.ELEVENLABS_API_KEY, ANTHROPIC_API_KEY: env.ANTHROPIC_API_KEY };
 if (env.XAI_API_KEY) value.XAI_API_KEY = env.XAI_API_KEY;
+// ComfyUI partner nodes (Seedance, Kling, Veo... templates api_*) bill this Comfy.org account (Gen's comfy client).
+if (env.COMFY_ORG_API_KEY) value.COMFY_ORG_API_KEY = env.COMFY_ORG_API_KEY;
 for (const [k, v] of Object.entries(value)) if (!v) throw new Error(`${k} is not in hawkesgen/.env`);
 const sm = new SecretsManagerClient(cfg);
 const SecretString = JSON.stringify(value);
