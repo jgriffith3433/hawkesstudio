@@ -91,9 +91,12 @@ if (sha !== remote) {
 step(`${repo}: tell the server`);
 const verified = JSON.stringify({ sha, at: new Date().toISOString(), by: `${os.hostname()} (local-deploy.mjs)`, checks });
 const ssh = spawnSync('ssh', ['-i', KEY, '-o', 'StrictHostKeyChecking=accept-new', '-o', 'BatchMode=yes', HOST,
-  `sudo mkdir -p /var/lib/hawkes && sudo tee /var/lib/hawkes/verified-${repo}.json > /dev/null && sudo systemctl start --no-block hawkes-pull.service && echo started`],
+  `sudo mkdir -p /var/lib/hawkes && sudo tee /var/lib/hawkes/verified-${repo}.json > /dev/null && echo "live $(sudo git -C /srv/hawkes/${repo} rev-parse HEAD)" && sudo systemctl start --no-block hawkes-pull.service && echo started`],
 { input: verified, encoding: 'utf8' });
 if (ssh.status !== 0 || !/started/.test(ssh.stdout)) fail(`SSH to the server failed: ${(ssh.stderr || ssh.stdout).trim()}`);
+// Already what the server runs: nothing to wait for.
+if (ssh.stdout.includes(`live ${sha}`)) { console.log(`
+The server already runs ${repo} ${sha.slice(0, 7)}. Nothing to deploy.`); process.exit(0); }
 console.log('The server is deploying it.');
 
 // 5. Wait for the deploy.
