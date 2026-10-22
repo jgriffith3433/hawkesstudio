@@ -36,8 +36,8 @@ test('versions come from .hawkes/video.json; the same asset twice is one version
   fs.writeFileSync(path.join(wt, '.hawkes', 'video.json'), JSON.stringify({ asset: 'a_0123456789abcdef', poster: 'nope', seconds: '31.5', summary: 'first cut' }));
   const f = v.readVideoFile(wt)!;
   assert.deepEqual([f.asset, f.poster, f.seconds], ['a_0123456789abcdef', undefined, 31.5]);
-  assert.equal(v.recordVersion(t.id, 'c_000000000001', f)!.n, 1);
-  assert.equal(v.recordVersion(t.id, 'c_000000000001', f), null, 'the same cut again');
+  assert.equal(v.recordVersion(t.id, 'c_000000000001', f as any)!.n, 1);
+  assert.equal(v.recordVersion(t.id, 'c_000000000001', f as any), null, 'the same cut again');
   assert.equal(v.recordVersion(t.id, 'c_000000000001', { ...f, asset: 'a_fedcba9876543210' })!.n, 2);
   assert.deepEqual(v.versionsOf(t.id).map((x) => x.n), [1, 2]);
 });
@@ -81,4 +81,22 @@ test("Studio's review: the craft bar and the beat sheet go to Claude; silences a
   assert.match(withBeats, /3\.0 s for 1\.2 s/);
   assert.match(withBeats, /too slow/);
   assert.deepEqual(v.silenceOf('[silencedetect] silence_start: 3.5\n[silencedetect] silence_end: 4.9 | silence_duration: 1.4\n'), [{ start: 3.5, seconds: 1.4 }]);
+});
+
+test("the agent's cut can be a file in its worktree (Studio puts it into Gen); never outside it", () => {
+  const wt = fs.mkdtempSync(path.join(os.tmpdir(), 'wt-'));
+  fs.mkdirSync(path.join(wt, '.hawkes'));
+  fs.mkdirSync(path.join(wt, 'videos', 'x', 'out'), { recursive: true });
+  fs.writeFileSync(path.join(wt, 'videos', 'x', 'out', 'cut.mp4'), 'video bytes');
+  fs.writeFileSync(path.join(wt, 'videos', 'x', 'out', 'poster.png'), 'png bytes');
+  const write = (o: any) => fs.writeFileSync(path.join(wt, '.hawkes', 'video.json'), JSON.stringify(o));
+  write({ file: 'videos/x/out/cut.mp4', poster: 'videos/x/out/poster.png', seconds: 21.6 });
+  const f = v.readVideoFile(wt)!;
+  assert.deepEqual([f.asset, f.file, f.posterFile], [undefined, 'videos/x/out/cut.mp4', 'videos/x/out/poster.png']);
+  write({ asset: 'videos/x/out/cut.mp4' });
+  assert.equal(v.readVideoFile(wt)!.file, 'videos/x/out/cut.mp4', 'a path in "asset" works too');
+  for (const bad of ['../outside.mp4', '/etc/passwd.mp4', 'videos/x/out/missing.mp4', 'videos/x/out/poster.png']) {
+    write({ file: bad });
+    assert.equal(v.readVideoFile(wt), null, bad);
+  }
 });

@@ -66,12 +66,34 @@ export function versionsOf(task: string): Version[] {
 }
 
 /** What the agent says it made this pass (.hawkes/video.json), checked. null when it left none or it isn't usable. */
-export function readVideoFile(worktree: string): { asset: string; poster?: string; seconds?: number; summary?: string; caption?: string; beats?: any[] } | null {
+export type VideoFile = { asset?: string; file?: string; poster?: string; posterFile?: string; seconds?: number; summary?: string; caption?: string; beats?: any[] };
+/**
+ * A path the agent gave for its cut (or poster): inside its worktree, a video or image file that exists. Agents can't
+ * put files into Gen themselves (the sandbox has no upload), so Studio does it for them (importVideoFile).
+ */
+export function worktreeFile(worktree: string, p: unknown, kinds: RegExp): string | undefined {
+  const rel = String(p ?? '').trim();
+  if (!rel || path.isAbsolute(rel) || rel.split(/[\\/]/).includes('..') || !kinds.test(rel)) return undefined;
+  const abs = path.join(worktree, rel);
+  try {
+    const st = fs.statSync(abs);
+    return st.isFile() && st.size > 0 && st.size < 1024 * 1024 * 1024 ? rel : undefined;
+  } catch {
+    return undefined;
+  }
+}
+const VIDEO_FILE = /\.(mp4|mov|webm|mkv)$/i;
+const IMAGE_FILE = /\.(png|jpe?g|webp)$/i;
+
+export function readVideoFile(worktree: string): VideoFile | null {
   try {
     const v = JSON.parse(fs.readFileSync(path.join(worktree, '.hawkes', 'video.json'), 'utf8'));
-    if (!ASSET.test(String(v.asset ?? ''))) return null;
+    const asset = ASSET.test(String(v.asset ?? '')) ? v.asset : undefined;
+    const file = asset ? undefined : worktreeFile(worktree, v.file ?? v.asset, VIDEO_FILE);
+    if (!asset && !file) return null;
     return {
-      asset: v.asset, poster: ASSET.test(String(v.poster ?? '')) ? v.poster : undefined,
+      asset, file, poster: ASSET.test(String(v.poster ?? '')) ? v.poster : undefined,
+      posterFile: ASSET.test(String(v.poster ?? '')) ? undefined : worktreeFile(worktree, v.posterFile ?? v.poster, IMAGE_FILE),
       seconds: Number.isFinite(Number(v.seconds)) ? Number(v.seconds) : undefined,
       summary: v.summary ? String(v.summary).slice(0, 2000) : undefined, caption: v.caption ? String(v.caption).slice(0, 2200) : undefined,
       beats: Array.isArray(v.beats) ? v.beats.slice(0, 120) : undefined,
@@ -81,8 +103,22 @@ export function readVideoFile(worktree: string): { asset: string; poster?: strin
   }
 }
 
+/** Puts the agent's cut (and poster) from its worktree into Gen's library, as the product's assets. */
+export async function importVideoFile(worktree: string, v: VideoFile, product: string): Promise<VideoFile & { asset: string }> {
+  if (v.asset) return v as VideoFile & { asset: string };
+  const { gen } = await import('./gen.ts');
+  const put = async (rel: string, type: string) => {
+    const r: any = await gen.request(`/assets?project=${encodeURIComponent(product)}&title=${encodeURIComponent(path.basename(rel))}`, { method: 'POST', body: fs.readFileSync(path.join(worktree, rel)), headers: { 'Content-Type': type, 'X-Filename': path.basename(rel) } });
+    if (!ASSET.test(String(r?.id ?? ''))) throw new Error(`Gen didn't take ${rel}: ${JSON.stringify(r).slice(0, 200)}`);
+    return r.id as string;
+  };
+  const asset = await put(v.file!, /\.webm$/i.test(v.file!) ? 'video/webm' : /\.mov$/i.test(v.file!) ? 'video/quicktime' : 'video/mp4');
+  const poster = v.poster ?? (v.posterFile ? await put(v.posterFile, /\.png$/i.test(v.posterFile) ? 'image/png' : /\.webp$/i.test(v.posterFile) ? 'image/webp' : 'image/jpeg').catch(() => undefined) : undefined);
+  return { ...v, asset, poster };
+}
+
 /** A new version from a pass of the video's change (the same asset as the last one isn't a new version). */
-export function recordVersion(task: string, change: string, v: NonNullable<ReturnType<typeof readVideoFile>>): Version | null {
+export function recordVersion(task: string, change: string, v: VideoFile & { asset: string }): Version | null {
   const all = versionsOf(task);
   if (all.at(-1)?.asset === v.asset) return null;
   const id = newId('vv');
@@ -93,9 +129,17 @@ export function recordVersion(task: string, change: string, v: NonNullable<Retur
 
 /** Called when a video's change is ready (agents.ts finish): keep its version; notes J left while it worked go back at once. */
 export async function videoReady(c: { id: string; task: string; worktree: string }): Promise<{ version: Version | null; resent: boolean }> {
-  const v = readVideoFile(c.worktree);
-  const version = v ? recordVersion(c.task, c.id, v) : null;
   const t = getTask(c.task)!;
+  const found = readVideoFile(c.worktree);
+  let v: (VideoFile & { asset: string }) | null = null;
+  if (found) {
+    try {
+      v = await importVideoFile(c.worktree, found, t.product);
+    } catch (e: any) {
+      logDecision('video', t.id, t.product, `"${t.title}": couldn't put the cut into Gen: ${String(e.message ?? e).slice(0, 200)}`);
+    }
+  }
+  const version = v ? recordVersion(c.task, c.id, v) : null;
   logDecision('video', t.id, t.product, version ? `"${t.title}" v${version.n} is ready to screen` : `"${t.title}": the pass left no video (.hawkes/video.json)`);
   // Studio's review first (the craft bar and the beat sheet): a version that falls short goes back by itself, up to
   // REVIEW_ROUNDS times since J's last note, before J is told.

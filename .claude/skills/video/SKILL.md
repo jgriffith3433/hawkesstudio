@@ -130,7 +130,9 @@ Faces on-model? The hook in the first second? Any dead air? Fix it before handin
 
 - Commit `videos/<slug>/`: `script.md` (J's script), `beats.json`, `video.json` (cast and forms, every shot's method,
   Gen jobs and asset ids), any helper scripts.
-- Write `.hawkes/video.json`:
+- Write `.hawkes/video.json` (`asset` and `poster` are Gen asset ids; if you can't put the files into Gen yourself,
+  give their paths in your worktree instead, `"file": "videos/<slug>/out/cut.mp4"` and `"poster": "videos/<slug>/out/poster.png"`,
+  and Studio uploads them):
   `{ "asset": "<the cut>", "poster": "<a frame>", "seconds": 24.5, "summary": "what this version is / what changed", "caption": "post text: one line that makes people watch, 3-6 hashtags, hawkesgen.com", "beats": <the same array as beats.json> }`
 - `.hawkes/summary.md` (what you made, what it cost) and `.hawkes/learned.md` (casting, a character's motion style, what
   worked or didn't, as durable notes).
