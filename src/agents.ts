@@ -34,6 +34,7 @@
 // Runs on the server (STUDIO_SERVER=1, repos cloned by repos.ts, GITHUB_TOKEN from /run/hawkes/github.env).
 // Caps (settings.agents): how many fixes run at once and per day, and a daily cost limit.
 
+import { isVideoTask, videoReady, versionsOf } from './videos.ts';
 import fs from 'node:fs';
 import os from 'node:os';
 import net from 'node:net';
@@ -666,6 +667,25 @@ export function pendingGpuOf(worktree: string, summary: string): string | null {
   return STAND_IN.test(s) && NO_GPU.test(s) ? `its summary says it shipped stand-ins because no GPU server ran: ${s.slice(0, 600)}` : null;
 }
 
+/** A video task's brief (videos.ts): how it's judged (J screens it), where the work goes, what to leave for Studio. */
+function videoBrief(c: Change) {
+  const versions = versionsOf(c.task!);
+  return `## This is a video (J screens it)
+
+Load the \`video\` skill now and follow it. No playtest and no beta check judge this: J watches each version in Studio's
+Screening tab and either approves it or sends notes, which come back to you here as a revision of this same work.
+
+- Keep the video's source in this repo under \`videos/<slug>/\`: \`script.md\` (J's script, as written), \`video.json\`
+  (cast and voices, shots, the cut's timeline, every Gen job and asset id). Commit it each pass.
+- Render with Hawkes Gen (\`video.compose\` for the cut). Leave the finished cut in \`.hawkes/video.json\`:
+  \`{ "asset": "a_...", "poster": "a_...", "seconds": 31.5, "summary": "what changed this version", "caption": "post text with hashtags" }\`.
+  Without it there is nothing for J to watch.
+- On a revision: answer every note, change only what the notes are about, and say per note what you did in \`summary\`.
+${versions.length ? `- Versions so far: ${versions.map((v) => `v${v.n} ${v.asset}${v.summary ? ` (${v.summary.slice(0, 120)})` : ''}`).join('; ')}.
+` : ''}
+`;
+}
+
 /** What GPU generation this change may do (content work): its approved budget (J's, or Studio's under the auto-approval threshold), or none. */
 function gpuBrief(c: Change) {
   const b = c.gpu_budget === null ? null : Number(c.gpu_budget);
@@ -712,8 +732,10 @@ Nothing here was approved for GPU generation (images, video, music, 3D on the fl
 
 /** Content and story work (dialogue, lore, levels, characters) is checked against canon; the rest is a fix or a build. */
 const CONTENT = /\b(story|lore|canon|dialog(ue)?|line|lines|bark|script|cutscene|quest|character|fighter|level|floor|stage|map|name|text|copy|voice|narrat|chapter|scene|enemy|enemies|boss)\b/i;
-export function roleOf(c: { infra?: boolean; request?: string | null; findings?: string[]; title?: string | null; gpu_budget?: string | null }): 'infra' | 'content' | 'builder' | 'fixer' {
+export function roleOf(c: { infra?: boolean; request?: string | null; findings?: string[]; title?: string | null; gpu_budget?: string | null; task?: string | null }): 'infra' | 'content' | 'builder' | 'fixer' {
   if (c.infra) return 'infra';
+  // A video (videos.ts) is content work: the content role, with the video skill.
+  if (c.task && isVideoTask(c.task)) return 'content';
   // A task J gave a GPU budget is content work (generated art, music, levels).
   if (c.gpu_budget !== undefined && c.gpu_budget !== null) return 'content';
   if (CONTENT.test(`${c.request ?? ''} ${c.title ?? ''}`)) return 'content';
@@ -826,7 +848,7 @@ ${c.request}
 Work out what that means in this project (read the story doc and AGENTS.md), make it well, and keep it consistent with
 the product's tone and style. If it's too big for one change, do a solid first part and say what's left in the summary.
 
-${gpuBrief(c)}` : ''}${c.criteria.length ? `## Acceptance criteria (how this is judged)
+${gpuBrief(c)}` : ''}${c.task && isVideoTask(c.task) ? videoBrief(c) : ''}${c.criteria.length && !(c.task && isVideoTask(c.task)) ? `## Acceptance criteria (how this is judged)
 
 The change is ready once your checks pass and its pull request is open; after it is merged into beta, beta's playtest
 judges these, and the work is done only when every one of them passes there:
@@ -1562,6 +1584,13 @@ async function work(id: string, note?: string, answer?: string, resumed?: Phase 
     const pendingGpu = c.task && (needsGpu(c) || roleOf(c) === 'content') ? pendingGpuOf(c.worktree, c.summary ?? '') : null;
     if (pendingGpu) addLog(id, `stand-ins: still to make on the GPU: ${pendingGpu.split('\n')[0].slice(0, 200)}`);
     const done = { ...verify, sha: ph.tip, preview, try: howTo, ...(pendingGpu ? { pendingGpu } : {}) };
+    // A video waits for J's screening (videos.ts): never merged by itself, its version kept, notes he left meanwhile sent back.
+    if (c.task && isVideoTask(c.task)) {
+      update(id, { status: 'ready', detail: 'ready to screen', verify: done, phase: null, auto_merge: null });
+      const r = await videoReady({ id, task: c.task, worktree: c.worktree });
+      addLog(id, r.version ? `video v${r.version.n}: ${r.version.asset}${r.resent ? ' (notes from while it worked: another pass)' : ''}` : 'no video left in .hawkes/video.json');
+      return;
+    }
     const auto = agentSettings().autoMergeBeta;
     // 'trying' is written with 'ready', so Talk's "ready for J" notice (followup.ts) never races the merge.
     update(id, { status: 'ready', detail: readyDetail(done), verify: done, phase: null, auto_merge: auto ? 'trying' : null });
@@ -2604,6 +2633,7 @@ export async function approve(id: string, { confirm, by = 'J', origin, auto = fa
  * phone, never Studio or Gen (their merges into main stay J's). The PM still judges a task's criteria on beta.
  */
 export async function autoMergeBeta(id: string) {
+  if (isVideoTask(getChange(id)?.task)) return null; // J screens videos (videos.ts approveVideo merges them)
   const c = getChange(id);
   if (!c || c.infra || c.status !== 'ready') return null;
   const fail = async (why: string) => {

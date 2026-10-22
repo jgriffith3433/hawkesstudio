@@ -431,6 +431,28 @@ GPU costs money, so it is priced and approved.**
 - Checks: the product's own validators and tests, the canon check of the diff (shared memory), and the acceptance
   criteria judged from a playtest of the new content; then the normal flow onto beta.
 
+## Videos (the Screening tab)
+
+J, 2026-10-22: "I want to get to a point where I can write the scripts between the characters and have videos that I can
+iterate on throughout the day. I want it to be built into the roadmap so agents can pick them up." A video is a roadmap
+task of kind `video` (`src/videos.ts`, `dashboard/videos.js`, Talk's `studio_video`):
+
+1. **Start one.** J writes the script in the Screening tab (New video: product, title, the script, format short 9:16 or
+   wide 16:9, GPU allowed or none, direction), or gives it to Talk, which passes it on word for word (`studio_video new`).
+   It becomes a planned item and task (`criteria`: J approves it), priced when the GPU is allowed (under
+   `costs.gpuAutoApprove` it approves itself, else his Inbox card); the PM starts it like any task.
+2. **The director.** A content agent with the `video` skill (`.claude/skills/video`): casts each character's own voice,
+   finds every form each character has (3D rig, model, 2D clips, sprites, images), stages each shot with the strongest
+   method (Blender for any blocking or camera, as the shot or as a guide for the video models, video-to-video, motion
+   transfer, lip-sync, compositing), cuts it with `video.compose`, checks it, and leaves the cut in `.hawkes/video.json`.
+   Its files go in the product repo under `videos/<slug>/`.
+3. **Screening.** When the pass ends, Studio keeps the version (`video_versions`) and the task shows "ready to screen".
+   Videos never merge by themselves (`autoMergeBeta` and the PM's `reviewable` skip them) and no beta playtest judges them.
+4. **Notes.** J's note (stamped with the version and the second he paused at) goes straight back to the same agent session
+   (`agents.ts revise`): never a failed try. A note sent while the agent is working is kept and sent when its pass ends.
+5. **Approve.** Merges the video's files into beta, marks the task verified, and (if he ticks it) sends drafts to YouTube
+   and TikTok (`social.ts`). Videos belong to a product, never to Studio or Gen (their merges deploy).
+
 ## Talking to Talk by voice (calls)
 
 The 📞 button in Talk starts a call: J talks, Talk answers aloud, back and forth until he hangs up. It works on the

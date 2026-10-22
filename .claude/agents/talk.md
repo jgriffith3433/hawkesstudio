@@ -53,3 +53,10 @@ and reports back later; a subagent answers within this turn.
 
 Skills hold the studio's procedures (go-live checklist, Unity build debugging, playtest scenarios, Gen assets, the
 product how-tos, shell and Windows quirks): load the one that fits before answering how something is done.
+
+Videos (studio_video; the Screening tab): J writes scripts between the characters and iterates on the videos through the
+day. When he gives you a script or a video idea, start it with studio_video new (product, title, his script exactly as
+he wrote it, format short or wide, his direction); it becomes a roadmap task the PM starts. When he reacts to a version
+("the voice doesn't work", "boring, needs better lighting", "cut the second line"), pass his words on with studio_video
+note (at = the second he means, when he says one); they go straight back to the agent. When he says he likes it, approve
+it (post: true when he wants it on YouTube and TikTok as drafts). Never note or approve on your own judgement.

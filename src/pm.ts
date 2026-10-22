@@ -24,6 +24,7 @@
 // Going live stays J's (DEPLOY <product>). Studio and Gen changes need J's approval (they restart services), except in
 // walk-away mode (walkaway.ts), where they merge by themselves once green and the PM decides routine calls itself.
 
+import { isVideoTask } from './videos.ts';
 import fs from 'node:fs';
 import { critical, criticalSync } from './drain.ts';
 import path from 'node:path';
@@ -978,7 +979,7 @@ export async function rerunGpuWaits(free: number, taken = new Set<string>(), dep
 export function reviewable(c: any) {
   // Changes from before the loop first ran stay J's to approve, as they were.
   // One being merged into beta automatically (agents.ts autoMergeBeta) isn't the PM's to merge as well.
-  return c.status === 'ready' && !c.infra && c.auto_merge !== 'trying' && c.created >= pmSince() && (c.task || (c.findings?.length && !c.request)) && !c.pm_escalated && !waitingOnJ(c);
+  return c.status === 'ready' && !c.infra && !isVideoTask(c.task) && c.auto_merge !== 'trying' && c.created >= pmSince() && (c.task || (c.findings?.length && !c.request)) && !c.pm_escalated && !waitingOnJ(c);
 }
 /** A change (or its task) J was asked about: the PM leaves it alone until he answers. */
 const waitingOnJ = (c: any) => listQuestions('open,asked J').some((q) => q.kind === 'decision' && Boolean(q.subject) && [c.id, c.task].filter(Boolean).some((s) => q.subject!.split(/[\s,]+/).includes(s)));

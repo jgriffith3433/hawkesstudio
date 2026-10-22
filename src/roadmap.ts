@@ -69,6 +69,10 @@ try { db.exec(`ALTER TABLE items ADD COLUMN priority TEXT NOT NULL DEFAULT 'norm
 try { db.exec('ALTER TABLE tasks ADD COLUMN priority TEXT'); } catch { /* already there */ }
 // The repo a task's agent works in: null (the product's source repo) or 'site' (a Unity game's website repo).
 try { db.exec('ALTER TABLE tasks ADD COLUMN target TEXT'); } catch { /* already there */ }
+// What kind of work a task is: null (a change judged on beta) or 'video' (videos.ts: J screens each version, his notes
+// revise it, his approval finishes it).
+try { db.exec('ALTER TABLE tasks ADD COLUMN kind TEXT'); } catch { /* already there */ }
+export const TASK_KINDS = ['video'];
 
 export const ITEM_STATUSES = ['idea', 'planned', 'in progress', 'on beta', 'live', 'done', 'dropped'];
 export const TASK_STATUSES = ['idea', 'planned', 'working', 'needs answer', 'review', 'merged', 'waiting for GPU', 'verified', 'live', 'failed', 'dropped', 'done'];
@@ -106,6 +110,8 @@ export type Task = {
   ord: number; change: string | null; changes: string[]; pr: string | null; tries: number;
   /** 'site': its agent works in the Unity game's website repo; null: the source repo. */
   target: string | null;
+  /** 'video': a video J screens (videos.ts); null: work judged on beta. */
+  kind: string | null;
   /** The latest acceptance results: where they were judged (the change's verification, or beta), per criterion. */
   checks: { where: 'change' | 'beta'; at: number; run?: string; change?: string; video?: string | null; verdict?: string; results: Check[] } | null;
   /** How J can try it (the agent's words). */
@@ -128,7 +134,7 @@ export type Item = {
 const toItem = (r: any): Item => ({ ...r, priority: r.priority ?? 'normal', criteria: parse(r.criteria) ?? [] });
 // Task rows are read with their item's priority alongside (TASK_SELECT), for the effective priority.
 const TASK_SELECT = `SELECT t.*, COALESCE(t.priority, i.priority, 'normal') AS effective_priority FROM tasks t LEFT JOIN items i ON i.id = t.item`;
-const toTask = (r: any): Task => ({ ...r, priority: r.priority ?? null, target: r.target ?? null, effective_priority: r.effective_priority ?? r.priority ?? 'normal', criteria: parse(r.criteria) ?? [], depends: parse(r.depends) ?? [], changes: parse(r.changes) ?? [], checks: parse(r.checks), gpu: parse(r.gpu) ?? null, build: parse(r.build) ?? null });
+const toTask = (r: any): Task => ({ ...r, priority: r.priority ?? null, target: r.target ?? null, kind: r.kind ?? null, effective_priority: r.effective_priority ?? r.priority ?? 'normal', criteria: parse(r.criteria) ?? [], depends: parse(r.depends) ?? [], changes: parse(r.changes) ?? [], checks: parse(r.checks), gpu: parse(r.gpu) ?? null, build: parse(r.build) ?? null });
 const list = (v: unknown) => (Array.isArray(v) ? v : typeof v === 'string' && v.trim() ? v.split('\n') : []).map((s) => String(s).replace(/^\s*[-*\d.)]+\s*/, '').trim()).filter(Boolean).slice(0, 20);
 const productId = (id: string) => {
   const p = loadProducts().find((x) => x.id === id || x.name.toLowerCase() === String(id).toLowerCase());
@@ -312,7 +318,7 @@ export function updateItem(id: string, patch: Partial<{ title: string; goal: str
   return getItem(id)!;
 }
 
-export function addTask(a: { item: string; title?: string; request: string; criteria?: unknown; depends?: unknown; status?: string; priority?: string | null; ord?: number; gpu?: unknown; target?: string | null }) {
+export function addTask(a: { item: string; title?: string; request: string; criteria?: unknown; depends?: unknown; status?: string; priority?: string | null; ord?: number; gpu?: unknown; target?: string | null; kind?: string | null }) {
   const item = getItem(a.item);
   if (!item) throw new StudioError(`No item ${a.item}`, 404);
   if (!a.request?.trim()) throw new StudioError('A task needs a request (what the agent should do)');
@@ -326,6 +332,10 @@ export function addTask(a: { item: string; title?: string; request: string; crit
   db.prepare('INSERT INTO tasks (id, item, product, title, request, criteria, depends, status, priority, ord, created) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
     .run(id, item.id, item.product, (a.title ?? a.request.split('\n')[0]).trim().slice(0, 160), a.request.trim(), J(list(a.criteria)), J(depends), status, priority, a.ord ?? nextOrd('tasks', 'item', item.id), Date.now());
   if (target) db.prepare('UPDATE tasks SET target = ? WHERE id = ?').run(target, id);
+  if (a.kind) {
+    if (!TASK_KINDS.includes(String(a.kind))) throw new StudioError(`kind is ${TASK_KINDS.join(' or ')} (or empty)`);
+    db.prepare('UPDATE tasks SET kind = ? WHERE id = ?').run(String(a.kind), id);
+  }
   const gpu = gpuItems(a.gpu);
   // A follow-up of GPU work added without its own items (the PM's, 2026-10-18: four were added with none, so no budget,
   // no server, and three agents in a row made nothing) keeps the items of the work it follows up.

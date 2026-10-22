@@ -38,7 +38,7 @@ function show(t, sub) {
   t = MOVED[t] ?? t;
   tab = t;
   // #changes/<id> (a link from the Activity panel) and #analytics/<product> (a game's page) stay.
-  if (!sub && (t === 'changes' || t === 'analytics') && location.hash.startsWith(`#${t}/`)) sub = location.hash.slice(t.length + 2);
+  if (!sub && (t === 'changes' || t === 'analytics' || t === 'videos') && location.hash.startsWith(`#${t}/`)) sub = location.hash.slice(t.length + 2);
   location.hash = sub ? `${t}/${sub}` : t;
   document.querySelectorAll('nav button[data-tab]').forEach((b) => b.classList.toggle('on', b.dataset.tab === t));
   document.querySelectorAll('.tab').forEach((s) => s.classList.toggle('on', s.id === t));
@@ -489,6 +489,7 @@ async function refresh() {
     if (tab === 'resources' && window.loadResourcesTab) await window.loadResourcesTab();
     if (tab === 'analytics' && window.loadAnalyticsTab) await window.loadAnalyticsTab();
     if (tab === 'social' && window.loadSocialTab) await window.loadSocialTab();
+    if (tab === 'videos' && window.loadVideosTab) await window.loadVideosTab();
     if (tab === 'live' && window.loadLiveTab) await window.loadLiveTab();
     if (tab === 'golive' && window.loadGoLiveTab) await window.loadGoLiveTab();
     if (tab === 'library' && window.loadLibraryTab) await window.loadLibraryTab();
