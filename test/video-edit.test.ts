@@ -3,7 +3,7 @@
 // and captions after them; the compose job it renders with.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readEdit, shotsOf, shotsIn, beatsIn, applyEdit, composeParams, lengthOf } from '../src/video-edit.ts';
+import { readEdit, shotsOf, shotsIn, beatsIn, applyEdit, composeParams, lengthOf, editFromCut } from '../src/video-edit.ts';
 
 const A = 'a_1111111111111111', B = 'a_2222222222222222', C = 'a_3333333333333333', VO = 'a_4444444444444444', MUSIC = 'a_5555555555555555';
 const edit = () => readEdit({
@@ -71,4 +71,16 @@ test('the compose job: each asset once, indexes into the inputs, burned captions
   assert.deepEqual(params.timeline.audio.map((t: any) => t.audio), [0, 0, 1]);
   assert.equal(params.captions, 'both');
   assert.deepEqual([params.width, params.height, params.fit], [1080, 1920, 'crop']);
+});
+
+test('a cut handed over without an edit becomes one, split where its beats start; plain edits work on it', () => {
+  const e = editFromCut(A, [{ t: 0, seconds: 2, shot: 'WS', key: 'hook', action: 'skates in' }, { t: 2, seconds: 3, shot: 'CU', key: 'hi', line: 'Hi.' }, { t: 5, seconds: 9, key: 'late' }, { t: 30 }], 8, { width: 1920, height: 1080, fps: 24 })!;
+  assert.equal(e.derived, true);
+  assert.deepEqual(e.clips.map((c) => [c.in, c.out, c.beat]), [[0, 2, 'hook'], [2, 5, 'hi'], [5, 8, 'late']]);
+  assert.equal(e.clips[1].label, 'CU Hi.');
+  assert.equal(lengthOf(e), 8);
+  assert.deepEqual(applyEdit(e, { op: 'remove', from: 2, to: 5 }).edit.clips.map((c) => [c.in, c.out]), [[0, 2], [5, 8]]);
+  assert.equal(composeParams(e).params.captions, 'vtt', 'the captions are already in the picture');
+  assert.equal(editFromCut('nope', [], 8, { width: 1, height: 1, fps: 24 }), null);
+  assert.equal(editFromCut(A, null, 6, { width: 1080, height: 1920, fps: 24 })!.clips.length, 1);
 });

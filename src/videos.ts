@@ -16,7 +16,7 @@ import path from 'node:path';
 import { db, newId } from './db.ts';
 import { StudioError, isInfra } from './config.ts';
 import { addItem, addTask, getTask, getItem, setTask, addComment, commentsOn, logDecision, type Task } from './roadmap.ts';
-import { readEdit, shotsOf, shotsIn, beatsIn, applyEdit, composeParams, type Edit, type EditOp } from './video-edit.ts';
+import { readEdit, shotsOf, shotsIn, beatsIn, applyEdit, composeParams, editFromCut, type Edit, type EditOp } from './video-edit.ts';
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS video_versions (
@@ -639,6 +639,30 @@ export function dropDraft(task: string, id: string) {
 }
 
 /**
+ * The version's edit; for a cut handed over without one, made from the file and its beat sheet (editFromCut: its size,
+ * rate and length from ffprobe) and kept on the version. null when it can't be made.
+ */
+export async function ensureEdit(v: Version): Promise<Edit | null> {
+  if (v.edit) return v.edit;
+  const os = await import('node:os');
+  const { execFileSync } = await import('node:child_process');
+  const { gen } = await import('./gen.ts');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'video-edit-'));
+  try {
+    const file = path.join(dir, 'cut.mp4');
+    await gen.download(v.asset, file);
+    const info = JSON.parse(execFileSync('ffprobe', ['-v', 'error', '-select_streams', 'v:0', '-show_entries', 'format=duration:stream=width,height,r_frame_rate', '-of', 'json', file], { encoding: 'utf8' }));
+    const s = info.streams?.[0] ?? {};
+    const [fn, fd] = String(s.r_frame_rate ?? '24/1').split('/').map(Number);
+    const edit = editFromCut(v.asset, v.beats, Number(info.format?.duration ?? v.seconds ?? 0), { width: Number(s.width) || 1080, height: Number(s.height) || 1920, fps: fn && fd ? Math.round((fn / fd) * 1000) / 1000 : 24 });
+    if (edit) db.prepare('UPDATE video_versions SET edit = ? WHERE id = ?').run(JSON.stringify(edit), v.id);
+    return edit;
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+/**
  * A plain edit J makes himself, in seconds, without the agent (video-edit.ts): cut a range out, speed it up, punch or push
  * in on a point. Studio renders the new edit with Gen video.compose (free, no GPU) into a new version, and tells the
  * agent with J's next notes so its own edit catches up. Only on the latest version, while it waits for J.
@@ -651,8 +675,9 @@ export async function quickEdit(task: string, op: EditOp, { by = 'J' }: { by?: s
   if (!c || c.status !== 'ready') throw new StudioError("Quick edits are for a version that's waiting for you (the agent is working on this one)");
   const base = versionsOf(task).at(-1);
   if (!base) throw new StudioError('No video yet');
-  if (!base.edit) throw new StudioError(`v${base.n} has no edit Studio can change (the agent cut it without one): send it as a note and the agent does it`);
   if (redosOf(task).some((r) => r.status === 'running')) throw new StudioError('A redo is rendering: edit the version it makes');
+  base.edit ??= await ensureEdit(base);
+  if (!base.edit) throw new StudioError(`v${base.n} has no edit Studio can change: send it as a note and the agent does it`);
   let next: { edit: Edit; said: string };
   try { next = applyEdit(base.edit, op); } catch (e: any) { throw new StudioError(e.message); }
   const { gen, genWait } = await import('./gen.ts');
@@ -726,7 +751,7 @@ export async function redoShots(task: string, { from, to, note, by = 'J' }: { fr
   if (!c || c.status !== 'ready') throw new StudioError("Redo is for a version that's waiting for you (the agent is working on this one)");
   if (redosOf(task).some((r) => r.status === 'running')) throw new StudioError('A redo is already rendering for this video');
   const base = versionsOf(task).at(-1);
-  if (!base?.edit) throw new StudioError(`v${base?.n ?? '?'} has no edit Studio can change: send "Redo" as a note and the agent does it`);
+  if (!base?.edit || base.edit.derived) throw new StudioError(`v${base?.n ?? '?'} was handed over as a finished cut, so Studio doesn't know which Gen jobs made its shots: use the Redo chip (a note) and the agent remakes it`);
   if (!Number.isFinite(Number(from))) throw new StudioError('Select the part to redo');
   const end = to != null && Number(to) > Number(from) ? Number(to) : Number(from) + 0.05;
   const shots = shotsIn(shotsOf(base.edit), Number(from), end);

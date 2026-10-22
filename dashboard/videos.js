@@ -142,7 +142,11 @@
     const anim = v?.stage === 'animatic';
     const drafts = (d.marks ?? []).filter((m) => m.status === 'draft');
     const redoing = (d.redos ?? []).some((r) => r.status === 'running');
-    const canQuick = waiting && v?.edit && sel && sel.to > sel.from + 0.05 && !redoing;
+    // Quick edits work on any cut (Studio makes an edit from the file and its beats); a redo needs the agent's own edit,
+    // which says which Gen job made each shot.
+    const editable = Boolean(v?.edit || v?.beats?.length || v?.seconds);
+    const redoable = Boolean(v?.edit && !v.edit.derived);
+    const canQuick = waiting && editable && sel && sel.to > sel.from + 0.05 && !redoing;
     return `
       ${canNote ? `<form id="vdNoteForm" class="card" style="max-width:none;display:grid;gap:8px">
         <b>${sel ? 'Notes on the selection' : 'Notes'}</b>
@@ -152,7 +156,7 @@
           ${drafts.length ? `<button type="button" id="vdSendAll">Send ${drafts.length} note${drafts.length > 1 ? 's' : ''} to the agent</button>` : ''}</div>
         <small class="dim">Notes wait here until you send them together, so the agent starts once with all of them.${anim && waiting ? ' Or approve the animatic below: they go with the go-ahead.' : ''}</small>
       </form>` : ''}
-      ${waiting && v?.edit ? `<div class="card" style="max-width:none;display:grid;gap:8px"><b>Quick edits (no agent, about a minute)</b>
+      ${waiting && editable ? `<div class="card" style="max-width:none;display:grid;gap:8px"><b>Quick edits (no agent, about a minute)</b>
         ${canQuick ? `<div class="vd-row">
           <button class="small" data-quick="remove">✂ Cut it out</button>
           <button class="small" data-quick="speed">⏩ Speed up 1.5×</button>
@@ -160,8 +164,9 @@
           <button class="small" data-quick="push">🎥 Push in</button></div>
           <small class="dim">${aim ? `Zoom aimed at ${Math.round(aim.x * 100)}%, ${Math.round(aim.y * 100)}%.` : 'Zooms aim at the centre:'} <a href="#" id="vdAimBtn">${aiming ? 'click the picture…' : 'aim it'}</a></small>`
         : '<small class="dim">Select a range on the timeline to cut it out, speed it up or zoom in.</small>'}
+        ${redoable ? '' : '<small class="dim">Redo a scene: this version came as a finished cut, so Studio cannot re-run its shots itself. Pick the <b>Redo</b> chip above and add a note: the agent makes a new take.</small>'}
         <small class="dim" id="vdQuickMsg"></small></div>` : ''}
-      ${waiting && v?.edit && !redoing ? `<div class="card" style="max-width:none;display:grid;gap:8px"><b>Redo a scene (no agent, uses the GPU)</b>
+      ${waiting && redoable && !redoing ? `<div class="card" style="max-width:none;display:grid;gap:8px"><b>Redo a scene (no agent, uses the GPU)</b>
         ${sel ? `<button class="small" id="vdRedo">🎲 New take of the scene${sel.to > sel.from + 0.05 ? 's' : ''} here</button>
           <small class="dim">Re-generates the scene${sel.to > sel.from + 0.05 ? 's' : ''} under the selection with a new seed (what you typed in the note box goes into the prompt), then re-cuts. About as long as the scene took the first time; it goes ahead of other GPU work.</small>`
         : '<small class="dim">Select a moment or a range on the timeline to re-generate the scene there.</small>'}

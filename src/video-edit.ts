@@ -19,7 +19,8 @@ export type EditClip = {
 };
 export type EditTrack = { asset: string; start?: number; in?: number; seconds?: number; volume?: number; fadeIn?: number; fadeOut?: number; loop?: boolean; duck?: boolean | 'envelope' | 'sidechain'; duckTo?: number; dialogue?: boolean; label?: string };
 export type EditCaption = { text: string; start: number; end: number };
-export type Edit = { width: number; height: number; fps: number; clips: EditClip[]; audio: EditTrack[]; captions: EditCaption[]; burn?: boolean; fadeIn?: number; fadeOut?: number };
+/** derived: Studio made it from a finished cut and its beat sheet (editFromCut), not the agent: its shots can't be re-generated. */
+export type Edit = { width: number; height: number; fps: number; clips: EditClip[]; audio: EditTrack[]; captions: EditCaption[]; burn?: boolean; fadeIn?: number; fadeOut?: number; derived?: boolean };
 
 const ASSET = /^a_[0-9a-f]{8,32}$/;
 /** How close (seconds) a selection's edge must be to a cut to snap to it. */
@@ -64,6 +65,23 @@ export function readEdit(e: any): Edit | null {
     clips, audio, captions, burn: e.burn !== false,
     ...(Number.isFinite(Number(e.fadeIn)) ? { fadeIn: Number(e.fadeIn) } : {}), ...(Number.isFinite(Number(e.fadeOut)) ? { fadeOut: Number(e.fadeOut) } : {}),
   };
+}
+
+/**
+ * An edit for a cut the agent handed over without one (every version before edits existed): the finished file itself,
+ * split where the beat sheet's shots start. Its sound and burned-in captions travel with the picture, so plain edits
+ * (cut a range out, speed up, zoom) work on it; re-generating a shot doesn't (derived).
+ */
+export function editFromCut(asset: string, beats: any[] | null | undefined, seconds: number, size: { width: number; height: number; fps: number }): Edit | null {
+  if (!ASSET.test(asset) || !(seconds > 0.5)) return null;
+  const starts = [...new Set((beats ?? []).map((b) => Number(b?.t)).filter((t) => Number.isFinite(t) && t > 0.05 && t < seconds - 0.05).map(r3))].sort((a, b) => a - b);
+  const cuts = [0, ...starts, r3(seconds)];
+  const at = (t: number) => (beats ?? []).find((b) => Math.abs(Number(b?.t) - t) < 1e-3);
+  const clips: EditClip[] = cuts.slice(0, -1).map((t, i) => {
+    const b = at(t);
+    return { asset, in: t, out: cuts[i + 1], ...(b?.key != null ? { beat: b.key } : {}), ...(b ? { label: [b.shot, b.line ? String(b.line) : b.action].filter(Boolean).join(' ').slice(0, 160) } : {}) };
+  });
+  return { width: size.width, height: size.height, fps: size.fps, clips, audio: [], captions: [], burn: false, derived: true };
 }
 
 /** A clip's length on the cut (its source span over its speed); null when its out is open and its source length unknown. */
