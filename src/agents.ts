@@ -672,8 +672,9 @@ function videoBrief(c: Change) {
   const versions = versionsOf(c.task!);
   return `## This is a video (J screens it)
 
-Load the \`video\` skill now and follow it. No playtest and no beta check judge this: J watches each version in Studio's
-Screening tab and either approves it or sends notes, which come back to you here as a revision of this same work.
+Follow the video skill below (every harness gets it here; Claude Code can also load it as \`video\`). No playtest and
+no beta check judge this: J watches each version in Studio's Screening tab and either approves it or sends notes, which
+come back to you here as a revision of this same work.
 
 - Keep the video's source in this repo under \`videos/<slug>/\`: \`script.md\` (J's script, as written), \`video.json\`
   (cast and voices, shots, the cut's timeline, every Gen job and asset id). Commit it each pass.
@@ -683,7 +684,17 @@ Screening tab and either approves it or sends notes, which come back to you here
 - On a revision: answer every note, change only what the notes are about, and say per note what you did in \`summary\`.
 ${versions.length ? `- Versions so far: ${versions.map((v) => `v${v.n} ${v.asset}${v.summary ? ` (${v.summary.slice(0, 120)})` : ''}`).join('; ')}.
 ` : ''}
+${videoSkill()}
 `;
+}
+
+/** The video skill's text (.claude/skills/video/SKILL.md without its frontmatter), for the brief. */
+function videoSkill() {
+  try {
+    return fs.readFileSync(path.join(ROOT, '.claude', 'skills', 'video', 'SKILL.md'), 'utf8').replace(/^---[\s\S]*?---\s*/, '').replace(/^# /m, '### The video skill: ').replace(/^## /gm, '#### ');
+  } catch {
+    return '(The video skill is missing: .claude/skills/video/SKILL.md in Hawkes Studio.)';
+  }
 }
 
 /** What GPU generation this change may do (content work): its approved budget (J's, or Studio's under the auto-approval threshold), or none. */
