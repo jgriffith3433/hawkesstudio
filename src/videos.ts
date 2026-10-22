@@ -57,6 +57,8 @@ export type Review = { pass: boolean; score: number; summary: string; notes: { a
 export type Version = { id: string; task: string; n: number; change: string | null; asset: string; poster: string | null; seconds: number | null; summary: string | null; caption: string | null; at: number; beats: any[] | null; review: Review | null };
 const toVersion = (r: any): Version => ({ ...r, beats: r.beats ? JSON.parse(r.beats) : null, review: r.review ? JSON.parse(r.review) : null });
 export const REVIEW_ROUNDS = 2;
+const REVIEW_TRIES = 4;
+const REVIEW_RETRY_MS = Number(process.env.STUDIO_VIDEO_REVIEW_RETRY_MS) || 3 * 60_000;
 
 export const isVideoTask = (taskId: string | null | undefined) => Boolean(taskId) && getTask(taskId!)?.kind === 'video';
 export const isVideoChange = (c: { task?: string | null } | null | undefined) => isVideoTask(c?.task);
@@ -144,7 +146,15 @@ export async function videoReady(c: { id: string; task: string; worktree: string
   // Studio's review first (the craft bar and the beat sheet): a version that falls short goes back by itself, up to
   // REVIEW_ROUNDS times since J's last note, before J is told.
   if (version) {
-    const review = await reviewVersion(t, version).catch((e: any) => ({ pass: true, score: 0, summary: `the review couldn't run: ${String(e.message ?? e).slice(0, 200)}`, notes: [], error: String(e.message ?? e) }) as Review);
+    // Gen (and Claude through it) can be briefly unreachable (a deploy, a restart): try a few times before J gets it
+    // unreviewed (The Board v1, 2026-10-22, reached J as "passed" because Gen was down for the one try).
+    let review: Review | null = null;
+    let lastError = '';
+    for (let i = 0; i < REVIEW_TRIES && !review; i++) {
+      if (i) await new Promise((r) => setTimeout(r, REVIEW_RETRY_MS));
+      review = await reviewVersion(t, version).catch((e: any) => { lastError = String(e.message ?? e); return null; });
+    }
+    review ??= { pass: true, score: 0, summary: `Not reviewed: Studio couldn't run its review (${lastError.slice(0, 200)}).`, notes: [], error: lastError };
     db.prepare('UPDATE video_versions SET review = ? WHERE id = ?').run(JSON.stringify(review), version.id);
     version.review = review;
     const rounds = (db.prepare('SELECT auto_rounds FROM video_state WHERE task = ?').get(t.id) as any)?.auto_rounds ?? 0;
@@ -210,13 +220,17 @@ it only if it meets the craft bar and looks good; otherwise give concrete fixes 
 The craft bar:
 - A hook in the first second (motion, a face or a line), no title-card opener.
 - Coverage: a new shot every 1-3 s and at least 5 different setups (shot size and angle); no shot over 3 s without a reason.
+- Variety: no ping-pong of the same two static close-ups; dialogue mixes over-the-shoulders, two-shots, angle changes
+  and camera moves, and each setup is used for a reason.
+- The same character looks the same in every shot: one model, one style, hair, colours and proportions as their
+  reference. A character drawn differently from shot to shot (3D in the wides, flat 2D in the close-ups) fails.
 - Faces: each spoken line shows the speaker in medium close-up or closer, lips moving, or plays over a deliberate reaction.
 - Reactions: each punchline, insult, hit or reveal cuts to a face reacting.
 - Physical action reads: a wide to show it, the impact close, a physical reaction, VFX on impacts and powers, SFX.
 - Bespoke animation that fits each character (not stock idles or generic attack clips for the hero beats).
 - At least one motivated camera move.
 - On-model characters, no morphing or melting, nothing ugly. Captions readable, inside the middle band.
-- Ends on a short end card ("Made with Hawkes Gen · hawkesgen.com").
+- Ends on a short end card ("Made with Hawkes Gen · hawkesgen.com"), about 1.5 s, without a long fade to black.
 
 ${t.title} (${t.product}). J's script:
 ${String(script).slice(0, 3000)}

@@ -45,6 +45,13 @@ on J's PC can't be used here: say in the summary which file should go into the l
 Look at what you find (frames, renders): you need to know what each character looks like from the front, in close-up,
 and how they move, before you plan shots.
 
+**One look per character, from their canonical reference.** Every shot's keyframe of a character starts from the same
+reference (DoD: the fighter's `reference` and `side` slots on `doseofdestruction/<id>`; others: their entity's
+`concept`/`reference`), never a look you invent for that shot. Make a small sheet first (front, three-quarter, close-up
+portrait, two or three expressions) from that reference with `image.edit` / `image.angles`, check it's on-model, and draw
+every shot of them from the sheet. The Board v1 made The Mechanic a 3D man in the wides and a flat 2D cartoon in the
+close-ups: that fails review.
+
 ## 3. The beat sheet (before you render anything)
 
 Write `videos/<slug>/beats.json`: an array, one entry per shot, timed to the voice lines:
@@ -66,6 +73,9 @@ Write it like a storyboard artist and an editor, second by second.
 - **A hook in the first second**: motion, a face or a line. No title card or slow establishing opener.
 - **Coverage**: in a short, a new shot every 1–3 s and at least 5 different setups (shot size × angle). No single shot
   over 3 s unless it's a deliberate hold, and say why.
+- **Variety in dialogue**: never a ping-pong of the same two static close-ups. Mix over-the-shoulders, two-shots, a
+  change of angle or side, a slow push on the line that matters, a cutaway to hands or a prop.
+- **Consistency**: each character looks the same in every shot (one model and style, from their reference).
 - **Faces**: every spoken line has the speaker in MCU or closer, lip-synced, or plays over a reaction on purpose.
 - **Reactions**: every punchline, insult, hit or reveal cuts to someone's face reacting (CU or ECU), held a beat.
 - **Physical action reads**: a wide or medium to show what happens, the impact in close-up, a physical reaction
@@ -121,7 +131,7 @@ was paid for.
 `video.compose`: shots in order with their durations from the beat sheet, cuts on action, voice lines on their shots
 (`dialogue: true`), SFX placed on the frames they belong to, music ducked under the voices, captions burned in for shorts
 (large, in the middle band: TikTok's buttons cover the right edge and the bottom 20%). Short = 1080 × 1920, wide =
-1920 × 1080. The end card last, 1.5 s.
+1920 × 1080. The end card last, 1.5 s, cut straight to it (no long fade to black after).
 
 Then watch it as J will: pull a frame per second and look at all of them in order next to `beats.json`. Every beat there?
 Faces on-model? The hook in the first second? Any dead air? Fix it before handing it over.
