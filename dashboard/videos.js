@@ -58,7 +58,6 @@
         <div class="vd-row">
           <select id="vdProduct">${products.map((p) => `<option value="${esc(p.id)}">${esc(p.name)}</option>`).join('')}</select>
           <select id="vdFormat"><option value="short">Short · 9:16</option><option value="wide">Wide · 16:9</option></select>
-          <select id="vdBudget" title="GPU: the director can use Blender, the video models and lip-sync (priced; under $5 approves itself, else you get a card). No GPU: only what the library has, voices and compositing"><option value="gpu">GPU allowed (priced)</option><option value="none">No GPU</option></select>
           <input id="vdTitle" placeholder="Title" required style="flex:1;min-width:200px">
         </div>
         <textarea id="vdScript" required placeholder="The script. Who says what, and what happens. For example:\n\nEXIT PUNK: (skating in) Nobody booked me. I booked me.\nSUSAN: (not looking up) You're on in thirty seconds.\nEXIT PUNK: Thirty? I need thirty-one.\n(He wipes out. The crowd roars anyway.)"></textarea>
@@ -86,6 +85,7 @@
           <div class="vd-player">${v ? `<video id="vdVideo" src="${file(v.asset)}" ${v.poster ? `poster="${file(v.poster)}"` : ''} controls playsinline preload="metadata"></video>` : `<p class="dim" style="padding:60px 20px;color:#bbb">${esc(d.change?.detail ?? 'Not started yet: the PM starts it when an agent is free.')}</p>`}</div>
           <div class="vd-versions">${vs.map((x) => `<button class="small${x.n === shown ? ' on' : ''}" data-version="${x.n}">v${x.n}</button>`).join('')}</div>
           ${v?.summary ? `<div class="status-line">v${v.n}: ${esc(v.summary)}</div>` : ''}
+          ${v?.review ? `<div class="status-line">Studio's review: <b>${esc(String(v.review.score))}/10</b>${v.review.pass ? ' · passed' : ' · sent back'} · ${esc(v.review.summary)}</div>` : ''}
           ${v?.caption ? `<details class="more-details"><summary>Post caption</summary><pre style="white-space:pre-wrap;font-size:12px">${esc(v.caption)}</pre></details>` : ''}
           ${d.change ? `<details class="more-details"><summary>What the agent is doing</summary><div class="dim" style="font-size:12px">${esc(d.change.status)} · ${esc(d.change.detail ?? '')}</div><pre style="white-space:pre-wrap;font-size:11px">${esc((d.change.log ?? []).join('\n'))}</pre></details>` : ''}
         </div>
@@ -138,7 +138,7 @@
     if (e.target.id === 'vdNew') {
       e.preventDefault();
       try { localStorage.setItem('vd.product', $('#vdProduct').value); } catch {}
-      const b = { product: $('#vdProduct').value, format: $('#vdFormat').value, budget: $('#vdBudget').value, title: $('#vdTitle').value, script: $('#vdScript').value, direction: $('#vdDirection').value };
+      const b = { product: $('#vdProduct').value, format: $('#vdFormat').value, title: $('#vdTitle').value, script: $('#vdScript').value, direction: $('#vdDirection').value };
       try { const d = await api('/api/videos', { method: 'POST', body: b }); open(d.task.id); } catch (x) { alert(x.message); }
     }
     if (e.target.id === 'vdNoteForm') {

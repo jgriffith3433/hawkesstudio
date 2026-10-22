@@ -64,12 +64,21 @@ test('never on Studio or Gen themselves (their merges deploy)', () => {
   assert.throws(() => v.createVideo({ product: 'hawkesgen', title: 'x', script: 'a' }), /belong to a product/);
 });
 
-test('the GPU budget: allowed by default (priced items), none keeps it off the GPU', () => {
+test('every video gets a priced GPU budget (no "No GPU" lock)', () => {
   const g = v.createVideo({ product: 'phorigins', title: 'The Train', script: 'PIERCE: There he is.' });
   assert.ok(g.gpu?.items?.some((i: any) => i.tool === 'blender.render'));
-  assert.match(g.request, /GPU allowed/);
-  const n = v.createVideo({ product: 'doseofdestruction', title: 'Quick joke', script: 'TT: Hi.', budget: 'none' });
-  assert.equal(n.gpu, null);
-  assert.match(n.request, /No GPU/);
-  assert.throws(() => v.createVideo({ product: 'doseofdestruction', title: 'x', script: 'a', budget: 'lots' }), /budget/);
+  assert.match(g.request, /beat sheet/);
+});
+
+test("Studio's review: the craft bar and the beat sheet go to Claude; silences are read from ffmpeg", () => {
+  const t = v.createVideo({ product: 'doseofdestruction', title: 'Review me', script: 'TT: Hi.' });
+  const base = { id: 'vv_x', task: t.id, n: 1, change: null, asset: 'a_0123456789abcdef', poster: null, seconds: 20, summary: 'first cut', caption: null, at: 0, review: null };
+  const none = v.reviewPrompt(t, { ...base, beats: null }, { seconds: 20, frames: 20, perSheet: 8, silences: [], jNotes: [] });
+  assert.match(none, /no beat sheet, which is itself a failure/);
+  assert.match(none, /reaction/i);
+  const withBeats = v.reviewPrompt(t, { ...base, beats: [{ t: 0, seconds: 1, shot: 'CU' }] }, { seconds: 20, frames: 20, perSheet: 8, silences: [{ start: 3, seconds: 1.2 }], jNotes: ['[v1 at 0:03] too slow'] });
+  assert.match(withBeats, /"shot":"CU"/);
+  assert.match(withBeats, /3\.0 s for 1\.2 s/);
+  assert.match(withBeats, /too slow/);
+  assert.deepEqual(v.silenceOf('[silencedetect] silence_start: 3.5\n[silencedetect] silence_end: 4.9 | silence_duration: 1.4\n'), [{ start: 3.5, seconds: 1.4 }]);
 });

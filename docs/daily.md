@@ -438,15 +438,19 @@ iterate on throughout the day. I want it to be built into the roadmap so agents 
 task of kind `video` (`src/videos.ts`, `dashboard/videos.js`, Talk's `studio_video`):
 
 1. **Start one.** J writes the script in the Screening tab (New video: product, title, the script, format short 9:16 or
-   wide 16:9, GPU allowed or none, direction), or gives it to Talk, which passes it on word for word (`studio_video new`).
-   It becomes a planned item and task (`criteria`: J approves it), priced when the GPU is allowed (under
-   `costs.gpuAutoApprove` it approves itself, else his Inbox card); the PM starts it like any task.
+   wide 16:9, direction), or gives it to Talk, which passes it on word for word (`studio_video new`). It becomes a
+   planned item and task (`criteria`: J approves it) with a GPU budget, always (J: a "No GPU" video "can't render a
+   background"): priced, under `costs.gpuAutoApprove` it approves itself, else his Inbox card. The PM starts it.
 2. **The director.** A content agent with the `video` skill (`.claude/skills/video`): casts each character's own voice,
-   finds every form each character has (3D rig, model, 2D clips, sprites, images), stages each shot with the strongest
-   method (Blender for any blocking or camera, as the shot or as a guide for the video models, video-to-video, motion
-   transfer, lip-sync, compositing), cuts it with `video.compose`, checks it, and leaves the cut in `.hawkes/video.json`.
+   finds every form each character has (3D rig, model, 2D clips, sprites, images), writes a beat sheet second by second
+   (shot size, angle, camera, action, expression, SFX, VFX, method) that meets the craft bar (close-ups on lines,
+   reactions, physical reactions and VFX, bespoke animation, a motivated camera), makes each shot with Blender and
+   ComfyUI first, cuts it with `video.compose`, and leaves the cut and the beat sheet in `.hawkes/video.json`.
    Its files go in the product repo under `videos/<slug>/`.
-3. **Screening.** When the pass ends, Studio keeps the version (`video_versions`) and the task shows "ready to screen".
+3. **Studio's review, then screening.** When the pass ends, Studio keeps the version (`video_versions`) and reviews it
+   (`reviewVersion`: a frame a second as contact sheets, dead air from ffmpeg, Claude against the craft bar and the beat
+   sheet). Short of the bar, it goes back to the agent with the review's notes, up to `REVIEW_ROUNDS` (2) times since J's
+   last note; then the task shows "ready to screen" with the review's score.
    Videos never merge by themselves (`autoMergeBeta` and the PM's `reviewable` skip them) and no beta playtest judges them.
 4. **Notes.** J's note (stamped with the version and the second he paused at) goes straight back to the same agent session
    (`agents.ts revise`): never a failed try. A note sent while the agent is working is kept and sent when its pass ends.

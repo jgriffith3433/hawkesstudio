@@ -339,13 +339,13 @@ export function studioMcp({ studio, waitRun }: Client = { studio: defaultStudio,
       inputSchema: obj({
         action: str('list | get | new | note | approve'), id: str('The video (its task id, k_...): get, note, approve'),
         product: str('new: the product (doseofdestruction, sickofit, phorigins, yoobaland, hawkesgen...)'), title: str('new: the title'),
-        script: str("new: J's script"), format: str('new: short (default) or wide'), budget: str('new: gpu (default: the director may use Blender guide renders, the video models, lip-sync; priced, under the auto-approve threshold it goes ahead) or none (library, voices and compositing only)'), direction: str('new: tone, look, music, voices'),
+        script: str("new: J's script"), format: str('new: short (default) or wide'), direction: str('new: tone, look, music, voices'),
         text: str("note: J's note"), at: { type: 'number', description: 'note: seconds into the version' }, post: { type: 'boolean', description: 'approve: also send drafts to YouTube and TikTok' },
       }, ['action']),
       run: async (a) => {
         if (a.action === 'list') return studio('/api/videos');
         if (a.action === 'get') return studio(`/api/videos/${a.id}`);
-        if (a.action === 'new') return studio('/api/videos', { method: 'POST', body: { product: a.product, title: a.title, script: a.script, format: a.format, budget: a.budget, direction: a.direction } });
+        if (a.action === 'new') return studio('/api/videos', { method: 'POST', body: { product: a.product, title: a.title, script: a.script, format: a.format, direction: a.direction } });
         if (a.action === 'note') return studio(`/api/videos/${a.id}/notes`, { method: 'POST', body: { text: a.text, at: a.at } });
         if (a.action === 'approve') return studio(`/api/videos/${a.id}/approve`, { method: 'POST', body: { post: a.post } });
         throw new Error('action: list, get, new, note or approve');

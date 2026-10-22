@@ -27,6 +27,10 @@ db.exec(`
 `);
 // The Talk conversation a video reports into (its item's origin, else one of its own made on its first version).
 try { db.exec('ALTER TABLE video_state ADD COLUMN conversation TEXT'); } catch { /* already there */ }
+// Studio's review rounds since J's last note (reviewVersion): at most REVIEW_ROUNDS go back before J sees it anyway.
+try { db.exec('ALTER TABLE video_state ADD COLUMN auto_rounds INTEGER NOT NULL DEFAULT 0'); } catch { /* already there */ }
+// Each version's beat sheet (the agent's plan) and Studio's review of it.
+for (const col of ['beats', 'review']) { try { db.exec(`ALTER TABLE video_versions ADD COLUMN ${col} TEXT`); } catch { /* already there */ } }
 
 const agents = () => import('./agents.ts');
 export const FORMATS: Record<string, string> = {
@@ -35,24 +39,24 @@ export const FORMATS: Record<string, string> = {
 };
 const ASSET = /^a_[0-9a-f]{8,32}$/;
 /**
- * The GPU budget: 'gpu' (the default) lets the director use everything Hawkes Gen has (Blender guide renders, the video
- * models, lip-sync, LoRAs), priced from these items and approved like any content task (under costs.gpuAutoApprove by
- * itself, else J's card); 'none' keeps it to the library, voices and compositing (no server starts for it).
+ * Every video gets a GPU budget (J, 2026-10-22: a "No GPU" video can't render a background or clean a shot up, and
+ * "we have an entire pipeline here and we are creating junk"). Priced from these items like any content task: under
+ * costs.gpuAutoApprove it approves itself, else J's card. Cost judgement is the director's (the cheapest method that
+ * looks as good), never a lock.
  */
-export const BUDGETS: Record<string, { label: string; gpu: any[] | null }> = {
-  gpu: { label: 'GPU allowed: Blender, the video models, lip-sync (priced)', gpu: [
-    { tool: 'film.gate', count: 4, label: 'staging checks' },
-    { tool: 'blender.render', count: 6, label: 'guide and shot renders' },
-    { tool: 'image.edit', count: 6, label: 'keyframes on-model' },
-    { tool: 'video.control', count: 4, label: 'repaints' },
-    { tool: 'video.motion', count: 2, label: 'motion transfers' },
-    { tool: 'video.talk', count: 2, label: 'lip-synced lines' },
-  ] },
-  none: { label: 'No GPU: the library, voices and compositing only', gpu: null },
-};
+export const VIDEO_GPU = [
+  { tool: 'film.gate', count: 6, label: 'staging checks' },
+  { tool: 'blender.render', count: 8, label: 'guide and shot renders' },
+  { tool: 'image.edit', count: 8, label: 'on-model keyframes' },
+  { tool: 'video.control', count: 6, label: 'repaints' },
+  { tool: 'video.motion', count: 3, label: 'motion transfers' },
+  { tool: 'video.talk', count: 3, label: 'lip-synced close-ups' },
+];
 
-export type Version = { id: string; task: string; n: number; change: string | null; asset: string; poster: string | null; seconds: number | null; summary: string | null; caption: string | null; at: number };
-const toVersion = (r: any): Version => r;
+export type Review = { pass: boolean; score: number; summary: string; notes: { at: number | null; note: string }[]; error?: string };
+export type Version = { id: string; task: string; n: number; change: string | null; asset: string; poster: string | null; seconds: number | null; summary: string | null; caption: string | null; at: number; beats: any[] | null; review: Review | null };
+const toVersion = (r: any): Version => ({ ...r, beats: r.beats ? JSON.parse(r.beats) : null, review: r.review ? JSON.parse(r.review) : null });
+export const REVIEW_ROUNDS = 2;
 
 export const isVideoTask = (taskId: string | null | undefined) => Boolean(taskId) && getTask(taskId!)?.kind === 'video';
 export const isVideoChange = (c: { task?: string | null } | null | undefined) => isVideoTask(c?.task);
@@ -62,7 +66,7 @@ export function versionsOf(task: string): Version[] {
 }
 
 /** What the agent says it made this pass (.hawkes/video.json), checked. null when it left none or it isn't usable. */
-export function readVideoFile(worktree: string): { asset: string; poster?: string; seconds?: number; summary?: string; caption?: string } | null {
+export function readVideoFile(worktree: string): { asset: string; poster?: string; seconds?: number; summary?: string; caption?: string; beats?: any[] } | null {
   try {
     const v = JSON.parse(fs.readFileSync(path.join(worktree, '.hawkes', 'video.json'), 'utf8'));
     if (!ASSET.test(String(v.asset ?? ''))) return null;
@@ -70,6 +74,7 @@ export function readVideoFile(worktree: string): { asset: string; poster?: strin
       asset: v.asset, poster: ASSET.test(String(v.poster ?? '')) ? v.poster : undefined,
       seconds: Number.isFinite(Number(v.seconds)) ? Number(v.seconds) : undefined,
       summary: v.summary ? String(v.summary).slice(0, 2000) : undefined, caption: v.caption ? String(v.caption).slice(0, 2200) : undefined,
+      beats: Array.isArray(v.beats) ? v.beats.slice(0, 120) : undefined,
     };
   } catch {
     return null;
@@ -81,8 +86,8 @@ export function recordVersion(task: string, change: string, v: NonNullable<Retur
   const all = versionsOf(task);
   if (all.at(-1)?.asset === v.asset) return null;
   const id = newId('vv');
-  db.prepare('INSERT INTO video_versions (id, task, n, change, asset, poster, seconds, summary, caption, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
-    .run(id, task, all.length + 1, change, v.asset, v.poster ?? null, v.seconds ?? null, v.summary ?? null, v.caption ?? null, Date.now());
+  db.prepare('INSERT INTO video_versions (id, task, n, change, asset, poster, seconds, summary, caption, at, beats) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+    .run(id, task, all.length + 1, change, v.asset, v.poster ?? null, v.seconds ?? null, v.summary ?? null, v.caption ?? null, Date.now(), v.beats ? JSON.stringify(v.beats) : null);
   return toVersion(db.prepare('SELECT * FROM video_versions WHERE id = ?').get(id));
 }
 
@@ -92,7 +97,22 @@ export async function videoReady(c: { id: string; task: string; worktree: string
   const version = v ? recordVersion(c.task, c.id, v) : null;
   const t = getTask(c.task)!;
   logDecision('video', t.id, t.product, version ? `"${t.title}" v${version.n} is ready to screen` : `"${t.title}": the pass left no video (.hawkes/video.json)`);
-  if (version) await tellTalk(t, version).catch((e: any) => console.warn(`[videos] telling Talk about ${t.id}: ${e.message ?? e}`));
+  // Studio's review first (the craft bar and the beat sheet): a version that falls short goes back by itself, up to
+  // REVIEW_ROUNDS times since J's last note, before J is told.
+  if (version) {
+    const review = await reviewVersion(t, version).catch((e: any) => ({ pass: true, score: 0, summary: `the review couldn't run: ${String(e.message ?? e).slice(0, 200)}`, notes: [], error: String(e.message ?? e) }) as Review);
+    db.prepare('UPDATE video_versions SET review = ? WHERE id = ?').run(JSON.stringify(review), version.id);
+    version.review = review;
+    const rounds = (db.prepare('SELECT auto_rounds FROM video_state WHERE task = ?').get(t.id) as any)?.auto_rounds ?? 0;
+    if (!review.pass && rounds < REVIEW_ROUNDS && review.notes.length) {
+      db.prepare('INSERT INTO video_state (task, auto_rounds) VALUES (?, 1) ON CONFLICT(task) DO UPDATE SET auto_rounds = auto_rounds + 1').run(t.id);
+      addComment(t.id, `Studio's review of v${version.n} (${review.score}/10): ${review.summary}\n${review.notes.map((n) => `- ${n.at != null ? `[${stampOf(n.at)}] ` : ''}${n.note}`).join('\n')}`, 'Studio (review)', 'review');
+      await sendNotes(t.id, review.notes.map((n) => `${n.at != null ? `[v${version.n} at ${stampOf(n.at)}] ` : ''}${n.note}`), 'Studio (review)');
+      logDecision('video', t.id, t.product, `Studio's review sent "${t.title}" v${version.n} back (${review.score}/10, round ${rounds + 1} of ${REVIEW_ROUNDS}): ${review.summary.slice(0, 200)}`);
+      return { version, resent: true };
+    }
+    await tellTalk(t, version).catch((e: any) => console.warn(`[videos] telling Talk about ${t.id}: ${e.message ?? e}`));
+  }
   // Notes that came while the agent was on this pass: it didn't see them, so they go to it now.
   const sent = (db.prepare('SELECT notes_sent_at FROM video_state WHERE task = ?').get(c.task) as any)?.notes_sent_at ?? 0;
   const waiting = commentsOn(c.task).filter((m: any) => m.kind === 'note' && m.at > sent);
@@ -124,6 +144,104 @@ Tell me what to change and I'll send it back, or say it's good and I'll approve 
   if (origin && talk.studioSays(origin, text)) return;
   const id = talk.postNotice(`Video: ${title}`, text);
   db.prepare('INSERT INTO video_state (task, conversation) VALUES (?, ?) ON CONFLICT(task) DO UPDATE SET conversation = excluded.conversation').run(t.id, id);
+}
+
+const stampOf = (at: number) => `${Math.floor(at / 60)}:${String(Math.floor(at % 60)).padStart(2, '0')}`;
+
+export const REVIEW_SCHEMA = {
+  type: 'object', additionalProperties: false, required: ['pass', 'score', 'summary', 'notes'],
+  properties: {
+    pass: { type: 'boolean' }, score: { type: 'number', minimum: 1, maximum: 10 }, summary: { type: 'string' },
+    notes: { type: 'array', maxItems: 8, items: { type: 'object', additionalProperties: false, required: ['note'], properties: { at: { type: ['number', 'null'] }, note: { type: 'string' } } } },
+  },
+};
+
+/** The review's prompt: the craft bar, J's script and notes, the agent's beat sheet, and what the frames and audio show. */
+export function reviewPrompt(t: Task, v: Version, facts: { seconds: number; frames: number; perSheet: number; silences: { start: number; seconds: number }[]; jNotes: string[] }) {
+  const script = (commentsOn(t.id).find((m: any) => m.kind === 'script') as any)?.text ?? t.request;
+  return `You review a short video for J (Hawkes Studio) before he sees it. Be the strict director he wants: he called the
+first video out of this pipeline "junk" (characters standing on a stage punching the air, one wide shot, no faces). Pass
+it only if it meets the craft bar and looks good; otherwise give concrete fixes the agent can act on.
+
+The craft bar:
+- A hook in the first second (motion, a face or a line), no title-card opener.
+- Coverage: a new shot every 1-3 s and at least 5 different setups (shot size and angle); no shot over 3 s without a reason.
+- Faces: each spoken line shows the speaker in medium close-up or closer, lips moving, or plays over a deliberate reaction.
+- Reactions: each punchline, insult, hit or reveal cuts to a face reacting.
+- Physical action reads: a wide to show it, the impact close, a physical reaction, VFX on impacts and powers, SFX.
+- Bespoke animation that fits each character (not stock idles or generic attack clips for the hero beats).
+- At least one motivated camera move.
+- On-model characters, no morphing or melting, nothing ugly. Captions readable, inside the middle band.
+- Ends on a short end card ("Made with Hawkes Gen · hawkesgen.com").
+
+${t.title} (${t.product}). J's script:
+${String(script).slice(0, 3000)}
+${facts.jNotes.length ? `\nJ's notes so far (the version must answer them):\n${facts.jNotes.map((n) => `- ${n}`).join('\n')}\n` : ''}
+The agent's beat sheet for v${v.n}:
+${v.beats?.length ? JSON.stringify(v.beats).slice(0, 8000) : '(none: the agent left no beat sheet, which is itself a failure)'}
+
+The agent says: ${v.summary ?? '(nothing)'}
+
+The images are contact sheets of the cut: one frame per second, ${facts.perSheet} per sheet, left to right, top to bottom,
+starting at 0 s (${facts.frames} frames for ${facts.seconds.toFixed(1)} s).
+Silences over 0.8 s: ${facts.silences.length ? facts.silences.map((s) => `${s.start.toFixed(1)} s for ${s.seconds.toFixed(1)} s`).join(', ') : 'none'}.
+
+Answer: pass (meets the bar and looks good), score 1-10, a two-sentence summary, and up to 8 notes, each a concrete fix
+with the second it's about (at) when it has one, worst first. Name the beat, the shot size, the angle or the tool when it
+helps ("1-4 s is one static wide: cut to Exit Punk's CU on 'That's me' and Shutup Bot's ECU reaction").`;
+}
+
+/** Studio's review of a version: frames (one a second, as contact sheets) and dead air, judged by Claude against the bar. */
+async function reviewVersion(t: Task, v: Version): Promise<Review> {
+  const os = await import('node:os');
+  const { execFileSync } = await import('node:child_process');
+  const { gen } = await import('./gen.ts');
+  const { askClaude } = await import('./llm.ts');
+  const { jobModel } = await import('./roles.ts');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'video-review-'));
+  try {
+    const file = path.join(dir, 'cut.mp4');
+    await gen.download(v.asset, file);
+    const info = JSON.parse(execFileSync('ffprobe', ['-v', 'error', '-show_entries', 'format=duration:stream=width,height', '-of', 'json', file], { encoding: 'utf8' }));
+    const seconds = Number(info.format?.duration ?? v.seconds ?? 0);
+    const vs = (info.streams ?? []).find((s: any) => s.width);
+    const tall = vs ? vs.height > vs.width : true;
+    const [cols, rows, w, h] = tall ? [4, 2, 270, 480] : [3, 3, 480, 270];
+    execFileSync('ffmpeg', ['-v', 'error', '-y', '-i', file, '-vf', `fps=1,scale=${w}:${h},tile=${cols}x${rows}`, path.join(dir, 'sheet-%02d.png')]);
+    const sheets = fs.readdirSync(dir).filter((f) => f.startsWith('sheet-')).sort().slice(0, 6);
+    let log = '';
+    try {
+      execFileSync('ffmpeg', ['-v', 'info', '-i', file, '-af', 'silencedetect=n=-38dB:d=0.8', '-f', 'null', '-'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+    } catch (e: any) {
+      log = String(e.stderr ?? '');
+    }
+    const images: string[] = [];
+    for (const s of sheets) images.push(await gen.upload(fs.readFileSync(path.join(dir, s)), s));
+    const jNotes = commentsOn(t.id).filter((m: any) => m.kind === 'note' && !String(m.by).startsWith('Studio')).map((m: any) => m.text).slice(-12);
+    const prompt = reviewPrompt(t, v, { seconds, frames: Math.ceil(seconds), perSheet: cols * rows, silences: silenceOf(log), jNotes });
+    const job = await askClaude({ prompt, schema: REVIEW_SCHEMA, images, model: jobModel('review'), maxTokens: 3000, timeoutMs: 8 * 60_000, purpose: 'video review', product: t.product });
+    const r = job?.result?.value ?? job?.value;
+    if (!r || typeof r.pass !== 'boolean') throw new Error(job?.error ?? 'no answer');
+    return { pass: r.pass, score: Number(r.score) || 0, summary: String(r.summary ?? '').slice(0, 600), notes: (r.notes ?? []).slice(0, 8).map((n: any) => ({ at: n.at === null || n.at === undefined || !Number.isFinite(Number(n.at)) ? null : Number(n.at), note: String(n.note).slice(0, 500) })) };
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+/** ffmpeg silencedetect's log to silences (start, length). */
+export function silenceOf(log: string) {
+  const out: { start: number; seconds: number }[] = [];
+  let start: number | null = null;
+  for (const line of log.split('\n')) {
+    const s = /silence_start: ([\d.]+)/.exec(line);
+    if (s) start = Number(s[1]);
+    const e = /silence_end: ([\d.]+) \| silence_duration: ([\d.]+)/.exec(line);
+    if (e) {
+      out.push({ start: start ?? Number(e[1]) - Number(e[2]), seconds: Number(e[2]) });
+      start = null;
+    }
+  }
+  return out;
 }
 
 /** What J sees per video: where it is, in his words. */
@@ -164,11 +282,10 @@ export async function videoDetail(task: string) {
 }
 
 /** The agent's request for a new video: J's script and what the format means. */
-export function videoRequest(a: { title: string; script: string; format?: string; budget?: string; direction?: string }) {
+export function videoRequest(a: { title: string; script: string; format?: string; direction?: string }) {
   const format = FORMATS[a.format ?? 'short'] ? a.format ?? 'short' : 'short';
-  const budget = BUDGETS[a.budget ?? 'gpu'] ? a.budget ?? 'gpu' : 'gpu';
-  return `Make the video "${a.title}" (${format}: ${FORMATS[format]}). ${BUDGETS[budget].label}. Load the video skill
-first; it is how videos are made here.
+  return `Make the video "${a.title}" (${format}: ${FORMATS[format]}). The video skill (below) is how videos are made here:
+a beat sheet first, then every shot made with the strongest method (Blender and ComfyUI by default), within the GPU budget.
 
 ## J's script
 ${a.script.trim()}
@@ -178,17 +295,15 @@ Gen asset in .hawkes/video.json; J screens it in Studio and his notes come back 
 }
 
 /** A new video: a roadmap item and its video task, planned, so the PM starts it. */
-export function createVideo(a: { product: string; title: string; script: string; format?: string; budget?: string; direction?: string; gpu?: unknown; priority?: string; by?: string; origin?: string | null }) {
+export function createVideo(a: { product: string; title: string; script: string; format?: string; direction?: string; gpu?: unknown; priority?: string; by?: string; origin?: string | null }) {
   if (!String(a.title ?? '').trim()) throw new StudioError('A video needs a title');
   if (!String(a.script ?? '').trim()) throw new StudioError('A video needs a script (the lines, who says them, what happens)');
   if (a.format && !FORMATS[a.format]) throw new StudioError(`format is ${Object.keys(FORMATS).join(' or ')}`);
-  if (a.budget && !BUDGETS[a.budget]) throw new StudioError(`budget is ${Object.keys(BUDGETS).join(' or ')}`);
-  const budget = a.budget ?? 'gpu';
   // A video's files go to a product's repo (and beta); Studio's and Gen's own repos deploy on merge, so never there.
   if (isInfra(a.product)) throw new StudioError(`Videos belong to a product (its characters and repo), not ${a.product}`);
   const title = String(a.title).trim().slice(0, 140);
   const item = addItem({ product: a.product, title: `Video: ${title}`, goal: `A ${a.format ?? 'short'} video J approves in the Screening tab.`, status: 'planned', priority: a.priority, by: a.by ?? 'J', origin: a.origin ?? null });
-  const task = addTask({ item: item.id, title: `Video: ${title}`, request: videoRequest({ title, script: a.script, format: a.format, budget, direction: a.direction }), criteria: ['J approves it in the Screening tab'], kind: 'video', gpu: a.gpu ?? BUDGETS[budget].gpu ?? undefined, priority: a.priority });
+  const task = addTask({ item: item.id, title: `Video: ${title}`, request: videoRequest({ title, script: a.script, format: a.format, direction: a.direction }), criteria: ['J approves it in the Screening tab'], kind: 'video', gpu: a.gpu ?? VIDEO_GPU, priority: a.priority });
   addComment(task.id, `Script (${a.format ?? 'short'}):\n${a.script.trim()}`, a.by ?? 'J', 'script');
   logDecision('video', task.id, task.product, `new video "${title}" (${a.format ?? 'short'})`);
   return getTask(task.id)!;
@@ -201,8 +316,11 @@ async function sendNotes(task: string, notes: string[], by: string) {
   const c = t.change ? getChange(t.change) : null;
   if (!c || !['ready', 'failed'].includes(c.status)) return false;
   const v = versionsOf(task).at(-1);
-  revise(c.id, `J's notes on ${v ? `v${v.n}` : 'the last pass'} (make a new version that answers every one; change only what they're about):\n${notes.map((n) => `- ${n}`).join('\n')}`, by);
+  const who = by.startsWith('Studio') ? "Studio's review" : "J's notes";
+  revise(c.id, `${who} on ${v ? `v${v.n}` : 'the last pass'} (make a new version that answers every one; change only what they're about):\n${notes.map((n) => `- ${n}`).join('\n')}`, by);
   db.prepare('INSERT INTO video_state (task, notes_sent_at) VALUES (?, ?) ON CONFLICT(task) DO UPDATE SET notes_sent_at = excluded.notes_sent_at').run(task, Date.now());
+  // J's own notes start the review's rounds again (Studio's review gets REVIEW_ROUNDS on each of his versions).
+  if (!by.startsWith('Studio')) db.prepare('UPDATE video_state SET auto_rounds = 0 WHERE task = ?').run(task);
   setTask(task, { status: 'working' });
   logDecision('video', task, t.product, `notes sent to the agent on "${t.title}": ${notes.join(' | ').slice(0, 300)}`);
   return true;
@@ -253,7 +371,7 @@ export async function handleVideosApi(req: import('node:http').IncomingMessage, 
   const method = req.method ?? 'GET';
   let m: RegExpExecArray | null;
   try {
-    if (route === '/api/videos' && method === 'GET') return send(res, 200, { videos: await listVideos(Number(url.searchParams.get('limit')) || 60), formats: FORMATS, budgets: Object.fromEntries(Object.entries(BUDGETS).map(([k, l]) => [k, l.label])) });
+    if (route === '/api/videos' && method === 'GET') return send(res, 200, { videos: await listVideos(Number(url.searchParams.get('limit')) || 60), formats: FORMATS });
     if (route === '/api/videos' && method === 'POST') {
       const b = await readJson(req);
       // Started from Talk: the version notices go back into that conversation (tellTalk).
