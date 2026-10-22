@@ -102,6 +102,13 @@ Hawkes Gen and Hawkes Studio are private GitHub repos (`jgriffith3433/hawkesgen`
      back to the previous commit, restarts again, and doesn't retry that commit.
    - It refuses (and logs why) when the server's checkout has edits to tracked files, or main no longer contains the
      deployed commit (history rewritten).
+**Deploying without GitHub Actions: `auto-deploy.bat`** in `hawkesgen` and `hawkesstudio` (`deploy/local-deploy.mjs`;
+J, 2026-10-22: Actions was off over a billing problem). It does what CI does, on J's PC: main must contain GitHub's main;
+`npm run typecheck` and `npm test` on a clean worktree of exactly that commit (this repo's `node_modules`, Gen's `.venv`
+and template cache shared in; Blender tests skipped with `HAWKES_NO_BLENDER`, as on CI); a push to main; then over SSH it
+writes `/var/lib/hawkes/verified-<repo>.json` (that sha) and starts `hawkes-pull`, whose `ciState` takes a locally
+verified commit as passed. It waits for the deploy and prints how it went. `--skip-tests` runs the typecheck only.
+
 **Restarting by hand: Settings → ↻ Restart services** (`src/restarts.ts`; J, 2026-10-22). One button per service.
 Studio can't restart services itself, so it leaves `.data/restart-request.json` and touches `.data/pull-now`;
 `hawkes-pull.mjs` (root) reads the server's secrets again (each `ExecStart` of `hawkes-secrets`, without restarting that

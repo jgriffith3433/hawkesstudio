@@ -85,8 +85,24 @@ function githubToken() {
   }
 }
 
+/**
+ * Commits checked on J's PC instead of GitHub Actions (deploy/local-deploy.mjs: typecheck and the tests on a clean copy of
+ * that exact commit, then it writes the sha here over SSH as root). J, 2026-10-22: Actions was off over a billing problem.
+ */
+const VERIFIED_DIR = process.env.HAWKES_PULL_VERIFIED_DIR ?? '/var/lib/hawkes';
+function verifiedLocally(repo, sha) {
+  try {
+    const v = JSON.parse(fs.readFileSync(path.join(VERIFIED_DIR, `verified-${repo}.json`), 'utf8'));
+    return v && v.sha === sha ? v : null;
+  } catch {
+    return null;
+  }
+}
+
 /** success | failure | pending | none (no CI ran) | error (GitHub didn't answer). */
 async function ciState(repo, sha, token) {
+  const local = verifiedLocally(repo, sha);
+  if (local) return { state: 'success', detail: `checked on ${local.by ?? "J's PC"} at ${local.at} (${local.checks ?? 'typecheck and tests'})` };
   const headers = { Accept: 'application/vnd.github+json', 'User-Agent': 'hawkes-pull', 'X-GitHub-Api-Version': '2022-11-28', ...(token ? { Authorization: `Bearer ${token}` } : {}) };
   try {
     const r = await fetch(`https://api.github.com/repos/${OWNER}/${repo}/commits/${sha}/check-runs?per_page=100`, { headers, signal: AbortSignal.timeout(20_000) });
