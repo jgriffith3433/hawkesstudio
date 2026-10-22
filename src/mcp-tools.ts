@@ -334,6 +334,26 @@ export function studioMcp({ studio, waitRun }: Client = { studio: defaultStudio,
       run: async ({ days }) => (await studio(`/api/ledger?${new URLSearchParams({ format: 'md', days: String(days ?? 7) })}`)).markdown,
     },
     {
+      name: 'studio_social',
+      description: "Studio's YouTube and TikTok (the Social tab): which accounts are connected, and recent posts with each platform's status (private on YouTube, waiting in the TikTok inbox, failed and why). id: one post (sp_...), with TikTok's latest status.",
+      inputSchema: obj({ id: str('A post id (sp_...)') }),
+      run: async ({ id }) => {
+        if (id) return studio(`/api/social/posts/${id}`);
+        const d = await studio('/api/social?limit=20');
+        const accounts = Object.fromEntries(Object.entries(d.accounts).map(([p, a]: [string, any]) => [p, a.connected ? `connected: ${a.name}` : a.configured ? 'not connected' : 'not set up']));
+        return { accounts, posts: d.posts.map((p: any) => ({ id: p.id, when: new Date(p.created).toISOString(), title: p.title, product: p.product, asset: p.asset, results: p.results })) };
+      },
+    },
+    {
+      name: 'studio_social_post',
+      description: "Upload a finished video (an .mp4 in Hawkes Gen's library) to Studio's connected YouTube and TikTok as drafts: private on YouTube, in the TikTok app's inbox. Nothing goes public; J publishes it on the platform. Vertical 9:16 under 60 s for Shorts/TikTok (put #Shorts in the title or description), 1920x1080 for a normal YouTube video. Write the title and caption like a person: what it shows, why it's cool, a link (e.g. https://hawkesgen.com), 3-6 hashtags. Returns the post; check it with studio_social.",
+      inputSchema: obj({
+        asset: str('Gen asset id of the .mp4 (a_...)'), title: str('Title, up to 100 characters'), description: str('Description / caption (TikTok: J pastes it in the app)'),
+        tags: str('Comma-separated tags'), platforms: str('youtube, tiktok or both comma-separated (default: every connected one)'), product: str('The product it is about (e.g. hawkesgen, sickofit)'),
+      }, ['asset', 'title']),
+      run: async (a) => studio('/api/social/posts', { method: 'POST', body: { ...a, platforms: a.platforms ? String(a.platforms).split(',').map((s) => s.trim()).filter(Boolean) : [] } }),
+    },
+    {
       name: 'studio_analytics',
       description: "How real players do (Hawkes Analytics, Gen's player analytics of every product's pages): compact JSON plus plain sentences with their sample sizes. Live site, bots and J's own devices left out, last 30 days unless you say otherwise. view: overview (every product: sessions and players this week vs the week before, D1, rating, error rate), product (one product's headline numbers), dropoff (where sessions end: before the game was ready, by level, screen, last event), levels (attempts, completion, quits, deaths, retries before the first win), feedback (ratings and the latest comments), errors (grouped by signature with sessions, players, browsers, builds), builds (two builds' KPIs side by side: by default the two newest; a, b to pick), insights (Gen's biggest changes and worst drop-offs, only over minimum samples), session (one session's timeline: session id). Check \"players die here 70% of the time\" before and after a change; don't call a change from small samples (under 30 sessions or 20 attempts is noise).",
       inputSchema: obj({

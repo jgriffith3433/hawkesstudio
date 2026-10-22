@@ -488,6 +488,7 @@ async function refresh() {
     if (tab === 'costs' && window.loadCosts) await window.loadCosts();
     if (tab === 'resources' && window.loadResourcesTab) await window.loadResourcesTab();
     if (tab === 'analytics' && window.loadAnalyticsTab) await window.loadAnalyticsTab();
+    if (tab === 'social' && window.loadSocialTab) await window.loadSocialTab();
     if (tab === 'live' && window.loadLiveTab) await window.loadLiveTab();
     if (tab === 'golive' && window.loadGoLiveTab) await window.loadGoLiveTab();
     if (tab === 'library' && window.loadLibraryTab) await window.loadLibraryTab();

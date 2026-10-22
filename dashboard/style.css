@@ -475,3 +475,4 @@ body.lt-big-open { overflow: hidden; }
   .lt-maxbtn { opacity: 1; }
 }
 @media (prefers-reduced-motion: reduce) { .lt-prog > span, .lt-tile { transition: none; } }
+.social-posts td { padding: 8px 6px; border-bottom: 1px solid var(--line); vertical-align: top; }

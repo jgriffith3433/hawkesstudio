@@ -899,7 +899,7 @@ async function lfsPull(worktree: string, log: (s: string) => void) {
 
 export const AGENT_MEMORY_TOOLS = ['memory_search', 'memory_get', 'memory_write'];
 /** The Studio tools on an agent's or scout's own MCP server: the shared memory, and real players' data (read-only). */
-export const AGENT_STUDIO_TOOLS = [...AGENT_MEMORY_TOOLS, 'studio_analytics'];
+export const AGENT_STUDIO_TOOLS = [...AGENT_MEMORY_TOOLS, 'studio_analytics', 'studio_social', 'studio_social_post'];
 /** The role an agent change runs as: content work, a build (requests, roadmap tasks, Studio and Gen), or a fix. */
 export const agentRole = (c: Change): RoleName => ({ infra: 'builder', content: 'content', builder: 'builder', fixer: 'fixer' } as const)[roleOf(c)];
 /**
