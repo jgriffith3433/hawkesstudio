@@ -317,12 +317,13 @@ export async function inbox({ tokens = false }: { tokens?: boolean } = {}): Prom
   }
 
   // A video version waiting for J to screen it (videos.ts): watch it here or in the Screening tab; a typed answer is a note.
-  for (const v of (await listVideos()).filter((x) => x.state === 'ready to screen' && x.latest)) {
+  for (const v of (await listVideos()).filter((x) => (x.state === 'ready to screen' || x.state === 'animatic ready') && x.latest)) {
+    const anim = v.state === 'animatic ready';
     if (acked(`video:${v.id}:${v.latest!.n}`)) continue;
     out.push({
-      id: `video:${v.id}`, kind: 'video', title: `Ready to screen: "${v.title.replace(/^Video:\s*/, '')}" v${v.latest!.n}`, text: v.latest!.summary, product: v.product, productName: name(v.product),
+      id: `video:${v.id}`, kind: 'video', title: `${anim ? 'Animatic ready' : 'Ready to screen'}: "${v.title.replace(/^Video:\s*/, '')}" v${v.latest!.n}`, text: v.latest!.summary, product: v.product, productName: name(v.product),
       context: v.latest!.summary ? `v${v.latest!.n}: ${v.latest!.summary.slice(0, 300)}` : null, asker: 'Studio', recommendation: null,
-      options: ['Approve', 'Approve and post drafts'], blocks: 'the next version of this video', since: v.latest!.at, weight: 25,
+      options: anim ? ['Approve the animatic'] : ['Approve', 'Approve and post drafts'], blocks: anim ? 'the final render of this video' : 'the next version of this video', since: v.latest!.at, weight: 25,
       links: [{ label: `Watch v${v.latest!.n}`, video: v.latest!.asset }, { label: 'Open in Screening', url: `#videos/${v.id}` }],
       subject: v.id, conversation: null, asks: 1,
     });

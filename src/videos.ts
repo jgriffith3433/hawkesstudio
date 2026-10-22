@@ -30,7 +30,7 @@ try { db.exec('ALTER TABLE video_state ADD COLUMN conversation TEXT'); } catch {
 // Studio's review rounds since J's last note (reviewVersion): at most REVIEW_ROUNDS go back before J sees it anyway.
 try { db.exec('ALTER TABLE video_state ADD COLUMN auto_rounds INTEGER NOT NULL DEFAULT 0'); } catch { /* already there */ }
 // Each version's beat sheet (the agent's plan) and Studio's review of it.
-for (const col of ['beats', 'review']) { try { db.exec(`ALTER TABLE video_versions ADD COLUMN ${col} TEXT`); } catch { /* already there */ } }
+for (const col of ['beats', 'review', 'stage', 'story']) { try { db.exec(`ALTER TABLE video_versions ADD COLUMN ${col} TEXT`); } catch { /* already there */ } }
 
 const agents = () => import('./agents.ts');
 export const FORMATS: Record<string, string> = {
@@ -54,8 +54,14 @@ export const VIDEO_GPU = [
 ];
 
 export type Review = { pass: boolean; score: number; summary: string; notes: { at: number | null; note: string }[]; error?: string };
-export type Version = { id: string; task: string; n: number; change: string | null; asset: string; poster: string | null; seconds: number | null; summary: string | null; caption: string | null; at: number; beats: any[] | null; review: Review | null };
-const toVersion = (r: any): Version => ({ ...r, beats: r.beats ? JSON.parse(r.beats) : null, review: r.review ? JSON.parse(r.review) : null });
+/**
+ * A version's stage (J, 2026-10-22: the story "made no sense", the characters felt "stitched together"): the first pass
+ * is an animatic (the story, the beat sheet, cheap staging and the real voices, timed) that J approves before anything
+ * expensive renders; then the final.
+ */
+export type Stage = 'animatic' | 'final';
+export type Version = { id: string; task: string; n: number; change: string | null; asset: string; poster: string | null; seconds: number | null; summary: string | null; caption: string | null; at: number; beats: any[] | null; review: Review | null; stage: Stage; story: string | null };
+const toVersion = (r: any): Version => ({ ...r, beats: r.beats ? JSON.parse(r.beats) : null, review: r.review ? JSON.parse(r.review) : null, stage: r.stage === 'animatic' ? 'animatic' : 'final', story: r.story ?? null });
 export const REVIEW_ROUNDS = 2;
 const REVIEW_TRIES = 4;
 const REVIEW_RETRY_MS = Number(process.env.STUDIO_VIDEO_REVIEW_RETRY_MS) || 3 * 60_000;
@@ -68,7 +74,7 @@ export function versionsOf(task: string): Version[] {
 }
 
 /** What the agent says it made this pass (.hawkes/video.json), checked. null when it left none or it isn't usable. */
-export type VideoFile = { asset?: string; file?: string; poster?: string; posterFile?: string; seconds?: number; summary?: string; caption?: string; beats?: any[] };
+export type VideoFile = { asset?: string; file?: string; poster?: string; posterFile?: string; seconds?: number; summary?: string; caption?: string; beats?: any[]; stage?: Stage; story?: string };
 /**
  * A path the agent gave for its cut (or poster): inside its worktree, a video or image file that exists. Agents can't
  * put files into Gen themselves (the sandbox has no upload), so Studio does it for them (importVideoFile).
@@ -99,6 +105,7 @@ export function readVideoFile(worktree: string): VideoFile | null {
       seconds: Number.isFinite(Number(v.seconds)) ? Number(v.seconds) : undefined,
       summary: v.summary ? String(v.summary).slice(0, 2000) : undefined, caption: v.caption ? String(v.caption).slice(0, 2200) : undefined,
       beats: Array.isArray(v.beats) ? v.beats.slice(0, 120) : undefined,
+      stage: v.stage === 'animatic' ? 'animatic' : 'final', story: v.story ? String(v.story).slice(0, 6000) : undefined,
     };
   } catch {
     return null;
@@ -124,8 +131,8 @@ export function recordVersion(task: string, change: string, v: VideoFile & { ass
   const all = versionsOf(task);
   if (all.at(-1)?.asset === v.asset) return null;
   const id = newId('vv');
-  db.prepare('INSERT INTO video_versions (id, task, n, change, asset, poster, seconds, summary, caption, at, beats) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
-    .run(id, task, all.length + 1, change, v.asset, v.poster ?? null, v.seconds ?? null, v.summary ?? null, v.caption ?? null, Date.now(), v.beats ? JSON.stringify(v.beats) : null);
+  db.prepare('INSERT INTO video_versions (id, task, n, change, asset, poster, seconds, summary, caption, at, beats, stage, story) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+    .run(id, task, all.length + 1, change, v.asset, v.poster ?? null, v.seconds ?? null, v.summary ?? null, v.caption ?? null, Date.now(), v.beats ? JSON.stringify(v.beats) : null, v.stage ?? 'final', v.story ?? null);
   return toVersion(db.prepare('SELECT * FROM video_versions WHERE id = ?').get(id));
 }
 
@@ -190,9 +197,11 @@ async function tellTalk(t: Task, v: Version) {
   const talk = await import('./talk.ts');
   const { PUBLIC_URL } = await import('./notify.ts');
   const title = t.title.replace(/^Video:\s*/, '');
-  const text = `"${title}" v${v.n} is ready to screen (video ${t.id}${v.seconds ? `, ${Math.round(v.seconds)} s` : ''}).${v.summary ? ` ${v.summary.slice(0, 400)}` : ''}
+  const what = v.stage === 'animatic' ? `The animatic of "${title}" (v${v.n})` : `"${title}" v${v.n}`;
+  const next = v.stage === 'animatic' ? "Tell me what to change in the story, staging or timing, or say it's good and the final gets made from it." : "Tell me what to change and I'll send it back, or say it's good and I'll approve it.";
+  const text = `${what} is ready to screen (video ${t.id}${v.seconds ? `, ${Math.round(v.seconds)} s` : ''}${v.review && !v.review.error ? `, Studio's review ${v.review.score}/10` : ''}).${v.summary ? ` ${v.summary.slice(0, 400)}` : ''}
 Watch it: ${PUBLIC_URL}/#videos/${t.id}
-Tell me what to change and I'll send it back, or say it's good and I'll approve it.`;
+${next}`;
   const row = db.prepare('SELECT conversation FROM video_state WHERE task = ?').get(t.id) as { conversation: string | null } | undefined;
   const origin = row?.conversation ?? getItem(t.item)?.origin ?? null;
   if (origin && talk.studioSays(origin, text)) return;
@@ -213,9 +222,29 @@ export const REVIEW_SCHEMA = {
 /** The review's prompt: the craft bar, J's script and notes, the agent's beat sheet, and what the frames and audio show. */
 export function reviewPrompt(t: Task, v: Version, facts: { seconds: number; frames: number; perSheet: number; silences: { start: number; seconds: number }[]; jNotes: string[] }) {
   const script = (commentsOn(t.id).find((m: any) => m.kind === 'script') as any)?.text ?? t.request;
+  const animatic = v.stage === 'animatic';
   return `You review a short video for J (Hawkes Studio) before he sees it. Be the strict director he wants: he called the
-first video out of this pipeline "junk" (characters standing on a stage punching the air, one wide shot, no faces). Pass
-it only if it meets the craft bar and looks good; otherwise give concrete fixes the agent can act on.
+first video out of this pipeline "junk" (characters standing on a stage punching the air, one wide shot, no faces), and
+of the next one: "the story it put together made no sense ... I couldn't follow along with the point of the story, why
+they are doing what they are doing", "they felt kinda disconnected? Like it was just two characters from random other
+movies stitched together". Pass it only if it meets the bar; otherwise give concrete fixes the agent can act on.
+${animatic ? `
+THIS IS THE ANIMATIC (v${v.n}): rough staging with the real voices, made so J can approve the story, staging and timing
+before the expensive render. Judge the story, the staging, the coverage the beat sheet plans and the timing. Don't mark
+it down for rough pictures (stills, grey-box, placeholders), only for what the final would inherit: an unclear story,
+characters not sharing a space, missing reactions, a bad rhythm.
+` : ''}
+Story (most important):
+- A viewer who has never seen the game can tell who these characters are, what each one wants, what happens, and why
+  it matters. The scene has a clear turn and a payoff; every line and shot moves it forward. If you can't say the point
+  of the story in one sentence after watching, it fails.
+
+Together, not stitched:
+- The characters share one space, one light and one geography: screen direction holds (the 180-degree line), eyelines
+  meet, over-the-shoulders and two-shots show both, they react to each other's words and touch the same things. Two
+  portraits on unrelated backgrounds intercut is a fail.
+- Faces act: clear, specific expressions that change with the beat, not neutral talking heads.
+- No style or quality jumps between shots or where clips join; lips match the voice the whole way through.
 
 The craft bar:
 - A hook in the first second (motion, a face or a line), no title-card opener.
@@ -232,7 +261,10 @@ The craft bar:
 - On-model characters, no morphing or melting, nothing ugly. Captions readable, inside the middle band.
 - Ends on a short end card ("Made with Hawkes Gen · hawkesgen.com"), about 1.5 s, without a long fade to black.
 
-${t.title} (${t.product}). J's script:
+${t.title} (${t.product}). The agent's story (logline, what each character wants, the turn, the payoff):
+${v.story ? v.story.slice(0, 3000) : '(none: the agent wrote no story, which is itself a failure)'}
+
+J's script:
 ${String(script).slice(0, 3000)}
 ${facts.jNotes.length ? `\nJ's notes so far (the version must answer them):\n${facts.jNotes.map((n) => `- ${n}`).join('\n')}\n` : ''}
 The agent's beat sheet for v${v.n}:
@@ -307,7 +339,7 @@ function stateOf(t: Task, c: any, versions: Version[]): string {
   if (t.status === 'verified' || t.status === 'live') return 'approved';
   if (t.status === 'dropped') return 'dropped';
   if (!c) return t.status === 'planned' ? 'queued' : t.status;
-  if (c.status === 'ready') return versions.length ? 'ready to screen' : 'no video yet';
+  if (c.status === 'ready') return !versions.length ? 'no video yet' : versions.at(-1)!.stage === 'animatic' ? 'animatic ready' : 'ready to screen';
   if (c.status === 'failed') return 'failed';
   if (c.status === 'needs answer') return 'has a question';
   if (c.status === 'waiting on Gen') return 'rendering';
@@ -343,7 +375,8 @@ export async function videoDetail(task: string) {
 export function videoRequest(a: { title: string; script: string; format?: string; direction?: string }) {
   const format = FORMATS[a.format ?? 'short'] ? a.format ?? 'short' : 'short';
   return `Make the video "${a.title}" (${format}: ${FORMATS[format]}). The video skill (below) is how videos are made here:
-a beat sheet first, then every shot made with the strongest method (Blender and ComfyUI by default), within the GPU budget.
+the story and a beat sheet first, an animatic J approves, then the final with every shot made with the strongest method
+(Blender and ComfyUI by default), within the GPU budget.
 
 ## J's script
 ${a.script.trim()}
@@ -409,6 +442,13 @@ export async function approveVideo(task: string, { by = 'J', post = false, platf
   if (!c || c.status !== 'ready') throw new StudioError(`"${t.title}" has no version waiting for you (${c ? c.status : 'not started'})`);
   const v = versionsOf(task).at(-1);
   if (!v) throw new StudioError(`"${t.title}" has no video yet`);
+  // An approved animatic: the agent goes on to the final from it (nothing merges yet).
+  if (v.stage === 'animatic') {
+    addComment(task, `Approved the animatic v${v.n}: make the final.`, by, 'note');
+    await sendNotes(task, [`J approved the animatic v${v.n}. Make the final from it now: keep its story, beats, staging and timing (don't redesign them), and render every beat at full quality with the methods your beat sheet names. Mark it "stage": "final".`], by);
+    logDecision('video', task, t.product, `${by} approved the animatic of "${t.title}" (v${v.n}): the final is being made`);
+    return { video: await videoDetail(task), social: null, final: 'in progress' };
+  }
   const merged = await approve(c.id, { confirm: `MERGE ${c.id}`, by });
   setTask(task, { status: 'verified', merged_at: merged?.merged_at ?? Date.now(), verified_at: Date.now(), pr: c.pr_url });
   addComment(task, `Approved v${v.n}.`, by, 'note');

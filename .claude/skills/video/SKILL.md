@@ -4,9 +4,15 @@ description: Make a video from J's script (characters talking, a lore moment, a 
 ---
 # Making a video
 
-J writes the script. You direct it: a beat sheet second by second, then every shot made with the strongest tool
-Hawkes Gen has. Studio reviews each version against your beat sheet and the craft bar below before J sees it, and sends
-it back to you if it falls short. J screens what passes; his notes come back to you as revisions of the same work.
+J writes the script. You direct it in two stages:
+
+1. **The animatic** (your first pass): the story, the beat sheet, cheap staging (Blender grey-box or on-model stills) and
+   the real voices, timed. It exists so J can fix the story, staging and timing while that's cheap.
+2. **The final**, once J approves the animatic: every beat rendered at full quality with the strongest tool Hawkes Gen
+   has, keeping the animatic's story, beats, staging and timing.
+
+Studio reviews each version (story first, then the craft bar) before J sees it and sends it back to you if it falls
+short. J screens what passes; his notes come back to you as revisions of the same work.
 
 ## What J wants (his words, 2026-10-22)
 
@@ -17,6 +23,12 @@ disposal to do so. And it just so happens, one of the best ways to do that is bl
 
 The first video out of this pipeline was keyed fighter clips standing on a stage, punching the air: one wide shot,
 small characters, no faces, no reactions, no camera. That is the floor, not the bar. Never ship that.
+
+And on The Board v1: "for the exit punk origins it went from one style to the next and that was a little weird",
+"the characters needed a little bit more expression, and as far as them interacting they felt kinda disconnected? Like
+it was just two characters from random other movies stitched together to form a barely coherent sentence. And on that
+note, the story it put together made no sense either. I couldn't follow along with the point of the story, why they are
+doing what they are doing." Story, togetherness and one consistent look come before any of the craft below.
 
 Also from J: lore and characters, not feature montages; each character in their own fitting voice; pacing cut to the
 voice; only shots that look good; something happens in the first second; a short end card (the game's name, then "Made
@@ -34,7 +46,21 @@ with Hawkes Gen · hawkesgen.com" small) is the only selling.
 3. Make every line (`audio.voice`, delivery tags like `[laughs]` `[deadpan]` where the script implies them; a second take
    when the first reads wrong). Measure each. **Line lengths set the timing of the beats.**
 
-## 2. Find every form of every character
+## 2. The story (before anything else)
+
+Write `videos/<slug>/story.md`, short, and put the same text in `.hawkes/video.json` `story`:
+- **Logline**: one sentence a stranger would understand: who, wants what, what gets in the way, what changes.
+- **Each character**: what they want in this scene, how they feel about the other one, their attitude (in one line each).
+- **The turn**: the moment the scene changes (a reveal, a decision, a reversal), and **the payoff**: how it lands (the
+  joke, the feeling, the consequence).
+- **Why it matters**: what it shows about the world or the character, in the game's canon.
+- **Who it's for**: someone who has never seen the game. They must be able to follow it.
+
+If J's script leaves the point unclear, find the strongest reading that fits his lines and canon, and say it in the
+logline. Don't add lines; make the staging, reactions and cuts carry the meaning. If you can't find a reading that makes
+sense, ask J (`.hawkes/question.md`) rather than shooting confusion. Every beat in the sheet should serve this story.
+
+## 3. Find every form of every character
 
 Characters exist in different forms across products: rigged 3D models, 3D models without a rig, 2D animated clips,
 sprites, still art, LoRAs. Yooba is a rigged Blender model (`yoobaland/yooba`), DoD clips (`doseofdestruction/yooba`) and
@@ -52,7 +78,14 @@ portrait, two or three expressions) from that reference with `image.edit` / `ima
 every shot of them from the sheet. The Board v1 made The Mechanic a 3D man in the wides and a flat 2D cartoon in the
 close-ups: that fails review.
 
-## 3. The beat sheet (before you render anything)
+**Character kits (made once, reused by every video).** Keep each character's kit in the product repo under
+`videos/cast/<character-id>/kit.json`: the canonical reference, the sheet (front, three-quarter, portrait) and an
+expression set (neutral, smug, shocked, angry, deadpan, hurt, delighted) as Gen asset ids, their voice, their 3D form or
+Blender proxy (height, proportions), a motion style in a sentence ("servo-stiff: holds still, then moves one joint at a
+time"), motion clips made for them, and a LoRA if one was trained. Look for the kit first; extend it when a video needs
+an expression or move it lacks; build it when it doesn't exist. Commit it, so the next video starts from it.
+
+## 4. The beat sheet (before you render anything)
 
 Write `videos/<slug>/beats.json`: an array, one entry per shot, timed to the voice lines:
 
@@ -75,7 +108,14 @@ Write it like a storyboard artist and an editor, second by second.
   over 3 s unless it's a deliberate hold, and say why.
 - **Variety in dialogue**: never a ping-pong of the same two static close-ups. Mix over-the-shoulders, two-shots, a
   change of angle or side, a slow push on the line that matters, a cutaway to hands or a prop.
-- **Consistency**: each character looks the same in every shot (one model and style, from their reference).
+- **Consistency**: each character looks the same in every shot (one model and style, from their kit).
+- **Together, not stitched**: the characters share one set, one light and one geography. Hold screen direction (the
+  180-degree line: if A looks right in the wide, A looks right in A's close-up), match eyelines, and use over-the-shoulders
+  and two-shots that show both. They react to each other's words, look at each other, hand things over, touch the same
+  props. Stage the scene once in Blender (or one set plate) and take every shot from that scene, so geography and light
+  hold. Never intercut portraits made on separate backgrounds.
+- **Expression**: faces act. Each beat names the expression, and it changes with the beat (a smirk dropping, eyes
+  narrowing, a beat of disbelief). Use the kit's expression set for keyframes and prompt the micro-motion.
 - **Faces**: every spoken line has the speaker in MCU or closer, lip-synced, or plays over a reaction on purpose.
 - **Reactions**: every punchline, insult, hit or reveal cuts to someone's face reacting (CU or ECU), held a beat.
 - **Physical action reads**: a wide or medium to show what happens, the impact in close-up, a physical reaction
@@ -87,7 +127,15 @@ Write it like a storyboard artist and an editor, second by second.
   reaction, a low angle for menace).
 - **Sound**: voices on top, SFX on every action, music or room tone under.
 
-## 4. Make each shot: Blender and ComfyUI first
+## 5. The animatic (your first pass)
+
+Before rendering anything expensive: lay out every beat at its real length with the real voices and SFX placeholders.
+Pictures can be rough: a Blender grey-box render of the staged scene (the cheapest and the most honest about staging and
+camera), or on-model stills from the kits held for each beat with a simple move. Captions on. Mark it `"stage":
+"animatic"` in `.hawkes/video.json` with the story and the beats. J approves it or sends notes; only then make the final.
+Skip the animatic only when J's direction says so.
+
+## 6. The final: Blender and ComfyUI first
 
 Blender is the director for every shot with blocking or a camera, whatever the characters are. ComfyUI makes it look
 finished. Price the shots first (`hawkesgen_estimate`, or `film.plan`, which prices a whole recipe) and stay inside the
@@ -119,6 +167,12 @@ brief's GPU budget; batch jobs of one kind together (one model load).
    `video.control` with `estimateDepth: true`.
 7. **Finish.** `video.upscale` then `video.interpolate` on shots that need it; `image.restore` on stills.
 
+**Longer shots and joins.** Don't chain a clip from the last frame of the one before and hope: the style drifts and the
+join shows. For a line longer than one clip, size `video.talk`'s `frames` to the whole line (it joins its two passes
+itself and keeps the lips on the voice; size from the line's real length) or cut to a reaction or another angle
+mid-line, which reads better anyway. Generate each shot from the same kit keyframe and the same set, never from the
+previous clip's last frame. Check every join for a jump in look, light or lip sync.
+
 `film.plan` builds these chains as priced `asset.make` recipes: `cinema` (gate, render, on-model keyframe, relight,
 repaint, upscale), `dialogue` (a lip-synced close-up), `vfx`, `trailer`.
 
@@ -126,7 +180,7 @@ repaint, upscale), `dialogue` (a lip-synced close-up), `vfx`, `trailer`.
 shot that looks wrong gets redone (another seed, a better keyframe, a tighter guide) or replaced, never kept because it
 was paid for.
 
-## 5. The cut
+## 7. The cut
 
 `video.compose`: shots in order with their durations from the beat sheet, cuts on action, voice lines on their shots
 (`dialogue: true`), SFX placed on the frames they belong to, music ducked under the voices, captions burned in for shorts
@@ -136,14 +190,14 @@ was paid for.
 Then watch it as J will: pull a frame per second and look at all of them in order next to `beats.json`. Every beat there?
 Faces on-model? The hook in the first second? Any dead air? Fix it before handing it over.
 
-## 6. Hand it over
+## 8. Hand it over
 
-- Commit `videos/<slug>/`: `script.md` (J's script), `beats.json`, `video.json` (cast and forms, every shot's method,
-  Gen jobs and asset ids), any helper scripts.
+- Commit `videos/<slug>/`: `script.md` (J's script), `story.md`, `beats.json`, `video.json` (cast and forms, every shot's
+  method, Gen jobs and asset ids), any helper scripts; and the kits you made or extended (`videos/cast/`).
 - Write `.hawkes/video.json` (`asset` and `poster` are Gen asset ids; if you can't put the files into Gen yourself,
   give their paths in your worktree instead, `"file": "videos/<slug>/out/cut.mp4"` and `"poster": "videos/<slug>/out/poster.png"`,
   and Studio uploads them):
-  `{ "asset": "<the cut>", "poster": "<a frame>", "seconds": 24.5, "summary": "what this version is / what changed", "caption": "post text: one line that makes people watch, 3-6 hashtags, hawkesgen.com", "beats": <the same array as beats.json> }`
+  `{ "asset": "<the cut>", "poster": "<a frame>", "seconds": 24.5, "summary": "what this version is / what changed", "caption": "post text: one line that makes people watch, 3-6 hashtags, hawkesgen.com", "beats": <the same array as beats.json>, "story": "<story.md>", "stage": "animatic" or "final" }`
 - `.hawkes/summary.md` (what you made, what it cost) and `.hawkes/learned.md` (casting, a character's motion style, what
   worked or didn't, as durable notes).
 

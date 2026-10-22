@@ -30,7 +30,7 @@
   `;
   document.head.appendChild(css);
 
-  const READY = new Set(['ready to screen']);
+  const READY = new Set(['ready to screen', 'animatic ready']);
   const file = (a) => (a ? `/api/gen/v1/files/${a}` : '');
   let current = null; // the open video's task id
   let shown = null;   // the version number playing
@@ -76,14 +76,16 @@
     if (shown == null || !vs.some((v) => v.n === shown)) shown = vs.at(-1)?.n ?? null;
     const v = vs.find((x) => x.n === shown);
     const canNote = d.task.status !== 'verified' && d.task.status !== 'dropped';
-    const canApprove = d.state === 'ready to screen' && v && v.n === vs.at(-1).n;
+    const canApprove = (d.state === 'ready to screen' || d.state === 'animatic ready') && v && v.n === vs.at(-1).n;
+    const anim = v?.stage === 'animatic';
     el.innerHTML = `
       <div class="vd-row" style="margin-bottom:12px"><button id="vdBack">← All videos</button>
         <h3 style="margin:0">${esc(d.task.title.replace(/^Video:\s*/, ''))}</h3><span class="pill">${esc(d.state)}</span><small class="dim">${esc(d.task.product)}</small></div>
       <div class="vd-main">
         <div>
           <div class="vd-player">${v ? `<video id="vdVideo" src="${file(v.asset)}" ${v.poster ? `poster="${file(v.poster)}"` : ''} controls playsinline preload="metadata"></video>` : `<p class="dim" style="padding:60px 20px;color:#bbb">${esc(d.change?.detail ?? 'Not started yet: the PM starts it when an agent is free.')}</p>`}</div>
-          <div class="vd-versions">${vs.map((x) => `<button class="small${x.n === shown ? ' on' : ''}" data-version="${x.n}">v${x.n}</button>`).join('')}</div>
+          <div class="vd-versions">${vs.map((x) => `<button class="small${x.n === shown ? ' on' : ''}" data-version="${x.n}">v${x.n}${x.stage === 'animatic' ? ' · animatic' : ''}</button>`).join('')}</div>
+          ${v?.story ? `<details class="more-details" open><summary>The story</summary><div style="white-space:pre-wrap;font-size:13px">${esc(v.story)}</div></details>` : ''}
           ${v?.summary ? `<div class="status-line">v${v.n}: ${esc(v.summary)}</div>` : ''}
           ${v?.review ? `<div class="status-line">Studio's review: <b>${esc(String(v.review.score))}/10</b>${v.review.pass ? ' · passed' : ' · sent back'} · ${esc(v.review.summary)}</div>` : ''}
           ${v?.caption ? `<details class="more-details"><summary>Post caption</summary><pre style="white-space:pre-wrap;font-size:12px">${esc(v.caption)}</pre></details>` : ''}
@@ -95,9 +97,11 @@
             <textarea id="vdNote" rows="4" placeholder="${v ? 'What should change? It is stamped with where the video is paused.' : 'Notes for the agent while it works'}"></textarea>
             <div class="vd-row"><button type="submit" class="primary">Send note</button><small class="dim" id="vdAt"></small></div>
           </form>` : ''}
-          ${canApprove ? `<div class="card" style="max-width:none"><b>Happy with v${v.n}?</b>
+          ${canApprove ? (anim ? `<div class="card" style="max-width:none"><b>Is the story and staging right?</b>
+            <div class="dim" style="font-size:13px">This is the animatic: rough pictures, real voices and timing. Approving it has the agent make the final from it.</div>
+            <button id="vdApprove" class="primary">Approve the animatic</button></div>` : `<div class="card" style="max-width:none"><b>Happy with v${v.n}?</b>
             <label class="vd-row"><input type="checkbox" id="vdPost" checked> Also send drafts to YouTube and TikTok</label>
-            <button id="vdApprove" class="primary">Approve v${v.n}</button></div>` : ''}
+            <button id="vdApprove" class="primary">Approve v${v.n}</button></div>`) : ''}
           <div class="vd-notes">${d.notes.slice().reverse().map((n) => `<div class="vd-note"><div class="who">${esc(n.by)} · ${esc(n.kind)} · ${esc(ago(n.at))}</div>${esc(n.text)}</div>`).join('')}</div>
         </div>
       </div>`;

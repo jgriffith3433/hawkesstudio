@@ -447,14 +447,17 @@ task of kind `video` (`src/videos.ts`, `dashboard/videos.js`, Talk's `studio_vid
    reactions, physical reactions and VFX, bespoke animation, a motivated camera), makes each shot with Blender and
    ComfyUI first, cuts it with `video.compose`, and leaves the cut and the beat sheet in `.hawkes/video.json`.
    Its files go in the product repo under `videos/<slug>/`.
-3. **Studio's review, then screening.** When the pass ends, Studio keeps the version (`video_versions`) and reviews it
+3. **The animatic first.** The agent's first pass is an animatic (`stage: "animatic"`: the story, the beat sheet, rough
+   staging and the real voices, timed). J approves it ("Approve the animatic": the agent makes the final from it,
+   nothing merges) or sends notes. The final versions come after.
+4. **Studio's review, then screening.** When the pass ends, Studio keeps the version (`video_versions`) and reviews it
    (`reviewVersion`: a frame a second as contact sheets, dead air from ffmpeg, Claude against the craft bar and the beat
    sheet). Short of the bar, it goes back to the agent with the review's notes, up to `REVIEW_ROUNDS` (2) times since J's
    last note; then the task shows "ready to screen" with the review's score.
    Videos never merge by themselves (`autoMergeBeta` and the PM's `reviewable` skip them) and no beta playtest judges them.
-4. **Notes.** J's note (stamped with the version and the second he paused at) goes straight back to the same agent session
+5. **Notes.** J's note (stamped with the version and the second he paused at) goes straight back to the same agent session
    (`agents.ts revise`): never a failed try. A note sent while the agent is working is kept and sent when its pass ends.
-5. **Approve.** Merges the video's files into beta, marks the task verified, and (if he ticks it) sends drafts to YouTube
+6. **Approve.** Merges the video's files into beta, marks the task verified, and (if he ticks it) sends drafts to YouTube
    and TikTok (`social.ts`). Videos belong to a product, never to Studio or Gen (their merges deploy).
 
 ## Talking to Talk by voice (calls)

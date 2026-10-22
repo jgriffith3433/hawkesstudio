@@ -72,7 +72,7 @@ test('every video gets a priced GPU budget (no "No GPU" lock)', () => {
 
 test("Studio's review: the craft bar and the beat sheet go to Claude; silences are read from ffmpeg", () => {
   const t = v.createVideo({ product: 'doseofdestruction', title: 'Review me', script: 'TT: Hi.' });
-  const base = { id: 'vv_x', task: t.id, n: 1, change: null, asset: 'a_0123456789abcdef', poster: null, seconds: 20, summary: 'first cut', caption: null, at: 0, review: null };
+  const base = { id: 'vv_x', task: t.id, n: 1, change: null, asset: 'a_0123456789abcdef', poster: null, seconds: 20, summary: 'first cut', caption: null, at: 0, review: null, stage: 'final' as const, story: null };
   const none = v.reviewPrompt(t, { ...base, beats: null }, { seconds: 20, frames: 20, perSheet: 8, silences: [], jNotes: [] });
   assert.match(none, /no beat sheet, which is itself a failure/);
   assert.match(none, /reaction/i);
@@ -108,4 +108,23 @@ test('videos take no product slot: several run beside each other and beside othe
   // Lanes as pump() gives them: each video is its own; the product's own limit still holds for the rest.
   const picks = pickQueued([{ id: 'c_v1', product: 'video:c_v1' }, { id: 'c_v2', product: 'video:c_v2' }, { id: 'c_code', product: 'doseofdestruction' }], ['doseofdestruction'], 5, { limit: () => 1 });
   assert.deepEqual(picks, ['c_v1', 'c_v2']);
+});
+
+test('the animatic comes first: its stage and story are kept, and the review judges story and staging, not polish', () => {
+  const t = v.createVideo({ product: 'doseofdestruction', title: 'Animatic', script: 'TT: Hi.' });
+  assert.match(t.request, /animatic J approves/);
+  const wt = fs.mkdtempSync(path.join(os.tmpdir(), 'wt-'));
+  fs.mkdirSync(path.join(wt, '.hawkes'));
+  fs.writeFileSync(path.join(wt, '.hawkes', 'video.json'), JSON.stringify({ asset: 'a_1111111111111111', stage: 'animatic', story: 'Logline: TT wants the last fry.' }));
+  const f = v.readVideoFile(wt)!;
+  assert.deepEqual([f.stage, f.story], ['animatic', 'Logline: TT wants the last fry.']);
+  const rec = v.recordVersion(t.id, 'c_000000000009', f as any)!;
+  assert.equal(v.versionsOf(t.id)[0].stage, 'animatic');
+  const anim = v.reviewPrompt(t, rec, { seconds: 20, frames: 20, perSheet: 8, silences: [], jNotes: [] });
+  assert.match(anim, /THIS IS THE ANIMATIC/);
+  assert.match(anim, /TT wants the last fry/);
+  assert.match(anim, /stitched together/);
+  const noStory = v.reviewPrompt(t, { ...rec, stage: 'final', story: null }, { seconds: 20, frames: 20, perSheet: 8, silences: [], jNotes: [] });
+  assert.doesNotMatch(noStory, /THIS IS THE ANIMATIC/);
+  assert.match(noStory, /wrote no story, which is itself a failure/);
 });
