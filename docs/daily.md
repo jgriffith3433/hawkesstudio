@@ -450,9 +450,11 @@ task of kind `video` (`src/videos.ts`, `dashboard/videos.js`, Talk's `studio_vid
    only where a scene needs more, cuts it with `video.compose`, and leaves the cut and the beat sheet in
    `.hawkes/video.json`. One house style per video (characters drawn in another style in canon are redrawn in it).
    Its files go in the product repo under `videos/<slug>/`.
-3. **The animatic first.** The agent's first pass is an animatic (`stage: "animatic"`: the story, the beat sheet, rough
-   staging and the real voices, timed). J approves it ("Approve the animatic": the agent makes the final from it,
-   nothing merges) or sends notes. The final versions come after.
+3. **Straight to the final; an animatic only on request.** J, 2026-10-22: "I don't want animatics (unless I specifically
+   ask for one)". The agent's first pass is the final. With `animatic: true` (`studio_video` new, the form's "Show me an
+   animatic first"), the first pass is an animatic instead (`stage: "animatic"`: the story, the beat sheet, rough
+   staging and the real voices, timed); J approves it ("Approve the animatic": the agent makes the final from it,
+   nothing merges) or sends notes.
 4. **Studio's review, then screening.** When the pass ends, Studio keeps the version (`video_versions`) and reviews it
    (`reviewVersion`: a frame a second as contact sheets, dead air from ffmpeg, Claude against the craft bar and the beat
    sheet). Short of the bar, it goes back to the agent with the review's notes, up to `REVIEW_ROUNDS` (2) times since J's

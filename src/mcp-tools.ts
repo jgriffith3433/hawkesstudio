@@ -335,17 +335,17 @@ export function studioMcp({ studio, waitRun }: Client = { studio: defaultStudio,
     },
     {
       name: 'studio_video',
-      description: "Videos (the Screening tab; docs/daily.md \"Videos\"): J writes a script, an agent makes the video with Hawkes Gen, J screens each version and his notes revise it. action: list (every video and where it is: queued, making, rendering, ready to screen, revising, approved), get (one: its versions with Gen asset ids, notes, the agent's progress), new (start one: product, title, script = J's lines as he wrote them, who says what, what happens; format short (9:16, default) or wide; direction: tone, music, look; it becomes a roadmap task the PM starts), note (J's note on the latest version, in his words: text, at = seconds into it; it goes straight back to the agent, never as a failed try), approve (J approved it: merges its files into beta; post=true also sends drafts to YouTube and TikTok). Only J's words decide a note or an approval: pass them on, don't invent them.",
+      description: "Videos (the Screening tab; docs/daily.md \"Videos\"): J writes a script, an agent makes the video with Hawkes Gen, J screens each version and his notes revise it. action: list (every video and where it is: queued, making, rendering, ready to screen, revising, approved), get (one: its versions with Gen asset ids, notes, the agent's progress), new (start one: product, title, script = J's lines as he wrote them, who says what, what happens; format short (9:16, default) or wide; direction: tone, music, look; animatic=true only when J asks for a rough draft first; it becomes a roadmap task the PM starts), note (J's note on the latest version, in his words: text, at = seconds into it; it goes straight back to the agent, never as a failed try), approve (J approved it: merges its files into beta; post=true also sends drafts to YouTube and TikTok). Only J's words decide a note or an approval: pass them on, don't invent them.",
       inputSchema: obj({
         action: str('list | get | new | note | approve'), id: str('The video (its task id, k_...): get, note, approve'),
         product: str('new: the product (doseofdestruction, sickofit, phorigins, yoobaland, hawkesgen...)'), title: str('new: the title'),
-        script: str("new: J's script"), format: str('new: short (default) or wide'), direction: str('new: tone, look, music, voices'),
+        script: str("new: J's script"), format: str('new: short (default) or wide'), direction: str('new: tone, look, music, voices'), animatic: { type: 'boolean', description: 'new: an animatic (rough draft) first, for J to approve before the final. Only when J asks for one' },
         text: str("note: J's note"), at: { type: 'number', description: 'note: seconds into the version' }, post: { type: 'boolean', description: 'approve: also send drafts to YouTube and TikTok' },
       }, ['action']),
       run: async (a) => {
         if (a.action === 'list') return studio('/api/videos');
         if (a.action === 'get') return studio(`/api/videos/${a.id}`);
-        if (a.action === 'new') return studio('/api/videos', { method: 'POST', body: { product: a.product, title: a.title, script: a.script, format: a.format, direction: a.direction } });
+        if (a.action === 'new') return studio('/api/videos', { method: 'POST', body: { product: a.product, title: a.title, script: a.script, format: a.format, direction: a.direction, animatic: a.animatic === true } });
         if (a.action === 'note') return studio(`/api/videos/${a.id}/notes`, { method: 'POST', body: { text: a.text, at: a.at } });
         if (a.action === 'approve') return studio(`/api/videos/${a.id}/approve`, { method: 'POST', body: { post: a.post } });
         throw new Error('action: list, get, new, note or approve');

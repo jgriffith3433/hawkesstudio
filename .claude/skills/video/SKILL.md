@@ -4,12 +4,13 @@ description: Make a video from J's script (characters talking, a lore moment, a 
 ---
 # Making a video
 
-J writes the script. You direct it in two stages:
+J writes the script. You direct it: the story and the beat sheet first (they're cheap, and you check them yourself),
+then **the final**: every beat rendered at full quality with the strongest tool Hawkes Gen has.
 
-1. **The animatic** (your first pass): the story, the beat sheet, cheap staging (Blender grey-box or on-model stills) and
-   the real voices, timed. It exists so J can fix the story, staging and timing while that's cheap.
-2. **The final**, once J approves the animatic: every beat rendered at full quality with the strongest tool Hawkes Gen
-   has, keeping the animatic's story, beats, staging and timing.
+**No animatic unless J asks for one** (J, 2026-10-22: "I don't want animatics (unless I specifically ask for one)").
+When the request says he asked for one, your first pass is the animatic: the story, the beat sheet, cheap staging
+(Blender grey-box, on-model stills or a Lightning-mode scene) and the real voices, timed, marked `"stage": "animatic"`;
+the final comes after he approves it, keeping its story, beats, staging and timing.
 
 Studio reviews each version (story first, then the craft bar) before J sees it and sends it back to you if it falls
 short. J screens what passes; his notes come back to you as revisions of the same work.
@@ -157,7 +158,7 @@ at a time drift apart in look, light and space; a scene made in one pass doesn't
   `megapixels` 0.4-0.6 (0.5 is 960x544); upscale the finished scene with `video.upscale`.
 - **Longer videos** are several scenes, each its own generation with the same references, cut together. Cut between
   scenes on a change of place, time or beat, never mid-line.
-- **The animatic** is the same call made cheap: `enable_lightning_lora: true` (4 steps), `megapixels` 0.3. The final
+- **An animatic** (only when J asked for one) is the same call made cheap: `enable_lightning_lora: true` (4 steps), `megapixels` 0.3. The final
   re-runs the approved prompts at full steps and size.
 - **Check** the result as always: frames once a second next to the beat sheet, and the audio against your voice track
   (it should follow it; H3 layers sound under it). The Board bake-off scene (11.5 s, 5 cuts) took 17 minutes on one GPU.

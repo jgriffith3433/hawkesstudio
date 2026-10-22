@@ -45,8 +45,8 @@ const ASSET = /^a_[0-9a-f]{8,32}$/;
  * looks as good), never a lock.
  */
 export const VIDEO_GPU = [
-  // Scenes from references are the default (J, 2026-10-22, after the bake-off): animatic and final passes of a few scenes.
-  { tool: 'video.scene', count: 4, label: 'scenes (animatic and final)' },
+  // Scenes from references are the default (J, 2026-10-22, after the bake-off): a few scenes and a retake or two.
+  { tool: 'video.scene', count: 4, label: 'scenes and retakes' },
   { tool: 'video.upscale', count: 2, label: 'finished scenes upscaled' },
   { tool: 'image.edit', count: 6, label: 'kit references in the house style, sets' },
   { tool: 'image.generate', count: 2, label: 'sets' },
@@ -57,9 +57,9 @@ export const VIDEO_GPU = [
 
 export type Review = { pass: boolean; score: number; summary: string; notes: { at: number | null; note: string }[]; error?: string };
 /**
- * A version's stage (J, 2026-10-22: the story "made no sense", the characters felt "stitched together"): the first pass
- * is an animatic (the story, the beat sheet, cheap staging and the real voices, timed) that J approves before anything
- * expensive renders; then the final.
+ * A version's stage. A video goes straight to the final; an animatic (the story, the beat sheet, cheap staging and the
+ * real voices, timed, approved by J before the final renders) only when J asks for one (J, 2026-10-22: "I don't want
+ * animatics (unless I specifically ask for one)").
  */
 export type Stage = 'animatic' | 'final';
 export type Version = { id: string; task: string; n: number; change: string | null; asset: string; poster: string | null; seconds: number | null; summary: string | null; caption: string | null; at: number; beats: any[] | null; review: Review | null; stage: Stage; story: string | null };
@@ -374,12 +374,15 @@ export async function videoDetail(task: string) {
 }
 
 /** The agent's request for a new video: J's script and what the format means. */
-export function videoRequest(a: { title: string; script: string; format?: string; direction?: string }) {
+export function videoRequest(a: { title: string; script: string; format?: string; direction?: string; animatic?: boolean }) {
   const format = FORMATS[a.format ?? 'short'] ? a.format ?? 'short' : 'short';
+  // No animatic unless J asks for one (J, 2026-10-22: "I don't want animatics (unless I specifically ask for one)").
+  const passes = a.animatic
+    ? 'the story and a beat sheet first, then an animatic first (J asked for one: rough staging, the real voices, timed) that J approves, then the final'
+    : 'the story and a beat sheet first, then the final itself (no animatic: J asks for one when he wants one)';
   return `Make the video "${a.title}" (${format}: ${FORMATS[format]}). The video skill (below) is how videos are made here:
-the story and a beat sheet first, an animatic J approves, then the final: whole scenes generated from the characters'
-references and the voice track (video.scene) by default, Blender and ComfyUI for shots that need more, within the GPU
-budget.
+${passes}: whole scenes generated from the characters' references and the voice track (video.scene) by default, Blender
+and ComfyUI for shots that need more, within the GPU budget.
 
 ## J's script
 ${a.script.trim()}
@@ -389,7 +392,7 @@ Gen asset in .hawkes/video.json; J screens it in Studio and his notes come back 
 }
 
 /** A new video: a roadmap item and its video task, planned, so the PM starts it. */
-export function createVideo(a: { product: string; title: string; script: string; format?: string; direction?: string; gpu?: unknown; priority?: string; by?: string; origin?: string | null }) {
+export function createVideo(a: { product: string; title: string; script: string; format?: string; direction?: string; animatic?: boolean; gpu?: unknown; priority?: string; by?: string; origin?: string | null }) {
   if (!String(a.title ?? '').trim()) throw new StudioError('A video needs a title');
   if (!String(a.script ?? '').trim()) throw new StudioError('A video needs a script (the lines, who says them, what happens)');
   if (a.format && !FORMATS[a.format]) throw new StudioError(`format is ${Object.keys(FORMATS).join(' or ')}`);
@@ -397,7 +400,7 @@ export function createVideo(a: { product: string; title: string; script: string;
   if (isInfra(a.product)) throw new StudioError(`Videos belong to a product (its characters and repo), not ${a.product}`);
   const title = String(a.title).trim().slice(0, 140);
   const item = addItem({ product: a.product, title: `Video: ${title}`, goal: `A ${a.format ?? 'short'} video J approves in the Screening tab.`, status: 'planned', priority: a.priority, by: a.by ?? 'J', origin: a.origin ?? null });
-  const task = addTask({ item: item.id, title: `Video: ${title}`, request: videoRequest({ title, script: a.script, format: a.format, direction: a.direction }), criteria: ['J approves it in the Screening tab'], kind: 'video', gpu: a.gpu ?? VIDEO_GPU, priority: a.priority });
+  const task = addTask({ item: item.id, title: `Video: ${title}`, request: videoRequest({ title, script: a.script, format: a.format, direction: a.direction, animatic: a.animatic === true }), criteria: ['J approves it in the Screening tab'], kind: 'video', gpu: a.gpu ?? VIDEO_GPU, priority: a.priority });
   addComment(task.id, `Script (${a.format ?? 'short'}):\n${a.script.trim()}`, a.by ?? 'J', 'script');
   logDecision('video', task.id, task.product, `new video "${title}" (${a.format ?? 'short'})`);
   return getTask(task.id)!;

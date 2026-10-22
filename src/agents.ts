@@ -680,7 +680,7 @@ come back to you here as a revision of this same work.
   (cast and voices, shots, the cut's timeline, every Gen job and asset id). Commit it each pass.
 - Render with Hawkes Gen (\`video.compose\` for the cut). Leave the finished cut in \`.hawkes/video.json\`:
   \`{ "asset": "a_...", "poster": "a_...", "seconds": 31.5, "summary": "what changed this version", "caption": "post text with hashtags", "stage": "animatic" or "final", "story": "the logline, wants, turn and payoff", "beats": [the beat sheet] }\`.
-  Your first pass is the animatic; the final comes after J approves it.
+  Make the final ("stage": "final") unless the request asks for an animatic first; only then is your first pass the animatic.
   If you can't put the cut into Gen yourself, give its path in this worktree instead (\`"file": "videos/<slug>/out/cut.mp4"\`,
   \`"poster": "videos/<slug>/out/poster.png"\`): Studio uploads it. Without one of them there is nothing for J to watch.
 - On a revision: answer every note, change only what the notes are about, and say per note what you did in \`summary\`.

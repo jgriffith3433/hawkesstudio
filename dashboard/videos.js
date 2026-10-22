@@ -62,6 +62,7 @@
         </div>
         <textarea id="vdScript" required placeholder="The script. Who says what, and what happens. For example:\n\nEXIT PUNK: (skating in) Nobody booked me. I booked me.\nSUSAN: (not looking up) You're on in thirty seconds.\nEXIT PUNK: Thirty? I need thirty-one.\n(He wipes out. The crowd roars anyway.)"></textarea>
         <input id="vdDirection" placeholder="Direction (optional): tone, music, look, voices">
+        <label class="dim" style="font-size:13px"><input type="checkbox" id="vdAnimatic"> Show me an animatic (a rough draft) first</label>
         <div class="vd-row"><button type="submit" class="primary">Start it</button><button type="button" id="vdCancel">Cancel</button></div>
       </form>
       <div class="vd-grid">${videos.map(card).join('') || '<p class="dim">No videos yet. Write a script to start one.</p>'}</div>`;
@@ -142,7 +143,7 @@
     if (e.target.id === 'vdNew') {
       e.preventDefault();
       try { localStorage.setItem('vd.product', $('#vdProduct').value); } catch {}
-      const b = { product: $('#vdProduct').value, format: $('#vdFormat').value, title: $('#vdTitle').value, script: $('#vdScript').value, direction: $('#vdDirection').value };
+      const b = { product: $('#vdProduct').value, format: $('#vdFormat').value, title: $('#vdTitle').value, script: $('#vdScript').value, direction: $('#vdDirection').value, animatic: $('#vdAnimatic').checked };
       try { const d = await api('/api/videos', { method: 'POST', body: b }); open(d.task.id); } catch (x) { alert(x.message); }
     }
     if (e.target.id === 'vdNoteForm') {

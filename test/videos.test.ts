@@ -110,9 +110,10 @@ test('videos take no product slot: several run beside each other and beside othe
   assert.deepEqual(picks, ['c_v1', 'c_v2']);
 });
 
-test('the animatic comes first: its stage and story are kept, and the review judges story and staging, not polish', () => {
-  const t = v.createVideo({ product: 'doseofdestruction', title: 'Animatic', script: 'TT: Hi.' });
-  assert.match(t.request, /animatic J approves/);
+test('no animatic unless J asks; one he asked for keeps its stage and story, and its review judges story and staging, not polish', () => {
+  assert.match(v.createVideo({ product: 'doseofdestruction', title: 'Straight', script: 'TT: Hi.' }).request, /the final itself \(no animatic/);
+  const t = v.createVideo({ product: 'doseofdestruction', title: 'Animatic', script: 'TT: Hi.', animatic: true });
+  assert.match(t.request, /an animatic first \(J asked for one/);
   const wt = fs.mkdtempSync(path.join(os.tmpdir(), 'wt-'));
   fs.mkdirSync(path.join(wt, '.hawkes'));
   fs.writeFileSync(path.join(wt, '.hawkes', 'video.json'), JSON.stringify({ asset: 'a_1111111111111111', stage: 'animatic', story: 'Logline: TT wants the last fry.' }));
