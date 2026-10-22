@@ -8,7 +8,7 @@ import { activeRun } from './pipeline.ts';
 import { criticalNow } from './drain.ts';
 import { turnsInside } from './talk.ts';
 
-export type SelfDeploy = { at: string; repo: string; outcome: 'deployed' | 'failed' | 'refused' | 'waiting'; from?: string; to?: string; detail?: string; files?: number; npm?: boolean; seconds?: number };
+export type SelfDeploy = { at: string; repo: string; outcome: 'deployed' | 'failed' | 'refused' | 'waiting' | 'restarted' | 'restart failed'; from?: string; to?: string; detail?: string; files?: number; npm?: boolean; seconds?: number };
 
 const count = (sql: string) => { try { return (db.prepare(sql).get() as any).n as number; } catch { return 0; } };
 

@@ -102,6 +102,13 @@ Hawkes Gen and Hawkes Studio are private GitHub repos (`jgriffith3433/hawkesgen`
      back to the previous commit, restarts again, and doesn't retry that commit.
    - It refuses (and logs why) when the server's checkout has edits to tracked files, or main no longer contains the
      deployed commit (history rewritten).
+**Restarting by hand: Settings → ↻ Restart services** (`src/restarts.ts`; J, 2026-10-22). One button per service.
+Studio can't restart services itself, so it leaves `.data/restart-request.json` and touches `.data/pull-now`;
+`hawkes-pull.mjs` (root) reads the server's secrets again (each `ExecStart` of `hawkes-secrets`, without restarting that
+unit, since Gen requires it), restarts the one service (Studio after its critical sections, as a deploy does), checks its
+health and logs `restarted` / `restart failed` in `self-deploys.jsonl`, which the box shows. Use it after storing a key
+(`deploy/*-key.mjs`, `deploy/secrets.mjs`). Only J's own click (`notJClick`), admins only.
+
 3. **Restarts end nothing** (since 2026-10-16). Studio's work carries on through a restart, so a deploy doesn't stall it:
    - **Agents and Talk answers** run outside Studio: each Claude Code is a transient unit of the `hawkes` user's own
      systemd manager (`systemd-run --user`, `src/detach.ts`; the user lingers: `loginctl enable-linger hawkes`, which

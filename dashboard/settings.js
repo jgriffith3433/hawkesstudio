@@ -261,12 +261,44 @@
     </div>`;
   }
 
+  // Restarting Studio or Gen (src/restarts.ts): the server's deploy runner restarts the one service, reading its secrets
+  // again first (a key just stored, like the Gemini key). Studio's own restart drops this page's connection for a moment.
+  let services = null;
+  function servicesBox(sv) {
+    if (!sv) return '';
+    const when = (d) => (d ? `${esc(ago(Date.parse(d.at)))}${d.detail ? ` · ${esc(d.detail)}` : ''}` : 'never from here');
+    const row = (s) => `<div class="ca-line" style="align-items:flex-start;gap:10px">
+        <button class="small" data-restart="${s.id}" ${sv.pending ? 'disabled' : ''}>↻ Restart ${esc(s.name)}</button>
+        <div class="meta">${s.restart ? `${s.restart.outcome === 'restarted' ? '✓ Last restart' : '<span class="set-err">Last restart failed</span>'} ${when(s.restart)}` : 'Not restarted from here yet.'}${s.deploy ? `<br>Last deploy ${esc(ago(Date.parse(s.deploy.at)))} (${esc(String(s.deploy.to ?? '').slice(0, 7))})` : ''}</div>
+      </div>`;
+    return `<div class="set-box"><h3>↻ Restart services</h3>
+      <div class="meta">Restarts one service on the server and reads its keys again (do it after storing a new key). Runs, agents and Talk answers carry on through a Studio restart; Gen's jobs pick up where they were.</div>
+      ${sv.pending ? `<div class="meta"><b>Restarting ${esc(sv.pending.service === 'gen' ? 'Hawkes Gen' : 'Hawkes Studio')}…</b> (asked ${esc(ago(Date.parse(sv.pending.at)))}). This box updates when it's back.</div>` : ''}
+      ${sv.services.map(row).join('')}
+      <div id="svcMsg" class="meta"></div>
+    </div>`;
+  }
+  let svcTimer = null;
+  async function watchRestart() {
+    clearInterval(svcTimer);
+    // Poll only while a restart is waiting or running; a Studio restart makes requests fail for a few seconds.
+    svcTimer = setInterval(async () => {
+      try {
+        services = await api('/api/services');
+        const box = $('#svcBox');
+        if (box) box.outerHTML = `<div id="svcBox">${servicesBox(services)}</div>`;
+        if (!services.pending) clearInterval(svcTimer);
+      } catch { /* Studio is restarting */ }
+    }, 3000);
+  }
+
   async function loadSettingsTab() {
-    [data, claude, agyLogin] = await Promise.all([api('/api/settings'), api('/api/claude/accounts').catch(() => null), api('/api/antigravity/login').catch(() => null)]);
+    [data, claude, agyLogin, services] = await Promise.all([api('/api/settings'), api('/api/claude/accounts').catch(() => null), api('/api/antigravity/login').catch(() => null), api('/api/services').catch(() => null)]);
     window.callVoice?.apply(data.call);
     const badge = $('#walkAwayBadge');
     if (badge) badge.hidden = !data.pm.walkAway;
-    $('#setBody').innerHTML = `<div class="set-grid">${brainBox(data.brain)}${tuningBox(data.tuning)}${claudeBox(claude, data.brain)}${agyBox(agyLogin)}${callBox(data.call)}${agentsBox(data.agents)}${pmBox(data.pm)}${notifyBox(data.notify)}${costsBox(data.costs)}${resourcesBox(data.resources)}</div>`;
+    $('#setBody').innerHTML = `<div class="set-grid">${brainBox(data.brain)}${tuningBox(data.tuning)}${claudeBox(claude, data.brain)}${agyBox(agyLogin)}<div id="svcBox">${servicesBox(services)}</div>${callBox(data.call)}${agentsBox(data.agents)}${pmBox(data.pm)}${notifyBox(data.notify)}${costsBox(data.costs)}${resourcesBox(data.resources)}</div>`;
+    if (services?.pending) watchRestart();
     if (data.call.engine === 'eleven') loadElevenVoices();
   }
   window.loadSettingsTab = loadSettingsTab;
@@ -340,6 +372,21 @@
   document.addEventListener('click', async (e) => {
     const t = e.target;
     if (t.dataset?.go) { e.preventDefault(); show(t.dataset.go); return; }
+    if (t.dataset?.restart) {
+      const name = t.dataset.restart === 'gen' ? 'Hawkes Gen' : 'Hawkes Studio';
+      if (!confirm(`Restart ${name} now?`)) return;
+      t.disabled = true;
+      try {
+        await api('/api/services/restart', { method: 'POST', body: { service: t.dataset.restart } });
+        services = await api('/api/services');
+        $('#svcBox').innerHTML = servicesBox(services);
+        watchRestart();
+      } catch (err) {
+        $('#svcMsg').innerHTML = `<span class="set-err">${esc(err.message)}</span>`;
+        t.disabled = false;
+      }
+      return;
+    }
     if (t.id === 'setTestVoice') {
       const out = $('#setTestOut');
       out.textContent = window.callVoice?.settings.engine === 'kokoro' && window.callVoice.kokoro.state !== 'ready' ? 'Loading Kokoro (the first time downloads the model)…' : 'Speaking…';

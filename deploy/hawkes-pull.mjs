@@ -201,6 +201,66 @@ function setFlag(dir, why) {
 }
 const clearFlag = (dir) => { if (!DRY) fs.rmSync(flagFile(dir), { force: true }); };
 
+/**
+ * J's restart buttons (Settings, src/restarts.ts): Studio leaves .data/restart-request.json and touches pull-now. The
+ * server's secrets are read again first (each ExecStart of hawkes-secrets, without restarting that unit: Gen requires it,
+ * so restarting it would take Gen down too), so a key stored in Secrets Manager reaches the service. Studio waits for its
+ * critical sections (seconds), as a deploy does; Gen's jobs resume after a restart. Logged like a deploy.
+ */
+const RESTART_REQUEST = path.join(ROOT, 'hawkesstudio', '.data', 'restart-request.json');
+async function restartRequested() {
+  let req;
+  try { req = JSON.parse(fs.readFileSync(RESTART_REQUEST, 'utf8')); } catch { return; }
+  if (DRY) { say(`would restart ${req.service} (asked by ${req.by})`); return; }
+  fs.rmSync(RESTART_REQUEST, { force: true });
+  const r = REPOS.find((x) => x.repo === (req.service === 'gen' ? 'hawkesgen' : req.service === 'studio' ? 'hawkesstudio' : ''));
+  if (!r || !(Date.now() - Date.parse(req.at) < 15 * 60_000)) { say(`restart request ignored: ${JSON.stringify(req)}`); return; }
+  const dir = path.join(ROOT, r.repo);
+  const head = (() => { try { return git(dir, 'rev-parse', 'HEAD'); } catch { return undefined; } })();
+  if (r.repo === 'hawkesstudio') {
+    const until = Date.now() + CRITICAL_MAX_MIN * 60_000;
+    for (;;) {
+      const critical = (await getJson('http://127.0.0.1:8791/api/self-deploys?limit=0'))?.busy?.critical ?? [];
+      if (!critical.length || Date.now() > until) break;
+      say(`[${r.repo}] restart waits for: ${critical.map((c) => c.what).join(', ')}`);
+      await new Promise((x) => setTimeout(x, 5_000));
+    }
+  }
+  const secrets = refreshSecrets();
+  let ok = false;
+  let detail = '';
+  try {
+    execFileSync('systemctl', ['restart', r.service], { stdio: 'ignore', timeout: 120_000 });
+    ok = await healthy(r.health);
+    if (!ok) detail = `it did not answer ${r.health} within 90 seconds: look at journalctl -u ${r.service}`;
+  } catch (e) {
+    detail = String(e.message).split('\n')[0];
+  }
+  record({ repo: r.repo, from: head, to: head, outcome: ok ? 'restarted' : 'restart failed', detail: `${ok ? '' : `${detail}; `}by ${req.by} from Settings; secrets read again: ${secrets}` });
+}
+
+/** Runs hawkes-secrets' ExecStart lines (fetch-secrets.mjs per env file) again. Returns a short summary. */
+function refreshSecrets() {
+  let lines = [];
+  try {
+    lines = execFileSync('systemctl', ['cat', 'hawkes-secrets'], { encoding: 'utf8' }).split('\n').filter((l) => l.startsWith('ExecStart=')).map((l) => l.slice('ExecStart='.length).trim());
+  } catch {
+    return 'no hawkes-secrets unit';
+  }
+  let done = 0;
+  const failed = [];
+  for (const line of lines) {
+    const [cmd, ...args] = line.split(/\s+/);
+    try {
+      execFileSync(cmd, args, { stdio: 'ignore', timeout: 60_000 });
+      done++;
+    } catch {
+      failed.push(args.find((a) => a.startsWith('hawkes/')) ?? cmd);
+    }
+  }
+  return `${done} of ${lines.length}${failed.length ? ` (failed: ${failed.join(', ')})` : ''}`;
+}
+
 async function healthy(url) {
   for (let i = 0; i < 30; i++) {
     await new Promise((r) => setTimeout(r, 3_000));
@@ -218,6 +278,7 @@ function install(r, dir) {
 }
 
 ensureLinger();
+await restartRequested();
 const state = loadState();
 const token = githubToken();
 if (!token) say('no GITHUB_TOKEN in /run/hawkes/github.env: fetching anonymously will fail for private repos');

@@ -547,6 +547,19 @@ const server = http.createServer(async (req, res) => {
     if (route === '/api/agents/roles' && method === 'GET') { const r = await import('./roles.ts'); return send(res, 200, { roles: r.listRoles(), skills: r.listSkills() }); }
     if (route === '/api/agents/settings' && method === 'POST') return send(res, 200, saveAgentSettings(await readJson(req)));
 
+    // Restarting Studio or Gen (restarts.ts): anyone signed in sees the status; a restart is J's own click in Settings.
+    if (route === '/api/services' && method === 'GET') return send(res, 200, (await import('./restarts.ts')).restartStatus());
+    if (route === '/api/services/restart' && method === 'POST') {
+      const why = (await import('./approvals.ts')).notJClick(req);
+      if (why) return send(res, 403, { error: `Restarts come only from J's own click in Settings: ${why}.` });
+      const b = await readJson(req);
+      try {
+        return send(res, 200, { requested: (await import('./restarts.ts')).requestRestart(String(b.service ?? ''), 'J') });
+      } catch (e: any) {
+        return send(res, e.status ?? 400, { error: e.message });
+      }
+    }
+
     // Antigravity's Google login (antigravity-login.ts): anyone may see whether it's signed in; signing in is J's click.
     if (route === '/api/antigravity/login' && method === 'GET') return send(res, 200, (await import('./antigravity-login.ts')).agyLogin());
     if (route.startsWith('/api/antigravity/') && method !== 'GET') {
