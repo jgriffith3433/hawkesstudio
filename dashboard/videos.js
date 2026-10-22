@@ -141,7 +141,8 @@
     const waiting = READY.has(d.state) && latest;
     const anim = v?.stage === 'animatic';
     const drafts = (d.marks ?? []).filter((m) => m.status === 'draft');
-    const canQuick = waiting && v?.edit && sel && sel.to > sel.from + 0.05;
+    const redoing = (d.redos ?? []).some((r) => r.status === 'running');
+    const canQuick = waiting && v?.edit && sel && sel.to > sel.from + 0.05 && !redoing;
     return `
       ${canNote ? `<form id="vdNoteForm" class="card" style="max-width:none;display:grid;gap:8px">
         <b>${sel ? 'Notes on the selection' : 'Notes'}</b>
@@ -160,6 +161,12 @@
           <small class="dim">${aim ? `Zoom aimed at ${Math.round(aim.x * 100)}%, ${Math.round(aim.y * 100)}%.` : 'Zooms aim at the centre:'} <a href="#" id="vdAimBtn">${aiming ? 'click the picture…' : 'aim it'}</a></small>`
         : '<small class="dim">Select a range on the timeline to cut it out, speed it up or zoom in.</small>'}
         <small class="dim" id="vdQuickMsg"></small></div>` : ''}
+      ${waiting && v?.edit && !redoing ? `<div class="card" style="max-width:none;display:grid;gap:8px"><b>Redo a scene (no agent, uses the GPU)</b>
+        ${sel ? `<button class="small" id="vdRedo">🎲 New take of the scene${sel.to > sel.from + 0.05 ? 's' : ''} here</button>
+          <small class="dim">Re-generates the scene${sel.to > sel.from + 0.05 ? 's' : ''} under the selection with a new seed (what you typed in the note box goes into the prompt), then re-cuts. About as long as the scene took the first time; it goes ahead of other GPU work.</small>`
+        : '<small class="dim">Select a moment or a range on the timeline to re-generate the scene there.</small>'}
+        <small class="dim" id="vdRedoMsg"></small></div>` : ''}
+      ${(d.redos ?? []).filter((r) => r.status !== 'done' || Date.now() - r.done_at < 600_000).slice(-2).map((r) => `<div class="status-line">${r.status === 'running' ? '⏳' : r.status === 'failed' ? '⚠' : '✓'} Redo of v${r.version} ${r.from_s != null ? (r.to_s ? `${ts(r.from_s)}–${ts(r.to_s)}` : `at ${ts(r.from_s)}`) : ''}: ${esc(r.status === 'running' ? `rendering (${r.plan.map((p) => p.steps.map((s) => `${s.tool}${s.out ? ' ✓' : s.newJob ? ' …' : ''}`).join(' → ')).join('; ')}), started ${ago(r.at)}` : r.status === 'failed' ? r.error ?? 'failed' : `done: v${r.result}`)}</div>`).join('')}
       ${waiting ? (anim ? `<div class="card" style="max-width:none;display:grid;gap:8px"><b>Go ahead with the final?</b>
           <div class="dim" style="font-size:13px">This is the rough draft: the real voices, the art and the staging, timed. Approving it has the agent make the final from it${drafts.length ? `, with your ${drafts.length} note${drafts.length > 1 ? 's' : ''}` : ''}.</div>
           <textarea id="vdGuidance" rows="2" placeholder="Guidance for the final (optional): e.g. more expression on Exit Punk, warmer light, faster ending"></textarea>
@@ -319,6 +326,18 @@
     if (t.id === 'vdClearSel') { sel = null; return rerender(); }
     if (t.id === 'vdAimBtn') { e.preventDefault(); aiming = !aiming; return rerender(); }
     if (t.id === 'vdPlaySel') { const vid = $('#vdVideo'); if (vid && sel) { vid.currentTime = sel.from; playSel = sel; void vid.play(); } return; }
+    if (t.id === 'vdRedo') {
+      if (!sel) return;
+      t.disabled = true;
+      $('#vdRedoMsg').textContent = 'Starting…';
+      try {
+        const r = await api(`/api/videos/${current}/redo`, { method: 'POST', body: { from: sel.from, to: sel.to > sel.from + 0.05 ? sel.to : null, text: $('#vdNote')?.value.trim() || undefined } });
+        data = r.video; sel = null;
+        if ($('#vdNote')) $('#vdNote').value = '';
+        return rerender();
+      } catch (x) { $('#vdRedoMsg').textContent = x.message; t.disabled = false; }
+      return;
+    }
     if (t.dataset.quick) {
       if (!sel) return;
       const op = t.dataset.quick;

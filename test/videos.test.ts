@@ -170,3 +170,19 @@ test('quick edits are for a version waiting for J that has an edit', async () =>
   const t = v.createVideo({ product: 'doseofdestruction', title: 'Quick', script: 'TT: Hi.' });
   await assert.rejects(v.quickEdit(t.id, { op: 'remove', from: 0, to: 1 }), /waiting for you/);
 });
+
+test('a redo follows a shot back to the generation that made it, through its finishing steps', async () => {
+  const assets: Record<string, any> = { a_0000000000000a01: { job: 'j_up' }, a_0000000000000a02: { job: 'j_scene' }, a_0000000000000a03: { job: 'j_cut' } };
+  const jobs: Record<string, any> = {
+    j_up: { id: 'j_up', tool: 'video.upscale', inputs: { video: '/srv/hawkes/hawkesgen/.data/library/2026-10/a_0000000000000a02.mp4' } },
+    j_scene: { id: 'j_scene', tool: 'video.scene', inputs: {} },
+    j_cut: { id: 'j_cut', tool: 'video.compose', inputs: {} },
+  };
+  const plan = await v.retakePlan('a_0000000000000a01', async (id) => assets[id], async (id) => jobs[id]);
+  assert.deepEqual(plan.steps.map((s) => s.tool), ['video.scene', 'video.upscale'], 'the generation first, then the upscale of the new take');
+  await assert.rejects(v.retakePlan('a_0000000000000a03', async (id) => assets[id], async (id) => jobs[id]), /outside a Gen generation \(video\.compose\).*note/);
+  await assert.rejects(v.retakePlan('a_0000000000000a09', async () => ({ tool: 'file.import' }), async () => null), /file\.import/);
+  assert.equal(v.assetOfPath('/x/library/2026-10/a_0123456789abcdef.mp4'), 'a_0123456789abcdef');
+  const t = v.createVideo({ product: 'doseofdestruction', title: 'Redo', script: 'TT: Hi.' });
+  await assert.rejects(v.redoShots(t.id, { from: 1 }), /waiting for you/);
+});

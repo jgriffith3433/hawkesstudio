@@ -773,6 +773,8 @@ server.listen(PORT, '127.0.0.1', () => {
   setTimeout(mergedOutside, 60_000).unref();
   setInterval(mergedOutside, 5 * 60_000).unref();
   const answers = resumeTalk();
+  // Scene redos J started from Screening carry on, waiting on the Gen jobs they already submitted (videos.ts).
+  void import('./videos.ts').then(({ resumeRedos }) => resumeRedos()).then((n) => { if (n) console.log(`[studio] ${n} video redo(s) carrying on`); }).catch((e) => console.warn(`[studio] video redos: ${e.message ?? e}`));
   if (runs.length || changes.length || answers.length) console.log(`[studio] carrying on after the restart: ${runs.length} run(s), ${changes.length} agent change(s), ${answers.length} Talk answer(s)`);
   pruneDetached();
   // The shared memory: its seed, and the daily fade and export (memory.ts).

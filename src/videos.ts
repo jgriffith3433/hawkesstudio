@@ -42,6 +42,18 @@ try { db.exec('ALTER TABLE video_state ADD COLUMN spec TEXT'); } catch { /* alre
  * (kept until he sends his notes together), sent, or quick (a quick edit Studio made, told to the agent with his next
  * notes so its own edit catches up).
  */
+/**
+ * Scene redos J starts from the timeline (redoShots): Studio re-runs the Gen jobs that made the shots he selected (a new
+ * seed, his note in the prompt), then the finishing steps on the new take, then re-cuts. plan: per source asset, the
+ * jobs to re-run in order and the new jobs as they're submitted (so a restart waits on them instead of paying twice).
+ */
+db.exec(`
+  CREATE TABLE IF NOT EXISTS video_redos (
+    id TEXT PRIMARY KEY, task TEXT NOT NULL, version INTEGER NOT NULL, from_s REAL, to_s REAL, note TEXT, by TEXT NOT NULL,
+    status TEXT NOT NULL, plan TEXT NOT NULL, error TEXT, result INTEGER, at INTEGER NOT NULL, done_at INTEGER
+  );
+  CREATE INDEX IF NOT EXISTS video_redos_task ON video_redos(task, status);
+`);
 db.exec(`
   CREATE TABLE IF NOT EXISTS video_notes (
     id TEXT PRIMARY KEY, task TEXT NOT NULL, version INTEGER, from_s REAL, to_s REAL, action TEXT, text TEXT NOT NULL,
@@ -197,6 +209,8 @@ export async function videoReady(c: { id: string; task: string; worktree: string
       return { version, resent: true };
     }
     await tellTalk(t, version).catch((e: any) => console.warn(`[videos] telling Talk about ${t.id}: ${e.message ?? e}`));
+    // It reached J: its work is no longer something he's waiting on.
+    await boostVideo(c.id, false);
   }
   // Notes that came while the agent was on this pass: it didn't see them, so they go to it now.
   const sent = (db.prepare('SELECT notes_sent_at FROM video_state WHERE task = ?').get(c.task) as any)?.notes_sent_at ?? 0;
@@ -395,7 +409,7 @@ export async function videoDetail(task: string) {
   return {
     task: t, item: getItem(t.item), state: stateOf(t, c, versions), versions, spec: specOf(task),
     notes: commentsOn(task).map((m: any) => ({ by: m.by, kind: m.kind, text: m.text, at: m.at })),
-    marks: timelineNotes(task), actions: NOTE_ACTIONS,
+    marks: timelineNotes(task), actions: NOTE_ACTIONS, redos: redosOf(task),
     change: c ? { id: c.id, status: c.status, detail: c.detail, log: (c.log ?? []).slice(-12) } : null,
   };
 }
@@ -495,7 +509,25 @@ async function sendNotes(task: string, notes: string[], by: string) {
   if (!by.startsWith('Studio')) db.prepare('UPDATE video_state SET auto_rounds = 0 WHERE task = ?').run(task);
   setTask(task, { status: 'working' });
   logDecision('video', task, t.product, `notes sent to the agent on "${t.title}": ${notes.join(' | ').slice(0, 300)}`);
+  // J is waiting for the next version now: its GPU jobs go ahead of background work until it reaches him.
+  if (!by.startsWith('Studio')) await boostVideo(c.id, true);
   return true;
+}
+
+/** How far ahead of other GPU work a video J is waiting on goes (Gen priorities run -10 to 10; normal is 0). */
+export const WAITING_PRIORITY = 5;
+/**
+ * Boosts (or stops boosting) the Gen jobs of a video's change: every job its agent submits carries the label
+ * studioChange (agents.ts agentMcp), and Gen runs them at WAITING_PRIORITY, ahead of a server's loaded family
+ * (J, 2026-10-22: "GPU priority for videos waiting on me"). Best effort: a Gen that's down only loses the boost.
+ */
+export async function boostVideo(change: string, on: boolean) {
+  try {
+    const { gen } = await import('./gen.ts');
+    await gen.request('/jobs/boost', { method: 'POST', body: { label: 'studioChange', value: change, priority: on ? WAITING_PRIORITY : 0, minutes: 6 * 60 } });
+  } catch (e: any) {
+    console.warn(`[videos] ${on ? 'boosting' : 'unboosting'} ${change}: ${e.message ?? e}`);
+  }
 }
 
 /**
@@ -620,6 +652,7 @@ export async function quickEdit(task: string, op: EditOp, { by = 'J' }: { by?: s
   const base = versionsOf(task).at(-1);
   if (!base) throw new StudioError('No video yet');
   if (!base.edit) throw new StudioError(`v${base.n} has no edit Studio can change (the agent cut it without one): send it as a note and the agent does it`);
+  if (redosOf(task).some((r) => r.status === 'running')) throw new StudioError('A redo is rendering: edit the version it makes');
   let next: { edit: Edit; said: string };
   try { next = applyEdit(base.edit, op); } catch (e: any) { throw new StudioError(e.message); }
   const { gen, genWait } = await import('./gen.ts');
@@ -638,6 +671,139 @@ export async function quickEdit(task: string, op: EditOp, { by = 'J' }: { by?: s
   addComment(task, summary, by, 'edit');
   logDecision('video', task, t.product, `${by}: ${summary}`);
   return { version: v, video: await videoDetail(task) };
+}
+
+// ------------------------------------------------------------------------------------------------ scene redo
+
+/** Finishing steps: re-run on the new take as they were run on the old one. Anything else made from a video is a generation. */
+const FINISHING = new Set(['video.upscale', 'video.interpolate']);
+/** Tools whose output isn't a take to re-roll (cuts, imports): a shot made by one of these is the agent's to redo. */
+const NOT_A_TAKE = new Set(['video.compose', 'file.import', 'video.composite', 'video.matte']);
+type RedoStep = { job: string; tool: string; newJob?: string; out?: string };
+type RedoPlan = { asset: string; steps: RedoStep[]; out?: string };
+export type Redo = { id: string; task: string; version: number; from_s: number | null; to_s: number | null; note: string | null; by: string; status: 'running' | 'done' | 'failed'; plan: RedoPlan[]; error: string | null; result: number | null; at: number; done_at: number | null };
+
+export function redosOf(task: string): Redo[] {
+  return (db.prepare('SELECT * FROM video_redos WHERE task = ? ORDER BY at').all(task) as any[]).map((r) => ({ ...r, plan: JSON.parse(r.plan) }));
+}
+const saveRedo = (r: Redo) => db.prepare('UPDATE video_redos SET status = ?, plan = ?, error = ?, result = ?, done_at = ? WHERE id = ?').run(r.status, JSON.stringify(r.plan), r.error, r.result, r.done_at, r.id);
+
+/** The library path of an asset (as Gen keeps job inputs) back to its id. */
+export const assetOfPath = (p: unknown) => /(a_[0-9a-f]{8,32})\.\w+$/.exec(String(Array.isArray(p) ? p[0] : p ?? ''))?.[1] ?? null;
+
+/**
+ * The jobs that made a shot, in the order to re-run them: the generation (a scene, a talking shot, an i2v clip), then
+ * its finishing steps (upscale, interpolate). Throws, in words for J, when the shot wasn't made by a Gen job Studio can
+ * re-run (an ffmpeg cut the agent uploaded): that one is the agent's (a Redo note).
+ */
+export async function retakePlan(asset: string, getAsset: (id: string) => Promise<any>, getJob: (id: string) => Promise<any>): Promise<RedoPlan> {
+  const steps: RedoStep[] = [];
+  let cur = asset;
+  for (let depth = 0; depth < 6; depth++) {
+    const a = await getAsset(cur);
+    const job = a?.job ? await getJob(a.job) : null;
+    if (!job || NOT_A_TAKE.has(job.tool)) throw new StudioError(`That shot was put together outside a Gen generation (${job ? job.tool : a?.tool ?? 'an upload'}), so Studio can't re-run it: send "Redo" as a note and the agent remakes it`);
+    steps.unshift({ job: job.id, tool: job.tool });
+    if (!FINISHING.has(job.tool)) return { asset, steps };
+    const from = assetOfPath(job.inputs?.video);
+    if (!from) throw new StudioError(`The ${job.tool} of that shot has no library input to follow back`);
+    cur = from;
+  }
+  throw new StudioError('That shot went through too many steps to re-run here: send "Redo" as a note');
+}
+
+/**
+ * J's one-click redo of the scene(s) under a selection: Studio re-runs the Gen jobs that made those shots, on the GPU at
+ * WAITING_PRIORITY, then cuts the new takes into the edit as a new version. It takes as long as the scene took (minutes),
+ * so it runs in the background; the version arrives in Screening and Talk tells J. note: his words for the retake,
+ * added to the generation's prompt.
+ */
+export async function redoShots(task: string, { from, to, note, by = 'J' }: { from: number; to?: number | null; note?: string; by?: string }) {
+  const t = getTask(task);
+  if (!t || t.kind !== 'video') throw new StudioError(`No video ${task}`, 404);
+  const { getChange } = await agents();
+  const c = t.change ? getChange(t.change) : null;
+  if (!c || c.status !== 'ready') throw new StudioError("Redo is for a version that's waiting for you (the agent is working on this one)");
+  if (redosOf(task).some((r) => r.status === 'running')) throw new StudioError('A redo is already rendering for this video');
+  const base = versionsOf(task).at(-1);
+  if (!base?.edit) throw new StudioError(`v${base?.n ?? '?'} has no edit Studio can change: send "Redo" as a note and the agent does it`);
+  if (!Number.isFinite(Number(from))) throw new StudioError('Select the part to redo');
+  const end = to != null && Number(to) > Number(from) ? Number(to) : Number(from) + 0.05;
+  const shots = shotsIn(shotsOf(base.edit), Number(from), end);
+  if (!shots.length) throw new StudioError('No shot there');
+  const assets = [...new Set(shots.map((s) => s.asset))];
+  const { gen } = await import('./gen.ts');
+  const plan: RedoPlan[] = [];
+  for (const a of assets) plan.push(await retakePlan(a, (id) => gen.request(`/assets/${id}`), (id) => gen.job(id)));
+  const r: Redo = { id: newId('vr'), task, version: base.n, from_s: Number(from), to_s: to != null ? end : null, note: String(note ?? '').trim() || null, by, status: 'running', plan, error: null, result: null, at: Date.now(), done_at: null };
+  db.prepare('INSERT INTO video_redos (id, task, version, from_s, to_s, note, by, status, plan, error, result, at, done_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+    .run(r.id, task, r.version, r.from_s, r.to_s, r.note, by, r.status, JSON.stringify(plan), null, null, r.at, null);
+  addComment(task, `Redo of v${base.n} ${stampRange(r.from_s, r.to_s)}: ${plan.length} scene${plan.length > 1 ? 's' : ''} re-generating${r.note ? ` ("${r.note}")` : ''}.`, by, 'edit');
+  logDecision('video', task, t.product, `${by} started a redo of "${t.title}" v${base.n} ${stampRange(r.from_s, r.to_s)} (${plan.map((p) => p.steps.map((s) => s.tool).join(' > ')).join('; ')})`);
+  void runRedo(r.id, c.id);
+  return { redo: r, video: await videoDetail(task) };
+}
+
+/** Runs (or, after a restart, carries on with) a redo: each step's new job, the re-cut, the new version. */
+export async function runRedo(id: string, change: string) {
+  const row = db.prepare('SELECT * FROM video_redos WHERE id = ?').get(id) as any;
+  if (!row || row.status !== 'running') return;
+  const r: Redo = { ...row, plan: JSON.parse(row.plan) };
+  const t = getTask(r.task)!;
+  const { gen, genWait } = await import('./gen.ts');
+  try {
+    for (const p of r.plan) {
+      let cur: string | null = null;
+      for (const [i, s] of p.steps.entries()) {
+        if (!s.newJob) {
+          const original: any = await gen.job(s.job);
+          const params = i === 0 && r.note && typeof original.params?.prompt === 'string' ? { prompt: `${original.params.prompt}\n\nRetake: ${r.note}` } : undefined;
+          const j: any = await gen.request(`/jobs/${s.job}/rerun`, { method: 'POST', body: { params, inputs: i > 0 && cur ? { video: `asset:${cur}` } : undefined, labels: { studioChange: change, videoRedo: r.id }, priority: WAITING_PRIORITY } });
+          s.newJob = j.id;
+          saveRedo(r);
+        }
+        const done: any = await genWait(s.newJob!, undefined, 3 * 60 * 60_000);
+        const out = (done.outputs ?? []).find((o: any) => o.kind === 'video')?.asset;
+        if (done.status !== 'done' || !out) throw new Error(`${s.tool} didn't make a new take: ${done.error ?? done.detail ?? done.status}`);
+        s.out = cur = out;
+        saveRedo(r);
+      }
+      p.out = cur!;
+    }
+    const base = versionsOf(r.task).find((v) => v.n === r.version)!;
+    const swap = new Map(r.plan.map((p) => [p.asset, p.out!]));
+    const edit: Edit = { ...base.edit!, clips: base.edit!.clips.map((c) => (swap.has(c.asset) ? { ...c, asset: swap.get(c.asset)! } : c)) };
+    const { inputs, params } = composeParams(edit);
+    const job: any = await gen.submit('video.compose', { project: t.product, params, inputs, labels: { video: r.task, videoRedo: r.id } } as any);
+    const cut: any = await genWait(job.id, undefined, 30 * 60_000);
+    const outs = cut.outputs ?? [];
+    const asset = outs.find((o: any) => o.kind === 'video')?.asset;
+    if (cut.status !== 'done' || !asset) throw new Error(`the re-cut didn't render: ${cut.error ?? cut.detail ?? cut.status}`);
+    const said = `${r.plan.length} scene${r.plan.length > 1 ? 's' : ''} under ${stampRange(r.from_s, r.to_s)} re-generated${r.note ? ` with "${r.note}"` : ''}`;
+    const v = recordVersion(r.task, base.change ?? change, { asset, poster: outs.find((o: any) => o.kind === 'image')?.asset ?? base.poster ?? undefined, seconds: Number(cut.result?.duration) || undefined, summary: `Redo of v${base.n} by ${r.by}: ${said}.`, caption: base.caption ?? undefined, beats: base.beats ?? undefined, stage: base.stage, story: base.story ?? undefined, edit }, 'redo')!;
+    const tell = `Studio re-generated scenes for ${r.by}: v${v.n} is v${base.n} with ${said}. New takes: ${r.plan.map((p) => `${p.asset} -> ${p.out}`).join(', ')}. Make them your edit's clips too: ${JSON.stringify(edit).slice(0, 6000)}`;
+    db.prepare('INSERT INTO video_notes (id, task, version, from_s, to_s, action, text, by, at, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+      .run(newId('vn'), r.task, base.n, r.from_s, r.to_s, 'quick:redo', tell, r.by, Date.now(), 'quick');
+    Object.assign(r, { status: 'done', result: v.n, done_at: Date.now() });
+    saveRedo(r);
+    addComment(r.task, `v${v.n}: ${said}.`, 'Studio', 'edit');
+    logDecision('video', r.task, t.product, `redo of "${t.title}" done: v${v.n}`);
+    await tellTalk(t, v).catch(() => {});
+  } catch (e: any) {
+    Object.assign(r, { status: 'failed', error: String(e.message ?? e).slice(0, 500), done_at: Date.now() });
+    saveRedo(r);
+    addComment(r.task, `The redo didn't finish: ${r.error}`, 'Studio', 'edit');
+  }
+}
+
+/** After a restart: redos that were rendering carry on, waiting on the jobs they already submitted. */
+export async function resumeRedos() {
+  const rows = db.prepare("SELECT id, task FROM video_redos WHERE status = 'running'").all() as { id: string; task: string }[];
+  for (const r of rows) {
+    const change = getTask(r.task)?.change;
+    if (change) void runRedo(r.id, change);
+  }
+  return rows.length;
 }
 
 /** J approves a version: the change merges into beta (its scripts and edit list), the task is done, optionally drafts go out. */
@@ -716,6 +882,10 @@ export async function handleVideosApi(req: import('node:http').IncomingMessage, 
         : b.op === 'zoom' ? { op: 'zoom', from: num(b.from), to: num(b.to), zoom: num(b.zoom) || 1.4, x: b.x == null ? undefined : num(b.x), y: b.y == null ? undefined : num(b.y), push: Boolean(b.push) }
         : (() => { throw new StudioError('op is remove, speed or zoom'); })();
       return send(res, 200, await quickEdit(m[1], op, { by }));
+    }
+    if ((m = /^\/api\/videos\/(k_[0-9a-f]+)\/redo$/.exec(route)) && method === 'POST') {
+      const b = await readJson(req);
+      return send(res, 200, await redoShots(m[1], { from: Number(b.from), to: b.to == null ? null : Number(b.to), note: b.text ?? b.note, by }));
     }
     if ((m = /^\/api\/videos\/(k_[0-9a-f]+)\/approve$/.exec(route)) && method === 'POST') {
       const b = await readJson(req);

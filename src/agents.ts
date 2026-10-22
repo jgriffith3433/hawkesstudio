@@ -954,7 +954,7 @@ export function agentMcp(id: string) {
   const genKey = process.env.AGENT_GEN_KEY ?? process.env.TALK_GEN_KEY ?? process.env.DEV_GEN_KEY ?? '';
   const cfg = { mcpServers: {
     hawkesstudio: { command: process.execPath, args: [path.join(ROOT, 'bin', 'studio-mcp.mjs')], env: { STUDIO_SERVER: '1', STUDIO_AGENT: id, STUDIO_MCP_TOOLS: AGENT_STUDIO_TOOLS.join(',') } },
-    ...(genKey ? { hawkesgen: { command: process.execPath, args: [path.join(PROJECTS, 'hawkesgen', 'bin', 'hawkesgen-mcp.mjs')], env: { HAWKESGEN_URL: process.env.HAWKESGEN_URL ?? 'http://127.0.0.1:8790', HAWKESGEN_KEY: genKey } } } : {}),
+    ...(genKey ? { hawkesgen: { command: process.execPath, args: [path.join(PROJECTS, 'hawkesgen', 'bin', 'hawkesgen-mcp.mjs')], env: { HAWKESGEN_URL: process.env.HAWKESGEN_URL ?? 'http://127.0.0.1:8790', HAWKESGEN_KEY: genKey, HAWKESGEN_LABELS: JSON.stringify({ studioChange: id }) } } } : {}),
   } };
   fs.writeFileSync(file, JSON.stringify(cfg, null, 2));
   return file;
