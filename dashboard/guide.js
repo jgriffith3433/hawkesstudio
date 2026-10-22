@@ -310,6 +310,12 @@ if (typeof document !== 'undefined') (() => {
       if (!n) throw new Error(`no analytics for ${id}`);
       return { line: `Opened ${id}'s analytics`, n };
     }
+    if (kind === 'video') {
+      show('videos', id);
+      const n = await waitFor(() => el('#vdBody .vd-main'));
+      if (!n) throw new Error(`no video ${id}`);
+      return { line: `Opened the video ${id}`, n };
+    }
     throw new Error(`can't open a ${kind}`);
   }
 
