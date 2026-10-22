@@ -444,8 +444,11 @@ task of kind `video` (`src/videos.ts`, `dashboard/videos.js`, Talk's `studio_vid
 2. **The director.** A content agent with the `video` skill (`.claude/skills/video`): casts each character's own voice,
    finds every form each character has (3D rig, model, 2D clips, sprites, images), writes a beat sheet second by second
    (shot size, angle, camera, action, expression, SFX, VFX, method) that meets the craft bar (close-ups on lines,
-   reactions, physical reactions and VFX, bespoke animation, a motivated camera), makes each shot with Blender and
-   ComfyUI first, cuts it with `video.compose`, and leaves the cut and the beat sheet in `.hawkes/video.json`.
+   reactions, physical reactions and VFX, bespoke animation, a motivated camera), and makes each scene whole from the
+   characters' references and the voice track (Gen `video.scene`, MiniMax H3 on the fleet; J's default after the
+   2026-10-22 bake-off; `video.seedance` and `video.kling` are the paid alternatives), with Blender and ComfyUI shots
+   only where a scene needs more, cuts it with `video.compose`, and leaves the cut and the beat sheet in
+   `.hawkes/video.json`. One house style per video (characters drawn in another style in canon are redrawn in it).
    Its files go in the product repo under `videos/<slug>/`.
 3. **The animatic first.** The agent's first pass is an animatic (`stage: "animatic"`: the story, the beat sheet, rough
    staging and the real voices, timed). J approves it ("Approve the animatic": the agent makes the final from it,

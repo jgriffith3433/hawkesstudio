@@ -78,6 +78,14 @@ portrait, two or three expressions) from that reference with `image.edit` / `ima
 every shot of them from the sheet. The Board v1 made The Mechanic a 3D man in the wides and a flat 2D cartoon in the
 close-ups: that fails review.
 
+**One house style per video.** Characters can be drawn in different styles in canon: in Dose Of Destruction, Exit
+Punk is a 3D, Pixar-like render and The Mechanic a flat 2D cartoon. A scene with both needs one style, or it looks like
+two films stitched together. Use the style J's direction names; without one, the style of the video's lead character.
+Redraw the others in it with `image.edit` (their reference as image 1, the lead's as image 2: "redraw the person from
+image 1 in exactly the rendering style of image 2, keep his design exactly: ..."), check the result is still them
+(face, hair, outfit, colours, props), and keep it in their kit as their look in that style. The Board bake-off redrew The
+Mechanic in 3D this way, on-model in one try (Gen asset `a_deb66dcd567fb43f`).
+
 **Character kits (made once, reused by every video).** Keep each character's kit in the product repo under
 `videos/cast/<character-id>/kit.json`: the canonical reference, the sheet (front, three-quarter, portrait) and an
 expression set (neutral, smug, shocked, angry, deadpan, hurt, delighted) as Gen asset ids, their voice, their 3D form or
@@ -121,25 +129,49 @@ Write it like a storyboard artist and an editor, second by second.
 - **Physical action reads**: a wide or medium to show what happens, the impact in close-up, a physical reaction
   (recoil, stagger, a shake, a dent, a wobble), **VFX** on impacts and powers (flash, sparks, dust, speed lines, a
   shockwave, steam), and an SFX for every action.
+- **Default method**: scenes from references (`video.scene`, section 5); single shots only where a scene needs more.
 - **Bespoke animation**: each character moves like themselves, made for this beat (a skater's flow, a robot's servo
   stiffness, a slime's wobble). Stock idle or attack clips only for background extras, never the hero beats.
 - **A motivated camera**: at least one move that serves the story (a push-in on a realization, a whip-pan to the
   reaction, a low angle for menace).
 - **Sound**: voices on top, SFX on every action, music or room tone under.
 
-## 5. The animatic (your first pass)
+## 5. Scenes, not shots: the default method (`video.scene`)
 
-Before rendering anything expensive: lay out every beat at its real length with the real voices and SFX placeholders.
-Pictures can be rough: a Blender grey-box render of the staged scene (the cheapest and the most honest about staging and
-camera), or on-model stills from the kits held for each beat with a simple move. Captions on. Mark it `"stage":
-"animatic"` in `.hawkes/video.json` with the story and the beats. J approves it or sends notes; only then make the final.
-Skip the animatic only when J's direction says so.
+J, 2026-10-22, after the bake-off: whole scenes generated from references are the director's default. One generation
+makes a whole scene (5-15 s, several cuts) with every character on-model in one room and one light, acting to the
+voices, with native sound. That is what fixes "two characters from random movies stitched together": shots made one
+at a time drift apart in look, light and space; a scene made in one pass doesn't.
 
-## 6. The final: Blender and ComfyUI first
+**`video.scene`** (MiniMax H3, open weights, our GPU fleet), per scene:
+- **Inputs:** `image` and `image2`: the two characters' kit references in the house style (full body, plain
+  background); `set`: the location with no people in it (generate it, then remove any figure that sneaks in with
+  `image.edit`); `audio`: the scene's voice track, every line in order with 0.2-0.4 s gaps, made from the cast's voices
+  (mix the `audio.voice` lines with ffmpeg and put the file into the library).
+- **Prompt:** style first, then each reference's job ("<Picture 1> is Exit Punk, a skater kid (blond spiky hair...)",
+  "<Picture 3> is the foundry: every shot happens in this one room"), then "Use <Audio 1> exactly as it is: X speaks
+  first, then Y; each speaker's lips match his own voice. Both stay exactly on-model in every shot.", then the shots as
+  `CUT 1 (0 to 1.7 s): ...`, timed to the voice track's lines, each with framing, camera, action, expression and the
+  line in quotes. Your beat sheet becomes this list.
+- **Params:** `seconds` = the voice track's length (5-15). `aspect` `16:9 (Widescreen)` or `9:16 (Portrait)`.
+  `megapixels` 0.4-0.6 (0.5 is 960x544); upscale the finished scene with `video.upscale`.
+- **Longer videos** are several scenes, each its own generation with the same references, cut together. Cut between
+  scenes on a change of place, time or beat, never mid-line.
+- **The animatic** is the same call made cheap: `enable_lightning_lora: true` (4 steps), `megapixels` 0.3. The final
+  re-runs the approved prompts at full steps and size.
+- **Check** the result as always: frames once a second next to the beat sheet, and the audio against your voice track
+  (it should follow it; H3 layers sound under it). The Board bake-off scene (11.5 s, 5 cuts) took 17 minutes on one GPU.
 
-Blender is the director for every shot with blocking or a camera, whatever the characters are. ComfyUI makes it look
-finished. Price the shots first (`hawkesgen_estimate`, or `film.plan`, which prices a whole recipe) and stay inside the
-brief's GPU budget; batch jobs of one kind together (one model load).
+Paid alternatives (ComfyUI partner nodes billed to the Comfy.org account, only when J has added the key and wants them):
+`video.seedance` (Seedance 2.5: the same inputs, up to 30 s) and `video.kling` (Kling O3: one reference sheet; Kling
+voices the characters itself, so not with our cast voices).
+
+## 6. Shots that need more: Blender and ComfyUI
+
+When a scene needs exact control the references can't give (precise blocking, a specific camera move, choreography, a
+character performing a particular motion, an effect on one character), make that shot this way and cut it into the
+scene. Price it first (`hawkesgen_estimate`, or `film.plan`, which prices a whole recipe) and stay inside the brief's
+GPU budget; batch jobs of one kind together (one model load).
 
 1. **Stage it in Blender** (`blender.render`; hawkesgen `docs/blender.md` has the format). Use the characters' 3D forms,
    or stand-ins for 2D-only characters (a mannequin or rig proxy of the right size and proportions, or a card with their

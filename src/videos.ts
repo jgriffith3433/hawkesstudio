@@ -45,12 +45,14 @@ const ASSET = /^a_[0-9a-f]{8,32}$/;
  * looks as good), never a lock.
  */
 export const VIDEO_GPU = [
-  { tool: 'film.gate', count: 6, label: 'staging checks' },
-  { tool: 'blender.render', count: 8, label: 'guide and shot renders' },
-  { tool: 'image.edit', count: 8, label: 'on-model keyframes' },
-  { tool: 'video.control', count: 6, label: 'repaints' },
-  { tool: 'video.motion', count: 3, label: 'motion transfers' },
-  { tool: 'video.talk', count: 3, label: 'lip-synced close-ups' },
+  // Scenes from references are the default (J, 2026-10-22, after the bake-off): animatic and final passes of a few scenes.
+  { tool: 'video.scene', count: 4, label: 'scenes (animatic and final)' },
+  { tool: 'video.upscale', count: 2, label: 'finished scenes upscaled' },
+  { tool: 'image.edit', count: 6, label: 'kit references in the house style, sets' },
+  { tool: 'image.generate', count: 2, label: 'sets' },
+  // Shots a scene can't give (exact blocking, camera, an effect): Blender and ComfyUI.
+  { tool: 'blender.render', count: 2, label: 'guide renders' },
+  { tool: 'video.control', count: 2, label: 'repaints' },
 ];
 
 export type Review = { pass: boolean; score: number; summary: string; notes: { at: number | null; note: string }[]; error?: string };
@@ -375,8 +377,9 @@ export async function videoDetail(task: string) {
 export function videoRequest(a: { title: string; script: string; format?: string; direction?: string }) {
   const format = FORMATS[a.format ?? 'short'] ? a.format ?? 'short' : 'short';
   return `Make the video "${a.title}" (${format}: ${FORMATS[format]}). The video skill (below) is how videos are made here:
-the story and a beat sheet first, an animatic J approves, then the final with every shot made with the strongest method
-(Blender and ComfyUI by default), within the GPU budget.
+the story and a beat sheet first, an animatic J approves, then the final: whole scenes generated from the characters'
+references and the voice track (video.scene) by default, Blender and ComfyUI for shots that need more, within the GPU
+budget.
 
 ## J's script
 ${a.script.trim()}
