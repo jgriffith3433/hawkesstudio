@@ -100,3 +100,12 @@ test("the agent's cut can be a file in its worktree (Studio puts it into Gen); n
     assert.equal(v.readVideoFile(wt), null, bad);
   }
 });
+
+test('videos take no product slot: several run beside each other and beside other work', async () => {
+  const { noRoomFor, pickQueued } = await import('../src/agents.ts');
+  const t = v.createVideo({ product: 'doseofdestruction', title: 'Lane', script: 'TT: Hi.' });
+  assert.equal(noRoomFor('doseofdestruction', { task: t.id, text: t.title }, 'queued,working,verifying,revising,ready'), null);
+  // Lanes as pump() gives them: each video is its own; the product's own limit still holds for the rest.
+  const picks = pickQueued([{ id: 'c_v1', product: 'video:c_v1' }, { id: 'c_v2', product: 'video:c_v2' }, { id: 'c_code', product: 'doseofdestruction' }], ['doseofdestruction'], 5, { limit: () => 1 });
+  assert.deepEqual(picks, ['c_v1', 'c_v2']);
+});

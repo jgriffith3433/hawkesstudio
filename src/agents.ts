@@ -1309,7 +1309,10 @@ export function shapeOf(c: Change): WorkShape {
  * one: parallel.ts), or null when it can.
  */
 export function noRoomFor(product: string, next: WorkShape, statuses = `queued,${ACTIVE}`) {
-  const others = listChanges({ status: statuses, product, limit: 50 });
+  // Videos write only under videos/<slug>/ (videos.ts): they never collide with the product's other work or each other,
+  // so they neither need a product slot nor hold one (J, 2026-10-22: a video waiting for his screening blocked four more).
+  if (isVideoTask(next.task)) return null;
+  const others = listChanges({ status: statuses, product, limit: 50 }).filter((c) => !isVideoTask(c.task));
   const limit = perProductLimit(product);
   if (others.length >= limit) return limit === 1 ? `${others[0].id} is running` : `${limit} changes are running`;
   return others.length ? overlapWith(next, others.map(shapeOf), { unity: isUnity(product) }) : null;
@@ -1328,13 +1331,16 @@ async function pump() {
   const queued = listChanges({ status: 'queued', limit: 500 }).reverse().filter((c) => !running.has(c.id));
   const fit = (id: string, picked: string[]) => {
     const c = getChange(id)!;
-    const beside = [...[...active.values()].filter((r) => r.product === c.product), ...picked.map((x) => getChange(x)!)];
+    if (isVideoTask(c.task)) return true;
+    const beside = [...[...active.values()].filter((r) => r.product === c.product && !isVideoTask(r.task)), ...picked.map((x) => getChange(x)!)];
     const why = overlapWith(shapeOf(c), beside.map(shapeOf), { unity: isUnity(c.product) });
     if (why && !c.detail?.includes(why)) update(id, { detail: `queued: waits for ${beside[0]?.id ?? 'the running change'} (${why})`.slice(0, 300) });
     return !why;
   };
-  const busy = [...active.values()].map((c) => c.product);
-  const picks = pickQueued(queued, busy, s.maxConcurrent - running.size, { limit: (p) => perProductLimit(p, s), fit });
+  // A video has a lane of its own (noRoomFor): only the studio-wide cap applies to it.
+  const lane = (c: Change) => (isVideoTask(c.task) ? `video:${c.id}` : c.product);
+  const busy = [...active.values()].map(lane);
+  const picks = pickQueued(queued.map((c) => ({ id: c.id, product: lane(c) })), busy, s.maxConcurrent - running.size, { limit: (p) => (p.startsWith('video:') ? 1 : perProductLimit(p, s)), fit });
   // A queued change's " behind c_..." names what it waits for now, not one that finished since (J, 2026-10-18).
   const ahead = new Map<string, string[]>();
   for (const c of [...active.values(), ...picks.map((x) => getChange(x)!)]) ahead.set(c.product, [...(ahead.get(c.product) ?? []), c.id]);
