@@ -450,11 +450,23 @@ task of kind `video` (`src/videos.ts`, `dashboard/videos.js`, Talk's `studio_vid
    only where a scene needs more, cuts it with `video.compose`, and leaves the cut and the beat sheet in
    `.hawkes/video.json`. One house style per video (characters drawn in another style in canon are redrawn in it).
    Its files go in the product repo under `videos/<slug>/`.
-3. **Straight to the final; an animatic only on request.** J, 2026-10-22: "I don't want animatics (unless I specifically
-   ask for one)". The agent's first pass is the final. With `animatic: true` (`studio_video` new, the form's "Show me an
-   animatic first"), the first pass is an animatic instead (`stage: "animatic"`: the story, the beat sheet, rough
-   staging and the real voices, timed); J approves it ("Approve the animatic": the agent makes the final from it,
-   nothing merges) or sends notes.
+3. **The animatic first, then the go-ahead.** J, 2026-10-22: "I like the workflow of a rough draft first and the go
+   ahead etc. This helps with also changing the voice, checking the art etc." The first pass is an animatic
+   (`stage: "animatic"`: the story, the beat sheet, the real voices and art, the staging, timed) unless J turns it off
+   (the form, `animatic: false`). J approves it with optional guidance ("yes, go ahead, but ..."; the notes he kept on it
+   go too: `approveVideo` `guidance`), and the agent makes the final from it; nothing merges yet.
+   **J's controls** (the New video form, `studio_video` new): length, look, voices, method (`engine`: auto, scene,
+   seedance, kling, shots), quality (draft, standard, high), music, captions, end card, animatic. They go into the
+   agent's request as "J's controls (follow them)" and are kept on the video (`video_state.spec`).
+   **The timeline** (`src/video-edit.ts`): the agent hands over its cut as an **edit** (`.hawkes/video.json` `edit`:
+   video.compose's timeline with Gen assets). The Screening tab shows it as shots under the player; J drags over a range
+   or clicks a shot, picks what he wants (shorter, redo, fix the lip sync, closer, another angle, a reaction, the voice,
+   the look, ...: `NOTE_ACTIONS`) and writes a line. Notes are kept as drafts until he sends them together (one
+   revision, not one per note); each reaches the agent with the version, the seconds, the edit's clips and the beat
+   sheet's beats it covers (`noteForAgent`). **Quick edits** (`quickEdit`): cut a range out, speed it up, punch or push in
+   on a point he clicks: Studio applies them to the edit and renders a new version with Gen `video.compose` (free, no
+   GPU, seconds), and the agent hears about them with his next notes so its edit catches up. A cut that would leave half
+   a voice line, or a speed-up under one, is refused (that's a note for the agent).
 4. **Studio's review, then screening.** When the pass ends, Studio keeps the version (`video_versions`) and reviews it
    (`reviewVersion`: a frame a second as contact sheets, dead air from ffmpeg, Claude against the craft bar and the beat
    sheet). Short of the bar, it goes back to the agent with the review's notes, up to `REVIEW_ROUNDS` (2) times since J's

@@ -679,11 +679,16 @@ come back to you here as a revision of this same work.
 - Keep the video's source in this repo under \`videos/<slug>/\`: \`script.md\` (J's script, as written), \`video.json\`
   (cast and voices, shots, the cut's timeline, every Gen job and asset id). Commit it each pass.
 - Render with Hawkes Gen (\`video.compose\` for the cut). Leave the finished cut in \`.hawkes/video.json\`:
-  \`{ "asset": "a_...", "poster": "a_...", "seconds": 31.5, "summary": "what changed this version", "caption": "post text with hashtags", "stage": "animatic" or "final", "story": "the logline, wants, turn and payoff", "beats": [the beat sheet] }\`.
-  Make the final ("stage": "final") unless the request asks for an animatic first; only then is your first pass the animatic.
+  \`{ "asset": "a_...", "poster": "a_...", "seconds": 31.5, "summary": "what changed this version", "caption": "post text with hashtags", "stage": "animatic" or "final", "story": "the logline, wants, turn and payoff", "beats": [the beat sheet], "edit": { the cut as video.compose's timeline with Gen asset ids } }\`.
+  Your first pass is the animatic unless the request says J turned it off; the final comes after J approves it.
+  **Always hand over the \`edit\`** (the skill's "The edit"): it's how J's timeline notes find your shots and how Studio makes
+  his quick edits (cut, speed, zoom) without you.
   If you can't put the cut into Gen yourself, give its path in this worktree instead (\`"file": "videos/<slug>/out/cut.mp4"\`,
   \`"poster": "videos/<slug>/out/poster.png"\`): Studio uploads it. Without one of them there is nothing for J to watch.
 - On a revision: answer every note, change only what the notes are about, and say per note what you did in \`summary\`.
+  J's notes come from the Screening timeline: \`[v3 · 0:12.4-0:15.0 · edit clips 4, 5 · beats 6 "ots_mech" (...)]\` names
+  exactly which version, seconds, clips of your edit and beats he means, then what he asked for and his words. "Studio made
+  a quick edit" lines are edits J already made: take them into your edit (don't undo them).
 ${versions.length ? `- Versions so far: ${versions.map((v) => `v${v.n} ${v.asset}${v.summary ? ` (${v.summary.slice(0, 120)})` : ''}`).join('; ')}.
 ` : ''}
 ${videoSkill()}

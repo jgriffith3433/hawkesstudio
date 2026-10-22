@@ -435,7 +435,9 @@ export async function answerInbox(id: string, answer: string, by: string, opts: 
     const videos = await import('./videos.ts');
     if (/^approve/i.test(text)) {
       jOnly('Approving a video');
-      const r = await videos.approveVideo(vm[1], { by, post: /post/i.test(text) });
+      // "Approve the animatic, but make Exit Punk louder": what follows the approval is J's guidance for the final.
+      const guidance = text.replace(/^approve( the animatic| and post drafts)?[\s,.:;!-]*(but|and|with)?\s*/i, '').trim();
+      const r = await videos.approveVideo(vm[1], { by, post: /post/i.test(text), guidance: guidance || undefined });
       record(id, by, text, `approved ${vm[1]}`);
       return { answered: id, by, video: r.video.task.id, social: r.social?.id ?? null };
     }

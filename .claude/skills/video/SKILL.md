@@ -4,13 +4,19 @@ description: Make a video from J's script (characters talking, a lore moment, a 
 ---
 # Making a video
 
-J writes the script. You direct it: the story and the beat sheet first (they're cheap, and you check them yourself),
-then **the final**: every beat rendered at full quality with the strongest tool Hawkes Gen has.
+J writes the script. You direct it in two passes:
 
-**No animatic unless J asks for one** (J, 2026-10-22: "I don't want animatics (unless I specifically ask for one)").
-When the request says he asked for one, your first pass is the animatic: the story, the beat sheet, cheap staging
-(Blender grey-box, on-model stills or a Lightning-mode scene) and the real voices, timed, marked `"stage": "animatic"`;
-the final comes after he approves it, keeping its story, beats, staging and timing.
+1. **The animatic** (your first pass, unless the request says J turned it off): the story, the beat sheet, the real
+   voices, the characters' art in the house style and the staging, timed, as a rough cut: a Lightning-mode scene
+   (section 5) or on-model stills held with moves. J, 2026-10-22: "I like the workflow of a rough draft first and the go
+   ahead etc. This helps with also changing the voice, checking the art etc." So it must show the real voices and the real
+   art, not placeholders: that's what he checks. Mark it `"stage": "animatic"`.
+2. **The final**, once J approves it ("yes, go ahead, but with this guidance": his guidance and notes come with the
+   go-ahead): every beat rendered at full quality with the strongest tool Hawkes Gen has, keeping the animatic's story,
+   beats, staging and timing, and doing what the guidance says.
+
+**J's controls** come in the request ("J's controls (follow them)"): length, look, voices, method (which scene model or
+shot by shot), quality (draft / standard / high), music, captions, end card. Follow them; what he leaves open is yours.
 
 Studio reviews each version (story first, then the craft bar) before J sees it and sends it back to you if it falls
 short. J screens what passes; his notes come back to you as revisions of the same work.
@@ -223,6 +229,29 @@ was paid for.
 Then watch it as J will: pull a frame per second and look at all of them in order next to `beats.json`. Every beat there?
 Faces on-model? The hook in the first second? Any dead air? Fix it before handing it over.
 
+## 7b. The edit (always)
+
+Make the cut from an **edit**: `video.compose`'s timeline with Gen asset ids where the tool takes input indexes, and hand
+it over as `.hawkes/video.json` `edit` (also commit it as `videos/<slug>/edit.json`). Render the cut by running
+`video.compose` from it (clips and audio as `asset:<id>` inputs in the same order as the indexes). This is what makes the
+Screening timeline work: J selects a range, Studio knows which of your clips and beats it is, and plain edits (cut a range
+out, speed it up, punch or push in on a point) are made by Studio in seconds without you.
+
+```json
+{ "width": 1080, "height": 1920, "fps": 24, "burn": true,
+  "clips": [ { "asset": "a_...", "in": 0, "out": 2.4, "beat": "hook", "label": "WS Exit Punk skates in" },
+             { "asset": "a_...", "in": 3.1, "out": 4.6, "beat": "ep_hi", "label": "CU Exit Punk: That's me. Hi.", "zoom": { "from": 1, "to": 1.15, "x": 0.5, "y": 0.3 } } ],
+  "audio": [ { "asset": "a_...", "start": 2.5, "seconds": 1.4, "dialogue": true, "label": "EXIT PUNK: That's me. Hi." },
+             { "asset": "a_...", "start": 0, "seconds": 24, "volume": 0.3, "duck": true, "label": "music" } ],
+  "captions": [ { "text": "That's me. Hi.", "start": 2.5, "end": 3.9 } ] }
+```
+
+Rules: every clip has its `out` (its length must be known); `beat` is the beat sheet's `key` for that shot; every audio
+track and caption has an absolute `start` on the cut (never relative to a clip) and every voice line its `seconds`;
+voice lines are `dialogue: true`. A whole generated scene can be one clip, or several clips cut from it (one per CUT),
+which lets J's notes and quick edits work shot by shot: prefer that. A punch-in on a close-up is a `zoom` on that clip,
+not a new render.
+
 ## 8. Hand it over
 
 - Commit `videos/<slug>/`: `script.md` (J's script), `story.md`, `beats.json`, `video.json` (cast and forms, every shot's
@@ -230,14 +259,35 @@ Faces on-model? The hook in the first second? Any dead air? Fix it before handin
 - Write `.hawkes/video.json` (`asset` and `poster` are Gen asset ids; if you can't put the files into Gen yourself,
   give their paths in your worktree instead, `"file": "videos/<slug>/out/cut.mp4"` and `"poster": "videos/<slug>/out/poster.png"`,
   and Studio uploads them):
-  `{ "asset": "<the cut>", "poster": "<a frame>", "seconds": 24.5, "summary": "what this version is / what changed", "caption": "post text: one line that makes people watch, 3-6 hashtags, hawkesgen.com", "beats": <the same array as beats.json>, "story": "<story.md>", "stage": "animatic" or "final" }`
+  `{ "asset": "<the cut>", "poster": "<a frame>", "seconds": 24.5, "summary": "what this version is / what changed", "caption": "post text: one line that makes people watch, 3-6 hashtags, hawkesgen.com", "beats": <the same array as beats.json>, "story": "<story.md>", "stage": "animatic" or "final", "edit": <edit.json> }`
 - `.hawkes/summary.md` (what you made, what it cost) and `.hawkes/learned.md` (casting, a character's motion style, what
   worked or didn't, as durable notes).
 
 ## Revisions
 
-Notes come from J ("J's notes on vN", with timestamps like `[v2 at 0:12]`) or from Studio's review (what fell short of
-the beat sheet or the craft bar). Answer every one. Change only what a note is about and reuse the rest from
-`video.json`: a voice note is a new take or a recast (save the choice); a pacing note is the timeline; "boring" is the beat
-sheet (a stronger hook, more reactions, cut a beat); a look note is those shots redone. In `summary`, say per note what
-you changed. If a note is unclear, ask instead of guessing big.
+Notes come from J's Screening timeline or Talk, and from Studio's review (what fell short of the beat sheet or the craft
+bar). A timeline note says exactly where: `[v3 · 0:12.4-0:15.0 · edit clips 4, 5 · beats 6 "ots_mech" (OTS The Mechanic
+"Eleven seconds...")] Make this shorter: ... J: "drag less here"`. That range is all it's about: change those clips and
+beats, keep everything else as it is (same assets, same timing elsewhere), re-render only what changes, and re-cut from
+your edit. Answer every note; in `summary`, say per note what you did.
+
+What each ask means (the first words after the brackets):
+- **Make this shorter / Let this breathe**: the timeline first (trim the clip's in/out, tighten the gap between lines,
+  drop a beat); a new take only if the line itself drags (a faster delivery).
+- **Redo this**: the same beat again, better: a new seed, a better keyframe or prompt; for a scene, regenerate that scene
+  with the same references, voice track and CUT list, and fix what looked wrong.
+- **Fix the lip sync**: the speaker's mouth on the voice line: re-run that shot with the line (`video.talk` sized to the
+  line's real length, or the scene with its voice track), and check the mouth against the line frame by frame.
+- **Closer / Wider / A different angle / Move the camera**: a new setup for that beat: a tighter or wider framing, an
+  over-the-shoulder or a two-shot, a motivated move. A simple closer can be a `zoom` on the clip; a new angle is a render.
+- **Add a reaction / More expression**: cut to the listener's face (an expression from the kit, `video.i2v` micro-motion),
+  or redo the shot with the expression named in the prompt.
+- **Change the voice**: a new take (delivery tags, emphasis) or another voice; re-time the beats to the new line length,
+  and save a recast in the product's voice file.
+- **Fix the look**: back on-model, in the house style and the scene's light (from the kit references), nothing melting.
+- **More physical action and VFX / Fix the sound / Fix the captions / Cut this out**: as they say.
+- **Studio made a quick edit**: J already cut, sped up or zoomed part of the cut in Studio; its new edit is in the line.
+  Make it your edit (then apply the other notes on top of it), never undo it.
+- **J approved the animatic ... J's guidance**: make the final with the guidance; his notes on the animatic come with it.
+
+If a note is unclear, ask (`.hawkes/question.md`) instead of guessing big.

@@ -335,20 +335,27 @@ export function studioMcp({ studio, waitRun }: Client = { studio: defaultStudio,
     },
     {
       name: 'studio_video',
-      description: "Videos (the Screening tab; docs/daily.md \"Videos\"): J writes a script, an agent makes the video with Hawkes Gen, J screens each version and his notes revise it. action: list (every video and where it is: queued, making, rendering, ready to screen, revising, approved), get (one: its versions with Gen asset ids, notes, the agent's progress), new (start one: product, title, script = J's lines as he wrote them, who says what, what happens; format short (9:16, default) or wide; direction: tone, music, look; animatic=true only when J asks for a rough draft first; it becomes a roadmap task the PM starts), note (J's note on the latest version, in his words: text, at = seconds into it; it goes straight back to the agent, never as a failed try), approve (J approved it: merges its files into beta; post=true also sends drafts to YouTube and TikTok). Only J's words decide a note or an approval: pass them on, don't invent them.",
+      description: "Videos (the Screening tab; docs/daily.md \"Videos\"): J writes a script, an agent makes the video with Hawkes Gen (an animatic first, then the final), J screens each version and his notes revise it. action: list (every video and where it is: queued, making, rendering, animatic ready, ready to screen, revising, approved), get (one: its versions with Gen asset ids and shots, notes, the agent's progress), new (start one: product, title, script = J's lines as he wrote them, who says what, what happens; format short (9:16, default) or wide; direction: tone, music, look; J's controls when he gives them: seconds, style, voices, engine (auto, scene, seedance, kling, shots), quality (draft, standard, high), music, captions, endCard, animatic=false to skip the rough draft; it becomes a roadmap task the PM starts), note (J's note, in his words: text, and where when he says: from/to = seconds into the version (a range), action = one of shorter, longer, redo, lipsync, closer, wider, angle, reaction, camera, expression, voice, look, action, sound, caption, cut; it goes straight back to the agent, never as a failed try), edit (a quick edit Studio makes itself in seconds on the latest version: op remove (cut from-to out), speed (from-to at factor), zoom (from-to, zoom 1.1-3, x/y 0-1 where to aim, push=true for a push-in)), approve (J approved it: an animatic goes to the final, with guidance = J's words for the final; a final merges into beta; post=true also sends drafts to YouTube and TikTok). Only J's words decide a note, an edit or an approval: pass them on, don't invent them.",
       inputSchema: obj({
-        action: str('list | get | new | note | approve'), id: str('The video (its task id, k_...): get, note, approve'),
+        action: str('list | get | new | note | edit | approve'), id: str('The video (its task id, k_...): get, note, approve'),
         product: str('new: the product (doseofdestruction, sickofit, phorigins, yoobaland, hawkesgen...)'), title: str('new: the title'),
-        script: str("new: J's script"), format: str('new: short (default) or wide'), direction: str('new: tone, look, music, voices'), animatic: { type: 'boolean', description: 'new: an animatic (rough draft) first, for J to approve before the final. Only when J asks for one' },
+        script: str("new: J's script"), format: str('new: short (default) or wide'), direction: str('new: tone, look, music, voices'),
         text: str("note: J's note"), at: { type: 'number', description: 'note: seconds into the version' }, post: { type: 'boolean', description: 'approve: also send drafts to YouTube and TikTok' },
+        from: { type: 'number', description: 'note, edit: where the range starts (seconds into the version)' }, to: { type: 'number', description: 'note, edit: where it ends' },
+        note_action: str('note: what J asks for (shorter, redo, lipsync, closer, angle, reaction, voice, look, ...)'), op: str('edit: remove | speed | zoom'),
+        factor: { type: 'number', description: 'edit speed: 1.25 to 4' }, zoom: { type: 'number', description: 'edit zoom: 1.1 to 3' }, x: { type: 'number', description: 'edit zoom: 0-1 across' }, y: { type: 'number', description: 'edit zoom: 0-1 down' }, push: { type: 'boolean', description: 'edit zoom: a push-in instead of a punch-in' },
+        guidance: str("approve (an animatic): J's guidance for the final"),
+        seconds: { type: 'number', description: 'new: target length' }, style: str('new: the look'), voices: str('new: who sounds how'), engine: str('new: auto | scene | seedance | kling | shots'), quality: str('new: draft | standard | high'), music: str('new: music direction'),
+        captions: { type: 'boolean', description: 'new: burned-in captions (default on)' }, endCard: { type: 'boolean', description: 'new: the end card (default on)' }, animatic: { type: 'boolean', description: 'new: false skips the animatic (default: an animatic first)' },
       }, ['action']),
       run: async (a) => {
         if (a.action === 'list') return studio('/api/videos');
         if (a.action === 'get') return studio(`/api/videos/${a.id}`);
-        if (a.action === 'new') return studio('/api/videos', { method: 'POST', body: { product: a.product, title: a.title, script: a.script, format: a.format, direction: a.direction, animatic: a.animatic === true } });
-        if (a.action === 'note') return studio(`/api/videos/${a.id}/notes`, { method: 'POST', body: { text: a.text, at: a.at } });
-        if (a.action === 'approve') return studio(`/api/videos/${a.id}/approve`, { method: 'POST', body: { post: a.post } });
-        throw new Error('action: list, get, new, note or approve');
+        if (a.action === 'new') return studio('/api/videos', { method: 'POST', body: { product: a.product, title: a.title, script: a.script, format: a.format, direction: a.direction, spec: { seconds: a.seconds, style: a.style, voices: a.voices, engine: a.engine, quality: a.quality, music: a.music, captions: a.captions, endCard: a.endCard, animatic: a.animatic } } });
+        if (a.action === 'note') return studio(`/api/videos/${a.id}/notes`, { method: 'POST', body: { text: a.text, at: a.at, from: a.from, to: a.to, action: a.note_action } });
+        if (a.action === 'edit') return studio(`/api/videos/${a.id}/edit`, { method: 'POST', body: { op: a.op, from: a.from, to: a.to, factor: a.factor, zoom: a.zoom, x: a.x, y: a.y, push: a.push } });
+        if (a.action === 'approve') return studio(`/api/videos/${a.id}/approve`, { method: 'POST', body: { post: a.post, guidance: a.guidance } });
+        throw new Error('action: list, get, new, note, edit or approve');
       },
     },
     {

@@ -55,7 +55,7 @@ test('a note with nothing waiting for J is kept for the next pass, stamped with 
   const r = await v.noteVideo(t.id, 'The voice is too slow', { at: 72.4, version: 2 });
   assert.equal(r.sent, false);
   assert.equal(r.queued, true);
-  assert.ok(rm.commentsOn(t.id).some((m: any) => m.kind === 'note' && m.text === '[v2 at 1:12] The voice is too slow'));
+  assert.ok(rm.commentsOn(t.id).some((m: any) => m.kind === 'note' && m.text === '[v2 · at 1:12.4] The voice is too slow'));
   await assert.rejects(v.noteVideo(t.id, '  '), /Say what/);
   await assert.rejects(v.approveVideo(t.id), /no version waiting/);
 });
@@ -72,7 +72,7 @@ test('every video gets a priced GPU budget (no "No GPU" lock)', () => {
 
 test("Studio's review: the craft bar and the beat sheet go to Claude; silences are read from ffmpeg", () => {
   const t = v.createVideo({ product: 'doseofdestruction', title: 'Review me', script: 'TT: Hi.' });
-  const base = { id: 'vv_x', task: t.id, n: 1, change: null, asset: 'a_0123456789abcdef', poster: null, seconds: 20, summary: 'first cut', caption: null, at: 0, review: null, stage: 'final' as const, story: null };
+  const base = { id: 'vv_x', task: t.id, n: 1, change: null, asset: 'a_0123456789abcdef', poster: null, seconds: 20, summary: 'first cut', caption: null, at: 0, review: null, stage: 'final' as const, story: null, edit: null, made_by: null };
   const none = v.reviewPrompt(t, { ...base, beats: null }, { seconds: 20, frames: 20, perSheet: 8, silences: [], jNotes: [] });
   assert.match(none, /no beat sheet, which is itself a failure/);
   assert.match(none, /reaction/i);
@@ -110,10 +110,10 @@ test('videos take no product slot: several run beside each other and beside othe
   assert.deepEqual(picks, ['c_v1', 'c_v2']);
 });
 
-test('no animatic unless J asks; one he asked for keeps its stage and story, and its review judges story and staging, not polish', () => {
-  assert.match(v.createVideo({ product: 'doseofdestruction', title: 'Straight', script: 'TT: Hi.' }).request, /the final itself \(no animatic/);
-  const t = v.createVideo({ product: 'doseofdestruction', title: 'Animatic', script: 'TT: Hi.', animatic: true });
-  assert.match(t.request, /an animatic first \(J asked for one/);
+test('an animatic first unless J turns it off; it keeps its stage and story, and its review judges story and staging, not polish', () => {
+  assert.match(v.createVideo({ product: 'doseofdestruction', title: 'Straight', script: 'TT: Hi.', animatic: false }).request, /the final itself \(J turned the animatic off/);
+  const t = v.createVideo({ product: 'doseofdestruction', title: 'Animatic', script: 'TT: Hi.' });
+  assert.match(t.request, /then an animatic \(a rough draft/);
   const wt = fs.mkdtempSync(path.join(os.tmpdir(), 'wt-'));
   fs.mkdirSync(path.join(wt, '.hawkes'));
   fs.writeFileSync(path.join(wt, '.hawkes', 'video.json'), JSON.stringify({ asset: 'a_1111111111111111', stage: 'animatic', story: 'Logline: TT wants the last fry.' }));
@@ -128,4 +128,45 @@ test('no animatic unless J asks; one he asked for keeps its stage and story, and
   const noStory = v.reviewPrompt(t, { ...rec, stage: 'final', story: null }, { seconds: 20, frames: 20, perSheet: 8, silences: [], jNotes: [] });
   assert.doesNotMatch(noStory, /THIS IS THE ANIMATIC/);
   assert.match(noStory, /wrote no story, which is itself a failure/);
+});
+
+test("J's controls reach the agent's request, and the form's leftovers are left to the director", () => {
+  const spec = v.readSpec({ seconds: '40', style: ' Pixar-like 3D ', engine: 'seedance', quality: 'high', captions: false, voices: '', engine2: 'x' });
+  assert.deepEqual(spec, { seconds: 40, style: 'Pixar-like 3D', engine: 'seedance', quality: 'high', captions: false });
+  const t = v.createVideo({ product: 'doseofdestruction', title: 'Controls', script: 'TT: Hi.', spec });
+  assert.match(t.request, /## J's controls \(follow them\)/);
+  assert.match(t.request, /Length: about 40 s/);
+  assert.match(t.request, /Seedance 2\.5/);
+  assert.match(t.request, /No burned-in captions/);
+  assert.deepEqual(v.specOf(t.id), spec);
+  assert.doesNotMatch(v.createVideo({ product: 'doseofdestruction', title: 'Plain', script: 'TT: Hi.' }).request, /J's controls/);
+});
+
+test('a note on a range names the shots and beats it covers; drafts wait and go to the agent together', async () => {
+  const t = v.createVideo({ product: 'doseofdestruction', title: 'Timeline', script: 'TT: Hi.\nSLICE: Bye.' });
+  const edit = { width: 1080, height: 1920, fps: 24, clips: [{ asset: 'a_1111111111111111', out: 3, beat: 'hook' }, { asset: 'a_2222222222222222', out: 2, beat: 'tt_hi' }, { asset: 'a_3333333333333333', out: 4, beat: 'slice_bye' }], audio: [], captions: [] };
+  const beats = [{ t: 0, seconds: 3, shot: 'WS', key: 'hook', who: ['TT'] }, { t: 3, seconds: 2, shot: 'CU', key: 'tt_hi', who: ['TT'], line: 'Hi.' }, { t: 5, seconds: 4, shot: 'MCU', key: 'slice_bye', who: ['Slice'], line: 'Bye.' }];
+  v.recordVersion(t.id, 'c_000000000077', { asset: 'a_9999999999999999', beats, edit } as any);
+  const line = v.noteForAgent(t.id, { version: 1, from_s: 3.2, to_s: 6, action: 'lipsync', text: 'her mouth is late' });
+  assert.match(line, /^\[v1 · 0:03\.2-0:06\.0 · edit clips 1, 2 · beats 1 "tt_hi" \(CU TT "Hi\."\); 2 "slice_bye" \(MCU Slice "Bye\."\)\] Fix the lip sync here/);
+  assert.match(line, /J: "her mouth is late"$/);
+  const d1 = await v.noteVideo(t.id, 'tighter', { from: 0, to: 3, action: 'shorter', hold: true });
+  await v.noteVideo(t.id, '', { from: 5, action: 'reaction', hold: true });
+  assert.ok(d1.draft);
+  assert.equal(v.timelineNotes(t.id, 'draft').length, 2);
+  assert.ok(!rm.commentsOn(t.id).some((m: any) => m.kind === 'note'), 'drafts are not sent');
+  v.dropDraft(t.id, d1.draft!);
+  const r = await v.sendDrafts(t.id, { text: 'and make it funnier' });
+  assert.equal(r.notes, 2);
+  assert.equal(v.timelineNotes(t.id, 'draft').length, 0);
+  assert.equal(v.timelineNotes(t.id, 'sent').length, 1);
+  const sent = rm.commentsOn(t.id).filter((m: any) => m.kind === 'note').map((m: any) => m.text);
+  assert.match(sent[0], /^\[v1 · at 0:05\.0 · edit clip 2 · beat 2 "slice_bye".*Add a reaction here/);
+  assert.equal(sent[1], 'and make it funnier');
+  await assert.rejects(v.sendDrafts(t.id), /No notes/);
+});
+
+test('quick edits are for a version waiting for J that has an edit', async () => {
+  const t = v.createVideo({ product: 'doseofdestruction', title: 'Quick', script: 'TT: Hi.' });
+  await assert.rejects(v.quickEdit(t.id, { op: 'remove', from: 0, to: 1 }), /waiting for you/);
 });

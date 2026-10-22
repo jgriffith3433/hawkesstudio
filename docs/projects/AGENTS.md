@@ -324,7 +324,7 @@ The websites never use AWS (they're on GitHub Pages). AWS is used for **compute 
     prices). GPU quota there: 8, 8 and 16 vCPUs. When AWS has no machine free in a stopped server's zone, Gen keeps
     trying and, with fallback launch, launches a new server where machines are free (within the cap of 4).
   - **Power and cost:** each server powers itself off after 60 idle minutes. About $1.86/hr while running
-    (more outside the US), plus about $27/month for each server's 250 GB disk until it's terminated.
+    (more outside the US), plus about $43/month for each server's 400 GB disk until it's terminated (servers launched from the fleet image are terminated when idle).
   - **Access:** a security group lets in only this PC's IP (`fleet access` when the IP changes), and a
     per-server token protects ComfyUI.
   - **Local state** (tokens, SSH keys) is in `hawkesgen/.data/fleet/` (gitignored).

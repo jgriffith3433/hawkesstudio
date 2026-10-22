@@ -16,6 +16,7 @@ import path from 'node:path';
 import { db, newId } from './db.ts';
 import { StudioError, isInfra } from './config.ts';
 import { addItem, addTask, getTask, getItem, setTask, addComment, commentsOn, logDecision, type Task } from './roadmap.ts';
+import { readEdit, shotsOf, shotsIn, beatsIn, applyEdit, composeParams, type Edit, type EditOp } from './video-edit.ts';
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS video_versions (
@@ -31,6 +32,23 @@ try { db.exec('ALTER TABLE video_state ADD COLUMN conversation TEXT'); } catch {
 try { db.exec('ALTER TABLE video_state ADD COLUMN auto_rounds INTEGER NOT NULL DEFAULT 0'); } catch { /* already there */ }
 // Each version's beat sheet (the agent's plan) and Studio's review of it.
 for (const col of ['beats', 'review', 'stage', 'story']) { try { db.exec(`ALTER TABLE video_versions ADD COLUMN ${col} TEXT`); } catch { /* already there */ } }
+// The cut as an edit (video-edit.ts) and who made the version: the agent, or Studio's quick edit for J.
+for (const col of ['edit', 'made_by']) { try { db.exec(`ALTER TABLE video_versions ADD COLUMN ${col} TEXT`); } catch { /* already there */ } }
+// J's controls for the video (VideoSpec), as he set them when he started it.
+try { db.exec('ALTER TABLE video_state ADD COLUMN spec TEXT'); } catch { /* already there */ }
+/**
+ * J's notes as he left them on the timeline (J, 2026-10-22: "click at points of time/highlight portions (like a video
+ * editor timeline) and give the agent notes on what to do"): a range of a version, an action, his words. status: draft
+ * (kept until he sends his notes together), sent, or quick (a quick edit Studio made, told to the agent with his next
+ * notes so its own edit catches up).
+ */
+db.exec(`
+  CREATE TABLE IF NOT EXISTS video_notes (
+    id TEXT PRIMARY KEY, task TEXT NOT NULL, version INTEGER, from_s REAL, to_s REAL, action TEXT, text TEXT NOT NULL,
+    by TEXT NOT NULL, at INTEGER NOT NULL, status TEXT NOT NULL, x REAL, y REAL
+  );
+  CREATE INDEX IF NOT EXISTS video_notes_task ON video_notes(task, status);
+`);
 
 const agents = () => import('./agents.ts');
 export const FORMATS: Record<string, string> = {
@@ -57,14 +75,17 @@ export const VIDEO_GPU = [
 
 export type Review = { pass: boolean; score: number; summary: string; notes: { at: number | null; note: string }[]; error?: string };
 /**
- * A version's stage. A video goes straight to the final; an animatic (the story, the beat sheet, cheap staging and the
- * real voices, timed, approved by J before the final renders) only when J asks for one (J, 2026-10-22: "I don't want
- * animatics (unless I specifically ask for one)").
+ * A version's stage. A video starts with an animatic (a rough draft: the story, the beat sheet, the art and staging, the
+ * real voices, timed) that J approves or steers before the final renders, unless he turns it off for that video (J,
+ * 2026-10-22: "I like the workflow of a rough draft first and the go ahead ... This helps with also changing the voice,
+ * checking the art etc.").
  */
 export type Stage = 'animatic' | 'final';
-export type Version = { id: string; task: string; n: number; change: string | null; asset: string; poster: string | null; seconds: number | null; summary: string | null; caption: string | null; at: number; beats: any[] | null; review: Review | null; stage: Stage; story: string | null };
-const toVersion = (r: any): Version => ({ ...r, beats: r.beats ? JSON.parse(r.beats) : null, review: r.review ? JSON.parse(r.review) : null, stage: r.stage === 'animatic' ? 'animatic' : 'final', story: r.story ?? null });
+export type Version = { id: string; task: string; n: number; change: string | null; asset: string; poster: string | null; seconds: number | null; summary: string | null; caption: string | null; at: number; beats: any[] | null; review: Review | null; stage: Stage; story: string | null; edit: Edit | null; made_by: string | null };
+const toVersion = (r: any): Version => ({ ...r, beats: r.beats ? JSON.parse(r.beats) : null, review: r.review ? JSON.parse(r.review) : null, stage: r.stage === 'animatic' ? 'animatic' : 'final', story: r.story ?? null, edit: r.edit ? JSON.parse(r.edit) : null, made_by: r.made_by ?? null });
 export const REVIEW_ROUNDS = 2;
+/** How many frames Studio's review looks at, at most (10 contact sheets). */
+const REVIEW_FRAMES = 80;
 const REVIEW_TRIES = 4;
 const REVIEW_RETRY_MS = Number(process.env.STUDIO_VIDEO_REVIEW_RETRY_MS) || 3 * 60_000;
 
@@ -76,7 +97,7 @@ export function versionsOf(task: string): Version[] {
 }
 
 /** What the agent says it made this pass (.hawkes/video.json), checked. null when it left none or it isn't usable. */
-export type VideoFile = { asset?: string; file?: string; poster?: string; posterFile?: string; seconds?: number; summary?: string; caption?: string; beats?: any[]; stage?: Stage; story?: string };
+export type VideoFile = { asset?: string; file?: string; poster?: string; posterFile?: string; seconds?: number; summary?: string; caption?: string; beats?: any[]; stage?: Stage; story?: string; edit?: Edit };
 /**
  * A path the agent gave for its cut (or poster): inside its worktree, a video or image file that exists. Agents can't
  * put files into Gen themselves (the sandbox has no upload), so Studio does it for them (importVideoFile).
@@ -108,6 +129,7 @@ export function readVideoFile(worktree: string): VideoFile | null {
       summary: v.summary ? String(v.summary).slice(0, 2000) : undefined, caption: v.caption ? String(v.caption).slice(0, 2200) : undefined,
       beats: Array.isArray(v.beats) ? v.beats.slice(0, 120) : undefined,
       stage: v.stage === 'animatic' ? 'animatic' : 'final', story: v.story ? String(v.story).slice(0, 6000) : undefined,
+      edit: readEdit(v.edit) ?? undefined,
     };
   } catch {
     return null;
@@ -129,12 +151,12 @@ export async function importVideoFile(worktree: string, v: VideoFile, product: s
 }
 
 /** A new version from a pass of the video's change (the same asset as the last one isn't a new version). */
-export function recordVersion(task: string, change: string, v: VideoFile & { asset: string }): Version | null {
+export function recordVersion(task: string, change: string, v: VideoFile & { asset: string }, madeBy: string | null = null): Version | null {
   const all = versionsOf(task);
   if (all.at(-1)?.asset === v.asset) return null;
   const id = newId('vv');
-  db.prepare('INSERT INTO video_versions (id, task, n, change, asset, poster, seconds, summary, caption, at, beats, stage, story) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
-    .run(id, task, all.length + 1, change, v.asset, v.poster ?? null, v.seconds ?? null, v.summary ?? null, v.caption ?? null, Date.now(), v.beats ? JSON.stringify(v.beats) : null, v.stage ?? 'final', v.story ?? null);
+  db.prepare('INSERT INTO video_versions (id, task, n, change, asset, poster, seconds, summary, caption, at, beats, stage, story, edit, made_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+    .run(id, task, all.length + 1, change, v.asset, v.poster ?? null, v.seconds ?? null, v.summary ?? null, v.caption ?? null, Date.now(), v.beats ? JSON.stringify(v.beats) : null, v.stage ?? 'final', v.story ?? null, v.edit ? JSON.stringify(v.edit) : null, madeBy);
   return toVersion(db.prepare('SELECT * FROM video_versions WHERE id = ?').get(id));
 }
 
@@ -222,7 +244,8 @@ export const REVIEW_SCHEMA = {
 };
 
 /** The review's prompt: the craft bar, J's script and notes, the agent's beat sheet, and what the frames and audio show. */
-export function reviewPrompt(t: Task, v: Version, facts: { seconds: number; frames: number; perSheet: number; silences: { start: number; seconds: number }[]; jNotes: string[] }) {
+export function reviewPrompt(t: Task, v: Version, facts: { seconds: number; frames: number; perSheet: number; silences: { start: number; seconds: number }[]; jNotes: string[]; every?: number }) {
+  const every = facts.every ?? 1;
   const script = (commentsOn(t.id).find((m: any) => m.kind === 'script') as any)?.text ?? t.request;
   const animatic = v.stage === 'animatic';
   return `You review a short video for J (Hawkes Studio) before he sees it. Be the strict director he wants: he called the
@@ -274,7 +297,7 @@ ${v.beats?.length ? JSON.stringify(v.beats).slice(0, 8000) : '(none: the agent l
 
 The agent says: ${v.summary ?? '(nothing)'}
 
-The images are contact sheets of the cut: one frame per second, ${facts.perSheet} per sheet, left to right, top to bottom,
+The images are contact sheets of the whole cut: one frame ${every === 1 ? 'per second' : `every ${every.toFixed(1)} s`}, ${facts.perSheet} per sheet, left to right, top to bottom,
 starting at 0 s (${facts.frames} frames for ${facts.seconds.toFixed(1)} s).
 Silences over 0.8 s: ${facts.silences.length ? facts.silences.map((s) => `${s.start.toFixed(1)} s for ${s.seconds.toFixed(1)} s`).join(', ') : 'none'}.
 
@@ -299,8 +322,11 @@ async function reviewVersion(t: Task, v: Version): Promise<Review> {
     const vs = (info.streams ?? []).find((s: any) => s.width);
     const tall = vs ? vs.height > vs.width : true;
     const [cols, rows, w, h] = tall ? [4, 2, 270, 480] : [3, 3, 480, 270];
-    execFileSync('ffmpeg', ['-v', 'error', '-y', '-i', file, '-vf', `fps=1,scale=${w}:${h},tile=${cols}x${rows}`, path.join(dir, 'sheet-%02d.png')]);
-    const sheets = fs.readdirSync(dir).filter((f) => f.startsWith('sheet-')).sort().slice(0, 6);
+    // The whole cut, however long (The Board v2's review saw only its first 54 of 77 s): a frame a second up to
+    // REVIEW_FRAMES, then spread evenly.
+    const every = Math.max(1, seconds / REVIEW_FRAMES);
+    execFileSync('ffmpeg', ['-v', 'error', '-y', '-i', file, '-vf', `fps=1/${every.toFixed(3)},scale=${w}:${h},tile=${cols}x${rows}`, path.join(dir, 'sheet-%02d.png')]);
+    const sheets = fs.readdirSync(dir).filter((f) => f.startsWith('sheet-')).sort().slice(0, Math.ceil(REVIEW_FRAMES / (cols * rows)));
     let log = '';
     try {
       execFileSync('ffmpeg', ['-v', 'info', '-i', file, '-af', 'silencedetect=n=-38dB:d=0.8', '-f', 'null', '-'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
@@ -310,7 +336,7 @@ async function reviewVersion(t: Task, v: Version): Promise<Review> {
     const images: string[] = [];
     for (const s of sheets) images.push(await gen.upload(fs.readFileSync(path.join(dir, s)), s));
     const jNotes = commentsOn(t.id).filter((m: any) => m.kind === 'note' && !String(m.by).startsWith('Studio')).map((m: any) => m.text).slice(-12);
-    const prompt = reviewPrompt(t, v, { seconds, frames: Math.ceil(seconds), perSheet: cols * rows, silences: silenceOf(log), jNotes });
+    const prompt = reviewPrompt(t, v, { seconds, frames: Math.ceil(seconds / every), perSheet: cols * rows, silences: silenceOf(log), jNotes, every });
     const job = await askClaude({ prompt, schema: REVIEW_SCHEMA, images, model: jobModel('review'), maxTokens: 3000, timeoutMs: 8 * 60_000, purpose: 'video review', product: t.product });
     const r = job?.result?.value ?? job?.value;
     if (!r || typeof r.pass !== 'boolean') throw new Error(job?.error ?? 'no answer');
@@ -365,43 +391,92 @@ export async function videoDetail(task: string) {
   if (!t || t.kind !== 'video') throw new StudioError(`No video ${task}`, 404);
   const { getChange } = await agents();
   const c = t.change ? getChange(t.change) : null;
-  const versions = versionsOf(task);
+  const versions = versionsOf(task).map((v) => ({ ...v, shots: v.edit ? shotsOf(v.edit) : null }));
   return {
-    task: t, item: getItem(t.item), state: stateOf(t, c, versions), versions,
+    task: t, item: getItem(t.item), state: stateOf(t, c, versions), versions, spec: specOf(task),
     notes: commentsOn(task).map((m: any) => ({ by: m.by, kind: m.kind, text: m.text, at: m.at })),
+    marks: timelineNotes(task), actions: NOTE_ACTIONS,
     change: c ? { id: c.id, status: c.status, detail: c.detail, log: (c.log ?? []).slice(-12) } : null,
   };
 }
 
-/** The agent's request for a new video: J's script and what the format means. */
-export function videoRequest(a: { title: string; script: string; format?: string; direction?: string; animatic?: boolean }) {
+/**
+ * J's controls for a video (the New video form, studio_video new): what he can steer before anything renders. Every one
+ * is optional; the director decides what he leaves open.
+ */
+export type VideoSpec = { seconds?: number; style?: string; voices?: string; engine?: string; quality?: string; music?: string; captions?: boolean; endCard?: boolean; animatic?: boolean };
+export const ENGINES: Record<string, string> = {
+  auto: "the director's choice: whole scenes from references (video.scene) by default, Blender and ComfyUI shots where a scene needs more",
+  scene: 'whole scenes from references on our GPUs (video.scene, MiniMax H3): one look, one room, lips on the voice track',
+  seedance: 'whole scenes through Seedance 2.5 (video.seedance, paid Comfy credits; up to 30 s a scene)',
+  kling: 'whole scenes through Kling O3 (video.kling, paid; Kling voices the characters itself, so not with our cast voices)',
+  shots: 'shot by shot: each shot staged in Blender and painted with ComfyUI (the most control, the slowest)',
+};
+export const QUALITY: Record<string, string> = {
+  draft: 'fast and cheap: Lightning steps, about 0.3 MP, no upscale (to judge story and staging)',
+  standard: 'about 0.5 MP, upscaled to the format',
+  high: 'about 0.6 MP, two takes per scene with the better one kept, upscaled and interpolated',
+};
+export function specOf(task: string): VideoSpec {
+  const row = db.prepare('SELECT spec FROM video_state WHERE task = ?').get(task) as { spec: string | null } | undefined;
+  try { return row?.spec ? JSON.parse(row.spec) : {}; } catch { return {}; }
+}
+/** J's controls, checked: what's unknown or empty is left to the director. */
+export function readSpec(a: any): VideoSpec {
+  const out: VideoSpec = {};
+  const sec = Number(a?.seconds);
+  if (Number.isFinite(sec) && sec >= 5 && sec <= 300) out.seconds = Math.round(sec);
+  for (const k of ['style', 'voices', 'music'] as const) if (String(a?.[k] ?? '').trim()) out[k] = String(a[k]).trim().slice(0, 1000);
+  if (a?.engine && ENGINES[a.engine] && a.engine !== 'auto') out.engine = a.engine;
+  if (a?.quality && QUALITY[a.quality]) out.quality = a.quality;
+  for (const k of ['captions', 'endCard', 'animatic'] as const) if (typeof a?.[k] === 'boolean') out[k] = a[k];
+  return out;
+}
+
+/** The agent's request for a new video: J's script, what the format means, and his controls. */
+export function videoRequest(a: { title: string; script: string; format?: string; direction?: string; animatic?: boolean; spec?: VideoSpec }) {
   const format = FORMATS[a.format ?? 'short'] ? a.format ?? 'short' : 'short';
-  // No animatic unless J asks for one (J, 2026-10-22: "I don't want animatics (unless I specifically ask for one)").
-  const passes = a.animatic
-    ? 'the story and a beat sheet first, then an animatic first (J asked for one: rough staging, the real voices, timed) that J approves, then the final'
-    : 'the story and a beat sheet first, then the final itself (no animatic: J asks for one when he wants one)';
+  const spec = a.spec ?? {};
+  // An animatic (a rough draft) first unless J turns it off (J, 2026-10-22: "I think i like the workflow of a rough
+  // draft first and the go ahead etc. This helps with also changing the voice, checking the art etc.").
+  const animatic = a.animatic ?? spec.animatic ?? true;
+  const passes = animatic
+    ? 'the story and a beat sheet first, then an animatic (a rough draft: the real voices, the art and the staging, timed) that J approves or steers, then the final'
+    : 'the story and a beat sheet first, then the final itself (J turned the animatic off for this one)';
+  const controls = [
+    spec.seconds ? `- Length: about ${spec.seconds} s.` : null,
+    spec.style ? `- Look: ${spec.style}` : null,
+    spec.voices ? `- Voices: ${spec.voices}` : null,
+    spec.engine ? `- Method: ${ENGINES[spec.engine]}.` : null,
+    spec.quality ? `- Quality: ${spec.quality} (${QUALITY[spec.quality]}).` : null,
+    spec.music ? `- Music: ${spec.music}` : null,
+    spec.captions === false ? '- No burned-in captions.' : null,
+    spec.endCard === false ? '- No end card.' : null,
+  ].filter(Boolean);
   return `Make the video "${a.title}" (${format}: ${FORMATS[format]}). The video skill (below) is how videos are made here:
 ${passes}: whole scenes generated from the characters' references and the voice track (video.scene) by default, Blender
 and ComfyUI for shots that need more, within the GPU budget.
 
 ## J's script
 ${a.script.trim()}
-${a.direction?.trim() ? `\n## Direction\n${a.direction.trim()}\n` : ''}
+${a.direction?.trim() ? `\n## Direction\n${a.direction.trim()}\n` : ''}${controls.length ? `\n## J's controls (follow them)\n${controls.join('\n')}\n` : ''}
 Keep J's lines as written (fix only obvious typos). Cast each character with their own voice. Leave the finished cut's
-Gen asset in .hawkes/video.json; J screens it in Studio and his notes come back to you as revisions.`;
+Gen asset and its edit in .hawkes/video.json; J screens it in Studio and his notes come back to you as revisions.`;
 }
 
 /** A new video: a roadmap item and its video task, planned, so the PM starts it. */
-export function createVideo(a: { product: string; title: string; script: string; format?: string; direction?: string; animatic?: boolean; gpu?: unknown; priority?: string; by?: string; origin?: string | null }) {
+export function createVideo(a: { product: string; title: string; script: string; format?: string; direction?: string; animatic?: boolean; spec?: VideoSpec; gpu?: unknown; priority?: string; by?: string; origin?: string | null }) {
   if (!String(a.title ?? '').trim()) throw new StudioError('A video needs a title');
   if (!String(a.script ?? '').trim()) throw new StudioError('A video needs a script (the lines, who says them, what happens)');
   if (a.format && !FORMATS[a.format]) throw new StudioError(`format is ${Object.keys(FORMATS).join(' or ')}`);
   // A video's files go to a product's repo (and beta); Studio's and Gen's own repos deploy on merge, so never there.
   if (isInfra(a.product)) throw new StudioError(`Videos belong to a product (its characters and repo), not ${a.product}`);
   const title = String(a.title).trim().slice(0, 140);
+  const spec = readSpec({ ...(a.spec ?? {}), ...(typeof a.animatic === 'boolean' ? { animatic: a.animatic } : {}) });
   const item = addItem({ product: a.product, title: `Video: ${title}`, goal: `A ${a.format ?? 'short'} video J approves in the Screening tab.`, status: 'planned', priority: a.priority, by: a.by ?? 'J', origin: a.origin ?? null });
-  const task = addTask({ item: item.id, title: `Video: ${title}`, request: videoRequest({ title, script: a.script, format: a.format, direction: a.direction, animatic: a.animatic === true }), criteria: ['J approves it in the Screening tab'], kind: 'video', gpu: a.gpu ?? VIDEO_GPU, priority: a.priority });
+  const task = addTask({ item: item.id, title: `Video: ${title}`, request: videoRequest({ title, script: a.script, format: a.format, direction: a.direction, spec }), criteria: ['J approves it in the Screening tab'], kind: 'video', gpu: a.gpu ?? VIDEO_GPU, priority: a.priority });
   addComment(task.id, `Script (${a.format ?? 'short'}):\n${a.script.trim()}`, a.by ?? 'J', 'script');
+  db.prepare('INSERT INTO video_state (task, spec) VALUES (?, ?) ON CONFLICT(task) DO UPDATE SET spec = excluded.spec').run(task.id, JSON.stringify(spec));
   logDecision('video', task.id, task.product, `new video "${title}" (${a.format ?? 'short'})`);
   return getTask(task.id)!;
 }
@@ -424,23 +499,149 @@ async function sendNotes(task: string, notes: string[], by: string) {
 }
 
 /**
- * J's note on a video (at: seconds into the version he was watching). Sent to the agent now when it's waiting for him;
- * while it works, kept and sent when its pass ends (videoReady).
+ * What J can ask for on a part of the timeline, and what each means to the agent. The agent does all of them; the
+ * QUICK ones Studio can also do itself in seconds when the version has an edit (quickEdit).
  */
-export async function noteVideo(task: string, text: string, { at, version, by = 'J' }: { at?: number | null; version?: number | null; by?: string } = {}) {
+export const NOTE_ACTIONS: Record<string, string> = {
+  shorter: 'Make this shorter: tighten it (trim pauses, cut a beat, faster cuts) without losing a line or the story point.',
+  longer: 'Let this breathe: hold it longer (a reaction, a beat of silence before or after the line).',
+  redo: 'Redo this: generate it again (a new take, a better keyframe or prompt), keeping its story, timing and voice.',
+  lipsync: "Fix the lip sync here: the speaker's mouth must match the voice line exactly the whole way through.",
+  closer: 'Closer here: a tighter shot (MCU, CU or ECU) on the face that matters.',
+  wider: 'Wider here: show the space and both characters.',
+  angle: 'A different angle here: a new setup (an over-the-shoulder, a low or high angle, a two-shot) instead of this one.',
+  reaction: 'Add a reaction here: cut to a face reacting, held a beat.',
+  camera: 'Move the camera here: a motivated move (push-in, whip-pan, orbit, handheld) instead of a static frame.',
+  expression: 'More expression here: the faces should act the beat (eyes, brows, mouth), not sit neutral.',
+  voice: 'Change the voice or the delivery here: a new take (emphasis, timing, emotion) or a different voice.',
+  look: 'Fix the look here: on-model, the same style and light as the rest, nothing melting or morphing.',
+  action: 'More physical action and VFX here: the impact, a physical reaction, sparks or a shake, and the SFX.',
+  sound: 'Fix the sound here: the SFX, the music level, the mix.',
+  caption: 'Fix the captions here.',
+  cut: 'Cut this out.',
+};
+
+export type TimelineNote = { id: string; task: string; version: number | null; from_s: number | null; to_s: number | null; action: string | null; text: string; by: string; at: number; status: 'draft' | 'sent' | 'quick' | 'told'; x: number | null; y: number | null };
+export function timelineNotes(task: string, status?: string): TimelineNote[] {
+  return db.prepare(`SELECT * FROM video_notes WHERE task = ?${status ? ' AND status = ?' : ''} ORDER BY at`).all(...(status ? [task, status] : [task])) as TimelineNote[];
+}
+
+const stampRange = (from: number | null, to: number | null) => {
+  const at = (s: number) => `${Math.floor(s / 60)}:${(s % 60).toFixed(1).padStart(4, '0')}`;
+  return from == null ? '' : to != null && to - from > 0.05 ? `${at(from)}-${at(to)}` : `at ${at(from)}`;
+};
+
+/**
+ * A note as the agent reads it: the version and range, the shots and beats it covers (from the version's edit and beat
+ * sheet, so "this" is never a guess), what J asked for, and his words.
+ */
+export function noteForAgent(task: string, n: { version?: number | null; from_s?: number | null; to_s?: number | null; action?: string | null; text?: string; x?: number | null; y?: number | null }) {
+  const v = n.version ? versionsOf(task).find((x) => x.n === n.version) : versionsOf(task).at(-1);
+  const where: string[] = [];
+  if (n.version ?? v?.n) where.push(`v${n.version ?? v!.n}`);
+  if (n.from_s != null) where.push(stampRange(n.from_s, n.to_s ?? null));
+  const to = n.to_s != null && n.to_s > (n.from_s ?? 0) ? n.to_s : (n.from_s ?? 0) + 0.05;
+  if (v && n.from_s != null) {
+    const shots = v.edit ? shotsIn(shotsOf(v.edit), n.from_s, to) : [];
+    if (shots.length) where.push(`edit clip${shots.length > 1 ? 's' : ''} ${shots.map((s) => s.i).join(', ')}`);
+    const beats = beatsIn(v.beats, n.from_s, to).slice(0, 6);
+    if (beats.length) where.push(`beat${beats.length > 1 ? 's' : ''} ${beats.map((b: any) => `${b.i}${b.key ? ` "${b.key}"` : ''} (${[b.shot, b.who?.join?.(' + '), b.line ? `"${String(b.line).slice(0, 60)}"` : null].filter(Boolean).join(' ')})`).join('; ')}`);
+  }
+  if (n.x != null && n.y != null) where.push(`aimed at ${Math.round(n.x * 100)}% across, ${Math.round(n.y * 100)}% down the frame`);
+  const ask = n.action && NOTE_ACTIONS[n.action] ? NOTE_ACTIONS[n.action] : '';
+  const words = String(n.text ?? '').trim();
+  return `${where.length ? `[${where.join(' · ')}] ` : ''}${[ask, words ? (ask ? `J: "${words}"` : words) : ''].filter(Boolean).join(' ')}`.trim();
+}
+
+/**
+ * J's note on a video: a moment or a range of a version (from, to: seconds), an action (NOTE_ACTIONS), his words.
+ * hold: keep it as a draft until he sends his notes together (sendDrafts), so the agent starts once with all of them.
+ * Otherwise (and every note from Talk) it goes now: to the agent when it's waiting for him; while it works, kept and sent
+ * when its pass ends (videoReady).
+ */
+export async function noteVideo(task: string, text: string, { at, from, to, action, version, x, y, hold = false, by = 'J' }: { at?: number | null; from?: number | null; to?: number | null; action?: string | null; version?: number | null; x?: number | null; y?: number | null; hold?: boolean; by?: string } = {}) {
   const t = getTask(task);
   if (!t || t.kind !== 'video') throw new StudioError(`No video ${task}`, 404);
-  const note = String(text ?? '').trim();
-  if (!note) throw new StudioError('Say what to change');
-  const stamp = [version ? `v${version}` : null, at != null && Number.isFinite(Number(at)) ? `at ${Math.floor(Number(at) / 60)}:${String(Math.floor(Number(at) % 60)).padStart(2, '0')}` : null].filter(Boolean).join(' ');
-  const full = stamp ? `[${stamp}] ${note}` : note;
+  const words = String(text ?? '').trim();
+  const act = action && NOTE_ACTIONS[action] ? action : null;
+  if (!words && !act) throw new StudioError('Say what to change');
+  const num = (v: unknown) => (v === null || v === undefined || v === '' || !Number.isFinite(Number(v)) ? null : Number(v));
+  const f = num(from) ?? num(at);
+  const tt = num(to);
+  const vn = num(version) ?? versionsOf(task).at(-1)?.n ?? null;
+  const row: TimelineNote = { id: newId('vn'), task, version: vn, from_s: f, to_s: tt != null && f != null && tt > f ? tt : null, action: act, text: words.slice(0, 4000), by, at: Date.now(), status: hold ? 'draft' : 'sent', x: num(x), y: num(y) };
+  db.prepare('INSERT INTO video_notes (id, task, version, from_s, to_s, action, text, by, at, status, x, y) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+    .run(row.id, task, row.version, row.from_s, row.to_s, row.action, row.text, by, row.at, row.status, row.x, row.y);
+  if (hold) return { sent: false, queued: false, draft: row.id, video: await videoDetail(task) };
+  const full = noteForAgent(task, row);
   addComment(task, full.slice(0, 4000), by, 'note');
-  const sent = await sendNotes(task, [full], by);
+  const sent = await sendNotes(task, [...pendingForAgent(task), full], by);
   return { sent, queued: !sent, video: await videoDetail(task) };
 }
 
+/** Drafts J kept and quick edits Studio made since the agent last heard from him, as lines for the agent (and marked sent). */
+function pendingForAgent(task: string): string[] {
+  const rows = [...timelineNotes(task, 'draft'), ...timelineNotes(task, 'quick')].sort((a, b) => a.at - b.at);
+  const lines = rows.map((r) => (r.status === 'quick' ? r.text : noteForAgent(task, r)));
+  for (const r of rows) db.prepare("UPDATE video_notes SET status = ? WHERE id = ?").run(r.status === 'quick' ? 'told' : 'sent', r.id);
+  for (const [i, r] of rows.entries()) if (r.status === 'draft') addComment(task, lines[i].slice(0, 4000), r.by, 'note');
+  return lines;
+}
+
+/** J sends the notes he kept (and, optionally, a last word on the whole thing): one revision with all of them. */
+export async function sendDrafts(task: string, { text, by = 'J' }: { text?: string; by?: string } = {}) {
+  const t = getTask(task);
+  if (!t || t.kind !== 'video') throw new StudioError(`No video ${task}`, 404);
+  const extra = String(text ?? '').trim();
+  const lines = pendingForAgent(task);
+  if (extra) { lines.push(extra); addComment(task, extra.slice(0, 4000), by, 'note'); }
+  if (!lines.length) throw new StudioError('No notes to send');
+  const sent = await sendNotes(task, lines, by);
+  return { sent, queued: !sent, notes: lines.length, video: await videoDetail(task) };
+}
+
+/** A draft J changed his mind about. */
+export function dropDraft(task: string, id: string) {
+  const r = db.prepare("DELETE FROM video_notes WHERE id = ? AND task = ? AND status = 'draft'").run(id, task);
+  if (!r.changes) throw new StudioError('No such draft', 404);
+}
+
+/**
+ * A plain edit J makes himself, in seconds, without the agent (video-edit.ts): cut a range out, speed it up, punch or push
+ * in on a point. Studio renders the new edit with Gen video.compose (free, no GPU) into a new version, and tells the
+ * agent with J's next notes so its own edit catches up. Only on the latest version, while it waits for J.
+ */
+export async function quickEdit(task: string, op: EditOp, { by = 'J' }: { by?: string } = {}) {
+  const t = getTask(task);
+  if (!t || t.kind !== 'video') throw new StudioError(`No video ${task}`, 404);
+  const { getChange } = await agents();
+  const c = t.change ? getChange(t.change) : null;
+  if (!c || c.status !== 'ready') throw new StudioError("Quick edits are for a version that's waiting for you (the agent is working on this one)");
+  const base = versionsOf(task).at(-1);
+  if (!base) throw new StudioError('No video yet');
+  if (!base.edit) throw new StudioError(`v${base.n} has no edit Studio can change (the agent cut it without one): send it as a note and the agent does it`);
+  let next: { edit: Edit; said: string };
+  try { next = applyEdit(base.edit, op); } catch (e: any) { throw new StudioError(e.message); }
+  const { gen, genWait } = await import('./gen.ts');
+  const { inputs, params } = composeParams(next.edit);
+  const job: any = await gen.submit('video.compose', { project: t.product, params, inputs, labels: { video: task, quickEdit: `v${base.n}` } } as any);
+  const done: any = await genWait(job.id, undefined, 15 * 60_000);
+  const outs = done.outputs ?? [];
+  const cut = outs.find((o: any) => o.kind === 'video')?.asset;
+  if (done.status !== 'done' || !cut) throw new StudioError(`The quick edit didn't render: ${done.error ?? done.detail ?? done.status}`);
+  const poster = outs.find((o: any) => o.kind === 'image')?.asset ?? base.poster ?? undefined;
+  const summary = `Quick edit of v${base.n} by ${by}: ${next.said}.`;
+  const v = recordVersion(task, base.change ?? c.id, { asset: cut, poster, seconds: Number(done.result?.duration) || undefined, summary, caption: base.caption ?? undefined, beats: base.beats ?? undefined, stage: base.stage, story: base.story ?? undefined, edit: next.edit }, 'quick')!;
+  const tell = `Studio made a quick edit for ${by}: v${v.n} is v${base.n} with ${next.said}. Make it your edit too (its edit is in Studio, version v${v.n}): ${JSON.stringify(next.edit).slice(0, 6000)}`;
+  db.prepare('INSERT INTO video_notes (id, task, version, from_s, to_s, action, text, by, at, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+    .run(newId('vn'), task, base.n, op.from, op.to, `quick:${op.op}`, tell, by, Date.now(), 'quick');
+  addComment(task, summary, by, 'edit');
+  logDecision('video', task, t.product, `${by}: ${summary}`);
+  return { version: v, video: await videoDetail(task) };
+}
+
 /** J approves a version: the change merges into beta (its scripts and edit list), the task is done, optionally drafts go out. */
-export async function approveVideo(task: string, { by = 'J', post = false, platforms }: { by?: string; post?: boolean; platforms?: string[] } = {}) {
+export async function approveVideo(task: string, { by = 'J', post = false, platforms, guidance }: { by?: string; post?: boolean; platforms?: string[]; guidance?: string } = {}) {
   const t = getTask(task);
   if (!t || t.kind !== 'video') throw new StudioError(`No video ${task}`, 404);
   const { getChange, approve } = await agents();
@@ -449,9 +650,17 @@ export async function approveVideo(task: string, { by = 'J', post = false, platf
   const v = versionsOf(task).at(-1);
   if (!v) throw new StudioError(`"${t.title}" has no video yet`);
   // An approved animatic: the agent goes on to the final from it (nothing merges yet).
+  // J (2026-10-22): the animatic "could be a way to say 'yes go ahead but with this guidance'": his guidance and the
+  // notes he kept on it go with the go-ahead.
   if (v.stage === 'animatic') {
-    addComment(task, `Approved the animatic v${v.n}: make the final.`, by, 'note');
-    await sendNotes(task, [`J approved the animatic v${v.n}. Make the final from it now: keep its story, beats, staging and timing (don't redesign them), and render every beat at full quality with the methods your beat sheet names. Mark it "stage": "final".`], by);
+    const words = String(guidance ?? '').trim();
+    addComment(task, `Approved the animatic v${v.n}: make the final.${words ? ` Guidance: ${words}` : ''}`, by, 'note');
+    const kept = pendingForAgent(task);
+    await sendNotes(task, [
+      `J approved the animatic v${v.n}. Make the final from it now: keep its story, beats, staging and timing (don't redesign them), and render every beat at full quality with the methods your beat sheet names. Mark it "stage": "final".`,
+      ...(words ? [`J's guidance for the final: "${words}"`] : []),
+      ...(kept.length ? ['Also do these, from his notes on the animatic:', ...kept] : []),
+    ], by);
     logDecision('video', task, t.product, `${by} approved the animatic of "${t.title}" (v${v.n}): the final is being made`);
     return { video: await videoDetail(task), social: null, final: 'in progress' };
   }
@@ -480,7 +689,7 @@ export async function handleVideosApi(req: import('node:http').IncomingMessage, 
       const b = await readJson(req);
       // Started from Talk: the version notices go back into that conversation (tellTalk).
       const origin = String(req.headers['x-talk-conversation'] ?? '').trim() || null;
-      const t = createVideo({ ...b, by, origin });
+      const t = createVideo({ ...b, spec: readSpec({ ...b, ...(b.spec ?? {}) }), by, origin });
       if (t.gpu) await (await import('./roadmap.ts')).estimateTask(t.id).catch((e: any) => console.warn(`[videos] pricing ${t.id}: ${e.message ?? e}`));
       const { kick } = await import('./pm.ts');
       kick();
@@ -489,11 +698,28 @@ export async function handleVideosApi(req: import('node:http').IncomingMessage, 
     if ((m = /^\/api\/videos\/(k_[0-9a-f]+)$/.exec(route)) && method === 'GET') return send(res, 200, await videoDetail(m[1]));
     if ((m = /^\/api\/videos\/(k_[0-9a-f]+)\/notes$/.exec(route)) && method === 'POST') {
       const b = await readJson(req);
-      return send(res, 200, await noteVideo(m[1], b.text, { at: b.at, version: b.version, by }));
+      return send(res, 200, await noteVideo(m[1], b.text, { at: b.at, from: b.from, to: b.to, action: b.action, version: b.version, x: b.x, y: b.y, hold: Boolean(b.hold), by }));
+    }
+    if ((m = /^\/api\/videos\/(k_[0-9a-f]+)\/notes\/send$/.exec(route)) && method === 'POST') {
+      const b = await readJson(req);
+      return send(res, 200, await sendDrafts(m[1], { text: b.text, by }));
+    }
+    if ((m = /^\/api\/videos\/(k_[0-9a-f]+)\/notes\/(vn_[0-9a-f]+)$/.exec(route)) && method === 'DELETE') {
+      dropDraft(m[1], m[2]);
+      return send(res, 200, await videoDetail(m[1]));
+    }
+    if ((m = /^\/api\/videos\/(k_[0-9a-f]+)\/edit$/.exec(route)) && method === 'POST') {
+      const b = await readJson(req);
+      const num = (v: unknown) => Number(v);
+      const op: EditOp = b.op === 'remove' ? { op: 'remove', from: num(b.from), to: num(b.to) }
+        : b.op === 'speed' ? { op: 'speed', from: num(b.from), to: num(b.to), factor: num(b.factor) || 1.5 }
+        : b.op === 'zoom' ? { op: 'zoom', from: num(b.from), to: num(b.to), zoom: num(b.zoom) || 1.4, x: b.x == null ? undefined : num(b.x), y: b.y == null ? undefined : num(b.y), push: Boolean(b.push) }
+        : (() => { throw new StudioError('op is remove, speed or zoom'); })();
+      return send(res, 200, await quickEdit(m[1], op, { by }));
     }
     if ((m = /^\/api\/videos\/(k_[0-9a-f]+)\/approve$/.exec(route)) && method === 'POST') {
       const b = await readJson(req);
-      return send(res, 200, await approveVideo(m[1], { by, post: Boolean(b.post), platforms: b.platforms }));
+      return send(res, 200, await approveVideo(m[1], { by, post: Boolean(b.post), platforms: b.platforms, guidance: b.guidance }));
     }
     return send(res, 404, { error: 'Not found' });
   } catch (e: any) {
