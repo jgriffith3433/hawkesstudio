@@ -1,6 +1,6 @@
 // The Inbox: everything waiting on J (decisions, agent questions, GPU budgets, merges only he may make, milestones
 // reached), most blocking first, with the nav badge. Uses app.js's helpers ($, esc, api, ago, file, show).
-const IB_KIND = { question: ['your call', 'broken'], agent: ['agent asks', 'warn'], gpu: ['GPU budget', 'warn'], merge: ['merge', ''], milestone: ['milestone reached', 'ship'] };
+const IB_KIND = { question: ['your call', 'broken'], agent: ['agent asks', 'warn'], gpu: ['GPU budget', 'warn'], merge: ['merge', ''], milestone: ['milestone reached', 'ship'], video: ['ready to screen', 'ship'] };
 let ibItems = [];
 
 function ibCard(x) {
@@ -18,7 +18,7 @@ function ibCard(x) {
     ${x.context ? `<div class="meta">${esc(x.context)}</div>` : ''}
     ${x.recommendation ? `<div class="meta">Recommended: <b>${esc(x.recommendation)}</b></div>` : ''}
     <div class="actions ib-actions">${options.map((o) => `<button class="small${rec(o) ? ' primary' : ''}" data-ibopt="${esc(o)}">${esc(o)}${rec(o) ? ' ★' : ''}</button>`).join('')}</div>
-    <div class="ib-free"><input data-ibtext placeholder="${x.kind === 'merge' ? 'What should the agent change? (sends it back)' : x.kind === 'milestone' ? "What's wrong? (the PM makes it tasks)" : 'Or answer in your own words'}"><button class="small" data-ibsend>Send</button></div>
+    <div class="ib-free"><input data-ibtext placeholder="${x.kind === 'video' ? 'A note for the next version (sends it back)' : x.kind === 'merge' ? 'What should the agent change? (sends it back)' : x.kind === 'milestone' ? "What's wrong? (the PM makes it tasks)" : 'Or answer in your own words'}"><button class="small" data-ibsend>Send</button></div>
     ${links.length ? `<div class="meta ib-links">${links.join(' · ')}</div>` : ''}
     <details class="more-details"><summary class="meta">Details</summary>
       ${x.text ? `<div class="summary" style="white-space:pre-wrap">${esc(x.text)}</div>` : ''}

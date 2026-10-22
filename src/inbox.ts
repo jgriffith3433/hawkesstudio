@@ -13,6 +13,7 @@
 // (actor()): J on the dashboard, J through Talk only in a turn J started, otherwise Talk or the PM by name.
 // No phone notifications here: the dashboard's badge is the signal.
 
+import { isVideoTask, listVideos } from './videos.ts';
 import type http from 'node:http';
 import { db, parse } from './db.ts';
 import { getProduct, getInfra, isInfra, StudioError } from './config.ts';
@@ -34,7 +35,7 @@ export type InboxLink = { label: string; url?: string; video?: string };
 export type InboxItem = {
   /** q_... for a question; gpu:k_..., merge:c_..., milestone:n_... for the others. */
   id: string;
-  kind: 'question' | 'agent' | 'gpu' | 'merge' | 'milestone' | 'approval';
+  kind: 'question' | 'agent' | 'gpu' | 'merge' | 'milestone' | 'approval' | 'video';
   /** The one-line question, and the whole of it when it's longer. */
   title: string; text: string | null;
   product: string | null; productName: string | null;
@@ -289,6 +290,8 @@ export async function inbox({ tokens = false }: { tokens?: boolean } = {}): Prom
   const autoBeta = (await import('./agents.ts')).agentSettings().autoMergeBeta;
   for (const c of readyChanges()) {
     if (autoBeta && !c.infra) continue;
+    // Videos are screened, not merged (videos.ts): their own card below.
+    if (isVideoTask(c.task)) continue;
     // J approved it already; main moved and it merges once CI is green (agents.ts mergeApprovedInfra).
     if (c.infra && (c as any).approved) continue;
     // Walk-away mode: Studio/Gen changes merge by themselves once green; only one held for J shows (protected files,
@@ -310,6 +313,18 @@ export async function inbox({ tokens = false }: { tokens?: boolean } = {}): Prom
       blocks: c.task ? taskBlocks(getTask(c.task)!, `"${c.title}" reaching ${into}`).text : `"${c.title ?? c.id}" reaching ${into}`,
       since: c.updated ?? c.created, weight: 20 + (blocker ? 15 : 0) + (c.task ? taskBlocks(getTask(c.task)!, '').weight : 0), links: changeLinks(c),
       subject: c.id, conversation: c.origin, asks: 1, ...(c.infra ? { confirm: `MERGE ${c.id}` } : {}),
+    });
+  }
+
+  // A video version waiting for J to screen it (videos.ts): watch it here or in the Screening tab; a typed answer is a note.
+  for (const v of (await listVideos()).filter((x) => x.state === 'ready to screen' && x.latest)) {
+    if (acked(`video:${v.id}:${v.latest!.n}`)) continue;
+    out.push({
+      id: `video:${v.id}`, kind: 'video', title: `Ready to screen: "${v.title.replace(/^Video:\s*/, '')}" v${v.latest!.n}`, text: v.latest!.summary, product: v.product, productName: name(v.product),
+      context: v.latest!.summary ? `v${v.latest!.n}: ${v.latest!.summary.slice(0, 300)}` : null, asker: 'Studio', recommendation: null,
+      options: ['Approve', 'Approve and post drafts'], blocks: 'the next version of this video', since: v.latest!.at, weight: 25,
+      links: [{ label: `Watch v${v.latest!.n}`, video: v.latest!.asset }, { label: 'Open in Screening', url: `#videos/${v.id}` }],
+      subject: v.id, conversation: null, asks: 1,
     });
   }
 
@@ -412,6 +427,19 @@ export async function answerInbox(id: string, answer: string, by: string, opts: 
     }
     record(id, by, text, `GPU budgets for ${waits.length} task(s)`);
     return { answered: id, by, tasks: out.length };
+  }
+  // A video: Approve (and post drafts), or anything else is a note for the next version (videos.ts).
+  const vm = /^video:(k_[0-9a-f]+)$/.exec(id);
+  if (vm) {
+    const videos = await import('./videos.ts');
+    if (/^approve/i.test(text)) {
+      jOnly('Approving a video');
+      const r = await videos.approveVideo(vm[1], { by, post: /post/i.test(text) });
+      record(id, by, text, `approved ${vm[1]}`);
+      return { answered: id, by, video: r.video.task.id, social: r.social?.id ?? null };
+    }
+    const r = await videos.noteVideo(vm[1], text, { by });
+    return { answered: id, by, note: r.sent ? 'sent to the agent' : 'kept for its next pass' };
   }
   let m = /^gpu:(k_[0-9a-f]+)$/.exec(id);
   if (m) {

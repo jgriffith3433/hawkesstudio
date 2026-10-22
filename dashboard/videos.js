@@ -24,6 +24,7 @@
     .vd-note { background: var(--panel2); border-radius: 7px; padding: 8px 10px; font-size: 13px; white-space: pre-wrap; }
     .vd-note .who { color: var(--dim); font-size: 11px; margin-bottom: 2px; }
     .vd-form { display: grid; gap: 8px; max-width: 760px; }
+    .vd-form[hidden] { display: none; }
     .vd-form textarea { min-height: 220px; font-family: inherit; }
     .vd-row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
   `;
