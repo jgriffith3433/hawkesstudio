@@ -313,7 +313,7 @@
       aiming = false;
       return rerender();
     }
-    const t = e.target.closest('[data-open],[data-version],[data-ask],[data-quick],[data-drop],[data-seek],#vdBack,#vdNewBtn,#vdCancel,#vdApprove,#vdSendAll,#vdPlaySel,#vdClearSel,#vdAimBtn');
+    const t = e.target.closest('[data-open],[data-version],[data-ask],[data-quick],[data-drop],[data-seek],#vdBack,#vdNewBtn,#vdCancel,#vdApprove,#vdSendAll,#vdPlaySel,#vdClearSel,#vdAimBtn,#vdRedo');
     if (!t) return;
     if (t.dataset.open) return open(t.dataset.open);
     if (t.dataset.version) { shown = Number(t.dataset.version); sel = null; return rerender(); }
