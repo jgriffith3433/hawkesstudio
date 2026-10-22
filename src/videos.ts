@@ -25,6 +25,8 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS video_versions_task ON video_versions(task, n);
   CREATE TABLE IF NOT EXISTS video_state (task TEXT PRIMARY KEY, notes_sent_at INTEGER);
 `);
+// The Talk conversation a video reports into (its item's origin, else one of its own made on its first version).
+try { db.exec('ALTER TABLE video_state ADD COLUMN conversation TEXT'); } catch { /* already there */ }
 
 const agents = () => import('./agents.ts');
 export const FORMATS: Record<string, string> = {
@@ -90,6 +92,7 @@ export async function videoReady(c: { id: string; task: string; worktree: string
   const version = v ? recordVersion(c.task, c.id, v) : null;
   const t = getTask(c.task)!;
   logDecision('video', t.id, t.product, version ? `"${t.title}" v${version.n} is ready to screen` : `"${t.title}": the pass left no video (.hawkes/video.json)`);
+  if (version) await tellTalk(t, version).catch((e: any) => console.warn(`[videos] telling Talk about ${t.id}: ${e.message ?? e}`));
   // Notes that came while the agent was on this pass: it didn't see them, so they go to it now.
   const sent = (db.prepare('SELECT notes_sent_at FROM video_state WHERE task = ?').get(c.task) as any)?.notes_sent_at ?? 0;
   const waiting = commentsOn(c.task).filter((m: any) => m.kind === 'note' && m.at > sent);
@@ -103,6 +106,24 @@ export async function videoReady(c: { id: string; task: string; worktree: string
     }
   }
   return { version, resent: false };
+}
+
+/**
+ * Tells J in Talk that a version is ready, in the conversation that asked for the video (Talk answers it there), else in
+ * one conversation per video, so his notes on every version stay together and Talk passes them on (studio_video note).
+ */
+async function tellTalk(t: Task, v: Version) {
+  const talk = await import('./talk.ts');
+  const { PUBLIC_URL } = await import('./notify.ts');
+  const title = t.title.replace(/^Video:\s*/, '');
+  const text = `"${title}" v${v.n} is ready to screen (video ${t.id}${v.seconds ? `, ${Math.round(v.seconds)} s` : ''}).${v.summary ? ` ${v.summary.slice(0, 400)}` : ''}
+Watch it: ${PUBLIC_URL}/#videos/${t.id}
+Tell me what to change and I'll send it back, or say it's good and I'll approve it.`;
+  const row = db.prepare('SELECT conversation FROM video_state WHERE task = ?').get(t.id) as { conversation: string | null } | undefined;
+  const origin = row?.conversation ?? getItem(t.item)?.origin ?? null;
+  if (origin && talk.studioSays(origin, text)) return;
+  const id = talk.postNotice(`Video: ${title}`, text);
+  db.prepare('INSERT INTO video_state (task, conversation) VALUES (?, ?) ON CONFLICT(task) DO UPDATE SET conversation = excluded.conversation').run(t.id, id);
 }
 
 /** What J sees per video: where it is, in his words. */
@@ -235,7 +256,9 @@ export async function handleVideosApi(req: import('node:http').IncomingMessage, 
     if (route === '/api/videos' && method === 'GET') return send(res, 200, { videos: await listVideos(Number(url.searchParams.get('limit')) || 60), formats: FORMATS, budgets: Object.fromEntries(Object.entries(BUDGETS).map(([k, l]) => [k, l.label])) });
     if (route === '/api/videos' && method === 'POST') {
       const b = await readJson(req);
-      const t = createVideo({ ...b, by });
+      // Started from Talk: the version notices go back into that conversation (tellTalk).
+      const origin = String(req.headers['x-talk-conversation'] ?? '').trim() || null;
+      const t = createVideo({ ...b, by, origin });
       if (t.gpu) await (await import('./roadmap.ts')).estimateTask(t.id).catch((e: any) => console.warn(`[videos] pricing ${t.id}: ${e.message ?? e}`));
       const { kick } = await import('./pm.ts');
       kick();
