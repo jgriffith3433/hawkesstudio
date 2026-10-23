@@ -613,6 +613,8 @@ request of the user to prevent high bills and usage limits being hit". `src/rout
   a change), and Studio checks J's newest message (or his quoted words) before it grants it. His asks aren't capped or
   counted against the budget, and are listed in Settings. In Talk, a message of his asking for Opus or Fable runs that
   turn on it; `hawkes:planner` (Fable) and `hawkes:architect` (Opus) are subagents for his explicit asks only.
+- **The Settings model pin.** On Claude Code with routing on, Settings → Harness → Model is not applied (`modelPin`):
+  each run keeps its routed model. Turn routing off to pin one model for every run again; other harnesses keep their pin.
 - **Talk.** Studio's own turns telling J what finished work came back run on Haiku (`autoTurnsFast`); J's turns and
   PM turns on Sonnet; scouts and Talk's research subagent on Haiku.
 - **Usage.** Settings shows each tier's share of the last 7 days' usage (agents, Talk, scouts, at Claude Code's

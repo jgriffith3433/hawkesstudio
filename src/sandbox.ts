@@ -13,7 +13,8 @@ import type http from 'node:http';
 import type net from 'node:net';
 import { PROJECTS } from './config.ts';
 import { runCommand } from './ops.ts';
-import { brainId, brainSettings, ANTIGRAVITY_AGENT, COPILOT_AGENT, CURSOR_AGENT, GEMINI_AGENT } from './brains.ts';
+import { brainId, ANTIGRAVITY_AGENT, COPILOT_AGENT, CURSOR_AGENT, GEMINI_AGENT } from './brains.ts';
+import { modelPin } from './routing.ts';
 
 /** The wrapper deploy/agent-sandbox.mjs installs: it runs a command as the sandbox user with its own HOME and umask. */
 export const WRAPPER = '/usr/local/bin/hawkes-agent-run';
@@ -185,7 +186,8 @@ function brainCommand(args: string[], forceClaude = false) {
   // Cursor is down (an unpaid invoice, 2026-10-20), falling back to "the brain" just failed the same way again.
   if (forceClaude) return { file: exe, args: [...pre, ...args] };
   const brain = brainId();
-  const model = brainSettings().model;
+  // The pinned model (Settings), unless routing picks each run's model (routing.ts modelPin).
+  const model = modelPin();
   const mapped = model ? args.map((a, i, all) => (all[i - 1] === '--model' ? model : a)) : args;
   if (pre.length || process.env.TALK_CLAUDE || brain === 'claude') return { file: exe, args: [...pre, ...mapped] };
   return { file: process.execPath, args: [brain === 'copilot' ? COPILOT_AGENT : brain === 'gemini' ? GEMINI_AGENT : brain === 'antigravity' ? ANTIGRAVITY_AGENT : CURSOR_AGENT, ...mapped] };

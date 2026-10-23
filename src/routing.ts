@@ -18,6 +18,7 @@
 import { db, J, parse } from './db.ts';
 import { StudioError } from './config.ts';
 import { TIERS, type Tier, type Effort } from './tuning.ts';
+import { brainSettings } from './brains.ts';
 
 db.exec(`CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated INTEGER NOT NULL, by TEXT)`);
 db.exec(`CREATE TABLE IF NOT EXISTS routing_premium (subject TEXT PRIMARY KEY, tier TEXT NOT NULL, by TEXT, words TEXT, at INTEGER NOT NULL, used INTEGER NOT NULL DEFAULT 0)`);
@@ -359,6 +360,16 @@ export function lastUsageStop(s: RoutingSettings = routingSettings(), now = Date
   }
 }
 export const conserving = (s: RoutingSettings = routingSettings(), now = Date.now()) => lastUsageStop(s, now) !== null;
+
+/**
+ * The model pinned for every run (Settings → Harness → Model), or '' when each run's own model applies. On Claude Code
+ * with routing on, the route wins (J, 2026-10-23): a pin put every run on one model, so no Haiku for small work, no climb
+ * on failure and no Fable on his ask. Other harnesses keep their pin (it picks the harness's model, e.g. Cursor's).
+ */
+export function modelPin(b: { harness: string; model: string } = brainSettings(), s: Pick<RoutingSettings, 'enabled'> = routingSettings()): string {
+  if (!b.model) return '';
+  return b.harness === 'claude' && s.enabled ? '' : b.model;
+}
 
 /** Talk's turn: the tier for Studio's own turns, and J's premium ask. null: the role's tuned tier. */
 export function talkTier({ auto, pm, text }: { auto: boolean; pm: boolean; text?: string | null }, s: RoutingSettings = routingSettings()): { tier: Tier; why: string } | null {

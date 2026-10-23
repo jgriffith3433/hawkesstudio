@@ -33,7 +33,7 @@ import { claudeEnv, billing, usingSubscription } from './claude.ts';
 import { brainId, brainLabel, brainSettings, type Harness } from './brains.ts';
 import { memoryBlock } from './memory.ts';
 import { roleArgs } from './roles.ts';
-import { talkTier } from './routing.ts';
+import { talkTier, modelPin } from './routing.ts';
 import type { Tier } from './tuning.ts';
 import { PUBLIC_URL } from './notify.ts';
 import { claudeCommand, sandboxOn, sandboxShare } from './sandbox.ts';
@@ -63,10 +63,10 @@ export type Turn = { cost: number; billing: 'subscription' | 'api'; ms?: number;
 export type Message = { role: 'user' | 'assistant' | 'tool'; text: string; at: number; tool?: string; files?: Attachment[]; turn?: Turn; notice?: boolean; followup?: boolean; voice?: boolean; context?: string };
 export type Conversation = { id: string; title: string | null; session: string | null; status: string; messages: Message[]; cost: number; created: number; updated: number | null; partial?: string | null; harness?: Harness; label?: string; model?: string };
 
-/** Effective model for Talk (Settings brain override, env override, or the role's tuned model on the active harness). */
+/** Effective model for Talk (Settings brain override unless routing picks it, env override, or the role's tuned model on the active harness). */
 export function talkModel(kind: 'talk' | 'pm' = 'talk', call = false): string {
-  const b = brainSettings();
-  if (b.model) return b.model;
+  const pin = modelPin();
+  if (pin) return pin;
   const env = (call && process.env.TALK_CALL_MODEL) || process.env.TALK_MODEL;
   if (env) return env;
   return roleArgs(kind).role.model;
@@ -572,7 +572,7 @@ export function studioTurn(id: string, prompt: string) {
 }
 
 /** What one turn needs while its output streams in (a turn of its own process, or of a call's warm process). */
-type TurnCtx = { userAt: number; auto: boolean; call: boolean; billing: Turn['billing']; harness: Harness; model: string; done: boolean; finished?: boolean; err: string };
+type TurnCtx = { userAt: number; auto: boolean; call: boolean; billing: Turn['billing']; harness: Harness; model: string; done: boolean; finished?: boolean; err: string; deadSession?: boolean };
 
 /**
  * Live text for call pages, per conversation id (GET /api/talk/<id>/events): { type: 'turn' } when a turn starts,
@@ -681,6 +681,9 @@ function recap(c: Conversation, before: number) {
   return `[This conversation continues from an earlier session that is no longer available. What was said so far, newest last:]\n${lines.join('\n')}\n\n[Now:]\n`;
 }
 
+/** A line Studio wrote because the harness stopped or couldn't answer (not the model's words). */
+export const isStopMarker = (m: Pick<Message, 'role' | 'text'>) => m.role === 'assistant' && /^\(\w+ (stopped|couldn't answer)\b/.test(m.text);
+
 /** Who started each running turn: J (his message) or Studio (a result, a PM turn). Attribution reads it (inbox.ts actor). */
 const turnOwner = new Map<string, 'J' | 'Studio'>();
 /** Who started the turn running in a conversation now ('J' or 'Studio'), or null when none runs. */
@@ -692,7 +695,7 @@ function runTurn(id: string, prompt: string, userAt: number, { auto = false, fre
   const c = getConversation(id)!;
   const harness = brainId();
   // A call keeps its warm process's model; other turns are routed (routing.ts): fast for Studio's, premium on J's ask.
-  const routed = call || process.env.TALK_MODEL || brainSettings().model ? null : turnTier(c, auto);
+  const routed = call || process.env.TALK_MODEL || modelPin() ? null : turnTier(c, auto);
   const model = routed ? roleArgs((c as any).kind === 'pm' ? 'pm' : 'talk', { tier: routed.tier }).role.model : talkModel((c as any).kind === 'pm' ? 'pm' : 'talk', Boolean(call));
   const billingKind: Turn['billing'] = harness === 'claude' ? (usingSubscription() ? 'subscription' : 'api') : harness === 'gemini' ? 'api' : 'subscription';
   // Who pays: Claude Code says which key it uses when it starts (apiKeySource "none" = the subscription login).
@@ -709,6 +712,15 @@ function runTurn(id: string, prompt: string, userAt: number, { auto = false, fre
     running.set(id, child);
     child.stdin!.write(`${JSON.stringify({ type: 'user', message: { role: 'user', content: prompt } })}\n`);
     return;
+  }
+  // A session another harness made can't be resumed here (a Gemini session on Claude fails): a new one, with the
+  // conversation so far.
+  const made = c.session && !fresh ? c.messages.findLast((m) => m.turn?.harness && !isStopMarker(m))?.turn?.harness : null;
+  if (made && made !== harness) {
+    c.session = null;
+    save(c);
+    prompt = `${recap(c, userAt)}${prompt}`;
+    fresh = true;
   }
   // Outside Studio where it can be (detach.ts): a Studio restart doesn't cut the answer off (resumeTalk).
   const { child, rec } = launch(`talk-${id}`, talkCommand(['-p', prompt, ...claudeArgs(c, false, null, routed?.tier ?? null)]));
@@ -736,7 +748,10 @@ function followTurn(id: string, child: ChildLike, ctx: TurnCtx, { prompt, fresh,
     const conv = getConversation(id);
     // Its Claude Code session is gone (another home since the agent sandbox, a cleared cache): once, a new session
     // that gets the conversation so far.
-    if (conv && prompt && !stopped && code !== 0 && session && !fresh && /no conversation found|session.*not found/i.test(ctx.err) && !conv.messages.some((x) => x.role === 'assistant' && x.at >= userAt)) {
+    const dead = ctx.deadSession || (code !== 0 && /no conversation found|session.*not found/i.test(ctx.err));
+    if (conv && prompt && !stopped && session && !fresh && dead && !conv.messages.some((x) => x.role === 'assistant' && x.at >= userAt && !isStopMarker(x))) {
+      // The "(Claude stopped: ...)" line of the failed try goes: the new session answers in its place.
+      conv.messages = conv.messages.filter((x) => !(x.at >= userAt && isStopMarker(x)));
       conv.session = null;
       save(conv);
       running.delete(id);
@@ -838,6 +853,13 @@ function onLine(id: string, m: any, ctx: TurnCtx) {
     const cost = Number(m.total_cost_usd) || 0;
     if (ctx.billing === 'api') conv.cost += cost;
     const turn: Turn = { cost, billing: ctx.billing, ms: Number(m.duration_ms) || undefined, harness: ctx.harness, model: ctx.model };
+    // An error before any model call (nothing spent, nothing written): the resumed session is dead, e.g. one another
+    // harness made (the PM's, 2026-10-23: a Gemini session resumed on Claude failed every turn all day). followTurn
+    // starts it again once in a new session with the conversation so far.
+    if (m.is_error && !(cost > 0) && !ctx.call && !conv.messages.some((x) => x.role !== 'user' && !x.notice && x.at >= ctx.userAt)) ctx.deadSession = true;
+    // A real answer on a harness Studio holds for its usage (harness-hold.ts): it works again, so the agents resume now
+    // instead of waiting for the reset time or the next probe.
+    if (!m.is_error && cost > 0) void import('./harness-hold.ts').then(({ answeredOn }) => answeredOn(ctx.harness, ctx.userAt, `Talk answered on it (${conv.title?.slice(0, 60) ?? id})`)).catch(() => {});
     // A call's process stays up: the turn ends with its result (stopping: J interrupted it, e.g. by talking).
     const stopped = ctx.call && stopping.delete(id);
     if (m.is_error && !stopped && !conv.messages.some((x) => x.role === 'assistant' && x.at >= ctx.userAt)) conv.messages.push({ role: 'assistant', text: `(${brainLabel(ctx.harness)} stopped: ${stopText(m.result ?? m.subtype)})`, at: Date.now() });

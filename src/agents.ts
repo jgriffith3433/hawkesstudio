@@ -63,7 +63,7 @@ import { briefSection, learnFrom, recordRun, LEARNED_ASK } from './memory.ts';
 import { canonCheck, CONTENTISH, type CanonCheck } from './canon.ts';
 import { roleArgs, loadRole, type RoleName } from './roles.ts';
 import { passLimitMs, roleTune } from './tuning.ts';
-import { routeFor, routeLine, routingSettings, premiumFor, usePremium, type Route } from './routing.ts';
+import { routeFor, routeLine, routingSettings, premiumFor, usePremium, modelPin, type Route } from './routing.ts';
 import { recordPass, lastPassFor, type PassOutcome } from './ledger.ts';
 import { markModelUnavailable, refusedModelOf } from './models.ts';
 import { claudeCommand, spawnShell, sandboxShare, assertWorktree, shareWorktree } from './sandbox.ts';
@@ -193,8 +193,8 @@ export function brainOfChange(r: any) {
   // The current attempt's route (routing.ts) names the model before its first pass is in the ledger.
   const routed = (() => { const x = parse(r.route ?? null) as Route | null; return x?.tier ? roleTune(roleArg, { tier: x.tier }).model : ''; })();
   const model: string | null = phaseHarness
-    ? (brainSettings().model || routed || roleArgs(roleArg).role.model)
-    : pass?.model ?? (active ? (brainSettings().model || routed || roleArgs(roleArg).role.model) : null);
+    ? (modelPin() || routed || roleArgs(roleArg).role.model)
+    : pass?.model ?? (active ? (modelPin() || routed || roleArgs(roleArg).role.model) : null);
   return {
     role,
     harness,
