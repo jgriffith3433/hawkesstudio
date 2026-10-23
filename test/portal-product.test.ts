@@ -21,7 +21,9 @@ fs.writeFileSync(process.env.STUDIO_PRODUCTS, JSON.stringify({ products: [
     deploy: { via: 'ec2', box: 'the test box' } },
   { id: 'pages', name: 'Pages site', framing: 'test', engine: 'web', repo: 'pagesrepo', site: 'pagesrepo', live: 'http://127.0.0.1:9/',
     local: { serve: 'npm', dir: 'pagesrepo', port: 8794, path: '/' }, playtests: [], story: [], about: 'A fixture.' },
-], repos: {} }));
+  { id: 'ghost', name: 'Ghost', framing: 'test', engine: 'web', repo: 'ghostrepo', site: 'ghostrepo', live: 'http://127.0.0.1:9/',
+    local: { serve: 'npm', dir: 'ghostrepo', port: 8793, path: '/' }, playtests: [], story: [], about: 'A fixture.' },
+], repos: { ghostrepo: 'test/ghostrepo' } }));
 
 const git = (cwd: string, ...args: string[]) => {
   const r = spawnSync('git', ['-c', 'user.name=Test', '-c', 'user.email=t@example.com', ...args], { cwd, encoding: 'utf8' });
@@ -43,7 +45,7 @@ function repo(name: string) {
 const { db, newId, J } = await import('../src/db.ts');
 const { getProduct } = await import('../src/config.ts');
 const beta = await import('../src/beta.ts');
-const { deployPlan, publisherOf, rollbackPlan } = await import('../src/deploy.ts');
+const { deployPlan, publisherOf, rollbackPlan, blockerFix } = await import('../src/deploy.ts');
 const { recipeOf } = await import('../src/previews.ts');
 
 test('the real products.json entry: repo, beta site, live site, playtests, dev front door', () => {
@@ -52,7 +54,7 @@ test('the real products.json entry: repo, beta site, live site, playtests, dev f
   assert.equal(p.repo, 'hawkesgenwebsite');
   assert.equal(p.live, 'https://hawkesgen.com/');
   assert.equal(real.repos.hawkesgenwebsite, 'jgriffith3433/hawkesgenwebsite');
-  assert.equal(real.previews.portal, 'hawkesgenwebsite');
+  assert.equal(real.previews.hawkesgenwebsite, 'hawkesgenwebsite');
   assert.deepEqual(p.deploy, { via: 'ec2', box: p.deploy.box });
   // No unattended signing up or paying: only read-only site crawls of the live pages, and no local run it can't make.
   assert.ok(p.playtests.length && p.playtests.every((t: any) => t.mode === 'site' && t.where === 'live'));
@@ -95,4 +97,33 @@ test('the go-live and rollback plans of a product on its own server say so, and 
   // Rolling back doesn't undo a database.
   const rp = await rollbackPlan('portal');
   assert.ok(rp.warnings.some((w) => /database/.test(w)), rp.warnings.join(' | '));
+});
+
+test('a product whose repo the server has not cloned yet: the plan says so (no spawn error), and a beta start clones it first', async () => {
+  const dir = path.join(process.env.STUDIO_PROJECTS!, 'ghostrepo');
+  assert.equal(fs.existsSync(dir), false);
+  const plan = await deployPlan('ghost');
+  assert.equal(plan.canDeploy, false);
+  assert.equal(plan.fix, 'sync');
+  assert.equal(plan.notCloned, 'ghostrepo');
+  const said = plan.blockers.join(' | ');
+  assert.match(said, /ghostrepo isn't cloned on this server yet: sync it/);
+  assert.doesNotMatch(said, /ENOENT|spawn/);
+  assert.equal(blockerFix(plan.blockers[0]), 'sync');
+  await assert.rejects(beta.fetchOrigin(dir), (e: any) => e instanceof beta.NotClonedError && e.folder === 'ghostrepo');
+  // ensureBeta clones (github.com/test/ghostrepo is redirected to a local bare repo) and makes beta from main.
+  const origin = path.join(tmp, 'ghostrepo.git');
+  repo('ghostrepo');
+  fs.rmSync(dir, { recursive: true, force: true });
+  process.env.GIT_CONFIG_COUNT = '1';
+  process.env.GIT_CONFIG_KEY_0 = `url.${origin}.insteadOf`;
+  process.env.GIT_CONFIG_VALUE_0 = 'https://github.com/test/ghostrepo.git';
+  try {
+    const made = await beta.ensureBeta(dir);
+    assert.equal(made.created, true);
+    assert.equal(fs.existsSync(path.join(dir, '.git')), true);
+    assert.equal((await deployPlan('ghost')).notCloned, null);
+  } finally {
+    delete process.env.GIT_CONFIG_COUNT; delete process.env.GIT_CONFIG_KEY_0; delete process.env.GIT_CONFIG_VALUE_0;
+  }
 });

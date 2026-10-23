@@ -76,14 +76,16 @@ their `usr_` projects.
 - **In Studio (product `hawkesgenwebsite`, J can build on it through Talk):** `products.json` has the product (live
   site hawkesgen.com, `deploy.via: "ec2"`), the server keeps a checkout of the repo on `beta` (made from main when
   missing), and agent changes are pull requests into beta like any web product. Its beta site is
-  `https://portal.hawkesgen.com/` (a copy of the repo's static files only: the server and database don't run there, so
+  `https://hawkesgenwebsite.hawkesgen.com/` (a copy of the repo's static files only: the server and database don't run there, so
   sign-in, credits and payments can't be tried on beta; `previews.ts` `RECIPES`). Playtests are live-only `site`
   crawls (read-only; never sign-up or checkout). **Going live is still J's typed `DEPLOY hawkesgenwebsite`**: it
   fast-forwards main to the beta commit, then the portal's own CI runs and its box pulls the passing commit; Studio waits
   for CI plus the box's pull and plays the live site. A rollback is a new revert commit through the same path and
   does not undo the database. Studio does not SSH to the box or touch its secrets. Needs once from J: the
   `.github/workflows/hawkes-studio.yml` hook in the portal repo (copy the one in any product repo), and `node
-  deploy/deploy.mjs` run from his PC for the `portal.` DNS record and Caddy block (Studio can't).
+  deploy/deploy.mjs` run from his PC for the `hawkesgenwebsite.` DNS record and Caddy block (Studio can't; both come
+  from the `previews` map in `products.json`, so no script changes). If the server has no checkout of the repo yet,
+  Go live says so and its "Sync repo" button clones it (`POST /api/repos/sync`); an agent or a beta push clones it first.
 - **DNS:** Route 53 `hawkesgen.com` and `www` point at the box; `studio.`, `gen.` and the beta subdomains still point
   here until they move to Studio's own domain.
 

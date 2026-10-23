@@ -525,7 +525,7 @@
     "icanbe": "icanbe",
     "imaginelivetv": "imaginelivetv",
     "corporate": "hawkesbiomedical",
-    "portal": "hawkesgenwebsite"
+    "hawkesgenwebsite": "hawkesgenwebsite"
   },
   "$comment_previews": "Beta sites: https://<subdomain>.hawkesgen.com/ is the product built from its beta branch (what going live ships), /c/<change id>/ an agent change (src/previews.ts; DNS and Caddy in deploy/deploy.mjs). Same login as Studio."
 }
