@@ -792,8 +792,10 @@ server.listen(PORT, '127.0.0.1', () => {
   pruneDetached();
   // The shared memory: its seed, and the daily fade and export (memory.ts).
   void import('./memory.ts').then(({ startMemory }) => startMemory());
-  // /dev/ on each beta site: the front doors Caddy sends /dev/* to, and the beta working copies' auto-commit.
+  // /dev/ on each beta site: the front doors Caddy sends /dev/* to, and the beta working copies' auto-commit. A server
+  // app's front door is its whole beta host (apps.ts); its change servers stop when idle.
   startFronts();
+  void import('./apps.ts').then(({ startAppSweeper }) => startAppSweeper());
   // A pick anywhere in Gen's library is written into its product's files (library.ts), on the server only.
   void import('./repos.ts').then(({ isServer }) => { if (isServer()) void import('./library.ts').then(({ followPicks }) => followPicks()); });
   // Web checkouts whose packages weren't installed for their lockfile (synced before installs followed syncs): npm ci now.

@@ -43,6 +43,17 @@ for (const d of [DATA, paths.logs, paths.reports]) {
   }
 }
 
+export type AppConf = {
+  start: string;
+  health: string;
+  portEnv: string;
+  dataEnv: string;
+  urlEnv?: string;
+  gen?: { keyEnv: string; urlEnv: string; projects: string[] };
+  env?: Record<string, string>;
+  open?: string;
+};
+
 /** device "phone": a 390x844 touch phone (the review also judges touch controls, text size and layout). */
 export type Playtest = { scenario?: string; mode?: 'auto' | 'contract' | 'generic' | 'site'; where: 'local' | 'live'; device?: 'desktop' | 'phone'; daily?: boolean; timeout?: number; seed?: number; options?: Record<string, unknown>;
   /** Where the scenario starts (a named place, chapter or level the game loads: docs/playtest.md); none: from its start. */
@@ -56,7 +67,17 @@ export type Product = {
   repo: string;
   site: string;
   live: string;
-  local: { serve: 'npm' | 'static'; dir: string; port: number; path: string };
+  /** serve "app": the product is a server Studio runs itself (`app`, apps.ts), on this port for local playtests. */
+  local: { serve: 'npm' | 'static' | 'app'; dir: string; port: number; path: string };
+  /**
+   * A web product that is a server with its own database (the customer portal): its beta site and agent changes run
+   * as processes (apps.ts) behind the front door instead of static files (previews.ts). start: the command, in the
+   * checkout; health: a path answering 200 once it's up; portEnv/dataEnv/urlEnv: the variables it reads its port, a
+   * data folder of its own and its public address from; gen: its own Gen key (made by Studio, scoped to `projects`)
+   * and Gen's address go in keyEnv/urlEnv; env: anything else; open: paths (a regex) reachable without Studio's login,
+   * for pages a sandboxed frame loads with no cookies (Caddy, deploy/caddyfile.mjs).
+   */
+  app?: AppConf;
   /** Unity: the project, its website folder, the batch deploy method, and test platforms to run on the build server when the source changes. */
   /** versionEnv: the environment variable the deploy method takes its Game/v<n> number from (beta.ts pinBetaVersion). */
   build?: { project: string; site: string; method: string; tests?: ('EditMode' | 'PlayMode')[]; versionEnv?: string };

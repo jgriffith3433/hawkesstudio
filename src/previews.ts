@@ -16,7 +16,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { spawn } from 'node:child_process';
-import { PROJECTS, DATA, paths, getProduct, loadProducts, StudioError, type Product } from './config.ts';
+import { PROJECTS, DATA, paths, getProduct, loadProducts, localUrl, StudioError, type Product } from './config.ts';
+import { appPort, appStatus, ensureApp, stopApp } from './apps.ts';
 import { db } from './db.ts';
 import { BRANCH, BETA, isServer, type RepoResult } from './repos.ts';
 import { betaBuild, betaSiteFolder } from './beta.ts';
@@ -56,16 +57,15 @@ const RECIPES: Record<string, Recipe> = {
   // Babylon 9 from npm with Vite (#6): its pages.yml publishes dist/ alone (vite.config.js copies the other pages,
   // releases.json and the CNAME into it), so the source as committed has bare imports a browser can't load.
   icanbe: { build: 'npm run build', site: 'none', out: { from: 'dist', to: '' } },
-  // The customer portal is a server app with a database on its own EC2 box (docs/cloud.md): its beta site is only a copy
-  // of the repo's static files (the public pages), so sign-in, credits and payments don't work there. Studio could not
-  // read the repo when this was added; if the public pages are built (Vite, a public/ folder), say so here.
-  hawkesgenwebsite: { site: 'tracked' },
+  // The customer portal (hawkesgenwebsite) isn't listed: it is a server (products.json "app"), so its beta and changes
+  // run as processes (apps.ts) instead of being published as files (buildApp below).
   // The corporate site isn't listed: Pages serves its repo root as committed (dist/ is only the old local build).
 };
 /** How a web product's beta site is built (products not listed: the files git would publish, no build). */
 export const recipeOf = (id: string): Recipe => RECIPES[id] ?? { site: 'tracked' };
 
-export type Preview = { status: 'building' | 'ready' | 'failed' | 'waiting'; at: number; sha?: string | null; ref?: string; detail?: string; files?: number; ms?: number; version?: string | null };
+/** app: built as a server app (buildApp), so its lane's worktree is what the process runs from. */
+export type Preview = { status: 'building' | 'ready' | 'failed' | 'waiting'; at: number; sha?: string | null; ref?: string; detail?: string; files?: number; ms?: number; version?: string | null; app?: boolean };
 /**
  * beta: the staging root (it was "main" before the beta lane; that entry is ignored and rebuilt). kept: a Unity beta
  * site's older Game/v<n> folders still published (keepOldBuilds), with when each stopped being beta's build.
@@ -149,6 +149,7 @@ export function buildPreview(productId: string, o: { change?: string; dir?: stri
 }
 
 async function build(p: Product, o: { change?: string; dir?: string }): Promise<Preview | null> {
+  if (p.app) return buildApp(p, o);
   const t0 = Date.now();
   const target = o.change ? path.join(PREVIEWS, p.id, 'c', o.change) : path.join(PREVIEWS, p.id, 'beta');
   const progress = (detail: string) => record(p.id, o.change, { status: 'building', at: t0, detail });
@@ -192,26 +193,9 @@ async function build(p: Product, o: { change?: string; dir?: string }): Promise<
       // A page still open on the previous build keeps loading its files (J's iPhone on Game/v54 after v55 landed).
       if (!o.change) keepOldBuilds(p.id, files, target);
     } else {
-      const top = p.repo.split('/')[0];
-      const repoDir = path.join(PROJECTS, top);
-      const sub = path.relative(top, p.site);
       progress('fetching');
-      await git(repoDir, ['fetch', '--quiet', '--prune', 'origin']);
-      let commit: string;
-      if (o.dir) {
-        commit = (await git(o.dir, ['rev-parse', 'HEAD'])).out;
-        ref = `change ${o.change ?? ''} (worktree)`.trim();
-      } else if (o.change) {
-        const c = changeRow(o.change);
-        if (!c) throw new Error(`No change ${o.change}`);
-        commit = c.worktree && fs.existsSync(c.worktree) ? (await git(c.worktree, ['rev-parse', 'HEAD'])).out : (await git(repoDir, ['rev-parse', `origin/${c.branch}`])).out;
-        ref = c.branch;
-      } else {
-        const beta = await git(repoDir, ['rev-parse', '--verify', '--quiet', `origin/${BETA}`]);
-        commit = beta.ok ? beta.out : (await git(repoDir, ['rev-parse', `origin/${BRANCH}`])).out;
-        ref = beta.ok ? BETA : `${BRANCH} (no ${BETA} branch yet)`;
-      }
-      if (!commit) throw new Error(`Couldn't find the commit for ${ref}`);
+      const { repoDir, sub, commit, ref: at } = await commitOf(p, o);
+      ref = at;
       sha = commit.slice(0, 7);
       progress(`checking out ${ref} (${sha})`);
       const wt = await worktree(repoDir, p.id, commit);
@@ -243,6 +227,97 @@ async function build(p: Product, o: { change?: string; dir?: string }): Promise<
     const last = o.change ? prev?.changes?.[o.change] : prev?.beta;
     return record(p.id, o.change, { ...(last ?? {}), status: 'failed', at: Date.now(), detail: String(e.message ?? e).slice(0, 500) });
   }
+}
+
+/** The commit a web product's beta (or an agent change) is built from, after fetching origin. */
+async function commitOf(p: Product, o: { change?: string; dir?: string }) {
+  const top = p.repo.split('/')[0];
+  const repoDir = path.join(PROJECTS, top);
+  const sub = path.relative(top, p.site);
+  await git(repoDir, ['fetch', '--quiet', '--prune', 'origin']);
+  let commit: string;
+  let ref: string;
+  if (o.dir) {
+    commit = (await git(o.dir, ['rev-parse', 'HEAD'])).out;
+    ref = `change ${o.change ?? ''} (worktree)`.trim();
+  } else if (o.change) {
+    const c = changeRow(o.change);
+    if (!c) throw new Error(`No change ${o.change}`);
+    commit = c.worktree && fs.existsSync(c.worktree) ? (await git(c.worktree, ['rev-parse', 'HEAD'])).out : (await git(repoDir, ['rev-parse', `origin/${c.branch}`])).out;
+    ref = c.branch;
+  } else {
+    const beta = await git(repoDir, ['rev-parse', '--verify', '--quiet', `origin/${BETA}`]);
+    commit = beta.ok ? beta.out : (await git(repoDir, ['rev-parse', `origin/${BRANCH}`])).out;
+    ref = beta.ok ? BETA : `${BRANCH} (no ${BETA} branch yet)`;
+  }
+  if (!commit) throw new Error(`Couldn't find the commit for ${ref}`);
+  return { repoDir, sub, commit, ref };
+}
+
+// ------------------------------------------------------- apps (servers)
+
+/** The worktree an app's lane runs from: beta has the product's own, each change one of its own (both run at once). */
+const laneWorktree = (p: Product, lane: string) => path.join(WORK, lane === 'beta' ? p.id : `${p.id}-${lane}`);
+/** The address a lane is reached at: the beta host (a change is the same host with its lane cookie: dev-front.ts). */
+const laneUrl = (p: Product) => previewUrl(p.id) ?? localUrl(p);
+/** Beta on the server takes local.port, so the "local" playtests (local.ts) play the same process. */
+const lanePort = (p: Product, lane: string) => (lane === 'beta' && isServer() ? p.local.port : undefined);
+
+/**
+ * An app's "build": its lane's worktree checked out at the commit, then its process (re)started there (apps.ts). The
+ * old process stops first so it never serves files from the new commit.
+ */
+async function buildApp(p: Product, o: { change?: string; dir?: string }): Promise<Preview | null> {
+  const t0 = Date.now();
+  const lane = o.change ?? 'beta';
+  const progress = (detail: string) => record(p.id, o.change, { status: 'building', at: t0, detail });
+  try {
+    progress('fetching');
+    const { repoDir, sub, commit, ref } = await commitOf(p, o);
+    const sha = commit.slice(0, 7);
+    const running = appStatus(p.id, lane);
+    if (running?.status === 'running' && running.sha === sha) return record(p.id, o.change, { status: 'ready', at: Date.now(), sha, ref, files: 0, ms: Date.now() - t0, app: true, detail: `running on :${running.port}` });
+    progress(`stopping the old ${lane} server`);
+    await stopApp(p.id, lane, `${ref} moved to ${sha}`);
+    progress(`checking out ${ref} (${sha})`);
+    const wt = await worktree(repoDir, path.basename(laneWorktree(p, lane)), commit);
+    progress(`starting ${p.name} (${p.app!.start})`);
+    const a = await ensureApp(p, lane, path.join(wt, sub), { sha, port: lanePort(p, lane), publicUrl: laneUrl(p) });
+    return record(p.id, o.change, { status: 'ready', at: Date.now(), sha, ref, files: 0, ms: Date.now() - t0, app: true, detail: `running on :${a.port}` });
+  } catch (e: any) {
+    const prev = readState()[p.id];
+    const last = o.change ? prev?.changes?.[o.change] : prev?.beta;
+    return record(p.id, o.change, { ...(last ?? {}), status: 'failed', at: Date.now(), detail: String(e.message ?? e).slice(0, 500) });
+  }
+}
+
+/**
+ * The port an app's lane answers on, started when it isn't running (a request after a restart or idle stop). null:
+ * the lane has nothing built yet (beta: a build is started; the caller says "building").
+ */
+export async function laneApp(productId: string, lane = 'beta'): Promise<number | null> {
+  const p = getProduct(productId);
+  if (!p.app) throw new StudioError(`${p.name} isn't an app`);
+  const port = appPort(p.id, lane);
+  if (port) return port;
+  const s = readState()[p.id];
+  const v = lane === 'beta' ? s?.beta : s?.changes?.[lane];
+  const wt = laneWorktree(p, lane);
+  // Not built as an app (nothing yet, or a static copy from before the product was one): build it now.
+  if (!v || v.status !== 'ready' || !v.app || !fs.existsSync(wt)) {
+    // A failed start is tried again at most once a minute (the "starting" page reloads every few seconds).
+    const failedLately = v?.status === 'failed' && Date.now() - v.at < 60_000;
+    if (lane === 'beta' && !active.has(`${p.id}/beta`) && !failedLately) void buildPreview(p.id);
+    if (failedLately) throw new StudioError(`${p.name}'s ${lane} failed to start: ${v.detail ?? 'unknown'}`, 503);
+    return null;
+  }
+  const a = await ensureApp(p, lane, path.join(wt, path.relative(p.repo.split('/')[0], p.site)), { sha: v.sha ?? null, port: lanePort(p, lane), publicUrl: laneUrl(p) });
+  return a.port;
+}
+/** Whether an app's lane has a preview (the front door's /c/<id>/ checks it before switching to it). */
+export function hasLane(productId: string, lane: string) {
+  const s = readState()[productId];
+  return lane === 'beta' ? true : Boolean(s?.changes?.[lane]);
 }
 
 function changeRow(id: string): { worktree: string | null; branch: string; repo?: string } | null {
@@ -396,8 +471,16 @@ export function betaNow(product: string) {
 /** Removes a change's preview (when it's merged or closed). */
 export async function removePreview(productId: string, change: string) {
   if (!/^c_[0-9a-f]+$/.test(change)) throw new StudioError(`Not a change id: ${change}`);
-  await fs.promises.rm(path.join(PREVIEWS, getProduct(productId).id, 'c', change), { recursive: true, force: true });
-  record(getProduct(productId).id, change, null);
+  const p = getProduct(productId);
+  await fs.promises.rm(path.join(PREVIEWS, p.id, 'c', change), { recursive: true, force: true });
+  if (p.app) {
+    // Its server and worktree go; its data folder (.work/apps/<product>/<change>) too.
+    await stopApp(p.id, change, 'the change was merged or closed');
+    const wt = laneWorktree(p, change);
+    if (fs.existsSync(wt)) await git(path.join(PROJECTS, p.repo.split('/')[0]), ['worktree', 'remove', '--force', wt]);
+    await fs.promises.rm(path.join(PROJECTS, '.work', 'apps', p.id, change), { recursive: true, force: true }).catch(() => {});
+  }
+  record(p.id, change, null);
 }
 
 /**

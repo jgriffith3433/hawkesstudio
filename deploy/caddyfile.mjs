@@ -154,7 +154,8 @@ export function previewHosts(products, withDev = false) {
  * Staging sites (src/previews.ts): <sub>.<domain> for each products.json "previews" entry, behind the same login.
  * / is the product built from its beta branch (previews/<product>/beta), /c/<change>/ an agent change, and /dev/ the
  * product's devtools running on this server (src/dev.ts, dev-front.ts): Studio's front door for the product
- * (products.json dev.front), which also takes Vite's HMR websocket.
+ * (products.json dev.front), which also takes Vite's HMR websocket. A server app (products.json "app") has the front
+ * door for its whole host instead.
  */
 function previewBlocks(domain, products, withDev) {
   const { previews, subs, devHosts } = previewHosts(products, withDev);
@@ -170,8 +171,29 @@ dev-${sub}.${domain} {
 	}
 }
 `).join('');
+  const apps = Object.fromEntries(products.products.filter((p) => p.app && p.dev?.front).map((p) => [p.id, p.app]));
   return devBlocks + subs.map((sub) => {
     const front = fronts[previews[sub]];
+    const app = apps[previews[sub]];
+    // A server app (src/apps.ts): no files to serve; the front door runs beta's process (and agent changes') and takes
+    // the whole host. Behind the login, except app.open: the pages a game's sandboxed frame loads, which send no cookies.
+    if (app) return `
+${sub}.${domain} {
+	encode zstd gzip${app.open ? `
+	@open path_regexp ${app.open}
+	handle @open {
+		reverse_proxy 127.0.0.1:${front} {
+			flush_interval -1
+		}
+	}` : ''}
+	handle {
+		import login
+		reverse_proxy 127.0.0.1:${front} {
+			flush_interval -1
+		}
+	}
+}
+`;
     const dev = front ? `
 	# /dev/: the product's devtools on this server, in beta's working copy (Studio's front door; saves commit to beta).
 	# Vite's HMR websocket connects to the site root with the vite-hmr protocol: it goes there too.

@@ -444,12 +444,21 @@
       "site": "hawkesgenwebsite",
       "live": "https://hawkesgen.com/",
       "local": {
-        "serve": "npm",
+        "serve": "app",
         "dir": "hawkesgenwebsite",
         "port": 8094,
         "path": "/"
       },
       "playtests": [
+        {
+          "mode": "site",
+          "where": "local"
+        },
+        {
+          "mode": "site",
+          "where": "local",
+          "device": "phone"
+        },
         {
           "mode": "site",
           "where": "live"
@@ -464,13 +473,32 @@
         "hawkesgenwebsite/AGENTS.md"
       ],
       "about": "The customer portal for public Hawkes Gen (hawkesgen.com): accounts, credits, Stripe payments, the landing page, portfolio and the Creator Studio UI, with its own database. It is a server app on its own EC2 box (not GitHub Pages) and a customer of Hawkes Gen like Studio: Gen does the jobs, the portal sells and shows them.",
-      "quality": "The public pages load with no broken links or images, no blank screens and no console errors: the landing page, the portfolio and the Creator Studio entry; works on a phone. A playtest never signs up, buys or spends credits (no real accounts, no Stripe), and no key, token or customer data shows on any page. Direction for the portal is J's: don't suggest features.",
+      "quality": "The public pages load with no broken links or images, no blank screens and no console errors: the landing page, the portfolio and the Creator Studio entry; works on a phone. On live a playtest never signs up, buys or spends credits (no real accounts, no Stripe), and no key, token or customer data shows on any page. Beta (Studio runs it from the beta branch with its own database and payments off) is where accounts, the Creator Studio and games are tried. Direction for the portal is J's: don't suggest features.",
       "deploy": {
         "via": "ec2",
         "box": "its own EC2 server (hawkes-gen-public)"
       },
       "dev": {
         "front": 8709
+      },
+      "app": {
+        "start": "node --disable-warning=ExperimentalWarning src/server.ts",
+        "health": "/v1/health",
+        "portEnv": "PORT",
+        "dataEnv": "PORTAL_DATA_DIR",
+        "urlEnv": "PUBLIC_URL",
+        "gen": {
+          "keyEnv": "HAWKESGEN_KEY",
+          "urlEnv": "HAWKESGEN_URL",
+          "projects": [
+            "ubeta_*",
+            "usr_00000000000000c0"
+          ]
+        },
+        "env": {
+          "PORTAL_PROJECT_PREFIX": "ubeta_"
+        },
+        "open": "^/(play/|play-asset/|v1/play/|v1/play-template/|v1/ws$|dl/)"
       }
     }
   ],
@@ -481,8 +509,20 @@
       "repo": "hawkesstudio",
       "slug": "jgriffith3433/hawkesstudio",
       "about": "J's cockpit (studio.hawkesgen.com): the daily build/playtest/review loop, backlog, reports, agent changes, beta lane and go live, Talk. Node 24 + TypeScript (type stripping), a plain-JS dashboard.",
-      "checks": ["npm run typecheck", "npm test"],
-      "smoke": { "start": "src/server.ts", "portEnv": "STUDIO_PORT", "dataEnv": "STUDIO_DATA", "health": "/api/health", "scripts": "dashboard", "env": { "STUDIO_SMOKE": "1" } }
+      "checks": [
+        "npm run typecheck",
+        "npm test"
+      ],
+      "smoke": {
+        "start": "src/server.ts",
+        "portEnv": "STUDIO_PORT",
+        "dataEnv": "STUDIO_DATA",
+        "health": "/api/health",
+        "scripts": "dashboard",
+        "env": {
+          "STUDIO_SMOKE": "1"
+        }
+      }
     },
     {
       "id": "hawkesgen",
@@ -490,8 +530,17 @@
       "repo": "hawkesgen",
       "slug": "jgriffith3433/hawkesgen",
       "about": "The shared generative-AI service (gen.hawkesgen.com): the job queue, the AWS GPU fleet (ComfyUI), ElevenLabs, Claude, local tools, the library, usage and API keys, the build server and the playtester. Node 24 + TypeScript (type stripping), a plain-JS dashboard.",
-      "checks": ["npm run typecheck", "npm test"],
-      "smoke": { "start": "src/server.ts", "portEnv": "HAWKESGEN_PORT", "dataEnv": "HAWKESGEN_DATA_DIR", "health": "/v1/health", "scripts": "dashboard" }
+      "checks": [
+        "npm run typecheck",
+        "npm test"
+      ],
+      "smoke": {
+        "start": "src/server.ts",
+        "portEnv": "HAWKESGEN_PORT",
+        "dataEnv": "HAWKESGEN_DATA_DIR",
+        "health": "/v1/health",
+        "scripts": "dashboard"
+      }
     }
   ],
   "$comment_infra": "Hawkes Studio and Hawkes Gen as agent targets (src/agents.ts): a change is a pull request into main (no beta lane), verified by CI on the pull request, the checks and a smoke check of the changed service on a spare port. Approving merges into main, and the server deploys it itself. Not in \"repos\": the server's checkouts of these two only move through deploy/hawkes-pull.mjs.",

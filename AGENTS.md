@@ -148,6 +148,7 @@ a budget (`approveGpu`, `gpuCleared`, `tasksAwaitingGpu`; the PM asks him once);
 | `src/deploy.ts` | Go live and rollback: the plan (commits on beta not on main, the playtests of that beta commit, blockers), the gated fast-forward of main, Unity's build committed to the website's main, rollback as a new commit, the live check |
 | `src/betaplay.ts` | One build per run: a run holds a Unity product's beta website copy while it plays; a build that would reset it waits; each playtest checks the copy still holds the build its run built or kept (build step data `served`) and fails loudly otherwise |
 | `src/previews.ts` | The beta sites `https://<sub>.hawkesgen.com/` (beta) and `/c/<change>/` (agent changes) |
+| `src/apps.ts` | Server apps (`products.json` `app`: the customer portal): beta and each agent change run as processes instead of files (sandboxed, own data folder, own scoped Gen key, change lanes stop after 30 idle minutes); the front door (`dev-front.ts`) is their whole beta host and picks the lane by the `hs_lane` cookie (`/c/<change>/`, `/c/beta/`); local playtests and verifications use them (`local.ts`). docs/cloud.md, "hawkesgen.com: the customer portal" |
 | `src/ops.ts` | Background operations: going live, rollbacks and merges of main into beta run as a persisted queue (an Approve tap answers at once; one product at a time, two in all; a restart puts a running one back, idempotently), each with its step and log; every git or shell command Studio waits on (`trackCommand`); the event-loop monitor (any block over 1 s is logged with what ran). `GET /api/ops`, Activity, `studio_ops`. **Never block Studio:** network or heavy git goes through `beta.ts gitAsync` (sync `git()` is for millisecond local reads, and warns on fetch/push/clone) |
 | `src/auth.ts`, `src/auth-pages.ts`, `src/mail.ts`, `dashboard/users.js` | Accounts: the sign-in page Caddy sends every hawkesgen.com host to (forward_auth to `/auth/check`), the first admin (`admin@hawkesgen.com` / `admin` until a password is set), sessions, invites and resets by email (SES) with a link fallback, roles (admins alone go live, merge into main, spend, manage users: `memberRefusal`), the sign-in log, the Users tab; J's scripts keep the old `j` login (docs/cloud.md) |
 | `src/bugreport.ts`, `dashboard/report-widget.js` | J's 🐞 button on the beta sites: previews.ts injects it into every published HTML page (never a repo or a live site); it posts to the front door (`/dev/__studio/report`); a report becomes a source-J finding linked to the milestone he's testing, started by the PM loop first, told in Talk (docs/daily.md, "Playtesting a milestone"); the page's uncaught errors also report themselves (`POST /dev/__studio/error`: source-auto findings deduped by signature, triaged like review bugs) |
@@ -202,7 +203,8 @@ a budget (`approveGpu`, `gpuCleared`, `tasksAwaitingGpu`; the PM asks him once);
 ## Rules
 
 - **Products are data.** Add or change one in `products.json`:
-  - local serve (npm dev server or static folder, port, path)
+  - local serve (npm dev server, static folder, or `app`: a server Studio runs, `app` below; port, path)
+  - `app` for a web product that is a server with a database: how to start it and what it reads (apps.ts)
   - `contract: true` once it implements the playtest contract
   - playtests (`scenario` or `mode: "site"`, `where: local|live`, `device: "phone"` for a 390x844 touch run; its step
     name gets `:phone`, e.g. `smoke@live:phone`)

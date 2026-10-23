@@ -76,15 +76,24 @@ their `usr_` projects.
 - **In Studio (product `hawkesgenwebsite`, J can build on it through Talk):** `products.json` has the product (live
   site hawkesgen.com, `deploy.via: "ec2"`), the server keeps a checkout of the repo on `beta` (made from main when
   missing), and agent changes are pull requests into beta like any web product. Its beta site is
-  `https://hawkesgenwebsite.hawkesgen.com/` (a copy of the repo's static files only: the server and database don't run there, so
-  sign-in, credits and payments can't be tried on beta; `previews.ts` `RECIPES`). Playtests are live-only `site`
-  crawls (read-only; never sign-up or checkout). **Going live is still J's typed `DEPLOY hawkesgenwebsite`**: it
+  `https://hawkesgenwebsite.hawkesgen.com/`: **the real portal, run by Studio** (`products.json` `app`, `src/apps.ts`).
+  A push to beta checks the commit out in `.work/previews/hawkesgenwebsite` and restarts the process there, on port 8094
+  (so the "local" playtests play it too), as the agent sandbox's user with only what it's given: its own database
+  (`.work/apps/hawkesgenwebsite/beta`), Gen on 127.0.0.1 with a key Studio made for it (client `beta-hawkesgenwebsite-app`,
+  projects `ubeta_*` and the starter pack's: beta customers are `ubeta_…`, so it never reaches a live customer's
+  project; kept in `.data/app-keys.json`), `PUBLIC_URL` the beta host, and no Stripe, Google or mail. Beta accounts
+  get the usual sign-up credits, and their jobs are real Gen jobs (GPU money). An agent change opens at `/c/<change>/` on the same host: the front door (port
+  8709) remembers the lane in the `hs_lane` cookie and runs the change's own server (its own worktree and database,
+  stopped after 30 idle minutes, removed when the change is merged or closed); `/c/beta/` goes back. Caddy sends the
+  whole host to the front door behind the login, except `app.open` (game pages, play assets, `/v1/play/`, `/v1/ws`,
+  `/dl/`), which a game's sandboxed frame loads without cookies. Studio's own session cookie never reaches the app.
+  Playtests: `site` crawls of beta (local) and of live (read-only; never sign-up or checkout on live).
+  **Going live is still J's typed `DEPLOY hawkesgenwebsite`**: it
   fast-forwards main to the beta commit, then the portal's own CI runs and its box pulls the passing commit; Studio waits
   for CI plus the box's pull and plays the live site. A rollback is a new revert commit through the same path and
-  does not undo the database. Studio does not SSH to the box or touch its secrets. Needs once from J: the
-  `.github/workflows/hawkes-studio.yml` hook in the portal repo (copy the one in any product repo), and `node
-  deploy/deploy.mjs` run from his PC for the `hawkesgenwebsite.` DNS record and Caddy block (Studio can't; both come
-  from the `previews` map in `products.json`, so no script changes). If the server has no checkout of the repo yet,
+  does not undo the database. Studio does not SSH to the box or touch its secrets. The portal repo has the
+  `.github/workflows/hawkes-studio.yml` hook, and Route 53 has the `hawkesgenwebsite.` record (2026-10-23); the Caddy
+  block comes from `deploy/caddyfile.mjs` and is applied by the pull-deploy. If the server has no checkout of the repo yet,
   Go live says so and its "Sync repo" button clones it (`POST /api/repos/sync`); an agent or a beta push clones it first.
 - **DNS:** Route 53 `hawkesgen.com` and `www` point at the box; `studio.`, `gen.` and the beta subdomains still point
   here until they move to Studio's own domain.

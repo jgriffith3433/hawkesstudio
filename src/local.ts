@@ -6,6 +6,8 @@ import { spawn, spawnSync } from 'node:child_process';
 import { abs, localUrl, paths, DATA, loadProducts, type Product } from './config.ts';
 import { sandboxOn, sandboxSpawn } from './sandbox.ts';
 import { shareCmds, ensureInstalled, installedFor, depsHash } from './warm.ts';
+import { ensureApp, stopLane } from './apps.ts';
+import { isServer } from './repos.ts';
 
 const WIN = process.platform === 'win32';
 /** A shell command, the platform's way (cmd on Windows, sh elsewhere). */
@@ -43,6 +45,22 @@ export const installCmd = (dir: string) => fs.existsSync(path.join(dir, 'package
 export async function ensureServer(p: Product, log: (s: string) => void = () => {}) {
   const url = localUrl(p);
   const dir = abs(p.local.dir);
+  if (p.local.serve === 'app') {
+    // A server app (apps.ts). On the server the local playtests play its beta (the beta site's process, on local.port);
+    // on J's PC the checkout itself.
+    if (isServer()) {
+      const { laneApp, buildPreview } = await import('./previews.ts');
+      if (!(await laneApp(p.id, 'beta'))) {
+        log(`${p.id}: starting its beta server`);
+        const v = await buildPreview(p.id);
+        if (v?.status !== 'ready') throw new Error(`${p.name}'s beta server didn't start: ${v?.detail ?? 'unknown'}`);
+      }
+      return url;
+    }
+    await ensureApp(p, 'local', dir, { port: p.local.port, publicUrl: `http://localhost:${p.local.port}` });
+    log(`${p.id}: its server runs on :${p.local.port}`);
+    return url;
+  }
   if (p.local.serve === 'npm') {
     // Packages follow the lockfile (warm.ts ensureInstalled): a checkout whose last install was for another one is
     // reinstalled, and the server Studio started on the old packages is started again (Vite answered 500 for modules
@@ -87,6 +105,12 @@ const served = new Map<number, number>();
 export async function serveDir(p: Product, dir: string, port: number) {
   // The worktree's own code (its dev server, its install scripts) runs as the agent sandbox's user when it's on
   // (sandbox.ts): an agent's change never runs as Studio.
+  if (p.local.serve === 'app') {
+    // A server app: its own process with its own data and the product's scoped Gen key (apps.ts, sandboxed too).
+    await ensureApp(p, `serve-${port}`, dir, { port, publicUrl: `http://localhost:${port}` });
+    served.set(port, -1);
+    return `http://localhost:${port}${p.local.path}`;
+  }
   if (p.local.serve === 'npm' && !fs.existsSync(path.join(dir, 'node_modules'))) {
     const main = path.join(abs(p.local.dir), 'node_modules');
     // Only packages installed for this worktree's own lockfile: never a checkout's stale ones.
@@ -133,6 +157,7 @@ export function stopServed(port: number) {
   const pid = served.get(port);
   if (!pid) return;
   served.delete(port);
+  if (pid === -1) return stopLane(`serve-${port}`, 'the verification ended');
   if (WIN) spawnSync('taskkill', ['/PID', String(pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true });
   else try { process.kill(-pid, 'SIGTERM'); } catch { /* gone */ }
 }

@@ -24,7 +24,9 @@ import http from 'node:http';
 import net from 'node:net';
 import fs from 'node:fs';
 import { getProduct, loadProducts, GEN_URL, type Product } from './config.ts';
-import { fileReport, fileAutoError, WIDGET } from './bugreport.ts';
+import { fileReport, fileAutoError, injectReport, WIDGET } from './bugreport.ts';
+import { COOKIE } from './auth.ts';
+import { hasLane, laneApp } from './previews.ts';
 import { devConf, devHostUrl, devStatus, startDev, stopDev, touchDev, devRunning, isUnity, unityInfo, sinceLive } from './dev.ts';
 
 const P = '/dev';
@@ -196,15 +198,123 @@ and builds every Unity product), and you can open it there over Remote Desktop.<
 <p class="mut"><a href="/">Beta site</a> · <a href="${esc(p.live)}">Live</a></p>`);
 }
 
-/** A product with no dev server here and no Unity editor: a server app on its own box (products.json dev without port). */
+/** A product with no dev server here and no Unity editor: a server app (products.json "app", apps.ts). */
 function serverPage(p: Product) {
-  return page(`${p.name}: no dev server here`, `<h1>${esc(p.name)} has no dev server on this page</h1>
-<p>It is a server app with its own database${p.deploy?.box ? ` (it runs on ${esc(p.deploy.box)})` : ''}, so it can't run next to Studio the way the Vite sites do.</p>
-<div class="card"><b>What you can do on beta instead</b><ul>
-<li>Ask Claude in Talk for a change: an agent edits the source on a branch from beta, runs the product's tests and opens a pull request into beta, and you approve it.</li>
-<li>The beta site is a copy of the repo's static files (its public pages). Anything that needs the server or its database (sign-in, credits, payments) doesn't work there.</li>
+  return page(`${p.name}: no devtools`, `<h1>${esc(p.name)} has no devtools page</h1>
+<p>It is a server app with its own database${p.deploy?.box ? ` (live, it runs on ${esc(p.deploy.box)})` : ''}. Its beta site is the real thing:
+Studio runs ${esc(p.name)} from the <b>beta</b> branch on this server, with its own database and its own Hawkes Gen key, so
+sign-in, the Creator Studio and games work there. Payments are off on beta.</p>
+<div class="card"><b>On beta</b><ul>
+<li><a href="/">The beta site</a> is beta's latest commit; it restarts on every push to beta.</li>
+<li>An agent change opens at <code>/c/&lt;change id&gt;/</code> on this host (its own server and database, until it's merged); <a href="/c/beta/">back to beta</a>.</li>
+<li>Ask Claude in Talk for a change: an agent edits the source on a branch from beta, runs the product's tests and opens a pull request into beta.</li>
 <li>Going live fast-forwards main to the beta commit; ${esc(p.name)}'s own CI and server take it from there.</li></ul></div>
 <p class="mut"><a href="/">Beta site</a> · <a href="${esc(p.live)}">Live</a></p>`);
+}
+
+// ------------------------------------------------------- apps: the whole host
+
+/**
+ * A server app's beta host (products.json "app"): Caddy sends every path here (deploy/caddyfile.mjs). / is beta's
+ * process; /c/<change>/ picks an agent change's for this browser (the hs_lane cookie, SameSite=None so a game's sandboxed
+ * frame sends it too) and /c/beta/ goes back. Pages get J's report button, and a pill on a change. Studio's own session
+ * cookie never reaches the app: it runs beta's or an agent's code.
+ */
+const LANE = 'hs_lane';
+function laneOf(p: Product, req: http.IncomingMessage) {
+  const m = new RegExp(`(?:^|;\\s*)${LANE}=([^;]+)`).exec(String(req.headers.cookie ?? ''));
+  const lane = m ? decodeURIComponent(m[1]) : 'beta';
+  return /^c_[0-9a-f]+$/.test(lane) && hasLane(p.id, lane) ? lane : 'beta';
+}
+const laneCookie = (req: http.IncomingMessage, lane: string | null) => {
+  const secure = String(req.headers['x-forwarded-proto'] ?? '') === 'https';
+  return `${LANE}=${lane ?? ''}; Path=/; HttpOnly; ${secure ? 'SameSite=None; Secure' : 'SameSite=Lax'}; Max-Age=${lane ? 7 * 86_400 : 0}`;
+};
+
+/** The request's headers for the app: no Studio session or lane cookie, no Studio login. */
+function appHeaders(req: http.IncomingMessage) {
+  const h: http.OutgoingHttpHeaders = { ...req.headers };
+  const cookie = String(req.headers.cookie ?? '').split(/;\s*/).filter((c) => c && !c.startsWith(`${COOKIE}=`) && !c.startsWith(`${LANE}=`)).join('; ');
+  if (cookie) h.cookie = cookie;
+  else delete h.cookie;
+  if (/^basic\s/i.test(String(h.authorization ?? ''))) delete h.authorization;
+  delete h['accept-encoding']; // HTML gets the report button
+  delete h['x-hawkes-user'];
+  delete h['x-hawkes-role'];
+  return h;
+}
+
+const lanePill = (lane: string) => `<a href="/c/beta/" data-hawkes-lane style="position:fixed;left:8px;bottom:8px;z-index:2147483647;font:12px/1.4 system-ui,sans-serif;padding:3px 9px;border-radius:999px;background:#2a2340;color:#d9ccff;text-decoration:none;opacity:.9;box-shadow:0 1px 4px #0006">change ${esc(lane)} · back to beta</a>`;
+
+function buildingPage(p: Product, lane: string) {
+  return page(`${p.name}: starting`, `<h1>${esc(p.name)} ${lane === 'beta' ? 'beta' : `change ${esc(lane)}`} is starting</h1>
+<p class="mut">Studio is checking out ${lane === 'beta' ? 'the beta branch' : 'the change'} and starting its server. This page reloads by itself.</p>
+<p class="mut"><a href="/dev/__studio/info">Status</a>${lane === 'beta' ? '' : ' · <a href="/c/beta/">Back to beta</a>'}</p>`, 'setTimeout(() => location.reload(), 3000);');
+}
+
+async function handleApp(p: Product, req: http.IncomingMessage, res: http.ServerResponse, url: URL) {
+  const route = url.pathname;
+  const c = /^\/c\/(beta|c_[0-9a-f]+)(\/.*)?$/.exec(route);
+  if (c) {
+    const lane = c[1];
+    if (lane !== 'beta' && !hasLane(p.id, lane)) return send(res, 404, 'text/html; charset=utf-8', page('No such change', `<h1>No preview of ${esc(lane)}</h1><p class="mut">It was merged or closed, or it has no preview yet.</p><p><a href="/c/beta/">Beta</a></p>`));
+    return send(res, 302, 'text/plain', '', { Location: (c[2] && c[2] !== '/' ? c[2] : '/') + url.search, 'Set-Cookie': laneCookie(req, lane === 'beta' ? null : lane) });
+  }
+  const lane = laneOf(p, req);
+  let port: number | null;
+  try {
+    port = await laneApp(p.id, lane);
+  } catch (e: any) {
+    if (isNav(req)) return send(res, 503, 'text/html; charset=utf-8', page(`${p.name} didn't start`, `<h1>${esc(p.name)} didn't start</h1><p class="warn">${esc(e.message ?? e)}</p><p class="mut"><a href="/dev/__studio/info">Status</a>${lane === 'beta' ? '' : ' · <a href="/c/beta/">Back to beta</a>'}</p>`));
+    return json(res, 503, { error: String(e.message ?? e) });
+  }
+  if (!port) return isNav(req) ? send(res, 503, 'text/html; charset=utf-8', buildingPage(p, lane), { 'Retry-After': '3' }) : json(res, 503, { error: `${p.name}'s ${lane} is starting` });
+  const info = (await import('./previews.ts')).listPreviews().find((x) => x.product === p.id);
+  const v = lane === 'beta' ? info?.beta : info?.changes.find((x) => x.id === lane);
+  const up = http.request({ host: '127.0.0.1', port, method: req.method, path: req.url, headers: appHeaders(req) }, (ur) => {
+    const headers = { ...ur.headers };
+    const sandboxed = /(^|;)\s*sandbox(\s|;|$)/i.test(String(headers['content-security-policy'] ?? ''));
+    // Whole pages get the report button; a sandboxed game page can't reach /dev/__studio/ (no cookies), so it doesn't.
+    if (String(headers['content-type'] ?? '').includes('text/html') && !sandboxed && req.method !== 'HEAD') {
+      const chunks: Buffer[] = [];
+      ur.on('data', (d) => chunks.push(d));
+      ur.on('end', () => {
+        let html = injectReport(Buffer.concat(chunks).toString('utf8'), { product: p.id, sha: v?.sha ?? null, ref: v?.ref, ...(lane === 'beta' ? {} : { change: lane }) });
+        if (lane !== 'beta' && !html.includes('data-hawkes-lane')) html = /<\/body>/i.test(html) ? html.replace(/<\/body>/i, `${lanePill(lane)}</body>`) : html + lanePill(lane);
+        delete headers['content-length'];
+        delete headers.etag;
+        res.writeHead(ur.statusCode ?? 200, headers);
+        res.end(html);
+      });
+      ur.on('error', () => res.destroy());
+      return;
+    }
+    res.writeHead(ur.statusCode ?? 200, headers);
+    ur.pipe(res);
+  });
+  up.on('error', (e) => {
+    if (!res.headersSent) json(res, 502, { error: `${p.name} (${lane}) didn't answer: ${e.message}` });
+    else res.destroy();
+  });
+  req.pipe(up);
+}
+
+/** A server app's websockets (game rooms): piped to the lane's process. */
+async function upgradeApp(p: Product, req: http.IncomingMessage, socket: net.Socket, head: Buffer) {
+  let port: number | null = null;
+  try { port = await laneApp(p.id, laneOf(p, req)); } catch { /* not running */ }
+  if (!port) return socket.destroy();
+  const up = net.connect(port, '127.0.0.1', () => {
+    const lines = [`${req.method} ${req.url} HTTP/1.1`];
+    for (const [k, v] of Object.entries(appHeaders(req))) for (const one of Array.isArray(v) ? v : [v]) if (one !== undefined) lines.push(`${k}: ${one}`);
+    up.write(`${lines.join('\r\n')}\r\n\r\n`);
+    if (head?.length) up.write(head);
+    up.pipe(socket);
+    socket.pipe(up);
+  });
+  const end = () => { up.destroy(); socket.destroy(); };
+  up.on('error', end);
+  socket.on('error', end);
 }
 const noDevPage = (p: Product) => (isUnity(p) ? unityPage(p) : serverPage(p));
 
@@ -273,6 +383,8 @@ async function handle(p: Product, req: http.IncomingMessage, res: http.ServerRes
   const route = url.pathname;
   const method = req.method ?? 'GET';
   const unity = isUnity(p) || !devConf(p)?.port;
+  // A server app's host is all here (Caddy): everything outside /dev/ is the app itself.
+  if (p.app && !root && route !== P && !route.startsWith(`${P}/`)) return handleApp(p, req, res, url);
   if (route === P) return send(res, 302, 'text/plain', '', { Location: `${P}/${url.search}` });
   // Only /dev/ (and HMR, handled on upgrade) comes here through Caddy. Locally, other paths are sent inside /dev/.
   if (!route.startsWith(`${P}/`)) {
@@ -375,7 +487,11 @@ export function startFronts(host = '127.0.0.1') {
     const s = http.createServer((req, res) => {
       handle(getProduct(p.id), req, res).catch((e) => { if (!res.headersSent) json(res, 500, { error: String(e.message ?? e) }); });
     });
-    s.on('upgrade', (req, socket, head) => upgrade(getProduct(p.id), req, socket as net.Socket, head));
+    s.on('upgrade', (req, socket, head) => {
+      const q = getProduct(p.id);
+      if (q.app && !(req.url ?? '/').startsWith(`${P}/`)) return void upgradeApp(q, req, socket as net.Socket, head);
+      upgrade(q, req, socket as net.Socket, head);
+    });
     s.on('error', (e: any) => console.warn(`[studio] /dev/ front door for ${p.id} on :${front}: ${e.message ?? e}`));
     s.listen(front, host);
     fronts.set(p.id, s);

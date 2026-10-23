@@ -211,10 +211,12 @@ export function spawnShell(cmd: string, { cwd, env }: { cwd: string; env: NodeJS
 /**
  * Any program that runs code from an agent's worktree (a dev server for its verification playtest, a preview build)
  * as the sandbox user, with spawn's own options (detached, stdio). No Claude login, no secrets. Off: a plain spawn.
+ * own: variables the program needs that the sandbox's filter would drop (an app server's port, data folder and its own
+ * scoped Gen key: apps.ts), added after the filter.
  */
-export function sandboxSpawn(file: string, args: string[], opts: SpawnOptions & { cwd: string }): ChildProcess {
-  if (!sandboxOn()) return spawn(file, args, { windowsHide: true, ...opts });
-  const clean = sandboxEnv(opts.env ?? process.env);
+export function sandboxSpawn(file: string, args: string[], { own, ...opts }: SpawnOptions & { cwd: string; own?: Record<string, string> }): ChildProcess {
+  if (!sandboxOn()) return spawn(file, args, { windowsHide: true, ...opts, ...(own ? { env: { ...(opts.env ?? process.env), ...own } } : {}) });
+  const clean = { ...sandboxEnv(opts.env ?? process.env), ...own };
   delete clean.CLAUDE_CODE_OAUTH_TOKEN;
   delete clean.ANTHROPIC_API_KEY;
   const keep = Object.keys(clean).filter((k) => k !== 'HOME' && k !== 'PATH');
