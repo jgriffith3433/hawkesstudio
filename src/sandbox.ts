@@ -71,6 +71,16 @@ export async function shareRepo(repoDir: string, group: string | null = sandboxO
   }
   if (await shareEntry(dotGit, gid, 0o2000)) changed = true;
   if (await shareEntry(path.join(dotGit, 'worktrees'), gid, 0o2070)) changed = true;
+  // What agents write when they commit: objects, refs, reflogs. deploy/agent-sandbox.mjs shares these for every repo there
+  // at setup; a repo Studio clones later (a product added after: the portal, 2026-10-23, whose agents' commits failed with
+  // "insufficient permission for adding an object") comes with them as Studio's group. Whole, once: a folder that is
+  // already the agent group's, setgid and group-writable is left alone (a stat each on every later pass).
+  for (const sub of ['objects', 'refs', 'logs', 'lfs']) {
+    const d = path.join(dotGit, sub);
+    let st: fs.Stats;
+    try { st = await fs.promises.stat(d); } catch { continue; }
+    if (st.gid !== gid || (st.mode & 0o2070) !== 0o2070) { if (await shareTree(d, gid)) changed = true; }
+  }
   return changed ? 'shared' : 'already';
 }
 

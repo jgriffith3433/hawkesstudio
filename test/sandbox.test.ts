@@ -131,6 +131,26 @@ const serverOnly = process.platform === 'win32' ? 'not on Windows'
   : process.env.CI ? 'CI: not the server\'s groups and git'
   : !agentGid ? `not in the agent group ${AGENT_GROUP}` : false;
 
+test('a repo cloned after the sandbox was set up: its objects, refs and logs become the agent group\'s (agents can commit)', { skip: serverOnly }, async () => {
+  const { shareRepo } = await import('../src/sandbox.ts');
+  const gid = Number(agentGid);
+  const r3 = path.join(process.env.STUDIO_PROJECTS!, 'late');
+  // Studio clones it with its own group and umask 022, as repos.ts does for a product added later.
+  const r = spawnSync('sh', ['-c', `umask 022 && git clone --quiet ${origin} ${r3}`], { encoding: 'utf8' });
+  assert.equal(r.status, 0, r.stderr);
+  const objects = path.join(r3, '.git', 'objects');
+  const dirs = [objects, ...fs.readdirSync(objects).map((n) => path.join(objects, n)), path.join(r3, '.git', 'refs'), path.join(r3, '.git', 'logs')];
+  assert.ok(dirs.some((d) => fs.statSync(d).gid !== gid), 'before: not the agent group\'s');
+  assert.equal(await shareRepo(r3, String(gid)), 'shared');
+  for (const d of dirs) {
+    const st = fs.statSync(d);
+    assert.equal(st.gid, gid, `${d} is the agent group's`);
+    assert.ok(st.mode & 0o020 && st.mode & 0o2000, `${d} is group-writable and setgid`);
+  }
+  // A second pass changes nothing.
+  assert.equal(await shareRepo(r3, String(gid)), 'already');
+});
+
 test("a fresh agent worktree's git folder is the agent group's and group-writable, whatever Studio's umask", { skip: serverOnly }, async () => {
   const { shareRepo, shareWorktree, shareAll } = await import('../src/sandbox.ts');
   const gid = Number(agentGid);
