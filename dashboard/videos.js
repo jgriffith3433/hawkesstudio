@@ -31,6 +31,11 @@
     .vd-mark { position: absolute; bottom: 4px; height: 12px; min-width: 4px; border-radius: 3px; background: var(--dim); opacity: .8; }
     .vd-mark.draft { background: #e0a030; }
     .vd-mark.quick { background: #4caf7a; }
+    .vd-mark.review { background: #8a7be0; }
+    .vd-note.review { border-left: 3px solid #8a7be0; cursor: pointer; }
+    .vd-scores { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+    .vd-scores span { font-size: 11px; padding: 1px 7px; border-radius: 999px; background: var(--panel2); }
+    .vd-scores span.low { color: var(--red); }
     .vd-sel { position: absolute; top: 0; bottom: 0; background: color-mix(in srgb, var(--accent) 30%, transparent); border-left: 2px solid var(--accent); border-right: 2px solid var(--accent); pointer-events: none; }
     .vd-head { position: absolute; top: 0; bottom: 0; width: 2px; background: #fff; box-shadow: 0 0 2px #000; pointer-events: none; }
     .vd-tlinfo { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; font-size: 12px; color: var(--dim); margin-top: 6px; min-height: 26px; }
@@ -54,7 +59,7 @@
   document.head.appendChild(css);
 
   const READY = new Set(['ready to screen', 'animatic ready']);
-  const ASKS = { shorter: 'Shorter', longer: 'Longer', redo: 'Redo', lipsync: 'Fix lip sync', closer: 'Closer', wider: 'Wider', angle: 'New angle', reaction: 'Add reaction', camera: 'Move camera', expression: 'More expression', voice: 'Voice', look: 'Fix look', action: 'Action / VFX', sound: 'Sound', caption: 'Captions', cut: 'Cut it' };
+  const ASKS = { shorter: 'Shorter', longer: 'Longer', redo: 'Redo', lipsync: 'Fix lip sync', closer: 'Closer', wider: 'Wider', angle: 'New angle', reaction: 'Add reaction', camera: 'Move camera', expression: 'More expression', voice: 'Voice', look: 'Fix look', action: 'Action / VFX', sound: 'Sound', caption: 'Captions', cut: 'Cut it', script: 'Script' };
   const file = (a) => (a ? `/api/gen/v1/files/${a}` : '');
   const ts = (s) => `${Math.floor(s / 60)}:${(s % 60).toFixed(1).padStart(4, '0')}`;
   let current = null; // the open video's task id
@@ -93,7 +98,9 @@
         <details class="more-details"><summary>Controls (optional: whatever you leave open, the director decides)</summary>
           <div class="vd-ctl">
             <label>Length (seconds)<input id="vdSeconds" type="number" min="5" max="300" placeholder="e.g. 30"></label>
-            <label>Method<select id="vdEngine"><option value="auto">Director's choice</option><option value="scene">Whole scenes (our GPUs)</option><option value="seedance">Seedance 2.5 (paid)</option><option value="kling">Kling O3 (paid, its own voices)</option><option value="shots">Shot by shot (Blender + ComfyUI)</option></select></label>
+            <label>Kind<select id="vdKind"><option value="">Director's choice</option><option value="dialogue">Dialogue scene</option><option value="monologue">Monologue</option><option value="action">Action / fight</option><option value="music">Music video</option><option value="trailer">Trailer</option><option value="ad">Gameplay ad</option><option value="capture">Performance capture</option></select></label>
+            <label>Method<select id="vdEngine"><option value="auto">Director's choice</option><option value="scene">Whole scenes (our GPUs)</option><option value="perform">Performances in their own voices (our GPUs)</option><option value="capture">My performance video drives it</option><option value="seedance">Seedance 2.5 (paid)</option><option value="kling">Kling O3 (paid, its own voices)</option><option value="shots">Shot by shot (Blender + ComfyUI)</option></select></label>
+            <label>Performance video (optional: you acting it, on a phone)<input id="vdPerformance" type="file" accept="video/*"></label>
             <label>Quality<select id="vdQuality"><option value="">Director's choice</option><option value="draft">Draft (fast, cheap)</option><option value="standard">Standard</option><option value="high">High (best of 2 takes)</option></select></label>
             <label>Look<input id="vdStyle" placeholder="e.g. Pixar-like 3D, warm light"></label>
             <label>Voices<input id="vdVoices" placeholder="e.g. Mechanic: tired, gravelly"></label>
@@ -124,7 +131,7 @@
     const marks = (data.marks ?? []).filter((m) => m.version === v.n && m.from_s != null);
     return `<div class="vd-tl" id="vdTl" title="Drag to select a range, click for a moment">
         ${shotsOf(v).map((s, i) => `<div class="vd-shot" data-shot="${i}" style="left:${pc(s.start)};width:${pc(s.end - s.start)};${thumbs.get(`${v.asset}:${i}`) ? `background-image:url(${thumbs.get(`${v.asset}:${i}`)})` : ''}" title="${esc(`${ts(s.start)}-${ts(s.end)} ${s.label}`)}">${(s.end - s.start) / dur > 0.07 ? `<span>${esc(s.label)}</span>` : ''}</div>`).join('')}
-        <div class="vd-marks">${marks.map((m) => `<div class="vd-mark ${m.status === 'draft' ? 'draft' : String(m.action ?? '').startsWith('quick') ? 'quick' : ''}" style="left:${pc(m.from_s)};width:${m.to_s ? pc(m.to_s - m.from_s) : '4px'}" title="${esc(`${m.status}: ${m.action ? ASKS[m.action] ?? m.action : ''} ${m.text}`.slice(0, 200))}"></div>`).join('')}</div>
+        <div class="vd-marks">${marks.map((m) => `<div class="vd-mark ${m.status === 'draft' ? 'draft' : m.status === 'review' || String(m.by ?? '').startsWith('Studio') ? 'review' : String(m.action ?? '').startsWith('quick') ? 'quick' : ''}" style="left:${pc(m.from_s)};width:${m.to_s ? pc(m.to_s - m.from_s) : '4px'}" title="${esc(`${m.status}: ${m.action ? ASKS[m.action] ?? m.action : ''} ${m.text}`.slice(0, 200))}"></div>`).join('')}</div>
         ${sel ? `<div class="vd-sel" style="left:${pc(sel.from)};width:${sel.to > sel.from ? pc(sel.to - sel.from) : '0'}"></div>` : ''}
         <div class="vd-head" id="vdHead" style="left:0"></div>
       </div>
@@ -181,6 +188,7 @@
           <button id="vdApprove" class="primary">Approve v${v.n}</button></div>`) : ''}
       <div class="vd-notes">
         ${drafts.slice().reverse().map((m) => `<div class="vd-note draft" data-seek="${m.from_s ?? ''}"><div class="who">Draft · v${m.version ?? '?'}${m.from_s != null ? ` · ${m.to_s ? `${ts(m.from_s)}–${ts(m.to_s)}` : ts(m.from_s)}` : ''} <a href="#" data-drop="${m.id}" style="float:right">remove</a></div>${m.action ? `<b>${esc(ASKS[m.action] ?? m.action)}</b> ` : ''}${esc(m.text)}</div>`).join('')}
+        ${(d.marks ?? []).filter((m) => m.status === 'review' && m.version === v?.n).map((m) => `<div class="vd-note review" data-seek="${m.from_s ?? ''}"><div class="who">Studio's review · v${m.version}${m.from_s != null ? ` · ${m.to_s ? `${ts(m.from_s)}–${ts(m.to_s)}` : ts(m.from_s)}` : ''}${canNote ? ` <a href="#" data-keep="${m.id}" style="float:right">keep as my note</a>` : ''}</div>${m.action ? `<b>${esc(ASKS[m.action] ?? m.action)}</b> ` : ''}${esc(m.text)}</div>`).join('')}
         ${d.notes.slice().reverse().map((n) => `<div class="vd-note"><div class="who">${esc(n.by)} · ${esc(n.kind)} · ${esc(ago(n.at))}</div>${esc(n.text)}</div>`).join('')}
       </div>`;
   }
@@ -202,7 +210,9 @@
           <div id="vdTimeline">${timelineHtml(v, v?.seconds ?? shotsOf(v).at(-1)?.end ?? 0)}</div>
           <div class="vd-versions">${vs.map((x) => `<button class="small${x.n === shown ? ' on' : ''}" data-version="${x.n}">v${x.n}${x.stage === 'animatic' ? ' · animatic' : ''}${x.made_by === 'quick' ? ' · quick edit' : ''}</button>`).join('')}</div>
           ${v?.summary ? `<div class="status-line">v${v.n}: ${esc(v.summary)}</div>` : ''}
-          ${v?.review ? `<div class="status-line">Studio's review: <b>${esc(String(v.review.score))}/10</b>${v.review.pass ? ' · passed' : ' · sent back'} · ${esc(v.review.summary)}</div>` : ''}
+          ${v?.review ? `<div class="status-line">Studio's review${v.review.critic === 'gemini' ? ' (watched and listened)' : v.review.critic === 'claude' ? ' (contact sheets)' : ''}: <b>${esc(String(v.review.score))}/10</b>${v.review.pass ? ' · passed' : ' · sent back'} · ${esc(v.review.summary)}
+            ${v.review.scores ? `<div class="vd-scores">${Object.entries(v.review.scores).map(([k, x]) => `<span class="${x < 5 ? 'low' : ''}">${esc(k)} ${esc(String(x))}</span>`).join('')}</div>` : ''}
+            ${v.review.experience ? `<details class="more-details"><summary>What watching it feels like</summary><div style="font-size:13px">${esc(v.review.experience)}</div></details>` : ''}</div>` : ''}
           ${v?.story ? `<details class="more-details"><summary>The story</summary><div style="white-space:pre-wrap;font-size:13px">${esc(v.story)}</div></details>` : ''}
           ${Object.keys(d.spec ?? {}).length ? `<details class="more-details"><summary>Your controls</summary><div class="dim" style="font-size:13px">${esc(Object.entries(d.spec).map(([k, x]) => `${k}: ${x}`).join(' · '))}</div></details>` : ''}
           ${v?.caption ? `<details class="more-details"><summary>Post caption</summary><pre style="white-space:pre-wrap;font-size:12px">${esc(v.caption)}</pre></details>` : ''}
@@ -318,12 +328,13 @@
       aiming = false;
       return rerender();
     }
-    const t = e.target.closest('[data-open],[data-version],[data-ask],[data-quick],[data-drop],[data-seek],#vdBack,#vdNewBtn,#vdCancel,#vdApprove,#vdSendAll,#vdPlaySel,#vdClearSel,#vdAimBtn,#vdRedo');
+    const t = e.target.closest('[data-open],[data-version],[data-ask],[data-quick],[data-drop],[data-keep],[data-seek],#vdBack,#vdNewBtn,#vdCancel,#vdApprove,#vdSendAll,#vdPlaySel,#vdClearSel,#vdAimBtn,#vdRedo');
     if (!t) return;
     if (t.dataset.open) return open(t.dataset.open);
     if (t.dataset.version) { shown = Number(t.dataset.version); sel = null; return rerender(); }
     if (t.dataset.ask) { ask = ask === t.dataset.ask ? null : t.dataset.ask; return rerender(); }
     if (t.dataset.drop) { e.preventDefault(); data = await api(`/api/videos/${current}/notes/${t.dataset.drop}`, { method: 'DELETE' }); return rerender(); }
+    if (t.dataset.keep) { e.preventDefault(); try { data = await api(`/api/videos/${current}/notes/${t.dataset.keep}/keep`, { method: 'POST', body: {} }); } catch (x) { alert(x.message); } return rerender(); }
     if (t.dataset.seek !== undefined && t.dataset.seek !== '') { const vid = $('#vdVideo'); if (vid) vid.currentTime = Number(t.dataset.seek); return; }
     if (t.id === 'vdBack') return open(null);
     if (t.id === 'vdNewBtn') { $('#vdNew').hidden = false; $('#vdTitle').focus(); return; }
@@ -375,11 +386,25 @@
     if (e.target.id === 'vdNew') {
       e.preventDefault();
       try { localStorage.setItem('vd.product', $('#vdProduct').value); } catch {}
+      const submit = e.target.querySelector('button[type="submit"]');
+      // J's own performance goes into Gen first (as the product's asset); the agent gets its id.
+      let performance;
+      const perf = $('#vdPerformance')?.files?.[0];
+      if (perf) {
+        if (perf.size > 500 * 1024 * 1024) return alert('The performance video is over 500 MB: trim it first');
+        submit.disabled = true; submit.textContent = 'Uploading your performance…';
+        try {
+          const r = await fetch(`/api/gen/v1/assets?project=${encodeURIComponent($('#vdProduct').value)}&title=${encodeURIComponent(perf.name || 'performance.mp4')}`, { method: 'POST', headers: { 'Content-Type': perf.type || 'video/mp4', 'X-Filename': perf.name || 'performance.mp4' }, body: perf });
+          const d = await r.json();
+          if (!r.ok || !d.id) throw new Error(d.error ?? `Gen said ${r.status}`);
+          performance = d.id;
+        } catch (x) { submit.disabled = false; submit.textContent = 'Start it'; return alert(`Couldn't upload the performance: ${x.message}`); }
+      }
       const b = {
         product: $('#vdProduct').value, format: $('#vdFormat').value, title: $('#vdTitle').value, script: $('#vdScript').value, direction: $('#vdDirection').value,
-        spec: { seconds: $('#vdSeconds').value || undefined, engine: $('#vdEngine').value, quality: $('#vdQuality').value || undefined, style: $('#vdStyle').value, voices: $('#vdVoices').value, music: $('#vdMusic').value, animatic: $('#vdAnimatic').checked, captions: $('#vdCaptions').checked, endCard: $('#vdEndCard').checked },
+        spec: { seconds: $('#vdSeconds').value || undefined, kind: $('#vdKind').value || undefined, engine: $('#vdEngine').value, performance, quality: $('#vdQuality').value || undefined, style: $('#vdStyle').value, voices: $('#vdVoices').value, music: $('#vdMusic').value, animatic: $('#vdAnimatic').checked, captions: $('#vdCaptions').checked, endCard: $('#vdEndCard').checked },
       };
-      try { const d = await api('/api/videos', { method: 'POST', body: b }); open(d.task.id); } catch (x) { alert(x.message); }
+      try { const d = await api('/api/videos', { method: 'POST', body: b }); open(d.task.id); } catch (x) { alert(x.message); if (submit) { submit.disabled = false; submit.textContent = 'Start it'; } }
     }
     if (e.target.id === 'vdNoteForm') {
       e.preventDefault();

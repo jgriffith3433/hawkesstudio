@@ -28,6 +28,18 @@ const HOST = process.env.HAWKES_SERVER ?? 'ubuntu@studio.hawkesgen.com';
 const step = (s) => console.log(`\n== ${s}`);
 const fail = (s) => { console.error(`\nNot deployed: ${s}`); process.exit(1); };
 const git = (...args) => execFileSync('git', args, { cwd: dir, encoding: 'utf8' }).trim();
+const npmBin = process.platform === 'win32' ? 'npm.cmd' : 'npm';
+
+/** Installs the repo's packages when any it declares is missing from node_modules (npm install: keeps what's there). */
+function ensureDeps() {
+  const pkg = JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf8'));
+  const names = Object.keys({ ...(pkg.dependencies ?? {}), ...(pkg.devDependencies ?? {}) });
+  const missing = names.filter((n) => !fs.existsSync(path.join(dir, 'node_modules', ...n.split('/'), 'package.json')));
+  if (!missing.length) return;
+  step(`${repo}: installing packages (${missing.slice(0, 6).join(', ')}${missing.length > 6 ? ', ...' : ''} missing from node_modules)`);
+  const r = spawnSync(npmBin, ['install', '--no-audit', '--no-fund'], { cwd: dir, stdio: 'inherit', shell: process.platform === 'win32' });
+  if (r.status !== 0) fail(`npm install in ${repo} failed (above).`);
+}
 
 // 1. What to deploy.
 step(`${repo}: what to deploy`);
@@ -45,6 +57,9 @@ if (sha !== remote) console.log(`${git('rev-list', '--count', `${remote}..${sha}
 if (dirty) console.log(`(Uncommitted edits in ${repo} are not deployed or tested:\n${dirty})`);
 
 // 2. The checks, on a clean copy of exactly this commit.
+// The clean copy shares this repo's node_modules, so the tools the checks run (tsc, @types/node...) must be installed
+// here first (J, 2026-10-22: Studio's node_modules was empty and the typecheck died on "'tsc' is not recognized").
+ensureDeps();
 let checks = 'typecheck and tests';
 if (skipTests) {
   checks = 'typecheck only (--skip-tests)';
@@ -76,8 +91,25 @@ try {
     console.log(summary);
   }
 } finally {
-  spawnSync('git', ['worktree', 'remove', '--force', wt], { cwd: dir });
-  fs.rmSync(tmp, { recursive: true, force: true });
+  // The links come out first, as links. Removing the copy with them in it deletes THROUGH them on Windows: that emptied
+  // Studio's and Gen's node_modules, Gen's .venv and its template cache on 2026-10-22. If a link won't go, the copy
+  // stays (a stray folder in the temp dir is harmless; deleting through a link is not).
+  let linksGone = true;
+  for (const link of ['node_modules', '.venv', path.join('.data', 'comfy-cache')]) {
+    const p = path.join(wt, link);
+    let st;
+    try { st = fs.lstatSync(p); } catch { continue; }
+    if (!st.isSymbolicLink()) continue;
+    try { fs.unlinkSync(p); } catch { try { fs.rmdirSync(p); } catch { linksGone = false; } }
+    if (fs.existsSync(p)) linksGone = false;
+  }
+  if (linksGone) {
+    spawnSync('git', ['worktree', 'remove', '--force', wt], { cwd: dir });
+    fs.rmSync(tmp, { recursive: true, force: true });
+  } else {
+    spawnSync('git', ['worktree', 'prune'], { cwd: dir });
+    console.log(`(Left ${tmp} in place: a link in it wouldn't come out, and deleting it could delete through the link.)`);
+  }
 }
 
 // 3. GitHub main.

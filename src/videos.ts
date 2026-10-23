@@ -85,7 +85,13 @@ export const VIDEO_GPU = [
   { tool: 'video.control', count: 2, label: 'repaints' },
 ];
 
-export type Review = { pass: boolean; score: number; summary: string; notes: { at: number | null; note: string }[]; error?: string };
+/**
+ * Studio's review of a version. critic: who reviewed it: 'gemini' (Gen video.review: watches the cut with its sound and
+ * scores story, pacing, voices, lip sync, movement, consistency and sound) or 'claude' (contact sheets and silences, the
+ * fallback when the critic can't run). A critic note has its range (at, to) and the timeline ask it is (NOTE_ACTIONS).
+ */
+export type ReviewNote = { at: number | null; to?: number | null; ask?: string | null; note: string };
+export type Review = { pass: boolean; score: number; summary: string; notes: ReviewNote[]; error?: string; critic?: 'gemini' | 'claude'; scores?: Record<string, number>; experience?: string; model?: string };
 /**
  * A version's stage. A video starts with an animatic (a rough draft: the story, the beat sheet, the art and staging, the
  * real voices, timed) that J approves or steers before the final renders, unless he turns it off for that video (J,
@@ -201,10 +207,14 @@ export async function videoReady(c: { id: string; task: string; worktree: string
     db.prepare('UPDATE video_versions SET review = ? WHERE id = ?').run(JSON.stringify(review), version.id);
     version.review = review;
     const rounds = (db.prepare('SELECT auto_rounds FROM video_state WHERE task = ?').get(t.id) as any)?.auto_rounds ?? 0;
-    if (!review.pass && rounds < REVIEW_ROUNDS && review.notes.length) {
+    const sendBack = !review.pass && rounds < REVIEW_ROUNDS && review.notes.length > 0;
+    // The review's notes land on the Screening timeline as asks: sent (they went back to the agent) or review (J sees
+    // them on the version he screens and can keep any as his own note).
+    markReview(t.id, version.n, review, sendBack ? 'sent' : 'review');
+    if (sendBack) {
       db.prepare('INSERT INTO video_state (task, auto_rounds) VALUES (?, 1) ON CONFLICT(task) DO UPDATE SET auto_rounds = auto_rounds + 1').run(t.id);
-      addComment(t.id, `Studio's review of v${version.n} (${review.score}/10): ${review.summary}\n${review.notes.map((n) => `- ${n.at != null ? `[${stampOf(n.at)}] ` : ''}${n.note}`).join('\n')}`, 'Studio (review)', 'review');
-      await sendNotes(t.id, review.notes.map((n) => `${n.at != null ? `[v${version.n} at ${stampOf(n.at)}] ` : ''}${n.note}`), 'Studio (review)');
+      addComment(t.id, `Studio's review of v${version.n} (${review.score}/10${review.scores ? `; ${scoresLine(review.scores)}` : ''}): ${review.summary}\n${review.notes.map((n) => `- ${n.at != null ? `[${stampOf(n.at)}${n.to != null ? `-${stampOf(n.to)}` : ''}] ` : ''}${n.note}`).join('\n')}`, 'Studio (review)', 'review');
+      await sendNotes(t.id, review.notes.map((n) => reviewNoteForAgent(t.id, version.n, n)), 'Studio (review)');
       logDecision('video', t.id, t.product, `Studio's review sent "${t.title}" v${version.n} back (${review.score}/10, round ${rounds + 1} of ${REVIEW_ROUNDS}): ${review.summary.slice(0, 200)}`);
       return { version, resent: true };
     }
@@ -237,7 +247,7 @@ async function tellTalk(t: Task, v: Version) {
   const title = t.title.replace(/^Video:\s*/, '');
   const what = v.stage === 'animatic' ? `The animatic of "${title}" (v${v.n})` : `"${title}" v${v.n}`;
   const next = v.stage === 'animatic' ? "Tell me what to change in the story, staging or timing, or say it's good and the final gets made from it." : "Tell me what to change and I'll send it back, or say it's good and I'll approve it.";
-  const text = `${what} is ready to screen (video ${t.id}${v.seconds ? `, ${Math.round(v.seconds)} s` : ''}${v.review && !v.review.error ? `, Studio's review ${v.review.score}/10` : ''}).${v.summary ? ` ${v.summary.slice(0, 400)}` : ''}
+  const text = `${what} is ready to screen (video ${t.id}${v.seconds ? `, ${Math.round(v.seconds)} s` : ''}${v.review && !v.review.error ? `, Studio's review ${v.review.score}/10${v.review.scores ? ` (${scoresLine(v.review.scores)})` : ''}` : ''}).${v.summary ? ` ${v.summary.slice(0, 400)}` : ''}
 Watch it: ${PUBLIC_URL}/#videos/${t.id}
 ${next}`;
   const row = db.prepare('SELECT conversation FROM video_state WHERE task = ?').get(t.id) as { conversation: string | null } | undefined;
@@ -287,7 +297,11 @@ Together, not stitched:
 
 The craft bar:
 - A hook in the first second (motion, a face or a line), no title-card opener.
-- Coverage: a new shot every 1-3 s and at least 5 different setups (shot size and angle); no shot over 3 s without a reason.
+- Pacing is a pulse, not a fixed tempo: every shot changes something (what the viewer knows, expects or feels), and each
+  shot lasts as long as its moment needs: important actions and reactions are held, routine is compressed, a beat of
+  silence before a hard answer is kept. Flag mechanical cutting (a cut every couple of seconds or on every sentence for
+  its own sake), constant escalation, dead air with no reason, and moments that are rushed or overstay.
+- Coverage: enough different setups (shot size and angle) that the scene reads and breathes; a long hold needs a reason.
 - Variety: no ping-pong of the same two static close-ups; dialogue mixes over-the-shoulders, two-shots, angle changes
   and camera moves, and each setup is used for a reason.
 - The same character looks the same in every shot: one model, one style, hair, colours and proportions as their
@@ -320,8 +334,91 @@ with the second it's about (at) when it has one, worst first. Name the beat, the
 helps ("1-4 s is one static wide: cut to Exit Punk's CU on 'That's me' and Shutup Bot's ECU reaction").`;
 }
 
-/** Studio's review of a version: frames (one a second, as contact sheets) and dead air, judged by Claude against the bar. */
+/** The critic's timeout: a 2-minute cut takes Gemini a minute or two; Gen's queue can add a few. */
+const CRITIC_TIMEOUT_MS = Number(process.env.STUDIO_VIDEO_CRITIC_TIMEOUT_MS) || 12 * 60_000;
+
+/**
+ * Studio's review of a version. The critic first (Gen video.review: Gemini watches the cut with its sound, which is the
+ * only way to judge pacing, voices, lip sync and movement; J, 2026-10-22: the videos fall short on "pacing, voices,
+ * lipsync, movement and script"), Claude's contact sheets when the critic can't run (no Gemini key, Gen without the tool).
+ */
 async function reviewVersion(t: Task, v: Version): Promise<Review> {
+  const jNotes = commentsOn(t.id).filter((m: any) => m.kind === 'note' && !String(m.by).startsWith('Studio')).map((m: any) => m.text).slice(-12);
+  let why = '';
+  try {
+    return await reviewWithCritic(t, v, jNotes);
+  } catch (e: any) {
+    why = String(e.message ?? e).slice(0, 200);
+    console.warn(`[videos] the critic couldn't review ${t.id} v${v.n} (${why}); contact sheets instead`);
+  }
+  const r = await reviewWithClaude(t, v, jNotes);
+  return { ...r, critic: 'claude', summary: `${r.summary}${why ? ` (Contact sheets: the critic couldn't watch it: ${why}.)` : ''}`.slice(0, 900) };
+}
+
+/** What the critic is told the video is meant to be: J's script, the agent's story and beats, J's notes, the stage. */
+export function reviewBrief(t: Task, v: Version, jNotes: string[]) {
+  const script = (commentsOn(t.id).find((m: any) => m.kind === 'script') as any)?.text ?? t.request;
+  const spec = specOf(t.id);
+  return [
+    `"${t.title.replace(/^Video:\s*/, '')}" (${t.product}), version ${v.n}${v.stage === 'animatic' ? `. THIS IS THE ANIMATIC: rough pictures (stills, grey-box, Lightning renders) with the real voices, made so the client can approve the story, staging and timing before the expensive render. Judge story, staging, timing and the voices; don't mark it down for rough pictures or still frames, only for what the final would inherit` : ''}.`,
+    `It advertises Hawkes Gen and the game: a stranger must follow it in one watch. It should end on a short end card ("Made with Hawkes Gen · hawkesgen.com").`,
+    `\nThe client's script:\n${String(script).slice(0, 4000)}`,
+    `\nThe director's story (logline, wants, the turn, the payoff):\n${v.story ? v.story.slice(0, 3000) : '(none written: say so)'}`,
+    Object.keys(spec).length ? `\nThe client's controls: ${JSON.stringify(spec)}` : '',
+    jNotes.length ? `\nThe client's notes so far (this version must answer them; check each):\n${jNotes.map((n) => `- ${n}`).join('\n')}` : '',
+    `\nThe director says of this version: ${v.summary ?? '(nothing)'}`,
+    `\nThe beat sheet (what each moment is meant to be):\n${v.beats?.length ? JSON.stringify(v.beats).slice(0, 8000) : '(none: say so)'}`,
+  ].filter(Boolean).join('\n');
+}
+
+/** Gen video.review's answer as Studio's review: its asks kept when the timeline knows them, its range and scores. */
+export function fromCritic(r: any, model?: string): Review {
+  if (!r || typeof r.pass !== 'boolean') throw new Error('the critic gave no verdict');
+  const num = (x: unknown) => (x === null || x === undefined || !Number.isFinite(Number(x)) ? null : Number(x));
+  return {
+    pass: r.pass, score: Number(r.score) || 0, summary: String(r.summary ?? '').slice(0, 900), critic: 'gemini',
+    scores: r.scores && typeof r.scores === 'object' ? Object.fromEntries(Object.entries(r.scores).filter(([, x]) => Number.isFinite(Number(x))).map(([k, x]) => [k, Number(x)])) : undefined,
+    experience: r.experience ? String(r.experience).slice(0, 2000) : undefined, model: model ?? r.model,
+    notes: (Array.isArray(r.notes) ? r.notes : []).slice(0, 8).map((n: any) => ({ at: num(n?.at), to: num(n?.to), ask: NOTE_ACTIONS[n?.ask] ? n.ask : null, note: String(n?.note ?? '').slice(0, 800) })).filter((n: ReviewNote) => n.note),
+  };
+}
+
+/** The critic: Gen video.review on the cut (picture and sound), with the brief. */
+async function reviewWithCritic(t: Task, v: Version, jNotes: string[]): Promise<Review> {
+  const { gen, genWait } = await import('./gen.ts');
+  const job: any = await gen.submit('video.review', { project: t.product, params: { brief: reviewBrief(t, v, jNotes), notes: 8 }, inputs: { video: `asset:${v.asset}` }, labels: { video: t.id, review: `v${v.n}` } } as any);
+  const done: any = await genWait(job.id, undefined, CRITIC_TIMEOUT_MS);
+  if (done.status !== 'done') throw new Error(done.error ?? done.detail ?? done.status);
+  return fromCritic(done.result, done.result?.model);
+}
+
+/** The aspect scores in a line, worst first ("lipsync 1, movement 2.5, ..."). */
+export const scoresLine = (s: Record<string, number>) => Object.entries(s).sort((a, b) => a[1] - b[1]).map(([k, x]) => `${k} ${x}`).join(', ');
+
+/** A review note as the agent reads it: where it is (shots, beats), the ask, the critic's words. */
+export function reviewNoteForAgent(task: string, version: number, n: ReviewNote) {
+  if (n.at == null) return n.note;
+  return noteForAgent(task, { version, from_s: n.at, to_s: n.to ?? null, action: n.ask ?? null, text: n.note }, "Studio's review");
+}
+
+/** The review's notes on the timeline (video_notes, by Studio): status sent (went back to the agent) or review (for J). */
+export function markReview(task: string, version: number, review: Review, status: 'sent' | 'review') {
+  if (review.error) return;
+  for (const n of review.notes) {
+    if (n.at == null) continue;
+    db.prepare('INSERT INTO video_notes (id, task, version, from_s, to_s, action, text, by, at, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+      .run(newId('vn'), task, version, n.at, n.to != null && n.to > n.at ? n.to : null, n.ask && NOTE_ACTIONS[n.ask] ? n.ask : null, n.note.slice(0, 4000), 'Studio (review)', Date.now(), status);
+  }
+}
+
+/** J keeps a review note as his own: it becomes a draft, sent with his other notes. */
+export function keepReviewNote(task: string, id: string, by = 'J') {
+  const r = db.prepare("UPDATE video_notes SET status = 'draft', by = ?, at = ? WHERE id = ? AND task = ? AND status = 'review'").run(by, Date.now(), id, task);
+  if (!r.changes) throw new StudioError('No such review note', 404);
+}
+
+/** Claude's review (the fallback): frames (one a second, as contact sheets) and dead air, judged against the bar. */
+async function reviewWithClaude(t: Task, v: Version, jNotes: string[]): Promise<Review> {
   const os = await import('node:os');
   const { execFileSync } = await import('node:child_process');
   const { gen } = await import('./gen.ts');
@@ -349,7 +446,6 @@ async function reviewVersion(t: Task, v: Version): Promise<Review> {
     }
     const images: string[] = [];
     for (const s of sheets) images.push(await gen.upload(fs.readFileSync(path.join(dir, s)), s));
-    const jNotes = commentsOn(t.id).filter((m: any) => m.kind === 'note' && !String(m.by).startsWith('Studio')).map((m: any) => m.text).slice(-12);
     const prompt = reviewPrompt(t, v, { seconds, frames: Math.ceil(seconds / every), perSheet: cols * rows, silences: silenceOf(log), jNotes, every });
     const job = await askClaude({ prompt, schema: REVIEW_SCHEMA, images, model: jobModel('review'), maxTokens: 3000, timeoutMs: 8 * 60_000, purpose: 'video review', product: t.product });
     const r = job?.result?.value ?? job?.value;
@@ -418,13 +514,25 @@ export async function videoDetail(task: string) {
  * J's controls for a video (the New video form, studio_video new): what he can steer before anything renders. Every one
  * is optional; the director decides what he leaves open.
  */
-export type VideoSpec = { seconds?: number; style?: string; voices?: string; engine?: string; quality?: string; music?: string; captions?: boolean; endCard?: boolean; animatic?: boolean };
+export type VideoSpec = { seconds?: number; style?: string; voices?: string; engine?: string; quality?: string; music?: string; captions?: boolean; endCard?: boolean; animatic?: boolean; performance?: string; kind?: string };
 export const ENGINES: Record<string, string> = {
   auto: "the director's choice: whole scenes from references (video.scene) by default, Blender and ComfyUI shots where a scene needs more",
-  scene: 'whole scenes from references on our GPUs (video.scene, MiniMax H3): one look, one room, lips on the voice track',
+  scene: 'whole scenes from references on our GPUs (video.scene, MiniMax H3): one look, one room; the model acts the lines from each voice sample, or follows a locked voice track',
+  perform: "close performances on our GPUs: each character speaks and moves in their own cloned voice (video.perform, LTX-2.3), or lip syncs to a locked line (video.lipsync); scenes for the wides",
+  capture: "J's own performance video drives it: our character takes over the person in it with every move and glance (video.replace, SCAIL-2), then the cast voice goes on his delivery (audio.voice-change) so lips and timing stay",
   seedance: 'whole scenes through Seedance 2.5 (video.seedance, paid Comfy credits; up to 30 s a scene)',
   kling: 'whole scenes through Kling O3 (video.kling, paid; Kling voices the characters itself, so not with our cast voices)',
   shots: 'shot by shot: each shot staged in Blender and painted with ComfyUI (the most control, the slowest)',
+};
+/** The kinds of video the skill has a route for (J, 2026-10-22: "fitting the many ways we make video"). */
+export const KINDS: Record<string, string> = {
+  dialogue: 'a dialogue scene (two or three characters talking)',
+  monologue: 'a monologue (one character to camera, or alone)',
+  action: 'an action or fight scene',
+  music: 'a music video (cut to a song)',
+  trailer: 'a trailer (a montage that sells the game)',
+  ad: 'a gameplay ad (real gameplay footage, with a hook and a payoff)',
+  capture: "a performance capture (J acted it on camera; our characters take it over)",
 };
 export const QUALITY: Record<string, string> = {
   draft: 'fast and cheap: Lightning steps, about 0.3 MP, no upscale (to judge story and staging)',
@@ -444,7 +552,22 @@ export function readSpec(a: any): VideoSpec {
   if (a?.engine && ENGINES[a.engine] && a.engine !== 'auto') out.engine = a.engine;
   if (a?.quality && QUALITY[a.quality]) out.quality = a.quality;
   for (const k of ['captions', 'endCard', 'animatic'] as const) if (typeof a?.[k] === 'boolean') out[k] = a[k];
+  // J's own performance (a phone video he uploaded into Gen): it drives the video, so the method is capture unless he chose.
+  if (ASSET.test(String(a?.performance ?? ''))) {
+    out.performance = a.performance;
+    out.engine ??= 'capture';
+  }
+  if (a?.kind && KINDS[a.kind]) out.kind = a.kind;
+  else if (out.performance) out.kind = 'capture';
   return out;
+}
+
+/** The GPU budget for a video: the default, plus what J's method needs (performances, a capture). */
+export function videoGpu(spec: VideoSpec) {
+  const extra = spec.engine === 'capture' ? [{ tool: 'video.replace', count: 3, label: "J's performance on our characters" }]
+    : spec.engine === 'perform' ? [{ tool: 'video.perform', count: 4, label: 'close performances in their own voices' }, { tool: 'video.lipsync', count: 2, label: 'locked lines' }]
+    : [];
+  return [...VIDEO_GPU, ...extra];
 }
 
 /** The agent's request for a new video: J's script, what the format means, and his controls. */
@@ -466,10 +589,13 @@ export function videoRequest(a: { title: string; script: string; format?: string
     spec.music ? `- Music: ${spec.music}` : null,
     spec.captions === false ? '- No burned-in captions.' : null,
     spec.endCard === false ? '- No end card.' : null,
+    spec.kind ? `- Kind: ${KINDS[spec.kind]}: take that route in the video skill.` : null,
+    spec.performance ? `- J's performance video: Gen asset ${spec.performance}. He acted it himself: keep his timing, movement, glances and delivery. Our characters take it over (video.replace, the driving video split into about 10 s pieces), then each line's audio goes into the cast voice (audio.voice-change, one speaker at a time), so the lips and timing stay his.` : null,
   ].filter(Boolean);
   return `Make the video "${a.title}" (${format}: ${FORMATS[format]}). The video skill (below) is how videos are made here:
-${passes}: whole scenes generated from the characters' references and the voice track (video.scene) by default, Blender
-and ComfyUI for shots that need more, within the GPU budget.
+${passes}: a table read of the whole scene first (audio.dialogue), then whole scenes generated from the characters'
+references (video.scene) by default, with several takes of the important scenes picked by the critic (video.review),
+and Blender and ComfyUI for shots that need more, within the GPU budget.
 
 ## J's script
 ${a.script.trim()}
@@ -488,7 +614,7 @@ export function createVideo(a: { product: string; title: string; script: string;
   const title = String(a.title).trim().slice(0, 140);
   const spec = readSpec({ ...(a.spec ?? {}), ...(typeof a.animatic === 'boolean' ? { animatic: a.animatic } : {}) });
   const item = addItem({ product: a.product, title: `Video: ${title}`, goal: `A ${a.format ?? 'short'} video J approves in the Screening tab.`, status: 'planned', priority: a.priority, by: a.by ?? 'J', origin: a.origin ?? null });
-  const task = addTask({ item: item.id, title: `Video: ${title}`, request: videoRequest({ title, script: a.script, format: a.format, direction: a.direction, spec }), criteria: ['J approves it in the Screening tab'], kind: 'video', gpu: a.gpu ?? VIDEO_GPU, priority: a.priority });
+  const task = addTask({ item: item.id, title: `Video: ${title}`, request: videoRequest({ title, script: a.script, format: a.format, direction: a.direction, spec }), criteria: ['J approves it in the Screening tab'], kind: 'video', gpu: a.gpu ?? videoGpu(spec), priority: a.priority });
   addComment(task.id, `Script (${a.format ?? 'short'}):\n${a.script.trim()}`, a.by ?? 'J', 'script');
   db.prepare('INSERT INTO video_state (task, spec) VALUES (?, ?) ON CONFLICT(task) DO UPDATE SET spec = excluded.spec').run(task.id, JSON.stringify(spec));
   logDecision('video', task.id, task.product, `new video "${title}" (${a.format ?? 'short'})`);
@@ -551,9 +677,10 @@ export const NOTE_ACTIONS: Record<string, string> = {
   sound: 'Fix the sound here: the SFX, the music level, the mix.',
   caption: 'Fix the captions here.',
   cut: 'Cut this out.',
+  script: 'Fix the script here: a line that does not earn its place, an unclear point, a missing turn or payoff.',
 };
 
-export type TimelineNote = { id: string; task: string; version: number | null; from_s: number | null; to_s: number | null; action: string | null; text: string; by: string; at: number; status: 'draft' | 'sent' | 'quick' | 'told'; x: number | null; y: number | null };
+export type TimelineNote = { id: string; task: string; version: number | null; from_s: number | null; to_s: number | null; action: string | null; text: string; by: string; at: number; status: 'draft' | 'sent' | 'quick' | 'told' | 'review'; x: number | null; y: number | null };
 export function timelineNotes(task: string, status?: string): TimelineNote[] {
   return db.prepare(`SELECT * FROM video_notes WHERE task = ?${status ? ' AND status = ?' : ''} ORDER BY at`).all(...(status ? [task, status] : [task])) as TimelineNote[];
 }
@@ -567,7 +694,7 @@ const stampRange = (from: number | null, to: number | null) => {
  * A note as the agent reads it: the version and range, the shots and beats it covers (from the version's edit and beat
  * sheet, so "this" is never a guess), what J asked for, and his words.
  */
-export function noteForAgent(task: string, n: { version?: number | null; from_s?: number | null; to_s?: number | null; action?: string | null; text?: string; x?: number | null; y?: number | null }) {
+export function noteForAgent(task: string, n: { version?: number | null; from_s?: number | null; to_s?: number | null; action?: string | null; text?: string; x?: number | null; y?: number | null }, who = 'J') {
   const v = n.version ? versionsOf(task).find((x) => x.n === n.version) : versionsOf(task).at(-1);
   const where: string[] = [];
   if (n.version ?? v?.n) where.push(`v${n.version ?? v!.n}`);
@@ -582,7 +709,7 @@ export function noteForAgent(task: string, n: { version?: number | null; from_s?
   if (n.x != null && n.y != null) where.push(`aimed at ${Math.round(n.x * 100)}% across, ${Math.round(n.y * 100)}% down the frame`);
   const ask = n.action && NOTE_ACTIONS[n.action] ? NOTE_ACTIONS[n.action] : '';
   const words = String(n.text ?? '').trim();
-  return `${where.length ? `[${where.join(' · ')}] ` : ''}${[ask, words ? (ask ? `J: "${words}"` : words) : ''].filter(Boolean).join(' ')}`.trim();
+  return `${where.length ? `[${where.join(' · ')}] ` : ''}${[ask, words ? (ask ? `${who}: "${words}"` : words) : ''].filter(Boolean).join(' ')}`.trim();
 }
 
 /**
@@ -875,7 +1002,7 @@ export async function handleVideosApi(req: import('node:http').IncomingMessage, 
   const method = req.method ?? 'GET';
   let m: RegExpExecArray | null;
   try {
-    if (route === '/api/videos' && method === 'GET') return send(res, 200, { videos: await listVideos(Number(url.searchParams.get('limit')) || 60), formats: FORMATS });
+    if (route === '/api/videos' && method === 'GET') return send(res, 200, { videos: await listVideos(Number(url.searchParams.get('limit')) || 60), formats: FORMATS, engines: ENGINES, kinds: KINDS });
     if (route === '/api/videos' && method === 'POST') {
       const b = await readJson(req);
       // Started from Talk: the version notices go back into that conversation (tellTalk).
@@ -894,6 +1021,10 @@ export async function handleVideosApi(req: import('node:http').IncomingMessage, 
     if ((m = /^\/api\/videos\/(k_[0-9a-f]+)\/notes\/send$/.exec(route)) && method === 'POST') {
       const b = await readJson(req);
       return send(res, 200, await sendDrafts(m[1], { text: b.text, by }));
+    }
+    if ((m = /^\/api\/videos\/(k_[0-9a-f]+)\/notes\/(vn_[0-9a-f]+)\/keep$/.exec(route)) && method === 'POST') {
+      keepReviewNote(m[1], m[2], by);
+      return send(res, 200, await videoDetail(m[1]));
     }
     if ((m = /^\/api\/videos\/(k_[0-9a-f]+)\/notes\/(vn_[0-9a-f]+)$/.exec(route)) && method === 'DELETE') {
       dropDraft(m[1], m[2]);

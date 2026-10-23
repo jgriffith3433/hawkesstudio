@@ -186,3 +186,45 @@ test('a redo follows a shot back to the generation that made it, through its fin
   const t = v.createVideo({ product: 'doseofdestruction', title: 'Redo', script: 'TT: Hi.' });
   await assert.rejects(v.redoShots(t.id, { from: 1 }), /waiting for you/);
 });
+
+test("the critic's review (Gen video.review) becomes Studio's: scores kept, asks the timeline knows, its notes on the timeline", async () => {
+  const t = v.createVideo({ product: 'doseofdestruction', title: 'Critic', script: 'TT: Hi.\nSLICE: Bye.' });
+  const beats = [{ t: 0, seconds: 3, shot: 'WS', key: 'hook' }, { t: 3, seconds: 4, shot: 'CU', key: 'tt_hi', line: 'Hi.' }];
+  const ver = v.recordVersion(t.id, 'c_000000000088', { asset: 'a_8888888888888888', beats, story: 'Logline: TT says hi.' } as any)!;
+  assert.throws(() => v.fromCritic({ summary: 'no verdict' }), /no verdict/);
+  const r = v.fromCritic({ pass: false, score: 4, summary: 'Stills with voices.', scores: { lipsync: 1, movement: 2.5, story: 7.5 }, experience: 'It drifts.', notes: [{ at: 3, to: 6.5, ask: 'lipsync', note: 'mouths are still' }, { at: 1, to: null, ask: 'made-up', note: 'odd' }, { at: 2, ask: 'cut', note: '' }] }, 'gemini-3.8-flash');
+  assert.equal(r.critic, 'gemini');
+  assert.equal(r.model, 'gemini-3.8-flash');
+  assert.deepEqual(r.notes.map((n) => [n.at, n.to, n.ask]), [[3, 6.5, 'lipsync'], [1, null, null]]);
+  assert.equal(v.scoresLine(r.scores!), 'lipsync 1, movement 2.5, story 7.5');
+  const line = v.reviewNoteForAgent(t.id, ver.n, r.notes[0]);
+  assert.match(line, /^\[v1 · 0:03\.0-0:06\.5 · beat 1 "tt_hi".*\] Fix the lip sync here.*Studio's review: "mouths are still"$/);
+  v.markReview(t.id, ver.n, r, 'review');
+  const marks = v.timelineNotes(t.id, 'review');
+  assert.deepEqual(marks.map((m) => [m.from_s, m.to_s, m.action, m.by]), [[3, 6.5, 'lipsync', 'Studio (review)'], [1, null, null, 'Studio (review)']]);
+  v.keepReviewNote(t.id, marks[0].id);
+  assert.equal(v.timelineNotes(t.id, 'draft')[0].by, 'J', 'kept as his own draft');
+  assert.throws(() => v.keepReviewNote(t.id, marks[0].id), /No such review note/);
+  v.markReview(t.id, ver.n, { ...r, error: 'down' }, 'review');
+  assert.equal(v.timelineNotes(t.id, 'review').length, 1, 'an unreviewed version leaves no marks');
+  const brief = v.reviewBrief(t, { ...ver, stage: 'animatic' }, ['[v1 at 0:03] too slow']);
+  assert.match(brief, /THIS IS THE ANIMATIC/);
+  assert.match(brief, /TT says hi/);
+  assert.match(brief, /too slow/);
+  assert.match(brief, /"key":"tt_hi"/);
+});
+
+test("J's performance video drives a capture: the method, the kind, the budget and the request follow it", () => {
+  const spec = v.readSpec({ performance: 'a_5555555555555555', engine: 'auto' });
+  assert.deepEqual(spec, { performance: 'a_5555555555555555', engine: 'capture', kind: 'capture' });
+  assert.deepEqual(v.readSpec({ performance: '../x.mp4', kind: 'opera' }), {}, 'not an asset, not a kind');
+  assert.equal(v.readSpec({ performance: 'a_5555555555555555', engine: 'scene', kind: 'dialogue' }).engine, 'scene', 'his method wins');
+  const t = v.createVideo({ product: 'doseofdestruction', title: 'Capture', script: 'EXIT PUNK: Watch this.', spec });
+  assert.match(t.request, /a_5555555555555555/);
+  assert.match(t.request, /video\.replace/);
+  assert.match(t.request, /audio\.voice-change/);
+  assert.match(t.request, /table read/);
+  assert.ok(t.gpu?.items?.some((i: any) => i.tool === 'video.replace'));
+  assert.ok(v.videoGpu({ engine: 'perform' }).some((i) => i.tool === 'video.perform'));
+  assert.ok(v.NOTE_ACTIONS.script, "the critic's script ask is one J can use too");
+});
