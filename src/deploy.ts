@@ -26,7 +26,7 @@ import { db, newId, rowToStep, type Step } from './db.ts';
 import { previewUrl } from './previews.ts';
 import { opLog, registerOp, enqueue, queuePosition, getOp, type Op } from './ops.ts';
 import {
-  BETA, MAIN, STUDIO_ROLLBACK, AUTHOR, must, repoDirs, compareBeta, fetchOrigin, shaOf, commitOf, commitsIn, betaBuild, saveBetaBuild,
+  BETA, MAIN, STUDIO_ROLLBACK, AUTHOR, must, repoDirs, compareBeta, NotClonedError, fetchOrigin, shaOf, commitOf, commitsIn, betaBuild, saveBetaBuild,
   betaSiteDir, betaSiteFolder, scratch, listDeploys, mergeMainIntoBeta, prebuilt, git as gitIn, gitAsync, type Commit, type DeployRow,
 } from './beta.ts';
 import { STUDIO_RELEASE, RELEASES, playedCommit, releasesAt, releasesPath, readReleases, draftWithin, addReleaseTo, releaseLine, releaseNotesLine, type Draft } from './release.ts';
@@ -56,8 +56,9 @@ function testedAt(productId: string, sha: string | undefined) {
  * also makes a missing beta) and then plays beta; "beta" is the beta run (pre-deploy build, Unity build, beta site, a
  * local playtest); "rebuild" is a forced Unity build of beta on top of live. None of them goes live. null: no button.
  */
-export type BlockerFix = 'merge-main' | 'beta' | 'rebuild';
+export type BlockerFix = 'merge-main' | 'beta' | 'rebuild' | 'sync';
 export function blockerFix(blocker: string): BlockerFix | null {
+  if (/^git: \S+ isn't cloned on this server yet/.test(blocker)) return 'sync';
   if (/^git:|^Nothing to go live/.test(blocker)) return null;
   if (/ has no \S+ branch yet|commit\(s\) \S+ lacks/.test(blocker)) return 'merge-main';
   if (/'s \S+ moved since the beta build/.test(blocker)) return 'rebuild';
@@ -71,7 +72,7 @@ export function blockerFix(blocker: string): BlockerFix | null {
 export function planFix(blockers: string[]): BlockerFix | null {
   if (blockers.some((b) => b.startsWith('Nothing to go live'))) return null;
   const fixes = new Set(blockers.map(blockerFix));
-  return (['merge-main', 'beta', 'rebuild'] as const).find((f) => fixes.has(f)) ?? null;
+  return (['sync', 'merge-main', 'beta', 'rebuild'] as const).find((f) => fixes.has(f)) ?? null;
 }
 
 /** notesWaitMs: how long to wait for the release notes being written (the Approve card waits longer, to show them). */
@@ -83,14 +84,16 @@ export async function deployPlan(productId: string, { notesWaitMs = 20_000 }: { 
   let cmp: Awaited<ReturnType<typeof compareBeta>> = { main: null, beta: null, ahead: [], behind: [] };
   // Unity: the website repo's own beta (page changes by agents) vs its main.
   let web: typeof cmp = { main: null, beta: null, ahead: [], behind: [] };
+  let notCloned: string | null = null;
   try {
     cmp = await compareBeta(source);
     if (unity && site !== source) web = await compareBeta(site);
   } catch (e: any) {
+    if (e instanceof NotClonedError) notCloned = e.folder;
     blockers.push(`git: ${e.message}`);
   }
   const beta = cmp.beta;
-  if (!beta) blockers.push(`${p.repo.split('/')[0]} has no ${BETA} branch yet. It's made from ${MAIN} when the first agent change starts (or "studio deploy ${p.id} --merge-main" makes it now).`);
+  if (!beta && !notCloned) blockers.push(`${p.repo.split('/')[0]} has no ${BETA} branch yet. It's made from ${MAIN} when the first agent change starts (or "studio deploy ${p.id} --merge-main" makes it now).`);
   if (cmp.behind.length) {
     const rollbacks = cmp.behind.every((c) => c.title.startsWith(STUDIO_ROLLBACK));
     blockers.push(`${MAIN} has ${cmp.behind.length} commit(s) ${BETA} lacks (${cmp.behind.slice(0, 5).map((c) => `"${c.title}"`).join(', ')}), so ${MAIN} can't be fast-forwarded. Merge ${MAIN} into ${BETA} first (studio deploy ${p.id} --merge-main${rollbacks ? `; they're rollbacks, so the merge keeps ${BETA}'s files` : ''}), then playtest ${BETA}.`);
@@ -170,7 +173,7 @@ export async function deployPlan(productId: string, { notesWaitMs = 20_000 }: { 
     previous: previous.map((d) => ({ id: d.id, kind: d.kind, at: d.at, by: d.by, before: d.before?.slice(0, 7) ?? null, after: d.after.slice(0, 7), beta: d.beta?.slice(0, 7) ?? null, detail: d.detail, rolledBack: d.rolled_back })),
     // How the build that's live now does with real players (players.ts), so the next release can be compared.
     players,
-    blockers, warnings, canDeploy: !blockers.length, fix: planFix(blockers),
+    blockers, warnings, canDeploy: !blockers.length, fix: planFix(blockers), notCloned,
     confirm: `DEPLOY ${p.id}`,
     what: unity
       ? `Commits ${BETA}'s build${build?.version ? ` (Game/v${build.version})` : ''} to ${p.site}'s ${MAIN}${web.ahead.length ? ` together with ${web.ahead.length} website commit(s) from its ${BETA} (${web.ahead.slice(0, 3).map((c) => `"${c.title}"`).join(', ')})` : ''} and fast-forwards ${p.repo.split('/')[0]}'s ${MAIN} to ${beta?.short ?? BETA}; GitHub Pages publishes ${p.live}.${relNote}`

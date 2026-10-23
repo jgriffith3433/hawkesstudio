@@ -72,6 +72,7 @@ if (typeof document !== 'undefined') (() => {
   const FIX = {
     'merge-main': { label: 'Merge live into beta', busy: 'Merging live into beta, then playing beta', title: 'Merges what is live into beta, then builds and playtests beta. Nothing goes live.' },
     beta: { label: 'Play beta', busy: 'Playing beta', title: 'Brings beta up to date (pre-deploy build, Unity build, beta site) and playtests it. Nothing goes live.' },
+    sync: { label: 'Sync repo', busy: 'Cloning the repo onto the server', title: 'Clones this product\'s repo onto the server (the server has no copy yet), then checks beta against live again. Nothing goes live.' },
     rebuild: { label: 'Rebuild beta', busy: 'Rebuilding beta on top of what is live', title: 'Builds beta again on top of the live site (Unity, about $0.10). Nothing goes live.' },
   };
   /** A run's step in plain words: what it's doing now. */
@@ -126,7 +127,13 @@ if (typeof document !== 'undefined') (() => {
     if (!p) return `<div class="gl-card" data-p="${esc(prod.id)}"><h3><span class="gl-light"></span>${esc(prod.name)}</h3>${links(prod)}<div class="meta">Checking beta and live…</div></div>`;
     if (p.error) return `<div class="gl-card red" data-p="${esc(prod.id)}"><h3><span class="gl-light red"></span>${esc(prod.name)}</h3>${links(prod)}<div class="meta">Couldn't check: ${esc(p.error)}</div></div>`;
     // Beta couldn't be read (git failed, or no beta branch yet): say so, never "up to date".
-    if (!p.beta || p.blockers.some((b) => b.startsWith('git:'))) return `<div class="gl-card red" data-p="${esc(p.product)}"><h3><span class="gl-light red"></span>${esc(p.name)}</h3>${links(prod, p)}<div class="gl-status">Couldn't compare beta with live</div><ul class="meta">${p.blockers.map((b) => `<li>${esc(b)}</li>`).join('')}</ul></div>`;
+    if (!p.beta || p.blockers.some((b) => b.startsWith('git:'))) {
+      // The server has no checkout of the repo yet: one button clones it (the repo sync), then the plan is made again.
+      const sx = fixing.get(p.product);
+      const syncing = sx?.action === 'sync' && !sx.done && !sx.error;
+      const sync = p.fix === 'sync' ? `<div class="gl-buttons"><button class="primary big" data-glfix="sync" title="${esc(FIX.sync.title)}"${syncing ? ' disabled' : ''}>${esc(syncing ? `${FIX.sync.busy}…` : FIX.sync.label)}</button></div>${sx?.action === 'sync' && sx.error ? `<div class="gl-done gl-fail">❌ Sync failed ${esc(ago(sx.errorAt))}: ${esc(String(sx.error).slice(0, 300))}</div>` : ''}` : '';
+      return `<div class="gl-card red" data-p="${esc(p.product)}"><h3><span class="gl-light red"></span>${esc(p.name)}</h3>${links(prod, p)}<div class="gl-status">${p.fix === 'sync' ? 'Not cloned on the server yet' : 'Couldn\'t compare beta with live'}</div><ul class="meta">${p.blockers.map((b) => `<li>${esc(b)}</li>`).join('')}</ul>${sync}</div>`;
+    }
     const L = light(p);
     const up = ahead(p);
     const status = up
@@ -202,9 +209,19 @@ if (typeof document !== 'undefined') (() => {
 
   /** Starts the beta step that clears a product's blockers; the card follows its run. Never goes live. */
   async function startFix(id, action) {
-    fixing.set(id, { action, step: action === 'merge-main' ? 'merging' : '' });
+    fixing.set(id, { action, step: action === 'merge-main' ? 'merging' : action === 'sync' ? 'cloning' : '' });
     draw();
     try {
+      if (action === 'sync') {
+        // The plan says which folder isn't cloned (its website repo, for a Unity game, can be the one missing).
+        const folder = plans.get(id)?.notCloned;
+        const r = await api('/api/repos/sync', { method: 'POST', body: folder ? { only: [folder] } : {} });
+        const bad = (r.repos ?? []).find((x) => x.action === 'failed');
+        if (bad) throw new Error(`${bad.folder}: ${bad.detail}`);
+        fixing.get(id).done = { ok: true, at: Date.now() };
+        await loadPlan(id);
+        return;
+      }
       if (action === 'merge-main') {
         await api(`/api/deploy/${id}`, { method: 'POST', body: { mergeMain: true, by: 'J' } });
         fixing.get(id).step = 'merged; playing beta';

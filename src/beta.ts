@@ -20,7 +20,7 @@ import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 import { PROJECTS, abs, type Product } from './config.ts';
 import { db } from './db.ts';
-import { BRANCH, BETA, isServer } from './repos.ts';
+import { BRANCH, BETA, isServer, repoMap, syncRepo } from './repos.ts';
 import { trackCommand, opLog } from './ops.ts';
 import { ensureInstalled } from './warm.ts';
 import { REF_LOCK, fetchBackoff, fetchLocked, repoKey, withRepoLock } from './gitlock.ts';
@@ -116,7 +116,29 @@ export const shaOf = (dir: string, ref: string) => {
   const r = git(dir, ['rev-parse', '--verify', '--quiet', `${ref}^{commit}`]);
   return r.ok && r.out ? r.out : null;
 };
-export const fetchOrigin = async (dir: string) => must(await gitAsync(dir, ['fetch', '--quiet', '--prune', 'origin']), `fetching ${path.basename(dir)}`);
+/** A product's repo has no checkout on this server yet (a product added after the server was set up). `folder` is what syncing it needs. */
+export class NotClonedError extends Error {
+  folder: string;
+  constructor(folder: string) {
+    super(`${folder} isn't cloned on this server yet: sync it (Go live > Sync repo, or POST /api/repos/sync {"only":["${folder}"]}).`);
+    this.folder = folder;
+  }
+}
+export const isCloned = (dir: string) => fs.existsSync(path.join(dir, '.git'));
+/** Fetches origin; a missing checkout is a NotClonedError (never git's "spawn git ENOENT" for a folder that isn't there). */
+export const fetchOrigin = async (dir: string) => {
+  if (!isCloned(dir)) throw new NotClonedError(path.basename(dir));
+  return must(await gitAsync(dir, ['fetch', '--quiet', '--prune', 'origin']), `fetching ${path.basename(dir)}`);
+};
+/** Clones the repo first when the server has no checkout yet (agents and beta pushes start from one). */
+export async function ensureCloned(dir: string) {
+  if (isCloned(dir)) return;
+  const folder = path.basename(dir);
+  const slug = repoMap()[folder];
+  if (!slug) throw new NotClonedError(folder);
+  const r = await syncRepo(folder, slug, BRANCH, BETA);
+  if (r.action === 'failed' || !isCloned(dir)) throw new Error(`cloning ${folder} failed: ${r.detail}`);
+}
 
 /** The folders (repo roots under PROJECTS) of a product: its source repo (agents and beta) and its website repo. */
 export function repoDirs(p: Product) {
@@ -127,6 +149,7 @@ export function repoDirs(p: Product) {
 
 /** Makes sure origin has a beta branch (from main when missing). Returns its commit. */
 export async function ensureBeta(dir: string) {
+  await ensureCloned(dir);
   await fetchOrigin(dir);
   const have = shaOf(dir, `origin/${BETA}`);
   if (have) return { sha: have, created: false };
