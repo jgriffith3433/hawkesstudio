@@ -196,6 +196,18 @@ and builds every Unity product), and you can open it there over Remote Desktop.<
 <p class="mut"><a href="/">Beta site</a> · <a href="${esc(p.live)}">Live</a></p>`);
 }
 
+/** A product with no dev server here and no Unity editor: a server app on its own box (products.json dev without port). */
+function serverPage(p: Product) {
+  return page(`${p.name}: no dev server here`, `<h1>${esc(p.name)} has no dev server on this page</h1>
+<p>It is a server app with its own database${p.deploy?.box ? ` (it runs on ${esc(p.deploy.box)})` : ''}, so it can't run next to Studio the way the Vite sites do.</p>
+<div class="card"><b>What you can do on beta instead</b><ul>
+<li>Ask Claude in Talk for a change: an agent edits the source on a branch from beta, runs the product's tests and opens a pull request into beta, and you approve it.</li>
+<li>The beta site is a copy of the repo's static files (its public pages). Anything that needs the server or its database (sign-in, credits, payments) doesn't work there.</li>
+<li>Going live fast-forwards main to the beta commit; ${esc(p.name)}'s own CI and server take it from there.</li></ul></div>
+<p class="mut"><a href="/">Beta site</a> · <a href="${esc(p.live)}">Live</a></p>`);
+}
+const noDevPage = (p: Product) => (isUnity(p) ? unityPage(p) : serverPage(p));
+
 const send = (res: http.ServerResponse, status: number, type: string, body: string | Buffer, extra: Record<string, string> = {}) => {
   res.writeHead(status, { 'Content-Type': type, 'Cache-Control': 'no-store', ...extra });
   res.end(body);
@@ -280,9 +292,9 @@ async function handle(p: Product, req: http.IncomingMessage, res: http.ServerRes
     // What beta serves now: a beta page asks, and offers "New build: reload" when it's an older build (report-widget.js).
     if (what === 'build') return json(res, 200, (await import('./previews.ts')).betaNow(p.id) ?? {});
     if (what === 'status') return json(res, 200, devStatus(p.id));
-    if (what === 'info') return send(res, 200, 'text/html; charset=utf-8', unity ? unityPage(p) : infoPage(p));
+    if (what === 'info') return send(res, 200, 'text/html; charset=utf-8', unity ? noDevPage(p) : infoPage(p));
     if (what === 'start' && method === 'POST') {
-      if (unity) return json(res, 400, { error: `${p.name} is a Unity game: no dev server` });
+      if (unity) return json(res, 400, { error: `${p.name} has no dev server here${isUnity(p) ? ' (a Unity game)' : ''}` });
       try {
         // Answers once the start is under way; the page polls status.
         const run = startDev(p.id, { by: 'the /dev/ page' });
@@ -293,10 +305,10 @@ async function handle(p: Product, req: http.IncomingMessage, res: http.ServerRes
       }
     }
     if (what === 'stop' && method === 'POST') return json(res, 200, await stopDev(p.id, { why: 'stopped from the /dev/ page' }));
-    if (what === 'start') return send(res, 200, 'text/html; charset=utf-8', unity ? unityPage(p) : startPage(p, url.searchParams.get('to') ?? '', root));
+    if (what === 'start') return send(res, 200, 'text/html; charset=utf-8', unity ? noDevPage(p) : startPage(p, url.searchParams.get('to') ?? '', root));
     return json(res, 404, { error: 'no such page' });
   }
-  if (unity) return send(res, 200, 'text/html; charset=utf-8', unityPage(p));
+  if (unity) return send(res, 200, 'text/html; charset=utf-8', noDevPage(p));
   if (isPing(req)) return devRunning(p.id) ? proxy(p, req, res, rest, root) : send(res, 503, 'text/plain', 'stopped');
   // /dev/ itself is always the start page (it installs the worker and opens the devtools).
   if (route === `${P}/` && isNav(req) && !(root && devRunning(p.id))) return send(res, 200, 'text/html; charset=utf-8', startPage(p, url.searchParams.get('to') ?? '', root));

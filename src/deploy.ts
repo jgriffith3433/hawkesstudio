@@ -19,7 +19,7 @@
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { critical } from './drain.ts';
-import { getProduct, StudioError } from './config.ts';
+import { getProduct, StudioError, type Product } from './config.ts';
 import { git } from './local.ts';
 import { startPartial } from './pipeline.ts';
 import { db, newId, rowToStep, type Step } from './db.ts';
@@ -174,8 +174,18 @@ export async function deployPlan(productId: string, { notesWaitMs = 20_000 }: { 
     confirm: `DEPLOY ${p.id}`,
     what: unity
       ? `Commits ${BETA}'s build${build?.version ? ` (Game/v${build.version})` : ''} to ${p.site}'s ${MAIN}${web.ahead.length ? ` together with ${web.ahead.length} website commit(s) from its ${BETA} (${web.ahead.slice(0, 3).map((c) => `"${c.title}"`).join(', ')})` : ''} and fast-forwards ${p.repo.split('/')[0]}'s ${MAIN} to ${beta?.short ?? BETA}; GitHub Pages publishes ${p.live}.${relNote}`
-      : `Fast-forwards ${p.site}'s ${MAIN} to ${BETA}${played ? ` ${played.short}` : ''} (${cmp.ahead.length} commit(s))${release && !release.existing ? ', with a release entry on top' : ''}; GitHub Pages publishes ${p.live}.${relNote}`,
+      : `Fast-forwards ${p.site}'s ${MAIN} to ${BETA}${played ? ` ${played.short}` : ''} (${cmp.ahead.length} commit(s))${release && !release.existing ? ', with a release entry on top' : ''}; ${publisherOf(p).says} ${p.live}.${relNote}`,
   };
+}
+
+/**
+ * Who publishes a product's main: GitHub Pages (the default), or the product's own server (products.json deploy.via
+ * "ec2": its CI runs, then its box pulls the passing commit; Studio only moves main and plays the live site).
+ */
+export function publisherOf(p: Product) {
+  if (p.deploy?.via !== 'ec2') return { box: false as const, says: 'GitHub Pages publishes', done: 'GitHub Pages publishes within a few minutes' };
+  const box = p.deploy.box ?? 'its own server';
+  return { box: true as const, says: `its CI runs and then ${box} pulls the passing commit and restarts it`, done: `The product's CI runs, then ${box} pulls the passing commit (a couple of minutes after CI is green)` };
 }
 
 /** Going live (pushing main, recording it) is a critical section (drain.ts): a Studio deploy waits for it. */
@@ -271,7 +281,7 @@ async function deployNow(productId: string, { confirm, by = 'J', mergeMain, orig
   await fetchOrigin(site);
   if (after !== before) void verifyLive(p.id, after, `Just went live (${BETA} ${beta.short}: ${plan.commits.slice(0, 3).map((c) => c!.title).join('; ')})`, origin);
   const rel = release && { version: release.version, title: release.title, notes: release.notes, build: release.build };
-  return { ok: true, product: p.id, deploy: id, live: p.live, main: after.slice(0, 7), beta: beta.short, release: rel, log, note: 'GitHub Pages publishes within a few minutes; Studio waits for it, then playtests the live site (a run appears in the dashboard). If it went wrong: the rollback plan.' };
+  return { ok: true, product: p.id, deploy: id, live: p.live, main: after.slice(0, 7), beta: beta.short, release: rel, log, note: `${publisherOf(p).done}; Studio waits for it, then playtests the live site (a run appears in the dashboard). If it went wrong: the rollback plan.` };
 }
 
 /** The go-live plan's players line: the live build's numbers from Hawkes Gen (builds, last 30 days), or null within 5 s. */
@@ -318,6 +328,7 @@ export async function rollbackPlan(productId: string) {
   if (!d) blockers.push(`No go live by Studio is recorded for ${p.name} (or each one was rolled back already), so the previous live commit isn't known. Roll back by hand (git revert on ${p.site}).`);
   else if (!d.before) blockers.push(`The last go live (${d.id}) has no previous commit recorded.`);
   const undo = d?.before && main ? commitsIn(site, `${d.before}..${main}`) : [];
+  if (p.deploy?.via === 'ec2') warnings.push(`${p.name} runs on its own server with a database: a rollback puts the previous code back through the same CI and pull, but nothing in the database (accounts, credits, payments, migrations) is undone.`);
   if (d && main && main !== d.after) warnings.push(`${MAIN} moved since that go live (${d.after.slice(0, 7)} -> ${main.slice(0, 7)}): rolling back also undoes those commits.`);
   if (d?.before && main === d.before) blockers.push(`${MAIN} already is ${d.before.slice(0, 7)}.`);
   return {
@@ -352,7 +363,7 @@ async function rollbackNow(productId: string, { confirm, by = 'J', origin }: { c
   gitIn(site, ['worktree', 'remove', '--force', wt]);
   await fetchOrigin(site);
   void verifyLive(p.id, after, `Just rolled back to ${d.before!.slice(0, 7)} (undoing ${d.after.slice(0, 7)}). Check the live site works.`, origin);
-  return { ok: true, product: p.id, rollback: id, live: p.live, main: after.slice(0, 7), to: d.before!.slice(0, 7), note: `GitHub Pages publishes within a few minutes; Studio then playtests live. ${BETA} still has the rolled-back commits: fix forward there.` };
+  return { ok: true, product: p.id, rollback: id, live: p.live, main: after.slice(0, 7), to: d.before!.slice(0, 7), note: `${publisherOf(p).done}; Studio then playtests live. ${BETA} still has the rolled-back commits: fix forward there.` };
 }
 
 // ------------------------------------------------------------------- live
@@ -378,6 +389,7 @@ export async function verifyLive(productId: string, sha: string, focus: string, 
   const slug = repoSlug(p.site);
   const end = Date.now() + 15 * 60_000;
   let published = false;
+  const own = publisherOf(p).box;
   // GitHub's API with the server's token (the gh CLI isn't on the server): Pages has built this commit, or (sites that
   // publish through a workflow, like Dose Of Destruction's pages.yml) every workflow run for it finished.
   const token = process.env.GITHUB_TOKEN;
@@ -388,6 +400,14 @@ export async function verifyLive(productId: string, sha: string, focus: string, 
     };
     while (Date.now() < end && !published) {
       await sleep(20_000);
+      if (own) {
+        // The product's own server: its CI (every workflow but Studio's hook) is done; its box pulls a passing commit
+        // on its own timer (2 minutes), so give it that and a little more before the live playtest.
+        const runs: any = await api(`actions/runs?head_sha=${sha}&event=push`);
+        const ci = (runs?.workflow_runs ?? []).filter((r: any) => !/hawkes-studio/i.test(`${r.name} ${r.path}`));
+        if (ci.length && ci.every((r: any) => r.status === 'completed')) { published = true; await sleep(3 * 60_000); }
+        continue;
+      }
       const build: any = await api('pages/builds/latest');
       if (build?.commit === sha && build.status === 'built') published = true;
       const runs: any = await api(`actions/runs?head_sha=${sha}&event=push`);
@@ -406,7 +426,7 @@ export async function verifyLive(productId: string, sha: string, focus: string, 
       }
     }
   } else {
-    await sleep(4 * 60_000);
+    await sleep((own ? 7 : 4) * 60_000);
   }
   const t = p.playtests.find((x) => x.where === 'live');
   startPartial('playtest', p.id, { where: 'live', scenario: t?.scenario, mode: t?.mode, focus: `${focus} Check the live site works and nothing regressed.`, origin });

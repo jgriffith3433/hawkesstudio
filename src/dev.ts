@@ -368,7 +368,7 @@ export const devRunning = (id: string) => srv(id).status === 'running';
 export function startDev(productId: string, { by = 'J' }: { by?: string } = {}): Promise<Server> {
   const p = devProduct(productId);
   const conf = devConf(p)!;
-  if (isUnity(p) || !conf.port) throw new StudioError(`${p.name} is a Unity game: its editor runs on the build server, not here (open ${devUrl(p) ?? '/dev/'} for how)`);
+  if (isUnity(p) || !conf.port) throw new StudioError(isUnity(p) ? `${p.name} is a Unity game: its editor runs on the build server, not here (open ${devUrl(p) ?? '/dev/'} for how)` : `${p.name} has no dev server here: it is a server app on its own box (open ${devUrl(p) ?? '/dev/'})`);
   if (wcOf(p.id).conflict) throw new StudioError(`${p.name}'s beta working copy has a conflict (${wcOf(p.id).conflict!.files.join(', ')}). Resolve it first.`, 409);
   const s = srv(p.id);
   if (s.status === 'running' && children.has(p.id)) {
