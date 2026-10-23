@@ -1,7 +1,7 @@
 ---
 name: scout
 description: Read-only investigation of a Hawkes product or of Studio/Gen ("what would it take to...?", "where does X happen?", "why does Y?"). Reads code and docs, changes nothing, reports with file paths. Use for research in parallel.
-model: opus
+model: haiku
 tools: Read, Glob, Grep, Bash, Skill
 allowed-tools: Read, Glob, Grep, Skill, Bash(git log:*), Bash(git show:*), Bash(git diff:*), Bash(git grep:*), Bash(ls:*)
 disallowed-tools: Edit, Write, NotebookEdit

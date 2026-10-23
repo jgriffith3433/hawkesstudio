@@ -63,6 +63,7 @@ import { briefSection, learnFrom, recordRun, LEARNED_ASK } from './memory.ts';
 import { canonCheck, CONTENTISH, type CanonCheck } from './canon.ts';
 import { roleArgs, loadRole, type RoleName } from './roles.ts';
 import { passLimitMs, roleTune } from './tuning.ts';
+import { routeFor, routeLine, routingSettings, premiumFor, usePremium, type Route } from './routing.ts';
 import { recordPass, lastPassFor, type PassOutcome } from './ledger.ts';
 import { markModelUnavailable, refusedModelOf } from './models.ts';
 import { claudeCommand, spawnShell, sandboxShare, assertWorktree, shareWorktree } from './sandbox.ts';
@@ -101,6 +102,10 @@ try { db.exec('ALTER TABLE changes ADD COLUMN conflicts INTEGER'); } catch { /* 
 try { db.exec('ALTER TABLE changes ADD COLUMN approved TEXT'); } catch { /* already there */ }
 // Walk-away mode's fix passes of a Studio/Gen change whose CI or checks failed (walkAwayFix).
 try { db.exec('ALTER TABLE changes ADD COLUMN auto_fixes INTEGER'); } catch { /* already there */ }
+// Model routing (routing.ts): passes sent back by a person or the PM (each is an attempt: the next one climbs a tier),
+// and the route of the current attempt (JSON), kept so every pass of one attempt runs on the same model.
+try { db.exec('ALTER TABLE changes ADD COLUMN revisions INTEGER'); } catch { /* already there */ }
+try { db.exec('ALTER TABLE changes ADD COLUMN route TEXT'); } catch { /* already there */ }
 
 export type Change = {
   id: string; product: string; findings: string[]; status: string; detail: string | null; repo: string; slug: string; branch: string; base: string;
@@ -120,6 +125,8 @@ export type Change = {
   approved?: string | null;
   /** Studio/Gen in walk-away mode: fix passes its agent made because CI or the checks failed (walkAwayFix). */
   auto_fixes?: number | null;
+  /** Passes a person or the PM sent back (revise); the route of the current attempt (routing.ts, JSON). */
+  revisions?: number | null; route?: string | null;
   /** The Talk conversation that started it (followup.ts). */
   origin?: string | null;
   /** A change to Hawkes Studio or Hawkes Gen (a pull request into main, which deploys itself), not a product. */
@@ -152,7 +159,7 @@ const SETTINGS_FILE = path.join(DATA, 'agents.json');
  */
 export type AgentSettings = { enabled: boolean; autoFix: boolean; autoMergeBeta: boolean; betaPlaytests: boolean; maxConcurrent: number; perProduct: number; productLimits: Record<string, number>; maxPerDay: number; maxCostPerDay: number; severities: string[]; model: string; maxTurns: number; idleMinutes: number; genWaitHours: number };
 /** genWaitHours: a change parked on Gen jobs longer than this is told in Talk once (it isn't failed). */
-const DEFAULTS: AgentSettings = { enabled: true, autoFix: true, autoMergeBeta: true, betaPlaytests: false, maxConcurrent: 2, perProduct: 1, productLimits: { sickofit: 2 }, maxPerDay: 4, maxCostPerDay: 20, severities: ['blocker', 'bug'], model: 'claude-opus-5-5', maxTurns: 80, idleMinutes: 20, genWaitHours: 6 };
+const DEFAULTS: AgentSettings = { enabled: true, autoFix: true, autoMergeBeta: true, betaPlaytests: false, maxConcurrent: 2, perProduct: 1, productLimits: { sickofit: 2 }, maxPerDay: 4, maxCostPerDay: 20, severities: ['blocker', 'bug'], model: 'claude-sonnet-5-5', maxTurns: 80, idleMinutes: 20, genWaitHours: 6 };
 export function agentSettings(): AgentSettings {
   try {
     return { ...DEFAULTS, ...JSON.parse(fs.readFileSync(SETTINGS_FILE, 'utf8')) };
@@ -183,9 +190,11 @@ export function brainOfChange(r: any) {
   const phaseHarness = isHarness(ph?.brain) ? ph.brain : null;
   const active = ['queued', 'working', 'revising'].includes(r.status);
   const harness: Harness | null = phaseHarness ?? (pass?.harness as Harness | undefined) ?? (active ? brainId() : null);
+  // The current attempt's route (routing.ts) names the model before its first pass is in the ledger.
+  const routed = (() => { const x = parse(r.route ?? null) as Route | null; return x?.tier ? roleTune(roleArg, { tier: x.tier }).model : ''; })();
   const model: string | null = phaseHarness
-    ? (brainSettings().model || roleArgs(roleArg).role.model)
-    : pass?.model ?? (active ? (brainSettings().model || roleArgs(roleArg).role.model) : null);
+    ? (brainSettings().model || routed || roleArgs(roleArg).role.model)
+    : pass?.model ?? (active ? (brainSettings().model || routed || roleArgs(roleArg).role.model) : null);
   return {
     role,
     harness,
@@ -759,6 +768,72 @@ export function roleOf(c: { infra?: boolean; request?: string | null; findings?:
   if (CONTENT.test(`${c.request ?? ''} ${c.title ?? ''}`)) return 'content';
   return c.request ? 'builder' : 'fixer';
 }
+
+// ------------------------------------------------------------------ routing (routing.ts)
+
+/** Earlier attempts at the same work that didn't land: the same task's other changes, or changes on the same findings. */
+export function earlierAttempts(c: Pick<Change, 'id' | 'task' | 'findings'>, limit = 3): { id: string; status: string; detail: string | null; summary: string | null; created: number }[] {
+  const rows = c.task
+    ? db.prepare(`SELECT id, status, detail, summary, created FROM changes WHERE task = ? AND id != ? AND status IN ('failed', 'closed') ORDER BY created DESC LIMIT ?`).all(c.task, c.id, limit)
+    : c.findings.length
+      ? db.prepare(`SELECT id, status, detail, summary, created FROM changes WHERE id != ? AND request IS NULL AND status IN ('failed', 'closed') AND (${c.findings.map(() => 'findings LIKE ?').join(' OR ')}) ORDER BY created DESC LIMIT ?`).all(c.id, ...c.findings.map((f) => `%"${f}"%`), limit)
+      : [];
+  return rows as any[];
+}
+
+/**
+ * Which attempt this is (1 = first). A task's tries count its starts and revisions (pm.ts); a fix or a request counts
+ * its own revisions, walk-away fix passes, and earlier changes on the same findings that failed.
+ */
+export function attemptOf(c: Change): number {
+  if (c.task) return Math.max(1, getTask(c.task)?.tries || 1);
+  const prior = c.findings.length ? earlierAttempts(c, 10).filter((x) => x.status === 'failed').length : 0;
+  return 1 + (c.revisions ?? 0) + (c.auto_fixes ?? 0) + prior;
+}
+
+/**
+ * The route this change's current attempt runs on (routing.ts): stored with the attempt, so its nudges, resumes and
+ * answers stay on the same model, and computed again when the attempt changes. null: routing is off (tuning.ts as before).
+ */
+export function changeRoute(c: Change): Route | null {
+  if (!routingSettings().enabled) return null;
+  const attempt = attemptOf(c);
+  const stored = parse(c.route ?? null) as Route | null;
+  const premium = premiumFor(c.id, c.task)?.tier ?? null;
+  if (stored && stored.attempt === attempt && (stored.premium ?? null) === premium) return stored;
+  const findings = c.findings.map((f) => getFinding(f)).filter(Boolean) as any[];
+  const worst = findings.some((f) => f.severity === 'blocker') ? 'blocker' : findings[0]?.severity ?? null;
+  const role = roleOf(c);
+  const text = [c.request, c.title, ...findings.map((f) => `${f.title} ${f.area ?? ''} ${f.detail ?? ''}`)].filter(Boolean).join('\n');
+  const r = routeFor({ text, role, criteria: c.criteria.length, severity: worst, attempt, premium });
+  if (r.premium) usePremium(c.id, c.task);
+  db.prepare('UPDATE changes SET route = ? WHERE id = ?').run(J(r), c.id);
+  return r;
+}
+
+/** The summary with the agent's stuck report (.hawkes/stuck.md) after it, so the next attempt's brief carries it up. */
+export function withStuck(worktree: string, summary: string) {
+  const file = path.join(worktree, '.hawkes', 'stuck.md');
+  if (!fs.existsSync(file)) return summary;
+  const stuck = fs.readFileSync(file, 'utf8').trim().slice(0, 3000);
+  return stuck ? `${summary}${summary ? '\n\n' : ''}Stuck after two approaches:\n${stuck}` : summary;
+}
+
+/** The brief's section on routing: earlier attempts (context carries up), and re-scoping once escalations are used. */
+function attemptsBrief(c: Change, r: Route | null) {
+  const attempt = r?.attempt ?? attemptOf(c);
+  if (attempt < 2) return '';
+  const prior = earlierAttempts(c);
+  const own = c.revisions && c.summary ? `- This branch's last pass said: ${c.summary.replace(/\s+/g, ' ').slice(0, 900)}` : '';
+  const lines = prior.map((x) => `- ${x.id} (${x.status}${x.detail ? `: ${x.detail.slice(0, 200)}` : ''}): ${(x.summary ?? '').replace(/\s+/g, ' ').slice(0, 900) || 'no summary'}`);
+  const rescope = r?.exhausted
+    ? `\nThis work has failed ${attempt - 1} times, on bigger models each time. Don't repeat those approaches: check the premise
+first (is the cause where they looked? is the request feasible as written?). If it is too big for one change, do a solid
+smaller part that works and say exactly what's left; if it needs a decision, ask ONE question (step 8).\n`
+    : '';
+  return `\n## Earlier attempts (this is attempt ${attempt})\n\n${[own, ...lines].filter(Boolean).join('\n') || '- (no summaries kept)'}\n\nLearn from them: don't redo what failed.\n${rescope}`;
+}
+
 /** The roadmap item a task's change belongs to (its memory scope). */
 function taskItem(c: Change) {
   if (!c.task) return null;
@@ -786,7 +861,7 @@ export function remember(id: string) {
     recordRun({
       id: `ar_${c.id.slice(2)}`, kind: c.infra ? 'infra' : c.task ? 'task' : c.request ? 'request' : 'fix', subject: c.id, product: c.product, title: c.title ?? c.id,
       outcome: c.status, summary: `${c.summary ?? ''}${c.detail ? `\n\nStatus: ${c.detail}` : ''}${c.pr_url ? `\n${c.pr_url}` : ''}`, lessons: [prev?.lessons, lessons].filter(Boolean).join('\n'),
-      by: c.task ? 'PM' : 'J', model: (() => { try { return loadRole(agentRole(c)).model; } catch { return null; } })(), cost: c.cost, started: c.created, finished: Date.now(),
+      by: c.task ? 'PM' : 'J', model: lastPassFor(c.id)?.model || (() => { try { return loadRole(agentRole(c)).model; } catch { return null; } })(), cost: c.cost, started: c.created, finished: Date.now(),
     });
   } catch (e: any) {
     console.warn(`[memory] ${id}: ${e.message}`);
@@ -894,7 +969,7 @@ ${findings.map((f) => `### [${f.severity}] ${f.title}
 - Suggested fix: ${f.fix ?? '-'}
 - Screenshots: ${(shots.filter((s) => s.includes(f.id)).map((s) => `\`${s}\``).join(', ')) || 'none'}${f.entities?.length ? `
 - In Hawkes Gen's library: ${f.entities.map((e: any) => `\`${e.id}\` (${e.kind})`).join(', ')}. When the problem is the art itself, fix it there (the hawkesgen MCP: hawkesgen_entities to see its versions, hawkesgen_entity_make with revise and feedback, hawkesgen_entity_judge to pick): a pick is written into this repo's files by Studio.` : ''}`).join('\n\n')}
-${note ? `\n## Notes on the last attempt (J's or the PM's)\n\n${note}\n` : ''}${others ? `\n${others}` : ''}${unity}${players}${mem.text ? `\n${mem.text}` : ''}
+${note ? `\n## Notes on the last attempt (J's or the PM's)\n\n${note}\n` : ''}${attemptsBrief(c, changeRoute(c))}${others ? `\n${others}` : ''}${unity}${players}${mem.text ? `\n${mem.text}` : ''}
 ## How to work
 
 1. Read \`AGENTS.md\` (and any docs it points to) before changing anything. Follow its rules.
@@ -907,6 +982,9 @@ ${checks}
    ${Math.round(agentLimitMs(c) / 60_000)} minutes: commit as you go (after each working piece or finished batch), so a stop loses nothing.
 6. Write \`.hawkes/summary.md\`: what was wrong, what you changed (files), how you checked it, and anything J should
    look at. If you couldn't fix it, explain why there instead, and don't commit.
+   Two approaches, then stop: when two different approaches haven't worked (the checks still fail, or you can't find
+   the cause), don't keep iterating. Write \`.hawkes/stuck.md\` (what you tried, what happened, where you think the cause
+   is) and commit nothing that doesn't work: Studio gives the next attempt a bigger model, with your notes.
 7. Write \`.hawkes/try.md\`: how J tries it on the beta site, in two to five short steps a player would follow (where to
    go, what to press, what he should see).
 8. If you can't go on without a decision that the request, the criteria and the thread don't settle (a real direction
@@ -1012,11 +1090,15 @@ function runAgent(c: Change, briefFile: string, s: AgentSettings, env = claudeEn
       const prompt = resume?.prompt ?? `Read ${path.relative(c.worktree, briefFile).replace(/\\/g, '/')} and do what it says. It's your whole task.`;
       // The role (.claude/agents/<role>.md): its model, standing instructions (the stable, cached part of the prompt),
       // tools and turn limit; the task itself is the brief.
+      // The route (routing.ts): the category's tier, one up per failed attempt, Opus within the day's budget, Fable only on J's ask.
+      const route = changeRoute(c);
       const { args: roleFlags, role } = roleArgs(agentRole(c), {
         extraAllowed: [...AGENT_STUDIO_TOOLS.map((t) => `mcp__hawkesstudio__${t}`), 'mcp__hawkesgen'],
         maxTurns: s.maxTurns !== DEFAULTS.maxTurns ? s.maxTurns : undefined,
         retry: (c.task ? getTask(c.task)?.tries : 0) || 1,
+        ...(route ? { tier: route.tier, effort: route.effort } : {}),
       });
+      if (route) addLog(c.id, `route: ${routeLine(route, role.model)}`);
       const args = [
         ...(resume?.session ? ['--resume', resume.session] : []),
         '-p', prompt, '--output-format', 'stream-json', '--verbose', ...roleFlags,
@@ -1152,12 +1234,15 @@ async function agentPass(id: string, ph: Phase, save: (patch: Partial<Phase>) =>
     const role = agentRole(c);
     const harness = (isHarness(ph.brain) ? ph.brain : brainId()) as Harness;
     const retry = (c.task ? getTask(c.task)?.tries : 0) || 1;
-    const t = roleTune(role, { harness, retry });
+    const route = changeRoute(c);
+    const t = roleTune(role, { harness, retry, ...(route ? { tier: route.tier, effort: route.effort } : {}) });
     const text = `${r.result ?? ''}\n${r.stderr ?? ''}`;
+    const stuck = fs.existsSync(path.join(c.worktree, '.hawkes', 'stuck.md'));
     const outcome: PassOutcome = refusedModelOf(text) && !(r.ok && r.sawResult) ? 'model-refused'
       : passStop(r) ? 'harness-stop'
+      : stuck ? 'stuck'
       : r.stopped ?? (r.ok && r.sawResult ? 'done' : 'failed');
-    recordPass({ change: id, product: c.product, task: c.task, role, harness, model: t.model, tier: t.tier, effort: t.effort, retry, ms: Date.now() - t0, cost: r.cost, outcome });
+    recordPass({ change: id, product: c.product, task: c.task, role, harness, model: t.model, tier: t.tier, effort: t.effort, retry, ms: Date.now() - t0, cost: r.cost, outcome, category: route?.category ?? null, premium: route?.premium ?? null });
   } catch { /* the ledger never stops a pass */ }
   return r;
 }
@@ -1454,8 +1539,9 @@ async function work(id: string, note?: string, answer?: string, resumed?: Phase 
       // before, or files Studio's own git wrote there since).
       await shareWorktree(c.worktree);
       await writeBrief(c, p, findings, note);
-      // A question from an earlier pass isn't asked again.
+      // A question or a stuck report from an earlier pass isn't read again (attemptsBrief carries what they said).
       fs.rmSync(path.join(c.worktree, '.hawkes', 'question.md'), { force: true });
+      fs.rmSync(path.join(c.worktree, '.hawkes', 'stuck.md'), { force: true });
       save({ step: 'agent', before: git(c.worktree, ['rev-parse', 'HEAD']).out, proc: undefined });
     }
 
@@ -1490,7 +1576,7 @@ async function work(id: string, note?: string, answer?: string, resumed?: Phase 
       // The agent could write its worktree: Studio's git runs there only while it still links to this repo.
       assertWorktree(c.worktree, repoDir);
       const summaryFile = path.join(c.worktree, '.hawkes', 'summary.md');
-      const summary = fs.existsSync(summaryFile) ? fs.readFileSync(summaryFile, 'utf8').trim() : ph.result ?? '';
+      const summary = withStuck(c.worktree, fs.existsSync(summaryFile) ? fs.readFileSync(summaryFile, 'utf8').trim() : ph.result ?? '');
       const listCommits = () => git(c.worktree, ['log', '--format=%h %s', `origin/${c.base}..HEAD`]).out.split('\n').filter(Boolean);
       let commits = listCommits();
       let changedNow = git(c.worktree, ['rev-parse', 'HEAD']).out !== ph.before;
@@ -1925,7 +2011,7 @@ the change small.
 ## What J asked for
 
 ${c.request ?? '(no request)'}
-${note ? `\n## J's note on the last attempt\n\n${note}\n` : ''}
+${note ? `\n## J's note on the last attempt\n\n${note}\n` : ''}${attemptsBrief(c, changeRoute(c))}
 ## How to work
 
 1. Read \`AGENTS.md\` (and the docs it points to, e.g. \`docs/cloud.md\`) before changing anything. Follow its rules.
@@ -1939,6 +2025,8 @@ ${t.checks.map((k) => `   - \`${k}\``).join('\n')}
 5. Commit your change with a clear message. Don't push; Studio does.
 6. Write \`.hawkes/summary.md\`: what you changed (files) and why, how you checked it, and anything J should know
    (in plain words: J doesn't read code). If you couldn't do it, explain why there instead, and don't commit.
+   Two approaches, then stop: when two different approaches haven't worked, write \`.hawkes/stuck.md\` (what you
+   tried, what happened, where you think the cause is) and commit nothing that doesn't work.
 7. ${LEARNED_ASK.replace(/\n/g, '\n   ')}
 ${mem.text ? `\n${mem.text}` : ''}`;
   fs.writeFileSync(path.join(dir, 'brief.md'), brief);
@@ -2012,7 +2100,7 @@ async function workInfra(id: string, note?: string, resumed?: Phase | null, nudg
       // The agent could write its worktree: Studio's git runs there only while it still links to this repo.
       assertWorktree(c.worktree, repoDir);
       const summaryFile = path.join(c.worktree, '.hawkes', 'summary.md');
-      const summary = fs.existsSync(summaryFile) ? fs.readFileSync(summaryFile, 'utf8').trim() : ph.result ?? '';
+      const summary = withStuck(c.worktree, fs.existsSync(summaryFile) ? fs.readFileSync(summaryFile, 'utf8').trim() : ph.result ?? '');
       const listCommits = () => git(c.worktree, ['log', '--format=%h %s', `origin/${c.base}..HEAD`]).out.split('\n').filter(Boolean);
       let commits = listCommits();
       let changedNow = git(c.worktree, ['rev-parse', 'HEAD']).out !== ph.before;
@@ -2708,7 +2796,7 @@ export function revise(id: string, note: string, by = 'J') {
   if (!c) throw new Error('No such change');
   if (!['ready', 'failed'].includes(c.status)) throw new Error(`The change is ${c.status}`);
   // A person's revision: the conflict passes start over, and an approval waiting to merge (Studio/Gen) is for what was.
-  db.prepare('UPDATE changes SET conflicts = NULL, approved = NULL WHERE id = ?').run(id);
+  db.prepare('UPDATE changes SET conflicts = NULL, approved = NULL, revisions = COALESCE(revisions, 0) + 1 WHERE id = ?').run(id);
   update(id, { status: 'queued', detail: 'queued for another pass', notes: [...c.notes, { at: Date.now(), by, text: note }] });
   running.add(id);
   // When it's done, the queue goes on (a revision holds a slot like any change).

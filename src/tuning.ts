@@ -1,7 +1,8 @@
 // Agent tuning (Settings → Tuning): how much brain each job gets, so cost, speed and quality can be traded on purpose.
 //
-// - Tiers: fast, standard, deep. Each harness maps a tier to a model (Claude: Haiku, Sonnet, Opus; Copilot: the same
-//   families under Copilot's ids; Cursor: its own default model unless set).
+// - Tiers: fast, standard, deep, max. Each harness maps a tier to a model (Claude: Haiku, Sonnet, Opus, Fable; Copilot:
+//   the same families under Copilot's ids; Cursor: its own default model unless set). max is reached only on J's request
+//   (routing.ts premium): no preset, retry or route picks it by itself.
 // - Roles: each role (fixer, builder, scout...) has a tier, a reasoning effort and a turn cap.
 // - Presets: economy, balanced (the default) and quality set all of the above at once; changing a field makes it "custom".
 // - Copilot bills a premium request per prompt times the model's multiplier (tool calls inside a run are free), so on
@@ -14,7 +15,7 @@ import { StudioError } from './config.ts';
 import { brainId, type Harness } from './brains.ts';
 import { modelUnavailable } from './models.ts';
 
-export const TIERS = ['fast', 'standard', 'deep'] as const;
+export const TIERS = ['fast', 'standard', 'deep', 'max'] as const;
 export type Tier = (typeof TIERS)[number];
 export const EFFORTS = ['', 'low', 'medium', 'high', 'xhigh', 'max'] as const;
 export type Effort = (typeof EFFORTS)[number];
@@ -44,13 +45,13 @@ export type Tuning = {
 };
 
 export const MODELS: Tuning['models'] = {
-  claude: { fast: 'claude-haiku-5-5', standard: 'claude-sonnet-5-5', deep: 'claude-opus-5-5' },
-  copilot: { fast: 'claude-haiku-5.5', standard: 'claude-sonnet-5.5', deep: 'claude-sonnet-5.5' },
-  cursor: { fast: '', standard: '', deep: '' },
+  claude: { fast: 'claude-haiku-5-5', standard: 'claude-sonnet-5-5', deep: 'claude-opus-5-5', max: 'claude-fable-5-1' },
+  copilot: { fast: 'claude-haiku-5.5', standard: 'claude-sonnet-5.5', deep: 'claude-sonnet-5.5', max: 'claude-sonnet-5.5' },
+  cursor: { fast: '', standard: '', deep: '', max: '' },
   // Gemini CLI's own aliases: Flash for quick jobs, Auto (its router) for most work, Pro where a mistake is expensive.
-  gemini: { fast: 'flash', standard: '', deep: 'pro' },
+  gemini: { fast: 'flash', standard: '', deep: 'pro', max: 'pro' },
   // Antigravity CLI slugs (`agy models`): the Flash tier for quick jobs, Gemini 4 for the rest.
-  antigravity: { fast: 'gemini-3.8-flash-medium', standard: 'gemini-4-argon-medium', deep: 'gemini-4-argon-high' },
+  antigravity: { fast: 'gemini-3.8-flash-medium', standard: 'gemini-4-argon-medium', deep: 'gemini-4-argon-high', max: 'gemini-4-argon-high' },
 };
 
 const r = (tier: Tier, effort: Effort, maxTurns: number): RoleTune => ({ tier, effort, maxTurns });
@@ -185,7 +186,7 @@ export function saveTuning(patch: Record<string, any>, by = 'J') {
   return tuningSettings();
 }
 
-const UP: Record<Tier, number> = { fast: 0, standard: 1, deep: 2 };
+const UP: Record<Tier, number> = { fast: 0, standard: 1, deep: 2, max: 3 };
 const EF: Record<string, number> = { '': 1, low: 0, medium: 1, high: 2, xhigh: 3, max: 4 };
 
 /** What in a patch would make agents spend more than today (so a Talk request needs J's yes); empty: nothing. */
@@ -210,20 +211,36 @@ export function tuningRaises(patch: Record<string, any>, cur: Tuning): string[] 
 
 // ------------------------------------------------------------ what the runs use
 
-/** The model, effort and turn cap for a role on a harness now; `retry` is the change's try number (1 = first). */
-export function roleTune(role: string, { harness = brainId(), retry = 1 }: { harness?: Harness; retry?: number } = {}) {
+/**
+ * The model, effort and turn cap for a role on a harness now; `retry` is the change's try number (1 = first). `tier` and
+ * `effort`: a route's choice (routing.ts), which replaces the role's tier and the retry step.
+ */
+export function roleTune(role: string, { harness = brainId(), retry = 1, tier: routed, effort: routedEffort }: { harness?: Harness; retry?: number; tier?: Tier; effort?: Effort } = {}) {
   const t = tuningSettings();
   const base = t.roles[role as TunedRole];
-  if (!base) return { tier: 'standard' as Tier, model: '', effort: '' as Effort, maxTurns: 0 };
-  let tier = base.tier;
-  if (t.escalateOnRetry && retry >= 2 && tier !== 'deep' && role !== 'talk') tier = TIERS[Math.min(2, TIERS.indexOf(tier) + 1)];
+  if (!base && !routed) return { tier: 'standard' as Tier, model: '', effort: '' as Effort, maxTurns: 0 };
+  let tier = routed ?? base.tier;
+  // A retry steps up one tier, never past deep (max is J's to ask for).
+  if (!routed && t.escalateOnRetry && retry >= 2 && UP[tier] < UP.deep && role !== 'talk') tier = TIERS[UP[tier] + 1];
   // A model this harness refused steps down a tier, then to the harness's own default (''), so a wrong id never blocks work.
   let model = '';
   for (let i = TIERS.indexOf(tier); i >= 0; i--) {
     const m = t.models[harness]?.[TIERS[i]] ?? '';
     if (!modelUnavailable(harness, m)) { model = m; tier = TIERS[i]; break; }
   }
-  return { tier, model, effort: base.effort, maxTurns: base.maxTurns };
+  return { tier, model, effort: routedEffort ?? base?.effort ?? '', maxTurns: base?.maxTurns ?? 0 };
+}
+
+/** The tier a model id belongs to (Claude's families by name; other harnesses by the tuning's own table), or null. */
+export function tierOfModel(model: string | null | undefined, t: Tuning = tuningSettings()): Tier | null {
+  const m = String(model ?? '').toLowerCase();
+  if (!m) return null;
+  if (/fable/.test(m)) return 'max';
+  if (/opus/.test(m)) return 'deep';
+  if (/sonnet/.test(m)) return 'standard';
+  if (/haiku/.test(m)) return 'fast';
+  for (const h of Object.keys(t.models) as Harness[]) for (const tier of [...TIERS].reverse()) if (t.models[h][tier] && t.models[h][tier].toLowerCase() === m) return tier;
+  return null;
 }
 
 /** The model for one of Studio's small model calls through Gen (triage, dedupe...). */

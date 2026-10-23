@@ -1,7 +1,7 @@
 ---
 name: builder
 description: Builds what J asked for (a feature, a change, a roadmap task with acceptance criteria) in one product, or a change to Hawkes Studio or Hawkes Gen themselves. One pull request per task.
-model: opus
+model: sonnet
 tools: Read, Edit, Write, Glob, Grep, Bash, TodoWrite, Skill
 allowed-tools: Read, Edit, Write, Glob, Grep, TodoWrite, Skill, Bash(git status:*), Bash(git diff:*), Bash(git add:*), Bash(git commit:*), Bash(git log:*), Bash(git show:*), Bash(npm:*), Bash(npx:*), Bash(node:*), Bash(ls:*), Bash(cat:*)
 sandbox-allowed-tools: Read, Edit, Write, Glob, Grep, TodoWrite, Skill, Bash

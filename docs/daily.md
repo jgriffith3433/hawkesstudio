@@ -588,6 +588,38 @@ the one API. Talk reads and changes them with `studio_settings` when J asks; fro
 Talk puts an Approve card on his screen (`studio_approval` kind settings), or, as the fallback, the request quotes his
 own yes from that conversation. The notification topic is changed only on the dashboard.
 
+
+## Models and usage limits (routing)
+
+J, 2026-10-23: "send each task to the cheapest model likely to finish it" and "only use the highest tier models upon
+request of the user to prevent high bills and usage limits being hit". `src/routing.ts` (Settings → 🧭 Model routing,
+`studio_routing`, settings section `routing`):
+
+- **Categories.** Every agent change is classified by its words, role and size, for free (rules, no model call): a
+  lookup, a small isolated edit or tests from a spec start on Haiku; a scoped feature, a bug with a repro, a refactor or
+  content on Sonnet (content and Studio/Gen changes never below it); systems work (netcode, render or build pipelines,
+  migrations), far-from-symptom bugs (intermittent, only in the build, races, leaks) and long build-until-green runs on
+  Opus. A blocker gets more effort. The change's log says its route (`route: bug_with_repro → standard (claude-sonnet-5-5)…`).
+- **Escalation.** A failed attempt (the PM's or J's revision, a task's next try, a failed fix of the same finding) climbs
+  one tier, at most `maxEscalations` (2) times and never above `ceiling` (Opus); already at the top it gets more effort.
+  The next attempt's brief has the earlier attempts' summaries ("context carries up"). An agent that has tried two
+  approaches stops and writes `.hawkes/stuck.md` instead of iterating (the pass ledger's outcome `stuck`). Past its
+  climbs, the brief tells it to check the premise and re-scope (a solid smaller part, or one question).
+- **Opus budget and conserve mode.** At most `deepPerDay` (6) automatic Opus passes a day; past it, and for
+  `conserveHours` (6) after the plan hit a usage limit (harness-hold.ts), work that would go to Opus runs on Sonnet with
+  more effort.
+- **Premium only on request.** Fable (and Opus outside the rules above) runs only when J asks for it in his own words:
+  "use Fable", "plan this on Opus". Talk then passes `model` to `studio_task` (or `studio_routing premium` for a task or
+  a change), and Studio checks J's newest message (or his quoted words) before it grants it. His asks aren't capped or
+  counted against the budget, and are listed in Settings. In Talk, a message of his asking for Opus or Fable runs that
+  turn on it; `hawkes:planner` (Fable) and `hawkes:architect` (Opus) are subagents for his explicit asks only.
+- **Talk.** Studio's own turns telling J what finished work came back run on Haiku (`autoTurnsFast`); J's turns and
+  PM turns on Sonnet; scouts and Talk's research subagent on Haiku.
+- **Usage.** Settings shows each tier's share of the last 7 days' usage (agents, Talk, scouts, at Claude Code's
+  reported cost, which on the Max plan measures how fast its limits fill) against the targets: Haiku 10-15%, Sonnet
+  50-60%, Opus 20-30%, Fable 5-10%. Opus over its band means work is under-scoped (tighten the criteria) or escalating
+  too readily.
+
 ## Walk-away mode
 
 J, 2026-10-18: "there's WAYYY too much going into my inbox ... just merge okay? ... I just want this system to build

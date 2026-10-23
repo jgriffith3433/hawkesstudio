@@ -33,6 +33,8 @@ import { claudeEnv, billing, usingSubscription } from './claude.ts';
 import { brainId, brainLabel, brainSettings, type Harness } from './brains.ts';
 import { memoryBlock } from './memory.ts';
 import { roleArgs } from './roles.ts';
+import { talkTier } from './routing.ts';
+import type { Tier } from './tuning.ts';
 import { PUBLIC_URL } from './notify.ts';
 import { claudeCommand, sandboxOn, sandboxShare } from './sandbox.ts';
 import { launch, DetachedChild, type ChildLike, type DetachRec } from './detach.ts';
@@ -616,10 +618,19 @@ by a speech voice, sentence by sentence as you write it, and he answers by talki
   in the chat stays the fallback.`;
 }
 
-function claudeArgs(c: Conversation, call: boolean, device: CallDevice | null = null) {
+/**
+ * The tier of one Talk turn (routing.ts talkTier): Studio's turns explaining results on the fast tier, J's turn on the
+ * premium tier his own message asks for ("use Opus", "plan this with Fable"), else null (the role's tuned tier).
+ */
+function turnTier(c: Conversation, auto: boolean): { tier: Tier; why: string } | null {
+  const last = auto ? null : c.messages.findLast((m) => m.role === 'user' && !m.notice)?.text ?? null;
+  return talkTier({ auto, pm: (c as any).kind === 'pm', text: last });
+}
+
+function claudeArgs(c: Conversation, call: boolean, device: CallDevice | null = null, tier: Tier | null = null) {
   // The role (.claude/agents/talk.md, or pm.md in the PM's conversation): model, tools, its standing instructions
   // first (stable, so the prompt caches), then Studio's context (products, lanes, the shared memory's decisions).
-  const { args: role } = roleArgs((c as any).kind === 'pm' ? 'pm' : 'talk', { extraPrompt: systemPrompt() + (call ? callPrompt(device) : '') });
+  const { args: role } = roleArgs((c as any).kind === 'pm' ? 'pm' : 'talk', { extraPrompt: systemPrompt() + (call ? callPrompt(device) : ''), ...(tier ? { tier } : {}) });
   const model = (call && process.env.TALK_CALL_MODEL) || process.env.TALK_MODEL;
   if (model) role.splice(role.indexOf('--model') + 1, 1, model);
   return [
@@ -680,7 +691,9 @@ function runTurn(id: string, prompt: string, userAt: number, { auto = false, fre
   const call = calls.get(id);
   const c = getConversation(id)!;
   const harness = brainId();
-  const model = talkModel((c as any).kind === 'pm' ? 'pm' : 'talk', Boolean(call));
+  // A call keeps its warm process's model; other turns are routed (routing.ts): fast for Studio's, premium on J's ask.
+  const routed = call || process.env.TALK_MODEL || brainSettings().model ? null : turnTier(c, auto);
+  const model = routed ? roleArgs((c as any).kind === 'pm' ? 'pm' : 'talk', { tier: routed.tier }).role.model : talkModel((c as any).kind === 'pm' ? 'pm' : 'talk', Boolean(call));
   const billingKind: Turn['billing'] = harness === 'claude' ? (usingSubscription() ? 'subscription' : 'api') : harness === 'gemini' ? 'api' : 'subscription';
   // Who pays: Claude Code says which key it uses when it starts (apiKeySource "none" = the subscription login).
   const ctx: TurnCtx = { userAt, auto, call: false, billing: billingKind, harness, model, done: false, err: '' };
@@ -698,7 +711,7 @@ function runTurn(id: string, prompt: string, userAt: number, { auto = false, fre
     return;
   }
   // Outside Studio where it can be (detach.ts): a Studio restart doesn't cut the answer off (resumeTalk).
-  const { child, rec } = launch(`talk-${id}`, talkCommand(['-p', prompt, ...claudeArgs(c, false)]));
+  const { child, rec } = launch(`talk-${id}`, talkCommand(['-p', prompt, ...claudeArgs(c, false, null, routed?.tier ?? null)]));
   if (rec) setProc(id, { rec, offset: 0, userAt, auto, billing: ctx.billing, harness: ctx.harness, model: ctx.model });
   followTurn(id, child, ctx, { prompt, fresh, session: c.session });
 }

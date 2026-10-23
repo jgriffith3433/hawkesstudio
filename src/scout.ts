@@ -136,7 +136,7 @@ ${mem.text ? `\n${mem.text}` : ''}${story ? `\nThe product's story, for tone:\n$
     fs.rmSync(wt, { recursive: true, force: true });
   }
   const done = getScout(id)!;
-  recordRun({ id: `ar_${id.slice(2)}`, kind: 'scout', subject: id, product: done.product, title: `Scout: ${done.question.slice(0, 150)}`, outcome: done.status, summary: done.report ?? done.detail ?? '', by: done.origin ? 'Talk' : 'J', model: process.env.SCOUT_MODEL ?? 'claude-opus-5-5', cost: done.cost, started: done.created, finished: done.finished ?? Date.now() });
+  recordRun({ id: `ar_${id.slice(2)}`, kind: 'scout', subject: id, product: done.product, title: `Scout: ${done.question.slice(0, 150)}`, outcome: done.status, summary: done.report ?? done.detail ?? '', by: done.origin ? 'Talk' : 'J', model: process.env.SCOUT_MODEL ?? roleArgs('scout').role.model, cost: done.cost, started: done.created, finished: done.finished ?? Date.now() });
   const text = done.status === 'done'
     ? `Scout ${id} reported on "${done.question}" (${done.product}):\n\n${done.report}\n\nTurn this into a proposal for J: the roadmap item and tasks with acceptance criteria, order, size and rough cost. Add them (studio_roadmap) only after J says yes.`
     : `Scout ${id} on "${done.question}" (${done.product}) failed: ${done.detail}`;

@@ -11,13 +11,15 @@ them too.
 
 | Role | Runs | Model | Tools |
 |---|---|---|---|
-| `talk` | Talk conversations (J's partner and PM) | Opus | MCP (Studio, Gen), read, skills, subagents; in the sandbox also shell, editor, web |
-| `pm` | the day's "Studio PM" conversation (PM turns) | Opus | MCP, read, skills, subagents |
-| `fixer` | an agent change for backlog findings | Sonnet | read, edit, git, npm/node (in the sandbox: any shell) |
-| `builder` | J's requests, roadmap tasks, Studio and Gen changes | Opus | the same |
-| `content` | requests about story and content (`roleOf` in agents.ts) | Opus | the same; its diff gets the canon check |
-| `scout` | `studio_scout` (read-only investigation) | Opus | read, git log/show |
+| `talk` | Talk conversations (J's partner and PM) | Sonnet (Studio's own result turns on Haiku; Opus or Fable when J asks) | MCP (Studio, Gen), read, skills, subagents; in the sandbox also shell, editor, web |
+| `pm` | the day's "Studio PM" conversation (PM turns) | Sonnet | MCP, read, skills, subagents |
+| `fixer` | an agent change for backlog findings | routed (below) | read, edit, git, npm/node (in the sandbox: any shell) |
+| `builder` | J's requests, roadmap tasks, Studio and Gen changes | routed | the same |
+| `content` | requests about story and content (`roleOf` in agents.ts) | routed (Sonnet or above) | the same; its diff gets the canon check |
+| `scout` | `studio_scout` (read-only investigation), Talk's research subagent | Haiku | read, git log/show |
 | `reviewer` | a subagent for a second opinion on a change | Sonnet | read, git diff |
+| `planner` | a subagent for a deep plan, only when J asks for Fable | Fable | read |
+| `architect` | a subagent for one design decision or a re-scope, only when J asks for Opus | Opus | read |
 
 **Harness** (Settings, `src/brains.ts`): Claude Code, Cursor or GitHub Copilot (`docs/copilot.md`), and the model. Copilot runs `bin/copilot-agent.mjs` the same way, and is also the last stand-in in the fallback chain (`STUDIO_HARNESS_ORDER`, default `claude,cursor,copilot`). Cursor runs `bin/cursor-agent.mjs`, which launches Cursor's `agent` on the Cursor plan (`CURSOR_API_KEY` from the hawkes/cursor secret) and speaks the same stream-json, so the roles, tools and MCP servers stay. On the control server, a Studio that has never stored a harness uses Cursor on Auto when that key is present (Claude usage ran out, J 2026-10-19) and tells Gen, whose writing and review calls follow (`settings.brain`). Auto is Cursor's router (including the free pool when premium usage is out). Claude Code still uses the model each role names, unless Settings picks one.
 
@@ -54,9 +56,21 @@ Claude load it: say when). On J's PC: `claude --plugin-dir C:/Projects/hawkesstu
 
 ## Speed
 
-- **A model per job:** Opus for planning and hard work (Talk, the PM, builds, content, scouts), Sonnet for routine
-  fixes, reviews and canon checks, Haiku for triage and dedupe (`jobModel` in roles.ts: the memory's first curation
-  pass, `memory-curate.ts`).
+- **A model per job (routing, `src/routing.ts`; J, 2026-10-23: "only use the highest tier models upon request"):**
+  every agent change is classified by its words, role and size into a category with a default tier: lookups, small
+  edits and tests from a spec on Haiku; scoped features, bugs with a repro, refactors and content on Sonnet; systems work
+  (netcode, render or build pipelines, migrations), far-from-symptom bugs and long runs on Opus, within a daily budget
+  of automatic Opus passes (`deepPerDay`, default 6) and never for `conserveHours` (6) after the plan hit a usage limit.
+  Each failed attempt climbs one tier (at most 2, never past Opus), with the earlier attempts' summaries and stuck
+  reports in its brief ("context carries up"); an agent stuck after two approaches stops and writes `.hawkes/stuck.md`
+  instead of iterating. Past its climbs the brief tells it to re-scope. **Fable only on J's request**: Talk passes
+  `model: "fable"` (or `"opus"`) to `studio_task` / `studio_routing premium` only when J asked in his own words, and
+  Studio checks his newest message (or his quoted words, `jSaid`). Talk's turns: Studio's own result turns on Haiku,
+  J's turns on Sonnet, or the model his message asks for. Talk, the PM and the reviewer run on Sonnet, scouts on
+  Haiku; Studio's small calls through Gen: Haiku for triage and dedupe, Sonnet for reviews and canon checks (`jobModel`).
+  Settings → Model routing shows each tier's share of the last 7 days' usage against its target (Haiku 10-15%,
+  Sonnet 50-60%, Opus 20-30%, Fable 5-10%), today's Opus passes, conserve mode and J's premium asks
+  (`GET /api/routing`, `studio_routing`); the pass ledger records each pass's category and premium.
 - **Prompt caching:** the stable parts come first and stay the same between runs: the role's instructions, then
   Studio's context, then the shared memory's decisions and preferences (they change only when the memory does). What
   changes per task is in the brief or the turn's message (Talk's per-turn memory matches are appended to J's message).

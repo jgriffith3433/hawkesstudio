@@ -14,7 +14,9 @@ test('every role loads with a model, tools and instructions', () => {
     assert.ok((r as any).chars > 200, `${r.name} has instructions`);
   }
   assert.equal(roles.loadRole('fixer').model, roles.MODEL_IDS.sonnet, 'routine fixes on Sonnet');
-  assert.equal(roles.loadRole('builder').model, roles.MODEL_IDS.opus, 'hard work on Opus');
+  // No role defaults to Opus or Fable (routing climbs to Opus on failure or for systems work; Fable is J's ask only).
+  for (const ro of roles.ROLES) assert.doesNotMatch(roles.loadRole(ro).model, /opus|fable/, `${ro} isn't on Opus or Fable by default`);
+  assert.equal(roles.loadRole('scout').model, roles.MODEL_IDS.haiku, 'scouts (also Talk\'s subagent) on Haiku');
   for (const ro of ['scout', 'reviewer', 'pm', 'talk'] as const) {
     const r = roles.loadRole(ro);
     assert.ok(!r.allowed.some((t) => /^(Edit|Write)$/.test(t)), `${ro} can't edit`);
@@ -34,6 +36,19 @@ test('role flags: model, the stable instructions, the plugin with the skills', (
   assert.equal(at('--max-turns'), '60', 'the balanced preset caps a fixer at 60 turns');
   assert.match(at('--plugin-dir'), /\.claude$/);
   assert.equal(roles.roleArgs('fixer').args.join('\u0000'), roles.roleArgs('fixer').args.join('\u0000'), 'stable between runs');
+});
+
+test('the premium subagents exist, read-only, and say they are for J\'s ask only', async () => {
+  const fs = await import('node:fs');
+  const path = await import('node:path');
+  for (const [name, model] of [['planner', 'fable'], ['architect', 'opus']] as const) {
+    const { meta, body } = roles.parseAgentFile(fs.readFileSync(path.join(roles.AGENTS_DIR(), `${name}.md`), 'utf8'));
+    assert.equal(meta.model, model, name);
+    assert.match(meta.description, /ONLY when J explicitly asks/, `${name} is on request`);
+    assert.match(meta['disallowed-tools'], /Edit/, `${name} can't edit`);
+    assert.ok(body.length > 200);
+  }
+  assert.equal(roles.modelId('fable'), 'claude-fable-5-1');
 });
 
 test('skills have names and descriptions', () => {

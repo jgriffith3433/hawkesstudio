@@ -7,6 +7,7 @@
 //   notify   phone notifications (notify.ts; the topic and server are the dashboard's only)
 //   costs    the budget, alert limits and the GPU auto-approval threshold (costs.ts)
 //   resources  when the server's memory, disk or an idle machine is real trouble (resources.ts, the Resources tab)
+//   routing  which model each piece of work gets: categories, escalation, the daily Opus budget, conserve mode (routing.ts)
 //
 // Changes that can raise what Studio spends (more agents or starts, higher limits or budget, the paid voice) need J's
 // own yes when they come from Talk: the request quotes his words and Studio checks they are in his messages there.
@@ -15,6 +16,7 @@ import { db, J, parse } from './db.ts';
 import { StudioError } from './config.ts';
 import { brainSettings, saveBrain, syncBrain } from './brains.ts';
 import { tuningSettings, saveTuning, tuningRaises } from './tuning.ts';
+import { routingSettings, saveRouting, routingRaises } from './routing.ts';
 
 db.exec(`CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated INTEGER NOT NULL, by TEXT)`);
 
@@ -99,7 +101,7 @@ const notifyMod = () => import('./notify.ts');
 const costsMod = () => import('./costs.ts');
 const resourcesMod = () => import('./resources.ts');
 
-export const SECTIONS = ['brain', 'tuning', 'call', 'agents', 'pm', 'notify', 'costs', 'resources'] as const;
+export const SECTIONS = ['brain', 'tuning', 'routing', 'call', 'agents', 'pm', 'notify', 'costs', 'resources'] as const;
 export type Section = (typeof SECTIONS)[number];
 
 /** Everything, for the Settings tab and Talk. */
@@ -112,6 +114,7 @@ export async function allSettings() {
   return {
     brain: brainSettings(),
     tuning: tuningSettings(),
+    routing: routingSettings(),
     call: callSettings(),
     agents: agentSettings(),
     pm: pmSettings(),
@@ -126,6 +129,7 @@ export async function allSettings() {
 const RAISES: Record<Section, { up?: string[]; on?: string[]; off?: string[]; any?: string[] }> = {
   brain: {},
   tuning: {},
+  routing: {},
   call: {},
   agents: { up: ['maxConcurrent', 'perProduct', 'maxPerDay', 'maxCostPerDay', 'maxTurns'], on: ['enabled', 'autoFix'], any: ['model', 'severities'] },
   pm: { up: ['maxStartsPerDay', 'maxConcurrent', 'maxTries', 'walkAwayGpuPerDay'], on: ['enabled', 'fixBugs', 'walkAway'] },
@@ -150,6 +154,7 @@ export function costRaising(section: Section, patch: Record<string, any>, cur: R
     }
   }
   if (section === 'tuning') out.push(...tuningRaises(patch, cur as any));
+  if (section === 'routing') out.push(...routingRaises(patch, cur as any));
   if (section === 'call' && patch.engine === 'eleven' && cur.engine !== 'eleven') out.push(`the ElevenLabs voice (about $${ELEVEN_PER_MIN.toFixed(2)} a minute Talk speaks)`);
   if (section === 'brain' && (patch.harness === 'cursor' || patch.id === 'cursor' || patch.id === 'grok') && cur.harness !== 'cursor') out.push('harness → Cursor (the Cursor plan)');
   if (section === 'brain' && (patch.harness === 'copilot' || patch.id === 'copilot') && cur.harness !== 'copilot') out.push('harness → Copilot (the Copilot plan\'s premium requests)');
@@ -195,6 +200,9 @@ export async function saveSettings(section: string, patch: Record<string, any>, 
   }
   if (s === 'tuning') {
     try { return saveTuning(patch, by); } catch (e: any) { throw new StudioError(e.message); }
+  }
+  if (s === 'routing') {
+    try { return saveRouting(patch, by); } catch (e: any) { throw new StudioError(e.message); }
   }
   if (s === 'call') {
     const next = cleanCall(patch, callSettings());
