@@ -447,7 +447,10 @@ async function applyCaddy(st) {
   }
 }
 
-/** null when Studio, Gen and the landing page answer through Caddy (a 401 from the sign-in counts: Caddy is up). */
+/**
+ * null when Studio and Gen answer through Caddy (a 401 from the sign-in counts: Caddy is up). Not ${domain} itself: it
+ * is the customer portal on its own box, so it never answers here (probing it rolled back every new Caddyfile).
+ */
 async function caddyAnswers(domain) {
   const probe = (host, p) => {
     try {
@@ -456,7 +459,7 @@ async function caddyAnswers(domain) {
       return 0;
     }
   };
-  const checks = [[`studio.${domain}`, '/auth/signin'], [`gen.${domain}`, '/v1/health'], [domain, '/']];
+  const checks = [[`studio.${domain}`, '/auth/signin'], [`gen.${domain}`, '/v1/health']];
   for (let i = 0; i < 10; i++) {
     await new Promise((r) => setTimeout(r, 2_000));
     const codes = checks.map(([h, p]) => probe(h, p));
