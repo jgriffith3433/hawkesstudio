@@ -63,7 +63,11 @@ export type Product = {
   /** The product implements the playtest contract (docs/playtest.md): playtests wait for it instead of falling back to a generic smoke test. */
   contract?: boolean;
   checks?: { dir: string; cmd: string }[];
-  deploy?: { prebuild?: string };
+  /**
+   * prebuild: a command run on beta before a go live. via "ec2": main isn't published by GitHub Pages but by the product's
+   * own server (the portal, hawkesgenwebsite): its CI runs and its box pulls a passing main; box says which one.
+   */
+  deploy?: { prebuild?: string; via?: 'ec2'; box?: string };
   /**
    * Developing on beta (dev.ts): front = the /dev/ front door's port (Caddy sends https://<sub>.<domain>/dev/* there),
    * port = the dev server's port (web products; Unity products have none), path = the devtools page under /dev/,

@@ -434,6 +434,44 @@
         "port": 8715,
         "path": "/"
       }
+    },
+    {
+      "id": "hawkesgenwebsite",
+      "name": "Hawkes Gen (customer portal)",
+      "framing": "laboratory services",
+      "engine": "web",
+      "repo": "hawkesgenwebsite",
+      "site": "hawkesgenwebsite",
+      "live": "https://hawkesgen.com/",
+      "local": {
+        "serve": "npm",
+        "dir": "hawkesgenwebsite",
+        "port": 8094,
+        "path": "/"
+      },
+      "playtests": [
+        {
+          "mode": "site",
+          "where": "live"
+        },
+        {
+          "mode": "site",
+          "where": "live",
+          "device": "phone"
+        }
+      ],
+      "story": [
+        "hawkesgenwebsite/AGENTS.md"
+      ],
+      "about": "The customer portal for public Hawkes Gen (hawkesgen.com): accounts, credits, Stripe payments, the landing page, portfolio and the Creator Studio UI, with its own database. It is a server app on its own EC2 box (not GitHub Pages) and a customer of Hawkes Gen like Studio: Gen does the jobs, the portal sells and shows them.",
+      "quality": "The public pages load with no broken links or images, no blank screens and no console errors: the landing page, the portfolio and the Creator Studio entry; works on a phone. A playtest never signs up, buys or spends credits (no real accounts, no Stripe), and no key, token or customer data shows on any page. Direction for the portal is J's: don't suggest features.",
+      "deploy": {
+        "via": "ec2",
+        "box": "its own EC2 server (hawkes-gen-public)"
+      },
+      "dev": {
+        "front": 8709
+      }
     }
   ],
   "infra": [
@@ -469,6 +507,7 @@
     "icanbeaiwebsite": "jgriffith3433/icanbeaiwebsite",
     "imaginelivetvwebsite": "jgriffith3433/imaginelivetvwebsite",
     "hawkesbiomedicalnew": "jgriffith3433/hawkesbiomedical",
+    "hawkesgenwebsite": "jgriffith3433/hawkesgenwebsite",
     "hawkes-assets": "jgriffith3433/hawkes-assets",
     "hawkes-video": "jgriffith3433/hawkes-video"
   },
@@ -485,7 +524,8 @@
     "placedept": "theplacedepartment",
     "icanbe": "icanbe",
     "imaginelivetv": "imaginelivetv",
-    "corporate": "hawkesbiomedical"
+    "corporate": "hawkesbiomedical",
+    "portal": "hawkesgenwebsite"
   },
   "$comment_previews": "Beta sites: https://<subdomain>.hawkesgen.com/ is the product built from its beta branch (what going live ships), /c/<change id>/ an agent change (src/previews.ts; DNS and Caddy in deploy/deploy.mjs). Same login as Studio."
 }

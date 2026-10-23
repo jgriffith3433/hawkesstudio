@@ -56,6 +56,10 @@ const RECIPES: Record<string, Recipe> = {
   // Babylon 9 from npm with Vite (#6): its pages.yml publishes dist/ alone (vite.config.js copies the other pages,
   // releases.json and the CNAME into it), so the source as committed has bare imports a browser can't load.
   icanbe: { build: 'npm run build', site: 'none', out: { from: 'dist', to: '' } },
+  // The customer portal is a server app with a database on its own EC2 box (docs/cloud.md): its beta site is only a copy
+  // of the repo's static files (the public pages), so sign-in, credits and payments don't work there. Studio could not
+  // read the repo when this was added; if the public pages are built (Vite, a public/ folder), say so here.
+  hawkesgenwebsite: { site: 'tracked' },
   // The corporate site isn't listed: Pages serves its repo root as committed (dist/ is only the old local build).
 };
 /** How a web product's beta site is built (products not listed: the files git would publish, no build). */

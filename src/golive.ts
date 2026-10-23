@@ -20,7 +20,7 @@ import { addReleaseTo, releaseLine, STUDIO_RELEASE } from './release.ts';
 import { unityBuild } from './buildpkgs.ts';
 import { startStep, updateStep, resumedStep } from './pipeline.ts';
 import { critical } from './drain.ts';
-import { verifyLive, repoSlug } from './deploy.ts';
+import { verifyLive, repoSlug, publisherOf } from './deploy.ts';
 
 const rel = (abs: string) => path.relative(PROJECTS, abs).replace(/\\/g, '/');
 
@@ -154,16 +154,17 @@ export async function onMainPush(folder: string, sha: string) {
     }
     // A web product: Pages publishes it. Record it (rollback needs the previous commit) and playtest it once live.
     const slug = repoSlug(p.site);
-    const pages = slug ? await ensurePagesWorkflow(slug, sha).catch((e: any) => `checking Pages failed: ${e.message ?? e}`) : null;
+    const own = publisherOf(p).box; // its own server, not Pages: nothing to switch on GitHub
+    const pages = slug && !own ? await ensurePagesWorkflow(slug, sha).catch((e: any) => `checking Pages failed: ${e.message ?? e}`) : null;
     if (liveAlready(p, sha)) { out[p.id] = { skipped: 'already recorded', pages }; continue; }
     const { site } = repoDirs(p);
     const before = shaOf(site, `origin/${MAIN}`);
     await fetchOrigin(site);
     const id = newId('d');
     db.prepare('INSERT INTO deploys (id, product, kind, repo, before, after, beta, source, source_before, source_after, version, by, detail, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
-      .run(id, p.id, 'deploy', p.site, before === sha ? null : before, sha, null, null, null, null, null, 'a push to main', 'pushed to main; GitHub Pages publishes it', Date.now());
+      .run(id, p.id, 'deploy', p.site, before === sha ? null : before, sha, null, null, null, null, null, 'a push to main', own ? 'pushed to main; its CI runs and its own server pulls it' : 'pushed to main; GitHub Pages publishes it', Date.now());
     void verifyLive(p.id, sha, `Just went live (pushed to main, ${sha.slice(0, 7)})`);
-    out[p.id] = { deploy: id, pages, note: 'GitHub Pages publishes it; Studio playtests the live site when it is out' };
+    out[p.id] = { deploy: id, pages, note: own ? `${publisherOf(p).done}; Studio playtests the live site when it is out` : 'GitHub Pages publishes it; Studio playtests the live site when it is out' };
   }
   return out;
 }

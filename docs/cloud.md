@@ -73,6 +73,17 @@ their `usr_` projects.
 - **Secrets:** the box's `/srv/hawkes/hawkesgenwebsite/.env` (the Gen key and the Stripe keys), owner `hawkes`, 0600.
 - **No AWS on the box:** its instance profile is detached; the portal never calls AWS.
 - **SSH:** `ssh -i hawkesstudio/deploy/.keys/gen_public_ed25519 ubuntu@54.163.56.66` (from J's IP or this server).
+- **In Studio (product `hawkesgenwebsite`, J can build on it through Talk):** `products.json` has the product (live
+  site hawkesgen.com, `deploy.via: "ec2"`), the server keeps a checkout of the repo on `beta` (made from main when
+  missing), and agent changes are pull requests into beta like any web product. Its beta site is
+  `https://portal.hawkesgen.com/` (a copy of the repo's static files only: the server and database don't run there, so
+  sign-in, credits and payments can't be tried on beta; `previews.ts` `RECIPES`). Playtests are live-only `site`
+  crawls (read-only; never sign-up or checkout). **Going live is still J's typed `DEPLOY hawkesgenwebsite`**: it
+  fast-forwards main to the beta commit, then the portal's own CI runs and its box pulls the passing commit; Studio waits
+  for CI plus the box's pull and plays the live site. A rollback is a new revert commit through the same path and
+  does not undo the database. Studio does not SSH to the box or touch its secrets. Needs once from J: the
+  `.github/workflows/hawkes-studio.yml` hook in the portal repo (copy the one in any product repo), and `node
+  deploy/deploy.mjs` run from his PC for the `portal.` DNS record and Caddy block (Studio can't).
 - **DNS:** Route 53 `hawkesgen.com` and `www` point at the box; `studio.`, `gen.` and the beta subdomains still point
   here until they move to Studio's own domain.
 
@@ -339,6 +350,7 @@ past the login. Studio answers:
 - A commit that already went live through Studio's "Go live" isn't published twice.
 - `GET /api/hooks/pushes` lists the last pushes Studio handled and what it did. A go live also shows as a `live` run.
 - The workflow can be re-run by hand (Actions tab, "Run workflow") to send the same push again.
+- The portal (`hawkesgenwebsite`) isn't on Pages: a push to `main` is recorded and its live site is played once its CI has finished and its box has had time to pull (`deploy.via: "ec2"`; section "hawkesgen.com: the customer portal").
 - The corporate site, I Can Be and Imagine Live TV have no build on GitHub: Pages serves main as committed, and their
   beta sites serve beta's files as committed too. I Can Be's version stamp (`deploy.prebuild`) is committed to beta by
   `studio beta icanbe`, so it ships with the push.
