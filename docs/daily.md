@@ -455,6 +455,9 @@ task of kind `video` (`src/videos.ts`, `dashboard/videos.js`, Talk's `studio_vid
    (`stage: "animatic"`: the story, the beat sheet, the real voices and art, the staging, timed) unless J turns it off
    (the form, `animatic: false`). J approves it with optional guidance ("yes, go ahead, but ..."; the notes he kept on it
    go too: `approveVideo` `guidance`), and the agent makes the final from it; nothing merges yet.
+   **Delete** (a button on each video, with a confirm; `studio_video` delete, `DELETE /api/videos/<task>`, `deleteVideo`): the task is
+   dropped and an agent still on it is stopped; nothing in Gen is deleted. Dropped videos stay out of the list
+   (`GET /api/videos?dropped=1` shows them).
    **J's controls** (the New video form, `studio_video` new): length, look, voices, method (`engine`: auto, scene,
    seedance, kling, shots), quality (draft, standard, high), music, captions, end card, animatic. They go into the
    agent's request as "J's controls (follow them)" and are kept on the video (`video_state.spec`).
