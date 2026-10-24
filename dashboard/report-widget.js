@@ -524,12 +524,12 @@
     host.addEventListener(t, (e) => e.stopPropagation());
   }
   // And while a field in here has focus, keys beat everything on the page: window-capture listeners
-  // (added after this one) never see them, so game shortcuts and Unity's keyboard capture can't steal the typing.
+  // (added after this one) never see them (stopImmediatePropagation), so game shortcuts and Unity's keyboard capture can't steal the typing.
   // Keys only: clicks and drags on the panel's own buttons still need to reach their handlers.
   const inModal = (e) => { const p = e.composedPath ? e.composedPath() : []; return p.indexOf(host) >= 0; };
   for (const t of ['keydown', 'keyup', 'keypress', 'beforeinput', 'input', 'compositionstart', 'compositionend']) {
-    addEventListener(t, (e) => { if (inModal(e)) e.stopPropagation(); }, true);
-    document.addEventListener(t, (e) => { if (inModal(e)) e.stopPropagation(); }, true);
+    addEventListener(t, (e) => { if (inModal(e)) e.stopImmediatePropagation(); }, true);
+    document.addEventListener(t, (e) => { if (inModal(e)) e.stopImmediatePropagation(); }, true);
   }
   // Unity WebGL grabs the whole keyboard (and preventDefaults it) unless told not to: off while the panel is open.
   let unityKeys;
