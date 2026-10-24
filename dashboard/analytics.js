@@ -245,7 +245,7 @@
     const sessionsN = d.sessions?.sessions ?? 0;
     if (!p.hasData && !sessionsN) return `${head}<div class="empty">No players on record for ${esc(name)} yet. Hawkes Analytics (Gen's SDK) isn't on it yet, or nobody has played since it went on. Try "All" sites or include bots to see playtests.</div>`;
     const S = [];
-    const nav = [['players', 'Players'], ['retention', 'Retention'], ['funnel', 'Funnel'], ['dropoff', 'Drop-off'], ['levels', 'Levels'], ['deaths', 'Deaths'], ['likes', 'What players like'], ['dislikes', "What they don't"], ['tech', 'Tech'], ['where', 'Where from'], ['builds', 'Builds'], ['sessions', 'Sessions']];
+    const nav = [['players', 'Players'], ['retention', 'Retention'], ['sticks', 'Who sticks around'], ['funnel', 'Funnel'], ['dropoff', 'Drop-off'], ['levels', 'Levels'], ['deaths', 'Deaths'], ['likes', 'What players like'], ['dislikes', "What they don't"], ['tech', 'Tech'], ['where', 'Where from'], ['builds', 'Builds'], ['sessions', 'Sessions']];
     const insights = ins?.insights?.length ? `<div class="an-box wide" style="margin-bottom:14px"><h3>What changed</h3>${ins.insights.slice(0, 5).map((x) => `<div class="an-read">• ${esc(x.text)}</div>`).join('')}</div>` : '';
 
     // Players over time
@@ -263,6 +263,29 @@
     S.push(box('retention', 'Retention',
       rt.total?.players ? `Of ${num(rt.total.players)} new players, ${pct(rt.total.d1?.rate)} came back the next day, ${pct(rt.total.d7?.rate)} after a week and ${pct(rt.total.d30?.rate)} after a month.` : 'No new players in this range.',
       table([{ h: 'First seen (week of)', f: (x) => esc(x.week) }, { h: 'Players', n: true, f: (x) => num(x.players) }, { h: 'Day 1', n: true, f: (x) => cell(x.d1) }, { h: 'Day 7', n: true, f: (x) => cell(x.d7) }, { h: 'Day 30', n: true, f: (x) => cell(x.d30) }], [...(rt.cohorts ?? [])].reverse(), 'No cohorts yet.')));
+
+    // Who sticks around: retention by what a player's first session was (Gen's segments), and by what they did in it.
+    const sg = d.segments;
+    if (sg && sg.total?.players) {
+      const GROUPS = [['entry', 'Came in through'], ['source', 'Came from'], ['device', 'Device'], ['input', 'Plays with'], ['account', 'Account'], ['hadFun', 'First session fun'], ['played', 'First session length']];
+      const segRows = (list) => table([{ h: 'Group', f: (x) => esc(x.value) }, { h: 'Players', n: true, f: (x) => num(x.players) }, { h: 'Day 1', n: true, f: (x) => cell(x.d1) }, { h: 'Day 7', n: true, f: (x) => cell(x.d7) }, { h: 'First session', n: true, f: (x) => dur(x.medianFirstActiveSeconds) }], list, 'Nobody yet.');
+      // The reading: the feature with the biggest day-1 lift among ones enough players used, and the best and worst way in.
+      const solid = (sg.features ?? []).filter((x) => x.with.players >= 5 && x.without.players >= 5 && x.d1Lift != null);
+      const best = [...solid].sort((a, b) => b.d1Lift - a.d1Lift)[0];
+      const worst = [...solid].sort((a, b) => a.d1Lift - b.d1Lift)[0];
+      const entries = (sg.by.entry ?? []).filter((x) => x.players >= 5 && x.d1.rate != null).sort((a, b) => b.d1.rate - a.d1.rate);
+      const reading = [
+        `Of ${num(sg.total.players)} new players, ${pct(sg.total.d1?.rate)} came back the next day and ${pct(sg.total.d7?.rate)} after a week.`,
+        entries.length > 1 ? `Best way in: <b>${esc(entries[0].value)}</b> (${pct(entries[0].d1.rate)} next day) against ${esc(entries[entries.length - 1].value)} (${pct(entries[entries.length - 1].d1.rate)}).` : '',
+        best && best.d1Lift > 0 ? `Players who <b>${esc(best.name)}</b> in their first session come back more: ${pct(best.with.d1.rate)} against ${pct(best.without.d1.rate)}.` : '',
+        worst && worst !== best && worst.d1Lift < 0 ? `Those who ${esc(worst.name)} come back less (${pct(worst.with.d1.rate)} against ${pct(worst.without.d1.rate)}).` : '',
+        solid.length ? '' : 'Too few players per feature to compare yet (5 with and 5 without).',
+      ].filter(Boolean).join(' ');
+      S.push(box('sticks', 'Who sticks around', reading,
+        `${GROUPS.map(([k, label]) => (sg.by[k]?.length ? `<h4>${esc(label)}</h4>${segRows(sg.by[k].slice(0, 8))}` : '')).join('')}
+         <h4>What they did first (each feature in the first session)</h4>${table([{ h: 'Did in first session', f: (x) => esc(x.name) }, { h: 'Players', n: true, f: (x) => num(x.with.players) }, { h: 'Day 1 with · without', n: true, f: (x) => `${cell(x.with.d1)} · ${cell(x.without.d1)}` }, { h: 'Day 7 with · without', n: true, f: (x) => `${cell(x.with.d7)} · ${cell(x.without.d7)}` }, { h: 'Day 1 lift', n: true, f: (x) => (x.d1Lift == null ? '–' : `${x.d1Lift > 0 ? '+' : ''}${Math.round(x.d1Lift * 100)} pts`) }], (sg.features ?? []).slice(0, 20), 'No feature events yet.')}
+         <div class="meta">Groups are each player's first session in the range. Small groups (under about 20 players) move a lot: read them as hints.</div>`, true));
+    }
 
     // Funnel
     const fn = d.funnel ?? {};
