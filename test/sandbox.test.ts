@@ -131,7 +131,10 @@ const serverOnly = process.platform === 'win32' ? 'not on Windows'
   : process.env.CI ? 'CI: not the server\'s groups and git'
   : !agentGid ? `not in the agent group ${AGENT_GROUP}` : false;
 
-test('a repo cloned after the sandbox was set up: its objects, refs and logs become the agent group\'s (agents can commit)', { skip: serverOnly }, async () => {
+// Run as the sandbox user itself (an infra agent's checks), every clone is already the agent group's: no "before".
+const studioClone = serverOnly || (process.getgid?.() === Number(agentGid) ? 'running in the agent group: clones are already its' : false);
+
+test('a repo cloned after the sandbox was set up: its objects, refs and logs become the agent group\'s (agents can commit)', { skip: studioClone }, async () => {
   const { shareRepo } = await import('../src/sandbox.ts');
   const gid = Number(agentGid);
   const r3 = path.join(process.env.STUDIO_PROJECTS!, 'late');

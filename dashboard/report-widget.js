@@ -523,6 +523,24 @@
   for (const t of ['keydown', 'keyup', 'keypress', 'pointerdown', 'pointerup', 'pointermove', 'mousedown', 'mouseup', 'click', 'touchstart', 'touchend', 'touchmove', 'wheel', 'contextmenu']) {
     host.addEventListener(t, (e) => e.stopPropagation());
   }
+  // And while a field in here has focus, keys beat everything on the page: window-capture listeners
+  // (added after this one) never see them (stopImmediatePropagation), so game shortcuts and Unity's keyboard capture can't steal the typing.
+  // Keys only: clicks and drags on the panel's own buttons still need to reach their handlers.
+  const inModal = (e) => { const p = e.composedPath ? e.composedPath() : []; return p.indexOf(host) >= 0; };
+  for (const t of ['keydown', 'keyup', 'keypress', 'beforeinput', 'input', 'compositionstart', 'compositionend']) {
+    addEventListener(t, (e) => { if (inModal(e)) e.stopImmediatePropagation(); }, true);
+    document.addEventListener(t, (e) => { if (inModal(e)) e.stopImmediatePropagation(); }, true);
+  }
+  // Unity WebGL grabs the whole keyboard (and preventDefaults it) unless told not to: off while the panel is open.
+  let unityKeys;
+  const unityCapture = (on) => {
+    try {
+      const w = window.WebGLInput || (window.Module && window.Module.WebGLInput) || (window.unityInstance && window.unityInstance.Module && window.unityInstance.Module.WebGLInput);
+      if (!w) return;
+      if (on) { if (unityKeys !== undefined) w.captureAllKeyboardInput = unityKeys; unityKeys = undefined; }
+      else { if (unityKeys === undefined) unityKeys = w.captureAllKeyboardInput; w.captureAllKeyboardInput = false; }
+    } catch {}
+  };
 
   let top = store.get('top', 0.42);
   let hidden = store.get('hidden', false);
@@ -650,6 +668,8 @@
     showShot();
     msg.textContent = !shot ? 'No screenshot (sending without one).' : shotNote ? "The game's picture couldn't be captured; the screenshot shows the page around it." : '';
     panel.classList.add('open');
+    unityCapture(false);
+    try { const c = document.activeElement; if (c && c !== document.body && c !== host && /^canvas$/i.test(c.tagName)) c.blur(); } catch {}
     updatePerfBadge();
     if (!perfUiTimer) perfUiTimer = setInterval(updatePerfBadge, 1000);
     place();
@@ -657,6 +677,7 @@
   }
   function close() {
     panel.classList.remove('open');
+    unityCapture(true);
     if (perfUiTimer) { clearInterval(perfUiTimer); perfUiTimer = 0; }
     stopMic();
   }
