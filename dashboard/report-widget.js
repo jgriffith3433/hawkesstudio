@@ -542,7 +542,10 @@
     } catch {}
   };
 
-  let top = store.get('top', 0.42);
+  // Where it starts (until it's dragged): on phones a quarter of the way down, above the games' right-edge buttons (the
+  // portal's ➕ spawn button sits at 40% on the right: J couldn't find the dot on it, 2026-10-24).
+  const touch = (() => { try { return matchMedia('(pointer: coarse)').matches; } catch { return false; } })();
+  let top = store.get('top', touch ? 0.24 : 0.42);
   let hidden = store.get('hidden', false);
   const place = () => {
     const y = Math.round(Math.max(8, Math.min(innerHeight - 46, top * innerHeight)));
