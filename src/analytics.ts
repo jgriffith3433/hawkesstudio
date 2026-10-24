@@ -7,14 +7,16 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import { gen } from './gen.ts';
 
 /** Gen's per-product sections (GET /v1/analytics/:product/:section). */
-export const SECTIONS = ['traffic', 'sessions', 'retention', 'funnel', 'dropoff', 'levels', 'deaths', 'features', 'feedback', 'errors', 'perf', 'builds', 'insights', 'export'];
+export const SECTIONS = ['traffic', 'sessions', 'retention', 'segments', 'funnel', 'dropoff', 'levels', 'deaths', 'features', 'engagement', 'frustration', 'feedback', 'errors', 'perf', 'accounts', 'builds', 'insights', 'export'];
 const RANGES = ['today', '24h', '7d', '14d', '30d', '90d', '180d', '365d'];
 const ENVS = ['live', 'beta', 'preview', 'local'];
 /** The params each route may pass on, besides the filters. */
-const EXTRA: Record<string, string[]> = { funnel: ['steps', 'by'], builds: ['a', 'b'], list: ['limit', 'offset'], export: ['what', 'format', 'limit'] };
+const EXTRA: Record<string, string[]> = { funnel: ['steps', 'by'], builds: ['a', 'b'], list: ['limit', 'offset'], accounts: ['limit', 'offset'], export: ['what', 'format', 'limit'] };
 
 const PRODUCT = /^[a-z0-9][a-z0-9_-]{0,39}$/;
 const SESSION = /^[A-Za-z0-9_-]{8,64}$/;
+/** A site's account id (hawkesAnalytics.identify; hawkesgen.com's usr_...). */
+const USER = /^[A-Za-z0-9_-]{4,64}$/;
 const TIME = /^(\d{4}-\d\d-\d\d(T[\d:.]+Z?)?|\d{10,13})$/;
 
 /** A filter's value, or null when it isn't one Gen takes (dropped, never forwarded). */
@@ -26,6 +28,7 @@ function filterValue(k: string, v: string): string | null {
   if (k === 'env') return v === 'all' || v.split(',').every((e) => ENVS.includes(e.trim())) ? v : null;
   if (k === 'bots' || k === 'internal') return v === '1' ? '1' : null;
   if (k === 'build' || k === 'device' || k === 'browser' || k === 'country') return v.length <= 120 ? v : null;
+  if (k === 'user') return USER.test(v) ? v : null;
   if (k === 'steps') return v.length <= 2000 ? v : null;
   if (k === 'by') return v === 'session' || v === 'player' ? v : null;
   if (k === 'a' || k === 'b') return v.length <= 120 ? v : null;
@@ -34,7 +37,7 @@ function filterValue(k: string, v: string): string | null {
   if (k === 'format') return v === 'csv' || v === 'json' ? v : null;
   return null;
 }
-const FILTERS = ['range', 'from', 'to', 'env', 'build', 'device', 'browser', 'country', 'bots', 'internal'];
+const FILTERS = ['range', 'from', 'to', 'env', 'build', 'device', 'browser', 'country', 'user', 'bots', 'internal'];
 
 /**
  * The Gen path (under /v1) for a Studio route, with only the filters and params that route takes; null when the route
@@ -50,6 +53,7 @@ export function genPath(route: string, params: URLSearchParams): string | null {
   else if (parts.length === 2 && SECTIONS.includes(parts[1])) kind = parts[1];
   else if (parts.length === 3 && parts[1] === 'sessions' && parts[2] === 'list') kind = 'list';
   else if (parts.length === 3 && parts[1] === 'sessions' && SESSION.test(parts[2])) kind = 'session';
+  else if (parts.length === 3 && parts[1] === 'accounts' && USER.test(parts[2])) kind = 'account';
   else return null;
   const out = new URLSearchParams();
   if (kind !== 'products' && kind !== 'session') {

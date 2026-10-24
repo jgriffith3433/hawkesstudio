@@ -195,7 +195,7 @@ test('a snapshot asks Gen for live data only, and a product Gen doesn\'t know is
     throw Object.assign(new Error('nope'), { status: 500 });
   }, NOW);
   assert.ok(s?.hasData);
-  assert.equal(asked.length, 8);
+  assert.equal(asked.length, 10);
   assert.ok(asked.every((p) => p.startsWith('/analytics/sickofit/') && !/env=|bots=|internal=/.test(p)), 'Gen\'s defaults: live, no bots, no internal');
   assert.ok(asked.includes(`/analytics/sickofit/sessions?from=${NOW - 14 * DAY}&to=${NOW - 7 * DAY}`));
   assert.ok(s!.errors.groups[0].message.length <= 300, 'trimmed for the step');
@@ -241,4 +241,37 @@ test('studio_analytics: the route per view, and compact JSON with sentences and 
   // Agents' own server lists it (agents.ts AGENT_STUDIO_TOOLS).
   const { AGENT_STUDIO_TOOLS } = await import('../src/agents.ts');
   assert.ok(AGENT_STUDIO_TOOLS.includes('studio_analytics'));
+});
+
+test('what gets in the way and where the time goes: report lines, work over the minimum sample, the views', async () => {
+  const s = rich();
+  s.frustration = {
+    sessions: 540, sessionsWithFrustration: 120, frustrationRate: 0.22, leftAfterRate: 0.4,
+    kinds: [
+      { kind: 'out_of_credits', count: 90, sessions: 70, players: 60, shareOfSessions: 0.13, leftAfter: 40, leftAfterRate: 0.57, pages: { '/app/g/*': 50 } },
+      { kind: 'server_error', count: 40, sessions: 30, players: 28, shareOfSessions: 0.056, leftAfter: 10, leftAfterRate: 0.33, pages: { '/app': 30 } },
+      { kind: 'assistant_slow', count: 3, sessions: 3, players: 3, shareOfSessions: 0.006, leftAfter: 0, leftAfterRate: 0, pages: {} },
+    ],
+    rageClicks: [{ where: '/app span#planChip', count: 30, sessions: 12 }],
+  };
+  s.engagement = { players: 312, activeSeconds: 90000, activities: [{ name: 'build', seconds: 40000, players: 120, medianSecondsPerPlayer: 200 }, { name: 'drive', seconds: 9000, players: 80, medianSecondsPerPlayer: 60 }] };
+  const lines = P.playersSection(s, NOW).join('\n');
+  assert.match(lines, /What gets in the way: out_of_credits in 70 sessions \(13%; 57% left within 2 minutes\); server_error in 30 sessions/);
+  assert.doesNotMatch(lines, /assistant_slow/, 'under the minimum sample');
+  assert.match(lines, /Where their time goes: build 667 min in all \(120 players, a median 3 min each\)/);
+  const work = P.playerWork(s);
+  const w = (k: string) => work.find((x) => x.key === k);
+  assert.equal(w('players:frustration:out_of_credits')?.kind, 'idea');
+  assert.equal(w('players:frustration:server_error')?.kind, 'bug', 'the site failing them is a bug');
+  assert.equal(w('players:frustration:assistant_slow'), undefined);
+  assert.ok(work.some((x) => x.key.startsWith('players:rage:')));
+  assert.equal(P.playerWork({ ...thin(), frustration: { sessions: 8, kinds: [{ kind: 'out_of_credits', sessions: 6, shareOfSessions: 0.75 }] } }).filter((x) => x.area === 'player frustration').length, 0, 'too few sessions');
+
+  assert.equal(P.viewRoute({ product: 'hawkesgen', view: 'accounts', user: 'usr_0123456789abcdef' }).path, '/api/analytics/hawkesgen/accounts/usr_0123456789abcdef');
+  assert.equal(P.viewRoute({ product: 'hawkesgen', view: 'frustration', user: 'usr_0123456789abcdef', range: '7d' }).path, '/api/analytics/hawkesgen/frustration?range=7d&user=usr_0123456789abcdef');
+  const fr = P.compactView('frustration', s.frustration);
+  assert.match(fr.sentences[0], /22% of 540 sessions hit something in their way; 40% of those left within 2 minutes/);
+  assert.ok(fr.sentences.some((x: string) => /Rage clicks on \/app span#planChip: 30 in 12 sessions/.test(x)));
+  const ac = P.compactView('accounts', { total: 1, identifiedSessions: 3, accounts: [{ user: 'usr_0123456789abcdef', sessions: 3, activeSeconds: 900, topActivities: [{ name: 'build', value: 600 }], frustrationKinds: [{ name: 'out_of_credits', value: 2 }], milestones: { signup: 1 } }] });
+  assert.match(ac.sentences[1], /usr_0123456789abcdef: 3 sessions, 15 min active; time on build 10 min; got in the way: out_of_credits ×2; signup ×1\./);
 });
