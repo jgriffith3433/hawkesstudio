@@ -2578,15 +2578,37 @@ export async function updateFromBase(id: string): Promise<{ state: 'current' | '
   const f = await gitAsync(repoDir, ['fetch', '--quiet', 'origin']);
   if (!f.ok) return { state: 'skipped', why: `fetch failed: ${f.err.slice(0, 200)}` };
   if (!git(c.worktree, ['rev-parse', '--verify', '--quiet', `origin/${c.base}`]).ok) return { state: 'skipped', why: `no origin/${c.base}` };
-  if (git(c.worktree, ['merge-base', '--is-ancestor', `origin/${c.base}`, 'HEAD']).ok) return { state: 'current' };
+  const untracked = await untrackNotes(c.worktree);
+  if (untracked) addLog(id, `${NOTES} was committed on the branch: Studio took it out of git (the notes stay in the worktree)`);
+  const current = git(c.worktree, ['merge-base', '--is-ancestor', `origin/${c.base}`, 'HEAD']).ok;
+  if (current && !untracked) return { state: 'current' };
   const before = git(c.worktree, ['rev-parse', 'HEAD']).out;
-  const m = await gitAsync(c.worktree, ['-c', 'user.name=Hawkes Studio', '-c', 'user.email=studio@hawkesgen.com', 'merge', '--no-edit', '-m', `Merge ${c.base} into ${c.branch} (Hawkes Studio: ${c.base} moved)`, `origin/${c.base}`]);
-  if (!m.ok) {
-    const files = git(c.worktree, ['diff', '--name-only', '--diff-filter=U']).out.split('\n').filter(Boolean);
-    git(c.worktree, ['merge', '--abort']);
-    await gitAsync(c.worktree, ['reset', '--hard', before]);
-    addLog(id, `${c.base} moved: merging origin/${c.base} into the branch conflicts${files.length ? ` in ${files.join(', ')}` : ` (${(m.err || m.out).slice(0, 200)})`}`);
-    return { state: 'conflict', files };
+  if (!current) {
+    // A merge writes over ignored files, and .hawkes/ may be tracked on the base: the notes are kept aside and put back.
+    const notes = snapshotNotes(c.worktree);
+    const m = await gitAsync(c.worktree, [...STUDIO_GIT, 'merge', '--no-ff', '--no-edit', '-m', `Merge ${c.base} into ${c.branch} (Hawkes Studio: ${c.base} moved)`, `origin/${c.base}`]);
+    const files = m.ok ? [] : git(c.worktree, ['diff', '--name-only', '--diff-filter=U']).out.split('\n').filter(Boolean);
+    // Only agents' notes conflict (each change writes its own summary.md, try.md, learned.md): none of them belong in git.
+    const notesOnly = !m.ok && files.length > 0 && files.every((f) => f.startsWith(NOTES));
+    if (!m.ok && !notesOnly) {
+      git(c.worktree, ['merge', '--abort']);
+      await gitAsync(c.worktree, ['reset', '--hard', before]);
+      restoreNotes(c.worktree, notes);
+      addLog(id, `${c.base} moved: merging origin/${c.base} into the branch conflicts${files.length ? ` in ${files.join(', ')}` : ` (${(m.err || m.out).slice(0, 200)})`}`);
+      return { state: 'conflict', files };
+    }
+    git(c.worktree, ['rm', '-r', '--cached', '--quiet', '--ignore-unmatch', '--', NOTES]);
+    restoreNotes(c.worktree, notes);
+    if (notesOnly || git(c.worktree, ['diff', '--cached', '--quiet']).ok === false) {
+      const done = await gitAsync(c.worktree, [...STUDIO_GIT, 'commit', '--no-verify', ...(notesOnly ? ['--no-edit'] : ['--amend', '--no-edit'])]);
+      if (!done.ok) {
+        git(c.worktree, ['merge', '--abort']);
+        await gitAsync(c.worktree, ['reset', '--hard', before]);
+        restoreNotes(c.worktree, notes);
+        return { state: 'skipped', why: `committing the merge failed: ${done.err.slice(0, 200)}` };
+      }
+    }
+    if (notesOnly) addLog(id, `${c.base} moved: only agents' notes conflicted (${files.join(', ')}); Studio kept them out of git`);
   }
   const sha = git(c.worktree, ['rev-parse', 'HEAD']).out;
   const p = await gitAsync(c.worktree, ['push', '--quiet', 'origin', `HEAD:${c.branch}`]);
@@ -2597,8 +2619,42 @@ export async function updateFromBase(id: string): Promise<{ state: 'current' | '
   // The agent's group keeps writing here (a later pass): what Studio's git just wrote is shared again (sandbox.ts).
   await shareWorktree(c.worktree);
   update(id, { verify: { ...(c.verify ?? {}), sha } });
-  addLog(id, `${c.base} moved: merged origin/${c.base} into the branch (no conflicts) and pushed ${sha.slice(0, 7)}`);
+  addLog(id, current ? `pushed ${sha.slice(0, 7)} (${NOTES} out of git)` : `${c.base} moved: merged origin/${c.base} into the branch (no conflicts) and pushed ${sha.slice(0, 7)}`);
   return { state: 'merged', sha };
+}
+
+/** Agents' notes (brief, summary, try, learned, video.json): Studio reads them from the worktree; they never belong in git. */
+const NOTES = '.hawkes/';
+const STUDIO_GIT = ['-c', 'user.name=Hawkes Studio', '-c', 'user.email=studio@hawkesgen.com', '-c', 'core.hooksPath=/dev/null'];
+
+/**
+ * .git/info/exclude only keeps untracked notes out; once a commit had them (Dose Of Destruction's video passes,
+ * 2026-10-22), every later change edited them and any two changes conflicted on them (J, 2026-10-24: a video's
+ * "Approve and post drafts" stopped on .hawkes/summary.md). Takes them out of the branch's index, files kept.
+ */
+async function untrackNotes(worktree: string) {
+  if (!git(worktree, ['ls-files', '--', NOTES]).out) return false;
+  const exclude = path.resolve(worktree, git(worktree, ['rev-parse', '--git-common-dir']).out, 'info', 'exclude');
+  fs.mkdirSync(path.dirname(exclude), { recursive: true });
+  if (!fs.existsSync(exclude) || !fs.readFileSync(exclude, 'utf8').includes(NOTES)) fs.appendFileSync(exclude, `\n${NOTES}\n`);
+  git(worktree, ['rm', '-r', '--cached', '--quiet', '--', NOTES]);
+  const r = await gitAsync(worktree, [...STUDIO_GIT, 'commit', '--no-verify', '--quiet', '-m', `Keep ${NOTES} out of git (Hawkes Studio: agents' notes)`]);
+  if (!r.ok) git(worktree, ['reset', '--quiet', 'HEAD', '--', NOTES]);
+  return r.ok;
+}
+function snapshotNotes(worktree: string) {
+  const dir = path.join(worktree, NOTES);
+  if (!fs.existsSync(dir)) return null;
+  const copy = fs.mkdtempSync(path.join(os.tmpdir(), 'hawkes-notes-'));
+  fs.cpSync(dir, copy, { recursive: true });
+  return copy;
+}
+function restoreNotes(worktree: string, copy: string | null) {
+  const dir = path.join(worktree, NOTES);
+  fs.rmSync(dir, { recursive: true, force: true });
+  if (!copy) return;
+  fs.cpSync(copy, dir, { recursive: true });
+  fs.rmSync(copy, { recursive: true, force: true });
 }
 
 /**

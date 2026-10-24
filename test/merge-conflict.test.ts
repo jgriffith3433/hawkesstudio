@@ -40,6 +40,7 @@ const other = path.join(tmp, 'other');
 git(tmp, 'clone', '--quiet', '-b', 'beta', origin, other);
 function betaMoves(file: string, text: string) {
   git(other, 'pull', '--quiet', 'origin', 'beta');
+  fs.mkdirSync(path.dirname(path.join(other, file)), { recursive: true });
   fs.writeFileSync(path.join(other, file), text);
   git(other, 'add', '-A');
   git(other, 'commit', '--quiet', '-m', `Another task: ${file}`);
@@ -167,6 +168,46 @@ test('a real conflict is not merged: aborted, the files named, the branch as it 
   assert.equal(git(c.wt, 'status', '--porcelain', '--', '.', ':(exclude).hawkes'), '', 'nothing left half-merged');
   await assert.rejects(agents.approve(c.id, { confirm: `MERGE ${c.id}` }), /moved and the branch conflicts with it in menu\.txt/);
   assert.ok(!merges.includes(c.branch));
+  db.prepare(`UPDATE changes SET status = 'closed' WHERE id = ?`).run(c.id);
+});
+
+test("agents' notes committed on both sides: Studio takes them out of git and merges, the branch's notes kept on disk", async () => {
+  // Beta already has notes in git from an earlier change (Dose Of Destruction, 2026-10-22), and this branch wrote its own.
+  betaMoves('.hawkes/summary.md', 'Another change\n');
+  const c = readyChange('Begin game\n');
+  fs.writeFileSync(path.join(c.wt, '.hawkes', 'summary.md'), 'This change\n');
+  fs.writeFileSync(path.join(c.wt, '.hawkes', 'video.json'), '{"asset":"a_1"}\n');
+  git(c.wt, 'add', '-f', '.hawkes');
+  git(c.wt, 'commit', '--quiet', '-m', 'Notes committed by mistake');
+  git(c.wt, 'push', '--quiet', 'origin', `HEAD:${c.branch}`);
+  betaMoves('.hawkes/summary.md', 'Yet another change\n');
+  const r = await updateFromBase(c.id);
+  assert.equal(r.state, 'merged', JSON.stringify(r));
+  assert.equal(git(c.wt, 'ls-files', '--', '.hawkes'), '', 'no notes in git');
+  assert.equal(fs.readFileSync(path.join(c.wt, '.hawkes', 'summary.md'), 'utf8'), 'This change\n', "the branch's own notes on disk");
+  assert.ok(fs.existsSync(path.join(c.wt, '.hawkes', 'video.json')));
+  assert.equal(fs.readFileSync(path.join(c.wt, 'menu.txt'), 'utf8'), 'Begin game\n');
+  git(repoDir, 'fetch', '--quiet', 'origin');
+  assert.equal(git(repoDir, 'rev-parse', `origin/${c.branch}`), r.sha, 'pushed');
+  assert.equal(git(repoDir, 'ls-tree', '-r', '--name-only', r.sha!, '--', '.hawkes'), '', 'merging it takes the notes off beta too');
+  assert.equal((await updateFromBase(c.id)).state, 'current');
+  db.prepare(`UPDATE changes SET status = 'closed' WHERE id = ?`).run(c.id);
+});
+
+test('notes in git on an up-to-date branch: taken out and pushed', async () => {
+  const c = readyChange('Start!\n');
+  fs.mkdirSync(path.join(c.wt, '.hawkes'), { recursive: true });
+  fs.writeFileSync(path.join(c.wt, '.hawkes', 'try.md'), 'Open the menu\n');
+  git(c.wt, 'add', '-f', '.hawkes');
+  git(c.wt, 'commit', '--quiet', '-m', 'Notes committed by mistake');
+  git(c.wt, 'push', '--quiet', 'origin', `HEAD:${c.branch}`);
+  git(c.wt, 'fetch', '--quiet', 'origin');
+  git(c.wt, 'merge', '--quiet', '--no-edit', 'origin/beta');
+  const r = await updateFromBase(c.id);
+  assert.equal(r.state, 'merged', JSON.stringify(r));
+  assert.equal(git(c.wt, 'ls-files', '--', '.hawkes'), '');
+  assert.equal(fs.readFileSync(path.join(c.wt, '.hawkes', 'try.md'), 'utf8'), 'Open the menu\n');
+  assert.equal(getChange(c.id)!.verify.sha, r.sha);
   db.prepare(`UPDATE changes SET status = 'closed' WHERE id = ?`).run(c.id);
 });
 
