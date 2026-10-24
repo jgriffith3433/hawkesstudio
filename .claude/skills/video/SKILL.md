@@ -351,7 +351,15 @@ not a new render.
 ## 8. Hand it over
 
 - Commit `videos/<slug>/`: `script.md` (J's script), `story.md`, `beats.json`, `video.json` (cast and forms, every shot's
-  method, Gen jobs and asset ids), any helper scripts; and the kits you made or extended (`videos/cast/`).
+  method, Gen jobs and asset ids), `edit.json`, any helper scripts; and the kits you made or extended (`videos/cast/`).
+  **Only those: text, never media.** Renders, clips, stills, audio and captions live in Gen's library and are found by
+  their asset ids in `video.json` and `edit.json`; a product repo is a game, and every video file in it is cloned by
+  every checkout forever. Keep downloads and renders under `videos/<slug>/out/` (or any folder there) uncommitted. Check
+  `git status` before committing: no `.mp4`, `.wav`, `.mp3`, `.png`, `.jpg`, `.webp`, `.vtt` or `.glb` (the product's
+  `.gitignore` may not list them all yet), and never `git add -f`.
+- Work only in your worktree (your current folder, where `.hawkes/brief.md` is). Never write in the product's other
+  checkouts (`/srv/hawkes/<repo>`, `C:\Projects\<repo>`, `.work/...`): Studio deploys beta from those, and files left there
+  stop it. Helper scripts use paths inside the worktree (relative to it, or to `/tmp` for scratch).
 - Write `.hawkes/video.json` (`asset` and `poster` are Gen asset ids; if you can't put the files into Gen yourself,
   give their paths in your worktree instead, `"file": "videos/<slug>/out/cut.mp4"` and `"poster": "videos/<slug>/out/poster.png"`,
   and Studio uploads them):

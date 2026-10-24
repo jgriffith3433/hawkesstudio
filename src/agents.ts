@@ -686,7 +686,10 @@ no beta check judge this: J watches each version in Studio's Screening tab and e
 come back to you here as a revision of this same work.
 
 - Keep the video's source in this repo under \`videos/<slug>/\`: \`script.md\` (J's script, as written), \`video.json\`
-  (cast and voices, shots, the cut's timeline, every Gen job and asset id). Commit it each pass.
+  (cast and voices, shots, the cut's timeline, every Gen job and asset id). Commit it each pass: **text only, never
+  media** (renders, clips, stills, audio, captions stay in Gen's library, by asset id; no \`git add -f\`).
+- Work only in this worktree (\`${c.worktree}\`). Never write in the product's other checkouts (\`${path.join(PROJECTS, c.repo)}\`
+  and the rest): Studio deploys beta from them, and files left there stop it.
 - Render with Hawkes Gen (\`video.compose\` for the cut). Leave the finished cut in \`.hawkes/video.json\`:
   \`{ "asset": "a_...", "poster": "a_...", "seconds": 31.5, "summary": "what changed this version", "caption": "post text with hashtags", "stage": "animatic" or "final", "story": "the logline, wants, turn and payoff", "beats": [the beat sheet], "edit": { the cut as video.compose's timeline with Gen asset ids } }\`.
   Your first pass is the animatic unless the request says J turned it off; the final comes after J approves it.
