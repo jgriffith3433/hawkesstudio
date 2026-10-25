@@ -2230,8 +2230,16 @@ async function ciJobLog(slug: string, jobId: number): Promise<string> {
 }
 
 /** GitHub's check runs of a commit ("Tell the server" doesn't count: it only runs on main). waitMs 0: one look. */
+/**
+ * GitHub Actions no longer runs Studio's and Gen's tests (J, 2026-10-25: "i don't want github running the tests
+ * anymore"). What gates a Studio/Gen change is Studio's own typecheck, tests and smoke check (verifyInfra), and the
+ * server's deploy runs them again on main before it deploys (deploy/hawkes-pull.mjs testOnServer). STUDIO_GITHUB_CI=1
+ * brings back waiting for GitHub's check runs.
+ */
+export const githubCi = () => process.env.STUDIO_GITHUB_CI === '1';
 export async function ciChecks(slug: string, sha: string, { waitMs = 30 * 60_000, onWait }: { waitMs?: number; onWait?: (detail: string) => void } = {}) {
   const t0 = Date.now();
+  if (!githubCi()) return { state: 'success', detail: 'no GitHub CI: Studio ran the checks itself, and the deploy tests main on the server', runs: [] as { name: string; status: string; conclusion: string | null; url: string }[] };
   for (;;) {
     const r = await github(`/repos/${slug}/commits/${sha}/check-runs?per_page=100`);
     const runs = latestChecks((r.check_runs ?? []) as any[]);

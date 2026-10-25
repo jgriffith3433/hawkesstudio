@@ -5,8 +5,9 @@
 // hawkes-pull.path watcher starts this. Nothing reaches in from GitHub but that signal: the server pulls itself.
 //
 // For each repo (Gen first), when origin/main has a new commit:
-//   - it deploys only a commit whose CI passed (GitHub check runs, with the server's token in /run/hawkes/github.env);
-//     a failing commit is logged once and never deployed; a pending one is looked at again a minute later
+//   - it deploys only a commit whose typecheck and tests passed HERE, on a clean copy of that commit (testOnServer;
+//     GitHub Actions runs no tests: J, 2026-10-25), or that J's PC checked (deploy/local-deploy.mjs); a failing commit
+//     is logged once and never deployed
 //   - Studio: runs, agent changes and Talk answers carry on after a restart (they run outside its process and resume),
 //     so it waits only for short critical sections (a merge, a push, a worktree add: src/drain.ts), looking again every
 //     20 s, up to HAWKES_PULL_CRITICAL_MAX_MIN (default 5); and, on a Studio that can't detach its agents (no systemd
@@ -117,6 +118,48 @@ async function ciState(repo, sha, token) {
   } catch (e) {
     return { state: 'error', detail: e.message };
   }
+}
+
+/**
+ * Typecheck and tests of `sha` on this server, on a clean copy (a worktree in a folder of its own, so nothing else in
+ * /srv/hawkes looks like a sibling repo), as hawkes, with no secrets in the environment and Gen's address pointed at a
+ * closed port (tests that want a live Gen skip themselves, as they did on CI). Once per commit: the answer is kept in
+ * the state file. J, 2026-10-25: "i don't want github running the tests anymore".
+ */
+function testOnServer(r, dir, sha, s) {
+  if (s.tested?.sha === sha) return s.tested;
+  const parent = path.join(ROOT, '.work', `deploy-test-${r.repo}`);
+  const wt = path.join(parent, r.repo);
+  const t0 = Date.now();
+  const cleanup = () => { try { git(dir, 'worktree', 'remove', '--force', wt); } catch { /* not there */ } fs.rmSync(wt, { recursive: true, force: true }); try { git(dir, 'worktree', 'prune'); } catch { /* fine */ } };
+  let result;
+  try {
+    cleanup();
+    if (HAWKES && process.getuid?.() === 0) { fs.mkdirSync(parent, { recursive: true }); fs.chownSync(parent, HAWKES.uid, HAWKES.gid); } else fs.mkdirSync(parent, { recursive: true });
+    git(dir, 'worktree', 'add', '--detach', '--quiet', wt, sha);
+    // The deployed checkout's packages when the lockfile is the same (the usual case), else a fresh install.
+    const lock = (ref) => { try { return git(dir, 'rev-parse', `${ref}:package-lock.json`); } catch { return ''; } };
+    if (lock('HEAD') && lock('HEAD') === lock(sha) && fs.existsSync(path.join(dir, 'node_modules'))) fs.symlinkSync(path.join(dir, 'node_modules'), path.join(wt, 'node_modules'), 'dir');
+    else shell(wt, 'npm ci --no-audit --no-fund --loglevel=error');
+    const env = { PATH: process.env.PATH ?? '/usr/local/bin:/usr/bin:/bin', HOME: '/home/hawkes', USER: 'hawkes', LOGNAME: 'hawkes', LANG: 'C.UTF-8', CI: '1', NODE_ENV: 'test', HAWKESGEN_URL: 'http://127.0.0.1:9' };
+    const [file, argv] = HAWKES && process.getuid?.() === 0 ? ['setpriv', ['--reuid=hawkes', '--regid=hawkes', '--init-groups', '--', 'bash', '-c', 'npm run typecheck && npm test']] : ['bash', ['-c', 'npm run typecheck && npm test']];
+    try {
+      execFileSync(file, argv, { cwd: wt, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 25 * 60_000, maxBuffer: 256 * 1024 * 1024 });
+      result = { sha, ok: true, detail: `typecheck and tests passed on the server (${Math.round((Date.now() - t0) / 1000)} s)` };
+    } catch (e) {
+      const out = `${e.stdout ?? ''}\n${e.stderr ?? ''}`;
+      const failing = out.split('\n').filter((l) => /^(✖|not ok|error TS|\s+AssertionError)/.test(l.trim())).slice(0, 8).join(' | ');
+      result = { sha, ok: false, detail: `${e.signal === 'SIGTERM' ? 'tests timed out after 25 minutes' : 'typecheck or tests failed'} on the server: ${(failing || out.trim().split('\n').slice(-4).join(' | ')).slice(0, 600)}` };
+    }
+  } catch (e) {
+    // Couldn't even set up the copy: say so, and look again later rather than call the commit bad.
+    return { sha, ok: null, detail: `couldn't set up the test copy: ${String(e.message ?? e).split('\n')[0]}` };
+  } finally {
+    cleanup();
+  }
+  s.tested = { ...result, at: new Date().toISOString() };
+  saveState(state);
+  return s.tested;
 }
 
 /**
@@ -299,7 +342,7 @@ const state = loadState();
 const token = githubToken();
 if (!token) say('no GITHUB_TOKEN in /run/hawkes/github.env: fetching anonymously will fail for private repos');
 
-// 1. What's new and passed CI.
+// 1. What's new and passed its tests.
 const todo = [];
 for (const r of REPOS) {
   const dir = path.join(ROOT, r.repo);
@@ -326,9 +369,19 @@ for (const r of REPOS) {
     once('refused', { outcome: 'refused', detail: 'the server checkout has edits to tracked files (git status); commit them on GitHub or discard them' });
     continue;
   }
-  const ci = await ciState(r.repo, tip, token);
-  if (ci.state === 'failure') { once('refused', { outcome: 'refused', detail: `CI failed: ${ci.detail}` }); continue; }
-  if (ci.state !== 'success') { say(`[${r.repo}] ${tip.slice(0, 7)} waits for CI: ${ci.detail}`); retryLater(60, 'waiting for CI'); continue; }
+  // Checked on J's PC, else tested here (GitHub runs no tests). Set HAWKES_PULL_GITHUB_CI=1 to go back to its check runs.
+  const local = verifiedLocally(r.repo, tip);
+  if (!local && process.env.HAWKES_PULL_GITHUB_CI === '1') {
+    const ci = await ciState(r.repo, tip, token);
+    if (ci.state === 'failure') { once('refused', { outcome: 'refused', detail: `CI failed: ${ci.detail}` }); continue; }
+    if (ci.state !== 'success') { say(`[${r.repo}] ${tip.slice(0, 7)} waits for CI: ${ci.detail}`); retryLater(60, 'waiting for CI'); continue; }
+  } else if (!local && !DRY) {
+    say(`[${r.repo}] ${tip.slice(0, 7)}: typecheck and tests on the server`);
+    const t = testOnServer(r, dir, tip, s);
+    if (t.ok === false) { once('refused', { outcome: 'refused', detail: t.detail }); continue; }
+    if (t.ok !== true) { say(`[${r.repo}] ${t.detail}`); retryLater(300, 'the test copy could not be set up'); continue; }
+    say(`[${r.repo}] ${t.detail}`);
+  }
   todo.push({ ...r, dir, head, tip, subject: git(dir, 'log', '-1', '--format=%s', tip) });
 }
 

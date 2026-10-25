@@ -330,17 +330,18 @@ Persistent=true
 WantedBy=timers.target`),
     unit('hawkes-pull.service', `
 [Unit]
-Description=Hawkes: deploy Gen and Studio from GitHub main (when CI passed and nothing is running)
+Description=Hawkes: deploy Gen and Studio from GitHub main (when its tests pass on this server and nothing is running)
 After=hawkes-secrets.service network-online.target
 Wants=network-online.target
 
 [Service]
 Type=oneshot
 ExecStart=/usr/bin/node /srv/hawkes/hawkesstudio/deploy/hawkes-pull.mjs
-TimeoutStartSec=30min
+# It runs each new commit's typecheck and tests itself (up to 25 minutes a repo, Gen then Studio).
+TimeoutStartSec=90min
 
 [Install]
-# Once at boot (anything pushed while the server was off); after that, only when CI says so (hawkes-pull.path).
+# Once at boot (anything pushed while the server was off); after that, only when a push to main says so (hawkes-pull.path).
 WantedBy=multi-user.target`),
     // No polling: CI's "Tell the server" job -> Studio (POST /api/hooks/self-deploy) touches .data/pull-now -> this.
     unit('hawkes-pull.path', `

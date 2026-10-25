@@ -1,3 +1,5 @@
+// These tests fake GitHub's check runs: the CI wait is on for them (ciChecks reads it per call).
+process.env.STUDIO_GITHUB_CI = '1';
 // Studio/Gen merges into main when main moved (J, 2026-10-18: a Studio change failed with "405 Pull Request has merge
 // conflicts" because PR #42 merged first, and J had to ask for a revise). On J's approval the branch is brought up to
 // date with main first: a clean merge is pushed and merges once CI on it is green (his approval stands meanwhile); red
