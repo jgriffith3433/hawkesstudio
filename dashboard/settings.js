@@ -302,6 +302,11 @@
       ${row('Disk over (%)', num('resources', 'diskPct', r.diskPct, { min: 50, max: 99 }))}
       ${row('…for at least (minutes)', num('resources', 'minutes', r.minutes, { min: 1, max: 120 }))}
       ${row('A machine idle past its stop time by (minutes)', num('resources', 'pastStopMinutes', r.pastStopMinutes, { min: 0, max: 240 }), 'A GPU server, the build server or the playtester that should have stopped itself and is still running.')}
+      ${row('Portal health failing for (minutes)', num('resources', 'portalMinutes', r.portalMinutes, { min: 1, max: 60 }), 'hawkesgen.com/v1/health not answering this long in a row. A relay node that is down is told at once.')}
+      ${row('Portal event-loop delay p99 over (ms)', num('resources', 'loopP99Ms', r.loopP99Ms, { min: 20, max: 5000 }), 'Needs the portal admin key.')}
+      ${row('…held for (minutes)', num('resources', 'loopMinutes', r.loopMinutes, { min: 1, max: 120 }), '')}
+      ${row('Portal WebSockets over (% of the cap)', num('resources', 'wsPct', r.wsPct, { min: 10, max: 100 }), '')}
+      ${row('Portal backup older than (hours)', num('resources', 'backupHours', r.backupHours, { min: 1, max: 72 }), '')}
     </div>`;
   }
 

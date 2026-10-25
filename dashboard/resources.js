@@ -118,6 +118,24 @@
       <div class="meta" style="margin-bottom:8px">From Hawkes Gen's last reading (its Machines page measures them every minute). Each one stops itself when idle; Gen starts and stops them.</div></details>`;
   }
 
+  function outside(r) {
+    const x = r.external;
+    if (!x) return '';
+    const p = x.portal.last, d = x.details;
+    const okp = (q) => (q.ok ? '<span class="pill">up</span>' : '<span class="pill warn">down</span>');
+    const rows = [
+      `<tr><td>Portal <span class="meta">${esc(x.portal.url || '')}/v1/health</span></td><td>${p ? okp(p) : '…'}</td><td class="n">${p ? `${p.ms} ms` : ''}</td><td class="meta">${p ? esc(p.ok ? ago(p.at) : `${p.status ? `HTTP ${p.status}` : p.error ?? ''} · ${ago(p.at)}`) : 'not probed yet'}</td></tr>`,
+      d.state === 'ok' && d.data
+        ? `<tr><td>Portal details <span class="meta">/v1/health/details</span></td><td><span class="pill">ok</span></td><td class="n">${d.data.p99ms == null ? '' : `p99 ${Math.round(d.data.p99ms)} ms`}</td><td class="meta">${d.data.sockets == null ? '' : `sockets ${d.data.sockets}${d.data.cap ? ` of ${d.data.cap}` : ''} · `}${d.data.lastBackup ? `backup ${ago(d.data.lastBackup)}` : 'no backup time'}</td></tr>`
+        : `<tr><td>Portal details <span class="meta">/v1/health/details</span></td><td>${d.state === 'failed' ? '<span class="pill warn">failed</span>' : '<span class="meta">skipped</span>'}</td><td></td><td class="meta">${esc(d.note ?? '')}</td></tr>`,
+      ...x.nodes.list.map((n) => `<tr><td>Relay node ${esc(n.id)} <span class="meta">${esc(n.url)}/health</span></td><td>${okp(n.last)}</td><td class="n">${n.last.ms} ms</td><td class="meta">${n.players == null ? '' : `${n.players}${n.capacity ? ` of ${n.capacity}` : ''} players`}</td></tr>`),
+    ].join('');
+    const down = (p && !p.ok) || x.nodes.list.some((n) => !n.last.ok);
+    return `<details class="rs-box more-details" data-k="outside"${down ? ' open' : ''}><summary>Outside: the portal and relay nodes <span class="meta">· ${down ? 'something is down' : x.nodes.list.length ? `portal and ${x.nodes.list.length} node(s) up` : p ? 'portal up' : 'not probed yet'}</span></summary>
+      <div class="rs-wrap"><table><tr><th>Target</th><th>State</th><th class="n">Time</th><th>Detail</th></tr>${rows}</table></div>
+      <div class="meta" style="margin-bottom:8px">Probed every minute. Details need a portal admin key in Studio's secrets (HAWKES_PORTAL_ADMIN_KEY); relay nodes come from Hawkes Gen once it lists them.${x.nodes.state === 'failed' ? ` <span class="rs-amber">Node list failed: ${esc(x.nodes.note ?? '')}</span>` : ''}</div></details>`;
+  }
+
   function work(r) {
     const w = r.work;
     if (!w) return '';
@@ -166,8 +184,8 @@
     const worst = r.attention[0]?.level ?? '';
     el.innerHTML = `<p class="rs-head ${worst}">${worst === 'bad' ? '⚠ ' : ''}${esc(r.headline)}</p>
       ${r.attention.length > 1 ? `<ul class="rs-att">${r.attention.slice(1).map((a) => `<li class="${a.level === 'bad' ? 'rs-red' : 'rs-amber'}">${a.level === 'bad' ? '⚠' : '•'} ${esc(a.text)}</li>`).join('')}</ul>` : ''}
-      ${tiles(r)}${groups(r.host)}${fleet(r)}${work(r)}${loop(r)}${charts(r)}
-      <div class="meta">Read ${ago(r.at)}${r.host ? ` in ${r.host.sampleMs} ms` : ''}. Phone alerts: ${r.settings.alerts ? `memory or disk over ${r.settings.memoryPct}% / ${r.settings.diskPct}% for ${r.settings.minutes} min, a machine idle ${r.settings.pastStopMinutes} min past its stop time` : 'off'} (<a href="#settings" data-rs-go="settings">Settings</a>).</div>`;
+      ${tiles(r)}${groups(r.host)}${outside(r)}${fleet(r)}${work(r)}${loop(r)}${charts(r)}
+      <div class="meta">Read ${ago(r.at)}${r.host ? ` in ${r.host.sampleMs} ms` : ''}. Phone alerts: ${r.settings.alerts ? `memory or disk over ${r.settings.memoryPct}% / ${r.settings.diskPct}% for ${r.settings.minutes} min, a machine idle ${r.settings.pastStopMinutes} min past its stop time, the portal failing ${r.settings.portalMinutes} min, event-loop p99 over ${r.settings.loopP99Ms} ms for ${r.settings.loopMinutes} min, WebSockets over ${r.settings.wsPct}%, a backup older than ${r.settings.backupHours} h, a relay node down` : 'off'} (<a href="#settings" data-rs-go="settings">Settings</a>).</div>`;
     for (const [k, o] of open) { const d = el.querySelector(`details[data-k="${k}"]`); if (d) d.open = o; }
   }
 

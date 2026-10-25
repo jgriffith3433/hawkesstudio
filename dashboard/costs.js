@@ -86,6 +86,7 @@
       { h: 'Builds', n: true, f: (x) => (x.builder ? usd(x.builder) : '') },
       { h: 'Playtester', n: true, f: (x) => (x.playtester ? `${usd(x.playtester)}<div class="meta">${x.playtesterMinutes} min</div>` : '') },
       { h: 'APIs', n: true, f: (x) => (x.claudeApi + x.voice + x.otherGen ? usd(x.claudeApi + x.voice + x.otherGen) : '') },
+      { h: 'Relay', n: true, f: (x) => (x.relayGb || x.relayPlayerMinutes ? `${x.relayGb} GB<div class="meta">${x.relayPlayerMinutes.toLocaleString()} player-min</div>` : '') },
       { h: 'Money', n: true, f: (x) => `<b>${usd(x.money)}</b>` },
       { h: 'Agents (not billed)', n: true, f: (x) => (x.agentRuns ? `${usd(x.agentUsage)}<div class="meta">${x.agentRuns} run(s)</div>` : '') },
     ], r.products, 'No product used anything in this period.');
