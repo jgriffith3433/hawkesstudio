@@ -282,6 +282,17 @@
     </div>`;
   }
 
+  function relaysBox(r) {
+    return `<div class="set-box"><h3>Relay health (Yooba Land)</h3>
+      <div class="meta">Once a day Studio checks each relay and runs the game's two-page soak; a relay that refuses or a failing signal route opens a finding.</div>
+      ${row('Daily check', bool('relays', 'enabled', r.enabled))}
+      ${row('From (UTC hour)', num('relays', 'hour', r.hour, { min: 0, max: 23 }))}
+      ${row('Soak length (seconds)', num('relays', 'soakSeconds', r.soakSeconds, { min: 30, max: 300 }))}
+      ${row('Stop the check after (minutes)', num('relays', 'budgetMinutes', r.budgetMinutes, { min: 2, max: 15 }))}
+      ${row('Relays', `<input type="text" data-s="relays" data-k="relays" value="${esc((r.relays ?? []).join(', '))}" placeholder="the game's own list">`, 'Comma-separated wss:// addresses to probe. Empty: the list the game ships.')}
+    </div>`;
+  }
+
   function resourcesBox(r) {
     if (!r) return '';
     return `<div class="set-box"><h3>🖥️ Server alerts</h3>
@@ -330,7 +341,7 @@
     window.callVoice?.apply(data.call);
     const badge = $('#walkAwayBadge');
     if (badge) badge.hidden = !data.pm.walkAway;
-    $('#setBody').innerHTML = `<div class="set-grid">${brainBox(data.brain)}${data.routing ? routingBox(data.routing, routing) : ''}${tuningBox(data.tuning)}${claudeBox(claude, data.brain)}${agyBox(agyLogin)}<div id="svcBox">${servicesBox(services)}</div>${callBox(data.call)}${agentsBox(data.agents)}${pmBox(data.pm)}${notifyBox(data.notify)}${costsBox(data.costs)}${resourcesBox(data.resources)}</div>`;
+    $('#setBody').innerHTML = `<div class="set-grid">${brainBox(data.brain)}${data.routing ? routingBox(data.routing, routing) : ''}${tuningBox(data.tuning)}${claudeBox(claude, data.brain)}${agyBox(agyLogin)}<div id="svcBox">${servicesBox(services)}</div>${callBox(data.call)}${agentsBox(data.agents)}${pmBox(data.pm)}${notifyBox(data.notify)}${costsBox(data.costs)}${resourcesBox(data.resources)}${data.relays ? relaysBox(data.relays) : ''}</div>`;
     if (services?.pending) watchRestart();
     if (data.call.engine === 'eleven') loadElevenVoices();
   }
@@ -380,6 +391,7 @@
     const section = t.dataset.s, k = t.dataset.k;
     if (!section || !k) return;
     let v = t.type === 'checkbox' ? t.checked : t.type === 'number' || t.type === 'range' || k === 'pause' ? Number(t.value) : t.value;
+    if (section === 'relays' && k === 'relays') v = t.value.split(/[\s,]+/).filter(Boolean);
     if (section === 'agents' && k === 'severities') v = [...document.querySelectorAll('#setBody input[data-k="severities"]:checked')].map((x) => x.value);
     if (section === 'agents' && k === 'productLimits') {
       // "sickofit: 2, phorigins: 1"; a product left out drops its override (null).
