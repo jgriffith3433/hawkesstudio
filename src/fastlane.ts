@@ -19,6 +19,7 @@ import { BETA, ensureBeta, git, gitAsync } from './beta.ts';
 import { spawnShell, assertWorktree, shareWorktree } from './sandbox.ts';
 import { recordRun } from './memory.ts';
 import { warmDeps, markInstalled } from './warm.ts';
+import { lfsPull } from './lfs.ts';
 
 export const FAST_FILES = () => Number(process.env.STUDIO_FAST_FILES ?? 8);
 export const FAST_LINES = () => Number(process.env.STUDIO_FAST_LINES ?? 200);
@@ -57,6 +58,7 @@ export async function workspace(productId: string) {
     if (!w.ok) throw new StudioError(`Couldn't make the workspace: ${w.err}`);
     await warmDeps(dir, top(p));
   }
+  await lfsPull(dir);
   // Talk (the sandbox user) commits here: its git folder must be the agent group's (sandbox.ts shareWorktree).
   await shareWorktree(dir);
   assertWorktree(dir, repo);

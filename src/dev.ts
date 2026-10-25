@@ -27,6 +27,7 @@ import { PROJECTS, DATA, GEN_URL, paths, getProduct, loadProducts, StudioError, 
 import { BETA, MAIN, ensureBeta, ensureDeps, compareRefs, repoDirs } from './beta.ts';
 import { isServer } from './repos.ts';
 import { fetchLocked } from './gitlock.ts';
+import { lfsPull } from './lfs.ts';
 import { notify, PUBLIC_URL } from './notify.ts';
 
 const WIN = process.platform === 'win32';
@@ -119,6 +120,7 @@ export async function ensureWorkingCopy(p: Product) {
   const r = spawnSync('git', ['worktree', 'add', '--quiet', '-B', DEV_BRANCH, dir, `origin/${BETA}`], { cwd: source, encoding: 'utf8', windowsHide: true });
   if (r.status !== 0) throw new Error(`Couldn't make the beta working copy: ${(r.stderr || r.stdout).trim().split('\n').pop()}`);
   spawnSync('git', ['branch', '--quiet', `--set-upstream-to=origin/${BETA}`, DEV_BRANCH], { cwd: dir, windowsHide: true });
+  await lfsPull(dir);
   return dir;
 }
 

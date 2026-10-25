@@ -53,6 +53,7 @@ import { serveDir, stopServed } from './local.ts';
 import { claudeEnv } from './claude.ts';
 import { buildPreview, removePreview, previewUrl, changeSiteDir, changeBuild, type ChangeBuild } from './previews.ts';
 import { BETA, ensureBeta, gitAsync } from './beta.ts';
+import { lfsPull } from './lfs.ts';
 import { runCommand, resumeGapMs } from './ops.ts';
 import { deployPending, critical } from './drain.ts';
 import { notify, notifyOnce, PUBLIC_URL } from './notify.ts';
@@ -1025,18 +1026,6 @@ ${storyOf(p, 6000)}
 
 // ------------------------------------------------------------------ agent
 
-/** Git LFS files in a new worktree (Sick Of It keeps its art there): real files, not pointers. Fast when the repo has them. */
-async function lfsPull(worktree: string, log: (s: string) => void) {
-  try {
-    if (!/filter=lfs/.test(fs.readFileSync(path.join(worktree, '.gitattributes'), 'utf8'))) return;
-  } catch {
-    return;
-  }
-  const t0 = Date.now();
-  const r = await gitAsync(worktree, ['lfs', 'pull'], 20 * 60_000);
-  log(r.ok ? `git lfs pull (${Math.round((Date.now() - t0) / 1000)} s)` : `git lfs pull failed: ${r.err.split('\n').pop()}`);
-}
-
 export const AGENT_MEMORY_TOOLS = ['memory_search', 'memory_get', 'memory_write'];
 /** The Studio tools on an agent's or scout's own MCP server: the shared memory, and real players' data (read-only). */
 export const AGENT_STUDIO_TOOLS = [...AGENT_MEMORY_TOOLS, 'studio_analytics', 'studio_social', 'studio_social_post'];
@@ -1571,8 +1560,9 @@ async function work(id: string, note?: string, answer?: string, resumed?: Phase 
         // A warm start: node_modules from a checkout installed for the same lockfile (warm.ts), else a fresh npm ci.
         await warmDeps(c.worktree, c.repo, (s) => addLog(id, s));
         await installCold(c.worktree, (dir, cmd) => sh(dir, cmd, { ...infraEnv({ keepGenKey: false }), PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1' }), (s) => addLog(id, s));
-      await lfsPull(c.worktree, (s) => addLog(id, s));
       } else assertWorktree(c.worktree, repoDir);
+      // Real files for its Git LFS pointers on every pass (a worktree made before git-lfs was on the server has pointers).
+      await lfsPull(c.worktree, (s) => addLog(id, s));
       // The agent (sandbox user) commits here: its git folder must be the agent group's, on every pass (a worktree made
       // before, or files Studio's own git wrote there since).
       await shareWorktree(c.worktree);
@@ -2101,7 +2091,7 @@ async function workInfra(id: string, note?: string, resumed?: Phase | null, nudg
           if (!w.ok) throw new Error(`worktree failed: ${w.err}`);
           // A warm start: node_modules from a checkout with the same lockfile (warm.ts), not a fresh npm ci.
           await warmDeps(c.worktree, c.repo, (s) => addLog(id, s));
-      await lfsPull(c.worktree, (s) => addLog(id, s));
+          await lfsPull(c.worktree, (s) => addLog(id, s));
         } else if (note) {
           // Another pass: bring the branch up to date with main first (main may have moved, or the merge conflicted).
           await gitAsync(repoDir, ['fetch', '--quiet', 'origin']);

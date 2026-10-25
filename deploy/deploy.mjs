@@ -124,6 +124,11 @@ async function setupGit() {
     'git config --global init.defaultBranch main',
   ];
   await ssh(`sudo -u hawkes -H bash -lc ${JSON.stringify(cmds.join(' && '))} && echo git-ok`);
+  // Git LFS for every user (Studio and the agent sandbox): Sick Of It keeps its art, scenes and prefabs in LFS, and
+  // without it agents read pointer text. The smudge filter is skipped so a worktree never waits on a download;
+  // src/lfs.ts pulls the files (and installs each repo's pre-push hook) after. Then the files of the repos already here.
+  await ssh(`(command -v git-lfs >/dev/null || (sudo apt-get update -qq && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq git-lfs)) && sudo git lfs install --system --skip-smudge --skip-repo >/dev/null && echo lfs-ok`);
+  await ssh(`for d in /srv/hawkes/*/; do [ -d "$d.git" ] && grep -qs 'filter=lfs' "$d.gitattributes" && sudo -u hawkes -H bash -lc "cd '$d' && git lfs update && git lfs pull && echo lfs-pulled $(basename $d)"; done; true`);
 }
 
 /** Story docs that live outside the product repos (products.json "story"), copied so reviews can read them. */
