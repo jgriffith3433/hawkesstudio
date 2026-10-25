@@ -14,7 +14,6 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { db, J, parse, newId } from './db.ts';
 import { PROJECTS } from './config.ts';
-import { isServer } from './repos.ts';
 
 db.exec(`CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated INTEGER NOT NULL, by TEXT)`);
 try { db.exec('ALTER TABLE findings ADD COLUMN source TEXT'); } catch { /* already there (roadmap.ts adds it) */ }
@@ -251,10 +250,12 @@ export function relayDue(now = Date.now(), s = relaySettings(), last = lastRelay
   return !last || new Date(last.at).toISOString().slice(0, 10) !== d.toISOString().slice(0, 10);
 }
 
+// The same test as repos.ts isServer, kept here so this module (loaded by Settings) pulls in nothing but the database.
+const onServer = () => process.platform !== 'win32' && process.env.STUDIO_SERVER === '1';
 let timer: ReturnType<typeof setInterval> | null = null;
 /** Looks every 10 minutes whether today's check is due (server only; STUDIO_RELAY_WATCH=on forces it elsewhere). */
 export function startRelayHealth() {
-  if (timer || process.env.STUDIO_SMOKE || !(isServer() || process.env.STUDIO_RELAY_WATCH === 'on')) return;
+  if (timer || process.env.STUDIO_SMOKE || !(onServer() || process.env.STUDIO_RELAY_WATCH === 'on')) return;
   // Inside a promise, so a throw (the database busy, say) is logged instead of ending Studio.
   const tick = () => void Promise.resolve().then(async () => {
     if (!relayDue()) return;
