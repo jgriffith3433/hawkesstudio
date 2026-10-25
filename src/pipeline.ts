@@ -33,6 +33,7 @@ import { betaTurn, newerBetaRun, supersede, absorbed, supersedingBuild } from '.
 import { holdBeta, waitForBetaPlays, serveBeta, runBetaBuild, servedMismatch } from './betaplay.ts';
 import { resolveScenario, missingScenario, noteScenarios, knownScenarios } from './scenarios.ts';
 import { slowNote, playTime } from './pace.ts';
+import { planRun, notePlaying, progressCheck } from './runplan.ts';
 import { brainId, harnessStopOf, type Harness } from './brains.ts';
 import { harnessHeld, holdHarness, onHoldLifted } from './harness-hold.ts';
 import { isBillingError } from './llm.ts';
@@ -172,6 +173,8 @@ async function runAll(run: string, ids: string[], o: RunOptions) {
       .catch((e: any) => updateStep(s, { status: 'failed', detail: `${e.message} (games are played in software instead)`, finished: true }));
   }
   db.prepare('UPDATE runs SET detail = ? WHERE id = ?').run(`running ${ids.length} products`, run);
+  // The scenarios this run will play, in order, so the Activity card can show "n of N" with N fixed (runplan.ts).
+  planRun(run, products.flatMap((p) => testsOf(p, o).map((t) => ({ product: p.id, name: nameOf({ ...t, scenario: t.scenario ? resolveScenario(p, t.scenario) : t.scenario }) }))));
   await Promise.all(products.map((p) => runProduct(run, p, o).catch((e) => {
     const s = startStep(run, p.id, 'error', 'pipeline');
     updateStep(s, { status: 'failed', detail: String(e.message ?? e), finished: true });
@@ -304,8 +307,7 @@ export async function runProduct(run: string, p: Product, o: RunOptions) {
   }
 
   // Playtests.
-  const tests = p.playtests.filter((t) => (o.where === 'local' ? t.where === 'local' : o.where === 'live' ? t.where === 'live' : true))
-    .filter((t) => !o.scenarios?.length || o.scenarios.includes(t.scenario ?? t.mode ?? ''));
+  const tests = testsOf(p, o);
   const ran: string[] = [];
   // Every local playtest of the run plays the beta build it built or kept: a newer build waits for them (betaplay.ts).
   const release = p.build && betaLane() && tests.some((t) => t.where === 'local') ? holdBeta(p.id, run) : null;
@@ -325,6 +327,10 @@ export async function runProduct(run: string, p: Product, o: RunOptions) {
     updateStep(s, { status: 'done', detail: `${quiet.length} open findings weren't seen this time (maybe fixed)`, data: { ids: quiet.map((f) => f.id) }, finished: true });
   }
 }
+
+/** The playtests a run plays for a product (the daily run and one-off runs). */
+const testsOf = (p: Product, o: RunOptions) => p.playtests.filter((t) => (o.where === 'local' ? t.where === 'local' : o.where === 'live' ? t.where === 'live' : true))
+  .filter((t) => !o.scenarios?.length || o.scenarios.includes(t.scenario ?? t.mode ?? ''));
 
 /** Stale beta checkouts Talk was told about (once per state, not every playtest). */
 const staleTold = new Set<string>();
@@ -499,12 +505,23 @@ export async function testProduct(run: string, p: Product, platform: 'EditMode' 
  * full (daily; regression-only once the scenario meets the product's quality bar), verify (beta runs, one-off checks),
  * regression (live checks). criteria: a roadmap task's acceptance criteria, judged on this playtest.
  */
-export async function playtestProduct(run: string, p: Product, asked: Playtest, { review = true, focus, mode = 'full', criteria, abandon, slot = 0 }: { review?: boolean; focus?: string; mode?: ReviewMode; criteria?: string[]; abandon?: () => string | null; slot?: number } = {}) {
+export async function playtestProduct(run: string, p: Product, asked: Playtest, opts: PlayOptions = {}) {
+  try {
+    return await playScenario(run, p, asked, opts);
+  } finally {
+    await progressCheck(run);
+  }
+}
+type PlayOptions = { review?: boolean; focus?: string; mode?: ReviewMode; criteria?: string[]; abandon?: () => string | null; slot?: number };
+
+async function playScenario(run: string, p: Product, asked: Playtest, { review = true, focus, mode = 'full', criteria, abandon, slot = 0 }: { review?: boolean; focus?: string; mode?: ReviewMode; criteria?: string[]; abandon?: () => string | null; slot?: number } = {}) {
   // A renamed scenario (an older task's name) plays under the game's current name (products.json scenarioAliases).
   const renamed = asked.scenario ? resolveScenario(p, asked.scenario) : undefined;
   const t: Playtest = renamed && renamed !== asked.scenario ? { ...asked, scenario: renamed } : asked;
   const name = nameOf(t);
   const s = startStep(run, p.id, 'playtest', name, renamed !== asked.scenario ? `starting (asked for "${asked.scenario}", now "${renamed}")` : 'starting');
+  // Not in the run's starting list: a line says which and why (runplan.ts).
+  notePlaying(run, p.id, name, renamed !== asked.scenario ? `the game renamed "${asked.scenario}" to "${renamed}"` : 'it was not in the starting list (the run took it up while going)');
   // Resumed after a restart: a playtest that finished is kept (its review carries on); one that was waiting in Gen's
   // queue is waited for again. A local one that was playing lost its page server (it stopped with Studio): it's
   // played again. A live one plays a site Studio doesn't serve: waited for again.
@@ -893,7 +910,11 @@ async function partialBody(id: string, kind: string, p: Product, opts: PartialOp
   try {
     if (kind === 'build') await buildProduct(id, p, { force: opts.force ?? true });
     else if (kind === 'test') await testProduct(id, p, opts.platform ?? 'EditMode', opts.category);
-    else await playtestProduct(id, p, { scenario: opts.scenario ?? (opts.mode ? undefined : 'smoke'), mode: (opts.mode as any) ?? undefined, where: opts.where ?? 'local', device: opts.device, seed: opts.seed, options: opts.options, ...(opts.at ? { at: opts.at } : {}) }, { review: opts.review !== false, focus: opts.focus, mode: opts.reviewMode ?? (opts.where === 'live' ? 'regression' : 'verify') });
+    else {
+      const t: Playtest = { scenario: opts.scenario ?? (opts.mode ? undefined : 'smoke'), mode: (opts.mode as any) ?? undefined, where: opts.where ?? 'local', device: opts.device, seed: opts.seed, options: opts.options, ...(opts.at ? { at: opts.at } : {}) };
+      planRun(id, [{ product: p.id, name: nameOf({ ...t, scenario: t.scenario ? resolveScenario(p, t.scenario) : t.scenario }) }]);
+      await playtestProduct(id, p, t, { review: opts.review !== false, focus: opts.focus, mode: opts.reviewMode ?? (opts.where === 'live' ? 'regression' : 'verify') });
+    }
     const cost = (db.prepare('SELECT COALESCE(SUM(cost), 0) AS c FROM steps WHERE run = ?').get(id) as any).c;
     const failed = (db.prepare(`SELECT COUNT(*) AS n FROM steps WHERE run = ? AND status = 'failed'`).get(id) as any).n;
     db.prepare(`UPDATE runs SET status = ?, detail = ?, finished = ?, cost = ? WHERE id = ?`).run(failed ? 'failed' : 'done', `${kind} ${p.id}${failed ? ' failed' : ''}`, Date.now(), cost, id);
@@ -926,6 +947,15 @@ export function startBeta(productId: string, o: BetaOptions = {}) {
 
 async function betaBody(id: string, p: Product, { focus, criteria, scenario, options, playtest, quiet, plays }: BetaOptions) {
   try {
+    // What this beta run was asked to play (runplan.ts): the tasks' scenarios, or beta's one playtest when asked for.
+    if (betaLane()) {
+      const nameFor = (x: { scenario?: string }) => {
+        const pt = x.scenario ? { scenario: resolveScenario(p, x.scenario), where: 'local' as const } : p.playtests.find((y) => y.where === 'local' && y.device !== 'phone');
+        return pt ? nameOf(pt) : null;
+      };
+      const asked = plays?.length ? plays.map(nameFor) : playtest ?? betaPlaytestsOn() ? [nameFor({ scenario })] : [];
+      planRun(id, [...new Set(asked.filter(Boolean) as string[])].map((name) => ({ product: p.id, name })));
+    }
     const lane = betaLane();
     const top = p.repo.split('/')[0];
     if (lane && repoMap()[top] && !hadSteps(id, 'repo')) {

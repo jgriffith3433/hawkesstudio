@@ -140,10 +140,26 @@ if (typeof document !== 'undefined') (() => {
       ${!done && c.log?.length ? `<details class="act-log"><summary class="meta">last log lines</summary><pre>${esc(c.log.join('\n'))}</pre></details>` : ''}
     </div>`;
   }
+  // A run's scenarios in order: expected time, state, and the verdict with findings as soon as its review is done.
+  const PLAN_ICON = { waiting: '⏳', playing: '▶️', reviewing: '🔎', done: '✅', failed: '❌', skipped: '⏭️' };
+  const mins = (s) => `${Math.max(1, Math.round(s / 60))} min`;
+  function planHtml(r) {
+    const p = r.plan;
+    if (!p) return '';
+    const item = (x) => {
+      const what = x.verdict ?? (x.state === 'playing' ? 'playing' : x.state === 'reviewing' ? 'Claude is reviewing' : x.state);
+      const cls = x.verdict === 'broken' || x.state === 'failed' ? ' act-bad' : '';
+      return `<li class="act-plan-item${cls}">${PLAN_ICON[x.state] ?? '•'} <b>${esc(x.productName)}</b> ${esc(x.name)} <span class="meta">~${mins(x.estS)} · ${esc(what)}${x.state === 'failed' && x.detail ? `: ${esc(x.detail.slice(0, 140))}` : ''}</span>${x.findings.length ? `<div class="meta">${x.findings.map((f) => `${esc(f.severity)}: ${esc(f.title)}`).join('<br>')}</div>` : ''}</li>`;
+    };
+    return `<div class="act-now"><b>${esc(p.line)}</b> <span class="meta">· expected ${p.expectedMin} min in all</span></div>
+      <ol class="act-plan">${p.items.map(item).join('')}</ol>
+      ${p.notes.map((n) => `<div class="act-step">➕ ${esc(n.text)}</div>`).join('')}`;
+  }
   function runHtml(r, done = false) {
     return `<div class="act-item">
       <div class="act-top">${ICON[r.status] ?? '•'} <b>${esc(r.kind)}${r.where === 'live' ? ' (live)' : ''}</b> ${esc(r.products.join(', '))}<span class="act-time">${done ? ago(r.at) : since(r.started)}</span></div>
       <div class="act-now">${esc(r.detail ?? '')}${r.steps.total ? ` · ${r.steps.done}/${r.steps.total} steps${r.steps.failed ? `, ${r.steps.failed} failed` : ''}` : ''}</div>
+      ${planHtml(r)}
       ${(r.now ?? []).map((s) => `<div class="act-step">▸ ${esc(s.kind)} ${esc(s.name)}${s.detail ? `: ${esc(s.detail)}` : ''} <span class="meta">${since(s.started)}${s.job && s.kind === 'playtest' ? ` · ${watch(s.job)}` : ''}${s.job ? ` · ${link(`${GEN}/#job/${s.job}`, 'job')}` : ''}</span></div>`).join('')}
       <div class="meta">by ${by(r)} · <a href="#" data-run-open="${esc(r.id)}">${esc(r.id)}</a>${r.cost ? ` · $${r.cost.toFixed(2)}` : ''}</div>
       ${r.playtests?.length ? `<details class="act-frames" data-frames-run="${esc(r.id)}"${openRuns.has(r.id) ? ' open' : ''}><summary class="meta">🎞 screenshots · ${r.playtests.length} playtest${r.playtests.length === 1 ? '' : 's'}</summary>${r.playtests.map((p) => `<div class="fr-slot" data-frames="${esc(p.id)}"><div class="meta">${esc(p.product)} · ${esc(p.name)} · ${esc(p.status)}</div></div>`).join('')}</details>` : ''}
