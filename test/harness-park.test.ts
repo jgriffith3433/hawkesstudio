@@ -122,8 +122,11 @@ const env: NodeJS.ProcessEnv = {
   STUDIO_AGENT_GRACE_MS: '1000',
   // A minute of the hold's backoff is 5 ms here, and the hold is looked at every 200 ms.
   STUDIO_HARNESS_MINUTE_MS: '5', STUDIO_HARNESS_POLL_MS: '200', FAKE_LIMIT_FILE: limitFile,
+  // No other harness stands in for the held one: on a machine with Cursor, Copilot or Antigravity set up (the server)
+  // a real stand-in would take the parked change and it would start a new session instead of resuming its own.
+  STUDIO_HARNESS_FAILOVER: 'off',
 };
-for (const k of ['STUDIO_SERVER', 'HAWKESGEN_KEY', 'STUDIO_BETA_LANE', 'NTFY_TOPIC', 'CURSOR_API_KEY', 'HAWKES_BRAIN']) delete env[k];
+for (const k of ['STUDIO_SERVER', 'HAWKESGEN_KEY', 'STUDIO_BETA_LANE', 'NTFY_TOPIC', 'CURSOR_API_KEY', 'COPILOT_GITHUB_TOKEN', 'GEMINI_API_KEY', 'HAWKES_BRAIN']) delete env[k];
 
 let studio: ChildProcess | null = null;
 let output = '';
