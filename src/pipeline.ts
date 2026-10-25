@@ -516,6 +516,13 @@ export async function playtestProduct(run: string, p: Product, asked: Playtest, 
     if (job.result?.software && p.engine !== 'static') return job;
     return reviewPlaytest(run, p, t, job, was.data?.played ?? null, { focus, mode, criteria });
   }
+  // A run that has been going past its total cap plays no more scenarios: the rest are skipped with the reason, and J's phone is told once.
+  const over = runOverCap(run);
+  if (over && !was?.job) {
+    updateStep(s, { status: 'skipped', detail: over.message, data: { runCap: over.capMin }, finished: true });
+    void notifyOnce(`runcap:${run}`, 24 * 3600_000, `Run stopped playing: ${p.name}`, `${over.message} (run ${run})`, { priority: 4, tags: ['hourglass'] });
+    return null;
+  }
   let prior: any = null;
   if (was?.job) {
     prior = await gen.job(was.job).catch(() => null);
@@ -625,6 +632,7 @@ export async function playtestProduct(run: string, p: Product, asked: Playtest, 
     data: ok ? { ...playtestData(job, url), played, ...(at ? { at } : {}), ...(slow ? { slow } : {}) } : { error: job.error, url, played },
     finished: true,
   });
+  if (!ok && /^stuck:/.test(String(job.error ?? ''))) fileStuck(run, p, name, job);
   // A live site failing its check may be down: tell J's phone (once per product and scenario every 6 hours).
   if (t.where === 'live' && (!ok || r.outcome === 'error')) {
     void notifyOnce(`live:${p.id}:${name}`, 6 * 3600_000, `Live check failed: ${p.name}`, `${p.live} (${name}): ${ok ? `the playtest ended in an error${r.problems?.[0]?.message ? `: ${r.problems[0].message}` : ''}` : (job.error ?? job.detail ?? 'the playtest failed')}`.slice(0, 600), { url: p.live, priority: 4, tags: ['rotating_light'] });
@@ -637,6 +645,34 @@ export async function playtestProduct(run: string, p: Product, asked: Playtest, 
     return job;
   }
   return reviewPlaytest(run, p, t, job, played, { focus, mode, criteria });
+}
+
+/** The most a whole run may take before it plays no more scenarios (J, 2026-10-25: a beta run sat for hours). */
+export const RUN_MAX_MS = () => Number(process.env.STUDIO_RUN_MAX_MS ?? 3 * 3600_000);
+export function runOverCap(run: string): { message: string; capMin: number } | null {
+  const row = db.prepare('SELECT started FROM runs WHERE id = ?').get(run) as { started?: number } | undefined;
+  const cap = RUN_MAX_MS();
+  if (!row?.started || cap <= 0 || Date.now() - row.started <= cap) return null;
+  const capMin = Math.round(cap / 60000);
+  return { capMin, message: `not played: this run has been going for over ${capMin} minutes (the most one run may take), so it plays no more scenarios. Ask for it again to play the rest.` };
+}
+
+/** A scenario Studio ended for standing still: a stuck finding with where it stood and its last events, and a note to J's phone. */
+function fileStuck(run: string, p: Product, name: string, job: any) {
+  const at = String(job.stuckAt ?? '').slice(0, 200);
+  const events = (job.stuckLog as string[] | undefined) ?? [];
+  const scenario = name.replace(/@.*$/, '');
+  try {
+    absorb(p.id, run, scenario, [{
+      title: `${scenario} got stuck and was ended${at ? `: ${at.slice(0, 80)}` : ''}`,
+      severity: 'bug', area: 'gameplay',
+      detail: `${job.error}\nWhere it stood: ${at || 'unknown'}\nLast events:\n${events.join('\n')}`.slice(0, 3000),
+      fix: 'Find why the bot (or the game) stops making progress at that position: a foothold it cannot leave, a door that never opens, or a scenario step that waits for something that never happens.',
+    }], { mode: 'full' });
+  } catch (e: any) {
+    console.warn(`[studio] stuck finding not filed (${p.id} ${name}): ${e.message ?? e}`);
+  }
+  void notifyOnce(`stuck:${p.id}:${name}`, 6 * 3600_000, `Playtest stuck: ${p.name} ${scenario}`, `${job.error}${at ? ` Last seen at: ${at}.` : ''} Filed as a stuck finding; the run moved on.`.slice(0, 600), { priority: 3, tags: ['warning'] });
 }
 
 /**
