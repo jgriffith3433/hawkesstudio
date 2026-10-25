@@ -186,6 +186,7 @@ const server = http.createServer(async (req, res) => {
 
     // Playtests: every run with its video, screenshots and review (dashboard Playtests tab), trends.
     if (route === '/api/playtests' && method === 'GET') return send(res, 200, listPlaytests({ product: q('product'), scenario: q('scenario'), where: q('where'), device: q('device'), outcome: q('outcome'), limit: Number(q('limit')) || 100, before: Number(q('before')) || undefined }));
+    if (route === '/api/playtests/audit' && method === 'GET') return send(res, 200, (await import('./playaudit.ts')).playAudit(Number(q('days')) || 30));
     if (route === '/api/playtests/trends' && method === 'GET') return send(res, 200, trends({ product: q('product'), days: Number(q('days')) || 30 }));
     // The Playtests page's grid: playing, waiting and just finished, with each one's Studio context (livetests.ts).
     if (route === '/api/playtests/live' && method === 'GET') return send(res, 200, await (await import('./livetests.ts')).livePlaytests());

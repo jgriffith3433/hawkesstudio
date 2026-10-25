@@ -47,6 +47,15 @@ export function notePlaying(run: string, product: string, name: string, why: str
   save(run, plan);
 }
 
+/** Scenarios a run took over from the runs it replaced, or left out: one line in the plan's notes says which and why. */
+export function planChange(run: string, product: string, add: string[], text: string) {
+  const plan = load(run);
+  if (!plan) return;
+  for (const name of add) if (!plan.items.some((x) => x.product === product && x.name === name)) plan.items.push({ product, name, estS: expectedSeconds(product, name) });
+  plan.notes.push({ at: Date.now(), text });
+  save(run, plan);
+}
+
 const productName = (id: string) => {
   try {
     return getProduct(id).name;
