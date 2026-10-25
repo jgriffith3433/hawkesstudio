@@ -112,3 +112,12 @@ test('an old beta run stops playing only when a newer beta run of the product wa
   step(daily, 'yoobaland', 'build', 'unity');
   assert.equal(supersedingBuild(old, 'yoobaland'), null, 'daily runs never cut a beta check short');
 });
+
+test('a bot standing on a ledge with a ticking counter in its detail is stuck, and its last log lines come back', async () => {
+  const g = fakeGen((n) => ({ status: 'running', started: Date.now(), detail: `overlord-cameos: Level 19 5% (level 19 ledge t=${n})`, log: ['a', 'b', 'foothold lost'] }));
+  const j = await runGenJob('playtest.run', 'p', {}, () => {}, { ...fast, api: g, runMs: 60_000, idleMs: 60 });
+  assert.equal(j.status, 'failed');
+  assert.match(j.error, /^stuck: no progress/);
+  assert.match(j.stuckAt, /Level 19/);
+  assert.deepEqual(j.stuckLog, ['a', 'b', 'foothold lost']);
+});

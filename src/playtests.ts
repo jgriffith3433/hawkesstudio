@@ -20,6 +20,12 @@ const TERMINAL = new Set(['done', 'failed', 'cancelled']);
 /** A playtest whose progress (Gen's detail) hasn't changed this long while it plays is stuck (J, 2026-10-19). */
 export const PLAYTEST_IDLE_MS = () => Number(process.env.STUDIO_PLAYTEST_IDLE_MS ?? 10 * 60_000);
 // Phases that legitimately sit on one detail for a long time (waiting for a browser slot, the video, the upload).
+/**
+ * A playtest's detail with its clocks taken out. The bot's detail carries a tick counter ("Level 19 ... (level 19 ledge
+ * t=312)"), so a bot standing on a ledge changed its detail every second and the idle check never fired (sickofit,
+ * overlord-cameos, 2026-10-25: 60 min on Level 19). Progress is the detail without "t=<n>" / "<n>s" counters.
+ */
+export const progressOf = (detail: unknown) => String(detail ?? '').replace(/\bt=\d+(\.\d+)?s?\b/g, 't=_').replace(/\b\d+(\.\d+)?\s?(s|sec|secs|seconds)\b/g, '_s');
 const QUIET_PHASE = /^(waiting for this machine|saving the recording|encoding|stacking|comparing screenshots|uploading)/i;
 
 type GenApi = { submit(tool: string, body: any): Promise<any>; job(id: string): Promise<any>; cancel(id: string): Promise<any> };
@@ -51,6 +57,7 @@ export async function runGenJob(tool: string, project: string, params: Record<st
   let started = since && since > 0 ? since : 0;
   let last = '';
   let moved = Date.now();
+  let lastProgress = '';
   let misses = 0;
   for (;;) {
     let j: any;
@@ -67,8 +74,12 @@ export async function runGenJob(tool: string, project: string, params: Record<st
     const sig = `${j.status}|${j.detail}`;
     if (sig !== last) {
       last = sig;
-      moved = Date.now();
       onUpdate(j);
+    }
+    const progress = `${j.status}|${progressOf(j.detail)}`;
+    if (progress !== lastProgress) {
+      lastProgress = progress;
+      moved = Date.now();
     }
     if (TERMINAL.has(j.status)) return j;
     const why = abandon?.();
@@ -91,14 +102,16 @@ export async function runGenJob(tool: string, project: string, params: Record<st
       : Date.now() - submitted > queueMs ? `waited in the queue for over ${mins(queueMs)} min` : '';
     if (over) {
       await api.cancel(job.id).catch(() => {});
-      return { ...j, status: 'failed', error: `stuck: ${over}, so it was cancelled` };
+      // Where it stood and its last events (foothold / stuck lines), for the finding Studio files.
+      const tail = Array.isArray(j.log) ? j.log.slice(-15).map((x: unknown) => String(x)) : [];
+      return { ...j, status: 'failed', error: `stuck: ${over}, so it was cancelled`, stuckAt: String(j.detail ?? ''), stuckLog: tail };
     }
     await new Promise((r) => setTimeout(r, pollMs));
   }
 }
 
 /** How long a playtest job may run: the scenario's limit, plus loading, a first-time browser install on a GPU server and the upload. */
-export const playtestRunMs = (t: Playtest) => ((t.timeout ?? 1800) + 1800) * 1000;
+export const playtestRunMs = (t: Playtest) => ((t.timeout ?? 1800) + 900) * 1000;
 export const REVIEW_RUN_MS = 20 * 60_000;
 
 export const isPhone = (t: Playtest) => t.device === 'phone';
