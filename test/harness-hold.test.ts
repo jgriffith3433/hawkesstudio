@@ -227,3 +227,26 @@ test('waitForAi holds the harness named in the review error instead of the activ
   assert.equal(hold.harnessHeld('claude'), true, 'claude is held instead');
   brains.saveBrain('claude');
 });
+
+test('an agent message about a third-party (ElevenLabs) billing error is not a harness stop', async () => {
+  const brains = await import('../src/brains.ts');
+  const msg = 'Stopped: ElevenLabs returned 401 payment_issue (billing) for audio.voice, so the 46 lines have no recording.';
+  assert.equal(brains.harnessStopOf(msg, { kinds: ['usage', 'billing', 'auth'] }), null);
+  assert.equal(brains.harnessStopOf('Error: 402 payment required from the Gen tool'), null);
+  assert.equal(brains.harnessStopOf('Hello\nCredit balance is too low')?.kind, 'billing');
+});
+
+test('a change parked by the harness waits out the gap and stops at the cap', async () => {
+  const { resumeGate, RESUME_GAP, RESUME_CAP } = await import('../src/agents.ts');
+  const now = 10_000_000;
+  assert.deepEqual(resumeGate(undefined, now), { go: true });
+  const soon = resumeGate({ at: now - 15_000 }, now);
+  assert.equal(soon.go, false);
+  assert.ok(!soon.go && soon.waitMs > 0 && soon.waitMs <= RESUME_GAP && !soon.capped);
+  assert.deepEqual(resumeGate({ at: now - RESUME_GAP - 1 }, now), { go: true });
+  const parks = Array.from({ length: RESUME_CAP }, (_, i) => now - RESUME_GAP * (i + 2));
+  const capped = resumeGate({ at: parks[0], parks }, now);
+  assert.ok(!capped.go && capped.capped);
+  // parks older than an hour don't count
+  assert.deepEqual(resumeGate({ at: now - RESUME_GAP - 1, parks: [now - 2 * 3600_000, now - 3 * 3600_000, now - RESUME_GAP - 1] }, now), { go: true });
+});
