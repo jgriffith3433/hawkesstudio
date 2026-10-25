@@ -21,18 +21,34 @@ db.exec(`CREATE TABLE IF NOT EXISTS pass_ledger (
   cost REAL,
   outcome TEXT
 )`);
+// The route that chose the tier (routing.ts): its category, and J's premium ask when one set it.
+for (const col of ['category', 'premium']) try { db.exec(`ALTER TABLE pass_ledger ADD COLUMN ${col} TEXT`); } catch { /* already there */ }
 db.exec('CREATE INDEX IF NOT EXISTS pass_ledger_change ON pass_ledger (change_id)');
 db.exec('CREATE INDEX IF NOT EXISTS pass_ledger_at ON pass_ledger (at)');
 
-export type PassOutcome = 'done' | 'time' | 'turns' | 'cut' | 'harness-stop' | 'model-refused' | 'failed';
+/** stuck: the agent stopped after two approaches and said so (.hawkes/stuck.md): the next attempt climbs a tier. */
+export type PassOutcome = 'done' | 'time' | 'turns' | 'cut' | 'harness-stop' | 'model-refused' | 'stuck' | 'failed';
 export type PassRecord = {
   change: string; product?: string | null; task?: string | null; role: string; harness: string; model: string;
   tier: string; effort: string; retry: number; ms: number; cost: number; outcome: PassOutcome;
+  category?: string | null; premium?: string | null;
 };
 
 export function recordPass(p: PassRecord, now = Date.now()) {
-  db.prepare('INSERT INTO pass_ledger (at, change_id, product, task, role, harness, model, tier, effort, retry, ms, cost, outcome) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
-    .run(now, p.change, p.product ?? null, p.task ?? null, p.role, p.harness, p.model, p.tier, p.effort, p.retry, Math.round(p.ms), p.cost, p.outcome);
+  db.prepare('INSERT INTO pass_ledger (at, change_id, product, task, role, harness, model, tier, effort, retry, ms, cost, outcome, category, premium) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+    .run(now, p.change, p.product ?? null, p.task ?? null, p.role, p.harness, p.model, p.tier, p.effort, p.retry, Math.round(p.ms), p.cost, p.outcome, p.category ?? null, p.premium ?? null);
+}
+
+/** The ledger by route category over the last `days`: passes, tiers used, and how its changes ended. */
+export function categorySummary(days = 7, now = Date.now()) {
+  return db.prepare(`
+    SELECT COALESCE(l.category, 'unrouted') AS category, COUNT(*) AS passes, COUNT(DISTINCT l.change_id) AS changes,
+      COUNT(DISTINCT CASE WHEN c.status = 'merged' THEN l.change_id END) AS merged,
+      SUM(CASE WHEN l.tier = 'fast' THEN 1 ELSE 0 END) AS fast, SUM(CASE WHEN l.tier = 'standard' THEN 1 ELSE 0 END) AS standard,
+      SUM(CASE WHEN l.tier = 'deep' THEN 1 ELSE 0 END) AS deep, SUM(CASE WHEN l.tier = 'max' THEN 1 ELSE 0 END) AS max,
+      ROUND(COALESCE(SUM(l.cost), 0), 2) AS cost
+    FROM pass_ledger l LEFT JOIN changes c ON c.id = l.change_id
+    WHERE l.at >= ? GROUP BY 1 ORDER BY passes DESC`).all(now - days * 86400_000) as any[];
 }
 
 const lastPassStmt = db.prepare('SELECT role, harness, model, tier, effort, retry FROM pass_ledger WHERE change_id = ? ORDER BY id DESC LIMIT 1');

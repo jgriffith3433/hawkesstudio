@@ -165,12 +165,19 @@ const STOPS: [HarnessKind, RegExp][] = [
 ];
 
 /**
+ * A line about a third-party service (a Gen tool's ElevenLabs 401 payment_issue, an invoice from a provider) is never
+ * the AI harness stopping, whoever quotes it: an agent that reports it in its final message must not park for "Claude billing"
+ * (c_f7171301e745 resumed every 15 s on one). That is a blocked task, not a hold.
+ */
+export const THIRD_PARTY = /eleven ?labs|payment_issue|payment_required|\bgen (tool|job)|hawkes ?gen|audio\.voice|openai|stripe|replicate|fal\.ai|runpod/i;
+
+/**
  * `kinds`: which kinds to look for. The harness's own output (the result, stderr) is read for all of them; an agent's
  * own words (its summary) only for usage and billing, so a summary about a game's login screen or its fetch errors
  * isn't taken for one.
  */
 export function harnessStopOf(text: string, { now = Date.now(), kinds }: { now?: number; kinds?: HarnessKind[] } = {}): HarnessStop | null {
-  const lines = String(text ?? '').split('\n').map((l) => l.trim()).filter(Boolean);
+  const lines = String(text ?? '').split('\n').map((l) => l.trim()).filter(Boolean).filter((l) => !THIRD_PARTY.test(l));
   for (const [kind, re] of STOPS) {
     if (kinds && !kinds.includes(kind)) continue;
     const line = lines.find((l) => re.test(l));

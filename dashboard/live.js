@@ -35,6 +35,55 @@
     return ps.length ? Math.max(0, Math.min(1, ps.reduce((a, b) => a + b, 0) / ps.length)) : null;
   };
   const streamUrl = (job, player, fps) => `${GEN}/v1/jobs/${job}/live.mjpeg?player=${player}&fps=${fps}`;
+  const frameUrl = (job, player) => `${GEN}/v1/jobs/${job}/frame?player=${player}&_=${Date.now()}`;
+
+  // One picture's feed: the MJPEG stream, and if it hasn't produced a frame within a couple of seconds (a proxy buffering
+  // it) or it drops, the single-frame route polled every ~250 ms. note(text) says what's up while there is no picture.
+  const FEED_WAIT = 2500;
+  const FRAME_EVERY = 250;
+  const feeds = new WeakMap();
+  function feedOff(img) {
+    const f = feeds.get(img);
+    if (f) {
+      clearTimeout(f.timer);
+      img.onload = img.onerror = null;
+      feeds.delete(img);
+    }
+    img.src = BLANK;
+  }
+  function feedOn(img, job, player, fps, note = () => {}) {
+    if (feeds.has(img)) feedOff(img);
+    const f = { mode: 'stream', got: false, fails: 0, timer: null };
+    feeds.set(img, f);
+    const poll = () => {
+      if (feeds.get(img) !== f) return;
+      img.src = frameUrl(job, player);
+    };
+    const toPoll = () => {
+      if (f.mode === 'poll') return;
+      f.mode = 'poll';
+      clearTimeout(f.timer);
+      poll();
+    };
+    img.onload = () => {
+      if (feeds.get(img) !== f || img.src === BLANK) return;
+      f.got = true;
+      f.fails = 0;
+      note('');
+      if (f.mode === 'poll') f.timer = setTimeout(poll, FRAME_EVERY);
+      else clearTimeout(f.timer);
+    };
+    img.onerror = () => {
+      if (feeds.get(img) !== f) return;
+      if (f.mode === 'stream') return toPoll();
+      f.fails += 1;
+      if (f.fails >= 3 && !f.got) note('no video available');
+      f.timer = setTimeout(poll, f.fails > 3 ? 2000 : 1000);
+    };
+    note('waiting for the first frame…');
+    img.src = streamUrl(job, player, fps);
+    f.timer = setTimeout(() => { if (!f.got) toPoll(); }, FEED_WAIT);
+  }
 
   // ------------------------------------------------------------- data
   async function load() {
@@ -177,7 +226,13 @@
     }
     if (on === t.streaming) return;
     t.streaming = on;
-    t.img.src = on ? streamUrl(t.job, 0, GRID_FPS) : BLANK;
+    if (on) feedOn(t.img, t.job, 0, GRID_FPS, (m) => { t.msg = m; showWait(t); });
+    else feedOff(t.img);
+  }
+  function showWait(t) {
+    const w = t.el.querySelector('.lt-wait');
+    if (t.msg) w.textContent = t.msg;
+    else if (t.p?.live === false) w.textContent = t.p.outcome ?? t.p.status ?? '';
   }
   async function lastShot(t) {
     t.shot = true;
@@ -185,6 +240,7 @@
       const r = await fetch(`${GEN}/v1/jobs/${t.job}/shots`).then((x) => x.json());
       const last = (r.shots ?? []).at(-1);
       if (last) t.img.src = `${GEN}/v1/jobs/${t.job}/shots/${last.i}`;
+      else { t.msg = 'no video available'; showWait(t); }
     } catch {
       // No screenshot: the tile says how it ended.
     }
@@ -226,7 +282,7 @@
     const bar = q('.lt-prog span');
     bar.style.width = pr == null ? '0' : `${Math.round(pr * 100)}%`;
     q('.lt-prog').classList.toggle('none', pr == null);
-    q('.lt-wait').textContent = live ? 'waiting for the first frame…' : (p.outcome ?? p.status ?? '');
+    q('.lt-wait').textContent = t.msg || (live ? 'waiting for the first frame…' : `${p.outcome ?? p.status ?? ''} · no video available`);
     if (!live && t.seen) stream(t, true);
   }
 
@@ -253,7 +309,9 @@
     el.hidden = false;
     document.body.classList.add('lt-big-open');
     el.dataset.job = job;
+    bigStreams(false);
     el.querySelector('.lt-players').innerHTML = '';
+    delete el.querySelector('.lt-players').dataset.key;
     el.querySelector('.lt-side-body').innerHTML = '<div class="meta">loading…</div>';
     S.detail = null;
     renderBigFromGrid();
@@ -312,17 +370,18 @@
   function playersHtml(p) {
     const n = Math.max(1, p.players?.length || p.peers || 1);
     if (p.live === false) {
-      return p.video ? `<video class="lt-video" controls autoplay muted playsinline src="${esc(file(p.video))}"></video>` : `<div class="empty">This playtest ${esc(p.outcome ?? p.status)}${p.status === 'failed' ? '' : ''}; its video is on its history page.</div>`;
+      return p.video ? `<video class="lt-video" controls autoplay muted playsinline src="${esc(file(p.video))}"></video>` : `<div class="empty">This playtest ${esc(p.outcome ?? p.status)} and no video was kept for it. Its history page has what was recorded.</div>`;
     }
-    return `<div class="lt-pgrid n${Math.min(4, n)}">${Array.from({ length: n }, (_, i) => `<figure class="lt-player${p.device === 'phone' ? ' phone' : ''}" data-player="${i}"><img alt="" src="${BLANK}"><figcaption></figcaption></figure>`).join('')}</div>`;
+    return `<div class="lt-pgrid n${Math.min(4, n)}">${Array.from({ length: n }, (_, i) => `<figure class="lt-player${p.device === 'phone' ? ' phone' : ''}" data-player="${i}"><img alt="" src="${BLANK}"><div class="lt-pmsg lt-wait">waiting for the first frame…</div><figcaption></figcaption></figure>`).join('')}</div>`;
   }
   function bigStreams(on) {
     const el = $('#ltBig');
     if (!el) return;
     for (const f of el.querySelectorAll('.lt-player')) {
       const img = f.querySelector('img');
-      const want = on ? streamUrl(el.dataset.job, Number(f.dataset.player), BIG_FPS) : BLANK;
-      if (img.src !== want) img.src = want;
+      const msg = f.querySelector('.lt-pmsg');
+      if (!on) feedOff(img);
+      else if (!feeds.has(img)) feedOn(img, el.dataset.job, Number(f.dataset.player), BIG_FPS, (m) => { msg.textContent = m; msg.hidden = !m; });
     }
     for (const v of el.querySelectorAll('video')) if (!on) v.pause();
   }

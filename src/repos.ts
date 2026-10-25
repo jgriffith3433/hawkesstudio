@@ -10,6 +10,7 @@ import { PROJECTS, paths } from './config.ts';
 import { trackCommand } from './ops.ts';
 import { lockHash, installedFor, ensureInstalled, runShell } from './warm.ts';
 import { REF_LOCK, fetchLocked } from './gitlock.ts';
+import { lfsPull } from './lfs.ts';
 
 export const BRANCH = process.env.STUDIO_BRANCH || 'main';
 /** The branch between agent changes and the live site (beta.ts). On the server, product source repos are kept on it. */
@@ -82,7 +83,10 @@ export function buildOutputs(folder: string): (file: string) => boolean {
 export async function syncRepo(folder: string, slug: string, branch = BRANCH, want?: string): Promise<RepoResult> {
   const dir = path.join(PROJECTS, folder);
   const before = fs.existsSync(path.join(dir, '.git')) ? git(dir, ['rev-parse', 'HEAD']).out : '';
-  return installAfterSync(await syncGit(folder, slug, branch, want), before);
+  const r = await syncGit(folder, slug, branch, want);
+  // The shared checkout's Git LFS files (the store every worktree of it reads from), and its pre-push hook.
+  if (r.action !== 'failed') await lfsPull(dir);
+  return installAfterSync(r, before);
 }
 
 async function syncGit(folder: string, slug: string, branch: string, want?: string): Promise<RepoResult> {

@@ -1,3 +1,5 @@
+// These tests fake GitHub's check runs: the CI wait is on for them (ciChecks reads it per call).
+process.env.STUDIO_GITHUB_CI = '1';
 // Walk-away mode (J, 2026-10-18: "I'm tired of going into the inbox and approving merges.. just merge okay?"): a ready
 // Studio/Gen change whose checks passed merges into main by itself once CI is green; red CI never merges (its agent gets
 // a fix pass, then J); a change touching protected files waits for J; with walk-away off nothing merges by itself.

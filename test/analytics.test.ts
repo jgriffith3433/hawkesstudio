@@ -104,3 +104,13 @@ test('the API proxy refuses what isn\'t a read route, and says when Gen fails', 
   assert.equal(unknown.status, 404);
   assert.match(unknown.body.error, /No analytics product/);
 });
+
+test('the new sections, one account, and the account filter go through; a bad account id does not', () => {
+  const P = (s: string) => new URLSearchParams(s);
+  for (const s of ['segments', 'engagement', 'frustration', 'accounts']) assert.equal(genPath(`/api/analytics/hawkesgen/${s}`, P('')), `/analytics/hawkesgen/${s}`);
+  assert.equal(genPath('/api/analytics/hawkesgen/accounts', P('limit=20&offset=40')), '/analytics/hawkesgen/accounts?limit=20&offset=40');
+  assert.equal(genPath('/api/analytics/hawkesgen/accounts/usr_0123456789abcdef', P('range=7d')), '/analytics/hawkesgen/accounts/usr_0123456789abcdef?range=7d');
+  assert.equal(genPath('/api/analytics/hawkesgen/frustration', P('user=usr_0123456789abcdef')), '/analytics/hawkesgen/frustration?user=usr_0123456789abcdef');
+  assert.equal(genPath('/api/analytics/hawkesgen/frustration', P('user=a b')), '/analytics/hawkesgen/frustration');
+  assert.equal(genPath('/api/analytics/hawkesgen/accounts/../x', P('')), null);
+});

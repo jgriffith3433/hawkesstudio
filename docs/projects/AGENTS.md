@@ -31,8 +31,10 @@ Canon that every project shares (from `hawkesbiomedicalnew/AGENTS.md` and `phori
 | **I Can Be** (AI-assisted full-body assessment) | icanbe.ai | `icanbeaiwebsite` | Vite + Babylon.js (port 8090) | Direction undecided. Currently a real-time "day of a developer" simulation; the character is "AI". The day is defined in `day.config.js`. |
 | **The Place Department** (HIPAA-compliant document storage) | theplacedepartment.com | `theplacedepartmentwebsite` | Unity `breakingthrough` → WebGL | Prototype roguelike strategy/wave-defense game. |
 | **Imagine Live TV** (live medical education) | imaginelivetv.com | `imaginelivetvwebsite` | Vite static site | Choose-your-path video story "The Final Spark" (one folder per branch) and a blog. Planning notes in `TheFinalSpark/`. |
+| **Hawkes Gen** (laboratory services; the customer portal) | hawkesgen.com | `hawkesgenwebsite` | Node server app with its own database and Stripe, on its own EC2 box (not GitHub Pages) | Accounts, credits, payments, the landing page, portfolio and Creator Studio UI for public Hawkes Gen. A customer of Hawkes Gen like Studio (`hawkesstudio/docs/cloud.md`, "hawkesgen.com: the customer portal"). |
 
-All repos are on GitHub as `jgriffith3433/<repo>`. **Every website is hosted on GitHub Pages**: static files
+All repos are on GitHub as `jgriffith3433/<repo>`. **Every website except `hawkesgenwebsite` (the Hawkes Gen portal, which
+runs on its own EC2 box) is hosted on GitHub Pages**: static files
 only, with no server code, no custom headers and no backend. Each site has a `CNAME` for its domain. Any Docker,
 nginx or Flask files in a site repo are leftovers. Most have `auto-start.bat` /
 `auto-stop.bat` for local dev.
@@ -298,6 +300,7 @@ it from Studio's Today card or `studio_dev_open`. Details: `hawkesstudio/docs/da
 | `doseofdestructionwebsite` | `auto-start.bat` → :8089 (`/devtools.html`) | GitHub Actions `pages.yml` on push |
 | `icanbeaiwebsite` | `auto-start.bat` → :8092 (preview :8093) | `bump-version.bat`, then commit and push |
 | `imaginelivetvwebsite` | `auto-start.bat` → :8090 | commit and push |
+| `hawkesgenwebsite` | see its `AGENTS.md` (needs its `.env`: Gen key, Stripe keys) | push `main`: its CI, then its own EC2 box pulls the passing commit (`hawkesstudio/docs/cloud.md`) |
 | `YoobaLandGame` | `auto-start.bat` → :8088 (`/Game/`) | Unity `YoobaWebBuild`, then commit and push |
 | `theplacedepartmentwebsite` | `auto-start.bat` → :4173 (python http.server) | Unity deploy window in `breakingthrough`, then commit and push |
 | `sickofitgamewebsite` | `python -m http.server 8087` (the Docker `auto-start.bat` on :80 is the older setup) | Unity **Game Deploy** window in `sickofitgame-unity` → `Game/v<n>/`, then commit and push |

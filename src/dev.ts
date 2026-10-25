@@ -27,6 +27,7 @@ import { PROJECTS, DATA, GEN_URL, paths, getProduct, loadProducts, StudioError, 
 import { BETA, MAIN, ensureBeta, ensureDeps, compareRefs, repoDirs } from './beta.ts';
 import { isServer } from './repos.ts';
 import { fetchLocked } from './gitlock.ts';
+import { lfsPull } from './lfs.ts';
 import { notify, PUBLIC_URL } from './notify.ts';
 
 const WIN = process.platform === 'win32';
@@ -119,6 +120,7 @@ export async function ensureWorkingCopy(p: Product) {
   const r = spawnSync('git', ['worktree', 'add', '--quiet', '-B', DEV_BRANCH, dir, `origin/${BETA}`], { cwd: source, encoding: 'utf8', windowsHide: true });
   if (r.status !== 0) throw new Error(`Couldn't make the beta working copy: ${(r.stderr || r.stdout).trim().split('\n').pop()}`);
   spawnSync('git', ['branch', '--quiet', `--set-upstream-to=origin/${BETA}`, DEV_BRANCH], { cwd: dir, windowsHide: true });
+  await lfsPull(dir);
   return dir;
 }
 
@@ -368,7 +370,7 @@ export const devRunning = (id: string) => srv(id).status === 'running';
 export function startDev(productId: string, { by = 'J' }: { by?: string } = {}): Promise<Server> {
   const p = devProduct(productId);
   const conf = devConf(p)!;
-  if (isUnity(p) || !conf.port) throw new StudioError(`${p.name} is a Unity game: its editor runs on the build server, not here (open ${devUrl(p) ?? '/dev/'} for how)`);
+  if (isUnity(p) || !conf.port) throw new StudioError(isUnity(p) ? `${p.name} is a Unity game: its editor runs on the build server, not here (open ${devUrl(p) ?? '/dev/'} for how)` : `${p.name} has no dev server here: it is a server app on its own box (open ${devUrl(p) ?? '/dev/'})`);
   if (wcOf(p.id).conflict) throw new StudioError(`${p.name}'s beta working copy has a conflict (${wcOf(p.id).conflict!.files.join(', ')}). Resolve it first.`, 409);
   const s = srv(p.id);
   if (s.status === 'running' && children.has(p.id)) {

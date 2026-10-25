@@ -18,6 +18,8 @@
 // - FAKE_LIMIT: while the file FAKE_LIMIT_FILE exists, a pass writes work.txt (uncommitted), prints Cursor's unpaid-invoice
 //   error on stderr and ends with no result, like a harness that refuses to run; once it's gone, it works like a good
 //   agent. A plain -p call (a harness probe) answers the same way: the error while the file exists, else a result.
+// A plain turn resuming the session "dead-session" fails like a session another harness made: error_during_execution,
+// nothing spent (talk.ts starts a new session with the conversation so far).
 // Told to merge its base (a conflict pass: "git merge origin/<base>" in its prompt), it merges keeping its own side of
 // each conflict and commits, unless its brief says FAKE_NOTHING (then it changes nothing: still conflicting).
 import fs from 'node:fs';
@@ -157,6 +159,13 @@ if (args.includes('--permission-mode')) {
   if (limited()) {
     log({ probeRefused: process.env.HAWKES_PROBE_HARNESS ?? null });
     refuse();
+  }
+  // A session it can't resume (another harness made it): an error before any model call, nothing spent.
+  if (args[args.indexOf('--resume') + 1] === 'dead-session' && args.includes('--resume')) {
+    log({ deadResume: true });
+    out({ type: 'system', subtype: 'init', session_id: 'dead-session', apiKeySource: 'none' });
+    out({ type: 'result', subtype: 'error_during_execution', is_error: true, session_id: 'dead-session', total_cost_usd: 0, duration_ms: 1 });
+    process.exit(1);
   }
   await answer(args[args.indexOf('-p') + 1] ?? '');
 }

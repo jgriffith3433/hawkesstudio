@@ -458,9 +458,13 @@ task of kind `video` (`src/videos.ts`, `dashboard/videos.js`, Talk's `studio_vid
    **Delete** (a button on each video, with a confirm; `studio_video` delete, `DELETE /api/videos/<task>`, `deleteVideo`): the task is
    dropped and an agent still on it is stopped; nothing in Gen is deleted. Dropped videos stay out of the list
    (`GET /api/videos?dropped=1` shows them).
-   **J's controls** (the New video form, `studio_video` new): length, look, voices, method (`engine`: auto, scene,
-   seedance, kling, shots), quality (draft, standard, high), music, captions, end card, animatic. They go into the
-   agent's request as "J's controls (follow them)" and are kept on the video (`video_state.spec`).
+   **J's controls** (the New video form, `studio_video` new): length, look, voices, kind (`KINDS`: dialogue, monologue,
+   action, music, trailer, ad, capture: the video skill's route), method (`engine`: auto, scene, perform, capture,
+   seedance, kling, shots), quality (draft, standard, high), music, captions, end card, animatic, and **his own
+   performance video** (uploaded into Gen from the form; `spec.performance`, method capture unless he picks one: our
+   characters take it over with `video.replace` and the cast voices go on his delivery with `audio.voice-change`). They
+   go into the agent's request as "J's controls (follow them)" and are kept on the video (`video_state.spec`); the GPU
+   budget follows the method (`videoGpu`).
    **The timeline** (`src/video-edit.ts`): the agent hands over its cut as an **edit** (`.hawkes/video.json` `edit`:
    video.compose's timeline with Gen assets). The Screening tab shows it as shots under the player; J drags over a range
    or clicks a shot, picks what he wants (shorter, redo, fix the lip sync, closer, another angle, a reaction, the voice,
@@ -471,9 +475,14 @@ task of kind `video` (`src/videos.ts`, `dashboard/videos.js`, Talk's `studio_vid
    GPU, seconds), and the agent hears about them with his next notes so its edit catches up. A cut that would leave half
    a voice line, or a speed-up under one, is refused (that's a note for the agent).
 4. **Studio's review, then screening.** When the pass ends, Studio keeps the version (`video_versions`) and reviews it
-   (`reviewVersion`: a frame a second as contact sheets, dead air from ffmpeg, Claude against the craft bar and the beat
-   sheet). Short of the bar, it goes back to the agent with the review's notes, up to `REVIEW_ROUNDS` (2) times since J's
-   last note; then the task shows "ready to screen" with the review's score.
+   (`reviewVersion`). **The critic** first: Gen `video.review` (Gemini watches the cut with its sound against
+   `reviewBrief`: J's script, the story, the beat sheet, his notes) scores story, pacing, voices, lip sync, movement,
+   consistency and sound, and gives timecoded notes, each with a timeline ask. When it can't run (no Gemini key, Gen
+   down), Claude reviews contact sheets (a frame a second, dead air from ffmpeg) against the craft bar instead. Short of
+   the bar, it goes back to the agent with the review's notes, up to `REVIEW_ROUNDS` (2) times since J's last note; then
+   the task shows "ready to screen" with the review's score. The review's notes land on the Screening timeline (purple
+   marks, `markReview`): sent ones as a record, the rest on the version J screens, where "keep as my note" makes one his
+   draft (`keepReviewNote`).
    Videos never merge by themselves (`autoMergeBeta` and the PM's `reviewable` skip them) and no beta playtest judges them.
 5. **Notes.** J's note (stamped with the version and the second he paused at) goes straight back to the same agent session
    (`agents.ts revise`): never a failed try. A note sent while the agent is working is kept and sent when its pass ends.
@@ -581,6 +590,40 @@ the one API. Talk reads and changes them with `studio_settings` when J asks; fro
 (higher limits or budget, more agents or starts, auto-fix or the PM on, another model, the paid voice) needs J's OK:
 Talk puts an Approve card on his screen (`studio_approval` kind settings), or, as the fallback, the request quotes his
 own yes from that conversation. The notification topic is changed only on the dashboard.
+
+
+## Models and usage limits (routing)
+
+J, 2026-10-23: "send each task to the cheapest model likely to finish it" and "only use the highest tier models upon
+request of the user to prevent high bills and usage limits being hit". `src/routing.ts` (Settings → 🧭 Model routing,
+`studio_routing`, settings section `routing`):
+
+- **Categories.** Every agent change is classified by its words, role and size, for free (rules, no model call): a
+  lookup, a small isolated edit or tests from a spec start on Haiku; a scoped feature, a bug with a repro, a refactor or
+  content on Sonnet (content and Studio/Gen changes never below it); systems work (netcode, render or build pipelines,
+  migrations), far-from-symptom bugs (intermittent, only in the build, races, leaks) and long build-until-green runs on
+  Opus. A blocker gets more effort. The change's log says its route (`route: bug_with_repro → standard (claude-sonnet-5-5)…`).
+- **Escalation.** A failed attempt (the PM's or J's revision, a task's next try, a failed fix of the same finding) climbs
+  one tier, at most `maxEscalations` (2) times and never above `ceiling` (Opus); already at the top it gets more effort.
+  The next attempt's brief has the earlier attempts' summaries ("context carries up"). An agent that has tried two
+  approaches stops and writes `.hawkes/stuck.md` instead of iterating (the pass ledger's outcome `stuck`). Past its
+  climbs, the brief tells it to check the premise and re-scope (a solid smaller part, or one question).
+- **Opus budget and conserve mode.** At most `deepPerDay` (6) automatic Opus passes a day; past it, and for
+  `conserveHours` (6) after the plan hit a usage limit (harness-hold.ts), work that would go to Opus runs on Sonnet with
+  more effort.
+- **Premium only on request.** Fable (and Opus outside the rules above) runs only when J asks for it in his own words:
+  "use Fable", "plan this on Opus". Talk then passes `model` to `studio_task` (or `studio_routing premium` for a task or
+  a change), and Studio checks J's newest message (or his quoted words) before it grants it. His asks aren't capped or
+  counted against the budget, and are listed in Settings. In Talk, a message of his asking for Opus or Fable runs that
+  turn on it; `hawkes:planner` (Fable) and `hawkes:architect` (Opus) are subagents for his explicit asks only.
+- **The Settings model pin.** On Claude Code with routing on, Settings → Harness → Model is not applied (`modelPin`):
+  each run keeps its routed model. Turn routing off to pin one model for every run again; other harnesses keep their pin.
+- **Talk.** Studio's own turns telling J what finished work came back run on Haiku (`autoTurnsFast`); J's turns and
+  PM turns on Sonnet; scouts and Talk's research subagent on Haiku.
+- **Usage.** Settings shows each tier's share of the last 7 days' usage (agents, Talk, scouts, at Claude Code's
+  reported cost, which on the Max plan measures how fast its limits fill) against the targets: Haiku 10-15%, Sonnet
+  50-60%, Opus 20-30%, Fable 5-10%. Opus over its band means work is under-scoped (tighten the criteria) or escalating
+  too readily.
 
 ## Walk-away mode
 

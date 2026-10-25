@@ -124,6 +124,11 @@ async function setupGit() {
     'git config --global init.defaultBranch main',
   ];
   await ssh(`sudo -u hawkes -H bash -lc ${JSON.stringify(cmds.join(' && '))} && echo git-ok`);
+  // Git LFS for every user (Studio and the agent sandbox): Sick Of It keeps its art, scenes and prefabs in LFS, and
+  // without it agents read pointer text. The smudge filter is skipped so a worktree never waits on a download;
+  // src/lfs.ts pulls the files (and installs each repo's pre-push hook) after. Then the files of the repos already here.
+  await ssh(`(command -v git-lfs >/dev/null || (sudo apt-get update -qq && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq git-lfs)) && sudo git lfs install --system --skip-smudge --skip-repo >/dev/null && echo lfs-ok`);
+  await ssh(`for d in /srv/hawkes/*/; do [ -d "$d.git" ] && grep -qs 'filter=lfs' "$d.gitattributes" && sudo -u hawkes -H bash -lc "cd '$d' && git lfs update && git lfs pull && echo lfs-pulled $(basename $d)"; done; true`);
 }
 
 /** Story docs that live outside the product repos (products.json "story"), copied so reviews can read them. */
@@ -325,17 +330,18 @@ Persistent=true
 WantedBy=timers.target`),
     unit('hawkes-pull.service', `
 [Unit]
-Description=Hawkes: deploy Gen and Studio from GitHub main (when CI passed and nothing is running)
+Description=Hawkes: deploy Gen and Studio from GitHub main (when its tests pass on this server and nothing is running)
 After=hawkes-secrets.service network-online.target
 Wants=network-online.target
 
 [Service]
 Type=oneshot
 ExecStart=/usr/bin/node /srv/hawkes/hawkesstudio/deploy/hawkes-pull.mjs
-TimeoutStartSec=30min
+# It runs each new commit's typecheck and tests itself (up to 25 minutes a repo, Gen then Studio).
+TimeoutStartSec=90min
 
 [Install]
-# Once at boot (anything pushed while the server was off); after that, only when CI says so (hawkes-pull.path).
+# Once at boot (anything pushed while the server was off); after that, only when a push to main says so (hawkes-pull.path).
 WantedBy=multi-user.target`),
     // No polling: CI's "Tell the server" job -> Studio (POST /api/hooks/self-deploy) touches .data/pull-now -> this.
     unit('hawkes-pull.path', `

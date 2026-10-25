@@ -11,6 +11,14 @@ const value = { ELEVENLABS_API_KEY: env.ELEVENLABS_API_KEY, ANTHROPIC_API_KEY: e
 if (env.XAI_API_KEY) value.XAI_API_KEY = env.XAI_API_KEY;
 // ComfyUI partner nodes (Seedance, Kling, Veo... templates api_*) bill this Comfy.org account (Gen's comfy client).
 if (env.COMFY_ORG_API_KEY) value.COMFY_ORG_API_KEY = env.COMFY_ORG_API_KEY;
+// AWS Bedrock credentials (optional fallback for Claude when direct API hits limits).
+if (env.AWS_BEDROCK_KEY && env.AWS_BEDROCK_SECRET) {
+  value.AWS_BEDROCK_KEY = env.AWS_BEDROCK_KEY;
+  value.AWS_BEDROCK_SECRET = env.AWS_BEDROCK_SECRET;
+  if (env.AWS_BEDROCK_REGION) value.AWS_BEDROCK_REGION = env.AWS_BEDROCK_REGION;
+} else if (env.AWS_BEDROCK_KEY || env.AWS_BEDROCK_SECRET) {
+  throw new Error('AWS_BEDROCK_KEY and AWS_BEDROCK_SECRET must both be set (or both omitted)');
+}
 for (const [k, v] of Object.entries(value)) if (!v) throw new Error(`${k} is not in hawkesgen/.env`);
 const sm = new SecretsManagerClient(cfg);
 const SecretString = JSON.stringify(value);

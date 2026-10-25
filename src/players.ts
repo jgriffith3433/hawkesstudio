@@ -46,6 +46,8 @@ export type Snapshot = {
   week: { sessions: number; players: number; medianActiveSeconds: number | null };
   prevWeek: { sessions: number; players: number; medianActiveSeconds: number | null };
   retention: any; dropoff: any; levels: any[]; feedback: any; errors: any; builds: any;
+  /** What got in players' way (frustration events, rage clicks, errors) and where their time went (engage). */
+  frustration?: any; engagement?: any;
   /** Gen has seen a player of it in the last 30 days. */
   hasData: boolean;
 };
@@ -64,6 +66,7 @@ export async function snapshot(product: string, ask: Ask = genAsk, now = Date.no
     prevWeek: q('sessions', { from: String(now - 14 * DAY), to: String(now - 7 * DAY) }),
     retention: q('retention', m30), dropoff: q('dropoff', m30), levels: q('levels', m30),
     feedback: q('feedback', m30), errors: q('errors', m30), builds: q('builds', m30),
+    frustration: q('frustration', m30), engagement: q('engagement', m30),
   };
   const keys = Object.keys(asks) as (keyof typeof asks)[];
   const got = await Promise.allSettled(keys.map((k) => ask(asks[k])));
@@ -84,9 +87,15 @@ export async function snapshot(product: string, ask: Ask = genAsk, now = Date.no
   const side = (s: any) => s && { build: s.build, sessions: num(s.sessions), first: s.first ?? null, kpis: s.kpis ?? {} };
   const builds = v.builds && { a: side(v.builds.a), b: side(v.builds.b), count: (v.builds.builds ?? []).length };
   const dropoff = v.dropoff && { sessions: num(v.dropoff.sessions), beforeReady: v.dropoff.beforeReady ?? null, byLevel: (v.dropoff.byLevel ?? []).slice(0, 8), biggest: v.dropoff.biggest ?? null };
+  const frustration = v.frustration && {
+    sessions: num(v.frustration.sessions), sessionsWithFrustration: num(v.frustration.sessionsWithFrustration), frustrationRate: v.frustration.frustrationRate ?? null, leftAfterRate: v.frustration.leftAfterRate ?? null,
+    kinds: (v.frustration.kinds ?? []).slice(0, 12).map((k: any) => ({ kind: k.kind, count: num(k.count), sessions: num(k.sessions), players: num(k.players), shareOfSessions: k.shareOfSessions ?? null, leftAfter: num(k.leftAfter), leftAfterRate: k.leftAfterRate ?? null, pages: k.pages ?? {} })),
+    rageClicks: (v.frustration.rageClicks ?? []).slice(0, 8).map((k: any) => ({ where: k.where, count: num(k.count), sessions: num(k.sessions) })),
+  };
+  const engagement = v.engagement && { players: num(v.engagement.players), activeSeconds: num(v.engagement.activeSeconds), activities: (v.engagement.activities ?? []).slice(0, 12) };
   const out: Snapshot = {
     product, at: now, week: sess(v.week), prevWeek: sess(v.prevWeek), retention: v.retention?.total ?? null, dropoff,
-    levels: Array.isArray(v.levels) ? v.levels.slice(0, 40) : [], feedback, errors, builds, hasData: false,
+    levels: Array.isArray(v.levels) ? v.levels.slice(0, 40) : [], feedback, errors, builds, frustration, engagement, hasData: false,
   };
   out.hasData = Boolean(out.week.sessions || out.prevWeek.sessions || dropoff?.sessions || errors?.sessions || feedback?.count);
   return out;
@@ -183,11 +192,26 @@ export function buildLine(b: any) {
 }
 
 /** The daily report's "Players" lines for one product (Markdown bullets), from its snapshot. */
+/** What gets in players' way: the worst kinds over the minimum sample, with how many left right after. */
+export function frustrationLine(f: any) {
+  if (!f || num(f.sessions) < MIN.sessions) return null;
+  const worst = (f.kinds ?? []).filter((k: any) => k.sessions >= MIN.errorSessions).slice(0, 3);
+  if (!worst.length) return `${pct(f.frustrationRate)} of ${f.sessions} sessions hit something in their way (none often enough to name).`;
+  return `What gets in the way: ${worst.map((k: any) => `${k.kind} in ${k.sessions} sessions (${pct(k.shareOfSessions)}; ${pct(k.leftAfterRate)} left within 2 minutes)`).join('; ')}.`;
+}
+
+/** Where players' time goes: the activities they spend the most time on. */
+export function engagementLine(e: any) {
+  const list = (e?.activities ?? []).filter((x: any) => x.players >= 5).slice(0, 4);
+  if (!list.length) return null;
+  return `Where their time goes: ${list.map((x: any) => `${x.name} ${secs(x.seconds)} in all (${x.players} players, a median ${secs(x.medianSecondsPerPlayer)} each)`).join('; ')}.`;
+}
+
 export function playersSection(s: Snapshot | null, now = Date.now()): string[] {
   if (!s) return ['No player analytics for it in Hawkes Gen (the SDK isn\'t registered for it).'];
   if (!s.hasData) return ['No real players on the live site in the last 30 days (or Hawkes Analytics isn\'t on it yet).'];
   const L: string[] = [weekLine(s)];
-  for (const x of [retentionLine(s.retention), dropoffLine(s.dropoff), hardestLine(s.levels)]) if (x) L.push(x);
+  for (const x of [retentionLine(s.retention), dropoffLine(s.dropoff), hardestLine(s.levels), frustrationLine(s.frustration), engagementLine(s.engagement)]) if (x) L.push(x);
   const fresh = newErrors(s.errors, now);
   if (fresh.length) L.push(`New errors from real players this week: ${fresh.slice(0, 3).map((g: any) => errorLine(g, s.errors.sessions)).join('; ')}.`);
   else if (s.errors?.sessions) L.push(`No new errors this week (${pct(s.errors.errorRate)} of ${s.errors.sessions} sessions hit any error in 30 days).`);
@@ -311,6 +335,28 @@ export function playerWork(s: Snapshot | null, noise: (message: string, stack: s
       fix: 'Read the comments and the context they rated (studio_analytics { view: feedback }); fix what they name first.',
     });
   }
+  // What gets in players' way, often enough to matter: the site failing them is a bug, the rest ideas.
+  const f = s.frustration;
+  if (f && f.sessions >= MIN.sessions) {
+    for (const k of f.kinds ?? []) {
+      if (k.kind === 'error' || k.kind === 'rage_click' || k.sessions < MIN.errorSessions || (k.shareOfSessions ?? 0) < 0.05) continue; // errors are above, by signature
+      const broken = ['server_error', 'request_failed', 'job_failed', 'generation_failed', 'assistant_failed', 'assistant_unreachable', 'edit_not_saved'].includes(k.kind);
+      const where = Object.keys(k.pages ?? {}).slice(0, 3).join(', ');
+      out.push({
+        kind: broken ? 'bug' : 'idea', key: `players:frustration:${k.kind}`, area: 'player frustration',
+        title: `Players run into ${k.kind.replace(/_/g, ' ')}`,
+        detail: `${k.sessions} of ${f.sessions} sessions (${pct(k.shareOfSessions)}), ${k.players} players, ${k.count} times${where ? `, mostly on ${where}` : ''}; ${pct(k.leftAfterRate)} of those sessions ended within 2 minutes of it. Hawkes Analytics, live, last 30 days.`,
+        fix: broken ? `Find why ${k.kind.replace(/_/g, ' ')} happens (studio_analytics { view: frustration } has where and the latest) and fix it.` : `Make ${k.kind.replace(/_/g, ' ')} less of a wall: say what to do next where it happens (studio_analytics { view: frustration }).`,
+      });
+    }
+    const rage = (f.rageClicks ?? [])[0];
+    if (rage && rage.sessions >= MIN.errorSessions) out.push({
+      kind: 'idea', key: `players:rage:${hash(rage.where)}`, area: 'player frustration',
+      title: `Players click again and again on ${cut(rage.where, 60)}`,
+      detail: `Rage clicks (3 fast clicks in one spot) on ${rage.where}: ${rage.count} times in ${rage.sessions} sessions. It looks clickable and doesn't do what they expect, or it's slow to answer. Hawkes Analytics, live, last 30 days.`,
+      fix: 'Make it answer at once (or not look clickable), and check it works on phones.',
+    });
+  }
   // Repeated complaints: low-rated comments about the same thing (their context, else the level).
   const groups = new Map<string, any[]>();
   for (const c of s.feedback?.comments ?? []) {
@@ -332,22 +378,23 @@ export function playerWork(s: Snapshot | null, noise: (message: string, stack: s
 
 // ------------------------------------------------------------------ studio_analytics
 
-export const VIEWS = ['overview', 'product', 'dropoff', 'levels', 'feedback', 'errors', 'builds', 'insights', 'session'] as const;
+export const VIEWS = ['overview', 'product', 'dropoff', 'levels', 'feedback', 'errors', 'frustration', 'engagement', 'accounts', 'builds', 'insights', 'session'] as const;
 export type View = (typeof VIEWS)[number];
 
 /** Studio's analytics route (src/analytics.ts, under /api/analytics) for a view, or an error message. */
-export function viewRoute(a: { view?: string; product?: string; session?: string; range?: string; env?: string; build?: string; device?: string; browser?: string; country?: string; from?: string; to?: string; a?: string; b?: string }) {
+export function viewRoute(a: { view?: string; product?: string; session?: string; user?: string; range?: string; env?: string; build?: string; device?: string; browser?: string; country?: string; from?: string; to?: string; a?: string; b?: string }) {
   const view = (a.view || (a.product ? 'product' : 'overview')) as View;
   if (!VIEWS.includes(view)) throw new Error(`view: ${VIEWS.join(' | ')}`);
   if (view !== 'overview' && !a.product) throw new Error(`view ${view} needs a product`);
   if (view === 'session' && !a.session) throw new Error('view session needs session (its id, s_...)');
   const params = new URLSearchParams();
-  for (const k of ['range', 'env', 'build', 'device', 'browser', 'country', 'from', 'to', ...(view === 'builds' ? ['a', 'b'] : [])] as const) {
+  for (const k of ['range', 'env', 'build', 'device', 'browser', 'country', 'from', 'to', ...(view === 'builds' ? ['a', 'b'] : []), ...(view === 'accounts' ? [] : ['user'])] as const) {
     const v = (a as any)[k];
     if (v != null && v !== '') params.set(k, String(v));
   }
   const p = encodeURIComponent(String(a.product ?? ''));
-  const path = view === 'overview' ? '/api/analytics/overview' : view === 'product' ? `/api/analytics/${p}` : view === 'session' ? `/api/analytics/${p}/sessions/${encodeURIComponent(String(a.session))}` : `/api/analytics/${p}/${view}`;
+  const path = view === 'overview' ? '/api/analytics/overview' : view === 'product' ? `/api/analytics/${p}` : view === 'session' ? `/api/analytics/${p}/sessions/${encodeURIComponent(String(a.session))}`
+    : view === 'accounts' && a.user ? `/api/analytics/${p}/accounts/${encodeURIComponent(String(a.user))}` : `/api/analytics/${p}/${view}`;
   const qs = params.toString();
   return { view, path: `${path}${qs ? `?${qs}` : ''}` };
 }
@@ -405,6 +452,19 @@ export function compactView(view: View, d: any, scope = 'live, last 30 days unle
     data = { errors: d?.errors, sessions: d?.sessions, sessionsWithErrors: d?.sessionsWithErrors, errorRate: d?.errorRate, groups: (d?.groups ?? []).slice(0, 15).map((g: any) => ({ signature: g.signature, message: cut(g.message, 300), stack: String(g.stack ?? '').slice(0, 800), count: g.count, sessions: g.sessions, players: g.players, browsers: g.browsers, builds: g.builds, sources: g.sources, first: g.first, last: g.last })) };
     say.push(`${pct(d?.errorRate)} of ${num(d?.sessions)} sessions hit an error (${num(d?.errors)} errors).`);
     for (const g of data.groups.slice(0, 6)) say.push(`${errorLine(g, num(d?.sessions))}${g.sessions < MIN.errorSessions ? ' (under the minimum sample)' : ''}.`);
+  } else if (view === 'frustration') {
+    data = { sessions: d?.sessions, sessionsWithFrustration: d?.sessionsWithFrustration, frustrationRate: d?.frustrationRate, leftAfterRate: d?.leftAfterRate, kinds: (d?.kinds ?? []).slice(0, 15).map((k: any) => ({ kind: k.kind, count: k.count, sessions: k.sessions, players: k.players, accounts: k.accounts, shareOfSessions: k.shareOfSessions, leftAfterRate: k.leftAfterRate, pages: k.pages, last: k.last })), rageClicks: (d?.rageClicks ?? []).slice(0, 10), recent: (d?.recent ?? []).slice(0, 15) };
+    say.push(`${pct(d?.frustrationRate)} of ${num(d?.sessions)} sessions hit something in their way; ${pct(d?.leftAfterRate)} of those left within 2 minutes of it.`);
+    for (const k of data.kinds.slice(0, 8)) say.push(`${k.kind}: ${k.sessions} sessions (${pct(k.shareOfSessions)}), ${k.count} times, ${pct(k.leftAfterRate)} left right after${Object.keys(k.pages ?? {}).length ? `; on ${Object.keys(k.pages).slice(0, 3).join(', ')}` : ''}${k.sessions < MIN.errorSessions ? ' (under the minimum sample)' : ''}.`);
+    for (const r of data.rageClicks.slice(0, 3)) say.push(`Rage clicks on ${r.where}: ${r.count} in ${r.sessions} sessions.`);
+  } else if (view === 'engagement') {
+    data = { players: d?.players, sessions: d?.sessions, activeSeconds: d?.activeSeconds, activities: (d?.activities ?? []).slice(0, 15) };
+    say.push(engagementLine(d) ?? `No activity time from 5 or more players yet (${num(d?.players)} players in the range).`);
+  } else if (view === 'accounts') {
+    const list = (d?.accounts ?? []).slice(0, 40);
+    data = { total: d?.total, identifiedSessions: d?.identifiedSessions, accounts: list, sessions: d?.sessions ? { total: d.sessions.total, items: (d.sessions.items ?? []).slice(0, 30) } : undefined };
+    say.push(`${num(d?.total)} signed-in accounts with ${num(d?.identifiedSessions)} sessions in the range.`);
+    for (const x of list.slice(0, 10)) say.push(`${x.user}: ${x.sessions} sessions, ${secs(x.activeSeconds)} active; time on ${(x.topActivities ?? []).map((t: any) => `${t.name} ${secs(t.value)}`).join(', ') || 'nothing tracked'}${(x.frustrationKinds ?? []).length ? `; got in the way: ${x.frustrationKinds.map((k: any) => `${k.name} ×${k.value}`).join(', ')}` : ''}${Object.keys(x.milestones ?? {}).length ? `; ${Object.entries(x.milestones).map(([k, n]) => `${k} ×${n}`).join(', ')}` : ''}.`);
   } else if (view === 'builds') {
     const side = (x: any) => x && { build: x.build, sessions: x.sessions, first: x.first, commit: x.commit_sha ?? null, kpis: x.kpis };
     data = { a: side(d?.a), b: side(d?.b), builds: (d?.builds ?? []).slice(0, 10).map((x: any) => ({ build: x.build, sessions: x.sessions, first: x.first })) };

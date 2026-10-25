@@ -512,9 +512,32 @@ const server = http.createServer(async (req, res) => {
     if (route === '/api/changes' && method === 'POST') {
       const b = await readJson(req);
       const by = origin ? 'Talk' : typeof b.by === 'string' ? b.by.slice(0, 60) : null;
+      // A premium model (Opus, Fable) only on J's own request (routing.ts): checked before anything starts.
+      const { premiumRequest, grantPremium } = await import('./routing.ts');
+      const premium = await premiumRequest(req, b);
       const change = b.request ? startTask(String(b.product), String(b.request), { gpuBudget: b.gpuBudget === undefined || b.gpuBudget === null ? null : Number(b.gpuBudget), target: b.target ? String(b.target) : null }) : startFix(String(b.product), Array.isArray(b.findings) ? b.findings.map(String) : [String(b.finding)]);
       tagChange(change, origin, by);
-      return send(res, 200, { ok: true, change });
+      if (premium) grantPremium(String(change), premium.tier, premium.by, premium.words);
+      return send(res, 200, { ok: true, change, ...(premium ? { premium: premium.tier === 'max' ? 'Fable' : 'Opus' } : {}) });
+    }
+    // Model routing (routing.ts): the rules, today's deep passes, conserve mode, usage per tier, J's premium grants.
+    if (route === '/api/routing' && method === 'GET') {
+      const { routingStatus } = await import('./routing.ts');
+      const { categorySummary } = await import('./ledger.ts');
+      return send(res, 200, { ...routingStatus(), categories: categorySummary(Number(q('days')) || 7) });
+    }
+    if (route === '/api/routing/premium' && method === 'POST') {
+      const b = await readJson(req);
+      const subject = String(b.subject ?? '');
+      if (!/^(c|k)_[0-9a-f]{6,32}$/.test(subject)) throw new StudioError('subject: a change (c_...) or a task (k_...)');
+      const { premiumRequest, grantPremium, clearPremium } = await import('./routing.ts');
+      if (b.model === 'none' || b.model === 'routed') {
+        clearPremium(subject);
+        return send(res, 200, { ok: true, subject, premium: null });
+      }
+      const p = await premiumRequest(req, b);
+      if (!p) throw new StudioError('model: opus or fable (or none to go back to routing)');
+      return send(res, 200, { ok: true, premium: grantPremium(subject, p.tier, p.by, p.words) });
     }
     m = /^\/api\/changes\/(c_[0-9a-f]+)\/answer$/.exec(route);
     if (m && method === 'POST') {
@@ -792,13 +815,17 @@ server.listen(PORT, '127.0.0.1', () => {
   pruneDetached();
   // The shared memory: its seed, and the daily fade and export (memory.ts).
   void import('./memory.ts').then(({ startMemory }) => startMemory());
-  // /dev/ on each beta site: the front doors Caddy sends /dev/* to, and the beta working copies' auto-commit.
+  // /dev/ on each beta site: the front doors Caddy sends /dev/* to, and the beta working copies' auto-commit. A server
+  // app's front door is its whole beta host (apps.ts); its change servers stop when idle.
   startFronts();
+  void import('./apps.ts').then(({ startAppSweeper }) => startAppSweeper());
   // A pick anywhere in Gen's library is written into its product's files (library.ts), on the server only.
   void import('./repos.ts').then(({ isServer }) => { if (isServer()) void import('./library.ts').then(({ followPicks }) => followPicks()); });
   // Web checkouts whose packages weren't installed for their lockfile (synced before installs followed syncs): npm ci now.
   void import('./repos.ts').then(({ reinstallStale }) => reinstallStale()).then((done) => { if (done.length) console.log(`[repos] reinstalled packages at start: ${done.map((i) => `${i.dir} ${i.ok ? `(${i.seconds} s)` : 'failed'}`).join(', ')}`); }).catch((e) => console.warn(`[repos] reinstalling packages: ${e.message ?? e}`));
   startDevService();
+  // Yooba Land's relay health, once a day (relayhealth.ts, NET-08).
+  void import('./relayhealth.ts').then(({ startRelayHealth }) => startRelayHealth()).catch((e) => console.warn(`[relays] starting the daily check: ${e.message ?? e}`));
   // Results of work Talk started go back into its conversation.
   startFollowups();
   // Costs: an hourly look for a forecast over budget or a server left running (phone only then).

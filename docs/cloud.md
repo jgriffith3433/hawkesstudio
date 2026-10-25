@@ -73,6 +73,28 @@ their `usr_` projects.
 - **Secrets:** the box's `/srv/hawkes/hawkesgenwebsite/.env` (the Gen key and the Stripe keys), owner `hawkes`, 0600.
 - **No AWS on the box:** its instance profile is detached; the portal never calls AWS.
 - **SSH:** `ssh -i hawkesstudio/deploy/.keys/gen_public_ed25519 ubuntu@54.163.56.66` (from J's IP or this server).
+- **In Studio (product `hawkesgenwebsite`, J can build on it through Talk):** `products.json` has the product (live
+  site hawkesgen.com, `deploy.via: "ec2"`), the server keeps a checkout of the repo on `beta` (made from main when
+  missing), and agent changes are pull requests into beta like any web product. Its beta site is
+  `https://hawkesgenwebsite.hawkesgen.com/`: **the real portal, run by Studio** (`products.json` `app`, `src/apps.ts`).
+  A push to beta checks the commit out in `.work/previews/hawkesgenwebsite` and restarts the process there, on port 8094
+  (so the "local" playtests play it too), as the agent sandbox's user with only what it's given: its own database
+  (`.work/apps/hawkesgenwebsite/beta`), Gen on 127.0.0.1 with a key Studio made for it (client `beta-hawkesgenwebsite-app`,
+  projects `ubeta_*` and the starter pack's: beta customers are `ubeta_…`, so it never reaches a live customer's
+  project; kept in `.data/app-keys.json`), `PUBLIC_URL` the beta host, and no Stripe, Google or mail. Beta accounts
+  get the usual sign-up credits, and their jobs are real Gen jobs (GPU money). An agent change opens at `/c/<change>/` on the same host: the front door (port
+  8709) remembers the lane in the `hs_lane` cookie and runs the change's own server (its own worktree and database,
+  stopped after 30 idle minutes, removed when the change is merged or closed); `/c/beta/` goes back. Caddy sends the
+  whole host to the front door behind the login, except `app.open` (game pages, play assets, `/v1/play/`, `/v1/ws`,
+  `/dl/`), which a game's sandboxed frame loads without cookies. Studio's own session cookie never reaches the app.
+  Playtests: `site` crawls of beta (local) and of live (read-only; never sign-up or checkout on live).
+  **Going live is still J's typed `DEPLOY hawkesgenwebsite`**: it
+  fast-forwards main to the beta commit, then the portal's own CI runs and its box pulls the passing commit; Studio waits
+  for CI plus the box's pull and plays the live site. A rollback is a new revert commit through the same path and
+  does not undo the database. Studio does not SSH to the box or touch its secrets. The portal repo has the
+  `.github/workflows/hawkes-studio.yml` hook, and Route 53 has the `hawkesgenwebsite.` record (2026-10-23); the Caddy
+  block comes from `deploy/caddyfile.mjs` and is applied by the pull-deploy. If the server has no checkout of the repo yet,
+  Go live says so and its "Sync repo" button clones it (`POST /api/repos/sync`); an agent or a beta push clones it first.
 - **DNS:** Route 53 `hawkesgen.com` and `www` point at the box; `studio.`, `gen.` and the beta subdomains still point
   here until they move to Studio's own domain.
 
@@ -199,6 +221,14 @@ the address it saw (Gen's GeoIP and rate limit read it) and drops any `Authoriza
 key never reaches those routes. Gen does the rest (allowed origins per product, validation; hawkesgen
 `docs/analytics.md`). Everything else on gen still needs the login or an `hg_` key; `test/caddyfile.test.ts` checks
 both. A merged change to them reaches the server on its own (`hawkes-pull.mjs` applies `deploy/caddyfile.mjs`, above).
+
+**Public on gen.hawkesgen.com (Hawkes Net):** players' pages join multiplayer rooms with no login, so `@net` opens
+`/v1/net/ws` (the relay's WebSocket: a signed, single-use ticket is the only way in), `/v1/net/ticket` (Gen's ticket
+door: player tickets for a listed project's own sites, limited per address; requests with a key go through `@apikey`),
+`/v1/net/keys`, `/v1/net/status` (totals only without a key) and `/v1/net/nodes`. Caddy drops `Cookie`, sets
+`X-Forwarded-For` (the relay caps sockets per address with it) and never buffers the socket (`flush_interval -1`).
+Everything else under `/v1/net/` (publish, room info, heartbeats, usage, key rotation) still needs a key. hawkesgen
+`docs/net.md` has the rest.
 
 Give each place its own Gen key (`hawkesgen.cmd key claude-ai --role owner`), so one can be turned off alone.
 Over HTTP, Gen outputs come back as `https://gen.hawkesgen.com/v1/files/<asset>` links (they need the key or the login),
@@ -339,6 +369,7 @@ past the login. Studio answers:
 - A commit that already went live through Studio's "Go live" isn't published twice.
 - `GET /api/hooks/pushes` lists the last pushes Studio handled and what it did. A go live also shows as a `live` run.
 - The workflow can be re-run by hand (Actions tab, "Run workflow") to send the same push again.
+- The portal (`hawkesgenwebsite`) isn't on Pages: a push to `main` is recorded and its live site is played once its CI has finished and its box has had time to pull (`deploy.via: "ec2"`; section "hawkesgen.com: the customer portal").
 - The corporate site, I Can Be and Imagine Live TV have no build on GitHub: Pages serves main as committed, and their
   beta sites serve beta's files as committed too. I Can Be's version stamp (`deploy.prebuild`) is committed to beta by
   `studio beta icanbe`, so it ships with the push.

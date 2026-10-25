@@ -14,6 +14,7 @@ import { claudeEnv } from './claude.ts';
 import { brainId, harnessStopOf } from './brains.ts';
 import { harnessHeld, holdHarness } from './harness-hold.ts';
 import { BETA, gitAsync } from './beta.ts';
+import { lfsPull } from './lfs.ts';
 import { briefSection, recordRun } from './memory.ts';
 import { roleArgs } from './roles.ts';
 import { spawnClaude } from './sandbox.ts';
@@ -69,6 +70,7 @@ async function run(id: string, top: string, base: string, opts: { brief?: string
     const ref = git(repo, ['rev-parse', '--verify', `origin/${base}`]).ok ? `origin/${base}` : 'origin/main';
     const w = git(repo, ['worktree', 'add', '--detach', wt, ref]);
     if (!w.ok) throw new Error(`worktree: ${w.err}`);
+    await lfsPull(wt);
     set(id, { detail: `reading ${top} (${ref})` });
     const story = isInfra(s.product) ? '' : storyOf(getProduct(s.product), 4000);
     const mem = briefSection({ product: s.product, role: 'scout', text: s.question });
@@ -136,7 +138,7 @@ ${mem.text ? `\n${mem.text}` : ''}${story ? `\nThe product's story, for tone:\n$
     fs.rmSync(wt, { recursive: true, force: true });
   }
   const done = getScout(id)!;
-  recordRun({ id: `ar_${id.slice(2)}`, kind: 'scout', subject: id, product: done.product, title: `Scout: ${done.question.slice(0, 150)}`, outcome: done.status, summary: done.report ?? done.detail ?? '', by: done.origin ? 'Talk' : 'J', model: process.env.SCOUT_MODEL ?? 'claude-opus-5-5', cost: done.cost, started: done.created, finished: done.finished ?? Date.now() });
+  recordRun({ id: `ar_${id.slice(2)}`, kind: 'scout', subject: id, product: done.product, title: `Scout: ${done.question.slice(0, 150)}`, outcome: done.status, summary: done.report ?? done.detail ?? '', by: done.origin ? 'Talk' : 'J', model: process.env.SCOUT_MODEL ?? roleArgs('scout').role.model, cost: done.cost, started: done.created, finished: done.finished ?? Date.now() });
   const text = done.status === 'done'
     ? `Scout ${id} reported on "${done.question}" (${done.product}):\n\n${done.report}\n\nTurn this into a proposal for J: the roadmap item and tasks with acceptance criteria, order, size and rough cost. Add them (studio_roadmap) only after J says yes.`
     : `Scout ${id} on "${done.question}" (${done.product}) failed: ${done.detail}`;

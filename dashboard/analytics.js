@@ -1,7 +1,8 @@
 // The Analytics tab: how the games are doing, from Hawkes Gen's player analytics (GET /api/analytics/..., src/analytics.ts,
 // hawkesgen docs/analytics.md). #analytics is the overview (a card per product, a studio-wide total on top);
-// #analytics/<product> is one game's page (players over time, retention, funnel, drop-off, levels, deaths, likes and
-// dislikes, tech, where from, builds, sessions), each section a chart or table with a one-line plain reading. Charts are
+// #analytics/<product> is one game's page (players over time, retention, funnel, drop-off, levels, deaths, likes,
+// where the time goes, dislikes, what gets in the way, accounts (one account's view: F.user), tech, where from, builds,
+// sessions), each section a chart or table with a one-line plain reading. Charts are
 // hand-made SVG in the theme's colours. Loaded when the tab is shown; refreshed on the stream's 60 s tick while the tab
 // is on screen. Uses app.js's helpers ($, esc, api, ago, show, tab).
 (() => {
@@ -124,7 +125,7 @@
   const box = (id, title, reading, body, wide = false) => `<div class="an-box${wide ? ' wide' : ''}" id="an-${id}"><h3>${esc(title)}</h3><p class="an-read">${reading}</p>${body}</div>`;
 
   // ------------------------------------------------------------- state
-  const F = { range: '30d', from: '', to: '', env: 'live', build: '', device: '', browser: '', country: '', bots: false, internal: false };
+  const F = { range: '30d', from: '', to: '', env: 'live', build: '', device: '', browser: '', country: '', user: '', bots: false, internal: false };
   const known = { builds: new Set(), browsers: new Set(), countries: new Set() };
   let shown = null; // '' for the overview, else the product on screen (or loading)
   let seq = 0;
@@ -141,7 +142,7 @@
       else p.set('range', F.range);
     }
     p.set('env', F.env);
-    for (const k of ['build', 'device', 'browser', 'country']) if (F[k]) p.set(k, F[k]);
+    for (const k of ['build', 'device', 'browser', 'country', 'user']) if (F[k]) p.set(k, F[k]);
     if (F.bots) p.set('bots', '1');
     if (F.internal) p.set('internal', '1');
     for (const [k, v] of Object.entries(extra)) if (v) p.set(k, v);
@@ -162,6 +163,7 @@
       <label>Device ${sel('device', [['', 'All devices'], ['desktop', 'Desktop'], ['phone', 'Phone'], ['tablet', 'Tablet']])}</label>
       <label>Browser <select data-an-f="browser">${opts(known.browsers, F.browser, 'All browsers')}</select></label>
       <label>Country <select data-an-f="country">${opts(known.countries, F.country, 'All countries')}</select></label>
+      ${F.user ? `<span class="pill">Account ${esc(F.user)} <a href="#analytics/${esc(product)}" data-an-user="" aria-label="Show every account">✕</a></span>` : ''}
       ${toggles}
       <span class="meta">Export CSV:</span> <a href="${exp('sessions')}" download>sessions</a> <a href="${exp('events')}" download>events</a>
     </div>`;
@@ -245,7 +247,7 @@
     const sessionsN = d.sessions?.sessions ?? 0;
     if (!p.hasData && !sessionsN) return `${head}<div class="empty">No players on record for ${esc(name)} yet. Hawkes Analytics (Gen's SDK) isn't on it yet, or nobody has played since it went on. Try "All" sites or include bots to see playtests.</div>`;
     const S = [];
-    const nav = [['players', 'Players'], ['retention', 'Retention'], ['funnel', 'Funnel'], ['dropoff', 'Drop-off'], ['levels', 'Levels'], ['deaths', 'Deaths'], ['likes', 'What players like'], ['dislikes', "What they don't"], ['tech', 'Tech'], ['where', 'Where from'], ['builds', 'Builds'], ['sessions', 'Sessions']];
+    const nav = [['players', 'Players'], ['retention', 'Retention'], ['sticks', 'Who sticks around'], ['funnel', 'Funnel'], ['dropoff', 'Drop-off'], ['levels', 'Levels'], ['deaths', 'Deaths'], ['likes', 'What players like'], ['time', 'Where the time goes'], ['dislikes', "What they don't"], ['frustration', 'What gets in the way'], ['accounts', 'Accounts'], ['tech', 'Tech'], ['where', 'Where from'], ['builds', 'Builds'], ['sessions', 'Sessions']];
     const insights = ins?.insights?.length ? `<div class="an-box wide" style="margin-bottom:14px"><h3>What changed</h3>${ins.insights.slice(0, 5).map((x) => `<div class="an-read">• ${esc(x.text)}</div>`).join('')}</div>` : '';
 
     // Players over time
@@ -263,6 +265,29 @@
     S.push(box('retention', 'Retention',
       rt.total?.players ? `Of ${num(rt.total.players)} new players, ${pct(rt.total.d1?.rate)} came back the next day, ${pct(rt.total.d7?.rate)} after a week and ${pct(rt.total.d30?.rate)} after a month.` : 'No new players in this range.',
       table([{ h: 'First seen (week of)', f: (x) => esc(x.week) }, { h: 'Players', n: true, f: (x) => num(x.players) }, { h: 'Day 1', n: true, f: (x) => cell(x.d1) }, { h: 'Day 7', n: true, f: (x) => cell(x.d7) }, { h: 'Day 30', n: true, f: (x) => cell(x.d30) }], [...(rt.cohorts ?? [])].reverse(), 'No cohorts yet.')));
+
+    // Who sticks around: retention by what a player's first session was (Gen's segments), and by what they did in it.
+    const sg = d.segments;
+    if (sg && sg.total?.players) {
+      const GROUPS = [['entry', 'Came in through'], ['source', 'Came from'], ['device', 'Device'], ['input', 'Plays with'], ['account', 'Account'], ['hadFun', 'First session fun'], ['played', 'First session length']];
+      const segRows = (list) => table([{ h: 'Group', f: (x) => esc(x.value) }, { h: 'Players', n: true, f: (x) => num(x.players) }, { h: 'Day 1', n: true, f: (x) => cell(x.d1) }, { h: 'Day 7', n: true, f: (x) => cell(x.d7) }, { h: 'First session', n: true, f: (x) => dur(x.medianFirstActiveSeconds) }], list, 'Nobody yet.');
+      // The reading: the feature with the biggest day-1 lift among ones enough players used, and the best and worst way in.
+      const solid = (sg.features ?? []).filter((x) => x.with.players >= 5 && x.without.players >= 5 && x.d1Lift != null);
+      const best = [...solid].sort((a, b) => b.d1Lift - a.d1Lift)[0];
+      const worst = [...solid].sort((a, b) => a.d1Lift - b.d1Lift)[0];
+      const entries = (sg.by.entry ?? []).filter((x) => x.players >= 5 && x.d1.rate != null).sort((a, b) => b.d1.rate - a.d1.rate);
+      const reading = [
+        `Of ${num(sg.total.players)} new players, ${pct(sg.total.d1?.rate)} came back the next day and ${pct(sg.total.d7?.rate)} after a week.`,
+        entries.length > 1 ? `Best way in: <b>${esc(entries[0].value)}</b> (${pct(entries[0].d1.rate)} next day) against ${esc(entries[entries.length - 1].value)} (${pct(entries[entries.length - 1].d1.rate)}).` : '',
+        best && best.d1Lift > 0 ? `Players who <b>${esc(best.name)}</b> in their first session come back more: ${pct(best.with.d1.rate)} against ${pct(best.without.d1.rate)}.` : '',
+        worst && worst !== best && worst.d1Lift < 0 ? `Those who ${esc(worst.name)} come back less (${pct(worst.with.d1.rate)} against ${pct(worst.without.d1.rate)}).` : '',
+        solid.length ? '' : 'Too few players per feature to compare yet (5 with and 5 without).',
+      ].filter(Boolean).join(' ');
+      S.push(box('sticks', 'Who sticks around', reading,
+        `${GROUPS.map(([k, label]) => (sg.by[k]?.length ? `<h4>${esc(label)}</h4>${segRows(sg.by[k].slice(0, 8))}` : '')).join('')}
+         <h4>What they did first (each feature in the first session)</h4>${table([{ h: 'Did in first session', f: (x) => esc(x.name) }, { h: 'Players', n: true, f: (x) => num(x.with.players) }, { h: 'Day 1 with · without', n: true, f: (x) => `${cell(x.with.d1)} · ${cell(x.without.d1)}` }, { h: 'Day 7 with · without', n: true, f: (x) => `${cell(x.with.d7)} · ${cell(x.without.d7)}` }, { h: 'Day 1 lift', n: true, f: (x) => (x.d1Lift == null ? '–' : `${x.d1Lift > 0 ? '+' : ''}${Math.round(x.d1Lift * 100)} pts`) }], (sg.features ?? []).slice(0, 20), 'No feature events yet.')}
+         <div class="meta">Groups are each player's first session in the range. Small groups (under about 20 players) move a lot: read them as hints.</div>`, true));
+    }
 
     // Funnel
     const fn = d.funnel ?? {};
@@ -314,11 +339,48 @@
        <h4>Ratings</h4>${fb.rating?.ratings ? columns(fb.stars.map((x) => ({ label: `${x.stars} ★`, value: x.count })), 'Star ratings') : ''}${fb.rating?.thumbsUp || fb.rating?.thumbsDown ? `<div class="meta">👍 ${num(fb.rating.thumbsUp)} · 👎 ${num(fb.rating.thumbsDown)}</div>` : ''}
        <h4>What they said</h4>${(good.length ? good : fb.comments).slice(0, 8).map(comment).join('') || '<div class="meta">No comments yet.</div>'}`));
 
+
+    // What gets in the way: frustration events (credits, failed requests and generations, the assistant), rage clicks
+    // and errors, each with how often the player left right after.
+    const fr = d.frustration ?? { kinds: [], rageClicks: [], recent: [] };
+    const frWorst = (fr.kinds ?? [])[0];
+    const kindName = (k) => esc(String(k).replace(/_/g, ' '));
+    const leftTag = (x) => (x.leftAfterRate == null ? '–' : `<span class="${x.leftAfterRate >= 0.5 ? 'an-down' : ''}">${pct(x.leftAfterRate)}</span>`);
+    S.push(box('frustration', 'What gets in the way',
+      fr.sessionsWithFrustration ? `${pct(fr.frustrationRate)} of sessions (${num(fr.sessionsWithFrustration)} of ${num(fr.sessions)}) hit something in their way, and ${pct(fr.leftAfterRate)} of those left within 2 minutes. ${frWorst ? `The most common: <b>${kindName(frWorst.kind)}</b> in ${num(frWorst.sessions)} sessions (${pct(frWorst.shareOfSessions)}).` : ''}` : 'Nothing got in anyone\'s way in this range (or the pages don\'t report it yet).',
+      `${table([{ h: 'What', f: (x) => `${kindName(x.kind)}<div class="meta">${esc(Object.keys(x.pages ?? {}).slice(0, 3).join(', '))}</div>` }, { h: 'Sessions', n: true, f: (x) => num(x.sessions) }, { h: 'Of sessions', n: true, f: (x) => pct(x.shareOfSessions) }, { h: 'Players', n: true, f: (x) => num(x.players) }, { h: 'Accounts', n: true, f: (x) => num(x.accounts) }, { h: 'Left right after', n: true, f: leftTag }, { h: 'Last', n: true, f: (x) => (x.last ? ago(x.last.at) : '–') }], fr.kinds ?? [], 'Nothing yet.', { rowAttr: (x) => ((x.leftAfterRate ?? 0) >= 0.5 && x.sessions >= 3 ? ' class="hot"' : '') })}
+       <h4>Rage clicks (3 fast clicks in one spot)</h4>${bars((fr.rageClicks ?? []).map((x) => ({ ...x, value: x.where })), { value: (x) => x.count, extra: (x) => ` · ${num(x.sessions)} sessions`, limit: 8 })}
+       <h4>Latest</h4>${table([{ h: 'When', f: (x) => ago(x.at) }, { h: 'What', f: (x) => kindName(x.kind) }, { h: 'Where', f: (x) => esc(x.page ?? '') }, { h: 'Details', f: (x) => esc(Object.entries(x.props ?? {}).filter(([k]) => k !== 'kind').map(([k, v]) => `${k}: ${typeof v === 'object' ? JSON.stringify(v) : v}`).join(', ').slice(0, 120)) }, { h: 'Account', f: (x) => (x.user ? `<a href="#analytics/${esc(product)}" data-an-user="${esc(x.user)}">${esc(x.user)}</a>` : '<span class="meta">guest</span>') }], (fr.recent ?? []).slice(0, 12), 'None yet.')}`, true));
+
+    // Where the time goes: seconds per activity from `engage` events (only while the player was active).
+    const en = d.engagement ?? { activities: [] };
+    const enTop = (en.activities ?? [])[0];
+    S.push(box('time', 'Where the time goes',
+      enTop ? `Players spent the most time on <b>${esc(enTop.name)}</b>: ${dur(enTop.seconds)} in all, ${pct(enTop.shareOfActiveTime)} of active time, ${num(enTop.players)} players (a median ${dur(enTop.medianSecondsPerPlayer)} each).` : 'No time per activity reported yet.',
+      `${bars((en.activities ?? []).map((x) => ({ ...x, value: x.name })), { value: (x) => x.seconds, extra: (x) => ` s · ${num(x.players)} players`, limit: 12 })}
+       ${table([{ h: 'Activity', f: (x) => esc(x.name) }, { h: 'Time', n: true, f: (x) => dur(x.seconds) }, { h: 'Players', n: true, f: (x) => num(x.players) }, { h: 'Of players', n: true, f: (x) => pct(x.shareOfPlayers) }, { h: 'Median each', n: true, f: (x) => dur(x.medianSecondsPerPlayer) }, { h: 'Top 10% each', n: true, f: (x) => dur(x.p90SecondsPerPlayer) }, { h: 'Of active time', n: true, f: (x) => pct(x.shareOfActiveTime) }], en.activities ?? [], 'No activity time yet.')}`));
+
+    // Accounts: who likes what (signed-in players: the site's own account id, nothing else about them).
+    const ac = d.accounts ?? { accounts: [] };
+    const acts = (x) => (x.topActivities ?? []).slice(0, 3).map((t) => `${esc(t.name)} ${dur(t.value)}`).join(', ');
+    const ms_ = (x) => Object.entries(x.milestones ?? {}).map(([k, n]) => `${esc(k)}${n > 1 ? ` ×${n}` : ''}`).join(', ');
+    const lastRating = (x) => { const r = (x.ratings ?? []).at(-1); return r ? `${r.rating === 'up' ? '👍' : r.rating === 'down' ? '👎' : `${esc(r.rating)} ★`}${r.text ? ` “${esc(String(r.text).slice(0, 60))}”` : ''}` : '–'; };
+    S.push(box('accounts', 'Accounts: who likes what',
+      ac.total ? `${num(ac.total)} signed-in accounts played in this range (${num(ac.identifiedSessions)} sessions). ${F.user ? `Showing <b>${esc(F.user)}</b> only: every section is just this account. <a href="#analytics/${esc(product)}" data-an-user="">Show everyone</a>.` : 'Tap one to see everything for just that account.'}` : 'No signed-in players yet (only sites that tell the SDK who is signed in have accounts).',
+      table([
+        { h: 'Account', f: (x) => `<a href="#analytics/${esc(product)}" data-an-user="${esc(x.user)}">${esc(x.user)}</a><div class="meta">${esc((x.devices ?? []).join(', '))}${x.browsers > 1 ? ` · ${num(x.browsers)} browsers` : ''}</div>` },
+        { h: 'Sessions', n: true, f: (x) => num(x.sessions) }, { h: 'Played', n: true, f: (x) => dur(x.activeSeconds) },
+        { h: 'Time on', f: (x) => acts(x) || '<span class="meta">–</span>' },
+        { h: 'Used', f: (x) => esc((x.features ?? []).slice(0, 6).join(', ')) || '<span class="meta">–</span>' },
+        { h: 'Got in the way', f: (x) => ((x.frustrationKinds ?? []).map((k) => `${kindName(k.name)}${k.value > 1 ? ` ×${k.value}` : ''}`).join(', ') || '<span class="meta">nothing</span>') },
+        { h: 'Rated', f: lastRating }, { h: 'Milestones', f: (x) => ms_(x) || '<span class="meta">–</span>' }, { h: 'Last seen', n: true, f: (x) => ago(x.last) },
+      ], (ac.accounts ?? []).slice(0, 60), 'No accounts yet.', { rowAttr: (x) => (x.frustrations >= 3 ? ' class="hot"' : '') }), true));
+
     // What they don't
     const er = d.errors ?? { groups: [] };
     const low = fb.comments.filter((c) => c.rating === 'down' || (Number(c.rating) >= 1 && Number(c.rating) <= 2));
     S.push(box('dislikes', "What they don't",
-      `${low.length ? `${num(low.length)} low ratings with comments.` : 'No low ratings with comments.'} ${er.sessionsWithErrors ? `${pct(er.errorRate)} of sessions hit an error (${num(er.sessionsWithErrors)} of ${num(er.sessions)})${er.groups[0] ? `; the most common: “${esc(String(er.groups[0].message ?? er.groups[0].signature).slice(0, 90))}”` : ''}.` : 'No errors.'} Rage clicks aren't reported yet (Gen's SDK has no rage-click event).`,
+      `${low.length ? `${num(low.length)} low ratings with comments.` : 'No low ratings with comments.'} ${er.sessionsWithErrors ? `${pct(er.errorRate)} of sessions hit an error (${num(er.sessionsWithErrors)} of ${num(er.sessions)})${er.groups[0] ? `; the most common: “${esc(String(er.groups[0].message ?? er.groups[0].signature).slice(0, 90))}”` : ''}.` : 'No errors.'} Rage clicks and everything else that got in the way: What gets in the way.`,
       `<h4>Low ratings</h4>${low.slice(0, 8).map(comment).join('') || '<div class="meta">None.</div>'}
        <h4>Errors</h4>${table([{ h: 'Error', f: (x) => `${esc(String(x.message ?? x.signature).slice(0, 140))}<div class="meta">${esc(Object.keys(x.sources ?? {}).join(', '))} · ${esc(Object.keys(x.browsers ?? {}).slice(0, 3).join(', '))}</div>` }, { h: 'Sessions', n: true, f: (x) => num(x.sessions) }, { h: 'Players', n: true, f: (x) => num(x.players) }, { h: 'Times', n: true, f: (x) => num(x.count) }, { h: 'Last', n: true, f: (x) => ago(x.last) }], er.groups.slice(0, 15), 'No errors.')}`));
 
@@ -364,7 +426,8 @@
         { h: 'Started', f: (x) => `${esc(new Date(x.started).toLocaleString())}${x.bot ? ' <span class="pill">bot</span>' : ''}${x.internal ? ' <span class="pill">you</span>' : ''}` },
         { h: 'Where', f: (x) => `${flag(x.country)} ${esc([x.city, x.country].filter(Boolean).join(', '))}` },
         { h: 'On', f: (x) => esc([x.device, x.browser, x.os].filter(Boolean).join(' · ')) },
-        { h: 'Played', n: true, f: (x) => dur(x.active_ms / 1000) }, { h: 'Levels done', n: true, f: (x) => num(x.levels_done) }, { h: 'Deaths', n: true, f: (x) => num(x.deaths) }, { h: 'Errors', n: true, f: (x) => num(x.errors) },
+        { h: 'Account', f: (x) => (x.user_id ? esc(x.user_id) : '<span class="meta">–</span>') },
+        { h: 'Played', n: true, f: (x) => dur(x.active_ms / 1000) }, { h: 'Levels done', n: true, f: (x) => num(x.levels_done) }, { h: 'Deaths', n: true, f: (x) => num(x.deaths) }, { h: 'Errors', n: true, f: (x) => num(x.errors) }, { h: 'In the way', n: true, f: (x) => num(x.frustrations) },
         { h: 'Ended on', f: (x) => esc([x.last_level != null && `level ${x.last_level}`, x.last_screen, x.last_event].filter(Boolean).join(' · ')) },
       ], list.items ?? [], 'No sessions in this range.', { rowAttr: (x) => ` data-an-session="${esc(x.id)}"` })}<div id="anSession"></div>`, true));
 
@@ -386,7 +449,7 @@
     const s = t.session;
     const brief = (o) => (o && Object.keys(o).length ? esc(Object.entries(o).map(([k, v]) => `${k}: ${typeof v === 'object' ? JSON.stringify(v) : v}`).join(', ').slice(0, 160)) : '');
     el.innerHTML = `<h4>Session ${esc(s.id)} · ${esc(s.anon)}</h4>
-      <div class="meta">${esc(new Date(s.started).toLocaleString())} · ${dur((s.active_ms ?? 0) / 1000)} active · ${esc([s.device, s.browser, s.os, s.screen].filter(Boolean).join(' · '))} · ${flag(s.country)} ${esc([s.city, s.country].filter(Boolean).join(', '))}${s.referrer ? ` · from ${esc(s.referrer)}` : ''}${s.build ? ` · build ${esc(s.build)}` : ''}</div>
+      <div class="meta">${s.user_id ? `account ${esc(s.user_id)} · ` : ''}${esc(new Date(s.started).toLocaleString())} · ${dur((s.active_ms ?? 0) / 1000)} active · ${esc([s.device, s.browser, s.os, s.screen].filter(Boolean).join(' · '))} · ${flag(s.country)} ${esc([s.city, s.country].filter(Boolean).join(', '))}${s.referrer ? ` · from ${esc(s.referrer)}` : ''}${s.build ? ` · build ${esc(s.build)}` : ''}</div>
       ${table([{ h: 'At', n: true, f: (e) => (e.offsetMs == null ? '' : dur(e.offsetMs / 1000)) }, { h: 'Event', f: (e) => `<b>${esc(e.name)}</b>` }, { h: 'Screen · level', f: (e) => esc([e.screen, e.level != null && `level ${e.level}`].filter(Boolean).join(' · ')) }, { h: 'Details', f: (e) => brief(e.props) }], t.events, 'No events.')}
       ${s.exit ? `<details open><summary class="meta">What was on screen when they left (the exit snapshot)</summary><pre>${esc(JSON.stringify(s.exit, null, 2))}</pre></details>` : '<div class="meta">No exit snapshot for this session.</div>'}`;
   }
@@ -407,6 +470,8 @@
     if (t.closest('[data-an-back]')) { e.preventDefault(); location.hash = '#analytics'; show('analytics'); return; }
     if (t.closest('[data-an-refresh]')) { loadAnalyticsTab(); return; }
     if (t.closest('a[download]')) return;
+    const who = t.closest('[data-an-user]');
+    if (who) { e.preventDefault(); F.user = who.dataset.anUser; openSession = null; loadAnalyticsTab(); return; }
     const open = t.closest('[data-an-open]');
     if (open) { show('analytics', open.dataset.anOpen); return; }
     const th = t.closest('#anLevels th[data-sort]');

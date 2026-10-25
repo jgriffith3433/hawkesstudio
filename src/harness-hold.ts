@@ -217,6 +217,18 @@ export function liftHold(why: string, harness: Harness = brainId()) {
 }
 
 /**
+ * A real answer on a held harness (J, 2026-10-23: Talk answered on Claude for two hours while the agents waited for the
+ * reset time): a usage or transient hold is lifted, so parked changes and the queue go on now. Only an answer from a turn
+ * that started after the hold began counts (one already running when the limit hit proves nothing). If the limit is
+ * still there, the next agent pass stops again and holds it again: a few seconds, never a try.
+ */
+export function answeredOn(harness: Harness, startedAt: number, why: string, now = Date.now()) {
+  const h = activeHold(harness);
+  if (!h || (h.kind !== 'usage' && h.kind !== 'transient') || !(startedAt > h.since) || startedAt > now) return null;
+  return liftHold(why, harness);
+}
+
+/**
  * The other harness stands in for a held one when it answers (brains.ts failover), or for Claude another saved account.
  * Returns what took over, or null.
  */

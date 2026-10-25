@@ -84,7 +84,7 @@
     return `<div class="set-box"><h3>🧠 Harness and model</h3>
       <div class="meta">What runs Talk, the PM, the agents and Gen's writing and review calls. Claude Code is the original harness.       Cursor, GitHub Copilot and Google Antigravity run on their plans (the Gemini API key bills a key). If the one you pick is out of usage, has a billing error or is down, Studio tries the others in turn (Claude, Cursor, Copilot, Antigravity, Gemini) and goes back by itself. Switching takes effect on the next turn and the next agent; a session already running is restarted on the harness you pick.${stand}</div>
             ${row('Harness', select('brain', 'harness', b.harness, [['claude', 'Claude Code'], ['cursor', 'Cursor'], ['copilot', 'GitHub Copilot'], ['antigravity', 'Google Antigravity (AI Ultra)'], ['gemini', 'Gemini API key']]), note)}
-      ${row('Model', select('brain', 'model', b.model, models), b.harness === 'cursor' ? 'Auto is Cursor’s router (keeps going when premium usage is out). Grok and Composer are pinned models.' : b.harness === 'copilot' ? 'Copilot’s own model ids; the default is what your plan picks.' : 'Leave this on each role’s model, or pick one for every role.')}
+      ${row('Model', select('brain', 'model', b.model, models), b.harness === 'cursor' ? 'Auto is Cursor’s router (keeps going when premium usage is out). Grok and Composer are pinned models.' : b.harness === 'copilot' ? 'Copilot’s own model ids; the default is what your plan picks.' : b.harness === 'claude' && b.model && data.routing?.enabled ? '<b>Not used while Model routing is on:</b> each run gets its routed model (Haiku, Sonnet, Opus when it climbs, Fable when you ask). Turn routing off to pin this model for every run.' : 'Leave this on each role’s model, or pick one for every role.')}
     </div>`;
   }
 
@@ -177,7 +177,6 @@
       ${row('Per product overrides', `<input type="text" data-s="agents" data-k="productLimits" value="${esc(Object.entries(a.productLimits ?? {}).map(([p, n]) => `${p}: ${n}`).join(', '))}" placeholder="sickofit: 2">`, 'Product ids with their own number, like "sickofit: 2, phorigins: 1". Leave a product out to use the number above.')}
       ${row('Auto-fixes per day', num('agents', 'maxPerDay', a.maxPerDay))}
       ${row('Dollars per day (reported)', num('agents', 'maxCostPerDay', a.maxCostPerDay, { step: 1 }))}
-      ${row('Model', `<input type="text" data-s="agents" data-k="model" value="${esc(a.model)}">`)}
       ${row('Turns per run', num('agents', 'maxTurns', a.maxTurns, { min: 10 }))}
       ${row('End a stuck agent after (minutes)', num('agents', 'idleMinutes', a.idleMinutes ?? 20), 'An agent with no new output this long, whose processes are only waiting or sleeping (no GPU job running), is ended and its change carries on. 0: never.')}
       ${row('Tell Talk when GPU jobs wait longer than (hours)', num('agents', 'genWaitHours', a.genWaitHours ?? 6, { min: 1 }), 'An agent whose Gen jobs are queued parks (it holds no agent slot) and is resumed when they finish. Waiting longer than this is said once in Talk; it never fails the task.')}
@@ -221,8 +220,42 @@
     </div>`;
   }
 
+  // Model routing (src/routing.ts, GET /api/routing): which model each piece of work gets, the climb on failure, the
+  // day's Opus budget, conserve mode after a usage limit, and how the usage splits across tiers against the targets.
+  let routing = null;
+  const TIER_NAME = { fast: 'fast · Haiku', standard: 'standard · Sonnet', deep: 'deep · Opus', max: 'max · Fable' };
+  function routingBox(s, st) {
+    const u = st?.usage;
+    const bar = (t) => {
+      const [lo, hi] = t.target;
+      const color = t.status === 'over' ? 'var(--red)' : t.status === 'under' ? 'var(--dim)' : 'var(--accent)';
+      return `<div class="set-row"><div>${esc(TIER_NAME[t.tier] ?? t.tier)}</div><div>
+        <div style="display:flex;align-items:center;gap:8px"><div style="flex:1;height:8px;border-radius:4px;background:var(--panel2);position:relative;overflow:hidden">
+          <div style="position:absolute;left:${lo}%;width:${hi - lo}%;top:0;bottom:0;background:var(--line)"></div>
+          <div style="position:absolute;left:0;width:${Math.min(100, t.share)}%;top:2px;bottom:2px;background:${color};border-radius:3px"></div>
+        </div><span class="meta" style="min-width:9em">${t.share}% <span title="target">(${lo}–${hi}%)</span></span></div>
+        <div class="meta">${t.passes} agent pass${t.passes === 1 ? '' : 'es'}, ${t.turns} Talk turn${t.turns === 1 ? '' : 's'}${t.status === 'over' ? ' · over its target' : ''}</div></div></div>`;
+    };
+    const rules = (st?.rules ?? []).map((r) => `<div class="set-row"><div>${esc(r.label)}</div><div class="meta">${esc(TIER_NAME[r.tier] ?? r.tier)}, ${esc(r.effort)} effort · on failure: ${esc(r.escalate)}</div></div>`).join('');
+    const cats = (st?.categories ?? []).filter((c) => c.passes).map((c) => `${esc(c.category)} ${c.merged}/${c.changes} merged`).join(' · ');
+    const premium = (st?.premium ?? []).map((p) => `<div class="meta">${esc(p.subject)}: ${p.tier === 'max' ? 'Fable' : 'Opus'} (${esc(p.by)}${p.words ? `: “${esc(p.words.slice(0, 80))}”` : ''}, ${esc(ago(p.at))}${p.used ? `, used ${p.used}×` : ''})</div>`).join('');
+    return `<div class="set-box"><h3>🧭 Model routing: usage limits last</h3>
+      <div class="meta">Each piece of work goes to the cheapest model likely to finish it, and climbs a tier only when an attempt fails. Opus runs for hard systems work within a daily budget; Fable runs only when you ask for it ("use Fable") in Talk. Talk's turns that just explain finished work run on Haiku.</div>
+      ${row('Routing', bool('routing', 'enabled', s.enabled, 'route agent work by category'), 'Off: every role runs on its tier below (Tuning), one tier up on a retry.')}
+      ${row('Tiers a failing change may climb', num('routing', 'maxEscalations', s.maxEscalations, { min: 0, max: 3 }), 'One per failed attempt (Haiku → Sonnet → Opus), carrying the earlier attempts’ notes. Past it, the agent is told to re-scope.')}
+      ${row('Highest tier on its own', select('routing', 'ceiling', s.ceiling, [['deep', 'deep (Opus)'], ['standard', 'standard (Sonnet): Opus only when you ask']]), 'Fable is never chosen by itself.')}
+      ${row('Automatic Opus passes a day', `${num('routing', 'deepPerDay', s.deepPerDay, { min: 0, max: 100 })} <span class="meta">${st ? `${st.deepToday} used today` : ''}</span>`, 'Past it, work that would go to Opus runs on Sonnet with more effort. Your own asks for Opus or Fable are not counted against it.')}
+      ${row('Conserve after a usage limit (hours)', `${num('routing', 'conserveHours', s.conserveHours, { min: 0, max: 72 })} ${st?.conserve ? `<span class="set-err">conserving until ${esc(new Date(st.conserve.until).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }))}</span>` : ''}`, 'When the plan hits a usage limit, automatic work stays on Sonnet or Haiku this long after it.')}
+      ${row('Studio’s own Talk turns on Haiku', bool('routing', 'autoTurnsFast', s.autoTurnsFast), 'The turns Studio starts to tell you what finished work came back. Your own messages and PM turns keep their tier.')}
+      ${u ? `<div class="meta" style="padding-top:8px"><b>Usage by tier</b>, last ${u.days} days (agents, Talk, scouts${u.total ? `; ${esc('$' + u.total.toFixed(2))} at API prices` : ''}): the band is the target</div>${u.tiers.map(bar).join('')}` : ''}
+      ${cats ? `<div class="meta" style="padding-top:8px"><b>By category</b>: ${cats}</div>` : ''}
+      ${premium ? `<div class="meta" style="padding-top:8px"><b>Your asks for a bigger model</b></div>${premium}` : ''}
+      <details class="more-details" style="padding-top:8px"><summary class="meta">Categories and their tiers</summary>${rules}</details>
+    </div>`;
+  }
+
   function tuningBox(t) {
-    const tiers = [['fast', 'fast (small model)'], ['standard', 'standard'], ['deep', 'deep (largest model)']];
+    const tiers = [['fast', 'fast (small model)'], ['standard', 'standard'], ['deep', 'deep (large model)'], ['max', 'max (Fable: costs the most)']];
     const efforts = [['', 'default'], ['low', 'low'], ['medium', 'medium'], ['high', 'high'], ['xhigh', 'extra high'], ['max', 'max']];
     const roleHelp = { talk: 'Talk (chat and calls)', pm: 'PM (plans and decides)', scout: 'Scout (read-only research)', reviewer: 'Reviewer (second opinions)', fixer: 'Fixer (bug fixes)', builder: 'Builder (features)', content: 'Content (art and assets)' };
     const roles = Object.keys(roleHelp).map((n) => {
@@ -230,12 +263,12 @@
       return `<div class="set-row"><div>${roleHelp[n]}</div><div>${select('tuning', `roles.${n}.tier`, r.tier, tiers)} ${select('tuning', `roles.${n}.effort`, r.effort, efforts)} ${num('tuning', `roles.${n}.maxTurns`, r.maxTurns, { min: 0, max: 500 })}</div></div>`;
     }).join('');
     const models = ['claude', 'copilot', 'cursor', 'antigravity', 'gemini'].map((h) => row(`${h === 'claude' ? 'Claude Code' : h === 'copilot' ? 'Copilot' : h === 'gemini' ? 'Gemini API' : h === 'antigravity' ? 'Antigravity' : 'Cursor'} models`,
-      ['fast', 'standard', 'deep'].map((k) => `<input type="text" data-s="tuning" data-k="models.${h}.${k}" value="${esc(t.models[h][k])}" placeholder="${k}: default" size="18" title="${k}">`).join(' '))).join('');
+      ['fast', 'standard', 'deep', 'max'].map((k) => `<input type="text" data-s="tuning" data-k="models.${h}.${k}" value="${esc(t.models[h][k] ?? '')}" placeholder="${k}: default" size="18" title="${k}">`).join(' '))).join('');
     const jobs = Object.keys(t.jobs).map((j) => `${j} ${select('tuning', `jobs.${j}`, t.jobs[j], tiers)}`).join(' &nbsp; ');
     return `<div class="set-box"><h3>🎚️ Agent tuning: cost, speed, quality</h3>
       <div class="meta">How much model each job gets. Each role has a tier (which model), an effort (how hard it thinks) and a turn cap (0: the role file's own). The tiers map to real models per harness below. Raising anything here spends more.</div>
       ${row('Preset', select('tuning', 'preset', t.preset, [['economy', 'Economy: least spend, small models, low effort'], ['balanced', 'Balanced (default): mid model, deep only where it counts'], ['quality', 'Quality: deep model for building and judging'], ['custom', 'Custom (your own mix)']]), 'Choosing one sets every field below. Editing a field makes it Custom.')}
-      <div class="meta" style="padding-top:8px"><b>Roles</b>: tier · effort · turn cap</div>
+      <div class="meta" style="padding-top:8px"><b>Roles</b>: tier · effort · turn cap${data.routing?.enabled ? ' (with Model routing on, fixer, builder and content changes get their tier and effort from their route; the turn caps here still apply)' : ''}</div>
       ${roles}
       ${row('Retry on a deeper model', bool('tuning', 'escalateOnRetry', t.escalateOnRetry, 'a change on its second try or later uses the next tier up'), 'Cheap first, deeper only when the first try did not land. Never applied to Talk.')}
       ${row('One agent pass lasts at most (minutes)', `${num('tuning', 'passMinutes.standard', t.passMinutes.standard, { min: 5, max: 600 })} <span class="meta">content:</span> ${num('tuning', 'passMinutes.content', t.passMinutes.content, { min: 5, max: 720 })}`, 'A pass that runs out is stopped and resumed, not failed.')}
@@ -246,6 +279,17 @@
       ${models}
       <div class="meta" style="padding-top:8px"><b>Small jobs</b> (triage, dedupe, summaries, reviews, canon checks through Gen)</div>
       <div class="set-row"><div>${jobs}</div><div></div></div>
+    </div>`;
+  }
+
+  function relaysBox(r) {
+    return `<div class="set-box"><h3>Relay health (Yooba Land)</h3>
+      <div class="meta">Once a day Studio checks each relay and runs the game's two-page soak; a relay that refuses or a failing signal route opens a finding.</div>
+      ${row('Daily check', bool('relays', 'enabled', r.enabled))}
+      ${row('From (UTC hour)', num('relays', 'hour', r.hour, { min: 0, max: 23 }))}
+      ${row('Soak length (seconds)', num('relays', 'soakSeconds', r.soakSeconds, { min: 30, max: 300 }))}
+      ${row('Stop the check after (minutes)', num('relays', 'budgetMinutes', r.budgetMinutes, { min: 2, max: 15 }))}
+      ${row('Relays', `<input type="text" data-s="relays" data-k="relays" value="${esc((r.relays ?? []).join(', '))}" placeholder="the game's own list">`, 'Comma-separated wss:// addresses to probe. Empty: the list the game ships.')}
     </div>`;
   }
 
@@ -293,11 +337,11 @@
   }
 
   async function loadSettingsTab() {
-    [data, claude, agyLogin, services] = await Promise.all([api('/api/settings'), api('/api/claude/accounts').catch(() => null), api('/api/antigravity/login').catch(() => null), api('/api/services').catch(() => null)]);
+    [data, claude, agyLogin, services, routing] = await Promise.all([api('/api/settings'), api('/api/claude/accounts').catch(() => null), api('/api/antigravity/login').catch(() => null), api('/api/services').catch(() => null), api('/api/routing').catch(() => null)]);
     window.callVoice?.apply(data.call);
     const badge = $('#walkAwayBadge');
     if (badge) badge.hidden = !data.pm.walkAway;
-    $('#setBody').innerHTML = `<div class="set-grid">${brainBox(data.brain)}${tuningBox(data.tuning)}${claudeBox(claude, data.brain)}${agyBox(agyLogin)}<div id="svcBox">${servicesBox(services)}</div>${callBox(data.call)}${agentsBox(data.agents)}${pmBox(data.pm)}${notifyBox(data.notify)}${costsBox(data.costs)}${resourcesBox(data.resources)}</div>`;
+    $('#setBody').innerHTML = `<div class="set-grid">${brainBox(data.brain)}${data.routing ? routingBox(data.routing, routing) : ''}${tuningBox(data.tuning)}${claudeBox(claude, data.brain)}${agyBox(agyLogin)}<div id="svcBox">${servicesBox(services)}</div>${callBox(data.call)}${agentsBox(data.agents)}${pmBox(data.pm)}${notifyBox(data.notify)}${costsBox(data.costs)}${resourcesBox(data.resources)}${data.relays ? relaysBox(data.relays) : ''}</div>`;
     if (services?.pending) watchRestart();
     if (data.call.engine === 'eleven') loadElevenVoices();
   }
@@ -347,6 +391,7 @@
     const section = t.dataset.s, k = t.dataset.k;
     if (!section || !k) return;
     let v = t.type === 'checkbox' ? t.checked : t.type === 'number' || t.type === 'range' || k === 'pause' ? Number(t.value) : t.value;
+    if (section === 'relays' && k === 'relays') v = t.value.split(/[\s,]+/).filter(Boolean);
     if (section === 'agents' && k === 'severities') v = [...document.querySelectorAll('#setBody input[data-k="severities"]:checked')].map((x) => x.value);
     if (section === 'agents' && k === 'productLimits') {
       // "sickofit: 2, phorigins: 1"; a product left out drops its override (null).
@@ -361,7 +406,7 @@
     const nest = (path, val) => path.reduceRight((acc, key) => ({ [key]: acc }), val);
     const patch = k.includes('.') ? nest(k.split('.'), v) : { [k]: v };
     const saved = await save(section, patch, t);
-    if (saved && section === 'tuning') loadSettingsTab();
+    if (saved && (section === 'tuning' || section === 'routing')) loadSettingsTab();
     // Choosing a voice engine changes what the box shows (the ElevenLabs voices, Kokoro's state).
     if (saved && section === 'call' && (k === 'engine' || k === 'rate')) loadSettingsTab();
     if (saved && section === 'brain') loadSettingsTab();

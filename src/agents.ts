@@ -53,6 +53,7 @@ import { serveDir, stopServed } from './local.ts';
 import { claudeEnv } from './claude.ts';
 import { buildPreview, removePreview, previewUrl, changeSiteDir, changeBuild, type ChangeBuild } from './previews.ts';
 import { BETA, ensureBeta, gitAsync } from './beta.ts';
+import { lfsPull } from './lfs.ts';
 import { runCommand, resumeGapMs } from './ops.ts';
 import { deployPending, critical } from './drain.ts';
 import { notify, notifyOnce, PUBLIC_URL } from './notify.ts';
@@ -63,6 +64,7 @@ import { briefSection, learnFrom, recordRun, LEARNED_ASK } from './memory.ts';
 import { canonCheck, CONTENTISH, type CanonCheck } from './canon.ts';
 import { roleArgs, loadRole, type RoleName } from './roles.ts';
 import { passLimitMs, roleTune } from './tuning.ts';
+import { routeFor, routeLine, routingSettings, premiumFor, usePremium, modelPin, type Route } from './routing.ts';
 import { recordPass, lastPassFor, type PassOutcome } from './ledger.ts';
 import { markModelUnavailable, refusedModelOf } from './models.ts';
 import { claudeCommand, spawnShell, sandboxShare, assertWorktree, shareWorktree } from './sandbox.ts';
@@ -101,6 +103,10 @@ try { db.exec('ALTER TABLE changes ADD COLUMN conflicts INTEGER'); } catch { /* 
 try { db.exec('ALTER TABLE changes ADD COLUMN approved TEXT'); } catch { /* already there */ }
 // Walk-away mode's fix passes of a Studio/Gen change whose CI or checks failed (walkAwayFix).
 try { db.exec('ALTER TABLE changes ADD COLUMN auto_fixes INTEGER'); } catch { /* already there */ }
+// Model routing (routing.ts): passes sent back by a person or the PM (each is an attempt: the next one climbs a tier),
+// and the route of the current attempt (JSON), kept so every pass of one attempt runs on the same model.
+try { db.exec('ALTER TABLE changes ADD COLUMN revisions INTEGER'); } catch { /* already there */ }
+try { db.exec('ALTER TABLE changes ADD COLUMN route TEXT'); } catch { /* already there */ }
 
 export type Change = {
   id: string; product: string; findings: string[]; status: string; detail: string | null; repo: string; slug: string; branch: string; base: string;
@@ -120,6 +126,8 @@ export type Change = {
   approved?: string | null;
   /** Studio/Gen in walk-away mode: fix passes its agent made because CI or the checks failed (walkAwayFix). */
   auto_fixes?: number | null;
+  /** Passes a person or the PM sent back (revise); the route of the current attempt (routing.ts, JSON). */
+  revisions?: number | null; route?: string | null;
   /** The Talk conversation that started it (followup.ts). */
   origin?: string | null;
   /** A change to Hawkes Studio or Hawkes Gen (a pull request into main, which deploys itself), not a product. */
@@ -152,7 +160,7 @@ const SETTINGS_FILE = path.join(DATA, 'agents.json');
  */
 export type AgentSettings = { enabled: boolean; autoFix: boolean; autoMergeBeta: boolean; betaPlaytests: boolean; maxConcurrent: number; perProduct: number; productLimits: Record<string, number>; maxPerDay: number; maxCostPerDay: number; severities: string[]; model: string; maxTurns: number; idleMinutes: number; genWaitHours: number };
 /** genWaitHours: a change parked on Gen jobs longer than this is told in Talk once (it isn't failed). */
-const DEFAULTS: AgentSettings = { enabled: true, autoFix: true, autoMergeBeta: true, betaPlaytests: false, maxConcurrent: 2, perProduct: 1, productLimits: { sickofit: 2 }, maxPerDay: 4, maxCostPerDay: 20, severities: ['blocker', 'bug'], model: 'claude-opus-5-5', maxTurns: 80, idleMinutes: 20, genWaitHours: 6 };
+const DEFAULTS: AgentSettings = { enabled: true, autoFix: true, autoMergeBeta: true, betaPlaytests: false, maxConcurrent: 2, perProduct: 1, productLimits: { sickofit: 2 }, maxPerDay: 4, maxCostPerDay: 20, severities: ['blocker', 'bug'], model: 'claude-sonnet-5-5', maxTurns: 80, idleMinutes: 20, genWaitHours: 6 };
 export function agentSettings(): AgentSettings {
   try {
     return { ...DEFAULTS, ...JSON.parse(fs.readFileSync(SETTINGS_FILE, 'utf8')) };
@@ -183,9 +191,11 @@ export function brainOfChange(r: any) {
   const phaseHarness = isHarness(ph?.brain) ? ph.brain : null;
   const active = ['queued', 'working', 'revising'].includes(r.status);
   const harness: Harness | null = phaseHarness ?? (pass?.harness as Harness | undefined) ?? (active ? brainId() : null);
+  // The current attempt's route (routing.ts) names the model before its first pass is in the ledger.
+  const routed = (() => { const x = parse(r.route ?? null) as Route | null; return x?.tier ? roleTune(roleArg, { tier: x.tier }).model : ''; })();
   const model: string | null = phaseHarness
-    ? (brainSettings().model || roleArgs(roleArg).role.model)
-    : pass?.model ?? (active ? (brainSettings().model || roleArgs(roleArg).role.model) : null);
+    ? (modelPin() || routed || roleArgs(roleArg).role.model)
+    : pass?.model ?? (active ? (modelPin() || routed || roleArgs(roleArg).role.model) : null);
   return {
     role,
     harness,
@@ -309,7 +319,24 @@ function parkForHarness(id: string, ph: Phase, save: (patch: Partial<Phase>, ext
   const harness = (isHarness(ph.brain) ? ph.brain : brainId()) as Harness;
   const { hold } = holdHarness(stop, { source: `agent change ${id}`, harness });
   addLog(id, `${HARNESS_LABEL[harness]} stopped the agent (${stop.kind}): ${stop.line.slice(0, 200)}. Parked with its worktree and session: not a try; it resumes by itself (${holdDetail(hold)})`);
-  save({ step: 'agent', proc: undefined, result: undefined, stopped: undefined, nudge: false, harness: { kind: stop.kind, line: stop.line.slice(0, 300), at: Date.now(), on: harness } }, { status: 'queued', detail: holdDetail(hold) });
+  const now = Date.now();
+  const parks = [...(ph.harness?.parks ?? []), now].filter((t) => now - t < RESUME_WINDOW);
+  save({ step: 'agent', proc: undefined, result: undefined, stopped: undefined, nudge: false, harness: { kind: stop.kind, line: stop.line.slice(0, 300), at: now, on: harness, parks } }, { status: 'queued', detail: holdDetail(hold) });
+}
+/**
+ * How soon a change parked by a harness hold may start again, whatever the hold says (a probe that answers lifts the
+ * hold at once, and c_f7171301e745 resumed every 15 s, $8.40): at least RESUME_GAP after its last park, and at most
+ * RESUME_CAP parks an hour; past the cap it waits for J (pump asks once).
+ */
+export const RESUME_GAP = Number(process.env.STUDIO_HARNESS_RESUME_GAP_MS) || 10 * 60_000;
+export const RESUME_CAP = 3;
+const RESUME_WINDOW = 3600_000;
+export function resumeGate(h: { at: number; parks?: number[]; capped?: boolean } | undefined, now = Date.now()): { go: true } | { go: false; waitMs: number; capped: boolean } {
+  if (!h) return { go: true };
+  const parks = (h.parks ?? [h.at]).filter((t) => now - t < RESUME_WINDOW);
+  if (h.capped || parks.length >= RESUME_CAP) return { go: false, waitMs: 0, capped: true };
+  const waitMs = h.at + RESUME_GAP - now;
+  return waitMs > 0 ? { go: false, waitMs, capped: false } : { go: true };
 }
 /**
  * The harness refused the model this pass asked for (the account's plan doesn't have it): remember it (models.ts) and
@@ -431,7 +458,7 @@ export type Phase = {
   /** The next pass continues the agent's session with its finished Gen jobs (this prompt). */
   genDone?: string;
   /** Parked by a harness hold (parkForHarness): what stopped it. The next pass resumes it (harnessResume). */
-  harness?: { kind: string; line: string; at: number; on: string };
+  harness?: { kind: string; line: string; at: number; on: string; /** When each park happened (the last hour's, for the resume cap). */ parks?: number[]; /** Asked J after the cap: no more resumes by itself. */ capped?: boolean };
 };
 
 /**
@@ -677,7 +704,10 @@ no beta check judge this: J watches each version in Studio's Screening tab and e
 come back to you here as a revision of this same work.
 
 - Keep the video's source in this repo under \`videos/<slug>/\`: \`script.md\` (J's script, as written), \`video.json\`
-  (cast and voices, shots, the cut's timeline, every Gen job and asset id). Commit it each pass.
+  (cast and voices, shots, the cut's timeline, every Gen job and asset id). Commit it each pass: **text only, never
+  media** (renders, clips, stills, audio, captions stay in Gen's library, by asset id; no \`git add -f\`).
+- Work only in this worktree (\`${c.worktree}\`). Never write in the product's other checkouts (\`${path.join(PROJECTS, c.repo)}\`
+  and the rest): Studio deploys beta from them, and files left there stop it.
 - Render with Hawkes Gen (\`video.compose\` for the cut). Leave the finished cut in \`.hawkes/video.json\`:
   \`{ "asset": "a_...", "poster": "a_...", "seconds": 31.5, "summary": "what changed this version", "caption": "post text with hashtags", "stage": "animatic" or "final", "story": "the logline, wants, turn and payoff", "beats": [the beat sheet], "edit": { the cut as video.compose's timeline with Gen asset ids } }\`.
   Your first pass is the animatic unless the request says J turned it off; the final comes after J approves it.
@@ -759,6 +789,72 @@ export function roleOf(c: { infra?: boolean; request?: string | null; findings?:
   if (CONTENT.test(`${c.request ?? ''} ${c.title ?? ''}`)) return 'content';
   return c.request ? 'builder' : 'fixer';
 }
+
+// ------------------------------------------------------------------ routing (routing.ts)
+
+/** Earlier attempts at the same work that didn't land: the same task's other changes, or changes on the same findings. */
+export function earlierAttempts(c: Pick<Change, 'id' | 'task' | 'findings'>, limit = 3): { id: string; status: string; detail: string | null; summary: string | null; created: number }[] {
+  const rows = c.task
+    ? db.prepare(`SELECT id, status, detail, summary, created FROM changes WHERE task = ? AND id != ? AND status IN ('failed', 'closed') ORDER BY created DESC LIMIT ?`).all(c.task, c.id, limit)
+    : c.findings.length
+      ? db.prepare(`SELECT id, status, detail, summary, created FROM changes WHERE id != ? AND request IS NULL AND status IN ('failed', 'closed') AND (${c.findings.map(() => 'findings LIKE ?').join(' OR ')}) ORDER BY created DESC LIMIT ?`).all(c.id, ...c.findings.map((f) => `%"${f}"%`), limit)
+      : [];
+  return rows as any[];
+}
+
+/**
+ * Which attempt this is (1 = first). A task's tries count its starts and revisions (pm.ts); a fix or a request counts
+ * its own revisions, walk-away fix passes, and earlier changes on the same findings that failed.
+ */
+export function attemptOf(c: Change): number {
+  if (c.task) return Math.max(1, getTask(c.task)?.tries || 1);
+  const prior = c.findings.length ? earlierAttempts(c, 10).filter((x) => x.status === 'failed').length : 0;
+  return 1 + (c.revisions ?? 0) + (c.auto_fixes ?? 0) + prior;
+}
+
+/**
+ * The route this change's current attempt runs on (routing.ts): stored with the attempt, so its nudges, resumes and
+ * answers stay on the same model, and computed again when the attempt changes. null: routing is off (tuning.ts as before).
+ */
+export function changeRoute(c: Change): Route | null {
+  if (!routingSettings().enabled) return null;
+  const attempt = attemptOf(c);
+  const stored = parse(c.route ?? null) as Route | null;
+  const premium = premiumFor(c.id, c.task)?.tier ?? null;
+  if (stored && stored.attempt === attempt && (stored.premium ?? null) === premium) return stored;
+  const findings = c.findings.map((f) => getFinding(f)).filter(Boolean) as any[];
+  const worst = findings.some((f) => f.severity === 'blocker') ? 'blocker' : findings[0]?.severity ?? null;
+  const role = roleOf(c);
+  const text = [c.request, c.title, ...findings.map((f) => `${f.title} ${f.area ?? ''} ${f.detail ?? ''}`)].filter(Boolean).join('\n');
+  const r = routeFor({ text, role, criteria: c.criteria.length, severity: worst, attempt, premium });
+  if (r.premium) usePremium(c.id, c.task);
+  db.prepare('UPDATE changes SET route = ? WHERE id = ?').run(J(r), c.id);
+  return r;
+}
+
+/** The summary with the agent's stuck report (.hawkes/stuck.md) after it, so the next attempt's brief carries it up. */
+export function withStuck(worktree: string, summary: string) {
+  const file = path.join(worktree, '.hawkes', 'stuck.md');
+  if (!fs.existsSync(file)) return summary;
+  const stuck = fs.readFileSync(file, 'utf8').trim().slice(0, 3000);
+  return stuck ? `${summary}${summary ? '\n\n' : ''}Stuck after two approaches:\n${stuck}` : summary;
+}
+
+/** The brief's section on routing: earlier attempts (context carries up), and re-scoping once escalations are used. */
+function attemptsBrief(c: Change, r: Route | null) {
+  const attempt = r?.attempt ?? attemptOf(c);
+  if (attempt < 2) return '';
+  const prior = earlierAttempts(c);
+  const own = c.revisions && c.summary ? `- This branch's last pass said: ${c.summary.replace(/\s+/g, ' ').slice(0, 900)}` : '';
+  const lines = prior.map((x) => `- ${x.id} (${x.status}${x.detail ? `: ${x.detail.slice(0, 200)}` : ''}): ${(x.summary ?? '').replace(/\s+/g, ' ').slice(0, 900) || 'no summary'}`);
+  const rescope = r?.exhausted
+    ? `\nThis work has failed ${attempt - 1} times, on bigger models each time. Don't repeat those approaches: check the premise
+first (is the cause where they looked? is the request feasible as written?). If it is too big for one change, do a solid
+smaller part that works and say exactly what's left; if it needs a decision, ask ONE question (step 8).\n`
+    : '';
+  return `\n## Earlier attempts (this is attempt ${attempt})\n\n${[own, ...lines].filter(Boolean).join('\n') || '- (no summaries kept)'}\n\nLearn from them: don't redo what failed.\n${rescope}`;
+}
+
 /** The roadmap item a task's change belongs to (its memory scope). */
 function taskItem(c: Change) {
   if (!c.task) return null;
@@ -786,7 +882,7 @@ export function remember(id: string) {
     recordRun({
       id: `ar_${c.id.slice(2)}`, kind: c.infra ? 'infra' : c.task ? 'task' : c.request ? 'request' : 'fix', subject: c.id, product: c.product, title: c.title ?? c.id,
       outcome: c.status, summary: `${c.summary ?? ''}${c.detail ? `\n\nStatus: ${c.detail}` : ''}${c.pr_url ? `\n${c.pr_url}` : ''}`, lessons: [prev?.lessons, lessons].filter(Boolean).join('\n'),
-      by: c.task ? 'PM' : 'J', model: (() => { try { return loadRole(agentRole(c)).model; } catch { return null; } })(), cost: c.cost, started: c.created, finished: Date.now(),
+      by: c.task ? 'PM' : 'J', model: lastPassFor(c.id)?.model || (() => { try { return loadRole(agentRole(c)).model; } catch { return null; } })(), cost: c.cost, started: c.created, finished: Date.now(),
     });
   } catch (e: any) {
     console.warn(`[memory] ${id}: ${e.message}`);
@@ -894,7 +990,7 @@ ${findings.map((f) => `### [${f.severity}] ${f.title}
 - Suggested fix: ${f.fix ?? '-'}
 - Screenshots: ${(shots.filter((s) => s.includes(f.id)).map((s) => `\`${s}\``).join(', ')) || 'none'}${f.entities?.length ? `
 - In Hawkes Gen's library: ${f.entities.map((e: any) => `\`${e.id}\` (${e.kind})`).join(', ')}. When the problem is the art itself, fix it there (the hawkesgen MCP: hawkesgen_entities to see its versions, hawkesgen_entity_make with revise and feedback, hawkesgen_entity_judge to pick): a pick is written into this repo's files by Studio.` : ''}`).join('\n\n')}
-${note ? `\n## Notes on the last attempt (J's or the PM's)\n\n${note}\n` : ''}${others ? `\n${others}` : ''}${unity}${players}${mem.text ? `\n${mem.text}` : ''}
+${note ? `\n## Notes on the last attempt (J's or the PM's)\n\n${note}\n` : ''}${attemptsBrief(c, changeRoute(c))}${others ? `\n${others}` : ''}${unity}${players}${mem.text ? `\n${mem.text}` : ''}
 ## How to work
 
 1. Read \`AGENTS.md\` (and any docs it points to) before changing anything. Follow its rules.
@@ -905,8 +1001,13 @@ ${note ? `\n## Notes on the last attempt (J's or the PM's)\n\n${note}\n` : ''}${
 ${checks}
 5. Commit your change with a clear message (\`Fix: ...\`). Don't push; Studio does. Studio stops a pass after
    ${Math.round(agentLimitMs(c) / 60_000)} minutes: commit as you go (after each working piece or finished batch), so a stop loses nothing.
+   A third-party error from a Gen job (ElevenLabs payment_issue, a 401 or 402) is not yours to retry: test ONE line
+   first for voice work, and on that error stop at once, write \`.hawkes/stuck.md\` naming the service, and end.
 6. Write \`.hawkes/summary.md\`: what was wrong, what you changed (files), how you checked it, and anything J should
    look at. If you couldn't fix it, explain why there instead, and don't commit.
+   Two approaches, then stop: when two different approaches haven't worked (the checks still fail, or you can't find
+   the cause), don't keep iterating. Write \`.hawkes/stuck.md\` (what you tried, what happened, where you think the cause
+   is) and commit nothing that doesn't work: Studio gives the next attempt a bigger model, with your notes.
 7. Write \`.hawkes/try.md\`: how J tries it on the beta site, in two to five short steps a player would follow (where to
    go, what to press, what he should see).
 8. If you can't go on without a decision that the request, the criteria and the thread don't settle (a real direction
@@ -924,18 +1025,6 @@ ${storyOf(p, 6000)}
 }
 
 // ------------------------------------------------------------------ agent
-
-/** Git LFS files in a new worktree (Sick Of It keeps its art there): real files, not pointers. Fast when the repo has them. */
-async function lfsPull(worktree: string, log: (s: string) => void) {
-  try {
-    if (!/filter=lfs/.test(fs.readFileSync(path.join(worktree, '.gitattributes'), 'utf8'))) return;
-  } catch {
-    return;
-  }
-  const t0 = Date.now();
-  const r = await gitAsync(worktree, ['lfs', 'pull'], 20 * 60_000);
-  log(r.ok ? `git lfs pull (${Math.round((Date.now() - t0) / 1000)} s)` : `git lfs pull failed: ${r.err.split('\n').pop()}`);
-}
 
 export const AGENT_MEMORY_TOOLS = ['memory_search', 'memory_get', 'memory_write'];
 /** The Studio tools on an agent's or scout's own MCP server: the shared memory, and real players' data (read-only). */
@@ -1012,11 +1101,15 @@ function runAgent(c: Change, briefFile: string, s: AgentSettings, env = claudeEn
       const prompt = resume?.prompt ?? `Read ${path.relative(c.worktree, briefFile).replace(/\\/g, '/')} and do what it says. It's your whole task.`;
       // The role (.claude/agents/<role>.md): its model, standing instructions (the stable, cached part of the prompt),
       // tools and turn limit; the task itself is the brief.
+      // The route (routing.ts): the category's tier, one up per failed attempt, Opus within the day's budget, Fable only on J's ask.
+      const route = changeRoute(c);
       const { args: roleFlags, role } = roleArgs(agentRole(c), {
         extraAllowed: [...AGENT_STUDIO_TOOLS.map((t) => `mcp__hawkesstudio__${t}`), 'mcp__hawkesgen'],
         maxTurns: s.maxTurns !== DEFAULTS.maxTurns ? s.maxTurns : undefined,
         retry: (c.task ? getTask(c.task)?.tries : 0) || 1,
+        ...(route ? { tier: route.tier, effort: route.effort } : {}),
       });
+      if (route) addLog(c.id, `route: ${routeLine(route, role.model)}`);
       const args = [
         ...(resume?.session ? ['--resume', resume.session] : []),
         '-p', prompt, '--output-format', 'stream-json', '--verbose', ...roleFlags,
@@ -1152,12 +1245,15 @@ async function agentPass(id: string, ph: Phase, save: (patch: Partial<Phase>) =>
     const role = agentRole(c);
     const harness = (isHarness(ph.brain) ? ph.brain : brainId()) as Harness;
     const retry = (c.task ? getTask(c.task)?.tries : 0) || 1;
-    const t = roleTune(role, { harness, retry });
+    const route = changeRoute(c);
+    const t = roleTune(role, { harness, retry, ...(route ? { tier: route.tier, effort: route.effort } : {}) });
     const text = `${r.result ?? ''}\n${r.stderr ?? ''}`;
+    const stuck = fs.existsSync(path.join(c.worktree, '.hawkes', 'stuck.md'));
     const outcome: PassOutcome = refusedModelOf(text) && !(r.ok && r.sawResult) ? 'model-refused'
       : passStop(r) ? 'harness-stop'
+      : stuck ? 'stuck'
       : r.stopped ?? (r.ok && r.sawResult ? 'done' : 'failed');
-    recordPass({ change: id, product: c.product, task: c.task, role, harness, model: t.model, tier: t.tier, effort: t.effort, retry, ms: Date.now() - t0, cost: r.cost, outcome });
+    recordPass({ change: id, product: c.product, task: c.task, role, harness, model: t.model, tier: t.tier, effort: t.effort, retry, ms: Date.now() - t0, cost: r.cost, outcome, category: route?.category ?? null, premium: route?.premium ?? null });
   } catch { /* the ledger never stops a pass */ }
   return r;
 }
@@ -1324,6 +1420,22 @@ export function noRoomFor(product: string, next: WorkShape, statuses = `queued,$
   return others.length ? overlapWith(next, others.map(shapeOf), { unity: isUnity(product) }) : null;
 }
 
+/** A change parked by the harness waits out its gap and stops at the cap (resumeGate); the cap asks J once. */
+function resumeAllowed(c: Change) {
+  const h = phaseOf(c.id)?.harness;
+  const g = resumeGate(h);
+  if (g.go) return true;
+  if (!g.capped) {
+    setTimeout(() => void pump(), g.waitMs + 1000).unref();
+  } else if (h && !h.capped) {
+    update(c.id, { phase: { ...phaseOf(c.id)!, harness: { ...h, capped: true } }, status: 'needs answer', detail: `the AI harness stopped it ${RESUME_CAP} times in an hour: it waits for you` });
+    addLog(c.id, `harness stops ${RESUME_CAP} times in an hour: no more resumes by itself, asked J`);
+    void import('./pm.ts').then(({ askJ }) => askJ(`"${c.title ?? c.id}" was stopped by the AI harness ${RESUME_CAP} times in an hour (${h.line.slice(0, 200)}). Is Claude's usage or billing really out? Resume it, or leave it?`,
+      { subject: c.id, product: c.product, options: ['resume it', 'leave it'], recommend: 'leave it', from: 'harness-resume cap' })).catch(() => {});
+  }
+  return false;
+}
+
 /** Runs queued changes up to the concurrency limit, per product up to its limit when they don't collide. */
 async function pump() {
   // A Studio deploy is waiting (drain.ts): start nothing new; the queue resumes after the deploy restarts Studio.
@@ -1334,7 +1446,7 @@ async function pump() {
   // Busy: anything running in this process (a revision or an answer is queued while it runs) and whatever is active.
   const active = new Map(listChanges({ status: ACTIVE, limit: 500 }).map((c) => [c.id, c]));
   for (const id of running) { const r = getChange(id); if (r) active.set(r.id, r); }
-  const queued = listChanges({ status: 'queued', limit: 500 }).reverse().filter((c) => !running.has(c.id));
+  const queued = listChanges({ status: 'queued', limit: 500 }).reverse().filter((c) => !running.has(c.id) && resumeAllowed(c));
   const fit = (id: string, picked: string[]) => {
     const c = getChange(id)!;
     if (isVideoTask(c.task)) return true;
@@ -1448,14 +1560,16 @@ async function work(id: string, note?: string, answer?: string, resumed?: Phase 
         // A warm start: node_modules from a checkout installed for the same lockfile (warm.ts), else a fresh npm ci.
         await warmDeps(c.worktree, c.repo, (s) => addLog(id, s));
         await installCold(c.worktree, (dir, cmd) => sh(dir, cmd, { ...infraEnv({ keepGenKey: false }), PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1' }), (s) => addLog(id, s));
-      await lfsPull(c.worktree, (s) => addLog(id, s));
       } else assertWorktree(c.worktree, repoDir);
+      // Real files for its Git LFS pointers on every pass (a worktree made before git-lfs was on the server has pointers).
+      await lfsPull(c.worktree, (s) => addLog(id, s));
       // The agent (sandbox user) commits here: its git folder must be the agent group's, on every pass (a worktree made
       // before, or files Studio's own git wrote there since).
       await shareWorktree(c.worktree);
       await writeBrief(c, p, findings, note);
-      // A question from an earlier pass isn't asked again.
+      // A question or a stuck report from an earlier pass isn't read again (attemptsBrief carries what they said).
       fs.rmSync(path.join(c.worktree, '.hawkes', 'question.md'), { force: true });
+      fs.rmSync(path.join(c.worktree, '.hawkes', 'stuck.md'), { force: true });
       save({ step: 'agent', before: git(c.worktree, ['rev-parse', 'HEAD']).out, proc: undefined });
     }
 
@@ -1490,7 +1604,7 @@ async function work(id: string, note?: string, answer?: string, resumed?: Phase 
       // The agent could write its worktree: Studio's git runs there only while it still links to this repo.
       assertWorktree(c.worktree, repoDir);
       const summaryFile = path.join(c.worktree, '.hawkes', 'summary.md');
-      const summary = fs.existsSync(summaryFile) ? fs.readFileSync(summaryFile, 'utf8').trim() : ph.result ?? '';
+      const summary = withStuck(c.worktree, fs.existsSync(summaryFile) ? fs.readFileSync(summaryFile, 'utf8').trim() : ph.result ?? '');
       const listCommits = () => git(c.worktree, ['log', '--format=%h %s', `origin/${c.base}..HEAD`]).out.split('\n').filter(Boolean);
       let commits = listCommits();
       let changedNow = git(c.worktree, ['rev-parse', 'HEAD']).out !== ph.before;
@@ -1925,7 +2039,7 @@ the change small.
 ## What J asked for
 
 ${c.request ?? '(no request)'}
-${note ? `\n## J's note on the last attempt\n\n${note}\n` : ''}
+${note ? `\n## J's note on the last attempt\n\n${note}\n` : ''}${attemptsBrief(c, changeRoute(c))}
 ## How to work
 
 1. Read \`AGENTS.md\` (and the docs it points to, e.g. \`docs/cloud.md\`) before changing anything. Follow its rules.
@@ -1939,6 +2053,8 @@ ${t.checks.map((k) => `   - \`${k}\``).join('\n')}
 5. Commit your change with a clear message. Don't push; Studio does.
 6. Write \`.hawkes/summary.md\`: what you changed (files) and why, how you checked it, and anything J should know
    (in plain words: J doesn't read code). If you couldn't do it, explain why there instead, and don't commit.
+   Two approaches, then stop: when two different approaches haven't worked, write \`.hawkes/stuck.md\` (what you
+   tried, what happened, where you think the cause is) and commit nothing that doesn't work.
 7. ${LEARNED_ASK.replace(/\n/g, '\n   ')}
 ${mem.text ? `\n${mem.text}` : ''}`;
   fs.writeFileSync(path.join(dir, 'brief.md'), brief);
@@ -1975,7 +2091,7 @@ async function workInfra(id: string, note?: string, resumed?: Phase | null, nudg
           if (!w.ok) throw new Error(`worktree failed: ${w.err}`);
           // A warm start: node_modules from a checkout with the same lockfile (warm.ts), not a fresh npm ci.
           await warmDeps(c.worktree, c.repo, (s) => addLog(id, s));
-      await lfsPull(c.worktree, (s) => addLog(id, s));
+          await lfsPull(c.worktree, (s) => addLog(id, s));
         } else if (note) {
           // Another pass: bring the branch up to date with main first (main may have moved, or the merge conflicted).
           await gitAsync(repoDir, ['fetch', '--quiet', 'origin']);
@@ -2012,7 +2128,7 @@ async function workInfra(id: string, note?: string, resumed?: Phase | null, nudg
       // The agent could write its worktree: Studio's git runs there only while it still links to this repo.
       assertWorktree(c.worktree, repoDir);
       const summaryFile = path.join(c.worktree, '.hawkes', 'summary.md');
-      const summary = fs.existsSync(summaryFile) ? fs.readFileSync(summaryFile, 'utf8').trim() : ph.result ?? '';
+      const summary = withStuck(c.worktree, fs.existsSync(summaryFile) ? fs.readFileSync(summaryFile, 'utf8').trim() : ph.result ?? '');
       const listCommits = () => git(c.worktree, ['log', '--format=%h %s', `origin/${c.base}..HEAD`]).out.split('\n').filter(Boolean);
       let commits = listCommits();
       let changedNow = git(c.worktree, ['rev-parse', 'HEAD']).out !== ph.before;
@@ -2088,9 +2204,42 @@ export function latestChecks(runs: { name: string; status?: string; conclusion?:
   return [...byName.values()];
 }
 
+/**
+ * What failed in a red CI job, from its log text: the failing tests (node's "failing tests:" block), then error lines.
+ * A red CI that says only "test: failure" sent whole fix passes after a failure nobody could read (NET-08).
+ */
+export function failureFromLog(log: string, max = 1800) {
+  const lines = String(log).split('\n').map((l) => l.replace(/^\d{4}-\d\d-\d\dT[\d:.]+Z ?/, '').replace(/\x1b\[[0-9;]*m/g, '').trimEnd());
+  const at = lines.findIndex((l) => /failing tests:/.test(l));
+  const block = at >= 0 ? lines.slice(at, at + 60).filter((l) => l.trim()) : [];
+  const errors = lines.filter((l) => /##\[error\]|error TS\d+|^npm error/.test(l)).slice(0, 12);
+  return [...block, ...errors].join('\n').slice(0, max);
+}
+
+/** The log of a failed CI job (best effort: the token may not read Actions; then there is no text). */
+async function ciJobLog(slug: string, jobId: number): Promise<string> {
+  try {
+    const r = await fetch(`${process.env.STUDIO_GITHUB_API ?? 'https://api.github.com'}/repos/${slug}/actions/jobs/${jobId}/logs`, {
+      headers: { Authorization: `Bearer ${process.env.GITHUB_TOKEN}`, Accept: 'application/vnd.github+json', 'User-Agent': 'hawkes-studio', 'X-GitHub-Api-Version': '2022-11-28' },
+      signal: AbortSignal.timeout(20_000),
+    });
+    return r.ok ? failureFromLog(await r.text()) : '';
+  } catch {
+    return '';
+  }
+}
+
 /** GitHub's check runs of a commit ("Tell the server" doesn't count: it only runs on main). waitMs 0: one look. */
+/**
+ * GitHub Actions no longer runs Studio's and Gen's tests (J, 2026-10-25: "i don't want github running the tests
+ * anymore"). What gates a Studio/Gen change is Studio's own typecheck, tests and smoke check (verifyInfra), and the
+ * server's deploy runs them again on main before it deploys (deploy/hawkes-pull.mjs testOnServer). STUDIO_GITHUB_CI=1
+ * brings back waiting for GitHub's check runs.
+ */
+export const githubCi = () => process.env.STUDIO_GITHUB_CI === '1';
 export async function ciChecks(slug: string, sha: string, { waitMs = 30 * 60_000, onWait }: { waitMs?: number; onWait?: (detail: string) => void } = {}) {
   const t0 = Date.now();
+  if (!githubCi()) return { state: 'success', detail: 'no GitHub CI: Studio ran the checks itself, and the deploy tests main on the server', runs: [] as { name: string; status: string; conclusion: string | null; url: string }[] };
   for (;;) {
     const r = await github(`/repos/${slug}/commits/${sha}/check-runs?per_page=100`);
     const runs = latestChecks((r.check_runs ?? []) as any[]);
@@ -2098,7 +2247,8 @@ export async function ciChecks(slug: string, sha: string, { waitMs = 30 * 60_000
     const open = runs.filter((x) => x.status !== 'completed');
     if (runs.length && !open.length) {
       const bad = runs.filter((x) => !['success', 'skipped', 'neutral'].includes(x.conclusion as string));
-      return { state: bad.length ? 'failure' : 'success', detail: bad.length ? bad.map((x) => `${x.name}: ${x.conclusion}`).join(', ') : `${runs.length} check(s) passed`, runs: list };
+      const failure = bad.length && (bad[0] as any).id ? await ciJobLog(slug, (bad[0] as any).id) : '';
+      return { state: bad.length ? 'failure' : 'success', detail: bad.length ? bad.map((x) => `${x.name}: ${x.conclusion}`).join(', ') : `${runs.length} check(s) passed`, runs: list, ...(failure ? { failure } : {}) };
     }
     const waited = Date.now() - t0;
     if (waited >= waitMs || (!runs.length && waited >= Math.min(waitMs, 5 * 60_000))) {
@@ -2408,7 +2558,7 @@ export async function walkAwayFix(id: string, why: string) {
   const failed = [
     ...(v.checks ?? []).filter((k: any) => !k.ok).map((k: any) => `\`${k.cmd}\` failed:\n${String(k.out ?? '').slice(-1500)}`),
     v.smoke && !v.smoke.ok ? `The smoke check failed: ${v.smoke.detail}${v.smoke.log ? `\n${String(v.smoke.log).slice(-1000)}` : ''}` : '',
-    v.ci?.state === 'failure' ? `CI failed: ${v.ci.detail}${(v.ci.runs ?? []).filter((r: any) => r.conclusion && r.conclusion !== 'success').map((r: any) => ` (${r.url})`).join('')}` : '',
+    v.ci?.state === 'failure' ? `CI failed: ${v.ci.detail}${(v.ci.runs ?? []).filter((r: any) => r.conclusion && r.conclusion !== 'success').map((r: any) => ` (${r.url})`).join('')}${v.ci.failure ? `\nWhat failed in its log:\n${v.ci.failure}` : ''}` : '',
   ].filter(Boolean).join('\n\n');
   const note = `Walk-away mode: this change didn't merge because ${why}. Fix what fails, run the checks again (npm run typecheck, npm test) and commit; it merges into ${c.base} by itself once everything is green.${failed ? `\n\n${failed}` : ''}`;
   addLog(id, `walk-away: fix pass ${n} (${n === 1 ? 'not counted as a try' : `try ${n - 1} of ${max}`}): ${why.slice(0, 200)}`);
@@ -2490,15 +2640,37 @@ export async function updateFromBase(id: string): Promise<{ state: 'current' | '
   const f = await gitAsync(repoDir, ['fetch', '--quiet', 'origin']);
   if (!f.ok) return { state: 'skipped', why: `fetch failed: ${f.err.slice(0, 200)}` };
   if (!git(c.worktree, ['rev-parse', '--verify', '--quiet', `origin/${c.base}`]).ok) return { state: 'skipped', why: `no origin/${c.base}` };
-  if (git(c.worktree, ['merge-base', '--is-ancestor', `origin/${c.base}`, 'HEAD']).ok) return { state: 'current' };
+  const untracked = await untrackNotes(c.worktree);
+  if (untracked) addLog(id, `${NOTES} was committed on the branch: Studio took it out of git (the notes stay in the worktree)`);
+  const current = git(c.worktree, ['merge-base', '--is-ancestor', `origin/${c.base}`, 'HEAD']).ok;
+  if (current && !untracked) return { state: 'current' };
   const before = git(c.worktree, ['rev-parse', 'HEAD']).out;
-  const m = await gitAsync(c.worktree, ['-c', 'user.name=Hawkes Studio', '-c', 'user.email=studio@hawkesgen.com', 'merge', '--no-edit', '-m', `Merge ${c.base} into ${c.branch} (Hawkes Studio: ${c.base} moved)`, `origin/${c.base}`]);
-  if (!m.ok) {
-    const files = git(c.worktree, ['diff', '--name-only', '--diff-filter=U']).out.split('\n').filter(Boolean);
-    git(c.worktree, ['merge', '--abort']);
-    await gitAsync(c.worktree, ['reset', '--hard', before]);
-    addLog(id, `${c.base} moved: merging origin/${c.base} into the branch conflicts${files.length ? ` in ${files.join(', ')}` : ` (${(m.err || m.out).slice(0, 200)})`}`);
-    return { state: 'conflict', files };
+  if (!current) {
+    // A merge writes over ignored files, and .hawkes/ may be tracked on the base: the notes are kept aside and put back.
+    const notes = snapshotNotes(c.worktree);
+    const m = await gitAsync(c.worktree, [...STUDIO_GIT, 'merge', '--no-ff', '--no-edit', '-m', `Merge ${c.base} into ${c.branch} (Hawkes Studio: ${c.base} moved)`, `origin/${c.base}`]);
+    const files = m.ok ? [] : git(c.worktree, ['diff', '--name-only', '--diff-filter=U']).out.split('\n').filter(Boolean);
+    // Only agents' notes conflict (each change writes its own summary.md, try.md, learned.md): none of them belong in git.
+    const notesOnly = !m.ok && files.length > 0 && files.every((f) => f.startsWith(NOTES));
+    if (!m.ok && !notesOnly) {
+      git(c.worktree, ['merge', '--abort']);
+      await gitAsync(c.worktree, ['reset', '--hard', before]);
+      restoreNotes(c.worktree, notes);
+      addLog(id, `${c.base} moved: merging origin/${c.base} into the branch conflicts${files.length ? ` in ${files.join(', ')}` : ` (${(m.err || m.out).slice(0, 200)})`}`);
+      return { state: 'conflict', files };
+    }
+    git(c.worktree, ['rm', '-r', '--cached', '--quiet', '--ignore-unmatch', '--', NOTES]);
+    restoreNotes(c.worktree, notes);
+    if (notesOnly || git(c.worktree, ['diff', '--cached', '--quiet']).ok === false) {
+      const done = await gitAsync(c.worktree, [...STUDIO_GIT, 'commit', '--no-verify', ...(notesOnly ? ['--no-edit'] : ['--amend', '--no-edit'])]);
+      if (!done.ok) {
+        git(c.worktree, ['merge', '--abort']);
+        await gitAsync(c.worktree, ['reset', '--hard', before]);
+        restoreNotes(c.worktree, notes);
+        return { state: 'skipped', why: `committing the merge failed: ${done.err.slice(0, 200)}` };
+      }
+    }
+    if (notesOnly) addLog(id, `${c.base} moved: only agents' notes conflicted (${files.join(', ')}); Studio kept them out of git`);
   }
   const sha = git(c.worktree, ['rev-parse', 'HEAD']).out;
   const p = await gitAsync(c.worktree, ['push', '--quiet', 'origin', `HEAD:${c.branch}`]);
@@ -2509,8 +2681,42 @@ export async function updateFromBase(id: string): Promise<{ state: 'current' | '
   // The agent's group keeps writing here (a later pass): what Studio's git just wrote is shared again (sandbox.ts).
   await shareWorktree(c.worktree);
   update(id, { verify: { ...(c.verify ?? {}), sha } });
-  addLog(id, `${c.base} moved: merged origin/${c.base} into the branch (no conflicts) and pushed ${sha.slice(0, 7)}`);
+  addLog(id, current ? `pushed ${sha.slice(0, 7)} (${NOTES} out of git)` : `${c.base} moved: merged origin/${c.base} into the branch (no conflicts) and pushed ${sha.slice(0, 7)}`);
   return { state: 'merged', sha };
+}
+
+/** Agents' notes (brief, summary, try, learned, video.json): Studio reads them from the worktree; they never belong in git. */
+const NOTES = '.hawkes/';
+const STUDIO_GIT = ['-c', 'user.name=Hawkes Studio', '-c', 'user.email=studio@hawkesgen.com', '-c', 'core.hooksPath=/dev/null'];
+
+/**
+ * .git/info/exclude only keeps untracked notes out; once a commit had them (Dose Of Destruction's video passes,
+ * 2026-10-22), every later change edited them and any two changes conflicted on them (J, 2026-10-24: a video's
+ * "Approve and post drafts" stopped on .hawkes/summary.md). Takes them out of the branch's index, files kept.
+ */
+async function untrackNotes(worktree: string) {
+  if (!git(worktree, ['ls-files', '--', NOTES]).out) return false;
+  const exclude = path.resolve(worktree, git(worktree, ['rev-parse', '--git-common-dir']).out, 'info', 'exclude');
+  fs.mkdirSync(path.dirname(exclude), { recursive: true });
+  if (!fs.existsSync(exclude) || !fs.readFileSync(exclude, 'utf8').includes(NOTES)) fs.appendFileSync(exclude, `\n${NOTES}\n`);
+  git(worktree, ['rm', '-r', '--cached', '--quiet', '--', NOTES]);
+  const r = await gitAsync(worktree, [...STUDIO_GIT, 'commit', '--no-verify', '--quiet', '-m', `Keep ${NOTES} out of git (Hawkes Studio: agents' notes)`]);
+  if (!r.ok) git(worktree, ['reset', '--quiet', 'HEAD', '--', NOTES]);
+  return r.ok;
+}
+function snapshotNotes(worktree: string) {
+  const dir = path.join(worktree, NOTES);
+  if (!fs.existsSync(dir)) return null;
+  const copy = fs.mkdtempSync(path.join(os.tmpdir(), 'hawkes-notes-'));
+  fs.cpSync(dir, copy, { recursive: true });
+  return copy;
+}
+function restoreNotes(worktree: string, copy: string | null) {
+  const dir = path.join(worktree, NOTES);
+  fs.rmSync(dir, { recursive: true, force: true });
+  if (!copy) return;
+  fs.cpSync(copy, dir, { recursive: true });
+  fs.rmSync(copy, { recursive: true, force: true });
 }
 
 /**
@@ -2708,7 +2914,7 @@ export function revise(id: string, note: string, by = 'J') {
   if (!c) throw new Error('No such change');
   if (!['ready', 'failed'].includes(c.status)) throw new Error(`The change is ${c.status}`);
   // A person's revision: the conflict passes start over, and an approval waiting to merge (Studio/Gen) is for what was.
-  db.prepare('UPDATE changes SET conflicts = NULL, approved = NULL WHERE id = ?').run(id);
+  db.prepare('UPDATE changes SET conflicts = NULL, approved = NULL, revisions = COALESCE(revisions, 0) + 1 WHERE id = ?').run(id);
   update(id, { status: 'queued', detail: 'queued for another pass', notes: [...c.notes, { at: Date.now(), by, text: note }] });
   running.add(id);
   // When it's done, the queue goes on (a revision holds a slot like any change).

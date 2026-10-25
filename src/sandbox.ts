@@ -13,7 +13,8 @@ import type http from 'node:http';
 import type net from 'node:net';
 import { PROJECTS } from './config.ts';
 import { runCommand } from './ops.ts';
-import { brainId, brainSettings, ANTIGRAVITY_AGENT, COPILOT_AGENT, CURSOR_AGENT, GEMINI_AGENT } from './brains.ts';
+import { brainId, ANTIGRAVITY_AGENT, COPILOT_AGENT, CURSOR_AGENT, GEMINI_AGENT } from './brains.ts';
+import { modelPin } from './routing.ts';
 
 /** The wrapper deploy/agent-sandbox.mjs installs: it runs a command as the sandbox user with its own HOME and umask. */
 export const WRAPPER = '/usr/local/bin/hawkes-agent-run';
@@ -70,6 +71,16 @@ export async function shareRepo(repoDir: string, group: string | null = sandboxO
   }
   if (await shareEntry(dotGit, gid, 0o2000)) changed = true;
   if (await shareEntry(path.join(dotGit, 'worktrees'), gid, 0o2070)) changed = true;
+  // What agents write when they commit: objects, refs, reflogs. deploy/agent-sandbox.mjs shares these for every repo there
+  // at setup; a repo Studio clones later (a product added after: the portal, 2026-10-23, whose agents' commits failed with
+  // "insufficient permission for adding an object") comes with them as Studio's group. Whole, once: a folder that is
+  // already the agent group's, setgid and group-writable is left alone (a stat each on every later pass).
+  for (const sub of ['objects', 'refs', 'logs', 'lfs']) {
+    const d = path.join(dotGit, sub);
+    let st: fs.Stats;
+    try { st = await fs.promises.stat(d); } catch { continue; }
+    if (st.gid !== gid || (st.mode & 0o2070) !== 0o2070) { if (await shareTree(d, gid)) changed = true; }
+  }
   return changed ? 'shared' : 'already';
 }
 
@@ -185,7 +196,8 @@ function brainCommand(args: string[], forceClaude = false) {
   // Cursor is down (an unpaid invoice, 2026-10-20), falling back to "the brain" just failed the same way again.
   if (forceClaude) return { file: exe, args: [...pre, ...args] };
   const brain = brainId();
-  const model = brainSettings().model;
+  // The pinned model (Settings), unless routing picks each run's model (routing.ts modelPin).
+  const model = modelPin();
   const mapped = model ? args.map((a, i, all) => (all[i - 1] === '--model' ? model : a)) : args;
   if (pre.length || process.env.TALK_CLAUDE || brain === 'claude') return { file: exe, args: [...pre, ...mapped] };
   return { file: process.execPath, args: [brain === 'copilot' ? COPILOT_AGENT : brain === 'gemini' ? GEMINI_AGENT : brain === 'antigravity' ? ANTIGRAVITY_AGENT : CURSOR_AGENT, ...mapped] };
@@ -211,10 +223,12 @@ export function spawnShell(cmd: string, { cwd, env }: { cwd: string; env: NodeJS
 /**
  * Any program that runs code from an agent's worktree (a dev server for its verification playtest, a preview build)
  * as the sandbox user, with spawn's own options (detached, stdio). No Claude login, no secrets. Off: a plain spawn.
+ * own: variables the program needs that the sandbox's filter would drop (an app server's port, data folder and its own
+ * scoped Gen key: apps.ts), added after the filter.
  */
-export function sandboxSpawn(file: string, args: string[], opts: SpawnOptions & { cwd: string }): ChildProcess {
-  if (!sandboxOn()) return spawn(file, args, { windowsHide: true, ...opts });
-  const clean = sandboxEnv(opts.env ?? process.env);
+export function sandboxSpawn(file: string, args: string[], { own, ...opts }: SpawnOptions & { cwd: string; own?: Record<string, string> }): ChildProcess {
+  if (!sandboxOn()) return spawn(file, args, { windowsHide: true, ...opts, ...(own ? { env: { ...(opts.env ?? process.env), ...own } } : {}) });
+  const clean = { ...sandboxEnv(opts.env ?? process.env), ...own };
   delete clean.CLAUDE_CODE_OAUTH_TOKEN;
   delete clean.ANTHROPIC_API_KEY;
   const keep = Object.keys(clean).filter((k) => k !== 'HOME' && k !== 'PATH');

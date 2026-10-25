@@ -15,7 +15,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { ROOT, PROJECTS, StudioError } from './config.ts';
 import { sandboxOn } from './sandbox.ts';
-import { roleTune, jobTune } from './tuning.ts';
+import { roleTune, jobTune, type Tier, type Effort } from './tuning.ts';
 import { brainId } from './brains.ts';
 
 export const ROLES = ['talk', 'pm', 'fixer', 'builder', 'content', 'scout', 'reviewer'] as const;
@@ -38,6 +38,7 @@ export type Role = {
 
 /** Aliases in the files, ids on the command line (Claude Code takes both; ids keep runs reproducible). */
 export const MODEL_IDS: Record<string, string> = {
+  fable: process.env.STUDIO_MODEL_FABLE ?? 'claude-fable-5-1',
   opus: process.env.STUDIO_MODEL_OPUS ?? 'claude-opus-5-5',
   sonnet: process.env.STUDIO_MODEL_SONNET ?? 'claude-sonnet-5-5',
   haiku: process.env.STUDIO_MODEL_HAIKU ?? 'claude-haiku-5-5',
@@ -100,7 +101,7 @@ export function loadRole(name: string): Role {
   const tools = list(meta.tools);
   const role: Role = {
     name: name as RoleName, description: meta.description ?? '', file,
-    model: modelId(process.env[`STUDIO_MODEL_${name.toUpperCase()}`] ?? meta.model ?? 'opus'),
+    model: modelId(process.env[`STUDIO_MODEL_${name.toUpperCase()}`] ?? meta.model ?? 'sonnet'),
     tools, allowed: list(meta['allowed-tools']).length ? list(meta['allowed-tools']) : tools,
     disallowed: list(meta['disallowed-tools'] ?? meta.disallowedtools),
     maxTurns: meta['max-turns'] ? Number(meta['max-turns']) || null : null,
@@ -114,12 +115,13 @@ export function loadRole(name: string): Role {
  * The Claude Code arguments for a role: model, its instructions after the default system prompt, the tools it may use
  * without asking (plus `extraAllowed`, e.g. its MCP tools), what it may never use, and the plugin (skills, subagents).
  */
-export function roleArgs(name: RoleName, { extraAllowed = [] as string[], extraPrompt = '', maxTurns, retry = 1 }: { extraAllowed?: string[]; extraPrompt?: string; maxTurns?: number; retry?: number } = {}) {
+export function roleArgs(name: RoleName, { extraAllowed = [] as string[], extraPrompt = '', maxTurns, retry = 1, tier, effort }: { extraAllowed?: string[]; extraPrompt?: string; maxTurns?: number; retry?: number; tier?: Tier; effort?: Effort } = {}) {
   const base = loadRole(name);
-  // Settings → Tuning: the model, effort and turn cap for this role on the harness in use (an env override still wins).
-  const tune = roleTune(name, { retry });
+  // Settings → Tuning: the model, effort and turn cap for this role on the harness in use (an env override still wins);
+  // a route (routing.ts) sets the tier and effort instead.
+  const tune = roleTune(name, { retry, tier, effort });
   const envModel = process.env[`STUDIO_MODEL_${name.toUpperCase()}`];
-  const r = { ...base, model: envModel ? base.model : tune.model || (brainId() === 'claude' ? base.model : 'auto') };
+  const r = { ...base, model: envModel ? base.model : tune.model || (brainId() === 'claude' ? base.model : 'auto'), tier: tune.tier, effort: tune.effort };
   const allowed = [...r.allowed, ...extraAllowed];
   const args = ['--model', r.model, '--append-system-prompt', extraPrompt ? `${r.body}\n\n${extraPrompt}` : r.body];
   if (tune.effort) args.push('--effort', tune.effort);

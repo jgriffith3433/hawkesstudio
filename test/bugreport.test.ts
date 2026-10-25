@@ -370,3 +370,11 @@ test('hawkes-perf diagnoses Babylon scenes, leaks, passes and root-cause suspect
     Object.assign(g, saved);
   }
 });
+
+test('the widget keeps typing in its fields from the page: capture-phase key guard and Unity keyboard capture off', () => {
+  const src = fs.readFileSync(br.WIDGET, 'utf8');
+  assert.match(src, /for \(const t of \['keydown', 'keyup', 'keypress'[^\]]*\]\) \{\s*addEventListener\(t, [^\n]*, true\);/, 'window capture listeners for keys');
+  assert.match(src, /composedPath/, 'finds the modal through the shadow root');
+  assert.match(src, /captureAllKeyboardInput = false/, 'Unity WebGL keyboard capture is switched off while open');
+  assert.match(src, /unityCapture\(false\)[\s\S]*unityCapture\(true\)/, 'off on open, restored on close');
+});

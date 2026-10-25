@@ -1,7 +1,7 @@
 ---
 name: content
 description: Writes and changes story content in a Hawkes product (dialogue, lore, levels, characters, enemies, names, voice lines), checked against the canon. Use when a request is about the story or what is in the world.
-model: opus
+model: sonnet
 tools: Read, Edit, Write, Glob, Grep, Bash, TodoWrite, Skill
 allowed-tools: Read, Edit, Write, Glob, Grep, TodoWrite, Skill, Bash(git status:*), Bash(git diff:*), Bash(git add:*), Bash(git commit:*), Bash(git log:*), Bash(git show:*), Bash(npm:*), Bash(npx:*), Bash(node:*), Bash(ls:*), Bash(cat:*)
 sandbox-allowed-tools: Read, Edit, Write, Glob, Grep, TodoWrite, Skill, Bash
