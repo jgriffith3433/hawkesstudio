@@ -122,8 +122,11 @@ const env: NodeJS.ProcessEnv = {
   STUDIO_AGENT_GRACE_MS: '1000',
   // A minute of the hold's backoff is 5 ms here, and the hold is looked at every 200 ms.
   STUDIO_HARNESS_MINUTE_MS: '5', STUDIO_HARNESS_POLL_MS: '200', FAKE_LIMIT_FILE: limitFile,
+  // No other harness stands in for the held one: on a machine with Cursor, Copilot or Antigravity set up (the server)
+  // a real stand-in would take the parked change and it would start a new session instead of resuming its own.
+  STUDIO_HARNESS_FAILOVER: 'off',
 };
-for (const k of ['STUDIO_SERVER', 'HAWKESGEN_KEY', 'STUDIO_BETA_LANE', 'NTFY_TOPIC', 'CURSOR_API_KEY', 'HAWKES_BRAIN']) delete env[k];
+for (const k of ['STUDIO_SERVER', 'HAWKESGEN_KEY', 'STUDIO_BETA_LANE', 'NTFY_TOPIC', 'CURSOR_API_KEY', 'COPILOT_GITHUB_TOKEN', 'GEMINI_API_KEY', 'HAWKES_BRAIN']) delete env[k];
 
 let studio: ChildProcess | null = null;
 let output = '';
@@ -162,6 +165,9 @@ test('a harness stop parks the change (not failed, not a try), holds the queue, 
     .catch((e) => { throw new Error(why(e, c)); });
   assert.ok(c.log.some((l: string) => /Claude stopped the agent \(billing\).*Parked with its worktree and session: not a try/.test(l)));
   assert.equal(passes(change).length, 1);
+  // What the resume depends on, checked where it is recorded: the session the first pass opened, and the park in its phase.
+  assert.ok(c.session, `the parked change kept its session\n${why(new Error('parked'), c)}`);
+  assert.match(typeof c.phase === 'string' ? c.phase : JSON.stringify(c.phase ?? {}), /"harness":\{/, `the park is in its phase\n${why(new Error('parked'), c)}`);
   const pmState = await api('/api/pm');
   assert.equal(pmState.hold?.held, true, 'studio_pm status shows the hold');
   assert.equal(pmState.hold.holds[0].kind, 'billing');
@@ -175,10 +181,11 @@ test('a harness stop parks the change (not failed, not a try), holds the queue, 
 
   // Paid: the next probe answers, the hold lifts, the parked change carries on in its own session and finishes.
   fs.rmSync(limitFile);
-  await until(async () => (c = await api(`/api/changes/${change}`)).status === 'ready', 60_000, 'it to resume and finish')
+  // Ready, and its resumed pass in the log (the log is written by the agent a moment before the change is ready).
+  await until(async () => (c = await api(`/api/changes/${change}`)).status === 'ready' && passes(change).length >= 2, 120_000, 'it to resume and finish')
     .catch((e) => { throw new Error(why(e, c)); });
   const p = passes(change);
-  assert.deepEqual(p.map((x) => x.resumed), [false, true], 'its own session, resumed once');
+  assert.deepEqual(p.map((x) => x.resumed), [false, true], `its own session, resumed once\n${why(new Error('the change'), c)}`);
   assert.match(p[1].prompt, /cut off because the AI harness stopped answering/);
   assert.ok(!c.log.some((l: string) => /failed/.test(l)), 'never failed');
   assert.match(c.diffstat ?? '', /2 files changed/, 'the half-done work.txt is kept and committed with the fix');

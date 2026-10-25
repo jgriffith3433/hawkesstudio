@@ -2179,6 +2179,31 @@ export function latestChecks(runs: { name: string; status?: string; conclusion?:
   return [...byName.values()];
 }
 
+/**
+ * What failed in a red CI job, from its log text: the failing tests (node's "failing tests:" block), then error lines.
+ * A red CI that says only "test: failure" sent whole fix passes after a failure nobody could read (NET-08).
+ */
+export function failureFromLog(log: string, max = 1800) {
+  const lines = String(log).split('\n').map((l) => l.replace(/^\d{4}-\d\d-\d\dT[\d:.]+Z ?/, '').replace(/\x1b\[[0-9;]*m/g, '').trimEnd());
+  const at = lines.findIndex((l) => /failing tests:/.test(l));
+  const block = at >= 0 ? lines.slice(at, at + 60).filter((l) => l.trim()) : [];
+  const errors = lines.filter((l) => /##\[error\]|error TS\d+|^npm error/.test(l)).slice(0, 12);
+  return [...block, ...errors].join('\n').slice(0, max);
+}
+
+/** The log of a failed CI job (best effort: the token may not read Actions; then there is no text). */
+async function ciJobLog(slug: string, jobId: number): Promise<string> {
+  try {
+    const r = await fetch(`${process.env.STUDIO_GITHUB_API ?? 'https://api.github.com'}/repos/${slug}/actions/jobs/${jobId}/logs`, {
+      headers: { Authorization: `Bearer ${process.env.GITHUB_TOKEN}`, Accept: 'application/vnd.github+json', 'User-Agent': 'hawkes-studio', 'X-GitHub-Api-Version': '2022-11-28' },
+      signal: AbortSignal.timeout(20_000),
+    });
+    return r.ok ? failureFromLog(await r.text()) : '';
+  } catch {
+    return '';
+  }
+}
+
 /** GitHub's check runs of a commit ("Tell the server" doesn't count: it only runs on main). waitMs 0: one look. */
 export async function ciChecks(slug: string, sha: string, { waitMs = 30 * 60_000, onWait }: { waitMs?: number; onWait?: (detail: string) => void } = {}) {
   const t0 = Date.now();
@@ -2189,7 +2214,8 @@ export async function ciChecks(slug: string, sha: string, { waitMs = 30 * 60_000
     const open = runs.filter((x) => x.status !== 'completed');
     if (runs.length && !open.length) {
       const bad = runs.filter((x) => !['success', 'skipped', 'neutral'].includes(x.conclusion as string));
-      return { state: bad.length ? 'failure' : 'success', detail: bad.length ? bad.map((x) => `${x.name}: ${x.conclusion}`).join(', ') : `${runs.length} check(s) passed`, runs: list };
+      const failure = bad.length && (bad[0] as any).id ? await ciJobLog(slug, (bad[0] as any).id) : '';
+      return { state: bad.length ? 'failure' : 'success', detail: bad.length ? bad.map((x) => `${x.name}: ${x.conclusion}`).join(', ') : `${runs.length} check(s) passed`, runs: list, ...(failure ? { failure } : {}) };
     }
     const waited = Date.now() - t0;
     if (waited >= waitMs || (!runs.length && waited >= Math.min(waitMs, 5 * 60_000))) {
@@ -2499,7 +2525,7 @@ export async function walkAwayFix(id: string, why: string) {
   const failed = [
     ...(v.checks ?? []).filter((k: any) => !k.ok).map((k: any) => `\`${k.cmd}\` failed:\n${String(k.out ?? '').slice(-1500)}`),
     v.smoke && !v.smoke.ok ? `The smoke check failed: ${v.smoke.detail}${v.smoke.log ? `\n${String(v.smoke.log).slice(-1000)}` : ''}` : '',
-    v.ci?.state === 'failure' ? `CI failed: ${v.ci.detail}${(v.ci.runs ?? []).filter((r: any) => r.conclusion && r.conclusion !== 'success').map((r: any) => ` (${r.url})`).join('')}` : '',
+    v.ci?.state === 'failure' ? `CI failed: ${v.ci.detail}${(v.ci.runs ?? []).filter((r: any) => r.conclusion && r.conclusion !== 'success').map((r: any) => ` (${r.url})`).join('')}${v.ci.failure ? `\nWhat failed in its log:\n${v.ci.failure}` : ''}` : '',
   ].filter(Boolean).join('\n\n');
   const note = `Walk-away mode: this change didn't merge because ${why}. Fix what fails, run the checks again (npm run typecheck, npm test) and commit; it merges into ${c.base} by itself once everything is green.${failed ? `\n\n${failed}` : ''}`;
   addLog(id, `walk-away: fix pass ${n} (${n === 1 ? 'not counted as a try' : `try ${n - 1} of ${max}`}): ${why.slice(0, 200)}`);

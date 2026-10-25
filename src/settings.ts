@@ -100,8 +100,9 @@ const pmMod = () => import('./pm.ts');
 const notifyMod = () => import('./notify.ts');
 const costsMod = () => import('./costs.ts');
 const resourcesMod = () => import('./resources.ts');
+const relaysMod = () => import('./relayhealth.ts');
 
-export const SECTIONS = ['brain', 'tuning', 'routing', 'call', 'agents', 'pm', 'notify', 'costs', 'resources'] as const;
+export const SECTIONS = ['brain', 'tuning', 'routing', 'call', 'agents', 'pm', 'notify', 'costs', 'resources', 'relays'] as const;
 export type Section = (typeof SECTIONS)[number];
 
 /** Everything, for the Settings tab and Talk. */
@@ -121,6 +122,7 @@ export async function allSettings() {
     notify: notifyInfo(),
     costs: costSettings(),
     resources: resourceSettings(),
+    relays: (await relaysMod()).relaySettings(),
     prices: { elevenPerMinute: Math.round(ELEVEN_PER_MIN * 100) / 100 },
   };
 }
@@ -136,6 +138,7 @@ const RAISES: Record<Section, { up?: string[]; on?: string[]; off?: string[]; an
   notify: {},
   costs: { up: ['budget', 'gpuHours', 'builderHours', 'playtesterHours', 'gpuAutoApprove'], off: ['alerts'] },
   resources: {},
+  relays: {},
 };
 
 /** What in this patch could raise costs (empty: nothing). */
@@ -246,6 +249,13 @@ export async function saveSettings(section: string, patch: Record<string, any>, 
   if (s === 'resources') {
     try {
       return (await resourcesMod()).saveResourceSettings(patch, by);
+    } catch (e: any) {
+      throw new StudioError(e.message);
+    }
+  }
+  if (s === 'relays') {
+    try {
+      return (await relaysMod()).saveRelaySettings(patch, by);
     } catch (e: any) {
       throw new StudioError(e.message);
     }
