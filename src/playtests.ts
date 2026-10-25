@@ -36,15 +36,16 @@ type GenApi = { submit(tool: string, body: any): Promise<any>; job(id: string): 
  * any, the job is cancelled and returned as failed ("stuck: ..."). The run time counts from the earliest start known:
  * Gen's own `started`, or `since` (when the step's job first ran, from before a Studio restart, onStart records it), so
  * neither a Studio restart nor a Gen restart (it puts a running job back in line and starts it again) extends it.
+ * priority: Gen's queue order (-10..10, default 0); the go-live check goes ahead of long scenarios, carried-over plays behind.
  * abandon: checked while it waits; a reason cancels the job and returns it cancelled with `abandoned` (a newer beta
  * build waits on it). Never throws for a failed job.
  */
-export async function runGenJob(tool: string, project: string, params: Record<string, unknown>, onUpdate: (job: any) => void, { runMs, queueMs = 6 * 3600_000, job: reuse, since, onStart, idleMs, abandon, api = gen, pollMs = 2000 }: { runMs: number; queueMs?: number; job?: string; since?: number; onStart?: (at: number) => void; idleMs?: number; abandon?: () => string | null; api?: GenApi; pollMs?: number }) {
+export async function runGenJob(tool: string, project: string, params: Record<string, unknown>, onUpdate: (job: any) => void, { runMs, queueMs = 6 * 3600_000, job: reuse, since, onStart, idleMs, abandon, api = gen, pollMs = 2000, priority }: { runMs: number; queueMs?: number; priority?: number; job?: string; since?: number; onStart?: (at: number) => void; idleMs?: number; abandon?: () => string | null; api?: GenApi; pollMs?: number }) {
   // A job submitted before a Studio restart (pipeline.ts resumes runs): waited on again, not submitted again.
   let job: any = reuse ? { id: reuse } : null;
   for (let i = 0; !job; i++) {
     try {
-      job = await api.submit(tool, { project, params });
+      job = await api.submit(tool, { project, params, ...(priority ? { priority } : {}) });
       break;
     } catch (e: any) {
       if ((e.kind !== 'offline' && !/reach|fetch failed|ECONN/i.test(String(e.message))) || i >= 20) throw e;

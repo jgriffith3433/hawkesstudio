@@ -821,6 +821,19 @@ words are the fallback.
   build only when the new pages touch the build's files).
 - **Playtests:** on the server, "local" playtests play beta (its exact commit is recorded); "live" ones play the live
   domains. On J's PC, local playtests play his checkout as it is.
+- **What a beta run plays** (`src/playplan.ts`; the audit and the reasons: `docs/playtest-audit.md`, J, 2026-10-25): what it
+  was asked for always plays, one copy per scenario and options. What it carried over from the runs it replaced
+  (`absorbed`) is trimmed: plays whose tasks are all verified are left out, and the rest fits 6 scenarios / 20
+  minutes of expected play (`STUDIO_BETA_CARRY_MAX`, `STUDIO_BETA_CARRY_BUDGET_MIN`), shortest first; what doesn't fit is
+  deferred, named in the run plan's notes and a `plan` step, and plays in the next check of its tasks or when asked for.
+  A beta run plays no more scenarios after 90 minutes (`STUDIO_BETA_RUN_MAX_MS`). The automatic smoke of a build
+  isn't replayed on a commit that changed only docs, notes, agent files or videos since its last clean pass
+  (a `carry` step says so; J's Beta button always plays), and the go-live plan accepts that earlier pass for its
+  playtest blocker ("only docs and notes changed since"). The go-live smoke is queued in Gen at priority 5, carried
+  plays at -1 (`runGenJob` `priority`). A new Unity build waits at most 30 minutes (`STUDIO_BETA_PLAY_WAIT_MS`) for a run
+  still playing the beta copy. Go live needs only a finished local playtest of beta's exact commit (or that carried
+  pass) and no blockers, never a run to end. `GET /api/playtests/audit?days=30` counts plays, minutes, reviews with
+  nothing new and findings per scenario and kind of run.
 - **Go live:** `studio_deploy_plan` (dashboard: the Today card's "Go live…") lists the commits on beta that main lacks
   (titles and authors), the beta commit that was playtested with each scenario's outcome and review verdict, and
   blockers and warnings. `DEPLOY <product>` fast-forwards main to that tested commit (never a merge, never a force

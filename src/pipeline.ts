@@ -24,7 +24,7 @@ import { reviewJob, viaNote } from './review-cc.ts';
 import { writeReport } from './report.ts';
 import { assetStatus, makeAsset } from './assets.ts';
 import { syncRepos, syncRepo, repoMap, betaFolders, isServer, BETA, BRANCH } from './repos.ts';
-import { betaLane, prepareBeta, playedLocal, gameVersions, resetBetaSite, pinBetaVersion, pruneGameVersions, saveBetaBuild, betaBuild, betaSiteDir, betaSiteFolder, betaPort, shaOf, repoDirs, fetchOrigin, betaBuildCurrent, siteBaseOf, refreshBetaSite } from './beta.ts';
+import { gitAsync, betaLane, prepareBeta, playedLocal, gameVersions, resetBetaSite, pinBetaVersion, pruneGameVersions, saveBetaBuild, betaBuild, betaSiteDir, betaSiteFolder, betaPort, shaOf, repoDirs, fetchOrigin, betaBuildCurrent, siteBaseOf, refreshBetaSite } from './beta.ts';
 import { notifyOnce } from './notify.ts';
 import { judgeCriteria } from './acceptance.ts';
 import { runGenJob, playtestExtras, playtestData, playtestRunMs, REVIEW_RUN_MS, PLAYTEST_IDLE_MS } from './playtests.ts';
@@ -33,7 +33,8 @@ import { betaTurn, newerBetaRun, supersede, absorbed, supersedingBuild } from '.
 import { holdBeta, waitForBetaPlays, serveBeta, runBetaBuild, servedMismatch } from './betaplay.ts';
 import { resolveScenario, missingScenario, noteScenarios, knownScenarios } from './scenarios.ts';
 import { slowNote, playTime } from './pace.ts';
-import { planRun, notePlaying, progressCheck } from './runplan.ts';
+import { planRun, planChange, notePlaying, progressCheck, expectedSeconds } from './runplan.ts';
+import { planCarried, settledAsk, askName, lastCleanPass, noRuntimeChange, type Ask } from './playplan.ts';
 import { brainId, harnessStopOf, type Harness } from './brains.ts';
 import { harnessHeld, holdHarness, onHoldLifted } from './harness-hold.ts';
 import { isBillingError } from './llm.ts';
@@ -512,9 +513,9 @@ export async function playtestProduct(run: string, p: Product, asked: Playtest, 
     await progressCheck(run);
   }
 }
-type PlayOptions = { review?: boolean; focus?: string; mode?: ReviewMode; criteria?: string[]; abandon?: () => string | null; slot?: number };
+type PlayOptions = { review?: boolean; focus?: string; mode?: ReviewMode; criteria?: string[]; abandon?: () => string | null; slot?: number; priority?: number };
 
-async function playScenario(run: string, p: Product, asked: Playtest, { review = true, focus, mode = 'full', criteria, abandon, slot = 0 }: { review?: boolean; focus?: string; mode?: ReviewMode; criteria?: string[]; abandon?: () => string | null; slot?: number } = {}) {
+async function playScenario(run: string, p: Product, asked: Playtest, { review = true, focus, mode = 'full', criteria, abandon, slot = 0, priority }: PlayOptions = {}) {
   // A renamed scenario (an older task's name) plays under the game's current name (products.json scenarioAliases).
   const renamed = asked.scenario ? resolveScenario(p, asked.scenario) : undefined;
   const t: Playtest = renamed && renamed !== asked.scenario ? { ...asked, scenario: renamed } : asked;
@@ -611,7 +612,7 @@ async function playScenario(run: string, p: Product, asked: Playtest, { review =
     // Timed out (and cancelled) if it hangs, so one stuck browser never holds up the run: the run time counts from the
     // step's first start (kept on the step, so a restart never extends it), and 10 minutes without progress is stuck.
     job = await runGenJob('playtest.run', p.id, params, (j) => updateStep(s, { job: j.id, detail: j.detail }), {
-      runMs: playtestRunMs(t), job: prior?.id, since, idleMs: PLAYTEST_IDLE_MS(), abandon,
+      runMs: playtestRunMs(t), job: prior?.id, since, idleMs: PLAYTEST_IDLE_MS(), abandon, priority,
       onStart: (at) => db.prepare(`UPDATE steps SET data = json_set(COALESCE(data, '{}'), '$.runningSince', ?) WHERE id = ?`).run(at, s),
     }).finally(() => { if (port) stopServed(port); });
     // A newer beta build waits on this old one (betaqueue.ts supersedingBuild): cancelled, not failed.
@@ -666,9 +667,11 @@ async function playScenario(run: string, p: Product, asked: Playtest, { review =
 
 /** The most a whole run may take before it plays no more scenarios (J, 2026-10-25: a beta run sat for hours). */
 export const RUN_MAX_MS = () => Number(process.env.STUDIO_RUN_MAX_MS ?? 3 * 3600_000);
+/** A beta run is a check, not a survey: 90 minutes, then it plays no more (J, 2026-10-25). Daily and one-off runs keep RUN_MAX_MS. */
+export const BETA_RUN_MAX_MS = () => Number(process.env.STUDIO_BETA_RUN_MAX_MS ?? 90 * 60_000);
 export function runOverCap(run: string): { message: string; capMin: number } | null {
-  const row = db.prepare('SELECT started FROM runs WHERE id = ?').get(run) as { started?: number } | undefined;
-  const cap = RUN_MAX_MS();
+  const row = db.prepare('SELECT started, kind FROM runs WHERE id = ?').get(run) as { started?: number; kind?: string } | undefined;
+  const cap = row?.kind === 'beta' ? BETA_RUN_MAX_MS() : RUN_MAX_MS();
   if (!row?.started || cap <= 0 || Date.now() - row.started <= cap) return null;
   const capMin = Math.round(cap / 60000);
   return { capMin, message: `not played: this run has been going for over ${capMin} minutes (the most one run may take), so it plays no more scenarios. Ask for it again to play the rest.` };
@@ -945,14 +948,30 @@ export function startBeta(productId: string, o: BetaOptions = {}) {
   return { id, done: betaBody(id, p, o) };
 }
 
+/**
+ * Why beta's newest commit needs no new play of a scenario (a sentence), or null: the scenario last passed cleanly on
+ * this commit, or on an earlier one with only docs, notes and the like between them (playplan.ts noRuntimeChange).
+ */
+async function unchangedPass(p: Product, name: string): Promise<string | null> {
+  const pass = lastCleanPass(p.id, name);
+  const dir = repoDirs(p).source;
+  const head = shaOf(dir, 'HEAD');
+  if (!pass || !head) return null;
+  if (pass.sha === head) return `${name} already passed on beta ${head.slice(0, 7)} (run ${pass.run}): not played again`;
+  const diff = await gitAsync(dir, ['diff', '--name-only', pass.sha, head]);
+  if (!diff.ok) return null;
+  const files = diff.out.split('\n').map((x) => x.trim()).filter(Boolean);
+  return noRuntimeChange(files) ? `${name} passed on beta ${pass.sha.slice(0, 7)} (run ${pass.run}); since then only docs and notes changed (${files.length} file(s)): not played again` : null;
+}
+
 async function betaBody(id: string, p: Product, { focus, criteria, scenario, options, playtest, quiet, plays }: BetaOptions) {
   try {
     // What this beta run was asked to play (runplan.ts): the tasks' scenarios, or beta's one playtest when asked for.
+    const nameFor = (x: { scenario?: string }) => {
+      const pt = x.scenario ? { scenario: resolveScenario(p, x.scenario), where: 'local' as const } : p.playtests.find((y) => y.where === 'local' && y.device !== 'phone');
+      return pt ? nameOf(pt) : null;
+    };
     if (betaLane()) {
-      const nameFor = (x: { scenario?: string }) => {
-        const pt = x.scenario ? { scenario: resolveScenario(p, x.scenario), where: 'local' as const } : p.playtests.find((y) => y.where === 'local' && y.device !== 'phone');
-        return pt ? nameOf(pt) : null;
-      };
       const asked = plays?.length ? plays.map(nameFor) : playtest ?? betaPlaytestsOn() ? [nameFor({ scenario })] : [];
       planRun(id, [...new Set(asked.filter(Boolean) as string[])].map((name) => ({ product: p.id, name })));
     }
@@ -983,11 +1002,28 @@ async function betaBody(id: string, p: Product, { focus, criteria, scenario, opt
       if (built?.superseded) return void supersede(id, p.id, built.superseded, head());
     } else void import('./previews.ts').then(({ buildPreview }) => buildPreview(p.id)).catch(() => {});
     // What the beta runs this one superseded asked for comes along: a playtest, their tasks' criteria (pm.ts reads them).
+    // Only what still waits for a beta check, once per scenario, within a budget (playplan.ts): a burst of pushes used to
+    // hand every later run the whole milestone set (r_fd260676d571: 21 scenarios, 2+ hours, nothing new).
+    const carried: BetaPlay[] = [];
     for (const o of absorbed(id)) {
       if (playtest === undefined && o.playtest !== undefined) playtest = o.playtest;
-      for (const k of o.criteria ?? []) if (!(criteria ??= []).includes(k)) criteria.push(k);
+      for (const k of o.criteria ?? []) if (!(criteria ??= []).includes(k) && !settledAsk(p.id, { criteria: [k] })) criteria.push(k);
       if (!scenario && o.scenario) ({ scenario, options } = o);
-      if (o.plays?.length) plays = [...(plays ?? []), ...o.plays];
+      if (o.plays?.length) carried.push(...o.plays);
+    }
+    if (plays?.length || carried.length) {
+      const plan = planCarried(p.id, plays ?? [], carried, (a) => expectedSeconds(p.id, nameFor(a) ?? 'smoke@local'));
+      plays = plan.plays;
+      const said = [
+        plan.dropped.length ? `left out ${plan.dropped.length} carried-over scenario(s) nothing waits on (${plan.dropped.map((d) => askName(d.ask)).join(', ')}): ${plan.dropped[0].why}` : '',
+        plan.deferred.length ? `deferred ${plan.deferred.length} carried-over scenario(s) (${plan.deferred.map((d) => `${askName(d.ask)} ~${Math.round(d.estS / 60)} min`).join(', ')}): ${plan.deferred[0].why}; they play in the next check of their tasks, or when asked for` : '',
+      ].filter(Boolean);
+      const names = plan.plays.map(nameFor).filter(Boolean) as string[];
+      if (said.length || names.length) planChange(id, p.id, names, `this run plays ${names.length} scenario(s) after merging duplicates${said.length ? `; ${said.join('; ')}` : ''}`);
+      if (said.length) {
+        const q = startStep(id, p.id, 'beta', 'plan', said.join('; ').slice(0, 400));
+        updateStep(q, { status: 'done', data: { dropped: plan.dropped.map((d) => d.ask.scenario ?? null), deferred: plan.deferred.map((d) => d.ask.scenario ?? null) }, finished: true });
+      }
     }
     // A merged roadmap task: the scenario its agent wrote for its criteria, and the criteria judged again.
     const t: Playtest | undefined = scenario ? { scenario, where: 'local', ...(options ? { options } : {}) } : p.playtests.find((x) => x.where === 'local' && x.device !== 'phone');
@@ -1007,15 +1043,25 @@ async function betaBody(id: string, p: Product, { focus, criteria, scenario, opt
         // Only the scenarios of the tasks it judges (pm.ts playsFor), independent ones in parallel across the playtester's slots.
         await inSlots(plays, BETA_PLAYS_PARALLEL(), async (x, slot) => {
           const pt: Playtest | undefined = x.scenario ? { scenario: x.scenario, where: 'local', ...(x.options ? { options: x.options } : {}) } : p.playtests.find((y) => y.where === 'local' && y.device !== 'phone');
-          if (pt) await playtestProduct(id, p, pt, { focus, mode: 'verify', criteria: x.criteria, abandon: newerBuild, slot });
+          // What this run was asked for goes ahead of what it carried over in Gen's queue (playplan.ts).
+          if (pt) await playtestProduct(id, p, pt, { focus, mode: 'verify', criteria: x.criteria, abandon: newerBuild, slot, ...((x as Ask).carried ? { priority: -1 } : {}) });
         }, newerBuild);
         if (by) return void supersede(id, p.id, by, shaOf(repoDirs(p).source, 'HEAD'));
       } finally {
         release?.();
       }
     } else if (lane && t && (playtest ?? betaPlaytestsOn())) {
-      await playtestProduct(id, p, t, { focus, mode: 'verify', criteria, abandon: newerBuild });
-      if (by) return void supersede(id, p.id, by, shaOf(repoDirs(p).source, 'HEAD'));
+      // The smoke every beta build gets (go live needs it) is not played again for a commit that changed nothing a
+      // player sees since its last clean pass, unless somebody asked for it (playtest: true), and plays ahead of the queue.
+      const bare = !scenario && !criteria?.length;
+      const same = bare && playtest === undefined ? await unchangedPass(p, nameOf(t)) : null;
+      if (same) {
+        const q = startStep(id, p.id, 'beta', 'carry', same);
+        updateStep(q, { status: 'done', finished: true });
+      } else {
+        await playtestProduct(id, p, t, { focus, mode: 'verify', criteria, abandon: newerBuild, ...(bare ? { priority: 5 } : {}) });
+        if (by) return void supersede(id, p.id, by, shaOf(repoDirs(p).source, 'HEAD'));
+      }
     } else if (lane && t) {
       const s = startStep(id, p.id, 'playtest', nameOf(t));
       updateStep(s, { status: 'skipped', detail: 'not playtested: beta playtests run when asked for (studio beta, the Beta button), not after every merge', finished: true });

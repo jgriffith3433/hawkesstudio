@@ -24,6 +24,7 @@ import { git } from './local.ts';
 import { startPartial } from './pipeline.ts';
 import { db, newId, rowToStep, type Step } from './db.ts';
 import { previewUrl } from './previews.ts';
+import { noRuntimeChange } from './playplan.ts';
 import { opLog, registerOp, enqueue, queuePosition, getOp, type Op } from './ops.ts';
 import {
   BETA, MAIN, STUDIO_ROLLBACK, AUTHOR, must, repoDirs, compareBeta, NotClonedError, fetchOrigin, shaOf, commitOf, commitsIn, betaBuild, saveBetaBuild,
@@ -34,16 +35,29 @@ import { STUDIO_RELEASE, RELEASES, playedCommit, releasesAt, releasesPath, readR
 const brief = (c: Commit | null) => c && { sha: c.sha, short: c.short, title: c.title, author: c.author, date: c.date };
 
 /** The latest local playtest of each scenario that played `sha` (clean), with its review. */
-function testedAt(productId: string, sha: string | undefined) {
+export function testedAt(productId: string, sha: string | undefined, carries: (from: string) => boolean = () => false) {
   const steps = (db.prepare(`SELECT * FROM steps WHERE product = ? AND kind IN ('playtest', 'review') AND name LIKE '%@local%' ORDER BY started DESC LIMIT 300`).all(productId) as any[]).map(rowToStep);
   const plays = steps.filter((s) => s.kind === 'playtest' && s.status !== 'running');
   const last = plays.find((s) => s.data?.played) ?? null;
   const byName = new Map<string, Step>();
   if (sha) for (const s of plays) if (s.data?.played?.sha === sha && !s.data.played.dirty && !byName.has(s.name)) byName.set(s.name, s);
+  // A clean pass of an earlier commit counts when nothing a player can see changed since (only docs and notes): a beta
+  // run doesn't replay it (pipeline.ts unchangedPass), so go live must not ask for it either. Exact plays win.
+  const carried = new Set<string>();
+  if (sha) {
+    const tried = new Map<string, boolean>();
+    for (const s of plays) {
+      const from = s.data?.played?.sha;
+      if (byName.has(s.name) || s.status !== 'done' || !['won', 'done'].includes(s.data?.outcome) || !from || from === sha || s.data.played.dirty) continue;
+      if (!tried.has(from)) tried.set(from, carries(from));
+      if (tried.get(from)) { byName.set(s.name, s); carried.add(s.name); }
+    }
+  }
   const tested = [...byName.values()].map((s) => {
     const rv = steps.find((r) => r.kind === 'review' && r.run === s.run && r.name === s.name && ['done', 'skipped'].includes(r.status));
     return {
-      name: s.name, status: s.status, outcome: s.data?.outcome ?? null, detail: s.detail, when: s.finished, run: s.run, video: s.data?.video ?? null,
+      name: s.name, status: s.status, outcome: s.data?.outcome ?? null, detail: carried.has(s.name) ? `passed on ${String(s.data.played.sha).slice(0, 7)}; only docs and notes changed since, so it isn't played again` : s.detail, when: s.finished, run: s.run, video: s.data?.video ?? null,
+      carriedFrom: carried.has(s.name) ? String(s.data.played.sha).slice(0, 7) : null,
       verdict: rv?.data?.verdict ?? null, summary: rv?.data?.summary ?? null, scores: rv?.data?.scores ?? null,
       blockers: (rv?.data?.findings ?? []).filter((f: any) => f.severity === 'blocker').map((f: any) => f.title),
     };
@@ -105,7 +119,10 @@ export async function deployPlan(productId: string, { notesWaitMs = 20_000 }: { 
 
   // The playtests of the exact beta commit (a Studio release commit on top, only releases.json, doesn't count as moving it).
   const played = beta ? playedCommit(source, beta) : null;
-  const { tested, last } = testedAt(p.id, played?.sha);
+  const { tested, last } = testedAt(p.id, played?.sha, (from) => {
+    const d = gitIn(source, ['diff', '--name-only', from, played!.sha]);
+    return d.ok && noRuntimeChange(d.out.split('\n').map((x) => x.trim()).filter(Boolean));
+  });
   if (played && !tested.length) {
     blockers.push(last ? `${BETA} hasn't been playtested at ${played.short} (the last local playtest played ${last.played.branch} ${String(last.played.sha).slice(0, 7)}${last.played.dirty ? ' with uncommitted changes' : ''}). Playtest ${BETA} first (the daily run, or "studio beta ${p.id}").` : `${BETA} hasn't been playtested yet (the daily run on the server plays it, or "studio beta ${p.id}").`);
   }

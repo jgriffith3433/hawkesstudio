@@ -6,7 +6,8 @@
 // run still playing its scenarios played the old build, then nothing. Now:
 //
 // - a run holds the copy while it plays (holdBeta); a build that would reset it waits for the other runs' plays to end
-//   (waitForBetaPlays, at most BETA_PLAY_WAIT_MS, then it goes ahead and those runs' next steps fail loudly);
+//   (waitForBetaPlays, at most BETA_PLAY_WAIT_MS: 30 minutes, since a long run of the daily full set must not hold up
+//   going live (J, 2026-10-25); then it goes ahead and those runs' next steps fail loudly);
 // - each run's build step records the build it built or kept (step data "served": sha and Game/v<n>), and a playtest
 //   checks that the copy still holds exactly that build, and that its Game/v<n> folder is there (servedMismatch);
 // - playtests of the copy take turns per product (one port, serveBeta): one run's page server is never stopped by another's.
@@ -16,7 +17,7 @@
 import { db, parse } from './db.ts';
 import type { Played } from './beta.ts';
 
-export const BETA_PLAY_WAIT_MS = () => Number(process.env.STUDIO_BETA_PLAY_WAIT_MS ?? 2 * 3600_000);
+export const BETA_PLAY_WAIT_MS = () => Number(process.env.STUDIO_BETA_PLAY_WAIT_MS ?? 30 * 60_000);
 const TICK_MS = () => Number(process.env.STUDIO_BETA_TICK_MS ?? 5_000);
 
 /** product → run → holds. */
