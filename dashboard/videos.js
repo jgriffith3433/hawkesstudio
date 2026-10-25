@@ -75,7 +75,8 @@
       <div class="vd-thumb">${poster}</div>
       <div class="b"><b>${esc(v.title.replace(/^Video:\s*/, ''))}</b>
         <span class="vd-state ${READY.has(v.state) ? 'ready' : v.state === 'failed' ? 'failed' : ''}">${esc(v.state)}${v.versions ? ` · v${v.versions}` : ''}</span>
-        <small class="dim">${esc(v.product)} · ${esc(ago(v.created))}</small></div>
+        <small class="dim">${esc(v.product)} · ${esc(ago(v.created))}</small>
+        <div><button class="small" data-delete="${v.id}" title="Remove this video from the list">Delete</button></div></div>
     </div>`;
   }
 
@@ -203,7 +204,8 @@
     const keepTime = $('#vdVideo')?.currentTime ?? 0;
     el.innerHTML = `
       <div class="vd-row" style="margin-bottom:12px"><button id="vdBack">← All videos</button>
-        <h3 style="margin:0">${esc(d.task.title.replace(/^Video:\s*/, ''))}</h3><span class="pill">${esc(d.state)}</span><small class="dim">${esc(d.task.product)}</small></div>
+        <h3 style="margin:0">${esc(d.task.title.replace(/^Video:\s*/, ''))}</h3><span class="pill">${esc(d.state)}</span><small class="dim">${esc(d.task.product)}</small>
+        <button class="small" data-delete="${d.task.id}" style="margin-left:auto" title="Remove this video from the list">Delete</button></div>
       <div class="vd-main">
         <div>
           <div class="vd-player">${v ? `<video id="vdVideo" src="${file(v.asset)}" ${v.poster ? `poster="${file(v.poster)}"` : ''} controls playsinline preload="metadata"></video><div class="vd-aim${aiming ? ' on' : ''}" id="vdAim">${aim ? `<i style="left:${aim.x * 100}%;top:${aim.y * 100}%"></i>` : ''}</div>` : `<p class="dim" style="padding:60px 20px;color:#bbb">${esc(d.change?.detail ?? 'Not started yet: the PM starts it when an agent is free.')}</p>`}</div>
@@ -328,8 +330,16 @@
       aiming = false;
       return rerender();
     }
-    const t = e.target.closest('[data-open],[data-version],[data-ask],[data-quick],[data-drop],[data-keep],[data-seek],#vdBack,#vdNewBtn,#vdCancel,#vdApprove,#vdSendAll,#vdPlaySel,#vdClearSel,#vdAimBtn,#vdRedo');
+    const t = e.target.closest('[data-delete],[data-open],[data-version],[data-ask],[data-quick],[data-drop],[data-keep],[data-seek],#vdBack,#vdNewBtn,#vdCancel,#vdApprove,#vdSendAll,#vdPlaySel,#vdClearSel,#vdAimBtn,#vdRedo');
     if (!t) return;
+    if (t.dataset.delete) {
+      const id = t.dataset.delete;
+      const title = (data?.task?.id === id ? data.task.title : t.closest('.vd-card')?.querySelector('b')?.textContent) ?? 'this video';
+      if (!confirm(`Delete "${String(title).replace(/^Video:\s*/, '')}"? It leaves the Videos list and its task is dropped. Nothing made in Hawkes Gen is deleted.`)) return;
+      t.disabled = true;
+      try { await api(`/api/videos/${id}`, { method: 'DELETE' }); } catch (x) { alert(x.message); t.disabled = false; return; }
+      return current ? open(null) : load();
+    }
     if (t.dataset.open) return open(t.dataset.open);
     if (t.dataset.version) { shown = Number(t.dataset.version); sel = null; return rerender(); }
     if (t.dataset.ask) { ask = ask === t.dataset.ask ? null : t.dataset.ask; return rerender(); }

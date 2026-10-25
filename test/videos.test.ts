@@ -187,6 +187,32 @@ test('a redo follows a shot back to the generation that made it, through its fin
   await assert.rejects(v.redoShots(t.id, { from: 1 }), /waiting for you/);
 });
 
+test('deleting a video drops its task and hides it from the list; dropped ones are hidden by default', async () => {
+  const t = v.createVideo({ product: 'doseofdestruction', title: 'Delete me', script: 'TT: Bye.' });
+  const keep = v.createVideo({ product: 'doseofdestruction', title: 'Keep me', script: 'TT: Hi.' });
+  const ids = async (o?: { dropped?: boolean }) => (await v.listVideos(60, o)).map((x) => x.id);
+  assert.ok((await ids()).includes(t.id));
+  const r = await v.deleteVideo(t.id, { by: 'J' });
+  assert.equal(r.deleted, t.id);
+  assert.equal(rm.getTask(t.id)!.status, 'dropped');
+  assert.ok(rm.commentsOn(t.id).some((m: any) => m.text === 'Deleted from the Videos tab.'));
+  assert.ok(!(await ids()).includes(t.id), 'gone from the default list');
+  assert.ok((await ids()).includes(keep.id), 'the others stay');
+  const all = await v.listVideos(60, { dropped: true });
+  assert.equal(all.find((x) => x.id === t.id)?.state, 'dropped', 'still there when asked for');
+  assert.equal((await v.deleteVideo(t.id)).deleted, t.id, 'deleting twice is fine');
+  assert.equal(rm.commentsOn(t.id).filter((m: any) => m.text === 'Deleted from the Videos tab.').length, 1);
+  await assert.rejects(v.deleteVideo('k_000000000000'), /No video/);
+  const plain = rm.addTask({ item: keep.item, request: 'not a video' });
+  await assert.rejects(v.deleteVideo(plain.id), /No video/, 'only videos');
+});
+
+test('a video already dropped by hand is hidden by default too', async () => {
+  const t = v.createVideo({ product: 'sickofit', title: 'Dropped by hand', script: 'YOOBA: No.' });
+  rm.updateTask(t.id, { status: 'dropped' });
+  assert.ok(!(await v.listVideos()).some((x) => x.id === t.id));
+});
+
 test("the critic's review (Gen video.review) becomes Studio's: scores kept, asks the timeline knows, its notes on the timeline", async () => {
   const t = v.createVideo({ product: 'doseofdestruction', title: 'Critic', script: 'TT: Hi.\nSLICE: Bye.' });
   const beats = [{ t: 0, seconds: 3, shot: 'WS', key: 'hook' }, { t: 3, seconds: 4, shot: 'CU', key: 'tt_hi', line: 'Hi.' }];

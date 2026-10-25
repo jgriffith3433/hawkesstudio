@@ -484,9 +484,10 @@ function stateOf(t: Task, c: any, versions: Version[]): string {
   return versions.length ? 'revising' : 'making';
 }
 
-export async function listVideos(limit = 60) {
+/** Dropped videos (deleted, or dropped by hand) stay out of the list unless asked for. */
+export async function listVideos(limit = 60, { dropped = false }: { dropped?: boolean } = {}) {
   const { getChange } = await agents();
-  const rows = db.prepare("SELECT id FROM tasks WHERE kind = 'video' ORDER BY created DESC LIMIT ?").all(limit) as { id: string }[];
+  const rows = db.prepare(`SELECT id FROM tasks WHERE kind = 'video'${dropped ? '' : " AND status != 'dropped'"} ORDER BY created DESC LIMIT ?`).all(limit) as { id: string }[];
   return rows.map(({ id }) => {
     const t = getTask(id)!;
     const c = t.change ? getChange(t.change) : null;
@@ -994,6 +995,27 @@ export async function approveVideo(task: string, { by = 'J', post = false, platf
   return { video: await videoDetail(task), social };
 }
 
+/** Changes still in flight for a video: deleting it stops them. Merged, failed and closed ones are left as they are. */
+const OPEN_CHANGE = ['queued', 'working', 'verifying', 'revising', 'ready', 'needs answer', 'waiting on Gen'];
+
+/**
+ * J deletes a video: its roadmap task is dropped (so the Videos tab hides it) and an agent still working on it is
+ * stopped. Nothing else is touched: no Gen asset, no GPU job, no merged work, no versions or notes.
+ */
+export async function deleteVideo(task: string, { by = 'J' }: { by?: string } = {}) {
+  const t = getTask(task);
+  if (!t || t.kind !== 'video') throw new StudioError(`No video ${task}`, 404);
+  if (t.status !== 'dropped') {
+    const { getChange, close } = await agents();
+    const c = t.change ? getChange(t.change) : null;
+    if (c && OPEN_CHANGE.includes(c.status)) await close(c.id, by);
+    setTask(task, { status: 'dropped' });
+    addComment(task, 'Deleted from the Videos tab.', by, 'note');
+    logDecision('video', task, t.product, `${by} deleted "${t.title}"`);
+  }
+  return { deleted: task, title: t.title };
+}
+
 // ------------------------------------------------------------------------------------------------ routes
 
 type Send = (res: import('node:http').ServerResponse, status: number, body: unknown) => void;
@@ -1002,7 +1024,7 @@ export async function handleVideosApi(req: import('node:http').IncomingMessage, 
   const method = req.method ?? 'GET';
   let m: RegExpExecArray | null;
   try {
-    if (route === '/api/videos' && method === 'GET') return send(res, 200, { videos: await listVideos(Number(url.searchParams.get('limit')) || 60), formats: FORMATS, engines: ENGINES, kinds: KINDS });
+    if (route === '/api/videos' && method === 'GET') return send(res, 200, { videos: await listVideos(Number(url.searchParams.get('limit')) || 60, { dropped: url.searchParams.get('dropped') === '1' }), formats: FORMATS, engines: ENGINES, kinds: KINDS });
     if (route === '/api/videos' && method === 'POST') {
       const b = await readJson(req);
       // Started from Talk: the version notices go back into that conversation (tellTalk).
@@ -1014,6 +1036,7 @@ export async function handleVideosApi(req: import('node:http').IncomingMessage, 
       return send(res, 200, await videoDetail(t.id));
     }
     if ((m = /^\/api\/videos\/(k_[0-9a-f]+)$/.exec(route)) && method === 'GET') return send(res, 200, await videoDetail(m[1]));
+    if ((m = /^\/api\/videos\/(k_[0-9a-f]+)$/.exec(route)) && method === 'DELETE') return send(res, 200, await deleteVideo(m[1], { by }));
     if ((m = /^\/api\/videos\/(k_[0-9a-f]+)\/notes$/.exec(route)) && method === 'POST') {
       const b = await readJson(req);
       return send(res, 200, await noteVideo(m[1], b.text, { at: b.at, from: b.from, to: b.to, action: b.action, version: b.version, x: b.x, y: b.y, hold: Boolean(b.hold), by }));
