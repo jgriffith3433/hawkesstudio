@@ -112,6 +112,7 @@ const port = await new Promise<number>((resolve) => {
   });
 });
 const env: NodeJS.ProcessEnv = {
+  STUDIO_HARNESS_RESUME_GAP_MS: "2000",
   ...process.env,
   STUDIO_PROJECTS: projects, STUDIO_DATA: path.join(tmp, 'data'), STUDIO_PRODUCTS: productsFile, STUDIO_PORT: String(port),
   HAWKESGEN_URL: `http://127.0.0.1:${genPort}`, GEN_PUBLIC_URL: `http://127.0.0.1:${genPort}`, STUDIO_GITHUB_API: `http://127.0.0.1:${githubPort}`, GITHUB_TOKEN: 'test',

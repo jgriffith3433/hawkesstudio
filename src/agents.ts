@@ -318,7 +318,24 @@ function parkForHarness(id: string, ph: Phase, save: (patch: Partial<Phase>, ext
   const harness = (isHarness(ph.brain) ? ph.brain : brainId()) as Harness;
   const { hold } = holdHarness(stop, { source: `agent change ${id}`, harness });
   addLog(id, `${HARNESS_LABEL[harness]} stopped the agent (${stop.kind}): ${stop.line.slice(0, 200)}. Parked with its worktree and session: not a try; it resumes by itself (${holdDetail(hold)})`);
-  save({ step: 'agent', proc: undefined, result: undefined, stopped: undefined, nudge: false, harness: { kind: stop.kind, line: stop.line.slice(0, 300), at: Date.now(), on: harness } }, { status: 'queued', detail: holdDetail(hold) });
+  const now = Date.now();
+  const parks = [...(ph.harness?.parks ?? []), now].filter((t) => now - t < RESUME_WINDOW);
+  save({ step: 'agent', proc: undefined, result: undefined, stopped: undefined, nudge: false, harness: { kind: stop.kind, line: stop.line.slice(0, 300), at: now, on: harness, parks } }, { status: 'queued', detail: holdDetail(hold) });
+}
+/**
+ * How soon a change parked by a harness hold may start again, whatever the hold says (a probe that answers lifts the
+ * hold at once, and c_f7171301e745 resumed every 15 s, $8.40): at least RESUME_GAP after its last park, and at most
+ * RESUME_CAP parks an hour; past the cap it waits for J (pump asks once).
+ */
+export const RESUME_GAP = Number(process.env.STUDIO_HARNESS_RESUME_GAP_MS) || 10 * 60_000;
+export const RESUME_CAP = 3;
+const RESUME_WINDOW = 3600_000;
+export function resumeGate(h: { at: number; parks?: number[]; capped?: boolean } | undefined, now = Date.now()): { go: true } | { go: false; waitMs: number; capped: boolean } {
+  if (!h) return { go: true };
+  const parks = (h.parks ?? [h.at]).filter((t) => now - t < RESUME_WINDOW);
+  if (h.capped || parks.length >= RESUME_CAP) return { go: false, waitMs: 0, capped: true };
+  const waitMs = h.at + RESUME_GAP - now;
+  return waitMs > 0 ? { go: false, waitMs, capped: false } : { go: true };
 }
 /**
  * The harness refused the model this pass asked for (the account's plan doesn't have it): remember it (models.ts) and
@@ -440,7 +457,7 @@ export type Phase = {
   /** The next pass continues the agent's session with its finished Gen jobs (this prompt). */
   genDone?: string;
   /** Parked by a harness hold (parkForHarness): what stopped it. The next pass resumes it (harnessResume). */
-  harness?: { kind: string; line: string; at: number; on: string };
+  harness?: { kind: string; line: string; at: number; on: string; /** When each park happened (the last hour's, for the resume cap). */ parks?: number[]; /** Asked J after the cap: no more resumes by itself. */ capped?: boolean };
 };
 
 /**
@@ -983,6 +1000,8 @@ ${note ? `\n## Notes on the last attempt (J's or the PM's)\n\n${note}\n` : ''}${
 ${checks}
 5. Commit your change with a clear message (\`Fix: ...\`). Don't push; Studio does. Studio stops a pass after
    ${Math.round(agentLimitMs(c) / 60_000)} minutes: commit as you go (after each working piece or finished batch), so a stop loses nothing.
+   A third-party error from a Gen job (ElevenLabs payment_issue, a 401 or 402) is not yours to retry: test ONE line
+   first for voice work, and on that error stop at once, write \`.hawkes/stuck.md\` naming the service, and end.
 6. Write \`.hawkes/summary.md\`: what was wrong, what you changed (files), how you checked it, and anything J should
    look at. If you couldn't fix it, explain why there instead, and don't commit.
    Two approaches, then stop: when two different approaches haven't worked (the checks still fail, or you can't find
@@ -1412,6 +1431,22 @@ export function noRoomFor(product: string, next: WorkShape, statuses = `queued,$
   return others.length ? overlapWith(next, others.map(shapeOf), { unity: isUnity(product) }) : null;
 }
 
+/** A change parked by the harness waits out its gap and stops at the cap (resumeGate); the cap asks J once. */
+function resumeAllowed(c: Change) {
+  const h = phaseOf(c.id)?.harness;
+  const g = resumeGate(h);
+  if (g.go) return true;
+  if (!g.capped) {
+    setTimeout(() => void pump(), g.waitMs + 1000).unref();
+  } else if (h && !h.capped) {
+    update(c.id, { phase: { ...phaseOf(c.id)!, harness: { ...h, capped: true } }, status: 'needs answer', detail: `the AI harness stopped it ${RESUME_CAP} times in an hour: it waits for you` });
+    addLog(c.id, `harness stops ${RESUME_CAP} times in an hour: no more resumes by itself, asked J`);
+    void import('./pm.ts').then(({ askJ }) => askJ(`"${c.title ?? c.id}" was stopped by the AI harness ${RESUME_CAP} times in an hour (${h.line.slice(0, 200)}). Is Claude's usage or billing really out? Resume it, or leave it?`,
+      { subject: c.id, product: c.product, options: ['resume it', 'leave it'], recommend: 'leave it', from: 'harness-resume cap' })).catch(() => {});
+  }
+  return false;
+}
+
 /** Runs queued changes up to the concurrency limit, per product up to its limit when they don't collide. */
 async function pump() {
   // A Studio deploy is waiting (drain.ts): start nothing new; the queue resumes after the deploy restarts Studio.
@@ -1422,7 +1457,7 @@ async function pump() {
   // Busy: anything running in this process (a revision or an answer is queued while it runs) and whatever is active.
   const active = new Map(listChanges({ status: ACTIVE, limit: 500 }).map((c) => [c.id, c]));
   for (const id of running) { const r = getChange(id); if (r) active.set(r.id, r); }
-  const queued = listChanges({ status: 'queued', limit: 500 }).reverse().filter((c) => !running.has(c.id));
+  const queued = listChanges({ status: 'queued', limit: 500 }).reverse().filter((c) => !running.has(c.id) && resumeAllowed(c));
   const fit = (id: string, picked: string[]) => {
     const c = getChange(id)!;
     if (isVideoTask(c.task)) return true;
