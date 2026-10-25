@@ -255,9 +255,12 @@ let timer: ReturnType<typeof setInterval> | null = null;
 /** Looks every 10 minutes whether today's check is due (server only; STUDIO_RELAY_WATCH=on forces it elsewhere). */
 export function startRelayHealth() {
   if (timer || process.env.STUDIO_SMOKE || !(isServer() || process.env.STUDIO_RELAY_WATCH === 'on')) return;
-  const tick = () => {
-    if (relayDue()) checkRelays().then((r) => console.log(`[relays] checked ${r.probed}: ${r.failures.length ? r.failures.join(', ') : 'all fine'}${r.note ? ` (${r.note})` : ''}`)).catch((e) => console.warn(`[relays] check failed: ${e.message ?? e}`));
-  };
+  // Inside a promise, so a throw (the database busy, say) is logged instead of ending Studio.
+  const tick = () => void Promise.resolve().then(async () => {
+    if (!relayDue()) return;
+    const r = await checkRelays();
+    console.log(`[relays] checked ${r.probed}: ${r.failures.length ? r.failures.join(', ') : 'all fine'}${r.note ? ` (${r.note})` : ''}`);
+  }).catch((e) => console.warn(`[relays] check failed: ${e.message ?? e}`));
   setTimeout(tick, 5 * 60_000).unref();
   timer = setInterval(tick, 10 * 60_000);
   timer.unref();

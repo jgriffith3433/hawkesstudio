@@ -825,7 +825,7 @@ server.listen(PORT, '127.0.0.1', () => {
   void import('./repos.ts').then(({ reinstallStale }) => reinstallStale()).then((done) => { if (done.length) console.log(`[repos] reinstalled packages at start: ${done.map((i) => `${i.dir} ${i.ok ? `(${i.seconds} s)` : 'failed'}`).join(', ')}`); }).catch((e) => console.warn(`[repos] reinstalling packages: ${e.message ?? e}`));
   startDevService();
   // Yooba Land's relay health, once a day (relayhealth.ts, NET-08).
-  void import('./relayhealth.ts').then(({ startRelayHealth }) => startRelayHealth());
+  void import('./relayhealth.ts').then(({ startRelayHealth }) => startRelayHealth()).catch((e) => console.warn(`[relays] starting the daily check: ${e.message ?? e}`));
   // Results of work Talk started go back into its conversation.
   startFollowups();
   // Costs: an hourly look for a forecast over budget or a server left running (phone only then).
