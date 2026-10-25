@@ -222,6 +222,14 @@ key never reaches those routes. Gen does the rest (allowed origins per product, 
 `docs/analytics.md`). Everything else on gen still needs the login or an `hg_` key; `test/caddyfile.test.ts` checks
 both. A merged change to them reaches the server on its own (`hawkes-pull.mjs` applies `deploy/caddyfile.mjs`, above).
 
+**Public on gen.hawkesgen.com (Hawkes Net):** players' pages join multiplayer rooms with no login, so `@net` opens
+`/v1/net/ws` (the relay's WebSocket: a signed, single-use ticket is the only way in), `/v1/net/ticket` (Gen's ticket
+door: player tickets for a listed project's own sites, limited per address; requests with a key go through `@apikey`),
+`/v1/net/keys`, `/v1/net/status` (totals only without a key) and `/v1/net/nodes`. Caddy drops `Cookie`, sets
+`X-Forwarded-For` (the relay caps sockets per address with it) and never buffers the socket (`flush_interval -1`).
+Everything else under `/v1/net/` (publish, room info, heartbeats, usage, key rotation) still needs a key. hawkesgen
+`docs/net.md` has the rest.
+
 Give each place its own Gen key (`hawkesgen.cmd key claude-ai --role owner`), so one can be turned off alone.
 Over HTTP, Gen outputs come back as `https://gen.hawkesgen.com/v1/files/<asset>` links (they need the key or the login),
 and inputs must be `asset:<id>` or `blob:<sha>` (`save_to` and `workflow_file` only work with the local server).
