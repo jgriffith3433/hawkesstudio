@@ -114,6 +114,22 @@ gen.${domain} {
 			header_up X-Forwarded-For {remote_host}
 		}
 	}
+	# Hawkes Net (hawkesgen docs/net.md): players' pages join rooms with no login. The WebSocket (/v1/net/ws) is authorized
+	# by its signed ticket alone; the ticket door checks the page's origin against the project and limits each address
+	# (src/net/api.ts); keys, status and nodes are public by design. Requests with a Gen key still go through @apikey above.
+	@net {
+		path /v1/net/ws /v1/net/ticket /v1/net/keys /v1/net/status /v1/net/nodes
+	}
+	handle @net {
+		request_body {
+			max_size 64KB
+		}
+		reverse_proxy 127.0.0.1:8790 {
+			header_up -Cookie
+			header_up X-Forwarded-For {remote_host}
+			flush_interval -1
+		}
+	}
 	# The analytics SDK script the pages load (cacheable; Gen's own Cache-Control wins when it sends one).
 	@sdk {
 		method GET HEAD

@@ -60,12 +60,13 @@ test('gen: everything else still needs the sign-in or a key Gen checks', () => {
   assert.equal(last.matcher, '', 'the catch-all comes last');
   assert.match(last.body, /import login/);
   assert.match(last.body, /WEB_GEN_KEY/);
-  // The only handles without the login: the key paths (Gen checks the key) and the two analytics routes.
+  // The only handles without the login: the key paths (Gen checks the key), the two analytics routes and Hawkes Net's
+  // public routes (players' pages: the socket needs a signed ticket, the ticket door checks the origin).
   const open = hs.filter((x) => !/import login/.test(x.body)).map((x) => x.matcher).sort();
-  assert.deepEqual(open, ['@apikey', '@collect', '@mcpurl', '@sdk']);
-  // No other path in gen's block is opened: the analytics matchers name exactly those paths.
+  assert.deepEqual(open, ['@apikey', '@collect', '@mcpurl', '@net', '@sdk']);
+  // No other path in gen's block is opened: the matchers name exactly these paths.
   const paths = [...gen.matchAll(/^\t\tpath (.+)$/gm)].map((x) => x[1]);
-  assert.deepEqual(paths, ['/v1/analytics/collect', '/sdk/*']);
+  assert.deepEqual(paths, ['/v1/analytics/collect', '/v1/net/ws /v1/net/ticket /v1/net/keys /v1/net/status /v1/net/nodes', '/sdk/*']);
 });
 
 test('studio: the analytics routes are not added there', () => {
