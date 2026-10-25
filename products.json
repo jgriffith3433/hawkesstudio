@@ -441,6 +441,7 @@
       "framing": "laboratory services",
       "engine": "web",
       "repo": "hawkesgenwebsite",
+      "checks": [{ "dir": "hawkesgenwebsite", "cmd": "npm run typecheck" }, { "dir": "hawkesgenwebsite", "cmd": "npm test" }],
       "site": "hawkesgenwebsite",
       "live": "https://hawkesgen.com/",
       "local": {

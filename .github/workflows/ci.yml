@@ -1,63 +1,17 @@
-# Typecheck and tests on every pull request and push to main (an agent branch runs once, through its pull request).
-# The control server deploys a commit on main only after this passes (hawkesstudio/deploy/hawkes-pull.mjs checks the commit's check runs).
+# No tests here (J, 2026-10-25: "i don't want github running the tests anymore"): the control server runs typecheck and
+# the tests on each new main commit itself before it deploys it (hawkesstudio/deploy/hawkes-pull.mjs testOnServer), and
+# Studio runs them on every agent change before it merges (src/agents.ts verifyInfra). This workflow only tells the
+# server that main moved, so it doesn't poll. Studio checks GitHub's OIDC token (this repo, main) and the server pulls
+# the commit itself.
 name: CI
 on:
   push:
     branches: [main]
-  pull_request:
-# A newer push to the same pull request cancels its older run; runs on main are never cancelled (each one deploys).
-concurrency:
-  group: ci-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 permissions:
   contents: read
 jobs:
-  test:
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@v4
-      # Docs-only changes (docs/, *.md) skip the install, typecheck and tests, but the job still reports success: Studio's
-      # merge gate and the server's deploy read this check, so it must exist.
-      - name: What changed
-        id: changed
-        env:
-          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
-        run: |
-          code=true
-          if [ -n "$BASE" ] && [ "$BASE" != "0000000000000000000000000000000000000000" ] && git fetch -q --no-tags --depth=1 origin "$BASE"; then
-            files=$(git diff --name-only "$BASE" HEAD)
-            if [ -n "$files" ] && ! echo "$files" | grep -qvE '(^docs/|\.md$)'; then code=false; echo "Docs only: skipping typecheck and tests"; fi
-          fi
-          echo "code=$code" >> "$GITHUB_OUTPUT"
-      - if: steps.changed.outputs.code == 'true'
-        uses: actions/setup-node@v4
-        with:
-          node-version: 24
-          cache: npm
-      - if: steps.changed.outputs.code == 'true'
-        run: npm ci --no-audit --no-fund
-      - if: steps.changed.outputs.code == 'true'
-        run: npm run typecheck
-      # The beta-lane and dev tests make git repos and commits.
-      - if: steps.changed.outputs.code == 'true'
-        run: |
-          git config --global user.name "CI"
-          git config --global user.email "ci@example.invalid"
-          git config --global init.defaultBranch main
-      # Without Hawkes Gen running here, the asset test skips itself; the rest need nothing else.
-      - if: steps.changed.outputs.code == 'true'
-        run: npm test
-        env:
-          HAWKESGEN_URL: http://127.0.0.1:8790
-
-  # On main, once the tests pass: tell the control server to deploy this commit (no polling). Studio checks GitHub's
-  # OIDC token (this repo, main) and the server pulls it itself (hawkesstudio/deploy/hawkes-pull.mjs). The server
-  # ignores this job when it checks CI, since this job is what starts the check.
   tell-server:
     name: Tell the server
-    needs: test
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
