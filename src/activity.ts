@@ -9,6 +9,7 @@ import { listOps, runningCommands, loopHealth } from './ops.ts';
 import { brainOfChange } from './agents.ts';
 import { talkInfo } from './talk.ts';
 import { brainLabel } from './brains.ts';
+import { planView, planLine } from './runplan.ts';
 
 const name = (product: string) => {
   try {
@@ -71,6 +72,8 @@ function runRow(r: any) {
   return {
     id: r.id, kind: r.kind, status: r.status, detail: r.detail, products: (parse(r.products) ?? []).map(name), started: r.started, finished: r.finished,
     cost: r.cost ?? 0, origin: r.origin ?? null, by, where: opts.where ?? null,
+    // The scenarios it will play, each one's state and verdict, and how far along it is (runplan.ts).
+    plan: (() => { const v = planView(r.id); return v ? { ...v, line: planLine(v) } : null; })(),
     steps: { total: steps.length, done: steps.filter((s) => s.status !== 'running').length, failed: steps.filter((s) => s.status === 'failed').length },
     now: steps.filter((s) => s.status === 'running').map((s) => ({ product: s.product, kind: s.kind, name: s.name, detail: s.detail, job: s.job, started: s.started })),
     // Its playtests, for the screenshots player when J expands the card (frames.ts, GET /api/frames/<id>).

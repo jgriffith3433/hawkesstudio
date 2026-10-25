@@ -476,3 +476,6 @@ body.lt-big-open { overflow: hidden; }
 }
 @media (prefers-reduced-motion: reduce) { .lt-prog > span, .lt-tile { transition: none; } }
 .social-posts td { padding: 8px 6px; border-bottom: 1px solid var(--line); vertical-align: top; }
+.act-plan { margin: 4px 0; padding-left: 20px; list-style: decimal; }
+.act-plan-item { margin: 2px 0; overflow-wrap: anywhere; }
+.act-plan-item.act-bad > b { color: var(--bad, #e5534b); }

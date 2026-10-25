@@ -10,6 +10,7 @@ import { fileUrl } from './gen.ts';
 import { PUBLIC_URL } from './notify.ts';
 import { regressions } from './playtests.ts';
 import { playersSection } from './players.ts';
+import { planView, planLine } from './runplan.ts';
 
 const SEV_ICON: Record<string, string> = { blocker: '🛑', bug: '🐞', polish: '✨', idea: '💡' };
 
@@ -47,6 +48,8 @@ export function buildReport(run: string) {
   return { run: r, per, open, newToday, newIdeas, ideas, cost, headline, date: today(new Date(r.started)) };
 }
 
+const PLAN_ICON: Record<string, string> = { waiting: '⏳', playing: '▶️', reviewing: '🔎', done: '✅', failed: '❌', skipped: '⏭️' };
+
 const fmtStep = (s: Step) => {
   const icon = s.status === 'done' ? '✅' : s.status === 'failed' ? '❌' : s.status === 'skipped' ? '⏭️' : '⏳';
   return `${icon} **${s.kind}** ${s.name}: ${s.detail ?? s.status}`;
@@ -65,6 +68,14 @@ export function reportMarkdown(run: string) {
     L.push(`| ${x.name} | ${x.verdict ?? (x.failed.length ? 'failed' : '-')} | ${a?.stability ?? '-'} | ${a?.visuals ?? '-'} | ${a?.clarity ?? '-'} | ${a?.feel ?? '-'} | ${a?.polish ?? '-'} | ${x.findings.length} | ${x.failed.map((s) => `${s.kind} ${s.name}`).join(', ') || '-'} |`);
   }
   L.push('');
+  // The scenarios the run played, in order, with how long they were expected to take and what came of each.
+  const plan = planView(run);
+  if (plan) {
+    L.push('## Scenarios', '', `${planLine(plan)} · expected about ${plan.expectedMin} min in all.`, '');
+    for (const it of plan.items) L.push(`- ${PLAN_ICON[it.state]} **${it.productName}** ${it.name} (about ${Math.max(1, Math.round(it.estS / 60))} min): ${it.verdict ?? it.state}${it.findings.length ? `; ${it.findings.map((f) => `${SEV_ICON[f.severity] ?? '-'} ${f.title}`).join('; ')}` : ''}`);
+    for (const n of plan.notes) L.push(`- ➕ ${new Date(n.at).toLocaleTimeString()} ${n.text}`);
+    L.push('');
+  }
   // Worse than the previous run of the same scenario (Playtests tab has the trends).
   const reg = regressions(run);
   if (reg.length) {
