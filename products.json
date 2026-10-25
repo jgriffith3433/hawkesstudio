@@ -498,7 +498,7 @@
         "env": {
           "PORTAL_PROJECT_PREFIX": "ubeta_"
         },
-        "open": "^/(play/|play-asset/|v1/play/|v1/play-template/|v1/ws$|dl/)"
+        "open": "^/(play/|play-asset/|v1/play/|v1/play-template/|v1/ws$|v1/community/a_[0-9a-f]+/file$|favicon\\.svg$|dl/)"
       }
     }
   ],
