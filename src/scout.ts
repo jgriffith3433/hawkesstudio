@@ -14,6 +14,7 @@ import { claudeEnv } from './claude.ts';
 import { brainId, harnessStopOf } from './brains.ts';
 import { harnessHeld, holdHarness } from './harness-hold.ts';
 import { BETA, gitAsync } from './beta.ts';
+import { lfsPull } from './lfs.ts';
 import { briefSection, recordRun } from './memory.ts';
 import { roleArgs } from './roles.ts';
 import { spawnClaude } from './sandbox.ts';
@@ -69,6 +70,7 @@ async function run(id: string, top: string, base: string, opts: { brief?: string
     const ref = git(repo, ['rev-parse', '--verify', `origin/${base}`]).ok ? `origin/${base}` : 'origin/main';
     const w = git(repo, ['worktree', 'add', '--detach', wt, ref]);
     if (!w.ok) throw new Error(`worktree: ${w.err}`);
+    await lfsPull(wt);
     set(id, { detail: `reading ${top} (${ref})` });
     const story = isInfra(s.product) ? '' : storyOf(getProduct(s.product), 4000);
     const mem = briefSection({ product: s.product, role: 'scout', text: s.question });
