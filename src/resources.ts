@@ -46,8 +46,10 @@ export type ResourceSettings = {
   minutes: number;
   /** A GPU server, the build server or the playtester idle and still running this many minutes past its own stop time. */
   pastStopMinutes: number;
+  /** The portal (external.ts): /v1/health failing this many minutes, event-loop p99 over loopP99Ms for loopMinutes, game WebSockets past wsPct of the cap, the last backup older than backupHours. */
+  portalMinutes: number; loopP99Ms: number; loopMinutes: number; wsPct: number; backupHours: number;
 };
-export const RESOURCE_DEFAULTS: ResourceSettings = { alerts: true, memoryPct: 90, diskPct: 90, minutes: 5, pastStopMinutes: 15 };
+export const RESOURCE_DEFAULTS: ResourceSettings = { alerts: true, memoryPct: 90, diskPct: 90, minutes: 5, pastStopMinutes: 15, portalMinutes: 2, loopP99Ms: 200, loopMinutes: 5, wsPct: 80, backupHours: 2 };
 
 export function resourceSettings(): ResourceSettings {
   const r = db.prepare(`SELECT value FROM settings WHERE key = 'resources'`).get() as { value: string } | undefined;
@@ -56,7 +58,7 @@ export function resourceSettings(): ResourceSettings {
 
 export function saveResourceSettings(patch: Record<string, any>, by = 'J'): ResourceSettings {
   const next = resourceSettings();
-  const range = { memoryPct: [50, 99], diskPct: [50, 99], minutes: [1, 120], pastStopMinutes: [0, 240] } as const;
+  const range = { memoryPct: [50, 99], diskPct: [50, 99], minutes: [1, 120], pastStopMinutes: [0, 240], portalMinutes: [1, 60], loopP99Ms: [20, 5000], loopMinutes: [1, 120], wsPct: [10, 100], backupHours: [1, 72] } as const;
   for (const [k, v] of Object.entries(patch ?? {})) {
     if (k === 'alerts') { next.alerts = v === true; continue; }
     if (!(k in range)) throw new Error(`resources.${k}: not a setting (${Object.keys(RESOURCE_DEFAULTS).join(', ')})`);
@@ -502,6 +504,22 @@ async function checkAlerts() {
   return sent;
 }
 
+/** Probe the external targets, then open and close their incidents (phone note once each, and a recovery note). */
+export async function externalTick(o?: import('./external.ts').ProbeOptions, now = Date.now()) {
+  const x = await import('./external.ts');
+  await x.probeExternal(o, now);
+  x.addLoopReading(x.externalState().details.data?.p99ms ?? null, now);
+  const s = resourceSettings();
+  const { opened, closed } = x.reconcile(x.externalIncidents(s, x.externalState(), undefined, now), now);
+  const { isServer } = await import('./repos.ts');
+  if (!s.alerts || !(isServer() || process.env.STUDIO_RESOURCE_ALERTS === 'on')) return { opened, closed, sent: 0 };
+  const { notify, PUBLIC_URL } = await import('./notify.ts');
+  const url = `${PUBLIC_URL}/#resources`;
+  for (const i of opened) await notify(i.title, i.message, { url, tags: ['warning'], priority: 4 });
+  for (const c of closed) await notify(`Recovered: ${c.title}`, `Fine again after ${Math.max(1, Math.round((now - c.since) / 60_000))} minutes.`, { url, tags: ['white_check_mark'], priority: 3 });
+  return { opened, closed, sent: opened.length + closed.length };
+}
+
 /** One tick: read, store, tell connected pages; every 10th (5 min) the alerts, every 120th (an hour) the downsampling. */
 export async function sampleOnce() {
   const h = await readHost();
@@ -510,6 +528,8 @@ export async function sampleOnce() {
   storeSample(rowOf(h));
   const n = ticks++;
   if (n % 120 === 0) downsample();
+  // The outside world, once a minute: the portal, its details and the relay nodes (never blocks the sample).
+  if (n % 2 === 0) void externalTick().catch((e) => console.warn(`[resources] external probe failed: ${e.message ?? e}`));
   const { changed } = await import('./stream.ts');
   changed('resources');
   const { isServer } = await import('./repos.ts');
@@ -534,11 +554,13 @@ export async function resources({ range = '1h' } = {}) {
   const host = latest && Date.now() - latest.at < 2 * SAMPLE_MS ? latest : (latest = await readHost());
   const [w, fl] = await Promise.all([work().catch(() => null), fleet()]);
   const { loopHealth, runningCommands } = await import('./ops.ts');
-  const attention = attentionOf(host, w, fl);
   const s = resourceSettings();
+  const xs = await import('./external.ts');
+  const attention = [...attentionOf(host, w, fl, s), ...xs.externalIncidents(s).map((i) => ({ level: 'bad' as const, text: `${i.title}: ${i.message}` }))]
+    .sort((a, b) => (a.level === b.level ? 0 : a.level === 'bad' ? -1 : 1));
   return {
     at: Date.now(), headline: headline(host, attention, w), attention, host, loop: loopHealth(), commands: runningCommands(),
-    fleet: fl, work: w, settings: s, history: history(range), spark: range === '1h' ? undefined : history('1h', { points: 60 }),
+    fleet: fl, work: w, external: xs.externalState(), settings: s, history: history(range), spark: range === '1h' ? undefined : history('1h', { points: 60 }),
   };
 }
 
@@ -562,6 +584,10 @@ export function resourcesMarkdown(r: Awaited<ReturnType<typeof resources>>) {
       ...(r.work.pm ? [`- PM: ${r.work.pm.enabled ? 'on' : 'paused'}, ${r.work.pm.active} working of ${r.work.pm.maxConcurrent}, ${r.work.pm.started} of ${r.work.pm.maxStartsPerDay} starts today`] : []),
       `- Hawkes Gen jobs: ${r.work.jobs.ok ? `${r.work.jobs.running} running, ${r.work.jobs.queued} queued` : 'unknown (Gen not answering)'}`, '');
   }
+  const x = r.external;
+  if (x) L.push('## Outside', `- Portal ${x.portal.url || '(not probed yet)'}/v1/health: ${x.portal.last ? `${x.portal.last.ok ? 'ok' : 'FAILING'} (${x.portal.last.status ?? x.portal.last.error}), ${x.portal.last.ms} ms` : 'not probed yet'}`,
+    `- Portal details: ${x.details.state === 'ok' && x.details.data ? `loop p99 ${x.details.data.p99ms ?? '?'} ms, sockets ${x.details.data.sockets ?? '?'}/${x.details.data.cap ?? '?'}, last backup ${x.details.data.lastBackup ? new Date(x.details.data.lastBackup).toISOString() : '?'}` : `${x.details.state}${x.details.note ? ` (${x.details.note})` : ''}`}`,
+    ...x.nodes.list.map((n) => `- Relay node ${n.id}: ${n.last.ok ? 'up' : 'DOWN'}, ${n.last.ms} ms${n.players != null ? `, ${n.players}${n.capacity ? `/${n.capacity}` : ''} players` : ''}`), '');
   L.push('## Fleet (Hawkes Gen)');
   if (!r.fleet.ok) L.push(`- ${r.fleet.error}`);
   for (const m of r.fleet.machines) {

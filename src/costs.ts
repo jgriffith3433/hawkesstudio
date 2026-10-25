@@ -537,8 +537,11 @@ export function claudeCosts(p: Period): ClaudeCosts {
 
 export type ProductCosts = {
   id: string; name: string; gpu: number; builder: number; playtester: number; playtesterMinutes: number; claudeApi: number; voice: number; otherGen: number;
-  money: number; agentUsage: number; agentRuns: number; jobs: number; detail: string[];
+  money: number; relayGb: number; relayPlayerMinutes: number; agentUsage: number; agentRuns: number; jobs: number; detail: string[];
 };
+
+/** Hawkes Net's relay in Gen's usage (provider hawkesnet, units `gb:<transport>` and `player-minute:<transport>`), summed over transports. */
+export const relayOf = (rows: Row[], unitPrefix: string) => rows.filter((r) => r.provider === 'hawkesnet' && r.unit.startsWith(unitPrefix)).reduce((n, r) => n + r.amount, 0);
 
 export function perProduct(g: GenUsage, pt: Map<string, { minutes: number; cost: number; runs: number }>, c: ClaudeCosts): ProductCosts[] {
   const names = new Map<string, string>([...loadProducts().map((x) => [x.id, x.name] as [string, string]), ...loadInfra().map((x: any) => [x.id, x.name ?? x.id] as [string, string])]);
@@ -553,12 +556,13 @@ export function perProduct(g: GenUsage, pt: Map<string, { minutes: number; cost:
     const a = c.perProduct[id];
     return {
       id, name: names.get(id) ?? id, gpu: r2(gpu), builder: r2(builder), playtester: r2(playtester), playtesterMinutes: Math.round(t?.minutes ?? 0), claudeApi: r2(claudeApi), voice: r2(voice), otherGen: r2(otherGen),
+      relayGb: r2(relayOf(mine, 'gb:')), relayPlayerMinutes: Math.round(relayOf(mine, 'player-minute:')),
       money: r2(gpu + builder + playtester + claudeApi + voice + otherGen + (a?.billed ?? 0)), agentUsage: r2(a?.usage ?? 0), agentRuns: a?.runs ?? 0,
       jobs: mine.reduce((n, r) => Math.max(n, r.jobs), 0),
       detail: mine.filter((r) => r.amount > 0).map((r) => `${PROVIDER_NAMES[r.provider] ?? r.provider}: ${unitAmount(r.unit, r.amount)}${r.cost ? ` ($${r.cost.toFixed(2)})` : ''}`),
     };
   });
-  return rows.filter((r) => r.money > 0 || r.agentUsage > 0 || r.jobs > 0).sort((a, b) => b.money - a.money || b.agentUsage - a.agentUsage);
+  return rows.filter((r) => r.money > 0 || r.agentUsage > 0 || r.jobs > 0 || r.relayGb > 0 || r.relayPlayerMinutes > 0).sort((a, b) => b.money - a.money || b.agentUsage - a.agentUsage);
 }
 
 // ------------------------------------------------------------- the whole picture
@@ -654,7 +658,7 @@ export function costMarkdown(r: CostReport) {
   if (c.fallback?.calls) L.push(`Studio's reviews and checks through Claude Code while Gen's API key was out of credit: ${c.fallback.calls} call(s)${c.fallback.failed ? ` (${c.fallback.failed} failed)` : ''}, ${c.fallback.billed ? `${$(c.fallback.billed)} billed` : `${$(c.fallback.usage)} of usage, Max plan (not billed)`}.`);
   if (r.products.length) {
     L.push('', '## Per product (money; agents\' Claude usage not billed)');
-    for (const x of r.products) L.push(`- ${x.name}: ${$(x.money)}${[x.gpu && `GPU ${$(x.gpu)}`, x.builder && `builds ${$(x.builder)}`, x.playtester && `playtester ${$(x.playtester)} (${x.playtesterMinutes} min)`, x.claudeApi && `reviews/Claude API ${$(x.claudeApi)}`, x.voice && `ElevenLabs ${$(x.voice)}`].filter(Boolean).map((s) => `, ${s}`).join('')}${x.agentRuns ? `; agents ${x.agentRuns} run(s), ${$(x.agentUsage)} usage` : ''}`);
+    for (const x of r.products) L.push(`- ${x.name}: ${$(x.money)}${[x.gpu && `GPU ${$(x.gpu)}`, x.builder && `builds ${$(x.builder)}`, x.playtester && `playtester ${$(x.playtester)} (${x.playtesterMinutes} min)`, x.claudeApi && `reviews/Claude API ${$(x.claudeApi)}`, x.voice && `ElevenLabs ${$(x.voice)}`, (x.relayGb || x.relayPlayerMinutes) && `relay ${x.relayGb} GB, ${x.relayPlayerMinutes} player-min`].filter(Boolean).map((s) => `, ${s}`).join('')}${x.agentRuns ? `; agents ${x.agentRuns} run(s), ${$(x.agentUsage)} usage` : ''}`);
     L.push(`- Shared (control server, disks, S3, DNS, idle time): AWS ${$(r.shared.awsUnattributed)}`);
   }
   const res = r.resources;
