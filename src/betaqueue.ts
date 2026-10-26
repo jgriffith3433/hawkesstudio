@@ -147,19 +147,21 @@ export function absorbed(run: string): { playtest?: boolean; criteria?: string[]
   return out;
 }
 
-export type Turn = { superseded: string } | { go: true };
+export type Turn = { superseded: string } | { go: true } | { cancelled: string };
 
 /**
  * A beta run's turn at the build server: waits out the quiet time (from the run's start) and any older build of the
  * product, cancelling older beta builds still queued in Gen. Ends early when a newer beta run arrives. onGo marks the
  * run's queue step done (synchronously, in the same tick as the check).
  */
-export async function betaTurn(run: string, product: string, { quiet = BETA_QUIET_MS(), onWait, onGo, gen: g }: { quiet?: number; onWait?: (detail: string) => void; onGo?: () => void; gen?: GenQueue } = {}): Promise<Turn> {
+export async function betaTurn(run: string, product: string, { quiet = BETA_QUIET_MS(), onWait, onGo, gen: g, halt }: { quiet?: number; onWait?: (detail: string) => void; onGo?: () => void; gen?: GenQueue; halt?: () => string | null } = {}): Promise<Turn> {
   const begun = me(run)?.started ?? Date.now();
   let said = '';
   const say = (d: string) => { if (d !== said) { said = d; onWait?.(d); } };
   const tried = new Set<string>();
   for (;;) {
+    const stopped = halt?.();
+    if (stopped) return { cancelled: stopped };
     const newer = newerBetaRun(run, product);
     if (newer) return { superseded: newer };
     // Quiet since this run started and since the last push to the product's beta.

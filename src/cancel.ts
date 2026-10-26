@@ -34,6 +34,11 @@ export function runCounts(run: string) {
   return { failed: c('failed'), cancelled: c('cancelled'), done: c('done') };
 }
 export const runCancelled = (run: string) => Boolean(cancelNote(`run:${run}`));
+/** For a run's waits and Gen jobs: a sentence once the run is cancelled ("run cancelled by Talk (why)"), else null. */
+export const haltOf = (run: string) => (): string | null => {
+  const n = cancelNote(`run:${run}`);
+  return n ? `run cancelled ${cancelWords(n)}` : null;
+};
 
 /** Whether a run's beta build step was cancelled: that beta was not built, so nothing is blamed and the next push builds again. */
 export function buildCancelled(run: string, product?: string): boolean {
@@ -41,7 +46,8 @@ export function buildCancelled(run: string, product?: string): boolean {
 }
 
 /** The note for a step whose Gen job ended cancelled: who did it, if Studio did (else it was cancelled in Gen). */
-export function jobCancelDetail(job: { id?: string; error?: string | null; detail?: string | null }) {
+export function jobCancelDetail(job: { id?: string; error?: string | null; detail?: string | null; halted?: boolean }) {
+  if (job.halted && job.error) return String(job.error);
   const n = job.id ? cancelNote(`job:${job.id}`) : null;
   return `cancelled ${cancelWords(n)}${n ? '' : job.error ? `: ${String(job.error).slice(0, 160)}` : ''}`;
 }
@@ -65,7 +71,16 @@ export async function cancelRun(runId: string, by: string, reason?: string | nul
   const jobs = (db.prepare(`SELECT job FROM steps WHERE run = ? AND status = 'running' AND job IS NOT NULL`).all(runId) as { job: string }[]).map((s) => s.job);
   const out: { job: string; status?: string; error?: string }[] = [];
   for (const j of new Set(jobs)) out.push(await cancelJob(j, by, reason).catch((e: any) => ({ job: j, error: String(e.message ?? e) })));
-  return { run: runId, cancelledJobs: out };
+  const state = runState(runId);
+  return { run: runId, ...state, status: state.runStatus === 'running' ? 'cancelling' : state.runStatus, cancelledJobs: out };
+}
+
+/** A run's real state now: its status, and its steps by status (the cancel route answers with this). */
+export function runState(runId: string) {
+  const run = db.prepare('SELECT status, detail FROM runs WHERE id = ?').get(runId) as { status: string; detail: string | null } | undefined;
+  const steps: Record<string, number> = {};
+  for (const s of db.prepare('SELECT status, COUNT(*) AS n FROM steps WHERE run = ? GROUP BY status').all(runId) as { status: string; n: number }[]) steps[s.status] = s.n;
+  return { runStatus: run?.status ?? null, cancelled: runCancelled(runId), runningSteps: steps.running ?? 0, steps };
 }
 
 /** What a cancelled run reads like in a list: its detail with who and why. */

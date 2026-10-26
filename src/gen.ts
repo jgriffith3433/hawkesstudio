@@ -37,7 +37,7 @@ const TERMINAL = new Set(['done', 'failed', 'cancelled']);
  * Waits for a Gen job. A busy or restarting service is retried for a few minutes (jobs resume after a Gen
  * restart), so one missed poll doesn't fail a long build. Never throws for a failed job: returns it.
  */
-export async function genWait(id: string, onUpdate?: (job: any) => void, timeoutMs = 4 * 60 * 60 * 1000) {
+export async function genWait(id: string, onUpdate?: (job: any) => void, timeoutMs = 4 * 60 * 60 * 1000, halt?: () => string | null) {
   const end = Date.now() + timeoutMs;
   let last = '';
   let misses = 0;
@@ -58,6 +58,12 @@ export async function genWait(id: string, onUpdate?: (job: any) => void, timeout
       onUpdate?.(j);
     }
     if (TERMINAL.has(j.status)) return j;
+    // The run it belongs to was cancelled (cancel.ts haltOf): the job is cancelled at once, whenever it was submitted.
+    const why = halt?.();
+    if (why) {
+      await gen.cancel(id).catch(() => {});
+      return { ...j, status: 'cancelled', error: why, halted: true };
+    }
     if (Date.now() > end) return { ...j, status: 'failed', error: `timed out after ${Math.round(timeoutMs / 60000)} min` };
     await new Promise((r) => setTimeout(r, 2000));
   }
@@ -67,8 +73,11 @@ export async function genWait(id: string, onUpdate?: (job: any) => void, timeout
  * Submits a Gen job (retrying a busy service) and waits for it. job: one submitted before (a Studio restart), waited on
  * instead of submitting again; onSubmit: the new job's id, as soon as Gen gives it (to record it for that).
  */
-export async function genRun(tool: string, project: string, params: Record<string, unknown>, onUpdate?: (job: any) => void, timeoutMs = 4 * 60 * 60 * 1000, { job: reuse, onSubmit }: { job?: string; onSubmit?: (id: string) => void } = {}) {
-  if (reuse) return genWait(reuse, onUpdate, timeoutMs);
+export async function genRun(tool: string, project: string, params: Record<string, unknown>, onUpdate?: (job: any) => void, timeoutMs = 4 * 60 * 60 * 1000, { job: reuse, onSubmit, halt }: { job?: string; onSubmit?: (id: string) => void; halt?: () => string | null } = {}) {
+  if (reuse) return genWait(reuse, onUpdate, timeoutMs, halt);
+  // Cancelled before it was submitted: nothing is submitted.
+  const before = halt?.();
+  if (before) return { id: null, status: 'cancelled', error: before, halted: true } as any;
   let job: any;
   for (let i = 0; ; i++) {
     try {
@@ -81,7 +90,7 @@ export async function genRun(tool: string, project: string, params: Record<strin
     }
   }
   onSubmit?.(job.id);
-  return genWait(job.id, onUpdate, timeoutMs);
+  return genWait(job.id, onUpdate, timeoutMs, halt);
 }
 
 export const fileUrl = (asset: string) => `${GEN_PUBLIC_URL}/v1/files/${asset}`;

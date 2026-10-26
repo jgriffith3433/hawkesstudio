@@ -42,11 +42,12 @@ export function holdBeta(product: string, run: string): () => void {
 export const betaPlayers = (product: string, run: string) => [...(holds.get(product)?.keys() ?? [])].filter((r) => r !== run);
 
 /** Waits until no other run plays the product's beta copy (or the time runs out). Returns the runs it waited for. */
-export async function waitForBetaPlays(product: string, run: string, onWait: (detail: string) => void = () => {}) {
+export async function waitForBetaPlays(product: string, run: string, onWait: (detail: string) => void = () => {}, halt?: () => string | null) {
   const end = Date.now() + BETA_PLAY_WAIT_MS();
   const waited = new Set<string>();
   for (let others = betaPlayers(product, run); others.length; others = betaPlayers(product, run)) {
     others.forEach((r) => waited.add(r));
+    if (halt?.()) break;
     if (Date.now() > end) {
       console.warn(`[beta] ${product}: ${run} builds although ${others.join(', ')} still play the beta copy (waited ${Math.round(BETA_PLAY_WAIT_MS() / 60_000)} min)`);
       break;
