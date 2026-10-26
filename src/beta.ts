@@ -61,13 +61,19 @@ export const listDeploys = (product: string, limit = 20) => db.prepare('SELECT *
 export function git(cwd: string, args: string[], timeoutMs = 10 * 60_000) {
   if (SLOW.has(args[0])) console.warn(`[studio] synchronous git ${args[0]} in ${path.basename(cwd)}: use gitAsync`);
   const t0 = Date.now();
-  const r = spawnSync('git', args, { cwd, encoding: 'utf8', windowsHide: true, timeout: timeoutMs, maxBuffer: 64 * 1024 * 1024 });
+  const r = spawnSync('git', args, { cwd, encoding: 'utf8', windowsHide: true, timeout: timeoutMs, maxBuffer: 64 * 1024 * 1024, env: gitEnv() });
   // A "quick" read that wasn't (git status on a Unity site copy with a big build takes seconds): name it, so it moves to gitAsync.
   const ms = Date.now() - t0;
   if (ms > 300) console.warn(`[studio] synchronous git ${args.slice(0, 3).join(' ')} in ${path.basename(cwd)} held Studio for ${ms} ms: use gitAsync`);
   return { ok: r.status === 0, out: (r.stdout ?? '').trim(), err: (r.stderr ?? r.error?.message ?? '').trim() };
 }
 const SLOW = new Set(['fetch', 'push', 'clone', 'pull']);
+/**
+ * No optional locks: a read (git status, diff) never takes index.lock to refresh the index, so Studio's background
+ * status polls can't make a go-live's `git add -A` on the same checkout fail ("index.lock: File exists", Sick Of It
+ * 2026-10-26: a 38 s add of a Unity build raced the polls twice).
+ */
+const gitEnv = () => ({ ...process.env, GIT_TERMINAL_PROMPT: '0', GIT_OPTIONAL_LOCKS: '0' });
 
 /**
  * git without blocking Studio: listed while it runs (ops.ts commands), logged to the operation it runs in, timed out.
@@ -77,9 +83,41 @@ const SLOW = new Set(['fetch', 'push', 'clone', 'pull']);
 export async function gitAsync(cwd: string, args: string[], timeoutMs = 10 * 60_000): Promise<{ ok: boolean; out: string; err: string }> {
   if (args[0] === 'fetch') return fetchLocked(cwd, args, (a) => runGit(cwd, a, timeoutMs), opLog);
   if (args[0] === 'push') return withRepoLock(repoKey(cwd), () => runGit(cwd, args, timeoutMs));
-  return runGit(cwd, args, timeoutMs);
+  return lockRetry(cwd, args, () => runGit(cwd, args, timeoutMs));
 }
 export { REF_LOCK, fetchBackoff, repoKey, withRepoLock };
+
+/**
+ * A write that meets another git's index.lock (a git outside Studio, or one still finishing) waits and tries again,
+ * about a minute in all. A lock nobody has touched for 10 minutes is left by a git that died: it is removed, logged.
+ */
+export const INDEX_LOCKED = /index\.lock'?:? File exists|Another git process seems to be running/i;
+async function lockRetry(cwd: string, args: string[], run: () => Promise<{ ok: boolean; out: string; err: string }>) {
+  let r = await run();
+  for (let i = 0; !r.ok && INDEX_LOCKED.test(r.err) && i < 8; i++) {
+    const lock = indexLockOf(cwd);
+    const age = lock ? Date.now() - (fs.statSync(lock, { throwIfNoEntry: false })?.mtimeMs ?? Date.now()) : 0;
+    if (lock && age > 10 * 60_000) {
+      opLog(`removing a stale ${path.basename(lock)} (${Math.round(age / 60_000)} min old) in ${path.basename(cwd)}`);
+      try { fs.rmSync(lock, { force: true }); } catch { /* the retry says what's wrong */ }
+    } else {
+      opLog(`git ${args[0]} in ${path.basename(cwd)}: index.lock held by another git, trying again`);
+      await new Promise((ok) => setTimeout(ok, 2_000 + i * 1_500));
+    }
+    r = await run();
+  }
+  return r;
+}
+/** The index.lock of a checkout or worktree (a worktree's lives in its git dir). */
+function indexLockOf(cwd: string): string | null {
+  const dotgit = path.join(cwd, '.git');
+  try {
+    const st = fs.statSync(dotgit);
+    if (st.isDirectory()) return path.join(dotgit, 'index.lock');
+    const m = /gitdir:\s*(.+)/.exec(fs.readFileSync(dotgit, 'utf8'));
+    return m ? path.join(path.resolve(cwd, m[1].trim()), 'index.lock') : null;
+  } catch { return null; }
+}
 
 function runGit(cwd: string, args: string[], timeoutMs: number): Promise<{ ok: boolean; out: string; err: string }> {
   const label = `git ${args.filter((a) => !a.startsWith('-c')).join(' ')}`.slice(0, 200);
@@ -96,7 +134,7 @@ function runGit(cwd: string, args: string[], timeoutMs: number): Promise<{ ok: b
       done();
       resolve({ ok: r.ok, out: r.out.trim(), err: r.err.trim() });
     };
-    const child = spawn('git', args, { cwd, windowsHide: true, env: { ...process.env, GIT_TERMINAL_PROMPT: '0' } });
+    const child = spawn('git', args, { cwd, windowsHide: true, env: gitEnv() });
     child.stdout.on('data', (d) => { out += d; if (out.length > 64 * 1024 * 1024) out = out.slice(-32 * 1024 * 1024); });
     child.stderr.on('data', (d) => { err += d; if (err.length > 1_000_000) err = err.slice(-500_000); });
     child.on('error', (e) => finish({ ok: false, out, err: e.message }));
