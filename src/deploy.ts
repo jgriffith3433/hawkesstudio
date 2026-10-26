@@ -200,12 +200,12 @@ export async function deployPlan(productId: string, { notesWaitMs = 20_000 }: { 
 
 /**
  * Who publishes a product's main: GitHub Pages (the default), or the product's own server (products.json deploy.via
- * "ec2": its CI runs, then its box pulls the passing commit; Studio only moves main and plays the live site).
+ * "ec2": its box pulls it; Studio only moves main and plays the live site).
  */
 export function publisherOf(p: Product) {
   if (p.deploy?.via !== 'ec2') return { box: false as const, says: 'GitHub Pages publishes', done: 'GitHub Pages publishes within a few minutes' };
   const box = p.deploy.box ?? 'its own server';
-  return { box: true as const, says: `its CI runs and then ${box} pulls the passing commit and restarts it`, done: `The product's CI runs, then ${box} pulls the passing commit (a couple of minutes after CI is green)` };
+  return { box: true as const, says: `${box} pulls it and restarts (health check, rollback if unhealthy)`, done: `${box} pulls it within a couple of minutes (no tests there; it rolls back if unhealthy)` };
 }
 
 /** Going live (pushing main, recording it) is a critical section (drain.ts): a Studio deploy waits for it. */

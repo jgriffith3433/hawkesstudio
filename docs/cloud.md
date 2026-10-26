@@ -67,7 +67,7 @@ projects `["usr_*"]`) and sends `X-Hawkesgen-Project: usr_<id>` with every call 
 the key to that customer inside Gen (hawkesgen `src/auth.ts`). Customer jobs show up in Gen's queue and usage under
 their `usr_` projects.
 
-- **Deploys:** push the portal's `main`; its CI runs and the box pulls a passing commit itself every 2 minutes (no
+- **Deploys:** push the portal's `main`; the box pulls it itself within 2 minutes (no tests on the box since 2026-10-26; health check and rollback; no
   dependency on this server). Setup or repair from J's PC: `node deploy/setup.mjs --host 54.163.56.66 --key
   C:/Projects/hawkesstudio/deploy/.keys/gen_public_ed25519` in the portal repo (see its AGENTS.md).
 - **Secrets:** the box's `/srv/hawkes/hawkesgenwebsite/.env` (the Gen key and the Stripe keys), owner `hawkes`, 0600.
@@ -89,8 +89,8 @@ their `usr_` projects.
   `/dl/`), which a game's sandboxed frame loads without cookies. Studio's own session cookie never reaches the app.
   Playtests: `site` crawls of beta (local) and of live (read-only; never sign-up or checkout on live).
   **Going live is still J's typed `DEPLOY hawkesgenwebsite`**: it
-  fast-forwards main to the beta commit, then the portal's own CI runs and its box pulls the passing commit; Studio waits
-  for CI plus the box's pull and plays the live site. A rollback is a new revert commit through the same path and
+  fast-forwards main to the beta commit, then the portal's box pulls it (no tests there, J 2026-10-26); Studio waits
+  for the box's pull and plays the live site. A rollback is a new revert commit through the same path and
   does not undo the database. Studio does not SSH to the box or touch its secrets. The portal repo has the
   `.github/workflows/hawkes-studio.yml` hook, and Route 53 has the `hawkesgenwebsite.` record (2026-10-23); the Caddy
   block comes from `deploy/caddyfile.mjs` and is applied by the pull-deploy. If the server has no checkout of the repo yet,

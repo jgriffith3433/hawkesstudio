@@ -162,7 +162,7 @@ export async function onMainPush(folder: string, sha: string) {
     await fetchOrigin(site);
     const id = newId('d');
     db.prepare('INSERT INTO deploys (id, product, kind, repo, before, after, beta, source, source_before, source_after, version, by, detail, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
-      .run(id, p.id, 'deploy', p.site, before === sha ? null : before, sha, null, null, null, null, null, 'a push to main', own ? 'pushed to main; its CI runs and its own server pulls it' : 'pushed to main; GitHub Pages publishes it', Date.now());
+      .run(id, p.id, 'deploy', p.site, before === sha ? null : before, sha, null, null, null, null, null, 'a push to main', own ? 'pushed to main; its own server pulls it' : 'pushed to main; GitHub Pages publishes it', Date.now());
     void verifyLive(p.id, sha, `Just went live (pushed to main, ${sha.slice(0, 7)})`);
     out[p.id] = { deploy: id, pages, note: own ? `${publisherOf(p).done}; Studio playtests the live site when it is out` : 'GitHub Pages publishes it; Studio playtests the live site when it is out' };
   }

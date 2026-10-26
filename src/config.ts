@@ -86,7 +86,7 @@ export type Product = {
   checks?: { dir: string; cmd: string }[];
   /**
    * prebuild: a command run on beta before a go live. via "ec2": main isn't published by GitHub Pages but by the product's
-   * own server (the portal, hawkesgenwebsite): its CI runs and its box pulls a passing main; box says which one.
+   * own server (the portal, hawkesgenwebsite): its box pulls main; box says which one.
    */
   deploy?: { prebuild?: string; via?: 'ec2'; box?: string };
   /**
