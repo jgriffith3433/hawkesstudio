@@ -9,6 +9,7 @@ import type http from 'node:http';
 import { db, parse } from './db.ts';
 import { GEN_PUBLIC_URL, getProduct, getInfra, isInfra } from './config.ts';
 import { PUBLIC_URL } from './notify.ts';
+import { cancelNote, cancelWords } from './cancel.ts';
 
 try { db.exec('ALTER TABLE runs ADD COLUMN origin TEXT'); } catch { /* already there */ }
 try { db.exec('ALTER TABLE runs ADD COLUMN told TEXT'); } catch { /* already there */ }
@@ -49,9 +50,10 @@ const cut = (s: unknown, n: number) => { const t = String(s ?? '').trim(); retur
 /** The notice for a finished agent change. */
 export function changeNotice(c: any) {
   const v = parse(c.verify) ?? {};
-  const head = `Agent change ${c.id} for ${name(c.product)} ${c.status === 'ready' ? 'is ready for J' : 'failed'}: "${c.title}".`;
+  const head = `Agent change ${c.id} for ${name(c.product)} ${c.status === 'ready' ? 'is ready for J' : c.status === 'cancelled' ? 'was cancelled (not a failure)' : 'failed'}: "${c.title}".`;
   const lines = [head];
   if (c.status === 'failed') lines.push(`Why: ${cut(c.detail, 400)}`);
+  if (c.status === 'cancelled') lines.push(`Cancelled ${cancelWords(cancelNote(`change:${c.id}`))}. Its branch and worktree are kept; it is not a failed try and the PM will not restart it. Resume it or close it (studio_cancel { kind: "change", id: "${c.id}", resume: true }, or the Activity panel).`);
   if (c.status === 'ready' && v.kind === 'infra') lines.push(`Checks: ${v.outcome} (${cut(v.summary, 400)})`);
   else if (c.status === 'ready') {
     // Playtests of a change run only on request (agents.ts playtestChange): without one, it's ready on the agent's checks.
@@ -106,6 +108,8 @@ export function runNotice(r: any) {
   // A beta run a newer one took over (betaqueue.ts) ended fine: nothing failed, and the newer run's result follows.
   if (r.status === 'skipped' && opts.supersededBy) return `${what} ${r.id} (${products.map(name).join(', ')}) was ${cut(r.detail, 200)}. Nothing failed: a newer beta run took over and builds beta's newest commit, which includes this one; its result follows.`;
   const lines = [`${what} ${r.id} (${products.map(name).join(', ')}) ${r.status === 'done' ? 'finished' : r.status}: ${cut(r.detail, 200)}${r.cost ? ` · $${Number(r.cost).toFixed(2)}` : ''}.`];
+  // Cancelled is not failed (cancel.ts): say so, so nobody goes looking for what broke.
+  if (r.status === 'cancelled' || r.status === 'partial') lines.push(`Nothing failed: ${r.status === 'cancelled' ? 'it was cancelled' : 'part of it was cancelled'} ${cancelWords(cancelNote(`run:${r.id}`))}. A cancelled build means beta is not built yet (the next beta run builds it); a cancelled playtest judged nothing.`);
   if (opts.focus) lines.push(`Why it ran: ${cut(opts.focus, 300)}`);
   for (const s of steps) {
     if (!STEP_KINDS.has(s.kind) && s.status !== 'failed') continue;
@@ -125,7 +129,7 @@ export async function checkFollowups() {
   // A change that went back to work (a revision) reports again when it's done.
   db.prepare(`UPDATE changes SET told = NULL WHERE told IS NOT NULL AND status IN ('queued', 'working', 'verifying', 'revising')`).run();
   const day = Date.now() - 86_400_000;
-  for (const c of db.prepare(`SELECT * FROM changes WHERE origin IS NOT NULL AND task IS NULL AND ${notPm} AND status IN ('ready', 'failed') AND told IS NULL AND COALESCE(auto_merge, '') != 'trying' AND COALESCE(updated, created) > ?`).all(day) as any[]) {
+  for (const c of db.prepare(`SELECT * FROM changes WHERE origin IS NOT NULL AND task IS NULL AND ${notPm} AND status IN ('ready', 'failed', 'cancelled') AND told IS NULL AND COALESCE(auto_merge, '') != 'trying' AND COALESCE(updated, created) > ?`).all(day) as any[]) {
     db.prepare('UPDATE changes SET told = ? WHERE id = ?').run(c.status, c.id);
     studioSays(c.origin, changeNotice(c));
   }

@@ -784,6 +784,21 @@ all). Numbers are said with their sample sizes.
    on his screen (`studio_approval` kind deploy); his tap goes live (see below). Typing `DEPLOY sickofit` still works.
 6. Studio waits for GitHub Pages and playtests the live site.
 
+## Cancelling
+
+J, 2026-10-26: "make the system aware of what cancelled is and make it so I can cancel playtests, builds and even agents all in the activity panel." Talk had cancelled a queued Unity build in Gen; Studio recorded the beta build as *failed*, and the PM sent a task back to an agent on Opus to "fix the compile errors" that did not exist.
+
+**Cancelled is its own outcome, never a failure** (`src/cancel.ts`):
+- A Gen job that ends `cancelled` (a playtest, a Unity build, a review, any GPU job) makes its step `cancelled`. A run with cancelled steps ends `cancelled`, or `partial` when other steps finished; a real failure still wins (`failed`).
+- A cancelled beta build means beta is **not built**: nothing is saved as a build, the run ends, and the next push builds again. The PM never sends a task back for it (`brokenCheck`, `followBuilds`, `buildSendBack`), and a task keeps its place until the next beta run.
+- A cancelled playtest or review files no findings, judges no criteria and is never "criteria missed". A cancelled change verification is "not played" (the change is ready on the agent's checks).
+- Who cancelled, and why, is kept (`cancellations`: J, Talk, or the PM) and shown in the run's, step's or change's detail, the Activity card and the PM log (`cancelled`).
+- Anything an older Gen-side cancel left as "failed: cancelled ..." is read as cancelled by the PM's next pass (`repairCancelled`), and an agent sent back for such a build is cancelled by the PM.
+
+**Where to cancel:** the Activity drawer (admins only; each asks for a short confirm and an optional reason): a playtest or build step's **Cancel playtest / Cancel build** (its Gen job), **Cancel run** (pending steps stop, its Gen jobs are cancelled), **Cancel** on an agent, and **Cancel** on any Gen job. Talk uses `studio_cancel { kind: run | job | change, id, reason }` (recorded as Talk; `resume: true` for a change). Routes: `POST /api/runs/<id>/cancel`, `/api/jobs/<id>/cancel`, `/api/changes/<id>/cancel` and `/resume`. The agent sandbox may call them only with a Talk conversation behind the call (`guards.ts`), never an agent on its own.
+
+**A cancelled agent change** stops the agent's unit and keeps its branch and worktree. It is status `cancelled`: not a failed try (attempts count failed and closed changes), not a harness stop, not shown to the next agent as failed, and the PM never starts it again. Its task reads "paused". The *Cancelled agents* section of Activity (and the Changes tab) has **Resume** (the agent carries on in its worktree, on its session when it can) and **Close** (removes the branch and worktree; the task is then retried or asked of J as for any closed change).
+
 ## Beta and going live
 
 ```

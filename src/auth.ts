@@ -359,7 +359,7 @@ export function memberRefusal(req: http.IncomingMessage, route: string, method: 
   const u = sessionUser(cookieToken(req));
   if (!u || u.role === 'admin') return null;
   const adminOnly = [
-    /^\/api\/deploy\//, /^\/api\/rollback\//, /^\/api\/changes\/c_[0-9a-f]+\/approve$/, /^\/api\/approvals\/a_[0-9a-f]+\/(approve|deny)$/,
+    /^\/api\/(runs|jobs|changes)\/[\w-]+\/(cancel|resume)$/, /^\/api\/deploy\//, /^\/api\/rollback\//, /^\/api\/changes\/c_[0-9a-f]+\/approve$/, /^\/api\/approvals\/a_[0-9a-f]+\/(approve|deny)$/,
     /^\/api\/agents\/settings$/, /^\/api\/pm\/settings$/, /^\/api\/settings$/, /^\/api\/costs\/settings$/, /^\/api\/notify$/,
     /^\/api\/content\/wire$/, /^\/api\/inbox\/answer$/, /^\/api\/roadmap\/.*gpu/, /^\/api\/users/, /^\/api\/invites/, /^\/api\/memory\/seed$/, /^\/api\/broadcast\/live$/, /^\/api\/social\/(config|disconnect)/, /^\/api\/services\/restart$/,
     // Through the library tab's Gen relay: making and revising takes, and any job, cost money.

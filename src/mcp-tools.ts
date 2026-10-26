@@ -127,6 +127,17 @@ export function studioMcp({ studio, waitRun }: Client = { studio: defaultStudio,
       },
     },
     {
+      name: 'studio_cancel',
+      description: 'Cancel or resume work, on J\'s word: a whole run (kind run, r_...), one Gen job (kind job: a playtest, a Unity build, GPU work, queued or running), or an agent change (kind change, c_...: its agent is stopped, the branch and worktree kept, status cancelled; not a failed try; the PM does not restart it; resume it or close it later). Cancelled is its own outcome, never a failure: a cancelled build or playtest blames nothing and the next beta run builds or plays again. It is recorded as Talk, with your reason. resume: carry on a cancelled change.',
+      inputSchema: obj({ kind: str('run, job or change'), id: str('r_..., a Gen job id, or c_...'), reason: str('Why (short): shown in the run, step or change and in the PM log'), resume: bool('Resume a cancelled change instead of cancelling') }, ['kind', 'id']),
+      run: async ({ kind, id, reason, resume }) => {
+        const k = ({ run: 'runs', job: 'jobs', change: 'changes' } as Record<string, string>)[String(kind)];
+        if (!k) throw new Error('kind is run, job or change');
+        if (resume && k !== 'changes') throw new Error('Only an agent change can be resumed');
+        return studio(`/api/${k}/${encodeURIComponent(String(id))}/${resume ? 'resume' : 'cancel'}`, { method: 'POST', body: { reason } });
+      },
+    },
+    {
       name: 'studio_assets',
       description: 'The generated-asset manifest of a product (hawkes.assets.json): the status of each asset (current, missing, changed recipe, edited by hand, file missing) and its files.',
       inputSchema: obj({ product: str('Product id') }, ['product']),
