@@ -16,7 +16,7 @@ import { db, newId, J, rowToStep, parse, type Step } from './db.ts';
 import { resumeGapMs } from './ops.ts';
 import { loadProducts, getProduct, localUrl, today, PROJECTS, betaPlaytestsOn, type Product, type Playtest } from './config.ts';
 import { unityBuild } from './buildpkgs.ts';
-import { endStatus, runCounts, runCancelled, jobCancelDetail, runCancelDetail } from './cancel.ts';
+import { endStatus, runCounts, runCancelled, haltOf, jobCancelDetail, runCancelDetail } from './cancel.ts';
 import { gen, genRun, genUp, ensureGen } from './gen.ts';
 import { ensureServer, gitState, treeFingerprint, runCheck, serveDir, stopServed } from './local.ts';
 import { absorb, applyKnown, expireIdeas, notSeenIn, type ReviewMode } from './backlog.ts';
@@ -202,7 +202,7 @@ async function runAll(run: string, ids: string[], o: RunOptions) {
   const report = writeReport(run);
   db.prepare(`UPDATE runs SET detail = ?, report = ? WHERE id = ?`).run(report.headline, J({ file: report.file, date: report.date }), run);
   // On the server, agents start on the worst new findings (within the day's budget); J approves the results.
-  if (isServer()) {
+  if (isServer() && !runCancelled(run)) {
     const { autoFix } = await import('./agents.ts');
     const started = autoFix(run);
     if (started.length) db.prepare(`UPDATE runs SET detail = ? WHERE id = ?`).run(`${report.headline} · agents started ${started.length} fixes`, run);
@@ -277,6 +277,7 @@ export async function runProduct(run: string, p: Product, o: RunOptions) {
   // Checks (tests, typecheck).
   if (!o.noChecks) {
     for (const c of p.checks ?? []) {
+      if (runCancelled(run)) return;
       const s = startStep(run, p.id, 'check', c.cmd, c.dir);
       if (finishedBefore(s)) continue;
       const r = await runCheck(c.dir, c.cmd);
@@ -300,12 +301,13 @@ export async function runProduct(run: string, p: Product, o: RunOptions) {
 
   // Beta's pre-deploy build (PH Origins' play/, I Can Be's version), committed to beta so what's played is what ships.
   const wantsLocal = o.where !== 'live';
+  if (runCancelled(run)) return;
   if (betaLane() && wantsLocal && p.deploy?.prebuild) await prebuildBeta(run, p);
 
   // Build (Unity), only when the source changed since the last good build.
-  if (p.build && !o.noBuild && wantsLocal) {
+  if (p.build && !o.noBuild && wantsLocal && !runCancelled(run)) {
     const built = await buildProduct(run, p, { force: o.forceBuild });
-    if (built?.status === 'done') for (const platform of p.build.tests ?? []) await testProduct(run, p, platform);
+    if (built?.status === 'done') for (const platform of p.build.tests ?? []) { if (runCancelled(run)) break; await testProduct(run, p, platform); }
   }
 
   // Playtests.
@@ -315,6 +317,7 @@ export async function runProduct(run: string, p: Product, o: RunOptions) {
   const release = p.build && betaLane() && tests.some((t) => t.where === 'local') ? holdBeta(p.id, run) : null;
   try {
     for (const t of tests) {
+      if (runCancelled(run)) break; // a cancelled run starts nothing more (cancel.ts)
       // The daily review is full; live desktop runs check for regressions only (beta's full review sees the same code first).
       const res = await playtestProduct(run, p, t, { review: !o.noReview, focus: o.focus, mode: t.where === 'live' && t.device !== 'phone' ? 'regression' : 'full' });
       if (res) ran.push(nameOf(t));
@@ -371,6 +374,7 @@ export const nameOf = (t: Playtest) => `${t.scenario ?? t.mode ?? 'auto'}@${t.wh
 
 /** Runs a product's pre-deploy build on beta and commits it there (beta.ts prepareBeta), then syncs the checkout. */
 async function prebuildBeta(run: string, p: Product) {
+  if (runCancelled(run)) return;
   const s = startStep(run, p.id, 'beta', 'prebuild', p.deploy?.prebuild ?? '');
   if (finishedBefore(s)) return;
   try {
@@ -396,6 +400,11 @@ export async function buildProduct(run: string, p: Product, { force = false, bet
     const was = resumedStep(s)!;
     if (was.status !== 'running') return was.status === 'done' ? { id: was.job, status: 'done', result: was.data } : was.status === 'skipped' ? null : { id: was.job, status: was.status === 'cancelled' ? 'cancelled' : 'failed' };
     if (was.job) return finishBuild(run, p, s, { fp: was.data?.fingerprint ?? treeFingerprint(p.build.project), head: was.data?.beta ?? '', base: was.data?.base ?? '', siteDir: was.data?.siteDir, placeholder: was.data?.placeholder, job: was.job, beta });
+  }
+  if (runCancelled(run)) {
+    const c = startStep(run, p.id, 'build', 'unity');
+    updateStep(c, { status: 'cancelled', detail: runCancelDetail(run, 'cancelled before it started'), data: { cancelled: true }, finished: true });
+    return { id: null, status: 'cancelled' };
   }
   const fp = treeFingerprint(p.build.project);
   const last = lastStep(p.id, 'build', 'unity');
@@ -433,7 +442,11 @@ export async function buildProduct(run: string, p: Product, { force = false, bet
   let pin: ReturnType<typeof pinBetaVersion> | undefined;
   if (lane) {
     // Resetting the copy takes the current beta build away: runs still playing it finish first (betaplay.ts).
-    const waited = await waitForBetaPlays(p.id, run, (d) => updateStep(s, { detail: d }));
+    const waited = await waitForBetaPlays(p.id, run, (d) => updateStep(s, { detail: d }), haltOf(run));
+    if (runCancelled(run)) {
+      updateStep(s, { status: 'cancelled', detail: runCancelDetail(run, 'cancelled before it started; not built'), data: { fingerprint: null, cancelled: true }, finished: true });
+      return { id: null, status: 'cancelled' };
+    }
     if (waited.length) {
       updateStep(s, { detail: 'queued on the build server' });
       const later = beta ? newerBetaRun(run, p.id) : null;
@@ -459,7 +472,7 @@ export async function buildProduct(run: string, p: Product, { force = false, bet
 async function finishBuild(run: string, p: Product, s: string, { fp, head, base, siteDir, env, placeholder, job: prior, beta = false }: { fp: string; head: string; base: string; siteDir?: string; env?: Record<string, string>; placeholder?: boolean; job?: string; beta?: boolean }) {
   const lane = betaLane();
   const job = await unityBuild(p.id, { project: p.build!.project, site: p.build!.site, method: p.build!.method, ...(siteDir ? { siteDir } : {}), ...(env ? { env } : {}) }, (j) => updateStep(s, { job: j.id, detail: j.detail }),
-    { job: prior, onSubmit: (id) => updateStep(s, { job: id }), log: (m) => updateStep(s, { detail: m }) });
+    { job: prior, onSubmit: (id) => updateStep(s, { job: id }), log: (m) => updateStep(s, { detail: m }), halt: haltOf(run) });
   // Cancelled while queued by a newer beta run (betaqueue.ts): not a failed build. The last good beta build stays the
   // beta build (nothing saved), and the run ends superseded (betaBody).
   if (beta && job.status === 'cancelled') {
@@ -493,11 +506,12 @@ async function finishBuild(run: string, p: Product, s: string, { fp, head, base,
 /** Runs a Unity product's tests on the build server (so J's editor can stay open). */
 export async function testProduct(run: string, p: Product, platform: 'EditMode' | 'PlayMode', category?: string) {
   if (!p.build) throw new Error(`${p.name} isn't a Unity product`);
+  if (runCancelled(run)) return { id: null, status: 'cancelled' };
   const s = startStep(run, p.id, 'check', `unity ${platform}${category ? ` ${category}` : ''}`, 'queued on the build server');
   const was = resumedStep(s);
   if (was && was.status !== 'running') return { id: was.job, status: was.status === 'done' ? 'done' : 'failed', result: was.data };
   const job = await genRun('unity.test', p.id, { project: p.build.project, platform, ...(category ? { category } : {}) }, (j) => updateStep(s, { job: j.id, detail: j.detail }), undefined,
-    { job: was?.job ?? undefined, onSubmit: (id) => updateStep(s, { job: id }) });
+    { job: was?.job ?? undefined, onSubmit: (id) => updateStep(s, { job: id }), halt: haltOf(run) });
   if (job.status === 'cancelled') {
     updateStep(s, { status: 'cancelled', job: job.id, detail: jobCancelDetail(job), finished: true });
     return job;
@@ -627,7 +641,7 @@ async function playScenario(run: string, p: Product, asked: Playtest, { review =
     // Timed out (and cancelled) if it hangs, so one stuck browser never holds up the run: the run time counts from the
     // step's first start (kept on the step, so a restart never extends it), and 10 minutes without progress is stuck.
     job = await runGenJob('playtest.run', p.id, params, (j) => updateStep(s, { job: j.id, detail: j.detail }), {
-      runMs: playtestRunMs(t), job: prior?.id, since, idleMs: PLAYTEST_IDLE_MS(), abandon, priority,
+      runMs: playtestRunMs(t), job: prior?.id, since, idleMs: PLAYTEST_IDLE_MS(), abandon, priority, halt: haltOf(run),
       onStart: (at) => db.prepare(`UPDATE steps SET data = json_set(COALESCE(data, '{}'), '$.runningSince', ?) WHERE id = ?`).run(at, s),
     }).finally(() => { if (port) stopServed(port); });
     // A newer beta build waits on this old one (betaqueue.ts supersedingBuild): cancelled, not failed.
@@ -791,7 +805,7 @@ async function reviewPlaytest(run: string, p: Product, t: Playtest, job: any, pl
     ...(previous ? { previous: { summary: previous.summary, verdict: previous.verdict, scores: previous.scores, findings: (previous.findings ?? []).map((f: any) => ({ severity: f.severity, title: f.title })) } } : {}),
   });
   // Gen's review, or the same review through Claude Code on the Max plan while Gen's Claude is out of credit (review-cc.ts).
-  const rev = await reviewJob(p.id, revParams, () => runGenJob('playtest.review', p.id, revParams, (j) => updateStep(rs, { job: j.id, detail: j.detail }), { runMs: REVIEW_RUN_MS, job: wasReview?.job ?? undefined }));
+  const rev = await reviewJob(p.id, revParams, () => runGenJob('playtest.review', p.id, revParams, (j) => updateStep(rs, { job: j.id, detail: j.detail }), { runMs: REVIEW_RUN_MS, job: wasReview?.job ?? undefined, halt: haltOf(run) }));
   const pending: PendingReview = { job: job.id, params: revParams, criteria: criteria?.length ? criteria : null, mode: reviewMode, reviewKey: sameKey, sha: fullSha, barMet: Boolean(bar?.met), barWhy: bar?.why ?? null, at: Date.now(), tries: 0 };
   if (rev.status !== 'done') {
     if (rev.status === 'cancelled') {
@@ -1022,10 +1036,15 @@ async function betaBody(id: string, p: Product, { focus, criteria, scenario, opt
       const head = () => shaOf(repoDirs(p).source, 'HEAD');
       if (!was || was.status === 'running') {
         const turn = await betaTurn(id, p.id, {
+          halt: haltOf(id),
           ...(quiet !== undefined ? { quiet } : {}),
           onWait: (detail) => updateStep(q, { detail }),
           onGo: () => updateStep(q, { status: 'done', detail: 'its turn at the build server', finished: true }),
         });
+        if ('cancelled' in turn) {
+          updateStep(q, { status: 'cancelled', detail: turn.cancelled, finished: true });
+          return void closeRun(id, `beta ${p.id}`);
+        }
         if ('superseded' in turn) return void supersede(id, p.id, turn.superseded, head());
       }
       const built = await buildProduct(id, p, { beta: true });
@@ -1077,7 +1096,7 @@ async function betaBody(id: string, p: Product, { focus, criteria, scenario, opt
           const pt: Playtest | undefined = x.scenario ? { scenario: x.scenario, where: 'local', ...(x.options ? { options: x.options } : {}) } : p.playtests.find((y) => y.where === 'local' && y.device !== 'phone');
           // What this run was asked for goes ahead of what it carried over in Gen's queue (playplan.ts).
           if (pt) await playtestProduct(id, p, pt, { focus, mode: 'verify', criteria: x.criteria, abandon: newerBuild, slot, ...((x as Ask).carried ? { priority: -1 } : {}) });
-        }, newerBuild);
+        }, () => newerBuild() || runCancelled(id));
         if (by) return void supersede(id, p.id, by, shaOf(repoDirs(p).source, 'HEAD'));
       } finally {
         release?.();
@@ -1137,6 +1156,7 @@ async function assetsBody(id: string, p: Product, todo: { id: string; status: st
     // Resumed: a made asset is kept; one being made waits for its Gen job again (not made twice: GPU money).
     const was = resumedStep(s);
     if (was && was.status !== 'running') return;
+    if (runCancelled(id)) return void updateStep(s, { status: 'cancelled', detail: runCancelDetail(id, 'cancelled before it started'), finished: true });
     try {
       const r: any = await makeAsset(p.id, a.id, { force: force || Boolean(only?.length), job: was?.job ?? undefined, onUpdate: (detail, job) => updateStep(s, { detail, job }) });
       updateStep(s, { status: r.skipped ? 'skipped' : 'done', detail: r.skipped ? `skipped: ${r.skipped}` : `made ${r.files.join(', ')}${r.picked ? ` (picked: ${r.picked.reason})` : ''}`, data: r, cost: r.cost ?? 0, finished: true });
@@ -1158,6 +1178,12 @@ export function resumeRuns() {
   for (const r of db.prepare(`SELECT * FROM runs WHERE status = 'running' ORDER BY started`).all() as any[]) {
     const options = parse(r.options) ?? {};
     const products: string[] = parse(r.products) ?? [];
+    // Cancelled before the restart: it ends cancelled and starts nothing (cancel.ts).
+    if (runCancelled(r.id)) {
+      db.prepare(`UPDATE steps SET status = 'cancelled', detail = ?, finished = ? WHERE status = 'running' AND run = ?`).run(runCancelDetail(r.id, 'cancelled before Studio restarted'), Date.now(), r.id);
+      closeRun(r.id, `${r.kind} ${products[0] ?? ''}`.trim());
+      continue;
+    }
     const steps = (db.prepare('SELECT * FROM steps WHERE run = ? ORDER BY started').all(r.id) as any[]).map(rowToStep);
     let body: (() => Promise<unknown>) | null = null;
     try {

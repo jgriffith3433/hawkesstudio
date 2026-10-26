@@ -40,9 +40,12 @@ type GenApi = { submit(tool: string, body: any): Promise<any>; job(id: string): 
  * abandon: checked while it waits; a reason cancels the job and returns it cancelled with `abandoned` (a newer beta
  * build waits on it). Never throws for a failed job.
  */
-export async function runGenJob(tool: string, project: string, params: Record<string, unknown>, onUpdate: (job: any) => void, { runMs, queueMs = 6 * 3600_000, job: reuse, since, onStart, idleMs, abandon, api = gen, pollMs = 2000, priority }: { runMs: number; queueMs?: number; priority?: number; job?: string; since?: number; onStart?: (at: number) => void; idleMs?: number; abandon?: () => string | null; api?: GenApi; pollMs?: number }) {
+export async function runGenJob(tool: string, project: string, params: Record<string, unknown>, onUpdate: (job: any) => void, { runMs, queueMs = 6 * 3600_000, job: reuse, since, onStart, idleMs, abandon, halt, api = gen, pollMs = 2000, priority }: { runMs: number; queueMs?: number; priority?: number; job?: string; since?: number; onStart?: (at: number) => void; idleMs?: number; abandon?: () => string | null; halt?: () => string | null; api?: GenApi; pollMs?: number }) {
   // A job submitted before a Studio restart (pipeline.ts resumes runs): waited on again, not submitted again.
   let job: any = reuse ? { id: reuse } : null;
+  // halt: the run was cancelled (cancel.ts haltOf). Before the submit nothing is submitted; after it the job is cancelled at once.
+  const stopped = () => ({ status: 'cancelled', error: halt?.() ?? 'run cancelled', halted: true });
+  if (!job && halt?.()) return { id: null, ...stopped() };
   for (let i = 0; !job; i++) {
     try {
       job = await api.submit(tool, { project, params, ...(priority ? { priority } : {}) });
@@ -52,6 +55,11 @@ export async function runGenJob(tool: string, project: string, params: Record<st
       if (i === 3) await ensureGen();
       await new Promise((r) => setTimeout(r, 3000));
     }
+  }
+  if (!reuse && halt?.()) {
+    onUpdate({ ...job, detail: 'cancelled' });
+    await api.cancel(job.id).catch(() => {});
+    return { ...job, ...stopped() };
   }
   onUpdate({ ...job, detail: job.detail ?? (reuse ? 'waiting for it again after a Studio restart' : 'queued') });
   const submitted = Date.now();
@@ -83,6 +91,11 @@ export async function runGenJob(tool: string, project: string, params: Record<st
       moved = Date.now();
     }
     if (TERMINAL.has(j.status)) return j;
+    const halted = halt?.();
+    if (halted) {
+      await api.cancel(job.id).catch(() => {});
+      return { ...j, status: 'cancelled', error: halted, halted: true };
+    }
     const why = abandon?.();
     if (why) {
       await api.cancel(job.id).catch(() => {});

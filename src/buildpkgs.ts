@@ -136,9 +136,11 @@ export function buildErrorLines(logTail: unknown, max = 6): string[] {
 }
 
 /** Runs Gen's unity.build after syncing the package checkouts (the control server's and the build server's own); the commits it built against ride in the job's result as `packages` and `buildServer`. */
-export async function unityBuild(project: string, params: Record<string, unknown>, onUpdate?: (job: any) => void, opts: { job?: string; onSubmit?: (id: string) => void; log?: (s: string) => void; serverShell?: BuildServerRun } = {}) {
+export async function unityBuild(project: string, params: Record<string, unknown>, onUpdate?: (job: any) => void, opts: { job?: string; onSubmit?: (id: string) => void; log?: (s: string) => void; serverShell?: BuildServerRun; halt?: () => string | null } = {}) {
   const { genRun } = await import('./gen.ts');
   const log = opts.log ?? ((s) => console.log(`[build] ${s}`));
+  const stopped = opts.halt?.();
+  if (stopped) return { id: null, status: 'cancelled', error: stopped, halted: true } as any;
   const packages = opts.job ? {} : await syncBuildPackages(log).catch((e) => { console.warn(`[build] package sync failed: ${e.message ?? e}`); return {} as BuildPackages; });
   let buildServer: Record<string, unknown> | undefined;
   if (!opts.job && (opts.serverShell || isServer())) {
@@ -150,7 +152,7 @@ export async function unityBuild(project: string, params: Record<string, unknown
       return { id: null, status: 'failed', error, detail: error, result: { ok: false, packages, buildServer: e instanceof BuildServerSyncError ? e.states : { error } } } as any;
     }
   }
-  const job = await genRun('unity.build', project, params, onUpdate, undefined, { job: opts.job, onSubmit: opts.onSubmit });
+  const job = await genRun('unity.build', project, params, onUpdate, undefined, { job: opts.job, onSubmit: opts.onSubmit, halt: opts.halt });
   if (Object.keys(packages).length || buildServer) job.result = { ...(job.result ?? {}), ...(Object.keys(packages).length ? { packages } : {}), ...(buildServer ? { buildServer } : {}) };
   if (job.status !== 'done') {
     const lines = buildErrorLines(job.result?.logTail);
