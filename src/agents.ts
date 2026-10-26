@@ -48,6 +48,7 @@ import { reviewParams } from './review.ts';
 import { reviewJob } from './review-cc.ts';
 import { gen, genRun, fileUrl } from './gen.ts';
 import { unityBuild } from './buildpkgs.ts';
+import { jobCancelDetail, noteCancel, cancelNote, cancelWords } from './cancel.ts';
 import { repoMap } from './repos.ts';
 import { serveDir, stopServed } from './local.ts';
 import { claudeEnv } from './claude.ts';
@@ -228,6 +229,8 @@ export function listChanges(q: { status?: string; product?: string; limit?: numb
 }
 function update(id: string, patch: Partial<Record<string, any>>) {
   const cur = db.prepare('SELECT * FROM changes WHERE id = ?').get(id) as any;
+  // A cancelled change stays cancelled until someone resumes (queued) or closes it: a pass still winding down can only log (cancelChange).
+  if (cur?.status === 'cancelled' && !['queued', 'closed'].includes(patch.status) && Object.keys(patch).some((k) => !['log', 'notes', 'cost'].includes(k))) return;
   const next: any = { ...cur, ...patch, updated: Date.now() };
   for (const k of ['findings', 'commits', 'verify', 'notes', 'log', 'phase']) if (patch[k] !== undefined) next[k] = patch[k] === null ? null : J(patch[k]);
   db.prepare(`UPDATE changes SET status=?, detail=?, pr=?, pr_url=?, title=?, summary=?, commits=?, diffstat=?, verify=?, notes=?, log=?, cost=?, session=?, phase=?, auto_merge=?, updated=? WHERE id=?`)
@@ -1588,6 +1591,8 @@ async function work(id: string, note?: string, answer?: string, resumed?: Phase 
       else if (!ph.proc && ph.genDone) addLog(id, resume?.session ? 'agent resumed its session with its finished Gen jobs' : 'agent started again with its finished Gen jobs (no session recorded)');
       else if (!ph.proc && !ph.nudge) addLog(id, resumed && !ph.conflict ?'agent: it ran inside Studio, which restarted; starting the pass again' : resume?.session ? `agent resumed its session ${ph.conflict ? 'to resolve the conflicts with beta' : 'with the answer'}` : ph.conflict ? 'agent started: resolving the conflicts with beta' : `agent started`);
       const r = await agentPass(id, ph, save, s, claudeEnv(), resume);
+      // Cancelled while it worked (cancelChange stopped it): not a failure, not a try; its branch and worktree stay.
+      if (getChange(id)?.status === 'cancelled') return void addLog(id, 'agent: stopped because the change was cancelled');
       const gone = modelRefused(r, ph);
       if (gone) return requeueForModel(id, save, gone);
       const stop = passStop(r, readSummary(getChange(id)!.worktree));
@@ -1882,7 +1887,7 @@ async function buildChange(c: Change, p: Product, jobs?: JobMemo): Promise<Chang
   update(c.id, { cost: getChange(c.id)!.cost + cost });
   // A Hawkes Gen without siteDir would have built into the real website folder: say so rather than playtest that.
   const stale = job.status === 'done' && r.site && r.site.folder !== rel(siteDir);
-  const error = stale ? `Hawkes Gen's unity.build ignored siteDir (update Hawkes Gen); the build went to ${r.site.folder}` : job.status === 'done' ? undefined : String(job.error ?? job.detail ?? 'build failed');
+  const error = stale ? `Hawkes Gen's unity.build ignored siteDir (update Hawkes Gen); the build went to ${r.site.folder}` : job.status === 'done' ? undefined : job.status === 'cancelled' ? jobCancelDetail(job) : String(job.error ?? job.detail ?? 'build failed');
   // Unity's own errors come back the same for the same commit; the server being busy, unlicensed or unreachable doesn't.
   const b: ChangeBuild = {
     sha, ok: !error, at: Date.now(), job: job.id, version: r.version ?? null, cost, ...(r.packages ? { packages: r.packages } : {}), minutes: Math.round((r.seconds ?? 0) / 60),
@@ -1902,6 +1907,8 @@ async function verifyChange(c: Change, p: Product, findings: any[], jobs?: JobMe
   } else if (p.engine === 'unity' || p.build) {
     // Unity: build the branch, then serve that build the way the site's local server would.
     build = await buildChange(c, p, jobs).catch((e: any): ChangeBuild => ({ sha: '', ok: false, at: Date.now(), error: String(e.message ?? e).slice(0, 500), retry: true }));
+    // Cancelled isn't failed: the change is simply not played (the "not played" path), no revise, no try.
+    if (!build.ok && /^cancelled\b/.test(String(build.error))) return { outcome: 'not played', error: build.error, build, cancelled: true };
     if (!build.ok) return { outcome: 'build failed', error: build.error, build };
     dir = path.join(changeSiteDir(c.id), path.relative(p.site.split('/')[0], p.local.dir));
   } else {
@@ -1925,6 +1932,7 @@ async function verifyChange(c: Change, p: Product, findings: any[], jobs?: JobMe
   try {
     const run = await genRun('playtest.run', p.id, { url, mode: mode ?? (p.contract ? 'contract' : 'auto'), ...(mode ? {} : { scenario }), ...(mode === 'site' ? { maxPages: 40 } : {}), ...(agentScenario && agentOptions ? { options: agentOptions } : {}) },
       undefined, undefined, { job: prior?.id, onSubmit: (id) => { jobs?.set('playtest', id); jobs?.set('review', ''); } });
+    if (run.status === 'cancelled') return { outcome: 'not played', error: jobCancelDetail(run), build, cancelled: true };
     if (run.status !== 'done') return { outcome: 'failed', error: run.error, playtest: run.id, build };
     // A verify review (review.ts): did the change work (it says by id whether the findings look fixed), did anything regress.
     // A roadmap task's acceptance criteria go with it and are judged one by one (acceptance.ts).
@@ -2113,6 +2121,7 @@ async function workInfra(id: string, note?: string, resumed?: Phase | null, nudg
       if (!ph.proc && !ph.nudge) addLog(id, ph.conflict ? `agent resumed to resolve the conflicts with ${c.base}` : resumed ? 'agent: it ran inside Studio, which restarted; starting the pass again' : `agent started`);
       if (!ph.proc && ph.harness) addLog(id, `agent carries on after the harness hold (${ph.harness.kind})`);
       const r = await agentPass(id, ph, save, s, infraEnv({ agent: true }), forHarness(ph, ph.nudge ? nudgeResume(getChange(id)!, ph) : ph.conflict ? conflictResume(getChange(id)!, ph.conflict) : ph.harness ? harnessResume(getChange(id)!, ph) : undefined));
+      if (getChange(id)?.status === 'cancelled') return void addLog(id, 'agent: stopped because the change was cancelled');
       const gone = modelRefused(r, ph);
       if (gone) return requeueForModel(id, save, gone);
       const stop = passStop(r, readSummary(getChange(id)!.worktree));
@@ -2939,6 +2948,52 @@ export function answerChange(id: string, answer: string, by = 'J') {
     remember(id);
     void pump();
   });
+  return getChange(id);
+}
+
+/** Changes an agent is on, or is waiting to be on: the ones that can be cancelled. */
+const CANCELLABLE = ['queued', 'working', 'verifying', 'revising', 'needs answer', 'waiting on Gen'];
+/**
+ * Cancels an agent change (Activity's Cancel, Talk's studio_cancel): the agent's unit is stopped, the branch and worktree
+ * are kept, the status is `cancelled`. Not a failed try (attempts count failed and closed ones), not a harness stop, and the
+ * PM never restarts it: only resumeChange or close does. Who and why are kept (cancel.ts).
+ */
+export async function cancelChange(id: string, by = 'J', reason?: string | null) {
+  const c = getChange(id);
+  if (!c) throw new StudioError('No such change');
+  if (!CANCELLABLE.includes(c.status)) throw new StudioError(`Change ${id} is ${c.status}: there is nothing to cancel`);
+  noteCancel(`change:${id}`, by, reason);
+  const ph = phaseOf(id);
+  update(id, {
+    status: 'cancelled', detail: `cancelled ${cancelWords(cancelNote(`change:${id}`))}; its branch and worktree are kept (Resume or Close)`.slice(0, 300),
+    notes: [...c.notes, { at: Date.now(), by, text: `cancelled${reason ? `: ${reason}` : ''}` }], ...(ph ? { phase: { ...ph, proc: undefined } } : {}),
+  });
+  addLog(id, `cancelled ${cancelWords(cancelNote(`change:${id}`))}`);
+  if (ph?.proc) {
+    stopDetached(ph.proc.rec);
+    addLog(id, 'agent: its unit was stopped');
+  }
+  // Its verification's Gen jobs go too (queued or running; a finished one is left alone).
+  for (const j of Object.values(ph?.jobs ?? {})) if (j) await gen.cancel(String(j)).catch(() => {});
+  return getChange(id);
+}
+
+/** Carries on a cancelled change in its own worktree (the agent's session when it can); the PM never does this by itself. */
+export function resumeChange(id: string, by = 'J') {
+  const c = getChange(id);
+  if (!c) throw new StudioError('No such change');
+  if (c.status !== 'cancelled') throw new StudioError(`Change ${id} is ${c.status}, not cancelled`);
+  if (!c.worktree || !fs.existsSync(c.worktree)) throw new StudioError(`Change ${id} has no worktree any more: close it and start the task again`);
+  assertWorktree(c.worktree, path.join(PROJECTS, c.repo));
+  const old = phaseOf(id);
+  const now = Date.now();
+  update(id, {
+    status: 'queued', detail: `resumed by ${by}: carries on in its own worktree`, notes: [...c.notes, { at: now, by, text: 'resumed' }],
+    // at is back-dated by the harness gap: a person's resume starts now (resumeGate).
+    phase: { step: 'agent', since: now, before: git(c.worktree, ['rev-parse', 'HEAD']).out, brain: old?.brain, harness: { kind: 'revive', line: `a person cancelled it and ${by} resumed it`, at: now - RESUME_GAP - 1, on: old?.brain ?? brainId(), parks: [] } },
+  });
+  addLog(id, `resumed by ${by}`);
+  setTimeout(() => void pump(), 0).unref();
   return getChange(id);
 }
 

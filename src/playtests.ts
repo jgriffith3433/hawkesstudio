@@ -168,7 +168,7 @@ function summary(s: Step, review: Step | null) {
   return {
     id: s.id, run: s.run, product: s.product, name: s.name, ...parseName(s.name), status: s.status, detail: s.detail, job: s.job,
     started: s.started, finished: s.finished,
-    outcome: s.status === 'failed' ? (/stuck/i.test(s.detail ?? '') ? 'stuck' : 'failed') : s.status === 'running' ? 'running' : d.outcome ?? null,
+    outcome: s.status === 'cancelled' ? 'cancelled' : s.status === 'failed' ? (/stuck/i.test(s.detail ?? '') ? 'stuck' : 'failed') : s.status === 'running' ? 'running' : d.outcome ?? null,
     seconds: d.seconds ?? null, loadSeconds: d.loadSeconds ?? null, fps: d.fps?.average ?? null, software: d.software ?? null,
     problems: d.problems?.length ?? 0, video: videoUrl(s), thumb: d.thumb ?? v?.frames?.[v.frames.length - 1]?.asset ?? null, visualBig: d.visual?.big ?? 0,
     review: review ? { id: review.id, status: review.status, verdict: v?.verdict ?? null, score: avgScore(v?.scores), scores: v?.scores ?? null, findings: v?.findings?.length ?? 0, added: v?.added?.length ?? 0 } : null,
@@ -185,6 +185,7 @@ export function listPlaytests(q: { product?: string; scenario?: string; where?: 
   if (q.device === 'desktop') where.push(`name NOT LIKE '%:phone'`);
   if (q.before) { where.push('started < ?'); args.push(q.before); }
   if (q.outcome === 'failed') where.push(`status = 'failed'`);
+  else if (q.outcome === 'cancelled') where.push(`status = 'cancelled'`);
   else if (q.outcome === 'stuck') where.push(`(json_extract(data, '$.outcome') = 'stuck' OR (status = 'failed' AND detail LIKE '%stuck%'))`);
   else if (q.outcome === 'running') where.push(`status = 'running'`);
   else if (q.outcome) { where.push(`json_extract(data, '$.outcome') = ?`); args.push(q.outcome); }

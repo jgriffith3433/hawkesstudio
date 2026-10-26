@@ -10,6 +10,7 @@ import { brainOfChange } from './agents.ts';
 import { talkInfo } from './talk.ts';
 import { brainLabel } from './brains.ts';
 import { planView, planLine } from './runplan.ts';
+import { cancelNote } from './cancel.ts';
 
 const name = (product: string) => {
   try {
@@ -58,6 +59,7 @@ function changeRow(c: any) {
   const b = brainOfChange(c);
   return {
     stage: stageOf(c, v),
+    cancelled: c.status === 'cancelled' ? cancelNote(`change:${c.id}`) : null,
     id: c.id, product: c.product, productName: name(c.product), title: c.title, status: c.status, detail: c.detail,
     started: c.created, updated: c.updated, cost: c.cost ?? 0, pr: c.pr_url ?? null, preview: v?.preview ?? null,
     origin: c.origin ?? null, by: c.origin ? `Talk: ${convTitle(c.origin)}` : c.started_by ?? 'J', log: log.slice(-12),
@@ -71,7 +73,7 @@ function runRow(r: any) {
   const by = r.origin ? `Talk: ${convTitle(r.origin)}` : r.kind === 'daily' ? 'the daily schedule' : r.kind === 'beta' ? 'beta moved' : r.kind === 'live' ? 'a push to main' : /went live|rolled back/i.test(opts.focus ?? '') ? 'go live' : 'J';
   return {
     id: r.id, kind: r.kind, status: r.status, detail: r.detail, products: (parse(r.products) ?? []).map(name), started: r.started, finished: r.finished,
-    cost: r.cost ?? 0, origin: r.origin ?? null, by, where: opts.where ?? null,
+    cost: r.cost ?? 0, origin: r.origin ?? null, by, where: opts.where ?? null, cancelled: cancelNote(`run:${r.id}`),
     // The scenarios it will play, each one's state and verdict, and how far along it is (runplan.ts).
     plan: (() => { const v = planView(r.id); return v ? { ...v, line: planLine(v) } : null; })(),
     steps: { total: steps.length, done: steps.filter((s) => s.status !== 'running').length, failed: steps.filter((s) => s.status === 'failed').length },
@@ -83,6 +85,8 @@ function runRow(r: any) {
 
 export async function activity() {
   const changes = (db.prepare(`SELECT * FROM changes WHERE status IN ('queued', 'working', 'verifying', 'revising') ORDER BY created`).all() as any[]).map(changeRow);
+  // Cancelled and not resumed or closed (kept a week): Resume and Close stay on the card.
+  const cancelled = (db.prepare(`SELECT * FROM changes WHERE status = 'cancelled' AND COALESCE(updated, created) > ? ORDER BY updated DESC LIMIT 20`).all(Date.now() - 7 * 86_400_000) as any[]).map(changeRow);
   const runs = (db.prepare(`SELECT * FROM runs WHERE status = 'running' ORDER BY started`).all() as any[]).map(runRow);
   // Only the last message J (or a notice) sent, picked out by SQLite: a long conversation's whole history isn't parsed every poll.
   const info = talkInfo();
@@ -119,7 +123,7 @@ export async function activity() {
   const opsDone = allOps.filter((o) => o.status === 'done' || o.status === 'failed').slice(0, 10);
   const loop = loopHealth();
   return {
-    at: Date.now(), gen: genOk, changes, runs, jobs, talk, recent, ops, opsDone, commands: runningCommands(),
+    at: Date.now(), gen: genOk, changes, cancelled, runs, jobs, talk, recent, ops, opsDone, commands: runningCommands(),
     // Moments in the last hour Studio couldn't answer for over a second (a blocking call), and what was running then.
     loop: { lastMinute: loop.lastMinute, blocks: loop.blocks.filter((b) => b.at > Date.now() - 3600_000) },
     // The header badge: things working now (a Gen job a run's step is waiting on counts once, as its run).

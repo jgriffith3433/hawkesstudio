@@ -66,7 +66,7 @@ const productName = (id: string) => {
 
 export type PlanItem = {
   product: string; productName: string; name: string; estS: number; step: string | null; job: string | null;
-  state: 'waiting' | 'playing' | 'reviewing' | 'done' | 'failed' | 'skipped';
+  state: 'waiting' | 'playing' | 'reviewing' | 'done' | 'failed' | 'skipped' | 'cancelled';
   verdict: string | null; findings: { severity: string; title: string }[]; detail: string | null;
 };
 
@@ -86,6 +86,7 @@ export function planView(run: string) {
     if (play) {
       if (play.status === 'running') state = 'playing';
       else if (play.status === 'failed') state = 'failed';
+      else if (play.status === 'cancelled') state = 'cancelled';
       else if (play.status === 'skipped') state = 'skipped';
       else if (rev && rev.status !== 'running') state = 'done';
       else if (!rev && noReview) state = 'done';
@@ -100,7 +101,7 @@ export function planView(run: string) {
       detail: (state === 'reviewing' || state === 'done' ? rev?.detail : null) ?? play?.detail ?? null,
     };
   });
-  const over = (s: PlanItem) => ['done', 'failed', 'skipped'].includes(s.state);
+  const over = (s: PlanItem) => ['done', 'failed', 'skipped', 'cancelled'].includes(s.state);
   const left = items.reduce((n, it) => {
     if (over(it)) return n;
     if (it.state === 'waiting') return n + it.estS;

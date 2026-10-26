@@ -48,10 +48,10 @@ export function buildReport(run: string) {
   return { run: r, per, open, newToday, newIdeas, ideas, cost, headline, date: today(new Date(r.started)) };
 }
 
-const PLAN_ICON: Record<string, string> = { waiting: '⏳', playing: '▶️', reviewing: '🔎', done: '✅', failed: '❌', skipped: '⏭️' };
+const PLAN_ICON: Record<string, string> = { waiting: '⏳', playing: '▶️', reviewing: '🔎', done: '✅', failed: '❌', skipped: '⏭️', cancelled: '🚫' };
 
 const fmtStep = (s: Step) => {
-  const icon = s.status === 'done' ? '✅' : s.status === 'failed' ? '❌' : s.status === 'skipped' ? '⏭️' : '⏳';
+  const icon = s.status === 'done' ? '✅' : s.status === 'failed' ? '❌' : s.status === 'skipped' ? '⏭️' : s.status === 'cancelled' ? '🚫' : '⏳';
   return `${icon} **${s.kind}** ${s.name}: ${s.detail ?? s.status}`;
 };
 

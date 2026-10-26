@@ -38,6 +38,7 @@ import {
   addItem, addTask, askedJ, landed, blockedBy, updateTask, taskWaits, DONE, adoptDoneDrops, tasksOf,
 } from './roadmap.ts';
 import { gate, allMet } from './acceptance.ts';
+import { buildCancelled, cancelNote, cancelWords, repairCancelled } from './cancel.ts';
 import { notify, PUBLIC_URL } from './notify.ts';
 import { fileUrl } from './gen.ts';
 import { BETA, gitAsync, repoDirs, shaOf } from './beta.ts';
@@ -234,6 +235,11 @@ async function syncTask(t: Task, getChange: (id: string) => any) {
     // the PM or walk-away) or asked of J (he closed it), never left failed (a couple of minutes first: J's "drop it"
     // closes the change, then drops the task).
     if (c.status === 'closed' && Date.now() - (c.updated ?? 0) > 2 * 60_000) afterClosed(t, c);
+    // Cancelled (Activity's Cancel, or Talk): not a failure and not a try. The PM leaves it alone until someone resumes
+    // or closes it; the task says so.
+    if (c.status === 'cancelled' && !String(t.note ?? '').includes(`${c.id} was cancelled`)) {
+      setTask(t.id, { note: `its agent change ${c.id} was cancelled ${cancelWords(cancelNote(`change:${c.id}`))}: not a failure and not a try; Resume or Close it in Activity` });
+    }
     return;
   }
   // Studio and Gen: merged into main is deployed, and its checks were CI, the tests and the smoke check.
@@ -383,6 +389,7 @@ export function buildOf(product: string, r: { id: string; status: string; detail
  */
 export async function followBuilds() {
   const { getChange } = await changes();
+  await settleCancelledBuilds(getChange);
   const byProduct = new Map<string, { t: Task; at: number }[]>();
   for (const r of db.prepare(`SELECT id FROM tasks WHERE status = 'merged'`).all() as any[]) {
     const t = getTask(r.id)!;
@@ -393,8 +400,12 @@ export async function followBuilds() {
   }
   for (const [product, list] of byProduct) {
     const since = Math.min(...list.map((x) => x.at));
-    const runs = db.prepare(`SELECT id, status, detail, started, finished FROM runs WHERE kind = 'beta' AND products LIKE ? AND started >= ? ORDER BY started DESC, rowid DESC`).all(`%"${product}"%`, since) as any[];
-    const finished = runs.filter((x) => ['done', 'failed'].includes(x.status));
+    // A run whose build was cancelled (J, Talk, the PM or Gen) built nothing: it is neither a build nor a failed one, and
+    // the "nothing built the newest merge" check below starts another (cancel.ts).
+    const runs = (db.prepare(`SELECT id, status, detail, started, finished FROM runs WHERE kind = 'beta' AND products LIKE ? AND started >= ? ORDER BY started DESC, rowid DESC`).all(`%"${product}"%`, since) as any[])
+      .filter((x) => !buildCancelled(x.id, product));
+    for (const { t } of list) if (t.build?.run && buildCancelled(t.build.run, product)) setTask(t.id, { build: null });
+    const finished = runs.filter((x) => ['done', 'failed', 'partial'].includes(x.status));
     for (const { t, at } of list) {
       const r = finished.find((x) => x.started >= at);
       if (r && t.build?.run !== r.id) setTask(t.id, { build: buildOf(product, r) });
@@ -417,6 +428,30 @@ export async function followBuilds() {
       await decideFailedBuild(product, newest, runs, hit);
     } finally {
       deciding.delete(newest.id);
+    }
+  }
+}
+
+/**
+ * What a cancel in Hawkes Gen left behind as "failed" (run r_f75a40eec26e, 2026-10-26: Talk cancelled a queued Unity
+ * build, the run recorded a failed build, and a task went back to an agent to "fix the compile errors"): the steps and
+ * runs read cancelled, and an agent change sent back for such a run's build is cancelled too (by the PM, with the reason).
+ */
+async function settleCancelledBuilds(getChange: (id: string) => any) {
+  try { repairCancelled(); } catch (e: any) { console.warn(`[pm] repairing cancelled runs: ${e.message ?? e}`); }
+  const cancelledRuns = new Set((db.prepare(`SELECT DISTINCT run FROM steps WHERE kind = 'build' AND status = 'cancelled'`).all() as any[]).map((x) => x.run as string));
+  if (!cancelledRuns.size) return;
+  const { cancelChange } = await changes();
+  for (const c of db.prepare(`SELECT id, request, status, task FROM changes WHERE status IN ('queued', 'working', 'verifying', 'revising') AND request LIKE '%build failed after your change%'`).all() as any[]) {
+    const run = [...cancelledRuns].find((r) => String(c.request).includes(r));
+    if (!run) continue;
+    const reason = `beta's build in run ${run} was cancelled, not failed: there is no compile error to fix`;
+    await cancelChange(c.id, 'the PM', reason).catch((e: any) => console.warn(`[pm] cancel ${c.id}: ${e.message ?? e}`));
+    const t = c.task ? getTask(c.task) : null;
+    if (t) {
+      const prior = t.changes.filter((x) => x !== c.id).map((x) => getChange(x)).filter((x) => x?.status === 'merged').pop();
+      setTask(t.id, { status: 'merged', change: prior?.id ?? t.change, merged_at: prior?.merged_at ?? prior?.created ?? Date.now(), build: null, note: `beta's build was cancelled (run ${run}), not failed; waiting for the next beta run` });
+      logDecision('cancelled', t.id, t.product, `"${t.title}": ${reason}; its send-back ${c.id} was cancelled and the build is not counted against it`);
     }
   }
 }
@@ -515,6 +550,8 @@ async function buildSendBack(t: Task, { errors = [], matched = [] }: { errors?: 
   const s = pmSettings();
   const free = !listDecisions({ since: 0, action: 'build-sendback', limit: 10_000 }).some((d) => d.subject === t.id);
   if (!s.enabled) return;
+  // A cancelled build isn't a broken one: nothing to fix, nothing blamed (cancel.ts).
+  if (t.build?.run && buildCancelled(t.build.run, t.product)) return void setTask(t.id, { build: null });
   if (!free && t.tries >= s.maxTries) {
     setTask(t.id, { status: 'failed', note: t.build?.detail.slice(0, 1000) ?? "beta's build failed" });
     outOfTries(getTask(t.id)!, `beta's build fails after it: ${t.build?.detail.slice(0, 600) ?? ''}`, () => askJ(`"${t.title}" (${name(t.product)}) is merged into beta but beta's build fails after it, and its agents couldn't fix that in ${t.tries} tries: ${t.build?.detail.slice(0, 600)}. Try again, revert it on beta, or drop it?`, { subject: t.id, product: t.product, options: ['try again', 'revert it', 'drop it'], from: `the default after ${s.maxTries} tries` }));
@@ -633,9 +670,11 @@ export function brokenCheck(run: string, product?: string): string | null {
   if (r.status === 'running') return `run ${run} is still running`;
   const p = product ?? (parse(r.products) ?? [])[0];
   const play = (db.prepare(`SELECT name, status, detail, data FROM steps WHERE run = ? AND product = ? AND kind = 'playtest'`).all(run, p) as any[])
-    .find((x) => x.status === 'failed' || x.status === 'skipped' || /\bstuck\b/i.test(String(x.detail ?? '')) || parse(x.data)?.outcome === 'stuck');
+    .find((x) => x.status === 'failed' || x.status === 'skipped' || x.status === 'cancelled' || /\bstuck\b/i.test(String(x.detail ?? '')) || parse(x.data)?.outcome === 'stuck');
   if (play) return `playtest ${play.name} ${play.status === 'done' ? 'got stuck' : play.status}: ${String(play.detail ?? '').slice(0, 300)}`;
   // Over and not failed counts as done here (buildOf reads any other status as a run that threw).
+  // A cancelled build was never built: this run says nothing about beta (and nothing is blamed), the next one builds it.
+  if (buildCancelled(run, p)) return `beta's build was cancelled in run ${run}, so beta was not built or checked there`;
   const build = buildOf(p, { ...r, status: r.status === 'failed' ? 'failed' : 'done' });
   return build.ok ? null : build.detail;
 }
@@ -2173,6 +2212,7 @@ export function stallReasons(): StallReason[] {
     const blocker = blockerOf(t.product);
     let why: string;
     if (asked.has(t.id) || (t.change && asked.has(t.change))) why = 'needs J: a question in his Inbox';
+    else if (t.status === 'working' && !hasLiveChange(t.id) && t.change && db.prepare(`SELECT 1 FROM changes WHERE id = ? AND status = 'cancelled'`).get(t.change)) why = `paused: its agent change ${t.change} was cancelled (Resume or Close it in Activity)`;
     else if (['working', 'needs answer', 'review'].includes(t.status) && !hasLiveChange(t.id)) why = 'stale status: no agent change is running for it (reconciled next pass)';
     else if (t.status === 'failed') why = heldFor(t.id) ? `held: investigation ${heldFor(t.id)!.change} fixes beta first` : rescues()[t.id]?.state === 'scouting' ? 'out of tries: a scout is investigating, then a fresh round' : `failed: ${String(t.note ?? '').slice(0, 200)}`;
     else if (t.status === 'merged' && t.build && !t.build.ok) why = `broken build: ${t.build.detail.slice(0, 200)}${blocker ? `; the fix in ${name(blocker.b.target)} (${blocker.fix}) is under way` : ''}`;

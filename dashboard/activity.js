@@ -31,7 +31,7 @@ var ChangeStages = (() => {
       return list.map((name, k) => ({ name, state: k < i ? 'done' : k === i ? how : after }));
     };
     if (status === 'merged') return list.map((name) => ({ name, state: 'done' }));
-    if (status === 'queued' || status === 'closed') return list.map((name) => ({ name, state: 'todo' }));
+    if (status === 'queued' || status === 'closed' || status === 'cancelled') return list.map((name) => ({ name, state: 'todo' }));
     if (status === 'failed') return row(s.failed ? stageAt(s) : 'coding', 'failed');
     if (status === 'ready') {
       const stop = stoppedAt(s);
@@ -51,7 +51,7 @@ var ChangeStages = (() => {
   function progress(status, s = {}, now = Date.now()) {
     const row = stages(status, s);
     if (status === 'ready' || status === 'merged') return { pct: 100, state: 'ready', stage: 'ready' };
-    if (status === 'queued' || status === 'closed') return { pct: 0, state: 'todo', stage: row[0].name };
+    if (status === 'queued' || status === 'closed' || status === 'cancelled') return { pct: 0, state: 'todo', stage: row[0].name };
     const i = Math.max(0, row.findIndex((x) => x.state === 'now' || x.state === 'failed'));
     const name = row[i].name;
     let within = 0.5;
@@ -120,7 +120,7 @@ if (typeof document !== 'undefined') (() => {
     return m < 60 ? `${m} min` : `${Math.floor(m / 60)} h ${m % 60} min`;
   };
   const since = (t) => (t ? dur(Date.now() - t) : '');
-  const ICON = { queued: '⏳', working: '🛠️', verifying: '🎮', revising: '🛠️', ready: '👀', merged: '✅', failed: '❌', closed: '🗑️', done: '✅', running: '⏳', interrupted: '⚠️', skipped: '⏭️' };
+  const ICON = { queued: '⏳', working: '🛠️', verifying: '🎮', revising: '🛠️', ready: '👀', merged: '✅', failed: '❌', closed: '🗑️', done: '✅', running: '⏳', interrupted: '⚠️', skipped: '⏭️', cancelled: '🚫', partial: '◐' };
   const link = (href, text, ext = true) => `<a href="${esc(href)}"${ext ? ' target="_blank" rel="noopener"' : ''}>${text}</a>`;
   const by = (x) => (x.origin ? `<a href="?conversation=${esc(x.origin)}#talk" data-talk="${esc(x.origin)}">${esc(x.by)}</a>` : esc(x.by));
 
@@ -138,10 +138,14 @@ if (typeof document !== 'undefined') (() => {
       ${c.detail ? `<div class="act-now">${esc(c.detail)}</div>` : ''}
       <div class="meta">by ${by(c)} · <a href="#changes/${esc(c.id)}" data-change-log="${esc(c.id)}">log</a>${c.pr ? ` · ${link(c.pr, 'PR')}` : ''}${c.preview ? ` · ${link(c.preview, 'preview')}` : ''}${c.cost ? ` · $${c.cost.toFixed(2)}` : ''}</div>
       ${!done && c.log?.length ? `<details class="act-log"><summary class="meta">last log lines</summary><pre>${esc(c.log.join('\n'))}</pre></details>` : ''}
+      ${c.status === 'cancelled'
+        ? `<div class="act-actions"><button class="small" data-act-cancel="resume" data-kind="changes" data-id="${esc(c.id)}">Resume</button> <button class="small" data-act-cancel="close" data-kind="changes" data-id="${esc(c.id)}">Close</button></div>`
+        : ['queued', 'working', 'verifying', 'revising', 'needs answer', 'waiting on Gen'].includes(c.status)
+          ? `<div class="act-actions"><button class="small" data-act-cancel="cancel" data-kind="changes" data-id="${esc(c.id)}" data-what="this agent (its branch and worktree are kept; Resume or Close it afterwards; it is not a failed try)">Cancel</button></div>` : ''}
     </div>`;
   }
   // A run's scenarios in order: expected time, state, and the verdict with findings as soon as its review is done.
-  const PLAN_ICON = { waiting: '⏳', playing: '▶️', reviewing: '🔎', done: '✅', failed: '❌', skipped: '⏭️' };
+  const PLAN_ICON = { waiting: '⏳', playing: '▶️', reviewing: '🔎', done: '✅', failed: '❌', skipped: '⏭️', cancelled: '🚫' };
   const mins = (s) => `${Math.max(1, Math.round(s / 60))} min`;
   function planHtml(r) {
     const p = r.plan;
@@ -160,8 +164,9 @@ if (typeof document !== 'undefined') (() => {
       <div class="act-top">${ICON[r.status] ?? '•'} <b>${esc(r.kind)}${r.where === 'live' ? ' (live)' : ''}</b> ${esc(r.products.join(', '))}<span class="act-time">${done ? ago(r.at) : since(r.started)}</span></div>
       <div class="act-now">${esc(r.detail ?? '')}${r.steps.total ? ` · ${r.steps.done}/${r.steps.total} steps${r.steps.failed ? `, ${r.steps.failed} failed` : ''}` : ''}</div>
       ${planHtml(r)}
-      ${(r.now ?? []).map((s) => `<div class="act-step">▸ ${esc(s.kind)} ${esc(s.name)}${s.detail ? `: ${esc(s.detail)}` : ''} <span class="meta">${since(s.started)}${s.job && s.kind === 'playtest' ? ` · ${watch(s.job)}` : ''}${s.job ? ` · ${link(`${GEN}/#job/${s.job}`, 'job')}` : ''}</span></div>`).join('')}
+      ${(r.now ?? []).map((s) => `<div class="act-step">▸ ${esc(s.kind)} ${esc(s.name)}${s.detail ? `: ${esc(s.detail)}` : ''} <span class="meta">${since(s.started)}${s.job && s.kind === 'playtest' ? ` · ${watch(s.job)}` : ''}${s.job ? ` · ${link(`${GEN}/#job/${s.job}`, 'job')}` : ''}</span>${s.job && ['playtest', 'build'].includes(s.kind) ? ` <button class="small" data-act-cancel="cancel" data-kind="jobs" data-id="${esc(s.job)}" data-what="this ${esc(s.kind)} (its step becomes cancelled, not failed)">Cancel ${esc(s.kind)}</button>` : ''}</div>`).join('')}
       <div class="meta">by ${by(r)} · <a href="#" data-run-open="${esc(r.id)}">${esc(r.id)}</a>${r.cost ? ` · $${r.cost.toFixed(2)}` : ''}</div>
+      ${r.status === 'running' ? `<div class="act-actions"><button class="small" data-act-cancel="cancel" data-kind="runs" data-id="${esc(r.id)}" data-what="this whole run (its pending steps stop and its Gen jobs are cancelled)">Cancel run</button></div>` : ''}
       ${r.playtests?.length ? `<details class="act-frames" data-frames-run="${esc(r.id)}"${openRuns.has(r.id) ? ' open' : ''}><summary class="meta">🎞 screenshots · ${r.playtests.length} playtest${r.playtests.length === 1 ? '' : 's'}</summary>${r.playtests.map((p) => `<div class="fr-slot" data-frames="${esc(p.id)}"><div class="meta">${esc(p.product)} · ${esc(p.name)} · ${esc(p.status)}</div></div>`).join('')}</details>` : ''}
     </div>`;
   }
@@ -285,6 +290,7 @@ if (typeof document !== 'undefined') (() => {
       <div class="act-top">${ICON[j.status] ?? '•'} <b>${esc(j.tool)}</b> ${esc(j.project)} <span class="pill">${esc(j.status)}</span><span class="act-time">${since(j.started ?? j.created)}</span></div>
       ${j.detail ? `<div class="act-now">${esc(j.detail)}</div>` : ''}
       <div class="meta">${j.tool === 'playtest.run' && j.status === 'running' ? `${watch(j.id)} · ` : ''}${link(j.link, esc(j.id))}${j.server ? ` · ${esc(j.server)}` : ''}</div>
+      <div class="act-actions"><button class="small" data-act-cancel="cancel" data-kind="jobs" data-id="${esc(j.id)}" data-what="this Gen job (${esc(j.tool)})">Cancel</button></div>
     </div>`;
   const section = (title, n, html) => `<h4>${title} <span class="meta">${n}</span></h4>${html || '<div class="meta act-none">nothing</div>'}`;
 
@@ -319,6 +325,7 @@ if (typeof document !== 'undefined') (() => {
       blocks.length ? `<div class="act-item act-warn"><div class="act-top">⚠ <b>Studio froze ${blocks.length} time(s) in the last hour</b></div><div class="act-now">${blocks.slice(0, 3).map((b) => `${new Date(b.at).toLocaleTimeString()}: ${(b.ms / 1000).toFixed(1)} s${b.where ? ` ${esc(b.where.slice(0, 200))}` : ''}${b.running.length ? ` (during ${esc(b.running.join('; ').slice(0, 160))})` : ''}`).join('<br>')}</div></div>` : '',
       (a.ops?.length || a.opsDone?.length) ? section('Going live, rollbacks, merges', a.ops.length, a.ops.map(opHtml).join('') + (a.opsDone.length ? `<details class="act-recent"><summary class="meta">finished today (${a.opsDone.length})</summary>${a.opsDone.map(opHtml).join('')}</details>` : '')) : '',
       section('Agents', a.changes.length, a.changes.map((c) => changeHtml(c)).join('')),
+      a.cancelled?.length ? section('Cancelled agents (not failed)', a.cancelled.length, a.cancelled.map((c) => changeHtml(c)).join('')) : '',
       section('Studio runs', a.runs.length, a.runs.map((r) => runHtml(r)).join('')),
       section('Hawkes Gen jobs', a.gen ? a.jobs.length : '(unreachable)', a.jobs.map(jobHtml).join('')),
       a.commands?.length ? section('Commands running now', a.commands.length, a.commands.map((c) => `<div class="act-item${c.slow ? ' act-warn' : ''}"><div class="act-top"><code>${esc(c.cmd.slice(0, 90))}</code><span class="act-time">${c.seconds} s</span></div><div class="act-now">${esc(c.cwd.split(/[\/]/).pop())}</div></div>`).join('')) : '',
@@ -371,7 +378,28 @@ if (typeof document !== 'undefined') (() => {
 
   el('#actBtn').addEventListener('click', () => setOpen(!open));
   el('#actClose').addEventListener('click', () => setOpen(false));
+  // Cancel / Resume / Close (src/cancel.ts routes; admins only): a short confirm, then Studio records J as who did it.
+  async function cancelAct(b) {
+    const { actCancel: act, kind, id, what } = { actCancel: b.dataset.actCancel, kind: b.dataset.kind, id: b.dataset.id, what: b.dataset.what };
+    try {
+      if (act === 'cancel') {
+        if (!confirm(`Cancel ${what ?? 'this'}?`)) return;
+        const reason = (prompt('Why? (optional, kept in the record)') ?? '').trim();
+        await api(`/api/${kind}/${encodeURIComponent(id)}/cancel`, { method: 'POST', body: { reason: reason || undefined, by: 'J' } });
+      } else if (act === 'resume') {
+        await api(`/api/${kind}/${encodeURIComponent(id)}/resume`, { method: 'POST', body: { by: 'J' } });
+      } else if (act === 'close') {
+        if (!confirm('Close this change? Its branch and worktree are removed.')) return;
+        await api(`/api/changes/${encodeURIComponent(id)}/close`, { method: 'POST', body: { by: 'J' } });
+      }
+      tick();
+    } catch (err) {
+      alert(`Couldn't do that: ${err.message}`);
+    }
+  }
   el('#activity').addEventListener('click', (e) => {
+    const cb = e.target.closest('[data-act-cancel]');
+    if (cb) { e.preventDefault(); cancelAct(cb); return; }
     const t = e.target.closest('[data-talk]');
     if (t && !(e.ctrlKey || e.metaKey || e.shiftKey)) { e.preventDefault(); window.openTalk?.(t.dataset.talk); }
     const c = e.target.closest('[data-change-log]');

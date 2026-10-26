@@ -157,6 +157,12 @@ const server = http.createServer(async (req, res) => {
       const { id } = startRun(b.kind === 'daily' ? 'daily' : 'manual', opts);
       return send(res, 200, { ok: true, run: id });
     }
+    // Cancelling a run, a Gen job or an agent change (cancel.ts): admins only (auth.ts), Talk and the PM with a conversation (guards.ts).
+    if (/^\/api\/(runs|jobs|changes)\/[\w-]+\/(cancel|resume)$/.test(route) && method === 'POST') {
+      const b = await readJson(req);
+      const r = await (await import('./cancel.ts')).cancelRoute(route, method, await (await import('./inbox.ts')).actor(req, b.by), b);
+      if (r) return send(res, 200, r);
+    }
     m = /^\/api\/runs\/(r_[0-9a-f]+)$/.exec(route);
     if (m && method === 'GET') {
       const r = getRun(m[1]);

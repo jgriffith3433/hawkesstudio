@@ -506,8 +506,8 @@ show(tab, tab === 'live' ? /^#live\/(j_[0-9a-f]+)/.exec(location.hash)?.[1] : un
 studioStream.on(['changes', 'runs'], () => { if (tab === 'today' || tab === 'runs' || tab === 'changes') refresh(); });
 
 // ----------------------------------------------------------- changes
-const CH_WORDS = { queued: 'Waiting its turn', working: 'The agent is working on it', verifying: 'Checking its work', revising: 'Making the changes asked for', ready: 'Ready', merged: 'Merged', failed: "Didn't work", closed: 'Closed' };
-const CH_ICON = { queued: '⏳', working: '🛠️', verifying: '🎮', revising: '🛠️', ready: '👀', merged: '✅', failed: '❌', closed: '🗑️' };
+const CH_WORDS = { queued: 'Waiting its turn', working: 'The agent is working on it', verifying: 'Checking its work', revising: 'Making the changes asked for', ready: 'Ready', merged: 'Merged', failed: "Didn't work", closed: 'Closed', cancelled: 'Cancelled (not a failure): its branch is kept' };
+const CH_ICON = { queued: '⏳', working: '🛠️', verifying: '🎮', revising: '🛠️', ready: '👀', merged: '✅', failed: '❌', closed: '🗑️', cancelled: '🚫' };
 async function loadChanges() {
   const qs = new URLSearchParams($('#chStatus').value ? { status: $('#chStatus').value } : {});
   const r = await api(`/api/changes?${qs}`);
@@ -540,6 +540,7 @@ async function loadChanges() {
         <details data-key="${c.id}:log"><summary class="meta">Log</summary><pre>${esc((c.log ?? []).slice(-40).join(String.fromCharCode(10)))}</pre></details>
         <div class="actions">
           ${c.status === 'ready' && !c.infra ? `<button class="small" data-change="${c.id}" data-act="playtest" title="Plays the change's scenario on its version (a build first for Unity), with a video and a review (a few cents).">${played ? 'Playtest again' : 'Playtest this change'}</button>` : ''}
+          ${c.status === 'cancelled' ? `<button class="small" data-change="${c.id}" data-act="resume">Resume</button>` : ''}
           ${!['merged', 'closed'].includes(c.status) ? `<button class="small" data-change="${c.id}" data-act="close">Close</button>` : ''}
         </div>
       </details>
@@ -575,6 +576,7 @@ document.addEventListener('click', async (e) => {
         await api(`/api/changes/${id}/revise`, { method: 'POST', body: { note, by: 'J' } });
       }
       if (b.dataset.act === 'playtest') await api(`/api/changes/${id}/playtest`, { method: 'POST', body: { by: 'J' } });
+      if (b.dataset.act === 'resume') await api(`/api/changes/${id}/resume`, { method: 'POST', body: { by: 'J' } });
       if (b.dataset.act === 'close' && confirm('Close this change and its pull request?')) await api(`/api/changes/${id}/close`, { method: 'POST', body: { by: 'J' } });
       loadChanges.sig = null;
       loadChanges();

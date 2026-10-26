@@ -16,6 +16,7 @@ import { db, newId, J, rowToStep, parse, type Step } from './db.ts';
 import { resumeGapMs } from './ops.ts';
 import { loadProducts, getProduct, localUrl, today, PROJECTS, betaPlaytestsOn, type Product, type Playtest } from './config.ts';
 import { unityBuild } from './buildpkgs.ts';
+import { endStatus, runCounts, runCancelled, jobCancelDetail, runCancelDetail } from './cancel.ts';
 import { gen, genRun, genUp, ensureGen } from './gen.ts';
 import { ensureServer, gitState, treeFingerprint, runCheck, serveDir, stopServed } from './local.ts';
 import { absorb, applyKnown, expireIdeas, notSeenIn, type ReviewMode } from './backlog.ts';
@@ -197,7 +198,7 @@ async function runAll(run: string, ids: string[], o: RunOptions) {
     if (usedPlaytester) await gen.request('/playtester/stop', { method: 'POST', body: { ifIdle: true } }).catch((e: any) => console.warn(`[studio] couldn't stop the playtester: ${e.message}`));
   }
   const cost = (db.prepare('SELECT COALESCE(SUM(cost), 0) AS c FROM steps WHERE run = ?').get(run) as any).c;
-  db.prepare(`UPDATE runs SET status = 'done', finished = ?, cost = ? WHERE id = ?`).run(Date.now(), cost, run);
+  db.prepare(`UPDATE runs SET status = ?, finished = ?, cost = ? WHERE id = ?`).run(endStatus({ ...runCounts(run), failed: 0 }, runCancelled(run)), Date.now(), cost, run);
   const report = writeReport(run);
   db.prepare(`UPDATE runs SET detail = ?, report = ? WHERE id = ?`).run(report.headline, J({ file: report.file, date: report.date }), run);
   // On the server, agents start on the worst new findings (within the day's budget); J approves the results.
@@ -393,7 +394,7 @@ export async function buildProduct(run: string, p: Product, { force = false, bet
   if (before && resuming.has(run)) {
     const s = startStep(run, p.id, 'build', 'unity');
     const was = resumedStep(s)!;
-    if (was.status !== 'running') return was.status === 'done' ? { id: was.job, status: 'done', result: was.data } : was.status === 'skipped' ? null : { id: was.job, status: 'failed' };
+    if (was.status !== 'running') return was.status === 'done' ? { id: was.job, status: 'done', result: was.data } : was.status === 'skipped' ? null : { id: was.job, status: was.status === 'cancelled' ? 'cancelled' : 'failed' };
     if (was.job) return finishBuild(run, p, s, { fp: was.data?.fingerprint ?? treeFingerprint(p.build.project), head: was.data?.beta ?? '', base: was.data?.base ?? '', siteDir: was.data?.siteDir, placeholder: was.data?.placeholder, job: was.job, beta });
   }
   const fp = treeFingerprint(p.build.project);
@@ -465,6 +466,12 @@ async function finishBuild(run: string, p: Product, s: string, { fp, head, base,
     const newer = newerBetaRun(run, p.id);
     if (newer) return { ...job, superseded: newer };
   }
+  // Cancelled (by J, Talk or the PM, or in Gen itself): not built, and not a failure. Nothing is saved as a beta build,
+  // so the next push builds again and nothing is blamed (cancel.ts).
+  if (job.status === 'cancelled') {
+    updateStep(s, { status: 'cancelled', job: job.id, detail: `${jobCancelDetail(job)}; not built`, data: { fingerprint: null, cancelled: true }, finished: true });
+    return { ...job, status: 'cancelled' };
+  }
   const r = job.result ?? {};
   // A Hawkes Gen without siteDir would have built into the real website folder: that isn't a beta build.
   const stale = Boolean(siteDir && job.status === 'done' && r.site && r.site.folder !== siteDir);
@@ -491,6 +498,10 @@ export async function testProduct(run: string, p: Product, platform: 'EditMode' 
   if (was && was.status !== 'running') return { id: was.job, status: was.status === 'done' ? 'done' : 'failed', result: was.data };
   const job = await genRun('unity.test', p.id, { project: p.build.project, platform, ...(category ? { category } : {}) }, (j) => updateStep(s, { job: j.id, detail: j.detail }), undefined,
     { job: was?.job ?? undefined, onSubmit: (id) => updateStep(s, { job: id }) });
+  if (job.status === 'cancelled') {
+    updateStep(s, { status: 'cancelled', job: job.id, detail: jobCancelDetail(job), finished: true });
+    return job;
+  }
   const r = job.result ?? {};
   const ok = job.status === 'done' && !r.failed;
   updateStep(s, {
@@ -539,6 +550,10 @@ async function playScenario(run: string, p: Product, asked: Playtest, { review =
   if (over && !was?.job) {
     updateStep(s, { status: 'skipped', detail: over.message, data: { runCap: over.capMin }, finished: true });
     void notifyOnce(`runcap:${run}`, 24 * 3600_000, `Run stopped playing: ${p.name}`, `${over.message} (run ${run})`, { priority: 4, tags: ['hourglass'] });
+    return null;
+  }
+  if (runCancelled(run) && !was?.job) {
+    updateStep(s, { status: 'cancelled', detail: runCancelDetail(run, 'cancelled before it started'), data: { cancelled: true }, finished: true });
     return null;
   }
   let prior: any = null;
@@ -618,6 +633,11 @@ async function playScenario(run: string, p: Product, asked: Playtest, { review =
     // A newer beta build waits on this old one (betaqueue.ts supersedingBuild): cancelled, not failed.
     if (job.abandoned) {
       updateStep(s, { status: 'skipped', job: job.id, detail: `cancelled: ${job.error}`, data: { url, played, abandoned: job.error, runningSince: since ?? null }, finished: true });
+      return job;
+    }
+    // Cancelled (J, Talk, the PM, or in Gen): its own outcome. No review, no finding, no criteria judged (cancel.ts).
+    if (job.status === 'cancelled') {
+      updateStep(s, { status: 'cancelled', job: job.id, detail: jobCancelDetail(job), data: { url, played, cancelled: true }, finished: true });
       return job;
     }
     // The game's own scenario list, for the next playtest of this build; a scenario it doesn't have is skipped, not failed.
@@ -774,6 +794,10 @@ async function reviewPlaytest(run: string, p: Product, t: Playtest, job: any, pl
   const rev = await reviewJob(p.id, revParams, () => runGenJob('playtest.review', p.id, revParams, (j) => updateStep(rs, { job: j.id, detail: j.detail }), { runMs: REVIEW_RUN_MS, job: wasReview?.job ?? undefined }));
   const pending: PendingReview = { job: job.id, params: revParams, criteria: criteria?.length ? criteria : null, mode: reviewMode, reviewKey: sameKey, sha: fullSha, barMet: Boolean(bar?.met), barWhy: bar?.why ?? null, at: Date.now(), tries: 0 };
   if (rev.status !== 'done') {
+    if (rev.status === 'cancelled') {
+      updateStep(rs, { status: 'cancelled', job: rev.id, detail: jobCancelDetail(rev), finished: true });
+      return job;
+    }
     if (waitForAi(rs, rev, pending, `${p.name} ${name}`)) return job;
     updateStep(rs, { status: 'failed', job: rev.id, detail: `failed: ${rev.error ?? rev.detail}`, finished: true });
     return job;
@@ -909,6 +933,14 @@ export function startPartial(kind: 'build' | 'playtest' | 'test', productId: str
   return { id, done: partialBody(id, kind, p, opts) };
 }
 
+/** Ends a run from its steps: failed if any failed, else cancelled or partial if any were cancelled (cancel.ts), else done. */
+function closeRun(id: string, label: string) {
+  const cost = (db.prepare('SELECT COALESCE(SUM(cost), 0) AS c FROM steps WHERE run = ?').get(id) as any).c;
+  const n = runCounts(id);
+  const status = endStatus(n, runCancelled(id));
+  db.prepare(`UPDATE runs SET status = ?, detail = ?, finished = ?, cost = ? WHERE id = ?`).run(status, runCancelDetail(id, `${label}${n.failed ? ' failed' : status === 'done' ? '' : ` ${status}`}`), Date.now(), cost, id);
+}
+
 async function partialBody(id: string, kind: string, p: Product, opts: PartialOptions) {
   try {
     if (kind === 'build') await buildProduct(id, p, { force: opts.force ?? true });
@@ -918,9 +950,7 @@ async function partialBody(id: string, kind: string, p: Product, opts: PartialOp
       planRun(id, [{ product: p.id, name: nameOf({ ...t, scenario: t.scenario ? resolveScenario(p, t.scenario) : t.scenario }) }]);
       await playtestProduct(id, p, t, { review: opts.review !== false, focus: opts.focus, mode: opts.reviewMode ?? (opts.where === 'live' ? 'regression' : 'verify') });
     }
-    const cost = (db.prepare('SELECT COALESCE(SUM(cost), 0) AS c FROM steps WHERE run = ?').get(id) as any).c;
-    const failed = (db.prepare(`SELECT COUNT(*) AS n FROM steps WHERE run = ? AND status = 'failed'`).get(id) as any).n;
-    db.prepare(`UPDATE runs SET status = ?, detail = ?, finished = ?, cost = ? WHERE id = ?`).run(failed ? 'failed' : 'done', `${kind} ${p.id}${failed ? ' failed' : ''}`, Date.now(), cost, id);
+    closeRun(id, `${kind} ${p.id}`);
   } catch (e: any) {
     db.prepare(`UPDATE runs SET status = 'failed', detail = ?, finished = ? WHERE id = ?`).run(String(e.message ?? e), Date.now(), id);
   }
@@ -1000,6 +1030,8 @@ async function betaBody(id: string, p: Product, { focus, criteria, scenario, opt
       }
       const built = await buildProduct(id, p, { beta: true });
       if (built?.superseded) return void supersede(id, p.id, built.superseded, head());
+      // Cancelled build: beta is not built, nothing is played on it, and the next push builds again (cancel.ts).
+      if (built?.status === 'cancelled') return void closeRun(id, `beta ${p.id}`);
     } else void import('./previews.ts').then(({ buildPreview }) => buildPreview(p.id)).catch(() => {});
     // What the beta runs this one superseded asked for comes along: a playtest, their tasks' criteria (pm.ts reads them).
     // Only what still waits for a beta check, once per scenario, within a budget (playplan.ts): a burst of pushes used to
@@ -1066,9 +1098,7 @@ async function betaBody(id: string, p: Product, { focus, criteria, scenario, opt
       const s = startStep(id, p.id, 'playtest', nameOf(t));
       updateStep(s, { status: 'skipped', detail: 'not playtested: beta playtests run when asked for (studio beta, the Beta button), not after every merge', finished: true });
     }
-    const cost = (db.prepare('SELECT COALESCE(SUM(cost), 0) AS c FROM steps WHERE run = ?').get(id) as any).c;
-    const failed = (db.prepare(`SELECT COUNT(*) AS n FROM steps WHERE run = ? AND status = 'failed'`).get(id) as any).n;
-    db.prepare(`UPDATE runs SET status = ?, detail = ?, finished = ?, cost = ? WHERE id = ?`).run(failed ? 'failed' : 'done', `beta ${p.id}${failed ? ' failed' : ''}`, Date.now(), cost, id);
+    closeRun(id, `beta ${p.id}`);
   } catch (e: any) {
     db.prepare(`UPDATE runs SET status = 'failed', detail = ?, finished = ? WHERE id = ?`).run(String(e.message ?? e), Date.now(), id);
   }
@@ -1116,7 +1146,7 @@ async function assetsBody(id: string, p: Product, todo: { id: string; status: st
   }));
   const failed = (db.prepare(`SELECT COUNT(*) AS n FROM steps WHERE run = ? AND status = 'failed'`).get(id) as any).n;
   const cost = (db.prepare('SELECT COALESCE(SUM(cost), 0) AS c FROM steps WHERE run = ?').get(id) as any).c;
-  db.prepare('UPDATE runs SET status = ?, detail = ?, finished = ?, cost = ? WHERE id = ?').run(failed ? 'failed' : 'done', `assets ${p.id}: ${todo.length - failed} made${failed ? `, ${failed} failed` : ''}`, Date.now(), cost, id);
+  db.prepare('UPDATE runs SET status = ?, detail = ?, finished = ?, cost = ? WHERE id = ?').run(endStatus({ ...runCounts(id), failed }, runCancelled(id)), `assets ${p.id}: ${todo.length - failed} made${failed ? `, ${failed} failed` : ''}`, Date.now(), cost, id);
 }
 
 /**

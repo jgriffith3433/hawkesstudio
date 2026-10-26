@@ -126,7 +126,7 @@ test('invites: an admin invites, the link makes a member once; members are refus
 
   const s = A.startSession(pat);
   const memberReq = (route: string) => req({ ...web, Cookie: `hawkes_session=${s.token}` }, '', 'POST');
-  for (const route of ['/api/deploy/sickofit', '/api/rollback/sickofit', '/api/approvals/a_0123456789ab/approve', '/api/users/invite', '/api/settings', '/api/roadmap/tasks/k_0123456789ab/gpu'])
+  for (const route of ['/api/deploy/sickofit', '/api/rollback/sickofit', '/api/approvals/a_0123456789ab/approve', '/api/users/invite', '/api/settings', '/api/roadmap/tasks/k_0123456789ab/gpu', '/api/runs/r_0123456789ab/cancel', '/api/jobs/j_0123456789ab/cancel', '/api/changes/c_0123456789ab/cancel', '/api/changes/c_0123456789ab/resume'])
     assert.match(String(A.memberRefusal(memberReq(route), route, 'POST')), /Only an admin/, route);
   assert.equal(A.memberRefusal(memberReq('/api/talk'), '/api/talk', 'POST'), null, 'members can use Talk');
   assert.equal(A.memberRefusal(req({ ...web, Cookie: `hawkes_session=${admin.token}` }, '', 'POST'), '/api/deploy/sickofit', 'POST'), null);

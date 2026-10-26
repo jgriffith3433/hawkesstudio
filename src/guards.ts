@@ -13,6 +13,7 @@
 //                                        sandbox (J's dashboard; live is going on air on Twitch)
 //   /api/claude/... (Claude accounts)    never from the sandbox; server.ts also wants J's click (approvals.ts notJClick)
 //   /api/antigravity/... (agy sign-in)   the same
+//   POST /api/runs|jobs|changes/<id>/cancel|resume  only from a Talk conversation (attributable), never an agent alone
 //   POST /api/pm/settings                only from a Talk conversation (attributable), on J's word (Talk's rules)
 //   POST /api/settings                   only from a Talk conversation; raising costs needs J's quoted yes (settings.ts)
 //
@@ -67,6 +68,8 @@ export function guardRoute(route: string, method: string, conv: string | null): 
     const infra = c && ['hawkesstudio', 'hawkesgen'].includes(c.product);
     return infra ? need(`MERGE ${m[1]}`, `Merging ${m[1]} into main (it deploys ${c!.product})`) : null;
   }
+  // Cancelling and resuming (cancel.ts): Talk and the PM (a conversation behind the call, recorded by name), never an agent on its own.
+  if (/^\/api\/(runs|jobs|changes)\/[\w-]+\/(cancel|resume)$/.test(route) && !conv) return 'Cancelling or resuming work is J\'s (the Activity panel) or Talk\'s, never an agent\'s own.';
   // Approve / Deny cards (approvals.ts): the sandbox may ask for one, never decide one (J's tap on the dashboard).
   if (/^\/api\/approvals\/a_[0-9a-f]+\/(approve|deny|dismiss)$/.test(route)) return 'Approving, denying or closing a card is J\'s tap on the card in his dashboard, never Talk\'s, the PM\'s or an agent\'s.';
   if (route.startsWith('/api/claude/')) return 'Claude accounts (signing in, switching) are J\'s click in Settings, never Talk\'s, the PM\'s or an agent\'s.';
