@@ -133,7 +133,8 @@ export const isPhone = (t: Playtest) => t.device === 'phone';
 /** Gen params for a playtest's device and baseline (the previous run of the same scenario, for the visual diff). */
 export function playtestExtras(product: string, name: string, t: Playtest) {
   const prev = db.prepare(`SELECT job FROM steps WHERE product = ? AND kind = 'playtest' AND name = ? AND status = 'done' AND job IS NOT NULL ORDER BY started DESC LIMIT 1`).get(product, name) as any;
-  return { ...(isPhone(t) ? { mobile: true } : {}), ...(prev?.job ? { baseline: prev.job } : {}) };
+  const peers = Math.max(1, Math.min(4, Math.round(Number(t.peers) || 1)));
+  return { ...(isPhone(t) ? { mobile: true } : {}), ...(prev?.job ? { baseline: prev.job } : {}), ...(peers > 1 ? { peers } : {}) };
 }
 
 /** What a playtest step keeps (the rest stays in the Gen job). */

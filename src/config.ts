@@ -57,7 +57,9 @@ export type AppConf = {
 /** device "phone": a 390x844 touch phone (the review also judges touch controls, text size and layout). */
 export type Playtest = { scenario?: string; mode?: 'auto' | 'contract' | 'generic' | 'site'; where: 'local' | 'live'; device?: 'desktop' | 'phone'; daily?: boolean; timeout?: number; seed?: number; options?: Record<string, unknown>;
   /** Where the scenario starts (a named place, chapter or level the game loads: docs/playtest.md); none: from its start. */
-  at?: string };
+  at?: string;
+  /** Real players: 2 to 4 browsers on the same ?room=<id> (Gen playtest.run peers), for a multiplayer scenario. */
+  peers?: number };
 
 export type Product = {
   id: string;
