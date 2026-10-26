@@ -128,12 +128,32 @@
       d.state === 'ok' && d.data
         ? `<tr><td>Portal details <span class="meta">/v1/health/details</span></td><td><span class="pill">ok</span></td><td class="n">${d.data.p99ms == null ? '' : `p99 ${Math.round(d.data.p99ms)} ms`}</td><td class="meta">${d.data.sockets == null ? '' : `sockets ${d.data.sockets}${d.data.cap ? ` of ${d.data.cap}` : ''} · `}${d.data.lastBackup ? `backup ${ago(d.data.lastBackup)}` : 'no backup time'}</td></tr>`
         : `<tr><td>Portal details <span class="meta">/v1/health/details</span></td><td>${d.state === 'failed' ? '<span class="pill warn">failed</span>' : '<span class="meta">skipped</span>'}</td><td></td><td class="meta">${esc(d.note ?? '')}</td></tr>`,
-      ...x.nodes.list.map((n) => `<tr><td>Relay node ${esc(n.id)} <span class="meta">${esc(n.url)}/health</span></td><td>${okp(n.last)}</td><td class="n">${n.last.ms} ms</td><td class="meta">${n.players == null ? '' : `${n.players}${n.capacity ? ` of ${n.capacity}` : ''} players`}</td></tr>`),
+      ...x.nodes.list.map((n) => `<tr><td>Relay node ${esc(n.id)} <span class="meta">${esc(n.url)}</span></td><td>${okp(n.last)}</td><td class="n">${n.last.ms} ms</td><td class="meta">${n.players == null ? '' : `${n.players}${n.capacity ? ` of ${n.capacity}` : ''} players`}</td></tr>`),
     ].join('');
     const down = (p && !p.ok) || x.nodes.list.some((n) => !n.last.ok);
     return `<details class="rs-box more-details" data-k="outside"${down ? ' open' : ''}><summary>Outside: the portal and relay nodes <span class="meta">· ${down ? 'something is down' : x.nodes.list.length ? `portal and ${x.nodes.list.length} node(s) up` : p ? 'portal up' : 'not probed yet'}</span></summary>
       <div class="rs-wrap"><table><tr><th>Target</th><th>State</th><th class="n">Time</th><th>Detail</th></tr>${rows}</table></div>
-      <div class="meta" style="margin-bottom:8px">Probed every minute. Details need a portal admin key in Studio's secrets (HAWKES_PORTAL_ADMIN_KEY); relay nodes come from Hawkes Gen once it lists them.${x.nodes.state === 'failed' ? ` <span class="rs-amber">Node list failed: ${esc(x.nodes.note ?? '')}</span>` : ''}</div></details>`;
+      <div class="meta" style="margin-bottom:8px">Probed every minute. Details need a portal admin key in Studio's secrets (HAWKES_PORTAL_ADMIN_KEY); relay nodes come from Hawkes Net (net.hawkesgen.com/v1/net/nodes).${x.nodes.state === 'failed' ? ` <span class="rs-amber">Node list failed: ${esc(x.nodes.note ?? '')}</span>` : ''}</div></details>`;
+  }
+
+  // Hawkes Net, the multiplayer box: what is happening on it (players, rooms per project, its workers, usage).
+  function netbox(r) {
+    const n = r.net;
+    if (!n) return '';
+    if (!n.ok) return `<details class="rs-box more-details" data-k="net" open><summary>Hawkes Net <span class="meta">· not answering</span></summary><p class="rs-red">${esc(n.error)}</p></details>`;
+    const players = (n.nodes ?? []).reduce((s, x) => s + (x.players || 0), 0);
+    const cap = (n.nodes ?? []).reduce((s, x) => s + (x.capacity || 0), 0);
+    const e = n.extra ?? null, nd = n.node ?? null;
+    const gb = (v) => (v >= 1 ? `${v.toFixed(2)} GB` : `${Math.round(v * 1024)} MB`);
+    const projects = (n.rooms ?? []).map((p) => `<tr><td>${esc(p.project)}</td><td>${p.transport === 'relay' ? '<span class="pill">relay</span>' : '<span class="meta">peer to peer</span>'}</td><td class="n">${p.rooms}</td><td class="n">${p.players}</td></tr>`).join('');
+    const workers = (nd?.workers ?? []).map((w, i) => `<tr><td>worker ${i}</td><td class="n">${w.rooms ?? 0}</td><td class="n">${w.players ?? 0}</td><td class="n">${w.cpu == null ? '' : `${Math.round(w.cpu * 100)}%`}</td><td class="n">${w.lagP99 == null ? '' : `${w.lagP99} ms`}</td></tr>`).join('');
+    const usage = e ? (e.sinceStart?.perProject ?? []).filter((p) => p.playerMinutes >= 0.1).sort((a, b) => b.gbOut - a.gbOut).slice(0, 12).map((p) => `<tr><td>${esc(p.project)}</td><td>${esc(p.transport)}</td><td class="n">${p.playerMinutes.toFixed(1)}</td><td class="n">${gb(p.gbOut)}</td></tr>`).join('') : '';
+    return `<details class="rs-box more-details" data-k="net"${n.up ? '' : ' open'}><summary>Hawkes Net <span class="meta">· ${n.up ? `${players} player${players === 1 ? '' : 's'} on ${(n.nodes ?? []).length} node${(n.nodes ?? []).length === 1 ? '' : 's'}${cap ? ` (room for ${cap})` : ''}` : 'no node up'}</span></summary>
+      <p style="margin:4px 0"><a href="${esc(n.url)}/" target="_blank" rel="noopener">${esc(n.url.replace(/^https?:\/\//, ''))}</a> · version ${esc(n.version ?? '?')}${e ? ` · up ${Math.round(e.uptimeS / 3600)} h · ${e.usageWaiting} usage report${e.usageWaiting === 1 ? '' : 's'} waiting for Gen · since start ${e.sinceStart.playerMinutes.toFixed(0)} player-minutes, ${gb(e.sinceStart.gbOut)} sent` : ''}</p>
+      ${projects ? `<div class="rs-wrap"><table><tr><th>Project (last 10 min)</th><th>Transport</th><th class="n">Rooms</th><th class="n">Players</th></tr>${projects}</table></div>` : '<p class="meta">No rooms in the last 10 minutes.</p>'}
+      ${workers ? `<div class="rs-wrap"><table><tr><th>Relay process</th><th class="n">Rooms</th><th class="n">Players</th><th class="n">CPU</th><th class="n">Lag p99</th></tr>${workers}</table></div>` : ''}
+      ${usage ? `<div class="rs-wrap"><table><tr><th>Usage since start</th><th>Transport</th><th class="n">Player-min</th><th class="n">Sent</th></tr>${usage}</table></div>` : ''}
+      <div class="meta" style="margin-bottom:8px">${n.full ? 'From its operator view, read with the Gen key Studio holds.' : 'Public status only: the Gen key Studio holds is not an owner or admin key.'} Down or full: the line above and a phone note. Logs: <code>journalctl -u hawkes-net</code> on the box.</div></details>`;
   }
 
   function work(r) {
@@ -184,7 +204,7 @@
     const worst = r.attention[0]?.level ?? '';
     el.innerHTML = `<p class="rs-head ${worst}">${worst === 'bad' ? '⚠ ' : ''}${esc(r.headline)}</p>
       ${r.attention.length > 1 ? `<ul class="rs-att">${r.attention.slice(1).map((a) => `<li class="${a.level === 'bad' ? 'rs-red' : 'rs-amber'}">${a.level === 'bad' ? '⚠' : '•'} ${esc(a.text)}</li>`).join('')}</ul>` : ''}
-      ${tiles(r)}${groups(r.host)}${outside(r)}${fleet(r)}${work(r)}${loop(r)}${charts(r)}
+      ${tiles(r)}${groups(r.host)}${outside(r)}${netbox(r)}${fleet(r)}${work(r)}${loop(r)}${charts(r)}
       <div class="meta">Read ${ago(r.at)}${r.host ? ` in ${r.host.sampleMs} ms` : ''}. Phone alerts: ${r.settings.alerts ? `memory or disk over ${r.settings.memoryPct}% / ${r.settings.diskPct}% for ${r.settings.minutes} min, a machine idle ${r.settings.pastStopMinutes} min past its stop time, the portal failing ${r.settings.portalMinutes} min, event-loop p99 over ${r.settings.loopP99Ms} ms for ${r.settings.loopMinutes} min, WebSockets over ${r.settings.wsPct}%, a backup older than ${r.settings.backupHours} h, a relay node down` : 'off'} (<a href="#settings" data-rs-go="settings">Settings</a>).</div>`;
     for (const [k, o] of open) { const d = el.querySelector(`details[data-k="${k}"]`); if (d) d.open = o; }
   }

@@ -102,3 +102,10 @@ test('relay GB and player-minutes per product from Gen usage', () => {
   assert.equal(out[0].relayGb, 2);
   assert.equal(out[0].relayPlayerMinutes, 120);
 });
+
+test("a Hawkes Net node's health is /healthz at its own https address (its row names its WebSocket)", async () => {
+  const x = await import('../src/external.ts');
+  assert.equal(x.healthOf({ url: 'wss://net.hawkesgen.com/v1/net/ws' }, 'https://hawkesgen.com'), 'https://net.hawkesgen.com/healthz');
+  assert.equal(x.healthOf({ url: 'ws://127.0.0.1:8800/v1/net/ws' }, 'x'), 'http://127.0.0.1:8800/healthz');
+  assert.equal(x.healthOf({ path: '/n1' }, 'http://b'), 'http://b/n1/health');
+});

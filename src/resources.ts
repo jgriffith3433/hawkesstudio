@@ -385,6 +385,39 @@ export async function fleet(maxAge = SAMPLE_MS) {
   return data;
 }
 
+/** Hawkes Net, the multiplayer box (https://net.hawkesgen.com, hawkesgen net/): its operator view with Studio's Gen key
+ *  (the node and its worker processes, rooms and players per project, usage since it started and waiting for Gen), else
+ *  its public status. Kept a minute; never more than an 8 s wait. (Its up/down alerts are external.ts's node incidents.) */
+let netCache: { at: number; data: any } | null = null;
+export async function netBox(maxAge = 60_000) {
+  if (netCache && Date.now() - netCache.at < maxAge) return netCache.data;
+  const { gen } = await import('./gen.ts');
+  const { NET_URL } = await import('./external.ts');
+  const url = NET_URL();
+  let data: any;
+  try {
+    const key = (gen as any).key as string | null;
+    let r = await fetch(`${url}/v1/net/ops`, { headers: key ? { Authorization: `Bearer ${key}` } : {}, signal: AbortSignal.timeout(8000) });
+    const full = r.ok;
+    if (!r.ok && (r.status === 401 || r.status === 403)) r = await fetch(`${url}/v1/net/status`, { signal: AbortSignal.timeout(8000) });
+    if (!r.ok) throw new Error(`answered ${r.status}`);
+    const j: any = await r.json();
+    data = { ok: true, url, full, up: Boolean(j.up), version: j.version, nodes: j.nodes ?? [], rooms: j.rooms ?? null, totals: j.totals ?? null, node: j.node ?? null, extra: j.extra ?? null };
+  } catch (e: any) {
+    data = { ok: false, url, error: `Hawkes Net (${url.replace(/^https?:\/\//, '')}) didn't answer: ${String(e?.message ?? e).slice(0, 160)}` };
+  }
+  netCache = { at: Date.now(), data };
+  return data;
+}
+/** What on the multiplayer box needs a look (capacity, usage stuck on the way to Gen). Down is external.ts's incident. */
+export function netAttention(net: any): Attention[] {
+  const out: Attention[] = [];
+  if (net?.ok && !net.up) out.push({ level: 'bad', text: "Hawkes Net answers but has no relay node up: players can't join multiplayer rooms." });
+  if (net?.extra?.usageWaiting > 10) out.push({ level: 'warn', text: `Hawkes Net has ${net.extra.usageWaiting} minutes of usage waiting to reach Gen.` });
+  for (const n of net?.nodes ?? []) if (n.capacity && n.players / n.capacity > 0.8) out.push({ level: 'warn', text: `Hawkes Net node ${n.id} is ${Math.round((n.players / n.capacity) * 100)}% full (${n.players} of ${n.capacity} players): time for a second relay box.` });
+  return out;
+}
+
 /** Agents (running, queued, waiting on Gen) against their limits, the PM's capacity, Gen's job queue. */
 async function work() {
   const { agentSettings, perProductLimit, brainOfChange } = await import('./agents.ts');
@@ -552,15 +585,15 @@ export function startResourceSampler() {
 export async function resources({ range = '1h' } = {}) {
   // Without the sampler (tests, a fresh start) a reading now; CPU percents need the second one.
   const host = latest && Date.now() - latest.at < 2 * SAMPLE_MS ? latest : (latest = await readHost());
-  const [w, fl] = await Promise.all([work().catch(() => null), fleet()]);
+  const [w, fl, net] = await Promise.all([work().catch(() => null), fleet(), netBox()]);
   const { loopHealth, runningCommands } = await import('./ops.ts');
   const s = resourceSettings();
   const xs = await import('./external.ts');
-  const attention = [...attentionOf(host, w, fl, s), ...xs.externalIncidents(s).map((i) => ({ level: 'bad' as const, text: `${i.title}: ${i.message}` }))]
+  const attention = [...attentionOf(host, w, fl, s), ...netAttention(net), ...xs.externalIncidents(s).map((i) => ({ level: 'bad' as const, text: `${i.title}: ${i.message}` }))]
     .sort((a, b) => (a.level === b.level ? 0 : a.level === 'bad' ? -1 : 1));
   return {
     at: Date.now(), headline: headline(host, attention, w), attention, host, loop: loopHealth(), commands: runningCommands(),
-    fleet: fl, work: w, external: xs.externalState(), settings: s, history: history(range), spark: range === '1h' ? undefined : history('1h', { points: 60 }),
+    fleet: fl, net, work: w, external: xs.externalState(), settings: s, history: history(range), spark: range === '1h' ? undefined : history('1h', { points: 60 }),
   };
 }
 

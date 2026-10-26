@@ -1,6 +1,7 @@
 // External targets for the Resources tab's sampler (resources.ts): the portal's health every minute (status and time),
-// its admin details when Studio has a key, and each Hawkes Net relay node's /health (the list from Gen's
-// GET /v1/net/nodes). Alerts are incidents: one phone note when one opens, one recovery note when it closes.
+// its admin details when Studio has a key, and each Hawkes Net relay node's health (the list from the Hawkes Net service's
+// GET /v1/net/nodes, https://net.hawkesgen.com: its own box since 2026-10-25). Alerts are incidents: one phone note when
+// one opens, one recovery note when it closes.
 //
 // The portal admin key is a portal API key for an admin account, given to Studio through the usual secrets path as the
 // environment variable HAWKES_PORTAL_ADMIN_KEY. Without it the details are skipped, quietly. Before Gen has
@@ -66,10 +67,20 @@ export function readDetails(d: any): PortalDetails {
 
 export type ProbeOptions = { portalUrl?: string; adminKey?: string; nodes?: () => Promise<any[]> };
 
+export const NET_URL = () => (process.env.HAWKES_NET_URL || 'https://net.hawkesgen.com').replace(/\/+$/, '');
 async function nodeList(): Promise<any[]> {
-  const { gen } = await import('./gen.ts');
-  const r = await gen.request('/net/nodes', { signal: AbortSignal.timeout(TIMEOUT_MS) });
-  return (Array.isArray(r) ? r : r?.nodes ?? []) as any[];
+  const r = await fetch(`${NET_URL()}/v1/net/nodes`, { signal: AbortSignal.timeout(TIMEOUT_MS) });
+  if (!r.ok) throw new Error(`Hawkes Net answered ${r.status}`);
+  const j: any = await r.json();
+  return (Array.isArray(j) ? j : j?.nodes ?? []) as any[];
+}
+/** Where a node's health is: a node's own address (wss://host/v1/net/ws) answers /healthz at https://host; a test row's
+ *  path or healthUrl answers /health. */
+export function healthOf(r: any, base: string): string {
+  const u = String(r.healthUrl ?? r.url ?? r.origin ?? (r.path ? `${base}${r.path}` : ''));
+  const ws = /^wss?:\/\/([^/]+)/i.exec(u);
+  if (ws) return `${u.toLowerCase().startsWith('wss:') ? 'https' : 'http'}://${ws[1]}/healthz`;
+  return u ? `${u.replace(/\/+$/, '').replace(/\/health$/, '')}/health` : '';
 }
 
 /** One round: the portal, its details and the relay nodes. Never throws. */
@@ -104,9 +115,9 @@ export async function probeExternal(o: ProbeOptions = {}, now = Date.now()) {
     const list: NodeState[] = [];
     await Promise.all((n.list ?? []).map(async (r: any) => {
       const id = String(r.id ?? r.path ?? '');
-      const url = String(r.healthUrl ?? r.url ?? r.origin ?? (r.path ? `${base}${r.path}` : '')).replace(/\/+$/, '').replace(/\/health$/, '');
+      const url = healthOf(r, base);
       if (!id || !url || r.status === 'draining') return; // a draining node is leaving on purpose
-      const p = (await get(`${url}/health`)).probe;
+      const p = (await get(url)).probe;
       list.push({ id, url, players: num(r.players), capacity: num(r.capacity), last: p });
     }));
     ext.nodes = { state: 'ok', list: list.sort((a, b) => a.id.localeCompare(b.id)) };
@@ -149,7 +160,7 @@ export function externalIncidents(s: ResourceSettings, e: External = ext, series
     if (d.sockets != null && d.cap && (100 * d.sockets) / d.cap > s.wsPct) out.push({ key: 'portal-ws', title: 'The portal is nearly full of WebSockets', message: `${d.sockets} of ${d.cap} game connections (${Math.round((100 * d.sockets) / d.cap)}%, alert past ${s.wsPct}%).` });
     if (d.lastBackup != null && now - d.lastBackup > s.backupHours * 3600_000) out.push({ key: 'portal-backup', title: 'The portal backup is old', message: `The last backup was ${fmtAgo(now - d.lastBackup)} ago (alert past ${s.backupHours} h).` });
   }
-  for (const n of e.nodes.list) if (!n.last.ok) out.push({ key: `node:${n.id}`, title: `Relay node ${n.id} is down`, message: `${n.url}/health ${n.last.status ? `answered HTTP ${n.last.status}` : `didn't answer (${n.last.error ?? 'no answer'})`}${n.players ? `; it had ${n.players} players` : ''}.` });
+  for (const n of e.nodes.list) if (!n.last.ok) out.push({ key: `node:${n.id}`, title: `Relay node ${n.id} is down`, message: `${n.url} ${n.last.status ? `answered HTTP ${n.last.status}` : `didn't answer (${n.last.error ?? 'no answer'})`}${n.players ? `; it had ${n.players} players` : ''}.` });
   return out;
 }
 
