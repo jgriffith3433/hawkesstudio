@@ -222,6 +222,15 @@ key never reaches those routes. Gen does the rest (allowed origins per product, 
 `docs/analytics.md`). Everything else on gen still needs the login or an `hg_` key; `test/caddyfile.test.ts` checks
 both. A merged change to them reaches the server on its own (`hawkes-pull.mjs` applies `deploy/caddyfile.mjs`, above).
 
+**The Hawkes Net box (net.hawkesgen.com; J, 2026-10-25: multiplayer off the control server):** its own EC2 instance
+(c7g.large Graviton, us-east-1, Elastic IP 44.219.198.116, about $59/month plus $0.09/GB the relay sends), made by
+`deploy/provision-net.mjs` (dry run without `--apply`; state and SSH key in `deploy/.keys/net.json` and `net_ed25519`;
+first boot `deploy/net-cloud-init.sh`) and set up by hawkesgen's `deploy/net/setup.mjs`. It runs tickets, the room
+directory and the relay (hawkesgen `src/net/hub.ts`, unit `hawkes-net`, Caddy in front) and deploys itself from
+hawkesgen main (`hawkes-net-pull.timer`). Gen on this server runs no relay any more: its Hawkes Net routes answer with a
+308 to the box; it only checks keys for the box (`/v1/net/whoami`) and files its usage. Logs:
+`ssh -i deploy/.keys/net_ed25519 ubuntu@44.219.198.116 journalctl -u hawkes-net -u hawkes-net-pull -u caddy`.
+
 **Public on gen.hawkesgen.com (Hawkes Net):** players' pages join multiplayer rooms with no login, so `@net` opens
 `/v1/net/ws` (the relay's WebSocket: a signed, single-use ticket is the only way in), `/v1/net/ticket` (Gen's ticket
 door: player tickets for a listed project's own sites, limited per address; requests with a key go through `@apikey`),
