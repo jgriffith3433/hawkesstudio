@@ -114,10 +114,13 @@ function exec(cmd: string, args: string[], cwd: string, { shell = false, timeout
     const child = shell && sandboxOn()
       ? sandboxSpawn('/bin/sh', ['-c', [cmd, ...args].join(' ')], { cwd, timeout: timeoutMs })
       : spawn(cmd, args, { cwd, shell, windowsHide: true, timeout: timeoutMs });
+    // A build's log is cut to its last part; git's answers are kept whole (a Unity site's ls-files is several MB: cut,
+    // the start of the list, Game/ included, went missing from the published site, 2026-10-27).
+    const cap = shell ? 1e6 : Infinity;
     let out = '';
     let err = '';
-    child.stdout?.on('data', (d) => { out += d; if (out.length > 1e6) out = out.slice(-5e5); });
-    child.stderr?.on('data', (d) => { err += d; if (err.length > 1e6) err = err.slice(-5e5); });
+    child.stdout?.on('data', (d) => { out += d; if (out.length > cap) out = out.slice(-5e5); });
+    child.stderr?.on('data', (d) => { err += d; if (err.length > cap) err = err.slice(-5e5); });
     child.on('error', (e) => resolve({ ok: false, out, err: e.message }));
     child.on('close', (code) => resolve({ ok: code === 0, out: out.trim(), err: err.trim() }));
   });

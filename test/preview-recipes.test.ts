@@ -40,3 +40,20 @@ test("I Can Be's beta site is dist/ at the root, never the unbuilt source", asyn
   fs.rmSync(path.join(dir, 'dist'), { recursive: true });
   await assert.rejects(collect(dir, recipeOf('icanbe')), /no dist\//);
 });
+
+test('a Unity site whose file list passes 1 MB is published whole (Sick Of It v262 lost Game/ to a cut list)', async () => {
+  const { spawnSync } = await import('node:child_process');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'collect-big-'));
+  spawnSync('git', ['init', '-q'], { cwd: dir });
+  const deep = path.join(dir, 'Game', 'v262', 'ServerData', 'WebGL');
+  fs.mkdirSync(deep, { recursive: true });
+  const name = (i: number) => `playerdata_${String(i).padStart(5, '0')}_assets_all_521fa1481d82b1d33ee13aba7c5d675b.bundle`;
+  const n = 12000; // about 1.3 MB of names with their folders
+  for (let i = 0; i < n; i++) fs.writeFileSync(path.join(deep, name(i)), '');
+  fs.writeFileSync(path.join(dir, 'index.html'), '<html></html>');
+  const files = await collect(dir, { site: 'tracked' } as any);
+  assert.ok(files.has('index.html'));
+  assert.ok(files.has(`Game/v262/ServerData/WebGL/${name(0)}`), 'the start of the list is kept');
+  assert.equal([...files.keys()].filter((k) => k.startsWith('Game/')).length, n);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
