@@ -77,7 +77,9 @@ that made it; usage and cost are tracked per project and API key. Projects never
 
 **`hawkesnet/`** (`jgriffith3433/hawkesnet`, private; its own repo since 2026-10-26, before that Gen's `net/`) is the
 multiplayer service at **https://net.hawkesgen.com**: accounts' projects (hawkesgen.com accounts), tickets, the room
-directory and the relay, on its own EC2 box that deploys itself from hawkesnet main (push only with J's OK). Its
+directory and the relay, on its own EC2 box that deploys itself from hawkesnet main. It has a beta lane like the
+products (products.json `hawkesnet`: work goes to `beta`, Studio runs beta as an app and playtests it, and going live is
+the Go live page's card, J's tap or `DEPLOY hawkesnet`). Its
 `docs/net.md` is the design. The client SDK is `sdk/js` (npm `@hawkesgen/net`, MIT); the Unity WebGL package
 `com.hawkes.net` is `sdk/unity` until `hawkesnet-unity` (public) takes it; `hawkesnet-babylon` (public) is next. Gen keeps
 only a bridge (`src/netbridge.ts`: it checks API keys for the box and takes its usage). Games on it: Dose Of Destruction

@@ -501,6 +501,63 @@
         },
         "open": "^/(play/|play-asset/|v1/play/|v1/play-template/|v1/ws$|v1/community/a_[0-9a-f]+/file$|favicon\\.svg$|dl/)"
       }
+    },
+    {
+      "id": "hawkesnet",
+      "name": "Hawkes Net (multiplayer)",
+      "framing": "network services",
+      "engine": "web",
+      "repo": "hawkesnet",
+      "checks": [{ "dir": "hawkesnet", "cmd": "npm run typecheck" }, { "dir": "hawkesnet", "cmd": "npm test" }],
+      "site": "hawkesnet",
+      "live": "https://net.hawkesgen.com/",
+      "local": {
+        "serve": "app",
+        "dir": "hawkesnet",
+        "port": 8095,
+        "path": "/"
+      },
+      "playtests": [
+        {
+          "mode": "site",
+          "where": "local"
+        },
+        {
+          "mode": "site",
+          "where": "live"
+        }
+      ],
+      "story": [
+        "hawkesnet/AGENTS.md",
+        "hawkesnet/docs/net.md"
+      ],
+      "about": "Hawkes Net, the multiplayer service at net.hawkesgen.com (its own repo since 2026-10-26, before that Hawkes Gen's net/ folder): hawkesgen.com accounts' projects, tickets, the room directory and the relay, plus the developer dashboard and the demo. Every Hawkes game's online play runs on it (Dose Of Destruction, Sick Of It, Yooba Land, the portal's play page), and outside developers' games through the SDKs (@hawkesgen/net, hawkesnet-babylon, hawkesnet-unity). It runs on its own EC2 box, which pulls main, tests it on a clean copy, restarts with the relay draining and rolls back if unhealthy.",
+      "quality": "The dashboard (net.hawkesgen.com: the sign-in page when signed out, the docs) and the demo load with no broken links, no blank screens and no console errors, and the demo joins a room. Live players are never disturbed by a test: playtests on live only read pages. Going live restarts the relay (rooms are drained and players reconnect): do it when the games are quiet.",
+      "deploy": {
+        "via": "ec2",
+        "box": "the Hawkes Net box (net.hawkesgen.com)"
+      },
+      "dev": {
+        "front": 8710
+      },
+      "app": {
+        "start": "node --disable-warning=ExperimentalWarning src/hub.ts",
+        "health": "/healthz",
+        "portEnv": "NET_PORT",
+        "dataEnv": "NET_DATA_DIR",
+        "gen": {
+          "keyEnv": "NET_GEN_KEY",
+          "urlEnv": "NET_GEN_URL",
+          "projects": [
+            "hawkesnet"
+          ]
+        },
+        "env": {
+          "NET_WORKERS": "1",
+          "NET_HOST": "127.0.0.1",
+          "NET_NODE_ID": "net-beta"
+        }
+      }
     }
   ],
   "infra": [
@@ -558,12 +615,14 @@
     "imaginelivetvwebsite": "jgriffith3433/imaginelivetvwebsite",
     "hawkesbiomedicalnew": "jgriffith3433/hawkesbiomedical",
     "hawkesgenwebsite": "jgriffith3433/hawkesgenwebsite",
+    "hawkesnet": "jgriffith3433/hawkesnet",
     "hawkes-assets": "jgriffith3433/hawkes-assets",
     "hawkes-video": "jgriffith3433/hawkes-video"
   },
   "repoSetup": {
     "$comment": "Run on the server after a repo is cloned or fast-forwarded (src/repos.ts), in the repo's folder. hawkes-assets: git keeps what the files are, S3 keeps the files (its README).",
-    "hawkes-assets": "npm ci --no-audit --no-fund --loglevel=error && node tools/sync.mjs pull"
+    "hawkes-assets": "npm ci --no-audit --no-fund --loglevel=error && node tools/sync.mjs pull",
+    "hawkesnet": "npm ci --no-audit --no-fund --loglevel=error"
   },
   "$comment_repos": "GitHub repo for each top-level folder (the server clones them into the same layout as C:\\Projects).",
   "previews": {
@@ -575,7 +634,8 @@
     "icanbe": "icanbe",
     "imaginelivetv": "imaginelivetv",
     "corporate": "hawkesbiomedical",
-    "hawkesgenwebsite": "hawkesgenwebsite"
+    "hawkesgenwebsite": "hawkesgenwebsite",
+    "hawkesnet": "hawkesnet"
   },
   "$comment_previews": "Beta sites: https://<subdomain>.hawkesgen.com/ is the product built from its beta branch (what going live ships), /c/<change id>/ an agent change (src/previews.ts; DNS and Caddy in deploy/deploy.mjs). Same login as Studio."
 }
