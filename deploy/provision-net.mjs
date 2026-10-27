@@ -1,6 +1,6 @@
-// Creates the Hawkes Net box (net.hawkesgen.com): multiplayer off the control server (J, 2026-10-25). It runs hawkesgen's
-// src/net/hub.ts (tickets, the room directory, the relay with worker processes) behind Caddy; hawkesgen's
-// deploy/net/setup.mjs installs it and it deploys itself from hawkesgen main after that.
+// Creates the Hawkes Net box (net.hawkesgen.com): multiplayer off the control server (J, 2026-10-25). It runs the
+// hawkesnet repo's src/hub.ts (tickets, the room directory, the relay with worker processes) behind Caddy; hawkesnet's
+// deploy/setup.mjs installs it and it deploys itself from hawkesnet main after that (Hawkes Net left Gen, 2026-10-26).
 //
 //   node deploy/provision-net.mjs            says what it would make and what it costs; changes nothing
 //   node deploy/provision-net.mjs --apply    makes what's missing (idempotent), prints the state

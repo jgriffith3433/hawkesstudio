@@ -73,6 +73,17 @@ that made it; usage and cost are tracked per project and API key. Projects never
   - **PH Origins:** voice, SFX and `tools/genMaterial.mjs`.
   - **Sick Of It:** `Tools/Art/art.mjs` (art) and the Unity Sound Generator (`audio.sfx`, `audio.voice`, voice design).
 
+## Hawkes Net: multiplayer (infrastructure and a product for outside developers)
+
+**`hawkesnet/`** (`jgriffith3433/hawkesnet`, private; its own repo since 2026-10-26, before that Gen's `net/`) is the
+multiplayer service at **https://net.hawkesgen.com**: accounts' projects (hawkesgen.com accounts), tickets, the room
+directory and the relay, on its own EC2 box that deploys itself from hawkesnet main (push only with J's OK). Its
+`docs/net.md` is the design. The client SDK is `sdk/js` (npm `@hawkesgen/net`, MIT); the Unity WebGL package
+`com.hawkes.net` is `sdk/unity` until `hawkesnet-unity` (public) takes it; `hawkesnet-babylon` (public) is next. Gen keeps
+only a bridge (`src/netbridge.ts`: it checks API keys for the box and takes its usage). Games on it: Dose Of Destruction
+(copy in `src/game/net/hawkes/`), the portal's play page (`public/play/`), Yooba Land and Sick Of It
+(`Packages/com.hawkes.net`).
+
 ## The cloud: hawkesgen.com
 
 Hawkes Gen and Hawkes Studio run on an AWS control server: **https://studio.hawkesgen.com** and
