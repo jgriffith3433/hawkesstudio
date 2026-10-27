@@ -46,6 +46,21 @@ test('the button goes into whole pages only, once', () => {
   assert.ok(fs.existsSync(br.WIDGET), 'the widget file is there');
 });
 
+test('beta pages name beta Hawkes Net before any game code runs, and a page that names its own keeps it', () => {
+  assert.equal(br.BETA_NET, 'https://hawkesnet.hawkesgen.com');
+  const out = br.injectReport('<html><head><script src="game.js"></script></head><body></body></html>', { product: 'brtest' });
+  assert.ok(out.indexOf('HAWKES_NET_ENDPOINT') < out.indexOf('game.js'), 'set before the game loads');
+  const code = /<script data-hawkes-report>([\s\S]*?)<\/script>/.exec(out)![1];
+  const run = (start: any) => {
+    const ctx: any = { console: { error() {}, warn() {} }, addEventListener() {}, Object, JSON, Date, HAWKES_NET_ENDPOINT: start };
+    ctx.window = ctx;
+    vm.runInNewContext(code, ctx);
+    return ctx.HAWKES_NET_ENDPOINT;
+  };
+  assert.equal(run(undefined), 'https://hawkesnet.hawkesgen.com');
+  assert.equal(run('http://127.0.0.1:8786'), 'http://127.0.0.1:8786');
+});
+
 test('the early hook makes WebGL keep its drawing buffer (screenshots on phones)', () => {
   const out = br.injectReport('<html><head></head><body></body></html>', { product: 'brtest' });
   const code = /<script data-hawkes-report>([\s\S]*?)<\/script>/.exec(out)![1];

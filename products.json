@@ -558,8 +558,10 @@
         "env": {
           "NET_WORKERS": "1",
           "NET_HOST": "127.0.0.1",
-          "NET_NODE_ID": "net-beta"
-        }
+          "NET_NODE_ID": "net-beta",
+          "NET_PUBLIC_URL": "wss://hawkesnet.hawkesgen.com/v1/net/ws"
+        },
+        "open": "^/(v1/net/|sdk/|healthz$)"
       }
     }
   ],

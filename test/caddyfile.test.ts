@@ -80,6 +80,13 @@ test("app hosts: only the portal's beta lets a CORS preflight past the sign-in, 
   assert.doesNotMatch(site('hawkesnet.hawkesgen.com'), /@preflight/);
 });
 
+test("Hawkes Net's beta: its public API is open like live's, its dashboard behind the sign-in", () => {
+  const net = site('hawkesnet.hawkesgen.com');
+  assert.match(net, /@open path_regexp \^\/\(v1\/net\/\|sdk\/\|healthz\$\)\n/);
+  assert.doesNotMatch(handles(net).find((x) => x.matcher === '@open')!.body, /import login/);
+  assert.match(handles(net).find((x) => x.matcher === '')!.body, /import login/);
+});
+
 test('studio: the analytics routes are not added there', () => {
   assert.doesNotMatch(site('studio.hawkesgen.com'), /analytics|@sdk/);
 });

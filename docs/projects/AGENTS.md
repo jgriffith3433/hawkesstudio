@@ -80,11 +80,17 @@ multiplayer service at **https://net.hawkesgen.com**: accounts' projects (hawkes
 directory and the relay, on its own EC2 box that deploys itself from hawkesnet main. It has a beta lane like the
 products (products.json `hawkesnet`: work goes to `beta`, Studio runs beta as an app and playtests it, and going live is
 the Go live page's card, J's tap or `DEPLOY hawkesnet`). Its
-`docs/net.md` is the design. The client SDK is `sdk/js` (npm `@hawkesgen/net`, MIT); the Unity WebGL package
-`com.hawkes.net` is `sdk/unity` until `hawkesnet-unity` (public) takes it; `hawkesnet-babylon` (public) is next. Gen keeps
-only a bridge (`src/netbridge.ts`: it checks API keys for the box and takes its usage). Games on it: Dose Of Destruction
-(copy in `src/game/net/hawkes/`), the portal's play page (`public/play/`), Yooba Land and Sick Of It
-(`Packages/com.hawkes.net`).
+`docs/net.md` is the design. **Beta plays on beta, live on live:** beta Hawkes Net is **https://hawkesnet.hawkesgen.com**
+(its own projects, accounts and rooms; its dashboard behind Studio's login, its API open like live's). Studio's script on
+every beta page sets `window.HAWKES_NET_ENDPOINT` to it, and the SDKs read that before their default net.hawkesgen.com,
+so a game's beta site plays on beta Net and its live site on the real one with no change to the game. The portal's beta
+signs in and keeps its accounts' projects and keys on beta Net too.
+**The SDKs are packages the games depend on by version** (all public, MIT): JS `@hawkesgen/net` from
+`jgriffith3433/hawkesnet-js` (`"github:jgriffith3433/hawkesnet-js#v<version>"` until npm; its source is hawkesnet's
+`sdk/js`, released with `node tools/release-js.mjs --push`), Babylon `hawkesnet-babylon`, Unity `com.hawkes.net` from
+`hawkesnet-unity` by git URL with `#v<version>`. Updating a game is a version bump. Gen keeps only a bridge
+(`src/netbridge.ts`: it checks API keys for the box and takes its usage). Games on it: Dose Of Destruction, the portal's
+play page, Yooba Land and Sick Of It.
 
 ## The cloud: hawkesgen.com
 
