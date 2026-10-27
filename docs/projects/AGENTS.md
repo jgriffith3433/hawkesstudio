@@ -86,7 +86,7 @@ every beta page sets `window.HAWKES_NET_ENDPOINT` to it, and the SDKs read that 
 so a game's beta site plays on beta Net and its live site on the real one with no change to the game. The portal's beta
 signs in and keeps its accounts' projects and keys on beta Net too.
 **The SDKs are packages the games depend on by version** (all public, MIT): JS `@hawkesgen/net` from
-`jgriffith3433/hawkesnet-js` (`"github:jgriffith3433/hawkesnet-js#v<version>"` until npm; its source is hawkesnet's
+`jgriffith3433/hawkesnet-js` (`"https://github.com/jgriffith3433/hawkesnet-js/archive/refs/tags/v<version>.tar.gz"` until npm; its source is hawkesnet's
 `sdk/js`, released with `node tools/release-js.mjs --push`), Babylon `hawkesnet-babylon`, Unity `com.hawkes.net` from
 `hawkesnet-unity` by git URL with `#v<version>`. Updating a game is a version bump. Gen keeps only a bridge
 (`src/netbridge.ts`: it checks API keys for the box and takes its usage). Games on it: Dose Of Destruction, the portal's

@@ -11,7 +11,7 @@ import { createRequire } from 'node:module';
 import { pathToFileURL } from 'node:url';
 import { db, rowToStep, type Step } from './db.ts';
 import { gen, ensureGen, fileUrl } from './gen.ts';
-import { PROJECTS, GEN_PUBLIC_URL, today, type Playtest } from './config.ts';
+import { PROJECTS, GEN_PUBLIC_URL, today, betaPageGlobals, type Playtest } from './config.ts';
 
 // ------------------------------------------------------------ running one (never stuck)
 
@@ -130,11 +130,12 @@ export const REVIEW_RUN_MS = 20 * 60_000;
 
 export const isPhone = (t: Playtest) => t.device === 'phone';
 
-/** Gen params for a playtest's device and baseline (the previous run of the same scenario, for the visual diff). */
+/** Gen params for a playtest's device, baseline, players and (beta) page globals (the previous run of the same scenario, for the visual diff). */
 export function playtestExtras(product: string, name: string, t: Playtest) {
   const prev = db.prepare(`SELECT job FROM steps WHERE product = ? AND kind = 'playtest' AND name = ? AND status = 'done' AND job IS NOT NULL ORDER BY started DESC LIMIT 1`).get(product, name) as any;
   const peers = Math.max(1, Math.min(4, Math.round(Number(t.peers) || 1)));
-  return { ...(isPhone(t) ? { mobile: true } : {}), ...(prev?.job ? { baseline: prev.job } : {}), ...(peers > 1 ? { peers } : {}) };
+  // A beta playtest plays on beta Hawkes Net, as the beta site does (Studio's page script); a live one on the real one.
+  return { ...(isPhone(t) ? { mobile: true } : {}), ...(prev?.job ? { baseline: prev.job } : {}), ...(peers > 1 ? { peers } : {}), ...(t.where === 'live' ? {} : { globals: betaPageGlobals() }) };
 }
 
 /** What a playtest step keeps (the rest stays in the Gen job). */
