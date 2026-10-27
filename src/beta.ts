@@ -23,7 +23,7 @@ import { db } from './db.ts';
 import { BRANCH, BETA, isServer, repoMap, syncRepo } from './repos.ts';
 import { trackCommand, opLog } from './ops.ts';
 import { ensureInstalled } from './warm.ts';
-import { REF_LOCK, fetchBackoff, fetchLocked, repoKey, withRepoLock } from './gitlock.ts';
+import { REF_LOCK, fetchBackoff, fetchLocked, repoKey, repoBusy, withRepoLock } from './gitlock.ts';
 
 export { BETA };
 export const MAIN = BRANCH;
@@ -85,7 +85,7 @@ export async function gitAsync(cwd: string, args: string[], timeoutMs = 10 * 60_
   if (args[0] === 'push') return withRepoLock(repoKey(cwd), () => runGit(cwd, args, timeoutMs));
   return lockRetry(cwd, args, () => runGit(cwd, args, timeoutMs));
 }
-export { REF_LOCK, fetchBackoff, repoKey, withRepoLock };
+export { REF_LOCK, fetchBackoff, repoKey, withRepoLock, repoBusy };
 
 /**
  * A write that meets another git's index.lock (a git outside Studio, or one still finishing) waits and tries again,
@@ -166,8 +166,25 @@ export const isCloned = (dir: string) => fs.existsSync(path.join(dir, '.git'));
 /** Fetches origin; a missing checkout is a NotClonedError (never git's "spawn git ENOENT" for a folder that isn't there). */
 export const fetchOrigin = async (dir: string) => {
   if (!isCloned(dir)) throw new NotClonedError(path.basename(dir));
-  return must(await gitAsync(dir, ['fetch', '--quiet', '--prune', 'origin']), `fetching ${path.basename(dir)}`);
+  const out = must(await gitAsync(dir, ['fetch', '--quiet', '--prune', 'origin']), `fetching ${path.basename(dir)}`);
+  fetchedAt.set(repoKey(dir), Date.now());
+  return out;
 };
+const fetchedAt = new Map<string, number>();
+/**
+ * A fetch for something that only reads (the go-live plan, its cards): skipped when this repo was fetched in the last
+ * `maxAgeMs`, and when a fetch or push of it is running, since waiting would hold the reader for as long as that runs
+ * (J, 2026-10-27: Sick Of It's plan never came back while its go live pushed a 1.2 GB build for half an hour).
+ * Going live itself always fetches. Returns why it didn't fetch, or null when it did (or the last one is fresh).
+ */
+export async function fetchForRead(dir: string, maxAgeMs = 60_000): Promise<string | null> {
+  if (!isCloned(dir)) throw new NotClonedError(path.basename(dir));
+  const key = repoKey(dir);
+  if (Date.now() - (fetchedAt.get(key) ?? 0) < maxAgeMs) return null;
+  if (repoBusy(key)) return `${path.basename(dir)} is busy (a push or fetch is running), so this is as of its last fetch`;
+  await fetchOrigin(dir);
+  return null;
+}
 /** Clones the repo first when the server has no checkout yet (agents and beta pushes start from one). */
 export async function ensureCloned(dir: string) {
   if (isCloned(dir)) return;

@@ -90,6 +90,31 @@ test('retries stop after 3 more tries; other errors are not retried; only remote
   assert.deepEqual(lock.staleRefs("cannot lock ref 'refs/heads/beta': x\ncannot lock ref 'refs/remotes/origin/beta': y\nunable to update local ref 'refs/remotes/origin/main'"), ['refs/remotes/origin/beta', 'refs/remotes/origin/main']);
 });
 
+test('a read-only fetch skips a fresh fetch and never waits behind a busy repo', async () => {
+  const beta = await import('../src/beta.ts');
+  const at = () => git(dir, 'rev-parse', 'origin/beta');
+  const v2 = push('read v2');
+  assert.equal(await beta.fetchForRead(dir), null);
+  assert.equal(at(), v2, 'the first read fetches');
+  const v3 = push('read v3');
+  assert.equal(await beta.fetchForRead(dir), null);
+  assert.equal(at(), v2, 'fetched under a minute ago: read as of that fetch');
+  // A push of this repo that goes on (Sick Of It's go live, a 1.2 GB build): the reader doesn't wait for it.
+  let release!: () => void;
+  const gate = new Promise<void>((ok) => { release = ok; });
+  const held = lock.withRepoLock(lock.repoKey(dir), () => gate);
+  const t0 = Date.now();
+  const why = await beta.fetchForRead(dir, 0);
+  assert.ok(Date.now() - t0 < 1000, 'answers at once');
+  assert.match(String(why), /busy/);
+  assert.equal(at(), v2);
+  release();
+  await held;
+  await new Promise((ok) => setTimeout(ok, 0)); // the lock lets go on the next tick
+  assert.equal(await beta.fetchForRead(dir, 0), null);
+  assert.equal(at(), v3, 'free again: it fetches');
+});
+
 test.after(() => {
   try {
     fs.rmSync(tmp, { recursive: true, force: true, maxRetries: 5 });

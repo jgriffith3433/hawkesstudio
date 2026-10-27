@@ -27,7 +27,7 @@ import { previewUrl } from './previews.ts';
 import { noRuntimeChange } from './playplan.ts';
 import { opLog, registerOp, enqueue, queuePosition, getOp, type Op } from './ops.ts';
 import {
-  BETA, MAIN, STUDIO_ROLLBACK, AUTHOR, must, repoDirs, compareBeta, NotClonedError, fetchOrigin, shaOf, commitOf, commitsIn, betaBuild, saveBetaBuild,
+  BETA, MAIN, STUDIO_ROLLBACK, AUTHOR, must, repoDirs, compareBeta, compareRefs, fetchForRead, NotClonedError, fetchOrigin, shaOf, commitOf, commitsIn, betaBuild, saveBetaBuild,
   betaSiteDir, betaSiteFolder, scratch, listDeploys, mergeMainIntoBeta, prebuilt, git as gitIn, gitAsync, type Commit, type DeployRow,
 } from './beta.ts';
 import { STUDIO_RELEASE, RELEASES, playedCommit, releasesAt, releasesPath, readReleases, draftWithin, addReleaseTo, releaseLine, releaseNotesLine, type Draft } from './release.ts';
@@ -100,8 +100,14 @@ export async function deployPlan(productId: string, { notesWaitMs = 20_000 }: { 
   let web: typeof cmp = { main: null, beta: null, ahead: [], behind: [] };
   let notCloned: string | null = null;
   try {
-    cmp = await compareBeta(source);
-    if (unity && site !== source) web = await compareBeta(site);
+    // Read-only: a repo fetched in the last minute, or busy with a push (a go live), is read as of its last fetch.
+    // Going live fetches again before it pushes, so a stale plan can't go live.
+    for (const dir of unity && site !== source ? [source, site] : [source]) {
+      const why = await fetchForRead(dir);
+      if (why) warnings.push(`Couldn't check GitHub just now: ${why}.`);
+    }
+    cmp = compareRefs(source);
+    if (unity && site !== source) web = compareRefs(site);
   } catch (e: any) {
     if (e instanceof NotClonedError) notCloned = e.folder;
     blockers.push(`git: ${e.message}`);
@@ -275,7 +281,9 @@ async function deployNow(productId: string, { confirm, by = 'J', mergeMain, orig
     // A build commit not on main yet: just made, or made before a restart cut this short. Pushing it is the go live.
     if (before && head !== before && gitIn(copy, ['merge-base', '--is-ancestor', before, head]).ok) {
       opLog(`pushing ${p.site}'s ${MAIN} (the build: this can take a few minutes)`);
-      must(await gitAsync(copy, ['push', 'origin', `HEAD:refs/heads/${MAIN}`], 30 * 60_000), `pushing ${p.site}'s ${MAIN}`);
+      // 90 minutes: a Unity build is about a gigabyte (Sick Of It's Game/v264 was 1.2 GB, pushed at ~0.4 MB/s), and a
+      // push cut off at 30 minutes is a failed go live that has to send it all again.
+      must(await gitAsync(copy, ['push', 'origin', `HEAD:refs/heads/${MAIN}`], 90 * 60_000), `pushing ${p.site}'s ${MAIN}`);
       after = head;
       log.push(`${p.site}: ${MAIN} -> ${after.slice(0, 7)} (the beta build${b.version ? `, Game/v${b.version}` : ''}${plan.siteCommits.length ? ` and ${plan.siteCommits.length} website commit(s) from ${BETA}` : ''})`);
       saveBetaBuild(p, { ...b, base: after });

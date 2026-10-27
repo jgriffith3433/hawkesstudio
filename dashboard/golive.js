@@ -275,9 +275,28 @@ if (typeof document !== 'undefined') (() => {
     const now = JSON.stringify(ops.filter((x) => x.status === 'queued' || x.status === 'running').map((x) => x.id));
     return before !== now; // something started or finished: the plans moved
   }
-  async function loadPlan(id) {
-    try { plans.set(id, await api(`/api/deploy/${id}`)); } catch (e) { plans.set(id, { error: e.message }); }
-    if (tab === 'golive') draw();
+  // Each card's plan loads on its own: one slow plan (a repo busy pushing a big build) never holds the others, the
+  // Refresh button or the stream's updates (J, 2026-10-27: cards stuck until a reload). A plan already on its way isn't
+  // asked for again; one that takes over 45 s says so on its card and is asked for again next time.
+  const loading = new Map();
+  const PLAN_SLOW_MS = 45_000;
+  function loadPlan(id) {
+    const was = loading.get(id);
+    if (was && Date.now() - was < PLAN_SLOW_MS) return;
+    const started = Date.now();
+    loading.set(id, started);
+    const slow = setTimeout(() => {
+      if (loading.get(id) !== started) return;
+      loading.delete(id);
+      if (!plans.has(id)) { plans.set(id, { error: 'still checking after 45 s (its repo may be busy with a push); press Refresh to try again' }); if (tab === 'golive') draw(); }
+    }, PLAN_SLOW_MS);
+    api(`/api/deploy/${id}`)
+      .then((p) => { plans.set(id, p); }, (e) => { plans.set(id, { error: e.message }); })
+      .finally(() => {
+        clearTimeout(slow);
+        if (loading.get(id) === started) loading.delete(id);
+        if (tab === 'golive') draw();
+      });
   }
 
   async function load() {
@@ -290,8 +309,8 @@ if (typeof document !== 'undefined') (() => {
       await loadOps();
       await loadRuns().catch(() => {});
       draw();
-      await Promise.all(products.map((p) => loadPlan(p.id)));
     } finally { busy = false; }
+    for (const p of products) loadPlan(p.id);
   }
   window.loadGoLiveTab = load;
 
@@ -303,7 +322,7 @@ if (typeof document !== 'undefined') (() => {
   });
   addEventListener('studio-approval', () => { if (tab === 'golive') setTimeout(() => loadOps().then(draw).catch(() => {}), 800); });
 
-  $('#glRefresh').onclick = () => { plans.clear(); load().catch((e) => alert(e.message)); };
+  $('#glRefresh').onclick = () => { plans.clear(); loading.clear(); load().catch((e) => alert(e.message)); };
   $('#glFixAll').onclick = (e) => {
     if (!e.isTrusted) return;
     for (const p of blockedNow()) startFix(p.product, p.fix);

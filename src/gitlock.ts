@@ -37,6 +37,9 @@ export function withRepoLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
   return run;
 }
 
+/** Whether a fetch or push of this repository is running or waiting (a read can use the last fetch instead). */
+export const repoBusy = (key: string) => repoLocks.has(key);
+
 /** The remote-tracking refs a failed fetch names as stuck ("cannot lock ref 'refs/remotes/origin/beta'"). Never local branches. */
 export function staleRefs(err: string) {
   const refs = new Set<string>();
