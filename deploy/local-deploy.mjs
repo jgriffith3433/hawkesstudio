@@ -27,6 +27,14 @@ const KEY = path.join(STUDIO, 'deploy', '.keys', 'control_ed25519');
 const HOST = process.env.HAWKES_SERVER ?? 'ubuntu@studio.hawkesgen.com';
 const step = (s) => console.log(`\n== ${s}`);
 const fail = (s) => { console.error(`\nNot deployed: ${s}`); process.exit(1); };
+// Every git this script runs (fetch, push, the clean copy) signs in with the GitHub token kept in git's credential
+// store, never a sign-in prompt (J, 2026-10-26: the fetch and push sat waiting on one). No token there: git fails
+// at once instead of waiting.
+Object.assign(process.env, {
+  GIT_CONFIG_COUNT: '2', GIT_CONFIG_KEY_0: 'credential.helper', GIT_CONFIG_VALUE_0: '',
+  GIT_CONFIG_KEY_1: 'credential.helper', GIT_CONFIG_VALUE_1: 'store',
+  GIT_TERMINAL_PROMPT: '0', GCM_INTERACTIVE: 'never',
+});
 const git = (...args) => execFileSync('git', args, { cwd: dir, encoding: 'utf8' }).trim();
 const npmBin = process.platform === 'win32' ? 'npm.cmd' : 'npm';
 
@@ -116,7 +124,7 @@ try {
 if (sha !== remote) {
   step(`${repo}: push to GitHub main`);
   const p = spawnSync('git', ['push', 'origin', `${sha}:refs/heads/main`], { cwd: dir, stdio: 'inherit' });
-  if (p.status !== 0) fail('git push failed (above).');
+  if (p.status !== 0) fail('git push failed (above). If it asked for a password: put the GitHub token in git\'s credential store (~/.git-credentials).');
 }
 
 // 4. Tell the server this commit passed, and start its deploy.
