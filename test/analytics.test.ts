@@ -114,3 +114,27 @@ test('the new sections, one account, and the account filter go through; a bad ac
   assert.equal(genPath('/api/analytics/hawkesgen/frustration', P('user=a b')), '/analytics/hawkesgen/frustration');
   assert.equal(genPath('/api/analytics/hawkesgen/accounts/../x', P('')), null);
 });
+
+test('players and marks go through to Gen; a mark posts only a checked kind and value', async () => {
+  assert.equal(genPath('/api/analytics/players', P('range=30d&env=live&limit=300&steps=x')), '/analytics/players?range=30d&env=live&limit=300');
+  assert.equal(genPath('/api/analytics/marks', P('range=30d')), '/analytics/marks');
+  assert.equal(genPath('/api/analytics/players/x', P('')), null);
+  const asked: any[] = [];
+  let status = 0;
+  let body: any;
+  const send = (_: any, s: number, b: any) => { status = s; body = b; };
+  const post = (b: any) => handleAnalyticsApi({ method: 'POST' } as any, {} as any, new URL('http://x/api/analytics/marks'), send, async (p, o) => { asked.push([p, o]); return { ok: true, sessions: 3 }; }, async () => b);
+  await post({ kind: 'net', value: 'n_abcdef1234567890', me: true, extra: 'dropped' });
+  assert.equal(status, 200);
+  assert.equal(body.sessions, 3);
+  assert.deepEqual(asked[0], ['/analytics/marks', { method: 'POST', body: { kind: 'net', value: 'n_abcdef1234567890', me: true } }]);
+  await post({ kind: 'anon', value: 'a_1234', me: false, note: 'old phone' });
+  assert.deepEqual(asked[1][1].body, { kind: 'anon', value: 'a_1234', me: false, note: 'old phone' });
+  for (const bad of [{ kind: 'ip', value: 'n_abcdef' }, { kind: 'net', value: '1.2.3.4' }, { kind: 'net' }]) {
+    await post(bad);
+    assert.equal(status, 400, JSON.stringify(bad));
+  }
+  assert.equal(asked.length, 2);
+  await handleAnalyticsApi({ method: 'POST' } as any, {} as any, new URL('http://x/api/analytics/sickofit'), send, async () => ({}));
+  assert.equal(status, 405);
+});

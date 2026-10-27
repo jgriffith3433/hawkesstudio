@@ -1,7 +1,8 @@
 // The Analytics tab's server side (dashboard/analytics.js): Hawkes Gen's player analytics (hawkesgen docs/analytics.md),
 // asked server-side with Studio's Gen key, the way Studio reaches Gen for everything else. Only Gen's read routes and
 // its filters go through (GET /api/analytics/... -> GET /v1/analytics/...); the overview gets a studio-wide total and
-// says which products have no data yet (the SDK isn't on them).
+// says which products have no data yet (the SDK isn't on them). One write: J's "that was me" (POST
+// /api/analytics/marks -> Gen's marks), so his own devices and private windows stop counting as players.
 
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { gen } from './gen.ts';
@@ -11,7 +12,7 @@ export const SECTIONS = ['traffic', 'sessions', 'retention', 'segments', 'funnel
 const RANGES = ['today', '24h', '7d', '14d', '30d', '90d', '180d', '365d'];
 const ENVS = ['live', 'beta', 'preview', 'local'];
 /** The params each route may pass on, besides the filters. */
-const EXTRA: Record<string, string[]> = { funnel: ['steps', 'by'], builds: ['a', 'b'], list: ['limit', 'offset'], accounts: ['limit', 'offset'], export: ['what', 'format', 'limit'] };
+const EXTRA: Record<string, string[]> = { funnel: ['steps', 'by'], builds: ['a', 'b'], list: ['limit', 'offset'], accounts: ['limit', 'offset'], players: ['limit', 'offset'], export: ['what', 'format', 'limit'] };
 
 const PRODUCT = /^[a-z0-9][a-z0-9_-]{0,39}$/;
 const SESSION = /^[A-Za-z0-9_-]{8,64}$/;
@@ -47,8 +48,9 @@ export function genPath(route: string, params: URLSearchParams): string | null {
   if (!route.startsWith('/api/analytics/')) return null;
   const parts = route.slice('/api/analytics/'.length).split('/').filter(Boolean);
   let kind: string;
-  if (parts.length === 1 && (parts[0] === 'overview' || parts[0] === 'products')) kind = parts[0];
-  else if (!PRODUCT.test(parts[0] ?? '') || parts[0] === 'overview' || parts[0] === 'products') return null;
+  const TOP = ['overview', 'products', 'players', 'marks'];
+  if (parts.length === 1 && TOP.includes(parts[0])) kind = parts[0];
+  else if (!PRODUCT.test(parts[0] ?? '') || TOP.includes(parts[0])) return null;
   else if (parts.length === 1) kind = 'all';
   else if (parts.length === 2 && SECTIONS.includes(parts[1])) kind = parts[1];
   else if (parts.length === 3 && parts[1] === 'sessions' && parts[2] === 'list') kind = 'list';
@@ -56,7 +58,7 @@ export function genPath(route: string, params: URLSearchParams): string | null {
   else if (parts.length === 3 && parts[1] === 'accounts' && USER.test(parts[2])) kind = 'account';
   else return null;
   const out = new URLSearchParams();
-  if (kind !== 'products' && kind !== 'session') {
+  if (kind !== 'products' && kind !== 'session' && kind !== 'marks') {
     for (const k of [...FILTERS, ...(EXTRA[kind] ?? [])]) {
       const v = params.get(k);
       const ok = v == null ? null : filterValue(k, v);
@@ -100,12 +102,28 @@ export function withTotals(o: any) {
   return { ...o, products, total };
 }
 
-type Request = (path: string) => Promise<any>;
+type Request = (path: string, opts?: { method?: string; body?: unknown }) => Promise<any>;
 type Send = (res: ServerResponse, status: number, body: unknown) => void;
 
-/** GET /api/analytics/...: Gen's answer (CSV exports streamed through as a download). request: Gen (tests pass their own). */
-export async function handleAnalyticsApi(req: IncomingMessage, res: ServerResponse, url: URL, send: Send, request: Request = (p) => gen.request(p)) {
-  if ((req.method ?? 'GET') !== 'GET') return send(res, 405, { error: 'Analytics is read-only (GET)' });
+const MARK_VALUE = /^[A-Za-z0-9_-]{4,64}$/;
+
+/**
+ * GET /api/analytics/...: Gen's answer (CSV exports streamed through as a download). POST /api/analytics/marks
+ * {kind: net | anon, value, me, note}: J's "that was me" (admins only: auth.ts memberRefusal). request: Gen (tests pass
+ * their own); readBody: the JSON body.
+ */
+export async function handleAnalyticsApi(req: IncomingMessage, res: ServerResponse, url: URL, send: Send, request: Request = (p, o) => gen.request(p, o), readBody: (req: IncomingMessage) => Promise<any> = async () => ({})) {
+  if ((req.method ?? 'GET') === 'POST' && url.pathname === '/api/analytics/marks') {
+    const b = await readBody(req);
+    if ((b?.kind !== 'net' && b?.kind !== 'anon') || !MARK_VALUE.test(String(b?.value ?? ''))) return send(res, 400, { error: 'kind (net | anon) and value are required' });
+    const body = { kind: b.kind, value: String(b.value), me: b.me !== false, ...(typeof b.note === 'string' ? { note: b.note.slice(0, 200) } : {}) };
+    try {
+      return send(res, 200, await request('/analytics/marks', { method: 'POST', body }));
+    } catch (e: any) {
+      return send(res, Number(e?.status) || 502, { error: String(e?.message ?? e) });
+    }
+  }
+  if ((req.method ?? 'GET') !== 'GET') return send(res, 405, { error: 'Analytics is read-only (GET), besides POST /api/analytics/marks' });
   const path = genPath(url.pathname, url.searchParams);
   if (!path) return send(res, 404, { error: `No analytics route ${url.pathname}` });
   if (/\/export\?/.test(path) && /[?&]format=csv/.test(path)) return (await import('./library.ts')).relay(req, res, path.slice(1));

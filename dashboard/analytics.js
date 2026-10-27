@@ -1,5 +1,8 @@
 // The Analytics tab: how the games are doing, from Hawkes Gen's player analytics (GET /api/analytics/..., src/analytics.ts,
 // hawkesgen docs/analytics.md). #analytics is the overview (a card per product, a studio-wide total on top);
+// below the cards, Players: who visits, across every site, by network (a private window or another browser on the same
+// Wi-Fi is the same row), with "That's me" (J's devices and private windows stop counting, past and future: Gen's
+// marks) and "Not me" to take it back.
 // #analytics/<product> is one game's page (players over time, retention, funnel, drop-off, levels, deaths, likes,
 // where the time goes, dislikes, what gets in the way, accounts (one account's view: F.user), tech, where from, builds,
 // sessions), each section a chart or table with a one-line plain reading. Charts are
@@ -42,6 +45,8 @@
     .an-comment { border-left: 3px solid var(--line); padding: 2px 8px; margin: 6px 0; font-size: 13px; }
     .an-comment.low { border-left-color: var(--red); } .an-comment.high { border-left-color: var(--accent); }
     .an-box pre { white-space: pre-wrap; word-break: break-word; font-size: 12px; max-height: 320px; overflow: auto; background: var(--panel2); padding: 8px; border-radius: 7px; }
+    .an-players tr.me td { opacity: .55; }
+    .an-players td .meta { font-size: 12px; }
     .an-sec-nav { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 12px; font-size: 13px; }
     @media (max-width: 700px) { .an-grid { grid-template-columns: 1fr; } .an-cards { grid-template-columns: 1fr; } }`;
   document.head.appendChild(css);
@@ -209,7 +214,45 @@
     };
     const list = [...o.products].sort((a, b) => Number(b.hasData) - Number(a.hasData) || (b['7d']?.visitors ?? 0) - (a['7d']?.visitors ?? 0));
     el.dataset.view = 'overview';
-    el.innerHTML = `${filterBar('')}${total}<div class="an-cards">${list.map(card).join('')}</div><p class="meta">Numbers are the ${F.env === 'all' ? 'live, beta and preview sites together' : `${F.env} site${F.env === 'live' ? 's' : ''}`}${F.bots || F.internal ? `, with ${[F.bots && 'bots', F.internal && 'your own devices'].filter(Boolean).join(' and ')} included` : ', without bots or your own devices'}. Tap a game for everything about it.</p>`;
+    el.innerHTML = `${filterBar('')}${total}<div class="an-cards">${list.map(card).join('')}</div><p class="meta">Numbers are the ${F.env === 'all' ? 'live, beta and preview sites together' : `${F.env} site${F.env === 'live' ? 's' : ''}`}${F.bots || F.internal ? `, with ${[F.bots && 'bots', F.internal && 'your own devices'].filter(Boolean).join(' and ')} included` : ', without bots or your own devices'}. Tap a game for everything about it.</p><div id="anPlayers"></div>`;
+    for (const x of o.products) players.names[x.product] = x.name;
+    loadPlayers(my);
+  }
+
+  // ------------------------------------------------------------- players: who is who, and "that's me"
+  const productName = (id) => (players.names[id] ?? id);
+  const players = { names: {}, showMe: false };
+  async function loadPlayers(my) {
+    const el = $('#anPlayers');
+    if (!el) return;
+    let p;
+    try {
+      p = await api(`/api/analytics/players?${qs({ limit: '300' }, { range: false })}&range=30d`);
+    } catch (e) {
+      if (my === seq) el.innerHTML = box('players-all', 'Players', `Couldn't load the players: ${esc(e.message)}`, '', true);
+      return;
+    }
+    if (my !== seq || !$('#anPlayers')) return;
+    const list = (p.items ?? []).filter((x) => players.showMe || !x.me);
+    const who = (x) => {
+      const devs = x.devices.slice(0, 3).map((d) => esc(d.name)).join('<br>');
+      const kind = x.kind === 'net' ? `${x.browsers > 1 ? `${num(x.browsers)} browsers or private windows` : 'one browser'} on one network` : 'one browser (before networks were kept)';
+      return `${devs}<div class="meta">${kind}${x.places.length ? ` · ${flag((x.places[0].match(/, ([A-Z]{2})$/) ?? [])[1])} ${esc(x.places[0])}` : ''}${x.accounts.length ? ` · ${x.accounts.map(esc).join(', ')}` : ''}</div>`;
+    };
+    const sites = (x) => x.products.map((s) => `${esc(productName(s.name))} <span class="meta">${num(s.sessions)}</span>`).join('<br>');
+    const btn = (x) => `<button class="small" data-an-mark="${esc(x.kind)}:${esc(x.value)}" data-an-me="${x.me ? '0' : '1'}">${x.me ? 'Not me' : "That's me"}</button>`;
+    const reading = `${num(p.real)} ${p.real === 1 ? 'player' : 'players'} who aren't you (${num(p.realSessions)} sessions), and ${num(p.me)} marked as you, in the last 30 days. One row is one network (a Wi-Fi, a phone's data connection): private windows and every browser on it are the same row. Tap <b>That's me</b> on yours: those sessions, and every later one from that network or those browsers, stop counting everywhere.`;
+    el.innerHTML = box('players-all', 'Players: who is who', reading,
+      `<p class="meta"><label><input type="checkbox" data-an-showme${players.showMe ? ' checked' : ''}> show the ones marked as you</label></p>
+      <div class="an-players">${table([
+        { h: 'Who', f: who },
+        { h: 'Sites', f: sites },
+        { h: 'Sessions', n: true, f: (x) => num(x.sessions) },
+        { h: 'Played', n: true, f: (x) => dur(x.activeSeconds) },
+        { h: 'Errors', n: true, f: (x) => num(x.errors) },
+        { h: 'Last seen', n: true, f: (x) => ago(x.last) },
+        { h: '', f: btn },
+      ], list.slice(0, 200), players.showMe ? 'Nobody yet.' : 'Nobody but you yet.', { rowAttr: (x) => (x.me ? ' class="me"' : '') })}</div>`, true);
   }
 
   // ------------------------------------------------------------- a product's page
@@ -470,6 +513,15 @@
     if (t.closest('[data-an-back]')) { e.preventDefault(); location.hash = '#analytics'; show('analytics'); return; }
     if (t.closest('[data-an-refresh]')) { loadAnalyticsTab(); return; }
     if (t.closest('a[download]')) return;
+    const mark = t.closest('[data-an-mark]');
+    if (mark) {
+      const [kind, value] = mark.dataset.anMark.split(':');
+      mark.disabled = true;
+      api('/api/analytics/marks', { method: 'POST', body: { kind, value, me: mark.dataset.anMe === '1' } })
+        .then((r) => { if (r?.error) throw new Error(r.error); loadAnalyticsTab(); })
+        .catch((err) => { mark.disabled = false; alert(`Couldn't mark it: ${err.message}`); });
+      return;
+    }
     const who = t.closest('[data-an-user]');
     if (who) { e.preventDefault(); F.user = who.dataset.anUser; openSession = null; loadAnalyticsTab(); return; }
     const open = t.closest('[data-an-open]');
@@ -484,6 +536,7 @@
     if (row && shown) loadSession(shown, row.dataset.anSession);
   });
   body.addEventListener('change', (e) => {
+    if (e.target.matches('[data-an-showme]')) { players.showMe = e.target.checked; loadPlayers(seq); return; }
     const f = e.target.dataset.anF;
     const b = e.target.dataset.anBuild;
     if (b) { cmp[b] = e.target.value; loadAnalyticsTab(); return; }

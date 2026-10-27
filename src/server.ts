@@ -109,7 +109,7 @@ const server = http.createServer(async (req, res) => {
     if (route === '/api/memory' || route.startsWith('/api/memory/')) return await (await import('./memory-api.ts')).handleMemory(req, res, url, send, readJson);
     if (route === '/api/videos' || route.startsWith('/api/videos/')) return await (await import('./videos.ts')).handleVideosApi(req, res, url, send, readJson, await (await import('./inbox.ts')).actor(req));
     if (route === '/api/social' || route.startsWith('/api/social/')) return await (await import('./social.ts')).handleSocialApi(req, res, url, send, readJson, await (await import('./inbox.ts')).actor(req));
-    if (route.startsWith('/api/analytics/')) return await (await import('./analytics.ts')).handleAnalyticsApi(req, res, url, send);
+    if (route.startsWith('/api/analytics/')) return await (await import('./analytics.ts')).handleAnalyticsApi(req, res, url, send, undefined, readJson);
     if (route === '/api/config') return send(res, 200, { genUrl: process.env.GEN_PUBLIC_URL || 'http://127.0.0.1:8790' });
     if (route === '/api/health') {
       const ops = await import('./ops.ts');
