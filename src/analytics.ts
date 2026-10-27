@@ -2,7 +2,8 @@
 // asked server-side with Studio's Gen key, the way Studio reaches Gen for everything else. Only Gen's read routes and
 // its filters go through (GET /api/analytics/... -> GET /v1/analytics/...); the overview gets a studio-wide total and
 // says which products have no data yet (the SDK isn't on them). One write: J's "that was me" (POST
-// /api/analytics/marks -> Gen's marks), so his own devices and private windows stop counting as players.
+// /api/analytics/marks -> Gen's marks), so his own devices and private windows stop counting as players, and "not a
+// person" for bots that got through.
 
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { gen } from './gen.ts';
@@ -27,7 +28,7 @@ function filterValue(k: string, v: string): string | null {
   if (k === 'range') return RANGES.includes(v) ? v : null;
   if (k === 'from' || k === 'to') return TIME.test(v) ? v : null;
   if (k === 'env') return v === 'all' || v.split(',').every((e) => ENVS.includes(e.trim())) ? v : null;
-  if (k === 'bots' || k === 'internal') return v === '1' ? '1' : null;
+  if (k === 'bots' || k === 'internal' || k === 'engaged') return v === '1' ? '1' : null;
   if (k === 'build' || k === 'device' || k === 'browser' || k === 'country') return v.length <= 120 ? v : null;
   if (k === 'user') return USER.test(v) ? v : null;
   if (k === 'steps') return v.length <= 2000 ? v : null;
@@ -38,7 +39,7 @@ function filterValue(k: string, v: string): string | null {
   if (k === 'format') return v === 'csv' || v === 'json' ? v : null;
   return null;
 }
-const FILTERS = ['range', 'from', 'to', 'env', 'build', 'device', 'browser', 'country', 'user', 'bots', 'internal'];
+const FILTERS = ['range', 'from', 'to', 'env', 'build', 'device', 'browser', 'country', 'user', 'bots', 'internal', 'engaged'];
 
 /**
  * The Gen path (under /v1) for a Studio route, with only the filters and params that route takes; null when the route
@@ -109,14 +110,15 @@ const MARK_VALUE = /^[A-Za-z0-9_-]{4,64}$/;
 
 /**
  * GET /api/analytics/...: Gen's answer (CSV exports streamed through as a download). POST /api/analytics/marks
- * {kind: net | anon, value, me, note}: J's "that was me" (admins only: auth.ts memberRefusal). request: Gen (tests pass
- * their own); readBody: the JSON body.
+ * {kind: net | anon, value, what: me | bot, on, note}: J's "that was me" or "not a person", or taking it back (on:
+ * false; the older me: false too). Admins only: auth.ts memberRefusal. request: Gen (tests pass their own); readBody:
+ * the JSON body.
  */
 export async function handleAnalyticsApi(req: IncomingMessage, res: ServerResponse, url: URL, send: Send, request: Request = (p, o) => gen.request(p, o), readBody: (req: IncomingMessage) => Promise<any> = async () => ({})) {
   if ((req.method ?? 'GET') === 'POST' && url.pathname === '/api/analytics/marks') {
     const b = await readBody(req);
     if ((b?.kind !== 'net' && b?.kind !== 'anon') || !MARK_VALUE.test(String(b?.value ?? ''))) return send(res, 400, { error: 'kind (net | anon) and value are required' });
-    const body = { kind: b.kind, value: String(b.value), me: b.me !== false, ...(typeof b.note === 'string' ? { note: b.note.slice(0, 200) } : {}) };
+    const body = { kind: b.kind, value: String(b.value), what: b.what === 'bot' ? 'bot' : 'me', on: b.on !== false && b.me !== false, ...(typeof b.note === 'string' ? { note: b.note.slice(0, 200) } : {}) };
     try {
       return send(res, 200, await request('/analytics/marks', { method: 'POST', body }));
     } catch (e: any) {

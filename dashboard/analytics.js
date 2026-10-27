@@ -2,7 +2,8 @@
 // hawkesgen docs/analytics.md). #analytics is the overview (a card per product, a studio-wide total on top);
 // below the cards, Players: who visits, across every site, by network (a private window or another browser on the same
 // Wi-Fi is the same row), with "That's me" (J's devices and private windows stop counting, past and future: Gen's
-// marks) and "Not me" to take it back.
+// marks), "Not a person" for a bot that got through, and buttons to take either back; on top, what Gen left out as
+// bots and why. "Engaged only" (the filter bar) keeps sessions with 10 s or more of play or 2 or more pages.
 // #analytics/<product> is one game's page (players over time, retention, funnel, drop-off, levels, deaths, likes,
 // where the time goes, dislikes, what gets in the way, accounts (one account's view: F.user), tech, where from, builds,
 // sessions), each section a chart or table with a one-line plain reading. Charts are
@@ -45,7 +46,8 @@
     .an-comment { border-left: 3px solid var(--line); padding: 2px 8px; margin: 6px 0; font-size: 13px; }
     .an-comment.low { border-left-color: var(--red); } .an-comment.high { border-left-color: var(--accent); }
     .an-box pre { white-space: pre-wrap; word-break: break-word; font-size: 12px; max-height: 320px; overflow: auto; background: var(--panel2); padding: 8px; border-radius: 7px; }
-    .an-players tr.me td { opacity: .55; }
+    .an-players tr.me td, .an-players tr.botrow td { opacity: .55; }
+    .an-players td button + button { margin-left: 4px; }
     .an-players td .meta { font-size: 12px; }
     .an-sec-nav { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 12px; font-size: 13px; }
     @media (max-width: 700px) { .an-grid { grid-template-columns: 1fr; } .an-cards { grid-template-columns: 1fr; } }`;
@@ -130,7 +132,7 @@
   const box = (id, title, reading, body, wide = false) => `<div class="an-box${wide ? ' wide' : ''}" id="an-${id}"><h3>${esc(title)}</h3><p class="an-read">${reading}</p>${body}</div>`;
 
   // ------------------------------------------------------------- state
-  const F = { range: '30d', from: '', to: '', env: 'live', build: '', device: '', browser: '', country: '', user: '', bots: false, internal: false };
+  const F = { range: '30d', from: '', to: '', env: 'live', build: '', device: '', browser: '', country: '', user: '', bots: false, internal: false, engaged: false };
   const known = { builds: new Set(), browsers: new Set(), countries: new Set() };
   let shown = null; // '' for the overview, else the product on screen (or loading)
   let seq = 0;
@@ -150,6 +152,7 @@
     for (const k of ['build', 'device', 'browser', 'country', 'user']) if (F[k]) p.set(k, F[k]);
     if (F.bots) p.set('bots', '1');
     if (F.internal) p.set('internal', '1');
+    if (F.engaged) p.set('engaged', '1');
     for (const [k, v] of Object.entries(extra)) if (v) p.set(k, v);
     return p.toString();
   }
@@ -157,7 +160,7 @@
   function filterBar(product) {
     const sel = (k, list) => `<select data-an-f="${k}">${list.map(([v, l]) => `<option value="${v}"${F[k] === v ? ' selected' : ''}>${l}</option>`).join('')}</select>`;
     const env = `<label>Site ${sel('env', [['live', 'Live'], ['beta', 'Beta'], ['all', 'All (live, beta, previews, local)']])}</label>`;
-    const toggles = `<label title="Studio's playtests, crawlers and headless browsers"><input type="checkbox" data-an-f="bots"${F.bots ? ' checked' : ''}> bots</label><label title="Your own devices (marked internal)"><input type="checkbox" data-an-f="internal"${F.internal ? ' checked' : ''}> internal</label>`;
+    const toggles = `<label title="Studio's playtests, crawlers and headless browsers"><input type="checkbox" data-an-f="bots"${F.bots ? ' checked' : ''}> bots</label><label title="Your own devices (marked internal)"><input type="checkbox" data-an-f="internal"${F.internal ? ' checked' : ''}> internal</label><label title="Only sessions with 10 s or more of play, or 2 or more pages (shorter ones are still visits)"><input type="checkbox" data-an-f="engaged"${F.engaged ? ' checked' : ''}> engaged only</label>`;
     if (!product) return `<div class="an-bar">${env}${toggles}<button class="small" data-an-refresh>Refresh</button></div>`;
     const custom = F.range === 'custom' ? `<input type="date" data-an-f="from" value="${esc(F.from)}" aria-label="From"> – <input type="date" data-an-f="to" value="${esc(F.to)}" aria-label="To">` : '';
     const exp = (what) => `/api/analytics/${encodeURIComponent(product)}/export?${qs({ what, format: 'csv' })}`;
@@ -233,26 +236,30 @@
       return;
     }
     if (my !== seq || !$('#anPlayers')) return;
-    const list = (p.items ?? []).filter((x) => players.showMe || !x.me);
+    const list = (p.items ?? []).filter((x) => players.showMe || (!x.me && !x.bot));
     const who = (x) => {
       const devs = x.devices.slice(0, 3).map((d) => esc(d.name)).join('<br>');
       const kind = x.kind === 'net' ? `${x.browsers > 1 ? `${num(x.browsers)} browsers or private windows` : 'one browser'} on one network` : 'one browser (before networks were kept)';
-      return `${devs}<div class="meta">${kind}${x.places.length ? ` · ${flag((x.places[0].match(/, ([A-Z]{2})$/) ?? [])[1])} ${esc(x.places[0])}` : ''}${x.accounts.length ? ` · ${x.accounts.map(esc).join(', ')}` : ''}</div>`;
+      const why = x.bot ? `<div class="meta">🤖 ${esc((x.botReasons.filter(Boolean)[0]) ?? 'marked')}</div>` : x.datacenter ? `<div class="meta">from ${esc(x.datacenter)}, but someone touched the page</div>` : '';
+      return `${devs}${why}<div class="meta">${kind}${x.places.length ? ` · ${flag((x.places[0].match(/, ([A-Z]{2})$/) ?? [])[1])} ${esc(x.places[0])}` : ''}${x.accounts.length ? ` · ${x.accounts.map(esc).join(', ')}` : ''}</div>`;
     };
     const sites = (x) => x.products.map((s) => `${esc(productName(s.name))} <span class="meta">${num(s.sessions)}</span>`).join('<br>');
-    const btn = (x) => `<button class="small" data-an-mark="${esc(x.kind)}:${esc(x.value)}" data-an-me="${x.me ? '0' : '1'}">${x.me ? 'Not me' : "That's me"}</button>`;
-    const reading = `${num(p.real)} ${p.real === 1 ? 'player' : 'players'} who aren't you (${num(p.realSessions)} sessions), and ${num(p.me)} marked as you, in the last 30 days. One row is one network (a Wi-Fi, a phone's data connection): private windows and every browser on it are the same row. Tap <b>That's me</b> on yours: those sessions, and every later one from that network or those browsers, stop counting everywhere.`;
+    const mk = (x, what, on, label) => `<button class="small" data-an-mark="${esc(x.kind)}:${esc(x.value)}" data-an-what="${what}" data-an-on="${on ? '1' : '0'}">${label}</button>`;
+    const btn = (x) => (x.me ? mk(x, 'me', false, 'Not me') : x.bot && x.botReasons.includes('marked') ? mk(x, 'bot', false, "It's a person") : `${mk(x, 'me', true, "That's me")}${x.bot ? '' : mk(x, 'bot', true, 'Not a person')}`);
+    const bots = (p.bots ?? []).reduce((a, b) => a + b.sessions, 0);
+    const botLine = bots ? ` Left out as bots: ${num(bots)} sessions (${p.bots.slice(0, 6).map((b) => `${esc(b.reason)} ${num(b.sessions)}`).join(', ')}).` : '';
+    const reading = `${num(p.real)} ${p.real === 1 ? 'player' : 'players'} who aren't you or bots (${num(p.realSessions)} sessions, ${num(p.engagedSessions)} of them engaged: 10 s or more of play, or 2 or more pages), and ${num(p.me)} marked as you, in the last 30 days.${botLine} One row is one network (a Wi-Fi, a phone's data connection): private windows and every browser on it are the same row. Tap <b>That's me</b> on yours, <b>Not a person</b> on a bot that got through: those sessions, and every later one from that network or those browsers, stop counting everywhere.`;
     el.innerHTML = box('players-all', 'Players: who is who', reading,
-      `<p class="meta"><label><input type="checkbox" data-an-showme${players.showMe ? ' checked' : ''}> show the ones marked as you</label></p>
+      `<p class="meta"><label><input type="checkbox" data-an-showme${players.showMe ? ' checked' : ''}> show the ones marked as you and the bots</label></p>
       <div class="an-players">${table([
         { h: 'Who', f: who },
         { h: 'Sites', f: sites },
-        { h: 'Sessions', n: true, f: (x) => num(x.sessions) },
+        { h: 'Sessions', n: true, f: (x) => `${num(x.sessions)}${x.engagedSessions && !x.bot ? `<div class="meta">${num(x.engagedSessions)} engaged</div>` : ''}` },
         { h: 'Played', n: true, f: (x) => dur(x.activeSeconds) },
         { h: 'Errors', n: true, f: (x) => num(x.errors) },
         { h: 'Last seen', n: true, f: (x) => ago(x.last) },
         { h: '', f: btn },
-      ], list.slice(0, 200), players.showMe ? 'Nobody yet.' : 'Nobody but you yet.', { rowAttr: (x) => (x.me ? ' class="me"' : '') })}</div>`, true);
+      ], list.slice(0, 200), players.showMe ? 'Nobody yet.' : 'Nobody but you yet.', { rowAttr: (x) => (x.me ? ' class="me"' : x.bot ? ' class="botrow"' : '') })}</div>`, true);
   }
 
   // ------------------------------------------------------------- a product's page
@@ -517,7 +524,7 @@
     if (mark) {
       const [kind, value] = mark.dataset.anMark.split(':');
       mark.disabled = true;
-      api('/api/analytics/marks', { method: 'POST', body: { kind, value, me: mark.dataset.anMe === '1' } })
+      api('/api/analytics/marks', { method: 'POST', body: { kind, value, what: mark.dataset.anWhat, on: mark.dataset.anOn === '1' } })
         .then((r) => { if (r?.error) throw new Error(r.error); loadAnalyticsTab(); })
         .catch((err) => { mark.disabled = false; alert(`Couldn't mark it: ${err.message}`); });
       return;

@@ -127,14 +127,18 @@ test('players and marks go through to Gen; a mark posts only a checked kind and 
   await post({ kind: 'net', value: 'n_abcdef1234567890', me: true, extra: 'dropped' });
   assert.equal(status, 200);
   assert.equal(body.sessions, 3);
-  assert.deepEqual(asked[0], ['/analytics/marks', { method: 'POST', body: { kind: 'net', value: 'n_abcdef1234567890', me: true } }]);
+  assert.deepEqual(asked[0], ['/analytics/marks', { method: 'POST', body: { kind: 'net', value: 'n_abcdef1234567890', what: 'me', on: true } }]);
   await post({ kind: 'anon', value: 'a_1234', me: false, note: 'old phone' });
-  assert.deepEqual(asked[1][1].body, { kind: 'anon', value: 'a_1234', me: false, note: 'old phone' });
+  assert.deepEqual(asked[1][1].body, { kind: 'anon', value: 'a_1234', what: 'me', on: false, note: 'old phone' });
+  await post({ kind: 'net', value: 'n_abcdef1234567890', what: 'bot' });
+  assert.deepEqual(asked[2][1].body, { kind: 'net', value: 'n_abcdef1234567890', what: 'bot', on: true });
+  assert.equal(genPath('/api/analytics/sickofit/levels', P('engaged=1&range=7d')), '/analytics/sickofit/levels?range=7d&engaged=1');
+  assert.equal(genPath('/api/analytics/sickofit/levels', P('engaged=yes')), '/analytics/sickofit/levels');
   for (const bad of [{ kind: 'ip', value: 'n_abcdef' }, { kind: 'net', value: '1.2.3.4' }, { kind: 'net' }]) {
     await post(bad);
     assert.equal(status, 400, JSON.stringify(bad));
   }
-  assert.equal(asked.length, 2);
+  assert.equal(asked.length, 3);
   await handleAnalyticsApi({ method: 'POST' } as any, {} as any, new URL('http://x/api/analytics/sickofit'), send, async () => ({}));
   assert.equal(status, 405);
 });
