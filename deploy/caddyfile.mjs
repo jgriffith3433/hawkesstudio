@@ -192,10 +192,16 @@ dev-${sub}.${domain} {
     const front = fronts[previews[sub]];
     const app = apps[previews[sub]];
     // A server app (src/apps.ts): no files to serve; the front door runs beta's process (and agent changes') and takes
-    // the whole host. Behind the login, except app.open: the pages a game's sandboxed frame loads, which send no cookies.
+    // the whole host. Behind the login, except app.open: the pages a game's sandboxed frame loads, which send no cookies,
+    // and with app.preflight a browser's CORS preflight (OPTIONS, which never carries cookies), so another beta host can
+    // call it with the login cookie (Hawkes Net's beta dashboard signs in through the portal's beta). The app answers it.
     if (app) return `
 ${sub}.${domain} {
-	encode zstd gzip${app.open ? `
+	encode zstd gzip${app.preflight ? `
+	@preflight method OPTIONS
+	handle @preflight {
+		reverse_proxy 127.0.0.1:${front}
+	}` : ''}${app.open ? `
 	@open path_regexp ${app.open}
 	handle @open {
 		reverse_proxy 127.0.0.1:${front} {

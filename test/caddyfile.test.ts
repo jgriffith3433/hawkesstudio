@@ -69,6 +69,17 @@ test('gen: everything else still needs the sign-in or a key Gen checks', () => {
   assert.deepEqual(paths, ['/v1/analytics/collect', '/v1/net/ws /v1/net/ticket /v1/net/keys /v1/net/status /v1/net/nodes', '/sdk/*']);
 });
 
+test("app hosts: only the portal's beta lets a CORS preflight past the sign-in, and only OPTIONS", () => {
+  const portal = site('hawkesgenwebsite.hawkesgen.com');
+  assert.match(portal, /@preflight method OPTIONS\n/);
+  const h = handles(portal).find((x) => x.matcher === '@preflight');
+  assert.ok(h, 'a handle for @preflight');
+  assert.doesNotMatch(h.body, /import login/);
+  // Everything that isn't a preflight or app.open still goes through the sign-in.
+  assert.match(handles(portal).find((x) => x.matcher === '')!.body, /import login/);
+  assert.doesNotMatch(site('hawkesnet.hawkesgen.com'), /@preflight/);
+});
+
 test('studio: the analytics routes are not added there', () => {
   assert.doesNotMatch(site('studio.hawkesgen.com'), /analytics|@sdk/);
 });

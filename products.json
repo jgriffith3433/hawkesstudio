@@ -497,9 +497,12 @@
           ]
         },
         "env": {
-          "PORTAL_PROJECT_PREFIX": "ubeta_"
+          "PORTAL_PROJECT_PREFIX": "ubeta_",
+          "PORTAL_NET_DASHBOARD": "https://hawkesnet.hawkesgen.com",
+          "PORTAL_NET_URL": "http://127.0.0.1:8095"
         },
-        "open": "^/(play/|play-asset/|v1/play/|v1/play-template/|v1/ws$|v1/community/a_[0-9a-f]+/file$|favicon\\.svg$|dl/)"
+        "open": "^/(play/|play-asset/|v1/play/|v1/play-template/|v1/ws$|v1/community/a_[0-9a-f]+/file$|favicon\\.svg$|dl/)",
+        "preflight": true
       }
     },
     {
