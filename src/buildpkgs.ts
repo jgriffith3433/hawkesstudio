@@ -117,6 +117,8 @@ async function buildServerShell(command: string, timeoutMs: number): Promise<str
     } catch (e: any) {
       // Only "not reachable yet" is retried; a refusal or a git failure is final.
       if (!/is (pending|stopped|stopping)|start it first|Connection (refused|timed out)|Could not resolve|waiting for SSH|ssh failed: .*(timed out|refused)/i.test(String(e.message)) || Date.now() - start > 10 * 60_000) throw e;
+      // Caught while stopping (idle shutdown), it ends up stopped: start it again rather than wait for nothing.
+      if (/is stopped/i.test(String(e.message))) await gen.request('/builder/start', { method: 'POST', body: { confirm: true } }).catch(() => {});
       await sleep(15_000);
     }
   }
