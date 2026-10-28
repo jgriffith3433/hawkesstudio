@@ -14,9 +14,9 @@ sandbox (`guards.ts`).
 
 ## Setting up (once, J)
 
-The redirect URIs are shown in the tab: `https://studio.hawkesgen.com/api/social/callback/youtube` and `.../tiktok`.
+The redirect URIs are shown in the tab: `https://studio.hawkesgen.ai/api/social/callback/youtube` and `.../tiktok`.
 
-**YouTube** (Google Cloud console, the same project as the hawkesgen.com sign-in is fine):
+**YouTube** (Google Cloud console, the same project as the hawkesgen.ai sign-in is fine):
 1. APIs & Services › Library: enable **YouTube Data API v3**.
 2. Credentials › Create credentials › OAuth client ID › **Web application**. Authorized redirect URI: the YouTube one above.
 3. OAuth consent screen › Data access: add the scopes `youtube.upload` and `youtube.readonly`.

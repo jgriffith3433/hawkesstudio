@@ -131,7 +131,7 @@ async function syncGit(folder: string, slug: string, branch: string, want?: stri
       // get them back. A stash that fails keeps today's refusal (staleBeta tells Talk).
       const to = git(dir, ['rev-parse', '--short', `origin/${want}`]).out || want;
       const label = `studio: set aside before following ${want} ${to} ${new Date().toISOString().slice(0, 16).replace('T', ' ')}`;
-      const s = await gitA(dir, ['-c', 'user.name=Hawkes Studio', '-c', 'user.email=studio@hawkesgen.com', 'stash', 'push', '--include-untracked', '-m', label]);
+      const s = await gitA(dir, ['-c', 'user.name=Hawkes Studio', '-c', 'user.email=studio@hawkesgen.ai', 'stash', 'push', '--include-untracked', '-m', label]);
       if (!s.ok) return kept(`; setting them aside failed: ${s.err.split('\n').pop()}`);
       if (git(dir, ['status', '--porcelain']).out) return kept('; still has uncommitted changes after setting them aside');
       const stash = git(dir, ['rev-parse', 'stash@{0}']).out;

@@ -1,4 +1,4 @@
-// Hawkes Studio: the "report a bug" button on the beta sites (https://<sub>.hawkesgen.com/, behind Studio's login).
+// Hawkes Studio: the "report a bug" button on the beta sites (https://<sub>.hawkesgen.ai/, behind Studio's login).
 // previews.ts puts it into every HTML page it publishes, with a tiny console hook at the top of <head>; it is never in a
 // product repo or a live site. Served by the product's /dev/ front door as /dev/__studio/report.js (dev-front.ts);
 // reports go to POST /dev/__studio/report (src/bugreport.ts), which makes them findings with source "J".

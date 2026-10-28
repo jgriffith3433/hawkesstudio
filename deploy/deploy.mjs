@@ -485,7 +485,7 @@ async function installCaddy(domain) {
   // one, and the old one is kept as Caddyfile.prev: `node deploy/deploy.mjs --caddy-rollback` puts it back.
   await ssh(`printf '%s\\n' '${JSON.stringify(inputs)}' | sudo tee /etc/hawkes/caddy.json >/dev/null && sudo chmod 644 /etc/hawkes/caddy.json && sudo chown caddy:caddy /tmp/Caddyfile &&sudo install -d -o caddy -g caddy /var/log/caddy && sudo touch /var/log/caddy/access.log && sudo chown caddy:caddy /var/log/caddy/access.log && sudo mkdir -p /etc/systemd/system/caddy.service.d && printf '[Service]\\nEnvironmentFile=/etc/hawkes/keys.env\\n' | sudo tee /etc/systemd/system/caddy.service.d/hawkes.conf >/dev/null && sudo usermod -aG hawkes caddy && sudo systemctl daemon-reload && sudo -u caddy caddy validate --config /tmp/Caddyfile --adapter caddyfile >/dev/null && sudo cp /etc/caddy/Caddyfile /etc/caddy/Caddyfile.prev && sudo mv /tmp/Caddyfile /etc/caddy/Caddyfile && sudo chown root:root /etc/caddy/Caddyfile && sudo systemctl restart caddy && sleep 2 && systemctl is-active caddy && echo caddy-ok`);
   saveState({ domain });
-  log(`HTTPS: https://${domain} (public landing page), https://studio.${domain} and https://gen.${domain} (sign in with an account; first run: ${'admin@hawkesgen.com'} / admin, then set a password)`);
+  log(`HTTPS: https://${domain} (public landing page), https://studio.${domain} and https://gen.${domain} (sign in with an account; first run: ${'admin@hawkesgen.ai'} / admin, then set a password)`);
 }
 
 async function health() {

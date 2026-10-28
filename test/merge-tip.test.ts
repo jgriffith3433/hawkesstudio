@@ -72,12 +72,12 @@ test('the merge names the verified commit, so GitHub refuses if the head moves m
 });
 
 test('changes carry real links (video, the change in Studio)', () => {
-  const id = change('ready', { sha: VERIFIED, video: 'a_123', preview: 'https://x.hawkesgen.com/c/1/' });
+  const id = change('ready', { sha: VERIFIED, video: 'a_123', preview: 'https://x.hawkesgen.ai/c/1/' });
   const c = getChange(id)!;
   assert.match(c.links.video!, /^https?:\/\/.+\/v1\/files\/a_123$/);
   assert.match(c.links.change, new RegExp(`^https?://[^#]+/#changes/${id}$`));
   assert.equal(c.links.pr, 'https://github.com/owner/site/pull/7');
-  assert.equal(c.links.preview, 'https://x.hawkesgen.com/c/1/');
+  assert.equal(c.links.preview, 'https://x.hawkesgen.ai/c/1/');
 });
 
 test('a pull request J merged on GitHub marks its change merged; one merged before later commits stays', async () => {

@@ -1,12 +1,12 @@
 // Email from Studio (invites and password resets) through Amazon SES's query API (us-east-1), signed like aws.ts.
-// The sending domain hawkesgen.com is set up by deploy/deploy.mjs --email (SES identity + DKIM records in Route 53).
+// The sending domain hawkesgen.ai is set up by deploy/deploy.mjs --email (SES identity + DKIM records in Route 53).
 // While the SES account is in the sandbox it only delivers to verified addresses; the Users tab always shows the link
 // too, so an invite never depends on email.
 
 import { awsCredentials, sign } from './aws.ts';
 
 const REGION = process.env.STUDIO_MAIL_REGION || 'us-east-1';
-const FROM = process.env.STUDIO_MAIL_FROM || 'Hawkes Studio <noreply@hawkesgen.com>';
+const FROM = process.env.STUDIO_MAIL_FROM || 'Hawkes Studio <noreply@hawkesgen.ai>';
 
 export type Mail = { to: string; subject: string; text: string; html?: string };
 

@@ -57,7 +57,7 @@ export class HawkesGen {
   constructor({ url, key, project } = {}) {
     const env = isNode ? process.env : {};
     // Where Hawkes Gen is: the arguments, else HAWKESGEN_URL / HAWKESGEN_KEY, else ~/.hawkes/client.json
-    // ({ "genUrl": "https://gen.hawkesgen.com", "genKey": "hg_..." }), else this PC.
+    // ({ "genUrl": "https://gen.hawkesgen.ai", "genKey": "hg_..." }), else this PC.
     const file = userConfig();
     this.url = (url ?? env.HAWKESGEN_URL ?? file.genUrl ?? 'http://127.0.0.1:8790').replace(/\/$/, '');
     this.key = key ?? env.HAWKESGEN_KEY ?? file.genKey ?? null;

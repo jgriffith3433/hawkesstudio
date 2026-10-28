@@ -385,7 +385,7 @@ export async function fleet(maxAge = SAMPLE_MS) {
   return data;
 }
 
-/** Hawkes Net, the multiplayer box (https://net.hawkesgen.com, hawkesgen net/): its operator view with Studio's Gen key
+/** Hawkes Net, the multiplayer box (https://net.hawkesgen.ai, hawkesgen net/): its operator view with Studio's Gen key
  *  (the node and its worker processes, rooms and players per project, usage since it started and waiting for Gen), else
  *  its public status. Kept a minute; never more than an 8 s wait. (Its up/down alerts are external.ts's node incidents.) */
 let netCache: { at: number; data: any } | null = null;

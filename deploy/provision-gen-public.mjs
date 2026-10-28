@@ -1,4 +1,4 @@
-// Creates the box that serves hawkesgen.com: the customer portal (jgriffith3433/hawkesgenwebsite; its deploy/setup.mjs
+// Creates the box that serves hawkesgen.ai: the customer portal (jgriffith3433/hawkesgenwebsite; its deploy/setup.mjs
 // installs it, and it deploys itself from main). Run from J's PC: it already exists (i-0ab9cd6b671092e9d, 54.163.56.66).
 //
 //   node deploy/provision-gen-public.mjs          create what's missing, print the state
@@ -93,7 +93,7 @@ export async function ensureRole() {
     await iam.send(new CreateRoleCommand({
       RoleName,
       Path: '/hawkes/',
-      Description: 'Hawkes Gen Public commercial cloud server (hawkesgen.com)',
+      Description: 'Hawkes Gen Public commercial cloud server (hawkesgen.ai)',
       AssumeRolePolicyDocument: JSON.stringify({
         Version: '2012-10-17',
         Statement: [{ Effect: 'Allow', Principal: { Service: 'ec2.amazonaws.com' }, Action: 'sts:AssumeRole' }],

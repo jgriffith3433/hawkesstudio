@@ -31,7 +31,7 @@ Canon that every project shares (from `hawkesbiomedicalnew/AGENTS.md` and `phori
 | **I Can Be** (AI-assisted full-body assessment) | icanbe.ai | `icanbeaiwebsite` | Vite + Babylon.js (port 8090) | Direction undecided. Currently a real-time "day of a developer" simulation; the character is "AI". The day is defined in `day.config.js`. |
 | **The Place Department** (HIPAA-compliant document storage) | theplacedepartment.com | `theplacedepartmentwebsite` | Unity `breakingthrough` → WebGL | Prototype roguelike strategy/wave-defense game. |
 | **Imagine Live TV** (live medical education) | imaginelivetv.com | `imaginelivetvwebsite` | Vite static site | Choose-your-path video story "The Final Spark" (one folder per branch) and a blog. Planning notes in `TheFinalSpark/`. |
-| **Hawkes Gen** (laboratory services; the customer portal) | hawkesgen.com | `hawkesgenwebsite` | Node server app with its own database and Stripe, on its own EC2 box (not GitHub Pages) | Accounts, credits, payments, the landing page, portfolio and Creator Studio UI for public Hawkes Gen. A customer of Hawkes Gen like Studio (`hawkesstudio/docs/cloud.md`, "hawkesgen.com: the customer portal"). |
+| **Hawkes Gen** (laboratory services; the customer portal) | hawkesgen.ai | `hawkesgenwebsite` | Node server app with its own database and Stripe, on its own EC2 box (not GitHub Pages) | Accounts, credits, payments, the landing page, portfolio and Creator Studio UI for public Hawkes Gen. A customer of Hawkes Gen like Studio (`hawkesstudio/docs/cloud.md`, "hawkesgen.ai: the customer portal"). |
 
 All repos are on GitHub as `jgriffith3433/<repo>`. **Every website except `hawkesgenwebsite` (the Hawkes Gen portal, which
 runs on its own EC2 box) is hosted on GitHub Pages**: static files
@@ -76,13 +76,13 @@ that made it; usage and cost are tracked per project and API key. Projects never
 ## Hawkes Net: multiplayer (infrastructure and a product for outside developers)
 
 **`hawkesnet/`** (`jgriffith3433/hawkesnet`, private; its own repo since 2026-10-26, before that Gen's `net/`) is the
-multiplayer service at **https://net.hawkesgen.com**: accounts' projects (hawkesgen.com accounts), tickets, the room
+multiplayer service at **https://net.hawkesgen.ai**: accounts' projects (hawkesgen.ai accounts), tickets, the room
 directory and the relay, on its own EC2 box that deploys itself from hawkesnet main. It has a beta lane like the
 products (products.json `hawkesnet`: work goes to `beta`, Studio runs beta as an app and playtests it, and going live is
 the Go live page's card, J's tap or `DEPLOY hawkesnet`). Its
-`docs/net.md` is the design. **Beta plays on beta, live on live:** beta Hawkes Net is **https://hawkesnet.hawkesgen.com**
+`docs/net.md` is the design. **Beta plays on beta, live on live:** beta Hawkes Net is **https://hawkesnet.hawkesgen.ai**
 (its own projects, accounts and rooms; its dashboard behind Studio's login, its API open like live's). Studio's script on
-every beta page sets `window.HAWKES_NET_ENDPOINT` to it, and the SDKs read that before their default net.hawkesgen.com,
+every beta page sets `window.HAWKES_NET_ENDPOINT` to it, and the SDKs read that before their default net.hawkesgen.ai,
 so a game's beta site plays on beta Net and its live site on the real one with no change to the game. The portal's beta
 signs in and keeps its accounts' projects and keys on beta Net too.
 **The SDKs are packages the games depend on by version** (all public, MIT): JS `@hawkesgen/net` from
@@ -92,10 +92,10 @@ signs in and keeps its accounts' projects and keys on beta Net too.
 (`src/netbridge.ts`: it checks API keys for the box and takes its usage). Games on it: Dose Of Destruction, the portal's
 play page, Yooba Land and Sick Of It.
 
-## The cloud: hawkesgen.com
+## The cloud: hawkesgen.ai
 
-Hawkes Gen and Hawkes Studio run on an AWS control server: **https://studio.hawkesgen.com** and
-**https://gen.hawkesgen.com** (login `j`; the password is in `hawkesstudio/deploy/.keys/web-password.txt`).
+Hawkes Gen and Hawkes Studio run on an AWS control server: **https://studio.hawkesgen.ai** and
+**https://gen.hawkesgen.ai** (login `j`; the password is in `hawkesstudio/deploy/.keys/web-password.txt`).
 - **On J's PC:** CLIs, MCP servers and the Gen clients in every project use the cloud through `~/.hawkes/client.json`.
 - **On the server:** product repos are cloned from GitHub. Work reaches it by being pushed: `beta`, or a branch with a
   pull request into `beta` (the server keeps product source repos on beta).
@@ -139,7 +139,7 @@ Every day it runs these steps for every product (one at a time, through Hawkes G
 - J can still read the report with Claude in chat and have it start fixes directly; each fix verifies with
   `studio_playtest` and marks the finding fixed.
 - **Beta, then live.** Every repo agents change has a `beta` branch between agent changes and `main` (the live site).
-  `https://<sub>.hawkesgen.com/` is beta (`/c/<id>/` is one agent change). Going live: `studio_deploy_plan` (the
+  `https://<sub>.hawkesgen.ai/` is beta (`/c/<id>/` is one agent change). Going live: `studio_deploy_plan` (the
   commits on beta not on main, and how that exact beta commit playtested), then J types `DEPLOY <product>`, then
   `studio_deploy` fast-forwards main to the playtested beta. Studio waits for GitHub Pages and playtests live.
   `studio_rollback` (J types `ROLLBACK <product>`) puts back what was live before, as a new commit.
@@ -162,7 +162,7 @@ Every day it runs these steps for every product (one at a time, through Hawkes G
   characters, places, rules like "slimes are villagers, never enemies"), work in progress, and every agent run's
   summary and lessons. Studio puts the relevant entries into every agent brief, scout, review and Talk turn.
 - **Any Claude uses it the same way** (Talk, agents, a session in the Claude app or on J's PC over Studio's MCP, local
-  or `https://studio.hawkesgen.com/mcp`): `memory_search` before planning or changing something (also "how did we fix
+  or `https://studio.hawkesgen.ai/mcp`): `memory_search` before planning or changing something (also "how did we fix
   X last time?"), `memory_write` when something durable is learned (a decision only with J's own words), `memory_get`
   for provenance. Agents' notes are candidates the PM curates. Read it in the Memory tab, or as Markdown on the
   hawkesstudio branch `memory` (`canon.md` is the story bible, `learned/<product>.md` per product).
@@ -283,10 +283,10 @@ ElevenLabs key may still sit in Unity EditorPrefs (`SickOfIt.ElevenLabs.ApiKey`,
 
 **Pushes drive everything: beta for the beta sites, main for live.** Each product source repo has the workflow
 `.github/workflows/hawkes-studio.yml`, which tells Hawkes Studio about every push to `beta` or `main`
-(`POST studio.hawkesgen.com/api/hooks/github`, with GitHub's signed OIDC token: no secrets). Studio's side is
+(`POST studio.hawkesgen.ai/api/hooks/github`, with GitHub's signed OIDC token: no secrets). Studio's side is
 `hawkesstudio/src/betawatch.ts` (beta) and `src/golive.ts` (main).
 1. **Beta:** work goes to the source repo's `beta` branch (agent pull requests approved in Studio, J's own pushes,
-   devtools saves). Pushing `beta` publishes nothing live. On each push the beta site `https://<sub>.hawkesgen.com/`
+   devtools saves). Pushing `beta` publishes nothing live. On each push the beta site `https://<sub>.hawkesgen.ai/`
    rebuilds (Studio's login); a Unity game is built on the build server a minute later (about $0.10), into a scratch
    copy of its website, then playtested.
 2. **Live = push main.** Studio's "Go live" (`studio.cmd deploy <product>`, the Today card, `studio_deploy_plan` in
@@ -302,7 +302,7 @@ ElevenLabs key may still sit in Unity EditorPrefs (`SickOfIt.ElevenLabs.ApiKey`,
 3. Undo: `studio.cmd rollback <product>`, confirmed with `ROLLBACK <product>` (a new commit; never a force push).
 The "Deploy" column below is the old by-hand way, kept for reference.
 
-**Developing on beta (cloud devtools):** `https://<sub>.hawkesgen.com/dev/` runs each web product's own devtools or
+**Developing on beta (cloud devtools):** `https://<sub>.hawkesgen.ai/dev/` runs each web product's own devtools or
 level editor live on the control server, in beta's working copy (`/srv/hawkes/.work/beta-<product>`). Saves are
 committed (`devtools: <files>`) after 60 quiet seconds and pushed to `beta` (never main), and the beta site rebuilds.
 At most 2 dev servers run at once, and each stops after 30 idle minutes. Devtools generate through Hawkes Gen (its own

@@ -209,7 +209,7 @@ function setupCommand(tmp: string): { file: string; args: string[] } {
     const [file, ...args] = JSON.parse(process.env.STUDIO_CLAUDE_SETUP_ARGS) as string[];
     return { file, args };
   }
-  if (process.platform === 'win32') throw new StudioError('Signing in to a Claude account runs on the cloud server (studio.hawkesgen.com): Claude Code needs a terminal, and this PC has no pseudo-terminal for Studio.', 400);
+  if (process.platform === 'win32') throw new StudioError('Signing in to a Claude account runs on the cloud server (studio.hawkesgen.ai): Claude Code needs a terminal, and this PC has no pseudo-terminal for Studio.', 400);
   const exe = (process.env.TALK_CLAUDE || 'claude').replace(/'/g, `'\\''`);
   // A wide terminal so the link and the token come out on one line each.
   return { file: 'script', args: ['-qfec', `stty cols 4000 rows 60; cd '${tmp}'; exec '${exe}' setup-token`, '/dev/null'] };

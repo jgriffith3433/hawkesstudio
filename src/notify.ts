@@ -14,7 +14,7 @@ const FILE = path.join(DATA, 'notify.json');
 export type NotifySettings = { enabled: boolean; server: string; topic: string };
 
 /** Where links in notifications point (the dashboard J opens on his phone). */
-export const PUBLIC_URL = (process.env.STUDIO_PUBLIC_URL || 'https://studio.hawkesgen.com').replace(/\/$/, '');
+export const PUBLIC_URL = (process.env.STUDIO_PUBLIC_URL || 'https://studio.hawkesgen.ai').replace(/\/$/, '');
 
 const newTopic = () => `hawkes-${crypto.randomBytes(18).toString('base64url')}`;
 

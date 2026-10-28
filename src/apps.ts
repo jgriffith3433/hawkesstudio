@@ -2,7 +2,7 @@
 // hawkesgenwebsite). previews.ts publishes the other web products' beta and changes as static files; an app has no files
 // to publish, so Studio runs it instead, one process per lane:
 //
-//   beta        the beta site (https://<sub>.hawkesgen.com/), from the preview worktree at beta's commit; on the server
+//   beta        the beta site (https://<sub>.hawkesgen.ai/), from the preview worktree at beta's commit; on the server
 //               on the product's local.port, so the "local" playtests play it (local.ts ensureServer)
 //   c_<id>      an agent change (/c/<id>/ on the same host: dev-front.ts switches lanes by cookie), started when opened,
 //               stopped after 30 idle minutes

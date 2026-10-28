@@ -222,22 +222,22 @@ test('a card whose action already happened leaves the Inbox: merged or closed by
 });
 
 test('a phone that sends no Sec-Fetch-Site: the page\'s own Origin (or Referer) on Studio\'s host stands in for it, nothing else', () => {
-  const site = { host: 'studio.hawkesgen.com', 'x-studio-click': '1' };
-  assert.equal(ap.notJClick(req({ ...site, origin: 'https://studio.hawkesgen.com' })), null, 'a POST from the page (Origin)');
-  assert.equal(ap.notJClick(req({ ...site, referer: 'https://studio.hawkesgen.com/?conversation=t_1#talk' })), null, 'a GET from the page (Referer)');
+  const site = { host: 'studio.hawkesgen.ai', 'x-studio-click': '1' };
+  assert.equal(ap.notJClick(req({ ...site, origin: 'https://studio.hawkesgen.ai' })), null, 'a POST from the page (Origin)');
+  assert.equal(ap.notJClick(req({ ...site, referer: 'https://studio.hawkesgen.ai/?conversation=t_1#talk' })), null, 'a GET from the page (Referer)');
   assert.equal(ap.notJClick(req({ host: '127.0.0.1:8791', 'x-studio-click': '1', origin: 'http://127.0.0.1:8791' })), null, 'Studio on the PC');
   const refused: Record<string, string>[] = [
     { ...site },
     { ...site, origin: 'https://evil.example' },
-    { ...site, origin: 'https://evil.example', referer: 'https://studio.hawkesgen.com/' },
+    { ...site, origin: 'https://evil.example', referer: 'https://studio.hawkesgen.ai/' },
     { ...site, origin: 'null' },
-    { ...site, origin: 'https://studio.hawkesgen.com.evil.example' },
-    { ...site, origin: 'https://doseofdestruction.hawkesgen.com' },
-    { host: 'studio.hawkesgen.com', origin: 'https://studio.hawkesgen.com' },
-    { ...site, origin: 'https://studio.hawkesgen.com', 'sec-fetch-site': 'same-site' },
-    { ...site, origin: 'https://studio.hawkesgen.com', 'x-talk-conversation': 't_123456' },
-    { ...site, origin: 'https://studio.hawkesgen.com', 'x-studio-agent': 'c_123456789abc' },
-    { ...site, origin: 'https://studio.hawkesgen.com', authorization: 'Bearer hs_key' },
+    { ...site, origin: 'https://studio.hawkesgen.ai.evil.example' },
+    { ...site, origin: 'https://doseofdestruction.hawkesgen.ai' },
+    { host: 'studio.hawkesgen.ai', origin: 'https://studio.hawkesgen.ai' },
+    { ...site, origin: 'https://studio.hawkesgen.ai', 'sec-fetch-site': 'same-site' },
+    { ...site, origin: 'https://studio.hawkesgen.ai', 'x-talk-conversation': 't_123456' },
+    { ...site, origin: 'https://studio.hawkesgen.ai', 'x-studio-agent': 'c_123456789abc' },
+    { ...site, origin: 'https://studio.hawkesgen.ai', authorization: 'Bearer hs_key' },
   ];
   for (const h of refused) assert.match(ap.notJClick(req(h)) ?? 'allowed', /Talk|agent|API key|isn't a click/, JSON.stringify(h));
 });

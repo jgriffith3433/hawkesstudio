@@ -23,7 +23,7 @@ service: say so to J rather than building a backend.
   Settings > Pages; meanwhile the branch keeps being served.
 - **No Content-Encoding:** Unity builds use `.unityweb` with the decompression fallback; the page's loader names the
   current `Game/v<n>/` files.
-- **Beta is not Pages:** `https://<sub>.hawkesgen.com/` is the beta site, served by Caddy on the control server from
+- **Beta is not Pages:** `https://<sub>.hawkesgen.ai/` is the beta site, served by Caddy on the control server from
   beta's build (`/srv/hawkes/previews/<product>/beta`); `/c/<change>/` is one agent change. Only main reaches Pages.
 - Every product repo's `.github/workflows/hawkes-studio.yml` tells Studio about pushes to beta and main (GitHub OIDC,
   no secrets). Don't edit workflows in an agent change.

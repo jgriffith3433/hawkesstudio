@@ -1,5 +1,5 @@
 // The /dev/ front door: one small listener per product (products.json dev.front, on 127.0.0.1). Caddy sends
-// https://<sub>.hawkesgen.com/dev/* there, and Vite's HMR websocket (Sec-WebSocket-Protocol: vite-hmr) too.
+// https://<sub>.hawkesgen.ai/dev/* there, and Vite's HMR websocket (Sec-WebSocket-Protocol: vite-hmr) too.
 //
 //   /dev/                        the start page: starts the dev server (dev.ts), installs the service worker, then
 //                                opens the product's devtools page (dev.path, e.g. /dev/devtools.html)
@@ -14,7 +14,7 @@
 // http://localhost:<front>/dev/.
 //
 // The fallback, for a browser without service workers (the Claude desktop app's browser pane refuses them): the
-// dev-<sub> host (https://dev-<sub>.hawkesgen.com/, or http://dev-<product>.localhost:<front>/ here), where the whole
+// dev-<sub> host (https://dev-<sub>.hawkesgen.ai/, or http://dev-<product>.localhost:<front>/ here), where the whole
 // host is the dev server at its root and nothing needs rewriting. Caddy sends that host here with no path change; any
 // Host starting with "dev-" is served this way ("root mode"). /__studio/ and /dev/__studio/ are this file's pages there.
 //
@@ -180,7 +180,7 @@ ${since ? `<div class="card"><b>On beta, not live yet:</b> ${since.commits.lengt
 
 function unityPage(p: Product) {
   const u = unityInfo(p);
-  const gen = GEN_URL.includes('127.0.0.1') ? 'https://gen.hawkesgen.com' : GEN_URL;
+  const gen = GEN_URL.includes('127.0.0.1') ? 'https://gen.hawkesgen.ai' : GEN_URL;
   return page(`${p.name}: Unity editor`, `<h1>${esc(p.name)} is a Unity game</h1>
 <p>Its editor can't run on this server. Unity runs on the <b>build server</b> (a Windows machine on AWS that mirrors C:\\Projects
 and builds every Unity product), and you can open it there over Remote Desktop.</p>

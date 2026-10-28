@@ -1,6 +1,6 @@
 // External targets for the Resources tab's sampler (resources.ts): the portal's health every minute (status and time),
 // its admin details when Studio has a key, and each Hawkes Net relay node's health (the list from the Hawkes Net service's
-// GET /v1/net/nodes, https://net.hawkesgen.com: its own box since 2026-10-25). Alerts are incidents: one phone note when
+// GET /v1/net/nodes, https://net.hawkesgen.ai: its own box since 2026-10-25). Alerts are incidents: one phone note when
 // one opens, one recovery note when it closes.
 //
 // The portal admin key is a portal API key for an admin account, given to Studio through the usual secrets path as the
@@ -9,7 +9,7 @@
 
 import type { ResourceSettings } from './resources.ts';
 
-export const PORTAL_URL = () => (process.env.HAWKES_PORTAL_URL || 'https://hawkesgen.com').replace(/\/+$/, '');
+export const PORTAL_URL = () => (process.env.HAWKES_PORTAL_URL || 'https://hawkesgen.ai').replace(/\/+$/, '');
 const TIMEOUT_MS = 8_000;
 const KEEP = 240; // probes kept per target (4 hours at one a minute)
 
@@ -67,7 +67,7 @@ export function readDetails(d: any): PortalDetails {
 
 export type ProbeOptions = { portalUrl?: string; adminKey?: string; nodes?: () => Promise<any[]> };
 
-export const NET_URL = () => (process.env.HAWKES_NET_URL || 'https://net.hawkesgen.com').replace(/\/+$/, '');
+export const NET_URL = () => (process.env.HAWKES_NET_URL || 'https://net.hawkesgen.ai').replace(/\/+$/, '');
 async function nodeList(): Promise<any[]> {
   const r = await fetch(`${NET_URL()}/v1/net/nodes`, { signal: AbortSignal.timeout(TIMEOUT_MS) });
   if (!r.ok) throw new Error(`Hawkes Net answered ${r.status}`);
@@ -152,7 +152,7 @@ export function externalIncidents(s: ResourceSettings, e: External = ext, series
   const fs = e.portal.failingSince;
   if (fs != null && now - fs >= s.portalMinutes * 60_000 - 5_000) {
     const l = e.portal.last;
-    out.push({ key: 'portal', title: 'The portal is not answering', message: `hawkesgen.com/v1/health has failed for ${fmtAgo(now - fs)} (${l?.status ? `HTTP ${l.status}` : l?.error ?? 'no answer'}).` });
+    out.push({ key: 'portal', title: 'The portal is not answering', message: `hawkesgen.ai/v1/health has failed for ${fmtAgo(now - fs)} (${l?.status ? `HTTP ${l.status}` : l?.error ?? 'no answer'}).` });
   }
   if (e.details.state === 'ok' && e.details.data) {
     const d = e.details.data;

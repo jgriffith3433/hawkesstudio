@@ -6,7 +6,7 @@ description: How to read and write Hawkes Studio's shared memory (J's decisions 
 
 One memory for every Claude on Hawkes, in Studio on the cloud server (`hawkesstudio/docs/memory.md`). Tools:
 `memory_search`, `memory_get`, `memory_write`, `memory_curate` (Studio MCP: in Talk and agents; on any machine over
-`https://studio.hawkesgen.com/mcp`).
+`https://studio.hawkesgen.ai/mcp`).
 
 ## Read
 

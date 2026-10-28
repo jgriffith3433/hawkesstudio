@@ -17,7 +17,7 @@ const EXTRA: Record<string, string[]> = { funnel: ['steps', 'by'], builds: ['a',
 
 const PRODUCT = /^[a-z0-9][a-z0-9_-]{0,39}$/;
 const SESSION = /^[A-Za-z0-9_-]{8,64}$/;
-/** A site's account id (hawkesAnalytics.identify; hawkesgen.com's usr_...). */
+/** A site's account id (hawkesAnalytics.identify; hawkesgen.ai's usr_...). */
 const USER = /^[A-Za-z0-9_-]{4,64}$/;
 const TIME = /^(\d{4}-\d\d-\d\d(T[\d:.]+Z?)?|\d{10,13})$/;
 

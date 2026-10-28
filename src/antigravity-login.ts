@@ -110,7 +110,7 @@ function signinCommand(tmp: string): { file: string; args: string[] } {
     const [file, ...args] = JSON.parse(process.env.STUDIO_AGY_SIGNIN_ARGS) as string[];
     return { file, args };
   }
-  if (process.platform === 'win32') throw new StudioError('Signing Antigravity in runs on the cloud server (studio.hawkesgen.com): agy needs a terminal, and this PC has no pseudo-terminal for Studio.', 400);
+  if (process.platform === 'win32') throw new StudioError('Signing Antigravity in runs on the cloud server (studio.hawkesgen.ai): agy needs a terminal, and this PC has no pseudo-terminal for Studio.', 400);
   const exe = String(agyBin()).replace(/'/g, `'\\''`);
   // A wide terminal so the link comes out on one line.
   return { file: 'script', args: ['-qfec', `stty cols 4000 rows 60; cd '${tmp}'; exec '${exe}'`, '/dev/null'] };

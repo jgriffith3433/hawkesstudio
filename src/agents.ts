@@ -950,7 +950,7 @@ ${onSite ? `
 
 You are working in ${p.name}'s website repository (the home page, blog, privacy page and the game page), not the
 game's source (${p.repo.split('/')[0]}). Your branch was cut from the website's beta and its pull request merges into
-it; the beta site https://<sub>.hawkesgen.com/ then shows your pages with beta's game build, and going live brings them
+it; the beta site https://<sub>.hawkesgen.ai/ then shows your pages with beta's game build, and going live brings them
 to the live site together with the build. Never touch \`Game/v*\` (Studio's Unity builds put the game there) or push
 main. If the work also needs the game itself changed, say so in the summary: that is a change in the source repo.
 ` : site ? `
@@ -1717,7 +1717,7 @@ async function work(id: string, note?: string, answer?: string, resumed?: Phase 
       for (const n of canon.notes ?? []) addLog(id, `canon note (not blocking: ${n.note}): ${n.entry} ${n.why}`.slice(0, 600));
       if (verify) verify.canon = canon;
     }
-    // A preview J can open: <product>.hawkesgen.com/c/<id>/
+    // A preview J can open: <product>.hawkesgen.ai/c/<id>/
     const pv = await Promise.resolve().then(() => buildPreview(p.id, { change: id, dir: c.worktree })).catch((e: any) => ({ status: 'failed', detail: e.message }) as any);
     const preview = pv?.status === 'ready' ? previewUrl(p.id, id) : null;
     if (preview) addLog(id, `preview: ${preview}`);
@@ -2103,7 +2103,7 @@ async function workInfra(id: string, note?: string, resumed?: Phase | null, nudg
         } else if (note) {
           // Another pass: bring the branch up to date with main first (main may have moved, or the merge conflicted).
           await gitAsync(repoDir, ['fetch', '--quiet', 'origin']);
-          const m = await gitAsync(c.worktree, ['-c', 'user.name=Hawkes Studio', '-c', 'user.email=studio@hawkesgen.com', 'merge', '--no-edit', `origin/${c.base}`]);
+          const m = await gitAsync(c.worktree, ['-c', 'user.name=Hawkes Studio', '-c', 'user.email=studio@hawkesgen.ai', 'merge', '--no-edit', `origin/${c.base}`]);
           if (!m.ok) git(c.worktree, ['merge', '--abort']);
           addLog(id, m.ok ? `merged origin/${c.base} into the branch` : `merging origin/${c.base} conflicted; the agent works from the branch as it was`);
         }
@@ -2696,7 +2696,7 @@ export async function updateFromBase(id: string): Promise<{ state: 'current' | '
 
 /** Agents' notes (brief, summary, try, learned, video.json): Studio reads them from the worktree; they never belong in git. */
 const NOTES = '.hawkes/';
-const STUDIO_GIT = ['-c', 'user.name=Hawkes Studio', '-c', 'user.email=studio@hawkesgen.com', '-c', 'core.hooksPath=/dev/null'];
+const STUDIO_GIT = ['-c', 'user.name=Hawkes Studio', '-c', 'user.email=studio@hawkesgen.ai', '-c', 'core.hooksPath=/dev/null'];
 
 /**
  * .git/info/exclude only keeps untracked notes out; once a commit had them (Dose Of Destruction's video passes,

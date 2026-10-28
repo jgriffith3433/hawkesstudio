@@ -1,23 +1,23 @@
-# Hawkes in the cloud (hawkesgen.com)
+# Hawkes in the cloud (hawkesgen.ai)
 
 Since 2026-10-16, Hawkes Gen and Hawkes Studio run on one always-on AWS server. J's laptop is optional: its tools
 talk to the cloud, and `auto-start.bat` opens the cloud dashboards. (`auto-start.bat local` still runs a copy here.)
 
 | | |
 |---|---|
-| **Studio** (dashboard, reports, backlog, changes) | https://studio.hawkesgen.com |
-| **Hawkes Gen** (dashboard, and the API for programs) | https://gen.hawkesgen.com |
-| **The public landing page** (no sign-in; what Gen and Studio do, for people and the product sites' "Powered by HAWKES GEN" badge) | https://hawkesgen.com (https://www.hawkesgen.com redirects to it). Plain HTML/CSS in this repo's `site/`, served by Caddy's `file_server` straight from `/srv/hawkes/hawkesstudio/site` with security headers (HSTS, a strict CSP, no framing); nothing runs behind it. Editing `site/` and pushing to main updates it (the server pulls main). The Caddy block is in `deploy/caddyfile.mjs` (applied by the server after a push); the apex and `www` DNS records come from `deploy/deploy.mjs` (`ensureDns`): `node deploy/deploy.mjs --caddy-only` creates them (`--caddy-rollback` undoes a Caddyfile) |
-| **Sign in** | Your own account at https://studio.hawkesgen.com/auth/signin (one session covers Studio, Gen and the beta sites). First run: `admin@hawkesgen.com` / `admin`, then set a password (after that "admin" never works). Invite people, reset passwords and see the sign-in log in Studio's **Users** tab (admins). Members use Studio, Talk and the beta sites; going live, merging into main, money and users are admins'. `src/auth.ts`, `src/auth-pages.ts`; Caddy asks `/auth/check` (forward_auth) |
+| **Studio** (dashboard, reports, backlog, changes) | https://studio.hawkesgen.ai |
+| **Hawkes Gen** (dashboard, and the API for programs) | https://gen.hawkesgen.ai |
+| **The public landing page** (no sign-in; what Gen and Studio do, for people and the product sites' "Powered by HAWKES GEN" badge) | https://hawkesgen.ai (https://www.hawkesgen.ai redirects to it). Plain HTML/CSS in this repo's `site/`, served by Caddy's `file_server` straight from `/srv/hawkes/hawkesstudio/site` with security headers (HSTS, a strict CSP, no framing); nothing runs behind it. Editing `site/` and pushing to main updates it (the server pulls main). The Caddy block is in `deploy/caddyfile.mjs` (applied by the server after a push); the apex and `www` DNS records come from `deploy/deploy.mjs` (`ensureDns`): `node deploy/deploy.mjs --caddy-only` creates them (`--caddy-rollback` undoes a Caddyfile) |
+| **Sign in** | Your own account at https://studio.hawkesgen.ai/auth/signin (one session covers Studio, Gen and the beta sites). First run: `admin@hawkesgen.ai` / `admin`, then set a password (after that "admin" never works). Invite people, reset passwords and see the sign-in log in Studio's **Users** tab (admins). Members use Studio, Talk and the beta sites; going live, merging into main, money and users are admins'. `src/auth.ts`, `src/auth-pages.ts`; Caddy asks `/auth/check` (forward_auth) |
 | **Script login** | user `j`, password in `hawkesstudio/deploy/.keys/web-password.txt`: J's scripts (`src/client.ts`) still send it; Studio checks its SHA-256 (`WEB_LOGIN_SHA256` in keys.env) and counts it as J |
-| **Email** | invites and resets go through Amazon SES from `noreply@hawkesgen.com` (`src/mail.ts`; set up with `node deploy/deploy.mjs --caddy-only --email`). In the SES sandbox only verified addresses get mail; the Users tab always shows the link too |
+| **Email** | invites and resets go through Amazon SES from `noreply@hawkesgen.ai` (`src/mail.ts`; set up with `node deploy/deploy.mjs --caddy-only --email`). In the SES sandbox only verified addresses get mail; the Users tab always shows the link too |
 | **Undo the web server config** | `node deploy/deploy.mjs --caddy-rollback` puts the previous Caddyfile back |
 | **Programs** (Unity, scripts, CLIs, MCP) | `~/.hawkes/client.json` holds the Gen URL and API key, and Studio's URL and login. Every client reads it |
 
 ## What runs where
 
 ```
-                 hawkesgen.com (Route 53)
+                 hawkesgen.ai (Route 53)
                         |
         control server (EC2 m7i.2xlarge, us-east-1, Elastic IP 52.0.19.230)
           Caddy (HTTPS, Let's Encrypt, login) -> Studio :8791, Gen :8790
@@ -57,12 +57,12 @@ ssh -i hawkesstudio/deploy/.keys/control_ed25519 ubuntu@52.0.19.230
 - `deploy/provision.mjs` created the server, its role, firewall and address, and is safe to run again.
 - `deploy/aws-policy.json` is the policy J attached to the `claw` user for this.
 
-## hawkesgen.com: the customer portal (its own box)
+## hawkesgen.ai: the customer portal (its own box)
 
-`hawkesgen.com` (and `www`) is **not** this server. It is the customer portal, `jgriffith3433/hawkesgenwebsite`, on its
+`hawkesgen.ai` (and `www`) is **not** this server. It is the customer portal, `jgriffith3433/hawkesgenwebsite`, on its
 own EC2 box (`hawkes-gen-public`, i-0ab9cd6b671092e9d, Elastic IP 54.163.56.66, its own Caddy and certificate, its own
 database of customers, credits and Stripe payments). It runs no Gen and no fleet: **Hawkes Gen on this server is the
-backend**, and the portal is one of its customers, like Studio. It holds one Gen key (client "hawkesgen.com portal",
+backend**, and the portal is one of its customers, like Studio. It holds one Gen key (client "hawkesgen.ai portal",
 projects `["usr_*"]`) and sends `X-Hawkesgen-Project: usr_<id>` with every call it makes for a customer, which narrows
 the key to that customer inside Gen (hawkesgen `src/auth.ts`). Customer jobs show up in Gen's queue and usage under
 their `usr_` projects.
@@ -74,9 +74,9 @@ their `usr_` projects.
 - **No AWS on the box:** its instance profile is detached; the portal never calls AWS.
 - **SSH:** `ssh -i hawkesstudio/deploy/.keys/gen_public_ed25519 ubuntu@54.163.56.66` (from J's IP or this server).
 - **In Studio (product `hawkesgenwebsite`, J can build on it through Talk):** `products.json` has the product (live
-  site hawkesgen.com, `deploy.via: "ec2"`), the server keeps a checkout of the repo on `beta` (made from main when
+  site hawkesgen.ai, `deploy.via: "ec2"`), the server keeps a checkout of the repo on `beta` (made from main when
   missing), and agent changes are pull requests into beta like any web product. Its beta site is
-  `https://hawkesgenwebsite.hawkesgen.com/`: **the real portal, run by Studio** (`products.json` `app`, `src/apps.ts`).
+  `https://hawkesgenwebsite.hawkesgen.ai/`: **the real portal, run by Studio** (`products.json` `app`, `src/apps.ts`).
   A push to beta checks the commit out in `.work/previews/hawkesgenwebsite` and restarts the process there, on port 8094
   (so the "local" playtests play it too), as the agent sandbox's user with only what it's given: its own database
   (`.work/apps/hawkesgenwebsite/beta`), Gen on 127.0.0.1 with a key Studio made for it (client `beta-hawkesgenwebsite-app`,
@@ -95,19 +95,19 @@ their `usr_` projects.
   `.github/workflows/hawkes-studio.yml` hook, and Route 53 has the `hawkesgenwebsite.` record (2026-10-23); the Caddy
   block comes from `deploy/caddyfile.mjs` and is applied by the pull-deploy. If the server has no checkout of the repo yet,
   Go live says so and its "Sync repo" button clones it (`POST /api/repos/sync`); an agent or a beta push clones it first.
-- **DNS:** Route 53 `hawkesgen.com` and `www` point at the box; `studio.`, `gen.` and the beta subdomains still point
+- **DNS:** Route 53 `hawkesgen.ai` and `www` point at the box; `studio.`, `gen.` and the beta subdomains still point
   here until they move to Studio's own domain.
 
 ## How code gets to the server
 
 Hawkes Gen and Hawkes Studio are private GitHub repos (`jgriffith3433/hawkesgen`, `jgriffith3433/hawkesstudio`), and
-**pushing to `main` deploys them**. There's no beta lane for these two: main is what runs at studio.hawkesgen.com and gen.hawkesgen.com.
+**pushing to `main` deploys them**. There's no beta lane for these two: main is what runs at studio.hawkesgen.ai and gen.hawkesgen.ai.
 
 1. **CI** (`.github/workflows/ci.yml` in each repo) runs on every push and pull request: Node 24, `npm ci`,
    `npm run typecheck`, `npm test`. Tests that need something CI doesn't have skip themselves (Gen: the ComfyUI
    template cache and `.venv`; Studio: a running Hawkes Gen).
 2. **CI tells the server; the server pulls.** No polling: CI's last job, "Tell the server" (on main, after the tests
-   pass), calls `POST studio.hawkesgen.com/api/hooks/self-deploy` with GitHub's OIDC token (this repo, main). Studio
+   pass), calls `POST studio.hawkesgen.ai/api/hooks/self-deploy` with GitHub's OIDC token (this repo, main). Studio
    touches `.data/pull-now`, and the `hawkes-pull.path` watcher runs `hawkesstudio/deploy/hawkes-pull.mjs` (as root;
    also once at boot). The only timer is a retry it schedules for itself while a deploy waits (1 minute for CI, 5
    minutes for a run).
@@ -205,16 +205,16 @@ tools over HTTPS (MCP Streamable HTTP; the tool tables are shared, in `src/mcp-t
 
 | | URL | Key |
 |---|---|---|
-| Studio | `https://studio.hawkesgen.com/mcp` | the Studio MCP key (`hs_...`): `deploy/.keys/studio-mcp-key.txt` (deploy.mjs makes it, as `STUDIO_MCP_KEY` in `/etc/hawkes/keys.env`) |
-| Hawkes Gen | `https://gen.hawkesgen.com/mcp` | any Hawkes Gen API key (`hg_...`); its role and projects apply |
+| Studio | `https://studio.hawkesgen.ai/mcp` | the Studio MCP key (`hs_...`): `deploy/.keys/studio-mcp-key.txt` (deploy.mjs makes it, as `STUDIO_MCP_KEY` in `/etc/hawkes/keys.env`) |
+| Hawkes Gen | `https://gen.hawkesgen.ai/mcp` | any Hawkes Gen API key (`hg_...`); its role and projects apply |
 
 The key goes in an `Authorization: Bearer` header; Caddy lets those requests skip the website login, and each
 service checks the key itself (no key or a wrong one: 401). For clients that can't send headers, the key can go in
-the URL instead: `https://studio.hawkesgen.com/mcp/hs_...` and `https://gen.hawkesgen.com/mcp/hg_...`. Then the URL
+the URL instead: `https://studio.hawkesgen.ai/mcp/hs_...` and `https://gen.hawkesgen.ai/mcp/hg_...`. Then the URL
 **is** the password: don't paste it anywhere shared. To revoke a Gen key, disable it (Gen dashboard → Keys); for the
 Studio key, delete the `STUDIO_MCP_KEY` line on the server, run `deploy.mjs` again (it makes a new one) and update clients.
 
-**Public on gen.hawkesgen.com (Hawkes Analytics):** two paths skip the login so players' browsers can use them:
+**Public on gen.hawkesgen.ai (Hawkes Analytics):** two paths skip the login so players' browsers can use them:
 `POST /v1/analytics/collect` (and its `OPTIONS` preflight; bodies over 64 KB get 413 from Caddy) and `GET /sdk/*`
 (the SDK script; `Cache-Control: public, max-age=3600` unless Gen sends its own). Caddy sets `X-Forwarded-For` to
 the address it saw (Gen's GeoIP and rate limit read it) and drops any `Authorization` or `Cookie` header, so the web
@@ -222,7 +222,7 @@ key never reaches those routes. Gen does the rest (allowed origins per product, 
 `docs/analytics.md`). Everything else on gen still needs the login or an `hg_` key; `test/caddyfile.test.ts` checks
 both. A merged change to them reaches the server on its own (`hawkes-pull.mjs` applies `deploy/caddyfile.mjs`, above).
 
-**The Hawkes Net box (net.hawkesgen.com; J, 2026-10-25: multiplayer off the control server):** its own EC2 instance
+**The Hawkes Net box (net.hawkesgen.ai; J, 2026-10-25: multiplayer off the control server):** its own EC2 instance
 (c7g.large Graviton, us-east-1, Elastic IP 44.219.198.116, about $59/month plus $0.09/GB the relay sends), made by
 `deploy/provision-net.mjs` (dry run without `--apply`; state and SSH key in `deploy/.keys/net.json` and `net_ed25519`;
 first boot `deploy/net-cloud-init.sh`) and set up by the hawkesnet repo's `deploy/setup.mjs`. It runs tickets, the room
@@ -231,7 +231,7 @@ itself from hawkesnet main (`hawkes-net-pull.timer`; until 2026-10-26 it ran fro
 308 to the box; it only checks keys for the box (`/v1/net/whoami`) and files its usage. Logs:
 `ssh -i deploy/.keys/net_ed25519 ubuntu@44.219.198.116 journalctl -u hawkes-net -u hawkes-net-pull -u caddy`.
 
-**Public on gen.hawkesgen.com (Hawkes Net):** players' pages join multiplayer rooms with no login, so `@net` opens
+**Public on gen.hawkesgen.ai (Hawkes Net):** players' pages join multiplayer rooms with no login, so `@net` opens
 `/v1/net/ws` (the relay's WebSocket: a signed, single-use ticket is the only way in), `/v1/net/ticket` (Gen's ticket
 door: player tickets for a listed project's own sites, limited per address; requests with a key go through `@apikey`),
 `/v1/net/keys`, `/v1/net/status` (totals only without a key) and `/v1/net/nodes`. Caddy drops `Cookie`, sets
@@ -240,14 +240,14 @@ Everything else under `/v1/net/` (publish, room info, heartbeats, usage, key rot
 `docs/net.md` has the rest.
 
 Give each place its own Gen key (`hawkesgen.cmd key claude-ai --role owner`), so one can be turned off alone.
-Over HTTP, Gen outputs come back as `https://gen.hawkesgen.com/v1/files/<asset>` links (they need the key or the login),
+Over HTTP, Gen outputs come back as `https://gen.hawkesgen.ai/v1/files/<asset>` links (they need the key or the login),
 and inputs must be `asset:<id>` or `blob:<sha>` (`save_to` and `workflow_file` only work with the local server).
 
 **Claude Code on any machine** (user scope, so every folder has them):
 
 ```bash
-claude mcp add --scope user --transport http hawkesstudio https://studio.hawkesgen.com/mcp --header "Authorization: Bearer hs_..."
-claude mcp add --scope user --transport http hawkesgen https://gen.hawkesgen.com/mcp --header "Authorization: Bearer hg_..."
+claude mcp add --scope user --transport http hawkesstudio https://studio.hawkesgen.ai/mcp --header "Authorization: Bearer hs_..."
+claude mcp add --scope user --transport http hawkesgen https://gen.hawkesgen.ai/mcp --header "Authorization: Bearer hg_..."
 ```
 
 **claude.ai/code (cloud sessions):** they read the repo's `.mcp.json`. The project files point at the stdio servers on
@@ -255,17 +255,17 @@ this PC, so add the HTTP ones with the keys from environment variables (Claude C
 
 ```json
 { "mcpServers": {
-  "hawkesstudio": { "type": "http", "url": "https://studio.hawkesgen.com/mcp", "headers": { "Authorization": "Bearer ${HAWKES_STUDIO_KEY}" } },
-  "hawkesgen": { "type": "http", "url": "https://gen.hawkesgen.com/mcp", "headers": { "Authorization": "Bearer ${HAWKESGEN_KEY}" } }
+  "hawkesstudio": { "type": "http", "url": "https://studio.hawkesgen.ai/mcp", "headers": { "Authorization": "Bearer ${HAWKES_STUDIO_KEY}" } },
+  "hawkesgen": { "type": "http", "url": "https://gen.hawkesgen.ai/mcp", "headers": { "Authorization": "Bearer ${HAWKESGEN_KEY}" } }
 } }
 ```
 
 Set `HAWKES_STUDIO_KEY` and `HAWKESGEN_KEY` in the cloud environment's settings (environment variables), and give it
-network access to `studio.hawkesgen.com` and `gen.hawkesgen.com` (the default "trusted" network list may not include
+network access to `studio.hawkesgen.ai` and `gen.hawkesgen.ai` (the default "trusted" network list may not include
 them: use custom access with those two domains). Untested from a cloud session yet.
 
 **claude.ai, the Claude desktop app (Chat) and the phone app:** Settings → Connectors → Add custom connector, one per
-service, with the **key-in-URL** address (`https://studio.hawkesgen.com/mcp/hs_...`, `https://gen.hawkesgen.com/mcp/hg_...`).
+service, with the **key-in-URL** address (`https://studio.hawkesgen.ai/mcp/hs_...`, `https://gen.hawkesgen.ai/mcp/hg_...`).
 Custom connectors only do OAuth or no auth (no custom headers), which is why the key goes in the URL. Connectors added
 on claude.ai also show in the desktop and phone apps. Alternatively, the desktop app's Chat can run the stdio servers on
 this PC: in `claude_desktop_config.json`, `"mcpServers": { "hawkesstudio": { "command": "node", "args":
@@ -320,9 +320,9 @@ The Changes tab refreshes itself every 5 s and keeps opened summaries and logs o
 2. Agents (Claude Code on the server, headless) fix the worst new ones, within the day's budget
    (`/api/agents/settings`: by default 4 fixes and $20 a day, blockers and bugs only).
 3. Each fix is a branch cut from `beta`, a pull request into `beta` (ready on the agent's checks; a playtest of it only on request), and a preview at
-   `https://<sub>.hawkesgen.com/c/<id>/`.
+   `https://<sub>.hawkesgen.ai/c/<id>/`.
 4. J approves in Studio's **Changes** tab, which merges the pull request into beta (nothing goes live). Beta's
-   pre-deploy build, Unity build, beta site (`https://<sub>.hawkesgen.com/`) and a playtest of beta follow.
+   pre-deploy build, Unity build, beta site (`https://<sub>.hawkesgen.ai/`) and a playtest of beta follow.
    J can also ask for changes, or close the fix.
 5. **Going live** is separate (pushing main; see "Pushes drive it" below): the Today card's "Go live…" (or `studio_deploy_plan` in Talk) shows the commits on beta
    that aren't live and how that exact beta commit played. J types `DEPLOY <product>`, Studio fast-forwards main to it,
@@ -365,7 +365,7 @@ The first agent change to Studio through this lane was a test of the lane itself
 ### Pushes drive it (GitHub Actions)
 
 Every product source repo has `.github/workflows/hawkes-studio.yml`: on each push to `beta` or `main` it calls
-`POST https://studio.hawkesgen.com/api/hooks/github` with GitHub's OIDC token (`id-token: write`; no secrets).
+`POST https://studio.hawkesgen.ai/api/hooks/github` with GitHub's OIDC token (`id-token: write`; no secrets).
 `src/github-oidc.ts` checks GitHub's signature, the owner (`jgriffith3433`) and the event; Caddy lets only that path
 past the login. Studio answers:
 
@@ -378,7 +378,7 @@ past the login. Studio answers:
 - A commit that already went live through Studio's "Go live" isn't published twice.
 - `GET /api/hooks/pushes` lists the last pushes Studio handled and what it did. A go live also shows as a `live` run.
 - The workflow can be re-run by hand (Actions tab, "Run workflow") to send the same push again.
-- The portal (`hawkesgenwebsite`) isn't on Pages: a push to `main` is recorded and its live site is played once its CI has finished and its box has had time to pull (`deploy.via: "ec2"`; section "hawkesgen.com: the customer portal").
+- The portal (`hawkesgenwebsite`) isn't on Pages: a push to `main` is recorded and its live site is played once its CI has finished and its box has had time to pull (`deploy.via: "ec2"`; section "hawkesgen.ai: the customer portal").
 - The corporate site, I Can Be and Imagine Live TV have no build on GitHub: Pages serves main as committed, and their
   beta sites serve beta's files as committed too. I Can Be's version stamp (`deploy.prebuild`) is committed to beta by
   `studio beta icanbe`, so it ships with the push.
@@ -389,7 +389,7 @@ of Unity games stay on main, and their beta builds land in `/srv/hawkes/.work/be
 
 ## Developing on beta (/dev/)
 
-`https://<sub>.hawkesgen.com/dev/` runs each web product's devtools on this server, in beta's working copy, and
+`https://<sub>.hawkesgen.ai/dev/` runs each web product's devtools on this server, in beta's working copy, and
 commits saves to beta. How J uses it: `docs/daily.md`, "Developing on beta". The operations side:
 
 - **Processes:** Studio starts each dev server (`npm run dev -- --port <dev.port> --strictPort --host 127.0.0.1`) as

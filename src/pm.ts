@@ -1656,7 +1656,7 @@ async function revertOnBetaNow(repo: string, pr: number, by: string) {
   const w = await gitAsync(dir, ['worktree', 'add', '--detach', wt, `origin/${BETA}`]);
   if (!w.ok) throw new StudioError(`worktree: ${w.err}`);
   try {
-    const r = git(wt, ['-c', 'user.name=Hawkes Studio', '-c', 'user.email=studio@hawkesgen.com', 'revert', '--no-edit', sha]);
+    const r = git(wt, ['-c', 'user.name=Hawkes Studio', '-c', 'user.email=studio@hawkesgen.ai', 'revert', '--no-edit', sha]);
     if (!r.ok) throw new StudioError(`git revert failed (beta changed the same lines since?): ${r.err.slice(0, 300)}`);
     git(wt, ['commit', '--amend', '-m', `Revert #${pr} on ${BETA} (undone by ${by} in Studio)`, '-c', 'user.name=Hawkes Studio']);
     const p = await gitAsync(wt, ['push', '--quiet', 'origin', `HEAD:${BETA}`]);

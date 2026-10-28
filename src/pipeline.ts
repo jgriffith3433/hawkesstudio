@@ -154,7 +154,7 @@ async function runAll(run: string, ids: string[], o: RunOptions) {
   if (isServer() && !hadSteps(run, 'repo')) {
     db.prepare('UPDATE runs SET detail = ? WHERE id = ?').run('updating repos from GitHub', run);
     const synced = await syncRepos();
-    // Product source repos are on beta (repos.ts); the staging sites (<sub>.hawkesgen.com) follow it.
+    // Product source repos are on beta (repos.ts); the staging sites (<sub>.hawkesgen.ai) follow it.
     void import('./previews.ts').then(({ previewsAfterSync }) => previewsAfterSync(synced)).catch(() => {});
     for (const r of synced) {
       const s = startStep(run, 'studio', 'repo', r.folder, r.action);

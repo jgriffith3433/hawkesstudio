@@ -17,7 +17,7 @@ Read `phoriginswebsite/AGENTS.md` (its hard constraints are real regressions tha
   T-poses).
 - **Hard constraints:** combat off on Apex Peak and B3 (and all six story levels); audio unlocks on the first gesture;
   inverted mouse Y is intentional; Start stays disabled until `gameReady`.
-- **Editor:** `/devtools.html` (on beta: `https://<sub>.hawkesgen.com/dev/`).
+- **Editor:** `/devtools.html` (on beta: `https://<sub>.hawkesgen.ai/dev/`).
 - **Playtests:** `src/playtest/phPlaytest.ts` (a read-only probe in `main.ts`), `src/hawkes-playtest.js` is a copy.
   `/game.html?playtest=smoke`.
 - **Voice:** `tools/voiceLines.mjs` through Hawkes Gen. Never put agent notes or instructions into the VO text.

@@ -317,7 +317,7 @@ const server = http.createServer(async (req, res) => {
       return send(res, 200, { ok: true, run: startBeta(m[1], { focus: b.focus, origin, playtest: b.playtest !== false, quiet: 0 }).id });
     }
 
-    // Developing on beta (dev.ts): <sub>.hawkesgen.com/dev/, the beta working copy and its dev server.
+    // Developing on beta (dev.ts): <sub>.hawkesgen.ai/dev/, the beta working copy and its dev server.
     if (route === '/api/dev' && method === 'GET') return send(res, 200, { dev: listDev() });
     m = /^\/api\/dev\/([\w-]+)(?:\/(start|stop|commit|resolve|since-live))?$/.exec(route);
     if (m && method === 'GET' && !m[2]) return send(res, 200, devStatus(m[1]));
@@ -689,7 +689,7 @@ const server = http.createServer(async (req, res) => {
     }
     if (route === '/api/servers/stop' && method === 'POST') return send(res, 200, { stopped: stopServers() });
 
-    // Staging sites (<sub>.hawkesgen.com): main and agent changes. POST rebuilds (body: { change? }) in the background.
+    // Staging sites (<sub>.hawkesgen.ai): main and agent changes. POST rebuilds (body: { change? }) in the background.
     if (route === '/api/previews' && method === 'GET') return send(res, 200, { previews: listPreviews() });
     m = /^\/api\/previews\/([\w-]+)$/.exec(route);
     if (m && method === 'POST') {
@@ -712,7 +712,7 @@ const server = http.createServer(async (req, res) => {
       const { verifyGitHubOidc } = await import('./github-oidc.ts');
       let claims: Record<string, any>;
       try {
-        claims = await verifyGitHubOidc(token, 'https://studio.hawkesgen.com');
+        claims = await verifyGitHubOidc(token, 'https://studio.hawkesgen.ai');
       } catch (e: any) {
         return send(res, 401, { error: `token rejected: ${e.message}` });
       }
@@ -729,7 +729,7 @@ const server = http.createServer(async (req, res) => {
       const { verifyGitHubOidc } = await import('./github-oidc.ts');
       let claims: Record<string, any>;
       try {
-        claims = await verifyGitHubOidc(token, 'https://studio.hawkesgen.com');
+        claims = await verifyGitHubOidc(token, 'https://studio.hawkesgen.ai');
       } catch (e: any) {
         return send(res, 401, { error: `token rejected: ${e.message}` });
       }
@@ -787,8 +787,8 @@ void import('./stream.ts').then(({ setProbes }) => setProbes({
 
 server.listen(PORT, '127.0.0.1', () => {
   console.log(`Hawkes Studio on http://127.0.0.1:${PORT}`);
-  // Accounts: the first admin (admin@hawkesgen.com, "admin" until it's changed) when there are no users yet.
-  void import('./auth.ts').then(({ ensureDefaultAdmin }) => { if (ensureDefaultAdmin()) console.log('[auth] created the first admin, admin@hawkesgen.com (sign in once and set a password)'); });
+  // Accounts: the first admin (admin@hawkesgen.ai, "admin" until it's changed) when there are no users yet.
+  void import('./auth.ts').then(({ ensureDefaultAdmin }) => { if (ensureDefaultAdmin()) console.log('[auth] created the first admin, admin@hawkesgen.ai (sign in once and set a password)'); });
   // An agent's smoke check of a changed Studio (agents.ts) starts the server and nothing else.
   if (process.env.STUDIO_SMOKE === '1') return;
   // A restart (a deploy) ends nothing: runs, agent changes and Talk answers carry on from where they were, waiting on

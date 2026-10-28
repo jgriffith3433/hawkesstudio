@@ -133,7 +133,7 @@
     const down = (p && !p.ok) || x.nodes.list.some((n) => !n.last.ok);
     return `<details class="rs-box more-details" data-k="outside"${down ? ' open' : ''}><summary>Outside: the portal and relay nodes <span class="meta">· ${down ? 'something is down' : x.nodes.list.length ? `portal and ${x.nodes.list.length} node(s) up` : p ? 'portal up' : 'not probed yet'}</span></summary>
       <div class="rs-wrap"><table><tr><th>Target</th><th>State</th><th class="n">Time</th><th>Detail</th></tr>${rows}</table></div>
-      <div class="meta" style="margin-bottom:8px">Probed every minute. Details need a portal admin key in Studio's secrets (HAWKES_PORTAL_ADMIN_KEY); relay nodes come from Hawkes Net (net.hawkesgen.com/v1/net/nodes).${x.nodes.state === 'failed' ? ` <span class="rs-amber">Node list failed: ${esc(x.nodes.note ?? '')}</span>` : ''}</div></details>`;
+      <div class="meta" style="margin-bottom:8px">Probed every minute. Details need a portal admin key in Studio's secrets (HAWKES_PORTAL_ADMIN_KEY); relay nodes come from Hawkes Net (net.hawkesgen.ai/v1/net/nodes).${x.nodes.state === 'failed' ? ` <span class="rs-amber">Node list failed: ${esc(x.nodes.note ?? '')}</span>` : ''}</div></details>`;
   }
 
   // Hawkes Net, the multiplayer box: what is happening on it (players, rooms per project, its workers, usage).

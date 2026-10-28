@@ -1,5 +1,5 @@
 // J's bug reports from the beta sites: the "report a bug" button Studio puts into every page of
-// https://<sub>.hawkesgen.com/ (previews.ts injects it into each HTML file it publishes; never into a product repo or a
+// https://<sub>.hawkesgen.ai/ (previews.ts injects it into each HTML file it publishes; never into a product repo or a
 // live site). It talks to the product's /dev/ front door (dev-front.ts: /dev/__studio/report.js and POST
 // /dev/__studio/report), which Caddy already sends behind the login on every beta host, Unity products included.
 //

@@ -25,7 +25,7 @@ test('sign-in addresses ask for upload scopes, offline access, and a state that 
 });
 
 test('the redirect is this site: https behind Caddy, http on this PC', () => {
-  assert.equal(social.redirectUri({ headers: { host: 'studio.hawkesgen.com' } } as any, 'tiktok'), 'https://studio.hawkesgen.com/api/social/callback/tiktok');
+  assert.equal(social.redirectUri({ headers: { host: 'studio.hawkesgen.ai' } } as any, 'tiktok'), 'https://studio.hawkesgen.ai/api/social/callback/tiktok');
   assert.equal(social.redirectUri({ headers: { host: '127.0.0.1:8791' } } as any, 'youtube'), 'http://127.0.0.1:8791/api/social/callback/youtube');
 });
 

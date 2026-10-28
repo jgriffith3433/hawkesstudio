@@ -31,13 +31,13 @@ function res() {
   return out;
 }
 
-const web = { 'X-Forwarded-Host': 'studio.hawkesgen.com', 'X-Forwarded-Proto': 'https' };
+const web = { 'X-Forwarded-Host': 'studio.hawkesgen.ai', 'X-Forwarded-Proto': 'https' };
 const cookieOf = (setCookie: string) => /hawkes_session=([^;]*)/.exec(setCookie)![1];
 
 test('the first admin: "admin" signs in once, must set a password, and never works again', async () => {
   assert.ok(A.ensureDefaultAdmin());
   assert.equal(A.ensureDefaultAdmin(), null, 'only when there are no users');
-  const u = A.signIn('Admin@HawkesGen.com ', 'admin', { ip: '1.1.1.1' });
+  const u = A.signIn('Admin@HawkesGen.ai ', 'admin', { ip: '1.1.1.1' });
   assert.equal(u.role, 'admin');
   assert.ok(u.must_change && u.default_password);
   assert.throws(() => A.signIn(A.DEFAULT_ADMIN, 'nope', { ip: '1.1.1.1' }), /don't match/);
@@ -72,14 +72,14 @@ test('lockout: five wrong passwords lock the account for 15 minutes, even with t
 });
 
 test('forward_auth: no session -> the sign-in page for a page load, 401 for anything else; next comes back', () => {
-  const page = A.check(req({ 'X-Forwarded-Host': 'icanbe.hawkesgen.com', 'X-Forwarded-Proto': 'https', 'X-Forwarded-Uri': '/c/x/?a=1', Accept: 'text/html' }));
+  const page = A.check(req({ 'X-Forwarded-Host': 'icanbe.hawkesgen.ai', 'X-Forwarded-Proto': 'https', 'X-Forwarded-Uri': '/c/x/?a=1', Accept: 'text/html' }));
   assert.equal(page.status, 302);
-  assert.equal(page.headers.Location, `https://studio.hawkesgen.com/auth/signin?next=${encodeURIComponent('https://icanbe.hawkesgen.com/c/x/?a=1')}`);
+  assert.equal(page.headers.Location, `https://studio.hawkesgen.ai/auth/signin?next=${encodeURIComponent('https://icanbe.hawkesgen.ai/c/x/?a=1')}`);
   assert.equal(A.check(req({ ...web, Accept: 'application/json' })).status, 401);
-  assert.equal(A.safeNext('https://icanbe.hawkesgen.com/x'), 'https://icanbe.hawkesgen.com/x');
+  assert.equal(A.safeNext('https://icanbe.hawkesgen.ai/x'), 'https://icanbe.hawkesgen.ai/x');
   assert.equal(A.safeNext('https://evil.example/x'), '/');
   assert.equal(A.safeNext('//evil.example'), '/');
-  assert.equal(A.safeNext('https://hawkesgen.com.evil.example/'), '/');
+  assert.equal(A.safeNext('https://hawkesgen.ai.evil.example/'), '/');
 });
 
 test('the cookie: HttpOnly, Secure and domain-wide on the web; 30 days only when remembered', () => {
@@ -87,7 +87,7 @@ test('the cookie: HttpOnly, Secure and domain-wide on the web; 30 days only when
   assert.match(c, /HttpOnly/);
   assert.match(c, /Secure/);
   assert.match(c, /SameSite=Lax/);
-  assert.match(c, /Domain=hawkesgen\.com/);
+  assert.match(c, /Domain=hawkesgen\.ai/);
   assert.match(c, /Max-Age=2592000/);
   assert.doesNotMatch(A.sessionCookie(req(web), 'tok', A.cookieAge(false)), /Max-Age/);
   assert.doesNotMatch(A.sessionCookie(req({ Host: '127.0.0.1:8791' }), 'tok', null), /Domain=/);
@@ -99,7 +99,7 @@ test('the sign-in page: a form post sets the cookie and goes to next; a form fro
   assert.equal(r.status, 401);
   assert.match(r.body, /don&#39;t match/);
   const g = res();
-  await handleAuthRoute(req(web), g, new URL('http://x/auth/signin?next=https%3A%2F%2Fphorigins.hawkesgen.com%2F'));
+  await handleAuthRoute(req(web), g, new URL('http://x/auth/signin?next=https%3A%2F%2Fphorigins.hawkesgen.ai%2F'));
   assert.match(g.body, /autocomplete="username"/);
   assert.match(g.body, /autocomplete="current-password"/);
   const x = res();

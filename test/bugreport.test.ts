@@ -47,7 +47,7 @@ test('the button goes into whole pages only, once', () => {
 });
 
 test('beta pages name beta Hawkes Net before any game code runs, and a page that names its own keeps it', () => {
-  assert.equal(br.BETA_NET, 'https://hawkesnet.hawkesgen.com');
+  assert.equal(br.BETA_NET, 'https://hawkesnet.hawkesgen.ai');
   const out = br.injectReport('<html><head><script src="game.js"></script></head><body></body></html>', { product: 'brtest' });
   assert.ok(out.indexOf('HAWKES_NET_ENDPOINT') < out.indexOf('game.js'), 'set before the game loads');
   const code = /<script data-hawkes-report>([\s\S]*?)<\/script>/.exec(out)![1];
@@ -57,7 +57,7 @@ test('beta pages name beta Hawkes Net before any game code runs, and a page that
     vm.runInNewContext(code, ctx);
     return ctx.HAWKES_NET_ENDPOINT;
   };
-  assert.equal(run(undefined), 'https://hawkesnet.hawkesgen.com');
+  assert.equal(run(undefined), 'https://hawkesnet.hawkesgen.ai');
   assert.equal(run('http://127.0.0.1:8786'), 'http://127.0.0.1:8786');
 });
 
@@ -93,7 +93,7 @@ test('a report becomes a top-priority finding for the milestone being tested', a
   assert.deepEqual(br.testing('brtest'), { milestone: ms.id, title: 'Controls done', origin: null, item: it.id });
 
   const r = await br.fileReport('brtest', {
-    text: 'Jump does nothing on the second level. It worked on the first.', url: 'https://brt.hawkesgen.com/Game/', shot: PNG, shotNote: "game frame couldn't be captured",
+    text: 'Jump does nothing on the second level. It worked on the first.', url: 'https://brt.hawkesgen.ai/Game/', shot: PNG, shotNote: "game frame couldn't be captured",
     viewport: { w: 390, h: 844, dpr: 3 }, device: { ua: 'Mobile Safari', touch: true, platform: 'iPhone' },
     console: [{ level: 'error', text: 'TypeError: x is undefined' }], state: '{"scene":"level2"}', build: { product: 'brtest', sha: 'abc1234', ref: 'beta' },
   });
@@ -140,8 +140,8 @@ test('Talk hears when a report is fixed', async () => {
 });
 
 test('error signatures: same error, same signature; noise is dropped', () => {
-  const a = br.errorSignature("TypeError: Cannot read properties of undefined (reading 'hp')", "TypeError: x\n    at Fighter.hit (https://brt.hawkesgen.com/assets/index-a1b2c3d4.js?v=17:120:33)\n    at loop (https://brt.hawkesgen.com/assets/index-a1b2c3d4.js:9:1)");
-  const b = br.errorSignature("Uncaught TypeError: Cannot read properties of undefined (reading 'hp')", "TypeError: x\n    at Fighter.hit (https://brt.hawkesgen.com/c/c_0123abcd/assets/index-ffee9988.js:121:7)");
+  const a = br.errorSignature("TypeError: Cannot read properties of undefined (reading 'hp')", "TypeError: x\n    at Fighter.hit (https://brt.hawkesgen.ai/assets/index-a1b2c3d4.js?v=17:120:33)\n    at loop (https://brt.hawkesgen.ai/assets/index-a1b2c3d4.js:9:1)");
+  const b = br.errorSignature("Uncaught TypeError: Cannot read properties of undefined (reading 'hp')", "TypeError: x\n    at Fighter.hit (https://brt.hawkesgen.ai/c/c_0123abcd/assets/index-ffee9988.js:121:7)");
   assert.equal(a, b, 'line numbers, bundle hashes, hosts, change paths and "Uncaught" don\'t matter');
   assert.match(a, /reading 'hp'.*Fighter\.hit/);
   assert.notEqual(a, br.errorSignature("TypeError: Cannot read properties of undefined (reading 'mp')", 'at Fighter.hit (https://x/assets/index.js:1:1)'));
@@ -155,12 +155,12 @@ test('error signatures: same error, same signature; noise is dropped', () => {
   assert.ok(br.isNoise('x', '', 'moz-extension://abc/inject.js'));
   assert.ok(br.isNoise("Uncaught (in promise) DOMException: The play() request was interrupted by a call to pause()."));
   assert.ok(br.isNoise(''));
-  assert.ok(!br.isNoise('TypeError: a is null', 'at f (https://brt.hawkesgen.com/assets/game.js:1:2)'));
+  assert.ok(!br.isNoise('TypeError: a is null', 'at f (https://brt.hawkesgen.ai/assets/game.js:1:2)'));
 });
 
 test('an error the page catches becomes one source-auto finding; again only counts', async () => {
-  const err = (over: any = {}) => ({ error: { kind: 'error', message: 'TypeError: boss is undefined', stack: 'TypeError: boss is undefined\n    at Arena.tick (https://brt.hawkesgen.com/assets/game-9f8e7d6c.js:40:9)', ...over },
-    url: 'https://brt.hawkesgen.com/', viewport: { w: 390, h: 844 }, device: { ua: 'Mobile Safari', touch: true, platform: 'iPhone' }, shot: PNG,
+  const err = (over: any = {}) => ({ error: { kind: 'error', message: 'TypeError: boss is undefined', stack: 'TypeError: boss is undefined\n    at Arena.tick (https://brt.hawkesgen.ai/assets/game-9f8e7d6c.js:40:9)', ...over },
+    url: 'https://brt.hawkesgen.ai/', viewport: { w: 390, h: 844 }, device: { ua: 'Mobile Safari', touch: true, platform: 'iPhone' }, shot: PNG,
     console: [{ level: 'error', text: 'TypeError: boss is undefined' }], state: '{"scene":"arena"}', build: { product: 'brtest', sha: 'def5678', ref: 'beta' } });
   const n = (db.prepare(`SELECT COUNT(*) AS n FROM findings`).get() as any).n;
   const r1: any = await br.fileAutoError('brtest', err(), '10.0.0.1');
@@ -176,7 +176,7 @@ test('an error the page catches becomes one source-auto finding; again only coun
   assert.match(f.detail, /"scene":"arena"/);
   assert.ok(br.reportShot(r1.id), 'its screenshot is kept');
   // Another load, another line number and bundle: the same finding, seen twice, the latest sample kept.
-  const r2: any = await br.fileAutoError('brtest', err({ stack: 'TypeError: boss is undefined\n    at Arena.tick (https://brt.hawkesgen.com/assets/game-0a1b2c3d.js:41:2)' , }), '10.0.0.2');
+  const r2: any = await br.fileAutoError('brtest', err({ stack: 'TypeError: boss is undefined\n    at Arena.tick (https://brt.hawkesgen.ai/assets/game-0a1b2c3d.js:41:2)' , }), '10.0.0.2');
   assert.equal(r2.id, r1.id);
   assert.equal(r2.seen, true);
   const g = db.prepare('SELECT * FROM findings WHERE id = ?').get(r1.id) as any;
@@ -202,7 +202,7 @@ test('the /dev/__studio/error endpoint: same-origin JSON, rate-limited per IP', 
     // startFronts doesn't wait for listen: wait until the front door answers.
     for (let i = 0; i < 50; i++) { try { await fetch(`http://127.0.0.1:${FRONT}/dev/__studio/status`); break; } catch { await new Promise((r) => setTimeout(r, 100)); } }
     const post = (body: any, ip: string, headers: any = {}) => fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Forwarded-For': `${ip}, 10.9.9.9`, ...headers }, body: JSON.stringify(body) });
-    const body = { error: { kind: 'rejection', message: 'Error: save failed 503', stack: 'Error: save failed\n    at save (https://brt.hawkesgen.com/assets/save.js:3:3)' }, url: 'https://brt.hawkesgen.com/' };
+    const body = { error: { kind: 'rejection', message: 'Error: save failed 503', stack: 'Error: save failed\n    at save (https://brt.hawkesgen.ai/assets/save.js:3:3)' }, url: 'https://brt.hawkesgen.ai/' };
     let r = await post(body, '192.0.2.7');
     assert.equal(r.status, 200);
     const out: any = await r.json();

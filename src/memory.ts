@@ -641,7 +641,7 @@ export async function publishMemory() {
   }
   git(wt, ['add', '-A']);
   if (!git(wt, ['status', '--porcelain']).out) return { changed: false, files: Object.keys(files).length };
-  const c = git(wt, ['-c', 'user.name=Hawkes Studio', '-c', 'user.email=studio@hawkesgen.com', 'commit', '--quiet', '-m', `Memory export ${new Date().toISOString().slice(0, 10)} [skip ci]`]);
+  const c = git(wt, ['-c', 'user.name=Hawkes Studio', '-c', 'user.email=studio@hawkesgen.ai', 'commit', '--quiet', '-m', `Memory export ${new Date().toISOString().slice(0, 10)} [skip ci]`]);
   if (!c.ok) throw new Error(`memory export commit: ${c.err}`);
   const p = await gitAsync(wt, ['push', '--quiet', 'origin', `HEAD:refs/heads/${MEMORY_BRANCH}`]);
   if (!p.ok) throw new Error(`memory export push: ${p.err}`);

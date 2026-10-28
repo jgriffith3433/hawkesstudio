@@ -4,7 +4,7 @@
 //
 // - beta is created from main when it's missing (pushing a branch other than main never deploys anything).
 // - Agent branches are cut from beta and their pull requests target it; approving merges into beta.
-// - The staging site https://<sub>.hawkesgen.com/ is built from beta (previews.ts), and "local" playtests on the server
+// - The staging site https://<sub>.hawkesgen.ai/ is built from beta (previews.ts), and "local" playtests on the server
 //   play beta (repos.ts checks it out; Unity products play the beta build in their beta website copy).
 // - Going live (deploy.ts) fast-forwards main to the beta commit that was playtested. Unity products commit that beta
 //   build's Game/v<n> to the website repo's main. Every go live and rollback is recorded in the db (deploys).
@@ -30,7 +30,7 @@ export const MAIN = BRANCH;
 /** Studio's own commits on beta and main (pre-deploy builds, rollbacks, merges), so they're recognizable. */
 export const STUDIO_BUILD = 'Studio build:';
 export const STUDIO_ROLLBACK = 'Rollback:';
-export const AUTHOR = ['-c', 'user.name=Hawkes Studio', '-c', 'user.email=studio@hawkesgen.com'];
+export const AUTHOR = ['-c', 'user.name=Hawkes Studio', '-c', 'user.email=studio@hawkesgen.ai'];
 
 /**
  * True where local playtests play beta (the server). On J's PC, local playtests play his checkout as it is, and his

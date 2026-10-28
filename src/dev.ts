@@ -1,7 +1,7 @@
 // Developing on beta: J and agents work on the beta branch together, live on the server.
 //
-//   https://<sub>.hawkesgen.com/        the built beta site (previews.ts)
-//   https://<sub>.hawkesgen.com/dev/    the product's own devtools / level editor, running on the server (dev-front.ts)
+//   https://<sub>.hawkesgen.ai/        the built beta site (previews.ts)
+//   https://<sub>.hawkesgen.ai/dev/    the product's own devtools / level editor, running on the server (dev-front.ts)
 //
 // - The beta working copy: a worktree of the product's source repo on a local branch (dev-beta) that tracks
 //   origin/beta, at PROJECTS/.work/beta-<product> (/srv/hawkes/.work/beta-<product>). It is never the checkout that
@@ -33,7 +33,7 @@ import { notify, PUBLIC_URL } from './notify.ts';
 const WIN = process.platform === 'win32';
 /** The local branch the working copy is on (beta itself may be checked out in the synced repo). */
 export const DEV_BRANCH = 'dev-beta';
-export const DEV_AUTHOR = ['-c', 'user.name=Hawkes Studio (devtools)', '-c', 'user.email=studio@hawkesgen.com'];
+export const DEV_AUTHOR = ['-c', 'user.name=Hawkes Studio (devtools)', '-c', 'user.email=studio@hawkesgen.ai'];
 const MAX = () => Number(process.env.STUDIO_DEV_MAX) || 2;
 const IDLE_MS = () => (Number(process.env.STUDIO_DEV_IDLE_MIN) || 30) * 60_000;
 const QUIET_MS = () => Number(process.env.STUDIO_DEV_QUIET_MS) || 60_000;
@@ -500,7 +500,7 @@ const subOf = (p: Product) => {
     return undefined;
   }
 };
-const DOMAIN = () => process.env.STUDIO_DOMAIN || 'hawkesgen.com';
+const DOMAIN = () => process.env.STUDIO_DOMAIN || 'hawkesgen.ai';
 /** https://<sub>.<domain>/dev/ (on J's PC without a domain: the local front door). */
 export function devUrl(p: Product) {
   const sub = subOf(p);

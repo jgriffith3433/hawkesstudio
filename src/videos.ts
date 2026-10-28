@@ -312,7 +312,7 @@ The craft bar:
 - Bespoke animation that fits each character (not stock idles or generic attack clips for the hero beats).
 - At least one motivated camera move.
 - On-model characters, no morphing or melting, nothing ugly. Captions readable, inside the middle band.
-- Ends on a short end card ("Made with Hawkes Gen · hawkesgen.com"), about 1.5 s, without a long fade to black.
+- Ends on a short end card ("Made with Hawkes Gen · hawkesgen.ai"), about 1.5 s, without a long fade to black.
 
 ${t.title} (${t.product}). The agent's story (logline, what each character wants, the turn, the payoff):
 ${v.story ? v.story.slice(0, 3000) : '(none: the agent wrote no story, which is itself a failure)'}
@@ -361,7 +361,7 @@ export function reviewBrief(t: Task, v: Version, jNotes: string[]) {
   const spec = specOf(t.id);
   return [
     `"${t.title.replace(/^Video:\s*/, '')}" (${t.product}), version ${v.n}${v.stage === 'animatic' ? `. THIS IS THE ANIMATIC: rough pictures (stills, grey-box, Lightning renders) with the real voices, made so the client can approve the story, staging and timing before the expensive render. Judge story, staging, timing and the voices; don't mark it down for rough pictures or still frames, only for what the final would inherit` : ''}.`,
-    `It advertises Hawkes Gen and the game: a stranger must follow it in one watch. It should end on a short end card ("Made with Hawkes Gen · hawkesgen.com").`,
+    `It advertises Hawkes Gen and the game: a stranger must follow it in one watch. It should end on a short end card ("Made with Hawkes Gen · hawkesgen.ai").`,
     `\nThe client's script:\n${String(script).slice(0, 4000)}`,
     `\nThe director's story (logline, wants, the turn, the payoff):\n${v.story ? v.story.slice(0, 3000) : '(none written: say so)'}`,
     Object.keys(spec).length ? `\nThe client's controls: ${JSON.stringify(spec)}` : '',

@@ -95,7 +95,7 @@ doing what they are doing." Story, togetherness and one consistent look come bef
 
 Also from J: lore and characters, not feature montages; each character in their own fitting voice; pacing cut to the
 voice; only shots that look good; something happens in the first second; a short end card (the game's name, then "Made
-with Hawkes Gen · hawkesgen.com" small) is the only selling.
+with Hawkes Gen · hawkesgen.ai" small) is the only selling.
 
 ## 1. Read and cast
 
@@ -363,7 +363,7 @@ not a new render.
 - Write `.hawkes/video.json` (`asset` and `poster` are Gen asset ids; if you can't put the files into Gen yourself,
   give their paths in your worktree instead, `"file": "videos/<slug>/out/cut.mp4"` and `"poster": "videos/<slug>/out/poster.png"`,
   and Studio uploads them):
-  `{ "asset": "<the cut>", "poster": "<a frame>", "seconds": 24.5, "summary": "what this version is / what changed", "caption": "post text: one line that makes people watch, 3-6 hashtags, hawkesgen.com", "beats": <the same array as beats.json>, "story": "<story.md>", "stage": "animatic" or "final", "edit": <edit.json> }`
+  `{ "asset": "<the cut>", "poster": "<a frame>", "seconds": 24.5, "summary": "what this version is / what changed", "caption": "post text: one line that makes people watch, 3-6 hashtags, hawkesgen.ai", "beats": <the same array as beats.json>, "story": "<story.md>", "stage": "animatic" or "final", "edit": <edit.json> }`
 - `.hawkes/summary.md` (what you made, what it cost) and `.hawkes/learned.md` (casting, a character's motion style, what
   worked or didn't, as durable notes).
 

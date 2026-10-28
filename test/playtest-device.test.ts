@@ -45,7 +45,7 @@ test("Sick Of It has the layout playtest at phone size", () => {
 
 test('a beta playtest plays on beta Hawkes Net (its page is told before it loads); a live one never is', () => {
   const beta = { scenario: 'online', where: 'local' as const };
-  assert.deepEqual((playtestExtras('doseofdestruction', nameOf(beta), beta) as any).globals, { HAWKES_NET_ENDPOINT: 'https://hawkesnet.hawkesgen.com' });
+  assert.deepEqual((playtestExtras('doseofdestruction', nameOf(beta), beta) as any).globals, { HAWKES_NET_ENDPOINT: 'https://hawkesnet.hawkesgen.ai' });
   const live = { scenario: 'smoke', where: 'live' as const };
   assert.equal((playtestExtras('doseofdestruction', nameOf(live), live) as any).globals, undefined);
 });

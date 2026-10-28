@@ -1,10 +1,10 @@
 // Accounts: the sign-in page in front of Studio, Gen's dashboard and the beta sites (Caddy's forward_auth asks
 // /auth/check on every request), users and their roles, invites and password resets, and the sign-in log.
 //
-//   First run: admin@hawkesgen.com with the password "admin". Signing in with it forces a new password before anything
+//   First run: admin@hawkesgen.ai with the password "admin". Signing in with it forces a new password before anything
 //   else, and "admin" never works again once one is set (only while the account has no password at all).
 //   Roles: admin (J: going live, rollbacks, merges into main, money, users) and member (Studio, Talk, the beta sites).
-//   Sessions: a random token in an HttpOnly, Secure cookie for .hawkesgen.com; only its SHA-256 is stored, so a copy of
+//   Sessions: a random token in an HttpOnly, Secure cookie for .hawkesgen.ai; only its SHA-256 is stored, so a copy of
 //   the database signs no one in. "Remember this device" keeps it 30 days, otherwise 12 hours.
 //   Scripts on J's PC keep the old login (Basic j:<web password>, src/client.ts): checked against WEB_LOGIN_SHA256
 //   (deploy.mjs writes it to /etc/hawkes/keys.env), and they count as J.
@@ -37,9 +37,9 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS signin_log_at ON signin_log(at);
 `);
 
-export const DEFAULT_ADMIN = 'admin@hawkesgen.com';
+export const DEFAULT_ADMIN = 'admin@hawkesgen.ai';
 export const COOKIE = 'hawkes_session';
-const DOMAIN = process.env.STUDIO_COOKIE_DOMAIN ?? 'hawkesgen.com';
+const DOMAIN = process.env.STUDIO_COOKIE_DOMAIN ?? 'hawkesgen.ai';
 const DAY = 86_400_000;
 const SHORT = 12 * 3600_000;
 const LONG = 30 * DAY;
@@ -89,7 +89,7 @@ function toUser(r: any): User {
 const normEmail = (e: unknown) => String(e ?? '').trim().toLowerCase();
 const validEmail = (e: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e) && e.length <= 200;
 
-/** The first admin (admin@hawkesgen.com, password "admin" until changed) when there are no users yet. */
+/** The first admin (admin@hawkesgen.ai, password "admin" until changed) when there are no users yet. */
 export function ensureDefaultAdmin() {
   const n = (db.prepare('SELECT COUNT(*) AS n FROM users').get() as any).n;
   if (n) return null;
@@ -320,7 +320,7 @@ export function clientIp(req: http.IncomingMessage) {
   return String(req.headers['x-forwarded-for'] ?? '').split(',')[0].trim() || req.socket.remoteAddress || null;
 }
 
-/** Whether the request came through the web (Caddy) for a hawkesgen.com host, so cookies are Secure and domain-wide. */
+/** Whether the request came through the web (Caddy) for a hawkesgen.ai host, so cookies are Secure and domain-wide. */
 function onWeb(req: http.IncomingMessage) {
   const host = String(req.headers['x-forwarded-host'] ?? req.headers.host ?? '').split(':')[0].toLowerCase();
   return host === DOMAIN || host.endsWith(`.${DOMAIN}`);
@@ -368,7 +368,7 @@ export function memberRefusal(req: http.IncomingMessage, route: string, method: 
   return adminOnly.some((r) => r.test(route)) ? `Only an admin can do that (you're signed in as ${u.email}, a member).` : null;
 }
 
-/** Where to go after signing in: a hawkesgen.com address or a path on this site; anything else goes to Studio. */
+/** Where to go after signing in: a hawkesgen.ai address or a path on this site; anything else goes to Studio. */
 export function safeNext(next: unknown, fallback = '/') {
   const s = String(next ?? '');
   if (/^\/(?!\/)/.test(s) && !s.startsWith('/auth/')) return s;
@@ -380,7 +380,7 @@ export function safeNext(next: unknown, fallback = '/') {
   return fallback;
 }
 
-/** The address of Studio's sign-in page (Caddy's forward_auth redirects every hawkesgen.com host there). */
+/** The address of Studio's sign-in page (Caddy's forward_auth redirects every hawkesgen.ai host there). */
 export const signinBase = () => process.env.STUDIO_PUBLIC_URL || `https://studio.${DOMAIN}`;
 
 /**

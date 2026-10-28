@@ -69,7 +69,7 @@ export function startDetached(name: string, spec: DetachSpec, mode: DetachMode):
   if (mode === 'systemd') {
     // Agents run at low CPU and disk priority (everything they start inherits it: tests, builds, their own browser), so
     // a busy night slows the agents rather than Studio, Gen and the web server: on 2026-10-17, ten agents on 2 CPUs left
-    // studio.hawkesgen.com and gen.hawkesgen.com unanswered until they were reniced. Talk's answers keep normal priority.
+    // studio.hawkesgen.ai and gen.hawkesgen.ai unanswered until they were reniced. Talk's answers keep normal priority.
     const low = name.startsWith('agent-') ? ['-p', 'Nice=15', '-p', 'IOSchedulingClass=idle'] : [];
     const r = spawnSync('systemd-run', ['--user', `--unit=${unit}`, '--collect', '--quiet', `--description=Hawkes Studio: ${name}`, ...low, '--', process.execPath, RUNNER, DETACH_DIR(), unit], { env: userEnv(), encoding: 'utf8', timeout: 15_000 });
     if (r.status !== 0) {

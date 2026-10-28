@@ -52,7 +52,7 @@ test('the real products.json entry: repo, beta site, live site, playtests, dev f
   const p = real.products.find((x: any) => x.id === 'hawkesgenwebsite');
   assert.ok(p, 'the product is listed');
   assert.equal(p.repo, 'hawkesgenwebsite');
-  assert.equal(p.live, 'https://hawkesgen.com/');
+  assert.equal(p.live, 'https://hawkesgen.ai/');
   assert.equal(real.repos.hawkesgenwebsite, 'jgriffith3433/hawkesgenwebsite');
   assert.equal(real.previews.hawkesgenwebsite, 'hawkesgenwebsite');
   // On Google Cloud since 2026-10-28: GitHub Actions deploys Firebase (beta to staging, main to live).

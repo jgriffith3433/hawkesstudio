@@ -1,4 +1,4 @@
-// Creates the Hawkes Net box (net.hawkesgen.com): multiplayer off the control server (J, 2026-10-25). It runs the
+// Creates the Hawkes Net box (net.hawkesgen.ai): multiplayer off the control server (J, 2026-10-25). It runs the
 // hawkesnet repo's src/hub.ts (tickets, the room directory, the relay with worker processes) behind Caddy; hawkesnet's
 // deploy/setup.mjs installs it and it deploys itself from hawkesnet main after that (Hawkes Net left Gen, 2026-10-26).
 //
@@ -7,7 +7,7 @@
 //
 // What it makes (tagged Project=hawkes-net, Name=hawkes-net): a security group (80/443 open for players and
 // Let's Encrypt, SSH from J's IP), the SSH key (deploy/.keys/net_ed25519), an Elastic IP, the instance (Ubuntu 24.04
-// arm64, Graviton, 30 GB gp3, no instance role: the box never touches AWS) and the DNS record net.hawkesgen.com.
+// arm64, Graviton, 30 GB gp3, no instance role: the box never touches AWS) and the DNS record net.hawkesgen.ai.
 // State: deploy/.keys/net.json. NET_TYPE picks the size (default c7g.large: 2 vCPUs, 4 GB).
 
 import fs from 'node:fs';
@@ -26,7 +26,7 @@ const APPLY = process.argv.includes('--apply');
 export const STATE_FILE = path.join(KEYS, 'net.json');
 export const KEY_FILE = path.join(KEYS, 'net_ed25519');
 const NAME = 'hawkes-net';
-const DOMAIN = 'hawkesgen.com';
+const DOMAIN = 'hawkesgen.ai';
 const HOST = `net.${DOMAIN}`;
 const TYPE = process.env.NET_TYPE || 'c7g.large';
 // On-demand us-east-1 (2026): c7g.medium $0.0363/h, c7g.large $0.0725/h, c7g.xlarge $0.145/h; gp3 $0.08/GB-month;

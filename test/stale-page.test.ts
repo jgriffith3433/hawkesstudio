@@ -89,15 +89,15 @@ test('a new beta build keeps the previous build published, cleaned after a day',
 });
 
 test('a 404 under an older Game/v<n> is a stale page, not a game bug', async () => {
-  const msg = 'RemoteProviderException : Unable to load asset bundle from : https://yl.hawkesgen.com/Game/v54/YoobaLand/StreamingAssets/aa/WebGL/loading_scene_scenes_all_a7df.bundle';
+  const msg = 'RemoteProviderException : Unable to load asset bundle from : https://yl.hawkesgen.ai/Game/v54/YoobaLand/StreamingAssets/aa/WebGL/loading_scene_scenes_all_a7df.bundle';
   assert.deepEqual(br.stalePage(msg, 55), { version: 54, current: 55 });
   assert.equal(br.stalePage(msg, 54), null, "beta's current build: a real problem");
   assert.equal(br.stalePage(msg, null), null, 'no Unity build published');
-  assert.equal(br.stalePage('TypeError: boss is undefined at https://yl.hawkesgen.com/Game/v54/Build/x.js', 55), null, 'not a load failure');
-  assert.deepEqual(br.stalePage('GET https://yl.hawkesgen.com/Game/v53/Build/x.data 404 (Not Found)', 58), { version: 53, current: 58 });
+  assert.equal(br.stalePage('TypeError: boss is undefined at https://yl.hawkesgen.ai/Game/v54/Build/x.js', 55), null, 'not a load failure');
+  assert.deepEqual(br.stalePage('GET https://yl.hawkesgen.ai/Game/v53/Build/x.data 404 (Not Found)', 58), { version: 53, current: 58 });
 
   // beta serves v58 now (the test above).
-  const page = { url: 'https://yl.hawkesgen.com/', device: { ua: 'iPhone', touch: true }, build: { product: 'ylgame', sha: 'aaaaaaa', ref: 'beta (build Game/v54)', version: '54' } };
+  const page = { url: 'https://yl.hawkesgen.ai/', device: { ua: 'iPhone', touch: true }, build: { product: 'ylgame', sha: 'aaaaaaa', ref: 'beta (build Game/v54)', version: '54' } };
   const r1: any = await br.fileAutoError('ylgame', { ...page, error: { kind: 'console', message: msg.replace('v54', 'v53') } }, '10.1.0.1');
   assert.equal(r1.stale, true);
   const r2: any = await br.fileAutoError('ylgame', { ...page, error: { kind: 'console', message: msg } }, '10.1.0.2');

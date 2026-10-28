@@ -209,7 +209,7 @@ export function studioMcp({ studio, waitRun }: Client = { studio: defaultStudio,
     },
     {
       name: 'studio_previews',
-      description: 'Staging sites (same login as Studio, never public): https://<sub>.hawkesgen.com/ is each product built from its beta branch (what going live would ship), /c/<change id>/ an agent change before J approves it. Lists the URLs and when each was built; with product, rebuilds that product\'s beta site (or the change) in the background.',
+      description: 'Staging sites (same login as Studio, never public): https://<sub>.hawkesgen.ai/ is each product built from its beta branch (what going live would ship), /c/<change id>/ an agent change before J approves it. Lists the URLs and when each was built; with product, rebuilds that product\'s beta site (or the change) in the background.',
       inputSchema: obj({ product: str('Rebuild this product\'s staging site (optional)'), change: str('With product: rebuild this agent change\'s preview (c_...)') }),
       run: async ({ product, change }) => {
         if (product) return studio(`/api/previews/${product}`, { method: 'POST', body: { change } });
@@ -218,7 +218,7 @@ export function studioMcp({ studio, waitRun }: Client = { studio: defaultStudio,
     },
     {
       name: 'studio_dev_open',
-      description: 'Developing on beta: starts a web product\'s own devtools (level editor, content editors) on the cloud server in beta\'s working copy and returns the link, https://<sub>.hawkesgen.com/dev/ (same login as Studio). Saves there are committed to beta after 60 quiet seconds and pushed (never main); the beta site rebuilds. At most 2 dev servers run at once (the least recently used stops); each stops after 30 idle minutes. Unity products: returns the page explaining the editor runs on the build server.',
+      description: 'Developing on beta: starts a web product\'s own devtools (level editor, content editors) on the cloud server in beta\'s working copy and returns the link, https://<sub>.hawkesgen.ai/dev/ (same login as Studio). Saves there are committed to beta after 60 quiet seconds and pushed (never main); the beta site rebuilds. At most 2 dev servers run at once (the least recently used stops); each stops after 30 idle minutes. Unity products: returns the page explaining the editor runs on the build server.',
       inputSchema: obj({ product: str('Product id'), wait: bool('Wait until the dev server answers (up to a few minutes on first start: npm ci)') }, ['product']),
       run: async ({ product, wait }) => {
         const s = await studio(`/api/dev/${product}`);
@@ -391,7 +391,7 @@ export function studioMcp({ studio, waitRun }: Client = { studio: defaultStudio,
     },
     {
       name: 'studio_social_post',
-      description: "Upload a finished video (an .mp4 in Hawkes Gen's library) to Studio's connected YouTube and TikTok as drafts: private on YouTube, in the TikTok app's inbox. Nothing goes public; J publishes it on the platform. Vertical 9:16 under 60 s for Shorts/TikTok (put #Shorts in the title or description), 1920x1080 for a normal YouTube video. Write the title and caption like a person: what it shows, why it's cool, a link (e.g. https://hawkesgen.com), 3-6 hashtags. Returns the post; check it with studio_social.",
+      description: "Upload a finished video (an .mp4 in Hawkes Gen's library) to Studio's connected YouTube and TikTok as drafts: private on YouTube, in the TikTok app's inbox. Nothing goes public; J publishes it on the platform. Vertical 9:16 under 60 s for Shorts/TikTok (put #Shorts in the title or description), 1920x1080 for a normal YouTube video. Write the title and caption like a person: what it shows, why it's cool, a link (e.g. https://hawkesgen.ai), 3-6 hashtags. Returns the post; check it with studio_social.",
       inputSchema: obj({
         asset: str('Gen asset id of the .mp4 (a_...)'), title: str('Title, up to 100 characters'), description: str('Description / caption (TikTok: J pastes it in the app)'),
         tags: str('Comma-separated tags'), platforms: str('youtube, tiktok or both comma-separated (default: every connected one)'), product: str('The product it is about (e.g. hawkesgen, sickofit)'),

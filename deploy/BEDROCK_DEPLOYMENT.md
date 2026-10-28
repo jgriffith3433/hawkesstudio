@@ -31,7 +31,7 @@ On the server, the credentials come from `/run/hawkes/gen.env` (fetched from Sec
 
 ## Deployment Steps
 
-### For the Cloud Server (studio.hawkesgen.com / gen.hawkesgen.com)
+### For the Cloud Server (studio.hawkesgen.ai / gen.hawkesgen.ai)
 
 #### 1️⃣ Add Keys Locally (Your PC)
 
@@ -106,7 +106,7 @@ Add:
 
 **Option B: Via Dashboard**
 
-1. Open https://gen.hawkesgen.com
+1. Open https://gen.hawkesgen.ai
 2. Login as `j`
 3. Settings tab → Claude Backend → select "bedrock"
 4. Save

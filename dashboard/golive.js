@@ -111,8 +111,8 @@ if (typeof document !== 'undefined') (() => {
   // The beta and live links (they were the Sites tab): on every card, whatever its state, opening in a new tab.
   // Studio and Gen have no beta lane, so only their live address.
   const INFRA = [
-    { name: 'Hawkes Studio', live: 'https://studio.hawkesgen.com/' },
-    { name: 'Hawkes Gen', live: 'https://gen.hawkesgen.com/' },
+    { name: 'Hawkes Studio', live: 'https://studio.hawkesgen.ai/' },
+    { name: 'Hawkes Gen', live: 'https://gen.hawkesgen.ai/' },
   ];
   const short = (u) => u.replace(/^https?:\/\//, '').replace(/\/$/, '');
   const siteLink = (kind, label, url) => (url

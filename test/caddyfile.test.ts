@@ -14,7 +14,7 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 // @ts-ignore: a plain .mjs module without types
 const { caddyfile: build } = await import('../deploy/caddyfile.mjs');
 const products = JSON.parse(fs.readFileSync(path.join(root, 'products.json'), 'utf8'));
-const caddyfile: string = build({ domain: 'hawkesgen.com', email: 'test@example.com', products });
+const caddyfile: string = build({ domain: 'hawkesgen.ai', email: 'test@example.com', products });
 
 /** The site block for a host: from its opening line to the closing brace at column 0. */
 function site(host: string): string {
@@ -31,7 +31,7 @@ function handles(block: string): { matcher: string; body: string }[] {
   return out;
 }
 
-const gen = site('gen.hawkesgen.com');
+const gen = site('gen.hawkesgen.ai');
 
 test('gen: analytics collect is public, POST (and the CORS preflight) only, 64 KB, with the visitor address', () => {
   assert.match(gen, /@collect \{\n\t\tmethod POST OPTIONS\n\t\tpath \/v1\/analytics\/collect\n\t\}/);
@@ -70,37 +70,37 @@ test('gen: everything else still needs the sign-in or a key Gen checks', () => {
 });
 
 test("the portal's beta host sends people to Firebase staging (it runs there since 2026-10-28), and no other host does", () => {
-  const portal = site('hawkesgenwebsite.hawkesgen.com');
+  const portal = site('hawkesgenwebsite.hawkesgen.ai');
   assert.ok(portal.includes('redir https://hawkes-staging.web.app{uri} 302'), portal);
   assert.doesNotMatch(portal, /reverse_proxy|file_server|import login/);
-  assert.doesNotMatch(site('hawkesnet.hawkesgen.com'), /@preflight|redir /);
+  assert.doesNotMatch(site('hawkesnet.hawkesgen.ai'), /@preflight|redir /);
 });
 
 test("Hawkes Net's beta: its public API is open like live's, its dashboard behind the sign-in", () => {
-  const net = site('hawkesnet.hawkesgen.com');
+  const net = site('hawkesnet.hawkesgen.ai');
   assert.match(net, /@open path_regexp \^\/\(v1\/net\/\|sdk\/\|healthz\$\)\n/);
   assert.doesNotMatch(handles(net).find((x) => x.matcher === '@open')!.body, /import login/);
   assert.match(handles(net).find((x) => x.matcher === '')!.body, /import login/);
 });
 
 test('studio: the analytics routes are not added there', () => {
-  assert.doesNotMatch(site('studio.hawkesgen.com'), /analytics|@sdk/);
+  assert.doesNotMatch(site('studio.hawkesgen.ai'), /analytics|@sdk/);
 });
 
-test("apex: hawkesgen.com and www are the portal's own box, not served here", () => {
-  assert.ok(!caddyfile.includes('\nhawkesgen.com {\n'));
-  assert.ok(!caddyfile.includes('\nwww.hawkesgen.com {\n'));
+test("apex: hawkesgen.ai and www are the portal's own box, not served here", () => {
+  assert.ok(!caddyfile.includes('\nhawkesgen.ai {\n'));
+  assert.ok(!caddyfile.includes('\nwww.hawkesgen.ai {\n'));
   assert.doesNotMatch(caddyfile, /X-Hawkes-Public-Saas/);
 });
 
 test('site/: the old landing page keeps its analytics (no longer served at the apex)', () => {
-  assert.doesNotMatch(site('gen.hawkesgen.com'), /player\.twitch\.tv/);
-  assert.doesNotMatch(site('studio.hawkesgen.com'), /player\.twitch\.tv/);
+  assert.doesNotMatch(site('gen.hawkesgen.ai'), /player\.twitch\.tv/);
+  assert.doesNotMatch(site('studio.hawkesgen.ai'), /player\.twitch\.tv/);
   const page = fs.readFileSync(path.join(root, 'site', 'index.html'), 'utf8');
-  assert.match(page, /<script src="https:\/\/gen\.hawkesgen\.com\/sdk\/analytics@1\.js" data-product="hawkesgen" defer><\/script>/);
+  assert.match(page, /<script src="https:\/\/gen\.hawkesgen\.ai\/sdk\/analytics@1\.js" data-product="hawkesgen" defer><\/script>/);
   assert.match(page, /<script src="\/analytics\.js"><\/script>/);
   assert.match(page, /We keep anonymous site statistics\. No cookies\. No personal data\./);
-  assert.match(page, /src="https:\/\/player\.twitch\.tv\/\?channel=jgriffith3433&amp;parent=hawkesgen\.com"/);
+  assert.match(page, /src="https:\/\/player\.twitch\.tv\/\?channel=jgriffith3433&amp;parent=hawkesgen\.ai"/);
   assert.doesNotMatch(page, /stream.?key|client_secret|oauth/i);
   const analyticsJs = fs.readFileSync(path.join(root, 'site', 'analytics.js'), 'utf8');
   assert.match(analyticsJs, /setAttribute\('data-debug', '1'\)/);
@@ -108,7 +108,7 @@ test('site/: the old landing page keeps its analytics (no longer served at the a
   assert.match(analyticsJs, /youtu\.be/);
   assert.match(analyticsJs, /twitch\.tv/);
   assert.match(analyticsJs, /hawkesbiomedical\.com/);
-  assert.match(analyticsJs, /gen\.hawkesgen\.com/);
+  assert.match(analyticsJs, /gen\.hawkesgen\.ai/);
 });
 
 test('site/analytics.js: enables debug on playtests, tracks read depth and tags key CTA/outbound clicks', () => {
@@ -124,7 +124,7 @@ test('site/analytics.js: enables debug on playtests, tracks read depth and tags 
     { textContent: 'What Gen does.', getBoundingClientRect: () => ({ top: 400 }) },
   ];
   const win: any = {
-    location: { search: '?hawkesPlaytest', href: 'https://hawkesgen.com/' },
+    location: { search: '?hawkesPlaytest', href: 'https://hawkesgen.ai/' },
     navigator: { webdriver: false },
     sessionStorage: { getItem: () => null },
     scrollY: 0,
@@ -162,7 +162,7 @@ test('site/analytics.js: enables debug on playtests, tracks read depth and tags 
   clickLink('https://youtu.be/gT3VqH2-cw0', '.hero');
   clickLink('https://www.twitch.tv/jgriffith3433', '#live');
   clickLink('https://hawkesbiomedical.com', '#soon');
-  clickLink('https://gen.hawkesgen.com/', 'nav');
+  clickLink('https://gen.hawkesgen.ai/', 'nav');
 
   assert.deepEqual(features, [
     { name: 'cta:product_video', props: { target: 'Product video (YouTube)', where: 'hero' } },

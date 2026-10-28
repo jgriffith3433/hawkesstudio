@@ -24,7 +24,7 @@ if (!['hawkesgen', 'hawkesstudio'].includes(repo)) {
 const skipTests = process.argv.includes('--skip-tests');
 const dir = path.join(path.dirname(STUDIO), repo);
 const KEY = path.join(STUDIO, 'deploy', '.keys', 'control_ed25519');
-const HOST = process.env.HAWKES_SERVER ?? 'ubuntu@studio.hawkesgen.com';
+const HOST = process.env.HAWKES_SERVER ?? 'ubuntu@studio.hawkesgen.ai';
 const step = (s) => console.log(`\n== ${s}`);
 const fail = (s) => { console.error(`\nNot deployed: ${s}`); process.exit(1); };
 // Every git this script runs (fetch, push, the clean copy) signs in with the GitHub token kept in git's credential

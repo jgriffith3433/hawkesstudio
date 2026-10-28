@@ -17,7 +17,7 @@
 //   studio changes                   studio fix <product> <finding id ...>     (an agent fixes it and opens a pull request)
 //   studio change <id> [approve --confirm "MERGE <id>" | revise --note "..." | close]
 //   studio servers stop
-//   studio dev [product] [open [--wait] | stop | commit | since-live | resolve retry|keep-beta]   (developing on beta: <sub>.hawkesgen.com/dev/)
+//   studio dev [product] [open [--wait] | stop | commit | since-live | resolve retry|keep-beta]   (developing on beta: <sub>.hawkesgen.ai/dev/)
 
 import fs from 'node:fs';
 import path from 'node:path';

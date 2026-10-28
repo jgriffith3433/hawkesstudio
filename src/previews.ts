@@ -1,7 +1,7 @@
 // Staging sites: every product, built the way it deploys, behind the same login as Studio.
 //
-//   https://<sub>.hawkesgen.com/          the product from its beta branch (beta.ts: what "go live" would ship)
-//   https://<sub>.hawkesgen.com/c/<id>/   an agent change (its branch), before J approves it
+//   https://<sub>.hawkesgen.ai/          the product from its beta branch (beta.ts: what "go live" would ship)
+//   https://<sub>.hawkesgen.ai/c/<id>/   an agent change (its branch), before J approves it
 //
 // Subdomains are products.json "previews". Files go to PREVIEWS/<product>/beta and PREVIEWS/<product>/c/<change>
 // (/srv/hawkes/previews on the server); Caddy serves them (deploy/deploy.mjs, previewSites).
@@ -25,7 +25,7 @@ import { fetchLocked } from './gitlock.ts';
 import { injectReport, type PageInfo } from './bugreport.ts';
 import { sandboxOn, sandboxSpawn } from './sandbox.ts';
 
-export const DOMAIN = process.env.STUDIO_DOMAIN || 'hawkesgen.com';
+export const DOMAIN = process.env.STUDIO_DOMAIN || 'hawkesgen.ai';
 export const PREVIEWS = process.env.STUDIO_PREVIEWS || (isServer() ? path.join(PROJECTS, 'previews') : path.join(DATA, 'previews'));
 const WORK = path.join(PROJECTS, '.work', 'previews');
 const STATE = path.join(DATA, 'previews.json');

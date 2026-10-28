@@ -64,7 +64,7 @@ function sameSite(req: http.IncomingMessage) {
   if (!o || o === 'null') return true;
   try {
     const h = new URL(o).hostname;
-    return h === 'hawkesgen.com' || h.endsWith('.hawkesgen.com') || h === '127.0.0.1' || h === 'localhost';
+    return h === 'hawkesgen.ai' || h.endsWith('.hawkesgen.ai') || h === '127.0.0.1' || h === 'localhost';
   } catch {
     return false;
   }

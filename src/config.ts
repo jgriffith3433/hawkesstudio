@@ -177,8 +177,8 @@ export class StudioError extends Error {
 export const today = (d = new Date()) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 
 /** Hawkes Net for beta pages: a beta site plays on beta Hawkes Net (hawkesnet.<domain>, products.json "hawkesnet"), its live
- *  site on net.hawkesgen.com. The SDK (1.2.1+) and the Unity package read window.HAWKES_NET_ENDPOINT before their default;
+ *  site on net.hawkesgen.ai. The SDK (1.2.1+) and the Unity package read window.HAWKES_NET_ENDPOINT before their default;
  *  a page that names its own keeps it. Live pages never get this script. */
-export const BETA_NET = (process.env.STUDIO_BETA_NET || `https://hawkesnet.${process.env.STUDIO_DOMAIN || 'hawkesgen.com'}`).replace(/\/+$/, '');
+export const BETA_NET = (process.env.STUDIO_BETA_NET || `https://hawkesnet.${process.env.STUDIO_DOMAIN || 'hawkesgen.ai'}`).replace(/\/+$/, '');
 /** What a beta (non-live) playtest's page is told before it loads: beta Hawkes Net (Gen playtest.run `globals`). */
 export const betaPageGlobals = () => ({ HAWKES_NET_ENDPOINT: BETA_NET });

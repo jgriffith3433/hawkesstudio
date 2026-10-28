@@ -306,7 +306,7 @@ summaries), which criteria were verified (with evidence and the beta playtest's 
 agents' steps) and the known open bugs (linked to the item, or new bugs of the product since its first merge). When an
 item reaches beta, the conversation that planned it gets this report (no phone notification).
 
-**Playtesting a milestone: the 🐞 button.** Every page of the beta sites (`https://<sub>.hawkesgen.com/`, and agent
+**Playtesting a milestone: the 🐞 button.** Every page of the beta sites (`https://<sub>.hawkesgen.ai/`, and agent
 changes at `/c/<id>/`) has a small red dot on the right edge; live sites never do. Studio puts it in as it publishes a
 beta site (`previews.ts` → `injectReport` in `src/bugreport.ts`: a console hook at the top of `<head>`, the widget
 `dashboard/report-widget.js` before `</body>`); no product repo has it. One problem, one report:
@@ -492,7 +492,7 @@ task of kind `video` (`src/videos.ts`, `dashboard/videos.js`, Talk's `studio_vid
 ## Talking to Talk by voice (calls)
 
 The 📞 button in Talk starts a call: J talks, Talk answers aloud, back and forth until he hangs up. It works on the
-laptop and the phone (studio.hawkesgen.com in Edge, Chrome or Safari) and costs nothing extra: speech recognition and
+laptop and the phone (studio.hawkesgen.ai in Edge, Chrome or Safari) and costs nothing extra: speech recognition and
 the default voice are the browser's own (Web Speech API), and the answers run on the Max plan like the chat.
 Afterwards it is a normal Talk conversation: everything said is in it (J's words marked 🎙, spoken answers 📞). The call
 tells Talk the device (phone, tablet or computer, from the page); Talk never assumes a phone.
@@ -766,7 +766,7 @@ all). Numbers are said with their sample sizes.
 - **Going live:** the plan (`studio_deploy_plan` `players`, the Approve card and the Go live card) says how the build
   live now does with players (sessions, median session, level completion, errors, rating, against the build before
   it), so the next release can be compared.
-- **hawkesgen.com** (`site/`) shows Hawkes Analytics as part of Gen's SDK and API, with the one-line script tag.
+- **hawkesgen.ai** (`site/`) shows Hawkes Analytics as part of Gen's SDK and API, with the one-line script tag.
 
 ## The conversation (J and Claude, in the Claude app)
 
@@ -829,8 +829,8 @@ words are the fallback.
   PM treat it as fine; its criteria and playtest carry over to the newer run). A build already running on the build
   server always finishes; an older beta build still queued in Hawkes Gen behind another build is cancelled (only if Gen
   says it never started). Daily runs, go-live builds and agent change builds are never collapsed.
-- **The beta site** is `https://<sub>.hawkesgen.com/` (Studio's login). Each agent change also has
-  `https://<sub>.hawkesgen.com/c/<id>/` until it's approved or closed. Unity's beta site is its own website copy
+- **The beta site** is `https://<sub>.hawkesgen.ai/` (Studio's login). Each agent change also has
+  `https://<sub>.hawkesgen.ai/c/<id>/` until it's approved or closed. Unity's beta site is its own website copy
   (`.work/beta/<product>-site`): the website's beta (its page changes) plus beta's Unity build. When a page change
   merges into the website's beta, the beta run moves the copy onto it and keeps the build (`refreshBetaSite`; a new Unity
   build only when the new pages touch the build's files).
@@ -906,9 +906,9 @@ J and agents build on beta together, live on the cloud server (`src/dev.ts`, `sr
 
 | | |
 |---|---|
-| `https://<sub>.hawkesgen.com/` | the built beta site |
-| `https://<sub>.hawkesgen.com/dev/` | the product's own devtools, running on the server in beta's working copy |
-| `https://dev-<sub>.hawkesgen.com/` | the same devtools at the root, for browsers without service workers (only after `deploy.mjs --dev-hosts`) |
+| `https://<sub>.hawkesgen.ai/` | the built beta site |
+| `https://<sub>.hawkesgen.ai/dev/` | the product's own devtools, running on the server in beta's working copy |
+| `https://dev-<sub>.hawkesgen.ai/` | the same devtools at the root, for browsers without service workers (only after `deploy.mjs --dev-hosts`) |
 
 - **Open it** from the Today card ("Open devtools"), `studio_dev_open` in Talk, or `studio dev <p> open`. The first
   open makes the **working copy** (`/srv/hawkes/.work/beta-<product>`, a worktree of the source repo on a local

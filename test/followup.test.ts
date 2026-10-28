@@ -45,7 +45,7 @@ test('a finished change and run report to their conversation, and one turn expla
   const c = startConversation('Fix the shop');
   const now = Date.now();
   db.prepare('INSERT INTO changes (id, product, findings, status, detail, repo, slug, branch, base, worktree, title, notes, log, verify, pr_url, created, updated) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
-    .run('c_aaaaaa000001', 'sickofit', '[]', 'ready', 'ok', 'x', 'x/x', 'b', 'beta', '/tmp/x', 'Make the shop red', '[]', '[]', JSON.stringify({ outcome: 'passed', verdict: 'ship', summary: 'Looks right', preview: 'https://sick.hawkesgen.com/c/c_aaaaaa000001/' }), 'https://github.com/x/x/pull/7', now, now);
+    .run('c_aaaaaa000001', 'sickofit', '[]', 'ready', 'ok', 'x', 'x/x', 'b', 'beta', '/tmp/x', 'Make the shop red', '[]', '[]', JSON.stringify({ outcome: 'passed', verdict: 'ship', summary: 'Looks right', preview: 'https://sick.hawkesgen.ai/c/c_aaaaaa000001/' }), 'https://github.com/x/x/pull/7', now, now);
   tagChange('c_aaaaaa000001', c.id, 'Talk');
   db.prepare('INSERT INTO runs (id, kind, status, detail, products, options, started, finished) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
     .run('r_aaaaaa000001', 'beta', 'done', 'beta sickofit', '["sickofit"]', '{"focus":"Just merged into beta"}', now, now);
