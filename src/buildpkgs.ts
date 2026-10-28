@@ -137,6 +137,19 @@ export function buildErrorLines(logTail: unknown, max = 6): string[] {
   return [...seen];
 }
 
+/** Whether Gen runs this build on the Windows build server (backend `builder`), the only one whose checkouts Studio
+ *  syncs. Cloud Run and VM builds fetch exact commits from GitHub themselves. Gen's answer decides: the job's
+ *  `backend` param, else the project's (`unityBuild.projects`, by folder), else the default; unknown counts as yes. */
+export async function buildsOnWindowsBox(params: Record<string, unknown>, log: (s: string) => void = () => {}, ask: (path: string) => Promise<any> = async (p) => (await import('./gen.ts')).gen.request(p)): Promise<boolean> {
+  if (typeof params.backend === 'string') return params.backend === 'builder';
+  const cloud = await ask('/builder/cloud').catch(() => null);
+  if (!cloud?.backend) return true;
+  const folder = typeof params.project === 'string' ? params.project.replace(/\\/g, '/') : '';
+  const backend = cloud.projects?.[folder] ?? cloud.backend;
+  if (backend !== 'builder') log(`builds on ${backend}: no build server sync`);
+  return backend === 'builder';
+}
+
 /** Runs Gen's unity.build after syncing the package checkouts (the control server's and the build server's own); the commits it built against ride in the job's result as `packages` and `buildServer`. */
 export async function unityBuild(project: string, params: Record<string, unknown>, onUpdate?: (job: any) => void, opts: { job?: string; onSubmit?: (id: string) => void; log?: (s: string) => void; serverShell?: BuildServerRun; halt?: () => string | null } = {}) {
   const { genRun } = await import('./gen.ts');
@@ -145,7 +158,7 @@ export async function unityBuild(project: string, params: Record<string, unknown
   if (stopped) return { id: null, status: 'cancelled', error: stopped, halted: true } as any;
   const packages = opts.job ? {} : await syncBuildPackages(log).catch((e) => { console.warn(`[build] package sync failed: ${e.message ?? e}`); return {} as BuildPackages; });
   let buildServer: Record<string, unknown> | undefined;
-  if (!opts.job && (opts.serverShell || isServer())) {
+  if (!opts.job && (opts.serverShell || isServer()) && await buildsOnWindowsBox(params, log)) {
     try {
       buildServer = await syncBuildServerCheckouts(opts.serverShell ?? buildServerShell, log, { token: process.env.GITHUB_TOKEN });
     } catch (e: any) {
