@@ -383,6 +383,8 @@ async function handle(p: Product, req: http.IncomingMessage, res: http.ServerRes
   const route = url.pathname;
   const method = req.method ?? 'GET';
   const unity = isUnity(p) || !devConf(p)?.port;
+  // A remote beta (deployed by the repo's CI): this host sends people there.
+  if (p.local.serve === 'remote' && p.local.url && !root) return send(res, 302, 'text/plain', '', { Location: new URL(route + url.search, p.local.url).toString() });
   // A server app's host is all here (Caddy): everything outside /dev/ is the app itself.
   if (p.app && !root && route !== P && !route.startsWith(`${P}/`)) return handleApp(p, req, res, url);
   if (route === P) return send(res, 302, 'text/plain', '', { Location: `${P}/${url.search}` });

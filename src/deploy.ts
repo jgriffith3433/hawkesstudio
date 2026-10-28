@@ -209,6 +209,7 @@ export async function deployPlan(productId: string, { notesWaitMs = 20_000 }: { 
  * "ec2": its box pulls it; Studio only moves main and plays the live site).
  */
 export function publisherOf(p: Product) {
+  if (p.deploy?.via === 'firebase') return { box: true as const, says: 'GitHub Actions deploys it to Firebase (hosting and functions)', done: 'GitHub Actions deploys it to Firebase within about 10 minutes' };
   if (p.deploy?.via !== 'ec2') return { box: false as const, says: 'GitHub Pages publishes', done: 'GitHub Pages publishes within a few minutes' };
   const box = p.deploy.box ?? 'its own server';
   return { box: true as const, says: `${box} pulls it and restarts (health check, rollback if unhealthy)`, done: `${box} pulls it within a couple of minutes (no tests there; it rolls back if unhealthy)` };

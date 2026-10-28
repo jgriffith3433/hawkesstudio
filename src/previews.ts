@@ -152,6 +152,14 @@ export function buildPreview(productId: string, o: { change?: string; dir?: stri
 }
 
 async function build(p: Product, o: { change?: string; dir?: string }): Promise<Preview | null> {
+  // Deployed by the repo's own CI (the portal: GitHub Actions to Firebase): nothing to build here.
+  if (p.local.serve === 'remote') {
+    const v: Preview = o.change
+      ? { status: 'failed', at: Date.now(), detail: `${p.name}'s changes aren't previewed one by one: its CI deploys beta (${p.local.url})` }
+      : { status: 'ready', at: Date.now(), detail: `deployed by GitHub Actions to ${p.local.url}` };
+    record(p.id, o.change, v);
+    return v;
+  }
   if (p.app) return buildApp(p, o);
   const t0 = Date.now();
   const target = o.change ? path.join(PREVIEWS, p.id, 'c', o.change) : path.join(PREVIEWS, p.id, 'beta');

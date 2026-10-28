@@ -441,11 +441,12 @@
       "framing": "laboratory services",
       "engine": "web",
       "repo": "hawkesgenwebsite",
-      "checks": [{ "dir": "hawkesgenwebsite", "cmd": "npm run typecheck" }, { "dir": "hawkesgenwebsite", "cmd": "npm test" }],
+      "checks": [{ "dir": "hawkesgenwebsite", "cmd": "npm run typecheck" }, { "dir": "hawkesgenwebsite", "cmd": "npm test" }, { "dir": "hawkesgenwebsite/cloud/functions", "cmd": "npm ci --no-audit --no-fund && npx tsc -p ." }],
       "site": "hawkesgenwebsite",
       "live": "https://hawkesgen.com/",
       "local": {
-        "serve": "app",
+        "serve": "remote",
+        "url": "https://hawkes-staging.web.app/",
         "dir": "hawkesgenwebsite",
         "port": 8094,
         "path": "/"
@@ -473,36 +474,14 @@
       "story": [
         "hawkesgenwebsite/AGENTS.md"
       ],
-      "about": "The customer portal for public Hawkes Gen (hawkesgen.com): accounts, credits, Stripe payments, the landing page, portfolio and the Creator Studio UI, with its own database. It is a server app on its own EC2 box (not GitHub Pages) and a customer of Hawkes Gen like Studio: Gen does the jobs, the portal sells and shows them.",
-      "quality": "The public pages load with no broken links or images, no blank screens and no console errors: the landing page, the portfolio and the Creator Studio entry; works on a phone. On live a playtest never signs up, buys or spends credits (no real accounts, no Stripe), and no key, token or customer data shows on any page. Beta (Studio runs it from the beta branch with its own database and payments off) is where accounts, the Creator Studio and games are tried. Direction for the portal is J's: don't suggest features.",
+      "about": "The customer portal for public Hawkes Gen (hawkesgen.com): accounts, credits, Stripe payments, the landing page, portfolio and the Creator Studio UI, in Firestore. Since 2026-10-28 it runs serverless on Google Cloud (Firebase Hosting, Cloud Functions, Firestore, Firebase Auth with Google sign-in only; the repo's cloud/ folder and docs/cloud.md; src/ is the old server, retired): a push to beta deploys https://hawkes-staging.web.app, a push to main deploys hawkesgen.com, both by GitHub Actions. It is a customer of Hawkes Gen like Studio: Gen does the jobs, the portal sells and shows them.",
+      "quality": "The public pages load with no broken links or images, no blank screens and no console errors: the landing page, the portfolio and the Creator Studio entry; works on a phone. On live a playtest never signs up, buys or spends credits (no real accounts, no Stripe), and no key, token or customer data shows on any page. Beta (https://hawkes-staging.web.app, its own Firestore and Gen key, payments off) is where accounts, the Creator Studio and games are tried. Direction for the portal is J's: don't suggest features.",
       "deploy": {
-        "via": "ec2",
-        "box": "its own EC2 server (hawkes-gen-public)"
+        "via": "firebase",
+        "box": "Firebase (GitHub Actions)"
       },
       "dev": {
         "front": 8709
-      },
-      "app": {
-        "start": "node --disable-warning=ExperimentalWarning src/server.ts",
-        "health": "/v1/health",
-        "portEnv": "PORT",
-        "dataEnv": "PORTAL_DATA_DIR",
-        "urlEnv": "PUBLIC_URL",
-        "gen": {
-          "keyEnv": "HAWKESGEN_KEY",
-          "urlEnv": "HAWKESGEN_URL",
-          "projects": [
-            "ubeta_*",
-            "usr_00000000000000c0"
-          ]
-        },
-        "env": {
-          "PORTAL_PROJECT_PREFIX": "ubeta_",
-          "PORTAL_NET_DASHBOARD": "https://hawkesnet.hawkesgen.com",
-          "PORTAL_NET_URL": "http://127.0.0.1:8095"
-        },
-        "open": "^/(play/|play-asset/|v1/play/|v1/play-template/|v1/ws$|v1/community/a_[0-9a-f]+/file$|favicon\\.svg$|dl/)",
-        "preflight": true
       }
     },
     {

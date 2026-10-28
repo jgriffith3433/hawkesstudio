@@ -45,6 +45,11 @@ export const installCmd = (dir: string) => fs.existsSync(path.join(dir, 'package
 export async function ensureServer(p: Product, log: (s: string) => void = () => {}) {
   const url = localUrl(p);
   const dir = abs(p.local.dir);
+  // Deployed by its own CI (Firebase for the portal): nothing to start here, beta is already up.
+  if (p.local.serve === 'remote') {
+    if (!(await answers(url))) throw new Error(`${p.name}'s beta (${url}) isn't answering: see its GitHub Actions deploy`);
+    return url;
+  }
   if (p.local.serve === 'app') {
     // A server app (apps.ts). On the server the local playtests play its beta (the beta site's process, on local.port);
     // on J's PC the checkout itself.
@@ -105,6 +110,7 @@ const served = new Map<number, number>();
 export async function serveDir(p: Product, dir: string, port: number) {
   // The worktree's own code (its dev server, its install scripts) runs as the agent sandbox's user when it's on
   // (sandbox.ts): an agent's change never runs as Studio.
+  if (p.local.serve === 'remote') throw new Error(`${p.name} deploys through its own CI: a change can't be served on its own; its checks run, and beta plays it once merged`);
   if (p.local.serve === 'app') {
     // A server app: its own process with its own data and the product's scoped Gen key (apps.ts, sandboxed too).
     await ensureApp(p, `serve-${port}`, dir, { port, publicUrl: `http://localhost:${port}` });

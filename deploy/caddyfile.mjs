@@ -188,9 +188,16 @@ dev-${sub}.${domain} {
 }
 `).join('');
   const apps = Object.fromEntries(products.products.filter((p) => p.app && p.dev?.front).map((p) => [p.id, p.app]));
+  // A remote beta (local.serve "remote": deployed by the repo's own CI, the portal on Firebase): the host sends people there.
+  const remotes = Object.fromEntries(products.products.filter((p) => p.local?.serve === 'remote' && p.local.url).map((p) => [p.id, p.local.url.replace(/\/+$/, '')]));
   return devBlocks + subs.map((sub) => {
     const front = fronts[previews[sub]];
     const app = apps[previews[sub]];
+    if (remotes[previews[sub]]) return `
+${sub}.${domain} {
+	redir ${remotes[previews[sub]]}{uri} 302
+}
+`;
     // A server app (src/apps.ts): no files to serve; the front door runs beta's process (and agent changes') and takes
     // the whole host. Behind the login, except app.open: the pages a game's sandboxed frame loads, which send no cookies,
     // and with app.preflight a browser's CORS preflight (OPTIONS, which never carries cookies), so another beta host can

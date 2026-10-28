@@ -69,15 +69,11 @@ test('gen: everything else still needs the sign-in or a key Gen checks', () => {
   assert.deepEqual(paths, ['/v1/analytics/collect', '/v1/net/ws /v1/net/ticket /v1/net/keys /v1/net/status /v1/net/nodes', '/sdk/*']);
 });
 
-test("app hosts: only the portal's beta lets a CORS preflight past the sign-in, and only OPTIONS", () => {
+test("the portal's beta host sends people to Firebase staging (it runs there since 2026-10-28), and no other host does", () => {
   const portal = site('hawkesgenwebsite.hawkesgen.com');
-  assert.match(portal, /@preflight method OPTIONS\n/);
-  const h = handles(portal).find((x) => x.matcher === '@preflight');
-  assert.ok(h, 'a handle for @preflight');
-  assert.doesNotMatch(h.body, /import login/);
-  // Everything that isn't a preflight or app.open still goes through the sign-in.
-  assert.match(handles(portal).find((x) => x.matcher === '')!.body, /import login/);
-  assert.doesNotMatch(site('hawkesnet.hawkesgen.com'), /@preflight/);
+  assert.ok(portal.includes('redir https://hawkes-staging.web.app{uri} 302'), portal);
+  assert.doesNotMatch(portal, /reverse_proxy|file_server|import login/);
+  assert.doesNotMatch(site('hawkesnet.hawkesgen.com'), /@preflight|redir /);
 });
 
 test("Hawkes Net's beta: its public API is open like live's, its dashboard behind the sign-in", () => {

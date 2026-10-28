@@ -69,8 +69,10 @@ export type Product = {
   repo: string;
   site: string;
   live: string;
-  /** serve "app": the product is a server Studio runs itself (`app`, apps.ts), on this port for local playtests. */
-  local: { serve: 'npm' | 'static' | 'app'; dir: string; port: number; path: string };
+  /** serve "app": the product is a server Studio runs itself (`app`, apps.ts), on this port for local playtests.
+   *  serve "remote": its beta is deployed elsewhere by the repo's own CI (the customer portal on Firebase: a push to
+   *  beta deploys https://hawkes-staging.web.app); `url` is that beta, and local playtests play it. */
+  local: { serve: 'npm' | 'static' | 'app' | 'remote'; dir: string; port: number; path: string; url?: string };
   /**
    * A web product that is a server with its own database (the customer portal): its beta site and agent changes run
    * as processes (apps.ts) behind the front door instead of static files (previews.ts). start: the command, in the
@@ -90,7 +92,7 @@ export type Product = {
    * prebuild: a command run on beta before a go live. via "ec2": main isn't published by GitHub Pages but by the product's
    * own server (the portal, hawkesgenwebsite): its box pulls main; box says which one.
    */
-  deploy?: { prebuild?: string; via?: 'ec2'; box?: string };
+  deploy?: { prebuild?: string; via?: 'ec2' | 'firebase'; box?: string };
   /**
    * Developing on beta (dev.ts): front = the /dev/ front door's port (Caddy sends https://<sub>.<domain>/dev/* there),
    * port = the dev server's port (web products; Unity products have none), path = the devtools page under /dev/,
@@ -148,7 +150,7 @@ export function getInfra(id: string): Infra {
   return t;
 }
 
-export const localUrl = (p: Product) => `http://localhost:${p.local.port}${p.local.path}`;
+export const localUrl = (p: Product) => (p.local.serve === 'remote' && p.local.url ? p.local.url : `http://localhost:${p.local.port}${p.local.path}`);
 export const abs = (rel: string) => path.join(PROJECTS, rel);
 
 /** The product's story doc(s), trimmed for prompts. */

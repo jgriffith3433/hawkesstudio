@@ -55,17 +55,16 @@ test('the real products.json entry: repo, beta site, live site, playtests, dev f
   assert.equal(p.live, 'https://hawkesgen.com/');
   assert.equal(real.repos.hawkesgenwebsite, 'jgriffith3433/hawkesgenwebsite');
   assert.equal(real.previews.hawkesgenwebsite, 'hawkesgenwebsite');
-  assert.deepEqual(p.deploy, { via: 'ec2', box: p.deploy.box });
-  // Read-only site crawls, of beta (the app Studio runs) and of live; never signing up or paying on live.
+  // On Google Cloud since 2026-10-28: GitHub Actions deploys Firebase (beta to staging, main to live).
+  assert.deepEqual(p.deploy, { via: 'firebase', box: p.deploy.box });
+  // Read-only site crawls, of beta (Firebase staging) and of live; never signing up or paying on live.
   assert.ok(p.playtests.length && p.playtests.every((t: any) => t.mode === 'site'));
   assert.ok(p.playtests.some((t: any) => t.where === 'local') && p.playtests.some((t: any) => t.where === 'live'));
   assert.ok(p.quality && /Stripe/.test(p.quality));
-  // A server app: its beta runs as a process with its own customers' prefix, never live customers' projects.
-  assert.equal(p.local.serve, 'app');
-  assert.ok(p.app.start && p.app.health && p.app.portEnv && p.app.dataEnv);
-  assert.equal(p.app.env.PORTAL_PROJECT_PREFIX, 'ubeta_');
-  assert.ok(p.app.gen.projects.includes('ubeta_*'));
-  assert.ok(!p.app.gen.projects.includes('usr_*') && !p.app.gen.projects.includes('*'), 'never all of live customers');
+  // Its beta is remote: the staging project (its own Firestore and Gen key, customers ustg_), never live customers.
+  assert.equal(p.local.serve, 'remote');
+  assert.equal(p.local.url, 'https://hawkes-staging.web.app/');
+  assert.equal(p.app, undefined, 'Studio runs no portal process any more');
   // Ports are unique across every product (local servers, dev servers, front doors).
   const ports = real.products.flatMap((x: any) => [x.local.port, x.dev?.front, x.dev?.port]).filter(Boolean);
   assert.equal(new Set(ports).size, ports.length, `duplicate port in ${ports.join(',')}`);
@@ -74,18 +73,19 @@ test('the real products.json entry: repo, beta site, live site, playtests, dev f
   assert.deepEqual(recipeOf('hawkesgenwebsite'), { site: 'tracked' });
 });
 
-test('Caddy: a server app\'s beta host goes to its front door, behind the login except the open game paths', async () => {
+test('Caddy: the portal\'s beta host sends people to its remote beta (Firebase staging), no files and no app process', async () => {
   const { caddyfile } = await import('../deploy/caddyfile.mjs');
   const text: string = caddyfile({ domain: 'example.com', email: 'x@example.com', products: real });
   const block = text.slice(text.indexOf('hawkesgenwebsite.example.com {'));
   const body = block.slice(0, block.indexOf('\n}\n'));
-  const front = real.products.find((x: any) => x.id === 'hawkesgenwebsite').dev.front;
-  assert.match(body, new RegExp(`reverse_proxy 127\\.0\\.0\\.1:${front}`));
-  assert.doesNotMatch(body, /file_server|previews\//, 'no static files for an app');
-  assert.match(body, /@open path_regexp \^\/\(play\//);
-  // The catch-all handle has the login.
-  assert.match(body.slice(body.lastIndexOf('handle {')), /import login/);
-  // A static product's block is unchanged.
+  const url = real.products.find((x: any) => x.id === 'hawkesgenwebsite').local.url.replace(/\/+$/, '');
+  assert.match(body, new RegExp(`redir ${url.replace(/[.]/g, '\\.')}\\{uri\\} 302`));
+  assert.doesNotMatch(body, /file_server|previews\/|reverse_proxy/, 'nothing served here for a remote beta');
+  // A server app still goes to its front door (the test products' portal fixture), and a static product is unchanged.
+  const fixture = { ...real, products: real.products.map((x: any) => (x.id === 'hawkesgenwebsite' ? { ...x, local: { ...x.local, serve: 'app' }, app: { start: 'node src/server.ts', open: '^/(play/)' } } : x)) };
+  const asApp: string = caddyfile({ domain: 'example.com', email: 'x@example.com', products: fixture });
+  const appBody = asApp.slice(asApp.indexOf('hawkesgenwebsite.example.com {'));
+  assert.match(appBody.slice(0, appBody.indexOf('\n}\n')), /reverse_proxy 127\.0\.0\.1:\d+/);
   assert.match(text.slice(text.indexOf('icanbe.example.com {')), /file_server/);
 });
 
