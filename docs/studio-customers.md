@@ -104,7 +104,8 @@ nothing is sent, and `planned` lists the requests it would have made.
 **No per-customer Google resources that cost money or hit quotas:**
 - **One shared service account** for every cell (`STUDIO_CELLS_SA`), never one per customer (projects cap at ~100).
   It has nothing on Cloud Run project-wide (a service's env holds its keys, and `run.services.get` would show every
-  cell's to every other): only the cells' bucket and running the shared agents' job.
+  cell's to every other): only the cells' bucket and running the shared agents' job. What that leaves open is under
+  Isolation.
 - **No secret per customer.** Every key a cell needs is derived from **one master secret** (`STUDIO_CELLS_MASTER`,
   only in the control plane) by HMAC-SHA256 of its purpose and the org id (src/cellkeys.ts): its owner key (the
   platform's own calls into it), agents' key, MCP key, beta-site pass seed, the key that seals its customer's secrets at
@@ -113,7 +114,8 @@ nothing is sent, and `planned` lists the requests it would have made.
 - **No Cloud Scheduler job per customer.** One central cron (`POST /api/cells/cron`, Scheduler's OIDC token or the
   owner key) runs the sweep, then the nightly run of every paying org whose plan has nightly runs: it wakes the cell and
   calls its `/api/cloud/daily` with that cell's owner key.
-- One shared bucket (`STUDIO_CELLS_BUCKET`) and one shared agents' job (`STUDIO_CELLS_AGENT_JOB`, `studio-cell-agent`).
+- One shared bucket (`STUDIO_CELLS_BUCKET`) and one shared agents' job (`STUDIO_CELLS_AGENT_JOB`, `studio-cell-agent`),
+  which runs as its own account with no data access (see Isolation).
 
 **The router** (server/studio-edge, a Worker on the zone route, as before):
 - `studio.hawkesgen.ai/o/<org>/…` goes to `studio-o-<org>-<project number>.<region>.run.app` (Cloud Run's deterministic
@@ -176,56 +178,107 @@ lockdown.ts's list.
   sealed and used, the onboarding seed.
 - `test/studio-edge.test.ts`: the Worker's routing, cookies, redirects and waking.
 
-### One-time setup (J; `node tools/studio-cloudrun/cells-setup.mjs [--beta]` prints it all, `--apply` does it)
+### Isolation: what one customer can reach
 
-1. **The shared service account** `studio-cells@<project>`: `roles/logging.logWriter` on the project; on the cells'
-   bucket `roles/storage.objectAdmin`; on the cells' agents' job `roles/run.jobsExecutorWithOverrides` and
-   `roles/run.viewer`. Nothing else.
-2. **The cells' bucket** `<project>-studio-cells` (`…-studio-beta-cells`), objectAdmin for J's Studio's account too.
-3. **The cells' agents' job** `studio-cell-agent` (`studio-beta-cell-agent`), running as the shared account.
-4. **The master secret** `studio-cells-master` (`studio-beta-cells-master`) in Secret Manager: 48 random bytes, made
-   once and never printed, readable by J's Studio's account, mounted as `STUDIO_CELLS_MASTER`. Rotating it changes
-   every cell's keys on its next deploy.
-5. **J's Studio as the control plane:** `roles/run.admin` and `iam.serviceAccountUser` on the cells' account for
-   `studio-control@`; env `STUDIO_CELLS=on`, `STUDIO_CELLS_PROJECT`, `_PROJECT_NUMBER`, `_REGION`, `_SA`, `_BUCKET`,
-   `_AGENT_JOB`.
-6. **The central cron:** one Cloud Scheduler job `studio-cells-cron`, daily 04:00 Los Angeles, `POST
-   https://studio.hawkesgen.ai/api/cells/cron` with the scheduler account's OIDC token.
-7. **The Worker's edge key:** `npx wrangler secret put EDGE_KEY` in server/studio-edge (the script prints the
-   one-liner that derives it from the master), then `npx wrangler deploy` (`--env beta` for beta).
+**Agent runs reach only their own run's files (built: src/jobbroker.ts, test/jobbroker.test.ts).** A customer's agents
+run the customer's prompts with a shell, so they are where another customer's data would leak. They run in the shared
+job `studio-cell-agent` as **`studio-cell-runner@`, an account with no role at all** besides writing logs: no bucket,
+no Secret Manager, no Cloud Run. The pattern is Gen's GPU broker (hawkesgen `src/providers/gpu/broker.ts`):
+1. The cell signs a **run token** for that one run (its org, the run's unit, 6 hours) with its own derived
+   `STUDIO_BROKER_KEY`. It starts the execution with the token and the broker's address in the env, never the bucket.
+2. The job reaches `POST/GET <control plane>/api/cells/broker` with the token. The control plane checks the token
+   against the key **it** derives for the org the token names. A cell therefore can't sign for another org.
+3. The control plane allows only keys inside `o/<org>/jobs/<unit>/`: list, read, write, remove. Anything else is 403:
+   another org's objects, another run's, the cell's own database and state, and paths with `..`.
+4. Big objects go by **V4 signed URL** for that one object (15 minutes), signed by J's Studio as itself through IAM
+   signBlob. Without a signer, the bytes go through the control plane.
+5. The runner takes the token out of its environment before the pass starts, so the agent's command never sees it.
+
+The tests show:
+- org A's run can't list, read, write or remove org B's objects, another run's, or its Studio's database
+- a token naming org B signed with A's key is refused, and so is a token whose body was edited
+
+**The cells' own services: what is left.** Every cell's service runs as the one shared account `studio-cells@`, which
+has object admin on the whole cells bucket. **IAM conditions can't limit that per cell.** A condition such as
+`resource.name.startsWith("projects/_/buckets/<b>/objects/o/<org>/")` is about the object, not about which cell is
+calling, and with one account every cell is the same principal.
+
+So a **compromised cell could read and change every customer's data**: their databases, state files, and sealed keys.
+The keys stay ciphertext, but their databases are plain. That would take an exploit of Studio's own code running in the
+cell (remote code execution, or a way to make it fetch any object). A customer's code and prompts don't run there; they
+run only in the agent job, which is isolated as above. Other limits that do hold:
+- a cell can't read another cell's keys: no Cloud Run rights project-wide, and keys are derived per org
+- a cell can't read the master or the Gen owner key: no Secret Manager rights
+- a cell's Gen key only works in its own Gen org
+
+**To close it**, when paying customers arrive: one service account per cell, with a prefix condition on the bucket.
+Service accounts are free; the limit is 100 per project by default and Google raises it on request. Or keep one account
+and move the cells' own bucket access behind short-lived downscoped tokens (Credential Access Boundaries) from the
+control plane. That needs Litestream to take a token instead of the metadata server, a bigger change.
+
+### Hawkes Gen for a cell (built)
+
+- At its first start, the control plane asks Gen for the org's own key. The call is `POST /v1/clients` with J's Gen
+  owner key (`STUDIO_GEN_OWNER_KEY`, only in the control plane): role `user`, projects `org_<hex>` and `org_<hex>.*`.
+  Its Gen org `org_<hex>` is made once per org.
+- The key goes into the cell's env (`HAWKESGEN_KEY`, `AGENT_GEN_KEY`). It is kept sealed in `cp_orgs` under a key
+  derived from the master, so a woken cell gets the same one.
+- In the cell every project Studio names becomes `org_<hex>.<game>` on the way to Gen (gen.ts,
+  `HAWKESGEN_PROJECT_PREFIX`). Gen treats `org_*` projects as a customer's.
+- **Connect your AI goes to Gen too.** After any change in Your AI, the cell sends its Anthropic key and its Claude
+  subscription's token, set or removed, to the control plane (`POST /api/cells/self/ai`, cellside.ts). The control
+  plane puts them in Gen for that org (`PUT|DELETE /v1/org/keys/anthropic|claude-subscription?org=`, hawkesgen
+  orgsecrets.ts). Gen's reviews and tools then run on the customer's own Claude.
+- When the org's data is deleted, its Gen key is disabled and its Claude credentials are removed from Gen.
+
+### Invited people at the front door (built)
+
+Each cell reports who may enter it to the control plane (`POST /api/cells/self/members`, cellside.ts): its users, with
+Google's id once linked, and its open invites by email. It reports at start, every 5 minutes, and after every change in
+Users, replacing the list each time (`cp_access`).
+
+Continue with Google on studio.hawkesgen.ai finds a person's orgs by Google's id or by their verified email:
+- with one org, they land in it
+- with several, they pick one at `/auth/start`
+- they are never sent to the sign-up
+
+An invite found by email is tied to their Google id from then on. Removed in the cell means no way in from the front
+door. Only an org's owner can start it, add its first game or subscribe from the sign-up pages.
+
+### One-time setup (J; `node tools/studio-cloudrun/cells-setup.mjs [--beta]` prints it in order, `--apply` does it)
+
+Before it: the lane's Studio runs this code (push `beta`; live with J's `DEPLOY`).
+1. **Two shared service accounts**, both with `roles/logging.logWriter` only:
+   - `studio-cells@`: the cells' services
+   - `studio-cell-runner@`: the customers' agent runs, with no data access at all
+2. **The cells' bucket** `<project>-studio-cells` (`…-studio-beta-cells`): object admin for `studio-cells@` and J's
+   Studio (`studio-control@`), never the runner.
+3. **The agents' job** `studio-cell-agent` (`studio-beta-cell-agent`), running as the runner, with no bucket in its
+   env. `studio-cells@` gets `run.jobsExecutorWithOverrides` and `run.viewer` on that job only.
+4. **Two secrets**, made once, never printed, readable by `studio-control@` alone:
+   - `studio-cells-master`: 48 random bytes
+   - `studio-cells-gen-owner-key`: J's Gen owner key for the lane, taken from `~/.hawkes/client.json` `genKey` /
+     `genBetaKey`
+5. **J's Studio as the control plane** (`studio-control@`):
+   - `roles/run.admin`, `iam.serviceAccountUser` on `studio-cells@`, `iam.serviceAccountTokenCreator` on itself (the
+     broker's signed URLs)
+   - env `STUDIO_CELLS=on` and `STUDIO_CELLS_*`
+   - secrets `STUDIO_CELLS_MASTER`, `STUDIO_GEN_OWNER_KEY`
+6. **The Worker:** derive the edge key from the master into `npx wrangler secret put EDGE_KEY` (the printout has the
+   PowerShell lines), then `npx wrangler deploy` (`--env beta`).
+7. **Last, the central cron** `studio-cells-cron` (daily 04:00 Los Angeles, Scheduler's OIDC token). On beta it is made
+   paused: beta never spends by itself.
+
+Check: `GET /api/cells` signed in as J shows `"on": true` and `"missing": []`.
 
 ### Not done yet (open)
 
-- **A cell's agents can reach other cells' data.** The agents' job runs as the shared account, which can read the
-  whole cells bucket, and a customer's agent runs their prompts with a shell. Before real customers, give each job
-  execution a downscoped token (Credential Access Boundary) limited to `o/<org>/`, not the account itself. The cell's
-  own service is the same image as J's and runs no customer code outside the agent pass.
-- **Gen for cells:** a cell has `HAWKESGEN_URL` but no Gen key yet. Playtests and reviews need one per org (Gen's
-  tenancy: a derived key Gen accepts, or a key the control plane asks Gen for), and Studio's credits paying for it.
-- **Members beyond the owner:** the control plane knows only an org's owner. Someone the owner invites reaches the cell
-  by the invite's link, but the front door alone sends them to the sign-up. Cells could report their members back.
-- **The portal's "Open Studio"** should link to `studio.hawkesgen.ai/o/<org>/` for orgs that have a cell.
+- **Cell-to-cell isolation for the cells' own services** (above): one service account per cell before paying customers.
+- **The portal's "Open Studio"** should link to `studio.hawkesgen.ai/o/<org>/`.
 - **One click less:** a signed hand-off from the control plane to the cell would skip the cell's own Continue with
   Google.
-
----|---|---|
-| What it is | The same image run once per customer org (Cloud Run service, scale to zero), its own database, bucket prefix, service account and secrets. **Started:** `STUDIO_ORG` (src/platform.ts) | One service; every table and query gets `org_id`; Postgres instead of SQLite; no in-process singletons (ops queue, PM loop, active run) |
-| Isolation | Physical: another customer's data isn't in the database at all | Logical: one missed `WHERE org_id` leaks |
-| Work to get there | Provisioning (a cell per org), a router Worker (`studio.hawkesgen.ai/o/<org>/…`), per-cell secrets, a nightly wake-up per cell | Rewrite the core: ~40 tables, ~25 modules, 363 mentions of "J" |
-| Idle cost | Cents per idle customer (storage) | One always-on service plus Cloud SQL (~$50+/month before the first customer) |
-| Cold start | A few seconds on the first request (Litestream restore) | None |
-| Upgrades | Roll the image across cells (canary on J's org first) | One deploy |
-| Limits | ~1,000 Cloud Run services per region per project, years away | The database |
-
-**Recommendation: cells.** The single-tenant Studio we have is exactly what a cell is. Everything built for this doc
-works the same in either model, so the choice doesn't block anything below.
-
-**A customer's Studio** is `customerStudio()` (src/tenancy.ts): an org cell (`STUDIO_ORG`), a claimed Studio
-(`STUDIO_SIGNUP=owner`) or `STUDIO_CUSTOMER=1`. In one (**built**):
-- its games are its own products file in its data folder, empty at first, written by onboarding
-- it never takes a game from J's GitHub (`jgriffith3433` in the repository is refused)
-- Claude is only ever the customer's own (section 4)
-- the platform features are closed to everyone in it (section 5)
+- **Studio's credits paying for Gen work:** a cell's Gen usage is on its own Gen key; billing it against the plan's
+  credits is the next billing step.
 
 ---
 
@@ -400,9 +453,7 @@ To try it on beta, in this order:
 5. Add a game and watch `GET /api/cells`.
 
 Before real customers:
-- the downscoped token for agent jobs
-- Gen keys for cells
-- members at the front door
+- one service account per cell (section 2, Isolation)
 - **"J" becomes "the owner"** in prompts and the dashboard (the owner's name from the org)
 - **share links on a separate domain** for customer content (never `hawkesgen.ai`, where our cookies live)
 - builds from GitHub for customers' games: the GitHub App and Gen's build intake (platform-plan 5). Playtests of `live`

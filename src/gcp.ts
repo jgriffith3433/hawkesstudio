@@ -197,3 +197,58 @@ export async function googleIdToken(token: string): Promise<{ aud: string; iss: 
   if (Number(t.exp) * 1000 < Date.now()) throw fail('That token has expired.', 401);
   return { aud: String(t.aud ?? ''), iss: t.iss, email: String(t.email ?? '').toLowerCase(), email_verified: t.email_verified === true || t.email_verified === 'true', exp: Number(t.exp), azp: t.azp, sub: t.sub ? String(t.sub) : undefined, name: t.name ? String(t.name) : undefined };
 }
+
+// ------------------------------------------------------------ V4 signed URLs
+// The job broker (jobbroker.ts) hands a customer's agent run a link that reads or writes ONE object for a few minutes,
+// so bundles go straight between the job and Cloud Storage while the job's own account has no bucket access at all.
+// Studio signs as its own service account with IAM's signBlob (no private key anywhere; the account needs
+// roles/iam.serviceAccountTokenCreator on itself: cells-setup.mjs). A copy of hawkesgen src/providers/gpu/sign.ts.
+
+export type Signer = { email: string; sign: (bytes: Buffer) => Promise<Buffer> };
+
+const rfc3986 = (s: string) => encodeURIComponent(s).replace(/[!'()*]/g, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`);
+const ymd = (d: Date) => d.toISOString().slice(0, 10).replace(/-/g, '');
+const stamp = (d: Date) => d.toISOString().replace(/[-:]/g, '').replace(/\.\d{3}/, '');
+
+/** A V4 signed URL for one object (GET to read, PUT to write), valid `seconds`. */
+export async function signedUrl(method: 'GET' | 'PUT', bucket: string, name: string, signer: Signer, seconds = 900, now = new Date()): Promise<string> {
+  const host = 'storage.googleapis.com';
+  const canonicalUri = `/${bucket}/${name.split('/').map(rfc3986).join('/')}`;
+  const scope = `${ymd(now)}/auto/storage/goog4_request`;
+  const q: Record<string, string> = {
+    'X-Goog-Algorithm': 'GOOG4-RSA-SHA256',
+    'X-Goog-Credential': `${signer.email}/${scope}`,
+    'X-Goog-Date': stamp(now),
+    'X-Goog-Expires': String(Math.max(1, Math.min(604_800, Math.round(seconds)))),
+    'X-Goog-SignedHeaders': 'host',
+  };
+  const query = Object.keys(q).sort().map((k) => `${rfc3986(k)}=${rfc3986(q[k])}`).join('&');
+  const canonical = [method, canonicalUri, query, `host:${host}\n`, 'host', 'UNSIGNED-PAYLOAD'].join('\n');
+  const toSign = ['GOOG4-RSA-SHA256', stamp(now), scope, crypto.createHash('sha256').update(canonical).digest('hex')].join('\n');
+  const sig = await signer.sign(Buffer.from(toSign));
+  return `https://${host}${canonicalUri}?${query}&X-Goog-Signature=${sig.toString('hex')}`;
+}
+
+let signerCache: Signer | null | undefined;
+/** Tests swap in a fake (null: can't sign, the broker carries the bytes itself). */
+export function setSigner(s: Signer | null | undefined) { signerCache = s; }
+
+/** Studio's signer on Cloud Run (its own service account), or null where it can't sign. Remembered. */
+export async function signer(): Promise<Signer | null> {
+  if (signerCache !== undefined) return signerCache;
+  let email = process.env.STUDIO_SIGN_AS?.trim() || null;
+  if (!email && process.env.K_SERVICE) {
+    email = await fetchImpl('http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/email', { headers: { 'Metadata-Flavor': 'Google' }, signal: AbortSignal.timeout(3000) })
+      .then((r) => (r.ok ? r.text() : null)).catch(() => null);
+  }
+  if (!email) return (signerCache = null);
+  const who = email.trim();
+  signerCache = {
+    email: who,
+    async sign(bytes) {
+      const j = await gapi(`https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/${encodeURIComponent(who)}:signBlob`, { body: { payload: bytes.toString('base64') }, timeoutMs: 15_000 });
+      return Buffer.from(String(j.signedBlob), 'base64');
+    },
+  };
+  return signerCache;
+}

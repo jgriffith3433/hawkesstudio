@@ -172,6 +172,8 @@ const server = http.createServer(async (req, res) => {
       const { laneOf } = await import('./sitekeys.ts');
       if (await betaHostReport(req, res, route, process.env.STUDIO_COOKIE_DOMAIN ?? 'hawkesgen.ai', laneOf())) return;
     }
+    // A customer's cell tells the control plane who may enter it after any change in Users (cellside.ts).
+    if (method !== 'GET' && (route.startsWith('/api/users') || route.startsWith('/api/invites'))) res.on('finish', () => { if (res.statusCode < 300) void import('./cellside.ts').then((c) => c.reportMembers()); });
     if ((route === '/api/me' || route.startsWith('/api/users') || route.startsWith('/api/invites') || route.startsWith('/api/signups')) && (await (await import('./auth-pages.ts')).handleUsersApi(req, res, url))) return;
     // The shared memory (memory.ts, memory-api.ts): the Memory tab, the memory_* tools.
     if (route === '/api/memory' || route.startsWith('/api/memory/')) return await (await import('./memory-api.ts')).handleMemory(req, res, url, send, readJson);
@@ -730,6 +732,8 @@ const server = http.createServer(async (req, res) => {
     // signing in, switching, renaming, checking and removing are J's click on the dashboard only.
     if (route === '/api/claude/accounts' && method === 'GET') return send(res, 200, { ...(await import('./claude-accounts.ts')).listAccounts(), ...((await import('./tenancy.ts')).customerStudio() ? { customer: (await import('./claude.ts')).customerClaude() } : {}) });
     if (route.startsWith('/api/claude/') && method !== 'GET') {
+      // A customer's cell: whatever changed in Your AI goes to Hawkes Gen for its org too (cellside.ts).
+      res.on('finish', () => { if (res.statusCode < 300) void import('./cellside.ts').then((c) => c.syncAiToGen()); });
       const why = (await import('./approvals.ts')).notJClick(req);
       if (why) return send(res, 403, { error: `Claude accounts change only from J's own click in Settings: ${why}.` });
       const ca = await import('./claude-accounts.ts');
@@ -947,6 +951,7 @@ server.listen(listenPort, cloud ? '0.0.0.0' : '127.0.0.1', () => {
   void import('./cells.ts').then((C) => C.wireBilling()).catch((e) => console.warn(`[cells] ${e.message ?? e}`));
   void import('./config.ts').then((c) => c.applyOnboardingSeed()).then((g) => { if (g) console.log(`[onboarding] added the first game, ${g.name}`); }).catch((e) => console.warn(`[onboarding] ${e.message ?? e}`));
   void import('./entitlements.ts').then((E) => E.startPlanRefresh());
+  void import('./cellside.ts').then((c) => c.startCellReports());
   // A restart (a deploy) ends nothing: runs, agent changes and Talk answers carry on from where they were, waiting on
   // the same Gen jobs and reading the same detached Claude Code processes (drain.ts, detach.ts).
   // Queued go-lives and rollbacks carry on (ops.ts), and the event loop is watched for anything that blocks it.

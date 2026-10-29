@@ -18,6 +18,7 @@ export const CELL_KEYS = {
   pass: 'STUDIO_SITES_SEED', // signing its beta-site passes (sitekeys.ts)
   secrets: 'STUDIO_SECRETS_KEY', // sealing its customer's secrets at rest
   cell: 'STUDIO_CELL_KEY', // the cell calling the control plane back (its plan, its billing)
+  broker: 'STUDIO_BROKER_KEY', // signing its agents' run tokens for the job broker (jobbroker.ts)
 } as const;
 export type CellKeyPurpose = keyof typeof CELL_KEYS;
 
@@ -80,6 +81,24 @@ export function seal(plain: string): string {
   const c = crypto.createCipheriv('aes-256-gcm', key, iv);
   const body = Buffer.concat([c.update(plain, 'utf8'), c.final()]);
   return SEALED + Buffer.concat([iv, c.getAuthTag(), body]).toString('base64url');
+}
+
+const keyOf = (k: string) => crypto.createHash('sha256').update(k).digest();
+
+/** Seals with a given key (the control plane's own records: a cell's Gen key, under a key derived from the master). */
+export function sealWith(plain: string, key: string): string {
+  const iv = crypto.randomBytes(12);
+  const c = crypto.createCipheriv('aes-256-gcm', keyOf(key), iv);
+  const body = Buffer.concat([c.update(plain, 'utf8'), c.final()]);
+  return SEALED + Buffer.concat([iv, c.getAuthTag(), body]).toString('base64url');
+}
+
+export function unsealWith(text: string, key: string): string {
+  if (!String(text ?? '').startsWith(SEALED)) return text;
+  const raw = Buffer.from(text.slice(SEALED.length), 'base64url');
+  const d = crypto.createDecipheriv('aes-256-gcm', keyOf(key), raw.subarray(0, 12));
+  d.setAuthTag(raw.subarray(12, 28));
+  return Buffer.concat([d.update(raw.subarray(28)), d.final()]).toString('utf8');
 }
 
 /** The secret back. Plain text (written before sealing) passes through, so turning sealing on needs no migration. */

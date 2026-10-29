@@ -33,6 +33,15 @@ const C = await import('../src/cells.ts');
 const B = await import('../src/billing.ts');
 const { setGcpFetch } = await import('../src/gcp.ts');
 
+// Hawkes Gen, standing in: the control plane makes each cell's key with J's Gen owner key (cells.ts genCall).
+const genCalls: { method: string; path: string; body: any }[] = [];
+let nextClient = 0;
+C.setGenCall(async (method, path, body) => {
+  genCalls.push({ method, path, body });
+  if (method === 'POST' && path === '/clients') { nextClient++; return { key: `hg_cell_${nextClient}`, client: { id: `c_${nextClient.toString(16).padStart(6, '0')}` } }; }
+  return { ok: true };
+});
+
 // A stand-in for Google: Cloud Run services and Cloud Storage objects in memory, every call recorded.
 const services = new Map<string, any>();
 const objects = new Map<string, Buffer>();
@@ -79,8 +88,8 @@ const noJson = async () => ({});
 test('keys: one master, a different key per org and purpose, the master never in a cell', () => {
   const a = K.cellKeyEnv('acme-1a2b');
   const b = K.cellKeyEnv('other-3c4d');
-  assert.deepEqual(Object.keys(a).sort(), ['STUDIO_AGENT_KEY', 'STUDIO_CELL_KEY', 'STUDIO_MCP_KEY', 'STUDIO_OWNER_KEY', 'STUDIO_SECRETS_KEY', 'STUDIO_SITES_SEED']);
-  assert.equal(new Set(Object.values(a)).size, 6, 'every purpose its own key');
+  assert.deepEqual(Object.keys(a).sort(), ['STUDIO_AGENT_KEY', 'STUDIO_BROKER_KEY', 'STUDIO_CELL_KEY', 'STUDIO_MCP_KEY', 'STUDIO_OWNER_KEY', 'STUDIO_SECRETS_KEY', 'STUDIO_SITES_SEED']);
+  assert.equal(new Set(Object.values(a)).size, 7, 'every purpose its own key');
   for (const k of Object.keys(a)) assert.notEqual(a[k], b[k], 'every org its own');
   assert.deepEqual(K.cellKeyEnv('acme-1a2b'), a, 'derived, so the same every time');
   assert.ok(!Object.values(a).includes(process.env.STUDIO_CELLS_MASTER!));
@@ -146,6 +155,15 @@ test('signing up makes only the record; the first game makes the cell (shared ac
   assert.equal(env.STUDIO_PUBLIC_URL, `https://studio.hawkesgen.ai/o/${org.id}`);
   assert.equal(env.STUDIO_OWNER_KEY, K.deriveKey('owner', org.id));
   assert.equal(env.STUDIO_CELLS_MASTER, undefined, 'never the master');
+  // Its own Gen key: role user, only its Gen org's projects, made with J's Gen owner key (which the cell never gets).
+  const made = genCalls.find((g) => g.path === '/clients')!;
+  const genOrg = C.getOrg(org.id)!.genOrg!;
+  assert.match(genOrg, /^org_[0-9a-f]{16}$/);
+  assert.deepEqual(made.body, { name: `Hawkes Studio cell ${org.id}`, role: 'user', projects: [genOrg, `${genOrg}.*`] });
+  assert.equal(env.HAWKESGEN_KEY, 'hg_cell_1');
+  assert.equal(env.HAWKESGEN_PROJECT_PREFIX, `${genOrg}.`);
+  assert.equal(env.STUDIO_GEN_OWNER_KEY, undefined);
+  assert.equal(env.STUDIO_BROKER_KEY, K.deriveKey('broker', org.id));
   assert.equal(R.serviceUrl(org.id), `https://studio-o-${org.id}-123456.us-east4.run.app`);
 });
 
@@ -164,6 +182,9 @@ test('hibernation: idle 14 days loses the service, keeps the data; the next visi
   await new Promise((r) => setTimeout(r, 20));
   assert.equal(C.getOrg(org.id)!.state, 'awake');
   assert.ok(services.has(`studio-o-${org.id}`));
+  const woken = Object.fromEntries(services.get(`studio-o-${org.id}`).template.containers[0].env.map((e: any) => [e.name, e.value]));
+  assert.equal(woken.HAWKESGEN_KEY, 'hg_cell_1', 'woken with the same Gen key, not a new one');
+  assert.equal(genCalls.filter((g) => g.path === '/clients').length, 1);
   // Without the edge key: nothing.
   const no = res();
   await C.handleCellsKeyed(req({ Authorization: 'Bearer nope' }, 'POST'), no, `/api/cells/edge/${org.id}/wake`, 'POST', send, noJson);
@@ -194,6 +215,12 @@ test('90 days with no sign-in and no plan: an email first, the data deleted 14 d
   r = await C.sweep({ now: t0 + 15 * 86_400_000, mail });
   assert.ok(r.deleted.includes(org.id));
   assert.equal(C.getOrg(org.id)!.state, 'deleted');
+  // Its Gen key is disabled, its Claude credentials removed from Gen.
+  const dead = C.getOrg(org.id)!;
+  if (dead.genClient) {
+    assert.ok(genCalls.some((g) => g.method === 'POST' && g.path === `/clients/${dead.genClient}/disable`));
+    assert.ok(genCalls.some((g) => g.method === 'DELETE' && g.path === `/org/keys/anthropic?org=${dead.genOrg}`));
+  }
   assert.equal([...objects.keys()].some((k) => k.startsWith(`o/${org.id}/`)), false);
   // Signing in again clears a warning.
   const paid = C.orgsOf(A1.sub)[0];
@@ -265,7 +292,48 @@ test('dry run: nothing reaches Google; the plan says what would be made', async 
   const org = C.createOrg({ sub: '7000004', email: 'd@d.example', name: null }, 'Dry Run');
   await C.ensureCell(org.id, 'test', { game: { id: 'g', name: 'G', engine: 'web', live: 'https://g.example' } });
   assert.equal(calls.length, 0);
-  assert.deepEqual(R.planned.map((p) => p.method), ['PUT', 'POST', 'POST']);
-  assert.match(R.planned[1].url, new RegExp(`/services\\?serviceId=studio-o-${org.id}$`));
+  // The first game left for the cell, its Gen key asked for, the service, then who may reach it.
+  assert.deepEqual(R.planned.map((p) => p.method), ['PUT', 'POST', 'POST', 'POST']);
+  assert.match(R.planned[1].url, /\/v1\/clients$/);
+  assert.match(R.planned[2].url, new RegExp(`/services\\?serviceId=studio-o-${org.id}$`));
   delete process.env.STUDIO_CELLS_DRY_RUN;
+});
+
+test('invited people at the front door: they land in the org that invited them, or pick among several; never the sign-up', async () => {
+  const paying = C.orgsOf('7000003')[0];
+  const cellReq = (org: string) => req({ Authorization: `Bearer ${K.deriveKey('cell', org)}`, 'X-Studio-Cell': org }, 'POST');
+  const body = (b: unknown) => async () => b;
+  // The cell reports its people: a member who signed in (sub known) and an open invite (email only).
+  const out = res();
+  await C.handleCellsKeyed(cellReq(paying.id), out, '/api/cells/self/members', 'POST', send, body({ people: [
+    { email: 'c@c.example', sub: '7000003', role: 'admin', kind: 'member' },
+    { email: 'Artist@Studio.example', role: 'member', kind: 'invite' },
+  ] }));
+  assert.equal(out.body.people, 2);
+  const artist = { email: 'artist@studio.example', sub: '7100001', name: 'Artist' };
+  assert.equal(C.frontDoor(artist).next, `/o/${paying.id}/`, 'straight into the org that invited them');
+  // In two orgs: they pick one.
+  const other = C.createOrg({ sub: '7000009', email: 'z@z.example', name: null }, 'Other Studio');
+  await C.handleCellsKeyed(cellReq(other.id), res(), '/api/cells/self/members', 'POST', send, body({ people: [{ email: 'artist@studio.example', role: 'member', kind: 'invite' }] }));
+  assert.equal(C.frontDoor(artist).next, '/auth/start');
+  assert.deepEqual(C.orgsOf(artist.sub, artist.email).map((o) => o.id).sort(), [paying.id, other.id].sort());
+  // By Google's id from now on, even if the email were to change.
+  assert.deepEqual(C.orgsOf(artist.sub).map((o) => o.id).sort(), [paying.id, other.id].sort());
+  // Removed in the cell: no way in from here.
+  await C.handleCellsKeyed(cellReq(paying.id), res(), '/api/cells/self/members', 'POST', send, body({ people: [{ email: 'c@c.example', sub: '7000003', role: 'admin' }] }));
+  assert.deepEqual(C.orgsOf(artist.sub, artist.email).map((o) => o.id), [other.id]);
+  // Another cell's key can't speak for this one.
+  const no = res();
+  await C.handleCellsKeyed(req({ Authorization: `Bearer ${K.deriveKey('cell', other.id)}`, 'X-Studio-Cell': paying.id }, 'POST'), no, '/api/cells/self/members', 'POST', send, body({ people: [] }));
+  assert.equal(no.status, 401);
+});
+
+test("the cell's Connect your AI goes to Gen for its org (reviews and Gen tools use it); removing it removes it there", async () => {
+  const paying = C.getOrg(C.orgsOf('7000003')[0].id)!;
+  const cellReq = () => req({ Authorization: `Bearer ${K.deriveKey('cell', paying.id)}`, 'X-Studio-Cell': paying.id }, 'POST');
+  genCalls.length = 0;
+  await C.handleCellsKeyed(cellReq(), res(), '/api/cells/self/ai', 'POST', send, async () => ({ kind: 'anthropic', key: 'sk-ant-api03-PayingOwnKey_abcdefghijklmnop' }));
+  await C.handleCellsKeyed(cellReq(), res(), '/api/cells/self/ai', 'POST', send, async () => ({ kind: 'claude-subscription', key: null }));
+  assert.deepEqual(genCalls.map((g) => `${g.method} ${g.path}`), [`PUT /org/keys/anthropic?org=${paying.genOrg}`, `DELETE /org/keys/claude-subscription?org=${paying.genOrg}`]);
+  assert.deepEqual(genCalls[0].body, { key: 'sk-ant-api03-PayingOwnKey_abcdefghijklmnop' });
 });

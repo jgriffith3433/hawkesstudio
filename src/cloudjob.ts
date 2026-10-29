@@ -24,6 +24,7 @@ import path from 'node:path';
 import zlib from 'node:zlib';
 import { spawnSync } from 'node:child_process';
 import { DATA, ROOT } from './config.ts';
+import { runToken } from './jobbroker.ts';
 
 export type PackFile = { p: string; d: string; m?: number };
 export type Pack = { files: PackFile[]; deleted?: string[] };
@@ -153,6 +154,17 @@ export type JobRunner = {
   cancel(execution: string): Promise<void>;
 };
 
+/**
+ * A customer's cell: its agents' job has no bucket access at all, so each execution gets a run token for its own run
+ * folder and the control plane's broker address instead (jobbroker.ts). J's Studio: nothing (the job reads its bucket).
+ */
+export function brokerEnv(unit: string): Record<string, string> {
+  const org = process.env.STUDIO_ORG;
+  const control = (process.env.STUDIO_CONTROL_URL ?? '').replace(/\/+$/, '');
+  if (!org || !control || !process.env.STUDIO_BROKER_KEY) return {};
+  return { STUDIO_RUN_TOKEN: runToken(org, unit), STUDIO_BROKER_URL: `${control}/api/cells/broker` };
+}
+
 /** The real runner: Cloud Storage and the Cloud Run job named by STUDIO_GCP_PROJECT, STUDIO_GCP_REGION, STUDIO_AGENT_JOB. */
 export function cloudRunner(): JobRunner {
   const bucket = process.env.STUDIO_STATE_BUCKET;
@@ -171,7 +183,7 @@ export function cloudRunner(): JobRunner {
     list: async (prefix) => (await (await g()).gcsList(bucket, at(prefix))).map((o) => (P ? o.name.slice(P.length + 1) : o.name)),
     remove: async (key) => (await g()).gcsDelete(bucket, at(key)),
     start: async (unit) => (await g()).runJob({ project, region, job }, {
-      env: { STUDIO_JOB_UNIT: unit, ...(P ? { STUDIO_STATE_PREFIX: P } : {}) },
+      env: { STUDIO_JOB_UNIT: unit, ...(P ? { STUDIO_STATE_PREFIX: P } : {}), ...brokerEnv(unit) },
       timeoutSeconds: Number(process.env.STUDIO_AGENT_JOB_TIMEOUT) || 4 * 3600,
     }),
     state: async (execution) => (await g()).getExecution(execution),

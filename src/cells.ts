@@ -26,7 +26,7 @@ import type http from 'node:http';
 import { db } from './db.ts';
 import { StudioError } from './config.ts';
 import { customerStudio } from './tenancy.ts';
-import { deriveKey, isCellKey, isEdgeKey, validOrg } from './cellkeys.ts';
+import { deriveKey, isCellKey, isEdgeKey, sealWith, unsealWith, validOrg } from './cellkeys.ts';
 import * as R from './cellrun.ts';
 
 db.exec(`
@@ -41,18 +41,34 @@ db.exec(`
     PRIMARY KEY (org, sub)
   );
   CREATE TABLE IF NOT EXISTS cp_config (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+  -- Who else may enter an org (its cell reports them: members and open invites, by email; sub once they've signed in).
+  CREATE TABLE IF NOT EXISTS cp_access (
+    org TEXT NOT NULL, email TEXT NOT NULL, sub TEXT, role TEXT NOT NULL, kind TEXT NOT NULL, updated INTEGER NOT NULL,
+    PRIMARY KEY (org, email)
+  );
 `);
+// The org's Hawkes Gen identity: its Gen org (org_<hex>), the user key made for its cell (sealed under a key derived
+// from the master: a woken cell gets it again) and that key's client id (disabled when the data is deleted).
+for (const c of ['gen_org TEXT', 'gen_client TEXT', 'gen_key TEXT']) {
+  try { db.exec(`ALTER TABLE cp_orgs ADD COLUMN ${c}`); } catch { /* already there */ }
+}
 
 /** J's Studio is the control plane (and never a cell). */
 export const cellsOn = () => process.env.STUDIO_CELLS === 'on' && !customerStudio();
 
 export type OrgState = 'new' | 'creating' | 'awake' | 'hibernated' | 'deleted';
-export type Org = { id: string; name: string; ownerSub: string; ownerEmail: string; state: OrgState; service: string | null; image: string | null; error: string | null; created: number; lastActive: number | null; lastSignin: number | null; hibernatedAt: number | null; warnedAt: number | null; deletedAt: number | null };
-const toOrg = (r: any): Org => ({ id: r.id, name: r.name, ownerSub: r.owner_sub, ownerEmail: r.owner_email, state: r.state, service: r.service, image: r.image, error: r.error, created: r.created, lastActive: r.last_active, lastSignin: r.last_signin, hibernatedAt: r.hibernated_at, warnedAt: r.warned_at, deletedAt: r.deleted_at });
+export type Org = { id: string; name: string; ownerSub: string; ownerEmail: string; state: OrgState; service: string | null; image: string | null; error: string | null; created: number; lastActive: number | null; lastSignin: number | null; hibernatedAt: number | null; warnedAt: number | null; deletedAt: number | null; genOrg: string | null; genClient: string | null };
+const toOrg = (r: any): Org => ({ id: r.id, name: r.name, ownerSub: r.owner_sub, ownerEmail: r.owner_email, state: r.state, service: r.service, image: r.image, error: r.error, created: r.created, lastActive: r.last_active, lastSignin: r.last_signin, hibernatedAt: r.hibernated_at, warnedAt: r.warned_at, deletedAt: r.deleted_at, genOrg: r.gen_org ?? null, genClient: r.gen_client ?? null });
 
 export const getOrg = (id: string) => { const r = db.prepare('SELECT * FROM cp_orgs WHERE id = ?').get(id); return r ? toOrg(r) : null; };
 export const listOrgs = () => (db.prepare(`SELECT * FROM cp_orgs ORDER BY created DESC`).all() as any[]).map(toOrg);
-export const orgsOf = (sub: string) => (db.prepare(`SELECT o.* FROM cp_orgs o JOIN cp_members m ON m.org = o.id WHERE m.sub = ? AND o.state != 'deleted' ORDER BY o.created`).all(sub) as any[]).map(toOrg);
+/** The orgs someone may enter: theirs, and those whose cell lists them (a member, or an open invite to their email). */
+export const orgsOf = (sub: string, email?: string) => (db.prepare(`SELECT o.* FROM cp_orgs o WHERE o.state != 'deleted' AND (
+    o.id IN (SELECT org FROM cp_members WHERE sub = ?)
+    OR o.id IN (SELECT org FROM cp_access WHERE sub = ? OR (? != '' AND email = ?))
+  ) ORDER BY o.created`).all(sub, sub, (email ?? '').toLowerCase(), (email ?? '').toLowerCase()) as any[]).map(toOrg);
+/** The orgs someone owns (the sign-up's limit counts these). */
+const ownedBy = (sub: string) => (db.prepare(`SELECT COUNT(*) AS n FROM cp_members WHERE sub = ?`).get(sub) as { n: number }).n;
 const setOrg = (id: string, f: Record<string, unknown>) => {
   const keys = Object.keys(f);
   db.prepare(`UPDATE cp_orgs SET ${keys.map((k) => `${k} = ?`).join(', ')} WHERE id = ?`).run(...keys.map((k) => f[k] as any), id);
@@ -115,8 +131,10 @@ export const cpCookie = (a: CpAccount | null) => `${CP_COOKIE}=${a ? encodeURICo
 export function frontDoor(profile: { email: string; sub: string | null; name: string | null }, now = Date.now()) {
   if (!profile.sub) throw new StudioError('That Google sign-in has no account id.', 401);
   const a: CpAccount = { sub: profile.sub, email: profile.email.toLowerCase(), name: profile.name };
-  const orgs = orgsOf(a.sub);
+  const orgs = orgsOf(a.sub, a.email);
   for (const o of orgs) setOrg(o.id, { last_signin: now, warned_at: null });
+  // An invite found by email: from now on it is theirs by Google's id too.
+  db.prepare(`UPDATE cp_access SET sub = ? WHERE email = ? AND sub IS NULL`).run(a.sub, a.email);
   return { cookie: cpCookie(a), next: orgs.length === 1 ? `/o/${orgs[0].id}/` : '/auth/start' };
 }
 
@@ -136,14 +154,82 @@ export function orgIdFor(name: string) {
 export function createOrg(a: CpAccount, name: string, now = Date.now()) {
   const n = String(name ?? '').trim().slice(0, 60);
   if (n.length < 2) throw new StudioError('Name your studio (2 to 60 characters).');
-  if (orgsOf(a.sub).length >= 3) throw new StudioError('You already have 3 studios.', 409);
+  if (ownedBy(a.sub) >= 3) throw new StudioError('You already have 3 studios.', 409);
   const id = orgIdFor(n);
   db.prepare(`INSERT INTO cp_orgs (id, name, owner_sub, owner_email, state, created, last_signin) VALUES (?, ?, ?, ?, 'new', ?, ?)`).run(id, n, a.sub, a.email, now, now);
   db.prepare(`INSERT INTO cp_members (org, sub, email, name, role, created) VALUES (?, ?, ?, ?, 'owner', ?)`).run(id, a.sub, a.email, a.name, now);
   return getOrg(id)!;
 }
 
-const isMember = (org: string, sub: string) => Boolean(db.prepare('SELECT 1 FROM cp_members WHERE org = ? AND sub = ?').get(org, sub));
+const isMember = (org: string, a: CpAccount) => orgsOf(a.sub, a.email).some((o) => o.id === org);
+const isOwner = (org: string, sub: string) => Boolean(db.prepare('SELECT 1 FROM cp_members WHERE org = ? AND sub = ?').get(org, sub));
+
+/**
+ * A cell's people, as it reports them (POST /api/cells/self/members, its cell key): its users (email, Google sub, role)
+ * and open invites (email, role). Replaces what it said before, so someone removed there can't enter from here.
+ */
+export function setAccess(org: string, people: { email: string; sub?: string | null; role?: string; kind?: string }[], now = Date.now()) {
+  const clean = people.slice(0, 1000).map((p) => ({ email: String(p.email ?? '').trim().toLowerCase(), sub: p.sub ? String(p.sub).slice(0, 255) : null, role: p.role === 'admin' ? 'admin' : 'member', kind: p.kind === 'invite' ? 'invite' : 'member' }))
+    .filter((p) => /^[^@\s]+@[^@\s]+$/.test(p.email) && !p.email.endsWith('@accounts.hawkesgen.ai'));
+  db.exec('BEGIN');
+  try {
+    db.prepare('DELETE FROM cp_access WHERE org = ?').run(org);
+    for (const p of clean) db.prepare(`INSERT OR REPLACE INTO cp_access (org, email, sub, role, kind, updated) VALUES (?, ?, ?, ?, ?, ?)`).run(org, p.email, p.sub, p.role, p.kind, now);
+    db.exec('COMMIT');
+  } catch (e) { db.exec('ROLLBACK'); throw e; }
+  return clean.length;
+}
+
+// ------------------------------------------------------------------ Hawkes Gen for a cell
+// Each org gets its own Gen key (J, 2026-10-29): role user, scoped to its Gen org's projects (org_<hex>, org_<hex>.*),
+// asked of Gen with J's Gen owner key (STUDIO_GEN_OWNER_KEY, only in the control plane) and given to the cell with its
+// other keys. Gen treats org_* projects as customers': their Claude calls run only on the org's own key or subscription
+// (hawkesgen orgsecrets.ts), which the cell's Connect your AI sets through here (setGenAi). Disabled with the data.
+
+const genUrl = () => (process.env.HAWKESGEN_URL ?? '').replace(/\/+$/, '');
+const genOwner = () => process.env.STUDIO_GEN_OWNER_KEY?.trim() || '';
+const cpSealKey = () => deriveKey('cp-secrets', '*');
+
+/** Gen's API, as J's Gen owner (the control plane only). Tests swap it. */
+export let genCall = async (method: string, path: string, body?: unknown): Promise<any> => {
+  if (!genUrl() || !genOwner()) throw new StudioError('Hawkes Gen is not set up for customers\' Studios here (HAWKESGEN_URL, STUDIO_GEN_OWNER_KEY).', 503);
+  const r = await fetch(`${genUrl()}/v1${path}`, { method, headers: { Authorization: `Bearer ${genOwner()}`, ...(body === undefined ? {} : { 'Content-Type': 'application/json' }) }, body: body === undefined ? undefined : JSON.stringify(body), signal: AbortSignal.timeout(20_000) });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new StudioError(`Hawkes Gen answered ${r.status}: ${j.error ?? ''}`, 502);
+  return j;
+};
+export function setGenCall(f: typeof genCall) { genCall = f; }
+
+/** The org's Gen key, made the first time (never at sign-up: with its cell). Returns {genOrg, key}. */
+export async function ensureGenKey(orgId: string, o: { dry?: boolean } = {}): Promise<{ genOrg: string; key: string } | null> {
+  const org = getOrg(orgId);
+  if (!org) return null;
+  const genOrg = org.genOrg ?? `org_${crypto.randomBytes(8).toString('hex')}`;
+  if (!org.genOrg) setOrg(orgId, { gen_org: genOrg });
+  const row = db.prepare('SELECT gen_key FROM cp_orgs WHERE id = ?').get(orgId) as { gen_key: string | null };
+  if (row.gen_key) return { genOrg, key: unsealWith(row.gen_key, cpSealKey()) };
+  if (R.dryRun(o)) { R.planned.push({ method: 'POST', url: `${genUrl() || '<gen>'}/v1/clients`, body: { name: `Studio cell ${orgId}`, role: 'user', projects: [genOrg, `${genOrg}.*`] } }); return { genOrg, key: 'dry-run' }; }
+  const made = await genCall('POST', '/clients', { name: `Hawkes Studio cell ${orgId}`, role: 'user', projects: [genOrg, `${genOrg}.*`] });
+  if (!made?.key) throw new StudioError('Hawkes Gen made no key for the cell.', 502);
+  setOrg(orgId, { gen_client: made.client?.id ?? made.id ?? null, gen_key: sealWith(String(made.key), cpSealKey()) });
+  return { genOrg, key: String(made.key) };
+}
+
+/** Disables the org's Gen key and removes its Claude credentials from Gen (its data is being deleted). */
+async function revokeGen(org: Org, o: { dry?: boolean }) {
+  if (!org.genOrg) return;
+  if (R.dryRun(o)) { R.planned.push({ method: 'POST', url: `<gen>/v1/clients/${org.genClient}/disable` }); return; }
+  if (org.genClient) await genCall('POST', `/clients/${org.genClient}/disable`);
+  for (const kind of ['anthropic', 'claude-subscription']) await genCall('DELETE', `/org/keys/${kind}?org=${org.genOrg}`).catch(() => null);
+  setOrg(org.id, { gen_key: null });
+}
+
+/** The cell's Connect your AI, mirrored into Gen for its org (reviews and Gen's own Claude calls use it). null removes. */
+export async function setGenAi(orgId: string, kind: 'anthropic' | 'claude-subscription', key: string | null) {
+  const org = getOrg(orgId);
+  if (!org?.genOrg) throw new StudioError('This studio has no Hawkes Gen org yet.', 409);
+  return key ? genCall('PUT', `/org/keys/${kind}?org=${org.genOrg}`, { key }) : genCall('DELETE', `/org/keys/${kind}?org=${org.genOrg}`);
+}
 
 // ------------------------------------------------------------------ cells: made lazily, hibernated, woken
 
@@ -185,7 +271,8 @@ export function ensureCell(orgId: string, why: string, o: { dry?: boolean; game?
     setOrg(orgId, { state: 'creating', error: null });
     try {
       const image = await currentImage();
-      const made = await R.createCell(orgId, { sub: org.ownerSub, email: org.ownerEmail }, image, o);
+      const g = await ensureGenKey(orgId, o).catch((e) => { console.warn(`[cells] ${orgId} has no Gen key: ${e.message}`); return null; });
+      const made = await R.createCell(orgId, { sub: org.ownerSub, email: org.ownerEmail }, image, o, undefined, g ?? undefined);
       setOrg(orgId, { state: 'awake', service: made.service, image, hibernated_at: null, last_active: Date.now() });
       console.log(`[cells] ${orgId} is up (${why}${made.dry ? ', dry run' : ''})`);
     } catch (e: any) {
@@ -253,6 +340,8 @@ export async function sweep(o: { dry?: boolean; now?: number; mail?: (to: string
 /** Deletes the cell and every object under its prefix; the record stays, marked deleted. */
 export async function deleteOrgData(orgId: string, o: { dry?: boolean } = {}) {
   await R.deleteCell(orgId, o);
+  const org = getOrg(orgId);
+  if (org) await revokeGen(org, o);
   const prefix = `o/${orgId}/`;
   const bucket = R.cellsConfig().bucket;
   if (R.dryRun(o)) R.planned.push({ method: 'DELETE', url: `gs://${bucket}/${prefix}*` });
@@ -347,6 +436,24 @@ export async function handleCellsKeyed(req: http.IncomingMessage, res: http.Serv
     }
     return send(res, 200, { state: org.state, url: org.state === 'awake' ? R.serviceUrl(org.id) : null, error: org.error }), true;
   }
+  if (route === '/api/cells/broker') {
+    if (!cellsOn()) return send(res, 404, { error: 'not the control plane' }), true;
+    const B = await import('./jobbroker.ts');
+    await B.handleBroker(req, res, new URL(req.url ?? route, 'http://x'), await B.defaultBrokerDeps(R.cellsConfig().bucket));
+    return true;
+  }
+  const self = /^\/api\/cells\/self\/(members|ai)$/.exec(route);
+  if (self && method === 'POST') {
+    if (!cellsOn()) return send(res, 404, { error: 'not the control plane' }), true;
+    const orgId = String(req.headers['x-studio-cell'] ?? '');
+    if (!isCellKey(orgId, bearer(req)) || !getOrg(orgId)) return send(res, 401, { error: 'cell key' }), true;
+    const b = await readJson(req);
+    try {
+      if (self[1] === 'members') return send(res, 200, { ok: true, people: setAccess(orgId, Array.isArray(b.people) ? b.people : []) }), true;
+      const kind = b.kind === 'claude-subscription' ? 'claude-subscription' : 'anthropic';
+      return send(res, 200, await setGenAi(orgId, kind, b.key ? String(b.key) : null)), true;
+    } catch (e: any) { return send(res, e.status ?? 400, { error: e.message ?? String(e) }), true; }
+  }
   m = /^\/api\/cells\/self(?:\/billing\/(checkout|cancel|resume|portal|view))?$/.exec(route);
   if (m) {
     if (!cellsOn()) return send(res, 404, { error: 'not the control plane' }), true;
@@ -395,14 +502,14 @@ export async function handleStart(req: http.IncomingMessage, res: http.ServerRes
   const method = req.method ?? 'GET';
   const a = cpAccount(req);
   if (!a) return P.redirect(res, `/auth/signin?next=${encodeURIComponent('/auth/start')}`), true;
-  const orgs = orgsOf(a.sub);
+  const orgs = orgsOf(a.sub, a.email);
   const fail = (e: any, back: () => string) => P.html(res, e.status ?? 400, P.page('Hawkes Studio', `<div class="err">${P.esc(e.message ?? e)}</div>${back()}`));
   if (route === '/auth/start/signout' && method === 'POST') return P.redirect(res, '/auth/signin', { 'Set-Cookie': cpCookie(null) }), true;
   if (route === '/auth/start' && method === 'GET') {
     if (!orgs.length) return P.html(res, 200, P.page('Name your studio', nameForm(a))), true;
     return P.html(res, 200, P.page('Your studios', `<h1>Your studios</h1><p>Signed in as ${P.esc(a.email)}.</p>
-${orgs.map((o) => o.state === 'new' ? `<p><b>${P.esc(o.name)}</b> · <a href="/auth/start/${o.id}">add your first game</a></p>` : `<p><a href="/o/${o.id}/"><b>${P.esc(o.name)}</b></a></p>`).join('')}
-${orgs.length < 3 ? '<p><a href="/auth/start/new">Make another studio</a></p>' : ''}${signOut()}`)), true;
+${orgs.map((o) => o.state === 'new' ? (isOwner(o.id, a.sub) ? `<p><b>${P.esc(o.name)}</b> · <a href="/auth/start/${o.id}">add your first game</a></p>` : `<p><b>${P.esc(o.name)}</b> · <span>not started yet</span></p>`) : `<p><a href="/o/${o.id}/"><b>${P.esc(o.name)}</b></a></p>`).join('')}
+${ownedBy(a.sub) < 3 ? '<p><a href="/auth/start/new">Make your own studio</a></p>' : ''}${signOut()}`)), true;
   }
   if (route === '/auth/start/new' && method === 'GET') return P.html(res, 200, P.page('Name your studio', nameForm(a))), true;
   if (route === '/auth/start' && method === 'POST') {
@@ -415,11 +522,12 @@ ${orgs.length < 3 ? '<p><a href="/auth/start/new">Make another studio</a></p>' :
   const m = /^\/auth\/start\/([a-z0-9-]+)(?:\/(game|subscribe))?$/.exec(route);
   if (!m) return false;
   const org = getOrg(m[1]);
-  if (!org || !isMember(org.id, a.sub) || org.state === 'deleted') return P.html(res, 404, P.page('Not found', '<h1>Not found</h1><p><a href="/auth/start">Your studios</a></p>')), true;
+  if (!org || !isMember(org.id, a) || org.state === 'deleted') return P.html(res, 404, P.page('Not found', '<h1>Not found</h1><p><a href="/auth/start">Your studios</a></p>')), true;
   if (!m[2] && method === 'GET') {
-    if (org.state !== 'new') return P.redirect(res, `/o/${org.id}/`), true;
+    if (org.state !== 'new' || !isOwner(org.id, a.sub)) return P.redirect(res, `/o/${org.id}/`), true;
     return P.html(res, 200, P.page('Your first game', await gameForm(org))), true;
   }
+  if ((m[2] === 'game' || m[2] === 'subscribe') && !isOwner(org.id, a.sub)) return P.html(res, 403, P.page('Not yours', '<h1>Only its owner starts a studio</h1><p><a href="/auth/start">Your studios</a></p>')), true;
   if (m[2] === 'game' && method === 'POST') {
     const f = await P.form(req);
     try {

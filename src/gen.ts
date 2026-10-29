@@ -8,6 +8,28 @@ import { GEN_URL, GEN_PUBLIC_URL, PROJECTS } from './config.ts';
 
 export const gen = new HawkesGen({ url: GEN_URL });
 
+// A customer's cell (cells.ts): its Gen key works only in its Gen org's projects, so every project Studio names (a game
+// id) becomes org_<hex>.<game> on the way to Gen (HAWKESGEN_PROJECT_PREFIX, set by the control plane). J's Studio: as is.
+const PREFIX = process.env.HAWKESGEN_PROJECT_PREFIX?.trim() || '';
+export const genProject = (p: unknown) => (PREFIX && typeof p === 'string' && p && !p.startsWith(PREFIX) && p !== PREFIX.slice(0, -1) ? `${PREFIX}${p}` : p);
+const scoped = (b: any): any => {
+  if (!b || typeof b !== 'object' || Buffer.isBuffer(b)) return b;
+  if (Array.isArray(b)) return b.map(scoped);
+  const out: any = { ...b };
+  if ('project' in out) out.project = genProject(out.project);
+  for (const k of ['jobs', 'specs', 'items']) if (Array.isArray(out[k])) out[k] = out[k].map(scoped);
+  return out;
+};
+if (PREFIX) {
+  const request = gen.request.bind(gen);
+  gen.request = (p: string, o: any = {}) => {
+    const [base, query] = String(p).split('?');
+    const q = query ? new URLSearchParams(query) : null;
+    if (q?.has('project')) q.set('project', String(genProject(q.get('project'))));
+    return request(q ? `${base}?${q}` : base, { ...o, body: scoped(o.body) });
+  };
+}
+
 export async function genUp() {
   try {
     await gen.health();

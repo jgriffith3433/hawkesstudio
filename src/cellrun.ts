@@ -62,7 +62,9 @@ async function call(method: string, url: string, body: unknown, o: { dry?: boole
 }
 
 /** What a cell runs with. `owner` is the control-plane account that claims it (only that Google account can). */
-export function cellEnv(org: string, owner: { sub: string; email: string }, c = cellsConfig()): Record<string, string> {
+export type CellGen = { genOrg: string; key: string };
+
+export function cellEnv(org: string, owner: { sub: string; email: string }, c = cellsConfig(), gen?: CellGen): Record<string, string> {
   return {
     STUDIO_ORG: org,
     STUDIO_SIGNUP: 'owner',
@@ -81,13 +83,15 @@ export function cellEnv(org: string, owner: { sub: string; email: string }, c = 
     STUDIO_COOKIE_HOST_ONLY: '1',
     STUDIO_GOOGLE_EMAILS: '',
     ...(c.genUrl ? { HAWKESGEN_URL: c.genUrl, GEN_PUBLIC_URL: c.genUrl } : {}),
+    // Its own Gen key (cells.ts ensureGenKey): role user, only its Gen org's projects; its jobs run as org_<hex>.<game>.
+    ...(gen ? { HAWKESGEN_KEY: gen.key, AGENT_GEN_KEY: gen.key, HAWKESGEN_PROJECT_PREFIX: `${gen.genOrg}.` } : {}),
     ...(c.googleClientId ? { STUDIO_GOOGLE_CLIENT_ID: c.googleClientId } : {}),
     ...cellKeyEnv(org),
   };
 }
 
 /** The service body for a cell (Cloud Run Admin API v2 Service). */
-export function cellService(org: string, owner: { sub: string; email: string }, image: string, c = cellsConfig()) {
+export function cellService(org: string, owner: { sub: string; email: string }, image: string, c = cellsConfig(), gen?: CellGen) {
   return {
     labels: { 'hawkes-studio-cell': '1', 'hawkes-org': org, 'hawkes-lane': c.lane },
     ingress: 'INGRESS_TRAFFIC_ALL',
@@ -100,7 +104,7 @@ export function cellService(org: string, owner: { sub: string; email: string }, 
       maxInstanceRequestConcurrency: 80,
       containers: [{
         image,
-        env: Object.entries(cellEnv(org, owner, c)).map(([name, value]) => ({ name, value })),
+        env: Object.entries(cellEnv(org, owner, c, gen)).map(([name, value]) => ({ name, value })),
         resources: { limits: { cpu: '1', memory: '2Gi' }, cpuIdle: false },
       }],
     },
@@ -119,10 +123,10 @@ export async function getCell(org: string, o: { dry?: boolean } = {}, c = cellsC
 }
 
 /** Makes the cell's service from `image` (and lets anyone reach it: the cell's own sign-in guards it, as Studio's does). */
-export async function createCell(org: string, owner: { sub: string; email: string }, image: string, o: { dry?: boolean } = {}, c = cellsConfig()) {
+export async function createCell(org: string, owner: { sub: string; email: string }, image: string, o: { dry?: boolean } = {}, c = cellsConfig(), gen?: CellGen) {
   needConfig(c, o);
   const name = serviceName(org, c);
-  const op = await call('POST', `${base(c)}/services?serviceId=${name}`, cellService(org, owner, image, c), o);
+  const op = await call('POST', `${base(c)}/services?serviceId=${name}`, cellService(org, owner, image, c, gen), o);
   await call('POST', `${base(c)}/services/${name}:setIamPolicy`, { policy: { bindings: [{ role: 'roles/run.invoker', members: ['allUsers'] }] } }, o);
   return { service: name, url: serviceUrl(org, c), operation: op?.name ?? null, dry: dryRun(o) };
 }

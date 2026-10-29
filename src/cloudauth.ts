@@ -55,7 +55,7 @@ export function openRoute(route: string, method: string) {
   if (route === '/api/cloud/daily' && method === 'POST') return true;
   if (route === '/api/billing/webhook' && method === 'POST') return true;
   // Customers' Studios (cells.ts): the router's and the cells' calls (their own keys), the central cron (Scheduler's token).
-  if (route.startsWith('/api/cells/edge/') || route === '/api/cells/self' || route.startsWith('/api/cells/self/')) return true;
+  if (route.startsWith('/api/cells/edge/') || route === '/api/cells/self' || route.startsWith('/api/cells/self/') || route === '/api/cells/broker') return true;
   if (route === '/api/cells/cron' && method === 'POST') return true;
   if (route === '/favicon.ico') return true;
   return false;

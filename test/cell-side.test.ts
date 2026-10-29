@@ -20,6 +20,7 @@ process.env.STUDIO_COOKIE_HOST_ONLY = '1';
 process.env.STUDIO_STATE_PREFIX = 'o/acme-1a2b/';
 process.env.STUDIO_SECRETS_KEY = 'acme-secrets-key';
 process.env.STUDIO_CELL_KEY = 'acme-cell-key';
+process.env.HAWKESGEN_PROJECT_PREFIX = 'org_0123456789abcdef.';
 process.env.CLAUDE_CODE_OAUTH_TOKEN = 'sk-ant-oat01-JsOwnMaxPlanTokenNeverForCustomers';
 delete process.env.STUDIO_PRODUCTS;
 delete process.env.STUDIO_STATE_BUCKET;
@@ -123,4 +124,19 @@ test('the sign-up\'s first game is added on start, through onboarding\'s checks,
   fs.writeFileSync(path.join(process.env.STUDIO_DATA!, 'onboarding.json'), JSON.stringify({ game: { id: 'theirs', name: 'X', engine: 'web', live: 'https://x.example', repo: 'jgriffith3433/sickofitgame-unity' } }));
   assert.equal(await CFG.applyOnboardingSeed(), null);
   assert.deepEqual(CFG.loadProducts().map((p) => p.id), ['moon']);
+});
+
+test("its Gen jobs are in its own Gen org's projects (its key works nowhere else)", async () => {
+  const G = await import('../src/gen.ts');
+  assert.equal(G.genProject('moon'), 'org_0123456789abcdef.moon');
+  assert.equal(G.genProject('org_0123456789abcdef.moon'), 'org_0123456789abcdef.moon');
+  const sent: any[] = [];
+  const real = globalThis.fetch;
+  globalThis.fetch = (async (url: any, init: any) => { sent.push({ url: String(url), body: init?.body ? JSON.parse(init.body) : null }); return new Response('{"id":"j1"}', { headers: { 'Content-Type': 'application/json' } }); }) as typeof fetch;
+  try {
+    await G.gen.request('/jobs', { method: 'POST', body: { tool: 'playtest.run', project: 'moon', params: {} } });
+    await G.gen.request('/entities?project=moon&kind=x');
+  } finally { globalThis.fetch = real; }
+  assert.equal(sent[0].body.project, 'org_0123456789abcdef.moon');
+  assert.match(sent[1].url, /project=org_0123456789abcdef\.moon/);
 });
