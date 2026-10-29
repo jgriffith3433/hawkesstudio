@@ -20,6 +20,7 @@ import { addReleaseTo, releaseLine, STUDIO_RELEASE } from './release.ts';
 import { unityBuild } from './buildpkgs.ts';
 import { startStep, updateStep, resumedStep } from './pipeline.ts';
 import { critical } from './drain.ts';
+import { repoMap } from './repos.ts';
 import { verifyLive, repoSlug, publisherOf } from './deploy.ts';
 
 const rel = (abs: string) => path.relative(PROJECTS, abs).replace(/\\/g, '/');
@@ -50,6 +51,7 @@ const liveAlready = (p: Product, sha: string) =>
  */
 export async function publishUnity(p: Product, sha: string, { by = 'a push to main', run: resumed }: { by?: string; run?: string } = {}) {
   if (!p.build) throw new Error(`${p.name} isn't a Unity product`);
+  if (p.build.r2 && process.env.K_SERVICE) return publishFromBeta(p, sha, by, resumed);
   const { source, site } = repoDirs(p);
   const done = liveAlready(p, sha);
   if (done) {
@@ -124,6 +126,46 @@ export async function publishUnity(p: Product, sha: string, { by = 'a push to ma
       await fetchOrigin(site);
       if (after !== before) void verifyLive(p.id, after, `Just went live (${p.repo.split('/')[0]} ${sha.slice(0, 7)}, ${by})`);
       return { deploy: id, website: p.site, before: before.slice(0, 7), after: after.slice(0, 7), what, release: release && { version: release.version, title: release.title } };
+    });
+  } catch (e: any) {
+    run.end('failed', `go live ${p.id} ${sha.slice(0, 7)} failed: ${String(e.message ?? e).slice(0, 300)}`);
+    throw e;
+  }
+}
+
+/**
+ * Going live for a game whose builds are in R2 (docs/unity-builds-storage.md), on Cloud Run: the website's beta commit
+ * the tag build pushed already has the page and Game/build.json naming that build, and the files are in R2, so live is
+ * the website's main fast-forwarded to that commit through GitHub's API. Nothing is cloned (Sick Of It's website repo
+ * is 8 GB) and nothing is built: a commit not built on beta is refused with the way to build it.
+ */
+async function publishFromBeta(p: Product, sha: string, by: string, resumed?: string) {
+  const run = liveRun(p, sha, by, resumed);
+  try {
+    const bb = betaBuild(p);
+    if (!(bb?.ok && bb.sha === sha && bb.base)) throw new Error(`${sha.slice(0, 7)} has no beta build: push a build tag on it (git tag build-<name> ${sha.slice(0, 7)}), let it pass on beta, then go live`);
+    const slug = repoMap()[p.site.split('/')[0]];
+    const token = process.env.GITHUB_TOKEN;
+    if (!slug || !token) throw new Error(`no GitHub repo or token for ${p.site}`);
+    const api = (route: string, init: RequestInit = {}) => fetch(`https://api.github.com/repos/${slug}/${route}`, { ...init, headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json', 'Content-Type': 'application/json', 'User-Agent': 'hawkes-studio' }, signal: AbortSignal.timeout(30_000) });
+    const ref: any = await (await api(`git/ref/heads/${MAIN}`)).json();
+    const before = String(ref?.object?.sha ?? '');
+    if (!before) throw new Error(`couldn't read ${slug} ${MAIN}`);
+    const what = `the beta build of ${sha.slice(0, 7)}${bb.version ? ` (Game/v${bb.version}, from R2)` : ''}`;
+    const s = startStep(run.id, p.id, 'deploy', p.site, `publishing ${what}`);
+    return await critical(`publishing ${p.name} live`, async () => {
+      if (before !== bb.base) {
+        const r = await api(`git/refs/heads/${MAIN}`, { method: 'PATCH', body: JSON.stringify({ sha: bb.base, force: false }) });
+        if (!r.ok) throw new Error(r.status === 422 ? `${slug} ${MAIN} has commits its beta lacks: merge ${MAIN} into beta (studio deploy ${p.id} --merge-main), build again, then go live` : `moving ${slug} ${MAIN} failed (HTTP ${r.status})`);
+      }
+      const after = bb.base!;
+      const id = newId('d');
+      db.prepare('INSERT INTO deploys (id, product, kind, repo, before, after, beta, source, source_before, source_after, version, by, detail, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+        .run(id, p.id, 'deploy', p.site, before, after, sha, p.repo, null, sha, bb.version ?? null, by, `published ${what}`, Date.now());
+      updateStep(s, { status: 'done', detail: after === before ? 'the build was already on the website' : `${p.site} ${MAIN} -> ${after.slice(0, 7)}: ${what}`, finished: true });
+      run.end('done', `live: ${p.name} ${what}`);
+      if (after !== before) void verifyLive(p.id, after, `Just went live (${p.repo.split('/')[0]} ${sha.slice(0, 7)}, ${by})`);
+      return { deploy: id, website: p.site, before: before.slice(0, 7), after: after.slice(0, 7), what, release: null };
     });
   } catch (e: any) {
     run.end('failed', `go live ${p.id} ${sha.slice(0, 7)} failed: ${String(e.message ?? e).slice(0, 300)}`);
