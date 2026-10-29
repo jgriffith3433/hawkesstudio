@@ -6,6 +6,7 @@ import { StudioError } from './config.ts';
 import * as A from './auth.ts';
 import { requestUser } from './sandbox.ts';
 import { googleClientId, verifyGoogleSignin } from './cloudauth.ts';
+import { laneOf, makePass, passReturn, passSetCookie, siteKeys } from './sitekeys.ts';
 
 const esc = (s: unknown) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!);
 
@@ -145,6 +146,32 @@ export async function handleAuthRoute(req: http.IncomingMessage, res: http.Serve
     const r = A.check(req);
     res.writeHead(r.status, { 'Cache-Control': 'no-store', ...(r.body ? { 'Content-Type': 'application/json' } : {}), ...r.headers });
     res.end(r.body ? JSON.stringify(r.body) : '');
+    return true;
+  }
+  // The beta sites (server/beta-sites, sitekeys.ts): the lane's public key for the Worker, and a pass for a signed-in user.
+  if (route === '/auth/sites-key' && method === 'GET') {
+    const k = siteKeys();
+    if (!k) json(res, 404, { error: 'no beta-site key here (STUDIO_SITES_SEED or STUDIO_OWNER_KEY)' });
+    else json(res, 200, { lane: laneOf(), alg: 'Ed25519', key: k.publicKey }, { 'Cache-Control': 'public, max-age=3600' });
+    return true;
+  }
+  if (route === '/auth/pass' && method === 'GET') {
+    const domain = process.env.STUDIO_COOKIE_DOMAIN ?? 'hawkesgen.ai';
+    const back = passReturn(url.searchParams.get('next'), domain);
+    if (!back) { json(res, 400, { error: 'next must be a beta site of this Studio' }); return true; }
+    const u = A.sessionUser(A.cookieToken(req));
+    // Not signed in (or a new password first): sign in, then back to the beta page, which comes here again.
+    if (!u || u.must_change) {
+      const page = new URL(back);
+      page.searchParams.delete('__hawkes_pass');
+      redirect(res, `/auth/signin?next=${encodeURIComponent(page.toString())}`);
+      return true;
+    }
+    try {
+      redirect(res, back, { 'Set-Cookie': passSetCookie(makePass(u.id), domain), 'Cache-Control': 'no-store' });
+    } catch (e: any) {
+      json(res, 503, { error: String(e.message ?? e) });
+    }
     return true;
   }
   if (method === 'POST' && !sameSite(req)) {

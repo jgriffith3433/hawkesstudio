@@ -26,7 +26,7 @@ import fs from 'node:fs';
 import { getProduct, loadProducts, GEN_URL, type Product } from './config.ts';
 import { fileReport, fileAutoError, injectReport, WIDGET } from './bugreport.ts';
 import { COOKIE } from './auth.ts';
-import { hasLane, laneApp } from './previews.ts';
+import { hasLane, laneApp, previewHosts } from './previews.ts';
 import { devConf, devHostUrl, devStatus, startDev, stopDev, touchDev, devRunning, isUnity, unityInfo, sinceLive } from './dev.ts';
 
 const P = '/dev';
@@ -458,6 +458,26 @@ async function report(p: Product, req: http.IncomingMessage, res: http.ServerRes
   } catch (e: any) {
     return json(res, e.status ?? 400, { error: String(e.message ?? e) });
   }
+}
+
+/**
+ * Studio on Cloud Run has no front doors: the beta-sites Worker (server/beta-sites) passes a beta page's
+ * POST /dev/__studio/report and /error to Studio with the beta host as X-Forwarded-Host (sb-<sub> on studio-beta).
+ * Answers them as the front door did; false when the request isn't one.
+ */
+export async function betaHostReport(req: http.IncomingMessage, res: http.ServerResponse, route: string, domain: string, lane: 'live' | 'beta') {
+  if (req.method !== 'POST' || (route !== `${P}/__studio/report` && route !== `${P}/__studio/error`)) return false;
+  const host = String(req.headers['x-forwarded-host'] ?? '').split(':')[0].toLowerCase();
+  if (!host.endsWith(`.${domain}`)) return false;
+  let label = host.slice(0, -domain.length - 1);
+  if (lane === 'beta') {
+    if (!label.startsWith('sb-')) return false;
+    label = label.slice(3);
+  }
+  const id = previewHosts()[label];
+  if (!id) return false;
+  await report(getProduct(id), req, res, route.endsWith('/error'));
+  return true;
 }
 
 /** Vite's HMR websocket (and any other websocket under /dev/): piped to the dev server. */

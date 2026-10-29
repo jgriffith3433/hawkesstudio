@@ -356,3 +356,71 @@ export function cloudMcp(studioEnv: Record<string, string>, genKey: string) {
     ...(genKey && gen ? { hawkesgen: { type: 'http', url: `${gen}/mcp`, headers: { Authorization: `Bearer ${genKey}` } } } : {}),
   };
 }
+
+// ------------------------------------------------------------- site builds
+
+let building = 0;
+/** Beta-site builds Studio waits on now (counted by cloudhost.ts busy() with the passes it follows). */
+export const buildsRunning = () => building;
+
+export type CloudBuild = { code: number | null; error?: string; log: string; outputs: Buffer | null };
+
+/**
+ * A beta site's build as one execution of the agents' job (previews-cloud.ts): never in Studio's own process, since the
+ * code built is beta's or an agent's, and the job is the sandbox (no Studio keys, its own machine). The commit is fetched
+ * from GitHub (`bundle`: a local file of commits GitHub lacks, for an agent change not pushed yet); `command` runs in
+ * `cwd` (the clone's absolute path; a site in a subfolder cds into it); `outputs` (relative to cwd) come back as a .tgz.
+ */
+export async function runCloudBuild(unit: string, o: { remote: string; head: string; cwd: string; command: string; outputs: string[]; bundle?: string | null; gitToken?: string | null; timeoutMs?: number; onLine?: (s: string) => void; every?: number }): Promise<CloudBuild> {
+  const r = runnerFor();
+  const k = (n: string) => key(unit, n);
+  building++;
+  let execution: string | null = null;
+  let log = '';
+  try {
+    if (o.bundle) await r.put(k('in.bundle'), fs.readFileSync(o.bundle));
+    await r.put(k('spec.json'), JSON.stringify({
+      kind: 'build', outputs: o.outputs, file: '/bin/sh', args: ['-c', o.command], cwd: o.cwd,
+      env: { CI: '1', npm_config_update_notifier: 'false' }, sessions: path.posix.join(o.cwd, '.hawkes-none', 's', 's'),
+      git: { head: o.head, branch: 'HEAD', remote: plainRemote(o.remote), bundle: Boolean(o.bundle), token: o.gitToken ?? null, shallow: !o.bundle },
+    }));
+    execution = await r.start(unit);
+    const t0 = Date.now();
+    const seen = { log: 0, err: 0 };
+    for (;;) {
+      const names = (await r.list(k('out/'))).map((n) => n.slice(k('out/').length)).sort();
+      for (const kind of ['log', 'err'] as const) {
+        for (const n of names.filter((x) => x.startsWith(`${kind}-`))) {
+          const i = Number(n.slice(kind.length + 1));
+          if (!(i > seen[kind])) continue;
+          const b = await r.get(k(`out/${n}`));
+          if (!b) break;
+          seen[kind] = i;
+          const s = b.toString('utf8');
+          log = (log + s).slice(-20_000);
+          for (const line of s.split('\n').filter(Boolean)) o.onLine?.(line);
+        }
+      }
+      if (names.includes('exit.json')) {
+        const exit = JSON.parse((await r.get(k('out/exit.json')))?.toString('utf8') ?? '{}');
+        const outputs = names.includes('outputs.tgz') ? await r.get(k('out/outputs.tgz')) : null;
+        return { code: exit.code ?? null, ...(exit.error ? { error: exit.error } : {}), log, outputs };
+      }
+      const st = await r.state(execution);
+      if (st?.done) {
+        await new Promise((res) => setTimeout(res, o.every ?? 5000));
+        if (!(await r.list(k('out/exit.json'))).length) return { code: null, error: `the build job ended without its result${st.message ? `: ${st.message}` : ''}`, log, outputs: null };
+        continue;
+      }
+      if (Date.now() - t0 > (o.timeoutMs ?? 30 * 60_000)) {
+        await r.put(k('stop'), String(Date.now())).catch(() => {});
+        await r.cancel(execution).catch(() => {});
+        return { code: null, error: 'the build took too long', log, outputs: null };
+      }
+      await new Promise((res) => setTimeout(res, o.every ?? 3000));
+    }
+  } finally {
+    building--;
+    void (async () => { for (const n of await r.list(k(''))) await r.remove(n); })().catch(() => {});
+  }
+}

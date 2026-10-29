@@ -3,6 +3,9 @@
 //   https://<sub>.hawkesgen.ai/          the product from its beta branch (beta.ts: what "go live" would ship)
 //   https://<sub>.hawkesgen.ai/c/<id>/   an agent change (its branch), before J approves it
 //
+// On Cloud Run (no disk, no Caddy) the same sites are published to Cloudflare R2 instead (previews-cloud.ts, sitestore.ts,
+// server/beta-sites; docs/studio-cloudrun.md, "Beta sites"); studio-beta's lane publishes https://sb-<sub>.hawkesgen.ai.
+//
 // Subdomains are products.json "previews". Files go to PREVIEWS/<product>/beta and PREVIEWS/<product>/c/<change>
 // (/srv/hawkes/previews on the server); Caddy serves them (deploy/deploy.mjs, previewSites).
 //
@@ -24,6 +27,8 @@ import { betaBuild, betaSiteFolder } from './beta.ts';
 import { fetchLocked } from './gitlock.ts';
 import { injectReport, type PageInfo } from './bugreport.ts';
 import { sandboxOn, sandboxSpawn } from './sandbox.ts';
+import { siteHost } from './sitekeys.ts';
+import { remoteSites, SiteWaiting } from './previews-cloud.ts';
 
 export const DOMAIN = process.env.STUDIO_DOMAIN || 'hawkesgen.ai';
 export const PREVIEWS = process.env.STUDIO_PREVIEWS || (isServer() ? path.join(PROJECTS, 'previews') : path.join(DATA, 'previews'));
@@ -79,7 +84,7 @@ export function previewHosts(): Record<string, string> {
 const subOf = (id: string) => Object.entries(previewHosts()).find(([, v]) => v === id)?.[0];
 export const previewUrl = (id: string, change?: string) => {
   const sub = subOf(id);
-  return sub ? `https://${sub}.${DOMAIN}/${change ? `c/${change}/` : ''}` : null;
+  return sub ? `https://${siteHost(sub, DOMAIN)}/${change ? `c/${change}/` : ''}` : null;
 };
 
 function readState(): State {
@@ -160,7 +165,11 @@ async function build(p: Product, o: { change?: string; dir?: string }): Promise<
     record(p.id, o.change, v);
     return v;
   }
+  if (p.app && remoteSites()) {
+    return record(p.id, o.change, { status: 'failed', at: Date.now(), detail: `${p.name} is a server app: its beta isn't published as files on Google Cloud (it runs on its own box)` });
+  }
   if (p.app) return buildApp(p, o);
+  if (remoteSites()) return buildCloud(p, o);
   const t0 = Date.now();
   const target = o.change ? path.join(PREVIEWS, p.id, 'c', o.change) : path.join(PREVIEWS, p.id, 'beta');
   const progress = (detail: string) => record(p.id, o.change, { status: 'building', at: t0, detail });
@@ -234,6 +243,25 @@ async function build(p: Product, o: { change?: string; dir?: string }): Promise<
     await place(files, target, { product: p.id, sha, ref, ...(o.change ? { change: o.change } : {}), ...(version ? { version: String(version) } : {}), built: Date.now() });
     return record(p.id, o.change, { status: 'ready', at: Date.now(), sha, ref, files: files.size, ms: Date.now() - t0, ...(version ? { version: String(version) } : {}) });
   } catch (e: any) {
+    const prev = readState()[p.id];
+    const last = o.change ? prev?.changes?.[o.change] : prev?.beta;
+    return record(p.id, o.change, { ...(last ?? {}), status: 'failed', at: Date.now(), detail: String(e.message ?? e).slice(0, 500) });
+  }
+}
+
+/** The same site published to R2 through the beta-sites Worker (Cloud Run: previews-cloud.ts). */
+async function buildCloud(p: Product, o: { change?: string; dir?: string }): Promise<Preview | null> {
+  const t0 = Date.now();
+  const progress = (detail: string) => record(p.id, o.change, { status: 'building', at: t0, detail });
+  try {
+    const { publishCloud } = await import('./previews-cloud.ts');
+    const r = await publishCloud(p, subOf(p.id)!, { change: o.change }, progress, {
+      changeRow, skip, recipe: recipeOf(p.id), domain: DOMAIN, keptVersions: keptGameVersions,
+      kept: { get: () => readState()[p.id]?.kept ?? {}, set: (v) => { const s = readState(); (s[p.id] ??= {}).kept = v; fs.writeFileSync(STATE, JSON.stringify(s, null, 2)); } },
+    });
+    return record(p.id, o.change, { status: 'ready', at: Date.now(), sha: r.sha, ref: r.ref, files: r.files, ms: Date.now() - t0, ...(r.version ? { version: r.version } : {}) });
+  } catch (e: any) {
+    if (e instanceof SiteWaiting) return record(p.id, o.change, { status: 'waiting', at: t0, detail: e.message });
     const prev = readState()[p.id];
     const last = o.change ? prev?.changes?.[o.change] : prev?.beta;
     return record(p.id, o.change, { ...(last ?? {}), status: 'failed', at: Date.now(), detail: String(e.message ?? e).slice(0, 500) });
@@ -356,7 +384,7 @@ async function worktree(repoDir: string, id: string, commit: string) {
 }
 
 /** Never published: git and agent folders, dependencies, keys. */
-const skip = (rel: string) => rel.split('/').some((s) => (s.startsWith('.') && s !== '.well-known' && s !== '.nojekyll') || s === 'node_modules')
+export const skip = (rel: string) => rel.split('/').some((s) => (s.startsWith('.') && s !== '.well-known' && s !== '.nojekyll') || s === 'node_modules')
   || /\.(pem|key)$/i.test(rel) || /(^|\/)\.env/.test(rel);
 
 /**
@@ -483,6 +511,10 @@ export function betaNow(product: string) {
 export async function removePreview(productId: string, change: string) {
   if (!/^c_[0-9a-f]+$/.test(change)) throw new StudioError(`Not a change id: ${change}`);
   const p = getProduct(productId);
+  if (remoteSites() && subOf(p.id) && !p.app) {
+    await (await import('./previews-cloud.ts')).removeCloud(subOf(p.id)!, change, { domain: DOMAIN }).catch((e: any) => console.warn(`[previews] removing ${p.id} ${change} from R2: ${e.message ?? e}`));
+    return void record(p.id, change, null);
+  }
   await fs.promises.rm(path.join(PREVIEWS, p.id, 'c', change), { recursive: true, force: true });
   if (p.app) {
     // Its server and worktree go; its data folder (.work/apps/<product>/<change>) too.

@@ -170,13 +170,17 @@ export async function studioTagDeps(run: string): Promise<TagBuildDeps> {
     versionsOn: (slug, ref) => siteVersions(slug, ref),
     settle: async (p, b) => {
       // Runs still playing the current beta copy finish first (betaplay.ts); then the copy is the pushed website commit.
+      // On Cloud Run the beta site comes from the website's beta on GitHub (previews-cloud.ts): publish it now, before
+      // the local website copy below (which a large website repo may not fit for).
+      const { remoteSites } = await import('./previews-cloud.ts');
+      if (remoteSites()) void import('./previews.ts').then(({ buildPreview }) => buildPreview(p.id)).catch(() => {});
       await waitForBetaPlays(p.id, run);
       const { site } = beta.repoDirs(p);
       await beta.ensureCloned(site);
       await beta.fetchOrigin(site);
       await beta.scratch(site, `${p.id}-site`, b.base);
       beta.saveBetaBuild(p, { sha: b.sha, base: b.base, ok: true, at: Date.now(), job: b.job, version: b.version, cost: b.cost, minutes: b.minutes });
-      void import('./previews.ts').then(({ buildPreview }) => buildPreview(p.id)).catch(() => {});
+      if (!remoteSites()) void import('./previews.ts').then(({ buildPreview }) => buildPreview(p.id)).catch(() => {});
     },
   };
 }

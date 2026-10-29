@@ -124,6 +124,12 @@ const server = http.createServer(async (req, res) => {
     // A signed-in member can use Studio, but going live, merging into main, money and users are an admin's (auth.ts).
     const memberNo = (await import('./auth.ts')).memberRefusal(req, route, method);
     if (memberNo) return send(res, 403, { error: memberNo });
+    // The 🐞 widget's posts from a beta site on Cloudflare (server/beta-sites passes them here; dev-front.ts).
+    if (cloudMode() && route.startsWith('/dev/__studio/')) {
+      const { betaHostReport } = await import('./dev-front.ts');
+      const { laneOf } = await import('./sitekeys.ts');
+      if (await betaHostReport(req, res, route, process.env.STUDIO_COOKIE_DOMAIN ?? 'hawkesgen.ai', laneOf())) return;
+    }
     if ((route === '/api/me' || route.startsWith('/api/users') || route.startsWith('/api/invites')) && (await (await import('./auth-pages.ts')).handleUsersApi(req, res, url))) return;
     // The shared memory (memory.ts, memory-api.ts): the Memory tab, the memory_* tools.
     if (route === '/api/memory' || route.startsWith('/api/memory/')) return await (await import('./memory-api.ts')).handleMemory(req, res, url, send, readJson);

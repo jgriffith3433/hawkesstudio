@@ -1,0 +1,13 @@
+{
+  "name": "hawkes-beta-sites",
+  "private": true,
+  "type": "module",
+  "description": "The beta sites <sub>.hawkesgen.ai (and studio-beta's sb-<sub>): R2 behind Studio's sign-in (docs/studio-cloudrun.md, \"Beta sites\")",
+  "devDependencies": {
+    "wrangler": "^4"
+  },
+  "scripts": {
+    "deploy": "wrangler deploy",
+    "check": "wrangler deploy --dry-run --outdir .dry"
+  }
+}
