@@ -18,7 +18,7 @@ import fs from 'node:fs';
 import { critical, criticalSync } from './drain.ts';
 import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
-import { PROJECTS, abs, type Product } from './config.ts';
+import { PROJECTS, DATA, abs, type Product } from './config.ts';
 import { db } from './db.ts';
 import { BRANCH, BETA, isServer, repoMap, syncRepo } from './repos.ts';
 import { trackCommand, opLog } from './ops.ts';
@@ -272,16 +272,25 @@ export const betaSiteFolder = (p: Product, sub = p.site) => path.join(betaSiteDi
 
 /** What's in the beta website copy: the source commit built, and the website commit it sits on. */
 export type BetaBuild = { sha: string; base: string; ok: boolean; at: number; job?: string; version?: string | null; error?: string; cost?: number; minutes?: number; packages?: Record<string, { sha: string; behind: number }> };
+/**
+ * Where a product's beta-build record lives: beside its local website copy, or on Cloud Run (no website copy there, and
+ * the projects folder is the instance's memory) in Studio's data folder, which goes to Cloud Storage with the other state
+ * files, so going live still knows the build after an instance is replaced (2026-10-29).
+ */
+const betaBuildFile = (p: Product) => (process.env.K_SERVICE ? path.join(DATA, 'beta-builds', `${p.id}.json`) : `${betaSiteDir(p)}.json`);
+
 export function betaBuild(p: Product): BetaBuild | null {
   try {
-    return JSON.parse(fs.readFileSync(`${betaSiteDir(p)}.json`, 'utf8'));
+    return JSON.parse(fs.readFileSync(betaBuildFile(p), 'utf8'));
   } catch {
     return null;
   }
 }
 export function saveBetaBuild(p: Product, b: BetaBuild | null) {
-  if (b) fs.writeFileSync(`${betaSiteDir(p)}.json`, JSON.stringify(b, null, 2));
-  else fs.rmSync(`${betaSiteDir(p)}.json`, { force: true });
+  const f = betaBuildFile(p);
+  fs.mkdirSync(path.dirname(f), { recursive: true });
+  if (b) fs.writeFileSync(f, JSON.stringify(b, null, 2));
+  else fs.rmSync(f, { force: true });
 }
 
 /**
