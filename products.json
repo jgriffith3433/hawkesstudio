@@ -250,7 +250,7 @@
       "build": {
         "project": "breakingthrough",
         "site": "theplacedepartmentwebsite",
-        "method": "WebGlBuild.FullDeploy",
+        "method": "WebGlBuild.FullDeploy", "r2": "placedept",
         "tests": [
           "EditMode"
         ]
