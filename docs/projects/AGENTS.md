@@ -85,11 +85,11 @@ that made it; usage and cost are tracked per project and API key. Projects never
 **`hawkesnet/`** (`jgriffith3433/hawkesnet`, private; its own repo since 2026-10-26, before that Gen's `net/`) is the
 multiplayer service at **https://net.hawkesgen.ai**: accounts' projects (hawkesgen.ai accounts), tickets, the room
 directory and the relay, on its own Google Cloud VM (`hawkes-net`, project `hawkes-prod`) that deploys itself from
-hawkesnet main. **Beta Net is not running since AWS was suspended (2026-10-28); to be rebuilt.** It has a beta lane like the
-products (products.json `hawkesnet`: work goes to `beta`, Studio runs beta as an app and playtests it, and going live is
-the Go live page's card, J's tap or `DEPLOY hawkesnet`). Its
+hawkesnet main. **Beta Net** (2026-10-29, hawkesnet `deploy/lane.mjs`) is its own VM `hawkes-net-beta` (hawkes-prod,
+us-east1-b, a free-tier e2-micro, made by hawkesnet `deploy/provision-gce.mjs`) that follows hawkesnet `beta` and checks
+API keys with gen-beta, never live Gen; going live is J's `DEPLOY hawkesnet` (main). Its
 `docs/net.md` is the design. **Beta plays on beta, live on live:** beta Hawkes Net is **https://hawkesnet.hawkesgen.ai**
-(its own projects, accounts and rooms; its dashboard behind Studio's login, its API open like live's). Studio's script on
+(its own projects, rooms and data; its dashboard signs in with the portal's beta, beta.hawkesgen.ai). Studio's script on
 every beta page sets `window.HAWKES_NET_ENDPOINT` to it, and the SDKs read that before their default net.hawkesgen.ai,
 so a game's beta site plays on beta Net and its live site on the real one with no change to the game. The portal's beta
 signs in and keeps its accounts' projects and keys on beta Net too.
@@ -113,7 +113,11 @@ AWS suspended the account on 2026-10-28; everything moved to Google Cloud and th
   buckets, keys and Claude logins; Studio beta uses Gen beta and has no daily run); a push to `main` deploys live.
   GitHub Actions does it with no stored key (Workload Identity Federation), health-checks and rolls back. Moving a lane
   is J's push (`git push origin dev:beta`, `beta:main`).
-- **The portal** (hawkesgen.ai) is on Firebase (`hawkes-prod`); **Net** on a VM there. Neither has a beta lane yet.
+- **The portal and Net have the same lanes** (2026-10-29; beta never touches live). The portal (hawkesgen.ai) is
+  Firebase `hawkes-prod`; its beta is Firebase `hawkes-staging` at **https://beta.hawkesgen.ai** (a `beta` push deploys
+  it), on gen-beta (its own key, `ustg_*` customers) and beta Net, Google sign-in, no Stripe or mail (hawkesgenwebsite
+  `docs/cloud.md` "Lanes"). Net: live VM `hawkes-net` (net.hawkesgen.ai, follows `main`), beta VM `hawkes-net-beta`
+  (hawkesnet.hawkesgen.ai, follows `beta`, keys checked with gen-beta). Gen beta's Hawkes Net redirects go to beta Net.
 - **On J's PC:** CLIs, MCP servers and the Gen clients use the cloud through `~/.hawkes/client.json` (`genUrl`/`genKey`,
   `studioUrl`/`studioKey`, and the `...Beta...` pairs).
 - **Studio works from GitHub:** product repos are cloned on demand; work reaches it by being pushed (`beta`, or a branch

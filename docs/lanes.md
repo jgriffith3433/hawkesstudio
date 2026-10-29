@@ -51,7 +51,7 @@ pointer in AGENTS.md). Git talks to GitHub with the stored token (`credential.he
 | **Hawkes Gen** (`hawkesgen`) | [127.0.0.1:8790](http://127.0.0.1:8790) | [gen-beta.hawkesgen.ai](https://gen-beta.hawkesgen.ai) | [gen.hawkesgen.ai](https://gen.hawkesgen.ai) | `auto-start.bat` |
 | **Hawkes Studio** (`hawkesstudio`) | [127.0.0.1:8791](http://127.0.0.1:8791) | [studio-beta.hawkesgen.ai](https://studio-beta.hawkesgen.ai) | [studio.hawkesgen.ai](https://studio.hawkesgen.ai) | `auto-start.bat` |
 | **Hawkes Net** (`hawkesnet`) | [127.0.0.1:8796](http://127.0.0.1:8796) | [hawkesnet.hawkesgen.ai](https://hawkesnet.hawkesgen.ai) | [net.hawkesgen.ai](https://net.hawkesgen.ai) | `npm run dev` |
-| **Hawkes Gen portal (hawkesgen.ai)** (`hawkesgenwebsite`) | [127.0.0.1:8800](http://127.0.0.1:8800) | [hawkes-staging.web.app](https://hawkes-staging.web.app) | [hawkesgen.ai](https://hawkesgen.ai) | `npm start` |
+| **Hawkes Gen portal (hawkesgen.ai)** (`hawkesgenwebsite`) | [127.0.0.1:8800](http://127.0.0.1:8800) | [beta.hawkesgen.ai](https://beta.hawkesgen.ai) | [hawkesgen.ai](https://hawkesgen.ai) | `npm start` |
 | **Hawkes Biomedical (corporate site)** (`hawkesbiomedicalnew`) | [localhost:5174](http://localhost:5174/) | [corporate.hawkesgen.ai](https://corporate.hawkesgen.ai/) | [hawkesbiomedical.com](https://hawkesbiomedical.com/) | `npm run dev` |
 | **PH Origins** (`phoriginswebsite`) | [localhost:5173/game.html](http://localhost:5173/game.html)<br>[localhost:5173/devtools.html](http://localhost:5173/devtools.html) | [phorigins.hawkesgen.ai](https://phorigins.hawkesgen.ai/) | [phorigins.com](https://phorigins.com/)<br>[phorigins.com/play/game.html](https://phorigins.com/play/game.html) | `npm run dev` |
 | **Dose Of Destruction** (`doseofdestructionwebsite`) | [localhost:8089/Game](http://localhost:8089/Game/)<br>[localhost:8089/devtools.html](http://localhost:8089/devtools.html) | [dod.hawkesgen.ai/Game](https://dod.hawkesgen.ai/Game/) | [doseofdestruction.com](https://doseofdestruction.com/)<br>[doseofdestruction.com/Game](https://doseofdestruction.com/Game/) | `auto-start.bat` |
@@ -65,4 +65,5 @@ pointer in AGENTS.md). Git talks to GitHub with the stored token (`credential.he
 | **The Place Department (website)** (`theplacedepartmentwebsite`) | [localhost:4173](http://localhost:4173/)<br>[localhost:4173/Game](http://localhost:4173/Game/) | [placedept.hawkesgen.ai](https://placedept.hawkesgen.ai/) | [theplacedepartment.com](https://theplacedepartment.com/) | `auto-start.bat` |
 
 Beta game sites (`<sub>.hawkesgen.ai`) need Studio sign-in. Gen and Studio betas have their own databases and keys;
-the portal's beta is Firebase `hawkes-staging`; Net's beta is hawkesnet.hawkesgen.ai.
+the portal's beta is Firebase `hawkes-staging` at beta.hawkesgen.ai (on gen-beta and beta Net); Net's beta is the VM
+hawkes-net-beta at hawkesnet.hawkesgen.ai (keys checked with gen-beta).
