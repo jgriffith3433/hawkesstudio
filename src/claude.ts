@@ -33,7 +33,7 @@ export function claudeEnv(extra: Record<string, string> = {}) {
   return env as NodeJS.ProcessEnv;
 }
 
-export const billing = () => (usingSubscription() ? 'Claude Max subscription' : 'API (per token)');
+export const billing = () => (customerStudio() ? (usingSubscription() ? 'your Claude subscription' : customerKey() ? 'your Anthropic API key' : 'no AI linked yet') : usingSubscription() ? 'Claude Max subscription' : 'API (per token)');
 
 // ------------------------------------------------------------ a customer's own Claude
 // Their Anthropic API key, kept like the Claude accounts (.data/claude, 0600, sealed with the cell's STUDIO_SECRETS_KEY,

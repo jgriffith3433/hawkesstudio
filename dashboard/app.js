@@ -182,7 +182,8 @@ async function loadToday() {
   const b = o.builder;
   $('#status').innerHTML = [
     `<span><span class="dot ${o.gen ? 'ok' : 'bad'}"></span>Hawkes Gen</span>`,
-    b && b.exists ? `<span><span class="dot ${b.state === 'running' ? 'ok' : b.state === 'stopped' ? '' : 'warn'}"></span>Build server: ${esc(b.state)}${b.stage ? ` · ${esc(b.stage.stage)}` : ''}</span>` : '<span><span class="dot"></span>No build server</span>',
+    // A customer's Studio has no build server of its own to show (src/tenancy.ts): the pill is J's.
+    b && b.exists ? `<span><span class="dot ${b.state === 'running' ? 'ok' : b.state === 'stopped' ? '' : 'warn'}"></span>Build server: ${esc(b.state)}${b.stage ? ` · ${esc(b.stage.stage)}` : ''}</span>` : window.studioMe?.customer ? '' : '<span><span class="dot"></span>No build server</span>',
     o.run ? `<span><span class="dot warn"></span>Run ${esc(o.run.id)}: ${esc(o.run.detail)}</span>` : '',
   ].join('');
   $('#runInfo').textContent = o.run ? `A run is going (${o.run.id}).` : o.runs[0] ? `Last run ${ago(o.runs[0].started)}: ${o.runs[0].status}${o.runs[0].detail ? ` · ${o.runs[0].detail}` : ''}` : 'No runs yet.';

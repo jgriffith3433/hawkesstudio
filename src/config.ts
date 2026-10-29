@@ -122,8 +122,31 @@ export type Product = {
 export function loadProducts(): Product[] {
   // A new org cell has no products until onboarding adds one.
   if (customerStudio() && !fs.existsSync(paths.products)) return [];
-  return JSON.parse(fs.readFileSync(paths.products, 'utf8')).products;
+  const all = JSON.parse(fs.readFileSync(paths.products, 'utf8')).products as Product[];
+  return customerStudio() ? all.map(asCustomerGame) : all;
 }
+
+/**
+ * A customer's game has no checkout or local server here (no `local`, maybe no `repo`): it is played where it is
+ * deployed. It reads as a product served "remote" at its live address, so code written for J's products (localUrl,
+ * ensureServer, previews, the pipeline) treats it as one that is already up elsewhere instead of crashing on `local`.
+ */
+export function asCustomerGame(p: Product): Product {
+  const live = p.live ?? '';
+  return {
+    ...p,
+    repo: p.repo ?? '',
+    site: p.site ?? p.repo ?? '',
+    live,
+    playtests: p.playtests ?? [],
+    story: p.story ?? [],
+    about: p.about ?? '',
+    local: p.local ?? { serve: 'remote', dir: '', port: 0, path: '/', ...(live ? { url: live } : {}) },
+  };
+}
+
+/** Whether there is a checkout of this product here (J's products; never a customer's game). */
+export const hasCheckout = (p: Product) => Boolean(p.local?.dir) && !customerStudio();
 
 /** A customer's game as onboarding describes it (an org cell): what Studio needs to play and review it. */
 export type ProductInput = {

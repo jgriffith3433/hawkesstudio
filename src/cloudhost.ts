@@ -27,7 +27,7 @@ const STATE = () => `${statePrefix()}state/`;
  * What is synced: small files under DATA, never the database (Litestream's), detached processes' output (the jobs keep
  * their own in the bucket), worktrees, previews, scratch or logs of single runs.
  */
-const SKIP = /^(studio\.db)(-wal|-shm|-journal)?$|^(detached|tmp|work|previews|logs|cache|npm-cache|talk-mcp|claude-home\/(statsig|todos|shell-snapshots|ide|plugins))(\/|$)|\.litestream|\.lock$/;
+const SKIP = /^(studio\.db)(-wal|-shm|-journal)?$|^(detached|tmp|work|previews|logs|cache|npm-cache|talk-mcp|claude-home\/(statsig|todos|shell-snapshots|ide|plugins))(\/|$)|litestream|\.lock$/;
 const MAX_BYTES = 20 * 1024 * 1024;
 
 function walk(dir: string, base = dir): string[] {

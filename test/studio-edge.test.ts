@@ -100,3 +100,12 @@ test('the cell host is the same as the control plane computes (cellrun.ts servic
   const R = await import('../src/cellrun.ts');
   assert.equal(`https://${W.cellHost('acme-1a2b', env)}`, R.serviceUrl('acme-1a2b'));
 });
+
+test('the waking page: "Setting up your studio" the first time, "Waking" after hibernation', async () => {
+  answer = (url) => (url.includes('/wake') ? Response.json({ state: 'creating', first: true }, { status: 202 }) : new Response('', { status: 404 }));
+  const first = await (await worker.fetch(at('/o/acme-1a2b/', { 'Sec-Fetch-Mode': 'navigate' }), env)).text();
+  assert.match(first, /Setting up your studio/);
+  assert.doesNotMatch(first, /asleep/);
+  answer = (url) => (url.includes('/wake') ? Response.json({ state: 'hibernated', first: false }, { status: 202 }) : new Response('', { status: 404 }));
+  assert.match(await (await worker.fetch(at('/o/acme-1a2b/', { 'Sec-Fetch-Mode': 'navigate' }), env)).text(), /Waking your studio[\s\S]*asleep/);
+});

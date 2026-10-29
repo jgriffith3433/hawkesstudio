@@ -432,9 +432,10 @@ export async function handleCellsKeyed(req: http.IncomingMessage, res: http.Serv
       if (org.state === 'new') return send(res, 200, { state: 'new', next: '/auth/start' }), true;
       void ensureCell(org.id, 'woken by a visit').catch((e) => console.warn(`[cells] waking ${org.id}: ${e.message}`));
       touch(org.id, 'active');
-      return send(res, 202, { state: getOrg(org.id)!.state }), true;
+      // Never asleep before: the waking page says it is being set up, not that it was asleep.
+      return send(res, 202, { state: getOrg(org.id)!.state, first: !org.hibernatedAt }), true;
     }
-    return send(res, 200, { state: org.state, url: org.state === 'awake' ? R.serviceUrl(org.id) : null, error: org.error }), true;
+    return send(res, 200, { state: org.state, first: !org.hibernatedAt, url: org.state === 'awake' ? R.serviceUrl(org.id) : null, error: org.error }), true;
   }
   if (route === '/api/cells/broker') {
     if (!cellsOn()) return send(res, 404, { error: 'not the control plane' }), true;

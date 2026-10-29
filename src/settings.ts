@@ -176,6 +176,14 @@ export async function saveSettings(section: string, patch: Record<string, any>, 
   if (!SECTIONS.includes(section as Section)) throw new StudioError(`section: ${SECTIONS.join(' | ')}`);
   if (!patch || typeof patch !== 'object' || Array.isArray(patch)) throw new StudioError('patch: the fields to change');
   const s = section as Section;
+  // A customer's Studio: Claude is the only harness (the others would run on our plans and keys), and the server's own
+  // budgets and alerts are the platform's, not theirs (docs/studio-customers.md section 4).
+  const { customerStudio } = await import('./tenancy.ts');
+  if (customerStudio()) {
+    if (s === 'costs' || s === 'resources') throw new StudioError("That setting is the platform's, not this Studio's.", 403);
+    const h = patch.harness ?? patch.id;
+    if (s === 'brain' && h !== undefined && h !== 'claude') throw new StudioError('Your Studio runs on your own Claude (Settings, Your Claude): other harnesses are not available.', 403);
+  }
   const all = await allSettings();
   const cur = all[s] as Record<string, any>;
   const by = from.by ?? (from.conversation ? 'Talk' : 'J');

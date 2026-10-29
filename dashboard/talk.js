@@ -131,7 +131,13 @@
         : `<div class="talk-msg ${m.role}">${m.role === 'user' ? (m.voice ? '<span class="talk-voice" title="Said on a call">🎙</span>' : '') + esc(m.text).replace(/\n/g, '<br>') + fileChips(m.files) : md(m.text)}</div>`) + (turnMark(m.turn) ?? '');
   }
 
-  const empty = () => `<div class="empty">Ask about the products: "What did last night's trial find?", "What are the agents working on?", "Make the Sick Of It shop screen feel more like Hell", "Is the PH Origins fix good to ship?"</div>`;
+  // A customer's Studio (window.studioMe.customer): their own games, not J's; and Talk is on the Team plan and up.
+  const empty = () => {
+    const me = window.studioMe;
+    if (!me?.customer) return `<div class="empty">Ask about the products: "What did last night's trial find?", "What are the agents working on?", "Make the Sick Of It shop screen feel more like Hell", "Is the PH Origins fix good to ship?"</div>`;
+    const locked = me.entitlements?.locked?.includes('talk');
+    return `<div class="empty">Ask about your games: "What did last night's playtest find?", "What are the agents working on?", "Is the latest fix good to ship?"${locked ? `<br><br>Talk is on the Team plan and up. <button class="small" onclick="studioUpgrade({ error: 'Talk is on the Team plan and up.', upgrade: { feature: 'talk', plan: 'studio_team', planName: 'Team' } })">Upgrade to Team</button>` : ''}</div>`;
+  };
   const tail = () => el('#talkLog .talk-tail');
 
   /** The bubble the active brain is writing into, or "thinking…" (the only part redrawn while an answer streams). */

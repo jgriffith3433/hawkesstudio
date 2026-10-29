@@ -17,7 +17,7 @@ import path from 'node:path';
 import http from 'node:http';
 import https from 'node:https';
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { gen } from './gen.ts';
+import { gen, genProject } from './gen.ts';
 import { abs, getProduct, loadProducts, PROJECTS, StudioError, type Product } from './config.ts';
 import { spawn } from 'node:child_process';
 import { ensureWorkingCopy, flushDev } from './dev.ts';
@@ -27,6 +27,9 @@ import { parseMappings, exportFolders } from './hawkesgen-folders.mjs';
 /** Forwards /api/gen/v1/* to Gen. */
 export function relay(req: IncomingMessage, res: ServerResponse, rest: string) {
   const target = new URL(`/v1/${rest}`, gen.url);
+  // A customer's cell: its Gen key works only in org_<hex>.<game> (gen.ts genProject), so the page's ?project=<game> too.
+  const project = target.searchParams.get('project');
+  if (project) target.searchParams.set('project', String(genProject(project)));
   const headers: Record<string, string> = {};
   for (const k of ['content-type', 'x-filename', 'accept', 'range', 'x-hawkes-client']) {
     const v = req.headers[k];

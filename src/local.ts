@@ -1,5 +1,6 @@
 // Things on this PC: each product's local server (for playtests), git state, and check commands.
 
+import { customerStudio } from './tenancy.ts';
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
@@ -205,6 +206,8 @@ export function git(dir: string, args: string[]) {
 
 /** Branch, last commit, uncommitted files, commits not pushed. */
 export function gitState(dir: string) {
+  // A customer's game has no checkout here (config.ts asCustomerGame): nothing to read.
+  if (!dir || customerStudio()) return { branch: '', head: '', dirty: 0, ahead: 0, lastPush: '', files: [] as string[] };
   const branch = git(dir, ['rev-parse', '--abbrev-ref', 'HEAD']).out;
   const head = git(dir, ['log', '-1', '--format=%h %s (%cr)']).out;
   const status = git(dir, ['status', '--porcelain']).out;

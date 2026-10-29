@@ -735,12 +735,16 @@ const server = http.createServer(async (req, res) => {
       // A customer's cell: whatever changed in Your AI goes to Hawkes Gen for its org too (cellside.ts).
       res.on('finish', () => { if (res.statusCode < 300) void import('./cellside.ts').then((c) => c.syncAiToGen()); });
       const why = (await import('./approvals.ts')).notJClick(req);
-      if (why) return send(res, 403, { error: `Claude accounts change only from J's own click in Settings: ${why}.` });
+      // In a customer's Studio this is their admins' own Claude (Connect your AI): the same check (a click on the
+      // dashboard by an admin, never Talk, an agent or a key), said in their words.
+      const customer = (await import('./tenancy.ts')).customerStudio();
+      if (why) return send(res, 403, { error: customer ? `Your AI changes only from an admin's own click in this Studio's dashboard: ${why}.` : `Claude accounts change only from J's own click in Settings: ${why}.` });
       const ca = await import('./claude-accounts.ts');
       const b = await readJson(req);
+      const who = customer ? ((await import('./auth.ts')).requester(req)?.email ?? 'admin') : 'J';
       // A customer's own Anthropic API key (claude.ts), when they don't sign in a subscription.
       if (route === '/api/claude/key' && method === 'POST') return send(res, 200, (await import('./claude.ts')).setCustomerKey(b.key ?? null));
-      if (route === '/api/claude/signin' && method === 'POST') return send(res, 200, await ca.startSignin(String(b.label ?? ''), 'J'));
+      if (route === '/api/claude/signin' && method === 'POST') return send(res, 200, await ca.startSignin(String(b.label ?? '') || (customer ? who : ''), who));
       if (route === '/api/claude/signin/code' && method === 'POST') {
         const r = await ca.finishSignin(String(b.code ?? ''), { use: b.use !== false });
         if (b.use !== false) { const br = await import('./brains.ts'); br.saveBrain({ harness: 'claude' }, 'J'); await br.syncBrain('claude'); }

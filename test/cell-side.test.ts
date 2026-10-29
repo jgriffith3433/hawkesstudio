@@ -140,3 +140,20 @@ test("its Gen jobs are in its own Gen org's projects (its key works nowhere else
   assert.equal(sent[0].body.project, 'org_0123456789abcdef.moon');
   assert.match(sent[1].url, /project=org_0123456789abcdef\.moon/);
 });
+
+test("a customer's game without `local` (as onboarding writes it) reads as served at its live address", async () => {
+  fs.writeFileSync(path.join(process.env.STUDIO_DATA!, 'products.json'), JSON.stringify({ products: [{ id: 'jgame', name: 'JGame', engine: 'web', live: 'https://icanbe.ai', about: '', contract: false, playtests: [{ scenario: 'smoke', where: 'live' }], story: [] }] }));
+  const p = CFG.loadProducts()[0];
+  assert.deepEqual(p.local, { serve: 'remote', dir: '', port: 0, path: '/', url: 'https://icanbe.ai' });
+  assert.equal(CFG.localUrl(p), 'https://icanbe.ai');
+  assert.equal(p.repo, '');
+  const { gitState } = await import('../src/local.ts');
+  assert.deepEqual(gitState(p.repo), { branch: '', head: '', dirty: 0, ahead: 0, lastPush: '', files: [] }, 'no checkout to read');
+});
+
+test("Settings: a customer's Studio runs only on Claude, and the server's budgets and alerts aren't theirs", async () => {
+  const S = await import('../src/settings.ts');
+  await assert.rejects(S.saveSettings('brain', { harness: 'cursor' }, { by: 'dev@acme.example', conversation: null }), (e: any) => e.status === 403);
+  await assert.rejects(S.saveSettings('costs', { monthlyBudget: 1 }, { by: 'dev@acme.example', conversation: null }), (e: any) => e.status === 403);
+  await assert.rejects(S.saveSettings('resources', { memoryPct: 99 }, { by: 'dev@acme.example', conversation: null }), (e: any) => e.status === 403);
+});
