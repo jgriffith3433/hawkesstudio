@@ -7,7 +7,7 @@
   "routes": [{ "pattern": "studio.hawkesgen.ai", "custom_domain": true }],
   "vars": {
     // The Cloud Run service's own address (tools/studio-cloudrun/deploy.mjs prints it as "Service URL").
-    "STUDIO_ORIGIN": "https://studio-REPLACE-uk.a.run.app"
+    "STUDIO_ORIGIN": "https://studio-388576319982.us-east4.run.app"
   },
   "observability": { "enabled": true }
 }
