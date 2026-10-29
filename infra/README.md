@@ -14,6 +14,7 @@ is hard to undo, so J runs them.
 | `deploy-edge-workers.bat` | Deploys every Cloudflare Worker (gen and studio edges, both lanes; beta sites; the CDN; builds) | Claude |
 | `unity-build-image.bat [region]` | Rebuilds the Unity build image (Cloud Build, ~15 min) and points the job at it with the R2 token | Claude |
 | `r2-builds-secret.bat` | Puts the R2 token (`C:\Projects\cloudflare.txt`) into Secret Manager as `r2-builds` | J |
+| `shrink-website-repo.bat <repo>` | Drops every old `Game/v<n>` from a Unity website repo's history (force-push), once its live page loads from R2 | J |
 | `old-betas-delete.bat` | Deletes the old beta services in us-east4 once the us-central1 ones are healthy | J |
 
 Where things run (J, 2026-10-29: each group on its own 20 vCPUs; Google's quota is per region):
