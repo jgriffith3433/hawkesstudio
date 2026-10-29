@@ -85,6 +85,11 @@ console.log("\n# 5. J's Studio becomes the control plane");
 const number = gcloudQuery(['projects', 'describe', project, '--format=value(projectNumber)']) || '<project number>';
 // It makes, rolls and deletes the cells' services, as the cells' account.
 gcloud(['projects', 'add-iam-policy-binding', project, `--member=serviceAccount:${studioSa}`, '--role=roles/run.admin', '--condition=None', '--format=none']);
+// Cloud Run checks that whoever deploys a service can read its image: the control plane makes every cell from J's
+// Studio's image, so it reads the image repository (the first customer's first game failed without this, 2026-10-29).
+const repo = /^([a-z0-9-]+)-docker\.pkg\.dev\/[^/]+\/([^/]+)\//.exec(image);
+if (repo) gcloud(['artifacts', 'repositories', 'add-iam-policy-binding', repo[2], `--location=${repo[1]}`, P, `--member=serviceAccount:${studioSa}`, '--role=roles/artifactregistry.reader', '--format=none']);
+else console.log(`  (the image ${image} is not in Artifact Registry: grant ${studioSa} read on it by hand)`);
 gcloud(['iam', 'service-accounts', 'add-iam-policy-binding', cellSa, P, `--member=serviceAccount:${studioSa}`, '--role=roles/iam.serviceAccountUser', '--format=none']);
 // The job broker signs V4 URLs as Studio's own account (IAM signBlob on itself).
 gcloud(['iam', 'service-accounts', 'add-iam-policy-binding', studioSa, P, `--member=serviceAccount:${studioSa}`, '--role=roles/iam.serviceAccountTokenCreator', '--format=none']);
