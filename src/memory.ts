@@ -18,6 +18,7 @@
 // publishMemory() commits them to the orphan branch "memory" of hawkesstudio ([skip ci]: it deploys nothing). J edits
 // entries in the dashboard's Memory tab.
 
+import { customerStudio } from './tenancy.ts';
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -683,12 +684,36 @@ export function importSeed(dir = path.join(ROOT, 'memory', 'seed')) {
 // -------------------------------------------------------------- the service
 
 let started = false;
+/**
+ * A customer's Studio never holds J's seed (his decisions, preferences, canon and lessons: memory/seed). Studios made
+ * before this imported it at start: those entries (keyed seed:<J's seed file>:…) are deleted. Theirs stay.
+ */
+export function purgePlatformSeed(dir = path.join(ROOT, 'memory', 'seed')) {
+  if (!fs.existsSync(dir)) return 0;
+  let n = 0;
+  for (const f of fs.readdirSync(dir).filter((x) => x.endsWith('.json'))) {
+    const base = f.replace(/\.json$/, '');
+    const keys = new Set<string>();
+    try { for (const e of JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8')).entries ?? []) if (e.key) keys.add(e.key); } catch { /* unreadable: by prefix only */ }
+    n += db.prepare('DELETE FROM memories WHERE substr(key, 1, ?) = ?').run(`seed:${base}:`.length, `seed:${base}:`).changes as number;
+    for (const k of keys) n += db.prepare('DELETE FROM memories WHERE key = ?').run(k).changes as number;
+  }
+  return n;
+}
+
+/** The seed this Studio gets: J's (memory/seed) in his Studio, the generic one (memory/seed-customer) in a customer's. */
+export const seedDir = () => path.join(ROOT, 'memory', customerStudio() ? 'seed-customer' : 'seed');
+
 /** At startup: import the seed; daily: fade what nobody uses and (on the server) publish the export. */
 export function startMemory() {
   if (started) return;
   started = true;
   try {
-    const s = importSeed();
+    if (customerStudio()) {
+      const gone = purgePlatformSeed();
+      if (gone) console.log(`[memory] removed ${gone} entries of the platform's seed (not this Studio's)`);
+    }
+    const s = importSeed(seedDir());
     if (s.entries) console.log(`[memory] seed: ${s.entries} entries from ${s.files} files`);
   } catch (e: any) {
     console.warn(`[memory] seed: ${e.message}`);

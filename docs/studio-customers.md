@@ -367,6 +367,24 @@ A customer's Studio has no Costs tab of its own: their bill and credits are on t
 - Gen's own Claude calls for customers already go to the API, never the Max plan (hawkesgen AGENTS.md "Customers
   (tenancy)").
 
+**Their own voice** (**built**): in a customer's Studio nothing that talks to Claude speaks as J's world.
+- **Roles and skills:** `customer-plugin/` (plugin "studio") instead of `.claude` (roles.ts `PLUGIN_DIR`). It has the
+  same seven roles in the customer's terms and only the generic skills: playtest-scenario, gen-assets, shared-memory.
+  It has none of J's product how-tos, the go-live checklist for his sites, or Studio and Gen changes.
+- **Talk's and the PM's prompt:** `customerSystemPrompt()` (talk.ts): the owner by name (owner.ts `ownerName`, the
+  first admin's first name), their games with their live address, story and quality bar, and the studio's mechanics.
+  It has none of: Hawkes Biomedical, J's products, servers, costs, On Air, or changing Studio or Gen.
+- **Anything shared that still says "J"** reaches Claude in the owner's name: `forOwner()` on Talk's turns and call
+  prompt, agents' briefs, scouts and Studio's own Claude calls (canon checks, acceptance).
+- **The memory:** a customer's Studio imports only `memory/seed-customer` (generic conventions). At start it deletes
+  any entries of J's seed (`purgePlatformSeed`), which Studios made before this had imported.
+- **Talk's tools:** the platform's (costs, the ledger, resources, Social, the Unity build server and devtools) aren't
+  listed, and descriptions say "the owner".
+- **Tests:**
+  - `test/customer-voice.test.ts`: the prompts, roles, skills, tools and memory have none of J's markers: Hawkes
+    Biomedical, Pierce, J, J's, the product names
+  - `test/j-voice.test.ts`: J's Studio still has them
+
 **They never get** J's machinery (section 5).
 
 ---

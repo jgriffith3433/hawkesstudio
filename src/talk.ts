@@ -23,6 +23,8 @@
 // where it got to (resumeTalk), so the answer keeps streaming into the conversation. A call's warm process (it reads
 // stdin) stays Studio's child: a restart ends the call.
 
+import { customerStudio } from './tenancy.ts';
+import { forOwner, ownerName } from './owner.ts';
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawn, type ChildProcess } from 'node:child_process';
@@ -188,7 +190,56 @@ function mcpConfig(id: string) {
   return MCP_FILE(id);
 }
 
+/**
+ * Talk's prompt in a customer's Studio (docs/studio-customers.md section 4): their games, their owner by name, the
+ * studio's mechanics in plain terms. Nothing of J's: no Hawkes Biomedical, no J products, canon or decisions, no
+ * Studio/Gen self-changes, servers, costs or On Air (those are the platform's, and refused anyway).
+ */
+export function customerSystemPrompt() {
+  const owner = ownerName();
+  const games = loadProducts().map((p) => `- ${p.name} (${p.id})${p.live ? `, played at ${p.live}` : ''}${p.about ? `: ${p.about}` : ''}${p.quality ? ` (done means: ${p.quality})` : ''}`).join('\n') || '- (no games yet: they add one from the dashboard)';
+  const media = process.env.GEN_PUBLIC_URL ?? 'https://gen.hawkesgen.ai';
+  return `You are the studio partner in ${owner === 'the owner' ? 'this' : `${owner}'s`} Hawkes Studio. You talk with ${owner === 'the owner' ? 'its owner' : owner}
+about their games the way a trusted producer and lead developer would: what's broken, what to build next, what agents
+are doing, what's ready to ship.
+
+Their games:
+${games}
+
+How to work:
+- Use the hawkesstudio tools for the truth: studio_reports and studio_report (the runs' reports), studio_overview,
+  studio_backlog, studio_changes / studio_change (agent pull requests), studio_playtest, studio_previews,
+  studio_deploy_plan. Use hawkesgen tools for generation (images, video, music, voice, 3D) and the library.
+- Explain in plain words: what was wrong, what changed, how it was checked, and show the evidence. Screenshots and
+  videos are library assets: link them as ${media}/v1/files/<asset id>. Use the links tools give you; never invent one.
+- Findings: Studio plays each game with a bot, Claude reviews the footage, and what it finds goes to the backlog (bugs
+  and blockers) or the ideas list (polish and ideas: never fixed by themselves). Each review files at most 5 new
+  findings and is told what is already known.
+- A request for a change is an action: start it in the same turn with studio_task (studio_fix for a backlog finding).
+  It works on its own branch, opens a pull request into the game's beta branch, and reports back here when it's ready.
+  Ask first only when the request is genuinely ambiguous, costs money or touches anything live.
+- Approvals are a card: anything that needs the owner's own OK (a merge only they make, going live, a rollback, a
+  budget, a cost-raising setting) is an Approve / Deny card (studio_approval); only their tap decides it.
+- Going live: show studio_deploy_plan in plain words, then put an Approve card on their screen (kind deploy).
+- Results come back here by themselves ("Studio says: ..."): explain them, lead with the verdict, give the links, and
+  say what they need to decide. In such a turn never approve, merge, deploy or start work.
+- You are also their PM: the roadmap (studio_roadmap: items per game with goals and acceptance criteria) is planned
+  with them; the PM loop works it with the agents. Anything they need to decide is filed in their Inbox (studio_inbox
+  ask), never only asked in prose.
+- What this Studio's plan includes is enforced by Studio: a feature the plan lacks answers with what to upgrade to.
+  Say so in a line (Settings → Plan and credits); never work around it.
+- Be concise and direct: lead with what matters, short lists, no filler.
+${memoryStable()}`;
+}
+
+/** Talk's whole prompt as Claude Code gets it (the role's text, then Studio's context, then a call's), for the tests. */
+export function talkPromptText(kind: 'talk' | 'pm' = 'talk', call: CallDevice | false = false) {
+  const { args } = roleArgs(kind, { extraPrompt: systemPrompt() + (call ? callPrompt(call) : '') });
+  return args[args.indexOf('--append-system-prompt') + 1];
+}
+
 function systemPrompt() {
+  if (customerStudio()) return customerSystemPrompt();
   const products = loadProducts().map((p) => `- ${p.name} (${p.id}): ${p.about}`).join('\n');
   const infra = loadInfra().map((t) => `- ${t.name} (${t.id}): ${t.about}`).join('\n');
   const media = process.env.GEN_PUBLIC_URL ?? 'https://studio.hawkesgen.ai/gen';
@@ -598,6 +649,10 @@ const DEVICE: Record<CallDevice, string> = {
 
 /** Spoken answers: appended to the system prompt of a call's process (only calls; the chat stays as it is). */
 function callPrompt(device: CallDevice | null) {
+  return forOwner(callPromptText(device));
+}
+
+function callPromptText(device: CallDevice | null) {
   return `
 
 J is on a voice call with you right now (Studio's call mode${device ? `, ${DEVICE[device]}` : ''}). What you write is read aloud
@@ -714,7 +769,7 @@ function runTurn(id: string, prompt: string, userAt: number, { auto = false, fre
     call.turn = ctx;
     call.seen = Date.now();
     running.set(id, child);
-    child.stdin!.write(`${JSON.stringify({ type: 'user', message: { role: 'user', content: prompt } })}\n`);
+    child.stdin!.write(`${JSON.stringify({ type: 'user', message: { role: 'user', content: forOwner(prompt) } })}\n`);
     return;
   }
   // A session another harness made can't be resumed here (a Gemini session on Claude fails): a new one, with the
@@ -727,7 +782,7 @@ function runTurn(id: string, prompt: string, userAt: number, { auto = false, fre
     fresh = true;
   }
   // Outside Studio where it can be (detach.ts): a Studio restart doesn't cut the answer off (resumeTalk).
-  const { child, rec } = launch(`talk-${id}`, talkCommand(['-p', prompt, ...claudeArgs(c, false, null, routed?.tier ?? null)]));
+  const { child, rec } = launch(`talk-${id}`, talkCommand(['-p', forOwner(prompt), ...claudeArgs(c, false, null, routed?.tier ?? null)]));
   if (rec) setProc(id, { rec, offset: 0, userAt, auto, billing: ctx.billing, harness: ctx.harness, model: ctx.model });
   followTurn(id, child, ctx, { prompt, fresh, session: c.session });
 }

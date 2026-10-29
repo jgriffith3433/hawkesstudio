@@ -17,6 +17,7 @@ import { ROOT, PROJECTS, StudioError } from './config.ts';
 import { sandboxOn } from './sandbox.ts';
 import { roleTune, jobTune, type Tier, type Effort } from './tuning.ts';
 import { brainId } from './brains.ts';
+import { customerStudio } from './tenancy.ts';
 
 export const ROLES = ['talk', 'pm', 'fixer', 'builder', 'content', 'scout', 'reviewer'] as const;
 export type RoleName = (typeof ROLES)[number];
@@ -49,9 +50,12 @@ export const modelId = (m: string) => MODEL_IDS[m.trim().toLowerCase()] ?? m.tri
 const JOBS: Record<string, string> = { triage: 'haiku', dedupe: 'haiku', summary: 'haiku', host: 'haiku', canon: 'sonnet', review: 'sonnet', criteria: 'sonnet' };
 export const jobModel = (job: keyof typeof JOBS | string) => modelId(process.env[`STUDIO_MODEL_JOB_${job.toUpperCase()}`] ?? (JOBS[job] ? jobTune(job).model : 'sonnet'));
 
-export const AGENTS_DIR = () => process.env.STUDIO_AGENTS_DIR ?? path.join(ROOT, '.claude', 'agents');
+// A customer's Studio (tenancy.ts) has its own plugin, customer-plugin/ ("studio"): the same roles and the generic skills,
+// in the customer's terms. J's (.claude, "hawkes") names his products, canon and decisions; a customer never gets it.
+const pluginRoot = () => path.join(ROOT, customerStudio() ? 'customer-plugin' : '.claude');
+export const AGENTS_DIR = () => process.env.STUDIO_AGENTS_DIR ?? path.join(pluginRoot(), 'agents');
 /** The plugin root Studio passes as --plugin-dir (skills and the roles as subagents). */
-export const PLUGIN_DIR = () => process.env.STUDIO_PLUGIN_DIR ?? path.join(ROOT, '.claude');
+export const PLUGIN_DIR = () => process.env.STUDIO_PLUGIN_DIR ?? pluginRoot();
 
 /** Frontmatter (simple "key: value" lines, lists as comma lists) and the body. */
 export function parseAgentFile(text: string) {

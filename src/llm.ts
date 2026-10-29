@@ -13,6 +13,7 @@
 // The answer looks like a Gen job, so callers keep reading job.status and job.result.value / .text; a fallback one has
 // via "claude-code", billing "Max plan (not billed)" and cost 0.
 
+import { forOwner } from './owner.ts';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -87,6 +88,8 @@ const fallbackOn = () => process.env.STUDIO_LLM_VIA !== 'gen';
 
 /** Gen first (unless it failed on credit lately), then Claude Code. Never throws: a failed call is status "failed". */
 export async function askClaude(p: AskParams, deps: { viaGen?: (p: AskParams) => Promise<any> } = {}): Promise<any> {
+  // A customer's Studio: their owner by name, never "J" (owner.ts).
+  p = { ...p, prompt: forOwner(p.prompt), ...(p.system ? { system: forOwner(p.system) } : {}) };
   if (llmVia() === 'claude-code') return askClaudeCode(p);
   let job: any;
   try {

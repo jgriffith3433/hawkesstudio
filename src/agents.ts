@@ -34,6 +34,7 @@
 // Runs on the server (STUDIO_SERVER=1, repos cloned by repos.ts, GITHUB_TOKEN from /run/hawkes/github.env).
 // Caps (settings.agents): how many fixes run at once and per day, and a daily cost limit.
 
+import { forOwner } from './owner.ts';
 import { isVideoTask, videoReady, versionsOf } from './videos.ts';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -64,7 +65,7 @@ import { overlapWith, filesIn, othersSection, sortConflicts, UNITY_RULES, type W
 import { judgeCriteria, gate } from './acceptance.ts';
 import { briefSection, learnFrom, recordRun, LEARNED_ASK } from './memory.ts';
 import { canonCheck, CONTENTISH, type CanonCheck } from './canon.ts';
-import { roleArgs, loadRole, type RoleName } from './roles.ts';
+import { roleArgs, loadRole, PLUGIN_DIR, type RoleName } from './roles.ts';
 import { passLimitMs, roleTune } from './tuning.ts';
 import { routeFor, routeLine, routingSettings, premiumFor, usePremium, modelPin, type Route } from './routing.ts';
 import { recordPass, lastPassFor, type PassOutcome } from './ledger.ts';
@@ -734,9 +735,9 @@ ${videoSkill()}
 /** The video skill's text (.claude/skills/video/SKILL.md without its frontmatter), for the brief. */
 function videoSkill() {
   try {
-    return fs.readFileSync(path.join(ROOT, '.claude', 'skills', 'video', 'SKILL.md'), 'utf8').replace(/^---[\s\S]*?---\s*/, '').replace(/^# /m, '### The video skill: ').replace(/^## /gm, '#### ');
+    return fs.readFileSync(path.join(PLUGIN_DIR(), 'skills', 'video', 'SKILL.md'), 'utf8').replace(/^---[\s\S]*?---\s*/, '').replace(/^# /m, '### The video skill: ').replace(/^## /gm, '#### ');
   } catch {
-    return '(The video skill is missing: .claude/skills/video/SKILL.md in Hawkes Studio.)';
+    return '(No video skill here: make the video with the video tools of Hawkes Gen, the gen-assets skill.)';
   }
 }
 
@@ -1026,7 +1027,8 @@ ${checks}
 
 ${storyOf(p, 6000)}
 `;
-  fs.writeFileSync(path.join(dir, 'brief.md'), brief);
+  // A customer's Studio: their owner by name, never "J" (owner.ts).
+  fs.writeFileSync(path.join(dir, 'brief.md'), forOwner(brief));
   return path.join(dir, 'brief.md');
 }
 
@@ -2074,7 +2076,8 @@ ${t.checks.map((k) => `   - \`${k}\``).join('\n')}
    tried, what happened, where you think the cause is) and commit nothing that doesn't work.
 7. ${LEARNED_ASK.replace(/\n/g, '\n   ')}
 ${mem.text ? `\n${mem.text}` : ''}`;
-  fs.writeFileSync(path.join(dir, 'brief.md'), brief);
+  // A customer's Studio: their owner by name, never "J" (owner.ts).
+  fs.writeFileSync(path.join(dir, 'brief.md'), forOwner(brief));
   return path.join(dir, 'brief.md');
 }
 

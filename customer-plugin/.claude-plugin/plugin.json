@@ -1,0 +1,6 @@
+{
+  "name": "studio",
+  "version": "1.0.0",
+  "description": "A customer's Hawkes Studio: its roles (talk, pm, fixer, builder, content, scout, reviewer) and generic skills. Studio passes --plugin-dir customer-plugin to every Claude Code it runs in a customer's Studio (roles.ts); J's Studio uses .claude instead.",
+  "author": { "name": "Hawkes Studio" }
+}

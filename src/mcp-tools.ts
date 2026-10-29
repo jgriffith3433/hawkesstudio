@@ -1,6 +1,7 @@
 // The Hawkes Studio MCP tools, shared by the stdio server (src/mcp.ts) and the HTTP endpoint (/mcp in src/server.ts).
 // Each tool talks to the Studio service over HTTP through the client it is given.
 
+import { customerStudio, ownerWords } from './tenancy.ts';
 import fs from 'node:fs';
 import path from 'node:path';
 import { studio as defaultStudio, waitRun as defaultWaitRun } from './client.ts';
@@ -13,6 +14,10 @@ const strs = (description: string) => ({ type: 'array', items: { type: 'string' 
 export const INSTRUCTIONS = "Hawkes Studio: daily builds, playtests and reviews of every Hawkes product, the backlog of findings, and gated deploys. Deploys publish live sites: only with J's approval in chat.";
 
 type Client = { studio: typeof defaultStudio; waitRun: typeof defaultWaitRun };
+
+/** The platform admin's tools (costs, the server, Studio's social accounts, Unity's build server): never a customer's. */
+export const PLATFORM_TOOLS = new Set(['studio_costs', 'studio_ledger', 'studio_resources', 'studio_social', 'studio_social_post', 'studio_unity_test', 'studio_build', 'studio_dev_open', 'studio_dev_status', 'studio_dev_stop', 'studio_dev_resolve']);
+export const CUSTOMER_INSTRUCTIONS = 'Hawkes Studio: daily playtests and reviews of your games, the backlog of findings, the roadmap and agents, and gated deploys. Going live needs your own approval.';
 
 export function studioMcp({ studio, waitRun }: Client = { studio: defaultStudio, waitRun: defaultWaitRun }): McpServer {
   const tools: McpTool[] = [
@@ -528,8 +533,14 @@ export function studioMcp({ studio, waitRun }: Client = { studio: defaultStudio,
   ];
   // An agent's or scout's own server lists only the tools it may use (STUDIO_MCP_TOOLS: names or prefixes, comma list).
   const only = (process.env.STUDIO_MCP_TOOLS ?? '').split(',').map((x) => x.trim()).filter(Boolean);
-  const allowed = only.length ? tools.filter((t) => only.some((o) => (o.endsWith('*') ? t.name.startsWith(o.slice(0, -1)) : t.name === o))) : tools;
-  return { name: 'hawkesstudio', version: '0.3.0', instructions: INSTRUCTIONS, tools: allowed };
+  const listed = only.length ? tools.filter((t) => only.some((o) => (o.endsWith('*') ? t.name.startsWith(o.slice(0, -1)) : t.name === o))) : tools;
+  // A customer's Studio: no platform tools (the API refuses them anyway: lockdown.ts), and descriptions say "the owner",
+  // not J (this process doesn't open Studio's database for the owner's name).
+  if (customerStudio()) {
+    const mine = listed.filter((t) => !PLATFORM_TOOLS.has(t.name)).map((t) => ({ ...t, description: ownerWords(t.description, 'the owner') }));
+    return { name: 'hawkesstudio', version: '0.3.0', instructions: CUSTOMER_INSTRUCTIONS, tools: mine };
+  }
+  return { name: 'hawkesstudio', version: '0.3.0', instructions: INSTRUCTIONS, tools: listed };
 }
 
 /** The shared memory (memory.ts): every Claude that works on Hawkes reads and adds to it. */

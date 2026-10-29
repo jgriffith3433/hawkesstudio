@@ -1,0 +1,13 @@
+{
+  "source": "Hawkes Studio (generic conventions for every customer's Studio)",
+  "about": "How a Hawkes Studio works, true for every studio: no one's decisions, preferences or story. The owner's own come from their words in Talk.",
+  "entries": [
+    { "kind": "convention", "title": "Playtest bots play through real input", "body": "A scenario presses the keys, clicks and touches a player would, into the game's own input layer. No teleporting or state edits; a named setup shortcut is fine.", "tags": "playtest" },
+    { "kind": "convention", "title": "Every game keeps a working smoke scenario", "body": "The smoke scenario loads the game, plays a little and checks nothing errors. Keep it passing when changing the game.", "tags": "playtest" },
+    { "kind": "convention", "title": "Agent changes go to beta first", "body": "An agent works on its own branch and opens a pull request into the game's beta branch. Nothing reaches the live game until the owner goes live.", "tags": "lanes" },
+    { "kind": "convention", "title": "Make acceptance criteria observable", "body": "Each criterion is something a player sees or can do, shown by a scenario event, a metric or a scene, so a playtest review can judge it.", "tags": "playtest,roadmap" },
+    { "kind": "convention", "title": "Generated assets go through Hawkes Gen", "body": "Images, video, voice, sound, music and 3D are made with Hawkes Gen's tools, never with keys of an agent's own. Price GPU work first.", "tags": "assets" },
+    { "kind": "convention", "title": "Never hand-edit generated output", "body": "Build output, engine-generated folders and lock files are made by their tools: change the source and rebuild.", "tags": "code" },
+    { "kind": "convention", "title": "Small, focused changes", "body": "One task, one pull request: the smallest correct change, no unrelated cleanups, no new dependencies unless the task needs one.", "tags": "code" }
+  ]
+}

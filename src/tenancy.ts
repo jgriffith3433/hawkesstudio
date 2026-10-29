@@ -32,3 +32,11 @@ export const customerStudio = () => Boolean(cellOrg()) || signupMode() === 'owne
 /** J's GitHub account: a customer's Studio never takes a game from it. */
 export const PLATFORM_GITHUB = 'jgriffith3433';
 export const touchesPlatformRepo = (s: unknown) => String(s ?? '').toLowerCase().includes(PLATFORM_GITHUB);
+
+/** "J" and "J's" in a sentence as `name` (the owner of a customer's Studio: owner.ts). Pure: no database. */
+export function ownerWords(text: string, name: string): string {
+  const poss = name === 'the owner' ? "the owner's" : `${name}'s`;
+  return String(text ?? '')
+    .replace(/\bJ['’]s\b/g, poss)
+    .replace(/(^|[^\w.@/-])J\b(?![.\w-])/g, `$1${name}`);
+}

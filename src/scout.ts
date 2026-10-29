@@ -4,6 +4,7 @@
 // order, sizes and rough cost, risks, questions for J), which goes back to the Talk conversation that asked
 // (talk.ts studioSays: Claude turns it into a proposal for J). At most 2 run at once.
 
+import { forOwner } from './owner.ts';
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -96,7 +97,7 @@ ${mem.text ? `\n${mem.text}` : ''}${story ? `\nThe product's story, for tone:\n$
     // The scout role (.claude/agents/scout.md): model, read-only tools, turn limit; SCOUT_MODEL still overrides the model.
     const { args: roleFlags } = roleArgs('scout', { extraAllowed: ['mcp__hawkesstudio__memory_search', 'mcp__hawkesstudio__memory_get', 'mcp__hawkesstudio__memory_write', 'mcp__hawkesstudio__studio_analytics'] });
     if (process.env.SCOUT_MODEL) roleFlags.splice(roleFlags.indexOf('--model') + 1, 1, process.env.SCOUT_MODEL);
-    const args = ['-p', prompt, '--output-format', 'stream-json', '--verbose', ...roleFlags,
+    const args = ['-p', forOwner(prompt), '--output-format', 'stream-json', '--verbose', ...roleFlags,
       '--mcp-config', (await import('./agents.ts')).agentMcp(id), '--strict-mcp-config'];
     const harness = brainId();
     const r = await new Promise<{ result: string; cost: number; ok: boolean; err: string }>((resolve) => {
