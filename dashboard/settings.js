@@ -122,7 +122,14 @@
           <div class="ca-line"><input type="text" id="caLabel" placeholder="A name for it, e.g. your email"><button class="small" id="caStart">Sign in to a Claude account</button></div>
           <div id="caMsg" class="meta">${si?.state === 'failed' && si.error ? `<span class="set-err">${esc(si.error)}</span>` : ''}</div>
           <div class="meta">Runs Claude&#39;s own sign-in on the server and gives you its link. Each sign-in is a 1-year login, kept here so you can switch back to it.</div></div>`;
-    return `<div class="set-box"><h3>🔑 Claude accounts</h3>
+    // A customer's Studio (GET /api/claude/accounts customer, claude.ts): their own Claude only, a subscription signed
+    // in below or their own Anthropic API key here; never this server's.
+    const cu = c.customer;
+    const keyRow = cu ? `<div class="ca-add"><b>Your Claude</b>
+          <div class="meta">${cu.ready ? `Running on your ${cu.via === 'api-key' ? `API key (…${esc(cu.keyTail)})` : 'Claude subscription'}.` : '<span class="set-err">No Claude yet:</span> Talk and agents wait until you sign in a Claude account below or add your Anthropic API key.'}</div>
+          <div class="ca-line"><input type="password" id="ckKey" placeholder="sk-ant-api03-…" autocomplete="off" spellcheck="false"><button class="small" id="ckSave">Save API key</button>${cu.keyTail ? '<button class="small" id="ckRemove">Remove key</button>' : ''}</div>
+          <div id="ckMsg" class="meta">Billed by Anthropic to you. Kept on your Studio only; never shown again.</div></div>` : '';
+    return `<div class="set-box"><h3>🔑 ${cu ? 'Your Claude' : 'Claude accounts'}</h3>${keyRow}
       <div class="meta">The Claude login that Talk, the PM, agents, scouts and Gen's Claude calls run on. Switching takes effect on the next turn, agent and Gen call; work already running finishes on the account it started with.${brain.harness !== 'claude' ? ` <b>The harness is ${brain.harness === 'copilot' ? 'Copilot' : brain.harness === 'gemini' ? 'Gemini' : brain.harness === 'antigravity' ? 'Antigravity' : 'Cursor'} now:</b> using or adding an account switches it to Claude Code.` : ''}</div>
       ${rows || '<div class="meta" style="padding:6px 0">No Claude account on this server yet.</div>'}
       ${signinRow}
@@ -443,6 +450,9 @@
         t.disabled = false;
       }
     }
+    if (t.id === 'ckSave' || t.id === 'ckRemove') return claudeAction(async () => {
+      await claudeCall('/api/claude/key', { method: 'POST', body: { key: t.id === 'ckSave' ? $('#ckKey').value : null } });
+    }, t);
     if (t.id === 'caStart') return claudeAction(async () => {
       $('#caMsg').textContent = 'Starting Claude’s sign-in on the server…';
       await claudeCall('/api/claude/signin', { method: 'POST', body: { label: $('#caLabel').value } });

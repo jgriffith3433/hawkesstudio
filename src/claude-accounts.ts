@@ -11,6 +11,9 @@
 // restart. With no account saved, everything uses CLAUDE_CODE_OAUTH_TOKEN from the environment (the AWS secret
 // hawkes/claude, deploy/claude-token.mjs), which the first look at the list keeps as an account of its own.
 //
+// In a customer's Studio (tenancy.ts) the accounts are the customer's own Claude subscription, signed in by their
+// admin, and the environment's token is never used or adopted.
+//
 // Only J's click on the dashboard changes accounts (server.ts, approvals.ts notJClick); the sandbox never (guards.ts).
 // Tests: STUDIO_CLAUDE_SETUP_ARGS (a JSON array: program and arguments) runs a stand-in instead of `script ... claude`.
 
@@ -20,6 +23,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { DATA, StudioError } from './config.ts';
+import { customerStudio } from './tenancy.ts';
 
 const DIR = () => path.join(DATA, 'claude');
 const FILE = () => path.join(DIR(), 'accounts.json');
@@ -62,7 +66,8 @@ function write(store: Store) {
  * token new to the list there means J stored a new one in AWS (deploy/claude-token.mjs) and restarted: it is used.
  */
 function adoptEnvironment(store: Store): Store {
-  const env = process.env.CLAUDE_CODE_OAUTH_TOKEN;
+  // A customer's Studio runs only on the customer's own Claude (claude.ts): never a token from the environment.
+  const env = customerStudio() ? undefined : process.env.CLAUDE_CODE_OAUTH_TOKEN;
   if (!env || store.accounts.some((a) => a.token === env)) return store;
   const a: Account = { id: `ca_${crypto.randomBytes(6).toString('hex')}`, label: 'From the server (AWS hawkes/claude)', token: env, added: Date.now(), by: 'Studio', source: 'environment' };
   const next = { active: a.id, accounts: [...store.accounts, a] };
@@ -73,7 +78,7 @@ function adoptEnvironment(store: Store): Store {
 /** The token Claude Code runs with now: the account in use, else the environment's. */
 export function activeToken(): string | undefined {
   const s = read();
-  return s.accounts.find((a) => a.id === s.active)?.token || process.env.CLAUDE_CODE_OAUTH_TOKEN || undefined;
+  return s.accounts.find((a) => a.id === s.active)?.token || (customerStudio() ? undefined : process.env.CLAUDE_CODE_OAUTH_TOKEN) || undefined;
 }
 
 const view = (a: Account, active: string | null) => ({

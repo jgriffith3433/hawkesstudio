@@ -21,11 +21,14 @@
 
   // Who's signed in (header), and the Users tab for admins.
   async function loadMe() {
+    let full = null;
     try {
-      me = (await api('/api/me')).user;
+      full = await api('/api/me');
+      me = full.user;
     } catch {
       me = null;
     }
+    window.studioMe = full;
     const status = $('#status');
     if (me && status && !$('#meBox')) {
       const el = document.createElement('span');
@@ -36,6 +39,51 @@
     }
     const btn = document.querySelector('nav button[data-tab="users"]');
     if (btn) btn.hidden = me?.role !== 'admin';
+    // The platform admin's features (src/lockdown.ts): hidden from everyone else (the API answers 403 to them anyway).
+    for (const what of full?.hide ?? []) {
+      const tabBtn = document.querySelector(`nav button[data-tab="${what}"]`);
+      if (tabBtn) tabBtn.hidden = true;
+      if (what === 'onair' && $('#onAir')) $('#onAir').hidden = true;
+    }
+    if (full?.onboarding) onboarding();
+  }
+
+  // First run in a customer's Studio (src/tenancy.ts): no game yet, so its admin adds the first one
+  // (PUT /api/products/<id>, config.ts saveProduct). Shown above every tab until there is a game.
+  function onboarding() {
+    if ($('#onboard')) return;
+    const el = document.createElement('section');
+    el.id = 'onboard';
+    el.className = 'us-box';
+    el.style.margin = '0 0 14px';
+    const claude = window.studioMe?.claude;
+    el.innerHTML = `<h3>Welcome to your Studio. Add your first game</h3>
+      <p class="meta">Studio plays it every night and on every push, Claude watches the footage and files what's broken, and agents fix it with proof. Start with the address it runs at; the rest can come later.</p>
+      <form id="obForm" class="us-form" style="flex-direction:column;align-items:stretch;max-width:560px">
+        <input name="name" placeholder="Game name" required maxlength="80">
+        <select name="engine"><option value="web">Web game or site</option><option value="unity">Unity (WebGL)</option><option value="godot">Godot (web export)</option><option value="desktop">Desktop (.exe), coming soon</option></select>
+        <input name="live" type="url" placeholder="Where it runs: https://…" required>
+        <input name="repo" placeholder="GitHub repository (owner/name), optional">
+        <textarea name="about" rows="3" placeholder="What it is, in a sentence or two (Claude reads it before every review)" style="background:var(--panel2);border:1px solid var(--line);border-radius:6px;padding:5px 8px;color:inherit"></textarea>
+        <button type="submit">Add it and play it</button>
+        <div id="obMsg" class="meta"></div>
+      </form>
+      ${claude && !claude.ready ? '<p class="meta">Next: connect <b>your</b> Claude in ⚙ Settings → Your Claude (your subscription or API key) so Talk and agents can run.</p>' : ''}`;
+    document.querySelector('main')?.prepend(el);
+    $('#obForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const f = Object.fromEntries(new FormData(e.target));
+      const id = String(f.name).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').replace(/^(?=[^a-z])/, 'g-').slice(0, 40) || 'my-game';
+      $('#obMsg').textContent = 'Adding…';
+      try {
+        await api(`/api/products/${id}`, { method: 'PUT', body: { ...f, id } });
+        el.remove();
+        location.hash = '#today';
+        location.reload();
+      } catch (err) {
+        $('#obMsg').innerHTML = `<span style="color:var(--red)">${esc(err.message)}</span>`;
+      }
+    });
   }
 
   const linkBox = (r, what) => `<div class="us-link">${r.emailed ? `Emailed to ${esc(r.invite?.email ?? r.reset?.email)}.` : `Not emailed${r.emailError ? ` (${esc(r.emailError)})` : ''}: send this link yourself.`}<br>${esc(what)} link (works once): <a href="${esc(r.link)}">${esc(r.link)}</a> <button class="small" data-copy="${esc(r.link)}">Copy</button></div>`;

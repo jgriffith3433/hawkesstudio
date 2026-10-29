@@ -188,12 +188,12 @@ export async function cancelExecution(name: string) {
  * A Google ID token checked with Google (the tokeninfo endpoint: signature and expiry), returning its claims. The caller
  * checks the audience and the email. Throws a sentence when Google doesn't accept it.
  */
-export async function googleIdToken(token: string): Promise<{ aud: string; iss: string; email: string; email_verified: boolean; exp: number; azp?: string }> {
+export async function googleIdToken(token: string): Promise<{ aud: string; iss: string; email: string; email_verified: boolean; exp: number; azp?: string; sub?: string; name?: string }> {
   if (!/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(String(token ?? ''))) throw fail('That is not a Google sign-in.', 401);
   const r = await fetchImpl(`https://oauth2.googleapis.com/tokeninfo?id_token=${enc(token)}`, { signal: AbortSignal.timeout(10_000) });
   if (!r.ok) throw fail('Google did not accept that token.', 401);
   const t = (await r.json()) as any;
   if (t.iss !== 'accounts.google.com' && t.iss !== 'https://accounts.google.com') throw fail('That token did not come from Google.', 401);
   if (Number(t.exp) * 1000 < Date.now()) throw fail('That token has expired.', 401);
-  return { aud: String(t.aud ?? ''), iss: t.iss, email: String(t.email ?? '').toLowerCase(), email_verified: t.email_verified === true || t.email_verified === 'true', exp: Number(t.exp), azp: t.azp };
+  return { aud: String(t.aud ?? ''), iss: t.iss, email: String(t.email ?? '').toLowerCase(), email_verified: t.email_verified === true || t.email_verified === 'true', exp: Number(t.exp), azp: t.azp, sub: t.sub ? String(t.sub) : undefined, name: t.name ? String(t.name) : undefined };
 }

@@ -1,5 +1,6 @@
 // Paths, settings and the product list.
 
+import { customerStudio, touchesPlatformRepo } from './tenancy.ts';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -32,9 +33,9 @@ export const paths = {
   logs: path.join(DATA, 'logs'),
   reports: path.join(ROOT, 'reports'),
   dashboard: path.join(ROOT, 'dashboard'),
-  /** STUDIO_PRODUCTS points at another products file (tests use a fixture). An org cell (STUDIO_ORG, platform.ts)
-   *  keeps its own in its data folder, which Cloud Run syncs to the cell's bucket (cloudhost.ts); onboarding writes it. */
-  products: process.env.STUDIO_PRODUCTS || (process.env.STUDIO_ORG ? path.join(DATA, 'products.json') : path.join(ROOT, 'products.json')),
+  /** STUDIO_PRODUCTS points at another products file (tests use a fixture). A customer's Studio (tenancy.ts: an org
+   *  cell, STUDIO_ORG, or one a customer claimed) keeps its own in its data folder, which Cloud Run syncs to the cell's bucket (cloudhost.ts); onboarding writes it. */
+  products: process.env.STUDIO_PRODUCTS || (customerStudio() ? path.join(DATA, 'products.json') : path.join(ROOT, 'products.json')),
 };
 for (const d of [DATA, paths.logs, paths.reports]) {
   try {
@@ -120,7 +121,7 @@ export type Product = {
 
 export function loadProducts(): Product[] {
   // A new org cell has no products until onboarding adds one.
-  if (process.env.STUDIO_ORG && !fs.existsSync(paths.products)) return [];
+  if (customerStudio() && !fs.existsSync(paths.products)) return [];
   return JSON.parse(fs.readFileSync(paths.products, 'utf8')).products;
 }
 
@@ -138,7 +139,7 @@ export type ProductInput = {
  * customer's game has (no local servers, deploy steps or devtools: those are J's studio's), checked; written whole.
  */
 export function saveProduct(input: ProductInput): Product {
-  if (!process.env.STUDIO_ORG) throw new StudioError("Products are edited in products.json here (this Studio isn't an org cell).", 409);
+  if (!customerStudio()) throw new StudioError("Products are edited in products.json here (this is J's Studio, not a customer's).", 409);
   const id = String(input.id ?? '').trim().toLowerCase();
   if (!/^[a-z][a-z0-9-]{1,39}$/.test(id)) throw new StudioError('id: 2-40 lower-case letters, digits or dashes, starting with a letter', 400);
   const name = String(input.name ?? '').trim().slice(0, 80);
@@ -147,6 +148,8 @@ export function saveProduct(input: ProductInput): Product {
   const live = input.live ? String(input.live).trim() : undefined;
   if (live && !/^https:\/\/[^\s]+$/.test(live)) throw new StudioError('live: an https:// address', 400);
   if (!live && !input.build) throw new StudioError('Give live (a web address) or build (where builds come from)', 400);
+  // A customer's Studio never takes on one of J's repos (lockdown: anything touching jgriffith3433 is the platform's).
+  if (touchesPlatformRepo(input.repo) || touchesPlatformRepo(input.build?.repo)) throw new StudioError("That repository belongs to Hawkes Studio's owner; add your own game's repository.", 403);
   const playtests = (input.playtests?.length ? input.playtests : [{ scenario: 'smoke', where: 'live' as const }]).slice(0, 20).map((t) => ({
     ...(t.mode === 'site' ? { mode: 'site' as const } : { scenario: String(t.scenario ?? 'smoke').slice(0, 60) }),
     where: 'live' as const, ...(t.device === 'phone' ? { device: 'phone' as const } : {}),
@@ -167,7 +170,7 @@ export function saveProduct(input: ProductInput): Product {
 
 /** Removes a product from an org cell's file. */
 export function removeProduct(id: string) {
-  if (!process.env.STUDIO_ORG) throw new StudioError("Products are edited in products.json here (this Studio isn't an org cell).", 409);
+  if (!customerStudio()) throw new StudioError("Products are edited in products.json here (this is J's Studio, not a customer's).", 409);
   const all = loadProducts();
   if (!all.some((p) => p.id === id)) throw new StudioError(`No product "${id}"`, 404);
   fs.writeFileSync(paths.products, JSON.stringify({ products: all.filter((p) => p.id !== id) }, null, 2));

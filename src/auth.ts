@@ -15,6 +15,7 @@ import type http from 'node:http';
 import { db, newId } from './db.ts';
 import { StudioError } from './config.ts';
 import { cloudMode, ownerKey, googleEmails } from './cloudauth.ts';
+import { customerStudio, platformAdmins, signupMode } from './tenancy.ts';
 import { bearerJwt, cellOrg, platformEmail, studioRole, verifyPlatformToken, type PlatformClaims } from './platform.ts';
 
 db.exec(`
@@ -37,7 +38,18 @@ db.exec(`
     at INTEGER NOT NULL, email TEXT, ip TEXT, ok INTEGER NOT NULL, reason TEXT, ua TEXT
   );
   CREATE INDEX IF NOT EXISTS signin_log_at ON signin_log(at);
+  CREATE TABLE IF NOT EXISTS signups (
+    sub TEXT PRIMARY KEY, email TEXT NOT NULL, name TEXT, created INTEGER NOT NULL, last_seen INTEGER NOT NULL,
+    tries INTEGER NOT NULL DEFAULT 1, status TEXT NOT NULL DEFAULT 'waiting'
+  );
 `);
+// Google accounts are keyed by Google's permanent id (the ID token's sub): an email can change hands or names, the sub
+// never does. via: how a session was made (google, password, platform, invite), so a platform admin's powers need a
+// Google sign-in (lockdown.ts), not a password. signup: how the account was made.
+for (const sql of ['ALTER TABLE users ADD COLUMN google_sub TEXT', 'ALTER TABLE users ADD COLUMN signup TEXT', 'ALTER TABLE sessions ADD COLUMN via TEXT']) {
+  try { db.exec(sql); } catch { /* already there */ }
+}
+db.exec('CREATE UNIQUE INDEX IF NOT EXISTS users_google_sub ON users(google_sub) WHERE google_sub IS NOT NULL');
 
 export const DEFAULT_ADMIN = 'admin@hawkesgen.ai';
 // One name per lane: the cookie is for all of hawkesgen.ai, so studio and studio-beta sharing a name signed each other out
@@ -52,7 +64,8 @@ const RESET_HOURS = 24;
 export const MIN_PASSWORD = 12;
 
 export type Role = 'admin' | 'member';
-export type User = { id: string; email: string; name: string | null; role: Role; must_change: boolean; disabled: boolean; created: number; last_seen: number | null; default_password: boolean };
+export type User = { id: string; email: string; name: string | null; role: Role; must_change: boolean; disabled: boolean; created: number; last_seen: number | null; default_password: boolean; google: boolean };
+export type GoogleProfile = { email: string; sub?: string | null; name?: string | null };
 
 const sha = (s: string) => crypto.createHash('sha256').update(s).digest('hex');
 const token = () => crypto.randomBytes(32).toString('base64url');
@@ -87,7 +100,7 @@ export function weakPassword(pw: string, email?: string) {
 // ------------------------------------------------------------- users
 
 function toUser(r: any): User {
-  return { id: r.id, email: r.email, name: r.name ?? null, role: r.role === 'admin' ? 'admin' : 'member', must_change: !!r.must_change, disabled: !!r.disabled, created: r.created, last_seen: r.last_seen ?? null, default_password: !r.pw_hash };
+  return { id: r.id, email: r.email, name: r.name ?? null, role: r.role === 'admin' ? 'admin' : 'member', must_change: !!r.must_change, disabled: !!r.disabled, created: r.created, last_seen: r.last_seen ?? null, default_password: !r.pw_hash, google: !!r.google_sub };
 }
 
 const normEmail = (e: unknown) => String(e ?? '').trim().toLowerCase();
@@ -208,37 +221,99 @@ export function signIn(emailIn: string, pw: string, meta: { ip?: string | null; 
   return toUser(r);
 }
 
+/** A waiting sign-up (STUDIO_SIGNUP=waitlist): someone who signed in with Google and has no account yet. */
+export class Waitlisted extends StudioError {}
+
 /**
- * The account a verified Google sign-in opens (cloudauth.ts verifyGoogleSignin): an email on STUDIO_GOOGLE_EMAILS is an
- * admin (made the first time, raised to admin if it was a member); any other email only when a user with it already
- * exists (an admin invited them). Accounts made here have no password: Google is how they sign in.
+ * The account a verified Google sign-in opens (cloudauth.ts verifyGoogleProfile). Found by Google's permanent id (sub)
+ * first, then by email (the first Google sign-in links the sub to it; an email already linked to another Google account
+ * is refused). With no account:
+ *   - an open invite for the email makes it, with the invite's role
+ *   - an email on STUDIO_GOOGLE_EMAILS (or, in J's Studio, a platform admin's) is an admin, made the first time and
+ *     raised to admin if it was a member
+ *   - STUDIO_SIGNUP=owner (a customer's own Studio): the first account claims it as its admin while it has none
+ *   - STUDIO_SIGNUP=waitlist: the person is recorded for J (signups) and refused with Waitlisted
+ *   - otherwise refused: ask an admin for an invite
+ * Accounts made here have no password: Google is how they sign in.
  */
-export function googleUser(emailIn: string, meta: { ip?: string | null; ua?: string | null } = {}): User {
-  const email = normEmail(emailIn);
-  const listed = googleEmails().includes(email);
-  const r = db.prepare('SELECT * FROM users WHERE email = ?').get(email) as any;
-  // An open invite for this email: Google accepts it (the account gets the invite's role, the link is used up).
-  const inv = r ? null : db.prepare(`SELECT * FROM invites WHERE email = ? AND kind = 'invite' AND used_at IS NULL AND revoked = 0 AND expires > ? ORDER BY created DESC`).get(email, Date.now()) as any;
-  if (inv && !listed) {
-    db.prepare('INSERT INTO users (id, email, name, role, pw_hash, must_change, created) VALUES (?, ?, ?, ?, NULL, 0, ?)').run(newId('u'), email, null, inv.role === 'admin' ? 'admin' : 'member', Date.now());
-    db.prepare('UPDATE invites SET used_at = ? WHERE id = ?').run(Date.now(), inv.id);
-    logSignin(email, meta.ip ?? null, true, 'joined from an invite with Google', meta.ua);
-    return userByEmail(email)!;
+export function googleUser(who: string | GoogleProfile, meta: { ip?: string | null; ua?: string | null } = {}): User {
+  const p: GoogleProfile = typeof who === 'string' ? { email: who } : who;
+  const email = normEmail(p.email);
+  const sub = p.sub ? String(p.sub).slice(0, 255) : null;
+  const name = p.name ? String(p.name).trim().slice(0, 80) || null : null;
+  const listed = googleEmails().includes(email) || (!customerStudio() && platformAdmins().includes(email));
+  const log = (ok: boolean, why: string) => logSignin(email, meta.ip ?? null, ok, why, meta.ua);
+  let r = (sub ? db.prepare('SELECT * FROM users WHERE google_sub = ?').get(sub) : null) as any;
+  if (r && r.email !== email) {
+    // The Google account's email changed: follow it, unless another account here already has the new one.
+    if (userByEmail(email)) {
+      log(false, 'Google: email changed to one another account here uses');
+      throw new StudioError(`Your Google account's email is now ${email}, and another account here already uses it. Ask an admin to sort it out.`, 409);
+    }
+    db.prepare('UPDATE users SET email = ? WHERE id = ?').run(email, r.id);
+    r = db.prepare('SELECT * FROM users WHERE id = ?').get(r.id);
   }
-  if (!r && !listed) {
-    logSignin(email, meta.ip ?? null, false, 'Google: no account for this email', meta.ua);
-    throw new StudioError(`${email} has no account here. Ask an admin for an invite.`, 403);
+  if (!r) {
+    r = db.prepare('SELECT * FROM users WHERE email = ?').get(email) as any;
+    if (r?.google_sub && sub && r.google_sub !== sub) {
+      log(false, 'Google: email linked to another Google account');
+      throw new StudioError(`${email} here belongs to a different Google account.`, 403);
+    }
   }
   if (r?.disabled) {
-    logSignin(email, meta.ip ?? null, false, 'Google: account disabled', meta.ua);
+    log(false, 'Google: account disabled');
     throw new StudioError('This account is disabled.', 403);
   }
-  if (!r) db.prepare('INSERT INTO users (id, email, name, role, pw_hash, must_change, created) VALUES (?, ?, ?, ?, NULL, 0, ?)').run(newId('u'), email, null, 'admin', Date.now());
-  else if (listed && r.role !== 'admin') db.prepare(`UPDATE users SET role = 'admin' WHERE id = ?`).run(r.id);
-  // An invite or reset left the account waiting for a password: Google is enough.
-  db.prepare('UPDATE users SET must_change = 0 WHERE email = ?').run(email);
-  logSignin(email, meta.ip ?? null, true, 'signed in with Google', meta.ua);
-  return userByEmail(email)!;
+  const make = (role: Role, how: string) => {
+    db.prepare('INSERT INTO users (id, email, name, role, pw_hash, must_change, created, google_sub, signup) VALUES (?, ?, ?, ?, NULL, 0, ?, ?, ?)').run(newId('u'), email, name, role, Date.now(), sub, how);
+    return db.prepare('SELECT * FROM users WHERE email = ?').get(email) as any;
+  };
+  if (!r) {
+    // An open invite for this email: Google accepts it (the account gets the invite's role, the link is used up).
+    const inv = db.prepare(`SELECT * FROM invites WHERE email = ? AND kind = 'invite' AND used_at IS NULL AND revoked = 0 AND expires > ? ORDER BY created DESC`).get(email, Date.now()) as any;
+    if (inv && !listed) {
+      r = make(inv.role === 'admin' ? 'admin' : 'member', 'invite');
+      db.prepare('UPDATE invites SET used_at = ? WHERE id = ?').run(Date.now(), inv.id);
+      log(true, 'joined from an invite with Google');
+      return toUser(r);
+    }
+    if (listed) r = make('admin', 'listed');
+    else if (signupMode() === 'owner' && !admins()) {
+      r = make('admin', 'owner');
+      log(true, 'claimed this Studio with Google (its first admin)');
+      return toUser(r);
+    } else if (signupMode() === 'waitlist' && sub) {
+      db.prepare(`INSERT INTO signups (sub, email, name, created, last_seen) VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(sub) DO UPDATE SET email = excluded.email, name = COALESCE(excluded.name, name), last_seen = excluded.last_seen, tries = tries + 1`).run(sub, email, name, Date.now(), Date.now());
+      log(false, 'Google: on the waitlist');
+      throw new Waitlisted(`Thanks, ${email} is on the list. You'll get an email when your Studio is ready.`, 403);
+    } else {
+      log(false, 'Google: no account for this email');
+      throw new StudioError(`${email} has no account here. Ask an admin for an invite.`, 403);
+    }
+  } else if (listed && r.role !== 'admin') db.prepare(`UPDATE users SET role = 'admin' WHERE id = ?`).run(r.id);
+  // Link Google's id the first time; fill in the name; an invite or reset left waiting for a password: Google is enough.
+  db.prepare('UPDATE users SET must_change = 0, google_sub = COALESCE(google_sub, ?), name = COALESCE(name, ?) WHERE id = ?').run(sub, name, r.id);
+  log(true, 'signed in with Google');
+  return getUser(r.id)!;
+}
+
+/** The waitlist (STUDIO_SIGNUP=waitlist), newest first: J's to let in (an invite) or decline. */
+export function listSignups(status = 'waiting') {
+  return db.prepare('SELECT sub, email, name, created, last_seen, tries, status FROM signups WHERE status = ? ORDER BY last_seen DESC LIMIT 200').all(status) as any[];
+}
+
+/** Lets a waiting sign-up in (an invite for their email, which their next Google sign-in uses) or declines it. */
+export function decideSignup(sub: string, decision: 'invite' | 'decline', by: User) {
+  const s = db.prepare('SELECT * FROM signups WHERE sub = ?').get(sub) as any;
+  if (!s) throw new StudioError('No such sign-up', 404);
+  if (decision === 'decline') {
+    db.prepare(`UPDATE signups SET status = 'declined' WHERE sub = ?`).run(sub);
+    return { declined: s.email };
+  }
+  const inv = userByEmail(s.email) ? null : createInvite({ email: s.email, role: 'member', by });
+  db.prepare(`UPDATE signups SET status = 'invited' WHERE sub = ?`).run(sub);
+  return { invited: s.email, invite: inv };
 }
 
 /**
@@ -267,11 +342,13 @@ export function platformBearerUser(req: http.IncomingMessage): User | null {
   }
 }
 
-export function startSession(user: User, { remember = false, ip, ua }: { remember?: boolean; ip?: string | null; ua?: string | null } = {}) {
+export type SessionVia = 'google' | 'password' | 'platform' | 'invite';
+
+export function startSession(user: User, { remember = false, ip, ua, via = 'password' }: { remember?: boolean; ip?: string | null; ua?: string | null; via?: SessionVia } = {}) {
   const t = token();
   const now = Date.now();
-  db.prepare('INSERT INTO sessions (id, user, created, expires, remember, ip, ua, last_seen) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
-    .run(sha(t), user.id, now, now + (remember ? LONG : SHORT), remember ? 1 : 0, ip ?? null, (ua ?? '').slice(0, 200), now);
+  db.prepare('INSERT INTO sessions (id, user, created, expires, remember, ip, ua, last_seen, via) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
+    .run(sha(t), user.id, now, now + (remember ? LONG : SHORT), remember ? 1 : 0, ip ?? null, (ua ?? '').slice(0, 200), now, via);
   db.prepare('DELETE FROM sessions WHERE expires < ?').run(now);
   return { token: t, remember };
 }
@@ -284,6 +361,13 @@ export function endSession(t: string | null) {
 export function endSessionsFor(userId: string, except?: string | null) {
   if (except) db.prepare('DELETE FROM sessions WHERE user = ? AND id != ?').run(userId, sha(except));
   else db.prepare('DELETE FROM sessions WHERE user = ?').run(userId);
+}
+
+/** How a live session was made (null: no such session). */
+export function sessionVia(t: string | null | undefined): SessionVia | null {
+  if (!t) return null;
+  const s = db.prepare('SELECT via, expires FROM sessions WHERE id = ?').get(sha(t)) as any;
+  return s && s.expires >= Date.now() ? (s.via ?? 'password') : null;
 }
 
 /** The user behind a session token (sliding: a used 12-hour session stays alive), or null. */
@@ -407,10 +491,10 @@ function basicLogin(req: http.IncomingMessage) {
 }
 
 /** J as a User when the old login was used (no account row: it's J's script). */
-const SCRIPT_J: User = { id: 'u_script_j', email: 'j (script login)', name: 'J', role: 'admin', must_change: false, disabled: false, created: 0, last_seen: null, default_password: false };
+export const SCRIPT_J: User = { id: 'u_script_j', email: 'j (script login)', name: 'J', role: 'admin', must_change: false, disabled: false, created: 0, last_seen: null, default_password: false, google: false };
 
 /** J's owner key (Cloud Run: STUDIO_OWNER_KEY, sent by src/client.ts from ~/.hawkes/client.json studioKey). */
-const OWNER_J: User = { ...SCRIPT_J, id: 'u_owner_key', email: 'j (owner key)' };
+export const OWNER_J: User = { ...SCRIPT_J, id: 'u_owner_key', email: 'j (owner key)' };
 
 /** Who sent a request: a signed-in user, J's script login or owner key, or null (no account: Talk, agents and Studio's own calls on the server). */
 export function requester(req: http.IncomingMessage): User | null {
@@ -426,14 +510,19 @@ export function memberRefusal(req: http.IncomingMessage, route: string, method: 
   if (method === 'GET') return null;
   const u = sessionUser(cookieToken(req)) ?? platformBearerUser(req);
   if (!u || u.role === 'admin') return null;
+  return adminOnlyRoute(route) ? `Only an admin can do that (you're signed in as ${u.email}, a member).` : null;
+}
+
+/** The routes only an admin may change (any method but GET): going live, rollbacks, merges, money and limits, users. */
+export function adminOnlyRoute(route: string) {
   const adminOnly = [
     /^\/api\/(runs|jobs|changes)\/[\w-]+\/(cancel|resume)$/, /^\/api\/deploy\//, /^\/api\/rollback\//, /^\/api\/changes\/c_[0-9a-f]+\/approve$/, /^\/api\/approvals\/a_[0-9a-f]+\/(approve|deny)$/,
     /^\/api\/products\//, /^\/api\/agents\/settings$/, /^\/api\/pm\/settings$/, /^\/api\/settings$/, /^\/api\/costs\/settings$/, /^\/api\/notify$/,
-    /^\/api\/content\/wire$/, /^\/api\/inbox\/answer$/, /^\/api\/roadmap\/.*gpu/, /^\/api\/users/, /^\/api\/invites/, /^\/api\/memory\/seed$/, /^\/api\/broadcast\/live$/, /^\/api\/social\/(config|disconnect)/, /^\/api\/services\/restart$/, /^\/api\/analytics\/marks$/,
+    /^\/api\/content\/wire$/, /^\/api\/claude\//, /^\/api\/inbox\/answer$/, /^\/api\/roadmap\/.*gpu/, /^\/api\/users/, /^\/api\/invites/, /^\/api\/memory\/seed$/, /^\/api\/broadcast\/live$/, /^\/api\/social\/(config|disconnect)/, /^\/api\/services\/restart$/, /^\/api\/analytics\/marks$/,
     // Through the library tab's Gen relay: making and revising takes, and any job, cost money.
     /^\/api\/gen\/v1\/entities\/.+\/(make|revise)$/, /^\/api\/gen\/v1\/(jobs|run|fleet|builder|playtester|settings)/,
   ];
-  return adminOnly.some((r) => r.test(route)) ? `Only an admin can do that (you're signed in as ${u.email}, a member).` : null;
+  return adminOnly.some((r) => r.test(route));
 }
 
 /** Where to go after signing in: a hawkesgen.ai address or a path on this site; anything else goes to Studio. */

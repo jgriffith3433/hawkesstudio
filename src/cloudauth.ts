@@ -11,8 +11,10 @@
 //     - Bearer STUDIO_AGENT_KEY: agents' and Talk's Claude Code in their Cloud Run jobs. Never J: sandbox.ts
 //       requestUser() calls it 'agent', so the guards (guards.ts) apply exactly as to the sandboxed Linux user.
 //   Continue with Google: Google's button gives the page an ID token for STUDIO_GOOGLE_CLIENT_ID; Studio asks Google
-//   whether it is real, then signs in the account with that email: one on STUDIO_GOOGLE_EMAILS becomes (or stays) an
-//   admin, any other verified email signs in only as a user who already exists (an invite made it). No mail needed.
+//   whether it is real, then signs in the account with Google's permanent id (sub), else that email: one on
+//   STUDIO_GOOGLE_EMAILS becomes (or stays) an admin, any other verified email signs in only as a user who already exists
+//   (an invite made it), unless STUDIO_SIGNUP says otherwise (tenancy.ts: waitlist, or owner for a customer's own
+//   Studio). No mail needed.
 
 import crypto from 'node:crypto';
 import type http from 'node:http';
@@ -74,15 +76,19 @@ export const googleEmails = () => String(process.env.STUDIO_GOOGLE_EMAILS ?? '')
 /** The client id the sign-in button uses, or null while Google sign-in isn't set up. */
 export const googleClientId = () => process.env.STUDIO_GOOGLE_CLIENT_ID?.trim() || null;
 
-/** A Google sign-in's email, checked: real, for our client, verified. Throws a sentence otherwise. */
-export async function verifyGoogleSignin(credential: string, check = googleIdToken): Promise<string> {
+/** A Google sign-in, checked: real, for our client, verified. Its permanent id (sub) keys the account (auth.ts
+ *  googleUser). Throws a sentence otherwise. */
+export async function verifyGoogleProfile(credential: string, check = googleIdToken): Promise<{ email: string; sub: string | null; name: string | null }> {
   const clientId = googleClientId();
   if (!clientId) throw new Error('Google sign-in is not set up on this Studio.');
   const t = await check(credential);
   if (t.aud !== clientId) throw new Error('That sign-in was made for another app.');
   if (!t.email_verified || !t.email) throw new Error('That Google account has no verified email.');
-  return t.email;
+  return { email: t.email, sub: t.sub ?? null, name: t.name ?? null };
 }
+
+/** A Google sign-in's email, checked (verifyGoogleProfile). */
+export const verifyGoogleSignin = async (credential: string, check = googleIdToken) => (await verifyGoogleProfile(credential, check)).email;
 
 // ------------------------------------------------------------ Cloud Scheduler
 

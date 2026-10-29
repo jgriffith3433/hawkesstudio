@@ -126,13 +126,16 @@ const server = http.createServer(async (req, res) => {
     // A signed-in member can use Studio, but going live, merging into main, money and users are an admin's (auth.ts).
     const memberNo = (await import('./auth.ts')).memberRefusal(req, route, method);
     if (memberNo) return send(res, 403, { error: memberNo });
+    // The platform admin's features (lockdown.ts): J's alone, in his Studio and in every customer's, whatever their role.
+    const platformNo = (await import('./lockdown.ts')).platformRefusal(req, route, method);
+    if (platformNo) return send(res, 403, { error: platformNo });
     // The 🐞 widget's posts from a beta site on Cloudflare (server/beta-sites passes them here; dev-front.ts).
     if (cloudMode() && route.startsWith('/dev/__studio/')) {
       const { betaHostReport } = await import('./dev-front.ts');
       const { laneOf } = await import('./sitekeys.ts');
       if (await betaHostReport(req, res, route, process.env.STUDIO_COOKIE_DOMAIN ?? 'hawkesgen.ai', laneOf())) return;
     }
-    if ((route === '/api/me' || route.startsWith('/api/users') || route.startsWith('/api/invites')) && (await (await import('./auth-pages.ts')).handleUsersApi(req, res, url))) return;
+    if ((route === '/api/me' || route.startsWith('/api/users') || route.startsWith('/api/invites') || route.startsWith('/api/signups')) && (await (await import('./auth-pages.ts')).handleUsersApi(req, res, url))) return;
     // The shared memory (memory.ts, memory-api.ts): the Memory tab, the memory_* tools.
     if (route === '/api/memory' || route.startsWith('/api/memory/')) return await (await import('./memory-api.ts')).handleMemory(req, res, url, send, readJson);
     if (route === '/api/videos' || route.startsWith('/api/videos/')) return await (await import('./videos.ts')).handleVideosApi(req, res, url, send, readJson, await (await import('./inbox.ts')).actor(req));
@@ -155,7 +158,7 @@ const server = http.createServer(async (req, res) => {
     // The dashboard's one push stream (stream.ts): "something changed" events instead of polling.
     if (route === '/api/stream' && method === 'GET') return (await import('./stream.ts')).handleStream(req, res, { talkUnseen: unseenConversations() });
     if (route === '/api/products' && method === 'GET') return send(res, 200, { products: loadProducts() });
-    // An org cell's games (config.ts saveProduct): onboarding adds and edits them; admins only (memberRefusal).
+    // A customer's games (config.ts saveProduct): onboarding adds and edits them; admins only (memberRefusal).
     const prod = /^\/api\/products\/([a-z][a-z0-9-]{1,39})$/.exec(route);
     if (prod && method === 'PUT') {
       const { saveProduct } = await import('./config.ts');
@@ -557,6 +560,9 @@ const server = http.createServer(async (req, res) => {
     if (route === '/api/changes' && method === 'GET') return send(res, 200, { changes: listChanges({ status: q('status'), product: q('product') }).map((c) => ({ ...c, stage: stageOf(c, c.verify) })), today: costToday(), settings: agentSettings() });
     if (route === '/api/changes' && method === 'POST') {
       const b = await readJson(req);
+      // An agent on Studio or Gen themselves (infra agents) is the platform admin's (lockdown.ts).
+      const infraNo = (await import('./lockdown.ts')).infraRefusal(req, String(b.product ?? ''));
+      if (infraNo) return send(res, 403, { error: infraNo });
       const by = origin ? 'Talk' : typeof b.by === 'string' ? b.by.slice(0, 60) : null;
       // A premium model (Opus, Fable) only on J's own request (routing.ts): checked before anything starts.
       const { premiumRequest, grantPremium } = await import('./routing.ts');
@@ -643,12 +649,14 @@ const server = http.createServer(async (req, res) => {
 
     // Claude accounts (claude-accounts.ts): the logins Claude Code runs with. Anyone may list them (labels, never tokens);
     // signing in, switching, renaming, checking and removing are J's click on the dashboard only.
-    if (route === '/api/claude/accounts' && method === 'GET') return send(res, 200, (await import('./claude-accounts.ts')).listAccounts());
+    if (route === '/api/claude/accounts' && method === 'GET') return send(res, 200, { ...(await import('./claude-accounts.ts')).listAccounts(), ...((await import('./tenancy.ts')).customerStudio() ? { customer: (await import('./claude.ts')).customerClaude() } : {}) });
     if (route.startsWith('/api/claude/') && method !== 'GET') {
       const why = (await import('./approvals.ts')).notJClick(req);
       if (why) return send(res, 403, { error: `Claude accounts change only from J's own click in Settings: ${why}.` });
       const ca = await import('./claude-accounts.ts');
       const b = await readJson(req);
+      // A customer's own Anthropic API key (claude.ts), when they don't sign in a subscription.
+      if (route === '/api/claude/key' && method === 'POST') return send(res, 200, (await import('./claude.ts')).setCustomerKey(b.key ?? null));
       if (route === '/api/claude/signin' && method === 'POST') return send(res, 200, await ca.startSignin(String(b.label ?? ''), 'J'));
       if (route === '/api/claude/signin/code' && method === 'POST') {
         const r = await ca.finishSignin(String(b.code ?? ''), { use: b.use !== false });

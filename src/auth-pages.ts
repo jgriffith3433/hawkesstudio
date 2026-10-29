@@ -5,7 +5,7 @@ import type http from 'node:http';
 import { StudioError } from './config.ts';
 import * as A from './auth.ts';
 import { requestUser } from './sandbox.ts';
-import { googleClientId, verifyGoogleSignin } from './cloudauth.ts';
+import { googleClientId, verifyGoogleProfile } from './cloudauth.ts';
 import { laneOf, makePass, passReturn, passSetCookie, siteKeys } from './sitekeys.ts';
 
 const esc = (s: unknown) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!);
@@ -85,7 +85,7 @@ function googleBlock(next: string) {
   if (!id) return '';
   return `<div id="g" style="display:flex;justify-content:center;min-height:44px;margin:4px 0 6px"></div><div class="err" id="gerr" hidden></div>
 <script src="https://accounts.google.com/gsi/client" async onload="hsGoogle()"></script>
-<script>function hsGoogle(){google.accounts.id.initialize({client_id:${JSON.stringify(id)},callback:function(r){fetch('/auth/google',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({credential:r.credential,next:${JSON.stringify(next)}})}).then(function(x){return x.json().then(function(j){if(x.ok)location.href=j.next||'/';else{var e=document.getElementById('gerr');e.hidden=false;e.textContent=j.error||('HTTP '+x.status);}});});}});google.accounts.id.renderButton(document.getElementById('g'),{theme:'filled_black',size:'large',text:'continue_with',shape:'pill'});}</script>
+<script>function hsGoogle(){google.accounts.id.initialize({client_id:${JSON.stringify(id)},callback:function(r){fetch('/auth/google',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({credential:r.credential,next:${JSON.stringify(next)}})}).then(function(x){return x.json().then(function(j){if(x.ok)location.href=j.next||'/';else{var e=document.getElementById('gerr');e.hidden=false;e.className=j.waitlist?'ok':'err';e.textContent=j.error||('HTTP '+x.status);}});});}});google.accounts.id.renderButton(document.getElementById('g'),{theme:'filled_black',size:'large',text:'continue_with',shape:'pill'});}</script>
 <details style="margin-top:10px"><summary><small>Sign in with a password instead</small></summary>`;
 }
 
@@ -132,8 +132,8 @@ ${invite ? '<label for="name">Your name</label><input id="name" name="name" type
 <button type="submit">${invite ? 'Create my account' : 'Save password'}</button></form>`);
 }
 
-function signedInCookie(req: http.IncomingMessage, user: A.User, remember: boolean) {
-  const s = A.startSession(user, { remember, ...meta(req) });
+function signedInCookie(req: http.IncomingMessage, user: A.User, remember: boolean, via: A.SessionVia = 'password') {
+  const s = A.startSession(user, { remember, via, ...meta(req) });
   return A.sessionCookie(req, s.token, A.cookieAge(remember));
 }
 
@@ -201,12 +201,12 @@ export async function handleAuthRoute(req: http.IncomingMessage, res: http.Serve
   if (route === '/auth/google' && method === 'POST') {
     const f = await form(req);
     try {
-      const email = await verifyGoogleSignin(String(f.credential ?? ''));
-      const u = A.googleUser(email, meta(req));
-      json(res, 200, { ok: true, next: A.safeNext(f.next) }, { 'Set-Cookie': signedInCookie(req, u, true) });
+      const profile = await verifyGoogleProfile(String(f.credential ?? ''));
+      const u = A.googleUser(profile, meta(req));
+      json(res, 200, { ok: true, next: A.safeNext(f.next) }, { 'Set-Cookie': signedInCookie(req, u, true, 'google') });
     } catch (e: any) {
-      A.logSignin(null, A.clientIp(req), false, `Google: ${e.message ?? e}`, String(req.headers['user-agent'] ?? ''));
-      json(res, e.status === 403 ? 403 : 401, { error: e.message ?? String(e) });
+      if (!(e instanceof StudioError)) A.logSignin(null, A.clientIp(req), false, `Google: ${e.message ?? e}`, String(req.headers['user-agent'] ?? ''));
+      json(res, e.status === 403 || e.status === 409 ? e.status : 401, { error: e.message ?? String(e), ...(e instanceof A.Waitlisted ? { waitlist: true } : {}) });
     }
     return true;
   }
@@ -220,7 +220,7 @@ export async function handleAuthRoute(req: http.IncomingMessage, res: http.Serve
       if (!P.cellOrg()) throw new Error('This Studio is not an org cell.');
       await P.primeToken(t);
       const u = A.platformUser(P.verifyPlatformToken(t), { ...meta(req), log: true });
-      redirect(res, A.safeNext(f.next), { 'Set-Cookie': signedInCookie(req, u, true) });
+      redirect(res, A.safeNext(f.next), { 'Set-Cookie': signedInCookie(req, u, true, 'platform') });
     } catch (e: any) {
       A.logSignin(null, A.clientIp(req), false, `hawkesgen.ai: ${e.message ?? e}`, String(req.headers['user-agent'] ?? ''));
       json(res, e.status === 403 ? 403 : 401, { error: `Couldn't sign you in from hawkesgen.ai: ${e.message ?? e}` });
@@ -264,7 +264,7 @@ export async function handleAuthRoute(req: http.IncomingMessage, res: http.Serve
       if (f.password !== f.confirm) throw new StudioError('The two passwords don\'t match.');
       const u = A.acceptInvite(f.token, f.password, f.name);
       A.logSignin(u.email, A.clientIp(req), true, i.kind === 'invite' ? 'joined from an invite' : 'reset password from a link', String(req.headers['user-agent'] ?? ''));
-      redirect(res, '/', { 'Set-Cookie': signedInCookie(req, u, false) });
+      redirect(res, '/', { 'Set-Cookie': signedInCookie(req, u, false, 'invite') });
     } catch (e: any) {
       html(res, 400, invitePage(i, f.token, e.message));
     }
@@ -304,7 +304,28 @@ export async function handleUsersApi(req: http.IncomingMessage, res: http.Server
   const method = req.method ?? 'GET';
   if (route === '/api/me') {
     const u = A.requester(req);
-    json(res, 200, { user: u ? { email: u.email, name: u.name, role: u.role } : null });
+    const L = await import('./lockdown.ts');
+    const T = await import('./tenancy.ts');
+    const products = (await import('./config.ts')).loadProducts();
+    // What this viewer sees: the platform admin's tabs and boxes are hidden from everyone else; a customer's Studio
+    // with no game yet opens onboarding for its admins.
+    json(res, 200, {
+      user: u ? { email: u.email, name: u.name, role: u.role } : null, ...L.hiddenFor(req),
+      customer: T.customerStudio(), signup: T.signupMode(),
+      onboarding: T.customerStudio() && u?.role === 'admin' && !products.length,
+      claude: T.customerStudio() ? (await import('./claude.ts')).customerClaude() : null,
+    });
+    return true;
+  }
+  if (route === '/api/signups' || route.startsWith('/api/signups/')) {
+    // The waitlist (tenancy.ts STUDIO_SIGNUP=waitlist): the platform admin's (lockdown.ts), so only J reaches here.
+    const admin = adminOf(req);
+    const m = /^\/api\/signups\/([\w.-]{1,255})\/(invite|decline)$/.exec(route);
+    if (route === '/api/signups' && method === 'GET') json(res, 200, { signups: A.listSignups(url.searchParams.get('status') ?? 'waiting') });
+    else if (m && method === 'POST') {
+      const r = A.decideSignup(decodeURIComponent(m[1]), m[2] as 'invite' | 'decline', admin);
+      json(res, 200, r.invite ? { ...r, invite: { id: r.invite.id, email: r.invite.email }, ...(await deliver(r.invite, admin)) } : r);
+    } else json(res, 404, { error: `No route ${method} ${route}` });
     return true;
   }
   if (!route.startsWith('/api/users') && !route.startsWith('/api/invites')) return false;
