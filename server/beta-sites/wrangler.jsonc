@@ -12,7 +12,7 @@
     "DOMAIN": "hawkesgen.ai",
     // The Cloud Run addresses (the keys and the 🐞 posts go straight there) and where people sign in.
     "STUDIO_ORIGIN_LIVE": "https://studio-388576319982.us-east4.run.app",
-    "STUDIO_ORIGIN_BETA": "https://studio-beta-388576319982.us-east4.run.app",
+    "STUDIO_ORIGIN_BETA": "https://studio-beta-388576319982.us-central1.run.app",
     "STUDIO_PUBLIC_LIVE": "https://studio.hawkesgen.ai",
     "STUDIO_PUBLIC_BETA": "https://studio-beta.hawkesgen.ai"
   },

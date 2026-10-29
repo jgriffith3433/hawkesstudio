@@ -32,10 +32,13 @@ jobs:
     steps:
       - name: The lane
         run: |
+          # beta runs in us-central1 (its own 20 vCPUs, J 2026-10-29: hawkesstudio infra/README.md); images stay in $REGION's registry.
           if [ "$GITHUB_REF_NAME" = beta ]; then
+            echo "RUN_REGION=us-central1" >> "$GITHUB_ENV"
             echo "SERVICE=studio-beta" >> "$GITHUB_ENV"; echo "JOB=studio-agent-beta" >> "$GITHUB_ENV"
             echo "HEALTH=https://studio-beta.hawkesgen.ai/api/health" >> "$GITHUB_ENV"
           else
+            echo "RUN_REGION=$REGION" >> "$GITHUB_ENV"
             echo "SERVICE=studio" >> "$GITHUB_ENV"; echo "JOB=studio-agent" >> "$GITHUB_ENV"
             echo "HEALTH=https://studio.hawkesgen.ai/api/health" >> "$GITHUB_ENV"
           fi
@@ -52,13 +55,13 @@ jobs:
         run: node tools/studio-cloudrun/build.mjs --project "$PROJECT" --region "$REGION" --commit "$GITHUB_SHA" --apply
       - name: Deploy it, keeping the previous revision to fall back on
         run: |
-          prev=$(gcloud run services describe "$SERVICE" --region "$REGION" --project "$PROJECT" --format='value(status.latestReadyRevisionName)')
+          prev=$(gcloud run services describe "$SERVICE" --region "$RUN_REGION" --project "$PROJECT" --format='value(status.latestReadyRevisionName)')
           [ -n "$prev" ] || { echo "No $SERVICE service yet: J runs tools/studio-cloudrun/deploy.ps1 for this lane first"; exit 1; }
-          prevJob=$(gcloud run jobs describe "$JOB" --region "$REGION" --project "$PROJECT" --format='value(spec.template.spec.template.spec.containers[0].image)')
+          prevJob=$(gcloud run jobs describe "$JOB" --region "$RUN_REGION" --project "$PROJECT" --format='value(spec.template.spec.template.spec.containers[0].image)')
           echo "prev=$prev" >> "$GITHUB_ENV"; echo "prevJob=$prevJob" >> "$GITHUB_ENV"
           tag=$(node -e "console.log(require('./.data/cloudrun/studio-image.json').tag)")
-          gcloud run services update "$SERVICE" --image "$tag" --region "$REGION" --project "$PROJECT" --format=none
-          gcloud run jobs update "$JOB" --image "$tag" --region "$REGION" --project "$PROJECT" --format=none
+          gcloud run services update "$SERVICE" --image "$tag" --region "$RUN_REGION" --project "$PROJECT" --format=none
+          gcloud run jobs update "$JOB" --image "$tag" --region "$RUN_REGION" --project "$PROJECT" --format=none
       - name: Health check (back to the previous revision if it fails)
         run: |
           for i in $(seq 1 18); do
@@ -67,6 +70,6 @@ jobs:
             sleep 10
           done
           echo "Not healthy: back to $prev"
-          gcloud run services update-traffic "$SERVICE" --to-revisions "$prev=100" --region "$REGION" --project "$PROJECT" --format=none
-          [ -n "$prevJob" ] && gcloud run jobs update "$JOB" --image "$prevJob" --region "$REGION" --project "$PROJECT" --format=none
+          gcloud run services update-traffic "$SERVICE" --to-revisions "$prev=100" --region "$RUN_REGION" --project "$PROJECT" --format=none
+          [ -n "$prevJob" ] && gcloud run jobs update "$JOB" --image "$prevJob" --region "$RUN_REGION" --project "$PROJECT" --format=none
           exit 1

@@ -15,7 +15,7 @@
     "beta": {
       "routes": [{ "pattern": "studio-beta.hawkesgen.ai/*", "zone_name": "hawkesgen.ai" }],
       // Cloud Run's deterministic address for the service studio-beta.
-      "vars": { "STUDIO_ORIGIN": "https://studio-beta-388576319982.us-east4.run.app" }
+      "vars": { "STUDIO_ORIGIN": "https://studio-beta-388576319982.us-central1.run.app" }
     }
   }
 }
