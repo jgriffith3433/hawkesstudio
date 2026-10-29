@@ -154,7 +154,10 @@ async function runAll(run: string, ids: string[], o: RunOptions) {
   if (isServer() && !hadSteps(run, 'repo')) {
     db.prepare('UPDATE runs SET detail = ? WHERE id = ?').run('updating repos from GitHub', run);
     // On Cloud Run the disk is the instance's memory: only the repos this run's products live in (cloned on demand).
-    const only = process.env.K_SERVICE ? [...new Set(ids.flatMap((p) => { const x = getProduct(p); return [x.repo, x.site].map((r) => r.split('/')[0]); }))] : undefined;
+    // Never a Unity game's repos there (source or website, up to 8 GB of Game/v* history): Gen builds from GitHub and the
+    // beta sites publish from GitHub. Cloning them filled the memory disk until the
+    // instance died, every restart resuming the run and cloning again (the daily run, 2026-10-29).
+    const only = process.env.K_SERVICE ? [...new Set(ids.flatMap((p) => { const x = getProduct(p); return (x.build ? [] : [x.repo, x.site]).map((r) => r.split('/')[0]); }))] : undefined;
     const synced = await syncRepos(only);
     // Product source repos are on beta (repos.ts); the staging sites (<sub>.hawkesgen.ai) follow it.
     void import('./previews.ts').then(({ previewsAfterSync }) => previewsAfterSync(synced)).catch(() => {});
@@ -1044,7 +1047,7 @@ async function betaBody(id: string, p: Product, { focus, criteria, scenario, opt
     const top = p.repo.split('/')[0];
     // A build tag on Cloud Run needs no source checkout here: Gen builds that commit from GitHub. Cloning a Unity repo onto
     // the instance's memory disk failed with no message and cost every run minutes (2026-10-29).
-    const cloudTag = Boolean(tag && process.env.K_SERVICE);
+    const cloudTag = Boolean((tag || p.build) && process.env.K_SERVICE);
     if (lane && repoMap()[top] && !hadSteps(id, 'repo') && !cloudTag) {
       const g = startStep(id, p.id, 'repo', top);
       const r = await syncRepo(top, repoMap()[top], BRANCH, betaFolders().has(top) ? BETA : undefined);

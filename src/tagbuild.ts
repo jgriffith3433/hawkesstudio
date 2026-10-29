@@ -175,6 +175,9 @@ export async function studioTagDeps(run: string): Promise<TagBuildDeps> {
       const { remoteSites } = await import('./previews-cloud.ts');
       if (remoteSites()) void import('./previews.ts').then(({ buildPreview }) => buildPreview(p.id)).catch(() => {});
       await waitForBetaPlays(p.id, run);
+      // On Cloud Run there is no local website copy: the published R2 site is the beta copy, and a Unity website repo
+      // (Sick Of It's is 8 GB) doesn't fit the instance's memory disk.
+      if (remoteSites()) return void beta.saveBetaBuild(p, { sha: b.sha, base: b.base, ok: true, at: Date.now(), job: b.job, version: b.version, cost: b.cost, minutes: b.minutes });
       const { site } = beta.repoDirs(p);
       await beta.ensureCloned(site);
       await beta.fetchOrigin(site);
