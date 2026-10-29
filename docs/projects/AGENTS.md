@@ -31,10 +31,10 @@ Canon that every project shares (from `hawkesbiomedicalnew/AGENTS.md` and `phori
 | **I Can Be** (AI-assisted full-body assessment) | icanbe.ai | `icanbeaiwebsite` | Vite + Babylon.js (port 8090) | Direction undecided. Currently a real-time "day of a developer" simulation; the character is "AI". The day is defined in `day.config.js`. |
 | **The Place Department** (HIPAA-compliant document storage) | theplacedepartment.com | `theplacedepartmentwebsite` | Unity `breakingthrough` → WebGL | Prototype roguelike strategy/wave-defense game. |
 | **Imagine Live TV** (live medical education) | imaginelivetv.com | `imaginelivetvwebsite` | Vite static site | Choose-your-path video story "The Final Spark" (one folder per branch) and a blog. Planning notes in `TheFinalSpark/`. |
-| **Hawkes Gen** (laboratory services; the customer portal) | hawkesgen.ai | `hawkesgenwebsite` | Node server app with its own database and Stripe, on its own EC2 box (not GitHub Pages) | Accounts, credits, payments, the landing page, portfolio and Creator Studio UI for public Hawkes Gen. A customer of Hawkes Gen like Studio (`hawkesstudio/docs/cloud.md`, "hawkesgen.ai: the customer portal"). |
+| **Hawkes Gen** (laboratory services; the customer portal) | hawkesgen.ai | `hawkesgenwebsite` | Server app with Stripe on Firebase (Hosting, Functions, Firestore; project `hawkes-prod`), not GitHub Pages | Accounts, credits, payments, the landing page, portfolio and Creator Studio UI for public Hawkes Gen. A customer of Hawkes Gen like Studio (`hawkesstudio/docs/cloud.md`, "hawkesgen.ai: the customer portal"). |
 
 All repos are on GitHub as `jgriffith3433/<repo>`. **Every website except `hawkesgenwebsite` (the Hawkes Gen portal, which
-runs on its own EC2 box) is hosted on GitHub Pages**: static files
+runs on Firebase) is hosted on GitHub Pages**: static files
 only, with no server code, no custom headers and no backend. Each site has a `CNAME` for its domain. Any Docker,
 nginx or Flask files in a site repo are leftovers. Most have `auto-start.bat` /
 `auto-stop.bat` for local dev.
@@ -44,12 +44,13 @@ and `README.md` product lists, and add it to the table above.
 
 ## Hawkes Gen: shared generative AI (infrastructure, not a product)
 
-**`hawkesgen/`** is the local service every game and site uses for custom generative AI: the AWS GPU fleet
-running ComfyUI, ElevenLabs, Claude, and local tools (cutout, framing, seamless textures, material maps).
+**`hawkesgen/`** is the service every game and site uses for custom generative AI: GPU work on ComfyUI (any GPU
+provider: Cloud Run, RunPod, Modal, the AWS fleet when AWS is back), ElevenLabs, Claude, and local tools (cutout, framing, seamless textures, material maps).
 One queue shares the GPU servers between projects; every output goes into a browsable library with the recipe
 that made it; usage and cost are tracked per project and API key. Projects never hold AWS or API keys.
 
-- **Start:** `hawkesgen\auto-start.bat`. The dashboard and API are at **http://127.0.0.1:8790** (`/v1/...`).
+- **Where:** **https://gen.hawkesgen.ai** (live, Cloud Run) and **https://gen-beta.hawkesgen.ai** (beta); every client on
+  J's PC reaches it through `~/.hawkes/client.json`. Locally: `hawkesgen\auto-start.bat`, http://127.0.0.1:8790 (`/v1/...`).
 - **Tools:** about 30, covering images, masks, depth, normals, video, 3D meshes (GLB), music, voice, SFX and
   Claude. The list is in `hawkesgen/README.md`.
 - **ComfyUI workflows become tools with no code.** Import a template or J's own export from the dashboard's
@@ -77,7 +78,8 @@ that made it; usage and cost are tracked per project and API key. Projects never
 
 **`hawkesnet/`** (`jgriffith3433/hawkesnet`, private; its own repo since 2026-10-26, before that Gen's `net/`) is the
 multiplayer service at **https://net.hawkesgen.ai**: accounts' projects (hawkesgen.ai accounts), tickets, the room
-directory and the relay, on its own EC2 box that deploys itself from hawkesnet main. It has a beta lane like the
+directory and the relay, on its own Google Cloud VM (`hawkes-net`, project `hawkes-prod`) that deploys itself from
+hawkesnet main. **Beta Net is not running since AWS was suspended (2026-10-28); to be rebuilt.** It has a beta lane like the
 products (products.json `hawkesnet`: work goes to `beta`, Studio runs beta as an app and playtests it, and going live is
 the Go live page's card, J's tap or `DEPLOY hawkesnet`). Its
 `docs/net.md` is the design. **Beta plays on beta, live on live:** beta Hawkes Net is **https://hawkesnet.hawkesgen.ai**
@@ -92,31 +94,35 @@ signs in and keeps its accounts' projects and keys on beta Net too.
 (`src/netbridge.ts`: it checks API keys for the box and takes its usage). Games on it: Dose Of Destruction, the portal's
 play page, Yooba Land and Sick Of It.
 
-## The cloud: hawkesgen.ai
+## The cloud: hawkesgen.ai (Google Cloud and Cloudflare)
 
-Hawkes Gen and Hawkes Studio run on an AWS control server: **https://studio.hawkesgen.ai** and
-**https://gen.hawkesgen.ai** (login `j`; the password is in `hawkesstudio/deploy/.keys/web-password.txt`).
-- **On J's PC:** CLIs, MCP servers and the Gen clients in every project use the cloud through `~/.hawkes/client.json`.
-- **On the server:** product repos are cloned from GitHub. Work reaches it by being pushed: `beta`, or a branch with a
-  pull request into `beta` (the server keeps product source repos on beta).
-- **Runbook:** `hawkesstudio/docs/cloud.md` (deploys, secrets, logs, costs).
-- **Gen and Studio themselves** are private repos (`jgriffith3433/hawkesgen`, `jgriffith3433/hawkesstudio`) with no beta
-  lane: a push to their `main` deploys to the cloud once CI passes (CI's last job tells the server, which pulls it within seconds). Push only with
-  J's OK; roll back with `git revert` + push.
-- **Talk can change Gen and Studio too** (`studio_task` with `hawkesstudio` or `hawkesgen`): the agent works on a branch
-  from main, Studio opens a pull request into main and checks it (CI, tests, a smoke check of the changed service on a
-  spare port). J approving it (`MERGE <id>`) merges into main, which deploys and restarts that service. Agents can't
-  touch deploy scripts, secrets handling, CI or the hooks' token checks unless J names the file, and never `.data`, keys
-  or `.env`. See `hawkesstudio/docs/cloud.md` ("Changing Studio and Gen through agents").
-- **The 5 AM daily trial** runs there and plays beta (and the live sites). Agents then open pull requests into `beta`
-  for the worst new bugs; J approves them in Studio's Changes tab, which merges them into beta (not live). Going live is
-  a separate step (below).
+AWS suspended the account on 2026-10-28; everything moved to Google Cloud and the domain to **hawkesgen.ai** on Cloudflare.
+- **Gen and Studio run on Cloud Run** in the Google Cloud project "Hawkes" (id `hawkes-staging`: a leftover name, it
+  is live), scale to zero, SQLite streamed to Cloud Storage by Litestream. Each is behind a Cloudflare Worker:
+  **https://gen.hawkesgen.ai**, **https://studio.hawkesgen.ai** (Continue with Google, J's email). Files go out through
+  **https://cdn.hawkesgen.ai** (a Worker caching Gen's library by hash). Runbooks: hawkesgen `docs/gen-cloudrun.md`,
+  hawkesstudio `docs/studio-cloudrun.md`.
+- **Lanes for Gen and Studio: dev -> beta -> main** (J, 2026-10-28). `dev` deploys nothing (Claude pushes finished work
+  there); a push to `beta` deploys **gen-beta.hawkesgen.ai** / **studio-beta.hawkesgen.ai** (their own databases,
+  buckets, keys and Claude logins; Studio beta uses Gen beta and has no daily run); a push to `main` deploys live.
+  GitHub Actions does it with no stored key (Workload Identity Federation), health-checks and rolls back. Moving a lane
+  is J's push (`git push origin dev:beta`, `beta:main`).
+- **The portal** (hawkesgen.ai) is on Firebase (`hawkes-prod`); **Net** on a VM there. Neither has a beta lane yet.
+- **On J's PC:** CLIs, MCP servers and the Gen clients use the cloud through `~/.hawkes/client.json` (`genUrl`/`genKey`,
+  `studioUrl`/`studioKey`, and the `...Beta...` pairs).
+- **Studio works from GitHub:** product repos are cloned on demand; work reaches it by being pushed (`beta`, or a branch
+  with a pull request into `beta`). Agents, scouts and Talk run as the Cloud Run job `studio-agent`.
+- **Talk can change Gen and Studio too** (`studio_task` with `hawkesstudio` or `hawkesgen`): the agent works on a
+  branch, Studio opens a pull request and checks it. Agents can't touch deploy scripts, secrets handling, CI or the
+  hooks' token checks unless J names the file, and never `.data`, keys or `.env`.
+- **The 5 AM daily trial** is a Cloud Scheduler call to live Studio; it plays beta (and the live sites). Agents then open
+  pull requests into `beta` for the worst new bugs. Going live is a separate step (below).
 
 ## Hawkes Studio: the daily loop (infrastructure)
 
 **`hawkesstudio/`** (dashboard and API at **http://127.0.0.1:8791**, `hawkesstudio\auto-start.bat`) is J's cockpit.
 Every day it runs these steps for every product (one at a time, through Hawkes Gen):
-1. Builds it: Unity games on the **AWS build server**, incrementally.
+1. Builds it: Unity games on the Cloud Run build job (a `build-*` tag, below), incrementally.
 2. Playtests it in a real browser, locally and live. The game's own bot plays through real input, via the **playtest
    contract** `window.hawkesPlaytest` (spec: `hawkesstudio/docs/playtest.md`).
 3. Has Claude review the footage against the story doc and the product's quality bar (`products.json` `quality`).
@@ -177,7 +183,7 @@ Every day it runs these steps for every product (one at a time, through Hawkes G
 ## How the pieces connect
 
 ```
-Unity source       built on the AWS build server (Hawkes Gen unity.build; Studio triggers it when the source changes)
+Unity source       built by the Cloud Run job (Hawkes Gen unity.build; a build-* tag, or Studio when the source changes)
 Unity source       or: push a build-* tag -> Gen's Cloud Run job builds that commit from GitHub -> website repo's beta
 Unity source                          builds WebGL into                     domain
 sickofitgame-unity  ── GameDeployWindow ──▶ sickofitgamewebsite/Game/v<n>/   sickofitgame.com
@@ -319,14 +325,14 @@ it from Studio's Today card or `studio_dev_open`. Details: `hawkesstudio/docs/da
 
 | Repo | Local dev | Deploy (old, by hand) |
 |---|---|---|
-| `hawkesgen` | `auto-start.bat` → :8790 (dashboard + `/v1` API) | push to `main`: CI, then the cloud server pulls it (`hawkesstudio/docs/cloud.md`) |
-| `hawkesstudio` | `auto-start.bat` → :8791 (dashboard + `/api`) | push to `main`: CI, then the cloud server pulls it (`hawkesstudio/docs/cloud.md`) |
+| `hawkesgen` | `auto-start.bat` → :8790 (dashboard + `/v1` API) | push `beta` (gen-beta) or `main` (gen): CI builds and deploys to Cloud Run (`docs/gen-cloudrun.md`) |
+| `hawkesstudio` | `auto-start.bat` → :8791 (dashboard + `/api`) | push `beta` (studio-beta) or `main` (studio): CI builds and deploys to Cloud Run (`docs/studio-cloudrun.md`) |
 | `hawkesbiomedicalnew` | `npm run dev` → :5174 | `auto-buildanddeploy.bat` (build, commit, push main; asks you to type DEPLOY) |
 | `phoriginswebsite` | `npm run dev` → :5173 | `auto-buildanddeploy.bat` (same pattern; builds to `play/`) |
 | `doseofdestructionwebsite` | `auto-start.bat` → :8089 (`/devtools.html`) | GitHub Actions `pages.yml` on push |
 | `icanbeaiwebsite` | `auto-start.bat` → :8092 (preview :8093) | `bump-version.bat`, then commit and push |
 | `imaginelivetvwebsite` | `auto-start.bat` → :8090 | commit and push |
-| `hawkesgenwebsite` | see its `AGENTS.md` (needs its `.env`: Gen key, Stripe keys) | push `main`: its CI, then its own EC2 box pulls the passing commit (`hawkesstudio/docs/cloud.md`) |
+| `hawkesgenwebsite` | see its `AGENTS.md` (needs its `.env`: Gen key, Stripe keys) | push `main`: Firebase deploy (see its `AGENTS.md`) |
 | `YoobaLandGame` | `auto-start.bat` → :8088 (`/Game/`) | Unity `YoobaWebBuild`, then commit and push |
 | `theplacedepartmentwebsite` | `auto-start.bat` → :4173 (python http.server) | Unity deploy window in `breakingthrough`, then commit and push |
 | `sickofitgamewebsite` | `python -m http.server 8087` (the Docker `auto-start.bat` on :80 is the older setup) | Unity **Game Deploy** window in `sickofitgame-unity` → `Game/v<n>/`, then commit and push |
@@ -339,35 +345,19 @@ safe (it rebuilds the beta site).
 Anything a feature needs from a server (accounts, payments, analytics, saves) has to be client-side or a
 third-party service.
 
-### AWS
+### GPUs and compute
 
-The websites never use AWS (they're on GitHub Pages). AWS is used for **compute behind the tools**:
-
-- **The GPU fleet, run by Hawkes Gen.** `hawkesgen/src/providers/comfy/fleet.ts` (ported from DoD) uses the
-  AWS SDK (EC2, Service Quotas, STS) to launch g6e.xlarge machines (L40S, 48 GB) running ComfyUI from the AWS
-  Deep Learning Base GPU image (Ubuntu 24.04); they install themselves from `hawkesgen/server/bootstrap.sh` and
-  `server/models.json`. DoD's 8 existing servers were adopted (tagged `Project=dose-of-destruction`, name
-  `dod-comfy`); new ones are tagged `Project=hawkes-gen`, name `hawkesgen-comfy`.
-  - **Fleet:** at most 4 servers (J's cap, the "servers" setting), one job per server at a time, jobs grouped by model family.
-  - **Regions:** the three US regions, us-east-1, us-east-2 and us-west-2 (`HAWKES_REGIONS`; J's choice, cheapest
-    prices). GPU quota there: 8, 8 and 16 vCPUs. When AWS has no machine free in a stopped server's zone, Gen keeps
-    trying and, with fallback launch, launches a new server where machines are free (within the cap of 4).
-  - **Power and cost:** each server powers itself off after 60 idle minutes. About $1.86/hr while running
-    (more outside the US), plus about $43/month for each server's 400 GB disk until it's terminated (servers launched from the fleet image are terminated when idle).
-  - **Access:** a security group lets in only this PC's IP (`fleet access` when the IP changes), and a
-    per-server token protects ComfyUI.
-  - **Local state** (tokens, SSH keys) is in `hawkesgen/.data/fleet/` (gitignored).
-
-  Credentials are `AWS_*` in `hawkesgen/.env`. Launch, start, sync and terminate cost money: always ask first.
-  Workflow models install on a server the first time a job needs them; the least-used ones are pruned when
-  disk runs short. DoD's old `tools/gpu` AWS code has been removed.
-- **`comfyui-docker` (reference).** The first GPU setup: ComfyUI in Docker on a g4dn EC2 machine (the Sick Of
-  It "prompt to prefab" pipeline in Feb 2026). The DoD fleet was built from this work.
-- **`claw-docker` (old, kept for reference).** Deployed the Claw (OpenClaw) agent container to EC2 through
-  Docker Hub.
-
-**Later:** host Hawkes Gen itself (S3 library, HTTPS, per-client limits) so other machines, or paying
-customers, can use it. The API already has keys and per-client usage for that. See `hawkesgen/DESIGN.md`.
+The websites never use a cloud of their own (they're on GitHub Pages). Compute behind the tools runs through Hawkes Gen:
+- **CPU tools** (cutout, transforms, maps, video fit/compose, LODs) on the scale-to-zero Cloud Run services `gen-cpu`,
+  `gen-cpu-heavy` (hawkesgen `docs/cpu-cloudrun.md`). **Unity builds** on the Cloud Run job `hawkes-unity-build`
+  (hawkesgen `docs/unity-cloudrun.md`). **Playtests** on `gen-playtest` (`docs/playtest-cloudrun.md`).
+- **GPU jobs go to whichever provider has room**, in `settings.gpu.order` with cooldowns and fallback (hawkesgen
+  `docs/gpu-providers.md`): Cloud Run GPUs (Google refused the account's GPU quota for lack of usage history,
+  2026-10-28), **RunPod** and **Modal** (set up once J has accounts and keys; the worker image is
+  `ghcr.io/jgriffith3433/hawkes-gen-gpu`, built by a `gpu-image-*` tag), any HTTPS host, and the **AWS fleet**
+  (`hawkesgen/src/providers/comfy/fleet.ts`: g6e.xlarge L40S, us-east-1/us-east-2/us-west-2, keyless from Cloud Run)
+  once AWS is back. GPU work costs money: always ask J first.
+- **`comfyui-docker`, `claw-docker` (old, reference).** The first GPU setup and the Claw agent container on EC2.
 
 ## Tech stack
 
