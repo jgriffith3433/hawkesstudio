@@ -12,6 +12,8 @@ is hard to undo, so J runs them.
 | `unity-build-job-to-region.bat <region>` | Copies the Unity build job (image, secrets, 8 vCPU / 24 GiB) to another region | Claude |
 | `betas-to-us-central1.bat` | Makes gen-beta, studio-beta and studio-agent-beta in us-central1 with beta's current images | Claude |
 | `deploy-edge-workers.bat` | Deploys every Cloudflare Worker (gen and studio edges, both lanes; beta sites; the CDN; builds) | Claude |
+| `unity-build-image.bat [region]` | Rebuilds the Unity build image (Cloud Build, ~15 min) and points the job at it with the R2 token | Claude |
+| `r2-builds-secret.bat` | Puts the R2 token (`C:\Projects\cloudflare.txt`) into Secret Manager as `r2-builds` | J |
 | `old-betas-delete.bat` | Deletes the old beta services in us-east4 once the us-central1 ones are healthy | J |
 
 Where things run (J, 2026-10-29: each group on its own 20 vCPUs; Google's quota is per region):
