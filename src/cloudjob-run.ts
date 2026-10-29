@@ -138,6 +138,9 @@ export async function runUnit(unit: string, store: Store, { every = 2000, at = (
     if (user) {
       // The pass's user owns its workspace and session folder (and nothing of this runner's).
       for (const d of [at(spec.cwd), path.dirname(path.dirname(at(spec.sessions))), user.home]) spawnSync('chown', ['-R', `${user.uid}:${user.gid}`, d]);
+      // And the files its command names by absolute path (Talk's --mcp-config, 0600): unreadable to it otherwise, so Claude
+      // Code stopped with EACCES before answering (2026-10-29).
+      for (const a of spec.args) if (path.isAbsolute(a) && fs.existsSync(at(a)) && fs.statSync(at(a)).isFile()) spawnSync('chown', [`${user.uid}:${user.gid}`, at(a)]);
     }
     const env = { ...spec.env, PATH: process.env.PATH ?? '/usr/local/bin:/usr/bin:/bin', HOME: user?.home ?? os.homedir(), STUDIO_JOB: '1' };
     const child = spawn(spec.file, spec.args, { cwd: at(spec.cwd), env, stdio: ['ignore', 'pipe', 'pipe'], ...(user ? { uid: user.uid, gid: user.gid } : {}), windowsHide: true });
