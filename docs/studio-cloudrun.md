@@ -89,7 +89,8 @@ takes the place of the peer check.
    with the owner key, and `~/.hawkes/client.json` (`studioUrl`, `studioKey`; the old one kept as `client.studio-aws.json`).
    Every step is safe to repeat; without `--apply` (`node tools/studio-cloudrun/deploy.mjs`) it prints the plan.
 3. `server/studio-edge/wrangler.jsonc`: set `STUDIO_ORIGIN` to the "Service URL" the deploy printed, then
-   `npx wrangler deploy` in `server/studio-edge` (it takes the `studio.hawkesgen.ai` custom domain).
+   `npx wrangler deploy` in `server/studio-edge` (a zone route on `studio.hawkesgen.ai`, which needs a proxied
+   `AAAA 100::` record: never a custom domain, see the universe map's cloud section).
 4. Add `https://studio.hawkesgen.ai` to the Google OAuth client's JavaScript origins, open it, Continue with Google.
 5. Settings > Claude accounts > Sign in (the Max plan), as on the server: the login is kept in `.data/claude/` and
    synced to the bucket; every job gets the account in use.
@@ -157,8 +158,9 @@ view never wakes Studio. A disabled user keeps their pass until it expires (at m
 **J, once** (no secrets, no IAM):
 1. Deploy Studio with this code (merge to `beta` / `main`; CI deploys the lane). Check: `https://studio.hawkesgen.ai/auth/sites-key` answers.
 2. `npx wrangler login` (once), then `node tools/beta-sites/setup.mjs --apply`: the R2 bucket `hawkes-beta-sites`, then
-   `wrangler deploy` of `server/beta-sites` with its custom domains (each makes its DNS record; delete any old record
-   for those hosts first). By hand: `cd server/beta-sites && npx wrangler r2 bucket create hawkes-beta-sites && npx wrangler deploy`.
+   `wrangler deploy` of `server/beta-sites` with its zone routes. Each host needs a proxied `AAAA <host> 100::` record
+   (wrangler doesn't make it for a route). Never custom domains: Chrome shares connections across our hosts and
+   Cloudflare 403s a custom domain's request on another's connection (2026-10-29; `tools/edge/to-routes.mjs`). By hand: `cd server/beta-sites && npx wrangler r2 bucket create hawkes-beta-sites && npx wrangler deploy`.
 3. `node tools/beta-sites/setup.mjs --publish` (and `--publish --lane beta`): every beta site published now.
 
 Tests: `test/beta-sites.test.ts` (the Worker's own code over an in-memory R2, the passes, both lanes, previews-cloud

@@ -108,6 +108,12 @@ AWS suspended the account on 2026-10-28; everything moved to Google Cloud and th
   **https://gen.hawkesgen.ai**, **https://studio.hawkesgen.ai** (Continue with Google, J's email). Files go out through
   **https://cdn.hawkesgen.ai** (a Worker caching Gen's library by hash). Runbooks: hawkesgen `docs/gen-cloudrun.md`,
   hawkesstudio `docs/studio-cloudrun.md`.
+- **Every Worker is on a zone route, never a custom domain** (2026-10-29): `{ "pattern": "<host>/*", "zone_name":
+  "hawkesgen.ai" }` in its `wrangler.jsonc`, on a proxied `AAAA <host> 100::` record. All our hosts share Cloudflare's IP
+  and the `*.hawkesgen.ai` certificate, so Chrome reuses one connection across them; Cloudflare refuses another custom
+  domain's request on it with an empty 403 that never reaches the Worker (sites "worked, then stopped"). A new host:
+  add the route and the record (hawkesstudio `tools/edge/to-routes.mjs` moves any custom domain over). The `cf` CLI's
+  login is per shell: `cf auth login` in PowerShell too.
 - **Lanes for Gen and Studio: dev -> beta -> main** (J, 2026-10-28). `dev` deploys nothing (Claude pushes finished work
   there); a push to `beta` deploys **gen-beta.hawkesgen.ai** / **studio-beta.hawkesgen.ai** (their own databases,
   buckets, keys and Claude logins; Studio beta uses Gen beta and has no daily run); a push to `main` deploys live.
@@ -158,7 +164,9 @@ Every day it runs these steps for every product (one at a time, through Hawkes G
   `https://<sub>.hawkesgen.ai/` is beta (`/c/<id>/` is one agent change), for people signed in to Studio. Since
   2026-10-29 the beta sites are Cloudflare R2 behind one Worker (`hawkesstudio/server/beta-sites`): Studio publishes
   each from GitHub (sites with a Vite build are built in its Cloud Run job), and the Worker checks a pass Studio signs
-  (`/auth/pass`). studio-beta's own copies are `https://sb-<sub>.hawkesgen.ai/`. See
+  (`/auth/pass`). studio-beta's own copies are `https://sb-<sub>.hawkesgen.ai/`. Studio's "beta" playtest of a web game
+  on Cloud Run plays that R2 site at the live page's path (`pipeline.ts cloudBetaUrl`); nothing starts a dev server
+  there. Each lane has its own session cookie (`hawkes_session` / `hawkes_session_beta`) and pass cookie. See
   `hawkesstudio/docs/studio-cloudrun.md` ("Beta sites"). Going live: `studio_deploy_plan` (the
   commits on beta not on main, and how that exact beta commit playtested), then J types `DEPLOY <product>`, then
   `studio_deploy` fast-forwards main to the playtested beta. Studio waits for GitHub Pages and playtests live.
@@ -364,18 +372,23 @@ third-party service.
 The websites never use a cloud of their own (they're on GitHub Pages). Compute behind the tools runs through Hawkes Gen:
 - **CPU tools** (cutout, transforms, maps, video fit/compose, LODs) on the scale-to-zero Cloud Run services `gen-cpu`,
   `gen-cpu-heavy` (hawkesgen `docs/cpu-cloudrun.md`). **Unity builds** on the Cloud Run job `hawkes-unity-build`
-  (hawkesgen `docs/unity-cloudrun.md`).
-- **Playtests** run on `gen-playtest-cpu` while there is no GPU (hawkesgen `docs/playtest-cloudrun.md`, "The CPU
-  service"; `settings.playtest.backend: "cloudrun-cpu"`).
-  - The browser draws WebGL on the CPU with SwiftShader, one tab per 4 vCPU / 8 GiB instance, scale to zero,
-    request-based billing: about $0.007 a playtest minute, nothing when idle.
-  - Runs say `software: true`, so frame rates mean nothing there, and the boot wait and scenario limits are doubled.
-  - J deploys it with `hawkesgen\tools\playtest-cloudrun\deploy-cpu.ps1` (`-Apply`, then `-Settings`).
-  - The L4 service `gen-playtest` stays ready for when GPU quota or RunPod exists; `backend: "cloudrun"` tries it
-    first, then the CPU service.
+  (hawkesgen `docs/unity-cloudrun.md`; `settings.unityBuild.backend: "cloudrun"` on both Gens since 2026-10-29, the
+  AWS build server is gone; `timeoutMinutes` 90 while no project has a Library cache yet).
+- **Playtests** run on a real GPU on **RunPod** (`settings.playtest.backend: "runpod"`, hawkesgen
+  `docs/playtest-runpod.md`): the serverless load-balancer endpoint `43vc12r3r5gj4n` (`hawkes-gen-playtest-gfx`), image
+  `ghcr.io/jgriffith3433/hawkes-gen-playtest:latest` (public; built by a `playtest-image-*` tag), about 52 fps and a
+  cent a smoke run, $0.58/h per worker only while it runs. **It names exact GPU models** (RTX A4000, A4500, RTX 4000
+  Ada, RTX 2000 Ada) through `tools/playtest-runpod/setup.mjs --gpu-types`: a pool alone gave RTX PRO 6000 **MIG
+  slices**, which have CUDA but no graphics, so Chromium fell back to software. Workers stay on the machine they were
+  first placed on, so a new GPU list needs a new endpoint. A job that needs other hardware gets its own endpoint.
+  - The fallback is `gen-playtest-cpu` (hawkesgen `docs/playtest-cloudrun.md`, "The CPU service"): WebGL on the CPU
+    with SwiftShader, about $0.007 a playtest minute, runs say `software: true` (frame rates mean nothing, boot wait and
+    scenario limits doubled). J deploys it with `hawkesgen\tools\playtest-cloudrun\deploy-cpu.ps1`.
+  - Check the GPU path: `GET /v1/playtester/cloud?variant=runpod&selftest=1` (starts a worker: about a cent).
+  - Beta-site playtests carry a one-hour pass (Studio `withPass()`, Gen `playtest.run` `cookies`).
 - **GPU jobs go to whichever provider has room**, in `settings.gpu.order` with cooldowns and fallback (hawkesgen
   `docs/gpu-providers.md`): Cloud Run GPUs (Google refused the account's GPU quota for lack of usage history,
-  2026-10-28), **RunPod** and **Modal** (set up once J has accounts and keys; the worker image is
+  2026-10-28), **RunPod** and **Modal** (both set up 2026-10-29: `settings.gpu.order` runpod, modal, fleet; the worker image is
   `ghcr.io/jgriffith3433/hawkes-gen-gpu`, built by a `gpu-image-*` tag), any HTTPS host, and the **AWS fleet**
   (`hawkesgen/src/providers/comfy/fleet.ts`: g6e.xlarge L40S, us-east-1/us-east-2/us-west-2, keyless from Cloud Run)
   once AWS is back. GPU work costs money: always ask J first.
