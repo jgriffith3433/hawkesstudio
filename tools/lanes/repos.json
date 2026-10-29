@@ -45,7 +45,7 @@
     "prod": [
       "https://net.hawkesgen.ai"
     ],
-    "deploys": "Push beta: the beta Net VM pulls it. Push main: the live Net VM (hawkes-net) pulls it on its timer.",
+    "deploys": "Push beta: the beta Net VM (hawkes-net-beta, keys checked with gen-beta) pulls it on its timer. Push main: the live Net VM (hawkes-net) pulls it on its timer.",
     "check": "npm run typecheck"
   },
   "hawkesgenwebsite": {
@@ -56,12 +56,12 @@
       "http://127.0.0.1:8800"
     ],
     "beta": [
-      "https://hawkes-staging.web.app"
+      "https://beta.hawkesgen.ai"
     ],
     "prod": [
       "https://hawkesgen.ai"
     ],
-    "deploys": "Push beta: GitHub Actions deploys Firebase project hawkes-staging (on gen-beta). Push main: Firebase hawkes-prod (live).",
+    "deploys": "Push beta: GitHub Actions deploys Firebase project hawkes-staging (beta.hawkesgen.ai, on gen-beta and beta Net). Push main: Firebase hawkes-prod (live).",
     "check": "npm run typecheck"
   },
   "hawkesbiomedicalnew": {
