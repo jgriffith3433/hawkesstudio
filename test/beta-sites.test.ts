@@ -201,6 +201,10 @@ test('serve: signed in with a pass, or sent to Studio for one; the widget, build
   const bpass = K.makePass('u_j', { lane: 'beta', keys: betaKeys });
   r = await browse('https://sb-dod.hawkesgen.ai/', { cookie: `hawkes_pass_beta=${bpass}` });
   assert.match(await r.text(), /sb/);
+  // A stale pass sent before the good one (two cookies of one name) doesn't hide it (2026-10-29: J's beta sites 403'd).
+  const stale = K.makePass('u_j', { lane: 'beta', keys: liveKeys });
+  r = await browse('https://sb-dod.hawkesgen.ai/', { cookie: `hawkes_pass_beta=${stale}; hawkes_pass_beta=${bpass}` });
+  assert.match(await r.text(), /sb/);
   // Read only.
   r = await browse('https://dod.hawkesgen.ai/a.js', { cookie, page: false, method: 'PUT', body: 'x' });
   assert.equal(r.status, 405);

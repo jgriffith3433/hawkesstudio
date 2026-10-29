@@ -132,12 +132,15 @@ export async function checkPass(env: Env, lane: Lane, value: string | null, now 
   return user;
 }
 
-const cookie = (req: Request, name: string) => {
+const cookie = (req: Request, name: string) => cookies(req, name)[0] ?? null;
+/** Every value of a cookie name: a browser can hold an old pass beside a new one (another Domain or Path), and sends both. */
+const cookies = (req: Request, name: string) => {
+  const out: string[] = [];
   for (const part of (req.headers.get('Cookie') ?? '').split(';')) {
     const [k, ...v] = part.trim().split('=');
-    if (k === name) return v.join('=');
+    if (k === name) out.push(v.join('='));
   }
-  return null;
+  return out;
 };
 
 const isPage = (req: Request) => req.method === 'GET' && (req.headers.get('Sec-Fetch-Mode') === 'navigate' || /text\/html/.test(req.headers.get('Accept') ?? ''));
@@ -272,8 +275,9 @@ export async function handle(req: Request, env: Env, now = Date.now()): Promise<
   const site = siteOf(url.host, env.DOMAIN ?? 'hawkesgen.ai');
   if (!site) return text(404, 'Not a beta site.');
   const { lane, sub } = site;
-  const passValue = cookie(req, passCookie(lane));
-  const user = await checkPass(env, lane, passValue, now);
+  // The first pass that checks out: a stale one sent first must not hide a good one (2026-10-29: beta sites 403 for J).
+  let user: string | null = null;
+  for (const v of cookies(req, passCookie(lane))) if ((user = await checkPass(env, lane, v, now))) break;
   if (!user) {
     if (isPage(req)) {
       // Back from /auth/pass without a pass that works: say so instead of going round again.
