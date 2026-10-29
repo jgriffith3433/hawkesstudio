@@ -18,25 +18,25 @@
   },
   "routes": [
     // Where Studio publishes (signed writes only; nothing to see there).
-    { "pattern": "sites.hawkesgen.ai", "custom_domain": true },
+    { "pattern": "sites.hawkesgen.ai/*", "zone_name": "hawkesgen.ai" },
     // Live Studio's beta sites: products.json "previews".
-    { "pattern": "dod.hawkesgen.ai", "custom_domain": true },
-    { "pattern": "phorigins.hawkesgen.ai", "custom_domain": true },
-    { "pattern": "sickofit.hawkesgen.ai", "custom_domain": true },
-    { "pattern": "yoobaland.hawkesgen.ai", "custom_domain": true },
-    { "pattern": "placedept.hawkesgen.ai", "custom_domain": true },
-    { "pattern": "icanbe.hawkesgen.ai", "custom_domain": true },
-    { "pattern": "imaginelivetv.hawkesgen.ai", "custom_domain": true },
-    { "pattern": "corporate.hawkesgen.ai", "custom_domain": true },
+    { "pattern": "dod.hawkesgen.ai/*", "zone_name": "hawkesgen.ai" },
+    { "pattern": "phorigins.hawkesgen.ai/*", "zone_name": "hawkesgen.ai" },
+    { "pattern": "sickofit.hawkesgen.ai/*", "zone_name": "hawkesgen.ai" },
+    { "pattern": "yoobaland.hawkesgen.ai/*", "zone_name": "hawkesgen.ai" },
+    { "pattern": "placedept.hawkesgen.ai/*", "zone_name": "hawkesgen.ai" },
+    { "pattern": "icanbe.hawkesgen.ai/*", "zone_name": "hawkesgen.ai" },
+    { "pattern": "imaginelivetv.hawkesgen.ai/*", "zone_name": "hawkesgen.ai" },
+    { "pattern": "corporate.hawkesgen.ai/*", "zone_name": "hawkesgen.ai" },
     // studio-beta's copies of them.
-    { "pattern": "sb-dod.hawkesgen.ai", "custom_domain": true },
-    { "pattern": "sb-phorigins.hawkesgen.ai", "custom_domain": true },
-    { "pattern": "sb-sickofit.hawkesgen.ai", "custom_domain": true },
-    { "pattern": "sb-yoobaland.hawkesgen.ai", "custom_domain": true },
-    { "pattern": "sb-placedept.hawkesgen.ai", "custom_domain": true },
-    { "pattern": "sb-icanbe.hawkesgen.ai", "custom_domain": true },
-    { "pattern": "sb-imaginelivetv.hawkesgen.ai", "custom_domain": true },
-    { "pattern": "sb-corporate.hawkesgen.ai", "custom_domain": true }
+    { "pattern": "sb-dod.hawkesgen.ai/*", "zone_name": "hawkesgen.ai" },
+    { "pattern": "sb-phorigins.hawkesgen.ai/*", "zone_name": "hawkesgen.ai" },
+    { "pattern": "sb-sickofit.hawkesgen.ai/*", "zone_name": "hawkesgen.ai" },
+    { "pattern": "sb-yoobaland.hawkesgen.ai/*", "zone_name": "hawkesgen.ai" },
+    { "pattern": "sb-placedept.hawkesgen.ai/*", "zone_name": "hawkesgen.ai" },
+    { "pattern": "sb-icanbe.hawkesgen.ai/*", "zone_name": "hawkesgen.ai" },
+    { "pattern": "sb-imaginelivetv.hawkesgen.ai/*", "zone_name": "hawkesgen.ai" },
+    { "pattern": "sb-corporate.hawkesgen.ai/*", "zone_name": "hawkesgen.ai" }
   ],
   "observability": { "enabled": true }
 }

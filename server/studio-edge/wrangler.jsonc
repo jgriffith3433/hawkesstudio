@@ -5,7 +5,7 @@
   "name": "hawkes-studio-edge",
   "main": "src/index.ts",
   "compatibility_date": "2026-10-01",
-  "routes": [{ "pattern": "studio.hawkesgen.ai", "custom_domain": true }],
+  "routes": [{ "pattern": "studio.hawkesgen.ai/*", "zone_name": "hawkesgen.ai" }],
   "vars": {
     // The Cloud Run service's own address (tools/studio-cloudrun/deploy.mjs prints it as "Service URL").
     "STUDIO_ORIGIN": "https://studio-388576319982.us-east4.run.app"
@@ -13,7 +13,7 @@
   "observability": { "enabled": true },
   "env": {
     "beta": {
-      "routes": [{ "pattern": "studio-beta.hawkesgen.ai", "custom_domain": true }],
+      "routes": [{ "pattern": "studio-beta.hawkesgen.ai/*", "zone_name": "hawkesgen.ai" }],
       // Cloud Run's deterministic address for the service studio-beta.
       "vars": { "STUDIO_ORIGIN": "https://studio-beta-388576319982.us-east4.run.app" }
     }
