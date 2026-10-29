@@ -51,6 +51,12 @@ async function api(method, p, body) {
 const domains = (await api('GET', `/accounts/${ACCOUNT}/workers/domains`)).filter((d) => d.zone_id === ZONE || d.hostname.endsWith(`.${ZONE_NAME}`));
 const routes = await api('GET', `/zones/${ZONE}/workers/routes`);
 // A host moved by an earlier run that stopped half way: a route but no DNS record (the host is down until it has one).
+// The cf CLI must be signed in here (its login is per shell profile): check before changing anything.
+const listed = cf(['dns', 'records', 'list', '--zone', ZONE]);
+if (listed.status !== 0 || !listed.stdout.includes('[')) {
+  console.error(`The cf CLI can't read hawkesgen.ai's DNS here (run  cf auth login  in this shell first). Nothing changed.\n${(listed.stderr || listed.stdout).slice(0, 300)}`);
+  process.exit(1);
+}
 const records = new Set(JSON.parse(cf(['dns', 'records', 'list', '--zone', ZONE]).stdout.replace(/^[^[]*/, '') || '[]').map((r) => r.name));
 const orphans = routes.filter((r) => /^[a-z0-9.-]+\/\*$/.test(r.pattern)).map((r) => ({ hostname: r.pattern.slice(0, -2), service: r.script })).filter((o) => !records.has(o.hostname) && !domains.some((d) => d.hostname === o.hostname));
 for (const o of orphans) {
@@ -67,7 +73,8 @@ for (const d of domains) {
   const pattern = `${d.hostname}/*`;
   if (!routes.some((r) => r.pattern === pattern)) await api('POST', `/zones/${ZONE}/workers/routes`, { pattern, script: d.service });
   await api('DELETE', `/accounts/${ACCOUNT}/workers/domains/${d.id}`);
-  if (makeRecord(d)) console.log(`  ${d.hostname}: route ${pattern} -> ${d.service}, proxied record made`);
+  if (!makeRecord(d)) { console.error("Stopped: fix the cf login and run this again (it makes the missing records first)."); process.exit(1); }
+  console.log(`  ${d.hostname}: route ${pattern} -> ${d.service}, proxied record made`);
 }
 
 // The cf CLI's own script under node (no shell: Windows' cmd would mangle the JSON).
