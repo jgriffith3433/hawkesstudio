@@ -70,8 +70,25 @@ works the same in either model, so the choice doesn't block anything below.
 
 ## 3. Billing
 
-**One bill, at the portal.** The portal already has Stripe, credits with a ledger, subscriptions, and the plans with
-per-product entitlements (hawkesgenwebsite `platform.ts PLANS`, offered when `PORTAL_PLATFORM_PLANS=on`):
+**One Stripe account for the portal, Gen and Studio** (J, 2026-10-29: "Gen portal and studio should all use the same
+stripe account. Beta should use the test keys."):
+- **One set of keys per lane:** test keys on beta (studio-beta, gen-beta, beta.hawkesgen.ai), live keys on live.
+- **One webhook endpoint per product per lane.** Each endpoint has its own signing secret, so Studio gets its own:
+
+| Lane | Endpoint | Stripe mode | Secrets (Secret Manager, project `hawkes-staging`) |
+|---|---|---|---|
+| beta | `https://studio-beta.hawkesgen.ai/api/billing/webhook` | test | `studio-beta-stripe-secret-key` (the test key the portal's beta and gen-beta use), `studio-beta-stripe-webhook-secret` (this endpoint's) |
+| live | `https://studio.hawkesgen.ai/api/billing/webhook` | live | `studio-stripe-secret-key`, `studio-stripe-webhook-secret` |
+
+  The secret names follow Studio's `studio-*` / `studio-beta-*` pattern (docs/studio-cloudrun.md). The portal's beta
+  keeps `STRIPE_SECRET_KEY` and `STRIPE_WEBHOOK_SECRET` (project `hawkes-staging`). gen-beta's endpoint is
+  `https://gen-beta.hawkesgen.ai/v1/billing/webhook`.
+- **Open routes:** `/api/billing/webhook` must be added to `openRoute` (cloudauth.ts), like GitHub's hooks. Stripe's
+  signature (`Stripe-Signature`, checked with this endpoint's secret) is its only check.
+
+**The plans** are the portal's (hawkesgenwebsite `platform.ts PLANS`, offered when `PORTAL_PLATFORM_PLANS=on`). One
+Stripe Product and Price per plan in the shared account, so a customer is one Stripe customer across all three
+products:
 
 | Plan | Price | Studio entitlements | Credits a month |
 |---|---|---|---|
@@ -80,15 +97,28 @@ per-product entitlements (hawkesgenwebsite `platform.ts PLANS`, offered when `PO
 | Team | $99 | 10 games, Windows, AI player, agents, Talk and the PM | 5,000 |
 | Studio | $299 | 30 games, cloud builds, priority | 15,000 |
 
-Studio itself never touches Stripe:
-- **The subscription** is the portal's (`plans.ts`: Checkout, plan changes, the billing portal, webhooks). Its
-  entitlements reach Studio in the platform token (`entitlements.studio`: games, schedule, desktopMinutes, windows,
-  aiPlayer, agents, talk, cloudBuilds, priority). A cell enforces them: today only `studio.on` is checked
-  (platform.ts); the rest is to build (section 6).
-- **Credits** pay for metered work: playtests, reviews, builds and generation are Gen jobs, billed to the org's credits
-  through the cell's Gen key at cost × 3. 1 credit = $0.01.
-- **Claude for Talk and agents is the customer's own** (their subscription or API key, billed by Anthropic to them),
-  so it costs us nothing and needs no metering. Later we could offer "our API key, metered into credits" as an option.
+**How Studio uses it:**
+- **The subscription:**
+  - Checkout, plan changes and the billing portal start at hawkesgen.ai (`plans.ts`).
+  - Studio's webhook listens for the subscription and invoice events on the shared account.
+  - It acts only on those for Studio: `metadata.product` includes `studio`, or the price is a platform plan's.
+  - It updates what this Studio may do: games, schedule, agents, Talk. Until it is built, the entitlements reach Studio
+    in the platform token (`entitlements.studio`), and today only `studio.on` is checked (platform.ts).
+  - The webhook is how a Studio running without a fresh token (the nightly run, agents) learns a plan changed or
+    lapsed, and when to pause work (`past_due`, `canceled`).
+- **Credits** pay for metered work:
+  - Playtests, reviews, builds and generation are Gen jobs, billed to the org's credits through the Studio's Gen key at
+    cost × 3. 1 credit = $0.01.
+  - Credit packs are bought at the portal on the same account.
+- **Claude for Talk and agents is the customer's own** (their subscription or API key, billed by Anthropic to them).
+  It costs us nothing and needs no metering. Later we could offer "our API key, metered into credits".
+
+**To build:** `src/billing.ts`, modelled on the portal's `billing.ts` and `plans.ts`:
+- the webhook with its signature check, and an idempotency key per Stripe event id
+- a `subscriptions` table (Stripe customer, subscription, plan, status, period end)
+- the plan's limits enforced, in onboarding first (games), then schedule and agents
+- the Stripe secret and webhook secret read from the lane's secrets (never logged)
+- a test with Stripe's signed test payloads
 
 A customer's Studio has no Costs tab of its own: their bill and credits are on the portal.
 
@@ -186,8 +216,9 @@ Air button. The Settings boxes for Claude, Antigravity and restarts already disa
    org project). J's org keeps today's Studio until its own cell passes the same daily run.
 3. **The router:** a Worker that sends `studio.hawkesgen.ai/o/<org>/…` to the org's cell; the portal's "Open Studio"
    links there.
-4. **Entitlements enforced** in the cell from the token: games (onboarding refuses past the plan's count), schedule,
-   agents, Talk.
+4. **Billing:** Studio's webhook per lane on the shared Stripe account (section 3: test keys and the studio-beta
+   endpoint first), and entitlements enforced in the cell: games (onboarding refuses past the plan's count),
+   schedule, agents, Talk.
 5. **Nightly per cell:** a Cloud Scheduler job per cell (or one control-plane cron), at the org's hour.
 6. **Builds and the pipeline for customers' games:**
    - playtests of `live` URLs work today
@@ -202,7 +233,8 @@ Air button. The Settings boxes for Claude, Antigravity and restarts already disa
 ## 7. Decisions J needs to make
 
 1. **Cells or shared.** Recommended: cells. One Studio per customer org, from the same image.
-2. **Prices.** The portal's draft: Free / Indie $29 / Team $99 / Studio $299 with the entitlements above. Also:
+2. **Prices** (the Stripe account is settled: one shared account, test keys on beta). The portal's draft: Free /
+   Indie $29 / Team $99 / Studio $299 with the entitlements above. Also:
    - Are Talk and agents Team-and-up, or on every paid plan with the customer's own Claude?
    - Do we also sell "Claude on our key", metered into credits?
 3. **Where people sign up.** At hawkesgen.ai only (recommended, with Studio's `owner` mode for one-offs)? And do we
