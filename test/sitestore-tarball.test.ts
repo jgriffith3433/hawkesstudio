@@ -54,3 +54,14 @@ test('publishSite prefetches exactly the files it will read: changed assets noth
   await publishSite(store, 's/beta', second);
   assert.deepEqual(asked.sort(), ['b.js', 'index.html']);
 });
+
+test("filtering and merging a source's files keeps its prefetch (DoD's build + tracked files lost it, 2026-10-29)", async () => {
+  const { keepPrefetch } = await import('../src/sitestore.ts');
+  const { pick } = await import('../src/previews-cloud.ts');
+  const prefetch = async () => {};
+  const src: any = [{ path: 'Game/a.js' }, { path: 'docs/x.md' }];
+  src.prefetch = prefetch;
+  assert.equal((pick(src, ['Game']) as any).prefetch, prefetch, 'pick');
+  assert.equal((keepPrefetch([...src, { path: 'dist/b.js' }], src) as any).prefetch, prefetch, 'merged with build output');
+  assert.equal((keepPrefetch(src.filter(() => true), src) as any).prefetch, prefetch, 'filtered');
+});

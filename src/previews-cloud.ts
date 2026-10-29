@@ -19,7 +19,7 @@ import { repoMap, BETA, BRANCH } from './repos.ts';
 import { cloudMode } from './cloudauth.ts';
 import { siteKeys } from './sitekeys.ts';
 import { WIDGET, type PageInfo } from './bugreport.ts';
-import { githubCommit, githubFiles, localGitFiles, folderFiles, publishSite, publishWidget, removeSite, readManifest, sitesUrl, workerStore, type SiteFile, type SiteStore } from './sitestore.ts';
+import { githubCommit, githubFiles, localGitFiles, folderFiles, publishSite, publishWidget, keepPrefetch, removeSite, readManifest, sitesUrl, workerStore, type SiteFile, type SiteStore } from './sitestore.ts';
 
 /** Beta sites go to R2 (Cloud Run, with a key to sign with), not to a local folder. STUDIO_SITES=local turns it off. */
 export const remoteSites = () => cloudMode() && process.env.STUDIO_SITES !== 'local' && Boolean(siteKeys());
@@ -53,7 +53,7 @@ const versionsIn = (paths: Iterable<string>) => [...new Set([...paths].map((r) =
 export function pick(files: SiteFile[], site: CloudRecipe['site']) {
   if (site === 'tracked') return files;
   if (site === 'none') return [];
-  return files.filter((f) => site.some((top) => f.path === top || f.path.startsWith(`${top}/`)));
+  return keepPrefetch(files.filter((f) => site.some((top) => f.path === top || f.path.startsWith(`${top}/`))), files);
 }
 
 export type CloudPublished = { sha: string; ref: string; files: number; version?: string | null; detail: string };
@@ -155,7 +155,7 @@ export async function publishCloud(p: Product, sub: string, o: { change?: string
         if (!built.length) throw new Error(`the build made no ${recipe.out.from}/`);
         const byPath = new Map(files.map((f) => [f.path, f]));
         for (const f of built) byPath.set(f.path, f);
-        files = [...byPath.values()];
+        files = keepPrefetch([...byPath.values()], files);
         files = await publishAll(store, base, files, skip, p, sha, ref, version, o.change, progress, keep);
         return { sha: sha.slice(0, 7), ref, files: files.length, version, detail: '' };
       }
@@ -169,7 +169,7 @@ export async function publishCloud(p: Product, sub: string, o: { change?: string
 }
 
 async function publishAll(store: SiteStore, base: string, all: SiteFile[], skip: (rel: string) => boolean, p: Product, sha: string, ref: string, version: string | null, change: string | undefined, progress: (s: string) => void, keep?: (p: string) => boolean) {
-  const files = all.filter((f) => !skip(f.path));
+  const files = keepPrefetch(all.filter((f) => !skip(f.path)), all);
   if (!files.length) throw new Error('nothing to publish');
   const page: PageInfo = { product: p.id, sha: sha.slice(0, 7), ref, ...(change ? { change } : {}), ...(version ? { version } : {}), built: Date.now() };
   progress(`publishing ${files.length} files`);

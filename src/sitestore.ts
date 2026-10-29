@@ -24,6 +24,12 @@ import { injectReport, type PageInfo } from './bugreport.ts';
 export type SiteFile = { path: string; oid: string; size: number; read: () => Promise<Buffer> };
 /** A source's files, optionally able to fetch many of them at once before they're read (publishSite calls it). */
 export type SiteFiles = SiteFile[] & { prefetch?: (paths: string[], progress?: (s: string) => void) => Promise<void> };
+/** A filtered or merged copy of a source's files keeps its prefetch (array methods return plain arrays). */
+export const keepPrefetch = (to: SiteFile[], from: SiteFile[]): SiteFiles => {
+  const f = (from as SiteFiles).prefetch;
+  if (f) (to as SiteFiles).prefetch = f;
+  return to as SiteFiles;
+};
 export type Manifest = { v: 1; at: number; sha?: string | null; ref?: string; files: Record<string, { oid: string; size: number }> };
 
 /** The R2 side, inside this lane's prefix (keys here have no lane). */
