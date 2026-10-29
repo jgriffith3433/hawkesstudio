@@ -52,10 +52,23 @@ fs.copyFileSync(path.join(dir, 'server', 'studio-cloudrun', 'Dockerfile'), path.
 console.log(`\nBuild context: ${dir}`);
 
 // The staging folder is named so gcloud doesn't check the default bucket's owner (that needs project-wide bucket
-// listing, which CI's studio-deployer lacks); logs aren't streamed in CI (that needs project Viewer). Failures still
-// exit non-zero.
-gcloud(['builds', 'submit', dir, `--project=${project}`, `--region=${region}`, `--tag=${tag}`, '--timeout=1800s',
-  `--gcs-source-staging-dir=gs://${project}_cloudbuild/source`, ...(process.env.CI ? ['--suppress-logs'] : [])]);
+// listing, which CI's studio-deployer lacks). In CI the build starts without waiting and its status is read every 15 s:
+// streaming logs needs project Viewer, and gcloud's own wait without logs polls fast enough to hit Cloud Build's
+// request limit (429).
+const submit = ['builds', 'submit', dir, `--project=${project}`, `--region=${region}`, `--tag=${tag}`, '--timeout=1800s',
+  `--gcs-source-staging-dir=gs://${project}_cloudbuild/source`];
+if (process.env.CI && APPLY) {
+  const id = gcloud([...submit, '--async', '--format=value(id)'], { capture: true }).out.trim();
+  if (!id) die('Cloud Build gave no build id');
+  console.log(`  build ${id}`);
+  for (let last = '';;) {
+    await new Promise((r) => setTimeout(r, 15_000));
+    const st = gcloudQuery(['builds', 'describe', id, `--project=${project}`, `--region=${region}`, '--format=value(status)']);
+    if (st && st !== last) console.log(`  ${(last = st)}`);
+    if (st === 'SUCCESS') break;
+    if (['FAILURE', 'INTERNAL_ERROR', 'TIMEOUT', 'CANCELLED', 'EXPIRED'].includes(st)) die(`Build ${id}: ${st} (gcloud builds log ${id} --region ${region} --project ${project})`);
+  }
+} else gcloud(submit);
 fs.rmSync(dir, { recursive: true, force: true });
 if (!APPLY) {
   console.log('\nDry run: nothing built. Add --apply to build.');
