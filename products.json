@@ -129,7 +129,7 @@
       "build": {
         "project": "sickofitgame-unity",
         "site": "sickofitgamewebsite",
-        "method": "SickOfIt.Tools.Editor.GameDeployWindow.FullDeployBatch",
+        "method": "SickOfIt.Tools.Editor.GameDeployWindow.FullDeployBatch", "r2": "sickofit",
         "versionEnv": "BUILD_VERSION",
         "tests": [
           "EditMode"
