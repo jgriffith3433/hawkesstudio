@@ -3,6 +3,12 @@
 This folder holds every project. Work at this level when a task spans projects; `cd` into a project for
 anything inside it, and read that project's own `AGENTS.md` / `README.md` first (they hold its hard rules).
 
+**Every repo has the same lanes: `dev` -> `beta` -> `main`** (J, 2026-10-29). Local work happens on `dev`. Each repo's
+folder has `dev.bat` (switch to dev, start its dev server), `deploy-beta.bat` (dev to beta, tagged `vX.Y.Z-beta.N`),
+`deploy-prod.bat` (beta to live, tagged `vX.Y.Z`; J types DEPLOY), `status.bat`, `links.bat` and `sync.bat`, plus a
+`LANES.md` with its local, beta and live links. `hawkesstudio\status-all.bat` shows every repo at once. The whole picture
+and the rules for Claude: `hawkesstudio/docs/lanes.md`; every repo's commands and addresses: `hawkesstudio/tools/lanes/repos.json`.
+
 ## The big picture
 
 **Hawkes Biomedical** is a fictional pharma megacorp and the parent brand over everything, the way Nintendo
