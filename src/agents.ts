@@ -43,6 +43,7 @@ import crypto from 'node:crypto';
 import { spawn, spawnSync } from 'node:child_process';
 import { db, newId, J, parse } from './db.ts';
 import { getProduct, getInfra, isInfra, PROJECTS, DATA, ROOT, storyOf, localUrl, StudioError, betaPageGlobals, type Product, type Infra } from './config.ts';
+import { withPass } from './sitekeys.ts';
 import { getFinding, updateFinding } from './backlog.ts';
 import { reviewParams } from './review.ts';
 import { reviewJob } from './review-cc.ts';
@@ -1935,7 +1936,7 @@ async function verifyChange(c: Change, p: Product, findings: any[], jobs?: JobMe
   }
   const url = prior?.status === 'done' ? localUrl(p) : await serveDir(p, dir, port);
   try {
-    const run = await genRun('playtest.run', p.id, { url, mode: mode ?? (p.contract ? 'contract' : 'auto'), ...(mode ? {} : { scenario }), ...(mode === 'site' ? { maxPages: 40 } : {}), ...(agentScenario && agentOptions ? { options: agentOptions } : {}), globals: betaPageGlobals() },
+    const run = await genRun('playtest.run', p.id, { url, mode: mode ?? (p.contract ? 'contract' : 'auto'), ...(mode ? {} : { scenario }), ...(mode === 'site' ? { maxPages: 40 } : {}), ...(agentScenario && agentOptions ? { options: agentOptions } : {}), globals: betaPageGlobals(), ...withPass() },
       undefined, undefined, { job: prior?.id, onSubmit: (id) => { jobs?.set('playtest', id); jobs?.set('review', ''); } });
     if (run.status === 'cancelled') return { outcome: 'not played', error: jobCancelDetail(run), build, cancelled: true };
     if (run.status !== 'done') return { outcome: 'failed', error: run.error, playtest: run.id, build };

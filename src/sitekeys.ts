@@ -45,12 +45,25 @@ export const passMessage = (lane: Lane, exp: number, user: string) => `pass\n${l
 export const publishMessage = (lane: Lane, method: string, pathAndQuery: string, ts: number, body: string) => `publish\n${lane}\n${method.toUpperCase()}\n${pathAndQuery}\n${ts}\n${body}`;
 
 /** A pass for a signed-in user: v1.<lane>.<exp>.<user, base64url>.<signature>. */
-export function makePass(userId: string, { now = Date.now(), lane = laneOf(), keys = siteKeys() } = {}) {
+export function makePass(userId: string, { now = Date.now(), lane = laneOf(), keys = siteKeys(), ms = PASS_MS } = {}) {
   if (!keys) throw new Error('beta site passes need STUDIO_SITES_SEED or STUDIO_OWNER_KEY');
-  const exp = Math.floor((now + PASS_MS) / 1000);
+  const exp = Math.floor((now + ms) / 1000);
   const sig = crypto.sign(null, Buffer.from(passMessage(lane, exp, userId)), keys.priv).toString('base64url');
   return `v1.${lane}.${exp}.${b64u(userId)}.${sig}`;
 }
+
+/**
+ * A beta-site pass for a playtest (Gen's playtest.run `cookies`): an hour, user "playtest", for the whole domain, so a
+ * playtest of a beta site gets past the sign-in. None where this Studio has no key (a local Studio).
+ */
+export function playtestCookies(lane: Lane = laneOf(), domain = process.env.STUDIO_COOKIE_DOMAIN ?? 'hawkesgen.ai') {
+  const keys = siteKeys();
+  if (!keys) return [];
+  return [{ name: passCookie(lane), value: makePass('playtest', { lane, keys, ms: 3600_000 }), domain: `.${domain}` }];
+}
+
+/** The playtest's cookies param when there is a pass to give (spread into Gen's params). */
+export const withPass = () => { const c = playtestCookies(); return c.length ? { cookies: c } : {}; };
 
 /** The signature header of a publish request: <ts>.<signature>. */
 export function signPublish(lane: Lane, method: string, pathAndQuery: string, body: string, { now = Date.now(), keys = siteKeys() } = {}) {

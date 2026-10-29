@@ -341,3 +341,25 @@ test.after(() => {
   globalThis.fetch = realFetch;
   try { fs.rmSync(TMP, { recursive: true, force: true }); } catch { /* Windows keeps a handle a moment longer */ }
 });
+
+test('a playtest of a beta site gets a pass (Gen playtest.run cookies) the Worker accepts, for an hour', async () => {
+  W.resetKeys();
+  const saved = { seed: process.env.STUDIO_SITES_SEED, lane: process.env.STUDIO_LANE };
+  try {
+    process.env.STUDIO_SITES_SEED = BETA.STUDIO_SITES_SEED ?? BETA.STUDIO_OWNER_KEY;
+    const [c] = K.playtestCookies('beta');
+    assert.equal(c.name, 'hawkes_pass_beta');
+    assert.equal(c.domain, '.hawkesgen.ai');
+    assert.equal(await W.checkPass(env, 'beta', c.value), 'playtest');
+    const exp = Number(c.value.split('.')[2]) * 1000;
+    assert.ok(exp > Date.now() + 50 * 60_000 && exp < Date.now() + 61 * 60_000, 'about an hour');
+    assert.ok(K.withPass().cookies?.length, 'withPass gives Gen the cookies param');
+    delete process.env.STUDIO_SITES_SEED;
+    const owner = process.env.STUDIO_OWNER_KEY;
+    delete process.env.STUDIO_OWNER_KEY;
+    assert.deepEqual(K.playtestCookies('beta'), [], 'no key, no pass');
+    if (owner !== undefined) process.env.STUDIO_OWNER_KEY = owner;
+  } finally {
+    if (saved.seed === undefined) delete process.env.STUDIO_SITES_SEED; else process.env.STUDIO_SITES_SEED = saved.seed;
+  }
+});
