@@ -293,7 +293,7 @@ export function googleUser(who: string | GoogleProfile, meta: { ip?: string | nu
       throw new Waitlisted(`Thanks, ${email} is on the list. You'll get an email when your Studio is ready.`, 403);
     } else {
       log(false, 'Google: no account for this email');
-      throw new StudioError(`${email} has no account here. Ask an admin for an invite.`, 403);
+      throw new StudioError(`${email} has no account here. Signed in with another Google account? Use the one you were invited with, or ask an admin for an invite.`, 403);
     }
   } else if (listed && r.role !== 'admin') db.prepare(`UPDATE users SET role = 'admin' WHERE id = ?`).run(r.id);
   // Link Google's id the first time; fill in the name; an invite or reset left waiting for a password: Google is enough.

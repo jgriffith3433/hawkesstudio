@@ -64,6 +64,26 @@ export function stripeKeys() {
   return { secretKey: pick('secretKey', 'STRIPE_SECRET_KEY'), webhookSecret: pick('webhookSecret', 'STRIPE_WEBHOOK_SECRET'), publishableKey: pick('publishableKey', 'STRIPE_PUBLISHABLE_KEY') };
 }
 
+/**
+ * Sets this Studio's Stripe keys (POST /api/billing/config, the platform admin only): written to .data/stripe.json
+ * (0600; synced to the state bucket on Cloud Run, so a restart keeps it). Empty values leave a key as it was.
+ */
+export function saveStripeConfig(input: { secretKey?: unknown; webhookSecret?: unknown; publishableKey?: unknown }) {
+  let f: Record<string, string> = {};
+  try { f = JSON.parse(fs.readFileSync(CONFIG(), 'utf8')) ?? {}; } catch { /* none */ }
+  const set = (k: 'secretKey' | 'webhookSecret' | 'publishableKey', re: RegExp) => {
+    const v = typeof input[k] === 'string' ? (input[k] as string).trim() : '';
+    if (!v) return;
+    if (!re.test(v)) throw new StudioError(`That ${k} doesn't look like one of Stripe's`, 400);
+    f[k] = v;
+  };
+  set('secretKey', /^(sk|rk)_(test|live)_[A-Za-z0-9]+$/);
+  set('webhookSecret', /^whsec_[A-Za-z0-9]+$/);
+  set('publishableKey', /^pk_(test|live)_[A-Za-z0-9]+$/);
+  fs.writeFileSync(CONFIG(), JSON.stringify(f, null, 2), { mode: 0o600 });
+  return stripeStatus();
+}
+
 /** Whether payments are set up, and in which mode (never a key). */
 export function stripeStatus() {
   const k = stripeKeys();

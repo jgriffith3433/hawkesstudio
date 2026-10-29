@@ -5,7 +5,7 @@ import type http from 'node:http';
 import { StudioError } from './config.ts';
 import * as A from './auth.ts';
 import { requestUser } from './sandbox.ts';
-import { googleClientId, verifyGoogleProfile } from './cloudauth.ts';
+import { cloudMode, googleClientId, verifyGoogleProfile } from './cloudauth.ts';
 import { laneOf, makePass, passReturn, passSetCookie, siteKeys } from './sitekeys.ts';
 
 export const esc = (s: unknown) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!);
@@ -89,8 +89,16 @@ function googleBlock(next: string) {
 <details style="margin-top:10px"><summary><small>Sign in with a password instead</small></summary>`;
 }
 
+/** Email and password on this Studio: off on the cloud lanes once Google sign-in is set up (J, 2026-10-29: "I don't
+ *  want to sign in with u/p"); STUDIO_PASSWORD_LOGIN=1 turns them back on. J's scripts use the owner key, not this. */
+export const passwordsAllowed = () => !(cloudMode() && googleClientId()) || process.env.STUDIO_PASSWORD_LOGIN === '1';
+
 function signinPage(next: string, error?: string, email = '', notice?: string) {
   const g = googleBlock(next);
+  if (g && !passwordsAllowed()) {
+    return page('Sign in', `<h1>Sign in</h1><p>Hawkes Studio, Gen and the beta sites.</p>
+${error ? `<div class="err">${esc(error)}</div>` : ''}${notice ? `<div class="ok">${esc(notice)}</div>` : ''}${g.replace(/<details[\s\S]*$/, '')}`);
+  }
   return page('Sign in', `<h1>Sign in</h1><p>Hawkes Studio, Gen and the beta sites.</p>
 ${error ? `<div class="err">${esc(error)}</div>` : ''}${notice ? `<div class="ok">${esc(notice)}</div>` : ''}${g}
 <form method="post" action="/auth/signin">
@@ -193,6 +201,7 @@ export async function handleAuthRoute(req: http.IncomingMessage, res: http.Serve
   if (route === '/auth/signin' && method === 'POST') {
     const f = await form(req);
     const to = A.safeNext(f.next);
+    if (!passwordsAllowed()) { html(res, 410, signinPage(to, 'Sign in with Google.')); return true; }
     try {
       const u = A.signIn(f.email, f.password, meta(req));
       const remember = f.remember === '1' || f.remember === 'on';

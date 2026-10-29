@@ -142,3 +142,15 @@ test('without keys: payments are not set up (503), and an unsigned webhook is re
   assert.equal(B.stripeStatus().mode, 'live', 'the environment is the fallback');
   delete process.env.STRIPE_SECRET_KEY;
 });
+
+test('the platform admin sets the keys: checked, kept in the data folder, never returned', async () => {
+  const Bm = await import('../src/billing.ts');
+  assert.throws(() => Bm.saveStripeConfig({ secretKey: 'not-a-key' }), /doesn't look like/);
+  Bm.saveStripeConfig({ webhookSecret: 'whsec_kept1' });
+  const st = Bm.saveStripeConfig({ secretKey: 'sk_test_newkey123', publishableKey: 'pk_test_abc', webhookSecret: '' });
+  assert.deepEqual([st.configured, st.mode, st.webhook], [true, 'test', true], 'an empty webhook secret leaves the old one');
+  assert.ok(!JSON.stringify(st).includes('sk_test_newkey123'));
+  assert.equal(Bm.stripeKeys().secretKey, 'sk_test_newkey123');
+  assert.equal(Bm.stripeKeys().webhookSecret, 'whsec_kept1');
+  Bm.saveStripeConfig({ secretKey: 'sk_test_studio' });
+});
