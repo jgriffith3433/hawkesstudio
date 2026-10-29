@@ -178,6 +178,7 @@ Every day it runs these steps for every product (one at a time, through Hawkes G
 
 ```
 Unity source       built on the AWS build server (Hawkes Gen unity.build; Studio triggers it when the source changes)
+Unity source       or: push a build-* tag -> Gen's Cloud Run job builds that commit from GitHub -> website repo's beta
 Unity source                          builds WebGL into                     domain
 sickofitgame-unity  ── GameDeployWindow ──▶ sickofitgamewebsite/Game/v<n>/   sickofitgame.com
 YoobaLand/YoobaLand ── YoobaWebBuild ─────▶ YoobaLandGame/Game/              yoobalandgame.com
@@ -289,6 +290,12 @@ ElevenLabs key may still sit in Unity EditorPrefs (`SickOfIt.ElevenLabs.ApiKey`,
    devtools saves). Pushing `beta` publishes nothing live. On each push the beta site `https://<sub>.hawkesgen.ai/`
    rebuilds (Studio's login); a Unity game is built on the build server a minute later (about $0.10), into a scratch
    copy of its website, then playtested.
+   **Unity games on Google Cloud: a build tag.** In sickofitgame-unity, YoobaLand or breakingthrough,
+   `git tag build-<name> && git push origin build-<name>` (e.g. `build-2026-10-28`; the tagged commit must contain the
+   `tags: ['build-*']` line of `.github/workflows/hawkes-studio.yml`). Studio asks Hawkes Gen for a Cloud Run build of
+   that exact commit from GitHub; the job commits `Game/v<n>` and the loader to the website repo's `beta` and pushes it
+   (never main), and Studio playtests it. Going live is still J's `DEPLOY <product>`. Details: hawkesgen
+   `docs/unity-cloudrun.md` ("GitHub mode"), hawkesstudio `docs/daily.md` ("Build tags").
 2. **Live = push main.** Studio's "Go live" (`studio.cmd deploy <product>`, the Today card, `studio_deploy_plan` in
    chat; J types `DEPLOY <product>`) fast-forwards main to the playtested beta commit; J can also push main himself.
    Then GitHub takes it from there:

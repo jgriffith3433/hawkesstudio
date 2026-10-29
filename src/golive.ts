@@ -35,6 +35,12 @@ function liveRun(p: Product, sha: string, by: string, resumed?: string) {
   return { id, end };
 }
 
+/** Whether the copy's HEAD has commits that `main` (the website's main as fetched before) doesn't. */
+export async function unpublished(copy: string, main: string) {
+  const r = await gitAsync(copy, ['rev-list', '--count', `${main}..HEAD`]);
+  return r.ok && Number(r.out.trim()) > 0;
+}
+
 const liveAlready = (p: Product, sha: string) =>
   db.prepare(`SELECT id FROM deploys WHERE product = ? AND kind = 'deploy' AND (after = ? OR beta = ? OR source_after = ?) AND rolled_back IS NULL ORDER BY at DESC LIMIT 1`).get(p.id, sha, sha, sha) as { id: string } | undefined;
 
@@ -99,8 +105,11 @@ export async function publishUnity(p: Product, sha: string, { by = 'a push to ma
     return critical(`publishing ${p.name} live`, async () => {
       must(await gitAsync(copy, ['add', '-A']), 'git add');
       let after = before;
-      if (!(await gitAsync(copy, ['diff', '--cached', '--quiet'])).ok) {
-        must(await gitAsync(copy, [...AUTHOR, 'commit', '--quiet', '-m', `Go live: ${p.name}${version ? ` Game/v${version}` : ''} (${p.repo.split('/')[0]} ${sha.slice(0, 7)}, ${by})`]), 'committing the build');
+      const staged = !(await gitAsync(copy, ['diff', '--cached', '--quiet'])).ok;
+      if (staged) must(await gitAsync(copy, [...AUTHOR, 'commit', '--quiet', '-m', `Go live: ${p.name}${version ? ` Game/v${version}` : ''} (${p.repo.split('/')[0]} ${sha.slice(0, 7)}, ${by})`]), 'committing the build');
+      // A tag build (tagbuild.ts) is already committed: the copy sits on the website's beta commit that holds it, with
+      // nothing staged. Either way, whatever the copy has that main lacks goes live.
+      if (staged || (await unpublished(copy, before))) {
         // The website's main may have moved since the copy was made: put the build on top of it.
         must(await gitAsync(copy, ['fetch', '--quiet', 'origin', MAIN]), 'fetching the website');
         must(await gitAsync(copy, ['rebase', '--quiet', `origin/${MAIN}`]), `rebasing onto ${p.site}'s ${MAIN}`);

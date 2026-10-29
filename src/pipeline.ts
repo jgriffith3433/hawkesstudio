@@ -977,7 +977,9 @@ async function partialBody(id: string, kind: string, p: Product, opts: PartialOp
  * quiet: ms a Unity beta run waits for more pushes before building (default STUDIO_BETA_QUIET_MS, 2 min; J's own Beta
  * button: 0). A newer beta run of the product supersedes one still waiting (betaqueue.ts).
  */
-type BetaOptions = { focus?: string; origin?: string | null; criteria?: string[]; scenario?: string; options?: Record<string, unknown>; playtest?: boolean; quiet?: number; plays?: BetaPlay[] };
+type BetaOptions = { focus?: string; origin?: string | null; criteria?: string[]; scenario?: string; options?: Record<string, unknown>; playtest?: boolean; quiet?: number; plays?: BetaPlay[];
+  /** A build tag J pushed (tagbuild.ts): this run builds that exact commit in the cloud (GitHub mode) instead of beta's checkout. */
+  tag?: { name: string; sha: string } };
 /** A reached milestone's check (pm.ts milestoneCheck): one scenario (none: the product's first local one) and the criteria judged on it. */
 export type BetaPlay = { scenario?: string; options?: Record<string, unknown>; criteria: string[] };
 
@@ -989,7 +991,7 @@ export type BetaPlay = { scenario?: string; options?: Record<string, unknown>; c
 export function startBeta(productId: string, o: BetaOptions = {}) {
   const p = getProduct(productId);
   const id = newId('r');
-  db.prepare('INSERT INTO runs (id, kind, status, detail, products, options, started) VALUES (?, ?, ?, ?, ?, ?, ?)').run(id, 'beta', 'running', `beta ${p.id}`, J([p.id]), J({ focus: o.focus, criteria: o.criteria, scenario: o.scenario, options: o.options, playtest: o.playtest, quiet: o.quiet, plays: o.plays }), Date.now());
+  db.prepare('INSERT INTO runs (id, kind, status, detail, products, options, started) VALUES (?, ?, ?, ?, ?, ?, ?)').run(id, 'beta', 'running', `beta ${p.id}`, J([p.id]), J({ focus: o.focus, criteria: o.criteria, scenario: o.scenario, options: o.options, playtest: o.playtest, quiet: o.quiet, plays: o.plays, ...(o.tag ? { tag: o.tag } : {}) }), Date.now());
   tagRun(id, o.origin);
   return { id, done: betaBody(id, p, o) };
 }
@@ -1010,7 +1012,7 @@ async function unchangedPass(p: Product, name: string): Promise<string | null> {
   return noRuntimeChange(files) ? `${name} passed on beta ${pass.sha.slice(0, 7)} (run ${pass.run}); since then only docs and notes changed (${files.length} file(s)): not played again` : null;
 }
 
-async function betaBody(id: string, p: Product, { focus, criteria, scenario, options, playtest, quiet, plays }: BetaOptions) {
+async function betaBody(id: string, p: Product, { focus, criteria, scenario, options, playtest, quiet, plays, tag }: BetaOptions) {
   try {
     // What this beta run was asked to play (runplan.ts): the tasks' scenarios, or beta's one playtest when asked for.
     const nameFor = (x: { scenario?: string }) => {
@@ -1031,7 +1033,13 @@ async function betaBody(id: string, p: Product, { focus, criteria, scenario, opt
       if (broken) throw new Error(`npm ci failed in ${broken.dir} (${broken.why}): ${broken.error}`);
     }
     if (p.deploy?.prebuild) await prebuildBeta(id, p);
-    if (p.build && lane) {
+    if (p.build && tag) {
+      // A build tag: that exact commit, built in the cloud from GitHub and pushed to the website's beta (tagbuild.ts).
+      // No beta queue: it builds one named commit, so it neither waits for pushes nor supersedes anything.
+      const { buildTag, studioTagDeps } = await import('./tagbuild.ts');
+      const built = await buildTag(id, p, tag, await studioTagDeps(id));
+      if (built?.status !== 'done') return void closeRun(id, `beta ${p.id} ${tag.name}`);
+    } else if (p.build && lane) {
       // Unity: one build for a burst of pushes (betaqueue.ts). Waiting, a newer beta run of the product takes over.
       const q = startStep(id, p.id, 'beta', 'queue', 'waiting for more pushes');
       const was = resumedStep(q);
