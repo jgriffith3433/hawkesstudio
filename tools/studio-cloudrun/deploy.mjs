@@ -64,11 +64,11 @@ const account = (email, id, title) => {
 account(sa, 'studio-control', 'Hawkes Studio (the service)');
 account(agentSa, 'studio-agent', 'Hawkes Studio agents (Claude Code jobs: only the jobs/ folder)');
 account(schedSa, 'studio-scheduler', 'Hawkes Studio daily run (Cloud Scheduler)');
-gcloud(['storage', 'buckets', 'add-iam-policy-binding', `gs://${bucket}`, P, `--member=serviceAccount:${sa}`, '--role=roles/storage.objectAdmin', '--format=none'], { retries: 9 });
+gcloud(['storage', 'buckets', 'add-iam-policy-binding', `gs://${bucket}`, P, `--member=serviceAccount:${sa}`, '--role=roles/storage.objectAdmin', '--condition=None', '--format=none'], { retries: 9 });
 // The job reads and writes only jobs/ (never state/: Claude accounts, settings); listing needs the bucket reader role.
 gcloud(['storage', 'buckets', 'add-iam-policy-binding', `gs://${bucket}`, P, `--member=serviceAccount:${agentSa}`, '--role=roles/storage.objectAdmin',
   `--condition=expression=resource.name.startsWith("projects/_/buckets/${bucket}/objects/jobs/"),title=jobs-only`, '--format=none'], { retries: 9 });
-gcloud(['storage', 'buckets', 'add-iam-policy-binding', `gs://${bucket}`, P, `--member=serviceAccount:${agentSa}`, '--role=roles/storage.legacyBucketReader', '--format=none'], { retries: 9 });
+gcloud(['storage', 'buckets', 'add-iam-policy-binding', `gs://${bucket}`, P, `--member=serviceAccount:${agentSa}`, '--role=roles/storage.legacyBucketReader', '--condition=None', '--format=none'], { retries: 9 });
 // run.developer: start the agent job with per-pass overrides and follow its executions; acting as the job's account.
 for (const role of ['roles/run.developer', 'roles/logging.logWriter']) {
   gcloud(['projects', 'add-iam-policy-binding', project, `--member=serviceAccount:${sa}`, `--role=${role}`, '--condition=None', '--format=none'], { retries: 9 });
