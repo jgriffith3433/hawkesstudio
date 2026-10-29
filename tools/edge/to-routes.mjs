@@ -42,14 +42,22 @@ const token = wranglerToken();
 
 async function api(method, p, body) {
   const r = await fetch(`https://api.cloudflare.com/client/v4${p}`, { method, headers: { Authorization: `Bearer ${token}`, 'content-type': 'application/json' }, body: body ? JSON.stringify(body) : undefined });
-  const j = await r.json().catch(() => ({}));
-  if (!j.success) throw new Error(`${method} ${p}: ${r.status} ${JSON.stringify(j.errors ?? j).slice(0, 300)}`);
+  // A custom domain's DELETE answers 200 with an empty body (no "success" field).
+  const j = await r.json().catch(() => ({ success: r.ok }));
+  if (j.success === undefined ? !r.ok : !j.success) throw new Error(`${method} ${p}: ${r.status} ${JSON.stringify(j.errors ?? j).slice(0, 300)}`);
   return j.result;
 }
 
 const domains = (await api('GET', `/accounts/${ACCOUNT}/workers/domains`)).filter((d) => d.zone_id === ZONE || d.hostname.endsWith(`.${ZONE_NAME}`));
 const routes = await api('GET', `/zones/${ZONE}/workers/routes`);
-if (!domains.length) { console.log('No Workers custom domains left on hawkesgen.ai: nothing to do.'); process.exit(0); }
+// A host moved by an earlier run that stopped half way: a route but no DNS record (the host is down until it has one).
+const records = new Set(JSON.parse(cf(['dns', 'records', 'list', '--zone', ZONE]).stdout.replace(/^[^[]*/, '') || '[]').map((r) => r.name));
+const orphans = routes.filter((r) => /^[a-z0-9.-]+\/\*$/.test(r.pattern)).map((r) => ({ hostname: r.pattern.slice(0, -2), service: r.script })).filter((o) => !records.has(o.hostname) && !domains.some((d) => d.hostname === o.hostname));
+for (const o of orphans) {
+  console.log(`  ${o.hostname}: has a route but no DNS record${APPLY ? ': making it' : ''}`);
+  if (APPLY) makeRecord(o);
+}
+if (!domains.length) { console.log('No Workers custom domains left on hawkesgen.ai: nothing more to do.'); process.exit(0); }
 
 console.log(`${domains.length} custom domain(s) to move to routes:`);
 for (const d of domains) console.log(`  ${d.hostname.padEnd(34)} -> ${d.service}${routes.some((r) => r.pattern === `${d.hostname}/*`) ? '  (route exists)' : ''}`);
@@ -59,12 +67,17 @@ for (const d of domains) {
   const pattern = `${d.hostname}/*`;
   if (!routes.some((r) => r.pattern === pattern)) await api('POST', `/zones/${ZONE}/workers/routes`, { pattern, script: d.service });
   await api('DELETE', `/accounts/${ACCOUNT}/workers/domains/${d.id}`);
-  // The cf CLI's own script under node (no shell: Windows' cmd would mangle the JSON).
-  const r = spawnSync(process.execPath, [CF, 'dns', 'records', 'create', '--zone', ZONE, '--body', JSON.stringify({ type: 'AAAA', name: d.hostname, content: '100::', proxied: true, comment: `Worker ${d.service} (route)` })], { encoding: 'utf8' });
-  if (r.status !== 0) {
-    console.error(`  ${d.hostname}: the DNS record failed. Make it by hand (AAAA ${d.hostname} 100::, proxied):\n${(r.stderr || r.stdout).slice(0, 400)}`);
-    continue;
-  }
-  console.log(`  ${d.hostname}: route ${pattern} -> ${d.service}, proxied record made`);
+  if (makeRecord(d)) console.log(`  ${d.hostname}: route ${pattern} -> ${d.service}, proxied record made`);
+}
+
+// The cf CLI's own script under node (no shell: Windows' cmd would mangle the JSON).
+function cf(args) {
+  return spawnSync(process.execPath, [CF, ...args], { encoding: 'utf8' });
+}
+function makeRecord(d) {
+  const r = cf(['dns', 'records', 'create', '--zone', ZONE, '--body', JSON.stringify({ type: 'AAAA', name: d.hostname, content: '100::', proxied: true, comment: `Worker ${d.service} (route)` })]);
+  if (r.status === 0) return true;
+  console.error(`  ${d.hostname}: the DNS record failed. Make it by hand (AAAA ${d.hostname} 100::, proxied):\n${(r.stderr || r.stdout).slice(0, 400)}`);
+  return false;
 }
 console.log('\nDone. Check: every pair of hosts now answers on a shared connection (the script in docs: curl -H "Host: b" https://a/).');
