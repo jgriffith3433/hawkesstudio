@@ -168,6 +168,29 @@ export function saveProduct(input: ProductInput): Product {
   return product;
 }
 
+/**
+ * A cell's first game from the sign-up (cells.ts seedGame left it as onboarding.json in its state): added through
+ * saveProduct's checks, then the file is removed here and in the bucket, so a game removed later never comes back.
+ */
+export async function applyOnboardingSeed() {
+  const file = path.join(DATA, 'onboarding.json');
+  if (!customerStudio() || !fs.existsSync(file)) return null;
+  let added: Product | null = null;
+  try {
+    const { game } = JSON.parse(fs.readFileSync(file, 'utf8'));
+    if (game && !loadProducts().some((p) => p.id === game.id)) added = saveProduct(game);
+  } catch (e: any) {
+    console.warn(`[onboarding] the sign-up's first game: ${e.message ?? e}`);
+  }
+  fs.rmSync(file, { force: true });
+  const bucket = process.env.STUDIO_STATE_BUCKET;
+  if (bucket) {
+    const { statePrefix } = await import('./cloudhost.ts');
+    await (await import('./gcp.ts')).gcsDelete(bucket, `${statePrefix()}state/onboarding.json`).catch(() => {});
+  }
+  return added;
+}
+
 /** Removes a product from an org cell's file. */
 export function removeProduct(id: string) {
   if (!customerStudio()) throw new StudioError("Products are edited in products.json here (this is J's Studio, not a customer's).", 409);

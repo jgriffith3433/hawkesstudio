@@ -25,9 +25,49 @@ async function api(path, opts = {}) {
     }
   }
   const d = await r.json();
+  // A pro feature on a plan without it (src/entitlements.ts): the API says what to upgrade to; offer it.
+  if (r.status === 402 && d.upgrade) studioUpgrade(d);
+  if (r.status === 409 && d.connectAi) studioUpgrade({ ...d, connectAi: true });
   if (!r.ok) throw new Error(d.error ?? r.status);
   return d;
 }
+
+// The Upgrade prompt: what the plan lacks, and a button to Stripe Checkout (billing.ts) for the cheapest plan with it.
+// Or, for Talk and agents with no AI linked yet, the way to Settings and the Connect your AI card.
+function studioUpgrade(d) {
+  document.getElementById('upgradeDlg')?.remove();
+  const el = document.createElement('div');
+  el.id = 'upgradeDlg';
+  el.setAttribute('role', 'dialog');
+  el.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.55);display:grid;place-items:center;z-index:1000;padding:16px';
+  const u = d.upgrade;
+  el.innerHTML = `<div style="background:var(--panel,#151a1f);border:1px solid var(--line,#2a3138);border-radius:12px;padding:20px;max-width:420px;width:100%">
+    <h3 style="margin:0 0 8px">${d.connectAi ? 'Connect your AI' : `Upgrade to ${esc(u.planName)}`}</h3>
+    <p class="meta" style="margin:0 0 14px">${esc(d.error)}</p>
+    <div style="display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap">
+      <button class="small" data-up="close">Not now</button>
+      ${d.connectAi ? '<button data-up="ai">Open Settings</button>' : `<button data-up="buy">Upgrade to ${esc(u.planName)}</button>`}
+    </div><div class="meta" id="upMsg"></div></div>`;
+  document.body.append(el);
+  el.addEventListener('click', async (e) => {
+    const b = e.target.closest('[data-up]');
+    if (e.target === el || b?.dataset.up === 'close') return el.remove();
+    if (b?.dataset.up === 'ai') { el.remove(); location.hash = '#settings'; return; }
+    if (b?.dataset.up === 'buy') {
+      b.disabled = true;
+      try {
+        const r = await fetch('/api/billing/checkout', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ plan: u.plan }) });
+        const j = await r.json();
+        if (!r.ok) throw new Error(j.error ?? r.status);
+        location.href = j.url;
+      } catch (err) {
+        b.disabled = false;
+        el.querySelector('#upMsg').textContent = err.message;
+      }
+    }
+  });
+}
+window.studioUpgrade = studioUpgrade;
 
 // ------------------------------------------------------------- tabs
 // Old tabs folded into others: #sites (the beta and live links) is on Go live now.

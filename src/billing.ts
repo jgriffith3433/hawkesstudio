@@ -47,6 +47,11 @@ db.exec(`
     ref TEXT UNIQUE, created INTEGER NOT NULL
   );
 `);
+// Which Studio a row is for: this one, or (in the control plane, cells.ts) a customer's org billed here. Rows from before
+// the column are this Studio's (scope below).
+for (const t of ['billing_subscriptions', 'billing_credits']) {
+  try { db.exec(`ALTER TABLE ${t} ADD COLUMN studio_id TEXT`); } catch { /* already there */ }
+}
 
 // ------------------------------------------------------------------ keys
 
@@ -90,6 +95,25 @@ export function studioId(): string {
   const id = `st_${crypto.randomBytes(8).toString('hex')}`;
   db.prepare(`INSERT OR IGNORE INTO billing_state (key, value) VALUES ('studio_id', ?)`).run(id);
   return (db.prepare(`SELECT value FROM billing_state WHERE key = 'studio_id'`).get() as { value: string }).value;
+}
+
+let owned = false;
+/** The id rows are kept under (`sid`, else this Studio's); rows made before studio_id existed become this Studio's. */
+function scope(sid?: string) {
+  const own = studioId();
+  if (!owned) {
+    for (const t of ['billing_subscriptions', 'billing_credits']) db.prepare(`UPDATE ${t} SET studio_id = ? WHERE studio_id IS NULL`).run(own);
+    owned = true;
+  }
+  return sid || own;
+}
+
+// The control plane (cells.ts) bills customers' orgs here too: it says which ids are its, and hears of new plans.
+let knownStudio: (sid: string) => boolean = () => false;
+let subscribed: (sid: string, plan: Plan) => void = () => {};
+export function setStudioHooks(h: { known?: (sid: string) => boolean; subscribed?: (sid: string, plan: Plan) => void }) {
+  if (h.known) knownStudio = h.known;
+  if (h.subscribed) subscribed = h.subscribed;
 }
 
 // ------------------------------------------------------------------ plans
@@ -155,54 +179,56 @@ export type Subscription = { id: string; planId: string; plan: Plan | null; stri
 const toSub = (r: any): Subscription => ({ id: r.id, planId: r.plan_id, plan: getPlan(r.plan_id), stripeSubscriptionId: r.stripe_subscription_id, status: r.status, periodStart: r.period_start ?? null, periodEnd: r.period_end ?? null, cancelAtPeriodEnd: !!r.cancel_at_period_end, by: r.by_user ?? null, created: r.created });
 
 /** The current plan: the newest subscription that isn't canceled (past due still counts), else null. */
-export function currentSubscription(): Subscription | null {
-  const r = db.prepare(`SELECT * FROM billing_subscriptions WHERE status != 'canceled' ORDER BY created DESC LIMIT 1`).get();
+export function currentSubscription(sid?: string): Subscription | null {
+  const r = db.prepare(`SELECT * FROM billing_subscriptions WHERE studio_id = ? AND status != 'canceled' ORDER BY created DESC LIMIT 1`).get(scope(sid));
   return r ? toSub(r) : null;
 }
 
 /** The Stripe customer this Studio pays as (from its first checkout), or null. */
-const customerId = () => (db.prepare(`SELECT value FROM billing_state WHERE key = 'stripe_customer'`).get() as { value: string } | undefined)?.value ?? null;
+const customerKey = (sid: string) => (sid === studioId() ? 'stripe_customer' : `stripe_customer:${sid}`);
+const customerId = (sid?: string) => (db.prepare(`SELECT value FROM billing_state WHERE key = ?`).get(customerKey(scope(sid))) as { value: string } | undefined)?.value ?? null;
 
 /** How many games this Studio's plan allows; null without a plan (onboarding's own rules apply). */
-export function planGames(): number | null {
-  const s = currentSubscription();
+export function planGames(sid?: string): number | null {
+  const s = currentSubscription(sid);
   return s?.plan ? s.plan.maxGames : null;
 }
 
 // ------------------------------------------------------------------ credits
 
-export function creditBalance(): number {
-  return (db.prepare('SELECT balance_after FROM billing_credits ORDER BY created DESC, rowid DESC LIMIT 1').get() as { balance_after: number } | undefined)?.balance_after ?? 0;
+export function creditBalance(sid?: string): number {
+  return (db.prepare('SELECT balance_after FROM billing_credits WHERE studio_id = ? ORDER BY created DESC, rowid DESC LIMIT 1').get(scope(sid)) as { balance_after: number } | undefined)?.balance_after ?? 0;
 }
 
 /** Adds credits once per ref (Stripe retries webhooks: a second grant with the same ref changes nothing). */
-export function grantCredits(delta: number, kind: string, detail: string, ref: string | null) {
-  if (ref && db.prepare('SELECT 1 FROM billing_credits WHERE ref = ?').get(ref)) return { duplicate: true, balance: creditBalance() };
-  const balance = creditBalance() + delta;
-  db.prepare('INSERT INTO billing_credits (id, delta, balance_after, kind, detail, ref, created) VALUES (?, ?, ?, ?, ?, ?, ?)').run(newId('cr'), delta, balance, kind, detail, ref, Date.now());
+export function grantCredits(delta: number, kind: string, detail: string, ref: string | null, sid?: string) {
+  const id = scope(sid);
+  if (ref && db.prepare('SELECT 1 FROM billing_credits WHERE ref = ?').get(ref)) return { duplicate: true, balance: creditBalance(id) };
+  const balance = creditBalance(id) + delta;
+  db.prepare('INSERT INTO billing_credits (id, delta, balance_after, kind, detail, ref, created, studio_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').run(newId('cr'), delta, balance, kind, detail, ref, Date.now(), id);
   return { duplicate: false, balance };
 }
 
-export function creditLedger(limit = 50) {
-  return db.prepare('SELECT id, delta, balance_after, kind, detail, created FROM billing_credits ORDER BY created DESC, rowid DESC LIMIT ?').all(limit) as any[];
+export function creditLedger(limit = 50, sid?: string) {
+  return db.prepare('SELECT id, delta, balance_after, kind, detail, created FROM billing_credits WHERE studio_id = ? ORDER BY created DESC, rowid DESC LIMIT ?').all(scope(sid), limit) as any[];
 }
 
 // ------------------------------------------------------------------ checkout, cancel, resume, portal
 
 /** A Stripe Checkout session for a plan: the admin goes to `url`, pays, and comes back to Settings. */
-export async function checkout(planId: string, by: { id: string; email: string }, origin: string) {
+export async function checkout(planId: string, by: { id: string; email: string }, origin: string, o: { sid?: string; successUrl?: string; cancelUrl?: string } = {}) {
   const plan = getPlan(String(planId ?? ''));
   if (!plan || !plan.active) throw new StudioError(`Unknown plan "${planId}"`, 404);
-  if (currentSubscription()) throw new StudioError('This Studio already has a plan: manage it from Settings.', 409);
-  const sid = studioId();
+  const sid = scope(o.sid);
+  if (currentSubscription(sid)) throw new StudioError('This Studio already has a plan: manage it from Settings.', 409);
   const f = new URLSearchParams();
   f.set('mode', 'subscription');
   f.set('client_reference_id', sid);
-  const cust = customerId();
+  const cust = customerId(sid);
   if (cust) f.set('customer', cust);
   else if (/@/.test(by.email) && !by.email.endsWith('@accounts.hawkesgen.ai')) f.set('customer_email', by.email);
-  f.set('success_url', `${origin}/?checkout=success#settings`);
-  f.set('cancel_url', `${origin}/?checkout=cancelled#settings`);
+  f.set('success_url', o.successUrl ?? `${origin}/?checkout=success#settings`);
+  f.set('cancel_url', o.cancelUrl ?? `${origin}/?checkout=cancelled#settings`);
   // The product tag and this Studio's id: the portal, Gen and other Studios share the account and skip what isn't theirs.
   for (const pre of ['metadata', 'subscription_data[metadata]']) {
     f.set(`${pre}[product]`, 'studio');
@@ -223,19 +249,19 @@ export async function checkout(planId: string, by: { id: string; email: string }
 }
 
 /** Cancels at the end of the paid month (resume undoes it before then). */
-export async function setCancelAtPeriodEnd(cancel: boolean) {
-  const sub = currentSubscription();
+export async function setCancelAtPeriodEnd(cancel: boolean, sid?: string) {
+  const sub = currentSubscription(sid);
   if (!sub) throw new StudioError('This Studio has no plan.', 404);
   await stripe(`subscriptions/${encodeURIComponent(sub.stripeSubscriptionId)}`, new URLSearchParams({ cancel_at_period_end: cancel ? 'true' : 'false' }));
   db.prepare('UPDATE billing_subscriptions SET cancel_at_period_end = ?, updated = ? WHERE id = ?').run(cancel ? 1 : 0, Date.now(), sub.id);
-  return currentSubscription();
+  return currentSubscription(sid);
 }
 
 /** Stripe's billing portal: cards, receipts, cancel. */
-export async function billingPortal(origin: string) {
-  const cust = customerId();
+export async function billingPortal(origin: string, o: { sid?: string; returnUrl?: string } = {}) {
+  const cust = customerId(o.sid);
   if (!cust) throw new StudioError('Nothing to manage yet: this Studio has not paid for anything.', 404);
-  const s = await stripe('billing_portal/sessions', new URLSearchParams({ customer: cust, return_url: `${origin}/#settings` }));
+  const s = await stripe('billing_portal/sessions', new URLSearchParams({ customer: cust, return_url: o.returnUrl ?? `${origin}/#settings` }));
   return { url: s.url as string };
 }
 
@@ -265,21 +291,33 @@ const subIdOf = (event: any) => {
 };
 const metaOf = (o: any) => ({ ...(o.parent?.subscription_details?.metadata ?? {}), ...(o.subscription_details?.metadata ?? {}), ...(o.metadata ?? {}) });
 
-/** Whether an event is this Studio's: tagged studio with this Studio's id, or about a subscription or customer it knows. */
-export function isStudioEvent(event: any): boolean {
+/**
+ * Whose event this is: this Studio's id, or a customer org the control plane bills here (cells.ts), when it is tagged
+ * studio with that id or is about a subscription or customer already known; null for everyone else's.
+ */
+export function studioOfEvent(event: any): string | null {
   const o = event?.data?.object ?? {};
   const meta = metaOf(o);
-  if (typeof meta.product === 'string' && meta.product) return meta.product === 'studio' && String(meta.studio_id ?? '') === studioId();
-  if (subByStripe(subIdOf(event))) return true;
-  const cust = customerId();
-  return Boolean(cust && typeof o.customer === 'string' && o.customer === cust);
+  const own = scope();
+  if (typeof meta.product === 'string' && meta.product) {
+    const sid = String(meta.studio_id ?? '');
+    return meta.product === 'studio' && sid && (sid === own || knownStudio(sid)) ? sid : null;
+  }
+  const sub = subByStripe(subIdOf(event));
+  if (sub) return sub.studio_id ?? own;
+  if (typeof o.customer !== 'string' || !o.customer) return null;
+  const r = db.prepare(`SELECT key FROM billing_state WHERE (key = 'stripe_customer' OR key LIKE 'stripe_customer:%') AND value = ?`).get(o.customer) as { key: string } | undefined;
+  return r ? (r.key === 'stripe_customer' ? own : r.key.slice('stripe_customer:'.length)) : null;
 }
+
+/** Whether an event is this Studio's (or one of the orgs billed here). */
+export const isStudioEvent = (event: any) => studioOfEvent(event) !== null;
 
 const secs = (v: unknown) => (Number(v) > 0 ? Number(v) * 1000 : null);
 const STATUS: Record<string, Subscription['status']> = { active: 'active', trialing: 'trialing', past_due: 'past_due', unpaid: 'past_due', canceled: 'canceled', incomplete_expired: 'canceled' };
 
 /** One of this Studio's events. Throws only on an event that is this Studio's and can't be applied (Stripe retries). */
-function apply(event: any): Record<string, unknown> {
+function apply(event: any, sid: string): Record<string, unknown> {
   const o = event?.data?.object ?? {};
   const type = String(event?.type ?? 'unknown');
   const now = Date.now();
@@ -290,12 +328,13 @@ function apply(event: any): Record<string, unknown> {
       const plan = getPlan(String(meta.plan_id ?? ''));
       const stripeId = String(o.subscription ?? '');
       if (!plan || !stripeId) throw new StudioError('A Studio checkout without a plan or subscription', 400);
-      if (typeof o.customer === 'string') db.prepare(`INSERT OR IGNORE INTO billing_state (key, value) VALUES ('stripe_customer', ?)`).run(o.customer);
+      if (typeof o.customer === 'string') db.prepare(`INSERT OR IGNORE INTO billing_state (key, value) VALUES (?, ?)`).run(customerKey(sid), o.customer);
       if (!subByStripe(stripeId)) {
-        db.prepare(`INSERT INTO billing_subscriptions (id, plan_id, stripe_subscription_id, stripe_customer_id, status, period_start, period_end, by_user, created, updated)
-          VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?, ?)`).run(newId('sub'), plan.id, stripeId, typeof o.customer === 'string' ? o.customer : null, now, now + 31 * 86_400_000, meta.user_id ? String(meta.user_id) : null, now, now);
+        db.prepare(`INSERT INTO billing_subscriptions (id, plan_id, stripe_subscription_id, stripe_customer_id, status, period_start, period_end, by_user, created, updated, studio_id)
+          VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?)`).run(newId('sub'), plan.id, stripeId, typeof o.customer === 'string' ? o.customer : null, now, now + 31 * 86_400_000, meta.user_id ? String(meta.user_id) : null, now, now, sid);
+        try { subscribed(sid, plan); } catch (e: any) { console.warn(`[billing] after ${sid} subscribed: ${e.message ?? e}`); }
       }
-      return { ok: true, type, subscription: stripeId };
+      return { ok: true, type, subscription: stripeId, studio: sid };
     }
     case 'invoice.paid': {
       const stripeId = subIdOf(event);
@@ -304,7 +343,7 @@ function apply(event: any): Record<string, unknown> {
       const plan = getPlan(sub?.plan_id ?? String(metaOf(o).plan_id ?? ''));
       if (!plan) throw new StudioError(`An invoice for an unknown Studio plan (${stripeId})`, 400);
       // Once per invoice: Stripe retries, and the ledger refuses a second grant for the same invoice.
-      const r = grantCredits(plan.creditsPerMonth, 'subscription_credits', `${plan.name} plan: this month's credits`, `invoice:${o.id}`);
+      const r = grantCredits(plan.creditsPerMonth, 'subscription_credits', `${plan.name} plan: this month's credits`, `invoice:${o.id}`, sid);
       const period = o.lines?.data?.[0]?.period;
       if (sub) db.prepare('UPDATE billing_subscriptions SET status = ?, period_start = COALESCE(?, period_start), period_end = COALESCE(?, period_end), updated = ? WHERE id = ?').run('active', secs(period?.start), secs(period?.end), now, sub.id);
       return { ok: true, type, duplicate: r.duplicate, creditsAdded: r.duplicate ? 0 : plan.creditsPerMonth };
@@ -335,11 +374,12 @@ export function handleStripeWebhook(raw: Buffer | string, signature: string): Re
   verifyStripeSignature(raw, signature);
   let event: any;
   try { event = JSON.parse(typeof raw === 'string' ? raw : raw.toString('utf8')); } catch { throw new StudioError('The body is not JSON', 400); }
-  if (!isStudioEvent(event)) return { ok: true, type: event?.type ?? 'unknown', ignored: "not this Studio's event" };
-  return apply(event);
+  const sid = studioOfEvent(event);
+  if (!sid) return { ok: true, type: event?.type ?? 'unknown', ignored: "not this Studio's event" };
+  return apply(event, sid);
 }
 
 /** What Settings shows: the plans, this Studio's plan, credits and whether payments are set up (never a key). */
-export function billingView() {
-  return { plans: listPlans(), subscription: currentSubscription(), credits: creditBalance(), ledger: creditLedger(20), stripe: stripeStatus(), studio: studioId() };
+export function billingView(sid?: string) {
+  return { plans: listPlans(), subscription: currentSubscription(sid), credits: creditBalance(sid), ledger: creditLedger(20, sid), stripe: stripeStatus(), studio: scope(sid) };
 }

@@ -24,6 +24,7 @@ import crypto from 'node:crypto';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { DATA, StudioError } from './config.ts';
 import { customerStudio } from './tenancy.ts';
+import { seal, sealing, unseal } from './cellkeys.ts';
 
 const DIR = () => path.join(DATA, 'claude');
 const FILE = () => path.join(DIR(), 'accounts.json');
@@ -42,7 +43,9 @@ function read(): Store {
   try {
     const st = fs.statSync(FILE());
     if (cache && cache.mtime === st.mtimeMs) return cache.store;
-    const store = JSON.parse(fs.readFileSync(FILE(), 'utf8')) as Store;
+    const disk = JSON.parse(fs.readFileSync(FILE(), 'utf8')) as Store;
+    // A customer's sign-ins are sealed at rest (cellkeys.ts); plain ones (J's, or from before sealing) read as they are.
+    const store = { ...disk, accounts: disk.accounts.map((a) => ({ ...a, token: unseal(a.token) })) };
     cache = { mtime: st.mtimeMs, store };
     return store;
   } catch {
@@ -53,11 +56,14 @@ function read(): Store {
 function write(store: Store) {
   fs.mkdirSync(DIR(), { recursive: true, mode: 0o700 });
   const tmp = `${FILE()}.${process.pid}.tmp`;
-  fs.writeFileSync(tmp, JSON.stringify(store, null, 1), { mode: 0o600 });
+  const sealed = customerStudio() && sealing();
+  fs.writeFileSync(tmp, JSON.stringify(sealed ? { ...store, accounts: store.accounts.map((a) => ({ ...a, token: seal(a.token) })) } : store, null, 1), { mode: 0o600 });
   fs.renameSync(tmp, FILE());
   cache = null;
   const active = store.accounts.find((a) => a.id === store.active);
-  if (active) fs.writeFileSync(ACTIVE_ENV(), `CLAUDE_CODE_OAUTH_TOKEN=${active.token}\n`, { mode: 0o600 });
+  // active.env is for J's Gen (its Claude calls read it); a customer's Studio keeps no plain copy.
+  if (customerStudio()) fs.rmSync(ACTIVE_ENV(), { force: true });
+  else if (active) fs.writeFileSync(ACTIVE_ENV(), `CLAUDE_CODE_OAUTH_TOKEN=${active.token}\n`, { mode: 0o600 });
   else fs.rmSync(ACTIVE_ENV(), { force: true });
 }
 

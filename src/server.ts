@@ -95,6 +95,9 @@ const server = http.createServer(async (req, res) => {
   const q = (k: string) => url.searchParams.get(k) ?? undefined;
   // The Talk conversation behind this call (Talk's MCP server sends it): what it starts reports back there.
   const origin = originOf(req);
+  // A customer's cell says so on every answer: the router (server/studio-edge) tells a cell's answer from Cloud Run's
+  // own "no such service" (a hibernated cell) by it.
+  if (process.env.STUDIO_ORG) res.setHeader('X-Studio-Cell', process.env.STUDIO_ORG);
   try {
     if (route === '/mcp' || route.startsWith('/mcp/')) return await handleMcp(req, res, route);
     // Accounts (auth.ts): the sign-in pages, and /auth/check that Caddy asks before every protected request.
@@ -115,6 +118,9 @@ const server = http.createServer(async (req, res) => {
     // timer's `studio daily --wait` on the AWS server). J's owner key starts one by hand.
     if (route === '/api/cloud/daily' && method === 'POST') {
       if (!(await schedulerCall(req))) return send(res, 401, { error: 'Only Cloud Scheduler (or J\'s owner key) starts the daily run here.' });
+      // A customer's nightly run is on their plan (entitlements.ts; the control plane's cron only asks paying cells).
+      const up = await (await import('./entitlements.ts')).upgradeRefusal(route, method);
+      if (up) return send(res, 402, up);
       const running = activeRun();
       if (running) return send(res, 200, { ok: true, run: running.id, note: 'a run is already going' });
       const { id } = startRun('daily', {});
@@ -127,6 +133,17 @@ const server = http.createServer(async (req, res) => {
       for await (const c of req) chunks.push(c as Buffer);
       return send(res, 200, (await import('./billing.ts')).handleStripeWebhook(Buffer.concat(chunks), String(req.headers['stripe-signature'] ?? '')));
     }
+    // Customers' Studios (cells.ts): the router's and the cells' calls carry their own keys; the central cron is Cloud
+    // Scheduler's (or the owner key), like the daily run.
+    if (route.startsWith('/api/cells/')) {
+      const C = await import('./cells.ts');
+      if (route === '/api/cells/cron' && method === 'POST') {
+        if (!C.cellsOn()) return send(res, 404, { error: 'not the control plane' });
+        if (!(await schedulerCall(req))) return send(res, 401, { error: 'Only Cloud Scheduler (or the owner key) runs the cells\' cron.' });
+        return send(res, 200, await C.cron());
+      }
+      if (await C.handleCellsKeyed(req, res, route, method, send, readJson)) return;
+    }
     // The agent sandbox's guards (guards.ts): from Talk's and the agents' Linux user, anything live needs J's own words.
     const refused = (await import('./guards.ts')).guardRequest(req, route, method);
     if (refused) return send(res, 403, { error: refused });
@@ -136,6 +153,13 @@ const server = http.createServer(async (req, res) => {
     // The platform admin's features (lockdown.ts): J's alone, in his Studio and in every customer's, whatever their role.
     const platformNo = (await import('./lockdown.ts')).platformRefusal(req, route, method);
     if (platformNo) return send(res, 403, { error: platformNo });
+    // A customer's plan (entitlements.ts): a pro feature on a plan without it answers 402 with what to upgrade to.
+    const upgrade = await (await import('./entitlements.ts')).upgradeRefusal(route, method);
+    if (upgrade) return send(res, 402, upgrade);
+    const noAi = await (await import('./entitlements.ts')).aiRefusal(route, method);
+    if (noAi) return send(res, 409, noAi);
+    // The platform admin's view of customers' Studios (cells.ts).
+    if ((route === '/api/cells' || route.startsWith('/api/cells/')) && (await (await import('./cells.ts')).handleCellsAdmin(req, res, route, method, send, readJson))) return;
     // The 🐞 widget's posts from a beta site on Cloudflare (server/beta-sites passes them here; dev-front.ts).
     if (cloudMode() && route.startsWith('/dev/__studio/')) {
       const { betaHostReport } = await import('./dev-front.ts');
@@ -169,10 +193,12 @@ const server = http.createServer(async (req, res) => {
     const prod = /^\/api\/products\/([a-z][a-z0-9-]{1,39})$/.exec(route);
     if (prod && method === 'PUT') {
       const { saveProduct, loadProducts: products } = await import('./config.ts');
-      // The Studio's plan sets how many games it may have (billing.ts).
-      const max = (await import('./billing.ts')).planGames();
-      if (max !== null && !products().some((p) => p.id === prod[1]) && products().length >= max) return send(res, 402, { error: `Your plan includes ${max} game${max === 1 ? '' : 's'}. Change your plan in Settings to add another.` });
-      return send(res, 200, { product: saveProduct({ ...(await readJson(req)), id: prod[1] }) });
+      const E = await import('./entitlements.ts');
+      const body = await readJson(req);
+      // The Studio's plan sets how many games it may have, and whether desktop builds are in it (entitlements.ts).
+      if (!products().some((p) => p.id === prod[1])) await E.requireRoomForGame(products().length);
+      if (E.needsDesktop(body)) await E.requireFeature('desktop');
+      return send(res, 200, { product: saveProduct({ ...body, id: prod[1] }) });
     }
     if (prod && method === 'DELETE') {
       const { removeProduct } = await import('./config.ts');
@@ -181,8 +207,29 @@ const server = http.createServer(async (req, res) => {
     }
     // Billing (billing.ts): the plans, this Studio's plan and credits; checkout, cancel, resume and the billing portal are
     // an admin's (memberRefusal), changing the plans the platform admin's (lockdown.ts).
-    if (route === '/api/billing' && method === 'GET') return send(res, 200, (await import('./billing.ts')).billingView());
+    // A cell made by the control plane is billed there (the one Stripe webhook and key are there): it asks with its key.
+    const viaControl = Boolean(process.env.STUDIO_CONTROL_URL && process.env.STUDIO_ORG && process.env.STUDIO_CELL_KEY);
+    const control = async (what: string, body?: unknown) => {
+      const r = await fetch(`${String(process.env.STUDIO_CONTROL_URL).replace(/\/+$/, '')}/api/cells/self/billing/${what}`, {
+        method: body === undefined ? 'GET' : 'POST', signal: AbortSignal.timeout(20_000),
+        headers: { Authorization: `Bearer ${process.env.STUDIO_CELL_KEY}`, 'X-Studio-Cell': String(process.env.STUDIO_ORG), ...(body === undefined ? {} : { 'Content-Type': 'application/json' }) },
+        body: body === undefined ? undefined : JSON.stringify(body),
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) throw new StudioError(j.error ?? `The control plane answered ${r.status}`, r.status);
+      if (what !== 'view') void (await import('./entitlements.ts')).refreshPlan();
+      return j;
+    };
+    if (route === '/api/billing' && method === 'GET') {
+      const E = await import('./entitlements.ts');
+      return send(res, 200, { ...(viaControl ? await control('view') : (await import('./billing.ts')).billingView()), entitlements: await E.entitlements(), features: E.FEATURE_NAMES, planFeatures: E.PLAN_FEATURES });
+    }
     const bill = /^\/api\/billing\/(checkout|cancel|resume|portal|plans)$/.exec(route);
+    if (bill && method === 'POST' && viaControl && bill[1] !== 'plans') {
+      const b = await readJson(req);
+      const u = (await import('./auth.ts')).requester(req);
+      return send(res, 200, await control(bill[1], { ...b, user: { id: u?.id ?? 'owner', email: u?.email ?? '' } }));
+    }
     if (bill && method === 'POST') {
       const B = await import('./billing.ts');
       const b = await readJson(req);
@@ -856,7 +903,7 @@ const server = http.createServer(async (req, res) => {
     }
     return send(res, 404, { error: `No route ${method} ${route}` });
   } catch (e: any) {
-    return send(res, e instanceof StudioError ? e.status : 400, { error: e.message ?? String(e) });
+    return send(res, e instanceof StudioError ? e.status : 400, { error: e.message ?? String(e), ...(e?.upgrade ? { upgrade: e.upgrade } : {}) });
   }
 });
 
@@ -889,6 +936,11 @@ server.listen(listenPort, cloud ? '0.0.0.0' : '127.0.0.1', () => {
   void import('./auth.ts').then(({ ensureDefaultAdmin }) => { if (ensureDefaultAdmin()) console.log('[auth] created the first admin, admin@hawkesgen.ai (sign in once and set a password)'); });
   // An agent's smoke check of a changed Studio (agents.ts) starts the server and nothing else.
   if (process.env.STUDIO_SMOKE === '1') return;
+  // Customers' Studios (cells.ts): the control plane hears of orgs' subscriptions; a cell adds the sign-up's first game
+  // and keeps its plan fresh from the control plane (entitlements.ts).
+  void import('./cells.ts').then((C) => C.wireBilling()).catch((e) => console.warn(`[cells] ${e.message ?? e}`));
+  void import('./config.ts').then((c) => c.applyOnboardingSeed()).then((g) => { if (g) console.log(`[onboarding] added the first game, ${g.name}`); }).catch((e) => console.warn(`[onboarding] ${e.message ?? e}`));
+  void import('./entitlements.ts').then((E) => E.startPlanRefresh());
   // A restart (a deploy) ends nothing: runs, agent changes and Talk answers carry on from where they were, waiting on
   // the same Gen jobs and reading the same detached Claude Code processes (drain.ts, detach.ts).
   // Queued go-lives and rollbacks carry on (ops.ts), and the event loop is watched for anything that blocks it.

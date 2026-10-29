@@ -14,7 +14,15 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { DATA } from './config.ts';
 
-const STATE_PREFIX = 'state/';
+/**
+ * A customer's Studio (a cell, cells.ts) shares one bucket with every other cell, each under its own prefix
+ * (STUDIO_STATE_PREFIX, e.g. `o/acme/`): its database, state files and agents' jobs all live under it. J's Studio has none.
+ */
+export const statePrefix = () => {
+  const p = String(process.env.STUDIO_STATE_PREFIX ?? '').trim().replace(/^\/+|\/+$/g, '');
+  return p ? `${p}/` : '';
+};
+const STATE = () => `${statePrefix()}state/`;
 /**
  * What is synced: small files under DATA, never the database (Litestream's), detached processes' output (the jobs keep
  * their own in the bucket), worktrees, previews, scratch or logs of single runs.
@@ -56,8 +64,9 @@ export async function pullState(dir = DATA) {
   if (!bucket) return 0;
   const { gcsList, gcsRead } = await import('./gcp.ts');
   let n = 0;
-  for (const o of await gcsList(bucket, STATE_PREFIX)) {
-    const rel = o.name.slice(STATE_PREFIX.length);
+  const prefix = STATE();
+  for (const o of await gcsList(bucket, prefix)) {
+    const rel = o.name.slice(prefix.length);
     if (!rel || !synced(rel) || rel.includes('..')) continue;
     const data = await gcsRead(bucket, o.name);
     if (!data) continue;
@@ -81,7 +90,7 @@ export function pushState(dir = DATA): Promise<number> {
     const { gcsWrite } = await import('./gcp.ts');
     let n = 0;
     for (const rel of changedFiles(dir, seen)) {
-      await gcsWrite(bucket, `${STATE_PREFIX}${rel}`, path.join(dir, rel));
+      await gcsWrite(bucket, `${STATE()}${rel}`, path.join(dir, rel));
       n++;
     }
     return n;

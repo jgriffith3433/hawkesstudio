@@ -41,13 +41,174 @@ Studio's own sign-up (`owner`) covers a Studio made for one person before the po
 
 ---
 
-## 2. Where customers' games and data live
+## 2. Where customers' games and data live: cells
 
-Studio was built for one owner: one SQLite database, one products file, one GitHub token, J's Claude. Two ways to give
-each customer their own:
+**J, 2026-10-29: cells, one Studio per customer.** studio.hawkesgen.ai is where you sign in to your own Studio; with
+none, it lets you sign up and subscribe. He also approved every cost-saving point below. (The shared alternative, one
+Studio for everyone with `org_id` on every table and Postgres, was ~$50+/month before the first customer and a rewrite
+of the core.)
 
-| | **Cells: one Studio per customer** (platform-plan 4.3) | **Shared: one Studio for everyone** |
+A customer's Studio is `customerStudio()` (src/tenancy.ts): an org cell (`STUDIO_ORG`), a claimed Studio
+(`STUDIO_SIGNUP=owner`) or `STUDIO_CUSTOMER=1`. In one (**built**):
+- its games are its own products file in its data folder, empty at first, written by onboarding
+- it never takes a game from J's GitHub (`jgriffith3433` in the repository is refused)
+- Claude is only ever the customer's own (section 4)
+- the platform features are closed to everyone in it (section 5)
+
+### How it fits together (**built**; nothing deployed or created yet)
+
+```
+browser ── studio.hawkesgen.ai ── Worker (server/studio-edge) ─┬─ /o/<org>/…  → that org's cell: Cloud Run studio-o-<org>
+                                                               │                (hibernated? "Waking your studio", then it)
+                                                               └─ everything else → J's Studio = the control plane (cells.ts)
+                                                                    front door, sign-up, org records, the one Stripe webhook,
+                                                                    hibernation, the central cron, the cells' plans
+```
+
+**The front door.** One "Continue with Google" on studio.hawkesgen.ai (auth-pages.ts `/auth/google`):
+- A platform admin (J), or anyone with an account in J's Studio, signs in to J's Studio as now.
+- Anyone else gets a **control-plane session** (cookie `hs_cp`, HMAC-signed, 30 days; never a session in J's Studio)
+  and goes to their Studio at `/o/<org>/`, or, with none, to a short sign-up at `/auth/start`: name the studio, then
+  add the first game (or pick a plan first). Google only, no passwords.
+- Inside the cell they press Continue with Google once more (the cell's own sign-in). Only the Google account the
+  control plane names (`STUDIO_OWNER_SUB`) can claim the cell; the next people need its admin's invite.
+
+**The control plane** is J's Studio with `STUDIO_CELLS=on` (src/cells.ts; never in a cell). Its records are three
+tables in J's Studio's own SQLite database: `cp_orgs` (id, name, owner, state, service, image, activity), `cp_members`,
+`cp_config`. **Why SQLite and not Firestore:** it is already streamed to Cloud Storage by Litestream, needs no new
+service, credentials or client library, and the control plane is one process (max-instances 1), the only writer.
+
+**Cells are made lazily.** Signing up writes only the org record (`state: new`). The Cloud Run service is made by
+`ensureCell` when the customer adds their first game (the game is left in the cell's state as `onboarding.json`; the
+cell adds it on start through onboarding's own checks: config.ts `applyOnboardingSeed`) or subscribes (billing.ts tells
+cells.ts on `checkout.session.completed`). Never at sign-up.
+
+**A cell** (src/cellrun.ts) is a Cloud Run service `studio-o-<org>` (`studio-beta-o-<org>` on beta) made through the
+Cloud Run Admin API v2 from the image J's Studio runs, scale 0 to 1. Its environment (`cellEnv`): `STUDIO_ORG`,
+`STUDIO_SIGNUP=owner`, `STUDIO_OWNER_SUB`, the shared bucket with its own prefix (`STUDIO_STATE_PREFIX=o/<org>/`: its
+database, state files and agents' jobs all live under it; cloudhost.ts, cloudjob.ts, Litestream), its own host-only
+cookie (`hs_o_<org>`), `STUDIO_PUBLIC_URL=…/o/<org>`, `STUDIO_CONTROL_URL` and its derived keys. Labels
+`hawkes-studio-cell=1`, `hawkes-org=<org>`. Every call has a **dry run** (`STUDIO_CELLS_DRY_RUN=1`, or `{ dry: true }`):
+nothing is sent, and `planned` lists the requests it would have made.
+
+**Hibernation** (cells.ts `sweep`, from the central cron):
+- An awake cell with no sign-in and no run for `idleDays` (default 14) loses its Cloud Run service; its data stays in
+  the bucket. The next visit wakes it: the Worker sees Cloud Run's own 404 (no `X-Studio-Cell` header, which every cell
+  sets), asks the control plane to make the service again (`POST /api/cells/edge/<org>/wake`) and shows "Waking your
+  studio" until the cell's `/api/health` answers. It wakes on J's Studio's current image.
+- An org with no sign-in for `deleteDays` (90) and no plan gets an email; `warnDays` (14) later its service and every
+  object under `o/<org>/` are deleted (the record stays, `state: deleted`). Signing in clears the warning; a plan keeps
+  an org however long nobody signs in.
+- The three numbers are settings (`POST /api/cells/config`, the platform admin's).
+
+**No per-customer Google resources that cost money or hit quotas:**
+- **One shared service account** for every cell (`STUDIO_CELLS_SA`), never one per customer (projects cap at ~100).
+  It has nothing on Cloud Run project-wide (a service's env holds its keys, and `run.services.get` would show every
+  cell's to every other): only the cells' bucket and running the shared agents' job.
+- **No secret per customer.** Every key a cell needs is derived from **one master secret** (`STUDIO_CELLS_MASTER`,
+  only in the control plane) by HMAC-SHA256 of its purpose and the org id (src/cellkeys.ts): its owner key (the
+  platform's own calls into it), agents' key, MCP key, beta-site pass seed, the key that seals its customer's secrets at
+  rest, and its cell key (calling the control plane back). They are plain env of its service; a cell never sees the
+  master, so one cell's keys open nothing of another's. The router's edge key is derived the same way.
+- **No Cloud Scheduler job per customer.** One central cron (`POST /api/cells/cron`, Scheduler's OIDC token or the
+  owner key) runs the sweep, then the nightly run of every paying org whose plan has nightly runs: it wakes the cell and
+  calls its `/api/cloud/daily` with that cell's owner key.
+- One shared bucket (`STUDIO_CELLS_BUCKET`) and one shared agents' job (`STUDIO_CELLS_AGENT_JOB`, `studio-cell-agent`).
+
+**The router** (server/studio-edge, a Worker on the zone route, as before):
+- `studio.hawkesgen.ai/o/<org>/…` goes to `studio-o-<org>-<project number>.<region>.run.app` (Cloud Run's deterministic
+  address: no lookup per request) with the prefix taken off and `X-Forwarded-Prefix` set. Everything else goes to J's
+  Studio.
+- The dashboard asks for absolute paths (`/api/…`, ~200 of them), so a request whose same-site Referer is a cell's page
+  goes to that cell, and a page navigation from a cell to a path outside it is sent back under `/o/<org>`. The Worker
+  sets `Referrer-Policy: same-origin` on cells' answers (Studio's own pages say no-referrer). `/auth/start` always
+  stays with the control plane.
+- Cookies never cross: a cell gets only its own `hs_o_<org>` (and Google's `g_state`), never J's session, the control
+  plane's `hs_cp` or another cell's; J's Studio never gets a cell's. A cell's redirects come back under its prefix.
+- Once every 10 minutes per org it tells the control plane the cell was used (`/api/cells/edge/<org>/seen`).
+
+**Upgrade prompts** (src/entitlements.ts; J: "Upgrade prompts appear when a free user reaches a pro feature"):
+
+| Plan | Games | Pro features |
 |---|---|---|
+| Free (no plan) | 1 | none: the daily web playtest and review, the backlog, the report |
+| Indie | 3 | nightly runs, desktop builds |
+| Team | 10 | + agent fixes, Talk, the PM |
+| Studio | 30 | + cloud builds |
+
+- **Gated in the API**, after the platform admin's check: `POST /api/changes` and finding fixes (agents), `/api/talk`
+  sends (Talk), `/api/pm/*` and scouts (the PM), `/api/cloud/daily` (nightly runs), a game past the plan's count, a
+  desktop game or Windows/Linux build target. Each answers **402** with `{ upgrade: { feature, plan, planName } }`, the
+  cheapest plan that has it. Reading is never gated.
+- **The page:** `dashboard/app.js` turns any 402 into an "Upgrade to <plan>" dialog whose button opens the Stripe
+  Checkout (billing.ts). Settings → Plan and credits lists what the plan has (✓) and what it lacks (🔒).
+- **Where the plan comes from:** J's Studio has everything. A cell asks the control plane (`GET /api/cells/self`, its
+  cell key), at start and every 5 minutes, and keeps the last answer if the control plane is away. The control plane
+  bills the orgs: the one Stripe webhook arrives there and the Stripe key stays there, so a cell's Settings → Plan
+  (`/api/billing`, checkout, cancel, resume, portal) is relayed to `/api/cells/self/billing/*`. billing.ts keeps every
+  subscription, customer and credit under a `studio_id` (J's Studio's own, or an org's).
+
+**Linking the customer's AI** (src/ailink.ts, onboarding's "Connect your AI" card and Settings):
+- A provider list, Claude the only entry for now: "Sign in with your Claude subscription" (Claude Code's
+  `claude setup-token`, the same sign-in as J's, per cell) or their Anthropic API key.
+- Stored **sealed** (AES-256-GCM under the cell's own derived `STUDIO_SECRETS_KEY`; cellkeys.ts `seal`): the key file
+  and the cell's Claude sign-ins are ciphertext on disk and in the bucket. Never shown again: only "set" and the last 4.
+  No plain `active.env` copy in a customer's Studio.
+- Never J's key or plan (claude.ts `claudeEnv` strips the server's credentials in a customer's Studio). Talk, agents
+  and the PM there refuse with 409 `connectAi` until one is linked, and the dashboard says where to link it.
+
+**Rolling upgrades** (cellrun.ts `rollImage`; `node tools/studio-cloudrun/roll-cells.mjs --image <image> [--beta]
+[--apply]`, or `POST /api/cells/roll`, the platform admin's):
+- J's Studio first. It is the control plane, and its image is what new and woken cells get, so hibernated cells wake
+  on the new image without being touched.
+- Then every awake cell (found by its label), one at a time, each checked healthy before the next.
+- The first cell that fails stops the roll, so a bad image reaches at most one customer. Prints the plan without
+  `--apply`.
+
+**The platform admin's view:** `GET /api/cells` (orgs and states, settings, missing setup, dry run),
+`POST /api/cells/<org>/wake|hibernate`, `/api/cells/config`, `/api/cells/sweep {dry}`, `/api/cells/roll`; all in
+lockdown.ts's list.
+
+**Tests:**
+- `test/cells.test.ts`: keys, sealing, the front door, lazy creation, hibernation and waking, the 90-day email and
+  deletion, billing for orgs, the nightly cron, the roll and dry runs, against a Google stand-in.
+- `test/cell-side.test.ts`: the owner-only claim, the cookie, the prefix, entitlements and 402s, the customer's AI
+  sealed and used, the onboarding seed.
+- `test/studio-edge.test.ts`: the Worker's routing, cookies, redirects and waking.
+
+### One-time setup (J; `node tools/studio-cloudrun/cells-setup.mjs [--beta]` prints it all, `--apply` does it)
+
+1. **The shared service account** `studio-cells@<project>`: `roles/logging.logWriter` on the project; on the cells'
+   bucket `roles/storage.objectAdmin`; on the cells' agents' job `roles/run.jobsExecutorWithOverrides` and
+   `roles/run.viewer`. Nothing else.
+2. **The cells' bucket** `<project>-studio-cells` (`…-studio-beta-cells`), objectAdmin for J's Studio's account too.
+3. **The cells' agents' job** `studio-cell-agent` (`studio-beta-cell-agent`), running as the shared account.
+4. **The master secret** `studio-cells-master` (`studio-beta-cells-master`) in Secret Manager: 48 random bytes, made
+   once and never printed, readable by J's Studio's account, mounted as `STUDIO_CELLS_MASTER`. Rotating it changes
+   every cell's keys on its next deploy.
+5. **J's Studio as the control plane:** `roles/run.admin` and `iam.serviceAccountUser` on the cells' account for
+   `studio-control@`; env `STUDIO_CELLS=on`, `STUDIO_CELLS_PROJECT`, `_PROJECT_NUMBER`, `_REGION`, `_SA`, `_BUCKET`,
+   `_AGENT_JOB`.
+6. **The central cron:** one Cloud Scheduler job `studio-cells-cron`, daily 04:00 Los Angeles, `POST
+   https://studio.hawkesgen.ai/api/cells/cron` with the scheduler account's OIDC token.
+7. **The Worker's edge key:** `npx wrangler secret put EDGE_KEY` in server/studio-edge (the script prints the
+   one-liner that derives it from the master), then `npx wrangler deploy` (`--env beta` for beta).
+
+### Not done yet (open)
+
+- **A cell's agents can reach other cells' data.** The agents' job runs as the shared account, which can read the
+  whole cells bucket, and a customer's agent runs their prompts with a shell. Before real customers, give each job
+  execution a downscoped token (Credential Access Boundary) limited to `o/<org>/`, not the account itself. The cell's
+  own service is the same image as J's and runs no customer code outside the agent pass.
+- **Gen for cells:** a cell has `HAWKESGEN_URL` but no Gen key yet. Playtests and reviews need one per org (Gen's
+  tenancy: a derived key Gen accepts, or a key the control plane asks Gen for), and Studio's credits paying for it.
+- **Members beyond the owner:** the control plane knows only an org's owner. Someone the owner invites reaches the cell
+  by the invite's link, but the front door alone sends them to the sign-up. Cells could report their members back.
+- **The portal's "Open Studio"** should link to `studio.hawkesgen.ai/o/<org>/` for orgs that have a cell.
+- **One click less:** a signed hand-off from the control plane to the cell would skip the cell's own Continue with
+  Google.
+
+---|---|---|
 | What it is | The same image run once per customer org (Cloud Run service, scale to zero), its own database, bucket prefix, service account and secrets. **Started:** `STUDIO_ORG` (src/platform.ts) | One service; every table and query gets `org_id`; Postgres instead of SQLite; no in-process singletons (ops queue, PM loop, active run) |
 | Isolation | Physical: another customer's data isn't in the database at all | Logical: one missed `WHERE org_id` leaks |
 | Work to get there | Provisioning (a cell per org), a router Worker (`studio.hawkesgen.ai/o/<org>/…`), per-cell secrets, a nightly wake-up per cell | Rewrite the core: ~40 tables, ~25 modules, 363 mentions of "J" |
@@ -220,21 +381,32 @@ Air button. The Settings boxes for Claude, Antigravity and restarts already disa
 2. J's `DEPLOY` (live). Nothing changes for J if he signs in with Google. His CLI uses the owner key, which still works.
 3. Optional: `STUDIO_SIGNUP=waitlist` on live, to start collecting sign-ups.
 
-**Phase B: the first customer Studios** (each step S or M).
-1. **Pick cells or shared** (section 7). With cells, the next steps are:
-2. **Provisioning:** a script (then the portal) makes a cell: a Cloud Run service from Studio's image with
-   `STUDIO_ORG=<org>`, its own bucket prefix, service account and secrets (owner, agent and MCP keys; its Gen key, an
-   org project). J's org keeps today's Studio until its own cell passes the same daily run.
-3. **The router:** a Worker that sends `studio.hawkesgen.ai/o/<org>/…` to the org's cell; the portal's "Open Studio"
-   links there.
-4. **Billing:** built (section 3). Left: studio-beta's test-mode endpoint and keys (then live's), Studio's credits
-   paying for its Gen work, and the plan's other limits (schedule, agents, Talk).
-5. **Nightly per cell:** a Cloud Scheduler job per cell (or one control-plane cron), at the org's hour.
-6. **Builds and the pipeline for customers' games:**
-   - playtests of `live` URLs work today
-   - builds from GitHub need the GitHub App and Gen's build intake (platform-plan 5)
-7. **"J" becomes "the owner"** in prompts and the dashboard (the owner's name from the org).
-8. **Share links on a separate domain** for customer content (never `hawkesgen.ai`, where our cookies live).
+**Phase B: the first customer Studios** (cells; J decided, 2026-10-29). Built, on `dev` (section 2):
+1. ~~Pick cells or shared~~: cells.
+2. **Provisioning:** built (cellrun.ts, cells.ts): made lazily, from J's Studio's image, the shared account, derived
+   keys. J's org keeps today's Studio.
+3. **The router:** built (server/studio-edge). The portal's "Open Studio" still needs to link to `/o/<org>/`.
+4. **Billing:** built (section 3), and the control plane bills the orgs. Left: studio-beta's test-mode endpoint and
+   keys (then live's), Studio's credits paying for its Gen work.
+5. **Nightly per cell:** built, as one central cron, not a job per cell.
+6. **Hibernation and rolling upgrades:** built.
+7. **Upgrade prompts and the customer's own AI:** built.
+
+To try it on beta, in this order:
+1. Push `beta`.
+2. Run `node tools/studio-cloudrun/cells-setup.mjs --beta` (read it), then add `--apply`.
+3. Set the Worker's edge key: `wrangler secret put EDGE_KEY --env beta`, then `wrangler deploy --env beta`.
+4. Sign up on studio-beta.hawkesgen.ai with a Google account that isn't J's.
+5. Add a game and watch `GET /api/cells`.
+
+Before real customers:
+- the downscoped token for agent jobs
+- Gen keys for cells
+- members at the front door
+- **"J" becomes "the owner"** in prompts and the dashboard (the owner's name from the org)
+- **share links on a separate domain** for customer content (never `hawkesgen.ai`, where our cookies live)
+- builds from GitHub for customers' games: the GitHub App and Gen's build intake (platform-plan 5). Playtests of `live`
+  URLs work today.
 
 **Phase C: design partners.** 5–10 teams, free for two months (platform-plan 8, Phase 1).
 
@@ -242,7 +414,8 @@ Air button. The Settings boxes for Claude, Antigravity and restarts already disa
 
 ## 7. Decisions J needs to make
 
-1. **Cells or shared.** Recommended: cells. One Studio per customer org, from the same image.
+1. ~~**Cells or shared.**~~ Cells (J, 2026-10-29), with lazy creation, hibernation, no per-customer Google resources,
+   one central cron and upgrade prompts (section 2).
 2. **Prices** (the Stripe account is settled: one shared account, test keys on beta). The portal's draft: Free /
    Indie $29 / Team $99 / Studio $299 with the entitlements above. Also:
    - Are Talk and agents Team-and-up, or on every paid plan with the customer's own Claude?

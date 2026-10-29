@@ -8,9 +8,9 @@ import { requestUser } from './sandbox.ts';
 import { googleClientId, verifyGoogleProfile } from './cloudauth.ts';
 import { laneOf, makePass, passReturn, passSetCookie, siteKeys } from './sitekeys.ts';
 
-const esc = (s: unknown) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!);
+export const esc = (s: unknown) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!);
 
-function page(title: string, body: string) {
+export function page(title: string, body: string) {
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${esc(title)} · Hawkes Studio</title><meta name="robots" content="noindex">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='%23101418'/><path d='M8 8v16M24 8v16M8 16h16' stroke='%2333d6a6' stroke-width='3.5' stroke-linecap='round'/></svg>">
@@ -30,22 +30,22 @@ small{color:var(--muted)}a{color:var(--accent)}
 </style></head><body><main><div class="brand"><span class="mark">H</span>Hawkes Studio</div>${body}</main></body></html>`;
 }
 
-function html(res: http.ServerResponse, status: number, body: string, headers: Record<string, string | string[]> = {}) {
+export function html(res: http.ServerResponse, status: number, body: string, headers: Record<string, string | string[]> = {}) {
   res.writeHead(status, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', 'X-Frame-Options': 'DENY', 'Referrer-Policy': 'no-referrer', ...headers });
   res.end(body);
 }
 
-function json(res: http.ServerResponse, status: number, body: unknown, headers: Record<string, string> = {}) {
+export function json(res: http.ServerResponse, status: number, body: unknown, headers: Record<string, string> = {}) {
   res.writeHead(status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', ...headers });
   res.end(JSON.stringify(body));
 }
 
-function redirect(res: http.ServerResponse, to: string, headers: Record<string, string | string[]> = {}) {
+export function redirect(res: http.ServerResponse, to: string, headers: Record<string, string | string[]> = {}) {
   res.writeHead(303, { Location: to, 'Cache-Control': 'no-store', ...headers });
   res.end();
 }
 
-async function form(req: http.IncomingMessage): Promise<Record<string, any>> {
+export async function form(req: http.IncomingMessage): Promise<Record<string, any>> {
   const chunks: Buffer[] = [];
   let size = 0;
   for await (const c of req) {
@@ -142,6 +142,11 @@ export async function handleAuthRoute(req: http.IncomingMessage, res: http.Serve
   const route = url.pathname;
   const method = req.method ?? 'GET';
   if (!route.startsWith('/auth/') && route !== '/auth') return false;
+  // The front door's sign-up pages for customers (cells.ts), on J's Studio when it is the control plane.
+  if (route.startsWith('/auth/start')) {
+    const C = await import('./cells.ts');
+    if (C.cellsOn() && (await C.handleStart(req, res, url))) return true;
+  }
   if (route === '/auth/check') {
     const r = A.check(req);
     res.writeHead(r.status, { 'Cache-Control': 'no-store', ...(r.body ? { 'Content-Type': 'application/json' } : {}), ...r.headers });
@@ -200,11 +205,20 @@ export async function handleAuthRoute(req: http.IncomingMessage, res: http.Serve
   }
   if (route === '/auth/google' && method === 'POST') {
     const f = await form(req);
+    let profile: Awaited<ReturnType<typeof verifyGoogleProfile>> | null = null;
     try {
-      const profile = await verifyGoogleProfile(String(f.credential ?? ''));
+      profile = await verifyGoogleProfile(String(f.credential ?? ''));
       const u = A.googleUser(profile, meta(req));
       json(res, 200, { ok: true, next: A.safeNext(f.next) }, { 'Set-Cookie': signedInCookie(req, u, true, 'google') });
     } catch (e: any) {
+      // studio.hawkesgen.ai's front door (cells.ts): someone with no account in J's Studio goes to their own Studio, or
+      // signs up for one. Never a session here.
+      const C = await import('./cells.ts');
+      if (profile && C.cellsOn() && (e instanceof A.Waitlisted || /has no account here/.test(String(e.message)))) {
+        const d = C.frontDoor(profile);
+        json(res, 200, { ok: true, next: d.next }, { 'Set-Cookie': d.cookie });
+        return true;
+      }
       if (!(e instanceof StudioError)) A.logSignin(null, A.clientIp(req), false, `Google: ${e.message ?? e}`, String(req.headers['user-agent'] ?? ''));
       json(res, e.status === 403 || e.status === 409 ? e.status : 401, { error: e.message ?? String(e), ...(e instanceof A.Waitlisted ? { waitlist: true } : {}) });
     }
@@ -314,6 +328,9 @@ export async function handleUsersApi(req: http.IncomingMessage, res: http.Server
       customer: T.customerStudio(), signup: T.signupMode(),
       onboarding: T.customerStudio() && u?.role === 'admin' && !products.length,
       claude: T.customerStudio() ? (await import('./claude.ts')).customerClaude() : null,
+      // The customer's own AI (ailink.ts: onboarding's "Connect your AI") and their plan (entitlements.ts: Upgrade buttons).
+      ai: await (await import('./ailink.ts')).aiLinks(),
+      entitlements: await (await import('./entitlements.ts')).entitlements(),
     });
     return true;
   }

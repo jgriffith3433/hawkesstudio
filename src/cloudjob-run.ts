@@ -209,12 +209,15 @@ if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(new URL(im
     process.exit(2);
   }
   const g = await import('./gcp.ts');
+  // A customer's cell: its jobs are under its own prefix in the shared bucket (cloudjob.ts passes STUDIO_STATE_PREFIX).
+  const P = String(process.env.STUDIO_STATE_PREFIX ?? '').replace(/^\/+|\/+$/g, '');
+  const at = (k: string) => (P ? `${P}/${k}` : k);
   const store: Store = {
     // Strings here are contents (exit.json, log chunks); gcsWrite reads a string as a file path, so they go as bytes.
-    put: async (k, d) => { await g.gcsWrite(bucket, k, typeof d === 'string' ? Buffer.from(d) : d); },
-    get: (k) => g.gcsRead(bucket, k),
-    list: async (p) => (await g.gcsList(bucket, p)).map((o) => o.name),
-    remove: (k) => g.gcsDelete(bucket, k),
+    put: async (k, d) => { const key = at(k); await g.gcsWrite(bucket, key, typeof d === 'string' ? Buffer.from(d) : d); },
+    get: (k) => g.gcsRead(bucket, at(k)),
+    list: async (p) => (await g.gcsList(bucket, at(p))).map((o) => (P ? o.name.slice(P.length + 1) : o.name)),
+    remove: (k) => g.gcsDelete(bucket, at(k)),
   };
   const rc = await runUnit(unit, store);
   console.log(`[job] ${unit} finished (${rc ? 'with an error' : 'ok'})`);

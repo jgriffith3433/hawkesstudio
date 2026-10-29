@@ -21,6 +21,9 @@ if [ -n "$GITHUB_TOKEN" ]; then
   git config --global credential.https://github.com.helper '!f() { test "$1" = get && echo username=x-access-token && echo "password=$GITHUB_TOKEN"; }; f'
 fi
 export STUDIO_PORT="${PORT:-8080}"
+# A customer's cell keeps its database under its own prefix of the shared bucket (litestream.yml; empty for J's Studio).
+export STUDIO_STATE_PREFIX="${STUDIO_STATE_PREFIX:-}"
+case "$STUDIO_STATE_PREFIX" in ""|*/) ;; *) export STUDIO_STATE_PREFIX="$STUDIO_STATE_PREFIX/" ;; esac
 mkdir -p /data "$STUDIO_PROJECTS"
 litestream restore -config /etc/litestream.yml -if-db-not-exists -if-replica-exists /data/studio.db
 exec litestream replicate -config /etc/litestream.yml \

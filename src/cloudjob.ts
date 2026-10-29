@@ -161,14 +161,17 @@ export function cloudRunner(): JobRunner {
   const job = process.env.STUDIO_AGENT_JOB || 'studio-agent';
   if (!bucket || !project) throw new Error('Cloud Run jobs need STUDIO_STATE_BUCKET and STUDIO_GCP_PROJECT');
   const g = () => import('./gcp.ts');
+  // A cell's jobs live under its own prefix in the shared bucket (cloudhost.ts statePrefix); the job is told it.
+  const P = String(process.env.STUDIO_STATE_PREFIX ?? '').replace(/^\/+|\/+$/g, '');
+  const at = (k: string) => (P ? `${P}/${k}` : k);
   return {
     // put's strings are contents (a spec, a marker); gcsWrite reads a string as a file path, so they go as bytes.
-    put: async (key, data) => { await (await g()).gcsWrite(bucket, key, typeof data === 'string' ? Buffer.from(data) : data); },
-    get: async (key) => (await g()).gcsRead(bucket, key),
-    list: async (prefix) => (await (await g()).gcsList(bucket, prefix)).map((o) => o.name),
-    remove: async (key) => (await g()).gcsDelete(bucket, key),
+    put: async (key, data) => { const k = at(key); await (await g()).gcsWrite(bucket, k, typeof data === 'string' ? Buffer.from(data) : data); },
+    get: async (key) => (await g()).gcsRead(bucket, at(key)),
+    list: async (prefix) => (await (await g()).gcsList(bucket, at(prefix))).map((o) => (P ? o.name.slice(P.length + 1) : o.name)),
+    remove: async (key) => (await g()).gcsDelete(bucket, at(key)),
     start: async (unit) => (await g()).runJob({ project, region, job }, {
-      env: { STUDIO_JOB_UNIT: unit },
+      env: { STUDIO_JOB_UNIT: unit, ...(P ? { STUDIO_STATE_PREFIX: P } : {}) },
       timeoutSeconds: Number(process.env.STUDIO_AGENT_JOB_TIMEOUT) || 4 * 3600,
     }),
     state: async (execution) => (await g()).getExecution(execution),

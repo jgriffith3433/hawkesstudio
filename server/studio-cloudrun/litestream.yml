@@ -5,6 +5,6 @@ dbs:
     replicas:
       - type: gcs
         bucket: ${STUDIO_STATE_BUCKET}
-        path: db/studio.db
+        path: ${STUDIO_STATE_PREFIX}db/studio.db
         sync-interval: 1s
         retention: 168h

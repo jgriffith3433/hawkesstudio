@@ -315,9 +315,12 @@
     const s = b.subscription;
     const until = s?.periodEnd ? new Date(s.periodEnd).toLocaleDateString() : '';
     const state = s ? `<b>${esc(s.plan?.name ?? s.planId)}</b> · ${s.status === 'past_due' ? '<span class="set-err">payment failed: update your card</span>' : s.cancelAtPeriodEnd ? `ends ${esc(until)}` : `renews ${esc(until)}`}` : 'No plan yet.';
-    const plans = s ? '' : b.plans.map((p) => `<div class="ca-line"><div style="flex:1"><b>${esc(p.name)}</b> ${usd(p.priceCents)}/month<div class="meta">${p.creditsPerMonth.toLocaleString()} credits a month · up to ${p.maxGames} games</div></div><button class="small" data-billplan="${esc(p.id)}" ${b.stripe.configured ? '' : 'disabled'}>Subscribe</button></div>`).join('');
+    const plans = s ? '' : b.plans.map((p) => `<div class="ca-line"><div style="flex:1"><b>${esc(p.name)}</b> ${usd(p.priceCents)}/month<div class="meta">${p.creditsPerMonth.toLocaleString()} credits a month · up to ${p.maxGames} games</div></div><button class="small" data-billplan="${esc(p.id)}" ${!b.stripe || b.stripe.configured ? '' : 'disabled'}>Subscribe</button></div>`).join('');
+    // What the plan includes and what it doesn't (src/entitlements.ts): each missing one is an Upgrade away.
+    const e = b.entitlements;
+    const feats = e && e.plan !== 'platform' ? `<div class="meta">${e.games !== null ? `${e.games} game${e.games === 1 ? '' : 's'}` : ''}${e.features.map((f) => ` · ✓ ${esc(b.features?.[f] ?? f)}`).join('')}${e.locked.map((f) => ` · <span title="Upgrade for it">🔒 ${esc(b.features?.[f] ?? f)}</span>`).join('')}</div>` : '';
     return `<div class="set-box"><h3>💳 Plan and credits</h3>
-      <div class="meta">${state} · ${Number(b.credits).toLocaleString()} credits${b.stripe.mode === 'test' ? ' · <b>test mode</b>' : ''}${b.stripe.configured ? '' : ' · payments are not set up on this Studio yet'}</div>
+      <div class="meta">${state} · ${Number(b.credits).toLocaleString()} credits${b.stripe?.mode === 'test' ? ' · <b>test mode</b>' : ''}${b.stripe && !b.stripe.configured ? ' · payments are not set up on this Studio yet' : ''}</div>${feats}
       ${plans}
       ${s ? `<div class="ca-line">${s.cancelAtPeriodEnd ? '<button class="small" data-bill="resume">Keep my plan</button>' : '<button class="small" data-bill="cancel">Cancel at the end of the month</button>'}<button class="small" data-bill="portal">Cards and receipts</button></div>` : ''}
       <div id="billMsg" class="meta"></div></div>`;

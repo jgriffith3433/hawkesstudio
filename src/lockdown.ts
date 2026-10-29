@@ -7,7 +7,8 @@
 // Always the platform admin's, in every Studio (J's and every customer's):
 //   On Air (/api/broadcast*), Social (/api/social*), the studio's costs and resources (/api/costs*, /api/ledger,
 //   /api/resources, /api/brief/cost), self-deploys and restarts (/api/self-deploys, /api/services*), the Antigravity
-//   login, seeding the shared memory from J's canon, the plans and their prices (/api/billing/plans), Hawkes Gen's
+//   login, seeding the shared memory from J's canon, the plans and their prices (/api/billing/plans), customers' Studios
+//   (/api/cells: the orgs, hibernation, the roll; cells.ts), Hawkes Gen's
 //   machinery through the library relay (fleet, builder, playtester, settings…), and Studio or Gen themselves: an agent change to hawkesstudio or hawkesgen (infra agents),
 //   approving, revising or merging one, and an Approve card for one.
 // In J's Studio (not a customer's), also:
@@ -47,6 +48,7 @@ const ALWAYS: [RegExp, string][] = [
   [/^\/api\/antigravity\//, 'The Antigravity login'],
   [/^\/api\/memory\/seed$/, 'Seeding the shared memory'],
   [/^\/api\/billing\/plans$/, 'Setting the plans and their prices'],
+  [/^\/api\/cells(\/|$)/, "Customers' Studios (the control plane)"],
   [/^\/api\/gen\/v1\/(fleet|machines|builder|playtester|settings|storage|clients|workflows|usage|keys|users)(\/|\?|$)/, "Hawkes Gen's machinery"],
 ];
 const J_STUDIO: [RegExp, string][] = [

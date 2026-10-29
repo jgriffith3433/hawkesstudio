@@ -46,6 +46,40 @@
       if (what === 'onair' && $('#onAir')) $('#onAir').hidden = true;
     }
     if (full?.onboarding) onboarding();
+    if (full?.ai && !full.ai.ready && me?.role === 'admin') aiStep(full.ai);
+  }
+
+  // Onboarding's "Connect your AI" (src/ailink.ts): a list of providers, Claude the only one for now. Talk and the
+  // agents here run only on what the customer links: their Claude subscription or their Anthropic API key.
+  function aiStep(ai) {
+    if ($('#aiStep')) return;
+    const el = document.createElement('section');
+    el.id = 'aiStep';
+    el.className = 'us-box';
+    el.style.margin = '0 0 14px';
+    el.innerHTML = `<h3>Connect your AI</h3>
+      <p class="meta">Talk and the agents run on <b>your</b> AI account, never ours. Pick one; you can change it in ⚙ Settings.</p>
+      ${ai.providers.map((p) => `<div class="ca-add"><b>${esc(p.name)}</b> <span class="meta">by ${esc(p.by)}</span>
+        ${p.methods.map((m) => m.id === 'api-key'
+          ? `<div class="ca-line"><input type="password" id="aiKey" placeholder="sk-ant-api03-…" autocomplete="off" spellcheck="false"><button class="small" id="aiKeySave">Save API key</button></div><div class="meta">${esc(m.help)} Stored encrypted; only its last 4 characters are ever shown.</div>`
+          : `<div class="ca-line"><button class="small" id="aiSignin">${esc(m.label)}</button></div><div class="meta">${esc(m.help)}</div>`).join('')}
+      </div>`).join('')}
+      <div id="aiMsg" class="meta"></div>`;
+    const ob = $('#onboard');
+    if (ob) ob.after(el);
+    else document.querySelector('main')?.prepend(el);
+    el.addEventListener('click', async (e) => {
+      // The subscription sign-in is Settings' (the claude setup-token flow: a link, then the code back).
+      if (e.target.id === 'aiSignin') { location.hash = '#settings'; return; }
+      if (e.target.id !== 'aiKeySave') return;
+      $('#aiMsg').textContent = 'Saving…';
+      try {
+        await api('/api/claude/key', { method: 'POST', body: { key: $('#aiKey').value } });
+        el.remove();
+      } catch (err) {
+        $('#aiMsg').innerHTML = `<span style="color:var(--red)">${esc(err.message)}</span>`;
+      }
+    });
   }
 
   // First run in a customer's Studio (src/tenancy.ts): no game yet, so its admin adds the first one
@@ -68,7 +102,7 @@
         <button type="submit">Add it and play it</button>
         <div id="obMsg" class="meta"></div>
       </form>
-      ${claude && !claude.ready ? '<p class="meta">Next: connect <b>your</b> Claude in ⚙ Settings → Your Claude (your subscription or API key) so Talk and agents can run.</p>' : ''}`;
+      ${claude && !claude.ready ? '<p class="meta">Then connect your AI (below) so Talk and the agents can run.</p>' : ''}`;
     document.querySelector('main')?.prepend(el);
     $('#obForm').addEventListener('submit', async (e) => {
       e.preventDefault();

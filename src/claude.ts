@@ -10,6 +10,7 @@ import { activeToken } from './claude-accounts.ts';
 import { copilotEnv } from './tuning.ts';
 import { DATA, StudioError } from './config.ts';
 import { customerStudio } from './tenancy.ts';
+import { seal, unseal } from './cellkeys.ts';
 
 export const usingSubscription = () => Boolean(activeToken());
 
@@ -35,13 +36,13 @@ export function claudeEnv(extra: Record<string, string> = {}) {
 export const billing = () => (usingSubscription() ? 'Claude Max subscription' : 'API (per token)');
 
 // ------------------------------------------------------------ a customer's own Claude
-// Their Anthropic API key, kept like the Claude accounts (.data/claude, 0600, never in the API: the dashboard sees the
-// last 4 characters). Set by their admin in Settings (POST /api/claude/key). Their subscription is a Claude account
+// Their Anthropic API key, kept like the Claude accounts (.data/claude, 0600, sealed with the cell's STUDIO_SECRETS_KEY,
+// never in the API: the dashboard sees the last 4 characters). Set by their admin in Settings (POST /api/claude/key). Their subscription is a Claude account
 // instead (claude-accounts.ts, the same sign-in as J's).
 const KEY_FILE = () => path.join(DATA, 'claude', 'customer-key.json');
 
 export function customerKey(): string | undefined {
-  try { return JSON.parse(fs.readFileSync(KEY_FILE(), 'utf8')).key || undefined; } catch { return undefined; }
+  try { return unseal(JSON.parse(fs.readFileSync(KEY_FILE(), 'utf8')).key) || undefined; } catch { return undefined; }
 }
 
 export function setCustomerKey(key: string | null) {
@@ -53,7 +54,8 @@ export function setCustomerKey(key: string | null) {
   const k = String(key).trim();
   if (!/^sk-ant-api\d\d-[A-Za-z0-9_-]{20,}$/.test(k)) throw new StudioError('That is not an Anthropic API key (sk-ant-api…).');
   fs.mkdirSync(path.dirname(KEY_FILE()), { recursive: true, mode: 0o700 });
-  fs.writeFileSync(KEY_FILE(), JSON.stringify({ key: k, at: Date.now() }), { mode: 0o600 });
+  // Sealed with the cell's own key (cellkeys.ts) where it has one: the state bucket holds only ciphertext.
+  fs.writeFileSync(KEY_FILE(), JSON.stringify({ key: seal(k), at: Date.now() }), { mode: 0o600 });
   return customerClaude();
 }
 

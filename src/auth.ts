@@ -54,8 +54,11 @@ db.exec('CREATE UNIQUE INDEX IF NOT EXISTS users_google_sub ON users(google_sub)
 export const DEFAULT_ADMIN = 'admin@hawkesgen.ai';
 // One name per lane: the cookie is for all of hawkesgen.ai, so studio and studio-beta sharing a name signed each other out
 // (2026-10-29: signing in to one made the other, and its beta-site passes, see no session).
-export const COOKIE = process.env.STUDIO_LANE === 'beta' ? 'hawkes_session_beta' : 'hawkes_session';
+// A customer's cell (cells.ts) has its own name and keeps it to its host (STUDIO_COOKIE_HOST_ONLY): never J's cookie, and
+// the router (server/studio-edge) strips every other Studio's cookies from what reaches a cell.
+export const COOKIE = process.env.STUDIO_COOKIE_NAME || (process.env.STUDIO_LANE === 'beta' ? 'hawkes_session_beta' : 'hawkes_session');
 const DOMAIN = process.env.STUDIO_COOKIE_DOMAIN ?? 'hawkesgen.ai';
+const HOST_ONLY = process.env.STUDIO_COOKIE_HOST_ONLY === '1';
 const DAY = 86_400_000;
 const SHORT = 12 * 3600_000;
 const LONG = 30 * DAY;
@@ -278,7 +281,8 @@ export function googleUser(who: string | GoogleProfile, meta: { ip?: string | nu
       return toUser(r);
     }
     if (listed) r = make('admin', 'listed');
-    else if (signupMode() === 'owner' && !admins()) {
+    // A cell made by the control plane names its owner (STUDIO_OWNER_SUB): only that Google account claims it.
+    else if (signupMode() === 'owner' && !admins() && (!process.env.STUDIO_OWNER_SUB || process.env.STUDIO_OWNER_SUB === sub)) {
       r = make('admin', 'owner');
       log(true, 'claimed this Studio with Google (its first admin)');
       return toUser(r);
@@ -477,7 +481,7 @@ function onWeb(req: http.IncomingMessage) {
 
 export function sessionCookie(req: http.IncomingMessage, value: string, maxAgeMs: number | null) {
   const web = onWeb(req);
-  return [`${COOKIE}=${encodeURIComponent(value)}`, 'Path=/', 'HttpOnly', 'SameSite=Lax', ...(web ? ['Secure', `Domain=${DOMAIN}`] : []), ...(maxAgeMs === null ? [] : [`Max-Age=${Math.round(maxAgeMs / 1000)}`])].join('; ');
+  return [`${COOKIE}=${encodeURIComponent(value)}`, 'Path=/', 'HttpOnly', 'SameSite=Lax', ...(web ? ['Secure', ...(HOST_ONLY ? [] : [`Domain=${DOMAIN}`])] : []), ...(maxAgeMs === null ? [] : [`Max-Age=${Math.round(maxAgeMs / 1000)}`])].join('; ');
 }
 
 /** The old shared login (Basic j:<web password>) from scripts on J's PC: it counts as J (admin). */
