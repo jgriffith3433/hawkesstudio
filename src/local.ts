@@ -82,6 +82,9 @@ export async function ensureServer(p: Product, log: (s: string) => void = () => 
   } else {
     child = spawn(PYTHON, ['-m', 'http.server', String(p.local.port), '--bind', '127.0.0.1'], { cwd: dir, detached: true, stdio: ['ignore', out, out], windowsHide: true });
   }
+  // A server that can't start (no shell or python in the image) fails this playtest below, never Studio: an unhandled
+  // 'error' ended the process, and the resumed run ended it again on every start (studio-beta, 2026-10-29).
+  child.on('error', (e) => log(`${p.id}: its local server didn't start: ${e.message}`));
   child.unref();
   const servers = readServers();
   servers[p.id] = { pid: child.pid!, port: p.local.port, started: Date.now() };
@@ -128,6 +131,7 @@ export async function serveDir(p: Product, dir: string, port: number) {
   const child = p.local.serve === 'npm'
     ? sandboxSpawn(...shell(`npm run dev -- --port ${port} --strictPort`), { cwd: dir, detached: true, stdio: ['ignore', out, out] })
     : spawn(PYTHON, ['-m', 'http.server', String(port), '--bind', '127.0.0.1'], { cwd: dir, detached: true, stdio: ['ignore', out, out], windowsHide: true });
+  child.on('error', (e) => console.warn(`[studio] ${p.id}: serving ${dir} on :${port} didn't start: ${e.message}`));
   child.unref();
   served.set(port, child.pid!);
   const end = Date.now() + 120_000;
@@ -245,6 +249,7 @@ export function runCheck(dir: string, cmd: string, timeoutMs = 15 * 60_000): Pro
     child.stdout.on('data', keep);
     child.stderr.on('data', keep);
     const timer = setTimeout(() => child.kill(), timeoutMs);
+    child.on('error', (e) => keep(Buffer.from(`${e.message}\n`)));
     child.on('close', (code) => {
       clearTimeout(timer);
       resolve({ ok: code === 0, code, seconds: Math.round((Date.now() - t0) / 1000), tail: out.split(/\r?\n/).slice(-40).join('\n') });

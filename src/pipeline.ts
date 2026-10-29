@@ -620,6 +620,8 @@ async function playScenario(run: string, p: Product, asked: Playtest, { review =
     try {
       if (t.where === 'live') url = p.live;
       else if (prior?.status === 'done') url = was?.data?.url ?? localUrl(p);
+      else if (p.build && betaLane() && !played) throw new Error(`${BETA} isn't built yet (or its last build failed): nothing to play locally`);
+      else if (await cloudBetaUrl(p)) url = (await cloudBetaUrl(p))!;
       else if (p.build && betaLane()) {
         // Unity on the beta lane: the beta build, from its own website copy, on its own port.
         if (!played) throw new Error(`${BETA} isn't built yet (or its last build failed): nothing to play locally`);
@@ -938,6 +940,21 @@ onHoldLifted(() => void setTimeout(() => void catchUpReviews(), 5_000).unref());
 type PartialOptions = { at?: string; peers?: number; scenario?: string; where?: 'local' | 'live'; device?: 'desktop' | 'phone'; mode?: string; force?: boolean; review?: boolean; focus?: string; reviewMode?: ReviewMode; platform?: 'EditMode' | 'PlayMode'; category?: string; origin?: string | null; seed?: number; options?: Record<string, unknown> };
 
 /** A playtest asked for over the API (studio_playtest, the CLI): device "phone" plays at 390x844 touch, as products.json's device does. */
+/**
+ * On Cloud Run a web product's beta is its R2 beta site (previews-cloud.ts), published the way the live site is: the
+ * live page's path on the beta host. There's no shell or dev server to start there (a playtest that tried ended
+ * studio-beta on every start, 2026-10-29). null elsewhere, and for products that serve themselves (`remote`, `app`).
+ */
+export async function cloudBetaUrl(p: { id: string; live: string; local: { serve: string } }) {
+  if (p.local.serve === 'remote' || p.local.serve === 'app') return null;
+  const { remoteSites } = await import('./previews-cloud.ts');
+  if (!remoteSites()) return null;
+  const root = (await import('./previews.ts')).previewUrl(p.id);
+  if (!root) return null;
+  const live = new URL(p.live);
+  return new URL(live.pathname + live.search, root).toString();
+}
+
 export const playtestRequest = (b: any): PartialOptions => ({ ...(typeof b.at === 'string' && b.at.trim() ? { at: b.at.trim() } : {}), ...(Number(b.peers) > 1 ? { peers: Math.min(4, Math.round(Number(b.peers))) } : {}), scenario: b.scenario, where: b.where, device: b.device === 'phone' ? 'phone' : undefined, mode: b.mode, review: b.review, focus: b.focus, reviewMode: ['full', 'verify', 'regression'].includes(b.reviewMode) ? b.reviewMode : undefined, seed: Number(b.seed) || undefined, options: b.options && typeof b.options === 'object' && !Array.isArray(b.options) ? b.options : undefined });
 
 /** Runs the pipeline pieces on their own (from the API, CLI or MCP) as a small run. */
