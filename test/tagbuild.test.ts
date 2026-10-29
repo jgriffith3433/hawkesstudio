@@ -52,6 +52,17 @@ test('the version is past everything built and everything on the website', async
   assert.deepEqual(await tb.siteVersions('o/site', 'beta', fake, 'tok'), [7, 12]);
   assert.equal(asked[0], 'https://api.github.com/repos/o/site/contents/Game?ref=beta Bearer tok');
   assert.deepEqual(await tb.siteVersions('o/site', 'beta', (async () => new Response('nope', { status: 404 })) as unknown as typeof fetch), []);
+  // Builds in R2: no Game/v<n> folder, Game/build.json names the version.
+  const r2 = (async (url: string) => String(url).endsWith('build.json?raw')
+    ? new Response(JSON.stringify({ version: 183, base: 'https://sites.hawkesgen.ai/builds/yoobaland/v183/' }))
+    : new Response(JSON.stringify([{ name: 'v180', type: 'dir' }, { name: 'build.json', type: 'file', download_url: 'https://raw/x/Game/build.json?raw' }, { name: 'index.html', type: 'file' }]))) as unknown as typeof fetch;
+  assert.deepEqual(await tb.siteVersions('o/site', 'beta', r2), [180, 183]);
+});
+
+test('a game whose builds live in R2 names itself in the build params', () => {
+  const p = tb.tagBuildParams({ ...yooba, build: { ...yooba.build!, r2: 'yoobaland' } }, { name: 'build-x', sha: SHA }, { repos });
+  assert.equal((p.github as any).builds, 'yoobaland');
+  assert.equal('builds' in tb.tagBuildParams(place, { name: 'build-x', sha: SHA }, { repos }).github, false);
 });
 
 /** Stand-ins for the pipeline's steps, Gen's build job and the beta copy. */

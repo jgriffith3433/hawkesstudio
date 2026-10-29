@@ -194,7 +194,7 @@
       "build": {
         "project": "YoobaLand/YoobaLand",
         "site": "YoobaLandGame",
-        "method": "YoobaWebBuild.FullDeploy",
+        "method": "YoobaWebBuild.FullDeploy", "r2": "yoobaland",
         "versionEnv": "BUILD_VERSION",
         "tests": [
           "EditMode"

@@ -84,7 +84,8 @@ export type Product = {
   app?: AppConf;
   /** Unity: the project, its website folder, the batch deploy method, and test platforms to run on the build server when the source changes. */
   /** versionEnv: the environment variable the deploy method takes its Game/v<n> number from (beta.ts pinBetaVersion). */
-  build?: { project: string; site: string; method: string; tests?: ('EditMode' | 'PlayMode')[]; versionEnv?: string };
+  // r2: the game's name in R2 when its builds are served from there, not committed (docs/unity-builds-storage.md).
+  build?: { project: string; site: string; method: string; tests?: ('EditMode' | 'PlayMode')[]; versionEnv?: string; r2?: string };
   /** The product implements the playtest contract (docs/playtest.md): playtests wait for it instead of falling back to a generic smoke test. */
   contract?: boolean;
   checks?: { dir: string; cmd: string }[];

@@ -17,11 +17,11 @@
 export type Lane = 'live' | 'beta';
 
 /** The parts of an R2 bucket binding used here. */
-export interface R2Obj { body?: ReadableStream | null; size: number; httpEtag: string; uploaded?: Date; httpMetadata?: { contentType?: string }; range?: { offset?: number; length?: number } }
+export interface R2Obj { body?: ReadableStream | null; size: number; httpEtag: string; uploaded?: Date; httpMetadata?: { contentType?: string; contentEncoding?: string }; range?: { offset?: number; length?: number } }
 export interface R2Like {
   get(key: string, o?: { onlyIf?: Headers; range?: Headers }): Promise<R2Obj | null>;
   head(key: string): Promise<R2Obj | null>;
-  put(key: string, value: ReadableStream | ArrayBuffer | string | null, o?: { httpMetadata?: { contentType?: string } }): Promise<unknown>;
+  put(key: string, value: ReadableStream | ArrayBuffer | string | null, o?: { httpMetadata?: { contentType?: string; contentEncoding?: string } }): Promise<unknown>;
   delete(keys: string | string[]): Promise<void>;
 }
 export interface Env {
@@ -242,6 +242,34 @@ async function serveFile(req: Request, env: Env, key: string, status = 200): Pro
   return new Response(req.method === 'HEAD' ? null : o.body, { status, headers });
 }
 
+const BUILD_CORS = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Methods': 'GET, HEAD, OPTIONS', 'Access-Control-Allow-Headers': '*', 'Access-Control-Max-Age': '86400' };
+
+/**
+ * A Unity build file from R2 (`builds/<game>/v<n>/...`, uploaded by Gen's build container): public, open CORS, cached for
+ * a year (a version folder never changes), and sent with the Content-Encoding it was stored with (Brotli .unityweb), the
+ * body passed as is so the browser decompresses it and Unity's slower JavaScript fallback never runs.
+ */
+export async function serveBuild(req: Request, env: Env, url: URL): Promise<Response> {
+  if (req.method === 'OPTIONS') return new Response(null, { status: 204, headers: BUILD_CORS });
+  if (req.method !== 'GET' && req.method !== 'HEAD') return new Response('Read only.', { status: 405, headers: BUILD_CORS });
+  let p: string;
+  try { p = decodeURIComponent(url.pathname); } catch { return new Response('Not found', { status: 404, headers: BUILD_CORS }); }
+  if (!/^\/builds\/[a-z0-9-]+\/v[0-9]+\/[^\0]+$/.test(p) || p.split('/').some((s) => s === '..' || s === '.')) return new Response('Not found', { status: 404, headers: BUILD_CORS });
+  const o = await env.SITES.get(p.slice(1), { onlyIf: req.headers });
+  if (!o) return new Response('Not found', { status: 404, headers: BUILD_CORS });
+  const headers = new Headers({
+    ...BUILD_CORS,
+    'Content-Type': o.httpMetadata?.contentType ?? 'application/octet-stream',
+    'Cache-Control': 'public, max-age=31536000, immutable',
+    ETag: o.httpEtag,
+  });
+  const enc = o.httpMetadata?.contentEncoding;
+  if (enc) headers.set('Content-Encoding', enc);
+  if (!o.body) return new Response(null, { status: 304, headers });
+  if (!enc) headers.set('Content-Length', String(o.size));
+  return new Response(req.method === 'HEAD' ? null : o.body, { status: 200, headers, ...(enc ? { encodeBody: 'manual' } : {}) } as ResponseInit);
+}
+
 /** A page path's file: <path>, <path>index.html for a folder, else a redirect to <path>/ when that folder has one. */
 async function page(req: Request, env: Env, url: URL, base: string, rel: string): Promise<Response> {
   const want = !rel || rel.endsWith('/') ? `${rel}index.html` : rel;
@@ -275,6 +303,9 @@ export async function handle(req: Request, env: Env, now = Date.now()): Promise<
   const site = siteOf(url.host, env.DOMAIN ?? 'hawkesgen.ai');
   if (!site) return text(404, 'Not a beta site.');
   const { lane, sub } = site;
+  // Unity builds (docs/unity-builds-storage.md): https://sites.<domain>/builds/<game>/v<n>/..., public (live pages load
+  // them), before any pass check.
+  if (lane === 'live' && sub === 'sites' && url.pathname.startsWith('/builds/')) return serveBuild(req, env, url);
   // The first pass that checks out: a stale one sent first must not hide a good one (2026-10-29: beta sites 403 for J).
   let user: string | null = null;
   for (const v of cookies(req, passCookie(lane))) if ((user = await checkPass(env, lane, v, now))) break;

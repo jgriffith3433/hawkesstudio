@@ -49,8 +49,16 @@ export async function siteVersions(slug: string, ref: string, fetcher: typeof fe
       signal: AbortSignal.timeout(20_000),
     });
     if (!r.ok) return [];
-    const list = (await r.json()) as { name?: string; type?: string }[];
-    return Array.isArray(list) ? list.filter((e) => e.type === 'dir').map((e) => /^v([1-9]\d*)$/.exec(String(e.name))?.[1]).filter(Boolean).map(Number) : [];
+    const list = (await r.json()) as { name?: string; type?: string; download_url?: string }[];
+    if (!Array.isArray(list)) return [];
+    const out = list.filter((e) => e.type === 'dir').map((e) => /^v([1-9]\d*)$/.exec(String(e.name))?.[1]).filter(Boolean).map(Number);
+    // Builds in R2 leave no Game/v<n> in git: Game/build.json names the version (docs/unity-builds-storage.md).
+    const bj = list.find((e) => e.name === 'build.json' && e.type === 'file');
+    if (bj?.download_url) {
+      const v = Number(((await (await fetcher(bj.download_url, { headers: token ? { Authorization: `Bearer ${token}` } : {}, signal: AbortSignal.timeout(20_000) })).json().catch(() => ({}))) as any)?.version);
+      if (Number.isInteger(v) && v > 0) out.push(v);
+    }
+    return out;
   } catch {
     return [];
   }
@@ -67,7 +75,7 @@ export function tagBuildParams(p: Product, tag: BuildTag, { repos = repoMap(), v
   return {
     project: b.project, site: b.site, method: b.method,
     ...(version && b.versionEnv ? { env: { [b.versionEnv]: String(version) } } : {}),
-    github: { repo, commit: tag.sha.toLowerCase(), ref: tag.name, siteRepo, branch: BETA },
+    github: { repo, commit: tag.sha.toLowerCase(), ref: tag.name, siteRepo, branch: BETA, ...(b.r2 ? { builds: b.r2 } : {}) },
   };
 }
 

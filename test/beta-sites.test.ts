@@ -29,11 +29,11 @@ const betaKeys = K.siteKeys(BETA)!;
 
 /** An in-memory R2 bucket with what the Worker uses. */
 function memR2() {
-  const m = new Map<string, { data: Uint8Array; type?: string }>();
-  const obj = (k: string, v: { data: Uint8Array; type?: string }, body: boolean, range?: { offset: number; length: number }) => {
+  const m = new Map<string, { data: Uint8Array; type?: string; enc?: string }>();
+  const obj = (k: string, v: { data: Uint8Array; type?: string; enc?: string }, body: boolean, range?: { offset: number; length: number }) => {
     const data = range ? v.data.slice(range.offset, range.offset + range.length) : v.data;
     return {
-      size: v.data.length, httpEtag: `"${crypto.createHash('md5').update(v.data).digest('hex')}"`, httpMetadata: { contentType: v.type },
+      size: v.data.length, httpEtag: `"${crypto.createHash('md5').update(v.data).digest('hex')}"`, httpMetadata: { contentType: v.type, ...(v.enc ? { contentEncoding: v.enc } : {}) },
       body: body ? new Response(data as Uint8Array<ArrayBuffer>).body : null, ...(range ? { range } : {}), key: k,
     };
   };
@@ -55,7 +55,7 @@ function memR2() {
     async head(k) { const v = m.get(k); return v ? obj(k, v, false) : null; },
     async put(k, value, o) {
       const data = value instanceof ReadableStream ? new Uint8Array(await new Response(value).arrayBuffer()) : typeof value === 'string' ? new TextEncoder().encode(value) : new Uint8Array(value ?? new ArrayBuffer(0));
-      m.set(k, { data, type: o?.httpMetadata?.contentType });
+      m.set(k, { data, type: o?.httpMetadata?.contentType, enc: o?.httpMetadata?.contentEncoding });
     },
     async delete(keys) { for (const k of Array.isArray(keys) ? keys : [keys]) m.delete(k); },
   };
@@ -362,4 +362,25 @@ test('a playtest of a beta site gets a pass (Gen playtest.run cookies) the Worke
   } finally {
     if (saved.seed === undefined) delete process.env.STUDIO_SITES_SEED; else process.env.STUDIO_SITES_SEED = saved.seed;
   }
+});
+
+test('Unity builds: public at sites.<domain>/builds/, Brotli files sent with their encoding, cached for good, open CORS', async () => {
+  const W = await import('../server/beta-sites/src/index.ts');
+  await r2.put('builds/yoobaland/v181/YoobaLand/Build/YoobaLand.wasm.unityweb', new TextEncoder().encode('br-bytes').buffer as ArrayBuffer, { httpMetadata: { contentType: 'application/wasm', contentEncoding: 'br' } });
+  await r2.put('builds/yoobaland/v181/sizes.json', '{}', { httpMetadata: { contentType: 'application/json' } });
+  const get = (p: string, init?: RequestInit) => W.handle(new Request(`https://sites.hawkesgen.ai${p}`, init), env);
+  const wasm = await get('/builds/yoobaland/v181/YoobaLand/Build/YoobaLand.wasm.unityweb');
+  assert.equal(wasm.status, 200);
+  assert.equal(wasm.headers.get('Content-Encoding'), 'br');
+  assert.equal(wasm.headers.get('Content-Type'), 'application/wasm');
+  assert.equal(wasm.headers.get('Access-Control-Allow-Origin'), '*');
+  assert.match(wasm.headers.get('Cache-Control') ?? '', /immutable/);
+  assert.equal(await wasm.text(), 'br-bytes');
+  const plain = await get('/builds/yoobaland/v181/sizes.json');
+  assert.equal(plain.headers.get('Content-Encoding'), null);
+  assert.equal(plain.headers.get('Content-Length'), '2');
+  assert.equal((await get('/builds/yoobaland/v181/', { method: 'OPTIONS' })).status, 204);
+  for (const bad of ['/builds/yoobaland/v181/../x', '/builds/Yooba/v1/a', '/builds/yoobaland/latest/a', '/builds/yoobaland/v9/missing']) assert.equal((await get(bad)).status, 404, bad);
+  // Only that host and path are public: a beta site still wants a pass.
+  assert.notEqual((await W.handle(new Request('https://sb-dod.hawkesgen.ai/builds/yoobaland/v181/sizes.json'), env)).status, 200);
 });
