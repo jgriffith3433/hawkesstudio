@@ -127,6 +127,12 @@ const server = http.createServer(async (req, res) => {
       for await (const c of req) chunks.push(c as Buffer);
       return send(res, 200, (await import('./billing.ts')).handleStripeWebhook(Buffer.concat(chunks), String(req.headers['stripe-signature'] ?? '')));
     }
+    // Stripe's keys for this Studio (billing.ts saveStripeConfig): the platform admin alone (J's Google sign-in or owner key).
+    if (route === '/api/billing/config' && method === 'POST') {
+      const { platformAdminOf } = await import('./lockdown.ts');
+      if (!platformAdminOf(req)) return send(res, 403, { error: 'Only the platform admin can set payments up.' });
+      return send(res, 200, (await import('./billing.ts')).saveStripeConfig(await readJson(req)));
+    }
     // The agent sandbox's guards (guards.ts): from Talk's and the agents' Linux user, anything live needs J's own words.
     const refused = (await import('./guards.ts')).guardRequest(req, route, method);
     if (refused) return send(res, 403, { error: refused });
