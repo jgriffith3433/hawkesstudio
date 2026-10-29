@@ -1,25 +1,72 @@
-# No tests here (J, 2026-10-25: "i don't want github running the tests anymore"): the control server runs typecheck and
-# the tests on each new main commit itself before it deploys it (hawkesstudio/deploy/hawkes-pull.mjs testOnServer), and
-# Studio runs them on every agent change before it merges (src/agents.ts verifyInfra). This workflow only tells the
-# server that main moved, so it doesn't poll. Studio checks GitHub's OIDC token (this repo, main) and the server pulls
-# the commit itself.
-name: CI
+# Deploys Studio to Cloud Run (docs/studio-cloudrun.md, "Deploys"). The lanes (J, 2026-10-28: dev -> beta -> main): a
+# push to beta deploys `studio-beta` and its job `studio-agent-beta` (studio-beta.hawkesgen.ai, on gen-beta), a push to
+# main deploys `studio` and `studio-agent` (studio.hawkesgen.ai); dev deploys nothing.
+# No tests here (J, 2026-10-25: "i don't want github running the tests anymore"): run `npm run typecheck` and
+# `npm test` before pushing. The safety net is the health check: a new revision that doesn't answer its lane's
+# /api/health is replaced by the one before it (the job keeps its old image too).
+# Keyless: GitHub's OIDC token is traded for the `studio-deployer` account through Workload Identity Federation, trusted
+# for this repo's main and beta only (tools/studio-cloudrun/setup-ci.ps1 sets that up once).
+name: Deploy
 on:
   push:
-    branches: [main]
+    branches: [main, beta]
+  workflow_dispatch:
+concurrency:
+  group: deploy-studio-${{ github.ref_name }}
+  cancel-in-progress: false
 permissions:
   contents: read
+env:
+  PROJECT: hawkes-staging
+  PROJECT_NUMBER: '388576319982'
+  REGION: us-east4
 jobs:
-  tell-server:
-    name: Tell the server
+  deploy:
+    name: Build and deploy to Cloud Run
+    if: github.ref_name == 'main' || github.ref_name == 'beta'
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 40
     permissions:
       id-token: write
       contents: read
     steps:
-      - name: Tell the control server to deploy this commit
+      - name: The lane
         run: |
-          token=$(curl -sSf -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=https://studio.hawkesgen.ai" | jq -r .value)
-          curl -sS --fail-with-body --retry 3 --retry-delay 10 --retry-all-errors \
-            -X POST -H "Authorization: Bearer $token" https://studio.hawkesgen.ai/api/hooks/self-deploy
+          if [ "$GITHUB_REF_NAME" = beta ]; then
+            echo "SERVICE=studio-beta" >> "$GITHUB_ENV"; echo "JOB=studio-agent-beta" >> "$GITHUB_ENV"
+            echo "HEALTH=https://studio-beta.hawkesgen.ai/api/health" >> "$GITHUB_ENV"
+          else
+            echo "SERVICE=studio" >> "$GITHUB_ENV"; echo "JOB=studio-agent" >> "$GITHUB_ENV"
+            echo "HEALTH=https://studio.hawkesgen.ai/api/health" >> "$GITHUB_ENV"
+          fi
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: projects/${{ env.PROJECT_NUMBER }}/locations/global/workloadIdentityPools/github/providers/github-studio
+          service_account: studio-deployer@${{ env.PROJECT }}.iam.gserviceaccount.com
+      - uses: google-github-actions/setup-gcloud@v2
+      - name: Build the image for this commit
+        run: node tools/studio-cloudrun/build.mjs --project "$PROJECT" --region "$REGION" --commit "$GITHUB_SHA" --apply
+      - name: Deploy it, keeping the previous revision to fall back on
+        run: |
+          prev=$(gcloud run services describe "$SERVICE" --region "$REGION" --project "$PROJECT" --format='value(status.latestReadyRevisionName)')
+          [ -n "$prev" ] || { echo "No $SERVICE service yet: J runs tools/studio-cloudrun/deploy.ps1 for this lane first"; exit 1; }
+          prevJob=$(gcloud run jobs describe "$JOB" --region "$REGION" --project "$PROJECT" --format='value(spec.template.spec.template.spec.containers[0].image)')
+          echo "prev=$prev" >> "$GITHUB_ENV"; echo "prevJob=$prevJob" >> "$GITHUB_ENV"
+          tag=$(node -e "console.log(require('./.data/cloudrun/studio-image.json').tag)")
+          gcloud run services update "$SERVICE" --image "$tag" --region "$REGION" --project "$PROJECT" --format=none
+          gcloud run jobs update "$JOB" --image "$tag" --region "$REGION" --project "$PROJECT" --format=none
+      - name: Health check (back to the previous revision if it fails)
+        run: |
+          for i in $(seq 1 18); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 "$HEALTH" || true)
+            [ "$code" = 200 ] && { echo "healthy"; exit 0; }
+            sleep 10
+          done
+          echo "Not healthy: back to $prev"
+          gcloud run services update-traffic "$SERVICE" --to-revisions "$prev=100" --region "$REGION" --project "$PROJECT" --format=none
+          [ -n "$prevJob" ] && gcloud run jobs update "$JOB" --image "$prevJob" --region "$REGION" --project "$PROJECT" --format=none
+          exit 1

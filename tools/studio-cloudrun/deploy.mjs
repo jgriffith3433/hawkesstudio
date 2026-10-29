@@ -4,7 +4,7 @@
 // changes things only with --apply. J runs it through deploy.ps1 (IAM and secret writes are his). Every step is safe to
 // run again.
 //
-//   node tools/studio-cloudrun/deploy.mjs [--project hawkes-staging] [--region us-east4] [--gen https://gen.hawkesgen.ai] [--apply]
+//   node tools/studio-cloudrun/deploy.mjs [--lane live|beta] [--project hawkes-staging] [--region us-east4] [--gen https://gen.hawkesgen.ai] [--apply]
 //
 // 1. APIs; the state bucket (studio.db through Litestream, state files, the jobs' folders, cleared after 7 days).
 // 2. Three accounts: studio-control@ (the service: the bucket, starting and following the job), studio-agent@ (the job:
@@ -24,16 +24,24 @@ import { flag, gcloud, gcloudQuery, die, done, ROOT, APPLY } from './common.mjs'
 
 const project = flag('project', 'hawkes-staging');
 const region = flag('region', 'us-east4');
-const service = flag('service', 'studio');
-const jobName = flag('job', 'studio-agent');
-const genUrl = flag('gen', 'https://gen.hawkesgen.ai').replace(/\/+$/, '');
-const publicUrl = flag('public-url', 'https://studio.hawkesgen.ai').replace(/\/+$/, '');
+// The lane (J, 2026-10-28: dev -> beta -> main): live is `studio` (studio.hawkesgen.ai, from main, on live Gen); beta is
+// `studio-beta` (studio-beta.hawkesgen.ai, from beta) on gen-beta, with its own database, keys and agents' job, and no
+// daily run of its own (it never spends by itself). Same image, same accounts.
+const lane = flag('lane', 'live');
+if (!['live', 'beta'].includes(lane)) die(`--lane is live or beta, not ${lane}`);
+const beta = lane === 'beta';
+const service = flag('service', beta ? 'studio-beta' : 'studio');
+const jobName = flag('job', beta ? 'studio-agent-beta' : 'studio-agent');
+const genUrl = flag('gen', beta ? 'https://gen-beta.hawkesgen.ai' : 'https://gen.hawkesgen.ai').replace(/\/+$/, '');
+const publicUrl = flag('public-url', beta ? 'https://studio-beta.hawkesgen.ai' : 'https://studio.hawkesgen.ai').replace(/\/+$/, '');
 const emails = flag('google-emails', 'piercehawkes3@gmail.com');
 const P = `--project=${project}`;
 const sa = `studio-control@${project}.iam.gserviceaccount.com`;
 const agentSa = `studio-agent@${project}.iam.gserviceaccount.com`;
 const schedSa = `studio-scheduler@${project}.iam.gserviceaccount.com`;
-const bucket = flag('state-bucket', `${project}-studio-state`);
+const bucket = flag('state-bucket', `${project}-${beta ? 'studio-beta' : 'studio'}-state`);
+/** Secret names per lane: studio-owner-key on live, studio-beta-owner-key on beta. */
+const sec = (name) => (beta ? name.replace(/^studio-/, 'studio-beta-') : name);
 
 const imageFile = path.join(ROOT, '.data', 'cloudrun', 'studio-image.json');
 const image = flag('image', fs.existsSync(imageFile) ? JSON.parse(fs.readFileSync(imageFile, 'utf8')).tag : null);
@@ -89,7 +97,8 @@ function putSecret(name, value) {
 }
 const readSecret = (name) => gcloudQuery(['secrets', 'versions', 'access', 'latest', `--secret=${name}`, P]);
 /** A secret made once (a random key, or what `make` returns), then mounted as `env`. */
-async function secret(env, name, make) {
+async function secret(env, laneless, make) {
+  const name = sec(laneless);
   let v = readSecret(name);
   if (!v) {
     v = await make();
@@ -105,21 +114,24 @@ const ownerKey = await secret('STUDIO_OWNER_KEY', 'studio-owner-key', random('hs
 await secret('STUDIO_AGENT_KEY', 'studio-agent-key', random('hsa_'));
 await secret('STUDIO_MCP_KEY', 'studio-mcp-key', random('hsm_'));
 
-// Studio's Gen keys, made with the Gen owner key on this PC (~/.hawkes/client.json genKey).
+// Studio's Gen keys, made with the lane's Gen owner key on this PC (~/.hawkes/client.json genKey, or genBetaKey for
+// gen-beta: Gen's deploy.ps1 -Lane beta saves it).
 const cj = path.join(os.homedir(), '.hawkes', 'client.json');
 const client = fs.existsSync(cj) ? JSON.parse(fs.readFileSync(cj, 'utf8')) : {};
+const genOwner = beta ? client.genBetaKey : client.genKey;
 async function genKey(name, role) {
   if (!APPLY) { console.log(`  (dry run) POST ${genUrl}/v1/clients {"name":"${name}","role":"${role}"} with the Gen owner key`); return 'dry-run'; }
-  if (!client.genKey) die(`No Gen owner key in ${cj} (genKey): Studio's Gen key can't be made.`);
-  const r = await fetch(`${genUrl}/v1/clients`, { method: 'POST', headers: { Authorization: `Bearer ${client.genKey}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ name, role }) });
+  if (!genOwner) die(`No Gen owner key in ${cj} (${beta ? 'genBetaKey: run hawkesgen\\tools\\gen-cloudrun\\deploy.ps1 -Lane beta first' : 'genKey'}): Studio's Gen key can't be made.`);
+  const r = await fetch(`${genUrl}/v1/clients`, { method: 'POST', headers: { Authorization: `Bearer ${genOwner}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ name, role }) });
   const j = await r.json().catch(() => ({}));
   if (!r.ok || !j.key) die(`Gen refused to make the key "${name}" (${r.status} ${j.error ?? ''}).`);
   console.log(`  made Gen key "${name}" (${role}, ${j.client?.id})`);
   return j.key;
 }
-await secret('HAWKESGEN_KEY', 'studio-gen-key', () => genKey('Hawkes Studio (Cloud Run)', 'admin'));
-const userGenKey = await secret('TALK_GEN_KEY', 'studio-agents-gen-key', () => genKey('Hawkes Studio agents and Talk (Cloud Run)', 'user'));
-if (userGenKey) mounted.push('AGENT_GEN_KEY=studio-agents-gen-key:latest');
+const named = (n) => (beta ? `${n} (beta)` : n);
+await secret('HAWKESGEN_KEY', 'studio-gen-key', () => genKey(named('Hawkes Studio (Cloud Run)'), 'admin'));
+const userGenKey = await secret('TALK_GEN_KEY', 'studio-agents-gen-key', () => genKey(named('Hawkes Studio agents and Talk (Cloud Run)'), 'user'));
+if (userGenKey) mounted.push(`AGENT_GEN_KEY=${sec('studio-agents-gen-key')}:latest`);
 
 // The GitHub token: git's stored credential for github.com on this PC (the stored-token form J's pushes use).
 await secret('GITHUB_TOKEN', 'studio-github-token', () => {
@@ -137,7 +149,7 @@ if (!googleClient) console.log('  No Google client id (--google-client, or the p
 
 console.log('\n# The service');
 const envVars = [
-  `STUDIO_STATE_BUCKET=${bucket}`, `STUDIO_GCP_PROJECT=${project}`, `STUDIO_GCP_REGION=${region}`, `STUDIO_AGENT_JOB=${jobName}`,
+  `STUDIO_LANE=${lane}`, `STUDIO_STATE_BUCKET=${bucket}`, `STUDIO_GCP_PROJECT=${project}`, `STUDIO_GCP_REGION=${region}`, `STUDIO_AGENT_JOB=${jobName}`,
   `HAWKESGEN_URL=${genUrl}`, `GEN_PUBLIC_URL=${genUrl}`, `STUDIO_PUBLIC_URL=${publicUrl}`,
   `STUDIO_GOOGLE_EMAILS=${emails}`, `STUDIO_SCHEDULER_SA=${schedSa}`,
   ...(googleClient ? [`STUDIO_GOOGLE_CLIENT_ID=${googleClient}`] : []),
@@ -161,11 +173,13 @@ if (!url) die('The service has no URL yet: run this again in a minute.');
 console.log(`\nService URL: ${url}`);
 gcloud(['run', 'services', 'update', service, `--region=${region}`, P, `--update-env-vars=STUDIO_SERVICE_URL=${url}`, '--format=none']);
 
-console.log('\n# The daily run (05:00 Los Angeles)');
-const sched = ['--location', region, '--schedule=0 5 * * *', '--time-zone=America/Los_Angeles', `--uri=${url}/api/cloud/daily`, '--http-method=POST',
+console.log(beta ? '\n# The daily run: none on beta (it never spends by itself)' : '\n# The daily run (05:00 Los Angeles)');
+const sched =['--location', region, '--schedule=0 5 * * *', '--time-zone=America/Los_Angeles', `--uri=${url}/api/cloud/daily`, '--http-method=POST',
   `--oidc-service-account-email=${schedSa}`, `--oidc-token-audience=${url}`, '--attempt-deadline=60s', P, '--format=none'];
-const exists = gcloudQuery(['scheduler', 'jobs', 'describe', 'studio-daily', '--location', region, P, '--format=value(name)']);
-gcloud(['scheduler', 'jobs', exists ? 'update' : 'create', 'http', 'studio-daily', ...sched]);
+if (!beta) {
+  const exists = gcloudQuery(['scheduler', 'jobs', 'describe', 'studio-daily', '--location', region, P, '--format=value(name)']);
+  gcloud(['scheduler', 'jobs', exists ? 'update' : 'create', 'http', 'studio-daily', ...sched]);
+}
 
 console.log('\n# Waiting for it to answer');
 let ok = false;
@@ -179,7 +193,11 @@ if (who !== 200) die(`The owner key was refused (${who}).`);
 console.log('  health ok, owner key accepted');
 
 // This PC's CLI and MCP server (src/client.ts) use ~/.hawkes/client.json: point Studio's part at the new address.
-if (fs.existsSync(cj)) {
+if (beta && fs.existsSync(cj)) {
+  // Beta never replaces live in this PC's clients: kept beside it.
+  fs.writeFileSync(cj, JSON.stringify({ ...client, studioBetaUrl: url, studioBetaKey: ownerKey }, null, 2));
+  console.log(`  ${cj}: studioBetaUrl and studioBetaKey saved (live's studioUrl unchanged)`);
+} else if (fs.existsSync(cj)) {
   const backup = path.join(path.dirname(cj), 'client.studio-aws.json');
   if (!fs.existsSync(backup)) fs.writeFileSync(backup, JSON.stringify(client, null, 2));
   fs.writeFileSync(cj, JSON.stringify({ ...client, studioUrl: url, studioKey: ownerKey }, null, 2));

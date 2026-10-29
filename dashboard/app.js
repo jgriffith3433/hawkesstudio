@@ -591,3 +591,10 @@ document.addEventListener('click', async (e) => {
     } catch (err) { alert(err.message); }
   }
 });
+
+// The beta lane (studio-beta.hawkesgen.ai, on gen-beta) says so on every page, so it's never taken for live.
+fetch('/api/health').then((r) => r.json()).then((h) => {
+  if (h.lane !== 'beta') return;
+  document.title = `BETA · ${document.title}`;
+  document.querySelector('header .brand .mark')?.parentElement?.insertAdjacentHTML('beforeend', ' <span class="lane-badge">BETA</span>');
+}).catch(() => {});

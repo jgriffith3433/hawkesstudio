@@ -480,3 +480,6 @@ body.lt-big-open { overflow: hidden; }
 .act-plan { margin: 4px 0; padding-left: 20px; list-style: decimal; }
 .act-plan-item { margin: 2px 0; overflow-wrap: anywhere; }
 .act-plan-item.act-bad > b { color: var(--bad, #e5534b); }
+
+/* The beta lane's badge beside the name (app.js). */
+.lane-badge { display: inline-block; margin-left: 6px; padding: 1px 6px; border-radius: 4px; background: #d97706; color: #fff; font-size: 11px; font-weight: 700; letter-spacing: 0.06em; vertical-align: middle; }

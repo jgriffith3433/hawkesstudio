@@ -1,5 +1,6 @@
 // studio.hawkesgen.ai: a Cloudflare Worker that passes every request to Hawkes Studio on Cloud Run
 // (docs/studio-cloudrun.md, "The address"). Deploy from this folder: npx wrangler deploy (the first time: npx wrangler login).
+// The beta lane (studio-beta.hawkesgen.ai -> the studio-beta service): npx wrangler deploy --env beta
 {
   "name": "hawkes-studio-edge",
   "main": "src/index.ts",
@@ -9,5 +10,12 @@
     // The Cloud Run service's own address (tools/studio-cloudrun/deploy.mjs prints it as "Service URL").
     "STUDIO_ORIGIN": "https://studio-388576319982.us-east4.run.app"
   },
-  "observability": { "enabled": true }
+  "observability": { "enabled": true },
+  "env": {
+    "beta": {
+      "routes": [{ "pattern": "studio-beta.hawkesgen.ai", "custom_domain": true }],
+      // Cloud Run's deterministic address for the service studio-beta.
+      "vars": { "STUDIO_ORIGIN": "https://studio-beta-388576319982.us-east4.run.app" }
+    }
+  }
 }

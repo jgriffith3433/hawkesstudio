@@ -93,8 +93,22 @@ takes the place of the peer check.
 5. Settings > Claude accounts > Sign in (the Max plan), as on the server: the login is kept in `.data/claude/` and
    synced to the bucket; every job gets the account in use.
 
-A new image later: build, then `gcloud run services update studio --image <tag>` and
-`gcloud run jobs update studio-agent --image <tag>` (or deploy.ps1 again).
+## Lanes and deploys: dev -> beta -> main
+
+J, 2026-10-28: "dev -> beta -> main", so Studio and Gen can be consumer facing and he tests features on their betas.
+`dev` deploys nothing. `beta` is **studio-beta** (`https://studio-beta.hawkesgen.ai`, job `studio-agent-beta`) on
+**gen-beta**: its own bucket (`<project>-studio-beta-state`), keys (`studio-beta-*` secrets), Gen keys made on gen-beta,
+no daily run (it never spends by itself), a BETA badge on the dashboard and `lane: "beta"` in `/api/health`. `main` is
+**studio**, live. Made once with `deploy.ps1 -Lane beta` (after Gen's `deploy.ps1 -Lane beta`, which saves gen-beta's
+owner key) and `npx wrangler deploy --env beta` in `server/studio-edge`; add `https://studio-beta.hawkesgen.ai` to the
+Google OAuth client's JavaScript origins.
+
+A push to `beta` or `main` deploys that lane (`.github/workflows/ci.yml`): GitHub signs in to Google with its own OIDC
+token (the `github-studio` provider trusts only this repo's main and beta, as `studio-deployer@`; one-time
+`tools\studio-cloudrun\setup-ci.ps1`), builds the commit's image, updates the lane's service and agents' job, and checks
+its `/api/health`; if the new revision doesn't answer within three minutes, the service and the job go back to what ran
+before. No tests run on GitHub (J, 2026-10-25): typecheck and test before pushing. By hand: build, then
+`gcloud run services update studio --image <tag>` and `gcloud run jobs update studio-agent --image <tag>`.
 
 ## Beta sites (`<sub>.hawkesgen.ai`)
 
