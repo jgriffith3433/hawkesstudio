@@ -1,5 +1,7 @@
 # Hawkes Studio — agent guide
 
+**Lanes, local dev and deploys:** `LANES.md` (branches dev -> beta -> main; `dev.bat`, `deploy-beta.bat`, `deploy-prod.bat`, `status.bat`, `links.bat`, `sync.bat`; beta and live links).
+
 J's cockpit for every Hawkes product, and the daily loop:
 
 ```
