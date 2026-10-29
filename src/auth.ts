@@ -39,7 +39,9 @@ db.exec(`
 `);
 
 export const DEFAULT_ADMIN = 'admin@hawkesgen.ai';
-export const COOKIE = 'hawkes_session';
+// One name per lane: the cookie is for all of hawkesgen.ai, so studio and studio-beta sharing a name signed each other out
+// (2026-10-29: signing in to one made the other, and its beta-site passes, see no session).
+export const COOKIE = process.env.STUDIO_LANE === 'beta' ? 'hawkes_session_beta' : 'hawkes_session';
 const DOMAIN = process.env.STUDIO_COOKIE_DOMAIN ?? 'hawkesgen.ai';
 const DAY = 86_400_000;
 const SHORT = 12 * 3600_000;
