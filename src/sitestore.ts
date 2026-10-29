@@ -16,11 +16,14 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import os from 'node:os';
 import { laneOf, signPublish, type Lane } from './sitekeys.ts';
 import { injectReport, type PageInfo } from './bugreport.ts';
 
 /** One file of a site: where it goes, its git blob id and size, and how to get its bytes. */
 export type SiteFile = { path: string; oid: string; size: number; read: () => Promise<Buffer> };
+/** A source's files, optionally able to fetch many of them at once before they're read (publishSite calls it). */
+export type SiteFiles = SiteFile[] & { prefetch?: (paths: string[], progress?: (s: string) => void) => Promise<void> };
 export type Manifest = { v: 1; at: number; sha?: string | null; ref?: string; files: Record<string, { oid: string; size: number }> };
 
 /** The R2 side, inside this lane's prefix (keys here have no lane). */
@@ -78,6 +81,10 @@ export async function publishSite(store: SiteStore, base: string, files: SiteFil
   const byPath = new Map(files.map((f) => [f.path, f]));
   const assets = [...byPath.values()].filter((f) => !isHtml(f.path));
   const pages = [...byPath.values()].filter((f) => isHtml(f.path));
+  // The bytes this publish reads (changed assets nothing published holds, and every page), fetched in one go when the
+  // source can (githubFiles: one tarball instead of an API call per file, 2026-10-29).
+  const toRead = [...assets.filter((f) => prev?.files[f.path]?.oid !== f.oid && !have.has(f.oid)), ...pages].map((f) => f.path);
+  await (files as SiteFiles).prefetch?.(toRead, o.progress);
   let done = 0;
   const tick = () => { if (++done % 100 === 0) o.progress?.(`publishing: ${done} of ${byPath.size} files`); };
   await pool(assets, o.concurrency ?? 6, async (f) => {
@@ -182,16 +189,99 @@ export async function githubCommit(slug: string, ref: string, fetcher: typeof fe
   return (await r.text()).trim();
 }
 
+/** Above this many files to read, a publish downloads the commit's tarball once instead of one API call per file. */
+export const TARBALL_OVER = 40;
+
+/**
+ * Reads a .tar.gz stream and writes the members `want` maps (path inside the repo, after the archive's top folder) to
+ * files under `dir`. GitHub's archives put every path under one top folder and use pax headers for long names. Returns
+ * repo path -> written file.
+ */
+export async function extractWanted(body: ReadableStream<Uint8Array> | NodeJS.ReadableStream, want: Set<string>, dir: string): Promise<Map<string, string>> {
+  const { Readable } = await import('node:stream');
+  const zlib = await import('node:zlib');
+  const src = typeof (body as any).getReader === 'function' ? Readable.fromWeb(body as any) : (body as NodeJS.ReadableStream);
+  const out = new Map<string, string>();
+  let buf: Buffer = Buffer.alloc(0);
+  let longName: string | null = null;
+  let entry: { path: string | null; left: number; pad: number; fd: number | null; meta: Buffer[] | null } | null = null;
+  const str = (b: Buffer, at: number, n: number) => b.subarray(at, at + n).toString('utf8').replace(/\0.*$/s, '');
+  const done = () => {
+    if (!entry) return;
+    if (entry.fd !== null) fs.closeSync(entry.fd);
+    if (entry.meta) {
+      // A pax header ("x"): its "path=" is the next member's name; GNU long name ("L"): the whole body is.
+      const text = Buffer.concat(entry.meta).toString('utf8');
+      longName = entry.path === '\0L' ? text.replace(/\0+$/, '') : (/(?:^|\n)\d+ path=([^\n]*)\n/.exec(text)?.[1] ?? longName);
+    }
+    entry = null;
+  };
+  for await (const chunk of src.pipe(zlib.createGunzip())) {
+    buf = buf.length ? Buffer.concat([buf, chunk as Buffer]) : (chunk as Buffer);
+    for (;;) {
+      if (entry) {
+        if (entry.left > 0) {
+          if (!buf.length) break;
+          const take = Math.min(entry.left, buf.length);
+          const part = buf.subarray(0, take);
+          if (entry.fd !== null) fs.writeSync(entry.fd, part);
+          else if (entry.meta) entry.meta.push(Buffer.from(part));
+          entry.left -= take;
+          buf = buf.subarray(take);
+          if (entry.left > 0) break;
+        }
+        if (buf.length < entry.pad) break;
+        buf = buf.subarray(entry.pad);
+        done();
+        continue;
+      }
+      if (buf.length < 512) break;
+      const h = buf.subarray(0, 512);
+      buf = buf.subarray(512);
+      if (h.every((x) => x === 0)) continue;
+      const size = parseInt(str(h, 124, 12).trim() || '0', 8) || 0;
+      const type = String.fromCharCode(h[156] || 48);
+      const pad = (512 - (size % 512)) % 512;
+      if (type === 'x' || type === 'g' || type === 'L') {
+        entry = { path: type === 'L' ? '\0L' : null, left: size, pad, fd: null, meta: type === 'g' ? null : [] };
+        if (type === 'g') entry.meta = null;
+        continue;
+      }
+      const name = longName ?? (str(h, 345, 155) ? `${str(h, 345, 155)}/${str(h, 0, 100)}` : str(h, 0, 100));
+      longName = null;
+      const rel = name.replace(/^[^/]+\//, ''); // drop the archive's top folder
+      let fd: number | null = null;
+      if ((type === '0' || type === '\0') && want.has(rel)) {
+        const file = path.join(dir, String(out.size));
+        fd = fs.openSync(file, 'w');
+        out.set(rel, file);
+      }
+      entry = { path: rel, left: size, pad, fd, meta: null };
+      if (size === 0) { buf = buf.subarray(Math.min(pad, buf.length)); done(); }
+    }
+  }
+  return out;
+}
+
 /** Every file of a commit on GitHub (the trees API; no clone), under `sub` with it cut off. */
-export async function githubFiles(slug: string, sha: string, { sub = '', fetcher = fetch }: { sub?: string; fetcher?: typeof fetch } = {}): Promise<SiteFile[]> {
+export async function githubFiles(slug: string, sha: string, { sub = '', fetcher = fetch }: { sub?: string; fetcher?: typeof fetch } = {}): Promise<SiteFiles> {
   const r = await fetcher(`${GH}/repos/${slug}/git/trees/${sha}?recursive=1`, { headers: ghHeaders(), signal: AbortSignal.timeout(60_000) });
   if (!r.ok) throw new Error(`GitHub tree of ${slug}@${sha.slice(0, 7)}: ${r.status} ${(await r.text()).slice(0, 200)}`);
   const t = (await r.json()) as { tree: { path: string; type: string; sha: string; size?: number; mode: string }[]; truncated?: boolean };
   if (t.truncated) throw new Error(`${slug} has too many files for GitHub's tree API`);
   const prefix = sub ? `${sub.replace(/\/+$/, '')}/` : '';
-  return t.tree.filter((e) => e.type === 'blob' && e.mode !== '120000' && e.path.startsWith(prefix)).map((e) => ({
+  // Files the tarball already brought (prefetch), by site path; each is read once and deleted (Cloud Run's /tmp is memory).
+  const got = new Map<string, string>();
+  const files: SiteFiles = t.tree.filter((e) => e.type === 'blob' && e.mode !== '120000' && e.path.startsWith(prefix)).map((e) => ({
     path: e.path.slice(prefix.length), oid: e.sha, size: e.size ?? 0,
     read: async () => {
+      const local = got.get(e.path.slice(prefix.length));
+      if (local) {
+        const b = fs.readFileSync(local);
+        fs.rmSync(local, { force: true });
+        got.delete(e.path.slice(prefix.length));
+        return b;
+      }
       for (let attempt = 1; ; attempt++) {
         const b = await fetcher(`${GH}/repos/${slug}/git/blobs/${e.sha}`, { headers: ghHeaders('application/vnd.github.raw'), signal: AbortSignal.timeout(5 * 60_000) }).catch(() => null);
         if (b?.ok) return Buffer.from(await b.arrayBuffer());
@@ -200,6 +290,19 @@ export async function githubFiles(slug: string, sha: string, { sub = '', fetcher
       }
     },
   }));
+  // Many files to read (a first publish, a new Unity build): the commit's tarball, one API call (GitHub redirects it to
+  // codeload), keeping only those files. A few: one API call each, as before.
+  files.prefetch = async (paths, progress) => {
+    if (paths.length <= TARBALL_OVER) return;
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'site-'));
+    progress?.(`downloading ${slug}@${sha.slice(0, 7)} as one archive for ${paths.length} files`);
+    const a = await fetcher(`${GH}/repos/${slug}/tarball/${sha}`, { headers: ghHeaders(), redirect: 'follow', signal: AbortSignal.timeout(30 * 60_000) });
+    if (!a.ok || !a.body) throw new Error(`GitHub tarball of ${slug}@${sha.slice(0, 7)}: ${a.status}`);
+    const found = await extractWanted(a.body, new Set(paths.map((p) => `${prefix}${p}`)), dir);
+    for (const [rel, file] of found) got.set(rel.slice(prefix.length), file);
+    progress?.(`unpacked ${found.size} of ${paths.length} files from the archive`);
+  };
+  return files;
 }
 
 /** Every file under a local folder (a build's output), as site files under `to`. */
