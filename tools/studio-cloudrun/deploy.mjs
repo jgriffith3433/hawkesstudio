@@ -43,8 +43,11 @@ const bucket = flag('state-bucket', `${project}-${beta ? 'studio-beta' : 'studio
 /** Secret names per lane: studio-owner-key on live, studio-beta-owner-key on beta. */
 const sec = (name) => (beta ? name.replace(/^studio-/, 'studio-beta-') : name);
 
+// The image: --image, else the one the service runs now (CI deploys code; this script changes settings, secrets and
+// permissions without rolling the code back), else the last one build.mjs made on this PC.
 const imageFile = path.join(ROOT, '.data', 'cloudrun', 'studio-image.json');
-const image = flag('image', fs.existsSync(imageFile) ? JSON.parse(fs.readFileSync(imageFile, 'utf8')).tag : null);
+const running = gcloudQuery(['run', 'services', 'describe', service, `--region=${region}`, P, '--format=value(spec.template.spec.containers[0].image)']);
+const image = flag('image', running || (fs.existsSync(imageFile) ? JSON.parse(fs.readFileSync(imageFile, 'utf8')).tag : null));
 if (!image) die('No image yet: node tools/studio-cloudrun/build.mjs --apply');
 console.log(`Studio on Cloud Run: ${service} + job ${jobName} in ${project} / ${region}\nImage ${image}\nGen ${genUrl}\n`);
 
