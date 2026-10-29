@@ -1,7 +1,7 @@
-// Email from Studio (invites and password resets) through Amazon SES's query API (us-east-1), signed like aws.ts.
-// The sending domain hawkesgen.ai is set up by deploy/deploy.mjs --email (SES identity + DKIM records in Route 53).
-// While the SES account is in the sandbox it only delivers to verified addresses; the Users tab always shows the link
-// too, so an invite never depends on email.
+// Email from Studio (invites and password resets). Since 2026-10-28 (AWS suspended) through Resend (resend.com), like
+// the portal (hawkesgenwebsite cloud/functions/src/mail.ts): on when RESEND_API_KEY is set. Without it nothing is sent
+// and the Users tab shows the link to pass on, so an invite never depends on email. STUDIO_MAIL=ses keeps the old Amazon
+// SES path (aws.ts signing) for a server that still has AWS.
 
 import { awsCredentials, sign } from './aws.ts';
 
@@ -10,9 +10,28 @@ const FROM = process.env.STUDIO_MAIL_FROM || 'Hawkes Studio <noreply@hawkesgen.a
 
 export type Mail = { to: string; subject: string; text: string; html?: string };
 
-/** Sends one email. Resolves with SES's message id; rejects with SES's reason (e.g. the sandbox, or no permission). */
+/** The Resend key, read as the secret was saved ("RESEND_API_KEY=re_..." or the bare key). */
+const resendKey = () => String(process.env.RESEND_API_KEY ?? '').trim().replace(/^[A-Za-z_ ]*[=:]\s*/, '');
+
+/** Sends one email. Resolves with the provider's message id; rejects with its reason (the caller shows the link). */
 export async function sendMail(m: Mail): Promise<string> {
   if (process.env.STUDIO_MAIL === 'off') throw new Error('email is off (STUDIO_MAIL=off)');
+  if (process.env.STUDIO_MAIL === 'ses') return sendSes(m);
+  const key = resendKey();
+  if (!key || key === 'unset') throw new Error('email is not set up (no RESEND_API_KEY): pass the link on yourself');
+  const r = await fetch('https://api.resend.com/emails', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ from: FROM, to: [m.to], subject: m.subject, text: m.text, ...(m.html ? { html: m.html } : {}) }),
+    signal: AbortSignal.timeout(15_000),
+  });
+  const j = (await r.json().catch(() => ({}))) as any;
+  if (!r.ok) throw new Error(`Resend ${r.status}: ${String(j.message ?? j.error ?? '').slice(0, 200)}`);
+  return String(j.id ?? 'sent');
+}
+
+/** The old path: Amazon SES's query API (us-east-1), signed like aws.ts. */
+async function sendSes(m: Mail): Promise<string> {
   const p = new URLSearchParams({
     Action: 'SendEmail', Version: '2010-12-01', Source: FROM,
     'Destination.ToAddresses.member.1': m.to,

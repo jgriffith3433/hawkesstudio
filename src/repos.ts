@@ -309,5 +309,21 @@ export async function syncRepos(only?: string[]) {
   return out;
 }
 
+/**
+ * Clones a product repo that isn't here yet (Studio on Cloud Run starts with none: they are cloned on demand, with the
+ * GitHub token from Secret Manager through git's credential helper set up by the image's entry). `rel` is a path under
+ * PROJECTS whose first folder is the repo. A repo already here is left as it is.
+ */
+export async function ensureCloned(rel: string, slugIn?: string) {
+  const top = rel.split(/[\\/]/)[0];
+  if (fs.existsSync(path.join(PROJECTS, top, '.git'))) return null;
+  const slug = repoMap()[top] ?? slugIn;
+  if (!slug) return null;
+  fs.mkdirSync(PROJECTS, { recursive: true });
+  const r = repoMap()[top] ? (await syncRepos([top]))[0] : await syncRepo(top, slug, BRANCH);
+  if (r?.action === 'failed') throw new Error(`couldn't clone ${slug}: ${r.detail}`);
+  return r ?? null;
+}
+
 /** True on the server (where Studio clones the repos itself). */
 export const isServer = () => process.platform !== 'win32' && process.env.STUDIO_SERVER === '1';

@@ -1,0 +1,13 @@
+// studio.hawkesgen.ai: a Cloudflare Worker that passes every request to Hawkes Studio on Cloud Run
+// (docs/studio-cloudrun.md, "The address"). Deploy from this folder: npx wrangler deploy (the first time: npx wrangler login).
+{
+  "name": "hawkes-studio-edge",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-01",
+  "routes": [{ "pattern": "studio.hawkesgen.ai", "custom_domain": true }],
+  "vars": {
+    // The Cloud Run service's own address (tools/studio-cloudrun/deploy.mjs prints it as "Service URL").
+    "STUDIO_ORIGIN": "https://studio-REPLACE-uk.a.run.app"
+  },
+  "observability": { "enabled": true }
+}

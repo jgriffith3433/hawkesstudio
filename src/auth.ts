@@ -14,6 +14,7 @@ import crypto from 'node:crypto';
 import type http from 'node:http';
 import { db, newId } from './db.ts';
 import { StudioError } from './config.ts';
+import { cloudMode, ownerKey, googleEmails } from './cloudauth.ts';
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS users (
@@ -91,6 +92,8 @@ const validEmail = (e: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e) && e.leng
 
 /** The first admin (admin@hawkesgen.ai, password "admin" until changed) when there are no users yet. */
 export function ensureDefaultAdmin() {
+  // On a public address (Cloud Run) there is no default password: J comes in with Google or the owner key (cloudauth.ts).
+  if (cloudMode()) return null;
   const n = (db.prepare('SELECT COUNT(*) AS n FROM users').get() as any).n;
   if (n) return null;
   const id = newId('u');
@@ -191,7 +194,7 @@ export function signIn(emailIn: string, pw: string, meta: { ip?: string | null; 
   }
   const r = db.prepare('SELECT * FROM users WHERE email = ?').get(email) as any;
   // The default password works only while the account has never had one (the first admin, before setup).
-  const ok = !!r && !r.disabled && (r.pw_hash ? checkPassword(String(pw ?? ''), r.pw_hash) : String(pw ?? '') === 'admin' && r.email === DEFAULT_ADMIN);
+  const ok = !!r && !r.disabled && (r.pw_hash ? checkPassword(String(pw ?? ''), r.pw_hash) : !cloudMode() && String(pw ?? '') === 'admin' && r.email === DEFAULT_ADMIN);
   if (!ok) {
     for (const k of [`ip:${ip}`, `acct:${email}`]) fails.set(k, [...recent(k), Date.now()]);
     logSignin(email, ip, false, !r ? 'no such account' : r.disabled ? 'account disabled' : 'wrong password', meta.ua);
@@ -200,6 +203,39 @@ export function signIn(emailIn: string, pw: string, meta: { ip?: string | null; 
   fails.delete(`acct:${email}`);
   logSignin(email, ip, true, r.pw_hash ? 'signed in' : 'signed in with the default password (must set a new one)', meta.ua);
   return toUser(r);
+}
+
+/**
+ * The account a verified Google sign-in opens (cloudauth.ts verifyGoogleSignin): an email on STUDIO_GOOGLE_EMAILS is an
+ * admin (made the first time, raised to admin if it was a member); any other email only when a user with it already
+ * exists (an admin invited them). Accounts made here have no password: Google is how they sign in.
+ */
+export function googleUser(emailIn: string, meta: { ip?: string | null; ua?: string | null } = {}): User {
+  const email = normEmail(emailIn);
+  const listed = googleEmails().includes(email);
+  const r = db.prepare('SELECT * FROM users WHERE email = ?').get(email) as any;
+  // An open invite for this email: Google accepts it (the account gets the invite's role, the link is used up).
+  const inv = r ? null : db.prepare(`SELECT * FROM invites WHERE email = ? AND kind = 'invite' AND used_at IS NULL AND revoked = 0 AND expires > ? ORDER BY created DESC`).get(email, Date.now()) as any;
+  if (inv && !listed) {
+    db.prepare('INSERT INTO users (id, email, name, role, pw_hash, must_change, created) VALUES (?, ?, ?, ?, NULL, 0, ?)').run(newId('u'), email, null, inv.role === 'admin' ? 'admin' : 'member', Date.now());
+    db.prepare('UPDATE invites SET used_at = ? WHERE id = ?').run(Date.now(), inv.id);
+    logSignin(email, meta.ip ?? null, true, 'joined from an invite with Google', meta.ua);
+    return userByEmail(email)!;
+  }
+  if (!r && !listed) {
+    logSignin(email, meta.ip ?? null, false, 'Google: no account for this email', meta.ua);
+    throw new StudioError(`${email} has no account here. Ask an admin for an invite.`, 403);
+  }
+  if (r?.disabled) {
+    logSignin(email, meta.ip ?? null, false, 'Google: account disabled', meta.ua);
+    throw new StudioError('This account is disabled.', 403);
+  }
+  if (!r) db.prepare('INSERT INTO users (id, email, name, role, pw_hash, must_change, created) VALUES (?, ?, ?, ?, NULL, 0, ?)').run(newId('u'), email, null, 'admin', Date.now());
+  else if (listed && r.role !== 'admin') db.prepare(`UPDATE users SET role = 'admin' WHERE id = ?`).run(r.id);
+  // An invite or reset left the account waiting for a password: Google is enough.
+  db.prepare('UPDATE users SET must_change = 0 WHERE email = ?').run(email);
+  logSignin(email, meta.ip ?? null, true, 'signed in with Google', meta.ua);
+  return userByEmail(email)!;
 }
 
 export function startSession(user: User, { remember = false, ip, ua }: { remember?: boolean; ip?: string | null; ua?: string | null } = {}) {
@@ -344,9 +380,12 @@ function basicLogin(req: http.IncomingMessage) {
 /** J as a User when the old login was used (no account row: it's J's script). */
 const SCRIPT_J: User = { id: 'u_script_j', email: 'j (script login)', name: 'J', role: 'admin', must_change: false, disabled: false, created: 0, last_seen: null, default_password: false };
 
-/** Who sent a request: a signed-in user, J's script login, or null (no account: Talk, agents and Studio's own calls on the server). */
+/** J's owner key (Cloud Run: STUDIO_OWNER_KEY, sent by src/client.ts from ~/.hawkes/client.json studioKey). */
+const OWNER_J: User = { ...SCRIPT_J, id: 'u_owner_key', email: 'j (owner key)' };
+
+/** Who sent a request: a signed-in user, J's script login or owner key, or null (no account: Talk, agents and Studio's own calls on the server). */
 export function requester(req: http.IncomingMessage): User | null {
-  return sessionUser(cookieToken(req)) ?? (basicLogin(req) ? SCRIPT_J : null);
+  return sessionUser(cookieToken(req)) ?? (basicLogin(req) ? SCRIPT_J : ownerKey(req) ? OWNER_J : null);
 }
 
 /**

@@ -31,6 +31,7 @@ import { originOf, tagChange, startFollowups } from './followup.ts';
 import { activity, stageOf } from './activity.ts';
 import { listReports as listBugReports, reportShot, startReportFollowups } from './bugreport.ts';
 import { shareAgyLogin } from './antigravity-login.ts';
+import { cloudMode, gate, schedulerCall } from './cloudauth.ts';
 
 const MIME: Record<string, string> = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.mjs': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.png': 'image/png', '.json': 'application/json', '.md': 'text/markdown; charset=utf-8' };
 
@@ -98,6 +99,25 @@ const server = http.createServer(async (req, res) => {
     if (route === '/mcp' || route.startsWith('/mcp/')) return await handleMcp(req, res, route);
     // Accounts (auth.ts): the sign-in pages, and /auth/check that Caddy asks before every protected request.
     if (route.startsWith('/auth/') && (await (await import('./auth-pages.ts')).handleAuthRoute(req, res, url))) return;
+    // On Cloud Run nothing stands in front of Studio (Caddy did on the AWS server): a session, J's owner key or the
+    // agents' key, else the sign-in page (cloudauth.ts).
+    if (cloudMode()) {
+      const { requester } = await import('./auth.ts');
+      const g = gate(req, route, method, (r) => Boolean(requester(r)));
+      if (g) {
+        res.writeHead(g.status, { 'Cache-Control': 'no-store', ...(g.body ? { 'Content-Type': 'application/json' } : {}), ...g.headers });
+        return res.end(g.body ? JSON.stringify(g.body) : '');
+      }
+    }
+    // The daily run on Cloud Run: Cloud Scheduler calls this at 05:00 Los Angeles time with its OIDC token (the systemd
+    // timer's `studio daily --wait` on the AWS server). J's owner key starts one by hand.
+    if (route === '/api/cloud/daily' && method === 'POST') {
+      if (!(await schedulerCall(req))) return send(res, 401, { error: 'Only Cloud Scheduler (or J\'s owner key) starts the daily run here.' });
+      const running = activeRun();
+      if (running) return send(res, 200, { ok: true, run: running.id, note: 'a run is already going' });
+      const { id } = startRun('daily', {});
+      return send(res, 202, { ok: true, run: id });
+    }
     // The agent sandbox's guards (guards.ts): from Talk's and the agents' Linux user, anything live needs J's own words.
     const refused = (await import('./guards.ts')).guardRequest(req, route, method);
     if (refused) return send(res, 403, { error: refused });
@@ -785,8 +805,22 @@ void import('./stream.ts').then(({ setProbes }) => setProbes({
   },
 }));
 
-server.listen(PORT, '127.0.0.1', () => {
-  console.log(`Hawkes Studio on http://127.0.0.1:${PORT}`);
+// On Cloud Run the platform's port on every address (its front end is the only way in; cloudauth.ts gates it).
+const cloud = cloudMode();
+// Cloud Run stops an instance with SIGTERM and 10 s: the state files go up first (the database is Litestream's), and
+// the jobs Studio follows carry on (the next instance follows them again from the bucket).
+if (cloud) {
+  for (const sig of ['SIGTERM', 'SIGINT'] as const) {
+    process.on(sig, async () => {
+      console.log(`[studio] ${sig}: saving state, then stopping`);
+      await import('./cloudhost.ts').then((m) => m.flushOnStop()).catch(() => {});
+      process.exit(0);
+    });
+  }
+}
+const listenPort = cloud && process.env.PORT ? Number(process.env.PORT) : PORT;
+server.listen(listenPort, cloud ? '0.0.0.0' : '127.0.0.1', () => {
+  console.log(`Hawkes Studio on http://${cloud ? '0.0.0.0' : '127.0.0.1'}:${listenPort}${cloud ? ' (Cloud Run mode)' : ''}`);
   // Accounts: the first admin (admin@hawkesgen.ai, "admin" until it's changed) when there are no users yet.
   void import('./auth.ts').then(({ ensureDefaultAdmin }) => { if (ensureDefaultAdmin()) console.log('[auth] created the first admin, admin@hawkesgen.ai (sign in once and set a password)'); });
   // An agent's smoke check of a changed Studio (agents.ts) starts the server and nothing else.
@@ -798,7 +832,7 @@ server.listen(PORT, '127.0.0.1', () => {
   void import('./deploy.ts');
   // The agent sandbox commits in its worktrees: every repo's and worktree's git folder is the agent group's (sandbox.ts).
   // In the background once start-up has settled (async, already-shared ones skipped): it used to freeze Studio after boot.
-  setTimeout(() => void import('./sandbox.ts').then(({ shareAll }) => shareAll()).then((r) => { if (r.shared) console.log(`[sandbox] shared ${r.shared} git folder(s) with the agent group (${r.already} already were)`); }).catch((e) => console.warn(`[sandbox] sharing git folders: ${e.message ?? e}`)), 30_000).unref();
+  if (!cloud) setTimeout(() => void import('./sandbox.ts').then(({ shareAll }) => shareAll()).then((r) => { if (r.shared) console.log(`[sandbox] shared ${r.shared} git folder(s) with the agent group (${r.already} already were)`); }).catch((e) => console.warn(`[sandbox] sharing git folders: ${e.message ?? e}`)), 30_000).unref();
   // Scenarios a game renamed (products.json scenarioAliases): older tasks' changes ask for the new names (scenarios.ts).
   void import('./scenarios.ts').then(({ migrateScenarioAliases }) => {
     const renamed = migrateScenarioAliases();
@@ -806,8 +840,8 @@ server.listen(PORT, '127.0.0.1', () => {
   }).catch((e) => console.warn(`[studio] renaming scenarios: ${e.message ?? e}`));
   // Antigravity's login for every agy Studio starts, the sandboxed agent user's too (antigravity-login.ts); again every
   // 10 minutes, so a sign-in made in a terminal is picked up.
-  shareAgyLogin();
-  setInterval(shareAgyLogin, 10 * 60_000).unref();
+  if (!cloud) shareAgyLogin();
+  if (!cloud) setInterval(shareAgyLogin, 10 * 60_000).unref();
   const runs = resumeRuns();
   chooseBrain();
   const changes = resumeChanges();
@@ -824,19 +858,20 @@ server.listen(PORT, '127.0.0.1', () => {
   void import('./memory.ts').then(({ startMemory }) => startMemory());
   // /dev/ on each beta site: the front doors Caddy sends /dev/* to, and the beta working copies' auto-commit. A server
   // app's front door is its whole beta host (apps.ts); its change servers stop when idle.
-  startFronts();
-  void import('./apps.ts').then(({ startAppSweeper }) => startAppSweeper());
+  if (!cloud) startFronts();
+  if (!cloud) void import('./apps.ts').then(({ startAppSweeper }) => startAppSweeper());
   // A pick anywhere in Gen's library is written into its product's files (library.ts), on the server only.
-  void import('./repos.ts').then(({ isServer }) => { if (isServer()) void import('./library.ts').then(({ followPicks }) => followPicks()); });
+  // Not on Cloud Run: no standing checkouts there to write into (repos are cloned on demand).
+  if (!cloud) void import('./repos.ts').then(({ isServer }) => { if (isServer()) void import('./library.ts').then(({ followPicks }) => followPicks()); });
   // Web checkouts whose packages weren't installed for their lockfile (synced before installs followed syncs): npm ci now.
-  void import('./repos.ts').then(({ reinstallStale }) => reinstallStale()).then((done) => { if (done.length) console.log(`[repos] reinstalled packages at start: ${done.map((i) => `${i.dir} ${i.ok ? `(${i.seconds} s)` : 'failed'}`).join(', ')}`); }).catch((e) => console.warn(`[repos] reinstalling packages: ${e.message ?? e}`));
-  startDevService();
+  if (!cloud) void import('./repos.ts').then(({ reinstallStale }) => reinstallStale()).then((done) => { if (done.length) console.log(`[repos] reinstalled packages at start: ${done.map((i) => `${i.dir} ${i.ok ? `(${i.seconds} s)` : 'failed'}`).join(', ')}`); }).catch((e) => console.warn(`[repos] reinstalling packages: ${e.message ?? e}`));
+  if (!cloud) startDevService();
   // Results of work Talk started go back into its conversation.
   startFollowups();
   // Costs: an hourly look for a forecast over budget or a server left running (phone only then).
-  void import('./costs.ts').then(({ startCostWatch }) => startCostWatch());
+  if (!cloud) void import('./costs.ts').then(({ startCostWatch }) => startCostWatch());
   // Resources: a reading of this server every 30 s (history, the Resources tab, alerts for real trouble).
-  void import('./resources.ts').then(({ startResourceSampler }) => startResourceSampler());
+  if (!cloud) void import('./resources.ts').then(({ startResourceSampler }) => startResourceSampler());
   startReportFollowups();
   // The PM loop (pm.ts): on the server, or on J's PC with STUDIO_PM=on.
   if ((process.platform !== 'win32' && process.env.STUDIO_SERVER === '1') || process.env.STUDIO_PM === 'on') void import('./pm.ts').then(({ startPm }) => startPm());

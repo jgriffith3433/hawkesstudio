@@ -1,0 +1,10 @@
+# Studio's SQLite database, streamed to Cloud Storage (the bucket comes from the environment). Credentials are the
+# service's own account (the metadata server). One instance at most writes it: the service runs with max-instances 1.
+dbs:
+  - path: /data/studio.db
+    replicas:
+      - type: gcs
+        bucket: ${STUDIO_STATE_BUCKET}
+        path: db/studio.db
+        sync-interval: 1s
+        retention: 168h

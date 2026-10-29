@@ -153,7 +153,9 @@ async function runAll(run: string, ids: string[], o: RunOptions) {
   // On the server, start from what's on GitHub (once: a resumed run plays what it synced before the restart).
   if (isServer() && !hadSteps(run, 'repo')) {
     db.prepare('UPDATE runs SET detail = ? WHERE id = ?').run('updating repos from GitHub', run);
-    const synced = await syncRepos();
+    // On Cloud Run the disk is the instance's memory: only the repos this run's products live in (cloned on demand).
+    const only = process.env.K_SERVICE ? [...new Set(ids.flatMap((p) => { const x = getProduct(p); return [x.repo, x.site].map((r) => r.split('/')[0]); }))] : undefined;
+    const synced = await syncRepos(only);
     // Product source repos are on beta (repos.ts); the staging sites (<sub>.hawkesgen.ai) follow it.
     void import('./previews.ts').then(({ previewsAfterSync }) => previewsAfterSync(synced)).catch(() => {});
     for (const r of synced) {

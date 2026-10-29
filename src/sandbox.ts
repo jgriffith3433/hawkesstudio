@@ -15,6 +15,7 @@ import { PROJECTS } from './config.ts';
 import { runCommand } from './ops.ts';
 import { brainId, ANTIGRAVITY_AGENT, COPILOT_AGENT, CURSOR_AGENT, GEMINI_AGENT } from './brains.ts';
 import { modelPin } from './routing.ts';
+import { cloudMode, agentKey } from './cloudauth.ts';
 
 /** The wrapper deploy/agent-sandbox.mjs installs: it runs a command as the sandbox user with its own HOME and umask. */
 export const WRAPPER = '/usr/local/bin/hawkes-agent-run';
@@ -294,6 +295,9 @@ export function peerUid(sock: net.Socket): number | null {
 const seen = new WeakMap<net.Socket, number | null>();
 /** "agent" when the request comes from the sandbox user, "other" otherwise, null when the sandbox isn't set up here. */
 export function requestUser(req: http.IncomingMessage): 'agent' | 'other' | null {
+  // On Cloud Run the agents and Talk are jobs, their own sandbox, and reach Studio over HTTPS with the agents' key
+  // (cloudauth.ts): that key is the sandbox user there, whatever else the request says.
+  if (cloudMode()) return agentKey(req) ? 'agent' : 'other';
   const uid = agentUid();
   if (uid === null) return null;
   const sock = req.socket;

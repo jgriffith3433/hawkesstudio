@@ -1,0 +1,184 @@
+// The Cloud Run job's side of src/cloudjob.ts: one execution of `studio-agent` runs one agent's, scout's or Talk's
+// Claude Code pass. Started by the image's entry with STUDIO_JOB_UNIT set:
+//
+//   node src/cloudjob-run.ts            (reads gs://<STUDIO_STATE_BUCKET>/jobs/<unit>/spec.json)
+//
+// 1. Reads the spec and deletes it at once (it holds the Claude login and the clone token).
+// 2. Rebuilds the workspace at the same absolute path: a clone from GitHub (the token goes only on that one command, as a
+//    header: it is never written to the clone), the commits GitHub lacks (in.bundle), the uncommitted files, Claude Code's
+//    session folder and the files the command names (in.pack).
+// 3. Runs the command as the unprivileged user `agent` when this runs as root (the image), so nothing the pass runs can
+//    read this process's memory or the token. Output goes up in chunks every ~2 s; a `stop` object ends the command.
+// 4. Sends back what the pass committed (out.bundle) and left uncommitted plus the session (out.pack), then exit.json.
+
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { spawn, spawnSync } from 'node:child_process';
+import { git, packFiles, readPack, unpack, folderEntries, dirtyState, type JobRunner } from './cloudjob.ts';
+
+type Store = Pick<JobRunner, 'put' | 'get' | 'list' | 'remove'>;
+type Spec = { file: string; args: string[]; cwd: string; env: Record<string, string>; sessions: string; git: { head: string; branch: string; remote: string; bundle: boolean; token: string | null } | null };
+
+/** The unprivileged user the pass runs as (made in the image), when this runner is root. */
+function agentUser() {
+  if (process.getuid?.() !== 0) return null;
+  const name = process.env.STUDIO_JOB_USER || 'agent';
+  const r = spawnSync('id', ['-u', name], { encoding: 'utf8' });
+  const g = spawnSync('id', ['-g', name], { encoding: 'utf8' });
+  if (r.status !== 0 || g.status !== 0) return null;
+  return { name, uid: Number(r.stdout.trim()), gid: Number(g.stdout.trim()), home: `/home/${name}` };
+}
+
+/** git with the clone token as a one-off header (never in the clone's config or remote URL). */
+function gitWithToken(cwd: string, args: string[], token: string | null) {
+  const auth = token ? ['-c', `http.extraHeader=Authorization: Basic ${Buffer.from(`x-access-token:${token}`).toString('base64')}`] : [];
+  return spawnSync('git', ['-c', 'safe.directory=*', ...auth, ...args], { cwd, encoding: 'utf8', env: { ...process.env, GIT_TERMINAL_PROMPT: '0' }, maxBuffer: 64 * 1024 * 1024 });
+}
+
+/** Rebuilds the workspace; returns the HEAD the pass starts from. */
+export async function prepare(unit: string, spec: Spec, store: Store, log: (s: string) => void, at: (p: string) => string = (p) => p) {
+  const key = (n: string) => `jobs/${unit}/${n}`;
+  const cwd = at(spec.cwd);
+  if (spec.git) {
+    fs.mkdirSync(path.dirname(cwd), { recursive: true });
+    fs.rmSync(cwd, { recursive: true, force: true });
+    const c = gitWithToken(path.dirname(cwd), ['clone', '--quiet', '--no-checkout', spec.git.remote, cwd], spec.git.token);
+    if (c.status !== 0) throw new Error(`clone failed: ${String(c.stderr).trim().split('\n').pop()}`);
+    if (spec.git.bundle) {
+      const b = await store.get(key('in.bundle'));
+      const file = path.join(os.tmpdir(), `${unit}-in.bundle`);
+      fs.writeFileSync(file, b!);
+      const f = git(cwd, ['fetch', '--quiet', file, 'HEAD']);
+      if (!f.ok) throw new Error(`the workspace's own commits: ${f.err.split('\n').pop()}`);
+    }
+    const co = spec.git.branch && spec.git.branch !== 'HEAD'
+      ? git(cwd, ['checkout', '--quiet', '-B', spec.git.branch, spec.git.head])
+      : git(cwd, ['checkout', '--quiet', '--detach', spec.git.head]);
+    if (!co.ok) throw new Error(`checkout of ${spec.git.head.slice(0, 7)}: ${co.err.split('\n').pop()}`);
+    log(`[job] workspace ${spec.git.remote} at ${spec.git.head.slice(0, 7)} (${spec.git.branch})`);
+  } else fs.mkdirSync(cwd, { recursive: true });
+  const pack = await store.get(key('in.pack'));
+  if (pack) {
+    const p = readPack(pack);
+    for (const f of p.files.filter((x) => path.isAbsolute(x.p))) unpack({ files: [{ ...f, p: at(f.p) }] }, '/');
+    unpack({ files: p.files.filter((f) => !path.isAbsolute(f.p)), deleted: p.deleted }, cwd);
+  }
+  return spec.git ? git(cwd, ['rev-parse', 'HEAD']).out : null;
+}
+
+/** What the pass did: its new commits (a bundle), its uncommitted files and the session folder. */
+export function collect(spec: Spec, start: string | null, tmp: string, at: (p: string) => string = (p) => p) {
+  const cwd = at(spec.cwd);
+  const entries = folderEntries(at(spec.sessions), (rel) => path.join(spec.sessions, rel));
+  let gitOut: { head: string; bundle: boolean } | null = null;
+  let deleted: string[] = [];
+  let bundle: string | null = null;
+  if (spec.git && fs.existsSync(path.join(cwd, '.git'))) {
+    const head = git(cwd, ['rev-parse', 'HEAD']).out;
+    if (start && head && head !== start) {
+      bundle = path.join(tmp, 'out.bundle');
+      const b = git(cwd, ['bundle', 'create', bundle, 'HEAD', `^${start}`]);
+      if (!b.ok) bundle = null;
+    }
+    const d = dirtyState(cwd);
+    deleted = d.deleted;
+    for (const rel of d.changed) entries.push({ p: rel, file: path.join(cwd, rel) });
+    gitOut = { head, bundle: Boolean(bundle) };
+  }
+  return { pack: packFiles(entries, deleted), bundle, git: gitOut };
+}
+
+/** The whole execution. `store` is the bucket; `at` places absolute paths (tests: under a scratch root, as if on another machine). */
+export async function runUnit(unit: string, store: Store, { every = 2000, at = (p: string) => p }: { every?: number; at?: (p: string) => string } = {}): Promise<number> {
+  const key = (n: string) => `jobs/${unit}/${n}`;
+  const chunks = { log: [] as Buffer[], err: [] as Buffer[] };
+  const n = { log: 0, err: 0 };
+  const flush = async () => {
+    for (const kind of ['log', 'err'] as const) {
+      if (!chunks[kind].length) continue;
+      const data = Buffer.concat(chunks[kind].splice(0));
+      await store.put(key(`out/${kind}-${String(++n[kind]).padStart(6, '0')}`), data);
+    }
+  };
+  const say = (s: string) => chunks.err.push(Buffer.from(`${s}\n`));
+  let spec: Spec;
+  try {
+    const raw = await store.get(key('spec.json'));
+    if (!raw) throw new Error('no spec');
+    spec = JSON.parse(raw.toString('utf8'));
+    await store.remove(key('spec.json'));
+  } catch (e: any) {
+    say(`[job] ${e.message}`);
+    await flush();
+    await store.put(key('out/exit.json'), JSON.stringify({ code: null, signal: null, error: `no spec: ${e.message}` }));
+    return 1;
+  }
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'hs-run-'));
+  let start: string | null = null;
+  let code: number | null = null;
+  let signal: string | null = null;
+  let error: string | undefined;
+  try {
+    start = await prepare(unit, spec, store, say, at);
+    const user = agentUser();
+    if (user) {
+      // The pass's user owns its workspace and session folder (and nothing of this runner's).
+      for (const d of [at(spec.cwd), path.dirname(path.dirname(at(spec.sessions))), user.home]) spawnSync('chown', ['-R', `${user.uid}:${user.gid}`, d]);
+    }
+    const env = { ...spec.env, PATH: process.env.PATH ?? '/usr/local/bin:/usr/bin:/bin', HOME: user?.home ?? os.homedir(), STUDIO_JOB: '1' };
+    const child = spawn(spec.file, spec.args, { cwd: at(spec.cwd), env, stdio: ['ignore', 'pipe', 'pipe'], ...(user ? { uid: user.uid, gid: user.gid } : {}), windowsHide: true });
+    child.stdout.on('data', (d: Buffer) => chunks.log.push(d));
+    child.stderr.on('data', (d: Buffer) => chunks.err.push(d));
+    const timer = setInterval(() => void (async () => {
+      await flush();
+      if ((await store.list(key('stop'))).length && child.exitCode === null) {
+        child.kill('SIGTERM');
+        setTimeout(() => { if (child.exitCode === null) child.kill('SIGKILL'); }, 10_000).unref();
+      }
+    })().catch(() => {}), every);
+    [code, signal] = await new Promise<[number | null, string | null]>((resolve) => {
+      child.on('error', (e) => { error = e.message; resolve([null, null]); });
+      child.on('close', (c, s) => resolve([c, s]));
+    });
+    clearInterval(timer);
+  } catch (e: any) {
+    error = String(e.message ?? e);
+    say(`[job] ${error}`);
+  }
+  try {
+    const out = collect(spec, start, tmp, at);
+    if (out.bundle) await store.put(key('out/out.bundle'), fs.readFileSync(out.bundle));
+    await store.put(key('out/out.pack'), out.pack);
+    await flush();
+    await store.put(key('out/exit.json'), JSON.stringify({ code, signal, ...(error ? { error } : {}), git: out.git }));
+  } catch (e: any) {
+    say(`[job] sending the work back: ${e.message ?? e}`);
+    await flush().catch(() => {});
+    await store.put(key('out/exit.json'), JSON.stringify({ code, signal, error: `sending the work back failed: ${e.message ?? e}` }));
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+  return error ? 1 : 0;
+}
+
+// Run as the job's entry (not when a test imports it).
+if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(new URL(import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1'))) {
+  const unit = process.env.STUDIO_JOB_UNIT;
+  const bucket = process.env.STUDIO_STATE_BUCKET;
+  if (!unit || !bucket) {
+    console.error('STUDIO_JOB_UNIT and STUDIO_STATE_BUCKET are needed');
+    process.exit(2);
+  }
+  const g = await import('./gcp.ts');
+  const store: Store = {
+    put: async (k, d) => { await g.gcsWrite(bucket, k, d); },
+    get: (k) => g.gcsRead(bucket, k),
+    list: async (p) => (await g.gcsList(bucket, p)).map((o) => o.name),
+    remove: (k) => g.gcsDelete(bucket, k),
+  };
+  const rc = await runUnit(unit, store);
+  console.log(`[job] ${unit} finished (${rc ? 'with an error' : 'ok'})`);
+  // The job's own exit is 0 either way: the result is in exit.json, and a retry would run the pass twice.
+  process.exit(0);
+}

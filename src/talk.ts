@@ -38,6 +38,8 @@ import type { Tier } from './tuning.ts';
 import { PUBLIC_URL } from './notify.ts';
 import { claudeCommand, sandboxOn, sandboxShare } from './sandbox.ts';
 import { launch, DetachedChild, type ChildLike, type DetachRec } from './detach.ts';
+import { cloudMcp } from './cloudjob.ts';
+import { cloudMode } from './cloudauth.ts';
 import { changed, streamClients } from './stream.ts';
 
 db.exec(`
@@ -173,7 +175,9 @@ const MCP_FILE = (id: string) => path.join(MCP_DIR(), `${id}.json`);
 function mcpConfig(id: string) {
   // The two Hawkes MCP servers, talking to the services on this machine. Studio's knows the conversation
   // (TALK_CONVERSATION, sent as X-Talk-Conversation on its calls), so what it starts reports back here (followup.ts).
-  const cfg = {
+  // On Cloud Run Talk is a job on another machine (cloudjob.ts): Studio over its address with the agents' key (the guards
+  // treat it as the sandbox, like Talk's Linux user on the server), Gen over HTTPS with Talk's own key.
+  const cfg = cloudMode() ? { mcpServers: cloudMcp({ TALK_CONVERSATION: id }, process.env.TALK_GEN_KEY ?? process.env.HAWKESGEN_KEY ?? '') } : {
     mcpServers: {
       hawkesstudio: { command: process.execPath, args: [path.join(ROOT, 'bin', 'studio-mcp.mjs')], env: { STUDIO_SERVER: '1', TALK_CONVERSATION: id } },
       hawkesgen: { command: process.execPath, args: [path.join(PROJECTS, 'hawkesgen', 'bin', 'hawkesgen-mcp.mjs')], env: { HAWKESGEN_URL: process.env.HAWKESGEN_URL ?? 'http://127.0.0.1:8790', HAWKESGEN_KEY: sandboxOn() ? process.env.TALK_GEN_KEY ?? process.env.DEV_GEN_KEY ?? '' : process.env.HAWKESGEN_KEY ?? '' } },

@@ -16,7 +16,10 @@ const userConfig = (() => {
 // On the server itself Studio is always local.
 const onServer = process.env.STUDIO_SERVER === '1';
 export const STUDIO_URL = process.env.STUDIO_URL || (onServer ? undefined : userConfig.studioUrl) || `http://127.0.0.1:${PORT}`;
-const auth = !onServer && userConfig.studioUser && userConfig.studioPassword ? `Basic ${Buffer.from(`${userConfig.studioUser}:${userConfig.studioPassword}`).toString('base64')}` : null;
+// Studio on Cloud Run (docs/studio-cloudrun.md): a Cloud Run job's MCP server sends the agents' key (STUDIO_AGENT_KEY), J's
+// PC the owner key (client.json studioKey); the old Basic login is for the AWS server.
+const key = process.env.STUDIO_AGENT_KEY || (onServer ? undefined : userConfig.studioKey);
+const auth = key ? `Bearer ${key}` : !onServer && userConfig.studioUser && userConfig.studioPassword ? `Basic ${Buffer.from(`${userConfig.studioUser}:${userConfig.studioPassword}`).toString('base64')}` : null;
 
 /** A client for the Studio service at base (studio() below is the one from ~/.hawkes/client.json). */
 export const studioAt = (base: string, auth: string | null = null) => async function studio(pathname: string, { method = 'GET', body }: { method?: string; body?: unknown } = {}): Promise<any> {

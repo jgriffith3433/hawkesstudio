@@ -49,7 +49,7 @@ import { reviewJob } from './review-cc.ts';
 import { gen, genRun, fileUrl } from './gen.ts';
 import { unityBuild } from './buildpkgs.ts';
 import { jobCancelDetail, noteCancel, cancelNote, cancelWords } from './cancel.ts';
-import { repoMap } from './repos.ts';
+import { repoMap, ensureCloned } from './repos.ts';
 import { serveDir, stopServed } from './local.ts';
 import { claudeEnv } from './claude.ts';
 import { buildPreview, removePreview, previewUrl, changeSiteDir, changeBuild, type ChangeBuild } from './previews.ts';
@@ -70,6 +70,8 @@ import { recordPass, lastPassFor, type PassOutcome } from './ledger.ts';
 import { markModelUnavailable, refusedModelOf } from './models.ts';
 import { claudeCommand, spawnShell, sandboxShare, assertWorktree, shareWorktree } from './sandbox.ts';
 import { launch, DetachedChild, detachedActivity, stopDetached, type DetachRec } from './detach.ts';
+import { cloudMcp } from './cloudjob.ts';
+import { cloudMode } from './cloudauth.ts';
 import { warmDeps, installCold, markInstalled } from './warm.ts';
 import { ensureGpuFor, needsGpu } from './gpustart.ts';
 import { walkAwayOn, WALK_AWAY_BY } from './walkaway.ts';
@@ -1044,7 +1046,8 @@ export function agentMcp(id: string) {
   fs.mkdirSync(dir, { recursive: true });
   const file = path.join(dir, `${id}.json`);
   const genKey = process.env.AGENT_GEN_KEY ?? process.env.TALK_GEN_KEY ?? process.env.DEV_GEN_KEY ?? '';
-  const cfg = { mcpServers: {
+  // On Cloud Run the agent is a job on another machine: Studio over its address with the agents' key, Gen over HTTPS (cloudjob.ts).
+  const cfg = cloudMode() ? { mcpServers: cloudMcp({ STUDIO_AGENT: id, STUDIO_MCP_TOOLS: AGENT_STUDIO_TOOLS.join(',') }, genKey) } : { mcpServers: {
     hawkesstudio: { command: process.execPath, args: [path.join(ROOT, 'bin', 'studio-mcp.mjs')], env: { STUDIO_SERVER: '1', STUDIO_AGENT: id, STUDIO_MCP_TOOLS: AGENT_STUDIO_TOOLS.join(',') } },
     ...(genKey ? { hawkesgen: { command: process.execPath, args: [path.join(PROJECTS, 'hawkesgen', 'bin', 'hawkesgen-mcp.mjs')], env: { HAWKESGEN_URL: process.env.HAWKESGEN_URL ?? 'http://127.0.0.1:8790', HAWKESGEN_KEY: genKey, HAWKESGEN_LABELS: JSON.stringify({ studioChange: id }) } } } : {}),
   } };
@@ -1125,7 +1128,7 @@ function runAgent(c: Change, briefFile: string, s: AgentSettings, env = claudeEn
       const l = launch(`agent-${c.id}`, claudeCommand(args, { cwd: c.worktree, env }));
       child = l.child;
       if (l.rec) {
-        addLog(c.id, `agent runs as ${l.rec.mode === 'systemd' ? 'the unit' : 'the process'} ${l.rec.unit} (it survives a Studio restart)`);
+        addLog(c.id, `agent runs as ${l.rec.mode === 'systemd' ? 'the unit' : l.rec.mode === 'cloudrun' ? 'the Cloud Run job' : 'the process'} ${l.rec.unit} (it survives a Studio restart)`);
         how.onStart?.(l.rec);
       }
     }
@@ -1546,6 +1549,8 @@ async function work(id: string, note?: string, answer?: string, resumed?: Phase 
         fs.mkdirSync(WORK(), { recursive: true });
         // Agent branches start from beta (made from main the first time: pushing beta deploys nothing).
         await critical(`making the worktree of ${id}`, async () => {
+          // Studio on Cloud Run starts with no checkouts: the product's repo is cloned the first time it's needed.
+          await ensureCloned(c.repo, c.slug);
           const beta = await ensureBeta(repoDir);
           if (beta.created) addLog(id, `made the ${BETA} branch from main (${beta.sha.slice(0, 7)})`);
           // Devtools saves still waiting in beta's working copy go to beta first, so the agent starts from them.
@@ -2090,6 +2095,7 @@ async function workInfra(id: string, note?: string, resumed?: Phase | null, nudg
       await critical(`making the worktree of ${id}`, async () => {
         if (!fs.existsSync(c.worktree)) {
           fs.mkdirSync(WORK(), { recursive: true });
+          await ensureCloned(c.repo, c.slug);
           // Only refs move in the server's checkout; its files only change through deploy/hawkes-pull.mjs.
           const f = await gitAsync(repoDir, ['fetch', '--quiet', 'origin']);
           if (!f.ok) throw new Error(`fetch failed: ${f.err}`);

@@ -1,0 +1,13 @@
+{
+  "name": "hawkes-studio-edge",
+  "private": true,
+  "type": "module",
+  "description": "studio.hawkesgen.ai: a Cloudflare Worker in front of Hawkes Studio on Cloud Run (docs/studio-cloudrun.md, \"The address\")",
+  "devDependencies": {
+    "wrangler": "^4"
+  },
+  "scripts": {
+    "deploy": "wrangler deploy",
+    "check": "wrangler deploy --dry-run --outdir .dry"
+  }
+}

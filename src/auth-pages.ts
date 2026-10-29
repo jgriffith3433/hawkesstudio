@@ -5,6 +5,7 @@ import type http from 'node:http';
 import { StudioError } from './config.ts';
 import * as A from './auth.ts';
 import { requestUser } from './sandbox.ts';
+import { googleClientId, verifyGoogleSignin } from './cloudauth.ts';
 
 const esc = (s: unknown) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!);
 
@@ -33,8 +34,8 @@ function html(res: http.ServerResponse, status: number, body: string, headers: R
   res.end(body);
 }
 
-function json(res: http.ServerResponse, status: number, body: unknown) {
-  res.writeHead(status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+function json(res: http.ServerResponse, status: number, body: unknown, headers: Record<string, string> = {}) {
+  res.writeHead(status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', ...headers });
   res.end(JSON.stringify(body));
 }
 
@@ -64,7 +65,9 @@ function sameSite(req: http.IncomingMessage) {
   if (!o || o === 'null') return true;
   try {
     const h = new URL(o).hostname;
-    return h === 'hawkesgen.ai' || h.endsWith('.hawkesgen.ai') || h === '127.0.0.1' || h === 'localhost';
+    // Studio's own address too (Cloud Run's run.app, before studio.hawkesgen.ai points at it).
+    const self = String(req.headers['x-forwarded-host'] ?? req.headers.host ?? '').split(':')[0].toLowerCase();
+    return h === 'hawkesgen.ai' || h.endsWith('.hawkesgen.ai') || h === '127.0.0.1' || h === 'localhost' || h === self;
   } catch {
     return false;
   }
@@ -72,16 +75,30 @@ function sameSite(req: http.IncomingMessage) {
 
 const meta = (req: http.IncomingMessage) => ({ ip: A.clientIp(req), ua: String(req.headers['user-agent'] ?? '') });
 
+/**
+ * Continue with Google (cloudauth.ts), when this Studio has a client id: Google's own button gives the page an ID token,
+ * which goes to /auth/google; Studio checks it with Google and signs the account in. The password form stays below it.
+ */
+function googleBlock(next: string) {
+  const id = googleClientId();
+  if (!id) return '';
+  return `<div id="g" style="display:flex;justify-content:center;min-height:44px;margin:4px 0 6px"></div><div class="err" id="gerr" hidden></div>
+<script src="https://accounts.google.com/gsi/client" async onload="hsGoogle()"></script>
+<script>function hsGoogle(){google.accounts.id.initialize({client_id:${JSON.stringify(id)},callback:function(r){fetch('/auth/google',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({credential:r.credential,next:${JSON.stringify(next)}})}).then(function(x){return x.json().then(function(j){if(x.ok)location.href=j.next||'/';else{var e=document.getElementById('gerr');e.hidden=false;e.textContent=j.error||('HTTP '+x.status);}});});}});google.accounts.id.renderButton(document.getElementById('g'),{theme:'filled_black',size:'large',text:'continue_with',shape:'pill'});}</script>
+<details style="margin-top:10px"><summary><small>Sign in with a password instead</small></summary>`;
+}
+
 function signinPage(next: string, error?: string, email = '', notice?: string) {
+  const g = googleBlock(next);
   return page('Sign in', `<h1>Sign in</h1><p>Hawkes Studio, Gen and the beta sites.</p>
-${error ? `<div class="err">${esc(error)}</div>` : ''}${notice ? `<div class="ok">${esc(notice)}</div>` : ''}
+${error ? `<div class="err">${esc(error)}</div>` : ''}${notice ? `<div class="ok">${esc(notice)}</div>` : ''}${g}
 <form method="post" action="/auth/signin">
 <input type="hidden" name="next" value="${esc(next)}">
 <label for="email">Email</label><input id="email" name="email" type="email" autocomplete="username" autocapitalize="none" autocorrect="off" spellcheck="false" required value="${esc(email)}"${email ? '' : ' autofocus'}>
 <label for="password">Password</label><input id="password" name="password" type="password" autocomplete="current-password" required${email ? ' autofocus' : ''}>
 <label class="row"><input type="checkbox" name="remember" value="1" checked> Remember this device for 30 days</label>
 <button type="submit">Sign in</button></form>
-<p style="margin:16px 0 0"><small>Forgot your password? Ask an admin to send you a reset link.</small></p>`);
+<p style="margin:16px 0 0"><small>Forgot your password? Ask an admin to send you a reset link.</small></p>${g ? '</details>' : ''}`);
 }
 
 function setPasswordPage(u: A.User, next: string, error?: string) {
@@ -151,6 +168,18 @@ export async function handleAuthRoute(req: http.IncomingMessage, res: http.Serve
       redirect(res, u.must_change ? `/auth/set-password?next=${encodeURIComponent(to)}` : to, { 'Set-Cookie': cookie });
     } catch (e: any) {
       html(res, e.status === 429 ? 429 : 401, signinPage(to, e.message, String(f.email ?? '')));
+    }
+    return true;
+  }
+  if (route === '/auth/google' && method === 'POST') {
+    const f = await form(req);
+    try {
+      const email = await verifyGoogleSignin(String(f.credential ?? ''));
+      const u = A.googleUser(email, meta(req));
+      json(res, 200, { ok: true, next: A.safeNext(f.next) }, { 'Set-Cookie': signedInCookie(req, u, true) });
+    } catch (e: any) {
+      A.logSignin(null, A.clientIp(req), false, `Google: ${e.message ?? e}`, String(req.headers['user-agent'] ?? ''));
+      json(res, e.status === 403 ? 403 : 401, { error: e.message ?? String(e) });
     }
     return true;
   }

@@ -9,17 +9,19 @@
 // process's pipes (DetachedChild); after a restart it reads them again from where it had got to.
 //
 // STUDIO_DETACH: unset = systemd when the user manager answers, else inside Studio (J's PC: no systemd, today's spawn);
-// "process" = a detached plain process instead of a unit (tests, and Windows); "off" = always inside Studio.
+// "process" = a detached plain process instead of a unit (tests, and Windows); "off" = always inside Studio;
+// "cloudrun" = a Cloud Run job execution per process (Studio on Cloud Run: cloudjob.ts), the default there.
 
 import fs from 'node:fs';
 import path from 'node:path';
 import { EventEmitter } from 'node:events';
 import { spawn, spawnSync } from 'node:child_process';
 import { DATA, ROOT } from './config.ts';
+import { startCloudJob, reattachCloudJob, cloudJobAlive } from './cloudjob.ts';
 
-export type DetachMode = 'systemd' | 'process';
-/** What Studio records (on a change, a conversation) to find a detached process again. */
-export type DetachRec = { unit: string; mode: DetachMode; pid?: number; started: number };
+export type DetachMode = 'systemd' | 'process' | 'cloudrun';
+/** What Studio records (on a change, a conversation) to find a detached process again (cwd: a Cloud Run job's workspace). */
+export type DetachRec = { unit: string; mode: DetachMode; pid?: number; started: number; cwd?: string };
 export type DetachSpec = { file: string; args: string[]; cwd: string; env: NodeJS.ProcessEnv };
 /** What Studio's code needs of a process: a ChildProcess, or a DetachedChild that reads one's files. */
 export type ChildLike = {
@@ -55,6 +57,7 @@ export function detachMode(): DetachMode | null {
   const want = process.env.STUDIO_DETACH;
   if (want === 'off') return null;
   if (want === 'process') return 'process';
+  if (want === 'cloudrun' || (!want && process.env.K_SERVICE)) return 'cloudrun';
   return systemdUser() ? 'systemd' : null;
 }
 
@@ -62,6 +65,11 @@ export function detachMode(): DetachMode | null {
 export function startDetached(name: string, spec: DetachSpec, mode: DetachMode): DetachRec {
   fs.mkdirSync(DETACH_DIR(), { recursive: true, mode: 0o700 });
   const unit = `hawkes-${name.replace(/[^A-Za-z0-9_.-]/g, '-')}-${Date.now().toString(36)}`;
+  if (mode === 'cloudrun') {
+    // A Cloud Run job execution: its inputs go to the bucket, never to a local spec file (cloudjob.ts).
+    startCloudJob(unit, spec, { gitToken: process.env.STUDIO_JOB_GITHUB_TOKEN || process.env.GITHUB_TOKEN || null });
+    return { unit, mode, started: Date.now(), cwd: spec.cwd };
+  }
   // The spec holds the environment (Claude's login): only Studio's user can read it, and the runner deletes it at once.
   fs.writeFileSync(file(unit, 'spec.json'), JSON.stringify(spec), { mode: 0o600 });
   for (const ext of ['log', 'err']) fs.writeFileSync(file(unit, ext), '');
@@ -86,6 +94,7 @@ export function startDetached(name: string, spec: DetachSpec, mode: DetachMode):
 
 /** Whether a detached process is still running. */
 export function detachedAlive(rec: DetachRec) {
+  if (rec.mode === 'cloudrun') return cloudJobAlive(rec.unit);
   if (rec.mode === 'systemd') {
     const r = systemctl('is-active', `${rec.unit}.service`);
     // No answer (systemctl timed out on a busy server, or couldn't run): it can't be called gone, so it's alive. Calling
@@ -116,6 +125,8 @@ export function stopDetached(rec: DetachRec) {
   try {
     fs.writeFileSync(file(rec.unit, 'stop'), String(Date.now()));
   } catch { /* the folder is gone: so is the process */ }
+  // A Cloud Run job: its follower passes the stop on and cancels the execution if it doesn't end (cloudjob.ts).
+  if (rec.mode === 'cloudrun') return;
   setTimeout(() => {
     if (detachedExit(rec) || !detachedAlive(rec)) return;
     if (rec.mode === 'systemd') systemctl('stop', '--no-block', `${rec.unit}.service`);
@@ -199,6 +210,8 @@ export class DetachedChild extends EventEmitter implements ChildLike {
     super();
     this.rec = rec;
     this.offset = offset;
+    // After a restart (a new Cloud Run instance has none of the local files): follow the job again from the bucket.
+    if (rec.mode === 'cloudrun' && reattached && rec.cwd) reattachCloudJob(rec.unit, rec.cwd);
     // Reattached: stderr from before the restart isn't news (an error at the end is still read, from its last 4 KB).
     this.errOffset = reattached ? Math.max(0, this.size('err') - 4096) : 0;
     this.timer = setInterval(() => this.poll(), 250);
