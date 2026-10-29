@@ -120,6 +120,13 @@ const server = http.createServer(async (req, res) => {
       const { id } = startRun('daily', {});
       return send(res, 202, { ok: true, run: id });
     }
+    // Stripe's webhook (billing.ts): open, its signature is the check. The portal, Gen and other Studios share the Stripe
+    // account, so most events aren't ours: those get 200 untouched (an error makes Stripe retry, then disable the endpoint).
+    if (route === '/api/billing/webhook' && method === 'POST') {
+      const chunks: Buffer[] = [];
+      for await (const c of req) chunks.push(c as Buffer);
+      return send(res, 200, (await import('./billing.ts')).handleStripeWebhook(Buffer.concat(chunks), String(req.headers['stripe-signature'] ?? '')));
+    }
     // The agent sandbox's guards (guards.ts): from Talk's and the agents' Linux user, anything live needs J's own words.
     const refused = (await import('./guards.ts')).guardRequest(req, route, method);
     if (refused) return send(res, 403, { error: refused });
@@ -161,13 +168,32 @@ const server = http.createServer(async (req, res) => {
     // A customer's games (config.ts saveProduct): onboarding adds and edits them; admins only (memberRefusal).
     const prod = /^\/api\/products\/([a-z][a-z0-9-]{1,39})$/.exec(route);
     if (prod && method === 'PUT') {
-      const { saveProduct } = await import('./config.ts');
+      const { saveProduct, loadProducts: products } = await import('./config.ts');
+      // The Studio's plan sets how many games it may have (billing.ts).
+      const max = (await import('./billing.ts')).planGames();
+      if (max !== null && !products().some((p) => p.id === prod[1]) && products().length >= max) return send(res, 402, { error: `Your plan includes ${max} game${max === 1 ? '' : 's'}. Change your plan in Settings to add another.` });
       return send(res, 200, { product: saveProduct({ ...(await readJson(req)), id: prod[1] }) });
     }
     if (prod && method === 'DELETE') {
       const { removeProduct } = await import('./config.ts');
       removeProduct(prod[1]);
       return send(res, 200, { removed: prod[1] });
+    }
+    // Billing (billing.ts): the plans, this Studio's plan and credits; checkout, cancel, resume and the billing portal are
+    // an admin's (memberRefusal), changing the plans the platform admin's (lockdown.ts).
+    if (route === '/api/billing' && method === 'GET') return send(res, 200, (await import('./billing.ts')).billingView());
+    const bill = /^\/api\/billing\/(checkout|cancel|resume|portal|plans)$/.exec(route);
+    if (bill && method === 'POST') {
+      const B = await import('./billing.ts');
+      const b = await readJson(req);
+      const origin = (process.env.STUDIO_PUBLIC_URL || (req.headers['x-forwarded-host'] ? `https://${req.headers['x-forwarded-host']}` : `http://${req.headers.host ?? `127.0.0.1:${PORT}`}`)).replace(/\/+$/, '');
+      if (bill[1] === 'checkout') {
+        const u = (await import('./auth.ts')).requester(req);
+        return send(res, 200, await B.checkout(String(b.plan ?? ''), { id: u?.id ?? 'owner', email: u?.email ?? '' }, origin));
+      }
+      if (bill[1] === 'cancel' || bill[1] === 'resume') return send(res, 200, { subscription: await B.setCancelAtPeriodEnd(bill[1] === 'cancel') });
+      if (bill[1] === 'portal') return send(res, 200, await B.billingPortal(origin));
+      return send(res, 200, { plan: B.savePlan(b) });
     }
     // The Library tab (library.ts, dashboard/library.js): Gen's library through Studio, and picks into product repos.
     if (route.startsWith('/api/gen/v1/')) return await (await import('./library.ts')).relay(req, res, route.slice('/api/gen/v1/'.length) + url.search);

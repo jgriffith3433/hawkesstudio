@@ -1,8 +1,8 @@
 // Who may use Studio when it answers on a public address (Cloud Run, docs/studio-cloudrun.md). On the AWS server Caddy's
 // forward_auth stood in front of everything; on Cloud Run nothing does, so server.ts asks gate() before every route.
 //
-//   Open: the sign-in pages (/auth/*), /api/health, /mcp (its own key, mcp-http.ts), GitHub's hooks (OIDC, server.ts)
-//   and the daily run's endpoint (Cloud Scheduler's OIDC token, checked there).
+//   Open: the sign-in pages (/auth/*), /api/health, /mcp (its own key, mcp-http.ts), GitHub's hooks (OIDC, server.ts),
+//   Stripe's webhook (its signature, billing.ts) and the daily run's endpoint (Cloud Scheduler's OIDC token, checked there).
 //   Everyone else needs one of:
 //     - a session: Studio's own users (auth.ts), made by the password form or by Continue with Google
 //     - Bearer STUDIO_OWNER_KEY: J's CLI and scripts (src/client.ts sends ~/.hawkes/client.json studioKey): J, an admin
@@ -53,6 +53,7 @@ export function openRoute(route: string, method: string) {
   if (route === '/api/health' || route === '/mcp' || route.startsWith('/mcp/')) return true;
   if (route.startsWith('/api/hooks/') && method === 'POST') return true;
   if (route === '/api/cloud/daily' && method === 'POST') return true;
+  if (route === '/api/billing/webhook' && method === 'POST') return true;
   if (route === '/favicon.ico') return true;
   return false;
 }

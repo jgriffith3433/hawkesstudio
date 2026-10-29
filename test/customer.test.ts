@@ -55,7 +55,7 @@ const PLATFORM_ONLY: [string, string][] = [
   ['GET', '/api/broadcast'], ['POST', '/api/broadcast/live'], ['GET', '/api/social'], ['POST', '/api/social/config'],
   ['GET', '/api/costs'], ['POST', '/api/costs/settings'], ['GET', '/api/ledger'], ['GET', '/api/resources'], ['GET', '/api/brief/cost'],
   ['GET', '/api/self-deploys'], ['GET', '/api/services'], ['POST', '/api/services/restart'],
-  ['POST', '/api/antigravity/signin'], ['POST', '/api/memory/seed'],
+  ['POST', '/api/antigravity/signin'], ['POST', '/api/memory/seed'], ['POST', '/api/billing/plans'],
   ['POST', '/api/gen/v1/fleet/launch'], ['GET', '/api/gen/v1/settings'], ['GET', '/api/gen/v1/machines'],
 ];
 
@@ -72,13 +72,15 @@ test('nothing without a user reaches them in a customer\'s Studio either (their 
 test('the customer\'s admin keeps their own: their games, going live with them, settings, users, their Claude', () => {
   const me = as(owner());
   for (const [method, route] of [['POST', '/api/deploy/my-game'], ['POST', '/api/rollback/my-game'], ['POST', '/api/settings'], ['GET', '/api/users'], ['POST', '/api/users/invite'],
-    ['POST', '/api/claude/key'], ['GET', '/api/claude/accounts'], ['PUT', '/api/products/my-game'], ['POST', '/api/agents/settings'], ['POST', '/api/approvals/a_0123456789ab/approve']]) {
+    ['POST', '/api/claude/key'], ['GET', '/api/claude/accounts'], ['PUT', '/api/products/my-game'], ['POST', '/api/agents/settings'], ['POST', '/api/approvals/a_0123456789ab/approve'],
+    ['POST', '/api/billing/checkout'], ['POST', '/api/billing/cancel'], ['POST', '/api/billing/portal']]) {
     assert.equal(L.platformRefusal(me(method), route, method), null, `${method} ${route}`);
   }
   // Their members are still members (auth.ts memberRefusal).
   const artist = as(A.userByEmail('artist@indie.example')!);
   assert.match(A.memberRefusal(artist('POST'), '/api/claude/key', 'POST') ?? '', /Only an admin/);
   assert.match(A.memberRefusal(artist('POST'), '/api/deploy/my-game', 'POST') ?? '', /Only an admin/);
+  assert.match(A.memberRefusal(artist('POST'), '/api/billing/checkout', 'POST') ?? '', /Only an admin/);
 });
 
 test('onboarding: /api/me opens it for the admin of a Studio with no game; the first game is theirs, never J\'s repos', async () => {

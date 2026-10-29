@@ -83,8 +83,16 @@ stripe account. Beta should use the test keys."):
   The secret names follow Studio's `studio-*` / `studio-beta-*` pattern (docs/studio-cloudrun.md). The portal's beta
   keeps `STRIPE_SECRET_KEY` and `STRIPE_WEBHOOK_SECRET` (project `hawkes-staging`). gen-beta's endpoint is
   `https://gen-beta.hawkesgen.ai/v1/billing/webhook`.
-- **Open routes:** `/api/billing/webhook` must be added to `openRoute` (cloudauth.ts), like GitHub's hooks. Stripe's
-  signature (`Stripe-Signature`, checked with this endpoint's secret) is its only check.
+- **Where Studio reads its keys** (**built**, src/billing.ts `stripeKeys`, read on every call, so no restart):
+  1. `stripe.json` in Studio's data folder: `{ "secretKey": "sk_test_…", "webhookSecret": "whsec_…",
+     "publishableKey": "pk_test_…" }`. On Cloud Run the data folder's small files are synced with the lane's state
+     bucket, so the file is `gs://<project>-studio-beta-state/state/stripe.json` on beta (`…-studio-state` live).
+  2. Else the environment: `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `STRIPE_PUBLISHABLE_KEY` (the secrets above,
+     mounted by `tools/studio-cloudrun/deploy.mjs` once they're added to its `--set-secrets`).
+- **The webhook is open** (`openRoute`, cloudauth.ts), handled before every other check. Stripe's signature
+  (`Stripe-Signature`, this endpoint's secret, 5 minutes' tolerance) is its only check. Events to subscribe the
+  endpoint to: `checkout.session.completed`, `invoice.paid`, `invoice.payment_failed`, `customer.subscription.updated`,
+  `customer.subscription.deleted`.
 
 **The plans** are the portal's (hawkesgenwebsite `platform.ts PLANS`, offered when `PORTAL_PLATFORM_PLANS=on`). One
 Stripe Product and Price per plan in the shared account, so a customer is one Stripe customer across all three
@@ -97,28 +105,31 @@ products:
 | Team | $99 | 10 games, Windows, AI player, agents, Talk and the PM | 5,000 |
 | Studio | $299 | 30 games, cloud builds, priority | 15,000 |
 
-**How Studio uses it:**
-- **The subscription:**
-  - Checkout, plan changes and the billing portal start at hawkesgen.ai (`plans.ts`).
-  - Studio's webhook listens for the subscription and invoice events on the shared account.
-  - It acts only on those for Studio: `metadata.product` includes `studio`, or the price is a platform plan's.
-  - It updates what this Studio may do: games, schedule, agents, Talk. Until it is built, the entitlements reach Studio
-    in the platform token (`entitlements.studio`), and today only `studio.on` is checked (platform.ts).
-  - The webhook is how a Studio running without a fresh token (the nightly run, agents) learns a plan changed or
-    lapsed, and when to pause work (`past_due`, `canceled`).
-- **Credits** pay for metered work:
-  - Playtests, reviews, builds and generation are Gen jobs, billed to the org's credits through the Studio's Gen key at
-    cost × 3. 1 credit = $0.01.
-  - Credit packs are bought at the portal on the same account.
+**How Studio uses it** (**built**, src/billing.ts, the same shape as Gen's `src/subscriptions.ts`):
+- **Plans:** monthly plans that grant credits each paid month and set how many games the Studio may have. Provisional
+  until J sets them: Indie $29 (1,500 credits, 3 games), Team $99 (5,000, 10), Studio $299 (15,000, 30). The
+  platform admin changes them with `POST /api/billing/plans` (`{ id, name, priceCents, creditsPerMonth, maxGames,
+  stripePriceId, active }`). Without a Stripe price id, checkout sends the price inline.
+- **The subscription belongs to the Studio** (an org cell's org id, else an id made once, `st_…`). An admin subscribes
+  from Settings → Plan and credits (`POST /api/billing/checkout {plan}`). That is a Stripe Checkout in subscription
+  mode, tagged `metadata[product]=studio` and `metadata[studio_id]` on both the session and `subscription_data`.
+- **The webhook** acts only on this Studio's events:
+  - those tagged `studio` with its own id, or about a subscription or customer it already knows
+  - everything else (the portal's, Gen's, another Studio cell's) gets 200 untouched
+  - `checkout.session.completed` records the plan
+  - `invoice.paid` grants the month's credits once per invoice (ledger key `invoice:<id>`)
+  - `invoice.payment_failed` marks it past due, and it still counts as the current plan
+  - `customer.subscription.updated` and `.deleted` keep the status, period and cancel-at-period-end
+- **Management:** cancel and resume at the period's end (`POST /api/billing/cancel|resume`), and the Stripe billing
+  portal (`POST /api/billing/portal`). All are an admin's; members see the plan (`GET /api/billing`).
+- **Limits:** with a plan, onboarding refuses a game past the plan's count (402).
+- **Credits:** Studio keeps its own ledger (`billing_credits`). Spending them is not wired yet: today Studio's Gen work
+  bills its Gen key. Connecting the two (Studio's credits paying for its Gen jobs, or the portal's ledger as the one
+  balance) is the next billing step.
 - **Claude for Talk and agents is the customer's own** (their subscription or API key, billed by Anthropic to them).
   It costs us nothing and needs no metering. Later we could offer "our API key, metered into credits".
-
-**To build:** `src/billing.ts`, modelled on the portal's `billing.ts` and `plans.ts`:
-- the webhook with its signature check, and an idempotency key per Stripe event id
-- a `subscriptions` table (Stripe customer, subscription, plan, status, period end)
-- the plan's limits enforced, in onboarding first (games), then schedule and agents
-- the Stripe secret and webhook secret read from the lane's secrets (never logged)
-- a test with Stripe's signed test payloads
+- **Tests:** `test/billing.test.ts`, with a local Stripe stand-in (`STRIPE_API_BASE`) and webhooks signed as Stripe
+  signs them.
 
 A customer's Studio has no Costs tab of its own: their bill and credits are on the portal.
 
@@ -216,9 +227,8 @@ Air button. The Settings boxes for Claude, Antigravity and restarts already disa
    org project). J's org keeps today's Studio until its own cell passes the same daily run.
 3. **The router:** a Worker that sends `studio.hawkesgen.ai/o/<org>/…` to the org's cell; the portal's "Open Studio"
    links there.
-4. **Billing:** Studio's webhook per lane on the shared Stripe account (section 3: test keys and the studio-beta
-   endpoint first), and entitlements enforced in the cell: games (onboarding refuses past the plan's count),
-   schedule, agents, Talk.
+4. **Billing:** built (section 3). Left: studio-beta's test-mode endpoint and keys (then live's), Studio's credits
+   paying for its Gen work, and the plan's other limits (schedule, agents, Talk).
 5. **Nightly per cell:** a Cloud Scheduler job per cell (or one control-plane cron), at the org's hour.
 6. **Builds and the pipeline for customers' games:**
    - playtests of `live` URLs work today

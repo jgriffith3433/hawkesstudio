@@ -50,7 +50,7 @@ const J_ONLY: [string, string][] = [
   ['GET', '/api/self-deploys'], ['GET', '/api/services'], ['POST', '/api/services/restart'],
   ['GET', '/api/users'], ['POST', '/api/users/invite'], ['POST', '/api/invites/inv_0123456789ab/revoke'], ['GET', '/api/signups'],
   ['POST', '/api/settings'], ['POST', '/api/agents/settings'], ['POST', '/api/pm/settings'], ['POST', '/api/notify'],
-  ['POST', '/api/memory/seed'], ['PUT', '/api/products/doseofdestruction'],
+  ['POST', '/api/memory/seed'], ['PUT', '/api/products/doseofdestruction'], ['POST', '/api/billing/plans'], ['POST', '/api/billing/checkout'],
   ['POST', '/api/gen/v1/fleet/launch'], ['GET', '/api/gen/v1/settings'], ['POST', '/api/gen/v1/jobs'],
 ];
 

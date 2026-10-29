@@ -306,6 +306,23 @@
     </div>`;
   }
 
+  // Plan and credits (src/billing.ts): this Studio's subscription on the shared Stripe account. Subscribing, cancelling
+  // and the billing portal are an admin's; the API refuses the rest.
+  let billing = null;
+  function billingBox(b) {
+    if (!b) return '';
+    const usd = (c) => `$${(c / 100).toFixed(c % 100 ? 2 : 0)}`;
+    const s = b.subscription;
+    const until = s?.periodEnd ? new Date(s.periodEnd).toLocaleDateString() : '';
+    const state = s ? `<b>${esc(s.plan?.name ?? s.planId)}</b> · ${s.status === 'past_due' ? '<span class="set-err">payment failed: update your card</span>' : s.cancelAtPeriodEnd ? `ends ${esc(until)}` : `renews ${esc(until)}`}` : 'No plan yet.';
+    const plans = s ? '' : b.plans.map((p) => `<div class="ca-line"><div style="flex:1"><b>${esc(p.name)}</b> ${usd(p.priceCents)}/month<div class="meta">${p.creditsPerMonth.toLocaleString()} credits a month · up to ${p.maxGames} games</div></div><button class="small" data-billplan="${esc(p.id)}" ${b.stripe.configured ? '' : 'disabled'}>Subscribe</button></div>`).join('');
+    return `<div class="set-box"><h3>💳 Plan and credits</h3>
+      <div class="meta">${state} · ${Number(b.credits).toLocaleString()} credits${b.stripe.mode === 'test' ? ' · <b>test mode</b>' : ''}${b.stripe.configured ? '' : ' · payments are not set up on this Studio yet'}</div>
+      ${plans}
+      ${s ? `<div class="ca-line">${s.cancelAtPeriodEnd ? '<button class="small" data-bill="resume">Keep my plan</button>' : '<button class="small" data-bill="cancel">Cancel at the end of the month</button>'}<button class="small" data-bill="portal">Cards and receipts</button></div>` : ''}
+      <div id="billMsg" class="meta"></div></div>`;
+  }
+
   // Restarting Studio or Gen (src/restarts.ts): the server's deploy runner restarts the one service, reading its secrets
   // again first (a key just stored, like the Gemini key). Studio's own restart drops this page's connection for a moment.
   let services = null;
@@ -338,11 +355,11 @@
   }
 
   async function loadSettingsTab() {
-    [data, claude, agyLogin, services, routing] = await Promise.all([api('/api/settings'), api('/api/claude/accounts').catch(() => null), api('/api/antigravity/login').catch(() => null), api('/api/services').catch(() => null), api('/api/routing').catch(() => null)]);
+    [data, claude, agyLogin, services, routing, billing] = await Promise.all([api('/api/settings'), api('/api/claude/accounts').catch(() => null), api('/api/antigravity/login').catch(() => null), api('/api/services').catch(() => null), api('/api/routing').catch(() => null), api('/api/billing').catch(() => null)]);
     window.callVoice?.apply(data.call);
     const badge = $('#walkAwayBadge');
     if (badge) badge.hidden = !data.pm.walkAway;
-    $('#setBody').innerHTML = `<div class="set-grid">${brainBox(data.brain)}${data.routing ? routingBox(data.routing, routing) : ''}${tuningBox(data.tuning)}${claudeBox(claude, data.brain)}${agyBox(agyLogin)}<div id="svcBox">${servicesBox(services)}</div>${callBox(data.call)}${agentsBox(data.agents)}${pmBox(data.pm)}${notifyBox(data.notify)}${costsBox(data.costs)}${resourcesBox(data.resources)}</div>`;
+    $('#setBody').innerHTML = `<div class="set-grid">${billingBox(billing)}${brainBox(data.brain)}${data.routing ? routingBox(data.routing, routing) : ''}${tuningBox(data.tuning)}${claudeBox(claude, data.brain)}${agyBox(agyLogin)}<div id="svcBox">${servicesBox(services)}</div>${callBox(data.call)}${agentsBox(data.agents)}${pmBox(data.pm)}${notifyBox(data.notify)}${costsBox(data.costs)}${resourcesBox(data.resources)}</div>`;
     if (services?.pending) watchRestart();
     if (data.call.engine === 'eleven') loadElevenVoices();
   }
@@ -417,6 +434,19 @@
   document.addEventListener('click', async (e) => {
     const t = e.target;
     if (t.dataset?.go) { e.preventDefault(); show(t.dataset.go); return; }
+    if (t.dataset?.billplan || t.dataset?.bill) {
+      t.disabled = true;
+      try {
+        const what = t.dataset.billplan ? 'checkout' : t.dataset.bill;
+        const r = await api(`/api/billing/${what}`, { method: 'POST', body: t.dataset.billplan ? { plan: t.dataset.billplan } : {} });
+        if (r.url) { location.href = r.url; return; }
+        loadSettingsTab();
+      } catch (err) {
+        $('#billMsg').innerHTML = `<span class="set-err">${esc(err.message)}</span>`;
+        t.disabled = false;
+      }
+      return;
+    }
     if (t.dataset?.restart) {
       const name = t.dataset.restart === 'gen' ? 'Hawkes Gen' : 'Hawkes Studio';
       if (!confirm(`Restart ${name} now?`)) return;
