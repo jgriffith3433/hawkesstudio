@@ -356,7 +356,7 @@ Agents' fixes land on \`beta\` (pull requests Studio merges); \`sync.bat\` bring
 | Local | ${list('local')} |
 | Beta | ${list('beta')} |
 | Live | ${list('prod')} |
-| Deploys (GitHub Actions) | [github.com/${OWNER}/${name}/actions](https://github.com/${OWNER}/${name}/actions) |
+| Deploys (GitHub Actions) | [github.com/${OWNER}/${conf.github ?? name}/actions](https://github.com/${OWNER}/${conf.github ?? name}/actions) |
 
 **How it deploys:** ${conf.deploys}
 

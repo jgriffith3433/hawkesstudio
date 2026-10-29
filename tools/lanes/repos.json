@@ -4,9 +4,15 @@
     "title": "Hawkes Gen",
     "kind": "service",
     "dev": "auto-start.bat",
-    "local": ["http://127.0.0.1:8790"],
-    "beta": ["https://gen-beta.hawkesgen.ai"],
-    "prod": ["https://gen.hawkesgen.ai"],
+    "local": [
+      "http://127.0.0.1:8790"
+    ],
+    "beta": [
+      "https://gen-beta.hawkesgen.ai"
+    ],
+    "prod": [
+      "https://gen.hawkesgen.ai"
+    ],
     "deploys": "Push beta: GitHub Actions builds the image and deploys Cloud Run gen-beta. Push main: the same for gen (live). Health-checked, rolled back if unhealthy.",
     "check": "npm run typecheck"
   },
@@ -14,9 +20,15 @@
     "title": "Hawkes Studio",
     "kind": "service",
     "dev": "auto-start.bat",
-    "local": ["http://127.0.0.1:8791"],
-    "beta": ["https://studio-beta.hawkesgen.ai"],
-    "prod": ["https://studio.hawkesgen.ai"],
+    "local": [
+      "http://127.0.0.1:8791"
+    ],
+    "beta": [
+      "https://studio-beta.hawkesgen.ai"
+    ],
+    "prod": [
+      "https://studio.hawkesgen.ai"
+    ],
     "deploys": "Push beta: GitHub Actions deploys Cloud Run studio-beta and job studio-agent-beta (on gen-beta). Push main: studio and studio-agent (live, with the 5 AM daily run).",
     "check": "npm run typecheck"
   },
@@ -24,9 +36,15 @@
     "title": "Hawkes Net",
     "kind": "service",
     "dev": "npm run dev",
-    "local": ["http://127.0.0.1:8796"],
-    "beta": ["https://hawkesnet.hawkesgen.ai"],
-    "prod": ["https://net.hawkesgen.ai"],
+    "local": [
+      "http://127.0.0.1:8796"
+    ],
+    "beta": [
+      "https://hawkesnet.hawkesgen.ai"
+    ],
+    "prod": [
+      "https://net.hawkesgen.ai"
+    ],
     "deploys": "Push beta: the beta Net VM pulls it. Push main: the live Net VM (hawkes-net) pulls it on its timer.",
     "check": "npm run typecheck"
   },
@@ -34,37 +52,66 @@
     "title": "Hawkes Gen portal (hawkesgen.ai)",
     "kind": "app",
     "dev": "npm start",
-    "local": ["http://127.0.0.1:8800"],
-    "beta": ["https://hawkes-staging.web.app"],
-    "prod": ["https://hawkesgen.ai"],
+    "local": [
+      "http://127.0.0.1:8800"
+    ],
+    "beta": [
+      "https://hawkes-staging.web.app"
+    ],
+    "prod": [
+      "https://hawkesgen.ai"
+    ],
     "deploys": "Push beta: GitHub Actions deploys Firebase project hawkes-staging (on gen-beta). Push main: Firebase hawkes-prod (live).",
     "check": "npm run typecheck"
   },
   "hawkesbiomedicalnew": {
     "title": "Hawkes Biomedical (corporate site)",
+    "github": "hawkesbiomedical",
     "kind": "web",
     "dev": "npm run dev",
-    "local": ["http://localhost:5174/"],
-    "beta": ["https://corporate.hawkesgen.ai/"],
-    "prod": ["https://hawkesbiomedical.com/"],
+    "local": [
+      "http://localhost:5174/"
+    ],
+    "beta": [
+      "https://corporate.hawkesgen.ai/"
+    ],
+    "prod": [
+      "https://hawkesbiomedical.com/"
+    ],
     "deploys": "Push beta: Studio publishes the beta site. Push main: GitHub Pages publishes it live."
   },
   "phoriginswebsite": {
     "title": "PH Origins",
     "kind": "web",
     "dev": "npm run dev",
-    "local": ["http://localhost:5173/game.html", "http://localhost:5173/devtools.html"],
-    "beta": ["https://phorigins.hawkesgen.ai/"],
-    "prod": ["https://phorigins.com/", "https://phorigins.com/play/game.html"],
+    "local": [
+      "http://localhost:5173/game.html",
+      "http://localhost:5173/devtools.html"
+    ],
+    "beta": [
+      "https://phorigins.hawkesgen.ai/"
+    ],
+    "prod": [
+      "https://phorigins.com/",
+      "https://phorigins.com/play/game.html"
+    ],
     "deploys": "Push beta: Studio builds and publishes the beta site and playtests it. Push main: its pages.yml builds and GitHub Pages publishes it live."
   },
   "doseofdestructionwebsite": {
     "title": "Dose Of Destruction",
     "kind": "web",
     "dev": "auto-start.bat",
-    "local": ["http://localhost:8089/Game/", "http://localhost:8089/devtools.html"],
-    "beta": ["https://dod.hawkesgen.ai/Game/"],
-    "prod": ["https://doseofdestruction.com/", "https://doseofdestruction.com/Game/"],
+    "local": [
+      "http://localhost:8089/Game/",
+      "http://localhost:8089/devtools.html"
+    ],
+    "beta": [
+      "https://dod.hawkesgen.ai/Game/"
+    ],
+    "prod": [
+      "https://doseofdestruction.com/",
+      "https://doseofdestruction.com/Game/"
+    ],
     "deploys": "Push beta: Studio builds and publishes the beta site and playtests it. Push main: its pages.yml builds and GitHub Pages publishes it live.",
     "check": "npm run typecheck"
   },
@@ -72,18 +119,30 @@
     "title": "I Can Be",
     "kind": "web",
     "dev": "auto-start.bat",
-    "local": ["http://localhost:8092/"],
-    "beta": ["https://icanbe.hawkesgen.ai/"],
-    "prod": ["https://icanbe.ai/"],
+    "local": [
+      "http://localhost:8092/"
+    ],
+    "beta": [
+      "https://icanbe.hawkesgen.ai/"
+    ],
+    "prod": [
+      "https://icanbe.ai/"
+    ],
     "deploys": "Push beta: Studio publishes the beta site and playtests it. Push main: GitHub Pages publishes it live."
   },
   "imaginelivetvwebsite": {
     "title": "Imagine Live TV",
     "kind": "web",
     "dev": "auto-start.bat",
-    "local": ["http://localhost:8090/"],
-    "beta": ["https://imaginelivetv.hawkesgen.ai/"],
-    "prod": ["https://imaginelivetv.com/"],
+    "local": [
+      "http://localhost:8090/"
+    ],
+    "beta": [
+      "https://imaginelivetv.hawkesgen.ai/"
+    ],
+    "prod": [
+      "https://imaginelivetv.com/"
+    ],
     "deploys": "Push beta: Studio publishes the beta site and playtests it. Push main: GitHub Pages publishes it live."
   },
   "sickofitgame-unity": {
@@ -92,18 +151,32 @@
     "dev": "unity",
     "unityProject": ".",
     "site": "sickofitgamewebsite",
-    "local": ["http://localhost:8087/Game/"],
-    "beta": ["https://sickofit.hawkesgen.ai/Game/"],
-    "prod": ["https://sickofitgame.com/", "https://sickofitgame.com/Game/"],
+    "local": [
+      "http://localhost:8087/Game/"
+    ],
+    "beta": [
+      "https://sickofit.hawkesgen.ai/Game/"
+    ],
+    "prod": [
+      "https://sickofitgame.com/",
+      "https://sickofitgame.com/Game/"
+    ],
     "deploys": "Push beta plus a build-* tag (deploy-beta does both): Gen builds that commit on Cloud Run and pushes Game/v<n> to sickofitgamewebsite's beta; Studio playtests it. Push main: Studio publishes that build to sickofitgamewebsite's main (GitHub Pages, live)."
   },
   "sickofitgamewebsite": {
     "title": "Sick Of It (website)",
     "kind": "site",
     "dev": "python -m http.server 8087",
-    "local": ["http://localhost:8087/", "http://localhost:8087/Game/"],
-    "beta": ["https://sickofit.hawkesgen.ai/"],
-    "prod": ["https://sickofitgame.com/"],
+    "local": [
+      "http://localhost:8087/",
+      "http://localhost:8087/Game/"
+    ],
+    "beta": [
+      "https://sickofit.hawkesgen.ai/"
+    ],
+    "prod": [
+      "https://sickofitgame.com/"
+    ],
     "deploys": "Builds arrive on beta from sickofitgame-unity (build tags). Push main: GitHub Pages publishes it live (Studio does this when the game goes live)."
   },
   "YoobaLand": {
@@ -112,18 +185,32 @@
     "dev": "unity",
     "unityProject": "YoobaLand",
     "site": "YoobaLandGame",
-    "local": ["http://localhost:8088/Game/"],
-    "beta": ["https://yoobaland.hawkesgen.ai/Game/"],
-    "prod": ["https://yoobalandgame.com/", "https://yoobalandgame.com/Game/"],
+    "local": [
+      "http://localhost:8088/Game/"
+    ],
+    "beta": [
+      "https://yoobaland.hawkesgen.ai/Game/"
+    ],
+    "prod": [
+      "https://yoobalandgame.com/",
+      "https://yoobalandgame.com/Game/"
+    ],
     "deploys": "Push beta plus a build-* tag (deploy-beta does both): Gen builds that commit on Cloud Run and pushes Game/ to YoobaLandGame's beta; Studio playtests it. Push main: Studio publishes that build to YoobaLandGame's main (GitHub Pages, live)."
   },
   "YoobaLandGame": {
     "title": "Yooba Land (website)",
     "kind": "site",
     "dev": "auto-start.bat",
-    "local": ["http://localhost:8088/", "http://localhost:8088/Game/"],
-    "beta": ["https://yoobaland.hawkesgen.ai/"],
-    "prod": ["https://yoobalandgame.com/"],
+    "local": [
+      "http://localhost:8088/",
+      "http://localhost:8088/Game/"
+    ],
+    "beta": [
+      "https://yoobaland.hawkesgen.ai/"
+    ],
+    "prod": [
+      "https://yoobalandgame.com/"
+    ],
     "deploys": "Builds arrive on beta from YoobaLand (build tags). Push main: GitHub Pages publishes it live (Studio does this when the game goes live)."
   },
   "breakingthrough": {
@@ -132,18 +219,32 @@
     "dev": "unity",
     "unityProject": ".",
     "site": "theplacedepartmentwebsite",
-    "local": ["http://localhost:4173/Game/"],
-    "beta": ["https://placedept.hawkesgen.ai/Game/"],
-    "prod": ["https://theplacedepartment.com/", "https://theplacedepartment.com/Game/"],
+    "local": [
+      "http://localhost:4173/Game/"
+    ],
+    "beta": [
+      "https://placedept.hawkesgen.ai/Game/"
+    ],
+    "prod": [
+      "https://theplacedepartment.com/",
+      "https://theplacedepartment.com/Game/"
+    ],
     "deploys": "Push beta plus a build-* tag (deploy-beta does both): Gen builds that commit on Cloud Run and pushes Game/v<n> to theplacedepartmentwebsite's beta; Studio playtests it. Push main: Studio publishes that build to theplacedepartmentwebsite's main (GitHub Pages, live)."
   },
   "theplacedepartmentwebsite": {
     "title": "The Place Department (website)",
     "kind": "site",
     "dev": "auto-start.bat",
-    "local": ["http://localhost:4173/", "http://localhost:4173/Game/"],
-    "beta": ["https://placedept.hawkesgen.ai/"],
-    "prod": ["https://theplacedepartment.com/"],
+    "local": [
+      "http://localhost:4173/",
+      "http://localhost:4173/Game/"
+    ],
+    "beta": [
+      "https://placedept.hawkesgen.ai/"
+    ],
+    "prod": [
+      "https://theplacedepartment.com/"
+    ],
     "deploys": "Builds arrive on beta from breakingthrough (build tags). Push main: GitHub Pages publishes it live (Studio does this when the game goes live)."
   }
 }
