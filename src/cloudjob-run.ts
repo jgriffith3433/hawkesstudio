@@ -207,7 +207,8 @@ if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(new URL(im
   }
   const g = await import('./gcp.ts');
   const store: Store = {
-    put: async (k, d) => { await g.gcsWrite(bucket, k, d); },
+    // Strings here are contents (exit.json, log chunks); gcsWrite reads a string as a file path, so they go as bytes.
+    put: async (k, d) => { await g.gcsWrite(bucket, k, typeof d === 'string' ? Buffer.from(d) : d); },
     get: (k) => g.gcsRead(bucket, k),
     list: async (p) => (await g.gcsList(bucket, p)).map((o) => o.name),
     remove: (k) => g.gcsDelete(bucket, k),

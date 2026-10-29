@@ -162,7 +162,8 @@ export function cloudRunner(): JobRunner {
   if (!bucket || !project) throw new Error('Cloud Run jobs need STUDIO_STATE_BUCKET and STUDIO_GCP_PROJECT');
   const g = () => import('./gcp.ts');
   return {
-    put: async (key, data) => { await (await g()).gcsWrite(bucket, key, data); },
+    // put's strings are contents (a spec, a marker); gcsWrite reads a string as a file path, so they go as bytes.
+    put: async (key, data) => { await (await g()).gcsWrite(bucket, key, typeof data === 'string' ? Buffer.from(data) : data); },
     get: async (key) => (await g()).gcsRead(bucket, key),
     list: async (prefix) => (await (await g()).gcsList(bucket, prefix)).map((o) => o.name),
     remove: async (key) => (await g()).gcsDelete(bucket, key),
