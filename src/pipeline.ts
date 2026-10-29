@@ -1042,7 +1042,10 @@ async function betaBody(id: string, p: Product, { focus, criteria, scenario, opt
     }
     const lane = betaLane();
     const top = p.repo.split('/')[0];
-    if (lane && repoMap()[top] && !hadSteps(id, 'repo')) {
+    // A build tag on Cloud Run needs no source checkout here: Gen builds that commit from GitHub. Cloning a Unity repo onto
+    // the instance's memory disk failed with no message and cost every run minutes (2026-10-29).
+    const cloudTag = Boolean(tag && process.env.K_SERVICE);
+    if (lane && repoMap()[top] && !hadSteps(id, 'repo') && !cloudTag) {
       const g = startStep(id, p.id, 'repo', top);
       const r = await syncRepo(top, repoMap()[top], BRANCH, betaFolders().has(top) ? BETA : undefined);
       updateStep(g, { status: r.action === 'failed' ? 'failed' : 'done', detail: `${r.detail}${r.head ? ` (${r.head})` : ''}`, data: r, finished: true });
