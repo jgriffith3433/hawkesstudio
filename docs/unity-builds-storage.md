@@ -1,4 +1,24 @@
-# Unity builds from storage, not git (plan, J 2026-10-29)
+# Unity builds from storage, not git (J, 2026-10-29)
+
+## As built (2026-10-29)
+
+- **Worker:** `server/beta-sites` `serveBuild` (test in `test/beta-sites.test.ts`). Deployed.
+- **Container:** hawkesgen `server/unity-cloudrun/github.sh` `github_r2_builds` + `r2_prune`, called before
+  `github_publish`. The token is the secret `r2-builds` (`infra/r2-builds-secret.bat`), mounted as `R2_BUILDS_TOKEN`
+  (`infra/unity-build-image.bat` rebuilds the image and attaches it). curl signs the S3 calls (`--aws-sigv4`). Brotli is
+  detected from Unity's own header in each `.unityweb`, so no Unity setting changed.
+- **Pages:** the container rewrites literal `"v<n>/` paths to the R2 address and puts
+  `window.HAWKES_BUILD_BASE = "<base>/<game>/"` after `<head>`; pages that build paths at run time use
+  `(window.HAWKES_BUILD_BASE || "") + gameVersion + "/"` (Yooba Land, The Place Department; Sick Of It's page uses
+  literal paths, and its Addressables content stays in `Game/v0000000`, loaded relative to the page).
+- **Studio:** `products.json` `build.r2` (yoobaland, placedept, sickofit) goes into `unity.build`'s `github.builds`;
+  `tagbuild.ts siteVersions` reads `Game/build.json`; `golive.ts publishFromBeta` takes an R2 game live by fast-forwarding
+  the website's main to the beta build's commit through GitHub's API (on Cloud Run: no clone, no build).
+- **Jobs:** the Unity build job runs in us-west1, 8 vCPU / 32 GiB (`infra/unity-build-job-size.bat`), Gen's
+  `unityBuild.timeoutMinutes` 180 (Sick Of It's cold import needed more than 90 minutes and 24 GiB).
+- **Shrinking:** `infra/shrink-website-repo.bat <repo>` (J), only after that game's live page loads from R2.
+
+## The plan
 
 **Why.** Every `Game/v<n>/` ever built is in the website repos' git history: sickofitgamewebsite is 8.3 GB, YoobaLandGame
 1.9 GB, theplacedepartmentwebsite 0.5 GB. Every clone (Studio, agents, the build container, J's PC) pays for it, and the
