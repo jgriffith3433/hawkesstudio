@@ -1,4 +1,4 @@
-// The Hawkes playtest contract v1 for Unity games (spec: C:/Projects/hawkesstudio/docs/playtest.md).
+// The Hawkes playtest contract v2 for Unity games (spec: C:/Projects/hawkesstudio/docs/playtest.md).
 //
 // At startup, register the scenarios and a bot coroutine that plays through real input:
 //
@@ -19,8 +19,10 @@
 //   }
 //
 // In a WebGL build the browser sees window.hawkesPlaytest (the Hawkes Studio runner drives it; ?playtest=<id> in
-// the URL starts one). In the editor and in PlayMode tests, call HawkesPlaytest.StartScenario directly.
-// Nothing runs and nothing is created until Register is called.
+// the URL starts one). In a desktop build (Windows, Linux, macOS; Mono or IL2CPP) launched by a native runner with
+// HAWKES_PLAYTEST=ws://127.0.0.1:<port>/<token> (or --hawkes-playtest=<url>), Register connects out to the runner
+// over a WebSocket (HawkesPlaytest.Native.cs); without either, nothing connects. In the editor and in PlayMode tests,
+// call HawkesPlaytest.StartScenario directly. Nothing runs and nothing is created until Register is called.
 
 using System;
 using System.Collections;
@@ -43,6 +45,8 @@ namespace Hawkes.Playtest
         public string title;
         public float seconds;
         public string[] tags;
+        /// <summary>Optional: what it does, and the content options it takes ("options: stage, fighter").</summary>
+        public string description;
         /// <summary>Optional: the start points this scenario takes in options.at ("chapter-3", "level-7").</summary>
         public string[] starts;
 
@@ -133,9 +137,11 @@ namespace Hawkes.Playtest
         public void Event(string type, string detail = null)
         {
             if (Done) return;
-            Events.Add((T, type, detail));
+            var t = T;
+            Events.Add((t, type, detail));
             if (Events.Count > 2000) Events.RemoveRange(0, Events.Count - 2000);
             Moved();
+            HawkesPlaytest.OnEvent(this, t, type, detail);
         }
 
         public void Problem(PlaytestSeverity severity, string message)
@@ -235,9 +241,12 @@ namespace Hawkes.Playtest
         }
     }
 
-    public static class HawkesPlaytest
+    public static partial class HawkesPlaytest
     {
-        public const int ContractVersion = 1;
+        /// <summary>The contract version this package speaks (2: the page and the native transport).</summary>
+        public const int ContractVersion = 2;
+        /// <summary>This package's version (package.json), sent in the native hello.</summary>
+        public const string PackageVersion = "0.2.0";
 
         public static string Product { get; private set; }
         public static IReadOnlyList<PlaytestScenario> Scenarios => _scenarios;
@@ -254,6 +263,14 @@ namespace Hawkes.Playtest
         static Action<string, bool> _input;
         static float _stallSeconds = 60f;
         static Driver _driver;
+        static float _fps;
+
+        // The native transport (HawkesPlaytest.Native.cs). On WebGL players these have no body and the compiler
+        // removes every call, so the page build carries none of it.
+        static partial void NativeConnect();
+        static partial void NativeUpdate();
+        static partial void NativeEvent(PlaytestRun run, float t, string type, string detail);
+        static partial void NativeFinished(PlaytestRun run);
 
 #if UNITY_WEBGL && !UNITY_EDITOR
         [DllImport("__Internal")] static extern void HawkesPlaytest_Install(string product, string scenariosJson);
@@ -277,6 +294,7 @@ namespace Hawkes.Playtest
 #if UNITY_WEBGL && !UNITY_EDITOR
             HawkesPlaytest_Install(product, ScenariosJson());
 #endif
+            NativeConnect();
         }
 
         public static bool IsReady
@@ -293,9 +311,7 @@ namespace Hawkes.Playtest
         public static PlaytestRun StartScenario(string id, PlaytestOptions options = null)
         {
             if (_bot == null) throw new InvalidOperationException("HawkesPlaytest.Register was not called");
-            var known = false;
-            foreach (var s in _scenarios)
-                if (s.id == id) known = true;
+            var known = HasScenario(id);
             Stop();
             var run = new PlaytestRun(id, options ?? new PlaytestOptions());
             Current = run;
@@ -326,14 +342,38 @@ namespace Hawkes.Playtest
             HawkesPlaytest_SetState(run.StateJson(IsReady));
             HawkesPlaytest_SetReport(run.ReportJson());
 #endif
+            NativeFinished(run);
             try { Finished?.Invoke(run); }
             catch (Exception e) { Debug.LogException(e); }
+        }
+
+        internal static void OnEvent(PlaytestRun run, float t, string type, string detail)
+        {
+            if (run == Current) NativeEvent(run, t, type, detail);
         }
 
         /// <summary>The report JSON for a run (what the browser runner reads).</summary>
         public static string ReportJson(PlaytestRun run) => run.ReportJson();
 
-        static string ScenariosJson()
+        /// <summary>The state JSON now: the current run's, or idle.</summary>
+        internal static string StateJson()
+        {
+            var run = Current;
+            if (run != null) return run.StateJson(IsReady);
+            var sb = new StringBuilder(64);
+            sb.Append("{\"ready\":").Append(IsReady ? "true" : "false").Append(",\"status\":\"idle\"");
+            if (_fps > 0) sb.Append(",\"fps\":").Append(Json.Num(Mathf.Round(_fps)));
+            return sb.Append('}').ToString();
+        }
+
+        internal static bool HasScenario(string id)
+        {
+            foreach (var s in _scenarios)
+                if (s.id == id) return true;
+            return false;
+        }
+
+        internal static string ScenariosJson()
         {
             var sb = new StringBuilder("[");
             for (var i = 0; i < _scenarios.Length; i++)
@@ -348,7 +388,19 @@ namespace Hawkes.Playtest
                     if (j > 0) sb.Append(',');
                     sb.Append(Json.Str(tags[j]));
                 }
-                sb.Append("]}");
+                sb.Append(']');
+                if (!string.IsNullOrEmpty(s.description)) sb.Append(",\"description\":").Append(Json.Str(s.description));
+                if (s.starts != null && s.starts.Length > 0)
+                {
+                    sb.Append(",\"starts\":[");
+                    for (var j = 0; j < s.starts.Length; j++)
+                    {
+                        if (j > 0) sb.Append(',');
+                        sb.Append(Json.Str(s.starts[j]));
+                    }
+                    sb.Append(']');
+                }
+                sb.Append('}');
             }
             return sb.Append(']').ToString();
         }
@@ -362,6 +414,7 @@ namespace Hawkes.Playtest
             _driver = go.AddComponent<Driver>();
         }
 
+#if UNITY_WEBGL && !UNITY_EDITOR
         [Serializable]
         class Command
         {
@@ -374,6 +427,7 @@ namespace Hawkes.Playtest
             public string action;
             public bool down;
         }
+#endif
 
         /// <summary>Runs the bot coroutine, polls browser commands, pushes state, and catches softlocks and errors.</summary>
         sealed class Driver : MonoBehaviour
@@ -439,7 +493,8 @@ namespace Hawkes.Playtest
                 _fpsTime += Time.unscaledDeltaTime;
                 if (_fpsTime >= 1f)
                 {
-                    if (Current != null) Current.Fps = _fpsFrames / _fpsTime;
+                    _fps = _fpsFrames / _fpsTime;
+                    if (Current != null) Current.Fps = _fps;
                     _fpsFrames = 0;
                     _fpsTime = 0f;
                 }
@@ -455,6 +510,7 @@ namespace Hawkes.Playtest
                     else if (c.cmd == "input") _input?.Invoke(c.action, c.down);
                 }
 #endif
+                NativeUpdate();
                 var run = Current;
                 if (run == null) return;
                 if (!run.Done && Time.realtimeSinceStartup - run.LastMove > _stallSeconds)
