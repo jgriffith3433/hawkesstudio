@@ -101,8 +101,9 @@ export async function busy(): Promise<string | null> {
     if (changes.n) return `${changes.n} agent change(s)`;
   } catch { /* table missing */ }
   try {
-    const { following } = await import('./cloudjob.ts');
+    const { following, buildsRunning } = await import('./cloudjob.ts');
     if (following() > 0) return 'a Cloud Run job';
+    if (buildsRunning() > 0) return 'a beta site build';
   } catch { /* not loaded */ }
   try {
     const ops = await import('./ops.ts');

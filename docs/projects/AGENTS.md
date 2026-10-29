@@ -151,7 +151,11 @@ Every day it runs these steps for every product (one at a time, through Hawkes G
 - J can still read the report with Claude in chat and have it start fixes directly; each fix verifies with
   `studio_playtest` and marks the finding fixed.
 - **Beta, then live.** Every repo agents change has a `beta` branch between agent changes and `main` (the live site).
-  `https://<sub>.hawkesgen.ai/` is beta (`/c/<id>/` is one agent change). Going live: `studio_deploy_plan` (the
+  `https://<sub>.hawkesgen.ai/` is beta (`/c/<id>/` is one agent change), for people signed in to Studio. Since
+  2026-10-29 the beta sites are Cloudflare R2 behind one Worker (`hawkesstudio/server/beta-sites`): Studio publishes
+  each from GitHub (sites with a Vite build are built in its Cloud Run job), and the Worker checks a pass Studio signs
+  (`/auth/pass`). studio-beta's own copies are `https://sb-<sub>.hawkesgen.ai/`. See
+  `hawkesstudio/docs/studio-cloudrun.md` ("Beta sites"). Going live: `studio_deploy_plan` (the
   commits on beta not on main, and how that exact beta commit playtested), then J types `DEPLOY <product>`, then
   `studio_deploy` fast-forwards main to the playtested beta. Studio waits for GitHub Pages and playtests live.
   `studio_rollback` (J types `ROLLBACK <product>`) puts back what was live before, as a new commit.
@@ -300,7 +304,7 @@ ElevenLabs key may still sit in Unity EditorPrefs (`SickOfIt.ElevenLabs.ApiKey`,
 `hawkesstudio/src/betawatch.ts` (beta) and `src/golive.ts` (main).
 1. **Beta:** work goes to the source repo's `beta` branch (agent pull requests approved in Studio, J's own pushes,
    devtools saves). Pushing `beta` publishes nothing live. On each push the beta site `https://<sub>.hawkesgen.ai/`
-   rebuilds (Studio's login); a Unity game is built on the build server a minute later (about $0.10), into a scratch
+   is published again to R2 (Studio's login; only changed files go up); a Unity game is built on the build server a minute later (about $0.10), into a scratch
    copy of its website, then playtested.
    **Unity games on Google Cloud: a build tag.** In sickofitgame-unity, YoobaLand or breakingthrough,
    `git tag build-<name> && git push origin build-<name>` (e.g. `build-2026-10-28`; the tagged commit must contain the
@@ -321,8 +325,8 @@ ElevenLabs key may still sit in Unity EditorPrefs (`SickOfIt.ElevenLabs.ApiKey`,
 3. Undo: `studio.cmd rollback <product>`, confirmed with `ROLLBACK <product>` (a new commit; never a force push).
 The "Deploy" column below is the old by-hand way, kept for reference.
 
-**Developing on beta (cloud devtools):** `https://<sub>.hawkesgen.ai/dev/` runs each web product's own devtools or
-level editor live on the control server, in beta's working copy (`/srv/hawkes/.work/beta-<product>`). Saves are
+**Developing on beta (cloud devtools):** not on Google Cloud yet (the beta sites' `/dev/` says so). On the AWS server,
+`https://<sub>.hawkesgen.ai/dev/` ran each web product's own devtools or level editor live, in beta's working copy (`/srv/hawkes/.work/beta-<product>`). Saves are
 committed (`devtools: <files>`) after 60 quiet seconds and pushed to `beta` (never main), and the beta site rebuilds.
 At most 2 dev servers run at once, and each stops after 30 idle minutes. Devtools generate through Hawkes Gen (its own
 `user` key, no AWS or API keys). Agent merges into beta flush and then pull the working copy; a conflict stops it and

@@ -27,3 +27,6 @@ test/fixture/selftest/hawkes.assets.lock.json
 *.log
 .DS_Store
 Thumbs.db
+
+.dry/
+.wrangler/

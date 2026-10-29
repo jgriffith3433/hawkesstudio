@@ -160,3 +160,48 @@ test('J\'s script login (Basic j:<web password>) counts as an admin; a wrong one
   assert.equal(page.status, 302);
   assert.equal(page.headers['WWW-Authenticate'], undefined);
 });
+
+test('beta sites: /auth/sites-key gives the public key, /auth/pass signs a pass for a signed-in user and goes back', async () => {
+  const K = await import('../src/sitekeys.ts');
+  const W = await import('../server/beta-sites/src/index.ts');
+  const had = process.env.STUDIO_OWNER_KEY;
+  process.env.STUDIO_OWNER_KEY = 'owner-key-for-the-pass-test-0123';
+  try {
+    const k = res();
+    await handleAuthRoute(req(web), k, new URL('http://x/auth/sites-key'));
+    assert.equal(k.status, 200);
+    const key = JSON.parse(k.body);
+    assert.deepEqual([key.lane, key.alg], ['live', 'Ed25519']);
+    const next = encodeURIComponent('https://dod.hawkesgen.ai/Game/');
+    // Not signed in: sign in first, with the beta page as next.
+    const out = res();
+    await handleAuthRoute(req(web), out, new URL(`http://x/auth/pass?next=${next}`));
+    assert.equal(out.status, 303);
+    assert.equal(out.headers.Location, `/auth/signin?next=${next}`);
+    // Somewhere else: refused.
+    const bad = res();
+    await handleAuthRoute(req(web), bad, new URL(`http://x/auth/pass?next=${encodeURIComponent('https://evil.example/')}`));
+    assert.equal(bad.status, 400);
+    // Signed in: the pass cookie for .hawkesgen.ai, back to the page with the marker.
+    const u = A.listUsers().find((x: any) => !x.disabled && !x.must_change)!;
+    const s = A.startSession(A.getUser(u.id)!);
+    const ok = res();
+    await handleAuthRoute(req({ ...web, Cookie: `hawkes_session=${s.token}` }), ok, new URL(`http://x/auth/pass?next=${next}`));
+    assert.equal(ok.status, 303);
+    assert.equal(ok.headers.Location, 'https://dod.hawkesgen.ai/Game/?__hawkes_pass=1');
+    const pass = /hawkes_pass=([^;]+); .*Domain=hawkesgen\.ai/.exec(ok.headers['Set-Cookie'])![1];
+    // The Worker accepts it with the key Studio published.
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async () => Response.json(key)) as typeof fetch;
+    try {
+      W.resetKeys();
+      assert.equal(await W.checkPass({ SITES: null as any, STUDIO_ORIGIN_LIVE: 'https://s.run.app' }, 'live', pass), u.id);
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+    assert.equal(K.laneOf({} as NodeJS.ProcessEnv), 'live');
+  } finally {
+    if (had === undefined) delete process.env.STUDIO_OWNER_KEY;
+    else process.env.STUDIO_OWNER_KEY = had;
+  }
+});

@@ -113,19 +113,60 @@ before. No tests run on GitHub (J, 2026-10-25): typecheck and test before pushin
 
 ## Beta sites (`<sub>.hawkesgen.ai`)
 
-Caddy on the AWS server served the built beta sites from disk behind Studio's login; that server is gone. The cheapest
-cloud-forward replacement, **not built yet**:
+Caddy on the AWS server served the built beta sites from disk behind Studio's login; that server is gone. Now
+(2026-10-29) they are **Cloudflare R2 behind one Worker** (`server/beta-sites/`), about $0: R2's free tier (10 GB, no
+egress fees), the Workers free tier, and Studio only wakes to publish.
 
-- **Cloudflare R2 + one Worker on `*.hawkesgen.ai` beta hosts.** Studio uploads each beta build (previews.ts `place()`)
-  to an R2 bucket under `<sub>/` and `<sub>/c/<change>/` (S3 API, an R2 key in Secret Manager). The Worker serves files
-  from its R2 binding and checks Studio's session cookie (`.hawkesgen.ai`) against `/auth/check`, cached a few minutes
-  per cookie. Cost: R2's free tier (10 GB, no egress fees) and the Workers free tier cover beta traffic: about $0.
-- The customer portal's beta is already remote (Firebase `hawkes-staging.web.app`, products.json `local.serve: remote`).
-- Until then, beta playtests that need a beta site can't run on Cloud Run; live checks and the portal's beta can.
+| Piece | What |
+|---|---|
+| `https://<sub>.hawkesgen.ai/` | live Studio's beta site of a product (products.json `previews`), R2 `live/<sub>/beta/` |
+| `https://<sub>.hawkesgen.ai/c/<change>/` | an agent change's preview, R2 `live/<sub>/c/<change>/` (files beta has are copied inside R2) |
+| `https://sb-<sub>.hawkesgen.ai/` | **studio-beta's** copies: its own R2 prefix `beta/`, its own key, its own pass cookie, so the lanes never overwrite each other |
+| `sites.hawkesgen.ai` | where Studio sends its signed writes (`STUDIO_SITES_URL` to change it) |
+| Not on it | `hawkesnet` (its own box) and `hawkesgenwebsite` (Firebase, `local.serve: remote`) |
+
+**Publishing** (`src/previews-cloud.ts`, `src/sitestore.ts`; previews.ts `build()` hands over when `remoteSites()`:
+Cloud Run and a key; `STUDIO_SITES=local` turns it off):
+- Static sites (corporate, Imagine Live TV) and Unity sites (the website repo's `beta`, where tag builds put
+  `Game/v<n>`) come straight from GitHub's API (trees, blobs): no clone, nothing on Studio's disk.
+- Sites with a build (DoD, PH Origins, I Can Be: previews.ts `RECIPES`) build in **one execution of the agents' job**
+  (`cloudjob.ts runCloudBuild`, `cloudjob-run.ts` kind `build`: a shallow fetch of that commit, `npm ci` and the build as
+  the user `agent`, only the outputs back as a .tgz), never in Studio's process: the code is beta's or an agent's, and
+  the job is the sandbox. About a cent a build. The committed part of the site still comes from GitHub.
+- Files are named by their git blob id: a publish sends only what changed (a manifest per site, `.studio/manifest.json`),
+  pages get the 🐞 widget (bugreport.ts) and go up every time, the manifest last, removals after. A Unity site keeps the
+  previous `Game/v<n>` (previews.ts `keptGameVersions`). The first publish of Sick Of It sends 1.4 GB (~$0.17 of Google
+  egress); later ones only the new build.
+- Triggers as before: a push to a web product's `beta` (betawatch.ts; a repo not cloned here isn't cloned for it), a
+  tag build's push to the website's beta (tagbuild.ts), Runs / `POST /api/previews/<product>`, an agent change ready.
+  A change's preview is merged or closed: its files go (`removePreview`). Unity *source* changes get no preview (no build
+  server; their build is a tag build onto the website's beta).
+
+**Signing in** (`src/sitekeys.ts`): each lane has an Ed25519 key pair derived from a secret it already has
+(`STUDIO_SITES_SEED`, else `STUDIO_OWNER_KEY`); `GET /auth/sites-key` gives the public half, which the Worker reads
+from the lane's run.app address and caches. A beta page without a pass goes to `https://studio.hawkesgen.ai/auth/pass?next=<page>`
+(studio-beta's for `sb-` hosts); signed in, Studio sets `hawkes_pass` (`hawkes_pass_beta`) for `.hawkesgen.ai`, 12 hours,
+signed, and sends the browser back; not signed in, the sign-in page first. The Worker checks the pass itself, so a page
+view never wakes Studio. A disabled user keeps their pass until it expires (at most 12 hours). Studio's signed writes
+(lane, method, path, time, body) are what let only that lane's Studio write under its prefix.
+
+**The 🐞 widget:** `/dev/__studio/report.js` and `/dev/__studio/build` come from R2; `POST /dev/__studio/report` and
+`/error` go through the Worker to the lane's Studio with the beta host as `X-Forwarded-Host` and the session cookie
+(server.ts → dev-front.ts `betaHostReport`). `/dev/` dev servers are still not on Google Cloud (a page says so).
+
+**J, once** (no secrets, no IAM):
+1. Deploy Studio with this code (merge to `beta` / `main`; CI deploys the lane). Check: `https://studio.hawkesgen.ai/auth/sites-key` answers.
+2. `npx wrangler login` (once), then `node tools/beta-sites/setup.mjs --apply`: the R2 bucket `hawkes-beta-sites`, then
+   `wrangler deploy` of `server/beta-sites` with its custom domains (each makes its DNS record; delete any old record
+   for those hosts first). By hand: `cd server/beta-sites && npx wrangler r2 bucket create hawkes-beta-sites && npx wrangler deploy`.
+3. `node tools/beta-sites/setup.mjs --publish` (and `--publish --lane beta`): every beta site published now.
+
+Tests: `test/beta-sites.test.ts` (the Worker's own code over an in-memory R2, the passes, both lanes, previews-cloud
+from a fake GitHub, the job's build mode) and `test/auth.test.ts` (`/auth/pass`, `/auth/sites-key`).
 
 ## Not done here (seams and notes)
 
-- **Beta sites** (above) and the 🐞 widget's `/dev/__studio/report|error` posts, which came through the front doors.
+- **Beta sites** are done (above), except previews of Unity *source* changes (no build server; tag builds only).
 - **/dev/ dev servers** (`dev.ts`, `dev-front.ts`): not started on Cloud Run (`server.ts` skips `startFronts`,
   `startDevService`). They need a long-lived machine; a Cloud Run service per product with the same front door is the seam.
 - **On Air** (`broadcast.ts`, the encoder unit): needs Xvfb, Chromium and ffmpeg on an always-on box; not here.

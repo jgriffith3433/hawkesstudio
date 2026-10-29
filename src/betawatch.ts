@@ -11,6 +11,7 @@
 // Studio's own pushes (devtools auto-commit) also trigger the workflow; the sync then finds beta current and nothing
 // is rebuilt twice.
 
+import fs from 'node:fs';
 import path from 'node:path';
 import { loadProducts, PROJECTS } from './config.ts';
 import { db } from './db.ts';
@@ -49,7 +50,12 @@ export function betaFolderFor(slug: string) {
 
 /** A push to beta in one repo: sync it, rebuild web beta sites now and schedule Unity ones. */
 export async function onBetaPush(folder: string, sha?: string) {
-  const [result] = await syncRepos([folder]);
+  // On Cloud Run the beta site is published from GitHub (previews-cloud.ts): a repo that isn't cloned here isn't cloned
+  // just for it (Dose Of Destruction is 1 GB, and /tmp is the instance's memory). One that is (an agent's) is synced.
+  const { remoteSites } = await import('./previews-cloud.ts');
+  const [result] = remoteSites() && !fs.existsSync(path.join(PROJECTS, folder, '.git'))
+    ? [{ folder, slug: repoMap()[folder] ?? folder, action: 'updated' as const, detail: `not cloned here: ${BETA} is published from GitHub` }]
+    : await syncRepos([folder]);
   const { previewsAfterSync } = await import('./previews.ts');
   const rebuilt = previewsAfterSync([result], { missing: false });
   const unity = loadProducts().filter((p) => p.build && p.repo.split('/')[0] === folder).map((p) => p.id);

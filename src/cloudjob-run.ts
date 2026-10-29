@@ -18,7 +18,9 @@ import { spawn, spawnSync } from 'node:child_process';
 import { git, packFiles, readPack, unpack, folderEntries, dirtyState, type JobRunner } from './cloudjob.ts';
 
 type Store = Pick<JobRunner, 'put' | 'get' | 'list' | 'remove'>;
-type Spec = { file: string; args: string[]; cwd: string; env: Record<string, string>; sessions: string; git: { head: string; branch: string; remote: string; bundle: boolean; token: string | null } | null };
+// kind "build" (previews-cloud.ts): a beta site's build of one commit, in a shallow clone when GitHub has the commit; no
+// session or workspace goes back, only `outputs` (paths in the workspace) as out/outputs.tgz.
+type Spec = { kind?: 'build'; outputs?: string[]; file: string; args: string[]; cwd: string; env: Record<string, string>; sessions: string; git: { head: string; branch: string; remote: string; bundle: boolean; token: string | null; shallow?: boolean } | null };
 
 /** The unprivileged user the pass runs as (made in the image), when this runner is root. */
 function agentUser() {
@@ -43,6 +45,17 @@ export async function prepare(unit: string, spec: Spec, store: Store, log: (s: s
   if (spec.git) {
     fs.mkdirSync(path.dirname(cwd), { recursive: true });
     fs.rmSync(cwd, { recursive: true, force: true });
+    if (spec.git.shallow && !spec.git.bundle) {
+      // Just that commit (a beta site's build): GitHub hands out any commit it has by id.
+      fs.mkdirSync(cwd, { recursive: true });
+      git(cwd, ['init', '--quiet']);
+      const f = gitWithToken(cwd, ['fetch', '--quiet', '--depth', '1', spec.git.remote, spec.git.head], spec.git.token);
+      if (f.status !== 0) throw new Error(`fetch of ${spec.git.head.slice(0, 7)} failed: ${String(f.stderr).trim().split('\n').pop()}`);
+      const co = git(cwd, ['checkout', '--quiet', '--detach', 'FETCH_HEAD']);
+      if (!co.ok) throw new Error(`checkout of ${spec.git.head.slice(0, 7)}: ${co.err.split('\n').pop()}`);
+      log(`[job] ${spec.git.remote} at ${spec.git.head.slice(0, 7)} (shallow)`);
+      return git(cwd, ['rev-parse', 'HEAD']).out;
+    }
     const c = gitWithToken(path.dirname(cwd), ['clone', '--quiet', '--no-checkout', spec.git.remote, cwd], spec.git.token);
     if (c.status !== 0) throw new Error(`clone failed: ${String(c.stderr).trim().split('\n').pop()}`);
     if (spec.git.bundle) {
@@ -145,6 +158,28 @@ export async function runUnit(unit: string, store: Store, { every = 2000, at = (
   } catch (e: any) {
     error = String(e.message ?? e);
     say(`[job] ${error}`);
+  }
+  if (spec.kind === 'build') {
+    // A build sends back its outputs only (never the workspace or a session).
+    try {
+      const cwd = at(spec.cwd);
+      const have = (spec.outputs ?? []).filter((o) => !path.isAbsolute(o) && !o.split(/[\\/]/).includes('..') && fs.existsSync(path.join(cwd, o)));
+      if (code === 0 && !error && have.length) {
+        // To stdout, from inside the workspace: no paths for tar to misread.
+        const t = spawnSync('tar', ['-czf', '-', '--', ...have], { cwd, encoding: 'buffer', maxBuffer: 4 * 1024 ** 3 });
+        if (t.status !== 0) throw new Error(`tar: ${String(t.stderr).trim().slice(0, 300)}`);
+        await store.put(key('out/outputs.tgz'), t.stdout);
+      }
+      await flush();
+      await store.put(key('out/exit.json'), JSON.stringify({ code, signal, ...(error ? { error } : {}), outputs: have }));
+    } catch (e: any) {
+      say(`[job] sending the build back: ${e.message ?? e}`);
+      await flush().catch(() => {});
+      await store.put(key('out/exit.json'), JSON.stringify({ code, signal, error: `sending the build back failed: ${e.message ?? e}` }));
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+    return error ? 1 : 0;
   }
   try {
     const out = collect(spec, start, tmp, at);

@@ -1,0 +1,42 @@
+// The beta sites: one Worker for every product's beta site, both Studio lanes (docs/studio-cloudrun.md, "Beta sites").
+// J, once: node tools/beta-sites/setup.mjs --apply (makes the R2 bucket, then deploys this from here). By hand:
+//   npx wrangler r2 bucket create hawkes-beta-sites && npx wrangler deploy
+// Each custom domain below makes its DNS record; a host that already has a record must lose it first (Cloudflare says so).
+// Not here on purpose: hawkesnet (its own box) and hawkesgenwebsite (Firebase): products.json "previews" lists them too.
+{
+  "name": "hawkes-beta-sites",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-01",
+  "r2_buckets": [{ "binding": "SITES", "bucket_name": "hawkes-beta-sites" }],
+  "vars": {
+    "DOMAIN": "hawkesgen.ai",
+    // The Cloud Run addresses (the keys and the 🐞 posts go straight there) and where people sign in.
+    "STUDIO_ORIGIN_LIVE": "https://studio-388576319982.us-east4.run.app",
+    "STUDIO_ORIGIN_BETA": "https://studio-beta-388576319982.us-east4.run.app",
+    "STUDIO_PUBLIC_LIVE": "https://studio.hawkesgen.ai",
+    "STUDIO_PUBLIC_BETA": "https://studio-beta.hawkesgen.ai"
+  },
+  "routes": [
+    // Where Studio publishes (signed writes only; nothing to see there).
+    { "pattern": "sites.hawkesgen.ai", "custom_domain": true },
+    // Live Studio's beta sites: products.json "previews".
+    { "pattern": "dod.hawkesgen.ai", "custom_domain": true },
+    { "pattern": "phorigins.hawkesgen.ai", "custom_domain": true },
+    { "pattern": "sickofit.hawkesgen.ai", "custom_domain": true },
+    { "pattern": "yoobaland.hawkesgen.ai", "custom_domain": true },
+    { "pattern": "placedept.hawkesgen.ai", "custom_domain": true },
+    { "pattern": "icanbe.hawkesgen.ai", "custom_domain": true },
+    { "pattern": "imaginelivetv.hawkesgen.ai", "custom_domain": true },
+    { "pattern": "corporate.hawkesgen.ai", "custom_domain": true },
+    // studio-beta's copies of them.
+    { "pattern": "sb-dod.hawkesgen.ai", "custom_domain": true },
+    { "pattern": "sb-phorigins.hawkesgen.ai", "custom_domain": true },
+    { "pattern": "sb-sickofit.hawkesgen.ai", "custom_domain": true },
+    { "pattern": "sb-yoobaland.hawkesgen.ai", "custom_domain": true },
+    { "pattern": "sb-placedept.hawkesgen.ai", "custom_domain": true },
+    { "pattern": "sb-icanbe.hawkesgen.ai", "custom_domain": true },
+    { "pattern": "sb-imaginelivetv.hawkesgen.ai", "custom_domain": true },
+    { "pattern": "sb-corporate.hawkesgen.ai", "custom_domain": true }
+  ],
+  "observability": { "enabled": true }
+}
