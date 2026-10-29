@@ -8,7 +8,7 @@ if "%REGION%"=="" set REGION=us-west1
 pushd C:\Projects\hawkesgen
 node tools\unity-cloudrun\build-image.mjs --project hawkes-staging --region us-east4 --apply || (popd & exit /b 1)
 rem The tag is <unity version>-<hash of Dockerfile, entrypoint.sh, github.sh> (build-image.mjs).
-for /f "delims=" %%T in ('node -e "const c=require('crypto').createHash('sha256');for(const f of ['Dockerfile','entrypoint.sh','github.sh'])c.update(require('fs').readFileSync('server/unity-cloudrun/'+f));console.log('us-east4-docker.pkg.dev/hawkes-staging/hawkes/unity-build:6000.3.7f1-'+c.digest('hex').slice(0,10))"') do set IMAGE=%%T
+for /f "delims=" %%T in ('node -e "const c=require('crypto').createHash('sha256');for(const f of ['Dockerfile','entrypoint.sh','github.sh','r2.mjs'])c.update(require('fs').readFileSync('server/unity-cloudrun/'+f));console.log('us-east4-docker.pkg.dev/hawkes-staging/hawkes/unity-build:6000.3.7f1-'+c.digest('hex').slice(0,10))"') do set IMAGE=%%T
 popd
 echo image %IMAGE%
 call gcloud run jobs update hawkes-unity-build --project hawkes-staging --region %REGION% --image %IMAGE% --update-secrets R2_BUILDS_TOKEN=r2-builds:latest --format=none || exit /b 1
