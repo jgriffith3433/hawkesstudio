@@ -1550,6 +1550,9 @@ async function work(id: string, note?: string, answer?: string, resumed?: Phase 
         fs.mkdirSync(WORK(), { recursive: true });
         // Agent branches start from beta (made from main the first time: pushing beta deploys nothing).
         await critical(`making the worktree of ${id}`, async () => {
+          // A Unity game's repo (up to 3 GB) doesn't fit Studio's memory disk on Cloud Run: cloning it ended Studio and every
+          // restart resumed the clone (2026-10-29). Until agents clone inside their own job, refuse plainly.
+          if (process.env.K_SERVICE && !isInfra(c.product) && getProduct(c.product)?.build) throw new Error(`agent changes to ${c.product} (a Unity game) don't run on Cloud Run yet: its repo doesn't fit Studio's disk there`);
           // Studio on Cloud Run starts with no checkouts: the product's repo is cloned the first time it's needed.
           await ensureCloned(c.repo, c.slug);
           const beta = await ensureBeta(repoDir);

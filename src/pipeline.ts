@@ -1217,6 +1217,17 @@ export function resumeRuns() {
       closeRun(r.id, `${r.kind} ${products[0] ?? ''}`.trim());
       continue;
     }
+    // A run that keeps coming back after restarts may be what ends Studio (a clone filling the disk, 2026-10-29): the
+    // fourth resume within 30 minutes stops it instead. Deploy restarts are far apart and resume as before.
+    const recent = ((options.resumes ?? []) as number[]).filter((t) => Date.now() - t < 30 * 60_000);
+    if (recent.length >= 3) {
+      const why = `stopped: Studio restarted ${recent.length + 1} times in 30 minutes while this run was going, so it isn't resumed again (it may be what crashed it)`;
+      db.prepare(`UPDATE steps SET status = 'failed', detail = ?, finished = ? WHERE status = 'running' AND run = ?`).run(why, Date.now(), r.id);
+      db.prepare(`UPDATE runs SET status = 'failed', detail = ?, finished = ? WHERE id = ?`).run(why, Date.now(), r.id);
+      console.warn(`[studio] ${r.id}: ${why}`);
+      continue;
+    }
+    db.prepare('UPDATE runs SET options = ? WHERE id = ?').run(JSON.stringify({ ...options, resumes: [...recent, Date.now()] }), r.id);
     const steps = (db.prepare('SELECT * FROM steps WHERE run = ? ORDER BY started').all(r.id) as any[]).map(rowToStep);
     let body: (() => Promise<unknown>) | null = null;
     try {
