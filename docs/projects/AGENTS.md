@@ -364,7 +364,15 @@ third-party service.
 The websites never use a cloud of their own (they're on GitHub Pages). Compute behind the tools runs through Hawkes Gen:
 - **CPU tools** (cutout, transforms, maps, video fit/compose, LODs) on the scale-to-zero Cloud Run services `gen-cpu`,
   `gen-cpu-heavy` (hawkesgen `docs/cpu-cloudrun.md`). **Unity builds** on the Cloud Run job `hawkes-unity-build`
-  (hawkesgen `docs/unity-cloudrun.md`). **Playtests** on `gen-playtest` (`docs/playtest-cloudrun.md`).
+  (hawkesgen `docs/unity-cloudrun.md`).
+- **Playtests** run on `gen-playtest-cpu` while there is no GPU (hawkesgen `docs/playtest-cloudrun.md`, "The CPU
+  service"; `settings.playtest.backend: "cloudrun-cpu"`).
+  - The browser draws WebGL on the CPU with SwiftShader, one tab per 4 vCPU / 8 GiB instance, scale to zero,
+    request-based billing: about $0.007 a playtest minute, nothing when idle.
+  - Runs say `software: true`, so frame rates mean nothing there, and the boot wait and scenario limits are doubled.
+  - J deploys it with `hawkesgen\tools\playtest-cloudrun\deploy-cpu.ps1` (`-Apply`, then `-Settings`).
+  - The L4 service `gen-playtest` stays ready for when GPU quota or RunPod exists; `backend: "cloudrun"` tries it
+    first, then the CPU service.
 - **GPU jobs go to whichever provider has room**, in `settings.gpu.order` with cooldowns and fallback (hawkesgen
   `docs/gpu-providers.md`): Cloud Run GPUs (Google refused the account's GPU quota for lack of usage history,
   2026-10-28), **RunPod** and **Modal** (set up once J has accounts and keys; the worker image is
