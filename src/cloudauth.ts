@@ -6,6 +6,8 @@
 //   Everyone else needs one of:
 //     - a session: Studio's own users (auth.ts), made by the password form or by Continue with Google
 //     - Bearer STUDIO_OWNER_KEY: J's CLI and scripts (src/client.ts sends ~/.hawkes/client.json studioKey): J, an admin
+//     - in an org cell (STUDIO_ORG, platform.ts): a hawkesgen.ai platform token for this org (the CLI, the MCP), or a
+//       session made from one at /auth/platform. requester() (auth.ts) turns either into the account's user here.
 //     - Bearer STUDIO_AGENT_KEY: agents' and Talk's Claude Code in their Cloud Run jobs. Never J: sandbox.ts
 //       requestUser() calls it 'agent', so the guards (guards.ts) apply exactly as to the sandboxed Linux user.
 //   Continue with Google: Google's button gives the page an ID token for STUDIO_GOOGLE_CLIENT_ID; Studio asks Google

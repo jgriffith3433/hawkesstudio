@@ -525,7 +525,7 @@ L = 3–6 weeks of focused agent-driven work.
 
 | Work | Size |
 |---|---|
-| Studio cells: provisioning, the router, the JWT, "J" → owner, products from onboarding, per-org secrets | L |
+| Studio cells: provisioning, the router, the JWT, "J" → owner, products from onboarding, per-org secrets (**started 2026-10-29**: `STUDIO_ORG` makes a Studio an org's cell; it accepts the portal token as bearer, MCP key for owners/admins, and `/auth/platform` sessions; roles follow the org; games are the cell's own products file, `PUT /api/products/:id`; `src/platform.ts`, `test/platform.test.ts`. Still to do: provisioning a cell per org, the router Worker, the pipeline playing customers' builds (needs Gen's build intake), "J" in prompts and the dashboard becoming the owner's name, per-org secrets) | L |
 | `playtest.run` takes builds (zip, artifact, release, URL) served by the runner; the loopback proxy removed for customers | M |
 | PR checks with clips (offer 1); nightly runs per org; reports by email, Discord and Slack (offer 0) | M |
 | The MCP endpoint with OAuth and plan-scoped tools (offer 3); the CLI with `hawkes connect` | M |

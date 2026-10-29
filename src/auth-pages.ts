@@ -210,6 +210,23 @@ export async function handleAuthRoute(req: http.IncomingMessage, res: http.Serve
     }
     return true;
   }
+  // An org cell (platform.ts): hawkesgen.ai's "Open Studio" sends the person here with a platform token (a form POST, or
+  // ?token= on a link); it becomes this cell's own session, then on to `next`.
+  if (route === '/auth/platform' && (method === 'POST' || method === 'GET')) {
+    const P = await import('./platform.ts');
+    const f = method === 'POST' ? await form(req) : Object.fromEntries(url.searchParams);
+    const t = String(f.token ?? '');
+    try {
+      if (!P.cellOrg()) throw new Error('This Studio is not an org cell.');
+      await P.primeToken(t);
+      const u = A.platformUser(P.verifyPlatformToken(t), { ...meta(req), log: true });
+      redirect(res, A.safeNext(f.next), { 'Set-Cookie': signedInCookie(req, u, true) });
+    } catch (e: any) {
+      A.logSignin(null, A.clientIp(req), false, `hawkesgen.ai: ${e.message ?? e}`, String(req.headers['user-agent'] ?? ''));
+      json(res, e.status === 403 ? 403 : 401, { error: `Couldn't sign you in from hawkesgen.ai: ${e.message ?? e}` });
+    }
+    return true;
+  }
   if (route === '/auth/signout') {
     A.endSession(A.cookieToken(req));
     redirect(res, '/auth/signin?out=1', { 'Set-Cookie': A.sessionCookie(req, '', 0) });

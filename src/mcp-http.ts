@@ -10,6 +10,7 @@ import { serveHttp, mcpKey } from './mcp-core.ts';
 import { studioMcp } from './mcp-tools.ts';
 import { studioAt, waitRun } from './client.ts';
 import { PORT } from './config.ts';
+import { cellOrg, primeToken, studioRole, verifyPlatformToken } from './platform.ts';
 
 // The tools call this service directly (never the cloud address from ~/.hawkes/client.json).
 const local = studioAt(`http://127.0.0.1:${PORT}`);
@@ -26,7 +27,14 @@ export async function handleMcp(req: IncomingMessage, res: ServerResponse, pathn
   const key = mcpKey(req, pathname);
   const addr = req.socket.remoteAddress ?? '';
   const direct = ['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(addr) && !req.headers['x-forwarded-for'];
-  const ok = expected ? Boolean(key) && same(key!, expected) : direct;
+  // In an org cell, the org's owners and admins may also connect with a hawkesgen.ai platform token (platform.ts). Only
+  // they: the tools act on this Studio as its owner would, so members use the dashboard.
+  let viaPlatform = false;
+  if (key && cellOrg() && /^eyJ/.test(key)) {
+    await primeToken(key);
+    try { viaPlatform = studioRole(verifyPlatformToken(key).role) === 'admin'; } catch { viaPlatform = false; }
+  }
+  const ok = viaPlatform || (expected ? Boolean(key) && same(key!, expected) : direct);
   if (!ok) {
     res.writeHead(401, { 'Content-Type': 'application/json', 'WWW-Authenticate': 'Bearer realm="hawkesstudio"' });
     return void res.end(JSON.stringify({ error: expected ? 'Send the Studio MCP key: Authorization: Bearer hs_...' : 'The Studio MCP key (STUDIO_MCP_KEY) is not set up here' }));

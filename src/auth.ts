@@ -15,6 +15,7 @@ import type http from 'node:http';
 import { db, newId } from './db.ts';
 import { StudioError } from './config.ts';
 import { cloudMode, ownerKey, googleEmails } from './cloudauth.ts';
+import { bearerJwt, cellOrg, platformEmail, studioRole, verifyPlatformToken, type PlatformClaims } from './platform.ts';
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS users (
@@ -240,6 +241,32 @@ export function googleUser(emailIn: string, meta: { ip?: string | null; ua?: str
   return userByEmail(email)!;
 }
 
+/**
+ * An org cell (platform.ts): the hawkesgen.ai account a platform token names, as this cell's user. Made on first sight,
+ * and its role follows the org's (owner/admin -> admin, member/viewer -> member) every time. A disabled account stays out.
+ */
+export function platformUser(c: PlatformClaims, meta: { ip?: string | null; ua?: string | null; log?: boolean } = {}): User {
+  const email = platformEmail(c.user);
+  const role = studioRole(c.role);
+  const r = db.prepare('SELECT * FROM users WHERE email = ?').get(email) as any;
+  if (r?.disabled) throw new StudioError('This account is disabled here.', 403);
+  if (!r) db.prepare('INSERT INTO users (id, email, name, role, pw_hash, must_change, created) VALUES (?, ?, ?, ?, NULL, 0, ?)').run(newId('u'), email, c.user, role, Date.now());
+  else if (r.role !== role) db.prepare('UPDATE users SET role = ? WHERE id = ?').run(role, r.id);
+  if (meta.log) logSignin(email, meta.ip ?? null, true, `signed in from hawkesgen.ai (${c.role} of ${c.org})`, meta.ua);
+  return userByEmail(email)!;
+}
+
+/** The user a request's platform token names, in an org cell (bearer tokens: the CLI, the MCP, the portal); else null. */
+export function platformBearerUser(req: http.IncomingMessage): User | null {
+  const t = cellOrg() ? bearerJwt(req) : null;
+  if (!t) return null;
+  try {
+    return platformUser(verifyPlatformToken(t));
+  } catch {
+    return null;
+  }
+}
+
 export function startSession(user: User, { remember = false, ip, ua }: { remember?: boolean; ip?: string | null; ua?: string | null } = {}) {
   const t = token();
   const now = Date.now();
@@ -387,7 +414,7 @@ const OWNER_J: User = { ...SCRIPT_J, id: 'u_owner_key', email: 'j (owner key)' }
 
 /** Who sent a request: a signed-in user, J's script login or owner key, or null (no account: Talk, agents and Studio's own calls on the server). */
 export function requester(req: http.IncomingMessage): User | null {
-  return sessionUser(cookieToken(req)) ?? (basicLogin(req) ? SCRIPT_J : ownerKey(req) ? OWNER_J : null);
+  return sessionUser(cookieToken(req)) ?? platformBearerUser(req) ?? (basicLogin(req) ? SCRIPT_J : ownerKey(req) ? OWNER_J : null);
 }
 
 /**
@@ -397,11 +424,11 @@ export function requester(req: http.IncomingMessage): User | null {
  */
 export function memberRefusal(req: http.IncomingMessage, route: string, method: string): string | null {
   if (method === 'GET') return null;
-  const u = sessionUser(cookieToken(req));
+  const u = sessionUser(cookieToken(req)) ?? platformBearerUser(req);
   if (!u || u.role === 'admin') return null;
   const adminOnly = [
     /^\/api\/(runs|jobs|changes)\/[\w-]+\/(cancel|resume)$/, /^\/api\/deploy\//, /^\/api\/rollback\//, /^\/api\/changes\/c_[0-9a-f]+\/approve$/, /^\/api\/approvals\/a_[0-9a-f]+\/(approve|deny)$/,
-    /^\/api\/agents\/settings$/, /^\/api\/pm\/settings$/, /^\/api\/settings$/, /^\/api\/costs\/settings$/, /^\/api\/notify$/,
+    /^\/api\/products\//, /^\/api\/agents\/settings$/, /^\/api\/pm\/settings$/, /^\/api\/settings$/, /^\/api\/costs\/settings$/, /^\/api\/notify$/,
     /^\/api\/content\/wire$/, /^\/api\/inbox\/answer$/, /^\/api\/roadmap\/.*gpu/, /^\/api\/users/, /^\/api\/invites/, /^\/api\/memory\/seed$/, /^\/api\/broadcast\/live$/, /^\/api\/social\/(config|disconnect)/, /^\/api\/services\/restart$/, /^\/api\/analytics\/marks$/,
     // Through the library tab's Gen relay: making and revising takes, and any job, cost money.
     /^\/api\/gen\/v1\/entities\/.+\/(make|revise)$/, /^\/api\/gen\/v1\/(jobs|run|fleet|builder|playtester|settings)/,

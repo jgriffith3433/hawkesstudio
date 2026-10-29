@@ -98,6 +98,8 @@ const server = http.createServer(async (req, res) => {
   try {
     if (route === '/mcp' || route.startsWith('/mcp/')) return await handleMcp(req, res, route);
     // Accounts (auth.ts): the sign-in pages, and /auth/check that Caddy asks before every protected request.
+    // An org cell's platform token (platform.ts): the portal's keys are fetched first, so the checks below can be synchronous.
+    await (await import('./platform.ts')).primePlatform(req);
     if (route.startsWith('/auth/') && (await (await import('./auth-pages.ts')).handleAuthRoute(req, res, url))) return;
     // On Cloud Run nothing stands in front of Studio (Caddy did on the AWS server): a session, J's owner key or the
     // agents' key, else the sign-in page (cloudauth.ts).
@@ -153,6 +155,17 @@ const server = http.createServer(async (req, res) => {
     // The dashboard's one push stream (stream.ts): "something changed" events instead of polling.
     if (route === '/api/stream' && method === 'GET') return (await import('./stream.ts')).handleStream(req, res, { talkUnseen: unseenConversations() });
     if (route === '/api/products' && method === 'GET') return send(res, 200, { products: loadProducts() });
+    // An org cell's games (config.ts saveProduct): onboarding adds and edits them; admins only (memberRefusal).
+    const prod = /^\/api\/products\/([a-z][a-z0-9-]{1,39})$/.exec(route);
+    if (prod && method === 'PUT') {
+      const { saveProduct } = await import('./config.ts');
+      return send(res, 200, { product: saveProduct({ ...(await readJson(req)), id: prod[1] }) });
+    }
+    if (prod && method === 'DELETE') {
+      const { removeProduct } = await import('./config.ts');
+      removeProduct(prod[1]);
+      return send(res, 200, { removed: prod[1] });
+    }
     // The Library tab (library.ts, dashboard/library.js): Gen's library through Studio, and picks into product repos.
     if (route.startsWith('/api/gen/v1/')) return await (await import('./library.ts')).relay(req, res, route.slice('/api/gen/v1/'.length) + url.search);
     if (route === '/api/content/health' && method === 'GET') {
