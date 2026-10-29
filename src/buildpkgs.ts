@@ -141,6 +141,8 @@ export function buildErrorLines(logTail: unknown, max = 6): string[] {
  *  syncs. Cloud Run and VM builds fetch exact commits from GitHub themselves. Gen's answer decides: the job's
  *  `backend` param, else the project's (`unityBuild.projects`, by folder), else the default; unknown counts as yes. */
 export async function buildsOnWindowsBox(params: Record<string, unknown>, log: (s: string) => void = () => {}, ask: (path: string) => Promise<any> = async (p) => (await import('./gen.ts')).gen.request(p)): Promise<boolean> {
+  // GitHub mode (a tag build, tagbuild.ts) always runs in the cloud and fetches its own commits.
+  if (params.github) return false;
   if (typeof params.backend === 'string') return params.backend === 'builder';
   const cloud = await ask('/builder/cloud').catch(() => null);
   if (!cloud?.backend) return true;

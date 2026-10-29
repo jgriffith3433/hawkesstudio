@@ -760,6 +760,17 @@ const server = http.createServer(async (req, res) => {
       const folder = betaFolderFor(String(claims.repository));
       if (!folder) return send(res, 404, { error: `${claims.repository} isn't a product source repo` });
       const sha = String(claims.sha ?? '');
+      if (ref.startsWith('refs/tags/')) {
+        // A build tag (build-*) in a Unity source repo: that commit is built in the cloud and pushed to the website's
+        // beta, then played (tagbuild.ts). Other tags are ignored. Answered now; the run shows in Runs.
+        const { buildTagOf, onBuildTag } = await import('./tagbuild.ts');
+        const tag = buildTagOf(ref);
+        if (!tag) return send(res, 200, { ok: true, ignored: `${ref} isn't a build tag (build-<name>)` });
+        const r = await onBuildTag(folder, tag, sha);
+        betaPushes.unshift({ at: Date.now(), repo: folder, sha: sha.slice(0, 7), result: r.ok ? `tag ${tag}: building ${Object.entries(r.runs).map(([p, run]) => `${p} (${run})`).join(', ')}` : `tag ${tag}: ${r.ignored}` });
+        betaPushes.splice(50);
+        return send(res, r.ok ? 202 : 200, r);
+      }
       if (ref === 'refs/heads/beta') return send(res, 200, { ok: true, branch: 'beta', ...(await onBetaPush(folder, sha)) });
       if (ref === 'refs/heads/main') {
         // Publishing can take a while (a Unity build): answer now; it shows in Runs and /api/hooks/pushes.

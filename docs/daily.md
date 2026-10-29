@@ -899,6 +899,25 @@ words are the fallback.
   has the rollback), playtest, go live again. Every go live and rollback is recorded (`deploys` in Studio's db).
 - **J's own work:** push it to beta (or to a branch with a pull request into beta), not main. Something pushed straight
   to main shows up in the plan as "main has commits beta lacks".
+- **Build tags (Unity games, in the cloud):** to build one exact commit of sickofitgame-unity, YoobaLand or
+  breakingthrough, J tags it and pushes the tag:
+
+  ```
+  git tag build-2026-10-28 && git push origin build-2026-10-28
+  ```
+
+  Any `build-<letters, digits, . _ ->` name works; other tags are ignored. The repo's `hawkes-studio.yml` (on
+  `tags: ['build-*']`; the tagged commit must have that line) calls the same OIDC hook as pushes. Studio
+  (`src/tagbuild.ts`) starts a beta run per Unity product in the repo (`options.tag`; the same commit is not started
+  twice while its run goes). Its build step asks Hawkes Gen for `unity.build` in **GitHub mode** (hawkesgen
+  docs/unity-cloudrun.md): the Cloud Run job fetches that commit, builds it, and commits `Game/v<n>` and the loader to
+  the website repo's **beta** and pushes it (never main; Gen and the container both refuse it). Products with
+  `build.versionEnv` get a `Game/v<n>` past every one Studio built and every one on the website's beta and main
+  (GitHub's contents API). Then the beta website copy moves onto the pushed commit and is recorded as the beta build of
+  the tagged commit, and the run plays it (`playtest: true`). The tag run skips the beta queue: it neither waits for
+  pushes nor supersedes push runs, and no push waits for it. Going live is unchanged: `DEPLOY <product>` (or the tap),
+  and `publishUnity` publishes a tag build that is already committed in the copy (whatever the copy has that the
+  website's main lacks). Pushes to beta still build as before. Tests: `test/tagbuild.test.ts`.
 
 ## Developing on beta
 

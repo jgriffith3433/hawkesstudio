@@ -13,6 +13,9 @@
 //   cancelled, the rest not played, and it ends superseded; the newer run plays its checks on the new build
 //   (supersedingBuild, pipeline.ts betaBody, J 2026-10-19).
 //
+// - A tag build's beta run (options.tag, tagbuild.ts) builds one exact commit in the cloud: it neither waits here nor
+//   supersedes, and no push waits for it.
+//
 // Steps: the beta run's "beta queue" step is running while it waits and done once it has its turn (pipeline.ts betaBody).
 
 import { db, parse, J } from './db.ts';
@@ -37,7 +40,7 @@ export const notePush = (product: string, at = Date.now()) => void lastPush.set(
  * a push needs no run of its own), if any.
  */
 export function waitingBetaRun(product: string): string | null {
-  const rows = db.prepare(`SELECT id FROM runs WHERE kind = 'beta' AND status = 'running' AND products LIKE ? AND started > ? ORDER BY rowid DESC`).all(like(product), Date.now() - STALE_MS) as { id: string }[];
+  const rows = db.prepare(`SELECT id FROM runs WHERE kind = 'beta' AND status = 'running' AND products LIKE ? AND json_extract(options, '$.tag') IS NULL AND started > ? ORDER BY rowid DESC`).all(like(product), Date.now() - STALE_MS) as { id: string }[];
   for (const r of rows) {
     const steps = db.prepare(`SELECT kind, name, status FROM steps WHERE run = ? AND product = ? AND ((kind = 'beta' AND name = 'queue') OR (kind = 'build' AND name = 'unity'))`).all(r.id, product) as any[];
     if (!steps.some((s) => s.kind === 'build' || s.status !== 'running')) return r.id;
@@ -52,7 +55,7 @@ const me = (run: string) => db.prepare('SELECT rowid AS n, started FROM runs WHE
 export function newerBetaRun(run: string, product: string): string | null {
   const m = me(run);
   if (!m) return null;
-  const r = db.prepare(`SELECT id FROM runs WHERE kind = 'beta' AND status = 'running' AND products LIKE ? AND rowid > ? ORDER BY rowid DESC LIMIT 1`).get(like(product), m.n) as { id: string } | undefined;
+  const r = db.prepare(`SELECT id FROM runs WHERE kind = 'beta' AND status = 'running' AND products LIKE ? AND json_extract(options, '$.tag') IS NULL AND rowid > ? ORDER BY rowid DESC LIMIT 1`).get(like(product), m.n) as { id: string } | undefined;
   return r?.id ?? null;
 }
 
@@ -64,7 +67,7 @@ export function newerBetaRun(run: string, product: string): string | null {
 export function supersedingBuild(run: string, product: string): string | null {
   const m = me(run);
   if (!m) return null;
-  const r = db.prepare(`SELECT r.id FROM runs r JOIN steps s ON s.run = r.id WHERE r.kind = 'beta' AND r.status = 'running' AND r.products LIKE ? AND r.rowid > ? AND r.started > ?
+  const r = db.prepare(`SELECT r.id FROM runs r JOIN steps s ON s.run = r.id WHERE r.kind = 'beta' AND r.status = 'running' AND json_extract(r.options, '$.tag') IS NULL AND r.products LIKE ? AND r.rowid > ? AND r.started > ?
     AND s.product = ? AND s.kind = 'build' AND s.name = 'unity' AND s.status = 'running' ORDER BY r.rowid DESC LIMIT 1`).get(like(product), m.n, Date.now() - STALE_MS, product) as { id: string } | undefined;
   return r?.id ?? null;
 }
