@@ -468,6 +468,24 @@ export async function handleCellsKeyed(req: http.IncomingMessage, res: http.Serv
     await B.handleBroker(req, res, new URL(req.url ?? route, 'http://x'), await B.defaultBrokerDeps(R.cellsConfig().bucket));
     return true;
   }
+  // GitHub through J's app (github-app.ts): a cell's install link and linked installations, and a token for one of its
+  // org's repos, scoped to that repo. Never a repo of an installation another org linked.
+  const gh = /^\/api\/cells\/self\/(github|github-token)$/.exec(route);
+  if (gh && method === 'POST') {
+    if (!cellsOn()) return send(res, 404, { error: 'not the control plane' }), true;
+    const orgId = String(req.headers['x-studio-cell'] ?? '');
+    if (!isCellKey(orgId, bearer(req)) || !getOrg(orgId)) return send(res, 401, { error: 'cell key' }), true;
+    const b = await readJson(req);
+    const G = await import('./github-app.ts');
+    try {
+      if (gh[1] === 'github') {
+        const app = G.appConfig();
+        return send(res, 200, { app: app ? { slug: app.slug } : null, install: G.installLinkFor(orgId, typeof b.back === 'string' && /^https:\/\//.test(b.back) ? b.back : null), installations: app ? await G.orgInstallations(orgId) : [] }), true;
+      }
+      const t = await G.orgRepoToken(orgId, String(b.repo ?? ''));
+      return send(res, 200, t ?? { token: null }), true;
+    } catch (e: any) { return send(res, e.status ?? 400, { error: e.message ?? String(e) }), true; }
+  }
   const self = /^\/api\/cells\/self\/(members|ai)$/.exec(route);
   if (self && method === 'POST') {
     if (!cellsOn()) return send(res, 404, { error: 'not the control plane' }), true;

@@ -81,9 +81,21 @@ const gitEnv = () => ({ ...process.env, GIT_TERMINAL_PROMPT: '0', GIT_OPTIONAL_L
  * origin/beta"), and a fetch that still hits a ref lock (git outside Studio) is tried again after a short wait (gitlock.ts).
  */
 export async function gitAsync(cwd: string, args: string[], timeoutMs = 10 * 60_000): Promise<{ ok: boolean; out: string; err: string }> {
-  if (args[0] === 'fetch') return fetchLocked(cwd, args, (a) => runGit(cwd, a, timeoutMs), opLog);
-  if (args[0] === 'push') return withRepoLock(repoKey(cwd), () => runGit(cwd, args, timeoutMs));
-  return lockRetry(cwd, args, () => runGit(cwd, args, timeoutMs));
+  // Talking to GitHub about a repo that isn't J's: its own token as a header for this command (ghtoken.ts).
+  const env = ['fetch', 'push', 'pull', 'ls-remote'].includes(args[0]) ? await authEnvFor(cwd) : {};
+  if (args[0] === 'fetch') return fetchLocked(cwd, args, (a) => runGit(cwd, a, timeoutMs, env), opLog);
+  if (args[0] === 'push') return withRepoLock(repoKey(cwd), () => runGit(cwd, args, timeoutMs, env));
+  return lockRetry(cwd, args, () => runGit(cwd, args, timeoutMs, env));
+}
+
+/** The token header for a checkout's GitHub repo (its origin), fetched first; {} for J's repos and anything else. */
+async function authEnvFor(cwd: string): Promise<Record<string, string>> {
+  const url = spawnSync('git', ['config', '--get', 'remote.origin.url'], { cwd, encoding: 'utf8', windowsHide: true }).stdout?.trim() ?? '';
+  const slug = /github\.com[/:]([^/]+\/[^/]+?)(?:\.git)?$/.exec(url)?.[1] ?? null;
+  if (!slug) return {};
+  const { primeRepoToken, gitAuthEnv } = await import('./ghtoken.ts');
+  await primeRepoToken(slug);
+  return gitAuthEnv(slug);
 }
 export { REF_LOCK, fetchBackoff, repoKey, withRepoLock, repoBusy };
 
@@ -119,7 +131,7 @@ function indexLockOf(cwd: string): string | null {
   } catch { return null; }
 }
 
-function runGit(cwd: string, args: string[], timeoutMs: number): Promise<{ ok: boolean; out: string; err: string }> {
+function runGit(cwd: string, args: string[], timeoutMs: number, extraEnv: Record<string, string> = {}): Promise<{ ok: boolean; out: string; err: string }> {
   const label = `git ${args.filter((a) => !a.startsWith('-c')).join(' ')}`.slice(0, 200);
   const done = trackCommand(label, cwd);
   if (SLOW.has(args[0]) || ['worktree', 'checkout', 'merge'].includes(args[0])) opLog(`$ ${label} (${path.basename(cwd)})`);
@@ -134,7 +146,7 @@ function runGit(cwd: string, args: string[], timeoutMs: number): Promise<{ ok: b
       done();
       resolve({ ok: r.ok, out: r.out.trim(), err: r.err.trim() });
     };
-    const child = spawn('git', args, { cwd, windowsHide: true, env: gitEnv() });
+    const child = spawn('git', args, { cwd, windowsHide: true, env: { ...gitEnv(), ...extraEnv } });
     child.stdout.on('data', (d) => { out += d; if (out.length > 64 * 1024 * 1024) out = out.slice(-32 * 1024 * 1024); });
     child.stderr.on('data', (d) => { err += d; if (err.length > 1_000_000) err = err.slice(-500_000); });
     child.on('error', (e) => finish({ ok: false, out, err: e.message }));

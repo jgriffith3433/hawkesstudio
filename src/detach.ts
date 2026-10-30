@@ -16,7 +16,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { EventEmitter } from 'node:events';
 import { spawn, spawnSync } from 'node:child_process';
-import { DATA, ROOT } from './config.ts';
+import { DATA, ROOT, PROJECTS, paths, addedRepoFolders } from './config.ts';
+import { repoTokenNow } from './ghtoken.ts';
+import { PLATFORM_GITHUB } from './tenancy.ts';
 import { startCloudJob, reattachCloudJob, cloudJobAlive } from './cloudjob.ts';
 
 export type DetachMode = 'systemd' | 'process' | 'cloudrun';
@@ -67,7 +69,8 @@ export function startDetached(name: string, spec: DetachSpec, mode: DetachMode):
   const unit = `hawkes-${name.replace(/[^A-Za-z0-9_.-]/g, '-')}-${Date.now().toString(36)}`;
   if (mode === 'cloudrun') {
     // A Cloud Run job execution: its inputs go to the bucket, never to a local spec file (cloudjob.ts).
-    startCloudJob(unit, spec, { gitToken: process.env.STUDIO_JOB_GITHUB_TOKEN || process.env.GITHUB_TOKEN || null });
+    // The job's repo's own token when one was fetched for it (ghtoken.ts: the GitHub App's for a repo that isn't J's).
+    startCloudJob(unit, spec, { gitToken: jobGitToken(spec.cwd) });
     return { unit, mode, started: Date.now(), cwd: spec.cwd };
   }
   // The spec holds the environment (Claude's login): only Studio's user can read it, and the runner deletes it at once.
@@ -316,4 +319,13 @@ export function pruneDetached(maxAgeMs = 7 * 86_400_000) {
       if (Date.now() - fs.statSync(f).mtimeMs > maxAgeMs) fs.rmSync(f, { force: true });
     } catch { /* gone */ }
   }
+}
+
+/** The git token a job gets: its repo's (ghtoken.ts, kept after repos.ts fetched or cloned it), else Studio's own. */
+function jobGitToken(cwd: string) {
+  const top = path.relative(PROJECTS, cwd).split(/[\\/]/)[0];
+  const map: Record<string, string> = { ...(JSON.parse(fs.readFileSync(paths.products, 'utf8')).repos ?? {}), ...addedRepoFolders() };
+  const slug = top && !top.startsWith('..') ? map[top] ?? null : null;
+  const own = slug && slug.split('/')[0].toLowerCase() !== PLATFORM_GITHUB ? repoTokenNow(slug) : null;
+  return own ?? (process.env.STUDIO_JOB_GITHUB_TOKEN || process.env.GITHUB_TOKEN || null);
 }

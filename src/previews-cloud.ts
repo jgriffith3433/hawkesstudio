@@ -143,7 +143,7 @@ export async function publishCloud(p: Product, sub: string, o: { change?: string
         progress(`building ${sha.slice(0, 7)} in a Cloud Run job (${recipe.build})`);
         const b = await build(`site-${p.id}-${Date.now().toString(36)}`, {
           remote: `https://github.com/${slug}.git`, head: sha, cwd: `/tmp/build/${top}`, bundle,
-          command: `${cd}(${install}) && ${recipe.build}`, outputs: [out], gitToken: process.env.GITHUB_TOKEN ?? null,
+          command: `${cd}(${install}) && ${recipe.build}`, outputs: [out], gitToken: (await (await import('./ghtoken.ts')).repoToken(slug)) ?? process.env.GITHUB_TOKEN ?? null,
           onLine: (l) => { if (/^\[job\]|error|built in/i.test(l)) progress(l.slice(0, 200)); },
         });
         const tail = b.log.split('\n').filter(Boolean).slice(-3).join(' | ').slice(0, 400);

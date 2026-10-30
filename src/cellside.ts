@@ -63,3 +63,25 @@ export function startCellReports(every = 5 * 60_000) {
   tick();
   setInterval(tick, every).unref();
 }
+
+// GitHub through J's GitHub App (github-app.ts; J, 2026-10-30: GitHub for customers): a cell has no app of its own. It
+// asks the control plane for its install link (the org signed into it) and the installations linked to its org, and for
+// a token scoped to one repo of one of them when it needs one (an agent's clone and pull request, a setup step).
+
+/** The app, the install link for this org, and its linked installations; null outside a cell. */
+export async function cellGithub(back?: string | null): Promise<{ app: { slug: string } | null; install: string | null; installations: { id: number; account: string; type: string; repos: string }[] } | null> {
+  if (!inCell()) return null;
+  return post('github', { back: back ?? null });
+}
+
+const cellTokens = new Map<string, { token: string; until: number }>();
+/** A token for one of this org's repos (scoped to it alone), or null when no installation of the org reaches it. */
+export async function cellGithubToken(repo: string): Promise<string | null> {
+  if (!inCell()) return null;
+  const hit = cellTokens.get(repo.toLowerCase());
+  if (hit && hit.until > Date.now()) return hit.token;
+  const r = await post('github-token', { repo });
+  if (!r?.token) return null;
+  cellTokens.set(repo.toLowerCase(), { token: r.token, until: Math.min(Number(r.expires) || 0, Date.now() + 50 * 60_000) - 5 * 60_000 });
+  return r.token;
+}

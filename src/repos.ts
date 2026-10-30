@@ -7,6 +7,13 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 import { PROJECTS, paths, addedRepoFolders } from './config.ts';
+import { gitAuthEnv, primeRepoToken } from './ghtoken.ts';
+
+/** The GitHub repo of a folder under PROJECTS (its top-level folder in repoMap), for git's token. */
+const slugOfDir = (dir: string) => {
+  const top = path.relative(PROJECTS, dir).split(/[\\/]/)[0];
+  return top && !top.startsWith('..') ? repoMap()[top] ?? null : null;
+};
 import { trackCommand } from './ops.ts';
 import { lockHash, installedFor, ensureInstalled, runShell } from './warm.ts';
 import { REF_LOCK, fetchLocked } from './gitlock.ts';
@@ -23,12 +30,13 @@ function git(cwd: string, args: string[], timeoutMs = 20 * 60_000) {
 }
 
 /** git for clone, fetch, checkout and merge, without blocking Studio (a sync of every repo used to freeze it). */
-function gitA(cwd: string, args: string[], timeoutMs = 20 * 60_000): Promise<{ ok: boolean; out: string; err: string }> {
+function gitA(cwd: string, args: string[], timeoutMs = 20 * 60_000, slug: string | null = null): Promise<{ ok: boolean; out: string; err: string }> {
   const done = trackCommand(`git ${args.join(' ')}`, cwd);
   return new Promise((resolve) => {
     let out = '';
     let err = '';
-    const child = spawn('git', args, { cwd, windowsHide: true, env: { ...process.env, GIT_TERMINAL_PROMPT: '0' } });
+    // A repo that isn't J's: its own token as a header for this one command (ghtoken.ts gitAuthEnv, primed by the caller).
+    const child = spawn('git', args, { cwd, windowsHide: true, env: { ...process.env, GIT_TERMINAL_PROMPT: '0', ...gitAuthEnv(slug ?? slugOfDir(cwd)) } });
     const timer = setTimeout(() => child.kill('SIGKILL'), timeoutMs);
     timer.unref();
     child.stdout.on('data', (d) => { out += d; if (out.length > 64 * 1024 * 1024) out = out.slice(-32 * 1024 * 1024); });
@@ -94,7 +102,8 @@ async function syncGit(folder: string, slug: string, branch: string, want?: stri
   const dir = path.join(PROJECTS, folder);
   if (!fs.existsSync(path.join(dir, '.git'))) {
     if (fs.existsSync(dir) && fs.readdirSync(dir).length) return { folder, slug, action: 'failed', detail: `${dir} exists and isn't a git repo` };
-    const c = await gitA(PROJECTS, ['clone', '--quiet', `https://github.com/${slug}.git`, folder]);
+    await primeRepoToken(slug);
+    const c = await gitA(PROJECTS, ['clone', '--quiet', `https://github.com/${slug}.git`, folder], undefined, slug);
     if (!c.ok) return { folder, slug, action: 'failed', detail: c.err.split('\n').pop() ?? 'clone failed' };
     const pick = [want, branch].find((b) => b && git(dir, ['rev-parse', '--verify', '--quiet', `origin/${b}`]).ok);
     if (pick) await gitA(dir, ['checkout', '--quiet', pick]);
@@ -102,7 +111,8 @@ async function syncGit(folder: string, slug: string, branch: string, want?: stri
   }
   // Under the repo's lock with agents' and betawatch's fetches (gitlock.ts). A ref lock that outlasts the retries means
   // another git just updated those refs: carry on with them rather than fail the run over a race.
-  const f = await fetchLocked(dir, ['fetch', '--quiet', '--prune', 'origin'], (a) => gitA(dir, a), (l) => console.log(`[repos] ${l}`));
+  await primeRepoToken(slug);
+  const f = await fetchLocked(dir, ['fetch', '--quiet', '--prune', 'origin'], (a) => gitA(dir, a, undefined, slug), (l) => console.log(`[repos] ${l}`));
   if (!f.ok && !REF_LOCK.test(f.err)) return { folder, slug, action: 'failed', detail: `fetch failed: ${f.err.split('\n').pop()}` };
   const raced = f.ok ? '' : `fetch kept hitting a ref lock (another fetch of this repo), used the refs it left; `;
   let cur = git(dir, ['rev-parse', '--abbrev-ref', 'HEAD']).out;

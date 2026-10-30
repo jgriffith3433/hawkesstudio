@@ -48,6 +48,12 @@ export async function handleGithubRoutes(req: http.IncomingMessage, res: http.Se
     // made once: with an app already here the link goes straight to installing it, so nobody replaces it this way.
     if (!requester(req)) return redirect(res, `/auth/signin?next=${encodeURIComponent(`${route}${url.search}`)}`), true;
     if (G.appConfig()) return redirect(res, G.installUrl()!), true;
+    // A customer's Studio shares Hawkes Studio's app: straight to installing it, with this org signed into the link.
+    const cell = await (await import('./cellside.ts')).cellGithub(`${base}/`).catch(() => null);
+    if (cell) {
+      if (!cell.install) throw new StudioError("GitHub isn't set up for Studio yet: Hawkes Studio's team turns it on.", 409);
+      return redirect(res, cell.install), true;
+    }
     return html(res, 200, G.setupPage(base, url.searchParams.get('org'))), true;
   }
   if (route === '/api/github/app/created' && method === 'GET') {
@@ -65,7 +71,9 @@ export async function handleGithubRoutes(req: http.IncomingMessage, res: http.Se
     return redirect(res, G.connectUrl(base, u.id)), true;
   }
   if (route === '/api/github/callback' && method === 'GET') {
-    const r = await G.userCallback(base, String(url.searchParams.get('code') ?? ''), String(url.searchParams.get('state') ?? ''));
+    const r = await G.userCallback(base, String(url.searchParams.get('code') ?? ''), String(url.searchParams.get('state') ?? ''), url.searchParams.get('installation_id'));
+    // An install from a customer's Studio: linked to their org; back to their Studio.
+    if (r.org) return html(res, 200, done('GitHub is connected', `Your Studio can now work on the repositories you chose${r.account ? ` in ${r.account}` : ''}. Go back to your Studio and tell Talk which game it is.`, r.back ?? '/')), true;
     return html(res, 200, done('Signed in with GitHub', `Studio can now make repositories as ${r.login}. Go back to Studio.`)), true;
   }
   if (route === '/api/github/user' && method === 'DELETE') {

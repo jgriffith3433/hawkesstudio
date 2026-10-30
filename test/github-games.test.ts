@@ -50,6 +50,7 @@ const gh = http.createServer(async (req, res) => {
   if (p === '/installation/repositories') return out(200, { repositories: [{ full_name: 'acme/space-game', private: false, html_url: 'https://github.test/acme/space-game' }] });
   if (p === '/login/oauth/access_token') return out(200, { access_token: 'ghu_user', refresh_token: 'ghr_user', expires_in: 28800, refresh_token_expires_in: 15811200 });
   if (p === '/user') return out(200, { login: 'jgriffith3433' });
+  if (p === '/user/installations') return out(200, { installations: [{ id: 5, account: { login: 'acme' } }] });
   if (p === '/user/repos' && req.method === 'POST') { repo(`jgriffith3433/${b.name}`); return out(201, { full_name: `jgriffith3433/${b.name}`, html_url: `https://github.test/jgriffith3433/${b.name}`, default_branch: 'main' }); }
   const m = /^\/repos\/([^/]+\/[^/]+)(\/.*)?$/.exec(p);
   if (m) {
@@ -196,4 +197,40 @@ test('every starter is complete: the playtest bot, the hook and Pages, valid pac
     assert.match(files['.github/workflows/pages.yml'], /deploy-pages/);
   }
   assert.equal(S.liveUrlFor({ repo: 'Acme/acme.github.io' } as any), 'https://acme.github.io/');
+});
+
+test("each repo gets its own token: J's keep his, others the app's, as a one-command git header", async () => {
+  const T = await import('../src/ghtoken.ts');
+  T.forgetRepoTokens();
+  process.env.GITHUB_TOKEN = 'ghp_j_own';
+  try {
+    assert.equal(await T.repoToken('jgriffith3433/orbit-run'), 'ghp_j_own');
+    assert.equal(await T.repoToken('acme/space-game'), 'ghs_install', "the app's installation on acme");
+    assert.equal(T.slugOfRoute('/repos/acme/space-game/pulls?state=open'), 'acme/space-game');
+    assert.deepEqual(T.gitAuthEnv('jgriffith3433/orbit-run'), {}, "J's repos go through the credential helper as before");
+    const env = T.gitAuthEnv('acme/space-game');
+    assert.equal(env.GIT_CONFIG_KEY_0, 'http.https://github.com/.extraheader');
+    assert.equal(Buffer.from(env.GIT_CONFIG_VALUE_0.replace('Authorization: Basic ', ''), 'base64').toString(), 'x-access-token:ghs_install');
+  } finally {
+    delete process.env.GITHUB_TOKEN;
+    T.forgetRepoTokens();
+  }
+});
+
+test("customers' Studios share the app: an install is linked to its org only after the person's sign-in shows it's theirs", async () => {
+  const link = new URL(G.installLinkFor('org_a', 'https://studio.test/o/org_a/')!);
+  assert.equal(link.pathname, '/apps/hawkes-studio-test/installations/new');
+  const state = link.searchParams.get('state')!;
+  await assert.rejects(G.userCallback('https://studio.test', 'code2', state, '999'), /isn't one your GitHub account can reach/);
+  const r = await G.userCallback('https://studio.test', 'code2', state, '5');
+  assert.equal(r.org, 'org_a');
+  assert.equal(r.account, 'acme');
+  assert.equal(r.back, 'https://studio.test/o/org_a/');
+  assert.deepEqual((await G.orgInstallations('org_a')).map((i) => i.id), [5]);
+  assert.deepEqual(await G.orgInstallations('org_b'), []);
+  assert.throws(() => G.linkInstallation(5, 'org_b', 'acme'), /another Studio/, "another org can't take it over");
+  // A token for one repo of the org's installation; nothing for another org or another owner.
+  assert.equal((await G.orgRepoToken('org_a', 'acme/space-game'))!.token, 'ghs_install');
+  assert.equal(await G.orgRepoToken('org_b', 'acme/space-game'), null);
+  assert.equal(await G.orgRepoToken('org_a', 'someone/else'), null);
 });

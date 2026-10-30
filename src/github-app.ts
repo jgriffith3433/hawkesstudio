@@ -75,6 +75,9 @@ export function manifest(base: string) {
     callback_urls: [`${base}/api/github/callback`],
     setup_url: `${base}/api/github/installed`,
     setup_on_update: true,
+    // After an install GitHub signs the person in (the callback), so Studio can check the installation is theirs before
+    // linking it to their Studio (customers' cells, below).
+    request_oauth_on_install: true,
     public: !customerStudio(),
     hook_attributes: { url: `${base}/api/github/webhook`, active: false },
     default_permissions: {
@@ -179,15 +182,72 @@ export function connectUrl(base: string, userId: string) {
 }
 
 /** GitHub's sign-in answer: the person's user token, kept for them. */
-export async function userCallback(base: string, code: string, state: string) {
+export async function userCallback(base: string, code: string, state: string, installationId?: string | null) {
   const s = readState(state);
+  // After installing the app from a customer's Studio (installLinkFor): the person's sign-in proves the installation is
+  // one they can reach, then it is linked to their org.
+  if (s?.k === 'install' && s.org && installationId) {
+    const link = await exchange({ code, redirect_uri: `${base}/api/github/callback` });
+    const theirs = await gh(link.token, 'GET', '/user/installations?per_page=100');
+    const inst = (theirs.installations as any[] ?? []).find((i) => String(i.id) === String(installationId));
+    if (!inst) throw new StudioError("That installation isn't one your GitHub account can reach: install the app again from your Studio.", 403);
+    linkInstallation(Number(installationId), String(s.org), String(inst.account?.login ?? ''));
+    return { user: null, login: null, org: String(s.org), account: String(inst.account?.login ?? ''), back: s.back ? String(s.back) : null };
+  }
   if (!s || s.k !== 'user' || !s.u) throw new StudioError('This sign-in link expired or was not made here: start again from Studio.', 400);
   const link = await exchange({ code, redirect_uri: `${base}/api/github/callback` });
   const me = await gh(link.token, 'GET', '/user');
   const users = readJson<Record<string, UserLink>>(USERS_FILE(), {});
   users[s.u] = { ...link, login: String(me.login) };
   writeSecret(USERS_FILE(), users);
-  return { user: s.u as string, login: String(me.login) };
+  return { user: s.u as string, login: String(me.login), org: null, account: null, back: null };
+}
+
+// ------------------------------------------------------------------ customers' Studios share J's app (the control plane)
+
+const INSTALLS_FILE = () => path.join(DATA, 'github-installs.json');
+type InstallLink = { org: string; account: string; at: number };
+
+/** The app's install page for one customer's org: the signed state comes back with the installation (userCallback). */
+export function installLinkFor(org: string, back?: string | null) {
+  const c = appConfig();
+  if (!c) return null;
+  return `${WEB()}/apps/${c.slug}/installations/new?state=${encodeURIComponent(signState({ k: 'install', org, ...(back ? { back } : {}) }))}`;
+}
+
+/** Records which org an installation belongs to. One installation, one org: a second org can't take it over. */
+export function linkInstallation(id: number, org: string, account: string) {
+  const all = readJson<Record<string, InstallLink>>(INSTALLS_FILE(), {});
+  const had = all[String(id)];
+  if (had && had.org !== org) throw new StudioError(`That installation (${account}) already belongs to another Studio.`, 409);
+  all[String(id)] = { org, account, at: Date.now() };
+  writeSecret(INSTALLS_FILE(), all);
+}
+
+/** The installations linked to one org, as GitHub has them now (gone ones are left out). */
+export async function orgInstallations(org: string) {
+  const linked = Object.entries(readJson<Record<string, InstallLink>>(INSTALLS_FILE(), {})).filter(([, l]) => l.org === org).map(([id]) => Number(id));
+  if (!linked.length) return [];
+  return (await installations()).filter((i) => linked.includes(i.id));
+}
+
+/**
+ * A token for one org's one repo: only through an installation linked to that org, and scoped to that repository alone
+ * (GitHub's repositories: [name]), so a cell never gets a token wider than the repo it asked for. null: not reachable.
+ */
+export async function orgRepoToken(org: string, repo: string) {
+  const slug = repoSlug(repo);
+  if (!slug) throw new StudioError('repo: owner/name', 400);
+  const [owner, name] = slug.split('/');
+  const inst = (await orgInstallations(org)).find((i) => i.account.toLowerCase() === owner.toLowerCase());
+  if (!inst) return null;
+  try {
+    const t = await gh(appJwt(), 'POST', `/app/installations/${inst.id}/access_tokens`, { repositories: [name] }, { jwt: true });
+    return { token: String(t.token), expires: Date.parse(t.expires_at) };
+  } catch (e: any) {
+    if (e.status === 404 || /422|not accessible|repositor/i.test(String(e.message))) return null;
+    throw e;
+  }
 }
 
 async function exchange(params: Record<string, string>): Promise<Omit<UserLink, 'login'>> {
@@ -263,6 +323,11 @@ export async function accessFor(repo: string, userId?: string | null): Promise<R
   } catch { /* no app, or GitHub unreachable: the other ways */ }
   const pasted = readJson<Record<string, string>>(TOKENS_FILE(), {})[slug.toLowerCase()];
   if (pasted) return { token: pasted, via: 'pasted' };
+  // A customer's Studio: J's app through the control plane, scoped to this one repo (cellside.ts).
+  if (customerStudio()) {
+    const t = await (await import('./cellside.ts')).cellGithubToken(slug).catch(() => null);
+    if (t) return { token: t, via: 'app' };
+  }
   if (!customerStudio() && owner.toLowerCase() === PLATFORM_GITHUB && process.env.GITHUB_TOKEN) return { token: process.env.GITHUB_TOKEN, via: 'studio' };
   if (userId) {
     const u = await userToken(userId).catch(() => null);
@@ -274,6 +339,15 @@ export async function accessFor(repo: string, userId?: string | null): Promise<R
 /** Everything about the connection, for Talk and the dashboard (no secrets). */
 export async function githubStatus(base: string, userId?: string | null) {
   const c = appConfig();
+  // A customer's Studio shares J's app (the control plane): its install link carries this org, and only the
+  // installations linked to it show. Making an app or signing in with GitHub isn't done from a cell.
+  const cell = !c ? await (await import('./cellside.ts')).cellGithub(`${base}/`).catch((e) => ({ error: String(e.message ?? e) }) as any) : null;
+  if (cell) {
+    return {
+      app: cell.app ? { slug: cell.app.slug } : null, setup: null, install: cell.install ?? null, installations: cell.installations ?? [],
+      user: null, connect: null, pastedRepos: Object.keys(readJson<Record<string, string>>(TOKENS_FILE(), {})), error: cell.error ?? (cell.app ? null : "GitHub isn't set up for Studio yet: Hawkes Studio's team turns it on."),
+    };
+  }
   const user = userId ? await userToken(userId).catch(() => null) : null;
   let installs: Awaited<ReturnType<typeof installations>> = [];
   let error: string | null = null;

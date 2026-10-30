@@ -669,7 +669,9 @@ const WORK = () => path.join(PROJECTS, '.work');
 // --------------------------------------------------------------- GitHub
 
 export async function github(route: string, init: { method?: string; body?: unknown } = {}) {
-  const token = process.env.GITHUB_TOKEN;
+  // The repo's own token (ghtoken.ts): J's for his repos, the GitHub App's (or a customer's org's) for the rest.
+  const { repoToken, slugOfRoute } = await import('./ghtoken.ts');
+  const token = (await repoToken(slugOfRoute(route))) ?? process.env.GITHUB_TOKEN;
   if (!token) throw new Error('No GitHub token on the server yet (node deploy/github-token.mjs, then restart hawkes-secrets and hawkes-studio).');
   // STUDIO_GITHUB_API: a stand-in for GitHub's API (tests).
   const r = await fetch(`${process.env.STUDIO_GITHUB_API ?? 'https://api.github.com'}${route}`, {
@@ -2241,8 +2243,9 @@ export function failureFromLog(log: string, max = 1800) {
 /** The log of a failed CI job (best effort: the token may not read Actions; then there is no text). */
 async function ciJobLog(slug: string, jobId: number): Promise<string> {
   try {
+    const token = (await (await import('./ghtoken.ts')).repoToken(slug)) ?? process.env.GITHUB_TOKEN;
     const r = await fetch(`${process.env.STUDIO_GITHUB_API ?? 'https://api.github.com'}/repos/${slug}/actions/jobs/${jobId}/logs`, {
-      headers: { Authorization: `Bearer ${process.env.GITHUB_TOKEN}`, Accept: 'application/vnd.github+json', 'User-Agent': 'hawkes-studio', 'X-GitHub-Api-Version': '2022-11-28' },
+      headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json', 'User-Agent': 'hawkes-studio', 'X-GitHub-Api-Version': '2022-11-28' },
       signal: AbortSignal.timeout(20_000),
     });
     return r.ok ? failureFromLog(await r.text()) : '';

@@ -50,7 +50,10 @@ export async function linksFor(repo: string | null, p?: Product | null) {
   out.branches = `${web}/${repo}/branches`;
   out.hook = `${web}/${repo}/blob/HEAD/.github/workflows/hawkes-studio.yml`;
   const app = appConfig();
-  if (app) {
+  // A customer's Studio: the shared app's install page, with this org signed into it (cellside.ts).
+  const cell = !app ? await import('./cellside.ts').then((m) => m.cellGithub()).catch(() => null) : null;
+  if (cell?.install) out.install = cell.install;
+  else if (app) {
     let ids: { owner?: number; repo?: number } = {};
     try {
       const r = await gh(null, 'GET', `/repos/${repo}`);
@@ -59,7 +62,7 @@ export async function linksFor(repo: string | null, p?: Product | null) {
     out.install = ids.owner && ids.repo
       ? `${web}/apps/${app.slug}/installations/new/permissions?suggested_target_id=${ids.owner}&repository_ids[]=${ids.repo}`
       : installUrl()!;
-  } else {
+  } else if (!cell) {
     out.connectGitHub = studioLink('/api/github/app/setup');
   }
   // The fallback: a fine-grained token with exactly what Studio needs, the form filled in on GitHub.
@@ -88,7 +91,7 @@ export async function readiness(productId: string, userId?: string | null) {
     token = access?.token ?? null;
     items.push(access
       ? { id: 'access', ok: true, what: `Studio can reach it (${access.via === 'app' ? 'the GitHub App' : access.via === 'user' ? 'your GitHub sign-in' : access.via === 'pasted' ? 'a pasted token' : "Studio's own token"})` }
-      : { id: 'access', ok: false, what: "Studio can't reach the repository", by: 'person', ...(appConfig() ? { fix: 'Install the GitHub App on it (the link opens with this repository chosen), then check again.', link: (await linksFor(slug)).install } : { fix: 'Connect Studio to GitHub first: one click on GitHub, then install it on this repository.', link: studioLink('/api/github/app/setup') }) });
+      : { id: 'access', ok: false, what: "Studio can't reach the repository", by: 'person', ...(appConfig() || (await linksFor(slug)).install ? { fix: 'Install the GitHub App on it (the link opens with this repository chosen), then check again.', link: (await linksFor(slug)).install } : { fix: 'Connect Studio to GitHub first: one click on GitHub, then install it on this repository.', link: studioLink('/api/github/app/setup') }) });
   }
   if (slug && token) {
     const info = await gh(token, 'GET', `/repos/${slug}`);
