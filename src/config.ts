@@ -130,7 +130,8 @@ export function loadProducts(): Product[] {
   // A new org cell has no products until onboarding adds one.
   if (customerStudio() && !fs.existsSync(paths.products)) return [];
   const all = JSON.parse(fs.readFileSync(paths.products, 'utf8')).products as Product[];
-  if (customerStudio()) return all.map(asCustomerGame);
+  // A customer's games with a GitHub repo are products agents work on too (asAddedGame), the rest are played where they are.
+  if (customerStudio()) return all.map(asAddedGame);
   // J's Studio: products.json first; a game added here never shadows one of its ids.
   const ids = new Set(all.map((p) => p.id));
   return [...all, ...addedGames().filter((p) => !ids.has(p.id)).map(asAddedGame)];
@@ -138,9 +139,12 @@ export function loadProducts(): Product[] {
 
 /** The folder an added game's repo is cloned into (beside the others), and its GitHub repo, for repos.ts repoMap. */
 export function addedRepoFolders(): Record<string, string> {
-  const taken = new Set(Object.keys(JSON.parse(fs.readFileSync(paths.products, 'utf8')).repos ?? {}).map((k) => k.toLowerCase()));
+  const own = customerStudio() ? {} : JSON.parse(fs.readFileSync(paths.products, 'utf8')).repos ?? {};
+  const taken = new Set(Object.keys(own).map((k) => k.toLowerCase()));
   const out: Record<string, string> = {};
-  for (const p of addedGames()) {
+  // J's added games, or a customer's games (their whole products file: a cell has nothing else).
+  const games = customerStudio() ? (fs.existsSync(paths.products) ? (JSON.parse(fs.readFileSync(paths.products, 'utf8')).products ?? []) as Product[] : []) : addedGames();
+  for (const p of games) {
     const slug = /^[\w.-]+\/[\w.-]+$/.test(String(p.repo ?? '')) ? String(p.repo) : null;
     if (!slug) continue;
     const [owner, name] = slug.split('/');
@@ -164,7 +168,8 @@ export function asAddedGame(p: Product): Product {
   return {
     ...g, repo: folder, site: folder, github: p.repo,
     local: { ...g.local, dir: folder },
-    checks: p.checks ?? (p.engine === 'web' ? [{ dir: folder, cmd: 'npm install --no-audit --no-fund && npm run build' }] : []),
+    // The build as the check when it has one (a plain site without package.json has none to run).
+    checks: p.checks ?? (p.engine === 'web' ? [{ dir: folder, cmd: 'test ! -f package.json || (npm install --no-audit --no-fund && npm run build --if-present)' }] : []),
   } as Product;
 }
 

@@ -169,7 +169,7 @@ test('a new game: asked what kind first (the plan wants a pitch and a starter), 
   assert.equal(p.github, 'jgriffith3433/orbit-run');
   assert.equal(p.repo, 'orbit-run');
   assert.equal(p.local.dir, 'orbit-run');
-  assert.deepEqual(p.checks, [{ dir: 'orbit-run', cmd: 'npm install --no-audit --no-fund && npm run build' }]);
+  assert.deepEqual(p.checks, [{ dir: 'orbit-run', cmd: 'test ! -f package.json || (npm install --no-audit --no-fund && npm run build --if-present)' }]);
   const { repoMap } = await import('../src/repos.ts');
   assert.equal(repoMap()['orbit-run'], 'jgriffith3433/orbit-run');
   assert.equal(repoMap()['doseofdestructionwebsite'], 'jgriffith3433/doseofdestructionwebsite', "products.json's stay");

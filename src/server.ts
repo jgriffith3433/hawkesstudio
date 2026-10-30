@@ -868,7 +868,8 @@ const server = http.createServer(async (req, res) => {
       const b = await readJson(req);
       // A customer's Studio has no checkouts to sync: its games are played where they are deployed (repos come with the
       // GitHub App, docs/studio-customers.md).
-      if ((await import('./tenancy.ts')).customerStudio()) return send(res, 200, { repos: [], note: 'Nothing to sync: your games are played where they are deployed.' });
+      // Only the games with a GitHub repo (cloned for agents, through Hawkes Studio's GitHub App).
+      if ((await import('./tenancy.ts')).customerStudio() && !Object.keys((await import('./repos.ts')).repoMap()).length) return send(res, 200, { repos: [], note: 'Nothing to sync: none of your games has a GitHub repository connected yet.' });
       const repos = await syncRepos(Array.isArray(b.only) ? b.only : undefined);
       const { previewsAfterSync } = await import('./previews.ts');
       previewsAfterSync(repos);
