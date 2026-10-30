@@ -128,14 +128,17 @@ export const cpCookie = (a: CpAccount | null) => `${CP_COOKIE}=${a ? encodeURICo
  * Continue with Google for someone with no account in J's Studio (auth-pages.ts): their control-plane session, and
  * where to go (their Studio, else the sign-up).
  */
-export function frontDoor(profile: { email: string; sub: string | null; name: string | null }, now = Date.now()) {
+export function frontDoor(profile: { email: string; sub: string | null; name: string | null }, now = Date.now(), want?: string | null) {
   if (!profile.sub) throw new StudioError('That Google sign-in has no account id.', 401);
   const a: CpAccount = { sub: profile.sub, email: profile.email.toLowerCase(), name: profile.name };
   const orgs = orgsOf(a.sub, a.email);
   for (const o of orgs) setOrg(o.id, { last_signin: now, warned_at: null });
   // An invite found by email: from now on it is theirs by Google's id too.
   db.prepare(`UPDATE cp_access SET sub = ? WHERE email = ? AND sub IS NULL`).run(a.sub, a.email);
-  return { cookie: cpCookie(a), next: orgs.length === 1 ? `/o/${orgs[0].id}/` : '/auth/start' };
+  // Where they were going (a page or link of a Studio, like /api/github/connect) goes on in their own Studio, so a link
+  // Talk gave them still works after the front door (2026-10-30: it ended on the Games page instead).
+  const path = want && /^\/(?!\/|auth\/|o\/)[^\s]*$/.test(want) && want !== '/' ? want.replace(/^\/+/, '') : '';
+  return { cookie: cpCookie(a), next: orgs.length === 1 ? `/o/${orgs[0].id}/${path}` : '/auth/start' };
 }
 
 // ------------------------------------------------------------------ orgs

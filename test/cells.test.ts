@@ -134,6 +134,10 @@ test('signing up makes only the record; the first game makes the cell (shared ac
   assert.equal(org.state, 'new');
   assert.equal(calls.length, 0, 'no Google call at sign-up');
   assert.equal(C.frontDoor({ ...A1 }).next, `/o/${org.id}/`, 'next time: straight into it');
+  // Where they were going goes on in their own Studio (a link Talk gave them); never the front door's own pages.
+  assert.equal(C.frontDoor({ ...A1 }, Date.now(), '/api/github/connect').next, `/o/${org.id}/api/github/connect`);
+  assert.equal(C.frontDoor({ ...A1 }, Date.now(), '/auth/start').next, `/o/${org.id}/`);
+  assert.equal(C.frontDoor({ ...A1 }, Date.now(), '//evil.example').next, `/o/${org.id}/`);
   const up = await C.ensureCell(org.id, 'first game', { game: { id: 'moon', name: 'Moon', engine: 'web', live: 'https://moon.example' } });
   assert.equal(up.state, 'awake');
   assert.equal(up.image, process.env.STUDIO_CELLS_IMAGE);

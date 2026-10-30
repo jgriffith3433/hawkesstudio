@@ -224,7 +224,7 @@ export async function handleAuthRoute(req: http.IncomingMessage, res: http.Serve
       // signs up for one. Never a session here.
       const C = await import('./cells.ts');
       if (profile && C.cellsOn() && (e instanceof A.Waitlisted || /has no account here/.test(String(e.message)))) {
-        const d = C.frontDoor(profile);
+        const d = C.frontDoor(profile, Date.now(), A.safeNext(f.next, ''));
         json(res, 200, { ok: true, next: d.next }, { 'Set-Cookie': d.cookie });
         return true;
       }
