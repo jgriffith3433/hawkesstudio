@@ -44,11 +44,9 @@ export async function handleGithubRoutes(req: http.IncomingMessage, res: http.Se
   const base = baseOf(req);
   if (route === '/api/github' && method === 'GET') return send(res, 200, await G.githubStatus(base, githubUserFor(req))), true;
   if (route === '/api/github/app/setup' && method === 'GET') {
-    // Making the app is an admin's (in J's Studio the platform admin's): it's opened in a browser, so the check is here.
-    const u = requester(req);
-    const { platformAdminOf } = await import('./lockdown.ts');
-    const { customerStudio } = await import('./tenancy.ts');
-    if (!u || u.role !== 'admin' || (!customerStudio() && !platformAdminOf(req))) throw new StudioError('Only an admin of this Studio connects it to GitHub.', 403);
+    // Anyone signed in to this Studio may connect it (J, 2026-10-30: "You shouldn't have to be admin to do this"). It is
+    // made once: with an app already here the link goes straight to installing it, so nobody replaces it this way.
+    if (!requester(req)) return redirect(res, `/auth/signin?next=${encodeURIComponent(`${route}${url.search}`)}`), true;
     if (G.appConfig()) return redirect(res, G.installUrl()!), true;
     return html(res, 200, G.setupPage(base, url.searchParams.get('org'))), true;
   }
@@ -61,7 +59,9 @@ export async function handleGithubRoutes(req: http.IncomingMessage, res: http.Se
   }
   if (route === '/api/github/connect' && method === 'GET') {
     const u = requester(req);
-    if (!u) throw new StudioError('Sign in to Studio first.', 401);
+    if (!u) return redirect(res, `/auth/signin?next=${encodeURIComponent(route)}`), true;
+    // No app yet: make it first, then come back here (one link does both).
+    if (!G.appConfig()) return redirect(res, '/api/github/app/setup'), true;
     return redirect(res, G.connectUrl(base, u.id)), true;
   }
   if (route === '/api/github/callback' && method === 'GET') {

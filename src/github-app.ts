@@ -291,9 +291,8 @@ export async function githubStatus(base: string, userId?: string | null) {
   };
 }
 
-/** The first admin here who signed in with GitHub (Talk and the agents have no person: in J's Studio this is J). */
+/** Whose GitHub sign-in Talk and the agents use (they have no person of their own): an admin's, else anyone's here. */
 export function linkedAdmin(): string | null {
-  const users = readJson<Record<string, UserLink>>(USERS_FILE(), {});
-  for (const id of Object.keys(users)) if (getUser(id)?.role === 'admin') return id;
-  return null;
+  const ids = Object.keys(readJson<Record<string, UserLink>>(USERS_FILE(), {}));
+  return ids.find((id) => getUser(id)?.role === 'admin') ?? ids.find((id) => getUser(id)) ?? null;
 }

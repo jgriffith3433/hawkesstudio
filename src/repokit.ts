@@ -25,7 +25,43 @@ export type Plan =
   | { kind: 'setup'; product: string; repo: string; steps: Step[] }
   | { kind: 'new'; id: string; name: string; pitch: string; starter: string; owner: string; repoName: string; private: boolean; user: string };
 
-type Item = { id: string; ok: boolean; what: string; fix?: string; by?: 'talk' | 'approve' | 'person'; step?: Step };
+type Item = { id: string; ok: boolean; what: string; fix?: string; by?: 'talk' | 'approve' | 'person'; step?: Step; link?: string };
+
+const studioLink = (p: string) => `${studioBase()}${p}`;
+
+/**
+ * The exact pages a person might need for a game, so they never hunt through GitHub (J, 2026-10-30: "give the user Links
+ * to where they need to go"). The app's install page for this one repository when GitHub says which it is.
+ */
+export async function linksFor(repo: string | null, p?: Product | null) {
+  const out: Record<string, string> = {};
+  if (p?.live) out.live = p.live;
+  if (p?.beta) out.beta = p.beta;
+  if (!repo) return out;
+  const web = 'https://github.com';
+  out.repo = `${web}/${repo}`;
+  out.actions = `${web}/${repo}/actions`;
+  out.pages = `${web}/${repo}/settings/pages`;
+  out.branches = `${web}/${repo}/branches`;
+  out.hook = `${web}/${repo}/blob/HEAD/.github/workflows/hawkes-studio.yml`;
+  const app = appConfig();
+  if (app) {
+    let ids: { owner?: number; repo?: number } = {};
+    try {
+      const r = await gh(null, 'GET', `/repos/${repo}`);
+      ids = { owner: r.owner?.id, repo: r.id };
+    } catch { /* private or unreachable without a token: the plain install page */ }
+    out.install = ids.owner && ids.repo
+      ? `${web}/apps/${app.slug}/installations/new/permissions?suggested_target_id=${ids.owner}&repository_ids[]=${ids.repo}`
+      : installUrl()!;
+  } else {
+    out.connectGitHub = studioLink('/api/github/app/setup');
+  }
+  // The fallback: a fine-grained token with exactly what Studio needs, the form filled in on GitHub.
+  const [owner] = repo.split('/');
+  out.token = `${web}/settings/personal-access-tokens/new?${new URLSearchParams({ name: `Hawkes Studio: ${repo}`.slice(0, 40), description: 'Lets Hawkes Studio set up and work on this game', target_name: owner, expires_in: '90', contents: 'write', workflows: 'write', pages: 'write', metadata: 'read' })}`;
+  return out;
+}
 
 const studioBase = () => (process.env.STUDIO_PUBLIC_URL || 'https://studio.hawkesgen.ai').replace(/\/+$/, '');
 
@@ -47,7 +83,7 @@ export async function readiness(productId: string, userId?: string | null) {
     token = access?.token ?? null;
     items.push(access
       ? { id: 'access', ok: true, what: `Studio can reach it (${access.via === 'app' ? 'the GitHub App' : access.via === 'user' ? 'your GitHub sign-in' : access.via === 'pasted' ? 'a pasted token' : "Studio's own token"})` }
-      : { id: 'access', ok: false, what: "Studio can't reach the repository", by: 'person', fix: appConfig() ? `Install the GitHub App on it: ${installUrl()} (choose the repository), then check again.` : 'Connect GitHub first: studio_github setup gives the link (one click on GitHub).' });
+      : { id: 'access', ok: false, what: "Studio can't reach the repository", by: 'person', ...(appConfig() ? { fix: 'Install the GitHub App on it (the link opens with this repository chosen), then check again.', link: (await linksFor(slug)).install } : { fix: 'Connect Studio to GitHub first: one click on GitHub, then install it on this repository.', link: studioLink('/api/github/app/setup') }) });
   }
   if (slug && token) {
     const info = await gh(token, 'GET', `/repos/${slug}`);
@@ -71,9 +107,12 @@ export async function readiness(productId: string, userId?: string | null) {
   const plays = p.playtests?.length ? p.playtests.map((t) => `${(t as any).scenario ?? (t as any).mode}@${t.where}`).join(', ') : 'none';
   items.push({ id: 'playtests', ok: Boolean(p.playtests?.length), what: `Playtests: ${plays}`, ...(p.playtests?.length ? {} : { by: 'talk' as const, fix: 'Add a smoke playtest with studio_game update.' }) });
   const steps = items.filter((i) => !i.ok && i.step).map((i) => i.step!) as Step[];
+  // Each item that waits on a GitHub page links straight to it.
+  const links = await linksFor(slug, p);
+  for (const i of items) if (!i.ok && !i.link) i.link = i.id === 'hook' ? links.repo : i.id === 'branches' ? links.branches : i.id === 'live' ? links.pages : undefined;
   return {
     product: p.id, name: p.name, ready: items.every((i) => i.ok),
-    items,
+    items, links,
     next: items.find((i) => !i.ok) ?? null,
     approve: steps.length ? { kind: 'setup', product: p.id, repo: slug, steps } : null,
   };
@@ -141,6 +180,7 @@ export async function applyPlan(plan: Plan): Promise<string[]> {
   done.push(await runStep(u.token, repo, 'branches'));
   saveProduct({ id: plan.id, name: plan.name, engine: 'web', live: liveUrlFor(seed), repo, about: plan.pitch, contract: true, playtests: [{ scenario: 'smoke', where: 'live' }] });
   done.push(`Added "${plan.name}" to Studio (${plan.id}): playtests play ${liveUrlFor(seed)}.`);
+  done.push(`Links: the repo ${created.html_url} · its first publish ${created.html_url}/actions · the game ${liveUrlFor(seed)} (live once the publish finishes, a minute or two)`);
   return done;
 }
 

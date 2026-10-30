@@ -53,7 +53,7 @@ const gh = http.createServer(async (req, res) => {
   if (m) {
     const r = repo(m[1]);
     const rest = m[2] ?? '';
-    if (!rest) return out(200, { full_name: m[1], default_branch: 'main', permissions: { push: true } });
+    if (!rest) return out(200, { id: 42, owner: { id: 7 }, full_name: m[1], default_branch: 'main', permissions: { push: true } });
     let x: RegExpExecArray | null;
     if ((x = /^\/branches\/(.+)$/.exec(rest))) return r.branches.has(x[1]) ? out(200, { name: x[1] }) : out(404, { message: 'Branch not found' });
     if ((x = /^\/contents\/(.+)$/.exec(rest))) return r.files.has(x[1]) ? out(200, { path: x[1] }) : out(404, { message: 'Not Found' });
@@ -129,6 +129,10 @@ test('readiness walks a game through what it lacks; the setup plan adds the hook
   assert.equal(ids.hook, false);
   assert.equal(ids.branches, false);
   assert.deepEqual(r.approve, { kind: 'setup', product: 'space-game', repo: 'acme/space-game', steps: ['hook', 'branches'] });
+  // Links straight to the pages: the app's install page with this repo chosen, a prefilled token form as the fallback.
+  assert.equal(r.links.install, 'https://github.com/apps/hawkes-studio-test/installations/new/permissions?suggested_target_id=7&repository_ids[]=42');
+  assert.match(r.links.token, /personal-access-tokens\/new\?.*target_name=acme.*contents=write/);
+  assert.equal(r.items.find((i) => i.id === 'branches')!.link, 'https://github.com/acme/space-game/branches');
   const d = await R.describePlan(r.approve as any);
   assert.deepEqual(d.blockers, []);
   const done = await R.applyPlan(r.approve as any);
