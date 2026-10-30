@@ -920,7 +920,10 @@ const server = http.createServer(async (req, res) => {
       } catch (e: any) {
         return send(res, 401, { error: `token rejected: ${e.message}` });
       }
-      if (String(claims.repository_owner).toLowerCase() !== 'jgriffith3433') return send(res, 403, { error: 'not one of J\'s repos' });
+      // J's own repos, or a game added to this Studio (Talk's studio_game; its repo by name, signed by GitHub's OIDC).
+      const { addedRepoFolders } = await import('./config.ts');
+      const added = Object.values(addedRepoFolders()).some((slug) => slug.toLowerCase() === String(claims.repository).toLowerCase());
+      if (String(claims.repository_owner).toLowerCase() !== 'jgriffith3433' && !added) return send(res, 403, { error: 'not one of J\'s repos or a game added here' });
       if (claims.event_name !== 'push' && claims.event_name !== 'workflow_dispatch') return send(res, 403, { error: `only pushes (got ${claims.event_name})` });
       const ref = String(claims.ref);
       const { betaFolderFor, onBetaPush, betaPushes } = await import('./betawatch.ts');

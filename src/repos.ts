@@ -6,7 +6,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
-import { PROJECTS, paths } from './config.ts';
+import { PROJECTS, paths, addedRepoFolders } from './config.ts';
 import { trackCommand } from './ops.ts';
 import { lockHash, installedFor, ensureInstalled, runShell } from './warm.ts';
 import { REF_LOCK, fetchLocked } from './gitlock.ts';
@@ -40,7 +40,8 @@ function gitA(cwd: string, args: string[], timeoutMs = 20 * 60_000): Promise<{ o
 }
 
 export function repoMap(): Record<string, string> {
-  return JSON.parse(fs.readFileSync(paths.products, 'utf8')).repos ?? {};
+  // Games added in J's Studio (config.ts addedRepoFolders) are cloned beside products.json's.
+  return { ...(JSON.parse(fs.readFileSync(paths.products, 'utf8')).repos ?? {}), ...addedRepoFolders() };
 }
 
 export type RepoResult = { folder: string; slug: string; action: 'cloned' | 'updated' | 'current' | 'kept' | 'failed'; detail: string; head?: string; dirty?: string[]; discarded?: string[];

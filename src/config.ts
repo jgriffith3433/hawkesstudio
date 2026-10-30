@@ -72,6 +72,8 @@ export type Product = {
   framing: string;
   engine: 'web' | 'unity' | 'static';
   repo: string;
+  /** A game added in J's Studio: its GitHub repo (owner/name); `repo` is then the folder it is cloned into. */
+  github?: string;
   site: string;
   live: string;
   /** A customer's game: where its test version plays (its beta), when it has one. Playtests "on beta" play it. */
@@ -131,7 +133,39 @@ export function loadProducts(): Product[] {
   if (customerStudio()) return all.map(asCustomerGame);
   // J's Studio: products.json first; a game added here never shadows one of its ids.
   const ids = new Set(all.map((p) => p.id));
-  return [...all, ...addedGames().filter((p) => !ids.has(p.id)).map(asCustomerGame)];
+  return [...all, ...addedGames().filter((p) => !ids.has(p.id)).map(asAddedGame)];
+}
+
+/** The folder an added game's repo is cloned into (beside the others), and its GitHub repo, for repos.ts repoMap. */
+export function addedRepoFolders(): Record<string, string> {
+  const taken = new Set(Object.keys(JSON.parse(fs.readFileSync(paths.products, 'utf8')).repos ?? {}).map((k) => k.toLowerCase()));
+  const out: Record<string, string> = {};
+  for (const p of addedGames()) {
+    const slug = /^[\w.-]+\/[\w.-]+$/.test(String(p.repo ?? '')) ? String(p.repo) : null;
+    if (!slug) continue;
+    const [owner, name] = slug.split('/');
+    let folder = name;
+    if (taken.has(folder.toLowerCase())) folder = `${owner}-${name}`;
+    taken.add(folder.toLowerCase());
+    out[folder] = slug;
+  }
+  return out;
+}
+
+/**
+ * A game added in J's Studio, as a product agents can work on (J, 2026-10-30: Talk makes games and agents build them):
+ * its GitHub repo cloned into its own folder like products.json's (repos.ts repoMap), the build as its check, and
+ * played where it is deployed (local serve "remote" at its beta, else live).
+ */
+export function asAddedGame(p: Product): Product {
+  const g = asCustomerGame(p);
+  const folder = Object.entries(addedRepoFolders()).find(([, slug]) => slug === p.repo)?.[0];
+  if (!folder) return g;
+  return {
+    ...g, repo: folder, site: folder, github: p.repo,
+    local: { ...g.local, dir: folder },
+    checks: p.checks ?? (p.engine === 'web' ? [{ dir: folder, cmd: 'npm install --no-audit --no-fund && npm run build' }] : []),
+  } as Product;
 }
 
 /** The games added in J's Studio (paths.games), as stored. */

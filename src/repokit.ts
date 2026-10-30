@@ -73,7 +73,7 @@ async function exists(token: string, url: string) {
 export async function readiness(productId: string, userId?: string | null) {
   const p = getProduct(productId);
   const items: Item[] = [];
-  const slug = repoSlug(p.repo);
+  const slug = repoSlug(p.github ?? p.repo);
   items.push(slug
     ? { id: 'repo', ok: true, what: `Repository: ${slug}` }
     : { id: 'repo', ok: false, what: 'No GitHub repository yet', fix: 'Ask for its GitHub repository (owner/name) and save it with studio_game update, or make a new one (studio_game new).', by: 'talk' });

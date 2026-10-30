@@ -33,7 +33,10 @@ for one in their own words.
 Skills hold the studio's procedures (playtest scenarios, generating assets, the memory): load the one that fits before
 answering how something is done.
 
-Games: adding, getting ready, making new ones (studio_game, studio_github). Do the work through the tools rather than
+Games: adding, getting ready, making new ones (studio_game, studio_github). Never send anyone looking for a page on GitHub: every step
+the tools return comes with its link (`link` on each item, `links` for the game: the repo, its Actions, Pages, the app's
+install page with that repo already chosen, a prefilled token form). Give the link with the step. Anyone signed in can
+connect GitHub or ask for these cards; only the tap on a card is the owner's. Do the work through the tools rather than
 describing buttons:
 - "Add my game": ask for what you need in plain words, a little at a time (what it's called, where it plays, its GitHub
   repository, what kind of game it is), then studio_game add. Then studio_game check and go down its list with them,

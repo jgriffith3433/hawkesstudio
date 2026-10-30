@@ -69,7 +69,10 @@ Skills hold the studio's procedures (go-live checklist, Unity build debugging, p
 product how-tos, shell and Windows quirks): load the one that fits before answering how something is done.
 
 Games: adding, getting ready, making new ones (studio_game, studio_github; J, 2026-10-30: Talk does "everything the user
-needs" and walks them through it). Do the work through the tools rather than describing buttons:
+needs" and walks them through it). Never send anyone looking for a page on GitHub: every step
+the tools return comes with its link (`link` on each item, `links` for the game: the repo, its Actions, Pages, the app's
+install page with that repo already chosen, a prefilled token form). Give the link with the step. Anyone signed in can
+connect GitHub or ask for these cards; only the tap on a card is the owner's. Do the work through the tools rather than describing buttons:
 - "Add a game": ask for what you need in plain words, a little at a time (what it's called, where it plays, its GitHub
   repository, what kind of game it is), then studio_game add (it lives in Studio's data; products.json games are edited
   in git). Then studio_game check and go down its list, one item at a time: do the "talk" items yourself, put an Approve

@@ -162,6 +162,14 @@ test('a new game: asked what kind first (the plan wants a pitch and a starter), 
   const p = C.getProduct('orbit-run');
   assert.equal(p.live, 'https://jgriffith3433.github.io/orbit-run/');
   assert.equal(p.contract, true);
+  // Agents can work on it like any product: cloned into its own folder, its build as the check.
+  assert.equal(p.github, 'jgriffith3433/orbit-run');
+  assert.equal(p.repo, 'orbit-run');
+  assert.equal(p.local.dir, 'orbit-run');
+  assert.deepEqual(p.checks, [{ dir: 'orbit-run', cmd: 'npm install --no-audit --no-fund && npm run build' }]);
+  const { repoMap } = await import('../src/repos.ts');
+  assert.equal(repoMap()['orbit-run'], 'jgriffith3433/orbit-run');
+  assert.equal(repoMap()['doseofdestructionwebsite'], 'jgriffith3433/doseofdestructionwebsite', "products.json's stay");
   assert.ok(done.some((l) => /Added "Orbit Run" to Studio/.test(l)));
   // The same game can't be made twice.
   assert.match((await R.describePlan(plan)).blockers.join(' '), /already has a game/);

@@ -113,7 +113,7 @@ export function studioMcp({ studio, waitRun }: Client = { studio: defaultStudio,
       }),
       run: async (a) => {
         const action = a.action ?? 'list';
-        if (action === 'list') return (await studio('/api/products')).products.map((p: any) => ({ id: p.id, name: p.name, engine: p.engine, live: p.live, repo: p.repo, contract: Boolean(p.contract), playtests: (p.playtests ?? []).length }));
+        if (action === 'list') return (await studio('/api/products')).products.map((p: any) => ({ id: p.id, name: p.name, engine: p.engine, live: p.live, repo: p.github ?? p.repo, contract: Boolean(p.contract), playtests: (p.playtests ?? []).length }));
         if (action === 'get') return (await studio('/api/products')).products.find((p: any) => p.id === a.product) ?? `No game "${a.product}".`;
         if (action === 'starters') return (await studio('/api/games/starters')).starters;
         if (action === 'check') return studio(`/api/games/${a.product}/readiness`);
@@ -124,7 +124,7 @@ export function studioMcp({ studio, waitRun }: Client = { studio: defaultStudio,
           const id = action === 'add' ? a.id : a.product;
           const cur = action === 'update' ? (await studio('/api/products')).products.find((p: any) => p.id === id) : null;
           if (action === 'update' && !cur) return `No game "${id}".`;
-          const keep = cur ? { name: cur.name, engine: cur.engine, live: cur.live, beta: cur.beta, repo: cur.repo, about: cur.about, quality: cur.quality, story: cur.storyText, contract: cur.contract, playtests: cur.playtests, build: cur.build } : {};
+          const keep = cur ? { name: cur.name, engine: cur.engine, live: cur.live, beta: cur.beta, repo: cur.github ?? cur.repo, about: cur.about, quality: cur.quality, story: cur.storyText, contract: cur.contract, playtests: cur.playtests, build: cur.build } : {};
           const set = Object.fromEntries(['name', 'engine', 'live', 'beta', 'repo', 'about', 'quality', 'story', 'contract', 'playtests'].filter((k) => a[k] !== undefined).map((k) => [k, a[k]]));
           return (await studio(`/api/products/${id}`, { method: 'PUT', body: { ...keep, ...set } })).product;
         }

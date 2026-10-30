@@ -91,7 +91,7 @@ async function studioEditGame(id) {
     <label class="meta">Made with<select name="engine" style="${field}">${opt('web', 'A web game or site')}${opt('unity', 'Unity (WebGL)')}${opt('godot', 'Godot (web export)')}${opt('desktop', 'A desktop game')}</select></label>
     <label class="meta">Where it plays (live)<input name="live" type="url" required placeholder="https://…" value="${v(p?.live)}" style="${field}"></label>
     <label class="meta">Its test version (beta), if it has one<input name="beta" type="url" placeholder="https://… (optional)" value="${v(p?.beta)}" style="${field}"></label>
-    <label class="meta">GitHub repository (owner/name), optional<input name="repo" placeholder="owner/name" value="${v(p?.repo)}" style="${field}"></label>
+    <label class="meta">GitHub repository (owner/name), optional<input name="repo" placeholder="owner/name" value="${v(p?.github ?? p?.repo)}" style="${field}"></label>
     <label class="meta">What it is (Claude reads it before every review)<textarea name="about" rows="2" style="${field}">${v(p?.about)}</textarea></label>
     <label class="meta">Its story and tone (optional)<textarea name="story" rows="3" style="${field}">${v(p?.storyText)}</textarea></label>
     <label class="meta">What "done" means for it (optional: reviews judge against it)<textarea name="quality" rows="2" style="${field}">${v(p?.quality)}</textarea></label>
@@ -99,9 +99,12 @@ async function studioEditGame(id) {
       <span>${p ? '<button type="button" class="small" data-game="delete" style="color:var(--red)">Delete this game</button>' : ''}</span>
       <span style="display:flex;gap:8px"><button type="button" class="small" data-game="close">Cancel</button><button type="submit" class="primary">${p ? 'Save' : 'Add it'}</button></span>
     </div>
-    <div class="meta" id="gameMsg"></div></form>`;
+    <div class="meta" id="gameMsg"></div>
+    <div id="gameReady" style="border-top:1px solid var(--line,#2a3138);margin-top:8px;padding-top:10px"></div></form>`;
   document.body.append(el);
   const msg = (t) => { el.querySelector('#gameMsg').innerHTML = t; };
+  if (p) studioGameReady(p.id, el.querySelector('#gameReady'));
+  else studioGithubLine(el.querySelector('#gameReady'));
   return new Promise((resolve) => {
     const done = (changed) => { el.remove(); resolve(changed); if (changed) refresh(); };
     el.addEventListener('click', async (e) => {
@@ -124,6 +127,43 @@ async function studioEditGame(id) {
   });
 }
 window.studioEditGame = studioEditGame;
+
+// GitHub in one line (github-routes.ts): connect Studio (one click on GitHub), sign in with GitHub, or where it's installed.
+async function studioGithubLine(box) {
+  try {
+    const g = await api('/api/github');
+    const btn = (href, label, primary) => `<a class="button small${primary ? ' primary' : ''}" href="${esc(href)}" target="_blank" rel="noopener">${label}</a>`;
+    box.innerHTML = !g.app
+      ? `<div class="meta">GitHub isn't connected yet. One click on GitHub connects it; then pick the repositories Studio may work on.</div><div style="margin-top:6px">${btn(g.setup, 'Connect GitHub', true)}</div>`
+      : `<div class="meta">GitHub: the app <b>${esc(g.app.slug)}</b>${g.installations.length ? ` is installed on ${g.installations.map((i) => esc(i.account)).join(', ')}` : ' is made, not installed yet'}${g.user ? `; you're signed in as <b>${esc(g.user.login)}</b>` : ''}.</div>
+         <div style="margin-top:6px;display:flex;gap:6px;flex-wrap:wrap">${btn(g.install, 'Choose repositories')}${g.connect ? btn(g.connect, 'Sign in with GitHub') : ''}</div>`;
+  } catch (e) {
+    box.innerHTML = `<div class="meta">GitHub: ${esc(e.message)}</div>`;
+  }
+}
+
+// "Get it ready" (repokit.ts readiness): what the game has and lacks, each with a link straight to the page, and one
+// button for the GitHub steps Studio can do (an Approve card: J's tap runs them).
+async function studioGameReady(id, box) {
+  box.innerHTML = '<div class="meta">Checking what it needs…</div>';
+  try {
+    const r = await api(`/api/games/${id}/readiness`);
+    const rows = r.items.map((i) => `<li style="margin:4px 0">${i.ok ? '✅' : '⬜'} ${esc(i.what)}${!i.ok && i.fix ? `<div class="meta">${esc(i.fix)}</div>` : ''}${!i.ok && i.link ? ` <a href="${esc(i.link)}" target="_blank" rel="noopener">Open ↗</a>` : ''}</li>`).join('');
+    const links = Object.entries(r.links ?? {}).filter(([k]) => ['live', 'beta', 'repo', 'actions'].includes(k)).map(([k, u]) => `<a href="${esc(u)}" target="_blank" rel="noopener">${({ live: 'Play it', beta: 'Beta', repo: 'Repository', actions: 'Builds on GitHub' })[k]} ↗</a>`).join(' · ');
+    box.innerHTML = `<div style="display:flex;justify-content:space-between;align-items:center;gap:8px"><b>${r.ready ? 'Ready ✓' : 'Get it ready'}</b><span class="meta">${links}</span></div>
+      <ul style="list-style:none;padding:0;margin:6px 0">${rows}</ul>
+      ${r.approve ? '<button type="button" class="small primary" data-ready="setup">Set it up on GitHub</button> <span class="meta">Puts an Approve card in your Inbox.</span>' : ''}
+      <div id="gameGh" style="margin-top:8px"></div>`;
+    studioGithubLine(box.querySelector('#gameGh'));
+    box.querySelector('[data-ready="setup"]')?.addEventListener('click', async (e) => {
+      e.target.disabled = true;
+      try { await api(`/api/games/${id}/setup`, { method: 'POST', body: {} }); e.target.outerHTML = '<span class="meta">The card is in your Inbox: tap Approve there.</span>'; }
+      catch (err) { e.target.disabled = false; e.target.insertAdjacentHTML('afterend', ` <span style="color:var(--red)">${esc(err.message)}</span>`); }
+    });
+  } catch (e) {
+    box.innerHTML = `<div class="meta">${esc(e.message)}</div>`;
+  }
+}
 // The Go live card's "Add its repository" (golive.js) opens the same editor.
 const studioAddRepo = (id) => studioEditGame(id);
 window.studioAddRepo = studioAddRepo;
@@ -316,7 +356,7 @@ function card(p, h = health(p)) {
     <div class="actions">
       ${window.studioMe?.customer
         ? `<button class="small primary" data-act="playtest" data-p="${p.id}" title="Plays it where it is live, with a video and a review (a few cents)">${p.beta ? 'Play live' : 'Run a playtest'}</button>${p.beta ? ` <button class="small" data-act="playbeta" data-p="${p.id}" title="Plays its test version (${esc(p.beta)}), with a video and a review">Play beta</button>` : ''} <button class="small" data-admin data-act="editgame" data-p="${p.id}">Edit</button>`
-        : `<button class="small primary" data-act="playtest" data-p="${p.id}" title="A quick playtest of the main scenario, with a video and a review (a few cents)">Smoke test</button>`}
+        : `<button class="small primary" data-act="playtest" data-p="${p.id}" title="A quick playtest of the main scenario, with a video and a review (a few cents)">Smoke test</button>${p.github ? ` <button class="small" data-admin data-act="editgame" data-p="${p.id}" title="Its settings, what it still needs and links to its pages">Edit · get it ready</button>` : ''}`}
     </div>
     <details class="more-details"><summary class="meta">Details</summary>
       <div class="meta">${esc(p.framing)}</div>
