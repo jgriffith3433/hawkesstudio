@@ -272,6 +272,8 @@ export function ensureCell(orgId: string, why: string, o: { dry?: boolean; game?
     try {
       const image = await currentImage();
       const g = await ensureGenKey(orgId, o).catch((e) => { console.warn(`[cells] ${orgId} has no Gen key: ${e.message}`); return null; });
+      // Isolated cells (cellrun.ts): its own service account, reaching only its own folder, made before the service.
+      if (R.isolated()) await R.ensureCellIdentity(orgId, o);
       const made = await R.createCell(orgId, { sub: org.ownerSub, email: org.ownerEmail }, image, o, undefined, g ?? undefined);
       setOrg(orgId, { state: 'awake', service: made.service, image, hibernated_at: null, last_active: Date.now() });
       console.log(`[cells] ${orgId} is up (${why}${made.dry ? ', dry run' : ''})`);
@@ -349,8 +351,31 @@ export async function deleteOrgData(orgId: string, o: { dry?: boolean } = {}) {
     const { gcsList, gcsDelete } = await import('./gcp.ts');
     for (const obj of await gcsList(bucket, prefix)) await gcsDelete(bucket, obj.name);
   }
+  // Its own account, folder and job grant go with the data (always tried: a cell made while isolated may be deleted after).
+  await R.removeCellIdentity(orgId, o).catch((e) => console.warn(`[cells] ${orgId}: removing its identity: ${e.message}`));
   setOrg(orgId, { state: 'deleted', deleted_at: Date.now(), service: null });
   console.log(`[cells] ${orgId}'s data deleted${R.dryRun(o) ? ' (dry run)' : ''}`);
+}
+
+/**
+ * Moves every cell onto its own service account (the setup's isolation step; docs/studio-customers.md "Isolation"):
+ * for each org not deleted, its account, folder and job grant; a running cell then gets a new revision as that account.
+ * Hibernated and new ones get it when they are made. Idempotent: run it again any time.
+ */
+export async function isolateCells(o: { dry?: boolean } = {}) {
+  if (!R.isolated() && !R.dryRun(o)) throw new StudioError('Turn isolation on first (STUDIO_CELLS_ISOLATE=1 on this service: cells-setup.mjs step 8).', 409);
+  const out = { moved: [] as string[], prepared: [] as string[], errors: [] as string[] };
+  for (const org of listOrgs()) {
+    if (org.state === 'deleted') continue;
+    try {
+      const id = await R.ensureCellIdentity(org.id, o);
+      if (org.state === 'awake') { await R.setCellAccount(org.id, id.email, o); out.moved.push(`${org.id} → ${id.email}`); }
+      else out.prepared.push(org.id);
+    } catch (e: any) {
+      out.errors.push(`${org.id}: ${e.message ?? e}`);
+    }
+  }
+  return out;
 }
 
 /** Nightly runs of every paying org whose plan has them: woken first, then asked (its owner key) to run. */
@@ -480,6 +505,7 @@ export async function handleCellsAdmin(req: http.IncomingMessage, res: http.Serv
   const b = method === 'POST' ? await readJson(req) : {};
   if (route === '/api/cells/config' && method === 'POST') return send(res, 200, { settings: saveCellsSettings(b) }), true;
   if (route === '/api/cells/roll' && method === 'POST') return send(res, 200, await R.rollImage(String(b.image ?? ''), { dry: b.dry === true ? true : undefined })), true;
+  if (route === '/api/cells/isolate' && method === 'POST') return send(res, 200, await isolateCells({ dry: b.dry === true ? true : undefined })), true;
   if (route === '/api/cells/sweep' && method === 'POST') return send(res, 200, await sweep({ dry: b.dry === true ? true : undefined })), true;
   const m = /^\/api\/cells\/([a-z0-9-]+)\/(wake|hibernate)$/.exec(route);
   if (m && method === 'POST') return send(res, 200, { org: m[2] === 'wake' ? await ensureCell(m[1], 'woken by the platform admin') : await hibernate(m[1]) }), true;
@@ -558,7 +584,8 @@ const htmlText = (v: unknown) => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '
 function nameForm(a: CpAccount) {
   return `<h1>Name your studio</h1><p>Hi ${a.name ? htmlText(a.name.split(' ')[0]) : 'there'}. Your own Hawkes Studio: it plays your games every day, reviews them and keeps the bugs. Free for one game.</p>
 <form method="post" action="/auth/start"><label for="name">Studio name</label><input id="name" name="name" type="text" maxlength="60" required autofocus placeholder="Moonlight Games">
-<button type="submit">Next</button></form>${signOut()}`;
+<button type="submit">Next</button></form>
+<p style="margin-top:12px"><small>By continuing you agree to Hawkes Studio's <a href="/legal" target="_blank" rel="noopener">terms, privacy policy and refunds</a>.</small></p>${signOut()}`;
 }
 
 async function gameForm(org: Org) {

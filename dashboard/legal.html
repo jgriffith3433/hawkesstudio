@@ -1,0 +1,162 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Terms, privacy and refunds · Hawkes Studio</title>
+  <style>
+    :root { --bg: #0b0f12; --panel: #12181d; --line: #24303a; --text: #e8edf1; --dim: #8a96a0; --accent: #3ddc97; }
+    @media (prefers-color-scheme: light) { :root { --bg: #f6f7f9; --panel: #fff; --line: #dde3e8; --text: #15202b; --dim: #5b6874; --accent: #0d8f5f; } }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--bg); color: var(--text); font: 16px/1.65 system-ui, -apple-system, "Segoe UI", sans-serif; }
+    header { display: flex; align-items: center; gap: 10px; padding: 14px 22px; border-bottom: 1px solid var(--line); font-weight: 600; }
+    header .mark { width: 28px; height: 28px; border-radius: 8px; background: #101418; color: var(--accent); display: grid; place-items: center; font-weight: 800; }
+    a { color: var(--accent); }
+    main { max-width: 760px; margin: 0 auto; padding: 30px 22px 80px; }
+    h1 { font-size: 34px; margin: 10px 0 6px; line-height: 1.2; }
+    h2 { font-size: 24px; margin: 44px 0 10px; padding-top: 10px; border-top: 1px solid var(--line); }
+    h3 { font-size: 16px; margin: 22px 0 6px; }
+    ul { padding-left: 20px; }
+    .muted { color: var(--dim); }
+    .draft { background: color-mix(in srgb, var(--accent) 12%, transparent); border: 1px solid var(--line); border-radius: 10px; padding: 10px 14px; }
+    .toc { display: flex; gap: 14px; flex-wrap: wrap; }
+  </style>
+</head>
+<body>
+  <!-- A draft written for J to review (2026-10-30), not legal advice: have it checked before relying on it.
+       Served without sign-in at /legal, /terms, /privacy and /refunds by J's Studio and every customer's (server.ts). -->
+  <header><span class="mark">H</span>Hawkes Studio</header>
+  <main>
+    <h1>Terms, privacy and refunds</h1>
+    <p class="muted">Last updated October 30, 2026</p>
+    <p class="draft">This is a draft we're having reviewed. If anything here is unclear, write to
+      <a href="mailto:support@hawkesgen.ai">support@hawkesgen.ai</a>.</p>
+    <p>Hawkes Studio ("we", "us") runs studio.hawkesgen.ai: your own studio that plays your games every day with a bot,
+      has an AI review what it saw, keeps a backlog of what's broken, and, on plans that include them, has agents fix
+      it. These pages explain the deal between you and us, what we do with your data, and when you get your money back,
+      in plain language.</p>
+    <p class="toc"><a href="#terms">Terms of service</a> <a href="#privacy">Privacy policy</a> <a href="#refunds">Refunds</a> <a href="#contact">Contact</a></p>
+
+    <h2 id="terms">Terms of service</h2>
+    <h3>Your account and your studio</h3>
+    <p>You sign in with your Google account. You must be at least 13 years old, and at least 18 (or have a parent or
+      guardian's permission) to pay for anything. You get your own studio: its games, data and people are yours, and
+      other customers can't see them. Anything done in your studio by you or the people you invite counts as done by
+      you, so invite only people you trust.</p>
+    <p>Hawkes Studio is its own product. Your account here is separate from your accounts on hawkesgen.ai and Hawkes Gen,
+      even though the same Google account signs in to all of them, and credits don't move between them.</p>
+
+    <h3>Plans, credits and payment</h3>
+    <ul>
+      <li>The free plan covers one game with playtests and reviews. Paid plans add more games, nightly runs, desktop builds,
+        agent fixes and the PM; your plan's page in Settings says what yours includes.</li>
+      <li>Paid plans renew every month until you cancel. Cancelling stops the next renewal; you keep the plan until the
+        end of the month you paid for.</li>
+      <li>Each paid month adds credits to your studio (one credit is worth one US cent). Credits have no cash value and
+        can't be moved to another account.</li>
+      <li>Payments go through Stripe, in US dollars; your bank may add its own fees.</li>
+      <li>We may change prices. A change never touches what you already paid for, and a plan's new price starts at a
+        renewal, after we tell you.</li>
+    </ul>
+
+    <h3>Your own AI accounts</h3>
+    <p>Talk and the agents in your studio run on an AI account that is yours, never ours: Claude (your Anthropic API key or
+      your Claude subscription), Cursor, GitHub Copilot, Gemini or Antigravity. You connect it in your studio, and you can
+      remove it any time. Your use of that account is between you and the provider: they bill you, and their terms apply.
+      We store what you give us encrypted, use it only for your own studio's work, and never show it back except its last
+      few characters.</p>
+
+    <h3>Your games, repositories and builds</h3>
+    <p>Your games are yours. We use the addresses, repositories and builds you give us only to build, play and review
+      your games for you, and, when you ask for it, to have agents change them. Playtests run your game in a real browser
+      on cloud servers with graphics cards. We don't use your games, code, prompts or results to train models, and we
+      don't show them to other customers.</p>
+    <p>Agents change your code only on their own branches and through pull requests; nothing goes live without you.
+      Review what an agent changed before you ship it: it's your game and your call.</p>
+
+    <h3>Quiet studios</h3>
+    <ul>
+      <li>A studio nobody has signed in to or run anything in for 14 days goes to sleep to save resources. Your data stays;
+        the next time you open it, it wakes up in a few seconds.</li>
+      <li>A studio on the free plan that nobody has signed in to for 90 days is deleted with its data. We email you first
+        and wait 14 days; signing in once keeps it. A studio on a paid plan is never deleted for being quiet.</li>
+    </ul>
+
+    <h3>What you can't do</h3>
+    <ul>
+      <li>Add games or material you don't have the rights to, or anything illegal.</li>
+      <li>Use the service to attack, overload or scrape other sites, or point it at sites you don't control.</li>
+      <li>Get around your plan's limits or billing, reverse-engineer the service, or resell access without our written
+        permission.</li>
+    </ul>
+    <p>We may stop work or suspend a studio that breaks these rules. If we close your studio for any other reason, we'll
+      refund the paid time and credits you haven't used.</p>
+
+    <h3>The service</h3>
+    <p>We work hard to keep Hawkes Studio running, but the service is provided "as is". Reviews and agents are AI: they can
+      miss things or get them wrong, and we can't promise a particular result or uptime. We may change, add or remove
+      features.</p>
+    <p>To the extent the law allows, we aren't liable for indirect or consequential losses, and our total liability to you
+      for anything to do with the service is limited to what you paid us in the 12 months before the claim.</p>
+
+    <h3>Ending</h3>
+    <p>You can stop using Hawkes Studio and ask us to delete your studio at any time. We may change these terms; if a change
+      matters, we'll tell you in your studio or by email before it takes effect. Using the service after that means you
+      accept the new terms.</p>
+
+    <h2 id="privacy">Privacy policy</h2>
+    <h3>What we collect</h3>
+    <ul>
+      <li><b>Account:</b> from Google, your email address, your name and Google's id for your account. We never see your
+        Google password.</li>
+      <li><b>Your studio:</b> your games' addresses and repositories, what you tell Talk, the roadmap and backlog, the
+        playtests' videos, screenshots and reviews, and the people you invite.</li>
+      <li><b>Billing:</b> your plan, what you paid and your credits. Card details go straight to Stripe; we never see or
+        store them.</li>
+      <li><b>Your AI accounts:</b> the keys or sign-ins you connect, stored encrypted.</li>
+      <li><b>Usage:</b> sign-in times and basic request logs (IP address, browser), kept for security and troubleshooting.</li>
+    </ul>
+    <h3>Cookies</h3>
+    <p>We set a cookie to keep you signed in. We use no advertising or tracking cookies.</p>
+    <h3>How we use it</h3>
+    <p>To run your studio, play and review your games, take payments, prevent abuse, answer you when you write to us, and
+      tell you about changes to the service. We don't sell your data and we don't use it for advertising.</p>
+    <h3>Who else handles it</h3>
+    <p>These companies run parts of the service. Each handles your data only to provide that part:</p>
+    <ul>
+      <li><b>Google Cloud:</b> the servers and storage your studio runs on (United States).</li>
+      <li><b>Cloudflare:</b> the network in front of the service.</li>
+      <li><b>RunPod and Modal:</b> the GPU servers your playtests run on (United States).</li>
+      <li><b>Anthropic, and the other AI providers you connect</b> (Cursor, GitHub Copilot, Google Gemini and
+        Antigravity): Talk, the agents and the reviews, on your own account.</li>
+      <li><b>Stripe:</b> payments.</li>
+      <li><b>GitHub:</b> your game's repository, when you connect one.</li>
+      <li><b>Google:</b> sign-in.</li>
+    </ul>
+    <p>We may also disclose information if the law requires it, or to protect people from harm.</p>
+    <h3>How long we keep it</h3>
+    <p>We keep your studio's data while it exists (see "Quiet studios" above). If you ask us to delete your studio, we
+      delete its data within 30 days. We keep billing records as long as tax and accounting law require.</p>
+    <h3>Your choices</h3>
+    <p>You can ask for a copy of your data, a correction, or deletion of your studio at any time by writing to us. Where
+      you live (for example the EU, the UK or California) may give you further rights, and we honor them.</p>
+    <h3>Security</h3>
+    <p>Connections are encrypted (HTTPS). Every studio runs separately with its own data, and its keys and your AI
+      accounts' credentials are encrypted. No system is perfectly secure; if a breach affects you, we'll tell you.</p>
+
+    <h2 id="refunds">Refunds</h2>
+    <ul>
+      <li><b>Plans:</b> cancel any time to stop the next renewal. Within 14 days of a monthly charge, we refund it in full
+        if you haven't used any of that month's credits.</li>
+      <li><b>Charged in error, or twice:</b> tell us and we'll refund it.</li>
+      <li><b>Something didn't work:</b> if a playtest or a feature you paid for clearly didn't do what it says, tell us and
+        we'll make it right, usually with credits.</li>
+    </ul>
+    <p>Card refunds go back through Stripe and usually reach your account in 5 to 10 business days. Write to us from the
+      email on your account.</p>
+
+    <h2 id="contact">Contact</h2>
+    <p>Questions, requests about your data, or a refund: <a href="mailto:support@hawkesgen.ai">support@hawkesgen.ai</a>.</p>
+  </main>
+</body>
+</html>

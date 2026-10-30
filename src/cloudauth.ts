@@ -47,6 +47,9 @@ export function fromItself(req: http.IncomingMessage) {
   return ['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(addr) && !req.headers['x-forwarded-for'] && !req.headers['x-forwarded-host'];
 }
 
+/** The legal page's addresses (dashboard/legal.html). */
+export const LEGAL_ROUTES = new Set(['/legal', '/terms', '/privacy', '/refunds']);
+
 /** Paths anyone may reach (each checks its own caller where it needs to). */
 export function openRoute(route: string, method: string) {
   if (route.startsWith('/auth/') || route === '/auth') return true;
@@ -58,6 +61,8 @@ export function openRoute(route: string, method: string) {
   if (route.startsWith('/api/cells/edge/') || route === '/api/cells/self' || route.startsWith('/api/cells/self/') || route === '/api/cells/broker') return true;
   if (route === '/api/cells/cron' && method === 'POST') return true;
   if (route === '/favicon.ico') return true;
+  // The terms, privacy and refunds page: for anyone, before signing up (server.ts LEGAL).
+  if (LEGAL_ROUTES.has(route) && method === 'GET') return true;
   return false;
 }
 

@@ -323,7 +323,7 @@
       <div class="meta">${state} · ${Number(b.credits).toLocaleString()} credits${b.stripe?.mode === 'test' ? ' · <b>test mode</b>' : ''}${b.stripe && !b.stripe.configured ? ' · payments are not set up on this Studio yet' : ''}</div>${feats}
       ${plans}
       ${s ? `<div class="ca-line">${s.cancelAtPeriodEnd ? '<button class="small" data-bill="resume">Keep my plan</button>' : '<button class="small" data-bill="cancel">Cancel at the end of the month</button>'}<button class="small" data-bill="portal">Cards and receipts</button></div>` : ''}
-      <div id="billMsg" class="meta"></div></div>`;
+      <div id="billMsg" class="meta"></div><div class="meta"><a href="/legal" target="_blank" rel="noopener">Terms, privacy and refunds</a></div></div>`;
   }
 
   // Restarting Studio or Gen (src/restarts.ts): the server's deploy runner restarts the one service, reading its secrets

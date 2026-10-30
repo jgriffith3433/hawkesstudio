@@ -109,4 +109,18 @@ gcloud(['scheduler', 'jobs', 'create', 'http', `${studio}-cells-cron`, '--locati
 if (beta) gcloud(['scheduler', 'jobs', 'pause', `${studio}-cells-cron`, '--location', region, P]);
 
 console.log(`\n# Check: GET ${publicUrl}/api/cells (J signed in) lists "missing": [] and "on": true.`);
+
+console.log(`\n# 8. Isolation: every cell its own service account, reaching only its own folder o/<org>/ (docs/studio-customers.md "Isolation")`);
+console.log('#    Quota: 100 service accounts per project by default; beta and live cells share this project. A raise is a free request to Google.');
+// The control plane makes and deletes the cells' accounts, deploys them as those accounts, and keeps each one's managed
+// folder and its policy in the cells' bucket.
+gcloud(['projects', 'add-iam-policy-binding', project, `--member=serviceAccount:${studioSa}`, '--role=roles/iam.serviceAccountAdmin', '--condition=None', '--format=none']);
+gcloud(['projects', 'add-iam-policy-binding', project, `--member=serviceAccount:${studioSa}`, '--role=roles/iam.serviceAccountUser', '--condition=None', '--format=none']);
+gcloud(['storage', 'buckets', 'add-iam-policy-binding', `gs://${bucket}`, `--member=serviceAccount:${studioSa}`, '--role=roles/storage.admin', '--format=none']);
+gcloud(['run', 'services', 'update', studio, `--region=${region}`, P, '--update-env-vars=STUDIO_CELLS_ISOLATE=1', '--format=none']);
+console.log(`#    Then move the existing cells (asks ${publicUrl} with your owner key; dry run first):`);
+console.log(`#      node tools/studio-cloudrun/isolate-cells.mjs${beta ? ' --beta' : ''}`);
+console.log(`#      node tools/studio-cloudrun/isolate-cells.mjs${beta ? ' --beta' : ''} --apply`);
+console.log('#    Last, once every cell moved, take the shared account\'s bucket-wide grant away:');
+console.log(`#      gcloud storage buckets remove-iam-policy-binding gs://${bucket} --member=serviceAccount:${cellSa} --role=roles/storage.objectAdmin`);
 done();

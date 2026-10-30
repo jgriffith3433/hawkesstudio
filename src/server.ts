@@ -100,6 +100,17 @@ const server = http.createServer(async (req, res) => {
   if (process.env.STUDIO_ORG) res.setHeader('X-Studio-Cell', process.env.STUDIO_ORG);
   try {
     if (route === '/mcp' || route.startsWith('/mcp/')) return await handleMcp(req, res, route);
+    // Terms, privacy and refunds (dashboard/legal.html): public, in J's Studio and every customer's, before any sign-in.
+    if ((route === '/legal' || route === '/terms' || route === '/privacy' || route === '/refunds') && method === 'GET') {
+      const anchor = route === '/legal' ? '' : route === '/terms' ? 'terms' : route.slice(1);
+      if (anchor) {
+        // One page: /terms, /privacy and /refunds open it at their section.
+        res.writeHead(302, { Location: `/legal#${anchor}`, 'Cache-Control': 'public, max-age=300' });
+        return res.end();
+      }
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'public, max-age=300' });
+      return res.end(fs.readFileSync(path.join(paths.dashboard, 'legal.html')));
+    }
     // Accounts (auth.ts): the sign-in pages, and /auth/check that Caddy asks before every protected request.
     // An org cell's platform token (platform.ts): the portal's keys are fetched first, so the checks below can be synchronous.
     await (await import('./platform.ts')).primePlatform(req);

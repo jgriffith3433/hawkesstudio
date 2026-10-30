@@ -198,23 +198,55 @@ The tests show:
 - org A's run can't list, read, write or remove org B's objects, another run's, or its Studio's database
 - a token naming org B signed with A's key is refused, and so is a token whose body was edited
 
-**The cells' own services: what is left.** Every cell's service runs as the one shared account `studio-cells@`, which
-has object admin on the whole cells bucket. **IAM conditions can't limit that per cell.** A condition such as
-`resource.name.startsWith("projects/_/buckets/<b>/objects/o/<org>/")` is about the object, not about which cell is
-calling, and with one account every cell is the same principal.
+**The cells' own services: one service account each** (**built**, src/cellrun.ts, src/cells.ts; on with
+`STUDIO_CELLS_ISOLATE=1`, cells-setup.mjs step 8). Each cell runs as its own account, `cell-<b|l>-<hash>@`. The id is
+made from the org id (service account ids are 6-30 characters) and differs per lane. The account can reach:
+- **its own data:** objectAdmin on a GCS **managed folder** `o/<org>/` in the cells' bucket. That grant is the folder's
+  own IAM policy and holds that account alone.
+- **its agents' runs:** the shared agents' job, through `run.jobsExecutorWithOverrides` and `run.viewer` on that job.
+  The runs themselves still reach only their own run folder, through the broker.
 
-So a **compromised cell could read and change every customer's data**: their databases, state files, and sealed keys.
-The keys stay ciphertext, but their databases are plain. That would take an exploit of Studio's own code running in the
-cell (remote code execution, or a way to make it fetch any object). A customer's code and prompts don't run there; they
-run only in the agent job, which is isolated as above. Other limits that do hold:
-- a cell can't read another cell's keys: no Cloud Run rights project-wide, and keys are derived per org
-- a cell can't read the master or the Gen owner key: no Secret Manager rights
-- a cell's Gen key only works in its own Gen org
+There is no bucket-wide grant, so a bug or a compromise in one cell can't read another org's `o/<other>/`. The control
+plane makes the account, folder and job grant before the cell's service, and deletes all three with the org's data.
 
-**To close it**, when paying customers arrive: one service account per cell, with a prefix condition on the bucket.
-Service accounts are free; the limit is 100 per project by default and Google raises it on request. Or keep one account
-and move the cells' own bucket access behind short-lived downscoped tokens (Credential Access Boundaries) from the
-control plane. That needs Litestream to take a token instead of the metadata server, a bigger change.
+Why this and not the other two options:
+- **Not IAM conditions on the bucket:** one bucket policy would carry a conditional binding per cell, and that grows
+  without end. A managed folder keeps each cell's grant in its own small policy.
+- **Not routing the cells' data through the broker:** Litestream streams the database with Google's own credentials
+  straight to Cloud Storage. Replacing it with signed URLs means rewriting how a cell's database is kept, with a real
+  risk of losing data. The agent runs, which execute a customer's prompts with a shell, already go through the broker.
+
+**Quota:** 100 service accounts per project by default. Beta and live cells share `hawkes-staging`, so near 100 cells
+in all, ask Google for a raise (free) or move live cells to their own project.
+
+**Moving existing cells over** (once per lane, in this order):
+1. Run step 8 of `node tools/studio-cloudrun/cells-setup.mjs [--beta] --apply`. It grants `studio-control@`:
+   - `iam.serviceAccountAdmin` and `iam.serviceAccountUser` on the project
+   - `storage.admin` on the cells' bucket (managed folders and their policies)
+
+   and sets `STUDIO_CELLS_ISOLATE=1` on the lane's studio service.
+2. Run `node tools/studio-cloudrun/isolate-cells.mjs [--beta]` (a dry run), then again with `--apply`. It asks the
+   control plane (`POST /api/cells/isolate`, J's owner key) to make each org's account and folder and to move each awake
+   cell onto it as a new revision. Hibernated cells wake as their own account. It is safe to run again.
+3. Once every cell has moved, remove `studio-cells@`'s objectAdmin on the bucket (the script prints the exact command).
+
+Until step 3, the old shared grant still exists, but no cell runs as that account any more.
+
+**Not proven against real Google yet:**
+- Litestream's listing under a managed folder: object listing needs `storage.objects.list` on the folder with a prefix
+  inside it, which Litestream uses.
+- Run executions inheriting the job's IAM: a cell must be able to read its own executions.
+
+Watch the first isolated cell's logs on beta.
+
+**Tests:** `test/cell-isolation.test.ts` checks two cells against a stand-in for Google:
+- each has its own account
+- each folder's policy holds only its own account
+- neither account is on the bucket or on the other's folder
+- the migration moves an old cell and changes nothing the second time
+- deleting an org's data removes its account, folder and job grant
+
+Together with the broker's tokens (`test/jobbroker.test.ts`), one cell can never hold a credential for another's prefix.
 
 ### Hawkes Gen for a cell (built)
 
@@ -273,7 +305,7 @@ Check: `GET /api/cells` signed in as J shows `"on": true` and `"missing": []`.
 
 ### Not done yet (open)
 
-- **Cell-to-cell isolation for the cells' own services** (above): one service account per cell before paying customers.
+- **Isolation on live:** step 8 and the migration (Isolation, above) on each lane before paying customers.
 - **The portal's "Open Studio"** should link to `studio.hawkesgen.ai/o/<org>/`.
 - **One click less:** a signed hand-off from the control plane to the cell would skip the cell's own Continue with
   Google.
@@ -498,7 +530,7 @@ To try it on beta, in this order:
 5. Add a game and watch `GET /api/cells`.
 
 Before real customers:
-- one service account per cell (section 2, Isolation)
+- cells isolated on live (section 2, Isolation: setup step 8 and the migration)
 - **"J" becomes "the owner"** in prompts and the dashboard (the owner's name from the org)
 - **share links on a separate domain** for customer content (never `hawkesgen.ai`, where our cookies live)
 - builds from GitHub for customers' games: the GitHub App and Gen's build intake (platform-plan 5). Playtests of `live`
