@@ -467,13 +467,22 @@ export function acceptInvite(t: string, pw: string, name?: string) {
 
 // ------------------------------------------------------------- requests
 
+/**
+ * The session cookie's value. A browser can hold two of the same name (an old host-only one beside the current
+ * domain-wide one) and sends both; the first that is a live session wins, so a stale one sent first never hides a good
+ * one (2026-10-30: J's iPhone signed in three times and was sent back to sign in each time).
+ */
 export function cookieToken(req: http.IncomingMessage) {
   const raw = String(req.headers.cookie ?? '');
+  const all: string[] = [];
   for (const part of raw.split(';')) {
     const [k, ...v] = part.trim().split('=');
-    if (k === COOKIE) return decodeURIComponent(v.join('='));
+    if (k !== COOKIE) continue;
+    try { all.push(decodeURIComponent(v.join('='))); } catch { /* a malformed one: skip it */ }
   }
-  return null;
+  if (all.length < 2) return all[0] ?? null;
+  const live = db.prepare('SELECT 1 FROM sessions WHERE id = ? AND expires >= ?');
+  return all.find((t) => live.get(sha(t), Date.now())) ?? all[0];
 }
 
 /** The client's address as Caddy saw it. */

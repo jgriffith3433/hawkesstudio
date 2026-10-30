@@ -205,3 +205,13 @@ test('beta sites: /auth/sites-key gives the public key, /auth/pass signs a pass 
     else process.env.STUDIO_OWNER_KEY = had;
   }
 });
+
+test('two session cookies of the same name (an old host-only one first): the live one wins', () => {
+  const u = A.userByEmail('j@example.com');
+  assert.ok(u);
+  const live = A.startSession(u!, { via: 'google' }).token;
+  const r = req({ Cookie: `${A.COOKIE}=stale-token-from-before; other=x; ${A.COOKIE}=${live}` });
+  assert.equal(A.cookieToken(r), live);
+  assert.equal(A.requester(r)?.id, u!.id);
+  assert.equal(A.cookieToken(req({ Cookie: `${A.COOKIE}=only-one` })), 'only-one', 'one cookie: as before');
+});
