@@ -35,6 +35,9 @@ export function route(request: Request): { org: string; path: string } | { redir
   if (m) return m[2] === undefined ? { redirect: `/o/${m[1]}/${url.search}` } : { org: m[1], path: m[2] };
   // The control plane's own pages and the sign-up stay with J's Studio whoever links them.
   if (url.pathname.startsWith('/auth/start') || url.pathname === '/favicon.ico') return null;
+  // GitHub's answers come back to J's Studio, which holds the GitHub App, whoever started the trip: a sign-in begun on a
+  // customer's page keeps that page as its Referer through GitHub's redirects (2026-10-30: it landed in the cell).
+  if (/^\/api\/github\/(callback|installed|app\/created)(\/|$)/.test(url.pathname)) return null;
   const ref = request.headers.get('Referer');
   if (!ref) return null;
   let r: URL;

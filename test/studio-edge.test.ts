@@ -56,6 +56,11 @@ test("the dashboard's absolute paths follow the page they came from; a navigatio
   seen = [];
   await worker.fetch(at('/auth/start', { Referer: 'https://studio.hawkesgen.ai/o/acme-1a2b/' }), env);
   assert.equal(new URL(seen[0].url).host, 'studio-123.us-east4.run.app');
+  // GitHub's answers go to J's Studio (it holds the GitHub App) even when a customer's page started the trip.
+  seen = [];
+  const back = await worker.fetch(at('/api/github/callback?code=c&state=s', { Referer: 'https://studio.hawkesgen.ai/o/acme-1a2b/#today', 'Sec-Fetch-Mode': 'navigate' }), env);
+  assert.notEqual(back.status, 302);
+  assert.equal(new URL(seen[0].url).host, 'studio-123.us-east4.run.app');
   seen = [];
   await worker.fetch(at('/api/me', { Referer: 'https://evil.example/o/acme-1a2b/' }), env);
   assert.equal(new URL(seen[0].url).host, 'studio-123.us-east4.run.app');
