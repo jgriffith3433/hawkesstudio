@@ -29,6 +29,7 @@ const html = (res: http.ServerResponse, status: number, body: string) => {
   res.end(body);
 };
 const redirect = (res: http.ServerResponse, to: string) => { res.writeHead(302, { Location: to, 'Cache-Control': 'no-store' }); res.end(); };
+const esc = (s: string) => s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]!));
 const done = (title: string, text: string, back = '/') => `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>${title}</title>
 <body style="font:16px system-ui;max-width:560px;margin:60px auto;padding:0 16px"><h1 style="font-size:22px">${title}</h1><p>${text}</p><p><a href="${back}">Back to Studio</a></p></body>`;
 
@@ -74,7 +75,10 @@ export async function handleGithubRoutes(req: http.IncomingMessage, res: http.Se
     if (!G.appConfig()) {
       const cell = await (await import('./cellside.ts')).cellGithub(`${base}/`, u.id).catch(() => null);
       if (cell?.connect) return redirect(res, cell.connect), true;
-      if (cell?.user) return html(res, 200, done('Signed in with GitHub', `You're signed in as ${cell.user.login}.`)), true;
+      if (cell?.user) {
+        const next = cell.installations.length || !cell.install ? '' : ` Next, <a href="${esc(cell.install)}">choose the repositories</a> Studio may work on.`;
+        return html(res, 200, done('Signed in with GitHub', `You're signed in as ${esc(cell.user.login)}.${next}`)), true;
+      }
     }
     // No app yet: make it first, then come back here (one link does both).
     if (!G.appConfig()) return redirect(res, '/api/github/app/setup'), true;
@@ -83,8 +87,15 @@ export async function handleGithubRoutes(req: http.IncomingMessage, res: http.Se
   if (route === '/api/github/callback' && method === 'GET') {
     const r = await G.userCallback(base, String(url.searchParams.get('code') ?? ''), String(url.searchParams.get('state') ?? ''), url.searchParams.get('installation_id'), requester(req)?.id ?? null);
     // An install from a customer's Studio: linked to their org; back to their Studio.
-    if (r.org && r.account) return html(res, 200, done('GitHub is connected', `Your Studio can now work on the repositories you chose in ${r.account}. Go back to your Studio and tell Talk which game it is.`, r.back ?? '/')), true;
-    if (r.org) return html(res, 200, done('Signed in with GitHub', `Your Studio can now make repositories as ${r.login}. Go back to your Studio.`, r.back ?? '/')), true;
+    if (r.org && r.account) return html(res, 200, done('GitHub is connected', `Your Studio can now work on the repositories you chose in ${esc(r.account)}. Go back to your Studio and tell Talk which game it is.`, r.back ?? '/')), true;
+    // Installed before signing in with GitHub from a Studio: nothing linked yet.
+    if ((r as any).unlinked) return html(res, 200, done('Installed', `Hawkes Studio is installed on ${esc(r.account ?? '')}. To finish, go back to your Studio and choose Sign in with GitHub there: it links this installation by itself.`)), true;
+    // A customer's GitHub sign-in: next, choosing the repositories (the install page), unless it's done already.
+    if (r.org) {
+      const installed = (await G.orgInstallations(r.org).catch(() => [])).length > 0;
+      const next = installed ? '' : ` Next, choose which repositories Studio may work on: <a href="${esc(G.installUrl() ?? '')}">choose repositories on GitHub</a>.`;
+      return html(res, 200, done('Signed in with GitHub', `Your Studio can now make repositories as ${esc(r.login ?? '')}.${next}`, r.back ?? '/')), true;
+    }
     return html(res, 200, done('Signed in with GitHub', `Studio can now make repositories as ${r.login}. Go back to Studio.`)), true;
   }
   if (route === '/api/github/user' && method === 'DELETE') {

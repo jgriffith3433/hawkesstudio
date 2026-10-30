@@ -9,7 +9,7 @@
 
 import crypto from 'node:crypto';
 import { StudioError, getProduct, saveProduct, loadProducts, type Product } from './config.ts';
-import { accessFor, gh, repoSlug, githubStatus, userToken, appConfig, installUrl } from './github-app.ts';
+import { accessFor, gh, repoSlug, githubStatus, userToken, appConfig, installUrl, userInstallationFor } from './github-app.ts';
 import { starterFiles, starterFor, liveUrlFor, STARTERS, type GameSeed } from './starters.ts';
 import { customerStudio } from './tenancy.ts';
 
@@ -54,14 +54,8 @@ export async function linksFor(repo: string | null, p?: Product | null) {
   const cell = !app ? await import('./cellside.ts').then((m) => m.cellGithub()).catch(() => null) : null;
   if (cell?.install) out.install = cell.install;
   else if (app) {
-    let ids: { owner?: number; repo?: number } = {};
-    try {
-      const r = await gh(null, 'GET', `/repos/${repo}`);
-      ids = { owner: r.owner?.id, repo: r.id };
-    } catch { /* private or unreachable without a token: the plain install page */ }
-    out.install = ids.owner && ids.repo
-      ? `${web}/apps/${app.slug}/installations/new/permissions?suggested_target_id=${ids.owner}&repository_ids[]=${ids.repo}`
-      : installUrl()!;
+    // GitHub's documented install page (the person picks the account and this repository there).
+    out.install = installUrl()!;
   } else if (!cell) {
     out.connectGitHub = studioLink('/api/github/app/setup');
   }
@@ -148,6 +142,10 @@ export async function describePlan(plan: Plan) {
   if (!s) blockers.push(`No starter "${plan.starter}".`);
   const u = await userToken(plan.user).catch(() => null);
   if (!u) blockers.push('Sign in with GitHub first (studio_github connect): the new repository is made in your account.');
+  // A GitHub App's sign-in only reaches accounts the app is installed on: no install there, no repo (GitHub refuses).
+  else if (!(await userInstallationFor(u.token, plan.owner || u.login).catch(() => null))) {
+    blockers.push(`Install Studio's GitHub App on ${plan.owner || u.login} first (studio_github status has the link): GitHub only lets the app make repositories where it's installed.`);
+  }
   if (loadProducts().some((p) => p.id === plan.id)) blockers.push(`Studio already has a game "${plan.id}".`);
   const repo = `${plan.owner}/${plan.repoName}`;
   return {
@@ -180,6 +178,11 @@ export async function applyPlan(plan: Plan, { origin = null }: { origin?: string
   });
   const repo = String(created.full_name);
   const done = [`Made ${created.html_url}`];
+  // An install that covers chosen repositories only doesn't cover a new one: add it, so Studio can push the starter.
+  const inst = await userInstallationFor(u.token, owner).catch(() => null);
+  if (inst?.selection === 'selected') {
+    await gh(u.token, 'PUT', `/user/installations/${inst.id}/repositories/${created.id}`).catch((e) => done.push(`(couldn't add it to the app's chosen repositories: ${e.message}; add it on GitHub)`));
+  }
   const seed: GameSeed = { id: plan.id, name: plan.name, pitch: plan.pitch, owner, repo, studioUrl: studioBase() };
   // Pages first, so the first push to main (the starter) deploys.
   done.push(await runStep(u.token, repo, 'pages').catch((e) => `GitHub Pages: not turned on (${e.message}); turn it on in the repo's Settings > Pages > GitHub Actions.`));

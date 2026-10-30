@@ -50,7 +50,7 @@ const gh = http.createServer(async (req, res) => {
   if (p === '/installation/repositories') return out(200, { repositories: [{ full_name: 'acme/space-game', private: false, html_url: 'https://github.test/acme/space-game' }] });
   if (p === '/login/oauth/access_token') return out(200, { access_token: 'ghu_user', refresh_token: 'ghr_user', expires_in: 28800, refresh_token_expires_in: 15811200 });
   if (p === '/user') return out(200, { login: 'jgriffith3433' });
-  if (p === '/user/installations') return out(200, { installations: [{ id: 5, account: { login: 'acme' } }] });
+  if (p === '/user/installations') return out(200, { installations: [{ id: 5, account: { login: 'acme' }, repository_selection: 'selected' }, { id: 8, account: { login: 'jgriffith3433' }, repository_selection: 'all' }] });
   if (p === '/user/repos' && req.method === 'POST') { repo(`jgriffith3433/${b.name}`); return out(201, { full_name: `jgriffith3433/${b.name}`, html_url: `https://github.test/jgriffith3433/${b.name}`, default_branch: 'main' }); }
   const m = /^\/repos\/([^/]+\/[^/]+)(\/.*)?$/.exec(p);
   if (m) {
@@ -133,7 +133,7 @@ test('readiness walks a game through what it lacks; the setup plan adds the hook
   assert.equal(ids.branches, false);
   assert.deepEqual(r.approve, { kind: 'setup', product: 'space-game', repo: 'acme/space-game', steps: ['hook', 'branches'] });
   // Links straight to the pages: the app's install page with this repo chosen, a prefilled token form as the fallback.
-  assert.equal(r.links.install, 'https://github.com/apps/hawkes-studio-test/installations/new/permissions?suggested_target_id=7&repository_ids[]=42');
+  assert.equal(r.links.install, `${ghBase}/apps/hawkes-studio-test/installations/new`);
   assert.match(r.links.token, /personal-access-tokens\/new\?.*target_name=acme.*contents=write/);
   assert.equal(r.items.find((i) => i.id === 'branches')!.link, 'https://github.com/acme/space-game/branches');
   const d = await R.describePlan(r.approve as any);
@@ -237,7 +237,10 @@ test("customers' Studios share the app: an install is linked to its org only aft
 
 test("a sign-in right after installing from the app's own page uses Studio's session; customers' people sign in by org", async () => {
   // GitHub comes back from an install with no state of Studio's (J's first install, 2026-10-30): the session says who.
-  await assert.rejects(G.userCallback('https://studio.test', 'c3', '', '5', null), /expired or was not made here/);
+  // No state and no session (a customer's install: GitHub starts that sign-in itself): linked by GitHub account, and
+  // this account signed in from no customer Studio yet, so nothing is linked.
+  assert.equal((await G.userCallback('https://studio.test', 'c3', '', '5', null) as any).unlinked, true);
+  await assert.rejects(G.userCallback('https://studio.test', 'c3', '', '', null), /expired or was not made here/);
   const r = await G.userCallback('https://studio.test', 'c3', '', '5', j.id);
   assert.equal(r.user, j.id);
   assert.equal(r.login, 'jgriffith3433');

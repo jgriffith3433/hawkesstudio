@@ -136,7 +136,8 @@ async function studioGithubLine(box) {
     box.innerHTML = !g.app
       ? `<div class="meta">GitHub isn't connected yet. One click on GitHub connects it; then pick the repositories Studio may work on.</div><div style="margin-top:6px">${btn(g.setup, 'Connect GitHub', true)}</div>`
       : `<div class="meta">GitHub: the app <b>${esc(g.app.slug)}</b>${g.installations.length ? ` is installed on ${g.installations.map((i) => esc(i.account)).join(', ')}` : ' is made, not installed yet'}${g.user ? `; you're signed in as <b>${esc(g.user.login)}</b>` : ''}.</div>
-         <div style="margin-top:6px;display:flex;gap:6px;flex-wrap:wrap">${btn(g.install, 'Choose repositories')}${g.connect ? btn(g.connect, 'Sign in with GitHub') : ''}</div>`;
+         <div style="margin-top:6px;display:flex;gap:6px;flex-wrap:wrap">${g.connect ? btn(g.connect, 'Sign in with GitHub', true) : ''}${btn(g.install, g.installations.length ? 'Change repositories' : 'Choose repositories', !g.connect && !g.installations.length)}</div>
+         ${g.connect ? '<div class="meta">First sign in with GitHub, then choose the repositories Studio may work on.</div>' : ''}`;
   } catch (e) {
     box.innerHTML = `<div class="meta">GitHub: ${esc(e.message)}</div>`;
   }

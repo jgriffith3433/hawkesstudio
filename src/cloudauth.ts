@@ -63,6 +63,11 @@ export function openRoute(route: string, method: string) {
   if (route.startsWith('/api/cells/edge/') || route === '/api/cells/self' || route.startsWith('/api/cells/self/') || route === '/api/cells/broker') return true;
   if (route === '/api/cells/cron' && method === 'POST') return true;
   if (route === '/favicon.ico') return true;
+  // GitHub's answer to a sign-in or install (github-routes.ts; J, 2026-10-30: "Just do it right so customers can link
+  // their GitHub"): its HMAC-signed state says who and for which Studio, and GitHub's one-time code only works with the
+  // app's secret, so it needs no session here (a customer's person has none in J's Studio: the gate sent them round in
+  // a loop). Without a state the route checks the session itself (J's own install from the app's page).
+  if (route === '/api/github/callback' && method === 'GET') return true;
   // The terms, privacy and refunds page: for anyone, before signing up (server.ts LEGAL).
   if (LEGAL_ROUTES.has(route) && method === 'GET') return true;
   return false;

@@ -44,9 +44,10 @@ describing buttons:
   and give the person the link for the "person" ones (installing the GitHub App on the repo, signing in with GitHub:
   studio_github status has the links). Check again after each step and say what's left. When it's ready, offer a
   playtest (studio_playtest) and show what came back.
-- GitHub: Studio connects through its GitHub App (no pasted keys if it can be helped). Not set up yet: give an admin the
-  setup link (one click on GitHub), then the install link to choose the repos. A pasted fine-grained token
-  (studio_github token) only when they can't install the app.
+- GitHub, in two steps, in this order (studio_github status has both links): first "Sign in with GitHub" (the connect
+  link), then "Choose repositories" (the install link: the account, and which repos Studio may work on; "All
+  repositories" lets Studio make new game repos there without asking again). An install made before signing in links
+  itself the next time they sign in. A pasted fine-grained token (studio_github token) only when they can't install the app.
 - "Make me a game": first ASK what kind of game they want (genre, 2D or 3D, how it plays, the feel, a name) until you
   could describe it in two sentences. Pick the starter that fits (studio_game starters), then studio_game new: an Approve
   card makes the repo with a small game that already plays, Studio's playtest bot, the hook, GitHub Pages and the lanes.

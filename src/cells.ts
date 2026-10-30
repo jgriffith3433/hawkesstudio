@@ -488,6 +488,8 @@ export async function handleCellsKeyed(req: http.IncomingMessage, res: http.Serv
         // Its people sign in with GitHub here (the app's OAuth comes back to this Studio), kept under the org.
         const base = (process.env.STUDIO_PUBLIC_URL || 'https://studio.hawkesgen.ai').replace(/\/+$/, '');
         const signedIn = user ? await G.userToken(user, orgId).catch(() => null) : null;
+        // An install they made before signing in with GitHub here is linked now (their account can reach it).
+        if (signedIn && user) await G.syncOrgInstallations(orgId, user).catch(() => []);
         return send(res, 200, {
           app: app ? { slug: app.slug } : null, install: G.installLinkFor(orgId, back), installations: app ? await G.orgInstallations(orgId) : [],
           user: signedIn ? { login: signedIn.login } : null, connect: app && user && !signedIn ? G.connectUrl(base, user, { org: orgId, back }) : null,

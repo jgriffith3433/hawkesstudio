@@ -198,6 +198,7 @@ export async function userCallback(base: string, code: string, state: string, in
   // Installed from the app's own page (no state of Studio's): GitHub signs the person in right after the install, and
   // Studio's own session says who they are (2026-10-30: J's first install ended on "This sign-in link expired").
   if (!s && installationId && sessionUser) s = { k: 'user', u: sessionUser };
+  if (!s && installationId) return installedBy(base, code, installationId);
   if (!s || s.k !== 'user' || !s.u) throw new StudioError('This sign-in link expired or was not made here: start again from Studio.', 400);
   const link = await exchange({ code, redirect_uri: `${base}/api/github/callback` });
   const me = await gh(link.token, 'GET', '/user');
@@ -217,6 +218,54 @@ export function installLinkFor(org: string, back?: string | null) {
   const c = appConfig();
   if (!c) return null;
   return `${WEB()}/apps/${c.slug}/installations/new?state=${encodeURIComponent(signState({ k: 'install', org, ...(back ? { back } : {}) }))}`;
+}
+
+/**
+ * An install that came back with no state and no Studio session (a customer's person: GitHub starts the sign-in after an
+ * install itself, without Studio's state). Their GitHub account says whose it is: the customer Studio where that account
+ * signed in with GitHub (a user link kept as "org:user" with that login) gets the installation, once GitHub confirms the
+ * account can reach it. Signed in from no Studio yet: nothing is linked; their next GitHub sign-in links it (syncOrgInstallations).
+ */
+async function installedBy(base: string, code: string, installationId: string) {
+  const link = await exchange({ code, redirect_uri: `${base}/api/github/callback` });
+  const me = await gh(link.token, 'GET', '/user');
+  const login = String(me.login);
+  const theirs = await gh(link.token, 'GET', '/user/installations?per_page=100');
+  const inst = (theirs.installations as any[] ?? []).find((i) => String(i.id) === String(installationId));
+  if (!inst) throw new StudioError("That installation isn't one your GitHub account can reach: install the app again from your Studio.", 403);
+  const account = String(inst.account?.login ?? '');
+  const users = readJson<Record<string, UserLink>>(USERS_FILE(), {});
+  const mine = Object.entries(users).filter(([k, u]) => k.includes(':') && u.login.toLowerCase() === login.toLowerCase());
+  const orgs = [...new Set(mine.map(([k]) => k.split(':')[0]))];
+  if (orgs.length !== 1) return { user: null, login, org: null, account, back: null, unlinked: true };
+  for (const [k] of mine) users[k] = { ...link, login };
+  writeSecret(USERS_FILE(), users);
+  linkInstallation(Number(installationId), orgs[0], account);
+  return { user: null, login, org: orgs[0], account, back: `${base}/o/${orgs[0]}/` };
+}
+
+/**
+ * Links to an org the installations of this app its person's GitHub account can reach and no other Studio has (an
+ * install made before they signed in with GitHub from their Studio). Called when the cell asks how GitHub stands.
+ */
+export async function syncOrgInstallations(org: string, userId: string) {
+  const u = await userToken(userId, org).catch(() => null);
+  if (!u || !appConfig()) return [];
+  const ours = new Set((await installations()).map((i) => i.id));
+  const theirs = await gh(u.token, 'GET', '/user/installations?per_page=100').catch(() => ({ installations: [] }));
+  const linked: string[] = [];
+  for (const i of (theirs.installations as any[]) ?? []) {
+    if (!ours.has(Number(i.id))) continue;
+    try { linkInstallation(Number(i.id), org, String(i.account?.login ?? '')); linked.push(String(i.account?.login ?? '')); } catch { /* another Studio's */ }
+  }
+  return linked;
+}
+
+/** This app's installation on one GitHub account, as the person's own token sees it (null: not installed there). */
+export async function userInstallationFor(token: string, owner: string) {
+  const r = await gh(token, 'GET', '/user/installations?per_page=100');
+  const i = ((r.installations as any[]) ?? []).find((x) => String(x.account?.login ?? '').toLowerCase() === owner.toLowerCase());
+  return i ? { id: Number(i.id), selection: String(i.repository_selection ?? 'selected') } : null;
 }
 
 /** The people of one customer's org who signed in with GitHub here (their Studio's user ids). */
