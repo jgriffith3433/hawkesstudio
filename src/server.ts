@@ -1013,6 +1013,9 @@ server.listen(listenPort, cloud ? '0.0.0.0' : '127.0.0.1', () => {
   void import('./config.ts').then((c) => c.applyOnboardingSeed()).then((g) => { if (g) console.log(`[onboarding] added the first game, ${g.name}`); }).catch((e) => console.warn(`[onboarding] ${e.message ?? e}`));
   void import('./entitlements.ts').then((E) => E.startPlanRefresh());
   void import('./cellside.ts').then((c) => c.startCellReports());
+  // A deploy of J's Studio rolls the awake customer Studios onto it, in the background, a minute after start
+  // (cells.ts followRoll; J, 2026-10-30: "Do roll on every deploy").
+  if (process.env.K_SERVICE) setTimeout(() => void import('./cells.ts').then((C) => C.followRoll('deploy')).then((r: any) => { if (r?.done?.length || r?.failed) console.log(`[cells] roll: ${JSON.stringify(r)}`); }).catch((e) => console.warn(`[cells] roll: ${e.message ?? e}`)), 60_000).unref();
   void import('./ailink.ts').then((a) => a.applyCustomerKeys()).then((n) => { if (n) console.log(`[ai] ${n} of the customer's own AI logins in place`); }).catch((e) => console.warn(`[ai] ${e.message ?? e}`));
   // A restart (a deploy) ends nothing: runs, agent changes and Talk answers carry on from where they were, waiting on
   // the same Gen jobs and reading the same detached Claude Code processes (drain.ts, detach.ts).

@@ -186,10 +186,27 @@ export async function rollImage(image: string, o: { dry?: boolean; health?: (url
     }
     return false;
   });
-  const done: string[] = [];
   log(`${c.studioService} (J's Studio) → ${image}`);
   await setImage(c.studioService, image, o, c);
-  done.push(c.studioService);
+  const r = await rollCells(image, { ...o, health, log }, c);
+  return { ...r, done: [c.studioService, ...r.done] };
+}
+
+/**
+ * The awake cells onto an image, one at a time, each checked healthy before the next; the first that isn't stops the
+ * roll (the rest stay on what they had, which works). J's Studio isn't touched: it rolls them after its own deploy
+ * (cells.ts followRoll). Hibernated cells wake on J's Studio's image anyway.
+ */
+export async function rollCells(image: string, o: { dry?: boolean; health?: (url: string) => Promise<boolean>; log?: (s: string) => void } = {}, c = cellsConfig()) {
+  const log = o.log ?? ((s: string) => console.log(`[cells] ${s}`));
+  const health = o.health ?? (async (url: string) => {
+    for (let i = 0; i < 20; i++) {
+      try { if ((await fetch(`${url}/api/health`, { signal: AbortSignal.timeout(20_000) })).ok) return true; } catch { /* starting */ }
+      await new Promise((r) => setTimeout(r, 6000));
+    }
+    return false;
+  });
+  const done: string[] = [];
   const cells = await listCells(o, c);
   for (const cell of cells) {
     if (cell.image === image) continue;

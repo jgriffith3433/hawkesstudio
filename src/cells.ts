@@ -548,7 +548,43 @@ export async function handleCellsAdmin(req: http.IncomingMessage, res: http.Serv
 
 /** The central cron (POST /api/cells/cron: Cloud Scheduler's token or the owner key, checked by server.ts). */
 export async function cron() {
-  return { sweep: await sweep(), nightly: await nightly() };
+  // The nightly catch-up: a cell a roll missed (it failed, or the cell woke mid-deploy) comes onto J's Studio's image.
+  return { sweep: await sweep(), nightly: await nightly(), roll: await followRoll('nightly').catch((e) => ({ error: String(e.message ?? e) })) };
+}
+
+// ------------------------------------------------------------------ rolling every deploy (J, 2026-10-30: "Do roll on every deploy")
+
+let rolling: Promise<unknown> | null = null;
+/** Whether a roll of the cells is under way (cloudhost.ts busy keeps the instance up for it). */
+export const rollingCells = () => rolling !== null;
+
+/**
+ * The awake cells onto the image J's Studio runs now, in the background: after a deploy (Studio starts on a new image)
+ * and in the nightly cron. One at a time, each checked healthy, stopping at the first that isn't; J's phone hears only
+ * when a roll stops on one. Nothing to do when every awake cell is already on it.
+ */
+export async function followRoll(why: 'deploy' | 'nightly' = 'deploy', o: { health?: (url: string) => Promise<boolean> } = {}) {
+  if (!cellsOn() || process.env.STUDIO_CELLS_DRY_RUN === '1') return { skipped: 'not the control plane' };
+  if (rolling) return { skipped: 'a roll is under way' };
+  const R = await import('./cellrun.ts');
+  const c = R.cellsConfig();
+  const image = await R.serviceImage(c.studioService, c);
+  if (!image) return { skipped: `couldn't read ${c.studioService}'s image` };
+  const behind = (await R.listCells({}, c)).filter((x) => x.image !== image);
+  if (!behind.length) return { image, done: [], behind: 0 };
+  console.log(`[cells] ${why}: ${behind.length} awake cell(s) onto ${image}`);
+  const run = R.rollCells(image, { health: o.health }, c);
+  rolling = run;
+  try {
+    const r = await run;
+    if (r.failed) {
+      const { notify } = await import('./notify.ts');
+      await notify('Customer Studio update stopped', `${r.failed} wasn't healthy on the new version (${image.split(':').pop()}), so the update stopped there; ${r.left.length} other customer Studio(s) stay on the old version until the next deploy or tonight's catch-up.`, { priority: 4, tags: ['warning'] }).catch(() => {});
+    }
+    return { ...r, behind: behind.length };
+  } finally {
+    rolling = null;
+  }
 }
 
 // ------------------------------------------------------------------ the sign-up pages (/auth/start…)

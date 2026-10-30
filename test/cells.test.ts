@@ -289,6 +289,18 @@ test('a rolling upgrade: J\'s Studio first, then each awake cell; a failing cell
   await assert.rejects(R.rollImage('not an image'), /Not an image/);
 });
 
+test("every deploy rolls the awake cells onto J's Studio's own image (and the nightly cron catches up)", async () => {
+  services.set('studio', { name: 'studio', template: { containers: [{ image: 'us-east4-docker.pkg.dev/hawkes-test/studio/studio:v9' }] } });
+  const r: any = await C.followRoll('deploy', { health: async () => true });
+  assert.equal(r.image, 'us-east4-docker.pkg.dev/hawkes-test/studio/studio:v9');
+  assert.ok(r.behind >= 1 && r.done.length === r.behind, 'every awake cell behind it');
+  assert.ok(!r.done.includes('studio'), "J's Studio itself isn't touched: it's the one that just deployed");
+  for (const s of r.done) assert.equal(services.get(s).template.containers[0].image, 'us-east4-docker.pkg.dev/hawkes-test/studio/studio:v9');
+  const again: any = await C.followRoll('nightly', { health: async () => true });
+  assert.equal(again.behind, 0, 'nothing behind: nothing to do');
+  assert.equal(C.rollingCells(), false);
+});
+
 test('dry run: nothing reaches Google; the plan says what would be made', async () => {
   process.env.STUDIO_CELLS_DRY_RUN = '1';
   calls.length = 0;

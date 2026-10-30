@@ -117,6 +117,9 @@ export async function busy(): Promise<string | null> {
     if (buildsRunning() > 0) return 'a beta site build';
   } catch { /* not loaded */ }
   try {
+    if ((await import('./cells.ts')).rollingCells()) return "a roll of customers' Studios";
+  } catch { /* not loaded */ }
+  try {
     const ops = await import('./ops.ts');
     if (ops.listOps({ since: Date.now() }).some((o) => o.status !== 'done' && o.status !== 'failed')) return 'a background operation';
   } catch { /* not loaded */ }
