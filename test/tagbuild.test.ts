@@ -183,3 +183,18 @@ test('going live sees a tag build that is already committed on the website copy'
   assert.equal(await unpublished(dir, main), true);
   fs.rmSync(dir, { recursive: true, force: true });
 });
+
+test("the Beta button on Cloud Run builds beta's head from GitHub: branchHead reads it, or says it can't", async () => {
+  const { branchHead } = await import('../src/tagbuild.ts');
+  const sha = 'A'.repeat(40);
+  let asked = '';
+  const ok = (async (u: string) => { asked = String(u); return new Response(JSON.stringify({ sha })); }) as unknown as typeof fetch;
+  assert.equal(await branchHead('jgriffith3433/breakingthrough', 'beta', ok, 't'), sha.toLowerCase());
+  assert.equal(asked, 'https://api.github.com/repos/jgriffith3433/breakingthrough/commits/beta');
+  const missing = (async () => new Response('{}', { status: 404 })) as unknown as typeof fetch;
+  assert.equal(await branchHead('x/y', 'beta', missing, 't'), null);
+  const junk = (async () => new Response(JSON.stringify({ sha: 'nope' }))) as unknown as typeof fetch;
+  assert.equal(await branchHead('x/y', 'beta', junk, 't'), null);
+  const down = (async () => { throw new Error('offline'); }) as unknown as typeof fetch;
+  assert.equal(await branchHead('x/y', 'beta', down, 't'), null);
+});

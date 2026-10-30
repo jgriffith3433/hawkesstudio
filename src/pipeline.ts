@@ -1056,13 +1056,33 @@ async function betaBody(id: string, p: Product, { focus, criteria, scenario, opt
       if (broken) throw new Error(`npm ci failed in ${broken.dir} (${broken.why}): ${broken.error}`);
     }
     if (p.deploy?.prebuild) await prebuildBeta(id, p);
+    // The Beta button (or a push) for a Unity game on Cloud Run: there is no source checkout or beta website copy here, so
+    // beta's head on GitHub is built like a build tag (GitHub mode). The local path asked Gen for a website copy it can't
+    // have ("siteDir .work/beta/<product>-site doesn't exist", 2026-10-30). The commit already built: nothing to build.
+    let cloudBuilt = false;
+    if (p.build && !tag && lane && process.env.K_SERVICE) {
+      const { branchHead } = await import('./tagbuild.ts');
+      const slug = repoMap()[top];
+      const sha = slug ? await branchHead(slug, BETA) : null;
+      if (!sha) {
+        const s = startStep(id, p.id, 'build', 'unity');
+        updateStep(s, { status: 'failed', detail: `couldn't read ${BETA}'s commit for ${top} from GitHub${slug ? '' : ' (no "repos" entry in products.json)'}`, finished: true });
+        return void closeRun(id, `beta ${p.id}`);
+      }
+      const bb = betaBuild(p);
+      if (bb?.ok && bb.sha === sha) {
+        const s = startStep(id, p.id, 'build', 'unity');
+        updateStep(s, { status: 'skipped', detail: `${BETA} ${sha.slice(0, 7)} is already built${bb.version ? ` (Game/v${bb.version})` : ''}`, data: { served: { sha, version: bb.version ?? null } }, finished: true });
+        cloudBuilt = true;
+      } else tag = { name: BETA, sha };
+    }
     if (p.build && tag) {
       // A build tag: that exact commit, built in the cloud from GitHub and pushed to the website's beta (tagbuild.ts).
       // No beta queue: it builds one named commit, so it neither waits for pushes nor supersedes anything.
       const { buildTag, studioTagDeps } = await import('./tagbuild.ts');
       const built = await buildTag(id, p, tag, await studioTagDeps(id));
       if (built?.status !== 'done') return void closeRun(id, `beta ${p.id} ${tag.name}`);
-    } else if (p.build && lane) {
+    } else if (p.build && lane && !cloudBuilt) {
       // Unity: one build for a burst of pushes (betaqueue.ts). Waiting, a newer beta run of the product takes over.
       const q = startStep(id, p.id, 'beta', 'queue', 'waiting for more pushes');
       const was = resumedStep(q);

@@ -64,6 +64,22 @@ export async function siteVersions(slug: string, ref: string, fetcher: typeof fe
   }
 }
 
+/** The commit a branch points at on GitHub, or null when it can't tell. The Beta button on Cloud Run builds beta's head
+ *  this way, through the tag path (GitHub mode): there is no source checkout or beta website copy on the instance. */
+export async function branchHead(slug: string, branch: string, fetcher: typeof fetch = fetch, token = process.env.GITHUB_TOKEN): Promise<string | null> {
+  try {
+    const r = await fetcher(`https://api.github.com/repos/${slug}/commits/${encodeURIComponent(branch)}`, {
+      headers: { Accept: 'application/vnd.github+json', 'User-Agent': 'hawkes-studio', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+      signal: AbortSignal.timeout(20_000),
+    });
+    if (!r.ok) return null;
+    const sha = String(((await r.json()) as { sha?: string })?.sha ?? '');
+    return /^[0-9a-f]{40}$/i.test(sha) ? sha.toLowerCase() : null;
+  } catch {
+    return null;
+  }
+}
+
 /** Hawkes Gen's unity.build params for a tag build (GitHub mode). */
 export function tagBuildParams(p: Product, tag: BuildTag, { repos = repoMap(), version }: { repos?: Record<string, string>; version?: number } = {}) {
   const b = p.build;
