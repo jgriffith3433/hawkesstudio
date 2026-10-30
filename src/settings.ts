@@ -182,7 +182,8 @@ export async function saveSettings(section: string, patch: Record<string, any>, 
   if (customerStudio()) {
     if (s === 'costs' || s === 'resources') throw new StudioError("That setting is the platform's, not this Studio's.", 403);
     const h = patch.harness ?? patch.id;
-    if (s === 'brain' && h !== undefined && h !== 'claude') throw new StudioError('Your Studio runs on your own Claude (Settings, Your Claude): other harnesses are not available.', 403);
+    // Their harness: only one they linked themselves (ailink.ts puts their keys and logins where the harness reads them).
+    if (s === 'brain' && h !== undefined && h !== 'claude' && !(await import('./brains.ts')).harnessConfigured(h)) throw new StudioError('Connect that AI first (Connect your AI): your Studio runs only on your own.', 403);
   }
   const all = await allSettings();
   const cur = all[s] as Record<string, any>;

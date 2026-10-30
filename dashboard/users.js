@@ -29,6 +29,7 @@
       me = null;
     }
     window.studioMe = full;
+    window.gateUi?.(full);
     const status = $('#status');
     if (me && status && !$('#meBox')) {
       const el = document.createElement('span');
@@ -49,67 +50,108 @@
     if (full?.ai && !full.ai.ready && me?.role === 'admin') aiStep(full.ai);
   }
 
-  // Onboarding's "Connect your AI" (src/ailink.ts): a list of providers, Claude the only one for now. Talk and the
-  // agents here run only on what the customer links: their Claude subscription or their Anthropic API key.
+  // "Connect your AI" (src/ailink.ts): every provider the customer can link, Claude, Cursor, GitHub Copilot, Gemini
+  // and Antigravity, each with its own way in (a key, a token, or a sign-in whose link they open and whose code they
+  // paste back), which one is linked (only the last 4 of a key), and "Use this" for the one Talk and the agents run on.
+  // Onboarding shows it on top until one is linked; Settings has it too (mountAiCard).
+  const PLACEHOLDER = { claude: 'sk-ant-api03-…', cursor: 'your Cursor API key', copilot: 'github_pat_… or gho_…', gemini: 'AIza…' };
+  // Changes to Your AI are an admin's own click (the server checks X-Studio-Click, as for Settings' Claude accounts).
+  const click = async (path, body) => {
+    const r = await fetch(path, { method: 'POST', headers: { 'X-Studio-Click': '1', 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    const d = await r.json().catch(() => ({ error: `Studio answered ${r.status}` }));
+    if (!r.ok || d.error) throw new Error(d.error ?? `Studio answered ${r.status}`);
+    return d;
+  };
+  const SIGNIN = {
+    claude: { start: '/api/claude/signin', code: '/api/claude/signin/code', cancel: '/api/claude/signin/cancel', where: "Claude's sign-in page", url: (r) => r.url },
+    antigravity: { start: '/api/antigravity/signin', code: '/api/antigravity/signin/code', cancel: '/api/antigravity/signin/cancel', where: "Google's sign-in page", url: (r) => r.signin?.url },
+  };
+
+  function aiCardHtml(ai, { onboarding }) {
+    const row = (p) => {
+      const state = p.linked
+        ? `<span class="pill">connected${p.keyTail ? ` · …${esc(p.keyTail)}` : ''}</span> ${p.inUse ? '<span class="pill verdict pass">in use</span>' : `<button class="small" data-ai-use="${p.id}">Use this</button>`}`
+        : '';
+      const ways = p.methods.map((m) => (m.id === 'subscription' || m.id === 'signin')
+        ? `<div class="ca-line"><button class="small" data-ai-signin="${p.id}">${esc(m.label)}</button> <span class="meta">${esc(m.help)}</span></div>`
+        : `<div class="ca-line"><input type="password" data-ai-input="${p.id}" placeholder="${esc(PLACEHOLDER[p.id] ?? m.label)}" autocomplete="off" spellcheck="false"><button class="small" data-ai-save="${p.id}">Save</button>${p.linked && p.keyTail ? ` <button class="small" data-ai-remove="${p.id}">Remove</button>` : ''}</div><div class="meta">${esc(m.label)}. ${esc(m.help)} Stored encrypted; only its last 4 characters are ever shown.</div>`).join('');
+      return `<div class="ca-add" data-ai-row="${p.id}"><b>${esc(p.name)}</b> <span class="meta">by ${esc(p.by)}</span> ${state}${ways}<div class="meta" data-ai-msg="${p.id}"></div></div>`;
+    };
+    return `<h3>${onboarding ? 'Connect your AI' : '🧠 Your AI'}</h3>
+      <p class="meta">Talk and the agents run on <b>your</b> AI account, never ours. Connect one or more; "Use this" picks the one they run on.</p>
+      ${ai.providers.map(row).join('')}
+      ${onboarding ? '<div class="ca-line"><button class="small" id="aiLater">Later</button></div>' : ''}`;
+  }
+
+  function wireAiCard(el, { onboarding }) {
+    const say = (id, html) => { const m = el.querySelector(`[data-ai-msg="${id}"]`); if (m) m.innerHTML = html; };
+    const fail = (id, err) => say(id, `<span style="color:var(--red)">${esc(err.message)}</span>`);
+    const redraw = async () => {
+      const ai = await api('/api/ai');
+      window.studioMe = { ...(window.studioMe ?? {}), ai };
+      if (onboarding && ai.ready) { el.remove(); return; }
+      el.innerHTML = aiCardHtml(ai, { onboarding });
+    };
+    el.addEventListener('click', async (e) => {
+      const t = e.target;
+      if (t.id === 'aiLater') { try { localStorage.setItem('studio.aiLater', String(Date.now())); } catch { /* no storage */ } el.remove(); return; }
+      const id = t.dataset.aiSignin ?? t.dataset.aiSave ?? t.dataset.aiRemove ?? t.dataset.aiUse ?? t.dataset.aiFinish ?? t.dataset.aiCancel;
+      if (!id) return;
+      try {
+        if (t.dataset.aiUse) { await click('/api/ai/use', { provider: id }); return redraw(); }
+        if (t.dataset.aiSave || t.dataset.aiRemove) {
+          const key = t.dataset.aiRemove ? null : el.querySelector(`[data-ai-input="${id}"]`).value;
+          say(id, 'Saving…');
+          await click(id === 'claude' ? '/api/claude/key' : `/api/ai/${id}/key`, { key });
+          return redraw();
+        }
+        const s = SIGNIN[id];
+        if (t.dataset.aiSignin) {
+          t.disabled = true;
+          say(id, 'Starting the sign-in…');
+          const r = await click(s.start, { label: window.studioMe?.user?.email ?? '' });
+          say(id, `<div>1. <a href="${esc(s.url(r) ?? '#')}" target="_blank" rel="noopener"><b>Open ${s.where}</b></a> and sign in with your own account.</div>
+            <div>2. It shows a code. Paste it here:</div>
+            <div class="ca-line"><input type="text" data-ai-code="${id}" placeholder="the code" autocomplete="off" spellcheck="false"><button class="small" data-ai-finish="${id}">Finish signing in</button><button class="small" data-ai-cancel="${id}">Cancel</button></div>
+            <div class="meta">Signed in to the wrong account in your browser? Sign out there first, or open the link in a private window.</div>`);
+          t.disabled = false;
+          return;
+        }
+        if (t.dataset.aiFinish) {
+          const code = el.querySelector(`[data-ai-code="${id}"]`).value;
+          say(id, 'Signing in…');
+          await click(s.code, { code });
+          return redraw();
+        }
+        if (t.dataset.aiCancel) { await click(s.cancel, {}).catch(() => {}); say(id, ''); }
+      } catch (err) {
+        t.disabled = false;
+        fail(id, err);
+      }
+    });
+  }
+
+  /** Settings' "Your AI" box (settings.js), in a customer's Studio. */
+  window.mountAiCard = (box, ai) => {
+    if (!box || !ai) return;
+    box.className = 'set-box';
+    box.innerHTML = aiCardHtml(ai, { onboarding: false });
+    if (!box.dataset.wired) { wireAiCard(box, { onboarding: false }); box.dataset.wired = '1'; }
+  };
+
   function aiStep(ai) {
     if ($('#aiStep')) return;
-    // Put off with "Later": not shown again on this browser for a day (Settings → Your Claude has it too).
+    // Put off with "Later": not shown again on this browser for a day (Settings → Your AI has it too).
     try { if (Date.now() - Number(localStorage.getItem('studio.aiLater') || 0) < 86_400_000) return; } catch { /* no storage */ }
     const el = document.createElement('section');
     el.id = 'aiStep';
     el.className = 'us-box';
     el.style.margin = '0 0 14px';
-    el.innerHTML = `<h3>Connect your AI</h3>
-      <p class="meta">Talk and the agents run on <b>your</b> AI account, never ours. Pick one; you can change it in ⚙ Settings.</p>
-      ${ai.providers.map((p) => `<div class="ca-add"><b>${esc(p.name)}</b> <span class="meta">by ${esc(p.by)}</span>
-        ${p.methods.map((m) => m.id === 'api-key'
-          ? `<div class="ca-line"><input type="password" id="aiKey" placeholder="sk-ant-api03-…" autocomplete="off" spellcheck="false"><button class="small" id="aiKeySave">Save API key</button></div><div class="meta">${esc(m.help)} Stored encrypted; only its last 4 characters are ever shown.</div>`
-          : `<div class="ca-line"><button class="small" id="aiSignin">${esc(m.label)}</button></div><div class="meta">${esc(m.help)}</div>`).join('')}
-      </div>`).join('')}
-      <div id="aiMsg" class="meta"></div>
-      <div class="ca-line"><button class="small" id="aiLater">Later</button></div>`;
+    el.innerHTML = aiCardHtml(ai, { onboarding: true });
     const ob = $('#onboard');
     if (ob) ob.after(el);
     else document.querySelector('main')?.prepend(el);
-    // Changes to Your AI are an admin's own click (the server checks X-Studio-Click, as for Settings' Claude accounts).
-    const click = async (path, body) => {
-      const r = await fetch(path, { method: 'POST', headers: { 'X-Studio-Click': '1', 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-      const d = await r.json().catch(() => ({ error: `Studio answered ${r.status}` }));
-      if (!r.ok || d.error) throw new Error(d.error ?? `Studio answered ${r.status}`);
-      return d;
-    };
-    const say = (html) => { $('#aiMsg').innerHTML = html; };
-    const fail = (err) => say(`<span style="color:var(--red)">${esc(err.message)}</span>`);
-    const done = () => { el.remove(); loadMe(); };
-    el.addEventListener('click', async (e) => {
-      const id = e.target.id;
-      if (id === 'aiLater') { try { localStorage.setItem('studio.aiLater', String(Date.now())); } catch { /* no storage */ } el.remove(); return; }
-      // Their Claude subscription: Claude Code's own sign-in (claude setup-token) runs in this Studio; they open
-      // Anthropic's link, sign in, and paste the code Claude shows back here.
-      if (id === 'aiSignin') {
-        e.target.disabled = true;
-        say('Starting the Claude sign-in…');
-        try {
-          const si = await click('/api/claude/signin', { label: me?.email ?? '' });
-          say(`<div>1. <a href="${esc(si.url)}" target="_blank" rel="noopener"><b>Open Claude's sign-in page</b></a> and sign in with your Claude account.</div>
-            <div>2. Claude shows a code. Paste it here:</div>
-            <div class="ca-line"><input type="text" id="aiCode" placeholder="the code from Claude" autocomplete="off" spellcheck="false"><button class="small" id="aiFinish">Finish signing in</button><button class="small" id="aiCancel">Cancel</button></div>
-            <div class="meta">Signed in to the wrong account in your browser? Sign out on claude.ai first, or open the link in a private window.</div>`);
-        } catch (err) { fail(err); }
-        e.target.disabled = false;
-        return;
-      }
-      if (id === 'aiFinish') {
-        const code = $('#aiCode').value;
-        say('Signing in…');
-        try { await click('/api/claude/signin/code', { code }); done(); } catch (err) { fail(err); }
-        return;
-      }
-      if (id === 'aiCancel') { await click('/api/claude/signin/cancel', {}).catch(() => {}); say(''); return; }
-      if (id !== 'aiKeySave') return;
-      say('Saving…');
-      try { await click('/api/claude/key', { key: $('#aiKey').value }); done(); } catch (err) { fail(err); }
-    });
+    wireAiCard(el, { onboarding: true });
   }
 
   // First run in a customer's Studio (src/tenancy.ts): no game yet, so its admin adds the first one

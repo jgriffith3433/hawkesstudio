@@ -12,14 +12,15 @@
 import { StudioError } from './config.ts';
 import { customerStudio } from './tenancy.ts';
 
-export type Feature = 'games' | 'nightly' | 'desktop' | 'agents' | 'talk' | 'pm' | 'cloudBuilds';
+// Talk is on every plan once the customer linked their own AI (J, 2026-10-30: "it's just an interface for talking with
+// LLMs anyways"): it is not a Feature; aiRefusal still waits for their AI.
+export type Feature = 'games' | 'nightly' | 'desktop' | 'agents' | 'pm' | 'cloudBuilds';
 
 export const FEATURE_NAMES: Record<Feature, string> = {
   games: 'More games',
   nightly: 'Nightly runs',
   desktop: 'Desktop builds (Windows, Linux)',
   agents: 'Agent fixes',
-  talk: 'Talk',
   pm: 'The PM',
   cloudBuilds: 'Cloud builds',
 };
@@ -28,8 +29,8 @@ export const FEATURE_NAMES: Record<Feature, string> = {
 export const PLAN_FEATURES: Record<string, { games: number; features: Feature[] }> = {
   free: { games: 1, features: [] },
   studio_indie: { games: 3, features: ['nightly', 'desktop'] },
-  studio_team: { games: 10, features: ['nightly', 'desktop', 'agents', 'talk', 'pm'] },
-  studio_studio: { games: 30, features: ['nightly', 'desktop', 'agents', 'talk', 'pm', 'cloudBuilds'] },
+  studio_team: { games: 10, features: ['nightly', 'desktop', 'agents', 'pm'] },
+  studio_studio: { games: 30, features: ['nightly', 'desktop', 'agents', 'pm', 'cloudBuilds'] },
 };
 const ORDER = ['free', 'studio_indie', 'studio_team', 'studio_studio'];
 const NAMES: Record<string, string> = { free: 'Free', studio_indie: 'Indie', studio_team: 'Team', studio_studio: 'Studio' };
@@ -85,17 +86,20 @@ export const planFor = (f: Feature) => ORDER.find((p) => p !== 'free' && (f === 
 /** Everything the dashboard needs to show a plan and its Upgrade buttons. */
 export async function entitlements() {
   const s = await planState();
-  if (s.plan === 'platform') return { plan: 'platform', planName: "Hawkes Studio (the owner's)", status: null, games: null, features: Object.keys(FEATURE_NAMES) as Feature[], locked: [] as Feature[] };
+  if (s.plan === 'platform') return { plan: 'platform', planName: "Hawkes Studio (the owner's)", status: null, games: null, features: Object.keys(FEATURE_NAMES) as Feature[], locked: [] as Feature[], offers: {} as Record<string, { feature: Feature; name: string; plan: string; planName: string }> };
   const f = featuresOf(s.plan, s.maxGames);
   const all = (Object.keys(FEATURE_NAMES) as Feature[]).filter((x) => x !== 'games');
-  return { plan: s.plan, planName: NAMES[s.plan] ?? s.plan, status: s.status, games: f.games, features: f.features, locked: all.filter((x) => !f.features.includes(x)) };
+  const locked = all.filter((x) => !f.features.includes(x));
+  // What each locked feature upgrades to (the dashboard's greyed-out controls open that Checkout).
+  const offers = Object.fromEntries(locked.map((x) => [x, { feature: x, name: FEATURE_NAMES[x], plan: planFor(x), planName: NAMES[planFor(x)] }]));
+  return { plan: s.plan, planName: NAMES[s.plan] ?? s.plan, status: s.status, games: f.games, features: f.features, locked, offers };
 }
 
 export class UpgradeNeeded extends StudioError {
   upgrade: { feature: Feature; name: string; plan: string; planName: string };
   constructor(feature: Feature, message?: string) {
     const plan = planFor(feature);
-    super(message ?? `${FEATURE_NAMES[feature]} ${feature === 'talk' || feature === 'pm' ? 'is' : 'are'} on the ${NAMES[plan]} plan and up. Upgrade to use ${feature === 'games' ? 'more games' : 'it'}.`, 402);
+    super(message ?? `${FEATURE_NAMES[feature]} ${feature === 'pm' ? 'is' : 'are'} on the ${NAMES[plan]} plan and up. Upgrade to use ${feature === 'games' ? 'more games' : 'it'}.`, 402);
     this.upgrade = { feature, name: FEATURE_NAMES[feature], plan, planName: NAMES[plan] };
   }
 }
@@ -122,7 +126,6 @@ export const needsDesktop = (p: { engine?: string; build?: { target?: string } }
 export function featureOfRoute(route: string, method: string): Exclude<Feature, 'games'> | null {
   if (method === 'GET' || method === 'HEAD') return null;
   if (route === '/api/changes' || /^\/api\/findings\/[\w-]+\/fix$/.test(route)) return 'agents';
-  if (route === '/api/talk' || route === '/api/talk/call' || /^\/api\/talk\/[\w-]+\/(send|messages|answer)$/.test(route)) return 'talk';
   if (route.startsWith('/api/pm/') || route === '/api/scouts') return 'pm';
   if (route === '/api/cloud/daily') return 'nightly';
   return null;
@@ -142,8 +145,9 @@ export async function upgradeRefusal(route: string, method: string): Promise<{ e
 /** Talk, agents and the PM in a customer's Studio need the customer's own AI linked first (ailink.ts); null when ready. */
 export async function aiRefusal(route: string, method: string): Promise<{ error: string; connectAi: true } | null> {
   if (!customerStudio()) return null;
+  const talk = method !== 'GET' && (route === '/api/talk' || route === '/api/talk/call' || /^\/api\/talk\/[\w-]+\/(send|messages|answer)$/.test(route));
   const f = featureOfRoute(route, method);
-  if (f !== 'talk' && f !== 'agents' && f !== 'pm') return null;
-  if ((await import('./claude.ts')).customerClaude().ready) return null;
-  return { error: 'Connect your AI first (Settings → Your AI): Talk and the agents run on your own Claude, never ours.', connectAi: true };
+  if (!talk && f !== 'agents' && f !== 'pm') return null;
+  if (await (await import('./ailink.ts')).aiReady()) return null;
+  return { error: 'Connect your AI first (Settings → Your AI): Talk and the agents run on your own AI, never ours.', connectAi: true };
 }

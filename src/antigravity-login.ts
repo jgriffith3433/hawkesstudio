@@ -44,6 +44,14 @@ function loginOf(raw: string | null | undefined): { refresh: string; email: stri
 }
 const readFile = (file: string) => { try { return fs.readFileSync(file, 'utf8'); } catch { return null; } };
 
+/** The login file's text, and putting one back (ailink.ts keeps a customer's sealed, and restores it at start). */
+export const readAgyLogin = () => readFile(tokenFile());
+export function restoreAgyLogin(raw: string) {
+  if (!loginOf(raw)) return false;
+  writeLogin(raw);
+  return shareAgyLogin();
+}
+
 function writeLogin(raw: string, file = tokenFile()) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const tmp = `${file}.${process.pid}.tmp`;

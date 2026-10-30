@@ -293,6 +293,13 @@ async function presign(bucket: string, key: string, region = 'us-east-1') {
   return url;
 }
 
+/** The playtest's video asset in Hawkes Gen's library, when it has one (server.ts streams it through the relay). */
+export function genVideoAsset(id: string): string | null {
+  const row = db.prepare(`SELECT * FROM steps WHERE id = ? AND kind = 'playtest'`).get(id);
+  const v = row ? rowToStep(row).data?.video : null;
+  return typeof v === 'string' && /^a_[0-9a-f]{8,32}$/.test(v) ? v : null;
+}
+
 /** Where a playtest's video (or report) is: S3 when it was uploaded, else Hawkes Gen's library. */
 export async function fileLink(id: string, what: 'video' | 'report') {
   const row = db.prepare(`SELECT * FROM steps WHERE id = ? AND kind = 'playtest'`).get(id);

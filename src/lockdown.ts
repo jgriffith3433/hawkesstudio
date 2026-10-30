@@ -45,7 +45,6 @@ const ALWAYS: [RegExp, string][] = [
   [/^\/api\/(costs|ledger|resources)(\/|$)/, "The studio's costs and resources"],
   [/^\/api\/brief\/cost$/, "The studio's costs"],
   [/^\/api\/(self-deploys|services)(\/|$)/, 'Self-deploys and restarts'],
-  [/^\/api\/antigravity\//, 'The Antigravity login'],
   [/^\/api\/memory\/seed$/, 'Seeding the shared memory'],
   [/^\/api\/billing\/plans$/, 'Setting the plans and their prices'],
   [/^\/api\/cells(\/|$)/, "Customers' Studios (the control plane)"],
@@ -53,6 +52,8 @@ const ALWAYS: [RegExp, string][] = [
 ];
 const J_STUDIO: [RegExp, string][] = [
   [/^\/api\/claude\//, 'Claude accounts'],
+  // A customer's own AI (ailink.ts): theirs in their Studio; J's Studio's are set up on the server, and its Antigravity login is J's.
+  [/^\/api\/(ai|antigravity)\//, 'AI logins'],
   [/^\/api\/(users|invites|signups)(\/|$)/, 'Users'],
 ];
 

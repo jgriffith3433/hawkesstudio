@@ -22,7 +22,7 @@ async function loadRoadmap() {
   const s = pm.settings;
   const c = pm.capacity;
   $('#rmPm').innerHTML = `<b>PM loop:</b> ${s.enabled ? '<span class="pill ship">running</span>' : '<span class="pill failed">paused</span>'}
-    <button class="small" data-pm="toggle">${s.enabled ? 'Pause' : 'Resume'}</button>
+    <button class="small" data-pro="pm" data-admin data-pm="toggle">${s.enabled ? 'Pause' : 'Resume'}</button>
     · delegated merges into beta: <b>${s.delegatedMerges ? 'on' : 'off'}</b> <button class="small" data-pm="merges">${s.delegatedMerges ? 'Turn off' : 'Turn on'}</button>
     · agents ${c.active}/${s.maxConcurrent} · starts today ${c.started}/${s.maxStartsPerDay} <button class="small" data-pm="caps">Limits…</button>
     ${pm.turn ? ' · <span class="pill warn">PM turn running</span>' : ''}${pm.conversation ? ` · <a href="/?conversation=${esc(pm.conversation.id)}#talk">PM conversation</a>` : ''}

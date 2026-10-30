@@ -55,7 +55,7 @@ const PLATFORM_ONLY: [string, string][] = [
   ['GET', '/api/broadcast'], ['POST', '/api/broadcast/live'], ['GET', '/api/social'], ['POST', '/api/social/config'],
   ['GET', '/api/costs'], ['POST', '/api/costs/settings'], ['GET', '/api/ledger'], ['GET', '/api/resources'], ['GET', '/api/brief/cost'],
   ['GET', '/api/self-deploys'], ['GET', '/api/services'], ['POST', '/api/services/restart'],
-  ['POST', '/api/antigravity/signin'], ['POST', '/api/memory/seed'], ['POST', '/api/billing/plans'],
+  ['POST', '/api/memory/seed'], ['POST', '/api/billing/plans'],
   ['POST', '/api/gen/v1/fleet/launch'], ['GET', '/api/gen/v1/settings'], ['GET', '/api/gen/v1/machines'],
 ];
 

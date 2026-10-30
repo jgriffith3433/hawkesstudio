@@ -385,6 +385,33 @@ A customer's Studio has no Costs tab of its own: their bill and credits are on t
     Biomedical, Pierce, J, J's, the product names
   - `test/j-voice.test.ts`: J's Studio still has them
 
+**Their AI, any of five** (**built**, src/ailink.ts; J, 2026-10-30): Claude (subscription sign-in or Anthropic key),
+Cursor (API key), GitHub Copilot (token), Gemini (API key) and Antigravity (Google sign-in, antigravity-login.ts).
+- Keys are sealed in `.data/ai/keys.json` and put where each harness reads them at start. Their Antigravity login is
+  kept sealed too.
+- "Use this" makes one the Studio's harness. Only a provider they linked can be picked (settings.ts refuses others).
+- Onboarding's "Connect your AI" card and Settings → Your AI show the same list.
+
+**Talk is on every plan** once they linked their own AI (J, 2026-10-30: "it's just an interface for talking with
+LLMs anyways"). Agents and the PM stay on Team and up.
+
+**What they see by plan and role** (dashboard/app.js `gateUi`; the API refuses the same):
+- `data-pro="<feature>"`: a control their plan lacks is greyed out with a 🔒, and a click offers the Upgrade.
+  Examples: an agent fix in Backlog, the PM switch.
+- `data-admin`: hidden from members (going live, rollback, merges and closes, the PM switch, Settings).
+- `data-platform`: J's machinery, hidden in every customer's Studio (Library's content health, the Unity and local-run
+  options, the walk-away badge, Gen job links).
+
+**Games with only an address** (no repository):
+- Nothing to sync.
+- Go Live explains that Studio plays and reviews the game where it is deployed, and offers "Add its repository". The
+  repository is saved; agent fixes, a beta and going live from it come with GitHub for customers (`STUDIO_GITHUB_APP`).
+- "Run a playtest" is on the game's card and on both playtest tabs.
+
+**Playtest videos and every library file** go through Studio's relay to Gen (`/api/gen/v1/files/<asset>`, with the
+Studio's own Gen key and range requests), never straight to gen.hawkesgen.ai, which answers 401 to a browser. This
+applies to J's Studio too.
+
 **They never get** J's machinery (section 5).
 
 ---

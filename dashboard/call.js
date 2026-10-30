@@ -279,11 +279,11 @@
 
   /** One sentence in ElevenLabs Flash through Hawkes Gen (about half a second), decoded and ready to play. */
   async function elevenClip(text, ctx) {
-    const r = await fetch(`${GEN}/v1/run`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tool: 'audio.voice', project: 'hawkesstudio', labels: { from: 'talk call' }, params: { text, voice: S.elevenVoice, model: 'eleven_flash_v2_5', format: 'mp3_44100_64' }, timeout: 20 }) });
+    const r = await fetch(`/api/gen/v1/run`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tool: 'audio.voice', project: 'hawkesstudio', labels: { from: 'talk call' }, params: { text, voice: S.elevenVoice, model: 'eleven_flash_v2_5', format: 'mp3_44100_64' }, timeout: 20 }) });
     const j = await r.json();
     const asset = j.outputs?.[0]?.asset;
     if (!r.ok || !asset) throw new Error(j.error ?? 'no audio');
-    const audio = await fetch(`${GEN}/v1/files/${asset}`).then((x) => x.arrayBuffer());
+    const audio = await fetch(`/api/gen/v1/files/${asset}`).then((x) => x.arrayBuffer());
     return await ctx.decodeAudioData(audio);
   }
 

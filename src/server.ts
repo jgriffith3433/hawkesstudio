@@ -362,7 +362,11 @@ const server = http.createServer(async (req, res) => {
     m = /^\/api\/playtests\/(s_[0-9a-f]+)(?:\/(video|report))?$/.exec(route);
     if (m && method === 'GET' && !m[2]) return send(res, 200, (await getPlaytest(m[1], { vs: q('vs') })) ?? { error: 'no such playtest' });
     if (m && method === 'GET' && m[2]) {
-      // S3 (a short-lived signed link) when it was uploaded, else Hawkes Gen's library.
+      // A video in Hawkes Gen's library is streamed through Studio's relay with this Studio's own Gen key (ranges and
+      // all): Gen's /v1/files answers 401 to a browser, so a redirect there never played (a customer's cell above all).
+      const asset = m[2] === 'video' ? (await import('./playtests.ts')).genVideoAsset(m[1]) : null;
+      if (asset) return await (await import('./library.ts')).relay(req, res, `files/${asset}`);
+      // Else S3 (a short-lived signed link, older playtests), or Gen's report.
       const link = await fileLink(m[1], m[2] as 'video' | 'report');
       if (!link) return send(res, 404, { error: `no ${m[2]} for this playtest` });
       res.writeHead(302, { Location: link, 'Cache-Control': 'no-store' });
@@ -412,6 +416,16 @@ const server = http.createServer(async (req, res) => {
 
     // Go live (gated): the plan, then "DEPLOY <product>" fast-forwards main to the playtested beta (deploy.ts).
     m = /^\/api\/deploy\/([\w-]+)$/.exec(route);
+    // A customer's game: played where it is deployed. With no repository, or before GitHub is connected for customers
+    // (the GitHub App, STUDIO_GITHUB_APP), there is no beta here and nothing goes live from Studio: the plan says so.
+    if (m && (await import('./tenancy.ts')).customerStudio() && (!(await import('./config.ts')).getProduct(m[1]).repo || !process.env.STUDIO_GITHUB_APP)) {
+      const p = (await import('./config.ts')).getProduct(m[1]);
+      const note = p.repo
+        ? `${p.name} is played and reviewed at ${p.live}. Its repository (${p.repo}) is saved: once GitHub is connected for your Studio, agents fix bugs in it and Studio keeps a beta site and goes live from it.`
+        : `${p.name} has no repository here: Studio plays and reviews it at ${p.live}, and it goes live wherever you deploy it. Add its GitHub repository to get agent fixes, a beta site and going live from Studio.`;
+      if (method === 'GET') return send(res, 200, { product: p.id, name: p.name, urlOnly: true, repo: p.repo || null, live: p.live, canDeploy: false, blockers: [], warnings: [], note });
+      return send(res, 409, { error: `${p.name} has no repository: it goes live where you deploy it, not from Studio.` });
+    }
     if (m && method === 'GET') return send(res, 200, await deployPlan(m[1]));
     if (m && method === 'POST') {
       // Queued like an Approve tap (one product at a time, Studio responsive); this request waits for the answer.
@@ -720,14 +734,32 @@ const server = http.createServer(async (req, res) => {
     if (route === '/api/antigravity/login' && method === 'GET') return send(res, 200, (await import('./antigravity-login.ts')).agyLogin());
     if (route.startsWith('/api/antigravity/') && method !== 'GET') {
       const why = (await import('./approvals.ts')).notJClick(req);
-      if (why) return send(res, 403, { error: `Antigravity signs in only from J's own click in Settings: ${why}.` });
+      const customer = (await import('./tenancy.ts')).customerStudio();
+      if (why) return send(res, 403, { error: customer ? `Your AI changes only from an admin's own click in this Studio's dashboard: ${why}.` : `Antigravity signs in only from J's own click in Settings: ${why}.` });
       const al = await import('./antigravity-login.ts');
       const b = await readJson(req);
       if (route === '/api/antigravity/signin' && method === 'POST') return send(res, 200, await al.startAgySignin());
-      if (route === '/api/antigravity/signin/code' && method === 'POST') return send(res, 200, await al.finishAgySignin(String(b.code ?? '')));
+      if (route === '/api/antigravity/signin/code' && method === 'POST') {
+        const r = await al.finishAgySignin(String(b.code ?? ''));
+        // A customer's Google login, kept sealed in their Studio so a new instance has it (ailink.ts).
+        await (await import('./ailink.ts')).keepAntigravityLogin();
+        return send(res, 200, r);
+      }
       if (route === '/api/antigravity/signin/cancel' && method === 'POST') return send(res, 200, al.cancelAgySignin());
     }
 
+    // A customer's other AI providers (ailink.ts): their Cursor, Copilot or Gemini key, and which one Talk and the agents
+    // run on. An admin's own click, as for Claude.
+    const aiKey = /^\/api\/ai\/(cursor|copilot|gemini)\/key$/.exec(route);
+    if ((aiKey || route === '/api/ai/use') && method === 'POST') {
+      const why = (await import('./approvals.ts')).notJClick(req);
+      if (why) return send(res, 403, { error: `Your AI changes only from an admin's own click in this Studio's dashboard: ${why}.` });
+      const AI = await import('./ailink.ts');
+      const b = await readJson(req);
+      if (aiKey) { AI.setProviderKey(aiKey[1], b.key ?? null); return send(res, 200, await AI.aiLinks()); }
+      return send(res, 200, await AI.useProvider(String(b.provider ?? ''), (await import('./auth.ts')).requester(req)?.email ?? 'admin'));
+    }
+    if (route === '/api/ai' && method === 'GET') return send(res, 200, (await (await import('./ailink.ts')).aiLinks()) ?? { providers: [] });
     // Claude accounts (claude-accounts.ts): the logins Claude Code runs with. Anyone may list them (labels, never tokens);
     // signing in, switching, renaming, checking and removing are J's click on the dashboard only.
     if (route === '/api/claude/accounts' && method === 'GET') return send(res, 200, { ...(await import('./claude-accounts.ts')).listAccounts(), ...((await import('./tenancy.ts')).customerStudio() ? { customer: (await import('./claude.ts')).customerClaude() } : {}) });
@@ -816,6 +848,9 @@ const server = http.createServer(async (req, res) => {
 
     if (route === '/api/repos/sync' && method === 'POST') {
       const b = await readJson(req);
+      // A customer's Studio has no checkouts to sync: its games are played where they are deployed (repos come with the
+      // GitHub App, docs/studio-customers.md).
+      if ((await import('./tenancy.ts')).customerStudio()) return send(res, 200, { repos: [], note: 'Nothing to sync: your games are played where they are deployed.' });
       const repos = await syncRepos(Array.isArray(b.only) ? b.only : undefined);
       const { previewsAfterSync } = await import('./previews.ts');
       previewsAfterSync(repos);
@@ -956,6 +991,7 @@ server.listen(listenPort, cloud ? '0.0.0.0' : '127.0.0.1', () => {
   void import('./config.ts').then((c) => c.applyOnboardingSeed()).then((g) => { if (g) console.log(`[onboarding] added the first game, ${g.name}`); }).catch((e) => console.warn(`[onboarding] ${e.message ?? e}`));
   void import('./entitlements.ts').then((E) => E.startPlanRefresh());
   void import('./cellside.ts').then((c) => c.startCellReports());
+  void import('./ailink.ts').then((a) => a.applyCustomerKeys()).then((n) => { if (n) console.log(`[ai] ${n} of the customer's own AI logins in place`); }).catch((e) => console.warn(`[ai] ${e.message ?? e}`));
   // A restart (a deploy) ends nothing: runs, agent changes and Talk answers carry on from where they were, waiting on
   // the same Gen jobs and reading the same detached Claude Code processes (drain.ts, detach.ts).
   // Queued go-lives and rollbacks carry on (ops.ts), and the event loop is watched for anything that blocks it.

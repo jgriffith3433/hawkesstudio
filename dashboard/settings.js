@@ -364,7 +364,9 @@
     if (badge) badge.hidden = !data.pm.walkAway;
     // A customer's Studio (src/tenancy.ts): no harness choice (their own Claude only), no server budgets or alerts.
     const cu = window.studioMe?.customer;
-    $('#setBody').innerHTML = `<div class="set-grid">${billingBox(billing)}${cu ? '' : brainBox(data.brain)}${data.routing ? routingBox(data.routing, routing) : ''}${tuningBox(data.tuning)}${claudeBox(claude, data.brain)}${agyBox(agyLogin)}<div id="svcBox">${servicesBox(services)}</div>${callBox(data.call)}${agentsBox(data.agents)}${pmBox(data.pm)}${notifyBox(data.notify)}${cu ? '' : costsBox(data.costs)}${cu ? '' : resourcesBox(data.resources)}</div>`;
+    $('#setBody').innerHTML = `<div class="set-grid">${billingBox(billing)}${cu ? '<div id="setAiBox"></div>' : brainBox(data.brain)}${data.routing ? routingBox(data.routing, routing) : ''}${tuningBox(data.tuning)}${cu ? '' : claudeBox(claude, data.brain)}${cu ? '' : agyBox(agyLogin)}<div id="svcBox">${servicesBox(services)}</div>${callBox(data.call)}${agentsBox(data.agents)}${pmBox(data.pm)}${notifyBox(data.notify)}${cu ? '' : costsBox(data.costs)}${cu ? '' : resourcesBox(data.resources)}</div>`;
+    // A customer's Studio: Claude and every other provider they link, in one box (users.js mountAiCard).
+    if (cu) api('/api/ai').then((ai) => window.mountAiCard?.($('#setAiBox'), ai)).catch(() => {});
     if (services?.pending) watchRestart();
     if (data.call.engine === 'eleven') loadElevenVoices();
   }
@@ -374,7 +376,7 @@
     const sel = $('#setElevenVoice');
     if (!sel) return;
     try {
-      const r = await fetch(`${GEN}/v1/providers/elevenlabs/voices`).then((x) => x.json());
+      const r = await fetch(`/api/gen/v1/providers/elevenlabs/voices`).then((x) => x.json());
       const list = (r.voices ?? []).filter((v) => ['premade', 'professional', 'cloned', 'generated'].includes(v.category));
       sel.innerHTML = list.map((v) => `<option value="${esc(v.id)}" ${v.id === data.call.elevenVoice ? 'selected' : ''}>${esc(v.name)}</option>`).join('');
       if (!data.call.elevenVoice && list[0]) await save('call', { elevenVoice: list[0].id }, sel);

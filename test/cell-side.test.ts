@@ -67,8 +67,11 @@ test('the free plan: pro features answer 402 with the plan to upgrade to; readin
   const e = await E.entitlements();
   assert.equal(e.plan, 'free');
   assert.equal(e.games, 1);
-  assert.deepEqual(e.locked.sort(), ['agents', 'cloudBuilds', 'desktop', 'nightly', 'pm', 'talk']);
-  for (const [route, feature, planId] of [['/api/changes', 'agents', 'studio_team'], ['/api/talk', 'talk', 'studio_team'], ['/api/pm/tick', 'pm', 'studio_team'], ['/api/cloud/daily', 'nightly', 'studio_indie']] as const) {
+  assert.deepEqual(e.locked.sort(), ['agents', 'cloudBuilds', 'desktop', 'nightly', 'pm']);
+  // Talk is on every plan (J, 2026-10-30): only their own AI is needed.
+  assert.equal(await E.upgradeRefusal('/api/talk', 'POST'), null);
+  assert.equal(e.offers.agents.planName, 'Team');
+  for (const [route, feature, planId] of [['/api/changes', 'agents', 'studio_team'], ['/api/pm/tick', 'pm', 'studio_team'], ['/api/cloud/daily', 'nightly', 'studio_indie']] as const) {
     const r = await E.upgradeRefusal(route, 'POST');
     assert.equal(r?.upgrade.feature, feature, route);
     assert.equal(r?.upgrade.plan, planId, route);
@@ -96,9 +99,9 @@ test('a plan from the control plane opens its features; Talk and agents still wa
   process.env.STUDIO_CONTROL_URL = url;
 });
 
-test('linking their AI: Claude the only provider; the key sealed on disk, shown as its last 4, used only for them', async () => {
+test('linking their AI: Claude among the providers; the key sealed on disk, shown as its last 4, used only for them', async () => {
   const links = (await AI.aiLinks())!;
-  assert.deepEqual(links.providers.map((p) => p.id), ['claude']);
+  assert.deepEqual(links.providers.map((p) => p.id), ['claude', 'cursor', 'copilot', 'gemini', 'antigravity']);
   assert.deepEqual(links.providers[0].methods.map((m) => m.id), ['subscription', 'api-key']);
   assert.equal(links.ready, false);
   const key = 'sk-ant-api03-AcmeOwnKey_abcdefghijklmnopqrstu';
@@ -156,4 +159,37 @@ test("Settings: a customer's Studio runs only on Claude, and the server's budget
   await assert.rejects(S.saveSettings('brain', { harness: 'cursor' }, { by: 'dev@acme.example', conversation: null }), (e: any) => e.status === 403);
   await assert.rejects(S.saveSettings('costs', { monthlyBudget: 1 }, { by: 'dev@acme.example', conversation: null }), (e: any) => e.status === 403);
   await assert.rejects(S.saveSettings('resources', { memoryPct: 99 }, { by: 'dev@acme.example', conversation: null }), (e: any) => e.status === 403);
+});
+
+test('more AI providers: their Cursor, Copilot or Gemini key, sealed, put where the harness reads it, and picked to run on', async () => {
+  const AIL = await import('../src/ailink.ts');
+  delete process.env.CURSOR_API_KEY;
+  assert.throws(() => AIL.setProviderKey('gemini', 'not-a-key'), /Gemini API key/);
+  assert.throws(() => AIL.setProviderKey('copilot', 'hunter2hunter2hunter2'), /GitHub token/);
+  const key = 'crsr_' + 'k'.repeat(40);
+  assert.deepEqual(AIL.setProviderKey('cursor', key), { linked: true, keyTail: 'kkkk' });
+  assert.equal(process.env.CURSOR_API_KEY, key, 'the cursor harness reads it from here');
+  const disk = fs.readFileSync(path.join(process.env.STUDIO_DATA!, 'ai', 'keys.json'), 'utf8');
+  assert.ok(!disk.includes(key) && K.isSealed(JSON.parse(disk).cursor.value), 'ciphertext at rest');
+  // A new instance: the key comes back from the sealed store.
+  delete process.env.CURSOR_API_KEY;
+  assert.ok((await AIL.applyCustomerKeys()) >= 1);
+  assert.equal(process.env.CURSOR_API_KEY, key);
+  const links = (await AIL.aiLinks())!;
+  assert.equal(links.providers.find((p) => p.id === 'cursor')!.linked, true);
+  // Use it: Talk and the agents run on Cursor now; a provider not linked can't be picked.
+  await AIL.useProvider('cursor', 'dev@acme.example');
+  assert.equal((await AIL.aiLinks())!.inUse, 'cursor');
+  await assert.rejects(AIL.useProvider('gemini', 'dev@acme.example'), /Connect Gemini first/);
+  AIL.setProviderKey('cursor', null);
+  assert.equal(process.env.CURSOR_API_KEY, undefined);
+  await AIL.useProvider('claude', 'dev@acme.example');
+});
+
+test('a playtest video in Gen is streamed through Studio (Gen answers 401 to a browser)', async () => {
+  const { db } = await import('../src/db.ts');
+  const P = await import('../src/playtests.ts');
+  db.prepare(`INSERT INTO steps (id, run, product, kind, name, status, started, data) VALUES ('s_0000aaaa', 'r_x', 'jgame', 'playtest', 'smoke@live', 'done', ?, ?)`).run(Date.now(), JSON.stringify({ video: 'a_65fed08c8df5c6cb' }));
+  assert.equal(P.genVideoAsset('s_0000aaaa'), 'a_65fed08c8df5c6cb');
+  assert.equal(P.genVideoAsset('s_nothere'), null);
 });

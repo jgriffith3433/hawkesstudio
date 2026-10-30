@@ -7,7 +7,7 @@ let memEditing = null;
 
 async function loadMemory() {
   const sel = $('#memProduct');
-  if (sel.options.length <= 1 && typeof overview !== 'undefined' && overview) sel.innerHTML += overview.products.map((p) => `<option value="${p.id}">${esc(p.name)}</option>`).join('') + '<option value="hawkesstudio">Hawkes Studio</option><option value="hawkesgen">Hawkes Gen</option>';
+  if (sel.options.length <= 1 && typeof overview !== 'undefined' && overview) sel.innerHTML += overview.products.map((p) => `<option value="${p.id}">${esc(p.name)}</option>`).join('') + (window.studioMe?.customer ? '' : '<option value="hawkesstudio">Hawkes Studio</option><option value="hawkesgen">Hawkes Gen</option>');
   const qs = new URLSearchParams({ limit: '300', status: $('#memStatus').value || 'active,candidate,disputed' });
   if (sel.value) qs.set('product', sel.value);
   if ($('#memKind').value) qs.set('kind', $('#memKind').value);

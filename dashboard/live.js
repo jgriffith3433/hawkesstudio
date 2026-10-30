@@ -34,8 +34,8 @@
     const ps = (p.players ?? []).map((x) => x.state?.progress).filter((x) => typeof x === 'number');
     return ps.length ? Math.max(0, Math.min(1, ps.reduce((a, b) => a + b, 0) / ps.length)) : null;
   };
-  const streamUrl = (job, player, fps) => `${GEN}/v1/jobs/${job}/live.mjpeg?player=${player}&fps=${fps}`;
-  const frameUrl = (job, player) => `${GEN}/v1/jobs/${job}/frame?player=${player}&_=${Date.now()}`;
+  const streamUrl = (job, player, fps) => `/api/gen/v1/jobs/${job}/live.mjpeg?player=${player}&fps=${fps}`;
+  const frameUrl = (job, player) => `/api/gen/v1/jobs/${job}/frame?player=${player}&_=${Date.now()}`;
 
   // One picture's feed: the MJPEG stream, and if it hasn't produced a frame within a couple of seconds (a proxy buffering
   // it) or it drops, the single-frame route polled every ~250 ms. note(text) says what's up while there is no picture.
@@ -237,9 +237,9 @@
   async function lastShot(t) {
     t.shot = true;
     try {
-      const r = await fetch(`${GEN}/v1/jobs/${t.job}/shots`).then((x) => x.json());
+      const r = await fetch(`/api/gen/v1/jobs/${t.job}/shots`).then((x) => x.json());
       const last = (r.shots ?? []).at(-1);
-      if (last) t.img.src = `${GEN}/v1/jobs/${t.job}/shots/${last.i}`;
+      if (last) t.img.src = `/api/gen/v1/jobs/${t.job}/shots/${last.i}`;
       else { t.msg = 'no video available'; showWait(t); }
     } catch {
       // No screenshot: the tile says how it ended.

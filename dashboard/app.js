@@ -4,7 +4,8 @@ let GEN = 'http://127.0.0.1:8790';
 fetch('/api/config').then((r) => r.json()).then((c) => { if (c.genUrl) GEN = c.genUrl; }).catch(() => {});
 const $ = (s, el = document) => el.querySelector(s);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
-const file = (asset) => `${GEN}/v1/files/${asset}`;
+// Library files through Studio's relay (its own Gen key, ranges for video): Gen's /v1/files answers 401 to a browser.
+const file = (asset) => `/api/gen/v1/files/${asset}`;
 const ago = (t) => {
   if (!t) return '';
   const m = Math.round((Date.now() - t) / 60000);
@@ -68,6 +69,21 @@ function studioUpgrade(d) {
   });
 }
 window.studioUpgrade = studioUpgrade;
+
+// A customer's game with only its address gets its GitHub repository later (owner/name): the same onboarding save
+// (PUT /api/products/<id>), keeping everything else. What it adds: agent fixes, a beta site, going live from Studio.
+async function studioAddRepo(id) {
+  const repo = prompt('Its GitHub repository (owner/name). Agents fix bugs in it, and Studio keeps a beta site and goes live from it.');
+  if (!repo) return false;
+  if (!/^[\w.-]+\/[\w.-]+$/.test(repo.trim())) { alert('Write it as owner/name, e.g. moonlight/rover.'); return false; }
+  try {
+    const { products } = await api('/api/products');
+    const p = products.find((x) => x.id === id);
+    await api(`/api/products/${id}`, { method: 'PUT', body: { id, name: p.name, engine: p.engine === 'static' ? 'web' : p.engine, live: p.live || undefined, about: p.about, quality: p.quality, story: p.storyText, contract: p.contract, playtests: p.playtests, repo: repo.trim() } });
+    return true;
+  } catch (err) { alert(err.message); return false; }
+}
+window.studioAddRepo = studioAddRepo;
 
 // ------------------------------------------------------------- tabs
 // Old tabs folded into others: #sites (the beta and live links) is on Go live now.
@@ -172,6 +188,7 @@ document.addEventListener('click', (e) => {
 let overview = null;
 async function loadToday() {
   overview = await api('/api/overview');
+  fillPlaytestBars(overview.products);
   const pv = await api('/api/previews').catch(() => ({ previews: [] }));
   const dv = await api('/api/dev').catch(() => ({ dev: [] }));
   for (const p of overview.products) {
@@ -253,11 +270,11 @@ function card(p, h = health(p)) {
     ${p.dev?.conflict ? devLine(p) : ''}
     <div class="meta">${p.preview ? `<a href="${esc(p.preview.play)}" target="_blank">Beta</a> · ` : ''}<a href="${esc(p.live)}" target="_blank">Live</a>${video ? ` · <a href="${file(video)}" target="_blank" rel="noopener" data-video="${file(video)}">▶ last playtest</a>` : ''} · ${bugs ? `<a href="#backlog" data-act="backlog" data-p="${p.id}">${bugs} open bug${bugs === 1 ? '' : 's'} in Backlog</a>` : 'no open bugs'}</div>
     <div class="actions">
-      <button class="small primary" data-act="playtest" data-p="${p.id}" title="A quick playtest of the main scenario, with a video and a review (a few cents)">Smoke test</button>
+      <button class="small primary" data-act="playtest" data-p="${p.id}" title="A quick playtest of the main scenario, with a video and a review (a few cents)">${window.studioMe?.customer ? 'Run a playtest' : 'Smoke test'}</button>
     </div>
     <details class="more-details"><summary class="meta">Details</summary>
       <div class="meta">${esc(p.framing)}</div>
-      <div class="meta">${esc(git)} · <a href="${esc(p.local)}" target="_blank">local</a>${p.preview ? p.preview.changes.filter((c) => c.status === 'ready').map((c) => ` · <a href="${esc(c.play)}" target="_blank" title="agent change ${esc(c.id)}">${esc(c.id)}</a>`).join('') : ''}</div>
+      <div class="meta">${window.studioMe?.customer ? '' : `${esc(git)} · <a href="${esc(p.local)}" target="_blank">local</a>`}${p.preview ? p.preview.changes.filter((c) => c.status === 'ready').map((c) => ` · <a href="${esc(c.play)}" target="_blank" title="agent change ${esc(c.id)}">${esc(c.id)}</a>`).join('') : ''}</div>
       ${p.dev?.conflict ? '' : devLine(p)}
       ${scores}
       <div class="tests">${build}${tests}</div>
@@ -464,7 +481,7 @@ function findingHtml(f) {
   const own = (f.source === 'J' || f.source === 'auto') && !(f.shots ?? []).length ? `<img loading="lazy" src="/api/bugreports/${f.id}/shot" data-full="/api/bugreports/${f.id}/shot" onerror="this.remove()">` : '';
   const shots = own + (f.shots ?? []).slice(0, 4).map((a) => `<img loading="lazy" src="${file(a)}" data-full="${file(a)}">`).join('');
   // One clear action: an open bug goes to an agent, an idea back to the backlog; the rest are under Details.
-  const main = !f.id ? '' : f.status === 'open' ? `<button class="small primary" data-agentfix="${f.id}" data-product="${esc(f.product)}" title="An agent fixes it on its own branch; it merges into beta when its checks pass">Fix with agent</button>`
+  const main = !f.id ? '' : f.status === 'open' ? `<button class="small primary" data-pro="agents" data-agentfix="${f.id}" data-product="${esc(f.product)}" title="An agent fixes it on its own branch; it merges into beta when its checks pass">Fix with agent</button>`
     : ['idea', 'expired'].includes(f.status) ? `<button class="small" data-finding="${f.id}" data-status="open">${F_MOVE.open}</button>` : '';
   const moves = f.id ? ['fixing', 'fixed', 'wontfix', 'open', 'idea'].filter((s) => s !== f.status && !(s === 'fixing' && f.status === 'idea') && !(s === 'open' && ['idea', 'expired'].includes(f.status))) : [];
   const where = [f.product, f.scenario, f.area].filter(Boolean).map(esc).join(' · ');
@@ -508,7 +525,7 @@ async function loadRuns() {
   $('#runList').innerHTML = runs.map((r) => `<div class="run-row" data-run="${r.id}"><span>${icon(['done', 'running', 'skipped'].includes(r.status) ? r.status : 'failed')}</span><b>${esc(r.kind)}</b><span class="meta">${new Date(r.started).toLocaleString()}</span><span>${esc(r.detail ?? '')}</span><span class="meta" style="margin-left:auto">$${(r.cost ?? 0).toFixed(2)}</span></div>`).join('') || '<div class="empty">No runs yet.</div>';
   if (openRun) {
     const r = await api(`/api/runs/${openRun}`);
-    $('#runDetail').innerHTML = `<div class="steps"><h3>${esc(r.id)} · ${esc(r.status)}</h3>${r.steps.map((s) => `<div class="step"><span>${icon(s.status)}</span><span>${esc(s.product)}</span><span>${esc(s.kind)}</span><span>${esc(s.name)}</span><span class="detail">${slowPill(s)}${esc(s.detail ?? '')}${s.job ? ` · <a href="${GEN}/#job/${s.job}" target="_blank">${esc(s.job)}</a>` : ''}</span></div>`).join('')}</div>`;
+    $('#runDetail').innerHTML = `<div class="steps"><h3>${esc(r.id)} · ${esc(r.status)}</h3>${r.steps.map((s) => `<div class="step"><span>${icon(s.status)}</span><span>${esc(s.product)}</span><span>${esc(s.kind)}</span><span>${esc(s.name)}</span><span class="detail">${slowPill(s)}${esc(s.detail ?? '')}${s.job && !window.studioMe?.customer ? ` · <a href="${GEN}/#job/${s.job}" target="_blank">${esc(s.job)}</a>` : ''}</span></div>`).join('')}</div>`;
   }
 }
 $('#runList').onclick = (e) => {
@@ -582,13 +599,13 @@ async function loadChanges() {
         <div class="actions">
           ${c.status === 'ready' && !c.infra ? `<button class="small" data-change="${c.id}" data-act="playtest" title="Plays the change's scenario on its version (a build first for Unity), with a video and a review (a few cents).">${played ? 'Playtest again' : 'Playtest this change'}</button>` : ''}
           ${c.status === 'cancelled' ? `<button class="small" data-change="${c.id}" data-act="resume">Resume</button>` : ''}
-          ${!['merged', 'closed'].includes(c.status) ? `<button class="small" data-change="${c.id}" data-act="close">Close</button>` : ''}
+          ${!['merged', 'closed'].includes(c.status) ? `<button class="small" data-admin data-change="${c.id}" data-act="close">Close</button>` : ''}
         </div>
       </details>
     </div><div class="side">
       ${v?.video ? `<a href="${file(v.video)}" target="_blank" rel="noopener" data-video="${file(v.video)}">▶ fixed version</a>` : ''}${v?.preview ? ` <a href="${esc(v.preview)}" target="_blank">🔗 try it</a>` : ''}
       <div class="actions">
-        ${c.status === 'ready' && c.infra ? `<button class="small primary" data-change="${c.id}" data-act="approve" data-infra="1" data-guide="off" title="Merges it into main: ${esc(c.product)} deploys itself once CI passes (a restart).">Approve into main</button>` : c.status === 'ready' ? `<button class="small primary" data-change="${c.id}" data-act="approve" data-guide="off" title="Merges it into the beta branch (the beta site). Nothing goes live until you use Go live.">Approve into beta</button>` : ''}
+        ${c.status === 'ready' && c.infra ? `<button class="small primary" data-admin data-change="${c.id}" data-act="approve" data-infra="1" data-guide="off" title="Merges it into main: ${esc(c.product)} deploys itself once CI passes (a restart).">Approve into main</button>` : c.status === 'ready' ? `<button class="small primary" data-change="${c.id}" data-act="approve" data-guide="off" title="Merges it into the beta branch (the beta site). Nothing goes live until you use Go live.">Approve into beta</button>` : ''}
         ${['ready', 'failed'].includes(c.status) ? `<button class="small" data-change="${c.id}" data-act="revise">Ask for changes</button>` : ''}
       </div></div></div>`;
   }).join('') : '<div class="empty">No changes here. Agents start on new bugs after each daily run, or use "Fix with agent" in the Backlog.</div>';
@@ -639,3 +656,60 @@ fetch('/api/health').then((r) => r.json()).then((h) => {
   document.title = `BETA · ${document.title}`;
   document.querySelector('header .brand .mark')?.parentElement?.insertAdjacentHTML('beforeend', ' <span class="lane-badge">BETA</span>');
 }).catch(() => {});
+
+// "Run a playtest" on the Playtests tabs: pick a game, it plays its main scenario (a video and a review), and the run
+// shows up here and in Activity like any other.
+function fillPlaytestBars(products) {
+  for (const sel of document.querySelectorAll('.ptRunProduct')) {
+    const cur = sel.value;
+    sel.innerHTML = products.map((p) => `<option value="${esc(p.id)}">${esc(p.name)}</option>`).join('');
+    if (cur) sel.value = cur;
+    sel.closest('.pt-run').hidden = !products.length;
+  }
+}
+document.addEventListener('click', async (e) => {
+  const go = e.target.closest('.ptRunGo');
+  if (!go) return;
+  const bar = go.closest('.pt-run');
+  const msg = bar.querySelector('.ptRunMsg');
+  go.disabled = true;
+  msg.textContent = 'Starting…';
+  try {
+    await api('/api/playtest', { method: 'POST', body: { product: bar.querySelector('.ptRunProduct').value } });
+    msg.textContent = 'Started: it shows up here in a minute, with its video and review when it ends.';
+  } catch (err) {
+    msg.textContent = err.message;
+  }
+  go.disabled = false;
+});
+
+// What a customer sees by plan and role (src/entitlements.ts, src/auth.ts; the API refuses the same things anyway):
+//   data-pro="<feature>"  a control their plan lacks: greyed out, and a click offers the Upgrade (Stripe Checkout)
+//   data-admin            a control only the Studio's admins use (going live, merging, settings): hidden from members
+//   data-platform         J's own machinery (content wiring, his servers): hidden in every customer's Studio
+// users.js calls it once /api/me is in; tabs drawn later pick the rules up from the body's classes.
+function gateUi(me) {
+  const b = document.body;
+  b.classList.toggle('is-customer', Boolean(me?.customer));
+  b.classList.toggle('is-member', Boolean(me?.customer) && me?.user?.role !== 'admin');
+  b.dataset.locked = (me?.entitlements?.locked ?? []).join(' ');
+}
+window.gateUi = gateUi;
+(() => {
+  const css = document.createElement('style');
+  css.textContent = `
+    body.is-member [data-admin], body.is-customer [data-platform] { display: none !important; }
+    ${['agents', 'pm', 'nightly', 'desktop', 'cloudBuilds'].map((f) => `body[data-locked~="${f}"] [data-pro="${f}"]`).join(', ')} { opacity: .5; cursor: pointer; }
+    ${['agents', 'pm', 'nightly', 'desktop', 'cloudBuilds'].map((f) => `body[data-locked~="${f}"] [data-pro="${f}"]::after`).join(', ')} { content: " 🔒"; }`;
+  document.head.append(css);
+})();
+document.addEventListener('click', (e) => {
+  const el = e.target.closest?.('[data-pro]');
+  if (!el) return;
+  const f = el.dataset.pro;
+  if (!(document.body.dataset.locked ?? '').split(' ').includes(f)) return;
+  e.preventDefault();
+  e.stopImmediatePropagation();
+  const offer = window.studioMe?.entitlements?.offers?.[f] ?? { feature: f, plan: 'studio_team', planName: 'Team', name: f };
+  studioUpgrade({ error: `${offer.name} ${f === 'pm' ? 'is' : 'are'} on the ${offer.planName} plan and up.`, upgrade: offer });
+}, true);

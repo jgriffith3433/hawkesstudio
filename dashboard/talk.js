@@ -135,8 +135,9 @@
   const empty = () => {
     const me = window.studioMe;
     if (!me?.customer) return `<div class="empty">Ask about the products: "What did last night's trial find?", "What are the agents working on?", "Make the Sick Of It shop screen feel more like Hell", "Is the PH Origins fix good to ship?"</div>`;
-    const locked = me.entitlements?.locked?.includes('talk');
-    return `<div class="empty">Ask about your games: "What did last night's playtest find?", "What are the agents working on?", "Is the latest fix good to ship?"${locked ? `<br><br>Talk is on the Team plan and up. <button class="small" onclick="studioUpgrade({ error: 'Talk is on the Team plan and up.', upgrade: { feature: 'talk', plan: 'studio_team', planName: 'Team' } })">Upgrade to Team</button>` : ''}</div>`;
+    // Talk is on every plan; it runs on their own AI, so it waits until they link one (Settings, or the card on top).
+    const noAi = me.ai && !me.ai.ready;
+    return `<div class="empty">Ask about your games: "What did last night's playtest find?", "What are the agents working on?", "Is the latest fix good to ship?"${noAi ? `<br><br>Talk runs on your own AI: connect it first. <button class="small" onclick="location.hash = '#settings'">Connect your AI</button>` : ''}</div>`;
   };
   const tail = () => el('#talkLog .talk-tail');
 
@@ -292,7 +293,7 @@
       pending.push(item);
       renderPending();
       try {
-        const r = await fetch(`${GEN}/v1/blobs`, { method: 'POST', headers: { 'X-Filename': item.name }, body: file });
+        const r = await fetch(`/api/gen/v1/blobs`, { method: 'POST', headers: { 'X-Filename': item.name }, body: file });
         const d = await r.json();
         if (!r.ok) throw new Error(d.error ?? r.status);
         item.blob = d.blob;

@@ -9,7 +9,7 @@
 </head>
 <body>
   <header>
-    <div class="brand"><span class="mark">H</span> Hawkes Studio <small>clinical trials, daily</small> <a href="#settings" class="walk-badge" id="walkAwayBadge" hidden title="Walk-away mode is on: Studio and Gen changes merge into main by themselves once green, the PM decides routine calls itself, and your Inbox keeps only what's yours (Settings, PM loop)">🚶 Walk-away</a></div>
+    <div class="brand"><span class="mark">H</span> Hawkes Studio <small data-platform>clinical trials, daily</small> <a data-platform href="#settings" class="walk-badge" id="walkAwayBadge" hidden title="Walk-away mode is on: Studio and Gen changes merge into main by themselves once green, the PM decides routine calls itself, and your Inbox keeps only what's yours (Settings, PM loop)">🚶 Walk-away</a></div>
     <nav>
       <button data-tab="inbox" class="on" title="Everything waiting on you: decisions, GPU budgets, merges only you make, milestones to playtest">Inbox <span class="ib-count zero" id="inboxCount">0</span></button>
       <button data-tab="talk">Talk</button>
@@ -35,7 +35,7 @@
           <button data-tab="resources" title="The resource monitor: this server's memory, CPU and disks per agent, Talk and service; the GPU servers, build server and playtester; history">Resources</button>
           <button data-tab="memory">Memory</button>
           <button data-tab="users" hidden title="Who can sign in: invites, roles, password resets, the sign-in log (admins)">Users</button>
-          <button data-tab="settings" title="Call voice and listening, agent and PM limits, notifications, budgets: stored in Studio, so they follow you across devices">⚙ Settings</button>
+          <button data-tab="settings" data-admin title="Call voice and listening, agent and PM limits, notifications, budgets: stored in Studio, so they follow you across devices">⚙ Settings</button>
         </div>
       </div>
     </nav>
@@ -91,8 +91,8 @@
       <div class="bar">
         <button class="primary" id="runDaily">Run daily trials</button>
         <button id="runSmoke">Smoke-test everything</button>
-        <label><input type="checkbox" id="optNoBuild"> skip Unity builds</label>
-        <label><input type="checkbox" id="optLocal"> local only</label>
+        <label data-platform><input type="checkbox" id="optNoBuild"> skip Unity builds</label>
+        <label data-platform><input type="checkbox" id="optLocal"> local only</label>
         <span id="runInfo"></span>
       </div>
       <div id="todayNow" class="today-now"></div>
@@ -102,7 +102,7 @@
       <p class="intro"><b>Library:</b> every product's characters, stages and shots in Hawkes Gen's library. Pick a take and it is written into the product's beta (when its folders are in its repo).</p>
       <div class="lb-head">Waiting for a pick</div>
       <div id="lbWait" class="lb-wait"><div class="meta">Loading…</div></div>
-      <details id="lbHealthBox" class="lb-health"><summary class="lb-head">Content health <span id="lbHealthSum" class="meta"></span></summary><div id="lbHealth"><div class="meta">Loading…</div></div></details>
+      <details id="lbHealthBox" class="lb-health" data-platform><summary class="lb-head">Content health <span id="lbHealthSum" class="meta"></span></summary><div id="lbHealth"><div class="meta">Loading…</div></div></details>
       <div class="lb-bar"><label>Product <select id="lbProduct"></select></label></div>
       <div id="lbLib"></div>
     </section>
@@ -140,10 +140,12 @@
     </section>
     <section id="live" class="tab">
       <p class="intro"><b>Playtests:</b> every playtest playing right now, live, and the ones that just finished. Click one to watch it big, with every step, what the bot is doing and what went wrong.</p>
+      <div class="pt-run" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:0 0 12px"><select class="ptRunProduct"></select><button class="small primary ptRunGo">Run a playtest</button><span class="meta ptRunMsg"></span></div>
       <div id="ltBody"><div class="meta">loading…</div></div>
     </section>
     <section id="playtests" class="tab">
       <p class="intro"><b>Playtest history:</b> every playtest with its video, screenshots and review, side by side with the one before.</p>
+      <div class="pt-run" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:0 0 12px"><select class="ptRunProduct"></select><button class="small primary ptRunGo">Run a playtest</button><span class="meta ptRunMsg"></span></div>
       <div id="ptListView"><div class="bar" id="ptBar"></div><div id="ptTrends"></div><div id="ptList"></div></div>
       <div id="ptDetail"></div>
     </section>

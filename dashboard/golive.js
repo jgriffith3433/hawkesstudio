@@ -126,6 +126,8 @@ if (typeof document !== 'undefined') (() => {
     const p = plans.get(prod.id);
     if (!p) return `<div class="gl-card" data-p="${esc(prod.id)}"><h3><span class="gl-light"></span>${esc(prod.name)}</h3>${links(prod)}<div class="meta">Checking beta and live…</div></div>`;
     if (p.error) return `<div class="gl-card red" data-p="${esc(prod.id)}"><h3><span class="gl-light red"></span>${esc(prod.name)}</h3>${links(prod)}<div class="meta">Couldn't check: ${esc(p.error)}</div></div>`;
+    // A customer's game with only its address (no repository): no beta here and nothing to send live from Studio.
+    if (p.urlOnly) return `<div class="gl-card" data-p="${esc(prod.id)}"><h3><span class="gl-light"></span>${esc(prod.name)}</h3><div class="gl-links"><a class="live" href="${esc(p.live)}" target="_blank" rel="noopener"><b>Live</b><small>${esc(p.live)}</small></a></div><div class="meta">${esc(p.note)}</div>${p.repo ? '' : `<div class="gl-buttons"><button class="small" data-glrepo="${esc(prod.id)}">Add its repository</button></div>`}</div>`;
     // Beta couldn't be read (git failed, or no beta branch yet): say so, never "up to date".
     if (!p.beta || p.blockers.some((b) => b.startsWith('git:'))) {
       // The server has no checkout of the repo yet: one button clones it (the repo sync), then the plan is made again.
@@ -168,8 +170,8 @@ if (typeof document !== 'undefined') (() => {
       ${up || p.mainOnly.length || L.played ? `<div class="gl-light-line"><b>${esc(L.text)}</b>${L.played ? `<br><span class="meta">${esc(L.played)}</span>` : ''}${L.why?.length ? `<ul>${L.why.map((w) => `<li>${esc(w)}</li>`).join('')}</ul>` : ''}</div>` : ''}
       <div class="gl-buttons">
         ${fix ? `<button class="primary big" data-glfix="${esc(fix)}" title="${esc(FIX[fix].title)}"${fixRunning ? ' disabled' : ''}>${esc(fixRunning ? `${FIX[fix].busy}…` : FIX[fix].label)}</button>` : ''}
-        ${up && !run.length && !fix ? `<button class="primary big" data-glgo="deploy" data-guide="off" title="Shows the Approve card for going live; your tap on Approve is what goes live">Go live</button>` : ''}
-        ${canRoll && !run.length ? `<button class="roll" data-glgo="rollback" data-guide="off" title="Shows the Approve card for rolling back to what was live before">Roll back</button>` : ''}
+        ${up && !run.length && !fix ? `<button class="primary big" data-admin data-glgo="deploy" data-guide="off" title="Shows the Approve card for going live; your tap on Approve is what goes live">Go live</button>` : ''}
+        ${canRoll && !run.length ? `<button class="roll" data-admin data-glgo="rollback" data-guide="off" title="Shows the Approve card for rolling back to what was live before">Roll back</button>` : ''}
       </div>
       <div class="gl-slot">${card ? approvals.html(card) : ''}</div>
       <details><summary class="meta">Details</summary>
@@ -328,6 +330,8 @@ if (typeof document !== 'undefined') (() => {
     for (const p of blockedNow()) startFix(p.product, p.fix);
   };
   $('#glList').addEventListener('click', async (e) => {
+    const ar = e.target.closest('button[data-glrepo]');
+    if (ar) { if (await studioAddRepo(ar.dataset.glrepo)) load(); return; }
     const fb = e.target.closest('button[data-glfix]');
     if (fb) { if (e.isTrusted) startFix(fb.closest('.gl-card').dataset.p, fb.dataset.glfix); return; }
     const rl = e.target.closest('a[data-glrun]');
