@@ -633,6 +633,13 @@ ${ownedBy(a.sub) < 3 ? '<p><a href="/auth/start/new">Make your own studio</a></p
   if ((m[2] === 'game' || m[2] === 'subscribe') && !isOwner(org.id, a.sub)) return P.html(res, 403, P.page('Not yours', '<h1>Only its owner starts a studio</h1><p><a href="/auth/start">Your studios</a></p>')), true;
   if (m[2] === 'game' && method === 'POST') {
     const f = await P.form(req);
+    // No game yet (J, 2026-10-30: the first 10 minutes): the studio starts empty and Talk opens on making one.
+    if (f.make) {
+      try {
+        await ensureCell(org.id, 'make a game with Talk');
+        return P.redirect(res, `/o/${org.id}/?ask=make#talk`), true;
+      } catch (e: any) { const back = await gameForm(org); return fail(e, () => back), true; }
+    }
     try {
       const name = String(f.name ?? '').trim().slice(0, 80);
       const engine = GAME_ENGINES.includes(String(f.engine)) ? String(f.engine) : 'web';
@@ -676,6 +683,7 @@ async function gameForm(org: Org) {
 <label for="live">Where it plays (https://…)</label><input id="live" name="live" type="text" inputmode="url" placeholder="https://mygame.example">
 <label for="repo">Or its GitHub repository</label><input id="repo" name="repo" type="text" placeholder="owner/game">
 <button type="submit">Start my studio</button></form>
+<form method="post" action="/auth/start/${org.id}/game" style="margin-top:10px"><input type="hidden" name="make" value="1"><button type="submit" style="background:transparent;border:1px solid var(--muted);color:inherit">No game yet? Make one with Talk</button></form>
 <details style="margin-top:16px"><summary><small>Or pick a plan first</small></summary>
 ${plans.map((p) => `<form method="post" action="/auth/start/${org.id}/subscribe"><input type="hidden" name="plan" value="${esc(p.id)}"><button type="submit">${esc(p.name)}: $${(p.priceCents / 100).toFixed(0)} a month · ${p.maxGames} games</button></form>`).join('')}
 </details>${signOut()}`;

@@ -137,8 +137,22 @@
     if (!me?.customer) return `<div class="empty">Ask about the products: "What did last night's trial find?", "What are the agents working on?", "Make the Sick Of It shop screen feel more like Hell", "Is the PH Origins fix good to ship?"</div>`;
     // Talk is on every plan; it runs on their own AI, so it waits until they link one (Settings, or the card on top).
     const noAi = me.ai && !me.ai.ready;
-    return `<div class="empty">Ask about your games: "What did last night's playtest find?", "What are the agents working on?", "Is the latest fix good to ship?"${noAi ? `<br><br>Talk runs on your own AI: connect it first. <button class="small" onclick="location.hash = '#settings'">Connect your AI</button>` : ''}</div>`;
+    // One tap to start (J, 2026-10-30: the first 10 minutes): each puts its words in the box and sends them.
+    const starts = STARTS.map((s) => `<button class="small" data-ask="${esc(s.say)}">${esc(s.label)}</button>`).join(' ');
+    return `<div class="empty">${noAi ? `Talk runs on your own AI: connect it first. <button class="small" onclick="location.hash = '#settings'">Connect your AI</button><br><br>` : ''}Start here: ${starts}<br><br>Or ask about your games: "What did last night's playtest find?", "What are the agents working on?", "Is the latest fix good to ship?"</div>`;
   };
+  const STARTS = [
+    { id: 'make', label: 'Make me a new game', say: 'I want to make a new game. Ask me what kind.' },
+    { id: 'add', label: 'Add a game I already have', say: 'I want to add a game I already have.' },
+    { id: 'github', label: 'Connect my GitHub', say: 'Help me connect my GitHub.' },
+  ];
+  // A deep link from sign-up (?ask=make#talk): that start is in the box, ready to send.
+  const ask = STARTS.find((s) => s.id === params.get('ask'));
+  if (ask) {
+    params.delete('ask');
+    history.replaceState(null, '', location.pathname + (params.toString() ? `?${params}` : '') + location.hash);
+    queueMicrotask(() => { const box = el('#talkInput'); if (box && !box.value) { box.value = ask.say; box.focus(); } });
+  }
   const tail = () => el('#talkLog .talk-tail');
 
   /** The bubble the active brain is writing into, or "thinking…" (the only part redrawn while an answer streams). */
@@ -327,6 +341,12 @@
   }
 
   document.addEventListener('click', async (e) => {
+    const start = e.target.closest('[data-ask]');
+    if (start) {
+      el('#talkInput').value = start.dataset.ask;
+      if (window.studioMe?.ai && !window.studioMe.ai.ready) el('#talkInput').focus(); else send();
+      return;
+    }
     if (e.target.id === 'talkNew') { current = null; el('.talk').classList.remove('lists'); loadList(); loadConversation(); el('#talkInput').focus(); }
     const item = e.target.closest('[data-conv]');
     if (item) { current = item.dataset.conv; el('.talk').classList.remove('lists'); loadList(); loadConversation(); }

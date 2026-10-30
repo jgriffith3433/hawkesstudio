@@ -353,3 +353,26 @@ test("the cell's Connect your AI goes to Gen for its org (reviews and Gen tools 
   assert.deepEqual(genCalls.map((g) => `${g.method} ${g.path}`), [`PUT /org/keys/anthropic?org=${paying.genOrg}`, `DELETE /org/keys/claude-subscription?org=${paying.genOrg}`]);
   assert.deepEqual(genCalls[0].body, { key: 'sk-ant-api03-PayingOwnKey_abcdefghijklmnop' });
 });
+
+test('no game yet: the first-game page has "Make one with Talk", which starts the studio empty and opens Talk on it', async () => {
+  const A9 = { sub: '7000009', email: 'new@maker.example', name: 'New Maker' };
+  const org = C.createOrg(A9, 'Blank Slate');
+  const cookie = /^hs_cp=[^;]+/.exec(C.frontDoor(A9).cookie)![0];
+  const page = (route: string, method = 'GET', bodyText = '') => {
+    const r: any = (async function* () { if (bodyText) yield Buffer.from(bodyText); })();
+    r.headers = { cookie, 'content-type': 'application/x-www-form-urlencoded' };
+    r.method = method;
+    r.socket = { remoteAddress: '203.0.113.9' };
+    const out: any = { status: 0, headers: {}, body: '' };
+    out.writeHead = (s: number, h: any) => { out.status = s; out.headers = h; };
+    out.end = (b?: string) => { out.body = b ?? ''; };
+    return C.handleStart(r, out, new URL(`https://studio.hawkesgen.ai${route}`)).then(() => out);
+  };
+  const form = await page(`/auth/start/${org.id}`);
+  assert.match(form.body, /No game yet\? Make one with Talk/);
+  const made = await page(`/auth/start/${org.id}/game`, 'POST', 'make=1');
+  assert.equal(made.status, 303);
+  assert.equal(made.headers.Location, `/o/${org.id}/?ask=make#talk`);
+  assert.equal(C.getOrg(org.id)!.state, 'awake', 'the studio is up, with no game in it');
+  assert.equal(objects.has(`o/${org.id}/state/onboarding.json`), false);
+});
