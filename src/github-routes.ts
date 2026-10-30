@@ -96,7 +96,23 @@ export async function handleGithubRoutes(req: http.IncomingMessage, res: http.Se
     const plan = await newGamePlan(b, user);
     return send(res, 200, await card(`new:${plan.kind === 'new' ? plan.id : ''}`, plan, b)), true;
   }
-  const m = /^\/api\/games\/([a-z][a-z0-9-]{1,39})\/(readiness|setup)$/.exec(route);
+  const m = /^\/api\/games\/([a-z][a-z0-9-]{1,39})\/(readiness|setup|status|contract)$/.exec(route);
+  if (m && m[2] === 'status' && method === 'GET') {
+    const { gameStatus } = await import('./repokit.ts');
+    return send(res, 200, await gameStatus(m[1], base, githubUserFor(req))), true;
+  }
+  if (m && m[2] === 'contract' && method === 'POST') {
+    // An agent adds Studio's playtest bot (a pull request into beta, like any task): no card, it changes nothing live.
+    const { getProduct } = await import('./config.ts');
+    const { contractBrief } = await import('./repokit.ts');
+    const p = getProduct(m[1]);
+    if (p.contract) throw new StudioError(`${p.name} already speaks Studio's playtest contract.`, 409);
+    const b = contractBrief(p);
+    const { startTask } = await import('./agents.ts');
+    const change = startTask(p.id, b.request, { criteria: b.criteria, title: b.title });
+    (await import('./followup.ts')).tagChange(String(change), origin, 'Talk');
+    return send(res, 200, { ok: true, change, note: 'An agent is adding the playtest bot; once its change is in beta, mark the game contract: true (studio_game update) and playtest it.' }), true;
+  }
   if (m && m[2] === 'readiness' && method === 'GET') {
     const { readiness } = await import('./repokit.ts');
     return send(res, 200, await readiness(m[1], githubUserFor(req))), true;

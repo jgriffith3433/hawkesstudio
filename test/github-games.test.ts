@@ -17,6 +17,8 @@ delete process.env.STUDIO_ORG;
 delete process.env.STUDIO_CUSTOMER;
 delete process.env.STUDIO_SIGNUP;
 delete process.env.GITHUB_TOKEN;
+// No agent ever starts here: the new game's first-version task is refused (and says so) instead of running Claude Code.
+fs.writeFileSync(path.join(process.env.STUDIO_DATA, 'agents.json'), JSON.stringify({ enabled: false }));
 
 // ------------------------------------------------------------------ the stand-in GitHub
 const { privateKey, publicKey } = crypto.generateKeyPairSync('rsa', { modulusLength: 2048 });
@@ -171,6 +173,16 @@ test('a new game: asked what kind first (the plan wants a pitch and a starter), 
   assert.equal(repoMap()['orbit-run'], 'jgriffith3433/orbit-run');
   assert.equal(repoMap()['doseofdestructionwebsite'], 'jgriffith3433/doseofdestructionwebsite', "products.json's stay");
   assert.ok(done.some((l) => /Added "Orbit Run" to Studio/.test(l)));
+  assert.ok(done.some((l) => /first version wasn't started \(Agent workers are turned off/.test(l)), 'the first version is asked for by itself');
+  // Everything about it in one answer, with its links.
+  const st = await R.gameStatus('orbit-run', 'https://studio.test', j.id);
+  assert.equal(st.game.repo, 'jgriffith3433/orbit-run');
+  assert.equal(st.links.live, 'https://jgriffith3433.github.io/orbit-run/');
+  assert.equal(st.links.repo, 'https://github.com/jgriffith3433/orbit-run');
+  assert.equal(st.links.studio, 'https://studio.test/#today');
+  assert.deepEqual(st.playtests, []);
+  assert.equal((st.findings as any).open, 0);
+  assert.equal(R.contractBrief(p).criteria.length, 3);
   // The same game can't be made twice.
   assert.match((await R.describePlan(plan)).blockers.join(' '), /already has a game/);
 });

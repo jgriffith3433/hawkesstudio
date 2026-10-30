@@ -438,7 +438,7 @@ async function run(a: Approval, by: string): Promise<string> {
   }
   if (a.kind === 'github') {
     const { applyPlan } = await import('./repokit.ts');
-    return (await applyPlan(a.params.plan)).join(' ');
+    return (await applyPlan(a.params.plan, { origin })).join(' ');
   }
   await answerDecision(a, a.card.approve, by);
   return `Answered "${a.card.approve}".`;

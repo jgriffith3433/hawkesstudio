@@ -155,7 +155,7 @@ export async function describePlan(plan: Plan) {
 }
 
 /** Runs a plan with the best token Studio has. Returns a line per step done. */
-export async function applyPlan(plan: Plan): Promise<string[]> {
+export async function applyPlan(plan: Plan, { origin = null }: { origin?: string | null } = {}): Promise<string[]> {
   if (plan.kind === 'setup') {
     const access = await accessFor(plan.repo);
     if (!access) throw new StudioError(`Studio can't reach ${plan.repo}: install the GitHub App on it.`, 409);
@@ -180,6 +180,16 @@ export async function applyPlan(plan: Plan): Promise<string[]> {
   done.push(await runStep(u.token, repo, 'branches'));
   saveProduct({ id: plan.id, name: plan.name, engine: 'web', live: liveUrlFor(seed), repo, about: plan.pitch, contract: true, playtests: [{ scenario: 'smoke', where: 'live' }] });
   done.push(`Added "${plan.name}" to Studio (${plan.id}): playtests play ${liveUrlFor(seed)}.`);
+  // The game they described, built by an agent on top of the starter (a pull request into beta; merged when it's ready).
+  try {
+    const { startTask } = await import('./agents.ts');
+    const b = firstVersionBrief(plan.name, plan.pitch, plan.starter);
+    const change = startTask(plan.id, b.request, { criteria: b.criteria, title: b.title });
+    (await import('./followup.ts')).tagChange(String(change), origin, 'Talk');
+    done.push(`Started an agent on the first playable version (${change}): it builds what you described on top of the starter; you'll hear here when it's ready.`);
+  } catch (e: any) {
+    done.push(`The first version wasn't started (${e.message}); ask for it with studio_task.`);
+  }
   done.push(`Links: the repo ${created.html_url} · its first publish ${created.html_url}/actions · the game ${liveUrlFor(seed)} (live once the publish finishes, a minute or two)`);
   return done;
 }
@@ -245,3 +255,70 @@ export async function newGamePlan(input: { name?: unknown; pitch?: unknown; star
 
 export { githubStatus, STARTERS };
 export type { Product };
+
+// ------------------------------------------------------------------ one call: everything about a game
+
+/**
+ * Everything about one game for Talk, in one answer (J, 2026-10-30: Talk "very capable"): what it is, how it's doing
+ * (its last playtests with their videos and verdicts), what's broken (open findings), what agents are doing on it, what
+ * it still needs, and every link. Each part fails soft: one that can't be read says so, the rest still answer.
+ */
+export async function gameStatus(productId: string, base: string, userId?: string | null) {
+  const p = getProduct(productId);
+  const soft = async <T>(f: () => Promise<T> | T): Promise<T | { error: string }> => { try { return await f(); } catch (e: any) { return { error: String(e.message ?? e) }; } };
+  const abs = (u: string | null | undefined) => (u ? (/^https?:/.test(u) ? u : `${base}${u.startsWith('/') ? '' : '/'}${u}`) : null);
+  const [ready, plays, findings, changes] = await Promise.all([
+    soft(() => readiness(p.id, userId)),
+    soft(async () => (await import('./playtests.ts')).listPlaytests({ product: p.id, limit: 6 }).playtests.map((t: any) => ({
+      name: t.name, outcome: t.outcome, when: t.finished ?? t.started, verdict: t.review?.verdict ?? null, score: t.review?.score ?? null,
+      findings: t.review?.findings ?? 0, video: abs(t.video), seconds: t.seconds, fps: t.fps, problems: t.problems,
+    }))),
+    soft(async () => {
+      const list = (await import('./backlog.ts')).listFindings({ product: p.id, status: 'open,fixing', limit: 200 }) as any[];
+      const by: Record<string, number> = {};
+      for (const f of list) by[f.severity] = (by[f.severity] ?? 0) + 1;
+      return { open: list.length, bySeverity: by, worst: list.slice(0, 5).map((f) => ({ id: f.id, severity: f.severity, title: f.title, status: f.status })) };
+    }),
+    soft(async () => (await import('./agents.ts')).listChanges({ product: p.id }).filter((c: any) => !['merged', 'closed'].includes(c.status)).slice(0, 8)
+      .map((c: any) => ({ id: c.id, title: c.title, status: c.status, pr: c.pr_url ?? null, preview: c.verify?.preview ?? null }))),
+  ]);
+  const links = await linksFor(repoSlug(p.github ?? p.repo), p).catch(() => ({}));
+  return {
+    game: { id: p.id, name: p.name, engine: p.engine, about: p.about, live: p.live || null, beta: p.beta ?? null, repo: p.github ?? (repoSlug(p.repo) ?? null), contract: Boolean(p.contract), playtests: (p.playtests ?? []).map((t: any) => `${t.scenario ?? t.mode}@${t.where}${t.device ? `:${t.device}` : ''}`) },
+    ready: 'error' in (ready as any) ? ready : { ready: (ready as any).ready, next: (ready as any).next, missing: (ready as any).items.filter((i: any) => !i.ok).map((i: any) => i.what) },
+    playtests: plays, findings, changes,
+    links: { ...links, studio: `${base}/#today`, playtestsPage: `${base}/#playtests`, backlog: `${base}/#backlog` },
+  };
+}
+
+// ------------------------------------------------------------------ agent briefs for a new game
+
+/** The first agent task on a brand-new game: build what the person described on top of the starter. */
+export function firstVersionBrief(name: string, pitch: string, starter: string) {
+  return {
+    title: `${name}: the first playable version`,
+    request: `Make the first playable version of "${name}" from what the person described, on top of the ${starter} starter that's in the repo now.
+
+What they want: ${pitch}
+
+- Replace the starter's demo (the ball and orbs, or the box and stars) with this game's own core loop: what the player does, a goal, a way to win or lose, a score or progress on screen. Small and fun beats big and broken: one solid loop first.
+- Keep the playtest contract working (src/playtest.js): its bot plays through real key presses. Update the smoke scenario so it plays this game's core loop and finishes 'done' when it reaches a point a player would (scores, clears, survives). Add a scenario for anything else worth checking.
+- Shapes and colors are fine for art now; leave clear names where real art, sound and music will go (Hawkes Gen makes them later).
+- \`npm run build\` must pass. Update README.md and AGENTS.md to describe the game as it now is.`,
+    criteria: ['The game opens and its own core loop is playable (not the starter demo)', 'The smoke playtest plays the core loop with real input and finishes done', 'npm run build passes'],
+  };
+}
+
+/** Adding Studio's playtest contract to a game that hasn't got it (the bot that plays it with real input). */
+export function contractBrief(p: Product) {
+  return {
+    title: `${p.name}: Studio's playtest bot`,
+    request: `Add Hawkes Studio's playtest contract to ${p.name}, so Studio's bot can play it with real input and Claude can review what it sees.
+
+- Copy hawkes-playtest.js and hawkes-perf.js (Studio's clients/web; for Unity, the com.hawkes.playtest package) into the game and call installPlaytest once at startup (the file's header shows how; the spec is Studio's docs/playtest.md).
+- One scenario first: smoke. It boots the game, gets past any menu, plays the core loop for 20 to 40 seconds by pressing keys or clicking like a player (never moving things directly), and finishes 'done' when it got somewhere a player would.
+- Report scenes (t.scene), events at the moments that matter (t.event), progress (t.progress) and problems the game can detect (t.problem).
+- Keep the game's own checks passing.`,
+    criteria: ['window.hawkesPlaytest is installed and lists a smoke scenario', 'The smoke scenario plays with real input and finishes done', "The game's checks pass"],
+  };
+}
