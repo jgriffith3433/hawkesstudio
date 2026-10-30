@@ -247,14 +247,28 @@ async function jobMember(member: string, add: boolean, o: { dry?: boolean }, c: 
   await gapi(`${url}:setIamPolicy`, { body: { policy: { ...policy, bindings: bindings.filter((b) => b.members.length) } } });
 }
 
+/**
+ * A grant naming an account made moments ago: Google's IAM takes up to a minute or so to know it, and answers 400
+ * "Service account ... does not exist" until then (seen on beta, 2026-10-29). Tries again for about 90 seconds.
+ */
+export async function whenAccountKnown<T>(fn: () => Promise<T>, o: { waits?: number[] } = {}): Promise<T> {
+  const waits = o.waits ?? [2000, 4000, 8000, 15000, 30000, 30000];
+  for (let i = 0; ; i++) {
+    try { return await fn(); } catch (e: any) {
+      if (i >= waits.length || !/does not exist/i.test(String(e?.message))) throw e;
+      await new Promise((r) => setTimeout(r, waits[i]));
+    }
+  }
+}
+
 /** The cell's own service account and its grants: its folder, the agents' job. Idempotent. */
 export async function ensureCellIdentity(org: string, o: { dry?: boolean } = {}, c = cellsConfig()) {
   const email = cellSaEmail(org, c);
   await made('POST', iamBase(c), { accountId: cellSaId(org, c), serviceAccount: { displayName: `Hawkes Studio cell ${org}`.slice(0, 100), description: `Customer Studio ${org} (${c.lane}): only ${cellFolder(org)} in ${c.bucket}` } }, o);
   await made('POST', `https://storage.googleapis.com/storage/v1/b/${c.bucket}/managedFolders`, { name: cellFolder(org) }, o);
   // The folder's whole policy: this cell's account alone (setting it whole also drops anyone else put there).
-  await call('PUT', `${folderUrl(org, c)}/iam`, { bindings: [{ role: 'roles/storage.objectAdmin', members: [`serviceAccount:${email}`] }] }, o);
-  await jobMember(`serviceAccount:${email}`, true, o, c);
+  await whenAccountKnown(() => call('PUT', `${folderUrl(org, c)}/iam`, { bindings: [{ role: 'roles/storage.objectAdmin', members: [`serviceAccount:${email}`] }] }, o));
+  await whenAccountKnown(() => jobMember(`serviceAccount:${email}`, true, o, c));
   return { email, folder: cellFolder(org) };
 }
 

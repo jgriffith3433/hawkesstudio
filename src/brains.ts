@@ -6,6 +6,7 @@
 
 import { db, J, parse } from './db.ts';
 import { GEN_URL, ROOT } from './config.ts';
+import { customerStudio } from './tenancy.ts';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -239,8 +240,12 @@ export function saveBrain(patch: string | { harness?: string; model?: string; id
   return brainSettings();
 }
 
-/** Tells Hawkes Gen to use the same harness (its settings.brain). Best effort. Gen requires the owner key. */
+/**
+ * Tells Hawkes Gen to use the same harness (its settings.brain). Best effort. Gen requires the owner key, so only J's
+ * Studio does it: a customer's Studio has a customer key, and Gen's settings are the platform's, not theirs.
+ */
 export async function syncBrain(harness: Harness = brainId()): Promise<boolean> {
+  if (customerStudio()) return false;
   try {
     const key = process.env.HAWKESGEN_KEY || process.env.DEV_GEN_KEY || '';
     const r = await fetch(`${GEN_URL}/v1/settings`, {

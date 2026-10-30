@@ -154,3 +154,14 @@ test('beta and live cells of the same org id get different accounts (they share 
   assert.match(beta, /^cell-b-/);
   assert.notEqual(beta, R.cellSaId('same-org-1a2b'));
 });
+
+test('a grant to a just-made account waits while Google says it does not exist, and only for that', async () => {
+  let n = 0;
+  const v = await R.whenAccountKnown(async () => { if (++n < 3) throw new Error('Google Cloud answered 400: Service account cell-b-x@p.iam.gserviceaccount.com does not exist.'); return 'ok'; }, { waits: [1, 1, 1] });
+  assert.equal(v, 'ok');
+  assert.equal(n, 3);
+  let m = 0;
+  await assert.rejects(R.whenAccountKnown(async () => { m++; throw new Error('Google Cloud answered 403: denied'); }, { waits: [1, 1] }), /403/);
+  assert.equal(m, 1);
+  await assert.rejects(R.whenAccountKnown(async () => { throw new Error('does not exist'); }, { waits: [1] }), /does not exist/);
+});
