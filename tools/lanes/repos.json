@@ -49,19 +49,19 @@
     "check": "npm run typecheck"
   },
   "hawkesgenwebsite": {
-    "title": "Hawkes Gen portal (hawkesgen.ai)",
+    "title": "Hawkes Gen portal (hawkesgames.com)",
     "kind": "app",
     "dev": "npm start",
     "local": [
       "http://127.0.0.1:8800"
     ],
     "beta": [
-      "https://beta.hawkesgen.ai"
+      "https://beta.hawkesgames.com"
     ],
     "prod": [
-      "https://hawkesgen.ai"
+      "https://hawkesgames.com"
     ],
-    "deploys": "Push beta: GitHub Actions deploys Firebase project hawkes-staging (beta.hawkesgen.ai, on gen-beta and beta Net). Push main: Firebase hawkes-prod (live).",
+    "deploys": "Push beta: GitHub Actions deploys Firebase project hawkes-staging (beta.hawkesgames.com, on gen-beta and beta Net). Push main: Firebase hawkes-prod (live).",
     "check": "npm run typecheck"
   },
   "hawkesbiomedicalnew": {

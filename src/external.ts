@@ -9,7 +9,7 @@
 
 import type { ResourceSettings } from './resources.ts';
 
-export const PORTAL_URL = () => (process.env.HAWKES_PORTAL_URL || 'https://hawkesgen.ai').replace(/\/+$/, '');
+export const PORTAL_URL = () => (process.env.HAWKES_PORTAL_URL || 'https://hawkesgames.com').replace(/\/+$/, '');
 const TIMEOUT_MS = 8_000;
 const KEEP = 240; // probes kept per target (4 hours at one a minute)
 
@@ -152,7 +152,7 @@ export function externalIncidents(s: ResourceSettings, e: External = ext, series
   const fs = e.portal.failingSince;
   if (fs != null && now - fs >= s.portalMinutes * 60_000 - 5_000) {
     const l = e.portal.last;
-    out.push({ key: 'portal', title: 'The portal is not answering', message: `hawkesgen.ai/v1/health has failed for ${fmtAgo(now - fs)} (${l?.status ? `HTTP ${l.status}` : l?.error ?? 'no answer'}).` });
+    out.push({ key: 'portal', title: 'The portal is not answering', message: `${new URL(PORTAL_URL()).host}/v1/health has failed for ${fmtAgo(now - fs)} (${l?.status ? `HTTP ${l.status}` : l?.error ?? 'no answer'}).` });
   }
   if (e.details.state === 'ok' && e.details.data) {
     const d = e.details.data;

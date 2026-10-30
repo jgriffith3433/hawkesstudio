@@ -1,4 +1,4 @@
-// Platform tokens from hawkesgen.ai (docs/platform-plan.md 4.2, 4.4). Studio runs as one cell per org: a cell is told
+// Platform tokens from the portal, hawkesgames.com (docs/platform-plan.md 4.2, 4.4). Studio runs as one cell per org: a cell is told
 // its org (STUDIO_ORG) and trusts the portal's short-lived JWT for that org only: EdDSA, checked against the portal's
 // public keys (<portal>/.well-known/jwks.json, cached), audience "hawkesstudio". The token's person becomes a Studio
 // user of this cell: the org's owners and admins are admins here, members and viewers are members (auth.ts
@@ -6,7 +6,7 @@
 //
 // Two ways in:
 //   - a bearer token (the CLI, the MCP, the portal calling on someone's behalf), checked on every request;
-//   - /auth/platform?token=… (a link from hawkesgen.ai's "Open Studio"): the token is exchanged for this cell's own
+//   - /auth/platform?token=… (a link from the portal's "Open Studio"): the token is exchanged for this cell's own
 //     session cookie, so the dashboard works like any sign-in.
 // Without STUDIO_ORG (J's Studio as it is today) none of this is on.
 //
@@ -30,8 +30,9 @@ export const cellOrg = () => {
   return o && ORG_ID.test(o) ? o : null;
 };
 
-/** The portal this cell trusts: STUDIO_PLATFORM_ISSUER, else hawkesgen.ai (live) or beta.hawkesgen.ai (beta). */
-export const issuer = () => (process.env.STUDIO_PLATFORM_ISSUER?.trim() || (process.env.STUDIO_LANE === 'beta' ? 'https://beta.hawkesgen.ai' : 'https://hawkesgen.ai')).replace(/\/+$/, '');
+/** The portal this cell trusts: STUDIO_PLATFORM_ISSUER, else hawkesgames.com (live) or beta.hawkesgames.com (beta; the portal
+ *  was hawkesgen.ai until it moved, hawkesgenwebsite docs/domain-move.md). */
+export const issuer = () => (process.env.STUDIO_PLATFORM_ISSUER?.trim() || (process.env.STUDIO_LANE === 'beta' ? 'https://beta.hawkesgames.com' : 'https://hawkesgames.com')).replace(/\/+$/, '');
 
 let keys: { iss: string; at: number; jwks: Jwk[] } | null = null;
 let fetching: Promise<void> | null = null;

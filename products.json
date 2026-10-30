@@ -443,7 +443,7 @@
       "repo": "hawkesgenwebsite",
       "checks": [{ "dir": "hawkesgenwebsite", "cmd": "npm run typecheck" }, { "dir": "hawkesgenwebsite", "cmd": "npm test" }, { "dir": "hawkesgenwebsite/cloud/functions", "cmd": "npm ci --no-audit --no-fund && npx tsc -p ." }],
       "site": "hawkesgenwebsite",
-      "live": "https://hawkesgen.ai/",
+      "live": "https://hawkesgames.com/",
       "local": {
         "serve": "remote",
         "url": "https://hawkes-staging.web.app/",
@@ -474,7 +474,7 @@
       "story": [
         "hawkesgenwebsite/AGENTS.md"
       ],
-      "about": "The customer portal for public Hawkes Gen (hawkesgen.ai): accounts, credits, Stripe payments, the landing page, portfolio and the Creator Studio UI, in Firestore. Since 2026-10-28 it runs serverless on Google Cloud (Firebase Hosting, Cloud Functions, Firestore, Firebase Auth with Google sign-in only; the repo's cloud/ folder and docs/cloud.md; src/ is the old server, retired): a push to beta deploys https://hawkes-staging.web.app, a push to main deploys hawkesgen.ai, both by GitHub Actions. It is a customer of Hawkes Gen like Studio: Gen does the jobs, the portal sells and shows them.",
+      "about": "The customer portal for public Hawkes Gen (hawkesgames.com; hawkesgen.ai until 2026-10-29, now Gen itself): accounts, credits, Stripe payments, the landing page, portfolio and the Creator Studio UI, in Firestore. Since 2026-10-28 it runs serverless on Google Cloud (Firebase Hosting, Cloud Functions, Firestore, Firebase Auth with Google sign-in only; the repo's cloud/ folder and docs/cloud.md; src/ is the old server, retired): a push to beta deploys https://hawkes-staging.web.app, a push to main deploys hawkesgames.com, both by GitHub Actions. It is a customer of Hawkes Gen like Studio: Gen does the jobs, the portal sells and shows them.",
       "quality": "The public pages load with no broken links or images, no blank screens and no console errors: the landing page, the portfolio and the Creator Studio entry; works on a phone. On live a playtest never signs up, buys or spends credits (no real accounts, no Stripe), and no key, token or customer data shows on any page. Beta (https://hawkes-staging.web.app, its own Firestore and Gen key, payments off) is where accounts, the Creator Studio and games are tried. Direction for the portal is J's: don't suggest features.",
       "deploy": {
         "via": "firebase",
@@ -514,7 +514,7 @@
         "hawkesnet/docs/net.md"
       ],
       "about": "Hawkes Net, the multiplayer service at net.hawkesgen.ai (its own repo since 2026-10-26, before that Hawkes Gen's net/ folder): hawkesgen.ai accounts' projects, tickets, the room directory and the relay, plus the developer dashboard and the demo. Every Hawkes game's online play runs on it (Dose Of Destruction, Sick Of It, Yooba Land, the portal's play page), and outside developers' games through the SDKs (@hawkesgen/net, hawkesnet-babylon, hawkesnet-unity). It runs on its own EC2 box, which pulls main, tests it on a clean copy, restarts with the relay draining and rolls back if unhealthy.",
-      "quality": "The dashboard (net.hawkesgen.ai: the sign-in page when signed out, the docs) and the demo load with no broken links, no blank screens and no console errors, and the demo joins a room. Live players are never disturbed by a test: playtests on live only read pages. Going live restarts the relay (rooms are drained and players reconnect): do it when the games are quiet.",
+      "quality": "The dashboard (net.hawkesgames.com, beside the portal for its sign-in cookie: the sign-in page when signed out, the docs) and the demo load with no broken links, no blank screens and no console errors, and the demo joins a room. Live players are never disturbed by a test: playtests on live only read pages. Going live restarts the relay (rooms are drained and players reconnect): do it when the games are quiet.",
       "deploy": {
         "via": "ec2",
         "box": "the Hawkes Net box (net.hawkesgen.ai)"
