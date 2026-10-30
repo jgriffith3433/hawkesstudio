@@ -97,7 +97,10 @@ export function studioMcp({ studio, waitRun }: Client = { studio: defaultStudio,
         const { run } = await studio('/api/playtest', { method: 'POST', body: a });
         if (!a.wait) return { run };
         const r = await waitRun(run);
-        return { run, status: r.status, steps: r.steps.map((s: any) => ({ kind: s.kind, name: s.name, status: s.status, detail: s.detail, job: s.job, verdict: s.data?.verdict, summary: s.data?.summary, findings: s.data?.findings?.map((f: any) => ({ severity: f.severity, title: f.title, fix: f.fix })), problems: s.data?.problems?.slice?.(0, 15) })) };
+        // Links the person can open (signed in to Studio): the video of each playtest, and the playtests page.
+        const base = (process.env.STUDIO_PUBLIC_URL || 'https://studio.hawkesgen.ai').replace(/\/+$/, '');
+        const video = (s: any) => (s.kind === 'playtest' && ((s.data?.s3?.video && !s.data?.s3?.error) || s.data?.video) ? `${base}/api/playtests/${s.id}/video` : undefined);
+        return { run, status: r.status, page: `${base}/#playtests`, steps: r.steps.map((s: any) => ({ kind: s.kind, name: s.name, status: s.status, detail: s.detail, job: s.job, video: video(s), verdict: s.data?.verdict, summary: s.data?.summary, findings: s.data?.findings?.map((f: any) => ({ severity: f.severity, title: f.title, fix: f.fix })), problems: s.data?.problems?.slice?.(0, 15) })) };
       },
     },
     {

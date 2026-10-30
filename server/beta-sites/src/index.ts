@@ -302,10 +302,20 @@ export async function handle(req: Request, env: Env, now = Date.now()): Promise<
   if (url.pathname.startsWith('/.hawkes-sites/')) return publish(req, env, url, now);
   const site = siteOf(url.host, env.DOMAIN ?? 'hawkesgen.ai');
   if (!site) return text(404, 'Not a beta site.');
-  const { lane, sub } = site;
+  let { lane, sub } = site;
+  let pathname = url.pathname;
   // Unity builds (docs/unity-builds-storage.md): https://sites.<domain>/builds/<game>/v<n>/..., public (live pages load
   // them), before any pass check.
   if (lane === 'live' && sub === 'sites' && url.pathname.startsWith('/builds/')) return serveBuild(req, env, url);
+  // Games added through Talk have no host of their own (each host needs a route): https://sites.<domain>/g/<game>/ is
+  // live Studio's beta site of one, /b/<game>/ studio-beta's (R2 <lane>/g-<game>/...). Their builds use relative paths.
+  const g = lane === 'live' && sub === 'sites' ? /^\/(g|b)\/([a-z][a-z0-9-]{1,39})(\/.*)?$/.exec(url.pathname) : null;
+  if (g) {
+    if (!g[3]) return new Response(null, { status: 301, headers: { Location: `${url.pathname}/${url.search}` } });
+    lane = g[1] === 'b' ? 'beta' : 'live';
+    sub = `g-${g[2]}`;
+    pathname = g[3];
+  }
   // The first pass that checks out: a stale one sent first must not hide a good one (2026-10-29: beta sites 403 for J).
   let user: string | null = null;
   for (const v of cookies(req, passCookie(lane))) if ((user = await checkPass(env, lane, v, now))) break;
@@ -331,7 +341,7 @@ export async function handle(req: Request, env: Env, now = Date.now()): Promise<
     return text(404, 'The /dev/ dev servers are not running on Google Cloud yet (docs/studio-cloudrun.md, "Not done here").');
   }
   if (req.method !== 'GET' && req.method !== 'HEAD') return text(405, 'Read only.');
-  const k = keyOf(lane, sub, url.pathname);
+  const k = keyOf(lane, sub, pathname);
   if (!k) return text(404, 'Not found');
   return page(req, env, url, k.base, k.rel);
 }

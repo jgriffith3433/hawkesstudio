@@ -37,6 +37,11 @@ export async function linksFor(repo: string | null, p?: Product | null) {
   const out: Record<string, string> = {};
   if (p?.live) out.live = p.live;
   if (p?.beta) out.beta = p.beta;
+  // Its beta site on Google Cloud (previews.ts: products.json's own hosts, or sites.<domain>/g/<game>/ for an added game).
+  if (p && !p.beta) {
+    const beta = await import('./previews.ts').then((m) => m.previewUrl(p.id)).catch(() => null);
+    if (beta) out.beta = beta;
+  }
   if (!repo) return out;
   const web = 'https://github.com';
   out.repo = `${web}/${repo}`;
@@ -282,12 +287,12 @@ export async function gameStatus(productId: string, base: string, userId?: strin
     soft(async () => (await import('./agents.ts')).listChanges({ product: p.id }).filter((c: any) => !['merged', 'closed'].includes(c.status)).slice(0, 8)
       .map((c: any) => ({ id: c.id, title: c.title, status: c.status, pr: c.pr_url ?? null, preview: c.verify?.preview ?? null }))),
   ]);
-  const links = await linksFor(repoSlug(p.github ?? p.repo), p).catch(() => ({}));
+  const links: Record<string, string> = await linksFor(repoSlug(p.github ?? p.repo), p).catch(() => ({}));
   return {
     game: { id: p.id, name: p.name, engine: p.engine, about: p.about, live: p.live || null, beta: p.beta ?? null, repo: p.github ?? (repoSlug(p.repo) ?? null), contract: Boolean(p.contract), playtests: (p.playtests ?? []).map((t: any) => `${t.scenario ?? t.mode}@${t.where}${t.device ? `:${t.device}` : ''}`) },
     ready: 'error' in (ready as any) ? ready : { ready: (ready as any).ready, next: (ready as any).next, missing: (ready as any).items.filter((i: any) => !i.ok).map((i: any) => i.what) },
     playtests: plays, findings, changes,
-    links: { ...links, studio: `${base}/#today`, playtestsPage: `${base}/#playtests`, backlog: `${base}/#backlog` },
+    links: { ...links, studio: `${base}/#today`, playtestsPage: `${base}/#playtests`, backlog: `${base}/#backlog` } as Record<string, string>,
   };
 }
 

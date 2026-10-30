@@ -5,6 +5,32 @@ what they can and can't use, and how it gets to production. It builds on `docs/p
 4.3–4.4) and the portal's plans (hawkesgenwebsite `cloud/functions/src/platform.ts`, `plans.ts`). What is built is
 marked **built**; everything else waits on J's decisions in section 7.*
 
+## 0. Why Studio, when Claude can already write the game
+
+J, 2026-10-30: "why would they use studio when they could just use claude and have full control. What does studio
+solve." Claude (Code, or in an editor) writes code well, and the person stays in full control of it. What it doesn't
+have is everything around the code that a game needs to get better every day. Studio is that, and Talk is how a person
+drives it without learning any of it:
+
+- **It sees the game being played.** Claude reads code; Studio plays the build in a real browser on a real GPU with the
+  game's own bot pressing real keys, records video, frame rate, errors and failed requests, and has Claude review the
+  footage against the game's story and quality bar. "It compiles" becomes "it plays, here is the video".
+- **It keeps watching.** A daily run plays every game; findings merge into one backlog that converges (the same bug is
+  one bug, seen again and again, until it's fixed); regressions in frame rate, load time or review scores are flagged.
+  Claude in a chat forgets; Studio remembers (the shared memory: decisions, canon, lessons, every past run).
+- **Work happens while nobody is watching, safely.** Agents work in parallel on branches, run the checks, open pull
+  requests into beta, and merge there by themselves once ready; live only moves on the owner's tap, from a beta commit
+  that was playtested, with a rollback one tap away. Claude alone pushes wherever it's pointed.
+- **Real players feed the backlog.** Player analytics (drop-offs, rage clicks, errors, where time goes) become work.
+- **Everything a game needs, already wired.** Art, voice, sound, music and 3D through Hawkes Gen; multiplayer through
+  Hawkes Net; builds (Unity WebGL in the cloud), beta sites, GitHub Pages, all behind one sign-in.
+- **No setup.** The person answers questions in Talk and taps Approve; Studio makes the repo, the branches, the hook,
+  Pages, the playtest bot, the first version of the game. Links go straight to the page they need. It works from a phone.
+
+So the pitch is not "Claude, but in Studio". It is: *Claude writes it; Studio plays it, remembers it, ships it safely
+and keeps it getting better.* Every feature should make that loop shorter or more reliable for someone who has never
+heard of a branch.
+
 ---
 
 ## 1. Signing up

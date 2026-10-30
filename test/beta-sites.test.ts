@@ -384,3 +384,26 @@ test('Unity builds: public at sites.<domain>/builds/, Brotli files sent with the
   // Only that host and path are public: a beta site still wants a pass.
   assert.notEqual((await W.handle(new Request('https://sb-dod.hawkesgen.ai/builds/yoobaland/v181/sizes.json'), env)).status, 200);
 });
+
+test("an added game's beta site is a path on sites.<domain>: /g/<game>/ for live Studio, /b/<game>/ for studio-beta", async () => {
+  W.resetKeys();
+  await r2.put('live/g-orbit-run/beta/index.html', '<p>orbit live</p>', { httpMetadata: { contentType: 'text/html' } });
+  await r2.put('live/g-orbit-run/beta/assets/app.js', 'js', { httpMetadata: { contentType: 'text/javascript' } });
+  await r2.put('beta/g-orbit-run/beta/index.html', '<p>orbit beta lane</p>', { httpMetadata: { contentType: 'text/html' } });
+  const live = `hawkes_pass=${K.makePass('u_j', { lane: 'live', keys: liveKeys })}`;
+  const beta = `hawkes_pass_beta=${K.makePass('u_j', { lane: 'beta', keys: betaKeys })}`;
+  let r = await browse('https://sites.hawkesgen.ai/g/orbit-run');
+  assert.equal(r.status, 301, 'a trailing slash first, so its relative paths resolve');
+  assert.equal(r.headers.get('Location'), '/g/orbit-run/');
+  r = await browse('https://sites.hawkesgen.ai/g/orbit-run/');
+  assert.equal(r.status, 302, 'no pass: sent to Studio for one, like any beta site');
+  r = await browse('https://sites.hawkesgen.ai/g/orbit-run/', { cookie: live });
+  assert.equal(r.status, 200);
+  assert.match(await r.text(), /orbit live/);
+  r = await browse('https://sites.hawkesgen.ai/g/orbit-run/assets/app.js', { cookie: live, page: false });
+  assert.equal(await r.text(), 'js');
+  r = await browse('https://sites.hawkesgen.ai/b/orbit-run/', { cookie: beta });
+  assert.match(await r.text(), /orbit beta lane/);
+  r = await browse('https://sites.hawkesgen.ai/b/orbit-run/', { cookie: live });
+  assert.equal(r.status, 302, "the live lane's pass doesn't open studio-beta's copy");
+});

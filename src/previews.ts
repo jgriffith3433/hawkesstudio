@@ -27,7 +27,7 @@ import { betaBuild, betaSiteFolder } from './beta.ts';
 import { fetchLocked } from './gitlock.ts';
 import { injectReport, type PageInfo } from './bugreport.ts';
 import { sandboxOn, sandboxSpawn } from './sandbox.ts';
-import { siteHost } from './sitekeys.ts';
+import { siteHost, laneOf } from './sitekeys.ts';
 import { remoteSites, SiteWaiting } from './previews-cloud.ts';
 
 export const DOMAIN = process.env.STUDIO_DOMAIN || 'hawkesgen.ai';
@@ -67,7 +67,10 @@ const RECIPES: Record<string, Recipe> = {
   // The corporate site isn't listed: Pages serves its repo root as committed (dist/ is only the old local build).
 };
 /** How a web product's beta site is built (products not listed: the files git would publish, no build). */
-export const recipeOf = (id: string): Recipe => RECIPES[id] ?? { site: 'tracked' };
+export const recipeOf = (id: string): Recipe => RECIPES[id] ?? (addedWeb().some((p) => p.id === id) ? ADDED_RECIPE : { site: 'tracked' });
+/** A web game added through Talk (starters.ts: Vite, its pages.yml publishes dist/ alone). */
+const ADDED_RECIPE: Recipe = { build: 'npm run build', site: 'none', out: { from: 'dist', to: '' } };
+const addedWeb = () => loadProducts().filter((p) => p.github && p.engine === 'web');
 
 /** app: built as a server app (buildApp), so its lane's worktree is what the process runs from. */
 export type Preview = { status: 'building' | 'ready' | 'failed' | 'waiting'; at: number; sha?: string | null; ref?: string; detail?: string; files?: number; ms?: number; version?: string | null; app?: boolean };
@@ -79,11 +82,15 @@ type State = Record<string, { beta?: Preview; changes?: Record<string, Preview>;
 
 /** Subdomain -> product id (products.json "previews"). */
 export function previewHosts(): Record<string, string> {
-  return JSON.parse(fs.readFileSync(paths.products, 'utf8')).previews ?? {};
+  const own = JSON.parse(fs.readFileSync(paths.products, 'utf8')).previews ?? {};
+  // Games added through Talk get a beta site on Google Cloud at https://sites.<domain>/g/<game>/ (no host of their own).
+  if (!remoteSites()) return own;
+  return { ...own, ...Object.fromEntries(addedWeb().filter((p) => !Object.values(own).includes(p.id)).map((p) => [`g-${p.id}`, p.id])) };
 }
 const subOf = (id: string) => Object.entries(previewHosts()).find(([, v]) => v === id)?.[0];
 export const previewUrl = (id: string, change?: string) => {
   const sub = subOf(id);
+  if (sub?.startsWith('g-')) return `https://sites.${DOMAIN}/${laneOf() === 'beta' ? 'b' : 'g'}/${sub.slice(2)}/${change ? `c/${change}/` : ''}`;
   return sub ? `https://${siteHost(sub, DOMAIN)}/${change ? `c/${change}/` : ''}` : null;
 };
 
