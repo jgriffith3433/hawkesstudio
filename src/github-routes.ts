@@ -36,13 +36,17 @@ const done = (title: string, text: string, back = '/') => `<!doctype html><meta 
  * Whose GitHub sign-in a request means: the signed-in person, else (Talk and the agents have none) the admin who
  * linked GitHub. In J's Studio that is J.
  */
-export function githubUserFor(req: http.IncomingMessage): string | null {
-  return requester(req)?.id ?? G.linkedAdmin();
+export async function githubUserFor(req: http.IncomingMessage): Promise<string | null> {
+  const own = requester(req)?.id ?? G.linkedAdmin();
+  if (own) return own;
+  // A customer's Studio: the control plane keeps its people's GitHub sign-ins; Talk uses the first one's.
+  const cell = await (await import('./cellside.ts')).cellGithub().catch(() => null);
+  return cell?.linked?.[0] ?? null;
 }
 
 export async function handleGithubRoutes(req: http.IncomingMessage, res: http.ServerResponse, route: string, method: string, url: URL, send: Send, readJson: (r: http.IncomingMessage) => Promise<any>, origin: string | null): Promise<boolean> {
   const base = baseOf(req);
-  if (route === '/api/github' && method === 'GET') return send(res, 200, await G.githubStatus(base, githubUserFor(req))), true;
+  if (route === '/api/github' && method === 'GET') return send(res, 200, await G.githubStatus(base, (await githubUserFor(req)))), true;
   if (route === '/api/github/app/setup' && method === 'GET') {
     // Anyone signed in to this Studio may connect it (J, 2026-10-30: "You shouldn't have to be admin to do this"). It is
     // made once: with an app already here the link goes straight to installing it, so nobody replaces it this way.
@@ -66,14 +70,21 @@ export async function handleGithubRoutes(req: http.IncomingMessage, res: http.Se
   if (route === '/api/github/connect' && method === 'GET') {
     const u = requester(req);
     if (!u) return redirect(res, `/auth/signin?next=${encodeURIComponent(route)}`), true;
+    // A customer's Studio: sign in through Hawkes Studio's app (the control plane keeps it under this org).
+    if (!G.appConfig()) {
+      const cell = await (await import('./cellside.ts')).cellGithub(`${base}/`, u.id).catch(() => null);
+      if (cell?.connect) return redirect(res, cell.connect), true;
+      if (cell?.user) return html(res, 200, done('Signed in with GitHub', `You're signed in as ${cell.user.login}.`)), true;
+    }
     // No app yet: make it first, then come back here (one link does both).
     if (!G.appConfig()) return redirect(res, '/api/github/app/setup'), true;
     return redirect(res, G.connectUrl(base, u.id)), true;
   }
   if (route === '/api/github/callback' && method === 'GET') {
-    const r = await G.userCallback(base, String(url.searchParams.get('code') ?? ''), String(url.searchParams.get('state') ?? ''), url.searchParams.get('installation_id'));
+    const r = await G.userCallback(base, String(url.searchParams.get('code') ?? ''), String(url.searchParams.get('state') ?? ''), url.searchParams.get('installation_id'), requester(req)?.id ?? null);
     // An install from a customer's Studio: linked to their org; back to their Studio.
-    if (r.org) return html(res, 200, done('GitHub is connected', `Your Studio can now work on the repositories you chose${r.account ? ` in ${r.account}` : ''}. Go back to your Studio and tell Talk which game it is.`, r.back ?? '/')), true;
+    if (r.org && r.account) return html(res, 200, done('GitHub is connected', `Your Studio can now work on the repositories you chose in ${r.account}. Go back to your Studio and tell Talk which game it is.`, r.back ?? '/')), true;
+    if (r.org) return html(res, 200, done('Signed in with GitHub', `Your Studio can now make repositories as ${r.login}. Go back to your Studio.`, r.back ?? '/')), true;
     return html(res, 200, done('Signed in with GitHub', `Studio can now make repositories as ${r.login}. Go back to Studio.`)), true;
   }
   if (route === '/api/github/user' && method === 'DELETE') {
@@ -98,7 +109,7 @@ export async function handleGithubRoutes(req: http.IncomingMessage, res: http.Se
   };
   if (route === '/api/games/new' && method === 'POST') {
     const b = await readJson(req);
-    const user = githubUserFor(req);
+    const user = (await githubUserFor(req));
     if (!user) throw new StudioError('Nobody has signed in with GitHub here yet: open /api/github/connect (studio_github connect) first.', 409);
     const { newGamePlan } = await import('./repokit.ts');
     const plan = await newGamePlan(b, user);
@@ -107,7 +118,7 @@ export async function handleGithubRoutes(req: http.IncomingMessage, res: http.Se
   const m = /^\/api\/games\/([a-z][a-z0-9-]{1,39})\/(readiness|setup|status|contract)$/.exec(route);
   if (m && m[2] === 'status' && method === 'GET') {
     const { gameStatus } = await import('./repokit.ts');
-    return send(res, 200, await gameStatus(m[1], base, githubUserFor(req))), true;
+    return send(res, 200, await gameStatus(m[1], base, (await githubUserFor(req)))), true;
   }
   if (m && m[2] === 'contract' && method === 'POST') {
     // An agent adds Studio's playtest bot (a pull request into beta, like any task): no card, it changes nothing live.
@@ -123,12 +134,12 @@ export async function handleGithubRoutes(req: http.IncomingMessage, res: http.Se
   }
   if (m && m[2] === 'readiness' && method === 'GET') {
     const { readiness } = await import('./repokit.ts');
-    return send(res, 200, await readiness(m[1], githubUserFor(req))), true;
+    return send(res, 200, await readiness(m[1], (await githubUserFor(req)))), true;
   }
   if (m && m[2] === 'setup' && method === 'POST') {
     const b = await readJson(req);
     const { readiness } = await import('./repokit.ts');
-    const r = await readiness(m[1], githubUserFor(req));
+    const r = await readiness(m[1], (await githubUserFor(req)));
     if (!r.approve) throw new StudioError(r.ready ? `${r.name} is ready: nothing to set up.` : `Nothing Studio can set up on GitHub for ${r.name} right now. Next: ${r.next?.what}${r.next?.fix ? `: ${r.next.fix}` : ''}`, 409);
     return send(res, 200, await card(r.approve.repo!, r.approve, b)), true;
   }

@@ -69,9 +69,16 @@ export function startCellReports(every = 5 * 60_000) {
 // a token scoped to one repo of one of them when it needs one (an agent's clone and pull request, a setup step).
 
 /** The app, the install link for this org, and its linked installations; null outside a cell. */
-export async function cellGithub(back?: string | null): Promise<{ app: { slug: string } | null; install: string | null; installations: { id: number; account: string; type: string; repos: string }[] } | null> {
+export async function cellGithub(back?: string | null, user?: string | null): Promise<{ app: { slug: string } | null; install: string | null; installations: { id: number; account: string; type: string; repos: string }[]; user: { login: string } | null; connect: string | null; linked: string[] } | null> {
   if (!inCell()) return null;
-  return post('github', { back: back ?? null });
+  return post('github', { back: back ?? null, user: user ?? null });
+}
+
+/** A person's GitHub sign-in (kept by the control plane for this org): their login and a fresh token, or null. */
+export async function cellGithubUser(user: string): Promise<{ login: string; token: string } | null> {
+  if (!inCell()) return null;
+  const r = await post('github-user', { user });
+  return r?.token ? { login: String(r.login), token: String(r.token) } : null;
 }
 
 const cellTokens = new Map<string, { token: string; until: number }>();

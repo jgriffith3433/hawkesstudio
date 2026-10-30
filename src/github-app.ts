@@ -174,16 +174,17 @@ export async function installationRepos(id: number) {
 
 // ------------------------------------------------------------------ signing in with GitHub (user tokens)
 
-export function connectUrl(base: string, userId: string) {
+export function connectUrl(base: string, userId: string, o: { org?: string | null; back?: string | null } = {}) {
   const c = appConfig();
   if (!c) throw new StudioError('Make the GitHub App first (studio_github setup), then sign in with GitHub.', 409);
-  const q = new URLSearchParams({ client_id: c.clientId, redirect_uri: `${base}/api/github/callback`, state: signState({ k: 'user', u: userId }) });
+  // A customer's Studio signs its people in here too (the control plane): their link is kept under their org.
+  const q = new URLSearchParams({ client_id: c.clientId, redirect_uri: `${base}/api/github/callback`, state: signState({ k: 'user', u: userId, ...(o.org ? { org: o.org } : {}), ...(o.back ? { back: o.back } : {}) }) });
   return `${WEB()}/login/oauth/authorize?${q}`;
 }
 
 /** GitHub's sign-in answer: the person's user token, kept for them. */
-export async function userCallback(base: string, code: string, state: string, installationId?: string | null) {
-  const s = readState(state);
+export async function userCallback(base: string, code: string, state: string, installationId?: string | null, sessionUser?: string | null) {
+  let s = readState(state);
   // After installing the app from a customer's Studio (installLinkFor): the person's sign-in proves the installation is
   // one they can reach, then it is linked to their org.
   if (s?.k === 'install' && s.org && installationId) {
@@ -194,13 +195,16 @@ export async function userCallback(base: string, code: string, state: string, in
     linkInstallation(Number(installationId), String(s.org), String(inst.account?.login ?? ''));
     return { user: null, login: null, org: String(s.org), account: String(inst.account?.login ?? ''), back: s.back ? String(s.back) : null };
   }
+  // Installed from the app's own page (no state of Studio's): GitHub signs the person in right after the install, and
+  // Studio's own session says who they are (2026-10-30: J's first install ended on "This sign-in link expired").
+  if (!s && installationId && sessionUser) s = { k: 'user', u: sessionUser };
   if (!s || s.k !== 'user' || !s.u) throw new StudioError('This sign-in link expired or was not made here: start again from Studio.', 400);
   const link = await exchange({ code, redirect_uri: `${base}/api/github/callback` });
   const me = await gh(link.token, 'GET', '/user');
   const users = readJson<Record<string, UserLink>>(USERS_FILE(), {});
-  users[s.u] = { ...link, login: String(me.login) };
+  users[userKey(s.u, s.org)] = { ...link, login: String(me.login) };
   writeSecret(USERS_FILE(), users);
-  return { user: s.u as string, login: String(me.login), org: null, account: null, back: null };
+  return { user: s.u as string, login: String(me.login), org: s.org ? String(s.org) : null, account: null, back: s.back ? String(s.back) : null };
 }
 
 // ------------------------------------------------------------------ customers' Studios share J's app (the control plane)
@@ -213,6 +217,11 @@ export function installLinkFor(org: string, back?: string | null) {
   const c = appConfig();
   if (!c) return null;
   return `${WEB()}/apps/${c.slug}/installations/new?state=${encodeURIComponent(signState({ k: 'install', org, ...(back ? { back } : {}) }))}`;
+}
+
+/** The people of one customer's org who signed in with GitHub here (their Studio's user ids). */
+export function orgGithubUsers(org: string): string[] {
+  return Object.keys(readJson<Record<string, UserLink>>(USERS_FILE(), {})).filter((k) => k.startsWith(`${org}:`)).map((k) => k.slice(org.length + 1));
 }
 
 /** Records which org an installation belongs to. One installation, one org: a second org can't take it over. */
@@ -266,8 +275,14 @@ async function exchange(params: Record<string, string>): Promise<Omit<UserLink, 
   };
 }
 
-/** A person's GitHub user token (refreshed when it is near its end), or null when they haven't signed in. */
-export async function userToken(userId: string): Promise<{ login: string; token: string } | null> {
+/** Where a person's GitHub sign-in is kept: theirs here, or (the control plane) one of a customer's people by org. */
+const userKey = (userId: string, org?: string | null) => (org ? `${org}:${userId}` : userId);
+
+/** A person's GitHub user token (refreshed when it is near its end), or null when they haven't signed in. A customer's
+ *  Studio asks the control plane, which keeps its people's sign-ins (cellside.ts cellGithubUser). */
+export async function userToken(userId: string, org?: string | null): Promise<{ login: string; token: string } | null> {
+  if (!org && customerStudio() && !appConfig()) return (await import('./cellside.ts')).cellGithubUser(userId).catch(() => null);
+  userId = userKey(userId, org);
   const users = readJson<Record<string, UserLink>>(USERS_FILE(), {});
   const u = users[userId];
   if (!u) return null;
@@ -281,9 +296,9 @@ export async function userToken(userId: string): Promise<{ login: string; token:
   return { login: u.login, token: u.token };
 }
 
-export function disconnectUser(userId: string) {
+export function disconnectUser(userId: string, org?: string | null) {
   const users = readJson<Record<string, UserLink>>(USERS_FILE(), {});
-  delete users[userId];
+  delete users[userKey(userId, org)];
   writeSecret(USERS_FILE(), users);
 }
 
@@ -341,11 +356,11 @@ export async function githubStatus(base: string, userId?: string | null) {
   const c = appConfig();
   // A customer's Studio shares J's app (the control plane): its install link carries this org, and only the
   // installations linked to it show. Making an app or signing in with GitHub isn't done from a cell.
-  const cell = !c ? await (await import('./cellside.ts')).cellGithub(`${base}/`).catch((e) => ({ error: String(e.message ?? e) }) as any) : null;
+  const cell = !c ? await (await import('./cellside.ts')).cellGithub(`${base}/`, userId).catch((e) => ({ error: String(e.message ?? e) }) as any) : null;
   if (cell) {
     return {
       app: cell.app ? { slug: cell.app.slug } : null, setup: null, install: cell.install ?? null, installations: cell.installations ?? [],
-      user: null, connect: null, pastedRepos: Object.keys(readJson<Record<string, string>>(TOKENS_FILE(), {})), error: cell.error ?? (cell.app ? null : "GitHub isn't set up for Studio yet: Hawkes Studio's team turns it on."),
+      user: cell.user ?? null, connect: cell.connect ?? null, pastedRepos: Object.keys(readJson<Record<string, string>>(TOKENS_FILE(), {})), error: cell.error ?? (cell.app ? null : "GitHub isn't set up for Studio yet: Hawkes Studio's team turns it on."),
     };
   }
   const user = userId ? await userToken(userId).catch(() => null) : null;
@@ -367,6 +382,7 @@ export async function githubStatus(base: string, userId?: string | null) {
 
 /** Whose GitHub sign-in Talk and the agents use (they have no person of their own): an admin's, else anyone's here. */
 export function linkedAdmin(): string | null {
-  const ids = Object.keys(readJson<Record<string, UserLink>>(USERS_FILE(), {}));
+  // Customers' people (kept here by org, "org:user") are never this Studio's.
+  const ids = Object.keys(readJson<Record<string, UserLink>>(USERS_FILE(), {})).filter((k) => !k.includes(':'));
   return ids.find((id) => getUser(id)?.role === 'admin') ?? ids.find((id) => getUser(id)) ?? null;
 }

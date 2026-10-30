@@ -234,3 +234,20 @@ test("customers' Studios share the app: an install is linked to its org only aft
   assert.equal(await G.orgRepoToken('org_b', 'acme/space-game'), null);
   assert.equal(await G.orgRepoToken('org_a', 'someone/else'), null);
 });
+
+test("a sign-in right after installing from the app's own page uses Studio's session; customers' people sign in by org", async () => {
+  // GitHub comes back from an install with no state of Studio's (J's first install, 2026-10-30): the session says who.
+  await assert.rejects(G.userCallback('https://studio.test', 'c3', '', '5', null), /expired or was not made here/);
+  const r = await G.userCallback('https://studio.test', 'c3', '', '5', j.id);
+  assert.equal(r.user, j.id);
+  assert.equal(r.login, 'jgriffith3433');
+  // A customer's person, through the control plane: kept under their org, given back to their Studio, never this one's.
+  const url = new URL(G.connectUrl('https://studio.test', 'u_cust', { org: 'org_a', back: 'https://studio.test/o/org_a/' }));
+  const c = await G.userCallback('https://studio.test', 'c4', url.searchParams.get('state')!);
+  assert.equal(c.org, 'org_a');
+  assert.equal(c.back, 'https://studio.test/o/org_a/');
+  assert.equal((await G.userToken('u_cust', 'org_a'))!.login, 'jgriffith3433');
+  assert.equal(await G.userToken('u_cust'), null, "not a sign-in of this Studio's");
+  assert.deepEqual(G.orgGithubUsers('org_a'), ['u_cust']);
+  assert.equal(G.linkedAdmin(), j.id);
+});
