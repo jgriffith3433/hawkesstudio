@@ -54,6 +54,8 @@ export const LEGAL_ROUTES = new Set(['/legal', '/terms', '/privacy', '/refunds']
 export function openRoute(route: string, method: string) {
   if (route.startsWith('/auth/') || route === '/auth') return true;
   if (route === '/api/health' || route === '/mcp' || route.startsWith('/mcp/')) return true;
+  // The editors' sign-in to /mcp (studiooauth.ts): discovery, registration and tokens; /oauth/authorize signs in itself.
+  if (route.startsWith('/oauth/') || route.startsWith('/.well-known/oauth-') || route === '/.well-known/openid-configuration') return true;
   if (route.startsWith('/api/hooks/') && method === 'POST') return true;
   if (route === '/api/cloud/daily' && method === 'POST') return true;
   if (route === '/api/billing/webhook' && method === 'POST') return true;

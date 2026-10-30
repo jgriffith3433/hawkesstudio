@@ -1,5 +1,8 @@
 // /mcp: the Studio MCP tools over Streamable HTTP, for Claude Code anywhere (claude mcp add --transport http) and
-// claude.ai connectors. On the server the key is STUDIO_MCP_KEY (/etc/hawkes/keys.env, made by deploy/deploy.mjs), sent
+// claude.ai connectors. Signing in is OAuth (src/studiooauth.ts, J, 2026-10-30: no pasted keys): with no token the
+// answer is a 401 naming where to sign in, the editor opens Studio, and the person signs in and allows it. Only who could
+// hold the owner's key may (the tools act as this Studio's owner): J's Studio's platform admin, a customer Studio's
+// admins. The pasted key still works: on the server it is STUDIO_MCP_KEY (/etc/hawkes/keys.env, made by deploy/deploy.mjs), sent
 // as "Authorization: Bearer hs_..." or in the URL (/mcp/hs_..., for clients that can't send headers). Caddy lets
 // these through without the website login. Without STUDIO_MCP_KEY (J's PC), only direct local requests get in.
 // docs/cloud.md has the setup.
@@ -11,6 +14,16 @@ import { studioMcp } from './mcp-tools.ts';
 import { studioAt, waitRun } from './client.ts';
 import { PORT } from './config.ts';
 import { cellOrg, primeToken, studioRole, verifyPlatformToken } from './platform.ts';
+import { studioOAuth } from './studiooauth.ts';
+import { getUser } from './auth.ts';
+import { customerStudio, platformAdmins } from './tenancy.ts';
+
+/** Whether an editor signed in through OAuth as this person may use Studio's tools (they act as its owner). */
+function mayConnect(userId: string) {
+  const u = getUser(userId) as { role?: string; email?: string; google?: unknown } | null;
+  if (!u || u.role !== 'admin') return false;
+  return customerStudio() || Boolean(u.google && platformAdmins().includes(String(u.email ?? '').toLowerCase()));
+}
 
 // The tools call this service directly (never the cloud address from ~/.hawkes/client.json).
 const local = studioAt(`http://127.0.0.1:${PORT}`);
@@ -34,10 +47,12 @@ export async function handleMcp(req: IncomingMessage, res: ServerResponse, pathn
     await primeToken(key);
     try { viaPlatform = studioRole(verifyPlatformToken(key).role) === 'admin'; } catch { viaPlatform = false; }
   }
-  const ok = viaPlatform || (expected ? Boolean(key) && same(key!, expected) : direct);
+  const access = key && studioOAuth.owns(key) ? studioOAuth.verify(key) : null;
+  const viaOAuth = Boolean(access && mayConnect(access.userId));
+  const ok = viaPlatform || viaOAuth || (expected ? Boolean(key) && !studioOAuth.owns(key!) && same(key!, expected) : direct);
   if (!ok) {
-    res.writeHead(401, { 'Content-Type': 'application/json', 'WWW-Authenticate': 'Bearer realm="hawkesstudio"' });
-    return void res.end(JSON.stringify({ error: expected ? 'Send the Studio MCP key: Authorization: Bearer hs_...' : 'The Studio MCP key (STUDIO_MCP_KEY) is not set up here' }));
+    res.writeHead(access ? 403 : 401, { 'Content-Type': 'application/json', 'WWW-Authenticate': studioOAuth.challenge(req, Boolean(key)), 'Access-Control-Expose-Headers': 'WWW-Authenticate' });
+    return void res.end(JSON.stringify({ error: access ? "This account can't use Studio's tools here (its owner's alone)." : key ? 'This sign-in expired or was disconnected: connect again.' : 'Sign in: add this server in your editor and it opens Studio to connect.' }));
   }
   return serveHttp(req, res, mcp);
 }

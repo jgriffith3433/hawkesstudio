@@ -100,6 +100,11 @@ const server = http.createServer(async (req, res) => {
   if (process.env.STUDIO_ORG) res.setHeader('X-Studio-Cell', process.env.STUDIO_ORG);
   try {
     if (route === '/mcp' || route.startsWith('/mcp/')) return await handleMcp(req, res, route);
+    // The editors' sign-in to /mcp (studiooauth.ts, mcp-oauth.ts).
+    if (route.startsWith('/oauth/') || route.startsWith('/.well-known/oauth-') || route === '/.well-known/openid-configuration') {
+      const { studioOAuth } = await import('./studiooauth.ts');
+      if (await studioOAuth.handle(req, res, route)) return;
+    }
     // Terms, privacy and refunds (dashboard/legal.html): public, in J's Studio and every customer's, before any sign-in.
     if ((route === '/legal' || route === '/terms' || route === '/privacy' || route === '/refunds') && method === 'GET') {
       const anchor = route === '/legal' ? '' : route === '/terms' ? 'terms' : route.slice(1);
