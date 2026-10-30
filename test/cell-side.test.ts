@@ -193,3 +193,15 @@ test('a playtest video in Gen is streamed through Studio (Gen answers 401 to a b
   assert.equal(P.genVideoAsset('s_0000aaaa'), 'a_65fed08c8df5c6cb');
   assert.equal(P.genVideoAsset('s_nothere'), null);
 });
+
+test("a customer's game keeps a beta address: its \"local\" playtests (Play beta) play it, live ones play where it is live", async () => {
+  fs.writeFileSync(path.join(process.env.STUDIO_DATA!, 'products.json'), JSON.stringify({ products: [] }));
+  const g = CFG.saveProduct({ id: 'jgame', name: 'JGame', engine: 'web', live: 'https://icanbe.ai', beta: 'https://beta.icanbe.ai' } as any);
+  assert.equal((g as any).beta, 'https://beta.icanbe.ai');
+  const p = CFG.loadProducts()[0];
+  assert.equal(CFG.localUrl(p), 'https://beta.icanbe.ai');
+  assert.equal(p.live, 'https://icanbe.ai');
+  assert.throws(() => CFG.saveProduct({ id: 'jgame', name: 'JGame', engine: 'web', live: 'https://icanbe.ai', beta: 'ftp://nope' } as any), /beta: an https/);
+  CFG.removeProduct('jgame');
+  assert.deepEqual(CFG.loadProducts(), []);
+});

@@ -71,6 +71,8 @@ export type Product = {
   repo: string;
   site: string;
   live: string;
+  /** A customer's game: where its test version plays (its beta), when it has one. Playtests "on beta" play it. */
+  beta?: string;
   /** serve "app": the product is a server Studio runs itself (`app`, apps.ts), on this port for local playtests.
    *  serve "remote": its beta is deployed elsewhere by the repo's own CI (the customer portal on Firebase: a push to
    *  beta deploys https://hawkes-staging.web.app); `url` is that beta, and local playtests play it. */
@@ -141,7 +143,8 @@ export function asCustomerGame(p: Product): Product {
     playtests: p.playtests ?? [],
     story: p.story ?? [],
     about: p.about ?? '',
-    local: p.local ?? { serve: 'remote', dir: '', port: 0, path: '/', ...(live ? { url: live } : {}) },
+    // Its "local" playtests are its beta's: the beta address when it has one, else where it plays.
+    local: p.local ?? { serve: 'remote', dir: '', port: 0, path: '/', ...(p.beta || live ? { url: p.beta || live } : {}) },
   };
 }
 
@@ -152,7 +155,7 @@ export const hasCheckout = (p: Product) => Boolean(p.local?.dir) && !customerStu
 export type ProductInput = {
   id: string; name: string; engine: 'web' | 'unity' | 'godot' | 'desktop';
   /** Where the build is played: a web address (web builds), or the build source for desktop games. */
-  live?: string; build?: { source: 'url' | 'upload' | 'github'; target?: 'web' | 'linux' | 'proton' | 'windows'; exe?: string; repo?: string };
+  live?: string; beta?: string; build?: { source: 'url' | 'upload' | 'github'; target?: 'web' | 'linux' | 'proton' | 'windows'; exe?: string; repo?: string };
   repo?: string; about?: string; quality?: string; story?: string; contract?: boolean;
   playtests?: { scenario?: string; mode?: 'site'; where: 'live'; device?: 'phone' }[];
 };
@@ -171,6 +174,8 @@ export function saveProduct(input: ProductInput): Product {
   const live = input.live ? String(input.live).trim() : undefined;
   if (live && !/^https:\/\/[^\s]+$/.test(live)) throw new StudioError('live: an https:// address', 400);
   if (!live && !input.build) throw new StudioError('Give live (a web address) or build (where builds come from)', 400);
+  const beta = input.beta ? String(input.beta).trim() : undefined;
+  if (beta && !/^https:\/\/[^\s]+$/.test(beta)) throw new StudioError('beta: an https:// address', 400);
   // A customer's Studio never takes on one of J's repos (lockdown: anything touching jgriffith3433 is the platform's).
   if (touchesPlatformRepo(input.repo) || touchesPlatformRepo(input.build?.repo)) throw new StudioError("That repository belongs to Hawkes Studio's owner; add your own game's repository.", 403);
   const playtests = (input.playtests?.length ? input.playtests : [{ scenario: 'smoke', where: 'live' as const }]).slice(0, 20).map((t) => ({
@@ -178,7 +183,7 @@ export function saveProduct(input: ProductInput): Product {
     where: 'live' as const, ...(t.device === 'phone' ? { device: 'phone' as const } : {}),
   }));
   const product: any = {
-    id, name, engine: input.engine, ...(live ? { live } : {}), ...(input.build ? { build: input.build } : {}),
+    id, name, engine: input.engine, ...(live ? { live } : {}), ...(beta ? { beta } : {}), ...(input.build ? { build: input.build } : {}),
     ...(input.repo ? { repo: String(input.repo).slice(0, 200) } : {}),
     about: String(input.about ?? '').slice(0, 2000), ...(input.quality ? { quality: String(input.quality).slice(0, 2000) } : {}),
     ...(input.story ? { storyText: String(input.story).slice(0, 20000) } : {}), contract: input.contract === true, playtests, story: [],

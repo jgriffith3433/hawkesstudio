@@ -94,7 +94,8 @@ if (typeof document !== 'undefined') (() => {
   /** Beta is ahead of live: new commits (Unity: the website's too), or a new build that differs from what's live. */
   const site = (p) => p.siteCommits ?? [];
   const siteOnly = (p) => p.siteMainOnly ?? [];
-  const ahead = (p) => p.commits.length > 0 || site(p).length > 0 || !!(p.unity && p.build?.ok && p.build.files > 0);
+  // A customer's game with only its addresses (urlOnly) has no commits to ship from Studio.
+  const ahead = (p) => !p.urlOnly && (p.commits?.length ?? 0) > 0 || site(p).length > 0 || !!(p.unity && p.build?.ok && p.build.files > 0);
   const nothingToDo = (b) => /^Nothing to go live/.test(b);
 
   /** The light: red = can't go live yet, yellow = can, with warnings, green = ready (or nothing to do). */
@@ -127,7 +128,9 @@ if (typeof document !== 'undefined') (() => {
     if (!p) return `<div class="gl-card" data-p="${esc(prod.id)}"><h3><span class="gl-light"></span>${esc(prod.name)}</h3>${links(prod)}<div class="meta">Checking beta and live…</div></div>`;
     if (p.error) return `<div class="gl-card red" data-p="${esc(prod.id)}"><h3><span class="gl-light red"></span>${esc(prod.name)}</h3>${links(prod)}<div class="meta">Couldn't check: ${esc(p.error)}</div></div>`;
     // A customer's game with only its address (no repository): no beta here and nothing to send live from Studio.
-    if (p.urlOnly) return `<div class="gl-card" data-p="${esc(prod.id)}"><h3><span class="gl-light"></span>${esc(prod.name)}</h3><div class="gl-links"><a class="live" href="${esc(p.live)}" target="_blank" rel="noopener"><b>Live</b><small>${esc(p.live)}</small></a></div><div class="meta">${esc(p.note)}</div>${p.repo ? '' : `<div class="gl-buttons"><button class="small" data-glrepo="${esc(prod.id)}">Add its repository</button></div>`}</div>`;
+    // Its beta and live addresses (edit them on the game), and a playtest of either: "Play beta" before it ships,
+    // "Play live" after.
+    if (p.urlOnly) return `<div class="gl-card" data-p="${esc(prod.id)}"><h3><span class="gl-light"></span>${esc(prod.name)}</h3><div class="gl-links">${p.beta ? `<a class="beta" href="${esc(p.beta)}" target="_blank" rel="noopener"><b>Beta</b><small>${esc(p.beta)}</small></a>` : '<span class="gl-none">No beta address<small>add one with Edit</small></span>'}<a class="live" href="${esc(p.live)}" target="_blank" rel="noopener"><b>Live</b><small>${esc(p.live)}</small></a></div><div class="gl-buttons">${p.beta ? `<button class="small" data-glplay="local">Play beta</button>` : ''}<button class="small" data-glplay="live">Play live</button><button class="small" data-admin data-glrepo="${esc(prod.id)}">Edit</button></div><div class="meta">${esc(p.note)}</div><div class="meta gl-playmsg"></div></div>`;
     // Beta couldn't be read (git failed, or no beta branch yet): say so, never "up to date".
     if (!p.beta || p.blockers.some((b) => b.startsWith('git:'))) {
       // The server has no checkout of the repo yet: one button clones it (the repo sync), then the plan is made again.
@@ -202,7 +205,8 @@ if (typeof document !== 'undefined') (() => {
     const blocked = blockedNow();
     $('#glFixAll').hidden = !blocked.length;
     $('#glFixAll').textContent = `Play beta for all blocked (${blocked.length})`;
-    $('#glInfo').textContent = plans.size < products.length ? 'Checking every product…' : waiting ? `${n(waiting, 'product')} with beta ahead of live.` : 'Every live site is up to date with beta.';
+    const allUrlOnly = products.length && [...plans.values()].every((p) => p.urlOnly);
+    $('#glInfo').textContent = plans.size < products.length ? 'Checking every product…' : allUrlOnly ? 'Your games go live where you deploy them: play their beta before you ship, and live after.' : waiting ? `${n(waiting, 'product')} with beta ahead of live.` : 'Every live site is up to date with beta.';
   }
 
   /** Products whose card shows a fix button and isn't running one. */
@@ -330,6 +334,13 @@ if (typeof document !== 'undefined') (() => {
     for (const p of blockedNow()) startFix(p.product, p.fix);
   };
   $('#glList').addEventListener('click', async (e) => {
+    const pl = e.target.closest('button[data-glplay]');
+    if (pl) {
+      const card = pl.closest('.gl-card');
+      const msg = card.querySelector('.gl-playmsg');
+      try { await api('/api/playtest', { method: 'POST', body: { product: card.dataset.p, where: pl.dataset.glplay } }); msg.textContent = `Playing ${pl.dataset.glplay === 'local' ? 'beta' : 'live'}: it shows up under Playtests, with its video and review.`; } catch (err) { msg.textContent = err.message; }
+      return;
+    }
     const ar = e.target.closest('button[data-glrepo]');
     if (ar) { if (await studioAddRepo(ar.dataset.glrepo)) load(); return; }
     const fb = e.target.closest('button[data-glfix]');

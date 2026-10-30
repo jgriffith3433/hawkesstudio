@@ -91,6 +91,7 @@
       <div class="bar">
         <button class="primary" id="runDaily">Run daily trials</button>
         <button id="runSmoke">Smoke-test everything</button>
+        <button id="addGame" data-admin hidden onclick="studioEditGame(null)">+ Add a game</button>
         <label data-platform><input type="checkbox" id="optNoBuild"> skip Unity builds</label>
         <label data-platform><input type="checkbox" id="optLocal"> local only</label>
         <span id="runInfo"></span>
@@ -110,8 +111,8 @@
       <p class="intro"><b>Go live:</b> what's on beta but not on the live site yet, and the button to ship it. Each product's Beta and Live links open its sites in a new tab. Nothing goes live until you tap Approve.</p>
       <div class="bar"><span class="meta" id="glInfo">Checking every product…</span> <button class="small" id="glRefresh">Check again</button> <button class="small" id="glFixAll" hidden title="Starts the step that clears each blocked product's blockers (merging live into beta, playing or rebuilding beta). Nothing goes live.">Play beta for all blocked</button></div>
       <div id="glList" class="gl-list"><div class="meta">Loading…</div></div>
-      <div class="gl-head">Studio and Gen</div>
-      <div id="glInfra" class="gl-list"></div>
+      <div class="gl-head" data-platform>Studio and Gen</div>
+      <div id="glInfra" class="gl-list" data-platform></div>
     </section>
     <section id="ready" class="tab">
       <p class="intro"><b>Ready to test:</b> finished work that is on the beta site now, with how to try it. Play it, then ship it from Go live, or tap 🐞 on the beta site for problems.</p>
@@ -241,6 +242,7 @@
   <script src="library.js"></script>
   <script src="memory.js"></script>
   <script src="settings.js"></script>
+  <script src="groups.js"></script>
   <script src="users.js"></script>
   <script src="guide.js"></script>
 </body>

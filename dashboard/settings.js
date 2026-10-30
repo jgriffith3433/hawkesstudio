@@ -309,6 +309,13 @@
   // Plan and credits (src/billing.ts): this Studio's subscription on the shared Stripe account. Subscribing, cancelling
   // and the billing portal are an admin's; the API refuses the rest.
   let billing = null;
+  if (!document.getElementById('setMoreCss')) {
+    const css = document.createElement('style');
+    css.id = 'setMoreCss';
+    css.textContent = '.set-more { margin-top: 14px; } .set-more > summary { cursor: pointer; font-weight: 600; padding: 8px 0; } .set-more[open] > summary { margin-bottom: 8px; }';
+    document.head.append(css);
+  }
+
   function billingBox(b) {
     if (!b) return '';
     const usd = (c) => `$${(c / 100).toFixed(c % 100 ? 2 : 0)}`;
@@ -364,7 +371,12 @@
     if (badge) badge.hidden = !data.pm.walkAway;
     // A customer's Studio (src/tenancy.ts): no harness choice (their own Claude only), no server budgets or alerts.
     const cu = window.studioMe?.customer;
-    $('#setBody').innerHTML = `<div class="set-grid">${billingBox(billing)}${cu ? '<div id="setAiBox"></div>' : brainBox(data.brain)}${data.routing ? routingBox(data.routing, routing) : ''}${tuningBox(data.tuning)}${cu ? '' : claudeBox(claude, data.brain)}${cu ? '' : agyBox(agyLogin)}<div id="svcBox">${servicesBox(services)}</div>${callBox(data.call)}${agentsBox(data.agents)}${pmBox(data.pm)}${notifyBox(data.notify)}${cu ? '' : costsBox(data.costs)}${cu ? '' : resourcesBox(data.resources)}</div>`;
+    // A customer's Studio: what matters first (their plan, their AI, notifications), the rest folded away by topic
+    // (J, 2026-10-30: "make settings page easier to deal with").
+    if (cu) $('#setBody').innerHTML = `<div class="set-grid">${billingBox(billing)}<div id="setAiBox"></div>${notifyBox(data.notify)}</div>
+      <details class="set-more"><summary>Agents and the PM: how much they do by themselves</summary><div class="set-grid">${agentsBox(data.agents)}${pmBox(data.pm)}</div></details>
+      <details class="set-more"><summary>Advanced: models, tuning and the call voice</summary><div class="set-grid">${data.routing ? routingBox(data.routing, routing) : ''}${tuningBox(data.tuning)}${callBox(data.call)}</div></details>`;
+    else $('#setBody').innerHTML = `<div class="set-grid">${billingBox(billing)}${cu ? '<div id="setAiBox"></div>' : brainBox(data.brain)}${data.routing ? routingBox(data.routing, routing) : ''}${tuningBox(data.tuning)}${cu ? '' : claudeBox(claude, data.brain)}${cu ? '' : agyBox(agyLogin)}<div id="svcBox">${servicesBox(services)}</div>${callBox(data.call)}${agentsBox(data.agents)}${pmBox(data.pm)}${notifyBox(data.notify)}${cu ? '' : costsBox(data.costs)}${cu ? '' : resourcesBox(data.resources)}</div>`;
     // A customer's Studio: Claude and every other provider they link, in one box (users.js mountAiCard).
     if (cu) api('/api/ai').then((ai) => window.mountAiCard?.($('#setAiBox'), ai)).catch(() => {});
     if (services?.pending) watchRestart();

@@ -30,6 +30,7 @@
     }
     window.studioMe = full;
     window.gateUi?.(full);
+    window.groupNav?.(full);
     const status = $('#status');
     if (me && status && !$('#meBox')) {
       const el = document.createElement('span');

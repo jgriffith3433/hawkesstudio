@@ -70,19 +70,62 @@ function studioUpgrade(d) {
 }
 window.studioUpgrade = studioUpgrade;
 
-// A customer's game with only its address gets its GitHub repository later (owner/name): the same onboarding save
-// (PUT /api/products/<id>), keeping everything else. What it adds: agent fixes, a beta site, going live from Studio.
-async function studioAddRepo(id) {
-  const repo = prompt('Its GitHub repository (owner/name). Agents fix bugs in it, and Studio keeps a beta site and goes live from it.');
-  if (!repo) return false;
-  if (!/^[\w.-]+\/[\w.-]+$/.test(repo.trim())) { alert('Write it as owner/name, e.g. moonlight/rover.'); return false; }
-  try {
-    const { products } = await api('/api/products');
-    const p = products.find((x) => x.id === id);
-    await api(`/api/products/${id}`, { method: 'PUT', body: { id, name: p.name, engine: p.engine === 'static' ? 'web' : p.engine, live: p.live || undefined, about: p.about, quality: p.quality, story: p.storyText, contract: p.contract, playtests: p.playtests, repo: repo.trim() } });
-    return true;
-  } catch (err) { alert(err.message); return false; }
+// A customer's games, edited in one place (J, 2026-10-30: "Should be able to edit games, delete them, change their
+// settings"): name, what it's made with, where it plays (live) and its test version (beta: playtests "on beta" play
+// it), its repository, what it is, its story and what "done" means. Saved through onboarding's own checks
+// (PUT /api/products/<id>, config.ts saveProduct); Delete removes the game (its playtests and findings stay in history).
+async function studioEditGame(id) {
+  let p = null;
+  if (id) p = (await api('/api/products')).products.find((x) => x.id === id) ?? null;
+  document.getElementById('gameDlg')?.remove();
+  const el = document.createElement('div');
+  el.id = 'gameDlg';
+  el.setAttribute('role', 'dialog');
+  el.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.55);display:grid;place-items:center;z-index:1000;padding:16px;overflow:auto';
+  const v = (x) => esc(x ?? '');
+  const opt = (val, label) => `<option value="${val}"${(p?.engine === 'static' ? 'web' : p?.engine ?? 'web') === val ? ' selected' : ''}>${label}</option>`;
+  const field = 'width:100%;padding:8px;border-radius:6px;border:1px solid var(--line);background:var(--panel2,transparent);color:inherit';
+  el.innerHTML = `<form style="background:var(--panel,#151a1f);border:1px solid var(--line,#2a3138);border-radius:12px;padding:20px;max-width:560px;width:100%;display:flex;flex-direction:column;gap:8px">
+    <h3 style="margin:0">${p ? `Edit ${esc(p.name)}` : 'Add a game'}</h3>
+    <label class="meta">Name<input name="name" required maxlength="80" value="${v(p?.name)}" style="${field}"></label>
+    <label class="meta">Made with<select name="engine" style="${field}">${opt('web', 'A web game or site')}${opt('unity', 'Unity (WebGL)')}${opt('godot', 'Godot (web export)')}${opt('desktop', 'A desktop game')}</select></label>
+    <label class="meta">Where it plays (live)<input name="live" type="url" required placeholder="https://…" value="${v(p?.live)}" style="${field}"></label>
+    <label class="meta">Its test version (beta), if it has one<input name="beta" type="url" placeholder="https://… (optional)" value="${v(p?.beta)}" style="${field}"></label>
+    <label class="meta">GitHub repository (owner/name), optional<input name="repo" placeholder="owner/name" value="${v(p?.repo)}" style="${field}"></label>
+    <label class="meta">What it is (Claude reads it before every review)<textarea name="about" rows="2" style="${field}">${v(p?.about)}</textarea></label>
+    <label class="meta">Its story and tone (optional)<textarea name="story" rows="3" style="${field}">${v(p?.storyText)}</textarea></label>
+    <label class="meta">What "done" means for it (optional: reviews judge against it)<textarea name="quality" rows="2" style="${field}">${v(p?.quality)}</textarea></label>
+    <div style="display:flex;gap:8px;justify-content:space-between;flex-wrap:wrap;margin-top:6px">
+      <span>${p ? '<button type="button" class="small" data-game="delete" style="color:var(--red)">Delete this game</button>' : ''}</span>
+      <span style="display:flex;gap:8px"><button type="button" class="small" data-game="close">Cancel</button><button type="submit" class="primary">${p ? 'Save' : 'Add it'}</button></span>
+    </div>
+    <div class="meta" id="gameMsg"></div></form>`;
+  document.body.append(el);
+  const msg = (t) => { el.querySelector('#gameMsg').innerHTML = t; };
+  return new Promise((resolve) => {
+    const done = (changed) => { el.remove(); resolve(changed); if (changed) refresh(); };
+    el.addEventListener('click', async (e) => {
+      const b = e.target.closest('[data-game]');
+      if (e.target === el || b?.dataset.game === 'close') return done(false);
+      if (b?.dataset.game === 'delete') {
+        if (!confirm(`Delete ${p.name}? Studio stops playing it. Its past playtests and findings stay in the history.`)) return;
+        try { await api(`/api/products/${p.id}`, { method: 'DELETE' }); done(true); } catch (err) { msg(`<span style="color:var(--red)">${esc(err.message)}</span>`); }
+      }
+    });
+    el.querySelector('form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const f = Object.fromEntries(new FormData(e.target));
+      const newId = String(f.name).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').replace(/^(?=[^a-z])/, 'g-').slice(0, 40) || 'my-game';
+      const gid = p?.id ?? newId;
+      const body = { id: gid, name: f.name, engine: f.engine, live: f.live, about: f.about, contract: p?.contract ?? false, playtests: p?.playtests, ...(f.beta ? { beta: f.beta } : {}), ...(f.repo ? { repo: f.repo.trim() } : {}), ...(f.story ? { story: f.story } : {}), ...(f.quality ? { quality: f.quality } : {}) };
+      msg('Saving…');
+      try { await api(`/api/products/${gid}`, { method: 'PUT', body }); done(true); } catch (err) { msg(`<span style="color:var(--red)">${esc(err.message)}</span>`); }
+    });
+  });
 }
+window.studioEditGame = studioEditGame;
+// The Go live card's "Add its repository" (golive.js) opens the same editor.
+const studioAddRepo = (id) => studioEditGame(id);
 window.studioAddRepo = studioAddRepo;
 
 // ------------------------------------------------------------- tabs
@@ -104,6 +147,7 @@ function show(t, sub) {
   $('#moreBtn').textContent = under ? `More: ${under.textContent.replace('⚙', '').trim()} ▾` : 'More ▾';
   moreMenu(false);
   if (picked?.tab !== t) picked = null;
+  window.afterShow?.(t); // a customer's grouped tabs (groups.js): the group's button and its pages' bar
   dispatchEvent(new CustomEvent('studio-tab', { detail: t })); // the Talk dock follows (talk.js)
   refresh();
 }
@@ -270,7 +314,9 @@ function card(p, h = health(p)) {
     ${p.dev?.conflict ? devLine(p) : ''}
     <div class="meta">${p.preview ? `<a href="${esc(p.preview.play)}" target="_blank">Beta</a> · ` : ''}<a href="${esc(p.live)}" target="_blank">Live</a>${video ? ` · <a href="${file(video)}" target="_blank" rel="noopener" data-video="${file(video)}">▶ last playtest</a>` : ''} · ${bugs ? `<a href="#backlog" data-act="backlog" data-p="${p.id}">${bugs} open bug${bugs === 1 ? '' : 's'} in Backlog</a>` : 'no open bugs'}</div>
     <div class="actions">
-      <button class="small primary" data-act="playtest" data-p="${p.id}" title="A quick playtest of the main scenario, with a video and a review (a few cents)">${window.studioMe?.customer ? 'Run a playtest' : 'Smoke test'}</button>
+      ${window.studioMe?.customer
+        ? `<button class="small primary" data-act="playtest" data-p="${p.id}" title="Plays it where it is live, with a video and a review (a few cents)">${p.beta ? 'Play live' : 'Run a playtest'}</button>${p.beta ? ` <button class="small" data-act="playbeta" data-p="${p.id}" title="Plays its test version (${esc(p.beta)}), with a video and a review">Play beta</button>` : ''} <button class="small" data-admin data-act="editgame" data-p="${p.id}">Edit</button>`
+        : `<button class="small primary" data-act="playtest" data-p="${p.id}" title="A quick playtest of the main scenario, with a video and a review (a few cents)">Smoke test</button>`}
     </div>
     <details class="more-details"><summary class="meta">Details</summary>
       <div class="meta">${esc(p.framing)}</div>
@@ -310,7 +356,10 @@ $('#cards').addEventListener('click', async (e) => {
   e.preventDefault();
   const p = btn.dataset.p;
   try {
-    if (btn.dataset.act === 'playtest') await api('/api/playtest', { method: 'POST', body: { product: p, scenario: undefined } });
+    // A customer's game: "Play live" plays where it is live; "Play beta" its test version (its "local" lane: config.ts asCustomerGame).
+    if (btn.dataset.act === 'playtest') await api('/api/playtest', { method: 'POST', body: { product: p, scenario: undefined, ...(window.studioMe?.customer ? { where: 'live' } : {}) } });
+    if (btn.dataset.act === 'playbeta') await api('/api/playtest', { method: 'POST', body: { product: p, scenario: undefined, where: 'local' } });
+    if (btn.dataset.act === 'editgame') return void studioEditGame(p);
     if (btn.dataset.act === 'all') await api('/api/runs', { method: 'POST', body: { products: [p], noBuild: $('#optNoBuild').checked, where: $('#optLocal').checked ? 'local' : undefined } });
     if (btn.dataset.act === 'build') await api('/api/build', { method: 'POST', body: { product: p } });
     if (btn.dataset.act === 'backlog') { $('#blProduct').value = p; return show('backlog'); }

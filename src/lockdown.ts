@@ -78,6 +78,9 @@ export function platformFeature(route: string, method: string): string | null {
       if (a?.kind === 'merge' && infraChange(a.target)) return 'Changing Hawkes Studio or Hawkes Gen';
     }
   }
+  // A customer's Studio: Analytics and Screening are the platform admin's for now (J, 2026-10-30: "lets not handle
+  // analytics for customers yet"; Screening "is more of a Gen feature"). Their dashboard hides the tabs (groups.js).
+  if (customerStudio() && /^\/api\/(analytics|videos)(\/|$)/.test(route)) return 'Analytics and Screening';
   if (!customerStudio()) {
     for (const [re, what] of J_STUDIO) if (re.test(route)) return what;
     if (method !== 'GET' && adminOnlyRoute(route)) return 'Going live, merges, money and settings in this Studio';
