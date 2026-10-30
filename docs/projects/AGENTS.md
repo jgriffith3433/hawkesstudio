@@ -103,12 +103,14 @@ play page, Yooba Land and Sick Of It.
 ## The cloud: hawkesgen.ai (Google Cloud and Cloudflare)
 
 AWS suspended the account on 2026-10-28; everything moved to Google Cloud and the domain to **hawkesgen.ai** on Cloudflare.
-- **The portal is moving to hawkesgames.com** (J, 2026-10-29; runbook hawkesgenwebsite `docs/domain-move.md`): the portal
+- **Three products** (J, 2026-10-29): **hawkesgames.com** (the portal, was hawkesgen.ai), **HawkesGen.ai** (Gen's own app,
+  was gen.hawkesgen.ai) and **Studio**. The move's runbook is hawkesgenwebsite `docs/domain-move.md`: the portal
   becomes **https://hawkesgames.com** (beta **https://beta.hawkesgames.com**), the Net dashboard net.hawkesgames.com
-  (beta net-beta.hawkesgames.com, beside the portal for its sign-in cookie), and **hawkesgen.ai** becomes Hawkes Gen itself
+  (beta net-beta.hawkesgames.com, beside the portal for its sign-in cookie), and **hawkesgen.ai** becomes Hawkes Gen's app
   (beta.hawkesgen.ai Gen beta). gen.hawkesgen.ai, gen-beta, net., hawkesnet., studio., cdn., the beta game sites and
-  support@hawkesgen.ai stay. The gen-edge Worker answers the portal's old links on hawkesgen.ai (redirects pages, passes on
-  the rest; `/v1` and `/mcp` by the caller's key). The code is on `dev`; the cutover follows the runbook, beta first.
+  support@hawkesgen.ai stay. The gen-edge Worker sends hawkesgen.ai to Gen first and only what Gen doesn't have
+  (or a key it refuses on `/v1`, `/mcp`) to the portal. Stripe: one account, one endpoint per product, each acting on its
+  own `metadata[product]` (`cloud/stripe-keys.mjs` sets all three). The code is on `dev`; the cutover follows the runbook, beta first.
 - **Gen and Studio run on Cloud Run** in the Google Cloud project "Hawkes" (id `hawkes-staging`: a leftover name, it
   is live), scale to zero, SQLite streamed to Cloud Storage by Litestream. Each is behind a Cloudflare Worker:
   **https://gen.hawkesgen.ai**, **https://studio.hawkesgen.ai** (Continue with Google, J's email). Files go out through
