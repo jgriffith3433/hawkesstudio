@@ -10,6 +10,7 @@
 //
 // Dry run (STUDIO_CELLS_DRY_RUN=1, or { dry: true }): nothing is sent; each call returns the request it would have made.
 
+import crypto from 'node:crypto';
 import { gapi } from './gcp.ts';
 import { StudioError } from './config.ts';
 import { cellKeyEnv } from './cellkeys.ts';
@@ -97,7 +98,8 @@ export function cellService(org: string, owner: { sub: string; email: string }, 
     ingress: 'INGRESS_TRAFFIC_ALL',
     template: {
       labels: { 'hawkes-studio-cell': '1', 'hawkes-org': org },
-      serviceAccount: c.serviceAccount,
+      // Its own account when isolated (cellAccount below), else the shared studio-cells@.
+      serviceAccount: cellAccount(org, c),
       scaling: { minInstanceCount: 0, maxInstanceCount: 1 },
       timeout: '3600s',
       executionEnvironment: 'EXECUTION_ENVIRONMENT_GEN2',
@@ -200,4 +202,72 @@ export async function rollImage(image: string, o: { dry?: boolean; health?: (url
     done.push(cell.service);
   }
   return { image, done, failed: null as string | null, left: [] as string[] };
+}
+
+// ------------------------------------------------------------------ one identity per cell (isolation)
+// docs/studio-customers.md "Isolation". With STUDIO_CELLS_ISOLATE=1 every cell runs as its own service account,
+// cell-<b|l>-<hash>@ (from the org id: service account ids are 6-30 characters), which can reach only its own data:
+//   - a managed folder o/<org>/ in the cells' bucket, with objectAdmin for that account alone (the folder's own IAM
+//     policy: no bucket-wide grant, no per-cell condition piling up on the bucket's policy)
+//   - running the shared agents' job (jobsExecutorWithOverrides and run.viewer on that job), whose runs reach their
+//     own folder through the broker only (jobbroker.ts)
+// The account is made with the cell and deleted with its data (cells.ts). Without STUDIO_CELLS_ISOLATE cells run as
+// the shared studio-cells@, as before (until J has run the setup's isolation step). Quota: 100 service accounts per
+// project by default (a raise is a request to Google, free): beta and live cells share hawkes-staging's.
+
+
+export const isolated = () => process.env.STUDIO_CELLS_ISOLATE === '1';
+export const cellSaId = (org: string, c = cellsConfig()) => `cell-${c.lane === 'beta' ? 'b' : 'l'}-${crypto.createHash('sha256').update(org).digest('hex').slice(0, 20)}`;
+export const cellSaEmail = (org: string, c = cellsConfig()) => `${cellSaId(org, c)}@${c.project}.iam.gserviceaccount.com`;
+/** The account a cell runs as: its own when isolated, else the shared one. */
+export const cellAccount = (org: string, c = cellsConfig()) => (isolated() ? cellSaEmail(org, c) : c.serviceAccount);
+export const cellFolder = (org: string) => `o/${org}/`;
+
+const iamBase = (c: CellsConfig) => `https://iam.googleapis.com/v1/projects/${c.project}/serviceAccounts`;
+const folderUrl = (org: string, c: CellsConfig) => `https://storage.googleapis.com/storage/v1/b/${c.bucket}/managedFolders/${encodeURIComponent(cellFolder(org))}`;
+const JOB_ROLES = ['roles/run.jobsExecutorWithOverrides', 'roles/run.viewer'];
+
+/** 409 (already there) is fine when making something idempotently. */
+async function made(method: string, url: string, body: unknown, o: { dry?: boolean }) {
+  try { return await call(method, url, body, o); } catch (e: any) { if (/answered 409/.test(String(e.message))) return { exists: true }; throw e; }
+}
+
+/** Adds (or removes) a member to the given roles of the shared agents' job's IAM policy (read, change, write). */
+async function jobMember(member: string, add: boolean, o: { dry?: boolean }, c: CellsConfig) {
+  const url = `${base(c)}/jobs/${c.agentJob}`;
+  if (dryRun(o)) { planned.push({ method: 'POST', url: `${url}:setIamPolicy`, body: { [add ? 'add' : 'remove']: member, roles: JOB_ROLES } }); return; }
+  const policy = (await gapi(`${url}:getIamPolicy`)) ?? {};
+  const bindings: { role: string; members: string[] }[] = policy.bindings ?? [];
+  for (const role of JOB_ROLES) {
+    let b = bindings.find((x) => x.role === role && !(x as any).condition);
+    if (!b && add) bindings.push((b = { role, members: [] }));
+    if (!b) continue;
+    b.members = add ? [...new Set([...b.members, member])] : b.members.filter((m) => m !== member);
+  }
+  await gapi(`${url}:setIamPolicy`, { body: { policy: { ...policy, bindings: bindings.filter((b) => b.members.length) } } });
+}
+
+/** The cell's own service account and its grants: its folder, the agents' job. Idempotent. */
+export async function ensureCellIdentity(org: string, o: { dry?: boolean } = {}, c = cellsConfig()) {
+  const email = cellSaEmail(org, c);
+  await made('POST', iamBase(c), { accountId: cellSaId(org, c), serviceAccount: { displayName: `Hawkes Studio cell ${org}`.slice(0, 100), description: `Customer Studio ${org} (${c.lane}): only ${cellFolder(org)} in ${c.bucket}` } }, o);
+  await made('POST', `https://storage.googleapis.com/storage/v1/b/${c.bucket}/managedFolders`, { name: cellFolder(org) }, o);
+  // The folder's whole policy: this cell's account alone (setting it whole also drops anyone else put there).
+  await call('PUT', `${folderUrl(org, c)}/iam`, { bindings: [{ role: 'roles/storage.objectAdmin', members: [`serviceAccount:${email}`] }] }, o);
+  await jobMember(`serviceAccount:${email}`, true, o, c);
+  return { email, folder: cellFolder(org) };
+}
+
+/** Undoes ensureCellIdentity (the data is deleted): the job grant, the folder (empty by now), the account. */
+export async function removeCellIdentity(org: string, o: { dry?: boolean } = {}, c = cellsConfig()) {
+  const email = cellSaEmail(org, c);
+  await jobMember(`serviceAccount:${email}`, false, o, c).catch((e) => console.warn(`[cells] ${org}: job grant: ${e.message}`));
+  await call('DELETE', folderUrl(org, c), undefined, { ...o, missingOk: true }).catch((e) => console.warn(`[cells] ${org}: folder: ${e.message}`));
+  await call('DELETE', `${iamBase(c)}/${email}`, undefined, { ...o, missingOk: true });
+  return { email };
+}
+
+/** Moves a running cell onto its own account (a new revision; everything else as it was). */
+export async function setCellAccount(org: string, email: string, o: { dry?: boolean } = {}, c = cellsConfig()) {
+  return call('PATCH', `${base(c)}/services/${serviceName(org, c)}?updateMask=template.serviceAccount`, { template: { serviceAccount: email } }, o);
 }
