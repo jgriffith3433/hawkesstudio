@@ -65,15 +65,17 @@ export async function pullState(dir = DATA) {
   const { gcsList, gcsRead } = await import('./gcp.ts');
   let n = 0;
   const prefix = STATE();
-  for (const o of await gcsList(bucket, prefix)) {
-    const rel = o.name.slice(prefix.length);
-    if (!rel || !synced(rel) || rel.includes('..')) continue;
-    const data = await gcsRead(bucket, o.name);
-    if (!data) continue;
-    const dest = path.join(dir, rel);
-    fs.mkdirSync(path.dirname(dest), { recursive: true });
-    fs.writeFileSync(dest, data, { mode: 0o600 });
-    n++;
+  const todo = (await gcsList(bucket, prefix)).filter((o) => { const rel = o.name.slice(prefix.length); return rel && synced(rel) && !rel.includes('..'); });
+  // Eight at a time: every cold start waits for this (one by one it was about 5 s for 21 files, 2026-10-30).
+  for (let i = 0; i < todo.length; i += 8) {
+    await Promise.all(todo.slice(i, i + 8).map(async (o) => {
+      const data = await gcsRead(bucket, o.name);
+      if (!data) return;
+      const dest = path.join(dir, o.name.slice(prefix.length));
+      fs.mkdirSync(path.dirname(dest), { recursive: true });
+      fs.writeFileSync(dest, data, { mode: 0o600 });
+      n++;
+    }));
   }
   return n;
 }
