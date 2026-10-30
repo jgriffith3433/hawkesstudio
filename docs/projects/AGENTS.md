@@ -37,9 +37,9 @@ Canon that every project shares (from `hawkesbiomedicalnew/AGENTS.md` and `phori
 | **I Can Be** (AI-assisted full-body assessment) | icanbe.ai | `icanbeaiwebsite` | Vite + Babylon.js (port 8090) | Direction undecided. Currently a real-time "day of a developer" simulation; the character is "AI". The day is defined in `day.config.js`. |
 | **The Place Department** (HIPAA-compliant document storage) | theplacedepartment.com | `theplacedepartmentwebsite` | Unity `breakingthrough` → WebGL | Prototype roguelike strategy/wave-defense game. |
 | **Imagine Live TV** (live medical education) | imaginelivetv.com | `imaginelivetvwebsite` | Vite static site | Choose-your-path video story "The Final Spark" (one folder per branch) and a blog. Planning notes in `TheFinalSpark/`. |
-| **Hawkes Gen** (laboratory services; the customer portal) | hawkesgames.com (hawkesgen.ai until the move) | `hawkesgenwebsite` | Server app with Stripe on Firebase (Hosting, Functions, Firestore; project `hawkes-prod`), not GitHub Pages | Accounts, credits, payments, the landing page, portfolio and Creator Studio UI for public Hawkes Gen. A customer of Hawkes Gen like Studio (`hawkesstudio/docs/cloud.md`, "hawkesgen.ai: the customer portal"). |
+| **Hawkes Games** (laboratory services) | hawkesgames.com | `hawkesgenwebsite` | Server app with Stripe on Firebase (Hosting, Functions, Firestore; project `hawkes-prod`), not GitHub Pages | A game (J, 2026-10-30): talk to the Overseer and build worlds with friends in the browser; the community library, Hawkes Net, avatars, accounts, credits and plans. No MCP or developer pages (editors use Hawkes Gen's MCP at hawkesgen.ai/mcp). A customer of Hawkes Gen like Studio. |
 
-All repos are on GitHub as `jgriffith3433/<repo>`. **Every website except `hawkesgenwebsite` (the Hawkes Gen portal, which
+All repos are on GitHub as `jgriffith3433/<repo>`. **Every website except `hawkesgenwebsite` (Hawkes Games, which
 runs on Firebase) is hosted on GitHub Pages**: static files
 only, with no server code, no custom headers and no backend. Each site has a `CNAME` for its domain. Any Docker,
 nginx or Flask files in a site repo are leftovers. Most have `auto-start.bat` /
@@ -108,9 +108,9 @@ AWS suspended the account on 2026-10-28; everything moved to Google Cloud and th
   becomes **https://hawkesgames.com** (beta **https://beta.hawkesgames.com**), the Net dashboard net.hawkesgames.com
   (beta net-beta.hawkesgames.com, beside the portal for its sign-in cookie), and **hawkesgen.ai** becomes Hawkes Gen's app
   (beta.hawkesgen.ai Gen beta). net., hawkesnet., studio., cdn., the beta game sites and support@hawkesgen.ai stay;
-  gen.hawkesgen.ai and gen-beta.hawkesgen.ai are Gen's old names, still routed until nothing calls them, then removed. The gen-edge Worker sends hawkesgen.ai to Gen first and only what Gen doesn't have
-  (or a key it refuses on `/v1`, `/mcp`) to the portal. Stripe: one account, one endpoint per product, each acting on its
-  own `metadata[product]` (`cloud/stripe-keys.mjs` sets all three). The code is on `dev`; the cutover follows the runbook, beta first.
+  gen.hawkesgen.ai and gen-beta.hawkesgen.ai were Gen's old names, retired 2026-10-29 (DNS deleted). The gen-edge Worker sends hawkesgen.ai to Gen first and only what Gen doesn't have
+  (or a key it refuses on `/v1`) to the portal; `/mcp`, `/oauth`, `/dl` and `/up` always stay on Gen. Stripe: one account, one endpoint per product, each acting on its
+  own `metadata[product]` (`cloud/stripe-keys.mjs` sets all three). The move is done and live (2026-10-30).
 - **Gen and Studio run on Cloud Run** in the Google Cloud project "Hawkes" (id `hawkes-staging`: a leftover name, it
   is live), scale to zero, SQLite streamed to Cloud Storage by Litestream. Each is behind a Cloudflare Worker:
   **https://hawkesgen.ai**, **https://studio.hawkesgen.ai** (Continue with Google, J's email). Files go out through

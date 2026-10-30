@@ -203,16 +203,17 @@ On this PC, every project's `.mcp.json` starts the stdio servers (`hawkesstudio/
 `hawkesgen/bin/hawkesgen-mcp.mjs`); they reach the cloud through `~/.hawkes/client.json`. Anywhere else, use the same
 tools over HTTPS (MCP Streamable HTTP; the tool tables are shared, in `src/mcp-tools.ts` of each project):
 
-| | URL | Key |
+| | URL | Signs in with |
 |---|---|---|
-| Studio | `https://studio.hawkesgen.ai/mcp` | the Studio MCP key (`hs_...`): `deploy/.keys/studio-mcp-key.txt` (deploy.mjs makes it, as `STUDIO_MCP_KEY` in `/etc/hawkes/keys.env`) |
-| Hawkes Gen | `https://hawkesgen.ai/mcp` | any Hawkes Gen API key (`hg_...`); its role and projects apply |
+| Studio | `https://studio.hawkesgen.ai/mcp` | Studio's own sign-in (Continue with Google); only the platform admin may connect, because the tools act as Studio's owner (`hsm_` tokens) |
+| Hawkes Gen | `https://hawkesgen.ai/mcp` | a Gen account (Continue with Google); the tools work in that account's project (`hgm_` tokens) |
 
-The key goes in an `Authorization: Bearer` header; Caddy lets those requests skip the website login, and each
-service checks the key itself (no key or a wrong one: 401). For clients that can't send headers, the key can go in
-the URL instead: `https://studio.hawkesgen.ai/mcp/hs_...` and `https://hawkesgen.ai/mcp/hg_...`. Then the URL
-**is** the password: don't paste it anywhere shared. To revoke a Gen key, disable it (Gen dashboard → Keys); for the
-Studio key, delete the `STUDIO_MCP_KEY` line on the server, run `deploy.mjs` again (it makes a new one) and update clients.
+**No pasted keys** (J, 2026-10-30): both speak OAuth (`src/mcp-oauth.ts`, the same file in both repos). An editor that
+connects with nothing gets a 401 naming `/.well-known/oauth-protected-resource/mcp`, registers itself, opens the browser
+to sign in and Allow, and gets a token it refreshes by itself. Gen's connections are listed and revoked at
+`/v1/users/me/connections`. Keys still work as a fallback (the Studio MCP key `hs_...` from
+`deploy/.keys/studio-mcp-key.txt`, a Gen API key `hg_...`, as a Bearer header or in the URL `/mcp/<key>`), for scripts
+and clients without OAuth; a key in a URL **is** the password.
 
 **Public on hawkesgen.ai (Hawkes Analytics):** two paths skip the login so players' browsers can use them:
 `POST /v1/analytics/collect` (and its `OPTIONS` preflight; bodies over 64 KB get 413 from Caddy) and `GET /sdk/*`
@@ -239,42 +240,30 @@ door: player tickets for a listed project's own sites, limited per address; requ
 Everything else under `/v1/net/` (publish, room info, heartbeats, usage, key rotation) still needs a key. hawkesgen
 `docs/net.md` has the rest.
 
-Give each place its own Gen key (`hawkesgen.cmd key claude-ai --role owner`), so one can be turned off alone.
-Over HTTP, Gen outputs come back as `https://hawkesgen.ai/v1/files/<asset>` links (they need the key or the login),
-and inputs must be `asset:<id>` or `blob:<sha>` (`save_to` and `workflow_file` only work with the local server).
+Over HTTP, Gen's tools hand back files as signed download links (`/dl/...`, good for a day, no sign-in needed) and take
+files through `upload_file` (a one-time `/up/...` link for `curl -T`, 30 minutes) or as `asset:<id>` / `blob:<sha>`.
 
-**Claude Code on any machine** (user scope, so every folder has them):
+**Claude Code on any machine** (user scope, so every folder has them; the first call opens the browser to sign in):
 
 ```bash
-claude mcp add --scope user --transport http hawkesstudio https://studio.hawkesgen.ai/mcp --header "Authorization: Bearer hs_..."
-claude mcp add --scope user --transport http hawkesgen https://hawkesgen.ai/mcp --header "Authorization: Bearer hg_..."
+claude mcp add --scope user --transport http hawkesstudio https://studio.hawkesgen.ai/mcp
+claude mcp add --scope user --transport http hawkesgen https://hawkesgen.ai/mcp
 ```
 
-**claude.ai/code (cloud sessions):** they read the repo's `.mcp.json`. The project files point at the stdio servers on
-this PC, so add the HTTP ones with the keys from environment variables (Claude Code expands `${VAR}` in `.mcp.json`):
-
-```json
-{ "mcpServers": {
-  "hawkesstudio": { "type": "http", "url": "https://studio.hawkesgen.ai/mcp", "headers": { "Authorization": "Bearer ${HAWKES_STUDIO_KEY}" } },
-  "hawkesgen": { "type": "http", "url": "https://hawkesgen.ai/mcp", "headers": { "Authorization": "Bearer ${HAWKESGEN_KEY}" } }
-} }
-```
-
-Set `HAWKES_STUDIO_KEY` and `HAWKESGEN_KEY` in the cloud environment's settings (environment variables), and give it
-network access to `studio.hawkesgen.ai` and `hawkesgen.ai` (the default "trusted" network list may not include
-them: use custom access with those two domains). Untested from a cloud session yet.
+**claude.ai/code (cloud sessions):** they read the repo's `.mcp.json`, whose entries start the stdio servers on this PC.
+A cloud session has no browser to sign in with, so it uses a key: an `http` entry with
+`"headers": { "Authorization": "Bearer ${HAWKESGEN_KEY}" }` (Claude Code expands `${VAR}`), the key set in the cloud
+environment's variables, and network access to `studio.hawkesgen.ai` and `hawkesgen.ai`. Untested from a cloud session yet.
 
 **claude.ai, the Claude desktop app (Chat) and the phone app:** Settings → Connectors → Add custom connector, one per
-service, with the **key-in-URL** address (`https://studio.hawkesgen.ai/mcp/hs_...`, `https://hawkesgen.ai/mcp/hg_...`).
-Custom connectors only do OAuth or no auth (no custom headers), which is why the key goes in the URL. Connectors added
-on claude.ai also show in the desktop and phone apps. Alternatively, the desktop app's Chat can run the stdio servers on
-this PC: in `claude_desktop_config.json`, `"mcpServers": { "hawkesstudio": { "command": "node", "args":
-["C:/Projects/hawkesstudio/bin/studio-mcp.mjs"] }, "hawkesgen": { "command": "node", "args":
+service, with the plain address (`https://studio.hawkesgen.ai/mcp`, `https://hawkesgen.ai/mcp`): the connector signs in
+with OAuth. Connectors added on claude.ai also show in the desktop and phone apps. Alternatively, the desktop app's Chat
+can run the stdio servers on this PC: in `claude_desktop_config.json`, `"mcpServers": { "hawkesstudio": { "command":
+"node", "args": ["C:/Projects/hawkesstudio/bin/studio-mcp.mjs"] }, "hawkesgen": { "command": "node", "args":
 ["C:/Projects/hawkesgen/bin/hawkesgen-mcp.mjs"] } }`. The desktop app's Code tab uses Claude Code's own settings.
 
-Limits: no OAuth (a future step if connectors ever need it); the endpoints are stateless (no server-sent
-notifications); a long tool call (a playtest with `wait`) streams keep-alives so proxies don't drop it, but a
-client may still time out: prefer `wait: false` and the status tools.
+Limits: the endpoints are stateless (no server-sent notifications); a long tool call (a playtest with `wait`) streams
+keep-alives so proxies don't drop it, but a client may still time out: prefer `wait: false` and the status tools.
 
 ## Talk
 

@@ -52,7 +52,7 @@ test('the real products.json entry: repo, beta site, live site, playtests, dev f
   const p = real.products.find((x: any) => x.id === 'hawkesgenwebsite');
   assert.ok(p, 'the product is listed');
   assert.equal(p.repo, 'hawkesgenwebsite');
-  assert.equal(p.live, 'https://hawkesgen.ai/');
+  assert.equal(p.live, 'https://hawkesgames.com/');
   assert.equal(real.repos.hawkesgenwebsite, 'jgriffith3433/hawkesgenwebsite');
   assert.equal(real.previews.hawkesgenwebsite, 'hawkesgenwebsite');
   // On Google Cloud since 2026-10-28: GitHub Actions deploys Firebase (beta to staging, main to live).
@@ -63,7 +63,7 @@ test('the real products.json entry: repo, beta site, live site, playtests, dev f
   assert.ok(p.quality && /Stripe/.test(p.quality));
   // Its beta is remote: the staging project (its own Firestore and Gen key, customers ustg_), never live customers.
   assert.equal(p.local.serve, 'remote');
-  assert.equal(p.local.url, 'https://hawkes-staging.web.app/');
+  assert.equal(p.local.url, 'https://beta.hawkesgames.com/');
   assert.equal(p.app, undefined, 'Studio runs no portal process any more');
   // Ports are unique across every product (local servers, dev servers, front doors).
   const ports = real.products.flatMap((x: any) => [x.local.port, x.dev?.front, x.dev?.port]).filter(Boolean);
