@@ -30,6 +30,7 @@ import {
   BETA, MAIN, STUDIO_ROLLBACK, AUTHOR, must, repoDirs, compareBeta, compareRefs, fetchForRead, NotClonedError, fetchOrigin, shaOf, commitOf, commitsIn, betaBuild, saveBetaBuild,
   betaSiteDir, betaSiteFolder, scratch, listDeploys, mergeMainIntoBeta, prebuilt, git as gitIn, gitAsync, type Commit, type DeployRow,
 } from './beta.ts';
+import { cloudGoLive, cloudRefs, cloudBlockers, cloudGoLiveNow, type CloudRefs } from './deploy-cloud.ts';
 import { STUDIO_RELEASE, RELEASES, playedCommit, releasesAt, releasesPath, readReleases, draftWithin, addReleaseTo, releaseLine, releaseNotesLine, type Draft } from './release.ts';
 
 const brief = (c: Commit | null) => c && { sha: c.sha, short: c.short, title: c.title, author: c.author, date: c.date };
@@ -93,6 +94,8 @@ export function planFix(blockers: string[]): BlockerFix | null {
 export async function deployPlan(productId: string, { notesWaitMs = 20_000 }: { notesWaitMs?: number } = {}) {
   const p = getProduct(productId);
   const { source, site, unity } = repoDirs(p);
+  // A Unity game on Cloud Run: no checkout of its repos here, so the plan reads them from GitHub (deploy-cloud.ts).
+  if (unity && cloudGoLive()) return cloudPlan(p);
   const blockers: string[] = [];
   const warnings: string[] = [];
   let cmp: Awaited<ReturnType<typeof compareBeta>> = { main: null, beta: null, ahead: [], behind: [] };
@@ -204,6 +207,47 @@ export async function deployPlan(productId: string, { notesWaitMs = 20_000 }: { 
   };
 }
 
+/** The go-live plan of a Unity game on Cloud Run, from GitHub (deploy-cloud.ts): the same shape and checks as above. */
+async function cloudPlan(p: Product) {
+  const blockers: string[] = [];
+  const warnings: string[] = [];
+  let refs: CloudRefs | null = null;
+  try {
+    refs = await cloudRefs(p);
+    blockers.push(...await cloudBlockers(p, refs));
+  } catch (e: any) {
+    blockers.push(`GitHub: ${e.message}`);
+  }
+  const beta = refs?.source.beta ?? null;
+  const { tested, last } = testedAt(p.id, beta?.sha);
+  if (beta && !tested.length) {
+    blockers.push(last ? `${BETA} hasn't been playtested at ${beta.short} (the last local playtest played ${last.played.branch} ${String(last.played.sha).slice(0, 7)}). Playtest ${BETA} first ("studio beta ${p.id}").` : `${BETA} hasn't been playtested yet ("studio beta ${p.id}").`);
+  }
+  for (const t of tested) {
+    if (t.status !== 'done' || !['won', 'done'].includes(t.outcome)) warnings.push(`Playtest ${t.name} on ${beta?.short} ${t.status === 'done' ? `ended "${t.outcome}"` : t.status === 'skipped' ? 'was inconclusive' : 'failed'}${t.detail ? ` (${t.detail})` : ''}.`);
+    if (t.verdict === 'broken') warnings.push(`The review of ${t.name} said "broken": ${t.summary ?? ''}`);
+    if (t.blockers.length) warnings.push(`The review of ${t.name} found ${t.blockers.length} blocker(s): ${t.blockers.join('; ')}`);
+    if (!t.verdict) warnings.push(`${t.name} on ${beta?.short} has no review.`);
+  }
+  const b = betaBuild(p);
+  const siteBeta = refs?.site.beta ?? null;
+  const top = p.repo.split('/')[0];
+  return {
+    product: p.id, name: p.name, live: p.live, betaSite: previewUrl(p.id), repo: p.repo, site: p.site, unity: true,
+    main: brief(refs?.source.main ?? null), beta: brief(beta), played: brief(beta), release: null,
+    commits: (refs?.source.ahead ?? []).map(brief), mainOnly: (refs?.source.behind ?? []).map(brief),
+    siteCommits: (refs?.site.ahead ?? []).map(brief), siteMainOnly: (refs?.site.behind ?? []).map(brief),
+    tested: { sha: beta?.short ?? null, playtests: tested }, lastPlayed: last,
+    build: b && { ...b, files: 0, sample: [] },
+    previous: listDeploys(p.id, 5).map((d) => ({ id: d.id, kind: d.kind, at: d.at, by: d.by, before: d.before?.slice(0, 7) ?? null, after: d.after.slice(0, 7), beta: d.beta?.slice(0, 7) ?? null, detail: d.detail, rolledBack: d.rolled_back })),
+    players: await livePlayers(p.id),
+    blockers, warnings, canDeploy: !blockers.length, fix: planFix(blockers), notCloned: null,
+    confirm: `DEPLOY ${p.id}`,
+    what: `Fast-forwards ${p.site}'s ${MAIN} to its ${BETA}${siteBeta ? ` ${siteBeta.short}` : ''} (the build${b?.version ? ` Game/v${b.version}` : ''}, already published) and ${top}'s ${MAIN} to ${beta?.short ?? BETA}, through GitHub; GitHub Pages publishes ${p.live}. No release entry this time.`,
+    cloud: { siteBeta: siteBeta?.sha ?? null },
+  };
+}
+
 /**
  * Who publishes a product's main: GitHub Pages (the default), or the product's own server (products.json deploy.via
  * "ec2": its box pulls it; Studio only moves main and plays the live site).
@@ -227,6 +271,16 @@ async function deployNow(productId: string, { confirm, by = 'J', mergeMain, orig
   // An Approve card (approvals.ts) is for one beta commit: a different one now isn't what J approved.
   if (expect && plan.beta?.sha !== expect && plan.played?.sha !== expect) throw new StudioError(`${BETA} is ${plan.beta?.short ?? '?'} now, not ${expect.slice(0, 7)} that J approved; look at the plan again.`);
   const { source, site, unity } = repoDirs(p);
+  // A Unity game on Cloud Run: both mains move through GitHub's API (deploy-cloud.ts), fast-forward only.
+  if (unity && cloudGoLive()) {
+    const r = await cloudGoLiveNow(p, { beta: plan.beta, site: { beta: (plan as any).cloud?.siteBeta ?? null } });
+    for (const l of r.log) opLog(l);
+    const id = newId('d');
+    db.prepare('INSERT INTO deploys (id, product, kind, repo, before, after, beta, source, source_before, source_after, version, by, detail, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+      .run(id, p.id, 'deploy', p.site, r.before, r.after, plan.beta!.sha, p.repo, r.sourceBefore, r.sourceAfter, plan.build?.version ?? null, by, `${plan.commits.length} commit(s): ${plan.commits.slice(0, 8).map((c) => c!.title).join('; ')}${plan.siteCommits.length ? ` · website ${plan.siteCommits.length} commit(s): ${plan.siteCommits.slice(0, 8).map((c) => c!.title).join('; ')}` : ''}`.slice(0, 1000), Date.now());
+    if (r.after !== r.before) void verifyLive(p.id, r.after, `Just went live (${BETA} ${plan.beta!.short}: ${plan.commits.slice(0, 3).map((c) => c!.title).join('; ')})`, origin);
+    return { ok: true, product: p.id, deploy: id, live: p.live, main: r.after.slice(0, 7), beta: plan.beta!.short, release: null, log: r.log, note: `${publisherOf(p).done}; Studio waits for it, then playtests the live site (a run appears in the dashboard). If it went wrong: the rollback plan.` };
+  }
   const beta = plan.beta!;
   const log: string[] = [];
   let before: string | null;
