@@ -40,8 +40,8 @@ const jGoogle = as(j, 'google');
 const helperGoogle = as(helper, 'google');
 
 // Every feature that is J's alone, as the route and method the dashboard, CLI or MCP use.
+// (Going live and rolling back a product are an admin's, not J's alone: J, 2026-10-30; the test below.)
 const J_ONLY: [string, string][] = [
-  ['POST', '/api/deploy/doseofdestruction'], ['POST', '/api/rollback/doseofdestruction'],
   ['POST', '/api/approvals/a_0123456789ab/approve'], ['POST', '/api/changes/c_0123456789ab/approve'],
   ['POST', '/api/claude/signin'], ['GET', '/api/claude/accounts'], ['POST', '/api/antigravity/signin'], ['GET', '/api/antigravity/login'],
   ['GET', '/api/broadcast'], ['POST', '/api/broadcast/live'], ['POST', '/api/broadcast/desk'],
@@ -80,6 +80,41 @@ test('J with Google, and J\'s owner key, pass; J with a password session does no
     assert.match(L.platformRefusal(jPassword(method), route, method) ?? '', /only the platform admin/, `${method} ${route} (password)`);
   }
   assert.equal(L.infraRefusal(jGoogle('POST'), 'hawkesstudio'), null);
+});
+
+test("going live and rolling back need Studio's admin role, not the platform admin (J, 2026-10-30)", async () => {
+  const { db } = await import('../src/db.ts');
+  for (const route of ['/api/deploy/doseofdestruction', '/api/rollback/doseofdestruction']) {
+    assert.equal(L.platformRefusal(helperGoogle('POST'), route, 'POST'), null, `${route}: an admin of J's Studio`);
+    assert.equal(A.memberRefusal(helperGoogle('POST'), route, 'POST'), null, `${route}: an admin by role`);
+  }
+  // Tapping an Approve card to go live or roll back is the same; any other card (a merge, money, settings) stays J's.
+  await import('../src/approvals.ts');
+  const card = (id: string, kind: string) => db.prepare("INSERT INTO approvals (id, kind, target, bind, token, card, status, created, expires) VALUES (?, ?, 'doseofdestruction', 'x', 't', '{}', 'pending', ?, ?)").run(id, kind, Date.now(), Date.now() + 60_000);
+  card('a_00000000d001', 'deploy');
+  card('a_00000000d002', 'rollback');
+  card('a_00000000d003', 'settings');
+  assert.equal(L.platformRefusal(helperGoogle('POST'), '/api/approvals/a_00000000d001/approve', 'POST'), null);
+  assert.equal(L.platformRefusal(helperGoogle('POST'), '/api/approvals/a_00000000d002/deny', 'POST'), null);
+  assert.match(L.platformRefusal(helperGoogle('POST'), '/api/approvals/a_00000000d003/approve', 'POST') ?? '', /only the platform admin/);
+  // A member still can't: that is the role check, unchanged.
+  A.createInvite({ email: 'member@example.com', role: 'member', by: j });
+  const member = A.googleUser({ email: 'member@example.com', sub: '1000009' });
+  assert.equal(member.role, 'member');
+  assert.match(A.memberRefusal(as(member, 'google')('POST'), '/api/deploy/doseofdestruction', 'POST') ?? '', /Only an admin/);
+});
+
+test("J's session from before sessions recorded how (via empty) counts as Google on Cloud Run", async () => {
+  const { db } = await import('../src/db.ts');
+  const old = A.startSession(j, { via: 'password' });
+  db.prepare('UPDATE sessions SET via = NULL WHERE user = ? AND via = ?').run(j.id, 'password');
+  const jOld = (method: string) => req({ Cookie: `${A.COOKIE}=${old.token}` }, method);
+  assert.equal(L.platformRefusal(jOld('POST'), '/api/settings', 'POST'), null);
+  assert.ok(L.platformAdminOf(jOld('GET')));
+  // Someone else's old session is still not the platform admin (the email check stands).
+  const hs = A.startSession(helper, { via: 'password' });
+  db.prepare('UPDATE sessions SET via = NULL WHERE user = ? AND via = ?').run(helper.id, 'password');
+  assert.equal(L.platformAdminOf(req({ Cookie: `${A.COOKIE}=${hs.token}` }, 'GET')), null);
 });
 
 test('a wrong owner key or another listed email is not the platform admin', () => {

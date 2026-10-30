@@ -374,6 +374,14 @@ export function sessionVia(t: string | null | undefined): SessionVia | null {
   return s && s.expires >= Date.now() ? (s.via ?? 'password') : null;
 }
 
+/** Whether a live session was made before sessions recorded how (via is empty): lockdown.ts reads these as Google on
+ *  Cloud Run, where Continue with Google is the only sign-in. */
+export function sessionUnmarked(t: string | null | undefined): boolean {
+  if (!t) return false;
+  const s = db.prepare('SELECT via, expires FROM sessions WHERE id = ?').get(sha(t)) as any;
+  return Boolean(s && s.expires >= Date.now() && s.via == null);
+}
+
 /** The user behind a session token (sliding: a used 12-hour session stays alive), or null. */
 export function sessionUser(t: string | null | undefined): User | null {
   if (!t) return null;

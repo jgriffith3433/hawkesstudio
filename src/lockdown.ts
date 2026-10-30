@@ -12,9 +12,10 @@
 //   machinery through the library relay (fleet, builder, playtester, settings…), and Studio or Gen themselves: an agent change to hawkesstudio or hawkesgen (infra agents),
 //   approving, revising or merging one, and an Approve card for one.
 // In J's Studio (not a customer's), also:
-//   every admin route (auth.ts adminOnlyRoute: going live and rollback for his products, merges, approvals, money and
-//   settings that cost money, products) and Claude accounts, Users and invites, read or changed. An invited admin of
-//   J's Studio is a member in all but name.
+//   every admin route (auth.ts adminOnlyRoute: merges, approvals, money and settings that cost money, products) and
+//   Claude accounts, Users and invites, read or changed. Going live and rolling back a product (the routes and their
+//   Approve cards) need only Studio's admin role (J, 2026-10-30: "it shouldn't be required that I am admin to deploy").
+//   A session from before sessions recorded how (via empty) counts as Google on Cloud Run, where that is the only way in.
 // A customer's admins keep their own: their games, going live with them, their settings, their users, their own Claude.
 //
 // Who isn't a user (Studio's own calls, Talk and the agents with the agents' key) is guards.ts's business in J's Studio;
@@ -25,7 +26,7 @@ import type http from 'node:http';
 import { db } from './db.ts';
 import { isInfra } from './config.ts';
 import { cloudMode } from './cloudauth.ts';
-import { adminOnlyRoute, cookieToken, requester, sessionVia, OWNER_J, SCRIPT_J, type User } from './auth.ts';
+import { adminOnlyRoute, cookieToken, requester, sessionVia, sessionUnmarked, OWNER_J, SCRIPT_J, type User } from './auth.ts';
 import { customerStudio, platformAdmins } from './tenancy.ts';
 
 /** The platform admin behind a request, or null. */
@@ -33,7 +34,11 @@ export function platformAdminOf(req: http.IncomingMessage): User | null {
   const u = requester(req);
   if (!u) return null;
   if (u.id === OWNER_J.id || u.id === SCRIPT_J.id) return u;
-  return u.google && platformAdmins().includes(u.email.toLowerCase()) && sessionVia(cookieToken(req)) === 'google' ? u : null;
+  if (!u.google || !platformAdmins().includes(u.email.toLowerCase())) return null;
+  const token = cookieToken(req);
+  // A session made before sessions recorded how (via empty) was a Google sign-in on Cloud Run, where Continue with Google
+  // is the only way in (J was refused his own Approve card with one, 2026-10-30).
+  return sessionVia(token) === 'google' || (cloudMode() && sessionUnmarked(token)) ? u : null;
 }
 
 /** Whether the lockdown applies here at all (not on J's PC). */
@@ -83,9 +88,22 @@ export function platformFeature(route: string, method: string): string | null {
   if (customerStudio() && /^\/api\/(analytics|videos)(\/|$)/.test(route)) return 'Analytics and Screening';
   if (!customerStudio()) {
     for (const [re, what] of J_STUDIO) if (re.test(route)) return what;
-    if (method !== 'GET' && adminOnlyRoute(route)) return 'Going live, merges, money and settings in this Studio';
+    // Going live and rolling back a product need Studio's admin role (auth.ts memberRefusal), not the platform admin
+    // (J, 2026-10-30: "it shouldn't be required that I am admin to deploy"). The Approve card is still his OK.
+    if (method !== 'GET' && adminOnlyRoute(route) && !goLiveRoute(route)) return 'Merges, money and settings in this Studio';
   }
   return null;
+}
+
+/** Going live or rolling back a product: the routes, and an Approve card's tap for one. */
+function goLiveRoute(route: string) {
+  if (/^\/api\/(deploy|rollback)\//.test(route)) return true;
+  const m = /^\/api\/approvals\/(a_[0-9a-f]+)\/(approve|deny)$/.exec(route);
+  if (!m) return false;
+  try {
+    const a = db.prepare('SELECT kind FROM approvals WHERE id = ?').get(m[1]) as { kind: string } | undefined;
+    return a?.kind === 'deploy' || a?.kind === 'rollback';
+  } catch { return false; }
 }
 
 const refusal = (what: string) => `${what}: only the platform admin can do that (Hawkes Studio's owner, signed in with Google), not this Studio's admins.`;
