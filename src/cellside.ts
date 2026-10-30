@@ -74,6 +74,13 @@ export async function cellGithub(back?: string | null, user?: string | null): Pr
   return post('github', { back: back ?? null, user: user ?? null });
 }
 
+/** Disconnects a person's GitHub (the control plane forgets and revokes it); installations: the org stops using its installs too. */
+export async function cellGithubDisconnect(user: string, installations = false) {
+  if (!inCell()) return null;
+  cellTokens.clear();
+  return post('github-disconnect', { user, installations });
+}
+
 /** A person's GitHub sign-in (kept by the control plane for this org): their login and a fresh token, or null. */
 export async function cellGithubUser(user: string): Promise<{ login: string; token: string } | null> {
   if (!inCell()) return null;

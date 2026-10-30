@@ -29,6 +29,7 @@ const ACCOUNTS: Record<string, { login: string; installs: number[] }> = { 'c-ana
 const INSTALLS: Record<number, { account: string; selection: string }> = {};
 const tokenOf = (auth: string) => Object.entries(ACCOUNTS).find(([c]) => auth.endsWith(`ghu_${c}`));
 const tokenScopes: any[] = [];
+const revoked: string[] = [];
 const gh = http.createServer(async (req, res) => {
   const u = new URL(req.url!, 'http://x');
   let body = '';
@@ -44,6 +45,12 @@ const gh = http.createServer(async (req, res) => {
   if (p === '/app/installations') return out(200, Object.entries(INSTALLS).map(([id, i]) => ({ id: Number(id), account: { login: i.account, type: 'User' }, repository_selection: i.selection })));
   const t = /^\/app\/installations\/(\d+)\/access_tokens$/.exec(p);
   if (t) { tokenScopes.push({ id: Number(t[1]), repositories: b?.repositories }); return out(201, { token: `ghs_${t[1]}_${b?.repositories?.join(',')}`, expires_at: new Date(Date.now() + 3600_000).toISOString() }); }
+  // GitHub's revoke of a person's grant: the app's client id and secret (Basic), their token in the body.
+  if (p === '/applications/Iv1.x/grant' && req.method === 'DELETE') {
+    if (auth !== `Basic ${Buffer.from('Iv1.x:s').toString('base64')}`) return out(401, {});
+    revoked.push(b.access_token);
+    res.writeHead(204); return res.end();
+  }
   out(404, { message: `no ${req.method} ${p}` });
 });
 await new Promise<void>((r) => gh.listen(0, '127.0.0.1', () => r()));
@@ -165,4 +172,26 @@ test('a forged or stale state is refused; a sign-in with no state and no install
     assert.match(String(res.body), /That didn&#39;t work|That didn't work/);
     assert.match(String(res.body), /expired or was not made here/);
   }
+});
+
+test('disconnecting: the sign-in is forgotten and revoked on GitHub; with installations her Studio stops using the repos', async () => {
+  // How it stands: signed in, one install, with its page on GitHub to manage or remove Studio.
+  let s = await cellAsks(orgAna, 'github', { user: 'u_ana' });
+  assert.equal(s.body.user.login, 'ana');
+  assert.equal(s.body.installations[0].manage, `${ghBase}/settings/installations/11`);
+  // Disconnect her GitHub sign-in: forgotten here, revoked on GitHub (her own token, the app's credentials).
+  let d = await cellAsks(orgAna, 'github-disconnect', { user: 'u_ana' });
+  assert.deepEqual({ forgot: d.body.forgot, login: d.body.login, revoked: d.body.revoked, unlinked: d.body.unlinked }, { forgot: true, login: 'ana', revoked: true, unlinked: [] });
+  assert.ok(revoked.includes('ghu_c-ana'));
+  s = await cellAsks(orgAna, 'github', { user: 'u_ana' });
+  assert.equal(s.body.user, null);
+  assert.ok(s.body.connect, 'she can sign in again');
+  assert.equal((await cellAsks(orgAna, 'github-token', { repo: 'ana/space-game' })).body.token, 'ghs_11_space-game', 'the install still works for her Studio');
+  // With installations: her Studio stops using them (still installed on GitHub until she removes it there).
+  d = await cellAsks(orgAna, 'github-disconnect', { user: 'u_ana', installations: true });
+  assert.deepEqual(d.body.unlinked, ['ana']);
+  assert.deepEqual((await cellAsks(orgAna, 'github', { user: 'u_ana' })).body.installations, []);
+  assert.equal((await cellAsks(orgAna, 'github-token', { repo: 'ana/space-game' })).body.token, null);
+  // Bo's are untouched.
+  assert.deepEqual((await cellAsks(orgBo, 'github', { user: 'u_bo' })).body.installations.map((i: any) => i.id), [12]);
 });

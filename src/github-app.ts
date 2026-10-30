@@ -154,7 +154,7 @@ export async function installations() {
   const c = appConfig();
   if (!c) return [];
   const list = await gh(appJwt(c), 'GET', '/app/installations?per_page=100', undefined, { jwt: true });
-  return (list as any[]).map((i) => ({ id: i.id as number, account: String(i.account?.login ?? ''), type: String(i.account?.type ?? ''), repos: i.repository_selection as string }));
+  return (list as any[]).map((i) => ({ id: i.id as number, account: String(i.account?.login ?? ''), type: String(i.account?.type ?? ''), repos: i.repository_selection as string, manage: manageUrl(i.id, String(i.account?.login ?? ''), String(i.account?.type ?? '')) }));
 }
 
 const tokenCache = new Map<number, { token: string; expires: number }>();
@@ -345,10 +345,45 @@ export async function userToken(userId: string, org?: string | null): Promise<{ 
   return { login: u.login, token: u.token };
 }
 
-export function disconnectUser(userId: string, org?: string | null) {
+/** An installation's settings page on GitHub: change its repositories, or uninstall Studio there. */
+export const manageUrl = (id: number, account: string, type: string) =>
+  type === 'Organization' ? `${WEB()}/organizations/${account}/settings/installations/${id}` : `${WEB()}/settings/installations/${id}`;
+
+/**
+ * Disconnecting a person's GitHub (J, 2026-10-30: "is there a way to disconnect?"): their sign-in is forgotten here
+ * and revoked on GitHub (the app's grant for that account, so it shows as removed under their Authorized GitHub Apps),
+ * and with installations the org (or this Studio) stops using the installs it was given. Uninstalling the app itself is
+ * the person's, on GitHub (each install's manage link). Returns what was done.
+ */
+export async function disconnectUser(userId: string, org?: string | null, o: { installations?: boolean } = {}) {
   const users = readJson<Record<string, UserLink>>(USERS_FILE(), {});
-  delete users[userKey(userId, org)];
+  const key = userKey(userId, org);
+  const had = users[key];
+  delete users[key];
   writeSecret(USERS_FILE(), users);
+  let revoked = false;
+  const c = appConfig();
+  if (had && c) {
+    // GitHub's own revoke: the app's client id and secret, the person's token (204 when done, 404 when already gone).
+    const r = await fetch(`${API()}/applications/${c.clientId}/grant`, {
+      method: 'DELETE', signal: AbortSignal.timeout(20_000),
+      headers: { Accept: 'application/vnd.github+json', 'User-Agent': 'hawkes-studio', 'Content-Type': 'application/json', Authorization: `Basic ${Buffer.from(`${c.clientId}:${c.clientSecret}`).toString('base64')}` },
+      body: JSON.stringify({ access_token: had.token }),
+    }).catch(() => null);
+    revoked = Boolean(r && (r.status === 204 || r.status === 404));
+  }
+  let unlinked: string[] = [];
+  if (o.installations && org) unlinked = unlinkInstallations(org);
+  return { forgot: Boolean(had), login: had?.login ?? null, revoked, unlinked };
+}
+
+/** An org stops using every installation linked to it (they stay installed on GitHub until the person removes them). */
+export function unlinkInstallations(org: string): string[] {
+  const all = readJson<Record<string, { org: string; account: string; at: number }>>(INSTALLS_FILE(), {});
+  const gone = Object.entries(all).filter(([, l]) => l.org === org);
+  for (const [id] of gone) delete all[id];
+  writeSecret(INSTALLS_FILE(), all);
+  return gone.map(([, l]) => l.account);
 }
 
 // ------------------------------------------------------------------ pasted tokens (the fallback)

@@ -48,6 +48,8 @@ describing buttons:
   link), then "Choose repositories" (the install link: the account, and which repos Studio may work on; "All
   repositories" lets Studio make new game repos there without asking again). An install made before signing in links
   itself the next time they sign in. A pasted fine-grained token (studio_github token) only when they can't install the app.
+  To disconnect (only when they ask): studio_github disconnect (installations: true to stop using the repos too), then
+  give them the "Manage on GitHub" links from the answer if they want Studio off their GitHub entirely.
 - "Make me a game": first ASK what kind of game they want (genre, 2D or 3D, how it plays, the feel, a name) until you
   could describe it in two sentences. Pick the starter that fits (studio_game starters), then studio_game new: an Approve
   card makes the repo with a small game that already plays, Studio's playtest bot, the hook, GitHub Pages and the lanes.

@@ -101,11 +101,20 @@ export async function handleGithubRoutes(req: http.IncomingMessage, res: http.Se
     if (!installed && install) return html(res, 200, flowPage({ title: `Signed in as ${r.login}`, text: 'Next, choose which repositories Studio may work on. Taking you to GitHub…', done: ['signin'], at: 'repos', next: install, nextLabel: 'Choose repositories', back: studio })), true;
     return html(res, 200, flowPage({ title: `Signed in as ${r.login}`, text: 'Your GitHub is connected. Taking you back to your Studio…', done: ['signin', 'repos'], at: 'back', next: backTo(studio, 'connected'), nextLabel: 'Back to your Studio' })), true;
   }
+  // Disconnecting GitHub: the signed-in person's sign-in forgotten and revoked on GitHub; ?installations=1 (an admin's)
+  // also stops this Studio using the repos it was given. In a customer's Studio the control plane does it.
   if (route === '/api/github/user' && method === 'DELETE') {
+    // The signed-in person, or for Talk (no person; it acts only when they ask) the one whose GitHub it uses.
     const u = requester(req);
-    if (!u) throw new StudioError('Sign in to Studio first.', 401);
-    G.disconnectUser(u.id);
-    return send(res, 200, { disconnected: true }), true;
+    const who = u?.id ?? (await githubUserFor(req));
+    if (!who) throw new StudioError('Nobody here is signed in with GitHub.', 404);
+    const all = url.searchParams.get('installations') === '1';
+    if (all && u && u.role !== 'admin') throw new StudioError('Only an admin of this Studio can stop it using the repositories.', 403);
+    const before = await G.githubStatus(base, who).catch(() => null);
+    const r = G.appConfig() ? await G.disconnectUser(who, null, {}) : await (await import('./cellside.ts')).cellGithubDisconnect(who, all);
+    (await import('./ghtoken.ts')).forgetRepoTokens();
+    // Where to remove Studio from GitHub itself (only the person can, on GitHub).
+    return send(res, 200, { disconnected: true, ...r, removeOnGitHub: (before?.installations ?? []).map((i: any) => ({ account: i.account, url: i.manage })) }), true;
   }
   if (route === '/api/github/token' && method === 'POST') {
     const b = await readJson(req);

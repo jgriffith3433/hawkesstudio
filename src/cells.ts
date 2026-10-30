@@ -473,7 +473,7 @@ export async function handleCellsKeyed(req: http.IncomingMessage, res: http.Serv
   }
   // GitHub through J's app (github-app.ts): a cell's install link and linked installations, and a token for one of its
   // org's repos, scoped to that repo. Never a repo of an installation another org linked.
-  const gh = /^\/api\/cells\/self\/(github|github-token|github-user)$/.exec(route);
+  const gh = /^\/api\/cells\/self\/(github|github-token|github-user|github-disconnect)$/.exec(route);
   if (gh && method === 'POST') {
     if (!cellsOn()) return send(res, 404, { error: 'not the control plane' }), true;
     const orgId = String(req.headers['x-studio-cell'] ?? '');
@@ -495,6 +495,10 @@ export async function handleCellsKeyed(req: http.IncomingMessage, res: http.Serv
           user: signedIn ? { login: signedIn.login } : null, connect: app && user && !signedIn ? G.connectUrl(base, user, { org: orgId, back }) : null,
           linked: G.orgGithubUsers(orgId),
         }), true;
+      }
+      if (gh[1] === 'github-disconnect') {
+        if (!user) return send(res, 400, { error: 'user' }), true;
+        return send(res, 200, await G.disconnectUser(user, orgId, { installations: b.installations === true })), true;
       }
       if (gh[1] === 'github-user') {
         if (!user) return send(res, 400, { error: 'user' }), true;

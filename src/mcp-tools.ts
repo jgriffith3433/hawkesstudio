@@ -138,10 +138,12 @@ export function studioMcp({ studio, waitRun }: Client = { studio: defaultStudio,
     },
     {
       name: 'studio_github',
-      description: "Studio's GitHub connection (a GitHub App, J's choice: no pasted keys if it can be helped). status: whether the app exists, where it's installed and on which repos, and whether the person signed in with GitHub (needed to make new repos). The links it returns are for the person to open: setup (make the app: one click on GitHub, an admin), install (choose the repos Studio may work on), connect (sign in with GitHub). token { repo, token }: a pasted fine-grained token for one repo, only when the person can't install the app (Contents read and write; Workflows for the hook). Walk the person through it a step at a time and check status after each.",
-      inputSchema: obj({ action: str('status (default) | token'), repo: str('token: owner/name'), token: str('token: the github_pat_... the person pasted') }),
+      description: "Studio's GitHub connection (a GitHub App, J's choice: no pasted keys if it can be helped). status: whether the app exists, where it's installed and on which repos, and whether the person signed in with GitHub (needed to make new repos). The links it returns are for the person to open: setup (make the app: one click on GitHub, an admin), install (choose the repos Studio may work on), connect (sign in with GitHub). token { repo, token }: a pasted fine-grained token for one repo, only when the person can't install the app (Contents read and write; Workflows for the hook). Walk the person through it a step at a time and check status after each. disconnect: only when they ask to disconnect: forgets and revokes their GitHub sign-in (installations: true also stops this Studio using the repos); give them the removeOnGitHub links to take Studio off their GitHub entirely.",
+      inputSchema: obj({ action: str('status (default) | token | disconnect'), repo: str('token: owner/name'), token: str('token: the github_pat_... the person pasted'), installations: bool('disconnect: also stop this Studio using the repositories it was given (an admin)') }),
       run: async (a) => {
         if (a.action === 'token') return studio('/api/github/token', { method: 'POST', body: { repo: a.repo, token: a.token } });
+        // Only when the person asked to disconnect, in their own words. The answer has the GitHub pages where they remove Studio itself.
+        if (a.action === 'disconnect') return studio(`/api/github/user${a.installations ? '?installations=1' : ''}`, { method: 'DELETE' });
         return studio('/api/github');
       },
     },
