@@ -1,0 +1,175 @@
+// Talk running Studio's games (J, 2026-10-30): games added in J's Studio live in its data (games.json, beside
+// products.json); the GitHub App made by the manifest flow, its installation tokens and the person's GitHub sign-in
+// (github-app.ts); a game's readiness and the plan behind its Approve card (repokit.ts); a brand-new game made from a
+// starter (starters.ts). GitHub is a small stand-in server (GITHUB_API_BASE / GITHUB_WEB_BASE): every call is recorded.
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import crypto from 'node:crypto';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import http from 'node:http';
+
+process.env.STUDIO_DATA = fs.mkdtempSync(path.join(os.tmpdir(), 'studio-github-games-'));
+process.env.STUDIO_MAIL = 'off';
+process.env.STUDIO_PUBLIC_URL = 'https://studio.test';
+delete process.env.STUDIO_ORG;
+delete process.env.STUDIO_CUSTOMER;
+delete process.env.STUDIO_SIGNUP;
+delete process.env.GITHUB_TOKEN;
+
+// ------------------------------------------------------------------ the stand-in GitHub
+const { privateKey, publicKey } = crypto.generateKeyPairSync('rsa', { modulusLength: 2048 });
+const pem = privateKey.export({ type: 'pkcs1', format: 'pem' }).toString();
+const calls: string[] = [];
+const repos = new Map<string, { branches: Map<string, string>; files: Map<string, string>; pages: any }>();
+let commitN = 0;
+const repo = (slug: string) => {
+  if (!repos.has(slug)) repos.set(slug, { branches: new Map([['main', 'c0']]), files: new Map(), pages: null });
+  return repos.get(slug)!;
+};
+const gh = http.createServer(async (req, res) => {
+  const u = new URL(req.url!, 'http://x');
+  let body = '';
+  for await (const c of req) body += c;
+  const b = body ? (() => { try { return JSON.parse(body); } catch { return body; } })() : null;
+  calls.push(`${req.method} ${u.pathname}`);
+  const out = (status: number, o: unknown) => { res.writeHead(status, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(o)); };
+  const auth = String(req.headers.authorization ?? '');
+  const p = u.pathname;
+  if (p === '/app-manifests/abc/conversions') return out(201, { id: 77, slug: 'hawkes-studio-test', client_id: 'Iv1.client', client_secret: 'csecret', pem, webhook_secret: 'w', html_url: 'https://github.test/apps/hawkes-studio-test', owner: { login: 'jgriffith3433' } });
+  if (p.startsWith('/app/')) {
+    const jwt = auth.replace(/^Bearer /, '').split('.');
+    const ok = crypto.verify('RSA-SHA256', Buffer.from(`${jwt[0]}.${jwt[1]}`), publicKey, Buffer.from(jwt[2] ?? '', 'base64url'));
+    if (!ok) return out(401, { message: 'bad jwt' });
+    if (p === '/app/installations') return out(200, [{ id: 5, account: { login: 'acme', type: 'Organization' }, repository_selection: 'selected' }]);
+    if (p === '/app/installations/5/access_tokens') return out(201, { token: 'ghs_install', expires_at: new Date(Date.now() + 3600_000).toISOString() });
+  }
+  if (p === '/installation/repositories') return out(200, { repositories: [{ full_name: 'acme/space-game', private: false, html_url: 'https://github.test/acme/space-game' }] });
+  if (p === '/login/oauth/access_token') return out(200, { access_token: 'ghu_user', refresh_token: 'ghr_user', expires_in: 28800, refresh_token_expires_in: 15811200 });
+  if (p === '/user') return out(200, { login: 'jgriffith3433' });
+  if (p === '/user/repos' && req.method === 'POST') { repo(`jgriffith3433/${b.name}`); return out(201, { full_name: `jgriffith3433/${b.name}`, html_url: `https://github.test/jgriffith3433/${b.name}`, default_branch: 'main' }); }
+  const m = /^\/repos\/([^/]+\/[^/]+)(\/.*)?$/.exec(p);
+  if (m) {
+    const r = repo(m[1]);
+    const rest = m[2] ?? '';
+    if (!rest) return out(200, { full_name: m[1], default_branch: 'main', permissions: { push: true } });
+    let x: RegExpExecArray | null;
+    if ((x = /^\/branches\/(.+)$/.exec(rest))) return r.branches.has(x[1]) ? out(200, { name: x[1] }) : out(404, { message: 'Branch not found' });
+    if ((x = /^\/contents\/(.+)$/.exec(rest))) return r.files.has(x[1]) ? out(200, { path: x[1] }) : out(404, { message: 'Not Found' });
+    if ((x = /^\/git\/ref\/heads\/(.+)$/.exec(rest))) return r.branches.has(x[1]) ? out(200, { object: { sha: r.branches.get(x[1]) } }) : out(404, { message: 'no ref' });
+    if (/^\/git\/commits\/.+$/.test(rest) && req.method === 'GET') return out(200, { tree: { sha: 't0' } });
+    if (rest === '/git/trees') { for (const f of b.tree) r.files.set(f.path, f.content); return out(201, { sha: `t${++commitN}` }); }
+    if (rest === '/git/commits') return out(201, { sha: `c${++commitN}` });
+    if ((x = /^\/git\/refs\/heads\/(.+)$/.exec(rest)) && req.method === 'PATCH') { r.branches.set(x[1], b.sha); return out(200, {}); }
+    if (rest === '/git/refs' && req.method === 'POST') { r.branches.set(b.ref.replace('refs/heads/', ''), b.sha); return out(201, {}); }
+    if (rest === '/pages' && req.method === 'GET') return r.pages ? out(200, r.pages) : out(404, { message: 'Not Found' });
+    if (rest === '/pages' && req.method === 'POST') { r.pages = { build_type: b.build_type, html_url: `https://${m[1].split('/')[0]}.github.io/${m[1].split('/')[1]}/` }; return out(201, r.pages); }
+  }
+  out(404, { message: `stand-in has no ${req.method} ${p}` });
+});
+await new Promise<void>((r) => gh.listen(0, '127.0.0.1', () => r()));
+const ghBase = `http://127.0.0.1:${(gh.address() as any).port}`;
+process.env.GITHUB_API_BASE = ghBase;
+process.env.GITHUB_WEB_BASE = ghBase;
+test.after(() => gh.close());
+
+const C = await import('../src/config.ts');
+const A = await import('../src/auth.ts');
+const G = await import('../src/github-app.ts');
+const R = await import('../src/repokit.ts');
+const S = await import('../src/starters.ts');
+
+const j = A.googleUser({ email: 'piercehawkes3@gmail.com', sub: '3000001', name: 'J' });
+
+test("J's Studio keeps added games in its data, beside products.json, and never over one of its ids", () => {
+  const before = C.loadProducts().length;
+  const g = C.saveProduct({ id: 'space-game', name: 'Space Game', engine: 'web', live: 'https://acme.github.io/space-game/', repo: 'acme/space-game' });
+  assert.equal(g.local.serve, 'remote', 'played where it is deployed');
+  assert.equal(C.loadProducts().length, before + 1);
+  assert.ok(fs.existsSync(path.join(process.env.STUDIO_DATA!, 'games.json')));
+  assert.throws(() => C.saveProduct({ id: 'doseofdestruction', name: 'x', engine: 'web', live: 'https://x.test/' }), /products\.json's/);
+  assert.throws(() => C.removeProduct('doseofdestruction'), /products\.json's/);
+});
+
+test('the GitHub App: the manifest page, the conversion, installation tokens from a signed JWT', async () => {
+  const page = G.setupPage('https://studio.test');
+  assert.match(page, /settings\/apps\/new\?state=/);
+  const manifest = JSON.parse(/name="manifest" value="([^"]+)"/.exec(page)![1].replace(/&quot;/g, '"').replace(/&amp;/g, '&'));
+  assert.equal(manifest.redirect_url, 'https://studio.test/api/github/app/created');
+  assert.equal(manifest.default_permissions.contents, 'write');
+  await assert.rejects(G.appCreated('abc', 'forged.state'), /expired or was not made here/);
+  const state = decodeURIComponent(/state=([^"&]+)/.exec(page)![1]);
+  const r = await G.appCreated('abc', state);
+  assert.equal(r.install, `${ghBase}/apps/hawkes-studio-test/installations/new`);
+  assert.equal(fs.statSync(path.join(process.env.STUDIO_DATA!, 'github-app.json')).size > 100, true);
+  const access = await G.accessFor('acme/space-game');
+  assert.deepEqual(access, { token: 'ghs_install', via: 'app' });
+  assert.equal(await G.accessFor('acme/not-chosen'), null, 'the installation reaches only the chosen repos');
+});
+
+test('signing in with GitHub keeps the person\'s token; Talk uses the admin who linked it', async () => {
+  const url = new URL(G.connectUrl('https://studio.test', j.id));
+  const r = await G.userCallback('https://studio.test', 'code1', url.searchParams.get('state')!);
+  assert.equal(r.login, 'jgriffith3433');
+  assert.equal((await G.userToken(j.id))!.token, 'ghu_user');
+  assert.equal(G.linkedAdmin(), j.id);
+  const s = await G.githubStatus('https://studio.test', j.id);
+  assert.equal(s.user!.login, 'jgriffith3433');
+  assert.equal(s.connect, null);
+  assert.deepEqual(s.installations.map((i) => i.account), ['acme']);
+});
+
+test('readiness walks a game through what it lacks; the setup plan adds the hook, the branches and Pages', async () => {
+  const r = await R.readiness('space-game', j.id);
+  assert.equal(r.ready, false);
+  const ids = Object.fromEntries(r.items.map((i) => [i.id, i.ok]));
+  assert.equal(ids.repo, true);
+  assert.equal(ids.access, true);
+  assert.equal(ids.hook, false);
+  assert.equal(ids.branches, false);
+  assert.deepEqual(r.approve, { kind: 'setup', product: 'space-game', repo: 'acme/space-game', steps: ['hook', 'branches'] });
+  const d = await R.describePlan(r.approve as any);
+  assert.deepEqual(d.blockers, []);
+  const done = await R.applyPlan(r.approve as any);
+  assert.equal(done.length, 2);
+  assert.match(repos.get('acme/space-game')!.files.get('.github/workflows/hawkes-studio.yml')!, /https:\/\/studio\.test\/api\/hooks\/github/);
+  const again = await R.readiness('space-game', j.id);
+  assert.equal(again.items.find((i) => i.id === 'hook')!.ok, true);
+  assert.equal(again.items.find((i) => i.id === 'branches')!.ok, true);
+  assert.equal(again.approve, null);
+});
+
+test('a new game: asked what kind first (the plan wants a pitch and a starter), then a repo that already plays', async () => {
+  await assert.rejects(R.newGamePlan({ name: 'Orbit Run' }, j.id), /pitch/);
+  await assert.rejects(R.newGamePlan({ name: 'Orbit Run', pitch: 'A tiny 3D game about collecting orbs.', starter: 'nope' }, j.id), /starter/);
+  const plan = await R.newGamePlan({ name: 'Orbit Run', pitch: 'A tiny 3D game about collecting orbs on a moon.', starter: 'web-3d' }, j.id);
+  assert.equal(plan.kind, 'new');
+  const d = await R.describePlan(plan);
+  assert.deepEqual(d.blockers, []);
+  assert.match(d.lines.join('\n'), /jgriffith3433\/orbit-run/);
+  const done = await R.applyPlan(plan);
+  const r = repos.get('jgriffith3433/orbit-run')!;
+  for (const f of ['package.json', 'index.html', 'src/main.js', 'src/playtest.js', 'src/playtest/hawkes-playtest.js', '.github/workflows/hawkes-studio.yml', '.github/workflows/pages.yml', 'AGENTS.md']) assert.ok(r.files.has(f), f);
+  assert.equal(JSON.parse(r.files.get('package.json')!).name, 'orbit-run');
+  assert.match(r.files.get('src/main.js')!, /setupPlaytest\(game\)/);
+  assert.ok(r.branches.has('beta') && r.branches.has('dev'));
+  assert.equal(r.pages.build_type, 'workflow');
+  const p = C.getProduct('orbit-run');
+  assert.equal(p.live, 'https://jgriffith3433.github.io/orbit-run/');
+  assert.equal(p.contract, true);
+  assert.ok(done.some((l) => /Added "Orbit Run" to Studio/.test(l)));
+  // The same game can't be made twice.
+  assert.match((await R.describePlan(plan)).blockers.join(' '), /already has a game/);
+});
+
+test('every starter is complete: the playtest bot, the hook and Pages, valid package.json', () => {
+  for (const s of S.STARTERS) {
+    const files = S.starterFiles(s.id, { id: 'x-game', name: 'X <Game>', pitch: 'p', owner: 'o', repo: 'o/x-game', studioUrl: 'https://studio.test' });
+    assert.ok(JSON.parse(files['package.json']).scripts.build, s.id);
+    assert.match(files['index.html'], /X &lt;Game&gt;/, 'the name is escaped');
+    assert.match(files['src/playtest.js'], /installPlaytest/);
+    assert.match(files['.github/workflows/pages.yml'], /deploy-pages/);
+  }
+  assert.equal(S.liveUrlFor({ repo: 'Acme/acme.github.io' } as any), 'https://acme.github.io/');
+});

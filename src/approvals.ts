@@ -37,7 +37,7 @@ db.exec(`CREATE TABLE IF NOT EXISTS approvals (
 // J's × on a card in the chat: hidden from the conversation, still pending (and answerable) in the Inbox.
 try { db.exec('ALTER TABLE approvals ADD COLUMN dismissed INTEGER'); } catch { /* already there */ }
 
-export const KINDS = ['merge', 'deploy', 'rollback', 'gpu', 'settings', 'decision'] as const;
+export const KINDS = ['merge', 'deploy', 'rollback', 'gpu', 'settings', 'decision', 'github'] as const;
 export type Kind = (typeof KINDS)[number];
 /** How long a card can be approved. */
 export const TTL_MS = () => Number(process.env.STUDIO_APPROVAL_TTL_MS ?? 15 * 60_000);
@@ -127,6 +127,15 @@ async function describe(kind: Kind, target: string, params: Record<string, any>)
     const raising = st.costRaising(target as any, patch, cur);
     const lines = Object.entries(patch).map(([k, v]) => `${target}.${k}: ${J(cur?.[k])} → ${J(v)}`);
     return { bind: hash(J([target, patch, Object.fromEntries(Object.keys(patch).map((k) => [k, cur?.[k] ?? null]))])), card: { title: `Change ${target} settings?`, lines, blockers: [], warnings: raising.length ? [`This can raise costs: ${raising.join(', ')}`] : [], links: [], approve: 'Approve', deny: 'Deny' } };
+  }
+  if (kind === 'github') {
+    // Outward-facing GitHub steps (repokit.ts; J, 2026-10-30: a new repo, Studio's hook, Pages go through a card).
+    const rk = await import('./repokit.ts');
+    const plan = params.plan as import('./repokit.ts').Plan;
+    if (!plan || (plan.kind !== 'setup' && plan.kind !== 'new')) throw new StudioError('github: plan, from studio_game check (approve) or studio_game new');
+    const d = await rk.describePlan(plan);
+    const repo = plan.kind === 'setup' ? plan.repo : `${plan.owner}/${plan.repoName}`;
+    return { bind: rk.planHash(plan), card: { title: d.title, lines: d.lines, blockers: d.blockers, warnings: [], links: plan.kind === 'setup' ? [{ label: repo, url: `https://github.com/${repo}` }] : [], approve: plan.kind === 'new' ? 'Approve: make it' : 'Approve: set it up', deny: 'Deny' } };
   }
   if (kind === 'decision') {
     const rm = await import('./roadmap.ts');
@@ -225,7 +234,7 @@ export async function requestApproval(kind: string, target: string, params: Reco
   // Already approved or answered: no card (it could only sit there with an Approve that never works).
   const moot = kind === 'gpu' && getTask(target) ? gpuMoot(target) : kind === 'decision' && getQuestion(target) ? decisionMoot(target) : null;
   if (moot) throw new StudioError(`Nothing to approve for ${target}: ${moot}.`, 409);
-  const clean = kind === 'gpu' ? { amount: params.amount === undefined || params.amount === null || params.amount === '' ? undefined : Number(params.amount) } : kind === 'settings' ? { patch: params.patch } : {};
+  const clean = kind === 'github' ? { plan: params.plan } : kind === 'gpu' ? { amount: params.amount === undefined || params.amount === null || params.amount === '' ? undefined : Number(params.amount) } : kind === 'settings' ? { patch: params.patch } : {};
   const { bind, card } = await describe(kind as Kind, target, clean);
   expire();
   const same = db.prepare(`SELECT * FROM approvals WHERE status = 'pending' AND kind = ? AND target = ? AND bind = ? ORDER BY created DESC LIMIT 1`).get(kind, target, bind) as any;
@@ -426,6 +435,10 @@ async function run(a: Approval, by: string): Promise<string> {
     const { saveSettings } = await import('./settings.ts');
     await saveSettings(a.target, a.params.patch, { conversation: null, by });
     return `Saved ${a.target}: ${Object.keys(a.params.patch).join(', ')}.`;
+  }
+  if (a.kind === 'github') {
+    const { applyPlan } = await import('./repokit.ts');
+    return (await applyPlan(a.params.plan)).join(' ');
   }
   await answerDecision(a, a.card.approve, by);
   return `Answered "${a.card.approve}".`;

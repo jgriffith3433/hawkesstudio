@@ -213,6 +213,8 @@ const server = http.createServer(async (req, res) => {
     // The dashboard's one push stream (stream.ts): "something changed" events instead of polling.
     if (route === '/api/stream' && method === 'GET') return (await import('./stream.ts')).handleStream(req, res, { talkUnseen: unseenConversations() });
     if (route === '/api/products' && method === 'GET') return send(res, 200, { products: loadProducts() });
+    // Talk's game tools and the GitHub connection (github-routes.ts).
+    if ((route.startsWith('/api/github') || route.startsWith('/api/games/')) && (await (await import('./github-routes.ts')).handleGithubRoutes(req, res, route, method, url, send, readJson, origin))) return;
     // A customer's games (config.ts saveProduct): onboarding adds and edits them; admins only (memberRefusal).
     const prod = /^\/api\/products\/([a-z][a-z0-9-]{1,39})$/.exec(route);
     if (prod && method === 'PUT') {

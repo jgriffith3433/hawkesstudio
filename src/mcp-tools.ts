@@ -101,6 +101,46 @@ export function studioMcp({ studio, waitRun }: Client = { studio: defaultStudio,
       },
     },
     {
+      name: 'studio_game',
+      description: `Add, change and set up games, and make new ones, so the person never has to leave the conversation. list: the games. get { product }. add { id, name, engine (web | unity | godot | desktop), live (https address where it plays), repo (owner/name), about, quality, story, contract, playtests }: adds a game to Studio (no card needed); update: the same fields for one already added (games in products.json are edited in git). remove { product }. check { product }: what it has and still needs, item by item, with who does each (you now, an Approve tap, or the person on GitHub) and how: work down it with the person, one item at a time, and check again after each. setup { product }: puts an Approve card on screen for the GitHub steps check found (Studio's push hook, the dev and beta branches, GitHub Pages); J's tap runs them. starters: the starters for a new game. new { name, pitch, starter, owner?, repo?, private? }: an Approve card that makes a brand-new game: a GitHub repo from the starter (a small game that already plays, Studio's playtest bot, the hook, Pages, the lanes), added to Studio. Before new, ASK what kind of game they want (genre, 2D or 3D, how it plays, what it's called) and pick the starter that fits; needs a GitHub sign-in (studio_github). After it's made, build the game they described on top of it with studio_task.`,
+      inputSchema: obj({
+        action: str('list (default) | get | add | update | remove | check | setup | starters | new'), product: str('get, remove, check, setup, update: the game id'),
+        id: str('add: the new id (lower-case, dashes)'), name: str('add, update, new: the name'), engine: str('add: web | unity | godot | desktop'),
+        live: str('add, update: where it plays (https)'), beta: str('add, update: its beta address (https), if any'), repo: str('add, update: owner/name on GitHub; new: the new repo\'s name (default from the name)'),
+        about: str('add, update: what it is, a few sentences'), quality: str("add, update: the quality bar: what 'done' means, in the person's words"), story: str('add, update: the story or design doc text'),
+        contract: bool("add, update: true once the game implements Studio's playtest contract"), playtests: { type: 'array', description: 'add, update: [{ scenario: "smoke", where: "live", device?: "phone" }] or [{ mode: "site", where: "live" }]', items: { type: 'object' } },
+        pitch: str('new: what the game is, from what the person told you'), starter: str('new: a starter id (action starters lists them)'), owner: str('new: the GitHub account or organization (default: the person\'s own)'), private: bool('new: a private repo (Pages then needs a paid GitHub plan)'),
+      }),
+      run: async (a) => {
+        const action = a.action ?? 'list';
+        if (action === 'list') return (await studio('/api/products')).products.map((p: any) => ({ id: p.id, name: p.name, engine: p.engine, live: p.live, repo: p.repo, contract: Boolean(p.contract), playtests: (p.playtests ?? []).length }));
+        if (action === 'get') return (await studio('/api/products')).products.find((p: any) => p.id === a.product) ?? `No game "${a.product}".`;
+        if (action === 'starters') return (await studio('/api/games/starters')).starters;
+        if (action === 'check') return studio(`/api/games/${a.product}/readiness`);
+        if (action === 'setup') return studio(`/api/games/${a.product}/setup`, { method: 'POST', body: {} });
+        if (action === 'new') return studio('/api/games/new', { method: 'POST', body: { name: a.name, pitch: a.pitch, starter: a.starter, owner: a.owner, repo: a.repo, private: a.private } });
+        if (action === 'remove') return studio(`/api/products/${a.product}`, { method: 'DELETE' });
+        if (action === 'add' || action === 'update') {
+          const id = action === 'add' ? a.id : a.product;
+          const cur = action === 'update' ? (await studio('/api/products')).products.find((p: any) => p.id === id) : null;
+          if (action === 'update' && !cur) return `No game "${id}".`;
+          const keep = cur ? { name: cur.name, engine: cur.engine, live: cur.live, beta: cur.beta, repo: cur.repo, about: cur.about, quality: cur.quality, story: cur.storyText, contract: cur.contract, playtests: cur.playtests, build: cur.build } : {};
+          const set = Object.fromEntries(['name', 'engine', 'live', 'beta', 'repo', 'about', 'quality', 'story', 'contract', 'playtests'].filter((k) => a[k] !== undefined).map((k) => [k, a[k]]));
+          return (await studio(`/api/products/${id}`, { method: 'PUT', body: { ...keep, ...set } })).product;
+        }
+        return `action: list | get | add | update | remove | check | setup | starters | new`;
+      },
+    },
+    {
+      name: 'studio_github',
+      description: "Studio's GitHub connection (a GitHub App, J's choice: no pasted keys if it can be helped). status: whether the app exists, where it's installed and on which repos, and whether the person signed in with GitHub (needed to make new repos). The links it returns are for the person to open: setup (make the app: one click on GitHub, an admin), install (choose the repos Studio may work on), connect (sign in with GitHub). token { repo, token }: a pasted fine-grained token for one repo, only when the person can't install the app (Contents read and write; Workflows for the hook). Walk the person through it a step at a time and check status after each.",
+      inputSchema: obj({ action: str('status (default) | token'), repo: str('token: owner/name'), token: str('token: the github_pat_... the person pasted') }),
+      run: async (a) => {
+        if (a.action === 'token') return studio('/api/github/token', { method: 'POST', body: { repo: a.repo, token: a.token } });
+        return studio('/api/github');
+      },
+    },
+    {
       name: 'studio_build',
       description: 'Build a Unity product (sickofit, yoobaland, theplacedepartment) on the AWS build server: incremental, uses the project\'s own deploy method, downloads the new Game/v<n> into the website folder (not committed). Starts the server if stopped (about $0.77/hr; it stops itself when idle).',
       inputSchema: obj({ product: str('Product id'), wait: bool('Wait for it (a first build can take an hour)') }, ['product']),

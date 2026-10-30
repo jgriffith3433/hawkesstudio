@@ -36,6 +36,9 @@ export const paths = {
   /** STUDIO_PRODUCTS points at another products file (tests use a fixture). A customer's Studio (tenancy.ts: an org
    *  cell, STUDIO_ORG, or one a customer claimed) keeps its own in its data folder, which Cloud Run syncs to the cell's bucket (cloudhost.ts); onboarding writes it. */
   products: process.env.STUDIO_PRODUCTS || (customerStudio() ? path.join(DATA, 'products.json') : path.join(ROOT, 'products.json')),
+  /** Games added in J's Studio through Talk or the dashboard (J, 2026-10-30: "Studio's data", not a commit): beside the
+   *  hand-edited products.json, in the data folder Cloud Run syncs. A customer's Studio keeps all its games in `products`. */
+  games: process.env.STUDIO_GAMES || path.join(DATA, 'games.json'),
 };
 for (const d of [DATA, paths.logs, paths.reports]) {
   try {
@@ -125,7 +128,26 @@ export function loadProducts(): Product[] {
   // A new org cell has no products until onboarding adds one.
   if (customerStudio() && !fs.existsSync(paths.products)) return [];
   const all = JSON.parse(fs.readFileSync(paths.products, 'utf8')).products as Product[];
-  return customerStudio() ? all.map(asCustomerGame) : all;
+  if (customerStudio()) return all.map(asCustomerGame);
+  // J's Studio: products.json first; a game added here never shadows one of its ids.
+  const ids = new Set(all.map((p) => p.id));
+  return [...all, ...addedGames().filter((p) => !ids.has(p.id)).map(asCustomerGame)];
+}
+
+/** The games added in J's Studio (paths.games), as stored. */
+export function addedGames(): Product[] {
+  if (customerStudio() || !fs.existsSync(paths.games)) return [];
+  try { return (JSON.parse(fs.readFileSync(paths.games, 'utf8')).products ?? []) as Product[]; } catch { return []; }
+}
+
+/** Where saveProduct and removeProduct write: the cell's products file, or J's added games. */
+const storeFile = () => (customerStudio() ? paths.products : paths.games);
+const storedGames = () => (customerStudio() ? (fs.existsSync(paths.products) ? loadProducts() : []) : addedGames());
+function writeGames(all: Product[]) {
+  const file = storeFile();
+  const tmp = `${file}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify({ products: all }, null, 2));
+  fs.renameSync(tmp, file);
 }
 
 /**
@@ -161,11 +183,14 @@ export type ProductInput = {
 };
 
 /**
- * Adds or replaces one product in an org cell's own products file (onboarding, PUT /api/products/:id). Only the fields a
- * customer's game has (no local servers, deploy steps or devtools: those are J's studio's), checked; written whole.
+ * Adds or replaces one game (onboarding, the Add game dialog, Talk's studio_game, PUT /api/products/:id): an org cell's
+ * own products file, or in J's Studio the added games beside products.json. Only the fields a customer's game has (no
+ * local servers, deploy steps or devtools: those are products.json's), checked; written whole.
  */
 export function saveProduct(input: ProductInput): Product {
-  if (!customerStudio()) throw new StudioError("Products are edited in products.json here (this is J's Studio, not a customer's).", 409);
+  if (!customerStudio() && JSON.parse(fs.readFileSync(paths.products, 'utf8')).products.some((p: Product) => p.id === String(input.id ?? '').trim().toLowerCase())) {
+    throw new StudioError(`"${input.id}" is one of products.json's (edited in git); pick another id for a new game.`, 409);
+  }
   const id = String(input.id ?? '').trim().toLowerCase();
   if (!/^[a-z][a-z0-9-]{1,39}$/.test(id)) throw new StudioError('id: 2-40 lower-case letters, digits or dashes, starting with a letter', 400);
   const name = String(input.name ?? '').trim().slice(0, 80);
@@ -177,7 +202,7 @@ export function saveProduct(input: ProductInput): Product {
   const beta = input.beta ? String(input.beta).trim() : undefined;
   if (beta && !/^https:\/\/[^\s]+$/.test(beta)) throw new StudioError('beta: an https:// address', 400);
   // A customer's Studio never takes on one of J's repos (lockdown: anything touching jgriffith3433 is the platform's).
-  if (touchesPlatformRepo(input.repo) || touchesPlatformRepo(input.build?.repo)) throw new StudioError("That repository belongs to Hawkes Studio's owner; add your own game's repository.", 403);
+  if (customerStudio() && (touchesPlatformRepo(input.repo) || touchesPlatformRepo(input.build?.repo))) throw new StudioError("That repository belongs to Hawkes Studio's owner; add your own game's repository.", 403);
   const playtests = (input.playtests?.length ? input.playtests : [{ scenario: 'smoke', where: 'live' as const }]).slice(0, 20).map((t) => ({
     ...(t.mode === 'site' ? { mode: 'site' as const } : { scenario: String(t.scenario ?? 'smoke').slice(0, 60) }),
     where: 'live' as const, ...(t.device === 'phone' ? { device: 'phone' as const } : {}),
@@ -188,12 +213,10 @@ export function saveProduct(input: ProductInput): Product {
     about: String(input.about ?? '').slice(0, 2000), ...(input.quality ? { quality: String(input.quality).slice(0, 2000) } : {}),
     ...(input.story ? { storyText: String(input.story).slice(0, 20000) } : {}), contract: input.contract === true, playtests, story: [],
   };
-  const all = loadProducts().filter((p) => p.id !== id);
+  const all = storedGames().filter((p) => p.id !== id);
   all.push(product);
-  const tmp = `${paths.products}.tmp`;
-  fs.writeFileSync(tmp, JSON.stringify({ products: all }, null, 2));
-  fs.renameSync(tmp, paths.products);
-  return product;
+  writeGames(all);
+  return customerStudio() ? product : asCustomerGame(product);
 }
 
 /**
@@ -219,12 +242,13 @@ export async function applyOnboardingSeed() {
   return added;
 }
 
-/** Removes a product from an org cell's file. */
+/** Removes a game added through saveProduct (an org cell's, or one added in J's Studio). */
 export function removeProduct(id: string) {
-  if (!customerStudio()) throw new StudioError("Products are edited in products.json here (this is J's Studio, not a customer's).", 409);
-  const all = loadProducts();
-  if (!all.some((p) => p.id === id)) throw new StudioError(`No product "${id}"`, 404);
-  fs.writeFileSync(paths.products, JSON.stringify({ products: all.filter((p) => p.id !== id) }, null, 2));
+  const all = storedGames();
+  if (!all.some((p) => p.id === id)) {
+    throw new StudioError(customerStudio() || !loadProducts().some((p) => p.id === id) ? `No product "${id}"` : `"${id}" is one of products.json's (edited in git), not an added game.`, customerStudio() ? 404 : 409);
+  }
+  writeGames(all.filter((p) => p.id !== id));
 }
 
 export function getProduct(id: string): Product {
