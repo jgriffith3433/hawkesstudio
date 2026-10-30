@@ -111,8 +111,9 @@ test('Ana: sign in with GitHub from her Studio, then install: linked to her Stud
     // GitHub sends her back with Studio's state: signed in, pointed at choosing repositories next, back to her Studio.
     let r = await githubCallsBack({ code: 'c-ana', state: connect.searchParams.get('state')! });
     assert.equal(r.status, 200);
-    assert.match(r.body, /Signed in with GitHub/);
-    assert.match(r.body, /choose repositories on GitHub/);
+    // Signed in, then on by itself to choosing repositories (none yet), with a way back to her Studio.
+    assert.match(r.body, /Signed in as ana/);
+    assert.ok(r.body.includes('location.replace(') && r.body.includes('/apps/hawkes-studio/installations/new"'), 'on to choosing repositories by itself');
     assert.match(r.body, new RegExp(`href="https://studio.test/o/${orgAna}/"`));
     // She installs on her account (chosen repositories); GitHub's sign-in after the install has no state.
     INSTALLS[11] = { account: 'ana', selection: 'selected' };
@@ -120,6 +121,7 @@ test('Ana: sign in with GitHub from her Studio, then install: linked to her Stud
     r = await githubCallsBack({ code: 'c-ana', installation_id: '11', setup_action: 'install' });
     assert.match(r.body, /GitHub is connected/);
     assert.match(r.body, /in ana/);
+    assert.ok(r.body.includes(`location.replace("https://studio.test/o/${orgAna}/?github=installed")`), 'and back to her Studio by itself');
     // Her Studio now sees her and her installation, and gets a token scoped to one of her repos.
     s = await cellAsks(orgAna, 'github', { user: 'u_ana' });
     assert.equal(s.body.user.login, 'ana');
@@ -137,12 +139,13 @@ test("Bo installs before signing in: nothing linked until he signs in from his S
   ACCOUNTS['c-bo'].installs.push(12);
   let r = await githubCallsBack({ code: 'c-bo', installation_id: '12', setup_action: 'install' });
   assert.match(r.body, /Installed/);
-  assert.match(r.body, /Sign in with GitHub there/);
+  assert.match(r.body, /sign in with GitHub from your Studio/);
   assert.deepEqual((await cellAsks(orgBo, 'github', { user: 'u_bo' })).body.installations, [], 'not linked yet');
   // He signs in from his Studio: the install his account can reach is linked by itself.
   const s = await cellAsks(orgBo, 'github', { user: 'u_bo', back: `https://studio.test/o/${orgBo}/` });
   r = await githubCallsBack({ code: 'c-bo', state: new URL(s.body.connect).searchParams.get('state')! });
-  assert.match(r.body, /Signed in with GitHub/);
+  assert.match(r.body, /Signed in as bo/);
+  assert.ok(r.body.includes(`location.replace("https://studio.test/o/${orgBo}/?github=connected")`), 'already installed: straight back to his Studio');
   const after = await cellAsks(orgBo, 'github', { user: 'u_bo' });
   assert.deepEqual(after.body.installations.map((i: any) => i.id), [12]);
   // Neither reaches the other's repos, and a cell's key opens only its own org.
@@ -157,6 +160,9 @@ test('a forged or stale state is refused; a sign-in with no state and no install
   for (const q of [{ code: 'c-ana', state: 'forged.state' }, { code: 'c-ana', state: '' }]) {
     const res = fakeRes();
     const url = new URL(`https://studio.test/api/github/callback?${new URLSearchParams(q)}`);
-    await assert.rejects(handleGithubRoutes(fakeReq(url.pathname + url.search), res, url.pathname, 'GET', url, send, readJson, null), /expired or was not made here/);
+    await handleGithubRoutes(fakeReq(url.pathname + url.search), res, url.pathname, 'GET', url, send, readJson, null);
+    assert.equal(res.status, 400);
+    assert.match(String(res.body), /That didn&#39;t work|That didn't work/);
+    assert.match(String(res.body), /expired or was not made here/);
   }
 });

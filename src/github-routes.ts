@@ -18,6 +18,7 @@ import type http from 'node:http';
 import { StudioError } from './config.ts';
 import * as G from './github-app.ts';
 import { requester } from './auth.ts';
+import { flowPage, backTo } from './github-pages.ts';
 
 type Send = (res: http.ServerResponse, status: number, body: unknown) => void;
 
@@ -29,9 +30,6 @@ const html = (res: http.ServerResponse, status: number, body: string) => {
   res.end(body);
 };
 const redirect = (res: http.ServerResponse, to: string) => { res.writeHead(302, { Location: to, 'Cache-Control': 'no-store' }); res.end(); };
-const esc = (s: string) => s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]!));
-const done = (title: string, text: string, back = '/') => `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>${title}</title>
-<body style="font:16px system-ui;max-width:560px;margin:60px auto;padding:0 16px"><h1 style="font-size:22px">${title}</h1><p>${text}</p><p><a href="${back}">Back to Studio</a></p></body>`;
 
 /**
  * Whose GitHub sign-in a request means: the signed-in person, else (Talk and the agents have none) the admin who
@@ -66,7 +64,7 @@ export async function handleGithubRoutes(req: http.IncomingMessage, res: http.Se
     return redirect(res, r.install!), true;
   }
   if (route === '/api/github/installed' && method === 'GET') {
-    return html(res, 200, done('GitHub is connected', 'Studio can work on the repositories you chose. Go back to Studio and tell Talk which game it is.')), true;
+    return html(res, 200, flowPage({ title: 'GitHub is connected', text: 'Studio can work on the repositories you chose. Taking you back…', done: ['signin', 'repos'], at: 'back', next: backTo(base, 'installed'), nextLabel: 'Back to Studio' })), true;
   }
   if (route === '/api/github/connect' && method === 'GET') {
     const u = requester(req);
@@ -75,28 +73,33 @@ export async function handleGithubRoutes(req: http.IncomingMessage, res: http.Se
     if (!G.appConfig()) {
       const cell = await (await import('./cellside.ts')).cellGithub(`${base}/`, u.id).catch(() => null);
       if (cell?.connect) return redirect(res, cell.connect), true;
-      if (cell?.user) {
-        const next = cell.installations.length || !cell.install ? '' : ` Next, <a href="${esc(cell.install)}">choose the repositories</a> Studio may work on.`;
-        return html(res, 200, done('Signed in with GitHub', `You're signed in as ${esc(cell.user.login)}.${next}`)), true;
-      }
+      // Already signed in: on to choosing repositories when none are chosen yet, else straight back.
+      if (cell?.user) return redirect(res, !cell.installations.length && cell.install ? cell.install : backTo(base, 'connected')), true;
     }
     // No app yet: make it first, then come back here (one link does both).
     if (!G.appConfig()) return redirect(res, '/api/github/app/setup'), true;
     return redirect(res, G.connectUrl(base, u.id)), true;
   }
   if (route === '/api/github/callback' && method === 'GET') {
-    const r = await G.userCallback(base, String(url.searchParams.get('code') ?? ''), String(url.searchParams.get('state') ?? ''), url.searchParams.get('installation_id'), requester(req)?.id ?? null);
-    // An install from a customer's Studio: linked to their org; back to their Studio.
-    if (r.org && r.account) return html(res, 200, done('GitHub is connected', `Your Studio can now work on the repositories you chose in ${esc(r.account)}. Go back to your Studio and tell Talk which game it is.`, r.back ?? '/')), true;
-    // Installed before signing in with GitHub from a Studio: nothing linked yet.
-    if ((r as any).unlinked) return html(res, 200, done('Installed', `Hawkes Studio is installed on ${esc(r.account ?? '')}. To finish, go back to your Studio and choose Sign in with GitHub there: it links this installation by itself.`)), true;
-    // A customer's GitHub sign-in: next, choosing the repositories (the install page), unless it's done already.
-    if (r.org) {
-      const installed = (await G.orgInstallations(r.org).catch(() => [])).length > 0;
-      const next = installed ? '' : ` Next, choose which repositories Studio may work on: <a href="${esc(G.installUrl() ?? '')}">choose repositories on GitHub</a>.`;
-      return html(res, 200, done('Signed in with GitHub', `Your Studio can now make repositories as ${esc(r.login ?? '')}.${next}`, r.back ?? '/')), true;
+    let r: Awaited<ReturnType<typeof G.userCallback>>;
+    try {
+      r = await G.userCallback(base, String(url.searchParams.get('code') ?? ''), String(url.searchParams.get('state') ?? ''), url.searchParams.get('installation_id'), requester(req)?.id ?? null);
+    } catch (e: any) {
+      // GitHub sent them back with something Studio can't use: the same card, saying what happened, with a way back.
+      return html(res, e.status && e.status < 500 ? e.status : 400, flowPage({ title: "That didn't work", text: String(e.message ?? e), tone: 'error', back: base, next: null })), true;
     }
-    return html(res, 200, done('Signed in with GitHub', `Studio can now make repositories as ${r.login}. Go back to Studio.`)), true;
+    const studio = r.back ?? `${base}/`;
+    // An install linked to a customer's Studio (or J's own): done, back to the Studio.
+    if (r.account && r.org) return html(res, 200, flowPage({ title: 'GitHub is connected', text: `Studio can work on the repositories you chose in ${r.account}. Taking you back to your Studio…`, done: ['signin', 'repos'], at: 'back', next: backTo(studio, 'installed'), nextLabel: 'Back to your Studio' })), true;
+    // Installed before signing in with GitHub from a Studio: one step left, from their Studio (its front door finds it).
+    if ((r as any).unlinked) return html(res, 200, flowPage({ title: 'Installed', text: `Hawkes Studio is installed on ${r.account ?? 'your account'}. One step left: sign in with GitHub from your Studio, and it links by itself.`, done: ['repos'], at: 'signin', next: `${base}/`, nextLabel: 'Go to your Studio', delayMs: 3000 })), true;
+    // Signed in: an install their account made before is linked now; then on to choosing repositories when none are
+    // chosen yet, else back to the Studio.
+    if (r.org && r.user) await G.syncOrgInstallations(r.org, r.user).catch(() => []);
+    const installed = r.org ? (await G.orgInstallations(r.org).catch(() => [])).length > 0 : (await G.installations().catch(() => [])).length > 0;
+    const install = G.installUrl();
+    if (!installed && install) return html(res, 200, flowPage({ title: `Signed in as ${r.login}`, text: 'Next, choose which repositories Studio may work on. Taking you to GitHub…', done: ['signin'], at: 'repos', next: install, nextLabel: 'Choose repositories', back: studio })), true;
+    return html(res, 200, flowPage({ title: `Signed in as ${r.login}`, text: 'Your GitHub is connected. Taking you back to your Studio…', done: ['signin', 'repos'], at: 'back', next: backTo(studio, 'connected'), nextLabel: 'Back to your Studio' })), true;
   }
   if (route === '/api/github/user' && method === 'DELETE') {
     const u = requester(req);

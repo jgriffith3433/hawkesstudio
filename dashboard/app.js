@@ -803,3 +803,18 @@ document.addEventListener('click', (e) => {
   const offer = window.studioMe?.entitlements?.offers?.[f] ?? { feature: f, plan: 'studio_team', planName: 'Team', name: f };
   studioUpgrade({ error: `${offer.name} ${f === 'pm' ? 'is' : 'are'} on the ${offer.planName} plan and up.`, upgrade: offer });
 }, true);
+
+// Back from GitHub (src/github-pages.ts backTo): a short notice, then the address tidied so a reload doesn't repeat it.
+(() => {
+  const q = new URLSearchParams(location.search);
+  const g = q.get('github');
+  if (!g) return;
+  q.delete('github');
+  history.replaceState(null, '', location.pathname + (q.toString() ? `?${q}` : '') + location.hash);
+  const t = document.createElement('div');
+  t.setAttribute('role', 'status');
+  t.textContent = g === 'installed' ? '✓ GitHub is connected: Studio can work on the repositories you chose.' : '✓ Signed in with GitHub.';
+  t.style.cssText = 'position:fixed;left:50%;bottom:24px;transform:translateX(-50%);max-width:calc(100vw - 32px);background:var(--panel2);border:1px solid var(--accent);color:var(--text);padding:10px 16px;border-radius:10px;z-index:2000;box-shadow:0 6px 20px rgba(0,0,0,.35)';
+  document.body.append(t);
+  setTimeout(() => t.remove(), 6000);
+})();
