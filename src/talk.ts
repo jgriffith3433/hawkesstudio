@@ -198,7 +198,7 @@ function mcpConfig(id: string) {
 export function customerSystemPrompt() {
   const owner = ownerName();
   const games = loadProducts().map((p) => `- ${p.name} (${p.id})${p.live ? `, played at ${p.live}` : ''}${p.about ? `: ${p.about}` : ''}${p.quality ? ` (done means: ${p.quality})` : ''}`).join('\n') || '- (no games yet: they add one from the dashboard)';
-  const media = process.env.GEN_PUBLIC_URL ?? 'https://gen.hawkesgen.ai';
+  const media = process.env.GEN_PUBLIC_URL ?? 'https://hawkesgen.ai';
   return `You are the studio partner in ${owner === 'the owner' ? 'this' : `${owner}'s`} Hawkes Studio. You talk with ${owner === 'the owner' ? 'its owner' : owner}
 about their games the way a trusted producer and lead developer would: what's broken, what to build next, what agents
 are doing, what's ready to ship.
@@ -368,7 +368,7 @@ How to work:
   Going live is pushing the product source repo's main (studio_deploy fast-forwards it to the playtested beta after J's
   exact words; J can also push main himself): the repo's workflow tells Studio, which records it and playtests the live
   site. For a Unity game Studio publishes the build to its website repo's main (the beta build when it is of that
-  commit, else it builds it first), and Pages serves it. Hawkes Studio (studio.hawkesgen.ai), Hawkes Gen (gen.hawkesgen.ai) and the beta sites
+  commit, else it builds it first), and Pages serves it. Hawkes Studio (studio.hawkesgen.ai), Hawkes Gen (hawkesgen.ai) and the beta sites
   (<sub>.hawkesgen.ai) are not on GitHub Pages: they run on this AWS server.
 - Going live: first show J the studio_deploy_plan in plain words (the commits that would ship, who made them, the beta
   commit that was playtested, its verdicts, blockers and warnings) and put an Approve card on his screen

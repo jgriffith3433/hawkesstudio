@@ -48,7 +48,7 @@ pointer in AGENTS.md). Git talks to GitHub with the stored token (`credential.he
 
 | Repo | Local | Beta | Live | Dev server |
 |---|---|---|---|---|
-| **Hawkes Gen** (`hawkesgen`) | [127.0.0.1:8790](http://127.0.0.1:8790) | [gen-beta.hawkesgen.ai](https://gen-beta.hawkesgen.ai) | [gen.hawkesgen.ai](https://gen.hawkesgen.ai) | `auto-start.bat` |
+| **Hawkes Gen** (`hawkesgen`) | [127.0.0.1:8790](http://127.0.0.1:8790) | [beta.hawkesgen.ai](https://beta.hawkesgen.ai) | [hawkesgen.ai](https://hawkesgen.ai) | `auto-start.bat` |
 | **Hawkes Studio** (`hawkesstudio`) | [127.0.0.1:8791](http://127.0.0.1:8791) | [studio-beta.hawkesgen.ai](https://studio-beta.hawkesgen.ai) | [studio.hawkesgen.ai](https://studio.hawkesgen.ai) | `auto-start.bat` |
 | **Hawkes Net** (`hawkesnet`) | [127.0.0.1:8796](http://127.0.0.1:8796) | [hawkesnet.hawkesgen.ai](https://hawkesnet.hawkesgen.ai) | [net.hawkesgen.ai](https://net.hawkesgen.ai) | `npm run dev` |
 | **Hawkes Gen portal (hawkesgen.ai)** (`hawkesgenwebsite`) | [127.0.0.1:8800](http://127.0.0.1:8800) | [beta.hawkesgen.ai](https://beta.hawkesgen.ai) | [hawkesgen.ai](https://hawkesgen.ai) | `npm start` |

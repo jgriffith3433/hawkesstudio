@@ -113,7 +113,7 @@ if (typeof document !== 'undefined') (() => {
   // Studio and Gen have no beta lane, so only their live address.
   const INFRA = [
     { name: 'Hawkes Studio', live: 'https://studio.hawkesgen.ai/' },
-    { name: 'Hawkes Gen', live: 'https://gen.hawkesgen.ai/' },
+    { name: 'Hawkes Gen', live: 'https://hawkesgen.ai/' },
   ];
   const short = (u) => u.replace(/^https?:\/\//, '').replace(/\/$/, '');
   const siteLink = (kind, label, url) => (url

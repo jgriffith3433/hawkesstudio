@@ -571,7 +571,7 @@
       "name": "Hawkes Gen",
       "repo": "hawkesgen",
       "slug": "jgriffith3433/hawkesgen",
-      "about": "The shared generative-AI service (gen.hawkesgen.ai): the job queue, the AWS GPU fleet (ComfyUI), ElevenLabs, Claude, local tools, the library, usage and API keys, the build server and the playtester. Node 24 + TypeScript (type stripping), a plain-JS dashboard.",
+      "about": "The shared generative-AI service (hawkesgen.ai): the job queue, the AWS GPU fleet (ComfyUI), ElevenLabs, Claude, local tools, the library, usage and API keys, the build server and the playtester. Node 24 + TypeScript (type stripping), a plain-JS dashboard.",
       "checks": [
         "npm run typecheck",
         "npm test"

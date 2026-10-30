@@ -31,7 +31,7 @@ const job = beta ? 'studio-beta-cell-agent' : 'studio-cell-agent';
 const master = `${studio}-cells-master`;
 const genOwnerSecret = `${studio}-cells-gen-owner-key`;
 const publicUrl = beta ? 'https://studio-beta.hawkesgen.ai' : 'https://studio.hawkesgen.ai';
-const genUrl = beta ? 'https://gen-beta.hawkesgen.ai' : 'https://gen.hawkesgen.ai';
+const genUrl = beta ? 'https://beta.hawkesgen.ai' : 'https://hawkesgen.ai';
 
 /** A secret's first version from a value that never reaches a command line or the screen (a 0600 file, gone after). */
 function secretOnce(name, value, what) {

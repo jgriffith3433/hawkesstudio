@@ -6,7 +6,7 @@ talk to the cloud, and `auto-start.bat` opens the cloud dashboards. (`auto-start
 | | |
 |---|---|
 | **Studio** (dashboard, reports, backlog, changes) | https://studio.hawkesgen.ai |
-| **Hawkes Gen** (dashboard, and the API for programs) | https://gen.hawkesgen.ai |
+| **Hawkes Gen** (dashboard, and the API for programs) | https://hawkesgen.ai |
 | **The public landing page** (no sign-in; what Gen and Studio do, for people and the product sites' "Powered by HAWKES GEN" badge) | https://hawkesgen.ai (https://www.hawkesgen.ai redirects to it). Plain HTML/CSS in this repo's `site/`, served by Caddy's `file_server` straight from `/srv/hawkes/hawkesstudio/site` with security headers (HSTS, a strict CSP, no framing); nothing runs behind it. Editing `site/` and pushing to main updates it (the server pulls main). The Caddy block is in `deploy/caddyfile.mjs` (applied by the server after a push); the apex and `www` DNS records come from `deploy/deploy.mjs` (`ensureDns`): `node deploy/deploy.mjs --caddy-only` creates them (`--caddy-rollback` undoes a Caddyfile) |
 | **Sign in** | Your own account at https://studio.hawkesgen.ai/auth/signin (one session covers Studio, Gen and the beta sites). First run: `admin@hawkesgen.ai` / `admin`, then set a password (after that "admin" never works). Invite people, reset passwords and see the sign-in log in Studio's **Users** tab (admins). Members use Studio, Talk and the beta sites; going live, merging into main, money and users are admins'. `src/auth.ts`, `src/auth-pages.ts`; Caddy asks `/auth/check` (forward_auth) |
 | **Script login** | user `j`, password in `hawkesstudio/deploy/.keys/web-password.txt`: J's scripts (`src/client.ts`) still send it; Studio checks its SHA-256 (`WEB_LOGIN_SHA256` in keys.env) and counts it as J |
@@ -101,7 +101,7 @@ their `usr_` projects.
 ## How code gets to the server
 
 Hawkes Gen and Hawkes Studio are private GitHub repos (`jgriffith3433/hawkesgen`, `jgriffith3433/hawkesstudio`), and
-**pushing to `main` deploys them**. There's no beta lane for these two: main is what runs at studio.hawkesgen.ai and gen.hawkesgen.ai.
+**pushing to `main` deploys them**. There's no beta lane for these two: main is what runs at studio.hawkesgen.ai and hawkesgen.ai.
 
 1. **CI** (`.github/workflows/ci.yml` in each repo) runs on every push and pull request: Node 24, `npm ci`,
    `npm run typecheck`, `npm test`. Tests that need something CI doesn't have skip themselves (Gen: the ComfyUI
@@ -206,15 +206,15 @@ tools over HTTPS (MCP Streamable HTTP; the tool tables are shared, in `src/mcp-t
 | | URL | Key |
 |---|---|---|
 | Studio | `https://studio.hawkesgen.ai/mcp` | the Studio MCP key (`hs_...`): `deploy/.keys/studio-mcp-key.txt` (deploy.mjs makes it, as `STUDIO_MCP_KEY` in `/etc/hawkes/keys.env`) |
-| Hawkes Gen | `https://gen.hawkesgen.ai/mcp` | any Hawkes Gen API key (`hg_...`); its role and projects apply |
+| Hawkes Gen | `https://hawkesgen.ai/mcp` | any Hawkes Gen API key (`hg_...`); its role and projects apply |
 
 The key goes in an `Authorization: Bearer` header; Caddy lets those requests skip the website login, and each
 service checks the key itself (no key or a wrong one: 401). For clients that can't send headers, the key can go in
-the URL instead: `https://studio.hawkesgen.ai/mcp/hs_...` and `https://gen.hawkesgen.ai/mcp/hg_...`. Then the URL
+the URL instead: `https://studio.hawkesgen.ai/mcp/hs_...` and `https://hawkesgen.ai/mcp/hg_...`. Then the URL
 **is** the password: don't paste it anywhere shared. To revoke a Gen key, disable it (Gen dashboard → Keys); for the
 Studio key, delete the `STUDIO_MCP_KEY` line on the server, run `deploy.mjs` again (it makes a new one) and update clients.
 
-**Public on gen.hawkesgen.ai (Hawkes Analytics):** two paths skip the login so players' browsers can use them:
+**Public on hawkesgen.ai (Hawkes Analytics):** two paths skip the login so players' browsers can use them:
 `POST /v1/analytics/collect` (and its `OPTIONS` preflight; bodies over 64 KB get 413 from Caddy) and `GET /sdk/*`
 (the SDK script; `Cache-Control: public, max-age=3600` unless Gen sends its own). Caddy sets `X-Forwarded-For` to
 the address it saw (Gen's GeoIP and rate limit read it) and drops any `Authorization` or `Cookie` header, so the web
@@ -231,7 +231,7 @@ itself from hawkesnet main (`hawkes-net-pull.timer`; until 2026-10-26 it ran fro
 308 to the box; it only checks keys for the box (`/v1/net/whoami`) and files its usage. Logs:
 `ssh -i deploy/.keys/net_ed25519 ubuntu@44.219.198.116 journalctl -u hawkes-net -u hawkes-net-pull -u caddy`.
 
-**Public on gen.hawkesgen.ai (Hawkes Net):** players' pages join multiplayer rooms with no login, so `@net` opens
+**Public on hawkesgen.ai (Hawkes Net):** players' pages join multiplayer rooms with no login, so `@net` opens
 `/v1/net/ws` (the relay's WebSocket: a signed, single-use ticket is the only way in), `/v1/net/ticket` (Gen's ticket
 door: player tickets for a listed project's own sites, limited per address; requests with a key go through `@apikey`),
 `/v1/net/keys`, `/v1/net/status` (totals only without a key) and `/v1/net/nodes`. Caddy drops `Cookie`, sets
@@ -240,14 +240,14 @@ Everything else under `/v1/net/` (publish, room info, heartbeats, usage, key rot
 `docs/net.md` has the rest.
 
 Give each place its own Gen key (`hawkesgen.cmd key claude-ai --role owner`), so one can be turned off alone.
-Over HTTP, Gen outputs come back as `https://gen.hawkesgen.ai/v1/files/<asset>` links (they need the key or the login),
+Over HTTP, Gen outputs come back as `https://hawkesgen.ai/v1/files/<asset>` links (they need the key or the login),
 and inputs must be `asset:<id>` or `blob:<sha>` (`save_to` and `workflow_file` only work with the local server).
 
 **Claude Code on any machine** (user scope, so every folder has them):
 
 ```bash
 claude mcp add --scope user --transport http hawkesstudio https://studio.hawkesgen.ai/mcp --header "Authorization: Bearer hs_..."
-claude mcp add --scope user --transport http hawkesgen https://gen.hawkesgen.ai/mcp --header "Authorization: Bearer hg_..."
+claude mcp add --scope user --transport http hawkesgen https://hawkesgen.ai/mcp --header "Authorization: Bearer hg_..."
 ```
 
 **claude.ai/code (cloud sessions):** they read the repo's `.mcp.json`. The project files point at the stdio servers on
@@ -256,16 +256,16 @@ this PC, so add the HTTP ones with the keys from environment variables (Claude C
 ```json
 { "mcpServers": {
   "hawkesstudio": { "type": "http", "url": "https://studio.hawkesgen.ai/mcp", "headers": { "Authorization": "Bearer ${HAWKES_STUDIO_KEY}" } },
-  "hawkesgen": { "type": "http", "url": "https://gen.hawkesgen.ai/mcp", "headers": { "Authorization": "Bearer ${HAWKESGEN_KEY}" } }
+  "hawkesgen": { "type": "http", "url": "https://hawkesgen.ai/mcp", "headers": { "Authorization": "Bearer ${HAWKESGEN_KEY}" } }
 } }
 ```
 
 Set `HAWKES_STUDIO_KEY` and `HAWKESGEN_KEY` in the cloud environment's settings (environment variables), and give it
-network access to `studio.hawkesgen.ai` and `gen.hawkesgen.ai` (the default "trusted" network list may not include
+network access to `studio.hawkesgen.ai` and `hawkesgen.ai` (the default "trusted" network list may not include
 them: use custom access with those two domains). Untested from a cloud session yet.
 
 **claude.ai, the Claude desktop app (Chat) and the phone app:** Settings → Connectors → Add custom connector, one per
-service, with the **key-in-URL** address (`https://studio.hawkesgen.ai/mcp/hs_...`, `https://gen.hawkesgen.ai/mcp/hg_...`).
+service, with the **key-in-URL** address (`https://studio.hawkesgen.ai/mcp/hs_...`, `https://hawkesgen.ai/mcp/hg_...`).
 Custom connectors only do OAuth or no auth (no custom headers), which is why the key goes in the URL. Connectors added
 on claude.ai also show in the desktop and phone apps. Alternatively, the desktop app's Chat can run the stdio servers on
 this PC: in `claude_desktop_config.json`, `"mcpServers": { "hawkesstudio": { "command": "node", "args":

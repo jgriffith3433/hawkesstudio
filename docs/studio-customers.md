@@ -328,7 +328,7 @@ stripe account. Beta should use the test keys."):
 
   The secret names follow Studio's `studio-*` / `studio-beta-*` pattern (docs/studio-cloudrun.md). The portal's beta
   keeps `STRIPE_SECRET_KEY` and `STRIPE_WEBHOOK_SECRET` (project `hawkes-staging`). gen-beta's endpoint is
-  `https://gen-beta.hawkesgen.ai/v1/billing/webhook`.
+  `https://beta.hawkesgen.ai/v1/billing/webhook`.
 - **Where Studio reads its keys** (**built**, src/billing.ts `stripeKeys`, read on every call, so no restart):
   1. `stripe.json` in Studio's data folder: `{ "secretKey": "sk_test_…", "webhookSecret": "whsec_…",
      "publishableKey": "pk_test_…" }`. On Cloud Run the data folder's small files are synced with the lane's state
@@ -441,7 +441,7 @@ LLMs anyways"). Agents and the PM stay on Team and up.
 - "Run a playtest" is on the game's card and on both playtest tabs.
 
 **Playtest videos and every library file** go through Studio's relay to Gen (`/api/gen/v1/files/<asset>`, with the
-Studio's own Gen key and range requests), never straight to gen.hawkesgen.ai, which answers 401 to a browser. This
+Studio's own Gen key and range requests), never straight to hawkesgen.ai, which answers 401 to a browser. This
 applies to J's Studio too.
 
 **They never get** J's machinery (section 5).

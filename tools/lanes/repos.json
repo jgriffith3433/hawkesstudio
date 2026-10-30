@@ -8,10 +8,10 @@
       "http://127.0.0.1:8790"
     ],
     "beta": [
-      "https://gen-beta.hawkesgen.ai"
+      "https://beta.hawkesgen.ai"
     ],
     "prod": [
-      "https://gen.hawkesgen.ai"
+      "https://hawkesgen.ai"
     ],
     "deploys": "Push beta: GitHub Actions builds the image and deploys Cloud Run gen-beta. Push main: the same for gen (live). Health-checked, rolled back if unhealthy.",
     "check": "npm run typecheck"

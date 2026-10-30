@@ -55,7 +55,7 @@ provider: Cloud Run, RunPod, Modal, the AWS fleet when AWS is back), ElevenLabs,
 One queue shares the GPU servers between projects; every output goes into a browsable library with the recipe
 that made it; usage and cost are tracked per project and API key. Projects never hold AWS or API keys.
 
-- **Where:** **https://gen.hawkesgen.ai** (live, Cloud Run) and **https://gen-beta.hawkesgen.ai** (beta); every client on
+- **Where:** **https://hawkesgen.ai** (live, Cloud Run) and **https://beta.hawkesgen.ai** (beta); every client on
   J's PC reaches it through `~/.hawkes/client.json`. Locally: `hawkesgen\auto-start.bat`, http://127.0.0.1:8790 (`/v1/...`).
 - **Tools:** about 30, covering images, masks, depth, normals, video, 3D meshes (GLB), music, voice, SFX and
   Claude. The list is in `hawkesgen/README.md`.
@@ -107,13 +107,13 @@ AWS suspended the account on 2026-10-28; everything moved to Google Cloud and th
   was gen.hawkesgen.ai) and **Studio**. The move's runbook is hawkesgenwebsite `docs/domain-move.md`: the portal
   becomes **https://hawkesgames.com** (beta **https://beta.hawkesgames.com**), the Net dashboard net.hawkesgames.com
   (beta net-beta.hawkesgames.com, beside the portal for its sign-in cookie), and **hawkesgen.ai** becomes Hawkes Gen's app
-  (beta.hawkesgen.ai Gen beta). gen.hawkesgen.ai, gen-beta, net., hawkesnet., studio., cdn., the beta game sites and
-  support@hawkesgen.ai stay. The gen-edge Worker sends hawkesgen.ai to Gen first and only what Gen doesn't have
+  (beta.hawkesgen.ai Gen beta). net., hawkesnet., studio., cdn., the beta game sites and support@hawkesgen.ai stay;
+  gen.hawkesgen.ai and gen-beta.hawkesgen.ai are Gen's old names, still routed until nothing calls them, then removed. The gen-edge Worker sends hawkesgen.ai to Gen first and only what Gen doesn't have
   (or a key it refuses on `/v1`, `/mcp`) to the portal. Stripe: one account, one endpoint per product, each acting on its
   own `metadata[product]` (`cloud/stripe-keys.mjs` sets all three). The code is on `dev`; the cutover follows the runbook, beta first.
 - **Gen and Studio run on Cloud Run** in the Google Cloud project "Hawkes" (id `hawkes-staging`: a leftover name, it
   is live), scale to zero, SQLite streamed to Cloud Storage by Litestream. Each is behind a Cloudflare Worker:
-  **https://gen.hawkesgen.ai**, **https://studio.hawkesgen.ai** (Continue with Google, J's email). Files go out through
+  **https://hawkesgen.ai**, **https://studio.hawkesgen.ai** (Continue with Google, J's email). Files go out through
   **https://cdn.hawkesgen.ai** (a Worker caching Gen's library by hash). Runbooks: hawkesgen `docs/gen-cloudrun.md`,
   hawkesstudio `docs/studio-cloudrun.md`.
 - **Every Worker is on a zone route, never a custom domain** (2026-10-29): `{ "pattern": "<host>/*", "zone_name":
@@ -123,7 +123,7 @@ AWS suspended the account on 2026-10-28; everything moved to Google Cloud and th
   add the route and the record (hawkesstudio `tools/edge/to-routes.mjs` moves any custom domain over). The `cf` CLI's
   login is per shell: `cf auth login` in PowerShell too.
 - **Lanes for Gen and Studio: dev -> beta -> main** (J, 2026-10-28). `dev` deploys nothing (Claude pushes finished work
-  there); a push to `beta` deploys **gen-beta.hawkesgen.ai** / **studio-beta.hawkesgen.ai** (their own databases,
+  there); a push to `beta` deploys **beta.hawkesgen.ai** / **studio-beta.hawkesgen.ai** (their own databases,
   buckets, keys and Claude logins; Studio beta uses Gen beta and has no daily run); a push to `main` deploys live.
   GitHub Actions does it with no stored key (Workload Identity Federation), health-checks and rolls back. Moving a lane
   is J's push (`git push origin dev:beta`, `beta:main`).

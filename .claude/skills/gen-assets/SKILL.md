@@ -4,7 +4,7 @@ description: Make images, textures, video clips, 3D props, music, voice lines or
 ---
 # Generating assets with Hawkes Gen
 
-Every generative job goes through Hawkes Gen (`https://gen.hawkesgen.ai`, the `hawkesgen` MCP tools, or the JS/Python
+Every generative job goes through Hawkes Gen (`https://hawkesgen.ai`, the `hawkesgen` MCP tools, or the JS/Python
 clients). Products never hold AWS or API keys; the job, its recipe and its cost are recorded per project.
 
 ## Pick the tool
@@ -36,7 +36,7 @@ changed: every run costs.
   minutes). Launching, starting or terminating servers asks J first; so do big batches.
 - ElevenLabs and Claude calls are per use (cents). `image.cutout` and the local tools are free.
 - `hawkesgen_jobs` / `hawkesgen_job` show progress; outputs land in the library (`hawkesgen_library`), linked as
-  `https://gen.hawkesgen.ai/v1/files/<asset>`.
+  `https://hawkesgen.ai/v1/files/<asset>`.
 
 Voice lines: use the character's saved voice (the product's `audio.json` / DoD's voice ids); keep prompts free of agent
 instructions (PH Origins: don't put notes into the VO text).

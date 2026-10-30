@@ -180,7 +180,7 @@ ${since ? `<div class="card"><b>On beta, not live yet:</b> ${since.commits.lengt
 
 function unityPage(p: Product) {
   const u = unityInfo(p);
-  const gen = GEN_URL.includes('127.0.0.1') ? 'https://gen.hawkesgen.ai' : GEN_URL;
+  const gen = GEN_URL.includes('127.0.0.1') ? 'https://hawkesgen.ai' : GEN_URL;
   return page(`${p.name}: Unity editor`, `<h1>${esc(p.name)} is a Unity game</h1>
 <p>Its editor can't run on this server. Unity runs on the <b>build server</b> (a Windows machine on AWS that mirrors C:\\Projects
 and builds every Unity product), and you can open it there over Remote Desktop.</p>

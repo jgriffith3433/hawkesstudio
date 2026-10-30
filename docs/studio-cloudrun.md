@@ -15,7 +15,7 @@ Cloud Run service `studio` in `hawkes-staging` / `us-east4`, the same way Hawkes
 | Agents', scouts' and Talk's Claude Code | Cloud Run job `studio-agent`, one execution per pass (`src/cloudjob.ts`, `src/cloudjob-run.ts`) | Its own sandbox; see "The job" |
 | The daily run | Cloud Scheduler `studio-daily`, 05:00 America/Los_Angeles, `POST /api/cloud/daily` | OIDC token of `studio-scheduler@`, checked by Studio (`cloudauth.ts schedulerCall`) |
 | Product repos | Cloned on demand into `/tmp/projects` (`repos.ts ensureCloned`, the run's own repos in `pipeline.ts`) | With the GitHub token through git's credential helper |
-| Generation, builds, playtests | Hawkes Gen at `https://gen.hawkesgen.ai`, with Studio's own Gen key | Unchanged: Studio orchestrates, Gen works |
+| Generation, builds, playtests | Hawkes Gen at `https://hawkesgen.ai`, with Studio's own Gen key | Unchanged: Studio orchestrates, Gen works |
 | Unity builds | A pushed `build-*` tag (`git tag build-x && git push origin build-x`) in a Unity source repo: Gen's Cloud Run job builds that commit from GitHub and pushes it to the website repo's beta (`src/tagbuild.ts`; docs/daily.md, "Build tags") | Gen and Studio share no disk here, so builds into a local website copy (`siteDir`) can't work; GitHub mode needs none |
 | `studio.hawkesgen.ai` | Cloudflare Worker `server/studio-edge/` | Passes everything to the service's run.app address |
 | Mail (invites, resets) | Resend (`RESEND_API_KEY`), like the portal | Without the key, the Users tab shows the link to pass on |

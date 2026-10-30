@@ -1,5 +1,5 @@
 /* Hawkes Analytics on hawkesgen.ai (the contract is hawkesgen/docs/analytics.md).
-   site/index.html loads Gen's SDK from https://gen.hawkesgen.ai/sdk/analytics@1.js (deferred) and then this file,
+   site/index.html loads Gen's SDK from https://hawkesgen.ai/sdk/analytics@1.js (deferred) and then this file,
    right after it. The SDK sends page views, referrers, UTM tags, the device, outbound links and the place by itself.
    This file adds:
    - debug mode in a playtest bot's tab (data-debug="1" before the deferred SDK runs), so playtests can read
@@ -42,7 +42,7 @@
       if (host === 'youtu.be' || host === 'youtube.com') return { id: 'product_video', label: 'Product video (YouTube)' };
       if (host === 'twitch.tv') return { id: 'twitch', label: 'Twitch' };
       if (host === 'hawkesbiomedical.com') return { id: 'hawkes_biomedical', label: 'Hawkes Biomedical' };
-      if (host === 'gen.hawkesgen.ai') return { id: 'sign_in', label: 'Sign in' };
+      if (host === 'hawkesgen.ai') return { id: 'sign_in', label: 'Sign in' };
       return null;
     } catch (e) {
       return null;

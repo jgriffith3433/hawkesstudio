@@ -4,7 +4,7 @@
 // changes things only with --apply. J runs it through deploy.ps1 (IAM and secret writes are his). Every step is safe to
 // run again.
 //
-//   node tools/studio-cloudrun/deploy.mjs [--lane live|beta] [--project hawkes-staging] [--region us-east4] [--gen https://gen.hawkesgen.ai] [--apply]
+//   node tools/studio-cloudrun/deploy.mjs [--lane live|beta] [--project hawkes-staging] [--region us-east4] [--gen https://hawkesgen.ai] [--apply]
 //
 // 1. APIs; the state bucket (studio.db through Litestream, state files, the jobs' folders, cleared after 7 days).
 // 2. Three accounts: studio-control@ (the service: the bucket, starting and following the job), studio-agent@ (the job:
@@ -32,7 +32,7 @@ if (!['live', 'beta'].includes(lane)) die(`--lane is live or beta, not ${lane}`)
 const beta = lane === 'beta';
 const service = flag('service', beta ? 'studio-beta' : 'studio');
 const jobName = flag('job', beta ? 'studio-agent-beta' : 'studio-agent');
-const genUrl = flag('gen', beta ? 'https://gen-beta.hawkesgen.ai' : 'https://gen.hawkesgen.ai').replace(/\/+$/, '');
+const genUrl = flag('gen', beta ? 'https://beta.hawkesgen.ai' : 'https://hawkesgen.ai').replace(/\/+$/, '');
 const publicUrl = flag('public-url', beta ? 'https://studio-beta.hawkesgen.ai' : 'https://studio.hawkesgen.ai').replace(/\/+$/, '');
 const emails = flag('google-emails', 'piercehawkes3@gmail.com');
 const P = `--project=${project}`;

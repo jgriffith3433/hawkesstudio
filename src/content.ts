@@ -240,7 +240,7 @@ export function wire(productId: string, { kind, root, slots, dry = false }: { ki
       '## Generative AI: Hawkes Gen',
       '',
       'Images, textures, video, 3D, music, voice, sound and Claude all go through **Hawkes Gen**',
-      '(`C:\\Projects\\hawkesgen`, https://gen.hawkesgen.ai). It holds the API and AWS keys and runs the shared GPU fleet.',
+      '(`C:\\Projects\\hawkesgen`, https://hawkesgen.ai). It holds the API and AWS keys and runs the shared GPU fleet.',
       'This project never holds those keys.',
       '',
       `- **Agents:** the \`hawkesgen\` MCP server is in \`.mcp.json\`. Use \`hawkesgen_presets\` (project \`${p.id}\`) for the`,
