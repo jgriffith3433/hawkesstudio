@@ -41,7 +41,9 @@ export function testedAt(productId: string, sha: string | undefined, carries: (f
   const plays = steps.filter((s) => s.kind === 'playtest' && s.status !== 'running');
   const last = plays.find((s) => s.data?.played) ?? null;
   const byName = new Map<string, Step>();
-  if (sha) for (const s of plays) if (s.data?.played?.sha === sha && !s.data.played.dirty && !byName.has(s.name)) byName.set(s.name, s);
+  // A deployed app or a beta site may report a short commit: the same commit either way.
+  const same = (x: unknown) => typeof x === 'string' && (x === sha || (x.length >= 7 && (sha!.startsWith(x) || x.startsWith(sha!))));
+  if (sha) for (const s of plays) if (same(s.data?.played?.sha) && !s.data.played.dirty && !byName.has(s.name)) byName.set(s.name, s);
   // A clean pass of an earlier commit counts when nothing a player can see changed since (only docs and notes): a beta
   // run doesn't replay it (pipeline.ts unchangedPass), so go live must not ask for it either. Exact plays win.
   const carried = new Set<string>();
@@ -473,9 +475,23 @@ export async function verifyLive(productId: string, sha: string, focus: string, 
   const end = Date.now() + 15 * 60_000;
   let published = false;
   const own = publisherOf(p).box;
-  // GitHub's API with the server's token (the gh CLI isn't on the server): Pages has built this commit, or (sites that
-  // publish through a workflow, like Dose Of Destruction's pages.yml) every workflow run for it finished.
-  const token = process.env.GITHUB_TOKEN;
+  // A project that says which commit it runs (a web app with its own deploy: Product.versionPath): live answers with
+  // this commit once its CI has deployed it.
+  if (p.versionPath) {
+    const { deployedOf, sameCommit } = await import('./deployed.ts');
+    const until = Date.now() + 30 * 60_000;
+    while (Date.now() < until && !published) {
+      await sleep(20_000);
+      published = sameCommit((await deployedOf(p, 'live'))?.commit, sha);
+    }
+    const t = p.playtests.find((x) => x.where === 'live');
+    startPartial('playtest', p.id, { where: 'live', scenario: t?.scenario, mode: t?.mode, focus: `${focus} Check the live site works and nothing regressed.${published ? '' : ' (Live did not report the new commit within 30 minutes: say so.)'}`, origin });
+    return;
+  }
+  // GitHub's API with the repo's own token (ghtoken.ts: J's for his repos, the GitHub App's for a customer's): Pages has
+  // built this commit, or (sites that publish through a workflow, like Dose Of Destruction's pages.yml) every workflow
+  // run for it finished.
+  const token = slug ? (await (await import('./ghtoken.ts')).repoToken(slug).catch(() => null)) ?? process.env.GITHUB_TOKEN : process.env.GITHUB_TOKEN;
   if (slug && token) {
     const api = async (route: string) => {
       const r = await fetch(`https://api.github.com/repos/${slug}/${route}`, { headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json' }, signal: AbortSignal.timeout(20_000) }).catch(() => null);

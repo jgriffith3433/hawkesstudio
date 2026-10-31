@@ -658,6 +658,10 @@ export const isSiteChange = (c: { repo: string; infra?: boolean | number | null 
 function repoForTarget(p: Product, target?: string | null) {
   const t = String(target ?? '').trim().toLowerCase();
   if (!t || t === 'source' || t === 'game') return repoFor(p);
+  // A project with more than one repository (config.ts Product.repos): the target names one by owner/name, name or role.
+  const other = (p.repos ?? []).find((r) => r.folder && [r.repo.toLowerCase(), r.repo.split('/')[1].toLowerCase(), String(r.role ?? '').toLowerCase()].includes(t));
+  if (other) return { top: other.folder!, slug: repoMap()[other.folder!] ?? other.repo, sub: '' };
+  if (p.repos?.length && t !== 'site' && t !== 'website') throw new StudioError(`target is one of ${p.name}'s repositories (${p.repos.map((r) => r.repo).join(', ')}) or empty (${p.github ?? p.repo})`);
   if (t !== 'site' && t !== 'website') throw new StudioError(`target is "site" (the website repo) or empty (the game's source repo), not "${target}"`);
   const site = siteRepoFor(p);
   if (!site) throw new StudioError(`${p.name} has no website repo of its own: its pages are in ${p.repo.split('/')[0]} (leave target empty).`);

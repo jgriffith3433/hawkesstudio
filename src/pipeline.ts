@@ -610,6 +610,11 @@ async function playScenario(run: string, p: Product, asked: Playtest, { review =
       const v = (await import('./previews.ts')).betaPreview(p.id);
       if (v?.sha) played = { branch: BETA, sha: v.sha, title: v.ref };
     }
+    // A web app its own CI deploys (Product.versionPath): what's played is the commit its beta says it runs.
+    if (t.where === 'local' && !was?.data?.played && p.versionPath) {
+      const d = await (await import('./deployed.ts')).deployedOf(p, 'beta');
+      if (d?.commit) played = { branch: BETA, sha: d.commit, title: `deployed beta${d.version ? ` ${d.version}` : ''}` };
+    }
     const build = played ? String(played.build ?? played.sha) : null;
     // A scenario this build is known not to have is skipped, not played (scenarios.ts).
     const has = t.where === 'local' && t.scenario && !prior ? knownScenarios(p.id, build) : null;
@@ -647,6 +652,16 @@ async function playScenario(run: string, p: Product, asked: Playtest, { review =
     const params: Record<string, unknown> = { url, mode: t.mode ?? (p.contract && t.where === 'local' ? 'contract' : 'auto'), ...(t.scenario ? { scenario: t.scenario } : {}), ...(t.timeout ? { timeout: t.timeout } : {}), ...(t.seed ? { seed: t.seed } : {}), ...(playOptions(t) ? { options: playOptions(t) } : {}) };
     if (t.mode === 'site') params.maxPages = 40;
     Object.assign(params, playtestExtras(p.id, name, t));
+    // An app behind a sign-in (Product.testSignIn): on its beta, the playtest starts signed in as a test account.
+    if (t.where === 'local' && p.testSignIn?.url && !prior) {
+      try {
+        const signedIn = await (await import('./playtest-signin.ts')).testSignIn(p);
+        params.cookies = [...((params.cookies as unknown[]) ?? []), ...signedIn];
+      } catch (e: any) {
+        updateStep(s, { status: 'failed', detail: `the test sign-in failed: ${e.message}`, data: { played, url, signInFailed: true }, finished: true });
+        return null;
+      }
+    }
     if (gpuGate && p.engine !== 'static' && !prior) {
       updateStep(s, { detail: 'waiting for the GPU machine' });
       await gpuGate;

@@ -86,17 +86,25 @@ async function studioEditGame(id) {
   const opt = (val, label) => `<option value="${val}"${(p?.engine === 'static' ? 'web' : p?.engine ?? 'web') === val ? ' selected' : ''}>${label}</option>`;
   const field = 'width:100%;padding:8px;border-radius:6px;border:1px solid var(--line);background:var(--panel2,transparent);color:inherit';
   el.innerHTML = `<form style="background:var(--panel,#151a1f);border:1px solid var(--line,#2a3138);border-radius:12px;padding:20px;max-width:560px;width:100%;display:flex;flex-direction:column;gap:8px">
-    <h3 style="margin:0">${p ? `Edit ${esc(p.name)}` : 'Add a game'}</h3>
+    <h3 style="margin:0">${p ? `Edit ${esc(p.name)}` : 'Add a project'}</h3>
+    <label class="meta">What it is<select name="kind" style="${field}">${['game', 'app', 'site'].map((k) => `<option value="${k}"${(p?.kind ?? 'game') === k ? ' selected' : ''}>${({ game: 'A game', app: 'A web app (with a server)', site: 'A website' })[k]}</option>`).join('')}</select></label>
     <label class="meta">Name<input name="name" required maxlength="80" value="${v(p?.name)}" style="${field}"></label>
-    <label class="meta">Made with<select name="engine" style="${field}">${opt('web', 'A web game or site')}${opt('unity', 'Unity (WebGL)')}${opt('godot', 'Godot (web export)')}${opt('desktop', 'A desktop game')}</select></label>
+    <label class="meta">Made with<select name="engine" style="${field}">${opt('web', 'For the web')}${opt('unity', 'Unity (WebGL)')}${opt('godot', 'Godot (web export)')}${opt('desktop', 'A desktop game')}</select></label>
     <label class="meta">Where it plays (live)<input name="live" type="url" required placeholder="https://…" value="${v(p?.live)}" style="${field}"></label>
     <label class="meta">Its test version (beta), if it has one<input name="beta" type="url" placeholder="https://… (optional)" value="${v(p?.beta)}" style="${field}"></label>
     <label class="meta">GitHub repository (owner/name), optional<input name="repo" placeholder="owner/name" value="${v(p?.github ?? p?.repo)}" style="${field}"></label>
+    <details class="meta"${p?.repos?.length || p?.versionPath || p?.checksCmd || p?.testSignIn || p?.reportOrigins?.length ? ' open' : ''}><summary>For web apps and bigger projects</summary>
+      <label class="meta">More repositories, one per line (owner/name, then what it is)<textarea name="repos" rows="2" placeholder="owner/worker  the GPU worker" style="${field}">${v((p?.repos ?? []).map((r) => `${r.repo}${r.role ? `  ${r.role}` : ''}`).join('\n'))}</textarea></label>
+      <label class="meta">Where it says which commit it runs (a path on its site)<input name="versionPath" placeholder="/v1/health" value="${v(p?.versionPath)}" style="${field}"></label>
+      <label class="meta">What an agent's change must pass (a command in the repo)<input name="checks" placeholder="npm ci && npm run typecheck && npm test" value="${v(p?.checksCmd)}" style="${field}"></label>
+      <label class="meta">Its beta's test sign-in (Studio's playtests sign in with it)<input name="testSignIn" type="url" placeholder="https://beta.example.com/api/test-session" value="${v(p?.testSignIn?.url)}" style="${field}"></label>
+      <label class="meta">Sites that may send bug reports, besides its beta (one per line)<textarea name="reportOrigins" rows="2" placeholder="https://example.com" style="${field}">${v((p?.reportOrigins ?? []).join('\n'))}</textarea></label>
+    </details>
     <label class="meta">What it is (Claude reads it before every review)<textarea name="about" rows="2" style="${field}">${v(p?.about)}</textarea></label>
     <label class="meta">Its story and tone (optional)<textarea name="story" rows="3" style="${field}">${v(p?.storyText)}</textarea></label>
     <label class="meta">What "done" means for it (optional: reviews judge against it)<textarea name="quality" rows="2" style="${field}">${v(p?.quality)}</textarea></label>
     <div style="display:flex;gap:8px;justify-content:space-between;flex-wrap:wrap;margin-top:6px">
-      <span>${p ? '<button type="button" class="small" data-game="delete" style="color:var(--red)">Delete this game</button>' : ''}</span>
+      <span>${p ? '<button type="button" class="small" data-game="delete" style="color:var(--red)">Delete this project</button>' : ''}</span>
       <span style="display:flex;gap:8px"><button type="button" class="small" data-game="close">Cancel</button><button type="submit" class="primary">${p ? 'Save' : 'Add it'}</button></span>
     </div>
     <div class="meta" id="gameMsg"></div>
@@ -118,9 +126,12 @@ async function studioEditGame(id) {
     el.querySelector('form').addEventListener('submit', async (e) => {
       e.preventDefault();
       const f = Object.fromEntries(new FormData(e.target));
-      const newId = String(f.name).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').replace(/^(?=[^a-z])/, 'g-').slice(0, 40) || 'my-game';
+      const newId = String(f.name).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').replace(/^(?=[^a-z])/, 'p-').slice(0, 40) || 'my-project';
       const gid = p?.id ?? newId;
-      const body = { id: gid, name: f.name, engine: f.engine, live: f.live, about: f.about, contract: p?.contract ?? false, playtests: p?.playtests, ...(f.beta ? { beta: f.beta } : {}), ...(f.repo ? { repo: f.repo.trim() } : {}), ...(f.story ? { story: f.story } : {}), ...(f.quality ? { quality: f.quality } : {}) };
+      const lines = (t) => String(t ?? '').split('\n').map((x) => x.trim()).filter(Boolean);
+      const repos = lines(f.repos).map((l) => { const [repo, ...role] = l.split(/\s+/); return { repo, ...(role.length ? { role: role.join(' ') } : {}) }; });
+      const body = { id: gid, name: f.name, kind: f.kind, engine: f.engine, live: f.live, about: f.about, contract: p?.contract ?? false, playtests: p?.playtests, ...(f.beta ? { beta: f.beta } : {}), ...(f.repo ? { repo: f.repo.trim() } : {}), ...(f.story ? { story: f.story } : {}), ...(f.quality ? { quality: f.quality } : {}),
+        repos, ...(f.versionPath ? { versionPath: f.versionPath.trim() } : {}), ...(f.checks ? { checks: f.checks.trim() } : {}), ...(f.testSignIn ? { testSignIn: { url: f.testSignIn.trim() } } : {}), reportOrigins: lines(f.reportOrigins) };
       msg('Saving…');
       try { await api(`/api/products/${gid}`, { method: 'PUT', body }); done(true); } catch (err) { msg(`<span style="color:var(--red)">${esc(err.message)}</span>`); }
     });
@@ -160,7 +171,8 @@ async function studioGameReady(id, box) {
     box.innerHTML = `<div style="display:flex;justify-content:space-between;align-items:center;gap:8px"><b>${r.ready ? 'Ready ✓' : 'Get it ready'}</b><span class="meta">${links}</span></div>
       <ul style="list-style:none;padding:0;margin:6px 0">${rows}</ul>
       ${r.approve ? '<button type="button" class="small primary" data-ready="setup">Set it up on GitHub</button> <span class="meta">Puts an Approve card in your Inbox.</span>' : ''}
-      <div id="gameGh" style="margin-top:8px"></div>`;
+      <div id="gameGh" style="margin-top:8px"></div><div id="gameHooks" style="margin-top:10px"></div>`;
+    studioProjectHooks(id, box.querySelector('#gameHooks'));
     studioGithubLine(box.querySelector('#gameGh'));
     box.querySelector('[data-ready="setup"]')?.addEventListener('click', async (e) => {
       e.target.disabled = true;
@@ -171,6 +183,18 @@ async function studioGameReady(id, box) {
     box.innerHTML = `<div class="meta">${esc(e.message)}</div>`;
   }
 }
+// A project's own lines (reportkey.ts, playtest-signin.ts): the script its pages load for the 🐞 button, and the secret its
+// beta's test sign-in checks Studio's tokens with.
+async function studioProjectHooks(id, box) {
+  try {
+    const r = await api(`/api/projects/${id}/report`);
+    let html = `<div class="meta"><b>Bug reports from its pages:</b> put this line in its pages (its beta at least). Reports come from ${r.origins.length ? r.origins.map(esc).join(', ') : 'its beta (set its beta address first)'}.</div><code style="display:block;white-space:pre-wrap;word-break:break-all;margin:4px 0;font-size:12px">${esc(r.tag)}</code>`;
+    const s = await api(`/api/projects/${id}/signin`).catch(() => null);
+    if (s?.url) html += `<div class="meta" style="margin-top:6px"><b>Test sign-in:</b> ${esc(s.url)}. Its secret (give it to the beta's settings): <code style="word-break:break-all">${esc(s.secret)}</code></div>`;
+    box.innerHTML = html;
+  } catch (e) { box.innerHTML = ''; }
+}
+
 // The Go live card's "Add its repository" (golive.js) opens the same editor.
 const studioAddRepo = (id) => studioEditGame(id);
 window.studioAddRepo = studioAddRepo;

@@ -369,7 +369,7 @@ test('no game yet: the first-game page has "Make one with Talk", which starts th
     return C.handleStart(r, out, new URL(`https://studio.hawkesgen.ai${route}`)).then(() => out);
   };
   const form = await page(`/auth/start/${org.id}`);
-  assert.match(form.body, /No game yet\? Make one with Talk/);
+  assert.match(form.body, /No project yet\? Make a game with Talk/);
   const made = await page(`/auth/start/${org.id}/game`, 'POST', 'make=1');
   assert.equal(made.status, 303);
   assert.equal(made.headers.Location, `/o/${org.id}/?ask=make#talk`);

@@ -120,6 +120,8 @@ const server = http.createServer(async (req, res) => {
     // An org cell's platform token (platform.ts): the portal's keys are fetched first, so the checks below can be synchronous.
     await (await import('./platform.ts')).primePlatform(req);
     if (route.startsWith('/auth/') && (await (await import('./auth-pages.ts')).handleAuthRoute(req, res, url))) return;
+    // 🐞 reports from a project's own pages (reportkey.ts): the project's key and its origins let them in, no sign-in.
+    if (route.startsWith('/r/') && (await (await import('./reportkey.ts')).handleReportRoutes(req, res, url))) return;
     // On Cloud Run nothing stands in front of Studio (Caddy did on the AWS server): a session, J's owner key or the
     // agents' key, else the sign-in page (cloudauth.ts).
     if (cloudMode()) {
@@ -215,7 +217,7 @@ const server = http.createServer(async (req, res) => {
     if (route === '/api/stream' && method === 'GET') return (await import('./stream.ts')).handleStream(req, res, { talkUnseen: unseenConversations() });
     if (route === '/api/products' && method === 'GET') return send(res, 200, { products: loadProducts() });
     // Talk's game tools and the GitHub connection (github-routes.ts).
-    if ((route.startsWith('/api/github') || route.startsWith('/api/games/')) && (await (await import('./github-routes.ts')).handleGithubRoutes(req, res, route, method, url, send, readJson, origin))) return;
+    if ((route.startsWith('/api/github') || route.startsWith('/api/games/') || route.startsWith('/api/projects/')) && (await (await import('./github-routes.ts')).handleGithubRoutes(req, res, route, method, url, send, readJson, origin))) return;
     // A customer's games (config.ts saveProduct): onboarding adds and edits them; admins only (memberRefusal).
     const prod = /^\/api\/products\/([a-z][a-z0-9-]{1,39})$/.exec(route);
     if (prod && method === 'PUT') {

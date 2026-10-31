@@ -16,9 +16,10 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
 
 # git for the product repos (cloned on demand) and the agents' worktrees; util-linux's `script` for the Claude sign-in's
-# pseudo-terminal (claude-accounts.ts); curl and ca-certificates for Litestream's download; procps for ps.
+# pseudo-terminal (claude-accounts.ts); curl and ca-certificates for Litestream's download; procps for ps. python3 and
+# ffmpeg: the checks of projects that need them (a web app's tests: Hawkes Gen's run Python helpers and ffmpeg).
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      git git-lfs ca-certificates curl util-linux procps \
+      git git-lfs ca-certificates curl util-linux procps python3 python3-venv ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
 RUN curl -fsSL "https://github.com/benbjohnson/litestream/releases/download/v${LITESTREAM_VERSION}/litestream-v${LITESTREAM_VERSION}-linux-amd64.tar.gz" \

@@ -11,7 +11,7 @@ import path from 'node:path';
 import { spawn, type ChildProcess, type ChildProcessWithoutNullStreams, type SpawnOptions } from 'node:child_process';
 import type http from 'node:http';
 import type net from 'node:net';
-import { PROJECTS } from './config.ts';
+import { DATA, PROJECTS } from './config.ts';
 import { runCommand } from './ops.ts';
 import { brainId, ANTIGRAVITY_AGENT, COPILOT_AGENT, CURSOR_AGENT, GEMINI_AGENT } from './brains.ts';
 import { modelPin } from './routing.ts';
@@ -204,8 +204,27 @@ function brainCommand(args: string[], forceClaude = false) {
   return { file: process.execPath, args: [brain === 'copilot' ? COPILOT_AGENT : brain === 'gemini' ? GEMINI_AGENT : brain === 'antigravity' ? ANTIGRAVITY_AGENT : CURSOR_AGENT, ...mapped] };
 }
 
+/**
+ * Windows caps a command line at 32,767 characters, and Talk's role plus Studio's context passes that: there the
+ * prompt goes in a file (`--append-system-prompt-file`). Linux (the cloud) keeps it in the arguments. Claude Code only:
+ * the other harnesses' wrappers read `--append-system-prompt`.
+ */
+function promptAsFile(args: string[], claude: boolean) {
+  const at = args.indexOf('--append-system-prompt');
+  if (process.platform !== 'win32' || at < 0 || !claude || args.join(' ').length < 24_000) return args;
+  const dir = path.join(DATA, 'prompts');
+  fs.mkdirSync(dir, { recursive: true });
+  for (const old of fs.readdirSync(dir)) {
+    const f = path.join(dir, old);
+    try { if (Date.now() - fs.statSync(f).mtimeMs > 86_400_000) fs.rmSync(f); } catch {}
+  }
+  const file = path.join(dir, `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}.md`);
+  fs.writeFileSync(file, args[at + 1]);
+  return [...args.slice(0, at), '--append-system-prompt-file', file, ...args.slice(at + 2)];
+}
+
 export function claudeCommand(args: string[], { cwd, env, brain }: { cwd: string; env: NodeJS.ProcessEnv; brain?: 'claude' }) {
-  const cmd = brainCommand(args, brain === 'claude');
+  const cmd = brainCommand(promptAsFile(args, brain === 'claude' || !!process.env.TALK_CLAUDE || brainId() === 'claude'), brain === 'claude');
   if (!sandboxOn() || process.env.TALK_CLAUDE_ARGS) return { file: cmd.file, args: cmd.args, cwd, env };
   const clean = sandboxEnv(env);
   const keep = Object.keys(clean).filter((k) => k !== 'HOME' && k !== 'PATH');

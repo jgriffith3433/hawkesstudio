@@ -24,6 +24,8 @@ export function betaPlaytestsOn() {
   }
 }
 export const PORT = Number(process.env.STUDIO_PORT) || 8791;
+/** A GitHub repository, owner/name. */
+const SLUG = /^[\w.-]+\/[\w.-]+$/;
 export const GEN_URL = process.env.HAWKESGEN_URL || 'http://127.0.0.1:8790';
 /** Where browsers reach Hawkes Gen (screenshots, videos): the public address on the server, else the same as GEN_URL. */
 export const GEN_PUBLIC_URL = process.env.GEN_PUBLIC_URL || GEN_URL;
@@ -78,6 +80,20 @@ export type Product = {
   live: string;
   /** A customer's game: where its test version plays (its beta), when it has one. Playtests "on beta" play it. */
   beta?: string;
+  /**
+   * A project (J, 2026-10-30: games are "projects" now, and a project may be a web app with a server, like Hawkes Gen):
+   * kind game | app | site; versionPath: where its deployed beta and live say which commit they run (JSON with commit,
+   * sha or version; e.g. /v1/health); repos: repositories beyond the main one (owner/name and what each is); checksCmd:
+   * what an agent's change must pass in the repo (e.g. npm run typecheck && npm test); reportOrigins: the sites whose
+   * 🐞 button may file bugs with this project's report key (bugreport.ts); testSignIn: its beta's test sign-in for
+   * playtests (playtest-signin.ts).
+   */
+  kind?: 'game' | 'app' | 'site';
+  versionPath?: string;
+  repos?: { repo: string; role?: string; folder?: string }[];
+  checksCmd?: string;
+  reportOrigins?: string[];
+  testSignIn?: { url: string };
   /** serve "app": the product is a server Studio runs itself (`app`, apps.ts), on this port for local playtests.
    *  serve "remote": its beta is deployed elsewhere by the repo's own CI (the customer portal on Firebase: a push to
    *  beta deploys https://hawkes-staging.web.app); `url` is that beta, and local playtests play it. */
@@ -144,14 +160,18 @@ export function addedRepoFolders(): Record<string, string> {
   const out: Record<string, string> = {};
   // J's added games, or a customer's games (their whole products file: a cell has nothing else).
   const games = customerStudio() ? (fs.existsSync(paths.products) ? (JSON.parse(fs.readFileSync(paths.products, 'utf8')).products ?? []) as Product[] : []) : addedGames();
-  for (const p of games) {
-    const slug = /^[\w.-]+\/[\w.-]+$/.test(String(p.repo ?? '')) ? String(p.repo) : null;
-    if (!slug) continue;
+  const add = (slug: string) => {
+    if (Object.values(out).includes(slug)) return;
     const [owner, name] = slug.split('/');
     let folder = name;
     if (taken.has(folder.toLowerCase())) folder = `${owner}-${name}`;
     taken.add(folder.toLowerCase());
     out[folder] = slug;
+  };
+  for (const p of games) {
+    if (SLUG.test(String(p.repo ?? ''))) add(String(p.repo));
+    // A project's other repositories are cloned too, so its agents can work in any of them (agents.ts repoForTarget).
+    for (const r of p.repos ?? []) if (SLUG.test(String(r?.repo ?? ''))) add(String(r.repo));
   }
   return out;
 }
@@ -165,14 +185,18 @@ export function asAddedGame(p: Product): Product {
   const g = asCustomerGame(p);
   const folder = Object.entries(addedRepoFolders()).find(([, slug]) => slug === p.repo)?.[0];
   if (!folder) return g;
+  // A project's other repositories by folder (agents.ts repoForTarget turns a task's target into one of them).
+  const folders = addedRepoFolders();
+  const extra = (p.repos ?? []).map((r) => ({ ...r, folder: Object.entries(folders).find(([, s]) => s === r.repo)?.[0] })).filter((r) => r.folder);
   return {
-    ...g, repo: folder, site: folder, github: p.repo,
+    ...g, repo: folder, site: folder, github: p.repo, ...(extra.length ? { repos: extra } : {}),
     // A web game's beta is Studio's own beta site, built from its beta branch (previews.ts ADDED_RECIPE: npm run build,
     // dist/), never "its CI deploys it": with "remote" its beta was never built and beta playtests played the live
     // site (Star Skipper, 2026-10-31). Here (J's PC) the built dist/ is served.
     local: p.engine === 'web' && !p.beta ? { serve: 'static', dir: `${folder}/dist`, port: 0, path: '/' } : { ...g.local, dir: folder },
     // The build as the check when it has one (a plain site without package.json has none to run).
-    checks: p.checks ?? (p.engine === 'web' ? [{ dir: folder, cmd: 'test ! -f package.json || (npm install --no-audit --no-fund && npm run build --if-present)' }] : []),
+    // Its own checks when the project says (checksCmd), else its build.
+    checks: p.checks ?? (p.checksCmd ? [{ dir: folder, cmd: p.checksCmd }] : p.engine === 'web' ? [{ dir: folder, cmd: 'test ! -f package.json || (npm install --no-audit --no-fund && npm run build --if-present)' }] : []),
   } as Product;
 }
 
@@ -222,6 +246,8 @@ export type ProductInput = {
   live?: string; beta?: string; build?: { source: 'url' | 'upload' | 'github'; target?: 'web' | 'linux' | 'proton' | 'windows'; exe?: string; repo?: string };
   repo?: string; about?: string; quality?: string; story?: string; contract?: boolean;
   playtests?: { scenario?: string; mode?: 'site'; where: 'live'; device?: 'phone' }[];
+  kind?: 'game' | 'app' | 'site'; versionPath?: string; repos?: { repo: string; role?: string }[]; checks?: string;
+  reportOrigins?: string[]; testSignIn?: { url: string } | null;
 };
 
 /**
@@ -249,9 +275,24 @@ export function saveProduct(input: ProductInput): Product {
     ...(t.mode === 'site' ? { mode: 'site' as const } : { scenario: String(t.scenario ?? 'smoke').slice(0, 60) }),
     where: 'live' as const, ...(t.device === 'phone' ? { device: 'phone' as const } : {}),
   }));
+  // A project's own extras (see Product): checked here, kept only when given.
+  const kind = input.kind ?? 'game';
+  if (!['game', 'app', 'site'].includes(kind)) throw new StudioError('kind: game, app or site', 400);
+  const versionPath = input.versionPath ? String(input.versionPath).trim() : '';
+  if (versionPath && !/^\/[\w./-]{0,200}$/.test(versionPath)) throw new StudioError('versionPath: a path on its own site, like /v1/health', 400);
+  const repos = (Array.isArray(input.repos) ? input.repos : []).slice(0, 10).map((r) => ({ repo: String(r?.repo ?? '').trim(), ...(r?.role ? { role: String(r.role).slice(0, 60) } : {}) }));
+  if (repos.some((r) => !SLUG.test(r.repo))) throw new StudioError('repos: each an owner/name', 400);
+  if (customerStudio() && repos.some((r) => touchesPlatformRepo(r.repo))) throw new StudioError("That repository belongs to Hawkes Studio's owner; add your own project's repository.", 403);
+  const checks = input.checks ? String(input.checks).trim().slice(0, 500) : '';
+  const reportOrigins = (Array.isArray(input.reportOrigins) ? input.reportOrigins : []).slice(0, 10).map((o) => String(o).trim().replace(/\/+$/, ''));
+  if (reportOrigins.some((o) => !/^https:\/\/[\w.-]+(:\d+)?$/.test(o))) throw new StudioError('reportOrigins: each an https:// origin (no path)', 400);
+  const testSignIn = input.testSignIn?.url ? String(input.testSignIn.url).trim() : '';
+  if (testSignIn && !/^https:\/\/[^\s]+$/.test(testSignIn)) throw new StudioError('testSignIn.url: an https:// address on its beta', 400);
   const product: any = {
     id, name, engine: input.engine, ...(live ? { live } : {}), ...(beta ? { beta } : {}), ...(input.build ? { build: input.build } : {}),
     ...(input.repo ? { repo: String(input.repo).slice(0, 200) } : {}),
+    ...(kind !== 'game' ? { kind } : {}), ...(versionPath ? { versionPath } : {}), ...(repos.length ? { repos } : {}),
+    ...(checks ? { checksCmd: checks } : {}), ...(reportOrigins.length ? { reportOrigins } : {}), ...(testSignIn ? { testSignIn: { url: testSignIn } } : {}),
     about: String(input.about ?? '').slice(0, 2000), ...(input.quality ? { quality: String(input.quality).slice(0, 2000) } : {}),
     ...(input.story ? { storyText: String(input.story).slice(0, 20000) } : {}), contract: input.contract === true, playtests, story: [],
   };

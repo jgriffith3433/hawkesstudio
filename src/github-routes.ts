@@ -49,6 +49,8 @@ export async function githubUserFor(req: http.IncomingMessage): Promise<string |
 }
 
 export async function handleGithubRoutes(req: http.IncomingMessage, res: http.ServerResponse, route: string, method: string, url: URL, send: Send, readJson: (r: http.IncomingMessage) => Promise<any>, origin: string | null): Promise<boolean> {
+  // Games are projects now (J, 2026-10-30): /api/projects/... is the same as /api/games/....
+  if (route.startsWith('/api/projects/')) route = `/api/games/${route.slice('/api/projects/'.length)}`;
   const base = baseOf(req);
   if (route === '/api/github' && method === 'GET') return send(res, 200, await G.githubStatus(base, (await githubUserFor(req)))), true;
   if (route === '/api/github/app/setup' && method === 'GET') {
@@ -143,7 +145,15 @@ export async function handleGithubRoutes(req: http.IncomingMessage, res: http.Se
     const plan = await newGamePlan(b, user);
     return send(res, 200, await card(`new:${plan.kind === 'new' ? plan.id : ''}`, plan, b)), true;
   }
-  const m = /^\/api\/games\/([a-z][a-z0-9-]{1,39})\/(readiness|setup|status|contract)$/.exec(route);
+  const m = /^\/api\/games\/([a-z][a-z0-9-]{1,39})\/(readiness|setup|status|contract|report|signin)$/.exec(route);
+  // A project's 🐞 script line and report key (reportkey.ts): what its pages load to report bugs here.
+  if (m && m[2] === 'report' && method === 'GET') return send(res, 200, (await import('./reportkey.ts')).reportInfo(m[1], req)), true;
+  // Its test sign-in's secret (playtest-signin.ts): an admin's, to put in the project's beta settings.
+  if (m && m[2] === 'signin' && method === 'GET') {
+    const u = requester(req);
+    if (u && u.role !== 'admin') throw new StudioError('Only an admin of this Studio sees the test sign-in secret.', 403);
+    return send(res, 200, (await import('./playtest-signin.ts')).signinInfo(m[1])), true;
+  }
   if (m && m[2] === 'status' && method === 'GET') {
     const { gameStatus } = await import('./repokit.ts');
     return send(res, 200, await gameStatus(m[1], base, (await githubUserFor(req)))), true;

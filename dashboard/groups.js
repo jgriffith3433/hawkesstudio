@@ -11,7 +11,7 @@
 (() => {
   const GROUPS = [
     { head: 'talk', label: 'Talk', tabs: [['talk', 'Talk'], ['inbox', 'Inbox']] },
-    { head: 'today', label: 'Games', tabs: [['today', 'Games'], ['golive', 'Go live']] },
+    { head: 'today', label: 'Projects', tabs: [['today', 'Projects'], ['golive', 'Go live']] },
     { head: 'roadmap', label: 'Plan', tabs: [['roadmap', 'Roadmap'], ['backlog', 'Bugs'], ['changes', "Agents' changes"]] },
     { head: 'live', label: 'Playtests', tabs: [['live', 'Playing now'], ['playtests', 'History'], ['report', 'Reports'], ['runs', 'Runs']] },
     { head: 'library', label: 'Library', tabs: [['library', 'Library']] },
@@ -60,7 +60,7 @@
       if (g) b.innerHTML = t === 'talk' ? `${g.label} <span class="ib-count zero" data-inbox-mirror>0</span>` : g.label;
     });
     const intro = document.querySelector('#today .intro');
-    if (intro) intro.innerHTML = '<b>Games:</b> each of your games: how its last playtest went, what is broken, and buttons to play it again (live, or its beta), edit it or add another. Go live, beside Games, is for shipping.';
+    if (intro) intro.innerHTML = '<b>Projects:</b> each of your projects (games, web apps, sites): how its last playtest went, what is broken, and buttons to play it again (live, or its beta), edit it or add another. Go live, beside Projects, is for shipping.';
     const add = document.getElementById('addGame');
     if (add) add.hidden = false;
     const onAir = document.getElementById('onAir');

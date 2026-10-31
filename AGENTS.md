@@ -38,6 +38,7 @@ So everything also shows in Gen's dashboard, library and usage. Studio adds:
 - the beta lane and the go-live gate (with rollback)
 
 - `docs/playtest.md`: **the playtest contract** every game implements (`window.hawkesPlaytest`).
+- `docs/projects.md`: **projects** (games are projects now: a game, a web app with its own server, beta and live, or a site): their fields (kind, more repos, versionPath, checks, testSignIn, reportOrigins), bug reports from any project's pages with its report key (`src/reportkey.ts`), playtests signed in through its beta (`src/playtest-signin.ts`), the commit a deployed app runs (`src/deployed.ts`).
 - `docs/daily.md`: how J and Claude use the daily loop.
 - `docs/memory.md`: **the shared memory** every agent, scout, reviewer and Talk reads and writes (decisions, preferences,
   conventions, lessons, canon, work in progress; run history; the canon check).

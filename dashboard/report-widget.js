@@ -24,8 +24,9 @@
   try { cfg = JSON.parse((me && me.getAttribute('data-hawkes')) || '{}'); } catch {}
   // A game on the shared sites. host lives under a path (cfg.root, e.g. /b/<game>): so do its endpoints.
   const ROOT = typeof cfg.root === 'string' ? cfg.root : '';
-  const ENDPOINT = ROOT + '/dev/__studio/report';
-  const ERRORS = ROOT + '/dev/__studio/error';
+  // A project's own pages (reportkey.ts) post to their Studio's address with the project's key instead.
+  const ENDPOINT = typeof cfg.endpoint === 'string' ? cfg.endpoint : ROOT + '/dev/__studio/report';
+  const ERRORS = typeof cfg.errors === 'string' ? cfg.errors : ROOT + '/dev/__studio/error';
   const H2C = 'https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js';
   const store = {
     get(k, d) { try { const v = localStorage.getItem('hawkesReport.' + k); return v == null ? d : JSON.parse(v); } catch { return d; } },

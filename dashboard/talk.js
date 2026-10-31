@@ -139,11 +139,11 @@
     const noAi = me.ai && !me.ai.ready;
     // One tap to start (J, 2026-10-30: the first 10 minutes): each puts its words in the box and sends them.
     const starts = STARTS.map((s) => `<button class="small" data-ask="${esc(s.say)}">${esc(s.label)}</button>`).join(' ');
-    return `<div class="empty">${noAi ? `Talk runs on your own AI: connect it first. <button class="small" onclick="location.hash = '#settings'">Connect your AI</button><br><br>` : ''}Start here: ${starts}<br><br>Or ask about your games: "What did last night's playtest find?", "What are the agents working on?", "Is the latest fix good to ship?"</div>`;
+    return `<div class="empty">${noAi ? `Talk runs on your own AI: connect it first. <button class="small" onclick="location.hash = '#settings'">Connect your AI</button><br><br>` : ''}Start here: ${starts}<br><br>Or ask about your projects: "What did last night's playtest find?", "What are the agents working on?", "Is the latest fix good to ship?"</div>`;
   };
   const STARTS = [
     { id: 'make', label: 'Make me a new game', say: 'I want to make a new game. Ask me what kind.' },
-    { id: 'add', label: 'Add a game I already have', say: 'I want to add a game I already have.' },
+    { id: 'add', label: 'Add a project I already have', say: 'I want to add a project I already have (a game, a web app or a site).' },
     { id: 'github', label: 'Connect my GitHub', say: 'Help me connect my GitHub.' },
   ];
   // A deep link from sign-up (?ask=make#talk): that start is in the box, ready to send.

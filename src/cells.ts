@@ -611,7 +611,7 @@ export async function handleStart(req: http.IncomingMessage, res: http.ServerRes
   if (route === '/auth/start' && method === 'GET') {
     if (!orgs.length) return P.html(res, 200, P.page('Name your studio', nameForm(a))), true;
     return P.html(res, 200, P.page('Your studios', `<h1>Your studios</h1><p>Signed in as ${P.esc(a.email)}.</p>
-${orgs.map((o) => o.state === 'new' ? (isOwner(o.id, a.sub) ? `<p><b>${P.esc(o.name)}</b> · <a href="/auth/start/${o.id}">add your first game</a></p>` : `<p><b>${P.esc(o.name)}</b> · <span>not started yet</span></p>`) : `<p><a href="/o/${o.id}/"><b>${P.esc(o.name)}</b></a></p>`).join('')}
+${orgs.map((o) => o.state === 'new' ? (isOwner(o.id, a.sub) ? `<p><b>${P.esc(o.name)}</b> · <a href="/auth/start/${o.id}">add your first project</a></p>` : `<p><b>${P.esc(o.name)}</b> · <span>not started yet</span></p>`) : `<p><a href="/o/${o.id}/"><b>${P.esc(o.name)}</b></a></p>`).join('')}
 ${ownedBy(a.sub) < 3 ? '<p><a href="/auth/start/new">Make your own studio</a></p>' : ''}${signOut()}`)), true;
   }
   if (route === '/auth/start/new' && method === 'GET') return P.html(res, 200, P.page('Name your studio', nameForm(a))), true;
@@ -628,7 +628,7 @@ ${ownedBy(a.sub) < 3 ? '<p><a href="/auth/start/new">Make your own studio</a></p
   if (!org || !isMember(org.id, a) || org.state === 'deleted') return P.html(res, 404, P.page('Not found', '<h1>Not found</h1><p><a href="/auth/start">Your studios</a></p>')), true;
   if (!m[2] && method === 'GET') {
     if (org.state !== 'new' || !isOwner(org.id, a.sub)) return P.redirect(res, `/o/${org.id}/`), true;
-    return P.html(res, 200, P.page('Your first game', await gameForm(org))), true;
+    return P.html(res, 200, P.page('Your first project', await gameForm(org))), true;
   }
   if ((m[2] === 'game' || m[2] === 'subscribe') && !isOwner(org.id, a.sub)) return P.html(res, 403, P.page('Not yours', '<h1>Only its owner starts a studio</h1><p><a href="/auth/start">Your studios</a></p>')), true;
   if (m[2] === 'game' && method === 'POST') {
@@ -676,16 +676,16 @@ async function gameForm(org: Org) {
   const plans = listPlans();
   const opt = (v: string, l: string) => `<option value="${v}">${l}</option>`;
   const { esc } = await import('./auth-pages.ts');
-  return `<h1>${esc(org.name)}: your first game</h1><p>Studio starts when you add a game. It plays it with a bot, has Claude review the video and keeps a backlog of what it finds.</p>
+  return `<h1>${esc(org.name)}: your first project</h1><p>Studio starts when you add a project: a game, a web app or a site. It plays it with a bot, has Claude review the video and keeps a backlog of what it finds.</p>
 <form method="post" action="/auth/start/${org.id}/game">
-<label for="name">Game</label><input id="name" name="name" type="text" maxlength="80" required autofocus>
-<label for="engine">Made with</label><select id="engine" name="engine" style="width:100%;padding:12px;border-radius:9px;font-size:16px">${opt('web', 'A web game')}${opt('unity', 'Unity')}${opt('godot', 'Godot')}${opt('desktop', 'A desktop game')}</select>
+<label for="name">Project</label><input id="name" name="name" type="text" maxlength="80" required autofocus>
+<label for="engine">Made with</label><select id="engine" name="engine" style="width:100%;padding:12px;border-radius:9px;font-size:16px">${opt('web', 'For the web (a game, app or site)')}${opt('unity', 'Unity')}${opt('godot', 'Godot')}${opt('desktop', 'A desktop game')}</select>
 <label for="live">Where it plays (https://…)</label><input id="live" name="live" type="text" inputmode="url" placeholder="https://mygame.example">
 <label for="repo">Or its GitHub repository</label><input id="repo" name="repo" type="text" placeholder="owner/game">
 <button type="submit">Start my studio</button></form>
-<form method="post" action="/auth/start/${org.id}/game" style="margin-top:10px"><input type="hidden" name="make" value="1"><button type="submit" style="background:transparent;border:1px solid var(--muted);color:inherit">No game yet? Make one with Talk</button></form>
+<form method="post" action="/auth/start/${org.id}/game" style="margin-top:10px"><input type="hidden" name="make" value="1"><button type="submit" style="background:transparent;border:1px solid var(--muted);color:inherit">No project yet? Make a game with Talk</button></form>
 <details style="margin-top:16px"><summary><small>Or pick a plan first</small></summary>
-${plans.map((p) => `<form method="post" action="/auth/start/${org.id}/subscribe"><input type="hidden" name="plan" value="${esc(p.id)}"><button type="submit">${esc(p.name)}: $${(p.priceCents / 100).toFixed(0)} a month · ${p.maxGames} games</button></form>`).join('')}
+${plans.map((p) => `<form method="post" action="/auth/start/${org.id}/subscribe"><input type="hidden" name="plan" value="${esc(p.id)}"><button type="submit">${esc(p.name)}: $${(p.priceCents / 100).toFixed(0)} a month · ${p.maxGames} projects</button></form>`).join('')}
 </details>${signOut()}`;
 }
 

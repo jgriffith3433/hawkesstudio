@@ -36,6 +36,9 @@ function gitEnv() {
 const gitAgent = (...a) => spawnSync('git', ['-c', 'user.name=Agent', '-c', 'user.email=agent@example.com', ...a], { encoding: 'utf8', env: gitEnv() });
 
 const args = process.argv.slice(2);
+// On Windows Studio passes a long prompt as a file (sandbox.ts promptAsFile): read it back like Claude Code does.
+const pf = args.indexOf('--append-system-prompt-file');
+if (pf >= 0) args.splice(pf, 2, '--append-system-prompt', fs.readFileSync(args[pf + 1], 'utf8'));
 const log = (o) => process.env.FAKE_CLAUDE_LOG && fs.appendFileSync(process.env.FAKE_CLAUDE_LOG, `${JSON.stringify(o)}\n`);
 const out = (o) => process.stdout.write(`${JSON.stringify(o)}\n`);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
