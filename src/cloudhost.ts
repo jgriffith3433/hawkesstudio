@@ -116,6 +116,11 @@ export async function busy(): Promise<string | null> {
     if (following() > 0) return 'a Cloud Run job';
     if (buildsRunning() > 0) return 'a beta site build';
   } catch { /* not loaded */ }
+  // The whole of a beta site's build, not only its Cloud Run job: reading the sources and publishing the files too
+  // (2026-10-31: a customer's Studio went idle mid-publish and Cloud Run stopped it).
+  try {
+    if ((await import('./previews.ts')).previewsBuilding() > 0) return 'a beta site build';
+  } catch { /* not loaded */ }
   try {
     if ((await import('./cells.ts')).rollingCells()) return "a roll of customers' Studios";
   } catch { /* not loaded */ }

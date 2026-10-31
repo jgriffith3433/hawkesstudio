@@ -100,3 +100,18 @@ test("a crashed holder (no heartbeat) doesn't hold a new instance up, and its la
   assert.equal(r2.how, 'quiet');
   assert.equal(r2.generation, null);
 });
+
+test("a second instance of the same revision stays down while the holder is alive; it takes over once the holder is quiet", async () => {
+  const holder: any = await L.claim({ rev: 'studio-beta-00090-6wd', pollMs: 10, staleMs: 0 });
+  assert.equal(holder.claimed, true);
+  const before = objects.get('db/lease.json')!.toString();
+  const stray: any = await L.claim({ rev: 'studio-beta-00090-6wd' });
+  assert.equal(stray.claimed, false, 'Cloud Run started it under load: the working instance keeps the database');
+  assert.equal(stray.how, 'same revision holds it');
+  assert.equal(objects.get('db/lease.json')!.toString(), before, 'the lease is untouched');
+  // A holder that died (no heartbeat for staleMs) is replaced by the next instance of its revision.
+  objects.set(`db/alive-${holder.id}`, Buffer.from(JSON.stringify({ at: Date.now() - 60_000 })));
+  const next: any = await L.claim({ rev: 'studio-beta-00090-6wd', pollMs: 10 });
+  assert.equal(next.claimed, true);
+  assert.equal(next.how, 'quiet');
+});

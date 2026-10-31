@@ -151,6 +151,8 @@ const tail = (s: string) => s.split('\n').filter(Boolean).slice(-3).join(' | ').
 /** One build at a time per product. */
 const queues = new Map<string, Promise<unknown>>();
 const active = new Set<string>();
+/** Beta-site builds under way, start to finish (cloudhost.ts busy keeps the instance up for them). */
+export const previewsBuilding = () => active.size;
 
 /**
  * Builds a product's staging site: beta (default), or an agent change (`change`, from its worktree `dir` or its

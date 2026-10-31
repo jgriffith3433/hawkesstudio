@@ -54,6 +54,10 @@ export async function claim(o: { waitMs?: number; staleMs?: number; pollMs?: num
   // Whether the holder was already gone before this claim (no heartbeat for staleMs): then nobody hands over. A holder
   // that was alive gets its full time to stop: seeing the claim (5 s), saving state (8 s), Litestream's last sync.
   const beat0 = prev ? await readBeat(bucket, prev.id) : { at: 0, generation: null };
+  // A second instance of the same revision (Cloud Run starts one under load) never takes the database from a live
+  // holder: each took over from the last, five in two minutes, and a beta site's build died with them (2026-10-31). It
+  // stays down like an old revision's; a holder that died (no heartbeat) is replaced as before.
+  if (prev?.rev && prev.rev === mine.rev && now() - beat0.at <= staleMs && !(await readJsonObj(bucket, `released-${prev.id}`))) return { claimed: false, id: null, previous: prev.id, how: 'same revision holds it', holder: prev.rev };
   await gcsWrite(bucket, key('lease.json'), Buffer.from(JSON.stringify(mine)), 'application/json');
   fs.writeFileSync(ID_FILE, mine.id);
   await gcsWrite(bucket, key(`alive-${mine.id}`), beatBody(now()), 'application/json');
@@ -129,8 +133,9 @@ if (import.meta.url === `file://${process.argv[1]}` || process.argv[1]?.endsWith
   if (what === 'claim') {
     const r: any = await claim().catch((e) => ({ claimed: false, why: String(e.message ?? e) }));
     console.log(`[lease] ${JSON.stringify(r)}`);
-    // A newer revision holds the database: this old one must not start (exit 3 tells entrypoint.sh).
-    if (r.how === 'newer holds it') process.exit(3);
+    // A newer revision, or a live instance of this one, holds the database: this one must not start (exit 3 tells
+    // entrypoint.sh).
+    if (r.how === 'newer holds it' || r.how === 'same revision holds it') process.exit(3);
   }
   else if (what === 'release') console.log(`[lease] released ${await release().catch(() => false)}`);
 }

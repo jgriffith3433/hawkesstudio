@@ -29,8 +29,8 @@ mkdir -p /data "$STUDIO_PROJECTS"
 # old revision lives on for a while) has stopped writing and made its last sync, then restore what it left.
 LEASE=0
 node --disable-warning=ExperimentalWarning src/cloudlease.ts claim || LEASE=$?
-# A newer revision holds the database (this is a stray instance of an old one): don't start, don't write.
-if [ "$LEASE" = 3 ]; then echo "[lease] a newer revision holds the database: this old one stays down"; exit 0; fi
+# A newer revision, or a live instance of this same one, holds the database (Cloud Run started a stray one): stay down.
+if [ "$LEASE" = 3 ]; then echo "[lease] another live instance holds the database: this one stays down"; exit 0; fi
 GEN=$(cat /tmp/hawkes-restore-generation 2>/dev/null || true)
 litestream restore -config /etc/litestream.yml -if-db-not-exists -if-replica-exists ${GEN:+-generation "$GEN"} /data/studio.db
 # Not exec: once Studio stops (Cloud Run's SIGTERM, or a newer instance took the lease) and Litestream has made its last
