@@ -1,0 +1,69 @@
+# Read-only: recent logs of a Studio Cloud Run service or job, as ops-reader (logging.viewer, run.viewer). Keyless (WIF).
+# Studio's WIF provider trusts this repo's main and beta only, so dispatch with --ref main (or beta).
+#   gh workflow run ops-logs.yml --repo jgriffith3433/hawkesstudio --ref main -f target=studio -f lane=production -f minutes=30 -f severity=WARNING
+name: ops-logs
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: studio (the service) or studio-agent (the agents' job)
+        type: choice
+        options: [studio, studio-agent, cell-agent]
+        default: studio
+      lane:
+        type: choice
+        options: [production, beta]
+        default: production
+      minutes:
+        description: 5 to 120
+        type: number
+        default: 30
+      severity:
+        type: choice
+        options: [DEFAULT, INFO, WARNING, ERROR]
+        default: WARNING
+permissions:
+  contents: read
+  id-token: write
+concurrency:
+  group: ops-logs-${{ inputs.lane }}
+  cancel-in-progress: true
+jobs:
+  logs:
+    name: Logs
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check the inputs
+        env:
+          MINUTES: ${{ inputs.minutes }}
+          TARGET: ${{ inputs.target }}
+          LANE: ${{ inputs.lane }}
+        run: |
+          [[ "$MINUTES" =~ ^[0-9]+$ ]] && [ "$MINUTES" -ge 5 ] && [ "$MINUTES" -le 120 ] || { echo "minutes must be 5 to 120"; exit 1; }
+          if [ "$LANE" = beta ]; then
+            region="${{ vars.REGION_BETA }}"
+            case "$TARGET" in studio) f="resource.type=cloud_run_revision AND resource.labels.service_name=studio-beta";; studio-agent) f="resource.type=cloud_run_job AND resource.labels.job_name=studio-agent-beta";; cell-agent) f="resource.type=cloud_run_job AND resource.labels.job_name=studio-beta-cell-agent";; esac
+          else
+            region="${{ vars.REGION_LIVE }}"
+            case "$TARGET" in studio) f="resource.type=cloud_run_revision AND resource.labels.service_name=studio";; studio-agent) f="resource.type=cloud_run_job AND resource.labels.job_name=studio-agent";; cell-agent) f="resource.type=cloud_run_job AND resource.labels.job_name=studio-cell-agent";; esac
+          fi
+          echo "FILTER=$f AND resource.labels.location=$region" >> "$GITHUB_ENV"
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: projects/${{ vars.GCP_PROJECT_NUMBER }}/locations/global/workloadIdentityPools/github/providers/github-studio
+          service_account: ops-reader@${{ vars.GCP_PROJECT }}.iam.gserviceaccount.com
+      - uses: google-github-actions/setup-gcloud@v2
+      - name: Read
+        env:
+          MINUTES: ${{ inputs.minutes }}
+          SEVERITY: ${{ inputs.severity }}
+          PROJECT: ${{ vars.GCP_PROJECT }}
+        run: |
+          since=$(date -u -d "-$MINUTES min" +%Y-%m-%dT%H:%M:%SZ)
+          gcloud logging read "$FILTER AND severity>=$SEVERITY AND timestamp>=\"$since\"" --project "$PROJECT" --limit 500 --order asc \
+            --format='value(timestamp,severity,textPayload,jsonPayload.message,httpRequest.status,httpRequest.requestUrl)' \
+            | sed -E 's/(hg_|hgm_|hs_|ghs_|ghp_|github_pat_|sk-ant-|cfut_|cfat_|AKIA)[A-Za-z0-9_-]+/\1***/g; s/(Bearer |token=|key=)[A-Za-z0-9._-]+/\1***/g' > logs.txt
+          n=$(wc -l < logs.txt)
+          { echo "### ${{ inputs.target }} (${{ inputs.lane }}), last $MINUTES min, >= $SEVERITY: $n lines"; echo '```'; tail -n 300 logs.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          echo "$n lines"; tail -n 300 logs.txt
