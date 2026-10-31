@@ -536,6 +536,11 @@ function rollbackSlug(p: Product): string | null {
   return null;
 }
 
+/** The deploy rows a go live of `slug` made in the repos its builds went into (deploy-github.ts targets), not rolled back yet. */
+function buildTargetsOf(slug: string, d: { id: string; after: string; beta?: string | null }) {
+  return db.prepare("SELECT id, product, repo, before, after FROM deploys WHERE kind = 'deploy' AND source = ? AND source_after IN (?, ?) AND rolled_back IS NULL AND id != ?").all(slug, d.beta ?? d.after, d.after, d.id) as { id: string; product: string; repo: string; before: string | null; after: string }[];
+}
+
 async function githubRollbackPlan(p: Product, slug: string, io: GitHubIO = {}) {
   const blockers: string[] = [];
   const warnings: string[] = [];
@@ -549,7 +554,11 @@ async function githubRollbackPlan(p: Product, slug: string, io: GitHubIO = {}) {
   if (!refs.main) blockers.push(`Studio can't read ${slug}'s ${MAIN} on GitHub.`);
   if (p.deploy?.via === 'ec2') warnings.push(`${p.name} runs on its own server with a database: a rollback puts the previous code back through the same CI and pull, but nothing in the database (accounts, credits, payments, migrations) is undone.`);
   if (d && main && main !== d.after) warnings.push(`${MAIN} moved since that go live (${d.after.slice(0, 7)} -> ${main.slice(0, 7)}): rolling back also undoes those commits.`);
-  if (d?.before && main === d.before) blockers.push(`${MAIN} already is ${d.before.slice(0, 7)}.`);
+  // The repos its builds went into in that go live (a Unity game's website): rolled back with it, or players keep the
+  // build that went wrong (2026-10-31 review).
+  const targets = d ? buildTargetsOf(slug, d) : [];
+  if (d?.before && main === d.before && !targets.length) blockers.push(`${MAIN} already is ${d.before.slice(0, 7)}.`);
+  if (targets.length) warnings.push(`It also rolls back ${targets.map((t) => `${t.repo} (to ${String(t.before ?? '?').slice(0, 7)})`).join(', ')}, where this go live put its build.`);
   return {
     product: p.id, name: p.name, live: p.live, repo: slug,
     main: brief(refs.main), to: brief(refs.to),
@@ -557,7 +566,7 @@ async function githubRollbackPlan(p: Product, slug: string, io: GitHubIO = {}) {
     undo: refs.undo.map(brief), blockers, warnings, canRollback: !blockers.length,
     confirm: `ROLLBACK ${p.id}`,
     what: `A new commit on ${slug}'s ${MAIN} with the files of ${d?.before?.slice(0, 7) ?? '?'} (what was live before the last go live), made through GitHub; never a force push. ${BETA} keeps its commits: fix forward there, merge ${MAIN} into ${BETA}, playtest, and go live again.`,
-    github: { slug },
+    github: { slug, targets: targets.map((t) => ({ project: t.product, repo: t.repo, to: t.before, deploy: t.id })) },
   };
 }
 
@@ -598,6 +607,20 @@ async function rollbackNow(productId: string, { confirm, by = 'J', origin, io }:
   const viaGitHub = rollbackSlug(p);
   if (viaGitHub) {
     const d = lastLive(p.id)!;
+    // The repos its build went into first (what players see), then its own main when that moved.
+    for (const t of buildTargetsOf(viaGitHub, d)) {
+      if (!t.before) continue;
+      const tr = await rollbackOnGitHub(t.repo, t.before, `${STUDIO_ROLLBACK} build of ${p.name} in ${t.repo} to ${t.before.slice(0, 7)} (undoes ${t.id}; by ${by})`, io).catch((e: any) => { if (/already has the files/.test(String(e.message))) return null; throw e; });
+      const tid = newId('d');
+      db.prepare('INSERT INTO deploys (id, product, kind, repo, before, after, by, detail, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)').run(tid, t.product, 'rollback', t.repo, tr?.before ?? t.after, tr?.after ?? t.before, by, `with ${p.name}'s rollback, undoing ${t.id}`, Date.now());
+      db.prepare('UPDATE deploys SET rolled_back = ? WHERE id = ?').run(tid, t.id);
+      const tp = (() => { try { return getProduct(t.product); } catch { return null; } })();
+      if (tr && tp?.live) void verifyLive(tp.id, tr.after, `Just rolled back the build of ${p.name} (undoing ${t.id}). Check the live site works.`, origin);
+    }
+    if (d.before === plan.main?.sha) {
+      db.prepare('UPDATE deploys SET rolled_back = ? WHERE id = ?').run('targets-only', d.id);
+      return { ok: true, product: p.id, rollback: null, live: p.live, main: d.before!.slice(0, 7), to: d.before!.slice(0, 7), note: `Rolled back where its build went; its own ${MAIN} hadn't moved.` };
+    }
     const r = await rollbackOnGitHub(viaGitHub, d.before!, `${STUDIO_ROLLBACK} ${p.name} to ${d.before!.slice(0, 7)} (undoes go live ${d.id}, ${d.after.slice(0, 7)}; by ${by})`, io, plan.main?.sha ?? null);
     const id = newId('d');
     db.prepare('INSERT INTO deploys (id, product, kind, repo, before, after, by, detail, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')

@@ -214,3 +214,16 @@ test('a project handed over to another Studio: left out of beta runs, agents and
   // Nothing is deleted: its history stays readable.
   assert.equal(C.getProduct('handed').id, 'handed');
 });
+
+test("rolling back a game also rolls back the website its build went into (what players see)", async () => {
+  const plan: any = await D.rollbackPlan('starfall');
+  assert.deepEqual(plan.blockers, []);
+  assert.deepEqual(plan.github.targets.map((t: any) => [t.repo, t.to]), [['acme/starsite', sha('c')]]);
+  assert.match(plan.warnings.join('\n'), /also rolls back acme\/starsite/);
+  await D.rollback('starfall', { confirm: 'ROLLBACK starfall', by: 'owner' });
+  const site = gh.repos['acme/starsite'];
+  assert.equal(site.commits[site.refs.main].tree, 'tc', "the website has the files from before the game's go live");
+  assert.equal(gh.repos['acme/starfall'].commits[gh.repos['acme/starfall'].refs.main].tree, 'ta', 'and so does the game');
+  const rows: any[] = db.prepare(`SELECT kind, product FROM deploys WHERE kind = 'rollback' AND product IN ('starsite', 'starfall') ORDER BY at`).all();
+  assert.deepEqual(rows.map((r) => r.product).sort(), ['starfall', 'starsite']);
+});
