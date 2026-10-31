@@ -52,6 +52,9 @@ Gen's side is `hawkesgen/src/testsignin.ts` (`POST /v1/users/test-session`, the 
 - kind `app`, beta `https://beta.hawkesgen.ai/`, live `https://hawkesgen.ai/`, repo the Gen repository, versionPath
   `/v1/health` (CI sets `HAWKESGEN_COMMIT` on every deploy), checks `npm ci && npm run typecheck && npm test`,
   testSignIn `https://beta.hawkesgen.ai/v1/users/test-session`.
+- Agents on it work like any project's (a branch from `beta`, a pull request into `beta`, never main), and keep Gen's guard
+  rails: a change to `src/auth.ts`, `bin/fetch-secrets.mjs`, CI, data or keys isn't pushed unless J names the file
+  (`agents.ts`, the same `guardFiles` as Gen's infra agents).
 - Its playtest bot is `dashboard/gen/playtest.js` (`smoke`, `media`, `signedout`; no GPU spent).
 - Its 🐞 button: the project's report line set at `PUT /v1/admin/report-script` (Gen's beta then loads it); without
   one, Gen's beta passes the widget through to J's Studio (`hawkesgen/src/studioreport.ts`).

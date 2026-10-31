@@ -1692,6 +1692,18 @@ async function work(id: string, note?: string, answer?: string, resumed?: Phase 
         return;
       }
       if ((note || answer) && !changedNow) addLog(id, 'no new commit this pass; checking the branch again');
+      // A project whose repository is Studio's or Gen's own (Gen's app: docs/projects.md) keeps their guard rails.
+      const infraName = (/^jgriffith3433\/(hawkesstudio|hawkesgen)$/i.exec(c.slug ?? '') ?? [])[1]?.toLowerCase();
+      if (infraName) {
+        const files = git(c.worktree, ['diff', '--name-only', `origin/${c.base}...HEAD`]).out.split('\n').filter(Boolean);
+        const bad = guardFiles(infraName, files, requestAndNotes(c));
+        if (bad.length) {
+          const list = bad.map((b) => `${b.file} (${b.why === 'forbidden' ? 'never changed by agents' : 'only when J names it'})`).join(', ');
+          addLog(id, `guard rails: ${list}`);
+          update(id, { status: 'failed', detail: `not pushed: it changes protected files: ${list}`.slice(0, 300), summary, commits, phase: null });
+          return;
+        }
+      }
       const diffstat = git(c.worktree, ['diff', '--shortstat', `origin/${c.base}...HEAD`]).out;
       update(id, { summary, commits, diffstat, detail: 'pushing and opening the pull request' });
       const criteriaMd = c.criteria.length ? `\n\n**Acceptance criteria:**\n${c.criteria.map((k) => `- ${k}`).join('\n')}` : '';
