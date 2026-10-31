@@ -1,0 +1,166 @@
+{
+  "version": 1,
+  "about": "Hawkes Studio's plugins (docs/plugins.md): each plugin is a package a project depends on by version, per engine. New plugins are a new entry here; src/plugins.ts reads it. Kinds: upm-git, upm-embed, npm-tarball, npm, script-tag, copy-file. Version sources: github-tags, package-json, studio-file, fixed, none. Templates: {version} {major} {project} {genProject} {reportScript}.",
+  "plugins": [
+    {
+      "id": "hawkes-net",
+      "name": "Hawkes Net",
+      "description": "Multiplayer with no server of your own: shared rooms, avatars, messages, synced state and a shared clock on Hawkes Net's relay (or peer to peer).",
+      "gives": [
+        "Rooms by area with live and test rooms, shards when one is full, rejoining by itself",
+        "Avatars played back smoothly, messages that arrive once and in order, synced state",
+        "A shared clock, and players marked away when their tab or game is in the background",
+        "Beta sites play on beta Net and live sites on the real one, with no change to the game"
+      ],
+      "homepage": "https://net.hawkesgen.ai",
+      "docs": "https://github.com/jgriffith3433/hawkesnet-js#readme",
+      "category": "multiplayer",
+      "setup": [
+        "Make a free account and a project at https://net.hawkesgen.ai; the project id goes into the game (project: \"<id>\").",
+        "List the game's live site in the Net project (liveHosts), so live players get live rooms and everywhere else gets test rooms.",
+        "Wire it into the game: join a room or a lobby where players meet, send the player's place, draw the others. An agent can do this (studio_plugins wire)."
+      ],
+      "brief": "Wire Hawkes Net (multiplayer) into this game. The dependency is in place or added as described below. Use the project's Hawkes Net project id (ask the owner if it isn't known; never invent one). Add a lobby (Unity: HawkesNetLobby; web: lobby({ project, liveHosts }) from @hawkesgen/net; Babylon: multiplayer(scene, { babylon, project, player, liveHosts }) from @hawkesgen/net-babylon) where players meet, send the local player's place, draw the other players as avatars, and leave cleanly. Keep single player working when the network is down. Add a playtest scenario that joins a room.",
+      "engines": {
+        "unity": {
+          "kind": "upm-git",
+          "package": "com.hawkes.net",
+          "git": "https://github.com/jgriffith3433/hawkesnet-unity.git?path=/Packages/com.hawkes.net",
+          "versions": { "source": "github-tags", "repo": "jgriffith3433/hawkesnet-unity" },
+          "docs": "https://github.com/jgriffith3433/hawkesnet-unity#readme"
+        },
+        "web": {
+          "kind": "npm-tarball",
+          "package": "@hawkesgen/net",
+          "tarball": "https://github.com/jgriffith3433/hawkesnet-js/archive/refs/tags/v{version}.tar.gz",
+          "versions": { "source": "github-tags", "repo": "jgriffith3433/hawkesnet-js" },
+          "docs": "https://github.com/jgriffith3433/hawkesnet-js#readme"
+        },
+        "babylon": {
+          "kind": "npm-tarball",
+          "package": "@hawkesgen/net-babylon",
+          "tarball": "https://github.com/jgriffith3433/hawkesnet-babylon/archive/refs/tags/v{version}.tar.gz",
+          "versions": { "source": "github-tags", "repo": "jgriffith3433/hawkesnet-babylon" },
+          "docs": "https://github.com/jgriffith3433/hawkesnet-babylon#readme"
+        }
+      }
+    },
+    {
+      "id": "playtest",
+      "name": "Studio playtest bot",
+      "description": "The playtest contract: Studio's bot plays the game through real input, so daily playtests, reviews and acceptance checks really play it.",
+      "gives": [
+        "Named scenarios Studio can start (smoke, a level, a chapter), with progress, events and an outcome",
+        "Playtests on beta and live with video, frame rates and problems, reviewed by Claude",
+        "Acceptance criteria judged from real play"
+      ],
+      "homepage": "https://studio.hawkesgen.ai",
+      "docs": "docs/playtest.md",
+      "category": "testing",
+      "setup": [
+        "Register at least a smoke scenario and a bot that plays it through real input (no teleporting).",
+        "Studio's agents can write the bot for you: studio_project contract, or studio_plugins wire."
+      ],
+      "brief": "Add Studio's playtest contract to this game (docs/playtest.md in Studio; the helper is added as described below). Register a 'smoke' scenario (boot, menu, a minute of real play) and a bot that plays it through real input like a player (no teleporting or state edits; named setup shortcuts are fine), reporting scenes, events, progress and finish('won'|'lost'|'done'|'stuck'). Web: import installPlaytest from the copied hawkes-playtest.js and call it once at startup. Unity: add a HawkesPlaytest component and register scenarios with coroutines. Mark the project contract: true once the bot plays.",
+      "engines": {
+        "unity": {
+          "kind": "upm-embed",
+          "package": "com.hawkes.playtest",
+          "from": "clients/unity/com.hawkes.playtest",
+          "versions": { "source": "studio-file", "path": "clients/unity/com.hawkes.playtest/package.json" }
+        },
+        "web": {
+          "kind": "copy-file",
+          "files": [
+            { "from": "clients/web/hawkes-playtest.js", "name": "hawkes-playtest.js" },
+            { "from": "clients/web/hawkes-playtest.d.ts", "name": "hawkes-playtest.d.ts" }
+          ],
+          "marker": "CONTRACT_VERSION = (\\d+)",
+          "versions": { "source": "studio-file", "path": "clients/web/hawkes-playtest.js", "match": "CONTRACT_VERSION = (\\d+)" }
+        }
+      }
+    },
+    {
+      "id": "hawkes-gen-unity",
+      "name": "Hawkes Gen for Unity",
+      "description": "Hawkes Gen's generative AI inside the Unity editor: images, textures, video, 3D models, music, voice and sound, imported straight into Assets.",
+      "gives": [
+        "Window > Hawkes Gen: run any tool or preset, browse the library and its characters, stages and shots",
+        "Takes and revisions imported into Assets; editor only, nothing ships in builds"
+      ],
+      "homepage": "https://hawkesgen.ai",
+      "docs": "https://hawkesgen.ai",
+      "category": "tools",
+      "setup": [
+        "Sign in to Hawkes Gen from Window > Hawkes Gen the first time it opens."
+      ],
+      "engines": {
+        "unity": {
+          "kind": "upm-git",
+          "package": "com.hawkes.gen",
+          "versions": { "source": "package-json", "repo": "jgriffith3433/hawkesgen", "path": "clients/unity/com.hawkes.gen/package.json", "ref": "main" },
+          "available": false,
+          "why": "Coming soon: it installs once com.hawkes.gen has its own public package repo (like Hawkes Net's). Installed copies are still detected."
+        }
+      }
+    },
+    {
+      "id": "analytics",
+      "name": "Hawkes Analytics",
+      "description": "Player analytics with one line: who plays, where they drop off, levels, errors, ratings, and what gets in their way. Studio's Analytics tab and agents read it.",
+      "gives": [
+        "Retention, funnels, drop-offs, levels and deaths, errors, feedback",
+        "What gets in players' way (failed requests, rage clicks) and where their time goes",
+        "Work for agents from real players' data"
+      ],
+      "homepage": "https://hawkesgen.ai",
+      "docs": "https://hawkesgen.ai",
+      "category": "analytics",
+      "setup": [
+        "Nothing else: the line names the project, and the Analytics tab fills in as players come.",
+        "Optional: track levels, deaths and feedback from the game (window.hawkesAnalytics.levelStart, levelEnd, death, feedback)."
+      ],
+      "engines": {
+        "web": {
+          "kind": "script-tag",
+          "src": "https://hawkesgen.ai/sdk/analytics@{major}.js",
+          "tag": "<script src=\"https://hawkesgen.ai/sdk/analytics@{major}.js\" data-product=\"{genProject}\" defer></script>",
+          "detect": "https://hawkesgen\\.ai/sdk/analytics@(\\d+)\\.js",
+          "versions": { "source": "fixed", "list": ["1"] }
+        },
+        "unity": {
+          "kind": "upm-git",
+          "package": "com.hawkes.analytics",
+          "versions": { "source": "package-json", "repo": "jgriffith3433/hawkesgen", "path": "clients/unity/com.hawkes.analytics/package.json", "ref": "main" },
+          "available": false,
+          "why": "Coming soon for Unity: a WebGL game's website can use the web line meanwhile. Installed copies are still detected."
+        }
+      }
+    },
+    {
+      "id": "bug-report",
+      "name": "Bug report button",
+      "description": "A 🐞 button on the project's pages: reports with a screenshot, the console and the page's context land in its backlog, and uncaught errors report themselves.",
+      "gives": [
+        "Bug reports from the project's own pages, straight into its backlog (top priority for the PM)",
+        "Uncaught errors filed by themselves, deduplicated",
+        "window.hawkesReportContext = () => ({ ... }) adds what the page knows to each report"
+      ],
+      "homepage": "https://studio.hawkesgen.ai",
+      "docs": "docs/projects.md",
+      "category": "feedback",
+      "setup": [
+        "Nothing else on beta. A live site reports only when it is listed in the project's reportOrigins."
+      ],
+      "engines": {
+        "web": {
+          "kind": "script-tag",
+          "src": "{reportScript}",
+          "tag": "<script src=\"{reportScript}\" defer></script>",
+          "detect": "/r/[a-z0-9-]+\\.js\\?k=rk_[\\w-]+",
+          "versions": { "source": "none" }
+        }
+      }
+    }
+  ]
+}

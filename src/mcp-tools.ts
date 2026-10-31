@@ -587,6 +587,21 @@ export function studioMcp({ studio, waitRun }: Client = { studio: defaultStudio,
       inputSchema: obj({ product: str('Product id'), message: str('What changed, as a commit message') }, ['product', 'message']),
       run: async ({ product, message }) => studio(`/api/fastlane/${product}`, { method: 'POST', body: { message } }),
     },
+    {
+      name: 'studio_plugins',
+      description: "Plugins (docs/plugins.md): packages a project adds by version, per engine (Unity, web, Babylon): Hawkes Net (multiplayer), the playtest bot, Hawkes Analytics, the bug report button, Hawkes Gen for Unity. list: the catalog with each engine's latest version and whether it is available. status { product }: for each plugin, installed or not, which version and where (repo, file, line), the latest, outdated, and what it would take (install / upgrade / current / unavailable / n/a when the project has nothing it fits). plan { product, plugin, engine?, version? }: the exact file edits, without changing anything. install { product, plugin, engine?, version? } (also for upgrading: the latest by default): Studio commits the edits on a branch plugin/<id>-<version> from beta and opens a pull request into beta; give its link, and say merging it puts it on beta (not live). wire { product, plugin, engine?, version? }: for a plugin that needs code to work (Hawkes Net into the game, the playtest bot): an agent change that starts from that branch and sets it up, reported back here. Say the plugin's setup notes (a Hawkes Net project, for one) before or with the install.",
+      inputSchema: obj({ action: str('list (default) | status | plan | install | wire'), product: str('status, plan, install, wire: the project id'), plugin: str('plan, install, wire: the plugin id (from list)'), engine: str('unity | web | babylon (empty: the one installed, else the one the project has)'), version: str('A version like 0.6.0 (empty: the latest)'), fresh: bool('status: read the repos again now (else up to a minute old)') }),
+      run: async ({ action, product, plugin, engine, version, fresh }) => {
+        const a = String(action || 'list');
+        if (a === 'list') return studio('/api/plugins');
+        if (!product) throw new Error('product: the project id');
+        if (a === 'status') return studio(`/api/projects/${product}/plugins${fresh ? '?fresh=1' : ''}`);
+        if (!plugin) throw new Error('plugin: the plugin id (studio_plugins list)');
+        if (a === 'plan') return studio(`/api/projects/${product}/plugins/${plugin}/plan?${new URLSearchParams({ ...(engine ? { engine } : {}), ...(version ? { version } : {}) })}`);
+        if (a === 'install' || a === 'upgrade' || a === 'wire') return studio(`/api/projects/${product}/plugins/${plugin}`, { method: 'POST', body: { engine, version, agent: a === 'wire' } });
+        throw new Error('action: list | status | plan | install | wire');
+      },
+    },
   ];
   // studio_game: the old name of studio_project (roles and conversations from before still call it).
   const proj = tools.find((t) => t.name === 'studio_project');
