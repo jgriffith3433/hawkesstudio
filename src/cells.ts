@@ -583,6 +583,8 @@ export async function followRoll(why: 'deploy' | 'nightly' = 'deploy', o: { heal
   rolling = run;
   try {
     const r = await run;
+    // The org records follow (the cells list showed the image a cell was made on, not the one it runs).
+    for (const org of listOrgs()) if (org.service && r.done.includes(org.service)) setOrg(org.id, { image });
     if (r.failed) {
       const { notify } = await import('./notify.ts');
       await notify('Customer Studio update stopped', `${r.failed} wasn't healthy on the new version (${image.split(':').pop()}), so the update stopped there; ${r.left.length} other customer Studio(s) stay on the old version until the next deploy or tonight's catch-up.`, { priority: 4, tags: ['warning'] }).catch(() => {});

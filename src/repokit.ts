@@ -85,7 +85,7 @@ export async function readiness(productId: string, userId?: string | null) {
     token = access?.token ?? null;
     items.push(access
       ? { id: 'access', ok: true, what: `Studio can reach it (${access.via === 'app' ? 'the GitHub App' : access.via === 'user' ? 'your GitHub sign-in' : access.via === 'pasted' ? 'a pasted token' : "Studio's own token"})` }
-      : { id: 'access', ok: false, what: "Studio can't reach the repository", by: 'person', ...(appConfig() || (await linksFor(slug)).install ? { fix: 'Install the GitHub App on it (the link opens with this repository chosen), then check again.', link: (await linksFor(slug)).install } : { fix: 'Connect Studio to GitHub first: one click on GitHub, then install it on this repository.', link: studioLink('/api/github/app/setup') }) });
+      : { id: 'access', ok: false, what: "Studio can't reach the repository", by: 'person', ...(appConfig() || (await linksFor(slug)).install ? { fix: 'Install the GitHub App on it (the link opens with this repository chosen), then check again.', link: (await linksFor(slug)).install } : { fix: 'Connect Studio to GitHub first: choose where its app lives (your account or an organization), then install it on this repository.', link: studioLink('/api/github/app/setup') }) });
   }
   if (slug && token) {
     const info = await gh(token, 'GET', `/repos/${slug}`);

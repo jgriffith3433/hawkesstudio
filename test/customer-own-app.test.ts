@@ -35,11 +35,13 @@ process.env.STUDIO_CONTROL_URL = `http://127.0.0.1:${(cp.address() as any).port}
 // GitHub: the manifest conversion, then the customer's own app installed on jgriffith3433 with hawkesgen chosen.
 const { privateKey } = crypto.generateKeyPairSync('rsa', { modulusLength: 2048 });
 const pem = privateKey.export({ type: 'pkcs1', format: 'pem' }).toString();
+let appPerms: Record<string, string> = { metadata: 'read', contents: 'read' };
 const gh = http.createServer(async (req, res) => {
   for await (const _ of req) { /* drain */ }
   const p = new URL(req.url!, 'http://x').pathname;
   const out = (status: number, o: unknown) => { res.writeHead(status, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(o)); };
   if (p === '/app-manifests/abc/conversions') return out(201, { id: 91, slug: 'hawkes-studio-j-studio-4f12', client_id: 'Iv1.own', client_secret: 'own-client-secret', pem, webhook_secret: 'own-webhook', html_url: 'https://github.test/apps/hawkes-studio-j-studio-4f12', owner: { login: 'jgriffith3433' } });
+  if (p === '/app') return out(200, { slug: 'their-existing-app', client_id: 'Iv1.existing', html_url: 'https://github.test/apps/their-existing-app', owner: { login: 'acme-org' }, permissions: appPerms });
   if (p === '/app/installations') return out(200, [{ id: 9, account: { login: 'jgriffith3433', type: 'User' }, repository_selection: 'selected' }]);
   if (p === '/app/installations/9/access_tokens') return out(201, { token: 'ghs_own_install', expires_at: new Date(Date.now() + 3600_000).toISOString() });
   if (p === '/installation/repositories') return out(200, { repositories: [{ full_name: 'jgriffith3433/hawkesgen', private: true, html_url: 'https://github.test/jgriffith3433/hawkesgen' }] });
@@ -61,6 +63,34 @@ test("with no shared app, a customer's Studio offers to make its own, named afte
   assert.equal(m.name, 'Hawkes Studio j-studio-4f12');
   assert.equal(m.public, false);
   assert.equal(m.redirect_url, 'https://studio.hawkesgen.ai/o/j-studio-4f12/api/github/app/created', 'GitHub comes back to this Studio');
+});
+
+test("before GitHub: whose account owns the app (theirs or an organization), or an app they already have", () => {
+  const page = G.chooserPage('https://studio.hawkesgen.ai/o/j-studio-4f12');
+  assert.match(page, /\/o\/j-studio-4f12\/api\/github\/app\/setup\?owner=me/);
+  assert.match(page, /name="org"/);
+  assert.match(page, /I already have a GitHub App/);
+  assert.match(page, /\/o\/j-studio-4f12\/api\/github\/app\/existing/);
+  assert.match(G.setupPage('https://studio.hawkesgen.ai/o/j-studio-4f12', 'acme-org'), /\/organizations\/acme-org\/settings\/apps\/new/);
+  assert.equal(G.githubLogin('acme-org'), 'acme-org');
+  for (const bad of ['-acme', 'acme/../x', 'a b', '']) assert.equal(G.githubLogin(bad), null, bad);
+});
+
+test("an app they already have: checked with GitHub (the key, the permissions Studio needs) before it is kept", async () => {
+  const base = 'https://studio.hawkesgen.ai/o/j-studio-4f12';
+  await assert.rejects(G.useExistingApp(base, { appId: 'abc', pem }), /App ID/);
+  await assert.rejects(G.useExistingApp(base, { appId: 55, pem: 'not a key' }), /Private key/);
+  await assert.rejects(G.useExistingApp(base, { appId: 55, pem }), /needs more permissions: contents: write/);
+  assert.equal(G.appConfig(), null, 'nothing kept');
+  appPerms = { metadata: 'read', contents: 'write', pull_requests: 'write', workflows: 'write', pages: 'write', administration: 'write', actions: 'read', checks: 'write' };
+  const r = await G.useExistingApp(base, { appId: '55', pem, clientSecret: 'existing-secret' });
+  assert.equal(r.app.slug, 'their-existing-app');
+  assert.equal(r.app.owner, 'acme-org');
+  assert.equal(r.signIn, true);
+  assert.equal(G.appConfig()?.clientId, 'Iv1.existing');
+  assert.ok(!fs.readFileSync(path.join(process.env.STUDIO_DATA!, 'github-app.json'), 'utf8').includes('existing-secret'), 'sealed');
+  await assert.rejects(G.useExistingApp(base, { appId: 55, pem }), /already has its GitHub App/);
+  fs.rmSync(path.join(process.env.STUDIO_DATA!, 'github-app.json'));
 });
 
 test("its app's secrets are sealed at rest, and it adds a repo its app is installed on (J's account too); never with J's token", async () => {

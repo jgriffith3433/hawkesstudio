@@ -63,7 +63,20 @@ export async function handleGithubRoutes(req: http.IncomingMessage, res: http.Se
     const cell = await (await import('./cellside.ts')).cellGithub(`${base}/`).catch((e: any) => ({ error: String(e.message ?? e) }) as any);
     if (cell?.install) return redirect(res, cell.install), true;
     if (cell?.error) throw new StudioError(`Couldn't reach Hawkes Studio to connect GitHub (${cell.error}). Try again in a minute.`, 502);
-    return html(res, 200, G.setupPage(base, url.searchParams.get('org'))), true;
+    // Who owns the app on GitHub (their account or an organization: a private app installs only there), or an app they
+    // already have: the chooser first, then GitHub's page.
+    const org = url.searchParams.get('org');
+    if (org !== null) {
+      if (!G.githubLogin(org.trim())) throw new StudioError('That isn\'t a GitHub organization name.', 400);
+      return html(res, 200, G.setupPage(base, org.trim())), true;
+    }
+    if (url.searchParams.get('owner') === 'me') return html(res, 200, G.setupPage(base)), true;
+    return html(res, 200, G.chooserPage(base)), true;
+  }
+  // An app the person already has, checked with GitHub before Studio keeps it (github-app.ts useExistingApp).
+  if (route === '/api/github/app/existing' && method === 'POST') {
+    if (!requester(req)) throw new StudioError('Sign in to this Studio first.', 401);
+    return send(res, 200, await G.useExistingApp(base, await readJson(req))), true;
   }
   if (route === '/api/github/app/created' && method === 'GET') {
     const r = await G.appCreated(String(url.searchParams.get('code') ?? ''), String(url.searchParams.get('state') ?? ''));

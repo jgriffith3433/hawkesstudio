@@ -77,7 +77,7 @@ of the core.)
 A customer's Studio is `customerStudio()` (src/tenancy.ts): an org cell (`STUDIO_ORG`), a claimed Studio
 (`STUDIO_SIGNUP=owner`) or `STUDIO_CUSTOMER=1`. In one (**built**):
 - its games are its own products file in its data folder, empty at first, written by onboarding
-- GitHub without Hawkes Studio's admin (J, 2026-10-31): it uses Hawkes Studio's shared GitHub App when the control plane has one, else the customer makes their own (`github-app.ts` manifest flow in the cell: named `Hawkes Studio <org>`, private, owned by their GitHub, secrets sealed). It takes a repository on J's GitHub (`jgriffith3433`) only when GitHub gave it access to that repository (`config.ts checkRepoOwnership`: ownership, not the name)
+- GitHub without Hawkes Studio's admin (J, 2026-10-31): it uses Hawkes Studio's shared GitHub App when the control plane has one, else the customer makes their own (`github-app.ts`: `chooserPage` asks whose GitHub owns it, their account or an organization, since GitHub installs a private app only on its owner; then the manifest flow, named `Hawkes Studio <org>`, secrets sealed), or uses an app they already have (`useExistingApp`: App ID and private key, checked with GitHub for the permissions Studio needs). It takes a repository on J's GitHub (`jgriffith3433`) only when GitHub gave it access to that repository (`config.ts checkRepoOwnership`: ownership, not the name)
 - Claude is only ever the customer's own (section 4)
 - the platform features are closed to everyone in it (section 5)
 

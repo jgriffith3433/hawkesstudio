@@ -145,10 +145,92 @@ export async function appCreated(code: string, state: string) {
     id: a.id, slug: a.slug, clientId: a.client_id, clientSecret: a.client_secret, pem: a.pem, webhookSecret: a.webhook_secret,
     htmlUrl: a.html_url, owner: a.owner?.login ?? '',
   };
+  saveApp(cfg);
+  return { app: publicApp(cfg), install: installUrl(cfg) };
+}
+
+function saveApp(cfg: AppConfig) {
   const sealed: AppConfig = { ...cfg };
   for (const k of SECRET_FIELDS) if (sealed[k]) (sealed as any)[k] = seal(String(sealed[k]));
   writeSecret(APP_FILE(), sealed);
-  return { app: publicApp(cfg), install: installUrl(cfg) };
+}
+
+/** A GitHub account or organization name, as GitHub allows them. */
+export const githubLogin = (s: unknown) => (/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$/.test(String(s ?? '')) ? String(s) : null);
+
+/**
+ * Before the app is made: who owns it on GitHub. A customer's app is private, and GitHub installs a private app only on
+ * the account that owns it, so repos under an organization need the app made there (J, 2026-10-31). Or an app they
+ * already have (useExistingApp).
+ */
+export function chooserPage(base: string) {
+  const esc = (s: string) => s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]!));
+  const setup = `${base}/api/github/app/setup`;
+  const m = manifest(base);
+  const perms = Object.entries(m.default_permissions).map(([k, v]) => `${k.replace(/_/g, ' ')}: ${v}`).join(', ');
+  return `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Connect GitHub</title>
+<body style="font:16px system-ui;max-width:600px;margin:48px auto;padding:0 16px;line-height:1.45">
+<h1 style="font-size:22px">Connect Studio to GitHub</h1>
+<p>Studio works on your repositories through a GitHub App of your own. Make it where your repositories are: GitHub lets
+this app be installed only on the account that owns it.</p>
+<p><a href="${esc(`${setup}?owner=me`)}" style="display:inline-block;padding:10px 16px;border:1px solid #888;border-radius:8px;text-decoration:none">My GitHub account</a></p>
+<form method="get" action="${esc(setup)}" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+<input name="org" required pattern="[A-Za-z0-9](?:[A-Za-z0-9\\-]{0,37}[A-Za-z0-9])?" placeholder="organization name" style="font:inherit;padding:9px 10px;flex:1;min-width:180px">
+<button style="font:inherit;padding:10px 16px">A GitHub organization</button></form>
+<p style="color:#666;font-size:14px">For an organization you need to be one of its owners. Either way GitHub shows you the app first: press <b>Create GitHub App</b>.</p>
+<details style="margin-top:28px"><summary style="cursor:pointer"><b>I already have a GitHub App for Studio</b></summary>
+<p style="font-size:14px">Studio needs its App ID and a private key (on the app's page on GitHub: <i>Generate a private key</i>). It must have these
+permissions: ${esc(perms)}. For signing in with GitHub (making new repositories) add its Client ID and a client secret, and
+the callback URL <code>${esc(m.callback_urls[0])}</code>; set the setup URL to <code>${esc(m.setup_url)}</code>.</p>
+<form id="existing" style="display:grid;gap:8px">
+<input name="appId" required inputmode="numeric" placeholder="App ID" style="font:inherit;padding:9px 10px">
+<textarea name="pem" required rows="5" placeholder="-----BEGIN RSA PRIVATE KEY-----" style="font:13px ui-monospace,monospace;padding:9px 10px"></textarea>
+<input type="file" accept=".pem" style="font-size:14px">
+<input name="clientId" placeholder="Client ID (optional)" style="font:inherit;padding:9px 10px">
+<input name="clientSecret" type="password" placeholder="Client secret (optional)" autocomplete="off" style="font:inherit;padding:9px 10px">
+<button style="font:inherit;padding:10px 16px;justify-self:start">Use this app</button><div id="msg" style="font-size:14px"></div></form></details>
+<script>
+const f = document.getElementById('existing'), msg = document.getElementById('msg');
+f.querySelector('input[type=file]').addEventListener('change', async (e) => { const file = e.target.files[0]; if (file) f.pem.value = await file.text(); });
+f.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  msg.textContent = 'Checking it with GitHub…';
+  const body = Object.fromEntries(new FormData(f));
+  const r = await fetch(${JSON.stringify(`${base}/api/github/app/existing`)}, { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) { msg.style.color = '#b00'; msg.textContent = j.error || ('GitHub said no (' + r.status + ')'); return; }
+  msg.style.color = ''; msg.textContent = 'Saved. Next, choose the repositories it may work on…';
+  location.href = j.install;
+});
+</script></body>`;
+}
+
+/**
+ * An app the person already has (made on GitHub, or for another of their Studios): checked with GitHub before it is
+ * kept, the private key and the permissions Studio needs. Without a client secret, installation tokens work and signing
+ * in with GitHub doesn't.
+ */
+export async function useExistingApp(base: string, input: { appId?: unknown; pem?: unknown; clientId?: unknown; clientSecret?: unknown }) {
+  if (appConfig()) throw new StudioError('This Studio already has its GitHub App: choose repositories from Connect GitHub.', 409);
+  const id = Number(String(input.appId ?? '').trim());
+  if (!Number.isInteger(id) || id <= 0) throw new StudioError('App ID: the number on the app\'s page on GitHub.', 400);
+  const pem = String(input.pem ?? '').trim();
+  if (!/-----BEGIN [A-Z ]*PRIVATE KEY-----/.test(pem)) throw new StudioError('Private key: the .pem file GitHub gave you ("Generate a private key").', 400);
+  const probe: AppConfig = { id, slug: '', clientId: '', clientSecret: '', pem, htmlUrl: '', owner: '' };
+  let a: any;
+  try { a = await gh(appJwt(probe), 'GET', '/app', undefined, { jwt: true }); } catch (e: any) {
+    throw new StudioError(`GitHub didn't accept that App ID and private key (${String(e.message ?? e).slice(0, 160)}).`, 400);
+  }
+  const rank: Record<string, number> = { read: 1, write: 2, admin: 3 };
+  const have: Record<string, string> = a.permissions ?? {};
+  const missing = Object.entries(manifest(base).default_permissions).filter(([k, v]) => (rank[have[k]] ?? 0) < rank[v]).map(([k, v]) => `${k.replace(/_/g, ' ')}: ${v}`);
+  if (missing.length) throw new StudioError(`That app needs more permissions: ${missing.join(', ')}. Add them on GitHub (${a.html_url ?? 'the app\'s page'} → Permissions), then try again.`, 400);
+  const cfg: AppConfig = {
+    id, slug: String(a.slug), clientId: String(input.clientId ?? '').trim() || String(a.client_id ?? ''), clientSecret: String(input.clientSecret ?? '').trim(),
+    pem, htmlUrl: String(a.html_url ?? ''), owner: String(a.owner?.login ?? ''),
+  };
+  saveApp(cfg);
+  return { app: publicApp(cfg), install: installUrl(cfg), signIn: Boolean(cfg.clientSecret) };
 }
 
 const publicApp = (c: AppConfig) => ({ id: c.id, slug: c.slug, owner: c.owner, url: c.htmlUrl });
