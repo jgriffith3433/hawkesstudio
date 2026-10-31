@@ -614,11 +614,34 @@ export function studioMcp({ studio, waitRun }: Client = { studio: defaultStudio,
   // A customer's Studio: no platform tools (the API refuses them anyway: lockdown.ts), and descriptions say "the owner",
   // not J (this process doesn't open Studio's database for the owner's name).
   if (customerStudio()) {
-    const mine = listed.filter((t) => !PLATFORM_TOOLS.has(t.name)).map((t) => ({ ...t, description: ownerWords(t.description, 'the owner') }));
+    const mine = listed.filter((t) => !PLATFORM_TOOLS.has(t.name) && !CUSTOMER_HIDDEN.has(t.name)).map((t) => ({ ...t, description: customerWords(t.description), inputSchema: customerSchema(t.inputSchema) }));
     return { name: 'hawkesstudio', version: '0.3.0', instructions: CUSTOMER_INSTRUCTIONS, tools: mine };
   }
   return { name: 'hawkesstudio', version: '0.3.0', instructions: INSTRUCTIONS, tools: listed };
 }
+
+/** Tools a customer's Studio refuses anyway (lockdown.ts): not listed, so its Talk doesn't offer them. */
+const CUSTOMER_HIDDEN = new Set(['studio_analytics', 'studio_video']);
+
+/**
+ * A tool's words as a customer's Talk reads them: J becomes "the owner", and what only exists in J's Studio (his build
+ * server and its price, his products, Studio and Gen as agent targets, the memory's git branch) is said generically or
+ * left out (2026-10-31 review: customers saw "the AWS build server (about $0.77/hr)" and J's product ids).
+ */
+export function customerWords(text: string): string {
+  return ownerWords(String(text ?? '').replace(/\bJ-only\b/g, "the owner's-only").replace(/\bJ-/g, 'owner-'), 'the owner')
+    .replace(/(?:the )?AWS build server(?: \(about \$[\d.]+\/hr[^)]*\))?/g, "Hawkes Gen's cloud")
+    .replace(/\$0\.77\/hr/g, 'cloud time')
+    .replace(/\b(?:sickofit|yoobaland|theplacedepartment|doseofdestruction|phorigins|icanbe|imaginelivetv|hawkesbiomedical)(?:, (?:sickofit|yoobaland|theplacedepartment|doseofdestruction|phorigins|icanbe|imaginelivetv|hawkesbiomedical))*\b/g, 'a project id')
+    .replace(/,? ?(?:or )?hawkesstudio ?\/ ?hawkesgen(?: for Studio or Gen themselves)?/g, '')
+    .replace(/push the Markdown export to the hawkesstudio "memory" branch/g, 'export the memory as Markdown')
+    .replace(/the owner's (decisions|words|phone|tap) (are|is) his/g, "the owner's $1 $2 theirs")
+    .replace(/every Hawkes product/gi, 'every project in this Studio')
+    .replace(/every Hawkes agent/gi, 'every agent here')
+    .replace(/Hawkes Biomedical/g, 'the studio')
+    .replace(/ on the hawkesstudio "memory" branch| \(the "memory" branch[^)]*\)/g, '');
+}
+const customerSchema = (schema: any): any => (Array.isArray(schema) ? schema.map(customerSchema) : schema && typeof schema === 'object' ? Object.fromEntries(Object.entries(schema).map(([k, v]) => [k, k === 'description' && typeof v === 'string' ? customerWords(v) : customerSchema(v)])) : schema);
 
 /** The shared memory (memory.ts): every Claude that works on Hawkes reads and adds to it. */
 function memoryTools(studio: Client['studio']): McpTool[] {

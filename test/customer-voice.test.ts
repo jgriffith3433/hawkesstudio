@@ -86,3 +86,17 @@ test('anything else that still says J reaches Claude in the owner\'s name', asyn
   assert.equal(forOwner("J asked for this; J's decision stands. Ready for J to test."), "Ada asked for this; Ada's decision stands. Ready for Ada to test.");
   assert.equal(forOwner('Keep J.json, j@x.io and ID-J intact'), 'Keep J.json, j@x.io and ID-J intact');
 });
+
+test("the tool list a customer's Talk and agents get: their Studio's, with none of J's world", async () => {
+  const { cloudMcp } = await import('../src/cloudjob.ts');
+  assert.equal((cloudMcp({ TALK_CONVERSATION: 't' }, '') as any).hawkesstudio.env.STUDIO_CUSTOMER, '1', 'the tool server in the shared job knows it is a customer Studio');
+  const { studioMcp, PLATFORM_TOOLS } = await import('../src/mcp-tools.ts');
+  const s: any = studioMcp();
+  const names = s.tools.map((t: any) => t.name);
+  for (const n of PLATFORM_TOOLS) assert.ok(!names.includes(n), `${n} is J's`);
+  const text = [s.instructions, ...s.tools.map((t: any) => `${t.name}: ${t.description} ${JSON.stringify(t.inputSchema)}`)].join('\n');
+  for (const bad of [/\bJ\b/, /\bJ's\b/, /AWS/, /\$0\.77/, /sickofit|yoobaland|theplacedepartment|doseofdestruction|phorigins/i, /Hawkes Biomedical/, /every Hawkes product/i, /"memory" branch/]) {
+    const m = bad.exec(text);
+    assert.ok(!m, `customer sees ${bad}: …${m ? text.slice(Math.max(0, m.index - 80), m.index + 60).replace(/\n/g, ' ') : ''}…`);
+  }
+});

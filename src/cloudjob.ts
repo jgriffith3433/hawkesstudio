@@ -18,6 +18,7 @@
 //   stop           Studio's Stop (a time limit, J's Stop): the runner ends the command
 // The workspace runs at the same absolute path in the job, so Claude Code's session folders (named after the path) match.
 
+import { customerStudio } from './tenancy.ts';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -374,7 +375,9 @@ export function cloudJobAlive(unit: string) {
 export function cloudMcp(studioEnv: Record<string, string>, genKey: string) {
   const gen = (process.env.HAWKESGEN_URL ?? '').replace(/\/+$/, '');
   return {
-    hawkesstudio: { command: process.execPath, args: [path.join(ROOT, 'bin', 'studio-mcp.mjs')], env: { STUDIO_SERVER: '1', ...studioEnv, ...(process.env.STUDIO_SERVICE_URL || process.env.STUDIO_URL ? { STUDIO_URL: process.env.STUDIO_SERVICE_URL || process.env.STUDIO_URL! } : {}), ...(process.env.STUDIO_AGENT_KEY ? { STUDIO_AGENT_KEY: process.env.STUDIO_AGENT_KEY } : {}) } },
+    // A customer's Studio says so to its tool server, which runs in the shared job with none of the cell's env: without
+    // it Talk and agents got J's tool list and instructions (2026-10-31 review).
+    hawkesstudio: { command: process.execPath, args: [path.join(ROOT, 'bin', 'studio-mcp.mjs')], env: { STUDIO_SERVER: '1', ...(customerStudio() ? { STUDIO_CUSTOMER: '1' } : {}), ...studioEnv, ...(process.env.STUDIO_SERVICE_URL || process.env.STUDIO_URL ? { STUDIO_URL: process.env.STUDIO_SERVICE_URL || process.env.STUDIO_URL! } : {}), ...(process.env.STUDIO_AGENT_KEY ? { STUDIO_AGENT_KEY: process.env.STUDIO_AGENT_KEY } : {}) } },
     ...(genKey && gen ? { hawkesgen: { type: 'http', url: `${gen}/mcp`, headers: { Authorization: `Bearer ${genKey}` } } } : {}),
   };
 }

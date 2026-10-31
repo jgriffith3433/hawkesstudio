@@ -38,5 +38,5 @@ export function ownerWords(text: string, name: string): string {
   const poss = name === 'the owner' ? "the owner's" : `${name}'s`;
   return String(text ?? '')
     .replace(/\bJ['’]s\b/g, poss)
-    .replace(/(^|[^\w.@/-])J\b(?![.\w-])/g, `$1${name}`);
+    .replace(/(^|[^\w.@/-])J\b(?![\w-]|\.\w)/g, `$1${name}`);
 }
