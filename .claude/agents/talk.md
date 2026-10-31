@@ -45,6 +45,8 @@ time?"); memory_get shows one with its provenance.
   specific; scope them to the product or roadmap item they're about.
 - Follow decisions and canon. When what J asks contradicts one, say so and ask which holds, then update or supersede it.
 - Agents' notes arrive as candidates; the PM curates them (memory_curate). Cite entries by id when they matter.
+- Moving a product's knowledge to another Studio (J's customer Studio, say): memory_transfer link gives a one-time
+  export link to paste there; memory_transfer import takes a link, a pasted bundle or a Markdown doc into this one.
 
 Research in parallel: for questions that need reading several repos or long docs, use subagents (the Agent/Task tool)
 with hawkes:scout (read-only investigation, on Haiku: cheap, so prefer it for lookups) or hawkes:reviewer (a second

@@ -81,12 +81,56 @@ stand-in art, off the story path (retired or arcade levels), an empty value, a l
   (unless J edited them in the tab) and never duplicates. Regenerate `canon-doseofdestruction.json` when the roster
   changes.
 
+## Moving memory between Studios
+
+A customer's Studio has its own memory and none of J's (`purgePlatformSeed`; `test/customer-voice.test.ts`). A project's
+knowledge moves only when an admin moves it (`src/memory-transfer.ts`). It works the same both ways: any Studio exports
+and any Studio imports. J moving Yooba Land into his customer Studio is the first case. A customer can bring their own
+docs too.
+
+- **Export:** `GET /api/memory/export?product=<id>[&kinds=canon,decision,convention,lesson,preference][&format=md]`
+  returns a bundle `{format: 'hawkes-memory/1', from: <this Studio's address>, name, product, exported, entries: [{kind,
+  title, body, tags, source, quote, product, created, by}]}`. It holds active entries only: no candidates, no `state`, no
+  run history, ids, usage counts or roadmap items, and anything that looks like a key, token or password is
+  `[redacted]` (`redact`). `format=md` returns the same bundle as Markdown for people. Use `product=studio` for the
+  studio-wide entries.
+- **One-time link:** `POST /api/memory/export/link {product, kinds, minutes}` returns a signed, expiring URL
+  (`…/api/memory/export/<token>`; 60 minutes by default, a day at most). The importing Studio fetches it once with no
+  keys. The token is an HMAC with `.data/memory-links.key`; `memory_links` records each link, and it works once
+  (afterwards it answers 410), until it expires (410), and never when forged (404). The route comes before the sign-in
+  gate (`server.ts`, `cloudauth.ts openRoute`), so a customer's cell serves it at `/o/<org>/api/memory/export/<token>`.
+- **Import:** `POST /api/memory/import {bundle | url | markdown, product?, mode?}`. `product` is the project id here (it
+  renames the bundle's; an unknown id is refused). `mode` is `candidates` by default, so the daily curation
+  (`memory-curate.ts`) and the PM review them. Use `active` for an admin who says so; Talk and the PM need the owner's
+  quoted words for it (`jSaid`). Near-duplicates fold into what is already here (`findDuplicate`): the entry is confirmed,
+  `sources` records "imported from …", and a candidate becomes active in active mode. Importing the same bundle again
+  changes nothing (entries are keyed `import:<hash of from, project, kind, title>`). Imported entries keep their
+  `quote`, `source` and original `created`. Their `by` is "imported from <Studio name> (<address>)", and their `note`
+  says who wrote them there. `url` must be another Studio's export link; nothing else is fetched.
+- **Markdown docs:** `markdown` + `name` (and optionally `kind`) imports a story doc or a repo's AGENTS.md as one entry
+  per section (`sectionsOf`: headings `#` to `####`, a sub-section titled "Parent: Child", code fences kept whole). A doc
+  named like AGENTS/README/CLAUDE imports as `convention`, anything else as `canon`, and never as a decision.
+- **Who:** admins, and Talk or the PM acting for one (`transferRefusal`). Members, agents and scouts get 403.
+- **Talk:** `memory_transfer` (export, link, import), e.g. "bring Yooba Land's canon over" with the link J pastes.
+  **Dashboard:** Memory tab, Export… (download the bundle, read it as Markdown, make a one-time link) and Import… (paste
+  or upload a bundle or a .md file, or give a link, then pick the project and the mode).
+
+Moving a project from J's Studio to a customer Studio:
+1. In J's Studio, open Memory, click Export…, pick the product (e.g. Yooba Land), then click One-time link (it is copied).
+   Or ask Talk there: "memory_transfer link for yooba".
+2. In the customer Studio, add the game as a project first, so it has an id.
+3. In the customer Studio, open Memory, click Import…, paste the link, pick that project, choose "As candidates" and
+   click Import. Or ask its Talk: "bring Yooba Land's memory over from <link>".
+4. Review the candidates there: confirm, edit or delete them. The daily curation folds duplicates, and decisions wait
+   for the owner. Or import with "Active now" to skip the review.
+
 ## API
 
 `GET /api/memory?product&kind&status&q&item&limit`, `POST /api/memory` (write), `GET|PATCH|DELETE /api/memory/<id>`,
 `POST /api/memory/<id>/merge { from }`, `GET /api/memory/search?q&product&kind`, `GET /api/memory/block?product&role&text`
 (what a prompt would get), `GET /api/memory/curation`, `GET /api/memory/runs[?q]`, `GET /api/memory/runs/<ar_id>`,
-`GET /api/memory/export[?file]`, `POST /api/memory/publish`, `POST /api/memory/seed`, `POST /api/memory/fade`.
+`GET /api/memory/export[?file]`, `GET /api/memory/export?product&kinds&format` (bundle), `POST /api/memory/export/link`,
+`GET /api/memory/export/<token>`, `POST /api/memory/import`, `POST /api/memory/publish`, `POST /api/memory/seed`, `POST /api/memory/fade`.
 
 Who is calling (`callerOf` in `memory-api.ts`): `X-Studio-Agent` (an agent or scout), `X-Talk-Conversation` (Talk, or
 the PM in its conversation), else J (the dashboard; the remote MCP). A request from the agent sandbox's Linux user is
