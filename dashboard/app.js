@@ -676,6 +676,7 @@ async function refresh() {
     if (tab === 'library' && window.loadLibraryTab) await window.loadLibraryTab();
     if (tab === 'settings' && window.loadSettingsTab) await window.loadSettingsTab();
     if (tab === 'users' && window.loadUsersTab) await window.loadUsersTab();
+    if (tab === 'connect' && window.loadConnectTab) await window.loadConnectTab();
     if (tab === 'talk' && window.loadTalk && !window.__talkLoaded) { window.__talkLoaded = true; await window.loadTalk(); }
   } catch (e) {
     $('#status').innerHTML = `<span><span class="dot bad"></span>${esc(e.message)}</span>`;

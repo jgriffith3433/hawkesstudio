@@ -100,6 +100,8 @@ const server = http.createServer(async (req, res) => {
   if (process.env.STUDIO_ORG) res.setHeader('X-Studio-Cell', process.env.STUDIO_ORG);
   try {
     if (route === '/mcp' || route.startsWith('/mcp/')) return await handleMcp(req, res, route);
+    // /connect: the dashboard's Connect page (connect your editor to this Studio's MCP).
+    if (route === '/connect' && req.method === 'GET') { res.writeHead(302, { Location: '/#connect', 'Cache-Control': 'no-store' }); return void res.end(); }
     // The editors' sign-in to /mcp (studiooauth.ts, mcp-oauth.ts).
     if (route.startsWith('/oauth/') || route.startsWith('/.well-known/oauth-') || route === '/.well-known/openid-configuration') {
       const { studioOAuth } = await import('./studiooauth.ts');
@@ -216,6 +218,8 @@ const server = http.createServer(async (req, res) => {
     // The dashboard's one push stream (stream.ts): "something changed" events instead of polling.
     if (route === '/api/stream' && method === 'GET') return (await import('./stream.ts')).handleStream(req, res, { talkUnseen: unseenConversations() });
     if (route === '/api/products' && method === 'GET') return send(res, 200, { products: loadProducts() });
+    // The Connect page: this Studio's MCP address and the signed-in person's editors (mcp-http.ts).
+    if ((route === '/api/connect' || route.startsWith('/api/connect/')) && (await import('./mcp-http.ts')).handleConnectApi(req, res, route, (await import('./auth.ts')).requester(req)?.id ?? null)) return;
     // Talk's game tools and the GitHub connection (github-routes.ts).
     if ((route.startsWith('/api/github') || route.startsWith('/api/games/') || route.startsWith('/api/projects/')) && (await (await import('./github-routes.ts')).handleGithubRoutes(req, res, route, method, url, send, readJson, origin))) return;
     // A customer's games (config.ts saveProduct): onboarding adds and edits them; admins only (memberRefusal).

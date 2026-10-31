@@ -114,3 +114,11 @@ test('the waking page: "Setting up your studio" the first time, "Waking" after h
   answer = (url) => (url.includes('/wake') ? Response.json({ state: 'hibernated', first: false }, { status: 202 }) : new Response('', { status: 404 }));
   assert.match(await (await worker.fetch(at('/o/acme-1a2b/', { 'Sec-Fetch-Mode': 'navigate' }), env)).text(), /Waking your studio[\s\S]*asleep/);
 });
+
+test("an editor finding a customer's Studio's MCP sign-in the standard way reaches that Studio (RFC 8414, RFC 9728)", () => {
+  const r = (u: string) => W.route(new Request(u));
+  assert.deepEqual(r('https://studio.hawkesgen.ai/.well-known/oauth-authorization-server/o/acme-1a2b'), { org: 'acme-1a2b', path: '/.well-known/oauth-authorization-server' });
+  assert.deepEqual(r('https://studio.hawkesgen.ai/.well-known/oauth-protected-resource/o/acme-1a2b/mcp'), { org: 'acme-1a2b', path: '/.well-known/oauth-protected-resource/mcp' });
+  assert.deepEqual(r('https://studio.hawkesgen.ai/.well-known/openid-configuration/o/acme-1a2b'), { org: 'acme-1a2b', path: '/.well-known/openid-configuration' });
+  assert.equal(r('https://studio.hawkesgen.ai/.well-known/oauth-authorization-server'), null, "J's Studio's own stays his");
+});

@@ -90,3 +90,38 @@ test('the pasted key still works, and a wrong one does not', async () => {
   assert.equal((await mcp('hs_test_key')).status, 200);
   assert.equal((await mcp('hs_wrong')).status, 401);
 });
+
+test("a customer's Studio names its own address in its sign-in (studio.<domain>/o/<org>), never J's Studio", async () => {
+  const S = await import('../src/studiooauth.ts');
+  const cell: any = { headers: { 'x-forwarded-host': 'studio.hawkesgen.ai', 'x-forwarded-proto': 'https', 'x-forwarded-prefix': '/o/acme-1a2b' } };
+  assert.equal(S.oauthBase(cell), 'https://studio.hawkesgen.ai/o/acme-1a2b');
+  assert.match(studioOAuth.challenge(cell), /resource_metadata="https:\/\/studio\.hawkesgen\.ai\/o\/acme-1a2b\/\.well-known\/oauth-protected-resource\/mcp"/);
+  assert.equal(S.oauthBase({ headers: { 'x-forwarded-host': 'studio.hawkesgen.ai', 'x-forwarded-prefix': '/evil/../x' } } as any), 'https://studio.hawkesgen.ai', 'only an org prefix');
+  assert.equal(S.oauthBase({ headers: { 'x-forwarded-host': 'studio.hawkesgen.ai' } } as any), 'https://studio.hawkesgen.ai', "J's Studio as before");
+});
+
+test("the Connect page: this Studio's MCP address, whether you may connect, your editors, and Disconnect", async () => {
+  const { handleConnectApi } = await import('../src/mcp-http.ts');
+  const call = (route: string, user: string | null, method = 'GET') => {
+    const out: any = { status: 0, body: null };
+    out.writeHead = (s: number) => { out.status = s; return out; };
+    out.end = (b: string) => { out.body = JSON.parse(b); };
+    const req: any = { method, headers: { 'x-forwarded-host': 'studio.hawkesgen.ai', 'x-forwarded-proto': 'https' } };
+    handleConnectApi(req, out, route, user);
+    return out;
+  };
+  assert.equal(call('/api/connect', null).status, 401);
+  const token = await connect(j);
+  const mine = call('/api/connect', j.id);
+  assert.equal(mine.status, 200);
+  assert.equal(mine.body.url, 'https://studio.hawkesgen.ai/mcp');
+  assert.equal(mine.body.name, 'hawkesstudio');
+  assert.equal(mine.body.mayConnect, true, 'the platform admin, in J\'s Studio');
+  const conn = mine.body.connections.find((x: any) => x.name === 'Claude Code');
+  assert.ok(conn, 'the editor just connected is listed');
+  assert.equal(call('/api/connect', helper.id).body.mayConnect, false, 'not an admin here');
+  assert.equal(call(`/api/connect/${conn.id}/revoke`, helper.id, 'POST').body.revoked, false, "only your own editors");
+  assert.equal(call(`/api/connect/${conn.id}/revoke`, j.id, 'POST').body.revoked, true);
+  assert.equal((await mcp(token)).status, 401, 'its token stops at once');
+  assert.ok(!call('/api/connect', j.id).body.connections.some((x: any) => x.id === conn.id));
+});

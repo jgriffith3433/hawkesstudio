@@ -33,6 +33,10 @@ export function route(request: Request): { org: string; path: string } | { redir
   const url = new URL(request.url);
   const m = ORG_PATH.exec(url.pathname);
   if (m) return m[2] === undefined ? { redirect: `/o/${m[1]}/${url.search}` } : { org: m[1], path: m[2] };
+  // An editor finding a customer's Studio's MCP sign-in the standard way (RFC 8414, RFC 9728: the well-known name, then
+  // the issuer's or resource's path): /.well-known/<name>/o/<org>[/mcp] is that Studio's /.well-known/<name>[/mcp].
+  const wk = /^\/\.well-known\/([a-z-]+)\/o\/([a-z0-9][a-z0-9-]{1,38}[a-z0-9])(\/.*)?$/.exec(url.pathname);
+  if (wk) return { org: wk[2], path: `/.well-known/${wk[1]}${wk[3] ?? ''}` };
   // The control plane's own pages and the sign-up stay with J's Studio whoever links them.
   if (url.pathname.startsWith('/auth/start') || url.pathname === '/favicon.ico') return null;
   // GitHub's answers come back to J's Studio, which holds the GitHub App, whoever started the trip: a sign-in begun on a

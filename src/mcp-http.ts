@@ -14,12 +14,36 @@ import { studioMcp } from './mcp-tools.ts';
 import { studioAt, waitRun } from './client.ts';
 import { PORT } from './config.ts';
 import { cellOrg, primeToken, studioRole, verifyPlatformToken } from './platform.ts';
-import { studioOAuth } from './studiooauth.ts';
+import { oauthBase, studioOAuth } from './studiooauth.ts';
 import { getUser } from './auth.ts';
 import { customerStudio, platformAdmins } from './tenancy.ts';
 
+/**
+ * The Connect page (dashboard/connect.js; J, 2026-10-31: "an easy way for customers to connect to their MCP"):
+ *   GET  /api/connect                  this Studio's MCP address and server name, whether you may connect, your editors
+ *   POST /api/connect/<id>/revoke      disconnects one of your editors (its tokens stop at once)
+ */
+export function handleConnectApi(req: IncomingMessage, res: ServerResponse, route: string, userId: string | null) {
+  if (route !== '/api/connect' && !route.startsWith('/api/connect/')) return false;
+  const send = (status: number, body: unknown) => { res.writeHead(status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); res.end(JSON.stringify(body)); };
+  if (!userId) return send(401, { error: 'Sign in first.' }), true;
+  if (route === '/api/connect' && req.method === 'GET') {
+    const org = process.env.STUDIO_ORG?.trim();
+    return send(200, {
+      url: `${oauthBase(req)}/mcp`,
+      // The name editors list it under: one per Studio, so a person with more than one tells them apart.
+      name: customerStudio() && org ? `studio-${org}`.slice(0, 40) : 'hawkesstudio',
+      mayConnect: mayConnect(userId),
+      connections: studioOAuth.connections(userId),
+    }), true;
+  }
+  const m = /^\/api\/connect\/([\w-]+)\/revoke$/.exec(route);
+  if (m && req.method === 'POST') return send(200, { revoked: studioOAuth.revoke(userId, m[1]) }), true;
+  return send(404, { error: 'No such call' }), true;
+}
+
 /** Whether an editor signed in through OAuth as this person may use Studio's tools (they act as its owner). */
-function mayConnect(userId: string) {
+export function mayConnect(userId: string) {
   const u = getUser(userId) as { role?: string; email?: string; google?: unknown } | null;
   if (!u || u.role !== 'admin') return false;
   return customerStudio() || Boolean(u.google && platformAdmins().includes(String(u.email ?? '').toLowerCase()));
