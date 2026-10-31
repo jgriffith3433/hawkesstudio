@@ -385,6 +385,8 @@ function devLine(p) {
 const VERDICT = { ship: 'Looks good to ship', 'fix-first': 'Works, but has problems to fix first', broken: 'Broken: needs fixing' };
 /** How a product stands, in one plain line: rank 0 = broken, 1 = needs a look, 2 = fine, 3 = not played yet. */
 function health(p) {
+  // Handed over to another Studio (config.ts managedBy): shown last, its history kept, nothing run here.
+  if (p.managedBy) return { rank: 4, text: `Managed by another Studio (${p.managedBy}): this Studio doesn't run, build, change or deploy it.` };
   const r = p.lastReview?.data;
   const failed = p.playtests.filter((t) => t.playtest?.status === 'failed');
   const bugs = (p.open.blocker ?? 0) + (p.open.bug ?? 0);

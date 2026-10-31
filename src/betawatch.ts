@@ -13,7 +13,10 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { loadProducts, PROJECTS } from './config.ts';
+import { loadProducts as allProducts, PROJECTS, managedElsewhere } from './config.ts';
+
+// Projects handed over to another Studio (config.ts managedBy) are left alone here.
+const loadProducts = () => allProducts().filter((p) => !managedElsewhere(p));
 import { db } from './db.ts';
 import { BETA, shaOf } from './beta.ts';
 import { betaFolders, repoMap, syncRepos } from './repos.ts';

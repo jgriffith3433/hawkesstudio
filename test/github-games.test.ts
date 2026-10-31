@@ -59,7 +59,7 @@ const gh = http.createServer(async (req, res) => {
     if (!rest) return out(200, { id: 42, owner: { id: 7 }, full_name: m[1], default_branch: 'main', permissions: { push: true } });
     let x: RegExpExecArray | null;
     if ((x = /^\/branches\/(.+)$/.exec(rest))) return r.branches.has(x[1]) ? out(200, { name: x[1] }) : out(404, { message: 'Branch not found' });
-    if ((x = /^\/contents\/(.+)$/.exec(rest))) return r.files.has(x[1]) ? out(200, { path: x[1] }) : out(404, { message: 'Not Found' });
+    if ((x = /^\/contents\/(.+)$/.exec(rest))) return r.files.has(x[1]) ? out(200, { path: x[1], encoding: 'base64', content: Buffer.from(String(r.files.get(x[1]))).toString('base64') }) : out(404, { message: 'Not Found' });
     if ((x = /^\/git\/ref\/heads\/(.+)$/.exec(rest))) return r.branches.has(x[1]) ? out(200, { object: { sha: r.branches.get(x[1]) } }) : out(404, { message: 'no ref' });
     if (/^\/git\/commits\/.+$/.test(rest) && req.method === 'GET') return out(200, { tree: { sha: 't0' } });
     if (rest === '/git/trees') { for (const f of b.tree) r.files.set(f.path, f.content); return out(201, { sha: `t${++commitN}` }); }
@@ -158,6 +158,42 @@ test('readiness walks a game through what it lacks; the setup plan adds the hook
   assert.equal(again.items.find((i) => i.id === 'hook')!.ok, true);
   assert.equal(again.items.find((i) => i.id === 'branches')!.ok, true);
   assert.equal(again.approve, null);
+});
+
+test("a repo whose hook points at another Studio: readiness says so and offers to point it here; the rewrite keeps the rest", async () => {
+  const file = '.github/workflows/hawkes-studio.yml';
+  const r0 = repos.get('acme/space-game')!;
+  const mine = r0.files.get(file)!;
+  // The hook as another Studio wrote it (a customer's Studio at its own address).
+  r0.files.set(file, mine.split('https://studio.test').join('https://studio.hawkesgen.ai/o/acme-1a2b'));
+  const r = await R.readiness('space-game', j.id);
+  const hook = r.items.find((i) => i.id === 'hook')!;
+  assert.equal(hook.ok, false);
+  assert.match(hook.what, /points at another Studio \(https:\/\/studio\.hawkesgen\.ai\/o\/acme-1a2b\)/);
+  assert.equal(hook.step, 'repoint');
+  assert.deepEqual(r.approve, { kind: 'setup', product: 'space-game', repo: 'acme/space-game', steps: ['repoint'] });
+  const d = await R.describePlan(r.approve as any);
+  assert.match(d.lines.join('\n'), /point this repo's hook at this Studio/);
+  const done = await R.applyPlan(r.approve as any);
+  assert.match(done[0], /Pointed acme\/space-game's hook at https:\/\/studio\.test \(main\)/);
+  const now = r0.files.get(file)!;
+  assert.equal(now, mine, 'the same workflow, with this Studio as its audience and address');
+  assert.equal((await R.readiness('space-game', j.id)).items.find((i) => i.id === 'hook')!.ok, true);
+});
+
+test('handover: where a hook points, and the rewrite for any pair of Studios', async () => {
+  const H = await import('../src/handover.ts');
+  const yml = (base: string) => `jobs:\n  notify:\n    steps:\n      - run: |\n          token=$(curl -sSf "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=${base}" | jq -r .value)\n          curl -X POST -H "Authorization: Bearer $token" ${base}/api/hooks/github\n`;
+  assert.deepEqual(H.hookTargets(yml('https://studio.hawkesgen.ai')), ['https://studio.hawkesgen.ai']);
+  assert.equal(H.hookPointsAt(yml('https://studio.hawkesgen.ai'), 'https://studio.hawkesgen.ai/').ok, true);
+  const there = H.hookPointsAt(yml('https://studio.hawkesgen.ai'), 'https://studio.hawkesgen.ai/o/acme');
+  assert.equal(there.ok, false);
+  assert.deepEqual(there.elsewhere, ['https://studio.hawkesgen.ai']);
+  // J's Studio -> a customer's, and back: the address is a prefix of the other either way.
+  assert.equal(H.repointHook(yml('https://studio.hawkesgen.ai'), 'https://studio.hawkesgen.ai/o/acme'), yml('https://studio.hawkesgen.ai/o/acme'));
+  assert.equal(H.repointHook(yml('https://studio.hawkesgen.ai/o/acme'), 'https://studio.hawkesgen.ai'), yml('https://studio.hawkesgen.ai'));
+  assert.equal(H.repointHook('name: build\non: push\n', 'https://x.test'), null, 'no Studio address in it: write the hook instead');
+  assert.equal(H.hookPointsAt('name: build\n').ok, false);
 });
 
 test('a new game: asked what kind first (the plan wants a pitch and a starter), then a repo that already plays', async () => {

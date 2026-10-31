@@ -8,14 +8,16 @@
 //     Studio has for the repo (github-app.ts accessFor). Adding the game to Studio, builds and playtests need no card.
 
 import crypto from 'node:crypto';
-import { StudioError, getProduct, saveProduct, loadProducts, type Product } from './config.ts';
+import { StudioError, getProduct, saveProduct, loadProducts, managedElsewhere, type Product } from './config.ts';
 import { accessFor, gh, repoSlug, githubStatus, userToken, appConfig, installUrl, userInstallationFor } from './github-app.ts';
 import { starterFiles, starterFor, liveUrlFor, STARTERS, type GameSeed } from './starters.ts';
 import { customerStudio } from './tenancy.ts';
+import { hookPointsAt, repointHook } from './handover.ts';
 
-export type Step = 'hook' | 'branches' | 'pages';
+export type Step = 'hook' | 'repoint' | 'branches' | 'pages';
 export const STEPS: Record<Step, string> = {
   hook: "add Hawkes Studio's push hook (.github/workflows/hawkes-studio.yml) so Studio hears about pushes to beta and main",
+  repoint: "point this repo's hook at this Studio: rewrite .github/workflows/hawkes-studio.yml (on main, and beta and dev where they have it) with this Studio's address, so pushes come here instead of the Studio it names now",
   branches: 'make the dev and beta branches from main (dev -> beta -> main)',
   pages: 'turn on GitHub Pages from GitHub Actions, so main is the live game',
 };
@@ -76,6 +78,9 @@ export async function readiness(productId: string, userId?: string | null) {
   const p = getProduct(productId);
   const items: Item[] = [];
   const slug = repoSlug(p.github ?? p.repo);
+  // Handed over to another Studio (config.ts managedBy): said first; this Studio leaves it alone.
+  const elsewhere = managedElsewhere(p);
+  if (elsewhere) items.push({ id: 'managed', ok: true, what: `Managed by another Studio (${elsewhere}): this Studio doesn't run, build, change or deploy it` });
   items.push(slug
     ? { id: 'repo', ok: true, what: `Repository: ${slug}` }
     : { id: 'repo', ok: false, what: 'No GitHub repository yet', fix: 'Ask for its GitHub repository (owner/name) and save it with studio_game update, or make a new one (studio_game new).', by: 'talk' });
@@ -90,8 +95,14 @@ export async function readiness(productId: string, userId?: string | null) {
   if (slug && token) {
     const info = await gh(token, 'GET', `/repos/${slug}`);
     const main = String(info.default_branch ?? 'main');
-    const hook = await exists(token, `/repos/${slug}/contents/.github/workflows/hawkes-studio.yml?ref=${encodeURIComponent(main)}`);
-    items.push(hook ? { id: 'hook', ok: true, what: "Studio's push hook is in the repo" } : { id: 'hook', ok: false, what: "Studio's push hook is missing", by: 'approve', step: 'hook', fix: STEPS.hook });
+    // The hook, and where it sends pushes: the Studio address and OIDC audience inside it (handover.ts).
+    const yml = await hookFile(token, slug, main);
+    if (yml === null) items.push({ id: 'hook', ok: false, what: "Studio's push hook is missing", by: 'approve', step: 'hook', fix: STEPS.hook });
+    else {
+      const at = hookPointsAt(yml, studioBase());
+      items.push(at.ok ? { id: 'hook', ok: true, what: "Studio's push hook is in the repo and points at this Studio" }
+        : { id: 'hook', ok: false, what: at.elsewhere.length ? `Studio's push hook points at another Studio (${at.elsewhere.join(', ')}), so its pushes go there, not here` : "The repo's hook workflow doesn't name this Studio, so its pushes don't come here", by: 'approve', step: 'repoint', fix: STEPS.repoint });
+    }
     const beta = await exists(token, `/repos/${slug}/branches/beta`);
     const dev = await exists(token, `/repos/${slug}/branches/dev`);
     items.push(beta && dev ? { id: 'branches', ok: true, what: 'dev and beta branches exist' } : { id: 'branches', ok: false, what: `Missing branch${beta || dev ? '' : 'es'}: ${[dev ? null : 'dev', beta ? null : 'beta'].filter(Boolean).join(', ')}`, by: 'approve', step: 'branches', fix: STEPS.branches });
@@ -205,12 +216,41 @@ export async function applyPlan(plan: Plan, { origin = null }: { origin?: string
   return done;
 }
 
+/** A repo's hook workflow on a branch (its text), or null when it has none. */
+async function hookFile(token: string, repo: string, branch: string): Promise<string | null> {
+  try {
+    const f = await gh(token, 'GET', `/repos/${repo}/contents/.github/workflows/hawkes-studio.yml?ref=${encodeURIComponent(branch)}`);
+    return Buffer.from(String(f?.content ?? ''), 'base64').toString('utf8');
+  } catch (e: any) {
+    if (e.status === 404) return null;
+    throw e;
+  }
+}
+
+/** Studio's own hook workflow, naming this Studio. */
+async function hookTemplate(repo: string) {
+  const { starterFiles: files } = await import('./starters.ts');
+  return files('web-3d', { id: 'x', name: 'x', pitch: '', owner: '', repo, studioUrl: studioBase() })['.github/workflows/hawkes-studio.yml'];
+}
+
 async function runStep(token: string, repo: string, step: Step): Promise<string> {
   const info = await gh(token, 'GET', `/repos/${repo}`);
   const main = String(info.default_branch ?? 'main');
+  if (step === 'repoint') {
+    // main first (it always gets the hook), then beta and dev where they have one: a push runs the workflow of its own branch.
+    const done: string[] = [];
+    for (const branch of [main, 'beta', 'dev'].filter((b, i, a) => a.indexOf(b) === i)) {
+      const yml = await hookFile(token, repo, branch).catch(() => null);
+      if (yml === null && branch !== main) continue;
+      if (yml !== null && hookPointsAt(yml, studioBase()).ok) continue;
+      const next = (yml !== null ? repointHook(yml, studioBase()) : null) ?? (await hookTemplate(repo));
+      await putFiles(token, repo, branch, { '.github/workflows/hawkes-studio.yml': next }, `Point Hawkes Studio's push hook at ${studioBase()}`);
+      done.push(branch);
+    }
+    return done.length ? `Pointed ${repo}'s hook at ${studioBase()} (${done.join(', ')}).` : `${repo}'s hook already points at ${studioBase()}.`;
+  }
   if (step === 'hook') {
-    const { starterFiles: files } = await import('./starters.ts');
-    const yml = files('web-3d', { id: 'x', name: 'x', pitch: '', owner: '', repo, studioUrl: studioBase() })['.github/workflows/hawkes-studio.yml'];
+    const yml = await hookTemplate(repo);
     await putFiles(token, repo, main, { '.github/workflows/hawkes-studio.yml': yml }, "Hawkes Studio's push hook");
     return `Added Studio's push hook to ${repo} (${main}).`;
   }

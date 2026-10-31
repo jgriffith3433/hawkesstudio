@@ -4,7 +4,7 @@
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
-import { PORT, DATA, ROOT, paths, loadProducts, getProduct, StudioError, localUrl } from './config.ts';
+import { PORT, DATA, ROOT, paths, loadProducts, getProduct, StudioError, localUrl, managedElsewhere } from './config.ts';
 import { db, rowToStep } from './db.ts';
 import { startRun, startPartial, playtestRequest, getRun, listRuns, activeRun, lastStep, nameOf, resumeRuns, type RunOptions } from './pipeline.ts';
 import { pruneDetached } from './detach.ts';
@@ -71,7 +71,7 @@ async function overview() {
     for (const s of [...latest('playtest'), ...reviews]) if (!byName.has(`${s.kind}:${s.name}`)) byName.set(`${s.kind}:${s.name}`, s);
     const open = (db.prepare(`SELECT severity, COUNT(*) AS n FROM findings WHERE product = ? AND status IN ('open','fixing') GROUP BY severity`).all(p.id) as any[]);
     return {
-      id: p.id, name: p.name, framing: p.framing, engine: p.engine, live: p.live, beta: p.beta ?? null, local: localUrl(p),
+      id: p.id, name: p.name, framing: p.framing, engine: p.engine, live: p.live, beta: p.beta ?? null, local: localUrl(p), managedBy: managedElsewhere(p),
       git: await cached(`git:${p.repo}`, 30_000, () => gitState(p.repo)), site: p.site !== p.repo ? await cached(`git:${p.site}`, 30_000, () => gitState(p.site)) : null,
       build: p.build ? lastStep(p.id, 'build', 'unity') ?? latest('build')[0] ?? null : null,
       playtests: p.playtests.map((t) => {
@@ -942,11 +942,32 @@ const server = http.createServer(async (req, res) => {
       const token = /^Bearer\s+(\S+)$/i.exec(String(req.headers.authorization ?? ''))?.[1];
       if (!token) return send(res, 401, { error: 'a GitHub Actions OIDC token is required' });
       const { verifyGitHubOidc } = await import('./github-oidc.ts');
-      let claims: Record<string, any>;
-      try {
-        claims = await verifyGitHubOidc(token, 'https://studio.hawkesgen.ai');
-      } catch (e: any) {
-        return send(res, 401, { error: `token rejected: ${e.message}` });
+      // The audience is the Studio's own address (repokit.ts and starters.ts write it so): a customer's Studio is
+      // studio.<domain>/o/<org>; J's Studio still takes its historical studio.hawkesgen.ai.
+      const audiences = [...new Set([process.env.STUDIO_PUBLIC_URL?.replace(/\/+$/, ''), 'https://studio.hawkesgen.ai'].filter(Boolean) as string[])];
+      let claims: Record<string, any> = null as any;
+      let why = '';
+      for (const aud of audiences) {
+        try { claims = await verifyGitHubOidc(token, aud); break; } catch (e: any) { why = e.message; }
+      }
+      if (!claims) return send(res, 401, { error: `token rejected: ${why}` });
+      // A project handed over to another Studio (config.ts managedBy): heard and left alone, so the repo's pushes don't
+      // fail while its hook still points here (the other Studio's readiness offers to point it there).
+      const { managedForRepo } = await import('./handover.ts');
+      const elsewhere = await managedForRepo(String(claims.repository ?? ''));
+      if (elsewhere) return send(res, 200, { ok: true, managedBy: elsewhere, note: `${claims.repository} is managed by another Studio (${elsewhere}): this Studio leaves it alone. Point the repo's hook there.` });
+      // A customer's Studio: its projects' repos (builds.ts: beta pushes and build-* tags build; an Actions build reports
+      // in), and main (going live by a push: recorded and checked live, golive.ts).
+      if ((await import('./tenancy.ts')).customerStudio()) {
+        const hookBody = await readJson(req).catch(() => ({}));
+        const B = await import('./builds.ts');
+        const byBuilds = await B.onRepoHook(claims, hookBody);
+        if (byBuilds) return send(res, 202, byBuilds);
+        if (claims.ref === 'refs/heads/main' && B.projectsForRepo(String(claims.repository ?? '')).length) {
+          const { onMainPushGitHub } = await import('./golive.ts');
+          return send(res, 202, { ok: true, branch: 'main', ...(await onMainPushGitHub(String(claims.repository), String(claims.sha ?? ''))) });
+        }
+        return send(res, 200, { ok: true, ignored: `nothing to do for ${claims.repository} ${claims.ref}` });
       }
       // J's own repos, or a game added to this Studio (Talk's studio_game; its repo by name, signed by GitHub's OIDC).
       const { addedRepoFolders } = await import('./config.ts');

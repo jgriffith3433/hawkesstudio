@@ -30,7 +30,7 @@ import { critical, criticalSync } from './drain.ts';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { db, J, parse } from './db.ts';
-import { DATA, PROJECTS, getProduct, getInfra, isInfra, today, StudioError, betaPlaytestsOn, loadInfra, loadProducts } from './config.ts';
+import { DATA, PROJECTS, getProduct, getInfra, isInfra, today, StudioError, betaPlaytestsOn, loadInfra, loadProducts, managedElsewhereId } from './config.ts';
 import {
   getTask, setTask, getItem, startableTasks, tasksAwaitingGpu, taskOfChange, addQuestion, listQuestions, getQuestion, setQuestion, addComment, isCommentSubject,
   logDecision, listDecisions, getDecision, markUndone, countToday, listItems, threadFor, milestonesToReach, markReached, getMilestone, milestoneTasks, setMilestoneChecks,
@@ -209,7 +209,8 @@ export async function syncTasks() {
 /** Studio and Gen have no beta lane: their changes merge into main, which deploys them. */
 const hasBeta = (product: string) => {
   if (isInfra(product)) return false;
-  try { getProduct(product); return true; } catch { return false; }
+  // Handed over to another Studio (config.ts managedBy): its beta is run there (startBeta refuses it here).
+  try { return !managedElsewhereId(getProduct(product).id); } catch { return false; }
 };
 
 async function syncTask(t: Task, getChange: (id: string) => any) {
@@ -840,7 +841,7 @@ export async function startWork() {
   const reports = db.prepare(`SELECT * FROM findings WHERE status = 'open' AND source = 'J' ORDER BY CASE severity WHEN 'blocker' THEN 0 ELSE 1 END, first_seen`).all() as any[];
   for (const f of reports) {
     if (cap.free <= 0) break;
-    if (isInfra(f.product) || await busy(f.product, { text: f.title })) continue;
+    if (isInfra(f.product) || managedElsewhereId(f.product) || await busy(f.product, { text: f.title })) continue;
     try {
       const id = startBug(f, "J's report ");
       if (id) { out.push(id); cap = capacity(); }
@@ -852,7 +853,8 @@ export async function startWork() {
   const taken = new Set<string>();
   for (const id of await rerunGpuWaits(cap.free, taken).catch((e) => { console.warn(`[pm] GPU waits: ${e.message ?? e}`); return []; })) { out.push(id); cap = capacity(); }
   // Not blocked (what they depend on is merged), highest effective priority first, then roadmap order (startableTasks).
-  const waiting = startableTasks();
+  // A project handed over to another Studio (config.ts managedBy): its PM works it there.
+  const waiting = startableTasks().filter((t) => !managedElsewhereId(t.product));
   for (const t of waiting) {
     if (cap.free <= 0) break;
     // The change it starts is queued at once, so the next task of the product sees it here.
@@ -871,7 +873,7 @@ export async function startWork() {
     const { betaPreview } = await import('./previews.ts');
     for (const f of bugs) {
       if (cap.free <= 0) break;
-      if (isInfra(f.product) || waiting.some((t) => t.product === f.product) || await slotHeld(f.product, { text: f.title })) continue;
+      if (isInfra(f.product) || managedElsewhereId(f.product) || waiting.some((t) => t.product === f.product) || await slotHeld(f.product, { text: f.title })) continue;
       // An automatic error report from a beta build older than a fix waits for the current build to catch it again.
       if (f.source === 'auto') {
         // A page left open on an older Unity build (filed before stale pages were told apart): not a game bug.
@@ -2450,7 +2452,7 @@ export async function tick() {
 /** Products with no planned or running work: no roadmap task to do, no change in flight, no open bug or report. */
 export function idleProducts() {
   const busyStatuses = ['planned', 'working', 'needs answer', 'review'];
-  return loadProducts().map((p) => p.id).filter((id) => !isInfra(id)
+  return loadProducts().filter((p) => !managedElsewhereId(p.id)).map((p) => p.id).filter((id) => !isInfra(id)
     && !db.prepare(`SELECT 1 FROM tasks WHERE product = ? AND status IN (${busyStatuses.map(() => '?').join(',')}) LIMIT 1`).get(id, ...busyStatuses)
     && !db.prepare(`SELECT 1 FROM changes WHERE product = ? AND status IN (${LIVE.map(() => '?').join(',')}) LIMIT 1`).get(id, ...LIVE)
     && !db.prepare(`SELECT 1 FROM findings WHERE product = ? AND status = 'open' AND severity IN ('blocker', 'bug') LIMIT 1`).get(id));

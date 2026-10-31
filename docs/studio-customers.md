@@ -419,7 +419,9 @@ A customer's Studio has no Costs tab of its own: their bill and credits are on t
 **They get**, in their own Studio:
 - the daily loop on their games: build, playtest, review, backlog, the report
 - the roadmap, the PM, Talk and agents on their repos (by plan)
-- going live and rollback of **their** games, with their own typed words or Approve cards
+- going live and rollback of **their** games, with their own typed words or Approve cards: through GitHub's API with
+  each repo's own token, no clones (src/deploy-github.ts; docs/daily.md "Any project with a GitHub repo"), and a project
+  J's Studio hands over (`managedBy`) arrives with "Point this repo's hook at this Studio" in its setup check
 - their own users (invites, roles), settings, memory and analytics
 
 **Their Claude** (**built**, src/claude.ts):
