@@ -33,7 +33,22 @@ export interface Env {
   /** Where people sign in (the Workers in front of Studio). */
   STUDIO_PUBLIC_LIVE?: string;
   STUDIO_PUBLIC_BETA?: string;
+  /** Customers' Studios (cells): Cloud Run's deterministic address per org, as the studio-edge Worker computes it. */
+  CELLS_PROJECT_NUMBER?: string;
+  CELLS_REGION_LIVE?: string;
+  CELLS_REGION_BETA?: string;
 }
+
+/** A customer's Studio's org id (cells.ts orgIdFor). */
+const ORG = /^[a-z0-9][a-z0-9-]{1,38}[a-z0-9]$/;
+/** A customer's Studio on Cloud Run (cellrun.ts serviceUrl): its key and its passes. */
+export const cellOrigin = (env: Env, lane: Lane, org: string) => (env.CELLS_PROJECT_NUMBER
+  ? `https://${`${lane === 'beta' ? 'studio-beta' : 'studio'}-o-${org}`.slice(0, 49)}-${env.CELLS_PROJECT_NUMBER}.${(lane === 'beta' ? env.CELLS_REGION_BETA : env.CELLS_REGION_LIVE) || (lane === 'beta' ? 'us-central1' : 'us-east4')}.run.app`
+  : null);
+/** Customers' sites' pass cookie: host-only on sites.<domain>, one per org by its Path (/o/<org>/, /ob/<org>/). */
+export const orgPassCookie = (lane: Lane) => (lane === 'beta' ? 'hawkes_opass_beta' : 'hawkes_opass');
+/** A customer site's path prefix in this lane: /o/<org> on live, /ob/<org> for studio-beta's. */
+export const orgPrefix = (lane: Lane, org: string) => `/${lane === 'beta' ? 'ob' : 'o'}/${org}`;
 
 const enc = new TextEncoder();
 const b64uBytes = (s: string) => {
@@ -70,20 +85,25 @@ export function keyOf(lane: Lane, sub: string, pathname: string): { base: string
 // ------------------------------------------------------------------ keys
 
 type KeyEntry = { key: CryptoKey; at: number };
-const keys = new Map<Lane, KeyEntry>();
-let lastRefetch = 0;
+// Keyed by the lane, or lane and org for a customer's Studio (each signs with its own key).
+const keys = new Map<string, KeyEntry>();
+const lastRefetch = new Map<string, number>();
 
 const originOf = (env: Env, lane: Lane) => (lane === 'beta' ? env.STUDIO_ORIGIN_BETA : env.STUDIO_ORIGIN_LIVE)?.replace(/\/+$/, '');
 const publicOf = (env: Env, lane: Lane) => ((lane === 'beta' ? env.STUDIO_PUBLIC_BETA : env.STUDIO_PUBLIC_LIVE) ?? originOf(env, lane) ?? '').replace(/\/+$/, '');
 
 /** Tests only: forget the cached keys. */
-export function resetKeys() { keys.clear(); lastRefetch = 0; }
+export function resetKeys() { keys.clear(); lastRefetch.clear(); }
 
-/** The lane's public key: from memory (an hour), else Studio's /auth/sites-key (through Cloudflare's cache when there is one). */
-async function laneKey(env: Env, lane: Lane, fresh = false): Promise<CryptoKey | null> {
-  const k = keys.get(lane);
+/**
+ * The lane's public key (or a customer's Studio's, with org): from memory (an hour), else that Studio's /auth/sites-key
+ * (through Cloudflare's cache when there is one).
+ */
+async function laneKey(env: Env, lane: Lane, fresh = false, org: string | null = null): Promise<CryptoKey | null> {
+  const id = org ? `${lane}:${org}` : lane;
+  const k = keys.get(id);
   if (k && !fresh && Date.now() - k.at < 3600_000) return k.key;
-  const origin = originOf(env, lane);
+  const origin = org ? cellOrigin(env, lane, org) : originOf(env, lane);
   if (!origin) return null;
   const url = `${origin}/auth/sites-key`;
   const cache = (globalThis as any).caches?.default as { match(r: Request): Promise<Response | undefined>; put(r: Request, s: Response): Promise<void> } | undefined;
@@ -96,17 +116,18 @@ async function laneKey(env: Env, lane: Lane, fresh = false): Promise<CryptoKey |
   const j = (await res.json().catch(() => null)) as { lane?: string; key?: string } | null;
   if (!j?.key || (j.lane ?? 'live') !== lane) return k?.key ?? null;
   const key = await crypto.subtle.importKey('raw', b64uBytes(j.key), { name: 'Ed25519' }, false, ['verify']);
-  keys.set(lane, { key, at: Date.now() });
+  keys.set(id, { key, at: Date.now() });
   return key;
 }
 
-async function verify(env: Env, lane: Lane, message: string, sig: string, retry: boolean) {
+async function verify(env: Env, lane: Lane, message: string, sig: string, retry: boolean, org: string | null = null) {
   const check = async (key: CryptoKey | null) => Boolean(key) && crypto.subtle.verify({ name: 'Ed25519' }, key!, b64uBytes(sig), enc.encode(message)).catch(() => false);
-  if (await check(await laneKey(env, lane))) return true;
+  if (await check(await laneKey(env, lane, false, org))) return true;
   // A new key (STUDIO_OWNER_KEY rotated): ask again, at most once a minute.
-  if (retry && Date.now() - lastRefetch > 60_000) {
-    lastRefetch = Date.now();
-    return check(await laneKey(env, lane, true));
+  const id = org ? `${lane}:${org}` : lane;
+  if (retry && Date.now() - (lastRefetch.get(id) ?? 0) > 60_000) {
+    lastRefetch.set(id, Date.now());
+    return check(await laneKey(env, lane, true, org));
   }
   return false;
 }
@@ -115,10 +136,10 @@ async function verify(env: Env, lane: Lane, message: string, sig: string, retry:
 
 const passOk = new Map<string, number>();
 
-/** The user id of a valid pass for this lane, or null. */
-export async function checkPass(env: Env, lane: Lane, value: string | null, now = Date.now()): Promise<string | null> {
+/** The user id of a valid pass for this lane (or a customer's Studio's, with org: signed with its key), or null. */
+export async function checkPass(env: Env, lane: Lane, value: string | null, now = Date.now(), org: string | null = null): Promise<string | null> {
   if (!value) return null;
-  const cached = passOk.get(value);
+  const cached = passOk.get(org ? `${org} ${value}` : value);
   const parts = value.split('.');
   if (parts.length !== 5 || parts[0] !== 'v1' || parts[1] !== lane) return null;
   const exp = Number(parts[2]);
@@ -126,9 +147,9 @@ export async function checkPass(env: Env, lane: Lane, value: string | null, now 
   let user: string;
   try { user = b64uText(parts[3]); } catch { return null; }
   if (cached) return user;
-  if (!(await verify(env, lane, passMessage(lane, exp, user), parts[4], false))) return null;
+  if (!(await verify(env, lane, passMessage(lane, exp, user), parts[4], false, org))) return null;
   if (passOk.size > 500) passOk.clear();
-  passOk.set(value, exp);
+  passOk.set(org ? `${org} ${value}` : value, exp);
   return user;
 }
 
@@ -177,10 +198,14 @@ export async function publish(req: Request, env: Env, url: URL, now = Date.now()
     body = req.method === 'POST' ? await req.arrayBuffer() : new ArrayBuffer(0);
     bodyTag = `sha256:${hex(await crypto.subtle.digest('SHA-256', body))}`;
   }
-  if (!(await verify(env, lane, publishMessage(lane, req.method, url.pathname + url.search, ts, bodyTag), sig, true))) return json(403, { error: 'bad signature' });
+  // A customer's Studio names its org and signs with its own key; it writes only under o/<org>/ in its lane.
+  const org = req.headers.get('X-Hawkes-Org');
+  if (org !== null && !ORG.test(org)) return json(400, { error: 'X-Hawkes-Org: an org id' });
+  if (!(await verify(env, lane, publishMessage(lane, req.method, url.pathname + url.search, ts, bodyTag), sig, true, org))) return json(403, { error: 'bad signature' });
   const inLane = (k: unknown) => {
     const s = String(k ?? '');
     if (!s || s.startsWith('/') || s.split('/').some((x) => x === '..' || x === '') || s.length > 1000) throw new Error(`bad key ${s.slice(0, 80)}`);
+    if (org && !s.startsWith(`o/${org}/`)) throw new Error(`a customer's Studio writes only under o/${org}/`);
     return `${lane}/${s}`;
   };
   try {
@@ -297,6 +322,26 @@ async function toStudio(req: Request, env: Env, lane: Lane, url: URL) {
   return fetch(to, { method: req.method, headers, body: await req.arrayBuffer(), redirect: 'manual' });
 }
 
+/**
+ * POST /o/<org>/.hawkes-pass {pass, next}: a customer's Studio hands over a pass it signed (a form its /auth/pass page
+ * posts, so the pass is never in an address). Kept host-only on this host, under that org's path alone, then back to
+ * the page.
+ */
+async function takePass(req: Request, env: Env, lane: Lane, org: string, url: URL, now: number): Promise<Response> {
+  if (req.method !== 'POST') return text(405, 'Studio posts here.');
+  const form = await req.formData().catch(() => null);
+  const pass = String(form?.get('pass') ?? '');
+  if (!(await checkPass(env, lane, pass, now, org))) return text(403, 'That sign-in did not check out. Open the page again from your Studio.');
+  const prefix = orgPrefix(lane, org);
+  let to = `${prefix}/`;
+  try {
+    const n = new URL(String(form?.get('next') ?? ''), url);
+    if (n.origin === url.origin && n.pathname.startsWith(`${prefix}/`)) to = n.pathname + n.search;
+  } catch { /* back to the org's root */ }
+  const cookie = [`${orgPassCookie(lane)}=${pass}`, `Path=${prefix}/`, 'HttpOnly', 'Secure', 'SameSite=Lax', 'Max-Age=43200'].join('; ');
+  return new Response(null, { status: 303, headers: { Location: to, 'Set-Cookie': cookie, 'Cache-Control': 'no-store' } });
+}
+
 export async function handle(req: Request, env: Env, now = Date.now()): Promise<Response> {
   const url = new URL(req.url);
   if (url.pathname.startsWith('/.hawkes-sites/')) return publish(req, env, url, now);
@@ -316,16 +361,31 @@ export async function handle(req: Request, env: Env, now = Date.now()): Promise<
     sub = `g-${g[2]}`;
     pathname = g[3];
   }
+  // Customers' Studios' sites (J, 2026-10-31): https://sites.<domain>/o/<org>/<project>/ (studio-beta's /ob/...), R2
+  // <lane>/o/<org>/<project>/..., previews at /c/<change>/ inside; passes signed by that Studio, kept per org by Path.
+  let org: string | null = null;
+  const o = lane === 'live' && sub === 'sites' ? /^\/(o|ob)\/([a-z0-9][a-z0-9-]{1,38}[a-z0-9])(?:\/([a-z][a-z0-9-]{1,39}))?(\/.*)?$/.exec(url.pathname) : null;
+  if (o) {
+    lane = o[1] === 'ob' ? 'beta' : 'live';
+    org = o[2];
+    if (!o[3] && o[4] === '/.hawkes-pass') return takePass(req, env, lane, org, url, now);
+    if (!o[3]) return text(404, 'Not found');
+    if (!o[4]) return new Response(null, { status: 301, headers: { Location: `${url.pathname}/${url.search}` } });
+    sub = `o/${org}/${o[3]}`;
+    pathname = o[4];
+  }
   // The first pass that checks out: a stale one sent first must not hide a good one (2026-10-29: beta sites 403 for J).
   let user: string | null = null;
-  for (const v of cookies(req, passCookie(lane))) if ((user = await checkPass(env, lane, v, now))) break;
+  for (const v of cookies(req, org ? orgPassCookie(lane) : passCookie(lane))) if ((user = await checkPass(env, lane, v, now, org))) break;
   if (!user) {
+    // Sign-in happens at the Studio that owns the site: a customer's at its own /o/<org>/.
+    const signin = `${publicOf(env, lane)}${org ? `/o/${org}` : ''}/auth/pass`;
     if (isPage(req)) {
       // Back from /auth/pass without a pass that works: say so instead of going round again.
       if (url.searchParams.has('__hawkes_pass')) return text(403, 'Studio signed you in, but this browser did not keep the beta-site pass (cookies blocked?). Allow cookies for hawkesgen.ai and reload.');
-      return new Response(null, { status: 302, headers: { Location: `${publicOf(env, lane)}/auth/pass?next=${encodeURIComponent(url.toString())}`, 'Cache-Control': 'no-store' } });
+      return new Response(null, { status: 302, headers: { Location: `${signin}?next=${encodeURIComponent(url.toString())}`, 'Cache-Control': 'no-store' } });
     }
-    return json(401, { error: 'Sign in to Studio first.', signin: `${publicOf(env, lane)}/auth/pass` });
+    return json(401, { error: 'Sign in to Studio first.', signin });
   }
   if (url.searchParams.has('__hawkes_pass')) {
     url.searchParams.delete('__hawkes_pass');
@@ -337,7 +397,8 @@ export async function handle(req: Request, env: Env, now = Date.now()): Promise<
     if (pathname.startsWith('/dev/__studio/')) {
       if (what === 'report.js') return (await serveFile(req, env, `${lane}/_studio/report.js`)) ?? text(404, 'no widget yet');
       if (what === 'build') return (await serveFile(req, env, `${lane}/${sub}/beta/.studio/build.json`)) ?? json(200, {});
-      if ((what === 'report' || what === 'error') && req.method === 'POST') return toStudio(req, env, lane, url);
+      // A customer's pages post reports to their own Studio with their project's key (reportkey.ts), never here.
+      if ((what === 'report' || what === 'error') && req.method === 'POST' && !org) return toStudio(req, env, lane, url);
     }
     return text(404, 'The /dev/ dev servers are not running on Google Cloud yet (docs/studio-cloudrun.md, "Not done here").');
   }

@@ -214,3 +214,41 @@ test("a plan just given or bought works at once: before refusing, the cell asks 
   assert.equal((await E.entitlements()).plan, 'studio_team');
   plan = { plan: 'free', status: null, maxGames: null };
 });
+
+test("its web projects' beta sites: sites.<domain>/o/<org>/<project>/, its 🐞 posts from there, and /auth/pass hands its own pass over", async () => {
+  process.env.STUDIO_SITES_SEED = 'acme-sites-seed';
+  try {
+    CFG.saveProduct({ id: 'space-run', name: 'Space Run', engine: 'web', live: 'https://acme.github.io/space-run/', repo: 'acme/space-run' } as any);
+    const P = await import('../src/previews.ts');
+    assert.equal(P.previewUrl('space-run'), 'https://sites.hawkesgen.ai/o/acme-1a2b/space-run/');
+    assert.equal(P.previewUrl('space-run', 'c_abc123'), 'https://sites.hawkesgen.ai/o/acme-1a2b/space-run/c/c_abc123/');
+    const RK = await import('../src/reportkey.ts');
+    assert.ok(RK.reportInfo('space-run').origins.includes('https://sites.hawkesgen.ai'), 'its beta pages may report');
+    assert.match(RK.reportInfo('space-run').endpoint, /\/r\/space-run\/report\?k=rk_/);
+    // /auth/pass: signed out, sign in and come back to the page; signed in, a form posting its own pass to the sites host.
+    const AP = await import('../src/auth-pages.ts');
+    const page = 'https://sites.hawkesgen.ai/o/acme-1a2b/space-run/';
+    const call = async (next: string, token?: string) => {
+      const out: any = { status: 0, headers: {}, body: '' };
+      out.writeHead = (s: number, h: any) => { out.status = s; out.headers = { ...out.headers, ...h }; return out; };
+      out.setHeader = (k: string, v: any) => { out.headers[k] = v; };
+      out.end = (b?: string) => { out.body += b ?? ''; };
+      const req: any = { method: 'GET', headers: { host: 'x', ...(token ? { cookie: `hs_o_acme_1a2b=${token}` } : {}) }, socket: {} };
+      await AP.handleAuthRoute(req, out, new URL(`http://x/auth/pass?next=${encodeURIComponent(next)}`));
+      return out;
+    };
+    const out = await call(page);
+    assert.ok([302, 303].includes(out.status), String(out.status));
+    assert.match(String(out.headers.Location), /^\/auth\/signin\?next=https%3A%2F%2Fsites\.hawkesgen\.ai%2Fo%2Facme-1a2b/);
+    assert.equal((await call('https://sites.hawkesgen.ai/o/bobco-9z9z/x/')).status, 400, "only this Studio's own sites");
+    assert.equal((await call('https://dod.hawkesgen.ai/')).status, 400);
+    const owner = A.googleUser({ email: 'dev@acme.example', sub: '8000001', name: 'Acme Dev' });
+    const { token } = A.startSession(owner, { via: 'google' }) as any;
+    const signed = await call(page, token);
+    assert.equal(signed.status, 200);
+    assert.match(signed.body, /action="https:\/\/sites\.hawkesgen\.ai\/o\/acme-1a2b\/\.hawkes-pass"/);
+    assert.match(signed.body, /name="pass" value="v1\.live\./);
+  } finally {
+    delete process.env.STUDIO_SITES_SEED;
+  }
+});

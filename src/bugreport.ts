@@ -92,7 +92,9 @@ export const WIDGET = path.join(import.meta.dirname, '..', 'dashboard', 'report-
 /** What a beta page knows about itself: the product, the commit and what was built (Game/v<n> for Unity), the change. */
 // root: where the site starts on its host, for a game added through Talk (its beta site is the path /b/<game> of the
 // shared sites. host); the widget and its endpoints live under it. Empty for a product with a host of its own.
-export type PageInfo = { product: string; sha?: string | null; ref?: string; change?: string; built?: number; version?: string; root?: string };
+// src, endpoint, errors: a page that loads the widget from elsewhere and posts with a project's key (a customer's Studio's
+// sites: previews-cloud.ts); the widget reads endpoint and errors from its data-hawkes.
+export type PageInfo = { product: string; sha?: string | null; ref?: string; change?: string; built?: number; version?: string; root?: string; src?: string; endpoint?: string; errors?: string };
 
 // Errors from before the widget loads: a tiny hook at the top of <head> (the widget reads window.__hawkesLog, and the
 // uncaught errors it queues in window.__hawkesErrs until the widget's window.__hawkesOnError takes them). It also
@@ -109,7 +111,8 @@ export function injectReport(html: string, info: PageInfo) {
   // Whole documents only (a fragment a page fetches and inserts stays as it is).
   if (html.includes('data-hawkes-report') || !/<(html|head|body)[\s>]/i.test(html)) return html;
   const attr = JSON.stringify(info).replace(/&/g, '&amp;').replace(/'/g, '&#39;').replace(/</g, '&lt;');
-  const widget = `<script src="${info.root ?? ''}/dev/__studio/report.js" data-hawkes='${attr}' defer></script>`;
+  const src = (info.src ?? `${info.root ?? ''}/dev/__studio/report.js`).replace(/"/g, '&quot;');
+  const widget = `<script src="${src}" data-hawkes='${attr}' defer></script>`;
   // After <meta charset> when it's there (it has to stay in the first 1024 bytes), else right after <head>.
   const head = /<meta[^>]+charset[^>]*>/i.exec(html.slice(0, 2048)) ?? /<head(\s[^>]*)?>/i.exec(html);
   let out = head ? html.slice(0, head.index + head[0].length) + HOOK + html.slice(head.index + head[0].length)

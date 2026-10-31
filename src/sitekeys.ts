@@ -22,6 +22,13 @@ export const siteHost = (sub: string, domain: string, lane: Lane = laneOf()) => 
 
 /** The pass cookie's name: one per lane, so signing in to studio-beta never replaces live's pass. */
 export const passCookie = (lane: Lane = laneOf()) => (lane === 'beta' ? 'hawkes_pass_beta' : 'hawkes_pass');
+
+// Customers' Studios (cells) publish at https://sites.<domain>/o/<org>/<project>/ (studio-beta's /ob/<org>/...), sign
+// with their own key, and keep their pass on sites.<domain> under their own path (the Worker: orgPassCookie, orgPrefix).
+/** This Studio's org when it is a customer's Studio made by the control plane, else null. */
+export const siteOrg = (env: NodeJS.ProcessEnv = process.env) => (env.STUDIO_CONTROL_URL && env.STUDIO_ORG?.trim()) || null;
+export const orgPassCookie = (lane: Lane = laneOf()) => (lane === 'beta' ? 'hawkes_opass_beta' : 'hawkes_opass');
+export const orgPrefix = (org: string, lane: Lane = laneOf()) => `/${lane === 'beta' ? 'ob' : 'o'}/${org}`;
 /** How long a pass lasts (the Worker sends the browser back to Studio for a new one after that). */
 export const PASS_MS = 12 * 3600_000;
 
@@ -59,6 +66,8 @@ export function makePass(userId: string, { now = Date.now(), lane = laneOf(), ke
 export function playtestCookies(lane: Lane = laneOf(), domain = process.env.STUDIO_COOKIE_DOMAIN ?? 'hawkesgen.ai') {
   const keys = siteKeys();
   if (!keys) return [];
+  // A customer's Studio: its own sites' pass, on the sites host (the Worker checks it against this Studio's key).
+  if (siteOrg()) return [{ name: orgPassCookie(lane), value: makePass('playtest', { lane, keys, ms: 3600_000 }), domain: `sites.${domain}` }];
   return [{ name: passCookie(lane), value: makePass('playtest', { lane, keys, ms: 3600_000 }), domain: `.${domain}` }];
 }
 

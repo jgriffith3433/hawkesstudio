@@ -12,6 +12,7 @@ import path from 'node:path';
 import type http from 'node:http';
 import { DATA, getProduct, StudioError, type Product } from './config.ts';
 import { WIDGET, fileReport, fileAutoError } from './bugreport.ts';
+import { siteOrg } from './sitekeys.ts';
 
 const KEY_FILE = () => path.join(DATA, 'report.key');
 let secret: Buffer | null = null;
@@ -45,6 +46,8 @@ const base = (req?: http.IncomingMessage) =>
 export function originsOf(p: Product) {
   const out = new Set<string>();
   try { if (p.beta) out.add(new URL(p.beta).origin); } catch { /* not a URL */ }
+  // A customer's Studio hosts its projects' betas on the shared sites host (previews.ts: /o/<org>/<project>/).
+  if (!p.beta && siteOrg()) out.add(`https://sites.${process.env.STUDIO_DOMAIN || 'hawkesgen.ai'}`);
   for (const o of p.reportOrigins ?? []) out.add(o.replace(/\/+$/, ''));
   return [...out];
 }
@@ -53,8 +56,10 @@ export function originsOf(p: Product) {
 export function reportInfo(projectId: string, req?: http.IncomingMessage) {
   const p = getProduct(projectId);
   const key = reportKey(p.id);
-  const script = `${base(req)}/r/${p.id}.js?k=${key}`;
-  return { project: p.id, key, script, tag: `<script src="${script}" defer></script>`, origins: originsOf(p) };
+  const b = base(req);
+  const script = `${b}/r/${p.id}.js?k=${key}`;
+  // widget, endpoint, errors: what the loader script sets up, for pages Studio publishes itself (previews-cloud.ts).
+  return { project: p.id, key, script, tag: `<script src="${script}" defer></script>`, origins: originsOf(p), widget: `${b}/r/widget.js`, endpoint: `${b}/r/${p.id}/report?k=${key}`, errors: `${b}/r/${p.id}/error?k=${key}` };
 }
 
 const cors = (origin: string) => ({ 'Access-Control-Allow-Origin': origin, 'Access-Control-Allow-Methods': 'POST, OPTIONS', 'Access-Control-Allow-Headers': 'Content-Type', 'Access-Control-Max-Age': '600', Vary: 'Origin' });

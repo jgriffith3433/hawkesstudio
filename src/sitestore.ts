@@ -17,7 +17,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { laneOf, signPublish, type Lane } from './sitekeys.ts';
+import { laneOf, signPublish, siteOrg, type Lane } from './sitekeys.ts';
 import { injectReport, type PageInfo } from './bugreport.ts';
 
 /** One file of a site: where it goes, its git blob id and size, and how to get its bytes. */
@@ -159,7 +159,8 @@ export function workerStore(url: string, { lane = laneOf(), fetcher = fetch, sig
     const pq = `/.hawkes-sites/${p}`;
     for (let attempt = 1; ; attempt++) {
       const res = await fetcher(`${url}${pq}`, {
-        method, headers: { ...headers, 'X-Hawkes-Lane': lane, 'X-Hawkes-Sig': sign(lane, method, pq, tag), ...(body ? { 'Content-Length': String(body.length) } : {}) },
+        // A customer's Studio names its org: the Worker checks its own key and keeps it under o/<org>/.
+        method, headers: { ...headers, 'X-Hawkes-Lane': lane, 'X-Hawkes-Sig': sign(lane, method, pq, tag), ...(siteOrg() ? { 'X-Hawkes-Org': siteOrg()! } : {}), ...(body ? { 'Content-Length': String(body.length) } : {}) },
         body: body ? new Uint8Array(body) : undefined, signal: AbortSignal.timeout(5 * 60_000),
       }).catch((e: any) => ({ ok: false, status: 0, text: async () => String(e.message ?? e), arrayBuffer: async () => new ArrayBuffer(0) }) as unknown as Response);
       if (res.ok || (ok404 && res.status === 404)) return res;

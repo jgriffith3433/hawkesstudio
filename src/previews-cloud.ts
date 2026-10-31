@@ -17,7 +17,7 @@ import { spawnSync } from 'node:child_process';
 import type { Product } from './config.ts';
 import { repoMap, BETA, BRANCH } from './repos.ts';
 import { cloudMode } from './cloudauth.ts';
-import { siteKeys } from './sitekeys.ts';
+import { siteKeys, siteOrg } from './sitekeys.ts';
 import { WIDGET, type PageInfo } from './bugreport.ts';
 import { githubCommit, githubFiles, localGitFiles, folderFiles, publishSite, publishWidget, keepPrefetch, removeSite, readManifest, sitesUrl, workerStore, type SiteFile, type SiteStore } from './sitestore.ts';
 
@@ -174,15 +174,21 @@ async function publishAll(store: SiteStore, base: string, all: SiteFile[], skip:
   // A game added through Talk: its site is a path of the shared sites. host (2026-10-31: its 🐞 widget loaded from the
   // host's root, outside the game's pass, and every page got a 401).
   const root = p.github ? new URL((await import('./previews.ts')).previewUrl(p.id)!).pathname.replace(/\/+$/, '') : '';
-  const page: PageInfo = { product: p.id, sha: sha.slice(0, 7), ref, ...(change ? { change } : {}), ...(version ? { version } : {}), ...(root ? { root } : {}), built: Date.now() };
+  // A customer's Studio: its pages' 🐞 widget comes from the Studio itself and posts with the project's report key
+  // (reportkey.ts: /r/widget.js, /r/<project>/report), since the sites host passes nothing on to it.
+  const org = siteOrg();
+  const own = org ? await import('./reportkey.ts').then((R) => R.reportInfo(p.id)) : null;
+  const widget = own ? { src: own.widget, endpoint: own.endpoint, errors: own.errors } : {};
+  const page: PageInfo = { product: p.id, sha: sha.slice(0, 7), ref, ...(change ? { change } : {}), ...(version ? { version } : {}), ...(root ? { root } : {}), ...widget, built: Date.now() };
   progress(`publishing ${files.length} files`);
-  const sub = base.split('/')[0];
+  // The site's own prefix (<sub>, or o/<org>/<project> for a customer's), without beta or c/<change>.
+  const sub = base.replace(/\/(beta|c\/[^/]+)$/, '');
   const r = await publishSite(store, base, files, {
     page, keep, progress, meta: { sha, ref },
     copyFrom: change ? [`${sub}/beta`] : [],
     build: change ? undefined : { sha: sha.slice(0, 7), version, at: Date.now() },
   });
-  await publishWidget(store, WIDGET).catch(() => {});
+  if (!org) await publishWidget(store, WIDGET).catch(() => {});
   progress(`published: ${r.sent} sent, ${r.copied} copied, ${r.removed} removed (${Math.round(r.bytes / 1e6)} MB)`);
   return files;
 }

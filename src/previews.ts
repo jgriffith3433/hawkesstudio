@@ -27,7 +27,7 @@ import { betaBuild, betaSiteFolder } from './beta.ts';
 import { fetchLocked } from './gitlock.ts';
 import { injectReport, type PageInfo } from './bugreport.ts';
 import { sandboxOn, sandboxSpawn } from './sandbox.ts';
-import { siteHost, laneOf } from './sitekeys.ts';
+import { siteHost, laneOf, siteOrg, orgPrefix } from './sitekeys.ts';
 import { remoteSites, SiteWaiting } from './previews-cloud.ts';
 
 export const DOMAIN = process.env.STUDIO_DOMAIN || 'hawkesgen.ai';
@@ -85,11 +85,16 @@ export function previewHosts(): Record<string, string> {
   const own = JSON.parse(fs.readFileSync(paths.products, 'utf8')).previews ?? {};
   // Games added through Talk get a beta site on Google Cloud at https://sites.<domain>/g/<game>/ (no host of their own).
   if (!remoteSites()) return own;
+  // A customer's Studio: each web project at https://sites.<domain>/o/<org>/<project>/ (J, 2026-10-31), R2 o/<org>/<project>.
+  // A project with a beta of its own (a web app's, like Gen's) is played there and not hosted.
+  const org = siteOrg();
+  if (org) return Object.fromEntries(addedWeb().filter((p) => !p.beta).map((p) => [`o/${org}/${p.id}`, p.id]));
   return { ...own, ...Object.fromEntries(addedWeb().filter((p) => !Object.values(own).includes(p.id)).map((p) => [`g-${p.id}`, p.id])) };
 }
 const subOf = (id: string) => Object.entries(previewHosts()).find(([, v]) => v === id)?.[0];
 export const previewUrl = (id: string, change?: string) => {
   const sub = subOf(id);
+  if (sub?.startsWith('o/')) return `https://sites.${DOMAIN}${orgPrefix(sub.split('/')[1])}/${id}/${change ? `c/${change}/` : ''}`;
   if (sub?.startsWith('g-')) return `https://sites.${DOMAIN}/${laneOf() === 'beta' ? 'b' : 'g'}/${sub.slice(2)}/${change ? `c/${change}/` : ''}`;
   return sub ? `https://${siteHost(sub, DOMAIN)}/${change ? `c/${change}/` : ''}` : null;
 };

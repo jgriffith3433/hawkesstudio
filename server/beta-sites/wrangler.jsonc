@@ -14,7 +14,10 @@
     "STUDIO_ORIGIN_LIVE": "https://studio-388576319982.us-east4.run.app",
     "STUDIO_ORIGIN_BETA": "https://studio-beta-388576319982.us-central1.run.app",
     "STUDIO_PUBLIC_LIVE": "https://studio.hawkesgen.ai",
-    "STUDIO_PUBLIC_BETA": "https://studio-beta.hawkesgen.ai"
+    "STUDIO_PUBLIC_BETA": "https://studio-beta.hawkesgen.ai",
+    "CELLS_PROJECT_NUMBER": "388576319982",
+    "CELLS_REGION_LIVE": "us-east4",
+    "CELLS_REGION_BETA": "us-central1"
   },
   "routes": [
     // Where Studio publishes (signed writes only; nothing to see there).

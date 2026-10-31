@@ -142,6 +142,7 @@ egress fees), the Workers free tier, and Studio only wakes to publish.
 | `https://<sub>.hawkesgen.ai/c/<change>/` | an agent change's preview, R2 `live/<sub>/c/<change>/` (files beta has are copied inside R2) |
 | `https://sb-<sub>.hawkesgen.ai/` | **studio-beta's** copies: its own R2 prefix `beta/`, its own key, its own pass cookie, so the lanes never overwrite each other |
 | `sites.hawkesgen.ai` | where Studio sends its signed writes (`STUDIO_SITES_URL` to change it) |
+| `https://sites.hawkesgen.ai/o/<org>/<project>/` | **a customer's Studio's** project (J, 2026-10-31), with `/c/<change>/` previews inside; studio-beta's cells `/ob/<org>/...`. R2 `<lane>/o/<org>/<project>/`. The cell writes with `X-Hawkes-Org` and its own key (its `STUDIO_SITES_SEED`; the Worker reads it from the cell's Cloud Run address, `CELLS_PROJECT_NUMBER` and `CELLS_REGION_*`) and only under `o/<org>/`. Its pass is signed by the cell: the cell's `/auth/pass` posts it to `/o/<org>/.hawkes-pass`, kept host-only as `hawkes_opass` with `Path=/o/<org>/`. Its pages' 🐞 widget comes from the cell (`/r/widget.js`) and posts with the project's report key. A project with a beta of its own (a web app's) isn't hosted. All customers share the `sites.hawkesgen.ai` origin for now (a separate domain later keeps their pages apart) |
 | Not on it | `hawkesnet` (its own box) and `hawkesgenwebsite` (Firebase, `local.serve: remote`) |
 
 **Publishing** (`src/previews-cloud.ts`, `src/sitestore.ts`; previews.ts `build()` hands over when `remoteSites()`:

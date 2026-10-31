@@ -6,7 +6,7 @@ import { StudioError } from './config.ts';
 import * as A from './auth.ts';
 import { requestUser } from './sandbox.ts';
 import { cloudMode, googleClientId, verifyGoogleProfile } from './cloudauth.ts';
-import { laneOf, makePass, passReturn, passSetCookie, siteKeys } from './sitekeys.ts';
+import { laneOf, makePass, orgPrefix, passReturn, passSetCookie, siteKeys, siteOrg } from './sitekeys.ts';
 
 export const esc = (s: unknown) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!);
 
@@ -166,6 +166,28 @@ export async function handleAuthRoute(req: http.IncomingMessage, res: http.Serve
     const k = siteKeys();
     if (!k) json(res, 404, { error: 'no beta-site key here (STUDIO_SITES_SEED or STUDIO_OWNER_KEY)' });
     else json(res, 200, { lane: laneOf(), alg: 'Ed25519', key: k.publicKey }, { 'Cache-Control': 'public, max-age=3600' });
+    return true;
+  }
+  // A customer's Studio: its sites live at https://sites.<domain>/o/<org>/ (previews.ts). The pass is handed to the sites
+  // Worker in a form it posts (POST /o/<org>/.hawkes-pass), which keeps it on that host under this org's path alone.
+  const org = siteOrg();
+  if (route === '/auth/pass' && method === 'GET' && org) {
+    const domain = process.env.STUDIO_DOMAIN || 'hawkesgen.ai';
+    const site = `https://sites.${domain}${orgPrefix(org)}/`;
+    const next = String(url.searchParams.get('next') ?? '');
+    let back: string | null = null;
+    try { const n = new URL(next); if (n.origin === new URL(site).origin && n.pathname.startsWith(new URL(site).pathname)) back = n.toString(); } catch { /* not a URL */ }
+    if (!back) { json(res, 400, { error: 'next must be a page of this Studio\'s beta sites' }); return true; }
+    const u = A.sessionUser(A.cookieToken(req));
+    // Not signed in: sign in, then back to the beta page, which comes here again.
+    if (!u || u.must_change) { redirect(res, `/auth/signin?next=${encodeURIComponent(back)}`); return true; }
+    let pass: string;
+    try { pass = makePass(u.id); } catch (e: any) { json(res, 503, { error: String(e.message ?? e) }); return true; }
+    const esc = (s: string) => s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]!));
+    html(res, 200, `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Opening the beta site…</title>
+<body style="font:16px system-ui;margin:60px auto;max-width:480px;padding:0 16px"><form method="post" action="${esc(`${site}.hawkes-pass`)}">
+<input type="hidden" name="pass" value="${esc(pass)}"><input type="hidden" name="next" value="${esc(back)}">
+<p>Opening the beta site…</p><button>Continue</button></form><script>document.forms[0].submit()</script></body>`);
     return true;
   }
   if (route === '/auth/pass' && method === 'GET') {

@@ -26,6 +26,11 @@ const LIVE = { STUDIO_OWNER_KEY: 'live-owner-key-0123456789' } as NodeJS.Process
 const BETA = { STUDIO_OWNER_KEY: 'beta-owner-key-0123456789', STUDIO_LANE: 'beta' } as NodeJS.ProcessEnv;
 const liveKeys = K.siteKeys(LIVE)!;
 const betaKeys = K.siteKeys(BETA)!;
+// Customers' Studios each sign with their own key (cellkeys.ts gives each its STUDIO_SITES_SEED).
+const orgKeys: Record<string, NonNullable<ReturnType<typeof K.siteKeys>>> = {
+  'acme-1a2b': K.siteKeys({ STUDIO_SITES_SEED: 'acme-seed' } as NodeJS.ProcessEnv)!,
+  'bobco-9z9z': K.siteKeys({ STUDIO_SITES_SEED: 'bobco-seed' } as NodeJS.ProcessEnv)!,
+};
 
 /** An in-memory R2 bucket with what the Worker uses. */
 function memR2() {
@@ -76,6 +81,9 @@ globalThis.fetch = (async (input: any, init?: any) => {
   const u = new URL(req.url);
   if (u.pathname === '/auth/sites-key') {
     const lane = u.host.startsWith('studio-beta') ? 'beta' : 'live';
+    // A customer's Studio on Cloud Run (the Worker's cellOrigin): its own key.
+    const cell = /^studio(?:-beta)?-o-([a-z0-9-]+)-123\./.exec(u.host);
+    if (cell) return orgKeys[cell[1]] ? Response.json({ lane, alg: 'Ed25519', key: orgKeys[cell[1]].publicKey }) : new Response('not found', { status: 404 });
     return Response.json({ lane, alg: 'Ed25519', key: (lane === 'beta' ? betaKeys : liveKeys).publicKey });
   }
   if (u.pathname.startsWith('/dev/__studio/')) { studioCalls.push(req); return Response.json({ ok: true, id: 'f_1' }); }
@@ -414,4 +422,56 @@ test("an added game's beta site is a path on sites.<domain>: /g/<game>/ for live
   const { injectReport } = await import('../src/bugreport.ts');
   assert.match(injectReport('<html><body></body></html>', { product: 'orbit-run', root: '/b/orbit-run' }), /src="\/b\/orbit-run\/dev\/__studio\/report\.js"/);
   assert.match(injectReport('<html><body></body></html>', { product: 'phorigins' }), /src="\/dev\/__studio\/report\.js"/);
+});
+
+test("customers' Studios: sites.<domain>/o/<org>/<project>/, written only by that Studio under its org, seen only with its pass", async () => {
+  W.resetKeys();
+  env.CELLS_PROJECT_NUMBER = '123';
+  process.env.STUDIO_CONTROL_URL = 'https://studio.hawkesgen.ai';
+  process.env.STUDIO_ORG = 'acme-1a2b';
+  try {
+    const acme = storeFor('live', orgKeys['acme-1a2b']);
+    const page = { product: 'space', sha: 'abc1234', root: '/o/acme-1a2b/space', src: 'https://studio.hawkesgen.ai/o/acme-1a2b/r/widget.js', endpoint: 'https://studio.hawkesgen.ai/o/acme-1a2b/r/space/report?k=rk_x', errors: 'https://studio.hawkesgen.ai/o/acme-1a2b/r/space/error?k=rk_x' };
+    await S.publishSite(acme, 'o/acme-1a2b/space/beta', [file('index.html', '<!doctype html><html><head><meta charset="utf-8"></head><body>space</body></html>'), file('game.wasm', 'w')], { page, build: { sha: 'abc1234' } });
+    const html = new TextDecoder().decode(r2.m.get('live/o/acme-1a2b/space/beta/index.html')!.data);
+    assert.match(html, /src="https:\/\/studio\.hawkesgen\.ai\/o\/acme-1a2b\/r\/widget\.js"/, "its own Studio's 🐞 widget");
+    assert.match(html, /r\/space\/report\?k=rk_x/, "posting with the project's report key");
+    assert.equal(r2.m.get('live/o/acme-1a2b/space/beta/game.wasm')!.type, 'application/wasm');
+    // Only under its own org, and only with its own key.
+    await assert.rejects(S.publishSite(acme, 'dod/beta', [file('x.txt', 'x')], {}), /writes only under o\/acme-1a2b\//);
+    process.env.STUDIO_ORG = 'bobco-9z9z';
+    await assert.rejects(S.publishSite(storeFor('live', orgKeys['acme-1a2b']), 'o/bobco-9z9z/space/beta', [file('x.txt', 'x')], {}), /bad signature/, "acme's key isn't bobco's");
+    delete process.env.STUDIO_ORG;
+    await assert.rejects(S.publishSite(storeFor('live', orgKeys['acme-1a2b']), 'o/acme-1a2b/space/beta', [file('x.txt', 'x')], {}), /bad signature/, "without its org it is checked against J's key");
+    process.env.STUDIO_ORG = 'acme-1a2b';
+
+    // Seeing it: a page sends you to that Studio's sign-in; its pass lets you in; another Studio's or J's does not.
+    const url = 'https://sites.hawkesgen.ai/o/acme-1a2b/space/';
+    const out = await browse(url);
+    assert.equal(out.status, 302);
+    assert.equal(out.headers.get('Location'), `https://studio.hawkesgen.ai/o/acme-1a2b/auth/pass?next=${encodeURIComponent(url)}`);
+    const pass = K.makePass('u_owner', { lane: 'live', keys: orgKeys['acme-1a2b'] });
+    const ok = await browse(url, { cookie: `hawkes_opass=${pass}` });
+    assert.equal(ok.status, 200);
+    assert.match(await ok.text(), /space/);
+    assert.equal((await browse(url, { cookie: `hawkes_opass=${K.makePass('u_bob', { lane: 'live', keys: orgKeys['bobco-9z9z'] })}` })).status, 302, "another Studio's pass");
+    assert.equal((await browse(url, { cookie: `hawkes_pass=${K.makePass('u_j', { lane: 'live', keys: liveKeys })}` })).status, 302, "J's Studio's pass isn't a customer's");
+    assert.equal((await browse('https://sites.hawkesgen.ai/o/acme-1a2b/space')).status, 301, 'a project root gets its slash');
+
+    // The handoff: its /auth/pass posts the pass here; kept host-only under its own path, then back to the page.
+    const form = (p: string, next: string) => browse('https://sites.hawkesgen.ai/o/acme-1a2b/.hawkes-pass', { method: 'POST', page: false, headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ pass: p, next }).toString() });
+    const taken = await form(pass, url);
+    assert.equal(taken.status, 303);
+    assert.equal(taken.headers.get('Location'), '/o/acme-1a2b/space/');
+    const set = taken.headers.get('Set-Cookie')!;
+    assert.match(set, /^hawkes_opass=v1\.live\./);
+    assert.match(set, /Path=\/o\/acme-1a2b\//);
+    assert.doesNotMatch(set, /Domain=/, 'host-only: never all of hawkesgen.ai');
+    assert.equal((await form(pass, 'https://sites.hawkesgen.ai/o/bobco-9z9z/space/')).headers.get('Location'), '/o/acme-1a2b/', 'never on to another org');
+    assert.equal((await form(K.makePass('u_bob', { lane: 'live', keys: orgKeys['bobco-9z9z'] }), url)).status, 403);
+  } finally {
+    delete env.CELLS_PROJECT_NUMBER;
+    delete process.env.STUDIO_CONTROL_URL;
+    delete process.env.STUDIO_ORG;
+  }
 });
