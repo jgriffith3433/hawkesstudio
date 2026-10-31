@@ -98,7 +98,10 @@ test('onboarding: /api/me opens it for the admin of a Studio with no game; the f
   assert.equal(before.claude.ready, false);
   for (const tab of ['costs', 'resources', 'social', 'onair']) assert.ok(before.hide.includes(tab), tab);
   assert.ok(!before.hide.includes('users'), 'their own users are theirs');
-  assert.throws(() => C.saveProduct({ id: 'dod', name: 'Dose Of Destruction', engine: 'web', live: 'https://doseofdestruction.com', repo: 'https://github.com/jgriffith3433/doseofdestructionwebsite' } as any), /belongs to Hawkes Studio's owner/);
+  // One of J's repos only with this Studio's own GitHub App installation on it (none here: no control plane).
+  await assert.rejects(C.checkRepoOwnership({ repo: 'https://github.com/jgriffith3433/doseofdestructionwebsite' } as any), /isn't installed for this Studio/);
+  await assert.rejects(C.checkRepoOwnership({ repo: 'indie/x', repos: [{ repo: 'jgriffith3433/hawkesgen' }] } as any), /jgriffith3433\/hawkesgen/);
+  await C.checkRepoOwnership({ repo: 'indie/my-game' } as any);
   C.saveProduct({ id: 'my-game', name: 'My Game', engine: 'web', live: 'https://my-game.example', repo: 'indie/my-game' } as any);
   assert.deepEqual(C.loadProducts().map((p) => p.id), ['my-game']);
   assert.equal((await me(as(owner())())).onboarding, false);

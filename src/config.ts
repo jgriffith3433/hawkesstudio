@@ -269,8 +269,6 @@ export function saveProduct(input: ProductInput): Product {
   if (!live && !input.build) throw new StudioError('Give live (a web address) or build (where builds come from)', 400);
   const beta = input.beta ? String(input.beta).trim() : undefined;
   if (beta && !/^https:\/\/[^\s]+$/.test(beta)) throw new StudioError('beta: an https:// address', 400);
-  // A customer's Studio never takes on one of J's repos (lockdown: anything touching jgriffith3433 is the platform's).
-  if (customerStudio() && (touchesPlatformRepo(input.repo) || touchesPlatformRepo(input.build?.repo))) throw new StudioError("That repository belongs to Hawkes Studio's owner; add your own game's repository.", 403);
   const playtests = (input.playtests?.length ? input.playtests : [{ scenario: 'smoke', where: 'live' as const }]).slice(0, 20).map((t) => ({
     ...(t.mode === 'site' ? { mode: 'site' as const } : { scenario: String(t.scenario ?? 'smoke').slice(0, 60) }),
     where: 'live' as const, ...(t.device === 'phone' ? { device: 'phone' as const } : {}),
@@ -282,7 +280,6 @@ export function saveProduct(input: ProductInput): Product {
   if (versionPath && !/^\/[\w./-]{0,200}$/.test(versionPath)) throw new StudioError('versionPath: a path on its own site, like /v1/health', 400);
   const repos = (Array.isArray(input.repos) ? input.repos : []).slice(0, 10).map((r) => ({ repo: String(r?.repo ?? '').trim(), ...(r?.role ? { role: String(r.role).slice(0, 60) } : {}) }));
   if (repos.some((r) => !SLUG.test(r.repo))) throw new StudioError('repos: each an owner/name', 400);
-  if (customerStudio() && repos.some((r) => touchesPlatformRepo(r.repo))) throw new StudioError("That repository belongs to Hawkes Studio's owner; add your own project's repository.", 403);
   const checks = input.checks ? String(input.checks).trim().slice(0, 500) : '';
   const reportOrigins = (Array.isArray(input.reportOrigins) ? input.reportOrigins : []).slice(0, 10).map((o) => String(o).trim().replace(/\/+$/, ''));
   if (reportOrigins.some((o) => !/^https:\/\/[\w.-]+(:\d+)?$/.test(o))) throw new StudioError('reportOrigins: each an https:// origin (no path)', 400);
@@ -303,6 +300,24 @@ export function saveProduct(input: ProductInput): Product {
 }
 
 /**
+ * A customer's Studio takes a repository on Hawkes Studio's owner's GitHub account only when its own org's GitHub App
+ * installation covers it (J, 2026-10-31: ownership, not the account's name). The control plane hands a cell a token only
+ * for repos its linked installations reach, and linking needs the installation on the person's own GitHub
+ * (github-app.ts linkInstallation, orgRepoToken), so a stranger can never add one of J's repos. Called before
+ * saveProduct by the projects API and the sign-up's first game.
+ */
+export async function checkRepoOwnership(input: Pick<ProductInput, 'repo' | 'build' | 'repos'>) {
+  if (!customerStudio()) return;
+  const slugOf = (s: unknown) => String(s ?? '').trim().replace(/^https?:\/\/github\.com\//i, '').replace(/\.git$/i, '').replace(/\/+$/, '');
+  const slugs = [input.repo, input.build?.repo, ...(input.repos ?? []).map((r) => r?.repo)].map(slugOf).filter((s) => s && touchesPlatformRepo(s));
+  const { cellGithubToken } = await import('./cellside.ts');
+  for (const s of new Set(slugs)) {
+    if (await cellGithubToken(s).catch(() => null)) continue;
+    throw new StudioError(`${s}: Hawkes Studio's GitHub App isn't installed for this Studio on that repository. Install it (the project's Connect GitHub), then add it again.`, 403);
+  }
+}
+
+/**
  * A cell's first game from the sign-up (cells.ts seedGame left it as onboarding.json in its state): added through
  * saveProduct's checks, then the file is removed here and in the bucket, so a game removed later never comes back.
  */
@@ -312,7 +327,10 @@ export async function applyOnboardingSeed() {
   let added: Product | null = null;
   try {
     const { game } = JSON.parse(fs.readFileSync(file, 'utf8'));
-    if (game && !loadProducts().some((p) => p.id === game.id)) added = saveProduct(game);
+    if (game && !loadProducts().some((p) => p.id === game.id)) {
+      await checkRepoOwnership(game);
+      added = saveProduct(game);
+    }
   } catch (e: any) {
     console.warn(`[onboarding] the sign-up's first game: ${e.message ?? e}`);
   }

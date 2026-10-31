@@ -21,7 +21,7 @@ const cp = http.createServer(async (req, res) => {
   const b = JSON.parse(body || '{}');
   asked.push({ path: req.url, cell: req.headers['x-studio-cell'], key: req.headers.authorization, body: b });
   res.writeHead(200, { 'Content-Type': 'application/json' });
-  if (req.url === '/api/cells/self/github-token') return res.end(JSON.stringify(b.repo === 'acme/space-game' ? { token: 'ghs_scoped', expires: Date.now() + 3600_000 } : { token: null }));
+  if (req.url === '/api/cells/self/github-token') return res.end(JSON.stringify(['acme/space-game', 'jgriffith3433/hawkesgen'].includes(b.repo) ? { token: 'ghs_scoped', expires: Date.now() + 3600_000 } : { token: null }));
   if (req.url === '/api/cells/self/github') return res.end(JSON.stringify({ app: { slug: 'hawkes-studio' }, install: 'https://github.com/apps/hawkes-studio/installations/new?state=x', installations: [], user: null, connect: null, linked: [] }));
   res.end('{}');
 });
@@ -62,4 +62,13 @@ test("its GitHub token comes from the control plane, scoped to that repo, never 
   assert.equal(T.repoTokenNow('acme/space-game'), 'ghs_scoped');
   assert.equal(T.repoTokenNow('never/primed'), null);
   assert.match(T.gitAuthEnv('acme/space-game').GIT_CONFIG_VALUE_0, /^Authorization: Basic /);
+});
+
+test("one of J's repos only when this org's own GitHub App installation covers it (ownership, not the name)", async () => {
+  await C.checkRepoOwnership({ repo: 'jgriffith3433/hawkesgen' });
+  await C.checkRepoOwnership({ repo: 'acme/app', repos: [{ repo: 'https://github.com/jgriffith3433/hawkesgen.git' }] });
+  await assert.rejects(C.checkRepoOwnership({ repo: 'jgriffith3433/sickofitgame-unity' }), /isn't installed for this Studio/);
+  T.forgetRepoTokens();
+  assert.equal(await T.repoToken('jgriffith3433/hawkesgen'), 'ghs_scoped', "the org's own token, never J's GITHUB_TOKEN");
+  assert.equal(await T.repoToken('jgriffith3433/sickofitgame-unity'), null);
 });

@@ -18,7 +18,7 @@ import { EventEmitter } from 'node:events';
 import { spawn, spawnSync } from 'node:child_process';
 import { DATA, ROOT, PROJECTS, paths, addedRepoFolders } from './config.ts';
 import { repoTokenNow } from './ghtoken.ts';
-import { PLATFORM_GITHUB } from './tenancy.ts';
+import { customerStudio, PLATFORM_GITHUB } from './tenancy.ts';
 import { startCloudJob, reattachCloudJob, cloudJobAlive } from './cloudjob.ts';
 
 export type DetachMode = 'systemd' | 'process' | 'cloudrun';
@@ -326,6 +326,8 @@ function jobGitToken(cwd: string) {
   const top = path.relative(PROJECTS, cwd).split(/[\\/]/)[0];
   const map: Record<string, string> = { ...(JSON.parse(fs.readFileSync(paths.products, 'utf8')).repos ?? {}), ...addedRepoFolders() };
   const slug = top && !top.startsWith('..') ? map[top] ?? null : null;
+  // A customer's Studio: only its own token for the repo (one on J's account too, when its installation covers it).
+  if (customerStudio()) return slug ? repoTokenNow(slug) : null;
   const own = slug && slug.split('/')[0].toLowerCase() !== PLATFORM_GITHUB ? repoTokenNow(slug) : null;
-  return own ?? (process.env.STUDIO_JOB_GITHUB_TOKEN || process.env.GITHUB_TOKEN || null);
+  return own ??(process.env.STUDIO_JOB_GITHUB_TOKEN || process.env.GITHUB_TOKEN || null);
 }

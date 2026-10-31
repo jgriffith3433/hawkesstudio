@@ -221,9 +221,10 @@ const server = http.createServer(async (req, res) => {
     // A customer's games (config.ts saveProduct): onboarding adds and edits them; admins only (memberRefusal).
     const prod = /^\/api\/products\/([a-z][a-z0-9-]{1,39})$/.exec(route);
     if (prod && method === 'PUT') {
-      const { saveProduct, loadProducts: products } = await import('./config.ts');
+      const { saveProduct, loadProducts: products, checkRepoOwnership } = await import('./config.ts');
       const E = await import('./entitlements.ts');
       const body = await readJson(req);
+      await checkRepoOwnership(body);
       // The Studio's plan sets how many games it may have, and whether desktop builds are in it (entitlements.ts).
       if (!products().some((p) => p.id === prod[1])) await E.requireRoomForGame(products().length);
       if (E.needsDesktop(body)) await E.requireFeature('desktop');
