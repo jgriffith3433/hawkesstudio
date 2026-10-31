@@ -33,6 +33,8 @@ export const PLAN_FEATURES: Record<string, { games: number; features: Feature[] 
   studio_studio: { games: 30, features: ['nightly', 'desktop', 'agents', 'pm', 'cloudBuilds'] },
 };
 const ORDER = ['free', 'studio_indie', 'studio_team', 'studio_studio'];
+/** How a plan ranks (a gift and a subscription: the higher wins, cells.ts effectivePlan); unknown plans rank as free. */
+export const planRank = (plan: string) => Math.max(0, ORDER.indexOf(plan));
 const NAMES: Record<string, string> = { free: 'Free', studio_indie: 'Indie', studio_team: 'Team', studio_studio: 'Studio' };
 
 export type PlanState = { plan: string; status: string | null; maxGames: number | null; from: 'platform' | 'local' | 'control' };
@@ -104,15 +106,32 @@ export class UpgradeNeeded extends StudioError {
   }
 }
 
+/**
+ * The plan, asked of the control plane again before refusing (a plan just bought or given works at once, not after
+ * the 5-minute refresh); at most every 20 seconds.
+ */
+let lastAsked = 0;
+/** Tests: the next refusal asks again. */
+export const forgetPlanAsk = () => { lastAsked = 0; };
+async function entitlementsBeforeRefusing(ok: (e: Awaited<ReturnType<typeof entitlements>>) => boolean) {
+  let e = await entitlements();
+  if (!ok(e) && controlUrl() && Date.now() - lastAsked > 20_000) {
+    lastAsked = Date.now();
+    await refreshPlan();
+    e = await entitlements();
+  }
+  return e;
+}
+
 /** Throws UpgradeNeeded unless this Studio's plan includes the feature. */
 export async function requireFeature(f: Exclude<Feature, 'games'>) {
-  const e = await entitlements();
+  const e = await entitlementsBeforeRefusing((x) => x.plan === 'platform' || x.features.includes(f));
   if (e.plan !== 'platform' && !e.features.includes(f)) throw new UpgradeNeeded(f);
 }
 
 /** Throws UpgradeNeeded when adding a game would pass the plan's count. */
 export async function requireRoomForGame(current: number) {
-  const e = await entitlements();
+  const e = await entitlementsBeforeRefusing((x) => x.games === null || current < x.games);
   if (e.games !== null && current >= e.games) throw new UpgradeNeeded('games', `Your plan includes ${e.games} game${e.games === 1 ? '' : 's'}. Upgrade to add another.`);
 }
 

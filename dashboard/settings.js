@@ -321,7 +321,10 @@
     const usd = (c) => `$${(c / 100).toFixed(c % 100 ? 2 : 0)}`;
     const s = b.subscription;
     const until = s?.periodEnd ? new Date(s.periodEnd).toLocaleDateString() : '';
-    const state = s ? `<b>${esc(s.plan?.name ?? s.planId)}</b> · ${s.status === 'past_due' ? '<span class="set-err">payment failed: update your card</span>' : s.cancelAtPeriodEnd ? `ends ${esc(until)}` : `renews ${esc(until)}`}` : 'No plan yet.';
+    // A plan Hawkes Studio gave this Studio (cells.ts gifts): it counts like a subscription, with no card.
+    const g = b.gift;
+    const gift = g ? `<b>${esc(b.entitlements?.status === 'gift' ? b.entitlements.planName : g.plan)}</b> · given by Hawkes Studio${g.until ? ` until ${esc(new Date(g.until).toLocaleDateString())}` : ''}` : '';
+    const state = s ? `<b>${esc(s.plan?.name ?? s.planId)}</b> · ${s.status === 'past_due' ? '<span class="set-err">payment failed: update your card</span>' : s.cancelAtPeriodEnd ? `ends ${esc(until)}` : `renews ${esc(until)}`}${gift && b.entitlements?.status === 'gift' ? ` · now on ${gift}` : ''}` : gift || 'No plan yet.';
     const plans = s ? '' : b.plans.map((p) => `<div class="ca-line"><div style="flex:1"><b>${esc(p.name)}</b> ${usd(p.priceCents)}/month<div class="meta">${p.creditsPerMonth.toLocaleString()} credits a month · up to ${p.maxGames} projects</div></div><button class="small" data-billplan="${esc(p.id)}" ${!b.stripe || b.stripe.configured ? '' : 'disabled'}>Subscribe</button></div>`).join('');
     // What the plan includes and what it doesn't (src/entitlements.ts): each missing one is an Upgrade away.
     const e = b.entitlements;
@@ -364,6 +367,56 @@
     }, 3000);
   }
 
+  // Customers' Studios (src/cells.ts), the platform admin's alone: who has which plan, and gift subscriptions (J,
+  // 2026-10-31: "set which accounts are under which subscription"). Hidden when this isn't the control plane or the
+  // viewer isn't the platform admin (the API refuses both).
+  async function mountCustomers(box) {
+    if (!box) return;
+    let c;
+    try { c = await api('/api/cells'); } catch { box.remove(); return; }
+    if (!c.on) { box.remove(); return; }
+    const plans = (billing?.plans ?? []).filter((p) => p.id !== 'free');
+    const name = (id) => plans.find((p) => p.id === id)?.name ?? id;
+    const day = (t) => new Date(t).toLocaleDateString();
+    const live = c.orgs.filter((o) => o.state !== 'deleted');
+    const row = (o) => {
+      const g = o.gift && (!o.gift.until || o.gift.until > Date.now()) ? o.gift : null;
+      const now = o.plan.id === 'free' ? 'Free' : `${esc(name(o.plan.id))}${o.plan.status === 'gift' ? ' (gift)' : o.plan.status ? ` (${esc(o.plan.status)})` : ''}`;
+      return `<div class="ca-line" style="align-items:flex-start;gap:10px;flex-wrap:wrap" data-org="${esc(o.id)}">
+        <div style="flex:1;min-width:200px"><b>${esc(o.name || o.id)}</b> <span class="meta">${esc(o.id)}</span>
+          <div class="meta">${esc(o.ownerEmail)} · ${esc(o.state)} · <b>${now}</b>${o.plan.sub && o.plan.status === 'gift' ? ` · also pays for ${esc(name(o.plan.sub.planId))}` : ''}</div>
+          ${g ? `<div class="meta">🎁 ${esc(name(g.plan))} ${g.until ? `until ${esc(day(g.until))}` : 'for good'}${g.note ? ` · ${esc(g.note)}` : ''}${g.by ? ` · by ${esc(g.by)}` : ''}</div>` : ''}</div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
+          <select data-gift="plan">${plans.map((p) => `<option value="${esc(p.id)}" ${(g?.plan ?? 'studio_team') === p.id ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}</select>
+          <input type="date" data-gift="until" title="Until (leave empty for good)" value="${g?.until ? new Date(g.until).toISOString().slice(0, 10) : ''}">
+          <input data-gift="note" placeholder="why (optional)" value="${esc(g?.note ?? '')}" style="width:140px">
+          <button class="small primary" data-gift="give">${g ? 'Change gift' : 'Give a plan'}</button>
+          ${g ? '<button class="small" data-gift="remove">Take it back</button>' : ''}
+        </div></div>`;
+    };
+    box.innerHTML = `<div class="set-box"><h3>🏢 Customers' Studios</h3>
+      <div class="meta">Every customer Studio, its owner and the plan it has. A gift is a plan with no card: it unlocks the plan's features and project count (not its monthly credits), until a date or for good. A paid plan that's higher still wins.</div>
+      ${live.length ? live.map(row).join('') : '<div class="meta">No customer Studios yet.</div>'}<div id="giftMsg" class="meta"></div></div>`;
+    box.onclick = async (e) => {
+      const btn = e.target.closest('[data-gift="give"],[data-gift="remove"]');
+      if (!btn) return;
+      const line = btn.closest('[data-org]');
+      const org = line.dataset.org;
+      const msg = box.querySelector('#giftMsg');
+      btn.disabled = true;
+      try {
+        if (btn.dataset.gift === 'remove') {
+          if (!confirm(`Take back the gift from ${org}? It goes back to its paid plan, or Free.`)) { btn.disabled = false; return; }
+          await api(`/api/cells/${org}/gift`, { method: 'DELETE' });
+        } else {
+          const until = line.querySelector('[data-gift="until"]').value;
+          await api(`/api/cells/${org}/gift`, { method: 'POST', body: { plan: line.querySelector('[data-gift="plan"]').value, until: until ? `${until}T23:59:59` : null, note: line.querySelector('[data-gift="note"]').value } });
+        }
+        await mountCustomers(box);
+      } catch (err) { btn.disabled = false; msg.innerHTML = `<span class="set-err">${esc(err.message)}</span>`; }
+    };
+  }
+
   async function loadSettingsTab() {
     [data, claude, agyLogin, services, routing, billing] = await Promise.all([api('/api/settings'), api('/api/claude/accounts').catch(() => null), api('/api/antigravity/login').catch(() => null), api('/api/services').catch(() => null), api('/api/routing').catch(() => null), api('/api/billing').catch(() => null)]);
     window.callVoice?.apply(data.call);
@@ -376,9 +429,10 @@
     if (cu) $('#setBody').innerHTML = `<div class="set-grid">${billingBox(billing)}<div id="setAiBox"></div>${notifyBox(data.notify)}</div>
       <details class="set-more"><summary>Agents and the PM: how much they do by themselves</summary><div class="set-grid">${agentsBox(data.agents)}${pmBox(data.pm)}</div></details>
       <details class="set-more"><summary>Advanced: models, tuning and the call voice</summary><div class="set-grid">${data.routing ? routingBox(data.routing, routing) : ''}${tuningBox(data.tuning)}${callBox(data.call)}</div></details>`;
-    else $('#setBody').innerHTML = `<div class="set-grid">${billingBox(billing)}${cu ? '<div id="setAiBox"></div>' : brainBox(data.brain)}${data.routing ? routingBox(data.routing, routing) : ''}${tuningBox(data.tuning)}${cu ? '' : claudeBox(claude, data.brain)}${cu ? '' : agyBox(agyLogin)}<div id="svcBox">${servicesBox(services)}</div>${callBox(data.call)}${agentsBox(data.agents)}${pmBox(data.pm)}${notifyBox(data.notify)}${cu ? '' : costsBox(data.costs)}${cu ? '' : resourcesBox(data.resources)}</div>`;
+    else $('#setBody').innerHTML = `<div class="set-grid">${billingBox(billing)}<div id="setCellsBox"></div>${cu ? '<div id="setAiBox"></div>' : brainBox(data.brain)}${data.routing ? routingBox(data.routing, routing) : ''}${tuningBox(data.tuning)}${cu ? '' : claudeBox(claude, data.brain)}${cu ? '' : agyBox(agyLogin)}<div id="svcBox">${servicesBox(services)}</div>${callBox(data.call)}${agentsBox(data.agents)}${pmBox(data.pm)}${notifyBox(data.notify)}${cu ? '' : costsBox(data.costs)}${cu ? '' : resourcesBox(data.resources)}</div>`;
     // A customer's Studio: Claude and every other provider they link, in one box (users.js mountAiCard).
     if (cu) api('/api/ai').then((ai) => window.mountAiCard?.($('#setAiBox'), ai)).catch(() => {});
+    else mountCustomers($('#setCellsBox'));
     if (services?.pending) watchRestart();
     if (data.call.engine === 'eleven') loadElevenVoices();
   }

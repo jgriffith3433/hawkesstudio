@@ -205,3 +205,12 @@ test("a customer's game keeps a beta address: its \"local\" playtests (Play beta
   CFG.removeProduct('jgame');
   assert.deepEqual(CFG.loadProducts(), []);
 });
+
+test("a plan just given or bought works at once: before refusing, the cell asks the control plane again", async () => {
+  E.setCellPlan({ plan: 'free', status: null, maxGames: null, from: 'control' });
+  E.forgetPlanAsk();
+  plan = { plan: 'studio_team', status: 'gift', maxGames: 10 };
+  await E.requireFeature('agents');
+  assert.equal((await E.entitlements()).plan, 'studio_team');
+  plan = { plan: 'free', status: null, maxGames: null };
+});

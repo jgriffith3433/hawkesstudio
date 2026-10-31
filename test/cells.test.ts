@@ -376,3 +376,43 @@ test('no game yet: the first-game page has "Make one with Talk", which starts th
   assert.equal(C.getOrg(org.id)!.state, 'awake', 'the studio is up, with no game in it');
   assert.equal(objects.has(`o/${org.id}/state/onboarding.json`), false);
 });
+
+test('gift subscriptions: the platform admin gives an org a plan with no Stripe; the higher of gift and paid plan counts', async () => {
+  const org = C.createOrg({ sub: '7000020', email: 'gift@g.example', name: null }, 'Gifted Studio');
+  const plan = async (id: string) => { const out = res(); await C.handleCellsKeyed(req({ Authorization: `Bearer ${K.deriveKey('cell', id)}`, 'X-Studio-Cell': id }), out, '/api/cells/self', 'GET', send, noJson); return out.body; };
+  assert.equal((await plan(org.id)).plan, 'free');
+  // Through the admin route, as the dashboard's Give a plan does.
+  const out = res();
+  await C.handleCellsAdmin(req({}, 'POST'), out, `/api/cells/${org.id}/gift`, 'POST', send, async () => ({ plan: 'studio_team', note: 'first customer' }));
+  assert.equal(out.status, 200, JSON.stringify(out.body));
+  assert.equal(out.body.org.gift.plan, 'studio_team');
+  const p = await plan(org.id);
+  assert.equal(p.plan, 'studio_team');
+  assert.equal(p.status, 'gift');
+  assert.equal(p.maxGames, B.getPlan('studio_team')!.maxGames);
+  assert.equal(p.credits, 0, 'a gift grants no monthly credits');
+  // The admin list shows it.
+  const list = res();
+  await C.handleCellsAdmin(req({}), list, '/api/cells', 'GET', send, noJson);
+  assert.equal(list.body.orgs.find((o: any) => o.id === org.id).plan.status, 'gift');
+  // Checked: a real plan, a date in the future.
+  await assert.rejects(C.setGift(org.id, { plan: 'free' }, 'admin'), /plan: one of/);
+  await assert.rejects(C.setGift(org.id, { plan: 'studio_team', until: '2001-01-01' }, 'admin'), /until/);
+  await assert.rejects(C.setGift('nobody-0000', { plan: 'studio_team' }, 'admin'), /No studio/);
+  // Until a date: once it passes, the org is back on Free.
+  await C.setGift(org.id, { plan: 'studio_studio', until: Date.now() + 60_000 }, 'admin');
+  assert.equal((await plan(org.id)).plan, 'studio_studio');
+  assert.equal(C.activeGift(C.getOrg(org.id), Date.now() + 120_000), null);
+  // A paid plan that's higher wins over the gift; a lower one doesn't.
+  const paying = C.listOrgs().find((o) => o.name === 'Paying Co')!;
+  await C.setGift(paying.id, { plan: 'studio_team' }, 'admin');
+  assert.equal((await plan(paying.id)).plan, 'studio_team', 'gift Team beats paid Indie');
+  await C.setGift(paying.id, { plan: 'studio_indie' }, 'admin');
+  assert.equal((await plan(paying.id)).status, 'active', 'paid Indie and a gift of Indie: the subscription');
+  C.removeGift(paying.id);
+  // Taking it back.
+  const back = res();
+  await C.handleCellsAdmin(req({}, 'DELETE'), back, `/api/cells/${org.id}/gift`, 'DELETE', send, noJson);
+  assert.equal(back.body.org.gift, null);
+  assert.equal((await plan(org.id)).plan, 'free');
+});

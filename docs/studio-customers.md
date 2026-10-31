@@ -342,6 +342,13 @@ Check: `GET /api/cells` signed in as J shows `"on": true` and `"missing": []`.
 
 ## 3. Billing
 
+**Gift subscriptions** (J, 2026-10-31: "admin can set which accounts are under which subscription"): the platform admin
+gives an org a plan with no Stripe in Settings → Customers' Studios (`POST/DELETE /api/cells/<org>/gift`, `cells.ts
+setGift`), until a date or for good, with a note. It counts like a subscription (features, project count, nightly runs)
+but grants no monthly credits; the higher of the gift and a paid plan wins (`effectivePlan`). A cell asks the control
+plane again before refusing a feature (`entitlements.ts`), so a gift works at once. Tests: `test/cells.test.ts`,
+`test/cell-side.test.ts`.
+
 **One Stripe account for the portal, Gen and Studio** (J, 2026-10-29: "Gen portal and studio should all use the same
 stripe account. Beta should use the test keys."):
 - **One set of keys per lane:** test keys on beta (studio-beta, gen-beta, beta.hawkesgen.ai), live keys on live.
