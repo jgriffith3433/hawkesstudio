@@ -125,3 +125,18 @@ test("the Connect page: this Studio's MCP address, whether you may connect, your
   assert.equal((await mcp(token)).status, 401, 'its token stops at once');
   assert.ok(!call('/api/connect', j.id).body.connections.some((x: any) => x.id === conn.id));
 });
+
+test("the consent page lets Allow's redirect reach the app (CSP form-action names its return address, nothing else)", async () => {
+  const reg = (await (await fetch(`${base}/oauth/register`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ client_name: 'Claude', redirect_uris: ['https://claude.ai/api/mcp/auth_callback'] }) })).json()) as any;
+  const q = new URLSearchParams({ response_type: 'code', client_id: reg.client_id, redirect_uri: 'https://claude.ai/api/mcp/auth_callback', code_challenge: 'x'.repeat(43), code_challenge_method: 'S256', state: 's' });
+  const cookie = `${A.COOKIE}=${A.startSession(j, { via: 'google' }).token}`;
+  const page = await fetch(`${base}/oauth/authorize?${q}`, { headers: { cookie } });
+  assert.equal(page.status, 200);
+  const csp = page.headers.get('content-security-policy')!;
+  assert.match(csp, /form-action 'self' https:\/\/claude\.ai;/, 'Chrome blocks the redirect to claude.ai otherwise');
+  assert.doesNotMatch(csp, /form-action[^;]*\*/);
+  const app = (await (await fetch(`${base}/oauth/register`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ client_name: 'Cursor', redirect_uris: ['cursor://anysphere.cursor-retrieval/oauth/callback'] }) })).json()) as any;
+  q.set('client_id', app.client_id);
+  q.set('redirect_uri', 'cursor://anysphere.cursor-retrieval/oauth/callback');
+  assert.match((await fetch(`${base}/oauth/authorize?${q}`, { headers: { cookie } })).headers.get('content-security-policy')!, /form-action 'self' cursor:;/, 'an app scheme by its scheme');
+});

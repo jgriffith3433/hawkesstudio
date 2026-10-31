@@ -268,7 +268,11 @@ ${hidden}<div class="row"><button class="no" name="action" value="deny" type="su
             const r = authorizeRequest(req, url.searchParams);
             const user = h.user(req);
             if (!user) return h.signIn(req, res, `/oauth/authorize${url.search}`), true;
-            res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', 'X-Frame-Options': 'DENY', 'Content-Security-Policy': "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'" });
+            // form-action also governs where the form's answer redirects (Chrome): the app's own return address must be in it,
+            // or Allow posts, gets its 302 to the app, and the browser stays on this page (2026-10-31, claude.ai).
+            const back = new URL(r.redirect);
+            const app = /^https?:$/.test(back.protocol) ? back.origin : back.protocol;
+            res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', 'X-Frame-Options': 'DENY', 'Content-Security-Policy': `default-src 'none'; style-src 'unsafe-inline'; form-action 'self' ${app}; frame-ancestors 'none'` });
             res.end(consentPage(req, user, url.searchParams, r.client.name));
             return true;
           }
