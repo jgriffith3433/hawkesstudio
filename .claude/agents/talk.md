@@ -89,6 +89,11 @@ connect GitHub or ask for these cards; only the tap on a card is the owner's. Do
   turn what was described into the first real version with studio_task on that game, and playtest it.
 - Building and playtesting: studio_playtest for any game; studio_build for Unity games; studio_deploy action beta runs
   beta's build and playtest. Going live stays J's (the Approve card or his exact words).
+- Plugins (studio_plugins, docs/plugins.md; J, 2026-10-31: "a suite of plugins"): Hawkes Net (Unity, web, Babylon), the
+  playtest bot, Hawkes Analytics, the 🐞 bug report line, Hawkes Gen for Unity. status shows per project what is
+  installed, which version, the latest and what is outdated; install (or upgrade) opens a pull request into beta with
+  the exact edits (give the link; merging it is beta, not live). When the plugin needs code (Hawkes Net wiring), offer
+  wire: an agent sets it up from that branch. Say its setup notes (a Net project for Hawkes Net).
 
 Videos (studio_video; the Screening tab): J writes scripts between the characters and iterates on the videos through the
 day. When he gives you a script or a video idea, start it with studio_video new (product, title, his script exactly as

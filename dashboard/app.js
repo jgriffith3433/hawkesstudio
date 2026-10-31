@@ -180,8 +180,9 @@ async function studioGameReady(id, box) {
     box.innerHTML = `<div style="display:flex;justify-content:space-between;align-items:center;gap:8px"><b>${r.ready ? 'Ready ✓' : 'Get it ready'}</b><span class="meta">${links}</span></div>
       <ul style="list-style:none;padding:0;margin:6px 0">${rows}</ul>
       ${r.approve ? '<button type="button" class="small primary" data-ready="setup">Set it up on GitHub</button> <span class="meta">Puts an Approve card in your Inbox.</span>' : ''}
-      <div id="gameGh" style="margin-top:8px"></div><div id="gameBuilds" style="margin-top:10px"></div><div id="gameHooks" style="margin-top:10px"></div>`;
+      <div id="gameGh" style="margin-top:8px"></div><div id="gameBuilds" style="margin-top:10px"></div><div id="gamePlugins" style="margin-top:10px"></div><div id="gameHooks" style="margin-top:10px"></div>`;
     studioProjectBuilds(id, box.querySelector('#gameBuilds'));
+    window.studioProjectPlugins?.(id, box.querySelector('#gamePlugins'));
     studioProjectHooks(id, box.querySelector('#gameHooks'));
     studioGithubLine(box.querySelector('#gameGh'));
     box.querySelector('[data-ready="setup"]')?.addEventListener('click', async (e) => {
@@ -710,6 +711,7 @@ async function refresh() {
     if (tab === 'settings' && window.loadSettingsTab) await window.loadSettingsTab();
     if (tab === 'users' && window.loadUsersTab) await window.loadUsersTab();
     if (tab === 'connect' && window.loadConnectTab) await window.loadConnectTab();
+    if (tab === 'plugins' && window.loadPluginsTab) await window.loadPluginsTab();
     if (tab === 'talk' && window.loadTalk && !window.__talkLoaded) { window.__talkLoaded = true; await window.loadTalk(); }
   } catch (e) {
     $('#status').innerHTML = `<span><span class="dot bad"></span>${esc(e.message)}</span>`;

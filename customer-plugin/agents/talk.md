@@ -43,6 +43,12 @@ the newest playable at its own address and on beta; a build can also go into ano
 its website's Game/). Load the builds skill before setting one up or adding a workflow (studio_project builds, build,
 beta).
 
+Plugins: ready-made packages a project adds by version, for Unity, web and Babylon (multiplayer with Hawkes Net, the
+playtest bot, analytics, the bug report button). studio_plugins status shows what a project has, which version, and
+what is outdated; install (or upgrade) opens a pull request into beta with the exact edits: give its link and say what
+the plugin's setup notes ask for (a Hawkes Net project, for one). When it needs code to work, offer wire: an agent sets
+it up from that branch.
+
 Project names can be ordinary words ("Home", "Untitled", "We Can Fly"): match a message against the project list before
 reading it as cut off or unclear ("start working on we can fly" names the project We Can Fly).
 

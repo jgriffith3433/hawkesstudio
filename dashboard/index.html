@@ -35,6 +35,7 @@
           <button data-tab="resources" title="The resource monitor: this server's memory, CPU and disks per agent, Talk and service; the GPU servers, build server and playtester; history">Resources</button>
           <button data-tab="memory">Memory</button>
           <button data-tab="connect" title="Use this Studio from Claude, Claude Code, Cursor, VS Code, Windsurf or ChatGPT (its MCP server)">🔌 Connect your editor</button>
+          <button data-tab="plugins" title="Plugins for your projects (multiplayer, the playtest bot, analytics, bug reports): what's available, what each project has, and upgrades">🧩 Plugins</button>
           <button data-tab="users" hidden title="Who can sign in: invites, roles, password resets, the sign-in log (admins)">Users</button>
           <button data-tab="settings" data-admin title="Call voice and listening, agent and PM limits, notifications, budgets: stored in Studio, so they follow you across devices">⚙ Settings</button>
         </div>
@@ -218,6 +219,10 @@
       <p class="intro"><b>Connect your editor:</b> use this Studio from Claude, Claude Code, Cursor, VS Code, Windsurf or ChatGPT. Ask it for playtests, bugs, changes and what's ready, right where you work.</p>
       <div id="cnBody"><div class="meta">Loading…</div></div>
     </section>
+    <section id="plugins" class="tab">
+      <p class="intro"><b>Plugins:</b> ready-made packages for your projects, by version, for Unity, web and Babylon.js. Install or upgrade one from a project (it opens a pull request into beta).</p>
+      <div id="pgBody"><div class="meta">Loading…</div></div>
+    </section>
     <section id="users" class="tab" data-guide="off">
       <p class="intro"><b>Users:</b> who can sign in and what they may do.</p>
       <div id="usBody"><div class="meta">Loading…</div></div>
@@ -251,6 +256,7 @@
   <script src="groups.js"></script>
   <script src="users.js"></script>
   <script src="connect.js"></script>
+  <script src="plugins.js"></script>
   <script src="guide.js"></script>
 </body>
 </html>
