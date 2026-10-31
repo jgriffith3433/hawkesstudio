@@ -58,12 +58,11 @@ export async function handleGithubRoutes(req: http.IncomingMessage, res: http.Se
     // made once: with an app already here the link goes straight to installing it, so nobody replaces it this way.
     if (!requester(req)) return redirect(res, `/auth/signin?next=${encodeURIComponent(`${route}${url.search}`)}`), true;
     if (G.appConfig()) return redirect(res, G.installUrl()!), true;
-    // A customer's Studio shares Hawkes Studio's app: straight to installing it, with this org signed into the link.
-    const cell = await (await import('./cellside.ts')).cellGithub(`${base}/`).catch(() => null);
-    if (cell) {
-      if (!cell.install) throw new StudioError("GitHub isn't set up for Studio yet: Hawkes Studio's team turns it on.", 409);
-      return redirect(res, cell.install), true;
-    }
+    // A customer's Studio shares Hawkes Studio's app when there is one: straight to installing it, with this org signed
+    // into the link. With none to share, the customer makes their own app, owned by their GitHub (the page below).
+    const cell = await (await import('./cellside.ts')).cellGithub(`${base}/`).catch((e: any) => ({ error: String(e.message ?? e) }) as any);
+    if (cell?.install) return redirect(res, cell.install), true;
+    if (cell?.error) throw new StudioError(`Couldn't reach Hawkes Studio to connect GitHub (${cell.error}). Try again in a minute.`, 502);
     return html(res, 200, G.setupPage(base, url.searchParams.get('org'))), true;
   }
   if (route === '/api/github/app/created' && method === 'GET') {

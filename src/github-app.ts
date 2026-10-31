@@ -13,6 +13,7 @@ import path from 'node:path';
 import { DATA, StudioError } from './config.ts';
 import { customerStudio, PLATFORM_GITHUB } from './tenancy.ts';
 import { getUser } from './auth.ts';
+import { seal, unseal } from './cellkeys.ts';
 
 export const API = () => (process.env.GITHUB_API_BASE || 'https://api.github.com').replace(/\/+$/, '');
 export const WEB = () => (process.env.GITHUB_WEB_BASE || 'https://github.com').replace(/\/+$/, '');
@@ -33,7 +34,16 @@ const writeSecret = (file: string, value: unknown) => {
   fs.renameSync(tmp, file);
 };
 
-export const appConfig = (): AppConfig | null => readJson<AppConfig | null>(APP_FILE(), null);
+// The app's secrets are sealed at rest (cellkeys.ts: with STUDIO_SECRETS_KEY; a customer's Studio always has one).
+const SECRET_FIELDS = ['clientSecret', 'pem', 'webhookSecret'] as const;
+export const appConfig = (): AppConfig | null => {
+  const c = readJson<AppConfig | null>(APP_FILE(), null);
+  if (!c) return null;
+  try {
+    for (const k of SECRET_FIELDS) if (c[k]) (c as any)[k] = unseal(String(c[k]));
+  } catch { return null; }
+  return c;
+};
 
 /** owner/name from anything people paste: a URL, git@, owner/name, with or without .git. */
 export function repoSlug(s: unknown): string | null {
@@ -68,8 +78,11 @@ export async function gh(token: string | null, method: string, url: string, body
 /** What Studio asks GitHub to make: permissions for setting a game up and working on it, nothing else. */
 export function manifest(base: string) {
   const host = new URL(base).host;
+  // GitHub App names are unique on GitHub: a customer's Studio names its own after its org (every cell shares the host).
+  const org = customerStudio() ? process.env.STUDIO_ORG?.trim() || null : null;
+  const name = org ? (`Hawkes Studio ${org}`.length <= 34 ? `Hawkes Studio ${org}` : `Studio ${org.slice(-27)}`) : `Hawkes Studio ${host}`.slice(0, 34);
   return {
-    name: `Hawkes Studio ${host}`.slice(0, 34),
+    name,
     url: base,
     redirect_url: `${base}/api/github/app/created`,
     callback_urls: [`${base}/api/github/callback`],
@@ -132,7 +145,9 @@ export async function appCreated(code: string, state: string) {
     id: a.id, slug: a.slug, clientId: a.client_id, clientSecret: a.client_secret, pem: a.pem, webhookSecret: a.webhook_secret,
     htmlUrl: a.html_url, owner: a.owner?.login ?? '',
   };
-  writeSecret(APP_FILE(), cfg);
+  const sealed: AppConfig = { ...cfg };
+  for (const k of SECRET_FIELDS) if (sealed[k]) (sealed as any)[k] = seal(String(sealed[k]));
+  writeSecret(APP_FILE(), sealed);
   return { app: publicApp(cfg), install: installUrl(cfg) };
 }
 
@@ -438,10 +453,11 @@ export async function accessFor(repo: string, userId?: string | null): Promise<R
 /** Everything about the connection, for Talk and the dashboard (no secrets). */
 export async function githubStatus(base: string, userId?: string | null) {
   const c = appConfig();
-  // A customer's Studio shares J's app (the control plane): its install link carries this org, and only the
-  // installations linked to it show. Making an app or signing in with GitHub isn't done from a cell.
+  // A customer's Studio shares Hawkes Studio's app when there is one (the control plane): its install link carries this
+  // org, and only the installations linked to it show. With none to share, the customer makes their own (J, 2026-10-31:
+  // "Customers should be able to do this without the admin"): below, like any Studio with no app yet.
   const cell = !c ? await (await import('./cellside.ts')).cellGithub(`${base}/`, userId).catch((e) => ({ error: String(e.message ?? e) }) as any) : null;
-  if (cell) {
+  if (cell && (cell.app || cell.error)) {
     return {
       app: cell.app ? { slug: cell.app.slug } : null, setup: null, install: cell.install ?? null, installations: cell.installations ?? [],
       user: cell.user ?? null, connect: cell.connect ?? null, pastedRepos: Object.keys(readJson<Record<string, string>>(TOKENS_FILE(), {})), error: cell.error ?? (cell.app ? null : "GitHub isn't set up for Studio yet: Hawkes Studio's team turns it on."),

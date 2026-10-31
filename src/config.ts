@@ -300,20 +300,23 @@ export function saveProduct(input: ProductInput): Product {
 }
 
 /**
- * A customer's Studio takes a repository on Hawkes Studio's owner's GitHub account only when its own org's GitHub App
- * installation covers it (J, 2026-10-31: ownership, not the account's name). The control plane hands a cell a token only
- * for repos its linked installations reach, and linking needs the installation on the person's own GitHub
- * (github-app.ts linkInstallation, orgRepoToken), so a stranger can never add one of J's repos. Called before
+ * A customer's Studio takes a repository on Hawkes Studio's owner's GitHub account only when GitHub gave it access to
+ * that repository (J, 2026-10-31: ownership, not the account's name): its own GitHub App installed there, or Hawkes
+ * Studio's shared app, whose tokens the control plane hands a cell only for repos its linked installations reach
+ * (linking needs the installation on the person's own GitHub: github-app.ts linkInstallation, orgRepoToken). Either
+ * way a stranger can never add one of J's repos. Called before
  * saveProduct by the projects API and the sign-up's first game.
  */
 export async function checkRepoOwnership(input: Pick<ProductInput, 'repo' | 'build' | 'repos'>) {
   if (!customerStudio()) return;
   const slugOf = (s: unknown) => String(s ?? '').trim().replace(/^https?:\/\/github\.com\//i, '').replace(/\.git$/i, '').replace(/\/+$/, '');
   const slugs = [input.repo, input.build?.repo, ...(input.repos ?? []).map((r) => r?.repo)].map(slugOf).filter((s) => s && touchesPlatformRepo(s));
-  const { cellGithubToken } = await import('./cellside.ts');
+  // Its own GitHub App's installation, a token pasted for that repo, or Hawkes Studio's shared app through the control
+  // plane: each needs access GitHub gave for that repository (github-app.ts accessFor; never a person's sign-in alone).
+  const { accessFor } = await import('./github-app.ts');
   for (const s of new Set(slugs)) {
-    if (await cellGithubToken(s).catch(() => null)) continue;
-    throw new StudioError(`${s}: Hawkes Studio's GitHub App isn't installed for this Studio on that repository. Install it (the project's Connect GitHub), then add it again.`, 403);
+    if ((await accessFor(s).catch(() => null))?.token) continue;
+    throw new StudioError(`${s}: this Studio's GitHub App isn't installed on that repository. Install it (the project's Connect GitHub), then add it again.`, 403);
   }
 }
 

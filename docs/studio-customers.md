@@ -77,7 +77,7 @@ of the core.)
 A customer's Studio is `customerStudio()` (src/tenancy.ts): an org cell (`STUDIO_ORG`), a claimed Studio
 (`STUDIO_SIGNUP=owner`) or `STUDIO_CUSTOMER=1`. In one (**built**):
 - its games are its own products file in its data folder, empty at first, written by onboarding
-- it takes a repository on J's GitHub (`jgriffith3433`) only when its own org's GitHub App installation covers it (`config.ts checkRepoOwnership`, J 2026-10-31: ownership, not the name)
+- GitHub without Hawkes Studio's admin (J, 2026-10-31): it uses Hawkes Studio's shared GitHub App when the control plane has one, else the customer makes their own (`github-app.ts` manifest flow in the cell: named `Hawkes Studio <org>`, private, owned by their GitHub, secrets sealed). It takes a repository on J's GitHub (`jgriffith3433`) only when GitHub gave it access to that repository (`config.ts checkRepoOwnership`: ownership, not the name)
 - Claude is only ever the customer's own (section 4)
 - the platform features are closed to everyone in it (section 5)
 
@@ -499,7 +499,7 @@ answers 403 with "only the platform admin can do that".
 | Merges, Approve cards, going live, rollbacks, settings, products, GPU budgets | every `adminOnlyRoute` (auth.ts) | Studio's admin role | the customer's admins (their own games) |
 | Claude accounts, users and invites | `/api/claude/*`, `/api/users*`, `/api/invites*` | Studio's admin role | the customer's admins |
 | Analytics and Screening | `/api/analytics*`, `/api/videos*` | everyone signed in | platform admin (for now) |
-| `jgriffith3433` repos | projects API and onboarding (`checkRepoOwnership`) | n/a | only when the org's own GitHub App installation covers the repo |
+| `jgriffith3433` repos | projects API and onboarding (`checkRepoOwnership`) | n/a | only when this Studio's GitHub App (its own or the shared one) is installed on the repo |
 
 Members of J's Studio still can't do an admin's things (auth.ts `memberRefusal`). Who has no account (Studio's own
 calls, Talk and the agents with the agents' key): in J's Studio guards.ts decides, as before (J's typed words, never

@@ -67,7 +67,7 @@ test("its GitHub token comes from the control plane, scoped to that repo, never 
 test("one of J's repos only when this org's own GitHub App installation covers it (ownership, not the name)", async () => {
   await C.checkRepoOwnership({ repo: 'jgriffith3433/hawkesgen' });
   await C.checkRepoOwnership({ repo: 'acme/app', repos: [{ repo: 'https://github.com/jgriffith3433/hawkesgen.git' }] });
-  await assert.rejects(C.checkRepoOwnership({ repo: 'jgriffith3433/sickofitgame-unity' }), /isn't installed for this Studio/);
+  await assert.rejects(C.checkRepoOwnership({ repo: 'jgriffith3433/sickofitgame-unity' }), /isn't installed on that repository/);
   T.forgetRepoTokens();
   assert.equal(await T.repoToken('jgriffith3433/hawkesgen'), 'ghs_scoped', "the org's own token, never J's GITHUB_TOKEN");
   assert.equal(await T.repoToken('jgriffith3433/sickofitgame-unity'), null);

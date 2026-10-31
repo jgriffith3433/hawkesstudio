@@ -146,7 +146,7 @@ async function studioGithubLine(box) {
     const btn = (href, label, primary) => `<a class="button small${primary ? ' primary' : ''}" href="${esc(href)}" target="_blank" rel="noopener">${label}</a>`;
     // A customer's Studio with no app to share yet: say so (a button with no link only reopened this page).
     box.innerHTML = !g.app && !g.setup
-      ? `<div class="meta">${esc(g.error || "GitHub isn't set up for Studio yet: Hawkes Studio's team turns it on.")}</div>`
+      ? `<div class="meta">${esc(g.error || "Couldn't check GitHub just now. Try again in a minute.")}</div>`
       : !g.app
       ? `<div class="meta">GitHub isn't connected yet. One click on GitHub connects it; then pick the repositories Studio may work on.</div><div style="margin-top:6px">${btn(g.setup, 'Connect GitHub', true)}</div>`
       : `<div class="meta">GitHub: the app <b>${esc(g.app.slug)}</b>${g.installations.length ? ` is installed on ${g.installations.map((i) => esc(i.account)).join(', ')}` : ' is made, not installed yet'}${g.user ? `; you're signed in as <b>${esc(g.user.login)}</b>` : ''}.</div>
