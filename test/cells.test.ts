@@ -57,7 +57,8 @@ setGcpFetch((async (input: any, init: any = {}) => {
   if (m && method === 'POST') { services.set(m[1], { name: `projects/p/locations/l/services/${m[1]}`, ...body }); return json(200, { name: `operations/${m[1]}` }); }
   m = /\/jobs\/([^/:?]+)(\?.*)?$/.exec(url);
   if (m) {
-    if (method === 'PATCH') { const j = jobs.get(m[1]); if (!j) return json(404, { error: { message: 'not found' } }); j.template = { ...j.template, ...body.template }; return json(200, {}); }
+    // Like Google: jobs.patch takes the whole job and no update mask (only services take one).
+    if (method === 'PATCH') { if (m[2]) return json(400, { error: { message: `Unknown name "update_mask"` } }); const j = jobs.get(m[1]); if (!j) return json(404, { error: { message: 'not found' } }); if (body.uid || body.createTime) return json(400, { error: { message: 'output-only field sent' } }); jobs.set(m[1], { ...body, uid: j.uid, createTime: j.createTime }); return json(200, {}); }
     const j = jobs.get(m[1]);
     return j ? json(200, j) : json(404, { error: { message: 'not found' } });
   }
@@ -311,12 +312,14 @@ test("every deploy rolls the awake cells onto J's Studio's own image (and the ni
 test("the customers' agents' job follows every deploy too, even with every cell already there", async () => {
   const v9 = 'us-east4-docker.pkg.dev/hawkes-test/studio/studio:v9';
   services.set('studio', { name: 'studio', template: { containers: [{ image: v9 }] } });
-  jobs.set('studio-cell-agent', { name: 'studio-cell-agent', template: { template: { containers: [{ image: 'old', env: [{ name: 'KEEP', value: '1' }] }] } } });
+  jobs.set('studio-cell-agent', { name: 'studio-cell-agent', uid: 'u1', createTime: 't', labels: { keep: 'me' }, template: { taskCount: 1, template: { serviceAccount: 'runner@', containers: [{ image: 'old', env: [{ name: 'KEEP', value: '1' }] }] } } });
   const r: any = await C.followRoll('deploy', { health: async () => true });
   assert.equal(r.behind, 0, 'the cells were already on it');
   const c0 = jobs.get('studio-cell-agent').template.template.containers[0];
   assert.equal(c0.image, v9, "customers' Talk and agents run the deployed image");
   assert.deepEqual(c0.env, [{ name: 'KEEP', value: '1' }], 'everything else about the job kept');
+  const job = jobs.get('studio-cell-agent');
+  assert.deepEqual([job.labels, job.template.taskCount, job.template.template.serviceAccount], [{ keep: 'me' }, 1, 'runner@'], 'the whole job went back, not just the image');
   calls.length = 0;
   await C.followRoll('nightly', { health: async () => true });
   assert.ok(!calls.some((x) => x.method === 'PATCH' && x.url.includes('/jobs/')), 'already there: not touched again');

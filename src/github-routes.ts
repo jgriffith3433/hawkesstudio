@@ -8,6 +8,8 @@
 //   DELETE /api/github/user             forget the person's GitHub sign-in
 //   POST /api/github/token              a pasted fine-grained token for one repo (the fallback)
 //   GET  /api/games/:id/readiness       what a game has and lacks (repokit.readiness)
+//   GET  /api/games/:id/survey          what its repos are and what would make them fit Studio (survey.ts)
+//   GET  /api/survey?repo=owner/name    the same for any repo Studio can reach, before it's a project
 //   POST /api/games/:id/setup           an Approve card for the outward steps readiness found (J's tap runs them)
 //   POST /api/games/new                 an Approve card that makes a new game's repo from a starter
 //   GET  /api/games/starters            the starters
@@ -157,7 +159,23 @@ export async function handleGithubRoutes(req: http.IncomingMessage, res: http.Se
     const plan = await newGamePlan(b, user);
     return send(res, 200, await card(`new:${plan.kind === 'new' ? plan.id : ''}`, plan, b)), true;
   }
-  const m = /^\/api\/games\/([a-z][a-z0-9-]{1,39})\/(readiness|setup|status|contract|report|signin)$/.exec(route);
+  // The survey (survey.ts): what a repository is, how it's built and hosted, how it connects, and what would make it fit
+  // Studio. Read-only. ?repo=owner/name before it's a project, or a project's own repos.
+  if (route === '/api/survey' && method === 'GET') {
+    const q = new URL(req.url ?? '/', 'http://x').searchParams;
+    const { survey } = await import('./survey.ts');
+    return send(res, 200, await survey(String(q.get('repo') ?? ''), { ref: q.get('ref') ?? undefined, fresh: q.get('fresh') === '1' })), true;
+  }
+  const m = /^\/api\/games\/([a-z][a-z0-9-]{1,39})\/(readiness|setup|status|contract|report|signin|survey)$/.exec(route);
+  if (m && m[2] === 'survey' && method === 'GET') {
+    const { getProduct } = await import('./config.ts');
+    const p = getProduct(m[1]);
+    const repos = [p.github ?? p.repo, ...(p.repos ?? []).map((r) => r.repo)].filter((r): r is string => Boolean(r && /^[^/\s]+\/[^/\s]+$/.test(r)));
+    if (!repos.length) throw new StudioError(`${p.name} has no GitHub repository yet.`, 409);
+    const { survey } = await import('./survey.ts');
+    const fresh = new URL(req.url ?? '/', 'http://x').searchParams.get('fresh') === '1';
+    return send(res, 200, { project: p.id, surveys: await Promise.all(repos.map((r) => survey(r, { fresh }).catch((e) => ({ repo: r, error: String(e.message ?? e) })))) }), true;
+  }
   // A project's 🐞 script line and report key (reportkey.ts): what its pages load to report bugs here.
   if (m && m[2] === 'report' && method === 'GET') return send(res, 200, (await import('./reportkey.ts')).reportInfo(m[1], req)), true;
   // Its test sign-in's secret (playtest-signin.ts): an admin's, to put in the project's beta settings.

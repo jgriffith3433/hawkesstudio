@@ -16,7 +16,7 @@ import { hookPointsAt, repointHook } from './handover.ts';
 
 export type Step = 'hook' | 'repoint' | 'branches' | 'pages';
 export const STEPS: Record<Step, string> = {
-  hook: "add Hawkes Studio's push hook (.github/workflows/hawkes-studio.yml) so Studio hears about pushes to beta and main",
+  hook: "add Hawkes Studio's push hook (.github/workflows/hawkes-studio.yml, on main, beta and dev) so Studio hears about pushes to beta and main",
   repoint: "point this repo's hook at this Studio: rewrite .github/workflows/hawkes-studio.yml (on main, and beta and dev where they have it) with this Studio's address, so pushes come here instead of the Studio it names now",
   branches: 'make the dev and beta branches from main (dev -> beta -> main)',
   pages: 'turn on GitHub Pages from GitHub Actions, so main is the live game',
@@ -105,6 +105,12 @@ export async function readiness(productId: string, userId?: string | null) {
     }
     const beta = await exists(token, `/repos/${slug}/branches/beta`);
     const dev = await exists(token, `/repos/${slug}/branches/dev`);
+    // On main but not beta: a push runs its own branch's workflow, so beta's pushes never reach Studio.
+    const hookItem = items.find((i) => i.id === 'hook');
+    if (hookItem?.ok && beta && main !== 'beta') {
+      const onBeta = await hookFile(token, slug, 'beta').catch(() => null);
+      if (onBeta === null || !hookPointsAt(onBeta, studioBase()).ok) Object.assign(hookItem, { ok: false, what: onBeta === null ? "Studio's push hook is on main but not on beta, so beta's pushes never reach Studio" : "beta's copy of the push hook points somewhere else, so beta's pushes don't come here", by: 'approve', step: onBeta === null ? 'hook' : 'repoint', fix: onBeta === null ? STEPS.hook : STEPS.repoint });
+    }
     items.push(beta && dev ? { id: 'branches', ok: true, what: 'dev and beta branches exist' } : { id: 'branches', ok: false, what: `Missing branch${beta || dev ? '' : 'es'}: ${[dev ? null : 'dev', beta ? null : 'beta'].filter(Boolean).join(', ')}`, by: 'approve', step: 'branches', fix: STEPS.branches });
     if (p.engine === 'web' && !p.live) {
       const pages = await gh(token, 'GET', `/repos/${slug}/pages`).catch(() => null);
@@ -121,6 +127,12 @@ export async function readiness(productId: string, userId?: string | null) {
     items.push(specs.length
       ? { id: 'builds', ok: true, what: `How it's built: ${specs.map((b) => `${b.id} (${b.tool}${b.target && b.target !== 'web' ? `, ${b.target}` : ''}${b.publish ? ` → ${b.publish.project}/${b.publish.path}` : ''})`).join(', ')}` }
       : { id: 'builds', ok: false, what: `Studio doesn't know how to build it yet (a ${p.engine} project)`, by: 'talk', fix: "Load the builds skill, ask how they want it built (Unity in Hawkes Gen's cloud, or their own GitHub Actions for anything), and set builds with studio_project update." });
+    // What would stop a cloud build or a fresh clone (survey.ts): said here, before a build fails on it.
+    if (token) {
+      const sv = await import('./survey.ts').then((m) => m.survey(slug)).catch(() => null);
+      for (const n of sv?.notes.filter((x) => x.level === 'blocker') ?? []) items.push({ id: 'survey', ok: false, what: n.what, fix: `${n.fix}${n.by === 'agent' ? ' (an agent task: studio_task)' : ''}`, by: n.by === 'person' ? 'person' : 'talk' });
+      if (sv && !sv.notes.some((x) => x.level === 'blocker')) items.push({ id: 'survey', ok: true, what: `Nothing in the repository stops a cloud build${sv.notes.some((x) => x.level === 'improve') ? ` (studio_project survey has ${sv.notes.filter((x) => x.level === 'improve').length} small improvements to offer)` : ''}` });
+    }
     if (specs.some((b) => (b.target ?? 'web') === 'web') && !p.beta) {
       const last = B.buildHistory(p.id, 20).find((h) => !h.change);
       const { previewUrl } = await import('./previews.ts');
@@ -265,9 +277,19 @@ async function runStep(token: string, repo: string, step: Step): Promise<string>
     return done.length ? `Pointed ${repo}'s hook at ${studioBase()} (${done.join(', ')}).` : `${repo}'s hook already points at ${studioBase()}.`;
   }
   if (step === 'hook') {
+    // On main, beta and dev (where they exist): a push runs the workflow file of its own branch, so a hook on main alone
+    // never hears beta's pushes (2026-10-31). Each branch is read back after, so the answer says what's really there.
     const yml = await hookTemplate(repo);
-    await putFiles(token, repo, main, { '.github/workflows/hawkes-studio.yml': yml }, "Hawkes Studio's push hook");
-    return `Added Studio's push hook to ${repo} (${main}).`;
+    const done: string[] = [];
+    for (const branch of [main, 'beta', 'dev'].filter((b, i, a) => a.indexOf(b) === i)) {
+      if (branch !== main && !(await exists(token, `/repos/${repo}/branches/${encodeURIComponent(branch)}`))) continue;
+      const cur = await hookFile(token, repo, branch).catch(() => null);
+      if (cur !== null && hookPointsAt(cur, studioBase()).ok) { done.push(branch); continue; }
+      await putFiles(token, repo, branch, { '.github/workflows/hawkes-studio.yml': cur !== null ? (repointHook(cur, studioBase()) ?? yml) : yml }, "Hawkes Studio's push hook");
+      if ((await hookFile(token, repo, branch).catch(() => null)) === null) throw new StudioError(`The hook didn't land on ${repo}'s ${branch} (GitHub accepted the commit but the file isn't there): check that the GitHub App may change workflows (its "Workflows: write" permission).`, 502);
+      done.push(branch);
+    }
+    return `Studio's push hook is on ${repo}'s ${done.join(', ')}.`;
   }
   if (step === 'branches') {
     const head = (await gh(token, 'GET', `/repos/${repo}/git/ref/heads/${encodeURIComponent(main)}`)).object.sha;
@@ -281,8 +303,9 @@ async function runStep(token: string, repo: string, step: Step): Promise<string>
   }
   const on = await gh(token, 'GET', `/repos/${repo}/pages`).catch(() => null);
   if (on) {
-    if (on.build_type !== 'workflow') await gh(token, 'PUT', `/repos/${repo}/pages`, { build_type: 'workflow' });
-    return `GitHub Pages builds from Actions (${on.html_url}).`;
+    // Already published (from a branch or a workflow): left exactly as it is. Switching a branch-published site to
+    // Actions takes it down until a Pages workflow exists, and the live site is the person's.
+    return `GitHub Pages already publishes it (${on.html_url}, ${on.build_type === 'workflow' ? 'from Actions' : `from the ${on.source?.branch ?? 'chosen'} branch`}); left as it is.`;
   }
   const p = await gh(token, 'POST', `/repos/${repo}/pages`, { build_type: 'workflow' });
   return `Turned on GitHub Pages (${p.html_url ?? 'from Actions'}).`;

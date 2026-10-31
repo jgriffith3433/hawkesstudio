@@ -24,7 +24,7 @@ fs.writeFileSync(path.join(process.env.STUDIO_DATA, 'agents.json'), JSON.stringi
 const { privateKey, publicKey } = crypto.generateKeyPairSync('rsa', { modulusLength: 2048 });
 const pem = privateKey.export({ type: 'pkcs1', format: 'pem' }).toString();
 const calls: string[] = [];
-const repos = new Map<string, { branches: Map<string, string>; files: Map<string, string>; pages: any }>();
+const repos = new Map<string, { branches: Map<string, string>; files: Map<string, string>; pages: any; perBranch?: boolean; byBranch?: Map<string, Map<string, string>>; pending?: any; pagesFlipped?: boolean }>();
 let commitN = 0;
 const repo = (slug: string) => {
   if (!repos.has(slug)) repos.set(slug, { branches: new Map([['main', 'c0']]), files: new Map(), pages: null });
@@ -47,7 +47,7 @@ const gh = http.createServer(async (req, res) => {
     if (p === '/app/installations') return out(200, [{ id: 5, account: { login: 'acme', type: 'Organization' }, repository_selection: 'selected' }]);
     if (p === '/app/installations/5/access_tokens') return out(201, { token: 'ghs_install', expires_at: new Date(Date.now() + 3600_000).toISOString() });
   }
-  if (p === '/installation/repositories') return out(200, { repositories: [{ full_name: 'acme/space-game', private: false, html_url: 'https://github.test/acme/space-game' }] });
+  if (p === '/installation/repositories') return out(200, { repositories: [{ full_name: 'acme/space-game', private: false, html_url: 'https://github.test/acme/space-game' }, { full_name: 'acme/old-site', private: false, html_url: 'https://github.test/acme/old-site' }] });
   if (p === '/login/oauth/access_token') return out(200, { access_token: 'ghu_user', refresh_token: 'ghr_user', expires_in: 28800, refresh_token_expires_in: 15811200 });
   if (p === '/user') return out(200, { login: 'jgriffith3433' });
   if (p === '/user/installations') return out(200, { installations: [{ id: 5, account: { login: 'acme' }, repository_selection: 'selected' }, { id: 8, account: { login: 'jgriffith3433' }, repository_selection: 'all' }] });
@@ -59,12 +59,15 @@ const gh = http.createServer(async (req, res) => {
     if (!rest) return out(200, { id: 42, owner: { id: 7 }, full_name: m[1], default_branch: 'main', permissions: { push: true } });
     let x: RegExpExecArray | null;
     if ((x = /^\/branches\/(.+)$/.exec(rest))) return r.branches.has(x[1]) ? out(200, { name: x[1] }) : out(404, { message: 'Branch not found' });
+    // A repo marked perBranch keeps each branch's files apart (a commit lands on the branch whose ref it moves).
+    if ((x = /^\/contents\/(.+)$/.exec(rest)) && r.perBranch) { const f = r.byBranch?.get(u.searchParams.get('ref') ?? 'main')?.get(x[1]); return f !== undefined ? out(200, { path: x[1], encoding: 'base64', content: Buffer.from(String(f)).toString('base64') }) : out(404, { message: 'Not Found' }); }
     if ((x = /^\/contents\/(.+)$/.exec(rest))) return r.files.has(x[1]) ? out(200, { path: x[1], encoding: 'base64', content: Buffer.from(String(r.files.get(x[1]))).toString('base64') }) : out(404, { message: 'Not Found' });
     if ((x = /^\/git\/ref\/heads\/(.+)$/.exec(rest))) return r.branches.has(x[1]) ? out(200, { object: { sha: r.branches.get(x[1]) } }) : out(404, { message: 'no ref' });
     if (/^\/git\/commits\/.+$/.test(rest) && req.method === 'GET') return out(200, { tree: { sha: 't0' } });
-    if (rest === '/git/trees') { for (const f of b.tree) r.files.set(f.path, f.content); return out(201, { sha: `t${++commitN}` }); }
+    if (rest === '/git/trees') { for (const f of b.tree) r.files.set(f.path, f.content); r.pending = b.tree; return out(201, { sha: `t${++commitN}` }); }
     if (rest === '/git/commits') return out(201, { sha: `c${++commitN}` });
-    if ((x = /^\/git\/refs\/heads\/(.+)$/.exec(rest)) && req.method === 'PATCH') { r.branches.set(x[1], b.sha); return out(200, {}); }
+    if ((x = /^\/git\/refs\/heads\/(.+)$/.exec(rest)) && req.method === 'PATCH') { r.branches.set(x[1], b.sha); if (r.perBranch && r.pending) { r.byBranch ??= new Map(); if (!r.byBranch.has(x[1])) r.byBranch.set(x[1], new Map()); for (const f of r.pending) r.byBranch.get(x[1])!.set(f.path, f.content); r.pending = null; } return out(200, {}); }
+    if (rest === '/pages' && req.method === 'PUT') { r.pagesFlipped = true; r.pages = { ...r.pages, build_type: b.build_type }; return out(204, {}); }
     if (rest === '/git/refs' && req.method === 'POST') { r.branches.set(b.ref.replace('refs/heads/', ''), b.sha); return out(201, {}); }
     if (rest === '/pages' && req.method === 'GET') return r.pages ? out(200, r.pages) : out(404, { message: 'Not Found' });
     if (rest === '/pages' && req.method === 'POST') { r.pages = { build_type: b.build_type, html_url: `https://${m[1].split('/')[0]}.github.io/${m[1].split('/')[1]}/` }; return out(201, r.pages); }
@@ -302,4 +305,18 @@ test("a sign-in right after installing from the app's own page uses Studio's ses
   assert.equal(await G.userToken('u_cust'), null, "not a sign-in of this Studio's");
   assert.deepEqual(G.orgGithubUsers('org_a'), ['u_cust']);
   assert.equal(G.linkedAdmin(), j.id);
+});
+
+test('the hook lands on every lane branch, and a site already on GitHub Pages is left exactly as it is', async () => {
+  const r = repo('acme/old-site');
+  r.perBranch = true;
+  r.branches.set('beta', 'c0');
+  r.branches.set('dev', 'c0');
+  r.pages = { build_type: 'legacy', html_url: 'https://old-site.example/', source: { branch: 'main' } };
+  const done = await R.applyPlan({ kind: 'setup', product: 'x', repo: 'acme/old-site', steps: ['hook', 'pages'] } as any);
+  for (const b of ['main', 'beta', 'dev']) assert.match(String(r.byBranch?.get(b)?.get('.github/workflows/hawkes-studio.yml') ?? ''), /api\/hooks\/github/, `the hook on ${b}`);
+  assert.match(done.join(' '), /main, beta, dev/);
+  assert.equal(r.pages.build_type, 'legacy', 'still published from its branch');
+  assert.ok(!r.pagesFlipped, 'never switched to Actions');
+  assert.match(done.join(' '), /left as it is/);
 });

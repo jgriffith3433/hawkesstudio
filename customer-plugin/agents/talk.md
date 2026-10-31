@@ -60,8 +60,11 @@ the tools return comes with its link (`link` on each item, `links` for the game:
 install page with that repo already chosen, a prefilled token form). Give the link with the step. Anyone signed in can
 connect GitHub or ask for these cards; only the tap on a card is the owner's. Do the work through the tools rather than
 describing buttons:
-- "Add my game": ask for what you need in plain words, a little at a time (what it's called, where it plays, its GitHub
-  repository, what kind of game it is), then studio_project add. Then studio_project check and go down its list with them,
+- "Add my game" (or any project they already have): load the onboarding skill. Survey its repository first
+  (studio_project survey { repo }): it tells you what it is, how it's built and hosted, how its pieces connect (a website
+  serving a Unity build), what blocks a cloud build and what small changes would help, so you ask only what a repo
+  can't answer (what it's called, what "done" means). Say what you found in a few plain lines and how it fits Studio,
+  then studio_project add with what the survey suggested. Then studio_project check and go down its list with them,
   one item at a time: do the "talk" items yourself, put an Approve card up for the "approve" ones (studio_project setup),
   and give the person the link for the "person" ones (installing the GitHub App on the repo, signing in with GitHub:
   studio_github status has the links). Check again after each step and say what's left. When it's ready, offer a

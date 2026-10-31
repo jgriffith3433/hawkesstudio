@@ -178,14 +178,20 @@ export async function setImage(service: string, image: string, o: { dry?: boolea
  */
 export async function followAgentJob(image: string, o: { dry?: boolean; log?: (s: string) => void } = {}, c = cellsConfig()) {
   const url = `${base(c)}/jobs/${c.agentJob}`;
-  const j = dryRun(o) ? null : await gapi(url, { missingOk: true });
-  if (!dryRun(o) && !j) return { job: c.agentJob, skipped: 'no such job' };
-  const containers = (j?.template?.template?.containers ?? [{}]) as any[];
+  if (dryRun(o)) return call('PATCH', url, { template: { template: { containers: [{ image }] } } }, o);
+  const j = await gapi(url, { missingOk: true });
+  if (!j) return { job: c.agentJob, skipped: 'no such job' };
+  const containers = (j.template?.template?.containers ?? [{}]) as any[];
   if (containers[0]?.image === image) return { job: c.agentJob, image, changed: false };
   (o.log ?? console.log)(`${c.agentJob} (customers' agents) → ${image}`);
-  await call('PATCH', `${url}?updateMask=template.template.containers`, { template: { template: { containers: containers.map((ct, i) => (i === 0 ? { ...ct, image } : ct)) } } }, o);
+  // Jobs take no update mask in v2 (only services do): the whole job goes back with the image changed, its output-only
+  // fields left out, its etag kept so a change made meanwhile isn't overwritten.
+  const out = Object.fromEntries(Object.entries(j).filter(([k]) => !JOB_OUTPUT_ONLY.has(k)));
+  out.template = { ...j.template, template: { ...j.template.template, containers: containers.map((ct, i) => (i === 0 ? { ...ct, image } : ct)) } };
+  await call('PATCH', url, out, o);
   return { job: c.agentJob, image, changed: true };
 }
+const JOB_OUTPUT_ONLY = new Set(['uid', 'generation', 'createTime', 'updateTime', 'deleteTime', 'expireTime', 'creator', 'lastModifier', 'observedGeneration', 'terminalCondition', 'conditions', 'executionCount', 'latestCreatedExecution', 'reconciling', 'satisfiesPzs']);
 
 /**
  * A rolling upgrade: J's Studio first (it is also the control plane, and the image hibernated cells wake on), then every
