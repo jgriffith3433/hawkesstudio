@@ -104,7 +104,7 @@ async function studioEditGame(id) {
     </details>
     <details class="meta"${p?.builds?.length ? ' open' : ''}><summary>How it's built</summary>
       <div class="meta" style="margin:4px 0">Any engine: Unity in Hawkes Gen's cloud, npm or static sites here, or anything in your own GitHub Actions. Easiest: ask Talk ("set up builds for this"). Each build is kept and playable; beta points at one.</div>
-      <label class="meta">Builds (JSON, docs/builds.md)<textarea name="builds" rows="4" placeholder='[{ "id": "web", "tool": "unity", "path": "MyGame" }]' style="${field};font-family:ui-monospace,monospace;font-size:12px">${v(p?.builds?.length ? JSON.stringify(p.builds, null, 1) : '')}</textarea></label>
+      <label class="meta">Builds (advanced, as JSON; Talk can fill it in)<textarea name="builds" rows="4" placeholder='[{ "id": "web", "tool": "unity", "path": "MyGame" }]' style="${field};font-family:ui-monospace,monospace;font-size:12px">${v(p?.builds?.length ? JSON.stringify(p.builds, null, 1) : '')}</textarea></label>
     </details>
     <label class="meta">What it is (Claude reads it before every review)<textarea name="about" rows="2" style="${field}">${v(p?.about)}</textarea></label>
     <label class="meta">Its story and tone (optional)<textarea name="story" rows="3" style="${field}">${v(p?.storyText)}</textarea></label>

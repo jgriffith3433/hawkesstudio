@@ -83,7 +83,7 @@ export async function readiness(productId: string, userId?: string | null) {
   if (elsewhere) items.push({ id: 'managed', ok: true, what: `Managed by another Studio (${elsewhere}): this Studio doesn't run, build, change or deploy it` });
   items.push(slug
     ? { id: 'repo', ok: true, what: `Repository: ${slug}` }
-    : { id: 'repo', ok: false, what: 'No GitHub repository yet', fix: 'Ask for its GitHub repository (owner/name) and save it with studio_game update, or make a new one (studio_game new).', by: 'talk' });
+    : { id: 'repo', ok: false, what: 'No GitHub repository yet', fix: 'Ask for its GitHub repository (owner/name) and save it with studio_project update, or make a new one (studio_project new).', by: 'talk' });
   let token: string | null = null;
   if (slug) {
     const access = await accessFor(slug, userId);
@@ -109,16 +109,31 @@ export async function readiness(productId: string, userId?: string | null) {
     if (p.engine === 'web' && !p.live) {
       const pages = await gh(token, 'GET', `/repos/${slug}/pages`).catch(() => null);
       items.push(pages?.html_url
-        ? { id: 'live', ok: false, what: `GitHub Pages is on (${pages.html_url}) but the game has no live address`, by: 'talk', fix: `Save live: ${pages.html_url} with studio_game update.` }
-        : { id: 'live', ok: false, what: 'The game has no live address', by: 'approve', step: 'pages', fix: `${STEPS.pages}, or ask where it is played and save it with studio_game update.` });
+        ? { id: 'live', ok: false, what: `GitHub Pages is on (${pages.html_url}) but the project has no live address`, by: 'talk', fix: `Save live: ${pages.html_url} with studio_project update.` }
+        : { id: 'live', ok: false, what: 'The project has no live address', by: 'approve', step: 'pages', fix: `${STEPS.pages}, or ask where it is played and save it with studio_project update.` });
     }
   }
   if (p.live) items.push({ id: 'live', ok: true, what: `Played at ${p.live}` });
+  // How it's built and its beta site (builds.ts, docs/builds.md): any engine, any runner.
+  if (slug && !elsewhere) {
+    const B = await import('./builds.ts');
+    const specs = B.buildsOf(p);
+    items.push(specs.length
+      ? { id: 'builds', ok: true, what: `How it's built: ${specs.map((b) => `${b.id} (${b.tool}${b.target && b.target !== 'web' ? `, ${b.target}` : ''}${b.publish ? ` → ${b.publish.project}/${b.publish.path}` : ''})`).join(', ')}` }
+      : { id: 'builds', ok: false, what: `Studio doesn't know how to build it yet (a ${p.engine} project)`, by: 'talk', fix: "Load the builds skill, ask how they want it built (Unity in Hawkes Gen's cloud, or their own GitHub Actions for anything), and set builds with studio_project update." });
+    if (specs.some((b) => (b.target ?? 'web') === 'web') && !p.beta) {
+      const last = B.buildHistory(p.id, 20).find((h) => !h.change);
+      const { previewUrl } = await import('./previews.ts');
+      items.push(last?.status === 'ready' || last?.status === 'pruned'
+        ? { id: 'beta-site', ok: true, what: `Beta site: ${previewUrl(p.id) ?? last.url} (${last.build} ${last.version})` }
+        : { id: 'beta-site', ok: false, what: last?.status === 'failed' ? `Its last build failed: ${String(last.detail ?? '').slice(0, 160)}` : last?.status === 'building' ? 'Its first build is running' : 'Not built yet, so it has no beta site', by: 'talk', fix: 'Build it now with studio_project build (it reports back when done).' });
+    }
+  }
   items.push(p.contract
     ? { id: 'contract', ok: true, what: "It speaks Studio's playtest contract (a bot plays it with real input)" }
     : { id: 'contract', ok: false, what: "No playtest contract yet: playtests can only load it and look", by: 'talk', fix: "Studio's agents can add window.hawkesPlaytest with a smoke scenario (studio_task); until then playtests run the generic smoke and site checks." });
   const plays = p.playtests?.length ? p.playtests.map((t) => `${(t as any).scenario ?? (t as any).mode}@${t.where}`).join(', ') : 'none';
-  items.push({ id: 'playtests', ok: Boolean(p.playtests?.length), what: `Playtests: ${plays}`, ...(p.playtests?.length ? {} : { by: 'talk' as const, fix: 'Add a smoke playtest with studio_game update.' }) });
+  items.push({ id: 'playtests', ok: Boolean(p.playtests?.length), what: `Playtests: ${plays}`, ...(p.playtests?.length ? {} : { by: 'talk' as const, fix: 'Add a smoke playtest with studio_project update.' }) });
   const steps = items.filter((i) => !i.ok && i.step).map((i) => i.step!) as Step[];
   // Each item that waits on a GitHub page links straight to it.
   const links = await linksFor(slug, p);

@@ -33,6 +33,29 @@ heard of a branch.
 
 ---
 
+## A customer's path, start to finish (2026-10-31)
+
+What a customer does, in order; the project dialog's "Get it ready" checklist (repokit.ts readiness) and Talk walk it
+the same way, one item at a time, each with its one action:
+
+1. **Sign up** (below) and, if Talk and agents are wanted, link their own AI (Settings → Your AI).
+2. **Connect GitHub**: their own GitHub App, made from the project dialog (github-app.ts chooser: their account or an
+   organization, or an app they already have), installed on the repos Studio may use.
+3. **Add a project**: a game, web app or site; its repo (and more repos); live and beta addresses if it has them.
+4. **Studio's hook and branches**: one Approve tap writes `.github/workflows/hawkes-studio.yml` (pushes and build tags
+   reach this Studio) and makes `dev` and `beta`. A repo already wired to another Studio offers "point it here"
+   (handover.ts; the other Studio marks it `managedBy`).
+5. **How it's built** (docs/builds.md, the builds skill): Unity in Hawkes Gen's cloud, npm or static here, or anything
+   in their own GitHub Actions (templates). A game and its website can be two projects, the build mounted into the
+   site's `Game/`.
+6. **Plugins** (docs/plugins.md): Hawkes Net, the playtest bot, analytics, the 🐞 line; installed or upgraded as a pull
+   request into beta.
+7. **Beta**: every build is a run; the newest is playable on its beta site, played by the bot and reviewed.
+8. **Work**: bug reports from their pages, Talk, agents and the PM on a plan with credits (or a gift).
+9. **Live**: DEPLOY (or an Approve tap) fast-forwards main to the played beta commit (deploy-github.ts); rollback is a
+   new commit. Memory moves with a project between Studios (docs/memory.md).
+10. **Their editor**: the 🔌 Connect page puts this Studio's MCP in Claude, Cursor, VS Code and the rest.
+
 ## 1. Signing up
 
 **One Google account, three products.** hawkesgen.ai (the portal), Hawkes Gen and Hawkes Studio each keep their own
