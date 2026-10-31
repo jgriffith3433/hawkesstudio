@@ -129,9 +129,15 @@ export async function readiness(productId: string, userId?: string | null) {
     items.push(beta && dev ? { id: 'branches', ok: true, what: 'dev and beta branches exist' } : { id: 'branches', ok: false, what: `Missing branch${beta || dev ? '' : 'es'}: ${[dev ? null : 'dev', beta ? null : 'beta'].filter(Boolean).join(', ')}`, by: 'approve', step: 'branches', fix: STEPS.branches });
     if (p.engine === 'web' && !p.live) {
       const pages = await gh(token, 'GET', `/repos/${slug}/pages`).catch(() => null);
+      // Hosted somewhere else (Netlify, Vercel, Cloudflare, a server: the survey reads its config) or on its own domain:
+      // ask for the address; GitHub Pages is offered only when nothing says where it's hosted (2026-10-31 review).
+      const sv = pages?.html_url ? null : await import('./survey.ts').then((m) => m.survey(slug)).catch(() => null);
+      const elsewhere = sv?.hosting.provider && sv.hosting.provider !== 'GitHub Pages' ? sv.hosting.provider : null;
       items.push(pages?.html_url
         ? { id: 'live', ok: false, what: `GitHub Pages is on (${pages.html_url}) but the project has no live address`, by: 'talk', fix: `Save live: ${pages.html_url} with studio_project update.` }
-        : { id: 'live', ok: false, what: 'The project has no live address', by: 'approve', step: 'pages', fix: `${STEPS.pages}, or ask where it is played and save it with studio_project update.` });
+        : elsewhere || sv?.suggest.live
+          ? { id: 'live', ok: false, what: `The project has no live address${elsewhere ? ` (it's hosted on ${elsewhere})` : ''}`, by: 'talk', fix: `${sv?.suggest.live ? `Its domain says ${sv.suggest.live}: confirm it and save` : 'Ask where it is played and save'} it with studio_project update (live).` }
+          : { id: 'live', ok: false, what: 'The project has no live address', by: 'approve', step: 'pages', fix: `${STEPS.pages}, or ask where it is played and save it with studio_project update.` });
     }
   }
   if (p.live) items.push({ id: 'live', ok: true, what: `Played at ${p.live}` });
