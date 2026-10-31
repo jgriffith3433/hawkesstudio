@@ -92,6 +92,7 @@ export async function cloudBlockers(p: Product, refs: CloudRefs, f: Fetch = fetc
 export async function fastForward(slug: string, branch: string, sha: string, f: Fetch, given?: Token) {
   const token = await tokenOf(slug, given);
   const r = await gh(f, token, 'PATCH', `/repos/${slug}/git/refs/heads/${branch}`, { sha, force: false });
+  if (!r.ok && r.status === 422 && /rule violation|protected ref/i.test(String(r.j?.message ?? ''))) throw new Error(`GitHub's rules on ${slug} stop this Studio from moving ${branch}: only those on the rule's bypass list may push it. Add this Studio's GitHub App to that list at https://github.com/${slug}/settings/rules, then go live again (nothing moved).`);
   if (!r.ok) throw new Error(`GitHub refused moving ${slug} ${branch} to ${sha.slice(0, 7)} (${r.status}${r.j?.message ? `: ${r.j.message}` : ''})`);
 }
 

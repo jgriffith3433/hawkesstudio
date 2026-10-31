@@ -97,12 +97,16 @@ export async function readiness(productId: string, userId?: string | null) {
     const main = String(info.default_branch ?? 'main');
     // The hook, and where it sends pushes: the Studio address and OIDC audience inside it (handover.ts).
     const yml = await hookFile(token, slug, main);
-    if (yml === null) items.push({ id: 'hook', ok: false, what: "Studio's push hook is missing", by: 'approve', step: 'hook', fix: STEPS.hook });
+    const mainRules = await pushRules(token, slug, main);
+    const betaHook = yml === null && mainRules?.blocked ? await hookFile(token, slug, 'beta').catch(() => null) : null;
+    if (yml === null && betaHook !== null && hookPointsAt(betaHook, studioBase()).ok) items.push({ id: 'hook', ok: true, what: `Studio's push hook is on beta; ${main} is protected by the repository's rules, so the hook reaches it with the first go live` });
+    else if (yml === null) items.push({ id: 'hook', ok: false, what: "Studio's push hook is missing", by: 'approve', step: 'hook', fix: STEPS.hook });
     else {
       const at = hookPointsAt(yml, studioBase());
       items.push(at.ok ? { id: 'hook', ok: true, what: "Studio's push hook is in the repo and points at this Studio" }
         : { id: 'hook', ok: false, what: at.elsewhere.length ? `Studio's push hook points at another Studio (${at.elsewhere.join(', ')}), so its pushes go there, not here` : "The repo's hook workflow doesn't name this Studio, so its pushes don't come here", by: 'approve', step: 'repoint', fix: STEPS.repoint });
     }
+    if (mainRules?.blocked) items.push({ id: 'golive', ok: false, what: `${main} is protected by the repository's rules (${mainRules.rules.join(', ')}): only those on the rule's bypass list may push it, so this Studio can't take it live yet`, by: 'person', fix: `On the rules page, add this Studio's GitHub App to the bypass list of the rule that restricts updates to ${main} (going live still needs the owner's Approve tap in Studio)`, link: mainRules.link });
     const beta = await exists(token, `/repos/${slug}/branches/beta`);
     const dev = await exists(token, `/repos/${slug}/branches/dev`);
     // On main but not beta: a push runs its own branch's workflow, so beta's pushes never reach Studio.
@@ -243,6 +247,21 @@ export async function applyPlan(plan: Plan, { origin = null }: { origin?: string
   return done;
 }
 
+/**
+ * Whether GitHub's rules stop pushes to a branch (a ruleset's "restrict updates", or one that needs a pull request) for
+ * anyone who isn't on its bypass list, with the page where the owner changes that. Read-only; null when it can't tell.
+ */
+export async function pushRules(token: string, repo: string, branch: string): Promise<{ blocked: boolean; rules: string[]; link: string } | null> {
+  try {
+    const rules = (await gh(token, 'GET', `/repos/${repo}/rules/branches/${encodeURIComponent(branch)}`)) as { type: string }[];
+    const stop = rules.filter((r) => r.type === 'update' || r.type === 'pull_request').map((r) => r.type);
+    return { blocked: stop.length > 0, rules: rules.map((r) => r.type), link: `https://github.com/${repo}/settings/rules` };
+  } catch { return null; }
+}
+
+/** GitHub's answer to a push its rules refused (422 "Repository rule violations"). */
+export const ruleRefusal = (e: any) => (e?.status === 422 || /: 422 /.test(String(e?.message ?? ''))) && /rule violation|protected ref/i.test(String(e?.message ?? ''));
+
 /** A repo's hook workflow on a branch (its text), or null when it has none. */
 async function hookFile(token: string, repo: string, branch: string): Promise<string | null> {
   try {
@@ -281,15 +300,24 @@ async function runStep(token: string, repo: string, step: Step): Promise<string>
     // never hears beta's pushes (2026-10-31). Each branch is read back after, so the answer says what's really there.
     const yml = await hookTemplate(repo);
     const done: string[] = [];
+    const skipped: string[] = [];
     for (const branch of [main, 'beta', 'dev'].filter((b, i, a) => a.indexOf(b) === i)) {
       if (branch !== main && !(await exists(token, `/repos/${repo}/branches/${encodeURIComponent(branch)}`))) continue;
       const cur = await hookFile(token, repo, branch).catch(() => null);
       if (cur !== null && hookPointsAt(cur, studioBase()).ok) { done.push(branch); continue; }
-      await putFiles(token, repo, branch, { '.github/workflows/hawkes-studio.yml': cur !== null ? (repointHook(cur, studioBase()) ?? yml) : yml }, "Hawkes Studio's push hook");
+      try {
+        await putFiles(token, repo, branch, { '.github/workflows/hawkes-studio.yml': cur !== null ? (repointHook(cur, studioBase()) ?? yml) : yml }, "Hawkes Studio's push hook");
+      } catch (e: any) {
+        // main protected by the owner's rules (only admins push it): left alone; going live fast-forwards main to beta,
+        // so the hook reaches main with the first go live. Any other branch refusing is a real failure.
+        if (branch === main && ruleRefusal(e)) { skipped.push(branch); continue; }
+        throw e;
+      }
       if ((await hookFile(token, repo, branch).catch(() => null)) === null) throw new StudioError(`The hook didn't land on ${repo}'s ${branch} (GitHub accepted the commit but the file isn't there): check that the GitHub App may change workflows (its "Workflows: write" permission).`, 502);
       done.push(branch);
     }
-    return `Studio's push hook is on ${repo}'s ${done.join(', ')}.`;
+    if (!done.length) throw new StudioError(`GitHub's rules on ${repo} refused the hook on every branch.`, 409);
+    return `Studio's push hook is on ${repo}'s ${done.join(', ')}.${skipped.length ? ` ${skipped.join(', ')} is protected by the repository's rules (only its admins push it), so it was left alone: the hook reaches it with the first go live, which moves ${main} to beta. Going live needs this Studio's GitHub App on that rule's bypass list (https://github.com/${repo}/settings/rules).` : ''}`;
   }
   if (step === 'branches') {
     const head = (await gh(token, 'GET', `/repos/${repo}/git/ref/heads/${encodeURIComponent(main)}`)).object.sha;

@@ -24,7 +24,7 @@ fs.writeFileSync(path.join(process.env.STUDIO_DATA, 'agents.json'), JSON.stringi
 const { privateKey, publicKey } = crypto.generateKeyPairSync('rsa', { modulusLength: 2048 });
 const pem = privateKey.export({ type: 'pkcs1', format: 'pem' }).toString();
 const calls: string[] = [];
-const repos = new Map<string, { branches: Map<string, string>; files: Map<string, string>; pages: any; perBranch?: boolean; byBranch?: Map<string, Map<string, string>>; pending?: any; pagesFlipped?: boolean }>();
+const repos = new Map<string, { branches: Map<string, string>; files: Map<string, string>; pages: any; perBranch?: boolean; protectedMain?: boolean; byBranch?: Map<string, Map<string, string>>; pending?: any; pagesFlipped?: boolean }>();
 let commitN = 0;
 const repo = (slug: string) => {
   if (!repos.has(slug)) repos.set(slug, { branches: new Map([['main', 'c0']]), files: new Map(), pages: null });
@@ -47,7 +47,7 @@ const gh = http.createServer(async (req, res) => {
     if (p === '/app/installations') return out(200, [{ id: 5, account: { login: 'acme', type: 'Organization' }, repository_selection: 'selected' }]);
     if (p === '/app/installations/5/access_tokens') return out(201, { token: 'ghs_install', expires_at: new Date(Date.now() + 3600_000).toISOString() });
   }
-  if (p === '/installation/repositories') return out(200, { repositories: [{ full_name: 'acme/space-game', private: false, html_url: 'https://github.test/acme/space-game' }, { full_name: 'acme/old-site', private: false, html_url: 'https://github.test/acme/old-site' }] });
+  if (p === '/installation/repositories') return out(200, { repositories: [{ full_name: 'acme/space-game', private: false, html_url: 'https://github.test/acme/space-game' }, { full_name: 'acme/old-site', private: false, html_url: 'https://github.test/acme/old-site' }, { full_name: 'acme/guarded', private: false, html_url: 'https://github.test/acme/guarded' }] });
   if (p === '/login/oauth/access_token') return out(200, { access_token: 'ghu_user', refresh_token: 'ghr_user', expires_in: 28800, refresh_token_expires_in: 15811200 });
   if (p === '/user') return out(200, { login: 'jgriffith3433' });
   if (p === '/user/installations') return out(200, { installations: [{ id: 5, account: { login: 'acme' }, repository_selection: 'selected' }, { id: 8, account: { login: 'jgriffith3433' }, repository_selection: 'all' }] });
@@ -66,6 +66,8 @@ const gh = http.createServer(async (req, res) => {
     if (/^\/git\/commits\/.+$/.test(rest) && req.method === 'GET') return out(200, { tree: { sha: 't0' } });
     if (rest === '/git/trees') { for (const f of b.tree) r.files.set(f.path, f.content); r.pending = b.tree; return out(201, { sha: `t${++commitN}` }); }
     if (rest === '/git/commits') return out(201, { sha: `c${++commitN}` });
+    if ((x = /^\/rules\/branches\/(.+)$/.exec(rest))) return out(200, r.protectedMain && x[1] === 'main' ? [{ type: 'deletion' }, { type: 'non_fast_forward' }, { type: 'update' }] : []);
+    if ((x = /^\/git\/refs\/heads\/(.+)$/.exec(rest)) && req.method === 'PATCH' && r.protectedMain && x[1] === 'main') { r.pending = null; return out(422, { message: 'Repository rule violations found. Cannot update this protected ref.' }); }
     if ((x = /^\/git\/refs\/heads\/(.+)$/.exec(rest)) && req.method === 'PATCH') { r.branches.set(x[1], b.sha); if (r.perBranch && r.pending) { r.byBranch ??= new Map(); if (!r.byBranch.has(x[1])) r.byBranch.set(x[1], new Map()); for (const f of r.pending) r.byBranch.get(x[1])!.set(f.path, f.content); r.pending = null; } return out(200, {}); }
     if (rest === '/pages' && req.method === 'PUT') { r.pagesFlipped = true; r.pages = { ...r.pages, build_type: b.build_type }; return out(204, {}); }
     if (rest === '/git/refs' && req.method === 'POST') { r.branches.set(b.ref.replace('refs/heads/', ''), b.sha); return out(201, {}); }
@@ -319,4 +321,27 @@ test('the hook lands on every lane branch, and a site already on GitHub Pages is
   assert.equal(r.pages.build_type, 'legacy', 'still published from its branch');
   assert.ok(!r.pagesFlipped, 'never switched to Actions');
   assert.match(done.join(' '), /left as it is/);
+});
+
+test("a main only admins may push: the hook goes on beta and dev, readiness says why main waits, and what going live needs", async () => {
+  const r = repo('acme/guarded');
+  r.perBranch = true;
+  r.protectedMain = true;
+  r.branches.set('beta', 'c0');
+  r.branches.set('dev', 'c0');
+  const done = await R.applyPlan({ kind: 'setup', product: 'x', repo: 'acme/guarded', steps: ['hook'] } as any);
+  assert.ok(!r.byBranch?.get('main')?.has('.github/workflows/hawkes-studio.yml'), 'main left alone');
+  for (const b of ['beta', 'dev']) assert.ok(r.byBranch?.get(b)?.has('.github/workflows/hawkes-studio.yml'), `on ${b}`);
+  assert.match(done.join(' '), /beta, dev/);
+  assert.match(done.join(' '), /main is protected.*first go live.*bypass list.*settings\/rules/);
+  C.saveProduct({ id: 'guarded', name: 'Guarded', engine: 'web', live: 'https://acme.github.io/guarded/', repo: 'acme/guarded' });
+  const rd = await R.readiness('guarded');
+  const hook = rd.items.find((i) => i.id === 'hook')!;
+  assert.equal(hook.ok, true, 'on beta is enough while main is protected');
+  assert.match(hook.what, /reaches it with the first go live/);
+  const live = rd.items.find((i) => i.id === 'golive')!;
+  assert.equal(live.ok, false);
+  assert.equal(live.by, 'person');
+  assert.equal(live.link, 'https://github.com/acme/guarded/settings/rules');
+  assert.match(live.what, /update/);
 });
