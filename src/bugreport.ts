@@ -87,7 +87,9 @@ async function conversationFor(product: string, t: ReturnType<typeof testing>) {
 export const WIDGET = path.join(import.meta.dirname, '..', 'dashboard', 'report-widget.js');
 
 /** What a beta page knows about itself: the product, the commit and what was built (Game/v<n> for Unity), the change. */
-export type PageInfo = { product: string; sha?: string | null; ref?: string; change?: string; built?: number; version?: string };
+// root: where the site starts on its host, for a game added through Talk (its beta site is the path /b/<game> of the
+// shared sites. host); the widget and its endpoints live under it. Empty for a product with a host of its own.
+export type PageInfo = { product: string; sha?: string | null; ref?: string; change?: string; built?: number; version?: string; root?: string };
 
 // Errors from before the widget loads: a tiny hook at the top of <head> (the widget reads window.__hawkesLog, and the
 // uncaught errors it queues in window.__hawkesErrs until the widget's window.__hawkesOnError takes them). It also
@@ -104,7 +106,7 @@ export function injectReport(html: string, info: PageInfo) {
   // Whole documents only (a fragment a page fetches and inserts stays as it is).
   if (html.includes('data-hawkes-report') || !/<(html|head|body)[\s>]/i.test(html)) return html;
   const attr = JSON.stringify(info).replace(/&/g, '&amp;').replace(/'/g, '&#39;').replace(/</g, '&lt;');
-  const widget = `<script src="/dev/__studio/report.js" data-hawkes='${attr}' defer></script>`;
+  const widget = `<script src="${info.root ?? ''}/dev/__studio/report.js" data-hawkes='${attr}' defer></script>`;
   // After <meta charset> when it's there (it has to stay in the first 1024 bytes), else right after <head>.
   const head = /<meta[^>]+charset[^>]*>/i.exec(html.slice(0, 2048)) ?? /<head(\s[^>]*)?>/i.exec(html);
   let out = head ? html.slice(0, head.index + head[0].length) + HOOK + html.slice(head.index + head[0].length)

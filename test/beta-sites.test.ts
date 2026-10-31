@@ -406,4 +406,12 @@ test("an added game's beta site is a path on sites.<domain>: /g/<game>/ for live
   assert.match(await r.text(), /orbit beta lane/);
   r = await browse('https://sites.hawkesgen.ai/b/orbit-run/', { cookie: live });
   assert.equal(r.status, 302, "the live lane's pass doesn't open studio-beta's copy");
+  // The 🐞 widget under the game's own path, with the game's pass (2026-10-31: it loaded from the host's root and got 401).
+  await r2.put('beta/_studio/report.js', '/* widget */', { httpMetadata: { contentType: 'text/javascript' } });
+  r = await browse('https://sites.hawkesgen.ai/b/orbit-run/dev/__studio/report.js', { cookie: beta, page: false });
+  assert.equal(r.status, 200);
+  assert.equal(await r.text(), '/* widget */');
+  const { injectReport } = await import('../src/bugreport.ts');
+  assert.match(injectReport('<html><body></body></html>', { product: 'orbit-run', root: '/b/orbit-run' }), /src="\/b\/orbit-run\/dev\/__studio\/report\.js"/);
+  assert.match(injectReport('<html><body></body></html>', { product: 'phorigins' }), /src="\/dev\/__studio\/report\.js"/);
 });

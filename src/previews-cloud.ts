@@ -171,7 +171,10 @@ export async function publishCloud(p: Product, sub: string, o: { change?: string
 async function publishAll(store: SiteStore, base: string, all: SiteFile[], skip: (rel: string) => boolean, p: Product, sha: string, ref: string, version: string | null, change: string | undefined, progress: (s: string) => void, keep?: (p: string) => boolean) {
   const files = keepPrefetch(all.filter((f) => !skip(f.path)), all);
   if (!files.length) throw new Error('nothing to publish');
-  const page: PageInfo = { product: p.id, sha: sha.slice(0, 7), ref, ...(change ? { change } : {}), ...(version ? { version } : {}), built: Date.now() };
+  // A game added through Talk: its site is a path of the shared sites. host (2026-10-31: its 🐞 widget loaded from the
+  // host's root, outside the game's pass, and every page got a 401).
+  const root = p.github ? new URL((await import('./previews.ts')).previewUrl(p.id)!).pathname.replace(/\/+$/, '') : '';
+  const page: PageInfo = { product: p.id, sha: sha.slice(0, 7), ref, ...(change ? { change } : {}), ...(version ? { version } : {}), ...(root ? { root } : {}), built: Date.now() };
   progress(`publishing ${files.length} files`);
   const sub = base.split('/')[0];
   const r = await publishSite(store, base, files, {

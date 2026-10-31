@@ -22,8 +22,10 @@
   const me = document.currentScript;
   let cfg = {};
   try { cfg = JSON.parse((me && me.getAttribute('data-hawkes')) || '{}'); } catch {}
-  const ENDPOINT = '/dev/__studio/report';
-  const ERRORS = '/dev/__studio/error';
+  // A game on the shared sites. host lives under a path (cfg.root, e.g. /b/<game>): so do its endpoints.
+  const ROOT = typeof cfg.root === 'string' ? cfg.root : '';
+  const ENDPOINT = ROOT + '/dev/__studio/report';
+  const ERRORS = ROOT + '/dev/__studio/error';
   const H2C = 'https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js';
   const store = {
     get(k, d) { try { const v = localStorage.getItem('hawkesReport.' + k); return v == null ? d : JSON.parse(v); } catch { return d; } },
@@ -814,7 +816,7 @@
   async function checkBuild() {
     if (cfg.change || !cfg.sha || document.visibilityState === 'hidden') return;
     try {
-      const r = await fetch('/dev/__studio/build', { credentials: 'same-origin', cache: 'no-store' });
+      const r = await fetch(ROOT + '/dev/__studio/build', { credentials: 'same-origin', cache: 'no-store' });
       const b = r.ok ? await r.json() : null;
       if (!b || !b.sha) return;
       const newer = (b.version && cfg.version) ? String(b.version) !== String(cfg.version) : !same(b.sha, cfg.sha);

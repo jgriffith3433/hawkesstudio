@@ -604,6 +604,12 @@ async function playScenario(run: string, p: Product, asked: Playtest, { review =
     const now = unityBeta ? playedLocal(p) : null;
     // Local: what's played (beta on the server) is recorded, so the report and the deploy plan know the commit.
     played = t.where === 'local' ? (was?.data?.played ?? (unityBeta ? now : playedLocal(p))) : null;
+    // A game added through Talk plays its published beta site: what's played is the commit that site was built from,
+    // not this instance's clone (2026-10-31: Star Skipper's beta playtest said it played main, the starter).
+    if (t.where === 'local' && !was?.data?.played && p.github && (await cloudBetaUrl(p))) {
+      const v = (await import('./previews.ts')).betaPreview(p.id);
+      if (v?.sha) played = { branch: BETA, sha: v.sha, title: v.ref };
+    }
     const build = played ? String(played.build ?? played.sha) : null;
     // A scenario this build is known not to have is skipped, not played (scenarios.ts).
     const has = t.where === 'local' && t.scenario && !prior ? knownScenarios(p.id, build) : null;

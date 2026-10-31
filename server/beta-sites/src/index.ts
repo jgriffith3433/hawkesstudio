@@ -331,9 +331,10 @@ export async function handle(req: Request, env: Env, now = Date.now()): Promise<
     url.searchParams.delete('__hawkes_pass');
     return new Response(null, { status: 302, headers: { Location: url.pathname + url.search, 'Cache-Control': 'no-store' } });
   }
-  if (url.pathname.startsWith('/dev/')) {
-    const what = url.pathname.slice('/dev/__studio/'.length);
-    if (url.pathname.startsWith('/dev/__studio/')) {
+  // pathname: under a game's own path for one added through Talk (/b/<game>/dev/__studio/...), as for any other host.
+  if (pathname.startsWith('/dev/')) {
+    const what = pathname.slice('/dev/__studio/'.length);
+    if (pathname.startsWith('/dev/__studio/')) {
       if (what === 'report.js') return (await serveFile(req, env, `${lane}/_studio/report.js`)) ?? text(404, 'no widget yet');
       if (what === 'build') return (await serveFile(req, env, `${lane}/${sub}/beta/.studio/build.json`)) ?? json(200, {});
       if ((what === 'report' || what === 'error') && req.method === 'POST') return toStudio(req, env, lane, url);
