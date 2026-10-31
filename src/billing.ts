@@ -12,6 +12,10 @@
 //       invoice.payment_failed          marks it past due (still the current plan; credits already granted stay)
 //       customer.subscription.updated / deleted   keep its status, period and cancel-at-period-end
 //   - cancel and resume act at the period's end; the Stripe billing portal manages cards and receipts.
+//   - credit packs (provisional, like the plans): a Checkout in payment mode, tagged the same way plus pack_id; its
+//     checkout.session.completed (paid) grants the pack's credits once per session (ledger key checkout:<id>).
+// Credits are the Studio's one balance (1 credit = $0.01): plans grant them monthly, gifts and the platform admin too
+// (cells.ts), and Hawkes Gen work done for the Studio is charged to it (chargeCredits; credits.ts in a cell).
 // The portal and Gen share the Stripe account, and every Studio cell has its own endpoint on it, so every endpoint gets
 // every event: this Studio acts only on events tagged studio with its own id, or about a subscription or customer it
 // already knows, and answers 200 without acting to everything else (an error makes Stripe retry, then disable the
@@ -233,6 +237,51 @@ export function creditLedger(limit = 50, sid?: string) {
   return db.prepare('SELECT id, delta, balance_after, kind, detail, created FROM billing_credits WHERE studio_id = ? ORDER BY created DESC, rowid DESC LIMIT ?').all(scope(sid), limit) as any[];
 }
 
+/** Whether a ref was granted or charged already (or marked done with nothing to grant: markCreditRef). */
+export const creditRefUsed = (ref: string) => Boolean(db.prepare('SELECT 1 FROM billing_credits WHERE ref = ?').get(ref) || db.prepare('SELECT 1 FROM billing_state WHERE key = ?').get(`ref:${ref}`));
+/** A ref done with nothing to write in the ledger (a free month already at its allowance). */
+export const markCreditRef = (ref: string) => { db.prepare('INSERT OR IGNORE INTO billing_state (key, value) VALUES (?, ?)').run(`ref:${ref}`, String(Date.now())); };
+/** The delta written under one ref for a Studio (0 when none). */
+export const creditDeltaOf = (ref: string, sid?: string) => (db.prepare('SELECT delta FROM billing_credits WHERE ref = ? AND studio_id = ?').get(ref, scope(sid)) as { delta: number } | undefined)?.delta ?? 0;
+/** The deltas written under refs LIKE a pattern for a Studio, added up. */
+export const creditDeltaLike = (pattern: string, sid?: string) => (db.prepare('SELECT COALESCE(SUM(delta), 0) AS n FROM billing_credits WHERE ref LIKE ? AND studio_id = ?').get(pattern, scope(sid)) as { n: number }).n;
+
+/** What a refusal for lack of credits says, everywhere (the control plane, a cell, Gen's own 402). */
+export const outOfCredits = (need: number, have: number, what = 'this') =>
+  `This studio is out of credits: ${what} needs ${need.toLocaleString('en-US')} and ${have.toLocaleString('en-US')} ${have === 1 ? 'is' : 'are'} left. Add credits or upgrade your plan in Settings → Plan and credits.`;
+
+/** A refusal for lack of credits (402): the API sends `credits` too, and the dashboard offers Add credits and Upgrade. */
+export class CreditsNeeded extends StudioError {
+  credits: { need: number | null; have: number | null; topUp: true };
+  constructor(message: string, need: number | null = null, have: number | null = null) {
+    super(message, 402);
+    this.credits = { need, have, topUp: true };
+  }
+}
+
+/**
+ * Takes credits for work (Hawkes Gen jobs a cell runs, credits.ts) once per ref; refuses with CreditsNeeded when the
+ * balance is short, taking nothing. Synchronous from the check to the write, so two charges can't both pass.
+ */
+export function chargeCredits(credits: number, kind: string, detail: string, ref: string, sid?: string, what?: string) {
+  const id = scope(sid);
+  const need = Math.max(0, Math.round(Number(credits) || 0));
+  if (db.prepare('SELECT 1 FROM billing_credits WHERE ref = ?').get(ref)) return { duplicate: true, balance: creditBalance(id) };
+  const have = creditBalance(id);
+  if (have < need) throw new CreditsNeeded(outOfCredits(need, have, what), need, have);
+  return grantCredits(-need, kind, detail, ref, id);
+}
+
+/** A credit pack: a one-off purchase of credits (provisional prices, like the plans; the same as Hawkes Gen's packs). */
+export type CreditPack = { id: string; name: string; priceCents: number; credits: number };
+export const CREDIT_PACKS: CreditPack[] = [
+  { id: 'credits_1000', name: '1,000 credits', priceCents: 1000, credits: 1000 },
+  { id: 'credits_2750', name: '2,750 credits (10% bonus)', priceCents: 2500, credits: 2750 },
+  { id: 'credits_12000', name: '12,000 credits (20% bonus)', priceCents: 10000, credits: 12000 },
+];
+export const listPacks = () => CREDIT_PACKS;
+export const getPack = (id: string) => CREDIT_PACKS.find((p) => p.id === id) ?? null;
+
 // ------------------------------------------------------------------ checkout, cancel, resume, portal
 
 /** A Stripe Checkout session for a plan: the admin goes to `url`, pays, and comes back to Settings. */
@@ -266,6 +315,37 @@ export async function checkout(planId: string, by: { id: string; email: string }
   }
   const s = await stripe('checkout/sessions', f);
   return { url: s.url as string, sessionId: s.id as string, plan };
+}
+
+/** A Stripe Checkout (payment mode) for a credit pack, any time, with or without a plan. Credits on the webhook. */
+export async function buyCredits(packId: string, by: { id: string; email: string }, origin: string, o: { sid?: string; successUrl?: string; cancelUrl?: string } = {}) {
+  const pack = getPack(String(packId ?? ''));
+  if (!pack) throw new StudioError(`Unknown credit pack "${packId}"`, 404);
+  const sid = scope(o.sid);
+  const f = new URLSearchParams();
+  f.set('mode', 'payment');
+  f.set('client_reference_id', sid);
+  const cust = customerId(sid);
+  if (cust) f.set('customer', cust);
+  else {
+    f.set('customer_creation', 'always');
+    if (/@/.test(by.email) && !by.email.endsWith('@accounts.hawkesgen.ai')) f.set('customer_email', by.email);
+  }
+  f.set('success_url', o.successUrl ?? `${origin}/?checkout=credits#settings`);
+  f.set('cancel_url', o.cancelUrl ?? `${origin}/?checkout=cancelled#settings`);
+  for (const pre of ['metadata', 'payment_intent_data[metadata]']) {
+    f.set(`${pre}[product]`, 'studio');
+    f.set(`${pre}[studio_id]`, sid);
+    f.set(`${pre}[pack_id]`, pack.id);
+    f.set(`${pre}[credits]`, String(pack.credits));
+    f.set(`${pre}[user_id]`, by.id);
+  }
+  f.set('line_items[0][quantity]', '1');
+  f.set('line_items[0][price_data][currency]', 'usd');
+  f.set('line_items[0][price_data][unit_amount]', String(pack.priceCents));
+  f.set('line_items[0][price_data][product_data][name]', `Hawkes Studio ${pack.name}`);
+  const s = await stripe('checkout/sessions', f);
+  return { url: s.url as string, sessionId: s.id as string, pack };
 }
 
 /** Cancels at the end of the paid month (resume undoes it before then). */
@@ -342,7 +422,19 @@ function apply(event: any, sid: string): Record<string, unknown> {
   const type = String(event?.type ?? 'unknown');
   const now = Date.now();
   switch (type) {
+    case 'checkout.session.async_payment_succeeded':
     case 'checkout.session.completed': {
+      if (o.mode === 'payment') {
+        // A credit pack: granted once the money is in (a delayed payment method arrives as async_payment_succeeded).
+        const meta = metaOf(o);
+        const pack = getPack(String(meta.pack_id ?? ''));
+        if (!pack) return { ok: true, type, ignored: 'not a credit pack' };
+        if (o.payment_status !== 'paid' && o.payment_status !== 'no_payment_required') return { ok: true, type, ignored: `not paid yet (${o.payment_status ?? 'unknown'})` };
+        if (typeof o.customer === 'string') db.prepare(`INSERT OR IGNORE INTO billing_state (key, value) VALUES (?, ?)`).run(customerKey(sid), o.customer);
+        const r = grantCredits(pack.credits, 'credit_pack', `Bought ${pack.name}`, `checkout:${o.id}`, sid);
+        return { ok: true, type, studio: sid, duplicate: r.duplicate, creditsAdded: r.duplicate ? 0 : pack.credits };
+      }
+      if (type !== 'checkout.session.completed') return { ok: true, type, ignored: 'not a credit pack' };
       if (o.mode !== 'subscription') return { ok: true, type, ignored: 'not a subscription checkout' };
       const meta = metaOf(o);
       const plan = getPlan(String(meta.plan_id ?? ''));
@@ -401,5 +493,5 @@ export function handleStripeWebhook(raw: Buffer | string, signature: string): Re
 
 /** What Settings shows: the plans, this Studio's plan, credits and whether payments are set up (never a key). */
 export function billingView(sid?: string) {
-  return { plans: listPlans(), subscription: currentSubscription(sid), credits: creditBalance(sid), ledger: creditLedger(20, sid), stripe: stripeStatus(), studio: scope(sid) };
+  return { plans: listPlans(), packs: listPacks(), subscription: currentSubscription(sid), credits: creditBalance(sid), ledger: creditLedger(20, sid), stripe: stripeStatus(), studio: scope(sid) };
 }

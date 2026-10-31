@@ -539,7 +539,7 @@ export function adminOnlyRoute(route: string) {
   const adminOnly = [
     /^\/api\/(runs|jobs|changes)\/[\w-]+\/(cancel|resume)$/, /^\/api\/deploy\//, /^\/api\/rollback\//, /^\/api\/changes\/c_[0-9a-f]+\/approve$/, /^\/api\/approvals\/a_[0-9a-f]+\/(approve|deny)$/,
     /^\/api\/products\//, /^\/api\/agents\/settings$/, /^\/api\/pm\/settings$/, /^\/api\/settings$/, /^\/api\/costs\/settings$/, /^\/api\/notify$/,
-    /^\/api\/content\/wire$/, /^\/api\/claude\//, /^\/api\/ai\//, /^\/api\/antigravity\//, /^\/api\/billing\/(checkout|cancel|resume|portal|plans)$/, /^\/api\/inbox\/answer$/, /^\/api\/roadmap\/.*gpu/, /^\/api\/users/, /^\/api\/invites/, /^\/api\/memory\/seed$/, /^\/api\/broadcast\/live$/, /^\/api\/social\/(config|disconnect)/, /^\/api\/services\/restart$/, /^\/api\/analytics\/marks$/,
+    /^\/api\/content\/wire$/, /^\/api\/claude\//, /^\/api\/ai\//, /^\/api\/antigravity\//, /^\/api\/billing\/(checkout|cancel|resume|portal|plans|buy)$/, /^\/api\/inbox\/answer$/, /^\/api\/roadmap\/.*gpu/, /^\/api\/users/, /^\/api\/invites/, /^\/api\/memory\/seed$/, /^\/api\/broadcast\/live$/, /^\/api\/social\/(config|disconnect)/, /^\/api\/services\/restart$/, /^\/api\/analytics\/marks$/,
     // GitHub (github-routes.ts): a pasted token is an admin's. Anyone may ask for the cards that make repos and set them
     // up (J, 2026-10-30: "You shouldn't have to be admin to do this"); the tap on the card stays the owner's.
     /^\/api\/github\/token$/,

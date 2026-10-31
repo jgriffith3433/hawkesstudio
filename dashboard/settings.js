@@ -323,17 +323,22 @@
     const until = s?.periodEnd ? new Date(s.periodEnd).toLocaleDateString() : '';
     // A plan Hawkes Studio gave this Studio (cells.ts gifts): it counts like a subscription, with no card.
     const g = b.gift;
-    const gift = g ? `<b>${esc(b.entitlements?.status === 'gift' ? b.entitlements.planName : g.plan)}</b> · given by Hawkes Studio${g.until ? ` until ${esc(new Date(g.until).toLocaleDateString())}` : ''}` : '';
+    const gift = g ? `<b>${esc(b.entitlements?.status === 'gift' ? b.entitlements.planName : g.plan)}</b> · given by Hawkes Studio${g.until ? ` until ${esc(new Date(g.until).toLocaleDateString())}` : ''}${g.creditsPerMonth ? ` · ${Number(g.creditsPerMonth).toLocaleString()} credits a month` : ''}` : '';
     const state = s ? `<b>${esc(s.plan?.name ?? s.planId)}</b> · ${s.status === 'past_due' ? '<span class="set-err">payment failed: update your card</span>' : s.cancelAtPeriodEnd ? `ends ${esc(until)}` : `renews ${esc(until)}`}${gift && b.entitlements?.status === 'gift' ? ` · now on ${gift}` : ''}` : gift || 'No plan yet.';
     const plans = s ? '' : b.plans.map((p) => `<div class="ca-line"><div style="flex:1"><b>${esc(p.name)}</b> ${usd(p.priceCents)}/month<div class="meta">${p.creditsPerMonth.toLocaleString()} credits a month · up to ${p.maxGames} projects</div></div><button class="small" data-billplan="${esc(p.id)}" ${!b.stripe || b.stripe.configured ? '' : 'disabled'}>Subscribe</button></div>`).join('');
+    // Credit packs (billing.ts): a one-off top-up any time; Hawkes Gen work (playtests, builds, assets) is paid from credits.
+    const packs = (b.packs ?? []).length ? `<details class="set-more"${Number(b.credits) < 100 ? ' open' : ''}><summary>Add credits</summary><div class="meta">Playtests, builds and generated assets on Hawkes Gen are paid from these credits (1 credit = $0.01; a Unity build is 100). Reviews and Talk run on your own AI and cost none.</div>${b.packs.map((p) => `<div class="ca-line"><div style="flex:1"><b>${esc(p.name)}</b> ${usd(p.priceCents)}</div><button class="small" data-billpack="${esc(p.id)}" ${!b.stripe || b.stripe.configured ? '' : 'disabled'}>Buy</button></div>`).join('')}</details>` : '';
+    const ledger = (b.ledger ?? []).length ? `<details class="set-more"><summary>Credits used and added</summary>${b.ledger.slice(0, 15).map((l) => `<div class="meta">${esc(new Date(l.created).toLocaleDateString())} · <b>${l.delta > 0 ? '+' : ''}${Number(l.delta).toLocaleString()}</b> · ${esc(l.detail ?? l.kind)}</div>`).join('')}</details>` : '';
     // What the plan includes and what it doesn't (src/entitlements.ts): each missing one is an Upgrade away.
     const e = b.entitlements;
     const feats = e && e.plan !== 'platform' ? `<div class="meta">${e.games !== null ? `${e.games} game${e.games === 1 ? '' : 's'}` : ''}${e.features.map((f) => ` · ✓ ${esc(b.features?.[f] ?? f)}`).join('')}${e.locked.map((f) => ` · <span title="Upgrade for it">🔒 ${esc(b.features?.[f] ?? f)}</span>`).join('')}</div>` : '';
     return `<div class="set-box"><h3>💳 Plan and credits</h3>
       <div class="meta">${state} · ${Number(b.credits).toLocaleString()} credits${b.stripe?.mode === 'test' ? ' · <b>test mode</b>' : ''}${b.stripe && !b.stripe.configured ? ' · payments are not set up on this Studio yet' : ''}</div>${feats}
       ${plans}
+      ${!s && !g && b.freeCredits ? `<div class="meta">Free: topped up to ${Number(b.freeCredits).toLocaleString()} credits each month.</div>` : ''}
+      ${packs}
       ${s ? `<div class="ca-line">${s.cancelAtPeriodEnd ? '<button class="small" data-bill="resume">Keep my plan</button>' : '<button class="small" data-bill="cancel">Cancel at the end of the month</button>'}<button class="small" data-bill="portal">Cards and receipts</button></div>` : ''}
-      <div id="billMsg" class="meta"></div><div class="meta"><a href="/legal" target="_blank" rel="noopener">Terms, privacy and refunds</a></div></div>`;
+      ${ledger}<div id="billMsg" class="meta"></div><div class="meta"><a href="/legal" target="_blank" rel="noopener">Terms, privacy and refunds</a></div></div>`;
   }
 
   // Restarting Studio or Gen (src/restarts.ts): the server's deploy runner restarts the one service, reading its secrets
@@ -384,33 +389,43 @@
       const now = o.plan.id === 'free' ? 'Free' : `${esc(name(o.plan.id))}${o.plan.status === 'gift' ? ' (gift)' : o.plan.status ? ` (${esc(o.plan.status)})` : ''}`;
       return `<div class="ca-line" style="align-items:flex-start;gap:10px;flex-wrap:wrap" data-org="${esc(o.id)}">
         <div style="flex:1;min-width:200px"><b>${esc(o.name || o.id)}</b> <span class="meta">${esc(o.id)}</span>
-          <div class="meta">${esc(o.ownerEmail)} · ${esc(o.state)} · <b>${now}</b>${o.plan.sub && o.plan.status === 'gift' ? ` · also pays for ${esc(name(o.plan.sub.planId))}` : ''}</div>
-          ${g ? `<div class="meta">🎁 ${esc(name(g.plan))} ${g.until ? `until ${esc(day(g.until))}` : 'for good'}${g.note ? ` · ${esc(g.note)}` : ''}${g.by ? ` · by ${esc(g.by)}` : ''}</div>` : ''}</div>
+          <div class="meta">${esc(o.ownerEmail)} · ${esc(o.state)} · <b>${now}</b>${o.plan.sub && o.plan.status === 'gift' ? ` · also pays for ${esc(name(o.plan.sub.planId))}` : ''} · ${Number(o.credits ?? 0).toLocaleString()} credits</div>
+          ${g ? `<div class="meta">🎁 ${esc(name(g.plan))} ${g.until ? `until ${esc(day(g.until))}` : 'for good'} · ${Number(o.giftCreditsPerMonth ?? 0).toLocaleString()} credits a month${g.note ? ` · ${esc(g.note)}` : ''}${g.by ? ` · by ${esc(g.by)}` : ''}</div>` : ''}</div>
         <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
           <select data-gift="plan">${plans.map((p) => `<option value="${esc(p.id)}" ${(g?.plan ?? 'studio_team') === p.id ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}</select>
           <input type="date" data-gift="until" title="Until (leave empty for good)" value="${g?.until ? new Date(g.until).toISOString().slice(0, 10) : ''}">
+          <input type="number" min="0" step="1" data-gift="credits" title="Credits a month (empty: the plan's own)" placeholder="credits/mo (plan's)" value="${g?.credits ?? ''}" style="width:130px">
           <input data-gift="note" placeholder="why (optional)" value="${esc(g?.note ?? '')}" style="width:140px">
           <button class="small primary" data-gift="give">${g ? 'Change gift' : 'Give a plan'}</button>
           ${g ? '<button class="small" data-gift="remove">Take it back</button>' : ''}
+          <input type="number" min="1" step="1" data-gift="amount" placeholder="credits" style="width:90px">
+          <button class="small" data-gift="add">Add credits</button>
         </div></div>`;
     };
     box.innerHTML = `<div class="set-box"><h3>🏢 Customers' Studios</h3>
-      <div class="meta">Every customer Studio, its owner and the plan it has. A gift is a plan with no card: it unlocks the plan's features and project count (not its monthly credits), until a date or for good. A paid plan that's higher still wins.</div>
+      <div class="meta">Every customer Studio, its owner, the plan it has and its credits. A gift is a plan with no card: it unlocks the plan's features and project count and grants credits each month (the plan's own unless you set a number; 0 for none), until a date or for good. A paid plan that's higher still wins. Add credits is a one-off top-up, written in its ledger.</div>
       ${live.length ? live.map(row).join('') : '<div class="meta">No customer Studios yet.</div>'}<div id="giftMsg" class="meta"></div></div>`;
     box.onclick = async (e) => {
-      const btn = e.target.closest('[data-gift="give"],[data-gift="remove"]');
+      const btn = e.target.closest('[data-gift="give"],[data-gift="remove"],[data-gift="add"]');
       if (!btn) return;
       const line = btn.closest('[data-org]');
       const org = line.dataset.org;
       const msg = box.querySelector('#giftMsg');
       btn.disabled = true;
       try {
-        if (btn.dataset.gift === 'remove') {
+        if (btn.dataset.gift === 'add') {
+          const amount = Number(line.querySelector('[data-gift="amount"]').value);
+          if (!amount) { btn.disabled = false; msg.innerHTML = '<span class="set-err">How many credits?</span>'; return; }
+          const note = prompt(`Add ${amount.toLocaleString()} credits to ${org}. A note for its ledger (optional):`, '');
+          if (note === null) { btn.disabled = false; return; }
+          await api(`/api/cells/${org}/credits`, { method: 'POST', body: { amount, note } });
+        } else if (btn.dataset.gift === 'remove') {
           if (!confirm(`Take back the gift from ${org}? It goes back to its paid plan, or Free.`)) { btn.disabled = false; return; }
           await api(`/api/cells/${org}/gift`, { method: 'DELETE' });
         } else {
           const until = line.querySelector('[data-gift="until"]').value;
-          await api(`/api/cells/${org}/gift`, { method: 'POST', body: { plan: line.querySelector('[data-gift="plan"]').value, until: until ? `${until}T23:59:59` : null, note: line.querySelector('[data-gift="note"]').value } });
+          const credits = line.querySelector('[data-gift="credits"]').value;
+          await api(`/api/cells/${org}/gift`, { method: 'POST', body: { plan: line.querySelector('[data-gift="plan"]').value, until: until ? `${until}T23:59:59` : null, note: line.querySelector('[data-gift="note"]').value, credits: credits === '' ? null : Number(credits) } });
         }
         await mountCustomers(box);
       } catch (err) { btn.disabled = false; msg.innerHTML = `<span class="set-err">${esc(err.message)}</span>`; }
@@ -507,11 +522,11 @@
   document.addEventListener('click', async (e) => {
     const t = e.target;
     if (t.dataset?.go) { e.preventDefault(); show(t.dataset.go); return; }
-    if (t.dataset?.billplan || t.dataset?.bill) {
+    if (t.dataset?.billplan || t.dataset?.bill || t.dataset?.billpack) {
       t.disabled = true;
       try {
-        const what = t.dataset.billplan ? 'checkout' : t.dataset.bill;
-        const r = await api(`/api/billing/${what}`, { method: 'POST', body: t.dataset.billplan ? { plan: t.dataset.billplan } : {} });
+        const what = t.dataset.billplan ? 'checkout' : t.dataset.billpack ? 'buy' : t.dataset.bill;
+        const r = await api(`/api/billing/${what}`, { method: 'POST', body: t.dataset.billplan ? { plan: t.dataset.billplan } : t.dataset.billpack ? { pack: t.dataset.billpack } : {} });
         if (r.url) { location.href = r.url; return; }
         loadSettingsTab();
       } catch (err) {

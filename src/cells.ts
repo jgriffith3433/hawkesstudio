@@ -14,8 +14,12 @@
 //   - Hibernation (sweep, from the central cron): an awake cell idle for `idleDays` (no sign-in, no run; default 14) loses
 //     its service and keeps its data in the bucket; the next visit makes it again ("waking your studio"). An org with no
 //     sign-in for `deleteDays` (90) and no plan is emailed, and its data deleted `warnDays` (14) later unless they return.
-//   - One central cron (POST /api/cells/cron, one Cloud Scheduler job): the sweep, then the nightly run of every paying
-//     org whose plan has nightly runs (woken first). No scheduler job per customer.
+//   - One central cron (POST /api/cells/cron, one Cloud Scheduler job): the sweep, the month's credits (gifts, the free
+//     allowance: monthlyCredits), then the nightly run of every paying org whose plan has nightly runs (woken first). No
+//     scheduler job per customer.
+//   - Credits: each org's one balance is billing.ts's ledger here (studio_id = the org). Plans grant it per paid invoice,
+//     gifts monthly, packs per purchase, the platform admin by hand; the cell charges its Hawkes Gen work to it
+//     (credits.ts, /api/cells/self/credits/charge|refund).
 //   - The router's questions (the Worker, server/studio-edge, with the edge key): where an org is, wake it, it was seen.
 //   - The cells' questions (each cell, with its cell key): its plan, and its billing (Checkout, cancel, resume, the
 //     portal), since the one Stripe webhook arrives here and the Stripe key stays here.
@@ -50,7 +54,8 @@ db.exec(`
 // The org's Hawkes Gen identity: its Gen org (org_<hex>), the user key made for its cell (sealed under a key derived
 // from the master: a woken cell gets it again) and that key's client id (disabled when the data is deleted).
 // A plan the platform admin gave the org (J, 2026-10-31: gift subscriptions): no Stripe, until a date or for good.
-for (const c of ['gen_org TEXT', 'gen_client TEXT', 'gen_key TEXT', 'gift_plan TEXT', 'gift_until INTEGER', 'gift_note TEXT', 'gift_by TEXT', 'gift_at INTEGER']) {
+// A gift's monthly credits (null: the plan's own creditsPerMonth).
+for (const c of ['gen_org TEXT', 'gen_client TEXT', 'gen_key TEXT', 'gift_plan TEXT', 'gift_until INTEGER', 'gift_note TEXT', 'gift_by TEXT', 'gift_at INTEGER', 'gift_credits INTEGER']) {
   try { db.exec(`ALTER TABLE cp_orgs ADD COLUMN ${c}`); } catch { /* already there */ }
 }
 
@@ -59,8 +64,8 @@ export const cellsOn = () => process.env.STUDIO_CELLS === 'on' && !customerStudi
 
 export type OrgState = 'new' | 'creating' | 'awake' | 'hibernated' | 'deleted';
 export type Org = { id: string; name: string; ownerSub: string; ownerEmail: string; state: OrgState; service: string | null; image: string | null; error: string | null; created: number; lastActive: number | null; lastSignin: number | null; hibernatedAt: number | null; warnedAt: number | null; deletedAt: number | null; genOrg: string | null; genClient: string | null; gift: Gift | null };
-export type Gift = { plan: string; until: number | null; note: string | null; by: string | null; at: number | null };
-const toOrg = (r: any): Org => ({ id: r.id, name: r.name, ownerSub: r.owner_sub, ownerEmail: r.owner_email, state: r.state, service: r.service, image: r.image, error: r.error, created: r.created, lastActive: r.last_active, lastSignin: r.last_signin, hibernatedAt: r.hibernated_at, warnedAt: r.warned_at, deletedAt: r.deleted_at, genOrg: r.gen_org ?? null, genClient: r.gen_client ?? null, gift: r.gift_plan ? { plan: r.gift_plan, until: r.gift_until ?? null, note: r.gift_note ?? null, by: r.gift_by ?? null, at: r.gift_at ?? null } : null });
+export type Gift = { plan: string; until: number | null; note: string | null; by: string | null; at: number | null; credits: number | null };
+const toOrg = (r: any): Org => ({ id: r.id, name: r.name, ownerSub: r.owner_sub, ownerEmail: r.owner_email, state: r.state, service: r.service, image: r.image, error: r.error, created: r.created, lastActive: r.last_active, lastSignin: r.last_signin, hibernatedAt: r.hibernated_at, warnedAt: r.warned_at, deletedAt: r.deleted_at, genOrg: r.gen_org ?? null, genClient: r.gen_client ?? null, gift: r.gift_plan ? { plan: r.gift_plan, until: r.gift_until ?? null, note: r.gift_note ?? null, by: r.gift_by ?? null, at: r.gift_at ?? null, credits: r.gift_credits ?? null } : null });
 
 export const getOrg = (id: string) => { const r = db.prepare('SELECT * FROM cp_orgs WHERE id = ?').get(id); return r ? toOrg(r) : null; };
 export const listOrgs = () => (db.prepare(`SELECT * FROM cp_orgs ORDER BY created DESC`).all() as any[]).map(toOrg);
@@ -78,8 +83,10 @@ const setOrg = (id: string, f: Record<string, unknown>) => {
 
 // ------------------------------------------------------------------ settings
 
-export type CellsSettings = { idleDays: number; deleteDays: number; warnDays: number };
-export const CELLS_DEFAULTS: CellsSettings = { idleDays: 14, deleteDays: 90, warnDays: 14 };
+// freeCredits: a Studio with no plan and no gift is topped up to this many credits each calendar month (its weekly smoke
+// playtests run on Hawkes Gen and are charged like everyone's). Provisional, like the plans.
+export type CellsSettings = { idleDays: number; deleteDays: number; warnDays: number; freeCredits: number };
+export const CELLS_DEFAULTS: CellsSettings = { idleDays: 14, deleteDays: 90, warnDays: 14, freeCredits: 100 };
 
 export function cellsSettings(): CellsSettings {
   const r = db.prepare(`SELECT value FROM cp_config WHERE key = 'settings'`).get() as { value: string } | undefined;
@@ -92,7 +99,9 @@ export function saveCellsSettings(patch: Partial<CellsSettings>) {
   for (const k of Object.keys(CELLS_DEFAULTS) as (keyof CellsSettings)[]) {
     if (patch[k] === undefined) continue;
     const n = Number(patch[k]);
-    if (!Number.isInteger(n) || n < 1 || n > 3650) throw new StudioError(`${k}: whole days, 1 to 3650`);
+    if (k === 'freeCredits') {
+      if (!Number.isInteger(n) || n < 0 || n > 1_000_000) throw new StudioError('freeCredits: a whole number, 0 to 1,000,000');
+    } else if (!Number.isInteger(n) || n < 1 || n > 3650) throw new StudioError(`${k}: whole days, 1 to 3650`);
     cur[k] = n;
   }
   db.prepare(`INSERT INTO cp_config (key, value) VALUES ('settings', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`).run(JSON.stringify(cur));
@@ -282,6 +291,8 @@ export function ensureCell(orgId: string, why: string, o: { dry?: boolean; game?
       const made = await R.createCell(orgId, { sub: org.ownerSub, email: org.ownerEmail }, image, o, undefined, g ?? undefined);
       setOrg(orgId, { state: 'awake', service: made.service, image, hibernated_at: null, last_active: Date.now() });
       console.log(`[cells] ${orgId} is up (${why}${made.dry ? ', dry run' : ''})`);
+      // Its month's credits (a free studio's allowance; a gift's came with it) before its first Gen job.
+      await monthlyCredits({ org: orgId }).catch((e) => console.warn(`[cells] ${orgId}'s monthly credits: ${e.message}`));
     } catch (e: any) {
       setOrg(orgId, { state: org.state === 'hibernated' ? 'hibernated' : 'new', error: String(e.message ?? e).slice(0, 500) });
       throw e;
@@ -426,10 +437,13 @@ export const activeGift = (org: Org | null, now = Date.now()) => (org?.gift && (
 
 /**
  * Gives an org a plan with no Stripe (the platform admin: "set which accounts are under which subscription"), until a
- * date or for good, with a note for why. It counts like a subscription (features, project count, nightly runs) without
- * the plan's monthly credits. A subscription on a higher plan still wins (effectivePlan).
+ * date or for good, with a note for why. It counts like a subscription (features, project count, nightly runs) and
+ * grants `credits` a month (default: the plan's own creditsPerMonth; 0 for none) now and each month after while it
+ * lasts (monthlyCredits). A subscription on a higher plan still wins for features (effectivePlan); a paid plan's own
+ * credits come with its invoices as before. Changing a gift that is still running keeps its months: a new amount
+ * applies from the next one.
  */
-export async function setGift(orgId: string, input: { plan?: unknown; until?: unknown; note?: unknown }, by: string) {
+export async function setGift(orgId: string, input: { plan?: unknown; until?: unknown; note?: unknown; credits?: unknown }, by: string) {
   const org = getOrg(orgId);
   if (!org || org.state === 'deleted') throw new StudioError(`No studio "${orgId}"`, 404);
   const { PLAN_FEATURES } = await import('./entitlements.ts');
@@ -440,8 +454,16 @@ export async function setGift(orgId: string, input: { plan?: unknown; until?: un
     until = typeof input.until === 'number' ? input.until : Date.parse(String(input.until));
     if (!Number.isFinite(until) || until <= Date.now()) throw new StudioError('until: a date in the future, or leave it out for good', 400);
   }
-  setOrg(orgId, { gift_plan: plan, gift_until: until, gift_note: input.note ? String(input.note).slice(0, 200) : null, gift_by: by, gift_at: Date.now() });
+  let credits: number | null = null;
+  if (input.credits !== undefined && input.credits !== null && input.credits !== '') {
+    credits = Number(input.credits);
+    if (!Number.isInteger(credits) || credits < 0 || credits > 1_000_000) throw new StudioError("credits: whole credits a month, 0 to 1,000,000 (leave it out for the plan's own)", 400);
+  }
+  // A gift still running keeps its anchor (its months count from when it was first given).
+  const running = activeGift(org);
+  setOrg(orgId, { gift_plan: plan, gift_until: until, gift_note: input.note ? String(input.note).slice(0, 200) : null, gift_by: by, gift_at: running?.at ?? Date.now(), gift_credits: credits });
   console.log(`[cells] ${orgId} given ${plan}${until ? ` until ${new Date(until).toISOString().slice(0, 10)}` : ''} by ${by}`);
+  await monthlyCredits({ org: orgId });
   // Like subscribing: its Studio is made (or woken) for it.
   void ensureCell(orgId, 'given a plan').catch((e) => console.warn(`[cells] ${orgId} after a gift: ${e.message}`));
   return getOrg(orgId)!;
@@ -449,8 +471,109 @@ export async function setGift(orgId: string, input: { plan?: unknown; until?: un
 
 export function removeGift(orgId: string) {
   if (!getOrg(orgId)) throw new StudioError(`No studio "${orgId}"`, 404);
-  setOrg(orgId, { gift_plan: null, gift_until: null, gift_note: null, gift_by: null, gift_at: null });
+  setOrg(orgId, { gift_plan: null, gift_until: null, gift_note: null, gift_by: null, gift_at: null, gift_credits: null });
   return getOrg(orgId)!;
+}
+
+/** A gift's credits a month: its own number, else its plan's creditsPerMonth. */
+export async function giftCredits(g: Gift) {
+  if (g.credits !== null && g.credits !== undefined) return g.credits;
+  return (await import('./billing.ts')).getPlan(g.plan)?.creditsPerMonth ?? 0;
+}
+
+/** Whole months from `from` to `now` (UTC; given on the 31st, a short month's last day counts as the day). */
+export function monthsBetween(from: number, now: number) {
+  const a = new Date(from), b = new Date(now);
+  let n = (b.getUTCFullYear() - a.getUTCFullYear()) * 12 + (b.getUTCMonth() - a.getUTCMonth());
+  const lastDay = new Date(Date.UTC(b.getUTCFullYear(), b.getUTCMonth() + 1, 0)).getUTCDate();
+  const inDay = (t: number) => ((t % 86_400_000) + 86_400_000) % 86_400_000;
+  const anchor = Math.min(a.getUTCDate(), lastDay) * 86_400_000 + inDay(from);
+  if (b.getUTCDate() * 86_400_000 + inDay(now) < anchor) n--;
+  return Math.max(0, n);
+}
+
+/**
+ * The month's credits for every org (or one), idempotent per org per month (the ledger's ref):
+ *   - an active gift: its credits for each month since it was given (gift:<org>:<given at>:<month>)
+ *   - no gift and no paid plan: topped up to the free allowance once per calendar month (free:<org>:<YYYY-MM>)
+ *   - a paid plan: nothing here (its invoices grant its credits, billing.ts)
+ * Orgs not started yet (no cell, no gift) and deleted ones get nothing.
+ */
+export async function monthlyCredits(o: { now?: number; org?: string } = {}) {
+  const now = o.now ?? Date.now();
+  const B = await import('./billing.ts');
+  const out = { granted: [] as { org: string; credits: number; kind: string }[], errors: [] as string[] };
+  const free = cellsSettings().freeCredits;
+  for (const org of o.org ? [getOrg(o.org)].filter((x): x is Org => Boolean(x)) : listOrgs()) {
+    if (org.state === 'deleted' || (org.state === 'new' && !org.gift)) continue;
+    try {
+      const gift = activeGift(org, now);
+      if (gift) {
+        const credits = await giftCredits(gift);
+        const n = monthsBetween(gift.at ?? now, now);
+        const ref = `gift:${org.id}:${gift.at}:${n}`;
+        if (credits > 0 && !B.creditRefUsed(ref)) {
+          const planName = B.getPlan(gift.plan)?.name ?? gift.plan;
+          const r = B.grantCredits(credits, 'gift_credits', `${planName} plan from Hawkes Studio: ${n ? `month ${n + 1}'s` : "this month's"} credits${gift.note ? ` (${gift.note})` : ''}`, ref, org.id);
+          if (!r.duplicate) out.granted.push({ org: org.id, credits, kind: 'gift' });
+        }
+        continue;
+      }
+      const sub = B.currentSubscription(org.id);
+      if (sub && sub.status !== 'canceled') continue;
+      const month = new Date(now).toISOString().slice(0, 7);
+      const ref = `free:${org.id}:${month}`;
+      if (B.creditRefUsed(ref)) continue;
+      const top = Math.max(0, free - B.creditBalance(org.id));
+      if (top > 0) {
+        B.grantCredits(top, 'free_credits', `Free plan: topped up to ${free.toLocaleString('en-US')} credits for ${month}`, ref, org.id);
+        out.granted.push({ org: org.id, credits: top, kind: 'free' });
+      } else B.markCreditRef(ref);
+    } catch (e: any) {
+      out.errors.push(`${org.id}: ${e.message ?? e}`);
+    }
+  }
+  return out;
+}
+
+/** The platform admin adds credits to an org by hand (POST /api/cells/<org>/credits {amount, note}), in its ledger. */
+export async function addCredits(orgId: string, input: { amount?: unknown; note?: unknown }, by: string) {
+  const org = getOrg(orgId);
+  if (!org || org.state === 'deleted') throw new StudioError(`No studio "${orgId}"`, 404);
+  const amount = Number(input.amount);
+  if (!Number.isInteger(amount) || amount < 1 || amount > 1_000_000) throw new StudioError('amount: whole credits, 1 to 1,000,000', 400);
+  const note = input.note ? String(input.note).trim().slice(0, 200) : '';
+  const B = await import('./billing.ts');
+  const r = B.grantCredits(amount, 'admin_grant', note ? `From Hawkes Studio: ${note}` : `${amount.toLocaleString('en-US')} credits from Hawkes Studio`, `admin:${orgId}:${crypto.randomBytes(6).toString('hex')}`, orgId);
+  console.log(`[cells] ${orgId} +${amount} credits by ${by}${note ? ` (${note})` : ''}`);
+  return { org: orgId, credits: r.balance, added: amount };
+}
+
+/**
+ * A cell's Hawkes Gen work, charged to its org's balance (credits.ts): charge {charge, credits, detail, what} takes them
+ * once per charge id or refuses (402); refund {charge, credits, part, detail} gives back part of a charge (a failed or
+ * reused job) once per part, never more than was charged.
+ */
+export async function cellCredits(orgId: string, what: 'charge' | 'refund', b: any) {
+  const B = await import('./billing.ts');
+  const charge = String(b.charge ?? '');
+  if (!/^[\w-]{6,64}$/.test(charge)) throw new StudioError('charge: an id', 400);
+  const credits = Math.round(Number(b.credits));
+  if (!Number.isFinite(credits) || credits < 0 || credits > 1_000_000) throw new StudioError('credits: 0 to 1,000,000', 400);
+  const ref = `gen:${orgId}:${charge}`;
+  if (what === 'charge') {
+    const r = B.chargeCredits(credits, 'gen_work', String(b.detail ?? 'Hawkes Gen work').slice(0, 200), ref, orgId, b.what ? String(b.what).slice(0, 80) : undefined);
+    return { ok: true, duplicate: r.duplicate, credits: r.balance };
+  }
+  const part = String(b.part ?? '');
+  if (!/^[\w-]{1,64}$/.test(part)) throw new StudioError('part: an id', 400);
+  const charged = -B.creditDeltaOf(ref, orgId);
+  if (!(charged > 0)) throw new StudioError('No such charge', 404);
+  const back = B.creditDeltaLike(`genback:${orgId}:${charge}:%`, orgId);
+  const amount = Math.min(credits, charged - back);
+  if (amount <= 0) return { ok: true, refunded: 0, credits: B.creditBalance(orgId) };
+  const r = B.grantCredits(amount, 'gen_refund', String(b.detail ?? 'Hawkes Gen work not done: credits back').slice(0, 200), `genback:${orgId}:${charge}:${part}`, orgId);
+  return { ok: true, refunded: r.duplicate ? 0 : amount, credits: r.balance };
 }
 
 /** The plan an org has: its subscription or its gift, whichever is the higher plan. */
@@ -468,7 +591,8 @@ export async function effectivePlan(orgId: string) {
 export async function cellPlan(orgId: string) {
   const B = await import('./billing.ts');
   const e = await effectivePlan(orgId);
-  return { org: orgId, plan: e.planId, status: e.status, maxGames: e.maxGames, credits: B.creditBalance(orgId), cancelAtPeriodEnd: e.sub?.cancelAtPeriodEnd ?? false, periodEnd: e.sub?.periodEnd ?? null, gift: e.gift };
+  const g = e.gift;
+  return { org: orgId, plan: e.planId, status: e.status, maxGames: e.maxGames, credits: B.creditBalance(orgId), cancelAtPeriodEnd: e.sub?.cancelAtPeriodEnd ?? false, periodEnd: e.sub?.periodEnd ?? null, gift: g ? { ...g, creditsPerMonth: await giftCredits(g) } : null };
 }
 
 const orgUrl = (orgId: string) => `${R.cellsConfig().publicUrl}/o/${orgId}`;
@@ -479,7 +603,11 @@ async function orgBilling(orgId: string, what: string, b: any) {
   if (what === 'checkout') return B.checkout(String(b.plan ?? ''), { id: String(b.user?.id ?? 'owner'), email: String(b.user?.email ?? getOrg(orgId)?.ownerEmail ?? '') }, back, { sid: orgId, successUrl: `${back}/?checkout=success#settings`, cancelUrl: `${back}/?checkout=cancelled#settings` });
   if (what === 'cancel' || what === 'resume') return { subscription: await B.setCancelAtPeriodEnd(what === 'cancel', orgId) };
   if (what === 'portal') return B.billingPortal(back, { sid: orgId, returnUrl: `${back}/#settings` });
-  if (what === 'view') return { ...B.billingView(orgId), gift: activeGift(getOrg(orgId)) };
+  if (what === 'buy') return B.buyCredits(String(b.pack ?? ''), { id: String(b.user?.id ?? 'owner'), email: String(b.user?.email ?? getOrg(orgId)?.ownerEmail ?? '') }, back, { sid: orgId, successUrl: `${back}/?checkout=credits#settings`, cancelUrl: `${back}/?checkout=cancelled#settings` });
+  if (what === 'view') {
+    const g = activeGift(getOrg(orgId));
+    return { ...B.billingView(orgId), gift: g ? { ...g, creditsPerMonth: await giftCredits(g) } : null, freeCredits: cellsSettings().freeCredits };
+  }
   throw new StudioError('Unknown billing action', 404);
 }
 
@@ -554,6 +682,16 @@ export async function handleCellsKeyed(req: http.IncomingMessage, res: http.Serv
       return send(res, 200, t ?? { token: null }), true;
     } catch (e: any) { return send(res, e.status ?? 400, { error: e.message ?? String(e) }), true; }
   }
+  // The cell's Hawkes Gen work charged to its org's balance (credits.ts): 402 with `credits` when it is short.
+  const cr = /^\/api\/cells\/self\/credits\/(charge|refund)$/.exec(route);
+  if (cr && method === 'POST') {
+    if (!cellsOn()) return send(res, 404, { error: 'not the control plane' }), true;
+    const orgId = String(req.headers['x-studio-cell'] ?? '');
+    if (!isCellKey(orgId, bearer(req)) || !getOrg(orgId)) return send(res, 401, { error: 'cell key' }), true;
+    try { return send(res, 200, await cellCredits(orgId, cr[1] as 'charge' | 'refund', await readJson(req))), true; } catch (e: any) {
+      return send(res, e.status ?? 400, { error: e.message ?? String(e), ...(e.credits ? { credits: e.credits } : {}) }), true;
+    }
+  }
   const self = /^\/api\/cells\/self\/(members|ai)$/.exec(route);
   if (self && method === 'POST') {
     if (!cellsOn()) return send(res, 404, { error: 'not the control plane' }), true;
@@ -566,7 +704,7 @@ export async function handleCellsKeyed(req: http.IncomingMessage, res: http.Serv
       return send(res, 200, await setGenAi(orgId, kind, b.key ? String(b.key) : null)), true;
     } catch (e: any) { return send(res, e.status ?? 400, { error: e.message ?? String(e) }), true; }
   }
-  m = /^\/api\/cells\/self(?:\/billing\/(checkout|cancel|resume|portal|view))?$/.exec(route);
+  m = /^\/api\/cells\/self(?:\/billing\/(checkout|cancel|resume|portal|buy|view))?$/.exec(route);
   if (m) {
     if (!cellsOn()) return send(res, 404, { error: 'not the control plane' }), true;
     const orgId = String(req.headers['x-studio-cell'] ?? '');
@@ -587,7 +725,8 @@ export async function handleCellsAdmin(req: http.IncomingMessage, res: http.Serv
   if (lockdownOn() && !platformAdminOf(req)) return send(res, 403, { error: "Customers' Studios: only the platform admin." }), true;
   if (route === '/api/cells' && method === 'GET') {
     // Each org with the plan it has now (its subscription or its gift: effectivePlan).
-    const orgs = await Promise.all(listOrgs().map(async (o) => { const e = await effectivePlan(o.id); return { ...o, plan: { id: e.planId, status: e.status, sub: e.sub ? { planId: e.sub.planId, status: e.sub.status } : null } }; }));
+    const B = await import('./billing.ts');
+    const orgs = await Promise.all(listOrgs().map(async (o) => { const e = await effectivePlan(o.id); return { ...o, credits: B.creditBalance(o.id), giftCreditsPerMonth: o.gift ? await giftCredits(o.gift) : null, plan: { id: e.planId, status: e.status, sub: e.sub ? { planId: e.sub.planId, status: e.sub.status } : null } }; }));
     return send(res, 200, { on: cellsOn(), settings: cellsSettings(), missing: R.missingConfig(), dryRun: R.dryRun(), orgs }), true;
   }
   const b = method === 'POST' || method === 'PUT' ? await readJson(req) : {};
@@ -601,13 +740,16 @@ export async function handleCellsAdmin(req: http.IncomingMessage, res: http.Serv
   const g = /^\/api\/cells\/([a-z0-9-]+)\/gift$/.exec(route);
   if (g && (method === 'POST' || method === 'PUT')) return send(res, 200, { org: await setGift(g[1], b, platformAdminOf(req)?.email ?? 'the platform admin') }), true;
   if (g && method === 'DELETE') return send(res, 200, { org: removeGift(g[1]) }), true;
+  // A one-off top-up by the platform admin, in the org's ledger.
+  const ac = /^\/api\/cells\/([a-z0-9-]+)\/credits$/.exec(route);
+  if (ac && method === 'POST') return send(res, 200, await addCredits(ac[1], b, platformAdminOf(req)?.email ?? 'the platform admin')), true;
   return false;
 }
 
 /** The central cron (POST /api/cells/cron: Cloud Scheduler's token or the owner key, checked by server.ts). */
 export async function cron() {
   // The nightly catch-up: a cell a roll missed (it failed, or the cell woke mid-deploy) comes onto J's Studio's image.
-  return { sweep: await sweep(), nightly: await nightly(), roll: await followRoll('nightly').catch((e) => ({ error: String(e.message ?? e) })) };
+  return { sweep: await sweep(), credits: await monthlyCredits(), nightly: await nightly(), roll: await followRoll('nightly').catch((e) => ({ error: String(e.message ?? e) })) };
 }
 
 // ------------------------------------------------------------------ rolling every deploy (J, 2026-10-30: "Do roll on every deploy")
