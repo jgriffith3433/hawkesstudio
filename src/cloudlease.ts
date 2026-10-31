@@ -50,14 +50,18 @@ export async function claim(o: { waitMs?: number; staleMs?: number; pollMs?: num
   const mine: Lease = { id: `l_${crypto.randomBytes(6).toString('hex')}`, rev: o.rev !== undefined ? o.rev : process.env.K_REVISION ?? null, at: now() };
   // An older revision never takes the database from a newer one: Cloud Run can start a fresh instance of the old
   // revision during a deploy, and it took the lease back once (2026-10-31). It doesn't start (entrypoint.sh).
-  if (prev && revNumber(prev.rev) > revNumber(mine.rev)) return { claimed: false, id: null, previous: prev.id, how: 'newer holds it', holder: prev.rev };
   // Whether the holder was already gone before this claim (no heartbeat for staleMs): then nobody hands over. A holder
   // that was alive gets its full time to stop: seeing the claim (5 s), saving state (8 s), Litestream's last sync.
   const beat0 = prev ? await readBeat(bucket, prev.id) : { at: 0, generation: null };
+  const holderAlive = Boolean(prev) && now() - beat0.at <= staleMs && !(await readJsonObj(bucket, `released-${prev!.id}`));
+  // ...but only a newer holder that is still alive: a service made again after hibernation numbers its revisions from 1
+  // while the lease still names the deleted service's -00004-, and a new revision that crashed must let the old one
+  // start again (2026-10-31 review: a woken customer Studio never came up).
+  if (prev && holderAlive && revNumber(prev.rev) > revNumber(mine.rev)) return { claimed: false, id: null, previous: prev.id, how: 'newer holds it', holder: prev.rev };
   // A second instance of the same revision (Cloud Run starts one under load) never takes the database from a live
   // holder: each took over from the last, five in two minutes, and a beta site's build died with them (2026-10-31). It
   // stays down like an old revision's; a holder that died (no heartbeat) is replaced as before.
-  if (prev?.rev && prev.rev === mine.rev && now() - beat0.at <= staleMs && !(await readJsonObj(bucket, `released-${prev.id}`))) return { claimed: false, id: null, previous: prev.id, how: 'same revision holds it', holder: prev.rev };
+  if (prev?.rev && prev.rev === mine.rev && holderAlive) return { claimed: false, id: null, previous: prev.id, how: 'same revision holds it', holder: prev.rev };
   await gcsWrite(bucket, key('lease.json'), Buffer.from(JSON.stringify(mine)), 'application/json');
   fs.writeFileSync(ID_FILE, mine.id);
   await gcsWrite(bucket, key(`alive-${mine.id}`), beatBody(now()), 'application/json');

@@ -809,15 +809,17 @@ export async function followRoll(why: 'deploy' | 'nightly' = 'deploy', o: { heal
   const c = R.cellsConfig();
   const image = await R.serviceImage(c.studioService, c);
   if (!image) return { skipped: `couldn't read ${c.studioService}'s image` };
-  // The customers' agents' job too (their Talk and agents run there), even when every cell is already on the image.
-  await R.followAgentJob(image, {}, c).catch((e) => console.warn(`[cells] ${c.agentJob} not moved to ${image}: ${e.message}`));
   const behind = (await R.listCells({}, c)).filter((x) => x.image !== image);
-  if (!behind.length) return { image, done: [], behind: 0 };
+  // The customers' agents' job too (their Talk and agents run there), even when every cell is already on the image;
+  // after a roll only when it went through (cells left on the old image keep the job they work with).
+  const moveJob = () => R.followAgentJob(image, {}, c).catch((e) => console.warn(`[cells] ${c.agentJob} not moved to ${image}: ${e.message}`));
+  if (!behind.length) { await moveJob(); return { image, done: [], behind: 0 }; }
   console.log(`[cells] ${why}: ${behind.length} awake cell(s) onto ${image}`);
   const run = R.rollCells(image, { health: o.health }, c);
   rolling = run;
   try {
     const r = await run;
+    if (!r.failed) await moveJob();
     // The org records follow (the cells list showed the image a cell was made on, not the one it runs).
     for (const org of listOrgs()) if (org.service && r.done.includes(org.service)) setOrg(org.id, { image });
     if (r.failed) {

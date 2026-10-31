@@ -135,7 +135,16 @@ export default {
       const s: any = await (await control(env, `/api/cells/edge/${org}`)).json().catch(() => ({}));
       return Response.json({ ready: false, state: s.state ?? 'unknown', ...(s.state === 'new' ? { next: '/auth/start' } : {}), ...(s.error ? { error: s.error } : {}) }, { headers: { 'Cache-Control': 'no-store' } });
     }
-    const res = await fetch(target, { method: request.method, headers: forwardHeaders(request, org), body: request.body, redirect: 'manual' });
+    // Small bodies are kept so a request can be sent again: a cell restarting (a deploy's roll, a scale-up) answers
+    // with Cloud Run's 429/5xx for a few seconds, and an Approve tap was lost to that once (2026-10-31 review).
+    const len = Number(request.headers.get('Content-Length') ?? '0');
+    const body = request.body && len > 0 && len <= 1024 * 1024 ? await request.arrayBuffer() : request.body;
+    const send = () => fetch(target, { method: request.method, headers: forwardHeaders(request, org), body: body instanceof ArrayBuffer ? body.slice(0) : body, redirect: 'manual' });
+    let res = await send();
+    for (let i = 0; i < 3 && !res.headers.get('X-Studio-Cell') && res.status !== 404 && (body === null || body instanceof ArrayBuffer); i++) {
+      await new Promise((r) => setTimeout(r, 2000 * (i + 1)));
+      res = await send();
+    }
     if (res.headers.get('X-Studio-Cell') === org) {
       const now = Date.now();
       if (ctx && env.EDGE_KEY && now - (seen.get(org) ?? 0) > 10 * 60_000) {
@@ -143,6 +152,12 @@ export default {
         ctx.waitUntil(control(env, `/api/cells/edge/${org}/seen`, 'POST').catch(() => null));
       }
       return fromCell(res, org);
+    }
+    // Anything but Cloud Run's 404 is a cell that exists and is restarting: say so, don't wake it, nothing was lost.
+    if (res.status !== 404) {
+      const navigating = request.method === 'GET' && (request.headers.get('Sec-Fetch-Mode') === 'navigate' || /text\/html/.test(request.headers.get('Accept') ?? ''));
+      if (navigating) return new Response(wakingPage(org, false), { status: 503, headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', 'Retry-After': '5' } });
+      return Response.json({ error: 'Your studio is restarting for a moment; nothing was changed. Try again in a few seconds.', restarting: true }, { status: 503, headers: { 'Retry-After': '5', 'Cache-Control': 'no-store' } });
     }
     // Cloud Run's own answer: no such service (hibernated, or never made).
     const w = await wake(org, env);

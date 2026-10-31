@@ -210,8 +210,9 @@ export async function rollImage(image: string, o: { dry?: boolean; health?: (url
   });
   log(`${c.studioService} (J's Studio) → ${image}`);
   await setImage(c.studioService, image, o, c);
-  await followAgentJob(image, { ...o, log }, c);
   const r = await rollCells(image, { ...o, health, log }, c);
+  // The customers' agents' job only once every cell is on the image (a stopped roll leaves them all on the old one).
+  if (!r.failed) await followAgentJob(image, { ...o, log }, c);
   return { ...r, done: [c.studioService, ...r.done] };
 }
 
@@ -220,6 +221,23 @@ export async function rollImage(image: string, o: { dry?: boolean; health?: (url
  * roll (the rest stay on what they had, which works). J's Studio isn't touched: it rolls them after its own deploy
  * (cells.ts followRoll). Hibernated cells wake on J's Studio's image anyway.
  */
+/** Whether a service's newest revision runs `image`, is ready, and takes the traffic (waits up to ~5 minutes). */
+export async function newRevisionServes(service: string, image: string, c = cellsConfig(), waitMs = 5 * 60_000): Promise<boolean> {
+  const end = Date.now() + waitMs;
+  while (Date.now() < end) {
+    const sv = await gapi(`${base(c)}/services/${service}`, { missingOk: true }).catch(() => null);
+    const created = sv?.latestCreatedRevision, ready = sv?.latestReadyRevision;
+    const failed = (sv?.conditions ?? []).some((x: any) => x.type === 'RoutesReady' && x.state === 'CONDITION_FAILED') || sv?.terminalCondition?.state === 'CONDITION_FAILED';
+    if (sv?.template?.containers?.[0]?.image === image && created && created === ready && !sv?.reconciling) {
+      const tr = (sv.trafficStatuses ?? sv.traffic_statuses ?? []) as any[];
+      if (!tr.length || tr.some((t) => (t.percent ?? 0) === 100 && (t.type === 'TRAFFIC_TARGET_ALLOCATION_TYPE_LATEST' || String(t.revision ?? '').endsWith(String(ready).split('/').pop()!)))) return true;
+    }
+    if (failed && !sv?.reconciling) return false;
+    await new Promise((r) => setTimeout(r, Math.min(5000, Math.max(0, end - Date.now()))));
+  }
+  return false;
+}
+
 export async function rollCells(image: string, o: { dry?: boolean; health?: (url: string) => Promise<boolean>; log?: (s: string) => void } = {}, c = cellsConfig()) {
   const log = o.log ?? ((s: string) => console.log(`[cells] ${s}`));
   const health = o.health ?? (async (url: string) => {
@@ -235,8 +253,11 @@ export async function rollCells(image: string, o: { dry?: boolean; health?: (url
     if (cell.image === image) continue;
     log(`${cell.service} → ${image}`);
     await setImage(cell.service, image, o, c);
-    if (!dryRun(o) && !(await health(serviceUrl(cell.org, c)))) {
-      log(`${cell.service} is not healthy on the new image: the roll stops here (${cells.length - done.length} left on the old one)`);
+    // Healthy means the NEW revision is ready and serving, then answering: the old one answers /api/health until it's
+    // replaced, so a bad image used to pass every cell (2026-10-31 review). A cell that fails goes back to its image.
+    if (!dryRun(o) && !((await newRevisionServes(cell.service, image, c)) && (await health(serviceUrl(cell.org, c))))) {
+      log(`${cell.service} is not healthy on the new image: back to ${cell.image.split(':').pop()}, and the roll stops here (${cells.length - done.length - 1} left on the old one)`);
+      await setImage(cell.service, cell.image, o, c).catch((e) => log(`${cell.service}: couldn't put it back (${e.message})`));
       return { image, done, failed: cell.service, left: cells.filter((x) => !done.includes(x.service) && x.service !== cell.service).map((x) => x.service) };
     }
     done.push(cell.service);

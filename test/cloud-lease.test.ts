@@ -115,3 +115,12 @@ test("a second instance of the same revision stays down while the holder is aliv
   assert.equal(next.claimed, true);
   assert.equal(next.how, 'quiet');
 });
+
+test("a Studio woken after hibernation starts: the lease's newer revision belonged to the deleted service and is silent", async () => {
+  const gone: any = await L.claim({ rev: 'studio-o-acme-1a2b-00004-xyz', pollMs: 10, staleMs: 0 });
+  assert.equal(gone.claimed, true);
+  objects.delete(`db/alive-${gone.id}`);
+  objects.set(`db/released-${gone.id}`, Buffer.from('{}'));
+  const woken: any = await L.claim({ rev: 'studio-o-acme-1a2b-00001-abc', pollMs: 10, waitMs: 300 });
+  assert.equal(woken.claimed, true, `took it (${woken.how})`);
+});

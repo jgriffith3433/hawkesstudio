@@ -122,3 +122,22 @@ test("an editor finding a customer's Studio's MCP sign-in the standard way reach
   assert.deepEqual(r('https://studio.hawkesgen.ai/.well-known/openid-configuration/o/acme-1a2b'), { org: 'acme-1a2b', path: '/.well-known/openid-configuration' });
   assert.equal(r('https://studio.hawkesgen.ai/.well-known/oauth-authorization-server'), null, "J's Studio's own stays his");
 });
+
+test("a cell restarting (Cloud Run's 503) gets the request again; still down, it's 'restarting', never a wake", async () => {
+  let n = 0;
+  const bodies: string[] = [];
+  answer = (url, init) => {
+    if (url.includes('studio-o-acme-1a2b')) { n++; if (init.body) bodies.push(new TextDecoder().decode(init.body)); return n < 2 ? new Response('Service Unavailable', { status: 503 }) : cell(); }
+    return Response.json({});
+  };
+  const tap = new Request('https://studio.hawkesgen.ai/o/acme-1a2b/api/approvals/a_1/approve', { method: 'POST', headers: { 'Content-Type': 'application/json', 'Content-Length': '13' }, body: '{"ok":"yes!"}' });
+  const r = await worker.fetch(tap, env);
+  assert.equal(r.status, 200, 'the tap reached the cell on its second try');
+  assert.deepEqual(bodies, ['{"ok":"yes!"}', '{"ok":"yes!"}'], 'the same body both times');
+  n = -100;
+  answer = (url) => (url.includes('studio-o-acme-1a2b') ? new Response('nope', { status: 503 }) : Response.json({}));
+  const down = await worker.fetch(at('/o/acme-1a2b/api/overview'), env);
+  assert.equal(down.status, 503);
+  assert.equal((await down.json()).restarting, true);
+  assert.ok(!seen.some((s) => s.url.endsWith('/wake')), 'a restarting cell is never woken');
+});

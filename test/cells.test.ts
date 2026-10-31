@@ -44,6 +44,8 @@ C.setGenCall(async (method, path, body) => {
 
 // A stand-in for Google: Cloud Run services and Cloud Storage objects in memory, every call recorded.
 const services = new Map<string, any>();
+let revN = 0;
+const BAD_IMAGE = 'crashes-on-start';
 const jobs = new Map<string, any>();
 const objects = new Map<string, Buffer>();
 const calls: { method: string; url: string; body: any }[] = [];
@@ -68,7 +70,8 @@ setGcpFetch((async (input: any, init: any = {}) => {
   if (m) {
     if (m[2]) return json(200, {});
     if (method === 'DELETE') { const had = services.delete(m[1]); return had ? json(200, {}) : json(404, { error: { message: 'not found' } }); }
-    if (method === 'PATCH') { const s = services.get(m[1]) ?? { name: m[1], template: { containers: [{}] } }; s.template = { ...s.template, ...body.template }; services.set(m[1], s); return json(200, {}); }
+    // Like Cloud Run: each change makes a revision that becomes ready and takes the traffic (BAD_IMAGE never does).
+    if (method === 'PATCH') { const s = services.get(m[1]) ?? { name: m[1], template: { containers: [{}] } }; s.template = { ...s.template, ...body.template }; const rev = `${m[1]}-${String(++revN).padStart(5, '0')}`; s.latestCreatedRevision = rev; if (!String(s.template?.containers?.[0]?.image ?? '').includes(BAD_IMAGE)) s.latestReadyRevision = rev; else s.terminalCondition = { state: 'CONDITION_FAILED' }; services.set(m[1], s); return json(200, {}); }
     const s = services.get(m[1]);
     return s ? json(200, s) : json(404, { error: { message: 'not found' } });
   }
@@ -295,6 +298,17 @@ test('a rolling upgrade: J\'s Studio first, then each awake cell; a failing cell
   assert.ok(bad.failed);
   assert.equal(bad.done.length, 1, 'stopped at the first cell');
   await assert.rejects(R.rollImage('not an image'), /Not an image/);
+});
+
+test("a bad image: its new revision never becomes ready, so the cell goes back to its image and the roll stops there", async () => {
+  const good = 'us-east4-docker.pkg.dev/hawkes-test/studio/studio:v4';
+  await R.rollImage(good, { health: async () => true, log: () => {} });
+  jobs.set('studio-cell-agent', { name: 'studio-cell-agent', template: { template: { containers: [{ image: good }] } } });
+  const r = await R.rollImage(`us-east4-docker.pkg.dev/hawkes-test/studio/studio:${BAD_IMAGE}`, { health: async () => true, log: () => {} }, { ...R.cellsConfig() });
+  assert.ok(r.failed, 'the old revision answering /api/health no longer counts');
+  assert.equal(r.done.length, 1, "only J's Studio moved");
+  assert.equal(services.get(r.failed!).template.containers[0].image, good, 'the failed cell is back on its image');
+  assert.equal(jobs.get('studio-cell-agent').template.template.containers[0].image, good, "the customers' agents' job stays with the cells");
 });
 
 test("every deploy rolls the awake cells onto J's Studio's own image (and the nightly cron catches up)", async () => {
