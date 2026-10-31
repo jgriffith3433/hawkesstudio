@@ -102,7 +102,9 @@ function goLiveRoute(route: string) {
   if (!m) return false;
   try {
     const a = db.prepare('SELECT kind FROM approvals WHERE id = ?').get(m[1]) as { kind: string } | undefined;
-    return a?.kind === 'deploy' || a?.kind === 'rollback';
+    // A game's GitHub card (a new game's repo, a game's setup) too (J, 2026-10-30: "You shouldn't have to be admin to do
+    // this", then "Why is so much gated by admin" when his own new-game card was refused).
+    return a?.kind === 'deploy' || a?.kind === 'rollback' || a?.kind === 'github';
   } catch { return false; }
 }
 

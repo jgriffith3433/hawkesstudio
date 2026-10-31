@@ -94,6 +94,8 @@ test("going live and rolling back need Studio's admin role, not the platform adm
   card('a_00000000d001', 'deploy');
   card('a_00000000d002', 'rollback');
   card('a_00000000d003', 'settings');
+  card('a_00000000d004', 'github');
+  assert.equal(L.platformRefusal(helperGoogle('POST'), '/api/approvals/a_00000000d004/approve', 'POST'), null, "a game's GitHub card: an admin's");
   assert.equal(L.platformRefusal(helperGoogle('POST'), '/api/approvals/a_00000000d001/approve', 'POST'), null);
   assert.equal(L.platformRefusal(helperGoogle('POST'), '/api/approvals/a_00000000d002/deny', 'POST'), null);
   assert.match(L.platformRefusal(helperGoogle('POST'), '/api/approvals/a_00000000d003/approve', 'POST') ?? '', /only the platform admin/);
