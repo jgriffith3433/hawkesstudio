@@ -41,18 +41,25 @@ export const myLeaseId = () => { try { return fs.readFileSync(ID_FILE, 'utf8').t
  * Takes the lease and waits until the previous holder has stopped writing: its released-<id>, or its heartbeat going
  * quiet (`staleMs`), at most `waitMs`. Returns what happened, for the log.
  */
-export async function claim(o: { waitMs?: number; staleMs?: number; pollMs?: number; now?: () => number } = {}) {
+export async function claim(o: { waitMs?: number; staleMs?: number; pollMs?: number; now?: () => number; rev?: string | null } = {}) {
   const bucket = stateBucket();
   if (!bucket) return { claimed: false, why: 'no state bucket' };
   const now = o.now ?? Date.now;
   const waitMs = o.waitMs ?? 30_000, staleMs = o.staleMs ?? 15_000, pollMs = o.pollMs ?? 1000;
   const prev = await readJsonObj<Lease>(bucket, 'lease.json');
-  const mine: Lease = { id: `l_${crypto.randomBytes(6).toString('hex')}`, rev: process.env.K_REVISION ?? null, at: now() };
+  const mine: Lease = { id: `l_${crypto.randomBytes(6).toString('hex')}`, rev: o.rev !== undefined ? o.rev : process.env.K_REVISION ?? null, at: now() };
+  // An older revision never takes the database from a newer one: Cloud Run can start a fresh instance of the old
+  // revision during a deploy, and it took the lease back once (2026-10-31). It doesn't start (entrypoint.sh).
+  if (prev && revNumber(prev.rev) > revNumber(mine.rev)) return { claimed: false, id: null, previous: prev.id, how: 'newer holds it', holder: prev.rev };
+  // Whether the holder was already gone before this claim (no heartbeat for staleMs): then nobody hands over. A holder
+  // that was alive gets its full time to stop: seeing the claim (5 s), saving state (8 s), Litestream's last sync.
+  const beat0 = prev ? Number((await gcsRead(bucket, key(`alive-${prev.id}`)).catch(() => null))?.toString() ?? 0) : 0;
   await gcsWrite(bucket, key('lease.json'), Buffer.from(JSON.stringify(mine)), 'application/json');
   fs.writeFileSync(ID_FILE, mine.id);
   await gcsWrite(bucket, key(`alive-${mine.id}`), Buffer.from(String(now())), 'text/plain');
   if (!prev) return { claimed: true, id: mine.id, previous: null, waited: 0, how: 'first' };
   const start = now();
+  const gone = now() - beat0 > staleMs;
   for (;;) {
     const rel = await readJsonObj<{ generation?: string }>(bucket, `released-${prev.id}`);
     if (rel) {
@@ -60,12 +67,14 @@ export async function claim(o: { waitMs?: number; staleMs?: number; pollMs?: num
       if (generation) fs.writeFileSync(GEN_FILE, generation);
       return { claimed: true, id: mine.id, previous: prev.id, waited: now() - start, how: 'released', generation };
     }
-    const beat = Number((await gcsRead(bucket, key(`alive-${prev.id}`)).catch(() => null))?.toString() ?? 0);
-    if (now() - beat > staleMs) return { claimed: true, id: mine.id, previous: prev.id, waited: now() - start, how: 'quiet' };
+    if (gone) return { claimed: true, id: mine.id, previous: prev.id, waited: now() - start, how: 'quiet' };
     if (now() - start >= waitMs) return { claimed: true, id: mine.id, previous: prev.id, waited: now() - start, how: 'timed out' };
     await new Promise((r) => setTimeout(r, pollMs));
   }
 }
+
+/** A Cloud Run revision's number (studio-beta-00043-9r2 → 43); 0 when unknown (J's PC, tests). */
+export const revNumber = (rev: string | null | undefined) => Number(/-(\d+)-[a-z0-9]+$/.exec(String(rev ?? ''))?.[1] ?? 0);
 
 /** Written once this instance's Litestream has made its last sync: the next holder may restore. */
 export async function release(id = myLeaseId()) {
@@ -105,6 +114,11 @@ export function watchLease(onLost: (by: Lease) => void, o: { everyMs?: number } 
 // entrypoint.sh: node src/cloudlease.ts claim | release
 if (import.meta.url === `file://${process.argv[1]}` || process.argv[1]?.endsWith('cloudlease.ts')) {
   const what = process.argv[2];
-  if (what === 'claim') console.log(`[lease] ${JSON.stringify(await claim().catch((e) => ({ claimed: false, why: String(e.message ?? e) })))}`);
+  if (what === 'claim') {
+    const r: any = await claim().catch((e) => ({ claimed: false, why: String(e.message ?? e) }));
+    console.log(`[lease] ${JSON.stringify(r)}`);
+    // A newer revision holds the database: this old one must not start (exit 3 tells entrypoint.sh).
+    if (r.how === 'newer holds it') process.exit(3);
+  }
   else if (what === 'release') console.log(`[lease] released ${await release().catch(() => false)}`);
 }

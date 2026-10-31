@@ -60,11 +60,35 @@ test('a deploy: the new instance waits for the old one to stop and restores exac
   assert.ok(!objects.has(`db/alive-${old}`), 'its heartbeat is gone');
 });
 
+test("a stray instance of an older revision never takes the database from a newer one (it stays down)", async () => {
+  assert.equal(L.revNumber('studio-beta-00043-9r2'), 43);
+  assert.equal(L.revNumber('studio-beta-o-acme-1a2b-00007-x1y'), 7);
+  assert.equal(L.revNumber(null), 0);
+  const newer: any = await L.claim({ rev: 'studio-beta-00043-9r2', pollMs: 10, staleMs: 0 });
+  assert.equal(newer.claimed, true);
+  const before = objects.get('db/lease.json')!.toString();
+  const old: any = await L.claim({ rev: 'studio-beta-00042-fxq' });
+  assert.equal(old.claimed, false);
+  assert.equal(old.how, 'newer holds it');
+  assert.equal(objects.get('db/lease.json')!.toString(), before, 'the lease is untouched');
+  // The same revision restarting (a crash, a new instance) takes it as usual.
+  objects.set(`db/released-${newer.id}`, Buffer.from('{}'));
+  const again: any = await L.claim({ rev: 'studio-beta-00043-9r2', pollMs: 10 });
+  assert.equal(again.claimed, true);
+});
+
+test("a holder that is shutting down gets its time; only one already silent before the claim is skipped", async () => {
+  const holder = L.myLeaseId()!;
+  objects.set(`db/alive-${holder}`, Buffer.from(String(Date.now())));
+  const r: any = await L.claim({ rev: 'studio-beta-00044-a1b', pollMs: 10, staleMs: 15_000, waitMs: 300 });
+  assert.equal(r.how, 'timed out', 'alive at the claim: waited for its release (here, until the test limit)');
+});
+
 test("a crashed holder (no heartbeat) doesn't hold a new instance up", async () => {
   fs.rmSync(process.env.STUDIO_LEASE_GEN_FILE!, { force: true });
   const dead = L.myLeaseId()!;
   objects.set(`db/alive-${dead}`, Buffer.from(String(Date.now() - 60_000)));
-  const r: any = await L.claim({ pollMs: 10, staleMs: 15_000 });
+  const r: any = await L.claim({ rev: 'studio-beta-00045-c2d', pollMs: 10, staleMs: 15_000 });
   assert.equal(r.how, 'quiet');
   assert.ok(r.waited < 1000);
   assert.equal(fs.existsSync(process.env.STUDIO_LEASE_GEN_FILE!), false, 'no generation named: restore takes the newest');

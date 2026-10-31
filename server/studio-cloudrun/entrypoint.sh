@@ -27,7 +27,10 @@ case "$STUDIO_STATE_PREFIX" in ""|*/) ;; *) export STUDIO_STATE_PREFIX="$STUDIO_
 mkdir -p /data "$STUDIO_PROJECTS"
 # One writer at a time (src/cloudlease.ts): claim the database and wait until the instance before this one (a deploy's
 # old revision lives on for a while) has stopped writing and made its last sync, then restore what it left.
-node --disable-warning=ExperimentalWarning src/cloudlease.ts claim || true
+LEASE=0
+node --disable-warning=ExperimentalWarning src/cloudlease.ts claim || LEASE=$?
+# A newer revision holds the database (this is a stray instance of an old one): don't start, don't write.
+if [ "$LEASE" = 3 ]; then echo "[lease] a newer revision holds the database: this old one stays down"; exit 0; fi
 GEN=$(cat /tmp/hawkes-restore-generation 2>/dev/null || true)
 litestream restore -config /etc/litestream.yml -if-db-not-exists -if-replica-exists ${GEN:+-generation "$GEN"} /data/studio.db
 # Not exec: once Studio stops (Cloud Run's SIGTERM, or a newer instance took the lease) and Litestream has made its last

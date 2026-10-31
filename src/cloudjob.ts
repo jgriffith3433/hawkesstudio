@@ -224,6 +224,12 @@ export function startCloudJob(unit: string, spec: Spec, o: { gitToken?: string |
       const ws = isGitWorkspace(cwd) ? workspaceIn(cwd, tmp) : null;
       const entries: { p: string; file: string }[] = [];
       if (ws) for (const rel of ws.changed) entries.push({ p: rel, file: path.join(cwd, rel) });
+      // The agent's brief and notes (.hawkes/) are kept out of commits by .git/info/exclude, so the dirty files above
+      // never include them: they go along by name (2026-10-31: every agent job asked where its brief was).
+      if (ws) {
+        const have = new Set(entries.map((e) => e.p));
+        entries.push(...folderEntries(path.join(cwd, '.hawkes'), (rel) => `.hawkes/${rel}`).filter((e) => !have.has(e.p)));
+      }
       // The session folder for this workspace, and files the command names outside it (an --mcp-config).
       const sessions = sessionDir(cwd, spec.env);
       entries.push(...folderEntries(sessions, (rel) => path.join(sessions, rel)));

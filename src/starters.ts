@@ -178,10 +178,19 @@ const playtestJs = (seed: GameSeed) => `// Hawkes Studio's playtest contract for
 // input: it presses keys like a player. Add a scenario for each new thing worth checking.
 import { installPlaytest } from './playtest/hawkes-playtest.js';
 
+// keyCode too: Phaser looks keys up by it, and a made-up KeyboardEvent has 0 there (the bot pressed keys nobody heard).
+const KEY_CODES = { ' ': 32, ArrowLeft: 37, ArrowUp: 38, ArrowRight: 39, ArrowDown: 40, Enter: 13, Escape: 27, Shift: 16 };
+const keyEvent = (type, key, code) => {
+  const e = new KeyboardEvent(type, { key, code, bubbles: true, cancelable: true });
+  const n = KEY_CODES[key] ?? (key.length === 1 ? key.toUpperCase().charCodeAt(0) : 0);
+  Object.defineProperty(e, 'keyCode', { get: () => n });
+  Object.defineProperty(e, 'which', { get: () => n });
+  return e;
+};
 const press = (key, ms) => new Promise((done) => {
   const code = key === ' ' ? 'Space' : key.length === 1 ? \`Key\${key.toUpperCase()}\` : key;
-  window.dispatchEvent(new KeyboardEvent('keydown', { key, code, bubbles: true }));
-  setTimeout(() => { window.dispatchEvent(new KeyboardEvent('keyup', { key, code, bubbles: true })); done(); }, ms);
+  window.dispatchEvent(keyEvent('keydown', key, code));
+  setTimeout(() => { window.dispatchEvent(keyEvent('keyup', key, code)); done(); }, ms);
 });
 
 export function setupPlaytest(game) {

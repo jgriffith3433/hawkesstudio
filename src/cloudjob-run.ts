@@ -69,6 +69,8 @@ export async function prepare(unit: string, spec: Spec, store: Store, log: (s: s
       ? git(cwd, ['checkout', '--quiet', '-B', spec.git.branch, spec.git.head])
       : git(cwd, ['checkout', '--quiet', '--detach', spec.git.head]);
     if (!co.ok) throw new Error(`checkout of ${spec.git.head.slice(0, 7)}: ${co.err.split('\n').pop()}`);
+    // As in Studio's own clone: the agent's brief and notes never go into a commit.
+    fs.appendFileSync(path.join(cwd, '.git', 'info', 'exclude'), '\n.hawkes/\n');
     log(`[job] workspace ${spec.git.remote} at ${spec.git.head.slice(0, 7)} (${spec.git.branch})`);
   } else fs.mkdirSync(cwd, { recursive: true });
   const pack = await store.get(key('in.pack'));
@@ -97,6 +99,9 @@ export function collect(spec: Spec, start: string | null, tmp: string, at: (p: s
     const d = dirtyState(cwd);
     deleted = d.deleted;
     for (const rel of d.changed) entries.push({ p: rel, file: path.join(cwd, rel) });
+    // The agent's notes (.hawkes/: its summary, question, stuck notes) come back by name: they're excluded from git.
+    const have = new Set(entries.map((e) => e.p));
+    entries.push(...folderEntries(path.join(cwd, '.hawkes'), (rel) => `.hawkes/${rel}`).filter((e) => !have.has(e.p)));
     gitOut = { head, bundle: Boolean(bundle) };
   }
   return { pack: packFiles(entries, deleted), bundle, git: gitOut };

@@ -177,6 +177,10 @@ test('a Cloud Run job pass: the workspace and session go out, its commits, files
   git(cwd, 'commit', '-qam', 'local commit');
   fs.writeFileSync(path.join(cwd, 'dirty.txt'), 'local edit\n');
   fs.writeFileSync(path.join(cwd, 'gone.txt'), 'the job deletes me\n');
+  // The agent's brief, kept out of commits like agents.ts writeBrief does (2026-10-31: it never reached the job).
+  fs.mkdirSync(path.join(cwd, '.hawkes'), { recursive: true });
+  fs.writeFileSync(path.join(cwd, '.hawkes', 'brief.md'), 'Make the first playable version.\n');
+  fs.appendFileSync(path.join(cwd, '.git', 'info', 'exclude'), '\n.hawkes/\n');
   // Claude Code's folder, with a session from an earlier pass.
   const claude = path.join(TMP, 'claude-home');
   const env = { ...process.env, CLAUDE_CONFIG_DIR: claude };
@@ -211,8 +215,8 @@ test('a Cloud Run job pass: the workspace and session go out, its commits, files
   const script = path.join(TMP, 'fake-pass.mjs');
   fs.writeFileSync(script, `import fs from 'node:fs'; import path from 'node:path'; import { execFileSync } from 'node:child_process';
 const g = (...a) => execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.com', ...a], { encoding: 'utf8' }).trim();
-console.log(JSON.stringify({ log: g('log', '--format=%s').split('\\n'), dirty: fs.readFileSync('dirty.txt', 'utf8'), gone: fs.existsSync('gone.txt'), s0: fs.existsSync(path.join(process.env.TALK_SESSIONS, 's0.jsonl')), key: process.env.GITHUB_TOKEN ?? null }));
-fs.writeFileSync('a.txt', 'from the job\\n'); g('commit', '-qam', 'job commit');
+console.log(JSON.stringify({ log: g('log', '--format=%s').split('\\n'), dirty: fs.readFileSync('dirty.txt', 'utf8'), gone: fs.existsSync('gone.txt'), brief: fs.existsSync('.hawkes/brief.md') ? fs.readFileSync('.hawkes/brief.md', 'utf8') : null, s0: fs.existsSync(path.join(process.env.TALK_SESSIONS, 's0.jsonl')), key: process.env.GITHUB_TOKEN ?? null }));
+fs.writeFileSync('a.txt', 'from the job\\n'); fs.writeFileSync('.hawkes/summary.md', 'Built it.\\n'); g('add', '-A'); g('commit', '-qm', 'job commit');
 fs.writeFileSync('new.txt', 'untracked from the job\\n'); fs.rmSync('gone.txt');
 fs.writeFileSync(path.join(process.env.TALK_SESSIONS, 's1.jsonl'), '{"job":true}\\n');
 console.error('a warning'); process.exit(3);
@@ -237,6 +241,7 @@ console.error('a warning'); process.exit(3);
   assert.equal(seen.dirty, 'local edit\n');
   assert.equal(seen.gone, true);
   assert.equal(seen.s0, true, 'the earlier session went along');
+  assert.equal(seen.brief, 'Make the first playable version.\n', "the agent's brief went along, though git ignores it");
   assert.equal(seen.key, null, 'no GitHub token in the pass\'s environment');
   assert.match(err, /a warning/);
   // The clone token travels only in the spec (deleted once read), never in its environment.
@@ -249,6 +254,8 @@ console.error('a warning'); process.exit(3);
   assert.equal(fs.readFileSync(path.join(cwd, 'a.txt'), 'utf8'), 'from the job\n');
   assert.equal(fs.readFileSync(path.join(cwd, 'new.txt'), 'utf8'), 'untracked from the job\n');
   assert.equal(fs.existsSync(path.join(cwd, 'gone.txt')), false);
+  assert.equal(fs.readFileSync(path.join(cwd, '.hawkes', 'summary.md'), 'utf8'), 'Built it.\n', "the agent's notes came back");
+  assert.doesNotMatch(git(cwd, 'show', '--stat', '--format=', 'HEAD'), /\.hawkes/, 'and never went into a commit');
   assert.equal(fs.readFileSync(path.join(sessions, 's1.jsonl'), 'utf8'), '{"job":true}\n');
   // The bucket is cleared once the work is back.
   await new Promise((r) => setTimeout(r, 200));
