@@ -144,10 +144,13 @@ async function studioGithubLine(box) {
   try {
     const g = await api('/api/github');
     const btn = (href, label, primary) => `<a class="button small${primary ? ' primary' : ''}" href="${esc(href)}" target="_blank" rel="noopener">${label}</a>`;
-    box.innerHTML = !g.app
+    // A customer's Studio with no app to share yet: say so (a button with no link only reopened this page).
+    box.innerHTML = !g.app && !g.setup
+      ? `<div class="meta">${esc(g.error || "GitHub isn't set up for Studio yet: Hawkes Studio's team turns it on.")}</div>`
+      : !g.app
       ? `<div class="meta">GitHub isn't connected yet. One click on GitHub connects it; then pick the repositories Studio may work on.</div><div style="margin-top:6px">${btn(g.setup, 'Connect GitHub', true)}</div>`
       : `<div class="meta">GitHub: the app <b>${esc(g.app.slug)}</b>${g.installations.length ? ` is installed on ${g.installations.map((i) => esc(i.account)).join(', ')}` : ' is made, not installed yet'}${g.user ? `; you're signed in as <b>${esc(g.user.login)}</b>` : ''}.</div>
-         <div style="margin-top:6px;display:flex;gap:6px;flex-wrap:wrap">${g.connect ? btn(g.connect, 'Sign in with GitHub', true) : ''}${btn(g.install, g.installations.length ? 'Change repositories' : 'Choose repositories', !g.connect && !g.installations.length)}</div>
+         <div style="margin-top:6px;display:flex;gap:6px;flex-wrap:wrap">${g.connect ? btn(g.connect, 'Sign in with GitHub', true) : ''}${g.install ? btn(g.install, g.installations.length ? 'Change repositories' : 'Choose repositories', !g.connect && !g.installations.length) : ''}</div>
          ${g.connect ? '<div class="meta">First sign in with GitHub, then choose the repositories Studio may work on.</div>' : ''}
          ${g.user || g.installations.length ? `<div class="meta" style="margin-top:6px">${g.installations.map((i) => i.manage ? `<a href="${esc(i.manage)}" target="_blank" rel="noopener">Manage on GitHub (${esc(i.account)}) ↗</a>` : '').filter(Boolean).join(' · ')}${g.user ? ` <button type="button" class="small" data-gh="disconnect" style="margin-left:6px">Disconnect GitHub</button>` : ''}</div>` : ''}`;
     box.querySelector('[data-gh="disconnect"]')?.addEventListener('click', async (e) => {
