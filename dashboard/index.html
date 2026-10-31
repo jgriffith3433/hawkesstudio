@@ -206,7 +206,10 @@
         <select id="memStatus"><option value="active,candidate,disputed">Active and waiting</option><option value="candidate,disputed">Waiting for curation</option><option value="active">Active</option><option value="faded">Faded</option><option value="all">Everything</option></select>
         <input id="memQ" placeholder="Search the memory (Enter)" style="min-width:16em">
         <button class="small" id="memNew">Add…</button>
+        <button class="small" id="memExport" title="Take a project's knowledge to another Studio">Export…</button>
+        <button class="small" id="memImport" title="Bring a project's knowledge from another Studio or a doc">Import…</button>
       </div>
+      <div id="memMove" class="card" style="display:none;margin:8px 0;padding:10px"></div>
       <div id="memStats" class="meta" style="margin:8px 0"></div>
       <div id="memCandidates"></div>
       <div id="memList"></div>

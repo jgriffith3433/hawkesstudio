@@ -124,6 +124,10 @@ const server = http.createServer(async (req, res) => {
     if (route.startsWith('/auth/') && (await (await import('./auth-pages.ts')).handleAuthRoute(req, res, url))) return;
     // 🐞 reports from a project's own pages (reportkey.ts): the project's key and its origins let them in, no sign-in.
     if (route.startsWith('/r/') && (await (await import('./reportkey.ts')).handleReportRoutes(req, res, url))) return;
+    // A one-time memory export link (memory-transfer.ts): another Studio fetches it with no keys; the signed, expiring,
+    // single-use token is the check, so it comes before the sign-in gate.
+    const memLink = /^\/api\/memory\/export\/([A-Za-z0-9_-]+\.[A-Za-z0-9_-]+)$/.exec(route);
+    if (memLink && method === 'GET') return await (await import('./memory-api.ts')).handleExportLink(req, res, memLink[1], send);
     // On Cloud Run nothing stands in front of Studio (Caddy did on the AWS server): a session, J's owner key or the
     // agents' key, else the sign-in page (cloudauth.ts).
     if (cloudMode()) {

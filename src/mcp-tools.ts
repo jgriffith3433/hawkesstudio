@@ -637,5 +637,18 @@ function memoryTools(studio: Client['studio']): McpTool[] {
         }
       },
     },
+    {
+      name: 'memory_transfer',
+      description: "Move a project's knowledge (canon, decisions with their quotes, conventions, lessons, preferences) between Studios, e.g. \"bring this game's canon over from my other Studio\". actions: export { product, kinds } (the portable bundle, format hawkes-memory/1: active entries only, no run history or secrets); link { product, kinds, minutes } (a one-time export link, signed, expiring (default 60 min): paste it into the other Studio's import); import { url | bundle | markdown, product, mode, quote } (url: another Studio's export link; bundle: the pasted JSON; markdown: a story doc or a repo's AGENTS.md, one canon or convention entry per section, with name: the doc's name and kind to override; product: the project id here the entries belong to (renames the bundle's); mode candidates (default: curation reviews them) or active (only when the owner says so: quote their exact words)). Near-duplicates merge into what is there. Admins and Talk only.",
+      inputSchema: obj({ action: str('export | link | import'), product: str("Project id (export/link: this Studio's; import: the project here, renaming the bundle's)"), kinds: str('canon, decision, convention, lesson, preference (comma list; default all)'), minutes: { type: 'number', description: 'link: minutes until it expires (default 60, at most 1440)' }, url: str("import: another Studio's one-time export link"), bundle: str('import: the bundle JSON, pasted'), markdown: str('import: a Markdown doc'), name: str("import markdown: the doc's name (e.g. Story.md, AGENTS.md)"), kind: str('import markdown: canon | convention | lesson | preference (default: canon for story docs, convention for AGENTS.md/README)'), mode: str('import: candidates (default) | active'), quote: str("import active: the owner's exact words asking for it") }, ['action']),
+      run: async (a) => {
+        switch (a.action) {
+          case 'export': return studio(`/api/memory/export?${new URLSearchParams({ product: String(a.product ?? 'studio'), ...(a.kinds ? { kinds: String(a.kinds) } : {}) })}`);
+          case 'link': return studio('/api/memory/export/link', { method: 'POST', body: { product: a.product ?? 'studio', kinds: a.kinds, minutes: a.minutes } });
+          case 'import': return studio('/api/memory/import', { method: 'POST', body: Object.fromEntries(['url', 'bundle', 'markdown', 'name', 'kind', 'product', 'mode', 'quote'].filter((k) => a[k] !== undefined && a[k] !== '').map((k) => [k, a[k]])) });
+          default: throw new Error('action: export | link | import');
+        }
+      },
+    },
   ];
 }

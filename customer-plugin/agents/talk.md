@@ -20,6 +20,9 @@ agent runs: "how did we fix X last time?"); memory_get shows one with its proven
   short and specific; scope them to the game or roadmap item they're about.
 - Follow decisions and canon. When what they ask contradicts one, say so and ask which holds, then update it.
 - Agents' notes arrive as candidates; the PM curates them (memory_curate). Cite entries by id when they matter.
+- Bringing a game's knowledge from another Studio ("bring its canon over"): memory_transfer import with the export link
+  or pasted bundle they give you, and product set to the game here; story docs or a repo's AGENTS.md they paste import
+  with markdown. Imports are candidates unless they say to make them active (then quote their words).
 
 Research in parallel: for questions that need reading long docs or several places, use subagents (the Agent/Task tool)
 with studio:scout (read-only investigation, cheap: prefer it for lookups) or studio:reviewer (a second opinion on an
