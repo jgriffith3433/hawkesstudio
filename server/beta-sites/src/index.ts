@@ -419,6 +419,18 @@ async function takePass(req: Request, env: Env, lane: Lane, org: string, url: UR
   return new Response(null, { status: 303, headers: { Location: to, 'Set-Cookie': cookie, 'Cache-Control': 'no-store' } });
 }
 
+/** The project prefix of the page that asked (same host only): /o/<org>/<project>, /ob/..., /g/<game>, /b/<game>, with
+ *  a change's /c/<id> when the page was inside one. null: not from a project under a path. */
+export function underProject(req: Request, url: URL): string | null {
+  const ref = req.headers.get('Referer');
+  if (!ref) return null;
+  let r: URL;
+  try { r = new URL(ref); } catch { return null; }
+  if (r.host !== url.host) return null;
+  const m = /^(\/(?:o|ob)\/[a-z0-9][a-z0-9-]{1,38}[a-z0-9]\/[a-z][a-z0-9-]{1,39}|\/(?:g|b)\/[a-z][a-z0-9-]{1,39})(\/c\/[A-Za-z0-9_-]{1,64})?\//.exec(r.pathname);
+  return m ? m[1] + (m[2] ?? '') : null;
+}
+
 export async function handle(req: Request, env: Env, now = Date.now()): Promise<Response> {
   const url = new URL(req.url);
   if (url.pathname.startsWith('/.hawkes-sites/')) return publish(req, env, url, now);
@@ -437,6 +449,14 @@ export async function handle(req: Request, env: Env, now = Date.now()): Promise<
     lane = g[1] === 'b' ? 'beta' : 'live';
     sub = `g-${g[2]}`;
     pathname = g[3];
+  }
+  // A root path asked for by a page of a project under a path (/o/<org>/<project>/, /g/<game>/, a change's /c/<id>/
+  // inside): back into that project. Sites written for their own domain use root paths (/css/site.css, /Game/), which
+  // left Yooba Land's website unstyled with Play going nowhere (2026-10-31). The Referer says which project; 307 keeps
+  // a form's method and body.
+  if (lane === 'live' && sub === 'sites' && !g && !/^\/(o|ob|g|b|builds)\//.test(url.pathname)) {
+    const back = underProject(req, url);
+    if (back) return new Response(null, { status: url.pathname === '/' ? 302 : 307, headers: { Location: `${back}${url.pathname}${url.search}`, 'Cache-Control': 'no-store', Vary: 'Referer' } });
   }
   // Customers' Studios' sites (J, 2026-10-31): https://sites.<domain>/o/<org>/<project>/ (studio-beta's /ob/...), R2
   // <lane>/o/<org>/<project>/..., previews at /c/<change>/ inside; passes signed by that Studio, kept per org by Path.

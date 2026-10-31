@@ -475,3 +475,24 @@ test("customers' Studios: sites.<domain>/o/<org>/<project>/, written only by tha
     delete process.env.STUDIO_ORG;
   }
 });
+
+test("a site written for its own domain still works under a path: root paths from a project's page go back into it", async () => {
+  const at = (path: string, referer?: string, method = 'GET') => W.handle(new Request(`https://sites.hawkesgen.ai${path}`, { method, headers: referer ? { Referer: referer } : {} }), env);
+  const site = 'https://sites.hawkesgen.ai/o/acme-studio/rocket/';
+  let r = await at('/css/site.css', site);
+  assert.equal(r.status, 307);
+  assert.equal(r.headers.get('Location'), '/o/acme-studio/rocket/css/site.css');
+  r = await at('/Game/?level=2', `${site}index.html`);
+  assert.equal(r.headers.get('Location'), '/o/acme-studio/rocket/Game/?level=2', 'a link, query kept');
+  r = await at('/img/a.png', 'https://sites.hawkesgen.ai/o/acme-studio/rocket/c/c_abc123/css/site.css');
+  assert.equal(r.headers.get('Location'), '/o/acme-studio/rocket/c/c_abc123/img/a.png', "inside a change's preview, it stays in that change");
+  r = await at('/', `${site}about.html`);
+  assert.equal(r.status, 302, 'the home link');
+  assert.equal(r.headers.get('Location'), '/o/acme-studio/rocket/');
+  r = await at('/logo.png', 'https://sites.hawkesgen.ai/g/my-game/');
+  assert.equal(r.headers.get('Location'), '/g/my-game/logo.png', "a Talk game's path too");
+  for (const ref of [undefined, 'https://evil.example/o/acme-studio/rocket/', 'https://sites.hawkesgen.ai/somewhere/']) {
+    const x = await at('/css/site.css', ref);
+    assert.notEqual(x.status, 307, `not moved for referer ${ref}`);
+  }
+});
