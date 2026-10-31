@@ -487,6 +487,13 @@ async function findOne(r: Recipe, engine: Engine, scans: RepoScan[]): Promise<Fo
       if (dep) return { installed: true, version: versionOfSpec(dep.value), where: at(s, m, dep.line), host: at(s, m), applies: true, ...(versionOfSpec(dep.value) === 'local' ? { note: `a local path (${dep.value}): it only works on the machine that has it` } : {}) };
       const embedded = `${path.posix.dirname(m)}/${r.package}/package.json`;
       if (s.blobs.has(embedded)) return { installed: true, version: String((await readJson(s, embedded))?.version ?? 'unknown'), where: at(s, embedded), host: at(s, m), applies: true, note: 'embedded in Packages/' };
+      // Embedded under another folder name (Packages/HawkesPlaytest/): found by the package's own name, so installing
+      // doesn't add a second copy Unity would refuse (2026-10-31 review).
+      const dir = path.posix.dirname(m);
+      for (const f of [...s.blobs.keys()].filter((b) => b.startsWith(`${dir}/`) && /^[^/]+\/package\.json$/.test(b.slice(dir.length + 1)) && b !== embedded).slice(0, 60)) {
+        const j = await readJson(s, f).catch(() => null);
+        if (j?.name === r.package) return { installed: true, version: String(j.version ?? 'unknown'), where: at(s, f), host: at(s, m), applies: true, note: `embedded in ${path.posix.dirname(f)}/` };
+      }
     }
     return { installed: false, version: null, where: null, host, applies: Boolean(host) };
   }

@@ -688,6 +688,18 @@ export async function github(route: string, init: { method?: string; body?: unkn
   return data;
 }
 
+const mergeMethods = new Map<string, { method: 'squash' | 'merge' | 'rebase'; at: number }>();
+/** The merge method a repo allows (squash first, then a merge commit, then rebase), read from GitHub and kept 10 minutes:
+ *  repos that turn squash off answered 405 to every merge (2026-10-31 review). */
+export async function mergeMethodOf(slug: string): Promise<'squash' | 'merge' | 'rebase'> {
+  const hit = mergeMethods.get(slug);
+  if (hit && Date.now() - hit.at < 10 * 60_000) return hit.method;
+  const r = await github(`/repos/${slug}`).catch(() => null);
+  const method = !r || r.allow_squash_merge !== false ? 'squash' : r.allow_merge_commit !== false ? 'merge' : 'rebase';
+  mergeMethods.set(slug, { method, at: Date.now() });
+  return method;
+}
+
 // ----------------------------------------------------------------- brief
 
 /** The marker a GPU change leaves when it merged stand-ins (J, 2026-10-18): what's still to make, with its Gen job ids. */
@@ -1455,11 +1467,27 @@ function resumeAllowed(c: Change) {
 }
 
 /** Runs queued changes up to the concurrency limit, per product up to its limit when they don't collide. */
+/** Why agents can't start in this customer's Studio (its plan, or no AI linked), or null; J's Studio is never gated. */
+export async function customerAgentGate(): Promise<string | null> {
+  const { customerStudio } = await import('./tenancy.ts');
+  if (!customerStudio()) return null;
+  try { await (await import('./entitlements.ts')).requireFeature('agents'); } catch { return 'waiting: this plan has no agents (Settings → Plan and credits to upgrade); it starts by itself after'; }
+  if (!(await (await import('./ailink.ts')).aiReady())) return 'waiting: connect your AI first (Settings → Your AI); it starts by itself after';
+  return null;
+}
+
 async function pump() {
   // A Studio deploy is waiting (drain.ts): start nothing new; the queue resumes after the deploy restarts Studio.
   if (deployPending()) return;
   // The harness in use refuses to run (harness-hold.ts): nothing starts; the hold's own look resumes the queue.
   if (harnessHeld()) return void reviewHolds().catch(() => {});
+  // A customer's Studio whose plan has no agents, or with no AI linked yet: nothing starts (it would only fail as a
+  // harness stop and wait forever); the queued changes say why, and start the moment that's fixed (2026-10-31 review).
+  const gate = await customerAgentGate();
+  if (gate) {
+    for (const c of listChanges({ status: 'queued', limit: 500 })) if (c.detail !== gate) update(c.id, { detail: gate });
+    return;
+  }
   const s = agentSettings();
   // Busy: anything running in this process (a revision or an answer is queued while it runs) and whatever is active.
   const active = new Map(listChanges({ status: ACTIVE, limit: 500 }).map((c) => [c.id, c]));
@@ -2405,7 +2433,7 @@ async function approveInfra(c: Change, by: string, origin?: string | null) {
   if (ci.state !== 'success') throw new Error(`CI on pull request #${c.pr} isn't green (${ci.state}: ${ci.detail}); not merging into main, which deploys ${t.name}.`);
   let m: any;
   try {
-    m = await github(`/repos/${c.slug}/pulls/${c.pr}/merge`, { method: 'PUT', body: { merge_method: 'squash', sha: head, commit_title: `${c.title} (#${c.pr})` } });
+    m = await github(`/repos/${c.slug}/pulls/${c.pr}/merge`, { method: 'PUT', body: { merge_method: await mergeMethodOf(c.slug!), sha: head, commit_title: `${c.title} (#${c.pr})` } });
   } catch (e: any) {
     // Main moved again between the update and the merge: up to date once more, and it merges once green.
     const again = MERGE_REFUSED.test(String(e.message ?? e)) ? await updateFromBase(c.id) : null;
@@ -2876,7 +2904,7 @@ export async function approve(id: string, { confirm, by = 'J', origin, auto = fa
     let m: any;
     try {
       // `sha`: GitHub refuses the merge if the pull request's head moved since the check above.
-      m = await github(`/repos/${c.slug}/pulls/${c.pr}/merge`, { method: 'PUT', body: { merge_method: 'squash', sha, commit_title: `${c.title} (#${c.pr})` } });
+      m = await github(`/repos/${c.slug}/pulls/${c.pr}/merge`, { method: 'PUT', body: { merge_method: await mergeMethodOf(c.slug!), sha, commit_title: `${c.title} (#${c.pr})` } });
     } catch (e: any) {
       // Usually a conflict with what's on beta now (devtools saves, another change). J hears it in Talk with the files
       // (an automatic merge says it in one line itself: autoMergeBeta).

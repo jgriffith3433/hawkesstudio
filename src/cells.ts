@@ -286,6 +286,9 @@ export function ensureCell(orgId: string, why: string, o: { dry?: boolean; game?
     try {
       const image = await currentImage();
       const g = await ensureGenKey(orgId, o).catch((e) => { console.warn(`[cells] ${orgId} has no Gen key: ${e.message}`); return null; });
+      // Without its Gen key a cell can't generate, review or use Gen's tools until it's made again: fail now (the next
+      // visit tries again) rather than start a cell that half works (2026-10-31 review).
+      if (!g && !R.dryRun(o) && process.env.STUDIO_CELLS_GEN !== 'off') throw new StudioError("Hawkes Gen couldn't make this studio's key just now; it tries again on the next visit in a minute.", 503);
       // Isolated cells (cellrun.ts): its own service account, reaching only its own folder, made before the service.
       if (R.isolated()) await R.ensureCellIdentity(orgId, o);
       const made = await R.createCell(orgId, { sub: org.ownerSub, email: org.ownerEmail }, image, o, undefined, g ?? undefined);

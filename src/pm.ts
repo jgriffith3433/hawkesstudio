@@ -2382,6 +2382,10 @@ let lastError: string | null = null;
 export const pmTicking = () => ticking;
 export async function tick() {
   if (ticking || !started) return;
+  // A customer's Studio whose plan has no PM: the loop rests (it would start agents the plan doesn't include).
+  if ((await import('./tenancy.ts')).customerStudio()) {
+    try { await (await import('./entitlements.ts')).requireFeature('pm'); } catch { return; }
+  }
   ticking = true;
   try {
     // Recording what happened can fail without stopping the starts below (it did: a Studio task's beta check threw).

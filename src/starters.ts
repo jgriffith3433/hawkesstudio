@@ -107,7 +107,7 @@ jobs:
       - name: Tell Hawkes Studio
         run: |
           token=$(curl -sSf -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=${host}" | jq -r .value)
-          curl -sS --fail-with-body --retry 3 --retry-delay 10 --retry-all-errors \\
+          curl -sS --fail-with-body --retry 8 --retry-delay 15 --retry-max-time 240 --retry-all-errors \\
             -X POST -H "Authorization: Bearer $token" ${host}/api/hooks/github
 `;
 }

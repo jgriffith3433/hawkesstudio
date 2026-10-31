@@ -128,7 +128,17 @@ export async function getCell(org: string, o: { dry?: boolean } = {}, c = cellsC
 export async function createCell(org: string, owner: { sub: string; email: string }, image: string, o: { dry?: boolean } = {}, c = cellsConfig(), gen?: CellGen) {
   needConfig(c, o);
   const name = serviceName(org, c);
-  const op = await call('POST', `${base(c)}/services?serviceId=${name}`, cellService(org, owner, image, c, gen), o);
+  // A 409: it exists already (another wake made it) or is still being deleted after hibernation: wait and try again,
+  // up to a minute, instead of failing the wake (2026-10-31 review).
+  let op: any = null;
+  for (let i = 0; ; i++) {
+    try { op = await call('POST', `${base(c)}/services?serviceId=${name}`, cellService(org, owner, image, c, gen), o); break; }
+    catch (e: any) {
+      if (!/409/.test(String(e?.message ?? e)) || i >= 6) throw e;
+      if (await getCell(org, o, c).catch(() => null)) break;
+      await new Promise((r) => setTimeout(r, 10_000));
+    }
+  }
   await call('POST', `${base(c)}/services/${name}:setIamPolicy`, { policy: { bindings: [{ role: 'roles/run.invoker', members: ['allUsers'] }] } }, o);
   return { service: name, url: serviceUrl(org, c), operation: op?.name ?? null, dry: dryRun(o) };
 }
