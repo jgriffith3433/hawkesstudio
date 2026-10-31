@@ -10,7 +10,7 @@
 // deploy.ts does the checks, the owner's typed words or Approve tap, the deploys rows and the live check.
 
 import { BETA, MAIN, type Commit } from './beta.ts';
-import { gh, commitOf, fastForward } from './deploy-cloud.ts';
+import { gh, commitOf, fastForward, liveBranchOf } from './deploy-cloud.ts';
 import { getProduct, StudioError, type Product } from './config.ts';
 import { db } from './db.ts';
 
@@ -51,13 +51,14 @@ export async function publishTargets(p: Product, sha: string, io: GitHubIO = {})
     const row = db.prepare(`SELECT version, commit_sha FROM builds WHERE product = ? AND build = ? AND change IS NULL AND commit_sha IS NOT NULL AND status IN ('ready', 'pruned') AND sha = ? ORDER BY version DESC LIMIT 1`).get(p.id, b.id, sha) as { version: number; commit_sha: string } | undefined;
     if (!row) { blockers.push(`Build ${b.id} of ${BETA} ${sha.slice(0, 7)} isn't in ${slug}'s ${BETA} yet: build ${BETA} first (a push to ${BETA}, or "build" on the project).`); continue; }
     const token = await tokenFor(slug, io);
-    const main = await gh(f, token, 'GET', `/repos/${slug}/commits/${MAIN}`);
-    if (!main.ok) { blockers.push(`${slug} has no ${MAIN} branch on GitHub (or Studio can't read it: ${main.status}).`); continue; }
+    const live = await liveBranchOf(slug, f, token);
+    const main = await gh(f, token, 'GET', `/repos/${slug}/commits/${encodeURIComponent(live)}`);
+    if (!main.ok) { blockers.push(`${slug} has no ${live} branch on GitHub (or Studio can't read it: ${main.status}).`); continue; }
     const mainSha = String(main.j.sha);
     const cmp = await gh(f, token, 'GET', `/repos/${slug}/compare/${mainSha}...${row.commit_sha}`);
-    if (!cmp.ok) { blockers.push(`GitHub couldn't compare ${slug} ${MAIN}...${row.commit_sha.slice(0, 7)} (${cmp.status}).`); continue; }
+    if (!cmp.ok) { blockers.push(`GitHub couldn't compare ${slug} ${live}...${row.commit_sha.slice(0, 7)} (${cmp.status}).`); continue; }
     // ahead: main fast-forwards to it; identical or behind: that build is already in main; diverged: it can't.
-    if (cmp.j.status === 'diverged') { blockers.push(`${slug}'s ${MAIN} has commits its ${BETA} lacks, so it can't be fast-forwarded to build ${b.id} (${row.commit_sha.slice(0, 7)}). Merge ${MAIN} into ${BETA} in ${slug}, build again, then go live.`); continue; }
+    if (cmp.j.status === 'diverged') { blockers.push(`${slug}'s ${live} has commits its ${BETA} lacks, so it can't be fast-forwarded to build ${b.id} (${row.commit_sha.slice(0, 7)}). Merge ${live} into ${BETA} in ${slug}, build again, then go live.`); continue; }
     targets.push({ build: b.id, project: target.id, name: target.name, slug, commit: row.commit_sha, version: row.version, main: mainSha, move: cmp.j.status === 'ahead' });
   }
   return { targets, blockers };
@@ -85,20 +86,22 @@ export async function goLiveOnGitHub(p: Product, plan: { beta: { sha: string; sh
   const log: string[] = [];
   const moved: { project: string; slug: string; build: string; version: number; before: string | null; after: string }[] = [];
   for (const t of (plan.github?.targets ?? []).filter((x) => x.move)) {
-    await fastForward(t.slug, MAIN, t.commit, f, io.token);
+    const tLive = await liveBranchOf(t.slug, f, await tokenFor(t.slug, io));
+    await fastForward(t.slug, tLive, t.commit, f, io.token);
     moved.push({ project: t.project, slug: t.slug, build: t.build, version: t.version, before: t.main, after: t.commit });
-    log.push(`${t.slug}: ${MAIN} -> ${t.commit.slice(0, 7)} (build ${t.build} ${t.version} of ${p.name})`);
+    log.push(`${t.slug}: ${tLive} -> ${t.commit.slice(0, 7)} (build ${t.build} ${t.version} of ${p.name})`);
   }
   const before = plan.main?.sha ?? null;
   let after = before;
+  const live = await liveBranchOf(slug, f, token);
   if (plan.commits.length && before !== plan.beta.sha) {
     try {
-      await fastForward(slug, MAIN, plan.beta.sha, f, token);
+      await fastForward(slug, live, plan.beta.sha, f, token);
       after = plan.beta.sha;
-      log.push(`${slug}: ${MAIN} -> ${plan.beta.short}`);
+      log.push(`${slug}: ${live} -> ${plan.beta.short}`);
     } catch (e: any) {
-      if (!moved.length) throw new StudioError(`${e.message}: merge ${MAIN} into ${BETA}, playtest ${BETA}, then go live.`, 409);
-      log.push(`warning: ${slug}'s ${MAIN} wasn't fast-forwarded: ${e.message}`);
+      if (!moved.length) throw new StudioError(`${e.message}: merge ${live} into ${BETA}, playtest ${BETA}, then go live.`, 409);
+      log.push(`warning: ${slug}'s ${live} wasn't fast-forwarded: ${e.message}`);
     }
   }
   return { slug, before, after, targets: moved, log };
@@ -109,7 +112,7 @@ export async function rollbackRefs(slug: string, to: string | null, io: GitHubIO
   const f = fetchOf(io);
   const token = await tokenFor(slug, io);
   const one = async (ref: string) => { const r = await gh(f, token, 'GET', `/repos/${slug}/commits/${ref}`); return r.ok ? commitOf(r.j) : null; };
-  const main = await one(MAIN);
+  const main = await one(encodeURIComponent(await liveBranchOf(slug, f, token)));
   const back = to ? await one(to) : null;
   let undo: Commit[] = [];
   if (main && back && main.sha !== back.sha) {
@@ -131,12 +134,13 @@ export async function rollbackOnGitHub(slug: string, to: string, message: string
     if (!r.ok) throw new StudioError(`GitHub ${method} ${url}: ${r.status}${r.j?.message ? ` ${r.j.message}` : ''}`, 409);
     return r.j;
   };
-  const ref = await must('GET', `/repos/${slug}/git/ref/heads/${MAIN}`);
+  const live = await liveBranchOf(slug, f, token);
+  const ref = await must('GET', `/repos/${slug}/git/ref/heads/${encodeURIComponent(live)}`);
   const before = String(ref.object?.sha ?? '');
-  if (expectMain && before !== expectMain) throw new StudioError(`${slug}'s ${MAIN} moved since the plan was made; look at the rollback plan again.`, 409);
+  if (expectMain && before !== expectMain) throw new StudioError(`${slug}'s ${live} moved since the plan was made; look at the rollback plan again.`, 409);
   const [old, cur] = await Promise.all([must('GET', `/repos/${slug}/git/commits/${to}`), must('GET', `/repos/${slug}/git/commits/${before}`)]);
-  if (old.tree?.sha === cur.tree?.sha) throw new StudioError(`${MAIN} already has the files of ${to.slice(0, 7)}; nothing to roll back.`, 409);
+  if (old.tree?.sha === cur.tree?.sha) throw new StudioError(`${live} already has the files of ${to.slice(0, 7)}; nothing to roll back.`, 409);
   const c = await must('POST', `/repos/${slug}/git/commits`, { message, tree: old.tree.sha, parents: [before] });
-  await fastForward(slug, MAIN, String(c.sha), f, token);
+  await fastForward(slug, live, String(c.sha), f, token);
   return { before, after: String(c.sha) };
 }

@@ -88,6 +88,17 @@ export async function cloudBlockers(p: Product, refs: CloudRefs, f: Fetch = fetc
   return out;
 }
 
+const liveBranches = new Map<string, { branch: string; at: number }>();
+/** A repo's live branch: its default branch on GitHub (main, master, trunk...), kept 10 minutes; 'main' when unreadable. */
+export async function liveBranchOf(slug: string, f: Fetch, token: Token): Promise<string> {
+  const hit = liveBranches.get(slug.toLowerCase());
+  if (hit && Date.now() - hit.at < 10 * 60_000) return hit.branch;
+  const r = await gh(f, token, 'GET', `/repos/${slug}`);
+  const branch = r.ok && typeof r.j?.default_branch === 'string' && r.j.default_branch ? String(r.j.default_branch) : 'main';
+  liveBranches.set(slug.toLowerCase(), { branch, at: Date.now() });
+  return branch;
+}
+
 /** Moves a branch to a commit, fast-forward only (GitHub answers 422 for anything else). */
 export async function fastForward(slug: string, branch: string, sha: string, f: Fetch, given?: Token) {
   const token = await tokenOf(slug, given);

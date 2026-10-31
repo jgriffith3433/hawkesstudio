@@ -247,10 +247,24 @@ export function appJwt(c = appConfig()) {
   return `${head}.${crypto.sign('RSA-SHA256', Buffer.from(head), c.pem).toString('base64url')}`;
 }
 
+/** Every page of a GitHub list (per_page=100 until a short page, at most 20 pages): the shared app has one
+ *  installation per customer account, and an install may cover hundreds of repos (2026-10-31 review). `pick` takes the
+ *  array out of an answer that wraps it ({ installations }, { repositories }). */
+export async function ghAll(token: string, url: string, pick: (d: any) => any[] = (d) => d, o: { jwt?: boolean } = {}): Promise<any[]> {
+  const out: any[] = [];
+  for (let page = 1; page <= 20; page++) {
+    const d = await gh(token, 'GET', `${url}${url.includes('?') ? '&' : '?'}per_page=100&page=${page}`, undefined, o);
+    const items = pick(d) ?? [];
+    out.push(...items);
+    if (items.length < 100) break;
+  }
+  return out;
+}
+
 export async function installations() {
   const c = appConfig();
   if (!c) return [];
-  const list = await gh(appJwt(c), 'GET', '/app/installations?per_page=100', undefined, { jwt: true });
+  const list = await ghAll(appJwt(c), '/app/installations', (d) => d, { jwt: true });
   return (list as any[]).map((i) => ({ id: i.id as number, account: String(i.account?.login ?? ''), type: String(i.account?.type ?? ''), repos: i.repository_selection as string, manage: manageUrl(i.id, String(i.account?.login ?? ''), String(i.account?.type ?? '')) }));
 }
 
@@ -265,7 +279,7 @@ export async function installationToken(id: number) {
 
 /** The repositories one installation may reach. */
 export async function installationRepos(id: number) {
-  const r = await gh(await installationToken(id), 'GET', '/installation/repositories?per_page=100');
+  const r = { repositories: await ghAll(await installationToken(id), '/installation/repositories', (d) => d.repositories) };
   return (r.repositories as any[]).map((x) => ({ repo: String(x.full_name), private: Boolean(x.private), url: String(x.html_url) }));
 }
 
@@ -286,7 +300,7 @@ export async function userCallback(base: string, code: string, state: string, in
   // one they can reach, then it is linked to their org.
   if (s?.k === 'install' && s.org && installationId) {
     const link = await exchange({ code, redirect_uri: `${base}/api/github/callback` });
-    const theirs = await gh(link.token, 'GET', '/user/installations?per_page=100');
+    const theirs = { installations: await ghAll(link.token, '/user/installations', (d) => d.installations) };
     const inst = (theirs.installations as any[] ?? []).find((i) => String(i.id) === String(installationId));
     if (!inst) throw new StudioError("That installation isn't one your GitHub account can reach: install the app again from your Studio.", 403);
     linkInstallation(Number(installationId), String(s.org), String(inst.account?.login ?? ''));
@@ -327,7 +341,7 @@ async function installedBy(base: string, code: string, installationId: string) {
   const link = await exchange({ code, redirect_uri: `${base}/api/github/callback` });
   const me = await gh(link.token, 'GET', '/user');
   const login = String(me.login);
-  const theirs = await gh(link.token, 'GET', '/user/installations?per_page=100');
+  const theirs = { installations: await ghAll(link.token, '/user/installations', (d) => d.installations) };
   const inst = (theirs.installations as any[] ?? []).find((i) => String(i.id) === String(installationId));
   if (!inst) throw new StudioError("That installation isn't one your GitHub account can reach: install the app again from your Studio.", 403);
   const account = String(inst.account?.login ?? '');
@@ -349,7 +363,7 @@ export async function syncOrgInstallations(org: string, userId: string) {
   const u = await userToken(userId, org).catch(() => null);
   if (!u || !appConfig()) return [];
   const ours = new Set((await installations()).map((i) => i.id));
-  const theirs = await gh(u.token, 'GET', '/user/installations?per_page=100').catch(() => ({ installations: [] }));
+  const theirs = await ghAll(u.token, '/user/installations', (d) => d.installations).then((installations) => ({ installations })).catch(() => ({ installations: [] as any[] }));
   const linked: string[] = [];
   for (const i of (theirs.installations as any[]) ?? []) {
     if (!ours.has(Number(i.id))) continue;
@@ -360,7 +374,7 @@ export async function syncOrgInstallations(org: string, userId: string) {
 
 /** This app's installation on one GitHub account, as the person's own token sees it (null: not installed there). */
 export async function userInstallationFor(token: string, owner: string) {
-  const r = await gh(token, 'GET', '/user/installations?per_page=100');
+  const r = { installations: await ghAll(token, '/user/installations', (d) => d.installations) };
   const i = ((r.installations as any[]) ?? []).find((x) => String(x.account?.login ?? '').toLowerCase() === owner.toLowerCase());
   return i ? { id: Number(i.id), selection: String(i.repository_selection ?? 'selected') } : null;
 }

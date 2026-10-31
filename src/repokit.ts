@@ -92,9 +92,17 @@ export async function readiness(productId: string, userId?: string | null) {
       ? { id: 'access', ok: true, what: `Studio can reach it (${access.via === 'app' ? 'the GitHub App' : access.via === 'user' ? 'your GitHub sign-in' : access.via === 'pasted' ? 'a pasted token' : "Studio's own token"})` }
       : { id: 'access', ok: false, what: "Studio can't reach the repository", by: 'person', ...(appConfig() || (await linksFor(slug)).install ? { fix: 'Install the GitHub App on it (the link opens with this repository chosen), then check again.', link: (await linksFor(slug)).install } : { fix: 'Connect Studio to GitHub first: choose where its app lives (your account or an organization), then install it on this repository.', link: studioLink('/api/github/app/setup') }) });
   }
+  // Reached only through the person's own GitHub sign-in: the setup card, agents and builds use the app, so they can't.
+  const access0 = items.find((i) => i.id === 'access');
+  if (access0?.ok && /your GitHub sign-in/.test(access0.what)) items.push({ id: 'app', ok: false, what: "Studio reaches it only through your GitHub sign-in, but setup, builds and agents need the GitHub App on it", by: 'person', fix: 'Install the GitHub App on this repository (the link opens with it chosen), then check again.', link: (await linksFor(slug)).install });
   if (slug && token) {
     const info = await gh(token, 'GET', `/repos/${slug}`);
     const main = String(info.default_branch ?? 'main');
+    // Repos Studio can't set up as they are (2026-10-31 review): said plainly instead of failing mid-card.
+    if (info.archived) items.push({ id: 'archived', ok: false, what: `${slug} is archived, so it's read-only: nothing can be pushed to it`, by: 'person', fix: 'Unarchive it in its Settings (Danger Zone), then check again.', link: `https://github.com/${slug}/settings` });
+    if (Number(info.size ?? 1) === 0) items.push({ id: 'empty', ok: false, what: `${slug} is empty (no commits yet)`, by: 'person', fix: 'Push its code first (or make a new game from a starter with studio_project new), then check again.', link: `https://github.com/${slug}` });
+    if (info.fork) items.push({ id: 'fork', ok: true, what: `${slug} is a fork: GitHub doesn't run its workflows (Studio's push hook included) until Actions is turned on for it`, fix: 'Open its Actions tab and turn workflows on, once.', link: `https://github.com/${slug}/actions` });
+    if (main !== 'main') items.push({ id: 'default-branch', ok: true, what: `Its default branch is ${main}: Studio treats ${main} as the live branch` });
     // The hook, and where it sends pushes: the Studio address and OIDC audience inside it (handover.ts).
     const yml = await hookFile(token, slug, main);
     const mainRules = await pushRules(token, slug, main);
@@ -106,6 +114,9 @@ export async function readiness(productId: string, userId?: string | null) {
       items.push(at.ok ? { id: 'hook', ok: true, what: "Studio's push hook is in the repo and points at this Studio" }
         : { id: 'hook', ok: false, what: at.elsewhere.length ? `Studio's push hook points at another Studio (${at.elsewhere.join(', ')}), so its pushes go there, not here` : "The repo's hook workflow doesn't name this Studio, so its pushes don't come here", by: 'approve', step: 'repoint', fix: STEPS.repoint });
     }
+    // Classic branch protection (not a ruleset): reported as a warning, since it may only require reviews or checks.
+    const classic = !mainRules?.blocked ? await gh(token, 'GET', `/repos/${slug}/branches/${encodeURIComponent(main)}`).then((b) => Boolean(b?.protected)).catch(() => false) : false;
+    if (classic) items.push({ id: 'golive', ok: true, what: `${main} has classic branch protection: if it restricts who may push or needs pull requests, going live is refused until this Studio's GitHub App may push it`, link: `https://github.com/${slug}/settings/branches` });
     if (mainRules?.blocked) items.push({ id: 'golive', ok: false, what: `${main} is protected by the repository's rules (${mainRules.rules.join(', ')}): only those on the rule's bypass list may push it, so this Studio can't take it live yet`, by: 'person', fix: `On the rules page, add this Studio's GitHub App to the bypass list of the rule that restricts updates to ${main} (going live still needs the owner's Approve tap in Studio)`, link: mainRules.link });
     const beta = await exists(token, `/repos/${slug}/branches/beta`);
     const dev = await exists(token, `/repos/${slug}/branches/dev`);
@@ -208,7 +219,9 @@ export async function applyPlan(plan: Plan, { origin = null }: { origin?: string
     const access = await accessFor(plan.repo);
     if (!access) throw new StudioError(`Studio can't reach ${plan.repo}: install the GitHub App on it.`, 409);
     const done: string[] = [];
-    for (const step of plan.steps) done.push(await runStep(access.token, plan.repo, step));
+    // Branches before the hook, so a hook skipped on a protected main still lands on beta and dev (2026-10-31 review).
+    const order: Step[] = ['branches', 'hook', 'repoint', 'pages'];
+    for (const step of [...plan.steps].sort((a, b) => order.indexOf(a) - order.indexOf(b))) done.push(await runStep(access.token, plan.repo, step));
     return done;
   }
   const u = await userToken(plan.user);
@@ -227,7 +240,7 @@ export async function applyPlan(plan: Plan, { origin = null }: { origin?: string
   }
   const seed: GameSeed = { id: plan.id, name: plan.name, pitch: plan.pitch, owner, repo, studioUrl: studioBase() };
   // Pages first, so the first push to main (the starter) deploys.
-  done.push(await runStep(u.token, repo, 'pages').catch((e) => `GitHub Pages: not turned on (${e.message}); turn it on in the repo's Settings > Pages > GitHub Actions.`));
+  done.push(await runStep(u.token, repo, 'pages', { pagesWorkflow: true }).catch((e) => `GitHub Pages: not turned on (${e.message}); turn it on in the repo's Settings > Pages > GitHub Actions.`));
   await putFiles(u.token, repo, String(created.default_branch ?? 'main'), starterFiles(plan.starter, seed), `${plan.name}: a new game from Hawkes Studio (${plan.starter} starter)`);
   done.push(`Pushed the ${plan.starter} starter to main (it publishes to ${liveUrlFor(seed)} in a minute or two).`);
   done.push(await runStep(u.token, repo, 'branches'));
@@ -260,7 +273,9 @@ export async function pushRules(token: string, repo: string, branch: string): Pr
 }
 
 /** GitHub's answer to a push its rules refused (422 "Repository rule violations"). */
-export const ruleRefusal = (e: any) => (e?.status === 422 || /: 422 /.test(String(e?.message ?? ''))) && /rule violation|protected ref/i.test(String(e?.message ?? ''));
+export const ruleRefusal = (e: any) => (e?.status === 422 || /: 422 /.test(String(e?.message ?? ''))) && /rule violation|protected ref|protected branch/i.test(String(e?.message ?? ''));
+/** What the owner changes so Studio may push a protected branch (rulesets and classic branch protection). */
+const rulesHelp = (repo: string) => `going live and pushes there need this Studio's GitHub App allowed through: add it to the bypass list of the rule (https://github.com/${repo}/settings/rules) or, for classic branch protection, to who may push (https://github.com/${repo}/settings/branches).`;
 
 /** A repo's hook workflow on a branch (its text), or null when it has none. */
 async function hookFile(token: string, repo: string, branch: string): Promise<string | null> {
@@ -279,21 +294,28 @@ async function hookTemplate(repo: string) {
   return files('web-3d', { id: 'x', name: 'x', pitch: '', owner: '', repo, studioUrl: studioBase() })['.github/workflows/hawkes-studio.yml'];
 }
 
-async function runStep(token: string, repo: string, step: Step): Promise<string> {
+async function runStep(token: string, repo: string, step: Step, o: { pagesWorkflow?: boolean } = {}): Promise<string> {
   const info = await gh(token, 'GET', `/repos/${repo}`);
   const main = String(info.default_branch ?? 'main');
   if (step === 'repoint') {
     // main first (it always gets the hook), then beta and dev where they have one: a push runs the workflow of its own branch.
     const done: string[] = [];
+    const refused: string[] = [];
     for (const branch of [main, 'beta', 'dev'].filter((b, i, a) => a.indexOf(b) === i)) {
       const yml = await hookFile(token, repo, branch).catch(() => null);
       if (yml === null && branch !== main) continue;
       if (yml !== null && hookPointsAt(yml, studioBase()).ok) continue;
       const next = (yml !== null ? repointHook(yml, studioBase()) : null) ?? (await hookTemplate(repo));
-      await putFiles(token, repo, branch, { '.github/workflows/hawkes-studio.yml': next }, `Point Hawkes Studio's push hook at ${studioBase()}`);
+      try {
+        await putFiles(token, repo, branch, { '.github/workflows/hawkes-studio.yml': next }, `Point Hawkes Studio's push hook at ${studioBase()}`);
+      } catch (e: any) {
+        if (ruleRefusal(e)) { refused.push(branch); continue; }
+        throw e;
+      }
       done.push(branch);
     }
-    return done.length ? `Pointed ${repo}'s hook at ${studioBase()} (${done.join(', ')}).` : `${repo}'s hook already points at ${studioBase()}.`;
+    if (!done.length && refused.length) throw new StudioError(`GitHub's rules on ${repo} refused the hook on ${refused.join(', ')}: ${rulesHelp(repo)}`, 409);
+    return `${done.length ? `Pointed ${repo}'s hook at ${studioBase()} (${done.join(', ')}).` : `${repo}'s hook already points at ${studioBase()}.`}${refused.length ? ` ${refused.join(', ')} ${refused.length > 1 ? 'are' : 'is'} protected by the repository's rules, so ${refused.length > 1 ? 'they were' : 'it was'} left alone: ${rulesHelp(repo)}` : ''}`;
   }
   if (step === 'hook') {
     // On main, beta and dev (where they exist): a push runs the workflow file of its own branch, so a hook on main alone
@@ -310,14 +332,15 @@ async function runStep(token: string, repo: string, step: Step): Promise<string>
       } catch (e: any) {
         // main protected by the owner's rules (only admins push it): left alone; going live fast-forwards main to beta,
         // so the hook reaches main with the first go live. Any other branch refusing is a real failure.
-        if (branch === main && ruleRefusal(e)) { skipped.push(branch); continue; }
+        // A branch the owner's rules protect (main: only admins push it; beta: pull requests only): left alone, said.
+        if (ruleRefusal(e)) { skipped.push(branch); continue; }
         throw e;
       }
       if ((await hookFile(token, repo, branch).catch(() => null)) === null) throw new StudioError(`The hook didn't land on ${repo}'s ${branch} (GitHub accepted the commit but the file isn't there): check that the GitHub App may change workflows (its "Workflows: write" permission).`, 502);
       done.push(branch);
     }
-    if (!done.length) throw new StudioError(`GitHub's rules on ${repo} refused the hook on every branch.`, 409);
-    return `Studio's push hook is on ${repo}'s ${done.join(', ')}.${skipped.length ? ` ${skipped.join(', ')} is protected by the repository's rules (only its admins push it), so it was left alone: the hook reaches it with the first go live, which moves ${main} to beta. Going live needs this Studio's GitHub App on that rule's bypass list (https://github.com/${repo}/settings/rules).` : ''}`;
+    if (!done.length) throw new StudioError(`GitHub's rules on ${repo} refused the hook on every branch (${skipped.join(', ')}): ${rulesHelp(repo)}`, 409);
+    return `Studio's push hook is on ${repo}'s ${done.join(', ')}.${skipped.length ? ` ${skipped.join(', ')} ${skipped.length > 1 ? 'are' : 'is'} protected by the repository's rules, so ${skipped.length > 1 ? 'they were' : 'it was'} left alone${skipped.includes(main) ? `: the hook reaches ${main} with the first go live, which moves ${main} to beta` : ''}. ${rulesHelp(repo)}` : ''}`;
   }
   if (step === 'branches') {
     const head = (await gh(token, 'GET', `/repos/${repo}/git/ref/heads/${encodeURIComponent(main)}`)).object.sha;
@@ -335,8 +358,20 @@ async function runStep(token: string, repo: string, step: Step): Promise<string>
     // Actions takes it down until a Pages workflow exists, and the live site is the person's.
     return `GitHub Pages already publishes it (${on.html_url}, ${on.build_type === 'workflow' ? 'from Actions' : `from the ${on.source?.branch ?? 'chosen'} branch`}); left as it is.`;
   }
-  const p = await gh(token, 'POST', `/repos/${repo}/pages`, { build_type: 'workflow' });
-  return `Turned on GitHub Pages (${p.html_url ?? 'from Actions'}).`;
+  // A brand-new game brings its own pages.yml; an existing repo is published from Actions only when it has a workflow
+  // that deploys Pages, else straight from main's files when they're a site (index.html at the root). Turning on
+  // Actions Pages with no workflow published nothing (2026-10-31 review).
+  let workflow = Boolean(o.pagesWorkflow);
+  if (!workflow) {
+    const flows = await gh(token, 'GET', `/repos/${repo}/contents/.github/workflows?ref=${encodeURIComponent(main)}`).catch(() => []);
+    for (const f of (Array.isArray(flows) ? flows : []).filter((x: any) => /\.ya?ml$/.test(String(x.name)))) {
+      const y = await gh(token, 'GET', `/repos/${repo}/contents/${String(f.path).split('/').map(encodeURIComponent).join('/')}?ref=${encodeURIComponent(main)}`).catch(() => null);
+      if (/actions\/deploy-pages|upload-pages-artifact/.test(Buffer.from(String(y?.content ?? ''), 'base64').toString('utf8'))) { workflow = true; break; }
+    }
+    if (!workflow && !(await exists(token, `/repos/${repo}/contents/index.html?ref=${encodeURIComponent(main)}`))) throw new StudioError(`${repo} has no workflow that publishes GitHub Pages and no index.html at the top of ${main}, so turning Pages on would publish nothing. Load the builds skill: an agent can add a Pages workflow that builds it (or say where it's hosted instead).`, 409);
+  }
+  const p = await gh(token, 'POST', `/repos/${repo}/pages`, workflow ? { build_type: 'workflow' } : { build_type: 'legacy', source: { branch: main, path: '/' } });
+  return `Turned on GitHub Pages (${p.html_url ?? (workflow ? 'from Actions' : `from ${main}`)}).`;
 }
 
 /** One commit of whole files onto a branch (the Git Data API: blobs inline in one tree). */

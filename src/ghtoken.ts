@@ -8,7 +8,7 @@ import path from 'node:path';
 import { customerStudio, PLATFORM_GITHUB } from './tenancy.ts';
 
 const cache = new Map<string, { token: string | null; until: number }>();
-const TTL = 40 * 60_000;
+const TTL = 4 * 60_000;
 
 const platformRepo = (slug: string) => slug.split('/')[0].toLowerCase() === PLATFORM_GITHUB;
 
@@ -31,7 +31,9 @@ export async function repoToken(slug: string | null | undefined): Promise<string
     // J's Studio: a repo of someone else's that J's token can still reach (a collaborator), as before.
     if (!token && !customerStudio()) token = process.env.GITHUB_TOKEN ?? null;
   }
-  cache.set(key, { token, until: Date.now() + TTL });
+  // Short: the caches behind accessFor and cellGithubToken hand back a token with as little as 5 minutes left, and a
+  // miss (the app not installed yet) must clear soon after the person installs it.
+  cache.set(key, { token, until: Date.now() + (token ? TTL : 60_000) });
   return token;
 }
 
