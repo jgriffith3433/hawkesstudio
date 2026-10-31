@@ -230,6 +230,9 @@ async function buildOne(run: string, p: Product, b: BuildSpec, o: StartOptions) 
     else if (!o.change && (b.target ?? 'web') !== 'web' && b.playtest !== false) await playDesktop(run, p, b, url);
   } catch (e: any) {
     const why = String(e?.message ?? e).slice(0, 500);
+    // In the log too: a customer's Studio is only visible to the platform through its logs (2026-10-31: a refused build
+    // left no trace anywhere J or Claude could read).
+    console.warn(`[builds] ${p.id} ${b.id} failed: ${why}`);
     if (rowId) db.prepare("UPDATE builds SET status = 'failed', detail = ?, finished = ? WHERE id = ?").run(why, Date.now(), rowId);
     updateStep(step, { status: 'failed', detail: why, finished: true });
   } finally {
