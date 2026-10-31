@@ -721,6 +721,9 @@
     const pf = ensurePerfProbe();
     let state = null, report = null, perf = null;
     try { if (pt && typeof pt.state === 'function') state = json(pt.state(), 4000); } catch (err) { state = `state() threw: ${err.message || err}`; }
+    // What an app knows that a game's playtest state doesn't (Hawkes Gen: the account, the scene and its tabs, the job in
+    // front...): window.hawkesReportContext(), kept with the report as its state.
+    try { if (typeof window.hawkesReportContext === 'function') state = json({ ...(state ? { playtest: state } : {}), ...window.hawkesReportContext() }, 6000); } catch (err) { state = `hawkesReportContext() threw: ${err.message || err}`; }
     try { if (pt && typeof pt.report === 'function') report = json(pt.report(), 4000); } catch (err) { report = `report() threw: ${err.message || err}`; }
     try { if (pf && typeof pf.snapshot === 'function') perf = pf.snapshot(); } catch (err) { perf = `snapshot() threw: ${err.message || err}`; }
     return {

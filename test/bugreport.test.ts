@@ -21,7 +21,7 @@ fs.mkdirSync(process.env.STUDIO_PROJECTS, { recursive: true });
 fs.writeFileSync(process.env.STUDIO_PRODUCTS, JSON.stringify({ previews: { brt: 'brtest' }, products: [{
   id: 'brtest', name: 'Report test', framing: 'test', engine: 'static', repo: 'site', site: 'site', live: 'http://127.0.0.1:9/',
   local: { serve: 'static', dir: 'site', port: 8796, path: '/' }, dev: { front: FRONT }, playtests: [{ scenario: 'smoke', where: 'local' }], story: [], about: 'A fixture.',
-}] }));
+}], infra: [{ id: 'hawkesgen', name: 'Hawkes Gen', repo: 'hawkesgen' }] }));
 
 const br = await import('../src/bugreport.ts');
 const rm = await import('../src/roadmap.ts');
@@ -392,4 +392,36 @@ test('the widget keeps typing in its fields from the page: capture-phase key gua
   assert.match(src, /composedPath/, 'finds the modal through the shadow root');
   assert.match(src, /captureAllKeyboardInput = false/, 'Unity WebGL keyboard capture is switched off while open');
   assert.match(src, /unityCapture\(false\)[\s\S]*unityCapture\(true\)/, 'off on open, restored on close');
+});
+
+test("Hawkes Gen's beta app (beta.<domain>) has the button: its reports file against Gen, with the page's own context", async () => {
+  const front = await import('../src/dev-front.ts');
+  const call = (route: string, method: string, body?: unknown, host = 'beta.hawkesgen.ai') => {
+    const data = body === undefined ? [] : [Buffer.from(JSON.stringify(body))];
+    const req: any = (async function* () { yield* data; })();
+    req.method = method;
+    req.headers = { 'x-forwarded-host': host, origin: 'https://' + host, 'content-type': 'application/json' };
+    req.socket = { remoteAddress: '203.0.113.9' };
+    const res: any = { status: 0, body: '' };
+    res.writeHead = (st: number) => { res.status = st; return res; };
+    res.setHeader = () => {};
+    res.end = (b?: any) => { res.body += b ? String(b) : ''; };
+    return { req, res };
+  };
+  const w = call('/dev/__studio/report.js', 'GET');
+  assert.equal(front.appHostWidget(w.req, w.res, '/dev/__studio/report.js', 'hawkesgen.ai', 'live'), true);
+  assert.equal(w.res.status, 200);
+  assert.match(w.res.body, /hawkesReportContext/, 'the widget, which reads the page context');
+  const other = call('/dev/__studio/report.js', 'GET', undefined, 'phorigins.hawkesgen.ai');
+  assert.equal(front.appHostWidget(other.req, other.res, '/dev/__studio/report.js', 'hawkesgen.ai', 'live'), false, 'only the apps listed');
+  const context = { account: { id: 'u_abc', email: 'j@example.com' }, scene: { id: 'sc_123', kind: 'video', title: 'Intro' }, tabs: ['sc_123', 'sc_456'] };
+  const r = call('/dev/__studio/report', 'POST', { text: 'The AI took over my preview.', url: 'https://beta.hawkesgen.ai/', shot: PNG, state: JSON.stringify(context), build: { product: 'hawkesgen', ref: 'Gen beta' } });
+  assert.equal(await front.betaHostReport(r.req, r.res, '/dev/__studio/report', 'hawkesgen.ai', 'live'), true);
+  assert.equal(r.res.status, 200, r.res.body);
+  const f = db.prepare("SELECT * FROM findings WHERE product = 'hawkesgen' ORDER BY first_seen DESC LIMIT 1").get() as any;
+  assert.equal(f.title, 'The AI took over my preview.');
+  const rep = JSON.parse(f.report);
+  assert.match(rep.state, /sc_123/);
+  assert.match(rep.state, /u_abc/);
+  assert.ok(rep.shot, 'the screenshot is kept');
 });

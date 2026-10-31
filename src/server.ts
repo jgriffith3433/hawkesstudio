@@ -187,6 +187,7 @@ const server = http.createServer(async (req, res) => {
       const { betaHostReport } = await import('./dev-front.ts');
       const { laneOf } = await import('./sitekeys.ts');
       if (await betaHostReport(req, res, route, process.env.STUDIO_COOKIE_DOMAIN ?? 'hawkesgen.ai', laneOf())) return;
+      if ((await import('./dev-front.ts')).appHostWidget(req, res, route, process.env.STUDIO_COOKIE_DOMAIN ?? 'hawkesgen.ai', laneOf())) return;
     }
     // A customer's cell tells the control plane who may enter it after any change in Users (cellside.ts).
     if (method !== 'GET' && (route.startsWith('/api/users') || route.startsWith('/api/invites'))) res.on('finish', () => { if (res.statusCode < 300) void import('./cellside.ts').then((c) => c.reportMembers()); });

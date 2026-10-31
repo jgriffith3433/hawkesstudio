@@ -468,6 +468,9 @@ async function report(p: Product, req: http.IncomingMessage, res: http.ServerRes
 export async function betaHostReport(req: http.IncomingMessage, res: http.ServerResponse, route: string, domain: string, lane: 'live' | 'beta') {
   if (req.method !== 'POST' || (route !== `${P}/__studio/report` && route !== `${P}/__studio/error`)) return false;
   const host = String(req.headers['x-forwarded-host'] ?? '').split(':')[0].toLowerCase();
+  // An app with a beta host of its own (Hawkes Gen's): its reports file against it (APP_HOSTS).
+  const app = appHostOf(host, domain, lane);
+  if (app) return void (await report({ id: app } as Product, req, res, route.endsWith('/error'))), true;
   if (!host.endsWith(`.${domain}`)) return false;
   let label = host.slice(0, -domain.length - 1);
   if (lane === 'beta') {
@@ -478,6 +481,28 @@ export async function betaHostReport(req: http.IncomingMessage, res: http.Server
   if (!id) return false;
   await report(getProduct(id), req, res, route.endsWith('/error'));
   return true;
+}
+
+/**
+ * Apps whose beta page carries the 🐞 button from a host of their own (J, 2026-10-30: "https://beta.hawkesgen.ai should
+ * have the bug report button"): the host's label and the service its reports file against. Gen passes the widget's
+ * requests to live Studio with that host (hawkesgen src/studioreport.ts), with J's Studio sign-in.
+ */
+const APP_HOSTS: Record<string, string> = { beta: 'hawkesgen' };
+// Either lane: the Studio a report reaches checks its own sign-in (its session cookie covers every <domain> host).
+const appHostOf = (host: string, domain: string, _lane: 'live' | 'beta') =>
+  host.endsWith(`.${domain}`) ? APP_HOSTS[host.slice(0, -domain.length - 1)] ?? null : null;
+
+/** GET /dev/__studio/report.js and /build for an app's host (APP_HOSTS): the widget, and no build to compare. */
+export function appHostWidget(req: http.IncomingMessage, res: http.ServerResponse, route: string, domain: string, lane: 'live' | 'beta') {
+  if (req.method !== 'GET' || !appHostOf(String(req.headers['x-forwarded-host'] ?? '').split(':')[0].toLowerCase(), domain, lane)) return false;
+  if (route === `${P}/__studio/report.js`) {
+    res.writeHead(200, { 'Content-Type': 'text/javascript; charset=utf-8', 'Cache-Control': 'private, max-age=300' });
+    res.end(fs.readFileSync(WIDGET));
+    return true;
+  }
+  if (route === `${P}/__studio/build`) return json(res, 200, {}), true;
+  return false;
 }
 
 /** Vite's HMR websocket (and any other websocket under /dev/): piped to the dev server. */

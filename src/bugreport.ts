@@ -18,7 +18,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { db, newId, J, parse } from './db.ts';
-import { DATA, getProduct, today, StudioError, BETA_NET } from './config.ts';
+import { DATA, getProduct, getInfra, isInfra, today, StudioError, BETA_NET } from './config.ts';
+
+/** A product or one of Studio's own services (Hawkes Gen's app reports bugs too: its beta page, src/dev-front.ts). */
+const target = (id: string): { id: string; name: string } => (isInfra(id) ? getInfra(id) : getProduct(id));
 export { BETA_NET };
 import { keyOf, takenBy } from './backlog.ts';
 import { gen, genWait, fileUrl } from './gen.ts';
@@ -48,7 +51,7 @@ export type Report = {
 };
 
 const cut = (s: unknown, n: number) => { const t = typeof s === 'string' ? s : s == null ? '' : JSON.stringify(s); return t.length > n ? `${t.slice(0, n)}…` : t; };
-const name = (product: string) => { try { return getProduct(product).name; } catch { return product; } };
+const name = (product: string) => { try { return target(product).name; } catch { return product; } };
 const readState = (): { conversations?: Record<string, string> } => { try { return JSON.parse(fs.readFileSync(STATE, 'utf8')); } catch { return {}; } };
 
 /**
@@ -120,7 +123,7 @@ const shotUrl =(r: { asset: string | null }, id: string) => (r.asset ? fileUrl(r
 
 /** Stores J's report as a finding, tells Talk and the PM loop. Returns what the panel says back. */
 export async function fileReport(productId: string, b: ReportIn) {
-  const p = getProduct(productId);
+  const p = target(productId);
   const text = String(b.text ?? '').trim().slice(0, 4000);
   if (!text && !b.shot) throw new StudioError('Say what is wrong (or send a screenshot)');
   const id = newId('f');
@@ -319,7 +322,7 @@ export function rateOk(ip: string, now = Date.now()) {
 
 /** Stores an error the page caught by itself: a new source-"auto" finding, or the open one with its signature seen again. */
 export async function fileAutoError(productId: string, b: ErrorIn, ip = '') {
-  const p = getProduct(productId);
+  const p = target(productId);
   if (!rateOk(ip || '?')) throw Object.assign(new StudioError('Too many error reports from here; try again later'), { status: 429 });
   const e = b.error ?? {};
   const message = cut(e.message, 1000).trim();
