@@ -167,7 +167,10 @@ export function asAddedGame(p: Product): Product {
   if (!folder) return g;
   return {
     ...g, repo: folder, site: folder, github: p.repo,
-    local: { ...g.local, dir: folder },
+    // A web game's beta is Studio's own beta site, built from its beta branch (previews.ts ADDED_RECIPE: npm run build,
+    // dist/), never "its CI deploys it": with "remote" its beta was never built and beta playtests played the live
+    // site (Star Skipper, 2026-10-31). Here (J's PC) the built dist/ is served.
+    local: p.engine === 'web' && !p.beta ? { serve: 'static', dir: `${folder}/dist`, port: 0, path: '/' } : { ...g.local, dir: folder },
     // The build as the check when it has one (a plain site without package.json has none to run).
     checks: p.checks ?? (p.engine === 'web' ? [{ dir: folder, cmd: 'test ! -f package.json || (npm install --no-audit --no-fund && npm run build --if-present)' }] : []),
   } as Product;

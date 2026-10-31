@@ -90,6 +90,11 @@ test("J's Studio keeps added games in its data, beside products.json, and never 
   const g = C.saveProduct({ id: 'space-game', name: 'Space Game', engine: 'web', live: 'https://acme.github.io/space-game/', repo: 'acme/space-game' });
   assert.equal(g.local.serve, 'remote', 'played where it is deployed');
   assert.equal(C.loadProducts().length, before + 1);
+  // As a product, a web game's beta is Studio's own beta site, built from its beta branch: never "its CI deploys it"
+  // (2026-10-31: Star Skipper's beta was never built and its beta playtest played the live starter).
+  const p = C.getProduct('space-game');
+  assert.notEqual(p.local.serve, 'remote');
+  assert.equal(p.local.dir, `${p.repo}/dist`);
   assert.ok(fs.existsSync(path.join(process.env.STUDIO_DATA!, 'games.json')));
   assert.throws(() => C.saveProduct({ id: 'doseofdestruction', name: 'x', engine: 'web', live: 'https://x.test/' }), /products\.json's/);
   assert.throws(() => C.removeProduct('doseofdestruction'), /products\.json's/);
@@ -176,7 +181,7 @@ test('a new game: asked what kind first (the plan wants a pitch and a starter), 
   // Agents can work on it like any product: cloned into its own folder, its build as the check.
   assert.equal(p.github, 'jgriffith3433/orbit-run');
   assert.equal(p.repo, 'orbit-run');
-  assert.equal(p.local.dir, 'orbit-run');
+  assert.equal(p.local.dir, 'orbit-run/dist', 'its built site');
   assert.deepEqual(p.checks, [{ dir: 'orbit-run', cmd: 'test ! -f package.json || (npm install --no-audit --no-fund && npm run build --if-present)' }]);
   const { repoMap } = await import('../src/repos.ts');
   assert.equal(repoMap()['orbit-run'], 'jgriffith3433/orbit-run');

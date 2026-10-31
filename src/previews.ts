@@ -556,7 +556,8 @@ export function previewsAfterSync(results: RepoResult[], { missing = true } = {}
 /** Every product's staging URLs and when each was built. */
 export function listPreviews() {
   const state = readState();
-  const live = (p: Product) => { try { return new URL(p.live).pathname; } catch { return '/'; } };
+  // A game added through Talk is its site's root (relative paths); others play at their live page's path.
+  const live = (p: Product) => { if (p.github) return '/'; try { return new URL(p.live).pathname; } catch { return '/'; } };
   const shown = (key: string, v?: Preview) => v && (v.status === 'building' && !active.has(key) ? { ...v, status: 'failed' as const, detail: 'interrupted (Studio restarted)' } : v);
   return loadProducts().filter((p) => subOf(p.id)).map((p) => {
     const url = previewUrl(p.id)!;

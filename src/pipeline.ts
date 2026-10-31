@@ -954,6 +954,9 @@ export async function cloudBetaUrl(p: { id: string; live: string; local: { serve
   if (!remoteSites()) return null;
   const root = (await import('./previews.ts')).previewUrl(p.id);
   if (!root) return null;
+  // A game added through Talk: its beta site is a path of its own (sites.<domain>/b/<game>/), built with relative
+  // paths, so the root is the game; its live address's path (GitHub Pages' /<repo>/) isn't part of it.
+  if ((p as { github?: string }).github) return root;
   const live = new URL(p.live);
   return new URL(live.pathname + live.search, root).toString();
 }

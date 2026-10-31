@@ -44,7 +44,7 @@ test("a customer's game with a repo is a product agents can work on; one without
   const g = C.getProduct('space-game');
   assert.equal(g.github, 'acme/space-game');
   assert.equal(g.repo, 'space-game');
-  assert.equal(g.local.dir, 'space-game');
+  assert.equal(g.local.dir, 'space-game/dist', 'its built site');
   assert.match(g.checks![0].cmd, /npm run build --if-present/);
   assert.deepEqual(repoMap(), { 'space-game': 'acme/space-game' }, "only the customer's own repos, nothing of J's");
   const o = C.getProduct('old-site');
