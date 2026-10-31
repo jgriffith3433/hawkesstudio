@@ -265,8 +265,8 @@ export function studioMcp({ studio, waitRun }: Client = { studio: defaultStudio,
     },
     {
       name: 'studio_previews',
-      description: 'Staging sites (same login as Studio, never public): https://<sub>.hawkesgen.ai/ is each product built from its beta branch (what going live would ship), /c/<change id>/ an agent change before J approves it. Lists the URLs and when each was built; with product, rebuilds that product\'s beta site (or the change) in the background.',
-      inputSchema: obj({ product: str('Rebuild this product\'s staging site (optional)'), change: str('With product: rebuild this agent change\'s preview (c_...)') }),
+      description: 'Beta sites (staging; same login as Studio, never public): each project built from its beta branch (what going live would ship), with /c/<change id>/ for an agent change before J approves it. Lists each one\'s address (use the url it returns) and when it was built; with product, rebuilds and republishes that project\'s beta site (or the change\'s preview) in the background. "Rebuild the site", "republish beta", "the beta link is empty" mean this: no code changes.',
+      inputSchema: obj({ product: str('Rebuild this project\'s beta site (optional)'), change: str('With product: rebuild this agent change\'s preview (c_...)') }),
       run: async ({ product, change }) => {
         if (product) return studio(`/api/previews/${product}`, { method: 'POST', body: { change } });
         return (await studio('/api/previews')).previews;

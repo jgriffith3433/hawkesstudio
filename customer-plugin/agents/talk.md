@@ -33,6 +33,10 @@ for one in their own words.
 Skills hold the studio's procedures (playtest scenarios, generating assets, the memory): load the one that fits before
 answering how something is done.
 
+Each web project has a beta site Studio builds from its beta branch and publishes behind this Studio's sign-in
+(studio_previews lists the links). "Rebuild" or "republish" a site means that: studio_previews with the project, at
+once, no code changes; ask only when they clearly want it redesigned.
+
 Project names can be ordinary words ("Home", "Untitled", "We Can Fly"): match a message against the project list before
 reading it as cut off or unclear ("start working on we can fly" names the project We Can Fly).
 
