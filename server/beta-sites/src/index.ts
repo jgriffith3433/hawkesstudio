@@ -290,8 +290,18 @@ export async function serveBuild(req: Request, env: Env, url: URL): Promise<Resp
   if (req.method !== 'GET' && req.method !== 'HEAD') return new Response('Read only.', { status: 405, headers: BUILD_CORS });
   let p: string;
   try { p = decodeURIComponent(url.pathname); } catch { return new Response('Not found', { status: 404, headers: BUILD_CORS }); }
-  if (!/^\/builds\/[a-z0-9-]+\/v[0-9]+\/[^\0]+$/.test(p) || p.split('/').some((s) => s === '..' || s === '.')) return new Response('Not found', { status: 404, headers: BUILD_CORS });
-  const o = await env.SITES.get(p.slice(1), { onlyIf: req.headers });
+  if (p.split('/').some((s) => s === '..' || s === '.')) return new Response('Not found', { status: 404, headers: BUILD_CORS });
+  // A customer's build that went into a live website (builds.ts commitInto: its files too big for git): public at
+  // /builds/o/<org>/<project>/b/<build>/<n>/..., only for a version its Studio marked public (.public).
+  const cust = /^\/builds\/(o|ob)\/([a-z0-9][a-z0-9-]{1,38}[a-z0-9])\/([a-z][a-z0-9-]{1,39})\/b\/([a-z0-9][a-z0-9-]{0,30})\/(\d{1,6})\/([^\0]+)$/.exec(p);
+  let key: string;
+  if (cust) {
+    const base = `${cust[1] === 'ob' ? 'beta' : 'live'}/o/${cust[2]}/${cust[3]}/b/${cust[4]}/${cust[5]}`;
+    if (!(await env.SITES.head(`${base}/.public`))) return new Response('Not found', { status: 404, headers: BUILD_CORS });
+    key = `${base}/${cust[6]}`;
+  } else if (/^\/builds\/[a-z0-9-]+\/v[0-9]+\/[^\0]+$/.test(p)) key = p.slice(1);
+  else return new Response('Not found', { status: 404, headers: BUILD_CORS });
+  const o = await env.SITES.get(key, { onlyIf: req.headers });
   if (!o) return new Response('Not found', { status: 404, headers: BUILD_CORS });
   const headers = new Headers({
     ...BUILD_CORS,

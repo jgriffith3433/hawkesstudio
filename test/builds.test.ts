@@ -217,3 +217,22 @@ test("beta only moves forward: a build of an older commit is published at its ow
   assert.ok(!pointer.includes(`"version":${last.version}`), `beta didn't move to the older commit's build (${pointer.slice(0, 80)})`);
   assert.throws(() => C.saveProduct({ id: 'loop', name: 'Loop', engine: 'unity', repo: 'acme/loop', builds: [{ id: 'web', tool: 'unity', publish: { project: 'loop', path: 'Game/', commit: true } }] } as any), /own repository/);
 });
+
+test("a build too big for git: its big folder stays on the public builds address and the committed pages point there", () => {
+  const files = [
+    { path: 'index.html', size: 2000 }, { path: 'TemplateData/style.css', size: 900 }, { path: 'TemplateData/logo.png', size: 30000 },
+    { path: 'Build/game.loader.js', size: 30000 }, { path: 'Build/game.data.unityweb', size: 90 * 1024 * 1024 }, { path: 'Build/game.wasm.unityweb', size: 30 * 1024 * 1024 },
+  ];
+  const pub = 'https://sites.hawkesgen.ai/builds/o/acme-1a2b/game/b/web/7/';
+  const s = B.splitForGit(files, pub);
+  assert.deepEqual(s.commit, ['index.html', 'TemplateData/style.css', 'TemplateData/logo.png'], 'the Build folder is not committed');
+  assert.equal(s.external, `${pub}Build/`);
+  const page = '<script src="Build/game.loader.js"></script><script>var buildUrl = "Build"; var c = { dataUrl: buildUrl + "/game.data.unityweb" };</script><img src="TemplateData/logo.png">';
+  const out = s.rewrite('index.html', page);
+  assert.match(out, /src="https:\/\/sites\.hawkesgen\.ai\/builds\/o\/acme-1a2b\/game\/b\/web\/7\/Build\/game\.loader\.js"/);
+  assert.match(out, /buildUrl = "https:\/\/sites\.hawkesgen\.ai\/builds\/o\/acme-1a2b\/game\/b\/web\/7\/Build"/);
+  assert.match(out, /src="TemplateData\/logo\.png"/, 'other paths untouched');
+  assert.equal(s.rewrite('TemplateData/logo.png', 'binary'), 'binary', 'non-text files are never rewritten');
+  assert.deepEqual(B.splitForGit([{ path: 'a.js', size: 10 }], pub).commit, ['a.js'], 'a small build commits as it is');
+  assert.throws(() => B.splitForGit([{ path: 'huge.bin', size: 60 * 1024 * 1024 }], pub), /aren't all in one folder/);
+});

@@ -113,9 +113,13 @@ async function prune(p: Product, build: string, sub: string) {
     for (const v of Object.values(m)) mounted.add(String(v));
   }
   const { removeSite } = await import('./sitestore.ts');
+  // Versions a website serves from the public builds address (commitInto) stay: the newest 3 of them, so what's live and
+  // what a rollback goes back to keep working.
+  let publicKept = 0;
   for (const r of rows.slice(BUILDS_KEEP)) {
     const base = `${sub}/b/${build}/${r.version}`;
     if ((beta?.build === build && beta?.version === r.version) || mounted.has(base)) continue;
+    if ((r as any).commit_sha && publicKept < 3 && (await store.get(`${base}/.public`).catch(() => null))) { publicKept++; continue; }
     await removeSite(store, base);
     db.prepare("UPDATE builds SET status = 'pruned', url = NULL WHERE id = ?").run(r.id);
   }
@@ -260,7 +264,7 @@ async function buildOne(run: string, p: Product, b: BuildSpec, o: StartOptions) 
       await mount(target, b.publish.path, base);
       linked.push(`${target.name} ${b.publish.path || '/'}`);
       if (b.publish.commit) {
-        const c = await commitInto(target, b.publish.path, out.files, `Build ${b.id} ${version} of ${p.name} (${sha.slice(0, 7)})`, say);
+        const c = await commitInto(target, b.publish.path, out.files, `Build ${b.id} ${version} of ${p.name} (${sha.slice(0, 7)})`, say, { base, publicUrl: `${new URL(root).origin}/builds/${sub}/b/${b.id}/${version}/` });
         db.prepare('UPDATE builds SET commit_repo = ?, commit_sha = ? WHERE id = ?').run(c.slug, c.sha, rowId);
         linked.push(c.line);
       }
@@ -405,7 +409,42 @@ function unzip(data: Buffer, dir: string) {
 }
 
 /** Commits a build's files into another project's repo at a path on its beta branch (GitHub's Git Data API, one commit). */
-async function commitInto(target: Product, at: string, files: import('./sitestore.ts').SiteFile[], message: string, say: (s: string) => void) {
+/** Files GitHub's API takes as blobs comfortably (its limit is around 40 MB of base64; git itself refuses 100 MB). */
+const BLOB_MAX = 25 * 1024 * 1024;
+
+/**
+ * The files to commit for a build going into a website, and the public address of the folder too big for git. A build
+ * with files over BLOB_MAX (a Unity game's .data, .wasm) keeps that folder on the public builds address (the Worker's
+ * /builds/o/<org>/..., marked public), and the committed pages point there (Unity's buildUrl, src="Build/...");
+ * everything else is committed (2026-10-31: Yooba Land's 160 MB build couldn't be committed).
+ */
+export function splitForGit(files: { path: string; size: number }[], publicUrl: string) {
+  const big = files.filter((f) => f.size > BLOB_MAX);
+  if (!big.length) return { commit: files.map((f) => f.path), external: null as string | null, rewrite: (_p: string, t: string) => t };
+  const dirs = [...new Set(big.map((f) => (f.path.includes('/') ? f.path.slice(0, f.path.indexOf('/')) : '')))];
+  if (dirs.includes('') || dirs.length > 1) throw new Error(`build files too big for git (${big.map((f) => `${f.path} ${Math.round(f.size / 1e6)} MB`).join(', ')}) aren't all in one folder, so they can't be served from the public builds address: keep the big files in one folder (Unity's Build/), or mount the build instead of committing it (publish without commit)`);
+  const dir = dirs[0];
+  const esc = dir.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return {
+    commit: files.filter((f) => !f.path.startsWith(`${dir}/`)).map((f) => f.path),
+    external: `${publicUrl}${dir}/`,
+    // "Build", "Build/x.loader.js", './Build/...' in the committed pages and scripts point at the public address.
+    rewrite: (p: string, t: string) => (/\.(html?|js|mjs|json|css)$/i.test(p) ? t.replace(new RegExp(`(["'\`(=]\\s*)(?:\\./)?${esc}(?=["'\`/)])`, 'g'), `$1${publicUrl}${dir}`) : t),
+  };
+}
+
+async function commitInto(target: Product, at: string, files: import('./sitestore.ts').SiteFile[], message: string, say: (s: string) => void, pub: { base: string; publicUrl: string } | null = null) {
+  if (pub) {
+    const split = splitForGit(files, pub.publicUrl);
+    if (split.external) {
+      const store = await siteStore();
+      await store.put(`${pub.base}/.public`, Buffer.from(JSON.stringify({ at: Date.now(), into: (target as any).github ?? target.id })), 'application/json');
+      say(`files too big for git stay on the public builds address (${split.external}); the pages point there`);
+      const keep = new Set(split.commit);
+      // Only text files are rewritten (an image or a binary stays byte for byte).
+      files = files.filter((f) => keep.has(f.path)).map((f) => (/\.(html?|js|mjs|json|css)$/i.test(f.path) && f.size < 5 * 1024 * 1024 ? { ...f, read: async () => Buffer.from(split.rewrite(f.path, (await f.read()).toString('utf8'))) } : f)) as typeof files;
+    }
+  }
   const slug = String((target as any).github ?? '');
   if (!slug) throw new Error(`${target.name} has no GitHub repo to commit the build into`);
   const { repoToken, githubFetch } = await import('./ghtoken.ts');

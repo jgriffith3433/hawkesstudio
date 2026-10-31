@@ -510,3 +510,15 @@ test('clean URLs, single-page apps without a 200.html, and a mounted folder name
   assert.match(await (await browse('https://sites.hawkesgen.ai/g/spa-app/settings/profile', { cookie, page: true })).text(), /id="root"/, 'a deep link of a single-page app gets its shell');
   assert.equal((await browse('https://sites.hawkesgen.ai/g/spa-app/assets/missing.js', { cookie, page: false })).status, 404, 'a missing file is still a 404');
 });
+
+test("a customer's build that went into a live website is public at /builds/o/..., only once its Studio marked it", async () => {
+  await r2.put('live/o/acme-1a2b/game/b/web/7/Build/game.data.unityweb', 'big-bytes', { httpMetadata: { contentType: 'application/octet-stream' } });
+  await r2.put('live/o/acme-1a2b/game/b/web/8/Build/game.data.unityweb', 'not-yet', { httpMetadata: { contentType: 'application/octet-stream' } });
+  await r2.put('live/o/acme-1a2b/game/b/web/7/.public', '{}', { httpMetadata: { contentType: 'application/json' } });
+  const pub = await browse('https://sites.hawkesgen.ai/builds/o/acme-1a2b/game/b/web/7/Build/game.data.unityweb', { page: false });
+  assert.equal(pub.status, 200, 'no pass needed: players load it from the live site');
+  assert.equal(await pub.text(), 'big-bytes');
+  assert.ok(pub.headers.get('access-control-allow-origin'), 'CORS for the live site');
+  assert.equal((await browse('https://sites.hawkesgen.ai/builds/o/acme-1a2b/game/b/web/8/Build/game.data.unityweb', { page: false })).status, 404, 'a version not marked public stays private');
+  assert.equal((await browse('https://sites.hawkesgen.ai/builds/o/acme-1a2b/game/b/web/7/../8/Build/game.data.unityweb', { page: false })).status, 404, 'no way out of the marked version');
+});
