@@ -172,6 +172,22 @@ export async function setImage(service: string, image: string, o: { dry?: boolea
 }
 
 /**
+ * The customers' agents' job onto an image (Talk, agents and scouts of every cell run there). It used to be left on the
+ * image it was made with, so a deploy reached the cells but their Talk kept old tools (2026-10-31: customer Talk had no
+ * studio_project). Nothing when it's already there; a missing job is left alone (cells-setup.mjs makes it).
+ */
+export async function followAgentJob(image: string, o: { dry?: boolean; log?: (s: string) => void } = {}, c = cellsConfig()) {
+  const url = `${base(c)}/jobs/${c.agentJob}`;
+  const j = dryRun(o) ? null : await gapi(url, { missingOk: true });
+  if (!dryRun(o) && !j) return { job: c.agentJob, skipped: 'no such job' };
+  const containers = (j?.template?.template?.containers ?? [{}]) as any[];
+  if (containers[0]?.image === image) return { job: c.agentJob, image, changed: false };
+  (o.log ?? console.log)(`${c.agentJob} (customers' agents) → ${image}`);
+  await call('PATCH', `${url}?updateMask=template.template.containers`, { template: { template: { containers: containers.map((ct, i) => (i === 0 ? { ...ct, image } : ct)) } } }, o);
+  return { job: c.agentJob, image, changed: true };
+}
+
+/**
  * A rolling upgrade: J's Studio first (it is also the control plane, and the image hibernated cells wake on), then every
  * awake cell, one at a time, each checked healthy before the next. Hibernated cells aren't touched: they wake on J's
  * Studio's image. Stops at the first cell that fails, so one bad image reaches at most one customer.
@@ -188,6 +204,7 @@ export async function rollImage(image: string, o: { dry?: boolean; health?: (url
   });
   log(`${c.studioService} (J's Studio) → ${image}`);
   await setImage(c.studioService, image, o, c);
+  await followAgentJob(image, { ...o, log }, c);
   const r = await rollCells(image, { ...o, health, log }, c);
   return { ...r, done: [c.studioService, ...r.done] };
 }
