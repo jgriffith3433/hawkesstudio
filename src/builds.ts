@@ -86,8 +86,8 @@ export async function setBeta(projectId: string, build: string, version: number)
   return { project: p.id, build, version, url: row.url };
 }
 
-/** How many versions of each build stay published (J, 2026-10-31: keep it cheap); beta's and mounted ones always stay. */
-export const BUILDS_KEEP = Math.max(1, Number(process.env.STUDIO_BUILDS_KEEP) || 5);
+/** How many versions of each build stay published (J, 2026-10-31: "Just keep only the latest version of the build"); beta's and mounted ones always stay. */
+export const BUILDS_KEEP = Math.max(1, Number(process.env.STUDIO_BUILDS_KEEP) || 1);
 
 /**
  * Removes a build's older versions from the sites (R2 storage grows with every Unity build otherwise): the newest

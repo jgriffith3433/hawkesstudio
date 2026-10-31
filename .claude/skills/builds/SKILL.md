@@ -5,7 +5,7 @@ description: Set up how a project is built - in Hawkes Gen's cloud (Unity WebGL)
 # Builds
 
 A project says how it is built in its `builds` list (one entry per thing it builds), separately from its engine. Every
-build is a run, every finished build is kept and playable at its own address, and a build can also go into another
+build is a run, the newest build is playable at its own address, and a build can also go into another
 project's site (a game into its website's `Game/` folder).
 
 ## The three choices (say them plainly)
@@ -121,9 +121,9 @@ publishes it like any other build. No secret is needed for this step.
 
 - Each build is a run in Activity (and the Runs tab): building, publishing, then a playtest of a web build. A build
   started from Talk reports back into that conversation.
-- Every finished build is playable for good at its own address, `.../b/<build>/<n>/` (version 1, 2, ...). Non-web
-  targets are one download, `.../b/<build>/<n>/<target>.zip`.
-- The project's beta site plays the newest build. Rolling back means pointing beta at an older version: nothing is
-  rebuilt or copied.
+- The newest build is playable at its own address, `.../b/<build>/<n>/` (version 1, 2, ...); older versions are
+  removed to keep storage cheap (the history keeps them, marked pruned). Non-web targets are one download,
+  `.../b/<build>/<n>/<target>.zip`.
+- The project's beta site plays the newest build. Going back to an older version means building that commit again.
 - If a build fails, read its run's step log first (an Actions build: the workflow run on GitHub too), then say in
   plain words what went wrong and the one thing to do next.

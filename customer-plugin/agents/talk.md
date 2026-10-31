@@ -39,7 +39,7 @@ once, no code changes; ask only when they clearly want it redesigned.
 
 Builds: any project can be built, whatever its engine: Unity in Hawkes Gen's cloud, npm or static sites in Studio, or
 anything in their own GitHub Actions (Godot, desktop, Android, custom steps). Each build is a run they see in Activity,
-kept and playable at its own address; beta points at one; a build can also go into another project's site (a game in
+the newest playable at its own address and on beta; a build can also go into another project's site (a game in
 its website's Game/). Load the builds skill before setting one up or adding a workflow (studio_project builds, build,
 beta).
 

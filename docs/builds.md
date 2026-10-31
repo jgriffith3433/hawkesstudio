@@ -2,7 +2,7 @@
 
 J, 2026-10-31: "build this out ... customer first and flexible and powerful so we can even support customer's needs
 outside of what I'm doing." A project says how it is built in `builds` (a list), separately from its engine. Every build
-is a run (Activity, Runs, and back to the Talk conversation that asked), every build's output is kept and playable at
+is a run (Activity, Runs, and back to the Talk conversation that asked), the newest build's output is playable at
 its own address, and a build can also go into another project's site (a Unity game into its website's `Game/`).
 
 J's own Unity games keep their products.json `build` block (`project`, `site`, `method`, `r2`: tagbuild.ts, Gen's
@@ -53,7 +53,7 @@ commit and ref, the runner, its size and file count, its address, the run, and i
 
 ## Hosting (a customer's Studio: `sites.<domain>/o/<org>/<project>/`)
 
-Every build's output is published once, under its version, and never changes:
+Each build's output is published once under its version (only the newest stays, below):
 
 | Address | What |
 |---|---|
@@ -61,9 +61,10 @@ Every build's output is published once, under its version, and never changes:
 | `…/o/<org>/<project>/b/<build>/<n>/` | that build's version n, playable for good (R2 `<lane>/o/<org>/<project>/b/<build>/<n>/`) |
 | `…/o/<org>/<project>/c/<change>/` | an agent change's preview |
 
-Making a build beta (or rolling beta back) changes the pointer only: nothing is copied. To keep storage cheap, each
-build keeps its newest 5 versions published (`STUDIO_BUILDS_KEEP`), plus the one beta points at and any mounted into a
-site; older ones are removed from R2 and their history rows say `pruned`. The Worker (server/beta-sites)
+Making a build beta (or rolling beta back) changes the pointer only: nothing is copied. To keep storage cheap (J, 2026-10-31:
+"Just keep only the latest version of the build"), each build keeps only its newest version published
+(`STUDIO_BUILDS_KEEP` raises it), plus the one beta points at and any mounted into a site; older ones are removed from
+R2 and their history rows say `pruned`. Going back to an older version means building that commit again. The Worker (server/beta-sites)
 also serves a build's pre-compressed files (Unity's `Build/*.wasm.br`, `*.data.gz`) with their Content-Encoding, so a
 build made without Unity's decompression fallback loads; a `200.html` in the output answers a single-page app's own
 routes; and a `_headers` file (the Cloudflare Pages format) sets headers from a safe list: Godot 4's
