@@ -1,7 +1,8 @@
-// The platform admin's lockdown in J's Studio (lockdown.ts, docs/studio-customers.md): Studio's `admin` role is not
-// enough for J's machinery. Only a Google sign-in with an email on STUDIO_PLATFORM_ADMINS (or J's owner key) passes; an
-// invited admin, J's own password sign-in and everyone else get 403. Also: Google accounts keyed by Google's sub, and
-// the waitlist. A customer's Studio is test/customer.test.ts.
+// The platform admin in J's Studio (lockdown.ts, docs/studio-customers.md): only for managing the platform for customers
+// (J, 2026-10-30: "admin should just be for managing the platform for customers"): customers' Studios, the plans, the
+// waitlist. Only a Google sign-in with an email on STUDIO_PLATFORM_ADMINS (or J's owner key) passes those; everything
+// else is Studio's admin role. Also: Google accounts keyed by Google's sub, and the waitlist. A customer's Studio (where
+// J's machinery stays the platform admin's) is test/customer.test.ts.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -39,19 +40,16 @@ const helper = A.googleUser({ email: 'helper@example.com', sub: '1000002' });
 const jGoogle = as(j, 'google');
 const helperGoogle = as(helper, 'google');
 
-// Every feature that is J's alone, as the route and method the dashboard, CLI or MCP use.
-// (Going live and rolling back a product are an admin's, not J's alone: J, 2026-10-30; the test below.)
-const J_ONLY: [string, string][] = [
+// Managing the platform for customers: the platform admin's alone, as the dashboard, CLI or MCP call them.
+const PLATFORM_ONLY: [string, string][] = [
+  ['GET', '/api/cells'], ['POST', '/api/cells/roll'], ['POST', '/api/cells/acme-1a2b/hibernate'], ['POST', '/api/billing/plans'], ['GET', '/api/signups'],
+];
+// Everything else an admin of J's Studio does: Studio's admin role is enough (J's own Approve card was refused, 2026-10-30).
+const ADMIN_ROLE: [string, string][] = [
   ['POST', '/api/approvals/a_0123456789ab/approve'], ['POST', '/api/changes/c_0123456789ab/approve'],
-  ['POST', '/api/claude/signin'], ['GET', '/api/claude/accounts'], ['POST', '/api/antigravity/signin'], ['GET', '/api/antigravity/login'],
-  ['GET', '/api/broadcast'], ['POST', '/api/broadcast/live'], ['POST', '/api/broadcast/desk'],
-  ['GET', '/api/social'], ['POST', '/api/social/config'], ['POST', '/api/social/disconnect/youtube'],
-  ['GET', '/api/costs'], ['POST', '/api/costs/settings'], ['GET', '/api/ledger'], ['GET', '/api/resources'], ['GET', '/api/brief/cost'],
-  ['GET', '/api/self-deploys'], ['GET', '/api/services'], ['POST', '/api/services/restart'],
-  ['GET', '/api/users'], ['POST', '/api/users/invite'], ['POST', '/api/invites/inv_0123456789ab/revoke'], ['GET', '/api/signups'],
-  ['POST', '/api/settings'], ['POST', '/api/agents/settings'], ['POST', '/api/pm/settings'], ['POST', '/api/notify'],
-  ['POST', '/api/memory/seed'], ['PUT', '/api/products/doseofdestruction'], ['POST', '/api/billing/plans'], ['POST', '/api/billing/checkout'],
-  ['POST', '/api/gen/v1/fleet/launch'], ['GET', '/api/gen/v1/settings'], ['POST', '/api/gen/v1/jobs'],
+  ['POST', '/api/claude/signin'], ['GET', '/api/claude/accounts'], ['GET', '/api/broadcast'], ['GET', '/api/costs'],
+  ['GET', '/api/users'], ['POST', '/api/users/invite'], ['POST', '/api/settings'], ['POST', '/api/agents/settings'],
+  ['PUT', '/api/products/doseofdestruction'], ['POST', '/api/gen/v1/jobs'], ['POST', '/api/deploy/doseofdestruction'],
 ];
 
 test('J signs in with Google as an admin (a platform admin is let in like STUDIO_GOOGLE_EMAILS)', () => {
@@ -61,49 +59,33 @@ test('J signs in with Google as an admin (a platform admin is let in like STUDIO
   assert.equal(helper.role, 'admin', 'the invite made an admin of this Studio');
 });
 
-test('an admin of J\'s Studio who is not the platform admin gets 403 on every J-only feature', () => {
-  for (const [method, route] of J_ONLY) {
-    assert.match(L.platformRefusal(helperGoogle(method), route, method) ?? '', /only the platform admin/, `${method} ${route}`);
+test("an admin of J's Studio who is not the platform admin: everything but managing the platform for customers", () => {
+  for (const [method, route] of PLATFORM_ONLY) assert.match(L.platformRefusal(helperGoogle(method), route, method) ?? '', /only the platform admin/, `${method} ${route}`);
+  for (const [method, route] of ADMIN_ROLE) {
+    assert.equal(L.platformRefusal(helperGoogle(method), route, method), null, `${method} ${route}`);
     assert.equal(A.memberRefusal(helperGoogle(method), route, method), null, 'they are an admin by role');
   }
-  assert.match(L.infraRefusal(helperGoogle('POST'), 'hawkesstudio') ?? '', /Changing Hawkes Studio/);
-  assert.match(L.infraRefusal(helperGoogle('POST'), 'hawkesgen') ?? '', /Changing Hawkes Studio/);
-  assert.equal(L.infraRefusal(helperGoogle('POST'), 'doseofdestruction'), null, 'a game agent is not infra');
+  assert.equal(L.infraRefusal(helperGoogle('POST'), 'hawkesstudio'), null, "a change to Studio itself: an admin's in J's Studio");
 });
 
-test('J with Google, and J\'s owner key, pass; J with a password session does not', () => {
+test("J with Google, and J's owner key, manage the platform; J with a password session does not", () => {
   const owner = (method: string) => req({ Authorization: 'Bearer owner-key-for-the-test' }, method);
   const jPassword = as(j, 'password');
-  for (const [method, route] of J_ONLY) {
+  for (const [method, route] of PLATFORM_ONLY) {
     assert.equal(L.platformRefusal(jGoogle(method), route, method), null, `${method} ${route}`);
     assert.equal(L.platformRefusal(owner(method), route, method), null, `${method} ${route} (owner key)`);
     assert.match(L.platformRefusal(jPassword(method), route, method) ?? '', /only the platform admin/, `${method} ${route} (password)`);
   }
-  assert.equal(L.infraRefusal(jGoogle('POST'), 'hawkesstudio'), null);
+  for (const [method, route] of ADMIN_ROLE) assert.equal(L.platformRefusal(jPassword(method), route, method), null, `${method} ${route}: his admin role`);
 });
 
-test("going live and rolling back need Studio's admin role, not the platform admin (J, 2026-10-30)", async () => {
-  const { db } = await import('../src/db.ts');
-  for (const route of ['/api/deploy/doseofdestruction', '/api/rollback/doseofdestruction']) {
-    assert.equal(L.platformRefusal(helperGoogle('POST'), route, 'POST'), null, `${route}: an admin of J's Studio`);
-    assert.equal(A.memberRefusal(helperGoogle('POST'), route, 'POST'), null, `${route}: an admin by role`);
-  }
-  // Tapping an Approve card to go live or roll back is the same; any other card (a merge, money, settings) stays J's.
-  await import('../src/approvals.ts');
-  const card = (id: string, kind: string) => db.prepare("INSERT INTO approvals (id, kind, target, bind, token, card, status, created, expires) VALUES (?, ?, 'doseofdestruction', 'x', 't', '{}', 'pending', ?, ?)").run(id, kind, Date.now(), Date.now() + 60_000);
-  card('a_00000000d001', 'deploy');
-  card('a_00000000d002', 'rollback');
-  card('a_00000000d003', 'settings');
-  card('a_00000000d004', 'github');
-  assert.equal(L.platformRefusal(helperGoogle('POST'), '/api/approvals/a_00000000d004/approve', 'POST'), null, "a game's GitHub card: an admin's");
-  assert.equal(L.platformRefusal(helperGoogle('POST'), '/api/approvals/a_00000000d001/approve', 'POST'), null);
-  assert.equal(L.platformRefusal(helperGoogle('POST'), '/api/approvals/a_00000000d002/deny', 'POST'), null);
-  assert.match(L.platformRefusal(helperGoogle('POST'), '/api/approvals/a_00000000d003/approve', 'POST') ?? '', /only the platform admin/);
-  // A member still can't: that is the role check, unchanged.
+test("a member of J's Studio still can't do an admin's things (the role check, unchanged)", () => {
   A.createInvite({ email: 'member@example.com', role: 'member', by: j });
   const member = A.googleUser({ email: 'member@example.com', sub: '1000009' });
   assert.equal(member.role, 'member');
-  assert.match(A.memberRefusal(as(member, 'google')('POST'), '/api/deploy/doseofdestruction', 'POST') ?? '', /Only an admin/);
+  for (const route of ['/api/deploy/doseofdestruction', '/api/approvals/a_0123456789ab/approve', '/api/settings']) {
+    assert.match(A.memberRefusal(as(member, 'google')('POST'), route, 'POST') ?? '', /Only an admin/, route);
+  }
 });
 
 test("J's session from before sessions recorded how (via empty) counts as Google on Cloud Run", async () => {
@@ -111,7 +93,7 @@ test("J's session from before sessions recorded how (via empty) counts as Google
   const old = A.startSession(j, { via: 'password' });
   db.prepare('UPDATE sessions SET via = NULL WHERE user = ? AND via = ?').run(j.id, 'password');
   const jOld = (method: string) => req({ Cookie: `${A.COOKIE}=${old.token}` }, method);
-  assert.equal(L.platformRefusal(jOld('POST'), '/api/settings', 'POST'), null);
+  assert.equal(L.platformRefusal(jOld('POST'), '/api/cells/roll', 'POST'), null);
   assert.ok(L.platformAdminOf(jOld('GET')));
   // Someone else's old session is still not the platform admin (the email check stands).
   const hs = A.startSession(helper, { via: 'password' });
@@ -124,7 +106,7 @@ test('a wrong owner key or another listed email is not the platform admin', () =
   assert.equal(L.platformAdminOf(req({ Authorization: 'Bearer nope' }, 'POST')), null);
   process.env.STUDIO_PLATFORM_ADMINS = 'someone-else@example.com';
   try {
-    assert.match(L.platformRefusal(jGoogle('GET'), '/api/costs', 'GET') ?? '', /only the platform admin/);
+    assert.match(L.platformRefusal(jGoogle('GET'), '/api/cells', 'GET') ?? '', /only the platform admin/);
   } finally {
     delete process.env.STUDIO_PLATFORM_ADMINS;
   }
@@ -135,7 +117,7 @@ test('what everyone may still use in J\'s Studio is untouched', () => {
     assert.equal(L.platformRefusal(helperGoogle(method), route, method), null, `${method} ${route}`);
   }
   // Studio's own calls, Talk and the agents: guards.ts decides, not this.
-  assert.equal(L.platformRefusal(req({}, 'GET'), '/api/costs', 'GET'), null);
+  assert.equal(L.platformRefusal(req({}, 'GET'), '/api/cells', 'GET'), null);
 });
 
 test('/api/me tells the dashboard what to hide', async () => {
@@ -148,8 +130,11 @@ test('/api/me tells the dashboard what to hide', async () => {
   };
   const h = await me(helperGoogle());
   assert.equal(h.platformAdmin, false);
-  for (const tab of ['costs', 'resources', 'social', 'onair', 'users', 'claude']) assert.ok(h.hide.includes(tab), tab);
+  assert.deepEqual(h.hide, [], "an admin of J's Studio sees everything");
   assert.equal(h.customer, false);
+  const member = A.userByEmail('member@example.com')!;
+  const m = await me(as(member, 'google')());
+  for (const tab of ['costs', 'resources', 'social', 'onair', 'users', 'claude']) assert.ok(m.hide.includes(tab), tab);
   const jm = await me(jGoogle());
   assert.equal(jm.platformAdmin, true);
   assert.deepEqual(jm.hide, []);

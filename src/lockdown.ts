@@ -4,18 +4,18 @@
 //   - a session made by Continue with Google (sessions.via = 'google') for an account linked to a Google id, whose email
 //     is on STUDIO_PLATFORM_ADMINS (tenancy.ts, default piercehawkes3@gmail.com). A password sign-in never is.
 //
-// Always the platform admin's, in every Studio (J's and every customer's):
+// In J's Studio the platform admin is only for managing the platform for customers (J, 2026-10-30: "admin should just be
+//   for managing the platform for customers"): customers' Studios (/api/cells: the orgs, hibernation, the roll), the
+//   plans and their prices (/api/billing/plans), the waitlist (/api/signups), and Stripe's keys (server.ts). Everything
+//   else there, merges, Approve cards, settings, products, users, Claude accounts, going live, is Studio's admin role
+//   (auth.ts memberRefusal); Talk and the agents keep their own guards (guards.ts).
+//   A session from before sessions recorded how (via empty) counts as Google on Cloud Run, where that is the only way in.
+// In a customer's Studio these stay the platform admin's, never its own admins':
 //   On Air (/api/broadcast*), Social (/api/social*), the studio's costs and resources (/api/costs*, /api/ledger,
 //   /api/resources, /api/brief/cost), self-deploys and restarts (/api/self-deploys, /api/services*), the Antigravity
-//   login, seeding the shared memory from J's canon, the plans and their prices (/api/billing/plans), customers' Studios
-//   (/api/cells: the orgs, hibernation, the roll; cells.ts), Hawkes Gen's
-//   machinery through the library relay (fleet, builder, playtester, settings…), and Studio or Gen themselves: an agent change to hawkesstudio or hawkesgen (infra agents),
-//   approving, revising or merging one, and an Approve card for one.
-// In J's Studio (not a customer's), also:
-//   every admin route (auth.ts adminOnlyRoute: merges, approvals, money and settings that cost money, products) and
-//   Claude accounts, Users and invites, read or changed. Going live and rolling back a product (the routes and their
-//   Approve cards) need only Studio's admin role (J, 2026-10-30: "it shouldn't be required that I am admin to deploy").
-//   A session from before sessions recorded how (via empty) counts as Google on Cloud Run, where that is the only way in.
+//   login, seeding the shared memory from J's canon, the plans, customers' Studios, Hawkes Gen's machinery through the
+//   library relay (fleet, builder, playtester, settings…), Studio or Gen themselves (infra agents, merging one, its
+//   card), and Analytics and Screening for now.
 // A customer's admins keep their own: their games, going live with them, their settings, their users, their own Claude.
 //
 // Who isn't a user (Studio's own calls, Talk and the agents with the agents' key) is guards.ts's business in J's Studio;
@@ -55,13 +55,6 @@ const ALWAYS: [RegExp, string][] = [
   [/^\/api\/cells(\/|$)/, "Customers' Studios (the control plane)"],
   [/^\/api\/gen\/v1\/(fleet|machines|builder|playtester|settings|storage|clients|workflows|usage|keys|users)(\/|\?|$)/, "Hawkes Gen's machinery"],
 ];
-const J_STUDIO: [RegExp, string][] = [
-  [/^\/api\/claude\//, 'Claude accounts'],
-  // A customer's own AI (ailink.ts): theirs in their Studio; J's Studio's are set up on the server, and its Antigravity login is J's.
-  [/^\/api\/(ai|antigravity)\//, 'AI logins'],
-  [/^\/api\/(users|invites|signups)(\/|$)/, 'Users'],
-];
-
 /** The change an infra route acts on, when it is a change to Studio or Gen. */
 function infraChange(id: string) {
   try {
@@ -70,8 +63,22 @@ function infraChange(id: string) {
   } catch { return false; }
 }
 
+/** Running the platform for customers: the one thing the platform admin is for in J's Studio. */
+const PLATFORM: [RegExp, string][] = [
+  [/^\/api\/cells(\/|$)/, "Customers' Studios (the control plane)"],
+  [/^\/api\/billing\/plans$/, 'Setting the plans and their prices'],
+  [/^\/api\/signups(\/|$)/, 'The waitlist'],
+];
+
 /** What a route is, when it is the platform admin's alone (a short name), else null. */
 export function platformFeature(route: string, method: string): string | null {
+  // J's Studio: the platform admin is only for managing the platform for customers (J, 2026-10-30: "admin should just
+  // be for managing the platform for customers"). Everything else is Studio's admin role (auth.ts memberRefusal), and
+  // Talk and the agents keep their own guards (guards.ts).
+  if (!customerStudio()) {
+    for (const [re, what] of PLATFORM) if (re.test(route)) return what;
+    return null;
+  }
   for (const [re, what] of ALWAYS) if (re.test(route)) return what;
   if (method !== 'GET') {
     let m = /^\/api\/(?:changes|pm\/(?:merge|revise))\/(c_[0-9a-f]+)(?:\/[\w-]+)?$/.exec(route);
@@ -85,27 +92,8 @@ export function platformFeature(route: string, method: string): string | null {
   }
   // A customer's Studio: Analytics and Screening are the platform admin's for now (J, 2026-10-30: "lets not handle
   // analytics for customers yet"; Screening "is more of a Gen feature"). Their dashboard hides the tabs (groups.js).
-  if (customerStudio() && /^\/api\/(analytics|videos)(\/|$)/.test(route)) return 'Analytics and Screening';
-  if (!customerStudio()) {
-    for (const [re, what] of J_STUDIO) if (re.test(route)) return what;
-    // Going live and rolling back a product need Studio's admin role (auth.ts memberRefusal), not the platform admin
-    // (J, 2026-10-30: "it shouldn't be required that I am admin to deploy"). The Approve card is still his OK.
-    if (method !== 'GET' && adminOnlyRoute(route) && !goLiveRoute(route)) return 'Merges, money and settings in this Studio';
-  }
+  if (/^\/api\/(analytics|videos)(\/|$)/.test(route)) return 'Analytics and Screening';
   return null;
-}
-
-/** Going live or rolling back a product: the routes, and an Approve card's tap for one. */
-function goLiveRoute(route: string) {
-  if (/^\/api\/(deploy|rollback)\//.test(route)) return true;
-  const m = /^\/api\/approvals\/(a_[0-9a-f]+)\/(approve|deny)$/.exec(route);
-  if (!m) return false;
-  try {
-    const a = db.prepare('SELECT kind FROM approvals WHERE id = ?').get(m[1]) as { kind: string } | undefined;
-    // A game's GitHub card (a new game's repo, a game's setup) too (J, 2026-10-30: "You shouldn't have to be admin to do
-    // this", then "Why is so much gated by admin" when his own new-game card was refused).
-    return a?.kind === 'deploy' || a?.kind === 'rollback' || a?.kind === 'github';
-  } catch { return false; }
 }
 
 const refusal = (what: string) => `${what}: only the platform admin can do that (Hawkes Studio's owner, signed in with Google), not this Studio's admins.`;
@@ -122,6 +110,8 @@ export function platformRefusal(req: http.IncomingMessage, route: string, method
 
 /** For a body-dependent case (server.ts): starting an agent on Studio or Gen themselves. null when allowed. */
 export function infraRefusal(req: http.IncomingMessage, product: string): string | null {
+  // J's Studio: Studio's admin role (the platform admin is only for customers' things); Talk and agents: guards.ts.
+  if (!customerStudio()) return null;
   if (!lockdownOn() || !isInfra(product) || platformAdminOf(req)) return null;
   if (!requester(req) && !customerStudio()) return null;
   return refusal('Changing Hawkes Studio or Hawkes Gen');
@@ -131,5 +121,7 @@ export function infraRefusal(req: http.IncomingMessage, product: string): string
 export function hiddenFor(req: http.IncomingMessage) {
   const admin = !lockdownOn() || Boolean(platformAdminOf(req));
   if (admin) return { platformAdmin: true, hide: [] as string[] };
+  // J's Studio: its admins see everything (only the customers' platform pages refuse them); its members don't.
+  if (!customerStudio() && requester(req)?.role === 'admin') return { platformAdmin: false, hide: [] as string[] };
   return { platformAdmin: false, hide: ['costs', 'resources', 'social', 'onair', 'services', 'antigravity', ...(customerStudio() ? [] : ['users', 'claude'])] };
 }
