@@ -544,3 +544,67 @@ test("a cell's Gen work is charged to its org's balance: refused with 402 when s
   r = await call('refund', { charge: 'gc_build1', credits: 100, part: 'steal' }, other.id);
   assert.equal(r.status, 404);
 });
+
+test("Hawkes Gen charges an org for a job made with its Gen key: its own key, the org by gen_org, once per job, 402 when short", async () => {
+  const o = C.createOrg({ sub: '7000070', email: 'genbank@m.example', name: null }, 'Gen Bank');
+  const { genOrg } = (await C.ensureGenKey(o.id))!;
+  await C.addCredits(o.id, { amount: 120 }, 'admin');
+  const genKey = K.genChargesKey();
+  assert.notEqual(genKey, K.deriveKey('cell', o.id));
+  const call = async (what: string, body: any, key = genKey) => {
+    const out = res();
+    const handled = await C.handleCellsKeyed(req({ Authorization: `Bearer ${key}` }, 'POST'), out, `/api/cells/gen/${what}`, 'POST', send, async () => body);
+    assert.equal(handled, true);
+    return out;
+  };
+  // Only Gen's key: not a cell's, not the edge's, not nothing.
+  assert.equal((await call('charge', { genOrg, credits: 6, job: 'j_000001', tool: 'image.generate' }, K.deriveKey('cell', o.id))).status, 401);
+  assert.equal((await call('charge', { genOrg, credits: 6, job: 'j_000001', tool: 'image.generate' }, K.edgeKey())).status, 401);
+  assert.equal((await call('charge', { genOrg, credits: 6, job: 'j_000001', tool: 'image.generate' }, '')).status, 401);
+  // A Gen org no studio has, or a bad job id.
+  assert.equal((await call('charge', { genOrg: 'org_ffffffffffffffff', credits: 6, job: 'j_000001' })).status, 404);
+  assert.equal((await call('charge', { genOrg, credits: 6, job: 'nope' })).status, 400);
+  // Charged once per job, in the org's own ledger.
+  let r = await call('charge', { genOrg, credits: 100, job: 'j_0b0001', tool: 'unity.build' });
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  assert.equal(r.body.org, o.id);
+  assert.equal(r.body.credits, 20);
+  r = await call('charge', { genOrg, credits: 100, job: 'j_0b0001', tool: 'unity.build' });
+  assert.equal(r.body.duplicate, true);
+  assert.equal(B.creditBalance(o.id), 20);
+  assert.match(B.creditLedger(5, o.id).find((l: any) => l.kind === 'gen_work')!.detail, /unity\.build \(j_0b0001\)/);
+  // Short: 402 with the numbers and the plain words, nothing taken.
+  r = await call('charge', { genOrg, credits: 100, job: 'j_0b0002', tool: 'unity.build' });
+  assert.equal(r.status, 402);
+  assert.match(r.body.error, /^This studio is out of credits: unity\.build needs 100 and 20 are left/);
+  assert.deepEqual(r.body.credits, { need: 100, have: 20, topUp: true });
+  assert.equal(B.creditBalance(o.id), 20);
+  // Refunds: the whole charge when no amount is given, once; never more than was charged; none for a job never charged.
+  r = await call('refund', { genOrg, job: 'j_0b0001', reason: 'Job failed: boom' });
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  assert.equal(r.body.refunded, 100);
+  r = await call('refund', { genOrg, job: 'j_0b0001', credits: 100 });
+  assert.equal(r.body.refunded, 0);
+  assert.equal(B.creditBalance(o.id), 120);
+  assert.equal((await call('refund', { genOrg, job: 'j_0b0002' })).status, 404);
+  // Another studio's Gen org can't refund this one's charge.
+  const other = C.createOrg({ sub: '7000071', email: 'genbank2@m.example', name: null }, 'Gen Bank Two');
+  const o2 = (await C.ensureGenKey(other.id))!;
+  await call('charge', { genOrg, credits: 10, job: 'j_0b0003', tool: 'image.generate' });
+  assert.equal((await call('refund', { genOrg: o2.genOrg, job: 'j_0b0003' })).status, 404);
+  assert.equal(B.creditBalance(o.id), 110);
+});
+
+test("Gen's charging key is the platform admin's alone to read", async () => {
+  const no = res();
+  await C.handleCellsAdmin(req({}), no, '/api/cells/gen-key', 'GET', send, noJson);
+  assert.equal(no.status, 403);
+  const prev = process.env.STUDIO_OWNER_KEY;
+  process.env.STUDIO_OWNER_KEY = 'owner-key-for-gen-key';
+  const yes = res();
+  await C.handleCellsAdmin(req({ Authorization: 'Bearer owner-key-for-gen-key' }), yes, '/api/cells/gen-key', 'GET', send, noJson);
+  if (prev === undefined) delete process.env.STUDIO_OWNER_KEY; else process.env.STUDIO_OWNER_KEY = prev;
+  assert.equal(yes.status, 200, JSON.stringify(yes.body));
+  assert.equal(yes.body.key, K.genChargesKey());
+  assert.equal(yes.body.env, 'HAWKESGEN_ORG_CREDITS_KEY');
+});

@@ -62,6 +62,8 @@ export function openRoute(route: string, method: string) {
   // Customers' Studios (cells.ts): the router's and the cells' calls (their own keys), the central cron (Scheduler's token).
   if (route.startsWith('/api/cells/edge/') || route === '/api/cells/self' || route.startsWith('/api/cells/self/') || route === '/api/cells/broker') return true;
   if (route === '/api/cells/cron' && method === 'POST') return true;
+  // Hawkes Gen charging customers' Studios for its jobs (cells.ts genCredits; Gen's own key).
+  if ((route === '/api/cells/gen/charge' || route === '/api/cells/gen/refund') && method === 'POST') return true;
   if (route === '/favicon.ico') return true;
   // A one-time memory export link (memory-transfer.ts): signed, expiring and single-use; another Studio fetches it.
   if (method === 'GET' && /^\/api\/memory\/export\/[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(route)) return true;

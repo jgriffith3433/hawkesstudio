@@ -57,6 +57,18 @@ export function isCellKey(org: string, key: string | null | undefined) {
   try { return sameText(key, deriveKey('cell', org)); } catch { return false; }
 }
 
+/**
+ * Hawkes Gen's key for charging customers' Studios (POST /api/cells/gen/charge|refund; hawkesgen src/orgcredits.ts):
+ * one for all orgs, set on each Gen lane as HAWKESGEN_ORG_CREDITS_KEY. Only the platform admin reads it
+ * (GET /api/cells/gen-key). Rotating the master changes it: set it on Gen again.
+ */
+export const genChargesKey = (m = master()) => deriveKey('gen-charges', '*', m);
+
+export const isGenChargesKey = (key: string | null | undefined) => {
+  if (!key) return false;
+  try { return sameText(key, genChargesKey()); } catch { return false; }
+};
+
 export const isEdgeKey = (key: string | null | undefined) => {
   if (!key) return false;
   try { return sameText(key, edgeKey()); } catch { return false; }

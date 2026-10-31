@@ -445,10 +445,11 @@ products:
     including when its cell is first made
   - a credit pack the customer buys (below)
   - the platform admin's Add credits
-- **What draws from it: Hawkes Gen work done for the Studio** (`src/credits.ts`, through `gen.ts`). Why Studio's ledger
-  and not Gen's: Gen's credits belong to Gen app accounts (a `users` row), and a cell's Gen key (role user, Gen org
-  `org_<hex>`) has none behind it, so Gen doesn't meter it today; the plans, invoices, gifts and the Settings box were
-  already on Studio's ledger. So the cell is metered on Studio's side, with Gen's own prices:
+- **What draws from it: Hawkes Gen work done for the Studio** (`src/credits.ts`, through `gen.ts`; and Gen itself, next
+  item). Why Studio's ledger and not Gen's: Gen's credits belong to Gen app accounts (a `users` row), and a cell's Gen key
+  (role user, Gen org `org_<hex>`) has none behind it; the plans, invoices, gifts and the Settings box were already on
+  Studio's ledger. So the balance is Studio's, with Gen's own prices. Before Gen charged orgs itself, the cell metered
+  its own submits:
   1. Gen prices each job (`POST /v1/billing/quote`: the same quote it charges its own accounts; a customer Unity build
      is 100 flat, a web smoke playtest about 6)
   2. the cell asks the control plane to take that (`POST /api/cells/self/credits/charge {charge, credits, what}`, its
@@ -458,6 +459,40 @@ products:
   4. every 2 minutes the cell gives back the credits of jobs that failed or were cancelled
      (`/api/cells/self/credits/refund {charge, credits, part}`: once per part, never more than the charge)
   Tools on the customer's own AI (`playtest.review`, `llm.text`, `llm.json`) cost no credits: Anthropic bills them.
+- **One bank, enforced by Gen** (2026-10-31): the steps above only cover jobs the cell itself submits through `gen.ts`.
+  Its agents and Talk use Gen's MCP (`/mcp`, `cloudjob.ts cloudMcp`) with the same key, and Gen has other routes that
+  make jobs (reruns, entity make, the director), so Gen now charges every job that key makes, whatever the path
+  (hawkesgen `src/orgcredits.ts`, its AGENTS.md "Customers' Studios pay from their Studio balance"):
+  1. Gen prices the job (`quoteJobCredits`, the same quote) and, before the job exists, calls the control plane:
+     `POST /api/cells/gen/charge {genOrg, credits, job, tool}` with **Gen's key** (`cellkeys.ts genChargesKey`, derived
+     from the master: `deriveKey('gen-charges', '*')`). `cells.ts genCredits` finds the org by `cp_orgs.gen_org` and takes
+     the credits from its ledger exactly like the cell's own charges (`cellCredits`: once per job, ledger ref
+     `gen:<org>:<job>`). Short: **402** `{ error, credits: { need, have, topUp } }`; Gen refuses the job with kind
+     `credits` and those words, which the cell shows as "out of credits" (`credits.ts genRefusal`). The control plane
+     unreachable, or any other answer: Gen refuses the job (fail closed).
+  2. A job that fails or is cancelled: `POST /api/cells/gen/refund {genOrg, job}` (once, never more than charged; Gen
+     retries every 2 minutes until it gets through). Jobs Gen hands back (reuse, the same key) are never charged.
+  3. **The cell then doesn't charge again:** `credits.ts genCharges` asks Gen's `/v1/health` (`orgCredits: true`, cached
+     5 minutes) or reads `STUDIO_GEN_CHARGES` (`gen`: Gen charges; `studio`: this side does), and `meteredSubmit` passes
+     the job straight to Gen. With an older Gen, or one not set up, the cell-side path above stays, and a job Gen says it
+     charged (label `orgCredits`) is refunded on the cell's side at once: never paid twice, never free.
+  Owner and admin keys, J's own keys and Gen's own chains are never charged. Both routes are open past the cloud gate
+  (`cloudauth.ts openRoute`) and check Gen's key themselves.
+
+  **Turning it on** (J, once per lane; until then cells charge on their own side as before):
+  1. Get the key: signed in to J's Studio as the platform admin, open `https://studio.hawkesgen.ai/api/cells/gen-key`
+     (studio-beta's for beta). It answers `{ key, env: "HAWKESGEN_ORG_CREDITS_KEY", url }`. Only the platform admin may
+     read it; it changes if `STUDIO_CELLS_MASTER` is rotated (then set it again).
+  2. Put it in Gen's lane: the secret `gen-org-credits-key` (live) or `gen-beta-org-credits-key` (beta) in project
+     `hawkes-staging` (`gcloud secrets create gen-org-credits-key --data-file=<a file with the key>`), then run
+     hawkesgen `tools\gen-cloudrun\deploy.ps1` (with `-Lane beta` for beta), which mounts it as
+     `HAWKESGEN_ORG_CREDITS_KEY` once it exists. Locally: `HAWKESGEN_ORG_CREDITS_KEY=` in hawkesgen's `.env`.
+  3. Point Gen at the control plane: `POST /v1/settings {"orgCredits":{"url":"https://studio.hawkesgen.ai"}}` with the
+     lane's owner key (beta: `https://studio-beta.hawkesgen.ai`), or the env `HAWKESGEN_ORG_CREDITS_URL`.
+  4. Check: Gen's `/v1/health` says `orgCredits: true`; a cell's next job shows a `gen_work` line with its job id in
+     Settings → Plan and credits, and no second charge.
+  Tests: hawkesgen `test/orgcredits.test.ts`; here `test/cells.test.ts` (the routes, the key) and `test/credits.test.ts`
+  (no double charge).
   The dashboard's Gen components submit through the same path (`POST /api/gen/v1/jobs` in a cell). `STUDIO_METER_GEN=0`
   turns charging off. J's own Studio is never metered.
 - **Out of credits is told plainly**, wherever the work started: "This studio is out of credits: unity.build needs 100

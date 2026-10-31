@@ -11,6 +11,13 @@
 // Jobs on the customer's own AI (their Claude: playtest reviews, llm.*) cost no credits: Anthropic bills them.
 // A Gen that refuses for lack of credits itself (402) is told the same way (genRefusal).
 // STUDIO_METER_GEN=0 turns charging off (a cell still on a control plane without this route).
+//
+// One bank, enforced by Gen (hawkesgen src/orgcredits.ts): a Gen with the control plane's key charges every job the
+// cell's key makes, on any path (its MCP, reruns, entity make), before the job exists, and refunds failures itself.
+// Then this side must not charge again: genCharges() asks Gen (/v1/health `orgCredits`, cached 5 minutes) unless
+// STUDIO_GEN_CHARGES says (`gen`: Gen charges; `studio`: this side does). A Gen that doesn't charge orgs (older, or not
+// set up) keeps the old path below. Should the check be wrong, a job Gen says it charged (label `orgCredits`) is
+// refunded here at once, so a job is never paid twice, nor free.
 
 import crypto from 'node:crypto';
 import { db } from './db.ts';
@@ -40,6 +47,24 @@ async function control(what: 'charge' | 'refund', body: Record<string, unknown>)
 
 type Raw = (path: string, o?: any) => Promise<any>;
 
+let enforced: { at: number; on: boolean } | null = null;
+/** Whether Hawkes Gen charges this cell's jobs to its balance itself (then this side only reads the balance). */
+export async function genCharges(raw: Raw, now = Date.now()): Promise<boolean> {
+  const set = (process.env.STUDIO_GEN_CHARGES ?? '').trim().toLowerCase();
+  if (set === 'gen') return true;
+  if (set === 'studio') return false;
+  if (enforced && now - enforced.at < 5 * 60_000) return enforced.on;
+  try {
+    const h = await raw('/health');
+    enforced = { at: now, on: h?.orgCredits === true };
+    return enforced.on;
+  } catch {
+    return false; // unknown: the old path, and a job Gen says it charged is refunded here (meteredSubmit)
+  }
+}
+/** Forget what Gen said (tests). */
+export function resetGenCharges() { enforced = null; }
+
 /** What Gen would charge for one job spec (0 for the customer's own AI). */
 async function quote(raw: Raw, s: any): Promise<number> {
   if (OWN_AI_TOOLS.has(String(s?.tool ?? ''))) return 0;
@@ -60,6 +85,8 @@ const refund = (charge: string, credits: number, part: string, detail: string) =
  * new job recorded for settling. `raw` is the unmetered request.
  */
 export async function meteredSubmit(raw: Raw, path: string, o: any) {
+  // Gen charges the balance itself: nothing to take here (its 402 says what's short: genRefusal).
+  if (await genCharges(raw)) return raw(path, o);
   const body = o?.body ?? {};
   const specs: any[] = Array.isArray(body.jobs) ? body.jobs : [body];
   const quotes = await Promise.all(specs.map((s) => quote(raw, s)));
@@ -82,6 +109,8 @@ export async function meteredSubmit(raw: Raw, path: string, o: any) {
     const j = jobs[i];
     // Handed back rather than made (reuse, or the same key as before): nothing new to pay for.
     if (!j?.id || j.reused || (Number(j.created) > 0 && Number(j.created) < started - 2000)) { back += q; return; }
+    // Gen charged it too (it charges orgs now): ours goes back, so it's paid once.
+    if (Number(j.labels?.orgCredits) > 0) { back += q; enforced = { at: Date.now(), on: true }; return; }
     const ins = db.prepare('INSERT OR IGNORE INTO gen_charges (job, charge, credits, tool, created) VALUES (?, ?, ?, ?, ?)').run(j.id, charge, q, String(s.tool ?? ''), Date.now());
     if (!ins.changes) back += q;
   });
@@ -121,6 +150,10 @@ export function startCreditSettler(getJob: (id: string) => Promise<any>, every =
 export function genRefusal(e: any) {
   if (e instanceof CreditsNeeded) return e;
   if (e?.status === 402 && (e.kind === 'credits' || /credit/i.test(String(e.message ?? '')))) {
+    const msg = String(e.message ?? '');
+    // The control plane's own words, passed on by Gen when it charges the studio (hawkesgen src/orgcredits.ts).
+    const cp = /^This studio is out of credits: .*? needs ([\d,]+) and ([\d,]+) (?:is|are) left/.exec(msg);
+    if (cp) return new CreditsNeeded(msg, Number(cp[1].replace(/,/g, '')), Number(cp[2].replace(/,/g, '')));
     const m = /need (\d+), have (\d+)/i.exec(String(e.message ?? ''));
     return new CreditsNeeded(m ? outOfCredits(Number(m[1]), Number(m[2])) : `This studio is out of credits for Hawkes Gen (${String(e.message ?? '').slice(0, 160)}). Add credits or upgrade your plan in Settings → Plan and credits.`, m ? Number(m[1]) : null, m ? Number(m[2]) : null);
   }

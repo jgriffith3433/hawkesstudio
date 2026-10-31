@@ -146,3 +146,55 @@ test('Gen refusing for lack of credits itself reads as a clear message with the 
   const other = Cr.genRefusal(Object.assign(new Error('Hawkes Gen /jobs: HTTP 500'), { status: 500 }));
   assert.equal(other.message, 'Hawkes Gen /jobs: HTTP 500', 'anything else unchanged');
 });
+
+// One bank, enforced by Gen (hawkesgen src/orgcredits.ts): a Gen that charges orgs itself is never charged again here.
+test('when Gen charges the studio itself (health orgCredits), the cell charges nothing and passes Gen\'s 402 on', async () => {
+  Cr.resetGenCharges();
+  const calls: string[] = [];
+  const raw = async (p: string, o: any = {}) => {
+    calls.push(`${o.method ?? 'GET'} ${p}`);
+    if (p === '/health') return { ok: true, orgCredits: true };
+    if (p === '/jobs') return { jobs: [{ id: 'j_gen1', status: 'queued', created: Date.now(), labels: { orgCredits: 6 } }] };
+    throw new Error(`unexpected ${p}`);
+  };
+  const before = controlCalls.length, bal = balance;
+  const r = await Cr.meteredSubmit(raw, '/jobs', { method: 'POST', body: { tool: 'image.generate', project: 'org_0123456789abcdef.g', params: {} } });
+  assert.equal(r.jobs[0].id, 'j_gen1');
+  assert.equal(controlCalls.length, before, 'no charge or refund from the cell');
+  assert.equal(balance, bal);
+  assert.ok(!calls.some((c) => c.includes('/billing/quote')), 'not even a quote');
+  // Cached: the next submit doesn't ask again.
+  await Cr.meteredSubmit(raw, '/jobs', { method: 'POST', body: { tool: 'image.generate', project: 'org_0123456789abcdef.g', params: {} } });
+  assert.equal(calls.filter((c) => c.endsWith('/health')).length, 1);
+  // Gen's refusal in the control plane's words reads as CreditsNeeded with the numbers.
+  const e = Cr.genRefusal(Object.assign(new Error('This studio is out of credits: unity.build needs 100 and 1,250 are left. Add credits or upgrade your plan in Settings → Plan and credits.'), { status: 402, kind: 'credits' }));
+  assert.equal(e.status, 402);
+  assert.deepEqual([e.credits.need, e.credits.have], [100, 1250]);
+  assert.match(e.message, /^This studio is out of credits: unity\.build needs 100/);
+  Cr.resetGenCharges();
+});
+
+test('STUDIO_GEN_CHARGES decides without asking; a job Gen says it charged is refunded here, so it is paid once', async () => {
+  process.env.STUDIO_GEN_CHARGES = 'gen';
+  let asked = 0;
+  const r1 = await Cr.meteredSubmit(async (p: string) => { if (p === '/health') asked++; return { jobs: [{ id: 'j_x', status: 'queued', created: Date.now() }] }; }, '/jobs', { method: 'POST', body: { tool: 'image.generate', project: 'p', params: {} } });
+  assert.equal(r1.jobs[0].id, 'j_x');
+  assert.equal(asked, 0);
+  // `studio`: the old path, even against a Gen that charged it too (an older health check, a mixed rollout).
+  process.env.STUDIO_GEN_CHARGES = 'studio';
+  const before = balance;
+  const raw = async (p: string) => {
+    if (p === '/billing/quote') return { credits: 6 };
+    if (p === '/jobs') return { jobs: [{ id: 'j_both', status: 'queued', created: Date.now(), labels: { orgCredits: 6 } }] };
+    throw Object.assign(new Error('no'), { status: 404 });
+  };
+  await Cr.meteredSubmit(raw, '/jobs', { method: 'POST', body: { tool: 'image.generate', project: 'p', params: {} } });
+  const mine = controlCalls.filter((c) => c.what === 'charge').at(-1)!;
+  const back = controlCalls.filter((c) => c.what === 'refund' && c.body.charge === mine.body.charge);
+  assert.equal(back.length, 1);
+  assert.equal(back[0].body.credits, 6);
+  assert.equal(balance, before, 'charged and given back: Gen\'s charge is the only one');
+  assert.equal((db.prepare('SELECT COUNT(*) AS n FROM gen_charges WHERE job = ?').get('j_both') as any).n, 0, 'not watched for settling: Gen refunds it');
+  delete process.env.STUDIO_GEN_CHARGES;
+  Cr.resetGenCharges();
+});

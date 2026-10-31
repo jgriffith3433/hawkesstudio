@@ -30,7 +30,7 @@ import type http from 'node:http';
 import { db } from './db.ts';
 import { StudioError } from './config.ts';
 import { customerStudio } from './tenancy.ts';
-import { deriveKey, isCellKey, isEdgeKey, sealWith, unsealWith, validOrg } from './cellkeys.ts';
+import { deriveKey, genChargesKey, isCellKey, isEdgeKey, isGenChargesKey, sealWith, unsealWith, validOrg } from './cellkeys.ts';
 import * as R from './cellrun.ts';
 
 db.exec(`
@@ -576,6 +576,30 @@ export async function cellCredits(orgId: string, what: 'charge' | 'refund', b: a
   return { ok: true, refunded: r.duplicate ? 0 : amount, credits: r.balance };
 }
 
+/** The org whose Gen org this is (cp_orgs.gen_org), or null. */
+export function orgOfGenOrg(genOrg: string): Org | null {
+  if (!/^org_[0-9a-f]{8,32}$/.test(String(genOrg ?? ''))) return null;
+  const r = db.prepare('SELECT * FROM cp_orgs WHERE gen_org = ?').get(genOrg);
+  return r ? toOrg(r) : null;
+}
+
+/**
+ * Hawkes Gen charging a customer's Studio for a job it makes with the org's Gen key, whatever the path (its HTTP routes,
+ * its MCP; hawkesgen src/orgcredits.ts): charge {genOrg, credits, job, tool} takes them from the org's balance once per
+ * job, or 402 with `credits` {need, have}; refund {genOrg, job, credits?} gives a job's charge back once, never more
+ * than was charged. The same ledger and rules as the cell's own charges (cellCredits), under the job's id.
+ */
+export async function genCredits(what: 'charge' | 'refund', b: any) {
+  const org = orgOfGenOrg(String(b?.genOrg ?? ''));
+  if (!org) throw new StudioError('No studio has that Gen org', 404);
+  const job = String(b?.job ?? '');
+  if (!/^j_[0-9a-f]{6,32}$/.test(job)) throw new StudioError('job: a Hawkes Gen job id', 400);
+  const tool = String(b?.tool ?? '').slice(0, 80);
+  if (what === 'charge') return { org: org.id, ...(await cellCredits(org.id, 'charge', { charge: job, credits: b.credits, what: tool || 'this job', detail: `Hawkes Gen: ${tool || 'a job'} (${job})` })) };
+  const credits = b?.credits === undefined || b?.credits === null ? 1_000_000 : b.credits;
+  return { org: org.id, ...(await cellCredits(org.id, 'refund', { charge: job, credits, part: 'gen', detail: `Hawkes Gen ${tool || 'job'} not done${b?.reason ? ` (${String(b.reason).slice(0, 80)})` : ''}: credits back` })) };
+}
+
 /** The plan an org has: its subscription or its gift, whichever is the higher plan. */
 export async function effectivePlan(orgId: string) {
   const B = await import('./billing.ts');
@@ -692,6 +716,15 @@ export async function handleCellsKeyed(req: http.IncomingMessage, res: http.Serv
       return send(res, e.status ?? 400, { error: e.message ?? String(e), ...(e.credits ? { credits: e.credits } : {}) }), true;
     }
   }
+  // Hawkes Gen charging an org's balance for a job made with its Gen key (genCredits), with Gen's own key.
+  const gc = /^\/api\/cells\/gen\/(charge|refund)$/.exec(route);
+  if (gc && method === 'POST') {
+    if (!cellsOn()) return send(res, 404, { error: 'not the control plane' }), true;
+    if (!isGenChargesKey(bearer(req))) return send(res, 401, { error: 'gen key' }), true;
+    try { return send(res, 200, await genCredits(gc[1] as 'charge' | 'refund', await readJson(req))), true; } catch (e: any) {
+      return send(res, e.status ?? 400, { error: e.message ?? String(e), ...(e.credits ? { credits: e.credits } : {}) }), true;
+    }
+  }
   const self = /^\/api\/cells\/self\/(members|ai)$/.exec(route);
   if (self && method === 'POST') {
     if (!cellsOn()) return send(res, 404, { error: 'not the control plane' }), true;
@@ -728,6 +761,12 @@ export async function handleCellsAdmin(req: http.IncomingMessage, res: http.Serv
     const B = await import('./billing.ts');
     const orgs = await Promise.all(listOrgs().map(async (o) => { const e = await effectivePlan(o.id); return { ...o, credits: B.creditBalance(o.id), giftCreditsPerMonth: o.gift ? await giftCredits(o.gift) : null, plan: { id: e.planId, status: e.status, sub: e.sub ? { planId: e.sub.planId, status: e.sub.status } : null } }; }));
     return send(res, 200, { on: cellsOn(), settings: cellsSettings(), missing: R.missingConfig(), dryRun: R.dryRun(), orgs }), true;
+  }
+  // The key Hawkes Gen charges customers' Studios with (cellkeys.ts genChargesKey): the platform admin's alone, to set
+  // on each Gen lane as HAWKESGEN_ORG_CREDITS_KEY (docs/studio-customers.md, "Billing").
+  if (route === '/api/cells/gen-key' && method === 'GET') {
+    if (!platformAdminOf(req)) return send(res, 403, { error: 'Only the platform admin.' }), true;
+    return send(res, 200, { key: genChargesKey(), env: 'HAWKESGEN_ORG_CREDITS_KEY', url: (process.env.STUDIO_PUBLIC_URL || R.cellsConfig().publicUrl || '').replace(/\/+$/, '') }), true;
   }
   const b = method === 'POST' || method === 'PUT' ? await readJson(req) : {};
   if (route === '/api/cells/config' && method === 'POST') return send(res, 200, { settings: saveCellsSettings(b) }), true;
