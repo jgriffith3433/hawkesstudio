@@ -46,7 +46,9 @@ export type StartOptions = {
 /** A project's builds: its own, else a web project's implicit one (its beta branch built, or published as it is). */
 export function buildsOf(p: Product): BuildSpec[] {
   if (p.builds?.length) return p.builds;
-  return (p.engine as string) === 'web' && (p as any).github ? [{ id: 'web', tool: 'npm', target: 'web' }] : [];
+  // A web app with its own server and beta (p.beta, kind app) is built and served where it's hosted: no build here,
+  // which used to fail on every push (2026-10-31 review).
+  return (p.engine as string) === 'web' && (p as any).github && !p.beta && (p as any).kind !== 'app' ? [{ id: 'web', tool: 'npm', target: 'web' }] : [];
 }
 /** When a build runs by itself: actions builds start themselves (their own workflow's triggers), the rest on beta pushes. */
 export const triggersOf = (b: BuildSpec): BuildTrigger[] => b.on ?? (b.tool === 'actions' ? [] : ['beta']);
@@ -296,7 +298,16 @@ const sizeOf = (files: { size: number }[]) => files.reduce((n, f) => n + f.size,
 async function viaStudio(p: Product, b: BuildSpec, slug: string, sha: string, token: string | null, gh: typeof fetch, say: (s: string) => void): Promise<Output> {
   const { githubFiles } = await import('./sitestore.ts');
   const dir = b.path && b.path !== '.' ? b.path : '';
-  const hasPkg = b.tool === 'npm' && (await gh(`https://api.github.com/repos/${slug}/contents/${dir ? `${encodeURI(dir)}/` : ''}package.json?ref=${sha}`, { method: 'HEAD', headers: { 'User-Agent': 'hawkes-studio' } })).ok;
+  // Only GitHub's 404 means "no package.json" (a rate limit or an outage used to publish the unbuilt source as the build,
+  // 2026-10-31 review); a package.json with no build script is a static site with tools (a dev server).
+  let hasPkg = false;
+  if (b.tool === 'npm') {
+    const r = await gh(`https://api.github.com/repos/${slug}/contents/${dir ? `${encodeURI(dir)}/` : ''}package.json?ref=${sha}`, { headers: { 'User-Agent': 'hawkes-studio', Accept: 'application/vnd.github.raw' } });
+    if (!r.ok && r.status !== 404) throw new Error(`GitHub couldn't read ${slug}'s package.json (${r.status}); the build waits for the next try rather than publish unbuilt files`);
+    let scripts: Record<string, string> = {};
+    if (r.ok) { try { scripts = JSON.parse(await r.text()).scripts ?? {}; } catch { scripts = {}; } }
+    hasPkg = r.ok && (Boolean(scripts.build) || Boolean(b.command));
+  }
   if (b.tool === 'static' || !hasPkg) {
     const from = [dir, b.tool === 'static' && b.out ? b.out : ''].filter(Boolean).join('/');
     say(`${b.tool === 'npm' ? 'no package.json: ' : ''}publishing ${from || 'the repo'} as it is`);
@@ -305,12 +316,18 @@ async function viaStudio(p: Product, b: BuildSpec, slug: string, sha: string, to
   }
   const { runCloudBuild } = await import('./cloudjob.ts');
   const cd = dir ? `cd '${dir.replace(/'/g, '')}' && ` : '';
-  const install = 'if [ -f package-lock.json ]; then npm ci --no-audit --no-fund --loglevel=error; else npm install --no-audit --no-fund --loglevel=error; fi';
+  // The package manager its lockfile names (in its folder or the repo's root, for workspaces); skipped when the build's
+  // own command installs. CI stays off unless the project sets it (Create React App fails every warning with CI on).
+  const root = `/tmp/build/${p.id}`;
+  const lock = (f: string) => `{ [ -f ${f} ] || [ -f "${root}/${f}" ]; }`;
+  const install = `if ${lock('pnpm-lock.yaml')}; then npx --yes pnpm@9 install --frozen-lockfile; elif ${lock('yarn.lock')}; then npx --yes yarn@1 install --frozen-lockfile; elif ${lock('bun.lockb')} || ${lock('bun.lock')}; then npx --yes bun install; elif [ -f package-lock.json ]; then npm ci --no-audit --no-fund --loglevel=error; else npm install --no-audit --no-fund --loglevel=error; fi`;
   const outDir = path.posix.join(dir || '.', b.out ?? 'dist');
   const command = b.command ?? 'npm run build';
+  const installs = /\b(npm (ci|install|i)\b|pnpm( [\w@.-]+)? install|yarn( [\w@.-]+)? install|bun install)/.test(command);
+  const env = Object.entries({ CI: 'false', ...(b.env ?? {}) }).map(([k, v]) => `export ${k}='${String(v).replace(/'/g, `'\\''`)}'`).join('; ');
   say(`building ${sha.slice(0, 7)} in a Cloud Run job (${command})`);
   const r = await runCloudBuild(`build-${p.id}-${b.id}-${Date.now().toString(36)}`, {
-    remote: `https://github.com/${slug}.git`, head: sha, cwd: `/tmp/build/${p.id}`, command: `${cd}(${install}) && ${command}`, outputs: [outDir], gitToken: token,
+    remote: `https://github.com/${slug}.git`, head: sha, cwd: root, command: `${env}; ${cd}${installs ? '' : `(${install}) && `}${command}`, outputs: [outDir], gitToken: token,
     onLine: (l) => { if (/^\[job\]|error|built in/i.test(l)) say(l); },
   });
   const tail = r.log.split('\n').filter(Boolean).slice(-3).join(' | ').slice(0, 400);

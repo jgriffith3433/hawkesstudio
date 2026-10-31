@@ -306,6 +306,11 @@ export async function serveBuild(req: Request, env: Env, url: URL): Promise<Resp
   return new Response(req.method === 'HEAD' ? null : o.body, { status: 200, headers, ...(enc ? { encodeBody: 'manual' } : {}) } as ResponseInit);
 }
 
+/** Whether a site's index.html is a single-page app's shell (a mount point or a module bundle), kept 10 seconds. */
+async function spaShell(env: Env, base: string): Promise<boolean> {
+  return Boolean(await smallFile(env, `${base}/index.html`, (t: string) => /<div[^>]+id=["'](root|app|__next|svelte)["']|<app-root|type=["']module["']/i.test(t) || null));
+}
+
 /** A page path's file: <path>, <path>index.html for a folder, else a redirect to <path>/ when that folder has one. */
 async function page(req: Request, env: Env, url: URL, base: string, rel: string): Promise<Response> {
   const want = !rel || rel.endsWith('/') ? `${rel}index.html` : rel;
@@ -315,11 +320,20 @@ async function page(req: Request, env: Env, url: URL, base: string, rel: string)
   if (rel && !rel.endsWith('/') && !/\.[a-z0-9]+$/i.test(rel) && (await env.SITES.head(`${base}/${rel}/index.html`))) {
     return new Response(null, { status: 301, headers: { Location: `${url.pathname}/${url.search}` } });
   }
+  // Clean URLs: /about serves about.html, as GitHub Pages, Netlify and Cloudflare Pages do (Next.js's static export and
+  // most site generators write about.html; 2026-10-31 review).
+  if (rel && !rel.endsWith('/') && !/\.[a-z0-9]+$/i.test(rel)) { const html = await serveFile(req, env, `${base}/${rel}.html`, 200, extra); if (html) return html; }
   if (!(await env.SITES.head(`${base}/.studio/build.json`)) && !(await env.SITES.head(`${base}/index.html`))) {
     return text(404, 'This beta site has not been published yet. Studio publishes it on the next push to the product\'s beta branch (or Runs > rebuild the beta site).');
   }
   // A single-page app's own routes: its 200.html (the convention static hosts use), else 404.html.
-  if (isPage(req) && !/\.[a-z0-9]+$/i.test(rel)) { const spa = await serveFile(req, env, `${base}/200.html`, 200, extra); if (spa) return spa; }
+  // With neither 200.html nor 404.html, its index.html: Vite and Create React App apps route in the browser, and their
+  // deep links 404'd (2026-10-31 review).
+  if (isPage(req) && !/\.[a-z0-9]+$/i.test(rel)) {
+    const spa = await serveFile(req, env, `${base}/200.html`, 200, extra);
+    if (spa) return spa;
+    if (rel && !rel.endsWith('/') && !(await env.SITES.head(`${base}/404.html`)) && (await spaShell(env, base))) { const index = await serveFile(req, env, `${base}/index.html`, 200, extra); if (index) return index; }
+  }
   return (await serveFile(req, env, `${base}/404.html`, 404, extra)) ?? text(404, 'Not found');
 }
 
@@ -353,6 +367,8 @@ export async function resolveKey(env: Env, lane: Lane, sub: string, pathname: st
   if (b) return b[3] === undefined ? { redirect: '/' } : { base: `${lane}/${sub}/b/${b[1]}/${b[2]}`, rel: b[3].replace(/^\/+/, '') };
   const mounts = (await smallFile(env, `${lane}/${sub}/mounts.json`, JSON.parse)) as Record<string, string> | null;
   if (mounts) {
+    // A mount's folder named without its slash (/Game) goes to the folder (/Game/), instead of the site's own 404.
+    if (Object.keys(mounts).some((m) => m && m === `${k.rel}/`)) return { redirect: '/' };
     const at = Object.keys(mounts).filter((m) => m && k.rel.startsWith(m)).sort((x, y) => y.length - x.length)[0];
     const to = at ? String(mounts[at]) : '';
     const ok = to && !to.split('/').some((s) => s === '..' || s === '') && (!org || to.startsWith(`o/${org}/`));

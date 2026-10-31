@@ -304,6 +304,8 @@ export type BuildSpec = {
   on?: ('beta' | 'tag')[];
   publish?: { project: string; path: string; commit?: boolean };
   playtest?: boolean;
+  /** Plain settings the build runs with (VITE_*, NEXT_PUBLIC_*, NODE_OPTIONS...): never secrets, they show in its log. */
+  env?: Record<string, string>;
 };
 const BUILD_TOOLS = ['unity', 'npm', 'static', 'actions'];
 const BUILD_TARGETS = ['web', 'windows', 'linux', 'mac', 'android'];
@@ -347,6 +349,18 @@ export function checkBuilds(list: unknown): BuildSpec[] {
       out.publish = { project, path: p ? `${p.replace(/\/+$/, '')}/` : '', ...(b.publish.commit === true ? { commit: true } : {}) };
     }
     if (b.playtest !== undefined) out.playtest = b.playtest !== false;
+    if (b.env !== undefined) {
+      if (!b.env || typeof b.env !== 'object' || Array.isArray(b.env)) throw new StudioError(`${at}.env: { NAME: "value" }`, 400);
+      const env: Record<string, string> = {};
+      for (const [k, v] of Object.entries(b.env as Record<string, unknown>)) {
+        if (!/^[A-Za-z_][A-Za-z0-9_]{0,63}$/.test(k)) throw new StudioError(`${at}.env: "${k}" isn't a plain variable name`, 400);
+        if (typeof v !== 'string' || v.length > 2000 || /[\u0000-\u001f]/.test(v)) throw new StudioError(`${at}.env.${k}: one plain line of text`, 400);
+        if (/(SECRET|TOKEN|PASSWORD|PRIVATE|API_KEY)/i.test(k)) throw new StudioError(`${at}.env.${k}: looks like a secret; build settings show in the build log, so keep secrets in the project's own CI`, 400);
+        env[k] = v;
+      }
+      if (Object.keys(env).length > 40) throw new StudioError(`${at}.env: at most 40 settings`, 400);
+      out.env = env;
+    }
     return out;
   });
 }

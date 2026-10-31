@@ -496,3 +496,17 @@ test("a site written for its own domain still works under a path: root paths fro
     assert.notEqual(x.status, 307, `not moved for referer ${ref}`);
   }
 });
+
+test('clean URLs, single-page apps without a 200.html, and a mounted folder named without its slash', async () => {
+  W.resetKeys();
+  W.resetSmall();
+  const html = { httpMetadata: { contentType: 'text/html' } };
+  await r2.put('live/g-docs-site/beta/index.html', 'home', html);
+  await r2.put('live/g-docs-site/beta/about.html', 'about page', html);
+  await r2.put('live/g-spa-app/beta/index.html', '<div id="root"></div><script type="module" src="assets/app.js"></script>', html);
+  await r2.put('live/g-spa-app/beta/assets/app.js', 'js', { httpMetadata: { contentType: 'text/javascript' } });
+  const cookie = `hawkes_pass=${K.makePass('u_j', { lane: 'live', keys: liveKeys })}`;
+  assert.equal(await (await browse('https://sites.hawkesgen.ai/g/docs-site/about', { cookie, page: true })).text(), 'about page', '/about serves about.html');
+  assert.match(await (await browse('https://sites.hawkesgen.ai/g/spa-app/settings/profile', { cookie, page: true })).text(), /id="root"/, 'a deep link of a single-page app gets its shell');
+  assert.equal((await browse('https://sites.hawkesgen.ai/g/spa-app/assets/missing.js', { cookie, page: false })).status, 404, 'a missing file is still a 404');
+});

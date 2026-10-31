@@ -52,7 +52,7 @@ test('a website serving a Unity build: root paths, its domain, Pages from a bran
   assert.equal(s.hosting.unityBuildIn, 'Game', 'the versioned folder is the build, Game/ is where builds go');
   assert.equal(s.suggest.live, 'https://yoobalandgame.com/');
   const rel = s.notes.find((n) => /from the site root/.test(n.what))!;
-  assert.equal(rel.level, 'improve');
+  assert.equal(rel.level, 'info', 'at its own domain (CNAME) root paths are fine: only a note');
   assert.match(rel.what, /\/css\/site\.css/);
   assert.equal(rel.by, 'agent');
   assert.ok(s.notes.some((n) => /publish \{ project: <this project's id>, path: "Game\/" \}/.test(n.fix)));
@@ -77,7 +77,7 @@ test('a Vite app: framework, build, base "/" breaks it under a path, no CI check
   assert.ok(s.ci.find((c) => c.file.endsWith('pages.yml'))!.does.includes('deploys GitHub Pages'));
   assert.ok(s.notes.some((n) => /base "\/"/.test(n.what) && /base: '\.\/'/.test(n.fix)));
   assert.ok(s.notes.some((n) => /No CI runs its checks/.test(n.what)));
-  assert.deepEqual(s.suggest.builds, [{ id: 'site', tool: 'npm', path: undefined, command: 'npm ci && npm run build', out: 'dist', on: ['beta'] }]);
+  assert.deepEqual(s.suggest.builds, [{ id: 'site', tool: 'npm', command: 'npm install && npm run build', out: 'dist', on: ['beta'] }], 'no lockfile: npm install');
   const relative = S.analyze('acme/vite', 'beta', paths, { ...files, 'vite.config.ts': "export default { base: './' }" }, { studioUrl: STUDIO });
   assert.ok(!relative.notes.some((n) => /base "\/"/.test(n.what)), "base './' is fine");
 });
@@ -109,4 +109,85 @@ test('a static site with dev tools but no build, and a page that starts a Unity 
   assert.deepEqual(s.suggest.builds, [{ id: 'site', tool: 'static', on: ['beta'] }]);
   assert.equal(s.hosting.unityBuildIn, 'Game');
   assert.ok(!s.notes.some((n) => /base "\//.test(n.what)), 'no Vite advice for a site Vite never builds');
+});
+
+// The shapes customers bring (2026-10-31 review): each is read as what it is, with the build that fits or none.
+const pkg = (o: Record<string, unknown>) => JSON.stringify(o);
+
+test('Next.js: a static export builds to out/; a server app is a web app with no static build', () => {
+  const exp = S.analyze('a/n', 'beta', ['package.json', 'next.config.mjs', 'package-lock.json'], { 'package.json': pkg({ scripts: { build: 'next build' }, dependencies: { next: '15' } }), 'next.config.mjs': "export default { output: 'export' }" }, {});
+  assert.deepEqual(exp.parts, [{ kind: 'web', path: '.', framework: 'next', build: 'npm run build', out: 'out' }]);
+  assert.equal((exp.suggest.builds[0] as any).command, 'npm ci && npm run build', 'a lockfile: npm ci');
+  const srv = S.analyze('a/n', 'beta', ['package.json', 'next.config.mjs'], { 'package.json': pkg({ scripts: { build: 'next build' }, dependencies: { next: '15' } }), 'next.config.mjs': 'export default {}' }, {});
+  assert.deepEqual(srv.parts, [{ kind: 'app', path: '.', stack: 'Next.js' }]);
+  assert.equal(srv.suggest.kind, 'app');
+  assert.deepEqual(srv.suggest.builds, [], 'no static build for a server app');
+});
+
+test('SvelteKit, Astro, Nuxt, Gatsby, Docusaurus, Eleventy: each its own output folder, or a server app', () => {
+  const kit = S.analyze('a/k', 'beta', ['package.json', 'svelte.config.js'], { 'package.json': pkg({ scripts: { build: 'vite build' }, devDependencies: { '@sveltejs/kit': '2', '@sveltejs/adapter-static': '3', vite: '5' } }), 'svelte.config.js': "import a from '@sveltejs/adapter-static'; export default { kit: { adapter: a() } }" }, {});
+  assert.equal((kit.parts[0] as any).out, 'build');
+  assert.ok(!kit.notes.some((n) => /base "\//.test(n.what)), 'no Vite base advice for SvelteKit');
+  const kitSrv = S.analyze('a/k', 'beta', ['package.json', 'svelte.config.js'], { 'package.json': pkg({ scripts: { build: 'vite build' }, devDependencies: { '@sveltejs/kit': '2', '@sveltejs/adapter-node': '5' } }), 'svelte.config.js': "import a from '@sveltejs/adapter-node'" }, {});
+  assert.equal(kitSrv.parts[0].kind, 'app');
+  const astro = S.analyze('a/a', 'beta', ['package.json', 'astro.config.mjs'], { 'package.json': pkg({ scripts: { build: 'astro build' }, dependencies: { astro: '4' } }), 'astro.config.mjs': 'export default {}' }, {});
+  assert.equal((astro.parts[0] as any).out, 'dist');
+  const nuxt = S.analyze('a/x', 'beta', ['package.json'], { 'package.json': pkg({ scripts: { build: 'nuxt generate' }, dependencies: { nuxt: '3' } }) }, {});
+  assert.equal((nuxt.parts[0] as any).out, '.output/public');
+  for (const [dep, out] of [['gatsby', 'public'], ['@docusaurus/core', 'build'], ['@11ty/eleventy', '_site']] as const) {
+    const s = S.analyze('a/x', 'beta', ['package.json'], { 'package.json': pkg({ scripts: { build: 'x' }, dependencies: { [dep]: '1' } }) }, {});
+    assert.equal((s.parts[0] as any).out, out, dep);
+  }
+});
+
+test('pnpm and yarn lockfiles choose the install; a monorepo gives one build per package and skips the workspace root', () => {
+  const paths = ['package.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml', 'apps/web/package.json', 'apps/docs/package.json', 'apps/api/package.json'];
+  const files = {
+    'package.json': pkg({ private: true, scripts: { build: 'turbo build' }, devDependencies: { turbo: '2' } }),
+    'apps/web/package.json': pkg({ scripts: { build: 'vite build' }, devDependencies: { vite: '5' } }),
+    'apps/docs/package.json': pkg({ scripts: { build: 'astro build' }, dependencies: { astro: '4' } }),
+    'apps/api/package.json': pkg({ scripts: { build: 'tsc', start: 'node dist/server.js' }, dependencies: { express: '4' } }),
+  };
+  const s = S.analyze('a/mono', 'beta', paths, files, {});
+  assert.deepEqual(s.suggest.builds.map((b: any) => b.id).sort(), ['site-docs', 'site-web'], 'unique ids, the root and the API left out');
+  assert.ok(s.suggest.builds.every((b: any) => String(b.command).startsWith('npx --yes pnpm@9 install --frozen-lockfile')));
+  assert.ok(s.parts.some((x) => x.kind === 'app' && x.path === 'apps/api'), 'the Express API is a server app');
+  const y = S.analyze('a/y', 'beta', ['package.json', 'yarn.lock'], { 'package.json': pkg({ scripts: { build: 'vite build' }, devDependencies: { vite: '5' } }) }, {});
+  assert.match(String((y.suggest.builds[0] as any).command), /yarn@1 install --frozen-lockfile && npx --yes yarn@1 run build/);
+});
+
+test('Electron is a desktop app, backends in other languages are web apps, and other hosts are named', () => {
+  const el = S.analyze('a/e', 'beta', ['package.json'], { 'package.json': pkg({ scripts: { build: 'electron-builder' }, devDependencies: { electron: '30', 'electron-builder': '24' } }) }, {});
+  assert.deepEqual(el.parts, [{ kind: 'desktop', path: '.', stack: 'electron' }]);
+  assert.equal(el.suggest.engine, 'desktop');
+  assert.deepEqual(el.suggest.builds, [], 'never published as a website');
+  const py = S.analyze('a/p', 'beta', ['requirements.txt', 'app.py', 'templates/index.html', 'Dockerfile', 'fly.toml'], { 'templates/index.html': '<html></html>', Dockerfile: 'FROM python', 'fly.toml': 'app="x"' }, {});
+  assert.deepEqual(py.parts, [{ kind: 'app', path: '.', stack: 'Python' }], "Flask's templates aren't a static site");
+  assert.equal(py.hosting.provider, 'Fly.io');
+  assert.ok(py.notes.some((n) => /hosted on Fly\.io/.test(n.what)));
+  const net = S.analyze('a/s', 'beta', ['index.html', 'netlify.toml'], { 'index.html': '<a href="about.html">x</a>', 'netlify.toml': '[build]' }, {});
+  assert.equal(net.hosting.provider, 'Netlify');
+});
+
+test("Unity WebGL templates and Godot exports aren't sites; Godot 3 and 4 are told apart", () => {
+  const u = S.analyze('a/u', 'beta', ['Game/ProjectSettings/ProjectVersion.txt', 'Game/Packages/manifest.json', 'Game/Assets/WebGLTemplates/Mine/index.html'], {
+    'Game/ProjectSettings/ProjectVersion.txt': 'm_EditorVersion: 6000.3.7f1', 'Game/Packages/manifest.json': '{"dependencies":{}}', 'Game/Assets/WebGLTemplates/Mine/index.html': '<script>createUnityInstance()</script>',
+  }, { unityVersions: ['6000.3.7f1'] });
+  assert.deepEqual(u.parts.map((x) => x.kind), ['unity'], 'the template is not a static site');
+  assert.equal(u.hosting.unityBuildIn, null, "nor a website serving a build");
+  const g3 = S.analyze('a/g', 'beta', ['project.godot', 'export/web/index.html'], { 'project.godot': 'config_version=4\n', 'export/web/index.html': '<html>' }, {});
+  assert.deepEqual(g3.parts, [{ kind: 'godot', path: '.', godot: '3' }], 'the committed export is not a second site');
+  assert.ok(g3.notes.some((n) => /Godot 3/.test(n.fix)));
+  const g4 = S.analyze('a/g', 'beta', ['project.godot'], { 'project.godot': 'config_version=5\n' }, {});
+  assert.equal((g4.parts[0] as any).godot, '4');
+});
+
+test("a Vite app's own source page isn't flagged for root paths (its build rewrites them), and CI that runs tests counts", () => {
+  const s = S.analyze('a/v', 'beta', ['package.json', 'index.html', '.github/workflows/ci.yml'], {
+    'package.json': pkg({ scripts: { build: 'vite build' }, devDependencies: { vite: '5' } }),
+    'index.html': '<script type="module" src="/src/main.ts"></script><link rel="icon" href="/vite.svg">',
+    '.github/workflows/ci.yml': 'on: [push]\njobs:\n  t:\n    steps:\n      - run: pnpm test\n',
+  }, {});
+  assert.ok(!s.notes.some((n) => /links its files from the site root/.test(n.what)));
+  assert.ok(!s.notes.some((n) => /No CI runs its checks/.test(n.what)), 'pnpm test counts as tests');
 });
