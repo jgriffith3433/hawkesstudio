@@ -13,7 +13,7 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import type http from 'node:http';
 import { db, newId } from './db.ts';
-import { getProduct, loadProducts, StudioError, type BuildSpec, type Product } from './config.ts';
+import { getProduct, loadProducts, StudioError, managedElsewhere, type BuildSpec, type Product } from './config.ts';
 import { folderFiles } from './sitestore.ts';
 
 db.exec(`CREATE TABLE IF NOT EXISTS builds (
@@ -22,8 +22,10 @@ db.exec(`CREATE TABLE IF NOT EXISTS builds (
   change TEXT, detail TEXT, started INTEGER NOT NULL, finished INTEGER
 )`);
 try { db.exec('CREATE UNIQUE INDEX IF NOT EXISTS builds_version ON builds (product, build, version)'); } catch { /* there */ }
+// publish.commit: the repo and the commit on its beta that holds this build (going live fast-forwards that repo's main to it).
+for (const col of ['commit_repo', 'commit_sha']) { try { db.exec(`ALTER TABLE builds ADD COLUMN ${col} TEXT`); } catch { /* there */ } }
 
-export type BuildRow = { id: string; product: string; build: string; version: number; status: 'building' | 'ready' | 'failed'; sha: string | null; ref: string | null; runner: string; target: string; files: number | null; bytes: number | null; url: string | null; run: string | null; change: string | null; detail: string | null; started: number; finished: number | null };
+export type BuildRow = { id: string; product: string; build: string; version: number; status: 'building' | 'ready' | 'failed' | 'pruned'; sha: string | null; ref: string | null; runner: string; target: string; files: number | null; bytes: number | null; url: string | null; run: string | null; change: string | null; detail: string | null; started: number; finished: number | null; commit_repo?: string | null; commit_sha?: string | null };
 export type BuildTrigger = 'beta' | 'tag';
 export type StartOptions = {
   /** One build by id (else every build the trigger starts, or all of them when asked). */
@@ -217,7 +219,11 @@ async function buildOne(run: string, p: Product, b: BuildSpec, o: StartOptions) 
       const target = getProduct(b.publish.project);
       await mount(target, b.publish.path, base);
       linked.push(`${target.name} ${b.publish.path || '/'}`);
-      if (b.publish.commit) linked.push(await commitInto(target, b.publish.path, out.files, `Build ${b.id} ${version} of ${p.name} (${sha.slice(0, 7)})`, say));
+      if (b.publish.commit) {
+        const c = await commitInto(target, b.publish.path, out.files, `Build ${b.id} ${version} of ${p.name} (${sha.slice(0, 7)})`, say);
+        db.prepare('UPDATE builds SET commit_repo = ?, commit_sha = ? WHERE id = ?').run(c.slug, c.sha, rowId);
+        linked.push(c.line);
+      }
     }
     updateStep(step, { status: 'done', detail: `${b.id} ${version || o.change}: ${out.files.length} files, ${Math.round(out.bytes / 1e5) / 10} MB${linked.length ? `; also in ${linked.join(', ')}` : ''}`, data: { url, version, sha, sent: r.sent }, finished: true });
     if (!o.change && (b.target ?? 'web') === 'web' && b.playtest !== false) await playIt(run, p, b.publish ? getProduct(b.publish.project) : p);
@@ -363,7 +369,7 @@ async function commitInto(target: Product, at: string, files: import('./sitestor
   const branch = head.ref?.endsWith('/beta') ? 'beta' : null;
   if (branch) await api('/git/refs/heads/beta', { method: 'PATCH', body: JSON.stringify({ sha: c.sha, force: false }) });
   else await api('/git/refs', { method: 'POST', body: JSON.stringify({ ref: 'refs/heads/beta', sha: c.sha }) });
-  return `${slug} beta (${c.sha.slice(0, 7)})`;
+  return { line: `${slug} beta (${c.sha.slice(0, 7)})`, slug, sha: String(c.sha) };
 }
 
 // ------------------------------------------------------------------ playing it
@@ -422,8 +428,11 @@ export async function handleBuildRoutes(req: http.IncomingMessage, res: http.Ser
  * builds they trigger; an Actions build's "built" notice publishes its artifact. null when no project here has this repo.
  */
 export async function onRepoHook(claims: Record<string, any>, body: any) {
-  const projects = projectsForRepo(String(claims.repository ?? ''));
-  if (!projects.length) return null;
+  const mine = projectsForRepo(String(claims.repository ?? ''));
+  if (!mine.length) return null;
+  // Handed over to another Studio (config.ts managedBy): heard, and left alone.
+  const projects = mine.filter((p) => !managedElsewhere(p));
+  if (!projects.length) return { ok: true, managedBy: managedElsewhere(mine[0]), note: `managed by ${managedElsewhere(mine[0])}: this Studio leaves it alone`, runs: {} as Record<string, string> };
   const ref = String(claims.ref ?? '');
   const sha = String(claims.sha ?? '');
   const out: Record<string, string> = {};

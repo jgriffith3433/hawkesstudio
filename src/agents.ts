@@ -43,7 +43,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { spawn, spawnSync } from 'node:child_process';
 import { db, newId, J, parse } from './db.ts';
-import { getProduct, getInfra, isInfra, PROJECTS, DATA, ROOT, storyOf, localUrl, StudioError, betaPageGlobals, type Product, type Infra } from './config.ts';
+import { getProduct, getInfra, isInfra, PROJECTS, DATA, ROOT, storyOf, localUrl, StudioError, betaPageGlobals, managedElsewhere, managedNote, type Product, type Infra } from './config.ts';
 import { withPass } from './sitekeys.ts';
 import { getFinding, updateFinding } from './backlog.ts';
 import { reviewParams } from './review.ts';
@@ -1313,6 +1313,8 @@ export function startTask(productId: string, request: string, { criteria = [], t
   const inf = isInfra(productId) ? getInfra(productId) : null;
   const p = inf ? null : getProduct(productId);
   const target = inf ?? p!;
+  // Handed over to another Studio: its agents work on it there (config.ts managedBy).
+  if (p && managedElsewhere(p)) throw new StudioError(managedNote(p), 409);
   if (!request.trim()) throw new Error('Say what to do');
   // J (2026-10-17): queue, don't refuse. One change runs per product; this one waits for it (pump starts it after).
   const ahead = aheadOf(target.id);
@@ -1334,6 +1336,7 @@ export function startFix(productId: string, findingIds: string[], { auto = false
   if (!s.enabled) throw new Error('Agent workers are turned off (settings).');
   if (isInfra(productId)) throw new Error(`${getInfra(productId).name} has no playtest findings: ask for the change with studio_task.`);
   const p = getProduct(productId);
+  if (managedElsewhere(p)) throw new StudioError(managedNote(p), 409);
   const findings = findingIds.map((id) => getFinding(id)).filter(Boolean) as any[];
   if (!findings.length) throw new Error('No such findings');
   const ahead = aheadOf(p.id);

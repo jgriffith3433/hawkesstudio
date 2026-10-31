@@ -83,3 +83,29 @@ test('going live refuses when beta moved since the plan, and moves nothing', asy
   await assert.rejects(cloudGoLiveNow(p, { beta: { sha: sha('b'), short: 'bbbbbbb' }, site: { beta: sha('f') } }, f, 't'), /moved since the plan/);
   assert.deepEqual(patched, []);
 });
+
+test("rolling back a Unity game on Cloud Run: the website's main gets a new commit with the tree live before, through GitHub (no clone)", async () => {
+  const { fakeGitHub: fake, sha: s } = await import('./fake-github.ts');
+  const { rollbackPlan, rollback } = await import('../src/deploy.ts');
+  const { db } = await import('../src/db.ts');
+  const gh = fake({ 'jgriffith3433/sickofitgamewebsite': { refs: { main: s('f'), beta: s('f') }, commits: { [s('e')]: { parents: [], tree: 'te' }, [s('f')]: { parents: [s('e')], tree: 'tf', title: 'Go live: Sick Of It Game/v9' } } } });
+  db.prepare('INSERT INTO deploys (id, product, kind, repo, before, after, beta, by, detail, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run('d_soi', 'sickofit', 'deploy', 'sickofitgamewebsite', s('e'), s('f'), s('b'), 'J', 'test', Date.now());
+  const was = process.env.K_SERVICE;
+  process.env.K_SERVICE = 'studio';
+  try {
+    const io = { fetch: gh.f, token: 't' };
+    const plan = await rollbackPlan('sickofit', { io });
+    assert.deepEqual(plan.blockers, []);
+    assert.equal(plan.to?.sha, s('e'));
+    assert.equal(plan.repo, 'jgriffith3433/sickofitgamewebsite');
+    await assert.rejects(rollback('sickofit', { io }), /ROLLBACK sickofit/);
+    const r: any = await rollback('sickofit', { confirm: 'ROLLBACK sickofit', io });
+    const site = gh.repos['jgriffith3433/sickofitgamewebsite'];
+    assert.equal(site.commits[site.refs.main].tree, 'te');
+    assert.deepEqual(site.commits[site.refs.main].parents, [s('f')]);
+    assert.equal(r.to, s('e').slice(0, 7));
+    assert.equal((db.prepare("SELECT rolled_back FROM deploys WHERE id = 'd_soi'").get() as any).rolled_back, r.rollback);
+  } finally {
+    if (was === undefined) delete process.env.K_SERVICE; else process.env.K_SERVICE = was;
+  }
+});

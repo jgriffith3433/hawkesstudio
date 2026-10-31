@@ -919,6 +919,34 @@ words are the fallback.
   and `publishUnity` publishes a tag build that is already committed in the copy (whatever the copy has that the
   website's main lacks). Pushes to beta still build as before. Tests: `test/tagbuild.test.ts`.
 
+### Any project with a GitHub repo, in any Studio (2026-10-31)
+
+A project added in a Studio (`github: owner/name`, its `repos` and `builds`: docs/builds.md, its beta site hosted by
+Studio), a customer's included, goes live and rolls back through GitHub's API with each repo's own token
+(`src/deploy-github.ts`, ghtoken.ts `repoToken`): no clones, nothing about J's repos or `GITHUB_TOKEN` assumed. J's
+products.json products keep the flows above.
+- **The plan** (`studio_deploy_plan`, the Approve card): the commits on beta that main lacks (the compare API), the
+  played beta commit's last finished playtests and reviews (`deploy.ts testedAt`, by project and commit; a build mounted
+  into another project's site counts where it was played, in its build's run), blockers. A build with
+  `publish.commit` must be in its target repo's beta at the build of that exact beta commit (the `builds` row records
+  the commit, `commit_sha`), and that repo's main must fast-forward to it.
+- **Going live** (the owner's tap, or exactly `DEPLOY <project>`): beta read again, then each target repo's main
+  fast-forwarded to the commit holding its build, then the project's main to the played beta commit (`PATCH git/refs`,
+  `force: false`). Each move is a `deploys` row (the target project's own too, so it rolls back by itself), and the live
+  check plays every one with a live address.
+- **Rollback** (`ROLLBACK <project>` or the tap): a new commit on main with the tree of the commit live before, on top
+  of main (the git data API), never a force push; recorded like any rollback. J's Unity games on Cloud Run roll their
+  website back the same way (no clone of it there).
+- **Pushes to main** in a customer's Studio (the repo's hook) are recorded as go lives and checked live. The hook is
+  heard at the Studio's own address (the OIDC audience is `STUDIO_PUBLIC_URL`).
+- **Handing a project over** (`managedBy: "<the other Studio's address>"` on a products.json product or an added game,
+  `studio_project update managedBy`): this Studio's daily and beta runs, push hooks (200 "managed by …"), agents and
+  PM leave it alone, it shows as managed elsewhere in the dashboard and `studio_overview`, and it never goes live or
+  rolls back from here; its history stays. The other Studio's readiness (`studio_project check`) sees where the repo's
+  `.github/workflows/hawkes-studio.yml` points (the address and OIDC audience in it) and offers "Point this repo's hook
+  at this Studio" (step `repoint` on the setup Approve card): the workflow rewritten with its address on main, and on
+  beta and dev where they have it (`src/handover.ts`). Tests: `test/deploy-github.test.ts`, `test/github-games.test.ts`.
+
 ## Developing on beta
 
 J and agents build on beta together, live on the cloud server (`src/dev.ts`, `src/dev-front.ts`):

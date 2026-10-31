@@ -42,8 +42,10 @@ export function nextVersion(builtMax: number, onSite: number[]) {
 }
 
 /** The Game/v<n> numbers in a website repo branch, from GitHub's contents API (no clone; [] when it can't tell). */
-export async function siteVersions(slug: string, ref: string, fetcher: typeof fetch = fetch, token = process.env.GITHUB_TOKEN): Promise<number[]> {
+export async function siteVersions(slug: string, ref: string, fetcher: typeof fetch = fetch, token?: string | null): Promise<number[]> {
   try {
+    // The repo's own token (ghtoken.ts: J's for his repos, the GitHub App's for anyone else's) unless one is given.
+    if (token === undefined) token = await (await import('./ghtoken.ts')).repoToken(slug).catch(() => null);
     const r = await fetcher(`https://api.github.com/repos/${slug}/contents/Game?ref=${encodeURIComponent(ref)}`, {
       headers: { Accept: 'application/vnd.github+json', 'User-Agent': 'hawkes-studio', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
       signal: AbortSignal.timeout(20_000),
@@ -66,8 +68,9 @@ export async function siteVersions(slug: string, ref: string, fetcher: typeof fe
 
 /** The commit a branch points at on GitHub, or null when it can't tell. The Beta button on Cloud Run builds beta's head
  *  this way, through the tag path (GitHub mode): there is no source checkout or beta website copy on the instance. */
-export async function branchHead(slug: string, branch: string, fetcher: typeof fetch = fetch, token = process.env.GITHUB_TOKEN): Promise<string | null> {
+export async function branchHead(slug: string, branch: string, fetcher: typeof fetch = fetch, token?: string | null): Promise<string | null> {
   try {
+    if (token === undefined) token = await (await import('./ghtoken.ts')).repoToken(slug).catch(() => null);
     const r = await fetcher(`https://api.github.com/repos/${slug}/commits/${encodeURIComponent(branch)}`, {
       headers: { Accept: 'application/vnd.github+json', 'User-Agent': 'hawkes-studio', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
       signal: AbortSignal.timeout(20_000),

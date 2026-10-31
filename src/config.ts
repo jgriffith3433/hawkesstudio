@@ -144,7 +144,31 @@ export type Product = {
   quality?: string;
   /** The public voice of its "What's new" (release.ts): voice, and words its notes never use. Unset: a game's player's-eye voice. */
   releaseVoice?: { voice: string; never?: string[] };
+  /**
+   * Handed over to another Studio (its address, e.g. https://studio.hawkesgen.ai/o/<org>): this Studio's daily and beta
+   * runs, push hooks, agents and PM leave it alone, and it doesn't go live from here. Its history stays.
+   */
+  managedBy?: string;
 };
+
+const trimUrl = (u: string) => u.trim().replace(/\/+$/, '').toLowerCase();
+
+/**
+ * The other Studio a project is managed by (Product.managedBy), or null when this Studio manages it (unset, or this
+ * Studio's own address).
+ */
+export function managedElsewhere(p: Pick<Product, 'managedBy'> | null | undefined): string | null {
+  const by = p?.managedBy ? String(p.managedBy).trim() : '';
+  if (!by) return null;
+  const self = process.env.STUDIO_PUBLIC_URL;
+  return self && trimUrl(self) === trimUrl(by) ? null : by.replace(/\/+$/, '');
+}
+/** managedElsewhere by project id (an unknown id: null). */
+export function managedElsewhereId(id: string): string | null {
+  try { return managedElsewhere(loadProducts().find((p) => p.id === id)); } catch { return null; }
+}
+/** The sentence for a project managed by another Studio (refusals, plans, hooks). */
+export const managedNote = (p: Pick<Product, 'name' | 'managedBy'>) => `${p.name} is managed by another Studio (${managedElsewhere(p)}): this Studio doesn't run, build, change or deploy it. Work on it there.`;
 
 export function loadProducts(): Product[] {
   // A new org cell has no products until onboarding adds one.
@@ -266,6 +290,8 @@ export type ProductInput = {
   kind?: 'game' | 'app' | 'site'; versionPath?: string; repos?: { repo: string; role?: string }[]; checks?: string;
   reportOrigins?: string[]; testSignIn?: { url: string } | null;
   builds?: BuildSpec[];
+  /** Handed over to another Studio (its https address); null or '' takes it back. */
+  managedBy?: string | null;
 };
 
 /** One way a project is built (docs/builds.md). */
@@ -363,11 +389,14 @@ export function saveProduct(input: ProductInput): Product {
   if (reportOrigins.some((o) => !/^https:\/\/[\w.-]+(:\d+)?$/.test(o))) throw new StudioError('reportOrigins: each an https:// origin (no path)', 400);
   const testSignIn = input.testSignIn?.url ? String(input.testSignIn.url).trim() : '';
   if (testSignIn && !/^https:\/\/[^\s]+$/.test(testSignIn)) throw new StudioError('testSignIn.url: an https:// address on its beta', 400);
+  const managedBy = input.managedBy ? String(input.managedBy).trim().replace(/\/+$/, '') : '';
+  if (managedBy && !/^https:\/\/[\w.-]+(:\d+)?(\/[\w.~-]+)*$/.test(managedBy)) throw new StudioError("managedBy: the other Studio's https:// address (e.g. https://studio.hawkesgen.ai/o/<org>)", 400);
   const product: any = {
     id, name, engine: input.engine, ...(live ? { live } : {}), ...(beta ? { beta } : {}), ...(input.build ? { build: input.build } : {}), ...(builds.length ? { builds } : {}),
     ...(input.repo ? { repo: String(input.repo).slice(0, 200) } : {}),
     ...(kind !== 'game' ? { kind } : {}), ...(versionPath ? { versionPath } : {}), ...(repos.length ? { repos } : {}),
     ...(checks ? { checksCmd: checks } : {}), ...(reportOrigins.length ? { reportOrigins } : {}), ...(testSignIn ? { testSignIn: { url: testSignIn } } : {}),
+    ...(managedBy ? { managedBy } : {}),
     about: String(input.about ?? '').slice(0, 2000), ...(input.quality ? { quality: String(input.quality).slice(0, 2000) } : {}),
     ...(input.story ? { storyText: String(input.story).slice(0, 20000) } : {}), contract: input.contract === true, playtests, story: [],
   };

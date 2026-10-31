@@ -83,9 +83,11 @@ export function buildServerSyncScript(repo: string, token?: string): string {
  * returns the commit each ends on. Any failure throws a BuildServerSyncError naming the commits seen: a build on stale
  * packages is never started silently.
  */
-export async function syncBuildServerCheckouts(run: BuildServerRun, log: (s: string) => void = () => {}, { repos = PACKAGE_REPOS as readonly string[], token }: { repos?: readonly string[]; token?: string } = {}): Promise<Record<string, BuildServerState>> {
+export async function syncBuildServerCheckouts(run: BuildServerRun, log: (s: string) => void = () => {}, { repos = PACKAGE_REPOS as readonly string[], token: given, tokenFor }: { repos?: readonly string[]; token?: string; tokenFor?: (repo: string) => Promise<string | null | undefined> } = {}): Promise<Record<string, BuildServerState>> {
   const states: Record<string, BuildServerState | { error: string }> = {};
   for (const repo of repos) {
+    // Each repo's own token (unity build: ghtoken.ts repoToken), or the one given for all.
+    const token = given ?? ((await tokenFor?.(repo).catch(() => null)) || undefined);
     try {
       const out = await run(buildServerSyncScript(repo, token), 10 * 60_000);
       const sha = out.trim().split(/\r?\n/).pop()?.trim() ?? '';
@@ -162,7 +164,9 @@ export async function unityBuild(project: string, params: Record<string, unknown
   let buildServer: Record<string, unknown> | undefined;
   if (!opts.job && (opts.serverShell || isServer()) && await buildsOnWindowsBox(params, log)) {
     try {
-      buildServer = await syncBuildServerCheckouts(opts.serverShell ?? buildServerShell, log, { token: process.env.GITHUB_TOKEN });
+      const { repoToken } = await import('./ghtoken.ts');
+      const { PLATFORM_GITHUB } = await import('./tenancy.ts');
+      buildServer = await syncBuildServerCheckouts(opts.serverShell ?? buildServerShell, log, { tokenFor: (repo) => repoToken(`${PLATFORM_GITHUB}/${repo}`) });
     } catch (e: any) {
       const error = String(e.message ?? e);
       log(`build server sync failed: ${error}`);

@@ -30,7 +30,7 @@ export function studioMcp({ studio, waitRun }: Client = { studio: defaultStudio,
         return {
           gen: o.gen, run: o.run, builder: o.builder && { exists: o.builder.exists, state: o.builder.state, stage: o.builder.stage },
           products: o.products.map((p: any) => ({
-            id: p.id, name: p.name, git: { dirty: p.git.dirty, unpushed: p.git.ahead, head: p.git.head }, site: p.site && { dirty: p.site.dirty, unpushed: p.site.ahead },
+            id: p.id, name: p.name, ...(p.managedBy ? { managedBy: p.managedBy, note: `managed by another Studio (${p.managedBy}): this Studio leaves it alone` } : {}), git: { dirty: p.git.dirty, unpushed: p.git.ahead, head: p.git.head }, site: p.site && { dirty: p.site.dirty, unpushed: p.site.ahead },
             build: p.build && { status: p.build.status, detail: p.build.detail, finished: p.build.finished },
             playtests: p.playtests.map((t: any) => ({ name: t.name, status: t.playtest?.status, detail: t.playtest?.detail, verdict: t.review?.data?.verdict, when: t.playtest?.finished })),
             open: p.open, lastReview: p.lastReview?.data && { verdict: p.lastReview.data.verdict, scores: p.lastReview.data.scores, summary: p.lastReview.data.summary },
@@ -112,6 +112,7 @@ export function studioMcp({ studio, waitRun }: Client = { studio: defaultStudio,
         build: str('build: one build by id (default: all); beta: the build id'), ref: str('build: the branch or tag to build (default beta)'), version: { type: 'number', description: 'beta: the version to make beta (rolling back = an older one)' },
         kind: str('add, update: game (default) | app | site'), versionPath: str('add, update: a path on its site that answers JSON with the commit it runs (apps)'), repos: { type: 'array', description: 'add, update: more repositories [{ repo: "owner/name", role: "what it is" }]', items: { type: 'object' } },
         checks: str("add, update: what an agent's change must pass in the repo"), testSignIn: { type: 'object', description: "add, update: { url }: its beta's test sign-in (the protocol: signin)" }, reportOrigins: strs('add, update: https origins besides its beta whose pages may send bug reports'),
+        managedBy: str("add, update: hand the project over to another Studio: that Studio's address (e.g. https://studio.hawkesgen.ai/o/<org>); this Studio's runs, hooks, agents and PM then leave it alone and nothing is deleted. '' takes it back"),
         id: str('add: the new id (lower-case, dashes)'), name: str('add, update, new: the name'), engine: str('add: web | unity | godot | desktop'),
         live: str('add, update: where it plays (https)'), beta: str('add, update: its beta address (https), if any'), repo: str('add, update: owner/name on GitHub; new: the new repo\'s name (default from the name)'),
         about: str('add, update: what it is, a few sentences'), quality: str("add, update: the quality bar: what 'done' means, in the person's words"), story: str('add, update: the story or design doc text'),
@@ -139,8 +140,8 @@ export function studioMcp({ studio, waitRun }: Client = { studio: defaultStudio,
           const id = action === 'add' ? a.id : a.product;
           const cur = action === 'update' ? (await studio('/api/products')).products.find((p: any) => p.id === id) : null;
           if (action === 'update' && !cur) return `No game "${id}".`;
-          const keep = cur ? { name: cur.name, kind: cur.kind, engine: cur.engine, live: cur.live, beta: cur.beta, repo: cur.github ?? cur.repo, about: cur.about, quality: cur.quality, story: cur.storyText, contract: cur.contract, playtests: cur.playtests, build: cur.source ?? (cur.build?.project ? undefined : cur.build), builds: cur.builds, versionPath: cur.versionPath, repos: cur.repos?.map((r: any) => ({ repo: r.repo, role: r.role })), checks: cur.checksCmd, testSignIn: cur.testSignIn, reportOrigins: cur.reportOrigins } : {};
-          const set = Object.fromEntries(['name', 'kind', 'engine', 'live', 'beta', 'repo', 'about', 'quality', 'story', 'contract', 'playtests', 'versionPath', 'repos', 'checks', 'testSignIn', 'reportOrigins', 'builds'].filter((k) => a[k] !== undefined).map((k) => [k, a[k]]));
+          const keep = cur ? { name: cur.name, kind: cur.kind, engine: cur.engine, live: cur.live, beta: cur.beta, repo: cur.github ?? cur.repo, about: cur.about, quality: cur.quality, story: cur.storyText, contract: cur.contract, playtests: cur.playtests, build: cur.source ?? (cur.build?.project ? undefined : cur.build), builds: cur.builds, versionPath: cur.versionPath, repos: cur.repos?.map((r: any) => ({ repo: r.repo, role: r.role })), checks: cur.checksCmd, testSignIn: cur.testSignIn, reportOrigins: cur.reportOrigins, managedBy: cur.managedBy } : {};
+          const set = Object.fromEntries(['name', 'kind', 'engine', 'live', 'beta', 'repo', 'about', 'quality', 'story', 'contract', 'playtests', 'versionPath', 'repos', 'checks', 'testSignIn', 'reportOrigins', 'builds', 'managedBy'].filter((k) => a[k] !== undefined).map((k) => [k, a[k]]));
           return (await studio(`/api/products/${id}`, { method: 'PUT', body: { ...keep, ...set } })).product;
         }
         return `action: list | get | status | add | update | remove | check | setup | contract | starters | new | report | signin`;

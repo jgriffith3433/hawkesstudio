@@ -15,6 +15,7 @@ Studio takes in its bug reports, works on features and fixes, playtests it signe
 | `checks` | What an agent's change must pass in the main repo (e.g. `npm ci && npm run typecheck && npm test`); else its build. The agents' image has Node, git, Python 3 and ffmpeg |
 | `testSignIn` | `{ url }` on its beta: playtests start signed in (below) |
 | `reportOrigins` | Sites besides its beta whose pages may send bug reports (live only when listed) |
+| `managedBy` | Handed over to another Studio (its address): this Studio's runs, hooks, agents and PM leave it alone and it doesn't go live from here; nothing is deleted (docs/daily.md, "Any project with a GitHub repo") |
 
 The dashboard's project dialog has these under "For web apps and bigger projects"; Talk's `studio_project` (and its old
 name `studio_game`) takes them. `/api/projects/...` is `/api/games/...`.

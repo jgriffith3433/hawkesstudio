@@ -14,7 +14,7 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { db, newId, J, rowToStep, parse, type Step } from './db.ts';
 import { resumeGapMs } from './ops.ts';
-import { loadProducts, getProduct, localUrl, today, PROJECTS, betaPlaytestsOn, type Product, type Playtest } from './config.ts';
+import { loadProducts, getProduct, localUrl, today, PROJECTS, betaPlaytestsOn, managedElsewhere, managedNote, StudioError, type Product, type Playtest } from './config.ts';
 import { unityBuild } from './buildpkgs.ts';
 import { endStatus, runCounts, runCancelled, haltOf, jobCancelDetail, runCancelDetail } from './cancel.ts';
 import { gen, genRun, genUp, ensureGen } from './gen.ts';
@@ -134,7 +134,9 @@ export function startRun(kind: string, options: RunOptions = {}) {
     if (Date.now() - running.started < 6 * 3600_000) throw new Error(`A run is already going (${running.id}, started ${new Date(running.started).toLocaleTimeString()}).`);
     db.prepare(`UPDATE runs SET status = 'abandoned' WHERE id = ?`).run(running.id);
   }
-  const products = (options.products?.length ? options.products.map((p) => getProduct(p)) : loadProducts()).map((p) => p.id);
+  // A project handed over to another Studio (config.ts managedBy) is left out of every run that wasn't asked for it by
+  // name, and out of daily runs even then.
+  const products = (options.products?.length ? options.products.map((p) => getProduct(p)).filter((p) => kind !== 'daily' || !managedElsewhere(p)) : loadProducts().filter((p) => !managedElsewhere(p))).map((p) => p.id);
   const id = newId('r');
   db.prepare('INSERT INTO runs (id, kind, status, detail, products, options, started) VALUES (?, ?, ?, ?, ?, ?, ?)').run(id, kind, 'running', 'starting', J(products), J(options), Date.now());
   tagRun(id, options.origin);
@@ -1034,6 +1036,7 @@ export type BetaPlay = { scenario?: string; options?: Record<string, unknown>; c
  */
 export function startBeta(productId: string, o: BetaOptions = {}) {
   const p = getProduct(productId);
+  if (managedElsewhere(p)) throw new StudioError(managedNote(p), 409);
   const id = newId('r');
   db.prepare('INSERT INTO runs (id, kind, status, detail, products, options, started) VALUES (?, ?, ?, ?, ?, ?, ?)').run(id, 'beta', 'running', `beta ${p.id}`, J([p.id]), J({ focus: o.focus, criteria: o.criteria, scenario: o.scenario, options: o.options, playtest: o.playtest, quiet: o.quiet, plays: o.plays, ...(o.tag ? { tag: o.tag } : {}) }), Date.now());
   tagRun(id, o.origin);

@@ -13,7 +13,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { loadProducts, PROJECTS, type Product } from './config.ts';
+import { loadProducts, PROJECTS, managedElsewhere, type Product } from './config.ts';
 import { db, newId, J } from './db.ts';
 import { MAIN, AUTHOR, must, repoDirs, fetchOrigin, shaOf, betaBuild, betaSiteDir, scratch, WORK, commitsIn, git as gitIn, gitAsync } from './beta.ts';
 import { addReleaseTo, releaseLine, STUDIO_RELEASE } from './release.ts';
@@ -22,6 +22,7 @@ import { startStep, updateStep, resumedStep } from './pipeline.ts';
 import { critical } from './drain.ts';
 import { repoMap } from './repos.ts';
 import { verifyLive, repoSlug, publisherOf } from './deploy.ts';
+import { repoToken } from './ghtoken.ts';
 
 const rel = (abs: string) => path.relative(PROJECTS, abs).replace(/\\/g, '/');
 
@@ -145,7 +146,8 @@ async function publishFromBeta(p: Product, sha: string, by: string, resumed?: st
     const bb = betaBuild(p);
     if (!(bb?.ok && bb.sha === sha && bb.base)) throw new Error(`${sha.slice(0, 7)} has no beta build: push a build tag on it (git tag build-<name> ${sha.slice(0, 7)}), let it pass on beta, then go live`);
     const slug = repoMap()[p.site.split('/')[0]];
-    const token = process.env.GITHUB_TOKEN;
+    // The repo's own token (ghtoken.ts: J's for his repos, the GitHub App's for anyone else's).
+    const token = slug ? await repoToken(slug) : null;
     if (!slug || !token) throw new Error(`no GitHub repo or token for ${p.site}`);
     const api = (route: string, init: RequestInit = {}) => fetch(`https://api.github.com/repos/${slug}/${route}`, { ...init, headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json', 'Content-Type': 'application/json', 'User-Agent': 'hawkes-studio' }, signal: AbortSignal.timeout(30_000) });
     const ref: any = await (await api(`git/ref/heads/${MAIN}`)).json();
@@ -176,12 +178,12 @@ async function publishFromBeta(p: Product, sha: string, by: string, resumed?: st
 /**
  * A site whose repo builds itself on GitHub (.github/workflows/pages.yml) but whose Pages still publishes the branch:
  * switch Pages to "GitHub Actions" and run the workflow (the run the push started fails at its deploy step while Pages
- * is set to the branch). Happens once per site, the first time the workflow reaches main. Needs GITHUB_TOKEN with
+ * is set to the branch). Happens once per site, the first time the workflow reaches main. Needs the repo's token with
  * Pages and Actions write on the repo.
  */
 async function ensurePagesWorkflow(slug: string, sha: string) {
-  const token = process.env.GITHUB_TOKEN;
-  if (!token) return 'no GITHUB_TOKEN';
+  const token = await repoToken(slug);
+  if (!token) return `no GitHub token for ${slug}`;
   const api = (route: string, init: RequestInit = {}) =>
     fetch(`https://api.github.com/repos/${slug}/${route}`, { ...init, headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json', 'Content-Type': 'application/json' }, signal: AbortSignal.timeout(20_000) });
   const wf = await api(`contents/.github/workflows/pages.yml?ref=${sha}`);
@@ -194,9 +196,29 @@ async function ensurePagesWorkflow(slug: string, sha: string) {
   return run.ok ? 'switched Pages to GitHub Actions and started the build' : `switched Pages to GitHub Actions; starting the build failed (HTTP ${run.status}): run it from the Actions tab`;
 }
 
+/**
+ * A push to main of a project's GitHub repo in any Studio (a customer's: builds.ts projectsForRepo), by anyone: recorded
+ * as a go live (rollback needs the commit before it) and checked live, unless Studio's own go live already recorded it.
+ */
+export async function onMainPushGitHub(slug: string, sha: string) {
+  const { projectsForRepo } = await import('./builds.ts');
+  const out: Record<string, unknown> = {};
+  for (const p of projectsForRepo(slug).filter((x) => !managedElsewhere(x))) {
+    if (liveAlready(p, sha)) { out[p.id] = { skipped: 'already recorded' }; continue; }
+    const last = db.prepare(`SELECT after FROM deploys WHERE product = ? ORDER BY at DESC LIMIT 1`).get(p.id) as { after: string } | undefined;
+    const id = newId('d');
+    db.prepare('INSERT INTO deploys (id, product, kind, repo, before, after, beta, source, source_before, source_after, version, by, detail, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+      .run(id, p.id, 'deploy', slug, last && last.after !== sha ? last.after : null, sha, null, null, null, null, null, 'a push to main', `pushed to main; ${publisherOf(p).says} it`, Date.now());
+    if (p.live) void verifyLive(p.id, sha, `Just went live (pushed to main, ${sha.slice(0, 7)})`);
+    out[p.id] = { deploy: id, note: p.live ? `${publisherOf(p).done}; Studio playtests the live site when it is out` : 'recorded (no live address to check)' };
+  }
+  return out;
+}
+
 /** A push to a product source repo's main (from its workflow): publish Unity games; record and check web products. */
 export async function onMainPush(folder: string, sha: string) {
-  const products = loadProducts().filter((p) => p.repo.split('/')[0] === folder);
+  // A project handed over to another Studio (config.ts managedBy) goes live there, not here.
+  const products = loadProducts().filter((p) => p.repo.split('/')[0] === folder && !managedElsewhere(p));
   const out: Record<string, unknown> = {};
   for (const p of products) {
     if (p.build) {

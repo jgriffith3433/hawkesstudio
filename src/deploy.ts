@@ -19,7 +19,7 @@
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { critical } from './drain.ts';
-import { getProduct, StudioError, type Product } from './config.ts';
+import { getProduct, StudioError, managedElsewhere, managedNote, type Product } from './config.ts';
 import { git } from './local.ts';
 import { startPartial } from './pipeline.ts';
 import { db, newId, rowToStep, type Step } from './db.ts';
@@ -30,7 +30,9 @@ import {
   BETA, MAIN, STUDIO_ROLLBACK, AUTHOR, must, repoDirs, compareBeta, compareRefs, fetchForRead, NotClonedError, fetchOrigin, shaOf, commitOf, commitsIn, betaBuild, saveBetaBuild,
   betaSiteDir, betaSiteFolder, scratch, listDeploys, mergeMainIntoBeta, prebuilt, git as gitIn, gitAsync, type Commit, type DeployRow,
 } from './beta.ts';
-import { cloudGoLive, cloudRefs, cloudBlockers, cloudGoLiveNow, type CloudRefs } from './deploy-cloud.ts';
+import { cloudGoLive, cloudRefs, cloudBlockers, cloudGoLiveNow, compareOnGitHub, type CloudRefs, type Compare } from './deploy-cloud.ts';
+import { githubSlugOf, publishTargets, buildRunsAt, onlyDocsSince, goLiveOnGitHub, rollbackRefs, rollbackOnGitHub, type GitHubIO } from './deploy-github.ts';
+import { repoMap } from './repos.ts';
 import { STUDIO_RELEASE, RELEASES, playedCommit, releasesAt, releasesPath, readReleases, draftWithin, addReleaseTo, releaseLine, releaseNotesLine, type Draft } from './release.ts';
 
 const brief = (c: Commit | null) => c && { sha: c.sha, short: c.short, title: c.title, author: c.author, date: c.date };
@@ -56,16 +58,40 @@ export function testedAt(productId: string, sha: string | undefined, carries: (f
       if (tried.get(from)) { byName.set(s.name, s); carried.add(s.name); }
     }
   }
-  const tested = [...byName.values()].map((s) => {
-    const rv = steps.find((r) => r.kind === 'review' && r.run === s.run && r.name === s.name && ['done', 'skipped'].includes(r.status));
-    return {
-      name: s.name, status: s.status, outcome: s.data?.outcome ?? null, detail: carried.has(s.name) ? `passed on ${String(s.data.played.sha).slice(0, 7)}; only docs and notes changed since, so it isn't played again` : s.detail, when: s.finished, run: s.run, video: s.data?.video ?? null,
-      carriedFrom: carried.has(s.name) ? String(s.data.played.sha).slice(0, 7) : null,
-      verdict: rv?.data?.verdict ?? null, summary: rv?.data?.summary ?? null, scores: rv?.data?.scores ?? null,
-      blockers: (rv?.data?.findings ?? []).filter((f: any) => f.severity === 'blocker').map((f: any) => f.title),
-    };
-  });
+  const tested = [...byName.values()].map((s) => playOf(s, steps, carried.has(s.name)));
   return { tested, last: last && { name: last.name, when: last.finished, played: last.data.played } };
+}
+
+/** One finished playtest as the plan shows it, with its review. */
+function playOf(s: Step, steps: Step[], carried = false) {
+  const rv = steps.find((r) => r.kind === 'review' && r.run === s.run && r.name === s.name && ['done', 'skipped'].includes(r.status));
+  return {
+    name: s.name, status: s.status, outcome: s.data?.outcome ?? null, detail: carried ? `passed on ${String(s.data.played.sha).slice(0, 7)}; only docs and notes changed since, so it isn't played again` : s.detail, when: s.finished, run: s.run, video: s.data?.video ?? null,
+    carriedFrom: carried ? String(s.data.played.sha).slice(0, 7) : null,
+    verdict: rv?.data?.verdict ?? null, summary: rv?.data?.summary ?? null, scores: rv?.data?.scores ?? null,
+    blockers: (rv?.data?.findings ?? []).filter((f: any) => f.severity === 'blocker').map((f: any) => f.title),
+  };
+}
+
+/** The latest finished playtest of each scenario of a project in these runs (a build's run plays it where it is mounted). */
+export function testedInRuns(productId: string, runs: string[]) {
+  if (!runs.length) return [];
+  const steps = (db.prepare(`SELECT * FROM steps WHERE product = ? AND kind IN ('playtest', 'review') AND run IN (${runs.map(() => '?').join(', ')}) ORDER BY started DESC`).all(productId, ...runs) as any[]).map(rowToStep);
+  const byName = new Map<string, Step>();
+  for (const s of steps) if (s.kind === 'playtest' && s.status !== 'running' && !byName.has(s.name)) byName.set(s.name, s);
+  return [...byName.values()].map((s) => playOf(s, steps));
+}
+
+/** The plan's warnings about the played commit's playtests and reviews. */
+function playWarnings(tested: ReturnType<typeof playOf>[], short: string | undefined) {
+  const out: string[] = [];
+  for (const t of tested) {
+    if (t.status !== 'done' || !['won', 'done'].includes(t.outcome)) out.push(`Playtest ${t.name} on ${short} ${t.status === 'done' ? `ended "${t.outcome}"` : t.status === 'skipped' ? 'was inconclusive' : 'failed'}${t.detail ? ` (${t.detail})` : ''}.`);
+    if (t.verdict === 'broken') out.push(`The review of ${t.name} said "broken": ${t.summary ?? ''}`);
+    if (t.blockers.length) out.push(`The review of ${t.name} found ${t.blockers.length} blocker(s): ${t.blockers.join('; ')}`);
+    if (!t.verdict) out.push(`${t.name} on ${short} has no review.`);
+  }
+  return out;
 }
 
 /**
@@ -93,8 +119,10 @@ export function planFix(blockers: string[]): BlockerFix | null {
 }
 
 /** notesWaitMs: how long to wait for the release notes being written (the Approve card waits longer, to show them). */
-export async function deployPlan(productId: string, { notesWaitMs = 20_000 }: { notesWaitMs?: number } = {}) {
+export async function deployPlan(productId: string, { notesWaitMs = 20_000, io }: { notesWaitMs?: number; io?: GitHubIO } = {}) {
   const p = getProduct(productId);
+  // A project with a GitHub repo, in any Studio (a customer's included): read and moved through GitHub's API, no clones.
+  if (githubSlugOf(p)) return githubPlan(p, io);
   const { source, site, unity } = repoDirs(p);
   // A Unity game on Cloud Run: no checkout of its repos here, so the plan reads them from GitHub (deploy-cloud.ts).
   if (unity && cloudGoLive()) return cloudPlan(p);
@@ -190,6 +218,7 @@ export async function deployPlan(productId: string, { notesWaitMs = 20_000 }: { 
 
   const previous = listDeploys(p.id, 5);
   const players = await livePlayers(p.id);
+  if (managedElsewhere(p)) blockers.unshift(managedNote(p));
   return {
     product: p.id, name: p.name, live: p.live, betaSite: previewUrl(p.id), repo: p.repo, site: p.site, unity,
     main: brief(cmp.main), beta: brief(beta), played: brief(played), release,
@@ -234,6 +263,7 @@ async function cloudPlan(p: Product) {
   const b = betaBuild(p);
   const siteBeta = refs?.site.beta ?? null;
   const top = p.repo.split('/')[0];
+  if (managedElsewhere(p)) blockers.unshift(managedNote(p));
   return {
     product: p.id, name: p.name, live: p.live, betaSite: previewUrl(p.id), repo: p.repo, site: p.site, unity: true,
     main: brief(refs?.source.main ?? null), beta: brief(beta), played: brief(beta), release: null,
@@ -251,6 +281,68 @@ async function cloudPlan(p: Product) {
 }
 
 /**
+ * The go-live plan of a project with a GitHub repo (deploy-github.ts), the same shape and checks as above: the commits
+ * on beta that main lacks, the playtests of that exact beta commit (and of its builds where they are mounted), the
+ * builds that go into another project's repo, blockers.
+ */
+async function githubPlan(p: Product, io: GitHubIO = {}) {
+  const slug = githubSlugOf(p)!;
+  const blockers: string[] = [];
+  const warnings: string[] = [];
+  if (managedElsewhere(p)) blockers.push(managedNote(p));
+  let cmp: Compare = { main: null, beta: null, ahead: [], behind: [] };
+  try {
+    cmp = await compareOnGitHub(slug, io.fetch ?? ((...a: Parameters<typeof fetch>) => fetch(...a)), io.token);
+  } catch (e: any) {
+    blockers.push(`GitHub: ${e.message}`);
+  }
+  const beta = cmp.beta;
+  if (!cmp.main && !beta) blockers.push(`Studio can't read ${slug}'s ${MAIN} or ${BETA} on GitHub: connect GitHub and give Studio's app access to it (the project's setup check has the link).`);
+  else if (!beta) blockers.push(`${slug} has no ${BETA} branch on GitHub yet: make it from ${MAIN} (the project's setup does), then playtest it.`);
+  else if (!cmp.main) blockers.push(`${slug} has no ${MAIN} branch on GitHub.`);
+  if (cmp.behind.length) blockers.push(`${MAIN} has ${cmp.behind.length} commit(s) ${BETA} lacks (${cmp.behind.slice(0, 5).map((c) => `"${c.title}"`).join(', ')}), so ${MAIN} can't be fast-forwarded. Merge ${MAIN} into ${BETA} on GitHub (a pull request from ${MAIN} into ${BETA}), then playtest ${BETA}.`);
+  // The playtests of the exact beta commit; a clean pass of an earlier one counts when only docs and notes changed since.
+  const carries = new Set<string>();
+  if (beta) {
+    const seen = new Set<string>();
+    for (const r of db.prepare(`SELECT data FROM steps WHERE product = ? AND kind = 'playtest' AND status = 'done' AND name LIKE '%@local%' ORDER BY started DESC LIMIT 100`).all(p.id) as any[]) {
+      const from = (() => { try { return JSON.parse(r.data ?? '{}')?.played?.sha; } catch { return null; } })();
+      if (typeof from === 'string' && from && !beta.sha.startsWith(from) && !seen.has(from) && seen.size < 4) seen.add(from);
+    }
+    for (const from of seen) if (await onlyDocsSince(slug, from, beta.sha, io).catch(() => false)) carries.add(from);
+  }
+  const { tested, last } = testedAt(p.id, beta?.sha, (from) => carries.has(from));
+  // A build mounted into another project's site is played there (builds.ts playIt): those plays count for this commit.
+  if (beta) {
+    const runs = buildRunsAt(p.id, beta.sha);
+    const { buildsOf } = await import('./builds.ts');
+    for (const b of buildsOf(p).filter((x) => x.publish && x.publish.project !== p.id)) {
+      for (const t of testedInRuns(b.publish!.project, runs)) if (!tested.some((x) => x.run === t.run && x.name === t.name)) tested.push({ ...t, name: `${t.name} (${b.publish!.project})` });
+    }
+  }
+  if (beta && !tested.length) blockers.push(last ? `${BETA} hasn't been playtested at ${beta.short} (the last playtest played ${last.played.branch} ${String(last.played.sha).slice(0, 7)}). Playtest ${BETA} first.` : `${BETA} hasn't been playtested yet: play it first (a beta run or a playtest of the project).`);
+  warnings.push(...playWarnings(tested, beta?.short));
+  const tg = beta ? await publishTargets(p, beta.sha, io).catch((e: any) => ({ targets: [], blockers: [`GitHub: ${e.message}`] })) : { targets: [], blockers: [] };
+  blockers.push(...tg.blockers);
+  const moving = tg.targets.filter((t) => t.move);
+  if (beta && cmp.main && !cmp.ahead.length && !cmp.behind.length && !moving.length) blockers.push(`Nothing to go live: ${MAIN} already is ${BETA} (${beta.short})${tg.targets.length ? ' and its builds are live' : ''}.`);
+  const into = moving.map((t) => `${t.slug}'s ${MAIN} to its ${BETA} commit holding build ${t.build} ${t.version} (${t.commit.slice(0, 7)})`);
+  return {
+    product: p.id, name: p.name, live: p.live, betaSite: previewUrl(p.id), repo: slug, site: slug, unity: false,
+    main: brief(cmp.main), beta: brief(beta), played: brief(beta), release: null,
+    commits: cmp.ahead.map(brief), mainOnly: cmp.behind.map(brief), siteCommits: [] as ReturnType<typeof brief>[], siteMainOnly: [] as ReturnType<typeof brief>[],
+    tested: { sha: beta?.short ?? null, playtests: tested }, lastPlayed: last,
+    build: null as any,
+    previous: listDeploys(p.id, 5).map((d) => ({ id: d.id, kind: d.kind, at: d.at, by: d.by, before: d.before?.slice(0, 7) ?? null, after: d.after.slice(0, 7), beta: d.beta?.slice(0, 7) ?? null, detail: d.detail, rolledBack: d.rolled_back })),
+    players: await livePlayers(p.id),
+    blockers, warnings, canDeploy: !blockers.length, fix: null as BlockerFix | null, notCloned: null,
+    confirm: `DEPLOY ${p.id}`,
+    what: `${cmp.ahead.length ? `Fast-forwards ${slug}'s ${MAIN} to ${BETA}${beta ? ` ${beta.short}` : ''} (${cmp.ahead.length} commit(s))` : `Leaves ${slug}'s ${MAIN} as it is`}${into.length ? `, and ${into.join(', ')}` : ''}, through GitHub (never a merge or a force push); ${publisherOf(p).says} ${p.live || 'its live site'}.`,
+    github: { slug, targets: tg.targets },
+  };
+}
+
+/**
  * Who publishes a product's main: GitHub Pages (the default), or the product's own server (products.json deploy.via
  * "ec2": its box pulls it; Studio only moves main and plays the live site).
  */
@@ -263,15 +355,33 @@ export function publisherOf(p: Product) {
 
 /** Going live (pushing main, recording it) is a critical section (drain.ts): a Studio deploy waits for it. */
 export const deploy = (...a: Parameters<typeof deployNow>) => critical(`going live: ${a[0]}`, () => deployNow(...a));
-async function deployNow(productId: string, { confirm, by = 'J', mergeMain, origin, beta: expect }: { confirm?: string; by?: string; mergeMain?: boolean; message?: string; origin?: string | null; beta?: string }) {
+async function deployNow(productId: string, { confirm, by = 'J', mergeMain, origin, beta: expect, io }: { confirm?: string; by?: string; mergeMain?: boolean; message?: string; origin?: string | null; beta?: string; io?: GitHubIO }) {
   const p = getProduct(productId);
+  if (mergeMain && githubSlugOf(p)) throw new StudioError(`Merge ${MAIN} into ${BETA} on GitHub (a pull request from ${MAIN} into ${BETA}), then playtest ${BETA}.`, 409);
   if (mergeMain) return { ok: true, product: p.id, ...(await mergeMainIntoBeta(p, by)), note: `Nothing went live. Playtest ${BETA} again before going live.` };
   opLog(`making the plan for ${p.name}`);
-  const plan = await deployPlan(p.id);
+  const plan = await deployPlan(p.id, { io });
   if (confirm !== plan.confirm) throw new StudioError(`Going live publishes ${plan.live}: ${plan.what} Show J the plan, then send confirm: "${plan.confirm}" (J's call).`);
   if (plan.blockers.length) throw new StudioError(`Not going live:\n- ${plan.blockers.join('\n- ')}`);
   // An Approve card (approvals.ts) is for one beta commit: a different one now isn't what J approved.
   if (expect && plan.beta?.sha !== expect && plan.played?.sha !== expect) throw new StudioError(`${BETA} is ${plan.beta?.short ?? '?'} now, not ${expect.slice(0, 7)} that J approved; look at the plan again.`);
+  // A project with a GitHub repo (deploy-github.ts): its main, and the repos its builds went into, through GitHub's API.
+  if (githubSlugOf(p)) {
+    const r = await goLiveOnGitHub(p, plan as any, io);
+    for (const l of r.log) opLog(l);
+    const id = newId('d');
+    const after = r.after ?? plan.beta!.sha;
+    const insert = db.prepare('INSERT INTO deploys (id, product, kind, repo, before, after, beta, source, source_before, source_after, version, by, detail, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)');
+    insert.run(id, p.id, 'deploy', r.slug, r.before, after, plan.beta!.sha, null, null, null, null, by, `${plan.commits.length} commit(s): ${plan.commits.slice(0, 8).map((c) => c!.title).join('; ')}${r.targets.length ? ` · builds: ${r.targets.map((t) => `${t.build} ${t.version} into ${t.slug}`).join(', ')}` : ''}`.slice(0, 1000), Date.now());
+    // Each repo a build went into is that project's go live too (its own rollback puts it back).
+    for (const t of r.targets) insert.run(newId('d'), t.project, 'deploy', t.slug, t.before, t.after, t.after, r.slug, null, plan.beta!.sha, String(t.version), by, `build ${t.build} ${t.version} of ${p.name} (${plan.beta!.short})`, Date.now());
+    if (after !== r.before && p.live) void verifyLive(p.id, after, `Just went live (${BETA} ${plan.beta!.short}: ${plan.commits.slice(0, 3).map((c) => c!.title).join('; ')})`, origin);
+    for (const t of r.targets) {
+      const tp = (() => { try { return getProduct(t.project); } catch { return null; } })();
+      if (tp?.live) void verifyLive(tp.id, t.after, `Just went live: build ${t.build} ${t.version} of ${p.name} (${plan.beta!.short})`, origin);
+    }
+    return { ok: true, product: p.id, deploy: id, live: p.live, main: after.slice(0, 7), beta: plan.beta!.short, release: null, log: r.log, note: `${publisherOf(p).done}; Studio waits for it, then playtests the live site where there is one. If it went wrong: the rollback plan.` };
+  }
   const { source, site, unity } = repoDirs(p);
   // A Unity game on Cloud Run: both mains move through GitHub's API (deploy-cloud.ts), fast-forward only.
   if (unity && cloudGoLive()) {
@@ -402,8 +512,46 @@ async function commitRelease(p: ReturnType<typeof getProduct>, source: string, b
 
 const lastLive = (product: string) => db.prepare(`SELECT * FROM deploys WHERE product = ? AND kind = 'deploy' AND rolled_back IS NULL ORDER BY at DESC LIMIT 1`).get(product) as DeployRow | undefined;
 
-export async function rollbackPlan(productId: string) {
+/**
+ * The repo a rollback moves through GitHub's API (no checkout): a project's own GitHub repo, or a Unity game's website
+ * on Cloud Run (no clone of it there). null: the local checkout as before.
+ */
+function rollbackSlug(p: Product): string | null {
+  const own = githubSlugOf(p);
+  if (own) return own;
+  if (p.build && cloudGoLive()) return repoMap()[p.site.split('/')[0]] ?? null;
+  return null;
+}
+
+async function githubRollbackPlan(p: Product, slug: string, io: GitHubIO = {}) {
+  const blockers: string[] = [];
+  const warnings: string[] = [];
+  if (managedElsewhere(p)) blockers.push(managedNote(p));
+  const d = lastLive(p.id);
+  if (!d) blockers.push(`No go live by Studio is recorded for ${p.name} (or each one was rolled back already), so the previous live commit isn't known. Roll back by hand (git revert on ${slug}).`);
+  else if (!d.before) blockers.push(`The last go live (${d.id}) has no previous commit recorded.`);
+  let refs: Awaited<ReturnType<typeof rollbackRefs>> = { main: null, to: null, undo: [] };
+  try { refs = await rollbackRefs(slug, d?.before ?? null, io); } catch (e: any) { blockers.push(`GitHub: ${e.message}`); }
+  const main = refs.main?.sha ?? null;
+  if (!refs.main) blockers.push(`Studio can't read ${slug}'s ${MAIN} on GitHub.`);
+  if (p.deploy?.via === 'ec2') warnings.push(`${p.name} runs on its own server with a database: a rollback puts the previous code back through the same CI and pull, but nothing in the database (accounts, credits, payments, migrations) is undone.`);
+  if (d && main && main !== d.after) warnings.push(`${MAIN} moved since that go live (${d.after.slice(0, 7)} -> ${main.slice(0, 7)}): rolling back also undoes those commits.`);
+  if (d?.before && main === d.before) blockers.push(`${MAIN} already is ${d.before.slice(0, 7)}.`);
+  return {
+    product: p.id, name: p.name, live: p.live, repo: slug,
+    main: brief(refs.main), to: brief(refs.to),
+    deploy: d ? { id: d.id, at: d.at, by: d.by, after: d.after.slice(0, 7), beta: d.beta?.slice(0, 7) ?? null, detail: d.detail } : null,
+    undo: refs.undo.map(brief), blockers, warnings, canRollback: !blockers.length,
+    confirm: `ROLLBACK ${p.id}`,
+    what: `A new commit on ${slug}'s ${MAIN} with the files of ${d?.before?.slice(0, 7) ?? '?'} (what was live before the last go live), made through GitHub; never a force push. ${BETA} keeps its commits: fix forward there, merge ${MAIN} into ${BETA}, playtest, and go live again.`,
+    github: { slug },
+  };
+}
+
+export async function rollbackPlan(productId: string, { io }: { io?: GitHubIO } = {}) {
   const p = getProduct(productId);
+  const viaGitHub = rollbackSlug(p);
+  if (viaGitHub) return githubRollbackPlan(p, viaGitHub, io);
   const { site } = repoDirs(p);
   const blockers: string[] = [];
   const warnings: string[] = [];
@@ -416,6 +564,7 @@ export async function rollbackPlan(productId: string) {
   if (p.deploy?.via === 'ec2') warnings.push(`${p.name} runs on its own server with a database: a rollback puts the previous code back through the same CI and pull, but nothing in the database (accounts, credits, payments, migrations) is undone.`);
   if (d && main && main !== d.after) warnings.push(`${MAIN} moved since that go live (${d.after.slice(0, 7)} -> ${main.slice(0, 7)}): rolling back also undoes those commits.`);
   if (d?.before && main === d.before) blockers.push(`${MAIN} already is ${d.before.slice(0, 7)}.`);
+  if (managedElsewhere(p)) blockers.unshift(managedNote(p));
   return {
     product: p.id, name: p.name, live: p.live, repo: p.site,
     main: brief(main ? commitOf(site, main) : null), to: brief(d?.before ? commitOf(site, d.before) : null),
@@ -428,11 +577,22 @@ export async function rollbackPlan(productId: string) {
 
 /** A rollback (pushing main, recording it) is a critical section too. */
 export const rollback = (...a: Parameters<typeof rollbackNow>) => critical(`rolling back: ${a[0]}`, () => rollbackNow(...a));
-async function rollbackNow(productId: string, { confirm, by = 'J', origin }: { confirm?: string; by?: string; origin?: string | null }) {
-  const plan = await rollbackPlan(productId);
+async function rollbackNow(productId: string, { confirm, by = 'J', origin, io }: { confirm?: string; by?: string; origin?: string | null; io?: GitHubIO }) {
+  const plan = await rollbackPlan(productId, { io });
   if (confirm !== plan.confirm) throw new StudioError(`Rolling back publishes ${plan.live}: ${plan.what} Show J the rollback plan, then send confirm: "${plan.confirm}" (J's call).`);
   if (plan.blockers.length) throw new StudioError(`Not rolling back:\n- ${plan.blockers.join('\n- ')}`);
   const p = getProduct(productId);
+  const viaGitHub = rollbackSlug(p);
+  if (viaGitHub) {
+    const d = lastLive(p.id)!;
+    const r = await rollbackOnGitHub(viaGitHub, d.before!, `${STUDIO_ROLLBACK} ${p.name} to ${d.before!.slice(0, 7)} (undoes go live ${d.id}, ${d.after.slice(0, 7)}; by ${by})`, io, plan.main?.sha ?? null);
+    const id = newId('d');
+    db.prepare('INSERT INTO deploys (id, product, kind, repo, before, after, by, detail, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
+      .run(id, p.id, 'rollback', viaGitHub, r.before, r.after, by, `to ${d.before!.slice(0, 7)}, undoing ${d.id}`, Date.now());
+    db.prepare('UPDATE deploys SET rolled_back = ? WHERE id = ?').run(id, d.id);
+    if (p.live) void verifyLive(p.id, r.after, `Just rolled back to ${d.before!.slice(0, 7)} (undoing ${d.after.slice(0, 7)}). Check the live site works.`, origin);
+    return { ok: true, product: p.id, rollback: id, live: p.live, main: r.after.slice(0, 7), to: d.before!.slice(0, 7), note: `${publisherOf(p).done}; Studio then playtests live. ${BETA} still has the rolled-back commits: fix forward there.` };
+  }
   const { site } = repoDirs(p);
   const d = lastLive(p.id)!;
   const wt = await scratch(site, `${p.id}-rollback`, plan.main!.sha);
@@ -471,7 +631,9 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms).unref());
 /** Waits for GitHub to publish a commit (its Pages or Actions runs, through gh when signed in), then playtests live. */
 export async function verifyLive(productId: string, sha: string, focus: string, origin?: string | null) {
   const p = getProduct(productId);
-  const slug = repoSlug(p.site);
+  if (!p.live) return;
+  // A project with a GitHub repo has no checkout to read its origin from (a customer's Studio): its repo is known.
+  const slug = githubSlugOf(p) ?? repoSlug(p.site);
   const end = Date.now() + 15 * 60_000;
   let published = false;
   const own = publisherOf(p).box;

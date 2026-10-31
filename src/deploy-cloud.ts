@@ -12,23 +12,27 @@ import { repoMap } from './repos.ts';
 import type { Product } from './config.ts';
 
 type Fetch = typeof fetch;
+/** A token given for a call, or (undefined) the repo's own (ghtoken.ts: J's for his repos, the GitHub App's for anyone else's). */
+type Token = string | null | undefined;
+const tokenOf = async (slug: string, token: Token) => (token !== undefined ? token : await (await import('./ghtoken.ts')).repoToken(slug).catch(() => null));
 export type Compare = { main: Commit | null; beta: Commit | null; ahead: Commit[]; behind: Commit[] };
 
 /** Whether this Studio goes live through GitHub's API: Cloud Run (no checkouts of the Unity repos). */
 export const cloudGoLive = () => Boolean(process.env.K_SERVICE);
 
-const headers = (token?: string) => ({ Accept: 'application/vnd.github+json', 'User-Agent': 'hawkes-studio', 'X-GitHub-Api-Version': '2022-11-28', ...(token ? { Authorization: `Bearer ${token}` } : {}) });
+const headers = (token?: string | null) => ({ Accept: 'application/vnd.github+json', 'User-Agent': 'hawkes-studio', 'X-GitHub-Api-Version': '2022-11-28', ...(token ? { Authorization: `Bearer ${token}` } : {}) });
 
-async function gh(f: Fetch, token: string | undefined, method: string, url: string, body?: unknown) {
+export async function gh(f: Fetch, token: string | null | undefined, method: string, url: string, body?: unknown) {
   const r = await f(`https://api.github.com${url}`, { method, headers: { ...headers(token), ...(body ? { 'Content-Type': 'application/json' } : {}) }, body: body ? JSON.stringify(body) : undefined, signal: AbortSignal.timeout(30_000) });
   const j = (await r.json().catch(() => ({}))) as any;
   return { ok: r.ok, status: r.status, j };
 }
 
-const commitOf = (c: any): Commit => ({ sha: c.sha, short: String(c.sha).slice(0, 7), author: c.commit?.author?.name ?? c.author?.login ?? '?', date: c.commit?.committer?.date ?? c.commit?.author?.date ?? '', title: String(c.commit?.message ?? '').split('\n')[0] });
+export const commitOf = (c: any): Commit => ({ sha: c.sha, short: String(c.sha).slice(0, 7), author: c.commit?.author?.name ?? c.author?.login ?? '?', date: c.commit?.committer?.date ?? c.commit?.author?.date ?? '', title: String(c.commit?.message ?? '').split('\n')[0] });
 
 /** main and beta of a repo, the commits beta has that main lacks (ahead) and the other way (behind). */
-export async function compareOnGitHub(slug: string, f: Fetch = fetch, token = process.env.GITHUB_TOKEN): Promise<Compare> {
+export async function compareOnGitHub(slug: string, f: Fetch = fetch, given?: Token): Promise<Compare> {
+  const token = await tokenOf(slug, given);
   const head = async (b: string) => { const r = await gh(f, token, 'GET', `/repos/${slug}/commits/${b}`); return r.ok ? commitOf(r.j) : null; };
   const [main, beta] = await Promise.all([head(MAIN), head(BETA)]);
   if (!main || !beta) return { main, beta, ahead: [], behind: [] };
@@ -44,8 +48,9 @@ export async function compareOnGitHub(slug: string, f: Fetch = fetch, token = pr
 }
 
 /** Whether `ancestor` is in `of`'s history (GitHub's compare: ancestor...of is "ahead" or "identical"). */
-export async function isAncestorOnGitHub(slug: string, ancestor: string, of: string, f: Fetch = fetch, token = process.env.GITHUB_TOKEN) {
+export async function isAncestorOnGitHub(slug: string, ancestor: string, of: string, f: Fetch = fetch, given?: Token) {
   if (ancestor === of) return true;
+  const token = await tokenOf(slug, given);
   const r = await gh(f, token, 'GET', `/repos/${slug}/compare/${ancestor}...${of}`);
   return r.ok && (r.j.status === 'ahead' || r.j.status === 'identical');
 }
@@ -53,7 +58,7 @@ export async function isAncestorOnGitHub(slug: string, ancestor: string, of: str
 export type CloudRefs = { sourceSlug: string; siteSlug: string; source: Compare; site: Compare };
 
 /** Both repos of a Unity game, read from GitHub. */
-export async function cloudRefs(p: Product, f: Fetch = fetch, token = process.env.GITHUB_TOKEN): Promise<CloudRefs> {
+export async function cloudRefs(p: Product, f: Fetch = fetch, token?: Token): Promise<CloudRefs> {
   const repos = repoMap();
   const sourceSlug = repos[p.repo.split('/')[0]];
   const siteSlug = repos[p.site.split('/')[0]];
@@ -63,7 +68,7 @@ export async function cloudRefs(p: Product, f: Fetch = fetch, token = process.en
 }
 
 /** The blockers a Unity go live on GitHub has besides the playtests (deploy.ts adds those): the build, main vs beta. */
-export async function cloudBlockers(p: Product, refs: CloudRefs, f: Fetch = fetch, token = process.env.GITHUB_TOKEN) {
+export async function cloudBlockers(p: Product, refs: CloudRefs, f: Fetch = fetch, token?: Token) {
   const out: string[] = [];
   const { source, site, siteSlug } = refs;
   const top = p.repo.split('/')[0];
@@ -84,7 +89,8 @@ export async function cloudBlockers(p: Product, refs: CloudRefs, f: Fetch = fetc
 }
 
 /** Moves a branch to a commit, fast-forward only (GitHub answers 422 for anything else). */
-async function fastForward(slug: string, branch: string, sha: string, f: Fetch, token?: string) {
+export async function fastForward(slug: string, branch: string, sha: string, f: Fetch, given?: Token) {
+  const token = await tokenOf(slug, given);
   const r = await gh(f, token, 'PATCH', `/repos/${slug}/git/refs/heads/${branch}`, { sha, force: false });
   if (!r.ok) throw new Error(`GitHub refused moving ${slug} ${branch} to ${sha.slice(0, 7)} (${r.status}${r.j?.message ? `: ${r.j.message}` : ''})`);
 }
@@ -94,7 +100,7 @@ async function fastForward(slug: string, branch: string, sha: string, f: Fetch, 
  * then the source's main to the playtested beta commit (it publishes nothing; a failure there is reported, not fatal).
  * Beta must not have moved since the plan: both are read again first.
  */
-export async function cloudGoLiveNow(p: Product, plan: { beta: { sha: string; short: string } | null; site: { beta: string | null } }, f: Fetch = fetch, token = process.env.GITHUB_TOKEN) {
+export async function cloudGoLiveNow(p: Product, plan: { beta: { sha: string; short: string } | null; site: { beta: string | null } }, f: Fetch = fetch, token?: Token) {
   const refs = await cloudRefs(p, f, token);
   if (!plan.beta || refs.source.beta?.sha !== plan.beta.sha) throw new Error(`${BETA} moved since the plan was made; look at the plan again.`);
   if (!refs.site.beta || (plan.site.beta && refs.site.beta.sha !== plan.site.beta)) throw new Error(`${p.site}'s ${BETA} moved since the plan was made; look at the plan again.`);
