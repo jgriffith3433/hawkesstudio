@@ -5,7 +5,7 @@
 //
 // The lease lives in the state bucket beside the database (<prefix>db/):
 //   lease.json        {id, rev, at}: who holds it. Only a starting instance writes it (claim).
-//   alive-<id>        the holder's heartbeat, every 5 s.
+//   alive-<id>        the holder's heartbeat, every 5 s, with the generation it streams (for a holder that dies).
 //   released-<id>     the holder has stopped writing and Litestream made its last sync (written after it exits), with
 //                     the Litestream generation it wrote: the next instance restores exactly that one, never a guess.
 // A starting instance claims before it restores (entrypoint.sh: node src/cloudlease.ts claim), then waits for the
@@ -53,13 +53,13 @@ export async function claim(o: { waitMs?: number; staleMs?: number; pollMs?: num
   if (prev && revNumber(prev.rev) > revNumber(mine.rev)) return { claimed: false, id: null, previous: prev.id, how: 'newer holds it', holder: prev.rev };
   // Whether the holder was already gone before this claim (no heartbeat for staleMs): then nobody hands over. A holder
   // that was alive gets its full time to stop: seeing the claim (5 s), saving state (8 s), Litestream's last sync.
-  const beat0 = prev ? Number((await gcsRead(bucket, key(`alive-${prev.id}`)).catch(() => null))?.toString() ?? 0) : 0;
+  const beat0 = prev ? await readBeat(bucket, prev.id) : { at: 0, generation: null };
   await gcsWrite(bucket, key('lease.json'), Buffer.from(JSON.stringify(mine)), 'application/json');
   fs.writeFileSync(ID_FILE, mine.id);
-  await gcsWrite(bucket, key(`alive-${mine.id}`), Buffer.from(String(now())), 'text/plain');
+  await gcsWrite(bucket, key(`alive-${mine.id}`), beatBody(now()), 'application/json');
   if (!prev) return { claimed: true, id: mine.id, previous: null, waited: 0, how: 'first' };
   const start = now();
-  const gone = now() - beat0 > staleMs;
+  const gone = now() - beat0.at > staleMs;
   for (;;) {
     const rel = await readJsonObj<{ generation?: string }>(bucket, `released-${prev.id}`);
     if (rel) {
@@ -67,10 +67,24 @@ export async function claim(o: { waitMs?: number; staleMs?: number; pollMs?: num
       if (generation) fs.writeFileSync(GEN_FILE, generation);
       return { claimed: true, id: mine.id, previous: prev.id, waited: now() - start, how: 'released', generation };
     }
-    if (gone) return { claimed: true, id: mine.id, previous: prev.id, waited: now() - start, how: 'quiet' };
+    if (gone) {
+      // A holder that died: its last heartbeat names the generation it streamed, so even this restore is exact.
+      if (beat0.generation) fs.writeFileSync(GEN_FILE, beat0.generation);
+      return { claimed: true, id: mine.id, previous: prev.id, waited: now() - start, how: 'quiet', generation: beat0.generation };
+    }
     if (now() - start >= waitMs) return { claimed: true, id: mine.id, previous: prev.id, waited: now() - start, how: 'timed out' };
     await new Promise((r) => setTimeout(r, pollMs));
   }
+}
+
+/** This instance's Litestream generation (null before Litestream has made one). */
+const localGeneration = () => { try { const g = fs.readFileSync(LOCAL_GEN, 'utf8').trim(); return GEN.test(g) ? g : null; } catch { return null; } };
+const beatBody = (at: number) => Buffer.from(JSON.stringify({ at, generation: localGeneration() }));
+/** A holder's heartbeat: when, and the generation it streams (older heartbeats were the time alone). */
+async function readBeat(bucket: string, id: string): Promise<{ at: number; generation: string | null }> {
+  const t = (await gcsRead(bucket, key(`alive-${id}`)).catch(() => null))?.toString() ?? '';
+  try { const j = JSON.parse(t); if (j && typeof j === 'object') return { at: Number(j.at) || 0, generation: GEN.test(String(j.generation ?? '')) ? j.generation : null }; } catch { /* the time alone */ }
+  return { at: Number(t) || 0, generation: null };
 }
 
 /** A Cloud Run revision's number (studio-beta-00043-9r2 → 43); 0 when unknown (J's PC, tests). */
@@ -80,9 +94,7 @@ export const revNumber = (rev: string | null | undefined) => Number(/-(\d+)-[a-z
 export async function release(id = myLeaseId()) {
   const bucket = stateBucket();
   if (!bucket || !id) return false;
-  let generation: string | null = null;
-  try { generation = fs.readFileSync(LOCAL_GEN, 'utf8').trim(); } catch { /* never streamed */ }
-  await gcsWrite(bucket, key(`released-${id}`), Buffer.from(JSON.stringify({ at: Date.now(), generation: generation && GEN.test(generation) ? generation : null })), 'application/json');
+  await gcsWrite(bucket, key(`released-${id}`), Buffer.from(JSON.stringify({ at: Date.now(), generation: localGeneration() })), 'application/json');
   await gcsDelete(bucket, key(`alive-${id}`)).catch(() => {});
   return true;
 }
@@ -104,7 +116,7 @@ export function watchLease(onLost: (by: Lease) => void, o: { everyMs?: number } 
       onLost(lease);
       return;
     }
-    await gcsWrite(bucket, key(`alive-${id}`), Buffer.from(String(Date.now())), 'text/plain').catch(() => {});
+    await gcsWrite(bucket, key(`alive-${id}`), beatBody(Date.now()), 'application/json').catch(() => {});
   };
   const t = setInterval(() => void tick().catch(() => {}), o.everyMs ?? 5000);
   t.unref();

@@ -84,12 +84,19 @@ test("a holder that is shutting down gets its time; only one already silent befo
   assert.equal(r.how, 'timed out', 'alive at the claim: waited for its release (here, until the test limit)');
 });
 
-test("a crashed holder (no heartbeat) doesn't hold a new instance up", async () => {
+test("a crashed holder (no heartbeat) doesn't hold a new instance up, and its last heartbeat names what to restore", async () => {
   fs.rmSync(process.env.STUDIO_LEASE_GEN_FILE!, { force: true });
   const dead = L.myLeaseId()!;
-  objects.set(`db/alive-${dead}`, Buffer.from(String(Date.now() - 60_000)));
+  objects.set(`db/alive-${dead}`, Buffer.from(JSON.stringify({ at: Date.now() - 60_000, generation: '062800f778d554ed' })));
   const r: any = await L.claim({ rev: 'studio-beta-00045-c2d', pollMs: 10, staleMs: 15_000 });
   assert.equal(r.how, 'quiet');
   assert.ok(r.waited < 1000);
-  assert.equal(fs.existsSync(process.env.STUDIO_LEASE_GEN_FILE!), false, 'no generation named: restore takes the newest');
+  assert.equal(r.generation, '062800f778d554ed');
+  assert.equal(fs.readFileSync(process.env.STUDIO_LEASE_GEN_FILE!, 'utf8'), '062800f778d554ed', 'restored by name, never a guess');
+  // An old heartbeat (the time alone) still reads.
+  objects.set(`db/alive-${r.id}`, Buffer.from(String(Date.now() - 60_000)));
+  fs.rmSync(process.env.STUDIO_LEASE_GEN_FILE!, { force: true });
+  const r2: any = await L.claim({ rev: 'studio-beta-00046-e3f', pollMs: 10, staleMs: 15_000 });
+  assert.equal(r2.how, 'quiet');
+  assert.equal(r2.generation, null);
 });
