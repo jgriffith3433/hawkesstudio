@@ -23,6 +23,8 @@
 import type http from 'node:http';
 import { db, parse } from './db.ts';
 import { requestUser } from './sandbox.ts';
+import * as GoLivePolicy from './golive-policy.ts';
+const goLivePolicy = () => GoLivePolicy;
 
 /** J's newest message in a conversation (not Studio's notices, not Claude's text), or null. */
 export function lastJMessage(conversation: string | null | undefined) {
@@ -58,10 +60,18 @@ export function guardRoute(route: string, method: string, conv: string | null): 
   const need = (words: string, what: string) => (jTyped(conv, words)
     ? null
     : `${what} is J's call: Studio goes ahead only when J's own latest message here says "${words}". Ask him to type it.`);
+  // Going live and rolling back on the owner's word, in plain words (golive-policy.ts; J, 2026-10-31: "Stop building in
+  // stop guards"): their latest message asks for it, or they told Studio to keep going live (policy auto). "Hold off"
+  // (policy hold) keeps it from going unless their latest message asks again.
   let m = /^\/api\/deploy\/([\w-]+)$/.exec(route);
-  if (m) return need(`DEPLOY ${m[1]}`, `Going live with ${m[1]}`);
+  if (m) {
+    const P = goLivePolicy();
+    if (P.asksToGoLive(lastJMessage(conv)?.text, m[1])) return null;
+    if (P.policyOf(m[1]).policy === 'auto') return null;
+    return `Going live with ${m[1]} waits for the owner's word: their latest message asks for it ("go live", "ship it"), or they've said to keep going live (studio_project golive auto).`;
+  }
   m = /^\/api\/rollback\/([\w-]+)$/.exec(route);
-  if (m) return need(`ROLLBACK ${m[1]}`, `Rolling back ${m[1]}`);
+  if (m) return goLivePolicy().asksToRollBack(lastJMessage(conv)?.text, m[1]) ? null : `Rolling back ${m[1]} waits for the owner's word: their latest message asks for it ("roll back").`;
   m = /^\/api\/changes\/(c_[0-9a-f]+)\/approve$/.exec(route);
   if (m) {
     const c = db.prepare('SELECT product FROM changes WHERE id = ?').get(m[1]) as { product: string } | undefined;

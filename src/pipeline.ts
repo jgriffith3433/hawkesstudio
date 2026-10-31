@@ -1198,6 +1198,8 @@ async function betaBody(id: string, p: Product, { focus, criteria, scenario, opt
       updateStep(s, { status: 'skipped', detail: 'not playtested: beta playtests run when asked for (studio beta, the Beta button), not after every merge', finished: true });
     }
     closeRun(id, `beta ${p.id}`);
+    // The owner said to keep going live (golive-policy.ts): beta's run passed, so it goes live by itself.
+    void (await import('./golive-policy.ts')).autoGoLive(p.id, `beta run ${id}`);
   } catch (e: any) {
     db.prepare(`UPDATE runs SET status = 'failed', detail = ?, finished = ? WHERE id = ?`).run(String(e.message ?? e), Date.now(), id);
   }

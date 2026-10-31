@@ -166,7 +166,18 @@ export async function handleGithubRoutes(req: http.IncomingMessage, res: http.Se
     const { survey } = await import('./survey.ts');
     return send(res, 200, await survey(String(q.get('repo') ?? ''), { ref: q.get('ref') ?? undefined, fresh: q.get('fresh') === '1' })), true;
   }
-  const m = /^\/api\/games\/([a-z][a-z0-9-]{1,39})\/(readiness|setup|status|contract|report|signin|survey)$/.exec(route);
+  const m = /^\/api\/games\/([a-z][a-z0-9-]{1,39})\/(readiness|setup|status|contract|report|signin|survey|golive)$/.exec(route);
+  // The project's go-live policy (golive-policy.ts): auto (go live by itself when beta passes), hold, ask.
+  if (m && m[2] === 'golive') {
+    const P = await import('./golive-policy.ts');
+    if (method === 'GET') return send(res, 200, P.policyOf(m[1])), true;
+    if (method === 'POST' || method === 'PUT') {
+      const b = await readJson(req);
+      const pol = P.setPolicy(m[1], String(b.policy ?? '') as any, requester(req)?.email ?? (origin ? 'Talk' : 'someone'), b.words ? String(b.words) : null);
+      const now = pol.policy === 'auto' ? await P.autoGoLive(m[1], 'the owner said to keep going live') : null;
+      return send(res, 200, { ...pol, ...(now ? { now } : {}) }), true;
+    }
+  }
   if (m && m[2] === 'survey' && method === 'GET') {
     const { getProduct } = await import('./config.ts');
     const p = getProduct(m[1]);

@@ -227,6 +227,8 @@ async function buildOne(run: string, p: Product, b: BuildSpec, o: StartOptions) 
     }
     updateStep(step, { status: 'done', detail: `${b.id} ${version || o.change}: ${out.files.length} files, ${Math.round(out.bytes / 1e5) / 10} MB${linked.length ? `; also in ${linked.join(', ')}` : ''}`, data: { url, version, sha, sent: r.sent }, finished: true });
     if (!o.change && (b.target ?? 'web') === 'web' && b.playtest !== false) await playIt(run, p, b.publish ? getProduct(b.publish.project) : p);
+    // The owner said to keep going live (golive-policy.ts): what just passed goes live by itself.
+    if (!o.change) await (await import('./golive-policy.ts')).autoGoLive(p.id, `build ${b.id} ${version}`);
     else if (!o.change && (b.target ?? 'web') !== 'web' && b.playtest !== false) await playDesktop(run, p, b, url);
   } catch (e: any) {
     const why = String(e?.message ?? e).slice(0, 500);
