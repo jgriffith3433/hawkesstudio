@@ -94,6 +94,10 @@ export type Product = {
   checksCmd?: string;
   reportOrigins?: string[];
   testSignIn?: { url: string };
+  /** How the project is built (docs/builds.md): any engine, any runner; each build kept and playable at its own address. */
+  builds?: BuildSpec[];
+  /** A customer's downloadable build's source (desktop playtests: where it comes from). Was ProductInput "build". */
+  source?: { source: 'url' | 'upload' | 'github'; target?: 'web' | 'linux' | 'proton' | 'windows'; exe?: string; repo?: string };
   /** serve "app": the product is a server Studio runs itself (`app`, apps.ts), on this port for local playtests.
    *  serve "remote": its beta is deployed elsewhere by the repo's own CI (the customer portal on Firebase: a push to
    *  beta deploys https://hawkes-staging.web.app); `url` is that beta, and local playtests play it. */
@@ -181,6 +185,12 @@ export function addedRepoFolders(): Record<string, string> {
  * its GitHub repo cloned into its own folder like products.json's (repos.ts repoMap), the build as its check, and
  * played where it is deployed (local serve "remote" at its beta, else live).
  */
+/**
+ * Whether Studio hosts this project's beta site (previews.ts): a web project, or one with a web build, built from its
+ * GitHub repo, without a beta address of its own (a web app's own server).
+ */
+export const hostedBeta = (p: Pick<Product, 'engine' | 'beta' | 'builds'>) => !p.beta && ((p.engine as string) === 'web' || Boolean(p.builds?.some((b) => (b.target ?? 'web') === 'web')));
+
 export function asAddedGame(p: Product): Product {
   const g = asCustomerGame(p);
   const folder = Object.entries(addedRepoFolders()).find(([, slug]) => slug === p.repo)?.[0];
@@ -193,7 +203,8 @@ export function asAddedGame(p: Product): Product {
     // A web game's beta is Studio's own beta site, built from its beta branch (previews.ts ADDED_RECIPE: npm run build,
     // dist/), never "its CI deploys it": with "remote" its beta was never built and beta playtests played the live
     // site (Star Skipper, 2026-10-31). Here (J's PC) the built dist/ is served.
-    local: p.engine === 'web' && !p.beta ? { serve: 'static', dir: `${folder}/dist`, port: 0, path: '/' } : { ...g.local, dir: folder },
+    // A project with a web build (docs/builds.md: Unity WebGL, Godot web, …) is played on its beta site too.
+    local: hostedBeta(p) ? { serve: 'static', dir: `${folder}/dist`, port: 0, path: '/' } : { ...g.local, dir: folder },
     // The build as the check when it has one (a plain site without package.json has none to run).
     // Its own checks when the project says (checksCmd), else its build.
     checks: p.checks ?? (p.checksCmd ? [{ dir: folder, cmd: p.checksCmd }] : p.engine === 'web' ? [{ dir: folder, cmd: 'test ! -f package.json || (npm install --no-audit --no-fund && npm run build --if-present)' }] : []),
@@ -223,8 +234,14 @@ function writeGames(all: Product[]) {
  */
 export function asCustomerGame(p: Product): Product {
   const live = p.live ?? '';
+  // A customer's "build" (where a downloadable build comes from) isn't J's Unity build block ({project, site, method}),
+  // which the pipeline reads as "build it on the Unity build server": it is the project's `source` (2026-10-31: a
+  // customer's project with one failed its daily run and lost its playtests).
+  const { build, ...rest } = p as Product & { build?: any };
+  const own = build && !build.project ? { source: build } : build ? { build } : {};
   return {
-    ...p,
+    ...rest,
+    ...own,
     repo: p.repo ?? '',
     site: p.site ?? p.repo ?? '',
     live,
@@ -248,7 +265,65 @@ export type ProductInput = {
   playtests?: { scenario?: string; mode?: 'site'; where: 'live'; device?: 'phone' }[];
   kind?: 'game' | 'app' | 'site'; versionPath?: string; repos?: { repo: string; role?: string }[]; checks?: string;
   reportOrigins?: string[]; testSignIn?: { url: string } | null;
+  builds?: BuildSpec[];
 };
+
+/** One way a project is built (docs/builds.md). */
+export type BuildSpec = {
+  id: string;
+  tool: 'unity' | 'npm' | 'static' | 'actions';
+  target?: 'web' | 'windows' | 'linux' | 'mac' | 'android';
+  path?: string; method?: string; command?: string; out?: string;
+  workflow?: string; artifact?: string;
+  on?: ('beta' | 'tag')[];
+  publish?: { project: string; path: string; commit?: boolean };
+  playtest?: boolean;
+};
+const BUILD_TOOLS = ['unity', 'npm', 'static', 'actions'];
+const BUILD_TARGETS = ['web', 'windows', 'linux', 'mac', 'android'];
+// A folder inside a repo or site: no leading slash, no "..", ordinary characters.
+const RELPATH = /^(?!\/)(?!.*(^|\/)\.\.(\/|$))[\w .@+/-]{0,200}$/;
+
+/** A project's builds, checked (saveProduct): what docs/builds.md says each field may be. */
+export function checkBuilds(list: unknown): BuildSpec[] {
+  if (list === undefined || list === null) return [];
+  if (!Array.isArray(list)) throw new StudioError('builds: a list (docs/builds.md)', 400);
+  const seen = new Set<string>();
+  return list.slice(0, 10).map((b: any, i) => {
+    const at = `builds[${i}]`;
+    const id = String(b?.id ?? '').trim().toLowerCase();
+    if (!/^[a-z0-9][a-z0-9-]{0,30}$/.test(id) || seen.has(id)) throw new StudioError(`${at}.id: a short unique name (a-z, 0-9, -)`, 400);
+    seen.add(id);
+    if (!BUILD_TOOLS.includes(b.tool)) throw new StudioError(`${at}.tool: ${BUILD_TOOLS.join(', ')} (Godot and anything else: actions)`, 400);
+    const target = b.target ?? 'web';
+    if (!BUILD_TARGETS.includes(target)) throw new StudioError(`${at}.target: ${BUILD_TARGETS.join(', ')}`, 400);
+    if (b.tool === 'unity' && target !== 'web') throw new StudioError(`${at}: Hawkes Gen builds Unity for the web; for desktop or Android use tool "actions" (your own GitHub Actions)`, 400);
+    if ((b.tool === 'npm' || b.tool === 'static') && target !== 'web') throw new StudioError(`${at}: ${b.tool} builds are web builds`, 400);
+    const out: BuildSpec = { id, tool: b.tool, target };
+    for (const k of ['path', 'out'] as const) if (b[k] !== undefined && b[k] !== '') {
+      const v = String(b[k]).trim().replace(/\\/g, '/').replace(/\/+$/, '');
+      if (!RELPATH.test(v)) throw new StudioError(`${at}.${k}: a folder inside the repo`, 400);
+      out[k] = v;
+    }
+    if (b.method) { if (!/^[A-Za-z_][\w.]{0,150}$/.test(String(b.method))) throw new StudioError(`${at}.method: a static C# method like MyBuild.WebGL`, 400); out.method = String(b.method); }
+    if (b.command) out.command = String(b.command).slice(0, 300);
+    if (b.workflow) { if (!/^[\w.-]{1,100}\.ya?ml$/.test(String(b.workflow))) throw new StudioError(`${at}.workflow: the workflow's file name, like build.yml`, 400); out.workflow = String(b.workflow); }
+    if (b.artifact) { if (!/^[\w.-]{1,100}$/.test(String(b.artifact))) throw new StudioError(`${at}.artifact: the artifact's name`, 400); out.artifact = String(b.artifact); }
+    if (b.on !== undefined) {
+      if (!Array.isArray(b.on) || b.on.some((x: unknown) => x !== 'beta' && x !== 'tag')) throw new StudioError(`${at}.on: ["beta"], ["tag"], both, or []`, 400);
+      out.on = [...new Set(b.on as ('beta' | 'tag')[])];
+    }
+    if (b.publish) {
+      const project = String(b.publish.project ?? '').trim();
+      const p = String(b.publish.path ?? '').trim().replace(/\\/g, '/').replace(/^\/+/, '');
+      if (!/^[a-z][a-z0-9-]{1,39}$/.test(project)) throw new StudioError(`${at}.publish.project: the id of the project whose site it goes into`, 400);
+      if (!RELPATH.test(p)) throw new StudioError(`${at}.publish.path: a folder in that site, like Game/`, 400);
+      out.publish = { project, path: p ? `${p.replace(/\/+$/, '')}/` : '', ...(b.publish.commit === true ? { commit: true } : {}) };
+    }
+    if (b.playtest !== undefined) out.playtest = b.playtest !== false;
+    return out;
+  });
+}
 
 /**
  * Adds or replaces one game (onboarding, the Add game dialog, Talk's studio_game, PUT /api/products/:id): an org cell's
@@ -266,7 +341,10 @@ export function saveProduct(input: ProductInput): Product {
   if (!['web', 'unity', 'godot', 'desktop'].includes(input.engine)) throw new StudioError('engine: web, unity, godot or desktop', 400);
   const live = input.live ? String(input.live).trim() : undefined;
   if (live && !/^https:\/\/[^\s]+$/.test(live)) throw new StudioError('live: an https:// address', 400);
-  if (!live && !input.build) throw new StudioError('Give live (a web address) or build (where builds come from)', 400);
+  const builds = checkBuilds(input.builds);
+  // A project Studio builds from its repo needs no live address yet (2026-10-31: a sign-up with a repo and no live site
+  // vanished: applyOnboardingSeed only logged this).
+  if (!live && !input.build && !input.repo && !builds.length) throw new StudioError('Give live (a web address), a repo, or how it is built', 400);
   const beta = input.beta ? String(input.beta).trim() : undefined;
   if (beta && !/^https:\/\/[^\s]+$/.test(beta)) throw new StudioError('beta: an https:// address', 400);
   const playtests = (input.playtests?.length ? input.playtests : [{ scenario: 'smoke', where: 'live' as const }]).slice(0, 20).map((t) => ({
@@ -286,7 +364,7 @@ export function saveProduct(input: ProductInput): Product {
   const testSignIn = input.testSignIn?.url ? String(input.testSignIn.url).trim() : '';
   if (testSignIn && !/^https:\/\/[^\s]+$/.test(testSignIn)) throw new StudioError('testSignIn.url: an https:// address on its beta', 400);
   const product: any = {
-    id, name, engine: input.engine, ...(live ? { live } : {}), ...(beta ? { beta } : {}), ...(input.build ? { build: input.build } : {}),
+    id, name, engine: input.engine, ...(live ? { live } : {}), ...(beta ? { beta } : {}), ...(input.build ? { build: input.build } : {}), ...(builds.length ? { builds } : {}),
     ...(input.repo ? { repo: String(input.repo).slice(0, 200) } : {}),
     ...(kind !== 'game' ? { kind } : {}), ...(versionPath ? { versionPath } : {}), ...(repos.length ? { repos } : {}),
     ...(checks ? { checksCmd: checks } : {}), ...(reportOrigins.length ? { reportOrigins } : {}), ...(testSignIn ? { testSignIn: { url: testSignIn } } : {}),

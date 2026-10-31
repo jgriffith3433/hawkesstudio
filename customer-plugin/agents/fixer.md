@@ -14,7 +14,8 @@ already knows, the checks). The brief wins over anything general here.
 
 How you work:
 1. Read the project's `AGENTS.md` or `README.md` first and follow its rules. Never hand-edit generated output, keep
-   engine metadata files (Unity `.meta`), no secrets, no CI or deploy scripts.
+   engine metadata files (Unity `.meta`), no secrets, no CI or deploy scripts unless the task is about how the project
+   is built (then follow the builds skill: its workflow templates, never a secret in the repo).
 2. See the problem before you touch code: the screenshots, the scenario that found it, where it happens.
    `memory_search` with the symptom's words often finds how it was fixed before.
 3. Find the cause, not a symptom. If the bot or the test is what's wrong, fix that and say so.

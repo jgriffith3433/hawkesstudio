@@ -70,3 +70,17 @@ export function gitAuthEnv(slug: string | null | undefined): Record<string, stri
 
 /** Forgets kept tokens (tests; a disconnected app). */
 export const forgetRepoTokens = () => cache.clear();
+
+/**
+ * fetch with a repo's own token on GitHub's hosts (its API and codeload): a customer's Studio has no GITHUB_TOKEN, so
+ * listing or downloading a private repo, or more than GitHub's anonymous 60 calls an hour, needs the repo's token.
+ * Redirects to storage elsewhere (an artifact's zip) don't carry it (fetch drops Authorization across origins).
+ */
+export function githubFetch(token: string | null, fetcher: typeof fetch = fetch): typeof fetch {
+  if (!token) return fetcher;
+  return ((url: any, init: any = {}) => {
+    const headers = new Headers(init.headers ?? {});
+    if (/^https:\/\/(api\.github\.com|codeload\.github\.com)\//.test(String(url))) headers.set('Authorization', `Bearer ${token}`);
+    return fetcher(url, { ...init, headers });
+  }) as typeof fetch;
+}

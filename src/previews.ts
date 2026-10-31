@@ -19,7 +19,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { spawn } from 'node:child_process';
-import { PROJECTS, DATA, paths, getProduct, loadProducts, localUrl, StudioError, type Product } from './config.ts';
+import { PROJECTS, DATA, paths, getProduct, loadProducts, localUrl, StudioError, hostedBeta, type Product } from './config.ts';
 import { appPort, appStatus, ensureApp, stopApp } from './apps.ts';
 import { db } from './db.ts';
 import { BRANCH, BETA, isServer, type RepoResult } from './repos.ts';
@@ -88,10 +88,10 @@ export function previewHosts(): Record<string, string> {
   // A customer's Studio: each web project at https://sites.<domain>/o/<org>/<project>/ (J, 2026-10-31), R2 o/<org>/<project>.
   // A project with a beta of its own (a web app's, like Gen's) is played there and not hosted.
   const org = siteOrg();
-  if (org) return Object.fromEntries(addedWeb().filter((p) => !p.beta).map((p) => [`o/${org}/${p.id}`, p.id]));
+  if (org) return Object.fromEntries(loadProducts().filter((p) => p.github && hostedBeta(p)).map((p) => [`o/${org}/${p.id}`, p.id]));
   return { ...own, ...Object.fromEntries(addedWeb().filter((p) => !Object.values(own).includes(p.id)).map((p) => [`g-${p.id}`, p.id])) };
 }
-const subOf = (id: string) => Object.entries(previewHosts()).find(([, v]) => v === id)?.[0];
+export const subOf = (id: string) => Object.entries(previewHosts()).find(([, v]) => v === id)?.[0];
 export const previewUrl = (id: string, change?: string) => {
   const sub = subOf(id);
   if (sub?.startsWith('o/')) return `https://sites.${DOMAIN}${orgPrefix(sub.split('/')[1])}/${id}/${change ? `c/${change}/` : ''}`;
@@ -108,6 +108,8 @@ function readState(): State {
 }
 /** What the beta site of a product serves now (its sha and when it was published), or is being rebuilt. */
 export const betaPreview = (product: string): Preview | null => readState()[product]?.beta ?? null;
+/** builds.ts: a build made beta (or failed), so the beta site's status (the Go live tab, studio_previews) says so. */
+export const noteBeta = (product: string, v: Preview) => record(product, undefined, v);
 function record(product: string, change: string | undefined, v: Preview | null) {
   // Ends in the server's log too (a customer's Studio's beta site failed with nothing to read but its own state).
   if (v?.status === 'failed' || v?.status === 'ready') console.log(`[previews] ${product}${change ? ` ${change}` : ''}: ${v.status}${v.detail ? `: ${v.detail}` : ''}`);
@@ -160,6 +162,15 @@ export const previewsBuilding = () => active.size;
  */
 export function buildPreview(productId: string, o: { change?: string; dir?: string } = {}): Promise<Preview | null> {
   const p = getProduct(productId);
+  // A project Studio builds (builds.ts): its beta is its builds' newest, as a build run (beta's commit built once).
+  if (!o.change && p.github && remoteSites()) {
+    return import('./builds.ts').then(async (B) => {
+      if (!B.buildsOf(p).length) return null;
+      const r = await B.startBuild(p.id, { trigger: 'beta' });
+      await r?.done;
+      return betaPreview(p.id);
+    });
+  }
   if (!subOf(p.id)) throw new StudioError(`${p.name} has no staging site (products.json "previews")`);
   if (o.change && !/^c_[0-9a-f]+$/.test(o.change)) throw new StudioError(`Not a change id: ${o.change}`);
   const key = `${p.id}/${o.change ?? 'beta'}`;

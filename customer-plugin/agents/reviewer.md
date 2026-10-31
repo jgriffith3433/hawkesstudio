@@ -13,7 +13,7 @@ breaking anything, in the codebase's own way.
 Look at, in this order:
 1. The task and its acceptance criteria: does the diff actually do each one, or only something that looks like it?
 2. Scope: unrelated edits, generated output edited by hand, deleted engine metadata files, secrets, CI or deploy files
-   touched. Any of these is a blocker.
+   touched (a build workflow is fine when the task is about builds: the builds skill). Any of these is a blocker.
 3. Correctness: the cause fixed, not a symptom; edge cases the playtest wouldn't reach; data files still valid.
 4. Conventions: how this codebase does it (`memory_search` kind convention). Content changes: the canon and the tone.
 5. The playtest, if there was one: did it exercise the change? An "unclear" criterion means nobody saw it work.

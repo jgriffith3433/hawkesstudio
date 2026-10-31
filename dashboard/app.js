@@ -100,6 +100,10 @@ async function studioEditGame(id) {
       <label class="meta">Its beta's test sign-in (Studio's playtests sign in with it)<input name="testSignIn" type="url" placeholder="https://beta.example.com/api/test-session" value="${v(p?.testSignIn?.url)}" style="${field}"></label>
       <label class="meta">Sites that may send bug reports, besides its beta (one per line)<textarea name="reportOrigins" rows="2" placeholder="https://example.com" style="${field}">${v((p?.reportOrigins ?? []).join('\n'))}</textarea></label>
     </details>
+    <details class="meta"${p?.builds?.length ? ' open' : ''}><summary>How it's built</summary>
+      <div class="meta" style="margin:4px 0">Any engine: Unity in Hawkes Gen's cloud, npm or static sites here, or anything in your own GitHub Actions. Easiest: ask Talk ("set up builds for this"). Each build is kept and playable; beta points at one.</div>
+      <label class="meta">Builds (JSON, docs/builds.md)<textarea name="builds" rows="4" placeholder='[{ "id": "web", "tool": "unity", "path": "MyGame" }]' style="${field};font-family:ui-monospace,monospace;font-size:12px">${v(p?.builds?.length ? JSON.stringify(p.builds, null, 1) : '')}</textarea></label>
+    </details>
     <label class="meta">What it is (Claude reads it before every review)<textarea name="about" rows="2" style="${field}">${v(p?.about)}</textarea></label>
     <label class="meta">Its story and tone (optional)<textarea name="story" rows="3" style="${field}">${v(p?.storyText)}</textarea></label>
     <label class="meta">What "done" means for it (optional: reviews judge against it)<textarea name="quality" rows="2" style="${field}">${v(p?.quality)}</textarea></label>
@@ -130,8 +134,10 @@ async function studioEditGame(id) {
       const gid = p?.id ?? newId;
       const lines = (t) => String(t ?? '').split('\n').map((x) => x.trim()).filter(Boolean);
       const repos = lines(f.repos).map((l) => { const [repo, ...role] = l.split(/\s+/); return { repo, ...(role.length ? { role: role.join(' ') } : {}) }; });
+      let builds;
+      try { builds = f.builds?.trim() ? JSON.parse(f.builds) : []; } catch { msg('<span style="color:var(--red)">Builds: that isn\'t valid JSON.</span>'); return; }
       const body = { id: gid, name: f.name, kind: f.kind, engine: f.engine, live: f.live, about: f.about, contract: p?.contract ?? false, playtests: p?.playtests, ...(f.beta ? { beta: f.beta } : {}), ...(f.repo ? { repo: f.repo.trim() } : {}), ...(f.story ? { story: f.story } : {}), ...(f.quality ? { quality: f.quality } : {}),
-        repos, ...(f.versionPath ? { versionPath: f.versionPath.trim() } : {}), ...(f.checks ? { checks: f.checks.trim() } : {}), ...(f.testSignIn ? { testSignIn: { url: f.testSignIn.trim() } } : {}), reportOrigins: lines(f.reportOrigins) };
+        repos, ...(f.versionPath ? { versionPath: f.versionPath.trim() } : {}), ...(f.checks ? { checks: f.checks.trim() } : {}), ...(f.testSignIn ? { testSignIn: { url: f.testSignIn.trim() } } : {}), reportOrigins: lines(f.reportOrigins), builds };
       msg('Saving…');
       try { await api(`/api/products/${gid}`, { method: 'PUT', body }); done(true); } catch (err) { msg(`<span style="color:var(--red)">${esc(err.message)}</span>`); }
     });
@@ -174,7 +180,8 @@ async function studioGameReady(id, box) {
     box.innerHTML = `<div style="display:flex;justify-content:space-between;align-items:center;gap:8px"><b>${r.ready ? 'Ready ✓' : 'Get it ready'}</b><span class="meta">${links}</span></div>
       <ul style="list-style:none;padding:0;margin:6px 0">${rows}</ul>
       ${r.approve ? '<button type="button" class="small primary" data-ready="setup">Set it up on GitHub</button> <span class="meta">Puts an Approve card in your Inbox.</span>' : ''}
-      <div id="gameGh" style="margin-top:8px"></div><div id="gameHooks" style="margin-top:10px"></div>`;
+      <div id="gameGh" style="margin-top:8px"></div><div id="gameBuilds" style="margin-top:10px"></div><div id="gameHooks" style="margin-top:10px"></div>`;
+    studioProjectBuilds(id, box.querySelector('#gameBuilds'));
     studioProjectHooks(id, box.querySelector('#gameHooks'));
     studioGithubLine(box.querySelector('#gameGh'));
     box.querySelector('[data-ready="setup"]')?.addEventListener('click', async (e) => {
@@ -186,6 +193,32 @@ async function studioGameReady(id, box) {
     box.innerHTML = `<div class="meta">${esc(e.message)}</div>`;
   }
 }
+// A project's builds (builds.ts, docs/builds.md): every version with its address, Build now, Make beta (rolling back too).
+async function studioProjectBuilds(id, box) {
+  let r;
+  try { r = await api(`/api/projects/${id}/builds`); } catch { box.innerHTML = ''; return; }
+  if (!r.builds.length) { box.innerHTML = '<div class="meta"><b>Builds:</b> none set. Ask Talk to set up how it\'s built, or fill "How it\'s built" above.</div>'; return; }
+  const when = (t) => (t ? new Date(t).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : '');
+  const rows = r.history.slice(0, 15).map((h) => `<tr><td>${esc(h.build)} ${h.change ? esc(h.change) : h.version}</td><td>${h.status === 'ready' ? '✅' : h.status === 'failed' ? '❌' : '⏳'} ${esc((h.sha ?? '').slice(0, 7))}</td><td class="meta">${esc(when(h.started))}</td>
+    <td class="meta" style="max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(h.detail ?? '')}">${esc(h.detail ?? (h.files ? `${h.files} files, ${(h.bytes / 1e6).toFixed(1)} MB` : ''))}</td>
+    <td>${h.url ? `<a href="${esc(h.url)}" target="_blank" rel="noopener">Play ↗</a>` : ''}${h.status === 'ready' && !h.change ? ` <button type="button" class="small" data-beta="${esc(h.build)}/${h.version}">Make beta</button>` : ''}</td></tr>`).join('');
+  box.innerHTML = `<div style="display:flex;justify-content:space-between;align-items:center;gap:8px"><b>Builds</b><span class="meta">${r.builds.map((b) => `${esc(b.id)}: ${esc(b.tool)}${b.target && b.target !== 'web' ? ` (${esc(b.target)})` : ''}${b.publish ? ` → ${esc(b.publish.project)}/${esc(b.publish.path)}` : ''}`).join(' · ')}</span></div>
+    <div style="margin:6px 0">${r.beta ? `<a href="${esc(r.beta)}" target="_blank" rel="noopener">Play beta ↗</a> ` : ''}<button type="button" class="small primary" data-build-now>Build now</button> <span class="meta" data-build-msg></span></div>
+    ${rows ? `<table style="width:100%;font-size:13px;border-collapse:collapse">${rows}</table>` : '<div class="meta">Not built yet.</div>'}`;
+  const say = (t) => { box.querySelector('[data-build-msg]').textContent = t; };
+  box.querySelector('[data-build-now]').addEventListener('click', async (e) => {
+    e.target.disabled = true;
+    try { const s = await api(`/api/projects/${id}/builds`, { method: 'POST', body: {} }); say(s.run ? 'Building: it shows in Activity.' : (s.note ?? '')); } catch (err) { say(err.message); }
+    e.target.disabled = false;
+  });
+  box.querySelectorAll('[data-beta]').forEach((b) => b.addEventListener('click', async () => {
+    const [build, n] = b.dataset.beta.split('/');
+    b.disabled = true;
+    try { await api(`/api/projects/${id}/builds/${build}/${n}/beta`, { method: 'POST', body: {} }); say(`${build} ${n} is beta now.`); } catch (err) { say(err.message); }
+    b.disabled = false;
+  }));
+}
+
 // A project's own lines (reportkey.ts, playtest-signin.ts): the script its pages load for the 🐞 button, and the secret its
 // beta's test sign-in checks Studio's tokens with.
 async function studioProjectHooks(id, box) {

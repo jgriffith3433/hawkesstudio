@@ -218,6 +218,8 @@ const server = http.createServer(async (req, res) => {
     // The dashboard's one push stream (stream.ts): "something changed" events instead of polling.
     if (route === '/api/stream' && method === 'GET') return (await import('./stream.ts')).handleStream(req, res, { talkUnseen: unseenConversations() });
     if (route === '/api/products' && method === 'GET') return send(res, 200, { products: loadProducts() });
+    // Builds (builds.ts): a project's builds, its history, build now, make one beta.
+    if (/^\/api\/(projects|games)\/[a-z][a-z0-9-]{1,39}\/builds/.test(route) && (await (await import('./builds.ts')).handleBuildRoutes(req, res, route, method, readJson))) return;
     // The Connect page: this Studio's MCP address and the signed-in person's editors (mcp-http.ts).
     if ((route === '/api/connect' || route.startsWith('/api/connect/')) && (await import('./mcp-http.ts')).handleConnectApi(req, res, route, (await import('./auth.ts')).requester(req)?.id ?? null)) return;
     // Talk's game tools and the GitHub connection (github-routes.ts).
@@ -890,6 +892,15 @@ const server = http.createServer(async (req, res) => {
     m = /^\/api\/previews\/([\w-]+)$/.exec(route);
     if (m && method === 'POST') {
       const b = await readJson(req);
+      // A project Studio builds (builds.ts: a customer's, or a game added here): rebuilding its beta site is a build run,
+      // in Activity and back to the Talk conversation that asked.
+      const p = getProduct(m[1]);
+      const B = await import('./builds.ts');
+      if (!b.change && (p as any).github && B.buildsOf(p).length && (await import('./previews-cloud.ts')).remoteSites()) {
+        const { originOf } = await import('./followup.ts');
+        const r = await B.startBuild(p.id, { origin: originOf(req) });
+        return send(res, 200, { ok: true, building: p.id, run: r?.id ?? null, builds: r?.builds ?? [], url: previewUrl(p.id), note: 'a build run: it shows in Activity, and Talk hears when it is done' });
+      }
       void buildPreview(m[1], { change: b.change ? String(b.change) : undefined });
       return send(res, 200, { ok: true, building: m[1], change: b.change ?? null, url: previewUrl(getProduct(m[1]).id, b.change) });
     }
@@ -907,11 +918,19 @@ const server = http.createServer(async (req, res) => {
       if (!token) return send(res, 401, { error: 'a GitHub Actions OIDC token is required' });
       const { verifyGitHubOidc } = await import('./github-oidc.ts');
       let claims: Record<string, any>;
-      try {
-        claims = await verifyGitHubOidc(token, 'https://studio.hawkesgen.ai');
-      } catch (e: any) {
-        return send(res, 401, { error: `token rejected: ${e.message}` });
+      // The audience is the Studio's own address: a customer's Studio is studio.<domain>/o/<org> (repokit.ts writes it so).
+      const audiences = [...new Set([process.env.STUDIO_PUBLIC_URL?.replace(/\/+$/, ''), 'https://studio.hawkesgen.ai'].filter(Boolean) as string[])];
+      let why = '';
+      claims = null as any;
+      for (const aud of audiences) {
+        try { claims = await verifyGitHubOidc(token, aud); break; } catch (e: any) { why = e.message; }
       }
+      if (!claims) return send(res, 401, { error: `token rejected: ${why}` });
+      // A project's builds (builds.ts, docs/builds.md): beta pushes, build-* tags, an Actions build's "built" notice.
+      const hookBody = await readJson(req).catch(() => ({}));
+      const B = await import('./builds.ts');
+      const byBuilds = await B.onRepoHook(claims, hookBody);
+      if (byBuilds) return send(res, 202, byBuilds);
       const repo = String(claims.repository).toLowerCase();
       if (!['jgriffith3433/hawkesstudio', 'jgriffith3433/hawkesgen'].includes(repo)) return send(res, 403, { error: `${claims.repository} doesn't deploy this server` });
       if (claims.ref !== 'refs/heads/main') return send(res, 403, { error: `only main deploys (got ${claims.ref})` });

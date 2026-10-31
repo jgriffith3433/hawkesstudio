@@ -244,18 +244,29 @@ export async function publish(req: Request, env: Env, url: URL, now = Date.now()
 
 // ------------------------------------------------------------------ serving
 
-async function serveFile(req: Request, env: Env, key: string, status = 200): Promise<Response | null> {
-  const o = await env.SITES.get(key, { onlyIf: req.headers, range: req.headers });
+// A build's pre-compressed files (Unity's Build/x.wasm.br, x.data.gz, …): sent with their Content-Encoding and the
+// inner file's type, so a build compressed without Unity's decompression fallback loads too (docs/builds.md).
+const PRECOMPRESSED = /\.(js|wasm|data|json|symbols\.json|mem)\.(br|gz)$/;
+const INNER_TYPE: Record<string, string> = { js: 'text/javascript; charset=utf-8', wasm: 'application/wasm', json: 'application/json', 'symbols.json': 'application/json', data: 'application/octet-stream', mem: 'application/octet-stream' };
+
+async function serveFile(req: Request, env: Env, key: string, status = 200, extra?: Record<string, string>): Promise<Response | null> {
+  const pre = PRECOMPRESSED.exec(key);
+  const o = await env.SITES.get(key, { onlyIf: req.headers, ...(pre ? {} : { range: req.headers }) });
   if (!o) return null;
   const headers = new Headers({
-    'Content-Type': o.httpMetadata?.contentType ?? 'application/octet-stream',
+    'Content-Type': pre ? INNER_TYPE[pre[1]] : o.httpMetadata?.contentType ?? 'application/octet-stream',
     ETag: o.httpEtag,
     // Behind a login: never in a shared cache; the browser asks again each time (304 when unchanged).
     'Cache-Control': 'private, no-cache',
-    'Accept-Ranges': 'bytes',
+    'Accept-Ranges': pre ? 'none' : 'bytes',
     'X-Robots-Tag': 'noindex',
+    ...(extra ?? {}),
   });
   if (!o.body) return new Response(null, { status: 304, headers });
+  if (pre) {
+    headers.set('Content-Encoding', pre[2] === 'br' ? 'br' : 'gzip');
+    return new Response(req.method === 'HEAD' ? null : o.body, { status, headers, encodeBody: 'manual' } as ResponseInit);
+  }
   if (req.headers.get('Range') && o.range && (o.range.offset !== undefined || o.range.length !== undefined)) {
     const start = o.range.offset ?? 0;
     const len = o.range.length ?? o.size - start;
@@ -298,7 +309,8 @@ export async function serveBuild(req: Request, env: Env, url: URL): Promise<Resp
 /** A page path's file: <path>, <path>index.html for a folder, else a redirect to <path>/ when that folder has one. */
 async function page(req: Request, env: Env, url: URL, base: string, rel: string): Promise<Response> {
   const want = !rel || rel.endsWith('/') ? `${rel}index.html` : rel;
-  const hit = await serveFile(req, env, `${base}/${want}`);
+  const extra = await headerRules(env, base, `/${want}`);
+  const hit = await serveFile(req, env, `${base}/${want}`, 200, extra);
   if (hit) return hit;
   if (rel && !rel.endsWith('/') && !/\.[a-z0-9]+$/i.test(rel) && (await env.SITES.head(`${base}/${rel}/index.html`))) {
     return new Response(null, { status: 301, headers: { Location: `${url.pathname}/${url.search}` } });
@@ -306,7 +318,72 @@ async function page(req: Request, env: Env, url: URL, base: string, rel: string)
   if (!(await env.SITES.head(`${base}/.studio/build.json`)) && !(await env.SITES.head(`${base}/index.html`))) {
     return text(404, 'This beta site has not been published yet. Studio publishes it on the next push to the product\'s beta branch (or Runs > rebuild the beta site).');
   }
-  return (await serveFile(req, env, `${base}/404.html`, 404)) ?? text(404, 'Not found');
+  // A single-page app's own routes: its 200.html (the convention static hosts use), else 404.html.
+  if (isPage(req) && !/\.[a-z0-9]+$/i.test(rel)) { const spa = await serveFile(req, env, `${base}/200.html`, 200, extra); if (spa) return spa; }
+  return (await serveFile(req, env, `${base}/404.html`, 404, extra)) ?? text(404, 'Not found');
+}
+
+// ------------------------------------------------------------------ builds, beta pointers, mounts, _headers (docs/builds.md)
+
+const small = new Map<string, { at: number; v: any }>();
+/** A small JSON file of a site (beta.json, mounts.json, _headers), cached for 10 seconds. */
+async function smallFile(env: Env, key: string, parse: (s: string) => any): Promise<any> {
+  const hit = small.get(key);
+  if (hit && Date.now() - hit.at < 10_000) return hit.v;
+  const o = await env.SITES.get(key);
+  let v: any = null;
+  if (o?.body) { try { v = parse(await new Response(o.body).text()); } catch { v = null; } }
+  if (small.size > 2000) small.clear();
+  small.set(key, { at: Date.now(), v });
+  return v;
+}
+/** Tests: forget cached pointers. */
+export const resetSmall = () => small.clear();
+
+/**
+ * Where a page path of a site lives in R2: a build's version (/b/<build>/<n>/…), an agent change (/c/<id>/…), a build
+ * mounted at a path (mounts.json: {"Game/": "o/<org>/<project>/b/web/7"}), else beta (beta.json's build, or the files
+ * published as beta). A customer's site may only mount its own org's builds.
+ */
+export async function resolveKey(env: Env, lane: Lane, sub: string, pathname: string, org: string | null): Promise<{ base: string; rel: string } | { redirect: string } | null> {
+  const k = keyOf(lane, sub, pathname);
+  if (!k) return null;
+  if (k.base.includes('/c/')) return k;
+  const b = /^b\/([a-z0-9][a-z0-9-]{0,30})\/(\d{1,6})(\/.*)?$/.exec(k.rel);
+  if (b) return b[3] === undefined ? { redirect: '/' } : { base: `${lane}/${sub}/b/${b[1]}/${b[2]}`, rel: b[3].replace(/^\/+/, '') };
+  const mounts = (await smallFile(env, `${lane}/${sub}/mounts.json`, JSON.parse)) as Record<string, string> | null;
+  if (mounts) {
+    const at = Object.keys(mounts).filter((m) => m && k.rel.startsWith(m)).sort((x, y) => y.length - x.length)[0];
+    const to = at ? String(mounts[at]) : '';
+    const ok = to && !to.split('/').some((s) => s === '..' || s === '') && (!org || to.startsWith(`o/${org}/`));
+    if (at && ok) return { base: `${lane}/${to}`, rel: k.rel.slice(at.length) };
+  }
+  const beta = await smallFile(env, `${lane}/${sub}/beta.json`, JSON.parse);
+  if (beta && /^[a-z0-9][a-z0-9-]{0,30}$/.test(String(beta.build)) && Number.isInteger(beta.version)) return { base: `${lane}/${sub}/b/${beta.build}/${beta.version}`, rel: k.rel };
+  return k;
+}
+
+/** Headers a site's _headers file asks for (the Cloudflare Pages format), from a safe list: Godot 4's isolation and the like. */
+const HEADER_OK = /^(cross-origin-opener-policy|cross-origin-embedder-policy|cross-origin-resource-policy|content-security-policy|permissions-policy|referrer-policy|x-frame-options|x-content-type-options)$/i;
+async function headerRules(env: Env, base: string, path: string): Promise<Record<string, string>> {
+  const rules = (await smallFile(env, `${base}/_headers`, parseHeaders)) as { pattern: RegExp; headers: [string, string][] }[] | null;
+  const out: Record<string, string> = {};
+  for (const r of rules ?? []) if (r.pattern.test(path)) for (const [k, v] of r.headers) out[k] = v;
+  return out;
+}
+export function parseHeaders(text: string) {
+  const rules: { pattern: RegExp; headers: [string, string][] }[] = [];
+  for (const line of text.split(/\r?\n/)) {
+    if (!line.trim() || line.trim().startsWith('#')) continue;
+    if (!/^\s/.test(line)) {
+      const glob = line.trim().replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*');
+      rules.push({ pattern: new RegExp(`^${glob}$`), headers: [] });
+      continue;
+    }
+    const m = /^\s+([\w-]+):\s*(.+)$/.exec(line);
+    if (m && rules.length && HEADER_OK.test(m[1])) rules[rules.length - 1].headers.push([m[1], m[2].trim()]);
+  }
+  return rules;
 }
 
 /** POST /dev/__studio/report|error: to the lane's Studio, as the studio.hawkesgen.ai Worker passes requests. */
@@ -403,8 +480,9 @@ export async function handle(req: Request, env: Env, now = Date.now()): Promise<
     return text(404, 'The /dev/ dev servers are not running on Google Cloud yet (docs/studio-cloudrun.md, "Not done here").');
   }
   if (req.method !== 'GET' && req.method !== 'HEAD') return text(405, 'Read only.');
-  const k = keyOf(lane, sub, pathname);
+  const k = await resolveKey(env, lane, sub, pathname, org);
   if (!k) return text(404, 'Not found');
+  if ('redirect' in k) return new Response(null, { status: 301, headers: { Location: `${url.pathname}/${url.search}` } });
   return page(req, env, url, k.base, k.rel);
 }
 

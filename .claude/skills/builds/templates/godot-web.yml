@@ -1,0 +1,68 @@
+# Godot 4 web export (in the barichello/godot-ci container), then tells Hawkes Studio it's ready.
+# Runs on pushes to beta, build-* tags, and by hand (Actions tab, or Studio when asked).
+# Secrets: none. The project needs a web export preset (Project > Export) committed in export_presets.cfg.
+# Godot 4 web exports with threads need cross-origin isolation headers: turn threads off in the preset (Godot 4.3+)
+# unless the host sends them.
+# Placeholders: STUDIO_URL (no trailing slash), BUILD_ID, ARTIFACT, PROJECT_PATH (the folder with project.godot),
+# GODOT_VERSION (e.g. 4.3, a barichello/godot-ci tag), EXPORT_PRESET (the preset's name, e.g. Web).
+name: Build {{BUILD_ID}} (Godot web)
+
+on:
+  push:
+    branches: [beta]
+    tags: ['build-*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: build-{{BUILD_ID}}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  STUDIO: "{{STUDIO_URL}}"
+  GODOT_VERSION: "{{GODOT_VERSION}}"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    container:
+      image: barichello/godot-ci:{{GODOT_VERSION}}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      - name: Put the export templates where Godot looks
+        run: |
+          mkdir -v -p ~/.local/share/godot/export_templates/
+          if [ ! -d ~/.local/share/godot/export_templates/${GODOT_VERSION}.stable ]; then
+            mv /root/.local/share/godot/export_templates/${GODOT_VERSION}.stable ~/.local/share/godot/export_templates/${GODOT_VERSION}.stable
+          fi
+
+      - name: Export
+        run: |
+          mkdir -v -p "$GITHUB_WORKSPACE/build/web"
+          cd "{{PROJECT_PATH}}"
+          godot --headless --verbose --export-release "{{EXPORT_PRESET}}" "$GITHUB_WORKSPACE/build/web/index.html"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: "{{ARTIFACT}}"
+          path: build/web/
+          if-no-files-found: error
+          retention-days: 7
+
+  notify:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Tell Hawkes Studio
+        run: |
+          token=$(curl -sSf -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=$STUDIO" | jq -r .value)
+          curl -sS --fail-with-body --retry 3 --retry-delay 10 --retry-all-errors -X POST "$STUDIO/api/hooks/github" \
+            -H "Authorization: Bearer $token" -H "Content-Type: application/json" -d '{"kind":"build","build":"{{BUILD_ID}}","artifact":"{{ARTIFACT}}"}'

@@ -994,7 +994,7 @@ export function startPartial(kind: 'build' | 'playtest' | 'test', productId: str
 }
 
 /** Ends a run from its steps: failed if any failed, else cancelled or partial if any were cancelled (cancel.ts), else done. */
-function closeRun(id: string, label: string) {
+export function closeRun(id: string, label: string) {
   const cost = (db.prepare('SELECT COALESCE(SUM(cost), 0) AS c FROM steps WHERE run = ?').get(id) as any).c;
   const n = runCounts(id);
   const status = endStatus(n, runCancelled(id));

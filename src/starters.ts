@@ -81,12 +81,14 @@ function hookYml(studioUrl: string) {
   const host = studioUrl.replace(/\/+$/, '');
   return `name: Hawkes Studio
 
-# Tells Hawkes Studio about every push to beta or main, so it takes it from there (the beta site, playtests, going live).
-# No secrets: the workflow proves which repo and branch it is with GitHub's signed OIDC token.
+# Tells Hawkes Studio about every push to beta or main, and build-* tags, so it takes it from there (the project's builds,
+# the beta site, playtests, going live). No secrets: the workflow proves which repo and branch it is with GitHub's
+# signed OIDC token.
 
 on:
   push:
     branches: [beta, main]
+    tags: ['build-*']
   workflow_dispatch:
 
 permissions:
