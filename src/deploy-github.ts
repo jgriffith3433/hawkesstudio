@@ -9,7 +9,7 @@
 //     main as parent), never a force push. J's Unity games on Cloud Run roll their website back the same way.
 // deploy.ts does the checks, the owner's typed words or Approve tap, the deploys rows and the live check.
 
-import { BETA, MAIN, type Commit } from './beta.ts';
+import { BETA, MAIN, STUDIO_ROLLBACK, type Commit } from './beta.ts';
 import { gh, commitOf, fastForward, liveBranchOf } from './deploy-cloud.ts';
 import { getProduct, StudioError, type Product } from './config.ts';
 import { db } from './db.ts';
@@ -77,13 +77,53 @@ export async function onlyDocsSince(slug: string, from: string, to: string, io: 
  * then the project's main to the played beta commit (fatal when it is the whole go live, reported when targets moved).
  * Beta must still be that commit.
  */
-export async function goLiveOnGitHub(p: Product, plan: { beta: { sha: string; short: string } | null; main: { sha: string } | null; commits: unknown[]; github?: { targets: Target[] } }, io: GitHubIO = {}) {
+/**
+ * Beta brought up to date with the live branch, through GitHub (2026-10-31 review: going live again after a rollback,
+ * or after someone pushed to main, was a blocker with a manual pull request as the fix):
+ *   - live's extra commits are only Studio's rollbacks: an "ours" merge (beta's files, both parents), so the rollback is
+ *     recorded without undoing beta's work, and beta's tree (what was playtested) is unchanged;
+ *   - anything else: GitHub merges live into beta (a new beta commit to build and playtest before it goes live).
+ * A real conflict says so; nothing is forced.
+ */
+export async function syncBetaWithLive(slug: string, io: GitHubIO = {}): Promise<{ how: 'ours' | 'merged' | 'none'; sha: string | null; message: string }> {
+  const f = fetchOf(io);
+  const token = await tokenFor(slug, io);
+  const live = await liveBranchOf(slug, f, token);
+  const cmp = await gh(f, token, 'GET', `/repos/${slug}/compare/${encodeURIComponent(BETA)}...${encodeURIComponent(live)}`);
+  if (!cmp.ok) throw new StudioError(`GitHub couldn't compare ${slug}'s ${BETA} and ${live} (${cmp.status})`, 409);
+  const behind = ((cmp.j.commits ?? []) as any[]);
+  if (!behind.length) return { how: 'none', sha: null, message: `${BETA} already has everything ${live} has.` };
+  const rollbacksOnly = behind.every((c) => String(c.commit?.message ?? '').startsWith(STUDIO_ROLLBACK));
+  const betaHead = await gh(f, token, 'GET', `/repos/${slug}/git/ref/heads/${encodeURIComponent(BETA)}`);
+  const liveHead = await gh(f, token, 'GET', `/repos/${slug}/git/ref/heads/${encodeURIComponent(live)}`);
+  if (!betaHead.ok || !liveHead.ok) throw new StudioError(`GitHub couldn't read ${slug}'s ${BETA} and ${live}`, 409);
+  const betaSha = String(betaHead.j.object.sha), liveSha = String(liveHead.j.object.sha);
+  if (rollbacksOnly) {
+    const bc = await gh(f, token, 'GET', `/repos/${slug}/git/commits/${betaSha}`);
+    const c = await gh(f, token, 'POST', `/repos/${slug}/git/commits`, { message: `Merge ${live} into ${BETA}: keep ${BETA}'s files (${live} only has ${behind.length} rollback commit(s))`, tree: bc.j.tree.sha, parents: [betaSha, liveSha] });
+    if (!c.ok) throw new StudioError(`GitHub refused the merge commit (${c.status})`, 409);
+    await fastForward(slug, BETA, String(c.j.sha), f, token);
+    return { how: 'ours', sha: String(c.j.sha), message: `Recorded ${live}'s rollback(s) in ${BETA}, keeping ${BETA}'s files (what was playtested).` };
+  }
+  const m = await gh(f, token, 'POST', `/repos/${slug}/merges`, { base: BETA, head: live, commit_message: `Merge ${live} into ${BETA} (Studio, before going live)` });
+  if (m.status === 409) throw new StudioError(`${live} and ${BETA} conflict in ${slug}: an agent can resolve it (studio_task "merge ${live} into ${BETA} and resolve the conflicts"), then ${BETA} is playtested and goes live.`, 409);
+  if (!m.ok && m.status !== 204) throw new StudioError(`GitHub couldn't merge ${live} into ${BETA} (${m.status}${m.j?.message ? `: ${m.j.message}` : ''})`, 409);
+  return { how: 'merged', sha: m.j?.sha ? String(m.j.sha) : null, message: `Merged ${live}'s ${behind.length} commit(s) into ${BETA}; ${BETA} is built and playtested next, then it can go live.` };
+}
+
+export async function goLiveOnGitHub(p: Product, plan: { beta: { sha: string; short: string } | null; main: { sha: string } | null; commits: unknown[]; github?: { targets: Target[]; rollbacksOnly?: boolean } }, io: GitHubIO = {}) {
   const slug = githubSlugOf(p)!;
   const f = fetchOf(io);
   const token = await tokenFor(slug, io);
   const head = await gh(f, token, 'GET', `/repos/${slug}/commits/${BETA}`);
   if (!plan.beta || !head.ok || head.j.sha !== plan.beta.sha) throw new StudioError(`${BETA} moved since the plan was made; look at the plan again.`, 409);
   const log: string[] = [];
+  // Live had only rollbacks: recorded in beta first (same files), and live then fast-forwards to that commit.
+  if (plan.github?.rollbacksOnly) {
+    const s = await syncBetaWithLive(slug, io);
+    log.push(s.message);
+    if (s.sha) plan = { ...plan, beta: { sha: s.sha, short: s.sha.slice(0, 7) } };
+  }
   const moved: { project: string; slug: string; build: string; version: number; before: string | null; after: string }[] = [];
   for (const t of (plan.github?.targets ?? []).filter((x) => x.move)) {
     const tLive = await liveBranchOf(t.slug, f, await tokenFor(t.slug, io));
@@ -94,11 +134,11 @@ export async function goLiveOnGitHub(p: Product, plan: { beta: { sha: string; sh
   const before = plan.main?.sha ?? null;
   let after = before;
   const live = await liveBranchOf(slug, f, token);
-  if (plan.commits.length && before !== plan.beta.sha) {
+  if (plan.commits.length && before !== plan.beta!.sha) {
     try {
-      await fastForward(slug, live, plan.beta.sha, f, token);
-      after = plan.beta.sha;
-      log.push(`${slug}: ${live} -> ${plan.beta.short}`);
+      await fastForward(slug, live, plan.beta!.sha, f, token);
+      after = plan.beta!.sha;
+      log.push(`${slug}: ${live} -> ${plan.beta!.short}`);
     } catch (e: any) {
       if (!moved.length) throw new StudioError(`${e.message}: merge ${live} into ${BETA}, playtest ${BETA}, then go live.`, 409);
       log.push(`warning: ${slug}'s ${live} wasn't fast-forwarded: ${e.message}`);

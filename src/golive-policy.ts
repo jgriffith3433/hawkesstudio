@@ -63,6 +63,13 @@ export async function autoGoLive(productId: string, why: string): Promise<{ went
     const { deployPlan, queueLive } = await import('./deploy.ts');
     const plan: any = await deployPlan(p.id, { notesWaitMs: 0 });
     if (!plan.commits?.length && !plan.github?.targets?.some((t: any) => t.move)) return { waits: 'nothing new on beta' };
+    // The one blocker is live having commits beta lacks: merge them into beta (its push builds and playtests it, and the
+    // next pass goes live by itself). Anything else waits, said in the log.
+    if (plan.blockers?.length === 1 && /can't be fast-forwarded/.test(plan.blockers[0]) && plan.github) {
+      const { op } = queueLive('golive', { product: p.id, confirm: plan.confirm, by: 'Studio (merging live into beta before going live)', mergeMain: true });
+      console.log(`[golive] ${p.id}: merging live into beta first (${why}): ${op.id}`);
+      return { waits: 'merging live into beta first; it goes live once beta passes again' };
+    }
     if (plan.blockers?.length) {
       console.log(`[golive] ${p.id}: not going live by itself yet (${why}): ${plan.blockers.join(' | ').slice(0, 400)}`);
       return { waits: plan.blockers.join(' ') };

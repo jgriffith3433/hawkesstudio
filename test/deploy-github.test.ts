@@ -139,6 +139,35 @@ test('rollback: a new commit on main with the tree live before, never a force pu
   assert.match((await D.rollbackPlan('webby')).blockers.join('\n'), /No go live by Studio is recorded/);
 });
 
+test("going live again after a rollback: the rollback is recorded in beta with beta's files, then live fast-forwards", async () => {
+  const w = gh.repos['acme/webby'];
+  const rolled = w.refs.main;
+  assert.match(String(w.commits[rolled].title), /^Rollback:/);
+  played('webby', w.refs.beta.slice(0, 7), 'r_webby_after_rollback');
+  const plan: any = await D.deployPlan('webby');
+  assert.deepEqual(plan.blockers, [], 'a rollback on live is no blocker');
+  assert.match(plan.warnings.join('\n'), /rollback commit\(s\).*keeping beta's files/);
+  const betaTree = w.commits[w.refs.beta].tree;
+  await D.deploy('webby', { confirm: 'DEPLOY webby', by: 'owner' });
+  const head = w.refs.main;
+  assert.deepEqual(w.commits[head].parents.slice().sort(), [sha('4'), rolled].sort(), 'both histories kept');
+  assert.equal(w.commits[head].tree, betaTree, "live has beta's files, not the rollback's");
+  assert.equal(w.refs.beta, head, 'beta has the merge too');
+});
+
+test("someone pushed to live: Studio merges it into beta itself (nothing goes live), and beta is built and playtested next", async () => {
+  const w = gh.repos['acme/webby'];
+  const hot = (`h1`).padEnd(40, '0');
+  w.commits[hot] = { parents: [w.refs.main], tree: 'thot', title: 'Hotfix on main' };
+  w.refs.main = hot;
+  const plan: any = await D.deployPlan('webby');
+  assert.match(plan.blockers.join('\n'), /Studio merges main into beta/);
+  const r: any = await D.deploy('webby', { mergeMain: true, by: 'owner' });
+  assert.equal(r.merged, 'merged');
+  assert.ok(w.commits[w.refs.beta].parents.includes(hot), 'beta now has the hotfix');
+  assert.equal(w.refs.main, hot, 'nothing went live');
+});
+
 test("a build committed into another project's repo goes live with its project: both mains fast-forward", async () => {
   // Beta is played where the build is mounted (the website's beta site, in the build's run: builds.ts playIt).
   const before = await D.deployPlan('starfall');

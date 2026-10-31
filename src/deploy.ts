@@ -33,6 +33,7 @@ import {
 import { cloudGoLive, cloudRefs, cloudBlockers, cloudGoLiveNow, compareOnGitHub, type CloudRefs, type Compare } from './deploy-cloud.ts';
 import { githubSlugOf, publishTargets, buildRunsAt, onlyDocsSince, goLiveOnGitHub, rollbackRefs, rollbackOnGitHub, type GitHubIO } from './deploy-github.ts';
 import { repoMap } from './repos.ts';
+import { customerStudio } from './tenancy.ts';
 import { STUDIO_RELEASE, RELEASES, playedCommit, releasesAt, releasesPath, readReleases, draftWithin, addReleaseTo, releaseLine, releaseNotesLine, type Draft } from './release.ts';
 
 const brief = (c: Commit | null) => c && { sha: c.sha, short: c.short, title: c.title, author: c.author, date: c.date };
@@ -300,7 +301,12 @@ async function githubPlan(p: Product, io: GitHubIO = {}) {
   if (!cmp.main && !beta) blockers.push(`Studio can't read ${slug}'s ${MAIN} or ${BETA} on GitHub: connect GitHub and give Studio's app access to it (the project's setup check has the link).`);
   else if (!beta) blockers.push(`${slug} has no ${BETA} branch on GitHub yet: make it from ${MAIN} (the project's setup does), then playtest it.`);
   else if (!cmp.main) blockers.push(`${slug} has no ${MAIN} branch on GitHub.`);
-  if (cmp.behind.length) blockers.push(`${MAIN} has ${cmp.behind.length} commit(s) ${BETA} lacks (${cmp.behind.slice(0, 5).map((c) => `"${c.title}"`).join(', ')}), so ${MAIN} can't be fast-forwarded. Merge ${MAIN} into ${BETA} on GitHub (a pull request from ${MAIN} into ${BETA}), then playtest ${BETA}.`);
+  // Live's extra commits only Studio's rollbacks: going live records them in beta first (an "ours" merge, beta's files),
+  // never a blocker. Anything else: Studio merges live into beta itself (studio_deploy action merge-main, or by itself on
+  // policy auto), and beta is built and playtested before it goes live (2026-10-31 review).
+  const rollbacksOnly = cmp.behind.length > 0 && cmp.behind.every((c) => String(c.title).startsWith(STUDIO_ROLLBACK));
+  if (rollbacksOnly) warnings.push(`${MAIN} has ${cmp.behind.length} rollback commit(s) ${BETA} lacks: going live records them in ${BETA} first, keeping ${BETA}'s files.`);
+  else if (cmp.behind.length) blockers.push(`${MAIN} has ${cmp.behind.length} commit(s) ${BETA} lacks (${cmp.behind.slice(0, 5).map((c) => `"${c.title}"`).join(', ')}), so ${MAIN} can't be fast-forwarded. Studio merges ${MAIN} into ${BETA} (studio_deploy action merge-main), then ${BETA} is built and playtested and can go live.`);
   // The playtests of the exact beta commit; a clean pass of an earlier one counts when only docs and notes changed since.
   const carries = new Set<string>();
   if (beta) {
@@ -338,7 +344,7 @@ async function githubPlan(p: Product, io: GitHubIO = {}) {
     blockers, warnings, canDeploy: !blockers.length, fix: null as BlockerFix | null, notCloned: null,
     confirm: `DEPLOY ${p.id}`,
     what: `${cmp.ahead.length ? `Fast-forwards ${slug}'s ${MAIN} to ${BETA}${beta ? ` ${beta.short}` : ''} (${cmp.ahead.length} commit(s))` : `Leaves ${slug}'s ${MAIN} as it is`}${into.length ? `, and ${into.join(', ')}` : ''}, through GitHub (never a merge or a force push); ${publisherOf(p).says} ${p.live || 'its live site'}.`,
-    github: { slug, targets: tg.targets },
+    github: { slug, targets: tg.targets, rollbacksOnly },
   };
 }
 
@@ -348,6 +354,9 @@ async function githubPlan(p: Product, io: GitHubIO = {}) {
  */
 export function publisherOf(p: Product) {
   if (p.deploy?.via === 'firebase') return { box: true as const, says: 'GitHub Actions deploys it to Firebase (hosting and functions)', done: 'GitHub Actions deploys it to Firebase within about 10 minutes' };
+  // A customer's project is hosted wherever they host it (GitHub Pages, Netlify, Vercel, Cloudflare, a server): its host
+  // deploys its live branch, and Studio checks the live site once the host reports the commit (verifyLive).
+  if (p.deploy?.via !== 'ec2' && !p.deploy && customerStudio()) return { box: false as const, says: 'its host (GitHub Pages, Netlify, Vercel, Cloudflare or its own server) deploys it to', done: 'its host deploys it within a few minutes' };
   if (p.deploy?.via !== 'ec2') return { box: false as const, says: 'GitHub Pages publishes', done: 'GitHub Pages publishes within a few minutes' };
   const box = p.deploy.box ?? 'its own server';
   return { box: true as const, says: `${box} pulls it and restarts (health check, rollback if unhealthy)`, done: `${box} pulls it within a couple of minutes (no tests there; it rolls back if unhealthy)` };
@@ -357,7 +366,11 @@ export function publisherOf(p: Product) {
 export const deploy = (...a: Parameters<typeof deployNow>) => critical(`going live: ${a[0]}`, () => deployNow(...a));
 async function deployNow(productId: string, { confirm, by = 'J', mergeMain, origin, beta: expect, io }: { confirm?: string; by?: string; mergeMain?: boolean; message?: string; origin?: string | null; beta?: string; io?: GitHubIO }) {
   const p = getProduct(productId);
-  if (mergeMain && githubSlugOf(p)) throw new StudioError(`Merge ${MAIN} into ${BETA} on GitHub (a pull request from ${MAIN} into ${BETA}), then playtest ${BETA}.`, 409);
+  if (mergeMain && githubSlugOf(p)) {
+    const { syncBetaWithLive } = await import('./deploy-github.ts');
+    const s = await syncBetaWithLive(githubSlugOf(p)!, io);
+    return { ok: true, product: p.id, merged: s.how, sha: s.sha, note: `${s.message} Nothing went live.` };
+  }
   if (mergeMain) return { ok: true, product: p.id, ...(await mergeMainIntoBeta(p, by)), note: `Nothing went live. Playtest ${BETA} again before going live.` };
   opLog(`making the plan for ${p.name}`);
   const plan = await deployPlan(p.id, { io });
@@ -671,6 +684,16 @@ export async function verifyLive(productId: string, sha: string, focus: string, 
       }
       const build: any = await api('pages/builds/latest');
       if (build?.commit === sha && build.status === 'built') published = true;
+      // Hosts that report back on the commit (Netlify, Vercel, Cloudflare Pages, Firebase, Render: a commit status or a
+      // deployment): published once they say so, instead of waiting out the 15 minutes (2026-10-31 review).
+      const status: any = await api(`commits/${sha}/status`);
+      const hosts = (status?.statuses ?? []).filter((x: any) => /netlify|vercel|cloudflare|firebase|render|deploy/i.test(String(x.context ?? '')));
+      if (hosts.length && hosts.every((x: any) => x.state === 'success')) published = true;
+      const deps: any = await api(`deployments?sha=${sha}&per_page=5`);
+      for (const d of (Array.isArray(deps) ? deps : []).filter((x: any) => /prod|live|github-pages/i.test(String(x.environment ?? '')))) {
+        const st: any = await api(`deployments/${d.id}/statuses?per_page=1`);
+        if (Array.isArray(st) && st[0]?.state === 'success') published = true;
+      }
       const runs: any = await api(`actions/runs?head_sha=${sha}&event=push`);
       const pagesRuns = (runs?.workflow_runs ?? []).filter((r: any) => /pages/i.test(`${r.name} ${r.path}`));
       if (pagesRuns.length && pagesRuns.every((r: any) => r.status === 'completed')) published = true;

@@ -65,6 +65,17 @@ export function fakeGitHub(repos: Record<string, FakeRepo>) {
       r.refs[mm[1]] = body.sha;
       return json(200, { ref: `refs/heads/${mm[1]}`, object: { sha: body.sha } });
     }
+    // POST merges { base, head }: a merge commit on base (head's tree; a real conflict isn't modelled).
+    if (rest === 'merges' && method === 'POST') {
+      const body = JSON.parse(String(init.body));
+      const a = r.refs[body.base], b = ref(body.head);
+      if (!a || !b) return json(404, { message: 'Not Found' });
+      if (history(r, a).includes(b)) return json(204, {});
+      const s = (`m${++n}`).padEnd(40, '0');
+      r.commits[s] = { parents: [a, b], tree: r.commits[b].tree, title: String(body.commit_message ?? 'Merge') };
+      r.refs[body.base] = s;
+      return json(201, { sha: s });
+    }
     return json(404, { message: `stand-in has no ${method} ${rest}` });
   }) as unknown as typeof fetch;
   return { f, calls, repos };
