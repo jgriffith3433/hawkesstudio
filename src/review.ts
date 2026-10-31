@@ -77,7 +77,8 @@ export function withCanon(p: Product) {
 export function reviewParams(p: Product, job: string, mode: ReviewMode, extra: Record<string, unknown> = {}) {
   return {
     model: reviewModel(), job, mode, maxFindings: reviewMax(),
-    product: `${p.name} (presented publicly as "${p.framing}"). ${p.about}`, story: withCanon(p),
+    // Studio's own 🐞 button sits on every beta page (bugreport.ts); reviews filed it as the game's (2026-10-31).
+    product: `${p.name} (presented publicly as "${p.framing}"). ${p.about} (On beta pages Hawkes Studio adds a small red bug-report button at the right edge: it is Studio's, not part of the game, and never a finding.)`, story: withCanon(p),
     known: knownFindings(p.id),
     ...(p.quality ? { bar: p.quality } : {}),
     ...extra,
