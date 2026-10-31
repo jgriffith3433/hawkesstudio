@@ -154,3 +154,56 @@ test('the platform admin sets the keys: checked, kept in the data folder, never 
   assert.equal(Bm.stripeKeys().webhookSecret, 'whsec_kept1');
   Bm.saveStripeConfig({ secretKey: 'sk_test_studio' });
 });
+
+test('credit packs: a payment-mode Checkout tagged studio with the pack; credits once per paid session, none before it is paid', async () => {
+  assert.deepEqual(B.listPacks().map((p) => [p.id, p.priceCents, p.credits]), [['credits_1000', 1000, 1000], ['credits_2750', 2500, 2750], ['credits_12000', 10000, 12000]]);
+  fs.writeFileSync(path.join(process.env.STUDIO_DATA!, 'stripe.json'), JSON.stringify({ secretKey: 'sk_test_studio', webhookSecret: WHSEC }));
+  calls.length = 0;
+  const r = await B.buyCredits('credits_2750', { id: 'u_owner', email: 'dev@indie.example' }, 'https://studio-beta.hawkesgen.ai');
+  assert.equal(r.pack.credits, 2750);
+  const f = calls.find((x) => x.path === '/v1/checkout/sessions')!.form;
+  assert.equal(f.get('mode'), 'payment');
+  for (const pre of ['metadata', 'payment_intent_data[metadata]']) {
+    assert.equal(f.get(`${pre}[product]`), 'studio');
+    assert.equal(f.get(`${pre}[studio_id]`), B.studioId());
+    assert.equal(f.get(`${pre}[pack_id]`), 'credits_2750');
+  }
+  assert.equal(f.get('line_items[0][price_data][unit_amount]'), '2500');
+  assert.equal(f.get('line_items[0][price_data][recurring][interval]'), null, 'a one-off payment');
+  assert.equal(f.get('success_url'), 'https://studio-beta.hawkesgen.ai/?checkout=credits#settings');
+  await assert.rejects(B.buyCredits('credits_free', { id: 'u', email: 'a@b.c' }, 'https://x'), /Unknown credit pack/);
+
+  const before = B.creditBalance();
+  const meta = { product: 'studio', studio_id: B.studioId(), pack_id: 'credits_2750', credits: '2750', user_id: 'u_owner' };
+  // A delayed payment method: completed but not paid yet grants nothing; async_payment_succeeded does, once.
+  let w = deliver({ type: 'checkout.session.completed', data: { object: { id: 'cs_pack_1', mode: 'payment', payment_status: 'unpaid', customer: 'cus_pack', metadata: meta } } });
+  assert.match(String(w.ignored), /not paid yet/);
+  assert.equal(B.creditBalance(), before);
+  w = deliver({ type: 'checkout.session.async_payment_succeeded', data: { object: { id: 'cs_pack_1', mode: 'payment', payment_status: 'paid', customer: 'cus_pack', metadata: meta } } });
+  assert.equal(w.creditsAdded, 2750);
+  w = deliver({ type: 'checkout.session.completed', data: { object: { id: 'cs_pack_1', mode: 'payment', payment_status: 'paid', customer: 'cus_pack', metadata: meta } } });
+  assert.equal(w.duplicate, true, 'once per payment, whichever event comes');
+  assert.equal(B.creditBalance(), before + 2750);
+  assert.equal(B.creditLedger(1)[0].kind, 'credit_pack');
+  // Another Studio's pack, or a pack the metadata only claims: nothing.
+  w = deliver({ type: 'checkout.session.completed', data: { object: { id: 'cs_pack_2', mode: 'payment', payment_status: 'paid', metadata: { ...meta, studio_id: 'st_someone_else' } } } });
+  assert.match(String(w.ignored), /not this Studio's/);
+  w = deliver({ type: 'checkout.session.completed', data: { object: { id: 'cs_pack_3', mode: 'payment', payment_status: 'paid', metadata: { ...meta, pack_id: 'credits_infinite', credits: '99999999' } } } });
+  assert.match(String(w.ignored), /not a credit pack/);
+  assert.equal(B.creditBalance(), before + 2750);
+});
+
+test('charging credits: refused with a clear message and nothing taken when short; once per ref', () => {
+  const have = B.creditBalance();
+  assert.throws(() => B.chargeCredits(have + 1, 'gen_work', 'too much', 'gen:test:big', undefined, 'unity.build'), (e: any) => {
+    assert.equal(e.status, 402);
+    assert.deepEqual(e.credits, { need: have + 1, have, topUp: true });
+    assert.match(e.message, /^This studio is out of credits: unity\.build needs .+ Add credits or upgrade your plan in Settings → Plan and credits\.$/);
+    return true;
+  });
+  assert.equal(B.creditBalance(), have);
+  assert.equal(B.chargeCredits(10, 'gen_work', 'a playtest', 'gen:test:small').balance, have - 10);
+  assert.equal(B.chargeCredits(10, 'gen_work', 'a playtest', 'gen:test:small').duplicate, true);
+  assert.equal(B.creditBalance(), have - 10);
+  assert.ok(B.billingView().packs.length === 3);
+});

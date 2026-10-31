@@ -335,8 +335,10 @@ Check: `GET /api/cells` signed in as J shows `"on": true` and `"missing": []`.
 - **The portal's "Open Studio"** should link to `studio.hawkesgen.ai/o/<org>/`.
 - **One click less:** a signed hand-off from the control plane to the cell would skip the cell's own Continue with
   Google.
-- **Studio's credits paying for Gen work:** a cell's Gen usage is on its own Gen key; billing it against the plan's
-  credits is the next billing step.
+- **Gen enforcing a cell's credits itself:** a cell charges its Gen work to its balance before submitting (section 3,
+  "Credits"), but its Gen key also reaches Gen without Studio (agents' Hawkes Gen MCP server, Gen routes that make jobs
+  other than `POST /v1/jobs`). Gen holding the org's balance and reserving it per job (its own `reserveJobCredits`, per
+  Gen org instead of per Gen account) would close that.
 
 ---
 
@@ -345,8 +347,15 @@ Check: `GET /api/cells` signed in as J shows `"on": true` and `"missing": []`.
 **Gift subscriptions** (J, 2026-10-31: "admin can set which accounts are under which subscription"): the platform admin
 gives an org a plan with no Stripe in Settings → Customers' Studios (`POST/DELETE /api/cells/<org>/gift`, `cells.ts
 setGift`), until a date or for good, with a note. It counts like a subscription (features, project count, nightly runs)
-but grants no monthly credits; the higher of the gift and a paid plan wins (`effectivePlan`). A cell asks the control
-plane again before refusing a feature (`entitlements.ts`), so a gift works at once. Tests: `test/cells.test.ts`,
+and grants **monthly credits**: `credits` a month (`POST /api/cells/<org>/gift {plan, until, note, credits}`; left out:
+the plan's own `creditsPerMonth`, so a gifted Team gets Team's 5,000; 0: the features only), the first month's when it is
+given and one more each month after while it lasts (`cells.ts monthlyCredits`, from the central cron; once per org per
+month: ledger ref `gift:<org>:<given at>:<month>`, months counted from the day it was given). Changing a gift that is
+still running keeps its months (a new amount applies from the next one). The higher of the gift and a paid plan wins for
+features (`effectivePlan`); a paid plan's own credits still come with its invoices. A cell asks the control plane again
+before refusing a feature (`entitlements.ts`), so a gift works at once. The admin's Customers' Studios box shows each
+org's credits and its gift's credits a month, with a credits field on the gift and **Add credits** (a one-off top-up:
+`POST /api/cells/<org>/credits {amount, note}`, ledger kind `admin_grant`). Tests: `test/cells.test.ts`,
 `test/cell-side.test.ts`.
 
 **One Stripe account for the portal, Gen and Studio** (J, 2026-10-29: "Gen portal and studio should all use the same
@@ -370,8 +379,8 @@ stripe account. Beta should use the test keys."):
      mounted by `tools/studio-cloudrun/deploy.mjs` once they're added to its `--set-secrets`).
 - **The webhook is open** (`openRoute`, cloudauth.ts), handled before every other check. Stripe's signature
   (`Stripe-Signature`, this endpoint's secret, 5 minutes' tolerance) is its only check. Events to subscribe the
-  endpoint to: `checkout.session.completed`, `invoice.paid`, `invoice.payment_failed`, `customer.subscription.updated`,
-  `customer.subscription.deleted`.
+  endpoint to: `checkout.session.completed`, `checkout.session.async_payment_succeeded` (credit packs paid by a delayed
+  method), `invoice.paid`, `invoice.payment_failed`, `customer.subscription.updated`, `customer.subscription.deleted`.
 
 **The plans** are the portal's (hawkesgenwebsite `platform.ts PLANS`, offered when `PORTAL_PLATFORM_PLANS=on`). One
 Stripe Product and Price per plan in the shared account, so a customer is one Stripe customer across all three
@@ -402,15 +411,52 @@ products:
 - **Management:** cancel and resume at the period's end (`POST /api/billing/cancel|resume`), and the Stripe billing
   portal (`POST /api/billing/portal`). All are an admin's; members see the plan (`GET /api/billing`).
 - **Limits:** with a plan, onboarding refuses a game past the plan's count (402).
-- **Credits:** Studio keeps its own ledger (`billing_credits`). Spending them is not wired yet: today Studio's Gen work
-  bills its Gen key. Connecting the two (Studio's credits paying for its Gen jobs, or the portal's ledger as the one
-  balance) is the next billing step.
+- **Credits: one balance per Studio** (J, 2026-10-31: "make credits work for customers' Studios"). 1 credit = $0.01.
+  The balance is Studio's own ledger (`billing_credits`, per `studio_id`): for a cell, the org's rows in the control
+  plane. Its people see it in Settings → Plan and credits (the balance, the gift's or free allowance, the packs, and
+  "Credits used and added"). What adds to it:
+  - a paid plan: `creditsPerMonth` per paid invoice (`invoice:<id>`)
+  - a gift: its credits each month while it lasts (above)
+  - no plan and no gift: topped up to the free allowance once a calendar month (`cells.ts` setting `freeCredits`,
+    default 100, provisional; `free:<org>:<YYYY-MM>`; topped up, never added up, so an unused studio doesn't hoard),
+    including when its cell is first made
+  - a credit pack the customer buys (below)
+  - the platform admin's Add credits
+- **What draws from it: Hawkes Gen work done for the Studio** (`src/credits.ts`, through `gen.ts`). Why Studio's ledger
+  and not Gen's: Gen's credits belong to Gen app accounts (a `users` row), and a cell's Gen key (role user, Gen org
+  `org_<hex>`) has none behind it, so Gen doesn't meter it today; the plans, invoices, gifts and the Settings box were
+  already on Studio's ledger. So the cell is metered on Studio's side, with Gen's own prices:
+  1. Gen prices each job (`POST /v1/billing/quote`: the same quote it charges its own accounts; a customer Unity build
+     is 100 flat, a web smoke playtest about 6)
+  2. the cell asks the control plane to take that (`POST /api/cells/self/credits/charge {charge, credits, what}`, its
+     cell key; once per charge id). Short: **402** with `{ error, credits: { need, have, topUp } }` and nothing is
+     submitted
+  3. the job is submitted; a job Gen hands back instead of making (reuse, the same key) is refunded at once
+  4. every 2 minutes the cell gives back the credits of jobs that failed or were cancelled
+     (`/api/cells/self/credits/refund {charge, credits, part}`: once per part, never more than the charge)
+  Tools on the customer's own AI (`playtest.review`, `llm.text`, `llm.json`) cost no credits: Anthropic bills them.
+  The dashboard's Gen components submit through the same path (`POST /api/gen/v1/jobs` in a cell). `STUDIO_METER_GEN=0`
+  turns charging off. J's own Studio is never metered.
+- **Out of credits is told plainly**, wherever the work started: "This studio is out of credits: unity.build needs 100
+  and 50 are left. Add credits or upgrade your plan in Settings → Plan and credits." (`billing.ts outOfCredits`,
+  `CreditsNeeded`). The API answers 402 with `credits`, and the dashboard opens an "Out of credits" dialog whose button
+  goes to Settings → Plan and credits. A refusal from Gen itself (402, kind `credits`) is told the same way
+  (`credits.ts genRefusal`). Runs record it as the step's error; Gen jobs are never retried on it.
+- **Credit packs** (provisional, the same as Gen's): 1,000 credits $10, 2,750 $25 (10% bonus), 12,000 $100 (20%
+  bonus) (`billing.ts CREDIT_PACKS`). An admin buys one from Settings (`POST /api/billing/buy {pack}`; in a cell relayed
+  to `/api/cells/self/billing/buy`): a Stripe Checkout in payment mode, tagged `metadata[product]=studio`,
+  `studio_id`, `pack_id` on the session and the payment intent. `checkout.session.completed` (or
+  `async_payment_succeeded`) with `payment_status` paid grants the pack's credits once per session
+  (`checkout:<id>`); unpaid, another Studio's or an unknown pack grants nothing.
 - **Claude for Talk and agents is the customer's own** (their subscription or API key, billed by Anthropic to them).
   It costs us nothing and needs no metering. Later we could offer "our API key, metered into credits".
 - **Tests:** `test/billing.test.ts`, with a local Stripe stand-in (`STRIPE_API_BASE`) and webhooks signed as Stripe
   signs them.
 
-A customer's Studio has no Costs tab of its own: their bill and credits are on the portal.
+A customer's Studio has no Costs tab of its own: its plan, credits and receipts are in Settings → Plan and credits
+(cards and receipts: the Stripe billing portal). Tests: `test/billing.test.ts` (packs, charging), `test/cells.test.ts`
+(gift credits, the monthly grant's idempotency, the free allowance, Add credits, the charge and refund routes),
+`test/credits.test.ts` (a cell's Gen jobs charged, refused, refunded; Gen's own refusal).
 
 ---
 

@@ -258,7 +258,7 @@ const server = http.createServer(async (req, res) => {
       const E = await import('./entitlements.ts');
       return send(res, 200, { ...(viaControl ? await control('view') : (await import('./billing.ts')).billingView()), entitlements: await E.entitlements(), features: E.FEATURE_NAMES, planFeatures: E.PLAN_FEATURES });
     }
-    const bill = /^\/api\/billing\/(checkout|cancel|resume|portal|plans)$/.exec(route);
+    const bill = /^\/api\/billing\/(checkout|cancel|resume|portal|plans|buy)$/.exec(route);
     if (bill && method === 'POST' && viaControl && bill[1] !== 'plans') {
       const b = await readJson(req);
       const u = (await import('./auth.ts')).requester(req);
@@ -274,9 +274,15 @@ const server = http.createServer(async (req, res) => {
       }
       if (bill[1] === 'cancel' || bill[1] === 'resume') return send(res, 200, { subscription: await B.setCancelAtPeriodEnd(bill[1] === 'cancel') });
       if (bill[1] === 'portal') return send(res, 200, await B.billingPortal(origin));
+      if (bill[1] === 'buy') {
+        const u = (await import('./auth.ts')).requester(req);
+        return send(res, 200, await B.buyCredits(String(b.pack ?? ''), { id: u?.id ?? 'owner', email: u?.email ?? '' }, origin));
+      }
       return send(res, 200, { plan: B.savePlan(b) });
     }
     // The Library tab (library.ts, dashboard/library.js): Gen's library through Studio, and picks into product repos.
+    // Jobs submitted from the dashboard's Gen components go through gen.ts too, so a cell charges them to its credits.
+    if (route === '/api/gen/v1/jobs' && method === 'POST' && (await import('./credits.ts')).meteringOn()) return send(res, 200, await (await import('./gen.ts')).gen.request('/jobs', { method: 'POST', body: await readJson(req) }));
     if (route.startsWith('/api/gen/v1/')) return await (await import('./library.ts')).relay(req, res, route.slice('/api/gen/v1/'.length) + url.search);
     if (route === '/api/content/health' && method === 'GET') {
       const product = url.searchParams.get('product') || undefined;
@@ -982,7 +988,7 @@ const server = http.createServer(async (req, res) => {
     }
     return send(res, 404, { error: `No route ${method} ${route}` });
   } catch (e: any) {
-    return send(res, e instanceof StudioError ? e.status : 400, { error: e.message ?? String(e), ...(e?.upgrade ? { upgrade: e.upgrade } : {}) });
+    return send(res, e instanceof StudioError ? e.status : 400, { error: e.message ?? String(e), ...(e?.upgrade ? { upgrade: e.upgrade } : {}), ...(e?.credits ? { credits: e.credits } : {}) });
   }
 });
 
@@ -1020,6 +1026,8 @@ server.listen(listenPort, cloud ? '0.0.0.0' : '127.0.0.1', () => {
   void import('./cells.ts').then((C) => C.wireBilling()).catch((e) => console.warn(`[cells] ${e.message ?? e}`));
   void import('./config.ts').then((c) => c.applyOnboardingSeed()).then((g) => { if (g) console.log(`[onboarding] added the first game, ${g.name}`); }).catch((e) => console.warn(`[onboarding] ${e.message ?? e}`));
   void import('./entitlements.ts').then((E) => E.startPlanRefresh());
+  // A cell gives back the credits of its Gen jobs that failed or were cancelled (credits.ts).
+  void Promise.all([import('./credits.ts'), import('./gen.ts')]).then(([C, G]) => C.startCreditSettler((id) => G.gen.job(id)));
   void import('./cellside.ts').then((c) => c.startCellReports());
   // A deploy of J's Studio rolls the awake customer Studios onto it, in the background, a minute after start
   // (cells.ts followRoll; J, 2026-10-30: "Do roll on every deploy").

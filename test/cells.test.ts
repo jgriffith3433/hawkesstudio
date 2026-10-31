@@ -390,7 +390,8 @@ test('gift subscriptions: the platform admin gives an org a plan with no Stripe;
   assert.equal(p.plan, 'studio_team');
   assert.equal(p.status, 'gift');
   assert.equal(p.maxGames, B.getPlan('studio_team')!.maxGames);
-  assert.equal(p.credits, 0, 'a gift grants no monthly credits');
+  assert.equal(p.credits, B.getPlan('studio_team')!.creditsPerMonth, "a gift grants its plan's monthly credits when it is given");
+  assert.equal(p.gift.creditsPerMonth, 5000);
   // The admin list shows it.
   const list = res();
   await C.handleCellsAdmin(req({}), list, '/api/cells', 'GET', send, noJson);
@@ -415,4 +416,131 @@ test('gift subscriptions: the platform admin gives an org a plan with no Stripe;
   await C.handleCellsAdmin(req({}, 'DELETE'), back, `/api/cells/${org.id}/gift`, 'DELETE', send, noJson);
   assert.equal(back.body.org.gift, null);
   assert.equal((await plan(org.id)).plan, 'free');
+});
+
+test("gift credits: the plan's own by default, a number of its own or 0; granted when given and once a month while it lasts", async () => {
+  const mk = async (name: string, sub: string) => { const o = C.createOrg({ sub, email: `${sub}@g.example`, name: null }, name); await C.ensureCell(o.id, 'test'); return o.id; };
+  const a = await mk('Gift Default', '7000030');
+  const free = C.cellsSettings().freeCredits;
+  assert.equal(B.creditBalance(a), free, 'a free studio is topped up to its allowance when its cell is made');
+  await C.setGift(a, { plan: 'studio_indie' }, 'admin');
+  assert.equal(B.creditBalance(a), free + 1500, "Indie's own 1,500 when given");
+  const g = C.getOrg(a)!.gift!;
+  // The cron, again and again in the same month: nothing more.
+  for (let i = 0; i < 3; i++) await C.monthlyCredits({ now: g.at! + 10 * 86_400_000 });
+  assert.equal(B.creditBalance(a), free + 1500, 'once per month');
+  // Changing the gift while it runs keeps its month: no second grant now.
+  await C.setGift(a, { plan: 'studio_indie', note: 'renamed' }, 'admin');
+  assert.equal(B.creditBalance(a), free + 1500);
+  // A month later, then two: one grant each, however often the cron runs.
+  const day = 86_400_000;
+  await C.monthlyCredits({ now: g.at! + 31 * day });
+  await C.monthlyCredits({ now: g.at! + 31 * day + 3600_000 });
+  assert.equal(B.creditBalance(a), free + 3000);
+  await C.monthlyCredits({ now: g.at! + 62 * day });
+  assert.equal(B.creditBalance(a), free + 4500);
+  assert.equal(B.creditLedger(50, a).filter((l: any) => l.kind === 'gift_credits').length, 3);
+
+  // Its own number, and 0.
+  const b = await mk('Gift Custom', '7000031');
+  await C.setGift(b, { plan: 'studio_team', credits: 250 }, 'admin');
+  assert.equal(B.creditBalance(b), free + 250);
+  assert.equal(C.getOrg(b)!.gift!.credits, 250);
+  const c = await mk('Gift None', '7000032');
+  await C.setGift(c, { plan: 'studio_studio', credits: 0 }, 'admin');
+  assert.equal(B.creditBalance(c), free, '0 credits: the features only');
+  await assert.rejects(C.setGift(c, { plan: 'studio_team', credits: -5 }, 'admin'), /credits/);
+  await assert.rejects(C.setGift(c, { plan: 'studio_team', credits: 1.5 }, 'admin'), /credits/);
+  // An ended gift grants nothing more; the org is free again (topped up only when below the allowance).
+  const until = Date.now() + 5 * day;
+  await C.setGift(b, { plan: 'studio_team', credits: 250, until }, 'admin');
+  const before = B.creditBalance(b);
+  await C.monthlyCredits({ now: until + 40 * day });
+  assert.equal(B.creditBalance(b), before, 'above the free allowance: nothing added');
+
+  // The admin's box shows the credits.
+  const list = res();
+  await C.handleCellsAdmin(req({}), list, '/api/cells', 'GET', send, noJson);
+  const row = list.body.orgs.find((o: any) => o.id === b);
+  assert.equal(row.credits, before);
+  assert.equal(row.giftCreditsPerMonth, 250);
+});
+
+test('months for gifts: whole months from the day it was given, the 31st counting a short month\'s last day', () => {
+  const t = (s: string) => Date.parse(s);
+  assert.equal(C.monthsBetween(t('2026-01-15T10:00:00Z'), t('2026-02-15T09:59:59Z')), 0);
+  assert.equal(C.monthsBetween(t('2026-01-15T10:00:00Z'), t('2026-02-15T10:00:00Z')), 1);
+  assert.equal(C.monthsBetween(t('2026-01-31T00:00:00Z'), t('2026-02-28T00:00:00Z')), 1);
+  assert.equal(C.monthsBetween(t('2026-01-31T00:00:00Z'), t('2026-02-27T23:00:00Z')), 0);
+  assert.equal(C.monthsBetween(t('2025-11-30T00:00:00Z'), t('2026-11-30T00:00:00Z')), 12);
+});
+
+test('the free allowance: topped up once a calendar month, never added up while unused', async () => {
+  const o = C.createOrg({ sub: '7000040', email: 'free@f.example', name: null }, 'Free Folk');
+  const none = await C.monthlyCredits({ org: o.id });
+  assert.equal(none.granted.length, 0, 'no cell yet: nothing');
+  await C.ensureCell(o.id, 'test');
+  const free = C.cellsSettings().freeCredits;
+  assert.equal(B.creditBalance(o.id), free);
+  // Spends some; next month it is topped up to the allowance again, once.
+  B.chargeCredits(60, 'gen_work', 'a playtest', `gen:${o.id}:test-spend`, o.id);
+  const now = new Date();
+  const next = Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 3);
+  await C.monthlyCredits({ now: next });
+  await C.monthlyCredits({ now: next + 86_400_000 });
+  assert.equal(B.creditBalance(o.id), free);
+  // Unused for a month: still the allowance, not twice it.
+  await C.monthlyCredits({ now: next + 40 * 86_400_000 });
+  assert.equal(B.creditBalance(o.id), free);
+  assert.throws(() => C.saveCellsSettings({ freeCredits: -1 }), /freeCredits/);
+});
+
+test('the platform admin adds credits to an org; it is in its ledger', async () => {
+  const o = C.createOrg({ sub: '7000050', email: 'topup@t.example', name: null }, 'Topped Up');
+  const out = res();
+  await C.handleCellsAdmin(req({}, 'POST'), out, `/api/cells/${o.id}/credits`, 'POST', send, async () => ({ amount: 700, note: 'launch week' }));
+  assert.equal(out.status, 200, JSON.stringify(out.body));
+  assert.equal(out.body.credits, 700);
+  assert.equal(B.creditBalance(o.id), 700);
+  const line = B.creditLedger(5, o.id)[0];
+  assert.equal(line.kind, 'admin_grant');
+  assert.match(line.detail, /launch week/);
+  await assert.rejects(C.addCredits(o.id, { amount: 0 }, 'admin'), /amount/);
+  await assert.rejects(C.addCredits(o.id, { amount: 'lots' }, 'admin'), /amount/);
+  await assert.rejects(C.addCredits('nobody-0000', { amount: 5 }, 'admin'), /No studio/);
+});
+
+test("a cell's Gen work is charged to its org's balance: refused with 402 when short, refunded once, never more than charged", async () => {
+  const o = C.createOrg({ sub: '7000060', email: 'meter@m.example', name: null }, 'Metered');
+  await C.addCredits(o.id, { amount: 150 }, 'admin');
+  const call = async (what: string, body: any, org = o.id) => {
+    const out = res();
+    await C.handleCellsKeyed(req({ Authorization: `Bearer ${K.deriveKey('cell', org)}`, 'X-Studio-Cell': org }, 'POST'), out, `/api/cells/self/credits/${what}`, 'POST', send, async () => body);
+    return out;
+  };
+  let r = await call('charge', { charge: 'gc_build1', credits: 100, what: 'unity.build', detail: 'Hawkes Gen: unity.build' });
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  assert.equal(r.body.credits, 50);
+  r = await call('charge', { charge: 'gc_build1', credits: 100 });
+  assert.equal(r.body.duplicate, true, 'the same charge twice takes once');
+  assert.equal(B.creditBalance(o.id), 50);
+  r = await call('charge', { charge: 'gc_build2', credits: 100, what: 'unity.build' });
+  assert.equal(r.status, 402);
+  assert.match(r.body.error, /out of credits: unity\.build needs 100 and 50 are left\. Add credits or upgrade your plan in Settings → Plan and credits/);
+  assert.deepEqual(r.body.credits, { need: 100, have: 50, topUp: true });
+  assert.equal(B.creditBalance(o.id), 50, 'a refusal takes nothing');
+  // The build failed: its credits back, once; asking for more than was charged gives back only what is left.
+  r = await call('refund', { charge: 'gc_build1', credits: 100, part: 'j_fail1', detail: 'failed' });
+  assert.equal(r.body.refunded, 100);
+  r = await call('refund', { charge: 'gc_build1', credits: 100, part: 'j_fail1' });
+  assert.equal(r.body.refunded, 0);
+  r = await call('refund', { charge: 'gc_build1', credits: 100, part: 'j_other' });
+  assert.equal(r.body.refunded, 0, 'never more than was charged');
+  assert.equal(B.creditBalance(o.id), 150);
+  r = await call('refund', { charge: 'gc_nothing', credits: 10, part: 'x' });
+  assert.equal(r.status, 404);
+  // Another org's charge can't be refunded with that org's key.
+  const other = C.createOrg({ sub: '7000061', email: 'other@m.example', name: null }, 'Other Metered');
+  r = await call('refund', { charge: 'gc_build1', credits: 100, part: 'steal' }, other.id);
+  assert.equal(r.status, 404);
 });

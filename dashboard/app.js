@@ -28,6 +28,8 @@ async function api(path, opts = {}) {
   const d = await r.json();
   // A pro feature on a plan without it (src/entitlements.ts): the API says what to upgrade to; offer it.
   if (r.status === 402 && d.upgrade) studioUpgrade(d);
+  // Out of credits (src/credits.ts, billing.ts CreditsNeeded): add credits or upgrade, both in Settings → Plan and credits.
+  if (r.status === 402 && d.credits && !d.upgrade) studioUpgrade({ ...d, topUp: true });
   if (r.status === 409 && d.connectAi) studioUpgrade({ ...d, connectAi: true });
   if (!r.ok) throw new Error(d.error ?? r.status);
   return d;
@@ -43,11 +45,11 @@ function studioUpgrade(d) {
   el.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.55);display:grid;place-items:center;z-index:1000;padding:16px';
   const u = d.upgrade;
   el.innerHTML = `<div style="background:var(--panel,#151a1f);border:1px solid var(--line,#2a3138);border-radius:12px;padding:20px;max-width:420px;width:100%">
-    <h3 style="margin:0 0 8px">${d.connectAi ? 'Connect your AI' : `Upgrade to ${esc(u.planName)}`}</h3>
+    <h3 style="margin:0 0 8px">${d.connectAi ? 'Connect your AI' : d.topUp ? 'Out of credits' : `Upgrade to ${esc(u.planName)}`}</h3>
     <p class="meta" style="margin:0 0 14px">${esc(d.error)}</p>
     <div style="display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap">
       <button class="small" data-up="close">Not now</button>
-      ${d.connectAi ? '<button data-up="ai">Open Settings</button>' : `<button data-up="buy">Upgrade to ${esc(u.planName)}</button>`}
+      ${d.connectAi ? '<button data-up="ai">Open Settings</button>' : d.topUp ? '<button data-up="ai">Add credits or upgrade</button>' : `<button data-up="buy">Upgrade to ${esc(u.planName)}</button>`}
     </div><div class="meta" id="upMsg"></div></div>`;
   document.body.append(el);
   el.addEventListener('click', async (e) => {

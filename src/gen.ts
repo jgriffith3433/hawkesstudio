@@ -20,13 +20,23 @@ const scoped = (b: any): any => {
   for (const k of ['jobs', 'specs', 'items']) if (Array.isArray(out[k])) out[k] = out[k].map(scoped);
   return out;
 };
-if (PREFIX) {
+{
   const request = gen.request.bind(gen);
-  gen.request = (p: string, o: any = {}) => {
+  const raw = (p: string, o: any = {}) => {
+    if (!PREFIX) return request(p, o);
     const [base, query] = String(p).split('?');
     const q = query ? new URLSearchParams(query) : null;
     if (q?.has('project')) q.set('project', String(genProject(q.get('project'))));
     return request(q ? `${base}?${q}` : base, { ...o, body: scoped(o.body) });
+  };
+  // Submitting jobs: a cell charges them to its balance first (credits.ts), and a refusal for lack of credits (the
+  // control plane's or Gen's own 402) says how many are needed and where to add more.
+  gen.request = async (p: string, o: any = {}) => {
+    if (!(String(p).split('?')[0] === '/jobs' && String(o.method ?? 'GET').toUpperCase() === 'POST')) return raw(p, o);
+    const C = await import('./credits.ts');
+    try {
+      return C.meteringOn() ? await C.meteredSubmit(raw, p, { ...o, body: scoped(o.body) }) : await raw(p, o);
+    } catch (e) { throw C.genRefusal(e); }
   };
 }
 

@@ -136,10 +136,12 @@ test("its Gen jobs are in its own Gen org's projects (its key works nowhere else
   const sent: any[] = [];
   const real = globalThis.fetch;
   globalThis.fetch = (async (url: any, init: any) => { sent.push({ url: String(url), body: init?.body ? JSON.parse(init.body) : null }); return new Response('{"id":"j1"}', { headers: { 'Content-Type': 'application/json' } }); }) as typeof fetch;
+  // Charging the cell's credits (credits.ts, test/credits.test.ts) is off here: only the projects are under test.
+  process.env.STUDIO_METER_GEN = '0';
   try {
     await G.gen.request('/jobs', { method: 'POST', body: { tool: 'playtest.run', project: 'moon', params: {} } });
     await G.gen.request('/entities?project=moon&kind=x');
-  } finally { globalThis.fetch = real; }
+  } finally { globalThis.fetch = real; delete process.env.STUDIO_METER_GEN; }
   assert.equal(sent[0].body.project, 'org_0123456789abcdef.moon');
   assert.match(sent[1].url, /project=org_0123456789abcdef\.moon/);
 });
