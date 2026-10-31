@@ -930,19 +930,11 @@ const server = http.createServer(async (req, res) => {
       if (!token) return send(res, 401, { error: 'a GitHub Actions OIDC token is required' });
       const { verifyGitHubOidc } = await import('./github-oidc.ts');
       let claims: Record<string, any>;
-      // The audience is the Studio's own address: a customer's Studio is studio.<domain>/o/<org> (repokit.ts writes it so).
-      const audiences = [...new Set([process.env.STUDIO_PUBLIC_URL?.replace(/\/+$/, ''), 'https://studio.hawkesgen.ai'].filter(Boolean) as string[])];
-      let why = '';
-      claims = null as any;
-      for (const aud of audiences) {
-        try { claims = await verifyGitHubOidc(token, aud); break; } catch (e: any) { why = e.message; }
+      try {
+        claims = await verifyGitHubOidc(token, 'https://studio.hawkesgen.ai');
+      } catch (e: any) {
+        return send(res, 401, { error: `token rejected: ${e.message}` });
       }
-      if (!claims) return send(res, 401, { error: `token rejected: ${why}` });
-      // A project's builds (builds.ts, docs/builds.md): beta pushes, build-* tags, an Actions build's "built" notice.
-      const hookBody = await readJson(req).catch(() => ({}));
-      const B = await import('./builds.ts');
-      const byBuilds = await B.onRepoHook(claims, hookBody);
-      if (byBuilds) return send(res, 202, byBuilds);
       const repo = String(claims.repository).toLowerCase();
       if (!['jgriffith3433/hawkesstudio', 'jgriffith3433/hawkesgen'].includes(repo)) return send(res, 403, { error: `${claims.repository} doesn't deploy this server` });
       if (claims.ref !== 'refs/heads/main') return send(res, 403, { error: `only main deploys (got ${claims.ref})` });

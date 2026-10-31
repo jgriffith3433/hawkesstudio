@@ -14,7 +14,7 @@ const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'studio-builds-'));
 Object.assign(process.env, {
   STUDIO_DATA: path.join(TMP, 'data'), STUDIO_MAIL: 'off', K_SERVICE: 'studio-o-acme-1a2b', STUDIO_ORG: 'acme-1a2b', STUDIO_SIGNUP: 'owner',
   STUDIO_CONTROL_URL: 'https://control.test', STUDIO_CELL_KEY: 'cell-key', STUDIO_SITES_SEED: 'acme-sites-seed', STUDIO_SITES_URL: 'https://sites.test',
-  STUDIO_PUBLIC_URL: 'https://studio.hawkesgen.ai/o/acme-1a2b', HAWKESGEN_URL: 'https://gen.test', HAWKESGEN_KEY: 'hg_cell', STUDIO_BUILDS_KEEP: '2',
+  STUDIO_PUBLIC_URL: 'https://studio.hawkesgen.ai/o/acme-1a2b', HAWKESGEN_URL: 'https://gen.test', HAWKESGEN_KEY: 'hg_cell', STUDIO_BUILDS_KEEP: '2', STUDIO_METER_GEN: '0',
 });
 fs.mkdirSync(process.env.STUDIO_DATA!, { recursive: true });
 delete process.env.STUDIO_PRODUCTS;
