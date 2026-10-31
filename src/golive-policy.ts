@@ -35,6 +35,8 @@ const NO = /\b(don'?t|do not|not yet|hold( off)?|wait|stop|pause|never|no)\b/i;
 export function asksToGoLive(text: string | null | undefined, product?: string): boolean {
   const t = String(text ?? '');
   if (product && new RegExp(`\\bDEPLOY\\s+${product.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`).test(t)) return true;
+  // "DEPLOY <another project>" names that one: not a go-ahead for this one.
+  if (product && /\bDEPLOY\s+[\w-]+/.test(t)) return false;
   if (!/\b(go(ing)?|take|put|push|send|ship|make)\b[^.!?\n]{0,30}\blive\b|\bship (it|this|that)\b|\bdeploy\b|\brelease (it|this|that)\b|\bgo ahead\b[^.!?\n]{0,30}\b(live|release|ship|deploy)/i.test(t)) return false;
   return !NO.test(t);
 }
@@ -43,6 +45,7 @@ export function asksToGoLive(text: string | null | undefined, product?: string):
 export function asksToRollBack(text: string | null | undefined, product?: string): boolean {
   const t = String(text ?? '');
   if (product && new RegExp(`\\bROLLBACK\\s+${product.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`).test(t)) return true;
+  if (product && /\bROLLBACK\s+[\w-]+/.test(t)) return false;
   return /\broll(ing)?[- ]?back\b|\brevert (the |that |this )?(release|deploy|go[- ]live|live)\b|\bundo (the |that |this )?(release|deploy|go[- ]live)\b/i.test(t) && !/\b(don'?t|do not|no need)\b/i.test(t);
 }
 

@@ -52,17 +52,17 @@ const conv = (texts: [string, string][]) => {
 
 test('anything live needs J\'s own latest words', () => {
   const c1 = conv([['user', 'looks good'], ['assistant', 'Type DEPLOY fasttest to go live.']]);
-  assert.match(guardRoute('/api/deploy/fasttest', 'POST', c1)!, /J's call/, "Claude's text doesn't count");
+  assert.match(guardRoute('/api/deploy/fasttest', 'POST', c1)!, /owner's word|J's call/, "Claude's text doesn't count");
   const c2 = conv([['user', 'DEPLOY fasttest'], ['assistant', 'Going live.']]);
   assert.equal(guardRoute('/api/deploy/fasttest', 'POST', c2), null);
-  assert.match(guardRoute('/api/deploy/othergame', 'POST', c2)!, /J's call/, 'the words name the product');
+  assert.match(guardRoute('/api/deploy/othergame', 'POST', c2)!, /owner's word|J's call/, 'the words name the product');
   const c3 = conv([['user', 'DEPLOY fasttest'], ['user', 'actually wait']]);
-  assert.match(guardRoute('/api/deploy/fasttest', 'POST', c3)!, /J's call/, 'only his newest message');
+  assert.match(guardRoute('/api/deploy/fasttest', 'POST', c3)!, /owner's word|J's call/, 'only his newest message');
   const c4 = conv([['notice', 'DEPLOY fasttest']]);
-  assert.match(guardRoute('/api/deploy/fasttest', 'POST', c4)!, /J's call/, "Studio's notices don't count");
+  assert.match(guardRoute('/api/deploy/fasttest', 'POST', c4)!, /owner's word|J's call/, "Studio's notices don't count");
   assert.equal(jTyped(conv([['user', 'ok ROLLBACK fasttest please']]), 'ROLLBACK fasttest'), true);
   assert.equal(jTyped(conv([['user', 'DEPLOY fasttest2']]), 'DEPLOY fasttest'), false, 'not inside a longer word');
-  assert.match(guardRoute('/api/rollback/fasttest', 'POST', null)!, /J's call/, 'no conversation, no rollback');
+  assert.match(guardRoute('/api/rollback/fasttest', 'POST', null)!, /owner's word|J's call/, 'no conversation, no rollback');
   assert.match(guardRoute('/api/agents/settings', 'POST', c2)!, /dashboard/);
   assert.equal(guardRoute('/api/deploy/fasttest', 'GET', null), null, 'plans are fine');
   assert.equal(guardRoute('/api/pm/merge/c_0123456789ab', 'POST', c1), null, 'beta merges stay open');
