@@ -123,6 +123,14 @@ test('signing in with GitHub keeps the person\'s token; Talk uses the admin who 
   assert.deepEqual(s.installations.map((i) => i.account), ['acme']);
 });
 
+test("Talk and Studio's own keys use the admin's GitHub; a signed-in person who hasn't linked theirs sees their own connect", async () => {
+  const { githubUserFor } = await import('../src/github-routes.ts');
+  const bare: any = { headers: {}, socket: { remoteAddress: '127.0.0.1' } };
+  assert.equal(await githubUserFor(bare), j.id, 'no person: the admin who signed in with GitHub');
+  assert.equal(G.isLinked(j.id), true);
+  assert.equal(G.isLinked('u_nobody'), false);
+});
+
 test('readiness walks a game through what it lacks; the setup plan adds the hook, the branches and Pages', async () => {
   const r = await R.readiness('space-game', j.id);
   assert.equal(r.ready, false);

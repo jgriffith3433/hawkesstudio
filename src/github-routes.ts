@@ -17,7 +17,7 @@
 import type http from 'node:http';
 import { StudioError } from './config.ts';
 import * as G from './github-app.ts';
-import { requester } from './auth.ts';
+import { requester, sessionUser, cookieToken, platformBearerUser } from './auth.ts';
 import { flowPage, backTo } from './github-pages.ts';
 
 type Send = (res: http.ServerResponse, status: number, body: unknown) => void;
@@ -36,11 +36,16 @@ const redirect = (res: http.ServerResponse, to: string) => { res.writeHead(302, 
  * linked GitHub. In J's Studio that is J.
  */
 export async function githubUserFor(req: http.IncomingMessage): Promise<string | null> {
-  const own = requester(req)?.id ?? G.linkedAdmin();
-  if (own) return own;
+  // A person signed in to Studio: their own GitHub (their status shows their own connect link until they sign in).
+  const person = sessionUser(cookieToken(req)) ?? platformBearerUser(req);
+  if (person) return person.id;
+  // Talk, agents and Studio's own keys (the owner key, scripts) have no GitHub of their own: they use whoever signed in
+  // here, an admin first (2026-10-30: the owner key never reached J's sign-in, so making a game said nobody had).
+  const key = requester(req)?.id ?? null;
+  if (G.appConfig()) return (key && G.isLinked(key) ? key : G.linkedAdmin()) ?? key;
   // A customer's Studio: the control plane keeps its people's GitHub sign-ins; Talk uses the first one's.
   const cell = await (await import('./cellside.ts')).cellGithub().catch(() => null);
-  return cell?.linked?.[0] ?? null;
+  return cell?.linked?.[0] ?? key;
 }
 
 export async function handleGithubRoutes(req: http.IncomingMessage, res: http.ServerResponse, route: string, method: string, url: URL, send: Send, readJson: (r: http.IncomingMessage) => Promise<any>, origin: string | null): Promise<boolean> {

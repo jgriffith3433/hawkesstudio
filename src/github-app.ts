@@ -465,6 +465,9 @@ export async function githubStatus(base: string, userId?: string | null) {
 }
 
 /** Whose GitHub sign-in Talk and the agents use (they have no person of their own): an admin's, else anyone's here. */
+/** Whether this Studio's user signed in with GitHub here. */
+export const isLinked = (userId: string) => Boolean(readJson<Record<string, UserLink>>(USERS_FILE(), {})[userId]);
+
 export function linkedAdmin(): string | null {
   // Customers' people (kept here by org, "org:user") are never this Studio's.
   const ids = Object.keys(readJson<Record<string, UserLink>>(USERS_FILE(), {})).filter((k) => !k.includes(':'));
