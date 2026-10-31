@@ -14,7 +14,7 @@ const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'studio-builds-'));
 Object.assign(process.env, {
   STUDIO_DATA: path.join(TMP, 'data'), STUDIO_MAIL: 'off', K_SERVICE: 'studio-o-acme-1a2b', STUDIO_ORG: 'acme-1a2b', STUDIO_SIGNUP: 'owner',
   STUDIO_CONTROL_URL: 'https://control.test', STUDIO_CELL_KEY: 'cell-key', STUDIO_SITES_SEED: 'acme-sites-seed', STUDIO_SITES_URL: 'https://sites.test',
-  STUDIO_PUBLIC_URL: 'https://studio.hawkesgen.ai/o/acme-1a2b', HAWKESGEN_URL: 'https://gen.test', HAWKESGEN_KEY: 'hg_cell',
+  STUDIO_PUBLIC_URL: 'https://studio.hawkesgen.ai/o/acme-1a2b', HAWKESGEN_URL: 'https://gen.test', HAWKESGEN_KEY: 'hg_cell', STUDIO_BUILDS_KEEP: '2',
 });
 fs.mkdirSync(process.env.STUDIO_DATA!, { recursive: true });
 delete process.env.STUDIO_PRODUCTS;
@@ -36,11 +36,11 @@ const env: any = { SITES: r2, DOMAIN: 'hawkesgen.ai', STUDIO_ORIGIN_LIVE: 'https
 const text = (s: string) => new TextEncoder().encode(s);
 
 // ---- the repos on "GitHub"
-const SHA1 = 'a'.repeat(40), SHA2 = 'b'.repeat(40);
+const SHA1 = 'a'.repeat(40), SHA2 = 'b'.repeat(40), SHA3 = 'c'.repeat(40), SHA4 = 'd'.repeat(40);
 const blobs = new Map<string, Uint8Array>();
 const tree = (files: Record<string, string>) => Object.entries(files).map(([p, c]) => { const d = text(c); const sha = crypto.createHash('sha1').update(d).digest('hex'); blobs.set(sha, d); return { path: p, type: 'blob', mode: '100644', sha, size: d.length }; });
 const repos: Record<string, Record<string, ReturnType<typeof tree>>> = {
-  'acme/site': { [SHA1]: tree({ 'index.html': '<!doctype html><html><head><meta charset="utf-8"></head><body>site v1</body></html>', 'a.js': 'a1' }), [SHA2]: tree({ 'index.html': '<!doctype html><html><head><meta charset="utf-8"></head><body>site v2</body></html>', 'a.js': 'a2' }) },
+  'acme/site': { [SHA1]: tree({ 'index.html': '<!doctype html><html><head><meta charset="utf-8"></head><body>site v1</body></html>', 'a.js': 'a1' }), [SHA2]: tree({ 'index.html': '<!doctype html><html><head><meta charset="utf-8"></head><body>site v2</body></html>', 'a.js': 'a2' }), [SHA3]: tree({ 'index.html': '<!doctype html><html><head><meta charset="utf-8"></head><body>site v3</body></html>' }), [SHA4]: tree({ 'index.html': '<!doctype html><html><head><meta charset="utf-8"></head><body>site v4</body></html>' }) },
   'acme/game': { [SHA1]: tree({ 'Game/ProjectSettings/ProjectVersion.txt': 'm_EditorVersion: 6000.3.7f1' }) },
 };
 let betaOf: Record<string, string> = { 'acme/site': SHA1, 'acme/game': SHA1 };
@@ -194,4 +194,14 @@ test("a site's _headers: Godot's cross-origin isolation, from a safe list", () =
   const rules = W.parseHeaders('/*\n  Cross-Origin-Opener-Policy: same-origin\n  Cross-Origin-Embedder-Policy: require-corp\n  Set-Cookie: no=1\n');
   assert.equal(rules[0].headers.length, 2, 'Set-Cookie is never taken');
   assert.ok(rules[0].pattern.test('/index.html'));
+});
+
+test('old versions are pruned to keep storage cheap: the newest stay, and the one beta points at always does', async () => {
+  // Beta was rolled back to 1 above; 2 builds are kept here (STUDIO_BUILDS_KEEP).
+  for (const sha of [SHA3, SHA4]) { betaOf['acme/site'] = sha; const r = (await B.startBuild('site', { trigger: 'beta' }))!; await r.done; }
+  const byVersion = Object.fromEntries(B.buildHistory('site').filter((h) => h.build === 'web').map((h) => [h.version, h.status]));
+  assert.deepEqual(byVersion, { 1: 'pruned', 2: 'pruned', 3: 'ready', 4: 'ready' });
+  assert.ok(!objects.has('live/o/acme-1a2b/site/b/web/2/index.html'), 'its files are gone from R2');
+  assert.ok(objects.has('live/o/acme-1a2b/site/b/web/4/index.html'));
+  await assert.rejects(B.setBeta('site', 'web', 2), /no finished build/);
 });

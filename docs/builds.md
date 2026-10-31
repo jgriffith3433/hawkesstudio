@@ -61,7 +61,9 @@ Every build's output is published once, under its version, and never changes:
 | `…/o/<org>/<project>/b/<build>/<n>/` | that build's version n, playable for good (R2 `<lane>/o/<org>/<project>/b/<build>/<n>/`) |
 | `…/o/<org>/<project>/c/<change>/` | an agent change's preview |
 
-Making a build beta (or rolling beta back) changes the pointer only: nothing is copied. The Worker (server/beta-sites)
+Making a build beta (or rolling beta back) changes the pointer only: nothing is copied. To keep storage cheap, each
+build keeps its newest 5 versions published (`STUDIO_BUILDS_KEEP`), plus the one beta points at and any mounted into a
+site; older ones are removed from R2 and their history rows say `pruned`. The Worker (server/beta-sites)
 also serves a build's pre-compressed files (Unity's `Build/*.wasm.br`, `*.data.gz`) with their Content-Encoding, so a
 build made without Unity's decompression fallback loads; a `200.html` in the output answers a single-page app's own
 routes; and a `_headers` file (the Cloudflare Pages format) sets headers from a safe list: Godot 4's

@@ -86,6 +86,34 @@ export async function setBeta(projectId: string, build: string, version: number)
   return { project: p.id, build, version, url: row.url };
 }
 
+/** How many versions of each build stay published (J, 2026-10-31: keep it cheap); beta's and mounted ones always stay. */
+export const BUILDS_KEEP = Math.max(1, Number(process.env.STUDIO_BUILDS_KEEP) || 5);
+
+/**
+ * Removes a build's older versions from the sites (R2 storage grows with every Unity build otherwise): the newest
+ * BUILDS_KEEP stay, and so do the one beta points at and any mounted into a site. Their rows stay, marked pruned.
+ */
+async function prune(p: Product, build: string, sub: string) {
+  const rows = db.prepare("SELECT * FROM builds WHERE product = ? AND build = ? AND status = 'ready' AND change IS NULL ORDER BY version DESC").all(p.id, build) as BuildRow[];
+  if (rows.length <= BUILDS_KEEP) return;
+  const store = await siteStore();
+  const beta = await store.get(`${sub}/beta.json`).then((x) => (x ? JSON.parse(x.toString('utf8')) : null)).catch(() => null);
+  const mounted = new Set<string>();
+  for (const q of loadProducts()) {
+    const qs = (await import('./previews.ts')).subOf(q.id);
+    if (!qs) continue;
+    const m = await store.get(`${qs}/mounts.json`).then((x) => (x ? JSON.parse(x.toString('utf8')) : {})).catch(() => ({}));
+    for (const v of Object.values(m)) mounted.add(String(v));
+  }
+  const { removeSite } = await import('./sitestore.ts');
+  for (const r of rows.slice(BUILDS_KEEP)) {
+    const base = `${sub}/b/${build}/${r.version}`;
+    if ((beta?.build === build && beta?.version === r.version) || mounted.has(base)) continue;
+    await removeSite(store, base);
+    db.prepare("UPDATE builds SET status = 'pruned', url = NULL WHERE id = ?").run(r.id);
+  }
+}
+
 /** A build mounted into another project's site at a path (the Worker serves it there): YoobaLand's in YoobaLandGame/Game/. */
 async function mount(target: Product, at: string, base: string) {
   const { sub } = await siteOf(target);
@@ -182,6 +210,7 @@ async function buildOne(run: string, p: Product, b: BuildSpec, o: StartOptions) 
       await setBeta(p.id, b.id, version);
       (await import('./previews.ts')).noteBeta(p.id, { status: 'ready', at: Date.now(), sha: sha.slice(0, 7), ref, files: out.files.length, version: `${b.id} ${version}` });
     }
+    if (!o.change) await prune(p, b.id, sub).catch((e) => say(`old builds not pruned: ${e.message}`));
     // Into another project's site too: mounted (its beta site serves it there) and, when asked, committed to its repo.
     const linked: string[] = [];
     if (b.publish && !o.change) {
