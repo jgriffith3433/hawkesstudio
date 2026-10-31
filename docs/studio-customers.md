@@ -476,7 +476,9 @@ applies to J's Studio too.
 
 ## 5. What only J can do: the platform admin
 
-Studio's `admin` role is not enough, because customers are admins of their own Studio.
+The platform admin is for **managing the platform for customers** (J, 2026-10-30: "admin should just be for managing
+the platform for customers"). Studio's `admin` role is enough for everything else in J's Studio. In a customer's
+Studio J's machinery stays out of reach of its own admins.
 
 The **platform admin** is one of:
 - a session made by **Continue with Google** for an account linked to a Google `sub`, whose email is on
@@ -488,35 +490,31 @@ answers 403 with "only the platform admin can do that".
 
 | Feature | Routes | J's Studio | A customer's Studio |
 |---|---|---|---|
-| On Air / broadcast | `/api/broadcast*` | platform admin | platform admin |
-| Social (YouTube, TikTok) | `/api/social*` | platform admin | platform admin |
-| Costs and resources across the studio | `/api/costs*`, `/api/ledger`, `/api/resources`, `/api/brief/cost` | platform admin | platform admin |
-| Self-deploys and restarts | `/api/self-deploys`, `/api/services*` | platform admin | platform admin |
-| Antigravity login | `/api/antigravity/*` | platform admin | platform admin |
-| Seeding memory from J's canon | `POST /api/memory/seed` | platform admin | platform admin |
-| Gen's machinery through the library relay | `/api/gen/v1/{fleet,machines,builder,playtester,settings,storage,clients,workflows,usage,keys,users}` | platform admin | platform admin |
-| Infra agents: changing Studio or Gen | `POST /api/changes` for hawkesstudio/hawkesgen; approve, revise, close, merge one (`/api/changes/<id>/…`, `/api/pm/merge\|revise/<id>`); its Approve card | platform admin | platform admin |
-| Going live and rollback of J's products, merges, approvals, settings that cost money, products | every `adminOnlyRoute` (auth.ts) | platform admin | the customer's admins (their own games) |
-| Claude accounts | `/api/claude/*` | platform admin | the customer's admins (their own Claude) |
-| Users, invites, the waitlist | `/api/users*`, `/api/invites*`, `/api/signups*` | platform admin | the customer's admins (their own users) |
+| Customers' Studios (orgs, hibernation, the roll) | `/api/cells*` | platform admin | platform admin |
+| The plans and their prices | `POST /api/billing/plans` | platform admin | platform admin |
+| The waitlist | `/api/signups*` | platform admin | the customer's admins |
+| Stripe's keys | `POST /api/billing/config` | platform admin | platform admin |
+| On Air, Social, costs and resources, self-deploys and restarts, the Antigravity login, seeding memory from J's canon, Gen's machinery through the library relay | `/api/broadcast*`, `/api/social*`, `/api/costs*`, `/api/ledger`, `/api/resources`, `/api/brief/cost`, `/api/self-deploys`, `/api/services*`, `/api/antigravity/*`, `POST /api/memory/seed`, `/api/gen/v1/{fleet,…}` | Studio's admin role | platform admin |
+| Infra agents: changing Studio or Gen | `POST /api/changes` for hawkesstudio/hawkesgen; approving or merging one; its card | Studio's admin role (Talk and agents: guards.ts) | platform admin |
+| Merges, Approve cards, going live, rollbacks, settings, products, GPU budgets | every `adminOnlyRoute` (auth.ts) | Studio's admin role | the customer's admins (their own games) |
+| Claude accounts, users and invites | `/api/claude/*`, `/api/users*`, `/api/invites*` | Studio's admin role | the customer's admins |
+| Analytics and Screening | `/api/analytics*`, `/api/videos*` | everyone signed in | platform admin (for now) |
 | Anything touching `jgriffith3433` repos | onboarding (`saveProduct`) | n/a | refused for everyone |
 
-Who has no account (Studio's own calls, Talk and the agents with the agents' key):
-- In J's Studio, guards.ts decides, as before (J's typed words, never the sandbox).
-- In a customer's Studio, nothing without a platform admin reaches a platform route, not even their Talk or MCP.
+Members of J's Studio still can't do an admin's things (auth.ts `memberRefusal`). Who has no account (Studio's own
+calls, Talk and the agents with the agents' key): in J's Studio guards.ts decides, as before (J's typed words, never
+the sandbox); in a customer's Studio nothing without a platform admin reaches a platform route.
 
 J's PC (not on Cloud Run, not a customer's Studio) has no lockdown: everyone there is J.
 
-**In J's Studio this means** an invited admin, or J signed in with a password, is a member in all but name. J signs in
-with Google, as he does on Cloud Run today.
-
-**The dashboard hides them** (**built**). `/api/me` returns `platformAdmin` and `hide` (costs, resources, social,
-onair, services, antigravity; in J's Studio also users and claude). `dashboard/users.js` hides those tabs and the On
-Air button. The Settings boxes for Claude, Antigravity and restarts already disappear when their API answers 403.
+**The dashboard hides them** (**built**). `/api/me` returns `platformAdmin` and `hide`: in J's Studio nothing for its
+admins and the platform tabs for its members; in a customer's Studio costs, resources, social, onair, services and
+antigravity.
 
 **Tests** (`test/lockdown.test.ts`, `test/customer.test.ts`):
-- an invited admin of J's Studio gets 403 on each of 35 J-only routes, and on starting an infra agent
-- J with Google and J's owner key pass; J with a password session doesn't
+- an admin of J's Studio who isn't the platform admin gets 403 only on managing the platform for customers, and passes
+  merges, cards, settings, users, Claude, costs, Gen jobs and going live; a member still can't
+- J with Google and J's owner key manage the platform; J with a password session doesn't
 - a customer's admin gets 403 on each platform route, and so do their unattributed calls
 - the customer's admin keeps their own deploys, settings, users, Claude and games
 

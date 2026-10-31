@@ -10,7 +10,7 @@ Cloud Run service `studio` in `hawkes-staging` / `us-east4`, the same way Hawkes
 | Piece | Where | Notes |
 |---|---|---|
 | Dashboard, API, `/mcp`, the daily loop, the PM loop, ops | Cloud Run service `studio` (`src/cloudrun-main.ts`) | One instance at most, none while idle |
-| `studio.db` | Litestream to `gs://hawkes-staging-studio-state/db/` | Restored when an instance starts (`server/studio-cloudrun/entrypoint.sh`) |
+| `studio.db` | Litestream to `gs://hawkes-staging-studio-state/db/` | Restored when an instance starts (`server/studio-cloudrun/entrypoint.sh`), after the one before it hands over ("One writer at a time") |
 | State files (settings, Claude accounts, Talk's sessions in `claude-home/`, agents.json...) | `gs://.../state/` (`src/cloudhost.ts`) | Pulled at start, pushed every 30 s and on SIGTERM |
 | Agents', scouts' and Talk's Claude Code | Cloud Run job `studio-agent`, one execution per pass (`src/cloudjob.ts`, `src/cloudjob-run.ts`) | Its own sandbox; see "The job" |
 | The daily run | Cloud Scheduler `studio-daily`, 05:00 America/Los_Angeles, `POST /api/cloud/daily` | OIDC token of `studio-scheduler@`, checked by Studio (`cloudauth.ts schedulerCall`) |
@@ -22,6 +22,24 @@ Cloud Run service `studio` in `hawkes-staging` / `us-east4`, the same way Hawkes
 
 `STUDIO_CLOUD=1` makes a local Studio act the same (the gate, no default admin) for a test run.
 
+
+### One writer at a time
+
+Cloud Run's max-instances 1 is per revision: after a deploy the old revision's instance keeps running for a while (CPU
+is always allocated, so idle instances linger), and before 2026-10-31 it kept streaming its own Litestream generation
+while the new instance restored a different one (studio-beta lost a new game's agent change, its playtest and J's
+Approve cards that way). Now (`src/cloudlease.ts`):
+
+- `db/lease.json` in the state bucket names the instance that writes the database; the holder writes a heartbeat
+  (`db/alive-<id>`) every 5 s.
+- A starting instance claims the lease before it restores (`entrypoint.sh`: `node src/cloudlease.ts claim`), then waits
+  (at most 30 s) for the holder's `db/released-<id>`, or for its heartbeat to be 15 s old (crashed or gone).
+- The holder sees the newer claim within 5 s, pushes its state files and exits; Litestream makes its last sync, and
+  `entrypoint.sh` writes `released-<id>` with the generation it streamed (`node src/cloudlease.ts release`).
+- The new instance restores exactly that generation (`litestream restore -generation`), never a guess.
+
+The logs say `[lease] {"claimed":true,…,"how":"released","generation":"…"}` on a start after a deploy, `"first"`
+the first time, `"quiet"` after a crash. Test: `test/cloud-lease.test.ts`.
 ## Signing in
 
 On the AWS server Caddy's forward_auth stood in front of everything. Here nothing does, so `server.ts` asks
