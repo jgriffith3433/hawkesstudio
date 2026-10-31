@@ -109,6 +109,8 @@ function readState(): State {
 /** What the beta site of a product serves now (its sha and when it was published), or is being rebuilt. */
 export const betaPreview = (product: string): Preview | null => readState()[product]?.beta ?? null;
 function record(product: string, change: string | undefined, v: Preview | null) {
+  // Ends in the server's log too (a customer's Studio's beta site failed with nothing to read but its own state).
+  if (v?.status === 'failed' || v?.status === 'ready') console.log(`[previews] ${product}${change ? ` ${change}` : ''}: ${v.status}${v.detail ? `: ${v.detail}` : ''}`);
   const s = readState();
   const e = (s[product] ??= {});
   if (!change) {
