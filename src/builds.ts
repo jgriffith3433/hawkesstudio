@@ -498,7 +498,7 @@ async function playDesktop(run: string, p: Product, b: BuildSpec, url: string) {
   try {
     const { genRun } = await import('./gen.ts');
     const { withPass } = await import('./sitekeys.ts');
-    const job: any = await genRun('playtest.run', p.id, { build: { url: `${url}${b.target}.zip`, target: b.target === 'linux' ? 'linux' : 'windows' }, scenario: p.contract ? 'smoke' : undefined, ...withPass() }, undefined, 45 * 60 * 1000);
+    const job: any = await genRun('playtest.run', p.id, { build: { url: `${url}${b.target}.zip` }, target: b.target === 'linux' ? 'linux' : 'windows', scenario: p.contract ? 'smoke' : undefined, ...withPass() }, undefined, 45 * 60 * 1000);
     updateStep(step, { status: job.status === 'done' ? 'done' : 'failed', detail: job.status === 'done' ? (job.result?.outcome ?? 'played') : String(job.error ?? job.status).slice(0, 300), job: job.id, finished: true });
   } catch (e: any) {
     updateStep(step, { status: 'failed', detail: String(e?.message ?? e).slice(0, 300), finished: true });

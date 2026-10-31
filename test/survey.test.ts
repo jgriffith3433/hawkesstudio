@@ -191,3 +191,9 @@ test("a Vite app's own source page isn't flagged for root paths (its build rewri
   assert.ok(!s.notes.some((n) => /links its files from the site root/.test(n.what)));
   assert.ok(!s.notes.some((n) => /No CI runs its checks/.test(n.what)), 'pnpm test counts as tests');
 });
+
+test('a mobile Unity game is asked about its platforms instead of getting a WebGL build', () => {
+  const s = S.analyze('a/m', 'beta', ['ProjectSettings/ProjectVersion.txt', 'Packages/manifest.json', 'Assets/Plugins/Android/libgame.so'], { 'ProjectSettings/ProjectVersion.txt': 'm_EditorVersion: 6000.3.7f1', 'Packages/manifest.json': '{"dependencies":{"com.unity.ads":"4.4.2"}}' }, { unityVersions: ['6000.3.7f1'] });
+  assert.deepEqual(s.suggest.builds, []);
+  assert.ok(s.notes.some((n) => /looks like a mobile game/.test(n.what)));
+});

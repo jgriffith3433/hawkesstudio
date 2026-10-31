@@ -98,7 +98,11 @@ export function analyze(repo: string, ref: string, paths: string[], files: Recor
       by: 'agent', files: [mf],
     });
     if (unity && o.unityVersions?.length && !o.unityVersions.includes(unity)) notes.push({ level: 'blocker', what: `${root} uses Unity ${unity}; Hawkes Gen's cloud builds have ${o.unityVersions.join(', ')}`, why: 'A cloud build runs the exact editor version the project was saved with', fix: `Upgrade the project to ${o.unityVersions[0]} in the editor (a branch first), or build it in your own GitHub Actions with GameCI (the builds skill's template)`, by: 'person' });
-    builds.push({ id: parts.filter((x) => x.kind === 'unity').length > 1 ? `web-${root.split('/').pop()!.toLowerCase().replace(/[^a-z0-9-]/g, '-')}` : 'web', tool: 'unity', path: root, target: 'web', on: ['tag'] });
+    // A mobile-only project (native Android or iOS plugins, mobile packages) may not build for the web: ask which
+    // targets before suggesting a WebGL cloud build (2026-10-31 review).
+    const mobile = paths.some((x) => x.startsWith(joinPath(root, 'Assets/Plugins/Android/')) || x.startsWith(joinPath(root, 'Assets/Plugins/iOS/'))) || deps.some(([k]) => /^com.unity.(mobile|ads|purchasing)|googlemobileads|com.google.(firebase|play)/.test(k));
+    if (mobile) notes.push({ level: 'info', what: `${root === '.' ? 'The Unity project' : root} looks like a mobile game (native plugins or mobile packages)`, why: "A WebGL cloud build needs everything to run in a browser; native Android or iOS plugins don't", fix: "Ask which platforms it ships on: WebGL (Studio's cloud build, after guarding native calls), or Android/iOS through their own GitHub Actions (the builds skill's GameCI template)", by: 'talk' });
+    else builds.push({ id: parts.filter((x) => x.kind === 'unity').length > 1 ? `web-${root.split('/').pop()!.toLowerCase().replace(/[^a-z0-9-]/g, '-')}` : 'web', tool: 'unity', path: root, target: 'web', on: ['tag'] });
   }
 
   // Web projects (package.json): what each folder makes, judged from its framework and config: a static build Studio
