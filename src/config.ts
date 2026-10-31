@@ -368,6 +368,14 @@ export function saveProduct(input: ProductInput): Product {
   const live = input.live ? String(input.live).trim() : undefined;
   if (live && !/^https:\/\/[^\s]+$/.test(live)) throw new StudioError('live: an https:// address', 400);
   const builds = checkBuilds(input.builds);
+  // A build committed into its own repository would start itself again on every commit, forever (Unity builds cost
+  // money; 2026-10-31 review): it goes into another project's repo, or is mounted (publish without commit).
+  const ownRepo = String(input.repo ?? '').toLowerCase().replace(/\.git$/, '');
+  for (const b of builds.filter((x) => x.publish?.commit)) {
+    const target = b.publish!.project === id ? { github: input.repo } : (loadProducts().find((x) => x.id === b.publish!.project) as any);
+    const targetRepo = String(target?.github ?? target?.repo ?? '').toLowerCase().replace(/\.git$/, '');
+    if (ownRepo && targetRepo && targetRepo === ownRepo) throw new StudioError(`builds: ${b.id} commits into ${b.publish!.project}, which is this project's own repository, so each commit would start the build again. Mount it instead (publish without commit: its beta site serves it there), or commit into the website's own repository.`, 400);
+  }
   // A project Studio builds from its repo needs no live address yet (2026-10-31: a sign-up with a repo and no live site
   // vanished: applyOnboardingSeed only logged this).
   if (!live && !input.build && !input.repo && !builds.length) throw new StudioError('Give live (a web address), a repo, or how it is built', 400);

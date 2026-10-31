@@ -21,6 +21,7 @@ db.exec(`CREATE TABLE IF NOT EXISTS builds (
   sha TEXT, ref TEXT, runner TEXT NOT NULL, target TEXT NOT NULL, files INTEGER, bytes INTEGER, url TEXT, run TEXT,
   change TEXT, detail TEXT, started INTEGER NOT NULL, finished INTEGER
 )`);
+try { db.exec('ALTER TABLE builds ADD COLUMN gen_job TEXT'); } catch { /* there already */ }
 try { db.exec('CREATE UNIQUE INDEX IF NOT EXISTS builds_version ON builds (product, build, version)'); } catch { /* there */ }
 // publish.commit: the repo and the commit on its beta that holds this build (going live fast-forwards that repo's main to it).
 for (const col of ['commit_repo', 'commit_sha']) { try { db.exec(`ALTER TABLE builds ADD COLUMN ${col} TEXT`); } catch { /* there */ } }
@@ -28,6 +29,8 @@ for (const col of ['commit_repo', 'commit_sha']) { try { db.exec(`ALTER TABLE bu
 export type BuildRow = { id: string; product: string; build: string; version: number; status: 'building' | 'ready' | 'failed' | 'pruned'; sha: string | null; ref: string | null; runner: string; target: string; files: number | null; bytes: number | null; url: string | null; run: string | null; change: string | null; detail: string | null; started: number; finished: number | null; commit_repo?: string | null; commit_sha?: string | null };
 export type BuildTrigger = 'beta' | 'tag';
 export type StartOptions = {
+  /** After a restart: the build row it carries on (its version) and the Gen job it waits for. */
+  resume?: { row: string; version: number; job: string | null };
   /** One build by id (else every build the trigger starts, or all of them when asked). */
   build?: string;
   ref?: string; sha?: string;
@@ -154,6 +157,27 @@ export async function startBuild(projectId: string, o: StartOptions = {}): Promi
   return { id, builds: specs.map((b) => b.id), done };
 }
 
+/**
+ * A build run that was going when Studio restarted (every deploy rolls the cells): each of its builds carries on where it
+ * was. One still building waits for its Gen job (no second Unity build, no second charge); one not started yet starts;
+ * finished ones stay done. Before this, the run was resumed as J's Unity build and lost (2026-10-31 review).
+ */
+export async function resumeRun(run: string, productId: string, options: { builds?: string[]; ref?: string; trigger?: BuildTrigger; change?: string }) {
+  const p = getProduct(productId);
+  const { closeRun } = await import('./pipeline.ts');
+  try {
+    for (const id of options.builds ?? []) {
+      const b = buildsOf(p).find((x) => x.id === id);
+      if (!b) continue;
+      const row = db.prepare('SELECT id, version, status, sha, gen_job FROM builds WHERE run = ? AND build = ? ORDER BY started DESC LIMIT 1').get(run, id) as any;
+      if (row && row.status !== 'building') continue;
+      await buildOne(run, p, b, { ref: options.ref, trigger: options.trigger, change: options.change, ...(row ? { sha: row.sha, resume: { row: row.id, version: row.version, job: row.gen_job ?? null } } : {}) });
+    }
+  } finally {
+    closeRun(run, `build ${p.id}`);
+  }
+}
+
 async function requireCloudBuilds() {
   const { customerStudio } = await import('./tenancy.ts');
   if (customerStudio()) await (await import('./entitlements.ts')).requireFeature('cloudBuilds');
@@ -182,6 +206,11 @@ async function buildOne(run: string, p: Product, b: BuildSpec, o: StartOptions) 
       const had = db.prepare("SELECT version, url FROM builds WHERE product = ? AND build = ? AND sha = ? AND status = 'ready' AND change IS NULL ORDER BY version DESC LIMIT 1").get(p.id, b.id, sha) as any;
       if (had) { updateStep(step, { status: 'done', detail: `${sha.slice(0, 7)} is built already (${b.id} ${had.version})`, data: { url: had.url, version: had.version, sha }, finished: true }); return; }
     }
+    // The same commit already building (a push, the nightly sync and a rebuild at once): not built twice (2026-10-31 review).
+    if (!o.resume && !o.artifact && !o.change) {
+      const busy = db.prepare("SELECT version, run FROM builds WHERE product = ? AND build = ? AND sha = ? AND status = 'building' AND change IS NULL AND started > ? LIMIT 1").get(p.id, b.id, sha, Date.now() - 4 * 3600_000) as any;
+      if (busy) { updateStep(step, { status: 'done', detail: `${sha.slice(0, 7)} is already building (${b.id} ${busy.version}, run ${busy.run})`, finished: true }); return; }
+    }
     // An Actions build Studio was only asked for: start the workflow; it reports when it's built (a run of its own).
     if (b.tool === 'actions' && !o.artifact) {
       if (!b.workflow) throw new Error(`build ${b.id} runs in ${slug}'s own GitHub Actions: it starts from its workflow's own triggers (set "workflow" so Studio can start it)`);
@@ -191,11 +220,13 @@ async function buildOne(run: string, p: Product, b: BuildSpec, o: StartOptions) 
       updateStep(step, { status: 'done', detail: `started ${b.workflow} on ${ref}: its build reports back when it's done (a run of its own)`, finished: true });
       return;
     }
-    const version = o.change ? 0 : nextVersion(p.id, b.id);
-    rowId = newId('b');
-    db.prepare('INSERT INTO builds (id, product, build, version, status, sha, ref, runner, target, run, change, started) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(rowId, p.id, b.id, version || -Date.now(), 'building', sha, ref, runnerOf(b), b.target ?? 'web', run, o.change ?? null, Date.now());
-    say(`${sha.slice(0, 7)} (${ref})`);
-    out = b.tool === 'unity' ? await viaGen(p, b, slug, sha, ref, token, say)
+    // Resumed after a restart: the same row and version, and a Unity build waits for the Gen job it started.
+    const version = o.resume ? o.resume.version : o.change ? 0 : nextVersion(p.id, b.id);
+    rowId = o.resume?.row ?? newId('b');
+    if (!o.resume) db.prepare('INSERT INTO builds (id, product, build, version, status, sha, ref, runner, target, run, change, started) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(rowId, p.id, b.id, version || -Date.now(), 'building', sha, ref, runnerOf(b), b.target ?? 'web', run, o.change ?? null, Date.now());
+    say(`${sha.slice(0, 7)} (${ref})${o.resume ? ', carrying on after a restart' : ''}`);
+    const row = rowId;
+    out = b.tool === 'unity' ? await viaGen(p, b, slug, sha, ref, token, say, { job: o.resume?.job ?? undefined, onSubmit: (id) => db.prepare('UPDATE builds SET gen_job = ? WHERE id = ?').run(id, row) })
       : b.tool === 'actions' ? await viaActions(b, slug, o.artifact!, gh, say)
       : await viaStudio(p, b, slug, sha, token, gh, say);
     // Publish: once, under its version (or the change's preview), behind the Studio's sign-in.
@@ -208,14 +239,21 @@ async function buildOne(run: string, p: Product, b: BuildSpec, o: StartOptions) 
     const page = (b.target ?? 'web') === 'web' ? await pageInfo(p, sha, ref, o.change, new URL(url).pathname.replace(/\/+$/, '')) : undefined;
     const r = await publishSite(store, base, out.files, { page, build: { sha: sha.slice(0, 7), version, build: b.id, at: Date.now() }, progress: say });
     db.prepare("UPDATE builds SET status = 'ready', files = ?, bytes = ?, url = ?, detail = ?, finished = ? WHERE id = ?").run(out.files.length, out.bytes, url, out.detail ?? null, Date.now(), rowId);
-    if (!o.change && (b.target ?? 'web') === 'web') {
+    // Beta moves only forward (2026-10-31 review): to a build of beta's newest commit, asked for or triggered, and never
+    // behind a newer version that already finished. Anything else (an old tag, a pull request's workflow, a slower
+    // build of an older commit) is published as its version and leaves beta, its mounts and commits alone.
+    const newer = db.prepare("SELECT 1 FROM builds WHERE product = ? AND build = ? AND status = 'ready' AND change IS NULL AND version > ? LIMIT 1").get(p.id, b.id, version);
+    const head = await githubCommit(slug, 'beta', gh).catch(() => null);
+    const movesBeta = !o.change && !newer && (head ? head === sha : ref === 'beta');
+    if (!o.change && !movesBeta) say(`${b.id} ${version} is published at its own address; beta stays (${newer ? 'a newer build is ready' : `${sha.slice(0, 7)} isn't beta's newest commit`})`);
+    if (movesBeta && (b.target ?? 'web') === 'web') {
       await setBeta(p.id, b.id, version);
       (await import('./previews.ts')).noteBeta(p.id, { status: 'ready', at: Date.now(), sha: sha.slice(0, 7), ref, files: out.files.length, version: `${b.id} ${version}` });
     }
     if (!o.change) await prune(p, b.id, sub).catch((e) => say(`old builds not pruned: ${e.message}`));
     // Into another project's site too: mounted (its beta site serves it there) and, when asked, committed to its repo.
     const linked: string[] = [];
-    if (b.publish && !o.change) {
+    if (b.publish && movesBeta) {
       const target = getProduct(b.publish.project);
       await mount(target, b.publish.path, base);
       linked.push(`${target.name} ${b.publish.path || '/'}`);
@@ -226,10 +264,10 @@ async function buildOne(run: string, p: Product, b: BuildSpec, o: StartOptions) 
       }
     }
     updateStep(step, { status: 'done', detail: `${b.id} ${version || o.change}: ${out.files.length} files, ${Math.round(out.bytes / 1e5) / 10} MB${linked.length ? `; also in ${linked.join(', ')}` : ''}`, data: { url, version, sha, sent: r.sent }, finished: true });
-    if (!o.change && (b.target ?? 'web') === 'web' && b.playtest !== false) await playIt(run, p, b.publish ? getProduct(b.publish.project) : p);
+    if (movesBeta && (b.target ?? 'web') === 'web' && b.playtest !== false) await playIt(run, p, b.publish ? getProduct(b.publish.project) : p);
+    else if (movesBeta && (b.target ?? 'web') !== 'web' && b.playtest !== false) await playDesktop(run, p, b, url);
     // The owner said to keep going live (golive-policy.ts): what just passed goes live by itself.
-    if (!o.change) await (await import('./golive-policy.ts')).autoGoLive(p.id, `build ${b.id} ${version}`);
-    else if (!o.change && (b.target ?? 'web') !== 'web' && b.playtest !== false) await playDesktop(run, p, b, url);
+    if (!o.change && movesBeta) await (await import('./golive-policy.ts')).autoGoLive(p.id, `build ${b.id} ${version}`);
   } catch (e: any) {
     const why = String(e?.message ?? e).slice(0, 500);
     // In the log too: a customer's Studio is only visible to the platform through its logs (2026-10-31: a refused build
@@ -284,13 +322,13 @@ async function viaStudio(p: Product, b: BuildSpec, slug: string, sha: string, to
 }
 
 /** unity: Hawkes Gen builds that commit in the cloud with the repo's own token, and hands back the output as an asset. */
-async function viaGen(p: Product, b: BuildSpec, slug: string, sha: string, ref: string, token: string | null, say: (s: string) => void): Promise<Output> {
+async function viaGen(p: Product, b: BuildSpec, slug: string, sha: string, ref: string, token: string | null, say: (s: string) => void, resume: { job?: string; onSubmit?: (id: string) => void } = {}): Promise<Output> {
   if (!token) throw new Error(`Studio has no GitHub access to ${slug}: connect GitHub and install the app on it`);
   const { genRun, gen } = await import('./gen.ts');
   say('Hawkes Gen is building it (Unity WebGL, in the cloud)');
   const job: any = await genRun('unity.build', p.id, {
     github: { repo: slug, commit: sha, token, ref }, ...(b.path ? { path: b.path } : {}), ...(b.method ? { method: b.method } : {}), target: 'web', out: 'artifact',
-  }, (j) => { if (j?.progress?.step || j?.status) say(`Hawkes Gen: ${j.progress?.step ?? j.status}`); }, 3 * 60 * 60 * 1000);
+  }, (j) => { if (j?.progress?.step || j?.status) say(`Hawkes Gen: ${j.progress?.step ?? j.status}`); }, 3 * 60 * 60 * 1000, resume);
   if (job.status !== 'done') throw new Error(`the Unity build ${job.status}: ${job.error ?? 'no reason given'}`);
   const asset = job.result?.artifact?.asset;
   if (!asset) throw new Error('Hawkes Gen finished without the build output');

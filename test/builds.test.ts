@@ -178,6 +178,7 @@ test('a Unity build in Hawkes Gen with the repo\'s own token, mounted into its w
 
 test("an Actions build: the workflow's artifact is published when its run reports in (the hook)", async () => {
   C.saveProduct({ id: 'godot', name: 'Godot', engine: 'godot', repo: 'acme/site', builds: [{ id: 'web', tool: 'actions', artifact: 'web', playtest: false }] } as any);
+  betaOf['acme/site'] = SHA1; // the run built beta's newest commit
   const res = await B.onRepoHook({ repository: 'acme/site', ref: 'refs/heads/beta', sha: SHA1, run_id: '77' }, { kind: 'build', build: 'web', artifact: 'web' });
   assert.ok(res?.runs?.godot);
   const run = await runOf(res!.runs.godot);
@@ -204,4 +205,15 @@ test('old versions are pruned to keep storage cheap: the newest stay, and the on
   assert.ok(!objects.has('live/o/acme-1a2b/site/b/web/2/index.html'), 'its files are gone from R2');
   assert.ok(objects.has('live/o/acme-1a2b/site/b/web/4/index.html'));
   await assert.rejects(B.setBeta('site', 'web', 2), /no finished build/);
+});
+
+test("beta only moves forward: a build of an older commit is published at its own address and beta stays", async () => {
+  betaOf['acme/site'] = SHA2;
+  const r = (await B.startBuild('site', { sha: SHA1, ref: 'beta' }))!;
+  await r.done;
+  const last = B.buildHistory('site', 1)[0];
+  assert.equal(last.status, 'ready');
+  const pointer = await (await W.handle(new Request('https://sites.hawkesgen.ai/.hawkes-sites/o/live/o/acme-1a2b/site/beta.json', { headers: { authorization: 'Bearer x' } }), env)).text().catch(() => '');
+  assert.ok(!pointer.includes(`"version":${last.version}`), `beta didn't move to the older commit's build (${pointer.slice(0, 80)})`);
+  assert.throws(() => C.saveProduct({ id: 'loop', name: 'Loop', engine: 'unity', repo: 'acme/loop', builds: [{ id: 'web', tool: 'unity', publish: { project: 'loop', path: 'Game/', commit: true } }] } as any), /own repository/);
 });

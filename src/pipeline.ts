@@ -1283,6 +1283,10 @@ export function resumeRuns() {
       if (r.kind === 'daily' || r.kind === 'manual') body = () => runAll(r.id, products, options).catch((e: any) => {
         db.prepare(`UPDATE runs SET status = 'failed', detail = ?, finished = ? WHERE id = ?`).run(String(e.message ?? e), Date.now(), r.id);
       });
+      // A project's builds (builds.ts) carry on through their own resume, never as a Unity product's build.
+      else if (r.kind === 'build' && Array.isArray(options.builds)) body = () => import('./builds.ts').then((B) => B.resumeRun(r.id, products[0], options)).catch((e: any) => {
+        db.prepare(`UPDATE runs SET status = 'failed', detail = ?, finished = ? WHERE id = ?`).run(String(e.message ?? e), Date.now(), r.id);
+      });
       else if (['build', 'test', 'playtest'].includes(r.kind)) body = () => partialBody(r.id, r.kind, getProduct(products[0]), options);
       else if (r.kind === 'beta') body = () => betaBody(r.id, getProduct(products[0]), options);
       else if (r.kind === 'assets' && Array.isArray(options.todo)) body = () => assetsBody(r.id, getProduct(products[0]), options.todo, options);
