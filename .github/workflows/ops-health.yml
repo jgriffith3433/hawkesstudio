@@ -1,0 +1,29 @@
+# Read-only: both lanes' /api/health (studio.hawkesgen.ai and studio-beta.hawkesgen.ai). No secrets, no environment.
+#   gh workflow run ops-health.yml --repo jgriffith3433/hawkesstudio
+name: ops-health
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: ops-health
+  cancel-in-progress: true
+jobs:
+  health:
+    name: Health of both lanes
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check
+        run: |
+          fail=0
+          check() {
+            out=$(curl -s --max-time 30 -o body.txt -w '%{http_code}' "$2" || echo 000)
+            body=$(head -c 1500 body.txt 2>/dev/null | sed -E 's/(hg_|hgm_|hs_|ghs_|ghp_|github_pat_|sk-ant-|cfut_|cfat_|AKIA)[A-Za-z0-9_-]+/\1***/g')
+            { echo "### $1: HTTP $out ($2)"; echo '```'; echo "$body"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+            echo "$1: $out"
+            [ "$out" = 200 ] || fail=1
+          }
+          check production https://studio.hawkesgen.ai/api/health
+          check beta https://studio-beta.hawkesgen.ai/api/health
+          exit $fail
