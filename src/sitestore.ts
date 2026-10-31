@@ -283,18 +283,26 @@ export async function githubFiles(slug: string, sha: string, { sub = '', fetcher
     path: e.path.slice(prefix.length), oid: e.sha, size: e.size ?? 0,
     read: async () => {
       const local = got.get(e.path.slice(prefix.length));
+      let out: Buffer | null = null;
       if (local) {
-        const b = fs.readFileSync(local);
+        out = fs.readFileSync(local);
         fs.rmSync(local, { force: true });
         got.delete(e.path.slice(prefix.length));
-        return b;
       }
-      for (let attempt = 1; ; attempt++) {
+      for (let attempt = 1; !out; attempt++) {
         const b = await fetcher(`${GH}/repos/${slug}/git/blobs/${e.sha}`, { headers: ghHeaders('application/vnd.github.raw'), signal: AbortSignal.timeout(5 * 60_000) }).catch(() => null);
-        if (b?.ok) return Buffer.from(await b.arrayBuffer());
+        if (b?.ok) { out = Buffer.from(await b.arrayBuffer()); break; }
         if (attempt >= 3) throw new Error(`GitHub blob ${e.path} of ${slug}: ${b?.status ?? 'no answer'}`);
         await new Promise((res) => setTimeout(res, attempt * 2000));
       }
+      // A Git LFS pointer (a big file kept in LFS: a committed Unity build, a video) is replaced by the file itself,
+      // from GitHub's media address; publishing the pointer's text broke the site (2026-10-31 review).
+      if (out.length < 300 && out.subarray(0, 40).toString('utf8').startsWith('version https://git-lfs')) {
+        const media = await fetcher(`https://media.githubusercontent.com/media/${slug}/${sha}/${e.path.split('/').map(encodeURIComponent).join('/')}`, { headers: ghHeaders(), signal: AbortSignal.timeout(10 * 60_000) }).catch(() => null);
+        if (!media?.ok) throw new Error(`${e.path} of ${slug} is in Git LFS and GitHub didn't give the file (${media?.status ?? 'no answer'})`);
+        out = Buffer.from(await media.arrayBuffer());
+      }
+      return out;
     },
   }));
   // Many files to read (a first publish, a new Unity build): the commit's tarball, one API call (GitHub redirects it to

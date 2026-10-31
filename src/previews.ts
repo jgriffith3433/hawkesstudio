@@ -171,8 +171,26 @@ export function buildPreview(productId: string, o: { change?: string; dir?: stri
       return betaPreview(p.id);
     });
   }
-  if (!subOf(p.id)) throw new StudioError(`${p.name} has no staging site (products.json "previews")`);
   if (o.change && !/^c_[0-9a-f]+$/.test(o.change)) throw new StudioError(`Not a change id: ${o.change}`);
+  // An agent change of a project Studio builds: its own builds (path, command, output, package manager), from the
+  // change's pushed branch, published at c/<change>/ (2026-10-31 review: previews used a fixed npm recipe and broke for
+  // anything else). Unity builds aren't run per change (each costs a cloud build); web builds are.
+  if (o.change && p.github && remoteSites()) {
+    const change = o.change;
+    return import('./builds.ts').then(async (B) => {
+      const web = B.buildsOf(p).filter((b) => (b.target ?? 'web') === 'web' && b.tool !== 'unity' && b.tool !== 'actions');
+      if (!web.length) return null;
+      const branch = (db.prepare('SELECT branch FROM changes WHERE id = ?').get(change) as { branch?: string } | undefined)?.branch;
+      if (!branch) return null;
+      record(p.id, change, { status: 'building', at: Date.now(), detail: `building ${branch}` });
+      const r = await B.startBuild(p.id, { build: web[0].id, change, ref: branch }).catch((e: any) => { record(p.id, change, { status: 'failed', at: Date.now(), detail: String(e.message ?? e).slice(0, 300) }); return null; });
+      await r?.done;
+      const row = db.prepare("SELECT status, url, detail FROM builds WHERE product = ? AND change = ? ORDER BY started DESC LIMIT 1").get(p.id, change) as { status: string; url: string | null; detail: string | null } | undefined;
+      record(p.id, change, { status: row?.status === 'ready' ? 'ready' : 'failed', at: Date.now(), detail: row?.detail ?? '', ...(row?.url ? { url: row.url } : {}) } as any);
+      return (readState()[p.id]?.changes?.[change] ?? null) as Preview | null;
+    });
+  }
+  if (!subOf(p.id)) throw new StudioError(`${p.name} has no staging site (products.json "previews")`);
   const key = `${p.id}/${o.change ?? 'beta'}`;
   const prev = readState()[p.id];
   const last = o.change ? prev?.changes?.[o.change] : prev?.beta;

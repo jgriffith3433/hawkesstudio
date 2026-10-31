@@ -347,9 +347,18 @@ async function viaGen(p: Product, b: BuildSpec, slug: string, sha: string, ref: 
   if (!token) throw new Error(`Studio has no GitHub access to ${slug}: connect GitHub and install the app on it`);
   const { genRun, gen } = await import('./gen.ts');
   say('Hawkes Gen is building it (Unity WebGL, in the cloud)');
-  const job: any = await genRun('unity.build', p.id, {
-    github: { repo: slug, commit: sha, token, ref }, ...(b.path ? { path: b.path } : {}), ...(b.method ? { method: b.method } : {}), target: 'web', out: 'artifact',
-  }, (j) => { if (j?.progress?.step || j?.status) say(`Hawkes Gen: ${j.progress?.step ?? j.status}`); }, 3 * 60 * 60 * 1000, resume);
+  const submit = (tok: string, r: typeof resume) => genRun('unity.build', p.id, {
+    github: { repo: slug, commit: sha, token: tok, ref }, ...(b.path ? { path: b.path } : {}), ...(b.method ? { method: b.method } : {}), target: 'web', out: 'artifact',
+  }, (j) => { if (j?.progress?.step || j?.status) say(`Hawkes Gen: ${j.progress?.step ?? j.status}`); }, 3 * 60 * 60 * 1000, r);
+  let job: any = await submit(token, resume);
+  // The repo's token lasts an hour and lives only in Gen's memory: a build that waited in Gen's queue, or a Gen that
+  // restarted, can lose it. Once, with a fresh token (2026-10-31 review); a real access problem fails the same way again.
+  if (job.status === 'failed' && /token (is gone|expired)|GitHub refused|can't read the repo|Bad credentials|401/i.test(String(job.error ?? ''))) {
+    const { forgetRepoTokens, repoToken } = await import('./ghtoken.ts');
+    forgetRepoTokens();
+    const fresh = await repoToken(slug);
+    if (fresh) { say('the GitHub token had run out while it waited: building again with a fresh one'); job = await submit(fresh, { onSubmit: resume.onSubmit }); }
+  }
   if (job.status !== 'done') throw new Error(`the Unity build ${job.status}: ${job.error ?? 'no reason given'}`);
   const asset = job.result?.artifact?.asset;
   if (!asset) throw new Error('Hawkes Gen finished without the build output');
