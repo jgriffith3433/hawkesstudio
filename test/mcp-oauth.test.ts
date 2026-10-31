@@ -140,3 +140,21 @@ test("the consent page lets Allow's redirect reach the app (CSP form-action name
   q.set('redirect_uri', 'cursor://anysphere.cursor-retrieval/oauth/callback');
   assert.match((await fetch(`${base}/oauth/authorize?${q}`, { headers: { cookie } })).headers.get('content-security-policy')!, /form-action 'self' cursor:;/, 'an app scheme by its scheme');
 });
+
+test("a customer's Studio under /o/<org>: the consent form posts to its own address, and its Allow is same-site", async () => {
+  const site = { 'x-forwarded-host': 'studio.hawkesgen.ai', 'x-forwarded-proto': 'https', 'x-forwarded-prefix': '/o/acme-1a2b' };
+  const reg = (await (await fetch(`${base}/oauth/register`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ client_name: 'Claude', redirect_uris: ['https://claude.ai/api/mcp/auth_callback'] }) })).json()) as any;
+  const q = new URLSearchParams({ response_type: 'code', client_id: reg.client_id, redirect_uri: 'https://claude.ai/api/mcp/auth_callback', code_challenge: 'x'.repeat(43), code_challenge_method: 'S256', state: 's', resource: 'https://studio.hawkesgen.ai/o/acme-1a2b/mcp' });
+  const cookie = `${A.COOKIE}=${A.startSession(j, { via: 'google' }).token}`;
+  const page = await (await fetch(`${base}/oauth/authorize?${q}`, { headers: { cookie, ...site } })).text();
+  assert.match(page, /action="https:\/\/studio\.hawkesgen\.ai\/o\/acme-1a2b\/oauth\/authorize"/, 'never the domain root (J\'s Studio)');
+  // The browser's Origin is the scheme and host alone.
+  const allow = await fetch(`${base}/oauth/authorize`, { method: 'POST', redirect: 'manual', headers: { cookie, ...site, origin: 'https://studio.hawkesgen.ai', 'content-type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ ...Object.fromEntries(q), action: 'allow' }) });
+  assert.equal(allow.status, 302, await allow.clone().text());
+  const to = new URL(allow.headers.get('location')!);
+  assert.equal(to.origin + to.pathname, 'https://claude.ai/api/mcp/auth_callback');
+  assert.ok(to.searchParams.get('code'));
+  assert.equal(to.searchParams.get('iss'), 'https://studio.hawkesgen.ai/o/acme-1a2b');
+  const evil = await fetch(`${base}/oauth/authorize`, { method: 'POST', redirect: 'manual', headers: { cookie, ...site, origin: 'https://evil.example.com', 'content-type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ ...Object.fromEntries(q), action: 'allow' }) });
+  assert.equal(evil.status, 403, 'another site still refused');
+});

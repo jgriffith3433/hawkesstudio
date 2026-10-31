@@ -150,7 +150,7 @@ export function createOAuth(h: OAuthHost) {
 @media (prefers-color-scheme:dark){body{background:#141413;color:#ecebe6}.card{background:#1f1e1c!important;border-color:#33312d!important}.muted{color:#a6a39a!important}button.no{color:#ecebe6!important;border-color:#4a4741!important}}
 .card{max-width:420px;margin:16px;padding:28px;background:#fff;border:1px solid #e3dfd6;border-radius:10px}h1{font-size:20px;margin:0 0 8px}.muted{color:#6b675e;margin:0 0 20px}
 .row{display:flex;gap:10px}button{flex:1;padding:11px 14px;border-radius:6px;font:inherit;font-weight:600;cursor:pointer;border:1px solid transparent}button.yes{background:#1a1915;color:#f4f2ed}button.no{background:transparent;border-color:#cfcabf;color:#1a1915}</style></head>
-<body><form class="card" method="post" action="/oauth/authorize"><h1>${esc(appName)} wants to use ${esc(h.name)}</h1>
+<body><form class="card" method="post" action="${esc(base(req))}/oauth/authorize"><h1>${esc(appName)} wants to use ${esc(h.name)}</h1>
 <p class="muted">Signed in as ${esc(user.label)}. It can do what you can in ${esc(h.name)} through its tools, until you disconnect it.</p>
 ${hidden}<div class="row"><button class="no" name="action" value="deny" type="submit">Cancel</button><button class="yes" name="action" value="allow" type="submit">Allow</button></div></form></body></html>`;
   }
@@ -279,7 +279,8 @@ ${hidden}<div class="row"><button class="no" name="action" value="deny" type="su
           if (method === 'POST') {
             // Same site only: the form is ours (a cross-site post never carries the session anyway).
             const origin = String(req.headers.origin ?? '');
-            if (origin && origin !== base(req)) throw new OAuthError('access_denied', 'That came from another site', 403);
+            // The browser's Origin is scheme and host alone: a Studio under a path (/o/<org>) still has this one.
+            if (origin && origin !== new URL(base(req)).origin) throw new OAuthError('access_denied', 'That came from another site', 403);
             const body = await readBody(req);
             const q = new URLSearchParams(Object.entries(body).filter(([k]) => k !== 'action').map(([k, v]) => [k, String(v)]));
             const r = authorizeRequest(req, q);
