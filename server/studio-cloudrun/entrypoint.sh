@@ -25,6 +25,17 @@ export STUDIO_PORT="${PORT:-8080}"
 export STUDIO_STATE_PREFIX="${STUDIO_STATE_PREFIX:-}"
 case "$STUDIO_STATE_PREFIX" in ""|*/) ;; *) export STUDIO_STATE_PREFIX="$STUDIO_STATE_PREFIX/" ;; esac
 mkdir -p /data "$STUDIO_PROJECTS"
-litestream restore -config /etc/litestream.yml -if-db-not-exists -if-replica-exists /data/studio.db
-exec litestream replicate -config /etc/litestream.yml \
-  -exec "node --disable-warning=ExperimentalWarning src/cloudrun-main.ts"
+# One writer at a time (src/cloudlease.ts): claim the database and wait until the instance before this one (a deploy's
+# old revision lives on for a while) has stopped writing and made its last sync, then restore what it left.
+node --disable-warning=ExperimentalWarning src/cloudlease.ts claim || true
+GEN=$(cat /tmp/hawkes-restore-generation 2>/dev/null || true)
+litestream restore -config /etc/litestream.yml -if-db-not-exists -if-replica-exists ${GEN:+-generation "$GEN"} /data/studio.db
+# Not exec: once Studio stops (Cloud Run's SIGTERM, or a newer instance took the lease) and Litestream has made its last
+# sync, this shell tells the next instance it may restore.
+litestream replicate -config /etc/litestream.yml \
+  -exec "node --disable-warning=ExperimentalWarning src/cloudrun-main.ts" &
+LS=$!
+trap 'kill -TERM $LS 2>/dev/null' TERM INT
+wait $LS || true
+wait $LS 2>/dev/null || true
+node --disable-warning=ExperimentalWarning src/cloudlease.ts release || true
