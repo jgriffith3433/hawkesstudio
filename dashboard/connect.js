@@ -105,4 +105,6 @@
     }));
   }
   window.loadConnectTab = loadConnectTab;
+  // The top bar's 🔌 Connect opens this page from any tab (it is also under More).
+  document.getElementById('connectBtn')?.addEventListener('click', () => document.querySelector('#moreMenu [data-tab="connect"]')?.click());
 })();
