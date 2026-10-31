@@ -522,3 +522,15 @@ test("a customer's build that went into a live website is public at /builds/o/..
   assert.equal((await browse('https://sites.hawkesgen.ai/builds/o/acme-1a2b/game/b/web/8/Build/game.data.unityweb', { page: false })).status, 404, 'a version not marked public stays private');
   assert.equal((await browse('https://sites.hawkesgen.ai/builds/o/acme-1a2b/game/b/web/7/../8/Build/game.data.unityweb', { page: false })).status, 404, 'no way out of the marked version');
 });
+
+test("links without a Referer (a headless browser, rel=noreferrer) still go back into the project the visitor was in", async () => {
+  W.resetKeys();
+  await r2.put('live/g-cookie-site/beta/index.html', '<a href="/blog.html">blog</a>', { httpMetadata: { contentType: 'text/html' } });
+  const cookie = `hawkes_pass=${K.makePass('u_j', { lane: 'live', keys: liveKeys })}`;
+  const home = await browse('https://sites.hawkesgen.ai/g/cookie-site/', { cookie, page: true });
+  const set = String(home.headers.get('set-cookie') ?? '');
+  assert.match(set, /hawkes_site=%2Fg%2Fcookie-site; Path=\//, 'the page remembers its project');
+  const r = await W.handle(new Request('https://sites.hawkesgen.ai/blog.html', { headers: { cookie: 'hawkes_site=%2Fg%2Fcookie-site', Accept: 'text/html' } }), env);
+  assert.equal(r.status, 307);
+  assert.equal(r.headers.get('Location'), '/g/cookie-site/blog.html');
+});

@@ -447,14 +447,33 @@ async function takePass(req: Request, env: Env, lane: Lane, org: string, url: UR
 
 /** The project prefix of the page that asked (same host only): /o/<org>/<project>, /ob/..., /g/<game>, /b/<game>, with
  *  a change's /c/<id> when the page was inside one. null: not from a project under a path. */
+const PROJECT_PREFIX = /^(\/(?:o|ob)\/[a-z0-9][a-z0-9-]{1,38}[a-z0-9]\/[a-z][a-z0-9-]{1,39}|\/(?:g|b)\/[a-z][a-z0-9-]{1,39})(\/c\/[A-Za-z0-9_-]{1,64})?\//;
+/** The cookie naming the project a visitor was last in (pages without a Referer: headless browsers, no-referrer links). */
+export const LAST_PROJECT = 'hawkes_site';
 export function underProject(req: Request, url: URL): string | null {
   const ref = req.headers.get('Referer');
-  if (!ref) return null;
-  let r: URL;
-  try { r = new URL(ref); } catch { return null; }
-  if (r.host !== url.host) return null;
-  const m = /^(\/(?:o|ob)\/[a-z0-9][a-z0-9-]{1,38}[a-z0-9]\/[a-z][a-z0-9-]{1,39}|\/(?:g|b)\/[a-z][a-z0-9-]{1,39})(\/c\/[A-Za-z0-9_-]{1,64})?\//.exec(r.pathname);
+  let fromRef: string | null = null;
+  if (ref) {
+    try {
+      const r = new URL(ref);
+      const m = r.host === url.host ? PROJECT_PREFIX.exec(r.pathname) : null;
+      fromRef = m ? m[1] + (m[2] ?? '') : null;
+    } catch { fromRef = null; }
+  }
+  if (fromRef) return fromRef;
+  // No usable Referer (a playtest's browser, rel=noreferrer, a typed link): the project the visitor was last in, from
+  // its cookie (2026-10-31: a site's nav links went to the root and showed an error in the playtest).
+  const c = cookies(req, LAST_PROJECT)[0];
+  const m = c ? PROJECT_PREFIX.exec(`${decodeURIComponent(c)}/`) : null;
   return m ? m[1] + (m[2] ?? '') : null;
+}
+/** Remembers the project of a page just served (for links without a Referer), an hour, this host only. */
+function rememberProject(res: Response, url: URL): Response {
+  const m = PROJECT_PREFIX.exec(url.pathname);
+  if (!m || !(res.headers.get('Content-Type') ?? '').includes('text/html')) return res;
+  const out = new Response(res.body, res);
+  out.headers.append('Set-Cookie', `${LAST_PROJECT}=${encodeURIComponent(m[1] + (m[2] ?? ''))}; Path=/; Max-Age=3600; Secure; SameSite=Lax`);
+  return out;
 }
 
 export async function handle(req: Request, env: Env, now = Date.now()): Promise<Response> {
@@ -529,7 +548,7 @@ export async function handle(req: Request, env: Env, now = Date.now()): Promise<
   const k = await resolveKey(env, lane, sub, pathname, org);
   if (!k) return text(404, 'Not found');
   if ('redirect' in k) return new Response(null, { status: 301, headers: { Location: `${url.pathname}/${url.search}` } });
-  return page(req, env, url, k.base, k.rel);
+  return rememberProject(await page(req, env, url, k.base, k.rel), url);
 }
 
 export default { fetch: (req: Request, env: Env) => handle(req, env) };
