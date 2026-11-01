@@ -15,6 +15,10 @@ const platformRepo = (slug: string) => slug.split('/')[0].toLowerCase() === PLAT
 /** owner/name from an API route (/repos/<owner>/<name>/...), or null. */
 export const slugOfRoute = (route: string) => /^\/repos\/([^/]+\/[^/?#]+)/.exec(route)?.[1] ?? null;
 
+/** owner/name from a GitHub clone address (https://github.com/<owner>/<name>(.git), git@github.com:...), or null. */
+export const slugOfRemote = (url: string | null | undefined) =>
+  /^(?:https?:\/\/(?:[^@/]*@)?github\.com\/|git@github\.com:)([^/\s]+\/[^/\s]+?)(?:\.git)?\/?$/i.exec(String(url ?? '').trim())?.[1] ?? null;
+
 /** The token for a repo now (null: none Studio may use). */
 export async function repoToken(slug: string | null | undefined): Promise<string | null> {
   if (!slug) return null;
@@ -22,7 +26,8 @@ export async function repoToken(slug: string | null | undefined): Promise<string
   const hit = cache.get(key);
   if (hit && hit.until > Date.now()) return hit.token;
   let token: string | null = null;
-  if (!customerStudio() && platformRepo(slug)) token = process.env.GITHUB_TOKEN ?? null;
+  // J's repos use his token when the service has one; without it they go through the GitHub App like anyone's.
+  if (!customerStudio() && platformRepo(slug) && process.env.GITHUB_TOKEN) token = process.env.GITHUB_TOKEN;
   else {
     try {
       token = (await (await import('./github-app.ts')).accessFor(slug))?.token ?? null;
@@ -60,7 +65,7 @@ export async function slugOfPath(dir: string, projects: string): Promise<string 
  * its remote address), for repos that aren't J's (his go through the credential helper as before). {} when none.
  */
 export function gitAuthEnv(slug: string | null | undefined): Record<string, string> {
-  if (!slug || (!customerStudio() && platformRepo(slug))) return {};
+  if (!slug || (!customerStudio() && platformRepo(slug) && process.env.GITHUB_TOKEN)) return {};
   const token = repoTokenNow(slug);
   if (!token) return {};
   return {

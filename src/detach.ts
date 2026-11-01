@@ -17,7 +17,7 @@ import path from 'node:path';
 import { EventEmitter } from 'node:events';
 import { spawn, spawnSync } from 'node:child_process';
 import { DATA, ROOT, PROJECTS, paths, addedRepoFolders } from './config.ts';
-import { repoTokenNow } from './ghtoken.ts';
+import { repoTokenNow, slugOfRemote } from './ghtoken.ts';
 import { customerStudio, PLATFORM_GITHUB } from './tenancy.ts';
 import { startCloudJob, reattachCloudJob, cloudJobAlive } from './cloudjob.ts';
 
@@ -321,13 +321,21 @@ export function pruneDetached(maxAgeMs = 7 * 86_400_000) {
   }
 }
 
+/** A folder's origin address ('' when it isn't a clone). */
+function originOf(cwd: string) {
+  const r = spawnSync('git', ['-c', 'safe.directory=*', 'remote', 'get-url', 'origin'], { cwd, encoding: 'utf8', timeout: 10_000 });
+  return r.status === 0 ? String(r.stdout).trim() : '';
+}
+
 /** The git token a job gets: its repo's (ghtoken.ts, kept after repos.ts fetched or cloned it), else Studio's own. */
 function jobGitToken(cwd: string) {
   const top = path.relative(PROJECTS, cwd).split(/[\\/]/)[0];
   const map: Record<string, string> = { ...(JSON.parse(fs.readFileSync(paths.products, 'utf8')).repos ?? {}), ...addedRepoFolders() };
-  const slug = top && !top.startsWith('..') ? map[top] ?? null : null;
+  // An agent's worktree (PROJECTS/.work/<change>) isn't a repo folder of its own: its origin names the repo
+  // (2026-11-01: every agent job on the private Hawkes Gen repo cloned with no token and failed).
+  const slug = (top && !top.startsWith('..') ? map[top] ?? null : null) ?? slugOfRemote(originOf(cwd));
   // A customer's Studio: only its own token for the repo (one on J's account too, when its installation covers it).
   if (customerStudio()) return slug ? repoTokenNow(slug) : null;
-  const own = slug && slug.split('/')[0].toLowerCase() !== PLATFORM_GITHUB ? repoTokenNow(slug) : null;
+  const own = slug && (slug.split('/')[0].toLowerCase() !== PLATFORM_GITHUB || !process.env.GITHUB_TOKEN) ? repoTokenNow(slug) : null;
   return own ??(process.env.STUDIO_JOB_GITHUB_TOKEN || process.env.GITHUB_TOKEN || null);
 }

@@ -239,9 +239,16 @@ export function startCloudJob(unit: string, spec: Spec, o: { gitToken?: string |
       if (ws?.bundle) await r.put(key(unit, 'in.bundle'), fs.readFileSync(ws.bundle));
       const { sandboxEnv } = await import('./sandbox.ts');
       const env = jobEnv(spec.env, sandboxEnv);
+      // No token handed over (the repo's wasn't kept, it outlived its few minutes, or the folder didn't name the repo):
+      // fetch the workspace's own repo's token now, so a private repo clones in the job (the GitHub App's installation).
+      let gitToken = o.gitToken ?? null;
+      if (!gitToken && ws) {
+        const { repoToken, slugOfRemote } = await import('./ghtoken.ts');
+        gitToken = await repoToken(slugOfRemote(ws.remote)).catch(() => null);
+      }
       await r.put(key(unit, 'spec.json'), JSON.stringify({
         file: spec.file, args: spec.args, cwd, env, sessions,
-        git: ws ? { head: ws.head, branch: ws.branch, remote: ws.remote, bundle: Boolean(ws.bundle), token: o.gitToken ?? null } : null,
+        git: ws ? { head: ws.head, branch: ws.branch, remote: ws.remote, bundle: Boolean(ws.bundle), token: gitToken } : null,
       }));
       f.execution = await r.start(unit);
       await r.put(key(unit, 'execution.txt'), f.execution);
