@@ -466,6 +466,8 @@ export type Phase = {
   genDone?: string;
   /** Parked by a harness hold (parkForHarness): what stopped it. The next pass resumes it (harnessResume). */
   harness?: { kind: string; line: string; at: number; on: string; /** When each park happened (the last hour's, for the resume cap). */ parks?: number[]; /** Asked J after the cap: no more resumes by itself. */ capped?: boolean };
+  /** Restarts that resumed it at this step in a row (resumeChanges): a step that keeps ending Studio isn't resumed again. */
+  restarts?: { step: string; n: number; at: number };
 };
 
 /**
@@ -1417,7 +1419,7 @@ export function changedFiles(c: Pick<Change, 'worktree' | 'base'>) {
 
 /** A Unity product (Sick Of It, Yooba Land, The Place Department): its scenes and binaries need the Unity rules (parallel.ts). */
 export function isUnity(product: string) {
-  try { const p = getProduct(product); return p.engine === 'unity' || Boolean(p.build); } catch { return false; }
+  try { const p = getProduct(product); return p.engine === 'unity' || Boolean(p.build) || Boolean(p.builds?.some((b) => b.tool === 'unity')); } catch { return false; }
 }
 
 /** The product's other changes with work in a worktree (running, waiting, or ready to merge): the brief's "Other agents". */
@@ -1591,7 +1593,7 @@ async function work(id: string, note?: string, answer?: string, resumed?: Phase 
         await critical(`making the worktree of ${id}`, async () => {
           // A Unity game's repo (up to 3 GB) doesn't fit Studio's memory disk on Cloud Run: cloning it ended Studio and every
           // restart resumed the clone (2026-10-29). Until agents clone inside their own job, refuse plainly.
-          if (process.env.K_SERVICE && !isInfra(c.product) && getProduct(c.product)?.build) throw new Error(`agent changes to ${c.product} (a Unity game) don't run on Cloud Run yet: its repo doesn't fit Studio's disk there`);
+          if (process.env.K_SERVICE && !isInfra(c.product) && isUnity(c.product)) throw new Error(`agent changes to ${c.product} (a Unity game) don't run on Cloud Run yet: its repo doesn't fit Studio's disk there`);
           // Studio on Cloud Run starts with no checkouts: the product's repo is cloned the first time it's needed.
           await ensureCloned(c.repo, c.slug);
           const beta = await ensureBeta(repoDir);
@@ -3124,6 +3126,10 @@ export function autoFix(runId: string) {
  * After a restart (a deploy): changes that were being worked on carry on from their recorded step, reattached to the
  * same agent process and Gen jobs (work()). Ones with no step recorded (from before steps were) go back to the queue.
  */
+/** Restarts in a row at one step (each within RESTART_WINDOW_MS of the last) before a change stops being resumed. */
+export const RESTART_LOOP = 3;
+const RESTART_WINDOW_MS = 5 * 60_000;
+
 export function resumeChanges() {
   const out: string[] = [];
   for (const c of listChanges({ status: 'working,verifying,revising', limit: 200 })) {
@@ -3133,11 +3139,28 @@ export function resumeChanges() {
       continue;
     }
     if (running.has(c.id)) continue;
+    // The same step resumed RESTART_LOOP times in a row and never got past it: it is what keeps ending Studio (a clone
+    // too big for its memory crashed the customer Studio on every restart, 2026-10-31). It stops, said plainly.
+    // Only quick ones count: a crash loop restarts every minute or two; deploys during a long agent pass are far apart.
+    const prev = ph.restarts;
+    const n = prev?.step === ph.step && Date.now() - (prev.at ?? 0) < RESTART_WINDOW_MS ? prev.n + 1 : 1;
+    if (n > RESTART_LOOP) {
+      update(c.id, { status: 'failed', detail: `stopped: Studio restarted ${n - 1} times in a row during its ${ph.step} step, so it isn't resumed again (start it again once the cause is fixed)`, phase: { ...ph, failed: true } });
+      addLog(c.id, `stopped after ${n - 1} restarts in a row at the ${ph.step} step`);
+      console.warn(`[studio] ${c.id}: stopped after ${n - 1} restarts in a row at ${ph.step}`);
+      continue;
+    }
+    ph.restarts = { step: ph.step, n, at: Date.now() };
+    update(c.id, { phase: ph });
     running.add(c.id);
     // One every RESUME_GAP_MS, not all at once: each picks up with git and file work, which together froze Studio's start.
     const wait = out.length * resumeGapMs();
     out.push(c.id);
-    void new Promise((r) => setTimeout(r, wait)).then(() => work(c.id, undefined, undefined, ph)).finally(() => {
+    // A failure outside work()'s own handling (its project was removed since) is logged, never an unhandled rejection.
+    void new Promise((r) => setTimeout(r, wait)).then(() => work(c.id, undefined, undefined, ph)).catch((e) => {
+      update(c.id, { status: 'failed', detail: `couldn't carry on after the restart: ${String(e?.message ?? e).slice(0, 200)}`, phase: { ...ph, failed: true } });
+      console.warn(`[studio] resume ${c.id}: ${e?.message ?? e}`);
+    }).finally(() => {
       running.delete(c.id);
       remember(c.id);
       void pump();

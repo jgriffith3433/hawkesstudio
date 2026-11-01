@@ -7,7 +7,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 import { PROJECTS, paths, addedRepoFolders } from './config.ts';
-import { gitAuthEnv, primeRepoToken } from './ghtoken.ts';
+import { gitAuthEnv, primeRepoToken, repoToken } from './ghtoken.ts';
 
 /** The GitHub repo of a folder under PROJECTS (its top-level folder in repoMap), for git's token. */
 const slugOfDir = (dir: string) => {
@@ -98,11 +98,32 @@ export async function syncRepo(folder: string, slug: string, branch = BRANCH, wa
   return installAfterSync(r, before);
 }
 
+/** Megabytes of repo Studio clones on Cloud Run, where its disk is the instance's memory (STUDIO_CLONE_MAX_MB). */
+export const cloneMaxMb = () => Number(process.env.STUDIO_CLONE_MAX_MB) || 600;
+
+/**
+ * On Cloud Run, a repo bigger than Studio's memory disk can hold: why it isn't cloned (else null). A Unity repo of
+ * a few GB filled the 2 GB customer Studio and every restart resumed the clone, a crash loop (2026-10-31). GitHub's
+ * size (KB, the packed history) is what a clone downloads; not knowing it (no token, GitHub down) clones as before.
+ */
+export async function tooBigToClone(slug: string, fetcher: typeof fetch = fetch): Promise<string | null> {
+  if (!process.env.K_SERVICE) return null;
+  try {
+    const token = await repoToken(slug).catch(() => null);
+    const r = await fetcher(`https://api.github.com/repos/${slug}`, { headers: { accept: 'application/vnd.github+json', ...(token ? { authorization: `Bearer ${token}` } : {}) }, signal: AbortSignal.timeout(10_000) });
+    if (!r.ok) return null;
+    const mb = Math.round(Number((await r.json() as any)?.size ?? 0) / 1024);
+    return mb > cloneMaxMb() ? `${slug} is about ${mb} MB, more than Studio can clone on its server (${cloneMaxMb()} MB): agent work on it runs in a build job or on your own machine, not inside Studio` : null;
+  } catch { return null; }
+}
+
 async function syncGit(folder: string, slug: string, branch: string, want?: string): Promise<RepoResult> {
   const dir = path.join(PROJECTS, folder);
   if (!fs.existsSync(path.join(dir, '.git'))) {
     if (fs.existsSync(dir) && fs.readdirSync(dir).length) return { folder, slug, action: 'failed', detail: `${dir} exists and isn't a git repo` };
     await primeRepoToken(slug);
+    const big = await tooBigToClone(slug);
+    if (big) return { folder, slug, action: 'failed', detail: big };
     const c = await gitA(PROJECTS, ['clone', '--quiet', `https://github.com/${slug}.git`, folder], undefined, slug);
     if (!c.ok) return { folder, slug, action: 'failed', detail: c.err.split('\n').pop() ?? 'clone failed' };
     const pick = [want, branch].find((b) => b && git(dir, ['rev-parse', '--verify', '--quiet', `origin/${b}`]).ok);
