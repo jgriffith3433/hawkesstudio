@@ -24,7 +24,7 @@ import { barState, barHash, reviewedSha, reviewParams } from './review.ts';
 import { reviewJob, viaNote } from './review-cc.ts';
 import { writeReport } from './report.ts';
 import { assetStatus, makeAsset } from './assets.ts';
-import { syncRepos, syncRepo, repoMap, betaFolders, isServer, BETA, BRANCH } from './repos.ts';
+import { syncRepos, syncRepo, repoMap, betaFolders, isServer, cloneRefusal, BETA, BRANCH } from './repos.ts';
 import { gitAsync, betaLane, prepareBeta, playedLocal, gameVersions, resetBetaSite, pinBetaVersion, pruneGameVersions, saveBetaBuild, betaBuild, betaSiteDir, betaSiteFolder, betaPort, shaOf, repoDirs, fetchOrigin, betaBuildCurrent, siteBaseOf, refreshBetaSite } from './beta.ts';
 import { notifyOnce } from './notify.ts';
 import { judgeCriteria } from './acceptance.ts';
@@ -159,8 +159,24 @@ async function runAll(run: string, ids: string[], o: RunOptions) {
     // Never a Unity game's repos there (source or website, up to 8 GB of Game/v* history): Gen builds from GitHub and the
     // beta sites publish from GitHub. Cloning them filled the memory disk until the
     // instance died, every restart resuming the run and cloning again (the daily run, 2026-10-29).
-    const only = process.env.K_SERVICE ? [...new Set(ids.flatMap((p) => { const x = getProduct(p); return (x.build ? [] : [x.repo, x.site]).map((r) => r.split('/')[0]); }))] : undefined;
-    const synced = await syncRepos(only);
+    // A customer cell's Unity project (its builds in `builds`) and any repo over STUDIO_CLONE_MAX_MB are left out too
+    // (repos.ts cloneRefusal), each said as a skipped step.
+    let only: string[] | undefined;
+    if (process.env.K_SERVICE) {
+      const folders = new Set<string>();
+      for (const pid of ids) {
+        const x = getProduct(pid);
+        const big = await cloneRefusal(x);
+        if (big) {
+          updateStep(startStep(run, x.id, 'repo', x.repo.split('/')[0] || x.id, 'skipped'), { status: 'skipped', detail: big, finished: true });
+          continue;
+        }
+        for (const r of [x.repo, x.site]) if (r) folders.add(r.split('/')[0]);
+      }
+      only = [...folders];
+    }
+    // Nothing left to sync on Cloud Run is nothing (an empty list would mean every repo to syncRepos).
+    const synced = only && !only.length ? [] : await syncRepos(only);
     // Product source repos are on beta (repos.ts); the staging sites (<sub>.hawkesgen.ai) follow it.
     void import('./previews.ts').then(({ previewsAfterSync }) => previewsAfterSync(synced)).catch(() => {});
     for (const r of synced) {
@@ -1075,7 +1091,11 @@ async function betaBody(id: string, p: Product, { focus, criteria, scenario, opt
     // A build tag on Cloud Run needs no source checkout here: Gen builds that commit from GitHub. Cloning a Unity repo onto
     // the instance's memory disk failed with no message and cost every run minutes (2026-10-29).
     const cloudTag = Boolean((tag || p.build) && process.env.K_SERVICE);
-    if (lane && repoMap()[top] && !hadSteps(id, 'repo') && !cloudTag) {
+    // On Cloud Run a project too big to clone (repos.ts cloneRefusal: a customer's Unity `builds`, a repo over the size
+    // limit) isn't cloned either: its builds come from GitHub.
+    const tooBig = lane && repoMap()[top] && !hadSteps(id, 'repo') && !cloudTag ? await cloneRefusal(p) : null;
+    if (tooBig) updateStep(startStep(id, p.id, 'repo', top), { status: 'skipped', detail: tooBig, finished: true });
+    else if (lane && repoMap()[top] && !hadSteps(id, 'repo') && !cloudTag) {
       const g = startStep(id, p.id, 'repo', top);
       const r = await syncRepo(top, repoMap()[top], BRANCH, betaFolders().has(top) ? BETA : undefined);
       updateStep(g, { status: r.action === 'failed' ? 'failed' : 'done', detail: `${r.detail}${r.head ? ` (${r.head})` : ''}`, data: r, finished: true });
