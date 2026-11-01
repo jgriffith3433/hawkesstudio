@@ -12,6 +12,14 @@ const TTL = 4 * 60_000;
 
 const platformRepo = (slug: string) => slug.split('/')[0].toLowerCase() === PLATFORM_GITHUB;
 
+/**
+ * Whether this Studio can reach GitHub for the loops that start or sync agents (the PM's starts, the daily run's
+ * auto-fix, merges done on GitHub). J's Studio has GITHUB_TOKEN; a customer's Studio (an org cell) never does and gets
+ * each repo's token from the control plane instead (repoToken). Gating on GITHUB_TOKEN alone meant walk-away never
+ * started a bug in an org cell (2026-11-01: 9 open bugs, 2 free slots, nothing started all day).
+ */
+export const githubReachable = () => Boolean(process.env.GITHUB_TOKEN) || customerStudio();
+
 /** owner/name from an API route (/repos/<owner>/<name>/...), or null. */
 export const slugOfRoute = (route: string) => /^\/repos\/([^/]+\/[^/?#]+)/.exec(route)?.[1] ?? null;
 
