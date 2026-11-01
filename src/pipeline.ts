@@ -801,10 +801,19 @@ async function playScenario(run: string, p: Product, asked: Playtest, { review =
   // A game rendered in software (no GPU server was free) plays at a few fps: the result says nothing about the game,
   // so it isn't reviewed and files no findings (agents would chase problems that aren't there).
   if (r.software && p.engine !== 'static') {
-    updateStep(s, { status: 'skipped', detail: `inconclusive: no GPU server was free, the browser ran in software (${r.fps?.average ?? '?'} fps); not reviewed` });
+    updateStep(s, { status: 'skipped', detail: softwareDetail(r) });
     return job;
   }
   return reviewPlaytest(run, p, t, job, played, { focus, mode, criteria });
+}
+
+/**
+ * The step's line for a game Gen played in software: Gen's own reason (result.softwareBecause: why no GPU browser
+ * played it, e.g. RunPod out of credit) when it gives one, so the fix is on the card, not a guess.
+ */
+export function softwareDetail(r: { fps?: { average?: number | null } | null; softwareBecause?: string | null }): string {
+  const why = String(r.softwareBecause ?? '').replace(/\s+/g, ' ').trim().slice(0, 300) || 'no GPU server was free';
+  return `inconclusive: the browser ran in software (${r.fps?.average ?? '?'} fps): ${why}; not reviewed`;
 }
 
 /** The most a whole run may take before it plays no more scenarios (J, 2026-10-25: a beta run sat for hours). */
