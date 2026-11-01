@@ -114,11 +114,13 @@
         "Work for agents from real players' data"
       ],
       "homepage": "https://hawkesgen.ai",
-      "docs": "https://hawkesgen.ai",
+      "docs": "https://github.com/jgriffith3433/hawkes-analytics#readme",
       "category": "analytics",
+      "brief": "Wire Hawkes Analytics into this game (README: https://github.com/jgriffith3433/hawkes-analytics). The dependency is in place or added as described below; the product is the project's name in Hawkes Gen ({genProject} in the catalog; ask the owner if unsure, never invent one). Web: keep the one script line from hawkesgen.ai (never copy the SDK into the repo); a bundled game uses @hawkesgen/analytics (load({ product, build }) once at startup). Unity: add Assets/Resources/HawkesAnalyticsSettings.asset (a HawkesAnalyticsSettings ScriptableObject, script guid 5f75b2ea67cc4867976b903eb06cb34c from the package's HawkesAnalyticsSettings.cs.meta) with the product set. Then call the game API at the moments that matter: ready() when the player can play, levelStart/levelEnd/death around levels or waves, screen() on menus, ask() for feedback at a natural pause (never mid-play), track() for a few key actions. Nothing may throw or block the game when analytics can't load. Add or extend a playtest scenario that checks window.hawkesAnalytics.debugLog with ?hawkes-analytics-debug=1.",
       "setup": [
         "Nothing else: the line names the project, and the Analytics tab fills in as players come.",
-        "Optional: track levels, deaths and feedback from the game (window.hawkesAnalytics.levelStart, levelEnd, death, feedback)."
+        "Optional: track levels, deaths and feedback from the game (window.hawkesAnalytics.levelStart, levelEnd, death, feedback; Unity: HawkesAnalytics.LevelStart and friends).",
+        "Unity: add Assets/Resources/HawkesAnalyticsSettings.asset (Assets > Create > Hawkes > Analytics Settings) with the product; the game's website needs no change."
       ],
       "engines": {
         "web": {
@@ -131,9 +133,9 @@
         "unity": {
           "kind": "upm-git",
           "package": "com.hawkes.analytics",
-          "versions": { "source": "package-json", "repo": "jgriffith3433/hawkesgen", "path": "clients/unity/com.hawkes.analytics/package.json", "ref": "main" },
-          "available": false,
-          "why": "Coming soon for Unity: a WebGL game's website can use the web line meanwhile. Installed copies are still detected."
+          "git": "https://github.com/jgriffith3433/hawkes-analytics.git?path=/Packages/com.hawkes.analytics",
+          "versions": { "source": "github-tags", "repo": "jgriffith3433/hawkes-analytics" },
+          "docs": "https://github.com/jgriffith3433/hawkes-analytics#unity"
         }
       }
     },
