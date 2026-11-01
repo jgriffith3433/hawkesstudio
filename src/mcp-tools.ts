@@ -117,7 +117,7 @@ export function studioMcp({ studio, waitRun }: Client = { studio: defaultStudio,
         id: str('add: the new id (lower-case, dashes)'), name: str('add, update, new: the name'), engine: str('add: web | unity | godot | desktop'),
         live: str('add, update: where it plays (https)'), beta: str('add, update: its beta address (https), if any'), repo: str('add, update: owner/name on GitHub; new: the new repo\'s name (default from the name)'),
         about: str('add, update: what it is, a few sentences'), quality: str("add, update: the quality bar: what 'done' means, in the person's words"), story: str('add, update: the story or design doc text'),
-        contract: bool("add, update: true once the game implements Studio's playtest contract"), playtests: { type: 'array', description: 'add, update: [{ scenario: "smoke", where: "live", device?: "phone" }] or [{ mode: "site", where: "live" }]', items: { type: 'object' } },
+        contract: bool("add, update: true once the game implements Studio's playtest contract"), playtests: { type: 'array', description: 'add, update: [{ scenario: "smoke", where: "live" | "beta", device?: "phone", peers?: 2-4 }] or [{ mode: "site", where: "live" }]. where "beta" plays its beta site (a library or a project with no live game plays only there); peers: real players on the same ?room= for a multiplayer scenario', items: { type: 'object' } },
         pitch: str('new: what the game is, from what the person told you'), starter: str('new: a starter id (action starters lists them)'), owner: str('new: the GitHub account or organization (default: the person\'s own)'), private: bool('new: a private repo (Pages then needs a paid GitHub plan)'),
       }),
       run: async (a) => {

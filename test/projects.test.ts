@@ -110,3 +110,14 @@ test("the commit its deployed beta or live runs, from its version address", asyn
   assert.ok(D.sameCommit('abcdef1', 'abcdef1234567890abcdef1234567890abcdef12'));
   assert.ok(!D.sameCommit('abcdef1', '1234567'));
 });
+
+test('a library plays its demo on beta, with real players in one room: playtests keep where "beta" and peers', () => {
+  const LIB = { id: 'net-lib', name: 'Net lib', kind: 'app' as const, engine: 'web' as const, live: 'https://github.com/acme/net-lib', repo: 'acme/net-lib',
+    builds: [{ id: 'package', tool: 'npm', target: 'web', path: '.', out: 'dist', command: 'npm ci && npm run build', on: ['beta'], playtest: true }] };
+  const saved = C.saveProduct({ ...LIB, playtests: [{ scenario: 'smoke', where: 'beta' }, { scenario: 'two-players', where: 'beta', peers: 2 }, { scenario: 'x', where: 'local', peers: 9 }] } as any);
+  assert.deepEqual(saved.playtests, [{ scenario: 'smoke', where: 'local' }, { scenario: 'two-players', where: 'local', peers: 2 }, { scenario: 'x', where: 'local', peers: 4 }]);
+  // live stays live; one player is no peers field
+  assert.deepEqual(C.saveProduct({ ...LIB, playtests: [{ scenario: 'smoke', where: 'live', peers: 1 }] } as any).playtests, [{ scenario: 'smoke', where: 'live' }]);
+  // Without a beta there is nowhere to play it
+  assert.throws(() => C.saveProduct({ id: 'no-beta', name: 'No beta', engine: 'web', live: 'https://x.example.com', playtests: [{ scenario: 'smoke', where: 'beta' }] } as any), /beta/);
+});
