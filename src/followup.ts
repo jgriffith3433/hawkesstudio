@@ -10,6 +10,7 @@ import { db, parse } from './db.ts';
 import { GEN_PUBLIC_URL, getProduct, getInfra, isInfra } from './config.ts';
 import { PUBLIC_URL } from './notify.ts';
 import { cancelNote, cancelWords } from './cancel.ts';
+import { onFollowupsDue } from './followup-kick.ts';
 
 try { db.exec('ALTER TABLE runs ADD COLUMN origin TEXT'); } catch { /* already there */ }
 try { db.exec('ALTER TABLE runs ADD COLUMN told TEXT'); } catch { /* already there */ }
@@ -139,9 +140,18 @@ export async function checkFollowups() {
   }
 }
 
-/** Looks every 10 seconds (a few rows in SQLite; nothing external). */
+/**
+ * Looks when a change or run's status is written (followup-kick.ts), so a notice reaches Talk at once. A look every
+ * minute stays as a safety net for a status written somewhere that doesn't kick (a few rows in SQLite; nothing external).
+ */
 export function startFollowups() {
-  const tick = () => void checkFollowups().catch((e) => console.warn(`[followup] ${e.message ?? e}`));
+  let running: Promise<void> | null = null;
+  let again = false;
+  const tick = (): void => {
+    if (running) { again = true; return; }
+    running = checkFollowups().catch((e) => console.warn(`[followup] ${e.message ?? e}`)).finally(() => { running = null; if (again) { again = false; tick(); } });
+  };
+  onFollowupsDue(tick);
   setTimeout(tick, 5000).unref();
-  setInterval(tick, 10_000).unref();
+  setInterval(tick, Number(process.env.STUDIO_FOLLOWUP_SAFETY_MS) || 60_000).unref();
 }

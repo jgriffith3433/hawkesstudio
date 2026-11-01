@@ -7,6 +7,7 @@
 
 import { db } from './db.ts';
 import { gen } from './gen.ts';
+import { kickFollowups } from './followup-kick.ts';
 
 db.exec(`CREATE TABLE IF NOT EXISTS cancellations (subject TEXT PRIMARY KEY, by TEXT NOT NULL, reason TEXT, at INTEGER NOT NULL);`);
 
@@ -102,6 +103,7 @@ export function repairCancelled() {
     if (!r || r.status === 'running') continue;
     const status = endStatus(runCounts(run));
     db.prepare(`UPDATE runs SET status = ?, detail = ? WHERE id = ?`).run(status, `cancelled in Hawkes Gen (not a failure)`, run);
+    kickFollowups();
   }
   return [...runs];
 }

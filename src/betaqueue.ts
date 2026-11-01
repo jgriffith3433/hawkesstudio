@@ -23,6 +23,7 @@
 // Steps: the beta run's "beta queue" step is running while it waits and done once it has its turn (pipeline.ts betaBody).
 
 import { db, parse, J } from './db.ts';
+import { kickFollowups } from './followup-kick.ts';
 
 try { db.exec('ALTER TABLE runs ADD COLUMN origin TEXT'); } catch { /* already there (followup.ts) */ }
 
@@ -128,6 +129,7 @@ export function supersede(run: string, product: string, by: string, sha?: string
   const r = db.prepare('SELECT options, origin FROM runs WHERE id = ?').get(run) as any;
   db.prepare(`UPDATE runs SET status = 'skipped', detail = ?, finished = ?, options = ?, cost = (SELECT COALESCE(SUM(cost), 0) FROM steps WHERE run = ?) WHERE id = ?`)
     .run(detail, now, J({ ...(parse(r?.options) ?? {}), supersededBy: by }), run, run);
+  kickFollowups();
   // The conversation that asked for it hears the newer run's result too.
   if (r?.origin) db.prepare('UPDATE runs SET origin = ? WHERE id = ? AND origin IS NULL').run(r.origin, by);
   console.log(`[beta] ${run} (${product}) ${detail}`);
