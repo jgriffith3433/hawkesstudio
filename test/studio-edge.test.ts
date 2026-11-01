@@ -39,7 +39,7 @@ test('/o/<org>/ goes to its cell without the prefix, with only its own cookie', 
   assert.equal(seen[0].url, 'https://studio-o-acme-1a2b-123.us-east4.run.app/api/me?x=1');
   assert.equal(seen[0].headers.get('Cookie'), 'hs_o_acme_1a2b=mine; g_state=1', "never J's session, the control plane's or another cell's");
   assert.equal(seen[0].headers.get('X-Forwarded-Prefix'), '/o/acme-1a2b');
-  assert.equal(r.headers.get('Referrer-Policy'), 'same-origin');
+  assert.equal(r.headers.get('Referrer-Policy'), 'strict-origin-when-cross-origin');
   const bare = await worker.fetch(at('/o/acme-1a2b'), env);
   assert.equal(bare.status, 302);
   assert.equal(bare.headers.get('Location'), '/o/acme-1a2b/');

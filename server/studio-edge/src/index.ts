@@ -84,8 +84,9 @@ function fromCell(r: Response, org: string) {
   const out = new Response(r.body, r);
   const loc = out.headers.get('Location');
   if (loc && loc.startsWith('/') && !loc.startsWith('//') && !ORG_PATH.test(loc)) out.headers.set('Location', `/o/${org}${loc}`);
-  // Studio's own pages say no-referrer; behind the router the same-origin referrer is how /api/… finds the cell.
-  out.headers.set('Referrer-Policy', 'same-origin');
+  // Behind the router the same-origin referrer is how /api/… finds the cell. Not 'same-origin' alone: Google's sign-in
+  // button needs the origin as Referer on its own requests, or it says the origin isn't allowed for the client ID.
+  out.headers.set('Referrer-Policy', 'strict-origin-when-cross-origin');
   return out;
 }
 

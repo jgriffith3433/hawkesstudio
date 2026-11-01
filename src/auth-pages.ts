@@ -30,8 +30,14 @@ small{color:var(--muted)}a{color:var(--accent)}
 </style></head><body><main><div class="brand"><span class="mark">H</span>Hawkes Studio</div>${body}</main></body></html>`;
 }
 
+/** Sent on Studio's own pages. Never no-referrer or same-origin: Google's sign-in button checks the Referer of its
+ *  requests against the client's authorized origins, and with none it answers 400 "The given origin is not allowed
+ *  for the given client ID" (live, 2026-11-01). strict-origin-when-cross-origin sends other sites only the origin, so no
+ *  path or token leaves, and keeps the full same-origin referrer the edge routes a cell's /api/... by. */
+export const REFERRER_POLICY = 'strict-origin-when-cross-origin';
+
 export function html(res: http.ServerResponse, status: number, body: string, headers: Record<string, string | string[]> = {}) {
-  res.writeHead(status, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', 'X-Frame-Options': 'DENY', 'Referrer-Policy': 'no-referrer', ...headers });
+  res.writeHead(status, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', 'X-Frame-Options': 'DENY', 'Referrer-Policy': REFERRER_POLICY, ...headers });
   res.end(body);
 }
 
@@ -84,7 +90,7 @@ function googleBlock(next: string) {
   const id = googleClientId();
   if (!id) return '';
   return `<div id="g" style="display:flex;justify-content:center;min-height:44px;margin:4px 0 6px"></div><div class="err" id="gerr" hidden></div>
-<script src="https://accounts.google.com/gsi/client" async onload="hsGoogle()"></script>
+<script src="https://accounts.google.com/gsi/client" async onload="hsGoogle()" onerror="var e=document.getElementById('gerr');e.hidden=false;e.textContent='Google sign-in could not load. Check your connection or blockers, then reload.'"></script>
 <script>function hsGoogle(){google.accounts.id.initialize({client_id:${JSON.stringify(id)},callback:function(r){fetch('/auth/google',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({credential:r.credential,next:${JSON.stringify(next)}})}).then(function(x){return x.json().then(function(j){if(x.ok)location.href=j.next||'/';else{var e=document.getElementById('gerr');e.hidden=false;e.className=j.waitlist?'ok':'err';e.textContent=j.error||('HTTP '+x.status);}});});}});google.accounts.id.renderButton(document.getElementById('g'),{theme:'filled_black',size:'large',text:'continue_with',shape:'pill'});}</script>
 <details style="margin-top:10px"><summary><small>Sign in with a password instead</small></summary>`;
 }
