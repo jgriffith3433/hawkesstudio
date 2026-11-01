@@ -5,8 +5,16 @@ import { HawkesGen } from './hawkesgen.mjs';
 import { spawnSync } from 'node:child_process';
 import path from 'node:path';
 import { GEN_URL, GEN_PUBLIC_URL, PROJECTS } from './config.ts';
+import { GenEvents, nextLook, terminal, type JobFollower } from './genevents.ts';
 
 export const gen = new HawkesGen({ url: GEN_URL });
+/**
+ * Gen's live events (genevents.ts): one stream for this process, opened by the server only (server.ts). Waits follow
+ * their job on it; until it is open (the CLI, tests) every wait asks Gen on its old timer.
+ */
+export const genEvents = new GenEvents(() => gen);
+// hawkesgen.mjs wait() (gen.run) follows its job on the stream too.
+(gen as any).follow = (id: string) => genEvents.follow(id);
 
 // A customer's cell (cells.ts): its Gen key works only in its Gen org's projects, so every project Studio names (a game
 // id) becomes org_<hex>.<game> on the way to Gen (HAWKESGEN_PROJECT_PREFIX, set by the control plane). J's Studio: as is.
@@ -63,41 +71,72 @@ export function ensureGen(): Promise<boolean> {
   return restarting;
 }
 
-const TERMINAL = new Set(['done', 'failed', 'cancelled']);
-
 /**
  * Waits for a Gen job. A busy or restarting service is retried for a few minutes (jobs resume after a Gen
- * restart), so one missed poll doesn't fail a long build. Never throws for a failed job: returns it.
+ * restart), so one missed look doesn't fail a long build. Never throws for a failed job: returns it.
  */
-export async function genWait(id: string, onUpdate?: (job: any) => void, timeoutMs = 4 * 60 * 60 * 1000, halt?: () => string | null) {
+export async function genWait(id: string, onUpdate?: (job: any) => void, timeoutMs = 4 * 60 * 60 * 1000, halt?: () => string | null, { api = gen, events = genEvents, pollMs = 2000 }: { api?: { job(id: string): Promise<any>; cancel(id: string): Promise<any> }; events?: JobFollower; pollMs?: number } = {}) {
   const end = Date.now() + timeoutMs;
   let last = '';
   let misses = 0;
-  for (;;) {
-    let j: any;
-    try {
-      j = await gen.job(id);
-      misses = 0;
-    } catch (e) {
-      if (++misses > 60) throw e;
-      if (misses === 10) await ensureGen();
-      await new Promise((r) => setTimeout(r, 3000));
-      continue;
+  // Its job's events wake it (genevents.ts); it asks Gen itself at the start, at its timeout, for the whole job once it
+  // ends (an event carries no log), and every pollMs only while the stream is down. halt is Studio's own database: it is
+  // still looked at every pollMs, without asking Gen.
+  const f = events.follow(id);
+  let j: any = null;
+  let look = true;
+  let fromGet = false;
+  let heard = Date.now();
+  try {
+    for (;;) {
+      if (look) {
+        f.drop();
+        try {
+          j = await api.job(id);
+          misses = 0;
+          look = false;
+          fromGet = true;
+          heard = Date.now();
+        } catch (e) {
+          if (++misses > 60) throw e;
+          if (misses === 10) await ensureGen();
+          const ev = await f.next(3000);
+          if (!ev) continue;
+          j = ev;
+          look = false;
+          fromGet = false;
+          heard = Date.now();
+        }
+      }
+      const sig = `${j.status}|${j.detail}`;
+      if (sig !== last) {
+        last = sig;
+        onUpdate?.(j);
+      }
+      if (terminal(j)) {
+        if (!fromGet) { look = true; continue; }
+        return j;
+      }
+      // The run it belongs to was cancelled (cancel.ts haltOf): the job is cancelled at once, whenever it was submitted.
+      const why = halt?.();
+      if (why) {
+        await api.cancel(id).catch(() => {});
+        return { ...j, status: 'cancelled', error: why, halted: true };
+      }
+      if (Date.now() > end) {
+        if (!fromGet) { look = true; continue; }
+        return { ...j, status: 'failed', error: `timed out after ${Math.round(timeoutMs / 60000)} min` };
+      }
+      const { due, ms } = nextLook(f.live(), { pollMs, heard, deadlines: [end + 1], localMs: halt ? pollMs : undefined });
+      const ev = await f.next(ms);
+      if (ev) {
+        j = ev;
+        fromGet = false;
+        heard = Date.now();
+      } else look = !f.live() || Date.now() >= due;
     }
-    const sig = `${j.status}|${j.detail}`;
-    if (sig !== last) {
-      last = sig;
-      onUpdate?.(j);
-    }
-    if (TERMINAL.has(j.status)) return j;
-    // The run it belongs to was cancelled (cancel.ts haltOf): the job is cancelled at once, whenever it was submitted.
-    const why = halt?.();
-    if (why) {
-      await gen.cancel(id).catch(() => {});
-      return { ...j, status: 'cancelled', error: why, halted: true };
-    }
-    if (Date.now() > end) return { ...j, status: 'failed', error: `timed out after ${Math.round(timeoutMs / 60000)} min` };
-    await new Promise((r) => setTimeout(r, 2000));
+  } finally {
+    f.close();
   }
 }
 

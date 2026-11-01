@@ -137,6 +137,9 @@ export class HawkesGen {
    * Waits for a job to finish. onUpdate(job) is called when its detail
    * changes. Throws HawkesGenError if it fails or is cancelled (unless
    * throwOnFail is false). signal: an AbortSignal that cancels the job.
+   * An app with a live event stream sets this.follow(id) -> { next(ms), live(), drop(), close() }
+   * (Studio: src/genevents.ts): the wait then wakes on the job's events instead of asking every pollMs, and asks
+   * itself only at its timeout, every 5 minutes as a safety net, for the whole job once it ends, and while the stream is down.
    */
   async wait(id, { onUpdate, pollMs = 1500, timeoutMs = 2 * 60 * 60 * 1000, signal, throwOnFail = true } = {}) {
     const until = Date.now() + timeoutMs;
@@ -144,33 +147,58 @@ export class HawkesGen {
     let cancelled = false;
     const onAbort = () => { cancelled = true; this.cancel(id).catch(() => {}); };
     signal?.addEventListener('abort', onAbort, { once: true });
+    const f = typeof this.follow === 'function' ? this.follow(id) : null;
+    const nap = (ms) => (f ? f.next(ms) : new Promise((r) => setTimeout(() => r(null), ms)));
+    const SAFETY_MS = 5 * 60_000;
     // A dropped connection or Gen restarting is not the job failing: keep asking for up to two minutes of failures.
     let offlineSince = 0;
+    let j = null;
+    let look = true;
+    let fromGet = false;
+    let heard = Date.now();
     try {
       for (;;) {
-        let j;
-        try {
-          j = await this.job(id);
-          offlineSince = 0;
-        } catch (e) {
-          const passing = e?.kind === 'offline' || [502, 503, 504].includes(e?.status);
-          if (!passing || cancelled) throw e;
-          offlineSince ||= Date.now();
-          if (Date.now() - offlineSince > 120_000) throw e;
-          await new Promise((r) => setTimeout(r, 5000));
-          continue;
+        if (look) {
+          f?.drop();
+          try {
+            j = await this.job(id);
+            offlineSince = 0;
+            look = false;
+            fromGet = true;
+            heard = Date.now();
+          } catch (e) {
+            const passing = e?.kind === 'offline' || [502, 503, 504].includes(e?.status);
+            if (!passing || cancelled) throw e;
+            offlineSince ||= Date.now();
+            if (Date.now() - offlineSince > 120_000) throw e;
+            const ev = await nap(5000);
+            if (!ev) continue;
+            j = ev;
+            look = false;
+            fromGet = false;
+            heard = Date.now();
+          }
         }
         const sig = `${j.status}|${j.detail}|${j.outputs?.length}`;
         if (sig !== last) { last = sig; onUpdate?.(j); }
         if (TERMINAL.has(j.status)) {
+          if (!fromGet) { look = true; continue; } // an event: the whole job is asked for once
           if (throwOnFail && j.status !== 'done') throw new HawkesGenError(j.status === 'cancelled' || cancelled ? 'Cancelled' : `${j.tool} failed: ${j.error ?? j.detail}`, { kind: j.status, job: j });
           return j;
         }
-        if (Date.now() > until) throw new HawkesGenError(`Timed out waiting for job ${id}`, { kind: 'timeout', job: j });
-        await new Promise((r) => setTimeout(r, pollMs));
+        if (Date.now() > until) {
+          if (!fromGet) { look = true; continue; }
+          throw new HawkesGenError(`Timed out waiting for job ${id}`, { kind: 'timeout', job: j });
+        }
+        const live = Boolean(f?.live());
+        const due = live ? Math.min(heard + SAFETY_MS, until + 1) : Date.now() + pollMs;
+        const ev = await nap(Math.max(0, due - Date.now()));
+        if (ev) { j = ev; fromGet = false; heard = Date.now(); }
+        else look = !f?.live() || Date.now() >= due;
       }
     } finally {
       signal?.removeEventListener('abort', onAbort);
+      f?.close();
     }
   }
 

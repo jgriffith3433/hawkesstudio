@@ -10,13 +10,12 @@ import path from 'node:path';
 import { createRequire } from 'node:module';
 import { pathToFileURL } from 'node:url';
 import { db, rowToStep, type Step } from './db.ts';
-import { gen, ensureGen, fileUrl } from './gen.ts';
+import { gen, genEvents, ensureGen, fileUrl } from './gen.ts';
+import { noEvents, nextLook, terminal, type JobFollower } from './genevents.ts';
 import { PROJECTS, GEN_PUBLIC_URL, today, betaPageGlobals, type Playtest } from './config.ts';
 import { withPass } from './sitekeys.ts';
 
 // ------------------------------------------------------------ running one (never stuck)
-
-const TERMINAL = new Set(['done', 'failed', 'cancelled']);
 
 /** A playtest whose progress (Gen's detail) hasn't changed this long while it plays is stuck (J, 2026-10-19). */
 export const PLAYTEST_IDLE_MS = () => Number(process.env.STUDIO_PLAYTEST_IDLE_MS ?? 10 * 60_000);
@@ -98,6 +97,8 @@ export async function runGenJob(tool: string, project: string, params: Record<st
 type RunGenJobOptions = {
   runMs: number; queueMs?: number; priority?: number; job?: string; since?: number; onStart?: (at: number) => void; idleMs?: number;
   abandon?: () => string | null; halt?: () => string | null; api?: GenApi; pollMs?: number;
+  /** Gen's live events (genevents.ts); default: the process's stream for the real Gen, none for a stand-in api. */
+  events?: JobFollower;
   /** Join the same job another caller here submitted while Gen still has it queued (playtests: pipeline.ts playScenario). */
   share?: boolean;
 };
@@ -141,8 +142,14 @@ async function submitGenJob(api: GenApi, tool: string, project: string, params: 
   }
 }
 
-/** runGenJob's wait: the limits below, on one job (shared: entry, whose cancel waits for every caller to let go). */
-async function watchGenJob(onUpdate: (job: any) => void, { runMs, queueMs = 6 * 3600_000, job: reuse, since, onStart, idleMs, abandon, halt, api = gen, pollMs = 2000 }: RunGenJobOptions, entry: Shared | null, joined: boolean, submittedJob?: any): Promise<any> {
+/**
+ * runGenJob's wait: the limits below, on one job (shared: entry, whose cancel waits for every caller to let go).
+ * The job's events wake it (genevents.ts): it asks Gen itself at the start, once before cancelling it for a limit (and
+ * for the whole job once it ends: an event carries no log), and every pollMs only while the stream is down. The limits
+ * are one timer set to the next deadline; halt and abandon are Studio's own database, still looked at every pollMs
+ * without asking Gen.
+ */
+async function watchGenJob(onUpdate: (job: any) => void, { runMs, queueMs = 6 * 3600_000, job: reuse, since, onStart, idleMs, abandon, halt, api = gen, pollMs = 2000, events }: RunGenJobOptions, entry: Shared | null, joined: boolean, submittedJob?: any): Promise<any> {
   const job: any = submittedJob ?? { id: reuse };
   let left = false;
   const leave = async (how: 'cancel' | 'done') => {
@@ -151,9 +158,11 @@ async function watchGenJob(onUpdate: (job: any) => void, { runMs, queueMs = 6 * 
     if (entry) await leaveShared(api, entry, job.id, how);
     else if (how === 'cancel') await api.cancel(job.id).catch(() => {});
   };
+  const f = (events ?? (api === gen ? genEvents : noEvents)).follow(job.id);
   try {
     return await watchLoop();
   } finally {
+    f.close();
     await leave('done');
   }
   async function watchLoop(): Promise<any> {
@@ -169,17 +178,30 @@ async function watchGenJob(onUpdate: (job: any) => void, { runMs, queueMs = 6 * 
     let moved = Date.now();
     let lastProgress = '';
     let misses = 0;
+    let j: any = null;
+    let look = true;
+    let fromGet = false;
+    let heard = Date.now();
     for (;;) {
-      let j: any;
-      try {
-        j = await api.job(job.id);
-        misses = 0;
-      } catch (e: any) {
-        // Gen restarting (jobs resume) or busy: keep trying for a few minutes.
-        if (++misses > 90) return { ...job, status: 'failed', error: `Hawkes Gen stopped answering: ${e.message}` };
-        if (misses === 10) await ensureGen();
-        await new Promise((r) => setTimeout(r, 3000));
-        continue;
+      if (look) {
+        f.drop();
+        try {
+          j = await api.job(job.id);
+          misses = 0;
+          look = false;
+          fromGet = true;
+          heard = Date.now();
+        } catch (e: any) {
+          // Gen restarting (jobs resume) or busy: keep trying for a few minutes.
+          if (++misses > 90) return { ...job, status: 'failed', error: `Hawkes Gen stopped answering: ${e.message}` };
+          if (misses === 10) await ensureGen();
+          const ev = await f.next(3000);
+          if (!ev) continue;
+          j = ev;
+          look = false;
+          fromGet = false;
+          heard = Date.now();
+        }
       }
       const sig = `${j.status}|${j.detail}`;
       if (sig !== last) {
@@ -191,7 +213,11 @@ async function watchGenJob(onUpdate: (job: any) => void, { runMs, queueMs = 6 * 
         lastProgress = progress;
         moved = Date.now();
       }
-      if (TERMINAL.has(j.status)) return j;
+      if (terminal(j)) {
+        // An event: the whole job (its log, its result as Gen keeps it) is asked for once.
+        if (!fromGet) { look = true; continue; }
+        return j;
+      }
       const halted = halt?.();
       if (halted) {
         await leave('cancel');
@@ -211,17 +237,28 @@ async function watchGenJob(onUpdate: (job: any) => void, { runMs, queueMs = 6 * 
         }
       }
       const mins = (ms: number) => Math.round(ms / 60000);
+      const idleCounts = Boolean(idleMs && j.status === 'running' && !QUIET_PHASE.test(String(j.detail ?? '')));
       const over = started
         ? Date.now() - started > runMs ? `ran for over ${mins(runMs)} min (since ${new Date(started).toISOString().slice(11, 16)} UTC, counted across restarts)`
-          : idleMs && j.status === 'running' && !QUIET_PHASE.test(String(j.detail ?? '')) && Date.now() - moved > idleMs ? `no progress for ${mins(Date.now() - moved)} min (still at "${String(j.detail ?? '').slice(0, 160)}")` : ''
+          : idleCounts && Date.now() - moved > idleMs! ? `no progress for ${mins(Date.now() - moved)} min (still at "${String(j.detail ?? '').slice(0, 160)}")` : ''
         : Date.now() - submitted > queueMs ? `waited in the queue for over ${mins(queueMs)} min` : '';
       if (over) {
+        // Before cancelling: Gen's own word on it now (an event may have been missed), with its log.
+        if (!fromGet) { look = true; continue; }
         await leave('cancel');
         // Where it stood and its last events (foothold / stuck lines), for the finding Studio files.
         const tail = Array.isArray(j.log) ? j.log.slice(-15).map((x: unknown) => String(x)) : [];
         return { ...j, status: 'failed', error: `stuck: ${over}, so it was cancelled`, stuckAt: String(j.detail ?? ''), stuckLog: tail };
       }
-      await new Promise((r) => setTimeout(r, pollMs));
+      // Asleep until its next event, its next deadline, or (stream down) pollMs.
+      const deadlines = started ? [started + runMs + 1, ...(idleCounts ? [moved + idleMs! + 1] : [])] : [submitted + queueMs + 1];
+      const { due, ms } = nextLook(f.live(), { pollMs, heard, deadlines, localMs: halt || abandon ? pollMs : undefined });
+      const ev = await f.next(ms);
+      if (ev) {
+        j = ev;
+        fromGet = false;
+        heard = Date.now();
+      } else look = !f.live() || Date.now() >= due;
     }
   }
 }

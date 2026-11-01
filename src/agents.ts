@@ -48,7 +48,8 @@ import { withPass } from './sitekeys.ts';
 import { getFinding, updateFinding } from './backlog.ts';
 import { reviewParams } from './review.ts';
 import { reviewJob } from './review-cc.ts';
-import { gen, genRun, fileUrl } from './gen.ts';
+import { gen, genEvents, genRun, fileUrl } from './gen.ts';
+import { SAFETY_MS as GEN_EVENTS_SAFETY_MS, terminal as genTerminal } from './genevents.ts';
 import { runGenJob, playtestRunMs, PLAYTEST_IDLE_MS } from './playtests.ts';
 import { unityBuild } from './buildpkgs.ts';
 import { jobCancelDetail, noteCancel, cancelNote, cancelWords } from './cancel.ts';
@@ -475,7 +476,8 @@ export type Phase = {
 /**
  * A GPU agent that queued Gen jobs parks instead of waiting in its session (J, 2026-10-18, q_dda086e2af58): it writes
  * .hawkes/waiting-jobs.txt and ends; the change is "waiting on Gen" (not failed, not ready, no try, no product slot)
- * while Studio polls the jobs (pollGenWaits), and its session is resumed with their results once all have finished.
+ * while Studio follows the jobs (pollGenWaits: Gen's events, genevents.ts), and its session is resumed with their results
+ * once all have finished.
  */
 export const WAITING_GEN = 'waiting on Gen';
 export type GenJobWait = { id: string; note: string; status?: string; assets?: string[]; error?: string };
@@ -508,16 +510,18 @@ budget or say what's missing. If you queue more Gen jobs, park again the same wa
 /** How long parked jobs may wait before Talk hears of it, once (agents.genWaitHours, default 6). */
 const genWaitMs = (s = agentSettings()) => Number(process.env.STUDIO_GEN_WAIT_MS) > 0 ? Number(process.env.STUDIO_GEN_WAIT_MS) : (s.genWaitHours > 0 ? s.genWaitHours : 6) * 3600_000;
 /**
- * How often parked jobs are polled (cheap: one GET per unfinished job). STUDIO_GEN_POLL_MS: tests. It was every 3 minutes,
- * so an agent whose Gen jobs finished sat up to 3 minutes (1.5 on average) before its session carried on: now every 30 s
- * while the wait is young, and every 3 minutes once it has waited GEN_POLL_SLOW_AFTER (long GPU queues need no more).
+ * How often parked jobs are asked for (one GET per unfinished job). STUDIO_GEN_POLL_MS: tests. Gen's events (genevents.ts)
+ * resume a change the moment its last job ends, so while the stream is open this is only the safety net for an event
+ * missed: every 5 minutes (SAFETY_MS). While it is down (Gen restarting, an old Gen), the old pace: every 30 s while the
+ * wait is young, and every 3 minutes once it has waited GEN_POLL_SLOW_AFTER (long GPU queues need no more). It was every
+ * 3 minutes before that, so an agent whose Gen jobs finished sat up to 3 minutes before its session carried on.
  */
 const genPollMs = () => Number(process.env.STUDIO_GEN_POLL_MS) > 0 ? Number(process.env.STUDIO_GEN_POLL_MS) : 30_000;
 const GEN_POLL_SLOW_AFTER = 15 * 60_000;
-/** Whether a parked change's jobs are due a look now (never looked at yet: at once). */
-export function genPollDue(w: Pick<GenWait, 'since' | 'checked'>, now = Date.now(), base = genPollMs()) {
+/** Whether a parked change's jobs are due a look now (never looked at yet: at once). live: Gen's event stream is open. */
+export function genPollDue(w: Pick<GenWait, 'since' | 'checked'>, now = Date.now(), base = genPollMs(), live = genEvents.live()) {
   if (!w.checked) return true;
-  const every = now - w.since < GEN_POLL_SLOW_AFTER ? base : Math.max(base, 3 * 60_000);
+  const every = live ? Math.max(base, GEN_EVENTS_SAFETY_MS()) : now - w.since < GEN_POLL_SLOW_AFTER ? base : Math.max(base, 3 * 60_000);
   return now - w.checked >= every - 1000; // a tick's own jitter doesn't skip a whole interval
 }
 
@@ -1701,6 +1705,7 @@ async function work(id: string, note?: string, answer?: string, resumed?: Phase 
         const w: GenWait = { jobs: parked, since: Date.now() };
         update(id, { status: WAITING_GEN, detail: `waiting for GPU jobs (${genProgress(w)})`, summary, commits, phase: { step: 'gen', gen: w, since: ph.since } });
         addLog(id, `parked: waiting on ${parked.length} Gen job(s) (${parked.map((j) => j.id).join(', ')}); its session resumes when they finish`);
+        genEvents.hold('parked-changes');
         setTimeout(() => void pollGenWaits(), 5_000).unref();
         return;
       }
@@ -3294,38 +3299,66 @@ export function resumeChanges() {
   // Walk-away mode: ready Studio/Gen changes not decided yet (or cut off mid-merge) are looked at again.
   walkAwayPending();
   // Changes parked on Gen jobs: their jobs are looked at again now (they may have finished while Studio was down).
-  void pollGenWaits();
+  void pollGenWaits({ force: true });
   return out;
 }
 
 let polling = false;
+/** A look asked for while one ran (an event, a reconnect): run right after it, so nothing is dropped. */
+let pendingLook: GenLook | null = null;
+/** force: every parked change is looked at now (a restart, the event stream reconnecting). jobs: jobs Gen says ended (events). */
+type GenLook = { force?: boolean; jobs?: Map<string, any> };
+const applyGenJob = (j: GenJobWait, r: any) => {
+  j.status = String(r.status ?? j.status ?? 'queued');
+  j.assets = (r.outputs ?? []).map((o: any) => o.asset).filter(Boolean);
+  if (r.error) j.error = String(r.error).slice(0, 300);
+};
 /**
- * Changes waiting on Gen: each unfinished job is looked up (GET /v1/jobs/<id>); once every one is done, failed or
- * cancelled (or unknown to Gen), the change is queued to resume its agent's session with the results (pump). Jobs
- * waiting longer than agents.genWaitHours are told in Talk once; that never fails the change.
+ * Changes waiting on Gen: once every job is done, failed or cancelled (or unknown to Gen), the change is queued to resume
+ * its agent's session with the results (pump). A job's end comes as Gen's event (look.jobs, at once); a change is also
+ * looked at when due (genPollDue: each unfinished job asked for, GET /v1/jobs/<id>), forced (look.force), or due to tell
+ * Talk. Jobs waiting longer than agents.genWaitHours are told in Talk once; that never fails the change.
  */
-export async function pollGenWaits() {
-  if (polling) return;
+export async function pollGenWaits(look: GenLook = {}) {
+  if (polling) {
+    // The look running now does what a plain one would; an event or a forced look is kept for right after it.
+    if (look.force || look.jobs?.size) {
+      const p = (pendingLook ??= {});
+      if (look.force) p.force = true;
+      if (look.jobs) for (const [id, j] of look.jobs) (p.jobs ??= new Map()).set(id, j);
+    }
+    return;
+  }
   polling = true;
   try {
-    for (const c of listChanges({ status: WAITING_GEN, limit: 100 })) {
+    const parked = listChanges({ status: WAITING_GEN, limit: 100 });
+    // Gen's events are wanted while a change is parked (genevents.ts opens its stream only while something waits).
+    if (parked.length) genEvents.hold('parked-changes');
+    else genEvents.release('parked-changes');
+    for (const c of parked) {
       const ph = phaseOf(c.id);
       const w = ph?.gen;
       if (!ph || !w) continue;
-      if (!genPollDue(w)) continue;
+      const ended = look.jobs ? w.jobs.filter((j) => !genJobDone(j) && look.jobs!.has(j.id)) : [];
+      const tellDue = !w.told && Date.now() - w.since > genWaitMs();
+      const due = Boolean(look.force) || genPollDue(w) || tellDue;
+      if (!ended.length && !due) continue;
       for (const j of w.jobs) {
         if (genJobDone(j)) continue;
+        const known = look.jobs?.get(j.id);
+        if (known) {
+          applyGenJob(j, known);
+          continue;
+        }
+        if (!due) continue;
         try {
-          const r: any = await gen.job(j.id);
-          j.status = String(r.status ?? j.status ?? 'queued');
-          j.assets = (r.outputs ?? []).map((o: any) => o.asset).filter(Boolean);
-          if (r.error) j.error = String(r.error).slice(0, 300);
+          applyGenJob(j, await gen.job(j.id));
         } catch (e: any) {
           // Gen doesn't know it (a wrong id): nothing to wait for. Gen not answering: next time.
           if (e?.status === 404) Object.assign(j, { status: 'missing', error: 'Hawkes Gen has no such job' });
         }
       }
-      w.checked = Date.now();
+      if (due) w.checked = Date.now();
       // Closed (or otherwise moved on) while we asked Gen: leave it.
       if (getChange(c.id)?.status !== WAITING_GEN) continue;
       if (w.jobs.every(genJobDone)) {
@@ -3353,8 +3386,28 @@ export async function pollGenWaits() {
     console.warn(`[studio] Gen waits: ${e.message ?? e}`);
   } finally {
     polling = false;
+    const p = pendingLook;
+    pendingLook = null;
+    if (p) void pollGenWaits(p);
   }
 }
+// A parked job's end, pushed by Gen (genevents.ts): its change resumes at once. Ends that come in together are one look.
+let endedJobs: Map<string, any> | null = null;
+genEvents.onEvent((type, job) => {
+  if (type !== 'job' || !job?.id || !genTerminal(job)) return;
+  if (!endedJobs) {
+    endedJobs = new Map();
+    setTimeout(() => {
+      const jobs = endedJobs!;
+      endedJobs = null;
+      void pollGenWaits({ jobs });
+    }, 100).unref();
+  }
+  endedJobs.set(String(job.id), job);
+});
+// The stream (re)opened: every parked job is asked for once (one may have ended while it was down).
+genEvents.onConnect(() => void pollGenWaits({ force: true }));
+// The clock behind the events: a change due a look (the stream down, or its safety check) or due to tell Talk.
 setInterval(() => void pollGenWaits(), genPollMs()).unref();
 // The server calls it once it listens (server.ts); a process that only imports this module (the CLI, tests) doesn't.
 setTimeout(() => void pump(), 5000).unref();
