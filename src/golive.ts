@@ -23,6 +23,7 @@ import { critical } from './drain.ts';
 import { repoMap } from './repos.ts';
 import { verifyLive, repoSlug, publisherOf } from './deploy.ts';
 import { repoToken } from './ghtoken.ts';
+import { kickFollowups } from './followup-kick.ts';
 
 const rel = (abs: string) => path.relative(PROJECTS, abs).replace(/\\/g, '/');
 
@@ -33,6 +34,7 @@ function liveRun(p: Product, sha: string, by: string, resumed?: string) {
   const end = (status: 'done' | 'failed', detail: string) => {
     const cost = (db.prepare('SELECT COALESCE(SUM(cost), 0) AS c FROM steps WHERE run = ?').get(id) as any).c;
     db.prepare('UPDATE runs SET status = ?, detail = ?, finished = ?, cost = ? WHERE id = ?').run(status, detail, Date.now(), cost, id);
+    kickFollowups();
   };
   return { id, end };
 }

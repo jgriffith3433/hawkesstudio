@@ -39,6 +39,7 @@ import { planCarried, settledAsk, askName, lastCleanPass, noRuntimeChange, type 
 import { brainId, harnessStopOf, type Harness } from './brains.ts';
 import { harnessHeld, holdHarness, onHoldLifted } from './harness-hold.ts';
 import { isBillingError } from './llm.ts';
+import { kickFollowups } from './followup-kick.ts';
 
 export type RunOptions = {
   products?: string[];
@@ -135,6 +136,7 @@ export function startRun(kind: string, options: RunOptions = {}) {
     // A run whose process died stays "running"; let a new one replace it after 6 hours.
     if (Date.now() - running.started < 6 * 3600_000) throw new Error(`A run is already going (${running.id}, started ${new Date(running.started).toLocaleTimeString()}).`);
     db.prepare(`UPDATE runs SET status = 'abandoned' WHERE id = ?`).run(running.id);
+    kickFollowups();
   }
   // A project handed over to another Studio (config.ts managedBy) is left out of every run that wasn't asked for it by
   // name, and out of daily runs even then.
@@ -147,6 +149,7 @@ export function startRun(kind: string, options: RunOptions = {}) {
       await runAll(id, products, options);
     } catch (e: any) {
       db.prepare(`UPDATE runs SET status = 'failed', detail = ?, finished = ? WHERE id = ?`).run(String(e.message ?? e), Date.now(), id);
+      kickFollowups();
     }
   })();
   return { id, done };
@@ -224,6 +227,7 @@ async function runAll(run: string, ids: string[], o: RunOptions) {
   }
   const cost = (db.prepare('SELECT COALESCE(SUM(cost), 0) AS c FROM steps WHERE run = ?').get(run) as any).c;
   db.prepare(`UPDATE runs SET status = ?, finished = ?, cost = ? WHERE id = ?`).run(endStatus({ ...runCounts(run), failed: 0 }, runCancelled(run)), Date.now(), cost, run);
+  kickFollowups();
   const report = writeReport(run);
   db.prepare(`UPDATE runs SET detail = ?, report = ? WHERE id = ?`).run(report.headline, J({ file: report.file, date: report.date }), run);
   // On the server, agents start on the worst new findings (within the day's budget); J approves the results.
@@ -1033,6 +1037,7 @@ export function closeRun(id: string, label: string) {
   const n = runCounts(id);
   const status = endStatus(n, runCancelled(id));
   db.prepare(`UPDATE runs SET status = ?, detail = ?, finished = ?, cost = ? WHERE id = ?`).run(status, runCancelDetail(id, `${label}${n.failed ? ' failed' : status === 'done' ? '' : ` ${status}`}`), Date.now(), cost, id);
+  kickFollowups();
 }
 
 async function partialBody(id: string, kind: string, p: Product, opts: PartialOptions) {
@@ -1047,6 +1052,7 @@ async function partialBody(id: string, kind: string, p: Product, opts: PartialOp
     closeRun(id, `${kind} ${p.id}`);
   } catch (e: any) {
     db.prepare(`UPDATE runs SET status = 'failed', detail = ?, finished = ? WHERE id = ?`).run(String(e.message ?? e), Date.now(), id);
+    kickFollowups();
   }
 }
 
@@ -1242,6 +1248,7 @@ async function betaBody(id: string, p: Product, { focus, criteria, scenario, opt
     void (await import('./golive-policy.ts')).autoGoLive(p.id, `beta run ${id}`);
   } catch (e: any) {
     db.prepare(`UPDATE runs SET status = 'failed', detail = ?, finished = ? WHERE id = ?`).run(String(e.message ?? e), Date.now(), id);
+    kickFollowups();
   }
 }
 
@@ -1289,6 +1296,7 @@ async function assetsBody(id: string, p: Product, todo: { id: string; status: st
   const failed = (db.prepare(`SELECT COUNT(*) AS n FROM steps WHERE run = ? AND status = 'failed'`).get(id) as any).n;
   const cost = (db.prepare('SELECT COALESCE(SUM(cost), 0) AS c FROM steps WHERE run = ?').get(id) as any).c;
   db.prepare('UPDATE runs SET status = ?, detail = ?, finished = ?, cost = ? WHERE id = ?').run(endStatus({ ...runCounts(id), failed }, runCancelled(id)), `assets ${p.id}: ${todo.length - failed} made${failed ? `, ${failed} failed` : ''}`, Date.now(), cost, id);
+  kickFollowups();
 }
 
 /**
@@ -1330,6 +1338,7 @@ export function stopResumedRun(run: string, why: string, cancel: (job: string) =
   const jobs = [...new Set((db.prepare(`SELECT job FROM steps WHERE run = ? AND status = 'running' AND job IS NOT NULL`).all(run) as { job: string }[]).map((x) => x.job))];
   db.prepare(`UPDATE steps SET status = 'failed', detail = ?, finished = ? WHERE status = 'running' AND run = ?`).run(why, Date.now(), run);
   db.prepare(`UPDATE runs SET status = 'failed', detail = ?, finished = ? WHERE id = ?`).run(why, Date.now(), run);
+  kickFollowups();
   db.prepare(`UPDATE builds SET status = 'failed', detail = ?, finished = ? WHERE run = ? AND status = 'building'`).run(why, Date.now(), run);
   console.warn(`[studio] ${run}: ${why}${jobs.length ? ` (cancelling its Gen job${jobs.length > 1 ? 's' : ''} ${jobs.join(', ')})` : ''}`);
   return Promise.all(jobs.map((j) => cancel(j).catch((e: any) => console.warn(`[studio] ${run}: couldn't cancel Gen job ${j}: ${String(e?.message ?? e).slice(0, 200)}`))));
@@ -1372,10 +1381,12 @@ export function resumeRuns() {
     try {
       if (r.kind === 'daily' || r.kind === 'manual') body = () => runAll(r.id, products, options).catch((e: any) => {
         db.prepare(`UPDATE runs SET status = 'failed', detail = ?, finished = ? WHERE id = ?`).run(String(e.message ?? e), Date.now(), r.id);
+        kickFollowups();
       });
       // A project's builds (builds.ts) carry on through their own resume, never as a Unity product's build.
       else if (r.kind === 'build' && Array.isArray(options.builds)) body = () => import('./builds.ts').then((B) => B.resumeRun(r.id, products[0], options)).catch((e: any) => {
         db.prepare(`UPDATE runs SET status = 'failed', detail = ?, finished = ? WHERE id = ?`).run(String(e.message ?? e), Date.now(), r.id);
+        kickFollowups();
       });
       else if (['build', 'test', 'playtest'].includes(r.kind)) body = () => partialBody(r.id, r.kind, getProduct(products[0]), options);
       else if (r.kind === 'beta') body = () => betaBody(r.id, getProduct(products[0]), options);
@@ -1387,6 +1398,7 @@ export function resumeRuns() {
     if (!body) {
       db.prepare(`UPDATE steps SET status = 'failed', detail = 'interrupted (Studio restarted)', finished = ? WHERE status = 'running' AND run = ?`).run(Date.now(), r.id);
       db.prepare(`UPDATE runs SET status = 'interrupted' WHERE id = ?`).run(r.id);
+      kickFollowups();
       db.prepare(`UPDATE builds SET status = 'failed', detail = 'interrupted (Studio restarted)', finished = ? WHERE run = ? AND status = 'building'`).run(Date.now(), r.id);
       continue;
     }

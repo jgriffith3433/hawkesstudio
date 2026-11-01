@@ -81,6 +81,7 @@ import { walkAwayOn, WALK_AWAY_BY } from './walkaway.ts';
 import { brainId, brainLabel, brainSettings, harnessStopOf, isHarness, type Harness, type HarnessStop } from './brains.ts';
 import { harnessHeld, holdDetail, holdHarness, onHoldLifted, reviewHolds, LABEL as HARNESS_LABEL } from './harness-hold.ts';
 import { githubReachable } from './ghtoken.ts';
+import { kickFollowups } from './followup-kick.ts';
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS changes (
@@ -244,6 +245,7 @@ function update(id: string, patch: Partial<Record<string, any>>) {
   // A bug is consumed when an agent takes it (startFix marks it fixed). If that attempt fails, for whatever reason, the
   // bug goes back to open so the PM picks it up again (at most maxTries attempts, then J is asked): consumed means it
   // will get done, not that it's dropped when an attempt crashes.
+  if (patch.status !== undefined && patch.status !== cur?.status) kickFollowups();
   if (patch.status === 'failed' && cur?.status !== 'failed') reopenTaken(id, (parse(next.findings) ?? []) as string[], String(next.detail ?? ''));
 }
 
