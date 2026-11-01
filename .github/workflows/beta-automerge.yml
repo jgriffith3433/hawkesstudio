@@ -1,0 +1,62 @@
+# Pull requests into beta merge by themselves (J, 2026-11-01: "Just have all work automatically merge into beta").
+# Beta only: nothing here touches main, which stays a person's call (deploy-prod.bat, Studio's go-live).
+#
+# - Which: a pull request into beta from a branch of this repo (never a fork), not a draft, without the label `hold`.
+#   Studio's own agent changes (branches task/<id>- and fix/<id>-, ids of 12 hex digits) are left to Studio, which
+#   merges them itself once its checks pass (agents.autoMergeBeta) and keeps their findings and worktrees in step.
+# - Checks: the repo runs no tests on GitHub (J, 2026-10-25), so there are none to wait for: run `npm run typecheck`
+#   and `npm test` before opening the pull request. The deploy's health check still rolls a bad beta back.
+# - Deploy: a merge made with this workflow's token doesn't start other workflows (GitHub's rule), so it starts beta's
+#   deploy (ci.yml's workflow_dispatch on beta) itself afterwards.
+# - A conflict with beta fails this run with the reason; push a fix to the branch and it tries again.
+name: Merge into beta
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, ready_for_review, unlabeled]
+    branches: [beta]
+concurrency:
+  group: beta-automerge
+  cancel-in-progress: false
+permissions:
+  contents: write
+  pull-requests: write
+  actions: write
+jobs:
+  merge:
+    if: >-
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      !github.event.pull_request.draft &&
+      !contains(github.event.pull_request.labels.*.name, 'hold')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Merge the pull request into beta
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          SHA: ${{ github.event.pull_request.head.sha }}
+          BRANCH: ${{ github.head_ref }}
+        run: |
+          if echo "$BRANCH" | grep -Eq '^(task|fix)/[0-9a-f]{12}-'; then
+            echo "$BRANCH is a Studio agent change: Studio merges it itself."; exit 0
+          fi
+          # GitHub works out mergeability in the background: wait for it.
+          for i in $(seq 1 12); do
+            state=$(gh api "repos/$REPO/pulls/$PR" --jq '.mergeable_state')
+            [ "$state" != unknown ] && break
+            sleep 5
+          done
+          echo "mergeable_state: $state"
+          case "$state" in
+            dirty) echo "::error::#$PR conflicts with beta: merge beta into the branch and push."; exit 1 ;;
+            draft) echo "#$PR is a draft."; exit 0 ;;
+          esac
+          title=$(gh api "repos/$REPO/pulls/$PR" --jq '.title')
+          gh api -X PUT "repos/$REPO/pulls/$PR/merge" -f merge_method=merge -f sha="$SHA" -f commit_title="$title (#$PR)" --jq '.message'
+          echo "MERGED=1" >> "$GITHUB_ENV"
+      - name: Deploy beta
+        if: env.MERGED == '1'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run ci.yml --repo "${{ github.repository }}" --ref beta
