@@ -39,89 +39,190 @@ type GenApi = { submit(tool: string, body: any): Promise<any>; job(id: string): 
  * neither a Studio restart nor a Gen restart (it puts a running job back in line and starts it again) extends it.
  * priority: Gen's queue order (-10..10, default 0); the go-live check goes ahead of long scenarios, carried-over plays behind.
  * abandon: checked while it waits; a reason cancels the job and returns it cancelled with `abandoned` (a newer beta
- * build waits on it). Never throws for a failed job.
+ * build waits on it). share: see below. Never throws for a failed job.
  */
-export async function runGenJob(tool: string, project: string, params: Record<string, unknown>, onUpdate: (job: any) => void, { runMs, queueMs = 6 * 3600_000, job: reuse, since, onStart, idleMs, abandon, halt, api = gen, pollMs = 2000, priority }: { runMs: number; queueMs?: number; priority?: number; job?: string; since?: number; onStart?: (at: number) => void; idleMs?: number; abandon?: () => string | null; halt?: () => string | null; api?: GenApi; pollMs?: number }) {
-  // A job submitted before a Studio restart (pipeline.ts resumes runs): waited on again, not submitted again.
-  let job: any = reuse ? { id: reuse } : null;
+export async function runGenJob(tool: string, project: string, params: Record<string, unknown>, onUpdate: (job: any) => void, opts: RunGenJobOptions) {
+  const { job: reuse, halt, api = gen, priority, share } = opts;
   // halt: the run was cancelled (cancel.ts haltOf). Before the submit nothing is submitted; after it the job is cancelled at once.
   const stopped = () => ({ status: 'cancelled', error: halt?.() ?? 'run cancelled', halted: true });
-  if (!job && halt?.()) return { id: null, ...stopped() };
-  for (let i = 0; !job; i++) {
+  if (!reuse && halt?.()) return { id: null, ...stopped() };
+  // share: the same playtest (tool, project, params) another caller here submitted and Gen hasn't started yet is joined,
+  // not queued a second time (2026-11-01: a beta run and a Talk walk-away each queued Hawkes Studio's smoke@local, and
+  // both waited for a browser tab). Only a job still queued is joined: it hasn't opened the page, so whatever it plays
+  // is at least as new as this request. Gen cancels it only when every caller sharing it has let go (leaveShared).
+  const reg = registryOf(api);
+  if (share && !reuse) {
+    const key = shareKey(tool, project, params);
+    const pending = reg.byKey.get(key);
+    if (pending) {
+      pending.subs++; // counted before any await, so the first caller's cancel can't pull it out from under this one
+      const id = await pending.id.catch(() => null);
+      const now = id ? await api.job(id).catch(() => null) : null;
+      if (id && now?.status === 'queued' && reg.byId.get(id) === pending && !halt?.()) {
+        onUpdate({ ...now, detail: `queued (the same playtest another run asked for: one job plays it for both)` });
+        return watchGenJob(onUpdate, { ...opts, job: id }, pending, true);
+      }
+      await leaveShared(api, pending, id, 'detach');
+      if (halt?.()) return { id: null, ...stopped() };
+    }
+    const entry: Shared = { key, id: Promise.resolve(''), subs: 1, cancelAsked: false };
+    let submitted!: (id: string) => void;
+    let refused!: (e: unknown) => void;
+    entry.id = new Promise<string>((ok, no) => { submitted = ok; refused = no; });
+    entry.id.catch(() => {});
+    reg.byKey.set(key, entry);
+    let job: any;
     try {
-      job = await api.submit(tool, { project, params, ...(priority ? { priority } : {}) });
-      break;
+      job = await submitGenJob(api, tool, project, params, priority);
+    } catch (e) {
+      if (reg.byKey.get(key) === entry) reg.byKey.delete(key);
+      refused(e);
+      throw e;
+    }
+    reg.byId.set(job.id, entry);
+    submitted(job.id);
+    return watchGenJob(onUpdate, opts, entry, false, job);
+  }
+  // A job submitted before a Studio restart (pipeline.ts resumes runs): waited on again, not submitted again.
+  const job = reuse ? { id: reuse } : await submitGenJob(api, tool, project, params, priority);
+  // Two steps resumed on one shared job (both recorded its id) share it again: neither cancels it under the other.
+  let entry: Shared | null = null;
+  if (reuse && share) {
+    entry = reg.byId.get(reuse) ?? null;
+    if (entry) entry.subs++;
+    else reg.byId.set(reuse, (entry = { key: null, id: Promise.resolve(reuse), subs: 1, cancelAsked: false }));
+  }
+  return watchGenJob(onUpdate, opts, entry, false, job);
+}
+
+type RunGenJobOptions = {
+  runMs: number; queueMs?: number; priority?: number; job?: string; since?: number; onStart?: (at: number) => void; idleMs?: number;
+  abandon?: () => string | null; halt?: () => string | null; api?: GenApi; pollMs?: number;
+  /** Join the same job another caller here submitted while Gen still has it queued (playtests: pipeline.ts playScenario). */
+  share?: boolean;
+};
+
+/** A job callers share (runGenJob share): its id once submitted, how many wait on it, and whether one asked to cancel it. */
+type Shared = { key: string | null; id: Promise<string>; subs: number; cancelAsked: boolean };
+const registries = new WeakMap<object, { byKey: Map<string, Shared>; byId: Map<string, Shared> }>();
+const registryOf = (api: object) => {
+  let r = registries.get(api);
+  if (!r) registries.set(api, (r = { byKey: new Map(), byId: new Map() }));
+  return r;
+};
+/** The same tool, project and params, whatever order the params' keys came in. */
+const stable = (v: unknown): unknown => (Array.isArray(v) ? v.map(stable) : v && typeof v === 'object' ? Object.fromEntries(Object.keys(v as object).sort().map((k) => [k, stable((v as any)[k])])) : v);
+export const shareKey = (tool: string, project: string, params: Record<string, unknown>) => JSON.stringify([tool, project, stable(params)]);
+/** Shared jobs waited on now (tests, the Activity card). */
+export const sharedJobs = (api: object = gen) => [...registryOf(api).byId.entries()].map(([id, e]) => ({ id, subs: e.subs }));
+
+/**
+ * One caller lets go of a shared job. "cancel": it would have cancelled it (halted, abandoned, stuck); Gen cancels it
+ * once nobody else waits on it. "done": it finished. "detach": it never used it (the job had started).
+ */
+async function leaveShared(api: GenApi, e: Shared, id: string | null, how: 'cancel' | 'done' | 'detach') {
+  if (how === 'cancel') e.cancelAsked = true;
+  if (--e.subs > 0) return;
+  const reg = registryOf(api);
+  if (e.key && reg.byKey.get(e.key) === e) reg.byKey.delete(e.key);
+  if (id && reg.byId.get(id) === e) reg.byId.delete(id);
+  if (id && how !== 'done' && e.cancelAsked) await api.cancel(id).catch(() => {});
+}
+
+async function submitGenJob(api: GenApi, tool: string, project: string, params: Record<string, unknown>, priority?: number) {
+  for (let i = 0; ; i++) {
+    try {
+      return await api.submit(tool, { project, params, ...(priority ? { priority } : {}) });
     } catch (e: any) {
       if ((e.kind !== 'offline' && !/reach|fetch failed|ECONN/i.test(String(e.message))) || i >= 20) throw e;
       if (i === 3) await ensureGen();
       await new Promise((r) => setTimeout(r, 3000));
     }
   }
-  if (!reuse && halt?.()) {
-    onUpdate({ ...job, detail: 'cancelled' });
-    await api.cancel(job.id).catch(() => {});
-    return { ...job, ...stopped() };
+}
+
+/** runGenJob's wait: the limits below, on one job (shared: entry, whose cancel waits for every caller to let go). */
+async function watchGenJob(onUpdate: (job: any) => void, { runMs, queueMs = 6 * 3600_000, job: reuse, since, onStart, idleMs, abandon, halt, api = gen, pollMs = 2000 }: RunGenJobOptions, entry: Shared | null, joined: boolean, submittedJob?: any): Promise<any> {
+  const job: any = submittedJob ?? { id: reuse };
+  let left = false;
+  const leave = async (how: 'cancel' | 'done') => {
+    if (left) return;
+    left = true;
+    if (entry) await leaveShared(api, entry, job.id, how);
+    else if (how === 'cancel') await api.cancel(job.id).catch(() => {});
+  };
+  try {
+    return await watchLoop();
+  } finally {
+    await leave('done');
   }
-  onUpdate({ ...job, detail: job.detail ?? (reuse ? 'waiting for it again after a Studio restart' : 'queued') });
-  const submitted = Date.now();
-  let started = since && since > 0 ? since : 0;
-  let last = '';
-  let moved = Date.now();
-  let lastProgress = '';
-  let misses = 0;
-  for (;;) {
-    let j: any;
-    try {
-      j = await api.job(job.id);
-      misses = 0;
-    } catch (e: any) {
-      // Gen restarting (jobs resume) or busy: keep trying for a few minutes.
-      if (++misses > 90) return { ...job, status: 'failed', error: `Hawkes Gen stopped answering: ${e.message}` };
-      if (misses === 10) await ensureGen();
-      await new Promise((r) => setTimeout(r, 3000));
-      continue;
+  async function watchLoop(): Promise<any> {
+    if (!reuse && halt?.()) {
+      onUpdate({ ...job, detail: 'cancelled' });
+      await leave('cancel');
+      return { ...job, status: 'cancelled', error: halt?.() ?? 'run cancelled', halted: true };
     }
-    const sig = `${j.status}|${j.detail}`;
-    if (sig !== last) {
-      last = sig;
-      onUpdate(j);
-    }
-    const progress = `${j.status}|${progressOf(j.detail)}`;
-    if (progress !== lastProgress) {
-      lastProgress = progress;
-      moved = Date.now();
-    }
-    if (TERMINAL.has(j.status)) return j;
-    const halted = halt?.();
-    if (halted) {
-      await api.cancel(job.id).catch(() => {});
-      return { ...j, status: 'cancelled', error: halted, halted: true };
-    }
-    const why = abandon?.();
-    if (why) {
-      await api.cancel(job.id).catch(() => {});
-      return { ...j, status: 'cancelled', error: why, abandoned: true };
-    }
-    if (j.status === 'running') {
-      // Gen's start time (a job started again after a Gen restart has a later one: the earlier start counts).
-      const at = Number(j.started) > 0 && Number(j.started) <= Date.now() ? Number(j.started) : Date.now();
-      if (!started || at < started) {
-        started = at;
-        onStart?.(at);
+    if (!joined) onUpdate({ ...job, detail: job.detail ?? (reuse ? 'waiting for it again after a Studio restart' : 'queued') });
+    const submitted = Date.now();
+    let started = since && since > 0 ? since : 0;
+    let last = '';
+    let moved = Date.now();
+    let lastProgress = '';
+    let misses = 0;
+    for (;;) {
+      let j: any;
+      try {
+        j = await api.job(job.id);
+        misses = 0;
+      } catch (e: any) {
+        // Gen restarting (jobs resume) or busy: keep trying for a few minutes.
+        if (++misses > 90) return { ...job, status: 'failed', error: `Hawkes Gen stopped answering: ${e.message}` };
+        if (misses === 10) await ensureGen();
+        await new Promise((r) => setTimeout(r, 3000));
+        continue;
       }
+      const sig = `${j.status}|${j.detail}`;
+      if (sig !== last) {
+        last = sig;
+        onUpdate(j);
+      }
+      const progress = `${j.status}|${progressOf(j.detail)}`;
+      if (progress !== lastProgress) {
+        lastProgress = progress;
+        moved = Date.now();
+      }
+      if (TERMINAL.has(j.status)) return j;
+      const halted = halt?.();
+      if (halted) {
+        await leave('cancel');
+        return { ...j, status: 'cancelled', error: halted, halted: true };
+      }
+      const why = abandon?.();
+      if (why) {
+        await leave('cancel');
+        return { ...j, status: 'cancelled', error: why, abandoned: true };
+      }
+      if (j.status === 'running') {
+        // Gen's start time (a job started again after a Gen restart has a later one: the earlier start counts).
+        const at = Number(j.started) > 0 && Number(j.started) <= Date.now() ? Number(j.started) : Date.now();
+        if (!started || at < started) {
+          started = at;
+          onStart?.(at);
+        }
+      }
+      const mins = (ms: number) => Math.round(ms / 60000);
+      const over = started
+        ? Date.now() - started > runMs ? `ran for over ${mins(runMs)} min (since ${new Date(started).toISOString().slice(11, 16)} UTC, counted across restarts)`
+          : idleMs && j.status === 'running' && !QUIET_PHASE.test(String(j.detail ?? '')) && Date.now() - moved > idleMs ? `no progress for ${mins(Date.now() - moved)} min (still at "${String(j.detail ?? '').slice(0, 160)}")` : ''
+        : Date.now() - submitted > queueMs ? `waited in the queue for over ${mins(queueMs)} min` : '';
+      if (over) {
+        await leave('cancel');
+        // Where it stood and its last events (foothold / stuck lines), for the finding Studio files.
+        const tail = Array.isArray(j.log) ? j.log.slice(-15).map((x: unknown) => String(x)) : [];
+        return { ...j, status: 'failed', error: `stuck: ${over}, so it was cancelled`, stuckAt: String(j.detail ?? ''), stuckLog: tail };
+      }
+      await new Promise((r) => setTimeout(r, pollMs));
     }
-    const mins = (ms: number) => Math.round(ms / 60000);
-    const over = started
-      ? Date.now() - started > runMs ? `ran for over ${mins(runMs)} min (since ${new Date(started).toISOString().slice(11, 16)} UTC, counted across restarts)`
-        : idleMs && j.status === 'running' && !QUIET_PHASE.test(String(j.detail ?? '')) && Date.now() - moved > idleMs ? `no progress for ${mins(Date.now() - moved)} min (still at "${String(j.detail ?? '').slice(0, 160)}")` : ''
-      : Date.now() - submitted > queueMs ? `waited in the queue for over ${mins(queueMs)} min` : '';
-    if (over) {
-      await api.cancel(job.id).catch(() => {});
-      // Where it stood and its last events (foothold / stuck lines), for the finding Studio files.
-      const tail = Array.isArray(j.log) ? j.log.slice(-15).map((x: unknown) => String(x)) : [];
-      return { ...j, status: 'failed', error: `stuck: ${over}, so it was cancelled`, stuckAt: String(j.detail ?? ''), stuckLog: tail };
-    }
-    await new Promise((r) => setTimeout(r, pollMs));
   }
 }
 

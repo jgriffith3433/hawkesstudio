@@ -407,7 +407,7 @@ GPU costs money, so it is priced and approved.**
   queue the Gen jobs, commit the non-GPU work, write `.hawkes/waiting-jobs.txt` (one Gen job id per line, then a
   note of what to do with that output) and end. Studio sets the change to **waiting on Gen**: not failed, not ready,
   no try counted, and it holds no agent slot (the product's next change runs meanwhile). Studio polls each job
-  (`GET /v1/jobs/<id>`, every 3 minutes: `pollGenWaits` in agents.ts); once every one is done, failed or cancelled
+  (`GET /v1/jobs/<id>`, every 30 s for its first 15 minutes, then every 3 minutes: `pollGenWaits` in agents.ts); once every one is done, failed or cancelled
   (or unknown to Gen), the change queues again and its agent's own session (same worktree and branch) is resumed with
   the results (ids, statuses, asset ids, its notes): it judges, bakes and commits, then the normal flow. The wait is
   in the database (`changes.phase`, step `gen`), so a restart carries on. Jobs waiting longer than

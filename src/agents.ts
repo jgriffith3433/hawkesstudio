@@ -506,8 +506,19 @@ budget or say what's missing. If you queue more Gen jobs, park again the same wa
 }
 /** How long parked jobs may wait before Talk hears of it, once (agents.genWaitHours, default 6). */
 const genWaitMs = (s = agentSettings()) => Number(process.env.STUDIO_GEN_WAIT_MS) > 0 ? Number(process.env.STUDIO_GEN_WAIT_MS) : (s.genWaitHours > 0 ? s.genWaitHours : 6) * 3600_000;
-/** How often parked jobs are polled (cheap: one GET per unfinished job). STUDIO_GEN_POLL_MS: tests. */
-const genPollMs = () => Number(process.env.STUDIO_GEN_POLL_MS) > 0 ? Number(process.env.STUDIO_GEN_POLL_MS) : 3 * 60_000;
+/**
+ * How often parked jobs are polled (cheap: one GET per unfinished job). STUDIO_GEN_POLL_MS: tests. It was every 3 minutes,
+ * so an agent whose Gen jobs finished sat up to 3 minutes (1.5 on average) before its session carried on: now every 30 s
+ * while the wait is young, and every 3 minutes once it has waited GEN_POLL_SLOW_AFTER (long GPU queues need no more).
+ */
+const genPollMs = () => Number(process.env.STUDIO_GEN_POLL_MS) > 0 ? Number(process.env.STUDIO_GEN_POLL_MS) : 30_000;
+const GEN_POLL_SLOW_AFTER = 15 * 60_000;
+/** Whether a parked change's jobs are due a look now (never looked at yet: at once). */
+export function genPollDue(w: Pick<GenWait, 'since' | 'checked'>, now = Date.now(), base = genPollMs()) {
+  if (!w.checked) return true;
+  const every = now - w.since < GEN_POLL_SLOW_AFTER ? base : Math.max(base, 3 * 60_000);
+  return now - w.checked >= every - 1000; // a tick's own jitter doesn't skip a whole interval
+}
 
 /** Uncommitted work in a worktree (Studio's .hawkes/ notes aside). */
 export function uncommitted(worktree: string) {
@@ -3270,6 +3281,7 @@ export async function pollGenWaits() {
       const ph = phaseOf(c.id);
       const w = ph?.gen;
       if (!ph || !w) continue;
+      if (!genPollDue(w)) continue;
       for (const j of w.jobs) {
         if (genJobDone(j)) continue;
         try {
