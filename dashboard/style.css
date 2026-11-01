@@ -22,12 +22,12 @@ nav button.on { background: var(--panel2); border-color: var(--line); }
 .status { margin-left: auto; color: var(--dim); font-size: 12px; display: flex; gap: 12px; flex-wrap: wrap; }
 .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 5px; background: var(--dim); }
 .dot.ok { background: var(--accent); } .dot.bad { background: var(--red); } .dot.warn { background: var(--amber); }
-main { padding: 18px 20px 60px; max-width: 1500px; margin: 0 auto; }
+main { padding: 18px 20px 60px; max-width: 1500px; margin: 0 auto; container-type: inline-size; }
 .tab { display: none; } .tab.on { display: block; }
 .bar { display: flex; gap: 10px; align-items: center; margin-bottom: 16px; flex-wrap: wrap; }
 .bar label { color: var(--dim); display: flex; gap: 5px; align-items: center; }
 #runInfo { color: var(--dim); }
-.cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 14px; }
+.cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(340px, 100%), 1fr)); gap: 14px; }
 .card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 14px; display: flex; flex-direction: column; gap: 10px; }
 .card h3 { margin: 0; font-size: 15px; display: flex; align-items: center; gap: 8px; }
 .card h3 small { color: var(--dim); font-weight: 400; font-size: 12px; }
@@ -175,7 +175,7 @@ body.in-call .talk-input, body.in-call .talk-files, body.in-call #notifyBox { di
 .pt-when { white-space: nowrap; }
 .pt-trends { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 10px 14px; margin-bottom: 14px; }
 .pt-trends summary { cursor: pointer; font-weight: 600; }
-.pt-trend-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 10px; margin-top: 10px; }
+.pt-trend-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(250px, 100%), 1fr)); gap: 10px; margin-top: 10px; }
 .pt-trend { background: var(--panel2); border-radius: 8px; padding: 8px 10px; display: flex; flex-direction: column; gap: 2px; }
 .pt-trend-title { font-size: 12.5px; margin-bottom: 2px; }
 .spark { display: grid; grid-template-columns: 40px 150px auto; align-items: center; gap: 6px; font-size: 12px; }
@@ -316,7 +316,6 @@ body.in-call .talk-input, body.in-call .talk-files, body.in-call #notifyBox { di
 .fr-cap { color: var(--text); opacity: .85; margin: 2px 0; overflow-wrap: anywhere; min-height: 1.3em; }
 .act-recent { margin-top: 12px; }
 .act-recent summary { cursor: pointer; margin-bottom: 6px; }
-@media (min-width: 1200px) { body.act-open main { margin-right: 360px; } }
 @media (max-width: 760px) { .activity { width: 100%; border-left: none; } }
 /* The Talk dock (talk.js): the Talk chat beside every other tab, a side panel on a computer, a sheet on a phone. */
 .talk-dock { position: fixed; right: 0; top: var(--hdr, 56px); bottom: 0; width: 420px; background: var(--bg); border-left: 1px solid var(--line); z-index: 4; display: flex; flex-direction: column; padding: 8px 10px 10px; box-shadow: -6px 0 18px rgba(0, 0, 0, .35); }
@@ -331,7 +330,23 @@ body.in-call .talk-input, body.in-call .talk-files, body.in-call #notifyBox { di
 .dock-body .talk-img { max-width: 100%; }
 .dock-btn[hidden] { display: none; }
 body.in-call .dock-btn:not(.on)::after { content: '📞'; animation: call-pulse 1.2s ease-in-out infinite; }
-@media (min-width: 1100px) { body.dock-open main { margin-right: 420px; } body.dock-open .activity { right: 420px; } }
+/* Side panes take their width out of the page, so nothing sits under them: Activity alone, Talk alone, or both side by
+   side (Talk on the right, Activity left of it). Both open on a smaller screen: each gives up some width so the page keeps
+   room. A phone gets the full-width drawer and the bottom sheet instead (below). */
+:root { --act-w: 0px; --dock-w: 0px; }
+@media (min-width: 761px) {
+  body.act-open { --act-w: 360px; }
+  body.dock-open { --dock-w: 420px; }
+  body.act-open.dock-open { --act-w: min(360px, 24vw); --dock-w: min(420px, 28vw); }
+  .activity { width: var(--act-w); right: var(--dock-w); }
+  .talk-dock { width: var(--dock-w); }
+  body:is(.act-open, .dock-open) main { margin-right: calc(var(--act-w) + var(--dock-w)); }
+}
+@media (min-width: 761px) and (max-width: 1099px) {
+  /* While Talk shows something there, the dock is a strip along the bottom, not a column. */
+  body.guide-on { --dock-w: 0px; }
+  body.guide-on.act-open { --act-w: 360px; }
+}
 @media (max-width: 760px) {
   /* The tall header scrolls away, so the page above the sheet stays usable. */
   body.dock-open header { position: static; }
@@ -396,8 +411,8 @@ a.button.primary { background: var(--accent); color: #062018; border-color: var(
 .lt-bar-top { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .lt-chip { font-size: 12px; padding: 2px 10px; border: 1px solid var(--line); border-radius: 99px; color: var(--dim); background: var(--panel); }
 .lt-h { margin: 18px 0 8px; font-size: 14px; }
-.lt-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 12px; }
-.lt-grid.lt-done { grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); }
+.lt-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(300px, 100%), 1fr)); gap: 12px; }
+.lt-grid.lt-done { grid-template-columns: repeat(auto-fill, minmax(min(230px, 100%), 1fr)); }
 .lt-empty { grid-column: 1 / -1; }
 .lt-tile { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; cursor: pointer; transition: border-color .15s, transform .15s; contain: content; }
 .lt-tile:hover { border-color: var(--accent); }
@@ -484,3 +499,10 @@ body.lt-big-open { overflow: hidden; }
 
 /* The beta lane's badge beside the name (app.js). */
 .lane-badge { display: inline-block; margin-left: 6px; padding: 1px 6px; border-radius: 4px; background: #d97706; color: #fff; font-size: 11px; font-weight: 700; letter-spacing: 0.06em; vertical-align: middle; }
+/* The page squeezed beside the side panes on a computer: the same one-column layouts a phone gets. */
+@container (max-width: 700px) {
+  .step { grid-template-columns: 22px 1fr; } .step > :nth-child(n+3) { grid-column: 2; }
+  .finding { grid-template-columns: 1fr; } .finding .side { align-items: flex-start; }
+  .pt-top, .pt-top.phone, .pt-cols, .pt-sbs, .pt-sbs.phone { grid-template-columns: 1fr; }
+  .pt-vrow { grid-template-columns: 1fr; }
+}
