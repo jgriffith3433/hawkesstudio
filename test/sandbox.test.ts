@@ -254,4 +254,10 @@ test("the safety net's trigger: what an agent says when its commit was refused, 
   assert.match("git commit failed: Unable to create '/srv/hawkes/x/.git/worktrees/c_1/index.lock': Permission denied", COMMIT_DENIED);
   assert.match('I couldn\'t commit: Permission denied on the git folder', COMMIT_DENIED);
   assert.doesNotMatch('Playwright: permission denied for /proc/hawkes-no-browsers', COMMIT_DENIED);
+  // Claude Code's own permission refusal (a Cloud Run job, 2026-11-01).
+  assert.match('I fixed two of the three problems and committed nothing yet: the commit command needs your approval and I can\'t run it.', COMMIT_DENIED);
+  assert.match('The git commit was blocked by the permission settings.', COMMIT_DENIED);
+  assert.match("I couldn't commit the change.", COMMIT_DENIED);
+  assert.doesNotMatch('I committed the fix and wrote the summary.', COMMIT_DENIED);
+  assert.doesNotMatch('I made no code change and committed nothing, because it was already fixed.', COMMIT_DENIED);
 });
