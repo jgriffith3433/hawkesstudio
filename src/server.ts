@@ -64,6 +64,9 @@ async function cached<T>(key: string, ms: number, f: () => T | Promise<T>): Prom
 
 /** Everything the dashboard's front page shows, per product. */
 async function overview() {
+  // A project's beta to play: its own beta address, else the beta site Studio hosts for it (sites.<domain>/o/<org>/<id>/).
+  // The Projects page's "Play beta" shows for either (2026-11-01: Studio-hosted betas had no Play beta button).
+  const hosted = new Map(listPreviews().map((x) => [x.product, x.play]));
   const products = await Promise.all(loadProducts().map(async (p) => {
     const steps = (db.prepare(`SELECT * FROM steps WHERE product = ? ORDER BY started DESC LIMIT 60`).all(p.id) as any[]).map(rowToStep);
     const latest = (kind: string) => steps.filter((s) => s.kind === kind);
@@ -72,7 +75,7 @@ async function overview() {
     for (const s of [...latest('playtest'), ...reviews]) if (!byName.has(`${s.kind}:${s.name}`)) byName.set(`${s.kind}:${s.name}`, s);
     const open = (db.prepare(`SELECT severity, COUNT(*) AS n FROM findings WHERE product = ? AND status IN ('open','fixing') GROUP BY severity`).all(p.id) as any[]);
     return {
-      id: p.id, name: p.name, framing: p.framing, engine: p.engine, live: p.live, beta: p.beta ?? null, local: localUrl(p), managedBy: managedElsewhere(p),
+      id: p.id, name: p.name, framing: p.framing, engine: p.engine, live: p.live, beta: p.beta ?? hosted.get(p.id) ?? null, local: localUrl(p), managedBy: managedElsewhere(p),
       git: await cached(`git:${p.repo}`, 30_000, () => gitState(p.repo)), site: p.site !== p.repo ? await cached(`git:${p.site}`, 30_000, () => gitState(p.site)) : null,
       build: p.build ? lastStep(p.id, 'build', 'unity') ?? latest('build')[0] ?? null : null,
       playtests: p.playtests.map((t) => {
