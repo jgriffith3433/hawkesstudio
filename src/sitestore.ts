@@ -320,6 +320,35 @@ export async function githubFiles(slug: string, sha: string, { sub = '', fetcher
   return files;
 }
 
+/** The git blob id of a file, hashed as a stream so a big file is never held in memory and the event loop keeps turning. */
+export async function gitOidOfFile(file: string, size: number): Promise<string> {
+  const h = crypto.createHash('sha1').update(`blob ${size}\0`);
+  for await (const chunk of fs.createReadStream(file)) h.update(chunk as Buffer);
+  return h.digest('hex');
+}
+
+/**
+ * Every file under a local folder as site files under `to`, without blocking the event loop or reading whole files into
+ * memory (2026-11-01: the synchronous folderFiles blocked Studio for seconds on a build's output and its memory grew by
+ * the size of every file; Studio restarted while agent changes ran).
+ */
+export async function folderFilesAsync(dir: string, to = ''): Promise<SiteFile[]> {
+  const out: SiteFile[] = [];
+  const walk = async (rel: string) => {
+    for (const e of await fs.promises.readdir(path.join(dir, rel), { withFileTypes: true })) {
+      const r = rel ? `${rel}/${e.name}` : e.name;
+      if (e.isDirectory()) await walk(r);
+      else if (e.isFile()) {
+        const file = path.join(dir, r);
+        const size = (await fs.promises.stat(file)).size;
+        out.push({ path: to ? `${to}/${r}` : r, oid: await gitOidOfFile(file, size), size, read: async () => fs.promises.readFile(file) });
+      }
+    }
+  };
+  if (fs.existsSync(dir)) await walk('');
+  return out;
+}
+
 /** Every file under a local folder (a build's output), as site files under `to`. */
 export function folderFiles(dir: string, to = ''): SiteFile[] {
   const out: SiteFile[] = [];

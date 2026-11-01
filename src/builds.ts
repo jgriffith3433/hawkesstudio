@@ -14,7 +14,7 @@ import { spawnSync } from 'node:child_process';
 import type http from 'node:http';
 import { db, newId } from './db.ts';
 import { getProduct, loadProducts, StudioError, managedElsewhere, type BuildSpec, type Product } from './config.ts';
-import { folderFiles } from './sitestore.ts';
+import { folderFilesAsync } from './sitestore.ts';
 
 db.exec(`CREATE TABLE IF NOT EXISTS builds (
   id TEXT PRIMARY KEY, product TEXT NOT NULL, build TEXT NOT NULL, version INTEGER NOT NULL, status TEXT NOT NULL,
@@ -381,8 +381,8 @@ async function viaStudio(p: Product, b: BuildSpec, slug: string, sha: string, to
   if (r.error || r.code !== 0) throw new Error(`${command} failed${r.error ? `: ${r.error}` : ` (exit ${r.code})`}${tail ? `: ${tail}` : ''}`);
   if (!r.outputs) throw new Error(`the build made no ${outDir}/`);
   const tmp = tmpDir();
-  untar(r.outputs, tmp);
-  return folderOutput(path.join(tmp, outDir), tmp);
+  await untar(r.outputs, tmp);
+  return await folderOutput(path.join(tmp, outDir), tmp);
 }
 
 /** unity: Hawkes Gen builds that commit in the cloud with the repo's own token, and hands back the output as an asset. */
@@ -411,7 +411,7 @@ async function viaGen(p: Product, b: BuildSpec, slug: string, sha: string, ref: 
   // holding it in memory (arrayBuffer, a Buffer copy, spawnSync's input) on top of the unpacked files (Cloud Run's disk
   // is memory too) went over a customer's Studio's 2 GiB, which restarted it mid-build until the run was stopped.
   await untarStream(await gen.request(`/files/${asset}`, { raw: true }), tmp);
-  return { ...folderOutput(tmp, tmp), detail: job.result?.unity ? `Unity ${job.result.unity}` : undefined };
+  return { ...(await folderOutput(tmp, tmp)), detail: job.result?.unity ? `Unity ${job.result.unity}` : undefined };
 }
 
 /** actions: the workflow run's artifact (its contents are the build: index.html at the root for the web). */
@@ -433,15 +433,15 @@ async function viaActions(b: BuildSpec, slug: string, a: { runId: string; name?:
   }
   const tmp = tmpDir();
   unzip(data, tmp);
-  return folderOutput(tmp, tmp);
+  return await folderOutput(tmp, tmp);
 }
 
-function folderOutput(dir: string, tmp: string): Output {
+async function folderOutput(dir: string, tmp: string): Promise<Output> {
   if (!fs.existsSync(dir)) { fs.rmSync(tmp, { recursive: true, force: true }); throw new Error('the build made no output'); }
   // An output that is one folder (an artifact zipped around its folder): its contents are the site.
   const entries = fs.readdirSync(dir);
   const root = entries.length === 1 && fs.statSync(path.join(dir, entries[0])).isDirectory() && !fs.existsSync(path.join(dir, 'index.html')) ? path.join(dir, entries[0]) : dir;
-  const files = folderFiles(root);
+  const files = await folderFilesAsync(root);
   if (!files.length) { fs.rmSync(tmp, { recursive: true, force: true }); throw new Error('the build output is empty'); }
   return { files, bytes: sizeOf(files), cleanup: () => fs.rmSync(tmp, { recursive: true, force: true }) };
 }
@@ -462,9 +462,17 @@ export async function untarStream(res: Response, dir: string) {
   if (code !== 0 || piping) throw new Error(`unpacking the build: ${(err.trim() || (piping as Error | null)?.message || `tar exited ${code}`).slice(0, 300)}`);
 }
 
-function untar(data: Buffer, dir: string) {
-  const x = spawnSync('tar', ['-xzf', '-'], { cwd: dir, input: data, maxBuffer: 64 * 1024 * 1024 });
-  if (x.status !== 0) throw new Error(`unpacking the build: ${String(x.stderr).trim().slice(0, 300)}`);
+/** Unpacks a .tar.gz held in memory without blocking the event loop (tar runs as a child process, not spawnSync). */
+export async function untar(data: Buffer, dir: string) {
+  const { spawn } = await import('node:child_process');
+  const tar = spawn('tar', ['-xzf', '-'], { cwd: dir, stdio: ['pipe', 'ignore', 'pipe'] });
+  let err = '';
+  tar.stderr.on('data', (d) => { if (err.length < 2000) err += String(d); });
+  const exited = new Promise<number>((ok) => { tar.on('error', (e) => { err += String(e.message); ok(1); }); tar.on('close', (code) => ok(code ?? 1)); });
+  tar.stdin.on('error', () => {});
+  tar.stdin.end(data);
+  const code = await exited;
+  if (code !== 0) throw new Error(`unpacking the build: ${err.trim().slice(0, 300)}`);
 }
 function unzip(data: Buffer, dir: string) {
   const zip = path.join(dir, '.artifact.zip');

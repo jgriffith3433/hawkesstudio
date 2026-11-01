@@ -780,7 +780,7 @@ export async function startWork() {
   if (!s.enabled || !(await import('./ghtoken.ts')).githubReachable()) return [];
   // The harness in use refuses to run (harness-hold.ts): starting would only burn tries. The hold resumes the loop.
   if (harnessHeld()) return [];
-  const { agentSettings, startFix, DECIDED, ALREADY, STUDIO_FAILED_SQL } = await changes();
+  const { agentSettings, startFix, DECIDED, ALREADY, STUDIO_FAILED_SQL, autoFixBlock } = await changes();
   if (!agentSettings().enabled) return [];
   // A Studio or Gen deploy waiting for agents to finish: start nothing new until it's through.
   const { selfDeploys } = await import('./selfdeploy.ts');
@@ -847,6 +847,8 @@ export async function startWork() {
       if (!asked) askJ(`"${f.title}" (${name(f.product)}) failed ${tries} attempts by agents. Try another way, or drop it (won't fix)?`, { subject: f.id, product: f.product, options: ['try again', "won't fix"], from: `the default after ${s.maxTries} tries` });
       return null;
     }
+    // An earlier change's pull request is still open, or it failed twice today: not again (agents.ts autoFixBlock).
+    if (autoFixBlock(f.id)) return null;
     const id = startFix(f.product, [f.id]);
     db.prepare('UPDATE changes SET criteria = ? WHERE id = ?').run(J([`Fixed: ${f.title}`]), id);
     logDecision('start', f.id, f.product, `started ${id} to fix ${why}[${f.severity}] ${f.title}`, { kind: 'start', change: id, finding: f.id });
