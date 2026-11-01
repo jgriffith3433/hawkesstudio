@@ -6,10 +6,14 @@ on:
   workflow_dispatch:
     inputs:
       target:
-        description: studio (the service) or studio-agent (the agents' job)
+        description: studio (the service), studio-agent (the agents' job), cell-agent, or cell (a customer's Studio, with org)
         type: choice
-        options: [studio, studio-agent, cell-agent]
+        options: [studio, studio-agent, cell-agent, cell]
         default: studio
+      org:
+        description: "cell: the org id (e.g. j-studio-4f12)"
+        type: string
+        default: ''
       lane:
         type: choice
         options: [production, beta]
@@ -39,16 +43,19 @@ jobs:
           MINUTES: ${{ inputs.minutes }}
           TARGET: ${{ inputs.target }}
           LANE: ${{ inputs.lane }}
+          ORG: ${{ inputs.org }}
         run: |
+          if [ "$TARGET" = cell ]; then [[ "$ORG" =~ ^[a-z0-9-]{1,40}$ ]] || { echo "cell needs org (lower-case letters, digits, dashes)"; exit 1; }; fi
           [[ "$MINUTES" =~ ^[0-9]+$ ]] && [ "$MINUTES" -ge 5 ] && [ "$MINUTES" -le 120 ] || { echo "minutes must be 5 to 120"; exit 1; }
           if [ "$LANE" = beta ]; then
             region="${{ vars.REGION_BETA }}"
-            case "$TARGET" in studio) f="resource.type=cloud_run_revision AND resource.labels.service_name=studio-beta";; studio-agent) f="resource.type=cloud_run_job AND resource.labels.job_name=studio-agent-beta";; cell-agent) f="resource.type=cloud_run_job AND resource.labels.job_name=studio-beta-cell-agent";; esac
+            case "$TARGET" in studio) f="resource.type=cloud_run_revision AND resource.labels.service_name=studio-beta";; studio-agent) f="resource.type=cloud_run_job AND resource.labels.job_name=studio-agent-beta";; cell-agent) f="resource.type=cloud_run_job AND resource.labels.job_name=studio-beta-cell-agent";; cell) f="resource.type=cloud_run_revision AND resource.labels.service_name=studio-beta-o-$ORG";; esac
           else
             region="${{ vars.REGION_LIVE }}"
-            case "$TARGET" in studio) f="resource.type=cloud_run_revision AND resource.labels.service_name=studio";; studio-agent) f="resource.type=cloud_run_job AND resource.labels.job_name=studio-agent";; cell-agent) f="resource.type=cloud_run_job AND resource.labels.job_name=studio-cell-agent";; esac
+            case "$TARGET" in studio) f="resource.type=cloud_run_revision AND resource.labels.service_name=studio";; studio-agent) f="resource.type=cloud_run_job AND resource.labels.job_name=studio-agent";; cell-agent) f="resource.type=cloud_run_job AND resource.labels.job_name=studio-cell-agent";; cell) f="resource.type=cloud_run_revision AND resource.labels.service_name=studio-o-$ORG";; esac
           fi
-          echo "FILTER=$f AND resource.labels.location=$region" >> "$GITHUB_ENV"
+          # A cell runs in the cells' region (CELLS_REGION_*), which may not be the lane's: its service name is enough.
+          if [ "$TARGET" = cell ]; then echo "FILTER=$f" >> "$GITHUB_ENV"; else echo "FILTER=$f AND resource.labels.location=$region" >> "$GITHUB_ENV"; fi
       - uses: google-github-actions/auth@v2
         with:
           workload_identity_provider: projects/${{ vars.GCP_PROJECT_NUMBER }}/locations/global/workloadIdentityPools/github/providers/github-studio
