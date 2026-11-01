@@ -6,7 +6,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
-import { PROJECTS, paths, addedRepoFolders, loadProducts, type Product } from './config.ts';
+import { PROJECTS, DATA, paths, addedRepoFolders, loadProducts, type Product } from './config.ts';
 import { gitAuthEnv, primeRepoToken, repoToken } from './ghtoken.ts';
 
 /** The GitHub repo of a folder under PROJECTS (its top-level folder in repoMap), for git's token. */
@@ -56,7 +56,35 @@ export type RepoResult = { folder: string; slug: string; action: 'cloned' | 'upd
   /** npm ci runs in the repo's web checkouts after the sync (installAfterSync): where, why, how long, the error. */
   install?: Install[];
   /** Uncommitted changes set aside (git stash) so a beta checkout could follow beta: the stash's commit, its message, the files. */
-  setAside?: { stash: string; label: string; files: string[] } };
+  setAside?: { stash: string; label: string; files: string[]; /** When the stash failed: the tar of the files, and why it failed. */ backup?: string; why?: string } };
+
+/**
+ * Backs the given repo files up to a .tar.gz under <data>/backups/repos (tar as a child process, the list on stdin:
+ * never spawnSync, never the files in memory). Only files that exist are listed (a deleted tracked file is in HEAD).
+ */
+export async function backupFiles(dir: string, folder: string, files: string[]): Promise<{ ok: true; file: string } | { ok: false; error: string }> {
+  const present = files.filter((f) => { try { fs.lstatSync(path.join(dir, f)); return true; } catch { return false; } });
+  const root = path.join(DATA, 'backups', 'repos');
+  const file = path.join(root, `${folder}-${new Date().toISOString().replace(/[:.]/g, '-')}.tar.gz`);
+  try {
+    fs.mkdirSync(root, { recursive: true });
+    if (!present.length) return { ok: false, error: 'none of the files exist to back up' };
+    return await new Promise((resolve) => {
+      const done = trackCommand(`tar -czf ${file}`, dir);
+      const tar = spawn('tar', ['-czf', file, '--null', '-T', '-'], { cwd: dir, stdio: ['pipe', 'ignore', 'pipe'], windowsHide: true });
+      let err = '';
+      tar.stderr.on('data', (d) => { if (err.length < 2000) err += String(d); });
+      tar.stdin.on('error', () => {});
+      tar.on('error', (e) => { done(); resolve({ ok: false, error: e.message }); });
+      tar.on('close', (code) => {
+        done();
+        if (code === 0) resolve({ ok: true, file });
+        else { fs.rmSync(file, { force: true }); resolve({ ok: false, error: err.trim().replace(/\s+/g, ' ').slice(0, 300) || `tar exited ${code}` }); }
+      });
+      tar.stdin.end(present.join('\0') + '\0');
+    });
+  } catch (e: any) { return { ok: false, error: e.message }; }
+}
 
 /**
  * The generated build output in a repo folder (products.json): for every product in it with a pre-deploy build or a
@@ -253,13 +281,33 @@ async function syncGit(folder: string, slug: string, branch: string, want?: stri
       const to = git(dir, ['rev-parse', '--short', `origin/${want}`]).out || want;
       const label = `studio: set aside before following ${want} ${to} ${new Date().toISOString().slice(0, 16).replace('T', ' ')}`;
       const s = await gitA(dir, ['-c', 'user.name=Hawkes Studio', '-c', 'user.email=studio@hawkesgen.ai', 'stash', 'push', '--include-untracked', '-m', label]);
-      if (!s.ok) return kept(`; setting them aside failed: ${s.err.split('\n').pop()}`);
-      if (git(dir, ['status', '--porcelain']).out) return kept('; still has uncommitted changes after setting them aside');
-      const stash = git(dir, ['rev-parse', 'stash@{0}']).out;
-      console.log(`[repos] ${folder}: set aside uncommitted changes in stash ${stash.slice(0, 7)} (${files.length} files): ${files.join(', ')}`);
       const list = files.slice(0, 20).join(', ') + (files.length > 20 ? `, and ${files.length - 20} more` : '');
-      setAside = { stash, label, files };
-      cleaned = `set aside uncommitted changes in stash ${stash.slice(0, 7)} (${list}); `;
+      if (s.ok && !git(dir, ['status', '--porcelain']).out) {
+        const stash = git(dir, ['rev-parse', 'stash@{0}']).out;
+        console.log(`[repos] ${folder}: set aside uncommitted changes in stash ${stash.slice(0, 7)} (${files.length} files): ${files.join(', ')}`);
+        setAside = { stash, label, files };
+        cleaned = `set aside uncommitted changes in stash ${stash.slice(0, 7)} (${list}); `;
+      } else {
+        // The stash failed (or left changes behind): say why in full, then back the files up to a tar in the data folder
+        // and only then put the checkout back to HEAD. No backup, no reset: the refusal stays.
+        const why = s.ok ? 'it left uncommitted changes in the checkout' : (s.err || 'git gave no reason').replace(/\s+/g, ' ').slice(0, 500);
+        console.warn(`[repos] ${folder}: git stash failed (${why}); backing the ${files.length} files up to a tar`);
+        const b = await backupFiles(dir, folder, files);
+        if (!b.ok) {
+          console.warn(`[repos] ${folder}: tar backup failed: ${b.error}`);
+          return kept(`; setting them aside failed: git stash: ${why}; tar backup: ${b.error}`);
+        }
+        const r = tracked.length ? await gitA(dir, ['--literal-pathspecs', 'restore', '--source=HEAD', '--staged', '--worktree', '--', ...tracked]) : { ok: true, err: '' };
+        const c = r.ok && untracked.length ? await gitA(dir, ['--literal-pathspecs', 'clean', '-f', '-q', '--', ...untracked]) : r;
+        if (!r.ok || !c.ok || git(dir, ['status', '--porcelain']).out) {
+          const e = (r.ok ? c : r).err.split('\n').pop() || 'changes remain';
+          console.warn(`[repos] ${folder}: backed up to ${b.file} but couldn't clear the checkout: ${e}`);
+          return kept(`; setting them aside failed: git stash: ${why}; backed up to ${b.file} but clearing the checkout failed: ${e}`);
+        }
+        console.log(`[repos] ${folder}: git stash failed (${why}); backed ${files.length} files up to ${b.file}, then cleared them: ${files.join(', ')}`);
+        setAside = { stash: '', label, files, backup: b.file, why };
+        cleaned = `git stash failed (${why}); backed up uncommitted changes to ${b.file} (${list}); `;
+      }
     }
   }
   const done = (r: RepoResult): RepoResult => {
@@ -382,6 +430,10 @@ function tellSetAside(dir: string, folder: string, want: string, a: NonNullable<
   const list = a.files.slice(0, 20).join(', ') + (a.files.length > 20 ? `, and ${a.files.length - 20} more` : '');
   const g = `git -C ${dir}`;
   const after = r.action === 'updated' || r.action === 'current' ? `and the checkout follows ${want} again (${r.head ?? ''})` : `but it still couldn't follow ${want}: ${r.detail}`;
+  if (a.backup) {
+    repoNotices.post(`${folder}: stray files backed up to follow ${want}`, `The server's ${want} checkout of ${folder} had uncommitted files that aren't build output. git stash failed (${a.why}), so Studio backed them up first and then cleared them, ${after}.\n\nFiles: ${list}\n\nThe backup: ${a.backup}\n\nTo get them back, on the server:\n\n\`\`\`\ntar -tzf ${a.backup}   # list\ntar -xzf ${a.backup} -C ${dir}   # restore\n\`\`\``);
+    return;
+  }
   repoNotices.post(`${folder}: stray files set aside to follow ${want}`, `The server's ${want} checkout of ${folder} had uncommitted files that aren't build output, which kept it from following ${want}. Studio set them aside in a git stash (nothing was deleted), ${after}.\n\nFiles: ${list}\n\nThe stash: "${a.label}" (${a.stash.slice(0, 7)}).\n\nTo look at them or get them back, on the server:\n\n\`\`\`\n${g} stash list\n${g} stash show -p --include-untracked ${a.stash.slice(0, 7)}\n${g} stash pop stash@{N}   # N: its number in stash list (0 while it's the newest)\n\`\`\`\n\nIf it's work worth keeping, commit it to ${want} (from an agent's own worktree, not this checkout). If not, drop it: ${g} stash drop stash@{N}.`);
 }
 

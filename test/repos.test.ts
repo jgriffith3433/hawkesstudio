@@ -62,3 +62,77 @@ test('build output: play/, dist/, Game/v<n> and deploy.output, nothing else', ()
   for (const f of ['src/main.ts', 'package.json', 'playground/x', 'Game/Shared/x', 'notes/play/x']) assert.ok(!out(f), f);
   assert.ok(!buildOutputs('elsewhere')('play/index.html'));
 });
+
+const sync = () => syncRepo('site', 'test/site', 'main', 'beta');
+const status = () => git(dir, 'status', '--porcelain');
+const tarList = (f: string) => spawnSync('tar', ['-tzf', f], { encoding: 'utf8' }).stdout.split('\n').filter(Boolean);
+// A `git` ahead on PATH that refuses `stash` (and passes everything else on) makes the stash fail like a locked index would.
+const realGit = spawnSync('which', ['git'], { encoding: 'utf8' }).stdout.trim();
+const fakeBin = path.join(tmp, 'fakebin');
+fs.mkdirSync(fakeBin, { recursive: true });
+fs.writeFileSync(path.join(fakeBin, 'git'), `#!/bin/sh\nfor a in "$@"; do if [ "$a" = stash ]; then echo "fatal: unable to write new index file" >&2; exit 128; fi; done\nexec ${realGit} "$@"\n`, { mode: 0o755 });
+const blockStash = () => { process.env.PATH = `${fakeBin}${path.delimiter}${process.env.PATH}`; };
+const unblockStash = () => { process.env.PATH = process.env.PATH!.replace(`${fakeBin}${path.delimiter}`, ''); };
+const quiet = async <T>(f: () => Promise<T>) => {
+  const warned: string[] = [];
+  const warn = console.warn;
+  console.warn = (...a: unknown[]) => { warned.push(a.join(' ')); };
+  try { return { r: await f(), warned }; } finally { console.warn = warn; }
+};
+
+test('dirty tracked file: set aside in a stash, the checkout follows beta', async () => {
+  push('src/a.ts', 'a1');
+  write(dir, 'src/main.ts', 'edited by hand');
+  const r = await sync();
+  assert.equal(r.action, 'updated', r.detail);
+  assert.ok(r.setAside?.stash && !r.setAside.backup);
+  assert.equal(status(), '');
+  assert.equal(head(), git(dir, 'rev-parse', 'origin/beta'));
+  assert.match(git(dir, 'stash', 'list'), /studio: set aside before following beta/);
+  assert.equal(fs.readFileSync(path.join(dir, 'src/main.ts'), 'utf8'), 'v1');
+});
+
+test('untracked files (.claude/launch.json, .cursor/mcp.json): stashed, the checkout follows beta', async () => {
+  push('src/b.ts', 'b1');
+  write(dir, '.claude/launch.json', '{}');
+  write(dir, '.cursor/mcp.json', '{}');
+  const r = await sync();
+  assert.equal(r.action, 'updated', r.detail);
+  assert.deepEqual([...r.setAside!.files].sort(), ['.claude/launch.json', '.cursor/mcp.json']);
+  assert.equal(status(), '');
+  assert.equal(head(), git(dir, 'rev-parse', 'origin/beta'));
+});
+
+test('stash fails: files backed up to a tar in the data folder, then the checkout follows beta; the reason is logged', async () => {
+  push('src/c.ts', 'c1');
+  write(dir, 'src/main.ts', 'edited again');
+  write(dir, '.claude/launch.json', '{"x":1}');
+  blockStash();
+  const { r, warned } = await quiet(sync).finally(unblockStash);
+  assert.equal(r.action, 'updated', r.detail);
+  assert.ok(r.setAside?.backup, 'a backup');
+  assert.match(r.detail, /git stash failed \(.+\); backed up/);
+  assert.ok(warned.some((l) => /git stash failed \(.+\)/.test(l)), warned.join('\n'));
+  assert.ok(r.setAside!.backup!.startsWith(path.join(process.env.STUDIO_DATA!, 'backups', 'repos')));
+  assert.deepEqual(tarList(r.setAside!.backup!).sort(), ['.claude/launch.json', 'src/main.ts']);
+  assert.equal(status(), '');
+  assert.equal(head(), git(dir, 'rev-parse', 'origin/beta'));
+  assert.ok(notices.some((n) => /backed up/.test(n.title)));
+});
+
+test('stash and tar both fail: nothing is touched and both reasons are in the detail', async () => {
+  push('src/d.ts', 'd1');
+  write(dir, 'src/main.ts', 'precious');
+  blockStash();
+  const repos = path.join(process.env.STUDIO_DATA!, 'backups', 'repos');
+  fs.rmSync(repos, { recursive: true, force: true });
+  fs.mkdirSync(path.dirname(repos), { recursive: true });
+  fs.writeFileSync(repos, 'a file where the backup folder should be');
+  const before = head();
+  const { r } = await quiet(sync).finally(unblockStash);
+  fs.rmSync(repos, { force: true });
+  assert.equal(r.action, 'kept');
+  assert.match(r.detail, /git stash: .+; tar backup: .+/);
+  assert.equal(fs.readFileSync(path.join(dir, 'src/main.ts'), 'utf8'), 'precious');
+  assert.equal(head(), before);
+});
