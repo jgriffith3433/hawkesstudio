@@ -220,3 +220,198 @@ test('two syncs at once (a desktop and a phone playtest): one clones, the other 
   assert.equal(status(), '');
   assert.ok(!b.setAside && !a.setAside);
 });
+
+// ------------------------------------------- backups: only what GitHub lacks, off the instance's memory, a few kept
+// A cell's half-written checkout of PH Origins (2026-11-01) was its whole beta tree, 1,256 files: the stash died and the
+// fallback tarred all of it (~518 MiB) to /data, which on Cloud Run is the instance's memory. Files exactly as they are
+// on GitHub hold nothing to lose and are left out; on Cloud Run the tar streams to the state bucket instead of /data.
+const { backupFiles, sameAsGit, KEEP_BACKUPS, restoreSteps } = await import('../src/repos.ts');
+const G = await import('../src/gcp.ts');
+const H = await import('../src/cloudhost.ts');
+
+test('half-written checkout (index lost), every file as on GitHub: nothing backed up, restored, follows beta', async () => {
+  push('src/h.ts', 'h1');
+  fs.rmSync(path.join(dir, '.git', 'index'));
+  const localBackups = () => { try { return fs.readdirSync(path.join(process.env.STUDIO_DATA!, 'backups', 'repos')).length; } catch { return 0; } };
+  const before = localBackups();
+  blockStash([], true);
+  const { r } = await quiet(sync).finally(unblockStash);
+  assert.equal(r.action, 'updated', r.detail);
+  assert.match(r.detail, /unchanged from GitHub \(HEAD or origin\/beta\), nothing to back up/);
+  assert.equal(r.setAside?.backup, undefined);
+  assert.ok((r.setAside?.unchanged ?? 0) >= 3, String(r.setAside?.unchanged));
+  assert.equal(localBackups(), before, 'no tar made');
+  assert.equal(status(), '');
+  assert.equal(head(), git(dir, 'rev-parse', 'origin/beta'));
+  assert.ok(notices.some((n) => /cleared to follow beta/.test(n.title) && /exactly as they are on GitHub/.test(n.text)));
+});
+
+test('half-written checkout with one real edit: only that file is in the backup, the rest are counted as left out', async () => {
+  push('src/i.ts', 'i1');
+  fs.rmSync(path.join(dir, '.git', 'index'));
+  write(dir, 'src/main.ts', 'mine, not on GitHub');
+  write(dir, 'notes/new.md', 'also mine');
+  blockStash([], true);
+  const { r } = await quiet(sync).finally(unblockStash);
+  assert.equal(r.action, 'updated', r.detail);
+  assert.ok(r.setAside?.backup, r.detail);
+  assert.deepEqual(tarList(r.setAside!.backup!).sort(), ['notes/new.md', 'src/main.ts']);
+  assert.ok((r.setAside!.unchanged ?? 0) >= 3);
+  assert.match(r.detail, /unchanged from GitHub left out/);
+  assert.equal(status(), '');
+  assert.equal(head(), git(dir, 'rev-parse', 'origin/beta'));
+});
+
+test('sameAsGit: same bytes as HEAD or the other branch count; edits, new files and folders do not', async () => {
+  write(dir, 'src/main.ts', 'edited');
+  write(dir, 'brand-new.txt', 'x');
+  const same = await sameAsGit(dir, ['src/main.ts', 'src/a.ts', 'play/index.html', 'brand-new.txt', 'src', 'missing.txt'], ['HEAD', 'origin/beta', 'no-such-ref']);
+  assert.deepEqual([...same].sort(), ['play/index.html', 'src/a.ts']);
+  git(dir, 'restore', '--source=HEAD', '--staged', '--worktree', '--', 'src/main.ts');
+  fs.rmSync(path.join(dir, 'brand-new.txt'));
+});
+
+test('local backups: only the newest few of a folder are kept, another folder with the same start is not touched', async () => {
+  const root = path.join(process.env.STUDIO_DATA!, 'backups', 'repos');
+  fs.mkdirSync(root, { recursive: true });
+  for (const n of fs.readdirSync(root)) fs.rmSync(path.join(root, n));
+  fs.writeFileSync(path.join(root, 'site-two-2026-01-01T00-00-00-000Z.tar.gz'), 'other folder');
+  for (let i = 0; i < KEEP_BACKUPS + 2; i++) {
+    const b = await backupFiles(dir, 'site', ['src/main.ts']);
+    assert.ok(b.ok, b.ok ? '' : b.error);
+    await new Promise((r) => setTimeout(r, 3));
+  }
+  const left = fs.readdirSync(root).sort();
+  assert.equal(left.filter((n) => /^site-\d/.test(n)).length, KEEP_BACKUPS, left.join(', '));
+  assert.ok(left.includes('site-two-2026-01-01T00-00-00-000Z.tar.gz'));
+  assert.ok(!H.synced('backups/repos/site-2026-01-01T00-00-00-000Z.tar.gz'), 'never synced to the state bucket');
+});
+
+/** Cloud Storage with resumable uploads (a session per upload, pieces checked in order), listing and deleting. */
+function fakeBucket() {
+  const objects = new Map<string, Buffer>();
+  const sessions = new Map<string, { key: string; parts: Buffer[] }>();
+  const puts: string[] = [];
+  const state = { failPutAt: 0, cancelled: 0 };
+  const f = (async (input: any, init: any = {}) => {
+    const u = new URL(String(input));
+    const method = init.method ?? 'GET';
+    if (u.pathname.startsWith('/upload/storage/') && u.searchParams.get('uploadType') === 'resumable') {
+      const id = `s${sessions.size + state.cancelled}`;
+      sessions.set(id, { key: `${u.pathname.split('/')[5]}/${u.searchParams.get('name')}`, parts: [] });
+      return new Response('', { status: 200, headers: { location: `https://storage.googleapis.com/upload/session/${id}` } });
+    }
+    const s = /^\/upload\/session\/(\w+)$/.exec(u.pathname);
+    if (s) {
+      const sess = sessions.get(s[1]);
+      if (!sess) return new Response('no session', { status: 404 });
+      if (method === 'DELETE') { sessions.delete(s[1]); state.cancelled++; return new Response('', { status: 499 }); }
+      const range = String(init.headers['Content-Range']);
+      puts.push(range);
+      if (state.failPutAt && puts.length === state.failPutAt) return new Response('backend error', { status: 503 });
+      const body = Buffer.from(init.body);
+      const had = sess.parts.reduce((n, b) => n + b.length, 0);
+      const m = /^bytes (?:(\d+)-(\d+)|\*)\/(\*|\d+)$/.exec(range);
+      assert.ok(m, range);
+      if (m![1] !== undefined) { assert.equal(Number(m![1]), had); assert.equal(Number(m![2]) - Number(m![1]) + 1, body.length); }
+      sess.parts.push(body);
+      if (m![3] === '*') { assert.equal(body.length % (256 * 1024), 0); return new Response('', { status: 308 }); }
+      const all = Buffer.concat(sess.parts);
+      assert.equal(all.length, Number(m![3]));
+      objects.set(sess.key, all);
+      sessions.delete(s[1]);
+      return new Response('{}', { status: 200 });
+    }
+    const o = /\/storage\/v1\/b\/([^/]+)\/o(?:\/(.+))?$/.exec(u.pathname);
+    if (o && !o[2] && method === 'GET') {
+      const prefix = `${o[1]}/${u.searchParams.get('prefix') ?? ''}`;
+      const items = [...objects.keys()].filter((k) => k.startsWith(prefix)).map((k) => ({ name: k.slice(o[1].length + 1), size: objects.get(k)!.length, updated: '' }));
+      return new Response(JSON.stringify({ items }), { status: 200 });
+    }
+    if (o && o[2] && method === 'DELETE') { objects.delete(`${o[1]}/${decodeURIComponent(o[2])}`); return new Response(null, { status: 204 }); }
+    return new Response(`unexpected ${method} ${u.pathname}`, { status: 500 });
+  }) as typeof fetch;
+  return { objects, sessions, puts, state, fetch: f };
+}
+
+async function* pieces(data: Buffer, size: number) { for (let i = 0; i < data.length; i += size) yield data.subarray(i, i + size); }
+
+test('gcsUploadStream: pieces of 256 KiB multiples in order, the last one names the total; a failure cancels the upload', async () => {
+  const store = fakeBucket();
+  G.setGcpFetch(store.fetch, 'test-token');
+  try {
+    const data = Buffer.alloc(700 * 1024, 7);
+    for (let i = 0; i < data.length; i += 997) data[i] = i % 251;
+    const n = await G.gcsUploadStream('bkt', 'a/b.bin', pieces(data, 100 * 1024), 'application/gzip', 256 * 1024);
+    assert.equal(n, data.length);
+    assert.ok(store.objects.get('bkt/a/b.bin')!.equals(data));
+    assert.deepEqual(store.puts, ['bytes 0-262143/*', 'bytes 262144-524287/*', `bytes 524288-${data.length - 1}/${data.length}`]);
+    // A size that is an exact multiple: the last request carries no bytes, only the total.
+    store.puts.length = 0;
+    await G.gcsUploadStream('bkt', 'a/c.bin', pieces(Buffer.alloc(512 * 1024, 1), 64 * 1024), undefined, 256 * 1024);
+    assert.deepEqual(store.puts, ['bytes 0-262143/*', 'bytes 262144-524287/*', 'bytes */524288']);
+    assert.equal(store.objects.get('bkt/a/c.bin')!.length, 512 * 1024);
+    // The second piece fails: the session is cancelled and nothing is left.
+    store.puts.length = 0;
+    store.state.failPutAt = 2;
+    await assert.rejects(G.gcsUploadStream('bkt', 'a/d.bin', pieces(data, 100 * 1024), undefined, 256 * 1024), /failed at byte 262144 \(503/);
+    assert.equal(store.objects.has('bkt/a/d.bin'), false);
+    assert.equal(store.sessions.size, 0);
+    assert.equal(store.state.cancelled, 1);
+    await assert.rejects(G.gcsUploadStream('bkt', 'x', pieces(data, 1), undefined, 1000), /multiple of 256 KiB/);
+  } finally { G.setGcpFetch(null); }
+});
+
+test('on Cloud Run (a state bucket): the backup streams to <prefix>backups/repos/, never /data; newest few kept; restore from gs://', async () => {
+  const store = fakeBucket();
+  G.setGcpFetch(store.fetch, 'test-token');
+  process.env.STUDIO_STATE_BUCKET = 'cells-bucket';
+  process.env.STUDIO_STATE_PREFIX = 'o/acme/';
+  const root = path.join(process.env.STUDIO_DATA!, 'backups', 'repos');
+  fs.rmSync(root, { recursive: true, force: true });
+  try {
+    write(dir, 'src/main.ts', 'kept in the bucket');
+    const b = await backupFiles(dir, 'site', ['src/main.ts', 'play/index.html', 'gone.txt']);
+    assert.ok(b.ok, b.ok ? '' : b.error);
+    const key = b.ok ? b.file.replace('gs://cells-bucket/', '') : '';
+    assert.match(key, /^o\/acme\/backups\/repos\/site-\d{4}-\d\d-\d\dT[\d-]+Z\.tar\.gz$/);
+    assert.ok(!fs.existsSync(root), 'nothing written under the data folder');
+    const tgz = store.objects.get(`cells-bucket/${key}`)!;
+    assert.equal(b.ok && b.bytes, tgz.length);
+    const listed = spawnSync('tar', ['-tzf', '-'], { input: tgz, encoding: 'utf8' }).stdout.split('\n').filter(Boolean).sort();
+    assert.deepEqual(listed, ['play/index.html', 'src/main.ts']);
+    const out = fs.mkdtempSync(path.join(tmp, 'restore-'));
+    spawnSync('tar', ['-xzf', '-', '-C', out], { input: tgz });
+    assert.equal(fs.readFileSync(path.join(out, 'src/main.ts'), 'utf8'), 'kept in the bucket');
+    assert.match(restoreSteps(b.ok ? b.file : '', dir), /gcloud storage cat gs:\/\/cells-bucket\/o\/acme\/backups\/repos\/site-.+ \| tar -xzf - -C <your checkout>/);
+    assert.match(restoreSteps('/data/backups/repos/x.tar.gz', dir), /tar -xzf \/data\/backups\/repos\/x\.tar\.gz -C /);
+
+    // Retention: a folder keeps its newest KEEP_BACKUPS; another folder, and objects outside backups/, stay.
+    store.objects.set('cells-bucket/o/acme/backups/repos/site-two-2026-01-01T00-00-00-000Z.tar.gz', Buffer.from('x'));
+    store.objects.set('cells-bucket/o/acme/state/settings.json', Buffer.from('{}'));
+    for (let i = 0; i < KEEP_BACKUPS + 1; i++) {
+      assert.ok((await backupFiles(dir, 'site', ['src/main.ts'])).ok);
+      await new Promise((r) => setTimeout(r, 3));
+    }
+    const names = [...store.objects.keys()];
+    assert.equal(names.filter((n) => /\/repos\/site-\d/.test(n)).length, KEEP_BACKUPS, names.join('\n'));
+    assert.ok(names.includes('cells-bucket/o/acme/backups/repos/site-two-2026-01-01T00-00-00-000Z.tar.gz'));
+    assert.ok(names.includes('cells-bucket/o/acme/state/settings.json'));
+
+    // The upload fails: an error, no object, nothing on /data.
+    const before = store.objects.size;
+    store.puts.length = 0;
+    store.state.failPutAt = 1;
+    const f = await backupFiles(dir, 'site', ['src/main.ts']);
+    store.state.failPutAt = 0;
+    assert.equal(f.ok, false);
+    assert.match(f.ok ? '' : f.error, /503/);
+    assert.equal(store.objects.size, before);
+    assert.ok(!fs.existsSync(root));
+  } finally {
+    G.setGcpFetch(null);
+    delete process.env.STUDIO_STATE_BUCKET;
+    delete process.env.STUDIO_STATE_PREFIX;
+    git(dir, 'restore', '--source=HEAD', '--staged', '--worktree', '--', 'src/main.ts');
+  }
+});
