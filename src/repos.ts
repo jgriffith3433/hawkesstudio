@@ -117,7 +117,26 @@ export function buildOutputs(folder: string): (file: string) => boolean {
  * (never deleted; Talk is told how to get them back) and it is updated, or "kept" as before when the stash fails. With `want`, a clean checkout is switched to that branch first when
  * origin has it (the server keeps product source repos on beta).
  */
-export async function syncRepo(folder: string, slug: string, branch = BRANCH, want?: string): Promise<RepoResult> {
+/**
+ * Syncs in flight, per repo folder: one at a time. Two at once (a desktop and a phone playtest of the same game start
+ * together) meant one cloned while the other saw the new .git, fetched, found every file "missing" mid-checkout and
+ * tried to stash them: PH Origins' checkout sat on main with ~1,300 "changes" (2026-11-01).
+ */
+const syncing = new Map<string, Promise<unknown>>();
+
+/** Waits for the sync of a folder that is running or queued, if any (a folder mid-clone isn't ready to use). */
+export const syncSettled = async (folder: string) => { await syncing.get(folder)?.catch(() => {}); };
+
+export function syncRepo(folder: string, slug: string, branch = BRANCH, want?: string): Promise<RepoResult> {
+  const prev = syncing.get(folder) ?? Promise.resolve();
+  const run = prev.catch(() => {}).then(() => syncRepoNow(folder, slug, branch, want));
+  const tail = run.catch(() => {});
+  syncing.set(folder, tail);
+  void tail.then(() => { if (syncing.get(folder) === tail) syncing.delete(folder); });
+  return run;
+}
+
+async function syncRepoNow(folder: string, slug: string, branch: string, want?: string): Promise<RepoResult> {
   const dir = path.join(PROJECTS, folder);
   const before = fs.existsSync(path.join(dir, '.git')) ? git(dir, ['rev-parse', 'HEAD']).out : '';
   const r = await syncGit(folder, slug, branch, want);
@@ -556,6 +575,7 @@ export async function syncRepos(only?: string[]) {
  */
 export async function ensureCloned(rel: string, slugIn?: string) {
   const top = rel.split(/[\\/]/)[0];
+  await syncSettled(top);
   if (fs.existsSync(path.join(PROJECTS, top, '.git'))) return null;
   const slug = repoMap()[top] ?? slugIn;
   if (!slug) return null;

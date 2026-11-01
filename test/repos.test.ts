@@ -211,3 +211,12 @@ test('a clone cut off at its checkout leaves no half-made folder; the next sync 
   assert.equal(git(dir, 'rev-parse', '--abbrev-ref', 'HEAD'), 'beta');
   assert.equal(status(), '');
 });
+
+test('two syncs at once (a desktop and a phone playtest): one clones, the other waits and finds it clean on beta', async () => {
+  fs.rmSync(dir, { recursive: true, force: true });
+  const [a, b] = await Promise.all([sync(), sync()]);
+  assert.deepEqual([a.action, b.action].sort(), ['cloned', 'current'], `${a.detail} | ${b.detail}`);
+  assert.equal(git(dir, 'rev-parse', '--abbrev-ref', 'HEAD'), 'beta');
+  assert.equal(status(), '');
+  assert.ok(!b.setAside && !a.setAside);
+});
