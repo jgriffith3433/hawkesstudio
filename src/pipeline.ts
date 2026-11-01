@@ -1056,6 +1056,9 @@ async function partialBody(id: string, kind: string, p: Product, opts: PartialOp
  * button: 0). A newer beta run of the product supersedes one still waiting (betaqueue.ts).
  */
 type BetaOptions = { focus?: string; origin?: string | null; criteria?: string[]; scenario?: string; options?: Record<string, unknown>; playtest?: boolean; quiet?: number; plays?: BetaPlay[];
+  /** The agent change whose merge into beta started this run (agents.ts approve): a Unity build skips the quiet time
+   *  while no other change of the product is on its way into beta (betaqueue.ts mergesInFlight). */
+  merge?: string;
   /** A build tag J pushed (tagbuild.ts): this run builds that exact commit in the cloud (GitHub mode) instead of beta's checkout. */
   tag?: { name: string; sha: string } };
 /** A reached milestone's check (pm.ts milestoneCheck): one scenario (none: the product's first local one) and the criteria judged on it. */
@@ -1070,7 +1073,7 @@ export function startBeta(productId: string, o: BetaOptions = {}) {
   const p = getProduct(productId);
   if (managedElsewhere(p)) throw new StudioError(managedNote(p), 409);
   const id = newId('r');
-  db.prepare('INSERT INTO runs (id, kind, status, detail, products, options, started) VALUES (?, ?, ?, ?, ?, ?, ?)').run(id, 'beta', 'running', `beta ${p.id}`, J([p.id]), J({ focus: o.focus, criteria: o.criteria, scenario: o.scenario, options: o.options, playtest: o.playtest, quiet: o.quiet, plays: o.plays, ...(o.tag ? { tag: o.tag } : {}) }), Date.now());
+  db.prepare('INSERT INTO runs (id, kind, status, detail, products, options, started) VALUES (?, ?, ?, ?, ?, ?, ?)').run(id, 'beta', 'running', `beta ${p.id}`, J([p.id]), J({ focus: o.focus, criteria: o.criteria, scenario: o.scenario, options: o.options, playtest: o.playtest, quiet: o.quiet, plays: o.plays, ...(o.merge ? { merge: o.merge } : {}), ...(o.tag ? { tag: o.tag } : {}) }), Date.now());
   tagRun(id, o.origin);
   return { id, done: betaBody(id, p, o) };
 }
@@ -1091,7 +1094,7 @@ async function unchangedPass(p: Product, name: string): Promise<string | null> {
   return noRuntimeChange(files) ? `${name} passed on beta ${pass.sha.slice(0, 7)} (run ${pass.run}); since then only docs and notes changed (${files.length} file(s)): not played again` : null;
 }
 
-async function betaBody(id: string, p: Product, { focus, criteria, scenario, options, playtest, quiet, plays, tag }: BetaOptions) {
+async function betaBody(id: string, p: Product, { focus, criteria, scenario, options, playtest, quiet, plays, tag, merge }: BetaOptions) {
   try {
     // What this beta run was asked to play (runplan.ts): the tasks' scenarios, or beta's one playtest when asked for.
     const nameFor = (x: { scenario?: string }) => {
@@ -1154,6 +1157,7 @@ async function betaBody(id: string, p: Product, { focus, criteria, scenario, opt
         const turn = await betaTurn(id, p.id, {
           halt: haltOf(id),
           ...(quiet !== undefined ? { quiet } : {}),
+          afterMerge: Boolean(merge),
           onWait: (detail) => updateStep(q, { detail }),
           onGo: () => updateStep(q, { status: 'done', detail: 'its turn at the build server', finished: true }),
         });

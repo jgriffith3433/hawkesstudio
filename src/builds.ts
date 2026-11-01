@@ -629,14 +629,26 @@ async function playIt(run: string, built: Product, site: Product) {
   catch (e: any) { console.warn(`[builds] playtest of ${p.id}: ${e?.message ?? e}`); }
 }
 
+/**
+ * A desktop build's playtest job, with the pipeline's limits (playtests.ts runGenJob): the scenario's run time once it
+ * starts, PLAYTEST_IDLE_MS without progress is stuck (cancelled, failed "stuck: ..."), and at most 45 min in Gen's queue
+ * (the whole wait used to be). Priority 0, as a daily play: behind agents' verify plays and the go-live smoke. The
+ * build is downloaded from its public address, not a page this run serves, so the same play another caller queued is
+ * joined (share). api, pollMs: tests' stand-ins.
+ */
+export async function playDesktopJob(project: string, params: Record<string, unknown>, onUpdate: (job: any) => void = () => {}, { api, pollMs }: { api?: any; pollMs?: number } = {}) {
+  const { runGenJob, playtestRunMs, PLAYTEST_IDLE_MS } = await import('./playtests.ts');
+  return runGenJob('playtest.run', project, params, onUpdate, { runMs: playtestRunMs({ where: 'local' }), queueMs: 45 * 60_000, idleMs: PLAYTEST_IDLE_MS(), priority: 0, share: true, ...(api ? { api } : {}), ...(pollMs ? { pollMs } : {}) });
+}
+
 /** A desktop build plays on Hawkes Gen's playtesters (windows, linux, proton), downloaded from its own address. */
 async function playDesktop(run: string, p: Product, b: BuildSpec, url: string) {
   const { startStep, updateStep } = await import('./pipeline.ts');
   const step = startStep(run, p.id, 'playtest', `${b.id}@${b.target}`, 'on a Hawkes Gen playtester');
   try {
-    const { genRun } = await import('./gen.ts');
     const { withPass } = await import('./sitekeys.ts');
-    const job: any = await genRun('playtest.run', p.id, { build: { url: `${url}${b.target}.zip` }, target: b.target === 'linux' ? 'linux' : 'windows', scenario: p.contract ? 'smoke' : undefined, ...withPass() }, undefined, 45 * 60 * 1000);
+    const job: any = await playDesktopJob(p.id, { build: { url: `${url}${b.target}.zip` }, target: b.target === 'linux' ? 'linux' : 'windows', scenario: p.contract ? 'smoke' : undefined, ...withPass() },
+      (j) => updateStep(step, { job: j.id, detail: j.detail }));
     updateStep(step, { status: job.status === 'done' ? 'done' : 'failed', detail: job.status === 'done' ? (job.result?.outcome ?? 'played') : String(job.error ?? job.status).slice(0, 300), job: job.id, finished: true });
   } catch (e: any) {
     updateStep(step, { status: 'failed', detail: String(e?.message ?? e).slice(0, 300), finished: true });

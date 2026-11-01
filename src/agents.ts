@@ -43,12 +43,13 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { spawn, spawnSync } from 'node:child_process';
 import { db, newId, J, parse } from './db.ts';
-import { getProduct, getInfra, isInfra, PROJECTS, DATA, ROOT, storyOf, localUrl, StudioError, betaPageGlobals, managedElsewhere, managedNote, type Product, type Infra } from './config.ts';
+import { getProduct, getInfra, isInfra, PROJECTS, DATA, ROOT, storyOf, localUrl, StudioError, betaPageGlobals, managedElsewhere, managedNote, type Product, type Infra, type Playtest } from './config.ts';
 import { withPass } from './sitekeys.ts';
 import { getFinding, updateFinding } from './backlog.ts';
 import { reviewParams } from './review.ts';
 import { reviewJob } from './review-cc.ts';
 import { gen, genRun, fileUrl } from './gen.ts';
+import { runGenJob, playtestRunMs, PLAYTEST_IDLE_MS } from './playtests.ts';
 import { unityBuild } from './buildpkgs.ts';
 import { jobCancelDetail, noteCancel, cancelNote, cancelWords } from './cancel.ts';
 import { repoMap, ensureCloned, bigProduct } from './repos.ts';
@@ -1981,6 +1982,24 @@ async function buildChange(c: Change, p: Product, jobs?: JobMemo): Promise<Chang
   return b;
 }
 
+/** An agent's verify playtest goes ahead of daily and carried-over plays (0, -1), behind the go-live smoke (5): an agent and its tab wait on it. */
+export const VERIFY_PRIORITY = 2;
+/** How long it may wait in Gen's queue (behind other playtests: not a hang), as long as the whole wait used to be. */
+const VERIFY_QUEUE_MS = 4 * 3600_000;
+
+/**
+ * An agent's verify playtest with the pipeline's limits (playtests.ts runGenJob): the scenario's run time (playtestRunMs,
+ * counted from Gen's start) and no progress for PLAYTEST_IDLE_MS is stuck, so a stuck browser is cancelled and comes back
+ * failed ("stuck: ...") instead of holding the agent and a tab for hours. Never shared: the page is served on the
+ * change's own port, which stops with it. prior: a job submitted before a Studio restart, waited on again. The new job's
+ * id goes into jobs as soon as Gen gives it (and its review starts afresh). api, pollMs: tests' stand-ins.
+ */
+export function verifyPlaytest(project: string, params: Record<string, unknown>, { prior, jobs, timeout, api, pollMs }: { prior?: string; jobs?: JobMemo; timeout?: number; api?: Parameters<typeof runGenJob>[4]['api']; pollMs?: number } = {}) {
+  return runGenJob('playtest.run', project, params, (j) => {
+    if (j?.id && jobs && jobs.get('playtest') !== j.id) { jobs.set('playtest', j.id); jobs.set('review', ''); }
+  }, { runMs: playtestRunMs({ timeout } as Playtest), queueMs: VERIFY_QUEUE_MS, idleMs: PLAYTEST_IDLE_MS(), priority: VERIFY_PRIORITY, job: prior, ...(api ? { api } : {}), ...(pollMs ? { pollMs } : {}) });
+}
+
 async function verifyChange(c: Change, p: Product, findings: any[], jobs?: JobMemo) {
   let dir: string;
   let build: ChangeBuild | null = null;
@@ -2012,9 +2031,10 @@ async function verifyChange(c: Change, p: Product, findings: any[], jobs?: JobMe
     prior = null;
   }
   const url = prior?.status === 'done' ? localUrl(p) : await serveDir(p, dir, port);
+  const timeout = p.playtests.find((t) => t.where === 'local' && (t.scenario ?? t.mode) === scenario)?.timeout;
   try {
-    const run = await genRun('playtest.run', p.id, { url, mode: mode ?? (p.contract ? 'contract' : 'auto'), ...(mode ? {} : { scenario }), ...(mode === 'site' ? { maxPages: 40 } : {}), ...(agentScenario && agentOptions ? { options: agentOptions } : {}), globals: betaPageGlobals(), ...withPass() },
-      undefined, undefined, { job: prior?.id, onSubmit: (id) => { jobs?.set('playtest', id); jobs?.set('review', ''); } });
+    const run = await verifyPlaytest(p.id, { url, mode: mode ?? (p.contract ? 'contract' : 'auto'), ...(mode ? {} : { scenario }), ...(mode === 'site' ? { maxPages: 40 } : {}), ...(agentScenario && agentOptions ? { options: agentOptions } : {}), globals: betaPageGlobals(), ...withPass() },
+      { prior: prior?.id, jobs, timeout });
     if (run.status === 'cancelled') return { outcome: 'not played', error: jobCancelDetail(run), build, cancelled: true };
     if (run.status !== 'done') return { outcome: 'failed', error: run.error, playtest: run.id, build };
     // A verify review (review.ts): did the change work (it says by id whether the findings look fixed), did anything regress.
@@ -2411,18 +2431,29 @@ export async function smokeCheck(dir: string, t: Infra) {
   }
 }
 
+type InfraCheck = { cmd: string; ok: boolean; seconds: number; out?: string };
+/**
+ * A Studio or Gen change's checks (products.json infra "checks": typecheck and tests), all at once: they read the
+ * worktree and write nothing the other reads (tsc is noEmit), so the slowest one sets the time (the tests, ~100 s)
+ * instead of their sum (+ ~14 s of typecheck). Every one runs to the end and each result is kept, in the listed order,
+ * so a change failing both hears of both. onDone: each one as it finishes. run: tests' stand-in for sh.
+ */
+export async function infraChecks(dir: string, cmds: string[], onDone?: (k: InfraCheck) => void, run: (cwd: string, cmd: string, env: NodeJS.ProcessEnv) => Promise<{ ok: boolean; out: string; ms: number }> = sh): Promise<InfraCheck[]> {
+  return Promise.all(cmds.map(async (cmd) => {
+    const r = await run(dir, cmd, infraEnv()).catch((e: any) => ({ ok: false, out: String(e?.message ?? e), ms: 0 }));
+    const k: InfraCheck = { cmd, ok: r.ok, seconds: Math.round(r.ms / 1000), out: r.ok ? undefined : tail(r.out) };
+    onDone?.(k);
+    return k;
+  }));
+}
+
 /** Verification of a Studio or Gen change: the checks and a smoke check here, and CI on the pull request (GitHub). */
 async function verifyInfra(c: Change, t: Infra) {
   const sha = git(c.worktree, ['rev-parse', 'HEAD']).out;
   const ci = ciChecks(c.slug, sha, { onWait: (d) => update(c.id, { detail: d }) }).catch((e: any) => ({ state: 'error', detail: String(e.message ?? e), runs: [] as any[] }));
   await npmCi(c.id, c.worktree);
-  const checks: { cmd: string; ok: boolean; seconds: number; out?: string }[] = [];
-  for (const cmd of t.checks) {
-    update(c.id, { detail: `running ${cmd}` });
-    const r = await sh(c.worktree, cmd, infraEnv());
-    checks.push({ cmd, ok: r.ok, seconds: Math.round(r.ms / 1000), out: r.ok ? undefined : tail(r.out) });
-    addLog(c.id, `${cmd}: ${r.ok ? 'ok' : 'FAILED'} (${Math.round(r.ms / 1000)} s)`);
-  }
+  update(c.id, { detail: `running ${t.checks.join(' and ')}` });
+  const checks = await infraChecks(c.worktree, t.checks, (k) => addLog(c.id, `${k.cmd}: ${k.ok ? 'ok' : 'FAILED'} (${k.seconds} s)`));
   update(c.id, { detail: 'smoke check: starting the changed service on a spare port' });
   const smoke = await smokeCheck(c.worktree, t).catch((e: any) => ({ ok: false, detail: String(e.message ?? e) }) as any);
   addLog(c.id, `smoke: ${smoke.ok ? 'ok' : 'FAILED'}: ${smoke.detail}`);
@@ -2946,7 +2977,7 @@ export async function approve(id: string, { confirm, by = 'J', origin, auto = fa
     await cleanup(id, { deleteBranch: true });
     // Beta moved: its pre-deploy build, its build (Unity), the beta site and a local playtest of it follow, in the background.
     // A roadmap task's criteria are judged again on beta, on the scenario its agent wrote for them.
-    void import('./pipeline.ts').then(({ startBeta }) => startBeta(c.product, { focus: `Just merged into beta: ${c.title}. Check it works and nothing regressed.`, origin, criteria: c.criteria, scenario: c.verify?.scenario, options: c.verify?.options })).catch((e) => console.warn(`[studio] beta after ${id}: ${e.message ?? e}`));
+    void import('./pipeline.ts').then(({ startBeta }) => startBeta(c.product, { focus: `Just merged into beta: ${c.title}. Check it works and nothing regressed.`, origin, criteria: c.criteria, scenario: c.verify?.scenario, options: c.verify?.options, merge: id })).catch((e) => console.warn(`[studio] beta after ${id}: ${e.message ?? e}`));
     return getChange(id);
   });
 }

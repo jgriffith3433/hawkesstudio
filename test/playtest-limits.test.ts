@@ -121,3 +121,19 @@ test('a bot standing on a ledge with a ticking counter in its detail is stuck, a
   assert.match(j.stuckAt, /Level 19/);
   assert.deepEqual(j.stuckLog, ['a', 'b', 'foothold lost']);
 });
+
+test('a desktop build\'s playtest (builds.ts) is cancelled as stuck when it stops making progress', async () => {
+  process.env.STUDIO_PLAYTEST_IDLE_MS = '60';
+  try {
+    const { playDesktopJob } = await import('../src/builds.ts');
+    const g = fakeGen(() => ({ status: 'running', started: Date.now(), detail: 'windows: main menu' }));
+    const seen: string[] = [];
+    const j = await playDesktopJob('mygame', { build: { url: 'https://builds.example/mygame/1/windows.zip' }, target: 'windows' }, (x) => seen.push(String(x.detail)), { api: g, pollMs: 5 });
+    assert.equal(j.status, 'failed');
+    assert.match(j.error, /^stuck: no progress/);
+    assert.deepEqual(g.cancels, ['j_new']);
+    assert.ok(seen.includes('windows: main menu'), 'its step hears how it goes');
+  } finally {
+    delete process.env.STUDIO_PLAYTEST_IDLE_MS;
+  }
+});

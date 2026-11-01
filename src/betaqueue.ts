@@ -13,6 +13,10 @@
 //   cancelled, the rest not played, and it ends superseded; the newer run plays its checks on the new build
 //   (supersedingBuild, pipeline.ts betaBody, J 2026-10-19).
 //
+// - A beta run an agent change's merge started (afterMerge: agents.ts approve) doesn't wait that quiet time when no other
+//   change of the product is on its way into beta (mergesInFlight: ready with its automatic merge going, or merged
+//   since this run started). Something in flight: it waits as before, so one build still covers a burst of merges.
+//
 // - A tag build's beta run (options.tag, tagbuild.ts) builds one exact commit in the cloud: it neither waits here nor
 //   supersedes, and no push waits for it.
 //
@@ -150,14 +154,29 @@ export function absorbed(run: string): { playtest?: boolean; criteria?: string[]
   return out;
 }
 
+/**
+ * Other changes of the product on their way into beta (agents.ts): ready with its automatic merge going (auto_merge
+ * 'trying': it merges any moment, and its merge starts a newer beta run), or merged after `since` (this run's start: its
+ * newer beta run may not have started yet). Each id; an error reading them (no changes table here) counts as one, so
+ * the quiet time is kept.
+ */
+export function mergesInFlight(product: string, since: number): string[] {
+  try {
+    return (db.prepare(`SELECT id FROM changes WHERE product = ? AND ((status = 'ready' AND auto_merge = 'trying') OR (status = 'merged' AND merged_at > ?)) ORDER BY created`).all(product, since) as { id: string }[]).map((r) => r.id);
+  } catch {
+    return ['(unknown)'];
+  }
+}
+
 export type Turn = { superseded: string } | { go: true } | { cancelled: string };
 
 /**
  * A beta run's turn at the build server: waits out the quiet time (from the run's start) and any older build of the
  * product, cancelling older beta builds still queued in Gen. Ends early when a newer beta run arrives. onGo marks the
- * run's queue step done (synchronously, in the same tick as the check).
+ * run's queue step done (synchronously, in the same tick as the check). afterMerge: an agent change's merge started this
+ * run, and the quiet time is skipped while no other change of the product is on its way into beta (mergesInFlight).
  */
-export async function betaTurn(run: string, product: string, { quiet = BETA_QUIET_MS(), onWait, onGo, gen: g, halt }: { quiet?: number; onWait?: (detail: string) => void; onGo?: () => void; gen?: GenQueue; halt?: () => string | null } = {}): Promise<Turn> {
+export async function betaTurn(run: string, product: string, { quiet = BETA_QUIET_MS(), onWait, onGo, gen: g, halt, afterMerge = false }: { quiet?: number; onWait?: (detail: string) => void; onGo?: () => void; gen?: GenQueue; halt?: () => string | null; afterMerge?: boolean } = {}): Promise<Turn> {
   const begun = me(run)?.started ?? Date.now();
   let said = '';
   const say = (d: string) => { if (d !== said) { said = d; onWait?.(d); } };
@@ -169,7 +188,9 @@ export async function betaTurn(run: string, product: string, { quiet = BETA_QUIE
     if (newer) return { superseded: newer };
     // Quiet since this run started and since the last push to the product's beta.
     const left = (quiet > 0 ? Math.max(begun, lastPush.get(product) ?? 0) : begun) + quiet - Date.now();
-    if (left > 0) say(`waiting ${Math.ceil(left / 1000)} s for more pushes (a newer beta run takes over from this one)`);
+    // After a merge with nothing else of the product on its way in, there are no more pushes to wait for.
+    const coming = left > 0 && afterMerge ? mergesInFlight(product, begun) : [];
+    if (left > 0 && (!afterMerge || coming.length)) say(`waiting ${Math.ceil(left / 1000)} s for more pushes (a newer beta run takes over from this one)${coming.length ? `: ${coming.join(', ')} is on its way into beta too` : ''}`);
     else {
       const older = olderBuilds(run, product);
       if (!older.length) {

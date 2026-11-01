@@ -88,6 +88,19 @@ test('the fast lane: a small checked change goes to beta, nothing else does', as
   assert.equal(bad.ok, false);
   assert.match(bad.why!, /check .* failed/);
   git(ws.dir, 'reset', '--quiet', '--hard', 'origin/beta');
+  // Content gets the canon check, which runs alongside the checks: a failed check is still what stops it and is named.
+  fs.writeFileSync(path.join(ws.dir, 'index.html'), '<h1>broken story</h1>\n');
+  const badStory = await fast.fastlane('fasttest', 'Reword the story text');
+  assert.equal(badStory.ok, false);
+  assert.match(badStory.why!, /the check "node check\.mjs" failed/);
+  assert.equal(badStory.canon, undefined, 'the failed check is reported, not the canon');
+  git(ws.dir, 'reset', '--quiet', '--hard', 'origin/beta');
+  fs.writeFileSync(path.join(ws.dir, 'index.html'), '<h1>Hello, story</h1>\n');
+  const story = await fast.fastlane('fasttest', 'Reword the story text');
+  assert.equal(story.ok, true, story.why);
+  assert.equal(story.checks[0].ok, true);
+  assert.equal(story.canon?.skipped, 'no canon', 'checked against the canon (none recorded here)');
+  git(ws.dir, 'reset', '--quiet', '--hard', 'origin/beta');
   // Protected and generated files are refused.
   fs.mkdirSync(path.join(ws.dir, '.github', 'workflows'), { recursive: true });
   fs.writeFileSync(path.join(ws.dir, '.github', 'workflows', 'x.yml'), 'on: push\n');
