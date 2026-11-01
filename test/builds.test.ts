@@ -290,3 +290,63 @@ test('a build archive is unpacked as it downloads, and a broken one says so', as
   assert.equal(fs.readFileSync(path.join(out, 'Game', 'StreamingAssets', 'aa', 'catalog.json'), 'utf8'), '{"ok":true}');
   await assert.rejects(B.untarStream(new Response(Buffer.from('not a tarball')), fs.mkdtempSync(path.join(os.tmpdir(), 'tar-bad-'))), /unpacking the build/);
 });
+
+test("Gen's \"token for this build is gone\" counts as a lost token (sick-of-it-unity v3, v4 failed on it)", () => {
+  assert.ok(B.tokenLost('The GitHub token for this build is gone (Gen restarted, or it expired): submit the build again with a fresh token'));
+  assert.ok(B.tokenLost('the token expired'));
+  assert.ok(B.tokenLost('GitHub refused the clone: Bad credentials'));
+  assert.equal(B.tokenLost('Unity exited with code 1: compile errors'), false);
+  assert.equal(B.tokenLost(undefined), false);
+});
+
+test('a Unity build whose token Gen lost is submitted again once with a fresh token, and is ready', async () => {
+  const { db } = await import('../src/db.ts');
+  C.saveProduct({ id: 'game-token', name: 'Game token', engine: 'unity', repo: 'acme/game', builds: [{ id: 'web', tool: 'unity', path: 'Game', playtest: false }] } as any);
+  const before = globalThis.fetch;
+  let posts = 0;
+  globalThis.fetch = (async (input: any, init: any = {}) => {
+    const u = new URL(String(input instanceof Request ? input.url : input));
+    if (u.host === 'gen.test' && u.pathname === '/v1/jobs' && init.method === 'POST' && posts++ === 0) { genCalls.push(JSON.parse(String(init.body))); return Response.json({ jobs: [{ id: 'j_gone', status: 'queued' }] }); }
+    if (u.host === 'gen.test' && u.pathname === '/v1/jobs/j_gone') return Response.json({ id: 'j_gone', status: 'failed', error: 'The GitHub token for this build is gone (Gen restarted, or it expired): submit the build again with a fresh token' });
+    return before(input, init);
+  }) as typeof fetch;
+  try {
+    const r = (await B.startBuild('game-token', {}))!;
+    await r.done;
+    const run = await runOf(r.id);
+    assert.equal(run.status, 'done', JSON.stringify(run.steps.map((s: any) => s.detail)));
+    assert.equal(posts, 2, 'submitted twice: the lost token, then a fresh one');
+    const row = db.prepare("SELECT status, gen_job, gen_done FROM builds WHERE product = 'game-token'").get() as any;
+    assert.equal(row.status, 'ready');
+    assert.equal(row.gen_job, 'j_unity', 'the step follows the new job');
+    assert.ok(row.gen_done, 'the Gen job is marked done before the download');
+  } finally {
+    globalThis.fetch = before;
+  }
+});
+
+test("a build waiting on its Gen job survives Studio's restarts: not counted, and the resume polls the same job", async () => {
+  const { db } = await import('../src/db.ts');
+  const P = await import('../src/pipeline.ts');
+  C.saveProduct({ id: 'game-restart', name: 'Game restart', engine: 'unity', repo: 'acme/game', builds: [{ id: 'web', tool: 'unity', path: 'Game', playtest: false }] } as any);
+  const now = Date.now();
+  // Three restarts in the last 30 minutes and three in a row at its build step: before, the fourth stopped it.
+  const options = { builds: ['web'], ref: 'beta', resumes: [now - 60_000, now - 40_000, now - 20_000], restarts: { step: 'game-restart/build/web', n: 3, at: now - 20_000 } };
+  db.prepare("INSERT INTO runs (id, kind, status, detail, products, options, started) VALUES ('r_gen', 'build', 'running', '', '[\"game-restart\"]', ?, ?)").run(JSON.stringify(options), now - 30 * 60_000);
+  db.prepare("INSERT INTO steps (id, run, product, kind, name, status, started) VALUES ('s_gen', 'r_gen', 'game-restart', 'build', 'web', 'running', ?)").run(now - 30 * 60_000);
+  db.prepare("INSERT INTO builds (id, product, build, version, status, sha, ref, runner, target, run, gen_job, started) VALUES ('b_gen', 'game-restart', 'web', 1, 'building', ?, 'beta', 'gen', 'web', 'r_gen', 'j_unity', ?)").run(SHA1, now - 30 * 60_000);
+  assert.equal(P.waitingInGen('r_gen'), true);
+  const posted = genCalls.length;
+  process.env.STUDIO_RESUME_GAP_MS = '0';
+  P.resumeRuns();
+  const opts = JSON.parse((db.prepare("SELECT options FROM runs WHERE id = 'r_gen'").get() as any).options);
+  assert.equal(opts.resumes.length, 3, 'a restart while Gen builds is not counted');
+  for (let i = 0; i < 100 && (await runOf('r_gen')).status === 'running'; i++) await new Promise((r) => setTimeout(r, 50));
+  const run = await runOf('r_gen');
+  assert.equal(run.status, 'done', JSON.stringify(run.steps.map((s: any) => s.detail)));
+  assert.equal(genCalls.length, posted, 'no second Unity build: the same job was polled');
+  assert.equal(B.buildHistory('game-restart')[0].status, 'ready');
+  // Once Gen is done, the download and publish are Studio's own work: restarts count again.
+  db.prepare("UPDATE builds SET status = 'building', gen_done = ? WHERE id = 'b_gen'").run(Date.now());
+  assert.equal(P.waitingInGen('r_gen'), false);
+});

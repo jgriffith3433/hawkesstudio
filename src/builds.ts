@@ -22,6 +22,8 @@ db.exec(`CREATE TABLE IF NOT EXISTS builds (
   change TEXT, detail TEXT, started INTEGER NOT NULL, finished INTEGER
 )`);
 try { db.exec('ALTER TABLE builds ADD COLUMN gen_job TEXT'); } catch { /* there already */ }
+// When the Gen job finished: until then a restart only waits on Gen and isn't counted (pipeline.ts waitingInGen).
+try { db.exec('ALTER TABLE builds ADD COLUMN gen_done INTEGER'); } catch { /* there already */ }
 try { db.exec('CREATE UNIQUE INDEX IF NOT EXISTS builds_version ON builds (product, build, version)'); } catch { /* there */ }
 // publish.commit: the repo and the commit on its beta that holds this build (going live fast-forwards that repo's main to it).
 for (const col of ['commit_repo', 'commit_sha']) { try { db.exec(`ALTER TABLE builds ADD COLUMN ${col} TEXT`); } catch { /* there */ } }
@@ -265,7 +267,7 @@ async function buildOne(run: string, p: Product, b: BuildSpec, o: StartOptions) 
     if (!o.resume) db.prepare('INSERT INTO builds (id, product, build, version, status, sha, ref, runner, target, run, change, started) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(rowId, p.id, b.id, version || -Date.now(), 'building', sha, ref, runnerOf(b), b.target ?? 'web', run, o.change ?? null, Date.now());
     say(`${sha.slice(0, 7)} (${ref})${o.resume ? ', carrying on after a restart' : ''}`);
     const row = rowId;
-    out = b.tool === 'unity' ? await viaGen(p, b, slug, sha, ref, token, say, { job: o.resume?.job ?? undefined, onSubmit: (id) => db.prepare('UPDATE builds SET gen_job = ? WHERE id = ?').run(id, row) })
+    out = b.tool === 'unity' ? await viaGen(p, b, slug, sha, ref, token, say, { job: o.resume?.job ?? undefined, onSubmit: (id) => db.prepare('UPDATE builds SET gen_job = ?, gen_done = NULL WHERE id = ?').run(id, row), onDone: () => db.prepare('UPDATE builds SET gen_done = ? WHERE id = ?').run(Date.now(), row) })
       : b.tool === 'actions' ? await viaActions(b, slug, o.artifact!, gh, say)
       : await viaStudio(p, b, slug, sha, token, gh, say);
     // Publish: once, under its version (or the change's preview), behind the Studio's sign-in.
@@ -385,24 +387,34 @@ async function viaStudio(p: Product, b: BuildSpec, slug: string, sha: string, to
   return await folderOutput(path.join(tmp, outDir), tmp);
 }
 
+/**
+ * Gen's word that a build lost or was refused its repo token, so it is worth one more try with a fresh one. Gen says
+ * "The GitHub token for this build is gone (Gen restarted, or it expired)" (hawkesgen customer.ts customerToken), which
+ * the first pattern ("token is gone") missed: sick-of-it-unity v3 and v4 failed on it (2026-11-01). Exported for the tests.
+ */
+export function tokenLost(error: unknown): boolean {
+  return /token\b[^.]{0,40}?\b(is gone|gone|expired)|GitHub refused|can't read the repo|Bad credentials|\b401\b/i.test(String(error ?? ''));
+}
+
 /** unity: Hawkes Gen builds that commit in the cloud with the repo's own token, and hands back the output as an asset. */
-async function viaGen(p: Product, b: BuildSpec, slug: string, sha: string, ref: string, token: string | null, say: (s: string) => void, resume: { job?: string; onSubmit?: (id: string) => void } = {}): Promise<Output> {
+async function viaGen(p: Product, b: BuildSpec, slug: string, sha: string, ref: string, token: string | null, say: (s: string) => void, resume: { job?: string; onSubmit?: (id: string) => void; onDone?: () => void } = {}): Promise<Output> {
   if (!token) throw new Error(`Studio has no GitHub access to ${slug}: connect GitHub and install the app on it`);
   const { genRun, gen } = await import('./gen.ts');
   say('Hawkes Gen is building it (Unity WebGL, in the cloud)');
   const submit = (tok: string, r: typeof resume) => genRun('unity.build', p.id, {
     github: { repo: slug, commit: sha, token: tok, ref }, ...(b.path ? { path: b.path } : {}), ...(b.method ? { method: b.method } : {}), target: 'web', out: 'artifact',
   }, (j) => { if (j?.progress?.step || j?.status) say(`Hawkes Gen: ${j.progress?.step ?? j.status}`); }, 3 * 60 * 60 * 1000, r);
-  let job: any = await submit(token, resume);
+  let job: any = await submit(token, { job: resume.job, onSubmit: resume.onSubmit });
   // The repo's token lasts an hour and lives only in Gen's memory: a build that waited in Gen's queue, or a Gen that
   // restarted, can lose it. Once, with a fresh token (2026-10-31 review); a real access problem fails the same way again.
-  if (job.status === 'failed' && /token (is gone|expired)|GitHub refused|can't read the repo|Bad credentials|401/i.test(String(job.error ?? ''))) {
+  if (job.status === 'failed' && tokenLost(job.error)) {
     const { forgetRepoTokens, repoToken } = await import('./ghtoken.ts');
     forgetRepoTokens();
     const fresh = await repoToken(slug);
     if (fresh) { say('the GitHub token had run out while it waited: building again with a fresh one'); job = await submit(fresh, { onSubmit: resume.onSubmit }); }
   }
   if (job.status !== 'done') throw new Error(`the Unity build ${job.status}: ${job.error ?? 'no reason given'}`);
+  resume.onDone?.();
   const asset = job.result?.artifact?.asset;
   if (!asset) throw new Error('Hawkes Gen finished without the build output');
   say('downloading the build');
