@@ -42,6 +42,19 @@ export async function repoToken(slug: string | null | undefined): Promise<string
   return token;
 }
 
+/**
+ * The token a Cloud Run job clones its repo with: this Studio's app's token for that one repo, read-only
+ * (github-app.ts repoJobToken), else the repo's token as above (a customer's Studio: the control plane's, scoped to it).
+ */
+export async function jobRepoToken(slug: string | null | undefined): Promise<string | null> {
+  if (!slug) return null;
+  try {
+    const t = await (await import('./github-app.ts')).repoJobToken(slug);
+    if (t) return t;
+  } catch { /* GitHub unreachable or the app's key unusable: the repo's token */ }
+  return repoToken(slug);
+}
+
 /** Fetches and keeps a repo's token, so repoTokenNow can give it to a synchronous caller. */
 export const primeRepoToken = (slug: string | null | undefined) => repoToken(slug).catch(() => null);
 

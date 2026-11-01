@@ -419,6 +419,38 @@ export async function orgRepoToken(org: string, repo: string) {
   }
 }
 
+/**
+ * A token for an agent's or a build's Cloud Run job (cloudjob.ts): through this Studio's own app's installation on the
+ * repo's owner, scoped to that one repository and read-only (contents: read), since the job only clones and fetches;
+ * Studio itself pushes the branch and opens the pull request afterwards (2026-11-01: a job's spec carried a token for
+ * every repo the installation reaches). An installation that won't narrow its permissions (422) gets the token scoped to
+ * the repo with the installation's own permissions. null: no app here, or it isn't installed on the owner or the repo.
+ */
+const jobTokens = new Map<string, { token: string; expires: number }>();
+export async function repoJobToken(repo: string): Promise<string | null> {
+  const slug = repoSlug(repo);
+  if (!slug || !appConfig()) return null;
+  const key = slug.toLowerCase();
+  const hit = jobTokens.get(key);
+  // A job may wait for a machine and then clone: keep at least 30 of the token's 60 minutes.
+  if (hit && hit.expires - Date.now() > 30 * 60_000) return hit.token;
+  const [owner, name] = slug.split('/');
+  const inst = (await installations()).find((i) => i.account.toLowerCase() === owner.toLowerCase());
+  if (!inst) return null;
+  for (const body of [{ repositories: [name], permissions: { contents: 'read' } }, { repositories: [name] }]) {
+    try {
+      const t = await gh(appJwt(), 'POST', `/app/installations/${inst.id}/access_tokens`, body, { jwt: true });
+      jobTokens.set(key, { token: String(t.token), expires: Date.parse(t.expires_at) });
+      return String(t.token);
+    } catch (e: any) {
+      if (e.status === 404) return null;
+      if (!/: 422 /.test(String(e.message))) throw e;
+      if (!body.permissions) return null;
+    }
+  }
+  return null;
+}
+
 async function exchange(params: Record<string, string>): Promise<Omit<UserLink, 'login'>> {
   const c = appConfig()!;
   const r = await fetch(`${WEB()}/login/oauth/access_token`, {
