@@ -606,13 +606,60 @@ export function studioMcp({ studio, waitRun }: Client = { studio: defaultStudio,
         throw new Error('action: list | status | plan | install | wire');
       },
     },
+    {
+      name: 'studio_talk',
+      description: "Talk with Talk, Studio's own assistant (the dashboard's Talk tab), from an assistant outside Studio: send a message and get Talk's answer. A message with no conversation starts a new conversation; give the conversation id from an earlier answer to go on in it. Waits up to `wait` seconds (default 60) for Talk to finish; if it is still answering (status thinking), call again with the conversation and `after` (the answer's `next`) and no message to read the rest. No message: reads a conversation, or with no conversation lists the recent ones. Talk knows your messages came through the MCP (they show \"via MCP\" in the dashboard): owner-only steps (going live, rolling back, merging into main, spending, raising costs) still need the owner's own words or tap, and Talk will say so. One message at a time per conversation.",
+      inputSchema: obj({
+        message: str("What to say to Talk (leave out to read a conversation's answer, or to list conversations)"),
+        conversation: str('A Talk conversation id (t_...) from an earlier answer or the list; none starts a new one'),
+        wait: { type: 'number', description: 'Seconds to wait for the answer (default 60, at most 300; 0 returns at once)' },
+        after: { type: 'number', description: "Reading: only messages from this index on (an earlier answer's `next`)" },
+      }),
+      run: async ({ message, conversation, wait, after }) => {
+        const id = conversation ? String(conversation).trim() : '';
+        if (id && !/^t_[0-9a-f]+$/.test(id)) throw new Error('conversation: a Talk conversation id (t_...), from an earlier studio_talk answer or its list');
+        const text = String(message ?? '').trim();
+        if (!text && !id) {
+          const r = await studio('/api/talk');
+          return { conversations: (r.conversations ?? []).slice(0, 20).map((c: any) => ({ id: c.id, title: c.title, status: c.status, updated: new Date(c.updated ?? c.created).toISOString(), ...(c.unseen ? { unseen: c.unseen } : {}) })) };
+        }
+        let cid = id;
+        let from = Math.max(0, Math.floor(Number(after) || 0));
+        if (text) {
+          const sent = await studio('/api/talk', { method: 'POST', body: { message: text, ...(id ? { conversation: id } : {}), via: 'mcp' } });
+          cid = sent.id;
+          // From the message just sent: it, then Talk's answer.
+          from = Math.max(0, (sent.messages?.length ?? 1) - 1);
+        }
+        const secs = wait === undefined || wait === null ? 60 : Math.min(300, Math.max(0, Number(wait) || 0));
+        const end = Date.now() + secs * 1000;
+        const every = Number(process.env.STUDIO_TALK_POLL_MS) || 2000;
+        let c: any;
+        for (;;) {
+          c = await studio(`/api/talk/${cid}?after=${from}`);
+          if (c.error) throw new Error(c.error);
+          if (c.status !== 'thinking' || Date.now() >= end) break;
+          await new Promise((r) => setTimeout(r, Math.min(every, Math.max(0, end - Date.now()))));
+        }
+        const thinking = c.status === 'thinking';
+        return {
+          conversation: cid, title: c.title ?? null, status: c.status, answered: !thinking, next: c.total ?? from + (c.messages?.length ?? 0),
+          messages: (c.messages ?? []).map((m: any) => (m.role === 'tool'
+            ? { role: 'tool', tool: m.tool ?? null, text: String(m.text ?? '').slice(0, 300) }
+            : { role: m.role === 'user' ? (m.via ? 'you' : 'owner') : m.notice ? 'studio' : 'talk', text: m.text, at: new Date(m.at).toISOString() })),
+          ...(thinking ? { note: `Talk is still answering. Read the rest with studio_talk { conversation: "${cid}", after: ${c.total ?? from} } (no message).` } : {}),
+        };
+      },
+    },
   ];
   // studio_game: the old name of studio_project (roles and conversations from before still call it).
   const proj = tools.find((t) => t.name === 'studio_project');
   if (proj) tools.splice(tools.indexOf(proj) + 1, 0, { ...proj, name: 'studio_game', description: 'The old name of studio_project (games are projects now): the same actions and fields. Prefer studio_project.' });
   // An agent's or scout's own server lists only the tools it may use (STUDIO_MCP_TOOLS: names or prefixes, comma list).
   const only = (process.env.STUDIO_MCP_TOOLS ?? '').split(',').map((x) => x.trim()).filter(Boolean);
-  const listed = only.length ? tools.filter((t) => only.some((o) => (o.endsWith('*') ? t.name.startsWith(o.slice(0, -1)) : t.name === o))) : tools;
+  // Talk's own server (TALK_CONVERSATION) doesn't list studio_talk: Talk doesn't message Talk (the API refuses it too).
+  const own = process.env.TALK_CONVERSATION ? tools.filter((t) => t.name !== 'studio_talk') : tools;
+  const listed = only.length ? own.filter((t) => only.some((o) => (o.endsWith('*') ? t.name.startsWith(o.slice(0, -1)) : t.name === o))) : own;
   // A customer's Studio: no platform tools (the API refuses them anyway: lockdown.ts), and descriptions say "the owner",
   // not J (this process doesn't open Studio's database for the owner's name).
   if (customerStudio()) {

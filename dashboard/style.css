@@ -102,6 +102,7 @@ pre { background: var(--panel2); padding: 10px; border-radius: 8px; overflow: au
 @keyframes talk-blink { 50% { opacity: 0; } }
 .talk-msg hr { border: none; border-top: 1px dashed var(--line); margin: 8px 0; }
 .talk-voice { color: var(--dim); font-size: 12px; margin-right: 4px; }
+.talk-via { color: var(--dim); font-size: 12px; }
 /* Calls (call.js): the call pane takes the input row's place, so the chat (with the details) stays in view. */
 .talk-call { font-size: 18px; padding: 6px 12px; }
 body.in-call .talk-input, body.in-call .talk-files, body.in-call #notifyBox { display: none; }
