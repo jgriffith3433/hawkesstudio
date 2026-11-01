@@ -65,3 +65,16 @@ test("filtering and merging a source's files keeps its prefetch (DoD's build + t
   assert.equal((keepPrefetch([...src, { path: 'dist/b.js' }], src) as any).prefetch, prefetch, 'merged with build output');
   assert.equal((keepPrefetch(src.filter(() => true), src) as any).prefetch, prefetch, 'filtered');
 });
+
+test('publishSite removes what its source unpacked, even when the publish fails part way (/tmp is memory on Cloud Run)', async () => {
+  let cleaned = 0;
+  const store = { get: async () => null, put: async () => { throw new Error('R2 down'); }, copy: async () => {}, remove: async () => {} } as any;
+  const files: any = [{ path: 'a.js', oid: gitOid(Buffer.from('A')), size: 1, read: async () => Buffer.from('A') }];
+  files.prefetch = async () => {};
+  files.cleanup = () => { cleaned++; };
+  await assert.rejects(publishSite(store, 's/beta', files), /R2 down/);
+  assert.equal(cleaned, 1);
+  const { keepPrefetch } = await import('../src/sitestore.ts');
+  const kept: any = keepPrefetch(files.slice(), files);
+  assert.equal(kept.cleanup, files.cleanup, 'filtering keeps the cleanup with the prefetch');
+});

@@ -23,11 +23,13 @@ import { injectReport, type PageInfo } from './bugreport.ts';
 /** One file of a site: where it goes, its git blob id and size, and how to get its bytes. */
 export type SiteFile = { path: string; oid: string; size: number; read: () => Promise<Buffer> };
 /** A source's files, optionally able to fetch many of them at once before they're read (publishSite calls it). */
-export type SiteFiles = SiteFile[] & { prefetch?: (paths: string[], progress?: (s: string) => void) => Promise<void> };
+export type SiteFiles = SiteFile[] & { prefetch?: (paths: string[], progress?: (s: string) => void) => Promise<void>; cleanup?: () => void };
 /** A filtered or merged copy of a source's files keeps its prefetch (array methods return plain arrays). */
 export const keepPrefetch = (to: SiteFile[], from: SiteFile[]): SiteFiles => {
   const f = (from as SiteFiles).prefetch;
   if (f) (to as SiteFiles).prefetch = f;
+  const c = (from as SiteFiles).cleanup;
+  if (c) (to as SiteFiles).cleanup = c;
   return to as SiteFiles;
 };
 export type Manifest = { v: 1; at: number; sha?: string | null; ref?: string; files: Record<string, { oid: string; size: number }> };
@@ -74,7 +76,13 @@ export type PublishResult = { files: number; sent: number; copied: number; kept:
  * previous Game/v<n>), then removes what's gone. Non-HTML first, pages after, the manifest last, removals at the end, so
  * a page never points at a file that isn't up yet.
  */
-export async function publishSite(store: SiteStore, base: string, files: SiteFile[], o: { page?: PageInfo; copyFrom?: string[]; keep?: (p: string) => boolean; build?: unknown; meta?: { sha?: string | null; ref?: string }; progress?: (s: string) => void; concurrency?: number } = {}): Promise<PublishResult> {
+type PublishOptions = { page?: PageInfo; copyFrom?: string[]; keep?: (p: string) => boolean; build?: unknown; meta?: { sha?: string | null; ref?: string }; progress?: (s: string) => void; concurrency?: number };
+export async function publishSite(store: SiteStore, base: string, files: SiteFile[], o: PublishOptions = {}): Promise<PublishResult> {
+  // What the tarball unpacked and the publish didn't read (it failed part way) is removed: Cloud Run's /tmp is memory,
+  // and those files stayed until the instance restarted (2026-11-01).
+  try { return await publishFiles(store, base, files, o); } finally { (files as SiteFiles).cleanup?.(); }
+}
+async function publishFiles(store: SiteStore, base: string, files: SiteFile[], o: PublishOptions): Promise<PublishResult> {
   const prev = await readManifest(store, base);
   const have = new Map<string, string>(); // oid -> full key already in R2
   for (const b of o.copyFrom ?? []) {
@@ -307,9 +315,12 @@ export async function githubFiles(slug: string, sha: string, { sub = '', fetcher
   }));
   // Many files to read (a first publish, a new Unity build): the commit's tarball, one API call (GitHub redirects it to
   // codeload), keeping only those files. A few: one API call each, as before.
+  const dirs: string[] = [];
+  files.cleanup = () => { for (const d of dirs.splice(0)) fs.rmSync(d, { recursive: true, force: true }); got.clear(); };
   files.prefetch = async (paths, progress) => {
     if (paths.length <= TARBALL_OVER) return;
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'site-'));
+    dirs.push(dir);
     progress?.(`downloading ${slug}@${sha.slice(0, 7)} as one archive for ${paths.length} files`);
     const a = await fetcher(`${GH}/repos/${slug}/tarball/${sha}`, { headers: ghHeaders(), redirect: 'follow', signal: AbortSignal.timeout(30 * 60_000) });
     if (!a.ok || !a.body) throw new Error(`GitHub tarball of ${slug}@${sha.slice(0, 7)}: ${a.status}`);
