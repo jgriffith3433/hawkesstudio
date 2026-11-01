@@ -27,7 +27,8 @@ import { StudioError, getInfra, isInfra, getProduct } from './config.ts';
 import { requestUser } from './sandbox.ts';
 import { sessionUser, cookieToken } from './auth.ts';
 import { getTask, getQuestion, tasksAwaitingGpu } from './roadmap.ts';
-import { walkAwayOn } from './walkaway.ts';
+import { walkAwayOn, walkAwayCardsOn, walkAwaySettings, gpuAutoApproveLimit, WALK_AWAY_BY } from './walkaway.ts';
+import { customerStudio } from './tenancy.ts';
 
 db.exec(`CREATE TABLE IF NOT EXISTS approvals (
   id TEXT PRIMARY KEY, kind TEXT NOT NULL, target TEXT NOT NULL, params TEXT, bind TEXT NOT NULL, token TEXT NOT NULL,
@@ -254,8 +255,105 @@ export async function requestApproval(kind: string, target: string, params: Reco
   const now = Date.now();
   db.prepare('INSERT INTO approvals (id, kind, target, params, bind, token, card, status, requested_by, conversation, created, expires) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
     .run(id, kind, target, J(clean), bind, crypto.randomBytes(18).toString('hex'), J(card), 'pending', by, conversation, now, now + ttlFor(kind));
+  // Walk-away mode: the card approves itself now, unless it is one that still waits (walkAwayHold).
+  await selfApprove(id).catch((e) => console.warn(`[approvals] walk-away approving ${id}: ${e.message ?? e}`));
   cardChanged(conversation);
   return getApproval(id)!;
+}
+
+/**
+ * Why a pending card still waits for J in walk-away mode, or null when Studio approves it itself (J, 2026-11-01: "Make
+ * it so all cards auto approve when in walk away mode"). What still waits: GPU budgets past the walk-away caps (per task
+ * gpuAutoApproveLimit, per day walkAwayGpuPerDay), settings that raise costs (settings.ts costRaising), Studio/Gen
+ * merges held for protected files (agents.ts guardFiles), and, in a customer's Studio, going live and rolling back
+ * (theirs, or their go-live policy's). Nothing a card does deletes a repo, a project or data.
+ */
+export async function walkAwayHold(a: Approval): Promise<string | null> {
+  if (!walkAwayCardsOn()) return 'walk-away mode is off';
+  if (a.kind === 'merge') {
+    const { getChange } = await import('./agents.ts');
+    const c = getChange(a.target);
+    if (String(c?.auto_merge ?? '').startsWith('held')) return `held for J: ${String(c!.auto_merge).slice(6, 300)}`;
+    return null;
+  }
+  if ((a.kind === 'deploy' || a.kind === 'rollback') && customerStudio()) return "going live and rolling back are the owner's";
+  if (a.kind === 'gpu') {
+    const t = getTask(a.target);
+    const e = t?.gpu?.estimate;
+    const amount = Number(a.params.amount ?? (e && !e.error ? Math.ceil(e.cost * 1.25 * 100) / 100 : NaN));
+    if (!Number.isFinite(amount)) return 'no price for it yet';
+    const limit = await gpuAutoApproveLimit();
+    if (!(amount < limit)) return `$${amount.toFixed(2)} is over the $${limit} a task Studio approves by itself`;
+    const { gpuAutoApprovedToday } = await import('./roadmap.ts');
+    const day = walkAwaySettings().walkAwayGpuPerDay;
+    if (gpuAutoApprovedToday() + amount > day) return `$${amount.toFixed(2)} would pass the $${day} a day Studio approves by itself`;
+    return null;
+  }
+  if (a.kind === 'settings') {
+    const { costRaising, allSettings } = await import('./settings.ts');
+    const cur = ((await allSettings()) as any)[a.target] ?? {};
+    const raising = costRaising(a.target as any, a.params.patch ?? {}, cur);
+    if (raising.length) return `it raises costs (${raising.join(', ')})`;
+    return null;
+  }
+  return null;
+}
+
+/**
+ * Walk-away mode: a pending card approves itself, as "Studio (walk-away)", through the same checks and code as J's tap
+ * (stale when its target changed, nothing while it has blockers), with a line in the PM log and the conversation told.
+ * Returns what happened, or null when it still waits (walkAwayHold) or can't go yet.
+ */
+export async function selfApprove(id: string): Promise<string | null> {
+  const r = row(id);
+  if (!r || r.status !== 'pending') return null;
+  const a = toApproval(r);
+  if (await walkAwayHold(a)) return null;
+  let now: { bind: string; card: Card };
+  try {
+    now = await describe(a.kind, a.target, a.params);
+  } catch (e: any) {
+    db.prepare(`UPDATE approvals SET status = 'stale', result = ? WHERE id = ? AND status = 'pending'`).run(String(e.message ?? e).slice(0, 500), id);
+    return null;
+  }
+  if (now.bind !== r.bind) {
+    db.prepare(`UPDATE approvals SET status = 'stale', result = 'what it was about changed since the card was made', card = ? WHERE id = ? AND status = 'pending'`).run(J(now.card), id);
+    return null;
+  }
+  // Can't go as things stand (a deploy plan's blockers, a merge's red CI): it waits, and is tried again later.
+  if (now.card.blockers.length) return null;
+  if (!claim(id, 'approving', WALK_AWAY_BY)) return null;
+  const { logDecision } = await import('./roadmap.ts');
+  const product = await productOf(a);
+  try {
+    const result = await carryOut(a, WALK_AWAY_BY, `${WALK_AWAY_BY} approved`);
+    logDecision('walk-away approve', a.target, product, `Approved by walk-away: ${a.card.title} (${a.id}). ${result}`);
+    return result;
+  } catch (e: any) {
+    logDecision('walk-away approve', a.target, product, `Approved by walk-away, but it failed: ${a.card.title} (${a.id}): ${e.message ?? e}`);
+    return null;
+  } finally {
+    cardChanged(a.conversation);
+  }
+}
+
+/** Walk-away mode: every pending card that may approve itself does (the PM's tick; cards from before it was on). */
+export async function selfApproveWaiting(): Promise<string[]> {
+  if (!walkAwayCardsOn()) return [];
+  expire();
+  const out: string[] = [];
+  for (const { id } of db.prepare(`SELECT id FROM approvals WHERE status = 'pending' ORDER BY created`).all() as any[]) {
+    if (await selfApprove(id).catch(() => null)) out.push(id);
+  }
+  return out;
+}
+
+async function productOf(a: Approval): Promise<string | null> {
+  if (a.kind === 'deploy' || a.kind === 'rollback') return a.target;
+  if (a.kind === 'merge') return (await import('./agents.ts')).getChange(a.target)?.product ?? null;
+  if (a.kind === 'gpu') return getTask(a.target)?.product ?? null;
+  if (a.kind === 'github') return a.params.plan?.product ?? a.params.plan?.id ?? null;
+  return null;
 }
 
 /** A card. The token only for J's own dashboard (withToken); Talk and agents never see it. */
@@ -363,27 +461,37 @@ async function decide(id: string, token: string, decision: string, req: http.Inc
   if (now.card.blockers.length) throw new StudioError(`Can't approve yet:\n- ${now.card.blockers.join('\n- ')}`, 409);
   // One time: only one tap moves it on.
   if (!claim(id, 'approving', by)) throw new StudioError('This card was just decided.', 409);
-  // Going live and rolling back are queued (deploy.ts, ops.ts): the tap is answered now, one product goes at a time,
-  // and the card (and the conversation) hears the result when it's done. Studio stays responsive meanwhile.
+  await carryOut(a, by, 'J approved');
+  return getApproval(id)!;
+}
+
+/**
+ * An approved card's action, once claimed: going live and rolling back are queued (deploy.ts, ops.ts), so the tap is
+ * answered now, one product goes at a time, and the card (and the conversation) hears the result when it's done; the
+ * rest run now. who: how the conversation hears it ("J approved", "Studio (walk-away) approved").
+ */
+async function carryOut(a: Approval, by: string, who: string) {
+  const id = a.id;
   if (a.kind === 'deploy' || a.kind === 'rollback') {
     const { queueLive } = await import('./deploy.ts');
     const kind = a.kind === 'deploy' ? 'golive' : 'rollback';
     const q = queueLive(kind, { product: a.target, confirm: `${a.kind === 'deploy' ? 'DEPLOY' : 'ROLLBACK'} ${a.target}`, by, origin: a.conversation, beta: a.kind === 'deploy' ? (parse(row(a.id).bind) as any[])[0] : undefined, approval: id });
     const where = q.ahead > 1 ? `queued (${q.ahead - 1} ahead of it)` : 'starting now';
-    db.prepare(`UPDATE approvals SET result = ? WHERE id = ?`).run(`${q.op.title}: ${where}. Follow it in Activity.`, id);
-    await tell(a, `J approved: ${a.card.title} (${a.id}). ${q.op.title}: ${where}; the result follows here.`);
-    return getApproval(id)!;
+    const result = `${q.op.title}: ${where}. Follow it in Activity.`;
+    db.prepare(`UPDATE approvals SET result = ? WHERE id = ?`).run(result, id);
+    await tell(a, `${who}: ${a.card.title} (${a.id}). ${q.op.title}: ${where}; the result follows here.`);
+    return result;
   }
   try {
     const result = await run(a, by);
     db.prepare(`UPDATE approvals SET status = 'approved', result = ? WHERE id = ?`).run(String(result).slice(0, 2000), id);
-    await tell(a, `J approved:${a.card.title} (${a.id}). ${result}`);
+    await tell(a, `${who}: ${a.card.title} (${a.id}). ${result}`);
+    return result;
   } catch (e: any) {
     db.prepare(`UPDATE approvals SET status = 'failed', result = ? WHERE id = ?`).run(String(e.message ?? e).slice(0, 2000), id);
-    await tell(a, `J approved ${a.card.title} (${a.id}), but it failed: ${e.message ?? e}`);
+    await tell(a, `${who} ${a.card.title} (${a.id}), but it failed: ${e.message ?? e}`);
     throw e;
   }
-  return getApproval(id)!;
 }
 
 /**

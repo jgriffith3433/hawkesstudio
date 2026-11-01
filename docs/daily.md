@@ -640,6 +640,14 @@ default**; the header shows a 🚶 Walk-away badge while it's on) lets Studio an
   asked (Inbox and phone). A change touching protected files (`guardFiles`' list, CI workflows) or one Studio can't
   read waits for J (`auto_merge: 'held: <why>'`, his Inbox's merge card). The guards on J's own path (typed `MERGE`,
   Approve cards, `studio_change approve`) are unchanged; only this automatic path skips them.
+- **Approve cards approve themselves** (J, 2026-11-01: "Make it so all cards auto approve when in walk away mode";
+  `approvals.ts selfApprove`, `walkAwayHold`; `pm.walkAwayCards`, on by default, turns just this off). A card made
+  while walk-away is on is approved at once by "Studio (walk-away)", through the same checks as J's tap (stale when
+  its target changed; a card with blockers waits and is tried again on the PM's tick, `selfApproveWaiting`, which also
+  approves cards made before walk-away was on). Each is recorded on the card (`decided_by`), in the Inbox's answered
+  list and in the PM log (`walk-away approve`), and its conversation is told. Still waiting for J: GPU budgets past the
+  walk-away caps (the per-task limit, `walkAwayGpuPerDay`), settings that raise costs (`settings.ts costRaising`), merges
+  held for protected files, and, in a customer's Studio, going live and rolling back (theirs, or their go-live policy).
 - **The PM decides criteria misses on beta** (`pm.ts decideMiss`), never one question per task: when beta itself looks
   broken (two or more of a product's tasks miss in the same beta run, beta's build failed, or an investigation is
   already open) it files ONE investigation change and holds those tasks (status failed, note "held") until it's done

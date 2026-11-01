@@ -264,8 +264,9 @@ a budget (`approveGpu`, `gpuCleared`, `tasksAwaitingGpu`; the PM asks him once);
 - **Walk-away mode** (`src/walkaway.ts`, `pm.walkAway`, on by default; docs/daily.md "Walk-away mode"): ready Studio
   and Gen changes merge into main by themselves once their checks and CI are green (`walkAwayMerge`, by "Studio
   (walk-away)"; red CI goes back to the agent, protected files wait for J), the PM decides criteria misses itself (one
-  investigation when several tasks miss the same way), GPU budgets are approved within a daily cap, and the Inbox keeps
-  only J-only things. Keep "red CI never merges", the protected-file hold and the deploy's rollback intact; with it off,
+  investigation when several tasks miss the same way), GPU budgets are approved within a daily cap, Approve cards
+  approve themselves as "Studio (walk-away)" (`approvals.ts selfApprove`; GPU past the caps, cost-raising settings and
+  protected-file merges still wait), and the Inbox keeps only J-only things. Keep "red CI never merges", the protected-file hold and the deploy's rollback intact; with it off,
   everything behaves as before. In a customer's Studio it is off until the owner turns it on (Team plan and up), and
   Studio approves GPU budgets only under their own caps (`walkAwayGpuPerTask`, `walkAwayGpuPerDay`, both 0 at first):
   docs/studio-customers.md section 4.

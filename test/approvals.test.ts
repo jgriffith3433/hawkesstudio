@@ -15,6 +15,9 @@ process.env.STUDIO_PRODUCTS = path.join(tmp, 'products.json');
 process.env.TALK_CLAUDE = 'no-such-claude-here';
 process.env.TALK_FOLLOWUP_BATCH_MS = '600000';
 fs.mkdirSync(process.env.STUDIO_PROJECTS, { recursive: true });
+// These tests are about J's tap: walk-away's own approvals (walkAwayCards) are tested in walkaway-cards.test.ts.
+fs.mkdirSync(process.env.STUDIO_DATA, { recursive: true });
+fs.writeFileSync(path.join(process.env.STUDIO_DATA, 'pm.json'), JSON.stringify({ walkAwayCards: false }));
 fs.writeFileSync(process.env.STUDIO_PRODUCTS, JSON.stringify({ products: [{
   id: 'aptest', name: 'Approval test', framing: 'test', engine: 'static', repo: 'site', site: 'site', live: 'http://127.0.0.1:9/',
   local: { serve: 'static', dir: 'site', port: 8797, path: '/' }, playtests: [{ scenario: 'smoke', where: 'local' }], story: [], about: 'A fixture.',

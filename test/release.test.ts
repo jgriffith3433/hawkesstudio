@@ -14,6 +14,9 @@ process.env.STUDIO_DATA = path.join(tmp, 'data');
 process.env.STUDIO_PRODUCTS = path.join(tmp, 'products.json');
 process.env.STUDIO_RELEASE_NOTES = 'off';
 fs.mkdirSync(process.env.STUDIO_PROJECTS, { recursive: true });
+// These tests are about J's tap: walk-away's own approvals (walkAwayCards) are tested in walkaway-cards.test.ts.
+fs.mkdirSync(process.env.STUDIO_DATA, { recursive: true });
+fs.writeFileSync(path.join(process.env.STUDIO_DATA, 'pm.json'), JSON.stringify({ walkAwayCards: false }));
 fs.writeFileSync(process.env.STUDIO_PRODUCTS, JSON.stringify({ products: [{
   id: 'reltest', name: 'Release test', framing: 'test', engine: 'static', repo: 'relsite', site: 'relsite', live: 'http://127.0.0.1:9/',
   local: { serve: 'static', dir: 'relsite', port: 8797, path: '/' }, playtests: [{ scenario: 'smoke', where: 'local' }], story: [], about: 'A fixture.',

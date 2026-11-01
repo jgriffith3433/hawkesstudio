@@ -2332,7 +2332,9 @@ one investigation). Ready changes merge into beta, never live: going live is alw
 ` : `Walk-away mode: ON (J, 2026-10-18: "I just want this system to build build build"). Decide routine calls yourself and
 log them; J's Inbox is only for going live, rollbacks, launching new GPU servers, spending above the caps, protected
 files, failures after all tries, milestones and real direction choices. Studio and Gen changes merge into main by
-themselves once green; criteria misses on beta are decided by Studio (retry, park, or one investigation).
+themselves once green; criteria misses on beta are decided by Studio (retry, park, or one investigation). ${s.walkAwayCards ? `Approve cards
+(studio_approval) approve themselves at once (as Studio (walk-away)); only GPU past the caps, cost-raising settings and
+protected-file merges wait for J.` : ''}
 `) : ''}
 Do, with the studio_pm, studio_roadmap and studio tools:
 1. Review each ready change (studio_change: the agent's summary, commits, diff size, preview; ready means its own checks
@@ -2426,6 +2428,8 @@ export async function tick() {
         (await changes()).walkAwayPending();
         await settleMissQuestions();
         await walkAwayDaily();
+        // Cards that may approve themselves now (made before walk-away was on, or blocked until now).
+        await (await import('./approvals.ts')).selfApproveWaiting();
       } catch (e: any) {
         console.warn(`[pm] walk-away: ${e.message ?? e}`);
       }
