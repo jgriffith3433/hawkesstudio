@@ -466,7 +466,7 @@ async function finish(f: Follow, r: JobRunner, cwd: string, env: NodeJS.ProcessE
     }
   } catch (e: any) {
     fs.appendFileSync(local(f.unit, 'err'), `[studio] bringing the job's work back: ${e.message ?? e}\n`);
-    end(f, { code: exit.code ?? null, signal: exit.signal ?? null, error: `the job's work couldn't be brought back: ${e.message ?? e}` });
+    end(f, { code: exit.code ?? null, signal: exit.signal ?? null, error: `${exit.error ? `${exit.error}; ` : ''}the job's work couldn't be brought back: ${e.message ?? e}` });
     return;
   }
   end(f, { code: exit.code ?? null, signal: exit.signal ?? null, ...(exit.error ? { error: exit.error } : {}) });

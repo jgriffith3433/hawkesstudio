@@ -58,6 +58,7 @@ import { serveDir, stopServed } from './local.ts';
 import { claudeEnv } from './claude.ts';
 import { buildPreview, removePreview, previewUrl, changeSiteDir, changeBuild, type ChangeBuild } from './previews.ts';
 import { BETA, ensureBeta, gitAsync } from './beta.ts';
+import { saveWork, restoreBranch, catchUpWorktree } from './savework.ts';
 import { lfsPull } from './lfs.ts';
 import { runCommand, resumeGapMs, RESTART_LOOP, RESTART_WINDOW_MS } from './ops.ts';
 import { deployPending, critical } from './drain.ts';
@@ -1632,6 +1633,9 @@ async function work(id: string, note?: string, answer?: string, resumed?: Phase 
           }
           // A worktree a restart cut off halfway is forgotten first; its branch is reused.
           git(repoDir, ['worktree', 'prune']);
+          // Work saved on GitHub after an earlier pass (savework.ts) wins over beta: a restart that lost the worktree restarts from it.
+          const restored = await restoreBranch(repoDir, c.branch);
+          if (restored) addLog(id, restored);
           const has = git(repoDir, ['rev-parse', '--verify', '--quiet', `refs/heads/${c.branch}`]).ok;
           const w = await gitAsync(repoDir, ['worktree', 'add', ...(has ? [] : ['-b']), ...(has ? [c.worktree, c.branch] : [c.branch, c.worktree, `origin/${c.base}`])]);
           if (!w.ok) throw new Error(`worktree failed: ${w.err}`);
@@ -1641,7 +1645,13 @@ async function work(id: string, note?: string, answer?: string, resumed?: Phase 
           await warmDeps(c.worktree, c.repo, (s) => addLog(id, s));
           await installCold(c.worktree, (dir, cmd) => sh(dir, cmd, { ...infraEnv({ keepGenKey: false }), PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1' }), (s) => addLog(id, s));
         });
-      } else assertWorktree(c.worktree, repoDir);
+      } else {
+        assertWorktree(c.worktree, repoDir);
+        // A worktree a restart reset to beta while its branch holds saved work on GitHub carries on from that work.
+        await gitAsync(c.worktree, ['fetch', '--quiet', 'origin', `+refs/heads/${c.branch}:refs/remotes/origin/${c.branch}`]);
+        const caught = await catchUpWorktree(c.worktree, c.branch);
+        if (caught) addLog(id, caught);
+      }
       // Real files for its Git LFS pointers on every pass (a worktree made before git-lfs was on the server has pointers).
       await lfsPull(c.worktree, (s) => addLog(id, s));
       // The agent (sandbox user) commits here: its git folder must be the agent group's, on every pass (a worktree made
@@ -1671,6 +1681,11 @@ async function work(id: string, note?: string, answer?: string, resumed?: Phase 
       const r = await agentPass(id, ph, save, s, claudeEnv(), resume);
       // Cancelled while it worked (cancelChange stopped it): not a failure, not a try; its branch and worktree stay.
       if (getChange(id)?.status === 'cancelled') return void addLog(id, 'agent: stopped because the change was cancelled');
+      // Its commits go to GitHub now, before anything else can lose them (never throws; publish pushes again for real).
+      const cw = getChange(id)!;
+      const saved = await saveWork(cw.worktree, cw.branch, cw.base);
+      if ('pushed' in saved) addLog(id, `saved ${cw.branch} to GitHub (${saved.pushed.slice(0, 7)})`);
+      else if ('error' in saved) addLog(id, `couldn't save ${cw.branch} to GitHub yet: ${saved.error}`);
       const gone = modelRefused(r, ph);
       if (gone) return requeueForModel(id, save, gone);
       const stop = passStop(r, readSummary(getChange(id)!.worktree));
@@ -2234,6 +2249,11 @@ async function workInfra(id: string, note?: string, resumed?: Phase | null, nudg
       if (!ph.proc && ph.harness) addLog(id, `agent carries on after the harness hold (${ph.harness.kind})`);
       const r = await agentPass(id, ph, save, s, infraEnv({ agent: true }), forHarness(ph, ph.nudge ? nudgeResume(getChange(id)!, ph) : ph.conflict ? conflictResume(getChange(id)!, ph.conflict) : ph.harness ? harnessResume(getChange(id)!, ph) : undefined));
       if (getChange(id)?.status === 'cancelled') return void addLog(id, 'agent: stopped because the change was cancelled');
+      // Its commits go to GitHub now, before anything else can lose them (never throws; publish pushes again for real).
+      const cw = getChange(id)!;
+      const saved = await saveWork(cw.worktree, cw.branch, cw.base);
+      if ('pushed' in saved) addLog(id, `saved ${cw.branch} to GitHub (${saved.pushed.slice(0, 7)})`);
+      else if ('error' in saved) addLog(id, `couldn't save ${cw.branch} to GitHub yet: ${saved.error}`);
       const gone = modelRefused(r, ph);
       if (gone) return requeueForModel(id, save, gone);
       const stop = passStop(r, readSummary(getChange(id)!.worktree));

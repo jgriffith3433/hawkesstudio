@@ -43,9 +43,13 @@ function gitA(cwd: string, args: string[], timeoutMs = 20 * 60_000, slug: string
     child.stderr.on('data', (d) => { err += d; if (err.length > 1_000_000) err = err.slice(-500_000); });
     const end = (ok: boolean, e?: string) => { clearTimeout(timer); done(); resolve({ ok, out: out.trim(), err: (e ?? err).trim() }); };
     child.on('error', (e) => end(false, e.message));
-    child.on('close', (code) => end(code === 0));
+    // A failure always says how it ended: git's own words, then the exit code or the signal (a kill prints nothing).
+    child.on('close', (code, signal) => end(code === 0, code === 0 ? undefined : `${err.trim()}${err.trim() ? '\n' : ''}git exited ${signal ? `by signal ${signal}` : `with code ${code}`}`));
   });
 }
+
+/** Wait before a failed clone is tried once more (tests shorten it). */
+export const CLONE_RETRY_MS = Number(process.env.STUDIO_CLONE_RETRY_MS ?? 3000);
 
 export function repoMap(): Record<string, string> {
   // Games added in J's Studio (config.ts addedRepoFolders) are cloned beside products.json's.
@@ -350,6 +354,8 @@ function unityOnlyRepo(slug: string, folder?: string): string | null {
 export const cloneArgs = (slug: string, folder: string, light: boolean) => ['clone', '--quiet', '--no-checkout', ...(light ? ['--filter=blob:none'] : []), `https://github.com/${slug}.git`, folder];
 
 /** git's reason in one line: its last non-empty line, or what a silent failure most likely was (killed: a timeout or memory). */
+/** The last `n` non-empty lines of git's output on one line (its reason is usually the last two or three). */
+export const lastLines = (err: string, n = 3) => err.split('\n').map((l) => l.trim()).filter(Boolean).slice(-n).join(' | ') || 'git exited without saying why (likely killed: a timeout or out of memory)';
 export const lastLine = (err: string) => err.split('\n').map((l) => l.trim()).filter(Boolean).pop() || 'git exited without saying why (likely killed: a timeout or out of memory)';
 
 /** What a light clone gets in its config: LFS smudge skipped, and the mark lfs.ts and warm.ts read (hawkes.light). */
@@ -402,11 +408,18 @@ async function syncGit(folder: string, slug: string, branch: string, want?: stri
     // refused to touch (PH Origins, 2026-11-01): it is removed instead, so the next sync clones it again.
     const halfClone = (what: string, err: string) => {
       fs.rmSync(dir, { recursive: true, force: true });
-      const why = lastLine(err);
+      const why = lastLines(err);
       console.warn(`[repos] ${folder}: ${what} failed (${why}); removed the half-made clone, the next sync clones it again`);
       return { folder, slug, action: 'failed' as const, detail: `${what} failed: ${why} (removed the half-made clone; the next sync clones it again)` };
     };
-    const c = await gitA(PROJECTS, cloneArgs(slug, folder, Boolean(big)), undefined, slug, big ? { GIT_LFS_SKIP_SMUDGE: '1' } : {});
+    let c = await gitA(PROJECTS, cloneArgs(slug, folder, Boolean(big)), undefined, slug, big ? { GIT_LFS_SKIP_SMUDGE: '1' } : {});
+    if (!c.ok) {
+      // Once more after 3 seconds, from a clean folder (a killed clone leaves a half-made one that would refuse the retry).
+      console.warn(`[repos] ${folder}: clone failed (${lastLines(c.err)}); trying once more in 3 seconds`);
+      fs.rmSync(dir, { recursive: true, force: true });
+      await new Promise((r) => setTimeout(r, CLONE_RETRY_MS));
+      c = await gitA(PROJECTS, cloneArgs(slug, folder, Boolean(big)), undefined, slug, big ? { GIT_LFS_SKIP_SMUDGE: '1' } : {});
+    }
     if (!c.ok) return halfClone('clone', c.err);
     if (big) for (const [k, v] of LIGHT_CONFIG) git(dir, ['config', k, v]);
     const pick = [want, branch].find((b) => b && git(dir, ['rev-parse', '--verify', '--quiet', `origin/${b}`]).ok)
