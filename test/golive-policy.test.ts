@@ -37,3 +37,17 @@ test("autoGoLive waits unless the owner said to keep going live", async () => {
   P.setPolicy('moon', 'ask', 'Talk');
   assert.match(String((await P.autoGoLive('moon', 'test')).waits), /policy is ask/);
 });
+
+test('auto only ships a beta whose playtests passed: failed, stopped, inconclusive or broken holds it', () => {
+  const pass = { name: 'smoke@local', status: 'done', outcome: 'won', verdict: 'ok', blockers: [] };
+  assert.deepEqual(P.playtestHolds([pass, { ...pass, name: 'phone@local', outcome: 'done', verdict: null }], 'abc1234'), [], 'passed (a missing review alone doesn\'t hold it)');
+  assert.match(P.playtestHolds([], 'abc1234')[0], /hasn't been playtested on abc1234/);
+  assert.match(P.playtestHolds([{ ...pass, status: 'failed', detail: 'Studio restarted' }]).join(), /smoke@local failed \(Studio restarted\)/);
+  assert.match(P.playtestHolds([{ ...pass, status: 'skipped' }]).join(), /was inconclusive/);
+  assert.match(P.playtestHolds([{ ...pass, status: 'stopped' }]).join(), /was stopped/);
+  assert.match(P.playtestHolds([{ ...pass, outcome: 'lost' }]).join(), /ended "lost"/);
+  assert.match(P.playtestHolds([{ ...pass, verdict: 'broken', summary: 'menu off screen' }]).join(), /said "broken": menu off screen/);
+  assert.match(P.playtestHolds([{ ...pass, blockers: ['buttons overlap'] }]).join(), /1 blocker\(s\): buttons overlap/);
+  assert.equal(P.holdLine({ tested: { sha: 'abc1234', playtests: [pass] } }), null);
+  assert.match(String(P.holdLine({ tested: { sha: 'abc1234', playtests: [{ ...pass, status: 'skipped' }] } })), /waits until beta plays clean: playtest smoke@local on abc1234 was inconclusive/);
+});

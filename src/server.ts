@@ -472,6 +472,11 @@ const server = http.createServer(async (req, res) => {
     if (m && method === 'POST') {
       // Queued like an Approve tap (one product at a time, Studio responsive); this request waits for the answer.
       const b = await readJson(req);
+      // Talk going live on the project's auto policy alone (no owner's words): only a beta whose playtests passed.
+      if (!b.mergeMain && (await import('./guards.ts')).goesLiveOnAutoOnly(req, m[1])) {
+        const held = (await import('./golive-policy.ts')).holdLine(await deployPlan(m[1], { notesWaitMs: 0 }));
+        if (held) return send(res, 409, { error: held });
+      }
       return send(res, 200, await (await import('./deploy.ts')).runLive('golive', { product: m[1], confirm: b.confirm, by: b.by, mergeMain: b.mergeMain, beta: b.beta, origin }));
     }
     m = /^\/api\/rollback\/([\w-]+)$/.exec(route);
