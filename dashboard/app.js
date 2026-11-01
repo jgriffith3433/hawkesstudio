@@ -522,7 +522,7 @@ async function goLive(p) {
     </div>
     ${plan.canDeploy ? `<div id="glCard"></div><details><summary class="meta">Or type <code>${esc(plan.confirm)}</code></summary>
       <div class="actions"><input id="glConfirm" autocomplete="off" placeholder="${esc(plan.confirm)}" style="flex:1"><button class="small primary" data-gl="go" data-p="${esc(plan.product)}" data-confirm="${esc(plan.confirm)}" disabled>Go live</button></div></details>` : ''}
-    ${plan.previous.length ? `<details><summary class="meta">Previous go lives</summary>${plan.previous.map((d) => `<div class="meta">${esc(d.kind)} ${esc(d.id)} · ${esc(when(d.at))} · ${esc(d.by ?? '')} · ${esc(d.before ?? '?')} → ${esc(d.after)}${d.rolledBack ? ` · rolled back (${esc(d.rolledBack)})` : ''} · ${esc(d.detail ?? '')}</div>`).join('')}</details>` : ''}
+    ${plan.previous.length ? `<details><summary class="meta">Previous go lives</summary>${plan.previous.map((d) => `<div class="meta">${esc(d.kind)} ${esc(d.id)} · ${esc(when(d.at))} · ${esc(d.by ?? '')} · ${esc(d.before ?? '?')} → ${esc(d.after)}${d.rolledBack ? ` · rolled back (${esc(d.rolledBack)})` : ''}${d.skippedPlaytest ? ` · ⚠️ went live without a playtest (${esc(d.skippedPlaytest.by)})` : ''} · ${esc(d.detail ?? '')}</div>`).join('')}</details>` : ''}
     <div id="glOut"></div>`));
   if (plan.canDeploy) glCard('deploy', plan.product);
 }

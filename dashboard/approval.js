@@ -11,6 +11,8 @@ const approvals = (() => {
   const what = (a) => String(a.card.title).replace(/\?\s*$/, '');
   /** Cards J opened from their one line in the chat (older waiting ones). */
   const expanded = new Set();
+  /** Go-live cards whose "Go live anyway" was tapped once: they show the confirm step (by id). */
+  const confirming = new Set();
 
   /** A decided, expired or stale card (or a waiting one folded away in the chat): one line, no buttons. */
   function line(a, error = errors.get(a.id) ?? '') {
@@ -25,20 +27,27 @@ const approvals = (() => {
   const errors = new Map();
   const failed = (error) => (error ? `<div class="ap-error" role="alert">${esc(error)}</div>` : '');
 
-  /** The card. chat: in the Talk chat (with × to close it there). error: why the last tap didn't work. */
-  function html(a, { chat = false, error = errors.get(a.id) ?? '' } = {}) {
+  /** The card. chat: in the Talk chat (with × to close it there). error: why the last tap didn't work. confirm: show
+   * "Go live anyway"'s confirm step (it shows once that button was tapped). */
+  function html(a, { chat = false, error = errors.get(a.id) ?? '', confirm: confirmOpen = confirming.has(a.id) } = {}) {
     if (a.status !== 'pending') return line(a, error);
     const c = a.card;
     // With blockers the button says so itself (a disabled button looks dead to a thumb). Without the token (the page
     // got the card some other way) Approve stays tappable: the tap fetches it first.
-    const approve = c.blockers.length ? `<button class="primary" data-apdecide="approve" disabled>Can't approve yet</button>` : `<button class="primary" data-apdecide="approve">${esc(c.approve)}</button>`;
+    // Going live when the only thing stopping it is the commit not being playtested (c.skip, approvals.ts): a person may
+    // take it live anyway, after a confirm step that names the commit (J, 2026-11-01).
+    const skip = a.kind === 'deploy' && c.blockers.length && c.skip ? c.skip : null;
+    const approve = skip ? `<button class="danger" data-apanyway title="Takes this commit live without a playtest, after you confirm. Your name goes on the release history.">Go live anyway</button>`
+      : c.blockers.length ? `<button class="primary" data-apdecide="approve" disabled>Can't approve yet</button>` : `<button class="primary" data-apdecide="approve">${esc(c.approve)}</button>`;
+    const confirm = skip && confirmOpen ? `<div class="ap-confirm" role="alertdialog"><b>Go live without a playtest?</b><br>Commit ${esc(skip.short)} hasn't passed a playtest: ${skip.why.map(esc).join(' ')}<br>It goes live untested. The health check and rollback after it work as usual, and your name and the commit go on the release history.
+      <div class="actions ap-actions"><button class="danger" data-apdecide="anyway" data-commit="${esc(skip.short)}">Yes, go live without a playtest</button><button data-apcancel>Cancel</button></div></div>` : '';
     return `<div class="approval st-pending" data-approval="${esc(a.id)}" data-token="${esc(a.token ?? '')}" data-guide="off">
       <div class="ap-head"><span class="pill warn">Needs your OK</span> <b>${esc(c.title)}</b>${chat ? '<button class="ap-close" data-apdismiss title="Close it here without deciding: it stays in your Inbox until it expires" aria-label="Close">×</button>' : ''}</div>
       ${c.lines.length ? `<ul>${c.lines.map((l) => `<li>${esc(l)}</li>`).join('')}</ul>` : ''}
-      ${c.blockers.length ? `<div class="ap-block"><b>Can't approve yet:</b><br>${c.blockers.map(esc).join('<br>')}${a.kind === 'deploy' ? '<br><button class="small" data-apgolive title="The Go live page has the button that clears these on beta (nothing goes live)">Fix it on the Go live page</button>' : ''}</div>` : ''}
+      ${c.blockers.length ? `<div class="ap-block"><b>${skip ? 'Not playtested yet:' : "Can't approve yet:"}</b><br>${c.blockers.map(esc).join('<br>')}${a.kind === 'deploy' ? `<br><button class="small" data-apgolive title="The Go live page has the button that clears these on beta (nothing goes live)">${skip ? 'Playtest it on the Go live page' : 'Fix it on the Go live page'}</button>` : ''}</div>` : ''}
       ${c.warnings.length ? `<div class="ap-warn"><b>Warnings:</b><br>${c.warnings.map(esc).join('<br>')}</div>` : ''}
       ${c.links.length ? `<div class="meta">${c.links.map((l) => `<a href="${esc(l.url)}" target="_blank" rel="noopener">${esc(l.label)}</a>`).join(' · ')}</div>` : ''}
-      <div class="actions ap-actions">${approve}<button data-apdecide="deny">${esc(c.deny)}</button></div>${failed(error)}
+      ${confirm || `<div class="actions ap-actions">${approve}<button data-apdecide="deny">${esc(c.deny)}</button></div>`}${failed(error)}
       <div class="meta">Asked by ${esc(a.requested_by ?? 'Studio')} · expires in ${left(a.expires)} · ${esc(a.id)}</div>
     </div>`;
   }
@@ -83,6 +92,16 @@ const approvals = (() => {
       } catch (err) { close.disabled = false; errors.set(card.dataset.approval, err.message); card.querySelector('.ap-error')?.remove(); card.insertAdjacentHTML('beforeend', failed(err.message)); }
       return dispatchEvent(new CustomEvent('studio-approval'));
     }
+    // "Go live anyway": the first tap opens the confirm step on the card; Cancel closes it. Neither decides anything.
+    const anyway = e.target.closest('button[data-apanyway], button[data-apcancel]');
+    if (anyway) {
+      const id = anyway.closest('.approval').dataset.approval;
+      if (anyway.hasAttribute('data-apanyway')) confirming.add(id); else confirming.delete(id);
+      // Every copy on screen (the chat, the Inbox, the Go live page) shows it now, with today's card.
+      const a = await get(id).catch(() => null);
+      if (a) for (const n of document.querySelectorAll(`.approval[data-approval="${id}"]`)) n.outerHTML = html(a, { chat: !!n.querySelector('[data-apdismiss]') });
+      return;
+    }
     const b = e.target.closest('button[data-apdecide]');
     if (!b) return;
     const card = b.closest('.approval');
@@ -101,7 +120,8 @@ const approvals = (() => {
       let token = card.dataset.token;
       if (!token) token = (await get(id)).token;
       if (!token) throw new Error("This page didn't get the card's key from Studio, so it can't decide it: reload the page and tap again.");
-      put(await call(`/api/approvals/${id}/${b.dataset.apdecide}`, { method: 'POST', body: { token } }), '');
+      confirming.delete(id);
+      put(await call(`/api/approvals/${id}/${b.dataset.apdecide}`, { method: 'POST', body: { token, ...(b.dataset.commit ? { commit: b.dataset.commit } : {}) } }), '');
     } catch (err) {
       errors.set(id, err.message);
       put(await get(id).catch(() => null), err.message);

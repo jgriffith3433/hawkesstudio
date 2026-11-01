@@ -119,8 +119,41 @@ export function planFix(blockers: string[]): BlockerFix | null {
   return (['sync', 'merge-main', 'beta', 'rebuild'] as const).find((f) => fixes.has(f)) ?? null;
 }
 
+/**
+ * The blockers a person may go live past (J, 2026-11-01: "Add a bypass button for going live for projects that haven't
+ * playtested the current commit"): only beta's exact commit not having been playtested. Everything else (nothing to go
+ * live, live ahead of beta, no build, GitHub unreadable) still stops it.
+ */
+export const isPlaytestBlocker = (b: string) => /hasn't been playtested/.test(b);
+/** True when a plan's only blockers are its commit not being playtested: "Go live anyway" is offered (a person's tap only). */
+export const playtestOnly = (blockers: string[]) => blockers.length > 0 && blockers.every(isPlaytestBlocker);
+
+/** What a person recorded when they took a commit live without its playtest (approvals.ts "Go live anyway"). */
+export type PlaytestSkip = { by: string; at: number; sha: string; why: string[]; approval: string };
+const skipOf = (d: DeployRow): PlaytestSkip | null => { try { return d.skipped_playtest ? JSON.parse(d.skipped_playtest) : null; } catch { return null; } };
+
+/**
+ * The skip an Approve card carries, when this go live came from a person's "Go live anyway" on it: only the card's own
+ * row says so (decideApproval writes it, from a person's click; walk-away, auto, Talk and agents have no way to), it is
+ * being carried out now, and it is for this product and this beta commit. null otherwise.
+ */
+export function playtestSkipFor(approval: string | undefined, product: string, sha: string | undefined): PlaytestSkip | null {
+  if (!approval || !sha) return null;
+  let r: any;
+  try { r = db.prepare(`SELECT kind, target, status, params, decided_by FROM approvals WHERE id = ?`).get(approval); } catch { return null; }
+  if (!r || r.kind !== 'deploy' || r.target !== product || r.status !== 'approving') return null;
+  let s: any;
+  try { s = JSON.parse(r.params ?? '{}')?.skipPlaytest; } catch { return null; }
+  if (!s || typeof s.sha !== 'string' || s.sha !== sha || typeof s.by !== 'string' || s.by !== r.decided_by) return null;
+  return { by: s.by, at: Number(s.at) || Date.now(), sha: s.sha, why: Array.isArray(s.why) ? s.why.map(String).slice(0, 10) : [], approval };
+}
+
 /** notesWaitMs: how long to wait for the release notes being written (the Approve card waits longer, to show them). */
-export async function deployPlan(productId: string, { notesWaitMs = 20_000, io }: { notesWaitMs?: number; io?: GitHubIO } = {}) {
+export async function deployPlan(productId: string, opts: { notesWaitMs?: number; io?: GitHubIO } = {}) {
+  const plan = await planOf(productId, opts);
+  return { ...plan, playtestOnly: playtestOnly(plan.blockers) };
+}
+async function planOf(productId: string, { notesWaitMs = 20_000, io }: { notesWaitMs?: number; io?: GitHubIO } = {}) {
   const p = getProduct(productId);
   // A project with a GitHub repo, in any Studio (a customer's included): read and moved through GitHub's API, no clones.
   if (githubSlugOf(p)) return githubPlan(p, io);
@@ -228,7 +261,7 @@ export async function deployPlan(productId: string, { notesWaitMs = 20_000, io }
     siteCommits: web.ahead.map(brief), siteMainOnly: web.behind.map(brief),
     tested: { sha: beta?.short ?? null, playtests: tested }, lastPlayed: last,
     build,
-    previous: previous.map((d) => ({ id: d.id, kind: d.kind, at: d.at, by: d.by, before: d.before?.slice(0, 7) ?? null, after: d.after.slice(0, 7), beta: d.beta?.slice(0, 7) ?? null, detail: d.detail, rolledBack: d.rolled_back })),
+    previous: previous.map((d) => ({ id: d.id, kind: d.kind, at: d.at, by: d.by, before: d.before?.slice(0, 7) ?? null, after: d.after.slice(0, 7), beta: d.beta?.slice(0, 7) ?? null, detail: d.detail, rolledBack: d.rolled_back, skippedPlaytest: skipOf(d) })),
     // How the build that's live now does with real players (players.ts), so the next release can be compared.
     players,
     blockers, warnings, canDeploy: !blockers.length, fix: planFix(blockers), notCloned,
@@ -272,7 +305,7 @@ async function cloudPlan(p: Product) {
     siteCommits: (refs?.site.ahead ?? []).map(brief), siteMainOnly: (refs?.site.behind ?? []).map(brief),
     tested: { sha: beta?.short ?? null, playtests: tested }, lastPlayed: last,
     build: b && { ...b, files: 0, sample: [] },
-    previous: listDeploys(p.id, 5).map((d) => ({ id: d.id, kind: d.kind, at: d.at, by: d.by, before: d.before?.slice(0, 7) ?? null, after: d.after.slice(0, 7), beta: d.beta?.slice(0, 7) ?? null, detail: d.detail, rolledBack: d.rolled_back })),
+    previous: listDeploys(p.id, 5).map((d) => ({ id: d.id, kind: d.kind, at: d.at, by: d.by, before: d.before?.slice(0, 7) ?? null, after: d.after.slice(0, 7), beta: d.beta?.slice(0, 7) ?? null, detail: d.detail, rolledBack: d.rolled_back, skippedPlaytest: skipOf(d) })),
     players: await livePlayers(p.id),
     blockers, warnings, canDeploy: !blockers.length, fix: planFix(blockers), notCloned: null,
     confirm: `DEPLOY ${p.id}`,
@@ -343,7 +376,7 @@ async function githubPlan(p: Product, io: GitHubIO = {}) {
     commits: cmp.ahead.map(brief), mainOnly: cmp.behind.map(brief), siteCommits: [] as ReturnType<typeof brief>[], siteMainOnly: [] as ReturnType<typeof brief>[],
     tested: { sha: beta?.short ?? null, playtests: tested }, lastPlayed: last,
     build: null as any,
-    previous: listDeploys(p.id, 5).map((d) => ({ id: d.id, kind: d.kind, at: d.at, by: d.by, before: d.before?.slice(0, 7) ?? null, after: d.after.slice(0, 7), beta: d.beta?.slice(0, 7) ?? null, detail: d.detail, rolledBack: d.rolled_back })),
+    previous: listDeploys(p.id, 5).map((d) => ({ id: d.id, kind: d.kind, at: d.at, by: d.by, before: d.before?.slice(0, 7) ?? null, after: d.after.slice(0, 7), beta: d.beta?.slice(0, 7) ?? null, detail: d.detail, rolledBack: d.rolled_back, skippedPlaytest: skipOf(d) })),
     players: await livePlayers(p.id),
     blockers, warnings, canDeploy: !blockers.length, fix: null as BlockerFix | null, notCloned: null,
     confirm: `DEPLOY ${p.id}`,
@@ -367,8 +400,18 @@ export function publisherOf(p: Product) {
 }
 
 /** Going live (pushing main, recording it) is a critical section (drain.ts): a Studio deploy waits for it. */
-export const deploy = (...a: Parameters<typeof deployNow>) => critical(`going live: ${a[0]}`, () => deployNow(...a));
-async function deployNow(productId: string, { confirm, by = 'J', mergeMain, origin, beta: expect, io }: { confirm?: string; by?: string; mergeMain?: boolean; message?: string; origin?: string | null; beta?: string; io?: GitHubIO }) {
+export const deploy = (...a: Parameters<typeof deployNow>) => critical(`going live: ${a[0]}`, async () => {
+  const r: any = await deployNow(...a);
+  // A person went live past the playtest ("Go live anyway"): who, when and which commit go on the go live's record.
+  const skip = playtestSkipFor(a[1]?.approval, a[0], a[1]?.beta);
+  if (skip && r?.deploy) {
+    db.prepare('UPDATE deploys SET skipped_playtest = ? WHERE id = ?').run(JSON.stringify(skip), r.deploy);
+    opLog(`${skip.by} took ${a[0]} live without a playtest of ${skip.sha.slice(0, 7)}`);
+    return { ...r, skippedPlaytest: skip };
+  }
+  return r;
+});
+async function deployNow(productId: string, { confirm, by = 'J', mergeMain, origin, beta: expect, approval, io }: { confirm?: string; by?: string; mergeMain?: boolean; message?: string; origin?: string | null; beta?: string; approval?: string; io?: GitHubIO }) {
   const p = getProduct(productId);
   if (mergeMain && githubSlugOf(p)) {
     const { syncBetaWithLive } = await import('./deploy-github.ts');
@@ -379,7 +422,10 @@ async function deployNow(productId: string, { confirm, by = 'J', mergeMain, orig
   opLog(`making the plan for ${p.name}`);
   const plan = await deployPlan(p.id, { io });
   if (confirm !== plan.confirm) throw new StudioError(`Going live publishes ${plan.live}: ${plan.what} Show J the plan, then send confirm: "${plan.confirm}" (J's call).`);
-  if (plan.blockers.length) throw new StudioError(`Not going live:\n- ${plan.blockers.join('\n- ')}`);
+  // A person's "Go live anyway" on an Approve card (playtestSkipFor) goes past beta not being playtested, and nothing else.
+  const skip = playtestSkipFor(approval, p.id, expect);
+  const blockers = skip ? plan.blockers.filter((b) => !isPlaytestBlocker(b)) : plan.blockers;
+  if (blockers.length) throw new StudioError(`Not going live:\n- ${blockers.join('\n- ')}`);
   // An Approve card (approvals.ts) is for one beta commit: a different one now isn't what J approved.
   if (expect && plan.beta?.sha !== expect && plan.played?.sha !== expect) throw new StudioError(`${BETA} is ${plan.beta?.short ?? '?'} now, not ${expect.slice(0, 7)} that J approved; look at the plan again.`);
   // A project with a GitHub repo (deploy-github.ts): its main, and the repos its builds went into, through GitHub's API.
@@ -766,7 +812,7 @@ async function settleApproval(op: Op, ok: boolean, text: string) {
 registerOp('golive', async (j: LiveJob, ctx) => {
   ctx.step(j.mergeMain ? `merging main into ${j.product}'s beta` : `going live with ${j.product}`);
   try {
-    return await deploy(j.product, { confirm: j.confirm, by: j.by, origin: j.origin, beta: j.beta, mergeMain: j.mergeMain });
+    return await deploy(j.product, { confirm: j.confirm, by: j.by, origin: j.origin, beta: j.beta, mergeMain: j.mergeMain, approval: j.approval });
   } catch (e: any) {
     // A second attempt after a restart that finds it already done: that's the first attempt's success.
     if (ctx.op.attempts > 1 && /Nothing to go live/.test(String(e.message))) {
