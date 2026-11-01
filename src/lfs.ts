@@ -9,7 +9,7 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 
 // Its own git and server check, not beta.ts's or repos.ts's: they import this module (a cycle breaks their start-up).
 const isServer = () => process.platform !== 'win32' && process.env.STUDIO_SERVER === '1';
@@ -36,8 +36,23 @@ const usesLfs = (dir: string) => {
  * Real files for every LFS pointer in this checkout or worktree. Fast when its objects are already in the shared store.
  * Only on the server: J's PC has git-lfs with its own hooks and credentials (a credential window there would hang).
  */
+/**
+ * A light checkout (repos.ts syncGit on Cloud Run: a big repo cloned partially, LFS smudge skipped, marked
+ * hawkes.light in its config, which its worktrees share): its LFS files and node_modules are the Cloud Run job's to
+ * fetch, never the Studio service's, whose disk is the instance's memory.
+ */
+export function lightCheckout(dir: string) {
+  if (!process.env.K_SERVICE || !fs.existsSync(dir)) return false;
+  const r = spawnSync('git', ['config', '--get', 'hawkes.light'], { cwd: dir, encoding: 'utf8', windowsHide: true, timeout: 10_000 });
+  return r.status === 0 && r.stdout.trim() === 'true';
+}
+
 export async function lfsPull(dir: string, log: (s: string) => void = (s) => console.log(`[lfs] ${s}`)) {
   if (!isServer() || !usesLfs(dir)) return;
+  if (lightCheckout(dir)) {
+    log(`git lfs pull skipped: a light checkout of a big repo on the cloud server (the agent's Cloud Run job works with the files)`);
+    return;
+  }
   const t0 = Date.now();
   if (!(await gitAsync(dir, ['lfs', 'version'])).ok) {
     log(`git-lfs isn't installed on this server (deploy.mjs setupGit installs it): this checkout has LFS pointers, not the files`);

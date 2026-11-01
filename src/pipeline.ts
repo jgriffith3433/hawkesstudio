@@ -13,7 +13,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { db, newId, J, rowToStep, parse, type Step } from './db.ts';
-import { resumeGapMs } from './ops.ts';
+import { resumeGapMs, RESTART_LOOP, RESTART_WINDOW_MS } from './ops.ts';
 import { loadProducts, getProduct, localUrl, today, PROJECTS, betaPlaytestsOn, managedElsewhere, managedNote, StudioError, type Product, type Playtest } from './config.ts';
 import { unityBuild } from './buildpkgs.ts';
 import { endStatus, runCounts, runCancelled, haltOf, jobCancelDetail, runCancelDetail } from './cancel.ts';
@@ -24,7 +24,7 @@ import { barState, barHash, reviewedSha, reviewParams } from './review.ts';
 import { reviewJob, viaNote } from './review-cc.ts';
 import { writeReport } from './report.ts';
 import { assetStatus, makeAsset } from './assets.ts';
-import { syncRepos, syncRepo, repoMap, betaFolders, isServer, cloneRefusal, BETA, BRANCH } from './repos.ts';
+import { syncRepos, syncRepo, repoMap, betaFolders, isServer, builtFromGitHub, BETA, BRANCH } from './repos.ts';
 import { gitAsync, betaLane, prepareBeta, playedLocal, gameVersions, resetBetaSite, pinBetaVersion, pruneGameVersions, saveBetaBuild, betaBuild, betaSiteDir, betaSiteFolder, betaPort, shaOf, repoDirs, fetchOrigin, betaBuildCurrent, siteBaseOf, refreshBetaSite } from './beta.ts';
 import { notifyOnce } from './notify.ts';
 import { judgeCriteria } from './acceptance.ts';
@@ -159,16 +159,16 @@ async function runAll(run: string, ids: string[], o: RunOptions) {
     // Never a Unity game's repos there (source or website, up to 8 GB of Game/v* history): Gen builds from GitHub and the
     // beta sites publish from GitHub. Cloning them filled the memory disk until the
     // instance died, every restart resuming the run and cloning again (the daily run, 2026-10-29).
-    // A customer cell's Unity project (its builds in `builds`) and any repo over STUDIO_CLONE_MAX_MB are left out too
-    // (repos.ts cloneRefusal), each said as a skipped step.
+    // A customer cell's Unity project (its builds in `builds`) is left out too (repos.ts builtFromGitHub), said as a
+    // skipped step. Any other big repo is synced on the light path (repos.ts syncGit: partial clone, no LFS, no npm ci).
     let only: string[] | undefined;
     if (process.env.K_SERVICE) {
       const folders = new Set<string>();
       for (const pid of ids) {
         const x = getProduct(pid);
-        const big = await cloneRefusal(x);
-        if (big) {
-          updateStep(startStep(run, x.id, 'repo', x.repo.split('/')[0] || x.id, 'skipped'), { status: 'skipped', detail: big, finished: true });
+        const skip = builtFromGitHub(x);
+        if (skip) {
+          updateStep(startStep(run, x.id, 'repo', x.repo.split('/')[0] || x.id, 'skipped'), { status: 'skipped', detail: skip, finished: true });
           continue;
         }
         for (const r of [x.repo, x.site]) if (r) folders.add(r.split('/')[0]);
@@ -1091,10 +1091,10 @@ async function betaBody(id: string, p: Product, { focus, criteria, scenario, opt
     // A build tag on Cloud Run needs no source checkout here: Gen builds that commit from GitHub. Cloning a Unity repo onto
     // the instance's memory disk failed with no message and cost every run minutes (2026-10-29).
     const cloudTag = Boolean((tag || p.build) && process.env.K_SERVICE);
-    // On Cloud Run a project too big to clone (repos.ts cloneRefusal: a customer's Unity `builds`, a repo over the size
-    // limit) isn't cloned either: its builds come from GitHub.
-    const tooBig = lane && repoMap()[top] && !hadSteps(id, 'repo') && !cloudTag ? await cloneRefusal(p) : null;
-    if (tooBig) updateStep(startStep(id, p.id, 'repo', top), { status: 'skipped', detail: tooBig, finished: true });
+    // On Cloud Run a customer's Unity project (its `builds`) isn't cloned either: its builds come from GitHub
+    // (repos.ts builtFromGitHub). A big web repo is synced on the light path (repos.ts syncGit).
+    const fromGitHub = lane && repoMap()[top] && !hadSteps(id, 'repo') && !cloudTag ? builtFromGitHub(p) : null;
+    if (fromGitHub) updateStep(startStep(id, p.id, 'repo', top), { status: 'skipped', detail: fromGitHub, finished: true });
     else if (lane && repoMap()[top] && !hadSteps(id, 'repo') && !cloudTag) {
       const g = startStep(id, p.id, 'repo', top);
       const r = await syncRepo(top, repoMap()[top], BRANCH, betaFolders().has(top) ? BETA : undefined);
@@ -1275,6 +1275,15 @@ async function assetsBody(id: string, p: Product, todo: { id: string; status: st
  * After a Studio restart (a deploy): runs that were going carry on (resuming, above) instead of ending as
  * interrupted. Returns the ids. Runs of a kind that can't carry on are marked interrupted, as before.
  */
+/**
+ * The run's restarts in a row at one step (`key`: its running step), counting this one: one more when the last restart
+ * was at the same step and quick (RESTART_WINDOW_MS), else 1. Exported for the tests.
+ */
+export function runRestarts(prev: { step?: string; n?: number; at?: number } | undefined, key: string | null, now = Date.now()) {
+  const n = key && prev?.step === key && now - (prev.at ?? 0) < RESTART_WINDOW_MS ? (prev.n ?? 0) + 1 : 1;
+  return { step: key ?? '', n, at: now };
+}
+
 export function resumeRuns() {
   const out: string[] = [];
   for (const r of db.prepare(`SELECT * FROM runs WHERE status = 'running' ORDER BY started`).all() as any[]) {
@@ -1297,8 +1306,22 @@ export function resumeRuns() {
       console.warn(`[studio] ${r.id}: ${why}`);
       continue;
     }
-    db.prepare('UPDATE runs SET options = ? WHERE id = ?').run(JSON.stringify({ ...options, resumes: [...recent, Date.now()] }), r.id);
     const steps = (db.prepare('SELECT * FROM steps WHERE run = ? ORDER BY started').all(r.id) as any[]).map(rowToStep);
+    // And as changes do (agents.ts resumeChanges): the same unfinished step resumed RESTART_LOOP times in a row, each
+    // restart quick after the last, never got past it (a repo step cloning a big repo on every restart). That step fails,
+    // said plainly, and the run isn't resumed again.
+    const at = steps.filter((s) => s.status === 'running').pop();
+    const key = at ? `${at.product}/${at.kind}/${at.name}` : null;
+    const loop = runRestarts(options.restarts, key);
+    if (key && loop.n > RESTART_LOOP) {
+      const why = `stopped: Studio restarted ${loop.n - 1} times in a row during this run's ${at!.kind} step (${at!.name}), so it isn't resumed again (start it again once the cause is fixed)`;
+      db.prepare(`UPDATE steps SET status = 'failed', detail = ?, finished = ? WHERE status = 'running' AND run = ?`).run(why, Date.now(), r.id);
+      db.prepare(`UPDATE runs SET status = 'failed', detail = ?, finished = ? WHERE id = ?`).run(why, Date.now(), r.id);
+      db.prepare(`UPDATE builds SET status = 'failed', detail = ?, finished = ? WHERE run = ? AND status = 'building'`).run(why, Date.now(), r.id);
+      console.warn(`[studio] ${r.id}: ${why}`);
+      continue;
+    }
+    db.prepare('UPDATE runs SET options = ? WHERE id = ?').run(JSON.stringify({ ...options, resumes: [...recent, Date.now()], ...(key ? { restarts: loop } : {}) }), r.id);
     let body: (() => Promise<unknown>) | null = null;
     try {
       if (r.kind === 'daily' || r.kind === 'manual') body = () => runAll(r.id, products, options).catch((e: any) => {

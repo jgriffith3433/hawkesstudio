@@ -51,13 +51,13 @@ import { reviewJob } from './review-cc.ts';
 import { gen, genRun, fileUrl } from './gen.ts';
 import { unityBuild } from './buildpkgs.ts';
 import { jobCancelDetail, noteCancel, cancelNote, cancelWords } from './cancel.ts';
-import { repoMap, ensureCloned, cloneRefusal } from './repos.ts';
+import { repoMap, ensureCloned, bigProduct } from './repos.ts';
 import { serveDir, stopServed } from './local.ts';
 import { claudeEnv } from './claude.ts';
 import { buildPreview, removePreview, previewUrl, changeSiteDir, changeBuild, type ChangeBuild } from './previews.ts';
 import { BETA, ensureBeta, gitAsync } from './beta.ts';
 import { lfsPull } from './lfs.ts';
-import { runCommand, resumeGapMs } from './ops.ts';
+import { runCommand, resumeGapMs, RESTART_LOOP, RESTART_WINDOW_MS } from './ops.ts';
 import { deployPending, critical } from './drain.ts';
 import { notify, notifyOnce, PUBLIC_URL } from './notify.ts';
 import { threadFor, getTask } from './roadmap.ts';
@@ -1588,12 +1588,11 @@ async function work(id: string, note?: string, answer?: string, resumed?: Phase 
     if (ph.step === 'prepare') {
       update(id, { detail: 'preparing the worktree' });
       if (!fs.existsSync(c.worktree)) {
-        // A repo too big for Studio's memory disk on Cloud Run (a Unity project, or over STUDIO_CLONE_MAX_MB): cloning it
-        // ended Studio and every restart resumed the clone (2026-10-29; a customer cell's Unity `builds` project,
-        // 2026-11-01). Refused before the clone, so the change fails plainly and a resumed one stops here too.
+        // A big repo on Cloud Run (a Unity project, or over STUDIO_CLONE_MAX_MB) is cloned light here (repos.ts syncGit:
+        // partial, no LFS files, no npm ci) and the pass's job makes the full checkout; nothing is refused for its size.
         if (!isInfra(c.product) && !fs.existsSync(path.join(PROJECTS, c.repo.split(/[\\/]/)[0], '.git'))) {
-          const big = await cloneRefusal(p);
-          if (big) throw new Error(big);
+          const big = await bigProduct(p).catch(() => null);
+          if (big) addLog(id, `a big repo (${big}): cloned light on the cloud server; the agent's Cloud Run job makes the full checkout`);
         }
         fs.mkdirSync(WORK(), { recursive: true });
         // Agent branches start from beta (made from main the first time: pushing beta deploys nothing).
@@ -3130,9 +3129,8 @@ export function autoFix(runId: string) {
  * After a restart (a deploy): changes that were being worked on carry on from their recorded step, reattached to the
  * same agent process and Gen jobs (work()). Ones with no step recorded (from before steps were) go back to the queue.
  */
-/** Restarts in a row at one step (each within RESTART_WINDOW_MS of the last) before a change stops being resumed. */
-export const RESTART_LOOP = 3;
-const RESTART_WINDOW_MS = 5 * 60_000;
+/** Restarts in a row at one step (each within RESTART_WINDOW_MS of the last) before a change stops being resumed (ops.ts). */
+export { RESTART_LOOP };
 
 export function resumeChanges() {
   const out: string[] = [];

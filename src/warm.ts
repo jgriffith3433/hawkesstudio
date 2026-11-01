@@ -12,6 +12,7 @@ import crypto from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { PROJECTS } from './config.ts';
 import { runCommand } from './ops.ts';
+import { lightCheckout } from './lfs.ts';
 
 export const lockHash = (dir: string) => {
   try {
@@ -167,6 +168,8 @@ export const coldDirs = (worktree: string) => lockDirs(worktree).filter((rel) =>
  */
 export async function warmDeps(worktree: string, repoTop: string, log: (s: string) => void = () => {}) {
   const warmed: string[] = [];
+  // A light checkout (a big repo on Cloud Run, lfs.ts): no node_modules copied onto the memory disk; the job installs.
+  if (lightCheckout(worktree)) { log('warm start skipped: a light checkout of a big repo on the cloud server'); return warmed; }
   const from = donors(repoTop, worktree);
   for (const rel of lockDirs(worktree)) {
     const dest = path.join(worktree, rel);
@@ -196,6 +199,7 @@ export async function warmDeps(worktree: string, repoTop: string, log: (s: strin
  * left to the agent's own checks.
  */
 export async function installCold(worktree: string, run: (dir: string, cmd: string) => Promise<{ ok: boolean; out: string; ms: number }>, log: (s: string) => void = () => {}) {
+  if (lightCheckout(worktree)) { log('npm ci skipped: a light checkout of a big repo on the cloud server'); return; }
   for (const rel of coldDirs(worktree)) {
     const dir = path.join(worktree, rel);
     const hash = lockHash(dir);

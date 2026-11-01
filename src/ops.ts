@@ -152,6 +152,12 @@ async function runOp(id: string) {
 }
 
 /** The gap between agent changes and runs resumed after a restart (agents.ts, pipeline.ts). STUDIO_RESUME_GAP_MS: tests. */
+/**
+ * Quick restarts in a row (each within RESTART_WINDOW_MS of the last) at one step before a change (agents.ts) or a run
+ * (pipeline.ts) stops being resumed: that step is what keeps ending Studio (a clone too big for Cloud Run's memory disk).
+ */
+export const RESTART_LOOP = 3;
+export const RESTART_WINDOW_MS = 5 * 60_000;
 export const resumeGapMs = () => process.env.STUDIO_RESUME_GAP_MS !== undefined && Number(process.env.STUDIO_RESUME_GAP_MS) >= 0 ? Number(process.env.STUDIO_RESUME_GAP_MS) : 2000;
 
 /** After a restart: running operations go back in the queue (handlers are idempotent), up to MAX_ATTEMPTS. */

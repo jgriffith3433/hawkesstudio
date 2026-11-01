@@ -17,7 +17,7 @@ const slugOfDir = (dir: string) => {
 import { trackCommand } from './ops.ts';
 import { lockHash, installedFor, ensureInstalled, runShell } from './warm.ts';
 import { REF_LOCK, fetchLocked } from './gitlock.ts';
-import { lfsPull } from './lfs.ts';
+import { lfsPull, lightCheckout } from './lfs.ts';
 
 export const BRANCH = process.env.STUDIO_BRANCH || 'main';
 /** The branch between agent changes and the live site (beta.ts). On the server, product source repos are kept on it. */
@@ -30,13 +30,13 @@ function git(cwd: string, args: string[], timeoutMs = 20 * 60_000) {
 }
 
 /** git for clone, fetch, checkout and merge, without blocking Studio (a sync of every repo used to freeze it). */
-function gitA(cwd: string, args: string[], timeoutMs = 20 * 60_000, slug: string | null = null): Promise<{ ok: boolean; out: string; err: string }> {
+function gitA(cwd: string, args: string[], timeoutMs = 20 * 60_000, slug: string | null = null, extraEnv: Record<string, string> = {}): Promise<{ ok: boolean; out: string; err: string }> {
   const done = trackCommand(`git ${args.join(' ')}`, cwd);
   return new Promise((resolve) => {
     let out = '';
     let err = '';
     // A repo that isn't J's: its own token as a header for this one command (ghtoken.ts gitAuthEnv, primed by the caller).
-    const child = spawn('git', args, { cwd, windowsHide: true, env: { ...process.env, GIT_TERMINAL_PROMPT: '0', ...gitAuthEnv(slug ?? slugOfDir(cwd)) } });
+    const child = spawn('git', args, { cwd, windowsHide: true, env: { ...process.env, GIT_TERMINAL_PROMPT: '0', ...gitAuthEnv(slug ?? slugOfDir(cwd)), ...extraEnv } });
     const timer = setTimeout(() => child.kill('SIGKILL'), timeoutMs);
     timer.unref();
     child.stdout.on('data', (d) => { out += d; if (out.length > 64 * 1024 * 1024) out = out.slice(-32 * 1024 * 1024); });
@@ -93,16 +93,17 @@ export async function syncRepo(folder: string, slug: string, branch = BRANCH, wa
   const dir = path.join(PROJECTS, folder);
   const before = fs.existsSync(path.join(dir, '.git')) ? git(dir, ['rev-parse', 'HEAD']).out : '';
   const r = await syncGit(folder, slug, branch, want);
-  // The shared checkout's Git LFS files (the store every worktree of it reads from), and its pre-push hook.
+  // The shared checkout's Git LFS files (the store every worktree of it reads from), and its pre-push hook. A light
+  // clone (Cloud Run, a big repo) gets neither LFS files nor an npm ci: lfsPull skips it, and so does the install.
   if (r.action !== 'failed') await lfsPull(dir);
-  return installAfterSync(r, before);
+  return lightCheckout(dir) ? r : installAfterSync(r, before);
 }
 
-/** Megabytes of repo Studio clones on Cloud Run, where its disk is the instance's memory (STUDIO_CLONE_MAX_MB). */
-export const cloneMaxMb = () => Number(process.env.STUDIO_CLONE_MAX_MB) || 600;
+/** True on Cloud Run, where the repo folder is the instance's memory disk: big repos take the light path there. */
+export const cloudHost = () => Boolean(process.env.K_SERVICE);
 
-/** The words a refused clone starts with (agents' failed changes and runs' skipped steps say it). */
-export const TOO_BIG = "This repo is too big to work on in Studio's cloud server yet";
+/** Megabytes of repo over which, on Cloud Run, a clone is light (partial, no LFS files, no npm ci): STUDIO_CLONE_MAX_MB. */
+export const cloneMaxMb = () => Number(process.env.STUDIO_CLONE_MAX_MB) || 600;
 
 /** GitHub's size of a repo in MB (what a clone downloads), cached per repo; null when GitHub doesn't say. */
 const sizes = new Map<string, { mb: number; at: number }>();
@@ -127,17 +128,6 @@ export async function repoSizeMb(slug: string, fetcher: typeof fetch = fetch): P
 /** Forgets the cached sizes (tests). */
 export const forgetRepoSizes = () => sizes.clear();
 
-/**
- * On Cloud Run, a repo bigger than Studio's memory disk can hold: why it isn't cloned (else null). A Unity repo of
- * a few GB filled the 2 GB customer Studio and every restart resumed the clone, a crash loop (2026-10-31). GitHub's
- * size (KB, the packed history) is what a clone downloads; not knowing it (no token, GitHub down) clones as before.
- */
-export async function tooBigToClone(slug: string, fetcher: typeof fetch = fetch): Promise<string | null> {
-  if (!process.env.K_SERVICE) return null;
-  const mb = await repoSizeMb(slug, fetcher);
-  return mb !== null && mb > cloneMaxMb() ? `${TOO_BIG}: ${slug} is about ${mb} MB, more than Studio can clone on its server (${cloneMaxMb()} MB): agent work on it runs in a build job or on your own machine, not inside Studio` : null;
-}
-
 type CloneProduct = Pick<Product, 'id' | 'engine' | 'repo' | 'site'> & Partial<Pick<Product, 'github' | 'repos' | 'builds' | 'build'>>;
 
 /** A Unity project: a legacy products.json `build`, a `builds` entry with tool unity, or the unity engine. */
@@ -158,48 +148,76 @@ function safeRepoMap() {
 }
 
 /**
- * Whether a product is too big to clone on this host (null: go ahead). Only on Cloud Run, where the repo folder is the
- * instance's memory: a Unity project (its repos run to GBs; Gen builds them from GitHub), or any repo it would clone
- * over STUDIO_CLONE_MAX_MB by GitHub's size. A customer cell's Unity project has its builds in `builds` (asCustomerGame
- * turns `build` into `source`), which the old guards missed: an agent change cloned a 3 GB repo and the cell restarted
- * about once a minute for hours (2026-11-01). Off Cloud Run, always null.
+ * Whether a repo is big (why, else null): over STUDIO_CLONE_MAX_MB by GitHub's size, or used only by Unity projects
+ * (their repos run to GBs). Only asked on Cloud Run, where a big repo is cloned light (syncGit) and its agent work's
+ * heavy part (the full checkout, LFS files) happens in the Cloud Run job; nothing is refused for it any more (a full
+ * clone of a 3 GB Unity repo filled the memory disk and every restart resumed it, 2026-10-31 and 2026-11-01). Off
+ * Cloud Run, always null and GitHub is never asked.
  */
-export async function cloneRefusal(p: CloneProduct, fetcher: typeof fetch = fetch): Promise<string | null> {
-  if (!process.env.K_SERVICE) return null;
-  if (isUnityProduct(p)) return `${TOO_BIG}: ${p.id} is a Unity project, and its repo doesn't fit the cloud server's disk (it is built from GitHub instead)`;
+export async function bigRepo(slug: string, fetcher: typeof fetch = fetch, folder?: string): Promise<string | null> {
+  if (!cloudHost()) return null;
+  const unity = unityOnlyRepo(slug, folder);
+  if (unity) return unity;
+  const mb = await repoSizeMb(slug, fetcher);
+  return mb !== null && mb > cloneMaxMb() ? `${slug} is about ${mb} MB (over ${cloneMaxMb()} MB)` : null;
+}
+
+/** Whether any repo a product would clone is big (why, else null): routing and logging only, never a refusal. */
+export async function bigProduct(p: CloneProduct, fetcher: typeof fetch = fetch): Promise<string | null> {
+  if (!cloudHost()) return null;
+  if (isUnityProduct(p)) return `${p.id} is a Unity project`;
   for (const slug of productSlugs(p)) {
-    const big = await tooBigToClone(slug, fetcher);
+    const big = await bigRepo(slug, fetcher);
     if (big) return big;
   }
   return null;
 }
 
 /**
- * The last line of defence in the clone itself: on Cloud Run, a repo that only Unity projects use isn't cloned (one a
- * web project shares still is, within the size limit).
+ * On Cloud Run, a Unity project's builds come from GitHub (Gen builds the commit; beta sites publish from GitHub), so a
+ * run or a beta push has no need of its checkout here: why not, else null. Not a refusal: the run carries on.
  */
-function unityOnlyRepo(folder: string, slug: string): string | null {
-  if (!process.env.K_SERVICE) return null;
+export const builtFromGitHub = (p: CloneProduct) => cloudHost() && isUnityProduct(p) ? `${p.id} is a Unity project, built from GitHub: no checkout needed on the cloud server` : null;
+
+/** A repo that only Unity projects use (why, else null); one a web project shares isn't. */
+function unityOnlyRepo(slug: string, folder?: string): string | null {
   let products: Product[];
   try { products = loadProducts(); } catch { return null; }
-  const map = { ...safeRepoMap(), [folder]: slug };
+  const map = { ...safeRepoMap(), ...(folder ? { [folder]: slug } : {}) };
   const users = products.filter((p) => productSlugs(p, map).some((s) => s.toLowerCase() === slug.toLowerCase()));
   const unity = users.filter(isUnityProduct);
-  return users.length && unity.length === users.length ? `${TOO_BIG}: ${slug} belongs to a Unity project (${unity.map((p) => p.id).join(', ')}), which is built from GitHub, not cloned here` : null;
+  return users.length && unity.length === users.length ? `${slug} belongs to a Unity project (${unity.map((p) => p.id).join(', ')})` : null;
 }
+
+/**
+ * The clone's arguments: a full clone, or on the light path a partial one (`--filter=blob:none`: history without file
+ * contents; git fetches the blobs a checkout needs). A light clone's LFS files are skipped (GIT_LFS_SKIP_SMUDGE, and the
+ * smudge filter set to skip in its config so later checkouts and worktrees skip them too). Exported for the tests.
+ */
+export const cloneArgs = (slug: string, folder: string, light: boolean) => ['clone', '--quiet', ...(light ? ['--filter=blob:none'] : []), `https://github.com/${slug}.git`, folder];
+
+/** What a light clone gets in its config: LFS smudge skipped, and the mark lfs.ts and warm.ts read (hawkes.light). */
+export const LIGHT_CONFIG: [string, string][] = [
+  ['hawkes.light', 'true'],
+  ['filter.lfs.smudge', 'git-lfs smudge --skip -- %f'],
+  ['filter.lfs.process', 'git-lfs filter-process --skip'],
+];
 
 async function syncGit(folder: string, slug: string, branch: string, want?: string): Promise<RepoResult> {
   const dir = path.join(PROJECTS, folder);
   if (!fs.existsSync(path.join(dir, '.git'))) {
     if (fs.existsSync(dir) && fs.readdirSync(dir).length) return { folder, slug, action: 'failed', detail: `${dir} exists and isn't a git repo` };
     await primeRepoToken(slug);
-    const big = unityOnlyRepo(folder, slug) ?? await tooBigToClone(slug);
-    if (big) return { folder, slug, action: 'failed', detail: big };
-    const c = await gitA(PROJECTS, ['clone', '--quiet', `https://github.com/${slug}.git`, folder], undefined, slug);
+    // On Cloud Run a big repo is cloned light (bigRepo, cloneArgs): the agent's job does the heavy checkout itself.
+    const big = await bigRepo(slug, fetch, folder);
+    const c = await gitA(PROJECTS, cloneArgs(slug, folder, Boolean(big)), undefined, slug, big ? { GIT_LFS_SKIP_SMUDGE: '1' } : {});
     if (!c.ok) return { folder, slug, action: 'failed', detail: c.err.split('\n').pop() ?? 'clone failed' };
+    if (big) for (const [k, v] of LIGHT_CONFIG) git(dir, ['config', k, v]);
     const pick = [want, branch].find((b) => b && git(dir, ['rev-parse', '--verify', '--quiet', `origin/${b}`]).ok);
     if (pick) await gitA(dir, ['checkout', '--quiet', pick]);
-    return { folder, slug, action: 'cloned', detail: `cloned (${pick ?? 'default branch'})`, head: git(dir, ['log', '-1', '--format=%h %s']).out };
+    const how = big ? `; light clone (partial, no LFS files, no npm ci: ${big})` : '';
+    if (big) console.log(`[repos] ${folder}: light clone: ${big}`);
+    return { folder, slug, action: 'cloned', detail: `cloned (${pick ?? 'default branch'})${how}`, head: git(dir, ['log', '-1', '--format=%h %s']).out };
   }
   // Under the repo's lock with agents' and betawatch's fetches (gitlock.ts). A ref lock that outlasts the retries means
   // another git just updated those refs: carry on with them rather than fail the run over a race.

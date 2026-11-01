@@ -14,7 +14,7 @@ Cloud Run service `studio` in `hawkes-staging` / `us-east4`, the same way Hawkes
 | State files (settings, Claude accounts, Talk's sessions in `claude-home/`, agents.json...) | `gs://.../state/` (`src/cloudhost.ts`) | Pulled at start, pushed every 30 s and on SIGTERM |
 | Agents', scouts' and Talk's Claude Code | Cloud Run job `studio-agent`, one execution per pass (`src/cloudjob.ts`, `src/cloudjob-run.ts`) | Its own sandbox; see "The job" |
 | The daily run | Cloud Scheduler `studio-daily`, 05:00 America/Los_Angeles, `POST /api/cloud/daily` | OIDC token of `studio-scheduler@`, checked by Studio (`cloudauth.ts schedulerCall`) |
-| Product repos | Cloned on demand into `/tmp/projects` (`repos.ts ensureCloned`, the run's own repos in `pipeline.ts`) | With the GitHub token through git's credential helper |
+| Product repos | Cloned on demand into `/tmp/projects` (`repos.ts ensureCloned`, the run's own repos in `pipeline.ts`); a big repo (a Unity project's, or over `STUDIO_CLONE_MAX_MB`, 600 MB: `repos.ts bigRepo`) is cloned light (`--filter=blob:none`, LFS files skipped, no npm ci, marked `hawkes.light`) and never refused | With the GitHub token through git's credential helper |
 | Generation, builds, playtests | Hawkes Gen at `https://hawkesgen.ai`, with Studio's own Gen key | Unchanged: Studio orchestrates, Gen works |
 | Unity builds | A pushed `build-*` tag (`git tag build-x && git push origin build-x`) in a Unity source repo: Gen's Cloud Run job builds that commit from GitHub and pushes it to the website repo's beta (`src/tagbuild.ts`; docs/daily.md, "Build tags") | Gen and Studio share no disk here, so builds into a local website copy (`siteDir`) can't work; GitHub mode needs none |
 | `studio.hawkesgen.ai` | Cloudflare Worker `server/studio-edge/` | Passes everything to the service's run.app address |
@@ -74,7 +74,9 @@ on Cloud Run a follower fills them from the job. The round trip (`gs://.../jobs/
    plus `STUDIO_URL`, `STUDIO_AGENT_KEY`, `CLAUDE_CONFIG_DIR`) and the clone token.
 2. **The execution:** the runner (root) reads the spec and deletes it, clones from GitHub with the token as a one-off
    header (never in the clone), applies the bundle and files at the **same absolute path**, and runs the command as the
-   user `agent` (uid 1001). Output goes up in chunks every 2 s; a `stop` object (Studio's Stop, a time limit) ends it.
+   user `agent` (uid 1001). The clone is partial (`--filter=blob:none`) with Git LFS files skipped unless the spec says
+   `lfs`; Studio's spec asks for a full clone with LFS files (`partial: false, lfs: true`) only for a repo that isn't big,
+   so a big repo's heavy checkout happens here, in the job, not on the Studio service. Output goes up in chunks every 2 s; a `stop` object (Studio's Stop, a time limit) ends it.
 3. **Back:** a bundle of the pass's commits, its uncommitted files and the session, then `exit.json`. Studio fetches the
    commits into the worktree, resets to the pass's HEAD, `git clean -fd`, writes the files, then the local exit. The
    job's folder is cleared; anything left goes after 7 days (bucket lifecycle).

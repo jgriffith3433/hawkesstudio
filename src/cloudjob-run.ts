@@ -20,7 +20,19 @@ import { git, packFiles, readPack, unpack, folderEntries, dirtyState, type JobRu
 type Store = Pick<JobRunner, 'put' | 'get' | 'list' | 'remove'>;
 // kind "build" (previews-cloud.ts): a beta site's build of one commit, in a shallow clone when GitHub has the commit; no
 // session or workspace goes back, only `outputs` (paths in the workspace) as out/outputs.tgz.
-type Spec = { kind?: 'build'; outputs?: string[]; file: string; args: string[]; cwd: string; env: Record<string, string>; sessions: string; git: { head: string; branch: string; remote: string; bundle: boolean; token: string | null; shallow?: boolean } | null };
+// The clone is partial (`--filter=blob:none`: git fetches the blobs a checkout needs, with the token) and skips Git LFS
+// files unless the spec asks (`lfs`), so a big repo (a Unity project of GBs) is never pulled whole; `partial: false` asks
+// for a full clone (Studio's spec for a small repo, so the pass can read any old file without a token).
+type JobGit = { head: string; branch: string; remote: string; bundle: boolean; token: string | null; shallow?: boolean; partial?: boolean; lfs?: boolean };
+type Spec = { kind?: 'build'; outputs?: string[]; file: string; args: string[]; cwd: string; env: Record<string, string>; sessions: string; git: JobGit | null };
+
+/** The workspace clone's arguments (no checkout: prepare checks the head out after the bundle). Exported for the tests. */
+export const jobCloneArgs = (g: Pick<JobGit, 'remote' | 'partial'>, cwd: string) => ['clone', '--quiet', '--no-checkout', ...(g.partial === false ? [] : ['--filter=blob:none']), g.remote, cwd];
+/** The environment for the clone's checkouts: LFS files skipped unless the spec asks for them. Exported for the tests. */
+export const jobGitEnv = (g: Pick<JobGit, 'lfs'>): Record<string, string> => g.lfs ? {} : { GIT_LFS_SKIP_SMUDGE: '1' };
+/** What a clone without LFS files keeps in its config, so the pass's own checkouts skip them too. */
+const SKIP_LFS: [string, string][] = [['filter.lfs.smudge', 'git-lfs smudge --skip -- %f'], ['filter.lfs.process', 'git-lfs filter-process --skip']];
+
 
 /** The unprivileged user the pass runs as (made in the image), when this runner is root. */
 function agentUser() {
@@ -33,9 +45,11 @@ function agentUser() {
 }
 
 /** git with the clone token as a one-off header (never in the clone's config or remote URL). */
-function gitWithToken(cwd: string, args: string[], token: string | null) {
+function gitWithToken(cwd: string, args: string[], token: string | null, env: Record<string, string> = {}) {
+  // `-c` reaches the git processes this one starts too (GIT_CONFIG_PARAMETERS): a partial clone's lazy blob fetch.
   const auth = token ? ['-c', `http.extraHeader=Authorization: Basic ${Buffer.from(`x-access-token:${token}`).toString('base64')}`] : [];
-  return spawnSync('git', ['-c', 'safe.directory=*', ...auth, ...args], { cwd, encoding: 'utf8', env: { ...process.env, GIT_TERMINAL_PROMPT: '0' }, maxBuffer: 64 * 1024 * 1024 });
+  const r = spawnSync('git', ['-c', 'safe.directory=*', ...auth, ...args], { cwd, encoding: 'utf8', env: { ...process.env, GIT_TERMINAL_PROMPT: '0', ...env }, maxBuffer: 64 * 1024 * 1024 });
+  return { status: r.status, ok: r.status === 0, err: String(r.stderr ?? r.error?.message ?? '').trim() };
 }
 
 /** Rebuilds the workspace; returns the HEAD the pass starts from. */
@@ -45,19 +59,21 @@ export async function prepare(unit: string, spec: Spec, store: Store, log: (s: s
   if (spec.git) {
     fs.mkdirSync(path.dirname(cwd), { recursive: true });
     fs.rmSync(cwd, { recursive: true, force: true });
+    const env = jobGitEnv(spec.git);
     if (spec.git.shallow && !spec.git.bundle) {
       // Just that commit (a beta site's build): GitHub hands out any commit it has by id.
       fs.mkdirSync(cwd, { recursive: true });
       git(cwd, ['init', '--quiet']);
       const f = gitWithToken(cwd, ['fetch', '--quiet', '--depth', '1', spec.git.remote, spec.git.head], spec.git.token);
-      if (f.status !== 0) throw new Error(`fetch of ${spec.git.head.slice(0, 7)} failed: ${String(f.stderr).trim().split('\n').pop()}`);
-      const co = git(cwd, ['checkout', '--quiet', '--detach', 'FETCH_HEAD']);
+      if (f.status !== 0) throw new Error(`fetch of ${spec.git.head.slice(0, 7)} failed: ${f.err.split('\n').pop()}`);
+      const co = gitWithToken(cwd, ['checkout', '--quiet', '--detach', 'FETCH_HEAD'], null, env);
       if (!co.ok) throw new Error(`checkout of ${spec.git.head.slice(0, 7)}: ${co.err.split('\n').pop()}`);
       log(`[job] ${spec.git.remote} at ${spec.git.head.slice(0, 7)} (shallow)`);
       return git(cwd, ['rev-parse', 'HEAD']).out;
     }
-    const c = gitWithToken(path.dirname(cwd), ['clone', '--quiet', '--no-checkout', spec.git.remote, cwd], spec.git.token);
-    if (c.status !== 0) throw new Error(`clone failed: ${String(c.stderr).trim().split('\n').pop()}`);
+    const c = gitWithToken(path.dirname(cwd), jobCloneArgs(spec.git, cwd), spec.git.token, env);
+    if (c.status !== 0) throw new Error(`clone failed: ${c.err.split('\n').pop()}`);
+    if (!spec.git.lfs) for (const [k, v] of SKIP_LFS) git(cwd, ['config', k, v]);
     if (spec.git.bundle) {
       const b = await store.get(key('in.bundle'));
       const file = path.join(os.tmpdir(), `${unit}-in.bundle`);
@@ -65,13 +81,14 @@ export async function prepare(unit: string, spec: Spec, store: Store, log: (s: s
       const f = git(cwd, ['fetch', '--quiet', file, 'HEAD']);
       if (!f.ok) throw new Error(`the workspace's own commits: ${f.err.split('\n').pop()}`);
     }
+    // With the token: a partial clone fetches the head's blobs from GitHub here.
     const co = spec.git.branch && spec.git.branch !== 'HEAD'
-      ? git(cwd, ['checkout', '--quiet', '-B', spec.git.branch, spec.git.head])
-      : git(cwd, ['checkout', '--quiet', '--detach', spec.git.head]);
+      ? gitWithToken(cwd, ['checkout', '--quiet', '-B', spec.git.branch, spec.git.head], spec.git.token, env)
+      : gitWithToken(cwd, ['checkout', '--quiet', '--detach', spec.git.head], spec.git.token, env);
     if (!co.ok) throw new Error(`checkout of ${spec.git.head.slice(0, 7)}: ${co.err.split('\n').pop()}`);
     // As in Studio's own clone: the agent's brief and notes never go into a commit.
     fs.appendFileSync(path.join(cwd, '.git', 'info', 'exclude'), '\n.hawkes/\n');
-    log(`[job] workspace ${spec.git.remote} at ${spec.git.head.slice(0, 7)} (${spec.git.branch})`);
+    log(`[job] workspace ${spec.git.remote} at ${spec.git.head.slice(0, 7)} (${spec.git.branch}${spec.git.partial === false ? '' : ', partial clone'}${spec.git.lfs ? '' : ', no LFS files'})`);
   } else fs.mkdirSync(cwd, { recursive: true });
   const pack = await store.get(key('in.pack'));
   if (pack) {
