@@ -333,7 +333,8 @@ test("a main only admins may push: the hook goes on beta and dev, readiness says
   assert.ok(!r.byBranch?.get('main')?.has('.github/workflows/hawkes-studio.yml'), 'main left alone');
   for (const b of ['beta', 'dev']) assert.ok(r.byBranch?.get(b)?.has('.github/workflows/hawkes-studio.yml'), `on ${b}`);
   assert.match(done.join(' '), /beta, dev/);
-  assert.match(done.join(' '), /main is protected.*first go live.*bypass list.*settings\/rules/);
+  assert.match(done.join(' '), /main is protected.*first go live.*pull request Studio merges itself.*settings\/rules/);
+  assert.doesNotMatch(done.join(' '), /add it to the bypass list/);
   C.saveProduct({ id: 'guarded', name: 'Guarded', engine: 'web', live: 'https://acme.github.io/guarded/', repo: 'acme/guarded' });
   const rd = await R.readiness('guarded');
   const hook = rd.items.find((i) => i.id === 'hook')!;
@@ -341,7 +342,10 @@ test("a main only admins may push: the hook goes on beta and dev, readiness says
   assert.match(hook.what, /reaches it with the first go live/);
   const live = rd.items.find((i) => i.id === 'golive')!;
   assert.equal(live.ok, false);
-  assert.equal(live.by, 'person');
+  // No bypass list for the owner to edit: the setup card's one-time "rules" step (golive-pr.ts; J, 2026-11-01).
+  assert.equal(live.by, 'approve');
+  assert.equal(live.step, 'rules');
   assert.equal(live.link, 'https://github.com/acme/guarded/settings/rules');
-  assert.match(live.what, /update/);
+  assert.match(live.what, /restricts updates/);
+  assert.ok(rd.approve?.steps.includes('rules'), 'on the setup card');
 });

@@ -2,7 +2,9 @@
 // through GitHub's API with each repo's own token (ghtoken.ts): no clones, nothing assumed about J's repos.
 //   - the plan (deploy.ts githubPlan): the commits on beta that main lacks (compare API), the played beta commit's
 //     playtests (deploy.ts testedAt, keyed on project + sha), blockers;
-//   - going live: main fast-forwarded to that exact beta commit (PATCH git/refs, force: false), and for each build with
+//   - going live: main fast-forwarded to that exact beta commit (PATCH git/refs, force: false), or, when the repo's rules
+//     don't let this Studio's app move main, a pull request from that commit merged by the app once main's checks pass
+//     (golive-pr.ts: no bypass list, the owner's tap is the whole approval); and for each build with
 //     `publish.commit` (builds.ts commitInto put it on the target repo's beta) that repo's main fast-forwarded to the
 //     beta commit holding that build;
 //   - rollback: a new commit on main with the tree of the commit live before (git data API: the old tree, the current
@@ -13,13 +15,35 @@ import { BETA, MAIN, STUDIO_ROLLBACK, type Commit } from './beta.ts';
 import { gh, commitOf, fastForward, liveBranchOf } from './deploy-cloud.ts';
 import { getProduct, StudioError, type Product } from './config.ts';
 import { db } from './db.ts';
+import { apiOf, moveLive, STUDIO_GOLIVE } from './golive-pr.ts';
 
 type Fetch = typeof fetch;
 /** Stand-ins for tests: GitHub's fetch, and a token for every repo (undefined: each repo's own). */
-export type GitHubIO = { fetch?: Fetch; token?: string | null };
+export type GitHubIO = { fetch?: Fetch; token?: string | null; pollMs?: number; waitMs?: number; sleep?: (ms: number) => Promise<void> };
 
 const fetchOf = (io: GitHubIO) => io.fetch ?? ((...a: Parameters<Fetch>) => fetch(...a));
 const tokenFor = async (slug: string, io: GitHubIO) => (io.token !== undefined ? io.token : await (await import('./ghtoken.ts')).repoToken(slug).catch(() => null));
+
+/** Moves a repo's live branch to `sha`: directly, else through a pull request Studio merges (golive-pr.ts moveLive). */
+async function move(slug: string, branch: string, sha: string, io: GitHubIO, o: { kind: 'live' | 'rollback'; title: string; body?: string; ifDiverged?: 'pr' | 'fail'; log?: string[] }) {
+  const f = fetchOf(io);
+  const token = await tokenFor(slug, io);
+  return moveLive(slug, branch, sha, {
+    api: apiOf(f, token), direct: () => fastForward(slug, branch, sha, f, token), kind: o.kind, title: o.title, body: o.body, ifDiverged: o.ifDiverged,
+    pollMs: io.pollMs, waitMs: io.waitMs, sleep: io.sleep, log: (l) => o.log?.push(l),
+  });
+}
+
+/** Beta fast-forwarded to main's go live merge commit when beta is still the commit that went live (best effort). */
+async function followBeta(slug: string, was: string, to: string, io: GitHubIO) {
+  const f = fetchOf(io);
+  const token = await tokenFor(slug, io);
+  const b = await gh(f, token, 'GET', `/repos/${slug}/git/ref/heads/${encodeURIComponent(BETA)}`);
+  if (b.ok && String(b.j?.object?.sha) === was) await fastForward(slug, BETA, to, f, token).catch(() => null);
+}
+
+/** Commits only a go live through a pull request leaves on main (its merge commits): never a reason to merge main into beta. */
+export const isGoLiveMerge = (title: string) => String(title).startsWith(STUDIO_GOLIVE);
 
 /**
  * The GitHub repo a project goes live through here: a project added in a Studio (`github`: owner/name). J's products.json
@@ -108,7 +132,7 @@ export async function syncBetaWithLive(slug: string, io: GitHubIO = {}): Promise
   const live = await liveBranchOf(slug, f, token);
   const cmp = await gh(f, token, 'GET', `/repos/${slug}/compare/${encodeURIComponent(BETA)}...${encodeURIComponent(live)}`);
   if (!cmp.ok) throw new StudioError(`GitHub couldn't compare ${slug}'s ${BETA} and ${live} (${cmp.status})`, 409);
-  const behind = ((cmp.j.commits ?? []) as any[]);
+  const behind = ((cmp.j.commits ?? []) as any[]).filter((c) => !isGoLiveMerge(String(c.commit?.message ?? '')));
   if (!behind.length) return { how: 'none', sha: null, message: `${BETA} already has everything ${live} has.` };
   const rollbacksOnly = behind.every((c) => String(c.commit?.message ?? '').startsWith(STUDIO_ROLLBACK));
   const betaHead = await gh(f, token, 'GET', `/repos/${slug}/git/ref/heads/${encodeURIComponent(BETA)}`);
@@ -128,7 +152,7 @@ export async function syncBetaWithLive(slug: string, io: GitHubIO = {}): Promise
   return { how: 'merged', sha: m.j?.sha ? String(m.j.sha) : null, message: `Merged ${live}'s ${behind.length} commit(s) into ${BETA}; ${BETA} is built and playtested next, then it can go live.` };
 }
 
-export async function goLiveOnGitHub(p: Product, plan: { beta: { sha: string; short: string } | null; main: { sha: string } | null; commits: unknown[]; github?: { targets: Target[]; rollbacksOnly?: boolean } }, io: GitHubIO = {}) {
+export async function goLiveOnGitHub(p: Product, plan: { beta: { sha: string; short: string } | null; main: { sha: string } | null; commits: unknown[]; github?: { targets: Target[]; rollbacksOnly?: boolean; liveMergesOnly?: boolean } }, io: GitHubIO = {}) {
   const slug = githubSlugOf(p)!;
   const f = fetchOf(io);
   const token = await tokenFor(slug, io);
@@ -144,21 +168,24 @@ export async function goLiveOnGitHub(p: Product, plan: { beta: { sha: string; sh
   const moved: { project: string; slug: string; build: string; version: number; before: string | null; after: string }[] = [];
   for (const t of (plan.github?.targets ?? []).filter((x) => x.move)) {
     const tLive = await liveBranchOf(t.slug, f, await tokenFor(t.slug, io));
-    await fastForward(t.slug, tLive, t.commit, f, io.token);
-    moved.push({ project: t.project, slug: t.slug, build: t.build, version: t.version, before: t.main, after: t.commit });
-    log.push(`${t.slug}: ${tLive} -> ${t.commit.slice(0, 7)} (build ${t.build} ${t.version} of ${p.name})`);
+    const m = await move(t.slug, tLive, t.commit, io, { kind: 'live', title: `${STUDIO_GOLIVE} build ${t.build} ${t.version} of ${p.name} (${t.commit.slice(0, 7)})`, ifDiverged: 'pr', log });
+    if (m.how === 'pr' && m.sha !== t.commit) await followBeta(t.slug, t.commit, m.sha, io);
+    moved.push({ project: t.project, slug: t.slug, build: t.build, version: t.version, before: t.main, after: m.sha });
+    log.push(`${t.slug}: ${tLive} -> ${m.sha.slice(0, 7)} (build ${t.build} ${t.version} of ${p.name}${m.how === 'pr' ? `, pull request #${m.pr}` : ''})`);
   }
   const before = plan.main?.sha ?? null;
   let after = before;
   const live = await liveBranchOf(slug, f, token);
   if (plan.commits.length && before !== plan.beta!.sha) {
     try {
-      await fastForward(slug, live, plan.beta!.sha, f, token);
-      after = plan.beta!.sha;
-      log.push(`${slug}: ${live} -> ${plan.beta!.short}`);
+      const m = await move(slug, live, plan.beta!.sha, io, { kind: 'live', title: `${STUDIO_GOLIVE} ${BETA} ${plan.beta!.short} of ${p.name}`, body: `Hawkes Studio takes ${p.name} live: ${live} gets ${BETA} ${plan.beta!.short}, the commit that was playtested. The owner approved this go live in Studio.`, ifDiverged: plan.github?.liveMergesOnly ? 'pr' : 'fail', log });
+      after = m.sha;
+      log.push(`${slug}: ${live} -> ${m.sha.slice(0, 7)}${m.how === 'pr' ? ` (pull request #${m.pr}, merging ${plan.beta!.short})` : ''}`);
+      // A merge commit on main: beta follows it when nothing new landed, so main and beta stay equal (same files).
+      if (m.how === 'pr' && m.sha !== plan.beta!.sha) await followBeta(slug, plan.beta!.sha, m.sha, io);
     } catch (e: any) {
-      if (!moved.length) throw new StudioError(`${e.message}: merge ${live} into ${BETA}, playtest ${BETA}, then go live.`, 409);
-      log.push(`warning: ${slug}'s ${live} wasn't fast-forwarded: ${e.message}`);
+      if (!moved.length) throw new StudioError(e?.diverged ? `${e.message}: merge ${live} into ${BETA}, playtest ${BETA}, then go live.` : String(e?.message ?? e), 409);
+      log.push(`warning: ${slug}'s ${live} wasn't moved: ${e.message}`);
     }
   }
   return { slug, before, after, targets: moved, log };
@@ -198,6 +225,6 @@ export async function rollbackOnGitHub(slug: string, to: string, message: string
   const [old, cur] = await Promise.all([must('GET', `/repos/${slug}/git/commits/${to}`), must('GET', `/repos/${slug}/git/commits/${before}`)]);
   if (old.tree?.sha === cur.tree?.sha) throw new StudioError(`${live} already has the files of ${to.slice(0, 7)}; nothing to roll back.`, 409);
   const c = await must('POST', `/repos/${slug}/git/commits`, { message, tree: old.tree.sha, parents: [before] });
-  await fastForward(slug, live, String(c.sha), f, token);
-  return { before, after: String(c.sha) };
+  const m = await move(slug, live, String(c.sha), io, { kind: 'rollback', title: message.split('\n')[0], body: message.split('\n').slice(1).join('\n').trim() || undefined });
+  return { before, after: m.sha };
 }

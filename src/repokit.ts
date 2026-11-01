@@ -13,13 +13,15 @@ import { accessFor, gh, repoSlug, githubStatus, userToken, appConfig, installUrl
 import { starterFiles, starterFor, liveUrlFor, STARTERS, type GameSeed } from './starters.ts';
 import { customerStudio } from './tenancy.ts';
 import { hookPointsAt, repointHook } from './handover.ts';
+import { apiOf, branchRules, rulesShape, rulesFix, describeRulesFix, applyRulesFix } from './golive-pr.ts';
 
-export type Step = 'hook' | 'repoint' | 'branches' | 'pages';
+export type Step = 'hook' | 'repoint' | 'branches' | 'pages' | 'rules';
 export const STEPS: Record<Step, string> = {
   hook: "add Hawkes Studio's push hook (.github/workflows/hawkes-studio.yml, on main, beta and dev) so Studio hears about pushes to beta and main",
   repoint: "point this repo's hook at this Studio: rewrite .github/workflows/hawkes-studio.yml (on main, and beta and dev where they have it) with this Studio's address, so pushes come here instead of the Studio it names now",
   branches: 'make the dev and beta branches from main (dev -> beta -> main)',
   pages: 'turn on GitHub Pages from GitHub Actions, so main is the live game',
+  rules: "let Studio go live on its own: main's rules keep it moving only through pull requests that pass its checks, but those pull requests need no reviewer (your Go live tap in Studio is the review) and Studio merges them itself; main still can't be deleted or rewritten, and its bypass list stays as it is",
 };
 
 /** A plan for an existing repo, or a new game (create the repo from a starter, then every step). */
@@ -116,8 +118,13 @@ export async function readiness(productId: string, userId?: string | null) {
     }
     // Classic branch protection (not a ruleset): reported as a warning, since it may only require reviews or checks.
     const classic = !mainRules?.blocked ? await gh(token, 'GET', `/repos/${slug}/branches/${encodeURIComponent(main)}`).then((b) => Boolean(b?.protected)).catch(() => false) : false;
-    if (classic) items.push({ id: 'golive', ok: true, what: `${main} has classic branch protection: if it restricts who may push or needs pull requests, going live is refused until this Studio's GitHub App may push it`, link: `https://github.com/${slug}/settings/branches` });
-    if (mainRules?.blocked) items.push({ id: 'golive', ok: false, what: `${main} is protected by the repository's rules (${mainRules.rules.join(', ')}): only those on the rule's bypass list may push it, so this Studio can't take it live yet`, by: 'person', fix: `On the rules page, add this Studio's GitHub App to the bypass list of the rule that restricts updates to ${main} (going live still needs the owner's Approve tap in Studio)`, link: mainRules.link });
+    if (classic) items.push({ id: 'golive', ok: true, what: `${main} has classic branch protection: going live goes through a pull request Studio merges itself, which works unless that protection requires a reviewer or limits who may push (moving it to a ruleset lets the setup card fix that)`, link: `https://github.com/${slug}/settings/branches` });
+    // Going live with no manual step (golive-pr.ts; J, 2026-11-01): Studio merges a pull request into main itself once
+    // its checks pass. Rules an app can't merge through (restrict updates, a required reviewer...) get the one-time
+    // "rules" step on the setup card; nobody adds anything to a bypass list.
+    const shape = rulesShape((await branchRules(apiOf(fetch, token), slug, main).catch(() => null)) ?? []);
+    if (!shape.viaPr) items.push({ id: 'golive', ok: false, what: `${main}'s rules stop Studio from going live on its own: ${shape.blockers.join('; ')}`, by: 'approve', step: 'rules', fix: STEPS.rules, link: `https://github.com/${slug}/settings/rules` });
+    else if (!shape.direct) items.push({ id: 'golive', ok: true, what: `Going live opens a pull request into ${main} and Studio merges it itself${shape.checks.length ? ` once ${shape.checks.join(', ')} pass${shape.checks.length > 1 ? '' : 'es'}` : ''}` });
     const beta = await exists(token, `/repos/${slug}/branches/beta`);
     const dev = await exists(token, `/repos/${slug}/branches/dev`);
     // On main but not beta: a push runs its own branch's workflow, so beta's pushes never reach Studio.
@@ -193,7 +200,7 @@ export async function describePlan(plan: Plan) {
     if (!access) blockers.push(`Studio can't reach ${plan.repo} on GitHub yet: install the GitHub App on it.`);
     return {
       title: `Set up ${plan.repo} for Hawkes Studio?`,
-      lines: [`Game: ${getProduct(plan.product).name} (${plan.product})`, ...plan.steps.map((s) => `• ${STEPS[s]}`), 'Nothing is pushed to main except these files, and nothing goes live.'],
+      lines: [`Game: ${getProduct(plan.product).name} (${plan.product})`, ...plan.steps.map((s) => `• ${STEPS[s]}`), ...(await rulesLines(plan, access?.token ?? null)), 'Nothing is pushed to main except these files, and nothing goes live.'],
       blockers,
     };
   }
@@ -226,7 +233,7 @@ export async function applyPlan(plan: Plan, { origin = null }: { origin?: string
     if (!access) throw new StudioError(`Studio can't reach ${plan.repo}: install the GitHub App on it.`, 409);
     const done: string[] = [];
     // Branches before the hook, so a hook skipped on a protected main still lands on beta and dev (2026-10-31 review).
-    const order: Step[] = ['branches', 'hook', 'repoint', 'pages'];
+    const order: Step[] = ['branches', 'hook', 'repoint', 'pages', 'rules'];
     for (const step of [...plan.steps].sort((a, b) => order.indexOf(a) - order.indexOf(b))) done.push(await runStep(access.token, plan.repo, step));
     return done;
   }
@@ -281,7 +288,7 @@ export async function pushRules(token: string, repo: string, branch: string): Pr
 /** GitHub's answer to a push its rules refused (422 "Repository rule violations"). */
 export const ruleRefusal = (e: any) => (e?.status === 422 || /: 422 /.test(String(e?.message ?? ''))) && /rule violation|protected ref|protected branch/i.test(String(e?.message ?? ''));
 /** What the owner changes so Studio may push a protected branch (rulesets and classic branch protection). */
-const rulesHelp = (repo: string) => `going live and pushes there need this Studio's GitHub App allowed through: add it to the bypass list of the rule (https://github.com/${repo}/settings/rules) or, for classic branch protection, to who may push (https://github.com/${repo}/settings/branches).`;
+const rulesHelp = (repo: string) => `going live brings it there through a pull request Studio merges itself (if main's rules need a reviewer or restrict updates, the setup card's "let Studio go live" step fixes that once: https://github.com/${repo}/settings/rules).`;
 
 /** A repo's hook workflow on a branch (its text), or null when it has none. */
 async function hookFile(token: string, repo: string, branch: string): Promise<string | null> {
@@ -300,9 +307,20 @@ async function hookTemplate(repo: string) {
   return files('web-3d', { id: 'x', name: 'x', pitch: '', owner: '', repo, studioUrl: studioBase() })['.github/workflows/hawkes-studio.yml'];
 }
 
+/** The exact ruleset changes the "rules" step would make, for the card. */
+async function rulesLines(plan: Extract<Plan, { kind: 'setup' }>, token: string | null): Promise<string[]> {
+  if (!plan.steps.includes('rules') || !token) return [];
+  try {
+    const info = await gh(token, 'GET', `/repos/${plan.repo}`);
+    const fix = await rulesFix(apiOf(fetch, token), plan.repo, String(info.default_branch ?? 'main'));
+    return [...describeRulesFix(fix).map((l) => `  ${l}`), ...fix.cannot.map((l) => `  ${l}`)];
+  } catch { return []; }
+}
+
 async function runStep(token: string, repo: string, step: Step, o: { pagesWorkflow?: boolean } = {}): Promise<string> {
   const info = await gh(token, 'GET', `/repos/${repo}`);
   const main = String(info.default_branch ?? 'main');
+  if (step === 'rules') return applyRulesFix(apiOf(fetch, token), await rulesFix(apiOf(fetch, token), repo, main));
   if (step === 'repoint') {
     // main first (it always gets the hook), then beta and dev where they have one: a push runs the workflow of its own branch.
     const done: string[] = [];
