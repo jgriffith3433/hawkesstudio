@@ -91,6 +91,20 @@ export function cellEnv(org: string, owner: { sub: string; email: string }, c = 
   };
 }
 
+/**
+ * A cell's size. 2 GiB ran out when several beta-site publishes overlapped (J's Studio restarted in a loop, 2026-11-01);
+ * J, 2026-11-01: "For now just scale the memory up." 4 GiB is the most Cloud Run gives one vCPU, so the CPU stays 1.
+ */
+export const CELL_LIMITS = { cpu: '1', memory: '4Gi' } as const;
+const mib = (v: unknown) => { const m = /^(\d+(?:\.\d+)?)(Mi|Gi|M|G)?$/.exec(String(v ?? '')); if (!m) return 0; const n = Number(m[1]); return m[2] === 'Gi' ? n * 1024 : m[2] === 'G' ? (n * 1e9) / 1048576 : m[2] === 'M' ? (n * 1e6) / 1048576 : m[2] === 'Mi' ? n : n / 1048576; };
+/** A container's limits with at least a cell's memory (never lowered; the CPU and anything else kept). */
+export function withCellMemory(limits: Record<string, string> | undefined): Record<string, string> {
+  const l = { ...(limits ?? {}) };
+  if (mib(l.memory) < mib(CELL_LIMITS.memory)) l.memory = CELL_LIMITS.memory;
+  if (!l.cpu) l.cpu = CELL_LIMITS.cpu;
+  return l;
+}
+
 /** The service body for a cell (Cloud Run Admin API v2 Service). */
 export function cellService(org: string, owner: { sub: string; email: string }, image: string, c = cellsConfig(), gen?: CellGen) {
   return {
@@ -107,7 +121,7 @@ export function cellService(org: string, owner: { sub: string; email: string }, 
       containers: [{
         image,
         env: Object.entries(cellEnv(org, owner, c, gen)).map(([name, value]) => ({ name, value })),
-        resources: { limits: { cpu: '1', memory: '2Gi' }, cpuIdle: false },
+        resources: { limits: { ...CELL_LIMITS }, cpuIdle: false },
       }],
     },
   };
@@ -143,6 +157,21 @@ export async function createCell(org: string, owner: { sub: string; email: strin
   return { service: name, url: serviceUrl(org, c), operation: op?.name ?? null, dry: dryRun(o) };
 }
 
+/**
+ * A cell's memory up to CELL_LIMITS now, on the image it already runs (a new revision; nothing else changes). Nothing
+ * when it's there already.
+ */
+export async function sizeCell(org: string, o: { dry?: boolean } = {}, c = cellsConfig()) {
+  const url = `${base(c)}/services/${serviceName(org, c)}`;
+  const s = dryRun(o) ? { template: { containers: [{}] } } : await gapi(url);
+  const ct = s.template?.containers?.[0] ?? {};
+  const limits = withCellMemory(ct.resources?.limits);
+  if (!dryRun(o) && limits.memory === ct.resources?.limits?.memory) return { service: serviceName(org, c), memory: limits.memory, changed: false };
+  const containers = (s.template?.containers ?? [{}]).map((x: any, i: number) => (i === 0 ? { ...x, resources: { ...(x.resources ?? {}), limits } } : x));
+  await call('PATCH', `${url}?updateMask=template.containers`, { template: { containers } }, o);
+  return { service: serviceName(org, c), memory: limits.memory, changed: true };
+}
+
 /** Deletes the service; the data stays in the bucket (hibernation). */
 export async function deleteCell(org: string, o: { dry?: boolean } = {}, c = cellsConfig()) {
   needConfig(c, o);
@@ -172,12 +201,15 @@ export async function serviceImage(service: string, c = cellsConfig()): Promise<
   return s?.template?.containers?.[0]?.image ?? null;
 }
 
-/** Puts a service on a new image (a new revision; everything else as it was). */
+/**
+ * Puts a service on a new image (a new revision; everything else as it was, except that a cell made smaller than
+ * CELL_LIMITS gets its memory raised: the roll after a deploy is what brings older cells up to size).
+ */
 export async function setImage(service: string, image: string, o: { dry?: boolean } = {}, c = cellsConfig()) {
   const url = `${base(c)}/services/${service}`;
   if (dryRun(o)) return call('PATCH', `${url}?updateMask=template.containers`, { template: { containers: [{ image }] } }, o);
   const s = await gapi(url);
-  const containers = (s.template?.containers ?? [{}]).map((ct: any, i: number) => (i === 0 ? { ...ct, image } : ct));
+  const containers = (s.template?.containers ?? [{}]).map((ct: any, i: number) => (i === 0 ? { ...ct, image, resources: { ...(ct.resources ?? {}), limits: withCellMemory(ct.resources?.limits) } } : ct));
   return call('PATCH', `${url}?updateMask=template.containers`, { template: { containers } }, o);
 }
 

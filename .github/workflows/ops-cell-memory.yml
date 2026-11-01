@@ -1,0 +1,50 @@
+# Changes one Cloud Run service's memory, nothing else (its image, CPU, scaling and env stay): a new revision.
+# J, 2026-11-01: "For now just scale the memory up." (his Studio restarted in a loop at 2 GiB). Only Studio's own
+# services (studio, studio-beta, studio-o-<org>, studio-beta-o-<org>), only up to 4Gi (the most for 1 vCPU).
+#   gh workflow run ops-cell-memory.yml --repo jgriffith3433/hawkesstudio --ref beta -f service=studio-o-<org> -f memory=4Gi
+name: ops-cell-memory
+on:
+  workflow_dispatch:
+    inputs:
+      service:
+        description: "The service: studio-o-<org> (a customer's Studio, J's own included) or studio-beta-o-<org>"
+        type: string
+      memory:
+        type: choice
+        options: [4Gi, 3Gi, 2Gi]
+        default: 4Gi
+permissions:
+  contents: read
+  id-token: write
+concurrency:
+  group: ops-cell-memory-${{ inputs.service }}
+  cancel-in-progress: false
+jobs:
+  memory:
+    name: Set memory
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check the inputs
+        env:
+          SERVICE: ${{ inputs.service }}
+        run: |
+          [[ "$SERVICE" =~ ^studio(-beta)?-o-[a-z0-9-]{1,40}$ ]] || { echo "service must be studio-o-<org> or studio-beta-o-<org>"; exit 1; }
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: projects/${{ vars.GCP_PROJECT_NUMBER }}/locations/global/workloadIdentityPools/github/providers/github-studio
+          service_account: studio-deployer@${{ vars.GCP_PROJECT }}.iam.gserviceaccount.com
+      - uses: google-github-actions/setup-gcloud@v2
+      - name: Set it
+        env:
+          SERVICE: ${{ inputs.service }}
+          MEMORY: ${{ inputs.memory }}
+          PROJECT: ${{ vars.GCP_PROJECT }}
+        run: |
+          region=$(gcloud run services list --project "$PROJECT" --filter="metadata.name=$SERVICE" --format='value(metadata.labels."cloud.googleapis.com/location")' | head -1)
+          [ -n "$region" ] || { echo "no service $SERVICE (a hibernated cell wakes at the new size)"; exit 0; }
+          before=$(gcloud run services describe "$SERVICE" --project "$PROJECT" --region "$region" --format='value(spec.template.spec.containers[0].resources.limits.memory)')
+          echo "$SERVICE ($region): $before -> $MEMORY"
+          [ "$before" = "$MEMORY" ] && { echo "already $MEMORY"; exit 0; }
+          gcloud run services update "$SERVICE" --memory "$MEMORY" --project "$PROJECT" --region "$region" --format=none
+          gcloud run services describe "$SERVICE" --project "$PROJECT" --region "$region" --format='value(spec.template.spec.containers[0].resources.limits.memory,status.latestReadyRevisionName)'
