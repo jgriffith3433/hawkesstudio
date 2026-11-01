@@ -190,11 +190,26 @@
     </div>`;
   }
 
+  // Walk-away mode in a customer's Studio (src/walkaway.ts; J, 2026-11-01: "Make Walk Away mode available for Team
+  // accounts"): the owner's own switch and GPU caps, on a plan with the PM (Team and up). Up top, not folded away.
+  function walkAwayBox(p) {
+    const locked = (window.studioMe?.entitlements?.locked ?? []).includes('pm');
+    const lock = (html) => `<span data-pro="pm">${html}</span>`;
+    const ro = (html) => (locked ? html.replace('<input', '<input readonly') : html);
+    return `<div class="set-box"><h3>🚶 Walk-away mode</h3>
+      <div class="meta">Let Studio keep building while you're away. The PM decides routine calls itself (a task that misses its acceptance criteria on beta gets another try, is parked, or gets one investigation when several miss the same way), ready changes merge into beta, and your Inbox keeps only what's yours: going live, rollbacks, GPU spending above your caps, failures after all tries, milestones and real direction questions. Every decision is in the PM log, with undo, and you get one summary a day. Going live always stays your call.${locked ? ' <b>On the Team plan and up</b> (it runs with the PM).' : ''}</div>
+      ${row('Walk-away mode', lock(bool('pm', 'walkAway', p.walkAway, 'on: Studio decides routine calls')), 'Off: every decision waits for you, as before.')}
+      ${row('GPU budgets Studio approves by itself: per task ($)', lock(ro(num('pm', 'walkAwayGpuPerTask', p.walkAwayGpuPerTask ?? 0, { step: 1 }))), '0: Studio never spends on GPU work by itself; every budget asks you. Above 0: in walk-away mode, a task whose GPU estimate is under this many dollars starts without asking.')}
+      ${row('…and at most per day ($)', lock(ro(num('pm', 'walkAwayGpuPerDay', p.walkAwayGpuPerDay ?? 0, { step: 5 }))), 'What Studio approves by itself in a day, in all. Anything beyond it is one card a day in your Inbox.')}
+    </div>`;
+  }
+
   function pmBox(p) {
+    const cu = window.studioMe?.customer;
     return `<div class="set-box"><h3>🗂 PM loop</h3>
       <div class="meta">Talk as your PM: it starts roadmap tasks and the worst bugs within these limits, and merges into beta what passes its checks (never live). Every change here is in the PM log, with undo.</div>
-      ${row('Walk-away mode', bool('pm', 'walkAway', p.walkAway, 'on: Studio decides routine calls'), 'On: Studio and Gen changes merge into main by themselves once typecheck, tests, the smoke check and CI are green (red CI goes back to its agent; protected files still wait for you), the PM decides criteria misses itself, and your Inbox keeps only going live, rollbacks, new GPU servers, spend above the caps, protected files, failures after all tries, milestones and real direction questions. Off: everything waits for you as before.')}
-      ${row('Walk-away GPU budgets per day ($)', num('pm', 'walkAwayGpuPerDay', p.walkAwayGpuPerDay ?? 25, { step: 5 }), 'In walk-away mode Studio approves GPU budgets under the per-task limit (Budgets) up to this much a day; above it, one card a day in your Inbox.')}
+      ${cu ? '' : row('Walk-away mode', bool('pm', 'walkAway', p.walkAway, 'on: Studio decides routine calls'), 'On: Studio and Gen changes merge into main by themselves once typecheck, tests, the smoke check and CI are green (red CI goes back to its agent; protected files still wait for you), the PM decides criteria misses itself, and your Inbox keeps only going live, rollbacks, new GPU servers, spend above the caps, protected files, failures after all tries, milestones and real direction questions. Off: everything waits for you as before.')}
+      ${cu ? '' : row('Walk-away GPU budgets per day ($)', num('pm', 'walkAwayGpuPerDay', p.walkAwayGpuPerDay ?? 25, { step: 5 }), 'In walk-away mode Studio approves GPU budgets under the per-task limit (Budgets) up to this much a day; above it, one card a day in your Inbox.')}
       ${row('PM loop', bool('pm', 'enabled', p.enabled, 'running'))}
       ${row('Delegated merges into beta', bool('pm', 'delegatedMerges', p.delegatedMerges))}
       ${row('Starts per day', num('pm', 'maxStartsPerDay', p.maxStartsPerDay))}
@@ -441,7 +456,7 @@
     const cu = window.studioMe?.customer;
     // A customer's Studio: what matters first (their plan, their AI, notifications), the rest folded away by topic
     // (J, 2026-10-30: "make settings page easier to deal with").
-    if (cu) $('#setBody').innerHTML = `<div class="set-grid">${billingBox(billing)}<div id="setAiBox"></div>${notifyBox(data.notify)}</div>
+    if (cu) $('#setBody').innerHTML = `<div class="set-grid">${billingBox(billing)}<div id="setAiBox"></div>${walkAwayBox(data.pm)}${notifyBox(data.notify)}</div>
       <details class="set-more"><summary>Agents and the PM: how much they do by themselves</summary><div class="set-grid">${agentsBox(data.agents)}${pmBox(data.pm)}</div></details>
       <details class="set-more"><summary>Advanced: models, tuning and the call voice</summary><div class="set-grid">${data.routing ? routingBox(data.routing, routing) : ''}${tuningBox(data.tuning)}${callBox(data.call)}</div></details>`;
     else $('#setBody').innerHTML = `<div class="set-grid">${billingBox(billing)}<div id="setCellsBox"></div>${cu ? '<div id="setAiBox"></div>' : brainBox(data.brain)}${data.routing ? routingBox(data.routing, routing) : ''}${tuningBox(data.tuning)}${cu ? '' : claudeBox(claude, data.brain)}${cu ? '' : agyBox(agyLogin)}<div id="svcBox">${servicesBox(services)}</div>${callBox(data.call)}${agentsBox(data.agents)}${pmBox(data.pm)}${notifyBox(data.notify)}${cu ? '' : costsBox(data.costs)}${cu ? '' : resourcesBox(data.resources)}</div>`;

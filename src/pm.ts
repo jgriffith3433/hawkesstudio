@@ -46,7 +46,8 @@ import { REF_LOCK } from './gitlock.ts';
 import { buildErrors, pickCulprit } from './buildblame.ts';
 import { curationLine } from './memory.ts';
 import { filesIn, type WorkShape } from './parallel.ts';
-import { WALK_DEFAULTS, WALK_AWAY_BY, walkAwayOn, type WalkAwaySettings } from './walkaway.ts';
+import { walkAwayDefaults, WALK_AWAY_BY, walkAwayOn, gpuAutoApproveLimit, type WalkAwaySettings } from './walkaway.ts';
+import { customerStudio } from './tenancy.ts';
 import { getFinding, updateFinding, takenBy } from './backlog.ts';
 import { waitsForCurrentBuild, staleReport, staleNote } from './bugreport.ts';
 import { notReached, slowNote, playTime, samplePace, whereTimeGoes, idleWatch, idleState, IDLE_SUBJECT } from './pace.ts';
@@ -74,23 +75,36 @@ export type PmSettings = {
   /** Minutes a ready change waits for a PM turn before the defaults apply. */
   graceMinutes: number;
 } & WalkAwaySettings;
-const DEFAULTS: PmSettings = { enabled: true, delegatedMerges: true, maxStartsPerDay: 8, maxConcurrent: 2, maxTries: 3, fixBugs: true, dailyHour: 9, graceMinutes: 15, ...WALK_DEFAULTS };
-export function pmSettings(): PmSettings {
+// The defaults are read each time (walkaway.ts: a customer's Studio starts with walk-away off and no GPU caps).
+const BASE = { enabled: true, delegatedMerges: true, maxStartsPerDay: 8, maxConcurrent: 2, maxTries: 3, fixBugs: true, dailyHour: 9, graceMinutes: 15 };
+const defaults = (): PmSettings => ({ ...BASE, ...walkAwayDefaults() });
+const stored = (): Partial<PmSettings> => {
   try {
-    return { ...DEFAULTS, ...JSON.parse(fs.readFileSync(FILE, 'utf8')) };
+    return JSON.parse(fs.readFileSync(FILE, 'utf8'));
   } catch {
-    return DEFAULTS;
+    return {};
   }
+};
+export function pmSettings(): PmSettings {
+  return { ...defaults(), ...stored() };
 }
+/** Dollar caps of walk-away mode: 0 or more, at most this. */
+const GPU_CAP_MAX = 1000;
 export function savePmSettings(patch: Partial<PmSettings>, by = 'J') {
+  const d = defaults();
   const cur = pmSettings();
   const next = { ...cur };
-  for (const k of Object.keys(DEFAULTS) as (keyof PmSettings)[]) {
+  const write: Record<string, unknown> = { ...stored() };
+  for (const k of Object.keys(d) as (keyof PmSettings)[]) {
     if (patch[k] === undefined) continue;
-    if (typeof DEFAULTS[k] !== typeof patch[k]) throw new StudioError(`${k} must be a ${typeof DEFAULTS[k]}`);
+    if (typeof d[k] !== typeof patch[k]) throw new StudioError(`${k} must be a ${typeof d[k]}`);
+    if ((k === 'walkAwayGpuPerDay' || k === 'walkAwayGpuPerTask') && !((patch[k] as number) >= 0 && (patch[k] as number) <= GPU_CAP_MAX)) throw new StudioError(`${k}: 0 to ${GPU_CAP_MAX} dollars`);
     (next as any)[k] = patch[k];
+    write[k] = patch[k];
   }
-  fs.writeFileSync(FILE, JSON.stringify(next, null, 2));
+  // Only what was ever set is written (the defaults stay the defaults: a customer's walk-away isn't saved "on" by
+  // saving another PM setting).
+  fs.writeFileSync(FILE, JSON.stringify(write, null, 2));
   const changed = (Object.keys(patch) as (keyof PmSettings)[]).filter((k) => patch[k] !== undefined && cur[k] !== next[k]);
   if (changed.length) logDecision('settings', null, null, `${by} set ${changed.map((k) => `${k} = ${next[k]}`).join(', ')}`, { kind: 'settings', before: Object.fromEntries(changed.map((k) => [k, cur[k]])) });
   if (patch.enabled === true) kick();
@@ -784,7 +798,7 @@ export async function startWork() {
   }
   const gpuWaits = tasksAwaitingGpu();
   // Walk-away's digest holds only what's above the caps (roadmap.ts gpuDigestTasks): never one within them, or $0.
-  const digest = walkAwayOn() && gpuWaits.length ? gpuDigestTasks({ threshold: (await import('./costs.ts')).costSettings().gpuAutoApprove }) : [];
+  const digest = walkAwayOn() && gpuWaits.length ? gpuDigestTasks({ threshold: await gpuAutoApproveLimit() }) : [];
   if (digest.length) {
     const st = state() as any;
     if (st.gpuDigest !== today()) {
@@ -2301,6 +2315,7 @@ export async function pmConversation() {
 /** The PM's instructions, sent with each PM turn (the events go below them). */
 export function pmPrompt(evs: PmEvent[], daily: boolean, inbox: string | null = null) {
   const s = pmSettings();
+  const customer = customerStudio();
   const cap = capacity();
   return `[Studio PM loop: this turn was started by Studio, not J. You are J's producer/PM. J sets direction with you in
 Talk; you work the roadmap and the backlog with the agents so he comes back to finished, verified work.]
@@ -2310,11 +2325,15 @@ ${evs.length ? evs.map((e) => `- ${e.kind}${e.subject ? ` (${e.subject})` : ''}:
 ${daily ? '\nThis is also the daily PM turn: triage the backlog and look over the roadmap.\n' : ''}
 J's Inbox: ${inbox ?? 'empty'}.
 Limits now: ${cap.active} agents working (at most ${s.maxConcurrent}), ${cap.started} of ${s.maxStartsPerDay} starts used today, ${s.maxTries} tries per task. Delegated merges into beta: ${s.delegatedMerges ? 'ON' : 'OFF (J approves merges)'}.
-${s.walkAway ? `Walk-away mode: ON (J, 2026-10-18: "I just want this system to build build build"). Decide routine calls yourself and
+${s.walkAway ? (customer ? `Walk-away mode: ON (J turned it on in Settings). Decide routine calls yourself and log them; J's Inbox is
+only for going live, rollbacks, GPU spending above J's caps ($${s.walkAwayGpuPerTask} a task, $${s.walkAwayGpuPerDay} a day), failures
+after all tries, milestones and real direction choices. Criteria misses on beta are decided by Studio (retry, park, or
+one investigation). Ready changes merge into beta, never live: going live is always J's.
+` : `Walk-away mode: ON (J, 2026-10-18: "I just want this system to build build build"). Decide routine calls yourself and
 log them; J's Inbox is only for going live, rollbacks, launching new GPU servers, spending above the caps, protected
 files, failures after all tries, milestones and real direction choices. Studio and Gen changes merge into main by
 themselves once green; criteria misses on beta are decided by Studio (retry, park, or one investigation).
-` : ''}
+`) : ''}
 Do, with the studio_pm, studio_roadmap and studio tools:
 1. Review each ready change (studio_change: the agent's summary, commits, diff size, preview; ready means its own checks
    passed and the pull request is open). Changes aren't playtested automatically: merge one into beta (studio_pm merge)

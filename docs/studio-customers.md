@@ -571,7 +571,23 @@ LLMs anyways"). Agents and the PM stay on Team and up.
   Examples: an agent fix in Backlog, the PM switch.
 - `data-admin`: hidden from members (going live, rollback, merges and closes, the PM switch, Settings).
 - `data-platform`: J's machinery, hidden in every customer's Studio (Library's content health, the Unity and local-run
-  options, the walk-away badge, Gen job links).
+  options, Gen job links).
+
+**Walk-away mode** (**built**, src/walkaway.ts; J, 2026-11-01: "Make Walk Away mode available for Team accounts"):
+- The owner turns it on in Settings → Walk-away mode (up top, not folded away). It is the PM's, so Team and up: below
+  that the switch and its caps show 🔒 and saving them answers 402 with the Upgrade to Team (settings.ts). Turning it
+  off is never refused.
+- **Off until they turn it on** (J's Studio keeps it on by default). Saving another PM setting never saves it as on:
+  pm.json holds only what was set, so the defaults stay the defaults.
+- On: the PM decides routine calls itself (criteria misses on beta: retry, park, or one investigation), ready changes
+  merge into beta as before, the Inbox keeps only the owner's things, and a daily summary of what it decided. There are
+  no Studio/Gen merges in a customer's Studio, and going live and rollbacks stay the owner's.
+- **Their own spending caps**: GPU budgets are approved by Studio only in walk-away mode, under `walkAwayGpuPerTask`
+  and up to `walkAwayGpuPerDay` (both 0 at first, so every budget asks the owner until they set them; never the
+  platform's costs.gpuAutoApprove). Above the caps, one card a day in their Inbox. From Talk, turning it on or raising
+  a cap needs the owner's own yes.
+- The header's 🚶 Walk-away badge shows while it's on.
+- Tests: `test/customer-walkaway.test.ts`.
 
 **Games with only an address** (no repository):
 - Nothing to sync.

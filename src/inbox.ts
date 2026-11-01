@@ -21,7 +21,7 @@ import {
   listQuestions, getQuestion, setQuestion, answeredSince, getTask, getItem, getMilestone, listMilestones, milestoneProgress, milestoneTasks, tasksAwaitingGpu,
   approveGpu, updateTask, estimateTask, addComment, gpuBudgetFor, gpuAutoApprovedToday, gpuDigestTasks, type Question, type Task,
 } from './roadmap.ts';
-import { walkAwayOn, walkAwaySettings } from './walkaway.ts';
+import { walkAwayOn, walkAwaySettings, gpuAutoApproveLimit } from './walkaway.ts';
 import { gate } from './acceptance.ts';
 import { listApprovals, type Approval } from './approvals.ts';
 import { contradictionSettled } from './memory-curate.ts';
@@ -251,7 +251,7 @@ export async function inbox({ tokens = false }: { tokens?: boolean } = {}): Prom
   const walk = walkAwayOn();
   const gpuWaits = tasksAwaitingGpu();
   // Only what's really above the caps (roadmap.ts gpuDigestTasks): $0 and what fits are Studio's, unpriced ones it prices.
-  const threshold = (await import('./costs.ts')).costSettings().gpuAutoApprove;
+  const threshold = await gpuAutoApproveLimit();
   const digest = walk && gpuWaits.length ? gpuDigestTasks({ threshold }) : [];
   if (digest.length) {
     const total = digest.reduce((a, x) => a + (x.amount ?? 0), 0);
@@ -418,7 +418,7 @@ export async function answerInbox(id: string, answer: string, by: string, opts: 
   if (id === 'gpu:digest') {
     jOnly('GPU budgets');
     // What the card showed: the tasks above the caps (roadmap.ts gpuDigestTasks), not every waiting one.
-    const waits = gpuDigestTasks({ threshold: (await import('./costs.ts')).costSettings().gpuAutoApprove }).map((x) => x.task);
+    const waits = gpuDigestTasks({ threshold: await gpuAutoApproveLimit() }).map((x) => x.task);
     const out: unknown[] = [];
     for (const t of waits) {
       const est = t.gpu?.estimate;
