@@ -27,7 +27,7 @@ const plan = (p: string) => { E.setCellPlan({ plan: p, status: 'active', maxGame
 
 test("off by default in a customer's Studio, with no GPU spending of its own", async () => {
   assert.equal(W.walkAwayOn(), false);
-  assert.deepEqual(W.walkAwaySettings(), { walkAway: false, walkAwayGpuPerDay: 0, walkAwayGpuPerTask: 0 });
+  assert.deepEqual(W.walkAwaySettings(), { walkAway: false, walkAwayGpuPerDay: 0, walkAwayGpuPerTask: 0, walkAwayCards: true });
   assert.equal(pm.pmSettings().walkAway, false);
   assert.equal(await W.gpuAutoApproveLimit(), 0, "not the platform's costs.gpuAutoApprove");
 });
