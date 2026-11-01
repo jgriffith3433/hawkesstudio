@@ -13,7 +13,7 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import type http from 'node:http';
 import { db, newId } from './db.ts';
-import { getProduct, loadProducts, StudioError, managedElsewhere, type BuildSpec, type Product } from './config.ts';
+import { getProduct, loadProducts, StudioError, managedElsewhere, setBuildMachine, type BuildSpec, type BuildMachine, type Product } from './config.ts';
 import { folderFilesAsync } from './sitestore.ts';
 
 db.exec(`CREATE TABLE IF NOT EXISTS builds (
@@ -402,7 +402,7 @@ async function viaGen(p: Product, b: BuildSpec, slug: string, sha: string, ref: 
   const { genRun, gen } = await import('./gen.ts');
   say('Hawkes Gen is building it (Unity WebGL, in the cloud)');
   const submit = (tok: string, r: typeof resume) => genRun('unity.build', p.id, {
-    github: { repo: slug, commit: sha, token: tok, ref }, ...(b.path ? { path: b.path } : {}), ...(b.method ? { method: b.method } : {}), target: 'web', out: 'artifact',
+    github: { repo: slug, commit: sha, token: tok, ref }, ...(b.path ? { path: b.path } : {}), ...(b.method ? { method: b.method } : {}), ...(b.machine ? { machine: b.machine } : {}), target: 'web', out: 'artifact',
   }, (j) => { if (j?.progress?.step || j?.status) say(`Hawkes Gen: ${j.progress?.step ?? j.status}`); }, 3 * 60 * 60 * 1000, r);
   let job: any = await submit(token, { job: resume.job, onSubmit: resume.onSubmit });
   // The repo's token lasts an hour and lives only in Gen's memory: a build that waited in Gen's queue, or a Gen that
@@ -423,7 +423,29 @@ async function viaGen(p: Product, b: BuildSpec, slug: string, sha: string, ref: 
   // holding it in memory (arrayBuffer, a Buffer copy, spawnSync's input) on top of the unpacked files (Cloud Run's disk
   // is memory too) went over a customer's Studio's 2 GiB, which restarted it mid-build until the run was stopped.
   await untarStream(await gen.request(`/files/${asset}`, { raw: true }), tmp);
-  return { ...(await folderOutput(tmp, tmp)), detail: job.result?.unity ? `Unity ${job.result.unity}` : undefined };
+  const learned = learnMachine(p.id, b, job.result);
+  if (learned) say(learned);
+  const ran = job.result?.machine?.name ? `on ${job.result.machine.name} (${job.result.machine.cpu} vCPU, ${job.result.machine.memoryGiB} GiB)` : '';
+  const detail = [job.result?.unity ? `Unity ${job.result.unity}` : '', ran, learned ?? ''].filter(Boolean).join('; ');
+  return { ...(await folderOutput(tmp, tmp)), detail: detail || undefined };
+}
+
+/**
+ * Hawkes Gen built it a size up after it ran out of memory (result.retried, result.machine: hawkesgen docs/unity-cloudrun.md,
+ * "Machine sizes"): that size becomes the build's own (config.ts setBuildMachine), so the next build starts there instead
+ * of running out of memory first. The line for the build's history, or null when nothing changed. Exported for the tests.
+ */
+export function learnMachine(productId: string, b: BuildSpec, result: any): string | null {
+  const ran = result?.machine;
+  const from = result?.retried?.from;
+  if (!result?.ok || !result?.retried || !ran?.name) return null;
+  // A size Gen names (s, m, l, xl) is saved by name; numbers it made up (4c12g) as { cpu, memoryGiB }.
+  const keep: BuildMachine = /^\d+c\d+g$/.test(String(ran.name)) ? { cpu: Number(ran.cpu), memoryGiB: Number(ran.memoryGiB) } : String(ran.name);
+  let where: string;
+  try { where = setBuildMachine(productId, b.id, keep); } catch (e: any) { return `ran on ${ran.name} after ${from} ran out of memory; couldn't save ${ran.name} as this build's size (${String(e?.message ?? e).slice(0, 120)})`; }
+  return where === 'none'
+    ? `ran on ${ran.name} after ${from} ran out of memory`
+    : `ran on ${ran.name} after ${from} ran out of memory; saved ${ran.name} as this build's size`;
 }
 
 /** actions: the workflow run's artifact (its contents are the build: index.html at the root for the web). */

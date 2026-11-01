@@ -325,6 +325,39 @@ test('a Unity build whose token Gen lost is submitted again once with a fresh to
   }
 });
 
+test('a Unity build\'s machine size: checked, sent to Gen; when Gen built it a size up, that size is saved as the build\'s own', async () => {
+  // Checked like the rest of a build (docs/builds.md): a size name or { cpu, memoryGiB } Cloud Run runs, Unity only.
+  assert.equal(C.checkBuilds([{ id: 'web', tool: 'unity', machine: 'S' }])[0].machine, 's');
+  assert.deepEqual(C.checkBuilds([{ id: 'web', tool: 'unity', machine: { cpu: 4, memoryGiB: 12 } }])[0].machine, { cpu: 4, memoryGiB: 12 });
+  assert.throws(() => C.checkBuilds([{ id: 'web', tool: 'unity', machine: { cpu: 2, memoryGiB: 16 } }]), /2 vCPU takes 1 to 8 GiB/);
+  assert.throws(() => C.checkBuilds([{ id: 'web', tool: 'npm', machine: 's' }]), /only Unity builds/);
+  const { db } = await import('../src/db.ts');
+  C.saveProduct({ id: 'game-size', name: 'Game size', engine: 'unity', repo: 'acme/game', builds: [{ id: 'web', tool: 'unity', path: 'Game', machine: 's', playtest: false }] } as any);
+  assert.equal(C.getProduct('game-size').builds![0].machine, 's', 'kept by saveProduct');
+  const before = globalThis.fetch;
+  globalThis.fetch = (async (input: any, init: any = {}) => {
+    const u = new URL(String(input instanceof Request ? input.url : input));
+    if (u.host === 'gen.test' && u.pathname === '/v1/jobs/j_unity') return Response.json({ id: 'j_unity', status: 'done', result: { ok: true, artifact: { asset: 'a_out', bytes: unityTar.length }, unity: '6000.3.7f1',
+      machine: { name: 'm', cpu: 4, memoryGiB: 16 }, machineAsked: 's', retried: { reason: 'out of memory', from: 's', to: 'm' } } });
+    return before(input, init);
+  }) as typeof fetch;
+  try {
+    const r = (await B.startBuild('game-size', {}))!;
+    await r.done;
+    assert.equal((await runOf(r.id)).status, 'done');
+    assert.equal(genCalls.at(-1).params.machine, 's', 'the size it asked for');
+    // Saved where the project's builds are kept (this cell's products file), so the next build starts on m.
+    assert.equal(C.getProduct('game-size').builds![0].machine, 'm');
+    const row = db.prepare("SELECT detail FROM builds WHERE product = 'game-size' ORDER BY started DESC").get() as any;
+    assert.match(row.detail, /Unity 6000\.3\.7f1; on m \(4 vCPU, 16 GiB\); ran on m after s ran out of memory; saved m as this build's size/);
+    assert.equal(B.buildsOf(C.getProduct('game-size'))[0].machine, 'm', 'the builds list (studio_project builds / get) shows it');
+  } finally {
+    globalThis.fetch = before;
+  }
+  // A build that ran on the size it asked for changes nothing.
+  assert.equal(B.learnMachine('game-size', { id: 'web', tool: 'unity' }, { ok: true, machine: { name: 'm', cpu: 4, memoryGiB: 16 } }), null);
+});
+
 test("a build waiting on its Gen job survives Studio's restarts: not counted, and the resume polls the same job", async () => {
   const { db } = await import('../src/db.ts');
   const P = await import('../src/pipeline.ts');
