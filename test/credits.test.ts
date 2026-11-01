@@ -198,3 +198,18 @@ test('STUDIO_GEN_CHARGES decides without asking; a job Gen says it charged is re
   delete process.env.STUDIO_GEN_CHARGES;
   Cr.resetGenCharges();
 });
+
+test("a job's end pushed by Gen (genevents.ts) is settled at once from the event, and a sweep beside it never refunds it twice", async () => {
+  const b0 = balance;
+  const [job] = await gen.submitMany([{ tool: 'image.generate', params: {}, project: 'mygame' }]);
+  assert.equal(balance, b0 - 6);
+  let push!: (type: string, data: any) => void;
+  const asked: string[] = [];
+  Cr.startCreditSettler(async (id) => { asked.push(id); return gen.job(id); }, 3600_000, { live: () => true, onEvent: (cb) => { push = cb; } });
+  jobState.set(job.id, 'failed');
+  push('job', { id: job.id, status: 'failed' });
+  await Cr.settleGenCharges((id) => gen.job(id));
+  assert.equal(balance, b0, 'given back once');
+  assert.equal(controlCalls.filter((x) => x.what === 'refund' && x.body.part === job.id).length, 1);
+  assert.deepEqual(asked, [], 'from the event itself: Gen not asked');
+});

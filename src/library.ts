@@ -17,7 +17,7 @@ import path from 'node:path';
 import http from 'node:http';
 import https from 'node:https';
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { gen, genProject } from './gen.ts';
+import { gen, genEvents, genProject } from './gen.ts';
 import { abs, getProduct, loadProducts, PROJECTS, StudioError, type Product } from './config.ts';
 import { spawn } from 'node:child_process';
 import { ensureWorkingCopy, flushDev } from './dev.ts';
@@ -190,7 +190,14 @@ function publishShared(p: Product, m: any, e: any, by: string) {
  */
 export function followPicks() {
   const timers = new Map<string, NodeJS.Timeout>();
-  return gen.watch(({ type, data }: { type: string; data: any }) => {
+  // On the process's one event stream (genevents.ts) when the server opened it; its own stream otherwise.
+  const watch = (cb: (e: { type: string; data: any }) => void) => {
+    if (!genEvents.started) return gen.watch(cb);
+    genEvents.hold('library-picks');
+    const off = genEvents.onEvent((type, data) => cb({ type, data }));
+    return () => { off(); genEvents.release('library-picks'); };
+  };
+  return watch(({ type, data }: { type: string; data: any }) => {
     if (type !== 'library' || data?.type !== 'version' || data.status !== 'current' || !data.entity) return;
     const id = String(data.entity);
     clearTimeout(timers.get(id));

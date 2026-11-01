@@ -19,7 +19,7 @@ import { notify, notifyInfo, saveNotifySettings, PUBLIC_URL } from './notify.ts'
 import { listChanges, getChange, startFix, startTask, approve, revise, close, agentSettings, saveAgentSettings, costToday, resumeChanges } from './agents.ts';
 import { startAssets } from './pipeline.ts';
 import { gitState, stopServers } from './local.ts';
-import { gen, genUp } from './gen.ts';
+import { gen, genEvents, genUp } from './gen.ts';
 import { listPreviews, buildPreview, previewUrl } from './previews.ts';
 import { listPlaytests, getPlaytest, fileLink, trends } from './playtests.ts';
 import { stepFrames, frameImage } from './frames.ts';
@@ -1093,13 +1093,16 @@ server.listen(listenPort, cloud ? '0.0.0.0' : '127.0.0.1', () => {
   void import('./auth.ts').then(({ ensureDefaultAdmin }) => { if (ensureDefaultAdmin()) console.log('[auth] created the first admin, admin@hawkesgen.ai (sign in once and set a password)'); });
   // An agent's smoke check of a changed Studio (agents.ts) starts the server and nothing else.
   if (process.env.STUDIO_SMOKE === '1') return;
+  // Gen's live events (genevents.ts): one stream for this process, so waits on Gen jobs end the moment the job changes
+  // instead of at their next poll. STUDIO_GEN_EVENTS=off: every wait asks Gen on its timer, as before.
+  if (process.env.STUDIO_GEN_EVENTS !== 'off') genEvents.start();
   // Customers' Studios (cells.ts): the control plane hears of orgs' subscriptions; a cell adds the sign-up's first game
   // and keeps its plan fresh from the control plane (entitlements.ts).
   void import('./cells.ts').then((C) => C.wireBilling()).catch((e) => console.warn(`[cells] ${e.message ?? e}`));
   void import('./config.ts').then((c) => c.applyOnboardingSeed()).then((g) => { if (g) console.log(`[onboarding] added the first game, ${g.name}`); }).catch((e) => console.warn(`[onboarding] ${e.message ?? e}`));
   void import('./entitlements.ts').then((E) => E.startPlanRefresh());
   // A cell gives back the credits of its Gen jobs that failed or were cancelled (credits.ts).
-  void Promise.all([import('./credits.ts'), import('./gen.ts')]).then(([C, G]) => C.startCreditSettler((id) => G.gen.job(id)));
+  void Promise.all([import('./credits.ts'), import('./gen.ts')]).then(([C, G]) => C.startCreditSettler((id) => G.gen.job(id), undefined, G.genEvents));
   void import('./cellside.ts').then((c) => c.startCellReports());
   // A deploy of J's Studio rolls the awake customer Studios onto it, in the background, a minute after start
   // (cells.ts followRoll; J, 2026-10-30: "Do roll on every deploy").

@@ -7,7 +7,8 @@
 //   2. the control plane takes that from the balance (POST /api/cells/self/credits/charge), or refuses with 402 and
 //      nothing is submitted: the refusal says how many it needs, how many are left, and where to add more
 //   3. the job is submitted; a job Gen hands back instead of making (reuse, the same key) is refunded at once
-//   4. settleGenCharges (every 2 minutes) gives back the credits of jobs that failed or were cancelled
+//   4. settleGenCharges gives back the credits of jobs that failed or were cancelled: at once on Gen's event for the
+//      job's end (genevents.ts), and every 2 minutes for the rest (every 5 while the event stream is open)
 // Jobs on the customer's own AI (their Claude: playtest reviews, llm.*) cost no credits: Anthropic bills them.
 // A Gen that refuses for lack of credits itself (402) is told the same way (genRefusal).
 // STUDIO_METER_GEN=0 turns charging off (a cell still on a control plane without this route).
@@ -22,6 +23,7 @@
 import crypto from 'node:crypto';
 import { db } from './db.ts';
 import { CreditsNeeded, outOfCredits } from './billing.ts';
+import { SAFETY_MS } from './genevents.ts';
 
 db.exec(`CREATE TABLE IF NOT EXISTS gen_charges (job TEXT PRIMARY KEY, charge TEXT NOT NULL, credits INTEGER NOT NULL, tool TEXT, created INTEGER NOT NULL, settled INTEGER)`);
 
@@ -118,10 +120,22 @@ export async function meteredSubmit(raw: Raw, path: string, o: any) {
   return r;
 }
 
-/** Gives back the credits of charged jobs that failed or were cancelled (and stops watching finished or old ones). */
-export async function settleGenCharges(getJob: (id: string) => Promise<any>, now = Date.now()) {
+/**
+ * Gives back the credits of charged jobs that failed or were cancelled (and stops watching finished or old ones). only:
+ * just these jobs (Gen's event for their end). One settling at a time, each row read again before its refund: an event's
+ * settle and the sweep never give the same credits back twice.
+ */
+let settling: Promise<unknown> = Promise.resolve();
+export function settleGenCharges(getJob: (id: string) => Promise<any>, now = Date.now(), only?: string[]) {
+  const run = settling.then(() => settleOnce(getJob, now, only));
+  settling = run.catch(() => {});
+  return run;
+}
+async function settleOnce(getJob: (id: string) => Promise<any>, now: number, only?: string[]) {
   const out = { refunded: [] as string[], settled: 0 };
-  const rows = db.prepare('SELECT * FROM gen_charges WHERE settled IS NULL ORDER BY created LIMIT 200').all() as { job: string; charge: string; credits: number; tool: string; created: number }[];
+  const rows = (only
+    ? only.map((job) => db.prepare('SELECT * FROM gen_charges WHERE settled IS NULL AND job = ?').get(job)).filter(Boolean)
+    : db.prepare('SELECT * FROM gen_charges WHERE settled IS NULL ORDER BY created LIMIT 200').all()) as { job: string; charge: string; credits: number; tool: string; created: number }[];
   for (const row of rows) {
     let j: any;
     try { j = await getJob(row.job); } catch (e: any) {
@@ -129,6 +143,7 @@ export async function settleGenCharges(getJob: (id: string) => Promise<any>, now
       continue;
     }
     if (j?.status === 'failed' || j?.status === 'cancelled') {
+      if ((db.prepare('SELECT settled FROM gen_charges WHERE job = ?').get(row.job) as any)?.settled) continue;
       try {
         await refund(row.charge, row.credits, row.job, `Hawkes Gen ${row.tool || 'job'} ${j.status}: credits back`);
         out.refunded.push(row.job);
@@ -140,10 +155,25 @@ export async function settleGenCharges(getJob: (id: string) => Promise<any>, now
   return out;
 }
 
-/** Settles every 2 minutes in a metered cell (server.ts at start). */
-export function startCreditSettler(getJob: (id: string) => Promise<any>, every = 2 * 60_000) {
+/**
+ * Settles in a metered cell (server.ts at start): a charged job's end, pushed by Gen (events: genevents.ts), is settled
+ * at once from the event; the sweep of every unsettled charge runs every 2 minutes while the stream is down, and every
+ * 5 minutes (SAFETY_MS) while it is open, only for an end the stream missed.
+ */
+export function startCreditSettler(getJob: (id: string) => Promise<any>, every = 2 * 60_000, events?: { live(): boolean; onEvent(cb: (type: string, data: any) => void): unknown }) {
   if (!meteringOn()) return;
-  setInterval(() => void settleGenCharges(getJob).catch((e) => console.warn(`[credits] settling: ${e.message}`)), every).unref();
+  const warn = (e: any) => console.warn(`[credits] settling: ${e.message}`);
+  let swept = 0;
+  setInterval(() => {
+    if (events?.live() && Date.now() - swept < SAFETY_MS() - 1000) return;
+    swept = Date.now();
+    void settleGenCharges(getJob).catch(warn);
+  }, every).unref();
+  events?.onEvent((type, j) => {
+    if (type !== 'job' || !j?.id || !['done', 'failed', 'cancelled'].includes(String(j.status))) return;
+    if (!db.prepare('SELECT 1 FROM gen_charges WHERE settled IS NULL AND job = ?').get(String(j.id))) return;
+    void settleGenCharges(async (id) => (id === j.id ? j : getJob(id)), Date.now(), [String(j.id)]).catch(warn);
+  });
 }
 
 /** Gen's own refusal for lack of credits (402), told the way Studio tells it; anything else unchanged. */
