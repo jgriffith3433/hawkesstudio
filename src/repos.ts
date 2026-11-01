@@ -6,7 +6,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
-import { PROJECTS, DATA, paths, addedRepoFolders, loadProducts, type Product } from './config.ts';
+import { PROJECTS, paths, addedRepoFolders, loadProducts, type Product } from './config.ts';
 import { gitAuthEnv, primeRepoToken, repoToken } from './ghtoken.ts';
 
 /** The GitHub repo of a folder under PROJECTS (its top-level folder in repoMap), for git's token. */
@@ -60,110 +60,13 @@ export type RepoResult = { folder: string; slug: string; action: 'cloned' | 'upd
   /** npm ci runs in the repo's web checkouts after the sync (installAfterSync): where, why, how long, the error. */
   install?: Install[];
   /** Uncommitted changes set aside (git stash) so a beta checkout could follow beta: the stash's commit, its message, the files. */
-  setAside?: { stash: string; label: string; files: string[]; /** When the stash failed: the tar of the files that were there and differ from GitHub (a local path, or gs:// on Cloud Run; none: nothing to save), how many were left out as unchanged from GitHub, and why it failed. */ backup?: string; unchanged?: number; why?: string; /** Clearing failed too, so the checkout was cloned again. */ recloned?: boolean } };
-
-/** Backups kept per repo folder: making one deletes that folder's older ones beyond these (no timer, no sweep). */
-export const KEEP_BACKUPS = 5;
-
-const backupName = (folder: string) => `${folder}-${new Date().toISOString().replace(/[:.]/g, '-')}.tar.gz`;
-const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-/** One folder's backups by name (newest last): `<folder>-<ISO time>.tar.gz`, never another folder that starts the same. */
-const ofFolder = (folder: string) => new RegExp(`^${escapeRe(folder)}-\\d{4}-\\d\\d-\\d\\dT[\\d-]+Z\\.tar\\.gz$`);
-
-/**
- * Backs the given repo files up to a .tar.gz (tar as a child process, the list on stdin: never spawnSync, never the
- * files in Node's memory). Only files that exist are listed (a deleted tracked file is in HEAD).
- *
- * Where it goes: on Cloud Run (STUDIO_STATE_BUCKET) the instance's disk is its memory, so tar's output is streamed
- * straight to the state bucket, under <prefix>backups/repos/ (one GCS_CHUNK in memory at a time, never a file on
- * /data): PH Origins' half-written checkout was 1,256 files, ~518 MiB as a .tar.gz, written to /data on a 4 GiB cell
- * beside its ~585 MiB checkout (2026-11-01). Elsewhere (J's PC, the AWS server) it is a file under <data>/backups/repos.
- * Either way only the newest KEEP_BACKUPS of a folder are kept.
- */
-export async function backupFiles(dir: string, folder: string, files: string[]): Promise<{ ok: true; file: string; bytes: number } | { ok: false; error: string }> {
-  const present = files.filter((f) => { try { fs.lstatSync(path.join(dir, f)); return true; } catch { return false; } });
-  const name = backupName(folder);
-  const { stateBucket, statePrefix } = await import('./cloudhost.ts');
-  const bucket = stateBucket();
-  if (bucket) {
-    if (!present.length) return { ok: false, error: 'none of the files exist to back up' };
-    return backupToBucket(dir, folder, present, bucket, `${statePrefix()}backups/repos/`, name);
-  }
-  const root = path.join(DATA, 'backups', 'repos');
-  const file = path.join(root, name);
-  try {
-    fs.mkdirSync(root, { recursive: true });
-    if (!present.length) return { ok: false, error: 'none of the files exist to back up' };
-    const r = await new Promise<{ ok: true; file: string; bytes: number } | { ok: false; error: string }>((resolve) => {
-      const done = trackCommand(`tar -czf ${file}`, dir);
-      const tar = spawn('tar', ['-czf', file, '--null', '-T', '-'], { cwd: dir, stdio: ['pipe', 'ignore', 'pipe'], windowsHide: true });
-      let err = '';
-      tar.stderr.on('data', (d) => { if (err.length < 2000) err += String(d); });
-      tar.stdin.on('error', () => {});
-      tar.on('error', (e) => { done(); resolve({ ok: false, error: e.message }); });
-      tar.on('close', (code) => {
-        done();
-        if (code === 0) resolve({ ok: true, file, bytes: fs.statSync(file).size });
-        else { fs.rmSync(file, { force: true }); resolve({ ok: false, error: tarError(err, code) }); }
-      });
-      tar.stdin.end(present.join('\0') + '\0');
-    });
-    if (r.ok) {
-      const mine = ofFolder(folder);
-      const old = fs.readdirSync(root).filter((n) => mine.test(n)).sort();
-      for (const n of old.slice(0, Math.max(0, old.length - KEEP_BACKUPS))) fs.rmSync(path.join(root, n), { force: true });
-    }
-    return r;
-  } catch (e: any) { return { ok: false, error: e.message }; }
-}
-
-const tarError = (err: string, code: number | null) => err.trim().replace(/\s+/g, ' ').slice(0, 300) || `tar exited ${code}`;
-
-/** tar's output piped into a resumable upload (gcp.ts gcsUploadStream); a tar that fails leaves no object behind. */
-async function backupToBucket(dir: string, folder: string, present: string[], bucket: string, prefix: string, name: string): Promise<{ ok: true; file: string; bytes: number } | { ok: false; error: string }> {
-  const { gcsUploadStream, gcsDelete, gcsList } = await import('./gcp.ts');
-  const key = `${prefix}${name}`;
-  const url = `gs://${bucket}/${key}`;
-  const done = trackCommand(`tar -cz | ${url}`, dir);
-  const tar = spawn('tar', ['-cz', '--null', '-T', '-'], { cwd: dir, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
-  let err = '';
-  let spawnError = '';
-  tar.stderr.on('data', (d) => { if (err.length < 2000) err += String(d); });
-  tar.stdin.on('error', () => {});
-  const exit = new Promise<number | null>((resolve) => {
-    tar.on('error', (e) => { spawnError = e.message; resolve(null); });
-    tar.on('close', (code) => resolve(code));
-  });
-  tar.stdin.end(present.join('\0') + '\0');
-  try {
-    let bytes: number;
-    try {
-      bytes = await gcsUploadStream(bucket, key, tar.stdout, 'application/gzip');
-    } catch (e: any) {
-      tar.kill('SIGKILL');
-      await exit;
-      return { ok: false, error: String(e.message ?? e).slice(0, 300) };
-    }
-    const code = await exit;
-    if (code !== 0) {
-      await gcsDelete(bucket, key).catch(() => {});
-      return { ok: false, error: spawnError || tarError(err, code) };
-    }
-    // Retention, now that the new one is safe: the folder's older backups beyond KEEP_BACKUPS go.
-    try {
-      const mine = ofFolder(folder);
-      const old = (await gcsList(bucket, `${prefix}${folder}-`)).map((o) => o.name).filter((n) => mine.test(n.slice(prefix.length))).sort();
-      for (const n of old.slice(0, Math.max(0, old.length - KEEP_BACKUPS))) await gcsDelete(bucket, n);
-    } catch (e: any) { console.warn(`[repos] ${folder}: pruning old backups failed: ${e.message ?? e}`); }
-    return { ok: true, file: url, bytes };
-  } finally { done(); }
-}
+  setAside?: { stash: string; label: string; files: string[]; /** When the stash failed: why. Real edits were first pushed to a rescue branch (rescueEdits; none: nothing differed from GitHub), then the checkout was reset to GitHub with no backup. */ why?: string; rescue?: Rescue; /** Clearing failed too, so the checkout was cloned again. */ recloned?: boolean } };
 
 /**
  * Of `files` (relative to `dir`, all present), those whose content is exactly what git has at the same path in one of
- * `revs` (HEAD, origin/beta): they are on GitHub, so backing them up saves nothing. A half-written checkout (a clone or
+ * `revs` (HEAD, origin/beta): they are on GitHub, so they are not edits worth rescuing. A half-written checkout (a clone or
  * switch cut off partway) is mostly these: PH Origins' 1,256 "changes" were its whole beta tree (2026-11-01). Anything
- * git can't vouch for (not in those trees, not a regular file, a failed hash) is not in the set, so it is backed up.
+ * git can't vouch for (not in those trees, not a regular file, a failed hash) is not in the set, so it is rescued.
  */
 export async function sameAsGit(dir: string, files: string[], revs: string[]): Promise<Set<string>> {
   const known = new Map<string, Set<string>>();
@@ -196,6 +99,58 @@ export async function sameAsGit(dir: string, files: string[], revs: string[]): P
   return same;
 }
 
+export type Rescue = { branch: string; pushed: boolean; error?: string; files: string[]; commits: number };
+
+/** A rescue branch's name: claude/rescue/<repo folder>-<UTC yyyymmdd-hhmmss>. */
+export const rescueBranch = (folder: string, at = new Date()) => `claude/rescue/${folder}-${at.toISOString().replace(/[-:]/g, '').replace('T', '-').slice(0, 15)}`;
+
+/**
+ * Before a dirty checkout whose stash failed is reset to GitHub: its real edits go to GitHub first, on a rescue branch
+ * (rescueBranch), so an agent's unpushed work is never lost and nothing is kept on the instance. Real edits: files
+ * there that differ from HEAD and origin/<want> (sameAsGit; a missing file is a half-written checkout's, not an edit),
+ * and commits on no remote branch. The commit is made in a throwaway index (the checkout's own index is what the stash
+ * just failed on, and the working tree is left alone). Null when there is nothing to rescue: no HEAD (a broken or
+ * half-written clone) or nothing that differs from GitHub. A failed commit or push comes back with its error; the
+ * caller still resets (a push that never works must not freeze the checkout), and a made commit stays on a local
+ * branch of that name until the checkout is cloned again.
+ */
+export async function rescueEdits(dir: string, folder: string, slug: string, want: string, files: string[], why: string): Promise<Rescue | null> {
+  const head = git(dir, ['rev-parse', '--verify', '--quiet', 'HEAD^{commit}']);
+  if (!head.ok || !head.out) return null;
+  const present = files.filter((f) => { try { fs.lstatSync(path.join(dir, f)); return true; } catch { return false; } });
+  const same = present.length ? await sameAsGit(dir, present, ['HEAD', `origin/${want}`]) : new Set<string>();
+  const edits = present.filter((f) => !same.has(f));
+  const commits = Number(git(dir, ['rev-list', '--count', 'HEAD', '--not', '--remotes']).out) || 0;
+  if (!edits.length && !commits) return null;
+  const branch = rescueBranch(folder);
+  const out: Rescue = { branch, pushed: false, files: edits, commits };
+  let tip = head.out;
+  if (edits.length) {
+    const indexFile = path.resolve(dir, git(dir, ['rev-parse', '--git-path', 'studio-rescue-index']).out || '.git/studio-rescue-index');
+    const env = { GIT_INDEX_FILE: indexFile };
+    const id = ['-c', 'user.name=Hawkes Studio', '-c', 'user.email=studio@hawkesgen.ai'];
+    try {
+      fs.rmSync(indexFile, { force: true });
+      const rt = await gitA(dir, ['read-tree', tip], undefined, slug, env);
+      if (!rt.ok) return { ...out, error: `making the commit: ${lastLine(rt.err)}` };
+      for (let i = 0; i < edits.length; i += 500) {
+        const add = await gitA(dir, ['--literal-pathspecs', 'add', '-A', '--', ...edits.slice(i, i + 500)], undefined, slug, env);
+        if (!add.ok) return { ...out, error: `making the commit: ${lastLine(add.err)}` };
+      }
+      const tree = await gitA(dir, ['write-tree'], undefined, slug, env);
+      if (!tree.ok) return { ...out, error: `making the commit: ${lastLine(tree.err)}` };
+      const msg = `studio: rescued from the server's ${want} checkout of ${folder} before resetting it to GitHub\n\ngit stash failed: ${why}\nFiles: ${edits.length}`;
+      const c = await gitA(dir, [...id, 'commit-tree', tree.out, '-p', tip, '-m', msg], undefined, slug);
+      if (!c.ok || !c.out) return { ...out, error: `making the commit: ${lastLine(c.err)}` };
+      tip = c.out;
+    } finally { fs.rmSync(indexFile, { force: true }); }
+  }
+  git(dir, ['branch', '--force', branch, tip]);
+  const p = await gitA(dir, ['push', '--quiet', 'origin', `${tip}:refs/heads/${branch}`], 5 * 60_000, slug);
+  if (!p.ok) return { ...out, error: `pushing: ${lastLines(p.err)}` };
+  return { ...out, pushed: true };
+}
+
 /**
  * The generated build output in a repo folder (products.json): for every product in it with a pre-deploy build or a
  * Unity build, play/, dist/ and Game/v<n>/ under its site folder, plus any deploy.output paths. A test on a path
@@ -224,7 +179,8 @@ export function buildOutputs(folder: string): (file: string) => boolean {
  * clean (local changes are never thrown away: the repo is "kept" and reported). The one exception: on the server, a
  * beta source checkout whose only changes are generated build output (buildOutputs: a leftover build) has them
  * discarded, named in the result, and is updated; any other uncommitted changes there are set aside in a git stash
- * (never deleted; Talk is told how to get them back) and it is updated, or "kept" as before when the stash fails. With `want`, a clean checkout is switched to that branch first when
+ * (Talk is told how to get them back) and it is updated; when the stash fails, real edits are pushed to a rescue branch
+ * on GitHub (rescueEdits) and the checkout is reset to GitHub with no backup, or cloned again when even that fails. With `want`, a clean checkout is switched to that branch first when
  * origin has it (the server keeps product source repos on beta).
  */
 /**
@@ -477,51 +433,37 @@ async function syncGit(folder: string, slug: string, branch: string, want?: stri
         setAside = { stash, label, files };
         cleaned = `set aside uncommitted changes in stash ${stash.slice(0, 7)} (${list}); `;
       } else {
-        // The stash failed (or left changes behind): say why in full, then back the files that are there up to a tar
-        // (backupFiles: the state bucket on Cloud Run, the data folder elsewhere) and only then put the checkout back to
-        // HEAD. No backup, no reset: the refusal stays. What GitHub already has holds nothing to lose: files git expects
-        // but that aren't there, and files exactly as they are in HEAD or origin/<want> (sameAsGit). A half-written
-        // checkout (a clone or switch killed partway) is all of those: PH Origins 2026-11-01, 1,256 "changes", its whole
-        // beta tree, tarred to ~518 MiB on a cell's in-memory disk. So with nothing else there, nothing is backed up.
+        // The stash failed (or left changes behind): say why in full, push any real edits to a rescue branch on GitHub
+        // (rescueEdits: GitHub is the store, nothing is kept on the instance), then put the checkout back to GitHub (HEAD)
+        // with no backup. A half-written checkout (a clone or switch killed partway: PH Origins 2026-11-01, 1,256
+        // "changes", its whole beta tree) has nothing that differs from GitHub, so it is reset with no branch.
         const why = s.ok ? 'it left uncommitted changes in the checkout' : lastLine(s.err).slice(0, 500);
-        console.warn(`[repos] ${folder}: git stash failed (${why}); backing the ${files.length} files up to a tar`);
-        const present = files.filter((f) => { try { fs.lstatSync(path.join(dir, f)); return true; } catch { return false; } });
-        const same = present.length ? await sameAsGit(dir, present, ['HEAD', `origin/${want}`]) : new Set<string>();
-        const toSave = present.filter((f) => !same.has(f));
-        let backup: string | undefined;
-        if (toSave.length) {
-          const b = await backupFiles(dir, folder, toSave);
-          if (!b.ok) {
-            console.warn(`[repos] ${folder}: tar backup failed: ${b.error}`);
-            return kept(`; setting them aside failed: git stash: ${why}; tar backup: ${b.error}`);
-          }
-          backup = b.file;
-          console.log(`[repos] ${folder}: backed up ${toSave.length} files to ${backup} (${(b.bytes / 1048576).toFixed(1)} MiB)`);
-        }
-        const leftOut = same.size ? `; ${same.size} unchanged from GitHub left out` : '';
-        const saved = backup ? `backed up to ${backup}${leftOut}`
-          : present.length ? `the ${present.length} files there are unchanged from GitHub (HEAD or origin/${want}), nothing to back up (a half-written checkout)`
-          : `none of the ${files.length} files were there to back up (a half-written checkout)`;
-        const unchanged = same.size || undefined;
+        const rescue = (await rescueEdits(dir, folder, slug, want!, files, why)) ?? undefined;
+        if (rescue?.pushed) console.log(`[repos] ${folder}: pushed ${rescue.files.length} edited files${rescue.commits ? ` and ${rescue.commits} local commits` : ''} to ${rescue.branch}`);
+        else if (rescue) console.warn(`[repos] ${folder}: rescue branch ${rescue.branch} failed (${rescue.error}); resetting anyway`);
+        const rescued = !rescue ? 'nothing differed from GitHub'
+          : rescue.pushed ? `edits pushed to ${rescue.branch}`
+          : `rescue branch ${rescue.branch} failed: ${rescue.error}`;
+        console.warn(`[repos] ${folder}: git stash failed (${why}); ${rescued}; resetting the ${files.length} files to GitHub`);
         const r = tracked.length ? await gitA(dir, ['--literal-pathspecs', 'restore', '--source=HEAD', '--staged', '--worktree', '--', ...tracked]) : { ok: true, err: '' };
         const c = r.ok && untracked.length ? await gitA(dir, ['--literal-pathspecs', 'clean', '-f', '-q', '--', ...untracked]) : r;
         if (!r.ok || !c.ok || git(dir, ['status', '--porcelain']).out) {
           const e = r.ok && c.ok ? 'changes remain' : lastLine((r.ok ? c : r).err);
-          // Last resort: the server's copy is only ever a clone of GitHub, and what was in it is saved: clone it again.
+          // Last resort: the server's copy is only ever a clone of GitHub: clone it again.
           const blocked = recloneBlocked(dir);
           if (blocked) {
-            console.warn(`[repos] ${folder}: ${saved} but couldn't clear the checkout (${e}), and won't clone it again: ${blocked}`);
-            return kept(`; setting them aside failed: git stash: ${why}; ${saved} but clearing the checkout failed: ${e}; not cloned again: ${blocked}`);
+            console.warn(`[repos] ${folder}: couldn't reset the checkout (${e}), and won't clone it again: ${blocked}`);
+            return kept(`; setting them aside failed: git stash: ${why}; ${rescued}; resetting to GitHub failed: ${e}; not cloned again: ${blocked}`);
           }
-          console.warn(`[repos] ${folder}: ${saved} but couldn't clear the checkout (${e}); cloning it again`);
+          console.warn(`[repos] ${folder}: couldn't reset the checkout (${e}); cloning it again`);
           const again = await reclone(folder, slug, branch, want!);
-          setAside = { stash: '', label, files, backup, unchanged, why, recloned: true };
-          cleaned = `git stash failed (${why}); ${saved} (${list}); clearing the checkout failed (${e}), so it was cloned again; `;
+          setAside = { stash: '', label, files, why, rescue, recloned: true };
+          cleaned = `git stash failed (${why}); ${rescued}; resetting to GitHub failed (${e}), so it was cloned again (${list}); `;
           return done(again, again.action === 'cloned' ? 'updated' : again.action);
         }
-        console.log(`[repos] ${folder}: git stash failed (${why}); ${saved}, then cleared them: ${files.join(', ')}`);
-        setAside = { stash: '', label, files, backup, unchanged, why };
-        cleaned = `git stash failed (${why}); ${backup ? `backed up uncommitted changes to ${backup}${leftOut}` : saved} (${list}); `;
+        console.log(`[repos] ${folder}: git stash failed (${why}); ${rescued}; reset to GitHub: ${files.join(', ')}`);
+        setAside = { stash: '', label, files, why, rescue };
+        cleaned = `git stash failed (${why}); ${rescued}; reset to GitHub, no backup (${list}); `;
       }
     }
   }
@@ -635,28 +577,21 @@ export const repoNotices = {
   post: (title: string, text: string) => { void import('./talk.ts').then(({ postNotice }) => postNotice(title, text)).catch(() => {}); },
 };
 
-/** How to list and restore a backup: a gs:// one (Cloud Run: the instance and its checkout are gone) from anywhere with gcloud, a local one on the server. */
-export function restoreSteps(backup: string, dir: string) {
-  if (backup.startsWith('gs://')) {
-    return `It is in Cloud Storage (the instance's checkout doesn't last). To get them back, from a machine signed in to gcloud with access to the bucket, into a checkout of the repo:\n\n\`\`\`\ngcloud storage cat ${backup} | tar -tzf -   # list\ngcloud storage cat ${backup} | tar -xzf - -C <your checkout>   # restore\n\`\`\``;
-  }
-  return `To get them back, on the server:\n\n\`\`\`\ntar -tzf ${backup}   # list\ntar -xzf ${backup} -C ${dir}   # restore\n\`\`\``;
-}
-
 /** One Talk notice for changes set aside in a stash: the files, the stash, and how to look at them or get them back. */
 function tellSetAside(dir: string, folder: string, want: string, a: NonNullable<RepoResult['setAside']>, r: RepoResult) {
   const list = a.files.slice(0, 20).join(', ') + (a.files.length > 20 ? `, and ${a.files.length - 20} more` : '');
   const g = `git -C ${dir}`;
   const after = r.action === 'updated' || r.action === 'current' ? `and the checkout follows ${want} again (${r.head ?? ''})` : `but it still couldn't follow ${want}: ${r.detail}`;
   if (!a.stash) {
-    const how = a.recloned ? 'cleared them by cloning the checkout again (clearing them in place failed)' : 'then cleared them';
-    const same = a.unchanged ? ` ${a.unchanged} of them were exactly as they are on GitHub (HEAD or ${want}), so they were left out of it.` : '';
-    const kept = a.backup
-      ? `Studio backed them up first and ${how}, ${after}.${same}\n\nFiles: ${list}\n\nThe backup: ${a.backup}\n\n${restoreSteps(a.backup, dir)}`
-      : a.unchanged
-        ? `The files that were there were exactly as they are on GitHub (a half-written checkout: a clone or switch that was cut off), so there was nothing to back up; Studio ${how.replace(/^then /, '')}, ${after}.\n\nFiles: ${list}`
-        : `None of those files were there (a half-written checkout: a clone or switch that was cut off), so there was nothing to back up; Studio ${how.replace(/^then /, '')}, ${after}.\n\nFiles: ${list}`;
-    repoNotices.post(`${folder}: stray files ${a.backup ? 'backed up' : 'cleared'} to follow ${want}`, `The server's ${want} checkout of ${folder} had uncommitted files that aren't build output. git stash failed (${a.why}). ${kept}`);
+    const how = a.recloned ? 'cloned the checkout again (resetting it in place failed)' : 'reset them to what GitHub has';
+    const x = a.rescue;
+    const edits = x ? `${x.files.length} edited file${x.files.length === 1 ? '' : 's'}${x.commits ? ` and ${x.commits} local commit${x.commits === 1 ? '' : 's'}` : ''}` : '';
+    const rescued = !x
+      ? 'Nothing there differed from GitHub (a half-written checkout, a clone or switch that was cut off, looks like this), so there was nothing to rescue.'
+      : x.pushed
+        ? `Studio first pushed the ${edits} to the branch ${x.branch} on GitHub, so nothing was lost: look at it there, merge what's worth keeping into ${want}, or delete the branch.`
+        : `Pushing the ${edits} to a rescue branch failed (${x.error}), so they were not saved to GitHub. ${a.recloned ? 'The checkout was cloned again, so they are gone from the server too.' : `Until the checkout is cloned again, the commit is on the local branch ${x.branch} in the server's checkout (${dir}).`}`;
+    repoNotices.post(`${folder}: stray files ${x?.pushed ? `pushed to ${x.branch}` : 'cleared'} to follow ${want}`, `The server's ${want} checkout of ${folder} had uncommitted files that aren't build output. git stash failed (${a.why}). ${rescued} Then Studio ${how}, with no backup, ${after}.\n\nFiles: ${list}`);
     return;
   }
   repoNotices.post(`${folder}: stray files set aside to follow ${want}`, `The server's ${want} checkout of ${folder} had uncommitted files that aren't build output, which kept it from following ${want}. Studio set them aside in a git stash (nothing was deleted), ${after}.\n\nFiles: ${list}\n\nThe stash: "${a.label}" (${a.stash.slice(0, 7)}).\n\nTo look at them or get them back, on the server:\n\n\`\`\`\n${g} stash list\n${g} stash show -p --include-untracked ${a.stash.slice(0, 7)}\n${g} stash pop stash@{N}   # N: its number in stash list (0 while it's the newest)\n\`\`\`\n\nIf it's work worth keeping, commit it to ${want} (from an agent's own worktree, not this checkout). If not, drop it: ${g} stash drop stash@{N}.`);

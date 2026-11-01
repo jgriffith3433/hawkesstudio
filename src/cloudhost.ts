@@ -25,8 +25,8 @@ export const statePrefix = () => {
 const STATE = () => `${statePrefix()}state/`;
 /**
  * What is synced: small files under DATA, never the database (Litestream's), detached processes' output (the jobs keep
- * their own in the bucket), worktrees, previews, scratch or logs of single runs, or repo backups (repos.ts backupFiles
- * streams them to <prefix>backups/ on Cloud Run; a stray one under DATA must not come back into memory on every start).
+ * their own in the bucket), worktrees, previews, scratch or logs of single runs, or old repo backups (Studio no longer
+ * makes them; a stray one left under DATA must not come back into memory on every start).
  */
 const SKIP = /^(studio\.db)(-wal|-shm|-journal)?$|^(detached|tmp|work|previews|logs|cache|npm-cache|talk-mcp|backups|claude-home\/(statsig|todos|shell-snapshots|ide|plugins))(\/|$)|litestream|\.lock$/;
 const MAX_BYTES = 20 * 1024 * 1024;
