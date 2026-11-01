@@ -37,7 +37,9 @@ export async function rpc(server: McpServer, msg: any): Promise<any | null> {
       if (!t) return fail(-32602, `Unknown tool ${params?.name}`);
       try {
         const out = await t.run(params.arguments ?? {});
-        return ok({ content: [{ type: 'text', text: typeof out === 'string' ? out : JSON.stringify(out, null, 1) }] });
+        // An object result also goes as structuredContent (MCP 2025-06-18), for clients that read fields, not text.
+        const structured = out && typeof out === 'object' && !Array.isArray(out) ? { structuredContent: out } : {};
+        return ok({ content: [{ type: 'text', text: typeof out === 'string' ? out : JSON.stringify(out, null, 1) }], ...structured });
       } catch (e: any) {
         return ok({ isError: true, content: [{ type: 'text', text: e.message ?? String(e) }] });
       }
