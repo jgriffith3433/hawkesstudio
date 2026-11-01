@@ -27,6 +27,23 @@ const tokenFor = async (slug: string, io: GitHubIO) => (io.token !== undefined ?
  */
 export const githubSlugOf = (p: Pick<Product, 'github' | 'build'>): string | null => (p.github && !p.build ? String(p.github) : null);
 
+/**
+ * A customer's project Studio can't go live for (cells): no GitHub repo, or no token for it (the Studio's GitHub App isn't
+ * installed on it). Then the plan is URL-only: Studio plays it where it is deployed and says what's missing. null when
+ * the project goes live through GitHub here (githubPlan / goLiveOnGitHub).
+ */
+export async function urlOnlyPlan(p: Product, io: GitHubIO = {}) {
+  const slug = githubSlugOf(p);
+  if (slug && (await tokenFor(slug, io))) return null;
+  const note = slug
+    ? `${p.name} is played and reviewed at ${p.live}. Studio can't reach its repository (${slug}) on GitHub: install your Studio's GitHub App on it (or connect GitHub), then agents fix bugs in it and Studio keeps a beta site and goes live from it.`
+    : `${p.name} has no repository here: Studio plays and reviews it at ${p.live}, and it goes live wherever you deploy it. Add its GitHub repository to get agent fixes, a beta site and going live from Studio.`;
+  const error = slug
+    ? `${p.name} can't go live from Studio yet: its repository (${slug}) isn't reachable with your Studio's GitHub App. Install the app on it and try again.`
+    : `${p.name} has no repository: it goes live where you deploy it, not from Studio.`;
+  return { plan: { product: p.id, name: p.name, urlOnly: true, repo: slug, live: p.live, beta: p.beta ?? null, canDeploy: false, blockers: [] as string[], warnings: [] as string[], note }, error };
+}
+
 /** A build that goes into another project's repo (publish.commit): where, the commit holding it, and whether main moves. */
 export type Target = { build: string; project: string; name: string; slug: string; commit: string; version: number; main: string | null; move: boolean };
 

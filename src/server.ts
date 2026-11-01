@@ -456,15 +456,14 @@ const server = http.createServer(async (req, res) => {
 
     // Go live (gated): the plan, then "DEPLOY <product>" fast-forwards main to the playtested beta (deploy.ts).
     m = /^\/api\/deploy\/([\w-]+)$/.exec(route);
-    // A customer's game: played where it is deployed. With no repository, or before GitHub is connected for customers
-    // (the GitHub App, STUDIO_GITHUB_APP), there is no beta here and nothing goes live from Studio: the plan says so.
-    if (m && (await import('./tenancy.ts')).customerStudio() && (!(await import('./config.ts')).getProduct(m[1]).repo || !process.env.STUDIO_GITHUB_APP)) {
-      const p = (await import('./config.ts')).getProduct(m[1]);
-      const note = p.repo
-        ? `${p.name} is played and reviewed at ${p.live}. Its repository (${p.repo}) is saved: once GitHub is connected for your Studio, agents fix bugs in it and Studio keeps a beta site and goes live from it.`
-        : `${p.name} has no repository here: Studio plays and reviews it at ${p.live}, and it goes live wherever you deploy it. Add its GitHub repository to get agent fixes, a beta site and going live from Studio.`;
-      if (method === 'GET') return send(res, 200, { product: p.id, name: p.name, urlOnly: true, repo: p.repo || null, live: p.live, beta: p.beta ?? null, canDeploy: false, blockers: [], warnings: [], note });
-      return send(res, 409, { error: `${p.name} has no repository: it goes live where you deploy it, not from Studio.` });
+    // A customer's game: played where it is deployed. With no GitHub repository, or none the Studio's GitHub App can
+    // reach (ghtoken.ts repoToken), there is no beta here and nothing goes live from Studio: the plan says what's missing.
+    const urlOnly = m && (await import('./tenancy.ts')).customerStudio()
+      ? await (await import('./deploy-github.ts')).urlOnlyPlan((await import('./config.ts')).getProduct(m[1]))
+      : null;
+    if (urlOnly) {
+      if (method === 'GET') return send(res, 200, urlOnly.plan);
+      return send(res, 409, { error: urlOnly.error });
     }
     if (m && method === 'GET') return send(res, 200, await deployPlan(m[1]));
     if (m && method === 'POST') {

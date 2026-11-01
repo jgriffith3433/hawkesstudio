@@ -227,3 +227,28 @@ test("rolling back a game also rolls back the website its build went into (what 
   const rows: any[] = db.prepare(`SELECT kind, product FROM deploys WHERE kind = 'rollback' AND product IN ('starsite', 'starfall') ORDER BY at`).all();
   assert.deepEqual(rows.map((r) => r.product).sort(), ['starfall', 'starsite']);
 });
+
+test("a cell's go live: a project its GitHub App reaches gets the real plan; one it can't reach, or with no repo, stays URL-only and says why", async () => {
+  const G = await import('../src/deploy-github.ts');
+  // The App (through the control plane) gives acme/webby a token: no URL-only short cut, the plan is GitHub's.
+  const webby = C.getProduct('webby');
+  assert.equal(await G.urlOnlyPlan(webby), null);
+  const plan = await D.deployPlan('webby');
+  assert.equal((plan as any).urlOnly, undefined);
+  assert.equal(plan.repo, 'acme/webby');
+  // A repo the App isn't installed on: no token, so URL-only, and the note names the repo and the missing install.
+  const lost = await G.urlOnlyPlan({ ...webby, id: 'lost', name: 'Lost', github: 'other/lost' } as any);
+  assert.ok(lost);
+  assert.equal(lost!.plan.urlOnly, true);
+  assert.equal(lost!.plan.canDeploy, false);
+  assert.equal(lost!.plan.repo, 'other/lost');
+  assert.match(lost!.plan.note, /can't reach its repository \(other\/lost\).*GitHub App/);
+  assert.doesNotMatch(lost!.plan.note, /once GitHub is connected/);
+  assert.match(lost!.error, /isn't reachable with your Studio's GitHub App/);
+  // No GitHub repository at all.
+  const bare = await G.urlOnlyPlan({ ...webby, id: 'bare', name: 'Bare', github: undefined, repo: undefined } as any);
+  assert.ok(bare);
+  assert.equal(bare!.plan.repo, null);
+  assert.match(bare!.plan.note, /has no repository here/);
+  assert.match(bare!.error, /has no repository/);
+});
