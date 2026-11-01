@@ -79,6 +79,7 @@ import { ensureGpuFor, needsGpu } from './gpustart.ts';
 import { walkAwayOn, WALK_AWAY_BY } from './walkaway.ts';
 import { brainId, brainLabel, brainSettings, harnessStopOf, isHarness, type Harness, type HarnessStop } from './brains.ts';
 import { harnessHeld, holdDetail, holdHarness, onHoldLifted, reviewHolds, LABEL as HARNESS_LABEL } from './harness-hold.ts';
+import { githubReachable } from './ghtoken.ts';
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS changes (
@@ -1879,7 +1880,7 @@ export function playtestChange(id: string, by = 'J') {
  */
 export async function syncMergedOutside() {
   const out: string[] = [];
-  if (!process.env.GITHUB_TOKEN) return out;
+  if (!githubReachable()) return out;
   for (const c of listChanges({ status: 'ready', limit: 100 })) {
     if (!c.pr || running.has(c.id)) continue;
     const pr = await github(`/repos/${c.slug}/pulls/${c.pr}`).catch(() => null);
@@ -3110,7 +3111,7 @@ async function cleanup(id: string, { deleteBranch = false } = {}) {
 /** After a daily run: start fixes for new findings worth fixing, within the day's budget. */
 export function autoFix(runId: string) {
   const s = agentSettings();
-  if (!s.enabled || !s.autoFix || !process.env.GITHUB_TOKEN) return [];
+  if (!s.enabled || !s.autoFix || !githubReachable()) return [];
   const started: string[] = [];
   const fresh = db.prepare(`SELECT * FROM findings WHERE status = 'open' AND last_run = ? ORDER BY CASE severity WHEN 'blocker' THEN 0 WHEN 'bug' THEN 1 ELSE 2 END, seen DESC`).all(runId) as any[];
   const byProduct = new Map<string, any>();

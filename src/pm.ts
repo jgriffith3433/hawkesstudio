@@ -777,7 +777,7 @@ let lastGpuSweep = 0;
 /** Starts what can start: J's reports, then roadmap tasks (highest priority first, then in order), then bugs, within the caps. Returns what it started. */
 export async function startWork() {
   const s = pmSettings();
-  if (!s.enabled || !process.env.GITHUB_TOKEN) return [];
+  if (!s.enabled || !(await import('./ghtoken.ts')).githubReachable()) return [];
   // The harness in use refuses to run (harness-hold.ts): starting would only burn tries. The hold resumes the loop.
   if (harnessHeld()) return [];
   const { agentSettings, startFix, DECIDED, ALREADY, STUDIO_FAILED_SQL } = await changes();
