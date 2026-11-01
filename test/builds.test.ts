@@ -279,3 +279,14 @@ test('a build row left "building" by a run that ended (stopped after restarts) n
   assert.doesNotMatch(run.steps[0].detail ?? '', /already building/);
   assert.equal(B.buildHistory('stuck')[0].status, 'ready');
 });
+
+test('a build archive is unpacked as it downloads, and a broken one says so', async () => {
+  const src = fs.mkdtempSync(path.join(os.tmpdir(), 'tar-src-'));
+  fs.mkdirSync(path.join(src, 'Game', 'StreamingAssets', 'aa'), { recursive: true });
+  fs.writeFileSync(path.join(src, 'Game', 'StreamingAssets', 'aa', 'catalog.json'), '{"ok":true}');
+  const tgz = spawnSync('tar', ['-czf', '-', '-C', src, '.']).stdout;
+  const out = fs.mkdtempSync(path.join(os.tmpdir(), 'tar-out-'));
+  await B.untarStream(new Response(tgz), out);
+  assert.equal(fs.readFileSync(path.join(out, 'Game', 'StreamingAssets', 'aa', 'catalog.json'), 'utf8'), '{"ok":true}');
+  await assert.rejects(B.untarStream(new Response(Buffer.from('not a tarball')), fs.mkdtempSync(path.join(os.tmpdir(), 'tar-bad-'))), /unpacking the build/);
+});
