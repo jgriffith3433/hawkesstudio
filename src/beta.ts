@@ -45,9 +45,11 @@ db.exec(`
   );
   CREATE INDEX IF NOT EXISTS deploys_product ON deploys(product, at);
 `);
+// A go live a person took past the playtest (deploy.ts PlaytestSkip, as JSON): who, when, which commit and why.
+try { db.exec('ALTER TABLE deploys ADD COLUMN skipped_playtest TEXT'); } catch { /* already there */ }
 export type DeployRow = {
   id: string; product: string; kind: 'deploy' | 'rollback'; repo: string; before: string | null; after: string; beta: string | null;
-  source: string | null; source_before: string | null; source_after: string | null; version: string | null; by: string | null; detail: string | null; rolled_back: string | null; at: number;
+  source: string | null; source_before: string | null; source_after: string | null; version: string | null; by: string | null; detail: string | null; rolled_back: string | null; at: number; skipped_playtest?: string | null;
 };
 export const listDeploys = (product: string, limit = 20) => db.prepare('SELECT * FROM deploys WHERE product = ? ORDER BY at DESC LIMIT ?').all(product, limit) as DeployRow[];
 

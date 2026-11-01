@@ -11,6 +11,7 @@ button { background: var(--panel2); border: 1px solid var(--line); border-radius
 button:hover { border-color: #3a4552; }
 button.primary { background: var(--accent); color: #062018; border-color: var(--accent); font-weight: 600; }
 button.small { padding: 2px 8px; font-size: 12px; }
+button.danger { background: transparent; color: var(--red, #e5484d); border-color: var(--red, #e5484d); font-weight: 600; }
 select { background: var(--panel2); border: 1px solid var(--line); border-radius: 7px; padding: 5px 8px; }
 header { display: flex; align-items: center; gap: 24px; padding: 12px 20px; border-bottom: 1px solid var(--line); position: sticky; top: 0; background: rgba(13,16,19,.94); backdrop-filter: blur(6px); z-index: 5; flex-wrap: wrap; }
 .brand { font-weight: 700; font-size: 16px; display: flex; align-items: center; gap: 8px; }
@@ -268,6 +269,7 @@ body.in-call .talk-input, body.in-call .talk-files, body.in-call #notifyBox { di
 .approval .ap-head { display: flex; flex-wrap: wrap; gap: 6px; align-items: baseline; font-size: 15px; }
 .approval ul { margin: 6px 0 6px 18px; padding: 0; line-height: 1.45; }
 .approval .ap-block { color: var(--red, #e5484d); margin: 6px 0; } .approval .ap-warn { color: var(--amber); margin: 6px 0; }
+.approval .ap-confirm { border: 1px solid var(--red, #e5484d); border-radius: 8px; padding: 8px 10px; margin: 8px 0; }
 .approval .ap-actions { display: flex; flex-wrap: wrap; gap: 10px; margin: 10px 0 4px; }
 .approval .ap-actions button { min-height: 44px; min-width: 120px; font-size: 15px; flex: 1 1 140px; }
 .approval .ap-close { margin-left: auto; min-width: 44px; min-height: 44px; padding: 0 8px; font-size: 20px; line-height: 1; background: none; border: none; color: var(--dim); }

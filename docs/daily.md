@@ -816,6 +816,14 @@ agent branch (fix/..., task/...) --ready: merged automatically (else the Merge b
 J's OK is an Approve / Deny card ("Approve / Deny cards" above), bound to the exact beta commit for a go live; the typed
 words are the fallback.
 
+**Go live anyway** (J, 2026-11-01): when the only thing stopping a go live is beta's commit not being playtested, the
+Go live card and its Approve card offer "Go live anyway" in place of "Can't approve yet", beside "Playtest this commit".
+Its confirm step names the commit; the tap (a signed-in admin's, on the dashboard) takes exactly that commit live, and
+who, when and which commit go on the go live's record (`deploys.skipped_playtest`), shown in the card's release history.
+Any other blocker still stops it. Talk, agents, walk-away and going live by itself never can: they don't decide cards,
+and `deploy()` goes past the playtest only for a card a person marked that way (`deploy.ts playtestSkipFor`). The
+health check and rollback after it are as usual.
+
 - **beta** is a branch in every repo agents change (the website repo for web products; for Unity games both the source
   repo and the website repo: sickofitgamewebsite, YoobaLandGame, theplacedepartmentwebsite). Studio makes it from main
   the first time an agent starts there (or the first beta build, for a website repo). Pushing beta deploys nothing.

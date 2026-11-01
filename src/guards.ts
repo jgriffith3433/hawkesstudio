@@ -6,7 +6,7 @@
 //   POST /api/deploy/<product>           J's latest message contains "DEPLOY <product>"
 //   POST /api/rollback/<product>         J's latest message contains "ROLLBACK <product>"
 //   POST /api/changes/<id>/approve       a Studio or Gen change (it merges into main, which deploys): "MERGE <id>"
-//   POST /api/approvals/<id>/approve|deny|dismiss never from the sandbox: J's tap on an Approve / Deny card (approvals.ts, which
+//   POST /api/approvals/<id>/approve|deny|dismiss|anyway never from the sandbox: J's tap on an Approve / Deny card (approvals.ts, which
 //                                        also refuses anything that isn't his dashboard page). The cards come first;
 //                                        the typed words above are the fallback.
 //   POST /api/agents/settings, /api/notify, /api/memory/seed, /api/broadcast/desk, /api/broadcast/live, /api/social/config|disconnect: never from the
@@ -96,7 +96,7 @@ export function guardRoute(route: string, method: string, conv: string | null): 
   // Cancelling and resuming (cancel.ts): Talk and the PM (a conversation behind the call, recorded by name), never an agent on its own.
   if (/^\/api\/(runs|jobs|changes)\/[\w-]+\/(cancel|resume)$/.test(route) && !conv) return 'Cancelling or resuming work is J\'s (the Activity panel) or Talk\'s, never an agent\'s own.';
   // Approve / Deny cards (approvals.ts): the sandbox may ask for one, never decide one (J's tap on the dashboard).
-  if (/^\/api\/approvals\/a_[0-9a-f]+\/(approve|deny|dismiss)$/.test(route)) return 'Approving, denying or closing a card is J\'s tap on the card in his dashboard, never Talk\'s, the PM\'s or an agent\'s.';
+  if (/^\/api\/approvals\/a_[0-9a-f]+\/(approve|deny|dismiss|anyway)$/.test(route)) return 'Approving, denying or closing a card is J\'s tap on the card in his dashboard, never Talk\'s, the PM\'s or an agent\'s.';
   if (route.startsWith('/api/claude/')) return 'Claude accounts (signing in, switching) are J\'s click in Settings, never Talk\'s, the PM\'s or an agent\'s.';
   if (route.startsWith('/api/antigravity/')) return 'Signing Antigravity in is J\'s click in Settings, never Talk\'s, the PM\'s or an agent\'s.';
   if (route === '/api/agents/settings' || route === '/api/notify'|| route === '/api/memory/seed' || route === '/api/broadcast/desk' || route === '/api/broadcast/live' || /^\/api\/social\/(config|disconnect)/.test(route)) return `${route} is changed from Studio's dashboard by J, not from a sandboxed agent.`;

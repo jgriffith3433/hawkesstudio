@@ -56,6 +56,19 @@ var PlayState = (() => {
   return { of, canPlay, ok, ICON };
 })();
 
+// The card's release history: recent go lives and rollbacks, with who took one live without a playtest of its commit
+// ("Go live anyway", deploy.ts PlaytestSkip). Pure (uses app.js's esc and ago when there), tested in test/golive-anyway.test.ts.
+var GoLiveHistory = (() => {
+  const e = (x) => (typeof esc === 'function' ? esc(x) : String(x ?? '').replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`));
+  const t = (at) => (typeof ago === 'function' ? ago(at) : new Date(at).toISOString());
+  const line = (d) => `${d.kind === 'rollback' ? 'Rolled back' : 'Went live'} ${t(d.at)}${d.by ? ` by ${d.by}` : ''}: ${d.before ?? '?'} → ${d.after}${d.rolledBack ? ' (rolled back since)' : ''}`;
+  function html(previous) {
+    if (!previous?.length) return '';
+    return `<p class="meta"><b>Release history</b></p>${previous.map((d) => `<div class="meta gl-hist">${e(line(d))}${d.skippedPlaytest ? ` · <span class="gl-fail">⚠️ without a playtest of ${e(String(d.skippedPlaytest.sha).slice(0, 7))} (${e(d.skippedPlaytest.by)}, ${e(t(d.skippedPlaytest.at))})</span>` : ''}</div>`).join('')}`;
+  }
+  return { html, line };
+})();
+
 if (typeof document !== 'undefined') (() => {
   const css = document.createElement('style');
   css.textContent = `
@@ -195,6 +208,8 @@ if (typeof document !== 'undefined') (() => {
     const showFx = FixResult.show(fx, { red: L.color === 'red' || offerPlay, fix: p.fix && FIX[p.fix] ? p.fix : offerPlay ? 'playtest' : null, okSince });
     // The fix "Play beta" plays this commit too: when it isn't played yet, the button says so.
     const fixLabel = fix === 'beta' && PlayState.canPlay(ps) ? FIX.playtest.label : fix && FIX[fix].label;
+    // Only the playtest stops it (deploy.ts playtestOnly): a person may go live anyway, beside "Playtest this commit".
+    const anyway = up && !run.length && !!p.playtestOnly;
     const fxRun = fx?.run ? ` · <a href="#runs" data-glrun="${esc(fx.run)}">the run</a>` : '';
     return `<div class="gl-card ${L.color}" data-p="${esc(p.product)}" data-key="gl:${esc(p.product)}">
       <h3><span class="gl-light ${L.color}" title="${esc(L.text)}"></span>${esc(p.name)}</h3>
@@ -205,7 +220,7 @@ if (typeof document !== 'undefined') (() => {
       ${run.map((o) => `<div class="gl-busy">⏳ ${esc(o.title)}${o.status === 'queued' ? ' (waiting its turn)' : o.step ? `: ${esc(o.step)}` : '…'}</div>`).join('')}
       ${fixRunning && !run.length ? `<div class="gl-busy">⏳ ${esc(FIX[fx.action].busy)}${fx.step ? `: ${esc(fx.step)}` : '…'}</div>` : ''}
       ${!showFx ? '' : fx.error ? `<div class="gl-done gl-fail">❌ ${esc(FIX[fx.action].label)} failed ${esc(ago(fx.errorAt))}: ${esc(String(fx.error).slice(0, 300))}</div>` : `<div class="gl-done">${fx.done.ok ? `✅ ${esc(FIX[fx.action].label)} finished ${esc(ago(fx.done.at))}${fxRun}` : `<span class="gl-fail">❌ ${esc(FIX[fx.action].label)} failed ${esc(ago(fx.done.at))}: ${esc(String(fx.done.detail ?? '').slice(0, 300))}</span>${fxRun}`}</div>`}
-      ${!run.length && recent ? `<div class="gl-done">${recent.status === 'done' ? `✅ ${esc(recent.kind === 'rollback' ? 'Rolled back' : 'Went live')} ${esc(ago(recent.finished))}${recent.result?.release ? ` · v${esc(recent.result.release.version)}: ${esc(recent.result.release.title ?? '')}` : ''}` : `❌ ${esc(recent.title)} failed ${esc(ago(recent.finished))}: ${esc(String(recent.error ?? '').slice(0, 200))}`}</div>` : ''}
+      ${!run.length && recent ? `<div class="gl-done">${recent.status === 'done' ? `✅ ${esc(recent.kind === 'rollback' ? 'Rolled back' : 'Went live')} ${esc(ago(recent.finished))}${recent.result?.skippedPlaytest ? ` without a playtest (${esc(recent.result.skippedPlaytest.by)})` : ''}${recent.result?.release ? ` · v${esc(recent.result.release.version)}: ${esc(recent.result.release.title ?? '')}` : ''}` : `❌ ${esc(recent.title)} failed ${esc(ago(recent.finished))}: ${esc(String(recent.error ?? '').slice(0, 200))}`}</div>` : ''}
       ${p.players ? `<div class="gl-players meta" title="Real players on the live site (Hawkes Analytics; bots and your own devices left out)">👥 ${esc(p.players)}</div>` : ''}
       ${up && p.release ? `<div class="gl-release meta">${p.release.existing ? 'What\'s new (already on beta, kept)' : 'Releases'} v${esc(p.release.version)}: ${esc(p.release.title ?? '(the notes are being written)')}${p.release.notes?.length ? `<ul>${p.release.notes.map((x) => `<li>${esc(x)}</li>`).join('')}</ul>` : ''}</div>` : ''}
       ${Object.entries(groups).map(([g, cs]) => `<div class="gl-group"><b>${esc(g)} (${cs.length})</b><ul>${cs.slice(0, 6).map((c) => `<li>${esc(plain(c.title))}</li>`).join('')}${cs.length > 6 ? `<li class="meta">and ${cs.length - 6} more</li>` : ''}</ul></div>`).join('')}
@@ -213,7 +228,8 @@ if (typeof document !== 'undefined') (() => {
       <div class="gl-buttons">
         ${fix ? `<button class="primary big" data-glfix="${esc(fix)}" title="${esc(FIX[fix].title)}"${fixRunning ? ' disabled' : ''}>${esc(fixRunning ? `${FIX[fix].busy}…` : fixLabel)}</button>` : ''}
         ${offerPlay && !fix ? `<button class="${ps.state === 'untested' ? 'primary ' : ''}big" data-admin data-glfix="playtest" data-guide="off" title="${esc(FIX.playtest.title)}"${fixRunning ? ' disabled' : ''}>${esc(ps.state === 'failed' ? 'Playtest this commit again' : FIX.playtest.label)}</button>` : ''}
-        ${up && !run.length && !fix ? `<button class="${offerPlay && ps.state === 'untested' ? '' : 'primary '}big" data-admin data-glgo="deploy" data-guide="off" title="Shows the Approve card for going live; your tap on Approve is what goes live">Go live</button>` : ''}
+        ${anyway ? `<button class="big danger" data-admin data-glgo="deploy" data-guide="off" title="Shows the go-live card: it takes this commit live without a playtest, after you confirm. Your name goes on the release history.">Go live anyway</button>`
+          : up && !run.length && !fix ? `<button class="${offerPlay && ps.state === 'untested' ? '' : 'primary '}big" data-admin data-glgo="deploy" data-guide="off" title="Shows the Approve card for going live; your tap on Approve is what goes live">Go live</button>` : ''}
         ${canRoll && !run.length ? `<button class="roll" data-admin data-glgo="rollback" data-guide="off" title="Shows the Approve card for rolling back to what was live before">Roll back</button>` : ''}
       </div>
       <div class="gl-slot"${card ? '' : ' data-patch-keep'}>${card ? approvals.html(card) : ''}</div>
@@ -224,6 +240,7 @@ if (typeof document !== 'undefined') (() => {
         ${site(p).length ? `<p class="meta">Website pages (${esc(p.site)}):</p>${site(p).map((c) => `<div class="meta"><code>${esc(c.short)}</code> ${esc(c.title)} · ${esc(c.author)} · ${esc(when(c.date))}</div>`).join('')}` : ''}
         ${siteOnly(p).length ? `<p class="meta">The live website has ${siteOnly(p).length} commit(s) its beta lacks: ${siteOnly(p).map((c) => esc(c.title)).join('; ')}</p>` : ''}
         <p class="meta">${esc(p.what)}</p>
+        ${GoLiveHistory.html(p.previous)}
         <div class="actions"><button class="small" data-glplan="${esc(p.product)}" data-guide="off" title="The full go-live plan: update and playtest beta, merge live's commits into beta, previous go lives, the typed DEPLOY fallback">Full plan and more options…</button></div>
       </details>
     </div>`;

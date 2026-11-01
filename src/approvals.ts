@@ -48,7 +48,13 @@ export const GITHUB_TTL_MS = () => Number(process.env.STUDIO_APPROVAL_GITHUB_TTL
 export const ttlFor = (kind: string) => (kind === 'github' ? GITHUB_TTL_MS() : TTL_MS());
 
 /** What J sees: a title, plain lines, links, blockers (approving is refused while there are any) and warnings. */
-export type Card = { title: string; lines: string[]; blockers: string[]; warnings: string[]; links: { label: string; url: string }[]; approve: string; deny: string };
+export type Card = { title: string; lines: string[]; blockers: string[]; warnings: string[]; links: { label: string; url: string }[]; approve: string; deny: string; skip?: Skip | null };
+/**
+ * A go-live card whose only blockers are beta's commit not being playtested: a person may still take it live with
+ * "Go live anyway" (decideApproval 'anyway', after a confirm step that names the commit). Walk-away, auto go-live, Talk
+ * and agents never can: they don't decide cards, and walk-away waits while a card has blockers.
+ */
+export type Skip = { sha: string; short: string; why: string[] };
 export type Approval = {
   id: string; kind: Kind; target: string; params: Record<string, any>; status: 'pending' | 'approving' | 'approved' | 'denied' | 'expired' | 'stale' | 'failed';
   card: Card; requested_by: string | null; conversation: string | null; created: number; expires: number;
@@ -102,7 +108,10 @@ async function describe(kind: Kind, target: string, params: Record<string, any>)
     return {
       // Bound to the playtested commit: a Studio release commit on top of it (only releases.json) isn't beta moving.
       bind: J([p.played?.sha ?? p.beta?.sha ?? null, p.main?.sha ?? null]),
-      card: { title: `Go live with ${p.name}?`, lines, blockers: p.blockers, warnings: p.warnings, links: [p.betaSite ? { label: 'Beta site', url: p.betaSite } : null, { label: 'Live site', url: p.live }].filter(Boolean) as Card['links'], approve: `Approve: go live`, deny: 'Deny' },
+      card: {
+        title: `Go live with ${p.name}?`, lines, blockers: p.blockers, warnings: p.warnings, links: [p.betaSite ? { label: 'Beta site', url: p.betaSite } : null, { label: 'Live site', url: p.live }].filter(Boolean) as Card['links'], approve: `Approve: go live`, deny: 'Deny',
+        skip: p.playtestOnly && (p.played ?? p.beta) ? { sha: (p.played ?? p.beta)!.sha, short: (p.played ?? p.beta)!.short, why: p.blockers } : null,
+      },
     };
   }
   if (kind === 'rollback') {
@@ -413,18 +422,18 @@ function cardChanged(conversation: string | null | undefined) {
 }
 
 /** J's tap on Approve or Deny. Runs the bound action on approve; tells the conversation either way. */
-export async function decideApproval(id: string, token: string, decision: string, req: http.IncomingMessage) {
+export async function decideApproval(id: string, token: string, decision: string, req: http.IncomingMessage, extra: { commit?: string } = {}) {
   try {
-    return await decide(id, token, decision, req);
+    return await decide(id, token, decision, req, extra);
   } finally {
     cardChanged((row(id) as any)?.conversation);
   }
 }
 
-async function decide(id: string, token: string, decision: string, req: http.IncomingMessage) {
+async function decide(id: string, token: string, decision: string, req: http.IncomingMessage, extra: { commit?: string } = {}) {
   const why = notJClick(req);
   if (why) throw new StudioError(`Only J approves or denies, with a tap on the card: ${why}.`, 403);
-  if (decision !== 'approve' && decision !== 'deny') throw new StudioError('decision: approve | deny');
+  if (decision !== 'approve' && decision !== 'deny' && decision !== 'anyway') throw new StudioError('decision: approve | deny | anyway');
   expire();
   const r = row(id);
   if (!r) throw new StudioError(`No approval ${id}`, 404);
@@ -434,7 +443,10 @@ async function decide(id: string, token: string, decision: string, req: http.Inc
   const expect = Buffer.from(String(r.token));
   const got = Buffer.from(String(token ?? ''));
   if (got.length !== expect.length || !crypto.timingSafeEqual(got, expect)) throw new StudioError('Wrong token for this card.', 403);
-  const by = 'J';
+  if (decision === 'anyway' && a.kind !== 'deploy') throw new StudioError('"Go live anyway" is only for going live.', 400);
+  // Who tapped: the signed-in admin's name (or J's own page without a session, as before).
+  const u = sessionUser(cookieToken(req));
+  const by = decision === 'anyway' && u ? (u.name || u.email) : 'J';
   if (decision === 'deny') {
     if (!claim(id, 'denied', by)) throw new StudioError('This card was just decided.', 409);
     if (a.kind === 'decision') await answerDecision(a, a.card.deny, by).catch(() => {});
@@ -458,10 +470,23 @@ async function decide(id: string, token: string, decision: string, req: http.Inc
     db.prepare(`UPDATE approvals SET status = 'stale', token = '', decided_by = 'Studio', decided_at = ?, result = ? WHERE id = ? AND status = 'pending'`).run(Date.now(), now.card.blockers.join(' ').slice(0, 500), id);
     throw new StudioError(`This card no longer applies: ${now.card.blockers.join(' ')}`, 409);
   }
+  // "Go live anyway": a person going live past beta not being playtested, and past nothing else. The confirm step on the
+  // card names the commit; the tap sends it back, so it is for exactly the commit they were shown.
+  if (decision === 'anyway' && now.card.blockers.length) {
+    const skip = now.card.skip;
+    if (!skip) throw new StudioError(`Can't go live anyway: not only the playtest stops it:\n- ${now.card.blockers.join('\n- ')}`, 409);
+    const c = String(extra.commit ?? '');
+    if (!c || !(c === skip.short || c === skip.sha)) throw new StudioError(`Confirm going live without a playtest of ${skip.short}: tap "Go live anyway" again.`, 409);
+    if (!claim(id, 'approving', by)) throw new StudioError('This card was just decided.', 409);
+    const rec = { by, at: Date.now(), sha: skip.sha, why: skip.why };
+    db.prepare('UPDATE approvals SET params = ?, card = ? WHERE id = ?').run(J({ ...a.params, skipPlaytest: rec }), J(now.card), id);
+    await carryOut({ ...a, params: { ...a.params, skipPlaytest: rec } }, by, `${by} went live without a playtest of ${skip.short}`);
+    return getApproval(id)!;
+  }
   if (now.card.blockers.length) throw new StudioError(`Can't approve yet:\n- ${now.card.blockers.join('\n- ')}`, 409);
   // One time: only one tap moves it on.
   if (!claim(id, 'approving', by)) throw new StudioError('This card was just decided.', 409);
-  await carryOut(a, by, 'J approved');
+  await carryOut(a, by, decision === 'anyway' ? `${by} approved (it was playtested meanwhile)` : 'J approved');
   return getApproval(id)!;
 }
 
