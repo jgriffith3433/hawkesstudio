@@ -363,7 +363,9 @@ export type ProductInput = {
   /** Where the build is played: a web address (web builds), or the build source for desktop games. */
   live?: string; beta?: string; build?: { source: 'url' | 'upload' | 'github'; target?: 'web' | 'linux' | 'proton' | 'windows'; exe?: string; repo?: string };
   repo?: string; about?: string; quality?: string; story?: string; contract?: boolean;
-  playtests?: { scenario?: string; mode?: 'site'; where: 'live'; device?: 'phone' }[];
+  /** where: 'live' plays its live address; 'beta' (or 'local') plays its beta (its published beta site or beta address),
+   *  for a project with one. peers: 2 to 4 real players on the same ?room= (a multiplayer scenario). */
+  playtests?: { scenario?: string; mode?: 'site'; where: 'live' | 'beta' | 'local'; device?: 'phone'; peers?: number }[];
   kind?: 'game' | 'app' | 'site'; versionPath?: string; repos?: { repo: string; role?: string }[]; checks?: string;
   reportOrigins?: string[]; testSignIn?: { url: string } | null;
   builds?: BuildSpec[];
@@ -507,10 +509,20 @@ export function saveProduct(input: ProductInput): Product {
   if (!live && !input.build && !input.repo && !builds.length) throw new StudioError('Give live (a web address), a repo, or how it is built', 400);
   const beta = input.beta ? String(input.beta).trim() : undefined;
   if (beta && !/^https:\/\/[^\s]+$/.test(beta)) throw new StudioError('beta: an https:// address', 400);
-  const playtests = (input.playtests?.length ? input.playtests : [{ scenario: 'smoke', where: 'live' as const }]).slice(0, 20).map((t) => ({
-    ...(t.mode === 'site' ? { mode: 'site' as const } : { scenario: String(t.scenario ?? 'smoke').slice(0, 60) }),
-    where: 'live' as const, ...(t.device === 'phone' ? { device: 'phone' as const } : {}),
-  }));
+  // A project with a beta (its own beta address, or a build Studio publishes as its beta site) may play there instead of
+  // live: a library has no live game, only its demo on beta (2026-11-01: Hawkes Net for Babylon's daily playtest loaded
+  // its GitHub repo page as "live" and tested nothing). peers: real players in one room, for multiplayer.
+  const hasBeta = Boolean(beta || builds.length || input.build);
+  const playtests = (input.playtests?.length ? input.playtests : [{ scenario: 'smoke', where: 'live' as const }]).slice(0, 20).map((t) => {
+    const onBeta = t.where === 'beta' || t.where === 'local';
+    if (onBeta && !hasBeta) throw new StudioError('playtests: where "beta" needs a beta (a beta address or a build Studio publishes)', 400);
+    const peers = Math.round(Number(t.peers) || 1);
+    return {
+      ...(t.mode === 'site' ? { mode: 'site' as const } : { scenario: String(t.scenario ?? 'smoke').slice(0, 60) }),
+      where: onBeta ? ('local' as const) : ('live' as const), ...(t.device === 'phone' ? { device: 'phone' as const } : {}),
+      ...(peers > 1 ? { peers: Math.min(4, peers) } : {}),
+    };
+  });
   // A project's own extras (see Product): checked here, kept only when given.
   const kind = input.kind ?? 'game';
   if (!['game', 'app', 'site'].includes(kind)) throw new StudioError('kind: game, app or site', 400);
