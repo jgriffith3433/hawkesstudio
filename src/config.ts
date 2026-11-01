@@ -181,8 +181,20 @@ export function loadProducts(): Product[] {
   return [...all, ...addedGames().filter((p) => !ids.has(p.id)).map(asAddedGame)];
 }
 
+// One folder map per version of the files it reads. loadProducts runs on most requests and asks it for every project:
+// re-reading and parsing the products file each time blocked a customer's Studio for up to 4 s at a time, and Cloud Run
+// stopped sending it requests (2026-11-01).
+let foldersMemo: { sig: string; out: Record<string, string> } | null = null;
+const fileSig = (f: string) => { try { const s = fs.statSync(f); return `${s.ino}:${s.mtimeMs}:${s.size}`; } catch { return '-'; } };
+
 /** The folder an added game's repo is cloned into (beside the others), and its GitHub repo, for repos.ts repoMap. */
 export function addedRepoFolders(): Record<string, string> {
+  const sig = [customerStudio(), paths.products, fileSig(paths.products), paths.games, fileSig(paths.games)].join('|');
+  if (foldersMemo?.sig !== sig) foldersMemo = { sig, out: readRepoFolders() };
+  return { ...foldersMemo.out };
+}
+
+function readRepoFolders(): Record<string, string> {
   const own = customerStudio() ? {} : JSON.parse(fs.readFileSync(paths.products, 'utf8')).repos ?? {};
   const taken = new Set(Object.keys(own).map((k) => k.toLowerCase()));
   const out: Record<string, string> = {};
@@ -230,10 +242,10 @@ export function repoSlugOf(p: Pick<Product, 'repo' | 'github'>): string | null {
 export function asAddedGame(p: Product): Product {
   const g = asCustomerGame(p);
   const slug = repoSlugOf(p);
-  const folder = slug ? Object.entries(addedRepoFolders()).find(([, s]) => s === slug)?.[0] : undefined;
+  const folders = slug ? addedRepoFolders() : {};
+  const folder = slug ? Object.entries(folders).find(([, s]) => s === slug)?.[0] : undefined;
   if (!folder) return g;
   // A project's other repositories by folder (agents.ts repoForTarget turns a task's target into one of them).
-  const folders = addedRepoFolders();
   const extra = (p.repos ?? []).map((r) => ({ ...r, folder: Object.entries(folders).find(([, s]) => s === r.repo)?.[0] })).filter((r) => r.folder);
   return {
     ...g, repo: folder, site: folder, github: slug!, ...(extra.length ? { repos: extra } : {}),

@@ -28,6 +28,7 @@ import { listDev, devStatus, startDev, stopDev, flushDev, resolveDev, sinceLive,
 import { startFronts } from './dev-front.ts';
 import { selfDeploys, selfBusy } from './selfdeploy.ts';
 import { originOf, tagChange, startFollowups } from './followup.ts';
+import { noteServed } from './served.ts';
 import { activity, stageOf } from './activity.ts';
 import { listReports as listBugReports, reportShot, startReportFollowups } from './bugreport.ts';
 import { shareAgyLogin } from './antigravity-login.ts';
@@ -89,6 +90,8 @@ async function overview() {
 }
 
 const server = http.createServer(async (req, res) => {
+  // Cloud Run still sends this instance requests (the lease's heartbeat says so; this container's own calls don't count).
+  if (!/^(::ffff:)?127\.|^::1$/.test(req.socket.remoteAddress ?? '')) noteServed();
   const url = new URL(req.url ?? '/', `http://127.0.0.1:${PORT}`);
   const route = url.pathname;
   const method = req.method ?? 'GET';
