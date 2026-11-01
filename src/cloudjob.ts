@@ -13,7 +13,8 @@
 //        in.bundle  commits of the workspace that GitHub doesn't have (git bundle HEAD --not --remotes)
 //        in.pack    its uncommitted files, Claude Code's session folder for the workspace (so --resume works) and
 //                   files the command names by absolute path outside it (an --mcp-config)
-//   out  log-NNNNNN, err-NNNNNN  output chunks, every ~2 s
+//   out  log-NNNNNN, err-NNNNNN  output chunks, every ~2 s (Talk's: as they're written, spec.flushMs); after each upload
+//                   the runner nudges Studio (POST /api/cloudjobs/<unit>/nudge), which reads them at once (kickCloudJob)
 //        out.bundle, out.pack, exit.json  what the pass committed and left uncommitted, the session, then the exit
 //   stop           Studio's Stop (a time limit, J's Stop): the runner ends the command
 // The workspace runs at the same absolute path in the job, so Claude Code's session folders (named after the path) match.
@@ -23,6 +24,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import zlib from 'node:zlib';
+import { EventEmitter } from 'node:events';
 import { spawnSync } from 'node:child_process';
 import { DATA, ROOT } from './config.ts';
 import { runToken } from './jobbroker.ts';
@@ -203,10 +205,34 @@ const local = (unit: string, ext: string) => path.join(DIR(), `${unit}.${ext}`);
 const key = (unit: string, name: string) => `jobs/${unit}/${name}`;
 
 type Spec = { file: string; args: string[]; cwd: string; env: NodeJS.ProcessEnv };
-type Follow = { unit: string; execution: string | null; seen: { log: number; err: number }; done: boolean; error?: string; stopAsked?: number };
+/** kick: read the bucket now (a nudge came); pushed: nudges have come for this job, so the timed look is a safety net. */
+type Follow = { unit: string; execution: string | null; seen: { log: number; err: number }; done: boolean; error?: string; stopAsked?: number; kick?: (nudged: boolean) => void; pushed?: boolean };
 const follows = new Map<string, Follow>();
 /** How many jobs Studio is following now (cloudhost.ts keeps the instance up while there are any). */
 export const following = () => [...follows.values()].filter((f) => !f.done).length;
+
+/**
+ * "<unit>" each time a job's local files changed (new output, its exit): DetachedChild reads them at once instead of on
+ * its next look (detach.ts).
+ */
+export const jobFiles = new EventEmitter();
+jobFiles.setMaxListeners(0);
+
+/**
+ * The job's runner wrote new output, or its exit (cloudjob-run.ts nudges Studio over HTTP after each upload: POST
+ * /api/cloudjobs/<unit>/nudge): its follower looks now. A stop asked for (stopDetached) does the same. False when Studio
+ * isn't following that job (another instance is, or it's over). nudged false: Studio's own reason to look (a stop), which
+ * says nothing about whether the runner nudges.
+ */
+export function kickCloudJob(unit: string, { nudged = true }: { nudged?: boolean } = {}) {
+  const f = follows.get(unit);
+  if (!f || f.done || !f.kick) return false;
+  f.kick(nudged);
+  return true;
+}
+
+/** Talk's answers stream: their runner uploads output as it comes (at most every this often) instead of every ~2 s. */
+const TALK_FLUSH_MS = () => Number(process.env.STUDIO_JOB_TALK_FLUSH_MS) || 250;
 
 /**
  * Starts a command as a Cloud Run job execution: packs and uploads its inputs, then runs the job. Returns at once; what
@@ -257,6 +283,8 @@ export function startCloudJob(unit: string, spec: Spec, o: { gitToken?: string |
       }
       await r.put(key(unit, 'spec.json'), JSON.stringify({
         file: spec.file, args: spec.args, cwd, env, sessions,
+        // Talk's answer (detach.ts names its unit hawkes-talk-<conversation>-…): its output goes up as it comes.
+        ...(unit.startsWith('hawkes-talk-') ? { flushMs: TALK_FLUSH_MS() } : {}),
         git: ws ? { head: ws.head, branch: ws.branch, remote: ws.remote, bundle: Boolean(ws.bundle), token: gitToken, ...(big ? {} : { partial: false, lfs: true }) } : null,
       }));
       f.execution = await r.start(unit);
@@ -294,6 +322,7 @@ function end(f: Follow, exit: { code: number | null; signal: string | null; erro
     fs.writeFileSync(local(f.unit, 'exit.tmp'), JSON.stringify({ ...exit, at: Date.now() }));
     fs.renameSync(local(f.unit, 'exit.tmp'), local(f.unit, 'exit'));
   } catch { /* the folder went */ }
+  jobFiles.emit(f.unit);
   setTimeout(() => follows.delete(f.unit), 60_000).unref();
 }
 
@@ -308,6 +337,7 @@ async function pull(f: Follow, r: JobRunner) {
       if (!b) break;
       fs.appendFileSync(local(f.unit, kind), b);
       f.seen[kind] = i;
+      jobFiles.emit(f.unit);
     }
   }
   return names;
@@ -319,13 +349,30 @@ async function pull(f: Follow, r: JobRunner) {
  */
 export const JOB_UNKNOWN_MS = () => Number(process.env.STUDIO_JOB_UNKNOWN_MS) || 10 * 60_000;
 
-/** Polls the job until its exit.json, then applies its workspace and session and writes the local exit. */
+/**
+ * A job whose runner has been nudging Studio (pushed): the timed look is only the safety net for a nudge that never
+ * came (the network, another instance got it, a runner from before nudges), Cloud Run's own view of the execution
+ * (killed, out of memory: no exit.json ever comes) and the stop. Before the first nudge it is STUDIO_JOB_POLL_MS.
+ */
+const JOB_SAFETY_MS = (every: number) => Number(process.env.STUDIO_JOB_SAFETY_MS) || Math.max(every, 5000);
+
+/**
+ * Follows the job until its exit.json, then applies its workspace and session and writes the local exit. It looks when
+ * the runner nudges it (kickCloudJob: new output is in the bucket) and, as a safety net, on a timer: every
+ * STUDIO_JOB_POLL_MS until the first nudge, then every JOB_SAFETY_MS. One look at a time; a nudge during a look makes
+ * another right after it.
+ */
 function follow(f: Follow, cwd: string, env: NodeJS.ProcessEnv, every = Number(process.env.STUDIO_JOB_POLL_MS) || 2000) {
   const r = runnerFor();
   let goneAt = 0;
+  let stateAt = 0;
   const since = Date.now();
-  const tick = async () => {
-    if (f.done) return;
+  let timer: NodeJS.Timeout | null = null;
+  let busy = false;
+  let again = false;
+  /** One look; true when the job is over (nothing more to follow). */
+  const look = async (): Promise<boolean> => {
+    if (f.done) return true;
     try {
       // Reattached: the execution's name is read again until the bucket answers (it used to be read once, and a miss
       // left the job followed forever with nothing to cancel or ask Cloud Run about).
@@ -338,29 +385,62 @@ function follow(f: Follow, cwd: string, env: NodeJS.ProcessEnv, every = Number(p
       const names = await pull(f, r);
       if (names.includes('exit.json')) {
         await finish(f, r, cwd, env);
-        return;
+        return true;
       }
       if (!f.execution && Date.now() - since > JOB_UNKNOWN_MS()) {
         end(f, { code: null, signal: null, error: "the Cloud Run job can't be found (Studio restarted while starting it, or its result was already collected)" });
-        return;
+        return true;
       }
       // Cloud Run says it's over but the runner said nothing (killed, out of memory, timed out): wait a little for the
-      // last upload, then end it.
-      const st = f.execution ? await r.state(f.execution) : null;
-      if (f.execution && (!st || st.done)) {
-        goneAt ||= Date.now();
-        if (Date.now() - goneAt > 30_000) {
-          await pull(f, r);
-          end(f, { code: null, signal: null, error: `the Cloud Run job ended without its result${st?.message ? `: ${st.message}` : ''}` });
-          return;
+      // last upload, then end it. Asked at most every `every` (nudges come several times a second while Talk streams).
+      if (f.execution && (goneAt || Date.now() - stateAt >= every)) {
+        stateAt = Date.now();
+        const st = await r.state(f.execution);
+        if (!st || st.done) {
+          goneAt ||= Date.now();
+          if (Date.now() - goneAt > 30_000) {
+            await pull(f, r);
+            end(f, { code: null, signal: null, error: `the Cloud Run job ended without its result${st?.message ? `: ${st.message}` : ''}` });
+            return true;
+          }
         }
       }
     } catch (e: any) {
       fs.appendFileSync(local(f.unit, 'err'), `[studio] following the job: ${e.message ?? e}\n`);
     }
-    setTimeout(() => void tick(), every).unref();
+    return false;
   };
-  void tick();
+  const schedule = (ms: number) => {
+    if (timer) clearTimeout(timer);
+    timer = setTimeout(() => void run(), ms);
+    timer.unref();
+  };
+  const run = async () => {
+    timer = null;
+    if (f.done) return;
+    if (busy) return void (again = true);
+    busy = true;
+    let over = false;
+    try {
+      over = await look();
+    } finally {
+      busy = false;
+    }
+    if (over || f.done) {
+      if (timer) clearTimeout(timer);
+      return;
+    }
+    if (again) {
+      again = false;
+      schedule(0);
+    } else schedule(f.pushed ? JOB_SAFETY_MS(every) : every);
+  };
+  f.kick = (nudged) => {
+    if (nudged) f.pushed = true;
+    if (busy) again = true;
+    else schedule(0);
+  };
+  void run();
 }
 
 async function finish(f: Follow, r: JobRunner, cwd: string, env: NodeJS.ProcessEnv) {
