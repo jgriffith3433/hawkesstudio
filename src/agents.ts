@@ -616,8 +616,12 @@ function git(cwd: string, args: string[], timeoutMs = 10 * 60_000) {
   return { ok: r.status === 0, out: (r.stdout ?? '').trim(), err: (r.stderr ?? r.error?.message ?? '').trim() };
 }
 
-/** What an agent says when the sandbox's permissions refused its `git commit` (index.lock: Permission denied). */
-export const COMMIT_DENIED = /index\.lock|(commit|\.git)[^\n]{0,80}permission denied|permission denied[^\n]{0,80}(commit|\.git)|unable to (create|append|write)[^\n]*\.git/i;
+/**
+ * What an agent says when its `git commit` was refused: the sandbox's permissions (index.lock: Permission denied), or
+ * Claude Code's own tool permissions (2026-11-01: on Cloud Run, `git -C <dir> commit` isn't in the role's allowed
+ * tools, and fixers in Hawkes Games and Hawkes Net for Unity said "the commit command needs your approval").
+ */
+export const COMMIT_DENIED = /index\.lock|(commit|\.git)[^\n]{0,80}permission denied|permission denied[^\n]{0,80}(commit|\.git)|unable to (create|append|write)[^\n]*\.git|commit[^\n]{0,60}\b(needs?|requires?|waits? for|awaiting) (your |an? )?(approval|permission)|commit[^\n]{0,60}\b(was|were|got|is) (blocked|denied|refused|not (allowed|permitted|approved))|(couldn't|could not|can't|cannot|unable to) (run )?(the )?(git )?commit/i;
 
 /**
  * The safety net behind shareWorktree (sandbox.ts): an agent that finished but whose `git commit` was refused left its
