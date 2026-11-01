@@ -315,7 +315,7 @@ export type BuildSpec = {
   path?: string; method?: string; command?: string; out?: string;
   workflow?: string; artifact?: string;
   on?: ('beta' | 'tag')[];
-  publish?: { project: string; path: string; commit?: boolean };
+  publish?: { project: string; path: string; commit?: boolean; page?: 'site' };
   playtest?: boolean;
   /** Plain settings the build runs with (VITE_*, NEXT_PUBLIC_*, NODE_OPTIONS...): never secrets, they show in its log. */
   env?: Record<string, string>;
@@ -359,7 +359,12 @@ export function checkBuilds(list: unknown): BuildSpec[] {
       const p = String(b.publish.path ?? '').trim().replace(/\\/g, '/').replace(/^\/+/, '');
       if (!/^[a-z][a-z0-9-]{1,39}$/.test(project)) throw new StudioError(`${at}.publish.project: the id of the project whose site it goes into`, 400);
       if (!RELPATH.test(p)) throw new StudioError(`${at}.publish.path: a folder in that site, like Game/`, 400);
-      out.publish = { project, path: p ? `${p.replace(/\/+$/, '')}/` : '', ...(b.publish.commit === true ? { commit: true } : {}) };
+      // page "site": the target site keeps its own page (a Unity game's custom game page); Studio commits only a pointer to
+      // the build (build.json, and window.HAWKES_BUILD_URL in <path>index.html) instead of the build's own index.html.
+      const page = b.publish.page == null || b.publish.page === '' || b.publish.page === 'build' ? undefined : String(b.publish.page);
+      if (page !== undefined && page !== 'site') throw new StudioError(`${at}.publish.page: "site" (keep that site's own page and point it at the build) or "build"`, 400);
+      if (page === 'site' && b.publish.commit !== true) throw new StudioError(`${at}.publish.page "site" needs commit: true (the pointer is committed into that site)`, 400);
+      out.publish = { project, path: p ? `${p.replace(/\/+$/, '')}/` : '', ...(b.publish.commit === true ? { commit: true } : {}), ...(page ? { page: 'site' as const } : {}) };
     }
     if (b.playtest !== undefined) out.playtest = b.playtest !== false;
     if (b.env !== undefined) {

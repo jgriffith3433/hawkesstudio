@@ -236,3 +236,19 @@ test("a build too big for git: its big folder stays on the public builds address
   assert.deepEqual(B.splitForGit([{ path: 'a.js', size: 10 }], pub).commit, ['a.js'], 'a small build commits as it is');
   assert.throws(() => B.splitForGit([{ path: 'huge.bin', size: 60 * 1024 * 1024 }], pub), /aren't all in one folder/);
 });
+
+test('publish.page "site": the website keeps its own game page and is only pointed at the build', () => {
+  C.saveProduct({ id: 'gamep', name: 'GameP', engine: 'unity', repo: 'acme/gamep', builds: [{ id: 'web', tool: 'unity', method: 'Acme.Build.Cloud', publish: { project: 'site', path: 'Game/', commit: true, page: 'site' } }] } as any);
+  const b = (C.loadProducts().find((x: any) => x.id === 'gamep') as any).builds[0];
+  assert.deepEqual(b.publish, { project: 'site', path: 'Game/', commit: true, page: 'site' });
+  assert.equal(b.method, 'Acme.Build.Cloud');
+  assert.throws(() => C.saveProduct({ id: 'gamep', name: 'GameP', engine: 'unity', repo: 'acme/gamep', builds: [{ id: 'web', tool: 'unity', publish: { project: 'site', path: 'Game/', page: 'site' } }] } as any), /needs commit: true/);
+  assert.throws(() => C.saveProduct({ id: 'gamep', name: 'GameP', engine: 'unity', repo: 'acme/gamep', builds: [{ id: 'web', tool: 'unity', publish: { project: 'site', path: 'Game/', commit: true, page: 'odd' } }] } as any), /publish\.page/);
+  const url = 'https://sites.hawkesgen.ai/builds/o/acme/gamep/b/web/3/';
+  const fresh = B.pointPage('<html>\n<head lang="en">\n  <script src="x.js"></script>\n</head></html>', url);
+  assert.match(fresh, /<head lang="en">\n  <script>window\.HAWKES_BUILD_URL = "https:\/\/sites\.hawkesgen\.ai\/builds\/o\/acme\/gamep\/b\/web\/3\/";<\/script>\n  <script src="x\.js">/, 'first in <head>, before the page\'s own scripts');
+  const again = B.pointPage(fresh, url.replace('/3/', '/4/'));
+  assert.equal((again.match(/HAWKES_BUILD_URL/g) ?? []).length, 1, 'replaced, never added twice');
+  assert.match(again, /b\/web\/4\//);
+  assert.match(B.pointPage('<p>no head</p>', url), /^<script>window\.HAWKES_BUILD_URL/);
+});
