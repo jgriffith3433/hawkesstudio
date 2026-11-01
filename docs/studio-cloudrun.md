@@ -211,3 +211,8 @@ from a fake GitHub, the job's build mode) and `test/auth.test.ts` (`/auth/pass`,
   `Game/v*`) count against the 4 GiB. A new instance (a deploy, a crash) loses local worktrees: a pass that finishes then
   can't be brought back into its worktree (its output is still read; the change then fails like any lost pass). The job's account can
   read other jobs' folders under `jobs/` while they run (each spec is deleted at start).
+- **Repo backups** (`repos.ts backupFiles`, when a checkout's stray files can't be stashed): files exactly as they are
+  on GitHub (HEAD or origin/beta) are left out, and on Cloud Run the tar streams to the state bucket
+  (`<prefix>backups/repos/<folder>-<time>.tar.gz`, 8 MiB in memory at a time), never `/data`; the newest 5 per repo
+  are kept. Before this a cell's half-written PH Origins checkout (1,256 files, its whole beta tree) became a ~518 MiB
+  tar on `/data` beside the ~585 MiB checkout (2026-11-01). Talk's notice gives the `gcloud storage cat … | tar` lines.

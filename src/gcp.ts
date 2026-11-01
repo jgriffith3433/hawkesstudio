@@ -134,6 +134,52 @@ export async function gcsWrite(bucket: string, key: string, data: Buffer | strin
   return body.length;
 }
 
+/** The size of each piece of a streamed upload: a multiple of 256 KiB (Cloud Storage's rule for resumable uploads). */
+export const GCS_CHUNK = 8 * 1024 * 1024;
+
+/**
+ * Streams bytes (a child process's stdout) to an object without holding more than about one piece in memory: a
+ * resumable upload, one PUT per `chunk`, with backpressure through the async iterator (the source waits while a piece
+ * goes up). A failure cancels the session, so no half object is left. Returns the bytes written.
+ */
+export async function gcsUploadStream(bucket: string, key: string, source: AsyncIterable<Buffer | string>, contentType = 'application/octet-stream', chunk = GCS_CHUNK): Promise<number> {
+  if (chunk <= 0 || chunk % (256 * 1024)) throw fail('A streamed upload\'s piece must be a multiple of 256 KiB.');
+  const start = await fetchImpl(`https://storage.googleapis.com/upload/storage/v1/b/${bucket}/o?uploadType=resumable&name=${enc(key)}`, {
+    method: 'POST', headers: { Authorization: `Bearer ${await accessToken()}`, 'Content-Type': 'application/json', 'X-Upload-Content-Type': contentType },
+    body: JSON.stringify({ contentType }), signal: AbortSignal.timeout(60_000),
+  });
+  const session = start.headers.get('location');
+  if (!start.ok || !session) throw fail(`Couldn't start an upload to gs://${bucket}/${key} (${start.status} ${(await start.text()).slice(0, 200)})`);
+  let sent = 0;
+  const put = async (body: Buffer, total: number | null) => {
+    const range = body.length ? `bytes ${sent}-${sent + body.length - 1}/${total ?? '*'}` : `bytes */${total}`;
+    const r = await fetchImpl(session, { method: 'PUT', headers: { 'Content-Range': range }, body: new Uint8Array(body), signal: AbortSignal.timeout(10 * 60_000) });
+    // 308: the piece is in, more to come. The last piece answers 200 or 201.
+    if (total === null ? r.status !== 308 : !r.ok) throw fail(`Uploading gs://${bucket}/${key} failed at byte ${sent} (${r.status} ${(await r.text()).slice(0, 200)})`);
+    sent += body.length;
+  };
+  try {
+    let parts: Buffer[] = [];
+    let held = 0;
+    for await (const d of source) {
+      const b = typeof d === 'string' ? Buffer.from(d) : d;
+      parts.push(b);
+      held += b.length;
+      while (held >= chunk) {
+        const all = parts.length === 1 ? parts[0] : Buffer.concat(parts);
+        await put(all.subarray(0, chunk), null);
+        parts = [all.subarray(chunk)];
+        held = all.length - chunk;
+      }
+    }
+    await put(Buffer.concat(parts), sent + held);
+    return sent;
+  } catch (e) {
+    await fetchImpl(session, { method: 'DELETE', signal: AbortSignal.timeout(30_000) }).catch(() => {});
+    throw e;
+  }
+}
+
 // ---------------------------------------------------------------- Cloud Run
 
 export type CloudRunTarget = { project: string; region: string; job: string };

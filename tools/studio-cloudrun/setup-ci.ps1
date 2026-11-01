@@ -2,7 +2,8 @@
 # (docs/studio-cloudrun.md, "Deploys"). In hawkes-staging: a provider `github-studio` in the `github` Workload Identity
 # pool that trusts only jgriffith3433/hawkesstudio's main and beta, and a `studio-deployer` account with only what a
 # deploy needs: Cloud Build (build the image), Artifact Registry (push it), Cloud Run (update `studio`/`studio-beta`
-# running as studio-control, and the agents' jobs running as studio-agent). Safe to run again.
+# running as studio-control, the agents' jobs running as studio-agent, and the customers' cells running as
+# studio-cells, for ops-cell-memory.yml). Safe to run again.
 #   powershell -ExecutionPolicy Bypass -File C:\Projects\hawkesstudio\tools\studio-cloudrun\setup-ci.ps1
 param([string]$Project = 'hawkes-staging', [string]$Repo = 'jgriffith3433/hawkesstudio')
 $ErrorActionPreference = 'Continue'
@@ -34,8 +35,11 @@ foreach ($r in 'roles/cloudbuild.builds.editor', 'roles/artifactregistry.writer'
 # `gcloud builds submit` uploads the source to Cloud Build's staging bucket first: admin on that one bucket.
 Retry { & $g storage buckets add-iam-policy-binding "gs://${Project}_cloudbuild" --member="serviceAccount:$sa" --role=roles/storage.admin --project $Project --format=none } "Cloud Build's staging bucket"
 # Updating the service and the jobs means acting as the accounts they run as; Cloud Build runs as the compute account.
+# studio-cells@: the customers' Studios (cells) run as it, and ops-cell-memory.yml's `gcloud run services update --memory`
+# makes a new revision of a cell, which Cloud Run allows only to whoever may act as its account (2026-11-01: refused,
+# "iam.serviceAccounts.actAs" on studio-cells@). Isolated cells (STUDIO_CELLS_ISOLATE) run as their own cell-*@ instead.
 $num = (& $g projects describe $Project --format='value(projectNumber)')
-foreach ($runtime in "studio-control@${Project}.iam.gserviceaccount.com", "studio-agent@${Project}.iam.gserviceaccount.com", "$num-compute@developer.gserviceaccount.com") {
+foreach ($runtime in "studio-control@${Project}.iam.gserviceaccount.com", "studio-agent@${Project}.iam.gserviceaccount.com", "studio-cells@${Project}.iam.gserviceaccount.com", "$num-compute@developer.gserviceaccount.com") {
   Retry { & $g iam service-accounts add-iam-policy-binding $runtime --member="serviceAccount:$sa" --role=roles/iam.serviceAccountUser --project $Project --format=none } "act as $runtime"
 }
 Retry { & $g iam service-accounts add-iam-policy-binding $sa --role=roles/iam.workloadIdentityUser --member="principalSet://iam.googleapis.com/projects/$num/locations/global/workloadIdentityPools/github/attribute.repository/$Repo" --project $Project --format=none } 'GitHub may act as studio-deployer'
