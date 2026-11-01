@@ -76,6 +76,13 @@ pre { background: var(--panel2); padding: 10px; border-radius: 8px; overflow: au
 
 /* Talk */
 .talk { display: grid; grid-template-columns: 260px 1fr; gap: 14px; height: calc(100vh - 156px); }
+/* The Talk tab fits the screen under the header (whatever its height: --hdr, talk.js), so the page itself never scrolls
+   and the tabs, and a customer's Talk · Inbox bar, stay in view; only the conversation scrolls. */
+body:has(#talk.on) main { padding-bottom: 10px; }
+#talk.on { display: flex; flex-direction: column; height: calc(100vh - var(--hdr, 56px) - 28px); height: calc(100dvh - var(--hdr, 56px) - 28px); min-height: 420px; }
+#talk.on > .talk { flex: 1; min-height: 300px; height: auto; }
+/* Any jump to a tab (an old #address on load) stops below the sticky header, not under it. */
+.tab { scroll-margin-top: calc(var(--hdr, 56px) + 8px); }
 .talk aside { overflow: auto; display: flex; flex-direction: column; gap: 6px; }
 .talk-item { padding: 8px 10px; border-radius: 8px; cursor: pointer; border: 1px solid transparent; display: flex; flex-direction: column; gap: 2px; }
 .talk-item:hover { background: var(--panel); }
@@ -136,6 +143,7 @@ body.in-call .talk-input, body.in-call .talk-files, body.in-call #notifyBox { di
   /* The header wraps to several rows on a phone: --hdr is its real height (talk.js). */
   .talk { grid-template-columns: 1fr; height: calc(100dvh - var(--hdr, 190px) - 26px); min-height: 360px; gap: 0; }
   body:has(#talk.on) main { padding-top: 10px; padding-bottom: 8px; }
+  #talk.on { height: calc(100dvh - var(--hdr, 190px) - 18px); min-height: 380px; }
   .talk aside { display: none; }
   .talk.lists aside { display: flex; max-height: 50dvh; margin-bottom: 10px; }
   .talk.lists .talk-main { display: none; }

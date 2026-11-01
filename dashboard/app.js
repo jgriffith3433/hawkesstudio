@@ -248,7 +248,16 @@ function show(t, sub) {
   tab = t;
   // #changes/<id> (a link from the Activity panel) and #analytics/<product> (a game's page) stay.
   if (!sub && (t === 'changes' || t === 'analytics' || t === 'videos') && location.hash.startsWith(`#${t}/`)) sub = location.hash.slice(t.length + 2);
-  location.hash = sub ? `${t}/${sub}` : t;
+  // Not location.hash = …: every tab is a <section> whose id is its address (#talk is the Talk tab), so setting the hash
+  // was a jump to that section, which scrolled the page down and tucked the top of the tab (a customer's Talk · Inbox
+  // bar) under the sticky header. pushState changes the address without scrolling; the pages that follow the address
+  // (analytics.js, live.js) still get their hashchange, a moment later as before.
+  const hash = `#${sub ? `${t}/${sub}` : t}`;
+  if (location.hash !== hash) {
+    const oldURL = location.href;
+    history.pushState(null, '', hash);
+    setTimeout(() => dispatchEvent(new HashChangeEvent('hashchange', { oldURL, newURL: location.href })), 0);
+  }
   document.querySelectorAll('nav button[data-tab]').forEach((b) => b.classList.toggle('on', b.dataset.tab === t));
   document.querySelectorAll('.tab').forEach((s) => s.classList.toggle('on', s.id === t));
   // A tab under More: the More button is lit and says which one.
