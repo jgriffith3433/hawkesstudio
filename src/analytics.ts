@@ -4,6 +4,11 @@
 // says which products have no data yet (the SDK isn't on them). One write: J's "that was me" (POST
 // /api/analytics/marks -> Gen's marks), so his own devices and private windows stop counting as players, and "not a
 // person" for bots that got through.
+//
+// A customer's Studio (a cell, gen.ts): its Gen key answers only for its own org's games (Gen's canProject), which Gen
+// knows as org_<hex>.<game>. So the game in the path gets that prefix on the way to Gen, comes back without it, and the
+// overview lists every game of this Studio, the ones Gen has nothing on yet too. J's players list and marks stay J's
+// (lockdown.ts); Gen refuses them to a cell's key anyway.
 
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { gen } from './gen.ts';
@@ -70,6 +75,41 @@ export function genPath(route: string, params: URLSearchParams): string | null {
   return `/analytics/${parts.join('/')}${qs ? `?${qs}` : ''}`;
 }
 
+/** A customer's cell: how Gen names its games (org_<hex>.); '' in J's Studio (gen.ts HAWKESGEN_PROJECT_PREFIX). */
+export const orgPrefix = () => process.env.HAWKESGEN_PROJECT_PREFIX?.trim() || '';
+const TOP_ROUTES = ['overview', 'products', 'players', 'marks'];
+
+/** A Gen path with the game named the way Gen knows it in a customer's cell (prefix + game); as is in J's Studio. */
+export function orgPath(path: string, prefix = orgPrefix()): string {
+  if (!prefix) return path;
+  const m = /^\/analytics\/([^/?]+)(.*)$/.exec(path);
+  if (!m || TOP_ROUTES.includes(m[1]) || m[1].startsWith(prefix)) return path;
+  return `/analytics/${encodeURIComponent(prefix + m[1])}${m[2]}`;
+}
+
+/**
+ * Gen's answer as this Studio shows it, in a customer's cell: only the org's own games (Gen already scopes them; this is
+ * belt and braces), named without the prefix, and the overview with every game of this Studio (own), the ones Gen has
+ * nothing on yet as "no players on record". As is in J's Studio.
+ */
+export function orgView(path: string, body: any, prefix = orgPrefix(), own: { id: string; name: string }[] = []): any {
+  if (!prefix || !body || typeof body !== 'object') return body;
+  const strip = (id: unknown) => (typeof id === 'string' && id.startsWith(prefix) ? id.slice(prefix.length) : null);
+  const base = path.split('?')[0];
+  if (base === '/analytics/overview') {
+    const mine = (Array.isArray(body.products) ? body.products : []).flatMap((p: any) => {
+      const id = strip(p?.product);
+      return id ? [{ ...p, product: id, name: own.find((g) => g.id === id)?.name ?? (p.name === p.product ? id : p.name) }] : [];
+    });
+    for (const g of own) if (!mine.some((p: any) => p.product === g.id)) mine.push({ product: g.id, name: g.name, daily: [] });
+    return { ...body, products: mine };
+  }
+  if (base === '/analytics/products') {
+    return { ...body, products: (Array.isArray(body.products) ? body.products : []).flatMap((p: any) => { const id = strip(p?.id); return id ? [{ ...p, id }] : []; }) };
+  }
+  return typeof body.product === 'string' ? { ...body, product: strip(body.product) ?? body.product } : body;
+}
+
 const sum = (xs: number[]) => xs.reduce((a, b) => a + (Number(b) || 0), 0);
 const trend = (cur: number, prev: number) => (prev ? Math.round(((cur - prev) / prev) * 1000) / 1000 : null);
 
@@ -126,13 +166,23 @@ export async function handleAnalyticsApi(req: IncomingMessage, res: ServerRespon
     }
   }
   if ((req.method ?? 'GET') !== 'GET') return send(res, 405, { error: 'Analytics is read-only (GET), besides POST /api/analytics/marks' });
-  const path = genPath(url.pathname, url.searchParams);
-  if (!path) return send(res, 404, { error: `No analytics route ${url.pathname}` });
+  const plain = genPath(url.pathname, url.searchParams);
+  if (!plain) return send(res, 404, { error: `No analytics route ${url.pathname}` });
+  const prefix = orgPrefix();
+  const path = orgPath(plain, prefix);
   if (/\/export\?/.test(path) && /[?&]format=csv/.test(path)) return (await import('./library.ts')).relay(req, res, path.slice(1));
+  // A customer's games (their names for the overview, and which games are theirs).
+  let own: { id: string; name: string }[] = [];
+  if (prefix) { try { own = (await import('./config.ts')).loadProducts().map((p) => ({ id: p.id, name: p.name })); } catch { /* no games yet */ } }
   try {
-    const body = await request(path);
+    const body = orgView(plain, await request(path), prefix, own);
     return send(res, 200, path.startsWith('/analytics/overview') ? withTotals(body) : body);
   } catch (e: any) {
+    // A customer's game Gen has no analytics on yet: nothing on record, not an error (the page says the SDK isn't on it).
+    const game = plain.split(/[/?]/)[2];
+    if (prefix && Number(e?.status) === 404 && own.some((g) => g.id === game) && /No analytics product/.test(String(e?.message ?? ''))) {
+      return send(res, 200, { product: game, onRecord: false });
+    }
     // Gen down or out of reach: the page says so (and keeps what it showed); Gen's own refusals keep their status.
     const offline = e?.kind === 'offline' || e?.status === 0;
     return send(res, offline ? 502 : Number(e?.status) || 502, { error: offline ? `Hawkes Gen isn't answering: ${e.message}` : String(e?.message ?? e), offline });

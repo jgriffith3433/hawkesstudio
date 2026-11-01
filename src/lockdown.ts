@@ -15,7 +15,7 @@
 //   /api/resources, /api/brief/cost), self-deploys and restarts (/api/self-deploys, /api/services*), the Antigravity
 //   login, seeding the shared memory from J's canon, the plans, customers' Studios, Hawkes Gen's machinery through the
 //   library relay (fleet, builder, playtester, settings…), Studio or Gen themselves (infra agents, merging one, its
-//   card), and Analytics and Screening for now.
+//   card), Screening, and Analytics' players list and "that was me" marks (the Analytics tab itself is theirs).
 // A customer's admins keep their own: their games, going live with them, their settings, their users, their own Claude.
 //
 // Who isn't a user (Studio's own calls, Talk and the agents with the agents' key) is guards.ts's business in J's Studio;
@@ -90,9 +90,12 @@ export function platformFeature(route: string, method: string): string | null {
       if (a?.kind === 'merge' && infraChange(a.target)) return 'Changing Hawkes Studio or Hawkes Gen';
     }
   }
-  // A customer's Studio: Analytics and Screening are the platform admin's for now (J, 2026-10-30: "lets not handle
-  // analytics for customers yet"; Screening "is more of a Gen feature"). Their dashboard hides the tabs (groups.js).
-  if (/^\/api\/(analytics|videos)(\/|$)/.test(route)) return 'Analytics and Screening';
+  // A customer's Studio: Screening is the platform admin's ("is more of a Gen feature", J 2026-10-30); its dashboard hides
+  // the tab (groups.js). Analytics is theirs again (J, 2026-11-01: "Turn on the analytics tab for customers again"): Gen
+  // answers their Studio's key only for their own org's games (analytics.ts). J's players list and "that was me"
+  // marks span J's own games and stay J's.
+  if (/^\/api\/videos(\/|$)/.test(route)) return 'Screening';
+  if (/^\/api\/analytics\/(players|marks)(\/|\?|$)/.test(route)) return "Analytics' players and marks";
   return null;
 }
 

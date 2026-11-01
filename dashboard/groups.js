@@ -2,16 +2,16 @@
 // group; inside, a small bar switches between the group's pages, which are the same tabs as before (so links, Talk's
 // guide and #hash addresses keep working). J's own Studio keeps its tabs as they are.
 //   Talk       Talk · Inbox
-//   Games      Games (the overview, each game's card, add/edit/delete) · Go live
+//   Games      Games (the overview, each game's card, add/edit/delete) · Go live · Analytics (their own games' players)
 //   Plan       Roadmap · Bugs (the backlog) · Agents' changes
 //   Playtests  Playing now · History · Reports · Runs
 //   Library, and under More: Memory, Users, Settings
-// Not in a customer's Studio: Ready to test (Go live covers it), Analytics and Screening (the platform admin's for now),
-// On Air, Social, Costs, Resources.
+// Not in a customer's Studio: Ready to test (Go live covers it), Screening (the platform admin's), On Air, Social, Costs,
+// Resources. Analytics is back (J, 2026-11-01: "Turn on the analytics tab for customers again").
 (() => {
   const GROUPS = [
     { head: 'talk', label: 'Talk', tabs: [['talk', 'Talk'], ['inbox', 'Inbox']] },
-    { head: 'today', label: 'Projects', tabs: [['today', 'Projects'], ['golive', 'Go live']] },
+    { head: 'today', label: 'Projects', tabs: [['today', 'Projects'], ['golive', 'Go live'], ['analytics', 'Analytics']] },
     { head: 'roadmap', label: 'Plan', tabs: [['roadmap', 'Roadmap'], ['backlog', 'Bugs'], ['changes', "Agents' changes"]] },
     { head: 'live', label: 'Playtests', tabs: [['live', 'Playing now'], ['playtests', 'History'], ['report', 'Reports'], ['runs', 'Runs']] },
     { head: 'library', label: 'Library', tabs: [['library', 'Library']] },
@@ -61,6 +61,8 @@
     });
     const intro = document.querySelector('#today .intro');
     if (intro) intro.innerHTML = '<b>Projects:</b> each of your projects (games, web apps, sites): how its last playtest went, what is broken, and buttons to play it again (live, or its beta), edit it or add another. Go live, beside Projects, is for shipping.';
+    const anIntro = document.querySelector('#analytics .intro');
+    if (anIntro) anIntro.innerHTML = '<b>Analytics:</b> how your projects are doing with real players (from Hawkes Analytics). Tap a project to see more about it.';
     const add = document.getElementById('addGame');
     if (add) add.hidden = false;
     const onAir = document.getElementById('onAir');
@@ -71,8 +73,8 @@
     const cur = location.hash.slice(1).split('/')[0];
     if (!cur || cur === 'inbox') show('today');
     else afterShow(cur);
-    // A page this Studio doesn't have (an old link to Ready to test, Analytics, Screening): Games instead.
-    if (['ready', 'analytics', 'videos', 'social', 'costs', 'resources'].includes(cur)) show(cur === 'ready' ? 'golive' : 'today');
+    // A page this Studio doesn't have (an old link to Ready to test, Screening): Games instead.
+    if (['ready', 'videos', 'social', 'costs', 'resources'].includes(cur)) show(cur === 'ready' ? 'golive' : 'today');
   }
 
   const css = document.createElement('style');

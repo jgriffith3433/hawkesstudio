@@ -11,7 +11,7 @@ before, so links, Talk's guide and `#hash` addresses keep working.
 | Group | Pages |
 |---|---|
 | Talk | Talk · Inbox (the Inbox's count shows on Talk) |
-| Games | Games (each game's card: Play live, Play beta, Edit; + Add a game) · Go live |
+| Games | Games (each game's card: Play live, Play beta, Edit; + Add a game) · Go live · Analytics |
 | Plan | Roadmap · Bugs (the backlog) · Agents' changes |
 | Playtests | Playing now · History (every past playtest) · Reports · Runs |
 | Library | |
@@ -19,7 +19,13 @@ before, so links, Talk's guide and `#hash` addresses keep working.
 
 The customer starts on Games. Not in a customer's Studio:
 - Ready to test: Go live covers it.
-- Analytics and Screening: the platform admin's for now; the API refuses them too (lockdown.ts).
+- Screening: the platform admin's; the API refuses it too (lockdown.ts).
+
+Analytics is theirs (J, 2026-11-01: "Turn on the analytics tab for customers again"): every game of their Studio, from
+Hawkes Analytics. Their Studio's Gen key answers only for their own org's games, which Gen knows as `org_<hex>.<game>`
+(src/analytics.ts adds and strips the prefix); a game Gen has nothing on shows "no players on record". The players list
+and "that was me" marks span J's own games and stay the platform admin's. A customer's game sends data only once it is
+in Gen's analytics registry (hawkesgen `analytics/products.json`) under its `org_<hex>.<game>` id.
 - On Air, Social, Costs and Resources.
 
 What their plan lacks is greyed out with an Upgrade; members don't see admin controls (app.js `gateUi`).

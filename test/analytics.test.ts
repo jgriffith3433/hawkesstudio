@@ -142,3 +142,51 @@ test('players and marks go through to Gen; a mark posts only a checked kind and 
   await handleAnalyticsApi({ method: 'POST' } as any, {} as any, new URL('http://x/api/analytics/sickofit'), send, async () => ({}));
   assert.equal(status, 405);
 });
+
+// A customer's cell: Gen knows its games as org_<hex>.<game> and answers its key only for those.
+const { orgPath, orgView } = await import('../src/analytics.ts');
+const ORG = 'org_0a1b2c.';
+
+test('in a customer\'s cell the game goes to Gen with its org prefix; J\'s Studio is unchanged', () => {
+  assert.equal(orgPath('/analytics/my-game?range=7d', ORG), '/analytics/org_0a1b2c.my-game?range=7d');
+  assert.equal(orgPath('/analytics/my-game/sessions/list?limit=50', ORG), '/analytics/org_0a1b2c.my-game/sessions/list?limit=50');
+  assert.equal(orgPath('/analytics/my-game/export?what=events&format=csv', ORG), '/analytics/org_0a1b2c.my-game/export?what=events&format=csv');
+  for (const top of ['/analytics/overview', '/analytics/products', '/analytics/players', '/analytics/marks']) assert.equal(orgPath(top, ORG), top);
+  assert.equal(orgPath('/analytics/my-game', ''), '/analytics/my-game');
+});
+
+test('a customer sees only their own games, without the prefix, and every game of their Studio', () => {
+  const gen = { products: [
+    { product: 'org_0a1b2c.my-game', name: 'org_0a1b2c.my-game', activeNow: 2, '30d': { sessions: 5 }, daily: [] },
+    { product: 'yoobaland', name: 'Yooba Land', activeNow: 9, '30d': { sessions: 900 }, daily: [] },
+    { product: 'org_ffffff.theirs', name: 'Not yours', activeNow: 1, daily: [] },
+  ] };
+  const own = [{ id: 'my-game', name: 'My Game' }, { id: 'new-one', name: 'New One' }];
+  const o = withTotals(orgView('/analytics/overview?range=30d', gen, ORG, own));
+  assert.deepEqual(o.products.map((p: any) => [p.product, p.name, p.hasData]), [['my-game', 'My Game', true], ['new-one', 'New One', false]]);
+  assert.equal(o.total.activeNow, 2);
+  assert.equal(o.total.products, 2);
+  assert.deepEqual(orgView('/analytics/products', { products: [{ id: 'org_0a1b2c.my-game' }, { id: 'yoobaland' }] }, ORG).products, [{ id: 'my-game' }]);
+  assert.equal(orgView('/analytics/org_0a1b2c.my-game', { product: 'org_0a1b2c.my-game', sessions: {} }, ORG).product, 'my-game');
+  // J's Studio: Gen's answer as is.
+  assert.equal(orgView('/analytics/overview', gen, ''), gen);
+});
+
+test('in a customer\'s cell the request reaches Gen prefixed, and a game Gen has nothing on yet is "no players", not an error', async () => {
+  const before = process.env.HAWKESGEN_PROJECT_PREFIX;
+  process.env.HAWKESGEN_PROJECT_PREFIX = ORG;
+  try {
+    const asked: string[] = [];
+    let out: any;
+    const send = (_res: any, status: number, body: unknown) => { out = { status, body }; };
+    const req: any = { method: 'GET' };
+    await handleAnalyticsApi(req, {} as any, new URL('http://x/api/analytics/my-game/sessions/list?limit=50'), send, async (p: string) => { asked.push(p); return { product: 'org_0a1b2c.my-game', items: [] }; });
+    assert.deepEqual(asked, ['/analytics/org_0a1b2c.my-game/sessions/list?limit=50']);
+    assert.equal(out.body.product, 'my-game');
+    // Gen's 404 for a game that isn't one of this Studio's stays an error.
+    await handleAnalyticsApi(req, {} as any, new URL('http://x/api/analytics/someone-else'), send, async () => { throw Object.assign(new Error('No analytics product org_0a1b2c.someone-else'), { status: 404 }); });
+    assert.equal(out.status, 404);
+  } finally {
+    if (before == null) delete process.env.HAWKESGEN_PROJECT_PREFIX; else process.env.HAWKESGEN_PROJECT_PREFIX = before;
+  }
+});
