@@ -28,6 +28,34 @@ var FixResult = (() => {
   return { show, at, OK_FOR, FAIL_FOR };
 })();
 
+// Whether the commit about to go live was playtested (J, 2026-11-01: "when the current commit hasn't been playtested,
+// add a button for playtesting it"). The same rule as going live by itself (golive-policy.ts playtestHolds): every
+// playtest of beta's exact commit done with outcome won or done, no review saying "broken" or finding a blocker.
+// `going`: a beta run or playtest of the product that hasn't finished (the card's own, or one started elsewhere).
+// null when the card has nothing to go live, so there is no commit to speak of. Pure, so it is tested without a DOM
+// (test/golive-playtest.test.ts).
+var PlayState = (() => {
+  const ok = (t) => t.status === 'done' && ['won', 'done'].includes(String(t.outcome)) && t.verdict !== 'broken' && !t.blockers?.length;
+  /** Why one playtest didn't pass, in a few words. */
+  const why = (t) => (t.status !== 'done' ? (t.status === 'skipped' ? 'was inconclusive' : t.status === 'stopped' ? 'was stopped' : 'failed')
+    : !['won', 'done'].includes(String(t.outcome)) ? `ended "${t.outcome}"`
+      : t.verdict === 'broken' ? 'was reviewed as broken' : `review found ${t.blockers.length} blocker(s)`);
+  function of(p, { going = null, ahead = true } = {}) {
+    if (!p || p.error || p.urlOnly || !p.beta || !ahead) return null;
+    const sha = p.tested?.sha ?? p.beta.short ?? String(p.beta.sha ?? '').slice(0, 7);
+    const t = p.tested?.playtests ?? [];
+    if (going) return { state: 'running', sha, text: `Playtesting ${sha}${going.step ? `: ${going.step}` : '…'}` };
+    if (!t.length) return { state: 'untested', sha, text: `This commit (${sha}) hasn't been playtested` };
+    const bad = t.filter((x) => !ok(x));
+    if (bad.length) return { state: 'failed', sha, text: `The playtest of this commit (${sha}) didn't pass: ${bad.map((x) => `${x.name} ${why(x)}`).join(', ')}` };
+    return { state: 'passed', sha, text: `This commit (${sha}) passed its playtest${t.length > 1 ? 's' : ''}` };
+  }
+  /** The card offers "Playtest this commit" when it wasn't played, or its play didn't pass, and nothing is playing it. */
+  const canPlay = (s) => !!s && (s.state === 'untested' || s.state === 'failed');
+  const ICON = { passed: '✅', failed: '❌', untested: '⚠️', running: '⏳' };
+  return { of, canPlay, ok, ICON };
+})();
+
 if (typeof document !== 'undefined') (() => {
   const css = document.createElement('style');
   css.textContent = `
@@ -47,6 +75,8 @@ if (typeof document !== 'undefined') (() => {
     .gl-buttons button.roll { flex: 0 1 auto; min-height: 48px; }
     .gl-busy { background: rgba(255,190,85,.12); border: 1px solid rgba(255,190,85,.4); border-radius: 8px; padding: 8px 10px; margin: 8px 0; font-size: 14px; }
     .gl-done { font-size: 13px; margin: 6px 0; } .gl-fail { color: var(--red); }
+    .gl-play { font-size: 14px; margin: 6px 0; padding: 6px 10px; border-radius: 8px; border: 1px solid var(--line); }
+    .gl-play.passed { border-color: rgba(80,200,120,.4); } .gl-play.failed { border-color: rgba(255,90,90,.5); } .gl-play.untested { border-color: rgba(255,190,85,.5); } .gl-play.running { background: rgba(255,190,85,.12); border-color: rgba(255,190,85,.4); }
     .gl-slot:not(:empty) { margin-top: 10px; }
     .gl-card details { margin-top: 8px; font-size: 13px; } .gl-card details code { font-size: 12px; }
     .gl-links { display: flex; gap: 10px; flex-wrap: wrap; margin: 8px 0; }
@@ -73,6 +103,7 @@ if (typeof document !== 'undefined') (() => {
     'merge-main': { label: 'Merge live into beta', busy: 'Merging live into beta, then playing beta', title: 'Merges what is live into beta, then builds and playtests beta. Nothing goes live.' },
     beta: { label: 'Play beta', busy: 'Playing beta', title: 'Brings beta up to date (pre-deploy build, Unity build, beta site) and playtests it. Nothing goes live.' },
     sync: { label: 'Sync repo', busy: 'Cloning the repo onto the server', title: 'Clones this product\'s repo onto the server (the server has no copy yet), then checks beta against live again. Nothing goes live.' },
+    playtest: { label: 'Playtest this commit', busy: 'Playtesting this commit', title: 'Plays beta as it is now (the commit about to go live) and reviews it. Nothing goes live.' },
     rebuild: { label: 'Rebuild beta', busy: 'Rebuilding beta on top of what is live', title: 'Builds beta again on top of the live site (Unity, about $0.10). Nothing goes live.' },
   };
   /** A run's step in plain words: what it's doing now. */
@@ -156,12 +187,20 @@ if (typeof document !== 'undefined') (() => {
     const fix = L.color === 'red' && p.fix && FIX[p.fix] && !run.length ? p.fix : null;
     const fixRunning = fx && !fx.done && !fx.error;
     const okSince = Math.max(lastOk.get(p.product) ?? 0, ...p.tested.playtests.filter((t) => t.status === 'done' && t.outcome !== 'error').map((t) => t.when ?? 0));
-    const showFx = FixResult.show(fx, { red: L.color === 'red', fix: p.fix && FIX[p.fix] ? p.fix : null, okSince });
+    // This commit's playtest: passed, didn't pass, not played (with the button that plays it), or being played (the
+    // busy line above says so, with its step).
+    const going = fixRunning && ['beta', 'playtest', 'merge-main'].includes(fx.action) ? { step: fx.step } : null;
+    const ps = PlayState.of(p, { going, ahead: up });
+    const offerPlay = PlayState.canPlay(ps) && !run.length;
+    const showFx = FixResult.show(fx, { red: L.color === 'red' || offerPlay, fix: p.fix && FIX[p.fix] ? p.fix : offerPlay ? 'playtest' : null, okSince });
+    // The fix "Play beta" plays this commit too: when it isn't played yet, the button says so.
+    const fixLabel = fix === 'beta' && PlayState.canPlay(ps) ? FIX.playtest.label : fix && FIX[fix].label;
     const fxRun = fx?.run ? ` · <a href="#runs" data-glrun="${esc(fx.run)}">the run</a>` : '';
     return `<div class="gl-card ${L.color}" data-p="${esc(p.product)}" data-key="gl:${esc(p.product)}">
       <h3><span class="gl-light ${L.color}" title="${esc(L.text)}"></span>${esc(p.name)}</h3>
       <div class="gl-status ${up ? 'ahead' : 'same'}">${esc(status)}</div>
       <div class="gl-when">Live updated ${esc(when(lastLive))} · beta changed ${esc(when(p.beta?.date))}</div>
+      ${ps && ps.state !== 'running' ? `<div class="gl-play ${ps.state}" data-key="glplay:${esc(p.product)}">${PlayState.ICON[ps.state]} ${esc(ps.text)}</div>` : ''}
       ${links(prod, p)}
       ${run.map((o) => `<div class="gl-busy">⏳ ${esc(o.title)}${o.status === 'queued' ? ' (waiting its turn)' : o.step ? `: ${esc(o.step)}` : '…'}</div>`).join('')}
       ${fixRunning && !run.length ? `<div class="gl-busy">⏳ ${esc(FIX[fx.action].busy)}${fx.step ? `: ${esc(fx.step)}` : '…'}</div>` : ''}
@@ -172,8 +211,9 @@ if (typeof document !== 'undefined') (() => {
       ${Object.entries(groups).map(([g, cs]) => `<div class="gl-group"><b>${esc(g)} (${cs.length})</b><ul>${cs.slice(0, 6).map((c) => `<li>${esc(plain(c.title))}</li>`).join('')}${cs.length > 6 ? `<li class="meta">and ${cs.length - 6} more</li>` : ''}</ul></div>`).join('')}
       ${up || p.mainOnly.length || L.played ? `<div class="gl-light-line"><b>${esc(L.text)}</b>${L.played ? `<br><span class="meta">${esc(L.played)}</span>` : ''}${L.why?.length ? `<ul>${L.why.map((w) => `<li>${esc(w)}</li>`).join('')}</ul>` : ''}</div>` : ''}
       <div class="gl-buttons">
-        ${fix ? `<button class="primary big" data-glfix="${esc(fix)}" title="${esc(FIX[fix].title)}"${fixRunning ? ' disabled' : ''}>${esc(fixRunning ? `${FIX[fix].busy}…` : FIX[fix].label)}</button>` : ''}
-        ${up && !run.length && !fix ? `<button class="primary big" data-admin data-glgo="deploy" data-guide="off" title="Shows the Approve card for going live; your tap on Approve is what goes live">Go live</button>` : ''}
+        ${fix ? `<button class="primary big" data-glfix="${esc(fix)}" title="${esc(FIX[fix].title)}"${fixRunning ? ' disabled' : ''}>${esc(fixRunning ? `${FIX[fix].busy}…` : fixLabel)}</button>` : ''}
+        ${offerPlay && !fix ? `<button class="${ps.state === 'untested' ? 'primary ' : ''}big" data-admin data-glfix="playtest" data-guide="off" title="${esc(FIX.playtest.title)}"${fixRunning ? ' disabled' : ''}>${esc(ps.state === 'failed' ? 'Playtest this commit again' : FIX.playtest.label)}</button>` : ''}
+        ${up && !run.length && !fix ? `<button class="${offerPlay && ps.state === 'untested' ? '' : 'primary '}big" data-admin data-glgo="deploy" data-guide="off" title="Shows the Approve card for going live; your tap on Approve is what goes live">Go live</button>` : ''}
         ${canRoll && !run.length ? `<button class="roll" data-admin data-glgo="rollback" data-guide="off" title="Shows the Approve card for rolling back to what was live before">Roll back</button>` : ''}
       </div>
       <div class="gl-slot"${card ? '' : ' data-patch-keep'}>${card ? approvals.html(card) : ''}</div>
@@ -259,10 +299,12 @@ if (typeof document !== 'undefined') (() => {
       if (r.status === 'done' && r.finished && ['beta', 'daily', 'manual', 'playtest'].includes(r.kind)) {
         for (const id of r.products ?? []) if (r.finished > (lastOk.get(id) ?? 0)) lastOk.set(id, r.finished);
       }
-      if (r.status !== 'running' || !['beta', 'build'].includes(r.kind) || r.products?.length !== 1) continue;
+      // A playtest of beta (where local) counts as playing this commit; one of the live site doesn't.
+      const betaPlay = r.kind === 'playtest' && (r.where ?? 'local') === 'local';
+      if (r.status !== 'running' || !(['beta', 'build'].includes(r.kind) || betaPlay) || r.products?.length !== 1) continue;
       const id = r.products[0];
       const f = fixing.get(id);
-      if (!f || f.done || f.error) fixing.set(id, { action: r.kind === 'build' ? 'rebuild' : 'beta', run: r.id, step: '' });
+      if (!f || f.done || f.error) fixing.set(id, { action: r.kind === 'build' ? 'rebuild' : betaPlay ? 'playtest' : 'beta', run: r.id, step: '' });
     }
   }
 

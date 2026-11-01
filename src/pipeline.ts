@@ -114,7 +114,9 @@ export function getRun(id: string) {
 }
 
 export function listRuns(limit = 30) {
-  return (db.prepare('SELECT id, kind, status, detail, products, started, finished, cost FROM runs ORDER BY started DESC LIMIT ?').all(limit) as any[]).map((r) => ({ ...r, products: parse(r.products) }));
+  // `where` (a playtest run's local or live): the Go live cards tell a playtest of beta from one of the live site.
+  return (db.prepare('SELECT id, kind, status, detail, products, options, started, finished, cost FROM runs ORDER BY started DESC LIMIT ?').all(limit) as any[])
+    .map(({ options, ...r }) => ({ ...r, products: parse(r.products), ...(r.kind === 'playtest' ? { where: (parse(options) as any)?.where ?? 'local' } : {}) }));
 }
 
 /** The latest finished step of a kind for a product (e.g. the last review of a scenario). */
