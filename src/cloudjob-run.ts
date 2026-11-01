@@ -126,12 +126,17 @@ export function collect(spec: Spec, start: string | null, tmp: string, at: (p: s
   let gitOut: { head: string; bundle: boolean } | null = null;
   let deleted: string[] = [];
   let bundle: string | null = null;
+  let bundleError: string | null = null;
   if (spec.git && fs.existsSync(path.join(cwd, '.git'))) {
     const head = git(cwd, ['rev-parse', 'HEAD']).out;
     if (start && head && head !== start) {
       bundle = path.join(tmp, 'out.bundle');
       const b = git(cwd, ['bundle', 'create', bundle, 'HEAD', `^${start}`]);
-      if (!b.ok) bundle = null;
+      if (!b.ok) {
+        // Never silent: HEAD moved, so the pass committed, but its commits can't travel. The pass fails with git's reason.
+        bundle = null;
+        bundleError = `couldn't bundle the pass's commits (${start.slice(0, 7)}..${head.slice(0, 7)}): ${b.err.split('\n').slice(-3).join(' | ') || 'git printed nothing'}`;
+      }
     }
     const d = dirtyState(cwd);
     deleted = d.deleted;
@@ -141,7 +146,7 @@ export function collect(spec: Spec, start: string | null, tmp: string, at: (p: s
     entries.push(...folderEntries(path.join(cwd, '.hawkes'), (rel) => `.hawkes/${rel}`).filter((e) => !have.has(e.p)));
     gitOut = { head, bundle: Boolean(bundle) };
   }
-  return { pack: packFiles(entries, deleted), bundle, git: gitOut };
+  return { pack: packFiles(entries, deleted), bundle, bundleError, git: gitOut };
 }
 
 /**
@@ -263,6 +268,8 @@ export async function runUnit(unit: string, store: Store, { every = 2000, at = (
     if (out.bundle) await store.put(key('out/out.bundle'), fs.readFileSync(out.bundle));
     await store.put(key('out/out.pack'), out.pack);
     await flush();
+    if (out.bundleError) say(`[job] ${out.bundleError}`);
+    if (out.bundleError && !error) error = out.bundleError;
     await store.put(key('out/exit.json'), JSON.stringify({ code, signal, ...(error ? { error } : {}), git: out.git }));
   } catch (e: any) {
     say(`[job] sending the work back: ${e.message ?? e}`);
