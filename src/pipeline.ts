@@ -726,7 +726,7 @@ async function playScenario(run: string, p: Product, asked: Playtest, { review =
   const slow = ok && criteria?.length ? slowNote(r.seconds) : null;
   updateStep(s, {
     status: ok ? 'done' : 'failed', job: job.id,
-    detail: ok ? `${r.outcome} in ${playTime(r.seconds ?? 0)}${at ? ` (from "${at}")` : ''} · ${r.problems?.length ?? 0} problems · ${r.fps?.average ?? '?'} fps${r.mode === 'generic' ? ' · no playtest contract' : ''}${slow ? ` · ⚠ ${slow}` : ''}` : `failed: ${job.error ?? job.detail}`,
+    detail: ok ? `${r.outcome} in ${playTime(r.seconds ?? 0)}${at ? ` (from "${at}")` : ''} · ${r.problems?.length ?? 0} problems · ${r.fps?.average ?? '?'} fps${r.mode === 'generic' ? ' · no playtest contract' : ''}${slow ? ` · ⚠ ${slow}` : ''}` : `failed: ${job.error ?? job.detail} (opened ${url})`,
     data: ok ? { ...playtestData(job, url), played, ...(at ? { at } : {}), ...(slow ? { slow } : {}) } : { error: job.error, url, played },
     finished: true,
   });
@@ -995,9 +995,21 @@ export async function cloudBetaUrl(p: { id: string; live: string; local: { serve
   if (!root) return null;
   // A game added through Talk: its beta site is a path of its own (sites.<domain>/b/<game>/), built with relative
   // paths, so the root is the game; its live address's path (GitHub Pages' /<repo>/) isn't part of it.
-  if ((p as { github?: string }).github) return root;
+  const github = (p as { github?: string }).github;
+  if (github) return betaPageUrl(root, p as { site?: string; repo?: string; github?: string });
   const live = new URL(p.live);
   return new URL(live.pathname + live.search, root).toString();
+}
+
+/**
+ * A project's page on its beta site: the root, plus its `site` folder when the build publishes the game page there
+ * (a Unity build with publish.page "site" lands at <root>/YoobaLand/index.html; the root has no game page).
+ * `site` that is only the repo (owner/name, or the repo folder) is not a sub-folder.
+ */
+export function betaPageUrl(root: string, p: { site?: string; repo?: string; github?: string }) {
+  const site = String(p.site ?? '').trim().replace(/^\/+|\/+$/g, '');
+  if (!site || site === '.' || site === p.repo || site === p.github || site === String(p.github ?? p.repo ?? '').split('/').pop()) return root;
+  return `${root.replace(/\/?$/, '/')}${site.split('/').map(encodeURIComponent).join('/')}/`;
 }
 
 export const playtestRequest = (b: any): PartialOptions => ({ ...(typeof b.at === 'string' && b.at.trim() ? { at: b.at.trim() } : {}), ...(Number(b.peers) > 1 ? { peers: Math.min(4, Math.round(Number(b.peers))) } : {}), scenario: b.scenario, where: b.where, device: b.device === 'phone' ? 'phone' : undefined, mode: b.mode, review: b.review, focus: b.focus, reviewMode: ['full', 'verify', 'regression'].includes(b.reviewMode) ? b.reviewMode : undefined, seed: Number(b.seed) || undefined, options: b.options && typeof b.options === 'object' && !Array.isArray(b.options) ? b.options : undefined });
