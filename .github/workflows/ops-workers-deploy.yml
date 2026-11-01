@@ -1,0 +1,59 @@
+# Deploys one of Studio's Cloudflare Workers with wrangler (was: npx wrangler deploy on J's laptop):
+#   studio-edge  (hawkes-studio-edge: studio.hawkesgen.ai, beta: studio-beta.hawkesgen.ai)
+#   beta-sites   (hawkes-beta-sites: the beta sites on R2; one worker serves both lanes, so it is production only)
+# production runs only from main (environment "production" allows main only); beta only from beta.
+# Workers keep their secrets across deploys. put_edge_key also writes EDGE_KEY (from the environment's EDGE_KEY secret)
+# with `wrangler secret put` on stdin.
+# Needs CLOUDFLARE_API_TOKEN in the environment (Workers Scripts edit, Workers Routes edit, R2 edit) and CLOUDFLARE_ACCOUNT_ID.
+#   gh workflow run ops-workers-deploy.yml --repo jgriffith3433/hawkesstudio --ref main -f worker=studio-edge -f lane=production -f put_edge_key=false
+name: ops-workers-deploy
+on:
+  workflow_dispatch:
+    inputs:
+      worker:
+        type: choice
+        options: [studio-edge, beta-sites]
+      lane:
+        type: choice
+        options: [beta, production]
+        default: beta
+      put_edge_key:
+        description: also write EDGE_KEY (studio-edge only)
+        type: boolean
+        default: false
+permissions:
+  contents: read
+concurrency:
+  group: ops-workers-${{ inputs.worker }}-${{ inputs.lane }}
+  cancel-in-progress: false
+jobs:
+  deploy:
+    name: Deploy a worker
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: ${{ inputs.lane }}
+    steps:
+      - name: Check the inputs
+        env:
+          HAS_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN != '' }}
+          HAS_EDGE: ${{ secrets.EDGE_KEY != '' }}
+        run: |
+          if [ "${{ inputs.worker }}" = beta-sites ] && [ "${{ inputs.lane }}" = beta ]; then echo "beta-sites is one worker for both lanes: use lane=production"; exit 1; fi
+          if [ "${{ inputs.put_edge_key }}" = true ] && [ "${{ inputs.worker }}" != studio-edge ]; then echo "put_edge_key is for studio-edge only"; exit 1; fi
+          if [ "${{ inputs.put_edge_key }}" = true ] && [ "$HAS_EDGE" != true ]; then echo "EDGE_KEY is not set in the ${{ inputs.lane }} environment"; exit 1; fi
+          [ "$HAS_TOKEN" = true ] || { echo "CLOUDFLARE_API_TOKEN is not set in the ${{ inputs.lane }} environment"; exit 1; }
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Deploy
+        working-directory: server/${{ inputs.worker }}
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          EDGE_KEY: ${{ secrets.EDGE_KEY }}
+        run: |
+          npm install --no-audit --no-fund
+          envarg=""; [ "${{ inputs.lane }}" = beta ] && envarg="--env beta"
+          npx wrangler deploy $envarg
+          if [ "${{ inputs.put_edge_key }}" = true ]; then printf '%s' "$EDGE_KEY" | npx wrangler secret put EDGE_KEY $envarg; fi
