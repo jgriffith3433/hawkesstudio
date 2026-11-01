@@ -619,6 +619,7 @@ export function getProduct(id: string): Product {
  * An agent change is a pull request into main; main deploys itself to the control server once CI passes.
  * smoke: how agents.ts starts the changed service on a spare port for its smoke check (portEnv/dataEnv point it at
  * that port and a scratch data folder; health must answer { ok: true }; scripts are node --check'ed).
+ * checks run at the same time (agents.ts infraChecks), so none may depend on another's output; the smoke check follows.
  */
 export type Infra = {
   id: string;

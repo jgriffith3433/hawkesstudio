@@ -13,7 +13,7 @@ process.env.STUDIO_DATA = tmp;
 process.env.STUDIO_BETA_TICK_MS = '10';
 
 const { db, newId, J } = await import('../src/db.ts');
-const { betaTurn, supersede, absorbed, cancelIfQueued, waitingBetaRun, olderBuilds, notePush } = await import('../src/betaqueue.ts');
+const { betaTurn, supersede, absorbed, cancelIfQueued, waitingBetaRun, olderBuilds, notePush, mergesInFlight } = await import('../src/betaqueue.ts');
 const { runNotice } = await import('../src/followup.ts');
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -179,4 +179,54 @@ test('a superseded run is reported as skipped and fine, not failed', () => {
   assert.doesNotMatch(notice.replace('Nothing failed', ''), /fail/i);
   assert.deepEqual(absorbed(neu).map((o) => o.criteria), [['The door opens']], 'its criteria carry over');
   assert.equal(waitingBetaRun('told'), neu);
+});
+
+// After an agent change's merge (agents.ts approve: startBeta's merge), the quiet time is only worth it when another
+// change of the product is on its way into beta (J, 2026-11-01: 2 min after every merge, for nothing).
+test('after a merge, a Unity beta run builds at once when no other change of the product is on its way in', async () => {
+  // No changes table here (agents.ts not loaded): unknown counts as something in flight, and the wait is kept.
+  assert.deepEqual(mergesInFlight('lone', 0), ['(unknown)']);
+  db.exec('CREATE TABLE IF NOT EXISTS changes (id TEXT PRIMARY KEY, product TEXT NOT NULL, findings TEXT NOT NULL DEFAULT \'[]\', status TEXT NOT NULL, auto_merge TEXT, merged_at INTEGER, created INTEGER NOT NULL)');
+  const change = (product: string, status: string, o: { auto_merge?: string | null; merged_at?: number | null } = {}) => {
+    const id = newId('c');
+    db.prepare('INSERT INTO changes (id, product, status, auto_merge, merged_at, created) VALUES (?, ?, ?, ?, ?, ?)').run(id, product, status, o.auto_merge ?? null, o.merged_at ?? null, Date.now());
+    return id;
+  };
+  // Its own change merged just before the run started; others are elsewhere, waiting for a person, or another product's.
+  change('lone', 'merged', { auto_merge: 'merged', merged_at: Date.now() - 1000 });
+  change('lone', 'ready', { auto_merge: 'failed: a canon conflict' });
+  change('lone', 'working');
+  change('other', 'ready', { auto_merge: 'trying' });
+  const id = run('lone');
+  const t0 = Date.now();
+  assert.deepEqual(await betaTurn(id, 'lone', { quiet: 60_000, gen: fakeGen({}), afterMerge: true }), { go: true });
+  assert.ok(Date.now() - t0 < 5_000, 'no quiet time');
+  // Not after a merge (a push from J's PC, the fast lane): the quiet time as before.
+  const pushed = run('lone');
+  const t1 = Date.now();
+  assert.deepEqual(await betaTurn(pushed, 'lone', { quiet: 300, gen: fakeGen({}) }), { go: true });
+  assert.ok(Date.now() - t1 >= 290, 'waited the quiet time');
+});
+
+test('after a merge, another change of the product ready to merge (or merged since) keeps the wait, and its run takes over', async () => {
+  db.exec('CREATE TABLE IF NOT EXISTS changes (id TEXT PRIMARY KEY, product TEXT NOT NULL, findings TEXT NOT NULL DEFAULT \'[]\', status TEXT NOT NULL, auto_merge TEXT, merged_at INTEGER, created INTEGER NOT NULL)');
+  const other = newId('c');
+  db.prepare('INSERT INTO changes (id, product, status, auto_merge, created) VALUES (?, ?, ?, ?, ?)').run(other, 'pair', 'ready', 'trying', Date.now());
+  const first = run('pair');
+  const said: string[] = [];
+  let went = false;
+  const p = betaTurn(first, 'pair', { quiet: 60_000, gen: fakeGen({}), afterMerge: true, onWait: (d) => said.push(d) }).then((t) => { went = true; return t; });
+  await sleep(80);
+  assert.equal(went, false, 'waits while the other change merges');
+  assert.match(said[0], new RegExp(`waiting \\d+ s for more pushes .*: ${other} is on its way into beta too`));
+  // It merged (approve: merged_at, then status), and its beta run hasn't started yet: still waiting.
+  db.prepare(`UPDATE changes SET status = 'merged', auto_merge = 'merged', merged_at = ? WHERE id = ?`).run(Date.now(), other);
+  assert.deepEqual(mergesInFlight('pair', runRow(first).started), [other], 'merged after this run started');
+  await sleep(50);
+  assert.equal(went, false);
+  // Its beta run starts: the waiting one steps aside, and the newer one (nothing else coming) builds at once.
+  const second = run('pair');
+  assert.deepEqual(await p, { superseded: second });
+  assert.deepEqual(mergesInFlight('pair', runRow(second).started), []);
+  assert.deepEqual(await betaTurn(second, 'pair', { quiet: 60_000, gen: fakeGen({}), afterMerge: true }), { go: true });
 });

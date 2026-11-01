@@ -142,6 +142,16 @@ async function fastlaneNow(productId: string, message: string, { origin = null, 
   if (out.files.length > FAST_FILES() || out.lines > FAST_LINES()) return refuse(`too big for the fast lane (${out.files.length} files, ${out.lines} lines; at most ${FAST_FILES()} and ${FAST_LINES()}): ask an agent (studio_task)`);
   const bad = protectedFiles(status);
   if (bad.length) return refuse(`it touches files the fast lane never changes: ${bad.join(', ')}`);
+  // Content gets the canon check (canon.ts), an AI call on the committed diff: it starts now and runs alongside the
+  // checks below rather than after them. Both still have to pass, and a failed check is still what the refusal names.
+  const { roleOf } = await import('./agents.ts');
+  let canon: Promise<any> | null = null;
+  if (roleOf({ request: `${message} ${out.commits.join(' ')}` }) === 'content') {
+    const { canonCheck, CONTENTISH } = await import('./canon.ts');
+    const files = out.files.filter((f) => CONTENTISH.test(f));
+    const diff = files.length ? git(dir, ['diff', `${base}...HEAD`, '--', ...files]).out : '';
+    canon = Promise.resolve().then(() => canonCheck(p.id, diff, message, { request: message })).catch((e: any) => ({ ok: true, summary: `couldn't check: ${e.message}`, conflicts: [] }));
+  }
   // The product's checks, as the sandbox user.
   for (const k of p.checks ?? []) {
     const cdir = path.join(dir, path.relative(top(p), k.dir));
@@ -151,12 +161,9 @@ async function fastlaneNow(productId: string, message: string, { origin = null, 
     out.checks.push({ cmd: k.cmd, ok: r.ok, seconds: Math.round(r.ms / 1000), out: r.ok ? undefined : r.out.slice(-2500) });
     if (!r.ok) return refuse(`the check "${k.cmd}" failed (see checks)`);
   }
-  // Content gets the canon check (canon.ts); a contradiction stops it.
-  const { roleOf } = await import('./agents.ts');
-  if (roleOf({ request: `${message} ${out.commits.join(' ')}` }) === 'content') {
-    const { canonCheck, CONTENTISH } = await import('./canon.ts');
-    const files = out.files.filter((f) => CONTENTISH.test(f));
-    out.canon = await canonCheck(p.id, files.length ? git(dir, ['diff', `${base}...HEAD`, '--', ...files]).out : '', message, { request: message }).catch((e: any) => ({ ok: true, summary: `couldn't check: ${e.message}`, conflicts: [] }));
+  // A contradiction with the canon stops it.
+  if (canon) {
+    out.canon = await canon;
     if (out.canon.ok === false) return refuse(`it contradicts the canon: ${out.canon.conflicts.map((c: any) => `${c.entry} (${c.why})`).join('; ')}`);
   }
   // A fast-forward of beta, never forced, never main.
