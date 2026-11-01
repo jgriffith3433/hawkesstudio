@@ -44,6 +44,17 @@ export function lastJMessage(conversation: string | null | undefined) {
   return null;
 }
 
+/**
+ * A sandboxed go live (Talk) that only the project's auto policy lets through: the owner's latest message doesn't ask
+ * for it. Then it goes live on auto's terms only: beta's playtests passed (server.ts checks golive-policy holdLine).
+ */
+export function goesLiveOnAutoOnly(req: http.IncomingMessage, product: string): boolean {
+  if (requestUser(req) !== 'agent') return false;
+  const conv = String(req.headers['x-talk-conversation'] ?? '') || null;
+  const P = goLivePolicy();
+  return P.policyOf(product).policy === 'auto' && !P.asksToGoLive(lastJMessage(conv)?.text, product);
+}
+
 /** Whether J's newest message has these exact words (as a phrase, not inside a longer word). */
 export function jTyped(conversation: string | null | undefined, words: string) {
   const m = lastJMessage(conversation);

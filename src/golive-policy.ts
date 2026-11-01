@@ -4,7 +4,8 @@
 //
 // Each project has a go-live policy its owner sets in their own words through Talk:
 //   auto  "keep going live", "ship it when it's ready": Studio goes live by itself whenever beta's newest playtested
-//         commit passes its checks (the go-live plan has no blockers), and Talk may take it live without asking again.
+//         commit passes its checks (the go-live plan has no blockers) and every playtest of that commit passed with no
+//         review calling it broken (playtestHolds), and Talk may take it live on the same terms without asking again.
 //   hold  "hold off", "don't ship yet": nothing goes live until they say so.
 //   ask   (the default) Talk goes live when the owner's message asks for it in plain words ("go live", "ship it").
 // The plan's checks (beta playtested at that exact commit, nothing broken, nothing to merge) stay: they're what make
@@ -30,6 +31,33 @@ export function setPolicy(product: string, policy: Policy, by: string, words?: s
   return policyOf(product);
 }
 
+/** One playtest of the beta commit as the go-live plan lists it (deploy.ts playOf). */
+export type PlayedTest = { name: string; status: string; outcome: string | null; detail?: string | null; verdict: string | null; summary?: string | null; blockers?: string[] };
+
+/**
+ * Why beta can't go live without a person (J, 2026-11-01: "Change first, then auto"): on policy auto, every playtest of
+ * the exact beta commit has to have passed (done, outcome won or done), and no review of it may say "broken" or find a
+ * blocker. A failed, stopped or inconclusive playtest (no GPU, Studio restarting mid-play) holds it until beta plays
+ * clean. The plan shows these as warnings, so the owner can still take it live in their own words. [] when it may go.
+ */
+export function playtestHolds(tested: PlayedTest[] | null | undefined, short?: string | null): string[] {
+  const out: string[] = [];
+  const at = short ? ` on ${short}` : '';
+  if (!tested?.length) return [`beta hasn't been playtested${at} yet`];
+  for (const t of tested) {
+    if (t.status !== 'done' || !['won', 'done'].includes(String(t.outcome))) out.push(`playtest ${t.name}${at} ${t.status === 'done' ? `ended "${t.outcome}"` : t.status === 'skipped' ? 'was inconclusive' : t.status === 'stopped' ? 'was stopped' : 'failed'}${t.detail ? ` (${String(t.detail).slice(0, 160)})` : ''}`);
+    if (t.verdict === 'broken') out.push(`the review of ${t.name} said "broken"${t.summary ? `: ${String(t.summary).slice(0, 160)}` : ''}`);
+    if (t.blockers?.length) out.push(`the review of ${t.name} found ${t.blockers.length} blocker(s): ${t.blockers.join('; ').slice(0, 200)}`);
+  }
+  return out;
+}
+
+/** The plan's holds as one line: "waits until beta plays clean: ...". null when nothing holds it. */
+export function holdLine(plan: any): string | null {
+  const holds = playtestHolds(plan?.tested?.playtests, plan?.tested?.sha ?? plan?.beta?.short);
+  return holds.length ? `Going live by itself waits until beta plays clean: ${holds.join('; ')}. Run beta's playtest again (studio beta), or the owner can say "go live" to ship it anyway.` : null;
+}
+
 const NO = /\b(don'?t|do not|not yet|hold( off)?|wait|stop|pause|never|no)\b/i;
 /** Whether a message asks to go live, in plain words ("go live", "ship it", "take it live", "deploy", "DEPLOY x"). */
 export function asksToGoLive(text: string | null | undefined, product?: string): boolean {
@@ -51,8 +79,8 @@ export function asksToRollBack(text: string | null | undefined, product?: string
 
 /**
  * After beta was built and playtested: when the owner said to keep going live (policy auto), go live with what passed.
- * Nothing new, or the plan says it can't go (not playtested at that commit, something broken, main ahead): it waits,
- * and says why in the log. Never throws (it runs at the end of builds and beta runs).
+ * Nothing new, the plan says it can't go (not playtested at that commit, main ahead), or a playtest of that commit
+ * didn't pass or was reviewed as broken (playtestHolds): it waits, and says why in the log. Never throws (it runs at the end of builds and beta runs).
  */
 export async function autoGoLive(productId: string, why: string): Promise<{ went?: string; waits?: string }> {
   try {
@@ -73,6 +101,12 @@ export async function autoGoLive(productId: string, why: string): Promise<{ went
     if (plan.blockers?.length) {
       console.log(`[golive] ${p.id}: not going live by itself yet (${why}): ${plan.blockers.join(' | ').slice(0, 400)}`);
       return { waits: plan.blockers.join(' ') };
+    }
+    // Only a beta whose playtests passed goes live with no one approving it.
+    const held = holdLine(plan);
+    if (held) {
+      console.log(`[golive] ${p.id}: not going live by itself yet (${why}): ${held.slice(0, 400)}`);
+      return { waits: held };
     }
     const { op } = queueLive('golive', { product: p.id, confirm: plan.confirm, by: `Studio (the owner said to keep going live${pol.words ? `: "${pol.words.slice(0, 80)}"` : ''})`, beta: plan.beta?.sha });
     console.log(`[golive] ${p.id}: going live by itself (${why}): ${op.id}`);
