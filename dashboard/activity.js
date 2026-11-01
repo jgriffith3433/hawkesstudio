@@ -131,7 +131,7 @@ if (typeof document !== 'undefined') (() => {
     const brain = c.harness_label || c.harness
       ? ` <span class="pill" title="${esc([c.role, c.harness_label || c.harness, c.model].filter(Boolean).join(' · '))}">${esc(c.harness_label || c.harness)}${c.model ? ` · ${esc(c.model)}` : ''}</span>`
       : '';
-    return `<div class="act-item">
+    return `<div class="act-item" data-key="c:${esc(c.id)}${done ? ':done' : ''}">
       <div class="act-top">${ICON[c.status] ?? '•'} <b>${esc(c.productName)}</b> <span class="pill ${c.status === 'ready' ? 'ship' : c.status === 'failed' ? 'failed' : ''}">${esc(c.status)}</span>${brain}<span class="act-time">${done ? `${ago(c.at)}` : since(c.started)}</span></div>
       <div class="act-title">${esc(c.title)}</div>
       ${stagesHtml(c)}
@@ -160,7 +160,7 @@ if (typeof document !== 'undefined') (() => {
       ${p.notes.map((n) => `<div class="act-step">➕ ${esc(n.text)}</div>`).join('')}`;
   }
   function runHtml(r, done = false) {
-    return `<div class="act-item">
+    return `<div class="act-item" data-key="r:${esc(r.id)}${done ? ':done' : ''}">
       <div class="act-top">${ICON[r.status] ?? '•'} <b>${esc(r.kind)}${r.where === 'live' ? ' (live)' : ''}</b> ${esc(r.products.join(', '))}<span class="act-time">${done ? ago(r.at) : since(r.started)}</span></div>
       <div class="act-now">${esc(r.detail ?? '')}${r.steps.total ? ` · ${r.steps.done}/${r.steps.total} steps${r.steps.failed ? `, ${r.steps.failed} failed` : ''}` : ''}</div>
       ${planHtml(r)}
@@ -321,7 +321,7 @@ if (typeof document !== 'undefined') (() => {
     if (s === drawn && !force) return;
     drawn = s;
     const blocks = a.loop?.blocks ?? [];
-    el('#actBody').innerHTML = [
+    studioPatch(el('#actBody'), [
       blocks.length ? `<div class="act-item act-warn"><div class="act-top">⚠ <b>Studio froze ${blocks.length} time(s) in the last hour</b></div><div class="act-now">${blocks.slice(0, 3).map((b) => `${new Date(b.at).toLocaleTimeString()}: ${(b.ms / 1000).toFixed(1)} s${b.where ? ` ${esc(b.where.slice(0, 200))}` : ''}${b.running.length ? ` (during ${esc(b.running.join('; ').slice(0, 160))})` : ''}`).join('<br>')}</div></div>` : '',
       (a.ops?.length || a.opsDone?.length) ? section('Going live, rollbacks, merges', a.ops.length, a.ops.map(opHtml).join('') + (a.opsDone.length ? `<details class="act-recent"><summary class="meta">finished today (${a.opsDone.length})</summary>${a.opsDone.map(opHtml).join('')}</details>` : '')) : '',
       section('Agents', a.changes.length, a.changes.map((c) => changeHtml(c)).join('')),
@@ -334,7 +334,7 @@ if (typeof document !== 'undefined') (() => {
         return `<div class="act-item"><div class="act-top">💬 <a href="?conversation=${esc(t.id)}#talk" data-talk="${esc(t.id)}">${esc(t.title ?? 'New conversation')}</a><span class="act-time">${since(t.since)}</span></div><div class="act-now">${t.auto ? `${who} is explaining results Studio brought back` : `${who} is answering`}</div></div>`;
       }).join('')) : '',
       a.recent.length ? `<details class="act-recent" ${el('.act-recent')?.open !== false ? 'open' : ''}><summary><b>Finished in the last 15 min</b> <span class="meta">${a.recent.length}</span></summary>${a.recent.map((x) => (x.type === 'change' ? changeHtml(x, true) : runHtml(x, true))).join('')}</details>` : '',
-    ].join('');
+    ].join(''));
     mountPlayers();
   }
 

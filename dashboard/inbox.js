@@ -5,13 +5,13 @@ let ibItems = [];
 
 function ibCard(x) {
   // An Approve / Deny card (approval.js): J's tap decides it; no options or free text.
-  if (x.kind === 'approval') return `<div class="ib-card ib-approval" data-ib="${esc(x.id)}">${approvals.html(x.approval)}${x.conversation ? `<div class="meta"><a href="/?conversation=${esc(x.conversation)}#talk">Conversation</a></div>` : ''}</div>`;
+  if (x.kind === 'approval') return `<div class="ib-card ib-approval" data-ib="${esc(x.id)}" data-key="ib:${esc(x.id)}">${approvals.html(x.approval)}${x.conversation ? `<div class="meta"><a href="/?conversation=${esc(x.conversation)}#talk">Conversation</a></div>` : ''}</div>`;
   const [label, pill] = IB_KIND[x.kind] ?? [x.kind, ''];
   const rec = (o) => x.recommendation && (o === x.recommendation || x.recommendation.toLowerCase().startsWith(o.toLowerCase()));
   const options = x.options.length ? x.options : x.recommendation ? [x.recommendation] : [];
   const links = x.links.map((l) => (l.video ? `<a href="#" data-video="${file(l.video)}">▶ ${esc(l.label)}</a>` : `<a href="${esc(l.url)}"${l.url.startsWith('#') ? '' : ' target="_blank"'}>${esc(l.label)}</a>`));
   if (x.conversation) links.push(`<a href="/?conversation=${esc(x.conversation)}#talk">Conversation</a>`);
-  return `<div class="ib-card" data-ib="${esc(x.id)}">
+  return `<div class="ib-card" data-ib="${esc(x.id)}" data-key="ib:${esc(x.id)}">
     <div class="ib-head"><span class="pill ${pill}">${esc(label)}</span>${x.productName ? ` <b>${esc(x.productName)}</b>` : ''}</div>
     <h4>${esc(x.title)}</h4>
     <div class="status-line">Holding up ${esc(x.blocks)} · waiting ${esc(ago(x.since).replace(' ago', '') || 'just now')}</div>
@@ -36,8 +36,9 @@ async function loadInbox() {
   if (document.activeElement?.matches?.('#inbox .ib-card input') && document.activeElement.value) return;
   const list = r.items.length ? r.items.map(ibCard).join('') : '<div class="empty">Nothing is waiting on you. 🎉 Decisions from Talk, the PM and the agents, GPU budgets, merges only you can make and milestones to playtest all land here, the most blocking first.</div>';
   // Unchanged: left alone, so a card isn't swapped out from under a thumb mid-tap (the stream refetches often).
-  if (list !== ibDrawn) { $('#ibList').innerHTML = list; ibDrawn = list; }
-  $('#ibAnswered').innerHTML = r.answered.length ? `<summary class="meta">Answered lately (${r.answered.length})</summary>${r.answered.map((a) => `<div class="test"><span class="name">${esc(a.title)}</span><span class="detail">${esc(String(a.answer ?? '').slice(0, 200))} · <b>by ${esc(a.by ?? '?')}</b> · ${ago(a.at)} · ${esc(a.id)}</span></div>`).join('')}` : '';
+  // Changed: redrawn in place (patch.js), so the cards J isn't touching stay put and so does the page.
+  if (list !== ibDrawn) { studioPatch($('#ibList'), list); ibDrawn = list; }
+  studioPatch($('#ibAnswered'), r.answered.length ? `<summary class="meta">Answered lately (${r.answered.length})</summary>${r.answered.map((a) => `<div class="test"><span class="name">${esc(a.title)}</span><span class="detail">${esc(String(a.answer ?? '').slice(0, 200))} · <b>by ${esc(a.by ?? '?')}</b> · ${ago(a.at)} · ${esc(a.id)}</span></div>`).join('')}` : '');
 }
 
 function setInboxCount(n, walkAway) {

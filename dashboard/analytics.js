@@ -217,7 +217,7 @@
     };
     const list = [...o.products].sort((a, b) => Number(b.hasData) - Number(a.hasData) || (b['7d']?.visitors ?? 0) - (a['7d']?.visitors ?? 0));
     el.dataset.view = 'overview';
-    el.innerHTML = `${filterBar('')}${total}<div class="an-cards">${list.map(card).join('')}</div><p class="meta">Numbers are the ${F.env === 'all' ? 'live, beta and preview sites together' : `${F.env} site${F.env === 'live' ? 's' : ''}`}${F.bots || F.internal ? `, with ${[F.bots && 'bots', F.internal && 'your own devices'].filter(Boolean).join(' and ')} included` : ', without bots or your own devices'}. Tap a game for everything about it.</p><div id="anPlayers"></div>`;
+    studioPatch(el, `${filterBar('')}${total}<div class="an-cards">${list.map(card).join('')}</div><p class="meta">Numbers are the ${F.env === 'all' ? 'live, beta and preview sites together' : `${F.env} site${F.env === 'live' ? 's' : ''}`}${F.bots || F.internal ? `, with ${[F.bots && 'bots', F.internal && 'your own devices'].filter(Boolean).join(' and ')} included` : ', without bots or your own devices'}. Tap a game for everything about it.</p><div id="anPlayers" data-patch-keep></div>`);
     for (const x of o.products) players.names[x.product] = x.name;
     loadPlayers(my);
   }
@@ -251,7 +251,7 @@
     const bots = (p.bots ?? []).reduce((a, b) => a + b.sessions, 0);
     const botLine = bots ? ` Left out as bots: ${num(bots)} sessions (${p.bots.slice(0, 6).map((b) => `${esc(b.reason)} ${num(b.sessions)}`).join(', ')}).` : '';
     const reading = `${num(p.real)} ${p.real === 1 ? 'player' : 'players'} who aren't you or bots (${num(p.realSessions)} sessions, ${num(p.engagedSessions)} of them engaged: 10 s or more of play, or 2 or more pages), and ${num(p.me)} marked as you, in the last 30 days.${botLine} One row is one network (a Wi-Fi, a phone's data connection): private windows and every browser on it are the same row. Tap <b>That's me</b> on yours, <b>Not a person</b> on a bot that got through: those sessions, and every later one from that network or those browsers, stop counting everywhere.`;
-    el.innerHTML = box('players-all', 'Players: who is who', reading,
+    studioPatch(el, box('players-all', 'Players: who is who', reading,
       `<p class="meta"><label><input type="checkbox" data-an-showme${players.showMe ? ' checked' : ''}> show the ones marked as you and the bots</label></p>
       <div class="an-players">${table([
         { h: 'Who', f: who },
@@ -261,7 +261,7 @@
         { h: 'Errors', n: true, f: (x) => num(x.errors) },
         { h: 'Last seen', n: true, f: (x) => ago(x.last) },
         { h: '', f: btn },
-      ], list.slice(0, 200), players.showMe ? 'Nobody yet.' : 'Nobody but you yet.', { rowAttr: (x) => (x.me ? ' class="me"' : x.bot ? ' class="botrow"' : '') })}</div>`, true);
+      ], list.slice(0, 200), players.showMe ? 'Nobody yet.' : 'Nobody but you yet.', { rowAttr: (x) => (x.me ? ' class="me"' : x.bot ? ' class="botrow"' : '') })}</div>`, true));
   }
 
   // ------------------------------------------------------------- a product's page
@@ -289,8 +289,9 @@
     for (const x of d.traffic?.countries ?? []) if (x.value && x.value !== '(none)') known.countries.add(x.value);
     last = { d, p, bl, list, ins };
     el.dataset.view = product;
-    el.innerHTML = render(product, last);
+    studioPatch(el, render(product, last));
     if (openSession) loadSession(product, openSession);
+    else $('#anSession')?.replaceChildren(); // its contents are kept across redraws (data-patch-keep): none open, none shown
   }
 
   function render(product, { d, p, bl, list, ins }) {
@@ -481,7 +482,7 @@
         { h: 'Account', f: (x) => (x.user_id ? esc(x.user_id) : '<span class="meta">–</span>') },
         { h: 'Played', n: true, f: (x) => dur(x.active_ms / 1000) }, { h: 'Levels done', n: true, f: (x) => num(x.levels_done) }, { h: 'Deaths', n: true, f: (x) => num(x.deaths) }, { h: 'Errors', n: true, f: (x) => num(x.errors) }, { h: 'In the way', n: true, f: (x) => num(x.frustrations) },
         { h: 'Ended on', f: (x) => esc([x.last_level != null && `level ${x.last_level}`, x.last_screen, x.last_event].filter(Boolean).join(' · ')) },
-      ], list.items ?? [], 'No sessions in this range.', { rowAttr: (x) => ` data-an-session="${esc(x.id)}"` })}<div id="anSession"></div>`, true));
+      ], list.items ?? [], 'No sessions in this range.', { rowAttr: (x) => ` data-an-session="${esc(x.id)}"` })}<div id="anSession" data-patch-keep></div>`, true));
 
     return `${head}<div class="an-sec-nav">${nav.map(([id, l]) => `<a href="#analytics/${esc(product)}" data-an-jump="an-${id}">${esc(l)}</a>`).join(' · ')}</div>${insights}<div class="an-grid">${S.join('')}</div>`;
   }
@@ -490,7 +491,8 @@
     openSession = id;
     const el = $('#anSession');
     if (!el) return;
-    el.innerHTML = '<div class="meta">Loading the session…</div>';
+    // Another session: "Loading" at once. The same one again (the 60 s refresh): it stays on screen until the new read is in.
+    if (el.__session !== id || !el.firstChild) { el.__session = id; el.innerHTML = '<div class="meta">Loading the session…</div>'; }
     let t;
     try {
       t = await api(`/api/analytics/${encodeURIComponent(product)}/sessions/${encodeURIComponent(id)}`);
@@ -500,10 +502,10 @@
     }
     const s = t.session;
     const brief = (o) => (o && Object.keys(o).length ? esc(Object.entries(o).map(([k, v]) => `${k}: ${typeof v === 'object' ? JSON.stringify(v) : v}`).join(', ').slice(0, 160)) : '');
-    el.innerHTML = `<h4>Session ${esc(s.id)} · ${esc(s.anon)}</h4>
+    studioPatch(el, `<h4>Session ${esc(s.id)} · ${esc(s.anon)}</h4>
       <div class="meta">${s.user_id ? `account ${esc(s.user_id)} · ` : ''}${esc(new Date(s.started).toLocaleString())} · ${dur((s.active_ms ?? 0) / 1000)} active · ${esc([s.device, s.browser, s.os, s.screen].filter(Boolean).join(' · '))} · ${flag(s.country)} ${esc([s.city, s.country].filter(Boolean).join(', '))}${s.referrer ? ` · from ${esc(s.referrer)}` : ''}${s.build ? ` · build ${esc(s.build)}` : ''}</div>
       ${table([{ h: 'At', n: true, f: (e) => (e.offsetMs == null ? '' : dur(e.offsetMs / 1000)) }, { h: 'Event', f: (e) => `<b>${esc(e.name)}</b>` }, { h: 'Screen · level', f: (e) => esc([e.screen, e.level != null && `level ${e.level}`].filter(Boolean).join(' · ')) }, { h: 'Details', f: (e) => brief(e.props) }], t.events, 'No events.')}
-      ${s.exit ? `<details open><summary class="meta">What was on screen when they left (the exit snapshot)</summary><pre>${esc(JSON.stringify(s.exit, null, 2))}</pre></details>` : '<div class="meta">No exit snapshot for this session.</div>'}`;
+      ${s.exit ? `<details open><summary class="meta">What was on screen when they left (the exit snapshot)</summary><pre>${esc(JSON.stringify(s.exit, null, 2))}</pre></details>` : '<div class="meta">No exit snapshot for this session.</div>'}`);
   }
 
   // ------------------------------------------------------------- events
@@ -538,7 +540,7 @@
     const th = t.closest('#anLevels th[data-sort]');
     if (th && last) {
       levelSort = { key: th.dataset.sort, dir: levelSort.key === th.dataset.sort ? -levelSort.dir : -1 };
-      body.innerHTML = render(shown, last);
+      studioPatch(body, render(shown, last));
       return;
     }
     const row = t.closest('[data-an-session]');

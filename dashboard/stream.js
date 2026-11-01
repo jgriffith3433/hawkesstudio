@@ -1,7 +1,7 @@
 // The push stream (GET /api/stream, src/stream.ts): one EventSource per page tells each part of the dashboard when
 // something it shows changed (talk, activity, inbox, changes, runs, ops), so they refetch only then instead of polling.
 // studioStream.on(topic, fn): fn gets the event ({ topic, ids?, count?, unseen? }), debounced per topic.
-// While the page is hidden events wait; coming back delivers each waiting topic once. A safety tick every 60 s (15 s
+// While the page is hidden, or the reader is scrolling or touching it (studioPatch.busy, patch.js), events wait; coming back delivers each waiting topic once. A safety tick every 60 s (15 s
 // while the stream is down) delivers every topic with { safety: true }; after a reconnect every topic gets { resync: true }.
 // The stream reconnects with backoff (2 s doubling to a minute). Loaded first, before app.js (which uses it at its top level); it needs nothing from the other scripts.
 const studioStream = (() => {
@@ -17,6 +17,8 @@ const studioStream = (() => {
   function deliver(topic) {
     timers.delete(topic);
     if (document.hidden) return; // stays queued until the page is visible
+    // The reader is scrolling or touching the page (patch.js): wait until they stop, so nothing redraws under their thumb.
+    if (typeof studioPatch !== 'undefined' && studioPatch.busy()) { timers.set(topic, setTimeout(() => deliver(topic), 250)); return; }
     const e = queued.get(topic);
     queued.delete(topic);
     for (const fn of handlers.get(topic) ?? []) try { fn(e); } catch (err) { console.warn(`[stream] ${topic}:`, err); }

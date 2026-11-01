@@ -125,19 +125,19 @@ if (typeof document !== 'undefined') (() => {
 
   function card(prod) {
     const p = plans.get(prod.id);
-    if (!p) return `<div class="gl-card" data-p="${esc(prod.id)}"><h3><span class="gl-light"></span>${esc(prod.name)}</h3>${links(prod)}<div class="meta">Checking beta and live…</div></div>`;
-    if (p.error) return `<div class="gl-card red" data-p="${esc(prod.id)}"><h3><span class="gl-light red"></span>${esc(prod.name)}</h3>${links(prod)}<div class="meta">Couldn't check: ${esc(p.error)}</div></div>`;
+    if (!p) return `<div class="gl-card" data-p="${esc(prod.id)}" data-key="gl:${esc(prod.id)}"><h3><span class="gl-light"></span>${esc(prod.name)}</h3>${links(prod)}<div class="meta">Checking beta and live…</div></div>`;
+    if (p.error) return `<div class="gl-card red" data-p="${esc(prod.id)}" data-key="gl:${esc(prod.id)}"><h3><span class="gl-light red"></span>${esc(prod.name)}</h3>${links(prod)}<div class="meta">Couldn't check: ${esc(p.error)}</div></div>`;
     // A customer's game with only its address (no repository): no beta here and nothing to send live from Studio.
     // Its beta and live addresses (edit them on the game), and a playtest of either: "Play beta" before it ships,
     // "Play live" after.
-    if (p.urlOnly) return `<div class="gl-card" data-p="${esc(prod.id)}"><h3><span class="gl-light"></span>${esc(prod.name)}</h3><div class="gl-links">${p.beta ? `<a class="beta" href="${esc(p.beta)}" target="_blank" rel="noopener"><b>Beta</b><small>${esc(p.beta)}</small></a>` : '<span class="gl-none">No beta address<small>add one with Edit</small></span>'}<a class="live" href="${esc(p.live)}" target="_blank" rel="noopener"><b>Live</b><small>${esc(p.live)}</small></a></div><div class="gl-buttons">${p.beta ? `<button class="small" data-glplay="local">Play beta</button>` : ''}<button class="small" data-glplay="live">Play live</button><button class="small" data-admin data-glrepo="${esc(prod.id)}">Edit</button></div><div class="meta">${esc(p.note)}</div><div class="meta gl-playmsg"></div></div>`;
+    if (p.urlOnly) return `<div class="gl-card" data-p="${esc(prod.id)}" data-key="gl:${esc(prod.id)}"><h3><span class="gl-light"></span>${esc(prod.name)}</h3><div class="gl-links">${p.beta ? `<a class="beta" href="${esc(p.beta)}" target="_blank" rel="noopener"><b>Beta</b><small>${esc(p.beta)}</small></a>` : '<span class="gl-none">No beta address<small>add one with Edit</small></span>'}<a class="live" href="${esc(p.live)}" target="_blank" rel="noopener"><b>Live</b><small>${esc(p.live)}</small></a></div><div class="gl-buttons">${p.beta ? `<button class="small" data-glplay="local">Play beta</button>` : ''}<button class="small" data-glplay="live">Play live</button><button class="small" data-admin data-glrepo="${esc(prod.id)}">Edit</button></div><div class="meta">${esc(p.note)}</div><div class="meta gl-playmsg"></div></div>`;
     // Beta couldn't be read (git failed, or no beta branch yet): say so, never "up to date".
     if (!p.beta || p.blockers.some((b) => b.startsWith('git:'))) {
       // The server has no checkout of the repo yet: one button clones it (the repo sync), then the plan is made again.
       const sx = fixing.get(p.product);
       const syncing = sx?.action === 'sync' && !sx.done && !sx.error;
       const sync = p.fix === 'sync' ? `<div class="gl-buttons"><button class="primary big" data-glfix="sync" title="${esc(FIX.sync.title)}"${syncing ? ' disabled' : ''}>${esc(syncing ? `${FIX.sync.busy}…` : FIX.sync.label)}</button></div>${sx?.action === 'sync' && sx.error ? `<div class="gl-done gl-fail">❌ Sync failed ${esc(ago(sx.errorAt))}: ${esc(String(sx.error).slice(0, 300))}</div>` : ''}` : '';
-      return `<div class="gl-card red" data-p="${esc(p.product)}"><h3><span class="gl-light red"></span>${esc(p.name)}</h3>${links(prod, p)}<div class="gl-status">${p.fix === 'sync' ? 'Not cloned on the server yet' : 'Couldn\'t compare beta with live'}</div><ul class="meta">${p.blockers.map((b) => `<li>${esc(b)}</li>`).join('')}</ul>${sync}</div>`;
+      return `<div class="gl-card red" data-p="${esc(p.product)}" data-key="gl:${esc(p.product)}"><h3><span class="gl-light red"></span>${esc(p.name)}</h3>${links(prod, p)}<div class="gl-status">${p.fix === 'sync' ? 'Not cloned on the server yet' : 'Couldn\'t compare beta with live'}</div><ul class="meta">${p.blockers.map((b) => `<li>${esc(b)}</li>`).join('')}</ul>${sync}</div>`;
     }
     const L = light(p);
     const up = ahead(p);
@@ -158,7 +158,7 @@ if (typeof document !== 'undefined') (() => {
     const okSince = Math.max(lastOk.get(p.product) ?? 0, ...p.tested.playtests.filter((t) => t.status === 'done' && t.outcome !== 'error').map((t) => t.when ?? 0));
     const showFx = FixResult.show(fx, { red: L.color === 'red', fix: p.fix && FIX[p.fix] ? p.fix : null, okSince });
     const fxRun = fx?.run ? ` · <a href="#runs" data-glrun="${esc(fx.run)}">the run</a>` : '';
-    return `<div class="gl-card ${L.color}" data-p="${esc(p.product)}">
+    return `<div class="gl-card ${L.color}" data-p="${esc(p.product)}" data-key="gl:${esc(p.product)}">
       <h3><span class="gl-light ${L.color}" title="${esc(L.text)}"></span>${esc(p.name)}</h3>
       <div class="gl-status ${up ? 'ahead' : 'same'}">${esc(status)}</div>
       <div class="gl-when">Live updated ${esc(when(lastLive))} · beta changed ${esc(when(p.beta?.date))}</div>
@@ -176,7 +176,7 @@ if (typeof document !== 'undefined') (() => {
         ${up && !run.length && !fix ? `<button class="primary big" data-admin data-glgo="deploy" data-guide="off" title="Shows the Approve card for going live; your tap on Approve is what goes live">Go live</button>` : ''}
         ${canRoll && !run.length ? `<button class="roll" data-admin data-glgo="rollback" data-guide="off" title="Shows the Approve card for rolling back to what was live before">Roll back</button>` : ''}
       </div>
-      <div class="gl-slot">${card ? approvals.html(card) : ''}</div>
+      <div class="gl-slot"${card ? '' : ' data-patch-keep'}>${card ? approvals.html(card) : ''}</div>
       <details><summary class="meta">Details</summary>
         <p>Live: ${p.main ? `<code>${esc(p.main.short)}</code> ${esc(p.main.title)}` : '<i>none</i>'}<br>Beta: ${p.beta ? `<code>${esc(p.beta.short)}</code> ${esc(p.beta.title)}` : '<i>none</i>'}</p>
         ${p.commits.map((c) => `<div class="meta"><code>${esc(c.short)}</code> ${esc(c.title)} · ${esc(c.author)} · ${esc(when(c.date))}</div>`).join('')}
@@ -189,18 +189,11 @@ if (typeof document !== 'undefined') (() => {
     </div>`;
   }
 
-  /** Redraws the cards, keeping open details and cards J is looking at. */
+  /** Redraws the cards in place (patch.js): open details, a card J made with a button (its slot keeps it) and the scroll position stay. */
   function draw() {
     const box = $('#glList');
-    const open = new Set([...box.querySelectorAll('.gl-card details[open]')].map((d) => d.closest('.gl-card').dataset.p));
-    const slots = new Map([...box.querySelectorAll('.gl-card')].map((c) => [c.dataset.p, c.querySelector('.gl-slot')?.innerHTML ?? '']));
-    box.innerHTML = products.map(card).join('') || '<div class="meta">No products.</div>';
-    $('#glInfra').innerHTML = INFRA.map((x) => `<div class="gl-card"><h3>${esc(x.name)}</h3><div class="gl-links">${siteLink('live', 'Live', x.live)}</div></div>`).join('');
-    for (const c of box.querySelectorAll('.gl-card')) {
-      if (open.has(c.dataset.p)) c.querySelector('details')?.setAttribute('open', '');
-      const s = c.querySelector('.gl-slot');
-      if (s && !s.innerHTML && slots.get(c.dataset.p)) s.innerHTML = slots.get(c.dataset.p);
-    }
+    studioPatch(box, products.map(card).join('') || '<div class="meta">No products.</div>');
+    studioPatch($('#glInfra'), INFRA.map((x) => `<div class="gl-card"><h3>${esc(x.name)}</h3><div class="gl-links">${siteLink('live', 'Live', x.live)}</div></div>`).join(''));
     const waiting = [...plans.values()].filter((p) => !p.error && ahead(p)).length;
     const blocked = blockedNow();
     $('#glFixAll').hidden = !blocked.length;

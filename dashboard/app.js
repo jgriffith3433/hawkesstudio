@@ -360,21 +360,23 @@ async function loadToday() {
   }
   const o = overview;
   const b = o.builder;
-  $('#status').innerHTML = [
+  studioPatch($('#status'), [
     `<span><span class="dot ${o.gen ? 'ok' : 'bad'}"></span>Hawkes Gen</span>`,
     // A customer's Studio has no build server of its own to show (src/tenancy.ts): the pill is J's.
     b && b.exists ? `<span><span class="dot ${b.state === 'running' ? 'ok' : b.state === 'stopped' ? '' : 'warn'}"></span>Build server: ${esc(b.state)}${b.stage ? ` · ${esc(b.stage.stage)}` : ''}</span>` : window.studioMe?.customer ? '' : '<span><span class="dot"></span>No build server</span>',
     o.run ? `<span><span class="dot warn"></span>Run ${esc(o.run.id)}: ${esc(o.run.detail)}</span>` : '',
-  ].join('');
+  ].join(''));
   $('#runInfo').textContent = o.run ? `A run is going (${o.run.id}).` : o.runs[0] ? `Last run ${ago(o.runs[0].started)}: ${o.runs[0].status}${o.runs[0].detail ? ` · ${o.runs[0].detail}` : ''}` : 'No runs yet.';
   $('#runDaily').disabled = $('#runSmoke').disabled = Boolean(o.run);
   // Problems first, then the rest in their usual order.
   const ps = o.products.map((p, i) => ({ p, i, h: health(p) })).sort((x, y) => x.h.rank - y.h.rank || x.i - y.i);
   const bad = ps.filter((x) => x.h.rank < 2);
   const daily = o.runs.find((r) => r.kind === 'daily');
-  $('#todayNow').innerHTML = `<div class="summary">${daily ? `The last daily run was ${esc(ago(daily.started))} (${esc(daily.status)}${daily.detail ? `: ${esc(daily.detail)}` : ''}). <a href="#report" data-goto="report">Its full report</a>.` : 'No daily run yet.'}
-    ${bad.length ? `<b>${bad.length === 1 ? '1 product needs' : `${bad.length} products need`} a look:</b> ${bad.map((x) => esc(x.p.name)).join(', ')}.` : o.products.length ? '<b>Nothing is broken.</b>' : ''}</div>`;
-  $('#cards').innerHTML = ps.map((x) => card(x.p, x.h)).join('');
+  // In place (patch.js): the page refetches whenever runs or agents' changes move, and a full redraw threw the cards away
+  // under J's thumb (their images loading again, Details closing, the page jumping back up on a phone).
+  studioPatch($('#todayNow'), `<div class="summary">${daily ? `The last daily run was ${esc(ago(daily.started))} (${esc(daily.status)}${daily.detail ? `: ${esc(daily.detail)}` : ''}). <a href="#report" data-goto="report">Its full report</a>.` : 'No daily run yet.'}
+    ${bad.length ? `<b>${bad.length === 1 ? '1 product needs' : `${bad.length} products need`} a look:</b> ${bad.map((x) => esc(x.p.name)).join(', ')}.` : o.products.length ? '<b>Nothing is broken.</b>' : ''}</div>`);
+  studioPatch($('#cards'), ps.map((x) => card(x.p, x.h)).join(''));
 }
 
 /** Beta, live and devtools links, and how developing on beta stands (dev.ts): the dev server and the working copy. */
@@ -428,7 +430,7 @@ function card(p, h = health(p)) {
   const git = `${p.git.dirty} uncommitted · ${p.git.ahead} unpushed${p.site ? ` · site ${p.site.dirty}/${p.site.ahead}` : ''}`;
   const video = p.playtests.map((t) => t.playtest?.data?.video).find(Boolean);
   const open = Object.entries(p.open).map(([k, n]) => `<span class="pill ${k}">${n} ${k}</span>`).join(' ');
-  return `<div class="card rank-${h.rank}" data-p="${esc(p.id)}">
+  return `<div class="card rank-${h.rank}" data-p="${esc(p.id)}" data-key="card:${esc(p.id)}">
     <h3>${esc(p.name)}${r ? `<span class="pill verdict ${r.verdict}">${r.verdict}</span>` : ''}</h3>
     <div class="status-line">${esc(h.text)}</div>
     ${r?.summary ? `<div class="summary">${esc(r.summary)}</div>` : ''}
@@ -692,10 +694,10 @@ document.addEventListener('click', async (e) => {
 let openRun = null;
 async function loadRuns() {
   const { runs } = await api('/api/runs?limit=50');
-  $('#runList').innerHTML = runs.map((r) => `<div class="run-row" data-run="${r.id}"><span>${icon(['done', 'running', 'skipped'].includes(r.status) ? r.status : 'failed')}</span><b>${esc(r.kind)}</b><span class="meta">${new Date(r.started).toLocaleString()}</span><span>${esc(r.detail ?? '')}</span><span class="meta" style="margin-left:auto">$${(r.cost ?? 0).toFixed(2)}</span></div>`).join('') || '<div class="empty">No runs yet.</div>';
+  studioPatch($('#runList'), runs.map((r) => `<div class="run-row" data-run="${r.id}" data-key="run:${esc(r.id)}"><span>${icon(['done', 'running', 'skipped'].includes(r.status) ? r.status : 'failed')}</span><b>${esc(r.kind)}</b><span class="meta">${new Date(r.started).toLocaleString()}</span><span>${esc(r.detail ?? '')}</span><span class="meta" style="margin-left:auto">$${(r.cost ?? 0).toFixed(2)}</span></div>`).join('') || '<div class="empty">No runs yet.</div>');
   if (openRun) {
     const r = await api(`/api/runs/${openRun}`);
-    $('#runDetail').innerHTML = `<div class="steps"><h3>${esc(r.id)} · ${esc(r.status)}</h3>${r.steps.map((s) => `<div class="step"><span>${icon(s.status)}</span><span>${esc(s.product)}</span><span>${esc(s.kind)}</span><span>${esc(s.name)}</span><span class="detail">${slowPill(s)}${esc(s.detail ?? '')}${s.job && !window.studioMe?.customer ? ` · <a href="${GEN}/#job/${s.job}" target="_blank">${esc(s.job)}</a>` : ''}</span></div>`).join('')}</div>`;
+    studioPatch($('#runDetail'), `<div class="steps"><h3>${esc(r.id)} · ${esc(r.status)}</h3>${r.steps.map((s) => `<div class="step"><span>${icon(s.status)}</span><span>${esc(s.product)}</span><span>${esc(s.kind)}</span><span>${esc(s.name)}</span><span class="detail">${slowPill(s)}${esc(s.detail ?? '')}${s.job && !window.studioMe?.customer ? ` · <a href="${GEN}/#job/${s.job}" target="_blank">${esc(s.job)}</a>` : ''}</span></div>`).join('')}</div>`);
   }
 }
 $('#runList').onclick = (e) => {
@@ -750,14 +752,14 @@ async function loadChanges() {
   // What waits on a person first (ready, failed), then what's running, then the rest.
   const first = (c) => (['ready', 'failed'].includes(c.status) ? 0 : ['working', 'verifying', 'revising', 'queued'].includes(c.status) ? 1 : 2);
   const list = r.changes.map((c, i) => ({ c, i })).sort((x, y) => first(x.c) - first(y.c) || x.i - y.i).map((x) => x.c);
-  $('#chList').innerHTML = list.length ? list.map((c) => {
+  studioPatch($('#chList'), list.length ? list.map((c) => {
     const v = c.verify;
     // A product change is playtested only on request ("Playtest this change"); not being playtested is plain info.
     const played = v && (v.playtest || (v.outcome && v.outcome !== 'not played'));
     const brainPill = c.harness_label || c.harness
       ? ` <span class="pill" title="${esc([c.role, c.harness_label || c.harness, c.model].filter(Boolean).join(' · '))}">${esc(c.harness_label || c.harness)}${c.model ? ` · ${esc(c.model)}` : ''}</span>`
       : '';
-    return `<div class="finding" data-cid="${c.id}"><div>
+    return `<div class="finding" data-cid="${c.id}" data-key="ch:${esc(c.id)}"><div>
       <h4>${CH_ICON[c.status] ?? ''} ${esc(c.title)} <span class="pill ${c.status === 'ready' ? 'ship' : c.status === 'failed' ? 'failed' : ''}">${esc(c.status)}</span>${brainPill}</h4>
       <div class="status-line">${esc(CH_WORDS[c.status] ?? c.status)}${c.product ? ` · ${esc(c.product)}` : ''}${c.detail ? `: ${esc(c.detail)}` : ''}</div>
       ${ChangeStages.barHtml(c.status, c.stage ?? {})}
@@ -780,7 +782,7 @@ async function loadChanges() {
         ${c.status === 'ready' && c.infra ? `<button class="small primary" data-admin data-change="${c.id}" data-act="approve" data-infra="1" data-guide="off" title="Merges it into main: ${esc(c.product)} deploys itself once CI passes (a restart).">Approve into main</button>` : c.status === 'ready' ? `<button class="small primary" data-change="${c.id}" data-act="approve" data-guide="off" title="Merges it into the beta branch (the beta site). Nothing goes live until you use Go live.">Approve into beta</button>` : ''}
         ${['ready', 'failed'].includes(c.status) ? `<button class="small" data-change="${c.id}" data-act="revise">Ask for changes</button>` : ''}
       </div></div></div>`;
-  }).join('') : '<div class="empty">No changes here. Agents start on new bugs after each daily run, or use "Fix with agent" in the Backlog.</div>';
+  }).join('') : '<div class="empty">No changes here. Agents start on new bugs after each daily run, or use "Fix with agent" in the Backlog.</div>');
   for (const d of $('#chList').querySelectorAll('details[data-key]')) if (open.has(d.dataset.key)) d.open = true;
   // #changes/<id> (the Activity panel's "log" link) opens that change's log once.
   const want = /^#changes\/(c_[0-9a-f]+)/.exec(location.hash)?.[1];
@@ -834,8 +836,8 @@ fetch('/api/health').then((r) => r.json()).then((h) => {
 function fillPlaytestBars(products) {
   for (const sel of document.querySelectorAll('.ptRunProduct')) {
     const cur = sel.value;
-    sel.innerHTML = products.map((p) => `<option value="${esc(p.id)}">${esc(p.name)}</option>`).join('');
-    if (cur) sel.value = cur;
+    studioPatch(sel, products.map((p) => `<option value="${esc(p.id)}">${esc(p.name)}</option>`).join(''));
+    if (cur && sel.value !== cur && [...sel.options].some((o) => o.value === cur)) sel.value = cur;
     sel.closest('.pt-run').hidden = !products.length;
   }
 }
