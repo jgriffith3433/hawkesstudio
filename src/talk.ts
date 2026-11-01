@@ -64,7 +64,7 @@ export type Turn = { cost: number; billing: 'subscription' | 'api'; ms?: number;
  * followup: the result of work this conversation started (followup.ts): Claude answers it on its own (studioSays).
  * voice: J said it on a call (speech recognition's words).
  */
-export type Message = { role: 'user' | 'assistant' | 'tool'; text: string; at: number; tool?: string; files?: Attachment[]; turn?: Turn; notice?: boolean; followup?: boolean; voice?: boolean; context?: string };
+export type Message = { role: 'user' | 'assistant' | 'tool'; text: string; at: number; tool?: string; files?: Attachment[]; turn?: Turn; notice?: boolean; followup?: boolean; voice?: boolean; context?: string; via?: 'mcp' };
 export type Conversation = { id: string; title: string | null; session: string | null; status: string; messages: Message[]; cost: number; created: number; updated: number | null; partial?: string | null; harness?: Harness; label?: string; model?: string };
 
 /** Effective model for Talk (Settings brain override unless routing picks it, env override, or the role's tuned model on the active harness). */
@@ -520,7 +520,14 @@ export function viewContext(v: unknown): string | null {
 }
 
 /** Sends J's message (with files already uploaded to Hawkes Gen); Claude answers in the background (poll getConversation). */
-export function say(id: string, text: string, files: Attachment[] = [], { voice = false, context }: { voice?: boolean; context?: unknown } = {}) {
+/**
+ * The note in front of a message that came through Studio's MCP (studio_talk): another Claude, an assistant the owner
+ * connected, wrote it, not the owner typing. Talk answers it like the owner's, but nothing in it counts as the owner's
+ * own words (guards.ts lastJMessage, memory.ts jSaid, the premium tier, guide's drive).
+ */
+export const MCP_NOTE = "[This message came through Studio's MCP: Claude, an assistant the owner connected, wrote it, not the owner typing. Answer it as you would the owner, plainly. Steps only the owner may decide (going live, rolling back, merging into main, spending, raising costs) still need the owner's own words or tap: say what is needed and stop.]";
+
+export function say(id: string, text: string, files: Attachment[] = [], { voice = false, context, via }: { voice?: boolean; context?: unknown; via?: 'mcp' } = {}) {
   const c = getConversation(id);
   if (!c) throw new Error('No such conversation');
   if (running.has(id)) throw new Error(`${brainLabel(runningCtx.get(id)?.harness)} is still answering`);
@@ -529,7 +536,7 @@ export function say(id: string, text: string, files: Attachment[] = [], { voice 
   if (!text.trim() && !files.length) throw new Error('Say something');
   const userAt = Date.now();
   const looking = viewContext(context);
-  c.messages.push({ role: 'user', text, at: userAt, ...(files.length ? { files } : {}), ...(voice ? { voice: true } : {}), ...(looking ? { context: looking } : {}) });
+  c.messages.push({ role: 'user', text, at: userAt, ...(files.length ? { files } : {}), ...(voice ? { voice: true } : {}), ...(looking ? { context: looking } : {}), ...(via ? { via } : {}) });
   if (!c.title) c.title = (text.trim() || files.map((f) => f.name).join(', ')).slice(0, 80);
   c.status = 'thinking';
   save(c);
@@ -543,7 +550,7 @@ export function say(id: string, text: string, files: Attachment[] = [], { voice 
   const known = memoryBlock({ role: 'talk', relevantOnly: true, text: `${text} ${notices.join(' ')}`.slice(0, 4000), maxChars: 2500, limit: 8, exclude: memoryBlock({ role: 'talk', stableOnly: true }).ids });
   const recall = known.text ? `\n\n[From the shared memory, matching this message (memory_get <id> for more)]\n${known.text}` : '';
   const seen = looking ? `\n\n[J is looking at ${looking} in the Studio dashboard: "this one" or "this" means it]` : '';
-  const prompt = `${notices.length ? `${notices.join('\n\n')}\n\n[J's message]\n` : ''}${text.trim() || 'See the attached files.'}${seen}${attached}${recall}`;
+  const prompt = `${notices.length ? `${notices.join('\n\n')}\n\n[${via ? 'The message' : "J's message"}]\n` : ''}${via ? `${MCP_NOTE}\n` : ''}${text.trim() || 'See the attached files.'}${seen}${attached}${recall}`;
   runTurn(id, prompt, userAt);
   return getConversation(id)!;
 }
@@ -688,7 +695,9 @@ by a speech voice, sentence by sentence as you write it, and he answers by talki
  * premium tier his own message asks for ("use Opus", "plan this with Fable"), else null (the role's tuned tier).
  */
 function turnTier(c: Conversation, auto: boolean): { tier: Tier; why: string } | null {
-  const last = auto ? null : c.messages.findLast((m) => m.role === 'user' && !m.notice)?.text ?? null;
+  const newest = auto ? null : c.messages.findLast((m) => m.role === 'user' && !m.notice);
+  // A message through Studio's MCP (via) is not the owner's own ask: no premium tier on its word.
+  const last = newest && !newest.via ? newest.text : null;
   return talkTier({ auto, pm: (c as any).kind === 'pm', text: last });
 }
 
@@ -742,16 +751,22 @@ function readLines(child: ChildLike, f: (m: any) => void) {
 function recap(c: Conversation, before: number) {
   const msgs = c.messages.filter((m) => m.at < before && m.role !== 'tool').slice(-30);
   if (!msgs.length) return '';
-  const lines = msgs.map((m) => `${m.role === 'user' ? 'J' : m.notice ? 'Studio' : 'You'}: ${m.text.replace(/\s+/g, ' ').slice(0, 1200)}`);
+  const lines = msgs.map((m) => `${m.role === 'user' ? (m.via ? 'Claude (via MCP)' : 'J') : m.notice ? 'Studio' : 'You'}: ${m.text.replace(/\s+/g, ' ').slice(0, 1200)}`);
   return `[This conversation continues from an earlier session that is no longer available. What was said so far, newest last:]\n${lines.join('\n')}\n\n[Now:]\n`;
 }
 
 /** A line Studio wrote because the harness stopped or couldn't answer (not the model's words). */
 export const isStopMarker = (m: Pick<Message, 'role' | 'text'>) => m.role === 'assistant' && /^\(\w+ (stopped|couldn't answer)\b/.test(m.text);
 
-/** Who started each running turn: J (his message) or Studio (a result, a PM turn). Attribution reads it (inbox.ts actor). */
-const turnOwner = new Map<string, 'J' | 'Studio'>();
-/** Who started the turn running in a conversation now ('J' or 'Studio'), or null when none runs. */
+/**
+ * Who started each running turn: J (his message), Studio (a result, a PM turn) or Claude (a message through Studio's
+ * MCP, studio_talk). Attribution reads it (inbox.ts actor); only J's turns act as J.
+ */
+type TurnOwner = 'J' | 'Studio' | 'Claude';
+const turnOwner = new Map<string, TurnOwner>();
+/** Who a turn that isn't Studio's belongs to: Claude when the newest message came through the MCP, else J. */
+const ownerOf = (c: Conversation | null | undefined, auto: boolean): TurnOwner => (auto ? 'Studio' : c?.messages.findLast((m) => m.role === 'user' && !m.notice)?.via ? 'Claude' : 'J');
+/** Who started the turn running in a conversation now ('J', 'Studio' or 'Claude'), or null when none runs. */
 export const turnBy = (id: string) => (running.has(id) ? turnOwner.get(id) ?? null : null);
 
 /** Runs one Claude Code turn in a conversation whose status is already "thinking" (in the call's process during a call). */
@@ -766,7 +781,7 @@ function runTurn(id: string, prompt: string, userAt: number, { auto = false, fre
   // Who pays: Claude Code says which key it uses when it starts (apiKeySource "none" = the subscription login).
   const ctx: TurnCtx = { userAt, auto, call: false, billing: billingKind, harness, model, done: false, err: '' };
   runningCtx.set(id, ctx);
-  turnOwner.set(id, auto ? 'Studio' : 'J');
+  turnOwner.set(id, ownerOf(c, auto));
   partial.delete(id);
   emit(id, { type: 'turn', auto });
   if (call) {
@@ -849,7 +864,7 @@ export function resumeTalk() {
       err: '',
     };
     runningCtx.set(r.id, ctx);
-    turnOwner.set(r.id, proc.auto ? 'Studio' : 'J');
+    turnOwner.set(r.id, ownerOf(getConversation(r.id), Boolean(proc.auto)));
     followTurn(r.id, new DetachedChild(proc.rec, { offset: proc.offset }), ctx, { fresh: true, session: null, started: proc.rec.started });
     out.push(r.id);
   }

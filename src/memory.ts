@@ -159,9 +159,10 @@ export function jSaid(conversation: string | null | undefined, quote: string | n
   } catch {
     return false;
   }
-  const msgs = (parse(r?.messages) ?? []) as { role: string; text: string; notice?: boolean }[];
+  const msgs = (parse(r?.messages) ?? []) as { role: string; text: string; notice?: boolean; via?: string }[];
   const q = norm(quote);
-  return msgs.some((m) => m.role === 'user' && !m.notice && norm(m.text).includes(q));
+  // A message through Studio's MCP (via) is another Claude's, not J's words.
+  return msgs.some((m) => m.role === 'user' && !m.notice && !m.via && norm(m.text).includes(q));
 }
 
 /** The status a new entry gets, by who writes it (or why it is refused). */

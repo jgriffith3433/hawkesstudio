@@ -128,7 +128,7 @@
       ? m.tool === 'guide' ? `<div class="talk-tool guide">${esc(m.text)}</div>` : `<div class="talk-tool">⚙ ${esc(m.text)}</div>`
       : m.notice
         ? `<div class="talk-msg assistant notice"><span class="talk-who">Studio</span>${md(m.text)}</div>`
-        : `<div class="talk-msg ${m.role}">${m.role === 'user' ? (m.voice ? '<span class="talk-voice" title="Said on a call">🎙</span>' : '') + esc(m.text).replace(/\n/g, '<br>') + fileChips(m.files) : md(m.text)}</div>`) + (turnMark(m.turn) ?? '');
+        : `<div class="talk-msg ${m.role}">${m.role === 'user' ? (m.voice ? '<span class="talk-voice" title="Said on a call">🎙</span>' : '') + (m.via ? '<span class="talk-via" title="Sent by Claude through Studio\'s MCP">via MCP · </span>' : '') + esc(m.text).replace(/\n/g, '<br>') + fileChips(m.files) : md(m.text)}</div>`) + (turnMark(m.turn) ?? '');
   }
 
   // A customer's Studio (window.studioMe.customer): their own games, not J's; and Talk is on the Team plan and up.

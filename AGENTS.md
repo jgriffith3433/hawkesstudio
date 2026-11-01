@@ -112,6 +112,7 @@ the service detached; restart it after changing `src/`. The MCP server (`bin/stu
 - `studio_costs` (what the studio costs: AWS, generation, Claude, per product, idle money; the budget)
 - `studio_resources` (the resource monitor: this server's memory, CPU and disks per process group, the fleet, agents' limits)
 - `studio_settings` (J's settings: calls, agents, PM, notifications, budgets; cost-raising changes need his quoted yes)
+- `studio_talk` (an assistant outside Studio talks with Talk: send a message, get Talk's answer, read a conversation; its messages are marked `via: mcp` and never count as J's own words in the guards, his quoted yes or the premium tier; Talk's own MCP server doesn't list it and the API refuses it from inside Talk; test `test/talk-mcp.test.ts`)
 - `studio_inbox` (J's Inbox: what's waiting on him, his answers given in Talk, filing a question instead of asking in prose)
 - `studio_approval` (an Approve / Deny card for anything needing J's OK: merges only he may make, go live, rollback,
   GPU budgets, cost-raising settings, yes/no decisions; Talk asks for one, only J's tap decides it)

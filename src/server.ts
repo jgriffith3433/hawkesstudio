@@ -523,9 +523,14 @@ const server = http.createServer(async (req, res) => {
     }
     if (route === '/api/talk' && method === 'POST') {
       const b = await readJson(req);
+      // via "mcp": another Claude writing through Studio's MCP (studio_talk). Never from inside Talk itself (its own
+      // MCP server sends X-Talk-Conversation): Talk doesn't message Talk.
+      const via = b.via === 'mcp' ? 'mcp' as const : undefined;
+      if (via && (origin || req.headers['x-talk-conversation'])) return send(res, 403, { error: "Talk can't message Talk: studio_talk is for an assistant outside Studio." });
+      if (via && b.conversation && !/^t_[0-9a-f]+$/.test(String(b.conversation))) return send(res, 400, { error: 'conversation: a Talk conversation id (t_...)' });
       const c = b.conversation ? getConversation(String(b.conversation)) : startConversation();
       if (!c) return send(res, 404, { error: 'no such conversation' });
-      return send(res, 200, say(c.id, String(b.message ?? ''), Array.isArray(b.files) ? b.files : [], { voice: b.voice === true, context: b.context }));
+      return send(res, 200, say(c.id, String(b.message ?? ''), Array.isArray(b.files) ? b.files : [], { voice: b.voice === true, context: b.context, via }));
     }
     // Calls (talk.ts, dashboard/call.js): start one (a new conversation without one), check in every 20 s, hang up;
     // the answer's text streams as server-sent events.

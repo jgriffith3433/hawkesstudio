@@ -26,7 +26,11 @@ import { requestUser } from './sandbox.ts';
 import * as GoLivePolicy from './golive-policy.ts';
 const goLivePolicy = () => GoLivePolicy;
 
-/** J's newest message in a conversation (not Studio's notices, not Claude's text), or null. */
+/**
+ * J's newest message in a conversation (not Studio's notices, not Claude's text), or null. When the newest message came
+ * through Studio's MCP (via: another Claude wrote it, studio_talk), that is null too: nothing counts as J's word until
+ * he writes again himself.
+ */
 export function lastJMessage(conversation: string | null | undefined) {
   if (!conversation) return null;
   let r: any;
@@ -35,8 +39,8 @@ export function lastJMessage(conversation: string | null | undefined) {
   } catch {
     return null;
   }
-  const msgs = (parse(r?.messages) ?? []) as { role: string; text: string; notice?: boolean; at: number }[];
-  for (let i = msgs.length - 1; i >= 0; i--) if (msgs[i].role === 'user' && !msgs[i].notice) return msgs[i];
+  const msgs = (parse(r?.messages) ?? []) as { role: string; text: string; notice?: boolean; at: number; via?: string }[];
+  for (let i = msgs.length - 1; i >= 0; i--) if (msgs[i].role === 'user' && !msgs[i].notice) return msgs[i].via ? null : msgs[i];
   return null;
 }
 
