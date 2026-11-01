@@ -265,3 +265,17 @@ test('an app with a beta server of its own still has its own builds published (H
   W.resetSmall();
   assert.equal((await page('/o/acme-1a2b/svc/b/release/1/')).status, 200);
 });
+
+test('a build row left "building" by a run that ended (stopped after restarts) never blocks a new build of that commit', async () => {
+  const { db } = await import('../src/db.ts');
+  C.saveProduct({ id: 'stuck', name: 'Stuck', engine: 'web', repo: 'acme/site', builds: [{ id: 'web', tool: 'static', playtest: false }] } as any);
+  const sha = betaOf['acme/site'];
+  db.prepare("INSERT INTO runs (id, kind, status, detail, products, options, started) VALUES ('r_dead', 'build', 'failed', 'stopped', '[\"stuck\"]', '{}', ?)").run(Date.now());
+  db.prepare("INSERT INTO builds (id, product, build, version, status, sha, ref, runner, target, run, started) VALUES ('b_dead', 'stuck', 'web', 1, 'building', ?, 'beta', 'studio', 'web', 'r_dead', ?)").run(sha, Date.now());
+  const r = (await B.startBuild('stuck', {}))!;
+  await r.done;
+  const run = await runOf(r.id);
+  assert.equal(run.status, 'done', JSON.stringify(run.steps.map((s: any) => s.detail)));
+  assert.doesNotMatch(run.steps[0].detail ?? '', /already building/);
+  assert.equal(B.buildHistory('stuck')[0].status, 'ready');
+});

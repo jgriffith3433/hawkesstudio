@@ -1293,6 +1293,7 @@ export function resumeRuns() {
       const why = `stopped: Studio restarted ${recent.length + 1} times in 30 minutes while this run was going, so it isn't resumed again (it may be what crashed it)`;
       db.prepare(`UPDATE steps SET status = 'failed', detail = ?, finished = ? WHERE status = 'running' AND run = ?`).run(why, Date.now(), r.id);
       db.prepare(`UPDATE runs SET status = 'failed', detail = ?, finished = ? WHERE id = ?`).run(why, Date.now(), r.id);
+      db.prepare(`UPDATE builds SET status = 'failed', detail = ?, finished = ? WHERE run = ? AND status = 'building'`).run(why, Date.now(), r.id);
       console.warn(`[studio] ${r.id}: ${why}`);
       continue;
     }
@@ -1317,6 +1318,7 @@ export function resumeRuns() {
     if (!body) {
       db.prepare(`UPDATE steps SET status = 'failed', detail = 'interrupted (Studio restarted)', finished = ? WHERE status = 'running' AND run = ?`).run(Date.now(), r.id);
       db.prepare(`UPDATE runs SET status = 'interrupted' WHERE id = ?`).run(r.id);
+      db.prepare(`UPDATE builds SET status = 'failed', detail = 'interrupted (Studio restarted)', finished = ? WHERE run = ? AND status = 'building'`).run(Date.now(), r.id);
       continue;
     }
     resuming.set(r.id, steps);

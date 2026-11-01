@@ -245,7 +245,9 @@ async function buildOne(run: string, p: Product, b: BuildSpec, o: StartOptions) 
     }
     // The same commit already building (a push, the nightly sync and a rebuild at once): not built twice (2026-10-31 review).
     if (!o.resume && !o.artifact && !o.change) {
-      const busy = db.prepare("SELECT version, run FROM builds WHERE product = ? AND build = ? AND sha = ? AND status = 'building' AND change IS NULL AND started > ? LIMIT 1").get(p.id, b.id, sha, Date.now() - 4 * 3600_000) as any;
+      // Only a build whose run is still going counts: a run stopped after restarts (pipeline.ts resumeRuns) left its row
+      // "building", which blocked every new build of that commit for 4 hours (2026-11-01, Hawkes Net for Unity's demo).
+      const busy = db.prepare("SELECT b.version, b.run FROM builds b JOIN runs r ON r.id = b.run WHERE b.product = ? AND b.build = ? AND b.sha = ? AND b.status = 'building' AND b.change IS NULL AND b.started > ? AND r.status = 'running' LIMIT 1").get(p.id, b.id, sha, Date.now() - 4 * 3600_000) as any;
       if (busy) { updateStep(step, { status: 'done', detail: `${sha.slice(0, 7)} is already building (${b.id} ${busy.version}, run ${busy.run})`, finished: true }); return; }
     }
     // An Actions build Studio was only asked for: start the workflow; it reports when it's built (a run of its own).
