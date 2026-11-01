@@ -6,7 +6,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
-import { PROJECTS, paths, addedRepoFolders } from './config.ts';
+import { PROJECTS, paths, addedRepoFolders, loadProducts, type Product } from './config.ts';
 import { gitAuthEnv, primeRepoToken, repoToken } from './ghtoken.ts';
 
 /** The GitHub repo of a folder under PROJECTS (its top-level folder in repoMap), for git's token. */
@@ -101,6 +101,32 @@ export async function syncRepo(folder: string, slug: string, branch = BRANCH, wa
 /** Megabytes of repo Studio clones on Cloud Run, where its disk is the instance's memory (STUDIO_CLONE_MAX_MB). */
 export const cloneMaxMb = () => Number(process.env.STUDIO_CLONE_MAX_MB) || 600;
 
+/** The words a refused clone starts with (agents' failed changes and runs' skipped steps say it). */
+export const TOO_BIG = "This repo is too big to work on in Studio's cloud server yet";
+
+/** GitHub's size of a repo in MB (what a clone downloads), cached per repo; null when GitHub doesn't say. */
+const sizes = new Map<string, { mb: number; at: number }>();
+const SIZE_TTL_MS = 30 * 60_000;
+export async function repoSizeMb(slug: string, fetcher: typeof fetch = fetch): Promise<number | null> {
+  const key = slug.toLowerCase();
+  const hit = sizes.get(key);
+  if (hit && Date.now() - hit.at < SIZE_TTL_MS) return hit.mb;
+  try {
+    const token = await repoToken(slug).catch(() => null);
+    const r = await fetcher(`${process.env.STUDIO_GITHUB_API ?? 'https://api.github.com'}/repos/${slug}`, { headers: { accept: 'application/vnd.github+json', 'user-agent': 'hawkes-studio', ...(token ? { authorization: `Bearer ${token}` } : {}) }, signal: AbortSignal.timeout(10_000) });
+    if (!r.ok) return null;
+    const kb = Number((await r.json() as any)?.size);
+    if (!Number.isFinite(kb)) return null;
+    const mb = Math.round(kb / 1024);
+    // Only a real answer is kept: not knowing (no token, GitHub down) asks again next time.
+    sizes.set(key, { mb, at: Date.now() });
+    return mb;
+  } catch { return null; }
+}
+
+/** Forgets the cached sizes (tests). */
+export const forgetRepoSizes = () => sizes.clear();
+
 /**
  * On Cloud Run, a repo bigger than Studio's memory disk can hold: why it isn't cloned (else null). A Unity repo of
  * a few GB filled the 2 GB customer Studio and every restart resumed the clone, a crash loop (2026-10-31). GitHub's
@@ -108,13 +134,58 @@ export const cloneMaxMb = () => Number(process.env.STUDIO_CLONE_MAX_MB) || 600;
  */
 export async function tooBigToClone(slug: string, fetcher: typeof fetch = fetch): Promise<string | null> {
   if (!process.env.K_SERVICE) return null;
-  try {
-    const token = await repoToken(slug).catch(() => null);
-    const r = await fetcher(`https://api.github.com/repos/${slug}`, { headers: { accept: 'application/vnd.github+json', ...(token ? { authorization: `Bearer ${token}` } : {}) }, signal: AbortSignal.timeout(10_000) });
-    if (!r.ok) return null;
-    const mb = Math.round(Number((await r.json() as any)?.size ?? 0) / 1024);
-    return mb > cloneMaxMb() ? `${slug} is about ${mb} MB, more than Studio can clone on its server (${cloneMaxMb()} MB): agent work on it runs in a build job or on your own machine, not inside Studio` : null;
-  } catch { return null; }
+  const mb = await repoSizeMb(slug, fetcher);
+  return mb !== null && mb > cloneMaxMb() ? `${TOO_BIG}: ${slug} is about ${mb} MB, more than Studio can clone on its server (${cloneMaxMb()} MB): agent work on it runs in a build job or on your own machine, not inside Studio` : null;
+}
+
+type CloneProduct = Pick<Product, 'id' | 'engine' | 'repo' | 'site'> & Partial<Pick<Product, 'github' | 'repos' | 'builds' | 'build'>>;
+
+/** A Unity project: a legacy products.json `build`, a `builds` entry with tool unity, or the unity engine. */
+export const isUnityProduct = (p: CloneProduct) => (p.engine as string) === 'unity' || Boolean(p.build) || Boolean(p.builds?.some((b) => b.tool === 'unity'));
+
+/** Every GitHub repo (owner/name) a product's work would clone: its repo, its site's and its other `repos`. */
+export function productSlugs(p: CloneProduct, map: Record<string, string> = safeRepoMap()): string[] {
+  const ofPath = (rel?: string) => {
+    const top = rel?.split(/[\\/]/)[0];
+    return top ? map[top] ?? null : null;
+  };
+  const all = [p.github, ofPath(p.repo), ofPath(p.site), ...(p.repos ?? []).map((r) => (r.folder ? map[r.folder] : null) ?? r.repo)];
+  return [...new Set(all.filter((s): s is string => Boolean(s) && /^[\w.-]+\/[\w.-]+$/.test(s!)))];
+}
+
+function safeRepoMap() {
+  try { return repoMap(); } catch { return {}; }
+}
+
+/**
+ * Whether a product is too big to clone on this host (null: go ahead). Only on Cloud Run, where the repo folder is the
+ * instance's memory: a Unity project (its repos run to GBs; Gen builds them from GitHub), or any repo it would clone
+ * over STUDIO_CLONE_MAX_MB by GitHub's size. A customer cell's Unity project has its builds in `builds` (asCustomerGame
+ * turns `build` into `source`), which the old guards missed: an agent change cloned a 3 GB repo and the cell restarted
+ * about once a minute for hours (2026-11-01). Off Cloud Run, always null.
+ */
+export async function cloneRefusal(p: CloneProduct, fetcher: typeof fetch = fetch): Promise<string | null> {
+  if (!process.env.K_SERVICE) return null;
+  if (isUnityProduct(p)) return `${TOO_BIG}: ${p.id} is a Unity project, and its repo doesn't fit the cloud server's disk (it is built from GitHub instead)`;
+  for (const slug of productSlugs(p)) {
+    const big = await tooBigToClone(slug, fetcher);
+    if (big) return big;
+  }
+  return null;
+}
+
+/**
+ * The last line of defence in the clone itself: on Cloud Run, a repo that only Unity projects use isn't cloned (one a
+ * web project shares still is, within the size limit).
+ */
+function unityOnlyRepo(folder: string, slug: string): string | null {
+  if (!process.env.K_SERVICE) return null;
+  let products: Product[];
+  try { products = loadProducts(); } catch { return null; }
+  const map = { ...safeRepoMap(), [folder]: slug };
+  const users = products.filter((p) => productSlugs(p, map).some((s) => s.toLowerCase() === slug.toLowerCase()));
+  const unity = users.filter(isUnityProduct);
+  return users.length && unity.length === users.length ? `${TOO_BIG}: ${slug} belongs to a Unity project (${unity.map((p) => p.id).join(', ')}), which is built from GitHub, not cloned here` : null;
 }
 
 async function syncGit(folder: string, slug: string, branch: string, want?: string): Promise<RepoResult> {
@@ -122,7 +193,7 @@ async function syncGit(folder: string, slug: string, branch: string, want?: stri
   if (!fs.existsSync(path.join(dir, '.git'))) {
     if (fs.existsSync(dir) && fs.readdirSync(dir).length) return { folder, slug, action: 'failed', detail: `${dir} exists and isn't a git repo` };
     await primeRepoToken(slug);
-    const big = await tooBigToClone(slug);
+    const big = unityOnlyRepo(folder, slug) ?? await tooBigToClone(slug);
     if (big) return { folder, slug, action: 'failed', detail: big };
     const c = await gitA(PROJECTS, ['clone', '--quiet', `https://github.com/${slug}.git`, folder], undefined, slug);
     if (!c.ok) return { folder, slug, action: 'failed', detail: c.err.split('\n').pop() ?? 'clone failed' };
