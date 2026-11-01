@@ -90,6 +90,11 @@ test('the token belongs to its card, and a wrong one is refused', async () => {
   assert.equal((await ap.requestApproval('decision', q1.id)).id, a1.id);
 });
 
+test('a GitHub setup card waits days, not 15 minutes', () => {
+  assert.equal(ap.ttlFor('github'), 7 * 24 * 60 * 60_000);
+  assert.equal(ap.ttlFor('deploy'), 15 * 60_000);
+});
+
 test('a card expires after 15 minutes', async () => {
   const q = pm.askJ('Park the boss fight?', { product: 'aptest', options: ['Yes', 'No'] });
   const a = await ap.requestApproval('decision', q.id);
