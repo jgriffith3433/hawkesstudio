@@ -8,7 +8,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 process.env.STUDIO_DATA = fs.mkdtempSync(path.join(os.tmpdir(), 'studio-restart-loop-'));
-const { resumeChanges, getChange, RESTART_LOOP } = await import('../src/agents.ts');
+const { resumeChanges, getChange, RESTART_LOOP, autoFixBlock } = await import('../src/agents.ts');
 const { db } = await import('../src/db.ts');
 const { resumeRuns, runRestarts } = await import('../src/pipeline.ts');
 await import('../src/builds.ts'); // its table, which a stopped run's builds are failed in
@@ -29,6 +29,41 @@ test('quick restarts at one step stop the change; far-apart ones start counting 
   assert.ok(resumed.includes('c_apart'));
   const row = db.prepare(`SELECT phase FROM changes WHERE id = 'c_apart'`).get() as { phase: string };
   assert.equal(JSON.parse(row.phase).restarts.n, 1);
+});
+
+test('a change with its work committed and its pull request open, cut off in its finish step, becomes ready, not failed', () => {
+  const at = Date.now() - 60_000;
+  seed('c_finish', { step: 'finish', since: 1, tip: 'abc1234def', restarts: { step: 'finish', n: RESTART_LOOP, at } });
+  db.prepare(`UPDATE changes SET pr = 36 WHERE id = 'c_finish'`).run();
+  seed('c_nopr', { step: 'finish', since: 1, tip: 'abc1234def', restarts: { step: 'finish', n: RESTART_LOOP, at } });
+  seed('c_agentloop', { step: 'agent', since: 1, restarts: { step: 'agent', n: RESTART_LOOP, at } });
+  db.prepare(`UPDATE changes SET pr = 37 WHERE id = 'c_agentloop'`).run();
+  const resumed = resumeChanges();
+  const done = getChange('c_finish')!;
+  assert.equal(done.status, 'ready');
+  assert.equal(done.verify.sha, 'abc1234def');
+  assert.ok(!resumed.includes('c_finish'));
+  // Without a pull request, or stuck before the finish, the loop still stops it.
+  assert.equal(getChange('c_nopr')!.status, 'failed');
+  assert.equal(getChange('c_agentloop')!.status, 'failed');
+});
+
+test('auto-fix skips a finding with an open pull request or two failures today, and starts others', () => {
+  const add = (id: string, finding: string, status: string, pr: number | null, created = Date.now()) =>
+    db.prepare(`INSERT INTO changes (id, product, findings, status, detail, log, created, pr) VALUES (?, 'nope', ?, ?, 'x', '[]', ?, ?)`).run(id, JSON.stringify([finding]), status, created, pr);
+  assert.equal(autoFixBlock('f_fresh'), null);
+  add('c_o1', 'f_openpr', 'ready', 40);
+  assert.match(autoFixBlock('f_openpr')!, /c_o1 already has pull request #40 open/);
+  add('c_m1', 'f_merged', 'merged', 41);
+  assert.equal(autoFixBlock('f_merged'), null);
+  add('c_x1', 'f_twice', 'failed', null);
+  assert.equal(autoFixBlock('f_twice'), null);
+  add('c_x2', 'f_twice', 'failed', null);
+  assert.match(autoFixBlock('f_twice')!, /failed 2 times today/);
+  // Failures from an earlier day don't count.
+  add('c_y1', 'f_old', 'failed', null, Date.now() - 3 * 86_400_000);
+  add('c_y2', 'f_old', 'failed', null, Date.now() - 3 * 86_400_000);
+  assert.equal(autoFixBlock('f_old'), null);
 });
 
 test("a resumed change whose project is gone fails plainly instead of an unhandled rejection", async () => {

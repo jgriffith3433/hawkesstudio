@@ -1601,7 +1601,7 @@ async function work(id: string, note?: string, answer?: string, resumed?: Phase 
         }
         fs.mkdirSync(WORK(), { recursive: true });
         // Agent branches start from beta (made from main the first time: pushing beta deploys nothing).
-        await critical(`making the worktree of ${id}`, async () => {
+        await checkoutSlot(() => critical(`making the worktree of ${id}`, async () => {
           // Studio on Cloud Run starts with no checkouts: the product's repo is cloned the first time it's needed.
           await ensureCloned(c.repo, c.slug);
           const beta = await ensureBeta(repoDir);
@@ -1617,10 +1617,12 @@ async function work(id: string, note?: string, answer?: string, resumed?: Phase 
           const has = git(repoDir, ['rev-parse', '--verify', '--quiet', `refs/heads/${c.branch}`]).ok;
           const w = await gitAsync(repoDir, ['worktree', 'add', ...(has ? [] : ['-b']), ...(has ? [c.worktree, c.branch] : [c.branch, c.worktree, `origin/${c.base}`])]);
           if (!w.ok) throw new Error(`worktree failed: ${w.err}`);
-        });
+        }));
         // A warm start: node_modules from a checkout installed for the same lockfile (warm.ts), else a fresh npm ci.
-        await warmDeps(c.worktree, c.repo, (s) => addLog(id, s));
-        await installCold(c.worktree, (dir, cmd) => sh(dir, cmd, { ...infraEnv({ keepGenKey: false }), PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1' }), (s) => addLog(id, s));
+        await checkoutSlot(async () => {
+          await warmDeps(c.worktree, c.repo, (s) => addLog(id, s));
+          await installCold(c.worktree, (dir, cmd) => sh(dir, cmd, { ...infraEnv({ keepGenKey: false }), PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1' }), (s) => addLog(id, s));
+        });
       } else assertWorktree(c.worktree, repoDir);
       // Real files for its Git LFS pointers on every pass (a worktree made before git-lfs was on the server has pointers).
       await lfsPull(c.worktree, (s) => addLog(id, s));
@@ -2158,7 +2160,7 @@ async function workInfra(id: string, note?: string, resumed?: Phase | null, nudg
 
     if (ph.step === 'prepare') {
       update(id, { detail: 'preparing the worktree' });
-      await critical(`making the worktree of ${id}`, async () => {
+      await checkoutSlot(() => critical(`making the worktree of ${id}`, async () => {
         if (!fs.existsSync(c.worktree)) {
           fs.mkdirSync(WORK(), { recursive: true });
           await ensureCloned(c.repo, c.slug);
@@ -2179,7 +2181,7 @@ async function workInfra(id: string, note?: string, resumed?: Phase | null, nudg
           if (!m.ok) git(c.worktree, ['merge', '--abort']);
           addLog(id, m.ok ? `merged origin/${c.base} into the branch` : `merging origin/${c.base} conflicted; the agent works from the branch as it was`);
         }
-      });
+      }));
       assertWorktree(c.worktree, repoDir);
       // The agent commits here: its git folder must be the agent group's, on every pass (sandbox.ts).
       await shareWorktree(c.worktree);
@@ -3112,6 +3114,45 @@ async function cleanup(id: string, { deleteBranch = false } = {}) {
   if (deleteBranch) await github(`/repos/${c.slug}/git/refs/heads/${c.branch}`, { method: 'DELETE' }).catch(() => {});
 }
 
+/**
+ * At most STUDIO_CHECKOUTS (default 2) worktree checkouts and dependency installs at once. Several big ones together
+ * (a 1,256-file worktree plus npm ci each) were what the cloud server's memory couldn't hold on 2026-11-01: the git
+ * process was killed (signal 9) and Studio restarted. The rest wait their turn; nothing is refused.
+ */
+let checkoutsActive = 0;
+const checkoutWaiters: (() => void)[] = [];
+export async function checkoutSlot<T>(fn: () => Promise<T>): Promise<T> {
+  const max = Math.max(1, Number(process.env.STUDIO_CHECKOUTS) || 2);
+  while (checkoutsActive >= max) await new Promise<void>((r) => checkoutWaiters.push(r));
+  checkoutsActive++;
+  try {
+    return await fn();
+  } finally {
+    checkoutsActive--;
+    checkoutWaiters.shift()?.();
+  }
+}
+
+/** Changes that failed on one finding in a UTC day before auto-fix stops starting it again (J, 2026-11-01). */
+export const AUTO_FIX_FAILS_PER_DAY = 2;
+
+/**
+ * Why an automatic fix must not start for this finding now, or null. An earlier change of it still has an open pull
+ * request (not merged or closed), or it already failed AUTO_FIX_FAILS_PER_DAY times today (UTC): on 2026-11-01 auto-fix
+ * ran the same finding 4 times (PH Origins), 4 times (sign-in) and 3 times (an intro video) while Studio kept restarting.
+ * J's own requests and the PM's answers to a question don't go through this.
+ */
+export function autoFixBlock(findingId: string, now = Date.now()): string | null {
+  const like = `%"${findingId}"%`;
+  const open = db.prepare(`SELECT id, pr FROM changes WHERE findings LIKE ? AND pr IS NOT NULL AND status NOT IN ('merged', 'closed') ORDER BY created DESC LIMIT 1`).get(like) as { id: string; pr: number } | undefined;
+  if (open) return `${open.id} already has pull request #${open.pr} open for it`;
+  const day = new Date(now);
+  day.setUTCHours(0, 0, 0, 0);
+  const failed = (db.prepare(`SELECT COUNT(*) AS n FROM changes WHERE findings LIKE ? AND status = 'failed' AND COALESCE(detail, '') NOT LIKE ? AND COALESCE(detail, '') NOT LIKE ? AND created >= ?`).get(like, `${DECIDED}%`, `${ALREADY}%`, day.getTime()) as { n: number }).n;
+  if (failed >= AUTO_FIX_FAILS_PER_DAY) return `it already failed ${failed} times today`;
+  return null;
+}
+
 /** After a daily run: start fixes for new findings worth fixing, within the day's budget. */
 export function autoFix(runId: string) {
   const s = agentSettings();
@@ -3119,7 +3160,12 @@ export function autoFix(runId: string) {
   const started: string[] = [];
   const fresh = db.prepare(`SELECT * FROM findings WHERE status = 'open' AND last_run = ? ORDER BY CASE severity WHEN 'blocker' THEN 0 WHEN 'bug' THEN 1 ELSE 2 END, seen DESC`).all(runId) as any[];
   const byProduct = new Map<string, any>();
-  for (const f of fresh) if (s.severities.includes(f.severity) && !byProduct.has(f.product)) byProduct.set(f.product, f);
+  for (const f of fresh) {
+    if (!s.severities.includes(f.severity) || byProduct.has(f.product)) continue;
+    const block = autoFixBlock(f.id);
+    if (block) { console.log(`[studio] auto-fix skips ${f.id}: ${block}`); continue; }
+    byProduct.set(f.product, f);
+  }
   for (const [product, f] of byProduct) {
     try {
       started.push(startFix(product, [f.id], { auto: true }));
@@ -3137,6 +3183,25 @@ export function autoFix(runId: string) {
 /** Restarts in a row at one step (each within RESTART_WINDOW_MS of the last) before a change stops being resumed (ops.ts). */
 export { RESTART_LOOP };
 
+/**
+ * A change whose work is committed and whose pull request is open, cut off again and again in its finish step (the
+ * preview build, the canon check): it is carried to ready (and beta's automatic merge) as it stands instead of being
+ * failed (2026-11-01: c_28347ae3cb6d had committed and opened phoriginswebsite PR 36, then failed after 3 restarts).
+ * Returns whether it did. approve() still refuses a head that moved, so nothing unchecked merges.
+ */
+export function carryFinishedToReady(c: Change, ph: Phase): boolean {
+  if (!c.pr || !['verify', 'finish'].includes(ph.step) || ph.requested) return false;
+  let tip = ph.tip ?? '';
+  if (!tip && c.worktree && fs.existsSync(c.worktree)) tip = git(c.worktree, ['rev-parse', 'HEAD']).out;
+  if (!tip) return false;
+  const done = { ...(c.verify ?? {}), ...(ph.verify ?? {}), sha: tip, preview: c.verify?.preview ?? null, try: c.verify?.try ?? null };
+  const auto = agentSettings().autoMergeBeta;
+  update(c.id, { status: 'ready', detail: readyDetail(done), verify: done, phase: null, auto_merge: auto ? 'trying' : null });
+  addLog(c.id, `Studio restarted ${RESTART_LOOP}+ times in its ${ph.step} step, but its pull request #${c.pr} is open and the work committed (${tip.slice(0, 7)}): ready${auto ? ', merging into beta' : ''}`);
+  if (auto) void autoMergeBeta(c.id).catch((e) => console.warn(`[studio] auto-merge ${c.id}: ${e.message ?? e}`));
+  return true;
+}
+
 export function resumeChanges() {
   const out: string[] = [];
   for (const c of listChanges({ status: 'working,verifying,revising', limit: 200 })) {
@@ -3152,6 +3217,8 @@ export function resumeChanges() {
     const prev = ph.restarts;
     const n = prev?.step === ph.step && Date.now() - (prev.at ?? 0) < RESTART_WINDOW_MS ? prev.n + 1 : 1;
     if (n > RESTART_LOOP) {
+      // Its pull request is already open and the work committed: only the finish was cut off. That is ready, not failed.
+      if (carryFinishedToReady(c, ph)) continue;
       update(c.id, { status: 'failed', detail: `stopped: Studio restarted ${n - 1} times in a row during its ${ph.step} step, so it isn't resumed again (start it again once the cause is fixed)`, phase: { ...ph, failed: true } });
       addLog(c.id, `stopped after ${n - 1} restarts in a row at the ${ph.step} step`);
       console.warn(`[studio] ${c.id}: stopped after ${n - 1} restarts in a row at ${ph.step}`);

@@ -19,7 +19,7 @@ import { repoMap, BETA, BRANCH } from './repos.ts';
 import { cloudMode } from './cloudauth.ts';
 import { siteKeys, siteOrg } from './sitekeys.ts';
 import { WIDGET, type PageInfo } from './bugreport.ts';
-import { githubCommit, githubFiles, localGitFiles, folderFiles, publishSite, publishWidget, keepPrefetch, removeSite, readManifest, sitesUrl, workerStore, type SiteFile, type SiteStore } from './sitestore.ts';
+import { githubCommit, githubFiles, localGitFiles, folderFilesAsync, publishSite, publishWidget, keepPrefetch, removeSite, readManifest, sitesUrl, workerStore, type SiteFile, type SiteStore } from './sitestore.ts';
 
 /** Beta sites go to R2 (Cloud Run, with a key to sign with), not to a local folder. STUDIO_SITES=local turns it off. */
 export const remoteSites = () => cloudMode() && process.env.STUDIO_SITES !== 'local' && Boolean(siteKeys());
@@ -149,9 +149,8 @@ export async function publishCloud(p: Product, sub: string, o: { change?: string
         const tail = b.log.split('\n').filter(Boolean).slice(-3).join(' | ').slice(0, 400);
         if (b.error || b.code !== 0) throw new Error(`${recipe.build} failed${b.error ? `: ${b.error}` : ` (exit ${b.code})`}${tail ? `: ${tail}` : ''}`);
         if (!b.outputs) throw new Error(`the build made no ${recipe.out.from}/`);
-        const x = spawnSync('tar', ['-xzf', '-'], { cwd: tmp, input: b.outputs, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
-        if (x.status !== 0) throw new Error(`unpacking the build: ${String(x.stderr).trim().slice(0, 300)}`);
-        const built = folderFiles(path.join(tmp, out), recipe.out.to);
+        await (await import('./builds.ts')).untar(b.outputs, tmp);
+        const built = await folderFilesAsync(path.join(tmp, out), recipe.out.to);
         if (!built.length) throw new Error(`the build made no ${recipe.out.from}/`);
         const byPath = new Map(files.map((f) => [f.path, f]));
         for (const f of built) byPath.set(f.path, f);
