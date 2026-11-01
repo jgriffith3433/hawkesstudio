@@ -576,7 +576,10 @@ LLMs anyways"). Agents and the PM stay on Team and up.
 **Games with only an address** (no repository):
 - Nothing to sync.
 - Go Live explains that Studio plays and reviews the game where it is deployed, and offers "Add its repository". The
-  repository is saved; agent fixes, a beta and going live from it come with GitHub for customers (`STUDIO_GITHUB_APP`).
+  repository is saved; agent fixes, a beta and going live from it come once the Studio's GitHub App can reach it.
+- A game with a GitHub repository goes live from Studio when the Studio has a token for that repo (`ghtoken.ts
+  repoToken`: the GitHub App's installation, through the control plane in a cell). Without one, Go Live stays URL-only
+  and says to install the app on that repository (`deploy-github.ts urlOnlyPlan`).
 - "Run a playtest" is on the game's card and on both playtest tabs.
 
 **Playtest videos and every library file** go through Studio's relay to Gen (`/api/gen/v1/files/<asset>`, with the
