@@ -31,7 +31,7 @@ import {
   betaSiteDir, betaSiteFolder, scratch, listDeploys, mergeMainIntoBeta, prebuilt, git as gitIn, gitAsync, type Commit, type DeployRow,
 } from './beta.ts';
 import { cloudGoLive, cloudRefs, cloudBlockers, cloudGoLiveNow, compareOnGitHub, type CloudRefs, type Compare } from './deploy-cloud.ts';
-import { githubSlugOf, publishTargets, buildRunsAt, onlyDocsSince, goLiveOnGitHub, rollbackRefs, rollbackOnGitHub, type GitHubIO } from './deploy-github.ts';
+import { githubSlugOf, isGoLiveMerge, publishTargets, buildRunsAt, onlyDocsSince, goLiveOnGitHub, rollbackRefs, rollbackOnGitHub, type GitHubIO } from './deploy-github.ts';
 import { repoMap } from './repos.ts';
 import { customerStudio } from './tenancy.ts';
 import { STUDIO_RELEASE, RELEASES, playedCommit, releasesAt, releasesPath, readReleases, draftWithin, addReleaseTo, releaseLine, releaseNotesLine, type Draft } from './release.ts';
@@ -304,9 +304,13 @@ async function githubPlan(p: Product, io: GitHubIO = {}) {
   // Live's extra commits only Studio's rollbacks: going live records them in beta first (an "ours" merge, beta's files),
   // never a blocker. Anything else: Studio merges live into beta itself (studio_deploy action merge-main, or by itself on
   // policy auto), and beta is built and playtested before it goes live (2026-10-31 review).
-  const rollbacksOnly = cmp.behind.length > 0 && cmp.behind.every((c) => String(c.title).startsWith(STUDIO_ROLLBACK));
-  if (rollbacksOnly) warnings.push(`${MAIN} has ${cmp.behind.length} rollback commit(s) ${BETA} lacks: going live records them in ${BETA} first, keeping ${BETA}'s files.`);
-  else if (cmp.behind.length) blockers.push(`${MAIN} has ${cmp.behind.length} commit(s) ${BETA} lacks (${cmp.behind.slice(0, 5).map((c) => `"${c.title}"`).join(', ')}), so ${MAIN} can't be fast-forwarded. Studio merges ${MAIN} into ${BETA} (studio_deploy action merge-main), then ${BETA} is built and playtested and can go live.`);
+  // Merge commits of earlier go lives through a pull request (golive-pr.ts) are Studio's own: the next go live merges
+  // over them, so they are neither a blocker nor merged into beta.
+  const foreign = cmp.behind.filter((c) => !isGoLiveMerge(c.title));
+  const liveMergesOnly = cmp.behind.length > 0 && !foreign.length;
+  const rollbacksOnly = foreign.length > 0 && foreign.every((c) => String(c.title).startsWith(STUDIO_ROLLBACK));
+  if (rollbacksOnly) warnings.push(`${MAIN} has ${foreign.length} rollback commit(s) ${BETA} lacks: going live records them in ${BETA} first, keeping ${BETA}'s files.`);
+  else if (foreign.length) blockers.push(`${MAIN} has ${foreign.length} commit(s) ${BETA} lacks (${foreign.slice(0, 5).map((c) => `"${c.title}"`).join(', ')}), so ${MAIN} can't be fast-forwarded. Studio merges ${MAIN} into ${BETA} (studio_deploy action merge-main), then ${BETA} is built and playtested and can go live.`);
   // The playtests of the exact beta commit; a clean pass of an earlier one counts when only docs and notes changed since.
   const carries = new Set<string>();
   if (beta) {
@@ -344,7 +348,7 @@ async function githubPlan(p: Product, io: GitHubIO = {}) {
     blockers, warnings, canDeploy: !blockers.length, fix: null as BlockerFix | null, notCloned: null,
     confirm: `DEPLOY ${p.id}`,
     what: `${cmp.ahead.length ? `Fast-forwards ${slug}'s ${MAIN} to ${BETA}${beta ? ` ${beta.short}` : ''} (${cmp.ahead.length} commit(s))` : `Leaves ${slug}'s ${MAIN} as it is`}${into.length ? `, and ${into.join(', ')}` : ''}, through GitHub (never a merge or a force push); ${publisherOf(p).says} ${p.live || 'its live site'}.`,
-    github: { slug, targets: tg.targets, rollbacksOnly },
+    github: { slug, targets: tg.targets, rollbacksOnly, liveMergesOnly },
   };
 }
 
