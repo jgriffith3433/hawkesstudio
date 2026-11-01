@@ -32,3 +32,9 @@ test('a customer Studio (STUDIO_CUSTOMER=1) with no GITHUB_TOKEN is reachable', 
   process.env.STUDIO_CUSTOMER = '1';
   assert.equal(githubReachable(), true);
 });
+
+test('git commands that check out files from a light clone get the repo token too', async () => {
+  const { gitNeedsAuth } = await import('../src/beta.ts');
+  for (const a of [['fetch'], ['push'], ['worktree', 'add', '-b', 'x', 'dir', 'origin/beta'], ['checkout', 'x']]) assert.equal(gitNeedsAuth(a), true, a.join(' '));
+  for (const a of [['status'], ['rev-parse', 'HEAD'], ['worktree'].slice(1)]) assert.equal(gitNeedsAuth(a as string[]), false, a.join(' '));
+});

@@ -82,11 +82,18 @@ const gitEnv = () => ({ ...process.env, GIT_TERMINAL_PROMPT: '0', GIT_OPTIONAL_L
  */
 export async function gitAsync(cwd: string, args: string[], timeoutMs = 10 * 60_000): Promise<{ ok: boolean; out: string; err: string }> {
   // Talking to GitHub about a repo that isn't J's: its own token as a header for this command (ghtoken.ts).
-  const env = ['fetch', 'push', 'pull', 'ls-remote'].includes(args[0]) ? await authEnvFor(cwd) : {};
+  const env = gitNeedsAuth(args) ? await authEnvFor(cwd) : {};
   if (args[0] === 'fetch') return fetchLocked(cwd, args, (a) => runGit(cwd, a, timeoutMs, env), opLog);
   if (args[0] === 'push') return withRepoLock(repoKey(cwd), () => runGit(cwd, args, timeoutMs, env));
   return lockRetry(cwd, args, () => runGit(cwd, args, timeoutMs, env));
 }
+
+/**
+ * Git commands that may talk to GitHub. A light clone (`--filter=blob:none`, a Unity repo) fetches file contents while it
+ * checks out, so `worktree add` and `checkout` need the repo's token too: without it an org cell's agent changes on
+ * Yooba Land and Sick of It (Unity) failed with "could not read Username" (2026-11-01).
+ */
+export const gitNeedsAuth = (args: string[]) => ['fetch', 'push', 'pull', 'ls-remote', 'worktree', 'checkout', 'switch'].includes(args[0]);
 
 /** The token header for a checkout's GitHub repo (its origin), fetched first; {} for J's repos and anything else. */
 async function authEnvFor(cwd: string): Promise<Record<string, string>> {
