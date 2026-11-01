@@ -60,7 +60,8 @@
     const unseen = (c) => (c.id === current && onScreen() && !document.hidden ? 0 : c.unseen);
     el('#dockConv').innerHTML = `<option value="">New conversation</option>${r.conversations.slice(0, 15).map((c) => `<option value="${c.id}">${unseen(c) ? `● (${unseen(c)}) ` : ''}${esc(c.title ?? 'New conversation')}</option>`).join('')}`;
     el('#dockConv').value = r.conversations.slice(0, 15).some((c) => c.id === current) ? current : '';
-    el('#talkList').innerHTML = `<button class="small primary" id="talkNew">New conversation</button>` + r.conversations.map((c) =>
+    // "Mark all as read": shown only while some conversation has messages J hasn't seen (setTalkCount keeps it in step).
+    el('#talkList').innerHTML = `<div class="talk-list-head"><button class="small primary" id="talkNew">New conversation</button><button class="small" id="talkReadAll" title="Clear the new-message badges on every conversation (nothing is answered or approved)"${r.unseen ? '' : ' hidden'}>Mark all as read</button></div>` + r.conversations.map((c) =>
       `<div class="talk-item ${c.id === current ? 'on' : ''}" data-conv="${c.id}"><b>${esc(c.title ?? 'New conversation')}${unseen(c) ? ` <span class="ib-count" title="New messages you haven't seen">${unseen(c)}</span>` : ''}</b><span class="meta">${new Date(c.updated ?? c.created).toLocaleString()}${c.status === 'thinking' ? ' · thinking…' : ''}${c.cost ? ` · $${c.cost.toFixed(2)} API` : ''}</span></div>`).join('');
   }
 
@@ -70,6 +71,21 @@
     if (!b || typeof n !== 'number') return;
     b.textContent = n;
     b.classList.toggle('zero', !n);
+    el('#talkReadAll')?.toggleAttribute('hidden', !n);
+  }
+  /** "Mark all as read": one call clears every conversation's badge (talk.ts markAllSeen); the list updates in place. */
+  async function markAllRead(btn) {
+    btn.disabled = true;
+    try {
+      const r = await api('/api/talk/seen', { method: 'POST', body: {} });
+      document.querySelectorAll('#talkList .talk-item .ib-count').forEach((n) => n.remove());
+      for (const o of el('#dockConv').options) o.textContent = o.textContent.replace(/^● \(\d+\) /, '');
+      setTalkCount(r.conversations);
+    } catch (err) {
+      btn.title = `Couldn't mark them read: ${err.message ?? err}`;
+    } finally {
+      btn.disabled = false;
+    }
   }
   /** J sees this conversation (on screen, the page visible): Studio remembers its newest message as seen. */
   function markSeen(c) {
@@ -347,6 +363,7 @@
       if (window.studioMe?.ai && !window.studioMe.ai.ready) el('#talkInput').focus(); else send();
       return;
     }
+    if (e.target.id === 'talkReadAll') { markAllRead(e.target); return; }
     if (e.target.id === 'talkNew') { current = null; el('.talk').classList.remove('lists'); loadList(); loadConversation(); el('#talkInput').focus(); }
     const item = e.target.closest('[data-conv]');
     if (item) { current = item.dataset.conv; el('.talk').classList.remove('lists'); loadList(); loadConversation(); }

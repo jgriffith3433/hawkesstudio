@@ -85,6 +85,8 @@ body:has(#talk.on) main { padding-bottom: 10px; }
 /* Any jump to a tab (an old #address on load) stops below the sticky header, not under it. */
 .tab { scroll-margin-top: calc(var(--hdr, 56px) + 8px); }
 .talk aside { overflow: auto; display: flex; flex-direction: column; gap: 6px; }
+.talk-list-head { display: flex; gap: 6px; flex-wrap: wrap; }
+.talk-list-head #talkReadAll[hidden] { display: none; }
 .talk-item { padding: 8px 10px; border-radius: 8px; cursor: pointer; border: 1px solid transparent; display: flex; flex-direction: column; gap: 2px; }
 .talk-item:hover { background: var(--panel); }
 .talk-item.on { background: var(--panel2); border-color: var(--line); }
