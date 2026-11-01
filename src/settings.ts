@@ -132,7 +132,7 @@ const RAISES: Record<Section, { up?: string[]; on?: string[]; off?: string[]; an
   routing: {},
   call: {},
   agents: { up: ['maxConcurrent', 'perProduct', 'maxPerDay', 'maxCostPerDay', 'maxTurns'], on: ['enabled', 'autoFix'], any: ['model', 'severities'] },
-  pm: { up: ['maxStartsPerDay', 'maxConcurrent', 'maxTries', 'walkAwayGpuPerDay'], on: ['enabled', 'fixBugs', 'walkAway'] },
+  pm: { up: ['maxStartsPerDay', 'maxConcurrent', 'maxTries', 'walkAwayGpuPerDay', 'walkAwayGpuPerTask'], on: ['enabled', 'fixBugs', 'walkAway'] },
   notify: {},
   costs: { up: ['budget', 'gpuHours', 'builderHours', 'playtesterHours', 'gpuAutoApprove'], off: ['alerts'] },
   resources: {},
@@ -184,6 +184,11 @@ export async function saveSettings(section: string, patch: Record<string, any>, 
     const h = patch.harness ?? patch.id;
     // Their harness: only one they linked themselves (ailink.ts puts their keys and logins where the harness reads them).
     if (s === 'brain' && h !== undefined && h !== 'claude' && !(await import('./brains.ts')).harnessConfigured(h)) throw new StudioError('Connect that AI first (Connect your AI): your Studio runs only on your own.', 403);
+    // Walk-away mode is the PM's (Team and up, entitlements.ts; J, 2026-11-01: "Make Walk Away mode available for Team
+    // accounts"): turning it on, or setting its GPU caps, on a plan without the PM answers 402 with the Upgrade.
+    if (s === 'pm' && (patch.walkAway === true || patch.walkAwayGpuPerTask !== undefined || patch.walkAwayGpuPerDay !== undefined)) {
+      await (await import('./entitlements.ts')).requireFeature('pm');
+    }
   }
   const all = await allSettings();
   const cur = all[s] as Record<string, any>;

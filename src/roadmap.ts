@@ -23,7 +23,7 @@
 
 import { db, newId, J, parse } from './db.ts';
 import { loadProducts, loadInfra, isInfra, StudioError, betaPlaytestsOn } from './config.ts';
-import { walkAwaySettings, type WalkAwaySettings } from './walkaway.ts';
+import { walkAwaySettings, gpuAutoApproveLimit, type WalkAwaySettings } from './walkaway.ts';
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS items (
@@ -529,12 +529,12 @@ export const gpuBudgetFor = (cost: number) => Math.ceil(cost * 1.25 * 100) / 100
  * monthly budget (J is asked, as for anything at or over the threshold). Returns the task when it approved, else null.
  * threshold, spend and tell are for tests.
  */
-export async function autoApproveGpu(id: string, opts: { threshold?: number; spend?: () => Promise<{ spent: number; budget: number; over: boolean }>; tell?: boolean; walkAway?: WalkAwaySettings } = {}) {
+export async function autoApproveGpu(id: string, opts: { threshold?: number; spend?: () => Promise<{ spent: number; budget: number; over: boolean }>; tell?: boolean; walkAway?: Pick<WalkAwaySettings, 'walkAway' | 'walkAwayGpuPerDay'> } = {}) {
   const t = getTask(id);
   const e = t?.gpu?.estimate;
   if (!t || !t.gpu?.items?.length || !e || e.error || gpuCleared(t) || ['dropped', 'live'].includes(t.status)) return null;
   const costs = await import('./costs.ts');
-  const threshold = opts.threshold ?? costs.costSettings().gpuAutoApprove;
+  const threshold = opts.threshold ?? (await gpuAutoApproveLimit());
   const price = e.withIdleTail > 0 ? e.withIdleTail : e.cost;
   if (!(threshold > 0) || !(price < threshold)) return null;
   const budget = gpuBudgetFor(e.cost);
@@ -611,7 +611,7 @@ export async function priceUnpriced(now = Date.now()) {
  * $0 budgets and what fits the caps are Studio's (autoApproveGpu), never the digest. A task whose pricing kept failing
  * for a day is in it too, as "couldn't be priced" (the one question a stall gets). threshold and walkAway are for tests.
  */
-export function gpuDigestTasks(opts: { threshold: number; walkAway?: WalkAwaySettings; now?: number }) {
+export function gpuDigestTasks(opts: { threshold: number; walkAway?: Pick<WalkAwaySettings, 'walkAway' | 'walkAwayGpuPerDay'>; now?: number }) {
   const wa = opts.walkAway ?? walkAwaySettings();
   const now = opts.now ?? Date.now();
   let room = wa.walkAwayGpuPerDay - gpuAutoApprovedToday();

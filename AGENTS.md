@@ -266,7 +266,9 @@ a budget (`approveGpu`, `gpuCleared`, `tasksAwaitingGpu`; the PM asks him once);
   (walk-away)"; red CI goes back to the agent, protected files wait for J), the PM decides criteria misses itself (one
   investigation when several tasks miss the same way), GPU budgets are approved within a daily cap, and the Inbox keeps
   only J-only things. Keep "red CI never merges", the protected-file hold and the deploy's rollback intact; with it off,
-  everything behaves as before.
+  everything behaves as before. In a customer's Studio it is off until the owner turns it on (Team plan and up), and
+  Studio approves GPU budgets only under their own caps (`walkAwayGpuPerTask`, `walkAwayGpuPerDay`, both 0 at first):
+  docs/studio-customers.md section 4.
 - **Going live:** show `studio_deploy_plan` in plain words (the commits, their authors, the playtested beta commit and
   its verdicts, blockers, warnings) and put an Approve card on J's screen (`studio_approval` kind deploy); his tap goes
   live. The fallback: he types exactly `DEPLOY <product>`, then `studio_deploy`. Rollbacks the same way (kind rollback,

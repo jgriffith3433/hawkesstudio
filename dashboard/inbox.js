@@ -48,6 +48,8 @@ function setInboxCount(n, walkAway) {
   // The header's walk-away badge: Studio merges and decides routine calls by itself (Settings > PM loop).
   const b = $('#walkAwayBadge');
   if (b && walkAway !== undefined) b.hidden = !walkAway;
+  // A customer's Studio: their own walk-away mode (no Studio/Gen merges there; Settings, Walk-away mode).
+  if (b && window.studioMe?.customer) b.title = 'Walk-away mode is on: the PM decides routine calls itself, ready changes merge into beta, and your Inbox keeps only what\'s yours (Settings, Walk-away mode). Going live stays your call.';
 }
 const pollInboxCount = () => api('/api/inbox?count=1').then((r) => setInboxCount(r.count, r.walkAway)).catch(() => {});
 
