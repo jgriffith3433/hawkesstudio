@@ -62,7 +62,7 @@ test('on Cloud Run a Unity project and a repo over the limit are big (routing), 
 });
 
 test("the service's light clone is partial and skips LFS files", () => {
-  assert.deepEqual(R.cloneArgs('o/n', 'n', false), ['clone', '--quiet', 'https://github.com/o/n.git', 'n']);
+  assert.deepEqual(R.cloneArgs('o/n', 'n', false), ['clone', '--quiet', '--no-checkout', 'https://github.com/o/n.git', 'n']);
   assert.ok(R.cloneArgs('o/n', 'n', true).includes('--filter=blob:none'));
   const cfg = Object.fromEntries(R.LIGHT_CONFIG);
   assert.equal(cfg['hawkes.light'], 'true');

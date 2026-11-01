@@ -16,7 +16,7 @@ const slugOfDir = (dir: string) => {
 };
 import { trackCommand } from './ops.ts';
 import { lockHash, installedFor, ensureInstalled, runShell } from './warm.ts';
-import { REF_LOCK, fetchLocked } from './gitlock.ts';
+import { REF_LOCK, fetchLocked, repoBusy, repoKey } from './gitlock.ts';
 import { lfsPull, lightCheckout } from './lfs.ts';
 
 export const BRANCH = process.env.STUDIO_BRANCH || 'main';
@@ -56,7 +56,7 @@ export type RepoResult = { folder: string; slug: string; action: 'cloned' | 'upd
   /** npm ci runs in the repo's web checkouts after the sync (installAfterSync): where, why, how long, the error. */
   install?: Install[];
   /** Uncommitted changes set aside (git stash) so a beta checkout could follow beta: the stash's commit, its message, the files. */
-  setAside?: { stash: string; label: string; files: string[]; /** When the stash failed: the tar of the files, and why it failed. */ backup?: string; why?: string } };
+  setAside?: { stash: string; label: string; files: string[]; /** When the stash failed: the tar of the files that were there (none: nothing was), and why it failed. */ backup?: string; why?: string; /** Clearing failed too, so the checkout was cloned again. */ recloned?: boolean } };
 
 /**
  * Backs the given repo files up to a .tar.gz under <data>/backups/repos (tar as a child process, the list on stdin:
@@ -222,7 +222,10 @@ function unityOnlyRepo(slug: string, folder?: string): string | null {
  * contents; git fetches the blobs a checkout needs). A light clone's LFS files are skipped (GIT_LFS_SKIP_SMUDGE, and the
  * smudge filter set to skip in its config so later checkouts and worktrees skip them too). Exported for the tests.
  */
-export const cloneArgs = (slug: string, folder: string, light: boolean) => ['clone', '--quiet', ...(light ? ['--filter=blob:none'] : []), `https://github.com/${slug}.git`, folder];
+export const cloneArgs = (slug: string, folder: string, light: boolean) => ['clone', '--quiet', '--no-checkout', ...(light ? ['--filter=blob:none'] : []), `https://github.com/${slug}.git`, folder];
+
+/** git's reason in one line: its last non-empty line, or what a silent failure most likely was (killed: a timeout or memory). */
+export const lastLine = (err: string) => err.split('\n').map((l) => l.trim()).filter(Boolean).pop() || 'git exited without saying why (likely killed: a timeout or out of memory)';
 
 /** What a light clone gets in its config: LFS smudge skipped, and the mark lfs.ts and warm.ts read (hawkes.light). */
 export const LIGHT_CONFIG: [string, string][] = [
@@ -231,6 +234,36 @@ export const LIGHT_CONFIG: [string, string][] = [
   ['filter.lfs.process', 'git-lfs filter-process --skip'],
 ];
 
+/**
+ * Why the server's checkout of a repo can't be thrown away and cloned again, else null: agents' worktrees hang off
+ * its .git (a new clone would orphan them), or a fetch or push of it is under way.
+ */
+export function recloneBlocked(dir: string): string | null {
+  const wt = git(dir, ['worktree', 'list', '--porcelain']);
+  const others = wt.ok ? wt.out.split('\n').filter((l) => l.startsWith('worktree ')).length - 1 : 0;
+  if (others > 0) return `${others} worktree${others === 1 ? '' : 's'} (agents' or the beta working copy) use it`;
+  if (repoBusy(repoKey(dir))) return 'a fetch or push of it is running';
+  return null;
+}
+
+/**
+ * Moves a checkout that can't be cleared out of the way (to PROJECTS/.trash, deleted in the background) and clones it
+ * again, on `want`. Only after what was in it is saved (syncGit).
+ */
+async function reclone(folder: string, slug: string, branch: string, want: string): Promise<RepoResult> {
+  const dir = path.join(PROJECTS, folder);
+  const trash = path.join(PROJECTS, '.trash', `${folder}-${new Date().toISOString().replace(/[:.]/g, '-')}`);
+  try {
+    fs.mkdirSync(path.dirname(trash), { recursive: true });
+    fs.renameSync(dir, trash);
+  } catch (e: any) {
+    return { folder, slug, action: 'failed', detail: `moving the old checkout aside failed: ${e.message}` };
+  }
+  void fs.promises.rm(trash, { recursive: true, force: true }).catch((e) => console.warn(`[repos] ${folder}: removing ${trash} failed: ${e.message}`));
+  console.log(`[repos] ${folder}: moved the old checkout to ${trash} (being deleted); cloning it again`);
+  return syncGit(folder, slug, branch, want);
+}
+
 async function syncGit(folder: string, slug: string, branch: string, want?: string): Promise<RepoResult> {
   const dir = path.join(PROJECTS, folder);
   if (!fs.existsSync(path.join(dir, '.git'))) {
@@ -238,11 +271,23 @@ async function syncGit(folder: string, slug: string, branch: string, want?: stri
     await primeRepoToken(slug);
     // On Cloud Run a big repo is cloned light (bigRepo, cloneArgs): the agent's job does the heavy checkout itself.
     const big = await bigRepo(slug, fetch, folder);
+    // --no-checkout, then one checkout of the branch it should be on: a light clone fetches file contents as it checks
+    // out, and checking out main and then beta did that twice. A clone or checkout that fails (or is killed: a timeout,
+    // the instance's memory) leaves a half-written folder that every later sync read as ~1,300 uncommitted changes and
+    // refused to touch (PH Origins, 2026-11-01): it is removed instead, so the next sync clones it again.
+    const halfClone = (what: string, err: string) => {
+      fs.rmSync(dir, { recursive: true, force: true });
+      const why = lastLine(err);
+      console.warn(`[repos] ${folder}: ${what} failed (${why}); removed the half-made clone, the next sync clones it again`);
+      return { folder, slug, action: 'failed' as const, detail: `${what} failed: ${why} (removed the half-made clone; the next sync clones it again)` };
+    };
     const c = await gitA(PROJECTS, cloneArgs(slug, folder, Boolean(big)), undefined, slug, big ? { GIT_LFS_SKIP_SMUDGE: '1' } : {});
-    if (!c.ok) return { folder, slug, action: 'failed', detail: c.err.split('\n').pop() ?? 'clone failed' };
+    if (!c.ok) return halfClone('clone', c.err);
     if (big) for (const [k, v] of LIGHT_CONFIG) git(dir, ['config', k, v]);
-    const pick = [want, branch].find((b) => b && git(dir, ['rev-parse', '--verify', '--quiet', `origin/${b}`]).ok);
-    if (pick) await gitA(dir, ['checkout', '--quiet', pick]);
+    const pick = [want, branch].find((b) => b && git(dir, ['rev-parse', '--verify', '--quiet', `origin/${b}`]).ok)
+      ?? git(dir, ['rev-parse', '--abbrev-ref', 'origin/HEAD']).out.replace(/^origin\//, '');
+    const co = await gitA(dir, ['checkout', '--quiet', ...(pick ? [pick] : [])], undefined, slug, big ? { GIT_LFS_SKIP_SMUDGE: '1' } : {});
+    if (!co.ok || git(dir, ['status', '--porcelain']).out) return halfClone(`checking out ${pick || 'the default branch'}`, co.ok ? 'files missing after the checkout' : co.err);
     const how = big ? `; light clone (partial, no LFS files, no npm ci: ${big})` : '';
     if (big) console.log(`[repos] ${folder}: light clone: ${big}`);
     return { folder, slug, action: 'cloned', detail: `cloned (${pick ?? 'default branch'})${how}`, head: git(dir, ['log', '-1', '--format=%h %s']).out };
@@ -258,6 +303,12 @@ async function syncGit(folder: string, slug: string, branch: string, want?: stri
   let cleaned = '';
   let discarded: string[] | undefined;
   let setAside: RepoResult['setAside'];
+  function done(r: RepoResult, action: RepoResult['action'] = r.action): RepoResult {
+    r = { ...r, action };
+    if (setAside) tellSetAside(dir, folder, want!, setAside, r);
+    if (raced) r = { ...r, detail: raced + r.detail };
+    return cleaned ? { ...r, detail: cleaned + r.detail, ...(discarded ? { discarded } : {}), ...(setAside ? { setAside } : {}) } : r;
+  }
   if (dirty) {
     const tracked = git(dir, ['diff', '--name-only', '--no-renames', 'HEAD']).out.split('\n').filter(Boolean);
     const untracked = git(dir, ['ls-files', '--others', '--exclude-standard']).out.split('\n').filter(Boolean);
@@ -288,33 +339,45 @@ async function syncGit(folder: string, slug: string, branch: string, want?: stri
         setAside = { stash, label, files };
         cleaned = `set aside uncommitted changes in stash ${stash.slice(0, 7)} (${list}); `;
       } else {
-        // The stash failed (or left changes behind): say why in full, then back the files up to a tar in the data folder
-        // and only then put the checkout back to HEAD. No backup, no reset: the refusal stays.
-        const why = s.ok ? 'it left uncommitted changes in the checkout' : (s.err || 'git gave no reason').replace(/\s+/g, ' ').slice(0, 500);
+        // The stash failed (or left changes behind): say why in full, then back the files that are there up to a tar in
+        // the data folder and only then put the checkout back to HEAD. No backup, no reset: the refusal stays. Files git
+        // expects but that aren't there (a half-written checkout: a clone or switch killed partway, PH Origins
+        // 2026-11-01, ~1,300 "changes") hold nothing to lose, so with none present there is nothing to back up.
+        const why = s.ok ? 'it left uncommitted changes in the checkout' : lastLine(s.err).slice(0, 500);
         console.warn(`[repos] ${folder}: git stash failed (${why}); backing the ${files.length} files up to a tar`);
-        const b = await backupFiles(dir, folder, files);
-        if (!b.ok) {
-          console.warn(`[repos] ${folder}: tar backup failed: ${b.error}`);
-          return kept(`; setting them aside failed: git stash: ${why}; tar backup: ${b.error}`);
+        const present = files.filter((f) => { try { fs.lstatSync(path.join(dir, f)); return true; } catch { return false; } });
+        let backup: string | undefined;
+        if (present.length) {
+          const b = await backupFiles(dir, folder, present);
+          if (!b.ok) {
+            console.warn(`[repos] ${folder}: tar backup failed: ${b.error}`);
+            return kept(`; setting them aside failed: git stash: ${why}; tar backup: ${b.error}`);
+          }
+          backup = b.file;
         }
+        const saved = backup ? `backed up to ${backup}` : `none of the ${files.length} files were there to back up (a half-written checkout)`;
         const r = tracked.length ? await gitA(dir, ['--literal-pathspecs', 'restore', '--source=HEAD', '--staged', '--worktree', '--', ...tracked]) : { ok: true, err: '' };
         const c = r.ok && untracked.length ? await gitA(dir, ['--literal-pathspecs', 'clean', '-f', '-q', '--', ...untracked]) : r;
         if (!r.ok || !c.ok || git(dir, ['status', '--porcelain']).out) {
-          const e = (r.ok ? c : r).err.split('\n').pop() || 'changes remain';
-          console.warn(`[repos] ${folder}: backed up to ${b.file} but couldn't clear the checkout: ${e}`);
-          return kept(`; setting them aside failed: git stash: ${why}; backed up to ${b.file} but clearing the checkout failed: ${e}`);
+          const e = r.ok && c.ok ? 'changes remain' : lastLine((r.ok ? c : r).err);
+          // Last resort: the server's copy is only ever a clone of GitHub, and what was in it is saved: clone it again.
+          const blocked = recloneBlocked(dir);
+          if (blocked) {
+            console.warn(`[repos] ${folder}: ${saved} but couldn't clear the checkout (${e}), and won't clone it again: ${blocked}`);
+            return kept(`; setting them aside failed: git stash: ${why}; ${saved} but clearing the checkout failed: ${e}; not cloned again: ${blocked}`);
+          }
+          console.warn(`[repos] ${folder}: ${saved} but couldn't clear the checkout (${e}); cloning it again`);
+          const again = await reclone(folder, slug, branch, want!);
+          setAside = { stash: '', label, files, backup, why, recloned: true };
+          cleaned = `git stash failed (${why}); ${saved} (${list}); clearing the checkout failed (${e}), so it was cloned again; `;
+          return done(again, again.action === 'cloned' ? 'updated' : again.action);
         }
-        console.log(`[repos] ${folder}: git stash failed (${why}); backed ${files.length} files up to ${b.file}, then cleared them: ${files.join(', ')}`);
-        setAside = { stash: '', label, files, backup: b.file, why };
-        cleaned = `git stash failed (${why}); backed up uncommitted changes to ${b.file} (${list}); `;
+        console.log(`[repos] ${folder}: git stash failed (${why}); ${saved}, then cleared them: ${files.join(', ')}`);
+        setAside = { stash: '', label, files, backup, why };
+        cleaned = `git stash failed (${why}); ${backup ? `backed up uncommitted changes to ${backup}` : saved} (${list}); `;
       }
     }
   }
-  const done = (r: RepoResult): RepoResult => {
-    if (setAside) tellSetAside(dir, folder, want!, setAside, r);
-    if (raced) r = { ...r, detail: raced + r.detail };
-    return cleaned ? { ...r, detail: cleaned + r.detail, ...(discarded ? { discarded } : {}), ...(setAside ? { setAside } : {}) } : r;
-  };
   let switched = '';
   if (want && cur !== want && git(dir, ['rev-parse', '--verify', '--quiet', `origin/${want}`]).ok) {
     const c = await gitA(dir, ['checkout', '--quiet', want]);
@@ -430,8 +493,12 @@ function tellSetAside(dir: string, folder: string, want: string, a: NonNullable<
   const list = a.files.slice(0, 20).join(', ') + (a.files.length > 20 ? `, and ${a.files.length - 20} more` : '');
   const g = `git -C ${dir}`;
   const after = r.action === 'updated' || r.action === 'current' ? `and the checkout follows ${want} again (${r.head ?? ''})` : `but it still couldn't follow ${want}: ${r.detail}`;
-  if (a.backup) {
-    repoNotices.post(`${folder}: stray files backed up to follow ${want}`, `The server's ${want} checkout of ${folder} had uncommitted files that aren't build output. git stash failed (${a.why}), so Studio backed them up first and then cleared them, ${after}.\n\nFiles: ${list}\n\nThe backup: ${a.backup}\n\nTo get them back, on the server:\n\n\`\`\`\ntar -tzf ${a.backup}   # list\ntar -xzf ${a.backup} -C ${dir}   # restore\n\`\`\``);
+  if (!a.stash) {
+    const how = a.recloned ? 'cleared them by cloning the checkout again (clearing them in place failed)' : 'then cleared them';
+    const kept = a.backup
+      ? `Studio backed them up first and ${how}, ${after}.\n\nFiles: ${list}\n\nThe backup: ${a.backup}\n\nTo get them back, on the server:\n\n\`\`\`\ntar -tzf ${a.backup}   # list\ntar -xzf ${a.backup} -C ${dir}   # restore\n\`\`\``
+      : `None of those files were there (a half-written checkout: a clone or switch that was cut off), so there was nothing to back up; Studio ${how.replace(/^then /, '')}, ${after}.\n\nFiles: ${list}`;
+    repoNotices.post(`${folder}: stray files ${a.backup ? 'backed up' : 'cleared'} to follow ${want}`, `The server's ${want} checkout of ${folder} had uncommitted files that aren't build output. git stash failed (${a.why}). ${kept}`);
     return;
   }
   repoNotices.post(`${folder}: stray files set aside to follow ${want}`, `The server's ${want} checkout of ${folder} had uncommitted files that aren't build output, which kept it from following ${want}. Studio set them aside in a git stash (nothing was deleted), ${after}.\n\nFiles: ${list}\n\nThe stash: "${a.label}" (${a.stash.slice(0, 7)}).\n\nTo look at them or get them back, on the server:\n\n\`\`\`\n${g} stash list\n${g} stash show -p --include-untracked ${a.stash.slice(0, 7)}\n${g} stash pop stash@{N}   # N: its number in stash list (0 while it's the newest)\n\`\`\`\n\nIf it's work worth keeping, commit it to ${want} (from an agent's own worktree, not this checkout). If not, drop it: ${g} stash drop stash@{N}.`);
