@@ -440,7 +440,8 @@ async function viaGen(p: Product, b: BuildSpec, slug: string, sha: string, ref: 
   if (learned) say(learned);
   const ran = job.result?.machine?.name ? `on ${job.result.machine.name} (${job.result.machine.cpu} vCPU, ${job.result.machine.memoryGiB} GiB)` : '';
   const detail = [job.result?.unity ? `Unity ${job.result.unity}` : '', ran, learned ?? ''].filter(Boolean).join('; ');
-  return { ...(await folderOutput(tmp, tmp)), detail: detail || undefined };
+  // A site with its own game page loads the build's own folder (PlaceDepartment/Build/...): never unwrap it.
+  return { ...(await folderOutput(tmp, tmp, b.publish?.page === 'site')), detail: detail || undefined };
 }
 
 /**
@@ -484,11 +485,11 @@ async function viaActions(b: BuildSpec, slug: string, a: { runId: string; name?:
   return await folderOutput(tmp, tmp);
 }
 
-async function folderOutput(dir: string, tmp: string): Promise<Output> {
+async function folderOutput(dir: string, tmp: string, keepFolder = false): Promise<Output> {
   if (!fs.existsSync(dir)) { fs.rmSync(tmp, { recursive: true, force: true }); throw new Error('the build made no output'); }
   // An output that is one folder (an artifact zipped around its folder): its contents are the site.
   const entries = fs.readdirSync(dir);
-  const root = entries.length === 1 && fs.statSync(path.join(dir, entries[0])).isDirectory() && !fs.existsSync(path.join(dir, 'index.html')) ? path.join(dir, entries[0]) : dir;
+  const root = !keepFolder && entries.length === 1 && fs.statSync(path.join(dir, entries[0])).isDirectory() && !fs.existsSync(path.join(dir, 'index.html')) ? path.join(dir, entries[0]) : dir;
   const files = await folderFilesAsync(root);
   if (!files.length) { fs.rmSync(tmp, { recursive: true, force: true }); throw new Error('the build output is empty'); }
   return { files, bytes: sizeOf(files), cleanup: () => fs.rmSync(tmp, { recursive: true, force: true }) };
