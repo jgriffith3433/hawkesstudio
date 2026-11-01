@@ -639,8 +639,21 @@ export function studioTurn(id: string, prompt: string) {
   return true;
 }
 
-/** What one turn needs while its output streams in (a turn of its own process, or of a call's warm process). */
-type TurnCtx = { userAt: number; auto: boolean; call: boolean; billing: Turn['billing']; harness: Harness; model: string; done: boolean; finished?: boolean; err: string; deadSession?: boolean };
+/**
+ * What one turn needs while its output streams in (a turn of its own process, or of a call's warm process). timedOut:
+ * it ran into TURN_DEADLINE_MS and Studio ended it; the conversation goes back to idle with a line saying so.
+ */
+type TurnCtx = { userAt: number; auto: boolean; call: boolean; billing: Turn['billing']; harness: Harness; model: string; done: boolean; finished?: boolean; err: string; deadSession?: boolean; timedOut?: boolean };
+
+/**
+ * The longest one Talk turn may run (its own process, a resumed one, or a call's): then Studio stops it and the
+ * conversation is idle again with a line saying the answer timed out and can be asked again. A long normal answer takes
+ * a few minutes; the PM loop stops waiting on its turn at 40 min (pm.ts turnRunning). Before this, a turn whose process
+ * Studio could no longer see (a Cloud Run restart) stayed "answering" for half a day.
+ */
+export const TURN_DEADLINE_MS = () => Number(process.env.TALK_TURN_DEADLINE_MS) || 30 * 60_000;
+/** After the deadline's stop, how long the process gets to end by itself before the conversation is let go of anyway. */
+export const TURN_KILL_GRACE_MS = () => Number(process.env.TALK_TURN_KILL_GRACE_MS) || 90_000;
 
 /**
  * Live text for call pages, per conversation id (GET /api/talk/<id>/events): { type: 'turn' } when a turn starts,
@@ -791,6 +804,12 @@ function runTurn(id: string, prompt: string, userAt: number, { auto = false, fre
     call.seen = Date.now();
     running.set(id, child);
     child.stdin!.write(`${JSON.stringify({ type: 'user', message: { role: 'user', content: forOwner(prompt) } })}\n`);
+    // A call's turn has the same deadline: its warm process is ended (the next turn starts a new one).
+    setTimeout(() => {
+      if (call.turn !== ctx || ctx.finished) return;
+      ctx.timedOut = true;
+      child.kill('SIGTERM');
+    }, TURN_DEADLINE_MS()).unref?.();
     return;
   }
   // A session another harness made can't be resumed here (a Gemini session on Claude fails): a new one, with the
@@ -808,6 +827,17 @@ function runTurn(id: string, prompt: string, userAt: number, { auto = false, fre
   followTurn(id, child, ctx, { prompt, fresh, session: c.session });
 }
 
+/** Ends a turn whose process didn't end when the deadline stopped it (a detached one Studio lost): idle again, with a line. */
+function giveUp(id: string, child: ChildLike, ctx: TurnCtx) {
+  if (ctx.finished) return;
+  // Stop it once more (a detached one: its runner's stop file; Studio's own child: for good), then stop reading it.
+  child.kill(child instanceof DetachedChild ? undefined : 'SIGKILL');
+  if (child instanceof DetachedChild) child.detach();
+  setProc(id, null);
+  stopping.delete(id);
+  finishTurn(id, ctx, { code: null });
+}
+
 /**
  * Reads a turn's process until it ends (its own, or one reattached after a restart). Each line that changes the
  * conversation saves it, and the offset of a detached process's output with it, so a restart reads on from there.
@@ -820,16 +850,27 @@ function followTurn(id: string, child: ChildLike, ctx: TurnCtx, { prompt, fresh,
     if (child instanceof DetachedChild && m.type !== 'stream_event') db.prepare(`UPDATE conversations SET proc = json_set(proc, '$.offset', ?, '$.billing', ?) WHERE id = ? AND proc IS NOT NULL`).run(child.offset, ctx.billing, id);
   });
   child.stderr!.on('data', (d) => (ctx.err += d));
-  const timer = setTimeout(() => child.kill('SIGTERM'), Math.max(5_000, 30 * 60_000 - (Date.now() - started)));
+  // The deadline (counted from the process's start, so a resumed turn keeps its own): stop it, and if it doesn't end
+  // (a detached process whose runner Studio lost), let the conversation go anyway.
+  let grace: NodeJS.Timeout | undefined;
+  const timer = setTimeout(() => {
+    ctx.timedOut = true;
+    child.kill('SIGTERM');
+    grace = setTimeout(() => giveUp(id, child, ctx), TURN_KILL_GRACE_MS());
+    grace.unref?.();
+  }, Math.max(5_000, TURN_DEADLINE_MS() - (Date.now() - started)));
   child.on('close', (code: number | null) => {
     clearTimeout(timer);
+    clearTimeout(grace);
+    // Already let go of (giveUp): a newer turn may own the conversation's proc by now.
+    if (ctx.finished) return;
     setProc(id, null);
     const stopped = stopping.delete(id);
     const conv = getConversation(id);
     // Its Claude Code session is gone (another home since the agent sandbox, a cleared cache): once, a new session
     // that gets the conversation so far.
     const dead = ctx.deadSession || (code !== 0 && /no conversation found|session.*not found/i.test(ctx.err));
-    if (conv && prompt && !stopped && session && !fresh && dead && !conv.messages.some((x) => x.role === 'assistant' && x.at >= userAt && !isStopMarker(x))) {
+    if (conv && prompt && !stopped && !ctx.timedOut && session && !fresh && dead && !conv.messages.some((x) => x.role === 'assistant' && x.at >= userAt && !isStopMarker(x))) {
       // The "(Claude stopped: ...)" line of the failed try goes: the new session answers in its place.
       conv.messages = conv.messages.filter((x) => !(x.at >= userAt && isStopMarker(x)));
       conv.session = null;
@@ -865,7 +906,10 @@ export function resumeTalk() {
     };
     runningCtx.set(r.id, ctx);
     turnOwner.set(r.id, ownerOf(getConversation(r.id), Boolean(proc.auto)));
-    followTurn(r.id, new DetachedChild(proc.rec, { offset: proc.offset }), ctx, { fresh: true, session: null, started: proc.rec.started });
+    // reattached always: a turn cut off before its first line was saved has offset 0, and on Cloud Run only a reattached
+    // child follows its job again (cloudjob.ts reattachCloudJob); without it nothing ever read the job's end, and the
+    // conversation stayed "answering" for hours.
+    followTurn(r.id, new DetachedChild(proc.rec, { offset: proc.offset, reattached: true }), ctx, { fresh: true, session: null, started: proc.rec.started });
     out.push(r.id);
   }
   return out;
@@ -956,6 +1000,8 @@ function onLine(id: string, m: any, ctx: TurnCtx) {
 function finishTurn(id: string, ctx: TurnCtx, { stopped = false, code = 0, turn }: { stopped?: boolean; code?: number | null; turn?: Turn }) {
   if (ctx.finished) return;
   ctx.finished = true;
+  // Ended by the deadline: a stopped turn, with a line saying so unless it had already answered.
+  stopped ||= Boolean(ctx.timedOut);
   running.delete(id);
   runningCtx.delete(id);
   const call = calls.get(id);
@@ -966,6 +1012,7 @@ function finishTurn(id: string, ctx: TurnCtx, { stopped = false, code = 0, turn 
   if (!conv) return;
   // What Claude had written when J stopped it stays in the conversation.
   if (text?.trim()) conv.messages.push({ role: 'assistant', text: `${text}${stopped ? ' …' : ''}`, at: Date.now() });
+  if (ctx.timedOut && !ctx.done) conv.messages.push({ role: 'assistant', text: `(${brainLabel(ctx.harness)} stopped: the answer timed out after ${Math.max(1, Math.round(TURN_DEADLINE_MS() / 60_000))} min, so Studio ended it. Ask again to get an answer.)`, at: Date.now() });
   if (!stopped && code !== 0 && !conv.messages.some((x) => x.role === 'assistant' && x.at >= ctx.userAt)) {
     conv.messages.push({ role: 'assistant', text: `(${brainLabel(ctx.harness)} couldn't answer: ${(ctx.err.trim().split('\n').pop() || `exit ${code}`).slice(0, 300)})`, at: Date.now() });
   }

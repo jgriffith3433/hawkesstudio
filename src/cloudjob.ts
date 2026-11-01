@@ -313,13 +313,23 @@ async function pull(f: Follow, r: JobRunner) {
   return names;
 }
 
+/**
+ * A job followed again after a restart whose execution's name isn't in the bucket after this long was never started
+ * (Studio stopped while uploading its inputs) or was already collected (its folder cleared): nothing will ever end it.
+ */
+export const JOB_UNKNOWN_MS = () => Number(process.env.STUDIO_JOB_UNKNOWN_MS) || 10 * 60_000;
+
 /** Polls the job until its exit.json, then applies its workspace and session and writes the local exit. */
 function follow(f: Follow, cwd: string, env: NodeJS.ProcessEnv, every = Number(process.env.STUDIO_JOB_POLL_MS) || 2000) {
   const r = runnerFor();
   let goneAt = 0;
+  const since = Date.now();
   const tick = async () => {
     if (f.done) return;
     try {
+      // Reattached: the execution's name is read again until the bucket answers (it used to be read once, and a miss
+      // left the job followed forever with nothing to cancel or ask Cloud Run about).
+      if (!f.execution) f.execution = (await r.get(key(f.unit, 'execution.txt')).catch(() => null))?.toString('utf8') || null;
       if (fs.existsSync(local(f.unit, 'stop')) && !f.stopAsked) {
         f.stopAsked = Date.now();
         await r.put(key(f.unit, 'stop'), String(Date.now()));
@@ -328,6 +338,10 @@ function follow(f: Follow, cwd: string, env: NodeJS.ProcessEnv, every = Number(p
       const names = await pull(f, r);
       if (names.includes('exit.json')) {
         await finish(f, r, cwd, env);
+        return;
+      }
+      if (!f.execution && Date.now() - since > JOB_UNKNOWN_MS()) {
+        end(f, { code: null, signal: null, error: "the Cloud Run job can't be found (Studio restarted while starting it, or its result was already collected)" });
         return;
       }
       // Cloud Run says it's over but the runner said nothing (killed, out of memory, timed out): wait a little for the
