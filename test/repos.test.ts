@@ -70,9 +70,19 @@ const tarList = (f: string) => spawnSync('tar', ['-tzf', f], { encoding: 'utf8' 
 const realGit = spawnSync('which', ['git'], { encoding: 'utf8' }).stdout.trim();
 const fakeBin = path.join(tmp, 'fakebin');
 fs.mkdirSync(fakeBin, { recursive: true });
-fs.writeFileSync(path.join(fakeBin, 'git'), `#!/bin/sh\nfor a in "$@"; do if [ "$a" = stash ]; then echo "fatal: unable to write new index file" >&2; exit 128; fi; done\nexec ${realGit} "$@"\n`, { mode: 0o755 });
-const blockStash = () => { process.env.PATH = `${fakeBin}${path.delimiter}${process.env.PATH}`; };
-const unblockStash = () => { process.env.PATH = process.env.PATH!.replace(`${fakeBin}${path.delimiter}`, ''); };
+// FAKE_GIT_BLOCK lists the subcommands it refuses (default stash); FAKE_GIT_SILENT makes it die without a word, like a
+// git killed by a timeout or the instance's memory.
+fs.writeFileSync(path.join(fakeBin, 'git'), `#!/bin/sh\nfor a in "$@"; do for b in $(echo "\${FAKE_GIT_BLOCK:-stash}" | tr , ' '); do if [ "$a" = "$b" ]; then [ -n "$FAKE_GIT_SILENT" ] || echo "fatal: unable to write new index file" >&2; exit 128; fi; done; done\nexec ${realGit} "$@"\n`, { mode: 0o755 });
+const blockStash = (also: string[] = [], silent = false) => {
+  process.env.PATH = `${fakeBin}${path.delimiter}${process.env.PATH}`;
+  process.env.FAKE_GIT_BLOCK = ['stash', ...also].join(',');
+  if (silent) process.env.FAKE_GIT_SILENT = '1';
+};
+const unblockStash = () => {
+  process.env.PATH = process.env.PATH!.replace(`${fakeBin}${path.delimiter}`, '');
+  delete process.env.FAKE_GIT_BLOCK;
+  delete process.env.FAKE_GIT_SILENT;
+};
 const quiet = async <T>(f: () => Promise<T>) => {
   const warned: string[] = [];
   const warn = console.warn;
@@ -135,4 +145,69 @@ test('stash and tar both fail: nothing is touched and both reasons are in the de
   assert.match(r.detail, /git stash: .+; tar backup: .+/);
   assert.equal(fs.readFileSync(path.join(dir, 'src/main.ts'), 'utf8'), 'precious');
   assert.equal(head(), before);
+});
+
+// A half-written checkout (a clone or switch cut off partway: PH Origins, 2026-11-01, ~1,300 "changes" on main). Studio
+// clones from https://github.com/<slug>.git: git's insteadOf points that at the test's bare origin.
+const gitConfig = path.join(tmp, 'gitconfig');
+fs.writeFileSync(gitConfig, `[url "${origin}"]\n\tinsteadOf = https://github.com/test/site.git\n`);
+process.env.GIT_CONFIG_GLOBAL = gitConfig;
+const tracked = () => git(dir, 'ls-files').split('\n').filter(Boolean);
+
+test('half-written checkout (tracked files missing), stash fails silently: nothing to back up, restored, follows beta', async () => {
+  push('src/e.ts', 'e1');
+  for (const f of tracked()) fs.rmSync(path.join(dir, f));
+  blockStash([], true);
+  const { r } = await quiet(sync).finally(unblockStash);
+  assert.equal(r.action, 'updated', r.detail);
+  assert.match(r.detail, /git exited without saying why/);
+  assert.match(r.detail, /none of the \d+ files were there to back up/);
+  assert.equal(r.setAside?.backup, undefined);
+  assert.equal(status(), '');
+  assert.equal(head(), git(dir, 'rev-parse', 'origin/beta'));
+  assert.ok(notices.some((n) => /cleared to follow beta/.test(n.title) && /half-written/.test(n.text)));
+});
+
+test("can't clear it in place either: what's there is backed up, the checkout is cloned again on beta", async () => {
+  push('src/f.ts', 'f1');
+  write(dir, 'src/main.ts', 'kept in the backup');
+  fs.rmSync(path.join(dir, 'play/index.html'));
+  blockStash(['restore']);
+  const { r } = await quiet(sync).finally(unblockStash);
+  assert.equal(r.action, 'updated', r.detail);
+  assert.match(r.detail, /so it was cloned again/);
+  assert.ok(r.setAside?.recloned && r.setAside.backup);
+  assert.deepEqual(tarList(r.setAside!.backup!), ['src/main.ts']);
+  assert.equal(status(), '');
+  assert.equal(git(dir, 'rev-parse', '--abbrev-ref', 'HEAD'), 'beta');
+  assert.equal(head(), git(dir, 'rev-parse', 'origin/beta'));
+  assert.equal(fs.readFileSync(path.join(dir, 'src/main.ts'), 'utf8'), 'v1');
+});
+
+test("not cloned again while a worktree hangs off it: kept, with why", async () => {
+  push('src/g.ts', 'g1');
+  write(dir, 'src/main.ts', 'agent nearby');
+  const wt = path.join(tmp, 'wt');
+  git(dir, 'worktree', 'add', '--quiet', '--detach', wt, 'HEAD');
+  blockStash(['restore']);
+  const before = head();
+  const { r } = await quiet(sync).finally(unblockStash);
+  git(dir, 'worktree', 'remove', '--force', wt);
+  assert.equal(r.action, 'kept');
+  assert.match(r.detail, /not cloned again: 1 worktree/);
+  assert.equal(head(), before);
+  git(dir, 'restore', '--source=HEAD', '--staged', '--worktree', '--', 'src/main.ts');
+});
+
+test('a clone cut off at its checkout leaves no half-made folder; the next sync clones it on beta', async () => {
+  fs.rmSync(dir, { recursive: true, force: true });
+  blockStash(['checkout'], true);
+  const { r } = await quiet(sync).finally(unblockStash);
+  assert.equal(r.action, 'failed');
+  assert.match(r.detail, /checking out beta failed: git exited without saying why .*removed the half-made clone/);
+  assert.ok(!fs.existsSync(dir));
+  const again = await sync();
+  assert.equal(again.action, 'cloned', again.detail);
+  assert.equal(git(dir, 'rev-parse', '--abbrev-ref', 'HEAD'), 'beta');
+  assert.equal(status(), '');
 });
