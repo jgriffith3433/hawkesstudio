@@ -1296,6 +1296,21 @@ export function runRestarts(prev: { step?: string; n?: number; at?: number } | u
   return { step: key ?? '', n, at: now };
 }
 
+/**
+ * A build run whose work is in Hawkes Gen right now (2026-11-01, j-studio-4f12): every build still building has a Gen job
+ * that hasn't finished. Studio only waits on it, so its restarts (deploys roll the cells) can't be what ends Studio: they
+ * don't count toward the restart limits below, and the resume polls the same job. Once the job is done (gen_done), the
+ * download and publish are Studio's own work and count again. Exported for the tests.
+ */
+export function waitingInGen(run: string): boolean {
+  try {
+    const rows = db.prepare("SELECT gen_job, gen_done FROM builds WHERE run = ? AND status = 'building'").all(run) as any[];
+    return rows.length > 0 && rows.every((b) => b.gen_job && !b.gen_done);
+  } catch {
+    return false; // no builds table yet: no project builds here
+  }
+}
+
 export function resumeRuns() {
   const out: string[] = [];
   for (const r of db.prepare(`SELECT * FROM runs WHERE status = 'running' ORDER BY started`).all() as any[]) {
@@ -1310,7 +1325,8 @@ export function resumeRuns() {
     // A run that keeps coming back after restarts may be what ends Studio (a clone filling the disk, 2026-10-29): the
     // fourth resume within 30 minutes stops it instead. Deploy restarts are far apart and resume as before.
     const recent = ((options.resumes ?? []) as number[]).filter((t) => Date.now() - t < 30 * 60_000);
-    if (recent.length >= 3) {
+    const inGen = r.kind === 'build' && Array.isArray(options.builds) && waitingInGen(r.id);
+    if (!inGen && recent.length >= 3) {
       const why = `stopped: Studio restarted ${recent.length + 1} times in 30 minutes while this run was going, so it isn't resumed again (it may be what crashed it)`;
       db.prepare(`UPDATE steps SET status = 'failed', detail = ?, finished = ? WHERE status = 'running' AND run = ?`).run(why, Date.now(), r.id);
       db.prepare(`UPDATE runs SET status = 'failed', detail = ?, finished = ? WHERE id = ?`).run(why, Date.now(), r.id);
@@ -1325,7 +1341,7 @@ export function resumeRuns() {
     const at = steps.filter((s) => s.status === 'running').pop();
     const key = at ? `${at.product}/${at.kind}/${at.name}` : null;
     const loop = runRestarts(options.restarts, key);
-    if (key && loop.n > RESTART_LOOP) {
+    if (!inGen && key && loop.n > RESTART_LOOP) {
       const why = `stopped: Studio restarted ${loop.n - 1} times in a row during this run's ${at!.kind} step (${at!.name}), so it isn't resumed again (start it again once the cause is fixed)`;
       db.prepare(`UPDATE steps SET status = 'failed', detail = ?, finished = ? WHERE status = 'running' AND run = ?`).run(why, Date.now(), r.id);
       db.prepare(`UPDATE runs SET status = 'failed', detail = ?, finished = ? WHERE id = ?`).run(why, Date.now(), r.id);
@@ -1333,7 +1349,7 @@ export function resumeRuns() {
       console.warn(`[studio] ${r.id}: ${why}`);
       continue;
     }
-    db.prepare('UPDATE runs SET options = ? WHERE id = ?').run(JSON.stringify({ ...options, resumes: [...recent, Date.now()], ...(key ? { restarts: loop } : {}) }), r.id);
+    if (!inGen) db.prepare('UPDATE runs SET options = ? WHERE id = ?').run(JSON.stringify({ ...options, resumes: [...recent, Date.now()], ...(key ? { restarts: loop } : {}) }), r.id);
     let body: (() => Promise<unknown>) | null = null;
     try {
       if (r.kind === 'daily' || r.kind === 'manual') body = () => runAll(r.id, products, options).catch((e: any) => {

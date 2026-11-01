@@ -35,6 +35,9 @@ What builds it (the runner) follows from `tool`:
   short-lived GitHub token (Studio passes it per job; Gen never stores it), and returns the output as a library asset
   (`result.artifact.asset`, a .tar.gz). Unity versions: the project's `ProjectSettings/ProjectVersion.txt` must be one Gen
   has an image for; otherwise the build fails saying which versions exist. Plan feature `cloudBuilds`.
+  The build is Gen's work: a Studio restart (every deploy rolls the cells) re-attaches to the same Gen job and doesn't count
+  toward the restart limits until that job is done, and a build whose token Gen lost (Gen restarted, or it expired) is
+  submitted once more with a fresh token.
 - **npm / static → Studio** (its Cloud Run job, `cloudjob.ts runCloudBuild`): `command` in `path`, output `out`; static
   publishes the files as they are (no package.json needed).
 - **actions → the project's own GitHub Actions**: the workflow builds however it likes (GameCI for Unity with their own
