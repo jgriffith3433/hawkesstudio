@@ -77,6 +77,21 @@ whole site is behind the Studio's sign-in (the org's pass).
 website's own host (GitHub Pages), `publish.commit: true` commits the output into that repo's `beta` branch at `path`
 through GitHub's API (like J's own games), and going live fast-forwards its main as usual.
 
+**A site with its own game page** (`publish.page: "site"`, with `commit: true`; 2026-11-01, Yooba Land's beta showed
+Unity's default template page instead of its own): a real game's website has its own page at `path` (its loader, sound
+prompt, links, analytics), so the build's template `index.html` must never land on it. Studio then keeps the build at
+its own public address (`/builds/<site>/b/<build>/<n>/`, kept while a site points at it), takes away any mount at
+`path`, and commits only a pointer onto the site's beta: `<path>build.json` (`version`, `base`, `build`, `sha`) and
+`window.HAWKES_BUILD_URL = "<that address>"` first in `<path>index.html`'s `<head>` (`builds.ts pointPage`). The page
+loads its build from `HAWKES_BUILD_URL` when set (Yooba Land: `buildBase = window.HAWKES_BUILD_URL || ...`).
+
+**The project's own build entry** (`method`): a Unity game with Addressables, bundles or post-build steps names its own
+static build method, which builds into the folder in env `HAWKES_OUT` (Hawkes Gen's default, `HawkesBuild.Build`, only
+builds the enabled scenes: no Addressables, the default template). Yooba Land's is `YoobaWebBuild.CloudBuild` (its
+Addressables content, then the player, into `HAWKES_OUT/YoobaLand`). Talk adds or fixes such a method in the game's repo
+through a pull request into its beta when a project needs one, and checks the published build against what's live
+(`studio_game status`: the build's files, `StreamingAssets/aa` present for an Addressables game).
+
 ## Hooks: GitHub tells the Studio
 
 Each repo's `.github/workflows/hawkes-studio.yml` (repokit.ts writes it) posts GitHub's signed OIDC token to the

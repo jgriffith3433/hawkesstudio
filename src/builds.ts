@@ -134,6 +134,29 @@ async function mount(target: Product, at: string, base: string) {
   await store.put(`${sub}/mounts.json`, Buffer.from(JSON.stringify(cur)), 'application/json');
 }
 
+/** Takes a mount away, so the target's beta site serves its own files at that path again (publish.page "site"). */
+async function unmount(target: Product, at: string) {
+  const { sub } = await siteOf(target);
+  const store = await siteStore();
+  const cur = await store.get(`${sub}/mounts.json`).then((b) => (b ? JSON.parse(b.toString('utf8')) : null)).catch(() => null);
+  if (!cur || !(at in cur)) return;
+  delete cur[at];
+  await store.put(`${sub}/mounts.json`, Buffer.from(JSON.stringify(cur)), 'application/json');
+}
+
+/**
+ * publish.page "site": the site's own page names the build's address in window.HAWKES_BUILD_URL (the folder the build's
+ * files are under, ending in /). Replaces the one already there, else goes first in <head> (before the page's loader).
+ */
+export function pointPage(html: string, url: string): string {
+  const line = `window.HAWKES_BUILD_URL = ${JSON.stringify(url)};`;
+  const there = /window\.HAWKES_BUILD_URL\s*=\s*("[^"\n]*"|'[^'\n]*')\s*;?/;
+  if (there.test(html)) return html.replace(there, line);
+  const head = /<head(\s[^>]*)?>/i.exec(html);
+  const tag = `<script>${line}</script>`;
+  return head ? html.slice(0, head.index + head[0].length) + `\n  ${tag}` + html.slice(head.index + head[0].length) : `${tag}\n${html}`;
+}
+
 // ------------------------------------------------------------------ runs
 
 /**
@@ -259,7 +282,17 @@ async function buildOne(run: string, p: Product, b: BuildSpec, o: StartOptions) 
     if (!o.change) await prune(p, b.id, sub).catch((e) => say(`old builds not pruned: ${e.message}`));
     // Into another project's site too: mounted (its beta site serves it there) and, when asked, committed to its repo.
     const linked: string[] = [];
-    if (b.publish && movesBeta) {
+    if (b.publish?.page === 'site' && movesBeta) {
+      // The site keeps its own page (a game page with its own loader, sound prompt and links): the build stays at its own
+      // public address and only a pointer goes into the site, never the build's template index.html over the page.
+      const target = getProduct(b.publish.project);
+      const publicUrl = `${new URL(root).origin}/builds/${sub}/b/${b.id}/${version}/`;
+      await (await siteStore()).put(`${base}/.public`, Buffer.from(JSON.stringify({ at: Date.now(), into: (target as any).github ?? target.id, page: 'site' })), 'application/json');
+      await unmount(target, b.publish.path);
+      const c = await pointInto(target, b.publish.path, publicUrl, { version, build: b.id, sha: sha.slice(0, 7) }, `Build ${b.id} ${version} of ${p.name} (${sha.slice(0, 7)}): point ${b.publish.path || '/'}index.html at it`, say);
+      db.prepare('UPDATE builds SET commit_repo = ?, commit_sha = ? WHERE id = ?').run(c.slug, c.sha, rowId);
+      linked.push(`${target.name} ${b.publish.path || '/'} (its own page, pointed at ${publicUrl})`, c.line);
+    } else if (b.publish && movesBeta) {
       const target = getProduct(b.publish.project);
       await mount(target, b.publish.path, base);
       linked.push(`${target.name} ${b.publish.path || '/'}`);
@@ -440,6 +473,26 @@ export function splitForGit(files: { path: string; size: number }[], publicUrl: 
     // "Build", "Build/x.loader.js", './Build/...' in the committed pages and scripts point at the public address.
     rewrite: (p: string, t: string) => (/\.(html?|js|mjs|json|css)$/i.test(p) ? t.replace(new RegExp(`(["'\`(=]\\s*)(?:\\./)?${esc}(?=["'\`/)])`, 'g'), `$1${publicUrl}${dir}`) : t),
   };
+}
+
+/** publish.page "site": <path>build.json and window.HAWKES_BUILD_URL in <path>index.html, on the target's beta. */
+async function pointInto(target: Product, at: string, url: string, info: { version: number; build: string; sha: string }, message: string, say: (s: string) => void) {
+  const slug = String((target as any).github ?? '');
+  if (!slug) throw new Error(`${target.name} has no GitHub repo to point at the build`);
+  const { repoToken, githubFetch } = await import('./ghtoken.ts');
+  const token = await repoToken(slug);
+  if (!token) throw new Error(`Studio has no GitHub access to ${slug}`);
+  const gh = githubFetch(token);
+  const read = async (ref: string) => {
+    const r = await gh(`https://api.github.com/repos/${slug}/contents/${encodeURI(`${at}index.html`)}?ref=${ref}`, { headers: { Accept: 'application/vnd.github.raw', 'User-Agent': 'hawkes-studio' } });
+    return r.ok ? r.text() : null;
+  };
+  const page = (await read('beta')) ?? (await read('main'));
+  if (page == null) throw new Error(`${slug} has no ${at}index.html to point at the build (publish.page "site" keeps the site's own page)`);
+  const json = { version: info.version, base: url, build: info.build, sha: info.sha, at: new Date().toISOString() };
+  const file = (path: string, text: string) => { const b = Buffer.from(text, 'utf8'); return { path, oid: '', size: b.length, read: async () => b }; };
+  say(`pointing ${slug} ${at}index.html at ${url}`);
+  return commitInto(target, at, [file('index.html', pointPage(page, url)), file('build.json', `${JSON.stringify(json, null, 2)}\n`)], message, say, null);
 }
 
 async function commitInto(target: Product, at: string, files: import('./sitestore.ts').SiteFile[], message: string, say: (s: string) => void, pub: { base: string; publicUrl: string } | null = null) {
