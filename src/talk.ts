@@ -161,6 +161,20 @@ export function markSeen(id: string, at: number) {
   talkChanged(id);
   return { unseen: unseenIn(id), conversations: unseenConversations() };
 }
+/**
+ * "Mark all as read" (the Talk list's button): every conversation counts as seen up to Claude's or Studio's newest
+ * message in it, in one statement. Only the seen mark moves: nothing is answered, approved or dismissed (approval cards
+ * and the Inbox's questions keep waiting on J), and a message that lands after this still counts as new.
+ */
+export function markAllSeen() {
+  const ids = (db.prepare(`SELECT id FROM conversations WHERE ${UNSEEN}`).all() as { id: string }[]).map((r) => r.id);
+  if (ids.length) db.prepare(`UPDATE conversations SET seen = reply WHERE ${UNSEEN}`).run();
+  if (ids.length && streamClients()) {
+    const unseen = unseenConversations();
+    for (const id of ids) changed('talk', id, { unseen });
+  }
+  return { cleared: ids.length, conversations: unseenConversations() };
+}
 function save(c: Conversation) {
   db.prepare('UPDATE conversations SET title = ?, session = ?, status = ?, messages = ?, cost = ?, updated = ?, reply = ? WHERE id = ?').run(c.title, c.session, c.status, J(c.messages), c.cost, Date.now(), lastReply(c.messages), c.id);
   talkChanged(c.id);

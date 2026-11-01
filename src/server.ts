@@ -14,7 +14,7 @@ import { deployPlan, deploy, rollbackPlan, rollback } from './deploy.ts';
 import { assetStatus } from './assets.ts';
 import { syncRepos } from './repos.ts';
 import { chooseBrain, ensureBrain } from './brains.ts';
-import { startConversation, say, getConversation, listConversations, stop as stopTalk, talkInfo, renameConversation, deleteConversation, startCall, endCall, callInfo, talkEvents, resumeTalk, markSeen, unseenConversations, untilIdle } from './talk.ts';
+import { startConversation, say, getConversation, listConversations, stop as stopTalk, talkInfo, renameConversation, deleteConversation, startCall, endCall, callInfo, talkEvents, resumeTalk, markSeen, markAllSeen, unseenConversations, untilIdle } from './talk.ts';
 import { notify, notifyInfo, saveNotifySettings, PUBLIC_URL } from './notify.ts';
 import { listChanges, getChange, startFix, startTask, approve, revise, close, agentSettings, saveAgentSettings, costToday, resumeChanges } from './agents.ts';
 import { startAssets } from './pipeline.ts';
@@ -555,6 +555,8 @@ const server = http.createServer(async (req, res) => {
       if (!c) return send(res, 404, { error: 'no such conversation' });
       return send(res, 200, { id: c.id, call: startCall(c.id, { device: b.device }) });
     }
+    // "Mark all as read" in the Talk list: every conversation's seen mark, in one call (talk.ts markAllSeen).
+    if (route === '/api/talk/seen' && method === 'POST') return send(res, 200, markAllSeen());
     // The dashboard had the conversation on screen up to `at` (the newest message it showed): talk.ts markSeen.
     m = /^\/api\/talk\/(t_[0-9a-f]+)\/seen$/.exec(route);
     if (m && method === 'POST') {
