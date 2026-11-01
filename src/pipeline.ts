@@ -592,6 +592,23 @@ export async function testProduct(run: string, p: Product, platform: 'EditMode' 
 }
 
 /**
+ * A contract game's page, with an empty `?playtest=`: pages that load their playtest bot only for a browser under
+ * automation (Hawkes Games loads public/playtest/portal.js for navigator.webdriver or `?playtest=`) load it under Gen's
+ * playtester too, which doesn't show as automated (2026-11-01: "The page never exposed window.hawkesPlaytest").
+ * Web games only: the runner starts a Unity page with its own `?playtest=<id>`. Empty never starts a scenario by itself (the contract's `?playtest=<id>`, docs/playtest.md), and visitors never get it.
+ */
+export function withPlaytestHint(url: string): string {
+  try {
+    const u = new URL(url);
+    if (!/^https?:$/.test(u.protocol) || u.searchParams.has('playtest')) return url;
+    u.searchParams.set('playtest', '');
+    return u.toString();
+  } catch {
+    return url;
+  }
+}
+
+/**
  * Plays one scenario and (unless review is false) has Claude review it; adds findings to the backlog. mode (review.ts):
  * full (daily; regression-only once the scenario meets the product's quality bar), verify (beta runs, one-off checks),
  * regression (live checks). criteria: a roadmap task's acceptance criteria, judged on this playtest.
@@ -711,6 +728,7 @@ async function playScenario(run: string, p: Product, asked: Playtest, { review =
     // Live sites may not have the contract yet (it ships with the next deploy): auto falls back to a generic smoke test.
     const params: Record<string, unknown> = { url, mode: t.mode ?? (p.contract && t.where === 'local' ? 'contract' : 'auto'), ...(t.scenario ? { scenario: t.scenario } : {}), ...(t.timeout ? { timeout: t.timeout } : {}), ...(t.seed ? { seed: t.seed } : {}), ...(playOptions(t) ? { options: playOptions(t) } : {}) };
     if (t.mode === 'site') params.maxPages = 40;
+    if (p.contract && p.engine === 'web' && (params.mode === 'contract' || params.mode === 'auto')) params.url = withPlaytestHint(String(params.url));
     Object.assign(params, playtestExtras(p.id, name, t));
     // An app behind a sign-in (Product.testSignIn): on its beta, the playtest starts signed in as a test account.
     if (t.where === 'local' && p.testSignIn?.url && !prior) {
