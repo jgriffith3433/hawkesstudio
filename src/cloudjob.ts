@@ -247,9 +247,17 @@ export function startCloudJob(unit: string, spec: Spec, o: { gitToken?: string |
         gitToken = await jobRepoToken(slugOfRemote(ws.remote)).catch(() => null);
       }
       gitToken ??= o.gitToken ?? null;
+      // A big repo (repos.ts bigRepo: a Unity project's, or over STUDIO_CLONE_MAX_MB) is cloned partially with no LFS
+      // files (cloudjob-run.ts prepare's default); a small one fully, with its LFS files, as before.
+      let big: string | null = null;
+      if (ws) {
+        const { slugOfRemote } = await import('./ghtoken.ts');
+        const slug = slugOfRemote(ws.remote);
+        if (slug) big = await import('./repos.ts').then(({ bigRepo }) => bigRepo(slug)).catch(() => null);
+      }
       await r.put(key(unit, 'spec.json'), JSON.stringify({
         file: spec.file, args: spec.args, cwd, env, sessions,
-        git: ws ? { head: ws.head, branch: ws.branch, remote: ws.remote, bundle: Boolean(ws.bundle), token: gitToken } : null,
+        git: ws ? { head: ws.head, branch: ws.branch, remote: ws.remote, bundle: Boolean(ws.bundle), token: gitToken, ...(big ? {} : { partial: false, lfs: true }) } : null,
       }));
       f.execution = await r.start(unit);
       await r.put(key(unit, 'execution.txt'), f.execution);
@@ -417,7 +425,7 @@ export async function runCloudBuild(unit: string, o: { remote: string; head: str
     await r.put(k('spec.json'), JSON.stringify({
       kind: 'build', outputs: o.outputs, file: '/bin/sh', args: ['-c', o.command], cwd: o.cwd,
       env: { CI: '1', npm_config_update_notifier: 'false' }, sessions: path.posix.join(o.cwd, '.hawkes-none', 's', 's'),
-      git: { head: o.head, branch: 'HEAD', remote: plainRemote(o.remote), bundle: Boolean(o.bundle), token: gitToken, shallow: !o.bundle },
+      git: { head: o.head, branch: 'HEAD', remote: plainRemote(o.remote), bundle: Boolean(o.bundle), token: gitToken, shallow: !o.bundle, lfs: true },
     }));
     execution = await r.start(unit);
     const t0 = Date.now();

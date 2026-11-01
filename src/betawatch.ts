@@ -19,7 +19,7 @@ import { loadProducts as allProducts, PROJECTS, managedElsewhere } from './confi
 const loadProducts = () => allProducts().filter((p) => !managedElsewhere(p));
 import { db } from './db.ts';
 import { BETA, shaOf } from './beta.ts';
-import { betaFolders, repoMap, syncRepos, cloneRefusal } from './repos.ts';
+import { betaFolders, repoMap, syncRepos, builtFromGitHub } from './repos.ts';
 import { notePush, waitingBetaRun } from './betaqueue.ts';
 
 // Pushes seconds apart (a merge and its webhook) start one beta run; the run's own quiet time does the rest.
@@ -55,14 +55,14 @@ export function betaFolderFor(slug: string) {
 export async function onBetaPush(folder: string, sha?: string) {
   // On Cloud Run the beta site is published from GitHub (previews-cloud.ts): a repo that isn't cloned here isn't cloned
   // just for it (Dose Of Destruction is 1 GB, and /tmp is the instance's memory). One that is (an agent's) is synced.
-  // Nor, on Cloud Run, a repo of a project too big to clone (repos.ts cloneRefusal: a Unity project, a repo over the
-  // size limit): its beta builds from GitHub.
+  // Nor, on Cloud Run, a Unity project's repo (repos.ts builtFromGitHub): its beta builds from GitHub. A big web repo
+  // is synced on the light path (repos.ts syncGit).
   const { remoteSites } = await import('./previews-cloud.ts');
   const cloned = fs.existsSync(path.join(PROJECTS, folder, '.git'));
   let skip = !cloned && remoteSites() ? `${BETA} is published from GitHub` : null;
   if (!cloned && !skip && process.env.K_SERVICE) {
     for (const p of loadProducts().filter((x) => [x.repo, x.site].some((r) => r?.split('/')[0] === folder))) {
-      skip = await cloneRefusal(p);
+      skip = builtFromGitHub(p);
       if (skip) break;
     }
   }
