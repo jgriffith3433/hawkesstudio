@@ -41,6 +41,10 @@ export const KINDS = ['merge', 'deploy', 'rollback', 'gpu', 'settings', 'decisio
 export type Kind = (typeof KINDS)[number];
 /** How long a card can be approved. */
 export const TTL_MS = () => Number(process.env.STUDIO_APPROVAL_TTL_MS ?? 15 * 60_000);
+/** A GitHub setup card waits in the Inbox for days: it's bound to its plan (a changed plan makes it stale), and the owner
+ *  taps it whenever they next open Studio. 15 minutes made every one lapse before it was seen (2026-11-01). */
+export const GITHUB_TTL_MS = () => Number(process.env.STUDIO_APPROVAL_GITHUB_TTL_MS ?? 7 * 24 * 60 * 60_000);
+export const ttlFor = (kind: string) => (kind === 'github' ? GITHUB_TTL_MS() : TTL_MS());
 
 /** What J sees: a title, plain lines, links, blockers (approving is refused while there are any) and warnings. */
 export type Card = { title: string; lines: string[]; blockers: string[]; warnings: string[]; links: { label: string; url: string }[]; approve: string; deny: string };
@@ -249,7 +253,7 @@ export async function requestApproval(kind: string, target: string, params: Reco
   const id = newId('a');
   const now = Date.now();
   db.prepare('INSERT INTO approvals (id, kind, target, params, bind, token, card, status, requested_by, conversation, created, expires) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
-    .run(id, kind, target, J(clean), bind, crypto.randomBytes(18).toString('hex'), J(card), 'pending', by, conversation, now, now + TTL_MS());
+    .run(id, kind, target, J(clean), bind, crypto.randomBytes(18).toString('hex'), J(card), 'pending', by, conversation, now, now + ttlFor(kind));
   cardChanged(conversation);
   return getApproval(id)!;
 }
