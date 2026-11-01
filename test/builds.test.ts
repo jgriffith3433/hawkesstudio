@@ -252,3 +252,16 @@ test('publish.page "site": the website keeps its own game page and is only point
   assert.match(again, /b\/web\/4\//);
   assert.match(B.pointPage('<p>no head</p>', url), /^<script>window\.HAWKES_BUILD_URL/);
 });
+
+test('an app with a beta server of its own still has its own builds published (Hawkes Net: its SDK files)', async () => {
+  C.saveProduct({ id: 'svc', name: 'Svc', engine: 'web', kind: 'app', beta: 'https://beta.svc.test', repo: 'acme/site', builds: [{ id: 'release', tool: 'static', playtest: false }] } as any);
+  const r = (await B.startBuild('svc', { trigger: 'beta' }))!;
+  await r.done;
+  const run = await runOf(r.id);
+  assert.equal(run.status, 'done', JSON.stringify(run.steps.map((s: any) => s.detail)));
+  const row = B.buildHistory('svc')[0];
+  assert.equal(row.status, 'ready');
+  assert.equal(row.url, 'https://sites.hawkesgen.ai/o/acme-1a2b/svc/b/release/1/');
+  W.resetSmall();
+  assert.equal((await page('/o/acme-1a2b/svc/b/release/1/')).status, 200);
+});
