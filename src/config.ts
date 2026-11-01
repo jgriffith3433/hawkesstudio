@@ -41,6 +41,9 @@ export const paths = {
   /** Games added in J's Studio through Talk or the dashboard (J, 2026-10-30: "Studio's data", not a commit): beside the
    *  hand-edited products.json, in the data folder Cloud Run syncs. A customer's Studio keeps all its games in `products`. */
   games: process.env.STUDIO_GAMES || path.join(DATA, 'games.json'),
+  /** Settings Studio learned for products.json's builds (a Unity build's machine size after Hawkes Gen had to build it a
+   *  size up: setBuildMachine), applied by loadProducts: products.json itself is edited in git. */
+  buildOverrides: process.env.STUDIO_BUILD_OVERRIDES || path.join(DATA, 'build-overrides.json'),
 };
 for (const d of [DATA, paths.logs, paths.reports]) {
   try {
@@ -178,7 +181,56 @@ export function loadProducts(): Product[] {
   if (customerStudio()) return all.map(asAddedGame);
   // J's Studio: products.json first; a game added here never shadows one of its ids.
   const ids = new Set(all.map((p) => p.id));
-  return [...all, ...addedGames().filter((p) => !ids.has(p.id)).map(asAddedGame)];
+  const over = buildOverrides();
+  return [...all.map((p) => withBuildOverrides(p, over)), ...addedGames().filter((p) => !ids.has(p.id)).map(asAddedGame)];
+}
+
+// ------------------------------------------------------------------ settings Studio learned for a build
+
+type BuildOverrides = Record<string, Record<string, { machine?: BuildMachine }>>;
+let overridesMemo: { sig: string; out: BuildOverrides } | null = null;
+/** paths.buildOverrides: { "<product>": { "<build>": { machine } } } (read once per version of the file). */
+export function buildOverrides(): BuildOverrides {
+  const sig = `${paths.buildOverrides}|${fileSig(paths.buildOverrides)}`;
+  if (overridesMemo?.sig === sig) return overridesMemo.out;
+  let out: BuildOverrides = {};
+  try { out = JSON.parse(fs.readFileSync(paths.buildOverrides, 'utf8')) ?? {}; } catch { /* none yet */ }
+  overridesMemo = { sig, out };
+  return out;
+}
+function withBuildOverrides(p: Product, over: BuildOverrides): Product {
+  const o = over[p.id];
+  if (!o || !p.builds?.length) return p;
+  return { ...p, builds: p.builds.map((b) => (o[b.id]?.machine ? { ...b, machine: o[b.id].machine } : b)) };
+}
+
+/**
+ * Saves the machine a Unity build should start on (Hawkes Gen built it a size up after it ran out of memory): into the
+ * project's own builds where Studio keeps them (an added game, a customer's game: the store saveProduct writes), else
+ * as an override of products.json's build in Studio's data (loadProducts applies it). Returns where it went.
+ */
+export function setBuildMachine(productId: string, buildId: string, machine: BuildMachine): 'project' | 'override' | 'none' {
+  const m = checkMachine(machine);
+  const file = storeFile();
+  let raw: Product[] = [];
+  try { raw = fs.existsSync(file) ? ((JSON.parse(fs.readFileSync(file, 'utf8')).products ?? []) as Product[]) : []; } catch { raw = []; }
+  const own = raw.find((p) => p.id === productId);
+  const inProductsJson = !customerStudio() && (() => { try { return (JSON.parse(fs.readFileSync(paths.products, 'utf8')).products as Product[]).find((p) => p.id === productId); } catch { return undefined; } })();
+  if (own && !inProductsJson) {
+    const b = own.builds?.find((x) => x.id === buildId);
+    if (!b) return 'none';
+    b.machine = m;
+    writeGames(raw);
+    return 'project';
+  }
+  if (!inProductsJson || !inProductsJson.builds?.some((x) => x.id === buildId)) return 'none';
+  const all = { ...buildOverrides() };
+  all[productId] = { ...(all[productId] ?? {}), [buildId]: { ...(all[productId]?.[buildId] ?? {}), machine: m } };
+  const tmp = `${paths.buildOverrides}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify(all, null, 2));
+  fs.renameSync(tmp, paths.buildOverrides);
+  overridesMemo = null;
+  return 'override';
 }
 
 // One folder map per version of the files it reads. loadProducts runs on most requests and asks it for every project:
@@ -331,7 +383,33 @@ export type BuildSpec = {
   playtest?: boolean;
   /** Plain settings the build runs with (VITE_*, NEXT_PUBLIC_*, NODE_OPTIONS...): never secrets, they show in its log. */
   env?: Record<string, string>;
+  /**
+   * unity: the machine Hawkes Gen builds it on (hawkesgen docs/unity-cloudrun.md, "Machine sizes"): a size name (s 2 vCPU
+   * / 8 GiB, m 4 / 16, l 6 / 24, xl 8 / 32; none: Gen's default, m) or { cpu, memoryGiB }. Smaller is cheaper; a build
+   * that runs out of memory is built again a size up, and Studio saves that size here (setBuildMachine).
+   */
+  machine?: BuildMachine;
 };
+export type BuildMachine = string | { cpu: number; memoryGiB: number };
+/** Cloud Run's vCPU counts and the most memory each takes (GiB); Hawkes Gen checks a size name against its own sizes. */
+const MACHINE_MEMORY: Record<number, [number, number]> = { 2: [1, 8], 4: [2, 16], 6: [4, 24], 8: [4, 32] };
+
+/** A build's machine, checked: a size name, or { cpu, memoryGiB } that Cloud Run runs. Throws naming the field. */
+export function checkMachine(m: unknown, at = 'machine'): BuildMachine {
+  if (typeof m === 'string') {
+    const name = m.trim().toLowerCase();
+    if (!/^[a-z0-9]{1,8}$/.test(name)) throw new StudioError(`${at}: a size name (s, m, l, xl) or { cpu, memoryGiB }`, 400);
+    return name;
+  }
+  const o = m as { cpu?: unknown; memoryGiB?: unknown } | null;
+  const cpu = Number(o?.cpu);
+  const mem = Number(o?.memoryGiB);
+  const range = MACHINE_MEMORY[cpu];
+  if (!o || typeof o !== 'object' || Array.isArray(o) || Object.keys(o).some((k) => k !== 'cpu' && k !== 'memoryGiB')) throw new StudioError(`${at}: a size name (s, m, l, xl) or { cpu, memoryGiB }`, 400);
+  if (!range) throw new StudioError(`${at}.cpu: 2, 4, 6 or 8`, 400);
+  if (!Number.isInteger(mem) || mem < range[0] || mem > range[1]) throw new StudioError(`${at}.memoryGiB: ${cpu} vCPU takes ${range[0]} to ${range[1]} GiB`, 400);
+  return { cpu, memoryGiB: mem };
+}
 const BUILD_TOOLS = ['unity', 'npm', 'static', 'actions'];
 const BUILD_TARGETS = ['web', 'windows', 'linux', 'mac', 'android'];
 // A folder inside a repo or site: no leading slash, no "..", ordinary characters.
@@ -377,6 +455,10 @@ export function checkBuilds(list: unknown): BuildSpec[] {
       if (page !== undefined && page !== 'site') throw new StudioError(`${at}.publish.page: "site" (keep that site's own page and point it at the build) or "build"`, 400);
       if (page === 'site' && b.publish.commit !== true) throw new StudioError(`${at}.publish.page "site" needs commit: true (the pointer is committed into that site)`, 400);
       out.publish = { project, path: p ? `${p.replace(/\/+$/, '')}/` : '', ...(b.publish.commit === true ? { commit: true } : {}), ...(page ? { page: 'site' as const } : {}) };
+    }
+    if (b.machine !== undefined && b.machine !== null && b.machine !== '') {
+      if (b.tool !== 'unity') throw new StudioError(`${at}.machine: only Unity builds (Hawkes Gen's cloud) take a machine size`, 400);
+      out.machine = checkMachine(b.machine, `${at}.machine`);
     }
     if (b.playtest !== undefined) out.playtest = b.playtest !== false;
     if (b.env !== undefined) {

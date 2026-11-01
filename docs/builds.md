@@ -25,7 +25,8 @@ GitHub mode into the website repo). Everything here is the `builds` list, which 
     "on": ["beta"],            // when Studio builds it by itself: beta pushes, build-* tags; [] = only when asked (actions
                                // builds default to []: their own workflow's triggers start them, and they report in)
     "publish": { "project": "yoobalandgame", "path": "Game/" }, // also put the output into another project's site here
-    "playtest": true           // play the build when it's published (default true for web)
+    "playtest": true,          // play the build when it's published (default true for web)
+    "machine": "m"             // unity: Gen's build machine, s | m | l | xl or { "cpu": 4, "memoryGiB": 12 } (default m)
   }
 ]
 ```
@@ -37,7 +38,10 @@ What builds it (the runner) follows from `tool`:
   has an image for; otherwise the build fails saying which versions exist. Plan feature `cloudBuilds`.
   The build is Gen's work: a Studio restart (every deploy rolls the cells) re-attaches to the same Gen job and doesn't count
   toward the restart limits until that job is done, and a build whose token Gen lost (Gen restarted, or it expired) is
-  submitted once more with a fresh token.
+  submitted once more with a fresh token. `machine` picks Gen's build machine (s 2 vCPU / 8 GiB, m 4 / 16, l 6 / 24, xl
+  8 / 32; Gen's default m, half of xl's price); a build that runs out of memory is built again a size up, and Studio saves
+  that size as the build's own (`config.ts setBuildMachine`: the project's builds, or for products.json an override in
+  `build-overrides.json`) with a line in the build's history ("ran on l after m ran out of memory; saved l ...").
 - **npm / static → Studio** (its Cloud Run job, `cloudjob.ts runCloudBuild`): `command` in `path`, output `out`; static
   publishes the files as they are (no package.json needed).
 - **actions → the project's own GitHub Actions**: the workflow builds however it likes (GameCI for Unity with their own
