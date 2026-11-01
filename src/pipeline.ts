@@ -686,8 +686,10 @@ async function playScenario(run: string, p: Product, asked: Playtest, { review =
     }
     // Timed out (and cancelled) if it hangs, so one stuck browser never holds up the run: the run time counts from the
     // step's first start (kept on the step, so a restart never extends it), and 10 minutes without progress is stuck.
+    // share: the same play another run queued (same page, scenario, device, baseline) and Gen hasn't started yet is
+    // joined, not queued twice; each run still reviews it. Not a page this run serves on its own port (it stops with the run).
     job = await runGenJob('playtest.run', p.id, params, (j) => updateStep(s, { job: j.id, detail: j.detail }), {
-      runMs: playtestRunMs(t), job: prior?.id, since, idleMs: PLAYTEST_IDLE_MS(), abandon, priority, halt: haltOf(run),
+      runMs: playtestRunMs(t), job: prior?.id, since, idleMs: PLAYTEST_IDLE_MS(), abandon, priority, halt: haltOf(run), share: port === null,
       onStart: (at) => db.prepare(`UPDATE steps SET data = json_set(COALESCE(data, '{}'), '$.runningSince', ?) WHERE id = ?`).run(at, s),
     }).finally(() => { if (port) stopServed(port); });
     // A newer beta build waits on this old one (betaqueue.ts supersedingBuild): cancelled, not failed.
