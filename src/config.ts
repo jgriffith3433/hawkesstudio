@@ -197,7 +197,8 @@ export function addedRepoFolders(): Record<string, string> {
     out[folder] = slug;
   };
   for (const p of games) {
-    if (SLUG.test(String(p.repo ?? ''))) add(String(p.repo));
+    const slug = repoSlugOf(p);
+    if (slug) add(slug);
     // A project's other repositories are cloned too, so its agents can work in any of them (agents.ts repoForTarget).
     for (const r of p.repos ?? []) if (SLUG.test(String(r?.repo ?? ''))) add(String(r.repo));
   }
@@ -215,15 +216,27 @@ export function addedRepoFolders(): Record<string, string> {
  */
 export const hostedBeta = (p: Pick<Product, 'engine' | 'beta' | 'builds'>) => !p.beta && ((p.engine as string) === 'web' || Boolean(p.builds?.some((b) => (b.target ?? 'web') === 'web')));
 
+/**
+ * A project's GitHub owner/name as stored: `repo`, or `github` when the project was saved back in its mapped form
+ * (repo the folder, github the slug; 2026-11-01: Hawkes Gen's agent changes then failed with "products.json has no
+ * GitHub repo for hawkesgen"). null: no GitHub repository.
+ */
+export function repoSlugOf(p: Pick<Product, 'repo' | 'github'>): string | null {
+  if (SLUG.test(String(p.repo ?? ''))) return String(p.repo);
+  if (SLUG.test(String(p.github ?? ''))) return String(p.github);
+  return null;
+}
+
 export function asAddedGame(p: Product): Product {
   const g = asCustomerGame(p);
-  const folder = Object.entries(addedRepoFolders()).find(([, slug]) => slug === p.repo)?.[0];
+  const slug = repoSlugOf(p);
+  const folder = slug ? Object.entries(addedRepoFolders()).find(([, s]) => s === slug)?.[0] : undefined;
   if (!folder) return g;
   // A project's other repositories by folder (agents.ts repoForTarget turns a task's target into one of them).
   const folders = addedRepoFolders();
   const extra = (p.repos ?? []).map((r) => ({ ...r, folder: Object.entries(folders).find(([, s]) => s === r.repo)?.[0] })).filter((r) => r.folder);
   return {
-    ...g, repo: folder, site: folder, github: p.repo, ...(extra.length ? { repos: extra } : {}),
+    ...g, repo: folder, site: folder, github: slug!, ...(extra.length ? { repos: extra } : {}),
     // A web game's beta is Studio's own beta site, built from its beta branch (previews.ts ADDED_RECIPE: npm run build,
     // dist/), never "its CI deploys it": with "remote" its beta was never built and beta playtests played the live
     // site (Star Skipper, 2026-10-31). Here (J's PC) the built dist/ is served.
