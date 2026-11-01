@@ -231,6 +231,11 @@ async function buildOne(run: string, p: Product, b: BuildSpec, o: StartOptions) 
   const slug = String((p as any).github ?? '');
   let rowId: string | null = null;
   let out: Output | null = null;
+  // Downloading the output, unpacking and publishing hold Studio's one heavy slot (heavyslot.ts); the build itself and
+  // its playtest don't.
+  const slot: { release: (() => void) | null } = { release: null };
+  const hold = async () => { if (!slot.release) slot.release = await (await import('./heavyslot.ts')).heavySlot(say); };
+  const release = () => slot.release?.();
   try {
     if (!slug) throw new Error(`${p.name} has no GitHub repo to build from`);
     const { repoToken, githubFetch } = await import('./ghtoken.ts');
@@ -267,9 +272,10 @@ async function buildOne(run: string, p: Product, b: BuildSpec, o: StartOptions) 
     if (!o.resume) db.prepare('INSERT INTO builds (id, product, build, version, status, sha, ref, runner, target, run, change, started) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(rowId, p.id, b.id, version || -Date.now(), 'building', sha, ref, runnerOf(b), b.target ?? 'web', run, o.change ?? null, Date.now());
     say(`${sha.slice(0, 7)} (${ref})${o.resume ? ', carrying on after a restart' : ''}`);
     const row = rowId;
-    out = b.tool === 'unity' ? await viaGen(p, b, slug, sha, ref, token, say, { job: o.resume?.job ?? undefined, onSubmit: (id) => db.prepare('UPDATE builds SET gen_job = ?, gen_done = NULL WHERE id = ?').run(id, row), onDone: () => db.prepare('UPDATE builds SET gen_done = ? WHERE id = ?').run(Date.now(), row) })
-      : b.tool === 'actions' ? await viaActions(b, slug, o.artifact!, gh, say)
-      : await viaStudio(p, b, slug, sha, token, gh, say);
+    out = b.tool === 'unity' ? await viaGen(p, b, slug, sha, ref, token, say, { job: o.resume?.job ?? undefined, onSubmit: (id) => db.prepare('UPDATE builds SET gen_job = ?, gen_done = NULL WHERE id = ?').run(id, row), onDone: () => db.prepare('UPDATE builds SET gen_done = ? WHERE id = ?').run(Date.now(), row) }, hold)
+      : b.tool === 'actions' ? await viaActions(b, slug, o.artifact!, gh, say, hold)
+      : await viaStudio(p, b, slug, sha, token, gh, say, hold);
+    await hold();
     // Publish: once, under its version (or the change's preview), behind the Studio's sign-in.
     const { sub, root } = await siteOf(p);
     const base = o.change ? `${sub}/c/${o.change}` : `${sub}/b/${b.id}/${version}`;
@@ -315,6 +321,10 @@ async function buildOne(run: string, p: Product, b: BuildSpec, o: StartOptions) 
       }
     }
     updateStep(step, { status: 'done', detail: `${b.id} ${version || o.change}: ${out.files.length} files, ${Math.round(out.bytes / 1e5) / 10} MB${linked.length ? `; also in ${linked.join(', ')}` : ''}`, data: { url, version, sha, sent: r.sent }, finished: true });
+    // Published: its files are no longer needed in memory, and the playtest doesn't hold the slot.
+    out.cleanup();
+    out = null;
+    release();
     if (movesBeta && (b.target ?? 'web') === 'web' && b.playtest !== false) await playIt(run, p, b.publish ? getProduct(b.publish.project) : p);
     else if (movesBeta && (b.target ?? 'web') !== 'web' && b.playtest !== false) await playDesktop(run, p, b, url);
     // The owner said to keep going live (golive-policy.ts): what just passed goes live by itself.
@@ -328,6 +338,7 @@ async function buildOne(run: string, p: Product, b: BuildSpec, o: StartOptions) 
     updateStep(step, { status: 'failed', detail: why, finished: true });
   } finally {
     out?.cleanup();
+    release();
   }
 }
 
@@ -344,7 +355,7 @@ const tmpDir = () => fs.mkdtempSync(path.join(os.tmpdir(), 'hs-build-'));
 const sizeOf = (files: { size: number }[]) => files.reduce((n, f) => n + f.size, 0);
 
 /** npm or static: Studio's Cloud Run job runs the command (or the files are published as they are, with no package.json). */
-async function viaStudio(p: Product, b: BuildSpec, slug: string, sha: string, token: string | null, gh: typeof fetch, say: (s: string) => void): Promise<Output> {
+async function viaStudio(p: Product, b: BuildSpec, slug: string, sha: string, token: string | null, gh: typeof fetch, say: (s: string) => void, hold: () => Promise<void> = async () => {}): Promise<Output> {
   const { githubFiles } = await import('./sitestore.ts');
   const dir = b.path && b.path !== '.' ? b.path : '';
   // Only GitHub's 404 means "no package.json" (a rate limit or an outage used to publish the unbuilt source as the build,
@@ -360,6 +371,7 @@ async function viaStudio(p: Product, b: BuildSpec, slug: string, sha: string, to
   if (b.tool === 'static' || !hasPkg) {
     const from = [dir, b.tool === 'static' && b.out ? b.out : ''].filter(Boolean).join('/');
     say(`${b.tool === 'npm' ? 'no package.json: ' : ''}publishing ${from || 'the repo'} as it is`);
+    await hold();
     const files = await githubFiles(slug, sha, { sub: from, fetcher: gh });
     return { files, bytes: sizeOf(files), cleanup: () => {} };
   }
@@ -377,7 +389,7 @@ async function viaStudio(p: Product, b: BuildSpec, slug: string, sha: string, to
   say(`building ${sha.slice(0, 7)} in a Cloud Run job (${command})`);
   const r = await runCloudBuild(`build-${p.id}-${b.id}-${Date.now().toString(36)}`, {
     remote: `https://github.com/${slug}.git`, head: sha, cwd: root, command: `${env}; ${cd}${installs ? '' : `(${install}) && `}${command}`, outputs: [outDir], gitToken: token,
-    onLine: (l) => { if (/^\[job\]|error|built in/i.test(l)) say(l); },
+    onLine: (l) => { if (/^\[job\]|error|built in/i.test(l)) say(l); }, beforeOutputs: hold,
   });
   const tail = r.log.split('\n').filter(Boolean).slice(-3).join(' | ').slice(0, 400);
   if (r.error || r.code !== 0) throw new Error(`${command} failed${r.error ? `: ${r.error}` : ` (exit ${r.code})`}${tail ? `: ${tail}` : ''}`);
@@ -397,7 +409,7 @@ export function tokenLost(error: unknown): boolean {
 }
 
 /** unity: Hawkes Gen builds that commit in the cloud with the repo's own token, and hands back the output as an asset. */
-async function viaGen(p: Product, b: BuildSpec, slug: string, sha: string, ref: string, token: string | null, say: (s: string) => void, resume: { job?: string; onSubmit?: (id: string) => void; onDone?: () => void } = {}): Promise<Output> {
+async function viaGen(p: Product, b: BuildSpec, slug: string, sha: string, ref: string, token: string | null, say: (s: string) => void, resume: { job?: string; onSubmit?: (id: string) => void; onDone?: () => void } = {}, hold: () => Promise<void> = async () => {}): Promise<Output> {
   if (!token) throw new Error(`Studio has no GitHub access to ${slug}: connect GitHub and install the app on it`);
   const { genRun, gen } = await import('./gen.ts');
   say('Hawkes Gen is building it (Unity WebGL, in the cloud)');
@@ -417,6 +429,7 @@ async function viaGen(p: Product, b: BuildSpec, slug: string, sha: string, ref: 
   resume.onDone?.();
   const asset = job.result?.artifact?.asset;
   if (!asset) throw new Error('Hawkes Gen finished without the build output');
+  await hold();
   say('downloading the build');
   const tmp = tmpDir();
   // Streamed from Gen straight into tar (2026-11-01): a Unity build with its Addressables content is hundreds of MB, and
@@ -449,13 +462,14 @@ export function learnMachine(productId: string, b: BuildSpec, result: any): stri
 }
 
 /** actions: the workflow run's artifact (its contents are the build: index.html at the root for the web). */
-async function viaActions(b: BuildSpec, slug: string, a: { runId: string; name?: string }, gh: typeof fetch, say: (s: string) => void): Promise<Output> {
+async function viaActions(b: BuildSpec, slug: string, a: { runId: string; name?: string }, gh: typeof fetch, say: (s: string) => void, hold: () => Promise<void> = async () => {}): Promise<Output> {
   const name = a.name ?? b.artifact ?? b.id;
   say(`downloading artifact ${name} of run ${a.runId}`);
   const list = await gh(`https://api.github.com/repos/${slug}/actions/runs/${encodeURIComponent(a.runId)}/artifacts?per_page=100`, { headers: { Accept: 'application/vnd.github+json', 'User-Agent': 'hawkes-studio' } });
   if (!list.ok) throw new Error(`GitHub: the run's artifacts: ${list.status}`);
   const art = ((await list.json()) as any).artifacts?.find((x: any) => x.name === name && !x.expired);
   if (!art) throw new Error(`run ${a.runId} has no artifact named ${name} (upload it with actions/upload-artifact under that name)`);
+  await hold();
   const zip = await gh(art.archive_download_url, { headers: { Accept: 'application/vnd.github+json', 'User-Agent': 'hawkes-studio' } });
   if (!zip.ok) throw new Error(`GitHub: downloading ${name}: ${zip.status}`);
   const data = Buffer.from(await zip.arrayBuffer());

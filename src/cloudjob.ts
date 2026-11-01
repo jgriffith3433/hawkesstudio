@@ -412,7 +412,7 @@ export type CloudBuild = { code: number | null; error?: string; log: string; out
  * from GitHub (`bundle`: a local file of commits GitHub lacks, for an agent change not pushed yet); `command` runs in
  * `cwd` (the clone's absolute path; a site in a subfolder cds into it); `outputs` (relative to cwd) come back as a .tgz.
  */
-export async function runCloudBuild(unit: string, o: { remote: string; head: string; cwd: string; command: string; outputs: string[]; bundle?: string | null; gitToken?: string | null; timeoutMs?: number; onLine?: (s: string) => void; every?: number }): Promise<CloudBuild> {
+export async function runCloudBuild(unit: string, o: { remote: string; head: string; cwd: string; command: string; outputs: string[]; bundle?: string | null; gitToken?: string | null; timeoutMs?: number; onLine?: (s: string) => void; every?: number; beforeOutputs?: () => Promise<void> }): Promise<CloudBuild> {
   const r = runnerFor();
   const k = (n: string) => key(unit, n);
   building++;
@@ -446,6 +446,8 @@ export async function runCloudBuild(unit: string, o: { remote: string; head: str
       }
       if (names.includes('exit.json')) {
         const exit = JSON.parse((await r.get(k('out/exit.json')))?.toString('utf8') ?? '{}');
+        // The caller may wait for a slot first (heavyslot.ts): the outputs come back whole, into memory.
+        if (names.includes('outputs.tgz')) await o.beforeOutputs?.();
         const outputs = names.includes('outputs.tgz') ? await r.get(k('out/outputs.tgz')) : null;
         return { code: exit.code ?? null, ...(exit.error ? { error: exit.error } : {}), log, outputs };
       }

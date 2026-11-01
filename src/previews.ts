@@ -300,10 +300,12 @@ async function buildCloud(p: Product, o: { change?: string; dir?: string }): Pro
   const progress = (detail: string) => record(p.id, o.change, { status: 'building', at: t0, detail });
   try {
     const { publishCloud } = await import('./previews-cloud.ts');
-    const r = await publishCloud(p, subOf(p.id)!, { change: o.change }, progress, {
+    // One beta-site publish or build download at a time across products (heavyslot.ts; the queues above are per product).
+    const { heavy } = await import('./heavyslot.ts');
+    const r = await heavy(() => publishCloud(p, subOf(p.id)!, { change: o.change }, progress, {
       changeRow, skip, recipe: recipeOf(p.id), domain: DOMAIN, keptVersions: keptGameVersions,
       kept: { get: () => readState()[p.id]?.kept ?? {}, set: (v) => { const s = readState(); (s[p.id] ??= {}).kept = v; fs.writeFileSync(STATE, JSON.stringify(s, null, 2)); } },
-    });
+    }), progress);
     return record(p.id, o.change, { status: 'ready', at: Date.now(), sha: r.sha, ref: r.ref, files: r.files, ms: Date.now() - t0, ...(r.version ? { version: r.version } : {}) });
   } catch (e: any) {
     if (e instanceof SiteWaiting) return record(p.id, o.change, { status: 'waiting', at: t0, detail: e.message });
