@@ -1,0 +1,57 @@
+# Read-only: what Cloud Run runs, as ops-reader (run.viewer): every service and job in the project with its region, CPU,
+# memory and scaling, and one service's newest revisions with their conditions (why a revision isn't ready).
+#   gh workflow run ops-describe.yml --repo jgriffith3433/hawkesstudio --ref beta -f service=studio
+name: ops-describe
+on:
+  workflow_dispatch:
+    inputs:
+      service:
+        description: "Optional: a service to describe (e.g. studio, studio-beta, studio-o-<org>)"
+        type: string
+        default: ''
+permissions:
+  contents: read
+  id-token: write
+concurrency:
+  group: ops-describe
+  cancel-in-progress: true
+jobs:
+  describe:
+    name: Describe
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check the inputs
+        env:
+          SERVICE: ${{ inputs.service }}
+        run: |
+          [ -z "$SERVICE" ] || [[ "$SERVICE" =~ ^[a-z][a-z0-9-]{0,62}$ ]] || { echo "service: lower-case letters, digits, dashes"; exit 1; }
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: projects/${{ vars.GCP_PROJECT_NUMBER }}/locations/global/workloadIdentityPools/github/providers/github-studio
+          service_account: ops-reader@${{ vars.GCP_PROJECT }}.iam.gserviceaccount.com
+      - uses: google-github-actions/setup-gcloud@v2
+      - name: Read
+        env:
+          SERVICE: ${{ inputs.service }}
+          PROJECT: ${{ vars.GCP_PROJECT }}
+        run: |
+          echo "== services"
+          gcloud run services list --project "$PROJECT" --format='table(metadata.name,metadata.labels."cloud.googleapis.com/location":label=REGION,spec.template.spec.containers[0].resources.limits.cpu:label=CPU,spec.template.spec.containers[0].resources.limits.memory:label=MEM,spec.template.metadata.annotations."autoscaling.knative.dev/minScale":label=MIN,spec.template.metadata.annotations."autoscaling.knative.dev/maxScale":label=MAX,status.latestReadyRevisionName:label=READY,status.latestCreatedRevisionName:label=CREATED)'
+          echo "== jobs"
+          gcloud run jobs list --project "$PROJECT" --format='table(metadata.name,metadata.labels."cloud.googleapis.com/location":label=REGION,spec.template.spec.template.spec.containers[0].resources.limits.cpu:label=CPU,spec.template.spec.template.spec.containers[0].resources.limits.memory:label=MEM)'
+          for r in us-east4 us-central1 us-west1; do
+            echo "== running job executions in $r"
+            gcloud run jobs executions list --project "$PROJECT" --region "$r" --limit 200 --format='value(metadata.name,status.startTime,status.completionTime)' 2>/dev/null | awk -F'\t' '$3=="" {print}' || true
+          done
+          if [ -n "$SERVICE" ]; then
+            region=$(gcloud run services list --project "$PROJECT" --filter="metadata.name=$SERVICE" --format='value(metadata.labels."cloud.googleapis.com/location")' | head -1)
+            [ -n "$region" ] || { echo "no service $SERVICE"; exit 0; }
+            echo "== $SERVICE ($region): conditions"
+            gcloud run services describe "$SERVICE" --project "$PROJECT" --region "$region" --format='yaml(status.conditions,status.traffic,spec.template.spec.containers[0].startupProbe,spec.template.spec.containers[0].resources,spec.template.metadata.annotations)'
+            echo "== $SERVICE: newest revisions"
+            for rev in $(gcloud run revisions list --service "$SERVICE" --project "$PROJECT" --region "$region" --limit 3 --format='value(metadata.name)'); do
+              echo "-- $rev"
+              gcloud run revisions describe "$rev" --project "$PROJECT" --region "$region" --format='yaml(status.conditions,spec.containers[0].image,spec.containers[0].resources,spec.containers[0].startupProbe,metadata.annotations)'
+            done
+          fi
