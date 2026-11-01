@@ -47,7 +47,7 @@ refused with the reason.
 | Playtest bot | web | copy-file `hawkes-playtest.js` (+ `.d.ts`) | `CONTRACT_VERSION` in `clients/web/hawkes-playtest.js` |
 | Hawkes Gen for Unity | Unity | upm-git `com.hawkes.gen`: coming soon (no public package repo yet) | package.json in jgriffith3433/hawkesgen |
 | Hawkes Analytics | web | script-tag `https://hawkesgen.ai/sdk/analytics@<major>.js` | fixed: 1 (breaking changes ship as `@2`) |
-| Hawkes Analytics | Unity | upm-git `com.hawkes.analytics`: coming soon | package.json in jgriffith3433/hawkesgen |
+| Hawkes Analytics | Unity | upm-git `com.hawkes.analytics` from `hawkes-analytics` (`?path=/Packages/com.hawkes.analytics#v…`) | tags of jgriffith3433/hawkes-analytics (its release.yml on main) |
 | Bug report button | web | script-tag, the project's own report line | none |
 
 ## Detecting
