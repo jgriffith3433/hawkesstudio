@@ -407,7 +407,10 @@ async function viaGen(p: Product, b: BuildSpec, slug: string, sha: string, ref: 
   if (!asset) throw new Error('Hawkes Gen finished without the build output');
   say('downloading the build');
   const tmp = tmpDir();
-  untar(Buffer.from(await gen.bytes(asset)), tmp);
+  // Streamed from Gen straight into tar (2026-11-01): a Unity build with its Addressables content is hundreds of MB, and
+  // holding it in memory (arrayBuffer, a Buffer copy, spawnSync's input) on top of the unpacked files (Cloud Run's disk
+  // is memory too) went over a customer's Studio's 2 GiB, which restarted it mid-build until the run was stopped.
+  await untarStream(await gen.request(`/files/${asset}`, { raw: true }), tmp);
   return { ...folderOutput(tmp, tmp), detail: job.result?.unity ? `Unity ${job.result.unity}` : undefined };
 }
 
@@ -441,6 +444,22 @@ function folderOutput(dir: string, tmp: string): Output {
   const files = folderFiles(root);
   if (!files.length) { fs.rmSync(tmp, { recursive: true, force: true }); throw new Error('the build output is empty'); }
   return { files, bytes: sizeOf(files), cleanup: () => fs.rmSync(tmp, { recursive: true, force: true }) };
+}
+
+/** Unpacks a .tar.gz response into dir as it downloads, never holding the archive in memory. */
+export async function untarStream(res: Response, dir: string) {
+  if (!res.body) throw new Error('unpacking the build: the download was empty');
+  const { spawn } = await import('node:child_process');
+  const { Readable } = await import('node:stream');
+  const { pipeline } = await import('node:stream/promises');
+  const tar = spawn('tar', ['-xzf', '-'], { cwd: dir, stdio: ['pipe', 'ignore', 'pipe'] });
+  let err = '';
+  tar.stderr.on('data', (d) => { if (err.length < 2000) err += String(d); });
+  const exited = new Promise<number>((ok) => tar.on('close', (code) => ok(code ?? 1)));
+  let piping: Error | null = null;
+  await pipeline(Readable.fromWeb(res.body as any), tar.stdin).catch((e) => { piping = e; });
+  const code = await exited;
+  if (code !== 0 || piping) throw new Error(`unpacking the build: ${(err.trim() || (piping as Error | null)?.message || `tar exited ${code}`).slice(0, 300)}`);
 }
 
 function untar(data: Buffer, dir: string) {
