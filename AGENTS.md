@@ -144,6 +144,7 @@ a budget (`approveGpu`, `gpuCleared`, `tasksAwaitingGpu`; the PM asks him once);
 | Path | What |
 |---|---|
 | `src/server.ts` | HTTP API (`/api/...`) and the dashboard; runs execute in this process |
+| `dashboard/patch.js` | **Redrawing without the page jumping** (J, 2026-11-01): `studioPatch(el, html)` changes a page in place (keyed by `data-key`/id, then position): unchanged nodes stay (images don't reload), open Details, typed or picked values and focus stay, `data-patch-keep` children are left to their script, and the element at the top of the screen holds its place (its own anchoring, the same on Safari). `studioPatch.busy()` holds the push stream's events while the reader touches or scrolls. Pages that refresh by themselves use it, never `innerHTML =`. Test `test/patch.test.ts` |
 | `src/pipeline.ts` | Runs: the daily pipeline per product (git → checks → asset status → build if changed → playtests → reviews → backlog), and one-off builds, playtests and asset runs |
 | `src/backlog.ts` | Findings merged across days (same or similar title = same finding; seen count, screenshots); bugs and blockers are the backlog, polish and ideas the ideas list (status `idea`, expired after 14 days unseen); what reviews are told is known, and their word on it |
 | `src/review.ts` | How reviews are asked so they converge: the mode per run kind (full, verify, regression), the cap, known findings, the product's quality bar and whether a scenario still meets it (docs/daily.md, "Reviews converge") |

@@ -94,14 +94,14 @@
     const rows = h.groups.map((g) => `<tr><td>${esc(g.name)}${g.detail ? `<div class="meta">${esc(g.detail)}</div>` : ''}<div class="rs-bar"><div style="width:${(100 * g.mem / top).toFixed(1)}%"></div></div></td>
       <td class="n">${mb(g.mem)}</td><td class="n">${pc(g.cpu)}</td><td class="n rs-hide-phone">${g.procs ?? ''}</td></tr>`).join('');
     const total = h.groups.reduce((n, g) => n + g.mem, 0);
-    return `<details class="rs-box more-details" data-k="groups" open><summary>What uses memory and CPU <span class="meta">· ${h.groups.length} groups, ${mb(total)} of ${gb(h.mem.used)} used</span></summary>
+    return `<details class="rs-box more-details" data-k="groups" data-key="rs:groups" open><summary>What uses memory and CPU <span class="meta">· ${h.groups.length} groups, ${mb(total)} of ${gb(h.mem.used)} used</span></summary>
       <table><tr><th>Group</th><th class="n">Memory</th><th class="n">CPU</th><th class="n rs-hide-phone">Processes</th></tr>${rows}</table>
       <div class="meta" style="margin-bottom:8px">Memory without the page cache (the kernel gives that back when asked). CPU is the share of one CPU over the last 30 s. The rest of the used memory is the system itself.</div></details>`;
   }
 
   function fleet(r) {
     const f = r.fleet;
-    if (!f.ok) return `<details class="rs-box more-details" data-k="fleet"><summary>Machines <span class="meta">· Hawkes Gen not answering</span></summary><p class="rs-amber">${esc(f.error)}</p></details>`;
+    if (!f.ok) return `<details class="rs-box more-details" data-k="fleet" data-key="rs:fleet"><summary>Machines <span class="meta">· Hawkes Gen not answering</span></summary><p class="rs-amber">${esc(f.error)}</p></details>`;
     const left = (m) => {
       if (!m.idle) return '';
       if (m.idle.busy) return 'busy';
@@ -113,7 +113,7 @@
       <td>${m.jobs.length ? m.jobs.map((j) => `${esc(j.tool)} <span class="meta">${esc(j.project)}</span>`).join('<br>') : '<span class="meta">nothing</span>'}</td>
       <td class="n">${m.pricePerHour ? `$${m.pricePerHour.toFixed(2)}/hr` : ''}</td></tr>`).join('');
     const up = f.machines.filter((m) => m.state === 'running').length;
-    return `<details class="rs-box more-details" data-k="fleet"${up ? ' open' : ''}><summary>Machines <span class="meta">· GPU servers, build server, playtester: ${up} running</span></summary>
+    return `<details class="rs-box more-details" data-k="fleet" data-key="rs:fleet"${up ? ' open' : ''}><summary>Machines <span class="meta">· GPU servers, build server, playtester: ${up} running</span></summary>
       <div class="rs-wrap"><table><tr><th>Machine</th><th>State</th><th>Doing</th><th class="n">Costs</th></tr>${rows || '<tr><td colspan="4" class="meta">None found.</td></tr>'}</table></div>
       <div class="meta" style="margin-bottom:8px">From Hawkes Gen's last reading (its Machines page measures them every minute). Each one stops itself when idle; Gen starts and stops them.</div></details>`;
   }
@@ -131,7 +131,7 @@
       ...x.nodes.list.map((n) => `<tr><td>Relay node ${esc(n.id)} <span class="meta">${esc(n.url)}</span></td><td>${okp(n.last)}</td><td class="n">${n.last.ms} ms</td><td class="meta">${n.players == null ? '' : `${n.players}${n.capacity ? ` of ${n.capacity}` : ''} players`}</td></tr>`),
     ].join('');
     const down = (p && !p.ok) || x.nodes.list.some((n) => !n.last.ok);
-    return `<details class="rs-box more-details" data-k="outside"${down ? ' open' : ''}><summary>Outside: the portal and relay nodes <span class="meta">· ${down ? 'something is down' : x.nodes.list.length ? `portal and ${x.nodes.list.length} node(s) up` : p ? 'portal up' : 'not probed yet'}</span></summary>
+    return `<details class="rs-box more-details" data-k="outside" data-key="rs:outside"${down ? ' open' : ''}><summary>Outside: the portal and relay nodes <span class="meta">· ${down ? 'something is down' : x.nodes.list.length ? `portal and ${x.nodes.list.length} node(s) up` : p ? 'portal up' : 'not probed yet'}</span></summary>
       <div class="rs-wrap"><table><tr><th>Target</th><th>State</th><th class="n">Time</th><th>Detail</th></tr>${rows}</table></div>
       <div class="meta" style="margin-bottom:8px">Probed every minute. Details need a portal admin key in Studio's secrets (HAWKES_PORTAL_ADMIN_KEY); relay nodes come from Hawkes Net (net.hawkesgen.ai/v1/net/nodes).${x.nodes.state === 'failed' ? ` <span class="rs-amber">Node list failed: ${esc(x.nodes.note ?? '')}</span>` : ''}</div></details>`;
   }
@@ -140,7 +140,7 @@
   function netbox(r) {
     const n = r.net;
     if (!n) return '';
-    if (!n.ok) return `<details class="rs-box more-details" data-k="net" open><summary>Hawkes Net <span class="meta">· not answering</span></summary><p class="rs-red">${esc(n.error)}</p></details>`;
+    if (!n.ok) return `<details class="rs-box more-details" data-k="net" data-key="rs:net" open><summary>Hawkes Net <span class="meta">· not answering</span></summary><p class="rs-red">${esc(n.error)}</p></details>`;
     const players = (n.nodes ?? []).reduce((s, x) => s + (x.players || 0), 0);
     const cap = (n.nodes ?? []).reduce((s, x) => s + (x.capacity || 0), 0);
     const e = n.extra ?? null, nd = n.node ?? null;
@@ -148,7 +148,7 @@
     const projects = (n.rooms ?? []).map((p) => `<tr><td>${esc(p.project)}</td><td>${p.transport === 'relay' ? '<span class="pill">relay</span>' : '<span class="meta">peer to peer</span>'}</td><td class="n">${p.rooms}</td><td class="n">${p.players}</td></tr>`).join('');
     const workers = (nd?.workers ?? []).map((w, i) => `<tr><td>worker ${i}</td><td class="n">${w.rooms ?? 0}</td><td class="n">${w.players ?? 0}</td><td class="n">${w.cpu == null ? '' : `${Math.round(w.cpu * 100)}%`}</td><td class="n">${w.lagP99 == null ? '' : `${w.lagP99} ms`}</td></tr>`).join('');
     const usage = e ? (e.sinceStart?.perProject ?? []).filter((p) => p.playerMinutes >= 0.1).sort((a, b) => b.gbOut - a.gbOut).slice(0, 12).map((p) => `<tr><td>${esc(p.project)}</td><td>${esc(p.transport)}</td><td class="n">${p.playerMinutes.toFixed(1)}</td><td class="n">${gb(p.gbOut)}</td></tr>`).join('') : '';
-    return `<details class="rs-box more-details" data-k="net"${n.up ? '' : ' open'}><summary>Hawkes Net <span class="meta">· ${n.up ? `${players} player${players === 1 ? '' : 's'} on ${(n.nodes ?? []).length} node${(n.nodes ?? []).length === 1 ? '' : 's'}${cap ? ` (room for ${cap})` : ''}` : 'no node up'}</span></summary>
+    return `<details class="rs-box more-details" data-k="net" data-key="rs:net"${n.up ? '' : ' open'}><summary>Hawkes Net <span class="meta">· ${n.up ? `${players} player${players === 1 ? '' : 's'} on ${(n.nodes ?? []).length} node${(n.nodes ?? []).length === 1 ? '' : 's'}${cap ? ` (room for ${cap})` : ''}` : 'no node up'}</span></summary>
       <p style="margin:4px 0"><a href="${esc(n.url)}/" target="_blank" rel="noopener">${esc(n.url.replace(/^https?:\/\//, ''))}</a> · version ${esc(n.version ?? '?')}${e ? ` · up ${Math.round(e.uptimeS / 3600)} h · ${e.usageWaiting} usage report${e.usageWaiting === 1 ? '' : 's'} waiting for Gen · since start ${e.sinceStart.playerMinutes.toFixed(0)} player-minutes, ${gb(e.sinceStart.gbOut)} sent` : ''}</p>
       ${projects ? `<div class="rs-wrap"><table><tr><th>Project (last 10 min)</th><th>Transport</th><th class="n">Rooms</th><th class="n">Players</th></tr>${projects}</table></div>` : '<p class="meta">No rooms in the last 10 minutes.</p>'}
       ${workers ? `<div class="rs-wrap"><table><tr><th>Relay process</th><th class="n">Rooms</th><th class="n">Players</th><th class="n">CPU</th><th class="n">Lag p99</th></tr>${workers}</table></div>` : ''}
@@ -165,7 +165,7 @@
       const b = c.harness_label || c.harness ? ` · ${esc(c.harness_label || c.harness)}${c.model ? ` (${esc(c.model)})` : ''}` : '';
       return `<tr><td>${esc(c.title)}<div class="meta">${esc(c.product)} · ${esc(c.id)}${b}</div></td><td>${esc(c.status)}</td></tr>`;
     }).join('');
-    return `<details class="rs-box more-details" data-k="work"><summary>Agents, the PM and Gen's queue <span class="meta">· ${a.running} of ${a.maxConcurrent} agents working</span></summary>
+    return `<details class="rs-box more-details" data-k="work" data-key="rs:work"><summary>Agents, the PM and Gen's queue <span class="meta">· ${a.running} of ${a.maxConcurrent} agents working</span></summary>
       <p style="margin:4px 0">Agents: <b>${a.running}</b> working of <b>${a.maxConcurrent}</b> at once (${a.perProduct} per product${limits ? `; ${limits}` : ''}), ${a.queued} queued, ${a.waitingOnGen} waiting on Gen${a.enabled ? '' : ' · <span class="rs-amber">agents are off</span>'}.</p>
       ${w.pm ? `<p style="margin:4px 0">The PM: ${w.pm.enabled ? 'on' : '<span class="rs-amber">paused</span>'}, ${w.pm.active} working of ${w.pm.maxConcurrent}, ${w.pm.started} of ${w.pm.maxStartsPerDay} starts used today.</p>` : ''}
       <p style="margin:4px 0">Hawkes Gen's jobs: ${w.jobs.ok ? `${w.jobs.running} running, ${w.jobs.queued} queued` : 'unknown (Gen not answering)'}.</p>
@@ -176,7 +176,7 @@
     const l = r.loop, lm = l.lastMinute;
     const blocks = l.blocks.map((b) => `<tr><td>${esc(ago(b.at))}</td><td class="n">${b.ms} ms</td><td>${esc(b.running.join('; ') || 'nothing tracked')}</td></tr>`).join('');
     const cmds = r.commands.map((c) => `<tr><td>${esc(c.cmd)}<div class="meta">${esc(c.cwd)}</div></td><td class="n">${c.seconds} s</td></tr>`).join('');
-    return `<details class="rs-box more-details" data-k="loop"><summary>Studio's own health <span class="meta">· ${l.blocksLastHour} freeze(s) over a second this hour</span></summary>
+    return `<details class="rs-box more-details" data-k="loop" data-key="rs:loop"><summary>Studio's own health <span class="meta">· ${l.blocksLastHour} freeze(s) over a second this hour</span></summary>
       <p style="margin:4px 0">${lm ? `Last minute: delay p50 ${lm.p50ms} ms, p99 ${lm.p99ms} ms, worst ${lm.maxms} ms.` : 'Not measured yet.'}</p>
       ${blocks ? `<table><tr><th>When</th><th class="n">Froze</th><th>Running then</th></tr>${blocks}</table>` : ''}
       ${cmds ? `<table><tr><th>Command Studio is waiting on</th><th class="n">For</th></tr>${cmds}</table>` : '<p class="meta">No commands running.</p>'}</details>`;
@@ -188,7 +188,7 @@
       const lastV = [...pts].reverse().find((p) => p[k] != null)?.[k];
       return `<div class="rs-chart" data-key="${k}"><h4>${esc(name)} <span class="now">${fmt(lastV)}</span></h4>${line(pts, k, { max })}<span class="tip" hidden></span></div>`;
     }).join('');
-    return `<details class="rs-box more-details" data-k="charts"><summary>History <span class="meta">· the last ${range === '1h' ? 'hour' : range === '24h' ? '24 hours' : '7 days'}</span></summary>
+    return `<details class="rs-box more-details" data-k="charts" data-key="rs:charts"><summary>History <span class="meta">· the last ${range === '1h' ? 'hour' : range === '24h' ? '24 hours' : '7 days'}</span></summary>
       <div class="bar" style="margin:0 0 8px">${['1h', '24h', '7d'].map((x) => `<button class="small${x === range ? ' on' : ''}" data-rs-range="${x}">${x === '1h' ? 'Hour' : x === '24h' ? '24 h' : '7 days'}</button>`).join(' ')}
         <span class="meta">${pts.length ? `${pts.length} points, ${r.history.bucketSeconds >= 60 ? `${Math.round(r.history.bucketSeconds / 60)} min` : `${r.history.bucketSeconds} s`} each` : 'No samples yet: one is taken every 30 s.'}</span></div>
       <div class="rs-charts">${box}</div></details>`;
@@ -202,10 +202,10 @@
     // What J opened stays open across redraws (every 30 s).
     const open = new Map([...el.querySelectorAll('details[data-k]')].map((d) => [d.dataset.k, d.open]));
     const worst = r.attention[0]?.level ?? '';
-    el.innerHTML = `<p class="rs-head ${worst}">${worst === 'bad' ? '⚠ ' : ''}${esc(r.headline)}</p>
+    studioPatch(el, `<p class="rs-head ${worst}">${worst === 'bad' ? '⚠ ' : ''}${esc(r.headline)}</p>
       ${r.attention.length > 1 ? `<ul class="rs-att">${r.attention.slice(1).map((a) => `<li class="${a.level === 'bad' ? 'rs-red' : 'rs-amber'}">${a.level === 'bad' ? '⚠' : '•'} ${esc(a.text)}</li>`).join('')}</ul>` : ''}
       ${tiles(r)}${groups(r.host)}${outside(r)}${netbox(r)}${fleet(r)}${work(r)}${loop(r)}${charts(r)}
-      <div class="meta">Read ${ago(r.at)}${r.host ? ` in ${r.host.sampleMs} ms` : ''}. Phone alerts: ${r.settings.alerts ? `memory or disk over ${r.settings.memoryPct}% / ${r.settings.diskPct}% for ${r.settings.minutes} min, a machine idle ${r.settings.pastStopMinutes} min past its stop time, the portal failing ${r.settings.portalMinutes} min, event-loop p99 over ${r.settings.loopP99Ms} ms for ${r.settings.loopMinutes} min, WebSockets over ${r.settings.wsPct}%, a backup older than ${r.settings.backupHours} h, a relay node down` : 'off'} (<a href="#settings" data-rs-go="settings">Settings</a>).</div>`;
+      <div class="meta">Read ${ago(r.at)}${r.host ? ` in ${r.host.sampleMs} ms` : ''}. Phone alerts: ${r.settings.alerts ? `memory or disk over ${r.settings.memoryPct}% / ${r.settings.diskPct}% for ${r.settings.minutes} min, a machine idle ${r.settings.pastStopMinutes} min past its stop time, the portal failing ${r.settings.portalMinutes} min, event-loop p99 over ${r.settings.loopP99Ms} ms for ${r.settings.loopMinutes} min, WebSockets over ${r.settings.wsPct}%, a backup older than ${r.settings.backupHours} h, a relay node down` : 'off'} (<a href="#settings" data-rs-go="settings">Settings</a>).</div>`);
     for (const [k, o] of open) { const d = el.querySelector(`details[data-k="${k}"]`); if (d) d.open = o; }
   }
 

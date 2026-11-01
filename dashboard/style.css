@@ -407,6 +407,10 @@ a.button.primary { background: var(--accent); color: #062018; border-color: var(
 .cards { grid-template-columns: repeat(auto-fill, minmax(min(340px, 100%), 1fr)); }
 @media (max-width: 760px) {
   header { gap: 10px; padding: 10px 12px; }
+  /* The header's status (Hawkes Gen, the build server, a run going) is one line on a phone: its text changes with every
+     refresh, and wrapping onto a second line made the sticky header taller, pushing the whole page down under J's thumb. */
+  .status { flex-wrap: nowrap; white-space: nowrap; overflow-x: auto; scrollbar-width: none; min-width: 0; max-width: 100%; }
+  .status::-webkit-scrollbar { display: none; }
   main { padding: 12px 12px 60px; }
   nav button, .more-btn { padding: 6px 9px; }
   .intro { font-size: 13px; margin-bottom: 10px; }

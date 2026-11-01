@@ -21,29 +21,29 @@ async function loadRoadmap() {
   if (sel.options.length <= 1) sel.innerHTML += (r.products ?? []).map((p) => `<option value="${esc(p.id)}">${esc(p.name)}</option>`).join('');
   const s = pm.settings;
   const c = pm.capacity;
-  $('#rmPm').innerHTML = `<b>PM loop:</b> ${s.enabled ? '<span class="pill ship">running</span>' : '<span class="pill failed">paused</span>'}
+  studioPatch($('#rmPm'), `<b>PM loop:</b> ${s.enabled ? '<span class="pill ship">running</span>' : '<span class="pill failed">paused</span>'}
     <button class="small" data-pro="pm" data-admin data-pm="toggle">${s.enabled ? 'Pause' : 'Resume'}</button>
     · delegated merges into beta: <b>${s.delegatedMerges ? 'on' : 'off'}</b> <button class="small" data-pm="merges">${s.delegatedMerges ? 'Turn off' : 'Turn on'}</button>
     · agents ${c.active}/${s.maxConcurrent} · starts today ${c.started}/${s.maxStartsPerDay} <button class="small" data-pm="caps">Limits…</button>
     ${pm.turn ? ' · <span class="pill warn">PM turn running</span>' : ''}${pm.conversation ? ` · <a href="/?conversation=${esc(pm.conversation.id)}#talk">PM conversation</a>` : ''}
     ${pm.lastError ? `<div class="meta" style="color:var(--red)">${esc(pm.lastError)}</div>` : ''}
     ${holdHtml(pm.hold)}
-    ${pm.time?.lines?.length ? `<details class="more-details"><summary class="meta">Where the time goes today</summary>${pm.time.lines.map((l) => `<div class="meta">${esc(l)}</div>`).join('')}</details>` : ''}`;
+    ${pm.time?.lines?.length ? `<details class="more-details"><summary class="meta">Where the time goes today</summary>${pm.time.lines.map((l) => `<div class="meta">${esc(l)}</div>`).join('')}</details>` : ''}`);
   // Questions are answered in the Inbox (one place for everything waiting on J).
   const asked = pm.questions.filter((q) => q.status === 'asked J').length;
   const agents = pm.questions.length - asked;
-  $('#rmQuestions').innerHTML = pm.questions.length ? `<div class="meta" style="margin:4px 0 8px">${asked ? `<b>${asked} question(s) for you</b> are in your <a href="#inbox" onclick="show('inbox');return false">Inbox</a>.` : ''}${agents ? ` ${agents} agent question(s) the PM is answering.` : ''}</div>` : '';
+  studioPatch($('#rmQuestions'), pm.questions.length ? `<div class="meta" style="margin:4px 0 8px">${asked ? `<b>${asked} question(s) for you</b> are in your <a href="#inbox" onclick="show('inbox');return false">Inbox</a>.` : ''}${agents ? ` ${agents} agent question(s) the PM is answering.` : ''}</div>` : '');
   rmMilestones = r.milestones;
-  $('#rmMilestones').innerHTML = r.milestones.length ? `<h3>Milestones</h3>${r.milestones.map(milestoneHtml).join('')}` : '';
+  studioPatch($('#rmMilestones'), r.milestones.length ? `<h3>Milestones</h3>${r.milestones.map(milestoneHtml).join('')}` : '');
   // Sort by priority (stable: equal ones keep the roadmap order), items and the tasks in each.
   if ($('#rmSort').value === 'priority') {
     r.items.sort((a, b) => RM_RANK[a.priority] - RM_RANK[b.priority]);
     for (const it of r.items) it.tasks.sort((a, b) => RM_RANK[a.effective_priority] - RM_RANK[b.effective_priority]);
   }
   const open = new Set([...$('#rmList').querySelectorAll('details[data-key][open]')].map((d) => d.dataset.key));
-  $('#rmList').innerHTML = r.items.length ? r.items.map(itemHtml).join('') : '<div class="empty">No roadmap items yet. Tell Talk what you want ("let\'s do X"): it proposes items and tasks with acceptance criteria, and adds them when you say yes.</div>';
+  studioPatch($('#rmList'), r.items.length ? r.items.map(itemHtml).join('') : '<div class="empty">No roadmap items yet. Tell Talk what you want ("let\'s do X"): it proposes items and tasks with acceptance criteria, and adds them when you say yes.</div>');
   for (const d of $('#rmList').querySelectorAll('details[data-key]')) if (open.has(d.dataset.key)) d.open = true;
-  $('#rmLog').innerHTML = `<summary class="meta">PM decision log (${pm.log.length})</summary>${pm.log.map((d) => `<div class="test"><span class="name">${esc(d.action)}</span><span class="detail">${esc(d.detail ?? '')} · ${esc(d.product ?? '')} · ${ago(d.at)}${d.undone ? ' · <i>undone</i>' : ''}</span>${d.undo && !d.undone ? `<button class="small" data-undo="${d.id}">Undo</button>` : ''}</div>`).join('')}`;
+  studioPatch($('#rmLog'), `<summary class="meta">PM decision log (${pm.log.length})</summary>${pm.log.map((d) => `<div class="test"><span class="name">${esc(d.action)}</span><span class="detail">${esc(d.detail ?? '')} · ${esc(d.product ?? '')} · ${ago(d.at)}${d.undone ? ' · <i>undone</i>' : ''}</span>${d.undo && !d.undone ? `<button class="small" data-undo="${d.id}">Undo</button>` : ''}</div>`).join('')}`);
   for (const id of rmOpen) loadThread(id);
 }
 
@@ -89,7 +89,7 @@ function itemHtml(it) {
     return `<div class="test" style="flex-wrap:wrap"><span class="pill ${RM_PILL[t.status] ?? ''}">${esc(t.status)}</span>${t.priority === 'high' || (!t.priority && t.effective_priority === 'high') ? prioBadge(t.effective_priority, !t.priority) : ''}<span class="name">${esc(t.title)}</span>
       <span class="detail">${[blocked, build, waits, t.note ? esc(t.note) : ''].filter(Boolean).join(' · ')}</span>
       <span>${['idea', 'failed'].includes(t.status) ? `<button class="small" data-task="${t.id}" data-st="planned">Plan</button>` : ''}</span>
-      <div style="flex-basis:100%">${checks}<div id="th-${t.id}"></div></div></div>`;
+      <div style="flex-basis:100%">${checks}<div id="th-${t.id}" data-patch-keep></div></div></div>`;
   }).join('');
   // Ids, changes, tries, priorities and the less common buttons, behind Details.
   const taskDetails = it.tasks.map((t) => `<div class="test" style="flex-wrap:wrap"><span class="name">${esc(t.title)}</span>
@@ -99,13 +99,13 @@ function itemHtml(it) {
   const main = it.status === 'idea' ? `<button class="small primary" data-item="${it.id}" data-st="planned" title="Its planned tasks start by themselves, in order">Plan it</button>`
     : it.status === 'live' ? `<button class="small" data-item="${it.id}" data-st="done">Done</button>`
     : ['on beta', 'verified'].includes(itemState(it)) ? `<a class="small" href="#ready" data-goto="ready">Try it (Ready to test)</a>` : '';
-  return `<div class="finding" data-item="${it.id}"><div style="flex:1">
+  return `<div class="finding" data-item="${it.id}" data-key="rm:${esc(it.id)}"><div style="flex:1">
     <h4><span class="pill ${RM_PILL[itemState(it)] ?? 'warn'}">${esc(itemLabel(it))}</span>${it.priority === 'high' ? ` ${prioBadge(it.priority)}` : ''} ${esc(it.title)} <span class="meta">${esc(rmNames[it.product] ?? it.product)}${it.milestone ? ` · 🏁 ${esc(rmMilestones.find((m) => m.id === it.milestone)?.title ?? it.milestone)}` : ''}</span></h4>
     <div class="status-line">${esc(taskLine(it))}</div>
     ${it.goal ? `<div class="summary">${esc(it.goal)}</div>` : ''}
     ${it.criteria.length ? `<div class="meta">Done when: ${it.criteria.map(esc).join(' · ')}</div>` : ''}
     <div class="tests">${tasks}</div>
-    <div id="th-${it.id}"></div>
+    <div id="th-${it.id}" data-patch-keep></div>
     <details class="more-details" data-key="${it.id}"><summary class="meta">Details</summary>
       ${it.why ? `<div class="meta">Why: ${esc(it.why)}</div>` : ''}
       <div class="meta">${esc(it.id)}${it.size ? ` · size ${esc(it.size)}` : ''} · ${ago(it.created)} by ${esc(it.by ?? '')} · priority ${esc(it.priority)}</div>
@@ -210,7 +210,7 @@ const reportHtml = (r) => `<div class="test" style="align-items:flex-start">${r.
   <span class="pill ${RM_PILL[r.status] ?? ''}">${esc(r.status)}</span></div>`;
 async function loadReady() {
   const [{ ready }, rmap, { reports }] = await Promise.all([api('/api/ready'), api('/api/roadmap?milestones=reached'), api('/api/bugreports?limit=200')]);
-  $('#readyMs').innerHTML = rmap.milestones.map((m) => {
+  studioPatch($('#readyMs'), rmap.milestones.map((m) => {
     const mine = reports.filter((r) => r.milestone === m.id);
     return `<div class="card" style="max-width:none;border-color:var(--accent)"><h3>🏁 Milestone reached: ${esc(m.title)} <small>${esc(m.product ?? '')}</small></h3>
     ${m.test ? `<div class="summary">You said you'd test: ${esc(m.test)}</div>` : ''}<div class="meta">${m.items.map((i) => esc(i.title)).join(' · ')} · reached ${ago(m.reached_at)}. When you've played it: ship it from <a href="#golive" data-goto="golive">Go live</a>, or tap 🐞 on the beta site for each problem (or tell Talk).</div>
@@ -218,10 +218,10 @@ async function loadReady() {
   }).join('') + (() => {
     const loose = reports.filter((r) => !r.milestone && ['open', 'fixing'].includes(r.status));
     return loose.length ? `<div class="card" style="max-width:none"><h3>🐞 Your other open reports</h3>${loose.map(reportHtml).join('')}</div>` : '';
-  })();
-  $('#readyList').innerHTML = ready.length ? ready.map((r) => {
+  })());
+  studioPatch($('#readyList'), ready.length ? ready.map((r) => {
     const yes = r.criteria.filter((c) => c.met === 'yes').length;
-    return `<div class="card" style="max-width:none" data-item="${esc(r.item)}">
+    return `<div class="card" style="max-width:none" data-item="${esc(r.item)}" data-key="ready:${esc(r.item)}">
     <h3>${esc(r.title)} <small>${esc(r.productName)}</small><span class="pill ${r.partly ? 'warn' : 'ship'}">${esc(r.partly ? r.progress ?? 'partly on beta' : 'on beta')}</span></h3>
     <div class="status-line">${r.criteria.length ? `${yes} of ${r.criteria.length} checks passed on beta` : 'No checks recorded'}${r.bugs.length ? ` · ${r.bugs.length} known bug${r.bugs.length === 1 ? '' : 's'}` : ''}${r.partly ? ' · some of its tasks are still being worked on' : ''}</div>
     ${r.goal ? `<div class="summary">${esc(r.goal)}</div>` : ''}
@@ -235,7 +235,7 @@ async function loadReady() {
       ${r.bugs.length ? `<div class="meta">${r.bugs.map((b) => esc(b.id)).join(' · ')}</div>` : ''}
     </details>
   </div>`;
-  }).join('') : '<div class="empty">Nothing waiting for you to test yet. Roadmap items show here once their tasks pass their checks on beta.</div>';
+  }).join('') : '<div class="empty">Nothing waiting for you to test yet. Roadmap items show here once their tasks pass their checks on beta.</div>');
 }
 
 function rmRefresh() {
