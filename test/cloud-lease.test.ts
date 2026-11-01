@@ -124,3 +124,36 @@ test("a Studio woken after hibernation starts: the lease's newer revision belong
   const woken: any = await L.claim({ rev: 'studio-o-acme-1a2b-00001-abc', pollMs: 10, waitMs: 300 });
   assert.equal(woken.claimed, true, `took it (${woken.how})`);
 });
+
+test("a holder Cloud Run stopped sending requests to is replaced by the next instance of its revision; a working one isn't", async () => {
+  const holder: any = await L.claim({ rev: 'studio-o-acme-1a2b-00022-g9p', pollMs: 10, staleMs: 0 });
+  assert.equal(holder.claimed, true);
+  const beat = (servedAgo: number) => objects.set(`db/alive-${holder.id}`, Buffer.from(JSON.stringify({ at: Date.now(), servedAt: Date.now() - servedAgo })));
+  // Alive, and answered a request a moment ago: Cloud Run started the stray under load. It stays down.
+  beat(1000);
+  const busy: any = await L.claim({ rev: 'studio-o-acme-1a2b-00022-g9p', pollMs: 10, confirmMs: 50 });
+  assert.equal(busy.how, 'same revision holds it');
+  // Idle for a while, then a burst: it answers while the stray watches, so the stray stays down.
+  beat(60_000);
+  setTimeout(() => beat(0), 20);
+  const burst: any = await L.claim({ rev: 'studio-o-acme-1a2b-00022-g9p', pollMs: 10, confirmMs: 200 });
+  assert.equal(burst.how, 'same revision holds it');
+  // A heartbeat without servedAt (an older image): kept, as before.
+  objects.set(`db/alive-${holder.id}`, Buffer.from(JSON.stringify({ at: Date.now() })));
+  const old: any = await L.claim({ rev: 'studio-o-acme-1a2b-00022-g9p', pollMs: 10, confirmMs: 50 });
+  assert.equal(old.how, 'same revision holds it');
+  // Alive but answering nothing (2026-11-01: a customer's Studio was unreachable for half an hour): the stray takes the
+  // lease, the holder sees it, stops and releases, and the stray restores what it wrote.
+  beat(60_000);
+  let lost = false;
+  const watcher = setInterval(() => {
+    const lease = JSON.parse(objects.get('db/lease.json')!.toString());
+    if (!lost && lease.id !== holder.id) { lost = true; void L.release(holder.id); }
+  }, 10);
+  const next: any = await L.claim({ rev: 'studio-o-acme-1a2b-00022-g9p', pollMs: 10, confirmMs: 50, waitMs: 2000 });
+  clearInterval(watcher);
+  assert.equal(next.claimed, true);
+  assert.equal(next.how, 'released');
+  assert.equal(next.took, 'the holder answered nothing');
+  assert.ok(lost, 'the holder learned it was replaced');
+});
