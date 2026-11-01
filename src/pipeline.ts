@@ -341,6 +341,15 @@ export async function runProduct(run: string, p: Product, o: RunOptions) {
 
   // Playtests.
   const tests = testsOf(p, o);
+  // A daily run plays beta too when the project's saved playtests are all @live and beta's newest commit hasn't been
+  // played: otherwise nothing ever played beta and every go-live stayed blocked on "beta hasn't been playtested"
+  // (2026-11-01). Once a day at most, and only while beta is ahead of live and unplayed, so it isn't a play per merge
+  // (beta is still played only when asked after a merge, J 2026-10-17).
+  const extra = wantsLocal && !tests.some((t) => t.where === 'local') && isDaily(run) && !runCancelled(run) ? await unplayedBeta(p) : null;
+  if (extra) {
+    tests.push(extra);
+    notePlaying(run, p.id, nameOf(extra), "beta's newest commit hadn't been played, so it couldn't go live");
+  }
   const ran: string[] = [];
   // Every local playtest of the run plays the beta build it built or kept: a newer build waits for them (betaplay.ts).
   const release = p.build && betaLane() && tests.some((t) => t.where === 'local') ? holdBeta(p.id, run) : null;
@@ -359,6 +368,33 @@ export async function runProduct(run: string, p: Product, o: RunOptions) {
   if (quiet.length) {
     const s = startStep(run, p.id, 'backlog', 'not seen');
     updateStep(s, { status: 'done', detail: `${quiet.length} open findings weren't seen this time (maybe fixed)`, data: { ids: quiet.map((f) => f.id) }, finished: true });
+  }
+}
+
+/**
+ * The playtest a beta run plays: the project's own desktop @local playtest, else its first desktop @live one played on
+ * beta. Projects whose saved playtests were all @live had nothing to play on beta, so beta runs and the go-live page's
+ * "Playtest this commit" played nothing and the go-live stayed blocked (2026-11-01).
+ */
+export function betaPlaytestOf(p: Product): Playtest | undefined {
+  const own = p.playtests.find((y) => y.where === 'local' && y.device !== 'phone');
+  if (own) return own;
+  const live = p.playtests.find((y) => y.where === 'live' && y.device !== 'phone');
+  return live ? { ...live, where: 'local' } : undefined;
+}
+
+const isDaily = (run: string) => (db.prepare('SELECT kind FROM runs WHERE id = ?').get(run) as any)?.kind === 'daily';
+
+/** The beta playtest to add to a daily run: only when the go-live plan says beta's newest commit hasn't been played. */
+async function unplayedBeta(p: Product): Promise<Playtest | null> {
+  const t = betaPlaytestOf(p);
+  if (!t) return null;
+  try {
+    const { deployPlan, isPlaytestBlocker } = await import('./deploy.ts');
+    const plan = await deployPlan(p.id, { notesWaitMs: 0 });
+    return plan.blockers.some(isPlaytestBlocker) ? t : null;
+  } catch {
+    return null;
   }
 }
 
@@ -1104,7 +1140,7 @@ async function betaBody(id: string, p: Product, { focus, criteria, scenario, opt
   try {
     // What this beta run was asked to play (runplan.ts): the tasks' scenarios, or beta's one playtest when asked for.
     const nameFor = (x: { scenario?: string }) => {
-      const pt = x.scenario ? { scenario: resolveScenario(p, x.scenario), where: 'local' as const } : p.playtests.find((y) => y.where === 'local' && y.device !== 'phone');
+      const pt = x.scenario ? { scenario: resolveScenario(p, x.scenario), where: 'local' as const } : betaPlaytestOf(p);
       return pt ? nameOf(pt) : null;
     };
     if (betaLane()) {
@@ -1203,7 +1239,7 @@ async function betaBody(id: string, p: Product, { focus, criteria, scenario, opt
       }
     }
     // A merged roadmap task: the scenario its agent wrote for its criteria, and the criteria judged again.
-    const t: Playtest | undefined = scenario ? { scenario, where: 'local', ...(options ? { options } : {}) } : p.playtests.find((x) => x.where === 'local' && x.device !== 'phone');
+    const t: Playtest | undefined = scenario ? { scenario, where: 'local', ...(options ? { options } : {}) } : betaPlaytestOf(p);
     // Beta is played only when asked (J, 2026-10-17): after a merge it is rebuilt, and that's it (Settings > Agents).
     // A milestone's check: each of its tasks' scenarios played once, its tasks' criteria judged on it (pm.ts).
     // Every play of the run plays the build it built or kept: a newer beta build waits until they're over (betaplay.ts).
@@ -1219,7 +1255,7 @@ async function betaBody(id: string, p: Product, { focus, criteria, scenario, opt
       try {
         // Only the scenarios of the tasks it judges (pm.ts playsFor), independent ones in parallel across the playtester's slots.
         await inSlots(plays, BETA_PLAYS_PARALLEL(), async (x, slot) => {
-          const pt: Playtest | undefined = x.scenario ? { scenario: x.scenario, where: 'local', ...(x.options ? { options: x.options } : {}) } : p.playtests.find((y) => y.where === 'local' && y.device !== 'phone');
+          const pt: Playtest | undefined = x.scenario ? { scenario: x.scenario, where: 'local', ...(x.options ? { options: x.options } : {}) } : betaPlaytestOf(p);
           // What this run was asked for goes ahead of what it carried over in Gen's queue (playplan.ts).
           if (pt) await playtestProduct(id, p, pt, { focus, mode: 'verify', criteria: x.criteria, abandon: newerBuild, slot, ...((x as Ask).carried ? { priority: -1 } : {}) });
         }, () => newerBuild() || runCancelled(id));
