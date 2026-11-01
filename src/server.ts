@@ -1033,7 +1033,14 @@ const server = http.createServer(async (req, res) => {
       const rel = route === '/' ? 'index.html' : route.slice(1);
       const file = path.join(paths.dashboard, path.normalize(rel));
       if (!file.startsWith(paths.dashboard) || !fs.existsSync(file) || fs.statSync(file).isDirectory()) return send(res, 404, { error: 'not found' });
-      res.writeHead(200, { 'Content-Type': MIME[path.extname(file)] ?? 'application/octet-stream', 'Cache-Control': 'no-store' });
+      // Pictures change only with a deploy and are kept a day; pages, scripts and styles are checked each time (an ETag,
+      // so an unchanged one is a 304 with no body). Every request still passes the edge Worker, so the day matters most.
+      const st = fs.statSync(file);
+      const ext = path.extname(file);
+      const etag = `W/"${st.size.toString(36)}-${Math.floor(st.mtimeMs).toString(36)}"`;
+      const cache = ext === '.png' || ext === '.svg' ? 'public, max-age=86400' : 'no-cache';
+      if (req.headers['if-none-match'] === etag) { res.writeHead(304, { ETag: etag, 'Cache-Control': cache }); return void res.end(); }
+      res.writeHead(200, { 'Content-Type': MIME[ext] ?? 'application/octet-stream', 'Cache-Control': cache, ETag: etag });
       return fs.createReadStream(file).pipe(res);
     }
     return send(res, 404, { error: `No route ${method} ${route}` });

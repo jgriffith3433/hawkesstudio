@@ -40,7 +40,7 @@
   // One picture's feed: the MJPEG stream, and if it hasn't produced a frame within a couple of seconds (a proxy buffering
   // it) or it drops, the single-frame route polled every ~250 ms. note(text) says what's up while there is no picture.
   const FEED_WAIT = 2500;
-  const FRAME_EVERY = 250;
+  const FRAME_EVERY = 1000; // one frame a second: every frame is a request through the edge
   const feeds = new WeakMap();
   function feedOff(img) {
     const f = feeds.get(img);
@@ -78,7 +78,7 @@
       if (f.mode === 'stream') return toPoll();
       f.fails += 1;
       if (f.fails >= 3 && !f.got) note('no video available');
-      f.timer = setTimeout(poll, f.fails > 3 ? 2000 : 1000);
+      f.timer = setTimeout(poll, f.fails > 3 ? 5000 : 2000);
     };
     note('waiting for the first frame…');
     img.src = streamUrl(job, player, fps);
@@ -101,7 +101,7 @@
     S.timer = setTimeout(async () => {
       if (!document.hidden && tab === 'live') await load();
       schedule();
-    }, 1500);
+    }, 5000);
   }
   window.loadLiveTab = async () => {
     const want = /^#live\/(j_[0-9a-f]+)/.exec(location.hash)?.[1] ?? null;
@@ -360,7 +360,7 @@
         // The grid's entry still shows.
       }
     }
-    if (S.open === job) S.detailTimer = setTimeout(pollDetail, (gridEntry()?.live === false) ? 5000 : 1000);
+    if (S.open === job) S.detailTimer = setTimeout(pollDetail, (gridEntry()?.live === false) ? 10000 : 3000);
   }
   function renderBigFromGrid() {
     if (!S.detail) renderBig();

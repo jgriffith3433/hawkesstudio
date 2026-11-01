@@ -74,8 +74,17 @@ const studioStream = (() => {
     lastSafety = Date.now();
     all({ safety: true });
   }, 5000);
+  // A tab left hidden for a minute closes its stream: while any page is connected the server checks Gen every few
+  // seconds, and every check is a request through the edge. Back on screen, it connects again and catches up.
+  let hideTimer = null;
   document.addEventListener('visibilitychange', () => {
-    if (document.hidden) return;
+    if (document.hidden) {
+      clearTimeout(hideTimer);
+      hideTimer = setTimeout(() => { if (document.hidden && es) { clearTimeout(retry); try { es.close(); } catch {} es = null; up = false; } }, 60_000);
+      return;
+    }
+    clearTimeout(hideTimer);
+    if (!es && typeof EventSource !== 'undefined') connect();
     for (const topic of queued.keys()) if (!timers.has(topic)) deliver(topic);
     // Away for a while: everything once.
     if (Date.now() - lastSafety > 60_000) { lastSafety = Date.now(); all({ safety: true }); }
