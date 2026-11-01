@@ -8,6 +8,8 @@
 //   costs    the budget, alert limits and the GPU auto-approval threshold (costs.ts)
 //   resources  when the server's memory, disk or an idle machine is real trouble (resources.ts, the Resources tab)
 //   routing  which model each piece of work gets: categories, escalation, the daily Opus budget, conserve mode (routing.ts)
+//   playtests  how many playtests run at once and the GPU providers' order, held by Hawkes Gen (playtest-capacity.ts);
+//            the studio's own: a customer's Studio neither sees nor changes it
 //
 // Changes that can raise what Studio spends (more agents or starts, higher limits or budget, the paid voice) need J's
 // own yes when they come from Talk: the request quotes his words and Studio checks they are in his messages there.
@@ -100,17 +102,24 @@ const pmMod = () => import('./pm.ts');
 const notifyMod = () => import('./notify.ts');
 const costsMod = () => import('./costs.ts');
 const resourcesMod = () => import('./resources.ts');
+const playtestsMod = () => import('./playtest-capacity.ts');
 
-export const SECTIONS = ['brain', 'tuning', 'routing', 'call', 'agents', 'pm', 'notify', 'costs', 'resources'] as const;
+export const SECTIONS = ['brain', 'tuning', 'routing', 'call', 'agents', 'pm', 'notify', 'costs', 'resources', 'playtests'] as const;
 export type Section = (typeof SECTIONS)[number];
 
-/** Everything, for the Settings tab and Talk. */
-export async function allSettings() {
+/**
+ * Everything, for the Settings tab and Talk. live (default): playtests asks Hawkes Gen once (the tab's open); false: what
+ * Studio holds, without asking (checking a change against the current values).
+ */
+export async function allSettings({ live = true }: { live?: boolean } = {}) {
   const { agentSettings } = await agentsMod();
   const { pmSettings } = await pmMod();
   const { notifyInfo } = await notifyMod();
   const { costSettings } = await costsMod();
   const { resourceSettings } = await resourcesMod();
+  const { customerStudio } = await import('./tenancy.ts');
+  const pt = await playtestsMod();
+  const playtests = customerStudio() ? null : live ? await pt.playtestSettings() : pt.playtestSettingsLocal();
   return {
     brain: brainSettings(),
     tuning: tuningSettings(),
@@ -121,6 +130,7 @@ export async function allSettings() {
     notify: notifyInfo(),
     costs: costSettings(),
     resources: resourceSettings(),
+    playtests,
     prices: { elevenPerMinute: Math.round(ELEVEN_PER_MIN * 100) / 100 },
   };
 }
@@ -136,6 +146,8 @@ const RAISES: Record<Section, { up?: string[]; on?: string[]; off?: string[]; an
   notify: {},
   costs: { up: ['budget', 'gpuHours', 'builderHours', 'playtesterHours', 'gpuAutoApprove'], off: ['alerts'] },
   resources: {},
+  // More playtests at once means more GPU workers; another provider order can mean a dearer one first.
+  playtests: { up: ['browsers'], any: ['providers'] },
 };
 
 /** What in this patch could raise costs (empty: nothing). */
@@ -180,7 +192,7 @@ export async function saveSettings(section: string, patch: Record<string, any>, 
   // budgets and alerts are the platform's, not theirs (docs/studio-customers.md section 4).
   const { customerStudio } = await import('./tenancy.ts');
   if (customerStudio()) {
-    if (s === 'costs' || s === 'resources') throw new StudioError("That setting is the platform's, not this Studio's.", 403);
+    if (s === 'costs' || s === 'resources' || s === 'playtests') throw new StudioError("That setting is the platform's, not this Studio's.", 403);
     const h = patch.harness ?? patch.id;
     // Their harness: only one they linked themselves (ailink.ts puts their keys and logins where the harness reads them).
     if (s === 'brain' && h !== undefined && h !== 'claude' && !(await import('./brains.ts')).harnessConfigured(h)) throw new StudioError('Connect that AI first (Connect your AI): your Studio runs only on your own.', 403);
@@ -190,8 +202,8 @@ export async function saveSettings(section: string, patch: Record<string, any>, 
       await (await import('./entitlements.ts')).requireFeature('pm');
     }
   }
-  const all = await allSettings();
-  const cur = all[s] as Record<string, any>;
+  const all = await allSettings({ live: false });
+  const cur = (all[s] ?? {}) as Record<string, any>;
   const by = from.by ?? (from.conversation ? 'Talk' : 'J');
   if (from.conversation) {
     const raising = costRaising(s, patch, cur);
@@ -257,6 +269,7 @@ export async function saveSettings(section: string, patch: Record<string, any>, 
     const { saveNotifySettings } = await notifyMod();
     return saveNotifySettings({ enabled: typeof patch.enabled === 'boolean' ? patch.enabled : undefined, server: patch.server, rotate: patch.rotate === true });
   }
+  if (s === 'playtests') return (await playtestsMod()).savePlaytestSettings(patch, by);
   if (s === 'resources') {
     try {
       return (await resourcesMod()).saveResourceSettings(patch, by);

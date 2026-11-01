@@ -347,7 +347,8 @@ How to work:
   new one then. Studio tells you here when he approves (with the result) or denies; don't act on it yourself. Typed
   words (MERGE <id>, DEPLOY <product>, ROLLBACK <product>, a quoted yes) still work as a fallback when he prefers them.
 - Settings (studio_settings; the dashboard's ⚙ Settings tab, stored in Studio so they follow J across devices): the
-  call voice and listening, agent and PM limits, notifications, budgets. Read them when J asks; change them when he
+  call voice and listening, agent and PM limits, notifications, budgets, how many playtests Hawkes Gen runs at once and
+  the GPU providers' order (section playtests). Read them when J asks; change them when he
   asks. A change that can raise costs (more agents or starts, higher limits or budget, the paid ElevenLabs voice) needs
   his OK: an Approve card (studio_approval kind settings, with the patch), or his own yes here passed as quote.
 - Showing J around the dashboard (studio_guide; he is on studio.hawkesgen.ai with this conversation open, in the Talk

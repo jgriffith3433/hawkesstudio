@@ -321,6 +321,50 @@
     </div>`;
   }
 
+  // Playtests at once and the GPU providers' order (src/playtest-capacity.ts): Hawkes Gen holds them; this box shows what
+  // Gen applied and each provider's limit or why it can't be used. The studio's own: not shown in a customer's Studio.
+  function playtestsBox(p) {
+    if (!p) return '';
+    const g = p.gen ?? { state: 'offline', providers: [] };
+    const asked = p.wanted?.browsers;
+    const status = g.state === 'ok'
+      ? `Hawkes Gen runs <b>${esc(p.browsers ?? '?')}</b> at once${g.perWorker ? ` (${esc(g.perWorker)} per GPU worker)` : ''}.${g.note ? ` ${esc(g.note)}` : ''}`
+      : g.state === 'missing'
+        ? `<span class="set-err">This ${esc(g.note || "needs Hawkes Gen's next release")}.</span>${asked !== undefined ? ` Your value (${esc(asked)}) is kept here and sent to Gen once it has it.` : ''}`
+        : `<span class="set-err">${esc(g.note || "Hawkes Gen didn't answer")}.</span>${p.wanted?.pending ? ' Your value is kept here and sent when this tab is next opened.' : ''}`;
+    const order = g.providers ?? [];
+    const prov = order.length ? order.map((x, i) => `<div class="ca-line pt-prov" data-prov="${esc(x.id)}" style="align-items:center;gap:8px">
+        <label style="flex:1;min-width:0"><input type="checkbox" data-provon ${x.enabled ? 'checked' : ''}> <b>${esc(x.id)}</b>${x.kind ? ` <span class="meta">${esc(x.kind)}</span>` : ''}</label>
+        <span class="meta">${x.maxBrowsers != null ? `up to ${esc(x.maxBrowsers)}` : ''}${x.ok === false || x.reason ? ` <span class="set-err">${esc(x.reason || 'not usable now')}</span>` : x.enabled ? ' ✓' : ''}</span>
+        <button class="small" data-provmove="-1" ${i === 0 ? 'disabled' : ''} title="Try earlier">↑</button><button class="small" data-provmove="1" ${i === order.length - 1 ? 'disabled' : ''} title="Try later">↓</button>
+      </div>`).join('') : '';
+    return `<div class="set-box" id="setPlaytests"><h3>🎮 Playtests</h3>
+      <div class="meta">How many playtests Hawkes Gen runs at the same time, and which GPU providers it uses, in order. Gen keeps it within what each provider account allows.</div>
+      ${row('Playtests at once', num('playtests', 'browsers', asked ?? p.browsers ?? '', { min: 1, max: 64 }))}
+      <div class="meta" style="padding:6px 0">${status}</div>
+      ${prov ? `<div class="meta" style="padding-top:6px"><b>GPU providers</b>: ticked ones are used, top first</div>${prov}` : ''}
+      <div id="ptMsg" class="meta"></div>
+    </div>`;
+  }
+  function redrawPlaytests() {
+    const box = $('#setPlaytests');
+    if (box && data?.playtests) box.outerHTML = playtestsBox(data.playtests);
+  }
+  async function saveProviders(ids, btn) {
+    const msg = $('#ptMsg');
+    if (!ids.length) { if (msg) msg.innerHTML = '<span class="set-err">Keep at least one provider ticked.</span>'; redrawPlaytests(); return; }
+    if (btn) btn.disabled = true;
+    try {
+      const r = await api('/api/settings', { method: 'POST', body: { section: 'playtests', patch: { providers: ids } } });
+      data.playtests = r.settings;
+      redrawPlaytests();
+      const m = $('#ptMsg'); if (m) { m.innerHTML = '<span class="set-saved">Saved</span>'; setTimeout(() => m.textContent === 'Saved' && (m.textContent = ''), 1800); }
+    } catch (err) {
+      redrawPlaytests();
+      const m = $('#ptMsg'); if (m) m.innerHTML = `<span class="set-err">${esc(err.message)}</span>`;
+    }
+  }
+
   // Plan and credits (src/billing.ts): this Studio's subscription on the shared Stripe account. Subscribing, cancelling
   // and the billing portal are an admin's; the API refuses the rest.
   let billing = null;
@@ -459,7 +503,7 @@
     if (cu) $('#setBody').innerHTML = `<div class="set-grid">${billingBox(billing)}<div id="setAiBox"></div>${walkAwayBox(data.pm)}${notifyBox(data.notify)}</div>
       <details class="set-more"><summary>Agents and the PM: how much they do by themselves</summary><div class="set-grid">${agentsBox(data.agents)}${pmBox(data.pm)}</div></details>
       <details class="set-more"><summary>Advanced: models, tuning and the call voice</summary><div class="set-grid">${data.routing ? routingBox(data.routing, routing) : ''}${tuningBox(data.tuning)}${callBox(data.call)}</div></details>`;
-    else $('#setBody').innerHTML = `<div class="set-grid">${billingBox(billing)}<div id="setCellsBox"></div>${cu ? '<div id="setAiBox"></div>' : brainBox(data.brain)}${data.routing ? routingBox(data.routing, routing) : ''}${tuningBox(data.tuning)}${cu ? '' : claudeBox(claude, data.brain)}${cu ? '' : agyBox(agyLogin)}<div id="svcBox">${servicesBox(services)}</div>${callBox(data.call)}${agentsBox(data.agents)}${pmBox(data.pm)}${notifyBox(data.notify)}${cu ? '' : costsBox(data.costs)}${cu ? '' : resourcesBox(data.resources)}</div>`;
+    else $('#setBody').innerHTML = `<div class="set-grid">${billingBox(billing)}<div id="setCellsBox"></div>${cu ? '<div id="setAiBox"></div>' : brainBox(data.brain)}${data.routing ? routingBox(data.routing, routing) : ''}${tuningBox(data.tuning)}${cu ? '' : claudeBox(claude, data.brain)}${cu ? '' : agyBox(agyLogin)}<div id="svcBox">${servicesBox(services)}</div>${callBox(data.call)}${agentsBox(data.agents)}${pmBox(data.pm)}${notifyBox(data.notify)}${cu ? '' : costsBox(data.costs)}${cu ? '' : resourcesBox(data.resources)}${cu ? '' : playtestsBox(data.playtests)}</div>`;
     // A customer's Studio: Claude and every other provider they link, in one box (users.js mountAiCard).
     if (cu) api('/api/ai').then((ai) => window.mountAiCard?.($('#setAiBox'), ai)).catch(() => {});
     else mountCustomers($('#setCellsBox'));
@@ -508,6 +552,10 @@
   document.addEventListener('change', async (e) => {
     const t = e.target;
     if (!t.closest?.('#setBody')) return;
+    if (t.matches?.('[data-provon]')) {
+      const ids = [...document.querySelectorAll('#setPlaytests .pt-prov')].filter((x) => x.querySelector('[data-provon]').checked).map((x) => x.dataset.prov);
+      return saveProviders(ids, null);
+    }
     if (t.id === 'setBrowserVoice') { window.callVoice?.setLocal({ browserVoice: t.value }); return mark(t, true, 'Saved on this device'); }
     const section = t.dataset.s, k = t.dataset.k;
     if (!section || !k) return;
@@ -530,6 +578,7 @@
     // Choosing a voice engine changes what the box shows (the ElevenLabs voices, Kokoro's state).
     if (saved && section === 'call' && (k === 'engine' || k === 'rate')) loadSettingsTab();
     if (saved && section === 'brain') loadSettingsTab();
+    if (saved && section === 'playtests') { redrawPlaytests(); const m = $('#ptMsg'); if (m) m.innerHTML = '<span class="set-saved">Saved</span>'; }
   });
   document.addEventListener('input', (e) => {
     if (e.target.matches?.('#setBody input[type=range]')) e.target.nextElementSibling.textContent = `${Number(e.target.value).toFixed(2)}×`;
@@ -549,6 +598,18 @@
         t.disabled = false;
       }
       return;
+    }
+    if (t.dataset?.provmove) {
+      const lines = [...document.querySelectorAll('#setPlaytests .pt-prov')];
+      const i = lines.indexOf(t.closest('.pt-prov'));
+      const j = i + Number(t.dataset.provmove);
+      if (i < 0 || j < 0 || j >= lines.length) return;
+      [lines[i], lines[j]] = [lines[j], lines[i]];
+      const ids = lines.filter((x) => x.querySelector('[data-provon]').checked).map((x) => x.dataset.prov);
+      // Only the ticked ones go to Gen, in order: moving an unticked one changes nothing there.
+      const all = (data.playtests.gen.providers ?? []);
+      data.playtests.gen.providers = lines.map((x) => all.find((p) => p.id === x.dataset.prov));
+      return saveProviders(ids, t);
     }
     if (t.dataset?.restart) {
       const name = t.dataset.restart === 'gen' ? 'Hawkes Gen' : 'Hawkes Studio';

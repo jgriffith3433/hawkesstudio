@@ -591,6 +591,15 @@ the one API. Talk reads and changes them with `studio_settings` when J asks; fro
 Talk puts an Approve card on his screen (`studio_approval` kind settings), or, as the fallback, the request quotes his
 own yes from that conversation. The notification topic is changed only on the dashboard.
 
+**🎮 Playtests** (section `playtests`, `src/playtest-capacity.ts`; J, 2026-11-01: "Can you make that a setting in
+studio? The amount of playtests?"): *Playtests at once* and the *GPU providers* to use, in order. Hawkes Gen holds them
+(`GET/PUT /v1/playtest/capacity` with Studio's Gen key); the box shows what Gen applied (it clamps to what each provider
+account allows), its browsers per GPU worker, and each provider's limit or why it can't be used ("out of credit"). Studio
+keeps J's value (the `settings` table, key `playtests`): a Gen without the API (404: "needs Hawkes Gen's next release")
+or not answering keeps it, and it is sent the next time the tab is opened. Gen is asked only when the tab opens and after
+a save, never on a timer. J's Studio only: a customer's Studio doesn't see it and its API refuses it (403); members can't
+change it (admin-only `/api/settings`). From Talk, more at once or another provider order needs J's yes.
+
 
 ## Models and usage limits (routing)
 
