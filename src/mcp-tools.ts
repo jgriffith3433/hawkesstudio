@@ -636,10 +636,15 @@ export function studioMcp({ studio, waitRun }: Client = { studio: defaultStudio,
         const every = Number(process.env.STUDIO_TALK_POLL_MS) || 2000;
         let c: any;
         for (;;) {
-          c = await studio(`/api/talk/${cid}?after=${from}`);
+          // Studio holds the read until Talk is done (wait=, at most 50 s a request: server.ts), so the answer comes back
+          // the moment it's written; a longer wait asks again.
+          const left = Math.ceil(Math.max(0, end - Date.now()) / 1000);
+          const asked = Date.now();
+          c = await studio(`/api/talk/${cid}?after=${from}${left ? `&wait=${Math.min(50, left)}` : ''}`);
           if (c.error) throw new Error(c.error);
           if (c.status !== 'thinking' || Date.now() >= end) break;
-          await new Promise((r) => setTimeout(r, Math.min(every, Math.max(0, end - Date.now()))));
+          // A Studio from before wait= answers at once: then a pause between reads, as it always was.
+          if (Date.now() - asked < every) await new Promise((r) => setTimeout(r, Math.min(every, Math.max(0, end - Date.now()))));
         }
         const thinking = c.status === 'thinking';
         return {

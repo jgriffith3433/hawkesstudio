@@ -19,7 +19,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { DATA, ROOT, PROJECTS, paths, addedRepoFolders } from './config.ts';
 import { repoTokenNow, slugOfRemote } from './ghtoken.ts';
 import { customerStudio, PLATFORM_GITHUB } from './tenancy.ts';
-import { startCloudJob, reattachCloudJob, cloudJobAlive } from './cloudjob.ts';
+import { startCloudJob, reattachCloudJob, cloudJobAlive, kickCloudJob, jobFiles } from './cloudjob.ts';
 
 export type DetachMode = 'systemd' | 'process' | 'cloudrun';
 /** What Studio records (on a change, a conversation) to find a detached process again (cwd: a Cloud Run job's workspace). */
@@ -128,8 +128,9 @@ export function stopDetached(rec: DetachRec) {
   try {
     fs.writeFileSync(file(rec.unit, 'stop'), String(Date.now()));
   } catch { /* the folder is gone: so is the process */ }
-  // A Cloud Run job: its follower passes the stop on and cancels the execution if it doesn't end (cloudjob.ts).
-  if (rec.mode === 'cloudrun') return;
+  // A Cloud Run job: its follower passes the stop on (now, not on its next look) and cancels the execution if it doesn't
+  // end (cloudjob.ts).
+  if (rec.mode === 'cloudrun') return void kickCloudJob(rec.unit, { nudged: false });
   setTimeout(() => {
     if (detachedExit(rec) || !detachedAlive(rec)) return;
     if (rec.mode === 'systemd') systemctl('stop', '--no-block', `${rec.unit}.service`);
@@ -190,11 +191,22 @@ function readFrom(f: string, from: number) {
   }
 }
 
+/** How often a followed process's files are looked at with no change pushed (the safety net; see DetachedChild). */
+const SAFETY_MS = () => Number(process.env.STUDIO_DETACH_POLL_MS) || 3000;
+/** How often they're looked at when nothing can push a change (fs.watch unavailable here): as before pushes. */
+const POLL_MS = 250;
+
 /**
  * A detached process seen through its files, shaped like a ChildProcess: stdout emits one line at a time ("data", with
  * its newline), and `offset` is the byte just after the last line emitted (save it to carry on from there after a
  * restart); stderr emits what was written; "close" (code) comes once it exited and everything was read. A process that
  * vanished without an exit (a reboot) closes with code null and `lost` set.
+ *
+ * Changes are pushed, not polled: fs.watch on the folder (the runner and a systemd unit write the files from another
+ * process) and, for a Cloud Run job, cloudjob.ts's jobFiles event when its follower wrote them. A look every few seconds
+ * stays as the safety net, for an event that never comes (fs.watch can drop events) and for a process that died without
+ * writing its exit (a reboot, a killed unit: nothing writes a file then, so only looking finds it). Where fs.watch can't
+ * be used, it looks every 250 ms as it always did.
  */
 export class DetachedChild extends EventEmitter implements ChildLike {
   stdout = new EventEmitter();
@@ -206,6 +218,9 @@ export class DetachedChild extends EventEmitter implements ChildLike {
   private checked = 0;
   private misses = 0;
   private timer: NodeJS.Timeout;
+  private watcher: fs.FSWatcher | null = null;
+  private pending: NodeJS.Timeout | null = null;
+  private onJob = () => this.soon();
 
   rec: DetachRec;
 
@@ -217,8 +232,41 @@ export class DetachedChild extends EventEmitter implements ChildLike {
     if (rec.mode === 'cloudrun' && reattached && rec.cwd) reattachCloudJob(rec.unit, rec.cwd);
     // Reattached: stderr from before the restart isn't news (an error at the end is still read, from its last 4 KB).
     this.errOffset = reattached ? Math.max(0, this.size('err') - 4096) : 0;
-    this.timer = setInterval(() => this.poll(), 250);
+    this.watcher = this.watch();
+    if (rec.mode === 'cloudrun') jobFiles.on(rec.unit, this.onJob);
+    this.timer = setInterval(() => this.poll(), this.watcher || rec.mode === 'cloudrun' ? SAFETY_MS() : POLL_MS);
     setImmediate(() => this.poll());
+  }
+
+  /** Watches the folder for this unit's files (null where fs.watch doesn't work: then it's the 250 ms look). */
+  private watch() {
+    const prefix = `${this.rec.unit}.`;
+    try {
+      const w = fs.watch(DETACH_DIR(), (_event, name) => {
+        if (!name || String(name).startsWith(prefix)) this.soon();
+      });
+      w.on('error', () => {
+        // Watching stopped (the folder went, the kernel's watch limit): back to looking every 250 ms.
+        w.close();
+        if (this.watcher !== w || this.closed) return;
+        this.watcher = null;
+        clearInterval(this.timer);
+        this.timer = setInterval(() => this.poll(), POLL_MS);
+      });
+      w.unref?.();
+      return w;
+    } catch {
+      return null;
+    }
+  }
+
+  /** A change was pushed: look right away (writes that come together, like streamed lines, share one look). */
+  private soon() {
+    if (this.closed || this.pending) return;
+    this.pending = setTimeout(() => {
+      this.pending = null;
+      this.poll();
+    }, 15);
   }
 
   private size(ext: string) {
@@ -269,9 +317,18 @@ export class DetachedChild extends EventEmitter implements ChildLike {
     this.finish(null);
   }
 
-  private finish(code: number | null) {
+  private stopFollowing() {
     this.closed = true;
     clearInterval(this.timer);
+    if (this.pending) clearTimeout(this.pending);
+    this.pending = null;
+    this.watcher?.close();
+    this.watcher = null;
+    jobFiles.off(this.rec.unit, this.onJob);
+  }
+
+  private finish(code: number | null) {
+    this.stopFollowing();
     setImmediate(() => this.emit('close', code));
   }
 
@@ -283,8 +340,7 @@ export class DetachedChild extends EventEmitter implements ChildLike {
 
   /** Stops reading (the process goes on): for a Studio that's shutting down, or tests. */
   detach() {
-    this.closed = true;
-    clearInterval(this.timer);
+    this.stopFollowing();
   }
 }
 

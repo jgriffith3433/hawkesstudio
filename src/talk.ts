@@ -563,16 +563,22 @@ function unanswered(c: Conversation) {
 
 // ------------------------------------------------------------ Studio says
 
-/** Results that finish within this window after the first one are answered in one turn. */
-const BATCH_MS = () => Number(process.env.TALK_FOLLOWUP_BATCH_MS ?? 60_000);
+/**
+ * Results that finish within this window after the first one are answered in one turn. It was a minute, which made
+ * every result's answer start a minute late (2026-11-01). What it is for: the notices one event sends together (a
+ * change's merge, then its beta run; several results of one follow-up look, followup.ts) share a turn instead of
+ * paying for one each. Those come within milliseconds to a second of each other, so a few seconds keep that; a result
+ * that comes while a turn runs waits for it anyway (never a second turn at once: waitingAuto).
+ */
+const BATCH_MS = () => Number(process.env.TALK_FOLLOWUP_BATCH_MS ?? 3_000);
 const autoTimers = new Map<string, NodeJS.Timeout>();
 /** Conversations with results waiting while a turn runs (answered when it ends). */
 const waitingAuto = new Set<string>();
 
 /**
  * Work this conversation started finished (followup.ts): the notice goes into the conversation now, and Claude answers
- * it by itself in a turn of its own a minute later (results within that minute share the turn). Never a second turn
- * while one runs: it waits for the running one, and J's own message answers the notices too (say() includes them).
+ * it by itself in a turn of its own a few seconds later (results within those seconds share the turn: BATCH_MS). Never
+ * a second turn while one runs: it waits for the running one, and J's own message answers the notices too (say() includes them).
  */
 export function studioSays(id: string, text: string) {
   const c = getConversation(id);
@@ -1024,8 +1030,33 @@ function finishTurn(id: string, ctx: TurnCtx, { stopped = false, code = 0, turn 
   waitingAuto.delete(id);
   const queued = queuedTurns.get(id);
   queuedTurns.delete(id);
-  if (queued?.length) setTimeout(() => studioTurn(id, queued.join('\n\n---\n\n')), 2000).unref?.();
-  else if (unanswered(conv).some((m) => m.followup)) scheduleAuto(id, 5000);
+  // A short beat first (J may answer the answer himself: his message takes the results with it), never longer than the
+  // results' own window.
+  if (queued?.length) setTimeout(() => studioTurn(id, queued.join('\n\n---\n\n')), Math.min(BATCH_MS(), 2000)).unref?.();
+  else if (unanswered(conv).some((m) => m.followup)) scheduleAuto(id, Math.min(BATCH_MS(), 5000));
+}
+
+/**
+ * Resolves when the conversation isn't answering any more (its 'idle' event, pushed by finishTurn and failedStart), or
+ * after `ms`, or when `signal` aborts: GET /api/talk/<id>?wait= holds the request on it, so studio_talk gets Talk's
+ * answer the moment it's done instead of re-reading the conversation every 2 s. True when it's idle.
+ */
+export function untilIdle(id: string, ms: number, signal?: AbortSignal): Promise<boolean> {
+  const busy = () => getConversation(id)?.status === 'thinking';
+  if (!busy() || ms <= 0 || signal?.aborted) return Promise.resolve(!busy());
+  return new Promise((resolve) => {
+    const done = () => {
+      clearTimeout(timer);
+      talkEvents.off(id, on);
+      signal?.removeEventListener('abort', done);
+      resolve(!busy());
+    };
+    const on = (e: { type?: string }) => { if (e?.type === 'idle') done(); };
+    const timer = setTimeout(done, ms);
+    timer.unref?.();
+    talkEvents.on(id, on);
+    signal?.addEventListener('abort', done, { once: true });
+  });
 }
 
 // ------------------------------------------------------------ calls

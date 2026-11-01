@@ -76,7 +76,13 @@ on Cloud Run a follower fills them from the job. The round trip (`gs://.../jobs/
    header (never in the clone), applies the bundle and files at the **same absolute path**, and runs the command as the
    user `agent` (uid 1001). The clone is partial (`--filter=blob:none`) with Git LFS files skipped unless the spec says
    `lfs`; Studio's spec asks for a full clone with LFS files (`partial: false, lfs: true`) only for a repo that isn't big,
-   so a big repo's heavy checkout happens here, in the job, not on the Studio service. Output goes up in chunks every 2 s; a `stop` object (Studio's Stop, a time limit) ends it.
+   so a big repo's heavy checkout happens here, in the job, not on the Studio service. Output goes up in chunks every 2 s
+   (a Talk answer's within 250 ms of being written: `flushMs` in its spec), and after each upload the runner nudges
+   Studio (`POST /api/cloudjobs/<unit>/nudge`, with the agents' key from the pass's environment), so Studio reads the
+   bucket at once instead of on its next look. The nudge carries nothing; the output is only ever read from the bucket.
+   Studio still looks every 2 s until a job's first nudge, then every 5 s (`STUDIO_JOB_SAFETY_MS`) as a safety net for
+   a lost nudge and for an execution Cloud Run ended without an `exit.json`. A `stop` object (Studio's Stop, a time
+   limit) ends it.
 3. **Back:** a bundle of the pass's commits, its uncommitted files and the session, then `exit.json`. Studio fetches the
    commits into the worktree, resets to the pass's HEAD, `git clean -fd`, writes the files, then the local exit. The
    job's folder is cleared; anything left goes after 7 days (bucket lifecycle).

@@ -2,8 +2,8 @@
 // (X-Talk-Conversation) on its calls; the API records it as the origin of what the call starts: agent changes
 // (studio_fix, studio_task, a revision), the beta run after an approval, playtests, builds, beta runs, and the live
 // check after a go live or rollback. When one finishes (a change ready or failed, a run done or failed), a short notice
-// goes into that conversation and Claude explains it there by itself (talk.ts studioSays: batched per minute, one turn
-// at a time). Work that no conversation started (the daily run, J's dashboard buttons) only notifies J's phone.
+// goes into that conversation and Claude explains it there by itself (talk.ts studioSays: batched for a few seconds, one
+// turn at a time). Work that no conversation started (the daily run, J's dashboard buttons) only notifies J's phone.
 
 import type http from 'node:http';
 import { db, parse } from './db.ts';
