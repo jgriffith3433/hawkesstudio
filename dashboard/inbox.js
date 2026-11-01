@@ -27,9 +27,75 @@ function ibCard(x) {
   </div>`;
 }
 
+// Loading the list (J, 2026-11-01: "the first time you navigate to inbox if it's been a while it says 'Loading..' but
+// never loads. Then if you refresh the page it populates"). It used to load only from the Inbox nav button's click and
+// the push stream's events: a customer's Studio has no Inbox nav button (groups.js opens it from the Talk · Inbox bar,
+// with show()), so after a quiet while nothing asked for it until the next stream event, and a request that hung (a
+// cold start, a connection that died while the page sat idle) had no timeout. Now:
+//   - it loads whenever the Inbox is shown (show() → studio-tab), however it was opened;
+//   - one load at a time: one asked for meanwhile runs right after, so the newest answer always lands;
+//   - each try has a timeout and one automatic retry (a timeout, a dropped connection, a 5xx or a page that isn't JSON);
+//   - an expired session goes to the sign-in page and back here, like api() (app.js);
+//   - it always ends in the cards, the empty state, or what went wrong with a Retry button;
+//   - asked while the page is hidden, it loads when the page is visible again.
+const IB_TIMEOUT = 15_000;
+const IB_RETRY_AFTER = 1000;
 let ibDrawn = null;
-async function loadInbox() {
-  const r = await approvals.call('/api/inbox');
+let ibLoading = null; // the load in flight
+let ibAgain = false; // asked for again while one was in flight
+let ibWaiting = false; // asked for while the page was hidden
+let ibFailed = false; // the last load ended in an error (shown with Retry)
+const ibOnScreen = () => Boolean($('#inbox')?.classList.contains('on'));
+
+/** GET path as J's click (approval tokens come with it), with the timeout, one retry and the sign-in redirect. */
+async function ibFetch(path) {
+  for (let attempt = 1; ; attempt++) {
+    const ctl = typeof AbortController === 'function' ? new AbortController() : null;
+    const timer = ctl ? setTimeout(() => ctl.abort(), IB_TIMEOUT) : null;
+    let retry = true;
+    try {
+      const r = await fetch(path, { headers: { 'X-Studio-Click': '1' }, cache: 'no-store', ...(ctl ? { signal: ctl.signal } : {}) });
+      const d = await r.json().catch(() => null);
+      // Signed out (the session expired while the page sat idle): to the sign-in page, then back here.
+      if ((r.status === 401 || r.status === 403) && d?.signin) {
+        retry = false;
+        location.href = `${d.signin}?next=${encodeURIComponent(location.href)}`;
+        throw new Error('Signing in again…');
+      }
+      if (!d) throw new Error(`Studio answered ${r.status} (not JSON).`);
+      if (!r.ok || d.error) {
+        retry = r.status >= 500; // a 4xx says the same the second time
+        throw new Error(d.error ?? `Studio answered ${r.status}`);
+      }
+      return d;
+    } catch (err) {
+      const e = ctl?.signal.aborted ? new Error(`Studio didn't answer in ${IB_TIMEOUT / 1000} seconds.`) : err;
+      if (!retry || attempt >= 2) throw e;
+      // Still "Loading…": say we're trying again (Studio may be waking up after a quiet while).
+      if (ibDrawn === null && !ibFailed) $('#ibList').innerHTML = '<div class="meta">Still loading (Studio may be waking up)…</div>';
+      await new Promise((ok) => setTimeout(ok, IB_RETRY_AFTER));
+    } finally {
+      if (timer !== null) clearTimeout(timer);
+    }
+  }
+}
+
+function ibShowError(message) {
+  ibFailed = true;
+  const box = `<div class="empty ib-error">Couldn't load the Inbox: ${esc(message)} <button class="small" data-ibretry>Retry</button></div>`;
+  // Nothing drawn yet: the error takes "Loading…"'s place. Cards already there stay, with the error above them.
+  if (ibDrawn === null) { $('#ibList').innerHTML = box; return; }
+  let el = $('#ibErr');
+  if (!el) { el = document.createElement('div'); el.id = 'ibErr'; $('#ibList').before(el); }
+  el.innerHTML = box;
+  el.hidden = false;
+}
+
+async function drawInbox() {
+  const r = await ibFetch('/api/inbox');
+  ibFailed = false;
+  const err = $('#ibErr');
+  if (err) err.hidden = true;
   ibItems = r.items;
   setInboxCount(r.count, r.walkAway);
   // A card J is typing in isn't redrawn under him.
@@ -39,6 +105,22 @@ async function loadInbox() {
   // Changed: redrawn in place (patch.js), so the cards J isn't touching stay put and so does the page.
   if (list !== ibDrawn) { studioPatch($('#ibList'), list); ibDrawn = list; }
   studioPatch($('#ibAnswered'), r.answered.length ? `<summary class="meta">Answered lately (${r.answered.length})</summary>${r.answered.map((a) => `<div class="test"><span class="name">${esc(a.title)}</span><span class="detail">${esc(String(a.answer ?? '').slice(0, 200))} · <b>by ${esc(a.by ?? '?')}</b> · ${ago(a.at)} · ${esc(a.id)}</span></div>`).join('')}` : '');
+}
+
+/** Loads and draws the Inbox. Never rejects: it ends in the cards, the empty state or the error with Retry. */
+function loadInbox() {
+  if (ibLoading) { ibAgain = true; return ibLoading; }
+  ibLoading = (async () => {
+    try {
+      do {
+        ibAgain = false;
+        try { await drawInbox(); } catch (e) { ibShowError(e?.message ?? String(e)); }
+      } while (ibAgain);
+    } finally {
+      ibLoading = null;
+    }
+  })();
+  return ibLoading;
 }
 
 function setInboxCount(n, walkAway) {
@@ -90,7 +172,7 @@ async function ibAnswer(card, answer) {
       return;
     }
     card.classList.add('ib-done');
-    setTimeout(() => loadInbox().catch(() => {}), 400);
+    setTimeout(loadInbox, 400);
   } catch (err) {
     card.classList.remove('ib-busy');
     alert(err.message);
@@ -116,15 +198,27 @@ $('#inbox').addEventListener('keydown', (e) => {
 
 addEventListener('studio-approval', () => setTimeout(ibRefresh, 1500));
 function ibRefresh() {
-  if (location.hash.slice(1).split('/')[0] === 'inbox') loadInbox().catch((e) => (ibDrawn = null, $('#ibList').innerHTML = `<div class="empty">${esc(e.message)}</div>`));
-  else pollInboxCount();
+  if (!ibOnScreen()) return void pollInboxCount();
+  // Hidden (another browser tab, a locked phone): when the page is back (below).
+  if (document.hidden) { ibWaiting = true; return; }
+  void loadInbox();
 }
-document.querySelector('nav button[data-tab="inbox"]').addEventListener('click', () => setTimeout(ibRefresh, 0));
+// Whenever the Inbox is shown, however it was opened: the nav button, the Talk · Inbox bar of a customer's Studio
+// (groups.js), a link (roadmap.js) or Talk's guide. show() (app.js) says which tab with studio-tab.
+addEventListener('studio-tab', (e) => { if (e.detail === 'inbox') ibRefresh(); });
+// Back on screen: a load asked for while hidden, or one that failed or never landed, goes again.
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden || !ibOnScreen()) return;
+  if (ibWaiting || ibFailed || ibDrawn === null) { ibWaiting = false; ibRefresh(); }
+});
+// Restored from the browser's back/forward cache: it may have been a long while.
+addEventListener('pageshow', (e) => { if (e.persisted && ibOnScreen()) ibRefresh(); });
+$('#inbox').addEventListener('click', (e) => { if (e.target.closest('button[data-ibretry]')) void loadInbox(); });
 ibRefresh();
 // The badge and the open Inbox follow the push stream (stream.js): the event carries the count; the list is fetched only
 // when the Inbox is on screen. Its slow safety tick refreshes too.
 studioStream.on('inbox', (e) => {
   if (typeof e.count === 'number') setInboxCount(e.count);
-  if (location.hash.slice(1).split('/')[0] === 'inbox') { if (!e.badge) ibRefresh(); }
+  if (ibOnScreen()) { if (!e.badge) ibRefresh(); }
   else if (typeof e.count !== 'number') pollInboxCount();
 });
