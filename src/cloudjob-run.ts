@@ -8,7 +8,10 @@
 //    header: it is never written to the clone), the commits GitHub lacks (in.bundle), the uncommitted files, Claude Code's
 //    session folder and the files the command names (in.pack).
 // 3. Runs the command as the unprivileged user `agent` when this runs as root (the image), so nothing the pass runs can
-//    read this process's memory or the token. Output goes up in chunks every ~2 s; a `stop` object ends the command.
+//    read this process's memory or the token. Output goes up in chunks every ~2 s (a Talk answer's within a quarter
+//    second of being written: spec.flushMs), and after each upload the runner nudges Studio (POST
+//    /api/cloudjobs/<unit>/nudge with the agents' key its MCP server uses) so it reads them now instead of on its next
+//    look; a `stop` object ends the command.
 // 4. Sends back what the pass committed (out.bundle) and left uncommitted plus the session (out.pack), then exit.json.
 
 import fs from 'node:fs';
@@ -24,7 +27,24 @@ type Store = Pick<JobRunner, 'put' | 'get' | 'list' | 'remove'>;
 // files unless the spec asks (`lfs`), so a big repo (a Unity project of GBs) is never pulled whole; `partial: false` asks
 // for a full clone (Studio's spec for a small repo, so the pass can read any old file without a token).
 type JobGit = { head: string; branch: string; remote: string; bundle: boolean; token: string | null; shallow?: boolean; partial?: boolean; lfs?: boolean };
-type Spec = { kind?: 'build'; outputs?: string[]; file: string; args: string[]; cwd: string; env: Record<string, string>; sessions: string; git: JobGit | null };
+type Spec = { kind?: 'build'; outputs?: string[]; file: string; args: string[]; cwd: string; env: Record<string, string>; sessions: string; git: JobGit | null; flushMs?: number };
+/** Tells Studio new output is in the bucket (resolves either way, never throws). */
+type Nudge = () => Promise<void>;
+
+/**
+ * The real nudge: Studio's address and the agents' key from the pass's own environment (cloudjob.ts jobEnv gives both,
+ * for its MCP server), so nothing new is provisioned. Carries nothing but the unit: Studio only ever reads the output
+ * from the bucket. Null without them (a local test, a Studio without the key).
+ */
+export function httpNudge(unit: string) {
+  return (env: Record<string, string>): Nudge | null => {
+    const url = String(env.STUDIO_URL ?? '').replace(/\/+$/, '');
+    const key = String(env.STUDIO_AGENT_KEY ?? '').trim();
+    if (!/^https?:\/\//.test(url) || !key) return null;
+    return () => fetch(`${url}/api/cloudjobs/${encodeURIComponent(unit)}/nudge`, { method: 'POST', headers: { Authorization: `Bearer ${key}` }, signal: AbortSignal.timeout(5000) })
+      .then((r) => void r.body?.cancel().catch(() => {}), () => {});
+  };
+}
 
 /** The workspace clone's arguments (no checkout: prepare checks the head out after the bundle). Exported for the tests. */
 export const jobCloneArgs = (g: Pick<JobGit, 'remote' | 'partial'>, cwd: string) => ['clone', '--quiet', '--no-checkout', ...(g.partial === false ? [] : ['--filter=blob:none']), g.remote, cwd];
@@ -124,18 +144,41 @@ export function collect(spec: Spec, start: string | null, tmp: string, at: (p: s
   return { pack: packFiles(entries, deleted), bundle, git: gitOut };
 }
 
-/** The whole execution. `store` is the bucket; `at` places absolute paths (tests: under a scratch root, as if on another machine). */
-export async function runUnit(unit: string, store: Store, { every = 2000, at = (p: string) => p }: { every?: number; at?: (p: string) => string } = {}): Promise<number> {
+/**
+ * The whole execution. `store` is the bucket; `at` places absolute paths (tests: under a scratch root, as if on another
+ * machine); `nudge` makes the function that tells Studio new output is up (the job's entry: httpNudge; tests their own).
+ */
+export async function runUnit(unit: string, store: Store, { every = 2000, at = (p: string) => p, nudge = null }: { every?: number; at?: (p: string) => string; nudge?: ((env: Record<string, string>) => Nudge | null) | null } = {}): Promise<number> {
   const key = (n: string) => `jobs/${unit}/${n}`;
   const chunks = { log: [] as Buffer[], err: [] as Buffer[] };
   const n = { log: 0, err: 0 };
-  const flush = async () => {
+  // One nudge at a time; more output meanwhile sends one more after it (never a pile of requests).
+  let send: Nudge | null = null;
+  let nudging: Promise<void> | null = null;
+  let nudgeAgain = false;
+  const poke = () => {
+    if (!send) return;
+    if (nudging) return void (nudgeAgain = true);
+    nudging = (async () => {
+      do {
+        nudgeAgain = false;
+        await send!();
+      } while (nudgeAgain);
+    })().finally(() => { nudging = null; });
+  };
+  // Uploads go one after another, so chunk n+1 is never in the bucket before chunk n (Studio reads them in order and
+  // skips numbers it has passed). One that fails doesn't stop the next ones.
+  let uploads: Promise<void> = Promise.resolve();
+  const flush = () => (uploads = uploads.catch(() => {}).then(async () => {
+    let wrote = false;
     for (const kind of ['log', 'err'] as const) {
       if (!chunks[kind].length) continue;
       const data = Buffer.concat(chunks[kind].splice(0));
       await store.put(key(`out/${kind}-${String(++n[kind]).padStart(6, '0')}`), data);
+      wrote = true;
     }
-  };
+    if (wrote) poke();
+  }));
   const say = (s: string) => chunks.err.push(Buffer.from(`${s}\n`));
   let spec: Spec;
   try {
@@ -143,6 +186,7 @@ export async function runUnit(unit: string, store: Store, { every = 2000, at = (
     if (!raw) throw new Error('no spec');
     spec = JSON.parse(raw.toString('utf8'));
     await store.remove(key('spec.json'));
+    send = nudge?.(spec.env ?? {}) ?? null;
   } catch (e: any) {
     say(`[job] ${e.message}`);
     await flush();
@@ -166,8 +210,15 @@ export async function runUnit(unit: string, store: Store, { every = 2000, at = (
     }
     const env = { ...spec.env, PATH: process.env.PATH ?? '/usr/local/bin:/usr/bin:/bin', HOME: user?.home ?? os.homedir(), STUDIO_JOB: '1' };
     const child = spawn(spec.file, spec.args, { cwd: at(spec.cwd), env, stdio: ['ignore', 'pipe', 'pipe'], ...(user ? { uid: user.uid, gid: user.gid } : {}), windowsHide: true });
-    child.stdout.on('data', (d: Buffer) => chunks.log.push(d));
-    child.stderr.on('data', (d: Buffer) => chunks.err.push(d));
+    // Output goes up `flushMs` after it's written (Talk's answers: a quarter second), else on the timer below.
+    const flushMs = Number(spec.flushMs) > 0 ? Number(spec.flushMs) : 0;
+    let soon: NodeJS.Timeout | null = null;
+    const wrote = () => {
+      if (!flushMs || soon) return;
+      soon = setTimeout(() => { soon = null; void flush().catch(() => {}); }, flushMs);
+    };
+    child.stdout.on('data', (d: Buffer) => { chunks.log.push(d); wrote(); });
+    child.stderr.on('data', (d: Buffer) => { chunks.err.push(d); wrote(); });
     const timer = setInterval(() => void (async () => {
       await flush();
       if ((await store.list(key('stop'))).length && child.exitCode === null) {
@@ -180,6 +231,7 @@ export async function runUnit(unit: string, store: Store, { every = 2000, at = (
       child.on('close', (c, s) => resolve([c, s]));
     });
     clearInterval(timer);
+    if (soon) clearTimeout(soon);
   } catch (e: any) {
     error = String(e.message ?? e);
     say(`[job] ${error}`);
@@ -219,6 +271,11 @@ export async function runUnit(unit: string, store: Store, { every = 2000, at = (
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }
+  // The exit is up: Studio collects it now rather than on its next look (awaited: the job's entry exits right after).
+  if (send) {
+    await nudging;
+    await send();
+  }
   return error ? 1 : 0;
 }
 
@@ -236,7 +293,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(new URL(im
     const { brokerStore } = await import('./jobbroker.ts');
     const token = process.env.STUDIO_RUN_TOKEN!;
     delete process.env.STUDIO_RUN_TOKEN; // the pass's command never sees it
-    const rc = await runUnit(unit, brokerStore(process.env.STUDIO_BROKER_URL!, token));
+    const rc = await runUnit(unit, brokerStore(process.env.STUDIO_BROKER_URL!, token), { nudge: httpNudge(unit) });
     console.log(`[job] ${unit} finished (${rc ? 'with an error' : 'ok'})`);
     process.exit(0);
   }
@@ -251,7 +308,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(new URL(im
     list: async (p) => (await g.gcsList(bucket!, at(p))).map((o) => (P ? o.name.slice(P.length + 1) : o.name)),
     remove: (k) => g.gcsDelete(bucket!, at(k)),
   };
-  const rc = await runUnit(unit, store);
+  const rc = await runUnit(unit, store, { nudge: httpNudge(unit) });
   console.log(`[job] ${unit} finished (${rc ? 'with an error' : 'ok'})`);
   // The job's own exit is 0 either way: the result is in exit.json, and a retry would run the pass twice.
   process.exit(0);

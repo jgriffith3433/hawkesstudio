@@ -14,7 +14,7 @@ import { deployPlan, deploy, rollbackPlan, rollback } from './deploy.ts';
 import { assetStatus } from './assets.ts';
 import { syncRepos } from './repos.ts';
 import { chooseBrain, ensureBrain } from './brains.ts';
-import { startConversation, say, getConversation, listConversations, stop as stopTalk, talkInfo, renameConversation, deleteConversation, startCall, endCall, callInfo, talkEvents, resumeTalk, markSeen, unseenConversations } from './talk.ts';
+import { startConversation, say, getConversation, listConversations, stop as stopTalk, talkInfo, renameConversation, deleteConversation, startCall, endCall, callInfo, talkEvents, resumeTalk, markSeen, unseenConversations, untilIdle } from './talk.ts';
 import { notify, notifyInfo, saveNotifySettings, PUBLIC_URL } from './notify.ts';
 import { listChanges, getChange, startFix, startTask, approve, revise, close, agentSettings, saveAgentSettings, costToday, resumeChanges } from './agents.ts';
 import { startAssets } from './pipeline.ts';
@@ -224,6 +224,11 @@ const server = http.createServer(async (req, res) => {
     if (route === '/api/activity') return send(res, 200, await cached('activity', 1500, activity));
     // The dashboard's one push stream (stream.ts): "something changed" events instead of polling.
     if (route === '/api/stream' && method === 'GET') return (await import('./stream.ts')).handleStream(req, res, { talkUnseen: unseenConversations() });
+    // A Cloud Run job's runner says it wrote new output (cloudjob-run.ts, with the agents' key like its MCP server): its
+    // follower reads the bucket now instead of on its next look (cloudjob.ts kickCloudJob). It carries nothing: the
+    // output itself is only ever read from the bucket, so a nudge can make Studio look sooner, never change what it reads.
+    const nudge = /^\/api\/cloudjobs\/([A-Za-z0-9_.-]{1,200})\/nudge$/.exec(route);
+    if (nudge && method === 'POST') return send(res, 200, { ok: (await import('./cloudjob.ts')).kickCloudJob(nudge[1]) });
     if (route === '/api/products' && method === 'GET') return send(res, 200, { products: loadProducts() });
     // Builds (builds.ts): a project's builds, its history, build now, make one beta.
     if (/^\/api\/(projects|games)\/[a-z][a-z0-9-]{1,39}\/builds/.test(route) && (await (await import('./builds.ts')).handleBuildRoutes(req, res, route, method, readJson))) return;
@@ -589,6 +594,16 @@ const server = http.createServer(async (req, res) => {
     }
     m = /^\/api\/talk\/(t_[0-9a-f]+)(\/stop)?$/.exec(route);
     if (m && method === 'GET' && !m[2]) {
+      // ?wait=<s>: while Talk is answering, hold the request until it's done (talk.ts untilIdle, pushed by the turn's
+      // end) instead of the caller re-reading every 2 s (studio_talk). At most 50 s a request, under the proxies' idle
+      // limits (Cloudflare's 100 s); the caller asks again for longer.
+      const wait = Math.min(50, Math.max(0, Number(q('wait')) || 0));
+      if (wait && getConversation(m[1])) {
+        const abort = new AbortController();
+        res.on('close', () => { if (!res.writableEnded) abort.abort(); });
+        await untilIdle(m[1], wait * 1000, abort.signal);
+        if (abort.signal.aborted) return;
+      }
       const c = getConversation(m[1]);
       const ap = await import('./approvals.ts');
       if (!c) return send(res, 200, { error: 'no such conversation' });

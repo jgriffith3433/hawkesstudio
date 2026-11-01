@@ -39,7 +39,8 @@ test('a message goes to Talk marked as through the MCP, and Talk\'s answer comes
   });
   const r: any = await t.run({ message: 'How is Yooba Land?', wait: 5 });
   assert.deepEqual(calls[0], { p: '/api/talk', o: { method: 'POST', body: { message: 'How is Yooba Land?', via: 'mcp' } } }, 'a new conversation, marked via mcp');
-  assert.ok(calls.slice(1).every((c) => c.p === '/api/talk/t_abc123?after=0'), 'reads from the message it sent');
+  // Reads from the message it sent, asking Studio to hold each read until Talk is done (wait=, never past the tool's own wait).
+  assert.ok(calls.slice(1).every((c) => /^\/api\/talk\/t_abc123\?after=0&wait=[1-5]$/.test(c.p)), 'reads from the message it sent, held by Studio');
   assert.equal(polls, 3, 'waits while Talk is thinking');
   assert.equal(r.conversation, 't_abc123');
   assert.equal(r.answered, true);
