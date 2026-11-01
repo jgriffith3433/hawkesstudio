@@ -72,6 +72,14 @@ export function projectsForRepo(slug: string): Product[] {
 async function siteOf(p: Product) {
   const P = await import('./previews.ts');
   const sub = P.subOf(p.id);
+  // A web app with a beta server of its own (Hawkes Net, Gen) is played there, so it has no beta site here; what its own
+  // builds make (an SDK, a package, a demo) is still published, at its place in the org's sites (2026-11-01: Hawkes Net's
+  // release build failed after building, with nowhere to go).
+  if (!sub && p.builds?.length) {
+    const { siteOrg, orgPrefix } = await import('./sitekeys.ts');
+    const org = siteOrg();
+    if (org) return { sub: `o/${org}/${p.id}`, root: `https://sites.${P.DOMAIN}${orgPrefix(org)}/${p.id}/` };
+  }
   if (!sub) throw new StudioError(`${p.name} has no hosted site here (a project with a beta address of its own is played there)`, 409);
   const root = P.previewUrl(p.id)!;
   return { sub, root };
