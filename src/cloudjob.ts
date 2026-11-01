@@ -239,13 +239,14 @@ export function startCloudJob(unit: string, spec: Spec, o: { gitToken?: string |
       if (ws?.bundle) await r.put(key(unit, 'in.bundle'), fs.readFileSync(ws.bundle));
       const { sandboxEnv } = await import('./sandbox.ts');
       const env = jobEnv(spec.env, sandboxEnv);
-      // No token handed over (the repo's wasn't kept, it outlived its few minutes, or the folder didn't name the repo):
-      // fetch the workspace's own repo's token now, so a private repo clones in the job (the GitHub App's installation).
-      let gitToken = o.gitToken ?? null;
-      if (!gitToken && ws) {
-        const { repoToken, slugOfRemote } = await import('./ghtoken.ts');
-        gitToken = await repoToken(slugOfRemote(ws.remote)).catch(() => null);
+      // The workspace's own repo's token, minted now: the GitHub App's, scoped to that one repo and read-only (the job
+      // only clones; Studio pushes and opens the pull request). Else the token handed over (detach.ts jobGitToken).
+      let gitToken: string | null = null;
+      if (ws) {
+        const { jobRepoToken, slugOfRemote } = await import('./ghtoken.ts');
+        gitToken = await jobRepoToken(slugOfRemote(ws.remote)).catch(() => null);
       }
+      gitToken ??= o.gitToken ?? null;
       await r.put(key(unit, 'spec.json'), JSON.stringify({
         file: spec.file, args: spec.args, cwd, env, sessions,
         git: ws ? { head: ws.head, branch: ws.branch, remote: ws.remote, bundle: Boolean(ws.bundle), token: gitToken } : null,
@@ -411,10 +412,12 @@ export async function runCloudBuild(unit: string, o: { remote: string; head: str
   let log = '';
   try {
     if (o.bundle) await r.put(k('in.bundle'), fs.readFileSync(o.bundle));
+    const { jobRepoToken, slugOfRemote } = await import('./ghtoken.ts');
+    const gitToken = (await jobRepoToken(slugOfRemote(o.remote)).catch(() => null)) ?? o.gitToken ?? null;
     await r.put(k('spec.json'), JSON.stringify({
       kind: 'build', outputs: o.outputs, file: '/bin/sh', args: ['-c', o.command], cwd: o.cwd,
       env: { CI: '1', npm_config_update_notifier: 'false' }, sessions: path.posix.join(o.cwd, '.hawkes-none', 's', 's'),
-      git: { head: o.head, branch: 'HEAD', remote: plainRemote(o.remote), bundle: Boolean(o.bundle), token: o.gitToken ?? null, shallow: !o.bundle },
+      git: { head: o.head, branch: 'HEAD', remote: plainRemote(o.remote), bundle: Boolean(o.bundle), token: gitToken, shallow: !o.bundle },
     }));
     execution = await r.start(unit);
     const t0 = Date.now();
