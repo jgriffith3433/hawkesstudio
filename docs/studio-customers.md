@@ -614,7 +614,8 @@ answers 403 with "only the platform admin can do that".
 | Infra agents: changing Studio or Gen | `POST /api/changes` for hawkesstudio/hawkesgen; approving or merging one; its card | Studio's admin role (Talk and agents: guards.ts) | platform admin |
 | Merges, Approve cards, going live, rollbacks, settings, products, GPU budgets | every `adminOnlyRoute` (auth.ts) | Studio's admin role | the customer's admins (their own games) |
 | Claude accounts, users and invites | `/api/claude/*`, `/api/users*`, `/api/invites*` | Studio's admin role | the customer's admins |
-| Analytics and Screening | `/api/analytics*`, `/api/videos*` | everyone signed in | platform admin (for now) |
+| Analytics | `/api/analytics*` (their own games only: Gen scopes their key) | everyone signed in | everyone signed in (players list and marks: platform admin) |
+| Screening | `/api/videos*` | everyone signed in | platform admin |
 | `jgriffith3433` repos | projects API and onboarding (`checkRepoOwnership`) | n/a | only when this Studio's GitHub App (its own or the shared one) is installed on the repo |
 
 Members of J's Studio still can't do an admin's things (auth.ts `memberRefusal`). Who has no account (Studio's own

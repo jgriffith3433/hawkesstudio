@@ -55,7 +55,7 @@ const PLATFORM_ONLY: [string, string][] = [
   ['GET', '/api/broadcast'], ['POST', '/api/broadcast/live'], ['GET', '/api/social'], ['POST', '/api/social/config'],
   ['GET', '/api/costs'], ['POST', '/api/costs/settings'], ['GET', '/api/ledger'], ['GET', '/api/resources'], ['GET', '/api/brief/cost'],
   ['GET', '/api/self-deploys'], ['GET', '/api/services'], ['POST', '/api/services/restart'],
-  ['POST', '/api/memory/seed'], ['GET', '/api/analytics/overview'], ['GET', '/api/videos'], ['POST', '/api/billing/plans'],
+  ['POST', '/api/memory/seed'], ['GET', '/api/analytics/players'], ['GET', '/api/analytics/marks'], ['POST', '/api/analytics/marks'], ['GET', '/api/videos'], ['POST', '/api/billing/plans'],
   ['POST', '/api/gen/v1/fleet/launch'], ['GET', '/api/gen/v1/settings'], ['GET', '/api/gen/v1/machines'],
 ];
 
@@ -73,7 +73,9 @@ test('the customer\'s admin keeps their own: their games, going live with them, 
   const me = as(owner());
   for (const [method, route] of [['POST', '/api/deploy/my-game'], ['POST', '/api/rollback/my-game'], ['POST', '/api/settings'], ['GET', '/api/users'], ['POST', '/api/users/invite'],
     ['POST', '/api/claude/key'], ['GET', '/api/claude/accounts'], ['PUT', '/api/products/my-game'], ['POST', '/api/agents/settings'], ['POST', '/api/approvals/a_0123456789ab/approve'],
-    ['POST', '/api/billing/checkout'], ['POST', '/api/billing/cancel'], ['POST', '/api/billing/portal']]) {
+    ['POST', '/api/billing/checkout'], ['POST', '/api/billing/cancel'], ['POST', '/api/billing/portal'],
+    // Analytics is theirs again (J, 2026-11-01): Gen answers their key only for their own games (analytics.ts).
+    ['GET', '/api/analytics/overview'], ['GET', '/api/analytics/my-game'], ['GET', '/api/analytics/my-game/sessions/list']]) {
     assert.equal(L.platformRefusal(me(method), route, method), null, `${method} ${route}`);
   }
   // Their members are still members (auth.ts memberRefusal).

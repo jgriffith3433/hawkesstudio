@@ -226,6 +226,8 @@
   const productName = (id) => (players.names[id] ?? id);
   const players = { names: {}, showMe: false };
   async function loadPlayers(my) {
+    // A customer's Studio: the players list and "that's me" are the platform admin's (they span the platform's own games).
+    if (window.studioMe?.customer) return;
     const el = $('#anPlayers');
     if (!el) return;
     let p;
