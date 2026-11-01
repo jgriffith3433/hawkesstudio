@@ -123,3 +123,20 @@ test('the cancel route answers with the run\'s real state', async () => {
   assert.equal(b.status, 'cancelling', 'still running until its body reaches the next check');
   assert.equal(b.runStatus, 'running');
 });
+
+test('a run stopped after restarts cancels the Gen jobs its running steps waited on (they held every playtest tab, 2026-11-01)', async () => {
+  await import('../src/builds.ts'); // its table, which the stop marks failed too
+  const id = run();
+  const a = P.startStep(id, 'gw', 'playtest', 'smoke@local');
+  P.updateStep(a, { job: 'j_play1' });
+  const b = P.startStep(id, 'gw', 'playtest', 'smoke@local:phone');
+  P.updateStep(b, { job: 'j_play2' });
+  const done = P.startStep(id, 'gw', 'playtest', 'site@local');
+  P.updateStep(done, { job: 'j_done', status: 'done', finished: true });
+  P.startStep(id, 'gw', 'review', 'no job yet');
+  const cancelled: string[] = [];
+  await P.stopResumedRun(id, 'stopped: Studio restarted 4 times', async (j) => { cancelled.push(j); if (j === 'j_play2') throw new Error('Gen down'); });
+  assert.deepEqual(cancelled.sort(), ['j_play1', 'j_play2']);
+  assert.equal((db.prepare('SELECT status FROM runs WHERE id = ?').get(id) as any).status, 'failed');
+  assert.equal((db.prepare("SELECT COUNT(*) AS n FROM steps WHERE run = ? AND status = 'running'").get(id) as any).n, 0);
+});

@@ -1311,6 +1311,22 @@ export function waitingInGen(run: string): boolean {
   }
 }
 
+
+/**
+ * A run stopped instead of resumed after restarts: it fails, and the Gen jobs its running steps were waiting on are
+ * cancelled. Nothing reads their results any more, and a playtest's job kept its browser tab: on 2026-11-01 seven runs
+ * stopped this way held all of the playtest lane's tabs, and every new playtest waited "4 of 4 playtest browser tabs in
+ * use" for half an hour. Exported for the tests.
+ */
+export function stopResumedRun(run: string, why: string, cancel: (job: string) => Promise<unknown> = (job) => import('./cancel.ts').then((C) => C.cancelJob(job, 'Studio', why))) {
+  const jobs = [...new Set((db.prepare(`SELECT job FROM steps WHERE run = ? AND status = 'running' AND job IS NOT NULL`).all(run) as { job: string }[]).map((x) => x.job))];
+  db.prepare(`UPDATE steps SET status = 'failed', detail = ?, finished = ? WHERE status = 'running' AND run = ?`).run(why, Date.now(), run);
+  db.prepare(`UPDATE runs SET status = 'failed', detail = ?, finished = ? WHERE id = ?`).run(why, Date.now(), run);
+  db.prepare(`UPDATE builds SET status = 'failed', detail = ?, finished = ? WHERE run = ? AND status = 'building'`).run(why, Date.now(), run);
+  console.warn(`[studio] ${run}: ${why}${jobs.length ? ` (cancelling its Gen job${jobs.length > 1 ? 's' : ''} ${jobs.join(', ')})` : ''}`);
+  return Promise.all(jobs.map((j) => cancel(j).catch((e: any) => console.warn(`[studio] ${run}: couldn't cancel Gen job ${j}: ${String(e?.message ?? e).slice(0, 200)}`))));
+}
+
 export function resumeRuns() {
   const out: string[] = [];
   for (const r of db.prepare(`SELECT * FROM runs WHERE status = 'running' ORDER BY started`).all() as any[]) {
@@ -1328,10 +1344,7 @@ export function resumeRuns() {
     const inGen = r.kind === 'build' && Array.isArray(options.builds) && waitingInGen(r.id);
     if (!inGen && recent.length >= 3) {
       const why = `stopped: Studio restarted ${recent.length + 1} times in 30 minutes while this run was going, so it isn't resumed again (it may be what crashed it)`;
-      db.prepare(`UPDATE steps SET status = 'failed', detail = ?, finished = ? WHERE status = 'running' AND run = ?`).run(why, Date.now(), r.id);
-      db.prepare(`UPDATE runs SET status = 'failed', detail = ?, finished = ? WHERE id = ?`).run(why, Date.now(), r.id);
-      db.prepare(`UPDATE builds SET status = 'failed', detail = ?, finished = ? WHERE run = ? AND status = 'building'`).run(why, Date.now(), r.id);
-      console.warn(`[studio] ${r.id}: ${why}`);
+      stopResumedRun(r.id, why);
       continue;
     }
     const steps = (db.prepare('SELECT * FROM steps WHERE run = ? ORDER BY started').all(r.id) as any[]).map(rowToStep);
@@ -1343,10 +1356,7 @@ export function resumeRuns() {
     const loop = runRestarts(options.restarts, key);
     if (!inGen && key && loop.n > RESTART_LOOP) {
       const why = `stopped: Studio restarted ${loop.n - 1} times in a row during this run's ${at!.kind} step (${at!.name}), so it isn't resumed again (start it again once the cause is fixed)`;
-      db.prepare(`UPDATE steps SET status = 'failed', detail = ?, finished = ? WHERE status = 'running' AND run = ?`).run(why, Date.now(), r.id);
-      db.prepare(`UPDATE runs SET status = 'failed', detail = ?, finished = ? WHERE id = ?`).run(why, Date.now(), r.id);
-      db.prepare(`UPDATE builds SET status = 'failed', detail = ?, finished = ? WHERE run = ? AND status = 'building'`).run(why, Date.now(), r.id);
-      console.warn(`[studio] ${r.id}: ${why}`);
+      stopResumedRun(r.id, why);
       continue;
     }
     if (!inGen) db.prepare('UPDATE runs SET options = ? WHERE id = ?').run(JSON.stringify({ ...options, resumes: [...recent, Date.now()], ...(key ? { restarts: loop } : {}) }), r.id);
