@@ -13,7 +13,7 @@
 
 import { StudioError, loadProducts } from './config.ts';
 
-export type GhCall = { method: string; path: string; body?: unknown; query?: Record<string, unknown> };
+export type GhCall = { method?: string; path: string; body?: unknown; query?: Record<string, unknown> };
 
 const OWN_BRANCH = /^(claude|agent)\/[\w./-]{1,200}$/;
 const has = (s: string, re: RegExp) => re.test(s);
