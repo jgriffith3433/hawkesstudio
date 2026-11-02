@@ -817,6 +817,18 @@ const server = http.createServer(async (req, res) => {
       if (who.change) (await import('./agents.ts')).changeLog(who.change, line);
       return send(res, 200, { ok: true, bytes: f.bytes.toString('base64'), mime: f.mime, ext: f.ext, size: f.bytes.length, source: f.source, copy: f.copy, made: f.made });
     }
+    // GitHub for agents and Talk (agent-github.ts): one REST call to one of this Studio's repos, with Studio's token,
+    // inside its rules (no merges, approvals, settings, or pushes to anything but their own branches).
+    if (route === '/api/agents/github' && method === 'POST') {
+      const b = await readJson(req);
+      const r = await (await import('./agent-github.ts')).agentGithub({ method: String(b.method ?? 'GET'), path: String(b.path ?? ''), body: b.body, query: b.query });
+      const who = String(req.headers['x-studio-agent'] ?? '') || (origin ? `Talk ${origin}` : 'owner');
+      if (String(b.method ?? 'GET').toUpperCase() !== 'GET') {
+        (await import('./access.ts')).logAccess({ who, product: null, kind: 'repo', source: r.repo, target: `${String(b.method).toUpperCase()} ${String(b.path).slice(0, 200)}`, detail: `GitHub ${r.status}` });
+        if (/^c_[0-9a-f]{12}$/.test(who)) (await import('./agents.ts')).changeLog(who, `GitHub ${String(b.method).toUpperCase()} ${String(b.path).slice(0, 160)}: ${r.status}`);
+      }
+      return send(res, 200, r);
+    }
     // An agent telling Talk (and so the owner) something while it works: a question, progress, a result (access.ts).
     if (route === '/api/agents/say' && method === 'POST') {
       const b = await readJson(req);

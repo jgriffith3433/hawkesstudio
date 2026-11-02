@@ -694,6 +694,15 @@ export function studioMcp({ studio, waitRun }: Client = { studio: defaultStudio,
       return { ok: true, wrote: path.relative(root, dest).split(path.sep).join('/'), bytes: r.size, type: r.mime, from: r.source?.via === 'owner' ? "an owner's own Gen library (copied into this Studio's)" : "this Studio's Gen library", ...(r.made ? { made: r.made } : {}) };
     },
   });
+  if (process.env.STUDIO_AGENT || process.env.TALK_CONVERSATION) tools.push({
+    name: 'studio_github_api',
+    description: "GitHub, through Studio (you hold no GitHub token: Studio adds its own for the repo): one REST call to one of this Studio's projects' repositories. Read anything (GET: issues, pull requests and their diffs and checks, Actions runs and logs, files, commits; /search/issues|code|commits inside this Studio's repos). Write: issues (open, edit, close, comment, label), pull requests (open from a branch of yours, edit, comment, review with comments, request reviewers), Actions (dispatch a workflow, re-run or cancel a run), branches of your own (claude/... or agent/...: create, move, delete, and file edits on them with PUT /contents). Not here, on purpose: merging or approving a pull request (beta merges itself on green; main is Studio's go live), pushing to main/beta/dev, releases, settings, secrets, webhooks, protection. Your own repo's work is still your commits in your worktree: Studio pushes it and opens its pull request.",
+    inputSchema: obj({
+      method: str('GET (default) | POST | PATCH | PUT | DELETE'), path: str('The REST path, e.g. /repos/owner/name/issues?state=open or /repos/owner/name/actions/runs'),
+      body: { type: 'object', description: 'The JSON body, for a write' }, query: { type: 'object', description: 'Query parameters (or put them in path)' },
+    }, ['path']),
+    run: async (a) => studio('/api/agents/github', { method: 'POST', body: { method: a.method ?? 'GET', path: a.path, body: a.body, query: a.query } }),
+  });
   if (process.env.STUDIO_AGENT?.startsWith('c_')) tools.push({
     name: 'studio_tell',
     description: "Tell Talk something while you work, and through Talk the owner: progress worth hearing, a result, or a question (kind question, with options and the one you'd pick). It lands in the Talk conversation that started this work (else a question goes to the owner's Inbox). You don't wait for an answer: carry on with your pick, or, when you truly can't go on without one, write .hawkes/question.md and end your pass (the change waits and Talk asks). Keep it to a few plain lines; don't send routine progress.",

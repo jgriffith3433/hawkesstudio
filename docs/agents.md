@@ -122,6 +122,11 @@ Since 2026-11-02 (J: "Why don't they just get the full MCP setup like Talk") an 
   there. It hands out a file only from that org's Gen org, or from the account of an owner who signed in with Google at
   the control plane, never from the people a cell reports about itself. A copy goes into the Studio's own library.
   Every import is logged (`GET /api/agents/access`, and the change's log).
+- **GitHub** (agent-github.ts, `studio_github_api`, agents and Talk): REST calls to any of the Studio's own repos with
+  Studio's token, so the agent holds none. It can read everything except secrets, keys and webhooks. It can write
+  issues, pull requests (opened from its own branch), reviews that comment, Actions dispatches and re-runs, and its own
+  claude/* or agent/* branches with their files. Merging, approving, pushes to main, beta or dev, releases, settings and
+  deletes stay with Studio's gates. Writes are logged.
 - **Read-only copies of the other repos** (cloudjob.ts / cloudjob-run.ts): shallow clones of the Studio's other
   projects' repositories at `../<worktree>.repos/<name>`. Their tokens are read-only and scoped to one repo, and the
   copies are never sent back. A change there is that project's own task.
