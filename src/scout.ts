@@ -21,6 +21,8 @@ import { roleArgs } from './roles.ts';
 import { spawnClaude } from './sandbox.ts';
 import { addWorktree } from './worktree.ts';
 import { syncRepo } from './repos.ts';
+import { readRepoViaApi } from './repo-read.ts';
+import { primeRepoToken } from './ghtoken.ts';
 import { noteCancel, cancelNote, cancelWords } from './cancel.ts';
 
 db.exec(`
@@ -213,21 +215,39 @@ async function run(id: string, top: string, base: string, opts: ScoutOpts = {}) 
   const s = getScout(id)!;
   const repo = path.join(PROJECTS, top);
   const wt = path.join(PROJECTS, '.work', `scout-${id}`);
+  let ref = '';
   try {
-    // No checkout yet (a fresh server, a repo added since): clone it first instead of failing with git's "not a repository".
-    if (!fs.existsSync(path.join(repo, '.git'))) {
+    // A clone or worktree that fails (a big Unity repo killed for memory, "could not read Username") falls back to reading
+    // GitHub's tarball of the ref (repo-read.ts): no history, no art, but the source a scout needs.
+    try {
+      // No checkout yet (a fresh server, a repo added since): clone it first instead of failing with git's "not a repository".
+      if (!fs.existsSync(path.join(repo, '.git'))) {
+        const slug = repoMap()[top];
+        if (!slug) throw new Error(`worktree: no checkout of ${top} and products.json has no GitHub repo for it`);
+        set(id, { detail: `cloning ${top}` });
+        const sync = await syncRepo(top, slug, base);
+        if (sync.action === 'failed' || !fs.existsSync(path.join(repo, '.git'))) throw new Error(`worktree: couldn't clone ${top}: ${sync.detail}`);
+      }
+      fs.mkdirSync(path.dirname(wt), { recursive: true });
+      await primeRepoToken(repoMap()[top]);
+      const fetched = await gitAsync(repo, ['fetch', '--quiet', 'origin']);
+      if (!fetched.ok) throw new Error(`worktree: fetch failed: ${String((fetched as any).err ?? '').split('\n').pop()}`);
+      ref = git(repo, ['rev-parse', '--verify', `origin/${base}`]).ok ? `origin/${base}` : 'origin/main';
+      const w = await addWorktree(repo, wt, ['--detach', wt, ref], gitAsync, { removeLeftover: true, log: (m) => set(id, { detail: m }) });
+      if (!w.ok) throw new Error(`worktree: ${w.err || 'git gave no message'} (repo ${repo}, exit ${w.ok ? 0 : 'non-zero'})`);
+    } catch (gitErr: any) {
       const slug = repoMap()[top];
-      if (!slug) throw new Error(`worktree: no checkout of ${top} and products.json has no GitHub repo for it`);
-      set(id, { detail: `cloning ${top}` });
-      const sync = await syncRepo(top, slug, base);
-      if (sync.action === 'failed' || !fs.existsSync(path.join(repo, '.git'))) throw new Error(`worktree: couldn't clone ${top}: ${sync.detail}`);
+      if (!slug) throw gitErr;
+      set(id, { detail: `git couldn't give the source (${String(gitErr.message ?? gitErr).slice(0, 120)}); reading it through GitHub's API` });
+      try {
+        const branch = base || 'main';
+        const got = await readRepoViaApi(slug, branch, wt).catch(() => readRepoViaApi(slug, 'main', wt));
+        ref = `${got.ref} (read through GitHub's API: ${got.files} files, no history)`;
+      } catch (apiErr: any) {
+        throw new Error(`${gitErr.message ?? gitErr}; reading through GitHub's API failed too: ${apiErr.message ?? apiErr}`);
+      }
     }
-    fs.mkdirSync(path.dirname(wt), { recursive: true });
-    await gitAsync(repo, ['fetch', '--quiet', 'origin']);
-    const ref = git(repo, ['rev-parse', '--verify', `origin/${base}`]).ok ? `origin/${base}` : 'origin/main';
-    const w = await addWorktree(repo, wt, ['--detach', wt, ref], gitAsync, { removeLeftover: true, log: (m) => set(id, { detail: m }) });
-    if (!w.ok) throw new Error(`worktree: ${w.err || 'git gave no message'} (repo ${repo}, exit ${w.ok ? 0 : 'non-zero'})`);
-    await lfsPull(wt);
+    if (fs.existsSync(path.join(wt, '.git'))) await lfsPull(wt);
     set(id, { detail: `reading ${top} (${ref})` });
     const story = isInfra(s.product) ? '' : storyOf(getProduct(s.product), 4000);
     const follow = opts.followUp;

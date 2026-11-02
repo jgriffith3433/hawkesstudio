@@ -158,13 +158,13 @@ test("a bug's retry waits for its previous try; Studio's own failures aren't tri
   assert.ok(ag.studioFailed({ status: 'failed', phase: J({ step: 'prepare', failed: true }) }));
   await pm.startWork();
   assert.equal(count(), 4, 'the last Studio failure was a minute ago: it waits');
-  db.prepare(`UPDATE changes SET updated = ?, created = created - ? WHERE findings LIKE '%"f_5c0000000001"%'`).run(now - pm.INFRA_WAIT_MS - 60_000, pm.INFRA_WAIT_MS);
+  db.prepare(`UPDATE changes SET updated = ?, created = created - ? WHERE findings LIKE '%"f_5c0000000001"%'`).run(now - 5 * 3600_000, 5 * 3600_000); // past the backoff (10, 20, 40 min after the 1st, 2nd, 3rd)
   await pm.startWork();
   assert.equal(count(), 5, 'a fresh attempt: the Studio failures used none of its 3 tries (the closed one is the only try)');
   assert.ok(!rm.listQuestions().some((q) => q.subject === 'f_5c0000000001'), 'nobody asked J');
   // INFRA_LIMIT Studio failures in a row: J hears once, instead of a loop.
   const fresh = db.prepare(`SELECT id FROM changes WHERE findings LIKE '%"f_5c0000000001"%' ORDER BY created DESC, rowid DESC LIMIT 1`).get() as any;
-  db.prepare(`UPDATE changes SET status = 'failed', phase = ?, updated = ? WHERE id = ?`).run(J({ step: 'agent', failed: true }), now - pm.INFRA_WAIT_MS - 60_000, fresh.id);
+  db.prepare(`UPDATE changes SET status = 'failed', phase = ?, updated = ? WHERE id = ?`).run(J({ step: 'agent', failed: true }), now - 5 * 3600_000, fresh.id);
   db.prepare(`UPDATE findings SET status = 'open' WHERE id = 'f_5c0000000001'`).run();
   await pm.startWork();
   assert.equal(count(), 5, 'no fifth attempt');

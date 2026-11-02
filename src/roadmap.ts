@@ -207,6 +207,10 @@ export function genWaitOf(change: string | null | undefined): { done: number; to
   }
 }
 
+/** pm.ts sets how to say why a startable task is not starting (the daily limit, busy slots, failing infrastructure). */
+let startWaitHook: ((t: Task) => string | null) | null = null;
+export const setStartWaitHook = (f: typeof startWaitHook) => { startWaitHook = f; };
+
 /** What a task waits on, in plain words; null when nothing (it's on beta, verified or live). */
 export function taskWaits(t: Task, asked: Set<string> = askedJ()): string | null {
   if (asked.has(t.id) || (t.change && asked.has(t.change))) return 'you: a question in your Inbox';
@@ -214,7 +218,9 @@ export function taskWaits(t: Task, asked: Set<string> = askedJ()): string | null
   if (t.status === 'planned') {
     if (t.gpu?.items?.length && !gpuCleared(t)) return 'your GPU budget';
     const b = blockedBy(t);
-    return b.length ? `${b.map((x) => `"${x.title}"`).join(', ')} first` : 'a free agent (it starts by itself)';
+    if (b.length) return `${b.map((x) => `"${x.title}"`).join(', ')} first`;
+    const why = startWaitHook?.(t);
+    return why ?? 'a free agent (it starts by itself)';
   }
   if (t.status === 'working') {
     const g = genWaitOf(t.change);

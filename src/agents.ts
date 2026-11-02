@@ -79,6 +79,7 @@ import { launch, DetachedChild, detachedActivity, stopDetached, type DetachRec }
 import { cloudMcp, setWorkspaceRestorer } from './cloudjob.ts';
 import { cloudMode } from './cloudauth.ts';
 import { warmDeps, installCold, markInstalled } from './warm.ts';
+import { infraFailed, INFRA_FAILED_SQL } from './infra-failure.ts';
 import { ensureGpuFor, needsGpu } from './gpustart.ts';
 import { walkAwayOn, WALK_AWAY_BY } from './walkaway.ts';
 import { brainId, brainLabel, brainSettings, harnessStopOf, isHarness, type Harness, type HarnessStop } from './brains.ts';
@@ -300,8 +301,8 @@ export function fixAlreadyDone(id: string, c: Pick<Change, 'task'>, findings: st
  * work()'s catch keeps the step it failed at, with `failed`). Not the agent's try (pm.ts; f_7f4ff7149602 burned its 3
  * tries in 2 minutes on such failures). STUDIO_FAILED_SQL is the same test on the changes table.
  */
-export const studioFailed = (c: { status: string; phase?: unknown }) => c.status === 'failed' && Boolean((typeof c.phase === 'string' ? parse(c.phase) : (c.phase as any))?.failed);
-export const STUDIO_FAILED_SQL = `(status = 'failed' AND COALESCE(phase, '') LIKE '%"failed":true%')`;
+export const studioFailed = (c: { status: string; phase?: unknown; detail?: unknown }) => infraFailed(c, parse);
+export const STUDIO_FAILED_SQL = INFRA_FAILED_SQL;
 /** Why a change with no commit failed: already done (ALREADY), else `why`. */
 const noCommitDetail = (summary: string, why: string) => (alreadyDone(summary) ? `${ALREADY} (the agent made no commit)` : why);
 /**
@@ -3306,7 +3307,7 @@ export function autoFixBlock(findingId: string, now = Date.now()): string | null
   if (open) return `${open.id} already has pull request #${open.pr} open for it`;
   const day = new Date(now);
   day.setUTCHours(0, 0, 0, 0);
-  const failed = (db.prepare(`SELECT COUNT(*) AS n FROM changes WHERE findings LIKE ? AND status = 'failed' AND COALESCE(detail, '') NOT LIKE ? AND COALESCE(detail, '') NOT LIKE ? AND created >= ?`).get(like, `${DECIDED}%`, `${ALREADY}%`, day.getTime()) as { n: number }).n;
+  const failed = (db.prepare(`SELECT COUNT(*) AS n FROM changes WHERE findings LIKE ? AND status = 'failed' AND COALESCE(detail, '') NOT LIKE ? AND COALESCE(detail, '') NOT LIKE ? AND NOT ${STUDIO_FAILED_SQL} AND created >= ?`).get(like, `${DECIDED}%`, `${ALREADY}%`, day.getTime()) as { n: number }).n;
   if (failed >= AUTO_FIX_FAILS_PER_DAY) return `it already failed ${failed} times today`;
   return null;
 }

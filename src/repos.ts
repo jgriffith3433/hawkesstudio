@@ -307,7 +307,32 @@ function unityOnlyRepo(slug: string, folder?: string): string | null {
  * contents; git fetches the blobs a checkout needs). A light clone's LFS files are skipped (GIT_LFS_SKIP_SMUDGE, and the
  * smudge filter set to skip in its config so later checkouts and worktrees skip them too). Exported for the tests.
  */
-export const cloneArgs = (slug: string, folder: string, light: boolean) => ['clone', '--quiet', '--no-checkout', ...(light ? ['--filter=blob:none'] : []), `https://github.com/${slug}.git`, folder];
+export const cloneArgs = (slug: string, folder: string, light: boolean) => [...(light ? GIT_MEMORY_ARGS : []), 'clone', '--quiet', '--no-checkout', ...(light ? ['--filter=blob:none'] : []), `https://github.com/${slug}.git`, folder];
+
+/**
+ * git's memory capped for a big repo on the small instance (YoobaLand, 2026-11-02: SIGKILL while packing and checking
+ * out): one pack thread, small mapped windows and delta cache. As `-c` for a command, and in a light clone's config.
+ */
+export const GIT_MEMORY_CONFIG: [string, string][] = [['pack.threads', '1'], ['core.packedGitLimit', '128m'], ['core.packedGitWindowSize', '32m'], ['core.deltaBaseCacheLimit', '64m']];
+export const GIT_MEMORY_ARGS = GIT_MEMORY_CONFIG.flatMap(([k, v]) => ['-c', `${k}=${v}`]);
+
+/**
+ * Disk freed before a big clone: what earlier failures and rechecked-out copies left (PROJECTS/.trash, half-made clones
+ * of this folder, finished scouts' folders). Returns what was removed; never throws (a clone goes on without it).
+ */
+export function cleanBeforeClone(projects: string, folder: string): string[] {
+  const removed: string[] = [];
+  const rm = (p: string) => { try { fs.rmSync(p, { recursive: true, force: true }); removed.push(path.relative(projects, p)); } catch { /* in use: leave it */ } };
+  try {
+    const trash = path.join(projects, '.trash');
+    if (fs.existsSync(trash)) for (const e of fs.readdirSync(trash)) rm(path.join(trash, e));
+    const work = path.join(projects, '.work');
+    if (fs.existsSync(work)) for (const e of fs.readdirSync(work)) if (e.startsWith('scout-') && Date.now() - fs.statSync(path.join(work, e)).mtimeMs > 3600_000) rm(path.join(work, e));
+    const dir = path.join(projects, folder);
+    if (fs.existsSync(dir) && !fs.existsSync(path.join(dir, '.git'))) rm(dir);
+  } catch { /* best effort */ }
+  return removed;
+}
 
 /** git's reason in one line: its last non-empty line, or what a silent failure most likely was (killed: a timeout or memory). */
 /** The last `n` non-empty lines of git's output on one line (its reason is usually the last two or three). */
@@ -317,6 +342,7 @@ export const lastLine = (err: string) => err.split('\n').map((l) => l.trim()).fi
 /** What a light clone gets in its config: LFS smudge skipped, and the mark lfs.ts and warm.ts read (hawkes.light). */
 export const LIGHT_CONFIG: [string, string][] = [
   ['hawkes.light', 'true'],
+  ...GIT_MEMORY_CONFIG,
   ['filter.lfs.smudge', 'git-lfs smudge --skip -- %f'],
   ['filter.lfs.process', 'git-lfs filter-process --skip'],
 ];
@@ -358,6 +384,10 @@ async function syncGit(folder: string, slug: string, branch: string, want?: stri
     await primeRepoToken(slug);
     // On Cloud Run a big repo is cloned light (bigRepo, cloneArgs): the agent's job does the heavy checkout itself.
     const big = await bigRepo(slug, fetch, folder);
+    if (big) {
+      const freed = cleanBeforeClone(PROJECTS, folder);
+      if (freed.length) console.log(`[repos] ${folder}: cleaned ${freed.length} leftover folder(s) before the big clone: ${freed.slice(0, 5).join(', ')}`);
+    }
     // --no-checkout, then one checkout of the branch it should be on: a light clone fetches file contents as it checks
     // out, and checking out main and then beta did that twice. A clone or checkout that fails (or is killed: a timeout,
     // the instance's memory) leaves a half-written folder that every later sync read as ~1,300 uncommitted changes and
