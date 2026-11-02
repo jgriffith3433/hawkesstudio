@@ -36,8 +36,12 @@ small{color:var(--muted)}a{color:var(--accent)}
  *  path or token leaves, and keeps the full same-origin referrer the edge routes a cell's /api/... by. */
 export const REFERRER_POLICY = 'strict-origin-when-cross-origin';
 
+/** Google's sign-in opens a popup and watches window.closed. A strict `same-origin` here (or from a proxy) cuts that link;
+ *  `same-origin-allow-popups` keeps the page isolated from others yet lets it keep a handle on popups it opens. */
+export const COOP = 'same-origin-allow-popups';
+
 export function html(res: http.ServerResponse, status: number, body: string, headers: Record<string, string | string[]> = {}) {
-  res.writeHead(status, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', 'X-Frame-Options': 'DENY', 'Referrer-Policy': REFERRER_POLICY, ...headers });
+  res.writeHead(status, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', 'X-Frame-Options': 'DENY', 'Referrer-Policy': REFERRER_POLICY, 'Cross-Origin-Opener-Policy': COOP, ...headers });
   res.end(body);
 }
 
