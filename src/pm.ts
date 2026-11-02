@@ -24,6 +24,7 @@
 // Going live stays J's (DEPLOY <product>). Studio and Gen changes need J's approval (they restart services), except in
 // walk-away mode (walkaway.ts), where they merge by themselves once green and the PM decides routine calls itself.
 
+import { INFRA_FAILED_SQL, infraWaitMs, MAX_FINDING_STARTS_PER_DAY } from './infra-failure.ts';
 import { isVideoTask } from './videos.ts';
 import fs from 'node:fs';
 import { critical, criticalSync } from './drain.ts';
@@ -34,7 +35,7 @@ import { DATA, PROJECTS, getProduct, getInfra, isInfra, today, StudioError, beta
 import {
   getTask, setTask, getItem, startableTasks, tasksAwaitingGpu, taskOfChange, addQuestion, listQuestions, getQuestion, setQuestion, addComment, isCommentSubject,
   logDecision, listDecisions, getDecision, markUndone, countToday, listItems, threadFor, milestonesToReach, markReached, getMilestone, milestoneTasks, setMilestoneChecks,
-  itemProgress, GPU_WAIT, priceUnpriced, autoApproveWaiting, gpuDigestTasks, type Task, type Check, type TaskBuild, type Question,
+  itemProgress, gpuCleared, setStartWaitHook, GPU_WAIT, priceUnpriced, autoApproveWaiting, gpuDigestTasks, type Task, type Check, type TaskBuild, type Question,
   addItem, addTask, askedJ, landed, blockedBy, updateTask, taskWaits, DONE, adoptDoneDrops, tasksOf,
 } from './roadmap.ts';
 import { gate, allMet } from './acceptance.ts';
@@ -746,12 +747,94 @@ async function startTaskChange(task: Task, note?: string, why?: string, countTry
 
 // ------------------------------------------------------------- starting
 
+/** Midnight (this server's day, UTC on Cloud Run) when today's start count began, and when it resets. */
+export const dayBounds = (now = Date.now()) => {
+  const since = new Date(now);
+  since.setHours(0, 0, 0, 0);
+  const next = new Date(since);
+  next.setDate(next.getDate() + 1);
+  return { since: since.getTime(), next: next.getTime() };
+};
+
+/**
+ * The PM's starts today that count against maxStartsPerDay: only the ones where an agent actually ran. A start whose
+ * change Studio itself failed to run (a clone killed, a session gone, a shell that refused git: infra-failure.ts) is
+ * given back, so a retry loop around broken machinery cannot use up the day (J, 2026-11-02: 8 of 8 burned, no task started).
+ */
+export function startsToday(now = Date.now()): number {
+  const { since } = dayBounds(now);
+  return (db.prepare(`SELECT COUNT(*) AS n FROM pm_log WHERE action = 'start' AND at >= ? AND undone IS NULL
+    AND NOT EXISTS (SELECT 1 FROM changes WHERE changes.created >= ? AND pm_log.detail LIKE '%' || changes.id || '%' AND ${INFRA_FAILED_SQL})`).get(since, since - 6 * 3600_000) as any).n as number;
+}
+
+/** Whether a finding already has an agent change (a retry: it waits behind roadmap tasks). */
+const hasEarlierAttempt = (findingId: string) => Boolean(db.prepare(`SELECT 1 FROM changes WHERE findings LIKE ? LIMIT 1`).get(`%"${findingId}"%`));
+
+/** Files ONE blocker for Studio itself (a roadmap task, deduped per product) with the infrastructure error. */
+function fileInfraBlocker(a: { from: string; product: string; text: string; tasks: string[] }) {
+  try {
+    const fix = fileBlocker({ ...a, target: 'hawkesstudio', text: `Studio itself failed to run the agent ${INFRA_LIMIT} times in a row (a clone, checkout, resume or shell around it), so work on this product keeps failing before any agent runs. The error:\n\n${a.text}\n\nFind and fix the cause (memory, disk, credentials, session handling) so agents can run.` });
+    logDecision('infra-blocker', a.tasks[0] ?? null, a.product, `Studio failed to run ${name(a.product)}'s agent ${INFRA_LIMIT} times in a row (${a.text.slice(0, 300)}): one blocker for Studio filed (${fix}) instead of another restart`);
+    return fix;
+  } catch (e: any) {
+    console.warn(`[pm] couldn't file the infrastructure blocker: ${e.message}`);
+    return null;
+  }
+}
+
+/** Starts of one finding today (its agents that ran; the PM's cap per finding is MAX_FINDING_STARTS_PER_DAY). */
+export function findingStartsToday(findingId: string, now = Date.now()): number {
+  const { since } = dayBounds(now);
+  return (db.prepare(`SELECT COUNT(*) AS n FROM pm_log WHERE action = 'start' AND subject = ? AND at >= ? AND undone IS NULL
+    AND NOT EXISTS (SELECT 1 FROM changes WHERE changes.created >= ? AND pm_log.detail LIKE '%' || changes.id || '%' AND ${INFRA_FAILED_SQL})`).get(findingId, since, since - 6 * 3600_000) as any).n as number;
+}
+
 /** Agents working now, and the PM's starts today. */
 export function capacity() {
   const s = pmSettings();
   const active = (db.prepare(`SELECT COUNT(*) AS n FROM changes WHERE status IN (${RUNNING.map(() => '?').join(',')})`).get(...RUNNING) as any).n as number;
-  const started = countToday('start');
+  const started = startsToday();
   return { active, started, maxConcurrent: s.maxConcurrent, maxStartsPerDay: s.maxStartsPerDay, free: Math.max(0, Math.min(s.maxConcurrent - active, s.maxStartsPerDay - started)) };
+}
+
+/**
+ * Exactly why a startable task isn't starting, or null when it would (J, 2026-11-02: "waits: a free agent" for a day
+ * while the daily limit was used up): the daily limit and when it resets, every agent slot busy, the AI harness on hold,
+ * Studio failing to run agents for the task's product (and when it tries again), or PM off.
+ */
+export function startWaitReason(t?: Pick<Task, 'id' | 'product'>, now = Date.now()): string | null {
+  const s = pmSettings();
+  if (!s.enabled) return 'the PM is paused (Settings)';
+  if (harnessHeld()) return 'the AI harness is on hold (a usage limit or billing); it starts when the harness answers';
+  const cap = capacity();
+  if (t) {
+    const hold = infraHoldOf(t.id, now);
+    if (hold) return `Studio could not run its agent ${hold.n} time${hold.n === 1 ? '' : 's'} in a row (${hold.why.slice(0, 160)}); trying again ${new Date(hold.until).toISOString().slice(11, 16)} UTC`;
+  }
+  if (cap.started >= s.maxStartsPerDay) return `daily start limit ${cap.started}/${s.maxStartsPerDay} reached, resets ${new Date(dayBounds(now).next).toISOString().slice(11, 16)} UTC`;
+  if (cap.active >= s.maxConcurrent) return `all ${s.maxConcurrent} agent slot${s.maxConcurrent === 1 ? ' is' : 's are'} busy (${cap.active} working); it starts when one finishes`;
+  return null;
+}
+
+setStartWaitHook((t) => startWaitReason(t));
+
+/**
+ * A task or finding whose last attempts Studio failed to run: how many in a row, why, and when the next attempt may
+ * start (exponential: 10 min, 20, 40, ... up to 4 hours; infraWaitMs). A task's first failure retries at once (afterFailed
+ * already waited its grace); a finding's first already waits (INFRA_WAIT_MS). null when its latest attempt wasn't one.
+ */
+export function infraHoldOf(subject: string, now = Date.now()): { n: number; why: string; until: number; change: string } | null {
+  const isFinding = subject.startsWith('f_');
+  const rows = (isFinding
+    ? db.prepare(`SELECT id, detail, updated, created, ${INFRA_FAILED_SQL} AS infra FROM changes WHERE findings LIKE ? ORDER BY created DESC, rowid DESC LIMIT 12`).all(`%"${subject}"%`)
+    : db.prepare(`SELECT id, detail, updated, created, ${INFRA_FAILED_SQL} AS infra FROM changes WHERE task = ? ORDER BY created DESC, rowid DESC LIMIT 12`).all(subject)) as any[];
+  let n = 0;
+  while (n < rows.length && rows[n].infra) n++;
+  if (!n) return null;
+  const wait = isFinding ? infraWaitMs(n) : infraWaitMs(n - 1);
+  const last = rows[0];
+  const until = (last.updated ?? last.created ?? 0) + wait;
+  return until > now ? { n, why: String(last.detail ?? '?'), until, change: last.id } : null;
 }
 
 // Agents queue a product's changes behind the running ones (agents.ts pump); the PM still starts them one slot at a
@@ -822,22 +905,25 @@ export async function startWork() {
   const startBug = (f: any, why: string) => {
     // One attempt at a time: a change of this finding still queued, working, ready or waiting is the attempt.
     if (db.prepare(`SELECT 1 FROM changes WHERE findings LIKE ? AND status IN (${LIVE.map(() => '?').join(',')}) LIMIT 1`).get(`%"${f.id}"%`, ...LIVE)) return null;
-    // Studio's own failures (the worktree, an install, a push: STUDIO_FAILED_SQL) aren't the agent's tries, but the next
-    // attempt waits a while after one, and after INFRA_LIMIT of them in a row J hears what keeps failing.
+    // Studio's own failures (the worktree, a clone, a resume, a push: infra-failure.ts) aren't the agent's tries or the
+    // day's starts, but the next attempt waits longer after each (10 min, 20, 40 ...), and after INFRA_LIMIT in a row
+    // J hears what keeps failing and ONE blocker for Studio itself is filed with the error instead of another restart.
     const last = db.prepare(`SELECT id, detail, updated, created, ${STUDIO_FAILED_SQL} AS infra FROM changes WHERE findings LIKE ? ORDER BY created DESC, rowid DESC LIMIT 1`).get(`%"${f.id}"%`) as any;
     if (last?.infra) {
-      if (Date.now() - (last.updated ?? last.created) < INFRA_WAIT_MS) return null;
       const rows = db.prepare(`SELECT ${STUDIO_FAILED_SQL} AS infra FROM changes WHERE findings LIKE ? ORDER BY created DESC, rowid DESC LIMIT ?`).all(`%"${f.id}"%`, INFRA_LIMIT) as any[];
       if (rows.length >= INFRA_LIMIT && rows.every((r) => r.infra)) {
         // J's answer (try again) lets the next one start.
         const q = db.prepare(`SELECT status FROM questions WHERE subject = ? AND at > ? ORDER BY at DESC LIMIT 1`).get(f.id, last.created) as any;
         if (!q) {
-          askJ(`"${f.title}" (${name(f.product)}): Studio couldn't run its agent ${INFRA_LIMIT} times in a row (not the agent's tries). The last error (${last.id}): ${String(last.detail ?? '?').slice(0, 400)}. Try again, or drop it (won't fix)?`, { subject: f.id, product: f.product, options: ['try again', "won't fix"], recommend: 'try again', from: 'Studio errors around an agent' });
+          fileInfraBlocker({ from: last.id, product: f.product, text: `${f.title}: ${String(last.detail ?? '?')}`, tasks: [] });
+          askJ(`"${f.title}" (${name(f.product)}): Studio couldn't run its agent ${INFRA_LIMIT} times in a row (not the agent's tries). The last error (${last.id}): ${String(last.detail ?? '?').slice(0, 400)}. A blocker for Studio itself is filed. Try again, or drop it (won't fix)?`, { subject: f.id, product: f.product, options: ['try again', "won't fix"], recommend: 'try again', from: 'Studio errors around an agent' });
           return null;
         }
         if (q.status !== 'answered') return null;
-      }
+      } else if (infraHoldOf(f.id)) return null;
     }
+    // One finding uses at most MAX_FINDING_STARTS_PER_DAY starts a day: retry loops can't take the day from the roadmap.
+    if (findingStartsToday(f.id) >= MAX_FINDING_STARTS_PER_DAY) return null;
     // An agent that changed nothing because J already decided it (DECIDED, agents.ts), or because it was already done
     // (ALREADY: e.g. the error came from a build older than the fix), didn't fail a try; nor did one Studio failed to run.
     const tries = (db.prepare(`SELECT COUNT(*) AS n FROM changes WHERE findings LIKE ? AND COALESCE(detail, '') NOT LIKE ? AND COALESCE(detail, '') NOT LIKE ? AND NOT ${STUDIO_FAILED_SQL}`).get(`%"${f.id}"%`, `${DECIDED}%`, `${ALREADY}%`) as any).n as number;
@@ -858,6 +944,8 @@ export async function startWork() {
   const reports = db.prepare(`SELECT * FROM findings WHERE status = 'open' AND source = 'J' ORDER BY CASE severity WHEN 'blocker' THEN 0 ELSE 1 END, first_seen`).all() as any[];
   for (const f of reports) {
     if (cap.free <= 0) break;
+    // A report already tried waits behind the roadmap's tasks (the bug stage below): retries don't take slots from them.
+    if (hasEarlierAttempt(f.id)) continue;
     if (isInfra(f.product) || managedElsewhereId(f.product) || await busy(f.product, { text: f.title })) continue;
     try {
       const id = startBug(f, "J's report ");
@@ -876,6 +964,8 @@ export async function startWork() {
     if (cap.free <= 0) break;
     // The change it starts is queued at once, so the next task of the product sees it here.
     if (await slotHeld(t.product, await taskShape(t))) continue;
+    // Studio failed to run its last agents for this task: it waits, longer each time (infraHoldOf), not a restart loop.
+    if (infraHoldOf(t.id)) continue;
     try {
       out.push(await startTaskChange(t, rescueNote(t.id), `priority ${t.effective_priority}${t.priority ? '' : ' (its item\'s)'}, not blocked${rescueNote(t.id) ? '; with a scout\'s diagnosis' : ''}`));
     } catch (e: any) {
@@ -886,7 +976,7 @@ export async function startWork() {
   }
   if (s.fixBugs && cap.free > 0) {
     // The worst open bugs not tried 3 times, one per product, in products without a task waiting.
-    const bugs = db.prepare(`SELECT * FROM findings WHERE status = 'open' AND severity IN ('blocker', 'bug') AND COALESCE(source, '') != 'J' ORDER BY CASE severity WHEN 'blocker' THEN 0 ELSE 1 END, seen DESC, last_seen DESC LIMIT 40`).all() as any[];
+    const bugs = db.prepare(`SELECT * FROM findings WHERE status = 'open' AND severity IN ('blocker', 'bug') AND (COALESCE(source, '') != 'J' OR EXISTS (SELECT 1 FROM changes WHERE changes.findings LIKE '%"' || findings.id || '"%')) ORDER BY CASE severity WHEN 'blocker' THEN 0 ELSE 1 END, seen DESC, last_seen DESC LIMIT 40`).all() as any[];
     const { betaPreview } = await import('./previews.ts');
     for (const f of bugs) {
       if (cap.free <= 0) break;
@@ -939,7 +1029,7 @@ export function mergedStatus(t: Pick<Task, 'gpu'>, c: { verify?: any }): string 
   return c.verify?.pendingGpu && t.gpu?.items?.length && (t.gpu.budget ?? 0) > 0 ? GPU_WAIT : 'merged';
 }
 
-const STUDIO_FAILED_SQL = `(status = 'failed' AND COALESCE(phase, '') LIKE '%"failed":true%')`;
+const STUDIO_FAILED_SQL = INFRA_FAILED_SQL;
 /** The change was a run for a task's real GPU art (rerunGpuWaits). */
 const gpuRerunOf = (change: string) => Boolean(db.prepare(`SELECT 1 FROM pm_log WHERE action = 'gpu-rerun' AND detail LIKE ?`).get(`%${change}%`));
 export function gpuReruns(task: string): number {
@@ -1924,9 +2014,10 @@ async function afterFailed(t: Task, c: any) {
   // (this runs after the grace period, so not in a loop a minute apart). After INFRA_LIMIT in a row, J hears.
   const { studioFailed } = await changes();
   if (studioFailed(c)) {
-    const recent = db.prepare(`SELECT status, phase FROM changes WHERE task = ? ORDER BY created DESC, rowid DESC LIMIT ?`).all(t.id, INFRA_LIMIT) as any[];
+    const recent = db.prepare(`SELECT status, phase, detail FROM changes WHERE task = ? ORDER BY created DESC, rowid DESC LIMIT ?`).all(t.id, INFRA_LIMIT) as any[];
     if (recent.length >= INFRA_LIMIT && recent.every(studioFailed)) {
       setTask(t.id, { status: 'failed', tries: back, note: `Studio couldn't run its agent ${INFRA_LIMIT} times in a row; the last (${c.id}): ${detail}`.slice(0, 1000) });
+      fileInfraBlocker({ from: c.id, product: t.product, text: `"${t.title}": ${detail}`, tasks: [] });
       askJ(`"${t.title}" (${name(t.product)}): Studio couldn't run its agent ${INFRA_LIMIT} times in a row (not the agent's tries). The last error (${c.id}): ${detail.slice(0, 400)}. Try again, change it, or drop it?`, { subject: t.id, product: t.product, options: ['try again', 'change it', 'drop it'], recommend: 'try again', from: 'Studio errors around an agent' });
       return;
     }
@@ -2235,11 +2326,32 @@ export function stallReasons(): StallReason[] {
     else if (t.status === 'failed') why = heldFor(t.id) ? `held: investigation ${heldFor(t.id)!.change} fixes beta first` : rescues()[t.id]?.state === 'scouting' ? 'out of tries: a scout is investigating, then a fresh round' : `failed: ${String(t.note ?? '').slice(0, 200)}`;
     else if (t.status === 'merged' && t.build && !t.build.ok) why = `broken build: ${t.build.detail.slice(0, 200)}${blocker ? `; the fix in ${name(blocker.b.target)} (${blocker.fix}) is under way` : ''}`;
     else if (t.status === 'planned' && blockedBy(t).length) why = `blocked by ${blockedBy(t).map((b) => `${b.id} "${b.title}" (${b.status})`).join(', ')}`;
+    else if (t.status === 'planned' && !blockedBy(t).length && !(t.gpu?.items?.length && !gpuCleared(t)) && startWaitReason(t)) why = `waits: ${startWaitReason(t)}`;
     else why = taskWaits(t, asked) ?? t.status;
     out.push({ task: t.id, title: t.title, product: t.product, status: t.status, why });
   }
   return out;
 }
+
+let lastSelfCheck = 0;
+/**
+ * The self-check (J, 2026-11-02: planned work sat for a day and nobody noticed): planned, startable tasks and nothing
+ * started or finished for STALL_MINUTES logs the exact reasons (the daily limit, busy slots, a failing clone, ...) once an
+ * hour, and says so in the PM log. It runs on the first pass after a start and on every pass. Returns what it logged.
+ */
+export function stallSelfCheck(reasons: StallReason[], moved: number, now = Date.now(), log: (m: string) => void = (m) => console.warn(m)): string | null {
+  const planned = reasons.filter((r) => r.status === 'planned' && r.why.startsWith('waits:'));
+  if (!planned.length || now - moved < STALL_MINUTES * 60_000 || now - lastSelfCheck < 3600_000) return null;
+  lastSelfCheck = now;
+  const kinds = new Map<string, number>();
+  for (const r of planned) kinds.set(r.why, (kinds.get(r.why) ?? 0) + 1);
+  const msg = `${planned.length} planned task(s) have not started for ${Math.round((now - moved) / 60_000)} min: ${[...kinds].map(([k, n]) => `${n} ${k}`).join('; ')}`.slice(0, 1500);
+  log(`[pm] stall self-check: ${msg}`);
+  logDecision('stall-check', null, null, msg);
+  return msg;
+}
+/** Tests: the hour between self-checks starts over. */
+export const resetSelfCheck = () => { lastSelfCheck = 0; };
 
 /**
  * The stall watch, each pass: unfinished roadmap work, free agents, and nothing started or finished for STALL_MINUTES.
@@ -2255,12 +2367,13 @@ export async function stallWatch(now = Date.now()) {
   if (!stuckOf(reasons).length) {
     for (const q of listQuestions().filter((x) => x.topic === 'stall')) setQuestion(q.id, { status: 'resolved', answer: '(no longer waiting: the roadmap moves again)', answered_by: 'Studio' });
   }
-  if (!s.enabled || !reasons.length || capacity().free <= 0) return lastStall;
   const moved = Math.max(
     (db.prepare(`SELECT MAX(created) AS at FROM changes`).get() as any)?.at ?? 0,
     (db.prepare(`SELECT MAX(updated) AS at FROM changes WHERE status IN ('ready', 'merged', 'failed', 'closed')`).get() as any)?.at ?? 0,
     (db.prepare(`SELECT MAX(at) AS at FROM pm_log WHERE action = 'start'`).get() as any)?.at ?? 0,
   );
+  stallSelfCheck(reasons, moved, now);
+  if (!s.enabled || !reasons.length || capacity().free <= 0) return lastStall;
   if (now - moved < STALL_MINUTES * 60_000) return lastStall;
   lastStall.stalled = true;
   // Once per stall (until something starts or finishes again).
