@@ -136,6 +136,23 @@ test('"Go live anyway" past another blocker is refused', async () => {
   assert.equal(gh.repos['acme/diverged'].refs.main, sha('x'));
 });
 
+test('a card stopped only by live having commits beta lacks offers "Bring beta up to date": one tap merges live into beta, nothing goes live', async () => {
+  const a = await ap.requestApproval('deploy', 'diverged');
+  assert.equal(ap.getApproval(a.id, true)!.card.catchUp, true);
+  const mainBefore = gh.repos['acme/diverged'].refs.main;
+  const betaBefore = gh.repos['acme/diverged'].refs.beta;
+  // Talk, an agent or a plain call can't tap it either.
+  assert.equal(await status(ap.decideApproval(a.id, token(a.id), 'catchup', req())), 403);
+  const done = await ap.decideApproval(a.id, token(a.id), 'catchup', jPage());
+  assert.equal(done.status, 'stale');
+  for (let i = 0; i < 200 && gh.repos['acme/diverged'].refs.beta === betaBefore; i++) await new Promise((r) => setTimeout(r, 25));
+  assert.notEqual(gh.repos['acme/diverged'].refs.beta, betaBefore, 'beta took main\'s commits');
+  assert.equal(gh.repos['acme/diverged'].refs.main, mainBefore, 'nothing went live');
+  // A card that can go live has no such button.
+  const w = await ap.requestApproval('deploy', 'webby');
+  assert.ok(!ap.getApproval(w.id, true)!.card.catchUp);
+});
+
 test("a person's confirmed tap takes exactly that commit live, records who skipped the playtest, and the history shows it", async () => {
   const a = await ap.requestApproval('deploy', 'webby');
   const r = await ap.decideApproval(a.id, token(a.id), 'anyway', jPage(), { commit: S3 });

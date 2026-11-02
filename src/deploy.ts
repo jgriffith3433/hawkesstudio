@@ -151,7 +151,22 @@ export function playtestSkipFor(approval: string | undefined, product: string, s
 /** notesWaitMs: how long to wait for the release notes being written (the Approve card waits longer, to show them). */
 export async function deployPlan(productId: string, opts: { notesWaitMs?: number; io?: GitHubIO } = {}) {
   const plan = await planOf(productId, opts);
-  return { ...plan, playtestOnly: playtestOnly(plan.blockers) };
+  return { ...plan, playtestOnly: playtestOnly(plan.blockers), betaDown: await betaDownOf(productId, plan) };
+}
+/**
+ * When beta's last playtest failed because the beta site didn't answer: what happened in plain words and the two ways
+ * on (the Go live page's "Redeploy beta" and "Retry playtest"), instead of a warning with nowhere to go. null otherwise.
+ */
+async function betaDownOf(productId: string, plan: { tested?: { playtests?: { status?: string; detail?: string | null }[] } }) {
+  const { betaDownLine, betaRepoOf, betaRunsUrl } = await import('./redeploy.ts');
+  const down = (plan.tested?.playtests ?? []).find((t) => t.status !== 'done' && betaDownLine(t.detail));
+  if (!down) return null;
+  const slug = betaRepoOf(getProduct(productId));
+  return {
+    line: 'Beta was not played: its site did not answer. Its last deploy may have failed, or it was still starting. Redeploy beta, or retry the playtest if it is up now.',
+    detail: down.detail ?? null,
+    runs: slug ? betaRunsUrl(slug) : null,
+  };
 }
 async function planOf(productId: string, { notesWaitMs = 20_000, io }: { notesWaitMs?: number; io?: GitHubIO } = {}) {
   const p = getProduct(productId);
@@ -378,7 +393,7 @@ async function githubPlan(p: Product, io: GitHubIO = {}) {
     build: null as any,
     previous: listDeploys(p.id, 5).map((d) => ({ id: d.id, kind: d.kind, at: d.at, by: d.by, before: d.before?.slice(0, 7) ?? null, after: d.after.slice(0, 7), beta: d.beta?.slice(0, 7) ?? null, detail: d.detail, rolledBack: d.rolled_back, skippedPlaytest: skipOf(d) })),
     players: await livePlayers(p.id),
-    blockers, warnings, canDeploy: !blockers.length, fix: null as BlockerFix | null, notCloned: null,
+    blockers, warnings, canDeploy: !blockers.length, fix: planFix(blockers) as BlockerFix | null, notCloned: null,
     confirm: `DEPLOY ${p.id}`,
     what: `${cmp.ahead.length ? `Fast-forwards ${slug}'s ${MAIN} to ${BETA}${beta ? ` ${beta.short}` : ''} (${cmp.ahead.length} commit(s))` : `Leaves ${slug}'s ${MAIN} as it is`}${into.length ? `, and ${into.join(', ')}` : ''}, through GitHub (never a merge or a force push); ${publisherOf(p).says} ${p.live || 'its live site'}.`,
     github: { slug, targets: tg.targets, rollbacksOnly, liveMergesOnly },
