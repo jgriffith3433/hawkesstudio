@@ -212,6 +212,8 @@ export async function startBuild(projectId: string, o: StartOptions = {}): Promi
   if (o.build && !specs.length) throw new StudioError(`${p.name} has no build "${o.build}" (it has ${all.map((b) => b.id).join(', ')})`, 404);
   if (!specs.length) return null;
   if (specs.some((b) => b.tool === 'unity')) await requireCloudBuilds();
+  // A stuck "building" row from before (its run gone) is settled now, so it never stands in this build's way.
+  await reconcileBuilds({ product: p.id }).catch((e) => console.warn(`[builds] ${p.id}: reconciling: ${e?.message ?? e}`));
   const { tagRun } = await import('./followup.ts');
   const id = newId('r');
   db.prepare('INSERT INTO runs (id, kind, status, detail, products, options, started) VALUES (?, ?, ?, ?, ?, ?, ?)').run(id, 'build', 'running', `build ${p.id}`, JSON.stringify([p.id]), JSON.stringify({ builds: specs.map((b) => b.id), ref: o.ref, trigger: o.trigger, change: o.change }), Date.now());
@@ -246,6 +248,78 @@ export async function resumeRun(run: string, productId: string, options: { build
   } finally {
     closeRun(run, `build ${p.id}`);
   }
+}
+
+/** The longest a build may stay "building": Gen's own wait ends at 3 h; past this, nobody is going to finish it. */
+export const BUILD_MAX_MS = () => Number(process.env.STUDIO_BUILD_MAX_MS) > 0 ? Number(process.env.STUDIO_BUILD_MAX_MS) : 4 * 3600_000;
+
+export type Reconciled = { build: string; version: number; product: string; job: string | null; outcome: string };
+
+/**
+ * Settles builds that say "building" but that nothing is going to finish (2026-11-02: sick-of-it-unity v1 stayed "building"
+ * for 12 hours with its Gen job long gone). A row is looked at when its run isn't running any more (stopped, failed,
+ * interrupted, deleted), or when it has been building longer than BUILD_MAX_MS. Rows whose run is going stay alone: that
+ * run is waiting on the job (and a restart re-attaches to it, pipeline.ts waitingInGen).
+ * With a Gen job, Gen is asked once for its state: failed or cancelled → the build fails with Gen's reason; done → the
+ * build fails saying Gen did finish and Studio didn't publish it (start it again); still going → cancelled, and the build
+ * fails ("timed out" when it ran past the maximum). Gen unreachable → the row is left for the next look; Gen not
+ * knowing the job (404) → failed. No polling: called when Studio starts (after the runs are resumed), when a build starts,
+ * and when Gen says a Unity build ended (the event listener below). `only`: one Gen job (that event).
+ */
+export async function reconcileBuilds(o: { only?: string; product?: string; now?: number; job?: (id: string) => Promise<any>; cancel?: (id: string, why: string) => Promise<unknown> } = {}): Promise<Reconciled[]> {
+  const now = o.now ?? Date.now();
+  const rows = db.prepare(`SELECT b.id, b.product, b.build, b.version, b.gen_job, b.started, b.run, r.status AS run_status FROM builds b LEFT JOIN runs r ON r.id = b.run
+    WHERE b.status = 'building' ${o.product ? 'AND b.product = ?' : ''}`).all(...(o.product ? [o.product] : [])) as any[];
+  const out: Reconciled[] = [];
+  for (const b of rows) {
+    if (o.only && b.gen_job !== o.only) continue;
+    const orphan = b.run_status !== 'running';
+    const old = now - b.started > BUILD_MAX_MS();
+    if (!orphan && !old) continue;
+    const age = `${Math.round((now - b.started) / 360_000) / 10} h`;
+    const why = orphan ? `its run ${b.run_status ?? 'is gone'} while the build was still going` : `it ran past ${Math.round(BUILD_MAX_MS() / 360_000) / 10} h`;
+    const fail = (detail: string) => {
+      db.prepare("UPDATE builds SET status = 'failed', detail = ?, finished = ? WHERE id = ? AND status = 'building'").run(detail.slice(0, 500), now, b.id);
+      out.push({ build: b.build, version: b.version, product: b.product, job: b.gen_job ?? null, outcome: detail });
+    };
+    if (!b.gen_job) { fail(orphan ? `stopped: ${why}, with no Gen job to wait for` : `timed out after ${age}: no result`); continue; }
+    let job: any;
+    try {
+      job = await (o.job ?? ((id) => import('./gen.ts').then((G) => G.gen.job(id))))(b.gen_job);
+    } catch (e: any) {
+      if (e?.status === 404 || /not found|no such job/i.test(String(e?.message))) { fail(`Hawkes Gen doesn't know job ${b.gen_job} any more (${why}); build again`); continue; }
+      console.warn(`[builds] ${b.product} ${b.build} ${b.version}: couldn't ask Gen about ${b.gen_job}: ${String(e?.message ?? e).slice(0, 160)}`);
+      continue;
+    }
+    const status = String(job?.status ?? '');
+    if (status === 'done') {
+      db.prepare('UPDATE builds SET gen_done = ? WHERE id = ? AND gen_done IS NULL').run(now, b.id);
+      fail(`Hawkes Gen finished job ${b.gen_job}, but Studio stopped before publishing it (${why}); build again`);
+    } else if (status === 'failed' || status === 'cancelled') {
+      db.prepare('UPDATE builds SET gen_done = ? WHERE id = ? AND gen_done IS NULL').run(now, b.id);
+      fail(`the Unity build ${status}: ${job?.error ?? 'no reason given'}`);
+    } else {
+      const text = old ? `timed out after ${age} in Hawkes Gen (job ${b.gen_job} was still ${status || 'running'}); cancelled it` : `stopped: ${why}; cancelled Gen job ${b.gen_job}`;
+      fail(text);
+      await (o.cancel ?? ((id, w) => import('./cancel.ts').then((C) => C.cancelJob(id, 'Studio', w))))(b.gen_job, text).catch((e: any) => console.warn(`[builds] couldn't cancel Gen job ${b.gen_job}: ${String(e?.message ?? e).slice(0, 160)}`));
+    }
+  }
+  if (out.length) console.warn(`[builds] settled ${out.length} stuck build(s): ${out.map((x) => `${x.product} ${x.build} ${x.version}`).join(', ')}`);
+  return out;
+}
+
+/** Gen says a Unity build ended: a build row still waiting on it, whose run is gone, is settled at once. */
+let watching = false;
+export async function watchGenBuilds() {
+  if (watching) return;
+  watching = true;
+  const { genEvents } = await import('./gen.ts');
+  const { terminal } = await import('./genevents.ts');
+  genEvents.onEvent((type, job) => {
+    if (type !== 'job' || !job?.id || !terminal(job)) return;
+    if (!db.prepare("SELECT 1 FROM builds WHERE gen_job = ? AND status = 'building'").get(String(job.id))) return;
+    void reconcileBuilds({ only: String(job.id) }).catch((e) => console.warn(`[builds] reconciling ${job.id}: ${e?.message ?? e}`));
+  });
 }
 
 async function requireCloudBuilds() {
@@ -450,6 +524,9 @@ export function tokenLost(error: unknown): boolean {
   return /token\b[^.]{0,40}?\b(is gone|gone|expired)|GitHub refused|can't read the repo|Bad credentials|\b401\b/i.test(String(error ?? ''));
 }
 
+/** How many times a Unity build whose repo token Gen lost is submitted again with a fresh one. */
+export const TOKEN_RETRIES = 2;
+
 /** unity: Hawkes Gen builds that commit in the cloud with the repo's own token, and hands back the output as an asset. */
 async function viaGen(p: Product, b: BuildSpec, slug: string, sha: string, ref: string, token: string | null, say: (s: string) => void, resume: { job?: string; onSubmit?: (id: string) => void; onDone?: () => void } = {}, hold: () => Promise<void> = async () => {}): Promise<Output> {
   if (!token) throw new Error(`Studio has no GitHub access to ${slug}: connect GitHub and install the app on it`);
@@ -460,12 +537,16 @@ async function viaGen(p: Product, b: BuildSpec, slug: string, sha: string, ref: 
   }, (j) => { if (j?.progress?.step || j?.status) say(`Hawkes Gen: ${j.progress?.step ?? j.status}`); }, 3 * 60 * 60 * 1000, r);
   let job: any = await submit(token, { job: resume.job, onSubmit: resume.onSubmit });
   // The repo's token lasts an hour and lives only in Gen's memory: a build that waited in Gen's queue, or a Gen that
-  // restarted, can lose it. Once, with a fresh token (2026-10-31 review); a real access problem fails the same way again.
-  if (job.status === 'failed' && tokenLost(job.error)) {
+  // restarted (Cloud Run scales it to zero), loses it, and Gen can't be handed a token it re-requests. So the same build is
+  // submitted again with a freshly minted token, up to TOKEN_RETRIES times (once wasn't enough: sick-of-it-unity v3 and v4,
+  // 2026-11-02). Each resubmit is a new Gen job, recorded on the row. A real access problem fails every time and ends here.
+  for (let n = 1; job.status === 'failed' && tokenLost(job.error) && n <= TOKEN_RETRIES; n++) {
     const { forgetRepoTokens, repoToken } = await import('./ghtoken.ts');
     forgetRepoTokens();
     const fresh = await repoToken(slug);
-    if (fresh) { say('the GitHub token had run out while it waited: building again with a fresh one'); job = await submit(fresh, { onSubmit: resume.onSubmit }); }
+    if (!fresh) break;
+    say(`Gen lost the GitHub token for this build: building again with a fresh one (try ${n + 1} of ${TOKEN_RETRIES + 1})`);
+    job = await submit(fresh, { onSubmit: resume.onSubmit });
   }
   if (job.status !== 'done') throw new Error(`the Unity build ${job.status}: ${job.error ?? 'no reason given'}`);
   resume.onDone?.();
