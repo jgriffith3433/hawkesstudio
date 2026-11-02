@@ -1,13 +1,22 @@
-# Deploys one of Studio's Cloudflare Workers with wrangler (was: npx wrangler deploy on J's laptop):
+# Deploys Studio's Cloudflare Workers with wrangler:
 #   studio-edge  (hawkes-studio-edge: studio.hawkesgen.ai, beta: studio-beta.hawkesgen.ai)
 #   beta-sites   (hawkes-beta-sites: the beta sites on R2; one worker serves both lanes, so it is production only)
-# production runs only from main (environment "production" allows main only); beta only from beta.
-# Workers keep their secrets across deploys. put_edge_key also writes EDGE_KEY (from the environment's EDGE_KEY secret)
-# with `wrangler secret put` on stdin.
+# On push (no hand step): a push to main that changes server/studio-edge/** deploys studio-edge to production, one that
+# changes server/beta-sites/** deploys beta-sites; a push to beta that changes server/studio-edge/** deploys studio-edge's
+# beta lane. A change to this file counts as a change to every worker of that branch's lane.
+# By hand (workflow_dispatch): pick the worker and lane; production runs only from main (environment "production" allows
+# main only), beta only from beta. put_edge_key also writes EDGE_KEY (from the environment's EDGE_KEY secret) with
+# `wrangler secret put` on stdin; a push never writes it (workers keep their secrets across deploys).
 # Needs CLOUDFLARE_API_TOKEN in the environment (Workers Scripts edit, Workers Routes edit, R2 edit) and CLOUDFLARE_ACCOUNT_ID.
 #   gh workflow run ops-workers-deploy.yml --repo jgriffith3433/hawkesstudio --ref main -f worker=studio-edge -f lane=production -f put_edge_key=false
 name: ops-workers-deploy
 on:
+  push:
+    branches: [main, beta]
+    paths:
+      - server/studio-edge/**
+      - server/beta-sites/**
+      - .github/workflows/ops-workers-deploy.yml
   workflow_dispatch:
     inputs:
       worker:
@@ -23,37 +32,85 @@ on:
         default: false
 permissions:
   contents: read
-concurrency:
-  group: ops-workers-${{ inputs.worker }}-${{ inputs.lane }}
-  cancel-in-progress: false
 jobs:
+  plan:
+    name: Which workers
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      targets: ${{ steps.plan.outputs.targets }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Plan
+        id: plan
+        env:
+          EVENT: ${{ github.event_name }}
+          REF: ${{ github.ref_name }}
+          BEFORE: ${{ github.event.before }}
+          WORKER: ${{ inputs.worker }}
+          LANE: ${{ inputs.lane }}
+          PUT_EDGE_KEY: ${{ inputs.put_edge_key }}
+        run: |
+          if [ "$EVENT" = workflow_dispatch ]; then
+            if [ "$WORKER" = beta-sites ] && [ "$LANE" = beta ]; then echo "beta-sites is one worker for both lanes: use lane=production"; exit 1; fi
+            if [ "$PUT_EDGE_KEY" = true ] && [ "$WORKER" != studio-edge ]; then echo "put_edge_key is for studio-edge only"; exit 1; fi
+            echo "targets=[{\"worker\":\"$WORKER\",\"lane\":\"$LANE\",\"put_edge_key\":$PUT_EDGE_KEY}]" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ -n "$BEFORE" ] && ! echo "$BEFORE" | grep -qE '^0+$' && git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then
+            changed=$(git diff --name-only "$BEFORE" "$GITHUB_SHA")
+          else
+            changed=$(git diff-tree --no-commit-id --name-only -r "$GITHUB_SHA")
+          fi
+          echo "$changed"
+          has() { echo "$changed" | grep -qE "$1"; }
+          wf='^\.github/workflows/ops-workers-deploy\.yml$'
+          targets=""
+          add() { targets="${targets:+$targets,}{\"worker\":\"$1\",\"lane\":\"$2\",\"put_edge_key\":false}"; }
+          if [ "$REF" = main ]; then
+            { has '^server/studio-edge/' || has "$wf"; } && add studio-edge production
+            { has '^server/beta-sites/' || has "$wf"; } && add beta-sites production
+          elif [ "$REF" = beta ]; then
+            { has '^server/studio-edge/' || has "$wf"; } && add studio-edge beta
+          fi
+          echo "targets=[$targets]" >> "$GITHUB_OUTPUT"
+          echo "targets: [$targets]"
   deploy:
-    name: Deploy a worker
+    name: Deploy ${{ matrix.worker }} (${{ matrix.lane }})
+    needs: plan
+    if: needs.plan.outputs.targets != '[]'
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    environment: ${{ inputs.lane }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.plan.outputs.targets) }}
+    concurrency:
+      group: ops-workers-${{ matrix.worker }}-${{ matrix.lane }}
+      cancel-in-progress: false
+    environment: ${{ matrix.lane }}
     steps:
-      - name: Check the inputs
+      - name: Check the secrets
         env:
           HAS_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN != '' }}
           HAS_EDGE: ${{ secrets.EDGE_KEY != '' }}
         run: |
-          if [ "${{ inputs.worker }}" = beta-sites ] && [ "${{ inputs.lane }}" = beta ]; then echo "beta-sites is one worker for both lanes: use lane=production"; exit 1; fi
-          if [ "${{ inputs.put_edge_key }}" = true ] && [ "${{ inputs.worker }}" != studio-edge ]; then echo "put_edge_key is for studio-edge only"; exit 1; fi
-          if [ "${{ inputs.put_edge_key }}" = true ] && [ "$HAS_EDGE" != true ]; then echo "EDGE_KEY is not set in the ${{ inputs.lane }} environment"; exit 1; fi
-          [ "$HAS_TOKEN" = true ] || { echo "CLOUDFLARE_API_TOKEN is not set in the ${{ inputs.lane }} environment"; exit 1; }
+          if [ "${{ matrix.put_edge_key }}" = true ] && [ "$HAS_EDGE" != true ]; then echo "EDGE_KEY is not set in the ${{ matrix.lane }} environment"; exit 1; fi
+          [ "$HAS_TOKEN" = true ] || { echo "CLOUDFLARE_API_TOKEN is not set in the ${{ matrix.lane }} environment"; exit 1; }
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 24
       - name: Deploy
-        working-directory: server/${{ inputs.worker }}
+        working-directory: server/${{ matrix.worker }}
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           EDGE_KEY: ${{ secrets.EDGE_KEY }}
         run: |
           npm install --no-audit --no-fund
-          envarg=""; [ "${{ inputs.lane }}" = beta ] && envarg="--env beta"
+          envarg=""; [ "${{ matrix.lane }}" = beta ] && envarg="--env beta"
           npx wrangler deploy $envarg
-          if [ "${{ inputs.put_edge_key }}" = true ]; then printf '%s' "$EDGE_KEY" | npx wrangler secret put EDGE_KEY $envarg; fi
+          if [ "${{ matrix.put_edge_key }}" = true ]; then printf '%s' "$EDGE_KEY" | npx wrangler secret put EDGE_KEY $envarg; fi

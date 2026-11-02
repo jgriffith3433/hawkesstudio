@@ -106,7 +106,7 @@ test('a feed is read once for every page watching it, sent only when it changed,
   server.close();
 });
 
-test('studio-beta calls gen-beta at its run.app address; browsers keep the public name', async () => {
+test('Studio calls Gen at its run.app address on both lanes; browsers keep the public name', async () => {
   const { routeGenDirect } = await import('../src/gendirect.ts');
   const beta: NodeJS.ProcessEnv = { HAWKESGEN_URL: 'https://beta.hawkesgen.ai', GEN_PUBLIC_URL: 'https://beta.hawkesgen.ai' };
   assert.equal(routeGenDirect(beta), 'https://gen-beta-388576319982.us-central1.run.app');
@@ -116,8 +116,9 @@ test('studio-beta calls gen-beta at its run.app address; browsers keep the publi
   routeGenDirect(unset);
   assert.equal(unset.GEN_PUBLIC_URL, 'https://beta.hawkesgen.ai');
   const live: NodeJS.ProcessEnv = { HAWKESGEN_URL: 'https://hawkesgen.ai' };
-  assert.equal(routeGenDirect(live), null, 'live is J\'s call (deploy.mjs --gen-direct)');
-  assert.equal(live.HAWKESGEN_URL, 'https://hawkesgen.ai');
+  assert.equal(routeGenDirect(live), 'https://gen-f6ruen5wfa-uk.a.run.app');
+  assert.equal(live.HAWKESGEN_URL, 'https://gen-f6ruen5wfa-uk.a.run.app');
+  assert.equal(live.GEN_PUBLIC_URL, 'https://hawkesgen.ai');
   const off: NodeJS.ProcessEnv = { HAWKESGEN_URL: 'https://beta.hawkesgen.ai', STUDIO_GEN_DIRECT: '0' };
   assert.equal(routeGenDirect(off), null);
   const local: NodeJS.ProcessEnv = { HAWKESGEN_URL: 'http://127.0.0.1:8790' };
