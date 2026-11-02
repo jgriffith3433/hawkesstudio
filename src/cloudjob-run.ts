@@ -26,7 +26,8 @@ type Store = Pick<JobRunner, 'put' | 'get' | 'list' | 'remove'>;
 // The clone is partial (`--filter=blob:none`: git fetches the blobs a checkout needs, with the token) and skips Git LFS
 // files unless the spec asks (`lfs`), so a big repo (a Unity project of GBs) is never pulled whole; `partial: false` asks
 // for a full clone (Studio's spec for a small repo, so the pass can read any old file without a token).
-type JobGit = { head: string; branch: string; remote: string; bundle: boolean; token: string | null; shallow?: boolean; partial?: boolean; lfs?: boolean };
+// tokenAt: when Studio minted `token`; refresh: where and with which job key to ask for a fresh one (jobgit.ts).
+type JobGit = { head: string; branch: string; remote: string; bundle: boolean; token: string | null; tokenAt?: number; refresh?: { url: string; key: string }; shallow?: boolean; partial?: boolean; lfs?: boolean };
 type Spec = { kind?: 'build'; outputs?: string[]; file: string; args: string[]; cwd: string; env: Record<string, string>; sessions: string; git: JobGit | null; flushMs?: number; repos?: ExtraRepo[] };
 /** A read-only copy of another of the Studio's repos, next to the worktree (access.ts extraReposFor). */
 type ExtraRepo = { slug: string; remote: string; token: string | null; dir: string };
@@ -74,6 +75,65 @@ function gitWithToken(cwd: string, args: string[], token: string | null, env: Re
   return { status: r.status, ok: r.status === 0, err: String(r.stderr ?? r.error?.message ?? '').trim() };
 }
 
+/** A spec's token older than this is swapped for a fresh one before cloning (GitHub's last an hour). */
+const TOKEN_FRESH_MS = () => Number(process.env.STUDIO_JOB_TOKEN_FRESH_MS) || 40 * 60_000;
+/** What git says when GitHub refused the token (with prompts off it can't ask for another). */
+export const authFailed = (err: string) => /could not read (Username|Password)|Authentication failed|terminal prompts disabled|HTTP Basic: Access denied|\b40[13]\b|Invalid username or password/i.test(err);
+
+/**
+ * The clone token: the spec's while it's fresh, else (or once GitHub refuses it) one fresh token asked from Studio with
+ * the job's own key (POST /api/cloudjobs/<unit>/git-token, jobgit.ts). Never logged. Exported for the tests.
+ */
+export function jobToken(unit: string, g: Pick<JobGit, 'token' | 'tokenAt' | 'refresh' | 'remote'>, log: (s: string) => void, now = Date.now) {
+  let token = g.token;
+  let asked = false;
+  const waitedMin = () => (g.tokenAt ? Math.round((now() - g.tokenAt) / 60_000) : null);
+  /** One fresh token from Studio (true: got one). Asked at most once. */
+  const refresh = async (why: string) => {
+    if (asked || !g.refresh) return false;
+    asked = true;
+    const slug = /github\.com[/:]([^/\s]+\/[^/\s]+?)(?:\.git)?\/?$/i.exec(g.remote)?.[1] ?? '';
+    try {
+      const r = await fetch(`${g.refresh.url}/api/cloudjobs/${encodeURIComponent(unit)}/git-token`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Studio-Job-Key': g.refresh.key },
+        body: JSON.stringify({ repo: slug }), signal: AbortSignal.timeout(20_000),
+      });
+      const d: any = await r.json().catch(() => ({}));
+      if (r.ok && typeof d.token === 'string' && d.token) {
+        token = d.token;
+        log(`[job] a fresh GitHub token from Studio (${why})`);
+        return true;
+      }
+      log(`[job] Studio gave no fresh GitHub token (${why}): ${r.status} ${String(d.error ?? '').slice(0, 200)}`);
+    } catch (e: any) {
+      log(`[job] couldn't ask Studio for a fresh GitHub token (${why}): ${e.message ?? e}`);
+    }
+    return false;
+  };
+  return {
+    get: () => token,
+    /** Before the first use: swaps a token minted too long ago. */
+    async freshen() {
+      const w = waitedMin();
+      if (token && g.tokenAt && now() - g.tokenAt > TOKEN_FRESH_MS()) await refresh(`the job waited ${w} min to start`);
+    },
+    /** Runs a git command with the token; once more with a fresh token when GitHub refused it. */
+    async run<T extends { ok: boolean; err: string }>(f: (token: string | null) => T): Promise<T> {
+      const r = f(token);
+      if (r.ok || !authFailed(r.err) || !(await refresh('GitHub refused the token'))) return r;
+      return f(token);
+    },
+    /** The error for a git command GitHub refused: says the token expired instead of git's prompt text. */
+    message(what: string, err: string) {
+      const last = err.split('\n').pop() ?? '';
+      if (!authFailed(err)) return `${what} failed: ${last}`;
+      const w = waitedMin();
+      if (w !== null && w >= 55) return `${what} failed: GitHub token expired: the job waited ${w} min to start`;
+      return `${what} failed: GitHub refused the token${w !== null ? ` (minted ${w} min before)` : ''}: ${last}`;
+    },
+  };
+}
+
 /** Rebuilds the workspace; returns the HEAD the pass starts from. */
 export async function prepare(unit: string, spec: Spec, store: Store, log: (s: string) => void, at: (p: string) => string = (p) => p) {
   const key = (n: string) => `jobs/${unit}/${n}`;
@@ -82,19 +142,24 @@ export async function prepare(unit: string, spec: Spec, store: Store, log: (s: s
     fs.mkdirSync(path.dirname(cwd), { recursive: true });
     fs.rmSync(cwd, { recursive: true, force: true });
     const env = jobGitEnv(spec.git);
+    const tok = jobToken(unit, spec.git, log);
+    await tok.freshen();
     if (spec.git.shallow && !spec.git.bundle) {
       // Just that commit (a beta site's build): GitHub hands out any commit it has by id.
       fs.mkdirSync(cwd, { recursive: true });
       git(cwd, ['init', '--quiet']);
-      const f = gitWithToken(cwd, ['fetch', '--quiet', '--depth', '1', spec.git.remote, spec.git.head], spec.git.token);
-      if (f.status !== 0) throw new Error(`fetch of ${spec.git.head.slice(0, 7)} failed: ${f.err.split('\n').pop()}`);
+      const f = await tok.run((t) => gitWithToken(cwd, ['fetch', '--quiet', '--depth', '1', spec.git!.remote, spec.git!.head], t));
+      if (f.status !== 0) throw new Error(tok.message(`fetch of ${spec.git.head.slice(0, 7)}`, f.err));
       const co = gitWithToken(cwd, ['checkout', '--quiet', '--detach', 'FETCH_HEAD'], null, env);
       if (!co.ok) throw new Error(`checkout of ${spec.git.head.slice(0, 7)}: ${co.err.split('\n').pop()}`);
       log(`[job] ${spec.git.remote} at ${spec.git.head.slice(0, 7)} (shallow)`);
       return git(cwd, ['rev-parse', 'HEAD']).out;
     }
-    const c = gitWithToken(path.dirname(cwd), jobCloneArgs(spec.git, cwd), spec.git.token, env);
-    if (c.status !== 0) throw new Error(`clone failed: ${c.err.split('\n').pop()}`);
+    const c = await tok.run((t) => {
+      fs.rmSync(cwd, { recursive: true, force: true });
+      return gitWithToken(path.dirname(cwd), jobCloneArgs(spec.git!, cwd), t, env);
+    });
+    if (c.status !== 0) throw new Error(tok.message('clone', c.err));
     if (!spec.git.lfs) for (const [k, v] of SKIP_LFS) git(cwd, ['config', k, v]);
     if (spec.git.bundle) {
       const b = await store.get(key('in.bundle'));
@@ -104,10 +169,11 @@ export async function prepare(unit: string, spec: Spec, store: Store, log: (s: s
       if (!f.ok) throw new Error(`the workspace's own commits: ${f.err.split('\n').pop()}`);
     }
     // With the token: a partial clone fetches the head's blobs from GitHub here.
-    const co = spec.git.branch && spec.git.branch !== 'HEAD'
-      ? gitWithToken(cwd, ['checkout', '--quiet', '-B', spec.git.branch, spec.git.head], spec.git.token, env)
-      : gitWithToken(cwd, ['checkout', '--quiet', '--detach', spec.git.head], spec.git.token, env);
-    if (!co.ok) throw new Error(`checkout of ${spec.git.head.slice(0, 7)}: ${co.err.split('\n').pop()}`);
+    const g = spec.git;
+    const co = await tok.run((t) => g.branch && g.branch !== 'HEAD'
+      ? gitWithToken(cwd, ['checkout', '--quiet', '-B', g.branch, g.head], t, env)
+      : gitWithToken(cwd, ['checkout', '--quiet', '--detach', g.head], t, env));
+    if (!co.ok) throw new Error(tok.message(`checkout of ${spec.git.head.slice(0, 7)}`, co.err));
     // As in Studio's own clone: the agent's brief and notes never go into a commit.
     fs.appendFileSync(path.join(cwd, '.git', 'info', 'exclude'), '\n.hawkes/\n');
     log(`[job] workspace ${spec.git.remote} at ${spec.git.head.slice(0, 7)} (${spec.git.branch}${spec.git.partial === false ? '' : ', partial clone'}${spec.git.lfs ? '' : ', no LFS files'})`);

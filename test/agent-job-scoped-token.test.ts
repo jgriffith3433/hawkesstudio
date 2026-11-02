@@ -19,6 +19,7 @@ process.env.STUDIO_JOB_POLL_MS = '50';
 delete process.env.STUDIO_CUSTOMER;
 process.env.GITHUB_TOKEN = 'ghp_js_own_token';
 delete process.env.STUDIO_JOB_GITHUB_TOKEN;
+process.env.STUDIO_SERVICE_URL = 'https://studio.example.test';
 fs.mkdirSync(process.env.STUDIO_DATA, { recursive: true });
 fs.mkdirSync(process.env.STUDIO_PROJECTS, { recursive: true });
 fs.writeFileSync(path.join(process.env.STUDIO_DATA, 'products.json'), JSON.stringify({ products: [], repos: {} }));
@@ -81,13 +82,14 @@ test("J's Studio: an agent's job gets the App's read-only token for its repo, no
 
   const bucket = new Map<string, Buffer>();
   let spec: any = null;
+  let unitStarted = '';
   const started = new Promise<void>((resolve) => {
     setJobRunner(() => ({
       put: async (k, d) => { bucket.set(k, Buffer.isBuffer(d) ? d : Buffer.from(d)); },
       get: async (k) => bucket.get(k) ?? null,
       list: async (p) => [...bucket.keys()].filter((k) => k.startsWith(p)),
       remove: async (k) => { bucket.delete(k); },
-      start: async (unit) => { spec = JSON.parse(bucket.get(`jobs/${unit}/spec.json`)!.toString('utf8')); resolve(); return 'projects/p/locations/r/jobs/studio-agent/executions/e1'; },
+      start: async (unit) => { unitStarted = unit; spec = JSON.parse(bucket.get(`jobs/${unit}/spec.json`)!.toString('utf8')); resolve(); return 'projects/p/locations/r/jobs/studio-agent/executions/e1'; },
       state: async () => ({ done: true, message: '' }),
       cancel: async () => {},
     }));
@@ -103,6 +105,74 @@ test("J's Studio: an agent's job gets the App's read-only token for its repo, no
   assert.equal(spec.git.token, 'ghs_private-gen_read');
   assert.equal(spec.env.GITHUB_TOKEN, undefined, "never in the pass's environment");
   assert.ok(!JSON.stringify(spec).includes('ghp_js_own_token'), "J's own token never reaches the job");
+  // A job that waits for a machine can ask for a fresh token for this repo with its own key (jobgit.ts).
+  assert.equal(typeof spec.git.tokenAt, 'number');
+  assert.equal(spec.git.refresh.url, 'https://studio.example.test');
+  const { jobGitToken } = await import('../src/jobgit.ts');
+  assert.equal(await jobGitToken(unitStarted, 'jgriffith3433/private-gen', spec.git.refresh.key), 'ghs_private-gen_read');
+  assert.equal(spec.env.STUDIO_JOB_KEY, undefined, "the job key never reaches the pass's environment");
+});
+
+test('the fresh-token route: its own job key and its own repo only', async () => {
+  const { jobGitKey, jobGitToken } = await import('../src/jobgit.ts');
+  const k = jobGitKey('agent-c_r1-1', 'jgriffith3433/hawkesgen')!;
+  const mint = async (slug: string) => `fresh_${slug}`;
+  assert.equal(await jobGitToken('agent-c_r1-1', 'jgriffith3433/hawkesgen', k, mint), 'fresh_jgriffith3433/hawkesgen');
+  assert.equal(await jobGitToken('agent-c_r1-1', 'jgriffith3433/hawkesgen', k), 'ghs_hawkesgen_read', 'minted like the start: the app\'s, one repo, read-only');
+  const refused = async (p: Promise<unknown>, what: string) => await assert.rejects(p, (e: any) => e.status === 403, what);
+  await refused(jobGitToken('agent-c_r1-1', 'jgriffith3433/hawkesgen', 'wrong-key', mint), 'a wrong job key');
+  await refused(jobGitToken('agent-c_r1-1', 'jgriffith3433/hawkesgen', undefined, mint), 'no job key');
+  await refused(jobGitToken('agent-c_r1-1', 'jgriffith3433/hawkesstudio', k, mint), 'another repo with this job\'s key');
+  await refused(jobGitToken('agent-c_other-1', 'jgriffith3433/hawkesgen', k, mint), "another job's unit with this key");
+  await refused(jobGitToken('agent-c_r1-1', 'not a slug', k, mint), 'not a repo');
+});
+
+test("the job's runner: a stale token is swapped before cloning, a refused one once, and the error says it expired", async () => {
+  const { jobGitKey, jobGitToken } = await import('../src/jobgit.ts');
+  const { jobToken, authFailed } = await import('../src/cloudjob-run.ts');
+  let asks = 0;
+  const studio = http.createServer(async (req, res) => {
+    let raw = '';
+    for await (const c of req) raw += c;
+    asks++;
+    const unit = decodeURIComponent(/\/api\/cloudjobs\/([^/]+)\/git-token$/.exec(req.url!)![1]);
+    try {
+      const token = await jobGitToken(unit, JSON.parse(raw).repo, req.headers['x-studio-job-key'], async () => 'ghs_fresh');
+      res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ token }));
+    } catch (e: any) { res.writeHead(e.status ?? 400, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: e.message })); }
+  });
+  await new Promise<void>((r) => studio.listen(0, '127.0.0.1', () => r()));
+  const url = `http://127.0.0.1:${(studio.address() as any).port}`;
+  const remote = 'https://github.com/jgriffith3433/hawkesgen.git';
+  const lines: string[] = [];
+  try {
+    // Minted 61 minutes before the job ran: swapped before the first use, asked once.
+    const stale = jobToken('agent-c_t1-1', { token: 'ghs_old', tokenAt: Date.now() - 61 * 60_000, remote, refresh: { url, key: jobGitKey('agent-c_t1-1', 'jgriffith3433/hawkesgen')! } }, (s) => lines.push(s));
+    await stale.freshen();
+    assert.equal(stale.get(), 'ghs_fresh');
+    assert.equal(asks, 1);
+    assert.ok(lines.every((l) => !l.includes('ghs_')), 'never logs a token');
+
+    // Fresh in the spec: used as it is; GitHub refusing it gets one retry with a fresh token.
+    const tried: (string | null)[] = [];
+    const t = jobToken('agent-c_t2-1', { token: 'ghs_spec', tokenAt: Date.now(), remote, refresh: { url, key: jobGitKey('agent-c_t2-1', 'jgriffith3433/hawkesgen')! } }, () => {});
+    await t.freshen();
+    assert.equal(asks, 1, 'a fresh token is not swapped');
+    const r = await t.run((tok) => { tried.push(tok); return tok === 'ghs_fresh' ? { ok: true, err: '' } : { ok: false, err: "fatal: could not read Username for 'https://github.com': terminal prompts disabled" }; });
+    assert.equal(r.ok, true);
+    assert.deepEqual(tried, ['ghs_spec', 'ghs_fresh']);
+
+    // A key for another repo is refused: the clone fails with the old token, saying it expired.
+    const wrong = jobToken('agent-c_t3-1', { token: 'ghs_old', tokenAt: Date.now() - 61 * 60_000, remote, refresh: { url, key: jobGitKey('agent-c_t3-1', 'jgriffith3433/hawkesstudio')! } }, () => {});
+    await wrong.freshen();
+    assert.equal(wrong.get(), 'ghs_old');
+    const err = "fatal: could not read Username for 'https://github.com': terminal prompts disabled";
+    assert.equal(authFailed(err), true);
+    assert.equal(wrong.message('clone', err), 'clone failed: GitHub token expired: the job waited 61 min to start');
+    assert.equal(wrong.message('clone', 'fatal: repository not found here'), 'clone failed: fatal: repository not found here');
+  } finally {
+    studio.close();
+  }
 });
 
 test("a beta site's build job gets the same read-only token for its repo", async () => {

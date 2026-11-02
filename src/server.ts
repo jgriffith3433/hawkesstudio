@@ -232,6 +232,13 @@ const server = http.createServer(async (req, res) => {
     // output itself is only ever read from the bucket, so a nudge can make Studio look sooner, never change what it reads.
     const nudge = /^\/api\/cloudjobs\/([A-Za-z0-9_.-]{1,200})\/nudge$/.exec(route);
     if (nudge && method === 'POST') return send(res, 200, { ok: (await import('./cloudjob.ts')).kickCloudJob(nudge[1]) });
+    // A job that waited for a machine asks for a fresh clone token (jobgit.ts): its own job key, for its own repo only.
+    const gitTok = /^\/api\/cloudjobs\/([A-Za-z0-9_.-]{1,200})\/git-token$/.exec(route);
+    if (gitTok && method === 'POST') {
+      const body = await readJson(req);
+      const token = await (await import('./jobgit.ts')).jobGitToken(gitTok[1], body?.repo, req.headers['x-studio-job-key']);
+      return send(res, 200, { token });
+    }
     if (route === '/api/products' && method === 'GET') return send(res, 200, { products: loadProducts() });
     // Builds (builds.ts): a project's builds, its history, build now, make one beta.
     if (/^\/api\/(projects|games)\/[a-z][a-z0-9-]{1,39}\/builds/.test(route) && (await (await import('./builds.ts')).handleBuildRoutes(req, res, route, method, readJson))) return;

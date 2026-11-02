@@ -287,7 +287,8 @@ export function startCloudJob(unit: string, spec: Spec, o: { gitToken?: string |
         file: spec.file, args: spec.args, cwd, env, sessions, ...(repos.length ? { repos } : {}),
         // Talk's answer (detach.ts names its unit hawkes-talk-<conversation>-…): its output goes up as it comes.
         ...(unit.startsWith('hawkes-talk-') ? { flushMs: TALK_FLUSH_MS() } : {}),
-        git: ws ? { head: ws.head, branch: ws.branch, remote: ws.remote, bundle: Boolean(ws.bundle), token: gitToken, ...(big ? {} : { partial: false, lfs: true }) } : null,
+        // tokenAt and refresh: a job that waits for a machine past most of the token's hour gets a fresh one (jobgit.ts).
+        git: ws ? { head: ws.head, branch: ws.branch, remote: ws.remote, bundle: Boolean(ws.bundle), token: gitToken, tokenAt: Date.now(), ...(await gitRefresh(unit, ws.remote)), ...(big ? {} : { partial: false, lfs: true }) } : null,
       }));
       f.execution = await r.start(unit);
       await r.put(key(unit, 'execution.txt'), f.execution);
@@ -300,6 +301,15 @@ export function startCloudJob(unit: string, spec: Spec, o: { gitToken?: string |
     }
     follow(f, spec.cwd, spec.env);
   })();
+}
+
+/** The spec's way to a fresh clone token (jobgit.ts), or nothing when Studio has no address the job can reach. */
+async function gitRefresh(unit: string, remote: string): Promise<{ refresh?: { url: string; key: string } }> {
+  try {
+    const { slugOfRemote } = await import('./ghtoken.ts');
+    const refresh = (await import('./jobgit.ts')).jobGitRefresh(unit, slugOfRemote(remote));
+    return refresh ? { refresh } : {};
+  } catch { return {}; }
 }
 
 /** After a Studio restart: follows a job started before it (the execution's name is in the bucket). */
@@ -567,7 +577,7 @@ export async function runCloudBuild(unit: string, o: { remote: string; head: str
     await r.put(k('spec.json'), JSON.stringify({
       kind: 'build', outputs: o.outputs, file: '/bin/sh', args: ['-c', o.command], cwd: o.cwd,
       env: { CI: '1', npm_config_update_notifier: 'false' }, sessions: path.posix.join(o.cwd, '.hawkes-none', 's', 's'),
-      git: { head: o.head, branch: 'HEAD', remote: plainRemote(o.remote), bundle: Boolean(o.bundle), token: gitToken, shallow: !o.bundle, lfs: true },
+      git: { head: o.head, branch: 'HEAD', remote: plainRemote(o.remote), bundle: Boolean(o.bundle), token: gitToken, tokenAt: Date.now(), ...(await gitRefresh(unit, o.remote)), shallow: !o.bundle, lfs: true },
     }));
     execution = await r.start(unit);
     const t0 = Date.now();

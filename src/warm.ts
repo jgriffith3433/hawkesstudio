@@ -33,6 +33,7 @@ export function installedFor(dir: string) {
 /** After an npm ci in `dir`: every stamp (ensureDeps, npmCi, the fast lane, warm starts) says it matches `hash`. */
 export function markInstalled(dir: string, hash: string | null = lockHash(dir)) {
   if (!hash) return;
+  try { fs.mkdirSync(path.join(dir, 'node_modules'), { recursive: true }); } catch { /* the sandbox owns it */ }
   for (const s of [...STAMPS, INSTALLED]) try { fs.writeFileSync(path.join(dir, 'node_modules', s), hash); } catch { /* the sandbox owns it */ }
 }
 
@@ -110,7 +111,9 @@ export function ensureInstalled(dir: string, { log = () => {}, run = runShell, w
 }
 
 /** The shell command that installs `dir`'s packages and stamps them (so it works as the sandbox user too). */
-export const stampedCi = (hash: string) => `npm ci --no-audit --no-fund && for s in ${[...STAMPS, INSTALLED].join(' ')}; do printf %s ${hash} > node_modules/$s; done`;
+// npm ci makes no node_modules for a repo with no dependencies: the stamps' folder is made first (2026-11-02: every pass
+// logged "cannot create node_modules/.studio-lock: Directory nonexistent").
+export const stampedCi = (hash: string) => `npm ci --no-audit --no-fund && mkdir -p node_modules && for s in ${[...STAMPS, INSTALLED].join(' ')}; do printf %s ${hash} > node_modules/$s; done`;
 
 /** The folders under `root` (at most 2 levels down, no node_modules) that have a package-lock.json, relative. */
 function lockDirs(root: string) {

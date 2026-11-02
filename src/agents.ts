@@ -84,6 +84,7 @@ import { brainId, brainLabel, brainSettings, harnessStopOf, isHarness, type Harn
 import { harnessHeld, holdDetail, holdHarness, onHoldLifted, reviewHolds, LABEL as HARNESS_LABEL } from './harness-hold.ts';
 import { githubReachable } from './ghtoken.ts';
 import { kickFollowups } from './followup-kick.ts';
+import { sessionGone, freshSessionPrompt } from './sessiongone.ts';
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS changes (
@@ -1364,7 +1365,15 @@ function runAgent(c: Change, briefFile: string, s: AgentSettings, env = claudeEn
  */
 async function agentPass(id: string, ph: Phase, save: (patch: Partial<Phase>) => void, s: AgentSettings, env: NodeJS.ProcessEnv, resume?: { session?: string; prompt: string }) {
   const t0 = Date.now();
-  const r = await agentPassRaw(id, ph, save, s, env, resume);
+  let r = await agentPassRaw(id, ph, save, s, env, resume);
+  // The session it was told to resume is gone (its folder never reached the job): a new session told the same, once,
+  // instead of failing the change with its uncommitted work (sessiongone.ts).
+  if (resume?.session && !r.ok && (sessionGone(r.stderr) || sessionGone(r.result))) {
+    addLog(id, `agent: its session ${resume.session.slice(0, 8)}… couldn't be found; starting a new session with the same brief`);
+    update(id, { session: null });
+    save({ proc: undefined });
+    r = await agentPassRaw(id, ph, save, s, env, { prompt: freshSessionPrompt(resume.prompt) });
+  }
   try {
     const c = getChange(id)!;
     const role = agentRole(c);
