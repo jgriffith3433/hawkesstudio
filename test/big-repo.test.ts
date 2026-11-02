@@ -100,3 +100,19 @@ test("prepare makes a partial workspace clone that skips LFS, at the head asked 
   assert.equal(g(cwd, 'config', '--get', 'remote.origin.promisor'), 'true', 'a partial clone');
   assert.match(g(cwd, 'config', '--get', 'filter.lfs.smudge'), /--skip/);
 });
+
+test("a big repo's light checkout is sparse: root files only, clean status, no whole-tree blob fetch", async () => {
+  const { execFileSync } = await import('node:child_process');
+  const fs = await import('node:fs'); const os = await import('node:os'); const path = await import('node:path');
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), 'sparse-'));
+  const g = (cwd: string, ...a: string[]) => execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', ...a], { cwd, encoding: 'utf8' });
+  g(d, 'init', '-q', '-b', 'beta', 'src');
+  fs.mkdirSync(path.join(d, 'src/Assets'), { recursive: true });
+  fs.writeFileSync(path.join(d, 'src/root.txt'), 'r'); fs.writeFileSync(path.join(d, 'src/Assets/big.bin'), 'x');
+  g(path.join(d, 'src'), 'add', '-A'); g(path.join(d, 'src'), 'commit', '-qm', 'i');
+  g(d, 'clone', '-q', '--no-checkout', 'src', 'dst');
+  g(path.join(d, 'dst'), 'sparse-checkout', 'set', '--cone'); g(path.join(d, 'dst'), 'checkout', '-q', 'beta');
+  assert.deepEqual(fs.readdirSync(path.join(d, 'dst')).filter((f) => f !== '.git'), ['root.txt']);
+  assert.equal(g(path.join(d, 'dst'), 'status', '--porcelain').trim(), '');
+  fs.rmSync(d, { recursive: true, force: true });
+});

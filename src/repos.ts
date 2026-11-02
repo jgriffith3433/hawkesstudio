@@ -377,11 +377,22 @@ async function syncGit(folder: string, slug: string, branch: string, want?: stri
       c = await gitA(PROJECTS, cloneArgs(slug, folder, Boolean(big)), undefined, slug, big ? { GIT_LFS_SKIP_SMUDGE: '1' } : {});
     }
     if (!c.ok) return halfClone('clone', c.err);
-    if (big) for (const [k, v] of LIGHT_CONFIG) git(dir, ['config', k, v]);
+    if (big) {
+      for (const [k, v] of LIGHT_CONFIG) git(dir, ['config', k, v]);
+      // A sparse (cone) checkout of just the root files: checking out a Unity project's whole beta tree fetched every blob
+      // at once and the instance's memory killed git (YoobaLand, 2026-11-02: "checking out beta failed: signal SIGKILL").
+      // The agent's Cloud Run job clones and checks out the whole tree itself; worktrees made from this clone inherit it.
+      const sp = await gitA(dir, ['sparse-checkout', 'set', '--cone'], undefined, slug);
+      if (!sp.ok) return halfClone('setting up a sparse checkout', sp.err);
+    }
     const pick = [want, branch].find((b) => b && git(dir, ['rev-parse', '--verify', '--quiet', `origin/${b}`]).ok)
       ?? git(dir, ['rev-parse', '--abbrev-ref', 'origin/HEAD']).out.replace(/^origin\//, '');
     const co = await gitA(dir, ['checkout', '--quiet', ...(pick ? [pick] : [])], undefined, slug, big ? { GIT_LFS_SKIP_SMUDGE: '1' } : {});
-    if (!co.ok || git(dir, ['status', '--porcelain']).out) return halfClone(`checking out ${pick || 'the default branch'}`, co.ok ? 'files missing after the checkout' : co.err);
+    if (!co.ok || git(dir, ['status', '--porcelain']).out) {
+      const dirty = co.ok ? git(dir, ['status', '--porcelain']).out.split('\n').filter(Boolean) : [];
+      const why = co.ok ? `${dirty.length} files differ from the branch right after the checkout (${dirty.slice(0, 3).join(', ')}${dirty.length > 3 ? ', …' : ''})` : co.err;
+      return halfClone(`checking out ${pick || 'the default branch'}`, `${why}${/SIGKILL|signal 9|killed/i.test(co.err) ? ' | the instance probably ran out of memory fetching the files' : ''}`);
+    }
     const how = big ? `; light clone (partial, no LFS files, no npm ci: ${big})` : '';
     if (big) console.log(`[repos] ${folder}: light clone: ${big}`);
     return { folder, slug, action: 'cloned', detail: `cloned (${pick ?? 'default branch'})${how}`, head: git(dir, ['log', '-1', '--format=%h %s']).out };
