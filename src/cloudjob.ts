@@ -77,7 +77,7 @@ export function folderEntries(dir: string, name: (rel: string) => string) {
 
 // ------------------------------------------------------------------- git
 
-export const git = (cwd: string, args: string[], o: { input?: string } = {}) => {
+export const git = (cwd: string, args: string[], o: { input?: string | Buffer } = {}) => {
   const r = spawnSync('git', ['-c', 'safe.directory=*', ...args], { cwd, encoding: 'buffer', windowsHide: true, maxBuffer: 512 * 1024 * 1024, input: o.input });
   return { ok: r.status === 0, out: (r.stdout ?? Buffer.alloc(0)).toString('utf8').trim(), raw: r.stdout ?? Buffer.alloc(0), err: (r.stderr ?? Buffer.alloc(0)).toString('utf8').trim() };
 };
@@ -120,6 +120,18 @@ export function applyWorkspace(cwd: string, o: { head: string; bundle: string | 
   } else git(cwd, ['reset', '--quiet', '--hard']);
   git(cwd, ['clean', '-fdq']);
   if (o.pack) unpack(o.pack, cwd);
+  // A light (sparse) worktree: tracked files outside its cone are skip-worktree, which git status and `git add -A` don't
+  // see, so the pass's edits there looked like "no changes" and were never committed. Mark what the pass touched.
+  if (o.pack) showSparse(cwd, [...o.pack.files.filter((f) => !path.isAbsolute(f.p)).map((f) => f.p), ...(o.pack.deleted ?? [])]);
+}
+
+/** In a sparse worktree: the tracked `paths` count as present (not skip-worktree), so status and add see their changes. */
+export function showSparse(cwd: string, paths: string[]) {
+  if (!paths.length || git(cwd, ['config', '--get', 'core.sparseCheckout']).out !== 'true') return;
+  for (let i = 0; i < paths.length; i += 200) {
+    const tracked = git(cwd, ['ls-files', '-z', '--', ...paths.slice(i, i + 200)]).raw.toString('utf8').split('\0').filter(Boolean);
+    if (tracked.length) git(cwd, ['update-index', '--no-skip-worktree', '-z', '--stdin'], { input: Buffer.from(tracked.join('\0') + '\0') });
+  }
 }
 
 // --------------------------------------------------------------- Claude Code
@@ -288,7 +300,7 @@ export function startCloudJob(unit: string, spec: Spec, o: { gitToken?: string |
         // Talk's answer (detach.ts names its unit hawkes-talk-<conversation>-…): its output goes up as it comes.
         ...(unit.startsWith('hawkes-talk-') ? { flushMs: TALK_FLUSH_MS() } : {}),
         // tokenAt and refresh: a job that waits for a machine past most of the token's hour gets a fresh one (jobgit.ts).
-        git: ws ? { head: ws.head, branch: ws.branch, remote: ws.remote, bundle: Boolean(ws.bundle), token: gitToken, tokenAt: Date.now(), ...(await gitRefresh(unit, ws.remote)), ...(big ? {} : { partial: false, lfs: true }) } : null,
+        git: ws ? { head: ws.head, branch: ws.branch, remote: ws.remote, bundle: Boolean(ws.bundle), token: gitToken, tokenAt: Date.now(), ...(await gitRefresh(unit, ws.remote)), ...(big ? {} : { partial: false, lfs: true }), ...(unit.startsWith('hawkes-agent-') ? { commitDirty: true } : {}) } : null,
       }));
       f.execution = await r.start(unit);
       await r.put(key(unit, 'execution.txt'), f.execution);

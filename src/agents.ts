@@ -654,7 +654,7 @@ export const COMMIT_DENIED = /index\.lock|(commit|\.git)[^\n]{0,80}permission de
  */
 async function commitForAgent(id: string, worktree: string, title: string, said: string) {
   if (!COMMIT_DENIED.test(said) || !git(worktree, ['status', '--porcelain']).out) return false;
-  const add = await gitAsync(worktree, ['add', '-A']);
+  const add = await gitAsync(worktree, ['add', '--sparse', '-A']);
   const commit = add.ok && await gitAsync(worktree, ['-c', 'core.hooksPath=/dev/null', 'commit', '--no-verify', '-m', `${title.slice(0, 72)}\n\nCommitted by Hawkes Studio: the agent's own git commit was refused (a permission error in the worktree's git folder).`]);
   if (!add.ok || !commit || !commit.ok) {
     addLog(id, `Studio couldn't commit the agent's work either: ${(add.ok ? commit && commit.err : add.err) ?? ''}`.slice(0, 300));
