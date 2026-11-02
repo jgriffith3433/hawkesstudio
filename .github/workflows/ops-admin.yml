@@ -123,7 +123,7 @@ jobs:
           net-access)
             P=hawkes-prod
             # ops-admin can read firewall rules but not instances: take the network from the VMs' own 80/443 rule.
-            net=$(gcloud compute firewall-rules list --project $P --filter='targetTags:hawkes-web' --format='value(network.basename())' --limit=1)
+            net=$(gcloud compute firewall-rules list --project $P --format='csv[no-heading](network.basename(),targetTags.list(separator=";"))' | awk -F, '$2 ~ /(^|;)hawkes-web(;|$)/{print $1; exit}')
             [ -n "$net" ] || { echo "no firewall rule targets tag hawkes-web in $P"; exit 1; }
             sum "- Hawkes Net VMs are on network $net (tag hawkes-web)"
             if have gcloud compute firewall-rules describe hawkes-ssh-iap --project $P; then sum "- firewall hawkes-ssh-iap exists"
