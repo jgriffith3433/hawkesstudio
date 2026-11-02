@@ -456,6 +456,14 @@ const server = http.createServer(async (req, res) => {
       return void fs.createReadStream(shot).pipe(res);
     }
 
+    // An agent imports one of the owner's finished Gen images (gen-import.ts; the MCP tool writes the bytes into its worktree).
+    if (route === '/api/gen/import' && method === 'POST') {
+      const b = await readJson(req);
+      const [{ importAsset }, { gen }] = await Promise.all([import('./gen-import.ts'), import('./gen.ts')]);
+      const r = await importAsset({ asset: b.asset, format: b.format, width: b.width, square: b.square, quality: b.quality, strip: b.strip }, gen as any);
+      return send(res, 200, { asset: r.asset, format: r.format, ext: r.ext, mime: r.mime, width: r.width, height: r.height, size: r.bytes.length, data: Buffer.from(r.bytes).toString('base64') });
+    }
+
     // Asset manifests.
     m = /^\/api\/assets\/([\w-]+)$/.exec(route);
     if (m && method === 'GET') return send(res, 200, assetStatus(m[1]));

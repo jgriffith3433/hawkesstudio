@@ -19,6 +19,17 @@ type Client = { studio: typeof defaultStudio; waitRun: typeof defaultWaitRun };
 export const PLATFORM_TOOLS = new Set(['studio_costs', 'studio_ledger', 'studio_resources', 'studio_social', 'studio_social_post', 'studio_unity_test', 'studio_build', 'studio_dev_open', 'studio_dev_status', 'studio_dev_stop', 'studio_dev_resolve']);
 export const CUSTOMER_INSTRUCTIONS = 'Hawkes Studio: daily playtests and reviews of your games, the backlog of findings, the roadmap and agents, and gated deploys. Going live needs your own approval.';
 
+/** The worktree an agent's MCP server writes into: its git checkout (STUDIO_WORKTREE, else the server's working folder). */
+export function worktreeRoot() {
+  let p = path.resolve(process.env.STUDIO_WORKTREE || process.cwd());
+  while (!fs.existsSync(path.join(p, '.git'))) {
+    const up = path.dirname(p);
+    if (up === p) throw new Error('studio_gen_import must run inside a git worktree');
+    p = up;
+  }
+  return p;
+}
+
 export function studioMcp({ studio, waitRun }: Client = { studio: defaultStudio, waitRun: defaultWaitRun }): McpServer {
   const tools: McpTool[] = [
     {
@@ -208,6 +219,18 @@ export function studioMcp({ studio, waitRun }: Client = { studio: defaultStudio,
       description: 'The generated-asset manifest of a product (hawkes.assets.json): the status of each asset (current, missing, changed recipe, edited by hand, file missing) and its files.',
       inputSchema: obj({ product: str('Product id') }, ['product']),
       run: async ({ product }) => studio(`/api/assets/${product}`),
+    },
+    {
+      name: 'studio_gen_import',
+      description: "Brings one of the owner's finished Hawkes Gen images into the repo you are working in. Studio fetches the asset by id with its own Gen access (only assets in the owner's own account), optionally converts it, and writes it at `path` inside your worktree (use this instead of curl or python). format: jpeg, png or webp; width: resize to that width keeping the ratio; square: resize and centre-crop to size x size; quality 1-100; strip: remove metadata (on whenever it converts). With none of these the original file is copied. Returns the path written, format, pixel size and bytes. Commit the file yourself.",
+      inputSchema: obj({ asset: str('Hawkes Gen asset id (the id in https://hawkesgen.ai/v1/files/<id>)'), path: str('Where to write it, relative to the worktree root, e.g. public/images/hero.webp'), format: str('jpeg, png or webp (optional)'), width: { type: 'number', description: 'Resize to this width in pixels (optional)' }, square: { type: 'number', description: 'Resize and centre-crop to a square of this size (optional)' }, quality: { type: 'number', description: '1-100 (jpeg, webp)' }, strip: bool('Strip metadata (default on when converting)') }, ['asset', 'path']),
+      run: async ({ asset, path: rel, format, width, square, quality, strip }) => {
+        const { writeInside } = await import('./gen-import.ts');
+        const root = worktreeRoot();
+        const r = await studio('/api/gen/import', { method: 'POST', body: { asset, format, width, square, quality, strip } });
+        const written = writeInside(root, String(rel), Buffer.from(String(r.data), 'base64'));
+        return { path: written, format: r.format, width: r.width, height: r.height, bytes: r.size, asset: r.asset, note: `Written to ${written}; it is not committed yet.` };
+      },
     },
     {
       name: 'studio_content',
