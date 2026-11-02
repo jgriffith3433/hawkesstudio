@@ -53,6 +53,7 @@ import { waitsForCurrentBuild, staleReport, staleNote } from './bugreport.ts';
 import { notReached, slowNote, playTime, samplePace, whereTimeGoes, idleWatch, idleState, IDLE_SUBJECT } from './pace.ts';
 import { harnessBlocked, harnessStopOf } from './brains.ts';
 import { harnessHeld, holdStatus, onHoldLifted } from './harness-hold.ts';
+import { addWorktree } from './worktree.ts';
 
 // ---------------------------------------------------------------- settings
 
@@ -1669,9 +1670,7 @@ async function revertOnBetaNow(repo: string, pr: number, by: string) {
   const sha = prCommit(repo, BETA, pr);
   if (!sha) throw new StudioError(`Can't find pull request #${pr}'s commit on ${BETA}`);
   const wt = path.join(PROJECTS, '.work', `revert-${repo}-${pr}`);
-  fs.rmSync(wt, { recursive: true, force: true });
-  git(dir, ['worktree', 'prune']);
-  const w = await gitAsync(dir, ['worktree', 'add', '--detach', wt, `origin/${BETA}`]);
+  const w = await addWorktree(dir, wt, ['--detach', wt, `origin/${BETA}`], gitAsync, { removeLeftover: true });
   if (!w.ok) throw new StudioError(`worktree: ${w.err}`);
   try {
     const r = git(wt, ['-c', 'user.name=Hawkes Studio', '-c', 'user.email=studio@hawkesgen.ai', 'revert', '--no-edit', sha]);
