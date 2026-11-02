@@ -96,6 +96,13 @@ export function cellEnv(org: string, owner: { sub: string; email: string }, c = 
  * J, 2026-11-01: "For now just scale the memory up." 4 GiB is the most Cloud Run gives one vCPU, so the CPU stays 1.
  */
 export const CELL_LIMITS = { cpu: '1', memory: '4Gi' } as const;
+/**
+ * How long a Studio may take from start to listening: the lease (up to ~30 s for the old instance to hand over),
+ * `litestream restore` (at most an hour of WAL: litestream.yml's hourly snapshots), the state pull. Cloud Run's default
+ * TCP probe allows 4 minutes in one attempt, and three deploys of J's Studio ran past it on 2026-11-02; this checks the
+ * port every 10 s for up to 10 minutes. The same numbers as tools/studio-cloudrun/deploy.mjs STARTUP_PROBE.
+ */
+export const CELL_STARTUP_PROBE = { initialDelaySeconds: 0, periodSeconds: 10, timeoutSeconds: 5, failureThreshold: 60, tcpSocket: { port: 8080 } } as const;
 const mib = (v: unknown) => { const m = /^(\d+(?:\.\d+)?)(Mi|Gi|M|G)?$/.exec(String(v ?? '')); if (!m) return 0; const n = Number(m[1]); return m[2] === 'Gi' ? n * 1024 : m[2] === 'G' ? (n * 1e9) / 1048576 : m[2] === 'M' ? (n * 1e6) / 1048576 : m[2] === 'Mi' ? n : n / 1048576; };
 /** A container's limits with at least a cell's memory (never lowered; the CPU and anything else kept). */
 export function withCellMemory(limits: Record<string, string> | undefined): Record<string, string> {
@@ -122,6 +129,7 @@ export function cellService(org: string, owner: { sub: string; email: string }, 
         image,
         env: Object.entries(cellEnv(org, owner, c, gen)).map(([name, value]) => ({ name, value })),
         resources: { limits: { ...CELL_LIMITS }, cpuIdle: false },
+        startupProbe: CELL_STARTUP_PROBE,
       }],
     },
   };
@@ -203,13 +211,14 @@ export async function serviceImage(service: string, c = cellsConfig()): Promise<
 
 /**
  * Puts a service on a new image (a new revision; everything else as it was, except that a cell made smaller than
- * CELL_LIMITS gets its memory raised: the roll after a deploy is what brings older cells up to size).
+ * CELL_LIMITS gets its memory raised and every one gets CELL_STARTUP_PROBE: the roll after a deploy is what brings
+ * older cells up to date).
  */
 export async function setImage(service: string, image: string, o: { dry?: boolean } = {}, c = cellsConfig()) {
   const url = `${base(c)}/services/${service}`;
   if (dryRun(o)) return call('PATCH', `${url}?updateMask=template.containers`, { template: { containers: [{ image }] } }, o);
   const s = await gapi(url);
-  const containers = (s.template?.containers ?? [{}]).map((ct: any, i: number) => (i === 0 ? { ...ct, image, resources: { ...(ct.resources ?? {}), limits: withCellMemory(ct.resources?.limits) } } : ct));
+  const containers = (s.template?.containers ?? [{}]).map((ct: any, i: number) => (i === 0 ? { ...ct, image, resources: { ...(ct.resources ?? {}), limits: withCellMemory(ct.resources?.limits) }, startupProbe: CELL_STARTUP_PROBE } : ct));
   return call('PATCH', `${url}?updateMask=template.containers`, { template: { containers } }, o);
 }
 
@@ -263,8 +272,9 @@ export async function rollImage(image: string, o: { dry?: boolean; health?: (url
  * roll (the rest stay on what they had, which works). J's Studio isn't touched: it rolls them after its own deploy
  * (cells.ts followRoll). Hibernated cells wake on J's Studio's image anyway.
  */
-/** Whether a service's newest revision runs `image`, is ready, and takes the traffic (waits up to ~5 minutes). */
-export async function newRevisionServes(service: string, image: string, c = cellsConfig(), waitMs = 5 * 60_000): Promise<boolean> {
+/** Whether a service's newest revision runs `image`, is ready, and takes the traffic (waits up to ~11 minutes: the
+ * startup probe allows 10). */
+export async function newRevisionServes(service: string, image: string, c = cellsConfig(), waitMs = 11 * 60_000): Promise<boolean> {
   const end = Date.now() + waitMs;
   while (Date.now() < end) {
     const sv = await gapi(`${base(c)}/services/${service}`, { missingOk: true }).catch(() => null);

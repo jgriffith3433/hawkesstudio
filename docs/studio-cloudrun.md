@@ -9,7 +9,7 @@ Cloud Run service `studio` in `hawkes-staging` / `us-east4`, the same way Hawkes
 
 | Piece | Where | Notes |
 |---|---|---|
-| Dashboard, API, `/mcp`, the daily loop, the PM loop, ops | Cloud Run service `studio` (`src/cloudrun-main.ts`) | One instance at most, none while idle |
+| Dashboard, API, `/mcp`, the daily loop, the PM loop, ops | Cloud Run service `studio` (`src/cloudrun-main.ts`) | One instance at most per revision (two for a moment during a rollout: "One writer at a time"), none while idle |
 | `studio.db` | Litestream to `gs://hawkes-staging-studio-state/db/` | Restored when an instance starts (`server/studio-cloudrun/entrypoint.sh`), after the one before it hands over ("One writer at a time") |
 | State files (settings, Claude accounts, Talk's sessions in `claude-home/`, agents.json...) | `gs://.../state/` (`src/cloudhost.ts`) | Pulled at start, pushed every 30 s and on SIGTERM |
 | Agents', scouts' and Talk's Claude Code | Cloud Run job `studio-agent`, one execution per pass (`src/cloudjob.ts`, `src/cloudjob-run.ts`) | Its own sandbox; see "The job" |
@@ -40,6 +40,39 @@ Approve cards that way). Now (`src/cloudlease.ts`):
 
 The logs say `[lease] {"claimed":true,…,"how":"released","generation":"…"}` on a start after a deploy, `"first"`
 the first time, `"quiet"` after a crash. Test: `test/cloud-lease.test.ts`.
+
+### Starting in time (2026-11-02)
+
+Three deploys of `studio` failed on 2026-11-02 with "Startup probes timed out after 4m" while the old instance was busy
+with agents' jobs (the one after them, once the jobs had ended, went through). An instance starts in this order
+(`entrypoint.sh`): the lease (up to ~30 s waiting for the old instance to hand over), `litestream restore`, the state
+files' pull, then `server.ts` listens on 8080. Two things kept it from listening within Cloud Run's default probe
+(TCP, one attempt of 240 s):
+
+- **The restore.** A restore is the generation's newest snapshot plus every WAL segment written since. Without
+  `snapshot-interval` Litestream 0.3 snapshots only when it enforces retention (once per `retention`, which was 168h),
+  so a long-lived instance left up to a week of 1-second WAL segments to fetch and replay. `litestream.yml` now takes a
+  snapshot every hour (`snapshot-interval: 1h`) and keeps three days (`retention: 72h`), so a restore replays at most an
+  hour.
+- **The probe.** `deploy.mjs` sets a TCP startup probe on port 8080 every 10 s, 60 tries: up to 10 minutes from start
+  to listening, and a revision that is ready sooner is seen within 10 s (`STARTUP_PROBE`). Cells get the same probe
+  (`cellrun.ts CELL_STARTUP_PROBE`: when made, and on every roll, which also brings J's Studio's along when
+  `roll-cells.mjs` runs).
+
+Instances: `--max-instances=1` is the revision template's cap (one writer per revision) and `--min-instances=0` keeps
+scale to zero. There is **no service-wide cap** (`--max=default`): a service-wide maximum is shared by every revision,
+and at 1 the new revision would get no instance until the old one drained. Two instances for a moment, the old one
+handing over and the new one waiting for it, is exactly what the lease is for: the new instance claims before it
+restores and waits for `released-<id>` (or a quiet heartbeat), the old one sees the claim within 5 s and stops writing,
+and an older revision never takes the database back from a newer one (`cloudlease.ts claim`). On 2026-11-02 `studio`
+had a hand-set service-wide `run.googleapis.com/maxScale: '3'`, which the next `deploy.mjs` removes.
+
+**CI does not carry these settings**: `ci.yml` only changes the image (`gcloud run services update --image`), and the
+service keeps everything else. The probe and the service-wide cap reach a lane when J runs `deploy.ps1` for it again,
+or by hand: `gcloud run services update studio --region us-east4 --project hawkes-staging --max=default
+--startup-probe=tcpSocket.port=8080,initialDelaySeconds=0,periodSeconds=10,timeoutSeconds=5,failureThreshold=60`
+(`studio-beta`: `--region us-central1`). The Litestream change comes with the image, so the next CI deploy has it;
+the first restore after it still replays what the old instance wrote since its last snapshot.
 ## Signing in
 
 On the AWS server Caddy's forward_auth stood in front of everything. Here nothing does, so `server.ts` asks

@@ -158,6 +158,7 @@ test('signing up makes only the record; the first game makes the cell (shared ac
   assert.ok(svc, 'the service studio-o-<org>');
   assert.equal(svc.template.serviceAccount, process.env.STUDIO_CELLS_SA, 'the one shared service account');
   assert.deepEqual(svc.template.scaling, { minInstanceCount: 0, maxInstanceCount: 1 });
+  assert.deepEqual(svc.template.containers[0].startupProbe, R.CELL_STARTUP_PROBE, 'room to restore and start (10 minutes)');
   assert.equal(svc.labels['hawkes-studio-cell'], '1');
   const env = Object.fromEntries(svc.template.containers[0].env.map((e: any) => [e.name, e.value]));
   assert.equal(env.STUDIO_ORG, org.id);
@@ -292,6 +293,8 @@ test('a rolling upgrade: J\'s Studio first, then each awake cell; a failing cell
   const awake = C.listOrgs().filter((o) => o.state === 'awake').map((o) => `studio-o-${o.id}`);
   assert.deepEqual(r.done.slice(1).sort(), awake.sort());
   for (const s of awake) assert.equal(services.get(s).template.containers[0].image, 'us-east4-docker.pkg.dev/hawkes-test/studio/studio:v2');
+  // A roll brings older services' startup probe up to date too (they were made with Cloud Run's 4-minute default).
+  for (const s of ['studio', ...awake]) assert.deepEqual(services.get(s).template.containers[0].startupProbe, R.CELL_STARTUP_PROBE);
   const patches = calls.filter((c) => c.method === 'PATCH').map((c) => c.url.split('/services/')[1].split('?')[0]);
   assert.equal(patches[0], 'studio', "J's Studio before any customer");
   const bad = await R.rollImage('us-east4-docker.pkg.dev/hawkes-test/studio/studio:v3', { health: async () => false, log: () => {} });
@@ -649,4 +652,22 @@ test("Gen's charging key is the platform admin's alone to read", async () => {
   assert.equal(yes.status, 200, JSON.stringify(yes.body));
   assert.equal(yes.body.key, K.genChargesKey());
   assert.equal(yes.body.env, 'HAWKESGEN_ORG_CREDITS_KEY');
+});
+
+test("the deploy config: Studio's startup probe is the cells' (10 minutes), Litestream snapshots hourly", () => {
+  const root = path.join(import.meta.dirname, '..');
+  const deploy = fs.readFileSync(path.join(root, 'tools/studio-cloudrun/deploy.mjs'), 'utf8');
+  const probe = /const STARTUP_PROBE = '([^']+)'/.exec(deploy)?.[1] ?? '';
+  const p = R.CELL_STARTUP_PROBE;
+  assert.equal(probe, `tcpSocket.port=${p.tcpSocket.port},initialDelaySeconds=${p.initialDelaySeconds},periodSeconds=${p.periodSeconds},timeoutSeconds=${p.timeoutSeconds},failureThreshold=${p.failureThreshold}`);
+  // Within Cloud Run's limits (period and timeout 1-240 s, the timeout no longer than the period), at least 8 minutes.
+  assert.ok(p.periodSeconds <= 240 && p.timeoutSeconds <= p.periodSeconds && p.initialDelaySeconds <= 240);
+  assert.ok(p.initialDelaySeconds + p.periodSeconds * p.failureThreshold >= 480);
+  assert.match(deploy, /`--startup-probe=\$\{STARTUP_PROBE\}`/);
+  // The cap is per revision (the template), never service-wide: the old and new revisions overlap during a rollout.
+  assert.match(deploy, /'--max-instances=1', '--max=default'/);
+  assert.match(deploy, /'--min-instances=0'/);
+  const ls = fs.readFileSync(path.join(root, 'server/studio-cloudrun/litestream.yml'), 'utf8');
+  assert.match(ls, /^\s+snapshot-interval: 1h$/m, 'a restore replays at most an hour of WAL');
+  assert.match(ls, /^\s+retention: 72h$/m);
 });
