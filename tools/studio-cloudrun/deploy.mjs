@@ -12,7 +12,8 @@
 // 3. Secrets (values never printed): Studio's owner key, the agents' key and the MCP key (new random ones, made once),
 //    Studio's own Gen keys (made with the Gen owner key in ~/.hawkes/client.json: an admin key for Studio, a user key
 //    for agents and Talk), the GitHub token (git's stored credential for github.com on this PC), Resend's key if set.
-// 4. The service: the image build.mjs made, one instance at most, none while idle, CPU while an instance lives.
+// 4. The service: the image build.mjs made, one instance at most per revision (no service-wide cap), none while idle,
+//    CPU while an instance lives, a startup probe that allows 10 minutes.
 // 5. The job, the scheduler (05:00 America/Los_Angeles), the service's own URL into its environment, a health check
 //    with the owner key, and this PC's ~/.hawkes/client.json pointed at Studio (studioUrl, studioKey).
 import fs from 'node:fs';
@@ -36,6 +37,9 @@ const genUrl = flag('gen', beta ? 'https://beta.hawkesgen.ai' : 'https://hawkesg
 const publicUrl = flag('public-url', beta ? 'https://studio-beta.hawkesgen.ai' : 'https://studio.hawkesgen.ai').replace(/\/+$/, '');
 const emails = flag('google-emails', 'piercehawkes3@gmail.com');
 const P = `--project=${project}`;
+// The service's startup probe (see the deploy below): a TCP check of the port every 10 s, 60 tries, so up to 10 minutes
+// from start to listening. Cells use the same numbers (src/cellrun.ts CELL_STARTUP_PROBE; test/cells.test.ts checks).
+const STARTUP_PROBE = 'tcpSocket.port=8080,initialDelaySeconds=0,periodSeconds=10,timeoutSeconds=5,failureThreshold=60';
 const sa = `studio-control@${project}.iam.gserviceaccount.com`;
 const agentSa = `studio-agent@${project}.iam.gserviceaccount.com`;
 const schedSa = `studio-scheduler@${project}.iam.gserviceaccount.com`;
@@ -158,9 +162,17 @@ const envVars = [
   ...(googleClient ? [`STUDIO_GOOGLE_CLIENT_ID=${googleClient}`] : []),
 ];
 // "^|^" separates the list: the emails may hold commas (and every value holds an @).
+// Instances: at most one per revision (--max-instances, the revision template) and no service-wide cap (--max=default
+// clears one set by hand): during a rollout the old revision's instance and the new one's run side by side for a moment,
+// and src/cloudlease.ts hands the database from one to the other. A service-wide max of 1 would leave the new revision
+// no instance until the old one drained. Scale to zero stays (min 0).
+// Startup: the entrypoint claims the lease (up to ~30 s waiting for the old instance to hand over), restores studio.db
+// (at most an hour of WAL since litestream.yml's hourly snapshots), pulls the state files, then server.ts listens.
+// Cloud Run's default TCP probe allows 4 minutes in one attempt; this one checks the port every 10 s for up to 10 minutes.
 gcloud(['run', 'deploy', service, `--image=${image}`, `--region=${region}`, P,
   `--service-account=${sa}`, '--allow-unauthenticated',
-  '--min-instances=0', '--max-instances=1', '--no-cpu-throttling', '--cpu=2', '--memory=4Gi',
+  '--min-instances=0', '--max-instances=1', '--max=default', `--startup-probe=${STARTUP_PROBE}`,
+  '--no-cpu-throttling', '--cpu=2', '--memory=4Gi',
   '--concurrency=80', '--timeout=3600', '--execution-environment=gen2',
   `--set-env-vars=^|^${envVars.join('|')}`, `--set-secrets=${mounted.join(',')}`, '--format=none']);
 

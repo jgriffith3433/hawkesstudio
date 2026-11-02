@@ -1,5 +1,10 @@
 # Studio's SQLite database, streamed to Cloud Storage (the bucket comes from the environment). Credentials are the
-# service's own account (the metadata server). One instance at most writes it: the service runs with max-instances 1.
+# service's own account (the metadata server). One instance at a time writes it: max-instances 1 per revision, and the
+# lease in the bucket (src/cloudlease.ts) hands the database from a deploy's old instance to the new one.
+# A restore is the generation's newest snapshot plus the WAL written after it, so how often snapshots are taken bounds
+# how long a starting instance spends in `litestream restore`. With no snapshot-interval Litestream only snapshots when
+# it enforces retention (once per `retention`): up to a week of 1 s WAL segments to fetch and replay, which is how three
+# deploys on 2026-11-02 ran past Cloud Run's startup probe. Hourly snapshots keep a restore to at most an hour of WAL.
 dbs:
   - path: /data/studio.db
     replicas:
@@ -7,4 +12,7 @@ dbs:
         bucket: ${STUDIO_STATE_BUCKET}
         path: ${STUDIO_STATE_PREFIX}db/studio.db
         sync-interval: 1s
-        retention: 168h
+        snapshot-interval: 1h
+        # Three days of point-in-time history (72 hourly snapshots and their WAL); older ones are deleted.
+        retention: 72h
+        retention-check-interval: 1h
