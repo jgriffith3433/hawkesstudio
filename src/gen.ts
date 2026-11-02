@@ -193,11 +193,20 @@ export async function signedFileUrl(asset: string, { api = gen, days = SIGN_DAYS
 }
 export const clearSignedFileUrls = () => signed.clear();
 
-/** Signs every bare Gen file link in a text (a message, a report), at the moment it is shown. */
+/**
+ * Signs every Gen file link in a text (a message, a report), at the moment it is shown. Bare links get a signature;
+ * links that already carry one (the model copies them from tool results, and stored text keeps them) are signed again,
+ * fresh, so an old message never shows an expired link. Only a plain `?exp=..&sig=..` query is taken as the old
+ * signature; its end is the first character that can't be part of a URL in Markdown (space, `)`, `]`, quote, `<`).
+ */
 export async function signFileLinks(text: string, opts?: Parameters<typeof signedFileUrl>[1]): Promise<string> {
-  const re = new RegExp(`${GEN_PUBLIC_URL.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}/v1/files/(a_[0-9a-f]+)(?![0-9a-f?&])`, 'g');
+  const re = new RegExp(`${GEN_PUBLIC_URL.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}/v1/files/(a_[0-9a-f]+)(?![0-9a-f])(?:\\?(?:[A-Za-z0-9_%~=&-]*(?:exp|sig)=)[A-Za-z0-9_%~=&-]*)?`, 'g');
   const ids = [...new Set([...String(text).matchAll(re)].map((m) => m[1]))];
   if (!ids.length) return text;
   const urls = new Map(await Promise.all(ids.map(async (id) => [id, await signedFileUrl(id, opts)] as const)));
-  return String(text).replace(re, (_m, id) => urls.get(id) ?? _m);
+  // A failed signing gives the bare link: don't let that replace a link that still carried its own signature.
+  return String(text).replace(re, (m, id) => {
+    const u = urls.get(id);
+    return !u || (/[?&]sig=/.test(m) && !/[?&]sig=/.test(u)) ? m : u;
+  });
 }

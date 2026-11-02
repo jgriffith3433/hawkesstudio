@@ -647,7 +647,9 @@ const server = http.createServer(async (req, res) => {
       if (!c) return send(res, 200, { error: 'no such conversation' });
       // ?after=<n>: only messages n and later (the page has the earlier ones); total says how many there are.
       const from = Math.min(Math.max(0, Number(q('after')) || 0), c.messages.length);
-      return send(res, 200, { ...c, messages: c.messages.slice(from), from, total: c.messages.length, guide: (await import('./guide.ts')).pendingGuide(c.id), approvals: ap.listApprovals({ conversation: c.id }, !ap.notJClick(req)) });
+      // Gen file links are signed here, when shown, with a fresh 7-day signature (never stored; gen.ts signFileLinks).
+      const shown = await Promise.all(c.messages.slice(from).map(async (x: any) => (typeof x.text === 'string' && x.text.includes('/v1/files/') ? { ...x, text: await signFileLinks(x.text) } : x)));
+      return send(res, 200, { ...c, messages: shown, from, total: c.messages.length, guide: (await import('./guide.ts')).pendingGuide(c.id), approvals: ap.listApprovals({ conversation: c.id }, !ap.notJClick(req)) });
     }
     if (m && method === 'POST' && m[2]) return send(res, 200, { ok: true, stopped: stopTalk(m[1]) });
     if (m && method === 'PATCH' && !m[2]) return send(res, 200, renameConversation(m[1], String((await readJson(req)).title ?? '')));
