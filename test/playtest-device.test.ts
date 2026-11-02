@@ -36,7 +36,7 @@ test('a phone request plays at phone size as <scenario>@local:phone; unset stays
 });
 
 test("Sick Of It has the layout playtest at phone size", () => {
-  const products = JSON.parse(fs.readFileSync(new URL('../products.json', import.meta.url), 'utf8'));
+  const products = JSON.parse(fs.readFileSync(new URL('./fixture/j-products.json', import.meta.url), 'utf8'));
   const soi = products.products.find((p: any) => p.id === 'sickofit');
   const t = soi.playtests.find((x: any) => x.scenario === 'layout' && x.device === 'phone');
   assert.ok(t);

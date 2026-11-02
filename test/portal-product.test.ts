@@ -8,7 +8,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 
-const real = JSON.parse(fs.readFileSync(new URL('../products.json', import.meta.url), 'utf8'));
+const real = JSON.parse(fs.readFileSync(new URL('./fixture/j-products.json', import.meta.url), 'utf8'));
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'studio-portal-'));
 process.env.STUDIO_PROJECTS = path.join(tmp, 'Projects');

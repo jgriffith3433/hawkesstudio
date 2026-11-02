@@ -1,0 +1,625 @@
+{
+  "$comment": "Every Hawkes product Studio builds, playtests and reports on. Paths are relative to C:\\Projects. local.serve: how Studio starts the product locally for playtests (npm: the dev server; static: python's http.server over a folder). playtests: what runs each day (where: local or live). quality: the quality bar, what \"done\" means for the product; reviews judge against it, and a scenario that meets it gets regression-only daily reviews until its build changes meaningfully (src/review.ts). Scenarios come from each game's playtest contract (docs/playtest.md). dev: developing on beta (src/dev.ts): front = the /dev/ front door port Caddy routes https://<sub>.hawkesgen.ai/dev/* to, port = the dev server port in the beta working copy (web products), path = the devtools page.",
+  "products": [
+    {
+      "id": "doseofdestruction",
+      "name": "Dose Of Destruction",
+      "framing": "cytotoxic dose",
+      "engine": "web",
+      "repo": "doseofdestructionwebsite",
+      "site": "doseofdestructionwebsite",
+      "live": "https://doseofdestruction.com/Game/",
+      "local": {
+        "serve": "npm",
+        "dir": "doseofdestructionwebsite",
+        "port": 8089,
+        "path": "/Game/"
+      },
+      "checks": [
+        {
+          "dir": "doseofdestructionwebsite",
+          "cmd": "npm test"
+        },
+        {
+          "dir": "doseofdestructionwebsite",
+          "cmd": "npm run typecheck"
+        }
+      ],
+      "playtests": [
+        {
+          "scenario": "smoke",
+          "where": "local"
+        },
+        {
+          "scenario": "match",
+          "where": "local"
+        },
+        {
+          "scenario": "campaign",
+          "where": "local"
+        },
+        {
+          "scenario": "smoke",
+          "where": "live"
+        },
+        {
+          "scenario": "smoke",
+          "where": "live",
+          "device": "phone"
+        }
+      ],
+      "story": [
+        "doseofdestructionwebsite/content/campaign.json"
+      ],
+      "about": "A browser platform fighter (Babylon.js) with every main Hawkes IP character. The campaign is a TV show, from Open Mic (a walk-on with one skateboard, Exit Punk) to Encore. Fighters, poses and animations are AI-generated.",
+      "quality": "From the menu a fight starts and ends; every fighter can be picked, moves, attacks and gets KO'd with readable hit feedback; campaign chapters play in order with their story beats; no crash or soft-lock. AI-generated art with uneven style between fighters is accepted.",
+      "contract": true,
+      "dev": {
+        "front": 8701,
+        "port": 8711,
+        "path": "/devtools.html",
+        "env": {
+          "DOD_ART_ROOT": "${PROJECTS}/AllTheCharacters",
+          "DOD_MAPS_ROOT": "${PROJECTS}/AllTheMaps"
+        }
+      }
+    },
+    {
+      "id": "phorigins",
+      "name": "PH Origins",
+      "framing": "pH balance",
+      "engine": "web",
+      "repo": "phoriginswebsite",
+      "site": "phoriginswebsite",
+      "live": "https://phorigins.com/play/game.html",
+      "local": {
+        "serve": "npm",
+        "dir": "phoriginswebsite",
+        "port": 5173,
+        "path": "/game.html"
+      },
+      "checks": [
+        {
+          "dir": "phoriginswebsite",
+          "cmd": "npx tsc --noEmit"
+        }
+      ],
+      "playtests": [
+        {
+          "scenario": "smoke",
+          "where": "local"
+        },
+        {
+          "scenario": "full",
+          "where": "local"
+        },
+        {
+          "scenario": "smoke",
+          "where": "live"
+        },
+        {
+          "scenario": "smoke",
+          "where": "live",
+          "device": "phone"
+        }
+      ],
+      "story": [
+        "phoriginsassets/Lore.txt"
+      ],
+      "about": "A third-person story game (Babylon.js): one night in Hawkes Tower. The board meets, B3 writes back, Pierce Hawkes goes down to the vat and transforms. Levels 1-6 are playable; dialogue, voice lines and cutscenes.",
+      "quality": "Levels 1-6 play start to finish with their cutscenes, dialogue and voice lines; the player always knows where to go and never gets stuck; the tone stays a corporate thriller turning to horror (per Lore.txt). Art fidelity beyond what the levels have now is not asked for.",
+      "deploy": {
+        "prebuild": "npm run build"
+      },
+      "contract": true,
+      "dev": {
+        "front": 8702,
+        "port": 8712,
+        "path": "/devtools.html"
+      }
+    },
+    {
+      "id": "sickofit",
+      "name": "Sick Of It",
+      "framing": "single-use fever shots",
+      "engine": "unity",
+      "repo": "sickofitgame-unity",
+      "site": "sickofitgamewebsite",
+      "live": "https://sickofitgame.com/Game/",
+      "build": {
+        "project": "sickofitgame-unity",
+        "site": "sickofitgamewebsite",
+        "method": "SickOfIt.Tools.Editor.GameDeployWindow.FullDeployBatch", "r2": "sickofit",
+        "versionEnv": "BUILD_VERSION",
+        "tests": [
+          "EditMode"
+        ]
+      },
+      "scenarioAliases": {
+        "gloob": "yooba",
+        "gloob-shop": "yooba-shop"
+      },
+      "local": {
+        "serve": "static",
+        "dir": "sickofitgamewebsite",
+        "port": 8087,
+        "path": "/Game/"
+      },
+      "playtests": [
+        {
+          "scenario": "smoke",
+          "where": "local"
+        },
+        {
+          "scenario": "menus",
+          "where": "local"
+        },
+        {
+          "scenario": "full",
+          "where": "local"
+        },
+        {
+          "scenario": "smoke",
+          "where": "live"
+        },
+        {
+          "scenario": "smoke",
+          "where": "live",
+          "device": "phone"
+        },
+        {
+          "scenario": "layout",
+          "where": "local",
+          "device": "phone"
+        }
+      ],
+      "story": [
+        "sickofitgame-unity/Docs/Story.md"
+      ],
+      "about": "A 2D arcade bullet-dodger (Unity WebGL) with rewind: a sarcastic nobody chases the Overlord up 1,000 floors of Hell. Hell is repetition, so rewind is the hero's power. Slimes are villagers, never enemies. No office or work jokes.",
+      "quality": "Menus work; a run climbs floors with dodging and rewind working; death sends you back down (the roguelite loop); the HUD and floor count are readable; tone per the story bible (deadpan hero, slimes are villagers, no office jokes).",
+      "contract": true,
+      "dev": {
+        "front": 8706
+      }
+    },
+    {
+      "id": "yoobaland",
+      "name": "Yooba Land",
+      "framing": "hyporexia support",
+      "engine": "unity",
+      "repo": "YoobaLand/YoobaLand",
+      "site": "YoobaLandGame",
+      "live": "https://yoobalandgame.com/Game/",
+      "build": {
+        "project": "YoobaLand/YoobaLand",
+        "site": "YoobaLandGame",
+        "method": "YoobaWebBuild.FullDeploy", "r2": "yoobaland",
+        "versionEnv": "BUILD_VERSION",
+        "tests": [
+          "EditMode"
+        ]
+      },
+      "local": {
+        "serve": "static",
+        "dir": "YoobaLandGame",
+        "port": 8088,
+        "path": "/Game/"
+      },
+      "playtests": [
+        {
+          "scenario": "smoke",
+          "where": "local"
+        },
+        {
+          "scenario": "explore",
+          "where": "local"
+        },
+        {
+          "scenario": "full",
+          "where": "local"
+        },
+        {
+          "scenario": "smoke",
+          "where": "live"
+        },
+        {
+          "scenario": "smoke",
+          "where": "live",
+          "device": "phone"
+        }
+      ],
+      "story": [
+        "YoobaLand/AGENTS.md"
+      ],
+      "about": "A 3D game (Unity URP, WebGL) about where Yooba came from: eat, grow, and find the way home.",
+      "quality": "The game loads into the world; Yooba moves, eats and grows; the way home can be found; no crash, no falling through the world, no stuck camera. Prototype art and sparse content are accepted.",
+      "contract": true,
+      "dev": {
+        "front": 8707
+      }
+    },
+    {
+      "id": "theplacedepartment",
+      "name": "The Place Department",
+      "framing": "HIPAA-compliant document storage",
+      "engine": "unity",
+      "repo": "breakingthrough",
+      "site": "theplacedepartmentwebsite",
+      "live": "https://theplacedepartment.com/Game/",
+      "build": {
+        "project": "breakingthrough",
+        "site": "theplacedepartmentwebsite",
+        "method": "WebGlBuild.FullDeploy", "r2": "placedept",
+        "tests": [
+          "EditMode"
+        ]
+      },
+      "local": {
+        "serve": "static",
+        "dir": "theplacedepartmentwebsite",
+        "port": 4173,
+        "path": "/Game/"
+      },
+      "playtests": [
+        {
+          "scenario": "smoke",
+          "where": "local"
+        },
+        {
+          "scenario": "run",
+          "where": "local"
+        },
+        {
+          "scenario": "menus",
+          "where": "local"
+        },
+        {
+          "scenario": "smoke",
+          "where": "live"
+        },
+        {
+          "scenario": "smoke",
+          "where": "live",
+          "device": "phone"
+        }
+      ],
+      "story": [
+        "breakingthrough/AGENTS.md"
+      ],
+      "about": "A prototype roguelike wave-defense game (Unity WebGL): Warrok, a bow-wielding brute, defends a pirate pianist from waves of birds. \"Where things that should not exist are given an address.\"",
+      "quality": "Prototype. A run starts; waves of birds come; Warrok can aim and shoot; the pianist can be defended or lost; a run ends with a result and can restart. Prototype art and placeholder UI are accepted.",
+      "contract": true,
+      "dev": {
+        "front": 8708
+      }
+    },
+    {
+      "id": "icanbe",
+      "name": "I Can Be",
+      "framing": "AI-assisted full-body assessment",
+      "engine": "web",
+      "repo": "icanbeaiwebsite",
+      "site": "icanbeaiwebsite",
+      "live": "https://icanbe.ai/",
+      "local": {
+        "serve": "npm",
+        "dir": "icanbeaiwebsite",
+        "port": 8092,
+        "path": "/"
+      },
+      "playtests": [
+        {
+          "scenario": "smoke",
+          "where": "local"
+        },
+        {
+          "scenario": "day",
+          "where": "local"
+        },
+        {
+          "scenario": "smoke",
+          "where": "live"
+        },
+        {
+          "scenario": "smoke",
+          "where": "live",
+          "device": "phone"
+        }
+      ],
+      "story": [
+        "icanbeaiwebsite/day.config.js"
+      ],
+      "about": "A real-time simulation (Babylon.js) of a day in a developer's life; the character is \"AI\". Direction undecided.",
+      "quality": "Direction undecided, so the bar is only that it runs: it loads and the day simulation runs without errors or a blank screen. Don't judge or suggest a direction.",
+      "deploy": {
+        "prebuild": "node scripts/stamp-build.mjs"
+      },
+      "contract": true,
+      "dev": {
+        "front": 8703,
+        "port": 8713,
+        "path": "/"
+      }
+    },
+    {
+      "id": "imaginelivetv",
+      "name": "Imagine Live TV",
+      "framing": "live medical education",
+      "engine": "web",
+      "repo": "imaginelivetvwebsite",
+      "site": "imaginelivetvwebsite",
+      "live": "https://imaginelivetv.com/",
+      "local": {
+        "serve": "npm",
+        "dir": "imaginelivetvwebsite",
+        "port": 8090,
+        "path": "/"
+      },
+      "playtests": [
+        {
+          "scenario": "smoke",
+          "where": "local"
+        },
+        {
+          "scenario": "branches",
+          "where": "local"
+        },
+        {
+          "scenario": "blog",
+          "where": "local"
+        },
+        {
+          "scenario": "smoke",
+          "where": "live"
+        },
+        {
+          "scenario": "smoke",
+          "where": "live",
+          "device": "phone"
+        }
+      ],
+      "story": [
+        "TheFinalSpark/Decision tree.txt"
+      ],
+      "about": "A choose-your-path video story, The Final Spark: you wake in a sewer, found by a rat; each choice is a page with a video. Plus a blog.",
+      "quality": "Every branch page of The Final Spark loads its video and its choices go to the right next page (per the decision tree); the blog pages load; works on a phone.",
+      "contract": true,
+      "dev": {
+        "front": 8704,
+        "port": 8714,
+        "path": "/"
+      }
+    },
+    {
+      "id": "hawkesbiomedical",
+      "name": "Hawkes Biomedical",
+      "framing": "the parent company",
+      "engine": "static",
+      "repo": "hawkesbiomedicalnew",
+      "site": "hawkesbiomedicalnew",
+      "live": "https://hawkesbiomedical.com/",
+      "local": {
+        "serve": "npm",
+        "dir": "hawkesbiomedicalnew",
+        "port": 5174,
+        "path": "/"
+      },
+      "playtests": [
+        {
+          "mode": "site",
+          "where": "local"
+        },
+        {
+          "mode": "site",
+          "where": "live"
+        },
+        {
+          "mode": "site",
+          "where": "live",
+          "device": "phone"
+        }
+      ],
+      "story": [
+        "hawkesbiomedicalnew/AGENTS.md"
+      ],
+      "about": "The corporate front of Hawkes Biomedical, a fictional pharma megacorp. It lists the product line as medical products, never games; the footer says it's fiction. Never mention B3, the vat or the creature. \"We do not pitch a cure. We own the category.\"",
+      "quality": "Every page loads with no broken links or images; it reads as a pharma company (products never called games, the footer says it's fiction, nothing about B3, the vat or the creature); works on a phone.",
+      "releaseVoice": {
+        "voice": "Hawkes Biomedical's own company notices, as on its site: a spare, confident corporate register (laboratory notices, formulation lines, the product line). Its products are medical products (PH Origins: pH balance; Sick of It: single-use fever shots; Imagine Live TV: live medical education; The Place Department: HIPAA-compliant document storage; Yooba Land: hyporexia support; I Can Be: AI-assisted full-body assessment; Dose Of Destruction: cytotoxic dose; Hawkes Gen: laboratory services), never games. Notes read like \"Products: each formulation line now shows its current lot, version and revision date.\"",
+        "never": ["B3", "vat", "creature", "basement", "pharma", "framing", "fiction", "fictional", "game", "games", "gameplay", "player", "players", "fix", "fixed", "fixes", "bug", "bugs"]
+      },
+      "dev": {
+        "front": 8705,
+        "port": 8715,
+        "path": "/"
+      }
+    },
+    {
+      "id": "hawkesgenwebsite",
+      "name": "Hawkes Games",
+      "framing": "laboratory services",
+      "engine": "web",
+      "repo": "hawkesgenwebsite",
+      "checks": [{ "dir": "hawkesgenwebsite", "cmd": "npm run typecheck" }, { "dir": "hawkesgenwebsite", "cmd": "npm test" }, { "dir": "hawkesgenwebsite/cloud/functions", "cmd": "npm ci --no-audit --no-fund && npx tsc -p ." }],
+      "site": "hawkesgenwebsite",
+      "live": "https://hawkesgames.com/",
+      "local": {
+        "serve": "remote",
+        "url": "https://beta.hawkesgames.com/",
+        "dir": "hawkesgenwebsite",
+        "port": 8094,
+        "path": "/"
+      },
+      "playtests": [
+        {
+          "mode": "site",
+          "where": "local"
+        },
+        {
+          "mode": "site",
+          "where": "local",
+          "device": "phone"
+        },
+        {
+          "mode": "site",
+          "where": "live"
+        },
+        {
+          "mode": "site",
+          "where": "live",
+          "device": "phone"
+        }
+      ],
+      "story": [
+        "hawkesgenwebsite/AGENTS.md"
+      ],
+      "about": "Hawkes Games (hawkesgames.com; the Hawkes Gen customer portal at hawkesgen.ai until 2026-10-29): a game where you talk to the Overseer and build worlds with friends in the browser, with the community library, Hawkes Net, avatars, accounts, credits and Stripe plans, in Firestore. Since 2026-10-30 it has no MCP, Asset Studio or developer pages (those are Hawkes Gen's, at hawkesgen.ai). Since 2026-10-28 it runs serverless on Google Cloud (Firebase Hosting, Cloud Functions, Firestore, Firebase Auth with Google sign-in only; the repo's cloud/ folder and docs/cloud.md; src/ is the old server, retired): a push to beta deploys https://beta.hawkesgames.com, a push to main deploys hawkesgames.com, both by GitHub Actions. It is a customer of Hawkes Gen like Studio: Gen does the jobs, the game sells credits and shows them.",
+      "quality": "The public pages load with no broken links or images, no blank screens and no console errors: the landing page, the games gallery, the community library, avatars and Hawkes Net; works on a phone. On live a playtest never signs up, buys or spends credits (no real accounts, no Stripe), and no key, token or customer data shows on any page. Beta (https://beta.hawkesgames.com, its own Firestore and Gen key, payments in test mode) is where accounts, the editor and games are tried. Direction for Hawkes Games is J's: don't suggest features.",
+      "deploy": {
+        "via": "firebase",
+        "box": "Firebase (GitHub Actions)"
+      },
+      "dev": {
+        "front": 8709
+      }
+    },
+    {
+      "id": "hawkesnet",
+      "name": "Hawkes Net (multiplayer)",
+      "framing": "network services",
+      "engine": "web",
+      "repo": "hawkesnet",
+      "checks": [{ "dir": "hawkesnet", "cmd": "npm run typecheck" }, { "dir": "hawkesnet", "cmd": "npm test" }],
+      "site": "hawkesnet",
+      "live": "https://net.hawkesgen.ai/",
+      "local": {
+        "serve": "app",
+        "dir": "hawkesnet",
+        "port": 8095,
+        "path": "/"
+      },
+      "playtests": [
+        {
+          "mode": "site",
+          "where": "local"
+        },
+        {
+          "mode": "site",
+          "where": "live"
+        }
+      ],
+      "story": [
+        "hawkesnet/AGENTS.md",
+        "hawkesnet/docs/net.md"
+      ],
+      "about": "Hawkes Net, the multiplayer service at net.hawkesgen.ai (its own repo since 2026-10-26, before that Hawkes Gen's net/ folder): hawkesgen.ai accounts' projects, tickets, the room directory and the relay, plus the developer dashboard and the demo. Every Hawkes game's online play runs on it (Dose Of Destruction, Sick Of It, Yooba Land, the portal's play page), and outside developers' games through the SDKs (@hawkesgen/net, hawkesnet-babylon, hawkesnet-unity). It runs on its own EC2 box, which pulls main, tests it on a clean copy, restarts with the relay draining and rolls back if unhealthy.",
+      "quality": "The dashboard (net.hawkesgames.com, beside the portal for its sign-in cookie: the sign-in page when signed out, the docs) and the demo load with no broken links, no blank screens and no console errors, and the demo joins a room. Live players are never disturbed by a test: playtests on live only read pages. Going live restarts the relay (rooms are drained and players reconnect): do it when the games are quiet.",
+      "deploy": {
+        "via": "ec2",
+        "box": "the Hawkes Net box (net.hawkesgen.ai)"
+      },
+      "dev": {
+        "front": 8710
+      },
+      "app": {
+        "start": "node --disable-warning=ExperimentalWarning src/hub.ts",
+        "health": "/healthz",
+        "portEnv": "NET_PORT",
+        "dataEnv": "NET_DATA_DIR",
+        "gen": {
+          "keyEnv": "NET_GEN_KEY",
+          "urlEnv": "NET_GEN_URL",
+          "projects": [
+            "hawkesnet"
+          ]
+        },
+        "env": {
+          "NET_WORKERS": "1",
+          "NET_HOST": "127.0.0.1",
+          "NET_NODE_ID": "net-beta",
+          "NET_PUBLIC_URL": "wss://hawkesnet.hawkesgen.ai/v1/net/ws"
+        },
+        "open": "^/(v1/net/|sdk/|healthz$)"
+      }
+    }
+  ],
+  "infra": [
+    {
+      "id": "hawkesstudio",
+      "name": "Hawkes Studio",
+      "repo": "hawkesstudio",
+      "slug": "jgriffith3433/hawkesstudio",
+      "about": "J's cockpit (studio.hawkesgen.ai): the daily build/playtest/review loop, backlog, reports, agent changes, beta lane and go live, Talk. Node 24 + TypeScript (type stripping), a plain-JS dashboard.",
+      "checks": [
+        "npm run typecheck",
+        "npm test"
+      ],
+      "smoke": {
+        "start": "src/server.ts",
+        "portEnv": "STUDIO_PORT",
+        "dataEnv": "STUDIO_DATA",
+        "health": "/api/health",
+        "scripts": "dashboard",
+        "env": {
+          "STUDIO_SMOKE": "1"
+        }
+      }
+    },
+    {
+      "id": "hawkesgen",
+      "name": "Hawkes Gen",
+      "repo": "hawkesgen",
+      "slug": "jgriffith3433/hawkesgen",
+      "about": "The shared generative-AI service (hawkesgen.ai): the job queue, the AWS GPU fleet (ComfyUI), ElevenLabs, Claude, local tools, the library, usage and API keys, the build server and the playtester. Node 24 + TypeScript (type stripping), a plain-JS dashboard.",
+      "checks": [
+        "npm run typecheck",
+        "npm test"
+      ],
+      "smoke": {
+        "start": "src/server.ts",
+        "portEnv": "HAWKESGEN_PORT",
+        "dataEnv": "HAWKESGEN_DATA_DIR",
+        "health": "/v1/health",
+        "scripts": "dashboard"
+      }
+    }
+  ],
+  "$comment_infra": "Hawkes Studio and Hawkes Gen as agent targets (src/agents.ts): a change is a pull request into main (no beta lane), verified by CI on the pull request, the checks and a smoke check of the changed service on a spare port. Approving merges into main, and the server deploys it itself. Not in \"repos\": the server's checkouts of these two only move through deploy/hawkes-pull.mjs.",
+  "repos": {
+    "doseofdestructionwebsite": "jgriffith3433/doseofdestructionwebsite",
+    "phoriginswebsite": "jgriffith3433/phoriginswebsite",
+    "sickofitgame-unity": "jgriffith3433/sickofitgame-unity",
+    "sickofitgamewebsite": "jgriffith3433/sickofitgamewebsite",
+    "YoobaLand": "jgriffith3433/YoobaLand",
+    "YoobaLandGame": "jgriffith3433/YoobaLandGame",
+    "breakingthrough": "jgriffith3433/breakingthrough",
+    "theplacedepartmentwebsite": "jgriffith3433/theplacedepartmentwebsite",
+    "icanbeaiwebsite": "jgriffith3433/icanbeaiwebsite",
+    "imaginelivetvwebsite": "jgriffith3433/imaginelivetvwebsite",
+    "hawkesbiomedicalnew": "jgriffith3433/hawkesbiomedical",
+    "hawkesgenwebsite": "jgriffith3433/hawkesgenwebsite",
+    "hawkesnet": "jgriffith3433/hawkesnet",
+    "hawkes-assets": "jgriffith3433/hawkes-assets",
+    "hawkes-video": "jgriffith3433/hawkes-video"
+  },
+  "repoSetup": {
+    "$comment": "Run on the server after a repo is cloned or fast-forwarded (src/repos.ts), in the repo's folder. hawkes-assets: git keeps what the files are, S3 keeps the files (its README).",
+    "hawkes-assets": "npm ci --no-audit --no-fund --loglevel=error && node tools/sync.mjs pull",
+    "hawkesnet": "npm ci --no-audit --no-fund --loglevel=error"
+  },
+  "$comment_repos": "GitHub repo for each top-level folder (the server clones them into the same layout as C:\\Projects).",
+  "previews": {
+    "dod": "doseofdestruction",
+    "phorigins": "phorigins",
+    "sickofit": "sickofit",
+    "yoobaland": "yoobaland",
+    "placedept": "theplacedepartment",
+    "icanbe": "icanbe",
+    "imaginelivetv": "imaginelivetv",
+    "corporate": "hawkesbiomedical",
+    "hawkesgenwebsite": "hawkesgenwebsite",
+    "hawkesnet": "hawkesnet"
+  },
+  "$comment_previews": "Beta sites: https://<subdomain>.hawkesgen.ai/ is the product built from its beta branch (what going live ships), /c/<change id>/ an agent change (src/previews.ts; DNS and Caddy in deploy/deploy.mjs). Same login as Studio."
+}

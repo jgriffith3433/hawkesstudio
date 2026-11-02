@@ -36,8 +36,10 @@ export const paths = {
   reports: path.join(ROOT, 'reports'),
   dashboard: path.join(ROOT, 'dashboard'),
   /** STUDIO_PRODUCTS points at another products file (tests use a fixture). A customer's Studio (tenancy.ts: an org
-   *  cell, STUDIO_ORG, or one a customer claimed) keeps its own in its data folder, which Cloud Run syncs to the cell's bucket (cloudhost.ts); onboarding writes it. */
-  products: process.env.STUDIO_PRODUCTS || (customerStudio() ? path.join(DATA, 'products.json') : path.join(ROOT, 'products.json')),
+   *  cell, STUDIO_ORG, or one a customer claimed) keeps its own in its data folder, which Cloud Run syncs to the cell's bucket (cloudhost.ts); onboarding writes it.
+   *  STUDIO_J_PRODUCTS points J's Studio alone at another file: its products.json is empty since 2026-11-02 (his
+   *  products moved to his customer Studio), and the tests read the list it had (test/setup-env.ts). */
+  products: process.env.STUDIO_PRODUCTS || (customerStudio() ? path.join(DATA, 'products.json') : process.env.STUDIO_J_PRODUCTS || path.join(ROOT, 'products.json')),
   /** Games added in J's Studio through Talk or the dashboard (J, 2026-10-30: "Studio's data", not a commit): beside the
    *  hand-edited products.json, in the data folder Cloud Run syncs. A customer's Studio keeps all its games in `products`. */
   games: process.env.STUDIO_GAMES || path.join(DATA, 'games.json'),

@@ -21,7 +21,7 @@ const { holdBeta, betaPlayers, waitForBetaPlays, serveBeta, runBetaBuild, served
 const sick = { id: 'sickofit', scenarioAliases: { gloob: 'yooba', 'gloob-shop': 'yooba-shop' } };
 
 test("Sick Of It's alias table maps the old Gloob scenarios to Yooba's", () => {
-  const real = JSON.parse(fs.readFileSync(new URL('../products.json', import.meta.url), 'utf8')).products.find((p: any) => p.id === 'sickofit');
+  const real = JSON.parse(fs.readFileSync(new URL('./fixture/j-products.json', import.meta.url), 'utf8')).products.find((p: any) => p.id === 'sickofit');
   assert.deepEqual(real.scenarioAliases, sick.scenarioAliases);
   assert.equal(resolveScenario(sick, 'gloob'), 'yooba');
   assert.equal(resolveScenario(sick, 'gloob-shop'), 'yooba-shop');
