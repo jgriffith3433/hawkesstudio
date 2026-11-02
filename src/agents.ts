@@ -75,7 +75,7 @@ import { recordPass, lastPassFor, type PassOutcome } from './ledger.ts';
 import { markModelUnavailable, refusedModelOf } from './models.ts';
 import { claudeCommand, spawnShell, sandboxShare, assertWorktree, shareWorktree } from './sandbox.ts';
 import { launch, DetachedChild, detachedActivity, stopDetached, type DetachRec } from './detach.ts';
-import { cloudMcp } from './cloudjob.ts';
+import { cloudMcp, setWorkspaceRestorer } from './cloudjob.ts';
 import { cloudMode } from './cloudauth.ts';
 import { warmDeps, installCold, markInstalled } from './warm.ts';
 import { ensureGpuFor, needsGpu } from './gpustart.ts';
@@ -695,6 +695,63 @@ function repoForTarget(p: Product, target?: string | null) {
 }
 
 const WORK = () => path.join(PROJECTS, '.work');
+
+/**
+ * A change's worktree lost with a replaced Cloud Run instance (2026-11-02: worktrees live on the instance's own disk,
+ * which is never synced) made again from the repo: its branch as saved on GitHub (savework.ts), else a new branch from
+ * origin/<base>. The pass's job brings its commits into it (cloudjob.ts finish). One at a time per change; true once the
+ * worktree is there. Never touches a folder that exists but isn't a worktree.
+ */
+const remaking = new Map<string, Promise<boolean>>();
+export function remakeWorktree(id: string): Promise<boolean> {
+  const c = getChange(id);
+  if (!c?.worktree) return Promise.resolve(false);
+  if (fs.existsSync(path.join(c.worktree, '.git'))) return Promise.resolve(true);
+  let p = remaking.get(id);
+  if (!p) {
+    p = checkoutSlot(() => critical(`making the worktree of ${id} again`, async () => {
+      if (fs.existsSync(path.join(c.worktree, '.git'))) return true;
+      if (fs.existsSync(c.worktree)) throw new Error(`${c.worktree} exists but isn't a worktree; not touching it`);
+      const repoDir = path.join(PROJECTS, c.repo);
+      fs.mkdirSync(WORK(), { recursive: true });
+      await ensureCloned(c.repo, c.slug);
+      const f = await gitAsync(repoDir, ['fetch', '--quiet', 'origin']);
+      if (!f.ok) throw new Error(`fetch failed: ${f.err}`);
+      git(repoDir, ['worktree', 'prune']);
+      const restored = await restoreBranch(repoDir, c.branch);
+      if (restored) addLog(id, restored);
+      const has = git(repoDir, ['rev-parse', '--verify', '--quiet', `refs/heads/${c.branch}`]).ok;
+      const w = await gitAsync(repoDir, ['worktree', 'add', ...(has ? [c.worktree, c.branch] : ['-b', c.branch, c.worktree, `origin/${c.base}`])]);
+      if (!w.ok) throw new Error(`worktree failed: ${w.err}`);
+      addLog(id, `worktree missing after a Studio restart: made again from ${has ? c.branch : `origin/${c.base}`}; the agent's job brings its work into it`);
+      return true;
+    })).finally(() => remaking.delete(id));
+    remaking.set(id, p);
+  }
+  return p;
+}
+// A Cloud Run job ending into a missing worktree (cloudjob.ts finish): the change's worktree is made again first.
+setWorkspaceRestorer(async (cwd) => {
+  const row = db.prepare('SELECT id FROM changes WHERE worktree = ? OR worktree = ?').get(cwd, path.resolve(cwd)) as { id: string } | undefined;
+  return row ? remakeWorktree(row.id) : false;
+});
+/** Studio's git would run in a folder that's gone ("spawn git ENOENT"): said plainly instead, never "made no commit". */
+function assertWorktreeThere(c: Pick<Change, 'worktree'>) {
+  if (!fs.existsSync(path.join(c.worktree, '.git'))) throw new Error(`worktree missing after restart: ${c.worktree} is gone (the agent's log says whether its job's work was kept)`);
+}
+/**
+ * Resumed at the agent step with the worktree gone: with a job still followed (proc), the worktree is made again before
+ * waiting on it; with none, the pass starts over from prepare (the worktree and its brief made again).
+ */
+async function worktreeForAgentStep(id: string, ph: Phase, save: (patch: Partial<Phase>) => void) {
+  if (ph.step !== 'agent' || fs.existsSync(path.join(getChange(id)!.worktree, '.git'))) return;
+  if (!ph.proc) {
+    addLog(id, 'worktree missing after a Studio restart: preparing it again before the pass');
+    save({ step: 'prepare' });
+    return;
+  }
+  await remakeWorktree(id).catch((e: any) => addLog(id, `couldn't make the worktree again yet: ${String(e?.message ?? e).slice(0, 300)} (the job's work stays in the bucket until it can be applied)`));
+}
 
 // --------------------------------------------------------------- GitHub
 
@@ -1608,6 +1665,7 @@ async function work(id: string, note?: string, answer?: string, resumed?: Phase 
     // After a restart too, while the agent hasn't finished (its tries in between ended with the old process).
     if ((!resumed || ph.step === 'prepare' || ph.step === 'agent') && needsGpu(c)) void ensureGpuFor(c).then((r) => addLog(id, `GPU server: ${r}`)).catch(() => {});
     const findings = c.findings.map((f) => getFinding(f)).filter((f): f is NonNullable<typeof f> => Boolean(f));
+    await worktreeForAgentStep(id, ph, save);
 
     if (ph.step === 'prepare') {
       update(id, { detail: 'preparing the worktree' });
@@ -1699,6 +1757,7 @@ async function work(id: string, note?: string, answer?: string, resumed?: Phase 
 
     if (ph.step === 'publish') {
       c = getChange(id)!;
+      assertWorktreeThere(c);
       // The agent could write its worktree: Studio's git runs there only while it still links to this repo.
       assertWorktree(c.worktree, repoDir);
       const summaryFile = path.join(c.worktree, '.hawkes', 'summary.md');
@@ -2211,6 +2270,8 @@ async function workInfra(id: string, note?: string, resumed?: Phase | null, nudg
     if (resumed && !nudged && !asked) addLog(id, `Studio restarted: carrying on from the ${ph.step} step`);
     else if (!resumed) save({}, { status: note ? 'revising' : 'working', detail: 'preparing the worktree' });
 
+    await worktreeForAgentStep(id, ph, save);
+
     if (ph.step === 'prepare') {
       update(id, { detail: 'preparing the worktree' });
       await checkoutSlot(() => critical(`making the worktree of ${id}`, async () => {
@@ -2266,6 +2327,7 @@ async function workInfra(id: string, note?: string, resumed?: Phase | null, nudg
 
     if (ph.step === 'publish') {
       c = getChange(id)!;
+      assertWorktreeThere(c);
       // The agent could write its worktree: Studio's git runs there only while it still links to this repo.
       assertWorktree(c.worktree, repoDir);
       const summaryFile = path.join(c.worktree, '.hawkes', 'summary.md');
