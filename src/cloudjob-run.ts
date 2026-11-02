@@ -27,7 +27,9 @@ type Store = Pick<JobRunner, 'put' | 'get' | 'list' | 'remove'>;
 // files unless the spec asks (`lfs`), so a big repo (a Unity project of GBs) is never pulled whole; `partial: false` asks
 // for a full clone (Studio's spec for a small repo, so the pass can read any old file without a token).
 type JobGit = { head: string; branch: string; remote: string; bundle: boolean; token: string | null; shallow?: boolean; partial?: boolean; lfs?: boolean };
-type Spec = { kind?: 'build'; outputs?: string[]; file: string; args: string[]; cwd: string; env: Record<string, string>; sessions: string; git: JobGit | null; flushMs?: number };
+type Spec = { kind?: 'build'; outputs?: string[]; file: string; args: string[]; cwd: string; env: Record<string, string>; sessions: string; git: JobGit | null; flushMs?: number; repos?: ExtraRepo[] };
+/** A read-only copy of another of the Studio's repos, next to the worktree (access.ts extraReposFor). */
+type ExtraRepo = { slug: string; remote: string; token: string | null; dir: string };
 /** Tells Studio new output is in the bucket (resolves either way, never throws). */
 type Nudge = () => Promise<void>;
 
@@ -116,7 +118,24 @@ export async function prepare(unit: string, spec: Spec, store: Store, log: (s: s
     for (const f of p.files.filter((x) => path.isAbsolute(x.p))) unpack({ files: [{ ...f, p: at(f.p) }] }, '/');
     unpack({ files: p.files.filter((f) => !path.isAbsolute(f.p)), deleted: p.deleted }, cwd);
   }
+  for (const r of spec.repos ?? []) cloneExtra(r, at, log);
   return spec.git ? git(cwd, ['rev-parse', 'HEAD']).out : null;
+}
+
+/**
+ * One read-only copy (shallow, no LFS files) of another of the Studio's repos, for the agent to read. Never part of its
+ * work: it sits outside the worktree, and its token was read-only and is not kept (a one-off header). A failure only
+ * leaves it out.
+ */
+export function cloneExtra(r: ExtraRepo, at: (p: string) => string, log: (s: string) => void) {
+  const dir = at(r.dir);
+  if (!/^[\w.-]+\/[\w.-]+$/.test(r.slug) || !/^https:\/\/github\.com\//.test(r.remote)) return false;
+  fs.mkdirSync(path.dirname(dir), { recursive: true });
+  fs.rmSync(dir, { recursive: true, force: true });
+  const c = gitWithToken(path.dirname(dir), ['clone', '--quiet', '--depth', '1', '--single-branch', r.remote, dir], r.token, { GIT_LFS_SKIP_SMUDGE: '1' });
+  if (c.status !== 0) { log(`[job] ${r.slug} not copied: ${c.err.split('\n').pop()}`); return false; }
+  log(`[job] read-only copy of ${r.slug} at ${r.dir}`);
+  return true;
 }
 
 /** What the pass did: its new commits (a bundle), its uncommitted files and the session folder. */
@@ -208,7 +227,7 @@ export async function runUnit(unit: string, store: Store, { every = 2000, at = (
     const user = agentUser();
     if (user) {
       // The pass's user owns its workspace and session folder (and nothing of this runner's).
-      for (const d of [at(spec.cwd), path.dirname(path.dirname(at(spec.sessions))), user.home]) spawnSync('chown', ['-R', `${user.uid}:${user.gid}`, d]);
+      for (const d of [at(spec.cwd), path.dirname(path.dirname(at(spec.sessions))), user.home, ...(spec.repos?.length ? [path.dirname(at(spec.repos[0].dir))] : [])]) spawnSync('chown', ['-R', `${user.uid}:${user.gid}`, d]);
       // And the files its command names by absolute path (Talk's --mcp-config, 0600): unreadable to it otherwise, so Claude
       // Code stopped with EACCES before answering (2026-10-29).
       for (const a of spec.args) if (path.isAbsolute(a) && fs.existsSync(at(a)) && fs.statSync(at(a)).isFile()) spawnSync('chown', [`${user.uid}:${user.gid}`, at(a)]);

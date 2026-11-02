@@ -24,5 +24,6 @@ Otherwise take the style from the game's story and the owner's decisions in memo
   budget; with none, design and price it and say what it would cost.
 - Voice, sound and writing calls are per use (cents); `image.cutout` is free.
 - `hawkesgen_jobs` / `hawkesgen_job` show progress; outputs land in the library (`hawkesgen_library`).
+- To put a Gen file into the repo you work in (an image, a sound, a model), call `studio_gen_import { asset, path }`: it writes the file for you, from this Studio's library or your owners' own hawkesgen.ai libraries, and can resize or convert an image (`width`, `height`, `format`, `quality`). No download, key or converter needed.
 
 Generate only what is missing or changed: every run costs.

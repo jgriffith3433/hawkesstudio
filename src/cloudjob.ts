@@ -281,8 +281,10 @@ export function startCloudJob(unit: string, spec: Spec, o: { gitToken?: string |
         const slug = slugOfRemote(ws.remote);
         if (slug) big = await import('./repos.ts').then(({ bigRepo }) => bigRepo(slug)).catch(() => null);
       }
+      // An agent's read-only copies of the Studio's other projects' repos (access.ts), next to its worktree.
+      const repos = ws ? await import('./access.ts').then((A) => A.extraReposFor(cwd)).catch(() => []) : [];
       await r.put(key(unit, 'spec.json'), JSON.stringify({
-        file: spec.file, args: spec.args, cwd, env, sessions,
+        file: spec.file, args: spec.args, cwd, env, sessions, ...(repos.length ? { repos } : {}),
         // Talk's answer (detach.ts names its unit hawkes-talk-<conversation>-…): its output goes up as it comes.
         ...(unit.startsWith('hawkes-talk-') ? { flushMs: TALK_FLUSH_MS() } : {}),
         git: ws ? { head: ws.head, branch: ws.branch, remote: ws.remote, bundle: Boolean(ws.bundle), token: gitToken, ...(big ? {} : { partial: false, lfs: true }) } : null,

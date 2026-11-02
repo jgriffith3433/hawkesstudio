@@ -102,6 +102,34 @@ sandbox (below) it is full Claude Code:
 - If a conversation's Claude Code session can't be found (a new home, a cleared cache), the turn starts a new session
   with the conversation so far, once.
 
+## Agents at Talk's power
+
+Since 2026-11-02 (J: "Why don't they just get the full MCP setup like Talk") an agent change gets what Talk gets:
+
+- **Studio's whole tool server** (agents.ts agentMcp): backlog, reports, playtests, previews, roadmap, the other
+  projects, deploy plans. The guards below apply to both (the agents' key). Its list swaps `studio_talk` for
+  `studio_tell`. Scouts keep their narrow list.
+- **The shell and the web on Cloud Run** (roles.ts): a pass there is a job on its own machine, so the agent roles get
+  their sandbox tool lists, as on the server. Talk keeps its own lists for now.
+- **`studio_tell`** (access.ts agentSays): progress, a result or a question goes to the Talk conversation that started
+  the work, and Talk passes it on to the owner. With no conversation, a question goes to the Inbox. An agent that
+  pauses on `.hawkes/question.md` is passed to that conversation too (agentPaused).
+- **Starting work**: `studio_task` / `studio_fix` start up to 3 tasks per change (access.ts agentStarts). Those tasks
+  can't start more. They report where their parent reports (followup.ts originOf).
+- **`studio_gen_import`** (agents and Talk): puts a Gen file into the repo, resized or converted by image.transform.
+  Files come from the Studio's own Gen library, or its owners' own hawkesgen.ai libraries (the owner's widening). In a
+  customer's cell they go through the control plane (cells.ts `/api/cells/self/gen-asset`). Gen's owner key stays
+  there. It hands out a file only from that org's Gen org, or from the account of an owner who signed in with Google at
+  the control plane, never from the people a cell reports about itself. A copy goes into the Studio's own library.
+  Every import is logged (`GET /api/agents/access`, and the change's log).
+- **Read-only copies of the other repos** (cloudjob.ts / cloudjob-run.ts): shallow clones of the Studio's other
+  projects' repositories at `../<worktree>.repos/<name>`. Their tokens are read-only and scoped to one repo, and the
+  copies are never sent back. A change there is that project's own task.
+
+Both widenings are on by default. Settings `agents.access: { gen, repos }` turns either off Studio-wide, and a
+project's `access` overrides that. Isolation between customers is the Studio's own: each cell's keys reach only its
+own org's Gen projects and repos.
+
 ## The guards
 
 The guards are in the infrastructure, not in the prompt.

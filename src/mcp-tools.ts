@@ -221,18 +221,6 @@ export function studioMcp({ studio, waitRun }: Client = { studio: defaultStudio,
       run: async ({ product }) => studio(`/api/assets/${product}`),
     },
     {
-      name: 'studio_gen_import',
-      description: "Brings one of the owner's finished Hawkes Gen images into the repo you are working in. Studio fetches the asset by id with its own Gen access (only assets in the owner's own account), optionally converts it, and writes it at `path` inside your worktree (use this instead of curl or python). format: jpeg, png or webp; width: resize to that width keeping the ratio; square: resize and centre-crop to size x size; quality 1-100; strip: remove metadata (on whenever it converts). With none of these the original file is copied. Returns the path written, format, pixel size and bytes. Commit the file yourself.",
-      inputSchema: obj({ asset: str('Hawkes Gen asset id (the id in https://hawkesgen.ai/v1/files/<id>)'), path: str('Where to write it, relative to the worktree root, e.g. public/images/hero.webp'), format: str('jpeg, png or webp (optional)'), width: { type: 'number', description: 'Resize to this width in pixels (optional)' }, square: { type: 'number', description: 'Resize and centre-crop to a square of this size (optional)' }, quality: { type: 'number', description: '1-100 (jpeg, webp)' }, strip: bool('Strip metadata (default on when converting)') }, ['asset', 'path']),
-      run: async ({ asset, path: rel, format, width, square, quality, strip }) => {
-        const { writeInside } = await import('./gen-import.ts');
-        const root = worktreeRoot();
-        const r = await studio('/api/gen/import', { method: 'POST', body: { asset, format, width, square, quality, strip } });
-        const written = writeInside(root, String(rel), Buffer.from(String(r.data), 'base64'));
-        return { path: written, format: r.format, width: r.width, height: r.height, bytes: r.size, asset: r.asset, note: `Written to ${written}; it is not committed yet.` };
-      },
-    },
-    {
       name: 'studio_content',
       description: "Content health of every product (or one): whether it's wired to Hawkes Gen the standard way (a hawkes.library.json or hawkes.content.json mapping, the hawkesgen MCP server, an AGENTS.md section), its entities by kind, takes waiting for a pick, unmade slots its kinds' recipes could make, SDK copies behind Gen's version, and the issues to fix. folders: also what importing its folders would change (slower).",
       inputSchema: obj({ product: str('Product id (optional; default every product)'), folders: bool('Also compare the folders with the library (slower)') }),
@@ -680,13 +668,46 @@ export function studioMcp({ studio, waitRun }: Client = { studio: defaultStudio,
       },
     },
   ];
+  // In an agent's or Talk's own tool server (STUDIO_AGENT, TALK_CONVERSATION: it runs in their job, next to their repo):
+  // a file from Hawkes Gen written straight into the repo, and (agents) a word to Talk while working (access.ts).
+  if (process.env.STUDIO_AGENT || process.env.TALK_CONVERSATION) tools.push({
+    name: 'studio_gen_import',
+    description: "Puts a file from Hawkes Gen (an image, sound, video, 3D model: its asset id a_...) into the repo you work in, at `path` (relative to the repo root, e.g. assets/medical/lab-hero.jpg). Takes files from this Studio's own Gen library and from its owners' own hawkesgen.ai libraries. For an image, width/height/fit/format/quality resize or convert it first (Gen does it, free); the path's extension picks the format when you give none. No download, key or converter needed: Studio fetches it and this tool writes it. Then commit it as usual.",
+    inputSchema: obj({
+      asset: str('The Gen asset id (a_...)'), path: str('Where in the repo, relative to its root (e.g. assets/products/x.jpg)'),
+      width: { type: 'number', description: 'Image: width in pixels' }, height: { type: 'number', description: 'Image: height in pixels' },
+      fit: str('Image, with width and height: cover (crop to fill, the default), contain (fit inside) or stretch'),
+      square: { type: 'number', description: 'Image: resize and centre-crop to a square of this size (the same as width and height)' },
+      format: str('Image: png | jpg | webp (default: from the path)'), quality: { type: 'number', description: 'Image: JPEG/WebP quality 1-100' },
+      product: str("Talk only: the project id the file is for (an agent's is its own)"), dir: str("Talk only: the repo folder to write into (your worktree); an agent's is its own"),
+    }, ['asset', 'path']),
+    run: async (a) => {
+      const { safeRepoPath, writeImport } = await import('./repo-write.ts');
+      const rel = safeRepoPath(a.path);
+      const { execFileSync } = await import('node:child_process');
+      let root: string;
+      if (a.dir) {
+        try { root = execFileSync('git', ['rev-parse', '--show-toplevel'], { cwd: String(a.dir), encoding: 'utf8' }).trim(); } catch { throw new Error(`${a.dir} is not inside a git repo: give dir (your worktree)`); }
+      } else root = worktreeRoot();
+      const r = await studio('/api/agents/gen-import', { method: 'POST', body: { asset: a.asset, path: rel, product: a.product, width: a.width ?? a.square, height: a.height ?? a.square, fit: a.fit, format: a.format, quality: a.quality } });
+      const dest = writeImport(root, rel, Buffer.from(String(r.bytes), 'base64'));
+      return { ok: true, wrote: path.relative(root, dest).split(path.sep).join('/'), bytes: r.size, type: r.mime, from: r.source?.via === 'owner' ? "an owner's own Gen library (copied into this Studio's)" : "this Studio's Gen library", ...(r.made ? { made: r.made } : {}) };
+    },
+  });
+  if (process.env.STUDIO_AGENT?.startsWith('c_')) tools.push({
+    name: 'studio_tell',
+    description: "Tell Talk something while you work, and through Talk the owner: progress worth hearing, a result, or a question (kind question, with options and the one you'd pick). It lands in the Talk conversation that started this work (else a question goes to the owner's Inbox). You don't wait for an answer: carry on with your pick, or, when you truly can't go on without one, write .hawkes/question.md and end your pass (the change waits and Talk asks). Keep it to a few plain lines; don't send routine progress.",
+    inputSchema: obj({ text: str('What to tell Talk'), kind: str('update (default) | result | question'), options: strs('question: the options'), recommend: str('question: the option you would pick') }, ['text']),
+    run: async (a) => studio('/api/agents/say', { method: 'POST', body: { text: a.text, kind: a.kind, options: a.options, recommend: a.recommend } }),
+  });
   // studio_game: the old name of studio_project (roles and conversations from before still call it).
   const proj = tools.find((t) => t.name === 'studio_project');
   if (proj) tools.splice(tools.indexOf(proj) + 1, 0, { ...proj, name: 'studio_game', description: 'The old name of studio_project (games are projects now): the same actions and fields. Prefer studio_project.' });
   // An agent's or scout's own server lists only the tools it may use (STUDIO_MCP_TOOLS: names or prefixes, comma list).
   const only = (process.env.STUDIO_MCP_TOOLS ?? '').split(',').map((x) => x.trim()).filter(Boolean);
   // Talk's own server (TALK_CONVERSATION) doesn't list studio_talk: Talk doesn't message Talk (the API refuses it too).
-  const own = process.env.TALK_CONVERSATION ? tools.filter((t) => t.name !== 'studio_talk') : tools;
+  // An agent's doesn't either: it tells Talk with studio_tell, in the conversation its work reports to.
+  const own = process.env.TALK_CONVERSATION || process.env.STUDIO_AGENT ? tools.filter((t) => t.name !== 'studio_talk') : tools;
   const listed = only.length ? own.filter((t) => only.some((o) => (o.endsWith('*') ? t.name.startsWith(o.slice(0, -1)) : t.name === o))) : own;
   // A customer's Studio: no platform tools (the API refuses them anyway: lockdown.ts), and descriptions say "the owner",
   // not J (this process doesn't open Studio's database for the owner's name).

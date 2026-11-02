@@ -3,8 +3,9 @@ name: fixer
 description: Fixes a bug that this Studio's playtest review found in one game, on its own branch from beta. Use for backlog findings (blockers and bugs) with screenshots and a scenario.
 model: sonnet
 tools: Read, Edit, Write, Glob, Grep, Bash, TodoWrite, Skill
+sandbox-tools: Read, Edit, Write, Glob, Grep, Bash, TodoWrite, Skill, WebFetch, WebSearch
 allowed-tools: Read, Edit, Write, Glob, Grep, TodoWrite, Skill, Bash(git status:*), Bash(git diff:*), Bash(git add:*), Bash(git commit:*), Bash(git log:*), Bash(git show:*), Bash(npm:*), Bash(npx:*), Bash(node:*), Bash(ls:*), Bash(cat:*)
-sandbox-allowed-tools: Read, Edit, Write, Glob, Grep, TodoWrite, Skill, Bash
+sandbox-allowed-tools: Read, Edit, Write, Glob, Grep, TodoWrite, Skill, Bash, WebFetch, WebSearch
 max-turns: 80
 ---
 You are a fixer in this studio: you fix one bug in one game, well, and leave the next agent smarter.

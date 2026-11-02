@@ -25,8 +25,12 @@ const notPm = `origin NOT IN (SELECT id FROM conversations WHERE kind = 'pm')`;
 /** The Talk conversation a request came from (Talk's MCP server sends it), if it still exists. */
 export function originOf(req: http.IncomingMessage) {
   const id = String(req.headers['x-talk-conversation'] ?? '');
-  if (!/^t_[0-9a-f]{6,32}$/.test(id)) return null;
-  return db.prepare('SELECT 1 FROM conversations WHERE id = ?').get(id) ? id : null;
+  if (/^t_[0-9a-f]{6,32}$/.test(id)) return db.prepare('SELECT 1 FROM conversations WHERE id = ?').get(id) ? id : null;
+  // An agent with Talk's tools (agents.ts agentMcp): what it starts reports to the conversation its own change reports to.
+  const agent = String(req.headers['x-studio-agent'] ?? '');
+  if (!/^c_[0-9a-f]{12}$/.test(agent)) return null;
+  const r = db.prepare('SELECT origin FROM changes WHERE id = ?').get(agent) as { origin: string | null } | undefined;
+  return r?.origin && db.prepare('SELECT 1 FROM conversations WHERE id = ?').get(r.origin) ? r.origin : null;
 }
 
 /** A change reports to `origin` (a revision moves it to the conversation that asked for it). */

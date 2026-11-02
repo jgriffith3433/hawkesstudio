@@ -168,8 +168,9 @@ const SETTINGS_FILE = path.join(DATA, 'agents.json');
  * perProduct: changes of one product that may run at once (a second only when it won't collide: parallel.ts);
  * productLimits: per-product overrides of it (J, 2026-10-18: Sick Of It 2). Studio and Gen always run one at a time.
  */
-export type AgentSettings = { enabled: boolean; autoFix: boolean; autoMergeBeta: boolean; betaPlaytests: boolean; maxConcurrent: number; perProduct: number; productLimits: Record<string, number>; maxPerDay: number; maxCostPerDay: number; severities: string[]; model: string; maxTurns: number; idleMinutes: number; genWaitHours: number };
-/** genWaitHours: a change parked on Gen jobs longer than this is told in Talk once (it isn't failed). */
+export type AgentSettings = { enabled: boolean; autoFix: boolean; autoMergeBeta: boolean; betaPlaytests: boolean; maxConcurrent: number; perProduct: number; productLimits: Record<string, number>; maxPerDay: number; maxCostPerDay: number; severities: string[]; model: string; maxTurns: number; idleMinutes: number; genWaitHours: number; access?: { gen?: boolean; repos?: boolean } };
+/** access: what agents reach beyond their own project (access.ts; both on unless turned off here or on the project).
+ * genWaitHours: a change parked on Gen jobs longer than this is told in Talk once (it isn't failed). */
 const DEFAULTS: AgentSettings = { enabled: true, autoFix: true, autoMergeBeta: true, betaPlaytests: false, maxConcurrent: 2, perProduct: 1, productLimits: { sickofit: 2 }, maxPerDay: 4, maxCostPerDay: 20, severities: ['blocker', 'bug'], model: 'claude-sonnet-5-5', maxTurns: 80, idleMinutes: 20, genWaitHours: 6 };
 export function agentSettings(): AgentSettings {
   try {
@@ -618,6 +619,8 @@ function noCommitWhy(worktree: string, ph: Phase) {
   return `the agent made no commit: resumed ${ph.nudges}× to commit, it still left its work uncommitted (it is still in the worktree: revise to carry on)`;
 }
 export const phaseOf = (id: string): Phase | null => parse((db.prepare('SELECT phase FROM changes WHERE id = ?').get(id) as any)?.phase ?? null);
+/** A line on a change's log, from outside this file (access.ts). */
+export const changeLog = (id: string, line: string) => addLog(id, line);
 function addLog(id: string, line: string) {
   const c = getChange(id)!;
   const log = [...c.log, `${new Date().toISOString().slice(11, 19)} ${line}`].slice(-400);
@@ -1046,6 +1049,12 @@ async function writeBrief(c: Change, p: Product, findings0: any[], note?: string
   // Up to 3 agents per product (J, 2026-10-19): what the others are doing, and the Unity rules (parallel.ts).
   const others = onSite ? '' : othersSection(p.name, neighboursOf(c), perProductLimit(p.id));
   const unity = !onSite && isUnity(p.id) ? `\n## Working in Unity (several agents share this repo)\n\n${UNITY_RULES}\n` : '';
+  // What the agent reaches beyond its project (access.ts): Gen files from the owners' own libraries, the other repos.
+  const reach = await import('./access.ts').then(async (A) => {
+    const a = await A.agentAccess(p.id);
+    const repos = a.repos && cloudMode() && !c.infra ? (await A.siblingRepos(p.id)).map((slug) => ({ slug, dir: path.relative(c.worktree, A.extraRepoDir(c.worktree, slug)).split(path.sep).join('/') })) : [];
+    return A.accessBrief(a, repos);
+  }).catch(() => '');
   const brief = `# ${c.request ? 'Work' : 'Fix'} for ${p.name}
 
 You are fixing a problem Hawkes Studio's automated playtest found in ${p.name} (${p.about}).
@@ -1098,7 +1107,7 @@ ${findings.map((f) => `### [${f.severity}] ${f.title}
 - Suggested fix: ${f.fix ?? '-'}
 - Screenshots: ${(shots.filter((s) => s.includes(f.id)).map((s) => `\`${s}\``).join(', ')) || 'none'}${f.entities?.length ? `
 - In Hawkes Gen's library: ${f.entities.map((e: any) => `\`${e.id}\` (${e.kind})`).join(', ')}. When the problem is the art itself, fix it there (the hawkesgen MCP: hawkesgen_entities to see its versions, hawkesgen_entity_make with revise and feedback, hawkesgen_entity_judge to pick): a pick is written into this repo's files by Studio.` : ''}`).join('\n\n')}
-${note ? `\n## Notes on the last attempt (J's or the PM's)\n\n${note}\n` : ''}${attemptsBrief(c, changeRoute(c))}${others ? `\n${others}` : ''}${unity}${players}${mem.text ? `\n${mem.text}` : ''}
+${note ? `\n## Notes on the last attempt (J's or the PM's)\n\n${note}\n` : ''}${attemptsBrief(c, changeRoute(c))}${others ? `\n${others}` : ''}${unity}${reach}${players}${mem.text ? `\n${mem.text}` : ''}
 ## How to work
 
 1. Read \`AGENTS.md\` (and any docs it points to) before changing anything. Follow its rules.
@@ -1137,11 +1146,17 @@ ${storyOf(p, 6000)}
 
 export const AGENT_MEMORY_TOOLS = ['memory_search', 'memory_get', 'memory_write'];
 /** The Studio tools on an agent's or scout's own MCP server: the shared memory, and real players' data (read-only). */
-export const AGENT_STUDIO_TOOLS = [...AGENT_MEMORY_TOOLS, 'studio_analytics', 'studio_gen_import', 'studio_social', 'studio_social_post'];
+export const AGENT_STUDIO_TOOLS = [...AGENT_MEMORY_TOOLS, 'studio_analytics', 'studio_social', 'studio_social_post'];
+/**
+ * Agent changes get Studio's whole tool server, as Talk does (J, 2026-11-02: "Why don't they just get the full MCP setup
+ * like Talk"): the same guards apply to both (guards.ts: the agents' key), and a customer's Studio's server only reaches
+ * that Studio. Theirs lists studio_tell (to Talk, and so the owner) instead of studio_talk (mcp-tools.ts).
+ */
+export const AGENT_FULL_TOOLS = true;
 /** The role an agent change runs as: content work, a build (requests, roadmap tasks, Studio and Gen), or a fix. */
 export const agentRole = (c: Change): RoleName => ({ infra: 'builder', content: 'content', builder: 'builder', fixer: 'fixer' } as const)[roleOf(c)];
 /**
- * An agent's or scout's MCP config: Studio's server with the memory tools and studio_analytics only, as that agent (writes are candidates),
+ * An agent's MCP config: Studio's whole server, as that agent (memory writes are candidates),
  * and Hawkes Gen's with a "user" role key (generate, estimate, read jobs and the library; no fleet launches, no keys):
  * AGENT_GEN_KEY, else Talk's, else the devtools' key. Never Studio's own (owner) key.
  */
@@ -1151,8 +1166,8 @@ export function agentMcp(id: string) {
   const file = path.join(dir, `${id}.json`);
   const genKey = process.env.AGENT_GEN_KEY ?? process.env.TALK_GEN_KEY ?? process.env.DEV_GEN_KEY ?? '';
   // On Cloud Run the agent is a job on another machine: Studio over its address with the agents' key, Gen over HTTPS (cloudjob.ts).
-  const cfg = cloudMode() ? { mcpServers: cloudMcp({ STUDIO_AGENT: id, STUDIO_MCP_TOOLS: AGENT_STUDIO_TOOLS.join(',') }, genKey) } : { mcpServers: {
-    hawkesstudio: { command: process.execPath, args: [path.join(ROOT, 'bin', 'studio-mcp.mjs')], env: { STUDIO_SERVER: '1', STUDIO_AGENT: id, STUDIO_MCP_TOOLS: AGENT_STUDIO_TOOLS.join(',') } },
+  const cfg = cloudMode() ? { mcpServers: cloudMcp({ STUDIO_AGENT: id, ...(AGENT_FULL_TOOLS && id.startsWith('c_') ? {} : { STUDIO_MCP_TOOLS: AGENT_STUDIO_TOOLS.join(',') }) }, genKey) } : { mcpServers: {
+    hawkesstudio: { command: process.execPath, args: [path.join(ROOT, 'bin', 'studio-mcp.mjs')], env: { STUDIO_SERVER: '1', STUDIO_AGENT: id, ...(AGENT_FULL_TOOLS && id.startsWith('c_') ? {} : { STUDIO_MCP_TOOLS: AGENT_STUDIO_TOOLS.join(',') }) } },
     ...(genKey ? { hawkesgen: { command: process.execPath, args: [path.join(PROJECTS, 'hawkesgen', 'bin', 'hawkesgen-mcp.mjs')], env: { HAWKESGEN_URL: process.env.HAWKESGEN_URL ?? 'http://127.0.0.1:8790', HAWKESGEN_KEY: genKey, HAWKESGEN_LABELS: JSON.stringify({ studioChange: id }) } } } : {}),
   } };
   fs.writeFileSync(file, JSON.stringify(cfg, null, 2));
@@ -1214,7 +1229,7 @@ function runAgent(c: Change, briefFile: string, s: AgentSettings, env = claudeEn
       // The route (routing.ts): the category's tier, one up per failed attempt, Opus within the day's budget, Fable only on J's ask.
       const route = changeRoute(c);
       const { args: roleFlags, role } = roleArgs(agentRole(c), {
-        extraAllowed: [...AGENT_STUDIO_TOOLS.map((t) => `mcp__hawkesstudio__${t}`), 'mcp__hawkesgen'],
+        extraAllowed: [...(AGENT_FULL_TOOLS ? ['mcp__hawkesstudio'] : AGENT_STUDIO_TOOLS.map((t) => `mcp__hawkesstudio__${t}`)), 'mcp__hawkesgen'],
         maxTurns: s.maxTurns !== DEFAULTS.maxTurns ? s.maxTurns : undefined,
         retry: (c.task ? getTask(c.task)?.tries : 0) || 1,
         ...(route ? { tier: route.tier, effort: route.effort } : {}),
@@ -1224,7 +1239,7 @@ function runAgent(c: Change, briefFile: string, s: AgentSettings, env = claudeEn
         ...(resume?.session ? ['--resume', resume.session] : []),
         '-p', prompt, '--output-format', 'stream-json', '--verbose', ...roleFlags,
         '--permission-mode', 'acceptEdits',
-        // Its own Studio MCP server with only the shared-memory tools, writing as this change (X-Studio-Agent).
+        // Its own Studio MCP server (Talk's tools, as this change: X-Studio-Agent), and Gen's.
         '--mcp-config', agentMcp(c.id), '--strict-mcp-config',
       ];
       addLog(c.id, `role ${role.name} (${role.model})`);
@@ -1796,6 +1811,8 @@ async function work(id: string, note?: string, answer?: string, resumed?: Phase 
         const { addQuestion, addComment } = await import('./roadmap.ts');
         addComment(c.task ?? id, question.slice(0, 4000), 'agent', 'question');
         addQuestion({ kind: 'agent', subject: id, product: c.product, text: question });
+        // The conversation that started it hears it now, so Talk asks the owner (access.ts agentPaused).
+        void import('./access.ts').then((A) => A.agentPaused(id, question)).catch(() => {});
         return;
       }
       // A conflict pass that couldn't resolve safely (its list, or markers left in): never a broken merge; the PM decides.
