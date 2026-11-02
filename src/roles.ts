@@ -20,8 +20,8 @@ import { brainId } from './brains.ts';
 import { customerStudio } from './tenancy.ts';
 import { cloudMode } from './cloudauth.ts';
 
-/** The agent roles whose passes run as Cloud Run jobs (agents.ts): their sandbox lists there. */
-const CLOUD_AGENT_ROLES = new Set(['fixer', 'builder', 'content']);
+/** The roles whose runs are Cloud Run jobs with a shell there (agents.ts, talk.ts): their sandbox or cloud lists. */
+const CLOUD_AGENT_ROLES = new Set(['fixer', 'builder', 'content', 'talk']);
 /** Studio runs its passes as Cloud Run jobs (detach.ts detachMode cloudrun). */
 const cloudJobs = () => cloudMode() && (process.env.STUDIO_DETACH === 'cloudrun' || (!process.env.STUDIO_DETACH && Boolean(process.env.K_SERVICE)));
 
@@ -75,13 +75,14 @@ export function parseAgentFile(text: string) {
   return { meta, body: m[2].trim() };
 }
 /** Keeps the sandbox-only or the no-sandbox parts of a role's instructions. */
-export function sections(body: string, sandboxed: boolean) {
-  const drop = sandboxed ? 'no-sandbox' : 'sandbox';
-  const keep = sandboxed ? 'sandbox' : 'no-sandbox';
-  return body
-    .replace(new RegExp(String.raw`<!-- ${drop} -->[\s\S]*?<!-- /${drop} -->\r?\n?`, 'g'), '')
-    .replace(new RegExp(String.raw`<!-- /?${keep} -->\r?\n?`, 'g'), '')
-    .trim();
+export function sections(body: string, sandboxed: boolean, cloud = false) {
+  // A Cloud Run job with a <!-- cloud --> part (talk.md): that part only, neither the server's sandbox nor no-sandbox one.
+  const hasCloud = cloud && /<!-- cloud -->/.test(body);
+  const drop = hasCloud ? ['sandbox', 'no-sandbox'] : ['cloud', sandboxed ? 'no-sandbox' : 'sandbox'];
+  const keep = hasCloud ? 'cloud' : sandboxed ? 'sandbox' : 'no-sandbox';
+  let out = body;
+  for (const d of drop) out = out.replace(new RegExp(String.raw`<!-- ${d} -->[\s\S]*?<!-- /${d} -->\r?\n?`, 'g'), '');
+  return out.replace(new RegExp(String.raw`<!-- /?${keep} -->\r?\n?`, 'g'), '').trim();
 }
 const list = (s?: string) => (s ?? '').split(',').map((x) => x.trim()).filter(Boolean);
 
@@ -100,17 +101,22 @@ export function loadRole(name: string): Role {
   // <!-- no-sandbox --> parts. The shell and the editor only come with the guards.
   // On Cloud Run an agent's pass is a job on its own machine (detach.ts cloudrun), which is its sandbox: the agents get
   // the shell and the web too, as on the server (J, 2026-11-02: agents should have Talk's full capabilities). The
-  // guards still apply (sandbox.ts requestUser: the agents' key). Talk keeps its own lists until its prompt is ready.
-  const sb = sandboxOn() || (CLOUD_AGENT_ROLES.has(name) && cloudJobs());
-  const key = `${file}:${sb}`;
+  // guards still apply (sandbox.ts requestUser: the agents' key). Talk too, with its own cloud lists and prompt part.
+  const job = cloudJobs() && CLOUD_AGENT_ROLES.has(name);
+  const sb = sandboxOn() || job;
+  const key = `${file}:${sb}:${job}`;
   const hit = cache.get(key);
   if (hit && hit.mtime === st.mtimeMs) return hit.role;
   const parsed = parseAgentFile(fs.readFileSync(file, 'utf8'));
   const meta = parsed.meta;
-  const body = sections(parsed.body, sb).replaceAll('<projects>', PROJECTS.split(path.sep).join('/'));
+  const body = sections(parsed.body, sb, job).replaceAll('<projects>', PROJECTS.split(path.sep).join('/'));
   if (sb && meta['sandbox-allowed-tools'] !== undefined) meta['allowed-tools'] = meta['sandbox-allowed-tools'];
   if (sb && meta['sandbox-disallowed-tools'] !== undefined) meta['disallowed-tools'] = meta['sandbox-disallowed-tools'];
   if (sb && meta['sandbox-tools'] !== undefined) meta.tools = meta['sandbox-tools'];
+  // Its own lists for a Cloud Run job (cloud-*: talk.md), where it has them.
+  if (job && meta['cloud-allowed-tools'] !== undefined) meta['allowed-tools'] = meta['cloud-allowed-tools'];
+  if (job && meta['cloud-disallowed-tools'] !== undefined) meta['disallowed-tools'] = meta['cloud-disallowed-tools'];
+  if (job && meta['cloud-tools'] !== undefined) meta.tools = meta['cloud-tools'];
   const tools = list(meta.tools);
   const role: Role = {
     name: name as RoleName, description: meta.description ?? '', file,
