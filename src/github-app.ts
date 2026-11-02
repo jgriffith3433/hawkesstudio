@@ -404,14 +404,15 @@ export async function orgInstallations(org: string) {
  * A token for one org's one repo: only through an installation linked to that org, and scoped to that repository alone
  * (GitHub's repositories: [name]), so a cell never gets a token wider than the repo it asked for. null: not reachable.
  */
-export async function orgRepoToken(org: string, repo: string) {
+export async function orgRepoToken(org: string, repo: string, { read = false }: { read?: boolean } = {}) {
   const slug = repoSlug(repo);
   if (!slug) throw new StudioError('repo: owner/name', 400);
   const [owner, name] = slug.split('/');
   const inst = (await orgInstallations(org)).find((i) => i.account.toLowerCase() === owner.toLowerCase());
   if (!inst) return null;
   try {
-    const t = await gh(appJwt(), 'POST', `/app/installations/${inst.id}/access_tokens`, { repositories: [name] }, { jwt: true });
+    // read: contents read-only, and nothing when GitHub won't narrow it (an agent's read-only copy: access.ts).
+    const t = await gh(appJwt(), 'POST', `/app/installations/${inst.id}/access_tokens`, read ? { repositories: [name], permissions: { contents: 'read' } } : { repositories: [name] }, { jwt: true });
     return { token: String(t.token), expires: Date.parse(t.expires_at) };
   } catch (e: any) {
     if (e.status === 404 || /422|not accessible|repositor/i.test(String(e.message))) return null;
@@ -426,21 +427,21 @@ export async function orgRepoToken(org: string, repo: string) {
  * every repo the installation reaches). An installation that won't narrow its permissions (422) gets the token scoped to
  * the repo with the installation's own permissions. null: no app here, or it isn't installed on the owner or the repo.
  */
-const jobTokens = new Map<string, { token: string; expires: number }>();
-export async function repoJobToken(repo: string): Promise<string | null> {
+const jobTokens = new Map<string, { token: string; expires: number; read?: boolean }>();
+export async function repoJobToken(repo: string, { strict = false }: { strict?: boolean } = {}): Promise<string | null> {
   const slug = repoSlug(repo);
   if (!slug || !appConfig()) return null;
   const key = slug.toLowerCase();
   const hit = jobTokens.get(key);
   // A job may wait for a machine and then clone: keep at least 30 of the token's 60 minutes.
-  if (hit && hit.expires - Date.now() > 30 * 60_000) return hit.token;
+  if (hit && hit.expires - Date.now() > 30 * 60_000 && (!strict || hit.read)) return hit.token;
   const [owner, name] = slug.split('/');
   const inst = (await installations()).find((i) => i.account.toLowerCase() === owner.toLowerCase());
   if (!inst) return null;
-  for (const body of [{ repositories: [name], permissions: { contents: 'read' } }, { repositories: [name] }]) {
+  for (const body of strict ? [{ repositories: [name], permissions: { contents: 'read' } }] : [{ repositories: [name], permissions: { contents: 'read' } }, { repositories: [name] }]) {
     try {
       const t = await gh(appJwt(), 'POST', `/app/installations/${inst.id}/access_tokens`, body, { jwt: true });
-      jobTokens.set(key, { token: String(t.token), expires: Date.parse(t.expires_at) });
+      jobTokens.set(key, { token: String(t.token), expires: Date.parse(t.expires_at), read: Boolean(body.permissions) });
       return String(t.token);
     } catch (e: any) {
       if (e.status === 404) return null;

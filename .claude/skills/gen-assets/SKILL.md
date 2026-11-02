@@ -36,6 +36,7 @@ changed: every run costs.
   minutes). Launching, starting or terminating servers asks J first; so do big batches.
 - ElevenLabs and Claude calls are per use (cents). `image.cutout` and the local tools are free.
 - `hawkesgen_jobs` / `hawkesgen_job` show progress; outputs land in the library (`hawkesgen_library`), linked as
+- To put a Gen file into the repo you work in (an image, a sound, a model), call `studio_gen_import { asset, path }`: it writes the file for you, from this Studio's library or your owners' own hawkesgen.ai libraries, and can resize or convert an image (`width`, `height`, `format`, `quality`). No download, key or converter needed.
   `https://hawkesgen.ai/v1/files/<asset>`.
 
 Voice lines: use the character's saved voice (the product's `audio.json` / DoD's voice ids); keep prompts free of agent

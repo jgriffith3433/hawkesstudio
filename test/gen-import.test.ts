@@ -78,19 +78,24 @@ test('the tool writes what Studio sends, inside the worktree, and says nothing o
   const wt = fs.mkdtempSync(path.join(os.tmpdir(), 'gen-import-tool-'));
   fs.mkdirSync(path.join(wt, '.git'));
   process.env.STUDIO_WORKTREE = wt;
+  // The one studio_gen_import (access.ts): listed in an agent's or Talk's own server; Studio's /api/agents/gen-import
+  // fetches and converts, the tool writes the bytes.
+  process.env.STUDIO_AGENT = 'c_0123456789ab';
   const calls: any[] = [];
   const studio: any = async (url: string, o: any) => {
     calls.push({ url, body: o.body });
-    const r = await importAsset(o.body, gen);
-    return { asset: r.asset, format: r.format, width: r.width, height: r.height, size: r.bytes.length, data: Buffer.from(r.bytes).toString('base64') };
+    const r = await importAsset({ asset: o.body.asset, format: o.body.format, square: o.body.width === o.body.height ? o.body.width : undefined }, gen);
+    return { ok: true, bytes: Buffer.from(r.bytes).toString('base64'), mime: r.mime, size: r.bytes.length, source: { asset: r.asset, via: 'own' } };
   };
   const server: any = studioMcp({ studio, waitRun: (async () => ({})) as any });
-  const tool = server.tools?.find?.((t: any) => t.name === 'studio_gen_import') ?? (await (server.listTools?.() ?? [])).find?.((t: any) => t.name === 'studio_gen_import');
+  delete process.env.STUDIO_AGENT;
+  const tool = server.tools.find((t: any) => t.name === 'studio_gen_import');
   assert.ok(tool, 'tool is registered');
   const r = await tool.run({ asset: 'a_mine', path: 'img/hero.webp', format: 'webp', square: 96 });
-  assert.equal(r.path, 'img/hero.webp');
+  assert.equal(r.wrote, 'img/hero.webp');
   assert.deepEqual(imageSize(new Uint8Array(fs.readFileSync(path.join(wt, 'img/hero.webp')))), { width: 96, height: 96, format: 'webp' });
-  await assert.rejects(tool.run({ asset: 'a_mine', path: '../escape.png' }), /inside the worktree/);
+  await assert.rejects(tool.run({ asset: 'a_mine', path: '../escape.png' }), /inside the repo/);
   assert.ok(!JSON.stringify(r).includes('http'));
-  assert.equal(calls[0].url, '/api/gen/import');
+  assert.equal(calls[0].url, '/api/agents/gen-import');
+  assert.equal(calls[0].body.width, 96);
 });

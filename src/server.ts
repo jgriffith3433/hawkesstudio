@@ -741,7 +741,10 @@ const server = http.createServer(async (req, res) => {
       // An agent on Studio or Gen themselves (infra agents) is the platform admin's (lockdown.ts).
       const infraNo = (await import('./lockdown.ts')).infraRefusal(req, String(b.product ?? ''));
       if (infraNo) return send(res, 403, { error: infraNo });
-      const by = origin ? 'Talk' : typeof b.by === 'string' ? b.by.slice(0, 60) : null;
+      // An agent starting work with Talk's tools (agents.ts agentMcp): a few tasks of its own, and those can't start more,
+      // so a loop of agents can't run away. It reports where the agent's own change reports.
+      const parent = (await import('./access.ts')).agentStarts(String(req.headers['x-studio-agent'] ?? ''));
+      const by = parent ? `agent ${parent}` : origin ? 'Talk' : typeof b.by === 'string' ? b.by.slice(0, 60) : null;
       // A premium model (Opus, Fable) only on J's own request (routing.ts): checked before anything starts.
       const { premiumRequest, grantPremium } = await import('./routing.ts');
       const premium = await premiumRequest(req, b);
@@ -795,6 +798,24 @@ const server = http.createServer(async (req, res) => {
         return send(res, 200, r);
       }
     }
+    // An agent's or Talk's file from Hawkes Gen, for the repo it works in (access.ts; the MCP tool studio_gen_import
+    // writes the bytes): its own Studio's Gen library, or its owners' own hawkesgen.ai libraries.
+    if (route === '/api/agents/gen-import' && method === 'POST') {
+      const A = await import('./access.ts');
+      const b = await readJson(req);
+      const who = await A.importerOf(String(req.headers['x-studio-agent'] ?? ''), b.product);
+      const f = await A.importGenFile({ asset: String(b.asset ?? ''), product: who.product, width: b.width, height: b.height, fit: b.fit, format: b.format ?? A.formatOfPath(String(b.path ?? '')) ?? undefined, quality: b.quality });
+      const line = `imported Gen ${f.source.asset} (${f.source.via === 'own' ? 'Studio library' : 'owner library'})${b.path ? ` as ${String(b.path).slice(0, 200)}` : ''}${f.made ? `, made ${f.made}` : ''}`;
+      A.logAccess({ who: who.who, product: who.product, kind: 'gen', source: f.source.asset, target: b.path ? String(b.path).slice(0, 200) : null, detail: line });
+      if (who.change) (await import('./agents.ts')).changeLog(who.change, line);
+      return send(res, 200, { ok: true, bytes: f.bytes.toString('base64'), mime: f.mime, ext: f.ext, size: f.bytes.length, source: f.source, copy: f.copy, made: f.made });
+    }
+    // An agent telling Talk (and so the owner) something while it works: a question, progress, a result (access.ts).
+    if (route === '/api/agents/say' && method === 'POST') {
+      const b = await readJson(req);
+      return send(res, 200, await (await import('./access.ts')).agentSays(String(req.headers['x-studio-agent'] ?? ''), b));
+    }
+    if (route === '/api/agents/access' && method === 'GET') return send(res, 200, { log: (await import('./access.ts')).accessLog(Number(q('limit')) || 100) });
     if (route === '/api/agents/settings' && method === 'GET') return send(res, 200, agentSettings());
     // The roles (.claude/agents/*.md) and skills (.claude/skills/) every Claude Code run uses (roles.ts).
     if (route === '/api/agents/roles' && method === 'GET') { const r = await import('./roles.ts'); return send(res, 200, { roles: r.listRoles(), skills: r.listSkills() }); }

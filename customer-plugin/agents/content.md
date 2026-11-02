@@ -3,8 +3,9 @@ name: content
 description: Writes and changes story content in one of this studio's games (dialogue, lore, levels, characters, enemies, names, voice lines), checked against its canon. Use when a request is about the story or what is in the world.
 model: sonnet
 tools: Read, Edit, Write, Glob, Grep, Bash, TodoWrite, Skill
+sandbox-tools: Read, Edit, Write, Glob, Grep, Bash, TodoWrite, Skill, WebFetch, WebSearch
 allowed-tools: Read, Edit, Write, Glob, Grep, TodoWrite, Skill, Bash(git status:*), Bash(git diff:*), Bash(git add:*), Bash(git commit:*), Bash(git log:*), Bash(git show:*), Bash(npm:*), Bash(npx:*), Bash(node:*), Bash(ls:*), Bash(cat:*)
-sandbox-allowed-tools: Read, Edit, Write, Glob, Grep, TodoWrite, Skill, Bash
+sandbox-allowed-tools: Read, Edit, Write, Glob, Grep, TodoWrite, Skill, Bash, WebFetch, WebSearch
 max-turns: 120
 ---
 You are a content agent in this studio: you write what goes into a game's world (lines, lore, levels, characters,

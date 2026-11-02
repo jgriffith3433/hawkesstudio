@@ -705,8 +705,30 @@ export async function handleCellsKeyed(req: http.IncomingMessage, res: http.Serv
         if (!user) return send(res, 400, { error: 'user' }), true;
         return send(res, 200, (await G.userToken(user, orgId)) ?? { token: null }), true;
       }
-      const t = await G.orgRepoToken(orgId, String(b.repo ?? ''));
+      const t = await G.orgRepoToken(orgId, String(b.repo ?? ''), { read: b.read === true });
       return send(res, 200, t ?? { token: null }), true;
+    } catch (e: any) { return send(res, e.status ?? 400, { error: e.message ?? String(e) }), true; }
+  }
+  // One Hawkes Gen file for the cell's agents and Talk (access.ts controlGenAsset): from its own Gen org, or, when the
+  // cell asks, from the hawkesgen.ai account of one of the org's owners (the Google sign-ins verified here, never the
+  // people the cell reports about itself). The bytes come back raw, with where they came from in headers.
+  if (route === '/api/cells/self/gen-asset' && method === 'POST') {
+    if (!cellsOn()) return send(res, 404, { error: 'not the control plane' }), true;
+    const orgId = String(req.headers['x-studio-cell'] ?? '');
+    const org = isCellKey(orgId, bearer(req)) ? getOrg(orgId) : null;
+    if (!org) return send(res, 401, { error: 'cell key' }), true;
+    try {
+      const b = await readJson(req);
+      const A = await import('./access.ts');
+      const emails = [org.ownerEmail, ...(db.prepare('SELECT email FROM cp_members WHERE org = ?').all(orgId) as { email: string }[]).map((m) => m.email)];
+      const f = await A.controlGenAsset({ asset: String(b.asset ?? ''), genOrg: org.genOrg, ownerEmails: emails, wantOwners: b.owners === true, ...A.ownerGen() });
+      A.logAccess({ who: `cell:${orgId}`, product: null, kind: 'gen', source: String(b.asset), target: f.via === 'own' ? 'org library' : 'owner library', detail: `${f.bytes.length} bytes` });
+      res.writeHead(200, {
+        'Content-Type': f.mime || 'application/octet-stream', 'Content-Length': String(f.bytes.length), 'X-Gen-Via': f.via,
+        'X-Gen-Project': f.project, 'X-Gen-Ext': f.ext, 'X-Gen-Title': encodeURIComponent(String(f.title ?? '').slice(0, 200)),
+      });
+      res.end(f.bytes);
+      return true;
     } catch (e: any) { return send(res, e.status ?? 400, { error: e.message ?? String(e) }), true; }
   }
   // The cell's Hawkes Gen work charged to its org's balance (credits.ts): 402 with `credits` when it is short.

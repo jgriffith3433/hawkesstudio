@@ -63,6 +63,21 @@ export async function jobRepoToken(slug: string | null | undefined): Promise<str
   return repoToken(slug);
 }
 
+/**
+ * A read-only token for one repo, or null: an agent's read-only copy of another of the Studio's projects (access.ts).
+ * Only tokens that are read-only and scoped to that repo: this Studio's app's, or in a customer's Studio the control
+ * plane's (cellside.ts read); never J's own token or one with the installation's write permissions.
+ */
+export async function readRepoToken(slug: string | null | undefined): Promise<string | null> {
+  if (!slug) return null;
+  try {
+    const t = await (await import('./github-app.ts')).repoJobToken(slug, { strict: true });
+    if (t) return t;
+  } catch { /* the cell's way, below */ }
+  if (!customerStudio()) return null;
+  return (await import('./cellside.ts')).cellGithubToken(slug, { read: true }).catch(() => null);
+}
+
 /** Fetches and keeps a repo's token, so repoTokenNow can give it to a synchronous caller. */
 export const primeRepoToken = (slug: string | null | undefined) => repoToken(slug).catch(() => null);
 

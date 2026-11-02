@@ -89,13 +89,40 @@ export async function cellGithubUser(user: string): Promise<{ login: string; tok
 }
 
 const cellTokens = new Map<string, { token: string; until: number }>();
-/** A token for one of this org's repos (scoped to it alone), or null when no installation of the org reaches it. */
-export async function cellGithubToken(repo: string): Promise<string | null> {
+/**
+ * A token for one of this org's repos (scoped to it alone), or null when no installation of the org reaches it.
+ * read: contents read-only (an agent's read-only copy of another project's repo: access.ts), or null when it can't be.
+ */
+export async function cellGithubToken(repo: string, { read = false }: { read?: boolean } = {}): Promise<string | null> {
   if (!inCell()) return null;
-  const hit = cellTokens.get(repo.toLowerCase());
+  const key = `${read ? 'r:' : ''}${repo.toLowerCase()}`;
+  const hit = cellTokens.get(key);
   if (hit && hit.until > Date.now()) return hit.token;
-  const r = await post('github-token', { repo });
+  const r = await post('github-token', read ? { repo, read: true } : { repo });
   if (!r?.token) return null;
-  cellTokens.set(repo.toLowerCase(), { token: r.token, until: Math.min(Number(r.expires) || 0, Date.now() + 50 * 60_000) - 5 * 60_000 });
+  cellTokens.set(key, { token: r.token, until: Math.min(Number(r.expires) || 0, Date.now() + 50 * 60_000) - 5 * 60_000 });
   return r.token;
+}
+
+/**
+ * One Hawkes Gen file through the control plane (cells.ts /api/cells/self/gen-asset): from this org's own Gen library,
+ * or, with `owners`, an owner's own hawkesgen.ai library. The control plane decides; refusals come back as they are.
+ */
+export async function cellGenAsset(asset: string, owners: boolean) {
+  const c = cfg();
+  if (!c) throw Object.assign(new Error('not a customer cell'), { status: 409 });
+  const r = await fetch(`${c.url}/api/cells/self/gen-asset`, {
+    method: 'POST', signal: AbortSignal.timeout(180_000),
+    headers: { Authorization: `Bearer ${c.key}`, 'X-Studio-Cell': c.org, 'Content-Type': 'application/json' }, body: JSON.stringify({ asset, owners }),
+  });
+  if (!r.ok) {
+    const j: any = await r.json().catch(() => ({}));
+    throw Object.assign(new Error(j.error ?? `the control plane answered ${r.status} for ${asset}`), { status: r.status === 401 ? 502 : r.status });
+  }
+  const via = r.headers.get('x-gen-via') === 'owner' ? 'owner' as const : 'own' as const;
+  return {
+    bytes: Buffer.from(await r.arrayBuffer()), mime: String(r.headers.get('content-type') ?? 'application/octet-stream'), via,
+    project: String(r.headers.get('x-gen-project') ?? ''), ext: String(r.headers.get('x-gen-ext') ?? '') || '.png',
+    title: decodeURIComponent(String(r.headers.get('x-gen-title') ?? '')) || null,
+  };
 }

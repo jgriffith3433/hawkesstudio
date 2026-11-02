@@ -18,6 +18,12 @@ import { sandboxOn } from './sandbox.ts';
 import { roleTune, jobTune, type Tier, type Effort } from './tuning.ts';
 import { brainId } from './brains.ts';
 import { customerStudio } from './tenancy.ts';
+import { cloudMode } from './cloudauth.ts';
+
+/** The agent roles whose passes run as Cloud Run jobs (agents.ts): their sandbox lists there. */
+const CLOUD_AGENT_ROLES = new Set(['fixer', 'builder', 'content']);
+/** Studio runs its passes as Cloud Run jobs (detach.ts detachMode cloudrun). */
+const cloudJobs = () => cloudMode() && (process.env.STUDIO_DETACH === 'cloudrun' || (!process.env.STUDIO_DETACH && Boolean(process.env.K_SERVICE)));
 
 export const ROLES = ['talk', 'pm', 'fixer', 'builder', 'content', 'scout', 'reviewer'] as const;
 export type RoleName = (typeof ROLES)[number];
@@ -92,7 +98,10 @@ export function loadRole(name: string): Role {
   // In the agent sandbox (sandbox.ts) a role gets its sandbox tools ("sandbox-allowed-tools", "sandbox-disallowed-tools")
   // and the parts of its instructions between <!-- sandbox --> and <!-- /sandbox -->; outside it, the
   // <!-- no-sandbox --> parts. The shell and the editor only come with the guards.
-  const sb = sandboxOn();
+  // On Cloud Run an agent's pass is a job on its own machine (detach.ts cloudrun), which is its sandbox: the agents get
+  // the shell and the web too, as on the server (J, 2026-11-02: agents should have Talk's full capabilities). The
+  // guards still apply (sandbox.ts requestUser: the agents' key). Talk keeps its own lists until its prompt is ready.
+  const sb = sandboxOn() || (CLOUD_AGENT_ROLES.has(name) && cloudJobs());
   const key = `${file}:${sb}`;
   const hit = cache.get(key);
   if (hit && hit.mtime === st.mtimeMs) return hit.role;
