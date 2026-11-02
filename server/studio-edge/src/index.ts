@@ -113,59 +113,71 @@ async function wake(org: string, env: Env) {
   return j.state === 'new' ? { next: j.next ?? '/auth/start' } : { waking: true, first: j.first === true };
 }
 
+// Workers Logs keep only what this logs (wrangler.jsonc: no per-request invocation logs): errors, never routine hits.
 export default {
   async fetch(request: Request, env: Env, ctx?: Ctx): Promise<Response> {
-    const url = new URL(request.url);
-    const r = env.CELLS_PROJECT_NUMBER ? route(request) : null;
-    if (r && 'redirect' in r) return new Response(null, { status: 302, headers: { Location: r.redirect, 'Cache-Control': 'no-store' } });
-
-    if (!r) {
-      const origin = new URL(env.STUDIO_ORIGIN);
-      url.protocol = origin.protocol;
-      url.hostname = origin.hostname;
-      url.port = '';
-      return fetch(url, { method: request.method, headers: forwardHeaders(request, null), body: request.body, redirect: 'manual' });
+    try {
+      const res = await handle(request, env, ctx);
+      if (res.status >= 500 && res.status !== 503) console.error(`studio-edge ${request.method} ${new URL(request.url).pathname.slice(0, 200)}: ${res.status}`);
+      return res;
+    } catch (e: any) {
+      console.error(`studio-edge ${request.method} ${new URL(request.url).pathname.slice(0, 200)}: ${e?.stack ?? e}`);
+      return new Response('Studio could not be reached.', { status: 502, headers: { 'Content-Type': 'text/plain', 'Cache-Control': 'no-store' } });
     }
-
-    const { org, path } = r;
-    const target = new URL(`https://${cellHost(org, env)}${path}${url.search}`);
-    // The waking page's question: is the cell up yet?
-    if (path === '/__waking') {
-      const h = await fetch(new URL('/api/health', target), { headers: { 'X-Forwarded-Prefix': `/o/${org}` } }).catch(() => null);
-      if (h?.headers.get('X-Studio-Cell')) return Response.json({ ready: true }, { headers: { 'Cache-Control': 'no-store' } });
-      const s: any = await (await control(env, `/api/cells/edge/${org}`)).json().catch(() => ({}));
-      return Response.json({ ready: false, state: s.state ?? 'unknown', ...(s.state === 'new' ? { next: '/auth/start' } : {}), ...(s.error ? { error: s.error } : {}) }, { headers: { 'Cache-Control': 'no-store' } });
-    }
-    // Small bodies are kept so a request can be sent again: a cell restarting (a deploy's roll, a scale-up) answers
-    // with Cloud Run's 429/5xx for a few seconds, and an Approve tap was lost to that once (2026-10-31 review).
-    const len = Number(request.headers.get('Content-Length') ?? '0');
-    const body = request.body && len > 0 && len <= 1024 * 1024 ? await request.arrayBuffer() : request.body;
-    const send = () => fetch(target, { method: request.method, headers: forwardHeaders(request, org), body: body instanceof ArrayBuffer ? body.slice(0) : body, redirect: 'manual' });
-    let res = await send();
-    for (let i = 0; i < 3 && !res.headers.get('X-Studio-Cell') && res.status !== 404 && (body === null || body instanceof ArrayBuffer); i++) {
-      await new Promise((r) => setTimeout(r, 2000 * (i + 1)));
-      res = await send();
-    }
-    if (res.headers.get('X-Studio-Cell') === org) {
-      const now = Date.now();
-      if (ctx && env.EDGE_KEY && now - (seen.get(org) ?? 0) > 10 * 60_000) {
-        seen.set(org, now);
-        ctx.waitUntil(control(env, `/api/cells/edge/${org}/seen`, 'POST').catch(() => null));
-      }
-      return fromCell(res, org);
-    }
-    // Anything but Cloud Run's 404 is a cell that exists and is restarting: say so, don't wake it, nothing was lost.
-    if (res.status !== 404) {
-      const navigating = request.method === 'GET' && (request.headers.get('Sec-Fetch-Mode') === 'navigate' || /text\/html/.test(request.headers.get('Accept') ?? ''));
-      if (navigating) return new Response(wakingPage(org, false), { status: 503, headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', 'Retry-After': '5' } });
-      return Response.json({ error: 'Your studio is restarting for a moment; nothing was changed. Try again in a few seconds.', restarting: true }, { status: 503, headers: { 'Retry-After': '5', 'Cache-Control': 'no-store' } });
-    }
-    // Cloud Run's own answer: no such service (hibernated, or never made).
-    const w = await wake(org, env);
-    if ('gone' in w) return new Response('No such studio.', { status: 404, headers: { 'Content-Type': 'text/plain' } });
-    if ('next' in w) return new Response(null, { status: 302, headers: { Location: w.next, 'Cache-Control': 'no-store' } });
-    const navigate = request.method === 'GET' && (request.headers.get('Sec-Fetch-Mode') === 'navigate' || /text\/html/.test(request.headers.get('Accept') ?? ''));
-    if (navigate) return new Response(wakingPage(org, 'first' in w && w.first), { status: 503, headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', 'Retry-After': '5' } });
-    return Response.json({ error: 'Your studio is waking up; try again in a few seconds.', waking: true }, { status: 503, headers: { 'Retry-After': '5', 'Cache-Control': 'no-store' } });
   },
 };
+
+async function handle(request: Request, env: Env, ctx?: Ctx): Promise<Response> {
+  const url = new URL(request.url);
+  const r = env.CELLS_PROJECT_NUMBER ? route(request) : null;
+  if (r && 'redirect' in r) return new Response(null, { status: 302, headers: { Location: r.redirect, 'Cache-Control': 'no-store' } });
+
+  if (!r) {
+    const origin = new URL(env.STUDIO_ORIGIN);
+    url.protocol = origin.protocol;
+    url.hostname = origin.hostname;
+    url.port = '';
+    return fetch(url, { method: request.method, headers: forwardHeaders(request, null), body: request.body, redirect: 'manual' });
+  }
+
+  const { org, path } = r;
+  const target = new URL(`https://${cellHost(org, env)}${path}${url.search}`);
+  // The waking page's question: is the cell up yet?
+  if (path === '/__waking') {
+    const h = await fetch(new URL('/api/health', target), { headers: { 'X-Forwarded-Prefix': `/o/${org}` } }).catch(() => null);
+    if (h?.headers.get('X-Studio-Cell')) return Response.json({ ready: true }, { headers: { 'Cache-Control': 'no-store' } });
+    const s: any = await (await control(env, `/api/cells/edge/${org}`)).json().catch(() => ({}));
+    return Response.json({ ready: false, state: s.state ?? 'unknown', ...(s.state === 'new' ? { next: '/auth/start' } : {}), ...(s.error ? { error: s.error } : {}) }, { headers: { 'Cache-Control': 'no-store' } });
+  }
+  // Small bodies are kept so a request can be sent again: a cell restarting (a deploy's roll, a scale-up) answers
+  // with Cloud Run's 429/5xx for a few seconds, and an Approve tap was lost to that once (2026-10-31 review).
+  const len = Number(request.headers.get('Content-Length') ?? '0');
+  const body = request.body && len > 0 && len <= 1024 * 1024 ? await request.arrayBuffer() : request.body;
+  const send = () => fetch(target, { method: request.method, headers: forwardHeaders(request, org), body: body instanceof ArrayBuffer ? body.slice(0) : body, redirect: 'manual' });
+  let res = await send();
+  for (let i = 0; i < 3 && !res.headers.get('X-Studio-Cell') && res.status !== 404 && (body === null || body instanceof ArrayBuffer); i++) {
+    await new Promise((r) => setTimeout(r, 2000 * (i + 1)));
+    res = await send();
+  }
+  if (res.headers.get('X-Studio-Cell') === org) {
+    const now = Date.now();
+    if (ctx && env.EDGE_KEY && now - (seen.get(org) ?? 0) > 10 * 60_000) {
+      seen.set(org, now);
+      ctx.waitUntil(control(env, `/api/cells/edge/${org}/seen`, 'POST').catch(() => null));
+    }
+    return fromCell(res, org);
+  }
+  // Anything but Cloud Run's 404 is a cell that exists and is restarting: say so, don't wake it, nothing was lost.
+  if (res.status !== 404) {
+    const navigating = request.method === 'GET' && (request.headers.get('Sec-Fetch-Mode') === 'navigate' || /text\/html/.test(request.headers.get('Accept') ?? ''));
+    if (navigating) return new Response(wakingPage(org, false), { status: 503, headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', 'Retry-After': '5' } });
+    return Response.json({ error: 'Your studio is restarting for a moment; nothing was changed. Try again in a few seconds.', restarting: true }, { status: 503, headers: { 'Retry-After': '5', 'Cache-Control': 'no-store' } });
+  }
+  // Cloud Run's own answer: no such service (hibernated, or never made).
+  const w = await wake(org, env);
+  if ('gone' in w) return new Response('No such studio.', { status: 404, headers: { 'Content-Type': 'text/plain' } });
+  if ('next' in w) return new Response(null, { status: 302, headers: { Location: w.next, 'Cache-Control': 'no-store' } });
+  const navigate = request.method === 'GET' && (request.headers.get('Sec-Fetch-Mode') === 'navigate' || /text\/html/.test(request.headers.get('Accept') ?? ''));
+  if (navigate) return new Response(wakingPage(org, 'first' in w && w.first), { status: 503, headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', 'Retry-After': '5' } });
+  return Response.json({ error: 'Your studio is waking up; try again in a few seconds.', waking: true }, { status: 503, headers: { 'Retry-After': '5', 'Cache-Control': 'no-store' } });
+}

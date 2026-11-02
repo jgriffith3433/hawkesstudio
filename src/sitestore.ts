@@ -160,6 +160,20 @@ export async function publishWidget(store: SiteStore, file: string) {
 /** Where Studio sends its writes: STUDIO_SITES_URL, else https://sites.<domain>. */
 export const sitesUrl = (domain: string) => (process.env.STUDIO_SITES_URL || `https://sites.${domain}`).replace(/\/+$/, '');
 
+/**
+ * The store a publish uses: R2's S3 API straight from Studio when this Studio has R2 keys (r2.ts: never through the
+ * beta-sites Worker, so a publish costs no Worker requests), else signed calls to the Worker. A customer's Studio always
+ * goes through the Worker, which keeps it under o/<org>/.
+ */
+export async function siteStore(domain: string): Promise<SiteStore> {
+  if (!siteOrg()) {
+    const { r2Config, r2Store } = await import('./r2.ts');
+    const c = r2Config();
+    if (c) return r2Store(c, laneOf());
+  }
+  return workerStore(sitesUrl(domain));
+}
+
 /** The real store: signed calls to the beta-sites Worker. */
 export function workerStore(url: string, { lane = laneOf(), fetcher = fetch, sign = signPublish }: { lane?: Lane; fetcher?: typeof fetch; sign?: typeof signPublish } = {}): SiteStore {
   const call = async (method: string, p: string, body: Buffer | null, headers: Record<string, string> = {}, ok404 = false) => {

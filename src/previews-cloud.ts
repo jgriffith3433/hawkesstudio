@@ -19,7 +19,7 @@ import { repoMap, BETA, BRANCH } from './repos.ts';
 import { cloudMode } from './cloudauth.ts';
 import { siteKeys, siteOrg } from './sitekeys.ts';
 import { WIDGET, type PageInfo } from './bugreport.ts';
-import { githubCommit, githubFiles, localGitFiles, folderFilesAsync, publishSite, publishWidget, keepPrefetch, removeSite, readManifest, sitesUrl, workerStore, type SiteFile, type SiteStore } from './sitestore.ts';
+import { githubCommit, githubFiles, localGitFiles, folderFilesAsync, publishSite, publishWidget, keepPrefetch, removeSite, readManifest, siteStore, type SiteFile, type SiteStore } from './sitestore.ts';
 
 /** Beta sites go to R2 (Cloud Run, with a key to sign with), not to a local folder. STUDIO_SITES=local turns it off. */
 export const remoteSites = () => cloudMode() && process.env.STUDIO_SITES !== 'local' && Boolean(siteKeys());
@@ -60,7 +60,7 @@ export type CloudPublished = { sha: string; ref: string; files: number; version?
 
 /** Publishes a product's beta site (or an agent change's preview) at <sub>/beta or <sub>/c/<change> in this lane. */
 export async function publishCloud(p: Product, sub: string, o: { change?: string }, progress: (s: string) => void, deps: CloudDeps = {}): Promise<CloudPublished> {
-  const store = deps.store ?? workerStore(sitesUrl(deps.domain ?? 'hawkesgen.ai'));
+  const store = deps.store ?? (await siteStore(deps.domain ?? 'hawkesgen.ai'));
   const repos = repoMap();
   const base = `${sub}/${o.change ? `c/${o.change}` : 'beta'}`;
   const skip = deps.skip ?? (() => false);
@@ -194,6 +194,6 @@ async function publishAll(store: SiteStore, base: string, all: SiteFile[], skip:
 
 /** Removes a change's preview from R2. */
 export async function removeCloud(sub: string, change: string, deps: { store?: SiteStore; domain?: string } = {}) {
-  return removeSite(deps.store ?? workerStore(sitesUrl(deps.domain ?? 'hawkesgen.ai')), `${sub}/c/${change}`);
+  return removeSite(deps.store ?? (await siteStore(deps.domain ?? 'hawkesgen.ai')), `${sub}/c/${change}`);
 }
 

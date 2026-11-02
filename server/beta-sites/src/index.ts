@@ -551,4 +551,16 @@ export async function handle(req: Request, env: Env, now = Date.now()): Promise<
   return rememberProject(await page(req, env, url, k.base, k.rel), url);
 }
 
-export default { fetch: (req: Request, env: Env) => handle(req, env) };
+// Workers Logs keep only what this logs (wrangler.jsonc: no per-request invocation logs): errors, never routine hits.
+export default {
+  async fetch(req: Request, env: Env): Promise<Response> {
+    try {
+      const res = await handle(req, env);
+      if (res.status >= 500) console.error(`beta-sites ${req.method} ${new URL(req.url).host}${new URL(req.url).pathname.slice(0, 200)}: ${res.status}`);
+      return res;
+    } catch (e: any) {
+      console.error(`beta-sites ${req.method} ${new URL(req.url).host}${new URL(req.url).pathname.slice(0, 200)}: ${e?.stack ?? e}`);
+      return new Response('Something went wrong here.', { status: 502, headers: { 'Content-Type': 'text/plain', 'Cache-Control': 'no-store' } });
+    }
+  },
+};

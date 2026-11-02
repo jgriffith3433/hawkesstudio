@@ -377,8 +377,21 @@ const server = http.createServer(async (req, res) => {
     if (route === '/api/playtests/trends' && method === 'GET') return send(res, 200, trends({ product: q('product'), days: Number(q('days')) || 30 }));
     // The Playtests page's grid: playing, waiting and just finished, with each one's Studio context (livetests.ts).
     if (route === '/api/playtests/live' && method === 'GET') return send(res, 200, await (await import('./livetests.ts')).livePlaytests());
+    // The same pushed (feeds.ts): the grid, and with ?job= that playtest's full live state for the big view, whenever it changes.
+    if (route === '/api/playtests/live/stream' && method === 'GET') {
+      const { serveFeed } = await import('./feeds.ts');
+      const job = /^j_[0-9a-f]+$/.test(q('job') ?? '') ? q('job') : null;
+      if (job) return serveFeed(req, res, `playtest:${job}`, { everyMs: 2000, read: async () => ({ job, ...(await gen.request(`/jobs/${job}/live`)) }), done: (v) => !v?.error && v?.live == null });
+      const { livePlaytests } = await import('./livetests.ts');
+      return serveFeed(req, res, 'playtests', { everyMs: 2000, read: livePlaytests });
+    }
     // The Twitch show (broadcast.ts, dashboard/broadcast.html): curated playtest, roadmap and agent titles.
     if (route === '/api/broadcast' && method === 'GET') return send(res, 200, await (await import('./broadcast.ts')).broadcastNow({ product: q('product') || undefined }));
+    if (route === '/api/broadcast/stream' && method === 'GET') {
+      const product = q('product') || undefined;
+      const { broadcastNow } = await import('./broadcast.ts');
+      return (await import('./feeds.ts')).serveFeed(req, res, `broadcast:${product ?? ''}`, { everyMs: 1000, read: () => broadcastNow({ product }) });
+    }
     // Director desk (the bar under the page, hidden on ?clean=1). Same show for every viewer. J's dashboard only.
     if (route === '/api/broadcast/desk' && method === 'POST') {
       const { updateDesk } = await import('./broadcast.ts');
@@ -1104,14 +1117,7 @@ const server = http.createServer(async (req, res) => {
       const rel = route === '/' ? 'index.html' : route.slice(1);
       const file = path.join(paths.dashboard, path.normalize(rel));
       if (!file.startsWith(paths.dashboard) || !fs.existsSync(file) || fs.statSync(file).isDirectory()) return send(res, 404, { error: 'not found' });
-      // Pictures change only with a deploy and are kept a day; pages, scripts and styles are checked each time (an ETag,
-      // so an unchanged one is a 304 with no body). Every request still passes the edge Worker, so the day matters most.
-      const st = fs.statSync(file);
-      const ext = path.extname(file);
-      const etag = `W/"${st.size.toString(36)}-${Math.floor(st.mtimeMs).toString(36)}"`;
-      const cache = ext === '.png' || ext === '.svg' ? 'public, max-age=86400' : 'no-cache';
-      if (req.headers['if-none-match'] === etag) { res.writeHead(304, { ETag: etag, 'Cache-Control': cache }); return void res.end(); }
-      res.writeHead(200, { 'Content-Type': MIME[ext] ?? 'application/octet-stream', 'Cache-Control': cache, ETag: etag });
+      res.writeHead(200, { 'Content-Type': MIME[path.extname(file)] ?? 'application/octet-stream', 'Cache-Control': 'no-store' });
       return fs.createReadStream(file).pipe(res);
     }
     return send(res, 404, { error: `No route ${method} ${route}` });

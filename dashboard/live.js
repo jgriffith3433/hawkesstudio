@@ -4,8 +4,8 @@
 // big view: every player's video, the step history, the bot's state and metrics, progress and fps over time, problems,
 // console errors and failed requests. Activity's playtest cards open it there.
 //
-// Kept light: one request for the grid every 1.5 s while the tab is visible (GET /api/playtests/live), one more per
-// second for the maximized one (GET /api/playtests/live/<job>); tiles are built once and updated in place (an <img>
+// Kept light: the grid and the maximized one are pushed (GET /api/playtests/live/stream, ?job= for the big view: one
+// long request each while the tab is visible, the server reads Gen once for every viewer); tiles are built once and updated in place (an <img>
 // streaming MJPEG is never recreated); only tiles on screen stream, at 4 fps (the maximized view at 12), and nothing
 // streams while the page is hidden or another tab is open. Uses app.js's helpers ($, esc, api, show, tab, GEN, file).
 
@@ -95,13 +95,54 @@
       $('#ltBody').innerHTML = `<div class="empty">Couldn't load the playtests: ${esc(e.message)}</div>`;
     }
   }
+  // Pushed, not polled: one stream for the grid while the tab is on screen (GET /api/playtests/live/stream, feeds.ts),
+  // and one for the maximized playtest. Each sends the whole payload whenever it changed. Closed while hidden or away.
+  const feedsOn = { grid: null, big: null, backoff: 2000, retry: null };
+  function feed(which, url, onData) {
+    const es = new EventSource(url);
+    es.onopen = () => { feedsOn.backoff = 2000; };
+    es.onmessage = (m) => {
+      let d;
+      try { d = JSON.parse(m.data); } catch { return; }
+      onData(d);
+    };
+    es.onerror = () => {
+      // The browser retries a dropped stream by itself; one it gave up on (signed out, the server down) we retry, slower each time.
+      if (es.readyState !== EventSource.CLOSED || feedsOn[which] !== es) return;
+      feedsOn[which] = null;
+      clearTimeout(feedsOn.retry);
+      feedsOn.retry = setTimeout(schedule, feedsOn.backoff);
+      feedsOn.backoff = Math.min(60_000, feedsOn.backoff * 2);
+    };
+    return es;
+  }
+  function stopFeeds(which = ['grid', 'big']) {
+    for (const w of [].concat(which)) {
+      try { feedsOn[w]?.close(); } catch {}
+      if (feedsOn[w]) feedsOn[w] = null;
+    }
+  }
   function schedule() {
-    clearTimeout(S.timer);
-    if (tab !== 'live') return;
-    S.timer = setTimeout(async () => {
-      if (!document.hidden && tab === 'live') await load();
-      schedule();
-    }, 5000);
+    clearTimeout(feedsOn.retry);
+    if (tab !== 'live' || document.hidden || typeof EventSource === 'undefined') return stopFeeds();
+    if (!feedsOn.grid) {
+      feedsOn.grid = feed('grid', '/api/playtests/live/stream', (d) => {
+        if (d.error) return void ($('#ltBody').innerHTML = `<div class="empty">Couldn't load the playtests: ${esc(d.error)}</div>`);
+        S.data = d;
+        render();
+        if (S.open && !S.detail) renderBig();
+      });
+    }
+    const want = S.open;
+    if (feedsOn.big && feedsOn.big.job !== want) stopFeeds('big');
+    if (want && !feedsOn.big) {
+      feedsOn.big = feed('big', `/api/playtests/live/stream?job=${want}`, (d) => {
+        if (S.open !== d.job || d.error) return;
+        S.detail = d.live ? { ...d.live, ctx: gridEntry()?.ctx } : null;
+        renderBig();
+      });
+      feedsOn.big.job = want;
+    }
   }
   window.loadLiveTab = async () => {
     const want = /^#live\/(j_[0-9a-f]+)/.exec(location.hash)?.[1] ?? null;
@@ -112,12 +153,13 @@
   };
   addEventListener('studio-tab', (e) => {
     if (e.detail !== 'live') {
-      clearTimeout(S.timer);
+      stopFeeds();
       closeBig({ push: false, keepHash: true });
       for (const t of S.tiles.values()) stream(t, false);
     }
   });
   document.addEventListener('visibilitychange', () => {
+    schedule();
     for (const t of S.tiles.values()) stream(t, !document.hidden && t.seen && !S.open);
     if (S.open) bigStreams(!document.hidden);
   });
@@ -320,7 +362,7 @@
   function closeBig({ push = true, keepHash = false } = {}) {
     if (!S.open) return;
     S.open = null;
-    clearTimeout(S.detailTimer);
+    stopFeeds('big');
     const el = $('#ltBig');
     if (el) {
       bigStreams(false);
@@ -345,22 +387,9 @@
 
   const gridEntry = () => [...(S.data?.playing ?? []), ...(S.data?.finished ?? [])].find((p) => p.job === S.open) ?? null;
 
-  async function pollDetail() {
-    clearTimeout(S.detailTimer);
-    const job = S.open;
-    if (!job) return;
-    const g = gridEntry();
-    if (!document.hidden && (!g || g.live !== false)) {
-      try {
-        const r = await api(`/api/playtests/live/${job}`);
-        if (S.open !== job) return;
-        S.detail = r.live ? { ...r.live, ctx: g?.ctx } : null;
-        renderBig();
-      } catch {
-        // The grid's entry still shows.
-      }
-    }
-    if (S.open === job) S.detailTimer = setTimeout(pollDetail, (gridEntry()?.live === false) ? 10000 : 3000);
+  // The big view's data comes from its own stream (schedule above).
+  function pollDetail() {
+    schedule();
   }
   function renderBigFromGrid() {
     if (!S.detail) renderBig();

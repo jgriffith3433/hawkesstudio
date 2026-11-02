@@ -196,7 +196,12 @@ Cloud Run and a key; `STUDIO_SITES=local` turns it off):
   the job is the sandbox. About a cent a build. The committed part of the site still comes from GitHub.
 - Files are named by their git blob id: a publish sends only what changed (a manifest per site, `.studio/manifest.json`),
   pages get the 🐞 widget (bugreport.ts) and go up every time, the manifest last, removals after. A Unity site keeps the
-  previous `Game/v<n>` (previews.ts `keptGameVersions`). The first publish of Sick Of It sends 1.4 GB (~$0.17 of Google
+  previous `Game/v<n>` (previews.ts `keptGameVersions`).
+- **Writes go straight to R2 when J's Studio has R2 keys** (2026-11-02, `src/r2.ts`, sitestore.ts `siteStore`): secrets
+  `studio-r2-account-id`, `studio-r2-access-key-id`, `studio-r2-secret-access-key` (beta: `studio-beta-r2-...`; an R2
+  API token with Object Read & Write on `hawkes-beta-sites`), mounted by `tools/studio-cloudrun/deploy.mjs` when they
+  exist. Then a publish is R2 S3 API calls with the Worker's own keys (`<lane>/<key>`), no Worker request per file.
+  Without them, and always for a customer's Studio (the Worker keeps it under `o/<org>/`), writes go through the Worker. The first publish of Sick Of It sends 1.4 GB (~$0.17 of Google
   egress); later ones only the new build.
 - Triggers as before: a push to a web product's `beta` (betawatch.ts; a repo not cloned here isn't cloned for it), a
   tag build's push to the website's beta (tagbuild.ts), Runs / `POST /api/previews/<product>`, an agent change ready.
