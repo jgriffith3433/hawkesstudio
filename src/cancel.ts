@@ -134,6 +134,13 @@ export async function cancelRoute(route: string, method: string, by: string, bod
     logDecision('cancelled', m[1], job.project ?? null, words(`cancelled Gen job ${m[1]} (${job.tool}, ${job.status})`));
     return { ok: true, ...r };
   }
+  m = /^\/api\/scouts\/(x_[0-9a-f]+)\/(cancel|resume)$/.exec(route);
+  if (m) {
+    const sc = await import('./scout.ts');
+    const x = m[2] === 'cancel' ? sc.cancelScout(m[1], by, reason) : sc.rerunScout(m[1]);
+    logDecision(m[2] === 'cancel' ? 'cancelled' : 'resumed', m[1], x.product, words(m[2] === 'cancel' ? `cancelled scout ${m[1]}` : `re-ran scout ${m[1]} as ${x.id}`));
+    return { ok: true, scout: x };
+  }
   m = /^\/api\/changes\/(c_[0-9a-f]+)\/(cancel|resume)$/.exec(route);
   if (m) {
     const agents = await import('./agents.ts');

@@ -11,6 +11,8 @@ import { talkInfo } from './talk.ts';
 import { brainLabel } from './brains.ts';
 import { planView, planLine } from './runplan.ts';
 import { cancelNote } from './cancel.ts';
+import { roleArgs } from './roles.ts';
+import { FAILED_HIDE_MS } from './scout.ts';
 
 const name = (product: string) => {
   try {
@@ -83,14 +85,30 @@ function runRow(r: any) {
   };
 }
 
+const scoutModel = () => { try { return roleArgs('scout').role.model ?? null; } catch { return null; } };
+
 /** A scout as one Activity row (the report is fetched when J opens it: GET /api/scouts/<id>, so the push payload stays small). */
 export function scoutRow(x: any) {
   const partial = x.status === 'done' && /^partial report/.test(x.detail ?? '');
   return {
     id: x.id, product: x.product, productName: name(x.product), question: String(x.question ?? '').replace(/\s+/g, ' ').slice(0, 160),
     status: partial ? 'partial' : x.status, detail: x.detail ?? null, started: x.created, finished: x.finished ?? null, cost: x.cost ?? 0,
-    origin: x.origin ?? null, by: x.origin ? `Talk: ${convTitle(x.origin)}` : 'J', hasReport: x.status === 'done' && Boolean(x.report),
+    origin: x.origin ?? null, by: x.origin ? `Talk: ${convTitle(x.origin)}` : 'J', hasReport: ['done', 'cancelled'].includes(x.status) && Boolean(x.report),
+    // Live progress while it runs (scout.ts keeps the last steps and the turns used; the push stream carries each write).
+    turns: x.turns ?? 0, log: (() => { try { return (JSON.parse(x.log ?? '[]') as string[]).slice(-6); } catch { return []; } })(),
+    model: process.env.SCOUT_MODEL ?? scoutModel(), retryOf: x.retry_of ?? null,
+    cancelled: x.status === 'cancelled' ? cancelNote(`scout:${x.id}`) : null,
   };
+}
+
+const SCOUT_COLS = 'id, product, question, status, detail, cost, origin, created, finished, turns, log, retry_of, dismissed, report IS NOT NULL AS report';
+/**
+ * The default list: running scouts, and finished ones from the last day that aren't dismissed; a failed one older than
+ * 24 h drops out by itself (scout.ts FAILED_HIDE_MS). Hidden = everything else, under "Show dismissed".
+ */
+const SCOUT_SHOWN = `status = 'running' OR (dismissed IS NULL AND COALESCE(finished, created) > ?)`;
+export function hiddenScouts(now = Date.now(), limit = 100) {
+  return (db.prepare(`SELECT ${SCOUT_COLS} FROM scouts WHERE NOT (${SCOUT_SHOWN}) ORDER BY created DESC LIMIT ?`).all(now - FAILED_HIDE_MS, limit) as any[]).map((x) => ({ ...scoutRow(x), dismissed: x.dismissed ?? null }));
 }
 
 export async function activity() {
@@ -99,7 +117,9 @@ export async function activity() {
   const cancelled = (db.prepare(`SELECT * FROM changes WHERE status = 'cancelled' AND COALESCE(updated, created) > ? ORDER BY updated DESC LIMIT 20`).all(Date.now() - 7 * 86_400_000) as any[]).map(changeRow);
   const runs = (db.prepare(`SELECT * FROM runs WHERE status = 'running' ORDER BY started`).all() as any[]).map(runRow);
   // Scouts (scout.ts): running ones and the last day's finished, mixed with runs by time in the drawer.
-  const scouts = (db.prepare(`SELECT id, product, question, status, detail, cost, origin, created, finished, report IS NOT NULL AS report FROM scouts WHERE status = 'running' OR COALESCE(finished, created) > ? ORDER BY created DESC LIMIT 30`).all(Date.now() - 86_400_000) as any[]).map(scoutRow);
+  const scouts = (db.prepare(`SELECT ${SCOUT_COLS} FROM scouts WHERE ${SCOUT_SHOWN} ORDER BY created DESC LIMIT 30`).all(Date.now() - FAILED_HIDE_MS) as any[]).map(scoutRow);
+  // How many are tucked away (dismissed, or older than a day): the drawer's "Show dismissed" fetches them when asked.
+  const hiddenScoutCount = (db.prepare(`SELECT COUNT(*) n FROM scouts WHERE NOT (${SCOUT_SHOWN})`).get(Date.now() - FAILED_HIDE_MS) as any).n as number;
   // Only the last message J (or a notice) sent, picked out by SQLite: a long conversation's whole history isn't parsed every poll.
   const info = talkInfo();
   const talk = (db.prepare(`SELECT id, title, updated, proc, (SELECT m.value FROM json_each(c.messages) m WHERE json_extract(m.value, '$.role') = 'user' OR json_extract(m.value, '$.notice') ORDER BY m.key DESC LIMIT 1) AS last FROM conversations c WHERE status = 'thinking'`).all() as any[]).map((c) => {
@@ -135,7 +155,7 @@ export async function activity() {
   const opsDone = allOps.filter((o) => o.status === 'done' || o.status === 'failed').slice(0, 10);
   const loop = loopHealth();
   return {
-    at: Date.now(), gen: genOk, changes, cancelled, runs, scouts, jobs, talk, recent, ops, opsDone, commands: runningCommands(),
+    at: Date.now(), gen: genOk, changes, cancelled, runs, scouts, hiddenScoutCount, jobs, talk, recent, ops, opsDone, commands: runningCommands(),
     // Moments in the last hour Studio couldn't answer for over a second (a blocking call), and what was running then.
     loop: { lastMinute: loop.lastMinute, blocks: loop.blocks.filter((b) => b.at > Date.now() - 3600_000) },
     // The header badge: things working now (a Gen job a run's step is waiting on counts once, as its run).

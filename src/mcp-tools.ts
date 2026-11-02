@@ -205,12 +205,12 @@ export function studioMcp({ studio, waitRun }: Client = { studio: defaultStudio,
     },
     {
       name: 'studio_cancel',
-      description: 'Cancel or resume work, on J\'s word: a whole run (kind run, r_...), one Gen job (kind job: a playtest, a Unity build, GPU work, queued or running), or an agent change (kind change, c_...: its agent is stopped, the branch and worktree kept, status cancelled; not a failed try; the PM does not restart it; resume it or close it later). Cancelled is its own outcome, never a failure: a cancelled build or playtest blames nothing and the next beta run builds or plays again. It is recorded as Talk, with your reason. resume: carry on a cancelled change.',
-      inputSchema: obj({ kind: str('run, job or change'), id: str('r_..., a Gen job id, or c_...'), reason: str('Why (short): shown in the run, step or change and in the PM log'), resume: bool('Resume a cancelled change instead of cancelling') }, ['kind', 'id']),
+      description: 'Cancel or resume work, on J\'s word: a whole run (kind run, r_...), one Gen job (kind job: a playtest, a Unity build, GPU work, queued or running), or a scout (kind scout, x_...: its process is stopped, any partial report from what it had written is kept, the cost so far recorded, status cancelled; resume: true re-runs its question as a new scout), or an agent change (kind change, c_...: its agent is stopped, the branch and worktree kept, status cancelled; not a failed try; the PM does not restart it; resume it or close it later). Cancelled is its own outcome, never a failure: a cancelled build or playtest blames nothing and the next beta run builds or plays again. It is recorded as Talk, with your reason. resume: carry on a cancelled change.',
+      inputSchema: obj({ kind: str('run, job, change or scout'), id: str('r_..., a Gen job id, c_... or x_...'), reason: str('Why (short): shown in the run, step or change and in the PM log'), resume: bool('Resume a cancelled change (or re-run a scout) instead of cancelling') }, ['kind', 'id']),
       run: async ({ kind, id, reason, resume }) => {
-        const k = ({ run: 'runs', job: 'jobs', change: 'changes' } as Record<string, string>)[String(kind)];
-        if (!k) throw new Error('kind is run, job or change');
-        if (resume && k !== 'changes') throw new Error('Only an agent change can be resumed');
+        const k = ({ run: 'runs', job: 'jobs', change: 'changes', scout: 'scouts' } as Record<string, string>)[String(kind)];
+        if (!k) throw new Error('kind is run, job, change or scout');
+        if (resume && k !== 'changes' && k !== 'scouts') throw new Error('Only an agent change or a scout can be resumed');
         return studio(`/api/${k}/${encodeURIComponent(String(id))}/${resume ? 'resume' : 'cancel'}`, { method: 'POST', body: { reason } });
       },
     },
@@ -382,9 +382,9 @@ export function studioMcp({ studio, waitRun }: Client = { studio: defaultStudio,
     },
     {
       name: 'studio_scout',
-      description: 'For "what would it take to ...?" when you can\'t answer from what you know: a scout (Claude Code, read-only, in a worktree of the product\'s beta; no edits, no pull request) reads the code and reports what exists, what it would take, a proposed roadmap item with tasks, acceptance criteria, order, size and rough cost, and questions for J. Its report comes back into this conversation by itself (minutes). With id: that scout\'s status and report.',
-      inputSchema: obj({ product: str('Product id (or hawkesstudio / hawkesgen)'), question: str('What J wants to know'), id: str('A scout id (x_...) to read') }),
-      run: async ({ product, question, id }) => (id ? studio(`/api/scouts/${id}`) : studio('/api/scouts', { method: 'POST', body: { product, question } })),
+      description: 'For "what would it take to ...?" when you can\'t answer from what you know: a scout (Claude Code, read-only, in a worktree of the product\'s beta; no edits, no pull request) reads the code and reports what exists, what it would take, a proposed roadmap item with tasks, acceptance criteria, order, size and rough cost, and questions for J. Its report comes back into this conversation by itself (minutes). With id: that scout\'s status, live progress (turns, last steps, cost so far), model and report; with id and message: a follow-up question in the same session (the answer is added to its report). Stop one with studio_cancel (kind scout), re-run one with studio_cancel (kind scout, resume).',
+      inputSchema: obj({ product: str('Product id (or hawkesstudio / hawkesgen)'), question: str('What J wants to know'), id: str('A scout id (x_...) to read'), message: str('With id: a follow-up question for that scout') }),
+      run: async ({ product, question, id, message }) => (id ? (message ? studio(`/api/scouts/${id}/message`, { method: 'POST', body: { message } }) : studio(`/api/scouts/${id}`)) : studio('/api/scouts', { method: 'POST', body: { product, question } })),
     },
     {
       name: 'studio_ready',

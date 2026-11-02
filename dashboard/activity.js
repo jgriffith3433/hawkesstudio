@@ -111,6 +111,8 @@ if (typeof document !== 'undefined') (() => {
   // Open by default on a wide screen (beside Talk); J's choice sticks. On a phone it covers the page: closed at first.
   let open = matchMedia('(max-width: 760px)').matches ? false : remembered() ? remembered() === 'open' : matchMedia('(min-width: 1200px)').matches;
   let last = null;
+  let showDismissed = false; // "Show dismissed": finished scouts J tucked away (or older failed ones), fetched when asked and on each stream event while on
+  let hiddenScouts = [];
   let drawn = ''; // what the drawer shows (redrawn only when the payload changed)
 
   const dur = (ms) => {
@@ -144,16 +146,22 @@ if (typeof document !== 'undefined') (() => {
           ? `<div class="act-actions"><button class="small" data-act-cancel="cancel" data-kind="changes" data-id="${esc(c.id)}" data-what="this agent (its branch and worktree are kept; Resume or Close it afterwards; it is not a failed try)">Cancel</button></div>` : ''}
     </div>`;
   }
-  /** A scout: the question, product, status, elapsed time, cost, origin; the report (or why it failed) opens in place. */
+  /** A scout: the question, product, status, elapsed time, live progress (turns, last steps), cost, origin; the report opens in place. Cancel / Re-run / Ask follow-up like an agent's controls. */
   function scoutHtml(x) {
     const running = x.status === 'running';
     const t = running ? since(x.started) : dur((x.finished ?? x.started) - x.started);
-    return `<div class="act-item${x.status === 'failed' ? ' act-warn' : ''}" data-key="x:${esc(x.id)}">
-      <div class="act-top">${ICON[x.status] ?? '•'} 🔎 <b>${esc(x.productName)}</b> <span class="pill ${x.status === 'failed' ? 'failed' : x.status === 'done' ? 'ship' : ''}">${esc(x.status)}</span><span class="act-time">${esc(t)}</span></div>
+    const warn = x.status === 'failed';
+    const act = running
+      ? `<button class="small" data-act-cancel="cancel" data-kind="scouts" data-id="${esc(x.id)}" data-what="this scout (what it has written so far is kept as a partial report; it is not a failure)">Cancel</button>`
+      : `<button class="small" data-act-cancel="resume" data-kind="scouts" data-id="${esc(x.id)}">Re-run</button> <button class="small" data-scout-ask="${esc(x.id)}">Ask a follow-up</button> ${x.dismissed ? `<button class="small" data-scout-dismiss="restore" data-id="${esc(x.id)}">Show again</button>` : `<button class="small" data-scout-dismiss="dismiss" data-id="${esc(x.id)}" title="Hide this from Activity (its report and cost are kept)" aria-label="Dismiss">×</button>`}`;
+    return `<div class="act-item${warn ? ' act-warn' : ''}" data-key="x:${esc(x.id)}">
+      <div class="act-top">${ICON[x.status] ?? '•'} 🔎 <b>${esc(x.productName)}</b> <span class="pill ${warn ? 'failed' : x.status === 'done' ? 'ship' : ''}">${esc(x.status)}</span>${x.model ? ` <span class="pill">${esc(x.model)}</span>` : ''}<span class="act-time">${esc(t)}</span></div>
       <div class="act-title">${esc(x.question)}</div>
       ${x.detail ? `<div class="act-now">${esc(x.detail)}</div>` : ''}
-      <div class="meta">scout ${esc(x.id)} · by ${by(x)}${x.cost ? ` · ${x.cost.toFixed(2)}` : ''}</div>
+      <div class="meta">scout ${esc(x.id)} · by ${by(x)}${x.turns ? ` · ${x.turns} turns` : ''}${x.cost ? ` · $${x.cost.toFixed(2)}` : running ? ' · cost shows when it reports' : ''}${x.retryOf ? ` · re-run of ${esc(x.retryOf)}` : ''}</div>
+      ${running && x.log?.length ? `<details class="act-log"><summary class="meta">last steps</summary><pre>${esc(x.log.join('\n'))}</pre></details>` : ''}
       ${x.hasReport ? `<details class="act-log" data-scout-report="${esc(x.id)}"><summary class="meta">report</summary><pre class="scout-report" data-patch-keep style="white-space:pre-wrap">open to read</pre></details>` : ''}
+      <div class="act-actions">${act}</div>
     </div>`;
   }
   async function loadScoutReport(d) {
@@ -313,6 +321,19 @@ if (typeof document !== 'undefined') (() => {
     </div>`;
   const section = (title, n, html) => `<h4>${title} <span class="meta">${n}</span></h4>${html || '<div class="meta act-none">nothing</div>'}`;
 
+  /** Under the scouts: Clear failed, and Show dismissed (finished scouts tucked away, still there with their reports and cost). */
+  function scoutTools(a) {
+    const failed = (a.scouts ?? []).filter((x) => x.status === 'failed').length;
+    const hidden = a.hiddenScoutCount ?? 0;
+    if (!failed && !hidden && !showDismissed) return '';
+    return `<div class="act-actions">${failed ? `<button class="small" data-scout-clear>Clear failed (${failed})</button> ` : ''}`
+      + `${hidden || showDismissed ? `<button class="small" data-scout-toggle>${showDismissed ? 'Hide dismissed' : `Show dismissed (${hidden})`}</button>` : ''}</div>`
+      + (showDismissed ? (hiddenScouts.length ? hiddenScouts.map(scoutHtml).join('') : '<div class="meta act-none">nothing dismissed</div>') : '');
+  }
+  async function loadHidden() {
+    try { hiddenScouts = showDismissed ? (await api('/api/scouts?dismissed=1')).scouts ?? [] : []; } catch { hiddenScouts = []; }
+  }
+
   /** A background operation (going live, a rollback, a merge): its step, how long, its last log lines. */
   function opHtml(o) {
     const icon = { queued: '⏳', running: '🚀', done: '✅', failed: '❌' }[o.status] ?? '•';
@@ -345,7 +366,8 @@ if (typeof document !== 'undefined') (() => {
       (a.ops?.length || a.opsDone?.length) ? section('Going live, rollbacks, merges', a.ops.length, a.ops.map(opHtml).join('') + (a.opsDone.length ? `<details class="act-recent"><summary class="meta">finished today (${a.opsDone.length})</summary>${a.opsDone.map(opHtml).join('')}</details>` : '')) : '',
       section('Agents', a.changes.length, a.changes.map((c) => changeHtml(c)).join('')),
       a.cancelled?.length ? section('Cancelled agents (not failed)', a.cancelled.length, a.cancelled.map((c) => changeHtml(c)).join('')) : '',
-      section('Studio runs and scouts', a.runs.length + (a.scouts ?? []).length, [...a.runs.map((r) => ({ t: r.started, h: runHtml(r) })), ...(a.scouts ?? []).map((x) => ({ t: x.started, h: scoutHtml(x) }))].sort((p, q) => p.t - q.t).map((i) => i.h).join('')),
+      section('Studio runs and scouts', a.runs.length + (a.scouts ?? []).length, [...a.runs.map((r) => ({ t: r.started, h: runHtml(r) })), ...(a.scouts ?? []).map((x) => ({ t: x.started, h: scoutHtml(x) }))].sort((p, q) => p.t - q.t).map((i) => i.h).join('')
+        + scoutTools(a)),
       section('Hawkes Gen jobs', a.gen ? a.jobs.length : '(unreachable)', a.jobs.map(jobHtml).join('')),
       a.commands?.length ? section('Commands running now', a.commands.length, a.commands.map((c) => `<div class="act-item${c.slow ? ' act-warn' : ''}"><div class="act-top"><code>${esc(c.cmd.slice(0, 90))}</code><span class="act-time">${c.seconds} s</span></div><div class="act-now">${esc(c.cwd.split(/[\/]/).pop())}</div></div>`).join('')) : '',
       a.talk.length ? section('Talk', a.talk.length, a.talk.map((t) => {
@@ -365,6 +387,7 @@ if (typeof document !== 'undefined') (() => {
       // Keep open <details> open across redraws.
       const kept = new Set([...document.querySelectorAll('#actBody .act-log[open]')].map((d) => d.closest('.act-item')?.querySelector('[data-change-log]')?.dataset.changeLog));
       last = await api('/api/activity');
+      if (showDismissed) await loadHidden();
       render(last);
       for (const d of document.querySelectorAll('#actBody .act-log')) if (kept.has(d.closest('.act-item')?.querySelector('[data-change-log]')?.dataset.changeLog)) d.open = true;
     } catch (e) {
@@ -421,6 +444,30 @@ if (typeof document !== 'undefined') (() => {
   }
   el('#activity').addEventListener('toggle', (e) => { if (e.target.open && e.target.dataset?.scoutReport) loadScoutReport(e.target); }, true);
   el('#activity').addEventListener('click', (e) => {
+    const dm = e.target.closest('[data-scout-dismiss]');
+    if (dm) {
+      e.preventDefault();
+      api(`/api/scouts/${encodeURIComponent(dm.dataset.id)}/${dm.dataset.scoutDismiss}`, { method: 'POST', body: {} }).then(tick).catch((err) => alert(`Couldn't do that: ${err.message}`));
+      return;
+    }
+    if (e.target.closest('[data-scout-clear]')) {
+      e.preventDefault();
+      if (confirm('Dismiss every failed scout? They stay under Show dismissed.')) api('/api/scouts/clear-failed', { method: 'POST', body: {} }).then(tick).catch((err) => alert(`Couldn't do that: ${err.message}`));
+      return;
+    }
+    if (e.target.closest('[data-scout-toggle]')) {
+      e.preventDefault();
+      showDismissed = !showDismissed;
+      tick().then(() => last && render(last, true));
+      return;
+    }
+    const ask = e.target.closest('[data-scout-ask]');
+    if (ask) {
+      e.preventDefault();
+      const message = (prompt('Ask the scout a follow-up (it answers in the same session; the answer is added to its report):') ?? '').trim();
+      if (message) api(`/api/scouts/${encodeURIComponent(ask.dataset.scoutAsk)}/message`, { method: 'POST', body: { message } }).catch((err) => alert(`Couldn't do that: ${err.message}`));
+      return;
+    }
     const cb = e.target.closest('[data-act-cancel]');
     if (cb) { e.preventDefault(); cancelAct(cb); return; }
     const t = e.target.closest('[data-talk]');
