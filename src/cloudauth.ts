@@ -58,6 +58,8 @@ export function openRoute(route: string, method: string) {
   if (route.startsWith('/oauth/') || route.startsWith('/.well-known/oauth-') || route === '/.well-known/openid-configuration') return true;
   if (route.startsWith('/api/hooks/') && method === 'POST') return true;
   if (route === '/api/cloud/daily' && method === 'POST') return true;
+  // A Cloud Run job's fresh clone token (jobgit.ts): its own job key (an HMAC for that job and its one repo) is the check.
+  if (method === 'POST' && /^\/api\/cloudjobs\/[A-Za-z0-9_.-]{1,200}\/git-token$/.test(route)) return true;
   if (route === '/api/billing/webhook' && method === 'POST') return true;
   // Customers' Studios (cells.ts): the router's and the cells' calls (their own keys), the central cron (Scheduler's token).
   if (route.startsWith('/api/cells/edge/') || route === '/api/cells/self' || route.startsWith('/api/cells/self/') || route === '/api/cells/broker') return true;
