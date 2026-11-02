@@ -5,6 +5,8 @@
 //   saveWork: right after each agent pass, push the task branch to GitHub. Never throws: a failed save is told, and
 //             the publish step (which pushes for real and fails loudly) still follows.
 //   restoreBranch: when a worktree is made again (or found reset), start from the branch on GitHub if it has the work.
+import fs from 'node:fs';
+import path from 'node:path';
 import { gitAsync } from './beta.ts';
 
 export type GitRun = (cwd: string, args: string[]) => Promise<{ ok: boolean; out: string; err: string }>;
@@ -15,6 +17,8 @@ export type Saved = { pushed: string } | { skipped: string } | { error: string }
 /** Pushes `branch` (the worktree's HEAD) to GitHub when it holds commits beyond `origin/<base>`. Never throws. */
 export async function saveWork(worktree: string, branch: string, base: string, git: GitRun = run): Promise<Saved> {
   try {
+    // A replaced Cloud Run instance took the worktree with it: git there would only say "spawn git ENOENT".
+    if (!fs.existsSync(path.join(worktree, '.git'))) return { error: `worktree missing after restart: ${worktree} is gone, nothing to save from it` };
     const head = await git(worktree, ['rev-parse', 'HEAD']);
     if (!head.ok || !head.out) return { error: `no HEAD to save: ${head.err}` };
     const ahead = await git(worktree, ['rev-list', '--count', `origin/${base}..HEAD`]);

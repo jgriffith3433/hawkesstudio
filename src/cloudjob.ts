@@ -443,6 +443,23 @@ function follow(f: Follow, cwd: string, env: NodeJS.ProcessEnv, every = Number(p
   void run();
 }
 
+/**
+ * Remakes a job's workspace that is missing when the job ends (agents.ts: a change's worktree lives on the instance's own
+ * disk, which a replaced Cloud Run instance lost while the job ran). True: the folder is a git workspace again.
+ */
+export type WorkspaceRestorer = (cwd: string) => Promise<boolean>;
+let restorer: WorkspaceRestorer | null = null;
+/** agents.ts sets it at load; tests swap in their own. */
+export function setWorkspaceRestorer(f: WorkspaceRestorer | null) {
+  restorer = f;
+}
+
+/** Where a job's folder is in the bucket, for messages (never a credential). */
+export function jobFolder(unit: string) {
+  const P = String(process.env.STUDIO_STATE_PREFIX ?? '').replace(/^\/+|\/+$/g, '');
+  return `gs://${process.env.STUDIO_STATE_BUCKET || '<state bucket>'}/${P ? `${P}/` : ''}${key(unit, '')}`;
+}
+
 async function finish(f: Follow, r: JobRunner, cwd: string, env: NodeJS.ProcessEnv) {
   const exit = JSON.parse((await r.get(key(f.unit, 'out/exit.json')))?.toString('utf8') ?? '{}');
   try {
@@ -452,11 +469,37 @@ async function finish(f: Follow, r: JobRunner, cwd: string, env: NodeJS.ProcessE
     const session = pack ? { files: pack.files.filter((x) => path.isAbsolute(x.p)) } : null;
     const work = pack ? { files: pack.files.filter((x) => !path.isAbsolute(x.p)), deleted: pack.deleted } : null;
     if (session) unpack(session, '/');
-    if (exit.git && fs.existsSync(cwd) && isGitWorkspace(cwd)) {
+    if (exit.git) {
+      // The workspace went while the job ran (2026-11-02: a replaced instance lost the worktree, this step skipped the
+      // job's commits without a word and then deleted them from the bucket). It is made again first; if it can't be, the
+      // job's folder stays in the bucket and the pass fails saying where its work is.
+      if (!isGitWorkspace(cwd)) {
+        const there = fs.existsSync(cwd);
+        const remade = !there && restorer ? await restorer(cwd).catch((e: any) => {
+          fs.appendFileSync(local(f.unit, 'err'), `[studio] remaking the workspace ${cwd}: ${e.message ?? e}\n`);
+          return false;
+        }) : false;
+        if (!remade || !isGitWorkspace(cwd)) throw new Error(`worktree missing after restart: ${cwd} ${there ? 'is not a git workspace' : "is gone and couldn't be made again"}; the job's work is kept in ${jobFolder(f.unit)}`);
+        // The workspace's own commits GitHub lacked when the job started (in.bundle): the job's commits build on them.
+        const inB = await r.get(key(f.unit, 'in.bundle'));
+        if (inB) {
+          const file = path.join(os.tmpdir(), `hs-${f.unit}-in.bundle`);
+          fs.writeFileSync(file, inB);
+          try {
+            const got = git(cwd, ['fetch', '--quiet', file, 'HEAD']);
+            if (!got.ok) throw new Error(`couldn't read the workspace's earlier commits: ${got.err.split('\n').pop()}`);
+          } finally {
+            fs.rmSync(file, { force: true });
+          }
+        }
+        fs.appendFileSync(local(f.unit, 'err'), `[studio] the workspace ${cwd} was gone (Studio restarted): made again, the job's work goes into it\n`);
+      }
       let bundle: string | null = null;
       if (exit.git.bundle) {
+        const b = await r.get(key(f.unit, 'out/out.bundle'));
+        if (!b) throw new Error(`the job's commits (out.bundle) are missing from ${jobFolder(f.unit)}`);
         bundle = path.join(os.tmpdir(), `hs-${f.unit}-out.bundle`);
-        fs.writeFileSync(bundle, (await r.get(key(f.unit, 'out/out.bundle')))!);
+        fs.writeFileSync(bundle, b);
       }
       try {
         applyWorkspace(cwd, { head: exit.git.head, bundle, pack: work });
@@ -465,8 +508,11 @@ async function finish(f: Follow, r: JobRunner, cwd: string, env: NodeJS.ProcessE
       }
     }
   } catch (e: any) {
-    fs.appendFileSync(local(f.unit, 'err'), `[studio] bringing the job's work back: ${e.message ?? e}\n`);
-    end(f, { code: exit.code ?? null, signal: exit.signal ?? null, error: `${exit.error ? `${exit.error}; ` : ''}the job's work couldn't be brought back: ${e.message ?? e}` });
+    // The job's folder (its out.bundle above all) stays: nothing else holds its commits.
+    const why = `${e.message ?? e}`;
+    console.error(`[cloudjob] ${f.unit}: the job's work couldn't be brought back: ${why}${why.includes(jobFolder(f.unit)) ? '' : ` (kept in ${jobFolder(f.unit)})`}`);
+    fs.appendFileSync(local(f.unit, 'err'), `[studio] bringing the job's work back: ${why}\n`);
+    end(f, { code: exit.code ?? null, signal: exit.signal ?? null, error: `${exit.error ? `${exit.error}; ` : ''}the job's work couldn't be brought back: ${why}` });
     return;
   }
   end(f, { code: exit.code ?? null, signal: exit.signal ?? null, ...(exit.error ? { error: exit.error } : {}) });
