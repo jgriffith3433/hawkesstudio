@@ -144,6 +144,16 @@ test('a static site builds as a run, is published once under its version, and be
   assert.equal(hist[0].url, 'https://sites.hawkesgen.ai/o/acme-1a2b/site/b/web/1/');
 });
 
+test("a published build's widget root is the project's site, where /dev/__studio/build is served (no 404 in the console)", async () => {
+  assert.equal(B.widgetRoot('https://sites.hawkesgen.ai/o/acme-1a2b/site/'), '/o/acme-1a2b/site');
+  assert.equal(B.widgetRoot('https://x.hawkesgen.ai/'), '');
+  const built = (await page('/o/acme-1a2b/site/b/web/1/')).body;
+  const info = JSON.parse(/data-hawkes='([^']*)'/.exec(built)![1].replace(/&#39;/g, "'").replace(/&lt;/g, '<').replace(/&amp;/g, '&'));
+  assert.equal(info.root, '/o/acme-1a2b/site', 'not the build folder /b/web/1');
+  const r = await W.handle(new Request(`https://sites.hawkesgen.ai${info.root}/dev/__studio/build`, { headers: { cookie: `hawkes_opass=${pass}` } }), env);
+  assert.equal(r.status, 200);
+});
+
 test('the same commit is never built twice; a new one is version 2; beta rolls back by its pointer', async () => {
   const again = (await B.startBuild('site', { trigger: 'beta' }))!;
   await again.done;

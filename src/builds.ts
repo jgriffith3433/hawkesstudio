@@ -314,7 +314,7 @@ async function buildOne(run: string, p: Product, b: BuildSpec, o: StartOptions) 
     say(`publishing ${out.files.length} files`);
     const store = await siteStore();
     const { publishSite } = await import('./sitestore.ts');
-    const page = (b.target ?? 'web') === 'web' ? await pageInfo(p, sha, ref, o.change, new URL(url).pathname.replace(/\/+$/, '')) : undefined;
+    const page = (b.target ?? 'web') === 'web' ? await pageInfo(p, sha, ref, o.change, widgetRoot(root)) : undefined;
     const r = await publishSite(store, base, out.files, { page, build: { sha: sha.slice(0, 7), version, build: b.id, at: Date.now() }, progress: say });
     db.prepare("UPDATE builds SET status = 'ready', files = ?, bytes = ?, url = ?, detail = ?, finished = ? WHERE id = ?").run(out.files.length, out.bytes, url, out.detail ?? null, Date.now(), rowId);
     // Beta moves only forward (2026-10-31 review): to a build of beta's newest commit, asked for or triggered, and never
@@ -373,6 +373,15 @@ async function buildOne(run: string, p: Product, b: BuildSpec, o: StartOptions) 
     out?.cleanup();
     release();
   }
+}
+
+/**
+ * Where the widget's endpoints (/dev/__studio/build, report.js, report) live: the project's site root, never the build's
+ * own folder (/b/<build>/<n>/). The sites Worker serves /dev/__studio/ only relative to the project's path, so a root
+ * inside the build 404'd on the widget's "newer build" check and failed playtests (2026-11-02, package builds).
+ */
+export function widgetRoot(siteRoot: string) {
+  return new URL(siteRoot).pathname.replace(/\/+$/, '');
 }
 
 /** The 🐞 widget's page info for a published page (previews-cloud.ts: a customer's Studio posts with its report key). */
