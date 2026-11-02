@@ -24,7 +24,13 @@
     const inline = (s) => esc(s)
       .replace(/!\[([^\]]*)\]\(([^)\s]+)\)/g, (_, a, u) => `<img class="talk-img" src="${u}" alt="${a}" data-full="${u}">`)
       .replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (_, t, u) => (/\/v1\/files\//.test(u) ? `<a href="${u}" target="_blank" rel="noopener" data-media="${u}">${t}</a>` : `<a href="${u}" target="_blank" rel="noopener">${t}</a>`))
-      .replace(/(^|[\s(])(https?:\/\/[^\s<)]+\/v1\/files\/[A-Za-z0-9_]+)/g, (_, pre, u) => `${pre}<a href="${u}" target="_blank" rel="noopener" data-media="${u}">▶ ${u.split('/').pop()}</a>`)
+      // A bare Gen file link keeps its whole query (?exp=..&sig=..: the text is escaped, so & is &amp; here); trailing
+      // sentence punctuation stays outside the link. The label is short; the viewer opens it (by the relay).
+      .replace(/(^|[\s(])(https?:\/\/[^\s<)\]]+?\/v1\/files\/[A-Za-z0-9_]+(?:\?[^\s<)\]]*)?)/g, (_, pre, u) => {
+        const tail = /[.,:!]+$/.exec(u)?.[0] ?? '';
+        const url = tail ? u.slice(0, -tail.length) : u;
+        return `${pre}<a href="${url}" target="_blank" rel="noopener" data-media="${url}">▶ Open file</a>${tail}`;
+      })
       .replace(/`([^`]+)`/g, '<code>$1</code>')
       .replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>');
     const out = [];
@@ -387,7 +393,9 @@
     const media = e.target.closest('[data-media]');
     if (media && !(e.ctrlKey || e.metaKey || e.shiftKey || e.button)) {
       e.preventDefault();
-      const u = media.dataset.media;
+      // Through Studio's relay (this session, no signature, never expires); the signed link itself stays the anchor's href.
+      const id = /\/v1\/files\/([A-Za-z0-9_]+)/.exec(media.dataset.media)?.[1];
+      const u = id ? `/api/gen/v1/files/${id}` : media.dataset.media;
       const r = await fetch(u, { method: 'HEAD' }).catch(() => null);
       const type = r?.headers.get('content-type') ?? '';
       view(type.startsWith('video/') ? `<video src="${u}" controls autoplay></video>` : type.startsWith('image/') ? `<img src="${u}">` : `<a href="${u}" target="_blank">Open file</a>`);
