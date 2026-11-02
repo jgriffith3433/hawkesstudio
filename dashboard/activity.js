@@ -144,6 +144,25 @@ if (typeof document !== 'undefined') (() => {
           ? `<div class="act-actions"><button class="small" data-act-cancel="cancel" data-kind="changes" data-id="${esc(c.id)}" data-what="this agent (its branch and worktree are kept; Resume or Close it afterwards; it is not a failed try)">Cancel</button></div>` : ''}
     </div>`;
   }
+  /** A scout: the question, product, status, elapsed time, cost, origin; the report (or why it failed) opens in place. */
+  function scoutHtml(x) {
+    const running = x.status === 'running';
+    const t = running ? since(x.started) : dur((x.finished ?? x.started) - x.started);
+    return `<div class="act-item${x.status === 'failed' ? ' act-warn' : ''}" data-key="x:${esc(x.id)}">
+      <div class="act-top">${ICON[x.status] ?? '•'} 🔎 <b>${esc(x.productName)}</b> <span class="pill ${x.status === 'failed' ? 'failed' : x.status === 'done' ? 'ship' : ''}">${esc(x.status)}</span><span class="act-time">${esc(t)}</span></div>
+      <div class="act-title">${esc(x.question)}</div>
+      ${x.detail ? `<div class="act-now">${esc(x.detail)}</div>` : ''}
+      <div class="meta">scout ${esc(x.id)} · by ${by(x)}${x.cost ? ` · ${x.cost.toFixed(2)}` : ''}</div>
+      ${x.hasReport ? `<details class="act-log" data-scout-report="${esc(x.id)}"><summary class="meta">report</summary><pre class="scout-report" data-patch-keep style="white-space:pre-wrap">open to read</pre></details>` : ''}
+    </div>`;
+  }
+  async function loadScoutReport(d) {
+    if (d.dataset.loaded) return;
+    d.dataset.loaded = '1';
+    const pre = d.querySelector('pre');
+    pre.textContent = 'loading…';
+    try { pre.textContent = (await api('/api/scouts/' + d.dataset.scoutReport)).report || '(no report)'; } catch (e) { d.dataset.loaded = ''; pre.textContent = `couldn't load: ${e.message}`; }
+  }
   // A run's scenarios in order: expected time, state, and the verdict with findings as soon as its review is done.
   const PLAN_ICON = { waiting: '⏳', playing: '▶️', reviewing: '🔎', done: '✅', failed: '❌', skipped: '⏭️', cancelled: '🚫' };
   const mins = (s) => `${Math.max(1, Math.round(s / 60))} min`;
@@ -326,7 +345,7 @@ if (typeof document !== 'undefined') (() => {
       (a.ops?.length || a.opsDone?.length) ? section('Going live, rollbacks, merges', a.ops.length, a.ops.map(opHtml).join('') + (a.opsDone.length ? `<details class="act-recent"><summary class="meta">finished today (${a.opsDone.length})</summary>${a.opsDone.map(opHtml).join('')}</details>` : '')) : '',
       section('Agents', a.changes.length, a.changes.map((c) => changeHtml(c)).join('')),
       a.cancelled?.length ? section('Cancelled agents (not failed)', a.cancelled.length, a.cancelled.map((c) => changeHtml(c)).join('')) : '',
-      section('Studio runs', a.runs.length, a.runs.map((r) => runHtml(r)).join('')),
+      section('Studio runs and scouts', a.runs.length + (a.scouts ?? []).length, [...a.runs.map((r) => ({ t: r.started, h: runHtml(r) })), ...(a.scouts ?? []).map((x) => ({ t: x.started, h: scoutHtml(x) }))].sort((p, q) => p.t - q.t).map((i) => i.h).join('')),
       section('Hawkes Gen jobs', a.gen ? a.jobs.length : '(unreachable)', a.jobs.map(jobHtml).join('')),
       a.commands?.length ? section('Commands running now', a.commands.length, a.commands.map((c) => `<div class="act-item${c.slow ? ' act-warn' : ''}"><div class="act-top"><code>${esc(c.cmd.slice(0, 90))}</code><span class="act-time">${c.seconds} s</span></div><div class="act-now">${esc(c.cwd.split(/[\/]/).pop())}</div></div>`).join('')) : '',
       a.talk.length ? section('Talk', a.talk.length, a.talk.map((t) => {
@@ -336,6 +355,7 @@ if (typeof document !== 'undefined') (() => {
       a.recent.length ? `<details class="act-recent" ${el('.act-recent')?.open !== false ? 'open' : ''}><summary><b>Finished in the last 15 min</b> <span class="meta">${a.recent.length}</span></summary>${a.recent.map((x) => (x.type === 'change' ? changeHtml(x, true) : runHtml(x, true))).join('')}</details>` : '',
     ].join(''));
     mountPlayers();
+    for (const d of document.querySelectorAll('#actBody details[data-scout-report][open]')) loadScoutReport(d);
   }
 
   /** The drawer's contents (only while it is open and the page visible; the badge comes with the stream's events). */
@@ -399,6 +419,7 @@ if (typeof document !== 'undefined') (() => {
       alert(`Couldn't do that: ${err.message}`);
     }
   }
+  el('#activity').addEventListener('toggle', (e) => { if (e.target.open && e.target.dataset?.scoutReport) loadScoutReport(e.target); }, true);
   el('#activity').addEventListener('click', (e) => {
     const cb = e.target.closest('[data-act-cancel]');
     if (cb) { e.preventDefault(); cancelAct(cb); return; }

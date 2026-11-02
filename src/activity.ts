@@ -83,11 +83,23 @@ function runRow(r: any) {
   };
 }
 
+/** A scout as one Activity row (the report is fetched when J opens it: GET /api/scouts/<id>, so the push payload stays small). */
+export function scoutRow(x: any) {
+  const partial = x.status === 'done' && /^partial report/.test(x.detail ?? '');
+  return {
+    id: x.id, product: x.product, productName: name(x.product), question: String(x.question ?? '').replace(/\s+/g, ' ').slice(0, 160),
+    status: partial ? 'partial' : x.status, detail: x.detail ?? null, started: x.created, finished: x.finished ?? null, cost: x.cost ?? 0,
+    origin: x.origin ?? null, by: x.origin ? `Talk: ${convTitle(x.origin)}` : 'J', hasReport: x.status === 'done' && Boolean(x.report),
+  };
+}
+
 export async function activity() {
   const changes = (db.prepare(`SELECT * FROM changes WHERE status IN ('queued', 'working', 'verifying', 'revising') ORDER BY created`).all() as any[]).map(changeRow);
   // Cancelled and not resumed or closed (kept a week): Resume and Close stay on the card.
   const cancelled = (db.prepare(`SELECT * FROM changes WHERE status = 'cancelled' AND COALESCE(updated, created) > ? ORDER BY updated DESC LIMIT 20`).all(Date.now() - 7 * 86_400_000) as any[]).map(changeRow);
   const runs = (db.prepare(`SELECT * FROM runs WHERE status = 'running' ORDER BY started`).all() as any[]).map(runRow);
+  // Scouts (scout.ts): running ones and the last day's finished, mixed with runs by time in the drawer.
+  const scouts = (db.prepare(`SELECT id, product, question, status, detail, cost, origin, created, finished, report IS NOT NULL AS report FROM scouts WHERE status = 'running' OR COALESCE(finished, created) > ? ORDER BY created DESC LIMIT 30`).all(Date.now() - 86_400_000) as any[]).map(scoutRow);
   // Only the last message J (or a notice) sent, picked out by SQLite: a long conversation's whole history isn't parsed every poll.
   const info = talkInfo();
   const talk = (db.prepare(`SELECT id, title, updated, proc, (SELECT m.value FROM json_each(c.messages) m WHERE json_extract(m.value, '$.role') = 'user' OR json_extract(m.value, '$.notice') ORDER BY m.key DESC LIMIT 1) AS last FROM conversations c WHERE status = 'thinking'`).all() as any[]).map((c) => {
@@ -123,10 +135,10 @@ export async function activity() {
   const opsDone = allOps.filter((o) => o.status === 'done' || o.status === 'failed').slice(0, 10);
   const loop = loopHealth();
   return {
-    at: Date.now(), gen: genOk, changes, cancelled, runs, jobs, talk, recent, ops, opsDone, commands: runningCommands(),
+    at: Date.now(), gen: genOk, changes, cancelled, runs, scouts, jobs, talk, recent, ops, opsDone, commands: runningCommands(),
     // Moments in the last hour Studio couldn't answer for over a second (a blocking call), and what was running then.
     loop: { lastMinute: loop.lastMinute, blocks: loop.blocks.filter((b) => b.at > Date.now() - 3600_000) },
     // The header badge: things working now (a Gen job a run's step is waiting on counts once, as its run).
-    count: changes.length + runs.length + talk.length + ops.length + jobs.filter((j) => !stepJobs.has(j.id)).length,
+    count: changes.length + runs.length + scouts.filter((x) => x.status === 'running').length + talk.length + ops.length + jobs.filter((j) => !stepJobs.has(j.id)).length,
   };
 }
