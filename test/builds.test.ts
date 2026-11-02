@@ -45,6 +45,8 @@ const repos: Record<string, Record<string, ReturnType<typeof tree>>> = {
 };
 let betaOf: Record<string, string> = { 'acme/site': SHA1, 'acme/game': SHA1 };
 const ghAuth: string[] = [];
+// Files the stand-in serves from a repo's contents API, keyed `repo:ref:path` (a website's Game/build.json).
+const pinFiles: Record<string, string> = {};
 
 // A Unity build's output (what Gen hands back) and an Actions artifact (a zip), made once here.
 const unityOut = path.join(TMP, 'unity-out');
@@ -73,6 +75,7 @@ globalThis.fetch = (async (input: any, init: any = {}) => {
     let m: RegExpExecArray | null;
     if ((m = /^\/repos\/([^/]+\/[^/]+)\/commits\/(.+)$/.exec(u.pathname))) return betaOf[m[1]] && m[2] === 'beta' ? new Response(betaOf[m[1]]) : new Response('', { status: 404 });
     if (/\/contents\/.*package\.json$/.test(u.pathname)) return new Response('', { status: 404 });
+    if ((m = /^\/repos\/([^/]+\/[^/]+)\/contents\/(.+)$/.exec(u.pathname)) && pinFiles[`${m[1]}:${u.searchParams.get('ref')}:${decodeURIComponent(m[2])}`]) return new Response(pinFiles[`${m[1]}:${u.searchParams.get('ref')}:${decodeURIComponent(m[2])}`]);
     if ((m = /^\/repos\/([^/]+\/[^/]+)\/git\/trees\/([0-9a-f]+)$/.exec(u.pathname))) return Response.json({ tree: repos[m[1]]?.[m[2]] ?? [] });
     if ((m = /\/git\/blobs\/([0-9a-f]+)$/.exec(u.pathname))) return new Response(blobs.get(m[1]) as any);
     if (/\/actions\/runs\/77\/artifacts$/.test(u.pathname)) return Response.json({ artifacts: [{ name: 'web', expired: false, archive_download_url: 'https://api.github.com/artifact/77.zip' }] });
@@ -251,6 +254,51 @@ test('publish.page "site": the website keeps its own game page and is only point
   assert.equal((again.match(/HAWKES_BUILD_URL/g) ?? []).length, 1, 'replaced, never added twice');
   assert.match(again, /b\/web\/4\//);
   assert.match(B.pointPage('<p>no head</p>', url), /^<script>window\.HAWKES_BUILD_URL/);
+});
+
+test('publish.page "site" guard 1: no Unity loader the page can reach, no pointer on the site\'s beta', async () => {
+  const f = (...ps: string[]) => ps.map((path) => ({ path }));
+  assert.doesNotThrow(() => B.assertLoader(f('PlaceDepartment/index.html', 'PlaceDepartment/Build/PlaceDepartment.loader.js'), 'web', 6));
+  assert.doesNotThrow(() => B.assertLoader(f('Build/x.loader.js'), 'web', 6));
+  assert.throws(() => B.assertLoader(f('index.html', 'PlaceDepartment/Build/x.data'), 'web', 6), /no Unity loader/);
+  assert.throws(() => B.assertLoader(f('a/b/Build/x.loader.js'), 'web', 6), /no Unity loader/, 'too deep for the page');
+  assert.throws(() => B.assertLoader(f('TemplateData/Build.loader.js'), 'web', 6), /no Unity loader/);
+});
+
+test('publish.page "site" guard 2: the build\'s single folder is kept; any other build still unwraps it', async () => {
+  const dir = fs.mkdtempSync(path.join(TMP, 'wrap-'));
+  fs.mkdirSync(path.join(dir, 'PlaceDepartment', 'Build'), { recursive: true });
+  fs.writeFileSync(path.join(dir, 'PlaceDepartment', 'Build', 'PlaceDepartment.loader.js'), 'x');
+  const kept = await B.folderOutput(dir, dir, true);
+  assert.deepEqual(kept.files.map((x: any) => x.path), ['PlaceDepartment/Build/PlaceDepartment.loader.js']);
+  fs.mkdirSync(dir, { recursive: true });
+  fs.mkdirSync(path.join(dir, 'PlaceDepartment', 'Build'), { recursive: true });
+  fs.writeFileSync(path.join(dir, 'PlaceDepartment', 'Build', 'PlaceDepartment.loader.js'), 'x');
+  const unwrapped = await B.folderOutput(dir, dir);
+  assert.deepEqual(unwrapped.files.map((x: any) => x.path), ['Build/PlaceDepartment.loader.js']);
+  unwrapped.cleanup();
+});
+
+test('publish.page "site" guard 3: prune never deletes a version the site\'s main or beta build.json names', async () => {
+  const { db } = await import('../src/db.ts');
+  const pr = C.getProduct('gamep');
+  const sub = 'o/acme-1a2b/gamep';
+  for (let v = 1; v <= 5; v++) {
+    db.prepare("INSERT INTO builds (id, product, build, version, status, runner, target, started) VALUES (?, 'gamep', 'web', ?, 'ready', 'gen', 'web', ?)").run(`b_pin${v}`, v, v);
+    objects.set(`live/${sub}/b/web/${v}/index.html`, { data: text('x') });
+  }
+  pinFiles['acme/site:main:Game/build.json'] = JSON.stringify({ version: 1, build: 'web' });
+  pinFiles['acme/site:beta:Game/build.json'] = JSON.stringify({ version: 2, build: 'web' });
+  assert.deepEqual([...(await B.pinnedVersions(pr, 'web'))].sort(), [1, 2]);
+  await B.prune(pr, 'web', sub);
+  const status = Object.fromEntries(B.buildHistory('gamep').map((h) => [h.version, h.status]));
+  assert.deepEqual(status, { 1: 'ready', 2: 'ready', 3: 'pruned', 4: 'ready', 5: 'ready' }, 'live (1) and beta (2) stay; the newest 2 stay; the rest go');
+  assert.ok(objects.has(`live/${sub}/b/web/1/index.html`), 'the live version\'s files stay');
+  // A page file that can't be read prunes nothing (not even what no page uses).
+  pinFiles['acme/site:main:Game/build.json'] = 'not json';
+  db.prepare("UPDATE builds SET status = 'ready' WHERE product = 'gamep'").run();
+  await assert.rejects(B.prune(pr, 'web', sub), /isn't JSON/);
+  assert.equal(B.buildHistory('gamep').filter((h) => h.status === 'pruned').length, 0);
 });
 
 test('an app with a beta server of its own still has its own builds published (Hawkes Net: its SDK files)', async () => {

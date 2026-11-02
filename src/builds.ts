@@ -110,9 +110,12 @@ export const BUILDS_KEEP = Math.max(1, Number(process.env.STUDIO_BUILDS_KEEP) ||
  * Removes a build's older versions from the sites (R2 storage grows with every Unity build otherwise): the newest
  * BUILDS_KEEP stay, and so do the one beta points at and any mounted into a site. Their rows stay, marked pruned.
  */
-async function prune(p: Product, build: string, sub: string) {
+export async function prune(p: Product, build: string, sub: string) {
   const rows = db.prepare("SELECT * FROM builds WHERE product = ? AND build = ? AND status = 'ready' AND change IS NULL ORDER BY version DESC").all(p.id, build) as BuildRow[];
   if (rows.length <= BUILDS_KEEP) return;
+  // The versions a website's main (live) and beta name in their <path>build.json stay however many newer builds exist.
+  // Unreadable (not just missing) means nothing is pruned: the error reaches the caller's "old builds not pruned" line.
+  const pinned = await pinnedVersions(p, build);
   const store = await siteStore();
   const beta = await store.get(`${sub}/beta.json`).then((x) => (x ? JSON.parse(x.toString('utf8')) : null)).catch(() => null);
   const mounted = new Set<string>();
@@ -128,11 +131,39 @@ async function prune(p: Product, build: string, sub: string) {
   let publicKept = 0;
   for (const r of rows.slice(BUILDS_KEEP)) {
     const base = `${sub}/b/${build}/${r.version}`;
-    if ((beta?.build === build && beta?.version === r.version) || mounted.has(base)) continue;
+    if ((beta?.build === build && beta?.version === r.version) || mounted.has(base) || pinned.has(r.version)) continue;
     if ((r as any).commit_sha && publicKept < 3 && (await store.get(`${base}/.public`).catch(() => null))) { publicKept++; continue; }
     await removeSite(store, base);
     db.prepare("UPDATE builds SET status = 'pruned', url = NULL WHERE id = ?").run(r.id);
   }
+}
+
+/**
+ * Versions of one build that the publish target's main or beta point at (publish.page "site": <path>build.json, read
+ * through GitHub with the target repo's own token). Live and beta each keep working however many newer builds exist.
+ * A file that isn't there pins nothing; any other failure to read it throws.
+ */
+export async function pinnedVersions(p: Product, build: string): Promise<Set<number>> {
+  const pins = new Set<number>();
+  const spec = buildsOf(p).find((x) => x.id === build);
+  if (spec?.publish?.page !== 'site') return pins;
+  const target = getProduct(spec.publish.project);
+  const slug = String((target as any).github ?? '');
+  if (!slug) return pins;
+  const { repoToken, githubFetch } = await import('./ghtoken.ts');
+  const token = await repoToken(slug);
+  if (!token) throw new Error(`Studio has no GitHub access to ${slug} to see which builds its pages use`);
+  const gh = githubFetch(token);
+  for (const ref of ['main', 'beta']) {
+    const r = await gh(`https://api.github.com/repos/${slug}/contents/${encodeURI(`${spec.publish.path}build.json`)}?ref=${ref}`, { headers: { Accept: 'application/vnd.github.raw', 'User-Agent': 'hawkes-studio' } });
+    if (r.status === 404) continue;
+    if (!r.ok) throw new Error(`GitHub: ${slug} ${spec.publish.path}build.json on ${ref}: ${r.status}`);
+    let j: any;
+    try { j = JSON.parse(await r.text()); } catch { throw new Error(`${slug} ${spec.publish.path}build.json on ${ref} isn't JSON`); }
+    const v = Number(j?.version);
+    if ((j?.build == null || j.build === build) && Number.isInteger(v)) pins.add(v);
+  }
+  return pins;
 }
 
 /** A build mounted into another project's site at a path (the Worker serves it there): YoobaLand's in YoobaLandGame/Game/. */
@@ -305,6 +336,8 @@ async function buildOne(run: string, p: Product, b: BuildSpec, o: StartOptions) 
       // public address and only a pointer goes into the site, never the build's template index.html over the page.
       const target = getProduct(b.publish.project);
       const publicUrl = `${new URL(root).origin}/builds/${sub}/b/${b.id}/${version}/`;
+      // Before anything changes on the site: a build without a loader the page can reach would break its beta.
+      assertLoader(out.files, b.id, version);
       await (await siteStore()).put(`${base}/.public`, Buffer.from(JSON.stringify({ at: Date.now(), into: (target as any).github ?? target.id, page: 'site' })), 'application/json');
       await unmount(target, b.publish.path);
       const c = await pointInto(target, b.publish.path, publicUrl, { version, build: b.id, sha: sha.slice(0, 7) }, `Build ${b.id} ${version} of ${p.name} (${sha.slice(0, 7)}): point ${b.publish.path || '/'}index.html at it`, say);
@@ -485,7 +518,7 @@ async function viaActions(b: BuildSpec, slug: string, a: { runId: string; name?:
   return await folderOutput(tmp, tmp);
 }
 
-async function folderOutput(dir: string, tmp: string, keepFolder = false): Promise<Output> {
+export async function folderOutput(dir: string, tmp: string, keepFolder = false): Promise<Output> {
   if (!fs.existsSync(dir)) { fs.rmSync(tmp, { recursive: true, force: true }); throw new Error('the build made no output'); }
   // An output that is one folder (an artifact zipped around its folder): its contents are the site.
   const entries = fs.readdirSync(dir);
@@ -559,6 +592,16 @@ export function splitForGit(files: { path: string; size: number }[], publicUrl: 
     // "Build", "Build/x.loader.js", './Build/...' in the committed pages and scripts point at the public address.
     rewrite: (p: string, t: string) => (/\.(html?|js|mjs|json|css)$/i.test(p) ? t.replace(new RegExp(`(["'\`(=]\\s*)(?:\\./)?${esc}(?=["'\`/)])`, 'g'), `$1${publicUrl}${dir}`) : t),
   };
+}
+
+/**
+ * publish.page "site": the published files must hold a Unity loader the site's page can reach, <dir>/Build/<name>.loader.js
+ * (the build's own folder, kept by folderOutput) or Build/<name>.loader.js. Else the pointer would send the page to a 404
+ * (2026-11-02: The Place Department's live Game/ pointed at web 5, published without PlaceDepartment/). Exported for tests.
+ */
+export function assertLoader(files: { path: string }[], build: string, version: number) {
+  if (files.some((f) => /^(?:[^/]+\/)?Build\/[^/]+\.loader\.js$/.test(f.path))) return;
+  throw new Error(`build ${build} ${version} has no Unity loader (<folder>/Build/*.loader.js) in its published files, so the site's page would 404; its beta was left pointing at the earlier build`);
 }
 
 /** publish.page "site": <path>build.json and window.HAWKES_BUILD_URL in <path>index.html, on the target's beta. */
