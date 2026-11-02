@@ -831,8 +831,8 @@
   $('.go').onclick = () => location.reload();
   $('.no').onclick = () => { dismissed = fresh.dataset.build || ''; fresh.classList.remove('on'); };
   if (!cfg.change && cfg.sha) {
+    // Once when the page opens and whenever it comes back to the screen; never on a timer (no polling).
     setTimeout(checkBuild, 3000);
-    setInterval(checkBuild, 120_000);
     addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') checkBuild(); });
     addEventListener('pageshow', (e) => { if (e.persisted) checkBuild(); });
   }

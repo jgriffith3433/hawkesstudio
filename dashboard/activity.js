@@ -221,10 +221,10 @@ if (typeof document !== 'undefined') (() => {
         else p.idx = p.frames.length - 1;
       }
       p.seen = true;
-      p.next = p.running ? Date.now() + (p.live ? 2000 : 8000) : Infinity;
+      p.next = Infinity; // the next look is asked for by the push stream (an 'activity' event), not by a timer
     } catch (e) {
       p.error = `couldn't load the screenshots: ${e.message}`;
-      p.next = Date.now() + 10_000;
+      p.next = Infinity;
     }
     p.busy = false;
     draw(p);
@@ -352,6 +352,8 @@ if (typeof document !== 'undefined') (() => {
     }
   }
   studioStream.on('activity', (e) => {
+    // A running playtest's screenshots: fetch the new ones now that something moved (the ticker only plays what's loaded).
+    if (!e.badge) for (const p of players.values()) if (p.running) p.next = 0;
     setCount(e.count);
     if (!e.badge || (open && !last)) tick();
   });

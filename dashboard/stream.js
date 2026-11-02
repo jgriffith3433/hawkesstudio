@@ -1,9 +1,13 @@
 // The push stream (GET /api/stream, src/stream.ts): one EventSource per page tells each part of the dashboard when
 // something it shows changed (talk, activity, inbox, changes, runs, ops), so they refetch only then instead of polling.
 // studioStream.on(topic, fn): fn gets the event ({ topic, ids?, count?, unseen? }), debounced per topic.
-// While the page is hidden, or the reader is scrolling or touching it (studioPatch.busy, patch.js), events wait; coming back delivers each waiting topic once. A safety tick every 60 s (15 s
-// while the stream is down) delivers every topic with { safety: true }; after a reconnect every topic gets { resync: true }.
-// The stream reconnects with backoff (2 s doubling to a minute). Loaded first, before app.js (which uses it at its top level); it needs nothing from the other scripts.
+// While the page is hidden, or the reader is scrolling or touching it (studioPatch.busy, patch.js), events wait; coming back delivers each waiting topic once.
+// No timer asks for anything (J, 2026-11-02: "Please stop implementing polling"): there is no safety tick. A dropped stream
+// is reconnected by the browser itself (EventSource, the server's `retry:`), and after a reconnect, or when the page comes
+// back after a minute hidden, every topic gets { resync: true } once, so a missed event costs one refetch, not a poll.
+// Only a stream the browser gave up on (signed out, the server down: readyState CLOSED, which it never retries) is reopened
+// by a timer, slower each time (2 s doubling to a minute): that is a reconnect, it fetches nothing but the stream itself.
+// Loaded first, before app.js (which uses it at its top level); it needs nothing from the other scripts.
 const studioStream = (() => {
   const handlers = new Map();
   const queued = new Map(); // topic -> merged event, waiting for the debounce or for the page to be visible
@@ -68,14 +72,8 @@ const studioStream = (() => {
     };
   }
 
-  let lastSafety = Date.now();
-  setInterval(() => {
-    if (document.hidden || Date.now() - lastSafety < (up ? 60_000 : 15_000)) return;
-    lastSafety = Date.now();
-    all({ safety: true });
-  }, 5000);
-  // A tab left hidden for a minute closes its stream: while any page is connected the server checks Gen every few
-  // seconds, and every check is a request through the edge. Back on screen, it connects again and catches up.
+  // A tab left hidden for a minute closes its stream (a held stream is a request the edge and Cloud Run keep open).
+  // Back on screen, it connects again and catches up with one resync.
   let hideTimer = null;
   document.addEventListener('visibilitychange', () => {
     if (document.hidden) {
@@ -86,8 +84,6 @@ const studioStream = (() => {
     clearTimeout(hideTimer);
     if (!es && typeof EventSource !== 'undefined') connect();
     for (const topic of queued.keys()) if (!timers.has(topic)) deliver(topic);
-    // Away for a while: everything once.
-    if (Date.now() - lastSafety > 60_000) { lastSafety = Date.now(); all({ safety: true }); }
   });
   if (typeof EventSource !== 'undefined') connect();
 
