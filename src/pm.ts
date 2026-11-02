@@ -40,7 +40,7 @@ import {
 import { gate, allMet } from './acceptance.ts';
 import { buildCancelled, cancelNote, cancelWords, repairCancelled } from './cancel.ts';
 import { notify, PUBLIC_URL } from './notify.ts';
-import { fileUrl } from './gen.ts';
+import { fileUrl, signFileLinks } from './gen.ts';
 import { BETA, gitAsync, repoDirs, shaOf } from './beta.ts';
 import { REF_LOCK } from './gitlock.ts';
 import { buildErrors, pickCulprit } from './buildblame.ts';
@@ -1245,6 +1245,7 @@ export function askJ(text: string, { subject, product, options, from, recommend,
 /** Puts a message into a Talk conversation (with Claude's answer when talk.ts can start one), else a new notice. */
 async function postTo(conversation: string | null, title: string, text: string) {
   const talk: any = await import('./talk.ts');
+  text = await signFileLinks(text);
   if (conversation && typeof talk.studioSays === 'function' && talk.studioSays(conversation, text)) return conversation;
   return talk.postNotice(title, text) as string;
 }

@@ -164,4 +164,40 @@ export async function genRun(tool: string, project: string, params: Record<strin
   return genWait(job.id, onUpdate, timeoutMs, halt);
 }
 
+/** The bare link: Gen answers it with "Sign in first" to anyone without a session, so people get signedFileUrl. */
 export const fileUrl = (asset: string) => `${GEN_PUBLIC_URL}/v1/files/${asset}`;
+
+const SIGN_DAYS = 7;
+const signed = new Map<string, { url: string; until: number }>();
+/**
+ * A link a person can open without signing in: Gen's signed, expiring one (POST /v1/assets/:id?sign=1&ttl=<days>).
+ * Made when a page or message is rendered, never stored (it expires); kept in memory for an hour so a page of
+ * screenshots asks once per file. Any failure (old Gen, no ownership, offline) gives the bare link.
+ */
+export async function signedFileUrl(asset: string, { api = gen, days = SIGN_DAYS }: { api?: { request(p: string, o?: any): Promise<any> }; days?: number } = {}): Promise<string> {
+  const bare = fileUrl(asset);
+  if (!/^a_[0-9a-f]+$/.test(String(asset))) return bare;
+  const hit = signed.get(asset);
+  if (hit && hit.until > Date.now()) return hit.url;
+  try {
+    const r = await api.request(`/assets/${asset}?sign=1&ttl=${days}`, { method: 'POST' });
+    const raw = String(r?.url ?? r?.signed_url ?? r?.signedUrl ?? '');
+    if (!raw || !/[?&]sig=/.test(raw)) return bare;
+    const url = /^https?:\/\//.test(raw) ? raw : `${GEN_PUBLIC_URL}${raw.startsWith('/') ? '' : '/'}${raw}`;
+    if (signed.size > 2000) signed.clear();
+    signed.set(asset, { url, until: Date.now() + 3_600_000 });
+    return url;
+  } catch {
+    return bare;
+  }
+}
+export const clearSignedFileUrls = () => signed.clear();
+
+/** Signs every bare Gen file link in a text (a message, a report), at the moment it is shown. */
+export async function signFileLinks(text: string, opts?: Parameters<typeof signedFileUrl>[1]): Promise<string> {
+  const re = new RegExp(`${GEN_PUBLIC_URL.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}/v1/files/(a_[0-9a-f]+)(?![0-9a-f?&])`, 'g');
+  const ids = [...new Set([...String(text).matchAll(re)].map((m) => m[1]))];
+  if (!ids.length) return text;
+  const urls = new Map(await Promise.all(ids.map(async (id) => [id, await signedFileUrl(id, opts)] as const)));
+  return String(text).replace(re, (_m, id) => urls.get(id) ?? _m);
+}

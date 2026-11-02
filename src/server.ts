@@ -19,7 +19,7 @@ import { notify, notifyInfo, saveNotifySettings, PUBLIC_URL } from './notify.ts'
 import { listChanges, getChange, startFix, startTask, approve, revise, close, agentSettings, saveAgentSettings, costToday, resumeChanges } from './agents.ts';
 import { startAssets } from './pipeline.ts';
 import { gitState, stopServers } from './local.ts';
-import { gen, genEvents, genUp } from './gen.ts';
+import { gen, genEvents, genUp, signFileLinks } from './gen.ts';
 import { listPreviews, buildPreview, previewUrl } from './previews.ts';
 import { listPlaytests, getPlaytest, fileLink, trends } from './playtests.ts';
 import { stepFrames, frameImage } from './frames.ts';
@@ -352,6 +352,7 @@ const server = http.createServer(async (req, res) => {
     m = /^\/api\/runs\/(r_[0-9a-f]+)\/report$/.exec(route);
     if (m && method === 'GET') {
       const r = reportMarkdown(m[1]);
+      r.markdown = await signFileLinks(r.markdown);
       if (q('format') === 'md') {
         res.writeHead(200, { 'Content-Type': MIME['.md'] });
         return res.end(r.markdown);
@@ -745,7 +746,7 @@ const server = http.createServer(async (req, res) => {
       if (m && method === 'POST') return send(res, 200, await pm.undoDecision(m[1], by));
       if (route === '/api/ready' && method === 'GET') {
         const ready = pm.readyReport({ product: q('product'), milestone: q('milestone') });
-        return send(res, 200, { ready, markdown: ready.map(pm.readyMarkdown).join('\n\n---\n\n') || 'Nothing on beta waiting for J to test.' });
+        return send(res, 200, { ready, markdown: await signFileLinks(ready.map(pm.readyMarkdown).join('\n\n---\n\n') || 'Nothing on beta waiting for J to test.') });
       }
       const sc = await import('./scout.ts');
       if (route === '/api/scouts' && method === 'GET') return send(res, 200, { scouts: sc.listScouts() });
@@ -800,7 +801,11 @@ const server = http.createServer(async (req, res) => {
       return send(res, 200, answerChange(m[1], String(b.answer ?? ''), await (await import('./inbox.ts')).actor(req, b.by)));
     }
     m = /^\/api\/changes\/(c_[0-9a-f]+)(?:\/(approve|revise|close|playtest))?$/.exec(route);
-    if (m && method === 'GET' && !m[2]) return send(res, 200, getChange(m[1]) ?? { error: 'no such change' });
+    if (m && method === 'GET' && !m[2]) {
+      const c = getChange(m[1]);
+      if (!c) return send(res, 200, { error: 'no such change' });
+      return send(res, 200, c.links?.video ? { ...c, links: { ...c.links, video: await signFileLinks(c.links.video) } } : c);
+    }
     if (m && method === 'POST' && m[2]) {
       const b = await readJson(req);
       const by = await (await import('./inbox.ts')).actor(req, b.by);

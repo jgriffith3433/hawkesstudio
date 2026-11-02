@@ -10,7 +10,7 @@ import path from 'node:path';
 import { createRequire } from 'node:module';
 import { pathToFileURL } from 'node:url';
 import { db, rowToStep, type Step } from './db.ts';
-import { gen, genEvents, ensureGen, fileUrl } from './gen.ts';
+import { gen, genEvents, ensureGen, signedFileUrl } from './gen.ts';
 import { noEvents, nextLook, terminal, type JobFollower } from './genevents.ts';
 import { PROJECTS, GEN_PUBLIC_URL, today, betaPageGlobals, type Playtest } from './config.ts';
 import { withPass } from './sitekeys.ts';
@@ -451,11 +451,11 @@ export async function fileLink(id: string, what: 'video' | 'report') {
       console.warn(`[playtests] S3 link for ${id}: ${e.message}`);
     }
   }
-  if (what === 'video' && d.video) return fileUrl(d.video);
+  if (what === 'video' && d.video) return signedFileUrl(d.video);
   if (what === 'report' && row && (row as any).job) {
     const job = await gen.job((row as any).job).catch(() => null);
     const rep = job?.outputs?.find((x: any) => x.mime === 'application/json')?.asset;
-    if (rep) return fileUrl(rep);
+    if (rep) return signedFileUrl(rep);
   }
   return null;
 }
