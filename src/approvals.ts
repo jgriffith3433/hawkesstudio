@@ -48,7 +48,7 @@ export const GITHUB_TTL_MS = () => Number(process.env.STUDIO_APPROVAL_GITHUB_TTL
 export const ttlFor = (kind: string) => (kind === 'github' ? GITHUB_TTL_MS() : TTL_MS());
 
 /** What J sees: a title, plain lines, links, blockers (approving is refused while there are any) and warnings. */
-export type Card = { title: string; lines: string[]; blockers: string[]; warnings: string[]; links: { label: string; url: string }[]; approve: string; deny: string; skip?: Skip | null };
+export type Card = { title: string; lines: string[]; blockers: string[]; warnings: string[]; links: { label: string; url: string }[]; approve: string; deny: string; skip?: Skip | null; catchUp?: boolean };
 /**
  * A go-live card whose only blockers are beta's commit not being playtested: a person may still take it live with
  * "Go live anyway" (decideApproval 'anyway', after a confirm step that names the commit). Walk-away, auto go-live, Talk
@@ -110,6 +110,8 @@ async function describe(kind: Kind, target: string, params: Record<string, any>)
       bind: J([p.played?.sha ?? p.beta?.sha ?? null, p.main?.sha ?? null]),
       card: {
         title: `Go live with ${p.name}?`, lines, blockers: p.blockers, warnings: p.warnings, links: [p.betaSite ? { label: 'Beta site', url: p.betaSite } : null, { label: 'Live site', url: p.live }].filter(Boolean) as Card['links'], approve: `Approve: go live`, deny: 'Deny',
+        // Only live having commits beta lacks stops it: one tap brings beta up to date (nothing goes live), not a dead end.
+        catchUp: p.fix === 'merge-main',
         skip: p.playtestOnly && (p.played ?? p.beta) ? { sha: (p.played ?? p.beta)!.sha, short: (p.played ?? p.beta)!.short, why: p.blockers } : null,
       },
     };
@@ -433,7 +435,7 @@ export async function decideApproval(id: string, token: string, decision: string
 async function decide(id: string, token: string, decision: string, req: http.IncomingMessage, extra: { commit?: string } = {}) {
   const why = notJClick(req);
   if (why) throw new StudioError(`Only J approves or denies, with a tap on the card: ${why}.`, 403);
-  if (decision !== 'approve' && decision !== 'deny' && decision !== 'anyway') throw new StudioError('decision: approve | deny | anyway');
+  if (!['approve', 'deny', 'anyway', 'catchup'].includes(decision)) throw new StudioError('decision: approve | deny | anyway | catchup');
   expire();
   const r = row(id);
   if (!r) throw new StudioError(`No approval ${id}`, 404);
@@ -443,7 +445,7 @@ async function decide(id: string, token: string, decision: string, req: http.Inc
   const expect = Buffer.from(String(r.token));
   const got = Buffer.from(String(token ?? ''));
   if (got.length !== expect.length || !crypto.timingSafeEqual(got, expect)) throw new StudioError('Wrong token for this card.', 403);
-  if (decision === 'anyway' && a.kind !== 'deploy') throw new StudioError('"Go live anyway" is only for going live.', 400);
+  if ((decision === 'anyway' || decision === 'catchup') && a.kind !== 'deploy') throw new StudioError(`"${decision === 'anyway' ? 'Go live anyway' : 'Bring beta up to date'}" is only for going live.`, 400);
   // Who tapped: the signed-in admin's name (or J's own page without a session, as before).
   const u = sessionUser(cookieToken(req));
   const by = decision === 'anyway' && u ? (u.name || u.email) : 'J';
@@ -469,6 +471,17 @@ async function decide(id: string, token: string, decision: string, req: http.Inc
   if (now.card.blockers.length && a.kind === 'merge' && walkAwayOn()) {
     db.prepare(`UPDATE approvals SET status = 'stale', token = '', decided_by = 'Studio', decided_at = ?, result = ? WHERE id = ? AND status = 'pending'`).run(Date.now(), now.card.blockers.join(' ').slice(0, 500), id);
     throw new StudioError(`This card no longer applies: ${now.card.blockers.join(' ')}`, 409);
+  }
+  // "Bring beta up to date" (2026-11-02: main had commits beta lacked and the card was a dead end): merges main into beta
+  // (nothing goes live); beta's push redeploys and plays it, and a new card comes once it passes. In walk-away mode an
+  // Approve tap on such a card does the same, since that is the only way forward.
+  if (now.card.catchUp && (decision === 'catchup' || (decision === 'approve' && walkAwayOn()))) {
+    if (!claim(id, 'approving', by)) throw new StudioError('This card was just decided.', 409);
+    const { queueLive } = await import('./deploy.ts');
+    const { op } = queueLive('golive', { product: a.target, confirm: `DEPLOY ${a.target}`, by: `${by} (bringing beta up to date)`, mergeMain: true });
+    db.prepare(`UPDATE approvals SET status = 'stale', token = '', decided_by = ?, decided_at = ?, result = ? WHERE id = ?`)
+      .run(by, Date.now(), `Bringing beta up to date with main (${op.id}). Nothing went live: beta is deployed and playtested again, then it can go live.`, id);
+    return getApproval(id)!;
   }
   // "Go live anyway": a person going live past beta not being playtested, and past nothing else. The confirm step on the
   // card names the commit; the tap sends it back, so it is for exactly the commit they were shown.

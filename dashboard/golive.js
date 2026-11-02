@@ -117,6 +117,7 @@ if (typeof document !== 'undefined') (() => {
     beta: { label: 'Play beta', busy: 'Playing beta', title: 'Brings beta up to date (pre-deploy build, Unity build, beta site) and playtests it. Nothing goes live.' },
     sync: { label: 'Sync repo', busy: 'Cloning the repo onto the server', title: 'Clones this product\'s repo onto the server (the server has no copy yet), then checks beta against live again. Nothing goes live.' },
     playtest: { label: 'Playtest this commit', busy: 'Playtesting this commit', title: 'Plays beta as it is now (the commit about to go live) and reviews it. Nothing goes live.' },
+    redeploy: { label: 'Redeploy beta', busy: 'Redeploying beta', title: 'Runs beta\'s deploy again on GitHub (its site did not answer). Nothing goes live. Then retry the playtest.' },
     rebuild: { label: 'Rebuild beta', busy: 'Rebuilding beta on top of what is live', title: 'Builds beta again on top of the live site (Unity, about $0.10). Nothing goes live.' },
   };
   /** A run's step in plain words: what it's doing now. */
@@ -225,6 +226,9 @@ if (typeof document !== 'undefined') (() => {
       ${up && p.release ? `<div class="gl-release meta">${p.release.existing ? 'What\'s new (already on beta, kept)' : 'Releases'} v${esc(p.release.version)}: ${esc(p.release.title ?? '(the notes are being written)')}${p.release.notes?.length ? `<ul>${p.release.notes.map((x) => `<li>${esc(x)}</li>`).join('')}</ul>` : ''}</div>` : ''}
       ${Object.entries(groups).map(([g, cs]) => `<div class="gl-group"><b>${esc(g)} (${cs.length})</b><ul>${cs.slice(0, 6).map((c) => `<li>${esc(plain(c.title))}</li>`).join('')}${cs.length > 6 ? `<li class="meta">and ${cs.length - 6} more</li>` : ''}</ul></div>`).join('')}
       ${up || p.mainOnly.length || L.played ? `<div class="gl-light-line"><b>${esc(L.text)}</b>${L.played ? `<br><span class="meta">${esc(L.played)}</span>` : ''}${L.why?.length ? `<ul>${L.why.map((w) => `<li>${esc(w)}</li>`).join('')}</ul>` : ''}</div>` : ''}
+      ${p.betaDown && !run.length ? `<div class="gl-light-line gl-down"><b>Beta wasn't played.</b><br>${esc(p.betaDown.line)}${fx?.action === 'redeploy' && (fx.done || fx.error) ? `<br><span class="meta">${esc(fx.done?.note ?? fx.error)}</span>${fx.done?.link ? ` <a href="${esc(fx.done.link)}" target="_blank" rel="noopener">Open the run ↗</a>` : ''}` : ''}
+        <div class="gl-buttons"><button class="primary big" data-admin data-glfix="redeploy" data-guide="off" title="${esc(FIX.redeploy.title)}"${fixRunning ? ' disabled' : ''}>${esc(fixRunning && fx.action === 'redeploy' ? `${FIX.redeploy.busy}…` : FIX.redeploy.label)}</button>
+        <button class="big" data-admin data-glfix="playtest" data-guide="off" title="${esc(FIX.playtest.title)}"${fixRunning ? ' disabled' : ''}>Retry playtest</button>${p.betaDown.runs ? ` <a href="${esc(p.betaDown.runs)}" target="_blank" rel="noopener">Beta's deploys ↗</a>` : ''}</div></div>` : ''}
       <div class="gl-buttons">
         ${fix ? `<button class="primary big" data-glfix="${esc(fix)}" title="${esc(FIX[fix].title)}"${fixRunning ? ' disabled' : ''}>${esc(fixRunning ? `${FIX[fix].busy}…` : fixLabel)}</button>` : ''}
         ${offerPlay && !fix ? `<button class="${ps.state === 'untested' ? 'primary ' : ''}big" data-admin data-glfix="playtest" data-guide="off" title="${esc(FIX.playtest.title)}"${fixRunning ? ' disabled' : ''}>${esc(ps.state === 'failed' ? 'Playtest this commit again' : FIX.playtest.label)}</button>` : ''}
@@ -276,6 +280,13 @@ if (typeof document !== 'undefined') (() => {
         if (bad) throw new Error(`${bad.folder}: ${bad.detail}`);
         fixing.get(id).done = { ok: true, at: Date.now() };
         await loadPlan(id);
+        return;
+      }
+      if (action === 'redeploy') {
+        const r = await api(`/api/deploy/${id}/redeploy-beta`, { method: 'POST', body: {} });
+        if (r.ok) fixing.get(id).done = { ok: true, at: Date.now(), note: r.note, link: r.link };
+        else Object.assign(fixing.get(id), { error: r.note, errorAt: Date.now(), done: { ok: false, note: r.note, link: r.link } });
+        draw();
         return;
       }
       if (action === 'merge-main') {
