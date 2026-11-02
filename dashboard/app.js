@@ -514,6 +514,9 @@ async function goLive(p) {
     ${t.length ? t.map((x) => `<div class="test"><span>${icon(x.status)}</span><span class="name">${esc(x.name)}</span><span class="detail">${esc(x.outcome ?? x.detail ?? '')} · ${ago(x.when)}</span>${x.verdict ? `<span class="pill ${esc(x.verdict)}">${esc(x.verdict)}</span>` : ''}${x.video ? `<a href="${file(x.video)}" target="_blank" rel="noopener" data-video="${file(x.video)}">▶</a>` : ''}</div>${x.summary ? `<div class="meta">${esc(x.summary)}</div>` : ''}`).join('') : `<p class="meta">None at this commit.${plan.lastPlayed ? ` The last local playtest played ${esc(plan.lastPlayed.played.branch)} <code>${esc(String(plan.lastPlayed.played.sha).slice(0, 7))}</code> ${ago(plan.lastPlayed.when)}.` : ''}</p>`}
     ${plan.blockers.length ? `<p style="color:var(--red, #e5484d)"><b>Can't go live yet:</b><br>${plan.blockers.map(esc).join('<br>')}</p>` : ''}
     ${plan.fix ? `<div class="actions"><button class="primary" data-gl="${{ 'merge-main': 'merge', beta: 'beta', rebuild: 'rebuild' }[plan.fix]}" data-p="${esc(plan.product)}" title="Clears the blockers on beta. Nothing goes live.">${{ 'merge-main': 'Merge live into beta', beta: 'Play beta', rebuild: 'Rebuild beta' }[plan.fix]}</button></div>` : ''}
+    ${plan.betaDown ? `<div class="ap-block"><b>Beta wasn't played.</b> ${esc(plan.betaDown.line)}
+      <div class="actions"><button class="primary" data-gl="redeploy" data-p="${esc(plan.product)}" title="Runs beta's deploy again on GitHub. Nothing goes live.">Redeploy beta</button>
+      <button class="small" data-gl="beta" data-p="${esc(plan.product)}" title="Plays beta again. Nothing goes live.">Retry playtest</button>${plan.betaDown.runs ? ` <a href="${esc(plan.betaDown.runs)}" target="_blank" rel="noopener">Beta's deploys ↗</a>` : ''}</div></div>` : ''}
     ${plan.warnings.length ? `<p style="color:var(--amber)"><b>Warnings:</b><br>${plan.warnings.map(esc).join('<br>')}</p>` : ''}
     ${!plan.blockers.length && !plan.warnings.length ? '<p style="color:var(--accent)">No warnings.</p>' : ''}
     <div class="actions">
@@ -561,7 +564,13 @@ $('#viewer').addEventListener('click', async (e) => {
     if (b.dataset.gl === 'rollback') return rollbackView(p);
     if (b.dataset.gl === 'merge') {
       const r = await api(`/api/deploy/${p}`, { method: 'POST', body: { mergeMain: true, by: 'J' } });
-      out(`<p>${esc(r.detail)}. ${esc(r.note)}</p>`);
+      out(`<p>${[r.detail, r.note].filter(Boolean).map(esc).join('. ')}</p>`);
+      return;
+    }
+    if (b.dataset.gl === 'redeploy') {
+      const r = await api(`/api/deploy/${p}/redeploy-beta`, { method: 'POST', body: {} });
+      out(`<p style="color:${r.ok ? 'var(--accent)' : 'var(--amber)'}">${esc(r.note)}${r.link ? ` <a href="${esc(r.link)}" target="_blank" rel="noopener">Open the run ↗</a>` : ''}</p>`);
+      if (!r.ok) b.disabled = false;
       return;
     }
     if (b.dataset.gl === 'rebuild') {

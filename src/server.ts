@@ -473,6 +473,9 @@ const server = http.createServer(async (req, res) => {
       return send(res, 200, { ok: true, run: r.id, todo: r.todo });
     }
 
+    // "Redeploy beta" (redeploy.ts): runs beta's own deploy again on GitHub. Beta only, nothing goes live.
+    m = /^\/api\/deploy\/([\w-]+)\/redeploy-beta$/.exec(route);
+    if (m && method === 'POST') return send(res, 200, await (await import('./redeploy.ts')).redeployBeta(m[1]));
     // Go live (gated): the plan, then "DEPLOY <product>" fast-forwards main to the playtested beta (deploy.ts).
     m = /^\/api\/deploy\/([\w-]+)$/.exec(route);
     // A customer's game: played where it is deployed. With no GitHub repository, or none the Studio's GitHub App can
@@ -639,7 +642,7 @@ const server = http.createServer(async (req, res) => {
         const by = await (await import('./inbox.ts')).actor(req, b.by);
         return send(res, 200, await ap.requestApproval(String(b.kind ?? ''), String(b.target ?? ''), { amount: b.amount, patch: b.patch }, { by, conversation: origin ?? (typeof b.conversation === 'string' && /^t_[0-9a-f]{6,32}$/.test(b.conversation) ? b.conversation : null) }).then((a) => ap.getApproval(a.id, jPage)));
       }
-      m = /^\/api\/approvals\/(a_[0-9a-f]+)(?:\/(approve|deny|dismiss|anyway))?$/.exec(route);
+      m = /^\/api\/approvals\/(a_[0-9a-f]+)(?:\/(approve|deny|dismiss|anyway|catchup))?$/.exec(route);
       if (m && method === 'GET' && !m[2]) { const a = ap.getApproval(m[1], jPage); return a ? send(res, 200, a) : send(res, 404, { error: 'no such approval' }); }
       if (m && method === 'POST' && m[2] === 'dismiss') return send(res, 200, ap.dismissApproval(m[1], req));
       if (m && method === 'POST' && m[2]) { const b = await readJson(req); return send(res, 200, await ap.decideApproval(m[1], String(b.token ?? ''), m[2], req, { commit: typeof b.commit === 'string' ? b.commit : undefined })); }

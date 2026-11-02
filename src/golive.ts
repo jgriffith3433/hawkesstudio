@@ -205,8 +205,12 @@ async function ensurePagesWorkflow(slug: string, sha: string) {
 export async function onMainPushGitHub(slug: string, sha: string) {
   const { projectsForRepo } = await import('./builds.ts');
   const out: Record<string, unknown> = {};
+  let followed = false;
   for (const p of projectsForRepo(slug).filter((x) => !managedElsewhere(x))) {
     if (liveAlready(p, sha)) { out[p.id] = { skipped: 'already recorded' }; continue; }
+    // Pushed to main some other way than Studio's go live: beta takes main's commits now (one merge per repo), so the
+    // next go live isn't stopped by "main has commits beta lacks".
+    if (!followed) followed = followMainIntoBeta(p, sha);
     const last = db.prepare(`SELECT after FROM deploys WHERE product = ? ORDER BY at DESC LIMIT 1`).get(p.id) as { after: string } | undefined;
     const id = newId('d');
     db.prepare('INSERT INTO deploys (id, product, kind, repo, before, after, beta, source, source_before, source_after, version, by, detail, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
@@ -215,6 +219,24 @@ export async function onMainPushGitHub(slug: string, sha: string) {
     out[p.id] = { deploy: id, note: p.live ? `${publisherOf(p).done}; Studio playtests the live site when it is out` : 'recorded (no live address to check)' };
   }
   return out;
+}
+
+/**
+ * After a push to main that wasn't Studio's own go live (a pull request merged straight into main, a person's push):
+ * merge main back into beta, queued like the Go live page's "Merge main into beta" (nothing goes live; beta's push
+ * redeploys and playtests it). 2026-11-02: three PRs merged into Studio's main left beta behind, and going live
+ * stopped at "main has 5 commit(s) beta lacks". A merge with nothing to bring is a no-op; a conflict fails the op with
+ * how to resolve it. STUDIO_FOLLOW_MAIN=0 turns it off. Returns whether a merge was queued.
+ */
+export function followMainIntoBeta(p: Product, sha: string): boolean {
+  if (process.env.STUDIO_FOLLOW_MAIN === '0' || p.build) return false;
+  void import('./deploy.ts')
+    .then(({ queueLive }) => {
+      const { op } = queueLive('golive', { product: p.id, confirm: `DEPLOY ${p.id}`, by: `Studio (main moved to ${sha.slice(0, 7)} outside a go live: bringing beta up to date)`, mergeMain: true });
+      console.log(`[golive] ${p.id}: main moved outside a go live (${sha.slice(0, 7)}); merging it into beta: ${op.id}`);
+    })
+    .catch((e: any) => console.warn(`[golive] ${p.id}: couldn't queue merging main into beta: ${e?.message ?? e}`));
+  return true;
 }
 
 /** A push to a product source repo's main (from its workflow): publish Unity games; record and check web products. */
@@ -232,6 +254,7 @@ export async function onMainPush(folder: string, sha: string) {
     const own = publisherOf(p).box; // its own server, not Pages: nothing to switch on GitHub
     const pages = slug && !own ? await ensurePagesWorkflow(slug, sha).catch((e: any) => `checking Pages failed: ${e.message ?? e}`) : null;
     if (liveAlready(p, sha)) { out[p.id] = { skipped: 'already recorded', pages }; continue; }
+    followMainIntoBeta(p, sha);
     const { site } = repoDirs(p);
     const before = shaOf(site, `origin/${MAIN}`);
     await fetchOrigin(site);

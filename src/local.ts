@@ -24,14 +24,20 @@ const readServers = (): Record<string, { pid: number; port: number; started: num
   }
 };
 
-async function answers(url: string) {
+async function answers(url: string, ms = 3000) {
   try {
-    const r = await fetch(url, { signal: AbortSignal.timeout(3000) });
+    const r = await fetch(url, { signal: AbortSignal.timeout(ms) });
     return r.status < 500;
   } catch {
     return false;
   }
 }
+
+/** How long a deployed beta (local.serve "remote") gets to wake up and answer before a playtest calls it down. */
+export const REMOTE_WAKE_MS = Number(process.env.STUDIO_REMOTE_WAKE_MS) || 90_000;
+/** The line a playtest fails with when a deployed beta doesn't answer: what happened, and the two ways on (Go live offers both). */
+export const remoteDownLine = (name: string, url: string) =>
+  `${name}'s beta (${url}) didn't answer within ${Math.round(REMOTE_WAKE_MS / 1000)} s, so it wasn't played. Its last deploy may have failed or it is still starting: redeploy beta or retry the playtest from the Go live page.`;
 
 /**
  * Installs a checkout's packages without touching its tracked files. A plain "npm install" rewrites package-lock.json
@@ -48,7 +54,10 @@ export async function ensureServer(p: Product, log: (s: string) => void = () => 
   const dir = abs(p.local.dir);
   // Deployed by its own CI (Firebase for the portal): nothing to start here, beta is already up.
   if (p.local.serve === 'remote') {
-    if (!(await answers(url))) throw new Error(`${p.name}'s beta (${url}) isn't answering: see its GitHub Actions deploy`);
+    // A beta that scales to zero (Cloud Run: Studio's own beta restores its database before it answers) takes a while to
+    // wake: one request held long enough for that, not a 3 s look (2026-11-02: Studio's beta was asleep, not down, and
+    // the go-live playtest failed as "isn't answering"). Still nothing: say so in plain words, with what to do.
+    if (!(await answers(url, REMOTE_WAKE_MS))) throw new Error(remoteDownLine(p.name, url));
     return url;
   }
   if (p.local.serve === 'app') {

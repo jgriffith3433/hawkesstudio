@@ -38,6 +38,7 @@ const approvals = (() => {
     // take it live anyway, after a confirm step that names the commit (J, 2026-11-01).
     const skip = a.kind === 'deploy' && c.blockers.length && c.skip ? c.skip : null;
     const approve = skip ? `<button class="danger" data-apanyway title="Takes this commit live without a playtest, after you confirm. Your name goes on the release history.">Go live anyway</button>`
+      : c.blockers.length && c.catchUp ? `<button class="primary" data-apdecide="catchup" title="Merges main's extra commits into beta. Nothing goes live: beta is deployed and playtested again, then a new card comes.">Bring beta up to date</button>`
       : c.blockers.length ? `<button class="primary" data-apdecide="approve" disabled>Can't approve yet</button>` : `<button class="primary" data-apdecide="approve">${esc(c.approve)}</button>`;
     const confirm = skip && confirmOpen ? `<div class="ap-confirm" role="alertdialog"><b>Go live without a playtest?</b><br>Commit ${esc(skip.short)} hasn't passed a playtest: ${skip.why.map(esc).join(' ')}<br>It goes live untested. The health check and rollback after it work as usual, and your name and the commit go on the release history.
       <div class="actions ap-actions"><button class="danger" data-apdecide="anyway" data-commit="${esc(skip.short)}">Yes, go live without a playtest</button><button data-apcancel>Cancel</button></div></div>` : '';
