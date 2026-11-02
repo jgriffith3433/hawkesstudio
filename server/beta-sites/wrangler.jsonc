@@ -41,5 +41,12 @@
     { "pattern": "sb-imaginelivetv.hawkesgen.ai/*", "zone_name": "hawkesgen.ai" },
     { "pattern": "sb-corporate.hawkesgen.ai/*", "zone_name": "hawkesgen.ai" }
   ],
-  "observability": { "enabled": true }
+  // Workers Logs (2026-11-02: the account reached 75% of its Workers Logs allowance): no log line per request
+  // (invocation_logs off; Cloudflare's own request metrics stay), traces sampled at 1%, every console.error kept
+  // (logs.head_sampling_rate 1: this Worker logs only its errors), so failures are all still visible.
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 0.01,
+    "logs": { "enabled": true, "invocation_logs": false, "head_sampling_rate": 1 }
+  }
 }
