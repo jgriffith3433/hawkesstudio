@@ -42,6 +42,45 @@ const git = (cwd: string, args: string[]) => {
   return { ok: r.status === 0, out: (r.stdout ?? '').trim(), err: (r.stderr ?? '').trim() };
 };
 let active = 0;
+// Scouts kept ending in error_max_turns with no report (2026-11-02); this beats Settings' tuning caps (20-40) for scouts.
+const SCOUT_MAX_TURNS = 100;
+
+/** What a scout's stream-json output said, line by line (feedScoutLine), so a run that ends without a report still says why. */
+export type ScoutStream = { result: string; cost: number; ok: boolean; subtype: string; isError: boolean; turns: number; sawResult: boolean; said: string[]; code: number | null; err: string };
+export const newScoutStream = (): ScoutStream => ({ result: '', cost: 0, ok: false, subtype: '', isError: false, turns: 0, sawResult: false, said: [], code: null, err: '' });
+export function feedScoutLine(st: ScoutStream, m: any, onTool?: (detail: string) => void) {
+  if (m?.type === 'assistant') {
+    for (const part of m.message?.content ?? []) {
+      if (part.type === 'tool_use') onTool?.(`${part.name} ${JSON.stringify(part.input).slice(0, 100)}`);
+      else if (part.type === 'text' && String(part.text ?? '').trim()) st.said = [...st.said, String(part.text).trim()].slice(-3);
+    }
+  }
+  if (m?.type === 'result') {
+    st.sawResult = true;
+    st.result = String(m.result ?? '');
+    st.cost = Number(m.total_cost_usd) || 0;
+    st.isError = !!m.is_error;
+    st.ok = !m.is_error;
+    st.subtype = String(m.subtype ?? '');
+    st.turns = Number(m.num_turns) || 0;
+  }
+}
+/** Why a scout has no (full) report: the result's subtype, turns, exit code and the end of stderr. */
+export function scoutWhy(st: ScoutStream) {
+  const parts = [st.sawResult ? `${st.subtype || 'result'}${st.isError ? ' (is_error)' : ''}${st.turns ? ` after ${st.turns} turns` : ''}` : 'no result message'];
+  if (st.code !== null) parts.push(`exit ${st.code}`);
+  const tail = st.err.trim().split('\n').slice(-3).join(' | ').slice(-200);
+  if (tail) parts.push(`stderr: ${tail}`);
+  return parts.join(', ');
+}
+/** The report, or when the result has no text the scout's last words as a partial one (so the reading isn't thrown away). */
+export function scoutReport(st: ScoutStream) {
+  const text = st.result.trim();
+  if (text.length > 40 && st.ok) return { text, partial: false };
+  const said = st.said.join('\n\n').trim();
+  if (text.length <= 40 && said.length > 40) return { text: `**Partial report** (the scout stopped early: ${scoutWhy(st)}). This is what it had written so far:\n\n${said}`, partial: true };
+  return { text, partial: false };
+}
 
 /**
  * opts.brief: the scout's instructions instead of "what would it take" (the PM's diagnosis of a task that failed its
@@ -79,7 +118,8 @@ async function run(id: string, top: string, base: string, opts: { brief?: string
     const prompt = opts.brief ? `${opts.brief}\n\nYou are reading ${top} at ${ref} (read AGENTS.md first). You can't change anything: don't edit, don't commit.${mem.text ? `\n\n${mem.text}` : ''}` : `You are a scout for Hawkes Studio. J asked: "${s.question}"
 
 Find out what it would take, by reading this repository (${top}, at ${ref}; read AGENTS.md first). You can't change
-anything: don't edit, don't commit. Be concrete and short. Reply with a Markdown report:
+anything: don't edit, don't commit. Be concrete and short. Once you have read about 25 files, stop reading and write
+the report; if the question has numbered parts, answer each one briefly. Reply with a Markdown report:
 
 ## What's there now
 (the relevant code, data and systems, with file paths)
@@ -96,19 +136,16 @@ anything: don't edit, don't commit. Be concrete and short. Reply with a Markdown
 (only real direction choices; with the option you'd pick)
 ${mem.text ? `\n${mem.text}` : ''}${story ? `\nThe product's story, for tone:\n${story}\n` : ''}`;
     // The scout role (.claude/agents/scout.md): model, read-only tools, turn limit; SCOUT_MODEL still overrides the model.
-    const { args: roleFlags } = roleArgs('scout', { extraAllowed: ['mcp__hawkesstudio__memory_search', 'mcp__hawkesstudio__memory_get', 'mcp__hawkesstudio__memory_write', 'mcp__hawkesstudio__studio_analytics'] });
+    const { args: roleFlags } = roleArgs('scout', { maxTurns: SCOUT_MAX_TURNS, extraAllowed: ['mcp__hawkesstudio__memory_search', 'mcp__hawkesstudio__memory_get', 'mcp__hawkesstudio__memory_write', 'mcp__hawkesstudio__studio_analytics'] });
     if (process.env.SCOUT_MODEL) roleFlags.splice(roleFlags.indexOf('--model') + 1, 1, process.env.SCOUT_MODEL);
     const args = ['-p', forOwner(prompt), '--output-format', 'stream-json', '--verbose', ...roleFlags,
       '--mcp-config', (await import('./agents.ts')).agentMcp(id), '--strict-mcp-config'];
     const harness = brainId();
-    const r = await new Promise<{ result: string; cost: number; ok: boolean; err: string }>((resolve) => {
+    const r = await new Promise<ScoutStream>((resolve) => {
       const child = spawnClaude(args, { cwd: wt, env: claudeEnv() });
+      const st = newScoutStream();
       let buf = '';
-      let result = '';
-      let cost = 0;
-      let ok = false;
-      let err = '';
-      child.stderr.on('data', (d) => (err = `${err}${d}`.slice(-8000)));
+      child.stderr.on('data', (d) => (st.err = `${st.err}${d}`.slice(-8000)));
       const timer = setTimeout(() => child.kill('SIGTERM'), 30 * 60_000);
       child.stdout.on('data', (d) => {
         buf += d;
@@ -116,23 +153,21 @@ ${mem.text ? `\n${mem.text}` : ''}${story ? `\nThe product's story, for tone:\n$
         while ((i = buf.indexOf('\n')) >= 0) {
           const line = buf.slice(0, i);
           buf = buf.slice(i + 1);
-          try {
-            const m = JSON.parse(line);
-            if (m.type === 'assistant') for (const part of m.message?.content ?? []) if (part.type === 'tool_use') set(id, { detail: `${part.name} ${JSON.stringify(part.input).slice(0, 100)}` });
-            if (m.type === 'result') { result = String(m.result ?? ''); cost = Number(m.total_cost_usd) || 0; ok = !m.is_error; }
-          } catch { /* not JSON */ }
+          try { feedScoutLine(st, JSON.parse(line), (detail) => set(id, { detail })); } catch { /* not JSON */ }
         }
       });
-      child.on('close', () => { clearTimeout(timer); resolve({ result, cost, ok, err }); });
-      child.on('error', (e) => { clearTimeout(timer); resolve({ result: `(couldn't start Claude Code: ${e.message})`, cost: 0, ok: false, err }); });
+      child.on('close', (code) => { clearTimeout(timer); st.code = code; resolve(st); });
+      child.on('error', (e) => { clearTimeout(timer); st.result = `(couldn't start Claude Code: ${e.message})`; st.ok = false; resolve(st); });
     });
-    const text = r.result.trim();
+    const full = scoutReport(r);
+    const text = full.text;
     // A usage cap, billing or a login error is not a report (it pasted the cap into the next brief as a diagnosis), and
     // the harness is held (harness-hold.ts). Its line stays in the detail, so pm.ts followRescues gives the round back.
-    const stop = r.ok && text.length > 400 ? null : harnessStopOf(r.ok ? text : `${text}\n${r.err}`, r.ok ? { kinds: ['usage', 'billing', 'auth'] } : {});
+    const stop = r.ok && text.length > 400 ? null : harnessStopOf(r.ok ? text : `${r.result.trim()}\n${r.err}`, r.ok ? { kinds: ['usage', 'billing', 'auth'] } : {});
     if (stop && stop.kind !== 'transient') holdHarness(stop, { source: `scout ${id}`, harness });
     const ok = !stop && text.length > 40;
-    set(id, { status: ok ? 'done' : 'failed', detail: stop ? `the harness stopped the scout: ${stop.line.slice(0, 200)}` : ok ? 'reported' : 'no report', report: ok ? text : null, cost: r.cost, finished: Date.now() });
+    const detail = stop ? `the harness stopped the scout: ${stop.line.slice(0, 200)}` : ok ? (full.partial ? `partial report: ${scoutWhy(r)}`.slice(0, 400) : 'reported') : `no report: ${scoutWhy(r)}`.slice(0, 400);
+    set(id, { status: ok ? 'done' : 'failed', detail, report: ok ? text : null, cost: r.cost, finished: Date.now() });
   } catch (e: any) {
     set(id, { status: 'failed', detail: String(e.message ?? e).slice(0, 300), finished: Date.now() });
   } finally {
