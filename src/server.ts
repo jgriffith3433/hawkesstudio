@@ -749,8 +749,13 @@ const server = http.createServer(async (req, res) => {
         return send(res, 200, { ready, markdown: await signFileLinks(ready.map(pm.readyMarkdown).join('\n\n---\n\n') || 'Nothing on beta waiting for J to test.') });
       }
       const sc = await import('./scout.ts');
-      if (route === '/api/scouts' && method === 'GET') return send(res, 200, { scouts: sc.listScouts() });
+      if (route === '/api/scouts' && method === 'GET') return send(res, 200, { scouts: q('dismissed') ? (await import('./activity.ts')).hiddenScouts() : sc.listScouts() });
       if (route === '/api/scouts' && method === 'POST') return send(res, 200, sc.startScout(String(b.product), String(b.question ?? ''), talkFrom));
+      if (route === '/api/scouts/clear-failed' && method === 'POST') return send(res, 200, { ok: true, dismissed: sc.clearFailedScouts() });
+      m = /^\/api\/scouts\/(x_[0-9a-f]+)\/(dismiss|restore)$/.exec(route);
+      if (m && method === 'POST') {
+        try { return send(res, 200, { ok: true, scout: m[2] === 'dismiss' ? sc.dismissScout(m[1]) : sc.restoreScout(m[1]) }); } catch (e: any) { return send(res, 400, { error: e.message }); }
+      }
       m = /^\/api\/scouts\/(x_[0-9a-f]+)$/.exec(route);
       if (m && method === 'GET') return send(res, 200, sc.getScoutView(m[1]) ?? { error: 'no such scout' });
       m = /^\/api\/scouts\/(x_[0-9a-f]+)\/message$/.exec(route);
