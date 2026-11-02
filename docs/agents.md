@@ -109,8 +109,10 @@ Since 2026-11-02 (J: "Why don't they just get the full MCP setup like Talk") an 
 - **Studio's whole tool server** (agents.ts agentMcp): backlog, reports, playtests, previews, roadmap, the other
   projects, deploy plans. The guards below apply to both (the agents' key). Its list swaps `studio_talk` for
   `studio_tell`. Scouts keep their narrow list.
-- **The shell and the web on Cloud Run** (roles.ts): a pass there is a job on its own machine, so the agent roles get
-  their sandbox tool lists, as on the server. Talk keeps its own lists for now.
+- **The shell and the web on Cloud Run** (roles.ts): a run there is a job on its own machine, so the agent roles get
+  their sandbox tool lists, as on the server. Talk gets its `cloud-*` lists too, with its `<!-- cloud -->` instructions:
+  it reads code and makes small changes through `studio_github_api` (a branch of its own, then a pull request into
+  beta), since nothing is checked out in its job.
 - **`studio_tell`** (access.ts agentSays): progress, a result or a question goes to the Talk conversation that started
   the work, and Talk passes it on to the owner. With no conversation, a question goes to the Inbox. An agent that
   pauses on `.hawkes/question.md` is passed to that conversation too (agentPaused).
