@@ -144,16 +144,22 @@ if (typeof document !== 'undefined') (() => {
           ? `<div class="act-actions"><button class="small" data-act-cancel="cancel" data-kind="changes" data-id="${esc(c.id)}" data-what="this agent (its branch and worktree are kept; Resume or Close it afterwards; it is not a failed try)">Cancel</button></div>` : ''}
     </div>`;
   }
-  /** A scout: the question, product, status, elapsed time, cost, origin; the report (or why it failed) opens in place. */
+  /** A scout: the question, product, status, elapsed time, live progress (turns, last steps), cost, origin; the report opens in place. Cancel / Re-run / Ask follow-up like an agent's controls. */
   function scoutHtml(x) {
     const running = x.status === 'running';
     const t = running ? since(x.started) : dur((x.finished ?? x.started) - x.started);
-    return `<div class="act-item${x.status === 'failed' ? ' act-warn' : ''}" data-key="x:${esc(x.id)}">
-      <div class="act-top">${ICON[x.status] ?? '•'} 🔎 <b>${esc(x.productName)}</b> <span class="pill ${x.status === 'failed' ? 'failed' : x.status === 'done' ? 'ship' : ''}">${esc(x.status)}</span><span class="act-time">${esc(t)}</span></div>
+    const warn = x.status === 'failed';
+    const act = running
+      ? `<button class="small" data-act-cancel="cancel" data-kind="scouts" data-id="${esc(x.id)}" data-what="this scout (what it has written so far is kept as a partial report; it is not a failure)">Cancel</button>`
+      : `<button class="small" data-act-cancel="resume" data-kind="scouts" data-id="${esc(x.id)}">Re-run</button> <button class="small" data-scout-ask="${esc(x.id)}">Ask a follow-up</button>`;
+    return `<div class="act-item${warn ? ' act-warn' : ''}" data-key="x:${esc(x.id)}">
+      <div class="act-top">${ICON[x.status] ?? '•'} 🔎 <b>${esc(x.productName)}</b> <span class="pill ${warn ? 'failed' : x.status === 'done' ? 'ship' : ''}">${esc(x.status)}</span>${x.model ? ` <span class="pill">${esc(x.model)}</span>` : ''}<span class="act-time">${esc(t)}</span></div>
       <div class="act-title">${esc(x.question)}</div>
       ${x.detail ? `<div class="act-now">${esc(x.detail)}</div>` : ''}
-      <div class="meta">scout ${esc(x.id)} · by ${by(x)}${x.cost ? ` · ${x.cost.toFixed(2)}` : ''}</div>
+      <div class="meta">scout ${esc(x.id)} · by ${by(x)}${x.turns ? ` · ${x.turns} turns` : ''}${x.cost ? ` · $${x.cost.toFixed(2)}` : running ? ' · cost shows when it reports' : ''}${x.retryOf ? ` · re-run of ${esc(x.retryOf)}` : ''}</div>
+      ${running && x.log?.length ? `<details class="act-log"><summary class="meta">last steps</summary><pre>${esc(x.log.join('\n'))}</pre></details>` : ''}
       ${x.hasReport ? `<details class="act-log" data-scout-report="${esc(x.id)}"><summary class="meta">report</summary><pre class="scout-report" data-patch-keep style="white-space:pre-wrap">open to read</pre></details>` : ''}
+      <div class="act-actions">${act}</div>
     </div>`;
   }
   async function loadScoutReport(d) {
@@ -421,6 +427,13 @@ if (typeof document !== 'undefined') (() => {
   }
   el('#activity').addEventListener('toggle', (e) => { if (e.target.open && e.target.dataset?.scoutReport) loadScoutReport(e.target); }, true);
   el('#activity').addEventListener('click', (e) => {
+    const ask = e.target.closest('[data-scout-ask]');
+    if (ask) {
+      e.preventDefault();
+      const message = (prompt('Ask the scout a follow-up (it answers in the same session; the answer is added to its report):') ?? '').trim();
+      if (message) api(`/api/scouts/${encodeURIComponent(ask.dataset.scoutAsk)}/message`, { method: 'POST', body: { message } }).catch((err) => alert(`Couldn't do that: ${err.message}`));
+      return;
+    }
     const cb = e.target.closest('[data-act-cancel]');
     if (cb) { e.preventDefault(); cancelAct(cb); return; }
     const t = e.target.closest('[data-talk]');
