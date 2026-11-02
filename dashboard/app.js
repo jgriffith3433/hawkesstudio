@@ -437,9 +437,12 @@ function card(p, h = health(p)) {
     ${p.dev?.conflict ? devLine(p) : ''}
     <div class="meta">${p.preview ? `<a href="${esc(p.preview.play)}" target="_blank">Beta</a> · ` : ''}<a href="${esc(p.live)}" target="_blank">Live</a>${video ? ` · <a href="${file(video)}" target="_blank" rel="noopener" data-video="${file(video)}">▶ last playtest</a>` : ''} · ${bugs ? `<a href="#backlog" data-act="backlog" data-p="${p.id}">${bugs} open bug${bugs === 1 ? '' : 's'} in Backlog</a>` : 'no open bugs'}</div>
     <div class="actions">
-      ${window.studioMe?.customer
-        ? `<button class="small primary" data-act="playtest" data-p="${p.id}" title="Plays it where it is live, with a video and a review (a few cents)">${p.beta ? 'Play live' : 'Run a playtest'}</button>${p.beta ? ` <button class="small" data-act="playbeta" data-p="${p.id}" title="Plays its test version (${esc(p.beta)}), with a video and a review">Play beta</button>` : ''} <button class="small" data-admin data-act="editgame" data-p="${p.id}">Edit</button>`
-        : `<button class="small primary" data-act="playtest" data-p="${p.id}" title="A quick playtest of the main scenario, with a video and a review (a few cents)">Smoke test</button>${p.github ? ` <button class="small" data-admin data-act="editgame" data-p="${p.id}" title="Its settings, what it still needs and links to its pages">Edit · get it ready</button>` : ''}`}
+      ${(() => {
+        // The same buttons in every Studio (J, 2026-11-02). Edit is for projects kept in Studio's data: products.json's
+        // (J's Studio) are edited in git.
+        const beta = p.beta ?? p.preview?.play;
+        return `<button class="small primary" data-act="playtest" data-p="${p.id}" title="Plays it where it is live, with a video and a review (a few cents)">${beta ? 'Play live' : 'Run a playtest'}</button>${beta ? ` <button class="small" data-act="playbeta" data-p="${p.id}" title="Plays its test version (${esc(beta)}), with a video and a review">Play beta</button>` : ''}${window.studioMe?.customer || p.github ? ` <button class="small" data-admin data-act="editgame" data-p="${p.id}" title="Its settings, what it still needs and links to its pages">Edit</button>` : ''}`;
+      })()}
     </div>
     <details class="more-details"><summary class="meta">Details</summary>
       <div class="meta">${esc(p.framing)}</div>
@@ -480,7 +483,7 @@ $('#cards').addEventListener('click', async (e) => {
   const p = btn.dataset.p;
   try {
     // A customer's game: "Play live" plays where it is live; "Play beta" its test version (its "local" lane: config.ts asCustomerGame).
-    if (btn.dataset.act === 'playtest') await api('/api/playtest', { method: 'POST', body: { product: p, scenario: undefined, ...(window.studioMe?.customer ? { where: 'live' } : {}) } });
+    if (btn.dataset.act === 'playtest') await api('/api/playtest', { method: 'POST', body: { product: p, scenario: undefined, where: 'live' } });
     if (btn.dataset.act === 'playbeta') await api('/api/playtest', { method: 'POST', body: { product: p, scenario: undefined, where: 'local' } });
     if (btn.dataset.act === 'editgame') return void studioEditGame(p);
     if (btn.dataset.act === 'all') await api('/api/runs', { method: 'POST', body: { products: [p], noBuild: $('#optNoBuild').checked, where: $('#optLocal').checked ? 'local' : undefined } });

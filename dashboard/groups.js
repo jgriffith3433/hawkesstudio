@@ -1,22 +1,27 @@
-// A customer's Studio has fewer, grouped tabs (J, 2026-10-30: "there's way too many tabs"). The nav shows one button per
-// group; inside, a small bar switches between the group's pages, which are the same tabs as before (so links, Talk's
-// guide and #hash addresses keep working). J's own Studio keeps its tabs as they are.
+// Every Studio has the same grouped tabs (J, 2026-10-30: "there's way too many tabs"; 2026-11-02: admin "shouldn't be
+// vastly different it should just have extra features"). The nav shows one button per group; inside, a small bar
+// switches between the group's pages, which are the same tabs as before (so links, Talk's guide and #hash addresses
+// keep working). A page this Studio doesn't have is left out of its group, so J's Studio is a customer's plus extras.
 //   Talk       Talk · Inbox
-//   Games      Games (the overview, each game's card, add/edit/delete) · Go live · Analytics (their own games' players)
+//   Projects   Projects (each project's card, add/edit/delete) · Ready to test* · Go live · Analytics
 //   Plan       Roadmap · Bugs (the backlog) · Agents' changes
 //   Playtests  Playing now · History · Reports · Runs
-//   Library, and under More: Memory, Users, Settings
-// Not in a customer's Studio: Ready to test (Go live covers it), Screening (the platform admin's), On Air, Social, Costs,
-// Resources. Analytics is back (J, 2026-11-01: "Turn on the analytics tab for customers again").
+//   Library    Library · Screening* · Social*
+//   More       Memory, Connect your editor, Plugins, Costs*, Resources*, Users, Settings
+// * not in a customer's Studio: Ready to test (Go live covers it) and Screening (the platform admin's) by CUSTOMER_LESS;
+// Social, Costs, Resources and On Air by /api/me's `hide` (src/lockdown.ts), which also hides them from J's members.
 (() => {
   const GROUPS = [
     { head: 'talk', label: 'Talk', tabs: [['talk', 'Talk'], ['inbox', 'Inbox']] },
-    { head: 'today', label: 'Projects', tabs: [['today', 'Projects'], ['golive', 'Go live'], ['analytics', 'Analytics']] },
+    { head: 'today', label: 'Projects', tabs: [['today', 'Projects'], ['ready', 'Ready to test'], ['golive', 'Go live'], ['analytics', 'Analytics']] },
     { head: 'roadmap', label: 'Plan', tabs: [['roadmap', 'Roadmap'], ['backlog', 'Bugs'], ['changes', "Agents' changes"]] },
     { head: 'live', label: 'Playtests', tabs: [['live', 'Playing now'], ['playtests', 'History'], ['report', 'Reports'], ['runs', 'Runs']] },
-    { head: 'library', label: 'Library', tabs: [['library', 'Library']] },
+    { head: 'library', label: 'Library', tabs: [['library', 'Library'], ['videos', 'Screening'], ['social', 'Social']] },
   ];
-  const MORE = ['memory', 'users', 'settings'];
+  const MORE = ['memory', 'connect', 'plugins', 'costs', 'resources', 'users', 'settings'];
+  const CUSTOMER_LESS = ['ready', 'videos'];
+  let gone = new Set();
+  const pages = (g) => g.tabs.filter(([id]) => !gone.has(id));
   const groupOf = (t) => GROUPS.find((g) => g.tabs.some(([id]) => id === t));
   let on = false;
 
@@ -25,14 +30,14 @@
     if (!on) return;
     const g = groupOf(t);
     document.querySelectorAll('nav button[data-tab]').forEach((b) => { if (g && b.dataset.tab === g.head) b.classList.add('on'); });
-    if (!g || g.tabs.length < 2) return;
+    if (!g || pages(g).length < 2) return;
     const sec = document.getElementById(t);
     if (!sec) return;
     let bar = sec.querySelector(':scope > .subnav');
     if (!bar) {
       bar = document.createElement('div');
       bar.className = 'subnav';
-      bar.innerHTML = g.tabs.map(([id, label]) => `<button type="button" data-sub="${id}">${label}${id === 'inbox' ? ' <span class="ib-count zero" data-inbox-mirror>0</span>' : ''}</button>`).join('');
+      bar.innerHTML = pages(g).map(([id, label]) => `<button type="button" data-sub="${id}">${label}${id === 'inbox' ? ' <span class="ib-count zero" data-inbox-mirror>0</span>' : ''}</button>`).join('');
       bar.addEventListener('click', (e) => { const b = e.target.closest('[data-sub]'); if (b) show(b.dataset.sub); });
       sec.prepend(bar);
     }
@@ -48,11 +53,12 @@
     for (const el of document.querySelectorAll('[data-inbox-mirror]')) { el.textContent = n; el.className = src.className; }
   }
 
-  /** Called with /api/me (users.js): a customer's Studio gets the grouped nav. */
+  /** Called with /api/me (users.js): the grouped nav, with the pages this Studio and this person have. */
   function groupNav(me) {
-    if (!me?.customer || on) return;
+    if (!me || on) return;
     on = true;
-    const keep = new Set([...GROUPS.map((g) => g.head), ...MORE]);
+    gone = new Set([...(me.hide ?? []), ...(me.customer ? CUSTOMER_LESS : [])]);
+    const keep = new Set([...GROUPS.map((g) => g.head), ...MORE.filter((t) => !gone.has(t))]);
     document.querySelectorAll('nav button[data-tab]').forEach((b) => {
       const t = b.dataset.tab;
       if (!keep.has(t)) { b.hidden = true; b.dataset.grouped = '1'; return; }
@@ -66,15 +72,15 @@
     const add = document.getElementById('addGame');
     if (add) add.hidden = false;
     const onAir = document.getElementById('onAir');
-    if (onAir) onAir.hidden = true;
+    if (onAir && gone.has('onair')) onAir.hidden = true;
     new MutationObserver(mirrorInbox).observe(document.getElementById('inboxCount'), { childList: true, characterData: true, subtree: true, attributes: true });
     mirrorInbox();
-    // The Inbox is no longer the first page: Games is (unless the address asks for one).
+    // The Inbox is no longer the first page: Projects is (unless the address asks for one).
     const cur = location.hash.slice(1).split('/')[0];
     if (!cur || cur === 'inbox') show('today');
     else afterShow(cur);
-    // A page this Studio doesn't have (an old link to Ready to test, Screening): Games instead.
-    if (['ready', 'videos', 'social', 'costs', 'resources'].includes(cur)) show(cur === 'ready' ? 'golive' : 'today');
+    // A page this Studio doesn't have (an old link to Ready to test, Screening, Costs…): Projects instead.
+    if (gone.has(cur)) show(cur === 'ready' ? 'golive' : 'today');
   }
 
   const css = document.createElement('style');
