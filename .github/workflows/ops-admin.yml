@@ -1,0 +1,149 @@
+# One-time Google Cloud setup, done as ops-admin@hawkes-staging (made by Jaycee's ops-admin-setup.sh in Cloud Shell:
+# keyless, usable only from this repo's main in the "production" environment). Every action is a PLAN by default: it
+# reads what exists and prints the gcloud commands it would run. Tick "apply" to run them. Each step skips what exists.
+#
+#   gen-actas      gen-deployer@hawkes-staging gets roles/iam.serviceAccountUser on gen-playtest@ and gen-cpu@,
+#                  so Gen's ops-service-deploy can deploy those services.
+#   secret-create  makes Secret Manager secret <name> in <project> if missing and lets ops-secrets@<project> add
+#                  versions to it (then ops-secret-put fills it); optional <accessor> may read it (a runtime account).
+#   net-access     Hawkes Net VMs (hawkes-prod): a firewall rule letting Google's IAP range reach SSH on tag hawkes-web,
+#                  WIF provider github-net (hawkesnet, main, production only) and ops-net@hawkes-prod with
+#                  roles/iap.tunnelResourceAccessor and roles/compute.instanceAdmin.v1. VM metadata is not touched.
+#   assets-bucket  gs://hawkes-assets-library (private, uniform access, versioned) in <project>, WIF provider
+#                  github-assets (hawkes-assets, main, production only) and ops-assets@<project>, objectAdmin on
+#                  that bucket only.
+#
+#   gh workflow run ops-admin.yml --repo jgriffith3433/hawkesstudio --ref main -f action=gen-actas          (plan)
+#   gh workflow run ops-admin.yml --repo jgriffith3433/hawkesstudio --ref main -f action=gen-actas -f apply=true
+name: ops-admin
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        type: choice
+        options: [gen-actas, secret-create, net-access, assets-bucket]
+      apply:
+        description: Run the commands (unticked = plan only)
+        type: boolean
+        default: false
+      project:
+        description: secret-create / assets-bucket project
+        type: choice
+        options: [hawkes-staging, hawkes-prod]
+        default: hawkes-staging
+      name:
+        description: secret-create secret name (lowercase, digits, dashes)
+        type: string
+        default: ''
+      accessor:
+        description: secret-create, optional service account that may read it
+        type: string
+        default: ''
+permissions:
+  contents: read
+  id-token: write
+concurrency:
+  group: ops-admin
+  cancel-in-progress: false
+jobs:
+  admin:
+    name: ${{ inputs.action }} (${{ inputs.apply && 'apply' || 'plan' }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: production
+    steps:
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: projects/${{ vars.GCP_PROJECT_NUMBER }}/locations/global/workloadIdentityPools/github-ops-admin/providers/github-ops-admin
+          service_account: ops-admin@hawkes-staging.iam.gserviceaccount.com
+      - uses: google-github-actions/setup-gcloud@v2
+      - name: Run
+        env:
+          ACTION: ${{ inputs.action }}
+          APPLY: ${{ inputs.apply }}
+          PROJECT: ${{ inputs.project }}
+          NAME: ${{ inputs.name }}
+          ACCESSOR: ${{ inputs.accessor }}
+        run: |
+          set -euo pipefail
+          sum() { echo "$*" >> "$GITHUB_STEP_SUMMARY"; echo "$*"; }
+          # do: print the command, run it only when applying.
+          do_() { sum "    \$ $*"; if [ "$APPLY" = "true" ]; then "$@"; fi; }
+          have() { "$@" >/dev/null 2>&1; }
+          num() { gcloud projects describe "$1" --format='value(projectNumber)'; }
+          case "$PROJECT" in hawkes-staging|hawkes-prod) ;; *) echo "bad project"; exit 1;; esac
+          sum "## ops-admin: $ACTION ($([ "$APPLY" = true ] && echo apply || echo 'plan only'))"
+
+          # A keyless GitHub provider in pool "github" of $1 trusting repo $3 (id $4) on main in production.
+          provider() {
+            local p=$1 prov=$2 repo=$3 id=$4
+            have gcloud iam workload-identity-pools describe github --location=global --project "$p" \
+              || do_ gcloud iam workload-identity-pools create github --location=global --project "$p" --display-name='GitHub Actions'
+            local cond="assertion.repository_id=='$id' && assertion.repository_owner_id=='44073795' && assertion.ref=='refs/heads/main' && assertion.environment=='production'"
+            if have gcloud iam workload-identity-pools providers describe "$prov" --workload-identity-pool=github --location=global --project "$p"; then
+              sum "- provider $prov exists in $p (condition reset to main + production)"
+              do_ gcloud iam workload-identity-pools providers update-oidc "$prov" --workload-identity-pool=github --location=global --project "$p" --attribute-condition="$cond"
+            else
+              do_ gcloud iam workload-identity-pools providers create-oidc "$prov" --workload-identity-pool=github --location=global --project "$p" \
+                --display-name="$repo main" --issuer-uri='https://token.actions.githubusercontent.com' \
+                --attribute-mapping='google.subject=assertion.sub,attribute.repository=assertion.repository,attribute.ref=assertion.ref,attribute.environment=assertion.environment' \
+                --attribute-condition="$cond"
+            fi
+          }
+          # A service account $2@$1 that repo $3's GitHub tokens (pool github of $1) may act as.
+          account() {
+            local p=$1 n=$2 repo=$3 sa="$2@$1.iam.gserviceaccount.com"
+            if have gcloud iam service-accounts describe "$sa" --project "$p"; then sum "- $sa exists"
+            else do_ gcloud iam service-accounts create "$n" --project "$p" --display-name="$repo GitHub Actions (main)"; if [ "$APPLY" = true ]; then sleep 15; fi; fi
+            do_ gcloud iam service-accounts add-iam-policy-binding "$sa" --project "$p" --role=roles/iam.workloadIdentityUser \
+              --member="principalSet://iam.googleapis.com/projects/$(num "$p")/locations/global/workloadIdentityPools/github/attribute.repository/$repo" --format=none
+          }
+
+          case "$ACTION" in
+          gen-actas)
+            for t in gen-playtest gen-cpu; do
+              sa="$t@hawkes-staging.iam.gserviceaccount.com"
+              if have gcloud iam service-accounts describe "$sa" --project hawkes-staging; then
+                do_ gcloud iam service-accounts add-iam-policy-binding "$sa" --project hawkes-staging --role=roles/iam.serviceAccountUser \
+                  --member=serviceAccount:gen-deployer@hawkes-staging.iam.gserviceaccount.com --format=none
+              else sum "- $sa doesn't exist: skipped"; fi
+            done
+            sum "Then run Gen's ops-service-deploy." ;;
+          secret-create)
+            [[ "$NAME" =~ ^[a-z][a-z0-9-]{2,62}$ ]] || { echo "name must be lowercase letters, digits and dashes"; exit 1; }
+            if [ -n "$ACCESSOR" ] && ! [[ "$ACCESSOR" =~ ^[a-z][a-z0-9-]{4,29}@hawkes-(staging|prod)\.iam\.gserviceaccount\.com$ ]]; then
+              echo "accessor must be a service account in hawkes-staging or hawkes-prod"; exit 1; fi
+            if have gcloud secrets describe "$NAME" --project "$PROJECT"; then sum "- secret $NAME exists in $PROJECT"
+            else do_ gcloud secrets create "$NAME" --project "$PROJECT" --replication-policy=automatic; fi
+            do_ gcloud secrets add-iam-policy-binding "$NAME" --project "$PROJECT" --role=roles/secretmanager.secretVersionAdder \
+              --member="serviceAccount:ops-secrets@$PROJECT.iam.gserviceaccount.com" --format=none
+            [ -z "$ACCESSOR" ] || do_ gcloud secrets add-iam-policy-binding "$NAME" --project "$PROJECT" --role=roles/secretmanager.secretAccessor \
+              --member="serviceAccount:$ACCESSOR" --format=none
+            sum "Then put the value in this repo's (or the owning repo's) production environment and run its ops-secret-put with $NAME added to its list." ;;
+          net-access)
+            P=hawkes-prod
+            # ops-admin can read firewall rules but not instances: take the network from the VMs' own 80/443 rule.
+            net=$(gcloud compute firewall-rules list --project $P --format='csv[no-heading](network.basename(),targetTags.list(separator=";"))' | awk -F, '$2 ~ /(^|;)hawkes-web(;|$)/{print $1; exit}')
+            [ -n "$net" ] || { echo "no firewall rule targets tag hawkes-web in $P"; exit 1; }
+            sum "- Hawkes Net VMs are on network $net (tag hawkes-web)"
+            if have gcloud compute firewall-rules describe hawkes-ssh-iap --project $P; then sum "- firewall hawkes-ssh-iap exists"
+            else do_ gcloud compute firewall-rules create hawkes-ssh-iap --project $P --network="$net" --direction=INGRESS --action=ALLOW \
+              --rules=tcp:22 --source-ranges=35.235.240.0/20 --target-tags=hawkes-web --description='SSH to Hawkes Net through IAP only (GitHub Actions)'; fi
+            do_ gcloud services enable iap.googleapis.com --project $P
+            provider $P github-net jgriffith3433/hawkesnet 1435066440
+            account $P ops-net jgriffith3433/hawkesnet
+            for r in roles/iap.tunnelResourceAccessor roles/compute.instanceAdmin.v1; do
+              do_ gcloud projects add-iam-policy-binding $P --member=serviceAccount:ops-net@$P.iam.gserviceaccount.com --role=$r --condition=None --format=none
+            done
+            sum "Then hawkesnet gets ops-net-status (gcloud compute ssh --tunnel-through-iap) as a PR." ;;
+          assets-bucket)
+            B=gs://hawkes-assets-library
+            if have gcloud storage buckets describe $B; then sum "- $B exists"
+            else do_ gcloud storage buckets create $B --project "$PROJECT" --location=us-east4 --uniform-bucket-level-access --public-access-prevention
+                 do_ gcloud storage buckets update $B --versioning; fi
+            provider "$PROJECT" github-assets jgriffith3433/hawkes-assets 1423637725
+            account "$PROJECT" ops-assets jgriffith3433/hawkes-assets
+            do_ gcloud storage buckets add-iam-policy-binding $B --member="serviceAccount:ops-assets@$PROJECT.iam.gserviceaccount.com" --role=roles/storage.objectAdmin
+            sum "Then hawkes-assets gets its GCS sync and the S3 copy (once AWS is readable) as PRs." ;;
+          esac
+          [ "$APPLY" = true ] && sum "Applied." || sum "Plan only: run again with apply ticked to make these changes."
