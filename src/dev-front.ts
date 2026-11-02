@@ -23,7 +23,7 @@
 import http from 'node:http';
 import net from 'node:net';
 import fs from 'node:fs';
-import { getProduct, loadProducts, GEN_URL, type Product } from './config.ts';
+import { getProduct, loadProducts, GEN_PUBLIC_URL, type Product } from './config.ts';
 import { fileReport, fileAutoError, injectReport, WIDGET } from './bugreport.ts';
 import { COOKIE } from './auth.ts';
 import { hasLane, laneApp, previewHosts } from './previews.ts';
@@ -180,7 +180,7 @@ ${since ? `<div class="card"><b>On beta, not live yet:</b> ${since.commits.lengt
 
 function unityPage(p: Product) {
   const u = unityInfo(p);
-  const gen = GEN_URL.includes('127.0.0.1') ? 'https://hawkesgen.ai' : GEN_URL;
+  const gen = GEN_PUBLIC_URL.includes('127.0.0.1') ? 'https://hawkesgen.ai' : GEN_PUBLIC_URL;
   return page(`${p.name}: Unity editor`, `<h1>${esc(p.name)} is a Unity game</h1>
 <p>Its editor can't run on this server. Unity runs on the <b>build server</b> (a Windows machine on AWS that mirrors C:\\Projects
 and builds every Unity product), and you can open it there over Remote Desktop.</p>

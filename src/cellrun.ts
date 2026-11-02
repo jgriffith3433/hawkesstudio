@@ -17,7 +17,7 @@ import { cellKeyEnv } from './cellkeys.ts';
 
 export type CellsConfig = {
   project: string; projectNumber: string; region: string; serviceAccount: string; bucket: string; agentJob: string;
-  publicUrl: string; controlUrl: string; genUrl: string; googleClientId: string; lane: 'live' | 'beta'; studioService: string;
+  publicUrl: string; controlUrl: string; genUrl: string; genPublicUrl: string; googleClientId: string; lane: 'live' | 'beta'; studioService: string;
 };
 
 export function cellsConfig(env: NodeJS.ProcessEnv = process.env): CellsConfig {
@@ -31,7 +31,9 @@ export function cellsConfig(env: NodeJS.ProcessEnv = process.env): CellsConfig {
     agentJob: env.STUDIO_CELLS_AGENT_JOB || 'studio-cell-agent',
     publicUrl: (env.STUDIO_PUBLIC_URL || (lane === 'beta' ? 'https://studio-beta.hawkesgen.ai' : 'https://studio.hawkesgen.ai')).replace(/\/+$/, ''),
     controlUrl: (env.STUDIO_SERVICE_URL || env.STUDIO_PUBLIC_URL || '').replace(/\/+$/, ''),
+    // Gen's own address for server calls (Cloud Run's run.app, not the Cloudflare edge) and its public one for browsers.
     genUrl: env.HAWKESGEN_URL || '',
+    genPublicUrl: env.GEN_PUBLIC_URL || env.HAWKESGEN_URL || '',
     googleClientId: env.STUDIO_GOOGLE_CLIENT_ID || '',
     lane,
     studioService: env.K_SERVICE || env.STUDIO_SERVICE || (lane === 'beta' ? 'studio-beta' : 'studio'),
@@ -83,7 +85,7 @@ export function cellEnv(org: string, owner: { sub: string; email: string }, c = 
     STUDIO_COOKIE_NAME: `hs_o_${org.replace(/-/g, '_')}`,
     STUDIO_COOKIE_HOST_ONLY: '1',
     STUDIO_GOOGLE_EMAILS: '',
-    ...(c.genUrl ? { HAWKESGEN_URL: c.genUrl, GEN_PUBLIC_URL: c.genUrl } : {}),
+    ...(c.genUrl ? { HAWKESGEN_URL: c.genUrl, GEN_PUBLIC_URL: c.genPublicUrl || c.genUrl } : {}),
     // Its own Gen key (cells.ts ensureGenKey): role user, only its Gen org's projects; its jobs run as org_<hex>.<game>.
     ...(gen ? { HAWKESGEN_KEY: gen.key, AGENT_GEN_KEY: gen.key, HAWKESGEN_PROJECT_PREFIX: `${gen.genOrg}.` } : {}),
     ...(c.googleClientId ? { STUDIO_GOOGLE_CLIENT_ID: c.googleClientId } : {}),

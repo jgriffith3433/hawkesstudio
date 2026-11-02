@@ -87,9 +87,9 @@ async function siteOf(p: Product) {
   return { sub, root };
 }
 async function siteStore() {
-  const { workerStore, sitesUrl } = await import('./sitestore.ts');
+  const { siteStore: store } = await import('./sitestore.ts');
   const { DOMAIN } = await import('./previews.ts');
-  return workerStore(sitesUrl(DOMAIN));
+  return store(DOMAIN);
 }
 
 /** Makes one of a project's builds its beta (or rolls beta back to it): the pointer the sites Worker reads. */
