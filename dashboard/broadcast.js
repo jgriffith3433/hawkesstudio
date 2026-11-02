@@ -479,6 +479,38 @@
       $('caption-text').textContent = 'Reconnecting to the studio…';
     }
   }
+  // Pushed, not polled (GET /api/broadcast/stream, src/feeds.ts): the show whenever it changes, one long request.
+  // The browser reconnects a dropped stream by itself; one it gave up on is retried, slower each time. Closed while hidden.
+  let es = null;
+  let backoff = 2000;
+  let retry = null;
+  function connect() {
+    clearTimeout(retry);
+    if (es || document.hidden) return;
+    const mine = (es = new EventSource('/api/broadcast/stream'));
+    mine.onopen = () => { backoff = 2000; };
+    mine.onmessage = (m) => {
+      let d;
+      try { d = JSON.parse(m.data); } catch { return; }
+      if (d.error) { scene('quiet'); $('caption-text').textContent = 'Reconnecting to the studio…'; return; }
+      render(d);
+    };
+    mine.onerror = () => {
+      if (mine.readyState !== EventSource.CLOSED || es !== mine) return;
+      es = null;
+      scene('quiet');
+      $('caption-text').textContent = 'Reconnecting to the studio…';
+      retry = setTimeout(connect, backoff);
+      backoff = Math.min(60_000, backoff * 2);
+    };
+  }
   load();
-  setInterval(() => { if (!document.hidden) load(); }, 1000);
+  if (typeof EventSource === 'undefined') setInterval(() => { if (!document.hidden) load(); }, 1000);
+  else {
+    connect();
+    document.addEventListener('visibilitychange', () => {
+      if (document.hidden) { try { es?.close(); } catch {} es = null; clearTimeout(retry); }
+      else connect();
+    });
+  }
 })();

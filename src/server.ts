@@ -377,8 +377,21 @@ const server = http.createServer(async (req, res) => {
     if (route === '/api/playtests/trends' && method === 'GET') return send(res, 200, trends({ product: q('product'), days: Number(q('days')) || 30 }));
     // The Playtests page's grid: playing, waiting and just finished, with each one's Studio context (livetests.ts).
     if (route === '/api/playtests/live' && method === 'GET') return send(res, 200, await (await import('./livetests.ts')).livePlaytests());
+    // The same pushed (feeds.ts): the grid, and with ?job= that playtest's full live state for the big view, whenever it changes.
+    if (route === '/api/playtests/live/stream' && method === 'GET') {
+      const { serveFeed } = await import('./feeds.ts');
+      const job = /^j_[0-9a-f]+$/.test(q('job') ?? '') ? q('job') : null;
+      if (job) return serveFeed(req, res, `playtest:${job}`, { everyMs: 2000, read: async () => ({ job, ...(await gen.request(`/jobs/${job}/live`)) }), done: (v) => !v?.error && v?.live == null });
+      const { livePlaytests } = await import('./livetests.ts');
+      return serveFeed(req, res, 'playtests', { everyMs: 2000, read: livePlaytests });
+    }
     // The Twitch show (broadcast.ts, dashboard/broadcast.html): curated playtest, roadmap and agent titles.
     if (route === '/api/broadcast' && method === 'GET') return send(res, 200, await (await import('./broadcast.ts')).broadcastNow({ product: q('product') || undefined }));
+    if (route === '/api/broadcast/stream' && method === 'GET') {
+      const product = q('product') || undefined;
+      const { broadcastNow } = await import('./broadcast.ts');
+      return (await import('./feeds.ts')).serveFeed(req, res, `broadcast:${product ?? ''}`, { everyMs: 1000, read: () => broadcastNow({ product }) });
+    }
     // Director desk (the bar under the page, hidden on ?clean=1). Same show for every viewer. J's dashboard only.
     if (route === '/api/broadcast/desk' && method === 'POST') {
       const { updateDesk } = await import('./broadcast.ts');
