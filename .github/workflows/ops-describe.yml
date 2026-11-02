@@ -1,5 +1,5 @@
 # Read-only: what Cloud Run runs, as ops-reader (run.viewer): every service and job in the project with its region, CPU,
-# memory and scaling, and one service's newest revisions with their conditions (why a revision isn't ready).
+# memory and scaling, and one service's newest revisions with their conditions (why a revision isn't ready). Also the service-level annotations (min, max and manual instance counts across revisions).
 #   gh workflow run ops-describe.yml --repo jgriffith3433/hawkesstudio --ref beta -f service=studio
 name: ops-describe
 on:
@@ -48,7 +48,7 @@ jobs:
             region=$(gcloud run services list --project "$PROJECT" --filter="metadata.name=$SERVICE" --format='value(metadata.labels."cloud.googleapis.com/location")' | head -1)
             [ -n "$region" ] || { echo "no service $SERVICE"; exit 0; }
             echo "== $SERVICE ($region): conditions"
-            gcloud run services describe "$SERVICE" --project "$PROJECT" --region "$region" --format='yaml(status.conditions,status.traffic,spec.template.spec.containers[0].startupProbe,spec.template.spec.containers[0].resources,spec.template.metadata.annotations)'
+            gcloud run services describe "$SERVICE" --project "$PROJECT" --region "$region" --format='yaml(metadata.annotations,status.conditions,status.traffic,spec.template.spec.containers[0].startupProbe,spec.template.spec.containers[0].resources,spec.template.metadata.annotations)'
             echo "== $SERVICE: newest revisions"
             for rev in $(gcloud run revisions list --service "$SERVICE" --project "$PROJECT" --region "$region" --limit 3 --format='value(metadata.name)'); do
               echo "-- $rev"
