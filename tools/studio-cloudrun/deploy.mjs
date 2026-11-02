@@ -38,9 +38,9 @@ const genUrl = flag('gen', beta ? 'https://beta.hawkesgen.ai' : 'https://hawkesg
 // name (2026-11-02: the account's Workers allowance was mostly Studio's own server calls). The public name stays for
 // what a browser opens (GEN_PUBLIC_URL: screenshots, videos, links). The addresses are hawkesgen's server/gen-edge
 // wrangler.jsonc GEN_ORIGIN (live and env.beta). --gen-direct overrides; --gen-direct= (empty) goes back to the public name.
-// Beta by default; live keeps the public name until J chooses (--gen-direct https://gen-f6ruen5wfa-uk.a.run.app).
-// src/gendirect.ts does the same for beta at start-up, so the image alone moves studio-beta.
-const genDirect = flag('gen-direct', beta ? 'https://gen-beta-388576319982.us-central1.run.app' : genUrl).replace(/\/+$/, '') || genUrl;
+// Both lanes by default (live: https://gen-f6ruen5wfa-uk.a.run.app). src/gendirect.ts does the same at start-up for
+// either lane, so the image CI deploys moves a service that still has the public name in HAWKESGEN_URL.
+const genDirect = flag('gen-direct', beta ? 'https://gen-beta-388576319982.us-central1.run.app' : 'https://gen-f6ruen5wfa-uk.a.run.app').replace(/\/+$/, '') || genUrl;
 const publicUrl = flag('public-url', beta ? 'https://studio-beta.hawkesgen.ai' : 'https://studio.hawkesgen.ai').replace(/\/+$/, '');
 const emails = flag('google-emails', 'piercehawkes3@gmail.com');
 const P = `--project=${project}`;
