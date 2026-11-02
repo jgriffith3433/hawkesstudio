@@ -122,7 +122,9 @@ jobs:
             sum "Then put the value in this repo's (or the owning repo's) production environment and run its ops-secret-put with $NAME added to its list." ;;
           net-access)
             P=hawkes-prod
-            net=$(gcloud compute instances describe hawkes-net --zone=us-east4-c --project $P --format='value(networkInterfaces[0].network.basename())')
+            # ops-admin can read firewall rules but not instances: take the network from the VMs' own 80/443 rule.
+            net=$(gcloud compute firewall-rules list --project $P --filter='targetTags:hawkes-web' --format='value(network.basename())' --limit=1)
+            [ -n "$net" ] || { echo "no firewall rule targets tag hawkes-web in $P"; exit 1; }
             sum "- Hawkes Net VMs are on network $net (tag hawkes-web)"
             if have gcloud compute firewall-rules describe hawkes-ssh-iap --project $P; then sum "- firewall hawkes-ssh-iap exists"
             else do_ gcloud compute firewall-rules create hawkes-ssh-iap --project $P --network="$net" --direction=INGRESS --action=ALLOW \
