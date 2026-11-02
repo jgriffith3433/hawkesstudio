@@ -249,7 +249,10 @@ console.error('a warning'); process.exit(3);
   assert.equal(sawSpec.env.GITHUB_TOKEN, undefined);
   assert.equal(bucket.has(`jobs/${rec.unit}/spec.json`), false);
   // Back in Studio's workspace: the job's commit on the same branch, its files, its deletion, its session.
-  assert.equal(git(cwd, 'log', '-1', '--format=%s'), 'job commit');
+  // The files the pass left uncommitted (new.txt, gone.txt's deletion) were committed by the job itself, on top of its own.
+  assert.equal(git(cwd, 'log', '-2', '--format=%s').split('\n')[1], 'job commit');
+  assert.match(git(cwd, 'log', '-1', '--format=%s'), /agent's pass/);
+  assert.equal(git(cwd, 'status', '--porcelain', '--', '.', ':(exclude).hawkes'), '', 'nothing is left uncommitted');
   assert.equal(git(cwd, 'rev-parse', '--abbrev-ref', 'HEAD'), 'task/c1');
   assert.equal(fs.readFileSync(path.join(cwd, 'a.txt'), 'utf8'), 'from the job\n');
   assert.equal(fs.readFileSync(path.join(cwd, 'new.txt'), 'utf8'), 'untracked from the job\n');

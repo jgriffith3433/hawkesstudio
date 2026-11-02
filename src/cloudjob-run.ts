@@ -27,7 +27,7 @@ type Store = Pick<JobRunner, 'put' | 'get' | 'list' | 'remove'>;
 // files unless the spec asks (`lfs`), so a big repo (a Unity project of GBs) is never pulled whole; `partial: false` asks
 // for a full clone (Studio's spec for a small repo, so the pass can read any old file without a token).
 // tokenAt: when Studio minted `token`; refresh: where and with which job key to ask for a fresh one (jobgit.ts).
-type JobGit = { head: string; branch: string; remote: string; bundle: boolean; token: string | null; tokenAt?: number; refresh?: { url: string; key: string }; shallow?: boolean; partial?: boolean; lfs?: boolean };
+type JobGit = { head: string; branch: string; remote: string; bundle: boolean; token: string | null; tokenAt?: number; refresh?: { url: string; key: string }; shallow?: boolean; partial?: boolean; lfs?: boolean; commitDirty?: boolean };
 type Spec = { kind?: 'build'; outputs?: string[]; file: string; args: string[]; cwd: string; env: Record<string, string>; sessions: string; git: JobGit | null; flushMs?: number; repos?: ExtraRepo[] };
 /** A read-only copy of another of the Studio's repos, next to the worktree (access.ts extraReposFor). */
 type ExtraRepo = { slug: string; remote: string; token: string | null; dir: string };
@@ -204,6 +204,23 @@ export function cloneExtra(r: ExtraRepo, at: (p: string) => string, log: (s: str
   return true;
 }
 
+/**
+ * An agent's pass that ended with files edited but not committed (its `git commit` refused, or the session cut off): the
+ * job commits them, so the work travels back in out.bundle and reaches the branch whatever the big repo's worktree does
+ * with loose files (2026-11-02: every Unity agent change came back "no commit"). The agent's .hawkes/ notes are excluded
+ * from git. True when a commit was made.
+ */
+export function commitLeftovers(cwd: string, log: (s: string) => void, message = 'Work from the agent\'s pass') {
+  if (!fs.existsSync(path.join(cwd, '.git'))) return false;
+  const dirty = git(cwd, ['status', '--porcelain']).out;
+  if (!dirty) return false;
+  const add = git(cwd, ['add', '-A']);
+  const c = add.ok && git(cwd, ['-c', 'user.name=Hawkes Studio', '-c', 'user.email=studio@hawkesgen.ai', '-c', 'core.hooksPath=/dev/null', 'commit', '--quiet', '--no-verify', '-m', `${message}\n\nCommitted by Hawkes Studio's job: the agent left these changes uncommitted.`]);
+  if (!add.ok || !c || !c.ok) { log(`[job] couldn't commit the agent's leftover changes: ${(add.ok ? c && c.err : add.err) || ''}`.slice(0, 300)); return false; }
+  log(`[job] committed the agent's leftover changes (${dirty.split('\n').length} file(s))`);
+  return true;
+}
+
 /** What the pass did: its new commits (a bundle), its uncommitted files and the session folder. */
 export function collect(spec: Spec, start: string | null, tmp: string, at: (p: string) => string = (p) => p) {
   const cwd = at(spec.cwd);
@@ -349,6 +366,7 @@ export async function runUnit(unit: string, store: Store, { every = 2000, at = (
     return error ? 1 : 0;
   }
   try {
+    if (spec.git?.commitDirty && !error) commitLeftovers(at(spec.cwd), say);
     const out = collect(spec, start, tmp, at);
     if (out.bundle) await store.put(key('out/out.bundle'), fs.readFileSync(out.bundle));
     await store.put(key('out/out.pack'), out.pack);
