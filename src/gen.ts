@@ -20,8 +20,8 @@ export const genEvents = new GenEvents(() => gen);
 // id) becomes org_<hex>.<game> on the way to Gen (HAWKESGEN_PROJECT_PREFIX, set by the control plane). J's Studio: as is.
 const PREFIX = process.env.HAWKESGEN_PROJECT_PREFIX?.trim() || '';
 export const genProject = (p: unknown) => (PREFIX && typeof p === 'string' && p && !p.startsWith(PREFIX) && p !== PREFIX.slice(0, -1) ? `${PREFIX}${p}` : p);
-const scoped = (b: any): any => {
-  if (!b || typeof b !== 'object' || Buffer.isBuffer(b)) return b;
+export const scoped = (b: any): any => {
+  if (!b || typeof b !== 'object' || ArrayBuffer.isView(b) || b instanceof ArrayBuffer || (typeof Blob !== 'undefined' && b instanceof Blob)) return b;
   if (Array.isArray(b)) return b.map(scoped);
   const out: any = { ...b };
   if ('project' in out) out.project = genProject(out.project);
