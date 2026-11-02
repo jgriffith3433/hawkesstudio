@@ -19,6 +19,7 @@ import { lfsPull } from './lfs.ts';
 import { briefSection, recordRun } from './memory.ts';
 import { roleArgs } from './roles.ts';
 import { spawnClaude } from './sandbox.ts';
+import { addWorktree } from './worktree.ts';
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS scouts (
@@ -69,7 +70,7 @@ async function run(id: string, top: string, base: string, opts: { brief?: string
   try {
     await gitAsync(repo, ['fetch', '--quiet', 'origin']);
     const ref = git(repo, ['rev-parse', '--verify', `origin/${base}`]).ok ? `origin/${base}` : 'origin/main';
-    const w = git(repo, ['worktree', 'add', '--detach', wt, ref]);
+    const w = await addWorktree(repo, wt, ['--detach', wt, ref], gitAsync, { removeLeftover: true, log: (m) => set(id, { detail: m }) });
     if (!w.ok) throw new Error(`worktree: ${w.err}`);
     await lfsPull(wt);
     set(id, { detail: `reading ${top} (${ref})` });

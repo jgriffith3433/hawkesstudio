@@ -67,7 +67,7 @@ export function git(cwd: string, args: string[], timeoutMs = 10 * 60_000) {
   // A "quick" read that wasn't (git status on a Unity site copy with a big build takes seconds): name it, so it moves to gitAsync.
   const ms = Date.now() - t0;
   if (ms > 300) console.warn(`[studio] synchronous git ${args.slice(0, 3).join(' ')} in ${path.basename(cwd)} held Studio for ${ms} ms: use gitAsync`);
-  return { ok: r.status === 0, out: (r.stdout ?? '').trim(), err: (r.stderr ?? r.error?.message ?? '').trim() };
+  return { ok: r.status === 0, out: (r.stdout ?? '').trim(), err: ((r.stderr ?? r.error?.message ?? '').trim() || (r.status === 0 ? '' : `git exited ${r.signal ? `by signal ${r.signal}` : `with code ${r.status}`}`)) };
 }
 const SLOW = new Set(['fetch', 'push', 'clone', 'pull']);
 /**
@@ -159,7 +159,7 @@ function runGit(cwd: string, args: string[], timeoutMs: number, extraEnv: Record
     child.stdout.on('data', (d) => { out += d; if (out.length > 64 * 1024 * 1024) out = out.slice(-32 * 1024 * 1024); });
     child.stderr.on('data', (d) => { err += d; if (err.length > 1_000_000) err = err.slice(-500_000); });
     child.on('error', (e) => finish({ ok: false, out, err: e.message }));
-    child.on('close', (code) => finish({ ok: code === 0, out, err }));
+    child.on('close', (code, signal) => finish({ ok: code === 0, out, err: code === 0 ? err : `${err.trim()}${err.trim() ? '\n' : ''}git exited ${signal ? `by signal ${signal}` : `with code ${code}`}` }));
     const timer = setTimeout(() => {
       child.kill('SIGKILL');
       finish({ ok: false, out, err: `${err}\ntimed out after ${Math.round(timeoutMs / 1000)} s` });

@@ -58,6 +58,7 @@ import { serveDir, stopServed } from './local.ts';
 import { claudeEnv } from './claude.ts';
 import { buildPreview, removePreview, previewUrl, changeSiteDir, changeBuild, type ChangeBuild } from './previews.ts';
 import { BETA, ensureBeta, gitAsync } from './beta.ts';
+import { addWorktree } from './worktree.ts';
 import { saveWork, restoreBranch, catchUpWorktree } from './savework.ts';
 import { lfsPull } from './lfs.ts';
 import { runCommand, resumeGapMs, RESTART_LOOP, RESTART_WINDOW_MS } from './ops.ts';
@@ -725,7 +726,7 @@ export function remakeWorktree(id: string): Promise<boolean> {
       const restored = await restoreBranch(repoDir, c.branch);
       if (restored) addLog(id, restored);
       const has = git(repoDir, ['rev-parse', '--verify', '--quiet', `refs/heads/${c.branch}`]).ok;
-      const w = await gitAsync(repoDir, ['worktree', 'add', ...(has ? [c.worktree, c.branch] : ['-b', c.branch, c.worktree, `origin/${c.base}`])]);
+      const w = await addWorktree(repoDir, c.worktree, has ? [c.worktree, c.branch] : ['-b', c.branch, c.worktree, `origin/${c.base}`], gitAsync, { removeLeftover: !fs.existsSync(path.join(c.worktree, '.git')), log: (m) => addLog(id, m) });
       if (!w.ok) throw new Error(`worktree failed: ${w.err}`);
       addLog(id, `worktree missing after a Studio restart: made again from ${has ? c.branch : `origin/${c.base}`}; the agent's job brings its work into it`);
       return true;
@@ -1719,7 +1720,7 @@ async function work(id: string, note?: string, answer?: string, resumed?: Phase 
           const restored = await restoreBranch(repoDir, c.branch);
           if (restored) addLog(id, restored);
           const has = git(repoDir, ['rev-parse', '--verify', '--quiet', `refs/heads/${c.branch}`]).ok;
-          const w = await gitAsync(repoDir, ['worktree', 'add', ...(has ? [] : ['-b']), ...(has ? [c.worktree, c.branch] : [c.branch, c.worktree, `origin/${c.base}`])]);
+          const w = await addWorktree(repoDir, c.worktree, has ? [c.worktree, c.branch] : ['-b', c.branch, c.worktree, `origin/${c.base}`], gitAsync, { removeLeftover: !fs.existsSync(path.join(c.worktree, '.git')), log: (m) => addLog(id, m) });
           if (!w.ok) throw new Error(`worktree failed: ${w.err}`);
         }));
         // A warm start: node_modules from a checkout installed for the same lockfile (warm.ts), else a fresh npm ci.
@@ -2309,7 +2310,7 @@ async function workInfra(id: string, note?: string, resumed?: Phase | null, nudg
           if (!f.ok) throw new Error(`fetch failed: ${f.err}`);
           git(repoDir, ['worktree', 'prune']);
           const has = git(repoDir, ['rev-parse', '--verify', '--quiet', `refs/heads/${c.branch}`]).ok;
-          const w = await gitAsync(repoDir, ['worktree', 'add', ...(has ? [c.worktree, c.branch] : ['-b', c.branch, c.worktree, `origin/${c.base}`])]);
+          const w = await addWorktree(repoDir, c.worktree, has ? [c.worktree, c.branch] : ['-b', c.branch, c.worktree, `origin/${c.base}`], gitAsync, { removeLeftover: !fs.existsSync(path.join(c.worktree, '.git')), log: (m) => addLog(id, m) });
           if (!w.ok) throw new Error(`worktree failed: ${w.err}`);
           // A warm start: node_modules from a checkout with the same lockfile (warm.ts), not a fresh npm ci.
           await warmDeps(c.worktree, c.repo, (s) => addLog(id, s));
