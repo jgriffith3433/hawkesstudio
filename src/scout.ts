@@ -31,16 +31,38 @@ db.exec(`
 `);
 // Later columns (a table made before them gets them added): the Claude session (follow-ups resume it), the turns used so
 // far, the last steps (live progress in Activity), and the scout this one re-runs.
-for (const col of ['session TEXT', 'turns INTEGER DEFAULT 0', 'log TEXT', 'retry_of TEXT']) {
+for (const col of ['session TEXT', 'turns INTEGER DEFAULT 0', 'log TEXT', 'retry_of TEXT', 'dismissed INTEGER']) {
   try { db.exec(`ALTER TABLE scouts ADD COLUMN ${col}`); } catch { /* already there */ }
 }
 
-export type Scout = { id: string; product: string; question: string; status: string; detail: string | null; report: string | null; origin: string | null; cost: number; created: number; finished: number | null; session?: string | null; turns?: number | null; log?: string | null; retry_of?: string | null };
+export type Scout = { id: string; product: string; question: string; status: string; detail: string | null; report: string | null; origin: string | null; cost: number; created: number; finished: number | null; session?: string | null; turns?: number | null; log?: string | null; retry_of?: string | null; dismissed?: number | null };
 /** A scout with its log as a list and who cancelled it (the same shape through the API, studio_scout and Activity). */
 const view = (x: Scout | undefined) => (x ? { ...x, log: ((): string[] => { try { return JSON.parse(x.log ?? '[]'); } catch { return []; } })(), cancelled: x.status === 'cancelled' ? cancelNote(`scout:${x.id}`) : null, model: process.env.SCOUT_MODEL ?? roleArgs('scout').role.model ?? null } : null);
 export const getScout = (id: string) => (db.prepare('SELECT * FROM scouts WHERE id = ?').get(id) as Scout | undefined) ?? null;
 export const getScoutView = (id: string) => view(getScout(id)!);
 export const listScouts = (limit = 30) => db.prepare('SELECT id, product, question, status, detail, cost, turns, created, finished, retry_of FROM scouts ORDER BY created DESC LIMIT ?').all(limit) as Scout[];
+
+/** Failed scouts older than this drop out of the default Activity list by themselves (still under "Show dismissed"). */
+export const FAILED_HIDE_MS = 24 * 3_600_000;
+/** Dismissing hides a finished scout from Activity (stored here, so every device agrees; the row, report and cost stay). Never a running one. */
+export function dismissScout(id: string, now = Date.now()) {
+  const x = getScout(id);
+  if (!x) throw new Error(`No such scout ${id}`);
+  if (x.status === 'running') throw new Error(`Scout ${id} is still running: cancel it first`);
+  db.prepare('UPDATE scouts SET dismissed = ? WHERE id = ?').run(now, id);
+  return getScout(id)!;
+}
+export function restoreScout(id: string) {
+  if (!getScout(id)) throw new Error(`No such scout ${id}`);
+  db.prepare('UPDATE scouts SET dismissed = NULL WHERE id = ?').run(id);
+  return getScout(id)!;
+}
+/** "Clear failed": dismisses every failed scout not already dismissed. Returns their ids. */
+export function clearFailedScouts(now = Date.now()) {
+  const ids = (db.prepare("SELECT id FROM scouts WHERE status = 'failed' AND dismissed IS NULL").all() as { id: string }[]).map((r) => r.id);
+  db.prepare("UPDATE scouts SET dismissed = ? WHERE status = 'failed' AND dismissed IS NULL").run(now);
+  return ids;
+}
 const set = (id: string, patch: Partial<Scout>) => {
   const cur = getScout(id)!;
   const n = { ...cur, ...patch };
