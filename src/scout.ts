@@ -20,6 +20,7 @@ import { briefSection, recordRun } from './memory.ts';
 import { roleArgs } from './roles.ts';
 import { spawnClaude } from './sandbox.ts';
 import { addWorktree } from './worktree.ts';
+import { syncRepo } from './repos.ts';
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS scouts (
@@ -42,12 +43,14 @@ const git = (cwd: string, args: string[]) => {
   return { ok: r.status === 0, out: (r.stdout ?? '').trim(), err: (r.stderr ?? '').trim() };
 };
 let active = 0;
+/** A scout never runs longer than this: it is stopped and reports what it had written so far (scoutReport). */
+export const SCOUT_WALL_MIN = Number(process.env.STUDIO_SCOUT_WALL_MIN) || 15;
 // Scouts kept ending in error_max_turns with no report (2026-11-02); this beats Settings' tuning caps (20-40) for scouts.
 const SCOUT_MAX_TURNS = 100;
 
 /** What a scout's stream-json output said, line by line (feedScoutLine), so a run that ends without a report still says why. */
-export type ScoutStream = { result: string; cost: number; ok: boolean; subtype: string; isError: boolean; turns: number; sawResult: boolean; said: string[]; code: number | null; err: string };
-export const newScoutStream = (): ScoutStream => ({ result: '', cost: 0, ok: false, subtype: '', isError: false, turns: 0, sawResult: false, said: [], code: null, err: '' });
+export type ScoutStream = { result: string; cost: number; ok: boolean; subtype: string; isError: boolean; turns: number; sawResult: boolean; said: string[]; code: number | null; err: string; timedOut: boolean };
+export const newScoutStream = (): ScoutStream => ({ result: '', cost: 0, ok: false, subtype: '', isError: false, turns: 0, sawResult: false, said: [], code: null, err: '', timedOut: false });
 export function feedScoutLine(st: ScoutStream, m: any, onTool?: (detail: string) => void) {
   if (m?.type === 'assistant') {
     for (const part of m.message?.content ?? []) {
@@ -67,7 +70,7 @@ export function feedScoutLine(st: ScoutStream, m: any, onTool?: (detail: string)
 }
 /** Why a scout has no (full) report: the result's subtype, turns, exit code and the end of stderr. */
 export function scoutWhy(st: ScoutStream) {
-  const parts = [st.sawResult ? `${st.subtype || 'result'}${st.isError ? ' (is_error)' : ''}${st.turns ? ` after ${st.turns} turns` : ''}` : 'no result message'];
+  const parts = st.timedOut ? [`stopped after ${SCOUT_WALL_MIN} min (wall-clock limit)`] : [st.sawResult ? `${st.subtype || 'result'}${st.isError ? ' (is_error)' : ''}${st.turns ? ` after ${st.turns} turns` : ''}` : 'no result message'];
   if (st.code !== null) parts.push(`exit ${st.code}`);
   const tail = st.err.trim().split('\n').slice(-3).join(' | ').slice(-200);
   if (tail) parts.push(`stderr: ${tail}`);
@@ -81,6 +84,24 @@ export function scoutReport(st: ScoutStream) {
   if (text.length <= 40 && said.length > 40) return { text: `**Partial report** (the scout stopped early: ${scoutWhy(st)}). This is what it had written so far:\n\n${said}`, partial: true };
   return { text, partial: false };
 }
+
+/**
+ * Scouts left 'running' by a restart (nothing in this process runs them: x_15ed2881de77 showed 40+ min at $0) are
+ * failed with a plain reason, and their scratch worktrees (.work/scout-*) are removed. Run once at start-up.
+ */
+export function sweepScouts(now = Date.now(), maxMin = SCOUT_WALL_MIN + 5) {
+  const stale = db.prepare("SELECT id FROM scouts WHERE status = 'running' AND created < ?").all(now - maxMin * 60_000) as { id: string }[];
+  for (const { id } of stale) set(id, { status: 'failed', detail: `lost: still running after ${maxMin} min with nothing working on it (Studio restarted?)`, finished: now });
+  const work = path.join(PROJECTS, '.work');
+  const running = new Set((db.prepare("SELECT id FROM scouts WHERE status = 'running'").all() as { id: string }[]).map((r) => r.id));
+  try {
+    for (const d of fs.readdirSync(work)) {
+      if (d.startsWith('scout-') && !running.has(d.slice(6))) fs.rmSync(path.join(work, d), { recursive: true, force: true });
+    }
+  } catch { /* no .work yet */ }
+  return stale.map((r) => r.id);
+}
+try { sweepScouts(); } catch { /* the table or folder isn't there yet */ }
 
 /**
  * opts.brief: the scout's instructions instead of "what would it take" (the PM's diagnosis of a task that failed its
@@ -107,10 +128,19 @@ async function run(id: string, top: string, base: string, opts: { brief?: string
   const repo = path.join(PROJECTS, top);
   const wt = path.join(PROJECTS, '.work', `scout-${id}`);
   try {
+    // No checkout yet (a fresh server, a repo added since): clone it first instead of failing with git's "not a repository".
+    if (!fs.existsSync(path.join(repo, '.git'))) {
+      const slug = repoMap()[top];
+      if (!slug) throw new Error(`worktree: no checkout of ${top} and products.json has no GitHub repo for it`);
+      set(id, { detail: `cloning ${top}` });
+      const sync = await syncRepo(top, slug, base);
+      if (sync.action === 'failed' || !fs.existsSync(path.join(repo, '.git'))) throw new Error(`worktree: couldn't clone ${top}: ${sync.detail}`);
+    }
+    fs.mkdirSync(path.dirname(wt), { recursive: true });
     await gitAsync(repo, ['fetch', '--quiet', 'origin']);
     const ref = git(repo, ['rev-parse', '--verify', `origin/${base}`]).ok ? `origin/${base}` : 'origin/main';
     const w = await addWorktree(repo, wt, ['--detach', wt, ref], gitAsync, { removeLeftover: true, log: (m) => set(id, { detail: m }) });
-    if (!w.ok) throw new Error(`worktree: ${w.err}`);
+    if (!w.ok) throw new Error(`worktree: ${w.err || 'git gave no message'} (repo ${repo}, exit ${w.ok ? 0 : 'non-zero'})`);
     await lfsPull(wt);
     set(id, { detail: `reading ${top} (${ref})` });
     const story = isInfra(s.product) ? '' : storyOf(getProduct(s.product), 4000);
@@ -146,7 +176,7 @@ ${mem.text ? `\n${mem.text}` : ''}${story ? `\nThe product's story, for tone:\n$
       const st = newScoutStream();
       let buf = '';
       child.stderr.on('data', (d) => (st.err = `${st.err}${d}`.slice(-8000)));
-      const timer = setTimeout(() => child.kill('SIGTERM'), 30 * 60_000);
+      const timer = setTimeout(() => { st.timedOut = true; child.kill('SIGTERM'); }, SCOUT_WALL_MIN * 60_000);
       child.stdout.on('data', (d) => {
         buf += d;
         let i;
@@ -169,7 +199,7 @@ ${mem.text ? `\n${mem.text}` : ''}${story ? `\nThe product's story, for tone:\n$
     const detail = stop ? `the harness stopped the scout: ${stop.line.slice(0, 200)}` : ok ? (full.partial ? `partial report: ${scoutWhy(r)}`.slice(0, 400) : 'reported') : `no report: ${scoutWhy(r)}`.slice(0, 400);
     set(id, { status: ok ? 'done' : 'failed', detail, report: ok ? text : null, cost: r.cost, finished: Date.now() });
   } catch (e: any) {
-    set(id, { status: 'failed', detail: String(e.message ?? e).slice(0, 300), finished: Date.now() });
+    set(id, { status: 'failed', detail: String(e.message ?? e).slice(0, 600), finished: Date.now() });
   } finally {
     git(repo, ['worktree', 'remove', '--force', wt]);
     fs.rmSync(wt, { recursive: true, force: true });

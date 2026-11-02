@@ -51,3 +51,14 @@ test('a normal result is the report, not partial', () => {
   assert.equal(r.partial, false);
   assert.match(r.text, /What's there now/);
 });
+
+test('a scout stopped by the wall-clock limit reports what it wrote and says why', async () => {
+  const { newScoutStream, feedScoutLine, scoutReport, scoutWhy } = await import('../src/scout.ts');
+  const st = newScoutStream();
+  feedScoutLine(st, { type: 'assistant', message: { content: [{ type: 'text', text: 'Found the relevant code in src/a.ts and src/b.ts; it would take two tasks.' }] } });
+  st.timedOut = true;
+  assert.match(scoutWhy(st), /wall-clock/);
+  const r = scoutReport(st);
+  assert.ok(r.partial);
+  assert.match(r.text, /two tasks/);
+});
