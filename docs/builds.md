@@ -38,7 +38,7 @@ What builds it (the runner) follows from `tool`:
   has an image for; otherwise the build fails saying which versions exist. Plan feature `cloudBuilds`.
   The build is Gen's work: a Studio restart (every deploy rolls the cells) re-attaches to the same Gen job and doesn't count
   toward the restart limits until that job is done, and a build whose token Gen lost (Gen restarted, or it expired) is
-  submitted once more with a fresh token. `machine` picks Gen's build machine (s 2 vCPU / 8 GiB, m 4 / 16, l 6 / 24, xl
+  submitted again with a freshly minted token (up to twice; each is a new Gen job). A build still "building" that nothing is going to finish (its run is gone, or it passed 4 hours: `STUDIO_BUILD_MAX_MS`) is settled from Gen's word on its job (done, failed, or cancelled and marked timed out) when Studio starts, when a build of that project starts, and when Gen says a Unity build ended (builds.ts `reconcileBuilds`; no timer). `machine` picks Gen's build machine (s 2 vCPU / 8 GiB, m 4 / 16, l 6 / 24, xl
   8 / 32; Gen's default m, half of xl's price); a build that runs out of memory is built again a size up, and Studio saves
   that size as the build's own (`config.ts setBuildMachine`: the project's builds, or for products.json an override in
   `build-overrides.json`) with a line in the build's history ("ran on l after m ran out of memory; saved l ...").

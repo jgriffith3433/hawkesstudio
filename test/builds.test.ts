@@ -441,3 +441,120 @@ test("a build waiting on its Gen job survives Studio's restarts: not counted, an
   db.prepare("UPDATE builds SET status = 'building', gen_done = ? WHERE id = 'b_gen'").run(Date.now());
   assert.equal(P.waitingInGen('r_gen'), false);
 });
+
+const GONE = 'The GitHub token for this build is gone (Gen restarted, or it expired): submit the build again with a fresh token';
+
+test('a Unity build that loses its token twice is submitted again each time with a fresh one, and is ready on the third', async () => {
+  const { db } = await import('../src/db.ts');
+  C.saveProduct({ id: 'game-token2', name: 'Game token 2', engine: 'unity', repo: 'acme/game', builds: [{ id: 'web', tool: 'unity', path: 'Game', playtest: false }] } as any);
+  const before = globalThis.fetch;
+  let posts = 0;
+  const tokens: string[] = [];
+  globalThis.fetch = (async (input: any, init: any = {}) => {
+    const u = new URL(String(input instanceof Request ? input.url : input));
+    if (u.host === 'gen.test' && u.pathname === '/v1/jobs' && init.method === 'POST' && posts < 2) {
+      const body = JSON.parse(String(init.body)); genCalls.push(body); tokens.push(JSON.stringify(body));
+      return Response.json({ jobs: [{ id: `j_gone${++posts}`, status: 'queued' }] });
+    }
+    if (u.host === 'gen.test' && /^\/v1\/jobs\/j_gone\d$/.test(u.pathname)) return Response.json({ id: u.pathname.split('/').pop(), status: 'failed', error: GONE });
+    if (u.host === 'gen.test' && u.pathname === '/v1/jobs' && init.method === 'POST') posts++;
+    return before(input, init);
+  }) as typeof fetch;
+  try {
+    const r = (await B.startBuild('game-token2', {}))!;
+    await r.done;
+    const run = await runOf(r.id);
+    assert.equal(run.status, 'done', JSON.stringify(run.steps.map((s: any) => s.detail)));
+    assert.equal(posts, 3, 'submitted three times: two lost tokens, then a good one');
+    assert.equal((db.prepare("SELECT status FROM builds WHERE product = 'game-token2'").get() as any).status, 'ready');
+  } finally {
+    globalThis.fetch = before;
+  }
+});
+
+test('a Unity build whose token keeps getting lost stops after TOKEN_RETRIES resubmits, with the reason', async () => {
+  const { db } = await import('../src/db.ts');
+  C.saveProduct({ id: 'game-token3', name: 'Game token 3', engine: 'unity', repo: 'acme/game', builds: [{ id: 'web', tool: 'unity', path: 'Game', playtest: false }] } as any);
+  const before = globalThis.fetch;
+  let posts = 0;
+  globalThis.fetch = (async (input: any, init: any = {}) => {
+    const u = new URL(String(input instanceof Request ? input.url : input));
+    if (u.host === 'gen.test' && u.pathname === '/v1/jobs' && init.method === 'POST') return Response.json({ jobs: [{ id: `j_never${++posts}`, status: 'queued' }] });
+    if (u.host === 'gen.test' && /^\/v1\/jobs\/j_never\d$/.test(u.pathname)) return Response.json({ id: u.pathname.split('/').pop(), status: 'failed', error: GONE });
+    return before(input, init);
+  }) as typeof fetch;
+  try {
+    const r = (await B.startBuild('game-token3', {}))!;
+    await r.done;
+    assert.equal(posts, B.TOKEN_RETRIES + 1);
+    const row = db.prepare("SELECT status, detail FROM builds WHERE product = 'game-token3'").get() as any;
+    assert.equal(row.status, 'failed');
+    assert.match(row.detail, /token for this build is gone/);
+  } finally {
+    globalThis.fetch = before;
+  }
+});
+
+test('a build left "building" with its run gone is settled from Gen\'s word on the job; one with a live run is left alone', async () => {
+  const { db } = await import('../src/db.ts');
+  const now = Date.now();
+  const run = (id: string, status: string) => db.prepare("INSERT INTO runs (id, kind, status, detail, products, options, started) VALUES (?, 'build', ?, '', '[\"game-rec\"]', '{}', ?)").run(id, status, now - 20 * 3600_000);
+  const row = (id: string, version: number, runId: string, job: string | null, started = now - 12 * 3600_000) => db.prepare("INSERT INTO builds (id, product, build, version, status, sha, ref, runner, target, run, gen_job, started) VALUES (?, 'game-rec', 'web', ?, 'building', ?, 'beta', 'gen', 'web', ?, ?, ?)").run(id, version, SHA1, runId, job, started);
+  run('r_rec_stopped', 'failed'); run('r_rec_live', 'running');
+  row('b_rec_failed', 1, 'r_rec_stopped', 'j_rec_failed');
+  row('b_rec_done', 2, 'r_rec_stopped', 'j_rec_done');
+  row('b_rec_going', 3, 'r_rec_stopped', 'j_rec_going', now - 3600_000);
+  row('b_rec_nojob', 4, 'r_rec_stopped', null);
+  row('b_rec_gone', 5, 'r_rec_stopped', 'j_rec_gone');
+  row('b_rec_down', 6, 'r_rec_stopped', 'j_rec_down');
+  row('b_rec_live', 7, 'r_rec_live', 'j_rec_live', now - 60_000);
+  row('b_rec_waiting', 8, 'r_rec_live', 'j_rec_waiting', now - 60_000);
+  const cancelled: string[] = [];
+  const jobs: Record<string, any> = { j_rec_failed: { status: 'failed', error: 'Unity exited with code 1' }, j_rec_done: { status: 'done' }, j_rec_going: { status: 'running' } };
+  const settled = await B.reconcileBuilds({
+    product: 'game-rec', now,
+    job: async (id) => { if (id === 'j_rec_gone') throw Object.assign(new Error('Not found'), { status: 404 }); if (id === 'j_rec_down') throw new Error('fetch failed'); return jobs[id]; },
+    cancel: async (id) => { cancelled.push(id); },
+  });
+  const st = (id: string) => db.prepare('SELECT status, detail, finished, gen_done FROM builds WHERE id = ?').get(id) as any;
+  assert.equal(st('b_rec_failed').status, 'failed');
+  assert.match(st('b_rec_failed').detail, /Unity build failed: Unity exited with code 1/);
+  assert.match(st('b_rec_done').detail, /finished job j_rec_done, but Studio stopped before publishing/);
+  assert.ok(st('b_rec_done').gen_done);
+  assert.match(st('b_rec_going').detail, /cancelled Gen job j_rec_going/);
+  assert.deepEqual(cancelled, ['j_rec_going']);
+  assert.match(st('b_rec_nojob').detail, /no Gen job to wait for/);
+  assert.match(st('b_rec_gone').detail, /doesn't know job j_rec_gone/);
+  assert.equal(st('b_rec_down').status, 'building', "Gen unreachable: left for the next look, not failed");
+  assert.equal(st('b_rec_live').status, 'building', 'its run is going: that run is waiting on the job');
+  assert.equal(st('b_rec_waiting').status, 'building');
+  assert.equal(settled.length, 5);
+});
+
+test('a build "building" past the maximum is timed out and its Gen job cancelled, even when its run says it is running', async () => {
+  const { db } = await import('../src/db.ts');
+  const now = Date.now();
+  db.prepare("INSERT INTO runs (id, kind, status, detail, products, options, started) VALUES ('r_old', 'build', 'running', '', '[\"game-old\"]', '{}', ?)").run(now - 13 * 3600_000);
+  db.prepare("INSERT INTO builds (id, product, build, version, status, sha, ref, runner, target, run, gen_job, started) VALUES ('b_83380d6285d9', 'game-old', 'web', 1, 'building', ?, 'beta', 'gen', 'web', 'r_old', 'j_4de531be674c', ?)").run(SHA1, now - 13 * 3600_000);
+  const cancelled: string[] = [];
+  const settled = await B.reconcileBuilds({ now, only: 'j_4de531be674c', job: async () => ({ status: 'running' }), cancel: async (id) => { cancelled.push(id); } });
+  assert.equal(settled.length, 1);
+  const r = db.prepare("SELECT status, detail, finished FROM builds WHERE id = 'b_83380d6285d9'").get() as any;
+  assert.equal(r.status, 'failed');
+  assert.match(r.detail, /timed out after 13 h in Hawkes Gen/);
+  assert.ok(r.finished);
+  assert.deepEqual(cancelled, ['j_4de531be674c']);
+  // Settled once: nothing left to do.
+  assert.equal((await B.reconcileBuilds({ now, job: async () => { throw new Error('asked again'); } })).filter((x) => x.job === 'j_4de531be674c').length, 0);
+});
+
+test('starting a build settles a stuck row of the same project first, so it never stands in its way', async () => {
+  const { db } = await import('../src/db.ts');
+  C.saveProduct({ id: 'game-stuck', name: 'Game stuck', engine: 'unity', repo: 'acme/game', builds: [{ id: 'web', tool: 'unity', path: 'Game', playtest: false }] } as any);
+  db.prepare("INSERT INTO runs (id, kind, status, detail, products, options, started) VALUES ('r_s', 'build', 'interrupted', '', '[\"game-stuck\"]', '{}', ?)").run(Date.now() - 3600_000);
+  db.prepare("INSERT INTO builds (id, product, build, version, status, sha, ref, runner, target, run, started) VALUES ('b_s', 'game-stuck', 'web', 1, 'building', ?, 'beta', 'gen', 'web', 'r_s', ?)").run(SHA1, Date.now() - 3600_000);
+  const r = (await B.startBuild('game-stuck', {}))!;
+  await r.done;
+  assert.match((db.prepare("SELECT detail FROM builds WHERE id = 'b_s'").get() as any).detail, /stopped: its run interrupted/);
+  assert.equal((await runOf(r.id)).status, 'done');
+});
