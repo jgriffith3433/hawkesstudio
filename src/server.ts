@@ -381,9 +381,10 @@ const server = http.createServer(async (req, res) => {
     if (route === '/api/playtests/live/stream' && method === 'GET') {
       const { serveFeed } = await import('./feeds.ts');
       const job = /^j_[0-9a-f]+$/.test(q('job') ?? '') ? q('job') : null;
-      if (job) return serveFeed(req, res, `playtest:${job}`, { everyMs: 2000, read: async () => ({ job, ...(await gen.request(`/jobs/${job}/live`)) }), done: (v) => !v?.error && v?.live == null });
-      const { livePlaytests } = await import('./livetests.ts');
-      return serveFeed(req, res, 'playtests', { everyMs: 2000, read: livePlaytests });
+      // Read when Hawkes Gen says a playtest job changed (livetests.ts followGen pokes these feeds), never on a timer.
+      const { livePlaytests, holdGenEvents } = await import('./livetests.ts');
+      if (job) return serveFeed(req, res, `playtest:${job}`, { hold: holdGenEvents, read: async () => ({ job, ...(await gen.request(`/jobs/${job}/live`)) }), done: (v) => !v?.error && v?.live == null });
+      return serveFeed(req, res, 'playtests', { hold: holdGenEvents, read: () => livePlaytests({ fresh: true }) });
     }
     // The Twitch show (broadcast.ts, dashboard/broadcast.html): curated playtest, roadmap and agent titles.
     if (route === '/api/broadcast' && method === 'GET') return send(res, 200, await (await import('./broadcast.ts')).broadcastNow({ product: q('product') || undefined }));

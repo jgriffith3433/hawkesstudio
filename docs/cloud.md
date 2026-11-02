@@ -301,7 +301,7 @@ turns at once (results wait for the running turn, and J's own message answers th
 **Activity** (`dashboard/activity.js`, `GET /api/activity`, `src/activity.ts`): the header's Activity button (its badge
 counts what is running) opens a drawer of everything in the background: agent changes (status, what they're doing now,
 time so far, who started them, log, PR, preview), Studio runs with their current steps, Hawkes Gen jobs, Talk answers in
-progress, and what finished in the last 15 minutes. It refreshes every 3 s; on a wide screen it sits beside the page.
+progress, and what finished in the last 15 minutes. It updates the moment something moves (pushed over /api/stream, no polling); on a wide screen it sits beside the page.
 The Changes tab refreshes itself every 5 s and keeps opened summaries and logs open.
 
 ## The agent loop

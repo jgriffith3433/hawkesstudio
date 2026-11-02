@@ -26,6 +26,31 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS findings_product ON findings(product, status);
 `);
 
+// Writes, reported (J, 2026-11-02: no polling): every insert/update/delete statement that ran tells the listeners which
+// table it wrote, so the push stream (stream.ts) learns that something moved without looking at the database on a timer.
+// Tables that change all the time without anything a page shows are left out.
+const NOISY = new Set(['resource_samples', 'access_log', 'signin_log', 'sessions', 'migrations', 'llm_fallbacks', 'pace_state', 'pace_days', 'gen_charges', 'cancellations', 'run_plan']);
+const writeListeners = new Set<(table: string) => void>();
+/** fn(table) after a statement wrote a table (not the noisy ones). Returns stop(). */
+export function onDbWrite(fn: (table: string) => void) {
+  writeListeners.add(fn);
+  return () => void writeListeners.delete(fn);
+}
+const WRITE = /^\s*(?:INSERT(?:\s+OR\s+\w+)?\s+INTO|REPLACE\s+INTO|UPDATE(?:\s+OR\s+\w+)?|DELETE\s+FROM)\s+["`]?([a-z_][a-z0-9_]*)/i;
+const prepare = db.prepare.bind(db);
+(db as any).prepare = (sql: string) => {
+  const st = prepare(sql);
+  const table = WRITE.exec(sql)?.[1]?.toLowerCase();
+  if (!table || NOISY.has(table)) return st;
+  const run = st.run.bind(st);
+  st.run = ((...args: any[]) => {
+    const r = (run as any)(...args);
+    for (const fn of writeListeners) try { fn(table); } catch { /* a listener never breaks a write */ }
+    return r;
+  }) as typeof st.run;
+  return st;
+};
+
 export const newId = (prefix: string) => `${prefix}_${crypto.randomBytes(6).toString('hex')}`;
 export const J = (v: unknown) => JSON.stringify(v ?? null);
 export const parse = (s: unknown) => {

@@ -417,19 +417,17 @@
       <div id="svcMsg" class="meta"></div>
     </div>`;
   }
-  let svcTimer = null;
-  async function watchRestart() {
-    clearInterval(svcTimer);
-    // Poll only while a restart is waiting or running; a Studio restart makes requests fail for a few seconds.
-    svcTimer = setInterval(async () => {
-      try {
-        services = await api('/api/services');
-        const box = $('#svcBox');
-        if (box) box.outerHTML = `<div id="svcBox">${servicesBox(services)}</div>`;
-        if (!services.pending) clearInterval(svcTimer);
-      } catch { /* Studio is restarting */ }
-    }, 3000);
-  }
+  // A restart waiting or running: the box updates when the push stream says something moved. Studio restarting drops the
+  // stream, and its reconnect refetches every topic once; Hawkes Gen coming back changes the activity panel (its `gen`
+  // flag). No timer (J, 2026-11-02: "Please stop implementing polling").
+  studioStream.on(['activity', 'ops', 'runs'], async (e) => {
+    if (e.badge || !services?.pending) return;
+    try {
+      services = await api('/api/services');
+      const box = $('#svcBox');
+      if (box) box.outerHTML = `<div id="svcBox">${servicesBox(services)}</div>`;
+    } catch { /* Studio is restarting: the reconnect asks again */ }
+  });
 
   // Customers' Studios (src/cells.ts), the platform admin's alone: who has which plan, and gift subscriptions (J,
   // 2026-10-31: "set which accounts are under which subscription"). Hidden when this isn't the control plane or the
@@ -507,7 +505,6 @@
     // A customer's Studio: Claude and every other provider they link, in one box (users.js mountAiCard).
     if (cu) api('/api/ai').then((ai) => window.mountAiCard?.($('#setAiBox'), ai)).catch(() => {});
     else mountCustomers($('#setCellsBox'));
-    if (services?.pending) watchRestart();
     if (data.call.engine === 'eleven') loadElevenVoices();
   }
   window.loadSettingsTab = loadSettingsTab;
@@ -619,7 +616,6 @@
         await api('/api/services/restart', { method: 'POST', body: { service: t.dataset.restart } });
         services = await api('/api/services');
         $('#svcBox').innerHTML = servicesBox(services);
-        watchRestart();
       } catch (err) {
         $('#svcMsg').innerHTML = `<span class="set-err">${esc(err.message)}</span>`;
         t.disabled = false;

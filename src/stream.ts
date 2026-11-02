@@ -3,14 +3,17 @@
 //
 // - talk: a conversation changed (a message, its status, an approval card, a guide batch): { ids, unseen } where
 //   unseen is the Talk tab's badge. Pushed by talk.ts, guide.ts and approvals.ts as it happens (coalesced briefly).
-// - activity { count }, inbox { count }, changes, runs, ops: from a watcher that runs only while a page is connected.
-//   It compares cheap signatures (a few database reads every 3 s; the activity panel's payload every 6 s, the Inbox every 12 s)
-//   and sends an event when one moved. poke() makes it look right away (an approval decided, a card asked for).
+// - activity { count }, inbox { count }, changes, runs, ops: from a watcher that looks only when something moved, and
+//   only while a page is connected. No timer: a database write (db.ts onDbWrite), a Hawkes Gen job event (genevents.ts)
+//   or poke() (an approval decided, a card asked for) schedules one look; it compares signatures and sends an event
+//   only for what actually changed. A page that nothing happens to receives nothing and asks for nothing.
 //
-// The page keeps a slow safety poll and reconnects with backoff, so a missed event costs a minute at most.
+// No safety tick on the page either (J, 2026-11-02: "Please stop implementing polling"): the browser reconnects a dropped
+// stream itself (`retry:`), and a reconnect makes every topic refetch once (dashboard/stream.js).
 
 import type http from 'node:http';
-import { db } from './db.ts';
+import { db, onDbWrite } from './db.ts';
+import { genEvents } from './gen.ts';
 
 type Event = { topic: string; [k: string]: unknown };
 const clients = new Set<http.ServerResponse>();
@@ -49,14 +52,14 @@ export type Probes = {
 let probes: Probes = {};
 export const setProbes = (p: Probes) => void (probes = p);
 
-const TICK_MS = () => Number(process.env.STUDIO_STREAM_TICK_MS ?? 3000);
 const last = new Map<string, string>();
 /** The newest counts, for a page that connects (its badges right away). */
 const counts: Record<string, number> = {};
-let ticks = 0;
-let watch: NodeJS.Timeout | null = null;
+let looking: NodeJS.Timeout | null = null;
 let busy = false;
 let again = false;
+let offWrites: (() => void) | null = null;
+let offGen: (() => void)[] = [];
 
 /** Fields that move every second without anything happening (durations, the time of the read). */
 const VOLATILE = new Set(['at', 'seconds', 'lastMinute', 'slow', 'stuck']);
@@ -79,29 +82,26 @@ function compare(topic: string, sig: string, extra: Record<string, unknown> = {}
   else if (before === undefined && 'count' in extra) broadcast({ topic, ...extra, badge: true });
 }
 
-async function tick() {
+async function look() {
   if (busy) return void (again = true);
   busy = true;
   try {
     compare('changes', one('SELECT COUNT(*) AS n, MAX(updated) AS u FROM changes'));
     compare('runs', one(`SELECT COUNT(*) AS n, MAX(started) AS s, MAX(finished) AS f, (SELECT group_concat(id || status || COALESCE(detail, ''), '|') FROM steps WHERE run IN (SELECT id FROM runs WHERE status = 'running')) AS now FROM runs`));
     compare('ops', one(`SELECT id, status, step FROM ops WHERE status IN ('queued', 'running') OR created > ${Date.now() - 86_400_000} ORDER BY created DESC LIMIT 40`));
-    // The heavier two: the activity panel (it asks Hawkes Gen for its jobs) every other tick, the Inbox every fourth.
-    const n = ticks++;
-    if (n % 2 === 0) {
-      if (probes.activity) {
-        const a = await probes.activity().catch(() => null);
-        if (a) {
-          counts.activity = a.count;
-          compare('activity', signature(a), { count: a.count });
-        }
+    // The activity panel asks Hawkes Gen for its jobs; the Inbox reads the roadmap: both only after something moved.
+    if (probes.activity) {
+      const a = await probes.activity().catch(() => null);
+      if (a) {
+        counts.activity = a.count;
+        compare('activity', signature(a), { count: a.count });
       }
-      if (probes.inbox && n % 4 === 0) {
-        const ib = await probes.inbox().catch(() => null);
-        if (ib) {
-          counts.inbox = ib.count;
-          compare('inbox', `${ib.count}|${ib.ids.join(',')}`, { count: ib.count });
-        }
+    }
+    if (probes.inbox) {
+      const ib = await probes.inbox().catch(() => null);
+      if (ib) {
+        counts.inbox = ib.count;
+        compare('inbox', `${ib.count}|${ib.ids.join(',')}`, { count: ib.count });
       }
     }
   } finally {
@@ -109,32 +109,41 @@ async function tick() {
   }
   if (again) {
     again = false;
-    void tick();
+    schedule(300);
   }
 }
 
-let pokeTimer: NodeJS.Timeout | null = null;
-/** Look now (soon): something changed that the Inbox or the activity panel shows. */
-export function poke() {
-  if (!clients.size || pokeTimer) return;
-  pokeTimer = setTimeout(() => {
-    pokeTimer = null;
-    ticks = 0; // the next tick reads the activity panel and the Inbox too
-    void tick();
-  }, 300);
-  pokeTimer.unref?.();
+function schedule(ms: number) {
+  if (!clients.size || looking) return;
+  looking = setTimeout(() => {
+    looking = null;
+    if (clients.size) void look();
+  }, ms);
+  looking.unref?.();
+}
+
+/** Look soon: something changed that the activity panel, the Inbox or a run's page shows (a burst of writes is one look). */
+export function poke(ms = 300) {
+  schedule(ms);
 }
 
 function startWatch() {
-  if (watch) return;
-  ticks = 0;
-  void tick();
-  watch = setInterval(() => void tick(), TICK_MS());
-  watch.unref?.();
+  if (offWrites) return;
+  offWrites = onDbWrite(() => poke(400));
+  // Hawkes Gen's own events (a job queued, started, a step, done): the activity panel and the playtests lists show them.
+  // Held open only while a page is connected (genevents.ts); bursts of progress are one look every 1.5 s at most.
+  genEvents.hold('dashboard-stream');
+  offGen = [genEvents.onEvent((type) => { if (type === 'job') poke(1500); }), genEvents.onConnect(() => poke(300))];
+  poke(0); // the badges' first look
 }
 function stopWatch() {
-  if (watch) clearInterval(watch);
-  watch = null;
+  offWrites?.();
+  offWrites = null;
+  for (const off of offGen) off();
+  offGen = [];
+  genEvents.release('dashboard-stream');
+  if (looking) clearTimeout(looking);
+  looking = null;
   last.clear(); // a page connecting later starts from a fresh look
 }
 

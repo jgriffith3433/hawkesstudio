@@ -9,7 +9,6 @@ import path from 'node:path';
 import http from 'node:http';
 
 process.env.STUDIO_DATA = fs.mkdtempSync(path.join(os.tmpdir(), 'studio-stream-'));
-process.env.STUDIO_STREAM_TICK_MS = '40';
 
 const stream = await import('../src/stream.ts');
 const talk = await import('../src/talk.ts');
@@ -79,8 +78,9 @@ test('hello, talk changes and the watcher reach a connected page', async () => {
     // What moves on its own (the time of the read) is no change; a real one is, with the new count.
     page.events.length = 0;
     await new Promise((r) => setTimeout(r, 200));
-    assert.equal(page.events.filter((e) => e.topic === 'activity').length, 0, 'nothing changed: no event');
+    assert.equal(page.events.length, 0, 'an idle page is sent nothing: no timer looks for changes');
     count = 2;
+    stream.poke(); // nothing looks by itself: a database write, a Gen event or a poke does
     assert.deepEqual(await page.next((e) => e.topic === 'activity'), { topic: 'activity', count: 2 });
     inboxIds = ['q_1', 'q_2'];
     stream.poke();
@@ -100,4 +100,35 @@ test('the activity signature ignores what moves by itself', () => {
   const b = { at: 2, count: 1, commands: [{ cmd: 'git fetch', seconds: 9, slow: true }], loop: { lastMinute: { max: 7 }, blocks: [] } };
   assert.equal(stream.signature(a), stream.signature(b));
   assert.notEqual(stream.signature(a), stream.signature({ ...b, commands: [] }));
+});
+
+test('a database write is what makes the watcher look, and nothing else does', async () => {
+  const { db, onDbWrite } = await import('../src/db.ts');
+  let seen: string[] = [];
+  const off = onDbWrite((t) => seen.push(t));
+  db.prepare('INSERT INTO runs (id, kind, status, started) VALUES (?, ?, ?, ?)').run('r_streamtest', 'daily', 'running', Date.now());
+  db.prepare('UPDATE runs SET status = ? WHERE id = ?').run('done', 'r_streamtest');
+  db.prepare('SELECT * FROM runs').all();
+  off();
+  assert.deepEqual(seen, ['runs', 'runs'], 'inserts and updates are reported with their table; reads are not');
+
+  let count = 1;
+  stream.setProbes({ activity: async () => ({ count, at: Date.now() }), inbox: async () => ({ count: 0, ids: [] }) });
+  const server = http.createServer((req, res) => stream.handleStream(req, res, {}));
+  await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+  const page = await connect((server.address() as any).port);
+  try {
+    await page.next((e) => e.topic === 'activity' && e.badge);
+    page.events.length = 0;
+    db.prepare('INSERT INTO runs (id, kind, status, started) VALUES (?, ?, ?, ?)').run('r_streamtest2', 'daily', 'running', Date.now());
+    assert.ok(await page.next((e) => e.topic === 'runs'), 'a run written: the runs topic, without any polling');
+    page.events.length = 0;
+    await new Promise((r) => setTimeout(r, 500));
+    assert.equal(page.events.length, 0, 'quiet again: nothing is sent');
+  } finally {
+    page.close();
+    for (let i = 0; i < 60 && stream.streamClients() > 0; i++) await new Promise((r) => setTimeout(r, 50));
+    server.close();
+    db.prepare('DELETE FROM runs WHERE id LIKE ?').run('r_streamtest%');
+  }
 });

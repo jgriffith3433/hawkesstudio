@@ -141,3 +141,25 @@ test("a cell restarting (Cloud Run's 503) gets the request again; still down, it
   assert.equal((await down.json()).restarting, true);
   assert.ok(!seen.some((s) => s.url.endsWith('/wake')), 'a restarting cell is never woken');
 });
+
+test('event streams and video streams go back as they come: not buffered, compressed or cached', async () => {
+  let pull!: (s: string) => void;
+  const body = new ReadableStream({ start(c) { pull = (s) => c.enqueue(new TextEncoder().encode(s)); } });
+  answer = () => new Response(body, { headers: { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', ETag: 'x', 'Content-Length': '99' } });
+  const r = await worker.fetch(at('/api/stream'), env);
+  assert.match(r.headers.get('Content-Type')!, /^text\/event-stream; charset=utf-8/);
+  assert.equal(r.headers.get('Cache-Control'), 'no-store, no-transform');
+  assert.equal(r.headers.get('X-Accel-Buffering'), 'no');
+  assert.equal(r.headers.get('Content-Length'), null);
+  // The first event arrives while the origin's response is still open (its body is passed through, never read to the end).
+  const reader = r.body!.getReader();
+  pull('data: {"topic":"hello"}\n\n');
+  const first = await reader.read();
+  assert.match(new TextDecoder().decode(first.value), /hello/);
+  await reader.cancel();
+  // A cell's stream is the same, and ordinary answers are left alone.
+  answer = () => cell(200, { 'Content-Type': 'text/event-stream' });
+  assert.equal((await worker.fetch(at('/o/acme-1a2b/api/stream'), env)).headers.get('Cache-Control'), 'no-store, no-transform');
+  answer = () => new Response('{}', { headers: { 'Content-Type': 'application/json', 'Cache-Control': 'max-age=60' } });
+  assert.equal((await worker.fetch(at('/api/x'), env)).headers.get('Cache-Control'), 'max-age=60');
+});

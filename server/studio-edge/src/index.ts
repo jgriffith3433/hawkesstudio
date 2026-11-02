@@ -113,11 +113,29 @@ async function wake(org: string, env: Env) {
   return j.state === 'new' ? { next: j.next ?? '/auth/start' } : { waking: true, first: j.first === true };
 }
 
+/**
+ * A live answer (the dashboard's event streams `text/event-stream`, the playtests' video `multipart/x-mixed-replace`) goes
+ * back as it comes, never buffered, compressed or cached: the body is passed through untouched (not read), `no-transform`
+ * keeps Cloudflare from compressing it into a buffer, and the type keeps its charset. A page holds one such request open
+ * instead of asking again and again (J, 2026-11-02: no polling); the browser's own reconnect (`retry:`) replaces a dropped one.
+ */
+export function streaming(res: Response): Response {
+  const type = res.headers.get('Content-Type') ?? '';
+  if (!/^text\/event-stream|^multipart\/x-mixed-replace/i.test(type)) return res;
+  const out = new Response(res.body, res);
+  if (/^text\/event-stream/i.test(type)) out.headers.set('Content-Type', 'text/event-stream; charset=utf-8');
+  out.headers.set('Cache-Control', 'no-store, no-transform');
+  out.headers.set('X-Accel-Buffering', 'no');
+  out.headers.delete('Content-Length');
+  out.headers.delete('ETag');
+  return out;
+}
+
 // Workers Logs keep only what this logs (wrangler.jsonc: no per-request invocation logs): errors, never routine hits.
 export default {
   async fetch(request: Request, env: Env, ctx?: Ctx): Promise<Response> {
     try {
-      const res = await handle(request, env, ctx);
+      const res = streaming(await handle(request, env, ctx));
       if (res.status >= 500 && res.status !== 503) console.error(`studio-edge ${request.method} ${new URL(request.url).pathname.slice(0, 200)}: ${res.status}`);
       return res;
     } catch (e: any) {

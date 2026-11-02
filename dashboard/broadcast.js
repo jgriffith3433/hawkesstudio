@@ -505,8 +505,7 @@
     };
   }
   load();
-  if (typeof EventSource === 'undefined') setInterval(() => { if (!document.hidden) load(); }, 1000);
-  else {
+  if (typeof EventSource !== 'undefined') {
     connect();
     document.addEventListener('visibilitychange', () => {
       if (document.hidden) { try { es?.close(); } catch {} es = null; clearTimeout(retry); }

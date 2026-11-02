@@ -35,17 +35,15 @@
     return ps.length ? Math.max(0, Math.min(1, ps.reduce((a, b) => a + b, 0) / ps.length)) : null;
   };
   const streamUrl = (job, player, fps) => `/api/gen/v1/jobs/${job}/live.mjpeg?player=${player}&fps=${fps}`;
-  const frameUrl = (job, player) => `/api/gen/v1/jobs/${job}/frame?player=${player}&_=${Date.now()}`;
 
-  // One picture's feed: the MJPEG stream, and if it hasn't produced a frame within a couple of seconds (a proxy buffering
-  // it) or it drops, the single-frame route polled every ~250 ms. note(text) says what's up while there is no picture.
-  const FEED_WAIT = 2500;
-  const FRAME_EVERY = 1000; // one frame a second: every frame is a request through the edge
+  // One picture's feed: Gen's MJPEG stream in an <img> (a stream, not a poll). There is no single-frame fallback that asks
+  // for a picture every second (J, 2026-11-02: "Please stop implementing polling"): when the stream can't start or drops,
+  // the tile says so, and tries the stream again the next time the pushed state arrives (feedRetry: the grid's and the big
+  // view's feeds send when Gen says the playtest changed). note(text) says what's up while there is no picture.
   const feeds = new WeakMap();
   function feedOff(img) {
     const f = feeds.get(img);
     if (f) {
-      clearTimeout(f.timer);
       img.onload = img.onerror = null;
       feeds.delete(img);
     }
@@ -53,36 +51,33 @@
   }
   function feedOn(img, job, player, fps, note = () => {}) {
     if (feeds.has(img)) feedOff(img);
-    const f = { mode: 'stream', got: false, fails: 0, timer: null };
+    const f = { got: false, failed: false, url: streamUrl(job, player, fps), note };
     feeds.set(img, f);
-    const poll = () => {
-      if (feeds.get(img) !== f) return;
-      img.src = frameUrl(job, player);
-    };
-    const toPoll = () => {
-      if (f.mode === 'poll') return;
-      f.mode = 'poll';
-      clearTimeout(f.timer);
-      poll();
-    };
     img.onload = () => {
       if (feeds.get(img) !== f || img.src === BLANK) return;
       f.got = true;
-      f.fails = 0;
+      f.failed = false;
       note('');
-      if (f.mode === 'poll') f.timer = setTimeout(poll, FRAME_EVERY);
-      else clearTimeout(f.timer);
     };
     img.onerror = () => {
       if (feeds.get(img) !== f) return;
-      if (f.mode === 'stream') return toPoll();
-      f.fails += 1;
-      if (f.fails >= 3 && !f.got) note('no video available');
-      f.timer = setTimeout(poll, f.fails > 3 ? 5000 : 2000);
+      f.failed = true;
+      note(f.got ? 'video ended' : 'no video yet');
     };
     note('waiting for the first frame…');
-    img.src = streamUrl(job, player, fps);
-    f.timer = setTimeout(() => { if (!f.got) toPoll(); }, FEED_WAIT);
+    img.src = f.url;
+  }
+  /** A stream that failed starts again (called when new state is pushed, never on a timer). */
+  function feedRetry(img) {
+    const f = feeds.get(img);
+    if (!f?.failed) return;
+    f.failed = false;
+    f.note('waiting for the first frame…');
+    img.src = `${f.url}&_=${Date.now()}`;
+  }
+  function retryFeeds() {
+    for (const t of S.tiles.values()) if (t.streaming) feedRetry(t.img);
+    for (const img of document.querySelectorAll('#ltBig .lt-player img')) feedRetry(img);
   }
 
   // ------------------------------------------------------------- data
@@ -131,6 +126,7 @@
         S.data = d;
         render();
         if (S.open && !S.detail) renderBig();
+        retryFeeds();
       });
     }
     const want = S.open;
@@ -140,6 +136,7 @@
         if (S.open !== d.job || d.error) return;
         S.detail = d.live ? { ...d.live, ctx: gridEntry()?.ctx } : null;
         renderBig();
+        retryFeeds();
       });
       feedsOn.big.job = want;
     }
@@ -357,7 +354,7 @@
     el.querySelector('.lt-side-body').innerHTML = '<div class="meta">loading…</div>';
     S.detail = null;
     renderBigFromGrid();
-    pollDetail();
+    watchDetail();
   }
   function closeBig({ push = true, keepHash = false } = {}) {
     if (!S.open) return;
@@ -388,7 +385,7 @@
   const gridEntry = () => [...(S.data?.playing ?? []), ...(S.data?.finished ?? [])].find((p) => p.job === S.open) ?? null;
 
   // The big view's data comes from its own stream (schedule above).
-  function pollDetail() {
+  function watchDetail() {
     schedule();
   }
   function renderBigFromGrid() {

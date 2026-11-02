@@ -2,10 +2,14 @@
 // or finished in the last half hour, from Hawkes Gen (`GET /v1/playtests/live`: each one's step, players' states,
 // problems; the live video is Gen's `/v1/jobs/<id>/live.mjpeg`, through the /gen/ door) with what it is in Studio:
 // the product, the run and step that asked for it (its history page), or the agent change it checks. One call per
-// refresh for the whole grid; the maximized view asks Gen for one job's full state itself.
+// read for the whole grid; the maximized view asks Gen for one job's full state itself.
+//
+// Never read on a timer (J, 2026-11-02: "Please stop implementing polling"): the pushed feeds (feeds.ts) read when Hawkes
+// Gen's event stream says a playtest.run job changed (followGen), and once when a page opens.
 
 import { db, parse } from './db.ts';
-import { gen } from './gen.ts';
+import { gen, genEvents } from './gen.ts';
+import { pokeFeeds } from './feeds.ts';
 import { loadProducts } from './config.ts';
 
 type Ctx = { product: string | null; productName: string | null; by: string; step?: string | null; run?: string | null; change?: string | null; changeTitle?: string | null; name?: string | null };
@@ -52,9 +56,28 @@ export function finishedTile(j: any) {
 
 let cache: { at: number; value: any } | null = null;
 
-/** The grid: playing, waiting, finished (newest first), each with its Studio context. Cached for a second. */
-export async function livePlaytests() {
-  if (cache && Date.now() - cache.at < 1000) return cache.value;
+/** Keeps Gen's event stream open while a page watches the playtests, and makes the feeds read again when a playtest job changes. */
+let followers = 0;
+let unfollow: (() => void)[] = [];
+export function holdGenEvents() {
+  if (!followers++) {
+    genEvents.hold('live-playtests');
+    unfollow = [
+      genEvents.onEvent((type, job) => { if (type === 'job' && job?.tool === 'playtest.run') pokeFeeds('playtest', 500); }),
+      genEvents.onConnect(() => pokeFeeds('playtest', 0)),
+    ];
+  }
+  return () => {
+    if (--followers) return;
+    for (const off of unfollow) off();
+    unfollow = [];
+    genEvents.release('live-playtests');
+  };
+}
+
+/** The grid: playing, waiting, finished (newest first), each with its Studio context. Cached for a second (`fresh`: no cache). */
+export async function livePlaytests({ fresh = false }: { fresh?: boolean } = {}) {
+  if (!fresh && cache && Date.now() - cache.at < 1000) return cache.value;
   const [now, recent] = await Promise.all([
     gen.request('/playtests/live'),
     gen.request('/jobs?tool=playtest.run&limit=40').catch(() => ({ jobs: [] })),

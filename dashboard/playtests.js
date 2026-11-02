@@ -2,7 +2,7 @@
 // screenshots, timeline, problems, Claude's review, backlog links, visual changes and the previous run side by side.
 // Uses app.js's helpers ($, esc, api, file, ago, view, show, tab, findingHtml).
 
-const pt = { open: null, vs: null, more: null, rows: [], products: [], timer: null };
+const pt = { open: null, vs: null, more: null, rows: [], products: [] };
 const PT_OUTCOMES = ['won', 'done', 'lost', 'stuck', 'error', 'failed', 'running'];
 const ptPill = (o) => `<span class="pill ${o === 'won' || o === 'done' ? 'ship' : o === 'lost' ? 'fix-first' : o === 'running' ? '' : 'failed'}">${esc(o ?? '?')}</span>`;
 const ptSec = (s) => (s == null ? '–' : s >= 90 ? `${Math.round(s / 60)} min` : `${Math.round(s)} s`);
@@ -33,7 +33,6 @@ async function loadPlaytests() {
   const more = $('#ptMore');
   if (more) more.onclick = ptLoadMore;
   loadTrends(f);
-  ptSchedule();
 }
 
 function ptFilters() {
@@ -77,11 +76,9 @@ $('#ptList').addEventListener('click', (e) => {
   if (row) openPlaytest(row.dataset.pt);
 });
 
-function ptSchedule() {
-  clearTimeout(pt.timer);
-  // Keep a list with running playtests fresh.
-  if (tab === 'playtests' && !pt.open && pt.rows.some((r) => r.outcome === 'running')) pt.timer = setTimeout(() => (document.hidden ? ptSchedule() : tab === 'playtests' && !pt.open && loadPlaytests()), 8000);
-}
+// The list refreshes when the server says a run moved (the push stream's 'runs' topic: a step started or ended, a review
+// landed), never on a timer (J, 2026-11-02: "Please stop implementing polling"). Only while the list is the page on screen.
+studioStream.on('runs', () => { if (tab === 'playtests' && !pt.open) loadPlaytests(); });
 
 // ------------------------------------------------------------ trends (plain SVG)
 

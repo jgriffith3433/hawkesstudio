@@ -64,7 +64,6 @@
   const ts = (s) => `${Math.floor(s / 60)}:${(s % 60).toFixed(1).padStart(4, '0')}`;
   let current = null; // the open video's task id
   let shown = null;   // the version number playing
-  let timer = null;
   let data = null;    // the open video's detail
   // The selection on the timeline (seconds), what J asks for there, and where he aimed a zoom (0-1 of the frame).
   let sel = null, ask = null, aim = null, aiming = false;
@@ -309,16 +308,15 @@
     const hash = location.hash.split('/');
     current = hash[0] === '#videos' && /^k_[0-9a-f]+$/.test(hash[1] ?? '') ? hash[1] : null;
     try { current ? await detail(current) : await list(); } catch (e) { $('#vdBody').innerHTML = `<p class="red">${esc(e.message)}</p>`; }
-    clearInterval(timer);
-    // While it's on screen: what the agent is doing moves (making, rendering, a new version), so look again every 20 s,
-    // unless J is in the middle of something (typing, watching, a selection on the timeline).
-    timer = setInterval(() => {
-      if (document.hidden || !$('#videos')?.classList.contains('on')) return;
-      const typing = document.activeElement && ['TEXTAREA', 'INPUT', 'SELECT'].includes(document.activeElement.tagName);
-      const playing = $('#vdVideo') && !$('#vdVideo').paused;
-      if (!typing && !playing && !sel && !aiming) void (current ? detail(current) : list()).catch(() => {});
-    }, 20_000);
   }
+  // What the agent is doing moves (making, rendering, a new version): look again when the push stream says a change, a run
+  // or Talk moved, unless J is in the middle of something (typing, watching, a selection on the timeline). No timer.
+  studioStream.on(['changes', 'runs', 'activity'], (e) => {
+    if (e.badge || !$('#videos')?.classList.contains('on') || !$('#vdBody')) return;
+    const typing = document.activeElement && ['TEXTAREA', 'INPUT', 'SELECT'].includes(document.activeElement.tagName);
+    const playing = $('#vdVideo') && !$('#vdVideo').paused;
+    if (!typing && !playing && !sel && !aiming) void (current ? detail(current) : list()).catch(() => {});
+  });
   const open = (id) => { shown = null; sel = null; ask = null; aim = null; aiming = false; data = null; location.hash = id ? `#videos/${id}` : '#videos'; void load(); };
 
   document.addEventListener('click', async (e) => {
