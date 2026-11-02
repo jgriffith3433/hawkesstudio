@@ -35,6 +35,7 @@ test('the sign-in page is Google only; a password POST is refused', async () => 
   assert.match(page.body, /accounts\.google\.com\/gsi\/client/);
   // Google's button needs the origin as Referer, or it answers "origin not allowed for the client ID".
   assert.equal(page.headers['Referrer-Policy'], 'strict-origin-when-cross-origin');
+  assert.equal(page.headers['Cross-Origin-Opener-Policy'], 'same-origin-allow-popups');
   assert.doesNotMatch(page.body, /type="password"/);
   assert.doesNotMatch(page.body, /password instead/);
   const post = res();
