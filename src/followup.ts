@@ -10,6 +10,7 @@ import { db, parse } from './db.ts';
 import { GEN_PUBLIC_URL, getProduct, getInfra, isInfra } from './config.ts';
 import { PUBLIC_URL } from './notify.ts';
 import { cancelNote, cancelWords } from './cancel.ts';
+import { signFileLinks } from './gen.ts';
 import { onFollowupsDue } from './followup-kick.ts';
 
 try { db.exec('ALTER TABLE runs ADD COLUMN origin TEXT'); } catch { /* already there */ }
@@ -136,11 +137,11 @@ export async function checkFollowups() {
   const day = Date.now() - 86_400_000;
   for (const c of db.prepare(`SELECT * FROM changes WHERE origin IS NOT NULL AND task IS NULL AND ${notPm} AND status IN ('ready', 'failed', 'cancelled') AND told IS NULL AND COALESCE(auto_merge, '') != 'trying' AND COALESCE(updated, created) > ?`).all(day) as any[]) {
     db.prepare('UPDATE changes SET told = ? WHERE id = ?').run(c.status, c.id);
-    studioSays(c.origin, changeNotice(c));
+    studioSays(c.origin, await signFileLinks(changeNotice(c)));
   }
   for (const r of db.prepare(`SELECT * FROM runs WHERE origin IS NOT NULL AND ${notPm} AND status != 'running' AND told IS NULL AND started > ?`).all(day) as any[]) {
     db.prepare('UPDATE runs SET told = ? WHERE id = ?').run(r.status, r.id);
-    studioSays(r.origin, runNotice(r));
+    studioSays(r.origin, await signFileLinks(runNotice(r)));
   }
 }
 

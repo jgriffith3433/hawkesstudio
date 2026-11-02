@@ -24,7 +24,7 @@ import { DATA, getProduct, getInfra, isInfra, today, StudioError, BETA_NET } fro
 const target = (id: string): { id: string; name: string } => (isInfra(id) ? getInfra(id) : getProduct(id));
 export { BETA_NET };
 import { keyOf, takenBy } from './backlog.ts';
-import { gen, genWait, fileUrl } from './gen.ts';
+import { gen, genWait, fileUrl, signFileLinks } from './gen.ts';
 import { PUBLIC_URL } from './notify.ts';
 import './roadmap.ts'; // milestones, items, and the findings columns source, milestone, report
 
@@ -169,12 +169,12 @@ export async function fileReport(productId: string, b: ReportIn) {
   const where = t ? `the milestone "${t.title}"` : `${p.name}'s roadmap`;
   if (conversation) {
     const talk = await import('./talk.ts');
-    talk.studioSays(conversation, [
+    talk.studioSays(conversation, await signFileLinks([
       `J reported a ${b.blocker ? 'blocker' : 'bug'} from ${p.name}'s beta site${t ? ` while testing **${t.title}**` : ''}: "${cut(text, 600) || '(no words, see the screenshot)'}"`,
       `Finding ${id} (source J: top priority; the PM loop starts an agent on it before anything else).${r.build?.ref ? ` Build: ${r.build.ref}${r.build.sha ? ` ${r.build.sha}` : ''}.` : ''} Page: ${r.url ?? '-'} · ${r.viewport} · ${r.device.split(' · ').slice(0, 2).join(', ')}`,
       r.console.filter((c) => c.level === 'error').length ? `Console errors: ${r.console.filter((c) => c.level === 'error').slice(-3).map((c) => c.text).join(' | ')}` : '',
       shot ? `![screenshot](${shotUrl(r, id)})${r.shot ? `\nScreenshot file (Read it): ${r.shot}` : ''}${r.shotNote ? `\n(${r.shotNote})` : ''}` : '',
-    ].filter(Boolean).join('\n\n'));
+    ].filter(Boolean).join('\n\n')));
   }
   const pm = await import('./pm.ts');
   pm.pmEvent('report', `J reported [${b.blocker ? 'blocker' : 'bug'}] "${title}" on ${p.name}'s beta (${id})${t ? `, testing milestone "${t.title}" (${t.milestone})` : ''}. It is top priority: start it first.`, id, p.id);
