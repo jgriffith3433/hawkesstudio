@@ -48,6 +48,13 @@ The app checks the signature, the expiry and that the nonce is new, signs in a t
 person's; beta only) and answers with its session's `Set-Cookie`. Studio gives those cookies to the playtest's browser.
 Gen's side is `hawkesgen/src/testsignin.ts` (`POST /v1/users/test-session`, the secret set at `PUT /v1/admin/test-signin`).
 
+Studio's own beta answers the same protocol at `POST /auth/test-session` (`auth-pages.ts`; `checkSigninToken` in
+`playtest-signin.ts`): only when `STUDIO_LANE=beta` and `STUDIO_TEST_SIGNIN_SECRET` is set (the project's secret from
+`studio_project signin`; `STUDIO_TEST_SIGNIN_PROJECT`, default `hawkesstudio`, is the project id it signs), and it signs in
+the throwaway member `playtest@test.hawkesgen.ai`. Live answers 404. Google's button can't run on the beta address unless
+that address is an authorized JavaScript origin of the OAuth client, so the playtest signs in this way instead.
+Test `test/test-session.test.ts`.
+
 ## Hawkes Gen's app as a project
 
 - kind `app`, beta `https://beta.hawkesgen.ai/`, live `https://hawkesgen.ai/`, repo the Gen repository, versionPath

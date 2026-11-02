@@ -346,7 +346,16 @@ export function platformBearerUser(req: http.IncomingMessage): User | null {
   }
 }
 
-export type SessionVia = 'google' | 'password' | 'platform' | 'invite';
+export const TEST_EMAIL = 'playtest@test.hawkesgen.ai';
+/** The throwaway member a beta playtest signs in as (auth-pages.ts POST /auth/test-session). No password, no Google id. */
+export function testUser(): User {
+  const r = db.prepare('SELECT * FROM users WHERE email = ?').get(TEST_EMAIL) as any;
+  if (r?.disabled) throw new StudioError('The test account is disabled here.', 403);
+  if (!r) db.prepare('INSERT INTO users (id, email, name, role, pw_hash, must_change, created, signup) VALUES (?, ?, ?, ?, NULL, 0, ?, ?)').run(newId('u'), TEST_EMAIL, 'Playtest', 'member', Date.now(), 'test');
+  return userByEmail(TEST_EMAIL)!;
+}
+
+export type SessionVia = 'google' | 'password' | 'platform' | 'invite' | 'test';
 
 export function startSession(user: User, { remember = false, ip, ua, via = 'password' }: { remember?: boolean; ip?: string | null; ua?: string | null; via?: SessionVia } = {}) {
   const t = token();

@@ -44,7 +44,21 @@ export function signinInfo(projectId: string) {
   };
 }
 
-type Cookie = { name: string; value: string; domain: string; path?: string; secure?: boolean; httpOnly?: boolean };
+/**
+ * The app's side of the protocol, for Studio's own beta (auth-pages.ts POST /auth/test-session): whether a posted body is a
+ * token signed with `secret` (the one the owner copies from `studio_project signin`) and still fresh. Throws a sentence.
+ */
+export function checkSigninToken(body: any, secret: string, project: string, now = Date.now()) {
+  const { exp, nonce, sig } = body ?? {};
+  if (body?.project !== project || typeof nonce !== 'string' || typeof sig !== 'string' || !Number.isFinite(exp)) throw new Error('Not a test sign-in token.');
+  const nowS = Math.floor(now / 1000);
+  if (exp < nowS || exp > nowS + 600) throw new Error('That test sign-in token has expired.');
+  const want = crypto.createHmac('sha256', secret).update(`${project}.${exp}.${nonce}`).digest();
+  const got = Buffer.from(sig, 'base64url');
+  if (got.length !== want.length || !crypto.timingSafeEqual(got, want)) throw new Error('Bad test sign-in signature.');
+}
+
+type Cookie ={ name: string; value: string; domain: string; path?: string; secure?: boolean; httpOnly?: boolean };
 
 /** Set-Cookie lines as the playtest browser's cookies, for the sign-in's host. */
 export function cookiesOf(setCookies: string[], host: string): Cookie[] {
