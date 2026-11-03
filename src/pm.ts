@@ -2220,6 +2220,8 @@ export async function sweepFailed() {
     // Every attempt found it already done: done (a question asked about it is settled in the Inbox: inbox.ts tidy).
     if (!heldFor(t.id) && await everyTrySaidDone(t)) { out.push(t.id); continue; }
     if (heldFor(t.id) || asked.has(t.id) || (t.change && asked.has(t.change)) || rescues()[t.id]?.state === 'scouting') continue;
+    // Liveness: a Studio-side failure is retried (tries given back), a failed task holding others up gets two automatic re-plans before J.
+    if (retryStudioFailure(t) || autoReplan(t)) { out.push(t.id); continue; }
     const since = (db.prepare(`SELECT MAX(created) AS at FROM changes WHERE task = ?`).get(t.id) as any)?.at ?? t.created;
     const q = (db.prepare(`SELECT * FROM questions WHERE subject IN (?, ?) AND at >= ? ORDER BY at DESC LIMIT 1`).get(t.id, t.change ?? t.id, since) as any) ?? null;
     if (q && q.status === 'answered' && /^(try|retry|again|yes)/i.test(String(q.answer ?? '').trim())) {
@@ -2297,6 +2299,8 @@ export function unblockDependencies(now = Date.now()): string[] {
       out.push(dep.id);
       continue;
     }
+    // Two automatic re-plans (a failed dependency one tier up, an idea planned) before J is asked.
+    if (!parkedByPerson && autoReplan(dep, waiting)) { out.push(dep.id); continue; }
     // An idea held for other work (releaseHeldIdeas), a failed task (sweepFailed): not this pass's to decide.
     if (dep.status !== 'idea' || /\b(held|hold|holds|holding|waits? for|until|after|once)\b/i.test(String(dep.note ?? ''))) continue;
     ask.push({ dep, waiting });
@@ -2310,6 +2314,108 @@ export function unblockDependencies(now = Date.now()): string[] {
         { subject: 'stall', topic: 'stall', options: ['try them again', 'drop them', 'leave them'], recommend: 'try them again', context: fresh.map((f) => f.dep.id).join(' '), blocks: `${fresh.reduce((n, f) => n + f.waiting.length, 0)} roadmap task(s) behind them`, from: 'tasks blocked by an idea' });
       logDecision('unblock', null, null, `asked J about ${fresh.length} idea(s) that hold up other tasks: ${fresh.map((f) => f.dep.id).join(', ')}`);
     }
+  }
+  return out;
+}
+
+/** Liveness (J, 2026-11-03: "work that's in the roadmap is ALWAYS being worked on"): how many automatic repairs a task has had. */
+export const AUTO_REPLANS = 2;
+const repairsOf = (subject: string) => (db.prepare(`SELECT COUNT(*) AS n FROM pm_log WHERE action = 'replan' AND subject = ? AND undone IS NULL`).get(subject) as any).n as number;
+const dependentsOf = (id: string) => (db.prepare(`SELECT t.id FROM tasks t WHERE t.status = 'planned' AND t.depends LIKE ?`).all(`%${id}%`) as any[]).map((r) => getTask(r.id)!).filter((t) => t && t.depends.includes(id));
+/** Minutes a Studio-side failure waits before it is tried again (a back-off, not a tight loop). */
+export const STUDIO_RETRY_MS = 10 * 60_000;
+
+/**
+ * A failed task whose latest attempt was Studio's own failure (no source, a restart, a tool error: infra-failure.ts) is
+ * planned again with the tries that were Studio's given back, once the back-off has passed. Nothing the agent did is
+ * held against it. A task a person parked, or one under investigation, is left alone. Returns whether it acted.
+ */
+export function retryStudioFailure(t: Task, now = Date.now()): boolean {
+  if (t.status !== 'failed' || heldFor(t.id) || /^(parked|dropped) on \S+'s answer/.test(String(t.note ?? ''))) return false;
+  const cause = studioSideFailure(t);
+  if (!cause) return false;
+  const lastAt = (db.prepare(`SELECT MAX(updated) AS at FROM changes WHERE task = ?`).get(t.id) as any)?.at ?? t.updated ?? t.created;
+  if (now - lastAt < STUDIO_RETRY_MS) return false;
+  const undo = tasksUndo([t.id]);
+  setTask(t.id, { status: 'planned', tries: Math.min(t.tries, cause.tries), checks: null, note: `planned again by the PM: Studio could not run its agent (${cause.why.slice(0, 240)}), not the work; tries given back` });
+  logDecision('replan', t.id, t.product, `"${t.title}" failed in Studio (${cause.why.slice(0, 240)}), not in its work: planned again after a ${Math.round(STUDIO_RETRY_MS / 60_000)}-minute back-off with ${Math.min(t.tries, cause.tries)} tries used (not counted: Studio's)`.slice(0, 1500), undo);
+  return true;
+}
+
+/**
+ * A failed task or idea that holds up planned tasks is planned again by Studio itself, twice (the third time is J's
+ * question): a failed one gets one more try on the next model tier up (the attempt number drives the route, routing.ts, so
+ * its tries are set one below the limit; its earlier attempts go in the brief), an idea is planned. Returns whether it acted.
+ */
+export function autoReplan(t: Task, waiting: Task[] = dependentsOf(t.id)): boolean {
+  if (!['failed', 'idea'].includes(t.status) || !waiting.length || heldFor(t.id) || hasLiveChange(t.id) || repairsOf(t.id) >= AUTO_REPLANS) return false;
+  if (/^(parked|dropped) on \S+'s answer/.test(String(t.note ?? '')) || (t.status === 'idea' && /\b(held|hold|holds|holding|waits? for|until|after|once)\b/i.test(String(t.note ?? '')))) return false;
+  if (rescues()[t.id]?.state === 'scouting') return false;
+  const s = pmSettings();
+  const n = repairsOf(t.id) + 1;
+  const undo = tasksUndo([t.id]);
+  const tries = t.status === 'failed' ? Math.max(0, Math.min(t.tries, s.maxTries - 1)) : t.tries;
+  setTask(t.id, { status: 'planned', tries, checks: null, note: `planned again by the PM (automatic re-plan ${n} of ${AUTO_REPLANS}): ${waiting.length} task(s) wait on it; ${t.status === 'failed' ? 'one more try on the next model tier up, with what the earlier attempts found' : 'it was an idea nobody was planning'}` });
+  logDecision('replan', t.id, t.product, `"${t.title}" was ${t.status} and holds up ${waiting.map((w) => `"${w.title}" (${w.id})`).join(', ')}: planned again by Studio (automatic re-plan ${n} of ${AUTO_REPLANS}${t.status === 'failed' ? `, ${tries} of ${s.maxTries} tries used, so its agent runs one tier up` : ''}); J is asked only if this fails too`.slice(0, 1500), undo);
+  return true;
+}
+
+/**
+ * An item that is planned but has no tasks (i_6dd54b95d6c6 sat so for days: nothing scheduled it). A task is made from its
+ * goal and acceptance criteria. When merged changes already name the item, they go in the task's request as evidence
+ * and its agent checks first: found done, the task is done (everyTrySaidDone), on beta with the evidence, no new change.
+ * Returns the items it planned.
+ */
+export function planEmptyItems(now = Date.now()): string[] {
+  const out: string[] = [];
+  const rows = db.prepare(`SELECT id FROM items WHERE status = 'planned' ORDER BY ord`).all() as any[];
+  for (const r of rows) {
+    const it = getItem(r.id);
+    if (!it || (it.tasks ?? []).length) continue;
+    if (now - (it.updated ?? it.created) < 60_000) continue; // Talk may be adding its tasks right now
+    const text = [it.goal, it.why].filter(Boolean).join('\n\n').trim() || it.title;
+    let merged: any[] = [];
+    try { merged = db.prepare(`SELECT id, title FROM changes WHERE status = 'merged' AND (request LIKE ? OR title LIKE ?) ORDER BY created DESC LIMIT 5`).all(`%${it.id}%`, `%${it.id}%`) as any[]; } catch { /* no request column */ }
+    const evidence = merged.length ? `\n\nEvidence: ${merged.map((c) => `${c.id} "${String(c.title ?? '').slice(0, 80)}"`).join(', ')} already merged and name this item. Check whether they did it: if every criterion is already met on beta, make no change and say so; else do what is missing.` : '';
+    const t = addTask({ item: it.id, title: it.title, request: `${it.title}\n\n${text}${evidence}`, criteria: it.criteria, priority: null });
+    logDecision('plan', t.id, it.product, `"${it.title}" (${it.id}) was planned with no tasks, so nothing could start: Studio made ${t.id} from its goal and ${it.criteria.length} acceptance criteri${it.criteria.length === 1 ? 'on' : 'a'}${merged.length ? `; ${merged.length} merged change(s) already name it, its agent checks them first` : ''}`.slice(0, 1500), { kind: 'tasks', change: null, tasks: [{ id: t.id, status: 'dropped', tries: 0, note: 'dropped: undone', checks: null }] });
+    out.push(it.id);
+  }
+  return out;
+}
+
+export const LIVENESS_MINUTES = 30;
+/**
+ * The liveness watchdog (each PM tick, after a restart, and on the stall pass; no timer of its own): every unfinished roadmap
+ * task or item with no change in 30 minutes and no agent running, that isn't waiting on J, a GPU budget or a dependency
+ * that is moving, gets a repair (above) and a line in the PM log. What no repair fits is logged once an hour with the exact
+ * reason and who acts, and the stall watch asks J. Returns what it did.
+ */
+export function livenessWatch(now = Date.now()): string[] {
+  const out: string[] = [];
+  const asked0 = askedJ();
+  const log = (id: string | null, product: string | null, msg: string) => { logDecision('liveness', id, product, msg.slice(0, 1500)); out.push(msg); };
+  // Repairs first, so the check below sees their result (the tick already ran the dependency passes).
+  try { const p = planEmptyItems(now); if (p.length) log(null, null, `planned ${p.length} item(s) that had no tasks: ${p.join(', ')}`); } catch (e: any) { console.warn(`[pm] liveness repair: ${e.message ?? e}`); }
+  for (const r of db.prepare(`SELECT id FROM tasks WHERE status IN ('failed', 'idea')`).all() as any[]) {
+    const t = getTask(r.id)!;
+    if (asked0.has(t.id) || (t.change && asked0.has(t.change)) || (t.status === 'failed' && now - (t.updated ?? t.created) < LIVENESS_MINUTES * 60_000)) continue;
+    if (t.status === 'failed' ? retryStudioFailure(t, now) : false) log(t.id, t.product, `"${t.title}": a Studio-side failure, planned again (tries given back)`);
+    else if (autoReplan(t)) log(t.id, t.product, `"${t.title}" (${t.id}) held up other tasks: planned again`);
+  }
+  const asked = askedJ();
+  const sinceLog = (db.prepare(`SELECT subject, MAX(at) AS at FROM pm_log WHERE action = 'liveness' GROUP BY subject`).all() as any[]);
+  const lastLogged = new Map<string, number>(sinceLog.map((r) => [r.subject, r.at]));
+  for (const r of stallReasons()) {
+    const t = getTask(r.task)!;
+    if (hasLiveChange(t.id) || ['working', 'needs answer', 'review'].includes(t.status)) continue;
+    const changed = Math.max(t.updated ?? 0, t.created, (db.prepare(`SELECT MAX(updated) AS at FROM changes WHERE task = ?`).get(t.id) as any)?.at ?? 0);
+    if (now - changed < LIVENESS_MINUTES * 60_000) continue;
+    if (asked.has(t.id) || (t.change && asked.has(t.change)) || (t.gpu?.items?.length && !gpuCleared(t))) continue;
+    if (blockedBy(t).some((b) => !STUCK_DEPENDENCY.includes(b.status))) continue; // a live dependency: it moves when that does
+    if (now - (lastLogged.get(t.id) ?? 0) < 3600_000) continue;
+    const who = /^needs J|^failed|^blocked by .*(idea|failed)/.test(r.why) ? 'Studio acts first, then J if two automatic re-plans fail' : 'Studio acts';
+    log(t.id, t.product, `"${t.title}" (${t.id}, ${t.status}) has not moved for ${Math.round((now - changed) / 60_000)} min: ${r.why} (${who})`);
   }
   return out;
 }
@@ -2633,6 +2739,7 @@ export async function tick() {
     // Tasks dropped as already done count as done; ideas held until other work is on beta are released once it is.
     try {
       adoptDoneDrops();
+      planEmptyItems();
       releaseHeldIdeas();
       unblockDependencies();
     } catch (e: any) {
@@ -2649,6 +2756,7 @@ export async function tick() {
       console.warn(`[pm] pace: ${e.message ?? e}`);
     }
     // Nothing moving with free agents and work left: why, per task, and what it can fix (one "stall" decision).
+    if (!held) { try { livenessWatch(); } catch (e: any) { console.warn(`[pm] liveness: ${e.message ?? e}`); } }
     if (!held) await stallWatch().catch((e: any) => console.warn(`[pm] stall watch: ${e.message ?? e}`));
     const daily = state().daily !== today() && new Date().getHours() >= s.dailyHour;
     if ((events.length || daily) && !turnRunning() && process.env.STUDIO_PM_TALK !== 'off') await runPmTurn(daily);
