@@ -104,7 +104,7 @@ function itemHtml(it) {
     : ['on beta', 'verified'].includes(itemState(it)) ? `<a class="small" href="#ready" data-goto="ready">Try it (Ready to test)</a>` : '';
   return `<div class="finding" data-item="${it.id}" data-key="rm:${esc(it.id)}"><div style="flex:1">
     <h4><span class="pill ${RM_PILL[itemState(it)] ?? 'warn'}">${esc(itemLabel(it))}</span>${it.priority === 'high' ? ` ${prioBadge(it.priority)}` : ''} ${esc(it.title)} <span class="meta">${esc(rmNames[it.product] ?? it.product)}${it.milestone ? ` · 🏁 ${esc(rmMilestones.find((m) => m.id === it.milestone)?.title ?? it.milestone)}` : ''}</span></h4>
-    <div class="status-line">${esc(taskLine(it))}</div>
+    <div class="status-line">${esc(taskLine(it))}${it.progress?.next ? ` · <b>${esc(it.progress.next)}</b>` : ''}</div>
     ${it.goal ? `<div class="summary">${esc(it.goal)}</div>` : ''}
     ${it.criteria.length ? `<div class="meta">Done when: ${it.criteria.map(esc).join(' · ')}</div>` : ''}
     <div class="tests">${tasks}</div>

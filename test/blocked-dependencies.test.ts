@@ -84,19 +84,27 @@ test("a dependency Studio failed to run (no source, a clone) is planned again, t
   assert.equal(rm.listQuestions().length, 0, 'nobody is asked about Studio\'s own failure');
 });
 
-test('a dependency whose agent really failed is left to the failed-task path; an idea nobody is planning is one question for J, once', () => {
+test('a dependency whose agent really failed is planned again twice by Studio, then left to the failed-task path; an idea is planned twice, then one question for J, once', () => {
   const it = rm.addItem({ product: 'bdep', title: 'Camera', status: 'planned' });
   const failed = rm.addTask({ item: it.id, request: 'Camera rig' });
   const after1 = rm.addTask({ item: it.id, request: 'Camera tuning', depends: [failed.id] });
   const c = change(failed.id, { status: 'failed', detail: 'the agent made no commit' });
   rm.setTask(failed.id, { status: 'failed', tries: 3, change: c, changes: [c], note: 'failed 3 times' });
-  assert.deepEqual(pm.unblockDependencies(), [], 'the agent\'s own failure is not planned again by the dependents\' pass');
+  assert.deepEqual(pm.unblockDependencies(), [failed.id], 'liveness: planned again by Studio (automatic re-plan 1 of 2)');
+  rm.setTask(failed.id, { status: 'failed', tries: 3 });
+  assert.deepEqual(pm.unblockDependencies(), [failed.id], 'automatic re-plan 2 of 2');
+  rm.setTask(failed.id, { status: 'failed', tries: 3 });
+  assert.deepEqual(pm.unblockDependencies(), [], 'after two, the agent\'s own failure is the failed-task path\'s (rescue, then J)');
   assert.equal(rm.getTask(failed.id)!.status, 'failed');
   assert.equal(rm.listQuestions().length, 0, 'sweepFailed asks about a failed task, not this pass');
 
   const idea = rm.addTask({ item: it.id, request: 'Cinemachine setup' });
   const waiting = rm.addTask({ item: it.id, request: 'Cinemachine shots', depends: [idea.id] });
   rm.setTask(idea.id, { status: 'idea', note: 'needs a decision on the rig' });
+  for (let i = 0; i < pm.AUTO_REPLANS; i++) {
+    assert.deepEqual(pm.unblockDependencies(), [idea.id]);
+    rm.setTask(idea.id, { status: 'idea', note: 'needs a decision on the rig' });
+  }
   pm.unblockDependencies();
   const qs = rm.listQuestions().filter((q) => q.topic === 'stall');
   assert.equal(qs.length, 1);

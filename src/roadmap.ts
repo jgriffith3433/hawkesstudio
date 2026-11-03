@@ -228,7 +228,13 @@ export function taskWaits(t: Task, asked: Set<string> = askedJ()): string | null
   }
   if (t.status === 'needs answer') return "an answer to its agent's question";
   if (t.status === 'review') return 'its merge into beta';
-  if (t.status === 'failed') return 'you: it failed after its tries';
+  if (t.status === 'failed') {
+    // Others wait on it: Studio plans it again twice by itself (pm.ts autoReplan) before it asks you.
+    const n = (db.prepare(`SELECT COUNT(*) AS n FROM pm_log WHERE action = 'replan' AND subject = ? AND undone IS NULL`).get(t.id) as any).n as number;
+    const holds = (db.prepare(`SELECT 1 FROM tasks WHERE status = 'planned' AND depends LIKE ? LIMIT 1`).get(`%${t.id}%`) as any);
+    if (holds && n < 2) return `Studio planning it again (automatic re-plan ${n + 1} of 2, one model tier up; it asks you only if that fails)`;
+    return 'you: it failed after its tries';
+  }
   if (t.status === GPU_WAIT) return 'a GPU server: stand-ins are on beta; Studio runs it again for the real art when one is up';
   if (t.status === 'merged' && !landed(t)) return t.build && !t.build.ok ? `a fix: beta's build failed (${t.build.detail.slice(0, 160)})` : "beta's build";
   return null;
@@ -241,7 +247,16 @@ export type Progress = {
   label: string;
   total: number; merged: number; built: number; working: number; waiting: number;
   tasks: { id: string; title: string; status: string; waits: string | null; build: string | null }[];
+  /**
+   * What happens next and who acts (J, 2026-11-03: "work in the roadmap is ALWAYS being worked on"): "working: ..." or
+   * "waiting on <reason> (Studio acts / you act)". Never a bare "planned"; null when it is on beta, verified, live,
+   * done by J's hand or dropped.
+   */
+  next: string | null;
 };
+
+/** Whose move a wait is: the ones that name J are his, everything else Studio takes by itself. */
+export const whoActs = (waits: string) => (/^(you|your)\b/.test(waits) ? 'you act' : 'Studio acts');
 
 /**
  * Where an item really is, from its tasks (never "done" while its tasks are being worked on): needs you (a question
@@ -276,7 +291,19 @@ export function itemProgress(it: Item, asked: Set<string> = askedJ()): Progress 
   const genLabel = state === 'working' && gens.length && gens.every(Boolean)
     ? `waiting for GPU jobs (${gens.reduce((n, g) => n + g!.done, 0)} of ${gens.reduce((n, g) => n + g!.total, 0)} done)` : null;
   if (genLabel) state = 'waiting for GPU jobs';
+  let next: string | null = null;
+  if (['idea', 'dropped', 'done', 'on beta', 'verified', 'live'].includes(state)) next = null;
+  else if (!tasks.length) next = 'waiting on its tasks to be planned from the goal and criteria (Studio acts, on its next PM pass)';
+  else if (state === 'working' || state === 'waiting for GPU jobs') {
+    const run = tasks.filter((t) => ['working', 'needs answer', 'review'].includes(t.status));
+    next = run.length ? `working: ${run.length} task${run.length === 1 ? '' : 's'} with an agent or in review` : null;
+  }
+  if (!next && !['idea', 'dropped', 'done', 'on beta', 'verified', 'live'].includes(state)) {
+    const w = tasks.map((t) => taskWaits(t, asked)).find((x) => x && !/^its agent|^its merge|^beta's build/.test(x));
+    next = w ? `waiting on ${w} (${whoActs(w)})` : 'working: Studio starts the next task by itself';
+  }
   return {
+    next,
     state, label: genLabel ?? (state === 'working' ? `working (${merged} of ${tasks.length} merged)` : state === 'dropped' && it.status !== 'dropped' ? 'dropped (nothing to do)' : state),
     total: tasks.length, merged, built, working, waiting,
     tasks: tasks.map((t) => ({ id: t.id, title: t.title, status: t.status, waits: taskWaits(t, asked), build: t.build ? t.build.detail : null })),
