@@ -594,6 +594,13 @@ export const TOKEN_RETRIES = 3;
  * its token is missing or past its hour) and gets { token, repo, commit, expiresAt }. key is an HMAC of the build row
  * under a secret only Studio holds, so it opens that one build's one repo and nothing else.
  */
+/**
+ * OFF until Hawkes Gen accepts it: Gen's admitCustomer (src/providers/builder/customer.ts) rejects any github key other
+ * than repo, commit, token and ref ("customer builds take github { repo, commit, token, ref? } (not refresh)"), so
+ * sending github.refresh failed every customer Unity build since #211. The endpoint and genTokenFor stay; turn this on
+ * (STUDIO_GEN_REFRESH=1) once Gen has a handler for it.
+ */
+export const SEND_GITHUB_REFRESH = process.env.STUDIO_GEN_REFRESH === '1';
 const refreshSecret = () => process.env.STUDIO_BUILD_KEY || process.env.STUDIO_OWNER_KEY || process.env.HAWKESGEN_KEY || '';
 export const refreshKey = (build: string) => crypto.createHmac('sha256', refreshSecret()).update(`gen-github-token|${build}`).digest('hex');
 export const refreshUrl = () => `${(process.env.STUDIO_PUBLIC_URL || 'https://studio.hawkesgen.ai').replace(/\/+$/, '')}/api/builds/gen-token`;
@@ -614,13 +621,18 @@ export async function genTokenFor(body: any, mint: (slug: string) => Promise<str
   return { status: 200, body: { token, repo: slug, commit: row.sha, expiresAt: new Date(Date.now() + 30 * 60_000).toISOString() } };
 }
 
+/** The github object a Unity build submit carries: repo, commit, token, ref (plus refresh only when SEND_GITHUB_REFRESH). */
+export function githubFor(repo: string, commit: string, token: string, ref: string, row?: string, withRefresh = SEND_GITHUB_REFRESH): Record<string, unknown> {
+  return { repo, commit, token, ref, ...(withRefresh && row && refreshSecret() ? { refresh: { url: refreshUrl(), build: row, key: refreshKey(row) } } : {}) };
+}
+
 /** unity: Hawkes Gen builds that commit in the cloud with the repo's own token, and hands back the output as an asset. */
 async function viaGen(p: Product, b: BuildSpec, slug: string, sha: string, ref: string, token: string | null, say: (s: string) => void, resume: { job?: string; row?: string; onSubmit?: (id: string) => void; onDone?: () => void } = {}, hold: () => Promise<void> = async () => {}): Promise<Output> {
   if (!token) throw new Error(`Studio has no GitHub access to ${slug}: connect GitHub and install the app on it`);
   const { genRun, gen } = await import('./gen.ts');
   say('Hawkes Gen is building it (Unity WebGL, in the cloud)');
   const submit = (tok: string, r: typeof resume) => genRun('unity.build', p.id, {
-    github: { repo: slug, commit: sha, token: tok, ref, ...(resume.row && refreshSecret() ? { refresh: { url: refreshUrl(), build: resume.row, key: refreshKey(resume.row) } } : {}) }, ...(b.path ? { path: b.path } : {}), ...(b.method ? { method: b.method } : {}), ...(b.machine ? { machine: b.machine } : {}), target: 'web', out: 'artifact',
+    github: githubFor(slug, sha, tok, ref, resume.row), ...(b.path ? { path: b.path } : {}), ...(b.method ? { method: b.method } : {}), ...(b.machine ? { machine: b.machine } : {}), target: 'web', out: 'artifact',
   }, (j) => { if (j?.progress?.step || j?.status) say(`Hawkes Gen: ${j.progress?.step ?? j.status}`); }, 3 * 60 * 60 * 1000, r);
   // Minted now, as late as there is: a token made at the start of the run could be an hour old by the time Gen reads it.
   // Gen also asks Studio for a new one when the job starts (refresh, genTokenFor), so no build rides on this one.

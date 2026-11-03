@@ -178,9 +178,7 @@ test('a Unity build in Hawkes Gen with the repo\'s own token, mounted into its w
   assert.equal(run.status, 'done', JSON.stringify(run.steps.map((s: any) => s.detail)));
   const sent = genCalls.at(-1);
   assert.equal(sent.tool, 'unity.build');
-  const { refresh, ...gh } = sent.params.github;
-  assert.deepEqual(gh, { repo: 'acme/game', commit: SHA1, token: 'ghs_acme', ref: 'beta' });
-  assert.match(refresh.url, /\/api\/builds\/gen-token$/);
+  assert.deepEqual(sent.params.github, { repo: 'acme/game', commit: SHA1, token: 'ghs_acme', ref: 'beta' }, 'Gen takes only repo, commit, token and ref');
   assert.equal(sent.params.out, 'artifact');
   assert.equal(sent.params.path, 'Game');
   W.resetSmall();
@@ -595,9 +593,12 @@ test('a Unity build Gen lost to a restart is resubmitted by itself, and the run 
     assert.equal(row.status, 'ready');
     assert.ok(row.token_sent, 'when the token was sent is recorded');
     const g = sent[0].params.github;
-    assert.equal(g.refresh.build, row.id, 'Gen is told how to ask for a fresh token');
-    assert.match(g.refresh.url, /\/api\/builds\/gen-token$/);
-    assert.equal(g.refresh.key, B.refreshKey(row.id));
+    assert.deepEqual(Object.keys(g).sort(), ['commit', 'ref', 'repo', 'token'], 'no github.refresh: Gen rejects it');
+    // The flag-on shape, for when Gen accepts refresh.
+    const on = B.githubFor('a/b', 'c', 't', 'beta', row.id, true) as any;
+    assert.equal(on.refresh.build, row.id);
+    assert.match(on.refresh.url, /\/api\/builds\/gen-token$/);
+    assert.equal(on.refresh.key, B.refreshKey(row.id));
   } finally {
     globalThis.fetch = before;
   }
