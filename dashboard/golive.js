@@ -219,6 +219,7 @@ if (typeof document !== 'undefined') (() => {
       <div class="gl-when">Live updated ${esc(when(lastLive))} · beta changed ${esc(when(p.beta?.date))}</div>
       ${ps && ps.state !== 'running' ? `<div class="gl-play ${ps.state}" data-key="glplay:${esc(p.product)}">${PlayState.ICON[ps.state]} ${esc(ps.text)}</div>` : ''}
       ${links(prod, p)}
+      ${(p.buildFailing ?? []).map((f) => BuildFail.badge(p.product, f)).join('')}
       ${run.map((o) => `<div class="gl-busy">⏳ ${esc(o.title)}${o.status === 'queued' ? ' (waiting its turn)' : o.step ? `: ${esc(o.step)}` : '…'}</div>`).join('')}
       ${fixRunning && !run.length ? `<div class="gl-busy">⏳ ${esc(FIX[fx.action].busy)}${fx.step ? `: ${esc(fx.step)}` : '…'}</div>` : ''}
       ${!showFx ? '' : fx.error ? `<div class="gl-done gl-fail">❌ ${esc(FIX[fx.action].label)} failed ${esc(ago(fx.errorAt))}: ${esc(String(fx.error).slice(0, 300))}</div>` : `<div class="gl-done">${fx.done.ok ? `✅ ${esc(FIX[fx.action].label)} finished ${esc(ago(fx.done.at))}${fxRun}` : `<span class="gl-fail">❌ ${esc(FIX[fx.action].label)} failed ${esc(ago(fx.done.at))}: ${esc(String(fx.done.detail ?? '').slice(0, 300))}</span>${fxRun}`}</div>`}
@@ -226,7 +227,7 @@ if (typeof document !== 'undefined') (() => {
       ${p.players ? `<div class="gl-players meta" title="Real players on the live site (Hawkes Analytics; bots and your own devices left out)">👥 ${esc(p.players)}</div>` : ''}
       ${up && p.release ? `<div class="gl-release meta">${p.release.existing ? 'What\'s new (already on beta, kept)' : 'Releases'} v${esc(p.release.version)}: ${esc(p.release.title ?? '(the notes are being written)')}${p.release.notes?.length ? `<ul>${p.release.notes.map((x) => `<li>${esc(x)}</li>`).join('')}</ul>` : ''}</div>` : ''}
       ${Object.entries(groups).map(([g, cs]) => `<div class="gl-group"><b>${esc(g)} (${cs.length})</b><ul>${cs.slice(0, 6).map((c) => `<li>${esc(plain(c.title))}</li>`).join('')}${cs.length > 6 ? `<li class="meta">and ${cs.length - 6} more</li>` : ''}</ul></div>`).join('')}
-      ${up || p.mainOnly.length || L.played ? `<div class="gl-light-line"><b>${esc(L.text)}</b>${L.played ? `<br><span class="meta">${esc(L.played)}</span>` : ''}${L.why?.length ? `<ul>${L.why.map((w) => `<li>${esc(w)}</li>`).join('')}</ul>` : ''}</div>` : ''}
+      ${up || p.mainOnly.length || L.played ? `<div class="gl-light-line"><b>${esc(L.text)}</b>${L.played ? `<br><span class="meta">${esc(L.played)}</span>` : ''}${L.why?.length ? `<ul>${L.why.map((w) => `<li>${esc(w)}</li>`).join('')}</ul>` : ''}${BuildFail.attempts(p.product, p.buildAttempts)}</div>` : ''}
       ${p.betaDown && !run.length ? `<div class="gl-light-line gl-down"><b>Beta wasn't played.</b><br>${esc(p.betaDown.line)}${fx?.action === 'redeploy' && (fx.done || fx.error) ? `<br><span class="meta">${esc(fx.done?.note ?? fx.error)}</span>${fx.done?.link ? ` <a href="${esc(fx.done.link)}" target="_blank" rel="noopener">Open the run ↗</a>` : ''}` : ''}
         <div class="gl-buttons"><button class="primary big" data-admin data-glfix="redeploy" data-guide="off" title="${esc(FIX.redeploy.title)}"${fixRunning ? ' disabled' : ''}>${esc(fixRunning && fx.action === 'redeploy' ? `${FIX.redeploy.busy}…` : FIX.redeploy.label)}</button>
         <button class="big" data-admin data-glfix="playtest" data-guide="off" title="${esc(FIX.playtest.title)}"${fixRunning ? ' disabled' : ''}>Retry playtest</button>${p.betaDown.runs ? ` <a href="${esc(p.betaDown.runs)}" target="_blank" rel="noopener">Beta's deploys ↗</a>` : ''}</div></div>` : ''}
@@ -388,7 +389,7 @@ if (typeof document !== 'undefined') (() => {
 
   // While the tab is open: the queue when the push stream says operations, changes or runs moved (stream.js)
   // when a go live starts or ends, the plans again.
-  studioStream.on(['ops', 'changes', 'runs'], async () => {
+  studioStream.on(['ops', 'changes', 'runs', 'builds'], async () => {
     if (tab !== 'golive' || busy || !products.length) return;
     try { await pollFixes(); if (await loadOps()) await load(); else draw(); } catch {}
   });

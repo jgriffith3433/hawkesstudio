@@ -16,6 +16,7 @@ import type http from 'node:http';
 import { db, newId } from './db.ts';
 import { getProduct, loadProducts, StudioError, managedElsewhere, setBuildMachine, type BuildSpec, type BuildMachine, type Product } from './config.ts';
 import { folderFilesAsync } from './sitestore.ts';
+import { BuildFailure, extractLog, recordFailure, announce, settleFailure } from './buildfail.ts';
 
 db.exec(`CREATE TABLE IF NOT EXISTS builds (
   id TEXT PRIMARY KEY, product TEXT NOT NULL, build TEXT NOT NULL, version INTEGER NOT NULL, status TEXT NOT NULL,
@@ -31,6 +32,10 @@ try { db.exec('ALTER TABLE builds ADD COLUMN token_at INTEGER'); } catch { /* th
 try { db.exec('CREATE UNIQUE INDEX IF NOT EXISTS builds_version ON builds (product, build, version)'); } catch { /* there */ }
 // publish.commit: the repo and the commit on its beta that holds this build (going live fast-forwards that repo's main to it).
 for (const col of ['commit_repo', 'commit_sha']) { try { db.exec(`ALTER TABLE builds ADD COLUMN ${col} TEXT`); } catch { /* there */ } }
+// Why a build failed (buildfail.ts): the class (token / restart / compile / publish / timeout ...), infrastructure or code,
+// the plain words, the stage it stopped at, the last ~200 log lines Gen kept, every Gen job tried, and when J was told.
+for (const col of ['fail_class', 'fail_kind', 'fail_plain', 'fail_step', 'fail_log', 'gen_jobs']) { try { db.exec(`ALTER TABLE builds ADD COLUMN ${col} TEXT`); } catch { /* there */ } }
+try { db.exec('ALTER TABLE builds ADD COLUMN notified INTEGER'); } catch { /* there */ }
 
 export type BuildRow = { id: string; product: string; build: string; version: number; status: 'building' | 'ready' | 'failed' | 'pruned'; sha: string | null; ref: string | null; runner: string; target: string; files: number | null; bytes: number | null; url: string | null; run: string | null; change: string | null; detail: string | null; started: number; finished: number | null; commit_repo?: string | null; commit_sha?: string | null };
 export type BuildTrigger = 'beta' | 'tag';
@@ -299,9 +304,12 @@ export async function reconcileBuilds(o: { only?: string; product?: string; now?
     if (!orphan && !old) continue;
     const age = `${Math.round((now - b.started) / 360_000) / 10} h`;
     const why = orphan ? `its run ${b.run_status ?? 'is gone'} while the build was still going` : `it ran past ${Math.round(BUILD_MAX_MS() / 360_000) / 10} h`;
-    const fail = (detail: string) => {
-      db.prepare("UPDATE builds SET status = 'failed', detail = ?, finished = ? WHERE id = ? AND status = 'building'").run(detail.slice(0, 500), now, b.id);
+    const fail = (detail: string, gone?: any) => {
+      const r = db.prepare("UPDATE builds SET status = 'failed', detail = ?, finished = ? WHERE id = ? AND status = 'building'").run(detail.slice(0, 500), now, b.id);
+      if (!Number(r.changes)) return;
       out.push({ build: b.build, version: b.version, product: b.product, job: b.gen_job ?? null, outcome: detail });
+      // Keep the reason, the log Gen has, and tell J once (buildfail.ts).
+      void settleFailure(b.id, detail.slice(0, 500), { job: gone, stage: 'build' }).catch((e) => console.warn(`[builds] couldn't record why ${b.id} failed: ${e?.message ?? e}`));
     };
     if (!b.gen_job) { fail(orphan ? `stopped: ${why}, with no Gen job to wait for` : `timed out after ${age}: no result`); continue; }
     let job: any;
@@ -315,13 +323,13 @@ export async function reconcileBuilds(o: { only?: string; product?: string; now?
     const status = String(job?.status ?? '');
     if (status === 'done') {
       db.prepare('UPDATE builds SET gen_done = ? WHERE id = ? AND gen_done IS NULL').run(now, b.id);
-      fail(`Hawkes Gen finished job ${b.gen_job}, but Studio stopped before publishing it (${why}); build again`);
+      fail(`Hawkes Gen finished job ${b.gen_job}, but Studio stopped before publishing it (${why}); build again`, job);
     } else if (status === 'failed' || status === 'cancelled') {
       db.prepare('UPDATE builds SET gen_done = ? WHERE id = ? AND gen_done IS NULL').run(now, b.id);
-      fail(`the Unity build ${status}: ${job?.error ?? 'no reason given'}`);
+      fail(`the Unity build ${status}: ${job?.error ?? 'no reason given'}`, job);
     } else {
       const text = old ? `timed out after ${age} in Hawkes Gen (job ${b.gen_job} was still ${status || 'running'}); cancelled it` : `stopped: ${why}; cancelled Gen job ${b.gen_job}`;
-      fail(text);
+      fail(text, job);
       await (o.cancel ?? ((id, w) => import('./cancel.ts').then((C) => C.cancelJob(id, 'Studio', w))))(b.gen_job, text).catch((e: any) => console.warn(`[builds] couldn't cancel Gen job ${b.gen_job}: ${String(e?.message ?? e).slice(0, 160)}`));
     }
   }
@@ -357,6 +365,9 @@ async function buildOne(run: string, p: Product, b: BuildSpec, o: StartOptions) 
   const slug = String((p as any).github ?? '');
   let rowId: string | null = null;
   let out: Output | null = null;
+  // Where it is, for the failure ("failed while publishing"): buildfail.ts Stage.
+  let stage: import('./buildfail.ts').Stage = 'checkout';
+  let shaSeen: string | null = o.sha ?? null;
   // Downloading the output, unpacking and publishing hold Studio's one heavy slot (heavyslot.ts); the build itself and
   // its playtest don't.
   const slot: { release: (() => void) | null } = { release: null };
@@ -371,6 +382,7 @@ async function buildOne(run: string, p: Product, b: BuildSpec, o: StartOptions) 
     const ref = o.ref ?? 'beta';
     const sha = o.sha ?? (await githubCommit(slug, ref, gh)) ?? (await githubCommit(slug, 'main', gh));
     if (!sha) throw new Error(`${slug} has no ${ref} or main branch on GitHub`);
+    shaSeen = sha;
     // A push or the nightly sync asking again for a commit already built: nothing to build (a Unity build costs money).
     if (o.trigger && !o.artifact && !o.change) {
       const had = db.prepare("SELECT version, url FROM builds WHERE product = ? AND build = ? AND sha = ? AND status = 'ready' AND change IS NULL ORDER BY version DESC LIMIT 1").get(p.id, b.id, sha) as any;
@@ -398,10 +410,12 @@ async function buildOne(run: string, p: Product, b: BuildSpec, o: StartOptions) 
     if (!o.resume) db.prepare('INSERT INTO builds (id, product, build, version, status, sha, ref, runner, target, run, change, started) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(rowId, p.id, b.id, version || -Date.now(), 'building', sha, ref, runnerOf(b), b.target ?? 'web', run, o.change ?? null, Date.now());
     say(`${sha.slice(0, 7)} (${ref})${o.resume ? ', carrying on after a restart' : ''}`);
     const row = rowId;
+    stage = 'build';
     out = b.tool === 'unity' ? await viaGen(p, b, slug, sha, ref, token, say, { job: o.resume?.job ?? undefined, row, onSubmit: (id) => db.prepare('UPDATE builds SET gen_job = ?, gen_done = NULL, token_sent = ? WHERE id = ?').run(id, Date.now(), row), onDone: () => db.prepare('UPDATE builds SET gen_done = ? WHERE id = ?').run(Date.now(), row) }, hold)
       : b.tool === 'actions' ? await viaActions(b, slug, o.artifact!, gh, say, hold)
       : await viaStudio(p, b, slug, sha, token, gh, say, hold);
     await hold();
+    stage = 'publish';
     // Publish: once, under its version (or the change's preview), behind the Studio's sign-in.
     const { sub, root } = await siteOf(p);
     const base = o.change ? `${sub}/c/${o.change}` : `${sub}/b/${b.id}/${version}`;
@@ -428,6 +442,7 @@ async function buildOne(run: string, p: Product, b: BuildSpec, o: StartOptions) 
     if (!o.change) await prune(p, b.id, sub).catch((e) => say(`old builds not pruned: ${e.message}`));
     // Into another project's site too: mounted (its beta site serves it there) and, when asked, committed to its repo.
     const linked: string[] = [];
+    stage = 'mount';
     if (b.publish?.page === 'site' && movesBeta) {
       // The site keeps its own page (a game page with its own loader, sound prompt and links): the build stays at its own
       // public address and only a pointer goes into the site, never the build's template index.html over the page.
@@ -455,6 +470,7 @@ async function buildOne(run: string, p: Product, b: BuildSpec, o: StartOptions) 
     out.cleanup();
     out = null;
     release();
+    stage = 'playtest';
     if (movesBeta && (b.target ?? 'web') === 'web' && b.playtest !== false) await playIt(run, p, b.publish ? getProduct(b.publish.project) : p);
     else if (movesBeta && (b.target ?? 'web') !== 'web' && b.playtest !== false) await playDesktop(run, p, b, url);
     // The owner said to keep going live (golive-policy.ts): what just passed goes live by itself.
@@ -464,8 +480,19 @@ async function buildOne(run: string, p: Product, b: BuildSpec, o: StartOptions) 
     // In the log too: a customer's Studio is only visible to the platform through its logs (2026-10-31: a refused build
     // left no trace anywhere J or Claude could read).
     console.warn(`[builds] ${p.id} ${b.id} failed: ${why}`);
-    if (rowId) db.prepare("UPDATE builds SET status = 'failed', detail = ?, finished = ? WHERE id = ?").run(why, Date.now(), rowId);
-    updateStep(step, { status: 'failed', detail: why, finished: true });
+    // The reason, the class (infrastructure or code), the log Gen kept and every Gen job tried stay on the row; Studio's own
+    // retries are over by here, so J is told once (buildfail.ts).
+    // Failing before there was a row (no GitHub access, no such branch, a workflow GitHub wouldn't start) used to leave no
+    // trace but a step; it is a failed build like any other now, so it shows where builds show.
+    if (!rowId && !o.resume && !o.artifact) {
+      rowId = newId('b');
+      db.prepare('INSERT INTO builds (id, product, build, version, status, sha, ref, runner, target, run, change, started) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(rowId, p.id, b.id, o.change ? -Date.now() : nextVersion(p.id, b.id), 'failed', shaSeen, o.ref ?? 'beta', runnerOf(b), b.target ?? 'web', run, o.change ?? null, Date.now());
+    }
+    if (rowId) {
+      const c = recordFailure(rowId, e, { stage });
+      updateStep(step, { status: 'failed', detail: why, data: { failure: { class: c.class, kind: c.kind, plain: c.plain, stage, build: rowId } }, finished: true });
+      void announce(rowId);
+    } else updateStep(step, { status: 'failed', detail: why, finished: true });
   } finally {
     out?.cleanup();
     release();
@@ -600,7 +627,11 @@ async function viaGen(p: Product, b: BuildSpec, slug: string, sha: string, ref: 
   const { forgetRepoToken, repoToken } = await import('./ghtoken.ts');
   let first = token;
   if (!resume.job) { forgetRepoToken(slug); first = (await repoToken(slug)) ?? token; }
+  // Every Gen job this build tried and why each failed, and what Gen kept of the last one (buildfail.ts): the failure keeps them.
+  const tried: { id: string; error: string }[] = [];
+  const note = (j: any) => { if (j?.status === 'failed' || j?.status === 'cancelled') tried.push({ id: String(j.id ?? ''), error: String(j.error ?? 'no reason given').slice(0, 300) }); };
   let job: any = await submit(first, { job: resume.job, onSubmit: resume.onSubmit });
+  note(job);
   // A Gen that restarted (Cloud Run scales it to zero) or lost the token is infrastructure, not the project: the same
   // build is submitted again with a freshly minted token, up to TOKEN_RETRIES times, and the run says so (sick-of-it-unity
   // v3 to v7 failed on it). Each resubmit is a new Gen job, recorded on the row. A Unity compile error is never retried,
@@ -611,8 +642,9 @@ async function viaGen(p: Product, b: BuildSpec, slug: string, sha: string, ref: 
     if (!fresh) break;
     say(`Hawkes Gen lost this build (${String(job.error).slice(0, 120)}): Studio is building it again by itself with a fresh GitHub token (try ${n + 1} of ${TOKEN_RETRIES + 1})`);
     job = await submit(fresh, { row: resume.row, onSubmit: resume.onSubmit });
+    note(job);
   }
-  if (job.status !== 'done') throw new Error(`the Unity build ${job.status}: ${job.error ?? 'no reason given'}`);
+  if (job.status !== 'done') throw new BuildFailure(`the Unity build ${job.status}: ${job.error ?? 'no reason given'}`, { jobs: tried, log: extractLog(job) });
   resume.onDone?.();
   const asset = job.result?.artifact?.asset;
   if (!asset) throw new Error('Hawkes Gen finished without the build output');
@@ -868,13 +900,22 @@ export async function handleGenToken(req: http.IncomingMessage, res: http.Server
 }
 
 export async function handleBuildRoutes(req: http.IncomingMessage, res: http.ServerResponse, route: string, method: string, readJson: (r: http.IncomingMessage) => Promise<any>) {
-  const m = /^\/api\/(?:projects|games)\/([a-z][a-z0-9-]{1,39})\/builds(?:\/([a-z0-9-]+)\/(\d+)\/beta)?$/.exec(route);
+  const m = /^\/api\/(?:projects|games)\/([a-z][a-z0-9-]{1,39})\/builds(?:\/([a-z0-9-]+)\/(\d+)\/beta|\/(b_[0-9a-f]+)\/why)?$/.exec(route);
   if (!m) return false;
   const send = (status: number, body: unknown) => { res.writeHead(status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); res.end(JSON.stringify(body)); };
   const p = getProduct(m[1]);
+  // "Why did this fail?": the whole record of one build, with the log Gen kept (buildfail.ts).
+  if (m[4]) {
+    if (method !== 'GET') return send(405, { error: 'GET' }), true;
+    const w = (await import('./buildfail.ts')).whyFailed(m[4]);
+    return w && w.product === p.id ? send(200, w) : send(404, { error: `No build ${m[4]} in ${p.id}` }), true;
+  }
   if (!m[2] && method === 'GET') {
     const { previewUrl } = await import('./previews.ts');
-    return send(200, { project: p.id, builds: buildsOf(p), beta: previewUrl(p.id), history: buildHistory(p.id) }), true;
+    const F = await import('./buildfail.ts');
+    // The history carries each failure's class, kind and plain words (not its log: that is /builds/<id>/why).
+    const history = buildHistory(p.id).map(({ fail_log: _log, ...h }: any) => ({ ...h, ...(h.status === 'failed' ? { failure: F.failureOf({ ...h, fail_log: _log }) } : {}) }));
+    return send(200, { project: p.id, builds: buildsOf(p), beta: previewUrl(p.id), history, failing: F.failingBuilds(p.id) }), true;
   }
   if (!m[2] && method === 'POST') {
     const b = await readJson(req);

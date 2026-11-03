@@ -83,6 +83,8 @@ async function overview() {
         return { name, playtest: byName.get(`playtest:${name}`) ?? null, review: byName.get(`review:${name}`) ?? null };
       }),
       lastReview: reviews[0] ?? null,
+      // Builds whose newest attempt failed (buildfail.ts): the red "Last build failed" badge on the card.
+      buildFailing: (await import('./buildfail.ts')).failingBuilds(p.id),
       open: Object.fromEntries(open.map((r) => [r.severity, r.n])),
     };
   }));

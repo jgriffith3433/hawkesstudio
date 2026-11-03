@@ -153,7 +153,9 @@ export function playtestSkipFor(approval: string | undefined, product: string, s
 /** notesWaitMs: how long to wait for the release notes being written (the Approve card waits longer, to show them). */
 export async function deployPlan(productId: string, opts: { notesWaitMs?: number; io?: GitHubIO } = {}) {
   const plan = await planOf(productId, opts);
-  return { ...plan, playtestOnly: playtestOnly(plan.blockers), betaDown: await betaDownOf(productId, plan) };
+  // Builds whose newest attempt failed (buildfail.ts): Go live's red badge, whatever else the plan says.
+  const buildFailing = (await import('./buildfail.ts')).failingBuilds(productId);
+  return { ...plan, playtestOnly: playtestOnly(plan.blockers), betaDown: await betaDownOf(productId, plan), buildFailing };
 }
 /**
  * When beta's last playtest failed because the beta site didn't answer: what happened in plain words and the two ways
@@ -382,7 +384,7 @@ async function githubPlan(p: Product, io: GitHubIO = {}) {
   }
   if (beta && !tested.length) blockers.push(last ? `${BETA} hasn't been playtested at ${beta.short} (the last playtest played ${last.played.branch} ${String(last.played.sha).slice(0, 7)}). Playtest ${BETA} first.` : `${BETA} hasn't been playtested yet: play it first (a beta run or a playtest of the project).`);
   warnings.push(...playWarnings(tested, beta?.short));
-  const tg = beta ? await publishTargets(p, beta.sha, io).catch((e: any) => ({ targets: [], blockers: [`GitHub: ${e.message}`] })) : { targets: [], blockers: [] };
+  const tg = beta ? await publishTargets(p, beta.sha, io).catch((e: any) => ({ targets: [], blockers: [`GitHub: ${e.message}`], attempts: [] })) : { targets: [], blockers: [], attempts: [] };
   blockers.push(...tg.blockers);
   const moving = tg.targets.filter((t) => t.move);
   if (beta && cmp.main && !cmp.ahead.length && !cmp.behind.length && !moving.length) blockers.push(`Nothing to go live: ${MAIN} already is ${BETA} (${beta.short})${tg.targets.length ? ' and its builds are live' : ''}.`);
@@ -393,6 +395,7 @@ async function githubPlan(p: Product, io: GitHubIO = {}) {
     commits: cmp.ahead.map(brief), mainOnly: cmp.behind.map(brief), siteCommits: [] as ReturnType<typeof brief>[], siteMainOnly: [] as ReturnType<typeof brief>[],
     tested: { sha: beta?.short ?? null, playtests: tested }, lastPlayed: last,
     build: null as any,
+    buildAttempts: tg.attempts,
     previous: listDeploys(p.id, 5).map((d) => ({ id: d.id, kind: d.kind, at: d.at, by: d.by, before: d.before?.slice(0, 7) ?? null, after: d.after.slice(0, 7), beta: d.beta?.slice(0, 7) ?? null, detail: d.detail, rolledBack: d.rolled_back, skippedPlaytest: skipOf(d) })),
     players: await livePlayers(p.id),
     blockers, warnings, canDeploy: !blockers.length, fix: planFix(blockers) as BlockerFix | null, notCloned: null,
