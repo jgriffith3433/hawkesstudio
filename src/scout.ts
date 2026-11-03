@@ -22,7 +22,7 @@ import { spawnClaude } from './sandbox.ts';
 import { addWorktree } from './worktree.ts';
 import { syncRepo, isUnityProduct } from './repos.ts';
 import { readRepoViaApi } from './repo-read.ts';
-import { populateSource } from './source-ready.ts';
+import { populateSource, sourceError } from './source-ready.ts';
 import { primeRepoToken } from './ghtoken.ts';
 import { noteCancel, cancelNote, cancelWords } from './cancel.ts';
 
@@ -220,6 +220,10 @@ async function run(id: string, top: string, base: string, opts: ScoutOpts = {}) 
   try {
     // A clone or worktree that fails (a big Unity repo killed for memory, "could not read Username") falls back to reading
     // GitHub's tarball of the ref (repo-read.ts): no history, no art, but the source a scout needs.
+    // A Unity repo has no tarball fallback (J, 2026-11-03: the fill-in found nothing in a nested project, the scout read a
+    // tarball with no .git and the failure stayed hidden): its scout either has the game's source in the worktree or fails
+    // up front as Studio's own failure (infra-failure.ts: "source missing/unreadable ... not counted").
+    const unityRepo = (() => { try { return !isInfra(s.product) && isUnityProduct(getProduct(s.product)); } catch { return false; } })();
     try {
       // No checkout yet (a fresh server, a repo added since): clone it first instead of failing with git's "not a repository".
       if (!fs.existsSync(path.join(repo, '.git'))) {
@@ -239,13 +243,14 @@ async function run(id: string, top: string, base: string, opts: ScoutOpts = {}) 
       // A light checkout gets its source files checked out here with Studio's token (source-ready.ts); a worktree that
       // still has none is a git failure like the rest: the tarball below gives the scout the source.
       const light = git(wt, ['config', '--get', 'hawkes.light']).out === 'true';
-      const unity = (() => { try { return !isInfra(s.product) && isUnityProduct(getProduct(s.product)); } catch { return false; } })();
+      const unity = unityRepo;
       if (light || unity) {
         const probe = await populateSource(wt, gitAsync, { unity, log: (m) => set(id, { detail: m }) });
-        if (!probe.ok) throw new Error(probe.reason ?? 'source unreadable');
+        if (!probe.ok) throw new Error(sourceError(`the scout's worktree ${wt}`, probe));
       }
     } catch (gitErr: any) {
       const slug = repoMap()[top];
+      if (unityRepo) throw new Error(/^source (missing|unreadable)/.test(String(gitErr.message)) ? gitErr.message : sourceError(`the scout's checkout of ${top}: ${String(gitErr.message ?? gitErr).slice(0, 200)}`, { ok: false, tracked: 0, reason: 'source unreadable' }));
       if (!slug) throw gitErr;
       set(id, { detail: `git couldn't give the source (${String(gitErr.message ?? gitErr).slice(0, 120)}); reading it through GitHub's API` });
       try {
