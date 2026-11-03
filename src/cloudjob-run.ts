@@ -19,7 +19,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
-import { git, packFiles, readPack, unpack, folderEntries, dirtyState, type JobRunner } from './cloudjob.ts';
+import { git, packFiles, readPack, unpack, folderEntries, dirtyState, type JobRunner, type PackCommit, type PackFile } from './cloudjob.ts';
 
 type Store = Pick<JobRunner, 'put' | 'get' | 'list' | 'remove'>;
 // kind "build" (previews-cloud.ts): a beta site's build of one commit, in a shallow clone when GitHub has the commit; no
@@ -223,10 +223,65 @@ export function commitLeftovers(cwd: string, log: (s: string) => void, message =
   const dirty = git(cwd, ['status', '--porcelain']).out;
   if (!dirty) return false;
   const add = git(cwd, ['add', '-A']);
+  if (add.ok) unstagePointers(cwd);
+  if (!git(cwd, ['diff', '--cached', '--name-only']).out) { log('[job] the only loose changes were LFS pointer files (skipped on purpose): nothing to commit'); return false; }
   const c = add.ok && git(cwd, ['-c', 'user.name=Hawkes Studio', '-c', 'user.email=studio@hawkesgen.ai', '-c', 'core.hooksPath=/dev/null', 'commit', '--quiet', '--no-verify', '-m', `${message}\n\nCommitted by Hawkes Studio's job: the agent left these changes uncommitted.`]);
   if (!add.ok || !c || !c.ok) { log(`[job] couldn't commit the agent's leftover changes: ${(add.ok ? c && c.err : add.err) || ''}`.slice(0, 300)); return false; }
   log(`[job] committed the agent's leftover changes (${dirty.split('\n').length} file(s))`);
   return true;
+}
+
+/** Whether a file's first bytes are a Git LFS pointer. */
+export function isLfsPointer(file: string) {
+  try {
+    const fd = fs.openSync(file, 'r');
+    try {
+      const buf = Buffer.alloc(64);
+      const n = fs.readSync(fd, buf, 0, 64, 0);
+      return buf.subarray(0, n).toString('utf8').startsWith('version https://git-lfs.github.com/spec');
+    } finally { fs.closeSync(fd); }
+  } catch { return false; }
+}
+
+/**
+ * A clone without LFS files (spec.git.lfs false) holds pointer files where the art would be. Git can list ~1,100 of them as
+ * modified (2026-11-03: Yooba Land and Sick of It), which is noise, not the agent's edits: a pointer is never staged here.
+ */
+export function unstagePointers(cwd: string) {
+  const staged = git(cwd, ['diff', '--cached', '--name-only', '-z']).raw.toString('utf8').split('\0').filter(Boolean);
+  const noise = staged.filter((f) => isLfsPointer(path.join(cwd, f)));
+  for (let i = 0; i < noise.length; i += 200) git(cwd, ['reset', '--quiet', '--', ...noise.slice(i, i + 200)]);
+  return noise;
+}
+
+/**
+ * The pass's commits as plain files: the net change start..HEAD (contents at HEAD, deletions) and the commits' messages.
+ * A bundle is a thin pack against blobs Studio's light clone may not have; this always applies (cloudjob.ts replayCommit).
+ * null when there is nothing to send or it would be too big (the bundle stays the only way then).
+ */
+export function replayOf(cwd: string, start: string, head: string, maxBytes = 120 * 1024 * 1024): PackCommit | null {
+  const raw = git(cwd, ['diff', '--raw', '-z', '--no-renames', '--no-abbrev', start, head]);
+  if (!raw.ok || !raw.out) return null;
+  const t = raw.raw.toString('utf8').split('\0');
+  const files: PackFile[] = [];
+  const deleted: string[] = [];
+  let bytes = 0;
+  for (let i = 0; i + 1 < t.length; i += 2) {
+    const m = /^:(\d+) (\d+) [0-9a-f]+ [0-9a-f]+ (\w)/.exec(t[i]);
+    if (!m) continue;
+    const file = t[i + 1];
+    if (m[3] === 'D') { deleted.push(file); continue; }
+    if (m[2] === '160000' || m[2] === '120000') continue; // submodules and symlinks aren't replayed
+    const blob = git(cwd, ['cat-file', 'blob', `${head}:${file}`]);
+    if (!blob.ok) return null; // a blob this clone doesn't have: the bundle is the only way
+    bytes += blob.raw.length;
+    if (bytes > maxBytes) return null;
+    files.push({ p: file, d: blob.raw.toString('base64'), m: m[2] === '100755' ? 0o755 : 0o644 });
+  }
+  if (!files.length && !deleted.length) return null;
+  const subjects = git(cwd, ['log', '--reverse', '--format=%B', '--no-merges', `${start}..${head}`]).out;
+  const message = (subjects || "Work from the agent's pass").slice(0, 4000);
+  return { message, files, deleted };
 }
 
 /** What the pass did: its new commits (a bundle), its uncommitted files and the session folder. */
@@ -237,9 +292,12 @@ export function collect(spec: Spec, start: string | null, tmp: string, at: (p: s
   let deleted: string[] = [];
   let bundle: string | null = null;
   let bundleError: string | null = null;
+  let commit: PackCommit | null = null;
   if (spec.git && fs.existsSync(path.join(cwd, '.git'))) {
     const head = git(cwd, ['rev-parse', 'HEAD']).out;
     if (start && head && head !== start) {
+      // The same commits as plain files too: the bundle's thin pack may not apply in Studio's light clone.
+      commit = replayOf(cwd, start, head);
       bundle = path.join(tmp, 'out.bundle');
       const b = git(cwd, ['bundle', 'create', bundle, 'HEAD', `^${start}`]);
       if (!b.ok) {
@@ -250,13 +308,14 @@ export function collect(spec: Spec, start: string | null, tmp: string, at: (p: s
     }
     const d = dirtyState(cwd);
     deleted = d.deleted;
-    for (const rel of d.changed) entries.push({ p: rel, file: path.join(cwd, rel) });
+    // Not LFS pointer files a no-LFS clone lists as modified (noise; unstagePointers).
+    for (const rel of d.changed) if (!isLfsPointer(path.join(cwd, rel))) entries.push({ p: rel, file: path.join(cwd, rel) });
     // The agent's notes (.hawkes/: its summary, question, stuck notes) come back by name: they're excluded from git.
     const have = new Set(entries.map((e) => e.p));
     entries.push(...folderEntries(path.join(cwd, '.hawkes'), (rel) => `.hawkes/${rel}`).filter((e) => !have.has(e.p)));
     gitOut = { head, bundle: Boolean(bundle) };
   }
-  return { pack: packFiles(entries, deleted), bundle, bundleError, git: gitOut };
+  return { pack: packFiles(entries, deleted, commit), bundle, bundleError, replay: Boolean(commit), git: gitOut };
 }
 
 /**
@@ -380,7 +439,8 @@ export async function runUnit(unit: string, store: Store, { every = 2000, at = (
     await store.put(key('out/out.pack'), out.pack);
     await flush();
     if (out.bundleError) say(`[job] ${out.bundleError}`);
-    if (out.bundleError && !error) error = out.bundleError;
+    // Without a bundle the commits still travel as files (out.replay); only when neither works is the pass failed.
+    if (out.bundleError && !out.replay && !error) error = out.bundleError;
     await store.put(key('out/exit.json'), JSON.stringify({ code, signal, ...(error ? { error } : {}), git: out.git }));
   } catch (e: any) {
     say(`[job] sending the work back: ${e.message ?? e}`);
