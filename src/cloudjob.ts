@@ -28,6 +28,7 @@ import { EventEmitter } from 'node:events';
 import { spawnSync } from 'node:child_process';
 import { DATA, ROOT } from './config.ts';
 import { runToken } from './jobbroker.ts';
+import { UNITY_SOURCE_PATTERNS, GENERIC_SOURCE_PATTERNS } from './source-ready.ts';
 
 export type PackFile = { p: string; d: string; m?: number };
 /**
@@ -336,10 +337,13 @@ export function startCloudJob(unit: string, spec: Spec, o: { gitToken?: string |
       // A big repo (repos.ts bigRepo: a Unity project's, or over STUDIO_CLONE_MAX_MB) is cloned partially with no LFS
       // files (cloudjob-run.ts prepare's default); a small one fully, with its LFS files, as before.
       let big: string | null = null;
+      let sparse: string[] | undefined;
       if (ws) {
         const { slugOfRemote } = await import('./ghtoken.ts');
         const slug = slugOfRemote(ws.remote);
         if (slug) big = await import('./repos.ts').then(({ bigRepo }) => bigRepo(slug)).catch(() => null);
+        // The job's checkout is sparse like Studio's worktree (the job's disk is memory: a Unity project's whole tree killed it).
+        if (big) sparse = jobSparsePatterns(cwd);
       }
       // An agent's read-only copies of the Studio's other projects' repos (access.ts), next to its worktree.
       const repos = ws ? await import('./access.ts').then((A) => A.extraReposFor(cwd)).catch(() => []) : [];
@@ -348,7 +352,7 @@ export function startCloudJob(unit: string, spec: Spec, o: { gitToken?: string |
         // Talk's answer (detach.ts names its unit hawkes-talk-<conversation>-…): its output goes up as it comes.
         ...(unit.startsWith('hawkes-talk-') ? { flushMs: TALK_FLUSH_MS() } : {}),
         // tokenAt and refresh: a job that waits for a machine past most of the token's hour gets a fresh one (jobgit.ts).
-        git: ws ? { head: ws.head, branch: ws.branch, remote: ws.remote, bundle: Boolean(ws.bundle), token: gitToken, tokenAt: Date.now(), ...(await gitRefresh(unit, ws.remote)), ...(big ? {} : { partial: false, lfs: true }), ...(unit.startsWith('hawkes-agent-') ? { commitDirty: true } : {}) } : null,
+        git: ws ? { head: ws.head, branch: ws.branch, remote: ws.remote, bundle: Boolean(ws.bundle), token: gitToken, tokenAt: Date.now(), ...(await gitRefresh(unit, ws.remote)), ...(big ? (sparse ? { sparse } : {}) : { partial: false, lfs: true }), ...(unit.startsWith('hawkes-agent-') ? { commitDirty: true } : {}) } : null,
       }));
       f.execution = await r.start(unit);
       await r.put(key(unit, 'execution.txt'), f.execution);
@@ -361,6 +365,12 @@ export function startCloudJob(unit: string, spec: Spec, o: { gitToken?: string |
     }
     follow(f, spec.cwd, spec.env);
   })();
+}
+
+/** The source patterns the job checks out in a big repo: the same ones Studio's worktree got (source-ready.ts). */
+export function jobSparsePatterns(cwd: string): string[] {
+  const unity = Boolean(git(cwd, ['ls-files', '--', 'Assets', 'ProjectSettings']).out);
+  return unity ? UNITY_SOURCE_PATTERNS : GENERIC_SOURCE_PATTERNS;
 }
 
 /** The spec's way to a fresh clone token (jobgit.ts), or nothing when Studio has no address the job can reach. */
@@ -388,8 +398,31 @@ export function reattachCloudJob(unit: string, cwd: string, env: NodeJS.ProcessE
   })();
 }
 
+/** The last lines the job printed (its log, then its errors), on one line: what a failed job's detail shows besides the error. */
+export function jobTail(unit: string, n = 4): string {
+  const lines: string[] = [];
+  for (const ext of ['err', 'log']) {
+    try {
+      lines.push(...fs.readFileSync(local(unit, ext), 'utf8').split('\n').map((l) => l.trim()).filter((l) => l && !l.startsWith('[studio] the Cloud Run job failed')).slice(-n));
+    } catch { /* no file */ }
+  }
+  return lines.slice(-n).join(' | ').slice(0, 400);
+}
+
+/**
+ * The line a failed job leaves on its stderr (J, 2026-11-03: Yooba Land passes ended "the agent made no commit" with the
+ * real reason, a job killed with no result, only in the exit file): exit code, signal, error and the last output lines.
+ * agents.ts machineryFailure reads `[studio] ... failed` lines, so the change's detail names the job's failure and it
+ * counts as Studio's, not a try. Exported for the tests.
+ */
+export function jobFailureLine(unit: string, exit: { code: number | null; signal: string | null; error?: string }): string {
+  const tail = jobTail(unit);
+  return `[studio] the Cloud Run job failed: ${String(exit.error ?? '').replace(/\s+/g, ' ').slice(0, 300)} (exit code ${exit.code ?? 'none'}${exit.signal ? `, signal ${exit.signal}` : ''})${tail ? `; last output: ${tail}` : '; it printed nothing'}`;
+}
+
 function end(f: Follow, exit: { code: number | null; signal: string | null; error?: string }) {
   f.done = true;
+  if (exit.error) { try { fs.appendFileSync(local(f.unit, 'err'), `${jobFailureLine(f.unit, exit)}\n`); } catch { /* the folder went */ } }
   try {
     fs.writeFileSync(local(f.unit, 'exit.tmp'), JSON.stringify({ ...exit, at: Date.now() }));
     fs.renameSync(local(f.unit, 'exit.tmp'), local(f.unit, 'exit'));

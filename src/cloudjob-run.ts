@@ -28,7 +28,7 @@ type Store = Pick<JobRunner, 'put' | 'get' | 'list' | 'remove'>;
 // files unless the spec asks (`lfs`), so a big repo (a Unity project of GBs) is never pulled whole; `partial: false` asks
 // for a full clone (Studio's spec for a small repo, so the pass can read any old file without a token).
 // tokenAt: when Studio minted `token`; refresh: where and with which job key to ask for a fresh one (jobgit.ts).
-type JobGit = { head: string; branch: string; remote: string; bundle: boolean; token: string | null; tokenAt?: number; refresh?: { url: string; key: string }; shallow?: boolean; partial?: boolean; lfs?: boolean; commitDirty?: boolean };
+type JobGit = { head: string; branch: string; remote: string; bundle: boolean; token: string | null; tokenAt?: number; refresh?: { url: string; key: string }; shallow?: boolean; partial?: boolean; lfs?: boolean; commitDirty?: boolean; sparse?: string[] };
 type Spec = { kind?: 'build'; outputs?: string[]; file: string; args: string[]; cwd: string; env: Record<string, string>; sessions: string; git: JobGit | null; flushMs?: number; repos?: ExtraRepo[] };
 /** A read-only copy of another of the Studio's repos, next to the worktree (access.ts extraReposFor). */
 type ExtraRepo = { slug: string; remote: string; token: string | null; dir: string };
@@ -168,6 +168,14 @@ export async function prepare(unit: string, spec: Spec, store: Store, log: (s: s
       fs.writeFileSync(file, b!);
       const f = git(cwd, ['fetch', '--quiet', file, 'HEAD']);
       if (!f.ok) throw new Error(`the workspace's own commits: ${f.err.split('\n').pop()}`);
+    }
+    // A big repo: only the source patterns are checked out (the job's disk is memory; a Unity project's whole tree killed the
+    // job within 2 minutes, before any agent line). Written as the sparse file, so nothing is checked out by this.
+    if (spec.git.sparse?.length) {
+      git(cwd, ['config', 'core.sparseCheckout', 'true']);
+      git(cwd, ['config', 'core.sparseCheckoutCone', 'false']);
+      fs.mkdirSync(path.join(cwd, '.git', 'info'), { recursive: true });
+      fs.writeFileSync(path.join(cwd, '.git', 'info', 'sparse-checkout'), `${spec.git.sparse.join('\n')}\n`);
     }
     // With the token: a partial clone fetches the head's blobs from GitHub here.
     const g = spec.git;
