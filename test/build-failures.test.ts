@@ -1,0 +1,165 @@
+// Build failures are visible and diagnosable (buildfail.ts; J, 2026-11-03: "if it's failing, why be in I know it's
+// failing? ... why did we have to dig so hard to find this problem"). Classified (infrastructure vs code), the log Gen kept
+// is stored on the build, J is told once (Inbox item + one push), Go live shows the attempts for the commit, and a later
+// success clears the failure. No Gen, no GitHub: stand-ins.
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+
+const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'studio-buildfail-'));
+process.env.STUDIO_DATA = path.join(tmp, 'data');
+process.env.STUDIO_PROJECTS = path.join(tmp, 'Projects');
+process.env.STUDIO_PRODUCTS = path.join(tmp, 'products.json');
+process.env.TALK_CLAUDE = 'no-such-claude-here';
+fs.mkdirSync(process.env.STUDIO_PROJECTS, { recursive: true });
+fs.mkdirSync(process.env.STUDIO_DATA, { recursive: true });
+// Phone notifications on, to a stand-in server that counts them (never ntfy.sh).
+fs.writeFileSync(path.join(process.env.STUDIO_DATA, 'notify.json'), JSON.stringify({ enabled: true, server: 'http://notify.test', topic: 'hawkes-test' }));
+fs.writeFileSync(process.env.STUDIO_PRODUCTS, JSON.stringify({ products: [{
+  id: 'bfgame', name: 'Build Fail Game', framing: 'test', engine: 'web', repo: 'site', site: 'site', live: 'http://127.0.0.1:9/', github: 'acme/bfgame',
+  local: { serve: 'static', dir: 'site', port: 8797, path: '/' }, playtests: [{ scenario: 'smoke', where: 'local' }], story: [], about: 'A fixture.',
+  builds: [{ id: 'web', tool: 'unity', target: 'web' }],
+}] }));
+
+const pushes: any[] = [];
+const realFetch = globalThis.fetch;
+globalThis.fetch = (async (url: any, init: any) => {
+  if (String(url).startsWith('http://notify.test')) { pushes.push(JSON.parse(init.body)); return new Response('{}', { status: 200 }); }
+  return realFetch(url, init);
+}) as any;
+
+const { db } = await import('../src/db.ts');
+const B = await import('../src/builds.ts');
+const F = await import('../src/buildfail.ts');
+const ib = await import('../src/inbox.ts');
+
+let n = 0;
+const row = (o: Record<string, unknown> = {}) => {
+  const r = { id: `b_${(++n).toString(16).padStart(12, '0')}`, product: 'bfgame', build: 'web', version: n, status: 'building', sha: 'a1b2c3d4e5f6a7b8c9d0a1b2c3d4e5f6a7b8c9d0', ref: 'beta', runner: 'gen', target: 'web', started: Date.now() - 20 * 60_000 + n, ...o };
+  db.prepare(`INSERT INTO builds (${Object.keys(r).join(', ')}) VALUES (${Object.keys(r).map(() => '?').join(', ')})`).run(...Object.values(r) as any[]);
+  return r.id as string;
+};
+
+test('failures are classified: infrastructure or code, in plain words', () => {
+  const tok = F.classify('the Unity build failed: The GitHub token for this build is gone (Gen restarted, or it expired)', { tries: 4 });
+  assert.equal(tok.class, 'token');
+  assert.equal(tok.kind, 'infrastructure');
+  assert.match(tok.plain, /infrastructure, not the code/i);
+  assert.match(tok.plain, /tried 4 times/);
+  const cs = F.classify('the Unity build failed: [GameDeploy] DEPLOY FAILED', { log: 'Assets/Foo.cs(12,5): error CS1002: ; expected\nBuild failed' });
+  assert.equal(cs.class, 'compile');
+  assert.equal(cs.kind, 'code');
+  assert.match(cs.plain, /error CS1002/, 'the first compiler error is in the message');
+  assert.equal(F.classify('Hawkes Gen finished job j_1, but Studio stopped before publishing it (its run interrupted); build again').class, 'restart');
+  assert.equal(F.classify('timed out after 4 h in Hawkes Gen (job j_1 was still running); cancelled it').class, 'timeout');
+  assert.equal(F.classify('the Unity build failed: Killed, out of memory').class, 'memory');
+  assert.equal(F.classify('boom', { stage: 'publish' }).class, 'publish');
+  // A bare "DEPLOY FAILED" with no compile error is not called a code problem or an infrastructure one: it says to read the log.
+  const bare = F.classify('the Unity build failed: [GameDeploy] DEPLOY FAILED');
+  assert.equal(bare.kind, 'unknown');
+  assert.match(bare.plain, /log/i);
+});
+
+test('the log is the last ~200 lines of what Gen kept, with the compiler errors first', () => {
+  const log = F.extractLog({ error: 'x', result: { errors: ['Foo.cs(1,1): error CS0103'], logTail: Array.from({ length: 500 }, (_, i) => `unity line ${i}`) }, log: Array.from({ length: 300 }, (_, i) => ({ text: `gen ${i}` })) });
+  assert.match(log, /error CS0103/);
+  assert.match(log, /unity line 499/);
+  assert.doesNotMatch(log, /unity line 299\n/, 'only the tail');
+  assert.match(log, /gen 299/);
+  assert.equal(F.extractLog(null), '');
+});
+
+test('a failed build keeps class, kind, step, log and every Gen job; the push is sent ONCE', async () => {
+  pushes.length = 0;
+  const id = row();
+  const jobs = [{ id: 'j_one', error: 'token is gone' }, { id: 'j_two', error: 'token is gone' }];
+  F.recordFailure(id, new F.BuildFailure('the Unity build failed: The GitHub token for this build is gone', { jobs, log: '--- Hawkes Gen job log ---\nlast line' }), { stage: 'build' });
+  const r = db.prepare('SELECT * FROM builds WHERE id = ?').get(id) as any;
+  assert.equal(r.status, 'failed');
+  assert.equal(r.fail_class, 'token');
+  assert.equal(r.fail_kind, 'infrastructure');
+  assert.equal(r.fail_step, 'build');
+  assert.match(r.fail_log, /last line/);
+  assert.equal(JSON.parse(r.gen_jobs).length, 2);
+  assert.equal(await F.announce(id), true);
+  assert.equal(await F.announce(id), false, 'told once per failure, not per look');
+  assert.equal(pushes.length, 1);
+  assert.match(pushes[0].title, /Build Fail Game: build web \d+ failed/);
+  assert.match(pushes[0].message, /Infrastructure/);
+  const why = F.whyFailed(id)!;
+  assert.match(why.log, /last line/);
+  assert.equal(why.jobs[1].id, 'j_two');
+  assert.equal(why.genJob, 'j_two');
+  assert.equal(why.stepWords, 'building');
+  assert.ok(why.seconds! > 0);
+});
+
+test('an agent change preview failing stays quiet; the project card and Inbox show the failure, a later success clears it', async () => {
+  pushes.length = 0;
+  const quiet = row({ change: 'c_preview' });
+  F.recordFailure(quiet, 'boom', { stage: 'build' });
+  assert.equal(await F.announce(quiet), false);
+  assert.equal(pushes.length, 0);
+  assert.ok(F.failingBuilds('bfgame').every((f) => f.id !== quiet), 'a preview is not the project\'s build');
+
+  const failing = F.failingBuilds('bfgame');
+  assert.equal(failing.length, 1, 'the newest attempt of web failed');
+  const f = failing[0];
+  assert.equal(f.kind, 'infrastructure');
+  const items = (await ib.inbox()).filter((x) => x.kind === 'build');
+  assert.equal(items.length, 1);
+  assert.equal(items[0].id, `build:${f.id}`);
+  assert.match(items[0].title, /build web \d+ failed/);
+  assert.deepEqual(items[0].options, ['Build again', 'Dismiss']);
+
+  // Dismiss hides the card; the failure stays on the project.
+  await ib.answerInbox(items[0].id, 'Dismiss', 'J');
+  assert.equal((await ib.inbox()).filter((x) => x.kind === 'build').length, 0);
+  assert.equal(F.failingBuilds('bfgame').length, 1);
+
+  // A newer build that works clears the badge, and a newer failure is a new card.
+  const ok = row({ status: 'ready', finished: Date.now() });
+  assert.ok(ok);
+  assert.equal(F.failingBuilds('bfgame').length, 0);
+  const again = row();
+  F.recordFailure(again, 'the Unity build failed: error CS0246: type not found', { stage: 'build' });
+  assert.equal(F.failingBuilds('bfgame')[0].kind, 'code');
+  assert.equal((await ib.inbox()).filter((x) => x.kind === 'build').length, 1);
+});
+
+test('Go live gets the attempts at the commit, not just "build first"', () => {
+  const sha = 'f'.repeat(40);
+  assert.match(F.attemptsLine(F.attemptsAt('bfgame', sha)), /never built/);
+  const a = row({ sha });
+  F.recordFailure(a, 'the Unity build failed: The GitHub token for this build is gone', { stage: 'build' });
+  const b = row({ sha });
+  F.recordFailure(b, 'the Unity build failed: error CS0246', { stage: 'build' });
+  const list = F.attemptsAt('bfgame', sha);
+  assert.equal(list.length, 2);
+  assert.equal(list[0].id, b, 'newest first');
+  const line = F.attemptsLine(list);
+  assert.match(line, /tried 2 times and failed \(the code\)/);
+  assert.match(line, /error CS0246/);
+  const live = row({ sha: 'e'.repeat(40) });
+  assert.match(F.attemptsLine(F.attemptsAt('bfgame', 'e'.repeat(40))), /being built right now/);
+  assert.ok(live);
+});
+
+test('a build Gen lost, settled later (reconcile), keeps the reason and its log, and tells J once', async () => {
+  pushes.length = 0;
+  const run = 'r_bf0000000001';
+  db.prepare("INSERT INTO runs (id, kind, status, started) VALUES (?, 'build', 'stopped', ?)").run(run, Date.now());
+  const id = row({ run, gen_job: 'j_lost' });
+  const out = await B.reconcileBuilds({ product: 'bfgame', job: async () => ({ id: 'j_lost', status: 'failed', error: 'worker preempted', log: ['one', 'two', 'last gen line'] }) });
+  assert.ok(out.some((x) => x.job === 'j_lost'));
+  await new Promise((r) => setTimeout(r, 50));
+  const r = db.prepare('SELECT * FROM builds WHERE id = ?').get(id) as any;
+  assert.equal(r.status, 'failed');
+  assert.match(r.fail_log, /last gen line/);
+  assert.equal(r.fail_kind, 'infrastructure');
+  assert.equal(JSON.parse(r.gen_jobs)[0].id, 'j_lost');
+  // The earlier test's unfinished row was settled by the same look, so two failures, two pushes: one each.
+  assert.equal(pushes.length, out.length);
+});

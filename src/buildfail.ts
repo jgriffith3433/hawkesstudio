@@ -1,0 +1,183 @@
+// Build failures you can see and understand (J, 2026-11-03: "if it's failing, why be in I know it's failing? ... why did
+// we have to dig so hard to find this problem"). Sick of It's web build failed seven times (v1 to v7) and the only place
+// anyone learned it was Go live refusing with "Build web of beta <sha> isn't in ... yet".
+//
+// Here, one place for what a failed build keeps and says (builds.ts calls it; it never starts a build):
+//   - classify(): what kind of failure (token / restart / compile / publish / timeout / memory / other) and whether it is
+//     infrastructure (Hawkes Gen, GitHub, Studio: build again) or code (the project: somebody has to fix it), in plain words
+//   - extractLog(): the last ~200 lines of the Unity / GameDeploy output from the Gen job, so the real reason is kept
+//   - recordFailure(): writes all of it on the build row (class, kind, step, the log, every Gen job that was tried)
+//   - announce(): the Inbox item (inbox.ts buildFailures) and ONE push notification per failure, after Studio's own
+//     retries (builds.ts viaGen) are used up
+//   - failureOf() / lastBuilds() / attemptsAt(): what the overview, Go live and the run's "Why did this fail?" show
+// No polling: the dashboard hears about a row changing through /api/stream (a database write).
+
+import { db } from './db.ts';
+import { tokenLost, infraLost } from './builds.ts';
+
+export type FailClass = 'token' | 'restart' | 'compile' | 'publish' | 'timeout' | 'memory' | 'access' | 'other';
+export type FailKind = 'infrastructure' | 'code' | 'unknown';
+export type Classified = { class: FailClass; kind: FailKind; plain: string };
+
+/** Where in a build it stopped (builds.ts sets it as it goes): shown as "failed at …". */
+export type Stage = 'checkout' | 'build' | 'download' | 'publish' | 'mount' | 'playtest';
+const STAGE_WORDS: Record<Stage, string> = {
+  checkout: 'getting the commit', build: 'building', download: 'downloading the build', publish: 'publishing the files', mount: 'putting it into the site', playtest: 'playing it',
+};
+export const stageWords = (s: string | null | undefined) => STAGE_WORDS[s as Stage] ?? (s || 'building');
+
+export const LOG_LINES = 200;
+const LOG_BYTES = 60_000;
+
+/** What went wrong, in two words and in plain ones. Exported for the tests. */
+export function classify(error: unknown, o: { stage?: string | null; log?: string | null; tries?: number } = {}): Classified {
+  const e = String(error ?? '');
+  const log = String(o.log ?? '');
+  const both = `${e}\n${log}`;
+  const retried = (o.tries ?? 1) > 1 ? ` Studio tried ${o.tries} times by itself.` : '';
+  if (/error CS\d+|compil(e|ation) (error|failed)|BuildFailedException|build method .* (failed|threw)|Unity exited with code|Scripts have compiler errors/i.test(both) && !tokenLost(e)) {
+    const first = /error CS\d+[^\n]{0,160}/i.exec(both)?.[0];
+    return { class: 'compile', kind: 'code', plain: `The project's code doesn't build${first ? ` (${first.trim()})` : ''}. Studio can't fix this by building again: someone has to fix the code first.` };
+  }
+  if (tokenLost(e)) return { class: 'token', kind: 'infrastructure', plain: `Hawkes Gen lost the GitHub access it was given for this build (the token expired or Gen restarted). That's infrastructure, not the code.${retried} Build again.` };
+  if (/timed out|ran past|no result/i.test(e)) return { class: 'timeout', kind: 'infrastructure', plain: `The build ran out of time before it finished. Probably infrastructure (a slow or stuck machine), not the code.${retried} Build again; if it keeps timing out, look at the Gen job.` };
+  if (/out of memory|\bOOM\b|killed \(137\)|exit(ed)? (code )?137/i.test(both)) return { class: 'memory', kind: 'infrastructure', plain: `The build machine ran out of memory. That's the machine's size, not the code; Studio asks Gen for a bigger one when this happens.${retried} Build again.` };
+  if (infraLost(e) || /Hawkes Gen (finished job|doesn't know job)|stopped: its run|Gen restarted/i.test(e)) return { class: 'restart', kind: 'infrastructure', plain: `Hawkes Gen or Studio restarted or lost the job while it was building. That's infrastructure, not the code.${retried} Build again.` };
+  if (/GitHub wouldn't|isn't installed|no GitHub access|has no GitHub repo|connect GitHub|403|404/i.test(e) && /github/i.test(e)) return { class: 'access', kind: 'infrastructure', plain: 'Studio can\'t reach the repository on GitHub (access or install). Fix the GitHub connection, then build again.' };
+  if (o.stage === 'publish' || o.stage === 'mount' || o.stage === 'download' || /publish|loader|assertLoader|commit(ting)? into|couldn't (put|write)|R2/i.test(e)) {
+    const loader = /loader/i.test(e);
+    return { class: 'publish', kind: loader ? 'code' : 'infrastructure', plain: loader ? `The build finished but its files aren't what the site page loads (${e.slice(0, 160)}). That's the build's setup, not Studio.` : `The build itself finished, but Studio couldn't publish it (${e.slice(0, 160)}). That's Studio or the site store, not your code. Build again.` };
+  }
+  if (/\[GameDeploy\][^\n]*FAILED|DEPLOY FAILED/i.test(both)) return { class: 'other', kind: 'unknown', plain: 'The deploy script failed and its log has no compile error in it. Read the log below: it is either the project (a script step failed) or the build machine.' };
+  return { class: 'other', kind: 'unknown', plain: `Not recognised: ${e.slice(0, 200) || 'no reason given'}. The log below is what Gen kept.` };
+}
+
+/** The last lines of what Gen kept for a job (its log, the Unity log's tail, the build's errors), as one text. */
+export function extractLog(job: any, lines = LOG_LINES): string {
+  if (!job) return '';
+  const parts: string[] = [];
+  const asLines = (x: unknown): string[] => (Array.isArray(x) ? x.map((l) => (typeof l === 'string' ? l : l?.text ?? l?.line ?? l?.message ?? JSON.stringify(l))) : typeof x === 'string' ? x.split(/\r?\n/) : []);
+  const errors = asLines(job.result?.errors).filter(Boolean);
+  if (errors.length) parts.push('--- errors ---', ...errors.slice(0, 40));
+  const unity = asLines(job.result?.logTail);
+  if (unity.length) parts.push('--- Unity log (tail) ---', ...unity.slice(-lines));
+  const genLog = asLines(job.log);
+  if (genLog.length) parts.push('--- Hawkes Gen job log ---', ...genLog.slice(-lines));
+  if (job.error) parts.push('--- Gen\'s error ---', String(job.error));
+  const text = parts.join('\n');
+  return text.length > LOG_BYTES ? text.slice(-LOG_BYTES) : text;
+}
+
+/** Thrown by builds.ts viaGen when a Unity build ends in failure: carries what Gen kept, so it isn't one line any more. */
+export class BuildFailure extends Error {
+  jobs: { id: string; error: string }[];
+  log: string;
+  constructor(message: string, o: { jobs: { id: string; error: string }[]; log: string }) {
+    super(message);
+    this.jobs = o.jobs;
+    this.log = o.log;
+  }
+}
+
+export type FailureView = {
+  id: string; product: string; build: string; version: number; status: string; sha: string | null; ref: string | null;
+  class: FailClass | null; kind: FailKind | null; plain: string; reason: string; step: string | null; stepWords: string | null;
+  seconds: number | null; started: number; finished: number | null; run: string | null; genJob: string | null; jobs: { id: string; error: string }[];
+  hasLog: boolean; tries: number;
+};
+
+const parseJobs = (s: unknown): { id: string; error: string }[] => { try { const v = JSON.parse(String(s ?? '[]')); return Array.isArray(v) ? v : []; } catch { return []; } };
+
+/** A builds row as a failure card needs it (no log: that is the "Why did this fail?" call). */
+export function failureOf(r: any): FailureView {
+  const jobs = parseJobs(r.gen_jobs);
+  const c = r.fail_class ? null : r.status === 'failed' ? classify(r.detail, { stage: r.fail_step }) : null;
+  return {
+    id: r.id, product: r.product, build: r.build, version: r.version, status: r.status, sha: r.sha ?? null, ref: r.ref ?? null,
+    class: (r.fail_class ?? c?.class ?? null) as FailClass | null, kind: (r.fail_kind ?? c?.kind ?? null) as FailKind | null,
+    plain: r.status === 'failed' ? (r.fail_plain ?? c?.plain ?? '') : '', reason: r.detail ?? '', step: r.fail_step ?? null, stepWords: r.status === 'failed' ? stageWords(r.fail_step) : null,
+    seconds: r.finished ? Math.round((r.finished - r.started) / 1000) : null, started: r.started, finished: r.finished ?? null, run: r.run ?? null,
+    genJob: r.gen_job ?? jobs[jobs.length - 1]?.id ?? null, jobs, hasLog: Boolean(r.fail_log), tries: Math.max(1, jobs.length),
+  };
+}
+
+/** Writes what a failed build knows on its row. Called from builds.ts when a build ends in failure; then announce(). */
+export function recordFailure(rowId: string, error: unknown, o: { stage?: string | null; jobs?: { id: string; error: string }[]; log?: string } = {}): Classified {
+  const why = String((error as any)?.message ?? error ?? '').slice(0, 500);
+  const jobs = o.jobs ?? (error instanceof BuildFailure ? error.jobs : []);
+  const log = (o.log ?? (error instanceof BuildFailure ? error.log : '')) || '';
+  const c = classify(why, { stage: o.stage, log, tries: jobs.length });
+  db.prepare("UPDATE builds SET status = 'failed', detail = ?, finished = COALESCE(finished, ?), fail_class = ?, fail_kind = ?, fail_plain = ?, fail_step = ?, fail_log = ?, gen_jobs = ? WHERE id = ?")
+    .run(why, Date.now(), c.class, c.kind, c.plain, o.stage ?? null, log ? log.slice(-LOG_BYTES) : null, jobs.length ? JSON.stringify(jobs) : null, rowId);
+  return c;
+}
+
+/** The newest build of each build id of a project (beta's, not an agent change's preview). */
+export function lastBuilds(product: string): any[] {
+  return db.prepare(`SELECT b.* FROM builds b WHERE b.product = ? AND b.change IS NULL AND b.started = (SELECT MAX(started) FROM builds x WHERE x.product = b.product AND x.build = b.build AND x.change IS NULL)`).all(product) as any[];
+}
+
+/** Builds whose newest attempt failed, with the failure; a later success (or one being built now) clears it. */
+export function failingBuilds(product: string): FailureView[] {
+  return lastBuilds(product).filter((r) => r.status === 'failed').map(failureOf);
+}
+
+/** Every attempt at one commit, newest first: the history Go live shows next to "build first". */
+export function attemptsAt(product: string, sha: string): FailureView[] {
+  return (db.prepare(`SELECT * FROM builds WHERE product = ? AND change IS NULL AND sha IS NOT NULL AND (sha = ? OR ? LIKE sha || '%') ORDER BY started DESC LIMIT 20`).all(product, sha, sha) as any[]).map(failureOf);
+}
+
+/** The whole record of one failed build, with its log: the "Why did this fail?" view. */
+export function whyFailed(rowId: string) {
+  const r = db.prepare('SELECT * FROM builds WHERE id = ?').get(rowId) as any;
+  if (!r) return null;
+  const f = failureOf(r);
+  const step = r.run ? db.prepare("SELECT id, status, detail FROM steps WHERE run = ? AND kind = 'build' AND name = ? ORDER BY started DESC LIMIT 1").get(r.run, r.build) : null;
+  return { ...f, log: r.fail_log ?? '', commit: r.sha ?? null, step: f.step, runStep: step ?? null, noLog: r.status === 'failed' && !r.fail_log ? 'Hawkes Gen kept no log for this build (it failed before it started, or it failed before logs were kept).' : null };
+}
+
+/** The one-line-per-attempt text Go live puts beside "isn't built yet". */
+export function attemptsLine(attempts: FailureView[]): string {
+  const failed = attempts.filter((a) => a.status === 'failed');
+  if (!attempts.length) return 'It was never built (no build ran for this commit).';
+  const building = attempts.find((a) => a.status === 'building');
+  if (building) return `It is being built right now (${building.build} ${building.version}).`;
+  if (!failed.length) return '';
+  const last = failed[0];
+  return `It was tried ${failed.length} time${failed.length === 1 ? '' : 's'} and failed${last.kind ? ` (${last.kind === 'infrastructure' ? 'infrastructure' : last.kind === 'code' ? 'the code' : 'cause unclear'})` : ''}; last: ${last.plain || last.reason}`;
+}
+
+// ------------------------------------------------------------------ telling people (once)
+
+/**
+ * The failure is final (Studio's own retries are used up): the Inbox shows it (inbox.ts) and J's phone is told ONCE.
+ * `notified` on the row makes it once per failure, not per look; agent changes' previews (change not null) stay quiet.
+ */
+export async function announce(rowId: string): Promise<boolean> {
+  const r = db.prepare('SELECT * FROM builds WHERE id = ?').get(rowId) as any;
+  if (!r || r.status !== 'failed' || r.change || r.notified) return false;
+  const took = db.prepare('UPDATE builds SET notified = ? WHERE id = ? AND notified IS NULL').run(Date.now(), rowId);
+  if (!Number(took.changes)) return false;
+  try {
+    const { getProduct } = await import('./config.ts');
+    const { notify, PUBLIC_URL } = await import('./notify.ts');
+    const name = (() => { try { return getProduct(r.product).name; } catch { return r.product; } })();
+    const f = failureOf(r);
+    const title = `${name}: build ${r.build} ${r.version} failed`;
+    const body = `${f.kind === 'infrastructure' ? 'Infrastructure' : f.kind === 'code' ? 'Code' : 'Cause unclear'}${f.stepWords ? `, while ${f.stepWords}` : ''}${f.tries > 1 ? `, after ${f.tries} tries` : ''}. ${f.plain}`.slice(0, 600);
+    return await notify(title, body, { url: `${PUBLIC_URL}/#inbox`, priority: 4, tags: ['rotating_light'] });
+  } catch (e: any) {
+    console.warn(`[builds] couldn't tell about the failed build ${rowId}: ${e?.message ?? e}`);
+    return false;
+  }
+}
+
+/** A build that ended: classify and keep what Gen left (the log), then tell. Used when a build row is settled outside buildOne. */
+export async function settleFailure(rowId: string, error: string, o: { job?: any; stage?: string | null } = {}) {
+  const log = extractLog(o.job);
+  const prior = parseJobs((db.prepare('SELECT gen_jobs FROM builds WHERE id = ?').get(rowId) as any)?.gen_jobs);
+  const jobId = o.job?.id ? String(o.job.id) : null;
+  const jobs = prior.length || !jobId ? prior : [{ id: jobId, error: String(o.job?.error ?? error).slice(0, 300) }];
+  recordFailure(rowId, error, { stage: o.stage ?? 'build', jobs, log });
+  await announce(rowId);
+}

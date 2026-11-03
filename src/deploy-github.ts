@@ -79,18 +79,28 @@ export const buildRunsAt = (product: string, sha: string) =>
  * The builds of `p` with publish.commit, for its beta commit `sha`: the commit on the target repo's beta that holds each
  * (recorded when it was committed: builds.ts), and whether that repo's main can fast-forward to it.
  */
-export async function publishTargets(p: Product, sha: string, io: GitHubIO = {}): Promise<{ targets: Target[]; blockers: string[] }> {
+export async function publishTargets(p: Product, sha: string, io: GitHubIO = {}): Promise<{ targets: Target[]; blockers: string[]; attempts: { build: string; sha: string; attempts: import('./buildfail.ts').FailureView[] }[] }> {
   const { buildsOf, buildHint } = await import('./builds.ts');
   const f = fetchOf(io);
   const targets: Target[] = [];
   const blockers: string[] = [];
+  const attempts: { build: string; sha: string; attempts: import('./buildfail.ts').FailureView[] }[] = [];
   for (const b of buildsOf(p).filter((x) => x.publish?.commit)) {
     let target: Product;
     try { target = getProduct(b.publish!.project); } catch { blockers.push(`Build ${b.id} goes into project "${b.publish!.project}", which isn't in this Studio.`); continue; }
     const slug = target.github ? String(target.github) : null;
     if (!slug) { blockers.push(`Build ${b.id} goes into ${target.name}, which has no GitHub repo here.`); continue; }
     const row = db.prepare(`SELECT version, commit_sha FROM builds WHERE product = ? AND build = ? AND change IS NULL AND commit_sha IS NOT NULL AND status IN ('ready', 'pruned') AND sha = ? ORDER BY version DESC LIMIT 1`).get(p.id, b.id, sha) as { version: number; commit_sha: string } | undefined;
-    if (!row) { blockers.push(`Build ${b.id} of ${BETA} ${sha.slice(0, 7)} isn't in ${slug}'s ${BETA} yet: use the Build button (${buildHint(p)}).`); continue; }
+    if (!row) {
+      // Not "build first" and nothing else (J, 2026-11-03: seven failed builds, and Go live only said it wasn't there): what
+      // was tried for this commit, each attempt with its result and reason, goes in the plan and the refusal.
+      const F = await import('./buildfail.ts');
+      const tried = F.attemptsAt(p.id, sha).filter((a) => a.build === b.id);
+      attempts.push({ build: b.id, sha, attempts: tried });
+      const said = F.attemptsLine(tried);
+      blockers.push(`Build ${b.id} of ${BETA} ${sha.slice(0, 7)} isn't in ${slug}'s ${BETA} yet${said ? `. ${said}` : ''}: use the Build button (${buildHint(p)}).`);
+      continue;
+    }
     const token = await tokenFor(slug, io);
     const live = await liveBranchOf(slug, f, token);
     const main = await gh(f, token, 'GET', `/repos/${slug}/commits/${encodeURIComponent(live)}`);
@@ -102,7 +112,7 @@ export async function publishTargets(p: Product, sha: string, io: GitHubIO = {})
     if (cmp.j.status === 'diverged') { blockers.push(`${slug}'s ${live} has commits its ${BETA} lacks, so it can't be fast-forwarded to build ${b.id} (${row.commit_sha.slice(0, 7)}). Merge ${live} into ${BETA} in ${slug}, build again, then go live.`); continue; }
     targets.push({ build: b.id, project: target.id, name: target.name, slug, commit: row.commit_sha, version: row.version, main: mainSha, move: cmp.j.status === 'ahead' });
   }
-  return { targets, blockers };
+  return { targets, blockers, attempts };
 }
 
 /** Whether a later commit changed nothing a player sees since `from` (only docs and notes: playplan.ts noRuntimeChange). */
