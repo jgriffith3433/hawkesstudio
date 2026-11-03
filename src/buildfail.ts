@@ -13,7 +13,8 @@
 // No polling: the dashboard hears about a row changing through /api/stream (a database write).
 
 import { db } from './db.ts';
-import { tokenLost, infraLost } from './builds.ts';
+import { tokenLost, infraLost, buildsOf } from './builds.ts';
+import { getProduct } from './config.ts';
 
 export type FailClass = 'rejected' | 'token' | 'restart' | 'compile' | 'publish' | 'timeout' | 'memory' | 'access' | 'other';
 export type FailKind = 'infrastructure' | 'code' | 'unknown';
@@ -164,10 +165,27 @@ export function buildsRunning(product: string): BuildRunning[] {
   return out;
 }
 
-/** Builds whose newest attempt failed, with the failure; a later success (or one being built now or about to start) clears it. */
+/**
+ * The build ids the project has now (its builds list). A failure of a build since removed or renamed isn't the project's
+ * failure any more (Hawkes Net's "package" build, 2026-11-03: the card kept saying "Last build failed" and its Build again
+ * named a build that no longer exists). null when the project isn't known here: nothing is hidden then.
+ */
+export function configuredBuilds(product: string): Set<string> | null {
+  try { return new Set(buildsOf(getProduct(product)).map((b) => b.id)); } catch { return null; }
+}
+
+/**
+ * Builds whose newest attempt failed, with the failure. Left out: a build id the project no longer has (configuredBuilds),
+ * a failure a later success of the same build id superseded (lastBuilds keeps only the newest attempt of each id, and an
+ * agent change's preview never counts), and one being built now or about to start. A success of a DIFFERENT build id
+ * doesn't clear it: "release" working says nothing about "web" failing.
+ */
 export function failingBuilds(product: string): FailureView[] {
   const going = new Set(buildsRunning(product).map((x) => x.build));
-  return lastBuilds(product).filter((r) => r.status === 'failed' && !going.has(r.build)).map(failureOf);
+  const now = configuredBuilds(product);
+  return lastBuilds(product)
+    .filter((r) => r.status === 'failed' && !going.has(r.build) && (!now || now.has(r.build)))
+    .map(failureOf);
 }
 
 /** Every attempt at one commit, newest first: the history Go live shows next to "build first". */
@@ -215,7 +233,6 @@ export async function announce(rowId: string): Promise<boolean> {
   // The same failure again (a rebuild that fails the same way) was told already: marked, not told twice.
   if (repeatsLast(r)) return false;
   try {
-    const { getProduct } = await import('./config.ts');
     const { notify, PUBLIC_URL } = await import('./notify.ts');
     const name = (() => { try { return getProduct(r.product).name; } catch { return r.product; } })();
     const f = failureOf(r);
