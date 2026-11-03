@@ -280,6 +280,22 @@ export function decidedNoChange(summary: string) {
     && /\b(already decided|decided|decision|chose|ruled|won'?t[- ]?fix|wontfix|by design|as designed|intentional)\b/i.test(s)
     && /\b(no change|no changes|nothing to (change|fix|do)|changed nothing|made no (change|commit)s?|no commit|committ?ed nothing|commit nothing|didn'?t change|did not change|not changing|unchanged|left (it )?as (it is|is))\b/i.test(s);
 }
+/** An agent's summary saying it changed nothing (whatever the reason). */
+export function saysNoChange(summary: string) {
+  return /\b(made no (change|commit)s?|no changes? (were |was )?(made|needed)|nothing to (change|fix|do)|changed nothing|committ?ed nothing|commit nothing|didn'?t change|did not change|not changing|left (it )?as (it is|is))\b/i.test(String(summary ?? ''));
+}
+/** The mark of a commit Studio made for the agent (the job's leftover step, cloudjob-run.ts; commitForAgent). */
+const STUDIO_COMMIT = /Committed by Hawkes Studio/;
+/**
+ * Whether every commit of the branch (beyond its base) was made by Studio for the agent, none by the agent itself: the job's
+ * "leftover changes" commit after a pass that changed nothing (c_2d931adecba5 on 2026-11-03 merged two shader files the
+ * agent never touched into Sick of It's beta). False with no commits.
+ */
+export function onlyStudioCommits(worktree: string, base: string) {
+  const log = git(worktree, ['log', '--format=%B%x00', `origin/${base}..HEAD`]).out;
+  const msgs = log.split('\0').map((m) => m.trim()).filter(Boolean);
+  return msgs.length > 0 && msgs.every((m) => STUDIO_COMMIT.test(m));
+}
 /** The detail of a change whose agent made no commit because the work is already done: the PM checks it (pm.ts), not a try. */
 export const ALREADY = 'nothing to do: already done';
 /** An agent's summary (of a change with no commit) saying the work is already there. */
@@ -1490,6 +1506,9 @@ export function startFix(productId: string, findingIds: string[], { auto = false
   if (managedElsewhere(p)) throw new StudioError(managedNote(p), 409);
   const findings = findingIds.map((id) => getFinding(id)).filter(Boolean) as any[];
   if (!findings.length) throw new Error('No such findings');
+  // Won't fix is the owner's answer: no one queues it (open it again first if the answer changed).
+  const dropped = findings.filter((f) => f.status === 'wontfix');
+  if (dropped.length) throw new StudioError(`${dropped.map((f) => f.id).join(', ')} ${dropped.length > 1 ? 'are' : 'is'} marked won't fix: no agent fixes ${dropped.length > 1 ? 'them' : 'it'}. Open ${dropped.length > 1 ? 'them' : 'it'} again first if that has changed.`, 409);
   const ahead = aheadOf(p.id);
   const today = costToday();
   if (auto && (today.count >= s.maxPerDay || today.cost >= s.maxCostPerDay)) {
@@ -1839,6 +1858,16 @@ async function work(id: string, note?: string, answer?: string, resumed?: Phase 
       const listCommits = () => git(c.worktree, ['log', '--format=%h %s', `origin/${c.base}..HEAD`]).out.split('\n').filter(Boolean);
       let commits = listCommits();
       let changedNow = git(c.worktree, ['rev-parse', 'HEAD']).out !== ph.before;
+      // The agent said it changed nothing, and the only commit is Studio's own "leftover changes" one (files the checkout showed
+      // as modified, never the agent's): that commit is dropped, so no pull request opens and nothing reaches beta.
+      if (commits.length && (decidedNoChange(summary) || saysNoChange(summary)) && onlyStudioCommits(c.worktree, c.base)) {
+        const r = git(c.worktree, ['reset', '--quiet', '--hard', `origin/${c.base}`]);
+        if (r.ok) {
+          addLog(id, `the agent changed nothing (${summary.slice(0, 160).replace(/\s+/g, ' ')}): dropped Studio's leftover-changes commit (${commits.join('; ').slice(0, 160)}), no pull request`);
+          commits = listCommits();
+          changedNow = false;
+        }
+      }
       // The agent asked a question: the change waits ("needs answer"); Talk answers from what J decided, or asks J (pm.ts).
       const questionFile = path.join(c.worktree, '.hawkes', 'question.md');
       const question = fs.existsSync(questionFile) ? fs.readFileSync(questionFile, 'utf8').trim() : '';
@@ -3368,6 +3397,7 @@ export const AUTO_FIX_FAILS_PER_DAY = 2;
  * J's own requests and the PM's answers to a question don't go through this.
  */
 export function autoFixBlock(findingId: string, now = Date.now()): string | null {
+  if (getFinding(findingId)?.status === 'wontfix') return "it is marked won't fix";
   const like = `%"${findingId}"%`;
   const open = db.prepare(`SELECT id, pr FROM changes WHERE findings LIKE ? AND pr IS NOT NULL AND status NOT IN ('merged', 'closed') ORDER BY created DESC LIMIT 1`).get(like) as { id: string; pr: number } | undefined;
   if (open) return `${open.id} already has pull request #${open.pr} open for it`;

@@ -824,3 +824,16 @@ test('an automatic error from a beta build older than a fix waits; "already done
     if (token === undefined) delete process.env.GITHUB_TOKEN; else process.env.GITHUB_TOKEN = token;
   }
 });
+
+test('a finding marked won\'t fix is never queued: not by startFix, not by auto-fix or the PM', async () => {
+  const { startFix, autoFixBlock } = await import('../src/agents.ts');
+  const now = Date.now();
+  db.prepare(`INSERT INTO findings (id, product, key, title, severity, status, first_seen, last_seen) VALUES ('f_wontfix00001', 'pmother', 'kw1', 'Intro video stutters', 'bug', 'wontfix', ?, ?)`).run(now, now);
+  assert.throws(() => startFix('pmother', ['f_wontfix00001']), /won't fix/);
+  assert.equal((db.prepare(`SELECT COUNT(*) AS n FROM changes WHERE findings LIKE '%f_wontfix00001%'`).get() as any).n, 0);
+  assert.match(autoFixBlock('f_wontfix00001') ?? '', /won't fix/);
+  assert.equal((db.prepare(`SELECT status FROM findings WHERE id = 'f_wontfix00001'`).get() as any).status, 'wontfix');
+  // Opened again by the owner, it can be queued.
+  db.prepare(`UPDATE findings SET status = 'open' WHERE id = 'f_wontfix00001'`).run();
+  assert.equal(autoFixBlock('f_wontfix00001'), null);
+});

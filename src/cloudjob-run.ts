@@ -136,7 +136,7 @@ export function jobToken(unit: string, g: Pick<JobGit, 'token' | 'tokenAt' | 're
 }
 
 /** Rebuilds the workspace; returns the HEAD the pass starts from. */
-export async function prepare(unit: string, spec: Spec, store: Store, log: (s: string) => void, at: (p: string) => string = (p) => p) {
+export async function prepare(unit: string, spec: Spec, store: Store, log: (s: string) => void, at: (p: string) => string = (p) => p, baseline?: Baseline) {
   const key = (n: string) => `jobs/${unit}/${n}`;
   const cwd = at(spec.cwd);
   if (spec.git) {
@@ -192,6 +192,12 @@ export async function prepare(unit: string, spec: Spec, store: Store, log: (s: s
     }
     // As in Studio's own clone: the agent's brief and notes never go into a commit.
     fs.appendFileSync(path.join(cwd, '.git', 'info', 'exclude'), '\n.hawkes/\n');
+    // What the fresh checkout already shows as changed (a partial clone without LFS files, line endings, modes): not the agent's.
+    if (baseline) {
+      const b = dirtyBaseline(cwd);
+      for (const [k, v] of b) baseline.set(k, v);
+      if (b.size) log(`[job] the checkout already shows ${b.size} file(s) as changed before the agent starts; they are never committed as its work`);
+    }
     log(`[job] workspace ${spec.git.remote} at ${spec.git.head.slice(0, 7)} (${spec.git.branch}${spec.git.partial === false ? '' : ', partial clone'}${spec.git.lfs ? '' : ', no LFS files'})`);
   } else fs.mkdirSync(cwd, { recursive: true });
   const pack = await store.get(key('in.pack'));
@@ -226,17 +232,68 @@ export function cloneExtra(r: ExtraRepo, at: (p: string) => string, log: (s: str
  * with loose files (2026-11-02: every Unity agent change came back "no commit"). The agent's .hawkes/ notes are excluded
  * from git. True when a commit was made.
  */
-export function commitLeftovers(cwd: string, log: (s: string) => void, message = 'Work from the agent\'s pass') {
+export function commitLeftovers(cwd: string, log: (s: string) => void, message = 'Work from the agent\'s pass', baseline?: Baseline) {
   if (!fs.existsSync(path.join(cwd, '.git'))) return false;
-  const dirty = git(cwd, ['status', '--porcelain']).out;
-  if (!dirty) return false;
-  const add = git(cwd, ['add', '-A']);
+  // Mode-only changes are not changes (a checkout without the executable bit, a Windows-made mode).
+  const files = realChanges(cwd, baseline);
+  if (!files.length) {
+    if (git(cwd, ['-c', 'core.fileMode=false', 'status', '--porcelain']).out) log('[job] the only loose changes were not the agent\'s (LFS pointers, line endings, modes, or files dirty before it started): nothing to commit');
+    return false;
+  }
+  let add = { ok: true, err: '' };
+  for (let i = 0; i < files.length && add.ok; i += 200) add = git(cwd, ['-c', 'core.fileMode=false', 'add', '-A', '--', ...files.slice(i, i + 200)]);
   if (add.ok) unstagePointers(cwd);
-  if (!git(cwd, ['diff', '--cached', '--name-only']).out) { log('[job] the only loose changes were LFS pointer files (skipped on purpose): nothing to commit'); return false; }
-  const c = add.ok && git(cwd, ['-c', 'user.name=Hawkes Studio', '-c', 'user.email=studio@hawkesgen.ai', '-c', 'core.hooksPath=/dev/null', 'commit', '--quiet', '--no-verify', '-m', `${message}\n\nCommitted by Hawkes Studio's job: the agent left these changes uncommitted.`]);
+  if (!git(cwd, ['diff', '--cached', '--name-only']).out) { log('[job] nothing left to commit after skipping LFS pointer files'); return false; }
+  const c = add.ok && git(cwd, ['-c', 'user.name=Hawkes Studio', '-c', 'user.email=studio@hawkesgen.ai', '-c', 'core.hooksPath=/dev/null', 'commit', '--quiet', '--no-verify', '-m', `${message}\n\n${LEFTOVER_MARK}: the agent left these changes uncommitted.`]);
   if (!add.ok || !c || !c.ok) { log(`[job] couldn't commit the agent's leftover changes: ${(add.ok ? c && c.err : add.err) || ''}`.slice(0, 300)); return false; }
-  log(`[job] committed the agent's leftover changes (${dirty.split('\n').length} file(s))`);
+  log(`[job] committed the agent's leftover changes (${files.length} file(s))`);
   return true;
+}
+
+/** The mark in the message of a commit Studio made for the agent (agents.ts tells these from the agent's own). */
+export const LEFTOVER_MARK = "Committed by Hawkes Studio's job";
+
+/** File -> content hash (or 'deleted') of what a worktree shows as changed. */
+export type Baseline = Map<string, string>;
+
+const hashes = (cwd: string, files: string[]) => {
+  const out = new Map<string, string>();
+  for (let i = 0; i < files.length; i += 200) {
+    const part = files.slice(i, i + 200);
+    const h = git(cwd, ['hash-object', '--no-filters', '--', ...part]).out.split('\n');
+    part.forEach((f, j) => out.set(f, h[j] ?? ''));
+  }
+  return out;
+};
+
+/** The worktree's changed, new and deleted files right now, with a hash of each (before the agent starts: its baseline). */
+export function dirtyBaseline(cwd: string): Baseline {
+  const base: Baseline = new Map();
+  if (!fs.existsSync(path.join(cwd, '.git'))) return base;
+  const list = (args: string[]) => git(cwd, ['-c', 'core.fileMode=false', 'ls-files', '-z', ...args]).raw.toString('utf8').split('\0').filter(Boolean);
+  const deleted = new Set(list(['-d']));
+  const changed = [...new Set([...list(['-m']), ...list(['-o', '--exclude-standard'])])].filter((f) => !deleted.has(f));
+  for (const [f, h] of hashes(cwd, changed)) base.set(f, h);
+  for (const f of deleted) base.set(f, 'deleted');
+  return base;
+}
+
+/**
+ * The files the agent really changed: changed since the baseline (a file dirty before it started and still the same is not
+ * its work), not LFS pointers, not a change that is only line endings, trailing whitespace or the file mode.
+ */
+export function realChanges(cwd: string, baseline?: Baseline): string[] {
+  const now = dirtyBaseline(cwd);
+  const mine = [...now].filter(([f, h]) => baseline?.get(f) !== h).map(([f]) => f);
+  const present = mine.filter((f) => now.get(f) !== 'deleted');
+  const tracked = new Set(git(cwd, ['ls-files', '-z', '--', ...present.slice(0, 5000)]).raw.toString('utf8').split('\0').filter(Boolean));
+  return mine.filter((f) => {
+    if (now.get(f) === 'deleted') return true;
+    if (isLfsPointer(path.join(cwd, f))) return false;
+    if (!tracked.has(f)) return true; // a new file
+    // Same text but for the line endings or trailing spaces: the checkout's doing, not an edit.
+    return !git(cwd, ['-c', 'core.fileMode=false', 'diff', '--quiet', '--ignore-cr-at-eol', '--ignore-space-at-eol', '--', f]).ok;
+  });
 }
 
 /** Whether a file's first bytes are a Git LFS pointer. */
@@ -293,7 +350,7 @@ export function replayOf(cwd: string, start: string, head: string, maxBytes = 12
 }
 
 /** What the pass did: its new commits (a bundle), its uncommitted files and the session folder. */
-export function collect(spec: Spec, start: string | null, tmp: string, at: (p: string) => string = (p) => p) {
+export function collect(spec: Spec, start: string | null, tmp: string, at: (p: string) => string = (p) => p, baseline?: Baseline) {
   const cwd = at(spec.cwd);
   const entries = folderEntries(at(spec.sessions), (rel) => path.join(spec.sessions, rel));
   let gitOut: { head: string; bundle: boolean } | null = null;
@@ -315,9 +372,10 @@ export function collect(spec: Spec, start: string | null, tmp: string, at: (p: s
       }
     }
     const d = dirtyState(cwd);
-    deleted = d.deleted;
-    // Not LFS pointer files a no-LFS clone lists as modified (noise; unstagePointers).
-    for (const rel of d.changed) if (!isLfsPointer(path.join(cwd, rel))) entries.push({ p: rel, file: path.join(cwd, rel) });
+    // Only what the agent changed: not LFS pointers, line endings or files already dirty at the checkout (realChanges).
+    const mine = new Set(realChanges(cwd, baseline));
+    deleted = d.deleted.filter((f) => mine.has(f));
+    for (const rel of d.changed) if (mine.has(rel)) entries.push({ p: rel, file: path.join(cwd, rel) });
     // The agent's notes (.hawkes/: its summary, question, stuck notes) come back by name: they're excluded from git.
     const have = new Set(entries.map((e) => e.p));
     entries.push(...folderEntries(path.join(cwd, '.hawkes'), (rel) => `.hawkes/${rel}`).filter((e) => !have.has(e.p)));
@@ -380,8 +438,9 @@ export async function runUnit(unit: string, store: Store, { every = 2000, at = (
   let code: number | null = null;
   let signal: string | null = null;
   let error: string | undefined;
+  const baseline: Baseline = new Map();
   try {
-    start = await prepare(unit, spec, store, say, at);
+    start = await prepare(unit, spec, store, say, at, baseline);
     const user = agentUser();
     if (user) {
       // The pass's user owns its workspace and session folder (and nothing of this runner's).
@@ -441,8 +500,8 @@ export async function runUnit(unit: string, store: Store, { every = 2000, at = (
     return error ? 1 : 0;
   }
   try {
-    if (spec.git?.commitDirty && !error) commitLeftovers(at(spec.cwd), say);
-    const out = collect(spec, start, tmp, at);
+    if (spec.git?.commitDirty && !error) commitLeftovers(at(spec.cwd), say, undefined, baseline);
+    const out = collect(spec, start, tmp, at, baseline);
     if (out.bundle) await store.put(key('out/out.bundle'), fs.readFileSync(out.bundle));
     await store.put(key('out/out.pack'), out.pack);
     await flush();
