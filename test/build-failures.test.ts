@@ -21,6 +21,11 @@ fs.writeFileSync(process.env.STUDIO_PRODUCTS, JSON.stringify({ products: [{
   id: 'bfgame', name: 'Build Fail Game', framing: 'test', engine: 'web', repo: 'site', site: 'site', live: 'http://127.0.0.1:9/', github: 'acme/bfgame',
   local: { serve: 'static', dir: 'site', port: 8797, path: '/' }, playtests: [{ scenario: 'smoke', where: 'local' }], story: [], about: 'A fixture.',
   builds: [{ id: 'web', tool: 'unity', target: 'web' }],
+}, {
+  // A project whose build ids changed: "package" was removed, "release" is its only build now (Hawkes Net, 2026-11-03).
+  id: 'bfrenamed', name: 'Build Renamed Game', framing: 'test', engine: 'web', repo: 'site', site: 'site', live: 'http://127.0.0.1:9/', github: 'acme/bfrenamed',
+  local: { serve: 'static', dir: 'site', port: 8798, path: '/' }, playtests: [{ scenario: 'smoke', where: 'local' }], story: [], about: 'A fixture.',
+  builds: [{ id: 'release', tool: 'unity', target: 'web' }],
 }] }));
 
 const pushes: any[] = [];
@@ -163,3 +168,37 @@ test('a build Gen lost, settled later (reconcile), keeps the reason and its log,
   // The earlier test's unfinished row was settled by the same look, so two failures, two pushes: one each.
   assert.equal(pushes.length, out.length);
 });
+
+test('a build id the project no longer has is not a failure any more; Build again never names it', async () => {
+  pushes.length = 0;
+  const gone = row({ product: 'bfrenamed', build: 'package', started: Date.now() - 3 * 24 * 3600_000, status: 'failed', finished: Date.now() - 3 * 24 * 3600_000 });
+  F.recordFailure(gone, 'the Unity build failed: Hawkes Net has no hosted site here', { stage: 'build' });
+  assert.equal(F.failingBuilds('bfrenamed').length, 0, 'package is not in the builds list any more');
+  assert.equal((await ib.inbox()).filter((x) => x.kind === 'build' && x.product === 'bfrenamed').length, 0, 'its Inbox card is gone too');
+  // The configured build's own failure still shows, with a Build again that names a build that exists.
+  const rel = row({ product: 'bfrenamed', build: 'release', started: Date.now() - 60_000, status: 'failed', finished: Date.now() - 60_000 });
+  F.recordFailure(rel, 'the Unity build failed: error CS0246: type not found', { stage: 'build' });
+  const shown = F.failingBuilds('bfrenamed');
+  assert.deepEqual(shown.map((f) => f.build), ['release']);
+  assert.equal(F.configuredBuilds('bfrenamed')!.has(shown[0].build), true);
+  // A product this Studio doesn't know keeps its failures (nothing to compare with).
+  assert.equal(F.configuredBuilds('no-such-product'), null);
+  assert.ok(gone);
+});
+
+test('a later success of the same build clears its earlier failure, and a success of another build does not', async () => {
+  const t = Date.now() - 5 * 3600_000;
+  // "web" fails, then "web" builds fine later on beta: the failure is superseded.
+  const oldFail = row({ product: 'bfgame', build: 'web', started: t, status: 'failed', finished: t + 1000 });
+  F.recordFailure(oldFail, 'the Unity build failed: error CS0246: type not found', { stage: 'build' });
+  const fixed = row({ product: 'bfgame', build: 'web', started: t + 60_000, status: 'ready', finished: t + 120_000, ref: 'beta' });
+  assert.ok(fixed);
+  assert.ok(F.failingBuilds('bfgame').every((f) => f.id !== oldFail), 'superseded by the later success');
+  // A different build of the same project working does not clear a failing one.
+  const other = row({ product: 'bfrenamed', build: 'release', started: t, status: 'failed', finished: t + 1000 });
+  F.recordFailure(other, 'the Unity build failed: error CS0246: type not found', { stage: 'build' });
+  const ok = row({ product: 'bfrenamed', build: 'release', started: t + 60_000, status: 'ready', finished: t + 120_000 });
+  assert.ok(ok);
+  assert.ok(F.failingBuilds('bfrenamed').every((f) => f.id !== other), 'superseded by the later success of the same build');
+});
+
