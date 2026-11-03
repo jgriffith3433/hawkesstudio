@@ -158,15 +158,27 @@ export function replayCommit(cwd: string, c: PackCommit, why = '') {
   showSparse(cwd, paths);
   // Rename detection reads the blobs of deleted and added files: a light clone lacks them and can't fetch them (no credentials).
   const norename = ['-c', 'diff.renames=false', '-c', 'status.renames=false'];
-  const stage = (args: string[], list: string[]) => {
-    for (let i = 0; i < list.length; i += 200) {
-      const r = git(cwd, [...norename, ...args, '--', ...list.slice(i, i + 200)]);
-      if (!r.ok) throw new Error(`staging the job's commits as files: ${r.err.split('\n').pop()}`);
-    }
-  };
-  stage(['add', '--sparse'], files.map((f) => f.p));
+  const fail = (what: string, err: string) => new Error(`staging the job's commits as files: ${what}${err.split('\n').pop()}`);
+  // Staged without `git add`: add converts the file against the index's old blob (line-ending checks), and a blobless
+  // clone can't fetch that blob (no credentials). Hash the file as it is and point the index at the new object instead.
+  const modes = new Map<string, string>();
+  for (let i = 0; i < files.length; i += 200) {
+    const ls = git(cwd, ['ls-files', '-s', '-z', '--', ...files.slice(i, i + 200).map((f) => f.p)]).raw.toString('utf8').split('\0').filter(Boolean);
+    for (const l of ls) { const m = /^(\d+) [0-9a-f]+ \d\t(.*)$/s.exec(l); if (m) modes.set(m[2], m[1]); }
+  }
+  const lines: string[] = [];
+  for (const f of files) {
+    const h = git(cwd, ['hash-object', '-w', '--no-filters', '--', path.join(cwd, f.p)]);
+    if (!h.ok || !h.out) throw fail(`${f.p}: `, h.err);
+    const mode = modes.get(f.p) ?? ((f.m ?? 0o644) & 0o111 ? '100755' : '100644');
+    lines.push(`${mode} ${h.out}\t${f.p}`);
+  }
   // Files the pass deleted may be ones this light worktree never checked out: removed from the index by name.
-  stage(['rm', '--cached', '--quiet', '--ignore-unmatch', '--sparse'], c.deleted);
+  for (const d of c.deleted) lines.push(`0 ${'0'.repeat(40)}\t${d}`);
+  if (lines.length) {
+    const r = git(cwd, ['update-index', '-z', '--index-info'], { input: Buffer.from(lines.join('\0') + '\0') });
+    if (!r.ok) throw fail('', r.err);
+  }
   if (!git(cwd, [...norename, 'diff', '--cached', '--name-only']).out) return false;
   const msg = `${c.message}\n\nCommitted by Hawkes Studio: the agent's commit${why ? ` couldn't be fetched as git objects (${why.slice(0, 200)})` : ' came back as files'}.`;
   const r = git(cwd, [...norename, '-c', 'user.name=Hawkes Studio', '-c', 'user.email=studio@hawkesgen.ai', '-c', 'core.hooksPath=/dev/null', 'commit', '--quiet', '--no-verify', '-m', msg]);
