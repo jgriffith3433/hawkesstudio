@@ -178,7 +178,9 @@ test('a Unity build in Hawkes Gen with the repo\'s own token, mounted into its w
   assert.equal(run.status, 'done', JSON.stringify(run.steps.map((s: any) => s.detail)));
   const sent = genCalls.at(-1);
   assert.equal(sent.tool, 'unity.build');
-  assert.deepEqual(sent.params.github, { repo: 'acme/game', commit: SHA1, token: 'ghs_acme', ref: 'beta' });
+  const { refresh, ...gh } = sent.params.github;
+  assert.deepEqual(gh, { repo: 'acme/game', commit: SHA1, token: 'ghs_acme', ref: 'beta' });
+  assert.match(refresh.url, /\/api\/builds\/gen-token$/);
   assert.equal(sent.params.out, 'artifact');
   assert.equal(sent.params.path, 'Game');
   W.resetSmall();
@@ -557,4 +559,80 @@ test('starting a build settles a stuck row of the same project first, so it neve
   await r.done;
   assert.match((db.prepare("SELECT detail FROM builds WHERE id = 'b_s'").get() as any).detail, /stopped: its run interrupted/);
   assert.equal((await runOf(r.id)).status, 'done');
+});
+
+test('infrastructure losses are retried by Studio itself; a Unity compile error never is', () => {
+  assert.ok(B.infraLost(GONE));
+  assert.ok(B.infraLost('Hawkes Gen restarted while the build was queued'));
+  assert.ok(B.infraLost('worker lost: the instance was preempted'));
+  assert.ok(B.infraLost('fetch failed: 503'));
+  assert.equal(B.infraLost('Assets/Foo.cs(3,1): error CS1002: ; expected'), false);
+  assert.equal(B.infraLost('Unity exited with code 1: compile errors'), false);
+  assert.equal(B.infraLost('Unity ran out of memory'), false);
+  assert.equal(B.infraLost(undefined), false);
+  assert.ok(B.TOKEN_RETRIES >= 3);
+});
+
+test('a Unity build Gen lost to a restart is resubmitted by itself, and the run says so', async () => {
+  const { db } = await import('../src/db.ts');
+  C.saveProduct({ id: 'game-infra', name: 'Game infra', engine: 'unity', repo: 'acme/game', builds: [{ id: 'web', tool: 'unity', path: 'Game', playtest: false }] } as any);
+  const before = globalThis.fetch;
+  let posts = 0;
+  const sent: any[] = [];
+  globalThis.fetch = (async (input: any, init: any = {}) => {
+    const u = new URL(String(input instanceof Request ? input.url : input));
+    if (u.host === 'gen.test' && u.pathname === '/v1/jobs' && init.method === 'POST' && posts++ === 0) { sent.push(JSON.parse(String(init.body))); return Response.json({ jobs: [{ id: 'j_rs', status: 'queued' }] }); }
+    if (u.host === 'gen.test' && u.pathname === '/v1/jobs/j_rs') return Response.json({ id: 'j_rs', status: 'failed', error: 'Hawkes Gen restarted while the build was queued' });
+    return before(input, init);
+  }) as typeof fetch;
+  try {
+    const r = (await B.startBuild('game-infra', {}))!;
+    await r.done;
+    const run = await runOf(r.id);
+    assert.equal(run.status, 'done', JSON.stringify(run.steps.map((s: any) => s.detail)));
+    assert.equal(posts, 2);
+    const row = db.prepare("SELECT id, status, token_sent FROM builds WHERE product = 'game-infra'").get() as any;
+    assert.equal(row.status, 'ready');
+    assert.ok(row.token_sent, 'when the token was sent is recorded');
+    const g = sent[0].params.github;
+    assert.equal(g.refresh.build, row.id, 'Gen is told how to ask for a fresh token');
+    assert.match(g.refresh.url, /\/api\/builds\/gen-token$/);
+    assert.equal(g.refresh.key, B.refreshKey(row.id));
+  } finally {
+    globalThis.fetch = before;
+  }
+});
+
+test('Gen asks Studio for a fresh token: only with the build\'s own key, only while it is building, for its repo alone', async () => {
+  const { db } = await import('../src/db.ts');
+  C.saveProduct({ id: 'game-tok', name: 'Game tok', engine: 'unity', repo: 'acme/game', github: 'acme/game', builds: [{ id: 'web', tool: 'unity', path: 'Game', playtest: false }] } as any);
+  db.prepare("INSERT INTO builds (id, product, build, version, status, sha, ref, runner, target, gen_job, started) VALUES ('b_tok', 'game-tok', 'web', 1, 'building', ?, 'beta', 'gen', 'web', 'j_tok', ?)").run(SHA1, Date.now());
+  const minted: string[] = [];
+  const mint = async (slug: string) => { minted.push(slug); return 'ghs_fresh'; };
+  assert.equal((await B.genTokenFor({ build: 'b_tok', job: 'j_tok', key: 'f'.repeat(64) }, mint)).status, 401);
+  assert.equal((await B.genTokenFor({ build: 'b_tok', key: 'short' }, mint)).status, 401);
+  const ok = await B.genTokenFor({ build: 'b_tok', job: 'j_tok', key: B.refreshKey('b_tok') }, mint);
+  assert.equal(ok.status, 200);
+  assert.equal(ok.body.token, 'ghs_fresh');
+  assert.equal(ok.body.repo, 'acme/game');
+  assert.equal(ok.body.commit, SHA1);
+  assert.deepEqual(minted, ['acme/game']);
+  assert.ok((db.prepare("SELECT token_at FROM builds WHERE id = 'b_tok'").get() as any).token_at);
+  assert.equal((await B.genTokenFor({ build: 'b_tok', job: 'j_other', key: B.refreshKey('b_tok') }, mint)).status, 409, 'another job');
+  db.prepare("UPDATE builds SET status = 'ready' WHERE id = 'b_tok'").run();
+  assert.equal((await B.genTokenFor({ build: 'b_tok', job: 'j_tok', key: B.refreshKey('b_tok') }, mint)).status, 409, 'finished builds get none');
+});
+
+test('what builds a project is told the truth for that project (tag-only builds are not built by a push)', () => {
+  const tagOnly = { id: 'g', name: 'G', engine: 'unity', builds: [{ id: 'web', tool: 'unity', on: ['tag'] }] } as any;
+  assert.match(B.buildHint(tagOnly), /build-\* tag builds web/);
+  assert.doesNotMatch(B.buildHint(tagOnly), /push to beta builds/);
+  assert.match(B.buildHint({ ...tagOnly, builds: [{ id: 'web', tool: 'npm' }] }), /push to beta builds web/);
+});
+
+test('a Gen build with no job id yet still counts as waiting in Gen (restarts do not stop it)', async () => {
+  const { db } = await import('../src/db.ts');
+  const P = await import('../src/pipeline.ts');
+  db.prepare("INSERT INTO builds (id, product, build, version, status, sha, ref, runner, target, run, started) VALUES ('b_nojob', 'game-restart', 'web', 9, 'building', ?, 'beta', 'gen', 'web', 'r_nojob', ?)").run(SHA1, Date.now());
+  assert.equal(P.waitingInGen('r_nojob'), true);
 });

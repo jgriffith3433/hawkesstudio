@@ -111,6 +111,9 @@ export function gitAuthEnv(slug: string | null | undefined): Record<string, stri
   };
 }
 
+/** Forgets one repo's kept token, so the next repoToken mints a new one (a build's submit, Gen's refresh). */
+export const forgetRepoToken = (slug: string) => { cache.delete(slug.toLowerCase()); };
+
 /** Forgets kept tokens (tests; a disconnected app). */
 export const forgetRepoTokens = () => cache.clear();
 

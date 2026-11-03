@@ -124,3 +124,23 @@ Talk's `builds` skill (customer-plugin/skills/builds) knows the choices and has 
 Godot, npm, desktop targets): it asks what the customer wants, sets the project's `builds` (`studio_project`), and has an
 agent add a workflow when the build runs in their Actions (a change they approve; agents may edit `.github/workflows/`
 in a customer's repo when the request is about builds).
+
+## The token Gen asks for (Unity cloud builds)
+
+A Unity build no longer rides on one GitHub token minted when the run started (it lasts an hour; Gen held it in memory and a
+queued or restarted job lost it: "The GitHub token for this build is gone"). Studio:
+
+- mints the installation token at submit (`builds.ts viaGen`, never an older cached one) and sends
+  `github.refresh = { url, build, key }` with the job; `key` is an HMAC of the build's row id under `STUDIO_BUILD_KEY`
+  (else the owner or Gen key), so it opens that one build's one repo.
+- answers `POST /api/builds/gen-token` `{ job, build, key }` with `{ token, repo, commit, expiresAt }`: Gen calls it when the
+  job is about to start, or its token is missing or past its hour. 401 for a wrong key, 409 once the build isn't `building` or
+  runs as another job, 502 when Studio has no access. The route is open to the gate; the key is the check.
+- publishes with tokens minted at that point (`pointInto`, `commitInto` and beta's check each call `repoToken`; the
+  submit-time one is never reused after the build).
+- resubmits by itself, up to `TOKEN_RETRIES` (3), when Gen failed the job for infrastructure (`infraLost`: token gone or expired,
+  Gen or its worker restarted, preempted, 50x), never for a Unity compile error, and says so on the run.
+- `builds.token_sent` / `token_at` record when a token went with the submit and when Gen last asked for one.
+- A build waiting in Gen is not counted toward the restart limits (`pipeline.ts waitingInGen`), including the seconds before
+  its job id is saved; the resume polls the same Gen job and never cancels it.
+- Go live names how this project's builds start (`buildHint`) and the card offers a Build button (`blockerFix` → `build`).

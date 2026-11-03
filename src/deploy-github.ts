@@ -80,7 +80,7 @@ export const buildRunsAt = (product: string, sha: string) =>
  * (recorded when it was committed: builds.ts), and whether that repo's main can fast-forward to it.
  */
 export async function publishTargets(p: Product, sha: string, io: GitHubIO = {}): Promise<{ targets: Target[]; blockers: string[] }> {
-  const { buildsOf } = await import('./builds.ts');
+  const { buildsOf, buildHint } = await import('./builds.ts');
   const f = fetchOf(io);
   const targets: Target[] = [];
   const blockers: string[] = [];
@@ -90,7 +90,7 @@ export async function publishTargets(p: Product, sha: string, io: GitHubIO = {})
     const slug = target.github ? String(target.github) : null;
     if (!slug) { blockers.push(`Build ${b.id} goes into ${target.name}, which has no GitHub repo here.`); continue; }
     const row = db.prepare(`SELECT version, commit_sha FROM builds WHERE product = ? AND build = ? AND change IS NULL AND commit_sha IS NOT NULL AND status IN ('ready', 'pruned') AND sha = ? ORDER BY version DESC LIMIT 1`).get(p.id, b.id, sha) as { version: number; commit_sha: string } | undefined;
-    if (!row) { blockers.push(`Build ${b.id} of ${BETA} ${sha.slice(0, 7)} isn't in ${slug}'s ${BETA} yet: build ${BETA} first (a push to ${BETA}, or "build" on the project).`); continue; }
+    if (!row) { blockers.push(`Build ${b.id} of ${BETA} ${sha.slice(0, 7)} isn't in ${slug}'s ${BETA} yet: use the Build button (${buildHint(p)}).`); continue; }
     const token = await tokenFor(slug, io);
     const live = await liveBranchOf(slug, f, token);
     const main = await gh(f, token, 'GET', `/repos/${slug}/commits/${encodeURIComponent(live)}`);

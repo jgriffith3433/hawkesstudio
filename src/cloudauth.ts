@@ -61,6 +61,8 @@ export function openRoute(route: string, method: string) {
   // A Cloud Run job's fresh clone token (jobgit.ts): its own job key (an HMAC for that job and its one repo) is the check.
   if (method === 'POST' && /^\/api\/cloudjobs\/[A-Za-z0-9_.-]{1,200}\/git-token$/.test(route)) return true;
   if (route === '/api/billing/webhook' && method === 'POST') return true;
+  // Hawkes Gen asking for a fresh GitHub token for one build (builds.ts genTokenFor): the build's own HMAC key is the check.
+  if (route === '/api/builds/gen-token' && method === 'POST') return true;
   // Customers' Studios (cells.ts): the router's and the cells' calls (their own keys), the central cron (Scheduler's token).
   if (route.startsWith('/api/cells/edge/') || route === '/api/cells/self' || route.startsWith('/api/cells/self/') || route === '/api/cells/broker') return true;
   if (route === '/api/cells/cron' && method === 'POST') return true;

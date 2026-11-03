@@ -100,10 +100,12 @@ function playWarnings(tested: ReturnType<typeof playOf>[], short: string | undef
  * also makes a missing beta) and then plays beta; "beta" is the beta run (pre-deploy build, Unity build, beta site, a
  * local playtest); "rebuild" is a forced Unity build of beta on top of live. None of them goes live. null: no button.
  */
-export type BlockerFix = 'merge-main' | 'beta' | 'rebuild' | 'sync';
+export type BlockerFix = 'merge-main' | 'beta' | 'rebuild' | 'sync' | 'build';
 export function blockerFix(blocker: string): BlockerFix | null {
   if (/^git: \S+ isn't cloned on this server yet/.test(blocker)) return 'sync';
   if (/^git:|^Nothing to go live/.test(blocker)) return null;
+  // A project's own builds (builds.ts): the Build button starts them, whatever their triggers are.
+  if (/use the Build button \(/.test(blocker)) return 'build';
   if (/ has no \S+ branch yet|commit\(s\) \S+ lacks/.test(blocker)) return 'merge-main';
   if (/'s \S+ moved since the beta build/.test(blocker)) return 'rebuild';
   if (/hasn't been playtested|isn't its pre-deploy build|The beta build is of|has no build yet|The last build of|The beta website copy sits on/.test(blocker)) return 'beta';
@@ -116,7 +118,7 @@ export function blockerFix(blocker: string): BlockerFix | null {
 export function planFix(blockers: string[]): BlockerFix | null {
   if (blockers.some((b) => b.startsWith('Nothing to go live'))) return null;
   const fixes = new Set(blockers.map(blockerFix));
-  return (['sync', 'merge-main', 'beta', 'rebuild'] as const).find((f) => fixes.has(f)) ?? null;
+  return (['sync', 'merge-main', 'build', 'beta', 'rebuild'] as const).find((f) => fixes.has(f)) ?? null;
 }
 
 /**
