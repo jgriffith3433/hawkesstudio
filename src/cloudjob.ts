@@ -30,10 +30,16 @@ import { DATA, ROOT } from './config.ts';
 import { runToken } from './jobbroker.ts';
 
 export type PackFile = { p: string; d: string; m?: number };
-export type Pack = { files: PackFile[]; deleted?: string[] };
+/**
+ * `commit`: the pass's own commits as plain files (the net change start..HEAD and the commits' messages), the way back when
+ * the commits' git objects can't be fetched: a bundle is a thin pack, and a light (partial) clone lacks the blobs it
+ * deltas against (2026-11-03: "pack has 1 unresolved delta", every Unity agent change "made no commit").
+ */
+export type PackCommit = { message: string; files: PackFile[]; deleted: string[] };
+export type Pack = { files: PackFile[]; deleted?: string[]; commit?: PackCommit };
 
 /** A pack of files (gzip of JSON, base64 bodies): small enough for uncommitted work and session logs. */
-export function packFiles(entries: { p: string; file: string }[], deleted: string[] = []): Buffer {
+export function packFiles(entries: { p: string; file: string }[], deleted: string[] = [], commit?: PackCommit | null): Buffer {
   const files: PackFile[] = [];
   for (const e of entries) {
     try {
@@ -42,7 +48,7 @@ export function packFiles(entries: { p: string; file: string }[], deleted: strin
       files.push({ p: e.p, d: fs.readFileSync(e.file).toString('base64'), m: st.mode & 0o777 });
     } catch { /* gone meanwhile */ }
   }
-  return zlib.gzipSync(Buffer.from(JSON.stringify({ files, deleted } satisfies Pack)));
+  return zlib.gzipSync(Buffer.from(JSON.stringify({ files, deleted, ...(commit ? { commit } : {}) } satisfies Pack)));
 }
 
 export const readPack = (b: Buffer): Pack => JSON.parse(zlib.gunzipSync(b).toString('utf8'));
@@ -110,19 +116,61 @@ export function workspaceIn(cwd: string, tmp: string) {
  * Untracked files the pass removed are removed here too (git clean, never ignored files such as node_modules).
  */
 export function applyWorkspace(cwd: string, o: { head: string; bundle: string | null; pack: Pack | null }) {
+  let fetchError = '';
   if (o.bundle) {
     const f = git(cwd, ['fetch', '--quiet', o.bundle, 'HEAD']);
-    if (!f.ok) throw new Error(`couldn't read the job's commits: ${f.err.split('\n').pop()}`);
+    if (!f.ok) fetchError = f.err.split('\n').filter(Boolean).slice(-2).join(' | ') || 'git printed nothing';
   }
-  if (o.head && git(cwd, ['rev-parse', 'HEAD']).out !== o.head) {
-    const r = git(cwd, ['reset', '--quiet', '--hard', o.head]);
-    if (!r.ok) throw new Error(`couldn't move to the job's HEAD ${o.head.slice(0, 7)}: ${r.err.split('\n').pop()}`);
-  } else git(cwd, ['reset', '--quiet', '--hard']);
+  // The job's HEAD is a commit this workspace has (fetched from the bundle, or already its own).
+  const hasHead = !o.head || git(cwd, ['cat-file', '-e', `${o.head}^{commit}`]).ok;
+  if (!hasHead && !o.pack?.commit) {
+    throw new Error(fetchError ? `couldn't read the job's commits: ${fetchError}` : `the job's HEAD ${o.head.slice(0, 7)} isn't in this workspace and its commits didn't come back`);
+  }
+  if (hasHead) {
+    if (o.head && git(cwd, ['rev-parse', 'HEAD']).out !== o.head) {
+      const r = git(cwd, ['reset', '--quiet', '--hard', o.head]);
+      if (!r.ok) throw new Error(`couldn't move to the job's HEAD ${o.head.slice(0, 7)}: ${r.err.split('\n').pop()}`);
+    } else git(cwd, ['reset', '--quiet', '--hard']);
+  } else {
+    git(cwd, ['reset', '--quiet', '--hard']);
+  }
   git(cwd, ['clean', '-fdq']);
-  if (o.pack) unpack(o.pack, cwd);
+  // The commits as files: written, staged and committed here (a light worktree can't take the job's git objects).
+  if (!hasHead) {
+    replayCommit(cwd, o.pack!.commit!, fetchError);
+    // Studio's own later git status / diff in this light clone must not read blobs it can't fetch either.
+    if (git(cwd, ['config', '--get', 'core.sparseCheckout']).out === 'true') for (const k of ['diff.renames', 'status.renames']) git(cwd, ['config', k, 'false']);
+  }
+  const rest = o.pack ? { files: o.pack.files, deleted: o.pack.deleted } : null;
+  if (rest) unpack(rest, cwd);
   // A light (sparse) worktree: tracked files outside its cone are skip-worktree, which git status and `git add -A` don't
   // see, so the pass's edits there looked like "no changes" and were never committed. Mark what the pass touched.
-  if (o.pack) showSparse(cwd, [...o.pack.files.filter((f) => !path.isAbsolute(f.p)).map((f) => f.p), ...(o.pack.deleted ?? [])]);
+  if (rest) showSparse(cwd, [...rest.files.filter((f) => !path.isAbsolute(f.p)).map((f) => f.p), ...(rest.deleted ?? [])]);
+}
+
+/** Makes the pass's commits here from their files (PackCommit): one commit with the pass's messages. Throws when git refuses. */
+export function replayCommit(cwd: string, c: PackCommit, why = '') {
+  const files = c.files.filter((f) => !path.isAbsolute(f.p));
+  unpack({ files, deleted: c.deleted }, cwd);
+  const paths = [...files.map((f) => f.p), ...c.deleted];
+  if (!paths.length) return false;
+  showSparse(cwd, paths);
+  // Rename detection reads the blobs of deleted and added files: a light clone lacks them and can't fetch them (no credentials).
+  const norename = ['-c', 'diff.renames=false', '-c', 'status.renames=false'];
+  const stage = (args: string[], list: string[]) => {
+    for (let i = 0; i < list.length; i += 200) {
+      const r = git(cwd, [...norename, ...args, '--', ...list.slice(i, i + 200)]);
+      if (!r.ok) throw new Error(`staging the job's commits as files: ${r.err.split('\n').pop()}`);
+    }
+  };
+  stage(['add', '--sparse'], files.map((f) => f.p));
+  // Files the pass deleted may be ones this light worktree never checked out: removed from the index by name.
+  stage(['rm', '--cached', '--quiet', '--ignore-unmatch', '--sparse'], c.deleted);
+  if (!git(cwd, [...norename, 'diff', '--cached', '--name-only']).out) return false;
+  const msg = `${c.message}\n\nCommitted by Hawkes Studio: the agent's commit${why ? ` couldn't be fetched as git objects (${why.slice(0, 200)})` : ' came back as files'}.`;
+  const r = git(cwd, [...norename, '-c', 'user.name=Hawkes Studio', '-c', 'user.email=studio@hawkesgen.ai', '-c', 'core.hooksPath=/dev/null', 'commit', '--quiet', '--no-verify', '-m', msg]);
+  if (!r.ok) throw new Error(`committing the job's commits as files: ${r.err.split('\n').pop()}`);
+  return true;
 }
 
 /** In a sparse worktree: the tracked `paths` count as present (not skip-worktree), so status and add see their changes. */
@@ -491,7 +539,7 @@ async function finish(f: Follow, r: JobRunner, cwd: string, env: NodeJS.ProcessE
     const pack = packB ? readPack(packB) : null;
     // The session files go where they were (absolute paths); the workspace's files are relative.
     const session = pack ? { files: pack.files.filter((x) => path.isAbsolute(x.p)) } : null;
-    const work = pack ? { files: pack.files.filter((x) => !path.isAbsolute(x.p)), deleted: pack.deleted } : null;
+    const work: Pack | null = pack ? { files: pack.files.filter((x) => !path.isAbsolute(x.p)), deleted: pack.deleted, ...(pack.commit ? { commit: pack.commit } : {}) } : null;
     if (session) unpack(session, '/');
     if (exit.git) {
       // The workspace went while the job ran (2026-11-02: a replaced instance lost the worktree, this step skipped the

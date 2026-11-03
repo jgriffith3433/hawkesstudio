@@ -464,6 +464,8 @@ export type Phase = {
   failed?: boolean;
   /** A playtest asked for (playtestChange): who asked. It ends the pass with the change ready again, never failed. */
   requested?: string;
+  /** The first failure line Studio's own job printed in the last pass (machineryFailure): with no commit, an infra failure, not a try. */
+  machinery?: string;
   /** Why the last agent pass ended before finishing (AgentResult.stopped). */
   stopped?: 'time' | 'turns' | 'cut';
   /** How many times its session was resumed to commit work it left uncommitted (at most NUDGES); `nudge`: the next pass is one. */
@@ -635,6 +637,19 @@ export function sourceLost(c: Pick<Change, 'worktree' | 'product' | 'infra'>, sa
 function noCommitWhy(worktree: string, ph: Phase) {
   if (!ph.nudges || !uncommitted(worktree)) return 'the agent made no commit';
   return `the agent made no commit: resumed ${ph.nudges}× to commit, it still left its work uncommitted (it is still in the worktree: revise to carry on)`;
+}
+/**
+ * A failure line Studio's own job or bring-back step printed (cloudjob-run.ts `[job] ...`, cloudjob.ts `[studio] ...`): the
+ * clone, the checkout, the bundle, the files coming back. With no commit that is why there is none (J, 2026-11-03: ~12
+ * Unity changes ended "the agent made no commit" and were tried again 11 times, because the reason never reached the
+ * change). null when the pass printed no such line.
+ */
+export function machineryFailure(stderr: string | undefined | null): string | null {
+  for (const line of String(stderr ?? '').split('\n')) {
+    const m = /^\s*\[(job|studio)\]\s+(.*)$/.exec(line);
+    if (m && !/not copied/i.test(m[2]) && /\b(fail(ed|ure)?|couldn'?t|could not|cannot|can'?t|unable|error|missing|unreadable|killed|signal|out of memory|no spec|gone)\b/i.test(m[2])) return `Studio's ${m[1]} step: ${m[2]}`.slice(0, 300);
+  }
+  return null;
 }
 export const phaseOf = (id: string): Phase | null => parse((db.prepare('SELECT phase FROM changes WHERE id = ?').get(id) as any)?.phase ?? null);
 /** A line on a change's log, from outside this file (access.ts). */
@@ -922,11 +937,11 @@ export function roleOf(c: { infra?: boolean; request?: string | null; findings?:
 // ------------------------------------------------------------------ routing (routing.ts)
 
 /** Earlier attempts at the same work that didn't land: the same task's other changes, or changes on the same findings. */
-export function earlierAttempts(c: Pick<Change, 'id' | 'task' | 'findings'>, limit = 3): { id: string; status: string; detail: string | null; summary: string | null; created: number }[] {
+export function earlierAttempts(c: Pick<Change, 'id' | 'task' | 'findings'>, limit = 3): { id: string; status: string; detail: string | null; summary: string | null; created: number; phase?: string | null }[] {
   const rows = c.task
-    ? db.prepare(`SELECT id, status, detail, summary, created FROM changes WHERE task = ? AND id != ? AND status IN ('failed', 'closed') ORDER BY created DESC LIMIT ?`).all(c.task, c.id, limit)
+    ? db.prepare(`SELECT id, status, detail, summary, created, phase FROM changes WHERE task = ? AND id != ? AND status IN ('failed', 'closed') ORDER BY created DESC LIMIT ?`).all(c.task, c.id, limit)
     : c.findings.length
-      ? db.prepare(`SELECT id, status, detail, summary, created FROM changes WHERE id != ? AND request IS NULL AND status IN ('failed', 'closed') AND (${c.findings.map(() => 'findings LIKE ?').join(' OR ')}) ORDER BY created DESC LIMIT ?`).all(c.id, ...c.findings.map((f) => `%"${f}"%`), limit)
+      ? db.prepare(`SELECT id, status, detail, summary, created, phase FROM changes WHERE id != ? AND request IS NULL AND status IN ('failed', 'closed') AND (${c.findings.map(() => 'findings LIKE ?').join(' OR ')}) ORDER BY created DESC LIMIT ?`).all(c.id, ...c.findings.map((f) => `%"${f}"%`), limit)
       : [];
   return rows as any[];
 }
@@ -937,7 +952,7 @@ export function earlierAttempts(c: Pick<Change, 'id' | 'task' | 'findings'>, lim
  */
 export function attemptOf(c: Change): number {
   if (c.task) return Math.max(1, getTask(c.task)?.tries || 1);
-  const prior = c.findings.length ? earlierAttempts(c, 10).filter((x) => x.status === 'failed').length : 0;
+  const prior = c.findings.length ? earlierAttempts(c, 10).filter((x) => x.status === 'failed' && !studioFailed(x)).length : 0;
   return 1 + (c.revisions ?? 0) + (c.auto_fixes ?? 0) + prior;
 }
 
@@ -1811,7 +1826,7 @@ async function work(id: string, note?: string, answer?: string, resumed?: Phase 
         return parkForHarness(id, ph, save, stop);
       }
       // The cost and the next step are written together, so a restart never counts a pass twice.
-      save({ step: 'publish', result: r.result, stopped: r.stopped, nudge: false, genDone: undefined, harness: undefined, proc: undefined }, { cost: getChange(id)!.cost + r.cost });
+      save({ step: 'publish', result: r.result, stopped: r.stopped, machinery: machineryFailure(r.stderr) ?? undefined, nudge: false, genDone: undefined, harness: undefined, proc: undefined }, { cost: getChange(id)!.cost + r.cost });
     }
 
     if (ph.step === 'publish') {
@@ -1888,6 +1903,15 @@ async function work(id: string, note?: string, answer?: string, resumed?: Phase 
         if (lost) {
           reopenTaken(id, findings.map((f) => f.id), lost);
           update(id, { status: 'failed', detail: lost.slice(0, 300), summary, commits, phase: { step: ph.step, failed: true } });
+          await dropEmptyWorktree(id, commits);
+          return;
+        }
+        // No commit because Studio's job failed around the agent (its clone, the bundle, the files coming back): Studio's
+        // failure, with its own words in the detail, not a try (infra-failure.ts), so the finding isn't tried 11 times.
+        if (ph.machinery) {
+          const detail = `${ph.machinery} (the agent made no commit; not counted as a try)`.slice(0, 300);
+          reopenTaken(id, findings.map((f) => f.id), detail);
+          update(id, { status: 'failed', detail, summary, commits, phase: { step: ph.step, failed: true } });
           await dropEmptyWorktree(id, commits);
           return;
         }
