@@ -16,7 +16,7 @@ import { db } from './db.ts';
 import { tokenLost, infraLost, buildsOf } from './builds.ts';
 import { getProduct } from './config.ts';
 
-export type FailClass = 'rejected' | 'token' | 'restart' | 'compile' | 'publish' | 'timeout' | 'memory' | 'access' | 'other';
+export type FailClass = 'rejected' | 'script' | 'token' | 'restart' | 'compile' | 'publish' | 'timeout' | 'memory' | 'access' | 'other';
 export type FailKind = 'infrastructure' | 'code' | 'unknown';
 export type Classified = { class: FailClass; kind: FailKind; plain: string };
 
@@ -39,6 +39,33 @@ export function genRefusal(error: unknown): string | null {
   const e = String(error ?? '');
   const m = /(customer builds take[^\n]*|github(?: must be|\.(?:repo|commit|token|ref)\b)[^\n]*|[a-zA-Z]+ isn't for customer builds[^\n]*|target "[^"]*" can't be built in the cloud[^\n]*|method must be a static method[^\n]*)/.exec(e);
   return m ? m[1].trim().slice(0, 300) : null;
+}
+
+/**
+ * The real error of a failed shell build (npm / static, run by Studio's job), not the tail of its output (Dose of Destruction
+ * v7-v11, 2026-11-03: the stored reason was Vite's chunk-size warnings). Picks the first error-looking lines of the log
+ * and the step of the `&&` chain they came from. Exported for the tests.
+ */
+export function digestLog(log: string, command = ''): { errors: string[]; step: string | null } {
+  const lines = String(log ?? '').split(/\r?\n/).map((l) => l.trimEnd()).filter(Boolean);
+  const bad = /\berror\b|\bERR!|ERR_|No such file|cannot (stat|create|open|access)|not found|Permission denied|ENOENT|EEXIST|failed to|Cannot find|\bfatal\b|Exit status|exited with/i;
+  const noise = /^\s*(\(!\)|warning|npm warn)|manualChunks|chunk(s)? (is|are) larger|Some chunks|dynamic import|Consider:|build\.rollupOptions|chunkSizeWarningLimit/i;
+  const hit: number[] = [];
+  lines.forEach((l, i) => { if (bad.test(l) && !noise.test(l)) hit.push(i); });
+  const errors = hit.slice(0, 8).map((i) => lines[i].slice(0, 240));
+  // The step: the command the first error follows (npm prints "> name@1.0.0 build" before a script; "npm ci" fails before any).
+  let step: string | null = null;
+  const at = hit.length ? hit[0] : lines.length;
+  for (let i = at; i >= 0; i--) {
+    const m = /^>\s+\S+@\S+\s+(.+)$/.exec(lines[i] ?? '');
+    if (m) { step = `npm run ${m[1].trim().split(/\s+/)[0]}`; break; }
+  }
+  const first = lines[hit[0]] ?? '';
+  const tool = /^(cp|rm|mv|mkdir|ln|tar|cd|sh|git):/.exec(first) ?? /^\/bin\/sh: \d+: (\S+?):/.exec(first);
+  if (tool) step = tool[1];
+  else if (!step && /npm (error|ERR!)/i.test(first) && /\bnpm ci\b|lock ?file|package-lock|EUSAGE/i.test(lines.join('\n'))) step = 'npm ci';
+
+  return { errors, step };
 }
 
 /** What went wrong, in two words and in plain ones. Exported for the tests. */
@@ -64,6 +91,8 @@ export function classify(error: unknown, o: { stage?: string | null; log?: strin
     const loader = /loader/i.test(e);
     return { class: 'publish', kind: loader ? 'code' : 'infrastructure', plain: loader ? `The build finished but its files aren't what the site page loads (${e.slice(0, 160)}). That's the build's setup, not Studio.` : `The build itself finished, but Studio couldn't publish it (${e.slice(0, 160)}). That's Studio or the site store, not your code. Build again.` };
   }
+  const sh = /^(.+?) failed(?:: ([^\n]*?))? \(exit (\d+)\)/m.exec(e);
+  if (sh) return { class: 'script', kind: 'code', plain: `The project's build command failed (exit ${sh[3]}). ${e.slice(sh[0].length).replace(/^:\s*/, '').slice(0, 300) || 'See the log below for the step that failed.'} Building again won't change it: the command or the project needs fixing.` };
   if (/\[GameDeploy\][^\n]*FAILED|DEPLOY FAILED/i.test(both)) return { class: 'other', kind: 'unknown', plain: 'The deploy script failed and its log has no compile error in it. Read the log below: it is either the project (a script step failed) or the build machine.' };
   return { class: 'other', kind: 'unknown', plain: `Not recognised: ${e.slice(0, 200) || 'no reason given'}. The log below is what Gen kept.` };
 }

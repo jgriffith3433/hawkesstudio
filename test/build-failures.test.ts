@@ -202,3 +202,30 @@ test('a later success of the same build clears its earlier failure, and a succes
   assert.ok(F.failingBuilds('bfrenamed').every((f) => f.id !== other), 'superseded by the later success of the same build');
 });
 
+
+test('a failed npm build keeps the real error and its step, not Vite\'s chunk-size warnings (Dose of Destruction v7-v11)', () => {
+  const log = [
+    '> dod@1.0.0 build', '> vite build', 'vite v6 building for production...',
+    '(!) Some chunks are larger than 500 kB after minification. Consider:',
+    '- Using dynamic import() to code-split the application',
+    '- Use build.rollupOptions.output.manualChunks to improve chunking: https://rollupjs.org/configuration-options/#output-manualchunks',
+    '- Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.',
+    "cp: cannot create hard link 'dist/releases.json' to 'releases.json': File exists",
+  ].join('\n');
+  const d = F.digestLog(log, 'npm run build && cp -al releases.json dist/');
+  assert.match(d.errors[0], /cannot create hard link 'dist\/releases.json'/);
+  assert.equal(d.errors.some((e) => /manualChunks/.test(e)), false);
+  assert.equal(d.step, 'cp');
+  const msg = `npm run build && cp -al releases.json dist/ failed (exit 1), at cp: ${d.errors[0]}`;
+  const c = F.classify(msg);
+  assert.equal(c.class, 'script');
+  assert.equal(c.kind, 'code');
+  assert.match(c.plain, /hard link/);
+  // The whole log stays on the row for "Why did this fail?".
+  const id = row({ product: 'bfgame', build: 'web', started: Date.now() + 5000 });
+  F.recordFailure(id, new F.BuildFailure(msg, { jobs: [], log }), { stage: 'build' });
+  const why = F.whyFailed(id)!;
+  assert.equal(why.hasLog, true);
+  assert.match(why.log, /manualChunks/);
+  assert.equal(why.class, 'script');
+});
