@@ -13,6 +13,7 @@ export const INFRA_PHRASES = [
   'git: command not found', 'git not found', 'spawn git enoent', 'enoent: git',
   'no conversation found',
   'prepare failed', 'prepare error',
+  'source unreadable', 'source missing', 'promisor remote',
   'git add', 'git commit',
 ];
 // "git add"/"git commit" are infra only when the shell refused them (the content role's sandbox did, 2026-11-02).
