@@ -16,7 +16,7 @@ import type http from 'node:http';
 import { db, newId } from './db.ts';
 import { getProduct, loadProducts, StudioError, managedElsewhere, setBuildMachine, type BuildSpec, type BuildMachine, type Product } from './config.ts';
 import { folderFilesAsync } from './sitestore.ts';
-import { BuildFailure, extractLog, recordFailure, announce, settleFailure } from './buildfail.ts';
+import { BuildFailure, LOG_LINES, extractLog, recordFailure, announce, settleFailure } from './buildfail.ts';
 
 db.exec(`CREATE TABLE IF NOT EXISTS builds (
   id TEXT PRIMARY KEY, product TEXT NOT NULL, build TEXT NOT NULL, version INTEGER NOT NULL, status TEXT NOT NULL,
@@ -559,8 +559,15 @@ async function viaStudio(p: Product, b: BuildSpec, slug: string, sha: string, to
     remote: `https://github.com/${slug}.git`, head: sha, cwd: root, command: `${env}; ${cd}${installs ? '' : `(${install}) && `}${command}`, outputs: [outDir], gitToken: token,
     onLine: (l) => { if (/^\[job\]|error|built in/i.test(l)) say(l); }, beforeOutputs: hold,
   });
-  const tail = r.log.split('\n').filter(Boolean).slice(-3).join(' | ').slice(0, 400);
-  if (r.error || r.code !== 0) throw new Error(`${command} failed${r.error ? `: ${r.error}` : ` (exit ${r.code})`}${tail ? `: ${tail}` : ''}`);
+  if (r.error || r.code !== 0) {
+    // The real error, not the tail (Vite's chunk-size warnings hid DoD's): the first error lines and the failing step, and the
+    // whole log kept on the row (fail_log) for "Why did this fail?".
+    const { digestLog } = await import('./buildfail.ts');
+    const d = digestLog(r.log, command);
+    const real = d.errors.length ? d.errors.slice(0, 3).join(' | ') : r.log.split('\n').filter(Boolean).slice(-3).join(' | ');
+    const msg = `${command.length > 80 ? `${command.slice(0, 80)}…` : command} failed${r.error ? `: ${r.error}` : ` (exit ${r.code})`}${d.step ? `, at ${d.step}` : ''}${real ? `: ${real}` : ''}`.slice(0, 500);
+    throw new BuildFailure(msg, { jobs: [], log: r.log.split('\n').slice(-LOG_LINES).join('\n') });
+  }
   if (!r.outputs) throw new Error(`the build made no ${outDir}/`);
   const tmp = tmpDir();
   await untar(r.outputs, tmp);
