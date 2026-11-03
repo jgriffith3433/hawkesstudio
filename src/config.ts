@@ -122,6 +122,8 @@ export type Product = {
   build?: { project: string; site: string; method: string; tests?: ('EditMode' | 'PlayMode')[]; versionEnv?: string; r2?: string };
   /** The product implements the playtest contract (docs/playtest.md): playtests wait for it instead of falling back to a generic smoke test. */
   contract?: boolean;
+  /** false: the game plays fine without a GPU, so a software playtest is still reviewed (gpu-breaker.ts). */
+  gpuBound?: boolean;
   checks?: { dir: string; cmd: string }[];
   /**
    * prebuild: a command run on beta before a go live. via "ec2": main isn't published by GitHub Pages but by the product's
@@ -515,7 +517,11 @@ export function saveProduct(input: ProductInput): Product {
   // live: a library has no live game, only its demo on beta (2026-11-01: Hawkes Net for Babylon's daily playtest loaded
   // its GitHub repo page as "live" and tested nothing). peers: real players in one room, for multiplayer.
   const hasBeta = Boolean(beta || builds.length || input.build);
-  const playtests = (input.playtests?.length ? input.playtests : [{ scenario: 'smoke', where: 'live' as const }]).slice(0, 20).map((t) => {
+  // No playtests named: play the live address, but a project whose only "live" is its repository page (or that has none)
+  // plays its beta demo (2026-11-03: hawkes-analytics, hawkes-net-js and -unity reviews crawled github.com and said nothing).
+  const noRealLive = !live || /^https:\/\/(www\.)?github\.com\//i.test(live);
+  const defaultWhere = hasBeta && noRealLive ? ('beta' as const) : ('live' as const);
+  const playtests = (input.playtests?.length ? input.playtests : [{ scenario: 'smoke', where: defaultWhere }]).slice(0, 20).map((t) => {
     const onBeta = t.where === 'beta' || t.where === 'local';
     if (onBeta && !hasBeta) throw new StudioError('playtests: where "beta" needs a beta (a beta address or a build Studio publishes)', 400);
     const peers = Math.round(Number(t.peers) || 1);
