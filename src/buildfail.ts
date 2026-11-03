@@ -15,7 +15,7 @@
 import { db } from './db.ts';
 import { tokenLost, infraLost } from './builds.ts';
 
-export type FailClass = 'token' | 'restart' | 'compile' | 'publish' | 'timeout' | 'memory' | 'access' | 'other';
+export type FailClass = 'rejected' | 'token' | 'restart' | 'compile' | 'publish' | 'timeout' | 'memory' | 'access' | 'other';
 export type FailKind = 'infrastructure' | 'code' | 'unknown';
 export type Classified = { class: FailClass; kind: FailKind; plain: string };
 
@@ -29,12 +29,27 @@ export const stageWords = (s: string | null | undefined) => STAGE_WORDS[s as Sta
 export const LOG_LINES = 200;
 const LOG_BYTES = 60_000;
 
+/**
+ * Gen's rejection of a build request (hawkesgen customer.ts admitCustomer: "customer builds take github ...", "github.repo
+ * must be ...", "X isn't for customer builds", "target ... can't be built in the cloud"), as its own sentence; null when the
+ * error is anything else. Exported for the tests.
+ */
+export function genRefusal(error: unknown): string | null {
+  const e = String(error ?? '');
+  const m = /(customer builds take[^\n]*|github(?: must be|\.(?:repo|commit|token|ref)\b)[^\n]*|[a-zA-Z]+ isn't for customer builds[^\n]*|target "[^"]*" can't be built in the cloud[^\n]*|method must be a static method[^\n]*)/.exec(e);
+  return m ? m[1].trim().slice(0, 300) : null;
+}
+
 /** What went wrong, in two words and in plain ones. Exported for the tests. */
 export function classify(error: unknown, o: { stage?: string | null; log?: string | null; tries?: number } = {}): Classified {
   const e = String(error ?? '');
   const log = String(o.log ?? '');
   const both = `${e}\n${log}`;
   const retried = (o.tries ?? 1) > 1 ? ` Studio tried ${o.tries} times by itself.` : '';
+  // Hawkes Gen refused the request itself (a shape or a value it doesn't take): its own message is the cause, said as it
+  // came ("Not recognised: customer builds take github ..." hid it behind "Cause unclear" on 2026-11-03).
+  const refused = genRefusal(e);
+  if (refused) return { class: 'rejected', kind: 'infrastructure', plain: `Hawkes Gen refused the build request: ${refused}. The request Studio sent doesn't fit what Gen takes, so it is a Studio/Gen mismatch, not your code, and building again won't change it until one of them is fixed.` };
   if (/error CS\d+|compil(e|ation) (error|failed)|BuildFailedException|build method .* (failed|threw)|Unity exited with code|Scripts have compiler errors/i.test(both) && !tokenLost(e)) {
     const first = /error CS\d+[^\n]{0,160}/i.exec(both)?.[0];
     return { class: 'compile', kind: 'code', plain: `The project's code doesn't build${first ? ` (${first.trim()})` : ''}. Studio can't fix this by building again: someone has to fix the code first.` };
@@ -88,6 +103,12 @@ export type FailureView = {
 
 const parseJobs = (s: unknown): { id: string; error: string }[] => { try { const v = JSON.parse(String(s ?? '[]')); return Array.isArray(v) ? v : []; } catch { return []; } };
 
+/** What a failure is, for "the same one again": the build, the class and the reason with ids, numbers and hashes taken out. */
+export function failSignature(r: { build: string; fail_class?: string | null; detail?: string | null }): string {
+  const why = String(r.detail ?? '').toLowerCase().replace(/\b[0-9a-f]{7,64}\b/g, '#').replace(/\b(?:b|r|j|a)_[0-9a-f]+\b/g, '#').replace(/\d+/g, '#').replace(/\s+/g, ' ').slice(0, 200);
+  return `${r.build}|${r.fail_class ?? ''}|${why}`;
+}
+
 /** A builds row as a failure card needs it (no log: that is the "Why did this fail?" call). */
 export function failureOf(r: any): FailureView {
   const jobs = parseJobs(r.gen_jobs);
@@ -117,9 +138,36 @@ export function lastBuilds(product: string): any[] {
   return db.prepare(`SELECT b.* FROM builds b WHERE b.product = ? AND b.change IS NULL AND b.started = (SELECT MAX(started) FROM builds x WHERE x.product = b.product AND x.build = b.build AND x.change IS NULL)`).all(product) as any[];
 }
 
-/** Builds whose newest attempt failed, with the failure; a later success (or one being built now) clears it. */
+export type BuildRunning = { build: string; version: number | null; state: 'starting' | 'building'; run: string; started: number; step: string | null };
+
+/**
+ * Builds going right now: a running build run names its builds up front, and the row only exists once that build's turn
+ * comes ("starting"), then it is "building". Go live and the cards show this at once when Build is pressed, and not a
+ * stale red badge in between (J, 2026-11-03: the buttons "show back up again").
+ */
+export function buildsRunning(product: string): BuildRunning[] {
+  const out: BuildRunning[] = [];
+  const runs = db.prepare("SELECT id, options, started FROM runs WHERE kind = 'build' AND status = 'running' AND products LIKE ? ORDER BY started DESC").all(`%"${product}"%`) as any[];
+  for (const r of runs) {
+    let want: string[] = [];
+    let change: unknown = null;
+    try { const o = JSON.parse(r.options ?? '{}'); want = Array.isArray(o.builds) ? o.builds.map(String) : []; change = o.change; } catch {}
+    if (change) continue; // an agent change's preview, not the project's own build
+    for (const id of want) {
+      if (out.some((x) => x.build === id)) continue;
+      const row = db.prepare('SELECT version, status FROM builds WHERE run = ? AND product = ? AND build = ? ORDER BY started DESC LIMIT 1').get(r.id, product, id) as any;
+      if (row && row.status !== 'building') continue; // this build of the run has ended; its result shows instead
+      const step = db.prepare("SELECT detail FROM steps WHERE run = ? AND kind = 'build' AND name = ? ORDER BY started DESC LIMIT 1").get(r.id, id) as any;
+      out.push({ build: id, version: row?.version ?? null, state: row ? 'building' : 'starting', run: r.id, started: r.started, step: step?.detail ?? null });
+    }
+  }
+  return out;
+}
+
+/** Builds whose newest attempt failed, with the failure; a later success (or one being built now or about to start) clears it. */
 export function failingBuilds(product: string): FailureView[] {
-  return lastBuilds(product).filter((r) => r.status === 'failed').map(failureOf);
+  const going = new Set(buildsRunning(product).map((x) => x.build));
+  return lastBuilds(product).filter((r) => r.status === 'failed' && !going.has(r.build)).map(failureOf);
 }
 
 /** Every attempt at one commit, newest first: the history Go live shows next to "build first". */
@@ -149,6 +197,12 @@ export function attemptsLine(attempts: FailureView[]): string {
 
 // ------------------------------------------------------------------ telling people (once)
 
+/** Whether the build's previous attempt (same project, same build) failed the same way and J was told about it. */
+export function repeatsLast(r: any): boolean {
+  const prev = db.prepare("SELECT * FROM builds WHERE product = ? AND build = ? AND change IS NULL AND status = 'failed' AND started < ? AND id != ? ORDER BY started DESC LIMIT 1").get(r.product, r.build, r.started, r.id) as any;
+  return Boolean(prev && prev.notified && failSignature(prev) === failSignature(r));
+}
+
 /**
  * The failure is final (Studio's own retries are used up): the Inbox shows it (inbox.ts) and J's phone is told ONCE.
  * `notified` on the row makes it once per failure, not per look; agent changes' previews (change not null) stay quiet.
@@ -158,6 +212,8 @@ export async function announce(rowId: string): Promise<boolean> {
   if (!r || r.status !== 'failed' || r.change || r.notified) return false;
   const took = db.prepare('UPDATE builds SET notified = ? WHERE id = ? AND notified IS NULL').run(Date.now(), rowId);
   if (!Number(took.changes)) return false;
+  // The same failure again (a rebuild that fails the same way) was told already: marked, not told twice.
+  if (repeatsLast(r)) return false;
   try {
     const { getProduct } = await import('./config.ts');
     const { notify, PUBLIC_URL } = await import('./notify.ts');

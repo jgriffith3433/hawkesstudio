@@ -17,7 +17,7 @@ import { isVideoTask, listVideos } from './videos.ts';
 import type http from 'node:http';
 import { db, parse } from './db.ts';
 import { getProduct, getInfra, isInfra, loadProducts, managedElsewhere, StudioError } from './config.ts';
-import { failingBuilds } from './buildfail.ts';
+import { failingBuilds, failSignature, lastBuilds } from './buildfail.ts';
 import {
   listQuestions, getQuestion, setQuestion, answeredSince, getTask, getItem, getMilestone, listMilestones, milestoneProgress, milestoneTasks, tasksAwaitingGpu,
   approveGpu, updateTask, estimateTask, addComment, gpuBudgetFor, gpuAutoApprovedToday, gpuDigestTasks, type Question, type Task,
@@ -201,6 +201,28 @@ function ack(id: string, by: string, answer: string, until: number | null = null
 /** Records an answer to a budget or merge card for "answered lately" (its card goes by itself). */
 const record = (id: string, by: string, answer: string, title: string) => ack(`${id}@${Date.now()}`, by, answer, null, title);
 
+/**
+ * A failed build whose earlier attempt (same project and build) failed the same way and had its card answered (Build again,
+ * Dismiss): it isn't filed again, so a rebuild that fails identically doesn't make the card go and come back. A different
+ * reason is a new card (buildfail.ts failSignature).
+ */
+function buildCardAnswered(f: { id: string; product: string; build: string; class: string | null; reason: string }): boolean {
+  const sig = failSignature({ build: f.build, fail_class: f.class, detail: f.reason });
+  const rows = db.prepare("SELECT id, build, fail_class, detail FROM builds WHERE product = ? AND build = ? AND change IS NULL AND status = 'failed' AND id != ?").all(f.product, f.build, f.id) as any[];
+  return rows.some((r) => failSignature(r) === sig && acked(`build:${r.id}`));
+}
+
+/**
+ * A rebuild started: the failed builds' cards are answered ("Build again"), so they go now and don't wait for the new
+ * build to show a row. Called by builds.ts startBuild, whichever button started it.
+ */
+export async function resolveBuildCards(product: string, builds: string[], by: string) {
+  for (const r of lastBuilds(product)) {
+    if (r.status !== 'failed' || !builds.includes(r.build) || acked(`build:${r.id}`)) continue;
+    ack(`build:${r.id}`, by, 'Build again', null, `Build ${r.build} of ${product}`);
+  }
+}
+
 /** Whether the PM loop is working here (on the server): then agent questions and ready changes are its first. */
 async function pmHandles() {
   const pm = await import('./pm.ts');
@@ -322,7 +344,7 @@ export async function inbox({ tokens = false }: { tokens?: boolean } = {}): Prom
   for (const p of loadProducts()) {
     if (managedElsewhere(p)) continue;
     for (const f of failingBuilds(p.id)) {
-      if (!f.finished || Date.now() - f.finished > 7 * 24 * HOUR || acked(`build:${f.id}`)) continue;
+      if (!f.finished || Date.now() - f.finished > 7 * 24 * HOUR || acked(`build:${f.id}`) || buildCardAnswered(f)) continue;
       out.push({
         id: `build:${f.id}`, kind: 'build', title: `${p.name}: build ${f.build} ${f.version} failed${f.sha ? ` (${f.sha.slice(0, 7)})` : ''}`,
         text: `${f.plain}\n\nReason: ${f.reason}${f.genJob ? `\nGen job: ${f.genJob}` : ''}`.slice(0, 1500),

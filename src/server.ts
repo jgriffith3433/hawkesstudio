@@ -85,6 +85,7 @@ async function overview() {
       lastReview: reviews[0] ?? null,
       // Builds whose newest attempt failed (buildfail.ts): the red "Last build failed" badge on the card.
       buildFailing: (await import('./buildfail.ts')).failingBuilds(p.id),
+      buildRunning: (await import('./buildfail.ts')).buildsRunning(p.id),
       open: Object.fromEntries(open.map((r) => [r.severity, r.n])),
     };
   }));

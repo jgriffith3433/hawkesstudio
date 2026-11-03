@@ -200,7 +200,8 @@ if (typeof document !== 'undefined') (() => {
     const card = pending.find((a) => a.target === p.product && (a.kind === 'deploy' || a.kind === 'rollback'));
     const fx = fixing.get(p.product);
     const fix = L.color === 'red' && p.fix && FIX[p.fix] && !run.length ? p.fix : null;
-    const fixRunning = fx && !fx.done && !fx.error;
+    const buildGoing = !!p.buildRunning?.length;
+    const fixRunning = (fx && !fx.done && !fx.error) || buildGoing;
     const okSince = Math.max(lastOk.get(p.product) ?? 0, ...p.tested.playtests.filter((t) => t.status === 'done' && t.outcome !== 'error').map((t) => t.when ?? 0));
     // This commit's playtest: passed, didn't pass, not played (with the button that plays it), or being played (the
     // busy line above says so, with its step).
@@ -219,9 +220,10 @@ if (typeof document !== 'undefined') (() => {
       <div class="gl-when">Live updated ${esc(when(lastLive))} · beta changed ${esc(when(p.beta?.date))}</div>
       ${ps && ps.state !== 'running' ? `<div class="gl-play ${ps.state}" data-key="glplay:${esc(p.product)}">${PlayState.ICON[ps.state]} ${esc(ps.text)}</div>` : ''}
       ${links(prod, p)}
+      ${(p.buildRunning ?? []).map((r) => BuildFail.running(p.product, r)).join('')}
       ${(p.buildFailing ?? []).map((f) => BuildFail.badge(p.product, f)).join('')}
       ${run.map((o) => `<div class="gl-busy">⏳ ${esc(o.title)}${o.status === 'queued' ? ' (waiting its turn)' : o.step ? `: ${esc(o.step)}` : '…'}</div>`).join('')}
-      ${fixRunning && !run.length ? `<div class="gl-busy">⏳ ${esc(FIX[fx.action].busy)}${fx.step ? `: ${esc(fx.step)}` : '…'}</div>` : ''}
+      ${fixRunning && !run.length && fx && !fx.done && !fx.error && !buildGoing ? `<div class="gl-busy">⏳ ${esc(FIX[fx.action].busy)}${fx.step ? `: ${esc(fx.step)}` : '…'}</div>` : ''}
       ${!showFx ? '' : fx.error ? `<div class="gl-done gl-fail">❌ ${esc(FIX[fx.action].label)} failed ${esc(ago(fx.errorAt))}: ${esc(String(fx.error).slice(0, 300))}</div>` : `<div class="gl-done">${fx.done.ok ? `✅ ${esc(FIX[fx.action].label)} finished ${esc(ago(fx.done.at))}${fxRun}` : `<span class="gl-fail">❌ ${esc(FIX[fx.action].label)} failed ${esc(ago(fx.done.at))}: ${esc(String(fx.done.detail ?? '').slice(0, 300))}</span>${fxRun}`}</div>`}
       ${!run.length && recent ? `<div class="gl-done">${recent.status === 'done' ? `✅ ${esc(recent.kind === 'rollback' ? 'Rolled back' : 'Went live')} ${esc(ago(recent.finished))}${recent.result?.skippedPlaytest ? ` without a playtest (${esc(recent.result.skippedPlaytest.by)})` : ''}${recent.result?.release ? ` · v${esc(recent.result.release.version)}: ${esc(recent.result.release.title ?? '')}` : ''}` : `❌ ${esc(recent.title)} failed ${esc(ago(recent.finished))}: ${esc(String(recent.error ?? '').slice(0, 200))}`}</div>` : ''}
       ${p.players ? `<div class="gl-players meta" title="Real players on the live site (Hawkes Analytics; bots and your own devices left out)">👥 ${esc(p.players)}</div>` : ''}
@@ -272,6 +274,8 @@ if (typeof document !== 'undefined') (() => {
   /** Starts the beta step that clears a product's blockers; the card follows its run. Never goes live. */
   async function startFix(id, action) {
     fixing.set(id, { action, step: action === 'merge-main' ? 'merging' : action === 'sync' ? 'cloning' : '' });
+    // Pressing Build shows "Starting" on the card at once (the server's state replaces it when the request answers).
+    if ((action === 'build' || action === 'rebuild') && plans.get(id) && !plans.get(id).error) Object.assign(plans.get(id), { buildFailing: [], buildRunning: [{ build: 'build', version: null, state: 'starting', run: '', started: Date.now(), step: null }] });
     draw();
     try {
       if (action === 'sync') {
@@ -301,11 +305,20 @@ if (typeof document !== 'undefined') (() => {
         ? await api('/api/build', { method: 'POST', body: { product: id, force: true } })
         : await api(`/api/beta/${id}`, { method: 'POST', body: {} });
       fixing.get(id).run = r.run;
+      if (action === 'build' || action === 'rebuild') await refreshBuildState(id);
     } catch (err) {
       Object.assign(fixing.get(id), { error: err.message, errorAt: Date.now() });
       loadPlan(id);
     }
     draw();
+  }
+
+  /** The product's builds as the server has them (failed, starting, building): one small fetch, never the whole plan. */
+  async function refreshBuildState(id) {
+    const plan = plans.get(id);
+    if (!plan || plan.error) return;
+    const b = await api(`/api/projects/${encodeURIComponent(id)}/builds`).catch(() => null);
+    if (b) Object.assign(plan, { buildFailing: b.failing ?? [], buildRunning: b.running ?? [] });
   }
 
   /** The runs the cards follow: their step now; when one ends, the product's plan again (it turns ready, or says why not). */
@@ -391,7 +404,12 @@ if (typeof document !== 'undefined') (() => {
   // when a go live starts or ends, the plans again.
   studioStream.on(['ops', 'changes', 'runs', 'builds'], async () => {
     if (tab !== 'golive' || busy || !products.length) return;
-    try { await pollFixes(); if (await loadOps()) await load(); else draw(); } catch {}
+    try {
+      await pollFixes();
+      // A build starting, running or ending: its card's state from the server (the stream says when; nothing is asked on a timer).
+      await Promise.all([...plans].filter(([, pl]) => pl.buildRunning?.length || pl.buildFailing?.length || [...fixing].some(([k, f]) => k === pl.product && ['build', 'rebuild'].includes(f.action))).map(([id]) => refreshBuildState(id)));
+      if (await loadOps()) await load(); else draw();
+    } catch {}
   });
   addEventListener('studio-approval', () => { if (tab === 'golive') setTimeout(() => loadOps().then(draw).catch(() => {}), 800); });
 
