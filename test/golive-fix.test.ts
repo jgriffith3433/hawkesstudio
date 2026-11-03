@@ -94,3 +94,9 @@ test('an old Play beta failure leaves the card once it no longer matters', () =>
   assert.equal(F.show({ action: 'beta', run: 'r_3', step: '' }, red), false);
   assert.equal(F.show(undefined, red), false);
 });
+
+test('a project\'s own builds get the Build button', () => {
+  const m = "Build web of beta abc1234 isn't in acme/site's beta yet: use the Build button (a build-* tag builds web; the Build button builds any of them now).";
+  assert.equal(blockerFix(m), 'build');
+  assert.equal(planFix([m, B.untested]), 'build');
+});

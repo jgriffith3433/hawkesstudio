@@ -241,6 +241,7 @@ const server = http.createServer(async (req, res) => {
     }
     if (route === '/api/products' && method === 'GET') return send(res, 200, { products: loadProducts() });
     // Builds (builds.ts): a project's builds, its history, build now, make one beta.
+    if (route === '/api/builds/gen-token' && method === 'POST') return void (await (await import('./builds.ts')).handleGenToken(req, res, readJson));
     if (/^\/api\/(projects|games)\/[a-z][a-z0-9-]{1,39}\/builds/.test(route) && (await (await import('./builds.ts')).handleBuildRoutes(req, res, route, method, readJson))) return;
     // Plugins (plugins.ts, docs/plugins.md): the catalog, a project's installed versions, install or upgrade as a pull request.
     if ((route === '/api/plugins' || /^\/api\/(projects|games)\/[a-z][a-z0-9-]{1,39}\/plugins/.test(route)) && (await (await import('./plugins.ts')).handlePluginRoutes(req, res, route, method, url, readJson))) return;

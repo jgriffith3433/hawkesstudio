@@ -1402,8 +1402,10 @@ export function runRestarts(prev: { step?: string; n?: number; at?: number } | u
  */
 export function waitingInGen(run: string): boolean {
   try {
-    const rows = db.prepare("SELECT gen_job, gen_done FROM builds WHERE run = ? AND status = 'building'").all(run) as any[];
-    return rows.length > 0 && rows.every((b) => b.gen_job && !b.gen_done);
+    const rows = db.prepare("SELECT gen_job, gen_done, runner FROM builds WHERE run = ? AND status = 'building'").all(run) as any[];
+    // A Gen build with no job id yet is being submitted right now (a restart in those seconds is still waiting on Gen:
+    // 2026-11-03, sick-of-it-unity v5 was stopped after 4 restarts in 30 minutes, none of them Studio's own work).
+    return rows.length > 0 && rows.every((b) => !b.gen_done && (b.gen_job || b.runner === 'gen'));
   } catch {
     return false; // no builds table yet: no project builds here
   }

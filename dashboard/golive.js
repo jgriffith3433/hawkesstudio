@@ -115,6 +115,7 @@ if (typeof document !== 'undefined') (() => {
   const FIX = {
     'merge-main': { label: 'Merge live into beta', busy: 'Merging live into beta, then playing beta', title: 'Merges what is live into beta, then builds and playtests beta. Nothing goes live.' },
     beta: { label: 'Play beta', busy: 'Playing beta', title: 'Brings beta up to date (pre-deploy build, Unity build, beta site) and playtests it. Nothing goes live.' },
+    build: { label: 'Build', busy: 'Building', title: 'Starts this project\'s builds now (the Build button), then checks beta against live again. Nothing goes live.' },
     sync: { label: 'Sync repo', busy: 'Cloning the repo onto the server', title: 'Clones this product\'s repo onto the server (the server has no copy yet), then checks beta against live again. Nothing goes live.' },
     playtest: { label: 'Playtest this commit', busy: 'Playtesting this commit', title: 'Plays beta as it is now (the commit about to go live) and reviews it. Nothing goes live.' },
     redeploy: { label: 'Redeploy beta', busy: 'Redeploying beta', title: 'Runs beta\'s deploy again on GitHub (its site did not answer). Nothing goes live. Then retry the playtest.' },
@@ -293,7 +294,9 @@ if (typeof document !== 'undefined') (() => {
         await api(`/api/deploy/${id}`, { method: 'POST', body: { mergeMain: true, by: 'J' } });
         fixing.get(id).step = 'merged; playing beta';
       }
-      const r = action === 'rebuild'
+      const r = action === 'build'
+        ? await api(`/api/projects/${id}/builds`, { method: 'POST', body: {} })
+        : action === 'rebuild'
         ? await api('/api/build', { method: 'POST', body: { product: id, force: true } })
         : await api(`/api/beta/${id}`, { method: 'POST', body: {} });
       fixing.get(id).run = r.run;
