@@ -6,19 +6,26 @@
 // topic (stream.js), never a timer. Uses app.js's helpers ($, esc, api, ago).
 var BuildFail = (() => {
   const KIND = { infrastructure: 'Infrastructure, not the code', code: 'The code', unknown: 'Cause unclear' };
+  // The cause named by its class where that says more than infrastructure/code (a Gen rejection is neither unclear nor "the machine").
+  const kindOf = (f) => (f.class === 'rejected' ? 'Hawkes Gen refused the request' : KIND[f.kind] ?? 'Cause unclear');
   const took = (s) => (s == null ? '' : s < 90 ? `${s}s` : s < 5400 ? `${Math.round(s / 60)} min` : `${Math.round(s / 360) / 10} h`);
   const sha = (f) => (f.sha ? f.sha.slice(0, 7) : '');
 
   /** One plain line: "Last build failed: web 7 (infrastructure) while building, after 12 min · a1b2c3d". */
-  const line = (f) => `Last build failed: ${f.build} ${f.version}${f.kind ? ` (${(KIND[f.kind] ?? f.kind).toLowerCase()})` : ''}${f.stepWords ? ` while ${f.stepWords}` : ''}${f.seconds != null ? `, ran ${took(f.seconds)}` : ''}${sha(f) ? ` · ${sha(f)}` : ''}.`;
+  const line = (f) => `Last build failed: ${f.build} ${f.version}${f.kind ? ` (${kindOf(f).toLowerCase()})` : ''}${f.stepWords ? ` while ${f.stepWords}` : ''}${f.seconds != null ? `, ran ${took(f.seconds)}` : ''}${sha(f) ? ` · ${sha(f)}` : ''}.`;
 
   /** The red badge; `product` is the project id (Retry and Why call its routes). */
   const badge = (product, f) => `<div class="bf-badge" data-key="bf:${esc(f.id)}" style="border:1px solid var(--red,#c33);border-left-width:4px;border-radius:6px;padding:8px 10px;margin:8px 0;background:rgba(200,50,50,.08)">
     <div><b style="color:var(--red,#c33)">❌ Last build failed</b> · ${esc(f.build)} ${esc(f.version)}${sha(f) ? ` · <code>${esc(sha(f))}</code>` : ''} · ${esc(ago(f.finished ?? f.started))}</div>
-    <div class="meta">${esc(KIND[f.kind] ?? 'Cause unclear')}${f.stepWords ? ` · failed while ${esc(f.stepWords)}` : ''}${f.seconds != null ? ` · ran ${esc(took(f.seconds))}` : ''}${f.tries > 1 ? ` · ${f.tries} tries` : ''}</div>
+    <div class="meta">${esc(kindOf(f))}${f.stepWords ? ` · failed while ${esc(f.stepWords)}` : ''}${f.seconds != null ? ` · ran ${esc(took(f.seconds))}` : ''}${f.tries > 1 ? ` · ${f.tries} tries` : ''}</div>
     <div style="margin:4px 0">${esc(f.plain || f.reason)}</div>
     <div class="actions"><button type="button" class="small primary" data-admin data-bf-retry="${esc(product)}/${esc(f.build)}">Build again</button> <button type="button" class="small" data-bf-why="${esc(product)}/${esc(f.id)}">Why did this fail?</button><span class="meta" data-bf-msg></span></div>
   </div>`;
+
+  /** A build that is starting or running: shown at once when Build is pressed, in place of the red badge (the push stream redraws it). */
+  const running = (product, r) => `<div class="bf-running" data-key="bfr:${esc(r.build)}" style="border:1px solid var(--accent,#48c);border-left-width:4px;border-radius:6px;padding:8px 10px;margin:8px 0">
+    <div><b>⏳ ${r.state === 'starting' ? 'Starting' : 'Building'} ${esc(r.build)}${r.version != null ? ` ${esc(r.version)}` : ''}</b> · started ${esc(ago(r.started))}${r.step ? ` · ${esc(String(r.step).slice(0, 160))}` : ''}</div>
+    <div class="meta">It shows here as done or failed when it ends; the run is in Activity.</div></div>`;
 
   /** Every attempt at one commit (Go live): result, reason, how long. */
   const attempts = (product, list) => (list ?? []).map((a) => `<div class="bf-attempts" data-key="bfa:${esc(a.build)}:${esc(a.sha)}"><b>Builds of ${esc(a.build)} at <code>${esc(a.sha.slice(0, 7))}</code></b>${a.attempts.length ? `<ul>${a.attempts.map((x) => `<li>${x.status === 'ready' ? '✅' : x.status === 'failed' ? '❌' : '⏳'} ${esc(x.build)} ${esc(x.version)} · ${esc(ago(x.started))}${x.seconds != null ? ` · ${esc(took(x.seconds))}` : ''}${x.status === 'failed' ? ` · ${esc(KIND[x.kind] ?? 'cause unclear')}${x.stepWords ? `, ${esc(x.stepWords)}` : ''}: ${esc(x.plain || x.reason)} <a href="#" data-bf-why="${esc(product)}/${esc(x.id)}">Why?</a>` : x.status === 'building' ? ' · building now' : ''}</li>`).join('')}</ul>` : '<div class="meta">No build has ever run for this commit.</div>'}</div>`).join('');
@@ -32,7 +39,7 @@ var BuildFail = (() => {
       const w = await api(`/api/projects/${encodeURIComponent(product)}/builds/${encodeURIComponent(id)}/why`);
       const GENURL = typeof GEN !== 'undefined' ? GEN : '';
       dlg.innerHTML = `<h3>Why did ${esc(w.build)} ${esc(w.version)} fail?</h3>
-        <div class="meta">${esc(KIND[w.kind] ?? 'Cause unclear')}${w.stepWords ? ` · failed while ${esc(w.stepWords)}` : ''}${w.seconds != null ? ` · ran ${esc(took(w.seconds))}` : ''}${w.commit ? ` · commit <code>${esc(w.commit.slice(0, 7))}</code>` : ''}${w.class ? ` · class: ${esc(w.class)}` : ''}</div>
+        <div class="meta">${esc(kindOf(w))}${w.stepWords ? ` · failed while ${esc(w.stepWords)}` : ''}${w.seconds != null ? ` · ran ${esc(took(w.seconds))}` : ''}${w.commit ? ` · commit <code>${esc(w.commit.slice(0, 7))}</code>` : ''}${w.class ? ` · class: ${esc(w.class)}` : ''}</div>
         <p>${esc(w.plain || w.reason)}</p>
         <div class="meta"><b>The reason Studio recorded:</b> ${esc(w.reason)}</div>
         ${w.jobs.length ? `<div class="meta"><b>Hawkes Gen jobs tried (${w.jobs.length}):</b><ol>${w.jobs.map((j) => `<li>${window.studioMe?.customer ? esc(j.id) : `<a href="${esc(GENURL)}/#job/${esc(j.id)}" target="_blank" rel="noopener">${esc(j.id)}</a>`}: ${esc(j.error)}</li>`).join('')}</ol></div>` : w.genJob ? `<div class="meta">Gen job: ${esc(w.genJob)}</div>` : ''}
@@ -58,5 +65,5 @@ var BuildFail = (() => {
       r.disabled = false;
     }
   });
-  return { line, badge, attempts, why, took };
+  return { line, badge, running, attempts, why, took };
 })();

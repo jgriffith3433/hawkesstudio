@@ -244,6 +244,8 @@ export async function startBuild(projectId: string, o: StartOptions = {}): Promi
   const id = newId('r');
   db.prepare('INSERT INTO runs (id, kind, status, detail, products, options, started) VALUES (?, ?, ?, ?, ?, ?, ?)').run(id, 'build', 'running', `build ${p.id}`, JSON.stringify([p.id]), JSON.stringify({ builds: specs.map((b) => b.id), ref: o.ref, trigger: o.trigger, change: o.change }), Date.now());
   tagRun(id, o.origin);
+  // A rebuild is the answer to the failed build's Inbox card: it goes now, and comes back only if this one fails differently.
+  if (!o.change) await (await import('./inbox.ts')).resolveBuildCards(p.id, specs.map((b) => b.id), o.origin ? 'Talk' : 'J').catch((e) => console.warn(`[builds] ${p.id}: resolving the failed build's card: ${e?.message ?? e}`));
   const done = (async () => {
     const { closeRun } = await import('./pipeline.ts');
     try {
@@ -626,14 +628,28 @@ export function githubFor(repo: string, commit: string, token: string, ref: stri
   return { repo, commit, token, ref, ...(withRefresh && row && refreshSecret() ? { refresh: { url: refreshUrl(), build: row, key: refreshKey(row) } } : {}) };
 }
 
+/** The only github keys Hawkes Gen's customer builds accept (hawkesgen src/providers/builder/customer.ts admitCustomer). */
+export const GEN_GITHUB_KEYS = ['repo', 'commit', 'token', 'ref'] as const;
+
+/**
+ * Everything a customer Unity build submit sends Gen (unity.build params), in the one shape admitCustomer takes: github
+ * { repo, commit, token, ref } and nothing else under it (never refresh unless SEND_GITHUB_REFRESH), out "artifact".
+ * Anything Gen would refuse is refused here first, in plain words, so a bad shape can't ride to Gen and fail in 0 s.
+ * Exported for the tests.
+ */
+export function genBuildParams(b: BuildSpec, slug: string, sha: string, ref: string, token: string, row?: string): Record<string, unknown> {
+  const github = githubFor(slug, sha, token, ref, row);
+  const extra = Object.keys(github).filter((k) => !(GEN_GITHUB_KEYS as readonly string[]).includes(k));
+  if (extra.length) throw new Error(`Studio would send Hawkes Gen github.${extra.join(', github.')}, which customer builds don't take (repo, commit, token, ref): not sent`);
+  return { github, ...(b.path ? { path: b.path } : {}), ...(b.method ? { method: b.method } : {}), ...(b.machine ? { machine: b.machine } : {}), target: 'web', out: 'artifact' };
+}
+
 /** unity: Hawkes Gen builds that commit in the cloud with the repo's own token, and hands back the output as an asset. */
 async function viaGen(p: Product, b: BuildSpec, slug: string, sha: string, ref: string, token: string | null, say: (s: string) => void, resume: { job?: string; row?: string; onSubmit?: (id: string) => void; onDone?: () => void } = {}, hold: () => Promise<void> = async () => {}): Promise<Output> {
   if (!token) throw new Error(`Studio has no GitHub access to ${slug}: connect GitHub and install the app on it`);
   const { genRun, gen } = await import('./gen.ts');
   say('Hawkes Gen is building it (Unity WebGL, in the cloud)');
-  const submit = (tok: string, r: typeof resume) => genRun('unity.build', p.id, {
-    github: githubFor(slug, sha, tok, ref, resume.row), ...(b.path ? { path: b.path } : {}), ...(b.method ? { method: b.method } : {}), ...(b.machine ? { machine: b.machine } : {}), target: 'web', out: 'artifact',
-  }, (j) => { if (j?.progress?.step || j?.status) say(`Hawkes Gen: ${j.progress?.step ?? j.status}`); }, 3 * 60 * 60 * 1000, r);
+  const submit = (tok: string, r: typeof resume) => genRun('unity.build', p.id, genBuildParams(b, slug, sha, ref, tok, resume.row), (j) => { if (j?.progress?.step || j?.status) say(`Hawkes Gen: ${j.progress?.step ?? j.status}`); }, 3 * 60 * 60 * 1000, r);
   // Minted now, as late as there is: a token made at the start of the run could be an hour old by the time Gen reads it.
   // Gen also asks Studio for a new one when the job starts (refresh, genTokenFor), so no build rides on this one.
   const { forgetRepoToken, repoToken } = await import('./ghtoken.ts');
@@ -927,7 +943,7 @@ export async function handleBuildRoutes(req: http.IncomingMessage, res: http.Ser
     const F = await import('./buildfail.ts');
     // The history carries each failure's class, kind and plain words (not its log: that is /builds/<id>/why).
     const history = buildHistory(p.id).map(({ fail_log: _log, ...h }: any) => ({ ...h, ...(h.status === 'failed' ? { failure: F.failureOf({ ...h, fail_log: _log }) } : {}) }));
-    return send(200, { project: p.id, builds: buildsOf(p), beta: previewUrl(p.id), history, failing: F.failingBuilds(p.id) }), true;
+    return send(200, { project: p.id, builds: buildsOf(p), beta: previewUrl(p.id), history, failing: F.failingBuilds(p.id), running: F.buildsRunning(p.id) }), true;
   }
   if (!m[2] && method === 'POST') {
     const b = await readJson(req);

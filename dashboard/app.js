@@ -407,6 +407,7 @@ function health(p) {
   const played = p.playtests.map((t) => t.playtest?.finished ?? 0).reduce((a, b) => Math.max(a, b), 0);
   const when = played ? ` (played ${ago(played)})` : '';
   if (p.dev?.conflict) return { rank: 0, text: 'Your devtools saves clash with beta: pick a fix below.' };
+  if (p.buildRunning?.length) return { rank: 1, text: `Building ${p.buildRunning.map((r) => r.build).join(', ')} now.` };
   if (p.buildFailing?.length) return { rank: 0, text: BuildFail.line(p.buildFailing[0]) };
   if (p.build?.status === 'failed') return { rank: 0, text: `The Unity build failed ${ago(p.build.finished)}.` };
   if (failed.length) return { rank: 0, text: `${failed.length === 1 ? 'A playtest' : `${failed.length} playtests`} failed${when}: ${failed[0].playtest.detail ?? failed[0].name}` };
@@ -434,6 +435,7 @@ function card(p, h = health(p)) {
   return `<div class="card rank-${h.rank}" data-p="${esc(p.id)}" data-key="card:${esc(p.id)}">
     <h3>${esc(p.name)}${r ? `<span class="pill verdict ${r.verdict}">${r.verdict}</span>` : ''}</h3>
     <div class="status-line">${esc(h.text)}</div>
+    ${(p.buildRunning ?? []).map((r) => BuildFail.running(p.id, r)).join('')}
     ${(p.buildFailing ?? []).map((f) => BuildFail.badge(p.id, f)).join('')}
     ${r?.summary ? `<div class="summary">${esc(r.summary)}</div>` : ''}
     ${p.dev?.conflict ? devLine(p) : ''}
