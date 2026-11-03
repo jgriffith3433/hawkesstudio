@@ -24,3 +24,29 @@ test('a site that is just the repo is not a sub-folder', async () => {
     assert.equal(betaPageUrl(root, p), root, JSON.stringify(p));
   }
 });
+
+// 2026-11-03: yoobaland's smoke@local failed every time: site "YoobaLand" equals its repo, so betaPageUrl returned the
+// beta root, and with publish.page "site" that root has no game page. The game is the published-into project's page.
+const yoobaland = {
+  site: 'YoobaLand', repo: 'YoobaLand', github: 'jgriffith3433/YoobaLand',
+  builds: [{ id: 'web', tool: 'unity', target: 'web', publish: { project: 'yoobalandgame', path: 'Game/', commit: true, page: 'site' as const } }],
+};
+const gameRoot = 'https://sites.hawkesgen.ai/o/j-studio-4f12/yoobalandgame/';
+
+test('a build that keeps the website\'s own page is played at the website\'s beta page', async () => {
+  const { siteBuildPublish, pagePathUrl } = await import('../src/pipeline.ts');
+  const into = siteBuildPublish(yoobaland.builds as any);
+  assert.deepEqual(into, { project: 'yoobalandgame', path: 'Game/' });
+  assert.equal(pagePathUrl(gameRoot, into!.path), `${gameRoot}Game/`);
+  assert.equal(pagePathUrl(gameRoot.slice(0, -1), '/Game'), `${gameRoot}Game/`);
+  assert.equal(pagePathUrl(gameRoot, ''), gameRoot);
+});
+
+test('other builds have no page of their own to play elsewhere', async () => {
+  const { siteBuildPublish } = await import('../src/pipeline.ts');
+  assert.equal(siteBuildPublish(undefined), null);
+  assert.equal(siteBuildPublish([]), null);
+  // mounted (no page "site"), or committed without keeping the site's page: the project's own beta root is the page
+  assert.equal(siteBuildPublish([{ id: 'web', publish: { project: 'site', path: 'Game/' } }] as any), null);
+  assert.equal(siteBuildPublish([{ id: 'web', publish: { project: 'site', path: 'Game/', commit: true } }] as any), null);
+});

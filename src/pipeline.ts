@@ -14,7 +14,7 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { db, newId, J, rowToStep, parse, type Step } from './db.ts';
 import { resumeGapMs, RESTART_LOOP, RESTART_WINDOW_MS } from './ops.ts';
-import { loadProducts, getProduct, localUrl, today, PROJECTS, betaPlaytestsOn, managedElsewhere, managedNote, StudioError, type Product, type Playtest } from './config.ts';
+import { loadProducts, getProduct, localUrl, today, PROJECTS, betaPlaytestsOn, managedElsewhere, managedNote, StudioError, type Product, type Playtest, type BuildSpec } from './config.ts';
 import { unityBuild } from './buildpkgs.ts';
 import { endStatus, runCounts, runCancelled, haltOf, jobCancelDetail, runCancelDetail } from './cancel.ts';
 import { gen, genRun, genUp, ensureGen } from './gen.ts';
@@ -1077,11 +1077,19 @@ type PartialOptions = { at?: string; peers?: number; scenario?: string; where?: 
  * live page's path on the beta host. There's no shell or dev server to start there (a playtest that tried ended
  * studio-beta on every start, 2026-10-29). null elsewhere, and for products that serve themselves (`remote`, `app`).
  */
-export async function cloudBetaUrl(p: { id: string; live: string; local: { serve: string } }) {
+export async function cloudBetaUrl(p: { id: string; live: string; local: { serve: string }; builds?: BuildSpec[] }) {
   if (p.local.serve === 'remote' || p.local.serve === 'app') return null;
   const { remoteSites } = await import('./previews-cloud.ts');
   if (!remoteSites()) return null;
-  const root = (await import('./previews.ts')).previewUrl(p.id);
+  const previews = await import('./previews.ts');
+  // A build that keeps the target site's own game page (publish.page "site") has no page at this project's beta root:
+  // the game is the target project's beta page at the publish path (2026-11-03, yoobaland smoke@local waited 150 s).
+  const into = siteBuildPublish(p.builds);
+  if (into) {
+    const target = previews.previewUrl(into.project);
+    if (target) return pagePathUrl(target, into.path);
+  }
+  const root = previews.previewUrl(p.id);
   if (!root) return null;
   // A game added through Talk: its beta site is a path of its own (sites.<domain>/b/<game>/), built with relative
   // paths, so the root is the game; its live address's path (GitHub Pages' /<repo>/) isn't part of it.
@@ -1089,6 +1097,17 @@ export async function cloudBetaUrl(p: { id: string; live: string; local: { serve
   if (github) return betaPageUrl(root, p as { site?: string; repo?: string; github?: string });
   const live = new URL(p.live);
   return new URL(live.pathname + live.search, root).toString();
+}
+
+/** The first build that publishes into another project's site and keeps that site's own page (builds.ts pointPage). */
+export function siteBuildPublish(builds?: BuildSpec[]) {
+  const b = builds?.find((x) => x.publish?.page === 'site' && x.publish.project);
+  return b?.publish ? { project: b.publish.project, path: b.publish.path ?? '' } : null;
+}
+/** `<root>` plus a publish path ("Game/"), always ending in a slash. */
+export function pagePathUrl(root: string, path: string) {
+  const sub = String(path ?? '').trim().replace(/^\/+|\/+$/g, '');
+  return `${root.replace(/\/?$/, '/')}${sub ? `${sub.split('/').map(encodeURIComponent).join('/')}/` : ''}`;
 }
 
 /**
