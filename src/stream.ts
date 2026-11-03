@@ -89,7 +89,7 @@ async function look() {
     compare('changes', one('SELECT COUNT(*) AS n, MAX(updated) AS u FROM changes'));
     compare('runs', one(`SELECT COUNT(*) AS n, MAX(started) AS s, MAX(finished) AS f, (SELECT group_concat(id || status || COALESCE(detail, ''), '|') FROM steps WHERE run IN (SELECT id FROM runs WHERE status = 'running')) AS now FROM runs`));
     // Builds finishing or failing (buildfail.ts): the Today cards, Go live and the project's build list redraw.
-    compare('builds', one('SELECT id, status, fail_class, notified FROM builds ORDER BY started DESC LIMIT 80'));
+    compare('builds', one("SELECT id, status, fail_class, notified, (SELECT group_concat(id, '|') FROM runs WHERE kind = 'build' AND status = 'running') AS going FROM builds ORDER BY started DESC LIMIT 80"));
     compare('ops', one(`SELECT id, status, step FROM ops WHERE status IN ('queued', 'running') OR created > ${Date.now() - 86_400_000} ORDER BY created DESC LIMIT 40`));
     // The activity panel asks Hawkes Gen for its jobs; the Inbox reads the roadmap: both only after something moved.
     if (probes.activity) {

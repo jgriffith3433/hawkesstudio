@@ -156,7 +156,7 @@ export async function deployPlan(productId: string, opts: { notesWaitMs?: number
   // Builds whose newest attempt failed (buildfail.ts): Go live's red badge, whatever else the plan says.
   const BF = await import('./buildfail.ts');
   const buildFailing = BF.failingBuilds(productId);
-  return { ...plan, playtestOnly: playtestOnly(plan.blockers), betaDown: await betaDownOf(productId, plan), buildFailing, buildRunning: BF.buildsRunning(productId) };
+  return { ...plan, playtestOnly: playtestOnly(plan.blockers), betaDown: await betaDownOf(productId, plan), buildFailing, buildRunning: BF.buildsRunning(productId), buildDone: BF.buildsDone(productId) };
 }
 /**
  * When beta's last playtest failed because the beta site didn't answer: what happened in plain words and the two ways

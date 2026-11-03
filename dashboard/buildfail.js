@@ -19,13 +19,17 @@ var BuildFail = (() => {
     <div><b style="color:var(--red,#c33)">❌ Last build failed</b> · ${esc(f.build)} ${esc(f.version)}${sha(f) ? ` · <code>${esc(sha(f))}</code>` : ''} · ${esc(ago(f.finished ?? f.started))}</div>
     <div class="meta">${esc(kindOf(f))}${f.stepWords ? ` · failed while ${esc(f.stepWords)}` : ''}${f.seconds != null ? ` · ran ${esc(took(f.seconds))}` : ''}${f.tries > 1 ? ` · ${f.tries} tries` : ''}</div>
     <div style="margin:4px 0">${esc(f.plain || f.reason)}</div>
-    <div class="actions"><button type="button" class="small primary" data-admin data-bf-retry="${esc(product)}/${esc(f.build)}">Build again</button> <button type="button" class="small" data-bf-why="${esc(product)}/${esc(f.id)}">Why did this fail?</button><span class="meta" data-bf-msg></span></div>
+    <div class="actions"><button type="button" class="small primary" data-admin data-bf-retry="${esc(product)}/${esc(f.build)}">Retry build</button> <button type="button" class="small" data-bf-why="${esc(product)}/${esc(f.id)}">Why did this fail?</button><span class="meta" data-bf-msg></span></div>
   </div>`;
 
   /** A build that is starting or running: shown at once when Build is pressed, in place of the red badge (the push stream redraws it). */
-  const running = (product, r) => `<div class="bf-running" data-key="bfr:${esc(r.build)}" style="border:1px solid var(--accent,#48c);border-left-width:4px;border-radius:6px;padding:8px 10px;margin:8px 0">
-    <div><b>⏳ ${r.state === 'starting' ? 'Starting' : 'Building'} ${esc(r.build)}${r.version != null ? ` ${esc(r.version)}` : ''}</b> · started ${esc(ago(r.started))}${r.step ? ` · ${esc(String(r.step).slice(0, 160))}` : ''}</div>
+  const running = (product, r) => `<div class="bf-running" data-key="bfr:${esc(r.build)}" style="border:1px solid var(--accent,#48c);border-left-width:4px;border-radius:6px;padding:8px 10px;margin:8px 0" role="status" aria-live="polite">
+    <div><b>⏳ ${r.state === 'starting' ? 'Starting' : 'Building'} ${esc(r.build)}${r.version != null ? ` ${esc(r.version)}` : ''}</b> · started ${esc(ago(r.started))} (${esc(took(Math.max(0, Math.round((Date.now() - r.started) / 1000))))} so far)${r.step ? ` · ${esc(String(r.step).slice(0, 160))}` : ''}</div>
     <div class="meta">It shows here as done or failed when it ends; the run is in Activity.</div></div>`;
+
+  /** A build that finished well lately: version, commit, when (green, so the three states read at a glance). */
+  const done = (product, d) => `<div class="bf-done" data-key="bfd:${esc(d.build)}" role="status" style="border:1px solid var(--green,#2a8);border-left-width:4px;border-radius:6px;padding:8px 10px;margin:8px 0">
+    <div><b>✅ Built ${esc(d.build)} ${esc(d.version)}</b>${sha(d) ? ` · <code>${esc(sha(d))}</code>` : ''} · ${esc(ago(d.finished))}${d.seconds != null ? ` · took ${esc(took(d.seconds))}` : ''}${d.url ? ` · <a href="${esc(d.url)}" target="_blank" rel="noopener">Play ↗</a>` : ''}</div></div>`;
 
   /** Every attempt at one commit (Go live): result, reason, how long. */
   const attempts = (product, list) => (list ?? []).map((a) => `<div class="bf-attempts" data-key="bfa:${esc(a.build)}:${esc(a.sha)}"><b>Builds of ${esc(a.build)} at <code>${esc(a.sha.slice(0, 7))}</code></b>${a.attempts.length ? `<ul>${a.attempts.map((x) => `<li>${x.status === 'ready' ? '✅' : x.status === 'failed' ? '❌' : '⏳'} ${esc(x.build)} ${esc(x.version)} · ${esc(ago(x.started))}${x.seconds != null ? ` · ${esc(took(x.seconds))}` : ''}${x.status === 'failed' ? ` · ${esc(KIND[x.kind] ?? 'cause unclear')}${x.stepWords ? `, ${esc(x.stepWords)}` : ''}: ${esc(x.plain || x.reason)} <a href="#" data-bf-why="${esc(product)}/${esc(x.id)}">Why?</a>` : x.status === 'building' ? ' · building now' : ''}</li>`).join('')}</ul>` : '<div class="meta">No build has ever run for this commit.</div>'}</div>`).join('');
@@ -44,7 +48,7 @@ var BuildFail = (() => {
         <div class="meta"><b>The reason Studio recorded:</b> ${esc(w.reason)}</div>
         ${w.jobs.length ? `<div class="meta"><b>Hawkes Gen jobs tried (${w.jobs.length}):</b><ol>${w.jobs.map((j) => `<li>${window.studioMe?.customer ? esc(j.id) : `<a href="${esc(GENURL)}/#job/${esc(j.id)}" target="_blank" rel="noopener">${esc(j.id)}</a>`}: ${esc(j.error)}</li>`).join('')}</ol></div>` : w.genJob ? `<div class="meta">Gen job: ${esc(w.genJob)}</div>` : ''}
         ${w.log ? `<details open><summary class="meta">The last lines of the build's log (${w.log.split('\n').length})</summary><pre style="max-height:50vh;overflow:auto;font-size:12px;white-space:pre-wrap">${esc(w.log)}</pre></details>` : `<div class="meta">${esc(w.noLog ?? 'No log was kept.')}</div>`}
-        <div class="actions"><button type="button" class="small primary" data-admin data-bf-retry="${esc(product)}/${esc(w.build)}">Build again</button> <button type="button" class="small" data-bf-close>Close</button><span class="meta" data-bf-msg></span></div>`;
+        <div class="actions"><button type="button" class="small primary" data-admin data-bf-retry="${esc(product)}/${esc(w.build)}">Retry build</button> <button type="button" class="small" data-bf-close>Close</button><span class="meta" data-bf-msg></span></div>`;
     } catch (err) {
       dlg.innerHTML = `<div class="meta">${esc(err.message)}</div><div class="actions"><button type="button" class="small" data-bf-close>Close</button></div>`;
     }
@@ -61,9 +65,9 @@ var BuildFail = (() => {
       const [p, build] = r.dataset.bfRetry.split('/');
       const msg = r.parentElement.querySelector('[data-bf-msg]');
       r.disabled = true;
-      try { const s = await api(`/api/projects/${encodeURIComponent(p)}/builds`, { method: 'POST', body: { build } }); if (msg) msg.textContent = s.run ? ' Building: it shows in Activity.' : ` ${s.note ?? ''}`; } catch (err) { if (msg) msg.textContent = ` ${err.message}`; }
-      r.disabled = false;
+      r.textContent = 'Starting…';
+      try { const s = await api(`/api/projects/${encodeURIComponent(p)}/builds`, { method: 'POST', body: { build } }); if (msg) msg.textContent = s.run ? ' Building: it shows in Activity.' : ` ${s.note ?? ''}`; } catch (err) { if (msg) msg.textContent = ` ${err.message}`; r.disabled = false; r.textContent = 'Retry build'; }
     }
   });
-  return { line, badge, running, attempts, why, took };
+  return { line, badge, running, done, attempts, why, took };
 })();

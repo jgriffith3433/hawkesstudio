@@ -126,3 +126,31 @@ test('Build again answers the card, and the same failure is not filed again; a n
   assert.equal(now[0].id, `build:${third}`);
   assert.equal(pushes.length, 2);
 });
+
+test('building hides the same id\'s failure only; a different id keeps its failure; done shows after success', () => {
+  db.prepare('DELETE FROM builds').run();
+  db.prepare("DELETE FROM runs").run();
+  const webFail = row({ status: 'failed', finished: Date.now() - 5000 });
+  F.recordFailure(webFail, REFUSED, { stage: 'build' });
+  // A running build of an id the project doesn't have must not hide web's failure.
+  db.prepare('INSERT INTO runs (id, kind, status, detail, products, options, started) VALUES (?, ?, ?, ?, ?, ?, ?)').run('r_btn2', 'build', 'running', 'build bbgame', JSON.stringify(['bbgame']), JSON.stringify({ builds: ['other'] }), Date.now());
+  assert.equal(F.failingBuilds('bbgame').length, 1, 'a running build of another id leaves this failure');
+  db.prepare("UPDATE runs SET options = ? WHERE id = 'r_btn2'").run(JSON.stringify({ builds: ['web'] }));
+  assert.equal(F.failingBuilds('bbgame').length, 0, 'the same id running hides its failure');
+  assert.equal(F.buildsDone('bbgame').length, 0);
+  // It succeeds: no failure, a Done entry.
+  const ok = row({ status: 'ready', finished: Date.now() });
+  db.prepare("UPDATE runs SET status = 'done' WHERE id = 'r_btn2'").run();
+  assert.equal(F.failingBuilds('bbgame').length, 0);
+  assert.deepEqual(F.buildsDone('bbgame').map((d) => d.id), [ok]);
+});
+
+test('the dashboard button states: Starting, disabled while running, Retry build, Done card', async () => {
+  const src = fs.readFileSync(new URL('../dashboard/buildfail.js', import.meta.url), 'utf8');
+  assert.match(src, /Starting…/);
+  assert.match(src, /Retry build/);
+  assert.match(src, /const done = /);
+  assert.match(src, /role="status"/);
+  const app = fs.readFileSync(new URL('../dashboard/app.js', import.meta.url), 'utf8');
+  assert.match(app, /data-build-now\$\{r\.running\?\.length \? ' disabled'/);
+});
