@@ -819,6 +819,8 @@
   let dismissed = '';
   async function checkBuild() {
     if (cfg.change || !cfg.sha || document.visibilityState === 'hidden') return;
+    // Only the hosts that answer it (beta sites): a local or unknown host would log a console 404 for nothing.
+    if (!/(^|\.)hawkesgen\.ai$/.test(location.hostname)) return;
     try {
       const r = await fetch(ROOT + '/dev/__studio/build', { credentials: 'same-origin', cache: 'no-store' });
       const b = r.ok ? await r.json() : null;

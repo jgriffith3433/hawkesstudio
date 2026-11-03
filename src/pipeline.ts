@@ -709,7 +709,12 @@ async function playScenario(run: string, p: Product, asked: Playtest, { review =
     // What installing the local server's packages logged ("dependencies changed: npm ci"): kept on the step.
     const deps: string[] = [];
     try {
-      if (t.where === 'live') url = p.live;
+      if (t.where === 'live') {
+        url = p.live;
+        // A library whose "live" is its GitHub page has nothing to play there: its beta demo is the product (config.ts saveProduct).
+        const demo = isRepoPage(p.live) ? await cloudBetaUrl(p) : null;
+        if (demo) url = demo;
+      }
       else if (prior?.status === 'done') url = was?.data?.url ?? localUrl(p);
       else if (p.build && betaLane() && !played) throw new Error(`${BETA} isn't built yet (or its last build failed): nothing to play locally`);
       else if (await cloudBetaUrl(p)) url = (await cloudBetaUrl(p))!;
@@ -730,6 +735,7 @@ async function playScenario(run: string, p: Product, asked: Playtest, { review =
     if (t.mode === 'site') params.maxPages = 40;
     if (p.contract && p.engine === 'web' && (params.mode === 'contract' || params.mode === 'auto')) params.url = withPlaytestHint(String(params.url));
     Object.assign(params, playtestExtras(p.id, name, t));
+    { const skip = (await import('./gpu-breaker.ts')).down(); if (skip.length) params.skipProviders = skip; }
     // An app behind a sign-in (Product.testSignIn): on its beta, the playtest starts signed in as a test account.
     if (t.where === 'local' && p.testSignIn?.url && !prior) {
       try {
@@ -801,8 +807,18 @@ async function playScenario(run: string, p: Product, asked: Playtest, { review =
   // A game rendered in software (no GPU server was free) plays at a few fps: the result says nothing about the game,
   // so it isn't reviewed and files no findings (agents would chase problems that aren't there).
   if (r.software && p.engine !== 'static') {
-    updateStep(s, { status: 'skipped', detail: softwareDetail(r) });
-    return job;
+    // The provider that failed is skipped for a few minutes (gpu-breaker.ts) and told once, not in every playtest.
+    const B = await import('./gpu-breaker.ts');
+    const tripped = B.trip(r.softwareBecause);
+    if (tripped?.fresh) {
+      void notifyOnce(`gpu-down:${tripped.provider}`, 6 * 3600_000, `Playtests: ${tripped.provider} is down`, `${String(r.softwareBecause).slice(0, 300)} Playtests skip it for ${Math.round(B.OPEN_MS() / 60000)} minutes and use the next backend.`, { priority: 3, tags: ['warning'] });
+    }
+    // Not GPU-bound (a web game that played fine in software): reviewed, with the note.
+    if (!B.reviewableInSoftware(p, r)) {
+      updateStep(s, { status: 'skipped', detail: softwareDetail(r) });
+      return job;
+    }
+    updateStep(s, { detail: `played in software (${r.fps?.average ?? '?'} fps)${r.softwareBecause ? `: ${String(r.softwareBecause).slice(0, 120)}` : ''}; reviewed anyway, it is not GPU-bound` });
   }
   return reviewPlaytest(run, p, t, job, played, { focus, mode, criteria });
 }
@@ -815,6 +831,9 @@ export function softwareDetail(r: { fps?: { average?: number | null } | null; so
   const why = String(r.softwareBecause ?? '').replace(/\s+/g, ' ').trim().slice(0, 300) || 'no GPU server was free';
   return `inconclusive: the browser ran in software (${r.fps?.average ?? '?'} fps): ${why}; not reviewed`;
 }
+
+/** An address that is a code host's page for the repository, not a running product. */
+export const isRepoPage = (u?: string | null) => !u || /^https:\/\/(www\.)?(github|gitlab)\.com\//i.test(u);
 
 /** The most a whole run may take before it plays no more scenarios (J, 2026-10-25: a beta run sat for hours). */
 export const RUN_MAX_MS = () => Number(process.env.STUDIO_RUN_MAX_MS ?? 3 * 3600_000);

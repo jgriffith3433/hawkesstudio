@@ -766,7 +766,7 @@ const server = http.createServer(async (req, res) => {
     }
 
     // Agent changes (findings -> pull requests).
-    if (route === '/api/changes' && method === 'GET') return send(res, 200, { changes: listChanges({ status: q('status'), product: q('product') }).map((c) => ({ ...c, stage: stageOf(c, c.verify) })), today: costToday(), settings: agentSettings() });
+    if (route === '/api/changes' && method === 'GET') return send(res, 200, { changes: listChanges({ status: q('status'), product: q('product'), ...(q('limit') ? { limit: Math.min(500, Math.max(1, Number(q('limit')) || 100)) } : {}), offset: Number(q('offset')) || 0 }).map((c) => ({ ...c, stage: stageOf(c, c.verify) })), today: costToday(), settings: agentSettings() });
     if (route === '/api/changes' && method === 'POST') {
       const b = await readJson(req);
       // An agent on Studio or Gen themselves (infra agents) is the platform admin's (lockdown.ts).

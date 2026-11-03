@@ -234,12 +234,12 @@ export const getChange = (id: string) => {
   const r = db.prepare('SELECT * FROM changes WHERE id = ?').get(id);
   return r ? toChange(r) : null;
 };
-export function listChanges(q: { status?: string; product?: string; limit?: number } = {}) {
+export function listChanges(q: { status?: string; product?: string; limit?: number; offset?: number } = {}) {
   const where: string[] = [];
   const args: any[] = [];
   if (q.status) { where.push(`status IN (${q.status.split(',').map(() => '?').join(',')})`); args.push(...q.status.split(',')); }
   if (q.product) { where.push('product = ?'); args.push(q.product); }
-  return (db.prepare(`SELECT * FROM changes ${where.length ? `WHERE ${where.join(' AND ')}` : ''} ORDER BY created DESC LIMIT ?`).all(...args, q.limit ?? 100) as any[]).map(toChange);
+  return (db.prepare(`SELECT * FROM changes ${where.length ? `WHERE ${where.join(' AND ')}` : ''} ORDER BY created DESC LIMIT ? OFFSET ?`).all(...args, q.limit ?? 100, Math.max(0, q.offset ?? 0)) as any[]).map(toChange);
 }
 function update(id: string, patch: Partial<Record<string, any>>) {
   const cur = db.prepare('SELECT * FROM changes WHERE id = ?').get(id) as any;

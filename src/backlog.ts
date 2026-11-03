@@ -46,6 +46,15 @@ export const IDEA_DAYS = 14;
  * blocker reopens it. One that was fixed and is reported again comes back, unless the agent change that took it is still
  * unmerged (takenBy).
  */
+/**
+ * Studio's own widget probing for a newer beta build (GET /dev/__studio/build) shows up as a console 404 on hosts that
+ * don't answer it. That is tooling, not the game: a review's finding about it is dropped, never filed.
+ */
+export function isToolingNoise(f: { title?: string; detail?: string }) {
+  const text = `${f?.title ?? ''} ${f?.detail ?? ''}`;
+  return /__studio\/(build|report\.js|error|report)\b/i.test(text) && /\b404\b|not found|failed to load resource/i.test(text);
+}
+
 export function absorb(product: string, run: string, scenario: string, findings: any[], { mode = 'full' as ReviewMode } = {}) {
   const now = Date.now();
   const pool = (statuses: string) => (db.prepare(`SELECT * FROM findings WHERE product = ? AND status IN (${statuses})`).all(product) as any[]).map(toFinding);
@@ -59,6 +68,7 @@ export function absorb(product: string, run: string, scenario: string, findings:
   let skipped = 0;
   for (const f of findings) {
     if (!f?.title) continue;
+    if (isToolingNoise(f)) { skipped++; continue; }
     if (mode !== 'full' && f.severity !== 'blocker' && f.regression !== true) { skipped++; continue; }
     const key = keyOf(f.title);
     const live = bestMatch(open, f.title);
