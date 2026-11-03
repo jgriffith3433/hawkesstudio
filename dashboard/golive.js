@@ -222,6 +222,7 @@ if (typeof document !== 'undefined') (() => {
       ${links(prod, p)}
       ${(p.buildRunning ?? []).map((r) => BuildFail.running(p.product, r)).join('')}
       ${(p.buildFailing ?? []).map((f) => BuildFail.badge(p.product, f)).join('')}
+      ${(p.buildDone ?? []).map((d) => BuildFail.done(p.product, d)).join('')}
       ${run.map((o) => `<div class="gl-busy">⏳ ${esc(o.title)}${o.status === 'queued' ? ' (waiting its turn)' : o.step ? `: ${esc(o.step)}` : '…'}</div>`).join('')}
       ${fixRunning && !run.length && fx && !fx.done && !fx.error && !buildGoing ? `<div class="gl-busy">⏳ ${esc(FIX[fx.action].busy)}${fx.step ? `: ${esc(fx.step)}` : '…'}</div>` : ''}
       ${!showFx ? '' : fx.error ? `<div class="gl-done gl-fail">❌ ${esc(FIX[fx.action].label)} failed ${esc(ago(fx.errorAt))}: ${esc(String(fx.error).slice(0, 300))}</div>` : `<div class="gl-done">${fx.done.ok ? `✅ ${esc(FIX[fx.action].label)} finished ${esc(ago(fx.done.at))}${fxRun}` : `<span class="gl-fail">❌ ${esc(FIX[fx.action].label)} failed ${esc(ago(fx.done.at))}: ${esc(String(fx.done.detail ?? '').slice(0, 300))}</span>${fxRun}`}</div>`}
@@ -318,7 +319,7 @@ if (typeof document !== 'undefined') (() => {
     const plan = plans.get(id);
     if (!plan || plan.error) return;
     const b = await api(`/api/projects/${encodeURIComponent(id)}/builds`).catch(() => null);
-    if (b) Object.assign(plan, { buildFailing: b.failing ?? [], buildRunning: b.running ?? [] });
+    if (b) Object.assign(plan, { buildFailing: b.failing ?? [], buildRunning: b.running ?? [], buildDone: b.done ?? [] });
   }
 
   /** The runs the cards follow: their step now; when one ends, the product's plan again (it turns ready, or says why not). */

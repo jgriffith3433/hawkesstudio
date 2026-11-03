@@ -206,13 +206,13 @@ async function studioProjectBuilds(id, box) {
     <td class="meta" style="max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(h.failure?.plain || h.detail || '')}">${esc(h.failure?.plain || h.detail || (h.files ? `${h.files} files, ${(h.bytes / 1e6).toFixed(1)} MB` : ''))}${h.failure ? ` <a href="#" data-bf-why="${esc(id)}/${esc(h.id)}">Why?</a>` : ''}</td>
     <td>${h.url ? `<a href="${esc(h.url)}" target="_blank" rel="noopener">Play ↗</a>` : ''}${h.status === 'ready' && !h.change ? ` <button type="button" class="small" data-beta="${esc(h.build)}/${h.version}">Make beta</button>` : ''}</td></tr>`).join('');
   box.innerHTML = `<div style="display:flex;justify-content:space-between;align-items:center;gap:8px"><b>Builds</b><span class="meta">${r.builds.map((b) => `${esc(b.id)}: ${esc(b.tool)}${b.target && b.target !== 'web' ? ` (${esc(b.target)})` : ''}${b.publish ? ` → ${esc(b.publish.project)}/${esc(b.publish.path)}` : ''}`).join(' · ')}</span></div>
-    <div style="margin:6px 0">${r.beta ? `<a href="${esc(r.beta)}" target="_blank" rel="noopener">Play beta ↗</a> ` : ''}<button type="button" class="small primary" data-build-now>Build now</button> <span class="meta" data-build-msg></span></div>
+    <div style="margin:6px 0">${r.beta ? `<a href="${esc(r.beta)}" target="_blank" rel="noopener">Play beta ↗</a> ` : ''}<button type="button" class="small primary" data-build-now${r.running?.length ? ' disabled' : ''}>${r.running?.length ? '⏳ Building…' : 'Build now'}</button> <span class="meta" data-build-msg></span></div>
     ${rows ? `<table style="width:100%;font-size:13px;border-collapse:collapse">${rows}</table>` : '<div class="meta">Not built yet.</div>'}`;
   const say = (t) => { box.querySelector('[data-build-msg]').textContent = t; };
   box.querySelector('[data-build-now]').addEventListener('click', async (e) => {
     e.target.disabled = true;
-    try { const s = await api(`/api/projects/${id}/builds`, { method: 'POST', body: {} }); say(s.run ? 'Building: it shows in Activity.' : (s.note ?? '')); } catch (err) { say(err.message); }
-    e.target.disabled = false;
+    e.target.textContent = 'Starting…';
+    try { const s = await api(`/api/projects/${id}/builds`, { method: 'POST', body: {} }); say(s.run ? 'Building: it shows in Activity.' : (s.note ?? '')); e.target.textContent = s.run ? '⏳ Building…' : 'Build now'; e.target.disabled = !!s.run; } catch (err) { say(err.message); e.target.textContent = 'Build now'; e.target.disabled = false; }
   });
   box.querySelectorAll('[data-beta]').forEach((b) => b.addEventListener('click', async () => {
     const [build, n] = b.dataset.beta.split('/');
@@ -437,6 +437,7 @@ function card(p, h = health(p)) {
     <div class="status-line">${esc(h.text)}</div>
     ${(p.buildRunning ?? []).map((r) => BuildFail.running(p.id, r)).join('')}
     ${(p.buildFailing ?? []).map((f) => BuildFail.badge(p.id, f)).join('')}
+    ${(p.buildDone ?? []).map((d) => BuildFail.done(p.id, d)).join('')}
     ${r?.summary ? `<div class="summary">${esc(r.summary)}</div>` : ''}
     ${p.dev?.conflict ? devLine(p) : ''}
     <div class="meta">${p.preview ? `<a href="${esc(p.preview.play)}" target="_blank">Beta</a> · ` : ''}<a href="${esc(p.live)}" target="_blank">Live</a>${video ? ` · <a href="${file(video)}" target="_blank" rel="noopener" data-video="${file(video)}">▶ last playtest</a>` : ''} · ${bugs ? `<a href="#backlog" data-act="backlog" data-p="${p.id}">${bugs} open bug${bugs === 1 ? '' : 's'} in Backlog</a>` : 'no open bugs'}</div>

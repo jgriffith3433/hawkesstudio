@@ -522,3 +522,9 @@ body.lt-big-open { overflow: hidden; }
   .pt-top, .pt-top.phone, .pt-cols, .pt-sbs, .pt-sbs.phone { grid-template-columns: 1fr; }
   .pt-vrow { grid-template-columns: 1fr; }
 }
+
+/* Build states (buildfail.js): visible focus, wrapping on phones */
+.bf-badge button:focus-visible, .bf-running button:focus-visible, .bf-done a:focus-visible, [data-build-now]:focus-visible { outline: 2px solid var(--accent, #48c); outline-offset: 2px; }
+.bf-badge button:disabled, [data-build-now]:disabled { opacity: .7; cursor: progress; }
+.bf-badge .actions { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+@media (max-width: 600px) { .bf-badge, .bf-running, .bf-done { padding: 10px 8px; } .bf-badge .actions button { min-height: 40px; } }

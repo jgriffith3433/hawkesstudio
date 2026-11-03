@@ -217,6 +217,20 @@ export function failingBuilds(product: string): FailureView[] {
     .map(failureOf);
 }
 
+export type BuildDone = { id: string; build: string; version: number; sha: string | null; finished: number; seconds: number | null; url: string | null };
+
+/**
+ * Builds whose newest attempt succeeded in the last day (and aren't running again): the green "Done" state beside the
+ * red and blue ones. A build id being built now isn't listed (it shows as building until it ends).
+ */
+export function buildsDone(product: string, within = 24 * 3600_000): BuildDone[] {
+  const going = new Set(buildsRunning(product).map((x) => x.build));
+  const now = configuredBuilds(product);
+  return lastBuilds(product)
+    .filter((r) => r.status === 'ready' && !going.has(r.build) && (!now || now.has(r.build)) && Date.now() - (r.finished ?? r.started) < within)
+    .map((r) => ({ id: r.id, build: r.build, version: r.version, sha: r.sha ?? null, finished: r.finished ?? r.started, seconds: r.finished ? Math.round((r.finished - r.started) / 1000) : null, url: r.url ?? null }));
+}
+
 /** Every attempt at one commit, newest first: the history Go live shows next to "build first". */
 export function attemptsAt(product: string, sha: string): FailureView[] {
   return (db.prepare(`SELECT * FROM builds WHERE product = ? AND change IS NULL AND sha IS NOT NULL AND (sha = ? OR ? LIKE sha || '%') ORDER BY started DESC LIMIT 20`).all(product, sha, sha) as any[]).map(failureOf);

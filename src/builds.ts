@@ -950,7 +950,7 @@ export async function handleBuildRoutes(req: http.IncomingMessage, res: http.Ser
     const F = await import('./buildfail.ts');
     // The history carries each failure's class, kind and plain words (not its log: that is /builds/<id>/why).
     const history = buildHistory(p.id).map(({ fail_log: _log, ...h }: any) => ({ ...h, ...(h.status === 'failed' ? { failure: F.failureOf({ ...h, fail_log: _log }) } : {}) }));
-    return send(200, { project: p.id, builds: buildsOf(p), beta: previewUrl(p.id), history, failing: F.failingBuilds(p.id), running: F.buildsRunning(p.id) }), true;
+    return send(200, { project: p.id, builds: buildsOf(p), beta: previewUrl(p.id), history, failing: F.failingBuilds(p.id), running: F.buildsRunning(p.id), done: F.buildsDone(p.id) }), true;
   }
   if (!m[2] && method === 'POST') {
     const b = await readJson(req);
