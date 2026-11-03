@@ -24,7 +24,7 @@
 // Going live stays J's (DEPLOY <product>). Studio and Gen changes need J's approval (they restart services), except in
 // walk-away mode (walkaway.ts), where they merge by themselves once green and the PM decides routine calls itself.
 
-import { INFRA_FAILED_SQL, infraWaitMs, MAX_FINDING_STARTS_PER_DAY } from './infra-failure.ts';
+import { INFRA_FAILED_SQL, infraWaitMs, isInfraText, MAX_FINDING_STARTS_PER_DAY } from './infra-failure.ts';
 import { isVideoTask } from './videos.ts';
 import fs from 'node:fs';
 import { critical, criticalSync } from './drain.ts';
@@ -36,7 +36,7 @@ import {
   getTask, setTask, getItem, startableTasks, tasksAwaitingGpu, taskOfChange, addQuestion, listQuestions, getQuestion, setQuestion, addComment, isCommentSubject,
   logDecision, listDecisions, getDecision, markUndone, countToday, listItems, threadFor, milestonesToReach, markReached, getMilestone, milestoneTasks, setMilestoneChecks,
   itemProgress, gpuCleared, setStartWaitHook, GPU_WAIT, priceUnpriced, autoApproveWaiting, gpuDigestTasks, type Task, type Check, type TaskBuild, type Question,
-  addItem, addTask, askedJ, landed, blockedBy, updateTask, taskWaits, DONE, adoptDoneDrops, tasksOf,
+  addItem, addTask, askedJ, landed, blockedBy, updateTask, taskWaits, DONE, adoptDoneDrops, tasksOf, waitingOn, STUCK_DEPENDENCY,
 } from './roadmap.ts';
 import { gate, allMet } from './acceptance.ts';
 import { buildCancelled, cancelNote, cancelWords, repairCancelled } from './cancel.ts';
@@ -2241,6 +2241,79 @@ export async function sweepFailed() {
   return out;
 }
 
+/**
+ * A task whose agents never got to work because Studio failed (a clone, a checkout, the source of a Unity repo): its latest
+ * attempt was a Studio failure (infra-failure.ts), so nothing the agent did is held against it. Returns the error and how
+ * many of its tries were the agent's own (the rest are given back), or null when the cause was the work itself.
+ */
+function studioSideFailure(t: Task): { why: string; tries: number } | null {
+  const rows = db.prepare(`SELECT status, detail, ${INFRA_FAILED_SQL} AS infra FROM changes WHERE task = ? ORDER BY created DESC, rowid DESC LIMIT 12`).all(t.id) as any[];
+  if (!rows.length) return isInfraText(t.note) ? { why: String(t.note), tries: 0 } : null;
+  if (!rows[0].infra) return null;
+  return { why: String(rows[0].detail ?? t.note ?? '?'), tries: rows.filter((r) => r.status === 'failed' && !r.infra).length };
+}
+
+/**
+ * Dependencies that will not move by themselves (J, 2026-11-03: Yooba Land's k_b14454bbe903, k_1e22e77e1fb3 and k_881cfd303c31
+ * sat in Planned for days behind k_49f909a23801, an idea whose agents had failed on Studio's own checkout). A planned task
+ * is blocked by a task that is an idea, failed, or gone: nobody is working on it, so it waits for ever. Each pass:
+ *  - a dependency whose latest attempt was a Studio-side failure (no source, a clone) is planned again with the tries
+ *    that were Studio's given back (undo in the PM log); it starts in a free slot, spaced by infraHoldOf;
+ *  - a dependency that no longer exists is taken off the task;
+ *  - an idea nobody is planning (not held for other work, not asked about, not J's own park) is ONE question in J's
+ *    Inbox (the stall question: try them again / drop them / leave them), once a day at most.
+ * A failed dependency with real tries used is sweepFailed's (rescue, then J). The task's own page says why it waits (waitingOn).
+ */
+export function unblockDependencies(now = Date.now()): string[] {
+  const out: string[] = [];
+  const dependents = (db.prepare(`SELECT t.id FROM tasks t JOIN items i ON i.id = t.item WHERE t.status = 'planned' AND t.depends != '[]'
+    AND i.status NOT IN ('idea', 'dropped') AND NOT (i.status = 'done' AND i.consumed IS NULL) ORDER BY i.ord, t.ord`).all() as any[]).map((r) => getTask(r.id)!).filter(Boolean);
+  const stuck = new Map<string, Task[]>();
+  for (const t of dependents) {
+    for (const b of blockedBy(t)) {
+      if (!STUCK_DEPENDENCY.includes(b.status)) continue;
+      if (b.status === 'missing') {
+        const rest = t.depends.filter((d) => d !== b.id);
+        setTask(t.id, { depends: rest, note: `its dependency ${b.id} no longer exists: taken off, it no longer waits on it` });
+        logDecision('unblock', t.id, t.product, `"${t.title}" waited on ${b.id}, which no longer exists: the dependency is taken off`, { kind: 'tasks', change: null, tasks: [{ id: t.id, status: t.status, tries: t.tries, note: t.note, checks: t.checks }] });
+        out.push(t.id);
+        continue;
+      }
+      stuck.set(b.id, [...(stuck.get(b.id) ?? []), t]);
+    }
+  }
+  const asked = askedJ();
+  const s = pmSettings();
+  const ask: { dep: Task; waiting: Task[] }[] = [];
+  for (const [id, waiting] of stuck) {
+    const dep = getTask(id);
+    if (!dep || heldFor(dep.id) || hasLiveChange(dep.id) || asked.has(dep.id) || (dep.change && asked.has(dep.change)) || rescues()[dep.id]?.state === 'scouting') continue;
+    const cause = studioSideFailure(dep);
+    const parkedByPerson = /^(parked|dropped) on \S+'s answer/.test(String(dep.note ?? ''));
+    if (cause && !parkedByPerson) {
+      const undo = tasksUndo([dep.id]);
+      setTask(dep.id, { status: 'planned', tries: Math.min(dep.tries, cause.tries), checks: null, note: `planned again by the PM: it was ${dep.status} because Studio could not run its agent (${cause.why.slice(0, 240)}), not because of the work; tries given back, ${waiting.length} task(s) wait on it` });
+      logDecision('unblock', dep.id, dep.product, `"${dep.title}" was ${dep.status} and holds up ${waiting.map((w) => `"${w.title}" (${w.id})`).join(', ')}: its last attempt failed in Studio (${cause.why.slice(0, 240)}), so it is planned again with ${Math.min(dep.tries, cause.tries)} of ${s.maxTries} tries used`.slice(0, 1500), undo);
+      out.push(dep.id);
+      continue;
+    }
+    // An idea held for other work (releaseHeldIdeas), a failed task (sweepFailed): not this pass's to decide.
+    if (dep.status !== 'idea' || /\b(held|hold|holds|holding|waits? for|until|after|once)\b/i.test(String(dep.note ?? ''))) continue;
+    ask.push({ dep, waiting });
+  }
+  if (ask.length) {
+    const day = db.prepare(`SELECT context, text FROM questions WHERE topic = 'stall' AND COALESCE(answered_at, at) >= ?`).all(now - 86_400_000) as any[];
+    const fresh = ask.filter(({ dep }) => !day.some((q) => String(q.context ?? '').split(/\s+/).includes(dep.id) || String(q.text ?? '').includes(dep.id)));
+    if (fresh.length) {
+      const list = fresh.map(({ dep, waiting }) => `${dep.id} "${dep.title}" (${name(dep.product)}, an idea${dep.note ? `: ${String(dep.note).replace(/\s+/g, ' ').slice(0, 160)}` : ''}) holds up ${waiting.map((w) => `${w.id} "${w.title}"`).join(', ')}`).join('; ');
+      askJ(`Roadmap tasks are waiting on tasks that nobody is working on: ${list}. Plan them (so the rest can start), drop them (the rest start without them), or leave them?`.slice(0, 3500),
+        { subject: 'stall', topic: 'stall', options: ['try them again', 'drop them', 'leave them'], recommend: 'try them again', context: fresh.map((f) => f.dep.id).join(' '), blocks: `${fresh.reduce((n, f) => n + f.waiting.length, 0)} roadmap task(s) behind them`, from: 'tasks blocked by an idea' });
+      logDecision('unblock', null, null, `asked J about ${fresh.length} idea(s) that hold up other tasks: ${fresh.map((f) => f.dep.id).join(', ')}`);
+    }
+  }
+  return out;
+}
+
 /** An item is on beta (itemProgress), or will never be (gone, dropped, every task dropped): nothing to hold for. */
 const itemSettled = (id: string) => {
   const it = getItem(id);
@@ -2321,7 +2394,7 @@ export function stallReasons(): StallReason[] {
     else if (['working', 'needs answer', 'review'].includes(t.status) && !hasLiveChange(t.id)) why = 'stale status: no agent change is running for it (reconciled next pass)';
     else if (t.status === 'failed') why = heldFor(t.id) ? `held: investigation ${heldFor(t.id)!.change} fixes beta first` : rescues()[t.id]?.state === 'scouting' ? 'out of tries: a scout is investigating, then a fresh round' : `failed: ${String(t.note ?? '').slice(0, 200)}`;
     else if (t.status === 'merged' && t.build && !t.build.ok) why = `broken build: ${t.build.detail.slice(0, 200)}${blocker ? `; the fix in ${name(blocker.b.target)} (${blocker.fix}) is under way` : ''}`;
-    else if (t.status === 'planned' && blockedBy(t).length) why = `blocked by ${blockedBy(t).map((b) => `${b.id} "${b.title}" (${b.status})`).join(', ')}`;
+    else if (t.status === 'planned' && blockedBy(t).length) why = `blocked by ${waitingOn(t).replace(/^waiting on /, '')}`;
     else if (t.status === 'planned' && !blockedBy(t).length && !(t.gpu?.items?.length && !gpuCleared(t)) && startWaitReason(t)) why = `waits: ${startWaitReason(t)}`;
     else why = taskWaits(t, asked) ?? t.status;
     out.push({ task: t.id, title: t.title, product: t.product, status: t.status, why });
@@ -2561,6 +2634,7 @@ export async function tick() {
     try {
       adoptDoneDrops();
       releaseHeldIdeas();
+      unblockDependencies();
     } catch (e: any) {
       console.warn(`[pm] done and held tasks: ${e.message ?? e}`);
     }

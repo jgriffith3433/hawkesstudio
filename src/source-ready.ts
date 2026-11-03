@@ -22,6 +22,45 @@ export const UNITY_SOURCE_PATTERNS = [
   '/ProjectSettings/', '/Packages/manifest.json', '/Packages/packages-lock.json',
   '/Editor/', '/Scripts/', '/docs/', '/Docs/', '/tools/', '/Tools/', '/.github/',
 ];
+/**
+ * The Unity project directories of a repo (J, 2026-11-03: yoobaland's repo root is YoobaLand/ and the project is nested one
+ * level down, YoobaLand/YoobaLand/ with Assets/, ProjectSettings/, Packages/; patterns anchored at the root matched
+ * nothing, and the scout read a tarball instead). Found by a tracked `ProjectSettings/ProjectVersion.txt` at any depth up
+ * to 3 directories: '' for the repo root, else 'A/B/' (with its trailing slash). Pure: `files` are repo-relative paths.
+ */
+export const UNITY_MAX_DEPTH = 3;
+export function unityRoots(files: string[]): string[] {
+  const roots = new Set<string>();
+  for (const f of files) {
+    const m = /^((?:[^/]+\/){0,3})ProjectSettings\/ProjectVersion\.txt$/.exec(f);
+    if (m) roots.add(m[1]);
+  }
+  return [...roots].sort((a, b) => a.length - b.length);
+}
+
+/** The Unity patterns for a project at `prefix` ('' = the repo root, else 'A/B/'): the root's own, moved under the prefix. */
+export function unityPatternsAt(prefix: string): string[] {
+  if (!prefix) return UNITY_SOURCE_PATTERNS;
+  const at = `/${prefix}`;
+  return [
+    `${at}*`, `!${at}*/`,
+    ...UNITY_SOURCE_PATTERNS.filter((p) => /^\/(Assets|ProjectSettings|Packages|Editor|Scripts)\//.test(p)).map((p) => `${at}${p.slice(1)}`),
+  ];
+}
+
+/**
+ * The sparse patterns for a worktree of a Unity repo: the repo's root files and docs, and each Unity project found in it
+ * (at the root or nested) with its code, settings and text assets. `git: fn` is for tests.
+ */
+export function unitySourcePatterns(dir: string, git: Git = sync): string[] {
+  const ls = git(dir, ['ls-files', '--', '*ProjectSettings/ProjectVersion.txt']);
+  const roots = ls.ok ? unityRoots(ls.out.split('\n').filter(Boolean)) : [];
+  if (!roots.length || (roots.length === 1 && roots[0] === '')) return UNITY_SOURCE_PATTERNS;
+  // Root patterns first (the repo's own files and docs), then each nested project's; later patterns win.
+  const nested = roots.filter(Boolean).flatMap(unityPatternsAt);
+  return [...(roots.includes('') ? UNITY_SOURCE_PATTERNS : UNITY_SOURCE_PATTERNS.filter((p) => !/^\/(Assets|ProjectSettings|Packages)\//.test(p))), ...nested];
+}
+
 /** Any other big repo: root files and the common source and config extensions, anywhere. */
 export const GENERIC_SOURCE_PATTERNS = [
   '/*', '!/*/',
@@ -32,7 +71,7 @@ export const GENERIC_SOURCE_PATTERNS = [
 /** Source file extensions the probe reads (a tracked one must exist on disk). */
 const PROBE_EXT = ['.cs', '.ts', '.tsx', '.js', '.mjs', '.py', '.gd', '.json'];
 /** Where the probe looks first in a Unity project. */
-const PROBE_PREFERRED = ['Assets/', 'Packages/', 'ProjectSettings/'];
+const PROBE_PREFERRED = /(^|\/)(Assets|Packages|ProjectSettings)\//;
 
 export type Probe = {
   ok: boolean;
@@ -67,14 +106,14 @@ export function probeSource(dir: string, opts: { git?: Git; unity?: boolean } = 
   if (!files.length) return { ok: false, tracked: 0, reason: `source missing: git ls-files lists 0 files in ${dir} (the checkout is empty)` };
   const isSrc = (f: string) => PROBE_EXT.some((e) => f.endsWith(e)) && !/(^|\/)(node_modules|Library|Temp|obj)\//.test(f);
   const src = files.filter(isSrc);
-  const unity = opts.unity || files.some((f) => f.startsWith('Assets/') || f.startsWith('ProjectSettings/'));
+  const unity = opts.unity || files.some((f) => f.startsWith('Assets/') || f.startsWith('ProjectSettings/')) || unityRoots(files).length > 0;
   if (unity && !src.some((f) => f.endsWith('.cs'))) {
     // A Unity project with no tracked C#: its source isn't in this branch at all.
     return { ok: false, tracked: files.length, reason: `source missing: ${files.length} tracked files but no .cs file among them (a Unity project's code)` };
   }
   const ordered = [...src].sort((a, b) => {
-    const pa = PROBE_PREFERRED.some((p) => a.startsWith(p)) ? 0 : 1;
-    const pb = PROBE_PREFERRED.some((p) => b.startsWith(p)) ? 0 : 1;
+    const pa = PROBE_PREFERRED.test(a) ? 0 : 1;
+    const pb = PROBE_PREFERRED.test(b) ? 0 : 1;
     return pa - pb;
   });
   // Root files (package.json, hawkes.assets.json) come with every checkout: they don't show the source is there.
@@ -119,13 +158,13 @@ export const SOURCE_UNREADABLE_SAID = /could not read username|could not fetch [
 export async function populateSource(
   dir: string,
   run: (cwd: string, args: string[]) => Promise<{ ok: boolean; out: string; err: string }>,
-  opts: { unity: boolean; log?: (s: string) => void; probe?: (dir: string) => Probe },
+  opts: { unity: boolean; log?: (s: string) => void; probe?: (dir: string) => Probe; git?: Git },
 ): Promise<Probe> {
   const log = opts.log ?? (() => {});
   const probe = opts.probe ?? ((d: string) => probeSource(d, { unity: opts.unity }));
   const before = probe(dir);
   if (before.ok) return before;
-  const patterns = opts.unity ? UNITY_SOURCE_PATTERNS : GENERIC_SOURCE_PATTERNS;
+  const patterns = opts.unity ? unitySourcePatterns(dir, opts.git) : GENERIC_SOURCE_PATTERNS;
   const t0 = Date.now();
   const r = await run(dir, ['sparse-checkout', 'set', '--no-cone', ...patterns]);
   if (!r.ok) {

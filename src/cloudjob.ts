@@ -28,7 +28,7 @@ import { EventEmitter } from 'node:events';
 import { spawnSync } from 'node:child_process';
 import { DATA, ROOT } from './config.ts';
 import { runToken } from './jobbroker.ts';
-import { UNITY_SOURCE_PATTERNS, GENERIC_SOURCE_PATTERNS } from './source-ready.ts';
+import { GENERIC_SOURCE_PATTERNS, unitySourcePatterns } from './source-ready.ts';
 
 export type PackFile = { p: string; d: string; m?: number };
 /**
@@ -369,8 +369,9 @@ export function startCloudJob(unit: string, spec: Spec, o: { gitToken?: string |
 
 /** The source patterns the job checks out in a big repo: the same ones Studio's worktree got (source-ready.ts). */
 export function jobSparsePatterns(cwd: string): string[] {
-  const unity = Boolean(git(cwd, ['ls-files', '--', 'Assets', 'ProjectSettings']).out);
-  return unity ? UNITY_SOURCE_PATTERNS : GENERIC_SOURCE_PATTERNS;
+  // A Unity project at the root or nested (YoobaLand/YoobaLand/): its patterns, moved under its folder (source-ready.ts).
+  const unity = Boolean(git(cwd, ['ls-files', '--', 'Assets', 'ProjectSettings']).out) || Boolean(git(cwd, ['ls-files', '--', '*ProjectSettings/ProjectVersion.txt']).out);
+  return unity ? unitySourcePatterns(cwd) : GENERIC_SOURCE_PATTERNS;
 }
 
 /** The spec's way to a fresh clone token (jobgit.ts), or nothing when Studio has no address the job can reach. */

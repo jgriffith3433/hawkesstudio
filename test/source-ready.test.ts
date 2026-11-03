@@ -138,3 +138,77 @@ test('no commit + the source unreadable or missing is Studio\'s failure, not the
   assert.equal(A.sourceLost({ ...c, infra: true }, 'could not read Username'), null, 'Studio/Gen changes are not Unity repos');
   assert.ok(!I.isInfraText('the agent made no commit'));
 });
+
+// ------------------------------------------------------------ a Unity project nested below the repo root (yoobaland)
+// J, 2026-11-03: the repo root is YoobaLand/ and the project is YoobaLand/YoobaLand/ (Assets/, ProjectSettings/, Packages/).
+const nestedOrigin = path.join(tmp, 'origin-nested');
+fs.mkdirSync(nestedOrigin);
+git(nestedOrigin, 'init', '-q', '-b', 'beta');
+put(nestedOrigin, 'AGENTS.md', '# yooba\n');
+put(nestedOrigin, 'YoobaLand/ProjectSettings/ProjectVersion.txt', 'm_EditorVersion: 6000.0\n');
+put(nestedOrigin, 'YoobaLand/Packages/manifest.json', '{"dependencies":{}}');
+for (const n of ['YoobaThirdPersonCamera', 'YoobaSceneVoice', 'YoobaCutscene']) put(nestedOrigin, `YoobaLand/Assets/Game/Scripts/${n}.cs`, `public class ${n} {}\n`);
+put(nestedOrigin, 'YoobaLand/Assets/Game/Data/lines.json', '{}');
+put(nestedOrigin, 'YoobaLand/Assets/Art/yooba.png', 'PNGDATA'.repeat(100));
+put(nestedOrigin, 'YoobaLand/Assets/Audio/theme.wav', 'WAVDATA'.repeat(100));
+put(nestedOrigin, 'Tools/other/readme.txt', 'x');
+git(nestedOrigin, 'add', '-A');
+git(nestedOrigin, 'commit', '-q', '-m', 'init');
+git(nestedOrigin, 'config', 'uploadpack.allowFilter', 'true');
+git(nestedOrigin, 'config', 'uploadpack.allowAnySHA1InWant', 'true');
+function nestedWorktree(name: string) {
+  const clone = path.join(tmp, `nclone-${name}`);
+  git(tmp, 'clone', '-q', '--no-checkout', '--filter=blob:none', `file://${nestedOrigin}`, clone);
+  git(clone, 'config', 'hawkes.light', 'true');
+  git(clone, 'sparse-checkout', 'set', '--cone');
+  git(clone, 'checkout', '-q', 'beta');
+  const wt = path.join(tmp, `nwt-${name}`);
+  git(clone, 'worktree', 'add', '-q', '-b', `task/${name}`, wt, 'origin/beta');
+  return { clone, wt };
+}
+
+test('unityRoots finds the project at the root or up to three folders down, and no deeper', () => {
+  assert.deepEqual(S.unityRoots(['ProjectSettings/ProjectVersion.txt', 'a.txt']), ['']);
+  assert.deepEqual(S.unityRoots(['YoobaLand/ProjectSettings/ProjectVersion.txt']), ['YoobaLand/']);
+  assert.deepEqual(S.unityRoots(['a/b/c/ProjectSettings/ProjectVersion.txt']), ['a/b/c/']);
+  assert.deepEqual(S.unityRoots(['a/b/c/d/ProjectSettings/ProjectVersion.txt']), [], 'four folders down is not looked for');
+  assert.deepEqual(S.unityRoots(['x/ProjectSettings/ProjectVersion.txt', 'ProjectSettings/ProjectVersion.txt']), ['', 'x/'], 'the root first');
+  assert.deepEqual(S.unityRoots(['YoobaLand/Assets/A.cs']), []);
+});
+
+test('a nested Unity project: the worktree starts with no source, populateSource fills in scripts and settings, art stays out', async () => {
+  const { wt } = nestedWorktree('n1');
+  const rel = 'YoobaLand/Assets/Game/Scripts';
+  assert.ok(!fs.existsSync(path.join(wt, rel, 'YoobaCutscene.cs')), 'the bug: nothing below the root');
+  const bad = S.probeSource(wt);
+  assert.equal(bad.ok, false, 'the probe sees tracked C# that is not on disk, in a nested project too');
+  assert.match(bad.reason!, /^source missing: \d+ tracked files, but YoobaLand\/Assets\//);
+  const patterns = S.unitySourcePatterns(wt);
+  assert.ok(patterns.includes('/YoobaLand/Assets/**/*.cs') && patterns.includes('/YoobaLand/ProjectSettings/'), patterns.join(' '));
+  const p = await S.populateSource(wt, run, { unity: true });
+  assert.equal(p.ok, true, p.reason);
+  for (const n of ['YoobaThirdPersonCamera', 'YoobaSceneVoice', 'YoobaCutscene']) {
+    assert.equal(fs.readFileSync(path.join(wt, rel, `${n}.cs`), 'utf8'), `public class ${n} {}\n`);
+  }
+  assert.ok(fs.existsSync(path.join(wt, 'YoobaLand/Assets/Game/Data/lines.json')));
+  assert.ok(fs.existsSync(path.join(wt, 'YoobaLand/ProjectSettings/ProjectVersion.txt')));
+  assert.ok(fs.existsSync(path.join(wt, 'YoobaLand/Packages/manifest.json')));
+  assert.ok(fs.existsSync(path.join(wt, 'AGENTS.md')));
+  assert.ok(!fs.existsSync(path.join(wt, 'YoobaLand/Assets/Art/yooba.png')), 'art stays out');
+  assert.ok(!fs.existsSync(path.join(wt, 'YoobaLand/Assets/Audio/theme.wav')), 'audio stays out');
+});
+
+test('the agents\' preflight and the job\'s patterns follow a nested project too', async () => {
+  const { wt } = nestedWorktree('n2');
+  await A.ensureSourceReady('c_none', { worktree: wt, product: 'nope', infra: false } as any, () => {});
+  assert.ok(fs.existsSync(path.join(wt, 'YoobaLand/Assets/Game/Scripts/YoobaSceneVoice.cs')));
+  const { jobSparsePatterns } = await import('../src/cloudjob.ts');
+  assert.ok(jobSparsePatterns(wt).includes('/YoobaLand/Assets/**/*.cs'), 'the job checks out the nested project, not just a root Assets/');
+});
+
+test('a Unity product whose source cannot be fetched fails with source unreadable, never a quiet success', async () => {
+  const { wt } = nestedWorktree('n3');
+  const p = await S.populateSource(wt, async () => ({ ok: false, out: '', err: "fatal: could not read Username for 'https://github.com'" }), { unity: true });
+  assert.equal(p.ok, false);
+  assert.ok(I.isInfraText(S.sourceError('the scout\'s worktree', p)), 'Studio\'s failure: not a try, not one of the day\'s starts');
+});
