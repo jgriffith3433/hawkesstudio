@@ -131,7 +131,8 @@ A Unity build no longer rides on one GitHub token minted when the run started (i
 queued or restarted job lost it: "The GitHub token for this build is gone"). Studio:
 
 - mints the installation token at submit (`builds.ts viaGen`, never an older cached one) and sends
-  `github.refresh = { url, build, key }` with the job; `key` is an HMAC of the build's row id under `STUDIO_BUILD_KEY`
+  `github.refresh = { url, build, key }` with the job (**currently off**: Gen rejects the key, so `SEND_GITHUB_REFRESH`
+  stays false until Gen accepts it; set `STUDIO_GEN_REFRESH=1` then); `key` is an HMAC of the build's row id under `STUDIO_BUILD_KEY`
   (else the owner or Gen key), so it opens that one build's one repo.
 - answers `POST /api/builds/gen-token` `{ job, build, key }` with `{ token, repo, commit, expiresAt }`: Gen calls it when the
   job is about to start, or its token is missing or past its hour. 401 for a wrong key, 409 once the build isn't `building` or
