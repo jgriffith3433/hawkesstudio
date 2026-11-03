@@ -27,6 +27,7 @@ async function loadRoadmap() {
     · agents ${c.active}/${s.maxConcurrent} · starts today ${c.started}/${s.maxStartsPerDay} <button class="small" data-pm="caps">Limits…</button>
     ${pm.turn ? ' · <span class="pill warn">PM turn running</span>' : ''}${pm.conversation ? ` · <a href="/?conversation=${esc(pm.conversation.id)}#talk">PM conversation</a>` : ''}
     ${pm.lastError ? `<div class="meta" style="color:var(--red)">${esc(pm.lastError)}</div>` : ''}
+    ${(pm.limits ?? []).map((n) => `<div class="meta" style="margin-top:6px"><span class="pill warn">⏳ ${esc(n.label)} reached</span> <b>${n.used}/${n.limit}</b>: ${n.waiting} roadmap task${n.waiting === 1 ? '' : 's'} waiting. ${n.resets ? `Resets ${esc(n.resets)}. ` : ''}Raise it: ${esc(n.raise)}. <button class="small" data-pm="caps">Limits…</button></div>`).join('')}
     ${holdHtml(pm.hold)}
     ${pm.time?.lines?.length ? `<details class="more-details"><summary class="meta">Where the time goes today</summary>${pm.time.lines.map((l) => `<div class="meta">${esc(l)}</div>`).join('')}</details>` : ''}`);
   // Questions are answered in the Inbox (one place for everything waiting on J).
