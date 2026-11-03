@@ -15,6 +15,7 @@ export const INFRA_PHRASES = [
   'prepare failed', 'prepare error',
   'source unreadable', 'source missing', 'promisor remote',
   "studio's job step", "studio's studio step", "couldn't be brought back", "couldn't bundle",
+  'cloud run job failed', 'ended without its result',
   'git add', 'git commit',
 ];
 // "git add"/"git commit" are infra only when the shell refused them (the content role's sandbox did, 2026-11-02).
