@@ -78,7 +78,7 @@ export type PmSettings = {
   graceMinutes: number;
 } & WalkAwaySettings;
 // The defaults are read each time (walkaway.ts: a customer's Studio starts with walk-away off and no GPU caps).
-const BASE = { enabled: true, delegatedMerges: true, maxStartsPerDay: 8, maxConcurrent: 2, maxTries: 3, fixBugs: true, dailyHour: 9, graceMinutes: 15 };
+const BASE = { enabled: true, delegatedMerges: true, maxStartsPerDay: 1000, maxConcurrent: 2, maxTries: 3, fixBugs: true, dailyHour: 9, graceMinutes: 15 };
 const defaults = (): PmSettings => ({ ...BASE, ...walkAwayDefaults() });
 const stored = (): Partial<PmSettings> => {
   try {
@@ -763,7 +763,10 @@ export const dayBounds = (now = Date.now()) => {
  */
 export function startsToday(now = Date.now()): number {
   const { since } = dayBounds(now);
+  // Automatic resends (an agent carried on in its own worktree, a run again for GPU art or after a build failure: logged
+  // "not counted as a try") are the same work going on, not new starts (J, 2026-11-03: they filled the day).
   return (db.prepare(`SELECT COUNT(*) AS n FROM pm_log WHERE action = 'start' AND at >= ? AND undone IS NULL
+    AND COALESCE(detail, '') NOT LIKE 'carried on with%' AND COALESCE(detail, '') NOT LIKE '%not counted as a try%'
     AND NOT EXISTS (SELECT 1 FROM changes WHERE changes.created >= ? AND pm_log.detail LIKE '%' || changes.id || '%' AND ${INFRA_FAILED_SQL})`).get(since, since - 6 * 3600_000) as any).n as number;
 }
 
@@ -821,6 +824,50 @@ export function startWaitReason(t?: Pick<Task, 'id' | 'product'>, now = Date.now
 }
 
 setStartWaitHook((t) => startWaitReason(t));
+
+export type LimitNotice = { cause: string; label: string; used: number; limit: number; resets: string | null; raise: string; waiting: number; text: string };
+
+/**
+ * Every cap that is holding roadmap work back right now (J, 2026-11-03: the daily start limit stopped the roadmap and the
+ * only trace was a small line on one item): which limit, used/limit, when it resets or how to raise it. Only while
+ * startable tasks are waiting; empty when nothing is held. The Roadmap tab shows them as a banner; startWork tells J once a
+ * day per cause (notifyLimits).
+ */
+export async function limitNotices(now = Date.now()): Promise<LimitNotice[]> {
+  const s = pmSettings();
+  if (!s.enabled) return [];
+  const waiting = startableTasks().filter((t) => !managedElsewhereId(t.product));
+  const out: LimitNotice[] = [];
+  if (!waiting.length) return out;
+  const reset = `${new Date(dayBounds(now).next).toISOString().slice(11, 16)} UTC`;
+  const mk = (cause: string, label: string, used: number, limit: number, resets: string | null, raise: string, n = waiting.length) =>
+    out.push({ cause, label, used, limit, resets, raise, waiting: n, text: `${label}: ${used} of ${limit} used, so ${n} roadmap task${n === 1 ? ' waits' : 's wait'}. ${resets ? `It resets at ${resets}. ` : ''}Raise it: ${raise}.` });
+  const cap = capacity();
+  if (cap.started >= s.maxStartsPerDay) mk('starts-per-day', 'Daily start limit', cap.started, s.maxStartsPerDay, reset, 'Settings → PM → Starts per day');
+  else if (cap.active >= s.maxConcurrent) mk('concurrency', 'Agents at once', cap.active, s.maxConcurrent, null, 'Settings → PM → Agents at once (it also frees when an agent finishes)');
+  const { costToday, agentSettings } = await changes();
+  const a = agentSettings();
+  const t = costToday();
+  if (t.cost >= a.maxCostPerDay) mk('cost-per-day', 'Agent spend per day', Math.round(t.cost * 100) / 100, a.maxCostPerDay, reset, 'Settings → Agents → cost per day', waiting.length);
+  if (t.count >= a.maxPerDay) mk('agents-per-day', 'Auto-fixes per day', t.count, a.maxPerDay, reset, 'Settings → Agents → Auto-fixes per day', waiting.length);
+  return out;
+}
+
+/** Tells J once a day per cause that a limit is holding the roadmap: a PM log line and a phone notification. */
+export async function notifyLimits(now = Date.now()) {
+  const list = await limitNotices(now);
+  if (!list.length) return [];
+  const day = today();
+  const seen = ((state() as any).limitNotified ?? {}) as Record<string, string>;
+  const fresh = list.filter((n) => seen[n.cause] !== day);
+  if (!fresh.length) return [];
+  saveState({ limitNotified: { ...seen, ...Object.fromEntries(fresh.map((n) => [n.cause, day])) } });
+  for (const n of fresh) {
+    logDecision('limit', null, null, n.text);
+    void notify(`${n.label} is holding the roadmap`, n.text, { url: `${PUBLIC_URL}/#roadmap`, priority: 3, tags: ['hourglass'] });
+  }
+  return fresh;
+}
 
 /**
  * A task or finding whose last attempts Studio failed to run: how many in a row, why, and when the next attempt may
@@ -1010,7 +1057,8 @@ export async function startWork() {
       cap = capacity();
     }
   }
-  // The daily cap is visible in the Roadmap tab and studio_pm status (no phone notification: nothing went wrong).
+  // A limit holding the roadmap back is told once a day per cause (banner on the Roadmap tab, PM log, J's phone).
+  await notifyLimits().catch((e: any) => console.warn(`[pm] limit notice: ${e.message}`));
   return out;
 }
 
@@ -2898,7 +2946,7 @@ export async function workFromPlayers(run: string) {
 export async function pmStatus() {
   const { listChanges } = await changes();
   return {
-    settings: pmSettings(), capacity: capacity(), lastError, turn: turn && turnRunning() ? turn : null, pending: events,
+    settings: pmSettings(), capacity: capacity(), limits: await limitNotices(), lastError, turn: turn && turnRunning() ? turn : null, pending: events,
     // The harness hold (harness-hold.ts): what refuses to run, until when, the stand-in, and what is parked on it.
     hold: holdStatus(),
     conversation: state().conversation ?? null, daily: state().daily ?? null,
