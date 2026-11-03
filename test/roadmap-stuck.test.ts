@@ -162,13 +162,13 @@ test("a bug's retry waits for its previous try; Studio's own failures aren't tri
   await pm.startWork();
   assert.equal(count(), 5, 'a fresh attempt: the Studio failures used none of its 3 tries (the closed one is the only try)');
   assert.ok(!rm.listQuestions().some((q) => q.subject === 'f_5c0000000001'), 'nobody asked J');
-  // INFRA_LIMIT Studio failures in a row: J hears once, instead of a loop.
+  // INFRA_LIMIT Studio failures in a row: nobody is asked (J, 2026-11-03); Studio retries by itself once its backoff passes.
   const fresh = db.prepare(`SELECT id FROM changes WHERE findings LIKE '%"f_5c0000000001"%' ORDER BY created DESC, rowid DESC LIMIT 1`).get() as any;
   db.prepare(`UPDATE changes SET status = 'failed', phase = ?, updated = ? WHERE id = ?`).run(J({ step: 'agent', failed: true }), now - 5 * 3600_000, fresh.id);
   db.prepare(`UPDATE findings SET status = 'open' WHERE id = 'f_5c0000000001'`).run();
   await pm.startWork();
-  assert.equal(count(), 5, 'no fifth attempt');
-  assert.equal(rm.listQuestions().filter((q) => q.subject === 'f_5c0000000001').length, 1);
+  assert.equal(count(), 6, 'the backoff has passed: it retries by itself');
+  assert.equal(rm.listQuestions().filter((q) => q.subject === 'f_5c0000000001').length, 0, 'J is never asked about Studio\'s own failure');
 });
 
 test("a task's change Studio failed to run: not a try, planned again and started", async () => {

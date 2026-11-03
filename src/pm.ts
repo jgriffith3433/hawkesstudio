@@ -771,7 +771,11 @@ export function startsToday(now = Date.now()): number {
 const hasEarlierAttempt = (findingId: string) => Boolean(db.prepare(`SELECT 1 FROM changes WHERE findings LIKE ? LIMIT 1`).get(`%"${findingId}"%`));
 
 /** Files ONE blocker for Studio itself (a roadmap task, deduped per product) with the infrastructure error. */
+const infraBlockerAt = new Map<string, number>();
 function fileInfraBlocker(a: { from: string; product: string; text: string; tasks: string[] }) {
+  // Called on every pass while the failures continue: the blocker is deduped (fileBlocker), the log says it once a day.
+  if (Date.now() - (infraBlockerAt.get(a.product) ?? 0) < 24 * 3600_000) return null;
+  infraBlockerAt.set(a.product, Date.now());
   try {
     const fix = fileBlocker({ ...a, target: 'hawkesstudio', text: `Studio itself failed to run the agent ${INFRA_LIMIT} times in a row (a clone, checkout, resume or shell around it), so work on this product keeps failing before any agent runs. The error:\n\n${a.text}\n\nFind and fix the cause (memory, disk, credentials, session handling) so agents can run.` });
     logDecision('infra-blocker', a.tasks[0] ?? null, a.product, `Studio failed to run ${name(a.product)}'s agent ${INFRA_LIMIT} times in a row (${a.text.slice(0, 300)}): one blocker for Studio filed (${fix}) instead of another restart`);
@@ -907,20 +911,15 @@ export async function startWork() {
     if (db.prepare(`SELECT 1 FROM changes WHERE findings LIKE ? AND status IN (${LIVE.map(() => '?').join(',')}) LIMIT 1`).get(`%"${f.id}"%`, ...LIVE)) return null;
     // Studio's own failures (the worktree, a clone, a resume, a push: infra-failure.ts) aren't the agent's tries or the
     // day's starts, but the next attempt waits longer after each (10 min, 20, 40 ...), and after INFRA_LIMIT in a row
-    // J hears what keeps failing and ONE blocker for Studio itself is filed with the error instead of another restart.
+    // ONE blocker for Studio itself is filed with the error, and the retries go on by themselves (nobody is asked).
     const last = db.prepare(`SELECT id, detail, updated, created, ${STUDIO_FAILED_SQL} AS infra FROM changes WHERE findings LIKE ? ORDER BY created DESC, rowid DESC LIMIT 1`).get(`%"${f.id}"%`) as any;
     if (last?.infra) {
+      // Studio's failure is Studio's to fix (J, 2026-11-03): after INFRA_LIMIT in a row ONE blocker for Studio is filed with
+      // the exact error (deduped per product), and the finding is retried by itself, further apart each time (at most
+      // every 4 hours). Nobody is asked "try again / drop it" for a cause that is not theirs.
       const rows = db.prepare(`SELECT ${STUDIO_FAILED_SQL} AS infra FROM changes WHERE findings LIKE ? ORDER BY created DESC, rowid DESC LIMIT ?`).all(`%"${f.id}"%`, INFRA_LIMIT) as any[];
-      if (rows.length >= INFRA_LIMIT && rows.every((r) => r.infra)) {
-        // J's answer (try again) lets the next one start.
-        const q = db.prepare(`SELECT status FROM questions WHERE subject = ? AND at > ? ORDER BY at DESC LIMIT 1`).get(f.id, last.created) as any;
-        if (!q) {
-          fileInfraBlocker({ from: last.id, product: f.product, text: `${f.title}: ${String(last.detail ?? '?')}`, tasks: [] });
-          askJ(`"${f.title}" (${name(f.product)}): Studio couldn't run its agent ${INFRA_LIMIT} times in a row (not the agent's tries). The last error (${last.id}): ${String(last.detail ?? '?').slice(0, 400)}. A blocker for Studio itself is filed. Try again, or drop it (won't fix)?`, { subject: f.id, product: f.product, options: ['try again', "won't fix"], recommend: 'try again', from: 'Studio errors around an agent' });
-          return null;
-        }
-        if (q.status !== 'answered') return null;
-      } else if (infraHoldOf(f.id)) return null;
+      if (rows.length >= INFRA_LIMIT && rows.every((r) => r.infra)) fileInfraBlocker({ from: last.id, product: f.product, text: `${f.title}: ${String(last.detail ?? '?')}`, tasks: [] });
+      if (infraHoldOf(f.id)) return null;
     }
     // One finding uses at most MAX_FINDING_STARTS_PER_DAY starts a day: retry loops can't take the day from the roadmap.
     if (findingStartsToday(f.id) >= MAX_FINDING_STARTS_PER_DAY) return null;
@@ -2015,12 +2014,9 @@ async function afterFailed(t: Task, c: any) {
   const { studioFailed } = await changes();
   if (studioFailed(c)) {
     const recent = db.prepare(`SELECT status, phase, detail FROM changes WHERE task = ? ORDER BY created DESC, rowid DESC LIMIT ?`).all(t.id, INFRA_LIMIT) as any[];
-    if (recent.length >= INFRA_LIMIT && recent.every(studioFailed)) {
-      setTask(t.id, { status: 'failed', tries: back, note: `Studio couldn't run its agent ${INFRA_LIMIT} times in a row; the last (${c.id}): ${detail}`.slice(0, 1000) });
-      fileInfraBlocker({ from: c.id, product: t.product, text: `"${t.title}": ${detail}`, tasks: [] });
-      askJ(`"${t.title}" (${name(t.product)}): Studio couldn't run its agent ${INFRA_LIMIT} times in a row (not the agent's tries). The last error (${c.id}): ${detail.slice(0, 400)}. Try again, change it, or drop it?`, { subject: t.id, product: t.product, options: ['try again', 'change it', 'drop it'], recommend: 'try again', from: 'Studio errors around an agent' });
-      return;
-    }
+    // After INFRA_LIMIT in a row: ONE blocker for Studio itself with the exact error. The task is planned again all the same
+    // (infraHoldOf spaces the attempts: 10 min, 20, 40 ... 4 hours): nobody is asked "try again / drop it" for Studio's own failure.
+    if (recent.length >= INFRA_LIMIT && recent.every(studioFailed)) fileInfraBlocker({ from: c.id, product: t.product, text: `"${t.title}": ${detail}`, tasks: [] });
     setTask(t.id, merged ? { status: 'merged', change: merged.id, tries: back } : { status: 'planned', tries: back, note: `${c.id}: Studio couldn't run its agent (${detail.slice(0, 300)}); not counted as a try, it starts again in a free slot` });
     logDecision('retry', t.id, t.product, `"${t.title}": ${c.id} failed in Studio, not in its agent (${detail.slice(0, 300)}): not counted as a try${merged ? '' : ', planned again'}`);
     return;

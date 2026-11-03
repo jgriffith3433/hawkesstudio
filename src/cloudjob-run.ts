@@ -14,6 +14,7 @@
 //    look; a `stop` object ends the command.
 // 4. Sends back what the pass committed (out.bundle) and left uncommitted plus the session (out.pack), then exit.json.
 
+import { probeSource, sourceError } from './source-ready.ts';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -174,6 +175,13 @@ export async function prepare(unit: string, spec: Spec, store: Store, log: (s: s
       ? gitWithToken(cwd, ['checkout', '--quiet', '-B', g.branch, g.head], t, env)
       : gitWithToken(cwd, ['checkout', '--quiet', '--detach', g.head], t, env));
     if (!co.ok) throw new Error(tok.message(`checkout of ${spec.git.head.slice(0, 7)}`, co.err));
+    // Preflight: a partial clone whose checkout has no readable source (a promisor remote without credentials, a sparse
+    // leftover) stops the job here, as an infra failure, instead of starting an agent on an empty tree.
+    if (spec.git.partial !== false) {
+      const probe = probeSource(cwd);
+      if (!probe.ok) throw new Error(sourceError(`the job's clone of ${spec.git.remote}`, probe));
+      log(`[job] source check: ${probe.tracked} tracked files, read ${probe.sample ?? 'the root files'}`);
+    }
     // As in Studio's own clone: the agent's brief and notes never go into a commit.
     fs.appendFileSync(path.join(cwd, '.git', 'info', 'exclude'), '\n.hawkes/\n');
     log(`[job] workspace ${spec.git.remote} at ${spec.git.head.slice(0, 7)} (${spec.git.branch}${spec.git.partial === false ? '' : ', partial clone'}${spec.git.lfs ? '' : ', no LFS files'})`);

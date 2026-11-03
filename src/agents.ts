@@ -61,6 +61,7 @@ import { BETA, ensureBeta, gitAsync } from './beta.ts';
 import { addWorktree } from './worktree.ts';
 import { saveWork, restoreBranch, catchUpWorktree } from './savework.ts';
 import { lfsPull } from './lfs.ts';
+import { populateSource, probeSource, sourceError, SOURCE_UNREADABLE_SAID } from './source-ready.ts';
 import { runCommand, resumeGapMs, RESTART_LOOP, RESTART_WINDOW_MS } from './ops.ts';
 import { deployPending, critical } from './drain.ts';
 import { notify, notifyOnce, PUBLIC_URL } from './notify.ts';
@@ -615,6 +616,20 @@ function nudge(id: string, ph: Phase, save: (patch: Partial<Phase>) => void) {
   const n = (ph.nudges ?? 0) + 1;
   addLog(id, `agent: ${ph.stopped ? STOP_WHY[ph.stopped] : 'it ended without committing'}, with its work uncommitted in the worktree; resuming its session to commit it and finish (${n} of ${NUDGES})`);
   save({ step: 'agent', nudges: n, nudge: true, result: undefined, stopped: undefined, proc: undefined, since: Date.now() });
+}
+/**
+ * Whether a change that made no commit did so because it never had the source: the worktree fails the probe now, or the
+ * agent said it couldn't read the repo. Returns the detail to record (it carries the exact finding), else null.
+ */
+export function sourceLost(c: Pick<Change, 'worktree' | 'product' | 'infra'>, said: string): string | null {
+  if (c.infra) return null;
+  const light = fs.existsSync(c.worktree) && git(c.worktree, ['config', '--get', 'hawkes.light']).out === 'true';
+  if (light || isUnity(c.product)) {
+    const probe = fs.existsSync(c.worktree) ? probeSource(c.worktree, { unity: light && isUnity(c.product) }) : { ok: false, tracked: 0, reason: `source missing: the worktree ${c.worktree} is gone` };
+    if (!probe.ok) return `${sourceError('the agent made no commit', probe)}`;
+  }
+  const hit = SOURCE_UNREADABLE_SAID.exec(said);
+  return hit ? `source unreadable: the agent made no commit and said it could not read the repo ("${hit[0].slice(0, 80)}"; not counted as a try)` : null;
 }
 /** A failed change's reason: today's words, plus what's left when its work stayed uncommitted after the resumes. */
 function noCommitWhy(worktree: string, ph: Phase) {
@@ -1671,6 +1686,23 @@ async function publish(id: string, { force, title, body }: { force: boolean; tit
   });
 }
 
+/**
+ * Preflight (J, 2026-11-02: Unity agents never got the game source): before the agent starts, a light checkout (a big repo
+ * cloned partially and sparse) gets the project's source files checked out by Studio, which holds the token, and a known
+ * source file must exist and read in the worktree. If not, this throws "source unreadable/missing ..." and the agent is
+ * never started: work()'s catch records an infra failure (infra-failure.ts: not a try, not one of the day's starts).
+ */
+export async function ensureSourceReady(id: string, c: Pick<Change, 'worktree' | 'product' | 'infra'>, log: (m: string) => void = (m) => addLog(id, m)) {
+  if (c.infra) return;
+  const light = git(c.worktree, ['config', '--get', 'hawkes.light']).out === 'true';
+  // A full checkout shows its own Unity-ness (Assets/ tracked); a light one of a Unity product must have its code.
+  const unity = light && isUnity(c.product);
+  if (!light && !isUnity(c.product)) return;
+  const probe = light ? await populateSource(c.worktree, gitAsync, { unity, log }) : probeSource(c.worktree);
+  if (!probe.ok) throw new Error(sourceError(`the worktree ${c.worktree}`, probe));
+  log(`source check: ${probe.tracked} tracked files, read ${probe.sample ?? 'the root files'}`);
+}
+
 async function work(id: string, note?: string, answer?: string, resumed?: Phase | null, asked = false) {
   if (getChange(id)!.infra) return workInfra(id, note, resumed, false, asked);
   let c = getChange(id)!;
@@ -1741,6 +1773,7 @@ async function work(id: string, note?: string, answer?: string, resumed?: Phase 
       // The agent (sandbox user) commits here: its git folder must be the agent group's, on every pass (a worktree made
       // before, or files Studio's own git wrote there since).
       await shareWorktree(c.worktree);
+      await ensureSourceReady(id, c);
       await writeBrief(c, p, findings, note);
       // A question or a stuck report from an earlier pass isn't read again (attemptsBrief carries what they said).
       fs.rmSync(path.join(c.worktree, '.hawkes', 'question.md'), { force: true });
@@ -1849,6 +1882,15 @@ async function work(id: string, note?: string, answer?: string, resumed?: Phase 
         // The harness's own words in the summary (it wrote one and then was refused): parked, not failed.
         const stopped = passStop({ ok: false, sawResult: false, result: ph.result ?? '' }, summary);
         if (stopped) return parkForHarness(id, ph, save, stopped);
+        // No commit and the source was unreadable or missing (the worktree has none, or the agent said it couldn't read it):
+        // Studio's failure, not the agent's try (infra-failure.ts reads the phrase and phase.failed).
+        const lost = sourceLost(c, `${ph.result ?? ''}\n${summary}`);
+        if (lost) {
+          reopenTaken(id, findings.map((f) => f.id), lost);
+          update(id, { status: 'failed', detail: lost.slice(0, 300), summary, commits, phase: { step: ph.step, failed: true } });
+          await dropEmptyWorktree(id, commits);
+          return;
+        }
         const why = noCommitWhy(c.worktree, ph);
         reopenTaken(id, findings.map((f) => f.id), `${why}: ${summary.slice(0, 120)}`);
         update(id, { status: 'failed', detail: noCommitDetail(summary, why), summary, commits, phase: null });

@@ -20,8 +20,9 @@ import { briefSection, recordRun } from './memory.ts';
 import { roleArgs } from './roles.ts';
 import { spawnClaude } from './sandbox.ts';
 import { addWorktree } from './worktree.ts';
-import { syncRepo } from './repos.ts';
+import { syncRepo, isUnityProduct } from './repos.ts';
 import { readRepoViaApi } from './repo-read.ts';
+import { populateSource } from './source-ready.ts';
 import { primeRepoToken } from './ghtoken.ts';
 import { noteCancel, cancelNote, cancelWords } from './cancel.ts';
 
@@ -235,6 +236,14 @@ async function run(id: string, top: string, base: string, opts: ScoutOpts = {}) 
       ref = git(repo, ['rev-parse', '--verify', `origin/${base}`]).ok ? `origin/${base}` : 'origin/main';
       const w = await addWorktree(repo, wt, ['--detach', wt, ref], gitAsync, { removeLeftover: true, log: (m) => set(id, { detail: m }) });
       if (!w.ok) throw new Error(`worktree: ${w.err || 'git gave no message'} (repo ${repo}, exit ${w.ok ? 0 : 'non-zero'})`);
+      // A light checkout gets its source files checked out here with Studio's token (source-ready.ts); a worktree that
+      // still has none is a git failure like the rest: the tarball below gives the scout the source.
+      const light = git(wt, ['config', '--get', 'hawkes.light']).out === 'true';
+      const unity = (() => { try { return !isInfra(s.product) && isUnityProduct(getProduct(s.product)); } catch { return false; } })();
+      if (light || unity) {
+        const probe = await populateSource(wt, gitAsync, { unity, log: (m) => set(id, { detail: m }) });
+        if (!probe.ok) throw new Error(probe.reason ?? 'source unreadable');
+      }
     } catch (gitErr: any) {
       const slug = repoMap()[top];
       if (!slug) throw gitErr;
