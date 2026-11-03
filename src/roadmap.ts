@@ -218,7 +218,7 @@ export function taskWaits(t: Task, asked: Set<string> = askedJ()): string | null
   if (t.status === 'planned') {
     if (t.gpu?.items?.length && !gpuCleared(t)) return 'your GPU budget';
     const b = blockedBy(t);
-    if (b.length) return `${b.map((x) => `"${x.title}"`).join(', ')} first`;
+    if (b.length) return waitingOn(t);
     const why = startWaitHook?.(t);
     return why ?? 'a free agent (it starts by itself)';
   }
@@ -289,6 +289,26 @@ export function itemProgress(it: Item, asked: Set<string> = askedJ()): Progress 
  */
 export function blockedBy(t: Pick<Task, 'depends'>) {
   return t.depends.map((d) => getTask(d) ?? { id: d, title: d, status: 'missing' }).filter((d) => !SATISFIED.includes(d.status)).map((d) => ({ id: d.id, title: d.title, status: d.status }));
+}
+
+/** Dependency states that will not change by themselves: the task after one needs someone (the PM, or J) to act. */
+export const STUCK_DEPENDENCY = ['idea', 'failed', 'missing'];
+
+/**
+ * What a blocked task is waiting on and why, in one sentence (J, 2026-11-03: tasks sat in "Planned" for days behind a task
+ * that was an idea or had failed, and the page only said "Planned"): each blocker by name, with its state and the reason from
+ * its own note, and for one that won't move by itself, that it needs action. null when nothing blocks it.
+ */
+export function waitingOn(t: Pick<Task, 'depends'>): string {
+  const parts = blockedBy(t).map((b) => {
+    const full = getTask(b.id);
+    const why = String(full?.note ?? '').replace(/\s+/g, ' ').trim().slice(0, 220);
+    if (b.status === 'missing') return `"${b.title}" (it no longer exists: remove the dependency)`;
+    if (b.status === 'idea') return `"${b.title}" (${b.id}), an idea nobody is working on${why ? `: ${why}` : ''}; it won't start until that is planned`;
+    if (b.status === 'failed') return `"${b.title}" (${b.id}), which failed${why ? `: ${why}` : ''}; it won't start until that is fixed`;
+    return `"${b.title}" (${b.id}, ${b.status}) first`;
+  });
+  return `waiting on ${parts.join('; ')}`;
 }
 
 const nextOrd = (table: 'items' | 'tasks', key: string, value: string) => ((db.prepare(`SELECT MAX(ord) AS m FROM ${table} WHERE ${key} = ?`).get(value) as any)?.m ?? 0) + 1;

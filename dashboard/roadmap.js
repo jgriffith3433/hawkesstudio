@@ -81,9 +81,12 @@ function taskLine(it) {
 function itemHtml(it) {
   const tasks = it.tasks.map((t) => {
     const checks = t.checks?.results?.length ? `<div class="meta">Checked on ${esc(t.checks.where)}: ${t.checks.results.map((k) => `<span title="${esc(k.evidence ?? '')}">${met(k.met)} ${esc(k.criterion)}</span>`).join(' · ')}${t.checks.video ? ` <a href="${file(t.checks.video)}" target="_blank" rel="noopener" data-video="${file(t.checks.video)}">▶</a>` : ''}</div>` : '';
-    const blocked = t.status === 'planned' && t.blocked_by?.length ? `<b style="color:var(--red)">blocked by ${t.blocked_by.map((d) => esc(d.title)).join(', ')}</b>` : '';
     // What it waits on, and beta's build after its merge ("did it work").
     const p = it.progress?.tasks?.find((x) => x.id === t.id);
+    // Blocked: who it waits on and why ("waiting on "X" (k_..), which failed: ..."), in red when that won't move by itself (roadmap.ts waitingOn).
+    const stuckDep = t.blocked_by?.some((d) => ['idea', 'failed', 'missing'].includes(d.status));
+    const blocked = t.status === 'planned' && t.blocked_by?.length
+      ? `<b${stuckDep ? ' style="color:var(--red)"' : ''}>${esc(p?.waits?.startsWith('waiting on') ? p.waits : `blocked by ${t.blocked_by.map((d) => d.title).join(', ')}`)}</b>` : '';
     const waits = p?.waits && !blocked ? `waiting ${/^GPU jobs/.test(p.waits) ? 'for' : 'on'} ${esc(p.waits)}` : '';
     const build = t.build ? `<span title="${esc(t.build.detail)}">${t.build.ok ? '✅ built on beta' : `<b style="color:var(--red)">❌ beta's build failed</b>`}</span>` : '';
     return `<div class="test" style="flex-wrap:wrap"><span class="pill ${RM_PILL[t.status] ?? ''}">${esc(t.status)}</span>${t.priority === 'high' || (!t.priority && t.effective_priority === 'high') ? prioBadge(t.effective_priority, !t.priority) : ''}<span class="name">${esc(t.title)}</span>
