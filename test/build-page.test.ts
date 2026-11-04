@@ -82,3 +82,14 @@ test('the route exists and the dashboard links to it', () => {
   assert.match(fs.readFileSync(new URL('../dashboard/activity.js', import.meta.url), 'utf8'), /data-build-open/);
   assert.match(fs.readFileSync(new URL('../dashboard/buildfail.js', import.meta.url), 'utf8'), /\/api\/runs\/\$\{encodeURIComponent\(run\)\}\/build/);
 });
+
+test('a failed or stopped build has a Restart build button: the same request as Build, and the new run is linked', () => {
+  const src = fs.readFileSync(new URL('../dashboard/buildfail.js', import.meta.url), 'utf8');
+  // Shown for failed and cancelled builds on the build page (Activity's "build page · logs" and the Runs tab open it).
+  assert.match(src, /b\.state === 'failed' \|\| b\.state === 'cancelled'[\s\S]{0,300}data-bf-restart/);
+  // The click posts to the route Build and Retry use (builds.ts handleBuildRoutes → startBuild at beta's current commit).
+  assert.match(src, /\[data-bf-restart\][\s\S]{0,900}\/api\/projects\/\$\{encodeURIComponent\(p\)\}\/builds`, \{ method: 'POST', body: \{ build \} \}/);
+  // It confirms what it started and links to the new run; the note survives the page's redraws.
+  assert.match(src, /Started a new \$\{esc\(restarted\.build\)\} build[\s\S]{0,200}data-build-open="\$\{esc\(restarted\.run\)\}"/);
+  assert.match(src, /let restarted = null/);
+});

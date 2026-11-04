@@ -59,6 +59,8 @@ var BuildFail = (() => {
    * it opens and on Refresh (GET /api/runs/<run>/build); the push stream's `builds` topic refetches it too, never a timer.
    */
   let pageRun = null;
+  // What the last "Restart build" started, for the open page (the page redraws on every build change, so the note is kept here).
+  let restarted = null;
   const pageHtml = (d) => {
     const blocks = d.builds.map((b) => {
       const p = b.progress;
@@ -71,16 +73,19 @@ var BuildFail = (() => {
         ${b.failure ? `<p>${esc(b.failure.plain || b.failure.reason)}</p>` : ''}
         ${p ? `<div role="status"><b>${esc(verdict)}</b>${p.lastLine ? ` · last line${idle ? ` (unchanged for ${esc(idle)})` : ''}: <code>${esc(p.lastLine.slice(0, 200))}</code>` : ' · no log lines yet'}<div class="meta">${p.lines} log lines · Studio has watched this log for ${esc(took(p.watchedSeconds))} (Gen's lines carry no time, so the age counts from when Studio saw the line change)</div></div>` : ''}
         ${b.log ? `<details open><summary class="meta">${esc(b.log.source)} · last ${b.log.text.split('\n').length} of ${b.log.total} lines</summary><pre data-bf-log style="max-height:50vh;overflow:auto;font-size:12px;white-space:pre-wrap">${esc(b.log.text)}</pre></details>` : `<div class="meta">${esc(b.logError ?? (b.state === 'starting' ? 'Not started yet: waiting its turn.' : 'No log yet.'))}</div>`}
+        ${b.state === 'failed' || b.state === 'cancelled' ? `<div class="actions"><button type="button" class="small primary" data-admin data-bf-restart="${esc(d.run.product)}/${esc(b.build)}">Restart build</button> <span class="meta">starts a new ${esc(b.build)} build of beta's current commit, the same as Build</span></div>` : ''}
       </div>`;
     }).join('');
     return `<h3>Build ${esc(d.run.product)} · ${esc(d.run.status)}</h3><div class="meta">${esc(d.run.id)}${d.run.detail ? ` · ${esc(d.run.detail)}` : ''} · started ${esc(ago(d.run.started))}</div>${blocks || '<div class="meta">This run has no builds.</div>'}
+      ${restarted && restarted.from === d.run.id ? `<p role="status" class="meta" data-bf-restarted>${restarted.run ? `Started a new ${esc(restarted.build)} build of beta's current commit (run <a href="#" data-build-open="${esc(restarted.run)}">${esc(restarted.run)}</a>). It shows here as done or failed when it ends.` : `Nothing was started: ${esc(restarted.note)}`}</p>` : ''}
       <div class="actions"><button type="button" class="small primary" data-bf-page-refresh>Refresh</button> <button type="button" class="small" data-bf-close>Close</button><span class="meta" data-bf-msg></span></div>`;
   };
   async function page(run) {
     let dlg = document.getElementById('bfWhy');
     if (!dlg) { dlg = document.createElement('dialog'); dlg.id = 'bfWhy'; dlg.style.cssText = 'max-width:900px;width:92vw;border-radius:8px;padding:16px'; document.body.appendChild(dlg); dlg.addEventListener('click', (e) => { if (e.target === dlg || e.target.closest('[data-bf-close]')) dlg.close(); }); }
+    if (pageRun !== run) restarted = null;
     pageRun = run;
-    dlg.addEventListener('close', () => { if (pageRun === run) pageRun = null; }, { once: true });
+    dlg.addEventListener('close', () => { if (pageRun === run) { pageRun = null; restarted = null; } }, { once: true });
     if (!dlg.open) { dlg.innerHTML = '<div class="meta">Loading…</div>'; dlg.showModal(); }
     try {
       const d = await api(`/api/runs/${encodeURIComponent(run)}/build`);
@@ -99,6 +104,23 @@ var BuildFail = (() => {
     if (w) { e.preventDefault(); const [p, id] = w.dataset.bfWhy.split('/'); return void why(p, id); }
     const h = e.target.closest('a[href^="#build-why/"]');
     if (h) { e.preventDefault(); const [, p, id] = h.getAttribute('href').split('/'); return void why(p, id); }
+    const k = e.target.closest('[data-bf-restart]');
+    if (k) {
+      // Restart: the same request Build makes (POST /api/projects/<p>/builds, startBuild), for this build at beta's current commit.
+      e.preventDefault();
+      const [p, build] = k.dataset.bfRestart.split('/');
+      const from = pageRun;
+      k.disabled = true;
+      k.textContent = 'Starting…';
+      try {
+        const s = await api(`/api/projects/${encodeURIComponent(p)}/builds`, { method: 'POST', body: { build } });
+        restarted = { from, build, run: s.run ?? null, note: s.note ?? 'nothing to build' };
+      } catch (err) {
+        restarted = { from, build, run: null, note: err.message };
+      }
+      if (pageRun) void page(pageRun);
+      return;
+    }
     const r = e.target.closest('[data-bf-retry]');
     if (r) {
       e.preventDefault();
