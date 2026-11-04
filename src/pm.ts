@@ -1064,7 +1064,7 @@ export async function pmMerge(changeId: string, why = '', by = 'Talk (PM)') {
   } catch (e: any) {
     // Beta moved and the branch conflicts: its agent resolves it (agents.ts resolveConflicts; not a try).
     const { isConflict, resolveConflicts } = await changes();
-    if (isConflict(e) && resolveConflicts(changeId, e.conflict)) {
+    if (isConflict(e) && ((e as any).resolving || resolveConflicts(changeId, e.conflict))) {
       logDecision('conflict', c.task ?? changeId, c.product, `${changeId} conflicts with ${BETA}: its agent resolves it (not a try)`);
       return getChange(changeId);
     }

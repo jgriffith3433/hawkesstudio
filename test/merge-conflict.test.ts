@@ -49,7 +49,10 @@ function betaMoves(file: string, text: string) {
 
 // GitHub: one open pull request per branch, its head what origin has; merging squashes nothing, it just says merged.
 const merges: string[] = [];
+const mergeTries: string[] = [];
 const prBranch = new Map<number, string>();
+const dirty = new Map<number, string>();
+const refuse = new Map<number, string>();
 const listen = async (server: http.Server) => {
   server.listen(0, '127.0.0.1');
   await once(server, 'listening');
@@ -64,12 +67,17 @@ const github = http.createServer(async (req, res) => {
   if (m) {
     const branch = prBranch.get(Number(m[1]))!;
     if (m[2] === '/files') return json(200, [{ filename: 'menu.txt' }]);
+    const sha = spawnSync('git', ['rev-parse', `refs/heads/${branch}`], { cwd: origin, encoding: 'utf8' }).stdout.trim();
+    // A pull request GitHub calls conflicting until its branch moves (dirty: the head it was dirty at).
+    const isDirty = dirty.get(Number(m[1])) === sha;
     if (m[2] === '/merge' && req.method === 'PUT') {
+      mergeTries.push(branch);
+      if (refuse.has(Number(m[1]))) return json(422, { message: refuse.get(Number(m[1])) });
+      if (isDirty) return json(405, { message: 'Pull Request is not mergeable' });
       merges.push(branch);
       return json(200, { merged: true, sha: 'f'.repeat(40) });
     }
-    const sha = spawnSync('git', ['rev-parse', `refs/heads/${branch}`], { cwd: origin, encoding: 'utf8' }).stdout.trim();
-    return json(200, { number: Number(m[1]), state: 'open', merged: false, head: { sha, ref: branch } });
+    return json(200, { number: Number(m[1]), state: 'open', merged: false, head: { sha, ref: branch }, mergeable: !isDirty, mergeable_state: isDirty ? 'dirty' : 'clean' });
   }
   if (/^\/repos\/x\/game\/pulls$/.test(url.pathname)) return json(200, []);
   if (req.method === 'DELETE') return json(204, {});
@@ -166,8 +174,46 @@ test('a real conflict is not merged: aborted, the files named, the branch as it 
   assert.deepEqual(r.files, ['menu.txt']);
   assert.equal(git(c.wt, 'rev-parse', 'HEAD'), head);
   assert.equal(git(c.wt, 'status', '--porcelain', '--', '.', ':(exclude).hawkes'), '', 'nothing left half-merged');
-  await assert.rejects(agents.approve(c.id, { confirm: `MERGE ${c.id}` }), /moved and the branch conflicts with it in menu\.txt/);
   assert.ok(!merges.includes(c.branch));
+  // A person's merge meets it too: its own agent resolves it (J, 2026-11-04: "it should be able to deal with the merge
+  // conflicts"), not a notice saying it stopped; once resolved it merges by itself.
+  await assert.rejects(agents.approve(c.id, { confirm: `MERGE ${c.id}` }), (e: any) => /moved and the branch conflicts with it in menu\.txt: its agent is resolving the conflicts \(conflict pass 1 of 2/.test(e.message) && e.resolving === true);
+  assert.equal(getChange(c.id)!.status, 'revising');
+  await until(() => getChange(c.id)!.status === 'merged', 60_000, 'the conflict pass and the merge');
+  assert.ok(merges.includes(c.branch));
+});
+
+test('GitHub says it conflicts and there is no worktree here (a big repo on Cloud Run): its agent resolves it, no "Merge stopped" over and over', async () => {
+  const talk = await import('../src/talk.ts');
+  const stopped = () => talk.listConversations().filter((x: any) => /^Merge stopped/.test(x.title ?? '')).length;
+  const before = stopped();
+  const c = readyChange('Ready\n');
+  betaMoves('menu.txt', 'Set\n');
+  // The service has no checkout of it (Yoobaland, 2026-11-04): Studio can't bring the branch up to date itself.
+  git(repoDir, 'worktree', 'remove', '--force', c.wt);
+  dirty.set(n, git(repoDir, 'rev-parse', `refs/heads/${c.branch}`));
+  const tries = mergeTries.length;
+  await assert.rejects(agents.approve(c.id, { confirm: `MERGE ${c.id}` }), (e: any) => /its agent is resolving the conflicts/.test(e.message) && e.resolving === true);
+  assert.equal(mergeTries.length, tries + 1, 'asked GitHub once');
+  assert.equal(stopped(), before, 'no "Merge stopped" conversation: it is being dealt with');
+  assert.equal(getChange(c.id)!.conflicts, 1);
+  await until(() => getChange(c.id)!.status === 'merged', 60_000, 'the worktree made again, the conflict pass and the merge');
+  assert.ok(merges.includes(c.branch));
+  assert.equal(fs.readFileSync(path.join(c.wt, 'menu.txt'), 'utf8').replace(/\r\n/g, '\n'), 'Ready\n', "the agent kept its side, in a worktree made again from the branch");
+});
+
+test('a merge that fails for another reason: Talk hears it once, and it is not asked of GitHub again for a minute', async () => {
+  const talk = await import('../src/talk.ts');
+  const stopped = () => talk.listConversations().filter((x: any) => /^Merge stopped/.test(x.title ?? '')).length;
+  const c = readyChange('Onward\n');
+  // GitHub refuses for a reason that isn't a conflict (a required check, say).
+  refuse.set(n, 'Required status check "build" is failing.');
+  const before = stopped(), tries = mergeTries.length;
+  await assert.rejects(agents.approve(c.id, { confirm: `MERGE ${c.id}` }));
+  assert.equal(stopped(), before + 1, 'one "Merge stopped"');
+  for (let i = 0; i < 5; i++) await assert.rejects(agents.approve(c.id, { confirm: `MERGE ${c.id}` }), /failed \d+ s ago/);
+  assert.equal(stopped(), before + 1, 'still one');
+  assert.equal(mergeTries.length, tries + 1, 'GitHub asked once');
   db.prepare(`UPDATE changes SET status = 'closed' WHERE id = ?`).run(c.id);
 });
 

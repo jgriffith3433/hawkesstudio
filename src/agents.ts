@@ -2868,6 +2868,40 @@ export const isConflict = (e: unknown): e is Error & { conflict: string[] } => A
 const MERGE_REFUSED = /not mergeable|merge conflict|base branch was modified|405|409/i;
 
 /**
+ * GitHub says the pull request conflicts with its base (mergeable false, state "dirty"). What tells a conflict when
+ * Studio couldn't bring the branch up to date itself (updateFromBase skipped: no worktree here, e.g. a big Unity repo on
+ * Cloud Run; J, 2026-11-04: PR #454 of Yoobaland refused six times in a row and was never handed to its agent).
+ * GitHub works mergeability out lazily (null at first): asked once more after a moment.
+ */
+async function githubSaysConflict(c: Change) {
+  for (let i = 0; i < 2; i++) {
+    const p = await github(`/repos/${c.slug}/pulls/${c.pr}`).catch(() => null);
+    if (p?.mergeable === false) return p.mergeable_state === 'dirty';
+    if (p?.mergeable === true) return false;
+    await new Promise((r) => setTimeout(r, Number(process.env.STUDIO_MERGE_RETRY_MS ?? 3000)));
+  }
+  return false;
+}
+
+/**
+ * A person's (or the PM's, or walk-away's) merge that met a conflict: its own agent resolves it, like an automatic
+ * merge does (J, 2026-11-04: "it should be able to deal with the merge conflicts"). The error says so, and carries
+ * `resolving` so a caller doesn't start a pass of its own; with the passes used up, it says J decides.
+ */
+function conflictHandled(id: string, e: Error & { conflict: string[] }) {
+  if (resolveConflicts(id, e.conflict)) {
+    const c = getChange(id)!;
+    return Object.assign(new Error(`${e.message}: its agent is resolving the conflicts (conflict pass ${c.conflicts} of ${CONFLICT_PASSES}, not a try); it merges once they're resolved`), { conflict: e.conflict, resolving: true });
+  }
+  return Object.assign(new Error(`${e.message}, and its agent already had ${CONFLICT_PASSES} conflict passes: revise it or close it`), { conflict: e.conflict });
+}
+
+/** The last merge of a change that failed for another reason (approve): the same failure isn't asked of GitHub again for a minute, and Talk hears it once. */
+const mergeFailed = new Map<string, { at: number; why: string; told: number }>();
+const MERGE_FAIL_QUIET_MS = 60_000;
+const MERGE_NOTICE_QUIET_MS = 30 * 60_000;
+
+/**
  * Brings a ready product change's branch up to date with its base before it merges (J, 2026-10-18: four Sick Of It
  * tasks hit "Pull request has merge conflicts" because another task merged into beta first). Up to date already:
  * nothing. Behind: origin/<base> is merged into the worktree; a clean merge is pushed, and that commit is what merges
@@ -2969,7 +3003,8 @@ function restoreNotes(worktree: string, copy: string | null) {
  */
 export function resolveConflicts(id: string, files: string[]) {
   const c = getChange(id);
-  if (!c || c.status !== 'ready' || !fs.existsSync(c.worktree)) return false;
+  // No worktree here (a big repo on Cloud Run, a restart): the pass's prepare step makes it again from the branch.
+  if (!c || c.status !== 'ready') return false;
   const n = (c.conflicts ?? 0) + 1;
   if (n > CONFLICT_PASSES) return false;
   db.prepare('UPDATE changes SET conflicts = ? WHERE id = ?').run(n, id);
@@ -3066,24 +3101,45 @@ export async function approve(id: string, { confirm, by = 'J', origin, auto = fa
     const { flushDev, pullDev } = await import('./dev.ts');
     const flushed = await flushDev(c.product, `before merging ${id}`);
     if ('conflict' in flushed && flushed.conflict) throw new Error(`Beta's working copy conflicts with beta (${flushed.conflict.join(', ')}); resolve that first (studio_dev_status).`);
-    // Beta moved since the agent's pass: the branch is brought up to date first (a clean merge pushed; a conflict thrown).
+    // The same merge failed moments ago (a caller trying again and again: J, 2026-11-04, six "Merge stopped" in 40 s): not
+    // asked of GitHub again yet.
+    const failed = mergeFailed.get(id);
+    if (!auto && failed && Date.now() - failed.at < MERGE_FAIL_QUIET_MS) throw new Error(`Merging ${id} failed ${Math.round((Date.now() - failed.at) / 1000)} s ago: ${failed.why}. Not tried again for a minute; revise it if it needs changing.`);
+    // Beta moved since the agent's pass: the branch is brought up to date first (a clean merge pushed; a conflict thrown,
+    // and its agent resolves it).
     const up = await updateFromBase(id);
-    if (up.state === 'conflict') throw conflictError(getChange(id)!, up.files ?? []);
+    if (up.state === 'conflict') {
+      const e = conflictError(getChange(id)!, up.files ?? []);
+      throw auto ? e : conflictHandled(id, e);
+    }
     // The pull request's head is checked before the merge (a verified commit: the agent's, or Studio's merge of beta).
     const sha = await verifiedHead(getChange(id)!);
     let m: any;
     try {
       // `sha`: GitHub refuses the merge if the pull request's head moved since the check above.
       m = await github(`/repos/${c.slug}/pulls/${c.pr}/merge`, { method: 'PUT', body: { merge_method: await mergeMethodOf(c.slug!), sha, commit_title: `${c.title} (#${c.pr})` } });
-    } catch (e: any) {
-      // Usually a conflict with what's on beta now (devtools saves, another change). J hears it in Talk with the files
-      // (an automatic merge says it in one line itself: autoMergeBeta).
-      if (auto || isConflict(e)) throw e;
-      const files = await github(`/repos/${c.slug}/pulls/${c.pr}/files?per_page=100`).then((fs: any[]) => fs.map((f) => f.filename)).catch(() => []);
-      const { postNotice } = await import('./talk.ts');
-      postNotice(`Merge stopped: ${c.title}`, `Merging ${id} (${c.pr_url}) into ${BETA} failed: ${e.message ?? e}\n\nThe change touches: ${files.slice(0, 30).join(', ') || '(unknown)'}\n\nIf beta changed those files since (devtools saves or another change), ask the agent to update its branch from ${BETA} (revise ${id}) and approve again.`);
+    } catch (e0: any) {
+      let e = e0;
+      const files = () => github(`/repos/${c.slug}/pulls/${c.pr}/files?per_page=100`).then((fs: any[]) => fs.map((f) => f.filename)).catch(() => [] as string[]);
+      // GitHub says it conflicts with beta (the branch couldn't be brought up to date here): a conflict like any other.
+      // GitHub doesn't name the conflicting files: the agent gets the ones the change touches.
+      if (!isConflict(e) && MERGE_REFUSED.test(String(e.message ?? e)) && await githubSaysConflict(c)) e = conflictError(c, await files());
+      if (isConflict(e)) throw auto ? e : conflictHandled(id, e);
+      if (auto) throw e;
+      // Anything else (an automatic merge says it in one line itself: autoMergeBeta): J hears it in Talk with the files,
+      // once for a while, and the same merge isn't tried again for a minute.
+      const why = String(e.message ?? e).slice(0, 300);
+      const told = mergeFailed.get(id)?.told ?? 0;
+      const tell = Date.now() - told > MERGE_NOTICE_QUIET_MS;
+      mergeFailed.set(id, { at: Date.now(), why, told: tell ? Date.now() : told });
+      if (tell) {
+        const touched = await files();
+        const { postNotice } = await import('./talk.ts');
+        postNotice(`Merge stopped: ${c.title}`, `Merging ${id} (${c.pr_url}) into ${BETA} failed: ${why}\n\nThe change touches: ${touched.slice(0, 30).join(', ') || '(unknown)'}\n\nIf beta changed those files since (devtools saves or another change), ask the agent to update its branch from ${BETA} (revise ${id}) and approve again.`);
+      }
       throw e;
     }
+    mergeFailed.delete(id);
     void pullDev(c.product, `after merging ${id}`).catch((e) => console.warn(`[studio] beta working copy after ${id}: ${e.message ?? e}`));
     // Before beta's run starts: the PM matches beta's build after this time to the task (pm.ts followBuilds).
     db.prepare('UPDATE changes SET merged_at = ?, conflicts = NULL WHERE id = ?').run(Date.now(), id);
