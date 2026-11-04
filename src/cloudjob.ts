@@ -28,12 +28,19 @@ import { EventEmitter } from 'node:events';
 import { spawnSync } from 'node:child_process';
 import { DATA, ROOT } from './config.ts';
 import { runToken } from './jobbroker.ts';
+import { GENERIC_SOURCE_PATTERNS, unitySourcePatterns } from './source-ready.ts';
 
 export type PackFile = { p: string; d: string; m?: number };
-export type Pack = { files: PackFile[]; deleted?: string[] };
+/**
+ * `commit`: the pass's own commits as plain files (the net change start..HEAD and the commits' messages), the way back when
+ * the commits' git objects can't be fetched: a bundle is a thin pack, and a light (partial) clone lacks the blobs it
+ * deltas against (2026-11-03: "pack has 1 unresolved delta", every Unity agent change "made no commit").
+ */
+export type PackCommit = { message: string; files: PackFile[]; deleted: string[] };
+export type Pack = { files: PackFile[]; deleted?: string[]; commit?: PackCommit };
 
 /** A pack of files (gzip of JSON, base64 bodies): small enough for uncommitted work and session logs. */
-export function packFiles(entries: { p: string; file: string }[], deleted: string[] = []): Buffer {
+export function packFiles(entries: { p: string; file: string }[], deleted: string[] = [], commit?: PackCommit | null): Buffer {
   const files: PackFile[] = [];
   for (const e of entries) {
     try {
@@ -42,7 +49,7 @@ export function packFiles(entries: { p: string; file: string }[], deleted: strin
       files.push({ p: e.p, d: fs.readFileSync(e.file).toString('base64'), m: st.mode & 0o777 });
     } catch { /* gone meanwhile */ }
   }
-  return zlib.gzipSync(Buffer.from(JSON.stringify({ files, deleted } satisfies Pack)));
+  return zlib.gzipSync(Buffer.from(JSON.stringify({ files, deleted, ...(commit ? { commit } : {}) } satisfies Pack)));
 }
 
 export const readPack = (b: Buffer): Pack => JSON.parse(zlib.gunzipSync(b).toString('utf8'));
@@ -77,7 +84,7 @@ export function folderEntries(dir: string, name: (rel: string) => string) {
 
 // ------------------------------------------------------------------- git
 
-export const git = (cwd: string, args: string[], o: { input?: string } = {}) => {
+export const git = (cwd: string, args: string[], o: { input?: string | Buffer } = {}) => {
   const r = spawnSync('git', ['-c', 'safe.directory=*', ...args], { cwd, encoding: 'buffer', windowsHide: true, maxBuffer: 512 * 1024 * 1024, input: o.input });
   return { ok: r.status === 0, out: (r.stdout ?? Buffer.alloc(0)).toString('utf8').trim(), raw: r.stdout ?? Buffer.alloc(0), err: (r.stderr ?? Buffer.alloc(0)).toString('utf8').trim() };
 };
@@ -110,16 +117,82 @@ export function workspaceIn(cwd: string, tmp: string) {
  * Untracked files the pass removed are removed here too (git clean, never ignored files such as node_modules).
  */
 export function applyWorkspace(cwd: string, o: { head: string; bundle: string | null; pack: Pack | null }) {
+  let fetchError = '';
   if (o.bundle) {
     const f = git(cwd, ['fetch', '--quiet', o.bundle, 'HEAD']);
-    if (!f.ok) throw new Error(`couldn't read the job's commits: ${f.err.split('\n').pop()}`);
+    if (!f.ok) fetchError = f.err.split('\n').filter(Boolean).slice(-2).join(' | ') || 'git printed nothing';
   }
-  if (o.head && git(cwd, ['rev-parse', 'HEAD']).out !== o.head) {
-    const r = git(cwd, ['reset', '--quiet', '--hard', o.head]);
-    if (!r.ok) throw new Error(`couldn't move to the job's HEAD ${o.head.slice(0, 7)}: ${r.err.split('\n').pop()}`);
-  } else git(cwd, ['reset', '--quiet', '--hard']);
+  // The job's HEAD is a commit this workspace has (fetched from the bundle, or already its own).
+  const hasHead = !o.head || git(cwd, ['cat-file', '-e', `${o.head}^{commit}`]).ok;
+  if (!hasHead && !o.pack?.commit) {
+    throw new Error(fetchError ? `couldn't read the job's commits: ${fetchError}` : `the job's HEAD ${o.head.slice(0, 7)} isn't in this workspace and its commits didn't come back`);
+  }
+  if (hasHead) {
+    if (o.head && git(cwd, ['rev-parse', 'HEAD']).out !== o.head) {
+      const r = git(cwd, ['reset', '--quiet', '--hard', o.head]);
+      if (!r.ok) throw new Error(`couldn't move to the job's HEAD ${o.head.slice(0, 7)}: ${r.err.split('\n').pop()}`);
+    } else git(cwd, ['reset', '--quiet', '--hard']);
+  } else {
+    git(cwd, ['reset', '--quiet', '--hard']);
+  }
   git(cwd, ['clean', '-fdq']);
-  if (o.pack) unpack(o.pack, cwd);
+  // The commits as files: written, staged and committed here (a light worktree can't take the job's git objects).
+  if (!hasHead) {
+    replayCommit(cwd, o.pack!.commit!, fetchError);
+    // Studio's own later git status / diff in this light clone must not read blobs it can't fetch either.
+    if (git(cwd, ['config', '--get', 'core.sparseCheckout']).out === 'true') for (const k of ['diff.renames', 'status.renames']) git(cwd, ['config', k, 'false']);
+  }
+  const rest = o.pack ? { files: o.pack.files, deleted: o.pack.deleted } : null;
+  if (rest) unpack(rest, cwd);
+  // A light (sparse) worktree: tracked files outside its cone are skip-worktree, which git status and `git add -A` don't
+  // see, so the pass's edits there looked like "no changes" and were never committed. Mark what the pass touched.
+  if (rest) showSparse(cwd, [...rest.files.filter((f) => !path.isAbsolute(f.p)).map((f) => f.p), ...(rest.deleted ?? [])]);
+}
+
+/** Makes the pass's commits here from their files (PackCommit): one commit with the pass's messages. Throws when git refuses. */
+export function replayCommit(cwd: string, c: PackCommit, why = '') {
+  const files = c.files.filter((f) => !path.isAbsolute(f.p));
+  unpack({ files, deleted: c.deleted }, cwd);
+  const paths = [...files.map((f) => f.p), ...c.deleted];
+  if (!paths.length) return false;
+  showSparse(cwd, paths);
+  // Rename detection reads the blobs of deleted and added files: a light clone lacks them and can't fetch them (no credentials).
+  const norename = ['-c', 'diff.renames=false', '-c', 'status.renames=false'];
+  const fail = (what: string, err: string) => new Error(`staging the job's commits as files: ${what}${err.split('\n').pop()}`);
+  // Staged without `git add`: add converts the file against the index's old blob (line-ending checks), and a blobless
+  // clone can't fetch that blob (no credentials). Hash the file as it is and point the index at the new object instead.
+  const modes = new Map<string, string>();
+  for (let i = 0; i < files.length; i += 200) {
+    const ls = git(cwd, ['ls-files', '-s', '-z', '--', ...files.slice(i, i + 200).map((f) => f.p)]).raw.toString('utf8').split('\0').filter(Boolean);
+    for (const l of ls) { const m = /^(\d+) [0-9a-f]+ \d\t(.*)$/s.exec(l); if (m) modes.set(m[2], m[1]); }
+  }
+  const lines: string[] = [];
+  for (const f of files) {
+    const h = git(cwd, ['hash-object', '-w', '--no-filters', '--', path.join(cwd, f.p)]);
+    if (!h.ok || !h.out) throw fail(`${f.p}: `, h.err);
+    const mode = modes.get(f.p) ?? ((f.m ?? 0o644) & 0o111 ? '100755' : '100644');
+    lines.push(`${mode} ${h.out}\t${f.p}`);
+  }
+  // Files the pass deleted may be ones this light worktree never checked out: removed from the index by name.
+  for (const d of c.deleted) lines.push(`0 ${'0'.repeat(40)}\t${d}`);
+  if (lines.length) {
+    const r = git(cwd, ['update-index', '-z', '--index-info'], { input: Buffer.from(lines.join('\0') + '\0') });
+    if (!r.ok) throw fail('', r.err);
+  }
+  if (!git(cwd, [...norename, 'diff', '--cached', '--name-only']).out) return false;
+  const msg = `${c.message}\n\nCommitted by Hawkes Studio: the agent's commit${why ? ` couldn't be fetched as git objects (${why.slice(0, 200)})` : ' came back as files'}.`;
+  const r = git(cwd, [...norename, '-c', 'user.name=Hawkes Studio', '-c', 'user.email=studio@hawkesgen.ai', '-c', 'core.hooksPath=/dev/null', 'commit', '--quiet', '--no-verify', '-m', msg]);
+  if (!r.ok) throw new Error(`committing the job's commits as files: ${r.err.split('\n').pop()}`);
+  return true;
+}
+
+/** In a sparse worktree: the tracked `paths` count as present (not skip-worktree), so status and add see their changes. */
+export function showSparse(cwd: string, paths: string[]) {
+  if (!paths.length || git(cwd, ['config', '--get', 'core.sparseCheckout']).out !== 'true') return;
+  for (let i = 0; i < paths.length; i += 200) {
+    const tracked = git(cwd, ['ls-files', '-z', '--', ...paths.slice(i, i + 200)]).raw.toString('utf8').split('\0').filter(Boolean);
+    if (tracked.length) git(cwd, ['update-index', '--no-skip-worktree', '-z', '--stdin'], { input: Buffer.from(tracked.join('\0') + '\0') });
+  }
 }
 
 // --------------------------------------------------------------- Claude Code
@@ -276,10 +349,13 @@ export function startCloudJob(unit: string, spec: Spec, o: { gitToken?: string |
       // A big repo (repos.ts bigRepo: a Unity project's, or over STUDIO_CLONE_MAX_MB) is cloned partially with no LFS
       // files (cloudjob-run.ts prepare's default); a small one fully, with its LFS files, as before.
       let big: string | null = null;
+      let sparse: string[] | undefined;
       if (ws) {
         const { slugOfRemote } = await import('./ghtoken.ts');
         const slug = slugOfRemote(ws.remote);
         if (slug) big = await import('./repos.ts').then(({ bigRepo }) => bigRepo(slug)).catch(() => null);
+        // The job's checkout is sparse like Studio's worktree (the job's disk is memory: a Unity project's whole tree killed it).
+        if (big) sparse = jobSparsePatterns(cwd);
       }
       // An agent's read-only copies of the Studio's other projects' repos (access.ts), next to its worktree.
       const repos = ws ? await import('./access.ts').then((A) => A.extraReposFor(cwd)).catch(() => []) : [];
@@ -288,7 +364,7 @@ export function startCloudJob(unit: string, spec: Spec, o: { gitToken?: string |
         // Talk's answer (detach.ts names its unit hawkes-talk-<conversation>-…): its output goes up as it comes.
         ...(unit.startsWith('hawkes-talk-') ? { flushMs: TALK_FLUSH_MS() } : {}),
         // tokenAt and refresh: a job that waits for a machine past most of the token's hour gets a fresh one (jobgit.ts).
-        git: ws ? { head: ws.head, branch: ws.branch, remote: ws.remote, bundle: Boolean(ws.bundle), token: gitToken, tokenAt: Date.now(), ...(await gitRefresh(unit, ws.remote)), ...(big ? {} : { partial: false, lfs: true }) } : null,
+        git: ws ? { head: ws.head, branch: ws.branch, remote: ws.remote, bundle: Boolean(ws.bundle), token: gitToken, tokenAt: Date.now(), ...(await gitRefresh(unit, ws.remote)), ...(big ? (sparse ? { sparse } : {}) : { partial: false, lfs: true }), ...(unit.startsWith('hawkes-agent-') ? { commitDirty: true } : {}) } : null,
       }));
       f.execution = await r.start(unit);
       await r.put(key(unit, 'execution.txt'), f.execution);
@@ -301,6 +377,13 @@ export function startCloudJob(unit: string, spec: Spec, o: { gitToken?: string |
     }
     follow(f, spec.cwd, spec.env);
   })();
+}
+
+/** The source patterns the job checks out in a big repo: the same ones Studio's worktree got (source-ready.ts). */
+export function jobSparsePatterns(cwd: string): string[] {
+  // A Unity project at the root or nested (YoobaLand/YoobaLand/): its patterns, moved under its folder (source-ready.ts).
+  const unity = Boolean(git(cwd, ['ls-files', '--', 'Assets', 'ProjectSettings']).out) || Boolean(git(cwd, ['ls-files', '--', '*ProjectSettings/ProjectVersion.txt']).out);
+  return unity ? unitySourcePatterns(cwd) : GENERIC_SOURCE_PATTERNS;
 }
 
 /** The spec's way to a fresh clone token (jobgit.ts), or nothing when Studio has no address the job can reach. */
@@ -328,8 +411,31 @@ export function reattachCloudJob(unit: string, cwd: string, env: NodeJS.ProcessE
   })();
 }
 
+/** The last lines the job printed (its log, then its errors), on one line: what a failed job's detail shows besides the error. */
+export function jobTail(unit: string, n = 4): string {
+  const lines: string[] = [];
+  for (const ext of ['err', 'log']) {
+    try {
+      lines.push(...fs.readFileSync(local(unit, ext), 'utf8').split('\n').map((l) => l.trim()).filter((l) => l && !l.startsWith('[studio] the Cloud Run job failed')).slice(-n));
+    } catch { /* no file */ }
+  }
+  return lines.slice(-n).join(' | ').slice(0, 400);
+}
+
+/**
+ * The line a failed job leaves on its stderr (J, 2026-11-03: Yooba Land passes ended "the agent made no commit" with the
+ * real reason, a job killed with no result, only in the exit file): exit code, signal, error and the last output lines.
+ * agents.ts machineryFailure reads `[studio] ... failed` lines, so the change's detail names the job's failure and it
+ * counts as Studio's, not a try. Exported for the tests.
+ */
+export function jobFailureLine(unit: string, exit: { code: number | null; signal: string | null; error?: string }): string {
+  const tail = jobTail(unit);
+  return `[studio] the Cloud Run job failed: ${String(exit.error ?? '').replace(/\s+/g, ' ').slice(0, 300)} (exit code ${exit.code ?? 'none'}${exit.signal ? `, signal ${exit.signal}` : ''})${tail ? `; last output: ${tail}` : '; it printed nothing'}`;
+}
+
 function end(f: Follow, exit: { code: number | null; signal: string | null; error?: string }) {
   f.done = true;
+  if (exit.error) { try { fs.appendFileSync(local(f.unit, 'err'), `${jobFailureLine(f.unit, exit)}\n`); } catch { /* the folder went */ } }
   try {
     fs.writeFileSync(local(f.unit, 'exit.tmp'), JSON.stringify({ ...exit, at: Date.now() }));
     fs.renameSync(local(f.unit, 'exit.tmp'), local(f.unit, 'exit'));
@@ -479,7 +585,7 @@ async function finish(f: Follow, r: JobRunner, cwd: string, env: NodeJS.ProcessE
     const pack = packB ? readPack(packB) : null;
     // The session files go where they were (absolute paths); the workspace's files are relative.
     const session = pack ? { files: pack.files.filter((x) => path.isAbsolute(x.p)) } : null;
-    const work = pack ? { files: pack.files.filter((x) => !path.isAbsolute(x.p)), deleted: pack.deleted } : null;
+    const work: Pack | null = pack ? { files: pack.files.filter((x) => !path.isAbsolute(x.p)), deleted: pack.deleted, ...(pack.commit ? { commit: pack.commit } : {}) } : null;
     if (session) unpack(session, '/');
     if (exit.git) {
       // The workspace went while the job ran (2026-11-02: a replaced instance lost the worktree, this step skipped the

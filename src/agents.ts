@@ -61,6 +61,7 @@ import { BETA, ensureBeta, gitAsync } from './beta.ts';
 import { addWorktree } from './worktree.ts';
 import { saveWork, restoreBranch, catchUpWorktree } from './savework.ts';
 import { lfsPull } from './lfs.ts';
+import { populateSource, probeSource, sourceError, SOURCE_UNREADABLE_SAID } from './source-ready.ts';
 import { runCommand, resumeGapMs, RESTART_LOOP, RESTART_WINDOW_MS } from './ops.ts';
 import { deployPending, critical } from './drain.ts';
 import { notify, notifyOnce, PUBLIC_URL } from './notify.ts';
@@ -79,6 +80,7 @@ import { launch, DetachedChild, detachedActivity, stopDetached, type DetachRec }
 import { cloudMcp, setWorkspaceRestorer } from './cloudjob.ts';
 import { cloudMode } from './cloudauth.ts';
 import { warmDeps, installCold, markInstalled } from './warm.ts';
+import { infraFailed, INFRA_FAILED_SQL } from './infra-failure.ts';
 import { ensureGpuFor, needsGpu } from './gpustart.ts';
 import { walkAwayOn, WALK_AWAY_BY } from './walkaway.ts';
 import { brainId, brainLabel, brainSettings, harnessStopOf, isHarness, type Harness, type HarnessStop } from './brains.ts';
@@ -173,7 +175,7 @@ const SETTINGS_FILE = path.join(DATA, 'agents.json');
 export type AgentSettings = { enabled: boolean; autoFix: boolean; autoMergeBeta: boolean; betaPlaytests: boolean; maxConcurrent: number; perProduct: number; productLimits: Record<string, number>; maxPerDay: number; maxCostPerDay: number; severities: string[]; model: string; maxTurns: number; idleMinutes: number; genWaitHours: number; access?: { gen?: boolean; repos?: boolean } };
 /** access: what agents reach beyond their own project (access.ts; both on unless turned off here or on the project).
  * genWaitHours: a change parked on Gen jobs longer than this is told in Talk once (it isn't failed). */
-const DEFAULTS: AgentSettings = { enabled: true, autoFix: true, autoMergeBeta: true, betaPlaytests: false, maxConcurrent: 2, perProduct: 1, productLimits: { sickofit: 2 }, maxPerDay: 4, maxCostPerDay: 20, severities: ['blocker', 'bug'], model: 'claude-sonnet-5-5', maxTurns: 80, idleMinutes: 20, genWaitHours: 6 };
+const DEFAULTS: AgentSettings = { enabled: true, autoFix: true, autoMergeBeta: true, betaPlaytests: false, maxConcurrent: 2, perProduct: 1, productLimits: { sickofit: 2 }, maxPerDay: 1000, maxCostPerDay: 20, severities: ['blocker', 'bug'], model: 'claude-sonnet-5-5', maxTurns: 80, idleMinutes: 20, genWaitHours: 6 };
 export function agentSettings(): AgentSettings {
   try {
     return { ...DEFAULTS, ...JSON.parse(fs.readFileSync(SETTINGS_FILE, 'utf8')) };
@@ -232,12 +234,12 @@ export const getChange = (id: string) => {
   const r = db.prepare('SELECT * FROM changes WHERE id = ?').get(id);
   return r ? toChange(r) : null;
 };
-export function listChanges(q: { status?: string; product?: string; limit?: number } = {}) {
+export function listChanges(q: { status?: string; product?: string; limit?: number; offset?: number } = {}) {
   const where: string[] = [];
   const args: any[] = [];
   if (q.status) { where.push(`status IN (${q.status.split(',').map(() => '?').join(',')})`); args.push(...q.status.split(',')); }
   if (q.product) { where.push('product = ?'); args.push(q.product); }
-  return (db.prepare(`SELECT * FROM changes ${where.length ? `WHERE ${where.join(' AND ')}` : ''} ORDER BY created DESC LIMIT ?`).all(...args, q.limit ?? 100) as any[]).map(toChange);
+  return (db.prepare(`SELECT * FROM changes ${where.length ? `WHERE ${where.join(' AND ')}` : ''} ORDER BY created DESC LIMIT ? OFFSET ?`).all(...args, q.limit ?? 100, Math.max(0, q.offset ?? 0)) as any[]).map(toChange);
 }
 function update(id: string, patch: Partial<Record<string, any>>) {
   const cur = db.prepare('SELECT * FROM changes WHERE id = ?').get(id) as any;
@@ -278,6 +280,22 @@ export function decidedNoChange(summary: string) {
     && /\b(already decided|decided|decision|chose|ruled|won'?t[- ]?fix|wontfix|by design|as designed|intentional)\b/i.test(s)
     && /\b(no change|no changes|nothing to (change|fix|do)|changed nothing|made no (change|commit)s?|no commit|committ?ed nothing|commit nothing|didn'?t change|did not change|not changing|unchanged|left (it )?as (it is|is))\b/i.test(s);
 }
+/** An agent's summary saying it changed nothing (whatever the reason). */
+export function saysNoChange(summary: string) {
+  return /\b(made no (change|commit)s?|no changes? (were |was )?(made|needed)|nothing to (change|fix|do)|changed nothing|committ?ed nothing|commit nothing|didn'?t change|did not change|not changing|left (it )?as (it is|is))\b/i.test(String(summary ?? ''));
+}
+/** The mark of a commit Studio made for the agent (the job's leftover step, cloudjob-run.ts; commitForAgent). */
+const STUDIO_COMMIT = /Committed by Hawkes Studio/;
+/**
+ * Whether every commit of the branch (beyond its base) was made by Studio for the agent, none by the agent itself: the job's
+ * "leftover changes" commit after a pass that changed nothing (c_2d931adecba5 on 2026-11-03 merged two shader files the
+ * agent never touched into Sick of It's beta). False with no commits.
+ */
+export function onlyStudioCommits(worktree: string, base: string) {
+  const log = git(worktree, ['log', '--format=%B%x00', `origin/${base}..HEAD`]).out;
+  const msgs = log.split('\0').map((m) => m.trim()).filter(Boolean);
+  return msgs.length > 0 && msgs.every((m) => STUDIO_COMMIT.test(m));
+}
 /** The detail of a change whose agent made no commit because the work is already done: the PM checks it (pm.ts), not a try. */
 export const ALREADY = 'nothing to do: already done';
 /** An agent's summary (of a change with no commit) saying the work is already there. */
@@ -300,8 +318,8 @@ export function fixAlreadyDone(id: string, c: Pick<Change, 'task'>, findings: st
  * work()'s catch keeps the step it failed at, with `failed`). Not the agent's try (pm.ts; f_7f4ff7149602 burned its 3
  * tries in 2 minutes on such failures). STUDIO_FAILED_SQL is the same test on the changes table.
  */
-export const studioFailed = (c: { status: string; phase?: unknown }) => c.status === 'failed' && Boolean((typeof c.phase === 'string' ? parse(c.phase) : (c.phase as any))?.failed);
-export const STUDIO_FAILED_SQL = `(status = 'failed' AND COALESCE(phase, '') LIKE '%"failed":true%')`;
+export const studioFailed = (c: { status: string; phase?: unknown; detail?: unknown }) => infraFailed(c, parse);
+export const STUDIO_FAILED_SQL = INFRA_FAILED_SQL;
 /** Why a change with no commit failed: already done (ALREADY), else `why`. */
 const noCommitDetail = (summary: string, why: string) => (alreadyDone(summary) ? `${ALREADY} (the agent made no commit)` : why);
 /**
@@ -462,6 +480,8 @@ export type Phase = {
   failed?: boolean;
   /** A playtest asked for (playtestChange): who asked. It ends the pass with the change ready again, never failed. */
   requested?: string;
+  /** The first failure line Studio's own job printed in the last pass (machineryFailure): with no commit, an infra failure, not a try. */
+  machinery?: string;
   /** Why the last agent pass ended before finishing (AgentResult.stopped). */
   stopped?: 'time' | 'turns' | 'cut';
   /** How many times its session was resumed to commit work it left uncommitted (at most NUDGES); `nudge`: the next pass is one. */
@@ -615,10 +635,37 @@ function nudge(id: string, ph: Phase, save: (patch: Partial<Phase>) => void) {
   addLog(id, `agent: ${ph.stopped ? STOP_WHY[ph.stopped] : 'it ended without committing'}, with its work uncommitted in the worktree; resuming its session to commit it and finish (${n} of ${NUDGES})`);
   save({ step: 'agent', nudges: n, nudge: true, result: undefined, stopped: undefined, proc: undefined, since: Date.now() });
 }
+/**
+ * Whether a change that made no commit did so because it never had the source: the worktree fails the probe now, or the
+ * agent said it couldn't read the repo. Returns the detail to record (it carries the exact finding), else null.
+ */
+export function sourceLost(c: Pick<Change, 'worktree' | 'product' | 'infra'>, said: string): string | null {
+  if (c.infra) return null;
+  const light = fs.existsSync(c.worktree) && git(c.worktree, ['config', '--get', 'hawkes.light']).out === 'true';
+  if (light || isUnity(c.product)) {
+    const probe = fs.existsSync(c.worktree) ? probeSource(c.worktree, { unity: light && isUnity(c.product) }) : { ok: false, tracked: 0, reason: `source missing: the worktree ${c.worktree} is gone` };
+    if (!probe.ok) return `${sourceError('the agent made no commit', probe)}`;
+  }
+  const hit = SOURCE_UNREADABLE_SAID.exec(said);
+  return hit ? `source unreadable: the agent made no commit and said it could not read the repo ("${hit[0].slice(0, 80)}"; not counted as a try)` : null;
+}
 /** A failed change's reason: today's words, plus what's left when its work stayed uncommitted after the resumes. */
 function noCommitWhy(worktree: string, ph: Phase) {
   if (!ph.nudges || !uncommitted(worktree)) return 'the agent made no commit';
   return `the agent made no commit: resumed ${ph.nudges}× to commit, it still left its work uncommitted (it is still in the worktree: revise to carry on)`;
+}
+/**
+ * A failure line Studio's own job or bring-back step printed (cloudjob-run.ts `[job] ...`, cloudjob.ts `[studio] ...`): the
+ * clone, the checkout, the bundle, the files coming back. With no commit that is why there is none (J, 2026-11-03: ~12
+ * Unity changes ended "the agent made no commit" and were tried again 11 times, because the reason never reached the
+ * change). null when the pass printed no such line.
+ */
+export function machineryFailure(stderr: string | undefined | null): string | null {
+  for (const line of String(stderr ?? '').split('\n')) {
+    const m = /^\s*\[(job|studio)\]\s+(.*)$/.exec(line);
+    if (m && !/not copied/i.test(m[2]) && /\b(fail(ed|ure)?|couldn'?t|could not|cannot|can'?t|unable|error|missing|unreadable|killed|signal|out of memory|no spec|gone)\b/i.test(m[2])) return `Studio's ${m[1]} step: ${m[2]}`.slice(0, 300);
+  }
+  return null;
 }
 export const phaseOf = (id: string): Phase | null => parse((db.prepare('SELECT phase FROM changes WHERE id = ?').get(id) as any)?.phase ?? null);
 /** A line on a change's log, from outside this file (access.ts). */
@@ -654,7 +701,7 @@ export const COMMIT_DENIED = /index\.lock|(commit|\.git)[^\n]{0,80}permission de
  */
 async function commitForAgent(id: string, worktree: string, title: string, said: string) {
   if (!COMMIT_DENIED.test(said) || !git(worktree, ['status', '--porcelain']).out) return false;
-  const add = await gitAsync(worktree, ['add', '-A']);
+  const add = await gitAsync(worktree, ['add', '--sparse', '-A']);
   const commit = add.ok && await gitAsync(worktree, ['-c', 'core.hooksPath=/dev/null', 'commit', '--no-verify', '-m', `${title.slice(0, 72)}\n\nCommitted by Hawkes Studio: the agent's own git commit was refused (a permission error in the worktree's git folder).`]);
   if (!add.ok || !commit || !commit.ok) {
     addLog(id, `Studio couldn't commit the agent's work either: ${(add.ok ? commit && commit.err : add.err) ?? ''}`.slice(0, 300));
@@ -906,11 +953,11 @@ export function roleOf(c: { infra?: boolean; request?: string | null; findings?:
 // ------------------------------------------------------------------ routing (routing.ts)
 
 /** Earlier attempts at the same work that didn't land: the same task's other changes, or changes on the same findings. */
-export function earlierAttempts(c: Pick<Change, 'id' | 'task' | 'findings'>, limit = 3): { id: string; status: string; detail: string | null; summary: string | null; created: number }[] {
+export function earlierAttempts(c: Pick<Change, 'id' | 'task' | 'findings'>, limit = 3): { id: string; status: string; detail: string | null; summary: string | null; created: number; phase?: string | null }[] {
   const rows = c.task
-    ? db.prepare(`SELECT id, status, detail, summary, created FROM changes WHERE task = ? AND id != ? AND status IN ('failed', 'closed') ORDER BY created DESC LIMIT ?`).all(c.task, c.id, limit)
+    ? db.prepare(`SELECT id, status, detail, summary, created, phase FROM changes WHERE task = ? AND id != ? AND status IN ('failed', 'closed') ORDER BY created DESC LIMIT ?`).all(c.task, c.id, limit)
     : c.findings.length
-      ? db.prepare(`SELECT id, status, detail, summary, created FROM changes WHERE id != ? AND request IS NULL AND status IN ('failed', 'closed') AND (${c.findings.map(() => 'findings LIKE ?').join(' OR ')}) ORDER BY created DESC LIMIT ?`).all(c.id, ...c.findings.map((f) => `%"${f}"%`), limit)
+      ? db.prepare(`SELECT id, status, detail, summary, created, phase FROM changes WHERE id != ? AND request IS NULL AND status IN ('failed', 'closed') AND (${c.findings.map(() => 'findings LIKE ?').join(' OR ')}) ORDER BY created DESC LIMIT ?`).all(c.id, ...c.findings.map((f) => `%"${f}"%`), limit)
       : [];
   return rows as any[];
 }
@@ -921,7 +968,7 @@ export function earlierAttempts(c: Pick<Change, 'id' | 'task' | 'findings'>, lim
  */
 export function attemptOf(c: Change): number {
   if (c.task) return Math.max(1, getTask(c.task)?.tries || 1);
-  const prior = c.findings.length ? earlierAttempts(c, 10).filter((x) => x.status === 'failed').length : 0;
+  const prior = c.findings.length ? earlierAttempts(c, 10).filter((x) => x.status === 'failed' && !studioFailed(x)).length : 0;
   return 1 + (c.revisions ?? 0) + (c.auto_fixes ?? 0) + prior;
 }
 
@@ -1459,6 +1506,9 @@ export function startFix(productId: string, findingIds: string[], { auto = false
   if (managedElsewhere(p)) throw new StudioError(managedNote(p), 409);
   const findings = findingIds.map((id) => getFinding(id)).filter(Boolean) as any[];
   if (!findings.length) throw new Error('No such findings');
+  // Won't fix is the owner's answer: no one queues it (open it again first if the answer changed).
+  const dropped = findings.filter((f) => f.status === 'wontfix');
+  if (dropped.length) throw new StudioError(`${dropped.map((f) => f.id).join(', ')} ${dropped.length > 1 ? 'are' : 'is'} marked won't fix: no agent fixes ${dropped.length > 1 ? 'them' : 'it'}. Open ${dropped.length > 1 ? 'them' : 'it'} again first if that has changed.`, 409);
   const ahead = aheadOf(p.id);
   const today = costToday();
   if (auto && (today.count >= s.maxPerDay || today.cost >= s.maxCostPerDay)) {
@@ -1670,6 +1720,23 @@ async function publish(id: string, { force, title, body }: { force: boolean; tit
   });
 }
 
+/**
+ * Preflight (J, 2026-11-02: Unity agents never got the game source): before the agent starts, a light checkout (a big repo
+ * cloned partially and sparse) gets the project's source files checked out by Studio, which holds the token, and a known
+ * source file must exist and read in the worktree. If not, this throws "source unreadable/missing ..." and the agent is
+ * never started: work()'s catch records an infra failure (infra-failure.ts: not a try, not one of the day's starts).
+ */
+export async function ensureSourceReady(id: string, c: Pick<Change, 'worktree' | 'product' | 'infra'>, log: (m: string) => void = (m) => addLog(id, m)) {
+  if (c.infra) return;
+  const light = git(c.worktree, ['config', '--get', 'hawkes.light']).out === 'true';
+  // A full checkout shows its own Unity-ness (Assets/ tracked); a light one of a Unity product must have its code.
+  const unity = light && isUnity(c.product);
+  if (!light && !isUnity(c.product)) return;
+  const probe = light ? await populateSource(c.worktree, gitAsync, { unity, log }) : probeSource(c.worktree);
+  if (!probe.ok) throw new Error(sourceError(`the worktree ${c.worktree}`, probe));
+  log(`source check: ${probe.tracked} tracked files, read ${probe.sample ?? 'the root files'}`);
+}
+
 async function work(id: string, note?: string, answer?: string, resumed?: Phase | null, asked = false) {
   if (getChange(id)!.infra) return workInfra(id, note, resumed, false, asked);
   let c = getChange(id)!;
@@ -1740,6 +1807,7 @@ async function work(id: string, note?: string, answer?: string, resumed?: Phase 
       // The agent (sandbox user) commits here: its git folder must be the agent group's, on every pass (a worktree made
       // before, or files Studio's own git wrote there since).
       await shareWorktree(c.worktree);
+      await ensureSourceReady(id, c);
       await writeBrief(c, p, findings, note);
       // A question or a stuck report from an earlier pass isn't read again (attemptsBrief carries what they said).
       fs.rmSync(path.join(c.worktree, '.hawkes', 'question.md'), { force: true });
@@ -1777,7 +1845,7 @@ async function work(id: string, note?: string, answer?: string, resumed?: Phase 
         return parkForHarness(id, ph, save, stop);
       }
       // The cost and the next step are written together, so a restart never counts a pass twice.
-      save({ step: 'publish', result: r.result, stopped: r.stopped, nudge: false, genDone: undefined, harness: undefined, proc: undefined }, { cost: getChange(id)!.cost + r.cost });
+      save({ step: 'publish', result: r.result, stopped: r.stopped, machinery: machineryFailure(r.stderr) ?? undefined, nudge: false, genDone: undefined, harness: undefined, proc: undefined }, { cost: getChange(id)!.cost + r.cost });
     }
 
     if (ph.step === 'publish') {
@@ -1790,6 +1858,16 @@ async function work(id: string, note?: string, answer?: string, resumed?: Phase 
       const listCommits = () => git(c.worktree, ['log', '--format=%h %s', `origin/${c.base}..HEAD`]).out.split('\n').filter(Boolean);
       let commits = listCommits();
       let changedNow = git(c.worktree, ['rev-parse', 'HEAD']).out !== ph.before;
+      // The agent said it changed nothing, and the only commit is Studio's own "leftover changes" one (files the checkout showed
+      // as modified, never the agent's): that commit is dropped, so no pull request opens and nothing reaches beta.
+      if (commits.length && (decidedNoChange(summary) || saysNoChange(summary)) && onlyStudioCommits(c.worktree, c.base)) {
+        const r = git(c.worktree, ['reset', '--quiet', '--hard', `origin/${c.base}`]);
+        if (r.ok) {
+          addLog(id, `the agent changed nothing (${summary.slice(0, 160).replace(/\s+/g, ' ')}): dropped Studio's leftover-changes commit (${commits.join('; ').slice(0, 160)}), no pull request`);
+          commits = listCommits();
+          changedNow = false;
+        }
+      }
       // The agent asked a question: the change waits ("needs answer"); Talk answers from what J decided, or asks J (pm.ts).
       const questionFile = path.join(c.worktree, '.hawkes', 'question.md');
       const question = fs.existsSync(questionFile) ? fs.readFileSync(questionFile, 'utf8').trim() : '';
@@ -1848,6 +1926,24 @@ async function work(id: string, note?: string, answer?: string, resumed?: Phase 
         // The harness's own words in the summary (it wrote one and then was refused): parked, not failed.
         const stopped = passStop({ ok: false, sawResult: false, result: ph.result ?? '' }, summary);
         if (stopped) return parkForHarness(id, ph, save, stopped);
+        // No commit and the source was unreadable or missing (the worktree has none, or the agent said it couldn't read it):
+        // Studio's failure, not the agent's try (infra-failure.ts reads the phrase and phase.failed).
+        const lost = sourceLost(c, `${ph.result ?? ''}\n${summary}`);
+        if (lost) {
+          reopenTaken(id, findings.map((f) => f.id), lost);
+          update(id, { status: 'failed', detail: lost.slice(0, 300), summary, commits, phase: { step: ph.step, failed: true } });
+          await dropEmptyWorktree(id, commits);
+          return;
+        }
+        // No commit because Studio's job failed around the agent (its clone, the bundle, the files coming back): Studio's
+        // failure, with its own words in the detail, not a try (infra-failure.ts), so the finding isn't tried 11 times.
+        if (ph.machinery) {
+          const detail = `${ph.machinery} (the agent made no commit; not counted as a try)`.slice(0, 300);
+          reopenTaken(id, findings.map((f) => f.id), detail);
+          update(id, { status: 'failed', detail, summary, commits, phase: { step: ph.step, failed: true } });
+          await dropEmptyWorktree(id, commits);
+          return;
+        }
         const why = noCommitWhy(c.worktree, ph);
         reopenTaken(id, findings.map((f) => f.id), `${why}: ${summary.slice(0, 120)}`);
         update(id, { status: 'failed', detail: noCommitDetail(summary, why), summary, commits, phase: null });
@@ -3357,12 +3453,13 @@ export const AUTO_FIX_FAILS_PER_DAY = 2;
  * J's own requests and the PM's answers to a question don't go through this.
  */
 export function autoFixBlock(findingId: string, now = Date.now()): string | null {
+  if (getFinding(findingId)?.status === 'wontfix') return "it is marked won't fix";
   const like = `%"${findingId}"%`;
   const open = db.prepare(`SELECT id, pr FROM changes WHERE findings LIKE ? AND pr IS NOT NULL AND status NOT IN ('merged', 'closed') ORDER BY created DESC LIMIT 1`).get(like) as { id: string; pr: number } | undefined;
   if (open) return `${open.id} already has pull request #${open.pr} open for it`;
   const day = new Date(now);
   day.setUTCHours(0, 0, 0, 0);
-  const failed = (db.prepare(`SELECT COUNT(*) AS n FROM changes WHERE findings LIKE ? AND status = 'failed' AND COALESCE(detail, '') NOT LIKE ? AND COALESCE(detail, '') NOT LIKE ? AND created >= ?`).get(like, `${DECIDED}%`, `${ALREADY}%`, day.getTime()) as { n: number }).n;
+  const failed = (db.prepare(`SELECT COUNT(*) AS n FROM changes WHERE findings LIKE ? AND status = 'failed' AND COALESCE(detail, '') NOT LIKE ? AND COALESCE(detail, '') NOT LIKE ? AND NOT ${STUDIO_FAILED_SQL} AND created >= ?`).get(like, `${DECIDED}%`, `${ALREADY}%`, day.getTime()) as { n: number }).n;
   if (failed >= AUTO_FIX_FAILS_PER_DAY) return `it already failed ${failed} times today`;
   return null;
 }

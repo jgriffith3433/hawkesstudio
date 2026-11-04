@@ -16,7 +16,8 @@
 import { isVideoTask, listVideos } from './videos.ts';
 import type http from 'node:http';
 import { db, parse } from './db.ts';
-import { getProduct, getInfra, isInfra, StudioError } from './config.ts';
+import { getProduct, getInfra, isInfra, loadProducts, managedElsewhere, StudioError } from './config.ts';
+import { failingBuilds, failSignature, lastBuilds } from './buildfail.ts';
 import {
   listQuestions, getQuestion, setQuestion, answeredSince, getTask, getItem, getMilestone, listMilestones, milestoneProgress, milestoneTasks, tasksAwaitingGpu,
   approveGpu, updateTask, estimateTask, addComment, gpuBudgetFor, gpuAutoApprovedToday, gpuDigestTasks, type Question, type Task,
@@ -35,7 +36,7 @@ export type InboxLink = { label: string; url?: string; video?: string };
 export type InboxItem = {
   /** q_... for a question; gpu:k_..., merge:c_..., milestone:n_... for the others. */
   id: string;
-  kind: 'question' | 'agent' | 'gpu' | 'merge' | 'milestone' | 'approval' | 'video';
+  kind: 'question' | 'agent' | 'gpu' | 'merge' | 'milestone' | 'approval' | 'video' | 'build';
   /** The one-line question, and the whole of it when it's longer. */
   title: string; text: string | null;
   product: string | null; productName: string | null;
@@ -200,6 +201,28 @@ function ack(id: string, by: string, answer: string, until: number | null = null
 /** Records an answer to a budget or merge card for "answered lately" (its card goes by itself). */
 const record = (id: string, by: string, answer: string, title: string) => ack(`${id}@${Date.now()}`, by, answer, null, title);
 
+/**
+ * A failed build whose earlier attempt (same project and build) failed the same way and had its card answered (Build again,
+ * Dismiss): it isn't filed again, so a rebuild that fails identically doesn't make the card go and come back. A different
+ * reason is a new card (buildfail.ts failSignature).
+ */
+function buildCardAnswered(f: { id: string; product: string; build: string; class: string | null; reason: string }): boolean {
+  const sig = failSignature({ build: f.build, fail_class: f.class, detail: f.reason });
+  const rows = db.prepare("SELECT id, build, fail_class, detail FROM builds WHERE product = ? AND build = ? AND change IS NULL AND status = 'failed' AND id != ?").all(f.product, f.build, f.id) as any[];
+  return rows.some((r) => failSignature(r) === sig && acked(`build:${r.id}`));
+}
+
+/**
+ * A rebuild started: the failed builds' cards are answered ("Build again"), so they go now and don't wait for the new
+ * build to show a row. Called by builds.ts startBuild, whichever button started it.
+ */
+export async function resolveBuildCards(product: string, builds: string[], by: string) {
+  for (const r of lastBuilds(product)) {
+    if (r.status !== 'failed' || !builds.includes(r.build) || acked(`build:${r.id}`)) continue;
+    ack(`build:${r.id}`, by, 'Build again', null, `Build ${r.build} of ${product}`);
+  }
+}
+
 /** Whether the PM loop is working here (on the server): then agent questions and ready changes are its first. */
 async function pmHandles() {
   const pm = await import('./pm.ts');
@@ -314,6 +337,23 @@ export async function inbox({ tokens = false }: { tokens?: boolean } = {}): Prom
       since: c.updated ?? c.created, weight: 20 + (blocker ? 15 : 0) + (c.task ? taskBlocks(getTask(c.task)!, '').weight : 0), links: changeLinks(c),
       subject: c.id, conversation: c.origin, asks: 1, ...(c.infra ? { confirm: `MERGE ${c.id}` } : {}),
     });
+  }
+
+  // A build that failed for good (its automatic retries used up): what failed, why in plain words, and the Build again button.
+  // It goes by itself when a newer build of it works; "Dismiss" hides it (buildfail.ts).
+  for (const p of loadProducts()) {
+    if (managedElsewhere(p)) continue;
+    for (const f of failingBuilds(p.id)) {
+      if (!f.finished || Date.now() - f.finished > 7 * 24 * HOUR || acked(`build:${f.id}`) || buildCardAnswered(f)) continue;
+      out.push({
+        id: `build:${f.id}`, kind: 'build', title: `${p.name}: build ${f.build} ${f.version} failed${f.sha ? ` (${f.sha.slice(0, 7)})` : ''}`,
+        text: `${f.plain}\n\nReason: ${f.reason}${f.genJob ? `\nGen job: ${f.genJob}` : ''}`.slice(0, 1500),
+        product: p.id, productName: p.name, context: `${f.kind === 'infrastructure' ? 'Infrastructure' : f.kind === 'code' ? 'The code' : 'Cause unclear'}${f.stepWords ? `, while ${f.stepWords}` : ''}${f.tries > 1 ? `, after ${f.tries} tries` : ''}. ${f.plain}`.slice(0, 400),
+        asker: 'Studio', recommendation: f.kind === 'code' ? null : 'Build again', options: ['Build again', 'Dismiss'], blocks: `${p.name} going live (the build is what ships)`,
+        since: f.finished, weight: 50, links: [{ label: 'Why did this fail?', url: `#build-why/${p.id}/${f.id}` }, ...(f.run ? [{ label: 'The run', url: '#runs' }] : [])],
+        subject: p.id, conversation: null, asks: 1,
+      });
+    }
   }
 
   // A video version waiting for J to screen it (videos.ts): watch it here or in the Screening tab; a typed answer is a note.
@@ -502,6 +542,19 @@ export async function answerInbox(id: string, answer: string, by: string, opts: 
     pm.pmEvent('feedback', `${by} playtested milestone ${ms.id} ("${ms.title}") and says: "${what}". Turn it into tasks on its items (or a new item in it), and say so in a line.`, ms.id, ms.product);
     ack(key, by, what, null, `Milestone "${ms.title}"`);
     return { answered: id, by, told: 'the PM' };
+  }
+  // A failed build: build it again (a run), or dismiss the card (the failure stays in the build history).
+  const bm = /^build:(b_[0-9a-f]+)$/.exec(id);
+  if (bm) {
+    const row = db.prepare('SELECT product, build FROM builds WHERE id = ?').get(bm[1]) as any;
+    if (!row) throw new StudioError(`No build ${bm[1]}`, 404);
+    if (/^\s*build again/i.test(text)) {
+      const r = await (await import('./builds.ts')).startBuild(row.product, { build: row.build });
+      ack(id, by, text, null, `Build ${row.build} of ${row.product}`);
+      return { answered: id, by, run: r?.id ?? null };
+    }
+    ack(id, by, text, null, `Build ${row.build} of ${row.product}`);
+    return { answered: id, by, dismissed: true };
   }
   throw new StudioError(`No Inbox item ${id}`, 404);
 }

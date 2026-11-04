@@ -203,16 +203,16 @@ async function studioProjectBuilds(id, box) {
   if (!r.builds.length) { box.innerHTML = '<div class="meta"><b>Builds:</b> none set. Ask Talk to set up how it\'s built, or fill "How it\'s built" above.</div>'; return; }
   const when = (t) => (t ? new Date(t).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : '');
   const rows = r.history.slice(0, 15).map((h) => `<tr><td>${esc(h.build)} ${h.change ? esc(h.change) : h.version}</td><td>${h.status === 'ready' ? '✅' : h.status === 'failed' ? '❌' : '⏳'} ${esc((h.sha ?? '').slice(0, 7))}</td><td class="meta">${esc(when(h.started))}</td>
-    <td class="meta" style="max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(h.detail ?? '')}">${esc(h.detail ?? (h.files ? `${h.files} files, ${(h.bytes / 1e6).toFixed(1)} MB` : ''))}</td>
+    <td class="meta" style="max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(h.failure?.plain || h.detail || '')}">${esc(h.failure?.plain || h.detail || (h.files ? `${h.files} files, ${(h.bytes / 1e6).toFixed(1)} MB` : ''))}${h.failure ? ` <a href="#" data-bf-why="${esc(id)}/${esc(h.id)}">Why?</a>` : ''}</td>
     <td>${h.url ? `<a href="${esc(h.url)}" target="_blank" rel="noopener">Play ↗</a>` : ''}${h.status === 'ready' && !h.change ? ` <button type="button" class="small" data-beta="${esc(h.build)}/${h.version}">Make beta</button>` : ''}</td></tr>`).join('');
   box.innerHTML = `<div style="display:flex;justify-content:space-between;align-items:center;gap:8px"><b>Builds</b><span class="meta">${r.builds.map((b) => `${esc(b.id)}: ${esc(b.tool)}${b.target && b.target !== 'web' ? ` (${esc(b.target)})` : ''}${b.publish ? ` → ${esc(b.publish.project)}/${esc(b.publish.path)}` : ''}`).join(' · ')}</span></div>
-    <div style="margin:6px 0">${r.beta ? `<a href="${esc(r.beta)}" target="_blank" rel="noopener">Play beta ↗</a> ` : ''}<button type="button" class="small primary" data-build-now>Build now</button> <span class="meta" data-build-msg></span></div>
+    <div style="margin:6px 0">${r.beta ? `<a href="${esc(r.beta)}" target="_blank" rel="noopener">Play beta ↗</a> ` : ''}<button type="button" class="small primary" data-build-now${r.running?.length ? ' disabled' : ''}>${r.running?.length ? '⏳ Building…' : 'Build now'}</button> <span class="meta" data-build-msg></span></div>
     ${rows ? `<table style="width:100%;font-size:13px;border-collapse:collapse">${rows}</table>` : '<div class="meta">Not built yet.</div>'}`;
   const say = (t) => { box.querySelector('[data-build-msg]').textContent = t; };
   box.querySelector('[data-build-now]').addEventListener('click', async (e) => {
     e.target.disabled = true;
-    try { const s = await api(`/api/projects/${id}/builds`, { method: 'POST', body: {} }); say(s.run ? 'Building: it shows in Activity.' : (s.note ?? '')); } catch (err) { say(err.message); }
-    e.target.disabled = false;
+    e.target.textContent = 'Starting…';
+    try { const s = await api(`/api/projects/${id}/builds`, { method: 'POST', body: {} }); say(s.run ? 'Building: it shows in Activity.' : (s.note ?? '')); e.target.textContent = s.run ? '⏳ Building…' : 'Build now'; e.target.disabled = !!s.run; } catch (err) { say(err.message); e.target.textContent = 'Build now'; e.target.disabled = false; }
   });
   box.querySelectorAll('[data-beta]').forEach((b) => b.addEventListener('click', async () => {
     const [build, n] = b.dataset.beta.split('/');
@@ -407,6 +407,8 @@ function health(p) {
   const played = p.playtests.map((t) => t.playtest?.finished ?? 0).reduce((a, b) => Math.max(a, b), 0);
   const when = played ? ` (played ${ago(played)})` : '';
   if (p.dev?.conflict) return { rank: 0, text: 'Your devtools saves clash with beta: pick a fix below.' };
+  if (p.buildRunning?.length) return { rank: 1, text: `Building ${p.buildRunning.map((r) => r.build).join(', ')} now.` };
+  if (p.buildFailing?.length) return { rank: 0, text: BuildFail.line(p.buildFailing[0]) };
   if (p.build?.status === 'failed') return { rank: 0, text: `The Unity build failed ${ago(p.build.finished)}.` };
   if (failed.length) return { rank: 0, text: `${failed.length === 1 ? 'A playtest' : `${failed.length} playtests`} failed${when}: ${failed[0].playtest.detail ?? failed[0].name}` };
   if (r?.verdict === 'broken') return { rank: 0, text: `${VERDICT.broken}${when}.` };
@@ -433,6 +435,9 @@ function card(p, h = health(p)) {
   return `<div class="card rank-${h.rank}" data-p="${esc(p.id)}" data-key="card:${esc(p.id)}">
     <h3>${esc(p.name)}${r ? `<span class="pill verdict ${r.verdict}">${r.verdict}</span>` : ''}</h3>
     <div class="status-line">${esc(h.text)}</div>
+    ${(p.buildRunning ?? []).map((r) => BuildFail.running(p.id, r)).join('')}
+    ${(p.buildFailing ?? []).map((f) => BuildFail.badge(p.id, f)).join('')}
+    ${(p.buildDone ?? []).map((d) => BuildFail.done(p.id, d)).join('')}
     ${r?.summary ? `<div class="summary">${esc(r.summary)}</div>` : ''}
     ${p.dev?.conflict ? devLine(p) : ''}
     <div class="meta">${p.preview ? `<a href="${esc(p.preview.play)}" target="_blank">Beta</a> · ` : ''}<a href="${esc(p.live)}" target="_blank">Live</a>${video ? ` · <a href="${file(video)}" target="_blank" rel="noopener" data-video="${file(video)}">▶ last playtest</a>` : ''} · ${bugs ? `<a href="#backlog" data-act="backlog" data-p="${p.id}">${bugs} open bug${bugs === 1 ? '' : 's'} in Backlog</a>` : 'no open bugs'}</div>
@@ -709,7 +714,7 @@ async function loadRuns() {
   studioPatch($('#runList'), runs.map((r) => `<div class="run-row" data-run="${r.id}" data-key="run:${esc(r.id)}"><span>${icon(['done', 'running', 'skipped'].includes(r.status) ? r.status : 'failed')}</span><b>${esc(r.kind)}</b><span class="meta">${new Date(r.started).toLocaleString()}</span><span>${esc(r.detail ?? '')}</span><span class="meta" style="margin-left:auto">$${(r.cost ?? 0).toFixed(2)}</span></div>`).join('') || '<div class="empty">No runs yet.</div>');
   if (openRun) {
     const r = await api(`/api/runs/${openRun}`);
-    studioPatch($('#runDetail'), `<div class="steps"><h3>${esc(r.id)} · ${esc(r.status)}</h3>${r.steps.map((s) => `<div class="step"><span>${icon(s.status)}</span><span>${esc(s.product)}</span><span>${esc(s.kind)}</span><span>${esc(s.name)}</span><span class="detail">${slowPill(s)}${esc(s.detail ?? '')}${s.job && !window.studioMe?.customer ? ` · <a href="${GEN}/#job/${s.job}" target="_blank">${esc(s.job)}</a>` : ''}</span></div>`).join('')}</div>`);
+    studioPatch($('#runDetail'), `<div class="steps"><h3>${esc(r.id)} · ${esc(r.status)}${r.kind === 'build' ? ` · <a href="#" data-build-open="${esc(r.id)}">build page · logs</a>` : ''}</h3>${r.steps.map((s) => `<div class="step"><span>${icon(s.status)}</span><span>${esc(s.product)}</span><span>${esc(s.kind)}</span><span>${esc(s.name)}</span><span class="detail">${slowPill(s)}${esc(s.detail ?? '')}${s.status === 'failed' && s.data?.failure ? ` · <a href="#" data-bf-why="${esc(s.product)}/${esc(s.data.failure.build)}">Why did this fail?</a> <span class="meta">(${esc(s.data.failure.kind === 'infrastructure' ? 'infrastructure' : s.data.failure.kind === 'code' ? 'code' : 'cause unclear')})</span>` : ''}${s.job && !window.studioMe?.customer ? ` · <a href="${GEN}/#job/${s.job}" target="_blank">${esc(s.job)}</a>` : ''}</span></div>`).join('')}</div>`);
   }
 }
 $('#runList').onclick = (e) => {
@@ -747,7 +752,7 @@ async function refresh() {
 // #live/<job> on the first load: that playtest opens big (live.js).
 show(tab, tab === 'live' ? /^#live\/(j_[0-9a-f]+)/.exec(location.hash)?.[1] : undefined);
 // Today, Runs and Changes refresh when the push stream says changes or runs moved (stream.js; also its slow safety tick).
-studioStream.on(['changes', 'runs'], () => { if (tab === 'today' || tab === 'runs' || tab === 'changes') refresh(); });
+studioStream.on(['changes', 'runs', 'builds'], () => { if (tab === 'today' || tab === 'runs' || tab === 'changes') refresh(); });
 
 // ----------------------------------------------------------- changes
 const CH_WORDS = { queued: 'Waiting its turn', working: 'The agent is working on it', verifying: 'Checking its work', revising: 'Making the changes asked for', ready: 'Ready', merged: 'Merged', failed: "Didn't work", closed: 'Closed', cancelled: 'Cancelled (not a failure): its branch is kept' };

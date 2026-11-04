@@ -6,6 +6,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { studio as defaultStudio, waitRun as defaultWaitRun } from './client.ts';
 import { paths } from './config.ts';
+import { slimChange, pageParams } from './changes-slim.ts';
 import { obj, str, type McpTool, type McpServer } from './mcp-core.ts';
 
 const bool = (description: string) => ({ type: 'boolean', description });
@@ -246,8 +247,14 @@ export function studioMcp({ studio, waitRun }: Client = { studio: defaultStudio,
     {
       name: 'studio_changes',
       description: 'Agent changes: findings an agent fixed on a branch, or requests J made, with the pull request, a summary and the diff size (ready = the agent\'s checks passed and the pull request is open; a playtest of the change, with verdict and video, only when one was asked for: studio_change playtest), or for Hawkes Studio and Hawkes Gen (infra: true) the checks (CI, tests, smoke check). Also the agent spend and limits for today.',
-      inputSchema: obj({ status: str('queued, working, verifying, ready, failed, merged, closed (comma list, optional)'), product: str('Product id (optional)') }),
-      run: async ({ status, product }) => studio(`/api/changes?${new URLSearchParams({ ...(status ? { status } : {}), ...(product ? { product } : {}) })}`),
+      inputSchema: obj({ status: str('queued, working, verifying, ready, failed, merged, closed (comma list, optional)'), product: str('Product id (optional)'), limit: { type: 'number', description: 'How many, newest first (default 20, at most 100)' }, offset: { type: 'number', description: 'Skip this many newest (for the next page)' } }),
+      run: async ({ status, product, limit, offset }) => {
+        // A page of trimmed changes: the full list for one product was 450k+ characters. One change in detail: studio_change.
+        const page = pageParams(limit, offset);
+        const r = await studio(`/api/changes?${new URLSearchParams({ ...(status ? { status } : {}), ...(product ? { product } : {}), limit: String(page.limit + 1), offset: String(page.offset) })}`);
+        const all: any[] = r.changes ?? [];
+        return { ...r, changes: all.slice(0, page.limit).map(slimChange), limit: page.limit, offset: page.offset, more: all.length > page.limit, note: 'Trimmed; studio_change <id> has one in full. More: offset ' + (page.offset + page.limit) };
+      },
     },
     {
       name: 'studio_fix',

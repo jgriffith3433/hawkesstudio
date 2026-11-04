@@ -333,7 +333,8 @@ async function page(req: Request, env: Env, url: URL, base: string, rel: string)
   // Clean URLs: /about serves about.html, as GitHub Pages, Netlify and Cloudflare Pages do (Next.js's static export and
   // most site generators write about.html; 2026-10-31 review).
   if (rel && !rel.endsWith('/') && !/\.[a-z0-9]+$/i.test(rel)) { const html = await serveFile(req, env, `${base}/${rel}.html`, 200, extra); if (html) return html; }
-  if (!(await env.SITES.head(`${base}/.studio/build.json`)) && !(await env.SITES.head(`${base}/index.html`))) {
+  // Only a site with nothing published at all says so; a published site's missing page is a plain 404 (below).
+  if (!(await env.SITES.head(`${base}/.studio/build.json`)) && !(await env.SITES.head(`${base}/.studio/manifest.json`)) && !(await env.SITES.head(`${base}/index.html`))) {
     return text(404, 'This beta site has not been published yet. Studio publishes it on the next push to the product\'s beta branch (or Runs > rebuild the beta site).');
   }
   // A single-page app's own routes: its 200.html (the convention static hosts use), else 404.html.

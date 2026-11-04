@@ -56,7 +56,33 @@ export function pick(files: SiteFile[], site: CloudRecipe['site']) {
   return keepPrefetch(files.filter((f) => site.some((top) => f.path === top || f.path.startsWith(`${top}/`))), files);
 }
 
-export type CloudPublished = { sha: string; ref: string; files: number; version?: string | null; detail: string };
+export type CloudPublished = { sha: string; ref: string; files: number; version?: string | null; detail: string; /** Page paths worth fetching once to prove the Worker serves the site: the root, and one deep page. */ probe?: string[] };
+
+/** The site's root and one deep page (a nested .html, else another top-level one), for the post-publish check. */
+export function probePaths(files: { path: string }[]): string[] {
+  const pages = files.map((f) => f.path).filter((p) => /\.html?$/i.test(p));
+  const out: string[] = [];
+  if (pages.includes('index.html')) out.push('');
+  const deep = pages.filter((p) => p !== 'index.html' && !p.startsWith('.')).sort((a, b) => b.split('/').length - a.split('/').length || a.localeCompare(b))[0];
+  if (deep) out.push(deep);
+  return out;
+}
+
+/**
+ * After a publish: one fetch of each probe path from the site's public address, with a playtest's pass. The publish
+ * wrote every object before this runs, so this is a single check, not a wait: a site the Worker doesn't serve yet is
+ * a failed publish, never "ready" (2026-11-04: playtests started 7 s after "ready" and got the Worker's 404).
+ */
+export async function verifyServed(root: string, paths: string[], fetcher: typeof fetch = fetch, cookies: { name: string; value: string }[] = []): Promise<void> {
+  const cookie = cookies.map((c) => `${c.name}=${c.value}`).join('; ');
+  for (const p of paths) {
+    const url = new URL(p, root.endsWith('/') ? root : `${root}/`).toString();
+    const r = await fetcher(url, { method: 'GET', redirect: 'follow', headers: { ...(cookie ? { Cookie: cookie } : {}), 'Cache-Control': 'no-cache' }, signal: AbortSignal.timeout(30_000) })
+      .catch((e: any) => { throw new Error(`published, but ${url} could not be fetched: ${String(e.message ?? e).slice(0, 120)}`); });
+    await r.body?.cancel().catch(() => {});
+    if (r.status !== 200) throw new Error(`published, but the beta site doesn't serve ${url} yet (${r.status})`);
+  }
+}
 
 /** Publishes a product's beta site (or an agent change's preview) at <sub>/beta or <sub>/c/<change> in this lane. */
 export async function publishCloud(p: Product, sub: string, o: { change?: string }, progress: (s: string) => void, deps: CloudDeps = {}): Promise<CloudPublished> {
@@ -156,7 +182,7 @@ export async function publishCloud(p: Product, sub: string, o: { change?: string
         for (const f of built) byPath.set(f.path, f);
         files = keepPrefetch([...byPath.values()], files);
         files = await publishAll(store, base, files, skip, p, sha, ref, version, o.change, progress, keep);
-        return { sha: sha.slice(0, 7), ref, files: files.length, version, detail: '' };
+        return { sha: sha.slice(0, 7), ref, files: files.length, version, detail: '', probe: probePaths(files) };
       }
     } finally {
       // Built files are read during the publish above, before this runs.
@@ -164,7 +190,7 @@ export async function publishCloud(p: Product, sub: string, o: { change?: string
     }
   }
   files = await publishAll(store, base, files, skip, p, sha, ref, version, o.change, progress, keep);
-  return { sha: sha.slice(0, 7), ref, files: files.length, version, detail: '' };
+  return { sha: sha.slice(0, 7), ref, files: files.length, version, detail: '', probe: probePaths(files) };
 }
 
 async function publishAll(store: SiteStore, base: string, all: SiteFile[], skip: (rel: string) => boolean, p: Product, sha: string, ref: string, version: string | null, change: string | undefined, progress: (s: string) => void, keep?: (p: string) => boolean) {

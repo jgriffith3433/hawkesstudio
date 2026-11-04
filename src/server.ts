@@ -83,6 +83,10 @@ async function overview() {
         return { name, playtest: byName.get(`playtest:${name}`) ?? null, review: byName.get(`review:${name}`) ?? null };
       }),
       lastReview: reviews[0] ?? null,
+      // Builds whose newest attempt failed (buildfail.ts): the red "Last build failed" badge on the card.
+      buildFailing: (await import('./buildfail.ts')).failingBuilds(p.id),
+      buildRunning: (await import('./buildfail.ts')).buildsRunning(p.id),
+      buildDone: (await import('./buildfail.ts')).buildsDone(p.id),
       open: Object.fromEntries(open.map((r) => [r.severity, r.n])),
     };
   }));
@@ -241,6 +245,7 @@ const server = http.createServer(async (req, res) => {
     }
     if (route === '/api/products' && method === 'GET') return send(res, 200, { products: loadProducts() });
     // Builds (builds.ts): a project's builds, its history, build now, make one beta.
+    if (route === '/api/builds/gen-token' && method === 'POST') return void (await (await import('./builds.ts')).handleGenToken(req, res, readJson));
     if (/^\/api\/(projects|games)\/[a-z][a-z0-9-]{1,39}\/builds/.test(route) && (await (await import('./builds.ts')).handleBuildRoutes(req, res, route, method, readJson))) return;
     // Plugins (plugins.ts, docs/plugins.md): the catalog, a project's installed versions, install or upgrade as a pull request.
     if ((route === '/api/plugins' || /^\/api\/(projects|games)\/[a-z][a-z0-9-]{1,39}\/plugins/.test(route)) && (await (await import('./plugins.ts')).handlePluginRoutes(req, res, route, method, url, readJson))) return;
@@ -348,6 +353,12 @@ const server = http.createServer(async (req, res) => {
     if (m && method === 'GET') {
       const r = getRun(m[1]);
       return r ? send(res, 200, r) : send(res, 404, { error: 'no such run' });
+    }
+    // The build page: a build run's builds with the log, asked of Hawkes Gen when this is called (buildview.ts).
+    m = /^\/api\/runs\/(r_[0-9a-f]+)\/build$/.exec(route);
+    if (m && method === 'GET') {
+      const page = await (await import('./buildview.ts')).buildPage(m[1]);
+      return page ? send(res, 200, page) : send(res, 404, { error: 'no such build run' });
     }
     m = /^\/api\/runs\/(r_[0-9a-f]+)\/report$/.exec(route);
     if (m && method === 'GET') {
@@ -647,7 +658,9 @@ const server = http.createServer(async (req, res) => {
       if (!c) return send(res, 200, { error: 'no such conversation' });
       // ?after=<n>: only messages n and later (the page has the earlier ones); total says how many there are.
       const from = Math.min(Math.max(0, Number(q('after')) || 0), c.messages.length);
-      return send(res, 200, { ...c, messages: c.messages.slice(from), from, total: c.messages.length, guide: (await import('./guide.ts')).pendingGuide(c.id), approvals: ap.listApprovals({ conversation: c.id }, !ap.notJClick(req)) });
+      // Gen file links are signed here, when shown, with a fresh 7-day signature (never stored; gen.ts signFileLinks).
+      const shown = await Promise.all(c.messages.slice(from).map(async (x: any) => (typeof x.text === 'string' && x.text.includes('/v1/files/') ? { ...x, text: await signFileLinks(x.text) } : x)));
+      return send(res, 200, { ...c, messages: shown, from, total: c.messages.length, guide: (await import('./guide.ts')).pendingGuide(c.id), approvals: ap.listApprovals({ conversation: c.id }, !ap.notJClick(req)) });
     }
     if (m && method === 'POST' && m[2]) return send(res, 200, { ok: true, stopped: stopTalk(m[1]) });
     if (m && method === 'PATCH' && !m[2]) return send(res, 200, renameConversation(m[1], String((await readJson(req)).title ?? '')));
@@ -764,7 +777,7 @@ const server = http.createServer(async (req, res) => {
     }
 
     // Agent changes (findings -> pull requests).
-    if (route === '/api/changes' && method === 'GET') return send(res, 200, { changes: listChanges({ status: q('status'), product: q('product') }).map((c) => ({ ...c, stage: stageOf(c, c.verify) })), today: costToday(), settings: agentSettings() });
+    if (route === '/api/changes' && method === 'GET') return send(res, 200, { changes: listChanges({ status: q('status'), product: q('product'), ...(q('limit') ? { limit: Math.min(500, Math.max(1, Number(q('limit')) || 100)) } : {}), offset: Number(q('offset')) || 0 }).map((c) => ({ ...c, stage: stageOf(c, c.verify) })), today: costToday(), settings: agentSettings() });
     if (route === '/api/changes' && method === 'POST') {
       const b = await readJson(req);
       // An agent on Studio or Gen themselves (infra agents) is the platform admin's (lockdown.ts).
@@ -1201,6 +1214,8 @@ server.listen(listenPort, cloud ? '0.0.0.0' : '127.0.0.1', () => {
   if (!cloud) shareAgyLogin();
   if (!cloud) setInterval(shareAgyLogin, 10 * 60_000).unref();
   const runs = resumeRuns();
+  // Builds nothing is going to finish (a run gone, or building past the maximum) are settled; later ones when Gen says so (builds.ts).
+  void import('./builds.ts').then((B) => { void B.watchGenBuilds(); return B.reconcileBuilds(); }).catch((e) => console.warn(`[studio] reconciling builds: ${e.message ?? e}`));
   chooseBrain();
   const changes = resumeChanges();
   // Pull requests J merged on GitHub: their changes are marked merged (agents.ts), every 5 minutes.

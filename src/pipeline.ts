@@ -14,7 +14,7 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { db, newId, J, rowToStep, parse, type Step } from './db.ts';
 import { resumeGapMs, RESTART_LOOP, RESTART_WINDOW_MS } from './ops.ts';
-import { loadProducts, getProduct, localUrl, today, PROJECTS, betaPlaytestsOn, managedElsewhere, managedNote, StudioError, type Product, type Playtest } from './config.ts';
+import { loadProducts, getProduct, localUrl, today, PROJECTS, betaPlaytestsOn, managedElsewhere, managedNote, StudioError, type Product, type Playtest, type BuildSpec } from './config.ts';
 import { unityBuild } from './buildpkgs.ts';
 import { endStatus, runCounts, runCancelled, haltOf, jobCancelDetail, runCancelDetail } from './cancel.ts';
 import { gen, genRun, genUp, ensureGen } from './gen.ts';
@@ -709,10 +709,22 @@ async function playScenario(run: string, p: Product, asked: Playtest, { review =
     // What installing the local server's packages logged ("dependencies changed: npm ci"): kept on the step.
     const deps: string[] = [];
     try {
-      if (t.where === 'live') url = p.live;
+      if (t.where === 'live') {
+        url = p.live;
+        // A library whose "live" is its GitHub page has nothing to play there: its beta demo is the product (config.ts saveProduct).
+        const demo = isRepoPage(p.live) ? await cloudBetaUrl(p) : null;
+        if (demo) url = demo;
+      }
       else if (prior?.status === 'done') url = was?.data?.url ?? localUrl(p);
       else if (p.build && betaLane() && !played) throw new Error(`${BETA} isn't built yet (or its last build failed): nothing to play locally`);
-      else if (await cloudBetaUrl(p)) url = (await cloudBetaUrl(p))!;
+      else if (await cloudBetaUrl(p)) {
+        // A beta publish in flight (this product's, or the website its build publishes into) finishes, and its check that
+        // the Worker serves it passes, before the playtest opens the site (2026-11-04: it raced the publish and got 404s).
+        const previews = await import('./previews.ts');
+        const into = siteBuildPublish(p.builds);
+        await Promise.all([previews.betaSettled(p.id), ...(into ? [previews.betaSettled(into.project)] : [])]);
+        url = (await cloudBetaUrl(p))!;
+      }
       else if (p.build && betaLane()) {
         // Unity on the beta lane: the beta build, from its own website copy, on its own port.
         if (!played) throw new Error(`${BETA} isn't built yet (or its last build failed): nothing to play locally`);
@@ -730,6 +742,7 @@ async function playScenario(run: string, p: Product, asked: Playtest, { review =
     if (t.mode === 'site') params.maxPages = 40;
     if (p.contract && p.engine === 'web' && (params.mode === 'contract' || params.mode === 'auto')) params.url = withPlaytestHint(String(params.url));
     Object.assign(params, playtestExtras(p.id, name, t));
+    { const skip = (await import('./gpu-breaker.ts')).down(); if (skip.length) params.skipProviders = skip; }
     // An app behind a sign-in (Product.testSignIn): on its beta, the playtest starts signed in as a test account.
     if (t.where === 'local' && p.testSignIn?.url && !prior) {
       try {
@@ -801,8 +814,18 @@ async function playScenario(run: string, p: Product, asked: Playtest, { review =
   // A game rendered in software (no GPU server was free) plays at a few fps: the result says nothing about the game,
   // so it isn't reviewed and files no findings (agents would chase problems that aren't there).
   if (r.software && p.engine !== 'static') {
-    updateStep(s, { status: 'skipped', detail: softwareDetail(r) });
-    return job;
+    // The provider that failed is skipped for a few minutes (gpu-breaker.ts) and told once, not in every playtest.
+    const B = await import('./gpu-breaker.ts');
+    const tripped = B.trip(r.softwareBecause);
+    if (tripped?.fresh) {
+      void notifyOnce(`gpu-down:${tripped.provider}`, 6 * 3600_000, `Playtests: ${tripped.provider} is down`, `${String(r.softwareBecause).slice(0, 300)} Playtests skip it for ${Math.round(B.OPEN_MS() / 60000)} minutes and use the next backend.`, { priority: 3, tags: ['warning'] });
+    }
+    // Not GPU-bound (a web game that played fine in software): reviewed, with the note.
+    if (!B.reviewableInSoftware(p, r)) {
+      updateStep(s, { status: 'skipped', detail: softwareDetail(r) });
+      return job;
+    }
+    updateStep(s, { detail: `played in software (${r.fps?.average ?? '?'} fps)${r.softwareBecause ? `: ${String(r.softwareBecause).slice(0, 120)}` : ''}; reviewed anyway, it is not GPU-bound` });
   }
   return reviewPlaytest(run, p, t, job, played, { focus, mode, criteria });
 }
@@ -815,6 +838,9 @@ export function softwareDetail(r: { fps?: { average?: number | null } | null; so
   const why = String(r.softwareBecause ?? '').replace(/\s+/g, ' ').trim().slice(0, 300) || 'no GPU server was free';
   return `inconclusive: the browser ran in software (${r.fps?.average ?? '?'} fps): ${why}; not reviewed`;
 }
+
+/** An address that is a code host's page for the repository, not a running product. */
+export const isRepoPage = (u?: string | null) => !u || /^https:\/\/(www\.)?(github|gitlab)\.com\//i.test(u);
 
 /** The most a whole run may take before it plays no more scenarios (J, 2026-10-25: a beta run sat for hours). */
 export const RUN_MAX_MS = () => Number(process.env.STUDIO_RUN_MAX_MS ?? 3 * 3600_000);
@@ -1058,11 +1084,19 @@ type PartialOptions = { at?: string; peers?: number; scenario?: string; where?: 
  * live page's path on the beta host. There's no shell or dev server to start there (a playtest that tried ended
  * studio-beta on every start, 2026-10-29). null elsewhere, and for products that serve themselves (`remote`, `app`).
  */
-export async function cloudBetaUrl(p: { id: string; live: string; local: { serve: string } }) {
+export async function cloudBetaUrl(p: { id: string; live: string; local: { serve: string }; builds?: BuildSpec[] }) {
   if (p.local.serve === 'remote' || p.local.serve === 'app') return null;
   const { remoteSites } = await import('./previews-cloud.ts');
   if (!remoteSites()) return null;
-  const root = (await import('./previews.ts')).previewUrl(p.id);
+  const previews = await import('./previews.ts');
+  // A build that keeps the target site's own game page (publish.page "site") has no page at this project's beta root:
+  // the game is the target project's beta page at the publish path (2026-11-03, yoobaland smoke@local waited 150 s).
+  const into = siteBuildPublish(p.builds);
+  if (into) {
+    const target = previews.previewUrl(into.project);
+    if (target) return pagePathUrl(target, into.path);
+  }
+  const root = previews.previewUrl(p.id);
   if (!root) return null;
   // A game added through Talk: its beta site is a path of its own (sites.<domain>/b/<game>/), built with relative
   // paths, so the root is the game; its live address's path (GitHub Pages' /<repo>/) isn't part of it.
@@ -1070,6 +1104,17 @@ export async function cloudBetaUrl(p: { id: string; live: string; local: { serve
   if (github) return betaPageUrl(root, p as { site?: string; repo?: string; github?: string });
   const live = new URL(p.live);
   return new URL(live.pathname + live.search, root).toString();
+}
+
+/** The first build that publishes into another project's site and keeps that site's own page (builds.ts pointPage). */
+export function siteBuildPublish(builds?: BuildSpec[]) {
+  const b = builds?.find((x) => x.publish?.page === 'site' && x.publish.project);
+  return b?.publish ? { project: b.publish.project, path: b.publish.path ?? '' } : null;
+}
+/** `<root>` plus a publish path ("Game/"), always ending in a slash. */
+export function pagePathUrl(root: string, path: string) {
+  const sub = String(path ?? '').trim().replace(/^\/+|\/+$/g, '');
+  return `${root.replace(/\/?$/, '/')}${sub ? `${sub.split('/').map(encodeURIComponent).join('/')}/` : ''}`;
 }
 
 /**
@@ -1383,8 +1428,10 @@ export function runRestarts(prev: { step?: string; n?: number; at?: number } | u
  */
 export function waitingInGen(run: string): boolean {
   try {
-    const rows = db.prepare("SELECT gen_job, gen_done FROM builds WHERE run = ? AND status = 'building'").all(run) as any[];
-    return rows.length > 0 && rows.every((b) => b.gen_job && !b.gen_done);
+    const rows = db.prepare("SELECT gen_job, gen_done, runner FROM builds WHERE run = ? AND status = 'building'").all(run) as any[];
+    // A Gen build with no job id yet is being submitted right now (a restart in those seconds is still waiting on Gen:
+    // 2026-11-03, sick-of-it-unity v5 was stopped after 4 restarts in 30 minutes, none of them Studio's own work).
+    return rows.length > 0 && rows.every((b) => !b.gen_done && (b.gen_job || b.runner === 'gen'));
   } catch {
     return false; // no builds table yet: no project builds here
   }

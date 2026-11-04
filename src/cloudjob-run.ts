@@ -14,11 +14,12 @@
 //    look; a `stop` object ends the command.
 // 4. Sends back what the pass committed (out.bundle) and left uncommitted plus the session (out.pack), then exit.json.
 
+import { probeSource, sourceError } from './source-ready.ts';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
-import { git, packFiles, readPack, unpack, folderEntries, dirtyState, type JobRunner } from './cloudjob.ts';
+import { git, packFiles, readPack, unpack, folderEntries, dirtyState, type JobRunner, type PackCommit, type PackFile } from './cloudjob.ts';
 
 type Store = Pick<JobRunner, 'put' | 'get' | 'list' | 'remove'>;
 // kind "build" (previews-cloud.ts): a beta site's build of one commit, in a shallow clone when GitHub has the commit; no
@@ -27,7 +28,7 @@ type Store = Pick<JobRunner, 'put' | 'get' | 'list' | 'remove'>;
 // files unless the spec asks (`lfs`), so a big repo (a Unity project of GBs) is never pulled whole; `partial: false` asks
 // for a full clone (Studio's spec for a small repo, so the pass can read any old file without a token).
 // tokenAt: when Studio minted `token`; refresh: where and with which job key to ask for a fresh one (jobgit.ts).
-type JobGit = { head: string; branch: string; remote: string; bundle: boolean; token: string | null; tokenAt?: number; refresh?: { url: string; key: string }; shallow?: boolean; partial?: boolean; lfs?: boolean };
+type JobGit = { head: string; branch: string; remote: string; bundle: boolean; token: string | null; tokenAt?: number; refresh?: { url: string; key: string }; shallow?: boolean; partial?: boolean; lfs?: boolean; commitDirty?: boolean; sparse?: string[] };
 type Spec = { kind?: 'build'; outputs?: string[]; file: string; args: string[]; cwd: string; env: Record<string, string>; sessions: string; git: JobGit | null; flushMs?: number; repos?: ExtraRepo[] };
 /** A read-only copy of another of the Studio's repos, next to the worktree (access.ts extraReposFor). */
 type ExtraRepo = { slug: string; remote: string; token: string | null; dir: string };
@@ -135,7 +136,7 @@ export function jobToken(unit: string, g: Pick<JobGit, 'token' | 'tokenAt' | 're
 }
 
 /** Rebuilds the workspace; returns the HEAD the pass starts from. */
-export async function prepare(unit: string, spec: Spec, store: Store, log: (s: string) => void, at: (p: string) => string = (p) => p) {
+export async function prepare(unit: string, spec: Spec, store: Store, log: (s: string) => void, at: (p: string) => string = (p) => p, baseline?: Baseline) {
   const key = (n: string) => `jobs/${unit}/${n}`;
   const cwd = at(spec.cwd);
   if (spec.git) {
@@ -168,14 +169,35 @@ export async function prepare(unit: string, spec: Spec, store: Store, log: (s: s
       const f = git(cwd, ['fetch', '--quiet', file, 'HEAD']);
       if (!f.ok) throw new Error(`the workspace's own commits: ${f.err.split('\n').pop()}`);
     }
+    // A big repo: only the source patterns are checked out (the job's disk is memory; a Unity project's whole tree killed the
+    // job within 2 minutes, before any agent line). Written as the sparse file, so nothing is checked out by this.
+    if (spec.git.sparse?.length) {
+      git(cwd, ['config', 'core.sparseCheckout', 'true']);
+      git(cwd, ['config', 'core.sparseCheckoutCone', 'false']);
+      fs.mkdirSync(path.join(cwd, '.git', 'info'), { recursive: true });
+      fs.writeFileSync(path.join(cwd, '.git', 'info', 'sparse-checkout'), `${spec.git.sparse.join('\n')}\n`);
+    }
     // With the token: a partial clone fetches the head's blobs from GitHub here.
     const g = spec.git;
     const co = await tok.run((t) => g.branch && g.branch !== 'HEAD'
       ? gitWithToken(cwd, ['checkout', '--quiet', '-B', g.branch, g.head], t, env)
       : gitWithToken(cwd, ['checkout', '--quiet', '--detach', g.head], t, env));
     if (!co.ok) throw new Error(tok.message(`checkout of ${spec.git.head.slice(0, 7)}`, co.err));
+    // Preflight: a partial clone whose checkout has no readable source (a promisor remote without credentials, a sparse
+    // leftover) stops the job here, as an infra failure, instead of starting an agent on an empty tree.
+    if (spec.git.partial !== false) {
+      const probe = probeSource(cwd);
+      if (!probe.ok) throw new Error(sourceError(`the job's clone of ${spec.git.remote}`, probe));
+      log(`[job] source check: ${probe.tracked} tracked files, read ${probe.sample ?? 'the root files'}`);
+    }
     // As in Studio's own clone: the agent's brief and notes never go into a commit.
     fs.appendFileSync(path.join(cwd, '.git', 'info', 'exclude'), '\n.hawkes/\n');
+    // What the fresh checkout already shows as changed (a partial clone without LFS files, line endings, modes): not the agent's.
+    if (baseline) {
+      const b = dirtyBaseline(cwd);
+      for (const [k, v] of b) baseline.set(k, v);
+      if (b.size) log(`[job] the checkout already shows ${b.size} file(s) as changed before the agent starts; they are never committed as its work`);
+    }
     log(`[job] workspace ${spec.git.remote} at ${spec.git.head.slice(0, 7)} (${spec.git.branch}${spec.git.partial === false ? '' : ', partial clone'}${spec.git.lfs ? '' : ', no LFS files'})`);
   } else fs.mkdirSync(cwd, { recursive: true });
   const pack = await store.get(key('in.pack'));
@@ -204,17 +226,143 @@ export function cloneExtra(r: ExtraRepo, at: (p: string) => string, log: (s: str
   return true;
 }
 
+/**
+ * An agent's pass that ended with files edited but not committed (its `git commit` refused, or the session cut off): the
+ * job commits them, so the work travels back in out.bundle and reaches the branch whatever the big repo's worktree does
+ * with loose files (2026-11-02: every Unity agent change came back "no commit"). The agent's .hawkes/ notes are excluded
+ * from git. True when a commit was made.
+ */
+export function commitLeftovers(cwd: string, log: (s: string) => void, message = 'Work from the agent\'s pass', baseline?: Baseline) {
+  if (!fs.existsSync(path.join(cwd, '.git'))) return false;
+  // Mode-only changes are not changes (a checkout without the executable bit, a Windows-made mode).
+  const files = realChanges(cwd, baseline);
+  if (!files.length) {
+    if (git(cwd, ['-c', 'core.fileMode=false', 'status', '--porcelain']).out) log('[job] the only loose changes were not the agent\'s (LFS pointers, line endings, modes, or files dirty before it started): nothing to commit');
+    return false;
+  }
+  let add = { ok: true, err: '' };
+  for (let i = 0; i < files.length && add.ok; i += 200) add = git(cwd, ['-c', 'core.fileMode=false', 'add', '-A', '--', ...files.slice(i, i + 200)]);
+  if (add.ok) unstagePointers(cwd);
+  if (!git(cwd, ['diff', '--cached', '--name-only']).out) { log('[job] nothing left to commit after skipping LFS pointer files'); return false; }
+  const c = add.ok && git(cwd, ['-c', 'user.name=Hawkes Studio', '-c', 'user.email=studio@hawkesgen.ai', '-c', 'core.hooksPath=/dev/null', 'commit', '--quiet', '--no-verify', '-m', `${message}\n\n${LEFTOVER_MARK}: the agent left these changes uncommitted.`]);
+  if (!add.ok || !c || !c.ok) { log(`[job] couldn't commit the agent's leftover changes: ${(add.ok ? c && c.err : add.err) || ''}`.slice(0, 300)); return false; }
+  log(`[job] committed the agent's leftover changes (${files.length} file(s))`);
+  return true;
+}
+
+/** The mark in the message of a commit Studio made for the agent (agents.ts tells these from the agent's own). */
+export const LEFTOVER_MARK = "Committed by Hawkes Studio's job";
+
+/** File -> content hash (or 'deleted') of what a worktree shows as changed. */
+export type Baseline = Map<string, string>;
+
+const hashes = (cwd: string, files: string[]) => {
+  const out = new Map<string, string>();
+  for (let i = 0; i < files.length; i += 200) {
+    const part = files.slice(i, i + 200);
+    const h = git(cwd, ['hash-object', '--no-filters', '--', ...part]).out.split('\n');
+    part.forEach((f, j) => out.set(f, h[j] ?? ''));
+  }
+  return out;
+};
+
+/** The worktree's changed, new and deleted files right now, with a hash of each (before the agent starts: its baseline). */
+export function dirtyBaseline(cwd: string): Baseline {
+  const base: Baseline = new Map();
+  if (!fs.existsSync(path.join(cwd, '.git'))) return base;
+  const list = (args: string[]) => git(cwd, ['-c', 'core.fileMode=false', 'ls-files', '-z', ...args]).raw.toString('utf8').split('\0').filter(Boolean);
+  const deleted = new Set(list(['-d']));
+  const changed = [...new Set([...list(['-m']), ...list(['-o', '--exclude-standard'])])].filter((f) => !deleted.has(f));
+  for (const [f, h] of hashes(cwd, changed)) base.set(f, h);
+  for (const f of deleted) base.set(f, 'deleted');
+  return base;
+}
+
+/**
+ * The files the agent really changed: changed since the baseline (a file dirty before it started and still the same is not
+ * its work), not LFS pointers, not a change that is only line endings, trailing whitespace or the file mode.
+ */
+export function realChanges(cwd: string, baseline?: Baseline): string[] {
+  const now = dirtyBaseline(cwd);
+  const mine = [...now].filter(([f, h]) => baseline?.get(f) !== h).map(([f]) => f);
+  const present = mine.filter((f) => now.get(f) !== 'deleted');
+  const tracked = new Set(git(cwd, ['ls-files', '-z', '--', ...present.slice(0, 5000)]).raw.toString('utf8').split('\0').filter(Boolean));
+  return mine.filter((f) => {
+    if (now.get(f) === 'deleted') return true;
+    if (isLfsPointer(path.join(cwd, f))) return false;
+    if (!tracked.has(f)) return true; // a new file
+    // Same text but for the line endings or trailing spaces: the checkout's doing, not an edit.
+    return !git(cwd, ['-c', 'core.fileMode=false', 'diff', '--quiet', '--ignore-cr-at-eol', '--ignore-space-at-eol', '--', f]).ok;
+  });
+}
+
+/** Whether a file's first bytes are a Git LFS pointer. */
+export function isLfsPointer(file: string) {
+  try {
+    const fd = fs.openSync(file, 'r');
+    try {
+      const buf = Buffer.alloc(64);
+      const n = fs.readSync(fd, buf, 0, 64, 0);
+      return buf.subarray(0, n).toString('utf8').startsWith('version https://git-lfs.github.com/spec');
+    } finally { fs.closeSync(fd); }
+  } catch { return false; }
+}
+
+/**
+ * A clone without LFS files (spec.git.lfs false) holds pointer files where the art would be. Git can list ~1,100 of them as
+ * modified (2026-11-03: Yooba Land and Sick of It), which is noise, not the agent's edits: a pointer is never staged here.
+ */
+export function unstagePointers(cwd: string) {
+  const staged = git(cwd, ['diff', '--cached', '--name-only', '-z']).raw.toString('utf8').split('\0').filter(Boolean);
+  const noise = staged.filter((f) => isLfsPointer(path.join(cwd, f)));
+  for (let i = 0; i < noise.length; i += 200) git(cwd, ['reset', '--quiet', '--', ...noise.slice(i, i + 200)]);
+  return noise;
+}
+
+/**
+ * The pass's commits as plain files: the net change start..HEAD (contents at HEAD, deletions) and the commits' messages.
+ * A bundle is a thin pack against blobs Studio's light clone may not have; this always applies (cloudjob.ts replayCommit).
+ * null when there is nothing to send or it would be too big (the bundle stays the only way then).
+ */
+export function replayOf(cwd: string, start: string, head: string, maxBytes = 120 * 1024 * 1024): PackCommit | null {
+  const raw = git(cwd, ['diff', '--raw', '-z', '--no-renames', '--no-abbrev', start, head]);
+  if (!raw.ok || !raw.out) return null;
+  const t = raw.raw.toString('utf8').split('\0');
+  const files: PackFile[] = [];
+  const deleted: string[] = [];
+  let bytes = 0;
+  for (let i = 0; i + 1 < t.length; i += 2) {
+    const m = /^:(\d+) (\d+) [0-9a-f]+ [0-9a-f]+ (\w)/.exec(t[i]);
+    if (!m) continue;
+    const file = t[i + 1];
+    if (m[3] === 'D') { deleted.push(file); continue; }
+    if (m[2] === '160000' || m[2] === '120000') continue; // submodules and symlinks aren't replayed
+    const blob = git(cwd, ['cat-file', 'blob', `${head}:${file}`]);
+    if (!blob.ok) return null; // a blob this clone doesn't have: the bundle is the only way
+    bytes += blob.raw.length;
+    if (bytes > maxBytes) return null;
+    files.push({ p: file, d: blob.raw.toString('base64'), m: m[2] === '100755' ? 0o755 : 0o644 });
+  }
+  if (!files.length && !deleted.length) return null;
+  const subjects = git(cwd, ['log', '--reverse', '--format=%B', '--no-merges', `${start}..${head}`]).out;
+  const message = (subjects || "Work from the agent's pass").slice(0, 4000);
+  return { message, files, deleted };
+}
+
 /** What the pass did: its new commits (a bundle), its uncommitted files and the session folder. */
-export function collect(spec: Spec, start: string | null, tmp: string, at: (p: string) => string = (p) => p) {
+export function collect(spec: Spec, start: string | null, tmp: string, at: (p: string) => string = (p) => p, baseline?: Baseline) {
   const cwd = at(spec.cwd);
   const entries = folderEntries(at(spec.sessions), (rel) => path.join(spec.sessions, rel));
   let gitOut: { head: string; bundle: boolean } | null = null;
   let deleted: string[] = [];
   let bundle: string | null = null;
   let bundleError: string | null = null;
+  let commit: PackCommit | null = null;
   if (spec.git && fs.existsSync(path.join(cwd, '.git'))) {
     const head = git(cwd, ['rev-parse', 'HEAD']).out;
     if (start && head && head !== start) {
+      // The same commits as plain files too: the bundle's thin pack may not apply in Studio's light clone.
+      commit = replayOf(cwd, start, head);
       bundle = path.join(tmp, 'out.bundle');
       const b = git(cwd, ['bundle', 'create', bundle, 'HEAD', `^${start}`]);
       if (!b.ok) {
@@ -224,14 +372,16 @@ export function collect(spec: Spec, start: string | null, tmp: string, at: (p: s
       }
     }
     const d = dirtyState(cwd);
-    deleted = d.deleted;
-    for (const rel of d.changed) entries.push({ p: rel, file: path.join(cwd, rel) });
+    // Only what the agent changed: not LFS pointers, line endings or files already dirty at the checkout (realChanges).
+    const mine = new Set(realChanges(cwd, baseline));
+    deleted = d.deleted.filter((f) => mine.has(f));
+    for (const rel of d.changed) if (mine.has(rel)) entries.push({ p: rel, file: path.join(cwd, rel) });
     // The agent's notes (.hawkes/: its summary, question, stuck notes) come back by name: they're excluded from git.
     const have = new Set(entries.map((e) => e.p));
     entries.push(...folderEntries(path.join(cwd, '.hawkes'), (rel) => `.hawkes/${rel}`).filter((e) => !have.has(e.p)));
     gitOut = { head, bundle: Boolean(bundle) };
   }
-  return { pack: packFiles(entries, deleted), bundle, bundleError, git: gitOut };
+  return { pack: packFiles(entries, deleted, commit), bundle, bundleError, replay: Boolean(commit), git: gitOut };
 }
 
 /**
@@ -288,8 +438,9 @@ export async function runUnit(unit: string, store: Store, { every = 2000, at = (
   let code: number | null = null;
   let signal: string | null = null;
   let error: string | undefined;
+  const baseline: Baseline = new Map();
   try {
-    start = await prepare(unit, spec, store, say, at);
+    start = await prepare(unit, spec, store, say, at, baseline);
     const user = agentUser();
     if (user) {
       // The pass's user owns its workspace and session folder (and nothing of this runner's).
@@ -349,12 +500,14 @@ export async function runUnit(unit: string, store: Store, { every = 2000, at = (
     return error ? 1 : 0;
   }
   try {
-    const out = collect(spec, start, tmp, at);
+    if (spec.git?.commitDirty && !error) commitLeftovers(at(spec.cwd), say, undefined, baseline);
+    const out = collect(spec, start, tmp, at, baseline);
     if (out.bundle) await store.put(key('out/out.bundle'), fs.readFileSync(out.bundle));
     await store.put(key('out/out.pack'), out.pack);
     await flush();
     if (out.bundleError) say(`[job] ${out.bundleError}`);
-    if (out.bundleError && !error) error = out.bundleError;
+    // Without a bundle the commits still travel as files (out.replay); only when neither works is the pass failed.
+    if (out.bundleError && !out.replay && !error) error = out.bundleError;
     await store.put(key('out/exit.json'), JSON.stringify({ code, signal, ...(error ? { error } : {}), git: out.git }));
   } catch (e: any) {
     say(`[job] sending the work back: ${e.message ?? e}`);

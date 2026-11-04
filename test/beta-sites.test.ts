@@ -534,3 +534,20 @@ test("links without a Referer (a headless browser, rel=noreferrer) still go back
   assert.equal(r.status, 307);
   assert.equal(r.headers.get('Location'), '/g/cookie-site/blog.html');
 });
+
+test("a published site's missing page is a plain 404, and verifyServed fails a site the Worker doesn't serve yet", async () => {
+  W.resetKeys();
+  const P = await import('../src/previews-cloud.ts');
+  assert.deepEqual(P.probePaths([{ path: 'index.html' }, { path: 'a.css' }, { path: 'blog/post.html' }, { path: 'blog.html' }]), ['', 'blog/post.html'], 'the root and the deepest page');
+  assert.deepEqual(P.probePaths([{ path: 'app.js' }]), []);
+  await r2.put('live/g-pub-site/beta/.studio/manifest.json', '{"v":1,"files":{}}', { httpMetadata: { contentType: 'application/json' } });
+  const cookie = `hawkes_pass=${K.makePass('u_j', { lane: 'live', keys: liveKeys })}`;
+  const miss = await browse('https://sites.hawkesgen.ai/g/pub-site/nope.html', { cookie, page: true });
+  assert.equal(miss.status, 404);
+  assert.doesNotMatch(await miss.text(), /not been published yet/, 'a published site says plain Not found');
+  const never = await browse('https://sites.hawkesgen.ai/g/never-site/nope.html', { cookie, page: true });
+  assert.match(await never.text(), /not been published yet/, 'nothing published at all still says so');
+  const fake = (async (u: any) => new Response('x', { status: String(u).endsWith('/blog/post.html') ? 404 : 200 })) as typeof fetch;
+  await assert.rejects(() => P.verifyServed('https://sites.hawkesgen.ai/g/x/', ['', 'blog/post.html'], fake), /blog\/post\.html yet \(404\)/);
+  await P.verifyServed('https://sites.hawkesgen.ai/g/x/', [''], fake);
+});

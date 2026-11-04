@@ -38,7 +38,7 @@ What builds it (the runner) follows from `tool`:
   has an image for; otherwise the build fails saying which versions exist. Plan feature `cloudBuilds`.
   The build is Gen's work: a Studio restart (every deploy rolls the cells) re-attaches to the same Gen job and doesn't count
   toward the restart limits until that job is done, and a build whose token Gen lost (Gen restarted, or it expired) is
-  submitted once more with a fresh token. `machine` picks Gen's build machine (s 2 vCPU / 8 GiB, m 4 / 16, l 6 / 24, xl
+  submitted again with a freshly minted token (up to twice; each is a new Gen job). A build still "building" that nothing is going to finish (its run is gone, or it passed 4 hours: `STUDIO_BUILD_MAX_MS`) is settled from Gen's word on its job (done, failed, or cancelled and marked timed out) when Studio starts, when a build of that project starts, and when Gen says a Unity build ended (builds.ts `reconcileBuilds`; no timer). `machine` picks Gen's build machine (s 2 vCPU / 8 GiB, m 4 / 16, l 6 / 24, xl
   8 / 32; Gen's default m, half of xl's price); a build that runs out of memory is built again a size up, and Studio saves
   that size as the build's own (`config.ts setBuildMachine`: the project's builds, or for products.json an override in
   `build-overrides.json`) with a line in the build's history ("ran on l after m ran out of memory; saved l ...").
@@ -124,3 +124,24 @@ Talk's `builds` skill (customer-plugin/skills/builds) knows the choices and has 
 Godot, npm, desktop targets): it asks what the customer wants, sets the project's `builds` (`studio_project`), and has an
 agent add a workflow when the build runs in their Actions (a change they approve; agents may edit `.github/workflows/`
 in a customer's repo when the request is about builds).
+
+## The token Gen asks for (Unity cloud builds)
+
+A Unity build no longer rides on one GitHub token minted when the run started (it lasts an hour; Gen held it in memory and a
+queued or restarted job lost it: "The GitHub token for this build is gone"). Studio:
+
+- mints the installation token at submit (`builds.ts viaGen`, never an older cached one) and sends
+  `github.refresh = { url, build, key }` with the job (**currently off**: Gen rejects the key, so `SEND_GITHUB_REFRESH`
+  stays false until Gen accepts it; set `STUDIO_GEN_REFRESH=1` then); `key` is an HMAC of the build's row id under `STUDIO_BUILD_KEY`
+  (else the owner or Gen key), so it opens that one build's one repo.
+- answers `POST /api/builds/gen-token` `{ job, build, key }` with `{ token, repo, commit, expiresAt }`: Gen calls it when the
+  job is about to start, or its token is missing or past its hour. 401 for a wrong key, 409 once the build isn't `building` or
+  runs as another job, 502 when Studio has no access. The route is open to the gate; the key is the check.
+- publishes with tokens minted at that point (`pointInto`, `commitInto` and beta's check each call `repoToken`; the
+  submit-time one is never reused after the build).
+- resubmits by itself, up to `TOKEN_RETRIES` (3), when Gen failed the job for infrastructure (`infraLost`: token gone or expired,
+  Gen or its worker restarted, preempted, 50x), never for a Unity compile error, and says so on the run.
+- `builds.token_sent` / `token_at` record when a token went with the submit and when Gen last asked for one.
+- A build waiting in Gen is not counted toward the restart limits (`pipeline.ts waitingInGen`), including the seconds before
+  its job id is saved; the resume polls the same Gen job and never cancels it.
+- Go live names how this project's builds start (`buildHint`) and the card offers a Build button (`blockerFix` → `build`).

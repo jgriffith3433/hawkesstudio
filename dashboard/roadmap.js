@@ -27,6 +27,7 @@ async function loadRoadmap() {
     · agents ${c.active}/${s.maxConcurrent} · starts today ${c.started}/${s.maxStartsPerDay} <button class="small" data-pm="caps">Limits…</button>
     ${pm.turn ? ' · <span class="pill warn">PM turn running</span>' : ''}${pm.conversation ? ` · <a href="/?conversation=${esc(pm.conversation.id)}#talk">PM conversation</a>` : ''}
     ${pm.lastError ? `<div class="meta" style="color:var(--red)">${esc(pm.lastError)}</div>` : ''}
+    ${(pm.limits ?? []).map((n) => `<div class="meta" style="margin-top:6px"><span class="pill warn">⏳ ${esc(n.label)} reached</span> <b>${n.used}/${n.limit}</b>: ${n.waiting} roadmap task${n.waiting === 1 ? '' : 's'} waiting. ${n.resets ? `Resets ${esc(n.resets)}. ` : ''}Raise it: ${esc(n.raise)}. <button class="small" data-pm="caps">Limits…</button></div>`).join('')}
     ${holdHtml(pm.hold)}
     ${pm.time?.lines?.length ? `<details class="more-details"><summary class="meta">Where the time goes today</summary>${pm.time.lines.map((l) => `<div class="meta">${esc(l)}</div>`).join('')}</details>` : ''}`);
   // Questions are answered in the Inbox (one place for everything waiting on J).
@@ -81,9 +82,12 @@ function taskLine(it) {
 function itemHtml(it) {
   const tasks = it.tasks.map((t) => {
     const checks = t.checks?.results?.length ? `<div class="meta">Checked on ${esc(t.checks.where)}: ${t.checks.results.map((k) => `<span title="${esc(k.evidence ?? '')}">${met(k.met)} ${esc(k.criterion)}</span>`).join(' · ')}${t.checks.video ? ` <a href="${file(t.checks.video)}" target="_blank" rel="noopener" data-video="${file(t.checks.video)}">▶</a>` : ''}</div>` : '';
-    const blocked = t.status === 'planned' && t.blocked_by?.length ? `<b style="color:var(--red)">blocked by ${t.blocked_by.map((d) => esc(d.title)).join(', ')}</b>` : '';
     // What it waits on, and beta's build after its merge ("did it work").
     const p = it.progress?.tasks?.find((x) => x.id === t.id);
+    // Blocked: who it waits on and why ("waiting on "X" (k_..), which failed: ..."), in red when that won't move by itself (roadmap.ts waitingOn).
+    const stuckDep = t.blocked_by?.some((d) => ['idea', 'failed', 'missing'].includes(d.status));
+    const blocked = t.status === 'planned' && t.blocked_by?.length
+      ? `<b${stuckDep ? ' style="color:var(--red)"' : ''}>${esc(p?.waits?.startsWith('waiting on') ? p.waits : `blocked by ${t.blocked_by.map((d) => d.title).join(', ')}`)}</b>` : '';
     const waits = p?.waits && !blocked ? `waiting ${/^GPU jobs/.test(p.waits) ? 'for' : 'on'} ${esc(p.waits)}` : '';
     const build = t.build ? `<span title="${esc(t.build.detail)}">${t.build.ok ? '✅ built on beta' : `<b style="color:var(--red)">❌ beta's build failed</b>`}</span>` : '';
     return `<div class="test" style="flex-wrap:wrap"><span class="pill ${RM_PILL[t.status] ?? ''}">${esc(t.status)}</span>${t.priority === 'high' || (!t.priority && t.effective_priority === 'high') ? prioBadge(t.effective_priority, !t.priority) : ''}<span class="name">${esc(t.title)}</span>
@@ -101,7 +105,7 @@ function itemHtml(it) {
     : ['on beta', 'verified'].includes(itemState(it)) ? `<a class="small" href="#ready" data-goto="ready">Try it (Ready to test)</a>` : '';
   return `<div class="finding" data-item="${it.id}" data-key="rm:${esc(it.id)}"><div style="flex:1">
     <h4><span class="pill ${RM_PILL[itemState(it)] ?? 'warn'}">${esc(itemLabel(it))}</span>${it.priority === 'high' ? ` ${prioBadge(it.priority)}` : ''} ${esc(it.title)} <span class="meta">${esc(rmNames[it.product] ?? it.product)}${it.milestone ? ` · 🏁 ${esc(rmMilestones.find((m) => m.id === it.milestone)?.title ?? it.milestone)}` : ''}</span></h4>
-    <div class="status-line">${esc(taskLine(it))}</div>
+    <div class="status-line">${esc(taskLine(it))}${it.progress?.next ? ` · <b>${esc(it.progress.next)}</b>` : ''}</div>
     ${it.goal ? `<div class="summary">${esc(it.goal)}</div>` : ''}
     ${it.criteria.length ? `<div class="meta">Done when: ${it.criteria.map(esc).join(' · ')}</div>` : ''}
     <div class="tests">${tasks}</div>

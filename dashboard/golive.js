@@ -115,6 +115,7 @@ if (typeof document !== 'undefined') (() => {
   const FIX = {
     'merge-main': { label: 'Merge live into beta', busy: 'Merging live into beta, then playing beta', title: 'Merges what is live into beta, then builds and playtests beta. Nothing goes live.' },
     beta: { label: 'Play beta', busy: 'Playing beta', title: 'Brings beta up to date (pre-deploy build, Unity build, beta site) and playtests it. Nothing goes live.' },
+    build: { label: 'Build', busy: 'Building', title: 'Starts this project\'s builds now (the Build button), then checks beta against live again. Nothing goes live.' },
     sync: { label: 'Sync repo', busy: 'Cloning the repo onto the server', title: 'Clones this product\'s repo onto the server (the server has no copy yet), then checks beta against live again. Nothing goes live.' },
     playtest: { label: 'Playtest this commit', busy: 'Playtesting this commit', title: 'Plays beta as it is now (the commit about to go live) and reviews it. Nothing goes live.' },
     redeploy: { label: 'Redeploy beta', busy: 'Redeploying beta', title: 'Runs beta\'s deploy again on GitHub (its site did not answer). Nothing goes live. Then retry the playtest.' },
@@ -199,7 +200,8 @@ if (typeof document !== 'undefined') (() => {
     const card = pending.find((a) => a.target === p.product && (a.kind === 'deploy' || a.kind === 'rollback'));
     const fx = fixing.get(p.product);
     const fix = L.color === 'red' && p.fix && FIX[p.fix] && !run.length ? p.fix : null;
-    const fixRunning = fx && !fx.done && !fx.error;
+    const buildGoing = !!p.buildRunning?.length;
+    const fixRunning = (fx && !fx.done && !fx.error) || buildGoing;
     const okSince = Math.max(lastOk.get(p.product) ?? 0, ...p.tested.playtests.filter((t) => t.status === 'done' && t.outcome !== 'error').map((t) => t.when ?? 0));
     // This commit's playtest: passed, didn't pass, not played (with the button that plays it), or being played (the
     // busy line above says so, with its step).
@@ -218,14 +220,17 @@ if (typeof document !== 'undefined') (() => {
       <div class="gl-when">Live updated ${esc(when(lastLive))} · beta changed ${esc(when(p.beta?.date))}</div>
       ${ps && ps.state !== 'running' ? `<div class="gl-play ${ps.state}" data-key="glplay:${esc(p.product)}">${PlayState.ICON[ps.state]} ${esc(ps.text)}</div>` : ''}
       ${links(prod, p)}
+      ${(p.buildRunning ?? []).map((r) => BuildFail.running(p.product, r)).join('')}
+      ${(p.buildFailing ?? []).map((f) => BuildFail.badge(p.product, f)).join('')}
+      ${(p.buildDone ?? []).map((d) => BuildFail.done(p.product, d)).join('')}
       ${run.map((o) => `<div class="gl-busy">⏳ ${esc(o.title)}${o.status === 'queued' ? ' (waiting its turn)' : o.step ? `: ${esc(o.step)}` : '…'}</div>`).join('')}
-      ${fixRunning && !run.length ? `<div class="gl-busy">⏳ ${esc(FIX[fx.action].busy)}${fx.step ? `: ${esc(fx.step)}` : '…'}</div>` : ''}
+      ${fixRunning && !run.length && fx && !fx.done && !fx.error && !buildGoing ? `<div class="gl-busy">⏳ ${esc(FIX[fx.action].busy)}${fx.step ? `: ${esc(fx.step)}` : '…'}</div>` : ''}
       ${!showFx ? '' : fx.error ? `<div class="gl-done gl-fail">❌ ${esc(FIX[fx.action].label)} failed ${esc(ago(fx.errorAt))}: ${esc(String(fx.error).slice(0, 300))}</div>` : `<div class="gl-done">${fx.done.ok ? `✅ ${esc(FIX[fx.action].label)} finished ${esc(ago(fx.done.at))}${fxRun}` : `<span class="gl-fail">❌ ${esc(FIX[fx.action].label)} failed ${esc(ago(fx.done.at))}: ${esc(String(fx.done.detail ?? '').slice(0, 300))}</span>${fxRun}`}</div>`}
       ${!run.length && recent ? `<div class="gl-done">${recent.status === 'done' ? `✅ ${esc(recent.kind === 'rollback' ? 'Rolled back' : 'Went live')} ${esc(ago(recent.finished))}${recent.result?.skippedPlaytest ? ` without a playtest (${esc(recent.result.skippedPlaytest.by)})` : ''}${recent.result?.release ? ` · v${esc(recent.result.release.version)}: ${esc(recent.result.release.title ?? '')}` : ''}` : `❌ ${esc(recent.title)} failed ${esc(ago(recent.finished))}: ${esc(String(recent.error ?? '').slice(0, 200))}`}</div>` : ''}
       ${p.players ? `<div class="gl-players meta" title="Real players on the live site (Hawkes Analytics; bots and your own devices left out)">👥 ${esc(p.players)}</div>` : ''}
       ${up && p.release ? `<div class="gl-release meta">${p.release.existing ? 'What\'s new (already on beta, kept)' : 'Releases'} v${esc(p.release.version)}: ${esc(p.release.title ?? '(the notes are being written)')}${p.release.notes?.length ? `<ul>${p.release.notes.map((x) => `<li>${esc(x)}</li>`).join('')}</ul>` : ''}</div>` : ''}
       ${Object.entries(groups).map(([g, cs]) => `<div class="gl-group"><b>${esc(g)} (${cs.length})</b><ul>${cs.slice(0, 6).map((c) => `<li>${esc(plain(c.title))}</li>`).join('')}${cs.length > 6 ? `<li class="meta">and ${cs.length - 6} more</li>` : ''}</ul></div>`).join('')}
-      ${up || p.mainOnly.length || L.played ? `<div class="gl-light-line"><b>${esc(L.text)}</b>${L.played ? `<br><span class="meta">${esc(L.played)}</span>` : ''}${L.why?.length ? `<ul>${L.why.map((w) => `<li>${esc(w)}</li>`).join('')}</ul>` : ''}</div>` : ''}
+      ${up || p.mainOnly.length || L.played ? `<div class="gl-light-line"><b>${esc(L.text)}</b>${L.played ? `<br><span class="meta">${esc(L.played)}</span>` : ''}${L.why?.length ? `<ul>${L.why.map((w) => `<li>${esc(w)}</li>`).join('')}</ul>` : ''}${BuildFail.attempts(p.product, p.buildAttempts)}</div>` : ''}
       ${p.betaDown && !run.length ? `<div class="gl-light-line gl-down"><b>Beta wasn't played.</b><br>${esc(p.betaDown.line)}${fx?.action === 'redeploy' && (fx.done || fx.error) ? `<br><span class="meta">${esc(fx.done?.note ?? fx.error)}</span>${fx.done?.link ? ` <a href="${esc(fx.done.link)}" target="_blank" rel="noopener">Open the run ↗</a>` : ''}` : ''}
         <div class="gl-buttons"><button class="primary big" data-admin data-glfix="redeploy" data-guide="off" title="${esc(FIX.redeploy.title)}"${fixRunning ? ' disabled' : ''}>${esc(fixRunning && fx.action === 'redeploy' ? `${FIX.redeploy.busy}…` : FIX.redeploy.label)}</button>
         <button class="big" data-admin data-glfix="playtest" data-guide="off" title="${esc(FIX.playtest.title)}"${fixRunning ? ' disabled' : ''}>Retry playtest</button>${p.betaDown.runs ? ` <a href="${esc(p.betaDown.runs)}" target="_blank" rel="noopener">Beta's deploys ↗</a>` : ''}</div></div>` : ''}
@@ -270,6 +275,8 @@ if (typeof document !== 'undefined') (() => {
   /** Starts the beta step that clears a product's blockers; the card follows its run. Never goes live. */
   async function startFix(id, action) {
     fixing.set(id, { action, step: action === 'merge-main' ? 'merging' : action === 'sync' ? 'cloning' : '' });
+    // Pressing Build shows "Starting" on the card at once (the server's state replaces it when the request answers).
+    if ((action === 'build' || action === 'rebuild') && plans.get(id) && !plans.get(id).error) Object.assign(plans.get(id), { buildFailing: [], buildRunning: [{ build: 'build', version: null, state: 'starting', run: '', started: Date.now(), step: null }] });
     draw();
     try {
       if (action === 'sync') {
@@ -293,15 +300,26 @@ if (typeof document !== 'undefined') (() => {
         await api(`/api/deploy/${id}`, { method: 'POST', body: { mergeMain: true, by: 'J' } });
         fixing.get(id).step = 'merged; playing beta';
       }
-      const r = action === 'rebuild'
+      const r = action === 'build'
+        ? await api(`/api/projects/${id}/builds`, { method: 'POST', body: {} })
+        : action === 'rebuild'
         ? await api('/api/build', { method: 'POST', body: { product: id, force: true } })
         : await api(`/api/beta/${id}`, { method: 'POST', body: {} });
       fixing.get(id).run = r.run;
+      if (action === 'build' || action === 'rebuild') await refreshBuildState(id);
     } catch (err) {
       Object.assign(fixing.get(id), { error: err.message, errorAt: Date.now() });
       loadPlan(id);
     }
     draw();
+  }
+
+  /** The product's builds as the server has them (failed, starting, building): one small fetch, never the whole plan. */
+  async function refreshBuildState(id) {
+    const plan = plans.get(id);
+    if (!plan || plan.error) return;
+    const b = await api(`/api/projects/${encodeURIComponent(id)}/builds`).catch(() => null);
+    if (b) Object.assign(plan, { buildFailing: b.failing ?? [], buildRunning: b.running ?? [], buildDone: b.done ?? [] });
   }
 
   /** The runs the cards follow: their step now; when one ends, the product's plan again (it turns ready, or says why not). */
@@ -385,9 +403,14 @@ if (typeof document !== 'undefined') (() => {
 
   // While the tab is open: the queue when the push stream says operations, changes or runs moved (stream.js)
   // when a go live starts or ends, the plans again.
-  studioStream.on(['ops', 'changes', 'runs'], async () => {
+  studioStream.on(['ops', 'changes', 'runs', 'builds'], async () => {
     if (tab !== 'golive' || busy || !products.length) return;
-    try { await pollFixes(); if (await loadOps()) await load(); else draw(); } catch {}
+    try {
+      await pollFixes();
+      // A build starting, running or ending: its card's state from the server (the stream says when; nothing is asked on a timer).
+      await Promise.all([...plans].filter(([, pl]) => pl.buildRunning?.length || pl.buildFailing?.length || [...fixing].some(([k, f]) => k === pl.product && ['build', 'rebuild'].includes(f.action))).map(([id]) => refreshBuildState(id)));
+      if (await loadOps()) await load(); else draw();
+    } catch {}
   });
   addEventListener('studio-approval', () => { if (tab === 'golive') setTimeout(() => loadOps().then(draw).catch(() => {}), 800); });
 

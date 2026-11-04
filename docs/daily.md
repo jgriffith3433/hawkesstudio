@@ -170,7 +170,7 @@ stuck. A revision by a person starts the count over.
   later ones as tries (then J). No beta run at all 20 minutes after a merge: one is started.
 - starts the next planned tasks in roadmap order (dependencies merged first), then the worst open bugs (blockers, then
   bugs seen most), within the caps: agents at once (`maxConcurrent`, default 2), agent starts per day
-  (`maxStartsPerDay`, 8), and per product `agents.perProduct` changes at a time (default 1; per-product overrides in
+  (`maxStartsPerDay`, 1000), and per product `agents.perProduct` changes at a time (default 1; per-product overrides in
   `agents.productLimits`, Sick Of It 2 since 2026-10-18; Studio and Gen always 1; Settings > Agents). A product's
   second change starts only when it won't collide with the ones in flight (`src/parallel.ts`): never the same task,
   never one its task depends on, and only in a different area (art, audio, levels, story, ui, engine, from the titles

@@ -207,6 +207,10 @@ export function genWaitOf(change: string | null | undefined): { done: number; to
   }
 }
 
+/** pm.ts sets how to say why a startable task is not starting (the daily limit, busy slots, failing infrastructure). */
+let startWaitHook: ((t: Task) => string | null) | null = null;
+export const setStartWaitHook = (f: typeof startWaitHook) => { startWaitHook = f; };
+
 /** What a task waits on, in plain words; null when nothing (it's on beta, verified or live). */
 export function taskWaits(t: Task, asked: Set<string> = askedJ()): string | null {
   if (asked.has(t.id) || (t.change && asked.has(t.change))) return 'you: a question in your Inbox';
@@ -214,7 +218,9 @@ export function taskWaits(t: Task, asked: Set<string> = askedJ()): string | null
   if (t.status === 'planned') {
     if (t.gpu?.items?.length && !gpuCleared(t)) return 'your GPU budget';
     const b = blockedBy(t);
-    return b.length ? `${b.map((x) => `"${x.title}"`).join(', ')} first` : 'a free agent (it starts by itself)';
+    if (b.length) return waitingOn(t);
+    const why = startWaitHook?.(t);
+    return why ?? 'a free agent (it starts by itself)';
   }
   if (t.status === 'working') {
     const g = genWaitOf(t.change);
@@ -222,7 +228,13 @@ export function taskWaits(t: Task, asked: Set<string> = askedJ()): string | null
   }
   if (t.status === 'needs answer') return "an answer to its agent's question";
   if (t.status === 'review') return 'its merge into beta';
-  if (t.status === 'failed') return 'you: it failed after its tries';
+  if (t.status === 'failed') {
+    // Others wait on it: Studio plans it again twice by itself (pm.ts autoReplan) before it asks you.
+    const n = (db.prepare(`SELECT COUNT(*) AS n FROM pm_log WHERE action = 'replan' AND subject = ? AND undone IS NULL`).get(t.id) as any).n as number;
+    const holds = (db.prepare(`SELECT 1 FROM tasks WHERE status = 'planned' AND depends LIKE ? LIMIT 1`).get(`%${t.id}%`) as any);
+    if (holds && n < 2) return `Studio planning it again (automatic re-plan ${n + 1} of 2, one model tier up; it asks you only if that fails)`;
+    return 'you: it failed after its tries';
+  }
   if (t.status === GPU_WAIT) return 'a GPU server: stand-ins are on beta; Studio runs it again for the real art when one is up';
   if (t.status === 'merged' && !landed(t)) return t.build && !t.build.ok ? `a fix: beta's build failed (${t.build.detail.slice(0, 160)})` : "beta's build";
   return null;
@@ -235,7 +247,16 @@ export type Progress = {
   label: string;
   total: number; merged: number; built: number; working: number; waiting: number;
   tasks: { id: string; title: string; status: string; waits: string | null; build: string | null }[];
+  /**
+   * What happens next and who acts (J, 2026-11-03: "work in the roadmap is ALWAYS being worked on"): "working: ..." or
+   * "waiting on <reason> (Studio acts / you act)". Never a bare "planned"; null when it is on beta, verified, live,
+   * done by J's hand or dropped.
+   */
+  next: string | null;
 };
+
+/** Whose move a wait is: the ones that name J are his, everything else Studio takes by itself. */
+export const whoActs = (waits: string) => (/^(you|your)\b/.test(waits) ? 'you act' : 'Studio acts');
 
 /**
  * Where an item really is, from its tasks (never "done" while its tasks are being worked on): needs you (a question
@@ -270,7 +291,19 @@ export function itemProgress(it: Item, asked: Set<string> = askedJ()): Progress 
   const genLabel = state === 'working' && gens.length && gens.every(Boolean)
     ? `waiting for GPU jobs (${gens.reduce((n, g) => n + g!.done, 0)} of ${gens.reduce((n, g) => n + g!.total, 0)} done)` : null;
   if (genLabel) state = 'waiting for GPU jobs';
+  let next: string | null = null;
+  if (['idea', 'dropped', 'done', 'on beta', 'verified', 'live'].includes(state)) next = null;
+  else if (!tasks.length) next = 'waiting on its tasks to be planned from the goal and criteria (Studio acts, on its next PM pass)';
+  else if (state === 'working' || state === 'waiting for GPU jobs') {
+    const run = tasks.filter((t) => ['working', 'needs answer', 'review'].includes(t.status));
+    next = run.length ? `working: ${run.length} task${run.length === 1 ? '' : 's'} with an agent or in review` : null;
+  }
+  if (!next && !['idea', 'dropped', 'done', 'on beta', 'verified', 'live'].includes(state)) {
+    const w = tasks.map((t) => taskWaits(t, asked)).find((x) => x && !/^its agent|^its merge|^beta's build/.test(x));
+    next = w ? `waiting on ${w} (${whoActs(w)})` : 'working: Studio starts the next task by itself';
+  }
   return {
+    next,
     state, label: genLabel ?? (state === 'working' ? `working (${merged} of ${tasks.length} merged)` : state === 'dropped' && it.status !== 'dropped' ? 'dropped (nothing to do)' : state),
     total: tasks.length, merged, built, working, waiting,
     tasks: tasks.map((t) => ({ id: t.id, title: t.title, status: t.status, waits: taskWaits(t, asked), build: t.build ? t.build.detail : null })),
@@ -283,6 +316,26 @@ export function itemProgress(it: Item, asked: Set<string> = askedJ()): Progress 
  */
 export function blockedBy(t: Pick<Task, 'depends'>) {
   return t.depends.map((d) => getTask(d) ?? { id: d, title: d, status: 'missing' }).filter((d) => !SATISFIED.includes(d.status)).map((d) => ({ id: d.id, title: d.title, status: d.status }));
+}
+
+/** Dependency states that will not change by themselves: the task after one needs someone (the PM, or J) to act. */
+export const STUCK_DEPENDENCY = ['idea', 'failed', 'missing'];
+
+/**
+ * What a blocked task is waiting on and why, in one sentence (J, 2026-11-03: tasks sat in "Planned" for days behind a task
+ * that was an idea or had failed, and the page only said "Planned"): each blocker by name, with its state and the reason from
+ * its own note, and for one that won't move by itself, that it needs action. null when nothing blocks it.
+ */
+export function waitingOn(t: Pick<Task, 'depends'>): string {
+  const parts = blockedBy(t).map((b) => {
+    const full = getTask(b.id);
+    const why = String(full?.note ?? '').replace(/\s+/g, ' ').trim().slice(0, 220);
+    if (b.status === 'missing') return `"${b.title}" (it no longer exists: remove the dependency)`;
+    if (b.status === 'idea') return `"${b.title}" (${b.id}), an idea nobody is working on${why ? `: ${why}` : ''}; it won't start until that is planned`;
+    if (b.status === 'failed') return `"${b.title}" (${b.id}), which failed${why ? `: ${why}` : ''}; it won't start until that is fixed`;
+    return `"${b.title}" (${b.id}, ${b.status}) first`;
+  });
+  return `waiting on ${parts.join('; ')}`;
 }
 
 const nextOrd = (table: 'items' | 'tasks', key: string, value: string) => ((db.prepare(`SELECT MAX(ord) AS m FROM ${table} WHERE ${key} = ?`).get(value) as any)?.m ?? 0) + 1;
