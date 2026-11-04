@@ -17,6 +17,7 @@ import { isVideoTask, listVideos } from './videos.ts';
 import type http from 'node:http';
 import { db, parse } from './db.ts';
 import { getProduct, getInfra, isInfra, loadProducts, managedElsewhere, StudioError } from './config.ts';
+import { fixersOf, MAX_FIXES } from './buildfix.ts';
 import { failingBuilds, failSignature, lastBuilds } from './buildfail.ts';
 import {
   listQuestions, getQuestion, setQuestion, answeredSince, getTask, getItem, getMilestone, listMilestones, milestoneProgress, milestoneTasks, tasksAwaitingGpu,
@@ -212,6 +213,15 @@ function buildCardAnswered(f: { id: string; product: string; build: string; clas
   return rows.some((r) => failSignature(r) === sig && acked(`build:${r.id}`));
 }
 
+/** What the automatic fixer did about a code failure (buildfix.ts), in a line for the card. */
+function fixLine(f: { kind: string | null; class: string | null; build: string; reason: string }): string {
+  if (f.kind !== 'code') return '';
+  const have = fixersOf(failSignature({ build: f.build, fail_class: f.class, detail: f.reason }));
+  if (have.open.length) return `\n\nAn agent (${have.open[0]}) is fixing it; beta rebuilds when its fix merges and this card goes then.`;
+  if (have.total >= MAX_FIXES) return `\n\nAgents tried ${have.total} times and the build still fails: it needs you.`;
+  return '';
+}
+
 /**
  * A rebuild started: the failed builds' cards are answered ("Build again"), so they go now and don't wait for the new
  * build to show a row. Called by builds.ts startBuild, whichever button started it.
@@ -347,7 +357,7 @@ export async function inbox({ tokens = false }: { tokens?: boolean } = {}): Prom
       if (!f.finished || Date.now() - f.finished > 7 * 24 * HOUR || acked(`build:${f.id}`) || buildCardAnswered(f)) continue;
       out.push({
         id: `build:${f.id}`, kind: 'build', title: `${p.name}: build ${f.build} ${f.version} failed${f.sha ? ` (${f.sha.slice(0, 7)})` : ''}`,
-        text: `${f.plain}\n\nReason: ${f.reason}${f.genJob ? `\nGen job: ${f.genJob}` : ''}`.slice(0, 1500),
+        text: `${f.plain}${fixLine(f)}\n\nReason: ${f.reason}${f.genJob ? `\nGen job: ${f.genJob}` : ''}`.slice(0, 1500),
         product: p.id, productName: p.name, context: `${f.kind === 'infrastructure' ? 'Infrastructure' : f.kind === 'code' ? 'The code' : 'Cause unclear'}${f.stepWords ? `, while ${f.stepWords}` : ''}${f.tries > 1 ? `, after ${f.tries} tries` : ''}. ${f.plain}`.slice(0, 400),
         asker: 'Studio', recommendation: f.kind === 'code' ? null : 'Build again', options: ['Build again', 'Dismiss'], blocks: `${p.name} going live (the build is what ships)`,
         since: f.finished, weight: 50, links: [{ label: 'Why did this fail?', url: `#build-why/${p.id}/${f.id}` }, ...(f.run ? [{ label: 'The run', url: '#runs' }] : [])],

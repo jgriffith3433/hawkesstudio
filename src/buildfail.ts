@@ -277,6 +277,8 @@ export async function announce(rowId: string): Promise<boolean> {
   if (!r || r.status !== 'failed' || r.change || r.notified) return false;
   const took = db.prepare('UPDATE builds SET notified = ? WHERE id = ? AND notified IS NULL').run(Date.now(), rowId);
   if (!Number(took.changes)) return false;
+  // A failure that is the code's: an agent is started on it (once per failure, at most twice in all: buildfix.ts).
+  if (r.fail_kind === 'code') void import('./buildfix.ts').then((m) => m.autoFixBuild(rowId)).then((x) => { if (x.started) console.log(`[builds] ${r.product} ${r.build}: ${x.why}`); });
   // The same failure again (a rebuild that fails the same way) was told already: marked, not told twice.
   if (repeatsLast(r)) return false;
   try {

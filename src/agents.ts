@@ -34,6 +34,7 @@
 // Runs on the server (STUDIO_SERVER=1, repos cloned by repos.ts, GITHUB_TOKEN from /run/hawkes/github.env).
 // Caps (settings.agents): how many fixes run at once and per day, and a daily cost limit.
 
+import { buildCheckBrief } from './buildfix.ts';
 import { forOwner } from './owner.ts';
 import { isVideoTask, videoReady, versionsOf } from './videos.ts';
 import fs from 'node:fs';
@@ -1094,6 +1095,7 @@ async function writeBrief(c: Change, p: Product, findings0: any[], note?: string
   const checks = onSite ? '- (static pages: open the pages you changed and the links between them, and check the HTML is well formed)'
     : (p.checks ?? []).map((k) => `- \`${k.cmd}\` (in ${k.dir === p.repo ? 'the repo root' : k.dir})`).join('\n') || '- (none listed: at least make sure it builds or loads)';
   const sub = onSite ? site!.sub : repoFor(p).sub;
+  const buildCheck = onSite ? '' : `\n${buildCheckBrief(p)}`.replace(/^\n$/, '');
   const players = await playersBrief(p.id);
   // Up to 3 agents per product (J, 2026-10-19): what the others are doing, and the Unity rules (parallel.ts).
   const others = onSite ? '' : othersSection(p.name, neighboursOf(c), perProductLimit(p.id));
@@ -1164,7 +1166,7 @@ ${note ? `\n## Notes on the last attempt (J's or the PM's)\n\n${note}\n` : ''}${
 3. Keep to this finding. Don't refactor unrelated code, don't touch generated output or build folders, don't change
    secrets, CI, or deploy scripts.
 4. Run the project's checks:
-${checks}
+${checks}${buildCheck}
 5. Commit your change with a clear message (\`Fix: ...\`). Don't push; Studio does. Studio stops a pass after
    ${Math.round(agentLimitMs(c) / 60_000)} minutes: commit as you go (after each working piece or finished batch), so a stop loses nothing.
    A third-party error from a Gen job (ElevenLabs payment_issue, a 401 or 402) is not yours to retry: test ONE line
