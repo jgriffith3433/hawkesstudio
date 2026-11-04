@@ -277,17 +277,28 @@ export async function announce(rowId: string): Promise<boolean> {
   if (!r || r.status !== 'failed' || r.change || r.notified) return false;
   const took = db.prepare('UPDATE builds SET notified = ? WHERE id = ? AND notified IS NULL').run(Date.now(), rowId);
   if (!Number(took.changes)) return false;
-  // A failure that is the code's: an agent is started on it (once per failure, at most twice in all: buildfix.ts).
-  if (r.fail_kind === 'code') void import('./buildfix.ts').then((m) => m.autoFixBuild(rowId)).then((x) => { if (x.started) console.log(`[builds] ${r.product} ${r.build}: ${x.why}`); });
+  // A failure that is the code's: an agent is started on it first (once per failure, at most twice in all: buildfix.ts),
+  // so the card and the push below say what it is doing rather than "someone has to fix the code first".
+  if (r.fail_kind === 'code') {
+    const x = await import('./buildfix.ts').then((m) => m.autoFixBuild(rowId)).catch(() => null);
+    if (x?.started) console.log(`[builds] ${r.product} ${r.build}: ${x.why}`);
+  }
   // The same failure again (a rebuild that fails the same way) was told already: marked, not told twice.
   if (repeatsLast(r)) return false;
+  // Beta is red: the agents running on this product hear why, on this event (not on a timer).
+  void import('./buildfix.ts').then((m) => m.tellRunningAgents(r)).catch((e: any) => console.warn(`[builds] telling agents about ${r.product}'s red build: ${e?.message ?? e}`));
   try {
     const { notify, PUBLIC_URL } = await import('./notify.ts');
+    const { fixerNow, fixedWording } = await import('./buildfix.ts');
     const name = (() => { try { return getProduct(r.product).name; } catch { return r.product; } })();
     const f = failureOf(r);
-    const title = `${name}: build ${r.build} ${r.version} failed`;
-    const body = `${f.kind === 'infrastructure' ? 'Infrastructure' : f.kind === 'code' ? 'Code' : 'Cause unclear'}${f.stepWords ? `, while ${f.stepWords}` : ''}${f.tries > 1 ? `, after ${f.tries} tries` : ''}. ${f.plain}`.slice(0, 600);
-    return await notify(title, body, { url: `${PUBLIC_URL}/#inbox`, priority: 4, tags: ['rotating_light'] });
+    const now = fixerNow(failSignature(r));
+    const fixing = now.state === 'working' || now.state === 'merged';
+    const title = fixing ? `${name}: build ${r.build} ${r.version} failed, a fix agent is on it` : `${name}: build ${r.build} ${r.version} failed`;
+    const why = fixedWording(f.plain, now);
+    const body = `${f.kind === 'infrastructure' ? 'Infrastructure' : f.kind === 'code' ? 'Code' : 'Cause unclear'}${f.stepWords ? `, while ${f.stepWords}` : ''}${f.tries > 1 ? `, after ${f.tries} tries` : ''}. ${why}`.slice(0, 600);
+    const url = fixing && now.url ? `${PUBLIC_URL}/${now.url}` : `${PUBLIC_URL}/#inbox`;
+    return await notify(title, body, { url, priority: 4, tags: ['rotating_light'] });
   } catch (e: any) {
     console.warn(`[builds] couldn't tell about the failed build ${rowId}: ${e?.message ?? e}`);
     return false;
