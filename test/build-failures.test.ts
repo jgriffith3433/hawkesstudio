@@ -233,3 +233,30 @@ test('a failed npm build keeps the real error and its step, not Vite\'s chunk-si
   assert.match(why.log, /manualChunks/);
   assert.equal(why.class, 'script');
 });
+
+// Gen's job log says "[Hawkes] Unity exited with code 0" on a build that went fine (J, 2026-11-04): that is no compile
+// failure, and Gen's "couldn't fetch <repo> at <commit>" is the source never arriving (infrastructure: build again).
+test('"Unity exited with code 0" in the log is not a compile failure; a non-zero exit is', () => {
+  const ok = F.classify('the Unity build failed: [GameDeploy] DEPLOY FAILED', { log: '[Hawkes] Unity exited with code 0\n[GameDeploy] DEPLOY FAILED' });
+  assert.notEqual(ok.class, 'compile', 'exit 0 is not a compile error');
+  assert.equal(ok.kind, 'unknown', 'a bare DEPLOY FAILED says read the log, not "the code"');
+  const bad = F.classify('the Unity build failed: Unity exited with code 1', { log: '[Hawkes] Unity exited with code 1' });
+  assert.equal(bad.class, 'compile');
+  assert.equal(bad.kind, 'code');
+  assert.equal(F.classify('the Unity build failed: Unity exited with code 10').class, 'compile', 'two-digit codes are failures too');
+  assert.equal(B.infraLost('Hawkes Gen finished job j_9 with status failed'), false);
+  assert.equal(B.infraLost('Unity exited with code 0'), false);
+  assert.equal(B.infraLost('Unity exited with code 1'), false, 'a Unity exit is the project, never infrastructure');
+  assert.equal(B.tokenLost('Unity exited with code 0'), false);
+});
+
+test("a Gen fetch failure without the token wording is infrastructure, and says a re-run is the fix", () => {
+  const f = F.classify("the Unity build failed: couldn't fetch acme/bfgame at a1b2c3d4e5f6 (is the commit pushed?)", { log: '[Hawkes] Unity exited with code 0' });
+  assert.equal(f.class, 'token');
+  assert.equal(f.kind, 'infrastructure');
+  assert.match(f.plain, /re-running the build is the fix/);
+  assert.doesNotMatch(f.plain, /someone has to fix the code/i);
+  assert.ok(B.tokenLost("couldn't fetch acme/bfgame at a1b2c3d4e5f6 (is the commit pushed?)"));
+  // A real compile error is not a token problem.
+  assert.equal(B.tokenLost('Assets/Foo.cs(3,1): error CS1002: ; expected'), false);
+});

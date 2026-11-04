@@ -584,8 +584,14 @@ export function tokenLost(error: unknown): boolean {
   // repo?)" when the source fetch failed. Studio only builds commits it read from GitHub, so that is the token (an hour's
   // installation token outlived by a long queue), never the code: sick-of-it-unity v13 (2026-11-03) was called a compile
   // error for it.
-  return /token\b[^.]{0,40}?\b(is gone|gone|expired)|GitHub refused|can't read the repo|can the GitHub token read the repo|Bad credentials|\b401\b/i.test(String(error ?? ''));
+  return /token\b[^.]{0,40}?\b(is gone|gone|expired)|GitHub refused|can't read the repo|can the GitHub token read the repo|couldn't fetch [^\n]{0,200}? at [0-9a-f]{7,40}\b|Bad credentials|\b401\b/i.test(String(error ?? ''));
 }
+
+/**
+ * Unity's own failure line: "Unity exited with code N" with N not 0. Gen's job log also says "[Hawkes] Unity exited with code 0"
+ * on a build that went fine, which is no compile failure (builds.ts infraLost, buildfail.ts classify). Exported for the tests.
+ */
+export const UNITY_FAILED = /Unity exited with code (?!0\b)\d+/i;
 
 /**
  * Gen's word that the build died of infrastructure, not of the project: its token gone, or Gen/its worker restarted,
@@ -594,7 +600,7 @@ export function tokenLost(error: unknown): boolean {
  */
 export function infraLost(error: unknown): boolean {
   const e = String(error ?? '');
-  if (/error CS\d+|compil(e|ation) (error|failed)|Unity exited with code|BuildFailedException|build method .* (failed|threw)|out of memory/i.test(e) && !tokenLost(e)) return false;
+  if ((/error CS\d+|compil(e|ation) (error|failed)|BuildFailedException|build method .* (failed|threw)|out of memory/i.test(e) || UNITY_FAILED.test(e)) && !tokenLost(e)) return false;
   return tokenLost(e) || /Gen (restarted|was restarted|is restarting)|restarted while|server (restarted|shut ?down)|worker (lost|restarted|was preempted)|preempted|job (was )?(lost|interrupted|orphaned)|interrupted \(|instance (was )?(terminated|stopped)|\b50[234]\b|ECONNRESET|socket hang up/i.test(e);
 }
 

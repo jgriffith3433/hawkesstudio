@@ -13,7 +13,7 @@
 // No polling: the dashboard hears about a row changing through /api/stream (a database write).
 
 import { db } from './db.ts';
-import { tokenLost, infraLost, buildsOf } from './builds.ts';
+import { tokenLost, infraLost, buildsOf, UNITY_FAILED } from './builds.ts';
 import { getProduct } from './config.ts';
 
 export type FailClass = 'rejected' | 'script' | 'token' | 'restart' | 'compile' | 'publish' | 'timeout' | 'memory' | 'access' | 'other';
@@ -78,11 +78,15 @@ export function classify(error: unknown, o: { stage?: string | null; log?: strin
   // came ("Not recognised: customer builds take github ..." hid it behind "Cause unclear" on 2026-11-03).
   const refused = genRefusal(e);
   if (refused) return { class: 'rejected', kind: 'infrastructure', plain: `Hawkes Gen refused the build request: ${refused}. The request Studio sent doesn't fit what Gen takes, so it is a Studio/Gen mismatch, not your code, and building again won't change it until one of them is fixed.` };
-  if (/error CS\d+|compil(e|ation) (error|failed)|BuildFailedException|build method .* (failed|threw)|Unity exited with code|Scripts have compiler errors/i.test(both) && !tokenLost(e)) {
+  if ((/error CS\d+|compil(e|ation) (error|failed)|BuildFailedException|build method .* (failed|threw)|Scripts have compiler errors/i.test(both) || UNITY_FAILED.test(both)) && !tokenLost(e)) {
     const first = /error CS\d+[^\n]{0,160}/i.exec(both)?.[0];
     return { class: 'compile', kind: 'code', plain: `The project's code doesn't build${first ? ` (${first.trim()})` : ''}. Studio can't fix this by building again: someone has to fix the code first.` };
   }
-  if (tokenLost(e)) return { class: 'token', kind: 'infrastructure', plain: `Hawkes Gen lost the GitHub access it was given for this build (the token expired or Gen restarted). That's infrastructure, not the code.${retried} Build again.` };
+  if (tokenLost(e)) {
+    // Gen's "couldn't fetch <repo> at <commit> (… can the GitHub token read the repo?)": the source never arrived, so no code was built.
+    if (/couldn't fetch/i.test(e)) return { class: 'token', kind: 'infrastructure', plain: `Hawkes Gen couldn't fetch the project's source from GitHub for this build (the GitHub access it was given had expired, or the commit wasn't readable then). The code never reached the compiler: that's infrastructure, so re-running the build is the fix.${retried} Build again.` };
+    return { class: 'token', kind: 'infrastructure', plain: `Hawkes Gen lost the GitHub access it was given for this build (the token expired or Gen restarted). That's infrastructure, not the code.${retried} Build again.` };
+  }
   if (/timed out|ran past|no result/i.test(e)) return { class: 'timeout', kind: 'infrastructure', plain: `The build ran out of time before it finished. Probably infrastructure (a slow or stuck machine), not the code.${retried} Build again; if it keeps timing out, look at the Gen job.` };
   if (/out of memory|\bOOM\b|killed \(137\)|exit(ed)? (code )?137/i.test(both)) return { class: 'memory', kind: 'infrastructure', plain: `The build machine ran out of memory. That's the machine's size, not the code; Studio asks Gen for a bigger one when this happens.${retried} Build again.` };
   if (infraLost(e) || /Hawkes Gen (finished job|doesn't know job)|stopped: its run|Gen restarted/i.test(e)) return { class: 'restart', kind: 'infrastructure', plain: `Hawkes Gen or Studio restarted or lost the job while it was building. That's infrastructure, not the code.${retried} Build again.` };
