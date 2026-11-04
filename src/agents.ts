@@ -35,6 +35,7 @@
 // Caps (settings.agents): how many fixes run at once and per day, and a daily cost limit.
 
 import { buildCheckBrief } from './buildfix.ts';
+import { compileCheckOn, compileFixPrompt, runCompileCheck, COMPILE_FIXES, type CompileResult } from './compilecheck.ts';
 import { unityCheck, unityFixPrompt, issueLines, looksUnity, changedCsFiles, type UnityCheckResult } from './unitycheck.ts';
 import { forOwner } from './owner.ts';
 import { isVideoTask, videoReady, versionsOf } from './videos.ts';
@@ -493,6 +494,10 @@ export type Phase = {
   unity?: UnityCheckResult;
   unityFixes?: number;
   unityFix?: boolean;
+  /** The compile gate (compilecheck.ts): Gen's compile of the pushed branch, `compileFixes` passes sent back for it (at most COMPILE_FIXES), `compileFix` the next pass is one. */
+  compile?: CompileResult;
+  compileFixes?: number;
+  compileFix?: boolean;
   /** A conflict pass (resolveConflicts): the files that conflict with the base; the agent's session merges and resolves. */
   conflict?: string[];
   /** Parked on Gen (status WAITING_GEN, step 'gen'): the agent's queued jobs, polled until every one has finished. */
@@ -591,6 +596,10 @@ function nudgeResume(c: Change, ph: Phase) {
 export const UNITY_FIXES = 2;
 function unityFixResume(c: Change, u: UnityCheckResult) {
   const prompt = unityFixPrompt(u);
+  return c.session ? { session: c.session, prompt } : { prompt: `Read .hawkes/brief.md for what your change is. ${prompt}` };
+}
+function compileFixResume(c: Change, r: CompileResult) {
+  const prompt = compileFixPrompt(r);
   return c.session ? { session: c.session, prompt } : { prompt: `Read .hawkes/brief.md for what your change is. ${prompt}` };
 }
 /** Where an agent says which conflicted files it couldn't resolve safely (a conflict pass): they go back to the PM. */
@@ -1834,6 +1843,7 @@ async function work(id: string, note?: string, answer?: string, resumed?: Phase 
       c = getChange(id)!;
       const resume = forHarness(ph, ph.nudge ? nudgeResume(c, ph)
         : ph.unityFix && ph.unity ? unityFixResume(c, ph.unity)
+        : ph.compileFix && ph.compile ? compileFixResume(c, ph.compile)
         : ph.conflict ? conflictResume(c, ph.conflict)
         : ph.genDone ? (c.session ? { session: c.session, prompt: ph.genDone } : { prompt: `Read .hawkes/brief.md: it's your whole task. ${ph.genDone}` })
         : answer && c.session
@@ -1859,7 +1869,7 @@ async function work(id: string, note?: string, answer?: string, resumed?: Phase 
         return parkForHarness(id, ph, save, stop);
       }
       // The cost and the next step are written together, so a restart never counts a pass twice.
-      save({ step: 'publish', result: r.result, stopped: r.stopped, machinery: machineryFailure(r.stderr) ?? undefined, nudge: false, unityFix: false, genDone: undefined, harness: undefined, proc: undefined }, { cost: getChange(id)!.cost + r.cost });
+      save({ step: 'publish', result: r.result, stopped: r.stopped, machinery: machineryFailure(r.stderr) ?? undefined, nudge: false, unityFix: false, compileFix: false, genDone: undefined, harness: undefined, proc: undefined }, { cost: getChange(id)!.cost + r.cost });
     }
 
     if (ph.step === 'publish') {
@@ -2006,6 +2016,28 @@ async function work(id: string, note?: string, answer?: string, resumed?: Phase 
       const criteriaMd = c.criteria.length ? `\n\n**Acceptance criteria:**\n${c.criteria.map((k) => `- ${k}`).join('\n')}` : '';
       const body = `${summary}${unityMd}${criteriaMd}\n\n---\n**Findings** (Hawkes Studio playtest review):\n${findings.map((f: any) => `- [${f.severity}] ${f.title} (${f.id}, seen ${f.seen}×)`).join('\n')}\n\nMade by a Hawkes Studio agent. Approving it in Studio merges it into ${c.base} (the beta site, not live); going live is a separate step.\n\n${prGeneratedBy(id)}`;
       await publish(id, { force: Boolean(note || answer), title: c.title, body });
+      // The compile gate: Gen compiles the pushed branch (no player build) before the change may be ready and merge.
+      if (!isSiteChange(c, p) && !c.infra && compileCheckOn() && isUnity(p.id)) {
+        c = getChange(id)!;
+        const tipNow = git(c.worktree, ['rev-parse', 'HEAD']).out;
+        update(id, { detail: 'Hawkes Gen is compiling the branch' });
+        const cc = await runCompileCheck({ changeId: id, product: p.id, slug: c.slug, sha: tipNow, ref: `refs/heads/${c.branch}` }, (t) => update(id, { detail: t }));
+        save({ compile: cc });
+        addLog(id, cc.summary);
+        for (const l of cc.issues.slice(0, 40)) addLog(id, `compile check: ${l.file}:${l.line} error ${l.code}: ${l.message}`);
+        if (cc.outcome === 'failed') {
+          const used = ph.compileFixes ?? 0;
+          if (used < COMPILE_FIXES) {
+            addLog(id, `compile check failed: sending the agent back to fix it (${used + 1} of ${COMPILE_FIXES}); not ready, it can't merge`);
+            save({ step: 'agent', compileFixes: used + 1, compileFix: true, result: undefined, stopped: undefined, proc: undefined, since: Date.now() }, { status: 'working', detail: `the compile check found ${cc.issues.length} error${cc.issues.length === 1 ? '' : 's'}: the agent is fixing them` });
+            return work(id, note, answer, ph, true);
+          }
+          const detail = `blocked from merging: the branch still doesn't compile after ${COMPILE_FIXES} fix passes: ${cc.issues.slice(0, 3).map((i) => `${i.file}:${i.line} ${i.code} ${i.message}`).join('; ')}`.slice(0, 300);
+          reopenTaken(id, findings.map((f) => f.id), detail);
+          update(id, { status: 'failed', detail, summary, commits, phase: { ...ph, failed: true, compile: cc } });
+          return;
+        }
+      }
       // The branch tip the agent's checks passed on; approving merges exactly this commit (approve() checks it). No
       // playtest here: one runs only when J asks for it (playtestChange); beta's run after the merge judges the criteria.
       save({ step: 'finish', tip: git(c.worktree, ['rev-parse', 'HEAD']).out, jobs: {}, verify: undefined });
@@ -2023,7 +2055,7 @@ async function work(id: string, note?: string, answer?: string, resumed?: Phase 
     c = getChange(id)!;
     // A playtest on request: its results join what the change already had (sha, preview, canon), and it's ready again.
     if (ph.requested) {
-      const keep = Object.fromEntries(['scenario', 'options', 'canon', 'pendingGpu', 'unityCheck'].filter((k) => c.verify?.[k] !== undefined).map((k) => [k, c.verify[k]]));
+      const keep = Object.fromEntries(['scenario', 'options', 'canon', 'pendingGpu', 'unityCheck', 'compileCheck'].filter((k) => c.verify?.[k] !== undefined).map((k) => [k, c.verify[k]]));
       const verify = { ...keep, ...ph.verify, sha: ph.tip ?? c.verify?.sha, preview: c.verify?.preview ?? null, try: c.verify?.try ?? null, asked: { at: Date.now(), by: ph.requested } };
       addLog(id, `playtest (asked by ${ph.requested}): ${verify.outcome ?? '?'} · review: ${verify.verdict ?? 'n/a'}${verify.error ? ` · ${verify.error}` : ''}`);
       update(id, { status: 'ready', detail: readyDetail(verify), verify, phase: null });
@@ -2052,7 +2084,7 @@ async function work(id: string, note?: string, answer?: string, resumed?: Phase 
     // A GPU task's change that shipped stand-ins: merged, but its task waits for GPU (pm.ts) and runs again.
     const pendingGpu = c.task && (needsGpu(c) || roleOf(c) === 'content') ? pendingGpuOf(c.worktree, c.summary ?? '') : null;
     if (pendingGpu) addLog(id, `stand-ins: still to make on the GPU: ${pendingGpu.split('\n')[0].slice(0, 200)}`);
-    const done = { ...verify, sha: ph.tip, preview, ...(ph.unity ? { unityCheck: ph.unity } : {}), try: howTo, ...(pendingGpu ? { pendingGpu } : {}) };
+    const done = { ...verify, sha: ph.tip, preview, ...(ph.unity ? { unityCheck: ph.unity } : {}), ...(ph.compile ? { compileCheck: ph.compile } : {}), try: howTo, ...(pendingGpu ? { pendingGpu } : {}) };
     // A video waits for J's screening (videos.ts): never merged by itself, its version kept, notes he left meanwhile sent back.
     if (c.task && isVideoTask(c.task)) {
       update(id, { status: 'ready', detail: 'ready to screen', verify: done, phase: null, auto_merge: null });
@@ -2087,8 +2119,9 @@ export function readyDetail(v: any) {
     : v?.outcome === 'not played' ? `ready: agent's checks passed (the playtest asked for couldn't run: ${String(v.error ?? '').slice(0, 160)})`
       : "ready: agent's checks passed, pull request open (not playtested)";
   const unity = v?.unityCheck ? ` · ${v.unityCheck.engine === 'none' ? 'Unity check: no C# changed' : `Unity check passed (${v.unityCheck.engine === 'roslyn' ? 'Roslyn' : 'built-in'}, ${v.unityCheck.files.length} file${v.unityCheck.files.length === 1 ? '' : 's'})`}` : '';
+  const compile = v?.compileCheck ? ` · ${v.compileCheck.summary}` : '';
   const notes = v?.canon?.notes?.length ? ` · ${v.canon.notes.length} canon note${v.canon.notes.length === 1 ? '' : 's'} (not blocking)` : '';
-  return `${what}${unity}${notes}${v?.preview ? ` · preview ${v.preview}` : ''}`;
+  return `${what}${unity}${compile}${notes}${v?.preview ? ` · preview ${v.preview}` : ''}`;
 }
 /** Whether a change was playtested (on request, or by the old automatic verification): its result is on it. */
 export const playtested = (v: any) => Boolean(v && (v.playtest || (v.outcome && v.outcome !== 'not played')));
