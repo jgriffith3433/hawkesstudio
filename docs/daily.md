@@ -361,6 +361,16 @@ triage restores the finding; settings go back). The **pause switch** (Roadmap ta
 false }` on J's word) stops starts, merges and PM turns; statuses still follow what finishes. Settings: `.data/pm.json`
 (`POST /api/pm/settings`); state: `.data/pm-state.json`.
 
+**The Unity check** (J, 2026-11-04). Every agent change that touches `.cs` files in a Unity project (set up as Unity or
+not: an `Assets`/`Packages` folder is enough) is read by `src/unitycheck.ts` before its pull request opens, with no
+customer config: syntax errors (an unterminated string CS1010/CS1039, a backslash before a closing quote, a stray
+backslash CS1056, unbalanced braces) and duplicate members in a type (CS0111 same signature, CS0102 same name),
+partial classes across files included (the other parts are read from the repo). A failure sends the agent back to fix it
+with file, line and message (twice at most, `UNITY_FIXES`, never a try), then fails the change with no pull request.
+What ran is in the change's log, its PR description and its ready line. Engine: Roslyn (`tools/unity-check`, published
+into the agent image at `/opt/unity-check/unity-check`, `STUDIO_UNITY_CHECK` to point elsewhere or `off`), else the
+built-in checker (a lexer and a member scan, always there). Test `test/unitycheck.test.ts`.
+
 **11. Content tasks** ("DoD: 3 new stages for the Encore chapter", "a Sick Of It enemy for Circle IX"). Agents make game
 content end to end with each product's content skills (`.claude/skills/` in the product repo, loaded by Claude Code):
 DoD `dod-stage`, `dod-fighter`, `dod-voice-music`; Sick Of It `soi-enemy`, `soi-level`, `soi-voice-music`; PH Origins

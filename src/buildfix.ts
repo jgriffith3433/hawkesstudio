@@ -241,7 +241,7 @@ export function buildCheckBrief(p: { engine?: string; build?: unknown; builds?: 
   ];
   if (unity) {
     out.push(
-      '   Unity: the compiler runs on the build server, not here. Before you open the PR, read the C# you changed for what it would reject:',
+      '   Unity: Studio itself reads every .cs file you changed (syntax errors such as an unterminated string or a backslash before a closing quote, and a member defined twice in a type, partial classes included) before the pull request opens, and sends you back with file and line if it finds any; the full compile runs on the build server, not here. Before you open the PR, read the C# you changed for what it would reject:',
       '   a member or type defined twice (error CS0102/CS0111: the same name in one class, partial classes in other files included; `grep -rn "<Name>" Assets` for every type or method you added or renamed),',
       '   a missing `using`, a call whose signature you changed but not its callers, and any `error CS` text in the brief. If a Unity editor (`unity-editor`/`Unity -batchmode -quit`) is on this machine, compile with it; if not, say "Unity compile not run here" in the PR description.',
     );

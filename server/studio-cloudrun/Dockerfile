@@ -3,6 +3,11 @@
 # agent's, scout's or Talk's Claude Code pass). The build context is `git archive` of one commit
 # (tools/studio-cloudrun/build.mjs), so .env, .data and deploy/.keys are never in it. Litestream keeps studio.db in
 # Cloud Storage.
+# Studio's Unity check (src/unitycheck.ts): Roslyn, published self-contained so the agent image needs no .NET install.
+FROM mcr.microsoft.com/dotnet/sdk:8.0-bookworm-slim AS unitycheck
+COPY tools/unity-check /src/unity-check
+RUN dotnet publish /src/unity-check -c Release -r linux-x64 --self-contained true -p:PublishSingleFile=true -o /out
+
 FROM node:24-bookworm-slim
 
 ARG LITESTREAM_VERSION=0.3.13
@@ -37,6 +42,7 @@ COPY package.json package-lock.json ./
 RUN npm ci --omit=dev --no-audit --no-fund
 
 COPY . .
+COPY --from=unitycheck /out/unity-check /opt/unity-check/unity-check
 COPY server/studio-cloudrun/litestream.yml /etc/litestream.yml
 RUN chmod +x server/studio-cloudrun/entrypoint.sh && mkdir -p /data /tmp/projects
 
