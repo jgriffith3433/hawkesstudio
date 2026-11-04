@@ -717,7 +717,14 @@ async function playScenario(run: string, p: Product, asked: Playtest, { review =
       }
       else if (prior?.status === 'done') url = was?.data?.url ?? localUrl(p);
       else if (p.build && betaLane() && !played) throw new Error(`${BETA} isn't built yet (or its last build failed): nothing to play locally`);
-      else if (await cloudBetaUrl(p)) url = (await cloudBetaUrl(p))!;
+      else if (await cloudBetaUrl(p)) {
+        // A beta publish in flight (this product's, or the website its build publishes into) finishes, and its check that
+        // the Worker serves it passes, before the playtest opens the site (2026-11-04: it raced the publish and got 404s).
+        const previews = await import('./previews.ts');
+        const into = siteBuildPublish(p.builds);
+        await Promise.all([previews.betaSettled(p.id), ...(into ? [previews.betaSettled(into.project)] : [])]);
+        url = (await cloudBetaUrl(p))!;
+      }
       else if (p.build && betaLane()) {
         // Unity on the beta lane: the beta build, from its own website copy, on its own port.
         if (!played) throw new Error(`${BETA} isn't built yet (or its last build failed): nothing to play locally`);

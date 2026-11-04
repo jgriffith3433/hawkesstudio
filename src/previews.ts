@@ -153,6 +153,12 @@ const tail = (s: string) => s.split('\n').filter(Boolean).slice(-3).join(' | ').
 /** One build at a time per product. */
 const queues = new Map<string, Promise<unknown>>();
 const active = new Set<string>();
+/**
+ * Resolves when a product's queued beta-site publish (if any) has finished, its Worker check included. Playtests of a
+ * beta site await this before they start, instead of racing the publish; it waits on the publish's own promise, so
+ * there is no polling. Never throws: a failed publish is the status's to say.
+ */
+export const betaSettled = async (productId: string): Promise<void> => { await queues.get(productId)?.catch(() => {}); };
 /** Beta-site builds under way, start to finish (cloudhost.ts busy keeps the instance up for them). */
 export const previewsBuilding = () => active.size;
 
@@ -306,6 +312,13 @@ async function buildCloud(p: Product, o: { change?: string; dir?: string }): Pro
       changeRow, skip, recipe: recipeOf(p.id), domain: DOMAIN, keptVersions: keptGameVersions,
       kept: { get: () => readState()[p.id]?.kept ?? {}, set: (v) => { const s = readState(); (s[p.id] ??= {}).kept = v; fs.writeFileSync(STATE, JSON.stringify(s, null, 2)); } },
     }), progress);
+    // Ready only once the Worker really serves it: one fetch of the root and one deep page, after the publish finished.
+    const root = previewUrl(p.id, o.change);
+    if (root && r.probe?.length) {
+      progress('checking the Worker serves the site');
+      const { verifyServed } = await import('./previews-cloud.ts');
+      await verifyServed(root, r.probe, fetch, (await import('./sitekeys.ts')).playtestCookies());
+    }
     return record(p.id, o.change, { status: 'ready', at: Date.now(), sha: r.sha, ref: r.ref, files: r.files, ms: Date.now() - t0, ...(r.version ? { version: r.version } : {}) });
   } catch (e: any) {
     if (e instanceof SiteWaiting) return record(p.id, o.change, { status: 'waiting', at: t0, detail: e.message });
