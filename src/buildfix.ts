@@ -14,6 +14,8 @@
 //   buildCheckBrief(): what every agent on a project with a build is told to run before opening a PR (agents.ts brief).
 
 import crypto from 'node:crypto';
+import fs from 'node:fs';
+import path from 'node:path';
 import { db } from './db.ts';
 import { getProduct, managedElsewhere } from './config.ts';
 import { failSignature } from './buildfail.ts';
@@ -25,6 +27,10 @@ export const MAX_FIXES = 2;
 const BLAME_WINDOW_MS = 48 * 3600_000;
 /** Statuses of a change that is still on its way (its fix may yet merge): another fixer for the same failure waits. */
 const OPEN = ['queued', 'working', 'verifying', 'revising', 'ready', 'needs answer', 'asked'];
+/** Statuses of a change whose agent is running now: it is told when beta's build goes red (tellRunningAgents). */
+const RUNNING = ['queued', 'working', 'verifying', 'revising', 'needs answer', 'waiting on Gen'];
+/** The file a running agent finds in its worktree when beta is red; its brief says to read it before the pull request. */
+export const BETA_RED_FILE = '.hawkes/beta-build.md';
 
 /** The marker line a fixer's request carries; the count and the dedupe read it back from `changes.request`. */
 export const fixMarker = (sig: string) => `build-fix:${crypto.createHash('sha1').update(sig).digest('hex').slice(0, 12)}`;
@@ -35,6 +41,91 @@ export function fixersOf(sig: string): FixState {
   let rows: { id: string; status: string }[] = [];
   try { rows = db.prepare("SELECT id, status FROM changes WHERE request LIKE ? AND status != 'cancelled' ORDER BY created").all(`%${fixMarker(sig)}%`) as typeof rows; } catch { /* agents.ts makes the table; none yet means none started */ }
   return { open: rows.filter((r) => OPEN.includes(r.status)).map((r) => r.id), total: rows.length };
+}
+
+/**
+ * Where the automatic fixer of a failure is now: working (an open change), merged (its fix is in beta and beta rebuilds),
+ * exhausted (MAX_FIXES tried: the owner's), or none (no fixer started, or the last one stopped). The Inbox card and the
+ * phone push say which; only "none" and "exhausted" keep the "someone has to fix the code" wording.
+ */
+export type FixerNow = { state: 'working' | 'merged' | 'exhausted' | 'none'; change: string | null; title: string | null; url: string | null };
+export function fixerNow(sig: string): FixerNow {
+  let rows: { id: string; status: string; title: string | null }[] = [];
+  try { rows = db.prepare("SELECT id, status, title FROM changes WHERE request LIKE ? AND status != 'cancelled' ORDER BY created").all(`%${fixMarker(sig)}%`) as typeof rows; } catch { /* no table yet: no fixer */ }
+  const pick = (r: { id: string; title: string | null }, state: FixerNow['state']): FixerNow => ({ state, change: r.id, title: r.title ?? r.id, url: `#changes/${r.id}` });
+  const open = rows.filter((r) => OPEN.includes(r.status));
+  if (open.length) return pick(open[open.length - 1], 'working');
+  const last = rows.at(-1);
+  if (last?.status === 'merged') return pick(last, 'merged');
+  if (rows.length >= MAX_FIXES) return { state: 'exhausted', change: null, title: null, url: null };
+  return { state: 'none', change: null, title: null, url: null };
+}
+
+/** The sentence that says where the fix is (the card and the push); empty when no fixer is involved. */
+export function fixSentence(now: FixerNow): string {
+  if (now.state === 'working') return `A fix agent is working on it (change ${now.change}, ${now.title}). Beta rebuilds when its fix merges, and this card goes then.`;
+  if (now.state === 'merged') return `Its fix merged into beta (change ${now.change}, ${now.title}); beta is rebuilding now.`;
+  return '';
+}
+
+/** The "needs a person" sentence buildfail.ts writes for every code failure. A fixer replaces it; no fixer keeps it. */
+const NEEDS_PERSON = /\s*Studio can't fix this by building again: someone has to fix the code first\./;
+/** A failure's plain reason for the owner, with the automatic fixer's state in it (never "someone has to fix" while one works). */
+export function fixedWording(plain: string, now: FixerNow): string {
+  if (now.state !== 'working' && now.state !== 'merged') return plain;
+  return `${plain.replace(NEEDS_PERSON, '')} ${fixSentence(now)}`.trim();
+}
+
+/**
+ * Beta's build failed (announce, once per failure): every agent running on that product is told, by a file in its worktree
+ * (.hawkes/beta-build.md: beta is red, why, and the error text) and a line in its log. Its brief has it read before the pull
+ * request (buildCheckBrief). A code failure also files a memory lesson candidate. Returns how many agents were told.
+ */
+export async function tellRunningAgents(r: any): Promise<number> {
+  let rows: { id: string; worktree: string | null }[] = [];
+  try { rows = db.prepare(`SELECT id, worktree FROM changes WHERE product = ? AND status IN (${RUNNING.map(() => '?').join(',')})`).all(r.product, ...RUNNING) as typeof rows; } catch { return 0; }
+  if (!rows.length) return 0;
+  const errors = buildErrors(`${r.fail_log ?? ''}\n${r.detail ?? ''}`);
+  const shown = errors.lines.length ? errors.lines : [String(r.detail ?? '').slice(0, 400)];
+  const sha = r.sha ? String(r.sha).slice(0, 7) : 'unknown';
+  const why = String(r.fail_plain ?? r.detail ?? '').replace(NEEDS_PERSON, '').trim();
+  const text = `# Beta's build is red
+
+Beta's build ${r.build} ${r.version} of ${r.product} failed (commit ${sha} on beta).
+
+Why: ${why || 'no reason given'}
+
+The error text:
+
+\`\`\`
+${shown.join('\n').slice(0, 3000)}
+\`\`\`
+
+Beta is red, so a change that builds on beta can still fail once it merges. Before you open your pull request, check that
+your change doesn't add to these errors, and fix any of them your change touches. Say in the pull request that beta was
+red and what you saw. (Studio wrote this file; it isn't part of your change and isn't committed.)
+`;
+  let agents: any = null;
+  try { agents = await import('./agents.ts'); } catch { /* agents.ts not loaded (a test without it): files only */ }
+  let told = 0;
+  for (const c of rows) {
+    if (c.worktree && fs.existsSync(c.worktree)) {
+      try {
+        fs.mkdirSync(path.join(c.worktree, '.hawkes'), { recursive: true });
+        fs.writeFileSync(path.join(c.worktree, BETA_RED_FILE), text);
+        told++;
+      } catch { /* the worktree is going away: the log still says so */ }
+    }
+    agents?.changeLog?.(c.id, `beta's build ${r.build} ${r.version} failed (${sha}): ${why.slice(0, 200)}. The error text is in ${BETA_RED_FILE}; read it before the pull request.`);
+  }
+  if (r.fail_kind === 'code') {
+    try {
+      const { writeMemory } = await import('./memory.ts');
+      const first = (shown[0] ?? '').replace(/^.*?(error )/, '$1').slice(0, 120);
+      writeMemory({ kind: 'lesson', title: `Beta's ${r.product} build failed: ${first || 'a compile error'}`, body: `${why}\n\nError text:\n${shown.slice(0, 5).join('\n')}`.slice(0, 1500), product: r.product, tags: 'build' }, { who: 'agent', name: 'Studio (beta build)' });
+    } catch (e: any) { console.warn(`[buildfix] lesson candidate for ${r.product}: ${e?.message ?? e}`); }
+  }
+  return told;
 }
 
 export type FixDeps = {
@@ -144,7 +235,10 @@ export function buildCheckBrief(p: { engine?: string; build?: unknown; builds?: 
   const unity = p.engine === 'unity' || Boolean(p.build) || Boolean(p.builds?.some((b) => b.tool === 'unity'));
   const others = (p.builds ?? []).filter((b) => b.tool !== 'unity' && b.command);
   if (!unity && !others.length) return '';
-  const out = ['   Before the pull request, also run the project\'s build or compile check where you can, and say in the PR description which you ran and which you could not (and why).'];
+  const out = [
+    `   If ${BETA_RED_FILE} is in your worktree, beta's build was red when Studio last looked: read it first, keep your change from adding to those errors, and say in the PR what you saw.`,
+    '   Before the pull request, also run the project\'s build or compile check where you can, and say in the PR description which you ran and which you could not (and why).',
+  ];
   if (unity) {
     out.push(
       '   Unity: the compiler runs on the build server, not here. Before you open the PR, read the C# you changed for what it would reject:',
