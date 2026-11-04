@@ -354,6 +354,7 @@ test("Gen's \"token for this build is gone\" counts as a lost token (sick-of-it-
   assert.ok(B.tokenLost('the token expired'));
   assert.ok(B.tokenLost('GitHub refused the clone: Bad credentials'));
   assert.equal(B.tokenLost('Unity exited with code 1: compile errors'), false);
+  assert.ok(B.tokenLost("couldn't fetch jgriffith3433/sickofitgame-unity at bc65eafd322b (is the commit pushed, and can the GitHub token read the repo?): ##utp:{\"type\":\"MemoryLeaks\"}"));
   assert.equal(B.tokenLost(undefined), false);
 });
 

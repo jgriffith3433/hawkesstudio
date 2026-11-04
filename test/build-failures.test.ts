@@ -57,6 +57,10 @@ test('failures are classified: infrastructure or code, in plain words', () => {
   assert.equal(cs.class, 'compile');
   assert.equal(cs.kind, 'code');
   assert.match(cs.plain, /error CS1002/, 'the first compiler error is in the message');
+  // sick-of-it-unity v13 (2026-11-03): Gen's source fetch failed and the Unity log's tail came after it; not the code.
+  const fetch = F.classify("the Unity build failed: couldn't fetch jgriffith3433/sickofitgame-unity at bc65eafd322b (is the commit pushed, and can the GitHub token read the repo?): ##utp:{\"type\":\"MemoryLeaks\"}", { log: '[GameDeploy] CLOUD BUILD COMPLETE\nUnity exited with code 0' });
+  assert.equal(fetch.class, 'token');
+  assert.equal(fetch.kind, 'infrastructure');
   assert.equal(F.classify('Hawkes Gen finished job j_1, but Studio stopped before publishing it (its run interrupted); build again').class, 'restart');
   assert.equal(F.classify('timed out after 4 h in Hawkes Gen (job j_1 was still running); cancelled it').class, 'timeout');
   assert.equal(F.classify('the Unity build failed: Killed, out of memory').class, 'memory');

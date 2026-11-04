@@ -580,7 +580,11 @@ async function viaStudio(p: Product, b: BuildSpec, slug: string, sha: string, to
  * the first pattern ("token is gone") missed: sick-of-it-unity v3 and v4 failed on it (2026-11-01). Exported for the tests.
  */
 export function tokenLost(error: unknown): boolean {
-  return /token\b[^.]{0,40}?\b(is gone|gone|expired)|GitHub refused|can't read the repo|Bad credentials|\b401\b/i.test(String(error ?? ''));
+  // Gen's cloud build also says "couldn't fetch <repo> at <sha> (is the commit pushed, and can the GitHub token read the
+  // repo?)" when the source fetch failed. Studio only builds commits it read from GitHub, so that is the token (an hour's
+  // installation token outlived by a long queue), never the code: sick-of-it-unity v13 (2026-11-03) was called a compile
+  // error for it.
+  return /token\b[^.]{0,40}?\b(is gone|gone|expired)|GitHub refused|can't read the repo|can the GitHub token read the repo|Bad credentials|\b401\b/i.test(String(error ?? ''));
 }
 
 /**
