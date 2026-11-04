@@ -354,6 +354,12 @@ const server = http.createServer(async (req, res) => {
       const r = getRun(m[1]);
       return r ? send(res, 200, r) : send(res, 404, { error: 'no such run' });
     }
+    // The build page: a build run's builds with the log, asked of Hawkes Gen when this is called (buildview.ts).
+    m = /^\/api\/runs\/(r_[0-9a-f]+)\/build$/.exec(route);
+    if (m && method === 'GET') {
+      const page = await (await import('./buildview.ts')).buildPage(m[1]);
+      return page ? send(res, 200, page) : send(res, 404, { error: 'no such build run' });
+    }
     m = /^\/api\/runs\/(r_[0-9a-f]+)\/report$/.exec(route);
     if (m && method === 'GET') {
       const r = reportMarkdown(m[1]);
