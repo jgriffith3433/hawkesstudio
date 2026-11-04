@@ -2989,6 +2989,9 @@ function conflictHandled(id: string, e: Error & { conflict: string[] }) {
     const c = getChange(id)!;
     return Object.assign(new Error(`${e.message}: its agent is resolving the conflicts (conflict pass ${c.conflicts} of ${CONFLICT_PASSES}, not a try); it merges once they're resolved`), { conflict: e.conflict, resolving: true });
   }
+  // The passes are used up: J decides, once (the PM leaves a change alone while J is asked about it, so its minute
+  // tick doesn't try the same merge again and again).
+  if ((getChange(id)?.conflicts ?? 0) >= CONFLICT_PASSES) void conflictStuck(id, e.message).catch((x) => console.warn(`[studio] conflict question ${id}: ${x.message ?? x}`));
   return Object.assign(new Error(`${e.message}, and its agent already had ${CONFLICT_PASSES} conflict passes: revise it or close it`), { conflict: e.conflict });
 }
 

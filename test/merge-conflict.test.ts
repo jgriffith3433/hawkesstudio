@@ -294,3 +294,28 @@ test('an agent that fails twice on the same conflict: stuck, and only then J is 
   assert.match(q!.text, /tried 2 times to resolve the conflicts/);
   assert.equal(rm.getTask(c.task)!.tries, 1, 'still not a try');
 });
+
+test("the PM's minute check meets a conflict GitHub reports: its agent takes it; with the passes used up J is asked once and the PM stops trying", async () => {
+  const pm = await import('../src/pm.ts');
+  // Yoobaland, 2026-11-04: the PM's default review merged PR #454 every minute and each one said "Merge stopped".
+  const c = readyChange('Hello\n');
+  betaMoves('menu.txt', 'Howdy\n');
+  git(repoDir, 'worktree', 'remove', '--force', c.wt);
+  dirty.set(n, git(repoDir, 'rev-parse', `refs/heads/${c.branch}`));
+  await pm.pmMerge(c.id);
+  assert.equal(getChange(c.id)!.status, 'revising', 'its agent is resolving it');
+  assert.equal(pm.reviewable(getChange(c.id)), false, "not the PM's to merge while it does");
+  await until(() => getChange(c.id)!.status === 'merged', 60_000, 'the conflict pass and the merge');
+
+  // Passes used up: one question for J, and the PM leaves it alone after that.
+  const d = readyChange('Hi there\n');
+  betaMoves('menu.txt', 'Greetings\n');
+  dirty.set(n, git(repoDir, 'rev-parse', `refs/heads/${d.branch}`));
+  db.prepare('UPDATE changes SET conflicts = ? WHERE id = ?').run(CONFLICT_PASSES, d.id);
+  const tries = mergeTries.length;
+  await assert.rejects(pm.pmMerge(d.id), /already had 2 conflict passes/);
+  await until(() => rm.listQuestions('asked J').some((q) => q.subject === d.task), 10_000, 'the question for J');
+  assert.equal(pm.reviewable(getChange(d.id)), false, 'the PM waits for J');
+  assert.ok(mergeTries.length <= tries + 1, 'GitHub asked at most once');
+  db.prepare(`UPDATE changes SET status = 'closed' WHERE id = ?`).run(d.id);
+});
