@@ -54,7 +54,47 @@ var BuildFail = (() => {
     }
   }
 
+  /**
+   * The build page (Activity's build rows, the Runs tab): one build run, its builds and their log, asked of Hawkes Gen when
+   * it opens and on Refresh (GET /api/runs/<run>/build); the push stream's `builds` topic refetches it too, never a timer.
+   */
+  let pageRun = null;
+  const pageHtml = (d) => {
+    const blocks = d.builds.map((b) => {
+      const p = b.progress;
+      const idle = p && p.unchangedSeconds != null ? took(p.unchangedSeconds) : null;
+      const verdict = !p ? '' : p.verdict === 'building' ? '🟢 Building: the log moved' : p.verdict === 'maybe stuck' ? '🟠 Maybe stuck: the log has not moved' : '⚪ Cannot tell yet (Studio has seen the log once)';
+      return `<div class="bf-page-build" data-key="bfp:${esc(b.build)}" style="border:1px solid var(--line,#8884);border-radius:6px;padding:8px 10px;margin:8px 0">
+        <div><b>${b.state === 'failed' ? '❌' : b.state === 'ready' ? '✅' : b.state === 'cancelled' ? '🚫' : '⏳'} ${esc(b.build)}${b.version != null ? ` ${esc(b.version)}` : ''}</b> · ${esc(b.state)}${b.elapsedSeconds != null ? ` · ${esc(took(b.elapsedSeconds))}${b.state === 'building' ? ' so far' : ''}` : ''}${b.started ? ` · started ${esc(ago(b.started))}` : ''}</div>
+        <div class="meta">${b.sha ? `commit <code>${esc(b.sha.slice(0, 7))}</code>` : 'no commit yet'}${b.ref ? ` · ${esc(b.ref)}` : ''}${b.genJob ? ` · Gen job ${window.studioMe?.customer ? esc(b.genJob) : `<a href="${esc(typeof GEN !== 'undefined' ? GEN : '')}/#job/${esc(b.genJob)}" target="_blank" rel="noopener">${esc(b.genJob)}</a>`}${b.genStatus ? ` (${esc(b.genStatus)})` : ''}` : ''}${b.url ? ` · <a href="${esc(b.url)}" target="_blank" rel="noopener">Play ↗</a>` : ''}</div>
+        ${b.step || b.genDetail ? `<div class="meta">Step: ${esc(b.genDetail || b.step)}</div>` : ''}
+        ${b.failure ? `<p>${esc(b.failure.plain || b.failure.reason)}</p>` : ''}
+        ${p ? `<div role="status"><b>${esc(verdict)}</b>${p.lastLine ? ` · last line${idle ? ` (unchanged for ${esc(idle)})` : ''}: <code>${esc(p.lastLine.slice(0, 200))}</code>` : ' · no log lines yet'}<div class="meta">${p.lines} log lines · Studio has watched this log for ${esc(took(p.watchedSeconds))} (Gen's lines carry no time, so the age counts from when Studio saw the line change)</div></div>` : ''}
+        ${b.log ? `<details open><summary class="meta">${esc(b.log.source)} · last ${b.log.text.split('\n').length} of ${b.log.total} lines</summary><pre data-bf-log style="max-height:50vh;overflow:auto;font-size:12px;white-space:pre-wrap">${esc(b.log.text)}</pre></details>` : `<div class="meta">${esc(b.logError ?? (b.state === 'starting' ? 'Not started yet: waiting its turn.' : 'No log yet.'))}</div>`}
+      </div>`;
+    }).join('');
+    return `<h3>Build ${esc(d.run.product)} · ${esc(d.run.status)}</h3><div class="meta">${esc(d.run.id)}${d.run.detail ? ` · ${esc(d.run.detail)}` : ''} · started ${esc(ago(d.run.started))}</div>${blocks || '<div class="meta">This run has no builds.</div>'}
+      <div class="actions"><button type="button" class="small primary" data-bf-page-refresh>Refresh</button> <button type="button" class="small" data-bf-close>Close</button><span class="meta" data-bf-msg></span></div>`;
+  };
+  async function page(run) {
+    let dlg = document.getElementById('bfWhy');
+    if (!dlg) { dlg = document.createElement('dialog'); dlg.id = 'bfWhy'; dlg.style.cssText = 'max-width:900px;width:92vw;border-radius:8px;padding:16px'; document.body.appendChild(dlg); dlg.addEventListener('click', (e) => { if (e.target === dlg || e.target.closest('[data-bf-close]')) dlg.close(); }); }
+    pageRun = run;
+    dlg.addEventListener('close', () => { if (pageRun === run) pageRun = null; }, { once: true });
+    if (!dlg.open) { dlg.innerHTML = '<div class="meta">Loading…</div>'; dlg.showModal(); }
+    try {
+      const d = await api(`/api/runs/${encodeURIComponent(run)}/build`);
+      studioPatch(dlg, pageHtml(d));
+    } catch (err) {
+      dlg.innerHTML = `<div class="meta">${esc(err.message)}</div><div class="actions"><button type="button" class="small" data-bf-close>Close</button></div>`;
+    }
+  }
+  studioStream.on(['builds', 'runs'], () => { if (pageRun) void page(pageRun); });
+
   document.addEventListener('click', async (e) => {
+    const bp = e.target.closest('[data-build-open]');
+    if (bp) { e.preventDefault(); e.stopPropagation(); return void page(bp.dataset.buildOpen); }
+    if (e.target.closest('[data-bf-page-refresh]') && pageRun) { e.preventDefault(); return void page(pageRun); }
     const w = e.target.closest('[data-bf-why]');
     if (w) { e.preventDefault(); const [p, id] = w.dataset.bfWhy.split('/'); return void why(p, id); }
     const h = e.target.closest('a[href^="#build-why/"]');
@@ -69,5 +109,5 @@ var BuildFail = (() => {
       try { const s = await api(`/api/projects/${encodeURIComponent(p)}/builds`, { method: 'POST', body: { build } }); if (msg) msg.textContent = s.run ? ' Building: it shows in Activity.' : ` ${s.note ?? ''}`; } catch (err) { if (msg) msg.textContent = ` ${err.message}`; r.disabled = false; r.textContent = 'Retry build'; }
     }
   });
-  return { line, badge, running, done, attempts, why, took };
+  return { line, badge, running, done, attempts, why, page, took };
 })();

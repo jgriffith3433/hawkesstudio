@@ -192,7 +192,7 @@ if (typeof document !== 'undefined') (() => {
       <div class="act-now">${esc(r.detail ?? '')}${r.steps.total ? ` · ${r.steps.done}/${r.steps.total} steps${r.steps.failed ? `, ${r.steps.failed} failed` : ''}` : ''}</div>
       ${planHtml(r)}
       ${(r.now ?? []).map((s) => `<div class="act-step">▸ ${esc(s.kind)} ${esc(s.name)}${s.detail ? `: ${esc(s.detail)}` : ''} <span class="meta">${since(s.started)}${s.job && s.kind === 'playtest' ? ` · ${watch(s.job)}` : ''}${s.job && !window.studioMe?.customer ? ` · ${link(`${GEN}/#job/${s.job}`, 'job')}` : ''}</span>${s.job && ['playtest', 'build'].includes(s.kind) ? ` <button class="small" data-act-cancel="cancel" data-kind="jobs" data-id="${esc(s.job)}" data-what="this ${esc(s.kind)} (its step becomes cancelled, not failed)">Cancel ${esc(s.kind)}</button>` : ''}</div>`).join('')}
-      <div class="meta">by ${by(r)} · <a href="#" data-run-open="${esc(r.id)}">${esc(r.id)}</a>${r.cost ? ` · $${r.cost.toFixed(2)}` : ''}</div>
+      <div class="meta">by ${by(r)} · ${r.kind === 'build' ? `<a href="#" data-build-open="${esc(r.id)}">build page · logs</a> · ` : ''}<a href="#" data-run-open="${esc(r.id)}">${esc(r.id)}</a>${r.cost ? ` · $${r.cost.toFixed(2)}` : ''}</div>
       ${r.status === 'running' ? `<div class="act-actions"><button class="small" data-act-cancel="cancel" data-kind="runs" data-id="${esc(r.id)}" data-what="this whole run (its pending steps stop and its Gen jobs are cancelled)">Cancel run</button></div>` : ''}
       ${r.playtests?.length ? `<details class="act-frames" data-frames-run="${esc(r.id)}"${openRuns.has(r.id) ? ' open' : ''}><summary class="meta">🎞 screenshots · ${r.playtests.length} playtest${r.playtests.length === 1 ? '' : 's'}</summary>${r.playtests.map((p) => `<div class="fr-slot" data-frames="${esc(p.id)}"><div class="meta">${esc(p.product)} · ${esc(p.name)} · ${esc(p.status)}</div></div>`).join('')}</details>` : ''}
     </div>`;
@@ -480,12 +480,13 @@ if (typeof document !== 'undefined') (() => {
       show('changes', c.dataset.changeLog);
     }
     const r = e.target.closest('[data-run-open]');
+    const bo = e.target.closest('[data-build-open]');
     if (r) { e.preventDefault(); openRun = r.dataset.runOpen; show('runs'); }
     // A playtest: the Playtests page with it maximized (other links in the card keep their own way).
     const w = !r && !c && !t && (e.target.closest('a[data-live-job]') || (!e.target.closest('a') && e.target.closest('[data-live-job]')));
     if (w && !(e.ctrlKey || e.metaKey || e.shiftKey)) { e.preventDefault(); show('live', w.dataset.liveJob); }
     // On a phone the drawer covers the page: following a link closes it.
-    if ((t || c || r || w) && matchMedia('(max-width: 760px)').matches) setOpen(false, { keep: false });
+    if ((t || c || r || bo || w) && matchMedia('(max-width: 760px)').matches) setOpen(false, { keep: false });
   });
   setOpen(open, { keep: false });
 })();
