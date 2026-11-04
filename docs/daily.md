@@ -371,6 +371,19 @@ What ran is in the change's log, its PR description and its ready line. Engine: 
 into the agent image at `/opt/unity-check/unity-check`, `STUDIO_UNITY_CHECK` to point elsewhere or `off`), else the
 built-in checker (a lexer and a member scan, always there). Test `test/unitycheck.test.ts`.
 
+**The compile gate** (J, 2026-11-04, `src/compilecheck.ts`). After the pull request is pushed and before the change is
+ready (so before it can merge into beta), Studio asks Hawkes Gen to compile the branch: `unity.build` in customer mode
+with `check: true` next to the usual `github {repo, commit, token, ref}` (`genBuildParams`' shape): batchmode,
+nographics, the project's own Unity version and Library cache, no WebGL player build (the Gen side is its own change:
+hawkesgen docs/unity-cloudrun.md, "Compile-only check"). Gen owns the Unity licence; the customer sets up nothing. The
+compiler errors (file, line, code, message) go in the change's log and `verify.compileCheck`, and the ready line says
+what ran, its time and its cost. A compile failure sends the agent back (its own session, `COMPILE_FIXES` = 2, never a
+try), then fails the change ("blocked from merging"), so a CS1503 never reaches beta. A check that couldn't run (Gen
+lost the job, no token) never blocks: it says so and the change goes on to beta's own build. **Off by default**
+(`STUDIO_UNITY_COMPILE=on`): J asked to measure first and stop if a run costs over a few dollars (`COST_STOP_USD`, 3).
+Every run is a row in `compile_checks` with its seconds and dollars; `compileCostReport()` is the average. Test
+`test/compilecheck.test.ts`.
+
 **11. Content tasks** ("DoD: 3 new stages for the Encore chapter", "a Sick Of It enemy for Circle IX"). Agents make game
 content end to end with each product's content skills (`.claude/skills/` in the product repo, loaded by Claude Code):
 DoD `dod-stage`, `dod-fighter`, `dod-voice-music`; Sick Of It `soi-enemy`, `soi-level`, `soi-voice-music`; PH Origins
