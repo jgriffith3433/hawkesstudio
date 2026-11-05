@@ -235,6 +235,8 @@ async function runAll(run: string, ids: string[], o: RunOptions) {
     const { autoFix } = await import('./agents.ts');
     const started = autoFix(run);
     if (started.length) db.prepare(`UPDATE runs SET detail = ? WHERE id = ?`).run(`${report.headline} · agents started ${started.length} fixes`, run);
+    // A project that still reads fix-first or broken with nobody on it: a fixer, or one Inbox card saying why (verdictwork.ts).
+    void import('./verdictwork.ts').then((m) => m.actOnRun(run)).catch((e) => console.warn(`[studio] verdicts after ${run}: ${e.message ?? e}`));
   }
   // The morning brief (daily runs): a Talk conversation summarizing the report, and a notification linking to it.
   void import('./brief.ts').then(({ morningBrief }) => morningBrief(run)).catch((e) => console.warn(`[studio] morning brief: ${e.message ?? e}`));
@@ -1018,6 +1020,8 @@ async function fileReview(rs: string, p: Product, run: string, name: string, rev
     detail: `${v.verdict} · ${x.mode}${x.barMet ? ' (meets its quality bar)' : ''} · ${(v.findings ?? []).length} findings (${parts.join(', ')})${p.quality ? ` · bar: ${v.meetsBar ?? '?'}` : ''}${viaNote(rev)}${late}`,
     data: { ...v, added: merged.added, updated: merged.updated, ideas: merged.ideas, skipped: merged.skipped, knownFixed: known.fixed, knownPresent: known.present, reviewKey: x.reviewKey, mode: x.mode, sha: x.sha, barHash: barHash(p.quality), bar: x.barWhy }, finished: true,
   });
+  // A review that came late (it waited for the AI; its run is long over): act on its verdict now (verdictwork.ts).
+  if (late && isServer()) void import('./verdictwork.ts').then((m) => m.actOnVerdict(p.id, 'a late review')).catch(() => {});
   // A roadmap task's acceptance criteria, judged on this playtest (the beta run after a merge; pm.ts reads them).
   if (x.criteria?.length) {
     const checks = await judgeCriteria(x.criteria, v, playResult);
@@ -1146,6 +1150,8 @@ export function closeRun(id: string, label: string) {
   const status = endStatus(n, runCancelled(id));
   db.prepare(`UPDATE runs SET status = ?, detail = ?, finished = ?, cost = ? WHERE id = ?`).run(status, runCancelDetail(id, `${label}${n.failed ? ' failed' : status === 'done' ? '' : ` ${status}`}`), Date.now(), cost, id);
   kickFollowups();
+  // A one-off playtest or a beta run ended: its review may have left the project fix-first or broken (verdictwork.ts).
+  if (isServer() && status !== 'cancelled') void import('./verdictwork.ts').then((m) => m.actOnRun(id)).catch((e) => console.warn(`[studio] verdicts after ${id}: ${e.message ?? e}`));
 }
 
 async function partialBody(id: string, kind: string, p: Product, opts: PartialOptions) {
@@ -1169,7 +1175,7 @@ async function partialBody(id: string, kind: string, p: Product, opts: PartialOp
  * quiet: ms a Unity beta run waits for more pushes before building (default STUDIO_BETA_QUIET_MS, 2 min; J's own Beta
  * button: 0). A newer beta run of the product supersedes one still waiting (betaqueue.ts).
  */
-type BetaOptions = { focus?: string; origin?: string | null; criteria?: string[]; scenario?: string; options?: Record<string, unknown>; playtest?: boolean; quiet?: number; plays?: BetaPlay[];
+type BetaOptions = { focus?: string; reverify?: boolean; origin?: string | null; criteria?: string[]; scenario?: string; options?: Record<string, unknown>; playtest?: boolean; quiet?: number; plays?: BetaPlay[];
   /** The agent change whose merge into beta started this run (agents.ts approve): a Unity build skips the quiet time
    *  while no other change of the product is on its way into beta (betaqueue.ts mergesInFlight). */
   merge?: string;
@@ -1187,7 +1193,7 @@ export function startBeta(productId: string, o: BetaOptions = {}) {
   const p = getProduct(productId);
   if (managedElsewhere(p)) throw new StudioError(managedNote(p), 409);
   const id = newId('r');
-  db.prepare('INSERT INTO runs (id, kind, status, detail, products, options, started) VALUES (?, ?, ?, ?, ?, ?, ?)').run(id, 'beta', 'running', `beta ${p.id}`, J([p.id]), J({ focus: o.focus, criteria: o.criteria, scenario: o.scenario, options: o.options, playtest: o.playtest, quiet: o.quiet, plays: o.plays, ...(o.merge ? { merge: o.merge } : {}), ...(o.tag ? { tag: o.tag } : {}) }), Date.now());
+  db.prepare('INSERT INTO runs (id, kind, status, detail, products, options, started) VALUES (?, ?, ?, ?, ?, ?, ?)').run(id, 'beta', 'running', `beta ${p.id}`, J([p.id]), J({ focus: o.focus, ...(o.reverify ? { reverify: true } : {}), criteria: o.criteria, scenario: o.scenario, options: o.options, playtest: o.playtest, quiet: o.quiet, plays: o.plays, ...(o.merge ? { merge: o.merge } : {}), ...(o.tag ? { tag: o.tag } : {}) }), Date.now());
   tagRun(id, o.origin);
   return { id, done: betaBody(id, p, o) };
 }

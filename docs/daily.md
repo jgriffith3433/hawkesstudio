@@ -1140,3 +1140,25 @@ J and agents build on beta together, live on the cloud server (`src/dev.ts`, `sr
 | Build server disk | about $24/month |
 | GPU generation | only when assets are made: about $1.86/hr while a GPU server runs |
 | Talk calls | free (browser voice, Max plan); the optional ElevenLabs Flash voice about $0.14 per minute Talk speaks |
+
+## Bad verdicts work themselves
+
+J, 2026-11-05: "Studio should be working on it if it's failed or fix first." A project's label on the Projects tab is its
+newest finished review's verdict (`server.ts` `overview` → `verdictWork`, `dashboard/app.js` `health()`/`verdictLine`).
+`src/verdictwork.ts` makes a bad one ("fix first", "broken") a thing Studio acts on, by events (no polling):
+
+- **Act.** When a run ends (`pipeline.ts` daily end and `closeRun`) or a late review is filed, `actOnVerdict(project)` looks
+  at the open findings behind the verdict. An agent already on the project: nothing to start. Else it starts ONE fixer
+  through `startFix` (so won't fix, per-product limits, the day's count and dollar budget and `autoFixBlock`'s retry cap
+  all apply). If it can't (no finding, all held back, a cap), it files ONE Inbox card (subject `verdict:<project>`, merged
+  on repeat, closed when the verdict clears or a fixer starts) that says why. Failed builds already have their own fixer
+  (`buildfix.ts`).
+- **Misconfiguration.** "Broken" because the live address doesn't answer (DNS, refused, expired domain: `deadAddress`) says so
+  in the label and files a card; no code fixer is started.
+- **Re-check.** A merge into beta (`agents.ts approve` → `noteMerge`) of a project that reads bad is followed by ONE beta
+  playtest and review per burst of merges (a quiet window; a merge while it plays queues one more), so the label moves to
+  the new commit. The beta run carries `options.reverify`.
+- **Label.** "Fix first (reviewed 3 h ago on abc1234) — fixing (agent running, c_…)", "— re-checking on beta after a fix
+  merged", "— needs you: <reason>". Never a bare "fix first" while work is in progress.
+- **Settings → Agents:** "Work on a bad verdict by itself" (`autoWorkVerdicts`) and "Re-check beta after a fix merges"
+  (`autoReverify`), both on by default. Test `test/verdictwork.test.ts`.

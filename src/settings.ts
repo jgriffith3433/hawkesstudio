@@ -144,7 +144,7 @@ const RAISES: Record<Section, { up?: string[]; on?: string[]; off?: string[]; an
   tuning: {},
   routing: {},
   call: {},
-  agents: { up: ['maxConcurrent', 'perProduct', 'maxPerDay', 'maxCostPerDay', 'maxTurns'], on: ['enabled', 'autoFix'], any: ['model', 'severities'] },
+  agents: { up: ['maxConcurrent', 'perProduct', 'maxPerDay', 'maxCostPerDay', 'maxTurns'], on: ['enabled', 'autoFix', 'autoWorkVerdicts', 'autoReverify'], any: ['model', 'severities'] },
   pm: { up: ['maxStartsPerDay', 'maxConcurrent', 'maxTries', 'walkAwayGpuPerDay', 'walkAwayGpuPerTask'], on: ['enabled', 'fixBugs', 'walkAway'] },
   notify: {},
   costs: { up: ['budget', 'gpuHours', 'builderHours', 'playtesterHours', 'gpuAutoApprove'], off: ['alerts'] },

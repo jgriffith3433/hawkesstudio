@@ -171,14 +171,17 @@ function changeLinks(r: any, verify: any): ChangeLinks {
 const SETTINGS_FILE = path.join(DATA, 'agents.json');
 /**
  * autoMergeBeta: ready product changes merge into beta by themselves (J, 2026-10-17); off: a person merges them.
+ * autoWorkVerdicts: a review or playtest that ends "fix-first" or "broken" starts a fixer on the findings behind it, or files one
+ * Inbox card saying why it can't (verdictwork.ts; J, 2026-11-05: "studio should be working on it if it's failed or fix first");
+ * autoReverify: a merge into beta that fixes a bad verdict is followed by ONE beta playtest and review per burst of merges.
  * idleMinutes: an agent with no new output that long, its processes only sleeping, is ended (runAgent's watchdog; 0: off).
  * perProduct: changes of one product that may run at once (a second only when it won't collide: parallel.ts);
  * productLimits: per-product overrides of it (J, 2026-10-18: Sick Of It 2). Studio and Gen always run one at a time.
  */
-export type AgentSettings = { enabled: boolean; autoFix: boolean; autoMergeBeta: boolean; betaPlaytests: boolean; maxConcurrent: number; perProduct: number; productLimits: Record<string, number>; maxPerDay: number; maxCostPerDay: number; severities: string[]; model: string; maxTurns: number; idleMinutes: number; genWaitHours: number; access?: { gen?: boolean; repos?: boolean } };
+export type AgentSettings = { enabled: boolean; autoFix: boolean; autoWorkVerdicts: boolean; autoReverify: boolean; autoMergeBeta: boolean; betaPlaytests: boolean; maxConcurrent: number; perProduct: number; productLimits: Record<string, number>; maxPerDay: number; maxCostPerDay: number; severities: string[]; model: string; maxTurns: number; idleMinutes: number; genWaitHours: number; access?: { gen?: boolean; repos?: boolean } };
 /** access: what agents reach beyond their own project (access.ts; both on unless turned off here or on the project).
  * genWaitHours: a change parked on Gen jobs longer than this is told in Talk once (it isn't failed). */
-const DEFAULTS: AgentSettings = { enabled: true, autoFix: true, autoMergeBeta: true, betaPlaytests: false, maxConcurrent: 2, perProduct: 1, productLimits: { sickofit: 2 }, maxPerDay: 1000, maxCostPerDay: 20, severities: ['blocker', 'bug'], model: 'claude-sonnet-5-5', maxTurns: 80, idleMinutes: 20, genWaitHours: 6 };
+const DEFAULTS: AgentSettings = { enabled: true, autoFix: true, autoWorkVerdicts: true, autoReverify: true, autoMergeBeta: true, betaPlaytests: false, maxConcurrent: 2, perProduct: 1, productLimits: { sickofit: 2 }, maxPerDay: 1000, maxCostPerDay: 20, severities: ['blocker', 'bug'], model: 'claude-sonnet-5-5', maxTurns: 80, idleMinutes: 20, genWaitHours: 6 };
 export function agentSettings(): AgentSettings {
   try {
     return { ...DEFAULTS, ...JSON.parse(fs.readFileSync(SETTINGS_FILE, 'utf8')) };
@@ -1520,7 +1523,7 @@ export function startTask(productId: string, request: string, { criteria = [], t
 }
 
 /** Starts a fix for one or more findings of a product. Returns the change id; the work continues in the background. */
-export function startFix(productId: string, findingIds: string[], { auto = false } = {}) {
+export function startFix(productId: string, findingIds: string[], { auto = false, by = 'the daily run' }: { auto?: boolean; by?: string } = {}) {
   const s = agentSettings();
   if (!s.enabled) throw new Error('Agent workers are turned off (settings).');
   if (isInfra(productId)) throw new Error(`${getInfra(productId).name} has no playtest findings: ask for the change with studio_task.`);
@@ -1540,8 +1543,8 @@ export function startFix(productId: string, findingIds: string[], { auto = false
   const id = newId('c');
   const branch = `fix/${id.slice(2)}-${findings[0].title.toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 40).replace(/-$/, '')}`;
   db.prepare('INSERT INTO changes (id, product, findings, status, detail, repo, slug, branch, base, worktree, title, notes, log, created) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
-    .run(id, p.id, J(findings.map((f) => f.id)), 'queued', `${auto ? 'queued by the daily run' : 'queued'}${ahead}`, top, slug, branch, BETA, path.join(WORK(), id), `Fix: ${findings[0].title}`.slice(0, 120), '[]', '[]', Date.now());
-  if (auto) db.prepare('UPDATE changes SET started_by = ? WHERE id = ?').run('the daily run', id);
+    .run(id, p.id, J(findings.map((f) => f.id)), 'queued', `${auto ? `queued by ${by}` : 'queued'}${ahead}`, top, slug, branch, BETA, path.join(WORK(), id), `Fix: ${findings[0].title}`.slice(0, 120), '[]', '[]', Date.now());
+  if (auto) db.prepare('UPDATE changes SET started_by = ? WHERE id = ?').run(by, id);
   // J (2026-10-17): a finding is consumed as soon as an agent takes it: fixed now, assumed done by the change. A review
   // reporting it again doesn't reopen it while this change is unmerged (backlog.ts absorb); closing the change does.
   for (const f of findings) updateFinding(f.id, { status: 'fixed', note: `agent change ${id}` });
@@ -3332,6 +3335,8 @@ export async function approve(id: string, { confirm, by = 'J', origin, auto = fa
     void import('./buildfix.ts').then((m) => m.fixMerged(id)).catch((e) => console.warn(`[studio] rebuild after ${id}: ${e.message ?? e}`));
     // Beta moved: its pre-deploy build, its build (Unity), the beta site and a local playtest of it follow, in the background.
     // A roadmap task's criteria are judged again on beta, on the scenario its agent wrote for them.
+    // A fix for a project that reads fix-first or broken: ONE beta playtest + review follows the burst of merges (verdictwork.ts).
+    void import('./verdictwork.ts').then((m) => m.noteMerge(c.product, id)).catch(() => {});
     void import('./pipeline.ts').then(({ startBeta }) => startBeta(c.product, { focus: `Just merged into beta: ${c.title}. Check it works and nothing regressed.`, origin, criteria: c.criteria, scenario: c.verify?.scenario, options: c.verify?.options, merge: id })).catch((e) => console.warn(`[studio] beta after ${id}: ${e.message ?? e}`));
     return getChange(id);
   });
