@@ -67,6 +67,8 @@ async function overview() {
   // A project's beta to play: its own beta address, else the beta site Studio hosts for it (sites.<domain>/o/<org>/<id>/).
   // The Projects page's "Play beta" shows for either (2026-11-01: Studio-hosted betas had no Play beta button).
   const hosted = new Map(listPreviews().map((x) => [x.product, x.play]));
+  const { verdictLabel } = await import('./verdictwork.ts');
+  const agentSet = (await import('./agents.ts')).agentSettings();
   const products = await Promise.all(loadProducts().map(async (p) => {
     const steps = (db.prepare(`SELECT * FROM steps WHERE product = ? ORDER BY started DESC LIMIT 60`).all(p.id) as any[]).map(rowToStep);
     const latest = (kind: string) => steps.filter((s) => s.kind === kind);
@@ -83,6 +85,8 @@ async function overview() {
         return { name, playtest: byName.get(`playtest:${name}`) ?? null, review: byName.get(`review:${name}`) ?? null };
       }),
       lastReview: reviews[0] ?? null,
+      // What Studio is doing about a fix-first or broken verdict (verdictwork.ts): the card's label shows it.
+      verdictWork: verdictLabel(p.id, agentSet),
       // Builds whose newest attempt failed (buildfail.ts): the red "Last build failed" badge on the card.
       buildFailing: (await import('./buildfail.ts')).failingBuilds(p.id),
       buildRunning: (await import('./buildfail.ts')).buildsRunning(p.id),

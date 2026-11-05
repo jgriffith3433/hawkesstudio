@@ -397,6 +397,17 @@ function devLine(p) {
 }
 
 const VERDICT = { ship: 'Looks good to ship', 'fix-first': 'Works, but has problems to fix first', broken: 'Broken: needs fixing' };
+/** The label of a bad verdict: what the review said (its age and commit) and what Studio is doing about it. */
+function verdictLine(vw) {
+  const said = vw.verdict === 'broken' ? 'Broken' : 'Fix first';
+  const seen = `reviewed ${ago(vw.at)}${vw.commit ? ` on ${vw.commit}` : ''}`;
+  const doing = vw.state === 'fixing' ? `fixing (agent running${vw.change ? `, ${vw.change}` : ''})`
+    : vw.state === 'rechecking' ? 're-checking on beta after a fix merged'
+    : vw.state === 'needs-you' ? `needs you: ${vw.reason ?? 'see the Inbox'}`
+    : vw.reason ? `waiting: ${vw.reason}` : 'waiting for Studio to pick it up';
+  return `${said} (${seen}) — ${doing}.`;
+}
+
 /** How a product stands, in one plain line: rank 0 = broken, 1 = needs a look, 2 = fine, 3 = not played yet. */
 function health(p) {
   // Handed over to another Studio (config.ts managedBy): shown last, its history kept, nothing run here.
@@ -411,6 +422,10 @@ function health(p) {
   if (p.buildFailing?.length) return { rank: 0, text: BuildFail.line(p.buildFailing[0]) };
   if (p.build?.status === 'failed') return { rank: 0, text: `The Unity build failed ${ago(p.build.finished)}.` };
   if (failed.length) return { rank: 0, text: `${failed.length === 1 ? 'A playtest' : `${failed.length} playtests`} failed${when}: ${failed[0].playtest.detail ?? failed[0].name}` };
+  // A bad verdict says what Studio is doing about it, with the review's age and commit (src/verdictwork.ts): never a bare
+  // "fix first" while an agent is on it, a re-check is playing, or it is waiting on the owner.
+  const vw = p.verdictWork;
+  if (vw) return { rank: vw.verdict === 'broken' && vw.state !== 'fixing' && vw.state !== 'rechecking' ? 0 : 1, text: verdictLine(vw) };
   if (r?.verdict === 'broken') return { rank: 0, text: `${VERDICT.broken}${when}.` };
   if (p.open.blocker) return { rank: 0, text: `${p.open.blocker} blocker${p.open.blocker === 1 ? '' : 's'} open.` };
   if (r?.verdict === 'fix-first') return { rank: 1, text: `${VERDICT['fix-first']}${when}.` };
