@@ -308,7 +308,7 @@ The Changes tab refreshes itself every 5 s and keeps opened summaries and logs o
 
 1. The daily run finds bugs.
 2. Agents (Claude Code on the server, headless) fix the worst new ones, within the day's budget
-   (`/api/agents/settings`: by default 4 fixes and $20 a day, blockers and bugs only).
+   (`/api/agents/settings`: by default 4 fixes and $150 a day, blockers and bugs only).
 3. Each fix is a branch cut from `beta`, a pull request into `beta` (ready on the agent's checks; a playtest of it only on request), and a preview at
    `https://<sub>.hawkesgen.ai/c/<id>/`.
 4. J approves in Studio's **Changes** tab, which merges the pull request into beta (nothing goes live). Beta's
