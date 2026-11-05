@@ -428,6 +428,8 @@ async function buildOne(run: string, p: Product, b: BuildSpec, o: StartOptions) 
     const page = (b.target ?? 'web') === 'web' ? await pageInfo(p, sha, ref, o.change, widgetRoot(root)) : undefined;
     const r = await publishSite(store, base, out.files, { page, build: { sha: sha.slice(0, 7), version, build: b.id, at: Date.now() }, progress: say });
     db.prepare("UPDATE builds SET status = 'ready', files = ?, bytes = ?, url = ?, detail = ?, finished = ? WHERE id = ?").run(out.files.length, out.bytes, url, out.detail ?? null, Date.now(), rowId);
+    // A project's own build working again verifies the fixers of its failure chain (buildfix.ts); a preview doesn't.
+    if (!o.change) void import('./buildfix.ts').then((m) => m.buildPassed(p.id, b.id)).catch(() => {});
     // Beta moves only forward (2026-10-31 review): to a build of beta's newest commit, asked for or triggered, and never
     // behind a newer version that already finished. Anything else (an old tag, a pull request's workflow, a slower
     // build of an older commit) is published as its version and leaves beta, its mounts and commits alone.

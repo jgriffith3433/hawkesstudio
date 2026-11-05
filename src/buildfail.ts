@@ -15,6 +15,7 @@
 import { db } from './db.ts';
 import { tokenLost, infraLost, buildsOf, UNITY_FAILED } from './builds.ts';
 import { getProduct } from './config.ts';
+import { fixerNow, fixedWording, fixSentence, type FixerNow } from './buildfix.ts';
 
 export type FailClass = 'rejected' | 'script' | 'token' | 'restart' | 'compile' | 'publish' | 'timeout' | 'memory' | 'access' | 'other';
 export type FailKind = 'infrastructure' | 'code' | 'unknown';
@@ -133,6 +134,8 @@ export type FailureView = {
   class: FailClass | null; kind: FailKind | null; plain: string; reason: string; step: string | null; stepWords: string | null;
   seconds: number | null; started: number; finished: number | null; run: string | null; genJob: string | null; jobs: { id: string; error: string }[];
   hasLog: boolean; tries: number;
+  /** The automatic fixer's state for a code failure (buildfix.ts): what the red card says instead of "someone has to fix the code". */
+  fix?: FixerNow & { sentence: string };
 };
 
 const parseJobs = (s: unknown): { id: string; error: string }[] => { try { const v = JSON.parse(String(s ?? '[]')); return Array.isArray(v) ? v : []; } catch { return []; } };
@@ -218,7 +221,15 @@ export function failingBuilds(product: string): FailureView[] {
   const now = configuredBuilds(product);
   return lastBuilds(product)
     .filter((r) => r.status === 'failed' && !going.has(r.build) && (!now || now.has(r.build)))
-    .map(failureOf);
+    .map(failureOf)
+    .map(withFixer);
+}
+
+/** A code failure with the fixer's state: its `plain` says "fix merged, rebuilding" or who is on it, never "someone has to fix the code" while a fixer is. */
+function withFixer(f: FailureView): FailureView {
+  if (f.kind !== 'code') return f;
+  const now = fixerNow(failSignature({ build: f.build, fail_class: f.class, detail: f.reason }), f.product);
+  return { ...f, plain: fixedWording(f.plain, now), fix: { ...now, sentence: fixSentence(now) } };
 }
 
 export type BuildDone = { id: string; build: string; version: number; sha: string | null; finished: number; seconds: number | null; url: string | null };
@@ -279,11 +290,14 @@ export async function announce(rowId: string): Promise<boolean> {
   if (!Number(took.changes)) return false;
   // A failure that is the code's: an agent is started on it first (once per failure, at most twice in all: buildfix.ts),
   // so the card and the push below say what it is doing rather than "someone has to fix the code first".
+  let stopped = false;
   if (r.fail_kind === 'code') {
     const x = await import('./buildfix.ts').then((m) => m.autoFixBuild(rowId)).catch(() => null);
     if (x?.started) console.log(`[builds] ${r.product} ${r.build}: ${x.why}`);
+    stopped = Boolean(x?.escalated); // buildfix.ts already told the phone, once
   }
   // The same failure again (a rebuild that fails the same way) was told already: marked, not told twice.
+  if (stopped) return true;
   if (repeatsLast(r)) return false;
   // Beta is red: the agents running on this product hear why, on this event (not on a timer).
   void import('./buildfix.ts').then((m) => m.tellRunningAgents(r)).catch((e: any) => console.warn(`[builds] telling agents about ${r.product}'s red build: ${e?.message ?? e}`));
@@ -292,7 +306,7 @@ export async function announce(rowId: string): Promise<boolean> {
     const { fixerNow, fixedWording } = await import('./buildfix.ts');
     const name = (() => { try { return getProduct(r.product).name; } catch { return r.product; } })();
     const f = failureOf(r);
-    const now = fixerNow(failSignature(r));
+    const now = fixerNow(failSignature(r), r.product);
     const fixing = now.state === 'working' || now.state === 'merged';
     const title = fixing ? `${name}: build ${r.build} ${r.version} failed, a fix agent is on it` : `${name}: build ${r.build} ${r.version} failed`;
     const why = fixedWording(f.plain, now);

@@ -35,7 +35,7 @@
 // Caps (settings.agents): how many fixes run at once and per day, and a daily cost limit.
 
 import { buildCheckBrief } from './buildfix.ts';
-import { compileGate, compileFixPrompt, runCompileCheck, COMPILE_FIXES, type CompileResult } from './compilecheck.ts';
+import { compileGate, compileFixPrompt, runCompileCheck, skippedCompile, COMPILE_FIXES, type CompileResult } from './compilecheck.ts';
 import { unityCheck, unityFixPrompt, issueLines, looksUnity, changedCsFiles, type UnityCheckResult } from './unitycheck.ts';
 import { forOwner } from './owner.ts';
 import { isVideoTask, videoReady, versionsOf } from './videos.ts';
@@ -2017,7 +2017,17 @@ async function work(id: string, note?: string, answer?: string, resumed?: Phase 
       const body = `${summary}${unityMd}${criteriaMd}\n\n---\n**Findings** (Hawkes Studio playtest review):\n${findings.map((f: any) => `- [${f.severity}] ${f.title} (${f.id}, seen ${f.seen}×)`).join('\n')}\n\nMade by a Hawkes Studio agent. Approving it in Studio merges it into ${c.base} (the beta site, not live); going live is a separate step.\n\n${prGeneratedBy(id)}`;
       await publish(id, { force: Boolean(note || answer), title: c.title, body });
       // The compile gate: Gen compiles the pushed branch (no player build) before the change may be ready and merge.
-      if (!isSiteChange(c, p) && !c.infra && isUnity(p.id) && await (async () => { const g = await compileGate(); if (g.why) addLog(id, g.why); return g.run; })()) {
+      const gate = !isSiteChange(c, p) && !c.infra && isUnity(p.id) ? await compileGate() : null;
+      // A gate that didn't run is said on the change, not only in its log: the ready line and the summary carry it, so the
+      // owner knows nothing compiled this branch before it can merge (J, 2026-11-05).
+      if (gate && !gate.run && gate.why) {
+        addLog(id, gate.why);
+        const skipped = skippedCompile(gate.why, git(c.worktree, ['rev-parse', 'HEAD']).out);
+        save({ compile: skipped });
+        const cur = getChange(id)!;
+        if (!/Compile check skipped/.test(cur.summary ?? '')) update(id, { summary: `${cur.summary ?? summary}\n\n_${gate.why}._` });
+      }
+      if (gate?.run) {
         c = getChange(id)!;
         const tipNow = git(c.worktree, ['rev-parse', 'HEAD']).out;
         update(id, { detail: 'Hawkes Gen is compiling the branch' });
@@ -3318,6 +3328,8 @@ export async function approve(id: string, { confirm, by = 'J', origin, auto = fa
     remember(id);
     for (const f of c.findings) updateFinding(f, { status: 'fixed', note: `merged into ${BETA} in ${c.pr_url} (goes live with the next deploy)` });
     await cleanup(id, { deleteBranch: true });
+    // A build fixer's change: rebuild the failed build on beta's head now, whatever triggers that build (buildfix.ts fixMerged).
+    void import('./buildfix.ts').then((m) => m.fixMerged(id)).catch((e) => console.warn(`[studio] rebuild after ${id}: ${e.message ?? e}`));
     // Beta moved: its pre-deploy build, its build (Unity), the beta site and a local playtest of it follow, in the background.
     // A roadmap task's criteria are judged again on beta, on the scenario its agent wrote for them.
     void import('./pipeline.ts').then(({ startBeta }) => startBeta(c.product, { focus: `Just merged into beta: ${c.title}. Check it works and nothing regressed.`, origin, criteria: c.criteria, scenario: c.verify?.scenario, options: c.verify?.options, merge: id })).catch((e) => console.warn(`[studio] beta after ${id}: ${e.message ?? e}`));

@@ -105,3 +105,41 @@ test('default values and explicit interface implementations are not signatures t
   fs.writeFileSync(path.join(dir, 'B.cs'), 'public class B {\n  void F(int a = 5) { }\n  void F(int b) { }\n}\n');
   assert.deepEqual(checkUnityFiles(dir, ['B.cs'], { engine: 'builtin' }).issues.map((i) => i.code), ['CS0111']);
 });
+
+test('CS0103: a delta time used in a method that never declared it is caught (Yooba Land web 29)', () => {
+  const r = run('UndefinedName.cs');
+  assert.equal(r.ok, false);
+  assert.equal(r.issues.length, 1, 'one report per name per method');
+  assert.deepEqual([r.issues[0].file, r.issues[0].line, r.issues[0].code], ['UndefinedName.cs', 18, 'CS0103']);
+  assert.match(r.issues[0].message, /The name 'dt' does not exist in the current context/);
+  assert.match(r.summary, /UndefinedName\.cs:18 CS0103/);
+});
+
+test('CS0103: valid code is never reported (locals, parameters, lambdas, out vars, fields, Unity members, unknown bases)', () => {
+  const r = run('NamesClean.cs');
+  assert.deepEqual(r.issues, []);
+});
+
+test('CS0103: when unsure it stays quiet', () => {
+  const check = (src: string) => { const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'uc-')); fs.writeFileSync(path.join(dir, 'A.cs'), src); return checkUnityFiles(dir, ['A.cs'], { engine: 'builtin' }).issues.filter((i) => i.code === 'CS0103'); };
+  // a base class from elsewhere may have the member
+  assert.equal(check('class A : Other { void F() { x = 1; } }').length, 0);
+  // a partial class may declare it in another file
+  assert.equal(check('partial class A { void F() { x = 1; } }').length, 0);
+  // using static brings in members we cannot see
+  assert.equal(check('using static Foo.Bar;\nclass A { void F() { x = 1; } }').length, 0);
+  // a lowercase namespace or type used as a qualifier, a call, a lambda parameter, a named argument
+  assert.equal(check('class A { void F() { game.Run(); go(1); G(n => n + 1); H(min: 1); } }').length, 0);
+  // a field of the class, a property setter's value, a local function parameter
+  assert.equal(check('class A { float speed; float P { set { speed = value; } } void F() { speed = 1; void L(int z) { speed += z; } L(1); } }').length, 0);
+  // a ternary and a comparison do not declare anything
+  assert.equal(check('class A { void F(float timer) { var a = timer > dt ? 1 : 0; } }').length, 1, 'but `timer > dt` is a use of an undeclared dt');
+  assert.equal(check('class A : MonoBehaviour { void F() { var a = transform.position; var b = gameObject; } }').length, 0, "Unity's own lowercase members");
+  assert.equal(check('class A : MonoBehaviour { void F() { var a = rigidbody2; } }').length, 1, 'a MonoBehaviour is checked');
+});
+
+test('CS0103 runs with the real checkUnityFiles summary and is part of the fix prompt', () => {
+  const r = run('UndefinedName.cs');
+  assert.match(unityFixPrompt(r), /UndefinedName\.cs:18 error CS0103/);
+  assert.match(unityFixPrompt(r), /undefined name|does not exist/i, 'the agent is told what CS0103 means');
+});
