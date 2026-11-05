@@ -65,7 +65,7 @@ test('one failure is retried, and an empty stderr still gives a message', async 
   assert.ok((await addWorktree(repo, wt, ['--detach', wt, 'main'], flaky)).ok);
   assert.equal(n, 2);
   const silent: GitRun = (cwd, args) => (args[1] === 'add' ? { ok: false, out: '', err: '' } : sh(cwd, args));
-  const r = await addWorktree(repo, path.join(tmp, 'silent'), ['--detach', 'x', 'main'], silent);
+  const r = await addWorktree(repo, path.join(tmp, 'silent'), ['--detach', 'x', 'main'], silent, { sleep: async () => {} });
   assert.equal(r.ok, false);
   assert.match(r.err, /worktree add silent failed: git ended without a message/);
   assert.notEqual(gitWhy({ out: '', err: '' }), '');

@@ -212,3 +212,25 @@ test('a Unity product whose source cannot be fetched fails with source unreadabl
   assert.equal(p.ok, false);
   assert.ok(I.isInfraText(S.sourceError('the scout\'s worktree', p)), 'Studio\'s failure: not a try, not one of the day\'s starts');
 });
+
+test('missing tracked files are repaired before the run fails (the 1467-files case)', async () => {
+  const { wt } = nestedWorktree('n4');
+  await A.ensureSourceReady('c_none', { worktree: wt, product: 'nope', infra: false } as any, () => {});
+  // The source goes missing behind git's back while the index still lists it.
+  const scripts = path.join(wt, 'YoobaLand/Assets/Game/Scripts');
+  fs.rmSync(scripts, { recursive: true, force: true });
+  const logs: string[] = [];
+  await A.ensureSourceReady('c_none', { worktree: wt, product: 'nope', infra: false } as any, (m) => logs.push(m), { sleep: async () => {} });
+  assert.ok(fs.existsSync(path.join(scripts, 'YoobaSceneVoice.cs')), 'checked out again');
+  assert.ok(logs.some((l) => /repairing|checked out in the worktree/.test(l)), logs.join('\n'));
+});
+
+test('checkoutSlot runs one at a time for a while after a checkout was killed', () => {
+  const was = process.env.STUDIO_CHECKOUTS;
+  process.env.STUDIO_CHECKOUTS = '3';
+  assert.equal(A.checkoutLimit(), 3);
+  A.lowerCheckouts();
+  assert.equal(A.checkoutLimit(), 1);
+  assert.equal(A.checkoutLimit(Date.now() + 11 * 60_000), 3);
+  if (was === undefined) delete process.env.STUDIO_CHECKOUTS; else process.env.STUDIO_CHECKOUTS = was;
+});

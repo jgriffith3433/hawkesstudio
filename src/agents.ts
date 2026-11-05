@@ -61,10 +61,10 @@ import { serveDir, stopServed } from './local.ts';
 import { claudeEnv } from './claude.ts';
 import { buildPreview, removePreview, previewUrl, changeSiteDir, changeBuild, type ChangeBuild } from './previews.ts';
 import { BETA, ensureBeta, gitAsync } from './beta.ts';
-import { addWorktree } from './worktree.ts';
+import { addWorktree, discardIfHalfMade } from './worktree.ts';
 import { saveWork, restoreBranch, catchUpWorktree } from './savework.ts';
 import { lfsPull } from './lfs.ts';
-import { populateSource, probeSource, sourceError, SOURCE_UNREADABLE_SAID } from './source-ready.ts';
+import { healSource, populateSource, probeSource, repairedError, sourceError, SOURCE_UNREADABLE_SAID } from './source-ready.ts';
 import { runCommand, resumeGapMs, RESTART_LOOP, RESTART_WINDOW_MS } from './ops.ts';
 import { deployPending, critical } from './drain.ts';
 import { notify, notifyOnce, PUBLIC_URL } from './notify.ts';
@@ -83,7 +83,7 @@ import { launch, DetachedChild, detachedActivity, stopDetached, type DetachRec }
 import { cloudMcp, setWorkspaceRestorer } from './cloudjob.ts';
 import { cloudMode } from './cloudauth.ts';
 import { warmDeps, installCold, markInstalled } from './warm.ts';
-import { infraFailed, INFRA_FAILED_SQL } from './infra-failure.ts';
+import { infraFailed, INFRA_FAILED_SQL, isInfraText } from './infra-failure.ts';
 import { ensureGpuFor, needsGpu } from './gpustart.ts';
 import { walkAwayOn, WALK_AWAY_BY } from './walkaway.ts';
 import { brainId, brainLabel, brainSettings, harnessStopOf, isHarness, type Harness, type HarnessStop } from './brains.ts';
@@ -511,6 +511,8 @@ export type Phase = {
   harness?: { kind: string; line: string; at: number; on: string; /** When each park happened (the last hour's, for the resume cap). */ parks?: number[]; /** Asked J after the cap: no more resumes by itself. */ capped?: boolean };
   /** Restarts that resumed it at this step in a row (resumeChanges): a step that keeps ending Studio isn't resumed again. */
   restarts?: { step: string; n: number; at: number };
+  /** Whole-run retries after a Studio checkout failure in prepare (AUTO_RETRIES at most): Studio tries again by itself. */
+  autoRetry?: number;
 };
 
 /**
@@ -787,6 +789,7 @@ export function remakeWorktree(id: string): Promise<boolean> {
   if (!p) {
     p = checkoutSlot(() => critical(`making the worktree of ${id} again`, async () => {
       if (fs.existsSync(path.join(c.worktree, '.git'))) return true;
+      await discardIfHalfMade(path.join(PROJECTS, c.repo), c.worktree, gitAsync, (m) => addLog(id, m));
       if (fs.existsSync(c.worktree)) throw new Error(`${c.worktree} exists but isn't a worktree; not touching it`);
       const repoDir = path.join(PROJECTS, c.repo);
       fs.mkdirSync(WORK(), { recursive: true });
@@ -797,7 +800,7 @@ export function remakeWorktree(id: string): Promise<boolean> {
       const restored = await restoreBranch(repoDir, c.branch);
       if (restored) addLog(id, restored);
       const has = git(repoDir, ['rev-parse', '--verify', '--quiet', `refs/heads/${c.branch}`]).ok;
-      const w = await addWorktree(repoDir, c.worktree, has ? [c.worktree, c.branch] : ['-b', c.branch, c.worktree, `origin/${c.base}`], gitAsync, { removeLeftover: !fs.existsSync(path.join(c.worktree, '.git')), log: (m) => addLog(id, m) });
+      const w = await addWorktree(repoDir, c.worktree, has ? [c.worktree, c.branch] : ['-b', c.branch, c.worktree, `origin/${c.base}`], gitAsync, { removeLeftover: !fs.existsSync(path.join(c.worktree, '.git')), log: (m) => addLog(id, m), onKilled: lowerCheckouts });
       if (!w.ok) throw new Error(`worktree failed: ${w.err}`);
       addLog(id, `worktree missing after a Studio restart: made again from ${has ? c.branch : `origin/${c.base}`}; the agent's job brings its work into it`);
       return true;
@@ -1751,16 +1754,46 @@ async function publish(id: string, { force, title, body }: { force: boolean; tit
  * source file must exist and read in the worktree. If not, this throws "source unreadable/missing ..." and the agent is
  * never started: work()'s catch records an infra failure (infra-failure.ts: not a try, not one of the day's starts).
  */
-export async function ensureSourceReady(id: string, c: Pick<Change, 'worktree' | 'product' | 'infra'>, log: (m: string) => void = (m) => addLog(id, m)) {
+export async function ensureSourceReady(id: string, c: Pick<Change, 'worktree' | 'product' | 'infra'>, log: (m: string) => void = (m) => addLog(id, m), opts: { rebuild?: () => Promise<void>; sleep?: (ms: number) => Promise<void> } = {}) {
   if (c.infra) return;
   const light = git(c.worktree, ['config', '--get', 'hawkes.light']).out === 'true';
   // A full checkout shows its own Unity-ness (Assets/ tracked); a light one of a Unity product must have its code.
   const unity = light && isUnity(c.product);
   if (!light && !isUnity(c.product)) return;
-  const probe = light ? await populateSource(c.worktree, gitAsync, { unity, log }) : probeSource(c.worktree);
-  if (!probe.ok) throw new Error(sourceError(`the worktree ${c.worktree}`, probe));
-  log(`source check: ${probe.tracked} tracked files, read ${probe.sample ?? 'the root files'}`);
+  // Missing tracked files are repaired, not failed (healSource: the source again, a reapply, a full checkout, then the
+  // worktree deleted and made again), and checked again after each, before the run is given up.
+  const fixed = await healSource(c.worktree, gitAsync, { unity, light, log, rebuild: opts.rebuild, sleep: opts.sleep });
+  if (!fixed.probe.ok) throw new Error(repairedError(`the worktree ${c.worktree}`, fixed));
+  log(`source check: ${fixed.probe.tracked} tracked files, read ${fixed.probe.sample ?? 'the root files'}`);
 }
+
+/** A change's worktree thrown away and made again from its branch (or origin/<base>): the last repair for a checkout that stays bad. */
+export async function rebuildWorktree(id: string) {
+  const c = getChange(id)!;
+  const repoDir = path.join(PROJECTS, c.repo);
+  await checkoutSlot(() => critical(`making the worktree of ${id} again`, async () => {
+    assertWorktreeRoot(c.worktree);
+    git(repoDir, ['worktree', 'remove', '--force', c.worktree]);
+    fs.rmSync(c.worktree, { recursive: true, force: true });
+    git(repoDir, ['worktree', 'prune']);
+    const has = git(repoDir, ['rev-parse', '--verify', '--quiet', `refs/heads/${c.branch}`]).ok;
+    const w = await addWorktree(repoDir, c.worktree, has ? [c.worktree, c.branch] : ['-b', c.branch, c.worktree, `origin/${c.base}`], gitAsync, { removeLeftover: true, log: (m) => addLog(id, m), onKilled: lowerCheckouts });
+    if (!w.ok) throw new Error(`worktree failed: ${w.err}`);
+  }));
+  await lfsPull(c.worktree, (m) => addLog(id, m));
+  await shareWorktree(c.worktree);
+}
+/** Studio only ever deletes a folder under its own .work (a worktree it made). */
+function assertWorktreeRoot(dir: string) {
+  const rel = path.relative(WORK(), path.resolve(dir));
+  if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) throw new Error(`${dir} is not under ${WORK()}; not deleting it`);
+}
+
+/** Whole-run retries of a Studio checkout failure in prepare, before the change is left failed for the PM's backoff. */
+export const AUTO_RETRIES = 2;
+export const AUTO_RETRY_WAIT_MS = [30_000, 120_000];
+/** Whether a failure at the prepare step is Studio's checkout machinery (retried by itself, never a try). */
+export const checkoutFailure = (message: string) => isInfraText(message);
 
 async function work(id: string, note?: string, answer?: string, resumed?: Phase | null, asked = false) {
   if (getChange(id)!.infra) return workInfra(id, note, resumed, false, asked);
@@ -1786,6 +1819,8 @@ async function work(id: string, note?: string, answer?: string, resumed?: Phase 
 
     if (ph.step === 'prepare') {
       update(id, { detail: 'preparing the worktree' });
+      // A worktree a restart or a kill cut off halfway is never reused: discarded and made again below.
+      await discardIfHalfMade(repoDir, c.worktree, gitAsync, (m) => addLog(id, m));
       if (!fs.existsSync(c.worktree)) {
         // A big repo on Cloud Run (a Unity project, or over STUDIO_CLONE_MAX_MB) is cloned light here (repos.ts syncGit:
         // partial, no LFS files, no npm ci) and the pass's job makes the full checkout; nothing is refused for its size.
@@ -1812,7 +1847,7 @@ async function work(id: string, note?: string, answer?: string, resumed?: Phase 
           const restored = await restoreBranch(repoDir, c.branch);
           if (restored) addLog(id, restored);
           const has = git(repoDir, ['rev-parse', '--verify', '--quiet', `refs/heads/${c.branch}`]).ok;
-          const w = await addWorktree(repoDir, c.worktree, has ? [c.worktree, c.branch] : ['-b', c.branch, c.worktree, `origin/${c.base}`], gitAsync, { removeLeftover: !fs.existsSync(path.join(c.worktree, '.git')), log: (m) => addLog(id, m) });
+          const w = await addWorktree(repoDir, c.worktree, has ? [c.worktree, c.branch] : ['-b', c.branch, c.worktree, `origin/${c.base}`], gitAsync, { removeLeftover: !fs.existsSync(path.join(c.worktree, '.git')), log: (m) => addLog(id, m), onKilled: lowerCheckouts });
           if (!w.ok) throw new Error(`worktree failed: ${w.err}`);
         }));
         // A warm start: node_modules from a checkout installed for the same lockfile (warm.ts), else a fresh npm ci.
@@ -1832,7 +1867,7 @@ async function work(id: string, note?: string, answer?: string, resumed?: Phase 
       // The agent (sandbox user) commits here: its git folder must be the agent group's, on every pass (a worktree made
       // before, or files Studio's own git wrote there since).
       await shareWorktree(c.worktree);
-      await ensureSourceReady(id, c);
+      await ensureSourceReady(id, c, undefined, { rebuild: () => rebuildWorktree(id) });
       await writeBrief(c, p, findings, note);
       // A question or a stuck report from an earlier pass isn't read again (attemptsBrief carries what they said).
       fs.rmSync(path.join(c.worktree, '.hawkes', 'question.md'), { force: true });
@@ -2119,8 +2154,18 @@ async function work(id: string, note?: string, answer?: string, resumed?: Phase 
       update(id, { status: 'ready', detail: readyDetail(v), verify: v, phase: null });
       return;
     }
+    // Studio's own checkout failing in prepare (a clone killed, source missing after the repairs): it tries the whole run
+    // again by itself, twice, after a wait, before leaving it failed (the PM's backoff and Studio blocker take over).
+    const tried = ph.autoRetry ?? 0;
+    if (ph.step === 'prepare' && tried < AUTO_RETRIES && checkoutFailure(String(e.message)) && getChange(id)?.status !== 'cancelled') {
+      addLog(id, `Studio's checkout failed (${String(e.message).slice(0, 200)}): trying the whole run again by itself in ${Math.round(AUTO_RETRY_WAIT_MS[tried] / 1000)} s (${tried + 1} of ${AUTO_RETRIES}; not a try)`);
+      await new Promise((r) => setTimeout(r, AUTO_RETRY_WAIT_MS[tried]));
+      if (getChange(id)?.status === 'cancelled') return;
+      return work(id, note, answer, { step: 'prepare', note, answer, since: Date.now(), autoRetry: tried + 1 }, true);
+    }
     // update() opens the bugs it still holds again (reopenTaken); ones triaged while it ran stay as they are.
-    update(id, { status: 'failed', detail: String(e.message).slice(0, 300), phase: { step: ph.step, jobs: ph.jobs, failed: true } });
+    const tail = ph.step === 'prepare' && tried ? ` (Studio already tried the run again ${tried}×; the PM tries it again later)` : '';
+    update(id, { status: 'failed', detail: (String(e.message).slice(0, 300 - tail.length) + tail), phase: { step: ph.step, jobs: ph.jobs, failed: true } });
   }
 }
 
@@ -2491,7 +2536,7 @@ async function workInfra(id: string, note?: string, resumed?: Phase | null, nudg
           if (!f.ok) throw new Error(`fetch failed: ${f.err}`);
           git(repoDir, ['worktree', 'prune']);
           const has = git(repoDir, ['rev-parse', '--verify', '--quiet', `refs/heads/${c.branch}`]).ok;
-          const w = await addWorktree(repoDir, c.worktree, has ? [c.worktree, c.branch] : ['-b', c.branch, c.worktree, `origin/${c.base}`], gitAsync, { removeLeftover: !fs.existsSync(path.join(c.worktree, '.git')), log: (m) => addLog(id, m) });
+          const w = await addWorktree(repoDir, c.worktree, has ? [c.worktree, c.branch] : ['-b', c.branch, c.worktree, `origin/${c.base}`], gitAsync, { removeLeftover: !fs.existsSync(path.join(c.worktree, '.git')), log: (m) => addLog(id, m), onKilled: lowerCheckouts });
           if (!w.ok) throw new Error(`worktree failed: ${w.err}`);
           // A warm start: node_modules from a checkout with the same lockfile (warm.ts), not a fresh npm ci.
           await warmDeps(c.worktree, c.repo, (s) => addLog(id, s));
@@ -3523,9 +3568,12 @@ async function cleanup(id: string, { deleteBranch = false } = {}) {
  */
 let checkoutsActive = 0;
 const checkoutWaiters: (() => void)[] = [];
+let lowerUntil = 0;
+/** A checkout was killed for memory (signal 9): one at a time for the next 10 minutes (J, 2026-11-05: make checkouts reliable). */
+export function lowerCheckouts(now = Date.now()) { lowerUntil = now + 10 * 60_000; }
+export const checkoutLimit = (now = Date.now()) => (now < lowerUntil ? 1 : Math.max(1, Number(process.env.STUDIO_CHECKOUTS) || 2));
 export async function checkoutSlot<T>(fn: () => Promise<T>): Promise<T> {
-  const max = Math.max(1, Number(process.env.STUDIO_CHECKOUTS) || 2);
-  while (checkoutsActive >= max) await new Promise<void>((r) => checkoutWaiters.push(r));
+  while (checkoutsActive >= checkoutLimit()) await new Promise<void>((r) => checkoutWaiters.push(r));
   checkoutsActive++;
   try {
     return await fn();

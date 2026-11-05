@@ -14,7 +14,7 @@ const { addWorktree } = await import('../src/worktree.ts');
 
 test('a missing checkout fails with git\'s words, not an empty string', async () => {
   const r = await addWorktree(path.join(os.tmpdir(), 'no-such-repo-xyz'), '/tmp/x-wt', ['--detach', '/tmp/x-wt', 'origin/beta'],
-    async () => ({ ok: false, out: '', err: '' }));
+    async () => ({ ok: false, out: '', err: '' }), { sleep: async () => {} });
   assert.ok(!r.ok);
   assert.match(r.err, /git ended without a message/);
 });
