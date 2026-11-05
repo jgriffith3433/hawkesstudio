@@ -55,7 +55,7 @@ db.exec(`
 // from the master: a woken cell gets it again) and that key's client id (disabled when the data is deleted).
 // A plan the platform admin gave the org (J, 2026-10-31: gift subscriptions): no Stripe, until a date or for good.
 // A gift's monthly credits (null: the plan's own creditsPerMonth).
-for (const c of ['gen_org TEXT', 'gen_client TEXT', 'gen_key TEXT', 'gift_plan TEXT', 'gift_until INTEGER', 'gift_note TEXT', 'gift_by TEXT', 'gift_at INTEGER', 'gift_credits INTEGER']) {
+for (const c of ['gen_org TEXT', 'gen_client TEXT', 'gen_key TEXT', 'gift_plan TEXT', 'gift_until INTEGER', 'gift_note TEXT', 'gift_by TEXT', 'gift_at INTEGER', 'gift_credits INTEGER', 'projects INTEGER', 'suspended_at INTEGER', 'suspended_by TEXT', 'suspended_reason TEXT']) {
   try { db.exec(`ALTER TABLE cp_orgs ADD COLUMN ${c}`); } catch { /* already there */ }
 }
 
@@ -63,9 +63,9 @@ for (const c of ['gen_org TEXT', 'gen_client TEXT', 'gen_key TEXT', 'gift_plan T
 export const cellsOn = () => process.env.STUDIO_CELLS === 'on' && !customerStudio();
 
 export type OrgState = 'new' | 'creating' | 'awake' | 'hibernated' | 'deleted';
-export type Org = { id: string; name: string; ownerSub: string; ownerEmail: string; state: OrgState; service: string | null; image: string | null; error: string | null; created: number; lastActive: number | null; lastSignin: number | null; hibernatedAt: number | null; warnedAt: number | null; deletedAt: number | null; genOrg: string | null; genClient: string | null; gift: Gift | null };
+export type Org = { id: string; name: string; ownerSub: string; ownerEmail: string; state: OrgState; service: string | null; image: string | null; error: string | null; created: number; lastActive: number | null; lastSignin: number | null; hibernatedAt: number | null; warnedAt: number | null; deletedAt: number | null; genOrg: string | null; genClient: string | null; gift: Gift | null; projects: number | null; suspended: { at: number; by: string | null; reason: string | null } | null };
 export type Gift = { plan: string; until: number | null; note: string | null; by: string | null; at: number | null; credits: number | null };
-const toOrg = (r: any): Org => ({ id: r.id, name: r.name, ownerSub: r.owner_sub, ownerEmail: r.owner_email, state: r.state, service: r.service, image: r.image, error: r.error, created: r.created, lastActive: r.last_active, lastSignin: r.last_signin, hibernatedAt: r.hibernated_at, warnedAt: r.warned_at, deletedAt: r.deleted_at, genOrg: r.gen_org ?? null, genClient: r.gen_client ?? null, gift: r.gift_plan ? { plan: r.gift_plan, until: r.gift_until ?? null, note: r.gift_note ?? null, by: r.gift_by ?? null, at: r.gift_at ?? null, credits: r.gift_credits ?? null } : null });
+const toOrg = (r: any): Org => ({ id: r.id, name: r.name, ownerSub: r.owner_sub, ownerEmail: r.owner_email, state: r.state, service: r.service, image: r.image, error: r.error, created: r.created, lastActive: r.last_active, lastSignin: r.last_signin, hibernatedAt: r.hibernated_at, warnedAt: r.warned_at, deletedAt: r.deleted_at, genOrg: r.gen_org ?? null, genClient: r.gen_client ?? null, gift: r.gift_plan ? { plan: r.gift_plan, until: r.gift_until ?? null, note: r.gift_note ?? null, by: r.gift_by ?? null, at: r.gift_at ?? null, credits: r.gift_credits ?? null } : null, projects: r.projects ?? null, suspended: r.suspended_at ? { at: r.suspended_at, by: r.suspended_by ?? null, reason: r.suspended_reason ?? null } : null });
 
 export const getOrg = (id: string) => { const r = db.prepare('SELECT * FROM cp_orgs WHERE id = ?').get(id); return r ? toOrg(r) : null; };
 export const listOrgs = () => (db.prepare(`SELECT * FROM cp_orgs ORDER BY created DESC`).all() as any[]).map(toOrg);
@@ -76,7 +76,7 @@ export const orgsOf = (sub: string, email?: string) => (db.prepare(`SELECT o.* F
   ) ORDER BY o.created`).all(sub, sub, (email ?? '').toLowerCase(), (email ?? '').toLowerCase()) as any[]).map(toOrg);
 /** The orgs someone owns (the sign-up's limit counts these). */
 const ownedBy = (sub: string) => (db.prepare(`SELECT COUNT(*) AS n FROM cp_members WHERE sub = ?`).get(sub) as { n: number }).n;
-const setOrg = (id: string, f: Record<string, unknown>) => {
+export const setOrg = (id: string, f: Record<string, unknown>) => {
   const keys = Object.keys(f);
   db.prepare(`UPDATE cp_orgs SET ${keys.map((k) => `${k} = ?`).join(', ')} WHERE id = ?`).run(...keys.map((k) => f[k] as any), id);
 };
@@ -85,8 +85,8 @@ const setOrg = (id: string, f: Record<string, unknown>) => {
 
 // freeCredits: a Studio with no plan and no gift is topped up to this many credits each calendar month (its weekly smoke
 // playtests run on Hawkes Gen and are charged like everyone's). Provisional, like the plans.
-export type CellsSettings = { idleDays: number; deleteDays: number; warnDays: number; freeCredits: number };
-export const CELLS_DEFAULTS: CellsSettings = { idleDays: 14, deleteDays: 90, warnDays: 14, freeCredits: 100 };
+export type CellsSettings = { idleDays: number; deleteDays: number; warnDays: number; freeCredits: number; giftMaxCredits: number };
+export const CELLS_DEFAULTS: CellsSettings = { idleDays: 14, deleteDays: 90, warnDays: 14, freeCredits: 100, giftMaxCredits: 100_000 };
 
 export function cellsSettings(): CellsSettings {
   const r = db.prepare(`SELECT value FROM cp_config WHERE key = 'settings'`).get() as { value: string } | undefined;
@@ -99,7 +99,9 @@ export function saveCellsSettings(patch: Partial<CellsSettings>) {
   for (const k of Object.keys(CELLS_DEFAULTS) as (keyof CellsSettings)[]) {
     if (patch[k] === undefined) continue;
     const n = Number(patch[k]);
-    if (k === 'freeCredits') {
+    if (k === 'giftMaxCredits') {
+      if (!Number.isInteger(n) || n < 1 || n > 10_000_000) throw new StudioError('giftMaxCredits: a whole number, 1 to 10,000,000');
+    } else if (k === 'freeCredits') {
       if (!Number.isInteger(n) || n < 0 || n > 1_000_000) throw new StudioError('freeCredits: a whole number, 0 to 1,000,000');
     } else if (!Number.isInteger(n) || n < 1 || n > 3650) throw new StudioError(`${k}: whole days, 1 to 3650`);
     cur[k] = n;
@@ -280,6 +282,7 @@ export function ensureCell(orgId: string, why: string, o: { dry?: boolean; game?
     const org = getOrg(orgId);
     if (!org) throw new StudioError(`No studio "${orgId}"`, 404);
     if (org.state === 'deleted') throw new StudioError('This studio was deleted.', 410);
+    if (org.suspended) throw new StudioError('This studio is suspended. Contact Hawkes Studio.', 403);
     if (o.game) await seedGame(orgId, o.game, o);
     if (org.state === 'awake' && (R.dryRun(o) || (await R.getCell(orgId)))) return org;
     setOrg(orgId, { state: 'creating', error: null });
@@ -403,7 +406,7 @@ export async function nightly(o: { dry?: boolean; call?: (url: string, key: stri
   const out = { started: [] as string[], skipped: [] as string[], errors: [] as string[] };
   const call = o.call ?? (async (url: string, key: string) => (await fetch(url, { method: 'POST', headers: { Authorization: `Bearer ${key}` }, signal: AbortSignal.timeout(120_000) })).status);
   for (const org of listOrgs()) {
-    if (org.state === 'deleted' || org.state === 'new') continue;
+    if (org.state === 'deleted' || org.state === 'new' || org.suspended) continue;
     const plan = await effectivePlan(org.id);
     if (!featuresOf(plan.planId, plan.maxGames).features.includes('nightly')) { out.skipped.push(org.id); continue; }
     try {
@@ -565,6 +568,7 @@ export async function cellCredits(orgId: string, what: 'charge' | 'refund', b: a
   if (!Number.isFinite(credits) || credits < 0 || credits > 1_000_000) throw new StudioError('credits: 0 to 1,000,000', 400);
   const ref = `gen:${orgId}:${charge}`;
   if (what === 'charge') {
+    if (getOrg(orgId)?.suspended) throw new StudioError('This studio is suspended. Contact Hawkes Studio.', 403);
     const r = B.chargeCredits(credits, 'gen_work', String(b.detail ?? 'Hawkes Gen work').slice(0, 200), ref, orgId, b.what ? String(b.what).slice(0, 80) : undefined);
     return { ok: true, duplicate: r.duplicate, credits: r.balance };
   }
@@ -656,6 +660,7 @@ export async function handleCellsKeyed(req: http.IncomingMessage, res: http.Serv
     if (!isEdgeKey(bearer(req))) return send(res, 401, { error: 'edge key' }), true;
     const org = getOrg(m[1]);
     if (!org || org.state === 'deleted') return send(res, 404, { state: 'none' }), true;
+    if (org.suspended) return send(res, 403, { state: 'suspended', error: 'This studio is suspended. Contact Hawkes Studio.' }), true;
     if (m[2] === 'seen' && method === 'POST') { touch(org.id, 'active'); return send(res, 200, { ok: true }), true; }
     if (m[2] === 'wake' && method === 'POST') {
       if (org.state === 'new') return send(res, 200, { state: 'new', next: '/auth/start' }), true;
@@ -757,7 +762,10 @@ export async function handleCellsKeyed(req: http.IncomingMessage, res: http.Serv
     if (!isCellKey(orgId, bearer(req)) || !getOrg(orgId)) return send(res, 401, { error: 'cell key' }), true;
     const b = await readJson(req);
     try {
-      if (self[1] === 'members') return send(res, 200, { ok: true, people: setAccess(orgId, Array.isArray(b.people) ? b.people : []) }), true;
+      if (self[1] === 'members') {
+        if (Number.isInteger(b.projects) && b.projects >= 0 && b.projects < 100_000) setOrg(orgId, { projects: b.projects });
+        return send(res, 200, { ok: true, people: setAccess(orgId, Array.isArray(b.people) ? b.people : []) }), true;
+      }
       const kind = b.kind === 'claude-subscription' ? 'claude-subscription' : 'anthropic';
       return send(res, 200, await setGenAi(orgId, kind, b.key ? String(b.key) : null)), true;
     } catch (e: any) { return send(res, e.status ?? 400, { error: e.message ?? String(e) }), true; }

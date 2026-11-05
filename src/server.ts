@@ -202,6 +202,8 @@ const server = http.createServer(async (req, res) => {
     if (upgrade) return send(res, 402, upgrade);
     const noAi = await (await import('./entitlements.ts')).aiRefusal(route, method);
     if (noAi) return send(res, 409, noAi);
+    // The Customers page's API (admin-customers.ts): the platform admin's, checked again inside.
+    if (route.startsWith('/api/admin/') && (await (await import('./admin-customers.ts')).handleAdminApi(req, res, route, method, send, readJson))) return;
     // The platform admin's view of customers' Studios (cells.ts).
     if ((route === '/api/cells' || route.startsWith('/api/cells/')) && (await (await import('./cells.ts')).handleCellsAdmin(req, res, route, method, send, readJson))) return;
     // The 🐞 widget's posts from a beta site on Cloudflare (server/beta-sites passes them here; dev-front.ts).

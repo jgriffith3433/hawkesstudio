@@ -35,7 +35,8 @@ export async function reportMembers() {
     ...users.map((u) => ({ email: u.email, sub: u.google_sub, role: u.role, kind: 'member' })),
     ...A.listInvites().filter((i) => i.status === 'open' && i.kind === 'invite').map((i) => ({ email: i.email, role: i.role, kind: 'invite' })),
   ];
-  return post('members', { people }).catch((e) => { console.warn(`[cell] reporting members: ${e.message}`); return null; });
+  const projects = await import('./config.ts').then((c) => c.loadProducts().length).catch(() => undefined);
+  return post('members', { people, projects }).catch((e) => { console.warn(`[cell] reporting members: ${e.message}`); return null; });
 }
 
 let lastAi = '';

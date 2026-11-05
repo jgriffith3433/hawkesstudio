@@ -41,6 +41,9 @@
     }
     const btn = document.querySelector('nav button[data-tab="users"]');
     if (btn) btn.hidden = me?.role !== 'admin';
+    // Customers: the platform admin's alone (/api/me says which; the API answers 403 to anyone else).
+    const cuBtn = document.querySelector('nav button[data-tab="customers"]');
+    if (cuBtn) cuBtn.hidden = !full?.platformAdmin || (full.hide ?? []).includes('customers');
     // The platform admin's features (src/lockdown.ts): hidden from everyone else (the API answers 403 to them anyway).
     for (const what of full?.hide ?? []) {
       const tabBtn = document.querySelector(`nav button[data-tab="${what}"]`);

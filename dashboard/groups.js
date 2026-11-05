@@ -18,7 +18,7 @@
     { head: 'live', label: 'Playtests', tabs: [['live', 'Playing now'], ['playtests', 'History'], ['report', 'Reports'], ['runs', 'Runs']] },
     { head: 'library', label: 'Library', tabs: [['library', 'Library'], ['videos', 'Screening'], ['social', 'Social']] },
   ];
-  const MORE = ['memory', 'connect', 'plugins', 'costs', 'resources', 'users', 'settings'];
+  const MORE = ['memory', 'connect', 'plugins', 'costs', 'resources', 'users', 'customers', 'settings'];
   const CUSTOMER_LESS = ['ready', 'videos'];
   let gone = new Set();
   const pages = (g) => g.tabs.filter(([id]) => !gone.has(id));

@@ -37,6 +37,7 @@
           <button data-tab="connect" title="Use this Studio from Claude, Claude Code, Cursor, VS Code, Windsurf or ChatGPT (its MCP server)">🔌 Connect your editor</button>
           <button data-tab="plugins" title="Plugins for your projects (multiplayer, the playtest bot, analytics, bug reports): what's available, what each project has, and upgrades">🧩 Plugins</button>
           <button data-tab="users" hidden title="Who can sign in: invites, roles, password resets, the sign-in log (admins)">Users</button>
+          <button data-tab="customers" hidden title="Customers' studios: plan, credits, activity, suspend, gift credits (the platform admin)">Customers</button>
           <button data-tab="settings" data-admin title="Call voice and listening, agent and PM limits, notifications, budgets: stored in Studio, so they follow you across devices">⚙ Settings</button>
         </div>
       </div>
@@ -230,6 +231,10 @@
       <p class="intro"><b>Users:</b> who can sign in and what they may do.</p>
       <div id="usBody"><div class="meta">Loading…</div></div>
     </section>
+    <section id="customers" class="tab" data-guide="off">
+      <p class="intro"><b>Customers:</b> every customer's studio, its plan, credits and activity. Open one to see its people and ledger, suspend it, or gift it credits.</p>
+      <div id="cuBody"><div class="meta">Loading…</div></div>
+    </section>
     <section id="settings" class="tab" data-guide="off">
       <p class="intro"><b>Settings:</b> call voice, agent and PM limits, notifications and budgets.</p>
       <div class="bar"><span class="meta">They follow you from your laptop to your phone. Talk can read and change them too ("make the voice a bit faster"); anything that can raise costs needs your yes.</span></div>
@@ -260,6 +265,7 @@
   <script src="settings.js"></script>
   <script src="groups.js"></script>
   <script src="users.js"></script>
+  <script src="customers.js"></script>
   <script src="connect.js"></script>
   <script src="plugins.js"></script>
   <script src="guide.js"></script>

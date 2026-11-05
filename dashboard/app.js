@@ -757,6 +757,7 @@ async function refresh() {
     if (tab === 'library' && window.loadLibraryTab) await window.loadLibraryTab();
     if (tab === 'settings' && window.loadSettingsTab) await window.loadSettingsTab();
     if (tab === 'users' && window.loadUsersTab) await window.loadUsersTab();
+    if (tab === 'customers' && window.loadCustomersTab) await window.loadCustomersTab();
     if (tab === 'connect' && window.loadConnectTab) await window.loadConnectTab();
     if (tab === 'plugins' && window.loadPluginsTab) await window.loadPluginsTab();
     if (tab === 'talk' && window.loadTalk && !window.__talkLoaded) { window.__talkLoaded = true; await window.loadTalk(); }
