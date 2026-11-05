@@ -379,8 +379,14 @@ hawkesgen docs/unity-cloudrun.md, "Compile-only check"). Gen owns the Unity lice
 compiler errors (file, line, code, message) go in the change's log and `verify.compileCheck`, and the ready line says
 what ran, its time and its cost. A compile failure sends the agent back (its own session, `COMPILE_FIXES` = 2, never a
 try), then fails the change ("blocked from merging"), so a CS1503 never reaches beta. A check that couldn't run (Gen
-lost the job, no token) never blocks: it says so and the change goes on to beta's own build. **Off by default**
-(`STUDIO_UNITY_COMPILE=on`): J asked to measure first and stop if a run costs over a few dollars (`COST_STOP_USD`, 3).
+lost the job, no token) never blocks: it says so and the change goes on to beta's own build. **A setting, on by default**
+(Settings → Unity builds, `builds.unityCompile`, also `studio_settings` section `builds`; J, 2026-11-05: customers never touch
+env vars, so a switch is a setting that works out of the box). It is read at run time: no restart, no redeploy. Turning it
+on, or raising `builds.unityCompileMaxCost` (default $3, J's "a few dollars"), costs more and so needs his yes from Talk.
+It degrades, never blocks: where Gen's `unity.build` has no `check` param yet (`genHasCompileMode`, looked up and cached
+5 minutes) or the measured average run is over the limit, the check is skipped with a line in the change's log and the
+change goes on to beta's own build. `STUDIO_UNITY_COMPILE=off|on` remains only as an operator override (like
+`STUDIO_UNITY_CHECK`, `STUDIO_MODEL_<ROLE>`: tests and emergencies).
 Every run is a row in `compile_checks` with its seconds and dollars; `compileCostReport()` is the average. Test
 `test/compilecheck.test.ts`.
 

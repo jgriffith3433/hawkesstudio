@@ -304,6 +304,16 @@
     </div>`;
   }
 
+  // The Unity compile gate (src/compilecheck.ts): every Studio, on by default; nothing to set up.
+  function buildsBox(b) {
+    if (!b) return '';
+    return `<div class="set-box"><h3>🧱 Unity builds</h3>
+      <div class="meta">Before an agent's Unity change can merge into beta, Hawkes Gen compiles it with your project's own Unity version (minutes, no player build). A compile error goes back to the agent. Where Gen can't do that yet, the check is skipped and the change carries on.</div>
+      ${row('Compile Unity changes before they merge', bool('builds', 'unityCompile', b.unityCompile), 'Turning it on costs a build-machine run per change, so it asks for your yes in Talk.')}
+      ${row('Stop checking when a run averages over ($)', num('builds', 'unityCompileMaxCost', b.unityCompileMaxCost, { min: 0.1, max: 100, step: 0.5 }), 'Studio measures each run. Above this average the check is skipped and says so.')}
+    </div>`;
+  }
+
   function resourcesBox(r) {
     if (!r) return '';
     return `<div class="set-box"><h3>🖥️ Server alerts</h3>
@@ -499,7 +509,7 @@
     // Every Studio: what matters first (the plan, the AI, notifications), the rest folded away by topic (J, 2026-10-30:
     // "make settings page easier to deal with"). J's Studio is the same page plus its own (J, 2026-11-02): his AI
     // (harness, Claude accounts, Antigravity) where a customer's "Your AI" is, and the platform's in a section of its own.
-    $('#setBody').innerHTML = `<div class="set-grid">${billingBox(billing)}${cu ? '<div id="setAiBox"></div>' : brainBox(data.brain) + claudeBox(claude, data.brain) + agyBox(agyLogin)}${cu ? walkAwayBox(data.pm) : ''}${notifyBox(data.notify)}</div>
+    $('#setBody').innerHTML = `<div class="set-grid">${billingBox(billing)}${cu ? '<div id="setAiBox"></div>' : brainBox(data.brain) + claudeBox(claude, data.brain) + agyBox(agyLogin)}${cu ? walkAwayBox(data.pm) : ''}${buildsBox(data.builds)}${notifyBox(data.notify)}</div>
       <details class="set-more"><summary>Agents and the PM: how much they do by themselves</summary><div class="set-grid">${agentsBox(data.agents)}${pmBox(data.pm)}</div></details>
       <details class="set-more"><summary>Advanced: models, tuning and the call voice</summary><div class="set-grid">${data.routing ? routingBox(data.routing, routing) : ''}${tuningBox(data.tuning)}${callBox(data.call)}</div></details>
       ${cu ? '' : `<details class="set-more" open><summary>Platform: customers' Studios, services, costs, resources and playtest machines</summary><div class="set-grid"><div id="setCellsBox"></div><div id="svcBox">${servicesBox(services)}</div>${costsBox(data.costs)}${resourcesBox(data.resources)}${playtestsBox(data.playtests)}</div></details>`}`;
