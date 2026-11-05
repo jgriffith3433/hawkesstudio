@@ -52,11 +52,48 @@ test('params are the customer shape plus check, nothing under github but repo, c
   assert.deepEqual(Object.keys(p.github).sort(), ['commit', 'ref', 'repo', 'token']);
 });
 
-test('off unless asked for', () => {
+test('a setting, on by default, read at run time; the env var is only an operator override', async () => {
+  const { buildsSettings, saveBuildsSettings } = await import('../src/compilecheck.ts');
   const was = process.env.STUDIO_UNITY_COMPILE;
   delete process.env.STUDIO_UNITY_COMPILE;
+  assert.deepEqual(buildsSettings(), { unityCompile: true, unityCompileMaxCost: 3 });
+  assert.equal(compileCheckOn(), true);
+  saveBuildsSettings({ unityCompile: false });
   assert.equal(compileCheckOn(), false);
   process.env.STUDIO_UNITY_COMPILE = 'on';
   assert.equal(compileCheckOn(), true);
+  saveBuildsSettings({ unityCompile: true });
+  process.env.STUDIO_UNITY_COMPILE = 'off';
+  assert.equal(compileCheckOn(), false);
   if (was === undefined) delete process.env.STUDIO_UNITY_COMPILE; else process.env.STUDIO_UNITY_COMPILE = was;
+  assert.throws(() => saveBuildsSettings({ unityCompileMaxCost: 0 }), /0\.10 to 100/);
+  assert.throws(() => saveBuildsSettings({ nope: 1 }), /not a setting/);
+});
+
+test('the gate degrades: no compile mode in Gen skips with a note, a cost over the limit skips', async () => {
+  const { compileGate, saveBuildsSettings, forgetGenCompileMode, recordCompile } = await import('../src/compilecheck.ts');
+  delete process.env.STUDIO_UNITY_COMPILE;
+  saveBuildsSettings({ unityCompile: true, unityCompileMaxCost: 3 });
+  forgetGenCompileMode();
+  const { gen } = await import('../src/gen.ts');
+  const tool = (gen as any).tool;
+  (gen as any).tool = async () => ({ params: { project: {}, target: {} } });
+  let g = await compileGate();
+  assert.equal(g.run, false);
+  assert.match(g.why ?? '', /compile-only mode isn't live yet/);
+  forgetGenCompileMode();
+  (gen as any).tool = async () => { throw new Error('down'); };
+  assert.equal((await compileGate()).run, false);
+  forgetGenCompileMode();
+  (gen as any).tool = async () => ({ params: { check: { type: 'boolean' } } });
+  assert.equal((await compileGate()).run, true);
+  recordCompile('c_x', 'p', { outcome: 'compiled', ok: true, sha: 'a', issues: [], seconds: 100, cost: 5, summary: '' });
+  g = await compileGate();
+  assert.equal(g.run, false);
+  assert.match(g.why ?? '', /averages \$5\.00.*\$3\.00/);
+  saveBuildsSettings({ unityCompileMaxCost: 10 });
+  assert.equal((await compileGate()).run, true);
+  saveBuildsSettings({ unityCompile: false });
+  assert.deepEqual(await compileGate(), { run: false });
+  (gen as any).tool = tool;
 });

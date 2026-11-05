@@ -63,3 +63,16 @@ test('the sandbox may change settings only from a Talk conversation', () => {
   assert.match(guardRoute('/api/settings', 'POST', null) ?? '', /Talk conversation/);
   assert.equal(guardRoute('/api/settings', 'POST', 't_123456'), null);
 });
+
+test('builds: the Unity compile gate is a setting; turning it on or raising its limit needs J\'s yes from Talk', async () => {
+  const s = await allSettings();
+  assert.deepEqual((s as any).builds, { unityCompile: true, unityCompileMaxCost: 3 });
+  const off = await saveSettings('builds', { unityCompile: false }, { conversation: null });
+  assert.equal(off.unityCompile, false);
+  const talk = convWith('hello');
+  await assert.rejects(saveSettings('builds', { unityCompile: true }, { conversation: talk }), /raise costs/);
+  const yes = convWith('yes, turn the compile check on');
+  assert.equal((await saveSettings('builds', { unityCompile: true }, { conversation: yes, quote: 'yes, turn the compile check on' })).unityCompile, true);
+  assert.equal((await saveSettings('builds', { unityCompile: false }, { conversation: talk })).unityCompile, false);
+  await assert.rejects(saveSettings('builds', { unityCompileMaxCost: 500 }, { conversation: null }), /0\.10 to 100/);
+});

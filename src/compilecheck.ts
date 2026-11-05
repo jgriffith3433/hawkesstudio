@@ -5,15 +5,18 @@
 // passes are used up, fails the change so it can't merge. Gen owns the Unity licence: the customer does nothing.
 //
 // Cost: Gen reports seconds and dollars per run (result.seconds, result.cost); they are kept on the change (verify.compileCheck)
-// and in `compile_checks`, and `compileCostReport()` is the average. Off by default (STUDIO_UNITY_COMPILE=on turns it on)
-// until a measured cost per run is below COST_STOP_USD (J: "if cost per run is above a few dollars, stop and report").
+// and in `compile_checks`, and `compileCostReport()` is the average. Whether it runs is a setting
+// (Settings → Builds, `builds.unityCompile`, on by default; the cost stop is `builds.unityCompileMaxCost`, $3): customers
+// never touch env vars. STUDIO_UNITY_COMPILE=off|on stays only as an operator override (like STUDIO_UNITY_CHECK).
+// Where Hawkes Gen has no compile-only mode yet the gate skips with a note (`compileGate`), never blocks, never runs a
+// full player build by mistake.
 //
 // An infrastructure failure (Gen lost the job, a token, quota) never blocks a merge: the check says "couldn't run" and the
 // change goes on to beta's own build. Only compiler errors block.
 import { db } from './db.ts';
 import { githubFor, GEN_GITHUB_KEYS } from './builds.ts';
 
-/** A check costing more than this per run is not enabled by default: Studio stops and reports (J: "a few dollars"). */
+/** The default cost stop: past this average per run the gate skips and says so (J: "a few dollars"). A setting. */
 export const COST_STOP_USD = 3;
 /** Passes an agent gets to fix compiler errors before its change fails. */
 export const COMPILE_FIXES = 2;
@@ -35,8 +38,68 @@ export type CompileResult = {
   note?: string;
 };
 
-/** Whether the gate runs. Off unless STUDIO_UNITY_COMPILE=on (a measured cost first: see the header). */
-export const compileCheckOn = () => /^(on|1|true)$/i.test(process.env.STUDIO_UNITY_COMPILE ?? '');
+db.exec(`CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated INTEGER NOT NULL, by TEXT)`);
+
+// ---- the setting (Settings → Builds; settings.ts section `builds`)
+export type BuildsSettings = { /** Compile agents' Unity changes in Hawkes Gen before they may merge. */ unityCompile: boolean; /** Dollars: the gate skips while the measured average per run is above this. */ unityCompileMaxCost: number };
+export const BUILDS_DEFAULTS: BuildsSettings = { unityCompile: true, unityCompileMaxCost: COST_STOP_USD };
+
+export function buildsSettings(): BuildsSettings {
+  const r = db.prepare(`SELECT value FROM settings WHERE key = 'builds'`).get() as { value: string } | undefined;
+  let v: any = {};
+  try { v = r ? JSON.parse(r.value) : {}; } catch { /* defaults */ }
+  return { ...BUILDS_DEFAULTS, ...(typeof v === 'object' && v ? v : {}) };
+}
+
+export function saveBuildsSettings(patch: Record<string, any>, by = 'J'): BuildsSettings {
+  const next = buildsSettings();
+  for (const [k, v] of Object.entries(patch ?? {})) {
+    if (k === 'unityCompile') { if (typeof v !== 'boolean') throw new Error('builds.unityCompile: true or false'); next.unityCompile = v; continue; }
+    if (k === 'unityCompileMaxCost') {
+      const n = Number(v);
+      if (!(Number.isFinite(n) && n >= 0.1 && n <= 100)) throw new Error('builds.unityCompileMaxCost: 0.10 to 100 (dollars per run)');
+      next.unityCompileMaxCost = Math.round(n * 100) / 100;
+      continue;
+    }
+    throw new Error(`builds.${k}: not a setting (${Object.keys(BUILDS_DEFAULTS).join(', ')})`);
+  }
+  db.prepare('INSERT INTO settings (key, value, updated, by) VALUES (?, ?, ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated = excluded.updated, by = excluded.by')
+    .run('builds', JSON.stringify(next), Date.now(), by);
+  return next;
+}
+
+/** Operator override only: STUDIO_UNITY_COMPILE=off|on beats the setting; unset (the norm) leaves it to the setting. */
+export const compileOverride = (): boolean | null => {
+  const v = (process.env.STUDIO_UNITY_COMPILE ?? '').trim();
+  return /^(on|1|true)$/i.test(v) ? true : /^(off|0|false)$/i.test(v) ? false : null;
+};
+/** Whether the gate is switched on (the override, else the setting). Read at run time: no restart. */
+export const compileCheckOn = () => compileOverride() ?? buildsSettings().unityCompile;
+
+/** Whether Gen's unity.build has the compile-only `check` param (older Gens would run a whole player build). Cached 5 min. */
+let genSeen: { at: number; ok: boolean } | null = null;
+export async function genHasCompileMode(): Promise<boolean> {
+  if (genSeen && Date.now() - genSeen.at < 5 * 60_000) return genSeen.ok;
+  let ok = false;
+  try {
+    const { gen } = await import('./gen.ts');
+    const t: any = await (gen as any).tool('unity.build');
+    const params = t?.params ?? t?.tool?.params;
+    ok = Array.isArray(params) ? params.some((x: any) => x?.name === 'check' || x === 'check') : Boolean(params && typeof params === 'object' && 'check' in params);
+  } catch { ok = false; }
+  genSeen = { at: Date.now(), ok };
+  return ok;
+}
+export const forgetGenCompileMode = () => { genSeen = null; };
+
+/** Should the gate run now? Never throws. `why` is a plain sentence for the change's log when it is skipped. */
+export async function compileGate(): Promise<{ run: boolean; why?: string }> {
+  if (!compileCheckOn()) return { run: false };
+  if (!(await genHasCompileMode())) return { run: false, why: "Compile check skipped: Hawkes Gen's compile-only mode isn't live yet, so the change goes on to beta's own build" };
+  const cap = buildsSettings().unityCompileMaxCost, avg = compileCostReport().avgCost;
+  if (avg != null && avg > cap) return { run: false, why: `Compile check skipped: it averages $${avg.toFixed(2)} a run, over your $${cap.toFixed(2)} limit (Settings → Builds), so the change goes on to beta's own build` };
+  return { run: true };
+}
 
 /** What Studio sends Gen: the customer build shape (github {repo, commit, token, ref}) and `check: true`, nothing else. */
 export function compileParams(opts: { slug: string; sha: string; ref: string; token: string; path?: string; machine?: string | { cpu: number; memoryGiB: number } }): Record<string, unknown> {
@@ -105,11 +168,11 @@ export function recordCompile(changeId: string, product: string, r: CompileResul
     .run(Date.now(), changeId, product, r.sha, r.outcome, r.seconds, r.cost, r.issues.length, r.job ?? null, r.machine ?? null);
 }
 
-/** Time and cost per run, from the runs Gen priced (unavailable ones have none). overCost: the average is past COST_STOP_USD. */
+/** Time and cost per run, from the runs Gen priced (unavailable ones have none). overCost: the average is past the setting's limit. */
 export function compileCostReport() {
   const row = db.prepare('SELECT COUNT(*) n, AVG(seconds) s, AVG(cost) c, MAX(cost) mx, SUM(cost) total FROM compile_checks WHERE cost IS NOT NULL').get() as any;
   const avgCost = row.n ? row.c : null;
-  return { runs: row.n as number, avgSeconds: row.n ? Math.round(row.s) : null, avgCost: avgCost == null ? null : Math.round(avgCost * 1000) / 1000, maxCost: row.n ? row.mx : null, totalCost: row.n ? Math.round(row.total * 100) / 100 : 0, overCost: avgCost != null && avgCost > COST_STOP_USD };
+  return { runs: row.n as number, avgSeconds: row.n ? Math.round(row.s) : null, avgCost: avgCost == null ? null : Math.round(avgCost * 1000) / 1000, maxCost: row.n ? row.mx : null, totalCost: row.n ? Math.round(row.total * 100) / 100 : 0, overCost: avgCost != null && avgCost > buildsSettings().unityCompileMaxCost };
 }
 
 /** Runs the check on a pushed commit. Never throws: any failure to run is `unavailable`. */

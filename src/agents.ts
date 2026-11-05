@@ -35,7 +35,7 @@
 // Caps (settings.agents): how many fixes run at once and per day, and a daily cost limit.
 
 import { buildCheckBrief } from './buildfix.ts';
-import { compileCheckOn, compileFixPrompt, runCompileCheck, COMPILE_FIXES, type CompileResult } from './compilecheck.ts';
+import { compileGate, compileFixPrompt, runCompileCheck, COMPILE_FIXES, type CompileResult } from './compilecheck.ts';
 import { unityCheck, unityFixPrompt, issueLines, looksUnity, changedCsFiles, type UnityCheckResult } from './unitycheck.ts';
 import { forOwner } from './owner.ts';
 import { isVideoTask, videoReady, versionsOf } from './videos.ts';
@@ -2017,7 +2017,7 @@ async function work(id: string, note?: string, answer?: string, resumed?: Phase 
       const body = `${summary}${unityMd}${criteriaMd}\n\n---\n**Findings** (Hawkes Studio playtest review):\n${findings.map((f: any) => `- [${f.severity}] ${f.title} (${f.id}, seen ${f.seen}×)`).join('\n')}\n\nMade by a Hawkes Studio agent. Approving it in Studio merges it into ${c.base} (the beta site, not live); going live is a separate step.\n\n${prGeneratedBy(id)}`;
       await publish(id, { force: Boolean(note || answer), title: c.title, body });
       // The compile gate: Gen compiles the pushed branch (no player build) before the change may be ready and merge.
-      if (!isSiteChange(c, p) && !c.infra && compileCheckOn() && isUnity(p.id)) {
+      if (!isSiteChange(c, p) && !c.infra && isUnity(p.id) && await (async () => { const g = await compileGate(); if (g.why) addLog(id, g.why); return g.run; })()) {
         c = getChange(id)!;
         const tipNow = git(c.worktree, ['rev-parse', 'HEAD']).out;
         update(id, { detail: 'Hawkes Gen is compiling the branch' });

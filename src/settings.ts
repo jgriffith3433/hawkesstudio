@@ -8,6 +8,7 @@
 //   costs    the budget, alert limits and the GPU auto-approval threshold (costs.ts)
 //   resources  when the server's memory, disk or an idle machine is real trouble (resources.ts, the Resources tab)
 //   routing  which model each piece of work gets: categories, escalation, the daily Opus budget, conserve mode (routing.ts)
+//   builds   the Unity compile gate on agents' pull requests and its cost stop (compilecheck.ts)
 //   playtests  how many playtests run at once and the GPU providers' order, held by Hawkes Gen (playtest-capacity.ts);
 //            the studio's own: a customer's Studio neither sees nor changes it
 //
@@ -18,6 +19,7 @@ import { db, J, parse } from './db.ts';
 import { StudioError } from './config.ts';
 import { brainSettings, saveBrain, syncBrain } from './brains.ts';
 import { tuningSettings, saveTuning, tuningRaises } from './tuning.ts';
+import { buildsSettings, saveBuildsSettings } from './compilecheck.ts';
 import { routingSettings, saveRouting, routingRaises } from './routing.ts';
 
 db.exec(`CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated INTEGER NOT NULL, by TEXT)`);
@@ -104,7 +106,7 @@ const costsMod = () => import('./costs.ts');
 const resourcesMod = () => import('./resources.ts');
 const playtestsMod = () => import('./playtest-capacity.ts');
 
-export const SECTIONS = ['brain', 'tuning', 'routing', 'call', 'agents', 'pm', 'notify', 'costs', 'resources', 'playtests'] as const;
+export const SECTIONS = ['brain', 'tuning', 'routing', 'call', 'agents', 'pm', 'notify', 'costs', 'resources', 'playtests', 'builds'] as const;
 export type Section = (typeof SECTIONS)[number];
 
 /**
@@ -131,6 +133,7 @@ export async function allSettings({ live = true }: { live?: boolean } = {}) {
     costs: costSettings(),
     resources: resourceSettings(),
     playtests,
+    builds: buildsSettings(),
     prices: { elevenPerMinute: Math.round(ELEVEN_PER_MIN * 100) / 100 },
   };
 }
@@ -148,6 +151,8 @@ const RAISES: Record<Section, { up?: string[]; on?: string[]; off?: string[]; an
   resources: {},
   // More playtests at once means more GPU workers; another provider order can mean a dearer one first.
   playtests: { up: ['browsers'], any: ['providers'] },
+  // The Unity compile gate runs a Gen job per agent change (minutes of the build machine): on or a higher stop costs more.
+  builds: { up: ['unityCompileMaxCost'], on: ['unityCompile'] },
 };
 
 /** What in this patch could raise costs (empty: nothing). */
@@ -268,6 +273,9 @@ export async function saveSettings(section: string, patch: Record<string, any>, 
   if (s === 'notify') {
     const { saveNotifySettings } = await notifyMod();
     return saveNotifySettings({ enabled: typeof patch.enabled === 'boolean' ? patch.enabled : undefined, server: patch.server, rotate: patch.rotate === true });
+  }
+  if (s === 'builds') {
+    try { return saveBuildsSettings(patch, by); } catch (e: any) { throw new StudioError(e.message); }
   }
   if (s === 'playtests') return (await playtestsMod()).savePlaytestSettings(patch, by);
   if (s === 'resources') {
