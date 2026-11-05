@@ -53,6 +53,7 @@ const ALWAYS: [RegExp, string][] = [
   [/^\/api\/memory\/seed$/, 'Seeding the shared memory'],
   [/^\/api\/billing\/plans$/, 'Setting the plans and their prices'],
   [/^\/api\/cells(\/|$)/, "Customers' Studios (the control plane)"],
+  [/^\/api\/admin\//, "The admin pages (Customers)"],
   [/^\/api\/gen\/v1\/(fleet|machines|builder|playtester|settings|storage|clients|workflows|usage|keys|users)(\/|\?|$)/, "Hawkes Gen's machinery"],
 ];
 /** The change an infra route acts on, when it is a change to Studio or Gen. */
@@ -66,6 +67,7 @@ function infraChange(id: string) {
 /** Running the platform for customers: the one thing the platform admin is for in J's Studio. */
 const PLATFORM: [RegExp, string][] = [
   [/^\/api\/cells(\/|$)/, "Customers' Studios (the control plane)"],
+  [/^\/api\/admin\//, 'The admin pages (Customers)'],
   [/^\/api\/billing\/plans$/, 'Setting the plans and their prices'],
   [/^\/api\/signups(\/|$)/, 'The waitlist'],
 ];
@@ -124,7 +126,8 @@ export function infraRefusal(req: http.IncomingMessage, product: string): string
 export function hiddenFor(req: http.IncomingMessage) {
   const admin = !lockdownOn() || Boolean(platformAdminOf(req));
   if (admin) return { platformAdmin: true, hide: [] as string[] };
+  // The Customers page is the platform admin's whatever the role (the API answers 403 to anyone else).
   // J's Studio: its admins see everything (only the customers' platform pages refuse them); its members don't.
-  if (!customerStudio() && requester(req)?.role === 'admin') return { platformAdmin: false, hide: [] as string[] };
-  return { platformAdmin: false, hide: ['costs', 'resources', 'social', 'onair', 'services', 'antigravity', ...(customerStudio() ? [] : ['users', 'claude'])] };
+  if (!customerStudio() && requester(req)?.role === 'admin') return { platformAdmin: false, hide: ['customers'] };
+  return { platformAdmin: false, hide: ['customers', 'costs', 'resources', 'social', 'onair', 'services', 'antigravity', ...(customerStudio() ? [] : ['users', 'claude'])] };
 }

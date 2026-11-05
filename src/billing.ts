@@ -237,6 +237,9 @@ export function creditLedger(limit = 50, sid?: string) {
   return db.prepare('SELECT id, delta, balance_after, kind, detail, created FROM billing_credits WHERE studio_id = ? ORDER BY created DESC, rowid DESC LIMIT ?').all(scope(sid), limit) as any[];
 }
 
+/** What a Studio's ledger did since a time, by kind: how many entries and their credits added up (the admin's usage view). */
+export const creditUsage = (since: number, sid?: string) => db.prepare('SELECT kind, COUNT(*) AS n, SUM(delta) AS credits FROM billing_credits WHERE studio_id = ? AND created >= ? GROUP BY kind ORDER BY ABS(SUM(delta)) DESC').all(scope(sid), since) as { kind: string; n: number; credits: number }[];
+
 /** Whether a ref was granted or charged already (or marked done with nothing to grant: markCreditRef). */
 export const creditRefUsed = (ref: string) => Boolean(db.prepare('SELECT 1 FROM billing_credits WHERE ref = ?').get(ref) || db.prepare('SELECT 1 FROM billing_state WHERE key = ?').get(`ref:${ref}`));
 /** A ref done with nothing to write in the ledger (a free month already at its allowance). */

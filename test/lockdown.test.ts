@@ -130,7 +130,7 @@ test('/api/me tells the dashboard what to hide', async () => {
   };
   const h = await me(helperGoogle());
   assert.equal(h.platformAdmin, false);
-  assert.deepEqual(h.hide, [], "an admin of J's Studio sees everything");
+  assert.deepEqual(h.hide, ['customers'], "an admin of J's Studio sees everything but Customers (the platform admin's)");
   assert.equal(h.customer, false);
   const member = A.userByEmail('member@example.com')!;
   const m = await me(as(member, 'google')());
