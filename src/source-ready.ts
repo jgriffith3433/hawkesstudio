@@ -177,3 +177,55 @@ export async function populateSource(
     : `source checkout finished but the worktree still has no source: ${after.reason}`);
   return after;
 }
+
+/** The wait before repair attempt `n` (1-based): 0 for the first, then 5 s, 20 s, 60 s. */
+export const REPAIR_BACKOFF_MS = [0, 5_000, 20_000, 60_000];
+export type Repair = { probe: Probe; attempts: string[] };
+
+/**
+ * Repairs a worktree whose source check failed (J, 2026-11-05: "source missing: 1467 tracked files, but
+ * Assets/Editor/BuildArena.cs ... are not on disk (a sparse checkout that never got the source)" ended a fix with no
+ * commit). Each attempt is one step further up a ladder, and the worktree is probed again after every one:
+ *   1. the project's source patterns again (populateSource: `sparse-checkout set` + one batched blob fetch),
+ *   2. `sparse-checkout reapply` and `checkout -- .` (files git thinks are there but aren't),
+ *   3. a full checkout: `sparse-checkout disable` then `checkout -- .` (not for a light Unity checkout: its whole tree
+ *      killed the job for memory, so it goes straight to 4),
+ *   4. `rebuild`: the worktree is deleted and cloned/checked out fresh (the caller's closure), then probed.
+ * Backoff between attempts (REPAIR_BACKOFF_MS). Returns the last probe and what was tried, in words for the log and for
+ * the failure's detail. Never throws. `run` is gitAsync; `sleep` is for tests.
+ */
+export async function healSource(
+  dir: string,
+  run: (cwd: string, args: string[]) => Promise<{ ok: boolean; out: string; err: string }>,
+  opts: { unity: boolean; light: boolean; rebuild?: () => Promise<void>; log?: (s: string) => void; probe?: (dir: string) => Probe; git?: Git; sleep?: (ms: number) => Promise<void>; backoffMs?: number[]; maxAttempts?: number },
+): Promise<Repair> {
+  const log = opts.log ?? (() => {});
+  const probe = opts.probe ?? ((d: string) => probeSource(d, { unity: opts.unity }));
+  const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  const backoff = opts.backoffMs ?? REPAIR_BACKOFF_MS;
+  const attempts: string[] = [];
+  let p = opts.light ? await populateSource(dir, run, { unity: opts.unity, log, probe, git: opts.git }) : probe(dir);
+  if (p.ok) return { probe: p, attempts };
+  if (opts.light) attempts.push('the source patterns checked out again');
+  const steps: { what: string; go: () => Promise<boolean> }[] = [
+    { what: 'sparse-checkout reapply and checkout of the tracked files', go: async () => { await run(dir, ['sparse-checkout', 'reapply']); return (await run(dir, ['checkout', '--quiet', '--', '.'])).ok; } },
+    ...(opts.light && opts.unity ? [] : [{ what: 'a full checkout (sparse-checkout disabled)', go: async () => { await run(dir, ['sparse-checkout', 'disable']); return (await run(dir, ['checkout', '--quiet', '--', '.'])).ok; } }]),
+    ...(opts.rebuild ? [{ what: 'the worktree deleted and made again from scratch', go: async () => { await opts.rebuild!(); return true; } }] : []),
+  ];
+  const max = Math.min(opts.maxAttempts ?? 4, steps.length);
+  for (let i = 0; i < max; i++) {
+    await sleep(backoff[Math.min(i + 1, backoff.length - 1)] ?? 0);
+    const step = steps[i];
+    log(`source check failed (${p.reason?.split('\n')[0]}); repairing: ${step.what} (attempt ${i + 1} of ${max})`);
+    let did = false;
+    try { did = await step.go(); } catch (e: any) { log(`repair step threw: ${String(e?.message ?? e).slice(0, 200)}`); }
+    attempts.push(did ? step.what : `${step.what} (git refused it)`);
+    // After a rebuild the light checkout needs its source patterns again.
+    p = opts.light && step.what.startsWith('the worktree deleted') ? await populateSource(dir, run, { unity: opts.unity, log, probe, git: opts.git }) : probe(dir);
+    if (p.ok) { log(`source repaired after ${attempts.length} attempt(s): ${step.what}`); return { probe: p, attempts }; }
+  }
+  return { probe: p, attempts };
+}
+
+/** The failure text for a source check that repair could not fix: the exact finding and everything tried. */
+export const repairedError = (what: string, r: Repair) => `${sourceError(what, r.probe)}${r.attempts.length ? `; tried: ${r.attempts.join(', then ')}` : ''}`;
