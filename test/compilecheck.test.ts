@@ -80,10 +80,12 @@ test('the gate degrades: no compile mode in Gen skips with a note, a cost over t
   (gen as any).tool = async () => ({ params: { project: {}, target: {} } });
   let g = await compileGate();
   assert.equal(g.run, false);
-  assert.match(g.why ?? '', /compile-only mode isn't live yet/);
+  assert.match(g.why ?? '', /no compile-only `check` mode yet/);
   forgetGenCompileMode();
   (gen as any).tool = async () => { throw new Error('down'); };
-  assert.equal((await compileGate()).run, false);
+  g = await compileGate();
+  assert.equal(g.run, false);
+  assert.match(g.why ?? '', /couldn't be asked/, 'a Gen that cannot be reached is named, not "not live yet"');
   forgetGenCompileMode();
   (gen as any).tool = async () => ({ params: { check: { type: 'boolean' } } });
   assert.equal((await compileGate()).run, true);
@@ -94,6 +96,17 @@ test('the gate degrades: no compile mode in Gen skips with a note, a cost over t
   saveBuildsSettings({ unityCompileMaxCost: 10 });
   assert.equal((await compileGate()).run, true);
   saveBuildsSettings({ unityCompile: false });
-  assert.deepEqual(await compileGate(), { run: false });
+  g = await compileGate();
+  assert.equal(g.run, false);
+  assert.match(g.why ?? '', /switched off \(Settings → Builds\)/, 'off is said too, not silent');
   (gen as any).tool = tool;
+});
+
+test('a skipped gate is said on the change: the ready line carries why nothing compiled the branch', async () => {
+  const { skippedCompile } = await import('../src/compilecheck.ts');
+  const { readyDetail } = await import('../src/agents.ts');
+  const s = skippedCompile("Compile check skipped: Hawkes Gen's unity.build has no compile-only `check` mode yet, so the change goes on to beta's own build", 'abc1234');
+  assert.equal(s.outcome, 'skipped');
+  assert.equal(s.ok, true, 'a skipped gate never blocks');
+  assert.match(readyDetail({ compileCheck: s }), /Compile check skipped: .* no compile-only `check` mode yet/);
 });

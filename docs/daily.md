@@ -364,8 +364,13 @@ false }` on J's word) stops starts, merges and PM turns; statuses still follow w
 **The Unity check** (J, 2026-11-04). Every agent change that touches `.cs` files in a Unity project (set up as Unity or
 not: an `Assets`/`Packages` folder is enough) is read by `src/unitycheck.ts` before its pull request opens, with no
 customer config: syntax errors (an unterminated string CS1010/CS1039, a backslash before a closing quote, a stray
-backslash CS1056, unbalanced braces) and duplicate members in a type (CS0111 same signature, CS0102 same name),
-partial classes across files included (the other parts are read from the repo). A failure sends the agent back to fix it
+backslash CS1056, unbalanced braces), duplicate members in a type (CS0111 same signature, CS0102 same name),
+partial classes across files included (the other parts are read from the repo), and the simple undefined name (CS0103,
+`src/unitynames.ts`: a lowercase name used in a method that has no such parameter or local, and the file has no such
+field, property, method or type; Yooba Land web 29's `dt`). CS0103 is the careful one: it says nothing for a partial class,
+a base class other than MonoBehaviour/ScriptableObject, `using static`, a name before `.` or `(`, a lambda or named
+argument, and counts any declaration in the method as enough. Fixtures: `test/fixture/unity-check/UndefinedName.cs`
+(the real failure) and `NamesClean.cs` (valid code that must stay quiet). A failure sends the agent back to fix it
 with file, line and message (twice at most, `UNITY_FIXES`, never a try), then fails the change with no pull request.
 What ran is in the change's log, its PR description and its ready line. Engine: Roslyn (`tools/unity-check`, published
 into the agent image at `/opt/unity-check/unity-check`, `STUDIO_UNITY_CHECK` to point elsewhere or `off`), else the
@@ -389,6 +394,53 @@ change goes on to beta's own build. `STUDIO_UNITY_COMPILE=off|on` remains only a
 `STUDIO_UNITY_CHECK`, `STUDIO_MODEL_<ROLE>`: tests and emergencies).
 Every run is a row in `compile_checks` with its seconds and dollars; `compileCostReport()` is the average. Test
 `test/compilecheck.test.ts`.
+
+**A skipped gate is said on the change** (J, 2026-11-05). Off in Settings, Gen without the `check` mode (or unreachable), or
+over the cost limit: the change carries `verify.compileCheck` with outcome `skipped` (`skippedCompile`), so the ready line
+and the change's summary say "Compile check skipped: <why>, so the change goes on to beta's own build", not only its log.
+
+**The compile gate: what Hawkes Gen serves** (the contract Studio relies on; Gen's side is hawkesgen
+`docs/unity-cloudrun.md`, "Compile-only check", added in hawkesgen #120). Studio calls no endpoint of its own for it: it
+submits an ordinary `unity.build` job and reads the finished job.
+- Looks up: `GET` the tool (`gen.tool('unity.build')`) and needs a `check` entry in its `params` (`genCompileMode`, cached 5
+  minutes). No `check` param, or Gen unreachable: the gate is skipped and says which.
+- Submits: `{ tool: "unity.build", project: <the key's Gen project>, params: { github: { repo, commit, token, ref }, check:
+  true, target: "web", path?, machine? } }`. Only the `github` keys Gen takes (`GEN_GITHUB_KEYS`), no `out`, no `method`
+  (Gen refuses both with `check`). `check` is a boolean; customer mode only.
+- Reads: job `status` (`done` / failed), `result.errors: [{ file, line, col, code, message }]` (at most 100; when absent, the
+  `Assets/X.cs(12,34): error CS...` lines of `result.logTail` are parsed), `result.seconds`, `result.cost`, `result.unity`,
+  `result.machine.name`, `result.ok`. `ok: false` with errors is a compile failure (blocks); any other failure (licence,
+  source, token, timeout) is `unavailable` and never blocks.
+- Gen's check is priced by machine time (15 credits reserved, settled), the figure Studio's cost stop reads from `result.cost`.
+If a Gen does not have this yet, nothing breaks: the gate skips (visible, above) until it does.
+
+**Where a Unity compile error is caught, in order** (J, 2026-11-05: Yooba Land builds 26-29 each failed on one error):
+1. *Sandbox check* (`unitycheck.ts`, `unitynames.ts`): the agent's changed `.cs` files, before the pull request opens;
+   syntax, duplicate members, simple undefined names. Seconds, no setup. The agent is sent back.
+2. *PR compile gate* (`compilecheck.ts`): Hawkes Gen compiles the pushed branch with the real Unity before the change may be
+   ready; a failure sends the agent back and then blocks the merge. Skipped visibly when it can't run.
+3. *Beta push*: the red beta build tells the agents still running on the product (`tellRunningAgents`, `.hawkes/beta-build.md`).
+4. *Cloud build* (`builds.ts`): Gen builds the project; a compiler error is classified as the code's (`buildfail.ts`).
+5. *Auto-fix and rebuild* (`buildfix.ts`, below).
+
+**Auto-fix and rebuild** (J, 2026-11-05: web 29's fix merged 90 seconds after the failure and nothing rebuilt it, because
+the build only runs on a tag, so the red card stayed on the old commit). A failing code build starts a fixer
+(`autoFixBuild`, once per failure). The failures of one build id since it last worked are a **chain**
+(`build_chains`, `openChain`/`latestChain`):
+- When the fixer's change merges into beta, `fixMerged` (called by `approve`) starts a new build of the same build id on
+  beta's head with `startBuild(product, { build })`: the trigger isn't asked, so a tag-only build runs too. On restart
+  `resumeChains` asks for any rebuild that a restart swallowed. A rebuild that can't start stops the chain (the owner's).
+- **The rebuild is the verification.** A fixer's word is not: its request says not to claim the build is fixed. A build of the
+  id passing closes the chain (`buildPassed`). Failing with *other* errors continues it: the next fixer's request carries the
+  full error text of every attempt so far (`attemptsText`) and the change of each. Failing with the *same* errors after a fix
+  merged stops it (`sameErrors`, positions and numbers ignored), and so does the cap, **3 attempts per chain** (`MAX_ATTEMPTS`).
+- Stopped means the owner's: the Inbox card for the failed build says what was tried (each attempt, its change as a link, the
+  first error) and why it stopped, never hidden by an earlier answered card; the phone is told once.
+- Notices follow: the red "Last build failed" card and the Inbox card use `failingBuilds`' `plain`, which says "A fix agent is
+  working on it" or "Fix merged into beta (…), rebuilding" instead of "someone has to fix the code first" (that wording stays
+  only when no fixer is on it). The rebuild starting answers the old card (`resolveBuildCards`); a pass removes the red card.
+No timers: every step is an event (a build failing, a change merging, a build starting or passing, boot). Tests
+`test/build-chain.test.ts`, `test/build-autofix.test.ts`, `test/build-fixer-news.test.ts`.
 
 **11. Content tasks** ("DoD: 3 new stages for the Encore chapter", "a Sick Of It enemy for Circle IX"). Agents make game
 content end to end with each product's content skills (`.claude/skills/` in the product repo, loaded by Claude Code):

@@ -14,6 +14,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { undefinedNames } from './unitynames.ts';
 
 export type UnityIssue = { file: string; line: number; col?: number; code: string; message: string };
 export type UnityCheckResult = {
@@ -33,7 +34,7 @@ export type UnityCheckResult = {
 
 // ---------------------------------------------------------------- the lexer
 
-type Tok = { k: 'id' | 'p' | 's' | 'n'; v: string; line: number; cond: boolean };
+export type Tok = { k: 'id' | 'p' | 's' | 'n'; v: string; line: number; cond: boolean };
 const KEYWORDS = new Set(['abstract', 'as', 'base', 'bool', 'break', 'byte', 'case', 'catch', 'char', 'checked', 'class', 'const', 'continue', 'decimal', 'default', 'delegate', 'do', 'double', 'else', 'enum', 'event', 'explicit', 'extern', 'false', 'finally', 'fixed', 'float', 'for', 'foreach', 'goto', 'if', 'implicit', 'in', 'int', 'interface', 'internal', 'is', 'lock', 'long', 'namespace', 'new', 'null', 'object', 'operator', 'out', 'override', 'params', 'private', 'protected', 'public', 'readonly', 'ref', 'return', 'sbyte', 'sealed', 'short', 'sizeof', 'stackalloc', 'static', 'string', 'struct', 'switch', 'this', 'throw', 'true', 'try', 'typeof', 'uint', 'ulong', 'unchecked', 'unsafe', 'ushort', 'using', 'virtual', 'void', 'volatile', 'while']);
 
 const issue = (file: string, line: number, code: string, message: string): UnityIssue => ({ file, line, code, message });
@@ -443,12 +444,15 @@ export function checkUnityFiles(dir: string, changed: string[], { engine = 'auto
   // Pass 1: the changed files (lexer, members), and which of their types are partial.
   const issues: UnityIssue[] = [];
   const members: Member[] = [];
+  const names: UnityIssue[] = [];
   const partialTypes = new Set<string>();
   for (const f of changedSet) {
     const text = read(f);
     if (text === null) continue;
     const lx = lexCs(text, f);
     issues.push(...lx.issues);
+    // The simple undefined-name case (CS0103, unitynames.ts) is read for the changed files with either engine; it skips when unsure.
+    if (!lx.issues.length) names.push(...undefinedNames(lx.toks, f));
     const m = membersOf(lx.toks, f);
     members.push(...m.members);
     for (const t of m.partialTypes) partialTypes.add(t);
@@ -471,11 +475,12 @@ export function checkUnityFiles(dir: string, changed: string[], { engine = 'auto
     }
     issues.push(...duplicates(members, changedSet));
   }
+  issues.push(...names);
   const ok = issues.length === 0;
   const files = [...changedSet];
   const what = engineUsed === 'roslyn' ? 'Roslyn' : 'the built-in checker';
   const summary = ok
-    ? `Unity check: ${files.length} changed C# file${files.length === 1 ? '' : 's'} read with ${what} (syntax, duplicate members${partials.length ? `, ${partials.length} other part${partials.length === 1 ? '' : 's'} of partial classes` : ''}): no errors`
+    ? `Unity check: ${files.length} changed C# file${files.length === 1 ? '' : 's'} read with ${what} (syntax, duplicate members, undefined names${partials.length ? `, ${partials.length} other part${partials.length === 1 ? '' : 's'} of partial classes` : ''}): no errors`
     : `Unity check FAILED (${what}): ${issues.length} error${issues.length === 1 ? '' : 's'} in ${new Set(issues.map((x) => x.file)).size} file${new Set(issues.map((x) => x.file)).size === 1 ? '' : 's'}: ${issues.slice(0, 3).map((x) => `${x.file}:${x.line} ${x.code}`).join(', ')}${issues.length > 3 ? ' ...' : ''}`;
   return { engine: engineUsed, ok, files, partials, issues, summary, ...(note ? { note } : {}) };
 }
@@ -495,7 +500,7 @@ export function unityFixPrompt(r: UnityCheckResult): string {
 
 ${issueLines(r).map((l) => `- ${l}`).join('\n')}
 
-Fix each one in the file and line named (an unterminated string, a backslash before a closing quote and a stray backslash are syntax errors; a method or member defined twice in one class, partial classes in other files included, is CS0102/CS0111: rename or remove one). Commit the fix, and update .hawkes/summary.md if what the change does is different now. Studio checks again before it opens the pull request.`;
+Fix each one in the file and line named (an unterminated string, a backslash before a closing quote and a stray backslash are syntax errors; a method or member defined twice in one class, partial classes in other files included, is CS0102/CS0111: rename or remove one; CS0103 "The name 'x' does not exist in the current context" means a name used where it is not declared: it is a local or parameter of another method, so declare it in this one, pass it in, or compute it here). Commit the fix, and update .hawkes/summary.md if what the change does is different now. Studio checks again before it opens the pull request.`;
 }
 
 /** Whether changed files sit in a Unity project (an Assets or Packages folder, nested projects too): a project that isn't set up as Unity in Studio still gets the check. */

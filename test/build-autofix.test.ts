@@ -1,5 +1,5 @@
 // A build that fails because of the code starts a fixer agent (buildfix.ts): only kind "code", one at a time per failure
-// (failSignature), at most MAX_FIXES in all, the commit's origin named, and the agents' brief tells them to run the build
+// (failSignature), at most MAX_ATTEMPTS (3) per failure chain, the commit's origin named, and the agents' brief tells them to run the build
 // check. Stand-ins for the agent start and GitHub.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -66,18 +66,51 @@ test('the same failure again starts no second fixer while one is open', async ()
   assert.equal(started.length, before);
 });
 
-test('attempts are capped per failure, then the Inbox card is the owner\'s', async () => {
-  // The first fixer is merged and the build fails the same way: one more try, and then no more.
+test('the same errors again after a merged fix stop the chain: the owner\'s now, with what was tried', async () => {
+  // The first fixer merged and the rebuild failed the very same way: another fixer would only repeat it.
   db.prepare("UPDATE changes SET status = 'merged' WHERE id = 'c_fix1'").run();
   const second = await X.autoFixBuild(row(), deps());
-  assert.ok(second.started, second.why);
-  assert.match(started[started.length - 1].request, /already tried this failure \(1 time\)/);
-  db.prepare("UPDATE changes SET status = 'merged' WHERE id = ?").run(second.started);
-  const third = await X.autoFixBuild(row(), deps());
-  assert.equal(third.started, null);
-  assert.match(third.why, /owner's now/);
-  const sig = F.failSignature(db.prepare('SELECT * FROM builds WHERE id = ?').get(`b_${(n).toString(16).padStart(12, '0')}`) as any);
-  assert.equal(X.fixersOf(sig).total, X.MAX_FIXES);
+  assert.equal(second.started, null);
+  assert.equal(second.escalated, true);
+  assert.match(second.why, /same errors after a merged fix/);
+  const chain = X.latestChain('bxgame', 'web')!;
+  assert.equal(chain.status, 'escalated');
+  assert.match(chain.reason ?? '', /same error/);
+  assert.equal(chain.attempts.length, 1);
+  assert.match(X.attemptsText(chain, { full: false }), /Attempt 1: change c_fix1/);
+  const exhausted = X.fixerNow(F.failSignature(db.prepare('SELECT * FROM builds WHERE id = ?').get(`b_${(n).toString(16).padStart(12, '0')}`) as any), 'bxgame');
+  assert.equal(exhausted.state, 'exhausted', 'the card keeps the needs-a-person wording');
+});
+
+test('other errors after a merged fix continue the chain with every earlier attempt\'s full error text, up to the cap', async () => {
+  const err = (k: number) => `Assets/Scripts/Step${k}.cs(${k},3): error CS010${k}: step ${k} is broken`;
+  const mk = (k: number) => row({ detail: `the Unity build failed: ${err(k)}`, fail_log: `${err(k)}\nBuild failed`, build: 'chainweb' });
+  const before = started.length;
+  const one = await X.autoFixBuild(mk(1), deps());
+  assert.ok(one.started, one.why);
+  assert.doesNotMatch(started[before].request, /Already tried/, 'the first fixer has no history');
+  db.prepare("UPDATE changes SET status = 'merged' WHERE id = ?").run(one.started);
+  const two = await X.autoFixBuild(mk(2), deps()); // the rebuild failed with another error
+  assert.ok(two.started, two.why);
+  const req2 = started[before + 1].request;
+  assert.match(req2, /Already tried \(1 fix attempt/);
+  assert.match(req2, /step 1 is broken/, 'attempt 1\'s error text is in the next fixer\'s request');
+  assert.match(req2, /step 2 is broken/);
+  db.prepare("UPDATE changes SET status = 'merged' WHERE id = ?").run(two.started);
+  const three = await X.autoFixBuild(mk(3), deps());
+  assert.ok(three.started, three.why);
+  const req3 = started[before + 2].request;
+  assert.match(req3, /Already tried \(2 fix attempts/);
+  assert.match(req3, /Attempt 1[\s\S]*step 1 is broken[\s\S]*Attempt 2[\s\S]*step 2 is broken/, 'every earlier attempt, in order'); assert.match(req3, /step 3 is broken/, 'and what fails now');
+  assert.match(req3, /Do not say the build is fixed/, 'the fixer is told the rebuild is the verdict, not its word');
+  db.prepare("UPDATE changes SET status = 'merged' WHERE id = ?").run(three.started);
+  const four = await X.autoFixBuild(mk(4), deps());
+  assert.equal(four.started, null);
+  assert.equal(four.escalated, true);
+  assert.match(four.why, /3 fixers already tried/);
+  const chain = X.latestChain('bxgame', 'chainweb')!;
+  assert.equal(chain.status, 'escalated');
+  assert.equal(chain.attempts.length, X.MAX_ATTEMPTS);
 });
 
 test('a different error is a different failure with its own attempts', async () => {
@@ -97,7 +130,7 @@ test('other failure kinds, agent previews and off switches start nothing', async
 });
 
 test('a failing blame lookup does not stop the fixer', async () => {
-  const r = await X.autoFixBuild(row({ detail: 'the Unity build failed: Assets/Baz.cs(1,1): error CS0246: nope', fail_log: 'Assets/Baz.cs(1,1): error CS0246: nope' }), deps({ culprits: async () => { throw new Error('GitHub down'); } }));
+  const r = await X.autoFixBuild(row({ build: 'blamew', detail: 'the Unity build failed: Assets/Baz.cs(1,1): error CS0246: nope', fail_log: 'Assets/Baz.cs(1,1): error CS0246: nope' }), deps({ culprits: async () => { throw new Error('GitHub down'); } }));
   assert.ok(r.started, r.why);
   assert.doesNotMatch(started[started.length - 1].request, /came from a change/);
 });

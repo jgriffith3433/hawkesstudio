@@ -17,7 +17,7 @@ import { isVideoTask, listVideos } from './videos.ts';
 import type http from 'node:http';
 import { db, parse } from './db.ts';
 import { getProduct, getInfra, isInfra, loadProducts, managedElsewhere, StudioError } from './config.ts';
-import { fixerNow, fixedWording, fixSentence, type FixerNow } from './buildfix.ts';
+import { fixerNow, latestChain, attemptsText, type FixerNow } from './buildfix.ts';
 import { failingBuilds, failSignature, lastBuilds } from './buildfail.ts';
 import {
   listQuestions, getQuestion, setQuestion, answeredSince, getTask, getItem, getMilestone, listMilestones, milestoneProgress, milestoneTasks, tasksAwaitingGpu,
@@ -209,17 +209,24 @@ const record = (id: string, by: string, answer: string, title: string) => ack(`$
  */
 function buildCardAnswered(f: { id: string; product: string; build: string; class: string | null; reason: string }): boolean {
   const sig = failSignature({ build: f.build, fail_class: f.class, detail: f.reason });
+  // A chain the fixers gave up on is the owner's card, even when the same failure's earlier card was answered by the rebuild.
+  if (latestChain(f.product, f.build)?.status === 'escalated') return false;
   const rows = db.prepare("SELECT id, build, fail_class, detail FROM builds WHERE product = ? AND build = ? AND change IS NULL AND status = 'failed' AND id != ?").all(f.product, f.build, f.id) as any[];
   return rows.some((r) => failSignature(r) === sig && acked(`build:${r.id}`));
 }
 
 /** What the automatic fixer is doing about a code failure (buildfix.ts fixerNow): the sentence and the change's link. */
-function fixLine(f: { kind: string | null; class: string | null; build: string; reason: string }): { text: string; links: InboxLink[] } {
+function fixLine(f: { kind: string | null; class: string | null; build: string; reason: string; product: string }): { text: string; links: InboxLink[] } {
   if (f.kind !== 'code') return { text: '', links: [] };
-  const now: FixerNow = fixerNow(failSignature({ build: f.build, fail_class: f.class, detail: f.reason }));
-  if (now.state === 'exhausted') return { text: '\n\nAgents already tried to fix this and the build still fails: it needs you.', links: [] };
-  const sentence = fixSentence(now);
-  return { text: sentence ? `\n\n${sentence}` : '', links: now.url ? [{ label: `Fix change ${now.change}`, url: now.url }] : [] };
+  const now: FixerNow = fixerNow(failSignature({ build: f.build, fail_class: f.class, detail: f.reason }), f.product);
+  if (now.state === 'exhausted') {
+    // What was tried, with each change linked (buildfix.ts chain): the owner starts from there.
+    const chain = latestChain(f.product, f.build);
+    const tried = chain?.attempts.length ? `\n\nWhat was tried:\n${attemptsText(chain, { full: false })}` : '';
+    return { text: `\n\nAgents already tried to fix this and the build still fails: it needs you.${chain?.reason ? ` ${chain.reason}.` : ''}${tried}`, links: (chain?.attempts ?? []).map((a, i) => ({ label: `Attempt ${i + 1}: change ${a.change}`, url: `#changes/${a.change}` })) };
+  }
+  // f.plain already carries the working / merged sentence (buildfail.ts withFixer).
+  return { text: '', links: now.url ? [{ label: `Fix change ${now.change}`, url: now.url }] : [] };
 }
 
 /**
@@ -357,8 +364,8 @@ export async function inbox({ tokens = false }: { tokens?: boolean } = {}): Prom
       if (!f.finished || Date.now() - f.finished > 7 * 24 * HOUR || acked(`build:${f.id}`) || buildCardAnswered(f)) continue;
       out.push({
         id: `build:${f.id}`, kind: 'build', title: `${p.name}: build ${f.build} ${f.version} failed${f.sha ? ` (${f.sha.slice(0, 7)})` : ''}`,
-        text: `${fixedWording(f.plain, fixerNow(failSignature({ build: f.build, fail_class: f.class, detail: f.reason })))}${fixLine(f).text}\n\nReason: ${f.reason}${f.genJob ? `\nGen job: ${f.genJob}` : ''}`.slice(0, 1500),
-        product: p.id, productName: p.name, context: `${f.kind === 'infrastructure' ? 'Infrastructure' : f.kind === 'code' ? 'The code' : 'Cause unclear'}${f.stepWords ? `, while ${f.stepWords}` : ''}${f.tries > 1 ? `, after ${f.tries} tries` : ''}. ${fixedWording(f.plain, fixerNow(failSignature({ build: f.build, fail_class: f.class, detail: f.reason })))}`.slice(0, 400),
+        text: `${f.plain}${fixLine(f).text}\n\nReason: ${f.reason}${f.genJob ? `\nGen job: ${f.genJob}` : ''}`.slice(0, 1500),
+        product: p.id, productName: p.name, context: `${f.kind === 'infrastructure' ? 'Infrastructure' : f.kind === 'code' ? 'The code' : 'Cause unclear'}${f.stepWords ? `, while ${f.stepWords}` : ''}${f.tries > 1 ? `, after ${f.tries} tries` : ''}. ${f.plain}`.slice(0, 400),
         asker: 'Studio', recommendation: f.kind === 'code' ? null : 'Build again', options: ['Build again', 'Dismiss'], blocks: `${p.name} going live (the build is what ships)`,
         since: f.finished, weight: 50, links: [...fixLine(f).links, { label: 'Why did this fail?', url: `#build-why/${p.id}/${f.id}` }, ...(f.run ? [{ label: 'The run', url: '#runs' }] : [])],
         subject: p.id, conversation: null, asks: 1,

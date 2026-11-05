@@ -23,8 +23,8 @@ export const COMPILE_FIXES = 2;
 
 export type CompileIssue = { file: string; line: number; col?: number; code: string; message: string };
 export type CompileResult = {
-  /** compiled: no errors; failed: compiler errors; unavailable: the check couldn't run (not a verdict). */
-  outcome: 'compiled' | 'failed' | 'unavailable';
+  /** compiled: no errors; failed: compiler errors; unavailable: the check ran into trouble (not a verdict); skipped: it was not asked for (off, Gen can't, over the cost limit). */
+  outcome: 'compiled' | 'failed' | 'unavailable' | 'skipped';
   ok: boolean;
   sha: string;
   issues: CompileIssue[];
@@ -76,26 +76,34 @@ export const compileOverride = (): boolean | null => {
 /** Whether the gate is switched on (the override, else the setting). Read at run time: no restart. */
 export const compileCheckOn = () => compileOverride() ?? buildsSettings().unityCompile;
 
-/** Whether Gen's unity.build has the compile-only `check` param (older Gens would run a whole player build). Cached 5 min. */
-let genSeen: { at: number; ok: boolean } | null = null;
-export async function genHasCompileMode(): Promise<boolean> {
-  if (genSeen && Date.now() - genSeen.at < 5 * 60_000) return genSeen.ok;
+/**
+ * Whether Gen's unity.build has the compile-only `check` param (older Gens would run a whole player build), and if not, why
+ * (the sentence the change shows). Cached 5 min. The contract Studio relies on is in docs/daily.md, "The compile gate:
+ * what Hawkes Gen serves".
+ */
+let genSeen: { at: number; ok: boolean; why?: string } | null = null;
+export async function genCompileMode(): Promise<{ ok: boolean; why?: string }> {
+  if (genSeen && Date.now() - genSeen.at < 5 * 60_000) return genSeen;
   let ok = false;
+  let why: string | undefined;
   try {
     const { gen } = await import('./gen.ts');
     const t: any = await (gen as any).tool('unity.build');
     const params = t?.params ?? t?.tool?.params;
     ok = Array.isArray(params) ? params.some((x: any) => x?.name === 'check' || x === 'check') : Boolean(params && typeof params === 'object' && 'check' in params);
-  } catch { ok = false; }
-  genSeen = { at: Date.now(), ok };
-  return ok;
+    if (!ok) why = "Hawkes Gen's unity.build has no compile-only `check` mode yet";
+  } catch (e: any) { why = `Hawkes Gen couldn't be asked about its compile-only mode (${String(e?.message ?? e).slice(0, 120)})`; }
+  genSeen = { at: Date.now(), ok, ...(why ? { why } : {}) };
+  return genSeen;
 }
+export const genHasCompileMode = async () => (await genCompileMode()).ok;
 export const forgetGenCompileMode = () => { genSeen = null; };
 
-/** Should the gate run now? Never throws. `why` is a plain sentence for the change's log when it is skipped. */
+/** Should the gate run now? Never throws. `why` is a plain sentence, for the change's log AND its summary (skippedCompile), when it is skipped. */
 export async function compileGate(): Promise<{ run: boolean; why?: string }> {
-  if (!compileCheckOn()) return { run: false };
-  if (!(await genHasCompileMode())) return { run: false, why: "Compile check skipped: Hawkes Gen's compile-only mode isn't live yet, so the change goes on to beta's own build" };
+  if (!compileCheckOn()) return { run: false, why: "Compile check skipped: it is switched off (Settings → Builds), so the change goes on to beta's own build" };
+  const mode = await genCompileMode();
+  if (!mode.ok) return { run: false, why: `Compile check skipped: ${mode.why ?? "Hawkes Gen's compile-only mode isn't live yet"}, so the change goes on to beta's own build` };
   const cap = buildsSettings().unityCompileMaxCost, avg = compileCostReport().avgCost;
   if (avg != null && avg > cap) return { run: false, why: `Compile check skipped: it averages $${avg.toFixed(2)} a run, over your $${cap.toFixed(2)} limit (Settings → Builds), so the change goes on to beta's own build` };
   return { run: true };
@@ -125,6 +133,9 @@ export function parseCompilerLog(log: string, max = 100): CompileIssue[] {
 
 const mins = (s: number | null) => (s == null ? '?' : s < 90 ? `${Math.round(s)} s` : `${(s / 60).toFixed(1)} min`);
 const usd = (c: number | null) => (c == null ? '?' : `$${c.toFixed(2)}`);
+
+/** A gate that did not run, as a result the change carries: its summary reaches the ready line and the owner (agents.ts readyDetail). */
+export const skippedCompile = (why: string, sha = ''): CompileResult => ({ outcome: 'skipped', ok: true, sha, issues: [], seconds: null, cost: null, note: why, summary: why });
 
 /** Gen's finished job -> the verdict. A job that failed for any reason but compiler errors is `unavailable`. */
 export function compileResultOf(job: any, sha: string): CompileResult {
