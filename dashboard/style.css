@@ -551,3 +551,6 @@ body.lt-big-open { overflow: hidden; }
 .report-decision { padding: 10px 16px; border-radius: var(--radius); border: 1px solid #d29922; background: var(--panel); margin-bottom: 14px; }
 .report-decision h3 { margin: 0 0 6px; font-size: 14px; } .report-decision ul { margin: 0; padding-left: 18px; font-size: 13px; }
 .inline-video { display: block; max-width: 100%; max-height: 360px; margin: 6px 0 10px; border-radius: 6px; background: #000; }
+
+.set-flash { outline: 2px solid var(--accent, #6cf); transition: outline-color 2s; }
+.empty p { margin: 4px 0; }
