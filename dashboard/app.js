@@ -650,6 +650,9 @@ async function loadReport() {
   if (!sel.value) return ($('#reportBody').innerHTML = '<div class="empty">No runs yet. Start one from Today.</div>');
   const run = await api(`/api/runs/${sel.value}`);
   $('#reportMd').href = `/api/runs/${run.id}/report?format=md`;
+  // The verdict first, then what needs J's decision (src/report.ts reportVerdict), then the evidence.
+  const { verdict: V } = await api(`/api/runs/${run.id}/report`);
+  const verdictHtml = V ? `<div class="report-verdict ${esc(V.level)}"><b>${esc(V.line)}</b></div>${V.decisions.length ? `<div class="report-decision"><h3>Needs your decision</h3><ul>${V.decisions.map((d) => `<li>${esc(d)}</li>`).join('')}</ul></div>` : ''}` : '';
   const byProduct = new Map();
   for (const s of run.steps) (byProduct.get(s.product) ?? byProduct.set(s.product, []).get(s.product)).push(s);
   // A daily report also lists what ran between the previous daily run and this one.
@@ -657,10 +660,10 @@ async function loadReport() {
   const prevDaily = me?.daily ? daily.find((r) => r.started < me.started) : null;
   const between = me?.daily ? other.filter((r) => r.started < me.started && (!prevDaily || r.started >= prevDaily.started)) : [];
   const sinceHtml = between.length ? `<div class="report-product"><h2>Since the last report</h2>${between.map((r) => `<div class="test"><span>${icon(r.status === 'interrupted' ? 'failed' : r.status)}</span><span class="name"><a href="#" data-report-run="${r.run}">${esc(r.kind)} · ${new Date(r.started).toLocaleString()}</a></span><span class="detail">${esc(r.products.join(', '))}${r.playtests ? ` · ${r.playtests} playtests, ${r.reviews} reviewed` : ''} · ${esc(r.headline ?? r.status)}</span></div>`).join('')}</div>` : '';
-  $('#reportBody').innerHTML = `<p class="meta">${esc(run.detail ?? '')} · $${(run.cost ?? 0).toFixed(2)}</p>` + sinceHtml + [...byProduct.entries()].map(([pid, steps]) => {
+  $('#reportBody').innerHTML = verdictHtml + `<p class="meta">${esc(run.detail ?? '')} · $${(run.cost ?? 0).toFixed(2)}</p>` + sinceHtml + [...byProduct.entries()].map(([pid, steps]) => {
     const reviews = steps.filter((s) => s.kind === 'review' && s.data);
     return `<div class="report-product"><h2>${esc(pid)}</h2>
-      ${steps.filter((s) => s.kind !== 'review').map((s) => `<div class="test"><span>${icon(s.status)}</span><span class="name">${esc(s.kind)} ${esc(s.name)}</span><span class="detail">${esc(s.detail ?? '')}</span>${slowPill(s)}${s.data?.video ? `<a href="${file(s.data.video)}" target="_blank" rel="noopener" data-video="${file(s.data.video)}">▶ video</a>` : ''}</div>${s.kind === 'check' && s.status === 'failed' ? `<pre>${esc(s.data?.tail ?? '')}</pre>` : ''}`).join('')}
+      ${steps.filter((s) => s.kind !== 'review').map((s) => `<div class="test"><span>${icon(s.status)}</span><span class="name">${esc(s.kind)} ${esc(s.name)}</span><span class="detail">${esc(s.detail ?? '')}</span>${slowPill(s)}${s.data?.video ? `<a href="${file(s.data.video)}" target="_blank" rel="noopener" data-video="${file(s.data.video)}">⤢ bigger</a>` : ''}</div>${s.data?.video ? `<video class="inline-video" controls preload="metadata" playsinline src="${file(s.data.video)}"></video>` : ''}${s.kind === 'check' && s.status === 'failed' ? `<pre>${esc(s.data?.tail ?? '')}</pre>` : ''}`).join('')}
       ${reviews.map((rv) => `<div class="review"><h4>${esc(rv.name)} <span class="pill ${rv.data.verdict}">${esc(rv.data.verdict)}</span></h4>
         <div class="scores">${Object.entries(rv.data.scores ?? {}).map(([k, n]) => `<div class="score"><b>${n}</b><span>${k}</span></div>`).join('')}</div>
         <p class="summary">${esc(rv.data.summary)}</p>${rv.data.changes?.length ? `<p class="meta">Since last time: ${rv.data.changes.map(esc).join('; ')}</p>` : ''}

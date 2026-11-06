@@ -119,6 +119,18 @@ test('the daily report has a "Players" section from the run\'s players step', ()
   assert.match(md.slice(md.indexOf('## PH Origins')), /### Players \(live site\)\n\n- Hawkes Gen didn't answer: offline/);
 });
 
+test('a report opens with a verdict line, and a decision block when something is broken', () => {
+  const run = newId('r');
+  db.prepare('INSERT INTO runs (id, kind, status, detail, products, options, started, finished) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').run(run, 'daily', 'done', 'x', J(['sickofit']), J({}), NOW, NOW + 60_000);
+  db.prepare('INSERT INTO steps (id, run, product, kind, name, status, detail, data, started, finished) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(newId('s'), run, 'sickofit', 'playtest', 'smoke', 'failed', 'crashed', J({}), NOW, NOW);
+  const md = reportMarkdown(run).markdown;
+  assert.match(md.split('\n')[2], /^\*\*Needs attention: (Sick Of It|sickofit)/);
+  assert.match(md, /## Needs your decision\n\n- (Sick Of It|sickofit): playtest smoke failed/);
+  const ok = newId('r');
+  db.prepare('INSERT INTO runs (id, kind, status, detail, products, options, started, finished) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').run(ok, 'daily', 'done', 'x', J(['sickofit']), J({}), NOW, NOW + 60_000);
+  assert.doesNotMatch(reportMarkdown(ok).markdown, /Needs your decision/);
+});
+
 test('player data becomes work only over the minimum samples: errors are bugs, the rest ideas', () => {
   const noise = (m: string, s: string) => /extension:/.test(s);
   const w = P.playerWork(rich(), noise);

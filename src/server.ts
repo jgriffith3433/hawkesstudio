@@ -9,7 +9,7 @@ import { db, rowToStep } from './db.ts';
 import { startRun, startPartial, playtestRequest, getRun, listRuns, activeRun, lastStep, nameOf, resumeRuns, type RunOptions } from './pipeline.ts';
 import { pruneDetached } from './detach.ts';
 import { listFindings, getFinding, updateFinding } from './backlog.ts';
-import { reportMarkdown, listReports } from './report.ts';
+import { reportMarkdown, reportVerdict, listReports } from './report.ts';
 import { deployPlan, deploy, rollbackPlan, rollback } from './deploy.ts';
 import { assetStatus } from './assets.ts';
 import { syncRepos } from './repos.ts';
@@ -375,7 +375,7 @@ const server = http.createServer(async (req, res) => {
         res.writeHead(200, { 'Content-Type': MIME['.md'] });
         return res.end(r.markdown);
       }
-      return send(res, 200, { markdown: r.markdown, headline: r.headline, date: r.date, cost: r.cost });
+      return send(res, 200, { markdown: r.markdown, headline: r.headline, date: r.date, cost: r.cost, verdict: reportVerdict(r) });
     }
     if (route === '/api/build' && method === 'POST') {
       const b = await readJson(req);
