@@ -48,6 +48,44 @@ export function buildReport(run: string) {
   return { run: r, per, open, newToday, newIdeas, ideas, cost, headline, date: today(new Date(r.started)) };
 }
 
+/**
+ * The report's verdict in one line, and what needs J's decision (empty when nothing does). Every report page opens with
+ * these, so J reads the answer first and the evidence after.
+ */
+export function reportVerdict(R: ReturnType<typeof buildReport>) {
+  const broken = R.per.filter((x) => x.verdict === 'broken');
+  const fixFirst = R.per.filter((x) => x.verdict === 'fix-first');
+  const failed = R.per.filter((x) => x.failed.length && x.verdict !== 'broken');
+  const running = !R.run.finished;
+  const names = (a: { name: string }[]) => a.map((x) => x.name).join(', ');
+  let level: 'ok' | 'attention' | 'broken' | 'running' = 'ok';
+  let line: string;
+  if (running) {
+    level = 'running';
+    line = 'Still running: the verdict comes when the reviews are in.';
+  } else if (broken.length) {
+    level = 'broken';
+    line = `Broken: ${names(broken)} ${broken.length === 1 ? 'is' : 'are'} not fit to ship${fixFirst.length || failed.length ? `; also needs work: ${names([...fixFirst, ...failed])}` : ''}.`;
+  } else if (fixFirst.length || failed.length) {
+    level = 'attention';
+    {
+    const fine = R.per.length - fixFirst.length - failed.length;
+    line = `Needs attention: ${names([...fixFirst, ...failed])}${fine ? `; the other ${fine} ${fine === 1 ? 'is' : 'are'} fine` : ''}.`;
+  }
+  } else if (!R.per.some((x) => x.verdict)) {
+    line = `No problems found, but nothing was reviewed in this run (${R.per.length} product${R.per.length === 1 ? '' : 's'}).`;
+  } else {
+    line = `All good: ${R.per.length} product${R.per.length === 1 ? '' : 's'} ship-ready, ${R.newToday ? `${R.newToday} new finding${R.newToday === 1 ? '' : 's'}` : 'no new findings'}.`;
+  }
+  const decisions: string[] = [];
+  for (const x of broken) decisions.push(`${x.name} is broken: send its blockers to an agent, or hold the go-live.`);
+  for (const x of fixFirst) decisions.push(`${x.name} should be fixed first: start an agent on its findings, or accept it as it is.`);
+  for (const x of failed) decisions.push(`${x.name}: ${x.failed.map((s) => `${s.kind} ${s.name}`).join(', ')} failed to run: retry it, or look at why.`);
+  const blockers = R.open.filter((f) => f.severity === 'blocker');
+  if (blockers.length) decisions.push(`${blockers.length} open blocker${blockers.length === 1 ? '' : 's'} in the backlog: ${blockers.slice(0, 3).map((f) => f.title).join('; ')}.`);
+  return { level, line, decisions };
+}
+
 const PLAN_ICON: Record<string, string> = { waiting: '⏳', playing: '▶️', reviewing: '🔎', done: '✅', failed: '❌', skipped: '⏭️', cancelled: '🚫' };
 
 const fmtStep = (s: Step) => {
@@ -60,7 +98,9 @@ export function reportMarkdown(run: string) {
   const L: string[] = [];
   const started = new Date(R.run.started);
   const mins = R.run.finished ? Math.round((R.run.finished - R.run.started) / 60000) : null;
-  L.push(`# Hawkes Studio report: ${R.date}`, '');
+  const V = reportVerdict(R);
+  L.push(`# Hawkes Studio report: ${R.date}`, '', `**${V.line}**`, '');
+  if (V.decisions.length) L.push('## Needs your decision', '', ...V.decisions.map((d) => `- ${d}`), '');
   L.push(`Run \`${run}\` started ${started.toLocaleString()}${mins != null ? `, took ${mins} min` : ' (still running)'}. ${R.headline}.`, '');
   L.push('| Product | Verdict | Stability | Visuals | Clarity | Feel | Polish | Findings | Problems |', '|---|---|---|---|---|---|---|---|---|');
   for (const x of R.per) {
@@ -103,7 +143,8 @@ export function reportMarkdown(run: string) {
       L.push('');
       for (const f of (v.findings ?? []).slice(0, 12)) {
         const shots = (f.shots ?? []).slice(0, 3).map((a: string, i: number) => `[shot ${i + 1}](${fileUrl(a)})`).join(' ');
-        L.push(`- ${SEV_ICON[f.severity] ?? '-'} **${f.title}** (${f.area}). ${f.detail} *Fix:* ${f.fix} ${shots}`);
+        const inline = (f.shots ?? []).slice(0, 3).map((a: string, i: number) => `![shot ${i + 1}](${fileUrl(a)})`).join(' ');
+        L.push(`- ${SEV_ICON[f.severity] ?? '-'} **${f.title}** (${f.area}). ${f.detail} *Fix:* ${f.fix} ${shots}${inline ? `\n  ${inline}` : ''}`);
       }
     }
     // Real players on the live site (daily runs: pipeline.ts recordPlayers; bots and J's own devices left out).
