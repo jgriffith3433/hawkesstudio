@@ -2,6 +2,7 @@
 // vastly different it should just have extra features"). The nav shows one button per group; inside, a small bar
 // switches between the group's pages, which are the same tabs as before (so links, Talk's guide and #hash addresses
 // keep working). A page this Studio doesn't have is left out of its group, so J's Studio is a customer's plus extras.
+//   Home       the at-a-glance page (needs you, running, ready to ship per game)
 //   Talk       Talk · Inbox
 //   Projects   Projects (each project's card, add/edit/delete) · Ready to test* · Go live · Analytics
 //   Plan       Roadmap · Bugs (the backlog) · Agents' changes
@@ -12,6 +13,7 @@
 // Social, Costs, Resources and On Air by /api/me's `hide` (src/lockdown.ts), which also hides them from J's members.
 (() => {
   const GROUPS = [
+    { head: 'home', label: 'Home', tabs: [['home', 'Home']] },
     { head: 'talk', label: 'Talk', tabs: [['talk', 'Talk'], ['inbox', 'Inbox']] },
     { head: 'today', label: 'Projects', tabs: [['today', 'Projects'], ['ready', 'Ready to test'], ['golive', 'Go live'], ['analytics', 'Analytics']] },
     { head: 'roadmap', label: 'Plan', tabs: [['roadmap', 'Roadmap'], ['backlog', 'Bugs'], ['changes', "Agents' changes"]] },

@@ -11,6 +11,7 @@
   <header>
     <div class="brand"><span class="mark">H</span> Hawkes Studio <small data-platform>clinical trials, daily</small> <a href="#settings" class="walk-badge" id="walkAwayBadge" hidden title="Walk-away mode is on: Studio and Gen changes merge into main by themselves once green, the PM decides routine calls itself, and your Inbox keeps only what's yours (Settings, PM loop)">🚶 Walk-away</a></div>
     <nav>
+      <button data-tab="home" title="At a glance: per game, what needs you, what is running, what is ready to ship">Home</button>
       <button data-tab="inbox" class="on" title="Everything waiting on you: decisions, GPU budgets, merges only you make, milestones to playtest">Inbox <span class="ib-count zero" id="inboxCount">0</span></button>
       <button data-tab="talk">Talk</button>
       <button data-tab="today">Today</button>
@@ -57,6 +58,11 @@
     <div id="dockBody" class="dock-body"></div>
   </aside>
   <main>
+    <section id="home" class="tab">
+      <p class="intro"><b>Home:</b> every game at a glance: what needs you, what's running, what's ready to ship. It updates by itself.</p>
+      <div id="homeTotals" class="home-totals"></div>
+      <div id="homeGames" class="home-games"><div class="meta">Loading…</div></div>
+    </section>
     <section id="inbox" class="tab on">
       <p class="intro"><b>Inbox:</b> only the things that need your yes or no. Answer here and it goes where it needs to; Talk is for conversation, this is the to-do list.</p>
       <div id="ibList"><div class="meta">Loading…</div></div>
@@ -260,6 +266,7 @@
   <script src="social.js"></script>
   <script src="videos.js"></script>
   <script src="golive.js"></script>
+  <script src="home.js"></script>
   <script src="library.js"></script>
   <script src="memory.js"></script>
   <script src="settings.js"></script>

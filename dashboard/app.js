@@ -241,7 +241,7 @@ window.studioAddRepo = studioAddRepo;
 // ------------------------------------------------------------- tabs
 // Old tabs folded into others: #sites (the beta and live links) is on Go live now.
 const MOVED = { sites: 'golive' };
-let tab = location.hash.slice(1).split('/')[0] || 'inbox';
+let tab = location.hash.slice(1).split('/')[0] || 'home';
 tab = MOVED[tab] ?? tab;
 function show(t, sub) {
   t = MOVED[t] ?? t;
@@ -753,6 +753,7 @@ async function refresh() {
     if (tab === 'social' && window.loadSocialTab) await window.loadSocialTab();
     if (tab === 'videos' && window.loadVideosTab) await window.loadVideosTab();
     if (tab === 'live' && window.loadLiveTab) await window.loadLiveTab();
+    if (tab === 'home' && window.loadHomeTab) await window.loadHomeTab();
     if (tab === 'golive' && window.loadGoLiveTab) await window.loadGoLiveTab();
     if (tab === 'library' && window.loadLibraryTab) await window.loadLibraryTab();
     if (tab === 'settings' && window.loadSettingsTab) await window.loadSettingsTab();

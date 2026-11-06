@@ -528,3 +528,20 @@ body.lt-big-open { overflow: hidden; }
 .bf-badge button:disabled, [data-build-now]:disabled { opacity: .7; cursor: progress; }
 .bf-badge .actions { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
 @media (max-width: 600px) { .bf-badge, .bf-running, .bf-done { padding: 10px 8px; } .bf-badge .actions button { min-height: 40px; } }
+
+/* Home: per game counts (needs you, running, ready to ship); 390px wide phones get one column */
+.home-totals { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin: 8px 0 12px; }
+.home-total { background: var(--panel, #161b22); border: 1px solid var(--line, #2a313a); border-radius: 8px; padding: 10px; text-align: center; }
+.home-total b { display: block; font-size: 26px; }
+.home-total span, .home-count span { font-size: 12px; opacity: .8; }
+.home-games { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 10px; }
+.home-card { background: var(--panel, #161b22); border: 1px solid var(--line, #2a313a); border-radius: 8px; padding: 10px; min-width: 0; }
+.home-card h3 { margin: 0 0 8px; overflow-wrap: anywhere; }
+.home-counts { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+.home-count { display: block; text-align: center; padding: 8px 4px; border-radius: 6px; background: rgba(255,255,255,.04); color: inherit; text-decoration: none; min-height: 44px; }
+.home-count .n { display: block; font-size: 22px; }
+.home-count.needs.some, .home-total.needs { box-shadow: inset 0 -3px 0 #e5a13a; }
+.home-count.running.some, .home-total.running { box-shadow: inset 0 -3px 0 #4aa3ff; }
+.home-count.ready.some, .home-total.ready { box-shadow: inset 0 -3px 0 #33d6a6; }
+.home-list ul { margin: 2px 0 6px 18px; padding: 0; overflow-wrap: anywhere; }
+@media (max-width: 480px) { .home-games { grid-template-columns: 1fr; } .home-total b { font-size: 22px; } }
