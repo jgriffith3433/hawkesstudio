@@ -95,9 +95,10 @@ export function cellEnv(org: string, owner: { sub: string; email: string }, c = 
 
 /**
  * A cell's size. 2 GiB ran out when several beta-site publishes overlapped (J's Studio restarted in a loop, 2026-11-01);
- * J, 2026-11-01: "For now just scale the memory up." 4 GiB is the most Cloud Run gives one vCPU, so the CPU stays 1.
+ * J, 2026-11-01: "For now just scale the memory up." One vCPU then ran full on a busy day and Cloud Run answered 429 with
+ * two requests in flight (J's Studio, 2026-11-06); on two it stopped refusing, and J raised every customer's the same day.
  */
-export const CELL_LIMITS = { cpu: '1', memory: '4Gi' } as const;
+export const CELL_LIMITS = { cpu: '2', memory: '4Gi' } as const;
 /**
  * How long a Studio may take from start to listening: the lease (up to ~30 s for the old instance to hand over),
  * `litestream restore` (at most an hour of WAL: litestream.yml's hourly snapshots), the state pull. Cloud Run's default
@@ -106,11 +107,12 @@ export const CELL_LIMITS = { cpu: '1', memory: '4Gi' } as const;
  */
 export const CELL_STARTUP_PROBE = { initialDelaySeconds: 0, periodSeconds: 10, timeoutSeconds: 5, failureThreshold: 60, tcpSocket: { port: 8080 } } as const;
 const mib = (v: unknown) => { const m = /^(\d+(?:\.\d+)?)(Mi|Gi|M|G)?$/.exec(String(v ?? '')); if (!m) return 0; const n = Number(m[1]); return m[2] === 'Gi' ? n * 1024 : m[2] === 'G' ? (n * 1e9) / 1048576 : m[2] === 'M' ? (n * 1e6) / 1048576 : m[2] === 'Mi' ? n : n / 1048576; };
-/** A container's limits with at least a cell's memory (never lowered; the CPU and anything else kept). */
-export function withCellMemory(limits: Record<string, string> | undefined): Record<string, string> {
+const cpus = (v: unknown) => { const m = /^(\d+(?:\.\d+)?)(m)?$/.exec(String(v ?? '')); if (!m) return 0; return m[2] ? Number(m[1]) / 1000 : Number(m[1]); };
+/** A container's limits with at least a cell's CPU and memory (never lowered; anything else kept). */
+export function withCellLimits(limits: Record<string, string> | undefined): Record<string, string> {
   const l = { ...(limits ?? {}) };
   if (mib(l.memory) < mib(CELL_LIMITS.memory)) l.memory = CELL_LIMITS.memory;
-  if (!l.cpu) l.cpu = CELL_LIMITS.cpu;
+  if (cpus(l.cpu) < cpus(CELL_LIMITS.cpu)) l.cpu = CELL_LIMITS.cpu;
   return l;
 }
 
@@ -168,18 +170,19 @@ export async function createCell(org: string, owner: { sub: string; email: strin
 }
 
 /**
- * A cell's memory up to CELL_LIMITS now, on the image it already runs (a new revision; nothing else changes). Nothing
- * when it's there already.
+ * A cell's CPU and memory up to CELL_LIMITS now, on the image it already runs (a new revision; nothing else changes).
+ * Nothing when it's there already.
  */
 export async function sizeCell(org: string, o: { dry?: boolean } = {}, c = cellsConfig()) {
   const url = `${base(c)}/services/${serviceName(org, c)}`;
   const s = dryRun(o) ? { template: { containers: [{}] } } : await gapi(url);
   const ct = s.template?.containers?.[0] ?? {};
-  const limits = withCellMemory(ct.resources?.limits);
-  if (!dryRun(o) && limits.memory === ct.resources?.limits?.memory) return { service: serviceName(org, c), memory: limits.memory, changed: false };
+  const was = ct.resources?.limits;
+  const limits = withCellLimits(was);
+  if (!dryRun(o) && limits.memory === was?.memory && limits.cpu === was?.cpu) return { service: serviceName(org, c), cpu: limits.cpu, memory: limits.memory, changed: false };
   const containers = (s.template?.containers ?? [{}]).map((x: any, i: number) => (i === 0 ? { ...x, resources: { ...(x.resources ?? {}), limits } } : x));
   await call('PATCH', `${url}?updateMask=template.containers`, { template: { containers } }, o);
-  return { service: serviceName(org, c), memory: limits.memory, changed: true };
+  return { service: serviceName(org, c), cpu: limits.cpu, memory: limits.memory, changed: true };
 }
 
 /** Deletes the service; the data stays in the bucket (hibernation). */
@@ -213,14 +216,14 @@ export async function serviceImage(service: string, c = cellsConfig()): Promise<
 
 /**
  * Puts a service on a new image (a new revision; everything else as it was, except that a cell made smaller than
- * CELL_LIMITS gets its memory raised and every one gets CELL_STARTUP_PROBE: the roll after a deploy is what brings
+ * CELL_LIMITS gets raised and every one gets CELL_STARTUP_PROBE: the roll after a deploy is what brings
  * older cells up to date).
  */
 export async function setImage(service: string, image: string, o: { dry?: boolean } = {}, c = cellsConfig()) {
   const url = `${base(c)}/services/${service}`;
   if (dryRun(o)) return call('PATCH', `${url}?updateMask=template.containers`, { template: { containers: [{ image }] } }, o);
   const s = await gapi(url);
-  const containers = (s.template?.containers ?? [{}]).map((ct: any, i: number) => (i === 0 ? { ...ct, image, resources: { ...(ct.resources ?? {}), limits: withCellMemory(ct.resources?.limits) }, startupProbe: CELL_STARTUP_PROBE } : ct));
+  const containers = (s.template?.containers ?? [{}]).map((ct: any, i: number) => (i === 0 ? { ...ct, image, resources: { ...(ct.resources ?? {}), limits: withCellLimits(ct.resources?.limits) }, startupProbe: CELL_STARTUP_PROBE } : ct));
   return call('PATCH', `${url}?updateMask=template.containers`, { template: { containers } }, o);
 }
 
