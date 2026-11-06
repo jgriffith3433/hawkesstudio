@@ -124,6 +124,13 @@ try { db.exec('ALTER TABLE changes ADD COLUMN auto_fixes INTEGER'); } catch { /*
 // and the route of the current attempt (JSON), kept so every pass of one attempt runs on the same model.
 try { db.exec('ALTER TABLE changes ADD COLUMN revisions INTEGER'); } catch { /* already there */ }
 try { db.exec('ALTER TABLE changes ADD COLUMN route TEXT'); } catch { /* already there */ }
+// The PM asks about changes by task and by status and date many times a pass. `created` and `task` sit after the agent's
+// log in each row, so without these every question reads past every log, on the one thread that also answers J's
+// browser (2026-11-06: a busy day froze a customer's Studio for up to 61 s at a time, and it stopped loading).
+db.exec(`
+  CREATE INDEX IF NOT EXISTS changes_task ON changes(task, created);
+  CREATE INDEX IF NOT EXISTS changes_status_created ON changes(status, created);
+`);
 
 export type Change = {
   id: string; product: string; findings: string[]; status: string; detail: string | null; repo: string; slug: string; branch: string; base: string;

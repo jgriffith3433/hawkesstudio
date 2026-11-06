@@ -96,13 +96,23 @@ async function control(env: Env, path: string, method = 'GET') {
   return fetch(`${env.STUDIO_ORIGIN.replace(/\/+$/, '')}${path}`, { method, headers: { Authorization: `Bearer ${env.EDGE_KEY ?? ''}` } });
 }
 
-/** The page while a cell starts: its first start ("Setting up your studio"), or after hibernation ("Waking…"). */
-export function wakingPage(org: string, first = false) {
-  const title = first ? 'Setting up your studio' : 'Waking your studio';
-  const line = first ? 'Your own Hawkes Studio is being made. This takes a few seconds, once.' : 'It was asleep to save you money. This takes a few seconds.';
+const PAGE = {
+  first: { title: 'Setting up your studio', line: 'Your own Hawkes Studio is being made. This takes a few seconds, once.', small: 'You sign in once it opens.' },
+  waking: { title: 'Waking your studio', line: 'It was asleep to save you money. This takes a few seconds.', small: 'Your games and data are all there.' },
+  busy: { title: 'Your studio is busy', line: 'It has a lot running and is slow to answer. This page opens by itself as soon as it can.', small: 'Your games and data are all there.' },
+  restarting: { title: 'Your studio is restarting', line: 'This takes a few seconds.', small: 'Your games and data are all there.' },
+} as const;
+
+/**
+ * The page while a cell can't answer: its first start, after hibernation, or awake but out of room (Cloud Run's 429) or
+ * restarting. Only a hibernated cell is asleep: telling an overloaded one's owner "It was asleep" sent the search the
+ * wrong way (2026-11-06).
+ */
+export function wakingPage(org: string, kind: keyof typeof PAGE = 'waking') {
+  const { title, line, small } = PAGE[kind];
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${title}</title>
 <style>body{margin:0;min-height:100vh;display:grid;place-items:center;background:#0b0f12;color:#e8edf1;font:16px/1.5 system-ui,sans-serif;padding:16px}main{max-width:380px;text-align:center}.dot{width:12px;height:12px;border-radius:50%;background:#3ddc97;display:inline-block;animation:p 1.2s infinite}@keyframes p{50%{opacity:.25}}small{color:#8a96a0}</style></head>
-<body><main><p><span class="dot"></span></p><h1 style="font-size:20px">${title}</h1><p id="s">${line}</p><small>${first ? 'You sign in once it opens.' : 'Your games and data are all there.'}</small></main>
+<body><main><p><span class="dot"></span></p><h1 style="font-size:20px">${title}</h1><p id="s">${line}</p><small>${small}</small></main>
 <script>(function(){var n=0;function t(){fetch('/o/${org}/__waking',{cache:'no-store'}).then(function(r){return r.json()}).then(function(j){if(j.ready)location.reload();else if(j.next)location.href=j.next;else if(j.error&&++n>60)document.getElementById('s').textContent=j.error;else setTimeout(t,2000)}).catch(function(){setTimeout(t,3000)})}setTimeout(t,1500)})();</script></body></html>`;
 }
 
@@ -185,17 +195,19 @@ async function handle(request: Request, env: Env, ctx?: Ctx): Promise<Response> 
     }
     return fromCell(res, org);
   }
-  // Anything but Cloud Run's 404 is a cell that exists and is restarting: say so, don't wake it, nothing was lost.
+  // Anything but Cloud Run's 404 is a cell that exists: restarting, or awake with no room (429). Say which, don't wake
+  // it, nothing was lost.
   if (res.status !== 404) {
+    const busy = res.status === 429;
     const navigating = request.method === 'GET' && (request.headers.get('Sec-Fetch-Mode') === 'navigate' || /text\/html/.test(request.headers.get('Accept') ?? ''));
-    if (navigating) return new Response(wakingPage(org, false), { status: 503, headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', 'Retry-After': '5' } });
-    return Response.json({ error: 'Your studio is restarting for a moment; nothing was changed. Try again in a few seconds.', restarting: true }, { status: 503, headers: { 'Retry-After': '5', 'Cache-Control': 'no-store' } });
+    if (navigating) return new Response(wakingPage(org, busy ? 'busy' : 'restarting'), { status: 503, headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', 'Retry-After': '5' } });
+    return Response.json({ error: busy ? 'Your studio is busy; nothing was changed. Try again in a moment.' : 'Your studio is restarting for a moment; nothing was changed. Try again in a few seconds.', restarting: true, ...(busy ? { busy: true } : {}) }, { status: 503, headers: { 'Retry-After': '5', 'Cache-Control': 'no-store' } });
   }
   // Cloud Run's own answer: no such service (hibernated, or never made).
   const w = await wake(org, env);
   if ('gone' in w) return new Response('No such studio.', { status: 404, headers: { 'Content-Type': 'text/plain' } });
   if ('next' in w) return new Response(null, { status: 302, headers: { Location: w.next, 'Cache-Control': 'no-store' } });
   const navigate = request.method === 'GET' && (request.headers.get('Sec-Fetch-Mode') === 'navigate' || /text\/html/.test(request.headers.get('Accept') ?? ''));
-  if (navigate) return new Response(wakingPage(org, 'first' in w && w.first), { status: 503, headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', 'Retry-After': '5' } });
+  if (navigate) return new Response(wakingPage(org, 'first' in w && w.first ? 'first' : 'waking'), { status: 503, headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', 'Retry-After': '5' } });
   return Response.json({ error: 'Your studio is waking up; try again in a few seconds.', waking: true }, { status: 503, headers: { 'Retry-After': '5', 'Cache-Control': 'no-store' } });
 }

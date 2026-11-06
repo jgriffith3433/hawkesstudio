@@ -67,6 +67,30 @@ test('a start counts only when an agent ran: infrastructure failures are given b
   assert.equal(pm.capacity().started, 2);
 });
 
+test('the count stays quick on a busy day: it runs many times a pass, on the thread that answers the browser', () => {
+  // 2026-11-06: 119 starts by morning froze a customer's Studio for up to 61 s at a time, and it stopped loading.
+  const log = 'x'.repeat(64 * 1024);
+  const add = db.prepare(`INSERT INTO changes (id, product, findings, status, detail, log, created) VALUES (?, 'istart', '[]', ?, ?, ?, ?)`);
+  const logged = db.prepare(`INSERT INTO pm_log (id, at, action, subject, product, detail) VALUES (?, ?, 'start', NULL, 'istart', ?)`);
+  const before = pm.startsToday();
+  const failedByStudio = (i: number) => i % 10 === 0;
+  db.exec('BEGIN');
+  for (let i = 0; i < 500; i++) {
+    const id = `c_busy${String(i).padStart(8, '0')}`;
+    add.run(id, failedByStudio(i) ? 'failed' : 'merged', failedByStudio(i) ? 'checking out beta failed: signal SIGKILL' : 'done', log, Date.now());
+    logged.run(`d_busy${i}`, Date.now(), `started ${id} for a thing`);
+  }
+  db.exec('COMMIT');
+  const t = performance.now();
+  for (let i = 0; i < 20; i++) assert.equal(pm.startsToday(), before + 450, 'the ones Studio failed to run are still given back');
+  const each = (performance.now() - t) / 20;
+  assert.ok(each < 50, `one count took ${each.toFixed(1)} ms`);
+  const plan = (sql: string) => (db.prepare(`EXPLAIN QUERY PLAN ${sql}`).all() as any[]).map((r) => r.detail).join(' ');
+  assert.match(plan(`SELECT id FROM changes WHERE status = 'failed' AND created >= 0`), /changes_status_created/);
+  assert.match(plan(`SELECT 1 FROM changes WHERE task = 'x' ORDER BY created DESC`), /changes_task/);
+  db.exec(`DELETE FROM changes WHERE id LIKE 'c_busy%'; DELETE FROM pm_log WHERE id LIKE 'd_busy%'`);
+});
+
 test('one finding may use at most 2 starts a day', () => {
   for (let i = 0; i < 3; i++) start(change({ status: 'failed', detail: 'No conversation found with session ID: x' }), 'f_cap');
   assert.equal(pm.findingStartsToday('f_cap'), 0, 'infrastructure failures are not its starts');

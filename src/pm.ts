@@ -765,9 +765,19 @@ export function startsToday(now = Date.now()): number {
   const { since } = dayBounds(now);
   // Automatic resends (an agent carried on in its own worktree, a run again for GPU art or after a build failure: logged
   // "not counted as a try") are the same work going on, not new starts (J, 2026-11-03: they filled the day).
-  return (db.prepare(`SELECT COUNT(*) AS n FROM pm_log WHERE action = 'start' AND at >= ? AND undone IS NULL
-    AND COALESCE(detail, '') NOT LIKE 'carried on with%' AND COALESCE(detail, '') NOT LIKE '%not counted as a try%'
-    AND NOT EXISTS (SELECT 1 FROM changes WHERE changes.created >= ? AND pm_log.detail LIKE '%' || changes.id || '%' AND ${INFRA_FAILED_SQL})`).get(since, since - 6 * 3600_000) as any).n as number;
+  return startsWithAgent(db.prepare(`SELECT detail FROM pm_log WHERE action = 'start' AND at >= ? AND undone IS NULL
+    AND COALESCE(detail, '') NOT LIKE 'carried on with%' AND COALESCE(detail, '') NOT LIKE '%not counted as a try%'`).all(since) as any[], since);
+}
+
+/**
+ * The starts whose change Studio didn't fail to run. Runs on every capacity check, so many times a pass and once per
+ * task: the failed changes are looked up once and the starts compared here, never one query joining the two with LIKE,
+ * which took seconds a call by the morning of a busy day (2026-11-06).
+ */
+function startsWithAgent(rows: { detail: string | null }[], since: number): number {
+  if (!rows.length) return 0;
+  const failed = (db.prepare(`SELECT id FROM changes WHERE status = 'failed' AND created >= ? AND ${INFRA_FAILED_SQL}`).all(since - 6 * 3600_000) as any[]).map((c) => c.id as string);
+  return rows.filter((r) => !failed.some((id) => String(r.detail ?? '').includes(id))).length;
 }
 
 /** Whether a finding already has an agent change (a retry: it waits behind roadmap tasks). */
@@ -792,8 +802,7 @@ function fileInfraBlocker(a: { from: string; product: string; text: string; task
 /** Starts of one finding today (its agents that ran; the PM's cap per finding is MAX_FINDING_STARTS_PER_DAY). */
 export function findingStartsToday(findingId: string, now = Date.now()): number {
   const { since } = dayBounds(now);
-  return (db.prepare(`SELECT COUNT(*) AS n FROM pm_log WHERE action = 'start' AND subject = ? AND at >= ? AND undone IS NULL
-    AND NOT EXISTS (SELECT 1 FROM changes WHERE changes.created >= ? AND pm_log.detail LIKE '%' || changes.id || '%' AND ${INFRA_FAILED_SQL})`).get(findingId, since, since - 6 * 3600_000) as any).n as number;
+  return startsWithAgent(db.prepare(`SELECT detail FROM pm_log WHERE action = 'start' AND subject = ? AND at >= ? AND undone IS NULL`).all(findingId, since) as any[], since);
 }
 
 /** Agents working now, and the PM's starts today. */

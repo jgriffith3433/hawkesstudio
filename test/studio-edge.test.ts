@@ -142,6 +142,22 @@ test("a cell restarting (Cloud Run's 503) gets the request again; still down, it
   assert.ok(!seen.some((s) => s.url.endsWith('/wake')), 'a restarting cell is never woken');
 });
 
+test("an overloaded cell (Cloud Run's 429) is 'busy' and a restarting one 'restarting': neither was asleep or is woken", async () => {
+  const before = seen.length;
+  answer = (url) => (url.includes('studio-o-acme-1a2b') ? new Response('Rate exceeded.', { status: 429 }) : Response.json({}));
+  const page = await (await worker.fetch(at('/o/acme-1a2b/', { 'Sec-Fetch-Mode': 'navigate' }), env)).text();
+  assert.match(page, /Your studio is busy/);
+  assert.doesNotMatch(page, /asleep/);
+  const api = await worker.fetch(at('/o/acme-1a2b/api/overview'), env);
+  assert.equal(api.status, 503);
+  assert.equal((await api.json()).busy, true);
+  answer = (url) => (url.includes('studio-o-acme-1a2b') ? new Response('Service Unavailable', { status: 503 }) : Response.json({}));
+  const restarting = await (await worker.fetch(at('/o/acme-1a2b/', { 'Sec-Fetch-Mode': 'navigate' }), env)).text();
+  assert.match(restarting, /Your studio is restarting/);
+  assert.doesNotMatch(restarting, /asleep/);
+  assert.ok(!seen.slice(before).some((s) => s.url.endsWith('/wake')));
+});
+
 test('event streams and video streams go back as they come: not buffered, compressed or cached', async () => {
   let pull!: (s: string) => void;
   const body = new ReadableStream({ start(c) { pull = (s) => c.enqueue(new TextEncoder().encode(s)); } });
