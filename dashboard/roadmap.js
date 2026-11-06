@@ -300,6 +300,6 @@ function rmRefresh() {
 }
 document.querySelectorAll('nav button[data-tab="roadmap"], nav button[data-tab="ready"]').forEach((b) => b.addEventListener('click', () => setTimeout(rmRefresh, 0)));
 rmRefresh();
-// Fresh while open when changes or the Inbox move (the push stream, stream.js, and its slow safety tick); typing in an
+// Fresh while open when changes, the Inbox or the roadmap itself move (the push stream, stream.js; no timer); typing in an
 // answer box isn't interrupted.
 studioStream.on(['changes', 'inbox', 'roadmap'], () => { if (location.hash === '#roadmap' && !document.activeElement?.matches?.('textarea, input, select[data-prio]')) rmRefresh(); });
