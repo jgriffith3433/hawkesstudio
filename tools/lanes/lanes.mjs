@@ -20,7 +20,12 @@ import { fileURLToPath } from 'node:url';
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPOS = JSON.parse(fs.readFileSync(path.join(HERE, 'repos.json'), 'utf8'));
 const OWNER = 'jgriffith3433';
-const AUTH = ['-c', 'credential.helper=', '-c', 'credential.helper=store'];
+// The token in C:\Projects\gh.txt when there is one (J, 2026-11-06: deploy-prod stopped at its first fetch on a PC with no
+// stored login), handed to git through the environment so it never shows in a command line; else git's stored login.
+const TOKEN_FILE = path.join(HERE, '..', '..', '..', 'gh.txt');
+const fileToken = () => { try { return /GITHUB_TOKEN=(\S+)/.exec(fs.readFileSync(TOKEN_FILE, 'utf8'))?.[1] ?? ''; } catch { return ''; } };
+const TOKEN = process.env.GH_TOKEN || process.env.GITHUB_TOKEN || fileToken();
+const AUTH = ['-c', 'credential.helper=', '-c', TOKEN ? 'credential.helper=!f() { test "$1" = get && echo username=x-access-token && echo "password=$LANES_GH_TOKEN"; }; f' : 'credential.helper=store'];
 const [cmd = 'help', ...args] = process.argv.slice(2);
 const flags = new Set(args.filter((a) => a.startsWith('--')));
 const bump = args.find((a) => ['patch', 'minor', 'major'].includes(a));
@@ -29,7 +34,7 @@ const c = { b: (s) => `\x1b[1m${s}\x1b[0m`, g: (s) => `\x1b[32m${s}\x1b[0m`, y: 
 const die = (m) => { console.error(c.r(`\n${m}`)); process.exit(1); };
 
 function git(cwd, a, { ok = false, net = false, show = false } = {}) {
-  const r = spawnSync('git', [...(net ? AUTH : []), ...a], { cwd, encoding: 'utf8', stdio: show ? 'inherit' : 'pipe', env: { ...process.env, GIT_TERMINAL_PROMPT: '0' } });
+  const r = spawnSync('git', [...(net ? AUTH : []), ...a], { cwd, encoding: 'utf8', stdio: show ? 'inherit' : 'pipe', env: { ...process.env, GIT_TERMINAL_PROMPT: '0', ...(TOKEN ? { LANES_GH_TOKEN: TOKEN } : {}) } });
   if (r.status !== 0 && !ok) die(`git ${a.join(' ')} failed:\n${(r.stderr || r.stdout || '').trim()}`);
   return r.status === 0 ? (r.stdout ?? '').trim() : null;
 }
