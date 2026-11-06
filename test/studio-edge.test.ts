@@ -158,6 +158,48 @@ test("an overloaded cell (Cloud Run's 429) is 'busy' and a restarting one 'resta
   assert.ok(!seen.slice(before).some((s) => s.url.endsWith('/wake')));
 });
 
+test("a page a cell doesn't answer in time gets the waiting page; the request carries on and nothing is woken", async () => {
+  const quick = { ...env, PAGE_WAIT_MS: 10 };
+  const before = seen.length;
+  let finish!: (r: Response) => void;
+  answer = ((url: string) => (url.includes('studio-o-acme-1a2b') ? new Promise<Response>((r) => { finish = r; }) : Response.json({}))) as any;
+  const kept: Promise<unknown>[] = [];
+  const r = await worker.fetch(at('/o/acme-1a2b/', { 'Sec-Fetch-Mode': 'navigate' }), quick, { waitUntil: (p: Promise<unknown>) => kept.push(p) });
+  assert.equal(r.status, 503);
+  assert.equal(r.headers.get('Cache-Control'), 'no-store');
+  const page = await r.text();
+  assert.match(page, /Opening your studio/);
+  assert.doesNotMatch(page, /asleep/);
+  assert.match(page, /hs_waited=1;path=\/o\/acme-1a2b/, 'its reload waits as long as it takes');
+  assert.equal(kept.length, 1, 'the request carries on, so the cell keeps starting');
+  finish(cell());
+  await kept[0];
+  assert.ok(!seen.slice(before).some((s) => s.url.endsWith('/wake')));
+});
+
+test('a page answered in time is the page itself', async () => {
+  answer = () => cell();
+  const r = await worker.fetch(at('/o/acme-1a2b/', { 'Sec-Fetch-Mode': 'navigate' }), { ...env, PAGE_WAIT_MS: 1000 });
+  assert.equal(r.status, 200);
+  assert.equal(await r.text(), 'ok');
+});
+
+test("the reload, signing in, API calls and anything but a page keep waiting: a slow page can't go round and round", async () => {
+  const quick = { ...env, PAGE_WAIT_MS: 5 };
+  answer = (async () => { await new Promise((r) => setTimeout(r, 30)); return cell(); }) as any;
+  const nav = { 'Sec-Fetch-Mode': 'navigate', Accept: 'text/html' };
+  for (const req of [
+    at('/o/acme-1a2b/', { ...nav, Cookie: 'hs_waited=1' }),
+    at('/o/acme-1a2b/', { ...nav, Cookie: 'hs_o_acme_1a2b=mine; hs_waited=1' }),
+    at('/o/acme-1a2b/auth/google/callback?code=c', nav),
+    at('/o/acme-1a2b/oauth/authorize?x=1', nav),
+    at('/o/acme-1a2b/api/download/x', nav),
+    at('/o/acme-1a2b/api/overview'),
+  ]) assert.equal((await worker.fetch(req, quick)).status, 200, req.url);
+  assert.equal(seen[0].headers.get('Cookie'), null, "the cell never sees the page's cookie");
+  assert.equal(seen[1].headers.get('Cookie'), 'hs_o_acme_1a2b=mine');
+});
+
 test('event streams and video streams go back as they come: not buffered, compressed or cached', async () => {
   let pull!: (s: string) => void;
   const body = new ReadableStream({ start(c) { pull = (s) => c.enqueue(new TextEncoder().encode(s)); } });

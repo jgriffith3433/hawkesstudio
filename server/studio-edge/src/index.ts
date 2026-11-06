@@ -23,6 +23,7 @@ type Env = {
   CELLS_REGION?: string;
   CELLS_SERVICE_PREFIX?: string; // studio, or studio-beta
   EDGE_KEY?: string; // the control plane's edge key (cellkeys.ts edgeKey): wrangler secret put EDGE_KEY
+  PAGE_WAIT_MS?: number; // tests: how long a page waits for a cell before saying so
 };
 type Ctx = { waitUntil(p: Promise<unknown>): void };
 
@@ -101,7 +102,18 @@ const PAGE = {
   waking: { title: 'Waking your studio', line: 'It was asleep to save you money. This takes a few seconds.', small: 'Your games and data are all there.' },
   busy: { title: 'Your studio is busy', line: 'It has a lot running and is slow to answer. This page opens by itself as soon as it can.', small: 'Your games and data are all there.' },
   restarting: { title: 'Your studio is restarting', line: 'This takes a few seconds.', small: 'Your games and data are all there.' },
+  opening: { title: 'Opening your studio', line: 'It can take up to a minute when it has been idle or has a lot running. This page opens by itself.', small: 'Your games and data are all there.' },
 } as const;
+
+/**
+ * A cell that scaled to zero is still there, so Cloud Run holds the first request until it has started: 45 seconds of a
+ * blank page on J's phone, which looked like a dead Studio (2026-11-06). A page that hasn't answered by now gets the
+ * waiting page instead. Signing in and anything that can't safely be asked twice wait as they always did.
+ */
+const PAGE_WAIT_MS = 5000;
+const NOT_A_PAGE = /^\/(auth|oauth|api|mcp|\.well-known)(\/|$)/;
+/** Set by the waiting page as it reloads: that load waits as long as it takes, so a slow page can't send it round again. */
+const WAITED_COOKIE = 'hs_waited';
 
 /**
  * The page while a cell can't answer: its first start, after hibernation, or awake but out of room (Cloud Run's 429) or
@@ -113,7 +125,7 @@ export function wakingPage(org: string, kind: keyof typeof PAGE = 'waking') {
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${title}</title>
 <style>body{margin:0;min-height:100vh;display:grid;place-items:center;background:#0b0f12;color:#e8edf1;font:16px/1.5 system-ui,sans-serif;padding:16px}main{max-width:380px;text-align:center}.dot{width:12px;height:12px;border-radius:50%;background:#3ddc97;display:inline-block;animation:p 1.2s infinite}@keyframes p{50%{opacity:.25}}small{color:#8a96a0}</style></head>
 <body><main><p><span class="dot"></span></p><h1 style="font-size:20px">${title}</h1><p id="s">${line}</p><small>${small}</small></main>
-<script>(function(){var n=0;function t(){fetch('/o/${org}/__waking',{cache:'no-store'}).then(function(r){return r.json()}).then(function(j){if(j.ready)location.reload();else if(j.next)location.href=j.next;else if(j.error&&++n>60)document.getElementById('s').textContent=j.error;else setTimeout(t,2000)}).catch(function(){setTimeout(t,3000)})}setTimeout(t,1500)})();</script></body></html>`;
+<script>(function(){var n=0;function t(){fetch('/o/${org}/__waking',{cache:'no-store'}).then(function(r){return r.json()}).then(function(j){if(j.ready){document.cookie='${WAITED_COOKIE}=1;path=/o/${org};max-age=120;samesite=lax';location.reload()}else if(j.next)location.href=j.next;else if(j.error&&++n>60)document.getElementById('s').textContent=j.error;else setTimeout(t,2000)}).catch(function(){setTimeout(t,3000)})}setTimeout(t,1500)})();</script></body></html>`;
 }
 
 async function wake(org: string, env: Env) {
@@ -182,7 +194,21 @@ async function handle(request: Request, env: Env, ctx?: Ctx): Promise<Response> 
   const len = Number(request.headers.get('Content-Length') ?? '0');
   const body = request.body && len > 0 && len <= 1024 * 1024 ? await request.arrayBuffer() : request.body;
   const send = () => fetch(target, { method: request.method, headers: forwardHeaders(request, org), body: body instanceof ArrayBuffer ? body.slice(0) : body, redirect: 'manual' });
-  let res = await send();
+  const navigating = request.method === 'GET' && (request.headers.get('Sec-Fetch-Mode') === 'navigate' || /text\/html/.test(request.headers.get('Accept') ?? ''));
+  const first = send();
+  const waited = (request.headers.get('Cookie') ?? '').split(';').some((c) => c.trim().startsWith(`${WAITED_COOKIE}=`));
+  if (navigating && !NOT_A_PAGE.test(path) && !waited) {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const late = new Promise<null>((r) => { timer = setTimeout(() => r(null), env.PAGE_WAIT_MS ?? PAGE_WAIT_MS); });
+    const answered = await Promise.race([first.then(() => true, () => true), late]);
+    clearTimeout(timer);
+    if (!answered) {
+      // The request carries on, so the cell keeps starting; the page's own question then finds it up.
+      ctx?.waitUntil(first.catch(() => null));
+      return new Response(wakingPage(org, 'opening'), { status: 503, headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', 'Retry-After': '5' } });
+    }
+  }
+  let res = await first;
   for (let i = 0; i < 3 && !res.headers.get('X-Studio-Cell') && res.status !== 404 && (body === null || body instanceof ArrayBuffer); i++) {
     await new Promise((r) => setTimeout(r, 2000 * (i + 1)));
     res = await send();
@@ -199,7 +225,6 @@ async function handle(request: Request, env: Env, ctx?: Ctx): Promise<Response> 
   // it, nothing was lost.
   if (res.status !== 404) {
     const busy = res.status === 429;
-    const navigating = request.method === 'GET' && (request.headers.get('Sec-Fetch-Mode') === 'navigate' || /text\/html/.test(request.headers.get('Accept') ?? ''));
     if (navigating) return new Response(wakingPage(org, busy ? 'busy' : 'restarting'), { status: 503, headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', 'Retry-After': '5' } });
     return Response.json({ error: busy ? 'Your studio is busy; nothing was changed. Try again in a moment.' : 'Your studio is restarting for a moment; nothing was changed. Try again in a few seconds.', restarting: true, ...(busy ? { busy: true } : {}) }, { status: 503, headers: { 'Retry-After': '5', 'Cache-Control': 'no-store' } });
   }
@@ -207,7 +232,6 @@ async function handle(request: Request, env: Env, ctx?: Ctx): Promise<Response> 
   const w = await wake(org, env);
   if ('gone' in w) return new Response('No such studio.', { status: 404, headers: { 'Content-Type': 'text/plain' } });
   if ('next' in w) return new Response(null, { status: 302, headers: { Location: w.next, 'Cache-Control': 'no-store' } });
-  const navigate = request.method === 'GET' && (request.headers.get('Sec-Fetch-Mode') === 'navigate' || /text\/html/.test(request.headers.get('Accept') ?? ''));
-  if (navigate) return new Response(wakingPage(org, 'first' in w && w.first ? 'first' : 'waking'), { status: 503, headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', 'Retry-After': '5' } });
+  if (navigating) return new Response(wakingPage(org, 'first' in w && w.first ? 'first' : 'waking'), { status: 503, headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', 'Retry-After': '5' } });
   return Response.json({ error: 'Your studio is waking up; try again in a few seconds.', waking: true }, { status: 503, headers: { 'Retry-After': '5', 'Cache-Control': 'no-store' } });
 }
