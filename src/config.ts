@@ -177,12 +177,20 @@ export function managedElsewhereId(id: string): string | null {
 /** The sentence for a project managed by another Studio (refusals, plans, hooks). */
 export const managedNote = (p: Pick<Product, 'name' | 'managedBy'>) => `${p.name} is managed by another Studio (${managedElsewhere(p)}): this Studio doesn't run, build, change or deploy it. Work on it there.`;
 
+// A customer's projects, once per version of the files they come from. Studio asks for them per project and per change
+// (listPreviews), and parsing them each time held one CPU full for hours on 2026-11-06.
+let customerMemo: { sig: string; out: Product[] } | null = null;
+
 export function loadProducts(): Product[] {
   // A new org cell has no products until onboarding adds one.
   if (customerStudio() && !fs.existsSync(paths.products)) return [];
-  const all = JSON.parse(fs.readFileSync(paths.products, 'utf8')).products as Product[];
   // A customer's games with a GitHub repo are products agents work on too (asAddedGame), the rest are played where they are.
-  if (customerStudio()) return all.map(asAddedGame);
+  if (customerStudio()) {
+    const sig = [paths.products, fileSig(paths.products), paths.games, fileSig(paths.games)].join('|');
+    if (customerMemo?.sig !== sig) customerMemo = { sig, out: (JSON.parse(fs.readFileSync(paths.products, 'utf8')).products as Product[]).map(asAddedGame) };
+    return customerMemo.out.map((p) => ({ ...p }));
+  }
+  const all = JSON.parse(fs.readFileSync(paths.products, 'utf8')).products as Product[];
   // J's Studio: products.json first; a game added here never shadows one of its ids.
   const ids = new Set(all.map((p) => p.id));
   const over = buildOverrides();

@@ -91,9 +91,9 @@ export function previewHosts(): Record<string, string> {
   if (org) return Object.fromEntries(loadProducts().filter((p) => p.github && hostedBeta(p)).map((p) => [`o/${org}/${p.id}`, p.id]));
   return { ...own, ...Object.fromEntries(addedWeb().filter((p) => !Object.values(own).includes(p.id)).map((p) => [`g-${p.id}`, p.id])) };
 }
-export const subOf = (id: string) => Object.entries(previewHosts()).find(([, v]) => v === id)?.[0];
-export const previewUrl = (id: string, change?: string) => {
-  const sub = subOf(id);
+export const subOf = (id: string, hosts = previewHosts()) => Object.entries(hosts).find(([, v]) => v === id)?.[0];
+export const previewUrl = (id: string, change?: string, hosts = previewHosts()) => {
+  const sub = subOf(id, hosts);
   if (sub?.startsWith('o/')) return `https://sites.${DOMAIN}${orgPrefix(sub.split('/')[1])}/${id}/${change ? `c/${change}/` : ''}`;
   if (sub?.startsWith('g-')) return `https://sites.${DOMAIN}/${laneOf() === 'beta' ? 'b' : 'g'}/${sub.slice(2)}/${change ? `c/${change}/` : ''}`;
   return sub ? `https://${siteHost(sub, DOMAIN)}/${change ? `c/${change}/` : ''}` : null;
@@ -612,13 +612,18 @@ export function listPreviews() {
   // A game added through Talk is its site's root (relative paths); others play at their live page's path.
   const live = (p: Product) => { if (p.github) return '/'; try { return new URL(p.live).pathname; } catch { return '/'; } };
   const shown = (key: string, v?: Preview) => v && (v.status === 'building' && !active.has(key) ? { ...v, status: 'failed' as const, detail: 'interrupted (Studio restarted)' } : v);
-  return loadProducts().filter((p) => subOf(p.id)).map((p) => {
-    const url = previewUrl(p.id)!;
+  // Once for the whole list: it covers every project and every change, on the thread that answers the browser.
+  const hosts = previewHosts();
+  return loadProducts().filter((p) => subOf(p.id, hosts)).map((p) => {
+    const url = previewUrl(p.id, undefined, hosts)!;
     const s = state[p.id] ?? {};
     return {
-      product: p.id, name: p.name, sub: subOf(p.id), url, play: url.replace(/\/$/, '') + live(p),
+      product: p.id, name: p.name, sub: subOf(p.id, hosts), url, play: url.replace(/\/$/, '') + live(p),
       beta: shown(`${p.id}/beta`, s.beta) ?? null,
-      changes: Object.entries(s.changes ?? {}).map(([id, v]) => ({ id, url: previewUrl(p.id, id), play: previewUrl(p.id, id)!.replace(/\/$/, '') + live(p), ...shown(`${p.id}/${id}`, v) })),
+      changes: Object.entries(s.changes ?? {}).map(([id, v]) => {
+        const at = previewUrl(p.id, id, hosts)!;
+        return { id, url: at, play: at.replace(/\/$/, '') + live(p), ...shown(`${p.id}/${id}`, v) };
+      }),
     };
   });
 }

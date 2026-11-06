@@ -38,6 +38,12 @@ const PKCS8_ED25519 = Buffer.from('302e020100300506032b657004220420', 'hex');
 export function siteKeys(env: NodeJS.ProcessEnv = process.env) {
   const secret = env.STUDIO_SITES_SEED?.trim() || env.STUDIO_OWNER_KEY?.trim();
   if (!secret) return null;
+  if (keysMemo?.secret !== secret) keysMemo = { secret, out: deriveKeys(secret) };
+  return keysMemo.out;
+}
+/** Made once per secret: remoteSites() asks on every preview address, and deriving them each time is slow. */
+let keysMemo: { secret: string; out: ReturnType<typeof deriveKeys> } | null = null;
+function deriveKeys(secret: string) {
   const seed = crypto.createHmac('sha256', secret).update('hawkes beta sites v1').digest();
   const priv = crypto.createPrivateKey({ key: Buffer.concat([PKCS8_ED25519, seed]), format: 'der', type: 'pkcs8' });
   const raw = crypto.createPublicKey(priv).export({ format: 'der', type: 'spki' }).subarray(-32);
