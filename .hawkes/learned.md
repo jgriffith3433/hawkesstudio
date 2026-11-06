@@ -1,0 +1,3 @@
+- lesson: out-of-credits beta failures are not code — a beta run failing with "out of credits: playtest.run needs N" is a Gen billing refusal; don't hunt for a code fault, add tests that pin the criteria and tell J to add credits.
+- lesson: run npm ci first — `tsc: not found` from `npm run typecheck` just means node_modules is missing in a fresh worktree.
+- convention: dashboard script helpers are tested by extracting functions from the page script and running them with node:vm (test/roadmap-board.test.ts).
