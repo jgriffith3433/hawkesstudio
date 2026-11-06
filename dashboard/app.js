@@ -15,8 +15,15 @@ const icon = (s) => ({ done: '✅', failed: '❌', skipped: '⏭️', running: '
 // A playtest step over its scenario's time budget (pace.ts): the agents are told to start it nearer.
 const slowPill = (s) => (s.kind === 'playtest' && s.data?.slow ? `<span class="pill fix-first" title="${esc(s.data.slow)}">over 10 min</span> ` : '');
 
+const RESTARTING = 'Studio is restarting for an update. Nothing is lost: try again in a few seconds.';
 async function api(path, opts = {}) {
-  const r = await fetch(path, { ...opts, headers: opts.body ? { 'Content-Type': 'application/json' } : {}, body: opts.body ? JSON.stringify(opts.body) : undefined });
+  let r;
+  try {
+    r = await fetch(path, { ...opts, headers: opts.body ? { 'Content-Type': 'application/json' } : {}, body: opts.body ? JSON.stringify(opts.body) : undefined });
+  } catch {
+    // The network dropped, or Studio is between instances: a plain sentence, never "Failed to fetch".
+    throw new Error(RESTARTING);
+  }
   // Signed out (the session expired, or the password must be set first): back to the sign-in page, then here again.
   if ((r.status === 401 || r.status === 403) && /json/.test(r.headers.get('content-type') ?? '')) {
     const e = await r.clone().json().catch(() => ({}));
@@ -25,13 +32,15 @@ async function api(path, opts = {}) {
       throw new Error('Signing in again…');
     }
   }
-  const d = await r.json();
+  // A restart (Cloud Run starting the next instance, a deploy): the edge answers 502/503/504 with a page, not JSON.
+  // Say so in plain words and offer the retry; never a SyntaxError or a stack trace.
+  const d = await r.json().catch(() => (r.ok ? {} : { error: [502, 503, 504, 429].includes(r.status) || /html|text/.test(r.headers.get('content-type') ?? '') ? RESTARTING : `Studio answered ${r.status}. Try again in a moment.` }));
   // A pro feature on a plan without it (src/entitlements.ts): the API says what to upgrade to; offer it.
   if (r.status === 402 && d.upgrade) studioUpgrade(d);
   // Out of credits (src/credits.ts, billing.ts CreditsNeeded): add credits or upgrade, both in Settings → Plan and credits.
   if (r.status === 402 && d.credits && !d.upgrade) studioUpgrade({ ...d, topUp: true });
   if (r.status === 409 && d.connectAi) studioUpgrade({ ...d, connectAi: true });
-  if (!r.ok) throw new Error(d.error ?? r.status);
+  if (!r.ok) throw new Error(d.error ?? `Studio answered ${r.status}. Try again in a moment.`);
   return d;
 }
 
@@ -49,13 +58,13 @@ function studioUpgrade(d) {
     <p class="meta" style="margin:0 0 14px">${esc(d.error)}</p>
     <div style="display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap">
       <button class="small" data-up="close">Not now</button>
-      ${d.connectAi ? '<button data-up="ai">Open Settings</button>' : d.topUp ? '<button data-up="ai">Add credits or upgrade</button>' : `<button data-up="buy">Upgrade to ${esc(u.planName)}</button>`}
+      ${d.connectAi ? '<button data-up="ai">Open Settings → Your AI</button>' : d.topUp ? '<button data-up="credits">Open Settings → Plan and credits</button>' : `<button data-up="buy">Upgrade to ${esc(u.planName)}</button>`}
     </div><div class="meta" id="upMsg"></div></div>`;
   document.body.append(el);
   el.addEventListener('click', async (e) => {
     const b = e.target.closest('[data-up]');
     if (e.target === el || b?.dataset.up === 'close') return el.remove();
-    if (b?.dataset.up === 'ai') { el.remove(); location.hash = '#settings'; return; }
+    if (b?.dataset.up === 'ai' || b?.dataset.up === 'credits') { el.remove(); window.__settingsFocus = b.dataset.up === 'ai' ? 'ai' : 'credits'; show('settings'); return; }
     if (b?.dataset.up === 'buy') {
       b.disabled = true;
       try {
@@ -508,8 +517,11 @@ $('#cards').addEventListener('click', async (e) => {
     if (btn.dataset.act === 'editgame') return void studioEditGame(p);
     if (btn.dataset.act === 'all') await api('/api/runs', { method: 'POST', body: { products: [p], noBuild: $('#optNoBuild').checked, where: $('#optLocal').checked ? 'local' : undefined } });
     if (btn.dataset.act === 'build') await api('/api/build', { method: 'POST', body: { product: p } });
+    if (btn.dataset.act === 'openbacklog') { $('#blStatus').value = 'open,fixing'; return loadBacklog(); }
+    if (btn.dataset.act === 'playall') await api('/api/runs', { method: 'POST', body: { kind: 'daily', noBuild: $('#optNoBuild').checked, where: $('#optLocal').checked ? 'local' : undefined } });
     if (btn.dataset.act === 'backlog') { $('#blProduct').value = p; return show('backlog'); }
     if (btn.dataset.act === 'golive') return show('golive');
+    if (tab === 'backlog') { btn.outerHTML = '<span class="meta">Playtest started. Its findings will land here; watch it under Playtests.</span>'; return; }
     await loadToday();
   } catch (err) {
     alert(err.message);
@@ -714,7 +726,15 @@ async function loadBacklog() {
   const SEV = { blocker: 0, bug: 1, polish: 2, idea: 3 };
   findings.sort((a, b) => (b.source === 'J') - (a.source === 'J') || (SEV[a.severity] ?? 9) - (SEV[b.severity] ?? 9));
   $('#blCount').textContent = `${findings.length} ${$('#blStatus').value === 'idea' ? 'ideas (polish and ideas: never auto-fixed, expire after 14 days unseen)' : 'findings'}`;
-  $('#blList').innerHTML = findings.length ? findings.map(findingHtml).join('') : '<div class="empty">Nothing here.</div>';
+  $('#blList').innerHTML = findings.length ? findings.map(findingHtml).join('') : backlogEmpty($('#blProduct').value, $('#blStatus').value);
+}
+// An empty backlog says why and offers the one next step: a playtest (the backlog fills from playtest reviews).
+function backlogEmpty(product, status) {
+  const p = overview?.products?.find((x) => x.id === product);
+  const who = p ? p.name : 'any project';
+  if (status && status !== 'open') return `<div class="empty"><p>Nothing marked "${esc(status)}" for ${esc(who)}.</p><p class="meta">Pick another status above, or look at the open findings.</p><button class="small" data-act="openbacklog">Show open findings</button></div>`;
+  const act = p ? `<button class="primary small" data-act="${p.preview ? 'playbeta' : 'playtest'}" data-p="${esc(p.id)}">Run a playtest of ${esc(p.name)}</button>` : '<button class="primary small" data-act="playall">Run a playtest of every project</button>';
+  return `<div class="empty"><p><b>No open findings for ${esc(who)}.</b></p><p class="meta">Nothing is waiting to be fixed. Findings appear here when a playtest finds a problem. Run one to look again.</p>${act}</div>`;
 }
 $('#blProduct').onchange = $('#blStatus').onchange = loadBacklog;
 document.addEventListener('click', async (e) => {

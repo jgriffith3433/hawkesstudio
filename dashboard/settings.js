@@ -403,7 +403,7 @@
     // What the plan includes and what it doesn't (src/entitlements.ts): each missing one is an Upgrade away.
     const e = b.entitlements;
     const feats = e && e.plan !== 'platform' ? `<div class="meta">${e.games !== null ? `${e.games} game${e.games === 1 ? '' : 's'}` : ''}${e.features.map((f) => ` · ✓ ${esc(b.features?.[f] ?? f)}`).join('')}${e.locked.map((f) => ` · <span title="Upgrade for it">🔒 ${esc(b.features?.[f] ?? f)}</span>`).join('')}</div>` : '';
-    return `<div class="set-box"><h3>💳 Plan and credits</h3>
+    return `<div class="set-box" id="setBilling"><h3>💳 Plan and credits</h3>
       <div class="meta">${state} · ${Number(b.credits).toLocaleString()} credits${b.stripe?.mode === 'test' ? ' · <b>test mode</b>' : ''}${b.stripe && !b.stripe.configured ? ' · payments are not set up on this Studio yet' : ''}</div>${feats}
       ${plans}
       ${!s && !g && b.freeCredits ? `<div class="meta">Free: topped up to ${Number(b.freeCredits).toLocaleString()} credits each month.</div>` : ''}
@@ -519,6 +519,11 @@
     if (cu) api('/api/ai').then((ai) => window.mountAiCard?.($('#setAiBox'), ai)).catch(() => {});
     else mountCustomers($('#setCellsBox'));
     if (data.call.engine === 'eleven') loadElevenVoices();
+    // A dialog or empty state sent the reader to one section ("Add credits" → Plan and credits, "Connect your AI" → Your AI).
+    const want = window.__settingsFocus;
+    window.__settingsFocus = null;
+    const box = want && document.getElementById(want === 'ai' ? 'setAiBox' : 'setBilling');
+    if (box) { box.scrollIntoView({ block: 'start' }); box.classList.add('set-flash'); setTimeout(() => box.classList.remove('set-flash'), 2500); }
   }
   window.loadSettingsTab = loadSettingsTab;
 
