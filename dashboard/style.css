@@ -591,3 +591,6 @@ body.lt-big-open { overflow: hidden; }
   header { max-width: 100%; }
   nav { max-width: 100%; }
 }
+/* Roadmap board: a card per milestone, items with their state and blocker in words. */
+.rm-board { grid-template-columns: repeat(auto-fill, minmax(min(360px, 100%), 1fr)); margin: 8px 0 16px; }
+.rm-bitem { padding: 6px 0; border-top: 1px solid var(--line, #333); }

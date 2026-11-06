@@ -3,7 +3,7 @@
 //
 // - talk: a conversation changed (a message, its status, an approval card, a guide batch): { ids, unseen } where
 //   unseen is the Talk tab's badge. Pushed by talk.ts, guide.ts and approvals.ts as it happens (coalesced briefly).
-// - activity { count }, inbox { count }, changes, runs, ops: from a watcher that looks only when something moved, and
+// - activity { count }, inbox { count }, changes, runs, ops, roadmap: from a watcher that looks only when something moved, and
 //   only while a page is connected. No timer: a database write (db.ts onDbWrite), a Hawkes Gen job event (genevents.ts)
 //   or poke() (an approval decided, a card asked for) schedules one look; it compares signatures and sends an event
 //   only for what actually changed. A page that nothing happens to receives nothing and asks for nothing.
@@ -88,6 +88,8 @@ async function look() {
   try {
     compare('changes', one('SELECT COUNT(*) AS n, MAX(updated) AS u FROM changes'));
     compare('runs', one(`SELECT COUNT(*) AS n, MAX(started) AS s, MAX(finished) AS f, (SELECT group_concat(id || status || COALESCE(detail, ''), '|') FROM steps WHERE run IN (SELECT id FROM runs WHERE status = 'running')) AS now FROM runs`));
+    // The roadmap board (dashboard/roadmap.js): any item, task or milestone changing (status, milestone, dependencies, notes).
+    compare('roadmap', one(`SELECT (SELECT group_concat(id || status || COALESCE(milestone, '') || COALESCE(updated, 0), '|') FROM items) AS i, (SELECT group_concat(id || status || COALESCE(updated, 0), '|') FROM tasks) AS t, (SELECT group_concat(id || status || COALESCE(updated, 0), '|') FROM milestones) AS m`));
     // Builds finishing or failing (buildfail.ts): the Today cards, Go live and the project's build list redraw.
     compare('builds', one("SELECT id, status, fail_class, notified, (SELECT group_concat(id, '|') FROM runs WHERE kind = 'build' AND status = 'running') AS going FROM builds ORDER BY started DESC LIMIT 80"));
     compare('ops', one(`SELECT id, status, step FROM ops WHERE status IN ('queued', 'running') OR created > ${Date.now() - 86_400_000} ORDER BY created DESC LIMIT 40`));

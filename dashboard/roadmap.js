@@ -35,7 +35,10 @@ async function loadRoadmap() {
   const agents = pm.questions.length - asked;
   studioPatch($('#rmQuestions'), pm.questions.length ? `<div class="meta" style="margin:4px 0 8px">${asked ? `<b>${asked} question(s) for you</b> are in your <a href="#inbox" onclick="show('inbox');return false">Inbox</a>.` : ''}${agents ? ` ${agents} agent question(s) the PM is answering.` : ''}</div>` : '');
   rmMilestones = r.milestones;
-  studioPatch($('#rmMilestones'), r.milestones.length ? `<h3>Milestones</h3>${r.milestones.map(milestoneHtml).join('')}` : '');
+  rmItems = r.items;
+  const board = $('#rmView').value !== 'list';
+  studioPatch($('#rmBoard'), board ? boardHtml(r) : '');
+  studioPatch($('#rmMilestones'), !board && r.milestones.length ? `<h3>Milestones</h3>${r.milestones.map(milestoneHtml).join('')}` : '');
   // Sort by priority (stable: equal ones keep the roadmap order), items and the tasks in each.
   if ($('#rmSort').value === 'priority') {
     r.items.sort((a, b) => RM_RANK[a.priority] - RM_RANK[b.priority]);
@@ -58,6 +61,54 @@ function holdHtml(h) {
 }
 
 let rmMilestones = [];
+let rmItems = [];
+const DONE_STATES = ['on beta', 'verified', 'live', 'done'];
+
+/** An item's blocker in words: what it waits on and who acts, or that nothing blocks it (roadmap.ts itemProgress `next`, task `waits`). */
+function blockerWords(it) {
+  const p = it.progress;
+  const state = p?.state ?? it.status;
+  if (DONE_STATES.includes(state)) return 'Nothing blocks it: it is done.';
+  if (state === 'idea') return 'Blocked: it is only an idea until you plan it (Plan it).';
+  if (state === 'dropped') return 'Dropped.';
+  if (state === 'needs you') {
+    const t = it.tasks.find((x) => x.status === 'failed' || x.status === 'needs answer');
+    return `Blocked on you: ${t ? `"${t.title}" ${t.status === 'failed' ? 'failed and needs a decision' : 'has a question for you'}` : 'a question or a failed task needs your answer'} (Inbox).`;
+  }
+  if (state === 'waiting for your GPU budget') return 'Blocked on you: it needs a GPU budget approved (Inbox).';
+  const stuck = it.tasks.find((t) => t.status === 'planned' && t.blocked_by?.length);
+  if (stuck && p?.next) return `Blocked: ${p.next}.`;
+  if (p?.next) return `Waiting: ${p.next}.`;
+  return 'Nothing blocks it: Studio starts the next task by itself.';
+}
+
+function boardItem(it, fallback) {
+  if (!it) return `<div class="rm-bitem"><span class="pill ${RM_PILL[fallback.state] ?? 'warn'}">${esc(fallback.display ?? fallback.state)}</span> <b>${esc(fallback.title)}</b></div>`;
+  const state = itemState(it);
+  const ok = DONE_STATES.includes(state);
+  return `<div class="rm-bitem" data-key="bi:${esc(it.id)}"><div><span class="pill ${RM_PILL[state] ?? 'warn'}">${esc(itemLabel(it))}</span> <b>${esc(it.title)}</b>${it.priority === 'high' ? ` ${prioBadge(it.priority)}` : ''}</div>
+    <div class="meta rm-blocker" style="${ok ? '' : /^Blocked on you/.test(blockerWords(it)) ? 'color:var(--red)' : ''}">${esc(blockerWords(it))}</div></div>`;
+}
+
+/** The visual roadmap: a card per milestone (items done of total, a bar, each item with its state and blocker), then what is in none. */
+function boardHtml(r) {
+  const byId = new Map(r.items.map((i) => [i.id, i]));
+  const inMs = new Set();
+  const cards = r.milestones.map((m) => {
+    const pct = m.total ? Math.round((100 * m.done) / m.total) : 0;
+    for (const i of m.items) inMs.add(i.id);
+    return `<div class="card rm-col" data-key="bm:${esc(m.id)}"><h3>🏁 ${esc(m.title)} <span class="pill ${m.status === 'reached' || m.status === 'live' ? 'ship' : ''}">${esc(m.status)}</span></h3>
+      <div class="meta">${esc(m.product ? rmNames[m.product] ?? m.product : 'all products')}</div>
+      <div class="status-line"><b>${m.done} of ${m.total} items done</b>${m.tasks?.total ? ` · ${m.tasks.merged} of ${m.tasks.total} tasks merged` : ''}</div>
+      <div style="height:8px;background:var(--line, #333);border-radius:4px;overflow:hidden;margin:4px 0"><div style="height:8px;width:${pct}%;background:var(--accent, #33d6a6)"></div></div>
+      ${m.goal ? `<div class="summary">${esc(m.goal)}</div>` : ''}
+      ${m.items.map((i) => boardItem(byId.get(i.id), i)).join('') || '<div class="meta">No items yet: add items to it (Milestone… on an item).</div>'}
+      <div class="actions">${m.status === 'reached' ? `<a class="small" href="#ready" data-goto="ready">What to test</a>` : ''}${m.status !== 'live' && m.status !== 'dropped' ? `<button class="small" data-ms="${m.id}" data-st="live">Live</button><button class="small" data-ms="${m.id}" data-st="dropped">Drop</button>` : ''}</div></div>`;
+  });
+  const loose = r.items.filter((i) => !inMs.has(i.id) && !['dropped', 'idea'].includes(itemState(i)));
+  if (loose.length) cards.push(`<div class="card rm-col" data-key="bm:none"><h3>No milestone yet</h3><div class="status-line"><b>${loose.filter((i) => DONE_STATES.includes(itemState(i))).length} of ${loose.length} items done</b></div>${loose.map((i) => boardItem(i)).join('')}</div>`);
+  return cards.length ? `<div class="cards rm-board">${cards.join('')}</div>` : '';
+}
 function milestoneHtml(m) {
   const pct = m.total ? Math.round((100 * m.done) / m.total) : 0;
   return `<div class="finding"><div style="flex:1">
@@ -130,7 +181,7 @@ async function loadThread(id) {
     <div class="actions"><input data-cin="${id}" placeholder="Add a comment (agents read this thread)" style="flex:1"><button class="small" data-csend="${id}">Add</button></div></div>`;
 }
 
-$('#rmProduct').onchange = $('#rmStatus').onchange = $('#rmSort').onchange = loadRoadmap;
+$('#rmProduct').onchange = $('#rmView').onchange = $('#rmStatus').onchange = $('#rmSort').onchange = loadRoadmap;
 // The inline priority selects: an item's, or a task's own ('' = its item's).
 $('#roadmap').addEventListener('change', async (e) => {
   const sel = e.target.closest('select[data-prio]');
@@ -251,4 +302,4 @@ document.querySelectorAll('nav button[data-tab="roadmap"], nav button[data-tab="
 rmRefresh();
 // Fresh while open when changes or the Inbox move (the push stream, stream.js, and its slow safety tick); typing in an
 // answer box isn't interrupted.
-studioStream.on(['changes', 'inbox'], () => { if (location.hash === '#roadmap' && !document.activeElement?.matches?.('textarea, input, select[data-prio]')) rmRefresh(); });
+studioStream.on(['changes', 'inbox', 'roadmap'], () => { if (location.hash === '#roadmap' && !document.activeElement?.matches?.('textarea, input, select[data-prio]')) rmRefresh(); });
