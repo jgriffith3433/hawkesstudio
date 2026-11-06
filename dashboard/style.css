@@ -554,3 +554,40 @@ body.lt-big-open { overflow: hidden; }
 
 .set-flash { outline: 2px solid var(--accent, #6cf); transition: outline-color 2s; }
 .empty p { margin: 4px 0; }
+
+/* ---- Mobile cockpit (J, 2026-11-06: "J approves from a phone"). On a phone or any touch screen every control a thumb
+   uses is at least 44px (Approve / Deny, Inbox answers, Changes, Roadmap, the tabs), and no page scrolls sideways:
+   wide content (tables, code, long words) scrolls inside its own box or wraps. test/mobile-cockpit.test.ts keeps this. */
+@media (pointer: coarse), (max-width: 760px) {
+  button, a.button, select, input:not([type=checkbox]):not([type=radio]):not([type=range]):not([type=file]), summary {
+    min-height: 44px;
+  }
+  button, a.button { min-width: 44px; touch-action: manipulation; }
+  a.button { display: inline-flex; align-items: center; justify-content: center; }
+  button.small, nav button, .more-btn, .more-menu button, .ib-card .ib-actions button, .ib-card .ib-free button,
+  .actions button, .roadmap button, .card button { min-height: 44px; padding-top: 8px; padding-bottom: 8px; }
+  input[type=checkbox], input[type=radio] { width: 22px; height: 22px; }
+  label:has(> input[type=checkbox]), label:has(> input[type=radio]) { min-height: 44px; display: inline-flex; align-items: center; gap: 8px; }
+  summary { display: list-item; padding: 10px 0; }
+  .ib-card .ib-actions, .actions { gap: 10px; }
+  .ib-card .ib-actions button { flex: 1 1 140px; }
+  .ib-card .ib-free { flex-wrap: wrap; }
+  .ib-card .ib-free input { flex: 1 1 100%; }
+  .ib-card .ib-free button { flex: 1 1 100%; }
+  .more-menu { min-width: min(240px, calc(100vw - 24px)); max-width: calc(100vw - 16px); }
+}
+@media (max-width: 760px) {
+  html, body { max-width: 100%; overflow-x: clip; }
+  main, .tab, .card, .ib-card, .approval, .bar { max-width: 100%; min-width: 0; }
+  .tab * { min-width: 0; }
+  .tab :is(p, h1, h2, h3, h4, li, td, th, .meta, .status-line, code, a) { overflow-wrap: anywhere; }
+  .tab pre, .tab code, details pre { white-space: pre-wrap; overflow-wrap: anywhere; max-width: 100%; }
+  .tab pre { overflow-x: auto; }
+  /* Wide tables scroll inside themselves, never the page. */
+  .tab table { display: block; max-width: 100%; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  .tab img, .tab video, .tab canvas, .tab svg { max-width: 100%; height: auto; }
+  .bar > *, .bar select, .bar input { max-width: 100%; }
+  .bar select, .bar input[type=text], .bar input:not([type]) { flex: 1 1 140px; }
+  header { max-width: 100%; }
+  nav { max-width: 100%; }
+}
