@@ -233,6 +233,7 @@ const server = http.createServer(async (req, res) => {
     }
     if (route === '/api/self-deploys') return send(res, 200, { deploys: selfDeploys(Number(q('limit') ?? 30)), busy: selfBusy() });
     if (route === '/api/overview') return send(res, 200, await overview());
+    if (route === '/api/home') return send(res, 200, await cached('home', 1000, async () => (await import('./home.ts')).home()));
     // Everything running in the background (the dashboard's Activity panel).
     if (route === '/api/activity') return send(res, 200, await cached('activity', 1500, activity));
     // The dashboard's one push stream (stream.ts): "something changed" events instead of polling.
