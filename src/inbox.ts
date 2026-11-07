@@ -28,6 +28,7 @@ import { walkAwayOn, walkAwaySettings, gpuAutoApproveLimit } from './walkaway.ts
 import { gate } from './acceptance.ts';
 import { listApprovals, type Approval } from './approvals.ts';
 import { contradictionSettled } from './memory-curate.ts';
+import { creditsWaiting, creditsBack } from './creditwait.ts';
 
 // Answers to the cards that aren't questions (budgets, merges, milestones): what was answered, by whom, and for a
 // milestone how long its card stays away (until; null: for good).
@@ -38,7 +39,7 @@ export type InboxLink = { label: string; url?: string; video?: string };
 export type InboxItem = {
   /** q_... for a question; gpu:k_..., merge:c_..., milestone:n_... for the others. */
   id: string;
-  kind: 'question' | 'agent' | 'gpu' | 'merge' | 'milestone' | 'approval' | 'video' | 'build' | 'access';
+  kind: 'question' | 'agent' | 'gpu' | 'merge' | 'milestone' | 'approval' | 'video' | 'build' | 'access' | 'credits';
   /** The one-line question, and the whole of it when it's longer. */
   title: string; text: string | null;
   product: string | null; productName: string | null;
@@ -389,6 +390,19 @@ export async function inbox({ tokens = false }: { tokens?: boolean } = {}): Prom
     });
   }
 
+  // Out of credits (creditwait.ts): ONE card, not one per refused run. Nothing failed; paid work starts again by itself when
+  // credits are added (the ledger's write), or on "Check again".
+  const cw = creditsWaiting();
+  if (cw) {
+    out.push({
+      id: 'credits:wait', kind: 'credits', title: 'Waiting for credits: paid work is paused',
+      text: `${cw.message}\n\nNothing failed and no agent was sent back: ${cw.runs.length} run${cw.runs.length === 1 ? ' was' : 's were'} held. Add credits (Settings → Plan and credits); the waiting beta playtest plays once by itself when they arrive.`,
+      product: null, productName: null, context: cw.need != null && cw.have != null ? `Needs ${cw.need.toLocaleString('en-US')}, ${cw.have.toLocaleString('en-US')} left.` : null,
+      asker: 'Studio', recommendation: 'Check again', options: ['Check again'], blocks: 'beta playtests and new agent work',
+      since: cw.since, weight: 60, links: [{ label: 'Plan and credits', url: '#settings' }], subject: null, conversation: null, asks: 1,
+    });
+  }
+
   // A video version waiting for J to screen it (videos.ts): watch it here or in the Screening tab; a typed answer is a note.
   for (const v of (await listVideos()).filter((x) => (x.state === 'ready to screen' || x.state === 'animatic ready') && x.latest)) {
     const anim = v.state === 'animatic ready';
@@ -577,6 +591,11 @@ export async function answerInbox(id: string, answer: string, by: string, opts: 
     return { answered: id, by, told: 'the PM' };
   }
   // The access card: look again now; back means it rebuilt and resolved, still missing says what is missing.
+  if (id === 'credits:wait') {
+    const { startBeta } = await import('./pipeline.ts');
+    const started = creditsBack((product, o) => startBeta(product, o));
+    return { answered: id, by, resolved: true, resumed: started };
+  }
   const am = /^access:(x_[0-9a-f]+)$/.exec(id);
   if (am) {
     const row = db.prepare('SELECT product, status FROM build_access WHERE id = ?').get(am[1]) as any;

@@ -45,6 +45,7 @@ import { fileUrl, signFileLinks } from './gen.ts';
 import { BETA, gitAsync, repoDirs, shaOf } from './beta.ts';
 import { REF_LOCK } from './gitlock.ts';
 import { buildErrors, pickCulprit } from './buildblame.ts';
+import { heldRun, creditsWaitReason } from './creditwait.ts';
 import { curationLine } from './memory.ts';
 import { filesIn, type WorkShape } from './parallel.ts';
 import { walkAwayDefaults, WALK_AWAY_BY, walkAwayOn, gpuAutoApproveLimit, type WalkAwaySettings } from './walkaway.ts';
@@ -298,7 +299,7 @@ async function checkOnBeta(t: Task) {
     // No beta check yet: start one if nothing is running for this product and the merge is a while ago.
     const running = db.prepare(`SELECT id FROM runs WHERE kind = 'beta' AND status = 'running' AND products LIKE ?`).get(`%"${t.product}"%`);
     const asked = listDecisions({ since: Date.now() - 6 * 3600_000, action: 'beta-check' }).some((d) => d.subject === t.id);
-    if (playsAfterMerges && !running && !asked && Date.now() - (t.merged_at ?? 0) > 45 * 60_000 && t.criteria.length && s.enabled) {
+    if (playsAfterMerges && !running && !asked && Date.now() - (t.merged_at ?? 0) > 45 * 60_000 && t.criteria.length && s.enabled && !creditsWaitReason()) {
       const { getChange } = await changes();
       const c = getChange(t.change!);
       const { startBeta } = await import('./pipeline.ts');
@@ -420,8 +421,9 @@ export async function followBuilds() {
     // A run whose build was cancelled (J, Talk, the PM or Gen) built nothing: it is neither a build nor a failed one, and
     // the "nothing built the newest merge" check below starts another (cancel.ts).
     const runs = (db.prepare(`SELECT id, status, detail, started, finished FROM runs WHERE kind = 'beta' AND products LIKE ? AND started >= ? ORDER BY started DESC, rowid DESC`).all(`%"${product}"%`, since) as any[])
-      .filter((x) => !buildCancelled(x.id, product));
-    for (const { t } of list) if (t.build?.run && buildCancelled(t.build.run, product)) setTask(t.id, { build: null });
+      .filter((x) => !buildCancelled(x.id, product) && !heldRun(x.id));
+    // A run refused for credits built nothing and says nothing about the change: never blamed (creditwait.ts).
+    for (const { t } of list) if (t.build?.run && (buildCancelled(t.build.run, product) || heldRun(t.build.run))) setTask(t.id, { build: null });
     const finished = runs.filter((x) => ['done', 'failed', 'partial'].includes(x.status));
     for (const { t, at } of list) {
       const r = finished.find((x) => x.started >= at);
@@ -429,7 +431,7 @@ export async function followBuilds() {
     }
     // Nothing built the newest merge (startBeta threw, a restart lost it): a beta build of its own, once.
     const last = list.reduce((a, b) => (a.at >= b.at ? a : b));
-    if (!runs.some((x) => x.started >= last.at) && Date.now() - last.at > 20 * 60_000 && pmSettings().enabled && !listDecisions({ since: last.at, action: 'beta-build' }).some((d) => d.product === product)) {
+    if (!runs.some((x) => x.started >= last.at) && Date.now() - last.at > 20 * 60_000 && pmSettings().enabled && !creditsWaitReason() && !listDecisions({ since: last.at, action: 'beta-build' }).some((d) => d.product === product)) {
       const { startBeta } = await import('./pipeline.ts');
       const r = startBeta(product, { focus: `Building beta after "${last.t.title}" merged.`, playtest: false });
       logDecision('beta-build', last.t.id, product, `no beta run built "${last.t.title}" after its merge: started ${r.id}`);
@@ -489,7 +491,7 @@ async function decideFailedBuild(product: string, run: { id: string; started: nu
   if (built && now && !now.startsWith(built) && !built.startsWith(now)) {
     const newer = runs.find((x) => x.status === 'running' && x.started > run.started);
     logDecision('build-failed', run.id, product, `beta's build of ${built.slice(0, 7)} failed, but beta has moved to ${now.slice(0, 7)} since: nothing sent back; ${newer ? `beta run ${newer.id} builds it` : 'building it'}, and that build decides`);
-    if (!newer && pmSettings().enabled) {
+    if (!newer && pmSettings().enabled && !creditsWaitReason()) {
       const { startBeta } = await import('./pipeline.ts');
       const r = startBeta(product, { focus: `Building beta's newest commit after the build of ${built.slice(0, 7)} failed.`, playtest: false });
       logDecision('beta-build', run.id, product, `beta moved since the failed build of ${built.slice(0, 7)}: started ${r.id} for ${now.slice(0, 7)}`);
@@ -569,6 +571,7 @@ async function buildSendBack(t: Task, { errors = [], matched = [] }: { errors?: 
   if (!s.enabled) return;
   // A cancelled build isn't a broken one: nothing to fix, nothing blamed (cancel.ts).
   if (t.build?.run && buildCancelled(t.build.run, t.product)) return void setTask(t.id, { build: null });
+  if (t.build?.run && heldRun(t.build.run)) return void setTask(t.id, { build: null }); // waiting for credits, not broken
   if (!free && t.tries >= s.maxTries) {
     setTask(t.id, { status: 'failed', note: t.build?.detail.slice(0, 1000) ?? "beta's build failed" });
     outOfTries(getTask(t.id)!, `beta's build fails after it: ${t.build?.detail.slice(0, 600) ?? ''}`, () => askJ(`"${t.title}" (${name(t.product)}) is merged into beta but beta's build fails after it, and its agents couldn't fix that in ${t.tries} tries: ${t.build?.detail.slice(0, 600)}. Try again, revert it on beta, or drop it?`, { subject: t.id, product: t.product, options: ['try again', 'revert it', 'drop it'], from: `the default after ${s.maxTries} tries` }));
@@ -725,6 +728,9 @@ export function startBlocked(taskId: string): string | null {
 /** Starts (or restarts) the agent change of a task, unless startBlocked says it has one going or merged. */
 async function startTaskChange(task: Task, note?: string, why?: string, countTry = true) {
   const { startTask, reviveForTask } = await changes();
+  // Out of credits: no agent is started (a refused beta run is no reason to), the run plays again when credits are back.
+  const waiting = creditsWaitReason();
+  if (waiting) throw new StudioError(`"${task.title}" isn't started: ${waiting}`);
   // Checked after the await and with nothing awaited before the insert: two callers in one tick, or two ticks, can't both pass.
   const blocked = startBlocked(task.id);
   if (blocked) throw new StudioError(`"${task.title}" isn't started again: ${blocked}`);
@@ -822,6 +828,8 @@ export function startWaitReason(t?: Pick<Task, 'id' | 'product'>, now = Date.now
   const s = pmSettings();
   if (!s.enabled) return 'the PM is paused (Settings)';
   if (harnessHeld()) return 'the AI harness is on hold (a usage limit or billing); it starts when the harness answers';
+  const credits = creditsWaitReason(now);
+  if (credits) return credits;
   const cap = capacity();
   if (t) {
     const hold = infraHoldOf(t.id, now);
@@ -924,6 +932,8 @@ export async function startWork() {
   if (!s.enabled || !(await import('./ghtoken.ts')).githubReachable()) return [];
   // The harness in use refuses to run (harness-hold.ts): starting would only burn tries. The hold resumes the loop.
   if (harnessHeld()) return [];
+  // Out of credits: nothing starts (one "waiting for credits" state, one Inbox card); credits coming back resume it (creditwait.ts).
+  if (creditsWaitReason()) return [];
   const { agentSettings, startFix, DECIDED, ALREADY, STUDIO_FAILED_SQL, autoFixBlock } = await changes();
   if (!agentSettings().enabled) return [];
   // A Studio or Gen deploy waiting for agents to finish: start nothing new until it's through.
