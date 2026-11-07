@@ -18,6 +18,7 @@ import type http from 'node:http';
 import { db, parse } from './db.ts';
 import { getProduct, getInfra, isInfra, loadProducts, managedElsewhere, StudioError } from './config.ts';
 import { fixerNow, latestChain, attemptsText, type FixerNow } from './buildfix.ts';
+import { openAccess, recheckAccess, accessLinks } from './buildaccess.ts';
 import { failingBuilds, failSignature, lastBuilds } from './buildfail.ts';
 import {
   listQuestions, getQuestion, setQuestion, answeredSince, getTask, getItem, getMilestone, listMilestones, milestoneProgress, milestoneTasks, tasksAwaitingGpu,
@@ -37,7 +38,7 @@ export type InboxLink = { label: string; url?: string; video?: string };
 export type InboxItem = {
   /** q_... for a question; gpu:k_..., merge:c_..., milestone:n_... for the others. */
   id: string;
-  kind: 'question' | 'agent' | 'gpu' | 'merge' | 'milestone' | 'approval' | 'video' | 'build';
+  kind: 'question' | 'agent' | 'gpu' | 'merge' | 'milestone' | 'approval' | 'video' | 'build' | 'access';
   /** The one-line question, and the whole of it when it's longer. */
   title: string; text: string | null;
   product: string | null; productName: string | null;
@@ -373,6 +374,21 @@ export async function inbox({ tokens = false }: { tokens?: boolean } = {}): Prom
     }
   }
 
+  // GitHub access a build needs (buildaccess.ts): ONE card per project with the exact fix and the link. Looked at now, as the
+  // Inbox opens (never on a timer): access back means the builds start again and the card goes.
+  await recheckAccess().catch((e) => console.warn(`[inbox] checking GitHub access: ${e?.message ?? e}`));
+  for (const a of openAccess()) {
+    const p = loadProducts().find((x) => x.id === a.product);
+    if (!p || managedElsewhere(p)) continue;
+    const links = await accessLinks(a);
+    out.push({
+      id: `access:${a.id}`, kind: 'access', title: `${p.name}: Studio needs ${a.what === 'permission' ? `the "${a.permission}" permission` : a.what === 'install' ? 'its GitHub app installed' : 'access'} on ${a.slug ?? 'the repository'}`,
+      text: `${a.detail ?? ''}\n\nBuilds waiting: ${a.builds.join(', ')}. When you've done it, press "Check again" (or just open this page): Studio rebuilds by itself.`.trim(),
+      product: p.id, productName: p.name, context: a.detail, asker: 'Studio', recommendation: 'Check again', options: ['Check again'],
+      blocks: `${p.name}'s builds (${a.builds.join(', ')})`, since: a.opened, weight: 55, links, subject: p.id, conversation: null, asks: 1,
+    });
+  }
+
   // A video version waiting for J to screen it (videos.ts): watch it here or in the Screening tab; a typed answer is a note.
   for (const v of (await listVideos()).filter((x) => (x.state === 'ready to screen' || x.state === 'animatic ready') && x.latest)) {
     const anim = v.state === 'animatic ready';
@@ -559,6 +575,16 @@ export async function answerInbox(id: string, answer: string, by: string, opts: 
     pm.pmEvent('feedback', `${by} playtested milestone ${ms.id} ("${ms.title}") and says: "${what}". Turn it into tasks on its items (or a new item in it), and say so in a line.`, ms.id, ms.product);
     ack(key, by, what, null, `Milestone "${ms.title}"`);
     return { answered: id, by, told: 'the PM' };
+  }
+  // The access card: look again now; back means it rebuilt and resolved, still missing says what is missing.
+  const am = /^access:(x_[0-9a-f]+)$/.exec(id);
+  if (am) {
+    const row = db.prepare('SELECT product, status FROM build_access WHERE id = ?').get(am[1]) as any;
+    if (!row) throw new StudioError(`No access card ${am[1]}`, 404);
+    if (row.status !== 'open') return { answered: id, by, resolved: true };
+    const r = (await recheckAccess({ product: row.product, force: true }))[0];
+    if (!r?.back) throw new StudioError('GitHub still refuses: the permission is not there yet. Accept it on the installation page (the card has the link), then check again.');
+    return { answered: id, by, resolved: true, rebuilding: true };
   }
   // A failed build: build it again (a run), or dismiss the card (the failure stays in the build history).
   const bm = /^build:(b_[0-9a-f]+)$/.exec(id);

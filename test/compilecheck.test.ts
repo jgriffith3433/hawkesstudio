@@ -56,7 +56,7 @@ test('a setting, on by default, read at run time; the env var is only an operato
   const { buildsSettings, saveBuildsSettings } = await import('../src/compilecheck.ts');
   const was = process.env.STUDIO_UNITY_COMPILE;
   delete process.env.STUDIO_UNITY_COMPILE;
-  assert.deepEqual(buildsSettings(), { unityCompile: true, unityCompileMaxCost: 3 });
+  assert.deepEqual(buildsSettings(), { unityCompile: true, unityCompileMaxCost: 3, handleFailures: true });
   assert.equal(compileCheckOn(), true);
   saveBuildsSettings({ unityCompile: false });
   assert.equal(compileCheckOn(), false);

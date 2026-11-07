@@ -15,6 +15,7 @@
 import { db } from './db.ts';
 import { tokenLost, infraLost, buildsOf, UNITY_FAILED } from './builds.ts';
 import { getProduct } from './config.ts';
+import { accessCause, accessFix, retryPending } from './buildaccess.ts';
 import { fixerNow, fixedWording, fixSentence, type FixerNow } from './buildfix.ts';
 
 export type FailClass = 'rejected' | 'script' | 'token' | 'restart' | 'compile' | 'publish' | 'timeout' | 'memory' | 'access' | 'other';
@@ -70,7 +71,7 @@ export function digestLog(log: string, command = ''): { errors: string[]; step: 
 }
 
 /** What went wrong, in two words and in plain ones. Exported for the tests. */
-export function classify(error: unknown, o: { stage?: string | null; log?: string | null; tries?: number } = {}): Classified {
+export function classify(error: unknown, o: { stage?: string | null; log?: string | null; tries?: number; slug?: string | null } = {}): Classified {
   const e = String(error ?? '');
   const log = String(o.log ?? '');
   const both = `${e}\n${log}`;
@@ -91,7 +92,9 @@ export function classify(error: unknown, o: { stage?: string | null; log?: strin
   if (/timed out|ran past|no result/i.test(e)) return { class: 'timeout', kind: 'infrastructure', plain: `The build ran out of time before it finished. Probably infrastructure (a slow or stuck machine), not the code.${retried} Build again; if it keeps timing out, look at the Gen job.` };
   if (/out of memory|\bOOM\b|killed \(137\)|exit(ed)? (code )?137/i.test(both)) return { class: 'memory', kind: 'infrastructure', plain: `The build machine ran out of memory. That's the machine's size, not the code; Studio asks Gen for a bigger one when this happens.${retried} Build again.` };
   if (infraLost(e) || /Hawkes Gen (finished job|doesn't know job)|stopped: its run|Gen restarted/i.test(e)) return { class: 'restart', kind: 'infrastructure', plain: `Hawkes Gen or Studio restarted or lost the job while it was building. That's infrastructure, not the code.${retried} Build again.` };
-  if (/GitHub wouldn't|isn't installed|no GitHub access|has no GitHub repo|connect GitHub|403|404/i.test(e) && /github/i.test(e)) return { class: 'access', kind: 'infrastructure', plain: 'Studio can\'t reach the repository on GitHub (access or install). Fix the GitHub connection, then build again.' };
+  // GitHub refused the app's token (403/404): the real cause and the one fix, never "access or install" (buildaccess.ts).
+  const cause = accessCause(e);
+  if (cause) return { class: 'access', kind: 'infrastructure', plain: accessFix(cause, o.slug ?? null) };
   if (o.stage === 'publish' || o.stage === 'mount' || o.stage === 'download' || /publish|loader|assertLoader|commit(ting)? into|couldn't (put|write)|R2/i.test(e)) {
     const loader = /loader/i.test(e);
     return { class: 'publish', kind: loader ? 'code' : 'infrastructure', plain: loader ? `The build finished but its files aren't what the site page loads (${e.slice(0, 160)}). That's the build's setup, not Studio.` : `The build itself finished, but Studio couldn't publish it (${e.slice(0, 160)}). That's Studio or the site store, not your code. Build again.` };
@@ -160,11 +163,11 @@ export function failureOf(r: any): FailureView {
 }
 
 /** Writes what a failed build knows on its row. Called from builds.ts when a build ends in failure; then announce(). */
-export function recordFailure(rowId: string, error: unknown, o: { stage?: string | null; jobs?: { id: string; error: string }[]; log?: string } = {}): Classified {
+export function recordFailure(rowId: string, error: unknown, o: { stage?: string | null; jobs?: { id: string; error: string }[]; log?: string; slug?: string | null } = {}): Classified {
   const why = String((error as any)?.message ?? error ?? '').slice(0, 500);
   const jobs = o.jobs ?? (error instanceof BuildFailure ? error.jobs : []);
   const log = (o.log ?? (error instanceof BuildFailure ? error.log : '')) || '';
-  const c = classify(why, { stage: o.stage, log, tries: jobs.length });
+  const c = classify(why, { stage: o.stage, log, tries: jobs.length, slug: o.slug });
   db.prepare("UPDATE builds SET status = 'failed', detail = ?, finished = COALESCE(finished, ?), fail_class = ?, fail_kind = ?, fail_plain = ?, fail_step = ?, fail_log = ?, gen_jobs = ? WHERE id = ?")
     .run(why, Date.now(), c.class, c.kind, c.plain, o.stage ?? null, log ? log.slice(-LOG_BYTES) : null, jobs.length ? JSON.stringify(jobs) : null, rowId);
   return c;
@@ -220,7 +223,8 @@ export function failingBuilds(product: string): FailureView[] {
   const going = new Set(buildsRunning(product).map((x) => x.build));
   const now = configuredBuilds(product);
   return lastBuilds(product)
-    .filter((r) => r.status === 'failed' && !going.has(r.build) && (!now || now.has(r.build)))
+    // A failure waiting for its automatic retry isn't one yet, and an access failure is the project's one access card (buildaccess.ts).
+    .filter((r) => r.status === 'failed' && !going.has(r.build) && (!now || now.has(r.build)) && !retryPending(r.id) && r.fail_class !== 'access')
     .map(failureOf)
     .map(withFixer);
 }

@@ -311,6 +311,7 @@
     if (!b) return '';
     return `<div class="set-box"><h3>🧱 Unity builds</h3>
       <div class="meta">Before an agent's Unity change can merge into beta, Hawkes Gen compiles it with your project's own Unity version (minutes, no player build). A compile error goes back to the agent. Where Gen can't do that yet, the check is skipped and the change carries on.</div>
+      ${row('Handle build failures by itself', bool('builds', 'handleFailures', b.handleFailures), 'A build that fails on a network hiccup is retried (3 tries over about 10 minutes) and you hear nothing unless all fail. A missing GitHub permission becomes one Inbox card with the exact fix, and Studio rebuilds when it is back.')}
       ${row('Compile Unity changes before they merge', bool('builds', 'unityCompile', b.unityCompile), 'Turning it on costs a build-machine run per change, so it asks for your yes in Talk.')}
       ${row('Stop checking when a run averages over ($)', num('builds', 'unityCompileMaxCost', b.unityCompileMaxCost, { min: 0.1, max: 100, step: 0.5 }), 'Studio measures each run. Above this average the check is skipped and says so.')}
     </div>`;

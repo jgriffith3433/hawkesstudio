@@ -66,7 +66,7 @@ test('the sandbox may change settings only from a Talk conversation', () => {
 
 test('builds: the Unity compile gate is a setting; turning it on or raising its limit needs J\'s yes from Talk', async () => {
   const s = await allSettings();
-  assert.deepEqual((s as any).builds, { unityCompile: true, unityCompileMaxCost: 3 });
+  assert.deepEqual((s as any).builds, { unityCompile: true, unityCompileMaxCost: 3, handleFailures: true });
   const off = await saveSettings('builds', { unityCompile: false }, { conversation: null });
   assert.equal(off.unityCompile, false);
   const talk = convWith('hello');
