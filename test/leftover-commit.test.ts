@@ -78,8 +78,25 @@ test('Studio\'s own commits are told from the agent\'s; no-change summaries are 
   sh(dir, 'update-ref', 'refs/remotes/origin/beta', base);
   assert.equal(onlyStudioCommits(dir, 'beta'), false, 'no commits');
   fs.writeFileSync(path.join(dir, 'Assets/V.cs'), 'studio\n');
-  sh(dir, 'commit', '-qam', `Work from the agent's pass\n\n${LEFTOVER_MARK}: the agent left these changes uncommitted.`);
+  assert.equal(commitLeftovers(dir, () => {}), true); // the job's own commit (Studio's identity and trailer)
   assert.equal(onlyStudioCommits(dir, 'beta'), true);
+  // The agent amends it (even --no-edit keeps the trailer, but the committer is no longer Studio): its work, never dropped.
+  fs.writeFileSync(path.join(dir, 'Assets/V.cs'), 'amended by the agent\n');
+  sh(dir, 'commit', '-qa', '--amend', '--no-edit');
+  assert.equal(onlyStudioCommits(dir, 'beta'), false, 'an amended Studio commit is the agent\'s');
+  sh(dir, 'reset', '-q', '--hard', base);
+  // An agent's message that merely quotes the trailer, or has it mid-message, is not Studio's.
+  fs.writeFileSync(path.join(dir, 'Assets/V.cs'), 'x\n');
+  sh(dir, 'commit', '-qam', `Fix: beta load checks\n\n${LEFTOVER_MARK}: the agent left these changes uncommitted.\n\nMore of the agent's own notes.`);
+  assert.equal(onlyStudioCommits(dir, 'beta'), false, 'trailer not last');
+  sh(dir, 'reset', '-q', '--hard', base);
+  fs.writeFileSync(path.join(dir, 'Assets/V.cs'), 'studio\n');
+  sh(dir, 'commit', '-qam', `Work from the agent's pass\n\n${LEFTOVER_MARK}: the agent left these changes uncommitted.`);
+  assert.equal(onlyStudioCommits(dir, 'beta'), false, 'the trailer typed by someone else (t@t.com)');
+  sh(dir, 'reset', '-q', '--hard', base);
+  assert.equal(onlyStudioCommits(dir, 'beta'), false, 'no commits');
+  fs.writeFileSync(path.join(dir, 'Assets/V.cs'), 'studio\n');
+  assert.equal(commitLeftovers(dir, () => {}), true);
   fs.writeFileSync(path.join(dir, 'Assets/V.cs'), 'agent\n');
   sh(dir, 'commit', '-qam', 'Fix: the real one');
   assert.equal(onlyStudioCommits(dir, 'beta'), false, 'one commit is the agent\'s own');
