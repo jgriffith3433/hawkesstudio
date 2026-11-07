@@ -1440,7 +1440,7 @@ function announceMilestone(id: string) {
     m.goal ? `Goal: ${m.goal}` : '',
     m.test ? `What you said you'd test: ${m.test}` : '',
     ...ready.map(readyMarkdown),
-    'When you have played it: go live (DEPLOY <product>), or tell me what is wrong and I will make it tasks.',
+    'When you have played it: tap Go live on its card (nothing to type), or tell me what is wrong and I will make it tasks.',
   ].filter(Boolean).join('\n\n---\n\n');
   const title = left.length ? `Milestone needs a look: ${m.title}` : `Milestone reached: ${m.title}`;
   void postTo(m.origin, title, text);

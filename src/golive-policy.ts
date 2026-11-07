@@ -103,6 +103,8 @@ export async function autoGoLive(productId: string, why: string): Promise<{ went
       return { waits: plan.blockers.join(' ') };
     }
     // Only a beta whose playtests passed goes live with no one approving it.
+    // ...and only at the exact commit that ships: the playtests listed must be of the beta commit being released.
+    if (plan.tested?.sha && plan.beta?.short && plan.tested.sha !== plan.beta.short && plan.played?.short !== plan.tested.sha) return { waits: `beta moved to ${plan.beta.short} since its playtest (${plan.tested.sha})` };
     const held = holdLine(plan);
     if (held) {
       console.log(`[golive] ${p.id}: not going live by itself yet (${why}): ${held.slice(0, 400)}`);
