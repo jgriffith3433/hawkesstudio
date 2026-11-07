@@ -575,9 +575,23 @@ export async function answerInbox(id: string, answer: string, by: string, opts: 
     if (!ms) throw new StudioError(`No milestone ${m[1]}`, 404);
     const key = `milestone:${ms.id}:${ms.reached_at ?? 0}`;
     if (/^\s*go live\b/i.test(text)) {
-      // Going live stays the deploy plan and J's typed words; the card stays until it's live.
+      // His "go live" here is his word (golive-policy.ts asksToGoLive): each product goes through the same plan and gate as
+      // any go live (beta's exact playtested commit, no blockers), with nothing for him to type. One that can't says why.
       const products = [...new Set(milestoneProgress(ms.id).items.map((i) => i.product))];
-      return { answered: null, by, next: 'deploy', products, note: `Going live is the deploy plan, then "DEPLOY <product>" typed by J (${products.join(', ')}).` };
+      const { deployPlan, queueLive } = await import('./deploy.ts');
+      const went: string[] = [];
+      const waits: string[] = [];
+      for (const pr of products) {
+        try {
+          const plan: any = await deployPlan(pr, { notesWaitMs: 0 });
+          if (plan.blockers?.length) { waits.push(`${pr}: ${plan.blockers.join(' ').slice(0, 300)}`); continue; }
+          queueLive('golive', { product: pr, confirm: plan.confirm, by: `${by} (go live on the milestone card)`, beta: plan.beta?.sha });
+          went.push(pr);
+        } catch (e: any) { waits.push(`${pr}: ${String(e?.message ?? e).slice(0, 300)}`); }
+      }
+      if (!went.length) return { answered: null, by, next: 'deploy', products, note: `Nothing went live yet. ${waits.join(' | ')}` };
+      record(id, by, text, `Milestone "${ms.title}"`);
+      return { answered: id, by, wentLive: went, waits, note: `Going live: ${went.join(', ')}.${waits.length ? ` Waiting: ${waits.join(' | ')}` : ''}` };
     }
     if (/^\s*later\b/i.test(text)) {
       ack(key, by, text, Date.now() + 24 * HOUR, `Milestone "${ms.title}"`);
