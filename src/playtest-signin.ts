@@ -10,6 +10,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { DATA, getProduct, type Product } from './config.ts';
+import { db } from './db.ts';
 
 const KEY_FILE = () => path.join(DATA, 'signin.key');
 let master: Buffer | null = null;
@@ -58,6 +59,90 @@ export function checkSigninToken(body: any, secret: string, project: string, now
   if (got.length !== want.length || !crypto.timingSafeEqual(got, want)) throw new Error('Bad test sign-in signature.');
 }
 
+/** Studio's own project id, in both spellings it has been given (the project is "hawkes-studio", the old default "hawkesstudio"). */
+export const STUDIO_PROJECT_IDS = ['hawkes-studio', 'hawkesstudio'];
+export const isStudioProject = (id: unknown) => typeof id === 'string' && STUDIO_PROJECT_IDS.includes(id);
+/** Where Studio's beta playtests sign in, unless the project says otherwise. */
+export const STUDIO_BETA_SIGNIN = 'https://studio-beta.hawkesgen.ai/auth/test-session';
+
+// No secret to copy (J: customers never touch config): the beta asks the Studio that signed the token. Which Studios it
+// asks is a setting (Settings → signin), by default Hawkes Studio and its cells (studio.hawkesgen.ai/o/<org>).
+export const DEFAULT_ISSUERS = ['https://studio.hawkesgen.ai'];
+export function signinSettings(): { issuers: string[] } {
+  const r = db.prepare(`SELECT value FROM settings WHERE key = 'signin'`).get() as { value: string } | undefined;
+  let v: any = {};
+  try { v = r ? JSON.parse(r.value) : {}; } catch { /* defaults */ }
+  return { issuers: Array.isArray(v?.issuers) && v.issuers.length ? v.issuers.map(String) : DEFAULT_ISSUERS };
+}
+export function saveSigninSettings(patch: Record<string, any>, by = 'J') {
+  const next = signinSettings();
+  for (const [k, v] of Object.entries(patch ?? {})) {
+    if (k !== 'issuers') throw new Error(`signin.${k}: not a setting (issuers)`);
+    if (!Array.isArray(v) || !v.length) throw new Error('signin.issuers: a list of https origins');
+    next.issuers = v.map((o) => {
+      let u: URL;
+      try { u = new URL(String(o)); } catch { throw new Error(`signin.issuers: "${o}" is not an address`); }
+      if (u.protocol !== 'https:') throw new Error('signin.issuers: https origins only');
+      return u.origin;
+    });
+  }
+  db.prepare('INSERT INTO settings (key, value, updated, by) VALUES (?, ?, ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated = excluded.updated, by = excluded.by')
+    .run('signin', JSON.stringify(next), Date.now(), by);
+  return next;
+}
+
+/** An issuer address we may ask: an allowlisted origin, at its root or one customer cell (/o/<org>). Returns its base or null. */
+export function allowedIssuer(issuer: unknown, issuers = signinSettings().issuers): string | null {
+  let u: URL;
+  try { u = new URL(String(issuer)); } catch { return null; }
+  if (u.protocol !== 'https:' || u.username || u.password || u.search || u.hash) return null;
+  if (!issuers.some((o) => { try { return new URL(o).origin === u.origin; } catch { return false; } })) return null;
+  if (!/^(\/|\/o\/[a-z0-9-]{1,60}\/?)$/.test(u.pathname)) return null;
+  return `${u.origin}${u.pathname.replace(/\/+$/, '')}`;
+}
+
+/** This Studio's address as a beta reaches it: the token's `issuer`. */
+export const issuerBase = () => (process.env.STUDIO_PUBLIC_URL || 'https://studio.hawkesgen.ai').replace(/\/+$/, '');
+
+// One-time nonces (issuer side). In memory: a token lives five minutes, and a restart that forgets one still leaves it expired.
+const seen = new Map<string, number>();
+export const resetSigninNonces = () => seen.clear();
+
+/**
+ * The issuer's side: is this token one this Studio signed, fresh, and not used before? Throws a sentence. Returns nothing
+ * (and never the secret). The nonce is spent only by a token whose signature is right.
+ */
+export function verifyIssued(body: any, now = Date.now()) {
+  const { project, exp, nonce, sig } = body ?? {};
+  if (typeof project !== 'string' || !project || typeof nonce !== 'string' || !nonce || nonce.length > 100 || typeof sig !== 'string' || !Number.isFinite(exp)) throw new Error('Not a test sign-in token.');
+  const nowS = Math.floor(now / 1000);
+  for (const [n, e] of seen) if (e < nowS) seen.delete(n);
+  if (exp < nowS || exp > nowS + 600) throw new Error('That test sign-in token has expired.');
+  const want = crypto.createHmac('sha256', signinSecret(project)).update(`${project}.${exp}.${nonce}`).digest();
+  const got = Buffer.from(sig, 'base64url');
+  if (got.length !== want.length || !crypto.timingSafeEqual(got, want)) throw new Error('Bad test sign-in signature.');
+  const k = `${project}.${nonce}`;
+  if (seen.has(k)) throw new Error('That test sign-in token was already used.');
+  seen.set(k, exp);
+}
+
+/** The beta's side without a secret: ask the allowlisted Studio that signed the token. Throws a sentence. */
+export async function verifyViaIssuer(body: any, now = Date.now(), fetchImpl: typeof fetch = fetch) {
+  const base = allowedIssuer(body?.issuer);
+  if (!base) throw new Error('That test sign-in token comes from a Studio this one does not trust.');
+  if (!isStudioProject(body?.project)) throw new Error('Not a test sign-in token.');
+  const { exp } = body, nowS = Math.floor(now / 1000);
+  if (!Number.isFinite(exp) || exp < nowS || exp > nowS + 600) throw new Error('That test sign-in token has expired.');
+  const { project, nonce, sig } = body;
+  let r: Response;
+  try {
+    r = await fetchImpl(`${base}/api/signin/verify`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ project, exp, nonce, sig }), redirect: 'manual', signal: AbortSignal.timeout(10_000) });
+  } catch (e: any) { throw new Error(`Could not reach the Studio that signed the token: ${e.message ?? e}`); }
+  if (!r.ok) throw new Error(`The Studio that signed the token refused it (${r.status}).`);
+  const j = await r.json().catch(() => null) as any;
+  if (j?.ok !== true) throw new Error('The Studio that signed the token refused it.');
+}
+
 type Cookie ={ name: string; value: string; domain: string; path?: string; secure?: boolean; httpOnly?: boolean };
 
 /** Set-Cookie lines as the playtest browser's cookies, for the sign-in's host. */
@@ -87,9 +172,9 @@ export function cookiesOf(setCookies: string[], host: string): Cookie[] {
  * sign-in. Fails loudly (the playtest would only see the sign-in page), with what the app said.
  */
 export async function testSignIn(p: Product, fetchImpl: typeof fetch = fetch): Promise<Cookie[]> {
-  const url = p.testSignIn?.url;
+  const url = p.testSignIn?.url ?? (isStudioProject(p.id) ? STUDIO_BETA_SIGNIN : undefined);
   if (!url) return [];
-  const r = await fetchImpl(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(signinToken(p.id)), redirect: 'manual', signal: AbortSignal.timeout(30_000) });
+  const r = await fetchImpl(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...signinToken(p.id), issuer: issuerBase() }), redirect: 'manual', signal: AbortSignal.timeout(30_000) });
   if (!r.ok) throw new Error(`${p.name}'s test sign-in answered ${r.status}: ${(await r.text().catch(() => '')).slice(0, 200)}`);
   const set = typeof (r.headers as any).getSetCookie === 'function' ? (r.headers as any).getSetCookie() as string[] : (r.headers.get('set-cookie') ? [r.headers.get('set-cookie')!] : []);
   const cookies = cookiesOf(set, new URL(url).hostname);

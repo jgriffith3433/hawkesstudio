@@ -20,6 +20,7 @@ import { StudioError } from './config.ts';
 import { brainSettings, saveBrain, syncBrain } from './brains.ts';
 import { tuningSettings, saveTuning, tuningRaises } from './tuning.ts';
 import { buildsSettings, saveBuildsSettings } from './compilecheck.ts';
+import { signinSettings, saveSigninSettings } from './playtest-signin.ts';
 import { routingSettings, saveRouting, routingRaises } from './routing.ts';
 
 db.exec(`CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated INTEGER NOT NULL, by TEXT)`);
@@ -106,7 +107,7 @@ const costsMod = () => import('./costs.ts');
 const resourcesMod = () => import('./resources.ts');
 const playtestsMod = () => import('./playtest-capacity.ts');
 
-export const SECTIONS = ['brain', 'tuning', 'routing', 'call', 'agents', 'pm', 'notify', 'costs', 'resources', 'playtests', 'builds'] as const;
+export const SECTIONS = ['brain', 'tuning', 'routing', 'call', 'agents', 'pm', 'notify', 'costs', 'resources', 'playtests', 'builds', 'signin'] as const;
 export type Section = (typeof SECTIONS)[number];
 
 /**
@@ -134,6 +135,7 @@ export async function allSettings({ live = true }: { live?: boolean } = {}) {
     resources: resourceSettings(),
     playtests,
     builds: buildsSettings(),
+    signin: signinSettings(),
     prices: { elevenPerMinute: Math.round(ELEVEN_PER_MIN * 100) / 100 },
   };
 }
@@ -153,6 +155,7 @@ const RAISES: Record<Section, { up?: string[]; on?: string[]; off?: string[]; an
   playtests: { up: ['browsers'], any: ['providers'] },
   // The Unity compile gate runs a Gen job per agent change (minutes of the build machine): on or a higher stop costs more.
   builds: { up: ['unityCompileMaxCost'], on: ['unityCompile'] },
+  signin: {},
 };
 
 /** What in this patch could raise costs (empty: nothing). */
@@ -276,6 +279,9 @@ export async function saveSettings(section: string, patch: Record<string, any>, 
   }
   if (s === 'builds') {
     try { return saveBuildsSettings(patch, by); } catch (e: any) { throw new StudioError(e.message); }
+  }
+  if (s === 'signin') {
+    try { return saveSigninSettings(patch, by); } catch (e: any) { throw new StudioError(e.message); }
   }
   if (s === 'playtests') return (await playtestsMod()).savePlaytestSettings(patch, by);
   if (s === 'resources') {
