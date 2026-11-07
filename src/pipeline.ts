@@ -752,6 +752,7 @@ async function playScenario(run: string, p: Product, asked: Playtest, { review =
       try {
         const signedIn = await (await import('./playtest-signin.ts')).testSignIn(p);
         params.cookies = [...((params.cookies as unknown[]) ?? []), ...signedIn];
+        updateStep(s, { detail: 'signed in as the test account' });
       } catch (e: any) {
         updateStep(s, { status: 'failed', detail: `the test sign-in failed: ${e.message}`, data: { played, url, signInFailed: true }, finished: true });
         return null;
