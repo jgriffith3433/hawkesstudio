@@ -220,15 +220,17 @@ export async function handleAuthRoute(req: http.IncomingMessage, res: http.Serve
     return true;
   }
   // Studio's own beta, for Studio's playtests (playtest-signin.ts): Google's button can't run on the beta address, so the
-  // playtest posts a signed token and gets a throwaway member's session. Only the beta lane, only with the secret set on
-  // it (STUDIO_TEST_SIGNIN_SECRET = `studio_project signin`'s secret for this project); never on live.
+  // playtest posts a signed token and gets a throwaway member's session. Only the beta lane, never live. With
+  // STUDIO_TEST_SIGNIN_SECRET set the token is checked with it; with none (the norm, nothing to copy) the beta asks the
+  // allowlisted Studio that signed it (POST /api/signin/verify there), and that Studio spends the one-time nonce.
   if (route === '/auth/test-session' && method === 'POST') {
-    const secret = process.env.STUDIO_TEST_SIGNIN_SECRET?.trim();
-    if (laneOf() !== 'beta' || !secret) { json(res, 404, { error: 'No test sign-in here.' }); return true; }
+    if (laneOf() !== 'beta') { json(res, 404, { error: 'No test sign-in here.' }); return true; }
     try {
-      const { checkSigninToken } = await import('./playtest-signin.ts');
+      const P = await import('./playtest-signin.ts');
       const body = await form(req);
-      checkSigninToken(body, secret, process.env.STUDIO_TEST_SIGNIN_PROJECT?.trim() || 'hawkesstudio');
+      const secret = process.env.STUDIO_TEST_SIGNIN_SECRET?.trim();
+      if (secret) P.checkSigninToken(body, secret, P.isStudioProject(body?.project) ? body.project : process.env.STUDIO_TEST_SIGNIN_PROJECT?.trim() || 'hawkesstudio');
+      else await P.verifyViaIssuer(body);
       const u = A.testUser();
       json(res, 200, { ok: true }, { 'Set-Cookie': signedInCookie(req, u, false, 'test') });
     } catch (e: any) {

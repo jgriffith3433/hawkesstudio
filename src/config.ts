@@ -352,13 +352,20 @@ export function asCustomerGame(p: Product): Product {
   // customer's project with one failed its daily run and lost its playtests).
   const { build, ...rest } = p as Product & { build?: any };
   const own = build && !build.project ? { source: build } : build ? { build } : {};
+  // Hawkes Studio's own project: its beta is studio-beta, signed in by Studio's test sign-in, played in desktop and phone smoke.
+  const studio = p.id === 'hawkes-studio' || p.id === 'hawkesstudio' ? {
+    ...(p.beta ? {} : { beta: 'https://studio-beta.hawkesgen.ai' }),
+    ...(p.testSignIn ? {} : { testSignIn: { url: 'https://studio-beta.hawkesgen.ai/auth/test-session' } }),
+    ...(p.playtests?.length ? {} : { playtests: [{ scenario: 'smoke', where: 'local' as const }, { scenario: 'smoke', where: 'local' as const, device: 'phone' as const }] }),
+  } : {};
   return {
     ...rest,
     ...own,
+    ...studio,
     repo: p.repo ?? '',
     site: p.site ?? p.repo ?? '',
     live,
-    playtests: p.playtests ?? [],
+    playtests: studio.playtests ?? p.playtests ?? [],
     story: p.story ?? [],
     about: p.about ?? '',
     // Its "local" playtests are its beta's: the beta address when it has one, else where it plays.

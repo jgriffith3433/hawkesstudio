@@ -171,6 +171,11 @@ const server = http.createServer(async (req, res) => {
       for await (const c of req) chunks.push(c as Buffer);
       return send(res, 200, (await import('./billing.ts')).handleStripeWebhook(Buffer.concat(chunks), String(req.headers['stripe-signature'] ?? '')));
     }
+    // A beta asking whether this Studio signed a playtest's test sign-in token (playtest-signin.ts): ok or 401, no secret.
+    if (route === '/api/signin/verify' && method === 'POST') {
+      try { (await import('./playtest-signin.ts')).verifyIssued(await readJson(req)); return send(res, 200, { ok: true }); }
+      catch (e: any) { return send(res, 401, { ok: false, error: e.message ?? String(e) }); }
+    }
     // Customers' Studios (cells.ts): the router's and the cells' calls carry their own keys; the central cron is Cloud
     // Scheduler's (or the owner key), like the daily run.
     if (route.startsWith('/api/cells/')) {
