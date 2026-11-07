@@ -298,16 +298,28 @@ export function saysNoChange(summary: string) {
   return /\b(made no (change|commit)s?|no changes? (were |was )?(made|needed)|nothing to (change|fix|do)|changed nothing|committ?ed nothing|commit nothing|didn'?t change|did not change|not changing|left (it )?as (it is|is))\b/i.test(String(summary ?? ''));
 }
 /** The mark of a commit Studio made for the agent (the job's leftover step, cloudjob-run.ts; commitForAgent). */
-const STUDIO_COMMIT = /Committed by Hawkes Studio/;
+/** Studio's trailers, each as the whole last line of the message (cloudjob-run.ts commitLeftovers, cloudjob.ts, commitForAgent). A phrase anywhere else in a message (an agent quoting it) is not the mark. */
+const STUDIO_TRAILER = /^Committed by Hawkes Studio(?:'s job)?: (?:the agent left these changes uncommitted\.|the agent's own git commit was refused\b.*|the agent's commit\b.*)$/;
+const STUDIO_EMAIL = 'studio@hawkesgen.ai';
+/** One commit's message and committer/author emails: Studio's only when its last line is Studio's trailer and nobody else committed it (an agent's amend, even --no-edit, changes the committer). */
+const isStudioCommit = (rec: string) => {
+  const [authorEmail, committerEmail, ...body] = rec.split('\x01');
+  const lines = body.join('\x01').trim().split('\n').map((l) => l.trimEnd());
+  const last = lines[lines.length - 1] ?? '';
+  if (!STUDIO_TRAILER.test(last)) return false;
+  // Commits Studio made carry its own identity when the job made them; commitForAgent uses the worktree's (the agent's) identity, so only a *different, non-Studio* committer or author is refused when the trailer is the job's.
+  if (/^Committed by Hawkes Studio's job/.test(last)) return authorEmail.trim() === STUDIO_EMAIL && committerEmail.trim() === STUDIO_EMAIL;
+  return true;
+};
 /**
  * Whether every commit of the branch (beyond its base) was made by Studio for the agent, none by the agent itself: the job's
  * "leftover changes" commit after a pass that changed nothing (c_2d931adecba5 on 2026-11-03 merged two shader files the
  * agent never touched into Sick of It's beta). False with no commits.
  */
 export function onlyStudioCommits(worktree: string, base: string) {
-  const log = git(worktree, ['log', '--format=%B%x00', `origin/${base}..HEAD`]).out;
-  const msgs = log.split('\0').map((m) => m.trim()).filter(Boolean);
-  return msgs.length > 0 && msgs.every((m) => STUDIO_COMMIT.test(m));
+  const log = git(worktree, ['log', '--format=%ae%x01%ce%x01%B%x00', `origin/${base}..HEAD`]).out;
+  const recs = log.split('\0').map((m) => m.trim()).filter(Boolean);
+  return recs.length > 0 && recs.every(isStudioCommit);
 }
 /** The detail of a change whose agent made no commit because the work is already done: the PM checks it (pm.ts), not a try. */
 export const ALREADY = 'nothing to do: already done';
