@@ -748,7 +748,7 @@ async function playScenario(run: string, p: Product, asked: Playtest, { review =
     Object.assign(params, playtestExtras(p.id, name, t));
     { const skip = (await import('./gpu-breaker.ts')).down(); if (skip.length) params.skipProviders = skip; }
     // An app behind a sign-in (Product.testSignIn): on its beta, the playtest starts signed in as a test account.
-    if (t.where === 'local' && p.testSignIn?.url && !prior) {
+    if (t.where === 'local' && (p.testSignIn?.url || (await import('./playtest-signin.ts')).isStudioProject(p.id)) && !prior) {
       try {
         const signedIn = await (await import('./playtest-signin.ts')).testSignIn(p);
         params.cookies = [...((params.cookies as unknown[]) ?? []), ...signedIn];
