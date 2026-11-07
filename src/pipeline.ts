@@ -767,10 +767,25 @@ async function playScenario(run: string, p: Product, asked: Playtest, { review =
     // share: the same play another run queued (same page, scenario, device, baseline) and Gen hasn't started yet is
     // joined, not queued twice; each run still reviews it. Not a page this run serves on its own port (it stops with the run).
     try {
+      const F = await import('./playtest-finish.ts');
       job = await runGenJob('playtest.run', p.id, params, (j) => updateStep(s, { job: j.id, detail: j.detail }), {
-        runMs: playtestRunMs(t), job: prior?.id, since, idleMs: PLAYTEST_IDLE_MS(), abandon, priority, halt: haltOf(run), share: port === null,
+        runMs: F.cappedRunMs(playtestRunMs(t)), queueMs: F.PLAYTEST_QUEUE_MS(), job: prior?.id, since, idleMs: PLAYTEST_IDLE_MS(), abandon, priority, halt: haltOf(run), share: port === null,
         onStart: (at) => db.prepare(`UPDATE steps SET data = json_set(COALESCE(data, '{}'), '$.runningSince', ?) WHERE id = ?`).run(at, s),
       });
+      // Cut off (a provider with no free worker or a full disk, a Gen or beta restart): one more try on the next backend,
+      // then it ends with its reason in one sentence, never a hang.
+      const cut = F.classifyFailure(job);
+      if (cut && !haltOf(run)()) {
+        if (cut.provider) { const B = await import('./gpu-breaker.ts'); B.trip(cut.provider); }
+        updateStep(s, { detail: `${F.plainWhy(job, null)} Trying again on the next backend.` });
+        if (cut.kind === 'beta-restart') { try { await (await import('./previews.ts')).betaSettled(p.id); } catch { /* the retry will say */ } }
+        const second = await runGenJob('playtest.run', p.id, F.retryParams(params, cut), (j) => updateStep(s, { job: j.id, detail: j.detail }), {
+          runMs: F.cappedRunMs(playtestRunMs(t)), queueMs: F.PLAYTEST_QUEUE_MS(), idleMs: PLAYTEST_IDLE_MS(), abandon, priority, halt: haltOf(run), share: false,
+          onStart: (at) => db.prepare(`UPDATE steps SET data = json_set(COALESCE(data, '{}'), '$.runningSince', ?) WHERE id = ?`).run(at, s),
+        });
+        if (second.status !== 'done') second.error = F.plainWhy(second, cut);
+        job = second;
+      }
     } catch (e: any) {
       // Refused for credits (or quota, billing): its own outcome, like cancelled. Not a failed playtest, not a failed beta build.
       const why = creditRefusal(e);
