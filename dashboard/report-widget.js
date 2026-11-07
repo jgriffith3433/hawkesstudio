@@ -13,7 +13,7 @@
 // notice). The only sign of it is a tiny "Error reported" toast.
 //
 // And it asks the front door which build beta serves now (GET /dev/__studio/build: on load, when the tab comes back,
-// every 2 minutes while it's on screen): a page of an older build shows a small "New build: reload" prompt (Studio
+// once, never on a timer): a page of an older build shows a small "New build: reload" prompt (Studio
 // keeps the previous Unity build published, so the old page keeps working until J taps it).
 (() => {
   if (window.__hawkesReport) return;
@@ -816,7 +816,32 @@
   // Not on a change's preview (/c/<id>/: that's the change, not beta) or a page that doesn't know its build.
   const fresh = $('.fresh');
   const same = (a, b) => { a = String(a || '').toLowerCase(); b = String(b || '').toLowerCase(); return Boolean(a && b) && (a.startsWith(b) || b.startsWith(a)); };
-  let dismissed = '';
+  // <newer-build> (test/report-widget-build.test.ts runs this block on its own)
+  // A version as a number list, whatever it is written as: 42, "v42", "web 42", "1.2.3+20261107" (a +stamp or -suffix is
+  // dropped). null when it has no digits.
+  const verOf = (v) => {
+    const m = /(\d+(?:\.\d+)*)/.exec(String(v == null ? '' : v).split(/[+\-]/)[0]);
+    return m ? m[1].split('.').map(Number) : null;
+  };
+  const verCmp = (a, b) => { for (let i = 0; i < Math.max(a.length, b.length); i++) { const d = (a[i] || 0) - (b[i] || 0); if (d) return d < 0 ? -1 : 1; } return 0; };
+  // Is the build beta serves (b: sha, version, at) really newer than the page (c: sha, version, built)? Versions decide
+  // when both sides have one (equal or older: no); else the same commit is not newer; else the served build must have been
+  // published after this page was (a minute of slack: build.json is written just after the pages of one publish).
+  const isNewer = (b, c) => {
+    const bv = verOf(b.version), cv = verOf(c.version);
+    if (bv && cv) return verCmp(bv, cv) > 0;
+    if (same(b.sha, c.sha)) return false;
+    if (Number(b.at) > 0 && Number(c.built) > 0) return Number(b.at) > Number(c.built) + 60000;
+    return true;
+  };
+  // </newer-build>
+  const seen = {
+    get() { try { return sessionStorage.getItem('hawkesReport.freshDismissed') || ''; } catch { return ''; } },
+    set(v) { try { sessionStorage.setItem('hawkesReport.freshDismissed', v); } catch {} },
+  };
+  let dismissed = seen.get();
+  let hideTimer = 0;
+  const dismiss = () => { clearTimeout(hideTimer); dismissed = fresh.dataset.build || ''; seen.set(dismissed); fresh.classList.remove('on'); };
   async function checkBuild() {
     if (cfg.change || !cfg.sha || document.visibilityState === 'hidden') return;
     // Only the hosts that answer it (beta sites): a local or unknown host would log a console 404 for nothing.
@@ -825,13 +850,17 @@
       const r = await fetch(ROOT + '/dev/__studio/build', { credentials: 'same-origin', cache: 'no-store' });
       const b = r.ok ? await r.json() : null;
       if (!b || !b.sha) return;
-      const newer = (b.version && cfg.version) ? String(b.version) !== String(cfg.version) : !same(b.sha, cfg.sha);
-      fresh.classList.toggle('on', newer && dismissed !== `${b.sha}/${b.version || ''}`);
-      fresh.dataset.build = `${b.sha}/${b.version || ''}`;
+      const key = `${b.sha}/${b.version || ''}`;
+      fresh.dataset.build = key;
+      const show = isNewer(b, cfg) && dismissed !== key;
+      fresh.classList.toggle('on', show);
+      clearTimeout(hideTimer);
+      // It is a hint, not a fixture: gone after about 8 seconds, and not asked again this tab session.
+      if (show) hideTimer = setTimeout(dismiss, 8000);
     } catch {}
   }
   $('.go').onclick = () => location.reload();
-  $('.no').onclick = () => { dismissed = fresh.dataset.build || ''; fresh.classList.remove('on'); };
+  $('.no').onclick = dismiss;
   if (!cfg.change && cfg.sha) {
     // Once when the page opens and whenever it comes back to the screen; never on a timer (no polling).
     setTimeout(checkBuild, 3000);

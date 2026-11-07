@@ -133,7 +133,9 @@ async function publishFiles(store: SiteStore, base: string, files: SiteFile[], o
     }
   }
   await store.put(`${base}/.studio/manifest.json`, Buffer.from(JSON.stringify(next)), 'application/json');
-  if (o.build !== undefined) await store.put(`${base}/.studio/build.json`, Buffer.from(JSON.stringify(o.build)), 'application/json');
+  // The pages' own build time is the build's: build.json is written after the pages, and the widget asks whether what
+  // beta serves was published after the page it sits in ("New build: reload" showed on fresh pages).
+  if (o.build !== undefined) await store.put(`${base}/.studio/build.json`, Buffer.from(JSON.stringify(o.build && o.page?.built ? { ...o.build, at: o.page.built } : o.build)), 'application/json');
   const gone = Object.keys(prev?.files ?? {}).filter((p) => !next.files[p]).map((p) => `${base}/${p}`);
   for (let i = 0; i < gone.length; i += 1000) await store.remove(gone.slice(i, i + 1000));
   r.removed = gone.length;
