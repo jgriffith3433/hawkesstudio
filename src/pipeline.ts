@@ -17,6 +17,7 @@ import { resumeGapMs, RESTART_LOOP, RESTART_WINDOW_MS } from './ops.ts';
 import { loadProducts, getProduct, localUrl, today, PROJECTS, betaPlaytestsOn, managedElsewhere, managedNote, StudioError, type Product, type Playtest, type BuildSpec } from './config.ts';
 import { unityBuild } from './buildpkgs.ts';
 import { endStatus, runCounts, runCancelled, haltOf, jobCancelDetail, runCancelDetail } from './cancel.ts';
+import { creditRefusal, holdRun as creditsHold, creditsWaiting } from './creditwait.ts';
 import { gen, genRun, genUp, ensureGen } from './gen.ts';
 import { ensureServer, gitState, treeFingerprint, runCheck, serveDir, stopServed } from './local.ts';
 import { absorb, applyKnown, expireIdeas, notSeenIn, type ReviewMode } from './backlog.ts';
@@ -144,6 +145,7 @@ export function startRun(kind: string, options: RunOptions = {}) {
   const id = newId('r');
   db.prepare('INSERT INTO runs (id, kind, status, detail, products, options, started) VALUES (?, ?, ?, ?, ?, ?, ?)').run(id, kind, 'running', 'starting', J(products), J(options), Date.now());
   tagRun(id, options.origin);
+  if (skipForCredits(id, products[0] ?? null)) return { id, done: Promise.resolve() };
   const done = (async () => {
     try {
       await runAll(id, products, options);
@@ -763,10 +765,24 @@ async function playScenario(run: string, p: Product, asked: Playtest, { review =
     // step's first start (kept on the step, so a restart never extends it), and 10 minutes without progress is stuck.
     // share: the same play another run queued (same page, scenario, device, baseline) and Gen hasn't started yet is
     // joined, not queued twice; each run still reviews it. Not a page this run serves on its own port (it stops with the run).
-    job = await runGenJob('playtest.run', p.id, params, (j) => updateStep(s, { job: j.id, detail: j.detail }), {
-      runMs: playtestRunMs(t), job: prior?.id, since, idleMs: PLAYTEST_IDLE_MS(), abandon, priority, halt: haltOf(run), share: port === null,
-      onStart: (at) => db.prepare(`UPDATE steps SET data = json_set(COALESCE(data, '{}'), '$.runningSince', ?) WHERE id = ?`).run(at, s),
-    }).finally(() => { if (port) stopServed(port); });
+    try {
+      job = await runGenJob('playtest.run', p.id, params, (j) => updateStep(s, { job: j.id, detail: j.detail }), {
+        runMs: playtestRunMs(t), job: prior?.id, since, idleMs: PLAYTEST_IDLE_MS(), abandon, priority, halt: haltOf(run), share: port === null,
+        onStart: (at) => db.prepare(`UPDATE steps SET data = json_set(COALESCE(data, '{}'), '$.runningSince', ?) WHERE id = ?`).run(at, s),
+      });
+    } catch (e: any) {
+      // Refused for credits (or quota, billing): its own outcome, like cancelled. Not a failed playtest, not a failed beta build.
+      const why = creditRefusal(e);
+      if (!why) throw e;
+      waitForCredits(run, p.id, s, why, { url, played });
+      return null;
+    } finally { if (port) stopServed(port); }
+    // The job itself ended on a credit refusal (Gen says so in its error): the same outcome.
+    const jobWhy = job.status === 'failed' ? creditRefusal({ message: job.error ?? job.detail }) : null;
+    if (jobWhy && /credit|quota|billing|payment/i.test(String(job.error ?? job.detail ?? ''))) {
+      waitForCredits(run, p.id, s, jobWhy, { url, played }, job.id);
+      return job;
+    }
     // A newer beta build waits on this old one (betaqueue.ts supersedingBuild): cancelled, not failed.
     if (job.abandoned) {
       updateStep(s, { status: 'skipped', job: job.id, detail: `cancelled: ${job.error}`, data: { url, played, abandoned: job.error, runningSince: since ?? null }, finished: true });
@@ -1140,6 +1156,7 @@ export function startPartial(kind: 'build' | 'playtest' | 'test', productId: str
   const id = newId('r');
   db.prepare('INSERT INTO runs (id, kind, status, detail, products, options, started) VALUES (?, ?, ?, ?, ?, ?, ?)').run(id, kind, 'running', `${kind} ${p.id}`, J([p.id]), J(opts), Date.now());
   tagRun(id, opts.origin);
+  if (kind !== 'test' && skipForCredits(id, p.id)) return { id, done: Promise.resolve() };
   return { id, done: partialBody(id, kind, p, opts) };
 }
 
@@ -1165,9 +1182,44 @@ async function partialBody(id: string, kind: string, p: Product, opts: PartialOp
     }
     closeRun(id, `${kind} ${p.id}`);
   } catch (e: any) {
+    if (runWaitsForCredits(id, p.id, e)) return;
     db.prepare(`UPDATE runs SET status = 'failed', detail = ?, finished = ? WHERE id = ?`).run(String(e.message ?? e), Date.now(), id);
     kickFollowups();
   }
+}
+
+/**
+ * Checked before a run starts its paid steps: while Studio is waiting for credits (creditwait.ts) the run is recorded as
+ * `cancelled` ("waiting for credits", not a failure) and starts nothing. True when it was skipped.
+ */
+function skipForCredits(id: string, product: string | null): boolean {
+  const w = creditsWaiting();
+  if (!w) return false;
+  creditsHold(id, product, w, w.since); // the wait's own start: skipped runs don't stretch it
+  db.prepare(`UPDATE runs SET status = 'cancelled', detail = ?, finished = ? WHERE id = ?`).run('waiting for credits (not started; not a failure)', Date.now(), id);
+  kickFollowups();
+  return true;
+}
+
+/**
+ * A step refused for credits (or quota, billing): `cancelled` with data.credits, so no review, no finding and nothing is
+ * blamed (cancel.ts), and the run is held for the credit-change event (creditwait.ts resumes a beta run once).
+ */
+function waitForCredits(run: string, product: string, step: string, why: { message: string; need: number | null; have: number | null }, data: Record<string, unknown> = {}, job?: string) {
+  creditsHold(run, product, why);
+  updateStep(step, { status: 'cancelled', ...(job ? { job } : {}), detail: `waiting for credits: ${why.message.replace(/ Add credits.*$/, '')}`, data: { ...data, credits: true, cancelled: true }, finished: true });
+}
+
+/** A run that threw a credit refusal ends `cancelled` (waiting for credits), never `failed`. True when it was one. */
+function runWaitsForCredits(id: string, product: string, e: unknown): boolean {
+  const why = creditRefusal(e);
+  if (!why) return false;
+  creditsHold(id, product, why);
+  db.prepare(`UPDATE steps SET status = 'cancelled', detail = ?, finished = ? WHERE status = 'running' AND run = ?`).run(`waiting for credits: ${why.message.replace(/ Add credits.*$/, '')}`, Date.now(), id);
+  const n = runCounts(id);
+  db.prepare(`UPDATE runs SET status = ?, detail = ?, finished = ? WHERE id = ?`).run(endStatus({ ...n, failed: n.failed, cancelled: Math.max(1, n.cancelled) }), 'waiting for credits (not a failure)', Date.now(), id);
+  kickFollowups();
+  return true;
 }
 
 /**
@@ -1195,6 +1247,8 @@ export function startBeta(productId: string, o: BetaOptions = {}) {
   const id = newId('r');
   db.prepare('INSERT INTO runs (id, kind, status, detail, products, options, started) VALUES (?, ?, ?, ?, ?, ?, ?)').run(id, 'beta', 'running', `beta ${p.id}`, J([p.id]), J({ focus: o.focus, ...(o.reverify ? { reverify: true } : {}), criteria: o.criteria, scenario: o.scenario, options: o.options, playtest: o.playtest, quiet: o.quiet, plays: o.plays, ...(o.merge ? { merge: o.merge } : {}), ...(o.tag ? { tag: o.tag } : {}) }), Date.now());
   tagRun(id, o.origin);
+  // Out of credits already: the paid steps (the build, the playtest) aren't started, the run waits (creditwait.ts).
+  if ((p.build || o.playtest || o.plays?.length || betaPlaytestsOn()) && skipForCredits(id, p.id)) return { id, done: Promise.resolve() };
   return { id, done: betaBody(id, p, o) };
 }
 
@@ -1361,6 +1415,7 @@ async function betaBody(id: string, p: Product, { focus, criteria, scenario, opt
     // The owner said to keep going live (golive-policy.ts): beta's run passed, so it goes live by itself.
     void (await import('./golive-policy.ts')).autoGoLive(p.id, `beta run ${id}`);
   } catch (e: any) {
+    if (runWaitsForCredits(id, p.id, e)) return;
     db.prepare(`UPDATE runs SET status = 'failed', detail = ?, finished = ? WHERE id = ?`).run(String(e.message ?? e), Date.now(), id);
     kickFollowups();
   }
