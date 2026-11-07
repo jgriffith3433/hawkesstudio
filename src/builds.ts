@@ -50,6 +50,8 @@ export type StartOptions = {
   origin?: string | null;
   /** An agent change's preview: published at c/<change>/, no version, beta untouched. */
   change?: string;
+  /** Which try this is when Studio retries a transient failure by itself (buildaccess.ts): 1 or none = the first. */
+  retry?: number;
   /** An Actions build that finished: its workflow run and artifact (server.ts hooks). */
   artifact?: { runId: string; name?: string };
 };
@@ -400,9 +402,12 @@ async function buildOne(run: string, p: Product, b: BuildSpec, o: StartOptions) 
     // An Actions build Studio was only asked for: start the workflow; it reports when it's built (a run of its own).
     if (b.tool === 'actions' && !o.artifact) {
       if (!b.workflow) throw new Error(`build ${b.id} runs in ${slug}'s own GitHub Actions: it starts from its workflow's own triggers (set "workflow" so Studio can start it)`);
+      // Before dispatching: can the app start workflows here? If not, the access card shows at once (buildaccess.ts).
+      const pre = await (await import('./buildaccess.ts')).preflight(p.id, b.id, slug, b.workflow);
+      if (!pre.ok) throw new Error(`GitHub wouldn't start ${b.workflow} in ${slug}: 403 Resource not accessible by integration (preflight: the app has no Actions: write)`);
       say(`starting ${b.workflow} on ${ref}`);
       const r = await gh(`https://api.github.com/repos/${slug}/actions/workflows/${encodeURIComponent(b.workflow)}/dispatches`, { method: 'POST', headers: { Accept: 'application/vnd.github+json', 'Content-Type': 'application/json', 'User-Agent': 'hawkes-studio' }, body: JSON.stringify({ ref }) });
-      if (!r.ok) throw new Error(`GitHub wouldn't start ${b.workflow}: ${r.status} ${(await r.text()).slice(0, 200)}`);
+      if (!r.ok) throw new Error(`GitHub wouldn't start ${b.workflow} in ${slug}: ${r.status} ${(await r.text()).slice(0, 200)}`);
       updateStep(step, { status: 'done', detail: `started ${b.workflow} on ${ref}: its build reports back when it's done (a run of its own)`, finished: true });
       return;
     }
@@ -429,7 +434,7 @@ async function buildOne(run: string, p: Product, b: BuildSpec, o: StartOptions) 
     const r = await publishSite(store, base, out.files, { page, build: { sha: sha.slice(0, 7), version, build: b.id, at: Date.now() }, progress: say });
     db.prepare("UPDATE builds SET status = 'ready', files = ?, bytes = ?, url = ?, detail = ?, finished = ? WHERE id = ?").run(out.files.length, out.bytes, url, out.detail ?? null, Date.now(), rowId);
     // A project's own build working again verifies the fixers of its failure chain (buildfix.ts); a preview doesn't.
-    if (!o.change) void import('./buildfix.ts').then((m) => m.buildPassed(p.id, b.id)).catch(() => {});
+    if (!o.change) { void import('./buildfix.ts').then((m) => m.buildPassed(p.id, b.id)).catch(() => {}); void import('./buildaccess.ts').then((m) => m.clearRetry(p.id, b.id)).catch(() => {}); }
     // Beta moves only forward (2026-10-31 review): to a build of beta's newest commit, asked for or triggered, and never
     // behind a newer version that already finished. Anything else (an old tag, a pull request's workflow, a slower
     // build of an older commit) is published as its version and leaves beta, its mounts and commits alone.
@@ -493,9 +498,11 @@ async function buildOne(run: string, p: Product, b: BuildSpec, o: StartOptions) 
       db.prepare('INSERT INTO builds (id, product, build, version, status, sha, ref, runner, target, run, change, started) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(rowId, p.id, b.id, o.change ? -Date.now() : nextVersion(p.id, b.id), 'failed', shaSeen, o.ref ?? 'beta', runnerOf(b), b.target ?? 'web', run, o.change ?? null, Date.now());
     }
     if (rowId) {
-      const c = recordFailure(rowId, e, { stage });
-      updateStep(step, { status: 'failed', detail: why, data: { failure: { class: c.class, kind: c.kind, plain: c.plain, stage, build: rowId } }, finished: true });
-      void announce(rowId);
+      const c = recordFailure(rowId, e, { stage, slug });
+      // Transient: retried by itself, quietly. Access: one Inbox card with the fix. Code and the rest: told as before (buildaccess.ts).
+      const h = o.change ? { handled: false } : await (await import('./buildaccess.ts')).handleFailure(rowId, { product: p.id, build: b.id, slug, error: why, stage, kind: c.kind, attempt: o.retry, ref: o.ref ?? null, sha: shaSeen, workflow: b.workflow ?? null }).catch((err: any) => { console.warn(`[builds] ${p.id} ${b.id}: handling the failure: ${err?.message ?? err}`); return { handled: false }; });
+      updateStep(step, { status: 'failed', detail: why, data: { failure: { class: c.class, kind: c.kind, plain: c.plain, stage, build: rowId, ...((h as any).retry ? { retryIn: Math.round((h as any).retry.inMs / 1000) } : {}) } }, finished: true });
+      if (!h.handled) void announce(rowId);
     } else updateStep(step, { status: 'failed', detail: why, finished: true });
   } finally {
     out?.cleanup();
