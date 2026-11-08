@@ -29,7 +29,7 @@
         { "id": "near-clip", "kind": "scan", "what": "A camera near distance under 0.05." },
         { "id": "duplicate-surface", "kind": "scan", "what": "Two copies of the same mesh at the same position, rotation and scale." },
         { "id": "z-flicker", "kind": "playtest", "what": "Two frames from a slightly moved camera: surfaces that swap or flicker.", "problem": "quality.z-fighting" },
-        { "id": "clipping", "kind": "playtest", "what": "Models poking through each other, the player or the camera inside a wall or floor.", "problem": "quality.clipping" }
+        { "id": "clipping", "kind": "playtest", "what": "Models poking through each other, the player or the camera inside a wall or floor. A hard limit: one sighting fails.", "problem": "quality.clipping", "hard": true }
       ]
     },
     {
@@ -90,6 +90,33 @@
         { "id": "text-story", "kind": "playtest", "what": "Story text counted against voiced and acted beats: no beat told only in text.", "metric": "quality.textOnlyBeats", "max": 0, "problem": "quality.text-story" },
         { "id": "empty-area", "kind": "vision", "what": "How empty each area looks: bare floors, nothing alive, nothing to do.", "problem": "quality.empty-area" },
         { "id": "fun-review", "kind": "review", "what": "The fun reviewer's verdict on a played build: a living world, or a demo." }
+      ]
+    },
+    {
+      "id": "camera-and-controls",
+      "title": "The camera and controls feel right",
+      "why": "What makes a game feel cheap is mostly felt, not seen in a still: a camera that clips into walls, snaps or shakes, controls that answer late, a jump that fails just after the edge, stutters. The numbers here are industry starting values; each game tunes its own and reports them.",
+      "build": [
+        "Input to a visible response in under 100 ms: movement and actions start on the frame the input arrives, never after an animation finishes.",
+        "Jumping games: coyote time of 80 to 150 ms (a jump still works just after running off an edge) and a jump buffer of 100 to 150 ms (a jump pressed just before landing happens on landing).",
+        "Combat games: hit-stop of 50 to 100 ms on heavy hits, with short, small screen shake.",
+        "The camera never clips: it pulls in ahead of walls (a sphere cast from the target to the camera, radius at least the near distance) and never shows the inside of geometry.",
+        "The camera never snaps or jitters: smooth, critically damped follow with a capped turn rate. An intended cut, respawn or teleport tells the playtest (hawkesPlaytest.cut()).",
+        "No frame over 250 ms during play: load and stream content off the main thread.",
+        "Report the tuned values as playtest metrics, e.g. run.metric('feel.coyoteMs', 120), run.metric('feel.jumpBufferMs', 120), run.metric('feel.hitStopMs', 70); the feel sensor measures input latency, camera clipping and hitches itself."
+      ],
+      "checks": [
+        { "id": "camera-clip", "kind": "playtest", "what": "The camera inside or behind a wall or floor (the feel sensor's camera-blocked). A hard limit: one sighting fails.", "problem": "quality.camera-clip", "metric": "feel.cameraClipSeconds", "max": 0, "hard": true },
+        { "id": "camera-snap", "kind": "playtest", "what": "The camera snaps, jumps or shakes between frames outside an intended cut. A hard limit: one sighting fails.", "problem": "quality.camera-snap", "hard": true },
+        { "id": "movement-jitter", "kind": "playtest", "what": "The player or camera jitters back and forth, or collision shoves the player.", "problem": "quality.jitter" },
+        { "id": "input-latency", "kind": "playtest", "what": "Input to visible movement, measured by the feel sensor: under 100 ms.", "metric": "feel.inputLatencyMs", "max": 100, "problem": "quality.input-latency" },
+        { "id": "hitch", "kind": "playtest", "what": "Frame hitches during play: no frame over 250 ms.", "metric": "feel.worstHitchMs", "max": 250, "problem": "quality.hitch" },
+        { "id": "video-hitch", "kind": "review", "what": "Stutters the recording shows (the review's video freezes): none over 250 ms.", "metric": "video.worstHitchMs", "max": 250, "optional": true },
+        { "id": "coyote-time", "kind": "playtest", "what": "Jumping games report their coyote time: at least 80 ms.", "metric": "feel.coyoteMs", "min": 80, "optional": true },
+        { "id": "jump-buffer", "kind": "playtest", "what": "Jumping games report their jump buffer: at least 80 ms.", "metric": "feel.jumpBufferMs", "min": 80, "optional": true },
+        { "id": "hit-stop", "kind": "playtest", "what": "Combat games report their hit-stop: at least 40 ms on heavy hits.", "metric": "feel.hitStopMs", "min": 40, "optional": true },
+        { "id": "explore-falls", "kind": "playtest", "what": "The explore bot (hugging walls, jumping edges) never falls through or out of the world. A hard limit: one spot fails.", "metric": "explore.fallSpots", "max": 0, "hard": true, "optional": true },
+        { "id": "explore-stuck", "kind": "playtest", "what": "The explore bot never gets stuck on geometry it can't escape by sliding, jumping or backing out.", "metric": "explore.stuckSpots", "max": 0, "optional": true }
       ]
     }
   ]

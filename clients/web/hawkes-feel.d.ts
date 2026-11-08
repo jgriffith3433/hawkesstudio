@@ -13,10 +13,12 @@ export interface FeelSample {
   t: number; dt: number; cam?: { pos: V3; fwd: V3 }; player?: V3; input?: number; grounded?: boolean; animSpeed?: number;
   floorBelow?: boolean; surfaceAbove?: number | null; cameraBlocked?: boolean; inside?: boolean;
 }
-export interface FeelCore { sample(s: FeelSample): void; cut(seconds?: number): void; flags(): FeelFlag[]; thresholds: Record<string, number> }
+/** feel.worstHitchMs, feel.maxCameraDegPerSec, feel.cameraClipSeconds, feel.insideSeconds, feel.inputLatencyMs, feel.inputSamples (each only when measured). */
+export type FeelMetrics = Record<string, number>;
+export interface FeelCore { sample(s: FeelSample): void; cut(seconds?: number): void; flags(): FeelFlag[]; metrics(): FeelMetrics; thresholds: Record<string, number> }
 export function createFeelCore(opts?: { emit?: (f: FeelFlag) => void; seed?: number; scene?: () => string | undefined; thresholds?: Record<string, number> }): FeelCore;
 export function parseSpot(spot: unknown): { x: number; y: number; z: number; yaw?: number } | null;
 export function pushToRunner(msg: unknown): void;
-export interface FeelSensor { core: FeelCore; cut(seconds?: number): void; flags(): FeelFlag[]; stop(): void }
+export interface FeelSensor { core: FeelCore; cut(seconds?: number): void; flags(): FeelFlag[]; metrics(): FeelMetrics; stop(): void }
 export function startBabylonFeel(opts?: Record<string, unknown>): FeelSensor | null;
 export function startFrameFeel(opts?: Record<string, unknown>): FeelSensor;

@@ -23,7 +23,7 @@ import { ensureServer, gitState, treeFingerprint, runCheck, serveDir, stopServed
 import { absorb, applyKnown, expireIdeas, notSeenIn, type ReviewMode } from './backlog.ts';
 import { feelFindings } from './feel.ts';
 import { barState, barHash, reviewedSha, reviewParams } from './review.ts';
-import { isGame } from './quality.ts';
+import { isGame, effectiveBar } from './quality.ts';
 import { funReview } from './fun-review.ts';
 import { reviewJob, viaNote } from './review-cc.ts';
 import { writeReport } from './report.ts';
@@ -217,7 +217,7 @@ async function runAll(run: string, ids: string[], o: RunOptions) {
     const s = startStep(run, p.id, 'error', 'pipeline');
     updateStep(s, { status: 'failed', detail: String(e.message ?? e), finished: true });
   })));
-  // Ideas (polish, ideas) not seen for 14 days drop off the ideas list (kept as expired).
+  // Ideas not seen for 14 days drop off the ideas list (kept as expired); polish never expires (polish.ts).
   const expired = expireIdeas();
   if (expired) {
     const s = startStep(run, 'studio', 'backlog', 'ideas expired');
@@ -243,6 +243,17 @@ async function runAll(run: string, ids: string[], o: RunOptions) {
     const { autoFix } = await import('./agents.ts');
     const started = autoFix(run);
     if (started.length) db.prepare(`UPDATE runs SET detail = ? WHERE id = ?`).run(`${report.headline} · agents started ${started.length} fixes`, run);
+    // The weekly polish pass (polish.ts): a game whose last one is a week old gets a change on its worst polish.
+    const { startFix, agentSettings } = await import('./agents.ts');
+    if ((db.prepare('SELECT kind FROM runs WHERE id = ?').get(run) as any)?.kind === 'daily' && agentSettings().enabled) {
+      const { weeklyPolish } = await import('./polish.ts');
+      const games = loadProducts().filter((p) => isGame(p) && !managedElsewhere(p));
+      const pass = weeklyPolish(games, startFix);
+      if (pass.started.length || pass.skipped.length) {
+        const s = startStep(run, 'studio', 'backlog', 'polish pass');
+        updateStep(s, { status: pass.started.length ? 'done' : 'skipped', detail: [pass.started.length ? `weekly polish pass started for ${pass.started.map((x) => `${x.product} (${x.findings.length} items, ${x.change})`).join(', ')}` : '', ...pass.skipped.map((x) => `${x.product}: ${x.why}`)].filter(Boolean).join('; ').slice(0, 600), data: pass, finished: true });
+      }
+    }
     // A project that still reads fix-first or broken with nobody on it: a fixer, or one Inbox card saying why (verdictwork.ts).
     void import('./verdictwork.ts').then((m) => m.actOnRun(run)).catch((e) => console.warn(`[studio] verdicts after ${run}: ${e.message ?? e}`));
   }
@@ -1112,8 +1123,8 @@ async function fileReview(rs: string, p: Product, run: string, name: string, rev
     : null;
   updateStep(rs, {
     status: 'done', job: rev.id, cost: rev.cost ?? 0,
-    detail: `${verdict} · ${x.mode}${x.barMet ? ' (meets its quality bar)' : ''} · ${(v.findings ?? []).length} findings (${parts.join(', ')})${p.quality ? ` · bar: ${v.meetsBar ?? '?'}` : ''}${fun && fun.verdict !== 'unjudged' ? ` · fun: ${fun.verdict}` : ''}${viaNote(rev)}${late}`,
-    data: { ...v, ...(fun ? { fun } : {}), ...(verdict !== v.verdict ? { verdict, verdictWas: v.verdict } : {}), added: merged.added, updated: merged.updated, ideas: merged.ideas, skipped: merged.skipped, knownFixed: known.fixed, knownPresent: known.present, reviewKey: x.reviewKey, mode: x.mode, sha: x.sha, barHash: barHash(p.quality), bar: x.barWhy }, finished: true,
+    detail: `${verdict} · ${x.mode}${x.barMet ? ' (meets its quality bar)' : ''} · ${(v.findings ?? []).length} findings (${parts.join(', ')})${effectiveBar(p) ? ` · bar: ${v.meetsBar ?? '?'}` : ''}${fun && fun.verdict !== 'unjudged' ? ` · fun: ${fun.verdict}` : ''}${viaNote(rev)}${late}`,
+    data: { ...v, ...(fun ? { fun } : {}), ...(verdict !== v.verdict ? { verdict, verdictWas: v.verdict } : {}), added: merged.added, updated: merged.updated, ideas: merged.ideas, skipped: merged.skipped, knownFixed: known.fixed, knownPresent: known.present, reviewKey: x.reviewKey, mode: x.mode, sha: x.sha, barHash: barHash(effectiveBar(p)), bar: x.barWhy }, finished: true,
   });
   // A review that came late (it waited for the AI; its run is long over): act on its verdict now (verdictwork.ts).
   if (late && isServer()) void import('./verdictwork.ts').then((m) => m.actOnVerdict(p.id, 'a late review')).catch(() => {});

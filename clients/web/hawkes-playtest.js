@@ -29,17 +29,29 @@
 // feel: false turns it off. In start(), t.spot is { x, y, z, yaw? } when the run replays a flagged place
 // (options.spot): put the player there (a named setup shortcut) and play on from it; t.cut() before a teleport or
 // cutscene the sensor shouldn't count.
+//
+// The explore bot (hawkes-explore.js, docs/playtest.md#explore) hugs walls, jumps edges and maps stuck and fall spots.
+// Give feel.player and explore: { enter: async (t) => game.startLevel() } (or explore: true when the game is playable
+// on load) and the run gets an "explore" scenario. A game's own "explore" scenario wins.
 
 import { installPerfMonitor, discoverBabylonScene } from './hawkes-perf.js';
 import { startBabylonFeel, startFrameFeel, parseSpot, pushToRunner } from './hawkes-feel.js';
+import { runExplore, createExploreMap, EXPLORE_DEFAULTS } from './hawkes-explore.js';
 
 export const CONTRACT_VERSION = 1;
 
 export function installPlaytest(opts) {
-  const { product, scenarios, isReady = () => true, start, stop, input, stallSeconds = 60, feel: feelOpts } = opts;
-  if (!product || !Array.isArray(scenarios) || typeof start !== 'function') {
+  const { product, isReady = () => true, start, stop, input, stallSeconds = 60, feel: feelOpts, explore: exploreOpts } = opts;
+  if (!product || !Array.isArray(opts.scenarios) || typeof start !== 'function') {
     throw new Error('installPlaytest needs product, scenarios and start');
   }
+  // The built-in explore scenario: the game gave the player to the feel sensor and said how to get into play.
+  const explorePlayer = feelOpts && typeof feelOpts === 'object' ? feelOpts.player : null;
+  const exploreOn = Boolean(exploreOpts && explorePlayer && !opts.scenarios.some((s) => s.id === 'explore'));
+  const ex = exploreOpts && typeof exploreOpts === 'object' ? exploreOpts : {};
+  const scenarios = exploreOn
+    ? [...opts.scenarios, { id: 'explore', title: 'Explore bot: hugs walls, jumps edges, maps stuck and fall spots', seconds: (ex.seconds ?? EXPLORE_DEFAULTS.seconds) + 15, tags: ['explore'] }]
+    : opts.scenarios;
 
   let run = null; // the current run
   let sensor = null; // the feel sensor of the current run
@@ -114,6 +126,10 @@ export function installPlaytest(opts) {
     const emit = (flag) => {
       if (r !== run) return;
       r.feel.push(flag);
+      if (r.exploreMap && flag.pos) {
+        if (flag.kind === 'below-ground' || flag.kind === 'fell-out') r.exploreMap.mark('fall', flag.pos);
+        else if (flag.kind === 'stuck') r.exploreMap.mark('stuck', flag.pos);
+      }
       tracker.event('feel', JSON.stringify({ id: flag.id, kind: flag.kind, pos: flag.pos, seed: flag.seed }));
       if (flag.severity === 'bug') tracker.problem('bug', `${flag.detail} at ${flag.pos ? flag.pos.join(',') : '?'}${flag.scene ? ` (${flag.scene})` : ''}`);
       pushToRunner({ type: 'feel', flag });
@@ -127,9 +143,26 @@ export function installPlaytest(opts) {
       tracker.log(`feel sensor off: ${e?.message ?? e}`);
     }
   }
+  function feelMetrics() {
+    try { return run?.feelMetrics ?? sensor?.metrics?.() ?? {}; } catch { return {}; }
+  }
   function stopFeel() {
-    try { if (sensor && run) run.feelFinal = sensor.flags(); sensor?.stop(); } catch {}
+    try { if (sensor && run) { run.feelFinal = sensor.flags(); run.feelMetrics = sensor.metrics?.() ?? null; } sensor?.stop(); } catch {}
     sensor = null;
+  }
+
+  async function playExplore(r) {
+    r.exploreMap = createExploreMap({ cell: ex.cell ?? EXPLORE_DEFAULTS.cell });
+    if (typeof ex.enter === 'function') await ex.enter(tracker);
+    const seconds = Number(r.options.seconds) || ex.seconds || EXPLORE_DEFAULTS.seconds;
+    const map = await runExplore({ player: explorePlayer, t: tracker, seed: r.options.seed, seconds, map: r.exploreMap, thresholds: ex.thresholds });
+    if (r !== run) return;
+    tracker.metric('explore.coverage', map.coverage);
+    tracker.metric('explore.stuckSpots', map.stuck.length);
+    tracker.metric('explore.fallSpots', map.falls.length);
+    tracker.metric('explore.deadSeconds', map.deadSeconds);
+    tracker.event('explore-map', JSON.stringify(map));
+    tracker.finish('done');
   }
 
   const onError = (e) => tracker.problem('bug', `page error: ${e.message ?? e.reason?.message ?? e.reason ?? e}`);
@@ -154,7 +187,8 @@ export function installPlaytest(opts) {
       // A start point (options.at): where the scenario starts; the game loads it in start() (t.at).
       if (mine.options.at != null && mine.options.at !== '') tracker.event('start-at', mine.options.at);
       try {
-        await start(id, mine.options, tracker);
+        if (id === 'explore' && exploreOn) await playExplore(mine);
+        else await start(id, mine.options, tracker);
         if (mine === run && !mine.done) tracker.finish('done');
       } catch (e) {
         if (mine === run && !mine.done) {
@@ -186,7 +220,8 @@ export function installPlaytest(opts) {
         scenario: run.id,
         outcome: run.done ? run.state.status : 'stuck',
         seconds: round(run.seconds ?? now()),
-        metrics: { ...run.metrics, fpsAverage: fps.average(), fpsWorst: fps.worst() },
+        // The feel sensor's measurements (feel.*) first, so a game's own run.metric('feel.…') wins.
+        metrics: { ...feelMetrics(), ...run.metrics, fpsAverage: fps.average(), fpsWorst: fps.worst() },
         events: run.events.slice(),
         problems: run.problems.slice(),
         log: run.log.slice(),

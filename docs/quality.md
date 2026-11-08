@@ -1,6 +1,6 @@
 # Game quality rules
 
-J's standard for every game Studio makes (2026-11-08): the six rules below, built into Studio so every agent follows
+J's standard for every game Studio makes (2026-11-08): the rules below, built into Studio so every agent follows
 them without being told, and checked so a build that breaks them fails. The most important one is the last: a game is a
 full, living world with soul, not a little demo.
 
@@ -25,6 +25,21 @@ A product is a game when its `kind` is empty or `game` and its engine isn't `sta
 | `ground-contact` | Buildings and props sit on the ground: not sunk (over 5 cm) or floating (over 2 cm) |
 | `animation-over-time` | Animation holds up over time: slope landings settle within 0.3 s, feet don't slide |
 | `living-world` | A full, living world with soul: a world bible, never more than ~10 s with nothing to see, hear or do, story told through gameplay, events, cutscenes, SFX and voice, not text |
+| `camera-and-controls` | The camera never clips or snaps, controls answer in under 100 ms, no frame over 250 ms; jumping and combat games report coyote time, jump buffer and hit-stop; the explore bot never falls out of the world |
+
+**Hard limits.** A check marked `hard` fails at its first sighting: the camera inside a wall (`camera-clip`), a snap
+or jump (`camera-snap`), models clipping (`clipping`), and a fall spot the explore bot found (`explore-falls`).
+
+**Measured limits.** A check with `metric` and `max` / `min` fails when the playtest reading is outside it:
+`feel.inputLatencyMs` (100), `feel.worstHitchMs` and `video.worstHitchMs` (250, the review's motion clips),
+`feel.cameraClipSeconds` (0), `feel.coyoteMs` and `feel.jumpBufferMs` (80), `feel.hitStopMs` (40),
+`explore.fallSpots` and `explore.stuckSpots` (0). `optional` checks only apply to games that report them. Software
+rendering drops the hitch and latency readings. These are starting values: a game tunes its own in products.json
+`tuning`, e.g. `{ "feel.inputLatencyMs": { "max": 120 }, "feel.coyoteMs": { "min": 120 } }`.
+
+**The bar never accepts prototype work.** A game's review bar always ends with the game floor (`effectiveBar` in
+`src/quality.ts`: final art and dense content, not placeholders), and a bar line that accepts less ("prototype art is
+fine", "placeholder ok") is dropped.
 
 ## The gates
 
@@ -48,6 +63,32 @@ The playtest probes themselves (sensors in `window.hawkesPlaytest`, clips and sc
 belong to the playtest feel layer (`docs/playtest.md#feel`, `src/feel.ts`). The gate reads what it reports too: a
 sensor flag or vision hit whose kind a rule names (`foot-sliding`, `slope-slide`, `inside-geometry`, z-fighting,
 floating or sunk props, inside-out models, backwards text) breaks that rule when it is a bug or was seen twice.
+
+## Judging the work
+
+- **A separate judge** (`src/acceptance.ts` judgeCriteria): the agent's own review is never the only one. A second run
+  that never sees the builder's summary judges each acceptance criterion from the frames and up to four motion sheets;
+  a criterion is met only when both say yes.
+- **Unclear never passes.** A criterion the playtest couldn't show is a fail at the merge gate. On beta, one the bot
+  never reached goes back once as a scenario fix, and the rest are checked again after beta's next build.
+- **Motion.** Gen's review (`playtest.review` v5) looks at short clips at 15 fps around the flagged moments, and
+  measures stutters in the recording (`review.motion.worstHitchMs`).
+- **Shots and a clip with every visible change** (`showcase` in agent settings: `web` by default, `all` adds Unity
+  build-server builds, `off`): a ready game change that touches files a player sees is played by itself, and its pull
+  request gets a "From the built game" section with the shots, motion sheets and video.
+
+## Kinds of work
+
+Each agent brief is one of four kinds (`jobKind`, `JOB_BRIEFS` in `src/agents.ts`), with its own rules: **fix** (find
+the root cause, never loosen a check), **feature** (built to the full bar, not a prototype), **content** (dense,
+canon-true, no filler) and **polish** (make each item disappear for a player). The commit message starts with the kind.
+
+## Polish never expires
+
+Polish findings stay on the polish list until they're fixed, worst for a player first (`painScore` in
+`src/polish.ts`). Once a week per game (after the daily run, when agents are on) the **weekly polish pass** fixes the
+five worst. `GET /api/polish?product=` lists them; `POST /api/polish/<product>` runs a pass now; Talk's tool is
+`studio_polish`.
 
 ## Planning a game
 

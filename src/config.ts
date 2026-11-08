@@ -149,6 +149,11 @@ export type Product = {
    * meaningfully (review.ts). Unset: no bar (full daily reviews, still capped).
    */
   quality?: string;
+  /**
+   * A game's own limits for the rubric's measured checks (quality.ts), by metric, when the starting values don't fit it:
+   * e.g. { "feel.inputLatencyMs": { "max": 120 }, "feel.coyoteMs": { "min": 60 } }.
+   */
+  tuning?: Record<string, { max?: number; min?: number }>;
   /** The public voice of its "What's new" (release.ts): voice, and words its notes never use. Unset: a game's player's-eye voice. */
   releaseVoice?: { voice: string; never?: string[] };
   /**

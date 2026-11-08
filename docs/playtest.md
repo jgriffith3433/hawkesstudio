@@ -313,6 +313,32 @@ the vision pass, the review and Studio's finding titles all use it. A run can ad
 polish goes to the ideas list. The fix agent is told the replay, and the change's playtest (and beta's) plays that
 exact place again.
 
+**Metrics.** The sensor also measures, into the report's `metrics` (a game's own `t.metric` of the same name wins):
+`feel.worstHitchMs`, `feel.maxCameraDegPerSec`, `feel.cameraClipSeconds`, `feel.insideSeconds`, `feel.inputLatencyMs`
+(median, a key press to 2 cm of movement within 0.5 s) and `feel.inputSamples`. The quality gate holds them to the
+rubric's limits (`docs/quality.md`). Games report what only they know: `feel.coyoteMs`, `feel.jumpBufferMs`,
+`feel.hitStopMs`.
+
+## Explore
+
+The **explore bot** (`clients/web/hawkes-explore.js`, copy it next to `hawkes-playtest.js`) plays a level the way a
+curious player does, with real key presses (W/A/S/D, Space): it runs forward, turns at random, hugs walls (when
+forward stops working it slides along the wall, jumps it, then backs out), jumps at edges and on a beat. It logs a 2 m
+grid of where the player went, where it got stuck (every escape failed for 6 s) and where it fell through or out (the
+feel sensor's `below-ground` / `fell-out`).
+
+```js
+installPlaytest({ ..., feel: { player: () => hero.mesh },
+  explore: { enter: async (t) => { await game.startLevel(); }, seconds: 120 } });
+```
+
+That adds an `explore` scenario (a game's own `explore` scenario wins; `explore: true` when the game is playable on
+load). The run reports metrics `explore.coverage` (cells), `explore.stuckSpots`, `explore.fallSpots` and
+`explore.deadSeconds` (the longest stretch with no new cell), and the map as the event `explore-map`. Studio keeps the
+map with the playtest (`data.explore`) and draws it: `GET /api/playtests/heatmap?step=<playtest step id>` (SVG: blue
+by time spent, amber stuck, red falls). A fall spot fails the quality gate; stuck spots are listed. Run it like any
+scenario: `{ "scenario": "explore", "where": "live" }` in a product's playtests.
+
 ## Games without the contract
 
 A page with no `window.hawkesPlaytest` still gets a **generic smoke test**: load it, wait for the canvas or the
