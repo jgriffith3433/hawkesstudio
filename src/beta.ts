@@ -95,7 +95,7 @@ export async function gitAsync(cwd: string, args: string[], timeoutMs = 10 * 60_
  * checks out, so `worktree add` and `checkout` need the repo's token too: without it an org cell's agent changes on
  * Yooba Land and Sick of It (Unity) failed with "could not read Username" (2026-11-01).
  */
-export const gitNeedsAuth = (args: string[]) => ['fetch', 'push', 'pull', 'ls-remote', 'worktree', 'checkout', 'switch', 'sparse-checkout'].includes(args[0]);
+export const gitNeedsAuth = (args: string[]) => ['fetch', 'push', 'pull', 'lfs', 'ls-remote', 'worktree', 'checkout', 'switch', 'sparse-checkout'].includes(args[0]);
 
 /** The token header for a checkout's GitHub repo (its origin), fetched first; {} for J's repos and anything else. */
 async function authEnvFor(cwd: string): Promise<Record<string, string>> {

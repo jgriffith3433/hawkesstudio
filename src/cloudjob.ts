@@ -24,10 +24,12 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import zlib from 'node:zlib';
+import { createHash } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import { spawnSync } from 'node:child_process';
 import { DATA, ROOT } from './config.ts';
 import { runToken } from './jobbroker.ts';
+import { storeLfsObject, type LfsRef } from './lfs.ts';
 import { GENERIC_SOURCE_PATTERNS, unitySourcePatterns } from './source-ready.ts';
 
 export type PackFile = { p: string; d: string; m?: number };
@@ -37,10 +39,11 @@ export type PackFile = { p: string; d: string; m?: number };
  * deltas against (2026-11-03: "pack has 1 unresolved delta", every Unity agent change "made no commit").
  */
 export type PackCommit = { message: string; files: PackFile[]; deleted: string[] };
-export type Pack = { files: PackFile[]; deleted?: string[]; commit?: PackCommit };
+/** `lfs`: the new Git LFS files the pass's commits point at; their bytes travel beside the pack as out/lfs/<oid>. */
+export type Pack = { files: PackFile[]; deleted?: string[]; commit?: PackCommit; lfs?: LfsRef[] };
 
 /** A pack of files (gzip of JSON, base64 bodies): small enough for uncommitted work and session logs. */
-export function packFiles(entries: { p: string; file: string }[], deleted: string[] = [], commit?: PackCommit | null): Buffer {
+export function packFiles(entries: { p: string; file: string }[], deleted: string[] = [], commit?: PackCommit | null, lfs: LfsRef[] = []): Buffer {
   const files: PackFile[] = [];
   for (const e of entries) {
     try {
@@ -49,7 +52,7 @@ export function packFiles(entries: { p: string; file: string }[], deleted: strin
       files.push({ p: e.p, d: fs.readFileSync(e.file).toString('base64'), m: st.mode & 0o777 });
     } catch { /* gone meanwhile */ }
   }
-  return zlib.gzipSync(Buffer.from(JSON.stringify({ files, deleted, ...(commit ? { commit } : {}) } satisfies Pack)));
+  return zlib.gzipSync(Buffer.from(JSON.stringify({ files, deleted, ...(commit ? { commit } : {}), ...(lfs.length ? { lfs } : {}) } satisfies Pack)));
 }
 
 export const readPack = (b: Buffer): Pack => JSON.parse(zlib.gunzipSync(b).toString('utf8'));
@@ -590,6 +593,17 @@ export function jobFolder(unit: string) {
   return `gs://${process.env.STUDIO_STATE_BUCKET || '<state bucket>'}/${P ? `${P}/` : ''}${key(unit, '')}`;
 }
 
+/** Downloads the job's new LFS objects (out/lfs/<oid>) into the workspace's store; each checked against its pointer's hash and size. */
+export async function bringLfs(r: JobRunner, unit: string, cwd: string, refs: LfsRef[]) {
+  const have = new Set((await r.list(key(unit, 'out/lfs/'))).map((n) => n.split('/').pop()));
+  for (const ref of refs) {
+    if (!have.has(ref.oid)) throw new Error(`the job's LFS file ${ref.oid.slice(0, 10)} is missing from ${jobFolder(unit)}`);
+    const data = await r.get(key(unit, `out/lfs/${ref.oid}`));
+    if (!data || data.length !== ref.size || createHash('sha256').update(data).digest('hex') !== ref.oid) throw new Error(`the job's LFS file ${ref.oid.slice(0, 10)} came back damaged (${data?.length ?? 0} of ${ref.size} bytes)`);
+    storeLfsObject(cwd, ref, data);
+  }
+}
+
 async function finish(f: Follow, r: JobRunner, cwd: string, env: NodeJS.ProcessEnv) {
   const exit = JSON.parse((await r.get(key(f.unit, 'out/exit.json')))?.toString('utf8') ?? '{}');
   try {
@@ -632,6 +646,8 @@ async function finish(f: Follow, r: JobRunner, cwd: string, env: NodeJS.ProcessE
         fs.writeFileSync(bundle, b);
       }
       try {
+        // The pass's new LFS files into this checkout's store; the branch push uploads them first (agents.ts publish).
+        if (pack?.lfs?.length) await bringLfs(r, f.unit, cwd, pack.lfs);
         applyWorkspace(cwd, { head: exit.git.head, bundle, pack: work });
       } finally {
         if (bundle) fs.rmSync(bundle, { force: true });

@@ -19,6 +19,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
+import { parsePointer, lfsObjectPath, type LfsRef } from './lfs.ts';
 import { git, packFiles, readPack, unpack, folderEntries, dirtyState, type JobRunner, type PackCommit, type PackFile } from './cloudjob.ts';
 
 type Store = Pick<JobRunner, 'put' | 'get' | 'list' | 'remove'>;
@@ -57,6 +58,7 @@ export const jobGitEnv = (g: Pick<JobGit, 'lfs'>): Record<string, string> => g.l
 /** What a clone without LFS files keeps in its config, so the pass's own checkouts skip them too. */
 const SKIP_LFS: [string, string][] = [['filter.lfs.smudge', 'git-lfs smudge --skip -- %f'], ['filter.lfs.process', 'git-lfs filter-process --skip']];
 
+const LFS_CLEAN: [string, string][] = [['filter.lfs.clean', 'git-lfs clean -- %f'], ['filter.lfs.required', 'true']];
 
 /** The unprivileged user the pass runs as (made in the image), when this runner is root. */
 function agentUser() {
@@ -188,6 +190,12 @@ export async function prepare(unit: string, spec: Spec, store: Store, log: (s: s
     });
     if (c.status !== 0) throw new Error(tok.message('clone', c.err));
     if (!spec.git.lfs) for (const [k, v] of SKIP_LFS) git(cwd, ['config', k, v]);
+    // New LFS files are stored in .git/lfs/objects when the pass commits them, whatever the image's own git config says.
+    for (const [k, v] of LFS_CLEAN) git(cwd, ['config', k, v]);
+    // The pass's own git fetches missing blobs from the promisor remote (a checkout, a merge, `git lfs fetch`): it needs the
+    // token too. A read-only token for this one repo, in the job's throwaway clone only (never in out.pack or a bundle).
+    const t0 = tok.get();
+    if (t0 && /^https:\/\/github\.com\//.test(spec.git.remote)) git(cwd, ['config', 'http.https://github.com/.extraheader', `Authorization: Basic ${Buffer.from(`x-access-token:${t0}`).toString('base64')}`]);
     if (spec.git.bundle) {
       const b = await store.get(key('in.bundle'));
       const file = path.join(os.tmpdir(), `${unit}-in.bundle`);
@@ -381,6 +389,30 @@ export function replayOf(cwd: string, start: string, head: string, maxBytes = 12
   return { message, files, deleted };
 }
 
+/**
+ * The new Git LFS files the commits start..head point at: pointers added or changed, whose object this clone holds in
+ * .git/lfs/objects (what the pass's commit made). Pointers whose object isn't here (a merged-in base's: GitHub has them) are left out.
+ */
+export function lfsOf(cwd: string, start: string, head: string): LfsRef[] {
+  const raw = git(cwd, ['diff', '--raw', '-z', '--no-renames', '--no-abbrev', '--diff-filter=AM', start, head]);
+  if (!raw.ok || !raw.out) return [];
+  const t = raw.raw.toString('utf8').split('\0');
+  const names: string[] = [];
+  for (let i = 0; i + 1 < t.length; i += 2) if (/^:\d+ 1\d+ /.test(t[i])) names.push(t[i + 1]);
+  const out = new Map<string, LfsRef>();
+  for (let i = 0; i < names.length; i += 500) {
+    const part = names.slice(i, i + 500);
+    const input = Buffer.from(part.map((f) => `${head}:${f}`).join('\n') + '\n');
+    const sizes = git(cwd, ['cat-file', '--batch-check'], { input }).out.split('\n');
+    const small = part.filter((_, j) => /\s(\d+)$/.test(sizes[j] ?? '') && Number(/\s(\d+)$/.exec(sizes[j])![1]) < 1024);
+    for (const f of small) {
+      const ref = parsePointer(git(cwd, ['cat-file', 'blob', `${head}:${f}`]).out);
+      if (ref && fs.existsSync(lfsObjectPath(cwd, ref.oid))) out.set(ref.oid, ref);
+    }
+  }
+  return [...out.values()];
+}
+
 /** What the pass did: its new commits (a bundle), its uncommitted files and the session folder. */
 export function collect(spec: Spec, start: string | null, tmp: string, at: (p: string) => string = (p) => p, baseline?: Baseline, token: string | null = null) {
   const cwd = at(spec.cwd);
@@ -390,11 +422,13 @@ export function collect(spec: Spec, start: string | null, tmp: string, at: (p: s
   let bundle: string | null = null;
   let bundleError: string | null = null;
   let commit: PackCommit | null = null;
+  let lfs: LfsRef[] = [];
   if (spec.git && fs.existsSync(path.join(cwd, '.git'))) {
     const head = git(cwd, ['rev-parse', 'HEAD']).out;
     if (start && head && head !== start) {
       // The same commits as plain files too: the bundle's thin pack may not apply in Studio's light clone.
       commit = replayOf(cwd, start, head);
+      lfs = lfsOf(cwd, start, head);
       bundle = path.join(tmp, 'out.bundle');
       // With the token: in a partial clone the bundle needs objects (a merged-in base's blobs) it must fetch from GitHub.
       const b = gitWithToken(cwd, ['bundle', 'create', bundle, 'HEAD', `^${start}`], token);
@@ -414,7 +448,7 @@ export function collect(spec: Spec, start: string | null, tmp: string, at: (p: s
     entries.push(...folderEntries(path.join(cwd, '.hawkes'), (rel) => `.hawkes/${rel}`).filter((e) => !have.has(e.p)));
     gitOut = { head, bundle: Boolean(bundle) };
   }
-  return { pack: packFiles(entries, deleted, commit), bundle, bundleError, replay: Boolean(commit), git: gitOut };
+  return { pack: packFiles(entries, deleted, commit, lfs), lfs: lfs.map((r) => ({ ...r, file: lfsObjectPath(cwd, r.oid) })), bundle, bundleError, replay: Boolean(commit), git: gitOut };
 }
 
 /**
@@ -537,6 +571,9 @@ export async function runUnit(unit: string, store: Store, { every = 2000, at = (
     if (spec.git?.commitDirty && !error) commitLeftovers(at(spec.cwd), say, undefined, baseline);
     const out = collect(spec, start, tmp, at, baseline, tokenBox.get?.() ?? null);
     if (out.bundle) await store.put(key('out/out.bundle'), fs.readFileSync(out.bundle));
+    // The new LFS files first: Studio reads them when it reads the pack, and the pack names them.
+    for (const o of out.lfs) await store.put(key(`out/lfs/${o.oid}`), fs.readFileSync(o.file));
+    if (out.lfs.length) say(`[job] sending ${out.lfs.length} new LFS file(s) back (${Math.round(out.lfs.reduce((n, o) => n + o.size, 0) / 1e6)} MB)`);
     await store.put(key('out/out.pack'), out.pack);
     await flush();
     if (out.bundleError) say(`[job] ${out.bundleError}`);
