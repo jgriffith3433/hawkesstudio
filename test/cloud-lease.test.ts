@@ -157,3 +157,14 @@ test("a holder Cloud Run stopped sending requests to is replaced by the next ins
   assert.equal(next.took, 'the holder answered nothing');
   assert.ok(lost, 'the holder learned it was replaced');
 });
+
+test("a stray doesn't call a holder gone on one old heartbeat: a late write that lands inside the confirm window keeps the database", async () => {
+  const holder: any = await L.claim({ rev: 'studio-beta-00120-aaa', pollMs: 10, staleMs: 0 });
+  objects.set(`db/alive-${holder.id}`, Buffer.from(JSON.stringify({ at: Date.now() - 60_000 })));
+  const before = objects.get('db/lease.json')!.toString();
+  setTimeout(() => objects.set(`db/alive-${holder.id}`, Buffer.from(JSON.stringify({ at: Date.now() }))), 100);
+  const stray: any = await L.claim({ rev: 'studio-beta-00120-aaa', pollMs: 20, confirmMs: 500 });
+  assert.equal(stray.claimed, false);
+  assert.equal(stray.how, 'same revision holds it');
+  assert.equal(objects.get('db/lease.json')!.toString(), before);
+});

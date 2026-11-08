@@ -178,6 +178,24 @@ export async function getExecution(name: string): Promise<ExecutionState | null>
   return e ? executionState(e) : null;
 }
 
+/** A job's executions that have not finished (no completion time): name, creation time and the env they were started with. */
+export async function listOpenExecutions(t: CloudRunTarget): Promise<{ name: string; createdAt: number; env: Record<string, string> }[]> {
+  const out: { name: string; createdAt: number; env: Record<string, string> }[] = [];
+  let page = '';
+  for (let i = 0; i < 10; i++) {
+    const j = await gapi(`${runBase(t)}/jobs/${t.job}/executions?pageSize=100${page ? `&pageToken=${enc(page)}` : ''}`);
+    for (const e of j?.executions ?? []) {
+      if (e.completionTime) continue;
+      const env: Record<string, string> = {};
+      for (const c of e.template?.template?.containers ?? e.template?.containers ?? []) for (const v of c.env ?? []) if (v?.name && typeof v.value === 'string') env[v.name] = v.value;
+      out.push({ name: String(e.name), createdAt: Date.parse(e.createTime) || 0, env });
+    }
+    page = j?.nextPageToken ?? '';
+    if (!page) break;
+  }
+  return out;
+}
+
 export async function cancelExecution(name: string) {
   await gapi(`https://run.googleapis.com/v2/${name}:cancel`, { body: {} }).catch(() => {});
 }

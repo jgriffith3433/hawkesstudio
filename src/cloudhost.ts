@@ -143,9 +143,11 @@ export function startCloudHost({ every = 30_000, ping = 45_000 } = {}) {
   // One writer at a time (cloudlease.ts): once a newer instance has claimed the database, this one saves its state and
   // stops, so nothing it writes afterwards is lost on a copy nobody reads.
   void import('./cloudlease.ts').then((L) => L.watchLease((by) => {
-    console.log(`[cloudhost] ${by.rev ?? 'another instance'} took over the database: saving state and stopping`);
+    logExit('lease-lost', `${by.rev ?? 'another instance'} (${by.id}) took the database, how: ${by.how ?? 'unknown'}; saving state and stopping`);
     void flushOnStop().finally(() => process.exit(0));
   })).catch((e) => console.warn(`[cloudhost] lease: ${e.message}`));
+  // Once, a minute after start (the jobs Studio follows are re-attached by then): executions nobody follows are cancelled.
+  setTimeout(() => void import('./cloudjob.ts').then((m) => m.cancelStrayExecutions()).catch((e) => console.warn(`[cloudhost] stray executions: ${e.message}`)), 60_000).unref();
   const url = selfUrl();
   if (!url) {
     console.warn('[cloudhost] STUDIO_SERVICE_URL is not set: nothing keeps the instance up while work runs');
@@ -154,6 +156,17 @@ export function startCloudHost({ every = 30_000, ping = 45_000 } = {}) {
   setInterval(() => void busy().then(async (why) => {
     if (why) await fetch(`${url}/api/health`, { signal: AbortSignal.timeout(20_000) });
   }).catch(() => {}), ping).unref();
+}
+
+/**
+ * One line for every deliberate exit, on stdout and stderr as JSON with a severity (Cloud Logging shows those as entries),
+ * and best effort in the state bucket (db/exit-<time>-<id>), which stays readable even when the log doesn't show it.
+ */
+export function logExit(path: string, why: string) {
+  const line = { severity: 'WARNING', message: `[studio] exit via ${path}: ${why}`, exitPath: path, revision: process.env.K_REVISION ?? null };
+  console.log(JSON.stringify(line));
+  console.error(line.message);
+  void import('./cloudlease.ts').then((L) => L.recordExit(path, why)).catch(() => {});
 }
 
 /** Cloud Run sends SIGTERM and allows 10 s: push the state first. Returns once it's done or after 8 s. */

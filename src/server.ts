@@ -1242,7 +1242,7 @@ const cloud = cloudMode();
 if (cloud) {
   for (const sig of ['SIGTERM', 'SIGINT'] as const) {
     process.on(sig, async () => {
-      console.log(`[studio] ${sig}: saving state, then stopping`);
+      await import('./cloudhost.ts').then((m) => m.logExit(sig, 'asked to stop by Cloud Run (a deploy, scale-down or replacement); saving state')).catch(() => console.log(`[studio] ${sig}: saving state, then stopping`));
       await import('./cloudhost.ts').then((m) => m.flushOnStop()).catch(() => {});
       process.exit(0);
     });
