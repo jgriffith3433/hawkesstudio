@@ -33,6 +33,15 @@ export const serverlessReady = (status: { providers?: ProviderRow[] } | null | u
   (status?.providers ?? []).find((p) => p.provider !== 'fleet' && p.enabled !== false && p.ready && !p.health?.down) ?? null;
 
 /**
+ * Gen's fleet answer says AWS isn't set up at all (no keys, the account suspended, the fleet skipped): there is no
+ * server Studio could ever start, and Gen routes GPU jobs to its other providers itself (and fails one at once when
+ * none can take it, hawkesgen docs/gpu-providers.md "When no GPU can run a job"). So a task waiting for GPU runs again
+ * instead of waiting on the fleet. Studio's own Gen key can't read /v1/gpu/providers (admin only: 403 on live,
+ * 2026-11-08), which is why this, not serverlessReady, is what lets the waits go.
+ */
+export const fleetGone = (error: unknown) => /AWS_ACCESS_KEY_ID|not in hawkesgen\/\.env|no AWS|AWS (account )?(is )?suspended|fleet is skipped|awsRefused/i.test(String(error ?? ''));
+
+/**
  * What to do for a change that needs the GPU: nothing (a server is already up or coming up), start one stopped server
  * (the one whose disk fits the job best), or nothing possible (why). Pure: the fleet list in, the decision out.
  * Preferred, in order: an install that finished (its models are on its disk; a resumable unfinished one would install
@@ -174,6 +183,8 @@ async function tryStart(c: GpuChange, d: GpuDeps): Promise<{ done: boolean; resu
     // Gen answers with no servers and an error when it couldn't list them: not the same as "none stopped".
     if ((fleet as any)?.error) throw new Error((fleet as any).error);
   } catch (e: any) {
+    // No AWS at all: GPU work goes through Gen's other providers, nothing to start and nothing to tell J.
+    if (fleetGone(e?.message ?? e)) return { done: true, result: 'already running: no AWS fleet, Gen sends GPU jobs to its other providers (RunPod, Modal)' };
     const why = `couldn't read the GPU fleet: ${String(e.message ?? e).slice(0, 200)}`;
     d.log('gpu-start-failed', subject, c.product, `no GPU server started for ${what}: ${why}`);
     await Promise.resolve(d.tell('GPU server not started', `Couldn't start a GPU server for ${what}: ${why}. The agent waits; nothing was launched.`)).catch(() => {});

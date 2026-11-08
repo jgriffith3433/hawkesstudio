@@ -188,3 +188,26 @@ test('a ready RunPod or Modal endpoint is a GPU up: nothing to start, no fleet r
   assert.equal(fleetRead, false);
   assert.deepEqual(told, []);
 });
+
+test('live 2026-11-08: providers refused (403) and no AWS keys: the wait ends, nothing is told', async () => {
+  const { fleetGone } = await import('../src/gpustart.ts');
+  const aws = 'AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY are not in hawkesgen/.env';
+  assert.equal(fleetGone(aws), true);
+  assert.equal(fleetGone('connect ETIMEDOUT'), false);
+  const told: string[] = [];
+  const r = await ensureGpuFor({ id: 'gpu-wait-k_0b8bc221e3fc', product: 'p', task: 'k_0b8bc221e3fc', gpu_budget: '5' }, {
+    providers: async () => { throw new Error('This needs the admin role'); },
+    fleet: async () => ({ servers: [], error: aws } as any),
+    start: async () => { throw new Error('no'); }, log: () => {}, tell: (_t, x) => { told.push(x); },
+  });
+  // pm.ts reruns the task when the answer starts "already running".
+  assert.match(r, /^already running: no AWS fleet/);
+  assert.deepEqual(told, []);
+  // Any other fleet error still says so.
+  const told2: string[] = [];
+  await ensureGpuFor({ id: 'gpu-wait-k_2', product: 'p', task: 'k_2', gpu_budget: '5' }, {
+    providers: async () => { throw new Error('403'); }, fleet: async () => ({ servers: [], error: 'Gen is restarting' } as any),
+    start: async () => ({}), log: () => {}, tell: (_t, x) => { told2.push(x); },
+  });
+  assert.equal(told2.length, 1);
+});
