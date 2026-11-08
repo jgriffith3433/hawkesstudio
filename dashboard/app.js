@@ -791,6 +791,41 @@ async function refresh() {
 }
 // #live/<job> on the first load: that playtest opens big (live.js).
 show(tab, tab === 'live' ? /^#live\/(j_[0-9a-f]+)/.exec(location.hash)?.[1] : undefined);
+// A reload keeps your place (J: "refresh jumps"): the tab is already in the address; the scroll position and which Details
+// are open are kept per tab in sessionStorage (no fetch, written on scroll/toggle) and put back once the page has drawn.
+// Restoring watches the tab for content for a few seconds (a MutationObserver, not a poll) and stops at the first touch.
+(() => {
+  const KEY = 'studio-place';
+  const read = () => { try { return JSON.parse(sessionStorage.getItem(KEY) || '{}'); } catch { return {}; } };
+  const tabKey = () => location.hash.split('/')[0] || '#home';
+  const keyOf = (d) => (d.id || d.dataset.key || d.querySelector(':scope > summary')?.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 80);
+  const save = () => {
+    const all = read();
+    const open = [...document.querySelectorAll('.tab.on details[open]')].map(keyOf).filter(Boolean).slice(0, 40);
+    all[tabKey()] = { y: Math.round(scrollY), open };
+    try { sessionStorage.setItem(KEY, JSON.stringify(all)); } catch { /* storage full or blocked */ }
+  };
+  let saving = 0;
+  let restoring = true;
+  const soon = () => { if (!saving) saving = requestAnimationFrame(() => { saving = 0; if (!restoring) save(); }); };
+  addEventListener('scroll', soon, { passive: true });
+  addEventListener('toggle', soon, true);
+  addEventListener('pagehide', () => { if (!restoring) save(); });
+  const want = read()[tabKey()] ?? {};
+  let obs;
+  const stop = () => { restoring = false; obs?.disconnect(); };
+  const apply = () => {
+    for (const d of document.querySelectorAll('.tab.on details:not([open])')) if (want.open?.includes(keyOf(d))) d.open = true;
+    const max = document.documentElement.scrollHeight - innerHeight;
+    if (want.y > 0 && max > 0) scrollTo({ top: Math.min(want.y, max), behavior: 'instant' });
+    if (!want.y || max >= want.y) stop();
+  };
+  obs = new MutationObserver(() => { if (restoring) apply(); });
+  obs.observe(document.querySelector('main'), { childList: true, subtree: true });
+  for (const ev of ['wheel', 'touchstart', 'keydown', 'pointerdown']) addEventListener(ev, stop, { once: true, passive: true });
+  setTimeout(stop, 6000); // gives up restoring (it never fetches) so a short page doesn't watch forever
+  if (!want.y && !want.open?.length) stop();
+})();
 // Today, Runs and Changes refresh when the push stream says changes or runs moved (stream.js; also its slow safety tick).
 studioStream.on(['changes', 'runs', 'builds'], () => { if (tab === 'today' || tab === 'runs' || tab === 'changes') refresh(); });
 
