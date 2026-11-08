@@ -127,9 +127,12 @@ async function slot<T>(f: () => Promise<T>): Promise<T> {
   }
 }
 
-/** The images as files in dir (frame-00.png, ...), in order; ones that can't be fetched are left out. */
-async function imageFiles(images: string[], dir: string) {
+/** The images as files in dir (frame-00.png, ...; the number is the image's index in `images`); ones that can't be
+ * fetched (a library file missing on this instance's disk and not served by Gen either) are left out and listed in
+ * `missing` by index, never an error. */
+export async function imageFiles(images: string[], dir: string) {
   const files: string[] = [];
+  const missing: number[] = [];
   for (const [i, src] of images.entries()) {
     try {
       const m = /^asset:(.+)$/.exec(src);
@@ -145,10 +148,11 @@ async function imageFiles(images: string[], dir: string) {
       fs.chmodSync(dest, 0o644);
       files.push(path.basename(dest));
     } catch (e: any) {
+      missing.push(i);
       console.warn(`[studio] llm fallback: couldn't fetch image ${src}: ${e.message}`);
     }
   }
-  return files;
+  return { files, missing };
 }
 
 /** Small JSON Schema check: types, required, enums (what Studio's schemas use). The first problem, or null. */
@@ -215,9 +219,13 @@ export async function askClaudeCode(p: AskParams): Promise<any> {
     let error = '';
     let value: unknown;
     let text = '';
+    let missingImages: number[] = [];
     try {
-      const files = p.images?.length ? await imageFiles(p.images, dir) : [];
-      const pics = files.length ? `\n\nATTACHED IMAGES: ${files.length} files in the current folder, in this order: ${files.join(', ')}. Read every one of them (the Read tool) before you answer; refer to them by their index (0 = ${files[0]}).` : '';
+      const got = p.images?.length ? await imageFiles(p.images, dir) : { files: [] as string[], missing: [] as number[] };
+      const files = got.files;
+      missingImages = got.missing;
+      const pics = files.length ? `\n\nATTACHED IMAGES: ${files.length} files in the current folder: ${files.join(', ')}. The number in each file name is the image's index (frame-03 is image 3). Read every one of them (the Read tool) before you answer; refer to them by that index.` : '';
+      const gone = missingImages.length ? `\n\nMISSING IMAGES: image ${missingImages.join(', ')} could not be loaded (the file is gone). Review with the rest, do not guess what they showed, and say in your summary that they were missing.` : '';
       const shape = p.schema ? `\n\nAnswer only with one JSON object matching this JSON Schema (no prose, no code fence):\n${JSON.stringify(p.schema)}` : '';
       const args = ['-p', '--output-format', 'json', '--model', p.model, '--no-session-persistence', '--strict-mcp-config',
         '--tools', files.length ? 'Read' : '', ...(files.length ? ['--allowedTools', 'Read'] : []),
@@ -226,7 +234,7 @@ export async function askClaudeCode(p: AskParams): Promise<any> {
       const timeout = p.timeoutMs ?? 10 * 60_000;
       for (let attempt = 0; attempt < 2; attempt++) {
         const again = attempt && text ? `\n\nYour previous answer was not valid (${error}). Answer again with JSON only.` : '';
-        const r = await runClaude(args, `${p.prompt}${pics}${shape}${again}`, dir, timeout);
+        const r = await runClaude(args, `${p.prompt}${pics}${gone}${shape}${again}`, dir, timeout);
         usage += r.usage;
         if (!r.ok) {
           error = r.error ?? 'failed';
@@ -260,7 +268,7 @@ export async function askClaudeCode(p: AskParams): Promise<any> {
         .run(id, started, p.purpose, p.product ?? null, p.model, ok ? 1 : 0, usage, billing, (Date.now() - started) / 1000, error || null);
     } catch { /* the log is a nicety */ }
     return ok
-      ? { id, status: 'done', via: 'claude-code', billing, cost: 0, usage, result: { ...(p.schema ? { value } : {}), text, model: p.model } }
+      ? { id, status: 'done', via: 'claude-code', billing, cost: 0, usage, result: { ...(p.schema ? { value } : {}), text, model: p.model }, ...(missingImages.length ? { missingImages } : {}) }
       : { id, status: 'failed', via: 'claude-code', billing, cost: 0, usage, error: `${error} (Claude Code fallback, Gen: ${downWhy || 'skipped'})` };
   });
 }

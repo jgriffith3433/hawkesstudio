@@ -161,3 +161,29 @@ test('billing errors are told apart from other failures', () => {
   assert.ok(llm.isBillingError('ActionRequiredError: You have an unpaid invoice'));
   assert.ok(!llm.isBillingError('timed out after 10 min'));
 });
+
+test('an image whose file is missing is left out and named, never an error (a library file gone from a Cloud Run instance)', async () => {
+  reset();
+  const dir = fs.mkdtempSync(path.join(tmp, 'imgs-'));
+  const real = path.join(tmp, 'real.png');
+  fs.writeFileSync(real, 'png');
+  const got = await llm.imageFiles([real, path.join(tmp, 'library', 'a_gone.jpg')], dir);
+  assert.deepEqual(got.files, ['frame-00.png']);
+  assert.deepEqual(got.missing, [1]);
+  const j = await llm.askClaudeCode({ prompt: 'review', model: 'm', purpose: 'test', images: [real, path.join(tmp, 'library', 'a_gone.jpg')] });
+  assert.equal(j.status, 'done');
+  assert.deepEqual(j.missingImages, [1]);
+  assert.match(lines()[0].input, /MISSING IMAGES: image 1/);
+  assert.match(lines()[0].input, /frame-00\.png/);
+});
+
+test('a Gen review that fails with ENOENT is reviewed through Claude Code instead of failing the run', async () => {
+  reset();
+  const { isMissingFileError } = await import('../src/review-cc.ts');
+  assert.ok(isMissingFileError("ENOENT: no such file or directory, open '/data/library/2026-11/a_44188e51f07cbeaa.jpg'"));
+  assert.ok(!isMissingFileError('The answer ran out of room'));
+  // Claude Code's review path needs Gen's job; with none reachable it answers failed (not a throw), and Gen's ENOENT job id is kept.
+  const j = await reviewJob('p', { job: 'j_none' }, async () => ({ id: 'j_enoent', status: 'failed', error: "ENOENT: no such file or directory, open '/data/library/2026-11/a_1.jpg'" }));
+  assert.equal(j.id, 'j_enoent');
+  assert.match(String(j.error ?? ''), /Claude Code review|j_none/);
+});
