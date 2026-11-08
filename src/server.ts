@@ -400,6 +400,16 @@ const server = http.createServer(async (req, res) => {
     // Playtests: every run with its video, screenshots and review (dashboard Playtests tab), trends.
     if (route === '/api/playtests' && method === 'GET') return send(res, 200, listPlaytests({ product: q('product'), scenario: q('scenario'), where: q('where'), device: q('device'), outcome: q('outcome'), limit: Number(q('limit')) || 100, before: Number(q('before')) || undefined }));
     if (route === '/api/playtests/audit' && method === 'GET') return send(res, 200, (await import('./playaudit.ts')).playAudit(Number(q('days')) || 30));
+    // The explore bot's heatmap of one playtest step (explore.ts): where it went, got stuck and fell out, as an SVG.
+    if (route === '/api/playtests/heatmap' && method === 'GET') {
+      const row = db.prepare(`SELECT * FROM steps WHERE id = ? AND kind = 'playtest'`).get(q('step') ?? '');
+      const step = row ? rowToStep(row) : null;
+      const map = (step?.data as any)?.explore;
+      if (!step || !map) return send(res, 404, { error: 'no explore map for that playtest step' });
+      const { heatmapSvg } = await import('./explore.ts');
+      res.writeHead(200, { 'Content-Type': 'image/svg+xml', 'Cache-Control': 'no-store' });
+      return void res.end(heatmapSvg(map, `${step.product} ${step.name}`));
+    }
     if (route === '/api/playtests/trends' && method === 'GET') return send(res, 200, trends({ product: q('product'), days: Number(q('days')) || 30 }));
     // The Playtests page's grid: playing, waiting and just finished, with each one's Studio context (livetests.ts).
     if (route === '/api/playtests/live' && method === 'GET') return send(res, 200, await (await import('./livetests.ts')).livePlaytests());

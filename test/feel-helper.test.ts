@@ -44,3 +44,29 @@ test('a run starts the feel sensor, pushes flags to the runner and puts them in 
   assert.equal(rep.feel.length, 1);
   assert.ok(rep.events.some((e: any) => e.type === 'feel'));
 });
+
+test('explore: with the player given, the run gets an explore scenario that maps where it went', async () => {
+  // @ts-ignore: plain JS
+  const { installPlaytest } = await import('../clients/web/hawkes-playtest.js');
+  let entered = 0;
+  const player = { position: { x: 0, y: 0, z: 0 } };
+  const api = installPlaytest({
+    product: 'demo2',
+    scenarios: [{ id: 'smoke', title: 'Smoke', seconds: 10 }],
+    start: () => {},
+    feel: { player: () => player },
+    explore: { enter: () => { entered++; }, seconds: 0.4, thresholds: { tickMs: 20 } },
+  });
+  assert.deepEqual(api.scenarios().map((s: any) => s.id), ['smoke', 'explore']);
+  const run = api.start('explore', { seed: 2 });
+  const iv = setInterval(() => { player.position.x += 0.5; }, 20);
+  await run;
+  clearInterval(iv);
+  const rep: any = api.report();
+  assert.equal(entered, 1);
+  assert.equal(rep.outcome, 'done');
+  assert.ok(rep.metrics['explore.coverage'] >= 2);
+  assert.equal(rep.metrics['explore.stuckSpots'], 0);
+  const map = JSON.parse(rep.events.find((e: any) => e.type === 'explore-map').detail);
+  assert.equal(map.cell, 2);
+});

@@ -7,6 +7,7 @@
 // (timeline, console, screenshots, visual diffs) is the Gen job's result; videos and reports are also in S3.
 
 import path from 'node:path';
+import { exploreOf } from './explore.ts';
 import { createRequire } from 'node:module';
 import { pathToFileURL } from 'node:url';
 import { db, rowToStep, type Step } from './db.ts';
@@ -291,6 +292,8 @@ export function playtestData(job: any, url: string) {
     // The feel layer's flags and vision hits, for the quality gate on going live (deploy.ts qualityOfPlay).
     feel: Array.isArray(r.feel) ? r.feel.slice(0, 200) : null,
     polishHits: Array.isArray(r.polish?.hits) ? r.polish.hits.slice(0, 60) : null,
+    // The explore bot's map (explore.ts): where it went, got stuck and fell out.
+    explore: exploreOf(r.events),
     visual: r.visual ? { baseline: r.visual.baseline, pairs: r.visual.pairs?.length ?? 0, big: r.visual.big ?? 0, top: (r.visual.pairs ?? []).filter((x: any) => x.big).slice(0, 4) } : null,
     url,
   };

@@ -114,7 +114,9 @@
         { "id": "video-hitch", "kind": "review", "what": "Stutters the recording shows (the review's video freezes): none over 250 ms.", "metric": "video.worstHitchMs", "max": 250, "optional": true },
         { "id": "coyote-time", "kind": "playtest", "what": "Jumping games report their coyote time: at least 80 ms.", "metric": "feel.coyoteMs", "min": 80, "optional": true },
         { "id": "jump-buffer", "kind": "playtest", "what": "Jumping games report their jump buffer: at least 80 ms.", "metric": "feel.jumpBufferMs", "min": 80, "optional": true },
-        { "id": "hit-stop", "kind": "playtest", "what": "Combat games report their hit-stop: at least 40 ms on heavy hits.", "metric": "feel.hitStopMs", "min": 40, "optional": true }
+        { "id": "hit-stop", "kind": "playtest", "what": "Combat games report their hit-stop: at least 40 ms on heavy hits.", "metric": "feel.hitStopMs", "min": 40, "optional": true },
+        { "id": "explore-falls", "kind": "playtest", "what": "The explore bot (hugging walls, jumping edges) never falls through or out of the world. A hard limit: one spot fails.", "metric": "explore.fallSpots", "max": 0, "hard": true, "optional": true },
+        { "id": "explore-stuck", "kind": "playtest", "what": "The explore bot never gets stuck on geometry it can't escape by sliding, jumping or backing out.", "metric": "explore.stuckSpots", "max": 0, "optional": true }
       ]
     }
   ]
