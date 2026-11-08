@@ -158,7 +158,11 @@ test('readiness walks a game through what it lacks; the setup plan adds the hook
   assert.deepEqual(d.blockers, []);
   const done = await R.applyPlan(r.approve as any);
   assert.equal(done.length, 2);
-  assert.match(repos.get('acme/space-game')!.files.get('.github/workflows/hawkes-studio.yml')!, /https:\/\/studio\.test\/api\/hooks\/github/);
+  assert.match(repos.get('acme/space-game')!.files.get('.github/workflows/hawkes-studio.yml')!, /STUDIO: https:\/\/studio\.test\n[\s\S]*\$STUDIO\/api\/hooks\/github/);
+  // A Studio restart during the notify step is waited out: it asks again with a fresh token, and only that step fails.
+  const hook = repos.get('acme/space-game')!.files.get('.github/workflows/hawkes-studio.yml')!;
+  assert.match(hook, /for attempt in/);
+  assert.match(hook, /Studio could not be reached after 20 attempts"; exit 1/);
   const again = await R.readiness('space-game', j.id);
   assert.equal(again.items.find((i) => i.id === 'hook')!.ok, true);
   assert.equal(again.items.find((i) => i.id === 'branches')!.ok, true);
