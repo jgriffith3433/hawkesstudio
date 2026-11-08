@@ -6,7 +6,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { PORT, DATA, ROOT, paths, loadProducts, getProduct, StudioError, localUrl, managedElsewhere } from './config.ts';
 import { db, rowToStep } from './db.ts';
-import { startRun, startPartial, playtestRequest, getRun, listRuns, activeRun, lastStep, nameOf, resumeRuns, type RunOptions } from './pipeline.ts';
+import { startRun, startBeta, startPartial, playtestRequest, getRun, listRuns, activeRun, lastStep, nameOf, resumeRuns, type RunOptions } from './pipeline.ts';
 import { pruneDetached } from './detach.ts';
 import { listFindings, getFinding, updateFinding } from './backlog.ts';
 import { reportMarkdown, reportVerdict, listReports } from './report.ts';
@@ -67,7 +67,7 @@ async function overview() {
   // A project's beta to play: its own beta address, else the beta site Studio hosts for it (sites.<domain>/o/<org>/<id>/).
   // The Projects page's "Play beta" shows for either (2026-11-01: Studio-hosted betas had no Play beta button).
   const hosted = new Map(listPreviews().map((x) => [x.product, x.play]));
-  const { verdictLabel } = await import('./verdictwork.ts');
+  const { verdictLabel, readReview, libraryProject } = await import('./verdictwork.ts');
   const agentSet = (await import('./agents.ts')).agentSettings();
   const products = await Promise.all(loadProducts().map(async (p) => {
     const steps = (db.prepare(`SELECT * FROM steps WHERE product = ? ORDER BY started DESC LIMIT 60`).all(p.id) as any[]).map(rowToStep);
@@ -84,7 +84,9 @@ async function overview() {
         const name = nameOf(t);
         return { name, playtest: byName.get(`playtest:${name}`) ?? null, review: byName.get(`review:${name}`) ?? null };
       }),
-      lastReview: reviews[0] ?? null,
+      lastReview: readReview(p.id, reviews[0] ?? null),
+      // A library or SDK has nothing to playtest on its own page: grey on the Home page, never red (verdictwork.ts).
+      nothingToPlay: libraryProject(p),
       // What Studio is doing about a fix-first or broken verdict (verdictwork.ts): the card's label shows it.
       verdictWork: verdictLabel(p.id, agentSet),
       // Builds whose newest attempt failed (buildfail.ts): the red "Last build failed" badge on the card.
@@ -170,6 +172,11 @@ const server = http.createServer(async (req, res) => {
       const chunks: Buffer[] = [];
       for await (const c of req) chunks.push(c as Buffer);
       return send(res, 200, (await import('./billing.ts')).handleStripeWebhook(Buffer.concat(chunks), String(req.headers['stripe-signature'] ?? '')));
+    }
+    // A beta asking whether this Studio signed a playtest's test sign-in token (playtest-signin.ts): ok or 401, no secret.
+    if (route === '/api/signin/verify' && method === 'POST') {
+      try { (await import('./playtest-signin.ts')).verifyIssued(await readJson(req)); return send(res, 200, { ok: true }); }
+      catch (e: any) { return send(res, 401, { ok: false, error: e.message ?? String(e) }); }
     }
     // Customers' Studios (cells.ts): the router's and the cells' calls carry their own keys; the central cron is Cloud
     // Scheduler's (or the owner key), like the daily run.
@@ -1198,6 +1205,8 @@ server.listen(listenPort, cloud ? '0.0.0.0' : '127.0.0.1', () => {
   void import('./entitlements.ts').then((E) => E.startPlanRefresh());
   // A cell gives back the credits of its Gen jobs that failed or were cancelled (credits.ts).
   void Promise.all([import('./credits.ts'), import('./gen.ts')]).then(([C, G]) => C.startCreditSettler((id) => G.gen.job(id), undefined, G.genEvents));
+  // Credits added (a write to the ledger): the beta playtests that waited for credits play once (creditwait.ts; no timer).
+  void import('./creditwait.ts').then((W) => W.watchCredits((product, o) => { return startBeta(product, o); })).catch((e) => console.warn(`[credits] ${e.message ?? e}`));
   void import('./cellside.ts').then((c) => c.startCellReports());
   // A deploy of J's Studio rolls the awake customer Studios onto it, in the background, a minute after start
   // (cells.ts followRoll; J, 2026-10-30: "Do roll on every deploy").
@@ -1222,7 +1231,7 @@ server.listen(listenPort, cloud ? '0.0.0.0' : '127.0.0.1', () => {
   if (!cloud) setInterval(shareAgyLogin, 10 * 60_000).unref();
   const runs = resumeRuns();
   // Builds nothing is going to finish (a run gone, or building past the maximum) are settled; later ones when Gen says so (builds.ts).
-  void import('./builds.ts').then((B) => { void B.watchGenBuilds(); return B.reconcileBuilds().then(() => import('./buildfix.ts')).then((F) => F.resumeChains()); }).catch((e) => console.warn(`[studio] reconciling builds: ${e.message ?? e}`));
+  void import('./builds.ts').then((B) => { void B.watchGenBuilds(); void import('./buildaccess.ts').then((A) => A.resumeRetries()); return B.reconcileBuilds().then(() => import('./buildfix.ts')).then((F) => F.resumeChains()); }).catch((e) => console.warn(`[studio] reconciling builds: ${e.message ?? e}`));
   chooseBrain();
   const changes = resumeChanges();
   // Pull requests J merged on GitHub: their changes are marked merged (agents.ts), every 5 minutes.

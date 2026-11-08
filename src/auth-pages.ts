@@ -93,7 +93,7 @@ const meta = (req: http.IncomingMessage) => ({ ip: A.clientIp(req), ua: String(r
 function googleBlock(next: string) {
   const id = googleClientId();
   if (!id) return '';
-  return `<div id="g" style="display:flex;justify-content:center;min-height:44px;margin:4px 0 6px"></div><div class="err" id="gerr" hidden></div>
+  return `<div id="g" style="display:flex;justify-content:center;align-items:center;height:44px;min-width:200px;margin:4px 0 6px;overflow:hidden"></div><div class="err" id="gerr" hidden></div>
 <script src="https://accounts.google.com/gsi/client" async onload="hsGoogle()" onerror="var e=document.getElementById('gerr');e.hidden=false;e.textContent='Google sign-in could not load. Check your connection or blockers, then reload.'"></script>
 <script>function hsGoogle(){google.accounts.id.initialize({client_id:${JSON.stringify(id)},callback:function(r){fetch('/auth/google',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({credential:r.credential,next:${JSON.stringify(next)}})}).then(function(x){return x.json().then(function(j){if(x.ok)location.href=j.next||'/';else{var e=document.getElementById('gerr');e.hidden=false;e.className=j.waitlist?'ok':'err';e.textContent=j.error||('HTTP '+x.status);}});});}});google.accounts.id.renderButton(document.getElementById('g'),{theme:'filled_black',size:'large',text:'continue_with',shape:'pill'});}</script>
 <details style="margin-top:10px"><summary><small>Sign in with a password instead</small></summary>`;
@@ -220,15 +220,17 @@ export async function handleAuthRoute(req: http.IncomingMessage, res: http.Serve
     return true;
   }
   // Studio's own beta, for Studio's playtests (playtest-signin.ts): Google's button can't run on the beta address, so the
-  // playtest posts a signed token and gets a throwaway member's session. Only the beta lane, only with the secret set on
-  // it (STUDIO_TEST_SIGNIN_SECRET = `studio_project signin`'s secret for this project); never on live.
+  // playtest posts a signed token and gets a throwaway member's session. Only the beta lane, never live. With
+  // STUDIO_TEST_SIGNIN_SECRET set the token is checked with it; with none (the norm, nothing to copy) the beta asks the
+  // allowlisted Studio that signed it (POST /api/signin/verify there), and that Studio spends the one-time nonce.
   if (route === '/auth/test-session' && method === 'POST') {
-    const secret = process.env.STUDIO_TEST_SIGNIN_SECRET?.trim();
-    if (laneOf() !== 'beta' || !secret) { json(res, 404, { error: 'No test sign-in here.' }); return true; }
+    if (laneOf() !== 'beta') { json(res, 404, { error: 'No test sign-in here.' }); return true; }
     try {
-      const { checkSigninToken } = await import('./playtest-signin.ts');
+      const P = await import('./playtest-signin.ts');
       const body = await form(req);
-      checkSigninToken(body, secret, process.env.STUDIO_TEST_SIGNIN_PROJECT?.trim() || 'hawkesstudio');
+      const secret = process.env.STUDIO_TEST_SIGNIN_SECRET?.trim();
+      if (secret) P.checkSigninToken(body, secret, P.isStudioProject(body?.project) ? body.project : process.env.STUDIO_TEST_SIGNIN_PROJECT?.trim() || 'hawkesstudio');
+      else await P.verifyViaIssuer(body);
       const u = A.testUser();
       json(res, 200, { ok: true }, { 'Set-Cookie': signedInCookie(req, u, false, 'test') });
     } catch (e: any) {

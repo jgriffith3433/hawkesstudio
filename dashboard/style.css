@@ -18,6 +18,7 @@ header { display: flex; align-items: center; gap: 24px; padding: 12px 20px; bord
 .brand small { color: var(--dim); font-weight: 400; font-size: 12px; }
 .mark { display: inline-grid; place-items: center; width: 26px; height: 26px; border-radius: 6px; background: var(--accent); color: #062018; font-weight: 800; }
 nav { display: flex; gap: 4px; }
+nav.pending { visibility: hidden; } /* the full tab list in the HTML is replaced by the grouped one once /api/me answers (groups.js); never show it */
 nav button { background: none; border-color: transparent; }
 nav button.on { background: var(--panel2); border-color: var(--line); }
 .status { margin-left: auto; color: var(--dim); font-size: 12px; display: flex; gap: 12px; flex-wrap: wrap; }
@@ -555,6 +556,18 @@ body.lt-big-open { overflow: hidden; }
 .set-flash { outline: 2px solid var(--accent, #6cf); transition: outline-color 2s; }
 .empty p { margin: 4px 0; }
 
+/* The on-screen keyboard on a phone (talk.js sets --vvh, the visual viewport's height, and --kb, the keyboard's): Talk
+   fills what is left above it and the dock sheet rides on top of it, so the input is never hidden. */
+@media (max-width: 760px) {
+  #talk.on, .talk { max-height: calc(var(--vvh, 100dvh) - var(--hdr, 0px) - 10px); }
+  body.kb-open #talk.on { height: calc(var(--vvh, 100dvh) - 12px); min-height: 0; }
+  body.kb-open #talk.on > .talk { min-height: 0; }
+  body.kb-open:has(#talk.on) header { display: none; }
+  .talk-dock { bottom: var(--kb, 0px); }
+  body.kb-open .talk-dock { height: min(55dvh, calc(var(--vvh, 100dvh) - 8px)); }
+  .talk-input { padding-bottom: env(safe-area-inset-bottom, 0px); }
+}
+
 /* ---- Mobile cockpit (J, 2026-11-06: "J approves from a phone"). On a phone or any touch screen every control a thumb
    uses is at least 44px (Approve / Deny, Inbox answers, Changes, Roadmap, the tabs), and no page scrolls sideways:
    wide content (tables, code, long words) scrolls inside its own box or wraps. test/mobile-cockpit.test.ts keeps this. */
@@ -594,3 +607,22 @@ body.lt-big-open { overflow: hidden; }
 /* Roadmap board: a card per milestone, items with their state and blocker in words. */
 .rm-board { grid-template-columns: repeat(auto-fill, minmax(min(360px, 100%), 1fr)); margin: 8px 0 16px; }
 .rm-bitem { padding: 6px 0; border-top: 1px solid var(--line, #333); }
+
+
+/* Compact phone header (finding f_e797de0f5b21: the header took 36% of the screen). On a phone: the brand on one line,
+   ONE row of tabs that swipes sideways; the status dots, account row and Connect/Talk buttons leave the header (Connect
+   and the account links are in More; Talk is a tab) and only Activity stays, beside the brand. */
+.me-menu { display: none; }
+@media (min-width: 0) and (max-width: 760px) {
+  header { gap: 4px 10px; padding: 6px 10px; }
+  .brand { flex: 1 1 auto; min-width: 0; white-space: nowrap; font-size: 15px; }
+  .brand small[data-platform] { display: none; }
+  .brand .walk-badge { display: none; }
+  nav { order: 3; flex: 1 1 100%; flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; }
+  nav::-webkit-scrollbar { display: none; }
+  nav > button, nav .more { flex: 0 0 auto; white-space: nowrap; }
+  header > .status, header > .me, #connectBtn, #dockBtn { display: none; }
+  #actBtn { order: 2; flex: 0 0 auto; }
+  .me-menu { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 14px; padding: 10px 12px; border-top: 1px solid var(--line); }
+  .me-menu a { min-height: 44px; display: inline-flex; align-items: center; }
+}

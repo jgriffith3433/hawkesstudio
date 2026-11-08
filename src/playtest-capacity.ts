@@ -150,3 +150,43 @@ export async function savePlaytestSettings(patch: Record<string, any>, by: strin
   // An answer to the GET is the fuller one; if it failed, what the PUT said it applied.
   return view(got.state === 'ok' ? got : { state: 'ok', data: put.data });
 }
+
+/** The most browsers a run asks Gen for by itself (Settings can set up to MAX_BROWSERS). */
+export const AUTO_BROWSERS = 12;
+
+/**
+ * A daily run that plays many projects lifts Gen's browser cap to what it needs (J: "lift the 4-browser cap"), one
+ * PUT at the start of the run, never on a timer. Only when J hasn't chosen a number in Settings (his value stands), and
+ * never lowers it. Gen clamps to what its provider accounts allow. Returns the number Gen runs now, or null.
+ */
+export async function raiseForRun(plays: number): Promise<number | null> {
+  try {
+    const want = Math.min(AUTO_BROWSERS, Math.max(0, Math.round(plays)));
+    if (stored()?.value.browsers !== undefined) return null;
+    const got = await ask('GET');
+    if (got.state !== 'ok') return null;
+    const now = Number(got.data.browsers);
+    if (!Number.isFinite(now) || now >= want) return Number.isFinite(now) ? now : null;
+    const put = await ask('PUT', { browsers: want });
+    if (put.state !== 'ok') return now;
+    console.log(`[playtests] a run with ${plays} playtests: browsers ${now} -> ${Number(put.data.browsers) || want}`);
+    return Number(put.data.browsers) || want;
+  } catch { return null; }
+}
+
+/**
+ * Why a queued playtest is still waiting, in one plain sentence from Gen's live view (tabs in use, how many are ahead).
+ * Asked once per change of the job's state (an event), not on a timer. null when Gen can't say.
+ */
+export async function waitReason(job: string): Promise<string | null> {
+  try {
+    const now = await capacityApi.request('/playtests/live', { signal: AbortSignal.timeout(TIMEOUT_MS) });
+    const waiting: any[] = now?.waiting ?? [];
+    const i = waiting.findIndex((w) => w.job === job);
+    if (i < 0) return null;
+    const lanes = now?.lanes, cap = now?.capacity;
+    const limit = Number(lanes?.limit ?? cap?.browsers ?? cap?.limit), used = Number(lanes?.used ?? (now?.playing ?? []).length);
+    const tabs = Number.isFinite(limit) && limit > 0 ? `${Math.min(used, limit)} of ${limit} browser tabs are in use` : `${(now?.playing ?? []).length} playtests are playing`;
+    return `waiting for a free browser: ${tabs}, ${i} ahead in the queue`;
+  } catch { return null; }
+}

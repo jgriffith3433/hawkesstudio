@@ -77,6 +77,7 @@ fails unpushed; so does one touching the deploy scripts (`deploy/hawkes-pull.mjs
 provisioning), secrets handling (`deploy/secrets.mjs`, `deploy/*-token.mjs`, `src/claude.ts`, `bin/git-credential-hawkes`;
 Gen: `bin/fetch-secrets.mjs`, `src/auth.ts`), CI workflows or the hooks' token check (`src/github-oidc.ts`), unless J's
 request names the file. Infra agents and their checks run without GitHub, AWS or service keys in their environment.
+Gen's tests are a Studio check, not GitHub Actions (J, 2026-11-08, q_4d2d7ca6facf; free Actions minutes are used up until Dec 1): `verifyInfra` runs `npm test` with `checkEnv` (provider mocks, no keys) in the change's worktree; a red result is compared with beta's own result on the same check (`baselineFailures`, cached per beta commit in `.data/infra-baseline/`, `src/infra-tests.ts`), so a test already failing there is shown as "already failing on beta" and only new failures block. `approveInfra` refuses a change whose checks failed, which covers J's tap, delegated and walk-away merges.
 
 ## Run
 

@@ -181,20 +181,42 @@ export const managedNote = (p: Pick<Product, 'name' | 'managedBy'>) => `${p.name
 // (listPreviews), and parsing them each time held one CPU full for hours on 2026-11-06.
 let customerMemo: { sig: string; out: Product[] } | null = null;
 
+/**
+ * Phone playtests are standard (J, 2026-11-08: "Products must be mobile ready, so every playtest should prove it"):
+ * every desktop playtest has a phone twin (same scenario and place, device "phone": 390x844, touch, Gen's `mobile`),
+ * so daily runs show a phone result next to each desktop one. A project that already lists its own phone entry for a
+ * scenario keeps it; peers (multiplayer) runs stay desktop-only.
+ */
+export function withPhonePlaytests<T extends { scenario?: string; mode?: string; where: string; device?: 'desktop' | 'phone'; peers?: number }>(tests: T[]): T[] {
+  const key = (t: T) => `${t.scenario ?? t.mode ?? 'auto'}@${t.where}`;
+  const has = new Set(tests.filter((t) => t.device === 'phone').map(key));
+  const out: T[] = [];
+  for (const t of tests) {
+    out.push(t);
+    if (t.device !== 'phone' && !(Number(t.peers) > 1) && !has.has(key(t))) {
+      has.add(key(t));
+      const { peers: _p, ...rest } = t as any;
+      out.push({ ...rest, device: 'phone' } as T);
+    }
+  }
+  return out;
+}
+const withPhones = (p: Product): Product => (p.playtests?.length ? { ...p, playtests: withPhonePlaytests(p.playtests) } : p);
+
 export function loadProducts(): Product[] {
   // A new org cell has no products until onboarding adds one.
   if (customerStudio() && !fs.existsSync(paths.products)) return [];
   // A customer's games with a GitHub repo are products agents work on too (asAddedGame), the rest are played where they are.
   if (customerStudio()) {
     const sig = [paths.products, fileSig(paths.products), paths.games, fileSig(paths.games)].join('|');
-    if (customerMemo?.sig !== sig) customerMemo = { sig, out: (JSON.parse(fs.readFileSync(paths.products, 'utf8')).products as Product[]).map(asAddedGame) };
+    if (customerMemo?.sig !== sig) customerMemo = { sig, out: (JSON.parse(fs.readFileSync(paths.products, 'utf8')).products as Product[]).map(asAddedGame).map(withPhones) };
     return customerMemo.out.map((p) => ({ ...p }));
   }
   const all = JSON.parse(fs.readFileSync(paths.products, 'utf8')).products as Product[];
   // J's Studio: products.json first; a game added here never shadows one of its ids.
   const ids = new Set(all.map((p) => p.id));
   const over = buildOverrides();
-  return [...all.map((p) => withBuildOverrides(p, over)), ...addedGames().filter((p) => !ids.has(p.id)).map(asAddedGame)];
+  return [...all.map((p) => withPhones(withBuildOverrides(p, over))), ...addedGames().filter((p) => !ids.has(p.id)).map(asAddedGame).map(withPhones)];
 }
 
 // ------------------------------------------------------------------ settings Studio learned for a build
@@ -352,13 +374,20 @@ export function asCustomerGame(p: Product): Product {
   // customer's project with one failed its daily run and lost its playtests).
   const { build, ...rest } = p as Product & { build?: any };
   const own = build && !build.project ? { source: build } : build ? { build } : {};
+  // Hawkes Studio's own project: its beta is studio-beta, signed in by Studio's test sign-in, played in desktop and phone smoke.
+  const studio = p.id === 'hawkes-studio' || p.id === 'hawkesstudio' ? {
+    ...(p.beta ? {} : { beta: 'https://studio-beta.hawkesgen.ai' }),
+    ...(p.testSignIn ? {} : { testSignIn: { url: 'https://studio-beta.hawkesgen.ai/auth/test-session' } }),
+    ...(p.playtests?.length ? {} : { playtests: [{ scenario: 'smoke', where: 'local' as const }, { scenario: 'smoke', where: 'local' as const, device: 'phone' as const }] }),
+  } : {};
   return {
     ...rest,
     ...own,
+    ...studio,
     repo: p.repo ?? '',
     site: p.site ?? p.repo ?? '',
     live,
-    playtests: p.playtests ?? [],
+    playtests: studio.playtests ?? p.playtests ?? [],
     story: p.story ?? [],
     about: p.about ?? '',
     // Its "local" playtests are its beta's: the beta address when it has one, else where it plays.
@@ -529,7 +558,7 @@ export function saveProduct(input: ProductInput): Product {
   // plays its beta demo (2026-11-03: hawkes-analytics, hawkes-net-js and -unity reviews crawled github.com and said nothing).
   const noRealLive = !live || /^https:\/\/(www\.)?github\.com\//i.test(live);
   const defaultWhere = hasBeta && noRealLive ? ('beta' as const) : ('live' as const);
-  const playtests = (input.playtests?.length ? input.playtests : [{ scenario: 'smoke', where: defaultWhere }]).slice(0, 20).map((t) => {
+  const playtests = withPhonePlaytests(input.playtests?.length ? input.playtests : [{ scenario: 'smoke', where: defaultWhere }]).slice(0, 20).map((t) => {
     const onBeta = t.where === 'beta' || t.where === 'local';
     if (onBeta && !hasBeta) throw new StudioError('playtests: where "beta" needs a beta (a beta address or a build Studio publishes)', 400);
     const peers = Math.round(Number(t.peers) || 1);
@@ -645,6 +674,12 @@ export type Infra = {
   about: string;
   checks: string[];
   smoke: { start: string; portEnv: string; dataEnv: string; health: string; scripts: string; env?: Record<string, string> };
+  /** Offline flags for the checks (Gen's provider mocks): added to the secret-free environment of `checks`. */
+  checkEnv?: Record<string, string>;
+  /** The check that is compared with beta's own result (agents.ts verifyInfra): only tests new in the change block. */
+  baselineCheck?: string;
+  /** The branch a change is compared with (default: the change's base). */
+  baselineBranch?: string;
 };
 
 export function loadInfra(): Infra[] {

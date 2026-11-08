@@ -378,21 +378,66 @@ export function playerWork(s: Snapshot | null, noise: (message: string, stack: s
 
 // ------------------------------------------------------------------ studio_analytics
 
-export const VIEWS = ['overview', 'product', 'dropoff', 'levels', 'feedback', 'errors', 'frustration', 'engagement', 'accounts', 'builds', 'insights', 'session'] as const;
+/** Most raw events studio_analytics reads for the events view (Gen's export, oldest first). */
+export const EVENT_ROW_LIMIT = 20000;
+
+/** The one thing that fixes a refused or unreachable analytics read, for the tool's answer (never a key, never a file to look in). */
+export function analyticsFix(message: string, product?: string): string {
+  if (/no analytics product|unknown product/i.test(message)) return `Hawkes Analytics has no product "${product ?? '?'}": its pages don't send events to Gen yet (the analytics script tag or SDK isn't on them). Check the id with view overview.`;
+  if (/401|403|unauthori[sz]ed|forbidden|can't see|not allowed|key/i.test(message)) return `Studio's own Hawkes Gen access can't read analytics${product ? ` for ${product}` : ''} (${cut(message, 120)}). Ask J to check Studio's Gen connection in Settings; there is nothing for you to set up, and don't look for keys.`;
+  if (/isn't answering|reach|offline|502|ECONN/i.test(message)) return `Hawkes Gen isn't answering right now (${cut(message, 120)}). Try again later; nothing is wrong with the request.`;
+  return message;
+}
+
+/**
+ * Raw events of one name grouped by chosen props (a prop, else the event's level or screen). Rows are Gen's export rows;
+ * `limit` is how many were asked for, so a full answer says it may be cut off (oldest first).
+ */
+export function eventBreakdown(rows: any[], event: string, by: string[], limit = EVENT_ROW_LIMIT) {
+  const mine = (Array.isArray(rows) ? rows : []).filter((r) => r?.name === event);
+  const sessions = new Set(mine.map((r) => r.session));
+  const val = (r: any, k: string) => { const v = r.props?.[k] ?? (k === 'level' || k === 'screen' || k === 'page' || k === 'build' ? r[k] : undefined); return v == null || v === '' ? '(none)' : typeof v === 'object' ? cut(JSON.stringify(v), 60) : cut(v, 60); };
+  const groups = new Map<string, { key: Record<string, string>; count: number; sessions: Set<string> }>();
+  for (const r of mine) {
+    const key = Object.fromEntries(by.map((k) => [k, val(r, k)]));
+    const id = JSON.stringify(key);
+    const g = groups.get(id) ?? { key, count: 0, sessions: new Set<string>() };
+    g.count++; g.sessions.add(r.session); groups.set(id, g);
+  }
+  const names = new Map<string, number>();
+  for (const r of Array.isArray(rows) ? rows : []) if (r?.name) names.set(r.name, (names.get(r.name) ?? 0) + 1);
+  const propKeys = new Map<string, number>();
+  for (const r of mine) for (const k of Object.keys(r.props ?? {})) propKeys.set(k, (propKeys.get(k) ?? 0) + 1);
+  return {
+    event, by, events: mine.length, sessions: sessions.size, rowsRead: Array.isArray(rows) ? rows.length : 0, mayBeCutOff: (Array.isArray(rows) ? rows.length : 0) >= limit,
+    groups: [...groups.values()].sort((a, b) => b.count - a.count).slice(0, 30).map((g) => ({ ...g.key, count: g.count, sessions: g.sessions.size })),
+    propKeys: [...propKeys.entries()].sort((a, b) => b[1] - a[1]).map(([k]) => k).slice(0, 20),
+    otherEvents: mine.length ? [] : [...names.entries()].sort((a, b) => b[1] - a[1]).slice(0, 15).map(([name, count]) => ({ name, count })),
+  };
+}
+
+export const VIEWS = ['overview', 'product', 'sessions', 'events', 'dropoff', 'levels', 'feedback', 'errors', 'frustration', 'engagement', 'accounts', 'builds', 'insights', 'session'] as const;
 export type View = (typeof VIEWS)[number];
 
 /** Studio's analytics route (src/analytics.ts, under /api/analytics) for a view, or an error message. */
-export function viewRoute(a: { view?: string; product?: string; session?: string; user?: string; range?: string; env?: string; build?: string; device?: string; browser?: string; country?: string; from?: string; to?: string; a?: string; b?: string }) {
+export function viewRoute(a: { event?: string; limit?: string | number; view?: string; product?: string; session?: string; user?: string; range?: string; env?: string; build?: string; device?: string; browser?: string; country?: string; from?: string; to?: string; a?: string; b?: string }) {
   const view = (a.view || (a.product ? 'product' : 'overview')) as View;
   if (!VIEWS.includes(view)) throw new Error(`view: ${VIEWS.join(' | ')}`);
   if (view !== 'overview' && !a.product) throw new Error(`view ${view} needs a product`);
   if (view === 'session' && !a.session) throw new Error('view session needs session (its id, s_...)');
+  if (view === 'events' && !a.event) throw new Error('view events needs event (the event name, e.g. stuck)');
   const params = new URLSearchParams();
   for (const k of ['range', 'env', 'build', 'device', 'browser', 'country', 'from', 'to', ...(view === 'builds' ? ['a', 'b'] : []), ...(view === 'accounts' ? [] : ['user'])] as const) {
     const v = (a as any)[k];
     if (v != null && v !== '') params.set(k, String(v));
   }
   const p = encodeURIComponent(String(a.product ?? ''));
+  // Custom events: Gen has no route that groups by props, so Studio reads the raw events (export) and groups them itself.
+  if (view === 'events') {
+    params.set('what', 'events');
+    params.set('limit', String(Math.min(EVENT_ROW_LIMIT, Math.max(1, Math.floor(Number(a.limit)) || EVENT_ROW_LIMIT))));
+    return { view, path: `/api/analytics/${p}/export?${params.toString()}` };
+  }
   const path = view === 'overview' ? '/api/analytics/overview' : view === 'product' ? `/api/analytics/${p}` : view === 'session' ? `/api/analytics/${p}/sessions/${encodeURIComponent(String(a.session))}`
     : view === 'accounts' && a.user ? `/api/analytics/${p}/accounts/${encodeURIComponent(String(a.user))}` : `/api/analytics/${p}/${view}`;
   const qs = params.toString();
@@ -431,6 +476,18 @@ export function compactView(view: View, d: any, scope = 'live, last 30 days unle
     for (const x of [retentionLine(data.retention), dropoffLine(d?.dropoff), hardestLine(d?.levels ?? []), ratingLine(d?.feedback)]) if (x) say.push(x);
     if (d?.errors?.sessions) say.push(`${pct(d.errors.errorRate)} of ${d.errors.sessions} sessions hit an error${data.topErrors[0] ? `; the most common: ${errorLine(d.errors.groups[0], d.errors.sessions)}` : ''}.`);
     if (data.funnelLoss && data.funnelLoss.of >= 20) say.push(`The funnel loses the most between ${data.funnelLoss.after} and ${data.funnelLoss.before}: ${data.funnelLoss.lost} of ${data.funnelLoss.of} (${pct(data.funnelLoss.rate)}).`);
+  } else if (view === 'sessions') {
+    data = { sessions: d?.sessions, players: d?.players, medianActiveSeconds: d?.medianActiveSeconds, p90ActiveSeconds: d?.p90ActiveSeconds, daily: Array.isArray(d?.daily) ? d.daily.slice(-31) : undefined };
+    say.push(num(d?.sessions) ? `${num(d.sessions)} sessions from ${num(d.players)} players; median session ${secs(d.medianActiveSeconds)} of active play${num(d.sessions) < MIN.sessions ? ` (under ${MIN.sessions} sessions: a small sample)` : ''}.` : 'No sessions from real players in the range.');
+  } else if (view === 'events') {
+    data = d;
+    if (!d?.events) say.push(`No "${d?.event}" events from real players in the range (${num(d?.rowsRead)} events read).${d?.otherEvents?.length ? ` Events that do exist: ${d.otherEvents.map((x: any) => x.name).join(', ')}.` : ' There are no events at all.'}`);
+    else {
+      say.push(`${d.events} "${d.event}" events in ${d.sessions} sessions${d.by.length ? `, grouped by ${d.by.join(' and ')}` : ''}${d.events < MIN.attempts ? ` (under ${MIN.attempts}: a small sample)` : ''}.`);
+      for (const g of d.groups.slice(0, 8)) say.push(`${d.by.map((k: string) => `${k} ${g[k]}`).join(', ') || 'all'}: ${g.count} times in ${g.sessions} sessions.`);
+      if (d.mayBeCutOff) say.push(`Gen's export was cut at ${d.rowsRead} events (oldest first): a shorter range gives the newest players.`);
+      if (!d.by.length) say.push(`Props on it: ${d.propKeys.join(', ') || 'none'}. Pass by to group.`);
+    }
   } else if (view === 'dropoff') {
     data = { sessions: d?.sessions, beforeReady: d?.beforeReady, biggest: d?.biggest, byLevel: (d?.byLevel ?? []).slice(0, 10), byScreen: (d?.byScreen ?? []).slice(0, 8), byEvent: (d?.byEvent ?? []).slice(0, 8) };
     const l = dropoffLine(d);

@@ -287,3 +287,46 @@ test('what gets in the way and where the time goes: report lines, work over the 
   const ac = P.compactView('accounts', { total: 1, identifiedSessions: 3, accounts: [{ user: 'usr_0123456789abcdef', sessions: 3, activeSeconds: 900, topActivities: [{ name: 'build', value: 600 }], frustrationKinds: [{ name: 'out_of_credits', value: 2 }], milestones: { signup: 1 } }] });
   assert.match(ac.sentences[1], /usr_0123456789abcdef: 3 sessions, 15 min active; time on build 10 min; got in the way: out_of_credits ×2; signup ×1\./);
 });
+
+test('studio_analytics events and sessions views: grouped by props, no access, empty data, unknown event', async () => {
+  assert.equal(P.viewRoute({ product: 'phorigins', view: 'sessions', range: '14d' }).path, '/api/analytics/phorigins/sessions?range=14d');
+  assert.equal(P.viewRoute({ product: 'phorigins', view: 'events', event: 'stuck', range: '7d', limit: 500 }).path, '/api/analytics/phorigins/export?range=7d&what=events&limit=500');
+  assert.match(P.viewRoute({ product: 'phorigins', view: 'events', event: 'stuck' }).path, /limit=20000$/);
+  assert.throws(() => P.viewRoute({ product: 'phorigins', view: 'events' }), /needs event/);
+
+  const rows = [
+    ...Array.from({ length: 24 }, (_, i) => ({ name: 'stuck', session: `s${i % 6}`, level: '2', props: { level: 2, objective: i % 3 ? 'key' : 'door' } })),
+    { name: 'stuck', session: 's9', props: { level: 3 } }, { name: 'level_start', session: 's1', level: '2', props: {} },
+  ];
+  let throwMsg: string | null = null;
+  const asked: string[] = [];
+  const server = studioMcp({ studio: (async (p: string) => { asked.push(p); if (throwMsg) throw new Error(throwMsg); return p.includes('/export?') ? { rows } : { sessions: 12, players: 8, medianActiveSeconds: 70 }; }) as any, waitRun: (async () => ({})) as any });
+  const tool = server.tools.find((t) => t.name === 'studio_analytics')!;
+  const ev: any = await tool.run({ product: 'phorigins', view: 'events', event: 'stuck', by: 'level,objective', range: '14d' });
+  assert.match(ev.sentences[0], /25 "stuck" events in 7 sessions, grouped by level and objective/);
+  assert.deepEqual(ev.data.groups[0], { level: '2', objective: 'key', count: 16, sessions: 4 });
+  assert.ok(ev.data.groups.some((g: any) => g.level === '3' && g.objective === '(none)'));
+  assert.equal(ev.data.mayBeCutOff, false);
+  const sm: any = await tool.run({ product: 'phorigins', view: 'sessions' });
+  assert.match(sm.sentences[0], /12 sessions from 8 players.*under 30 sessions: a small sample/);
+
+  // An event nobody sent: says so and lists the ones that exist.
+  const none: any = await tool.run({ product: 'phorigins', view: 'events', event: 'nosuch' });
+  assert.match(none.sentences[0], /No "nosuch" events.*Events that do exist: stuck, level_start/);
+  // Empty data.
+  rows.length = 0;
+  const empty: any = await tool.run({ product: 'phorigins', view: 'events', event: 'stuck' });
+  assert.match(empty.sentences[0], /There are no events at all/);
+  // Cut off at the row limit.
+  const cut = P.eventBreakdown([{ name: 'a', session: 's', props: {} }, { name: 'a', session: 's', props: {} }], 'a', [], 2);
+  assert.equal(cut.mayBeCutOff, true);
+
+  // No access: one fix, no key hunting.
+  throwMsg = 'HTTP 403 forbidden';
+  await assert.rejects(tool.run({ product: 'phorigins', view: 'levels' }), /Studio's own Hawkes Gen access.*don't look for keys/);
+  throwMsg = 'No analytics product nosuch';
+  await assert.rejects(tool.run({ product: 'nosuch', view: 'sessions' }), /no product "nosuch"/);
+  throwMsg = "Hawkes Gen isn't answering: x";
+  await assert.rejects(tool.run({ product: 'phorigins', view: 'levels' }), /Try again later/);
+  assert.ok(asked.every((p) => p.startsWith('/api/analytics/')), 'GET reads of Studio\'s analytics proxy only');
+});

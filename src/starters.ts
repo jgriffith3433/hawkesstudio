@@ -102,13 +102,22 @@ concurrency:
 jobs:
   notify:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 15
     steps:
       - name: Tell Hawkes Studio
+        env:
+          STUDIO: ${host}
         run: |
-          token=$(curl -sSf -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=${host}" | jq -r .value)
-          curl -sS --fail-with-body --retry 8 --retry-delay 15 --retry-max-time 240 --retry-all-errors \\
-            -X POST -H "Authorization: Bearer $token" ${host}/api/hooks/github
+          # Studio can be restarting (a new version going out): ask again, with a fresh token each time, for about
+          # ten minutes. Only this step fails if it never answers; the build and the deploy are other workflows.
+          for attempt in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+            token=$(curl -sSf -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=$STUDIO" | jq -r .value) || token=""
+            if [ -n "$token" ] && curl -sS --fail-with-body --max-time 30 -X POST -H "Authorization: Bearer $token" "$STUDIO/api/hooks/github"; then
+              echo "Studio told on attempt $attempt"; exit 0
+            fi
+            echo "Studio did not answer (attempt $attempt of 20); trying again in 30 seconds"; sleep 30
+          done
+          echo "Studio could not be reached after 20 attempts"; exit 1
 `;
 }
 

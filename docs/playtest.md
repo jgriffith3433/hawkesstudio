@@ -244,7 +244,11 @@ shows every run with all of this, next to the previous run of the same scenario.
 
 - **Stuck runs:** if the page, browser or tunnel stops answering, the runner kills the browser and ends the run as
   `stuck`, keeping what it recorded. A page that freezes its main thread for a minute counts.
-- **Phones:** a playtest with `device: "phone"` in `products.json` plays at 390x844 with touch input (no keyboard).
+- **Phones are standard** (`config.ts withPhonePlaytests`): every project's desktop playtest has a phone twin
+  (`<scenario>@<where>:phone`) added when products load or are saved, so a new project starts with a desktop and a
+  phone smoke and daily runs show the phone result next to the desktop one. List your own phone entry to keep it;
+  `peers` (multiplayer) runs stay desktop-only.
+- **Phones:** a playtest with `device: "phone"` plays at 390x844 with touch input (no keyboard).
   Bots should play through touch there (or the game should show touch controls), and Claude judges touch controls,
   text size and layout.
 - **Visual changes:** screenshots at the same events (load, ready, each new `scene`, the end) are compared with the

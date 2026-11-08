@@ -13,12 +13,13 @@ process.env.STUDIO_PROJECTS = path.join(tmp, 'Projects');
 process.env.STUDIO_PRODUCTS = path.join(tmp, 'products.json');
 fs.mkdirSync(process.env.STUDIO_PROJECTS, { recursive: true });
 fs.mkdirSync(process.env.STUDIO_DATA, { recursive: true });
-fs.writeFileSync(process.env.STUDIO_PRODUCTS, JSON.stringify({ products: ['vwgame', 'vwdead'].map((id, i) => ({
-  id, name: `Verdict ${id}`, framing: 'test', engine: 'static', repo: 'site', site: 'site', live: 'https://gone.example/', github: `acme/${id}`,
+fs.writeFileSync(process.env.STUDIO_PRODUCTS, JSON.stringify({ products: ['vwgame', 'vwdead', 'vwlib', 'vwhook'].map((id, i) => ({
+  id, name: `Verdict ${id}`, framing: 'test', engine: 'static', repo: 'site', site: 'site', live: id === 'vwlib' ? 'https://github.com/acme/vwlib' : 'https://gone.example/', github: `acme/${id}`,
   local: { serve: 'static', dir: 'site', port: 8790 + i, path: '/' }, playtests: [{ scenario: 'smoke', where: 'local' }], story: [], about: 'A fixture.',
 })) }));
 
-const { db, J } = await import('../src/db.ts');
+const { db, J, parse } = await import('../src/db.ts');
+const { getProduct } = await import('../src/config.ts');
 await import('../src/agents.ts'); // the changes table and the agent settings
 const { askJ } = await import('../src/pm.ts');
 const { listQuestions } = await import('../src/roadmap.ts');
@@ -82,19 +83,69 @@ test('a verdict that is not bad starts nothing and clears its card', async () =>
   assert.equal(V.verdictLabel('vwgame'), null);
 });
 
-test('no finding to fix: ONE Inbox card that says why, merged on repeat, closed when the verdict clears', async () => {
+test('no open finding behind it: one re-check starts, no card; the same commit never starts a second', async () => {
   db.prepare("DELETE FROM findings").run();
-  review('vwgame', 'broken');
+  finding('vwgame', 'Already fixed', { status: 'fixed' });
+  betas.length = 0;
+  const run = review('vwgame', 'broken', { sha: 'aaa1111' });
   const r = await V.actOnVerdict('vwgame', 'test', deps());
-  assert.equal(r.action, 'card');
+  assert.equal(r.action, 'started');
+  assert.deepEqual(betas, [{ product: 'vwgame', reverify: true, playtest: true }]);
+  assert.equal(listQuestions().filter((q) => q.subject === 'verdict:vwgame').length, 0, 'no card');
+  // Asked again on the same review/commit while nothing new came: nothing more starts.
   await V.actOnVerdict('vwgame', 'test', deps());
-  const cards = listQuestions().filter((q) => q.subject === 'verdict:vwgame');
-  assert.equal(cards.length, 1, 'a repeat merges into the open card');
-  assert.match(cards[0].text, /no open finding/);
-  assert.equal(V.verdictLabel('vwgame', SETTINGS)!.state, 'needs-you');
-  review('vwgame', 'ship');
-  await V.actOnVerdict('vwgame', 'test', deps());
+  assert.equal(betas.length, 1);
+  // The re-check's own review (a reverify run) still reads bad with nothing open: stale, label cleared, decision logged.
+  const rr = review('vwgame', 'fix-first', { sha: 'aaa1111' });
+  db.prepare("UPDATE runs SET kind = 'beta', options = ? WHERE id = ?").run(J({ reverify: true }), rr);
+  const s2 = await V.actOnVerdict('vwgame', 'test', deps());
+  assert.equal(s2.action, 'none');
+  assert.equal(betas.length, 1, 'no second re-check');
+  assert.equal(V.verdictLabel('vwgame', SETTINGS), null, 'the red label is cleared');
+  assert.equal(V.latestVerdict('vwgame')!.verdict, 'stale');
   assert.equal(listQuestions().filter((q) => q.subject === 'verdict:vwgame').length, 0);
+  assert.ok(db.prepare("SELECT 1 FROM pm_log WHERE action = 'verdict-stale'").get());
+  void run;
+});
+
+test('a second bad verdict on the same commit files nothing and starts nothing', async () => {
+  betas.length = 0;
+  review('vwgame', 'broken', { sha: 'aaa1111' });
+  const first = await V.actOnVerdict('vwgame', 'test', deps());
+  assert.equal(first.action, 'none', 'already re-checked on this commit');
+  assert.equal(betas.length, 0);
+  assert.equal(listQuestions().filter((q) => q.subject === 'verdict:vwgame').length, 0);
+});
+
+test('the label says why it is re-checking, and an open card is closed when nothing is open behind the verdict', async () => {
+  db.prepare("DELETE FROM findings").run();
+  db.prepare("DELETE FROM pm_log").run();
+  await askJ('stale card', { subject: 'verdict:vwgame', product: 'vwgame', from: 'verdicts', topic: 'verdict' });
+  assert.equal(listQuestions().filter((q) => q.subject === 'verdict:vwgame').length, 1);
+  betas.length = 0;
+  review('vwgame', 'fix-first', { sha: 'bbb2222' });
+  await V.actOnVerdict('vwgame', 'test', deps({ startBeta: (product, o) => { betas.push({ product, reverify: o.reverify, playtest: o.playtest }); db.prepare("INSERT INTO runs (id, kind, status, products, options, started) VALUES ('r_re2', 'beta', 'running', ?, ?, ?)").run(J([product]), J({ reverify: true }), Date.now()); return { id: 'r_re2', done: new Promise(() => {}) }; } }));
+  assert.equal(listQuestions().filter((q) => q.subject === 'verdict:vwgame').length, 0, 'card closed');
+  const label = V.verdictLabel('vwgame', SETTINGS)!;
+  assert.equal(label.state, 'rechecking');
+  assert.match(label.reason!, /every finding behind it is fixed/);
+  db.prepare("UPDATE runs SET status = 'done' WHERE id = 'r_re2'").run();
+});
+
+test('an answered verdict card is not filed again for the same review', async () => {
+  db.prepare("DELETE FROM findings").run();
+  finding('vwgame', 'Quiet polish', { severity: 'polish' });
+  review('vwgame', 'fix-first', { sha: 'ccc3333' });
+  const before = listQuestions().length;
+  assert.equal((await V.actOnVerdict('vwgame', 'test', deps())).action, 'card');
+  const q = listQuestions().find((x) => x.subject === 'verdict:vwgame')!;
+  const { setQuestion } = await import('../src/roadmap.ts');
+  setQuestion(q.id, { status: 'answered', answer: 'Run a full playtest again', answered_by: 'J' });
+  assert.equal((await V.actOnVerdict('vwgame', 'test', deps())).action, 'none');
+  assert.equal(listQuestions().length, before, 'not asked again');
+  // A new review with a new bad verdict may ask.
+  review('vwgame', 'fix-first', { sha: 'ddd4444' });
+  assert.equal((await V.actOnVerdict('vwgame', 'test', deps())).action, 'card');
 });
 
 test("won't fix and the retry cap are honoured: a card names why, no fixer starts", async () => {
@@ -195,3 +246,56 @@ test('the dashboard label names the verdict, the review age and commit, and what
   assert.match(src, /needs you: /);
   assert.match(src, /reviewed \$\{ago\(vw\.at\)\}\$\{vw\.commit/);
 });
+
+test('a library (its live address is its GitHub page, no beta) reads nothing to playtest: grey, no fixer, no card, no re-check', async () => {
+  started.length = 0;
+  betas.length = 0;
+  finding('vwlib', 'The module export is missing');
+  review('vwlib', 'fix-first', { summary: 'Works, but has problems to fix first' });
+  const r = await V.actOnVerdict('vwlib', 'test', deps());
+  assert.equal(r.action, 'none');
+  assert.equal(started.length, 0, 'no fixer');
+  assert.equal(betas.length, 0, 'no re-check');
+  assert.equal(listQuestions().filter((q) => q.subject === 'verdict:vwlib').length, 0, 'no Inbox card');
+  assert.equal(V.latestVerdict('vwlib')!.verdict, V.NEUTRAL);
+  assert.equal(V.verdictLabel('vwlib', SETTINGS), null, 'no red label');
+  // The Projects page reads the same review as neutral too (readReview), and the stored review is left as it was.
+  const row = db.prepare("SELECT * FROM steps WHERE product = 'vwlib' AND kind = 'review' ORDER BY started DESC LIMIT 1").get() as any;
+  const read = V.readReview('vwlib', { ...row, data: parse(row.data) });
+  assert.equal(read!.data.verdict, V.NEUTRAL);
+  assert.equal(read!.data.verdictWas, 'fix-first');
+  assert.equal(V.libraryProject(getProduct('vwlib')), true);
+  assert.equal(V.libraryProject(getProduct('vwgame')), false, 'a game with a playable page is not a library');
+});
+
+test('a page that never exposed the playtest hook: red with an open finding behind it, nothing to playtest once none is open', async () => {
+  started.length = 0;
+  const f = finding('vwhook', 'The title screen never appears');
+  const run = review('vwhook', 'fix-first', { sha: 'eee5555' });
+  playtest(run, 'vwhook', 'failed', 'The page never exposed window.hawkesPlaytest (waited 90 s)');
+  assert.equal(V.hookMissing('The page never exposed window.hawkesPlaytest (waited 90 s)'), true);
+  assert.equal(V.hookMissing('the bot got stuck on level 2'), false);
+  // A game with an open finding stays red: the fix-first verdict stands and a fixer starts on the finding.
+  assert.equal(V.nothingToPlay('vwhook'), false);
+  assert.equal(V.latestVerdict('vwhook')!.verdict, 'fix-first');
+  assert.equal((await V.actOnVerdict('vwhook', 'test', deps())).action, 'started');
+  assert.equal(started[0].findings[0], f);
+  assert.equal(V.verdictLabel('vwhook', SETTINGS)!.state, 'fixing');
+  // Its finding fixed, and the playtest skipped as nothing to play (what the playtest step records): neutral, not red.
+  db.prepare("UPDATE findings SET status = 'fixed' WHERE id = ?").run(f);
+  db.prepare("INSERT INTO steps (id, run, product, kind, name, status, detail, data, started, finished) VALUES (?, ?, 'vwhook', 'playtest', 'smoke@live', 'skipped', 'nothing to playtest', ?, ?, ?)")
+    .run(`s_${++n}sk`, run, J({ unplayable: true }), Date.now() + 1000, Date.now() + 1000);
+  assert.equal(V.nothingToPlay('vwhook'), true);
+  assert.equal(V.latestVerdict('vwhook')!.verdict, V.NEUTRAL);
+  const betasBefore = betas.length;
+  assert.equal((await V.actOnVerdict('vwhook', 'test', deps())).action, 'none', 'no re-check, no card for nothing to playtest');
+  assert.equal(betas.length, betasBefore);
+  assert.equal(listQuestions().filter((q) => q.subject === 'verdict:vwhook').length, 0);
+});
+
+test('the dashboard names the neutral verdict and reads it grey, not red', () => {
+  const src = fs.readFileSync(path.join(import.meta.dirname, '..', 'dashboard', 'app.js'), 'utf8');
+  assert.match(src, /'nothing-to-playtest': 'Nothing to playtest'/);
+  assert.match(src, /r\?\.verdict === 'nothing-to-playtest'/);
+});
+

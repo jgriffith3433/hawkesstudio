@@ -41,8 +41,8 @@ export type CompileResult = {
 db.exec(`CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated INTEGER NOT NULL, by TEXT)`);
 
 // ---- the setting (Settings → Builds; settings.ts section `builds`)
-export type BuildsSettings = { /** Compile agents' Unity changes in Hawkes Gen before they may merge. */ unityCompile: boolean; /** Dollars: the gate skips while the measured average per run is above this. */ unityCompileMaxCost: number };
-export const BUILDS_DEFAULTS: BuildsSettings = { unityCompile: true, unityCompileMaxCost: COST_STOP_USD };
+export type BuildsSettings = { /** Compile agents' Unity changes in Hawkes Gen before they may merge. */ unityCompile: boolean; /** Dollars: the gate skips while the measured average per run is above this. */ unityCompileMaxCost: number; /** Retry transient build failures by itself and turn access problems into one Inbox card (buildaccess.ts). */ handleFailures: boolean };
+export const BUILDS_DEFAULTS: BuildsSettings = { unityCompile: true, unityCompileMaxCost: COST_STOP_USD, handleFailures: true };
 
 export function buildsSettings(): BuildsSettings {
   const r = db.prepare(`SELECT value FROM settings WHERE key = 'builds'`).get() as { value: string } | undefined;
@@ -55,6 +55,7 @@ export function saveBuildsSettings(patch: Record<string, any>, by = 'J'): Builds
   const next = buildsSettings();
   for (const [k, v] of Object.entries(patch ?? {})) {
     if (k === 'unityCompile') { if (typeof v !== 'boolean') throw new Error('builds.unityCompile: true or false'); next.unityCompile = v; continue; }
+    if (k === 'handleFailures') { if (typeof v !== 'boolean') throw new Error('builds.handleFailures: true or false'); next.handleFailures = v; continue; }
     if (k === 'unityCompileMaxCost') {
       const n = Number(v);
       if (!(Number.isFinite(n) && n >= 0.1 && n <= 100)) throw new Error('builds.unityCompileMaxCost: 0.10 to 100 (dollars per run)');

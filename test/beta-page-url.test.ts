@@ -50,3 +50,35 @@ test('other builds have no page of their own to play elsewhere', async () => {
   assert.equal(siteBuildPublish([{ id: 'web', publish: { project: 'site', path: 'Game/' } }] as any), null);
   assert.equal(siteBuildPublish([{ id: 'web', publish: { project: 'site', path: 'Game/', commit: true } }] as any), null);
 });
+
+// 2026-11-08: ph-origins (live https://phorigins.com/play/game.html) played its beta root, the lore site, whose
+// contract has only smoke, so every other scenario skipped. The game page is the live path under the beta root.
+test("an added game is played at its live page's path under the beta root", async () => {
+  const { betaPageUrl } = await import('../src/pipeline.ts');
+  const phroot = 'https://sites.hawkesgen.ai/o/j-studio-4f12/ph-origins/';
+  const ph = { site: 'phoriginswebsite', repo: 'phoriginswebsite', github: 'jgriffith3433/phoriginswebsite', live: 'https://phorigins.com/play/game.html' };
+  assert.equal(betaPageUrl(phroot, ph), `${phroot}play/game.html`);
+  // GitHub Pages' project page: the repo's name is the beta root itself
+  assert.equal(betaPageUrl(root, { github: 'acme/yooba', live: 'https://acme.github.io/yooba/' }), root);
+  assert.equal(betaPageUrl(root, { github: 'acme/yooba', live: 'https://acme.github.io/yooba/play/' }), `${root}play/`);
+  assert.equal(betaPageUrl(root, { github: 'acme/yooba', live: 'https://yooba.com/' }), root);
+  assert.equal(betaPageUrl(root, { github: 'acme/yooba', live: 'not a url' }), root);
+});
+
+// 2026-11-08 regression: a library's live URL is its GitHub repo; its path is not a page of its beta site.
+test("a project whose live address is a repo page plays its beta root; other products land on their own page", async () => {
+  const { betaPageUrl } = await import('../src/pipeline.ts');
+  const at = (id: string) => `https://sites.hawkesgen.ai/o/j-studio-4f12/${id}/`;
+  for (const [id, repo] of [['hawkes-net-babylon', 'hawkesnet-babylon'], ['hawkes-net-unity', 'hawkesnet-unity'], ['hawkes-net-js', 'hawkesnet-js'], ['hawkes-analytics', 'hawkes-analytics']]) {
+    assert.equal(betaPageUrl(at(id), { site: repo, repo, github: `jgriffith3433/${repo}`, live: `https://github.com/jgriffith3433/${repo}` }), at(id), id);
+    assert.equal(betaPageUrl(at(id), { github: `jgriffith3433/${repo}`, live: `https://github.com/jgriffith3433/${repo}/` }), at(id), id);
+  }
+  // GitHub Pages project pages: the repo name is the root, what follows is the page
+  assert.equal(betaPageUrl(at('yoobalandgame'), { github: 'jgriffith3433/YoobaLandGame', live: 'https://jgriffith3433.github.io/YoobaLandGame/' }), at('yoobalandgame'));
+  assert.equal(betaPageUrl(at('yoobalandgame'), { github: 'jgriffith3433/YoobaLandGame', live: 'https://jgriffith3433.github.io/YoobaLandGame/Game/' }), `${at('yoobalandgame')}Game/`);
+  assert.equal(betaPageUrl(at('yoobaland'), { site: 'YoobaLandGame', github: 'jgriffith3433/YoobaLand', live: 'https://jgriffith3433.github.io/YoobaLandGame/Game/' }), `${at('yoobaland')}YoobaLandGame/`);
+  // the games' own sites keep their live path
+  assert.equal(betaPageUrl(at('sick-of-it'), { github: 'jgriffith3433/sickofitgamewebsite', live: 'https://hawkesgames.com/play/sickofit/' }), `${at('sick-of-it')}play/sickofit/`);
+  assert.equal(betaPageUrl(at('place-department-unity'), { github: 'jgriffith3433/theplacedepartmentwebsite', live: 'https://theplacedepartment.com/Game/' }), `${at('place-department-unity')}Game/`);
+  assert.equal(betaPageUrl(at('ph-origins'), { github: 'jgriffith3433/phoriginswebsite', live: 'https://phorigins.com/play/game.html' }), `${at('ph-origins')}play/game.html`);
+});

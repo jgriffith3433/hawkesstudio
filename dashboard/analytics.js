@@ -20,6 +20,8 @@
     .an-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(310px, 1fr)); gap: 14px; }
     .an-card { cursor: pointer; } .an-card:hover { border-color: var(--accent); }
     .an-card.empty { opacity: .75; }
+    .an-events { display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: center; min-width: 0; overflow-wrap: anywhere; }
+    .an-events .pill.quiet { color: var(--red); border-color: rgba(255,107,107,.4); font-weight: 600; }
     .an-kpis { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 8px; }
     .an-kpi { background: var(--panel2); border-radius: 7px; padding: 6px 8px; } .an-kpi b { display: block; font-size: 16px; }
     .an-up { color: var(--accent); font-size: 12px; } .an-down { color: var(--red); font-size: 12px; } .an-flat { color: var(--dim); font-size: 12px; }
@@ -50,7 +52,27 @@
     .an-players td button + button { margin-left: 4px; }
     .an-players td .meta { font-size: 12px; }
     .an-sec-nav { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 12px; font-size: 13px; }
-    @media (max-width: 700px) { .an-grid { grid-template-columns: 1fr; } .an-cards { grid-template-columns: 1fr; } }`;
+    @media (max-width: 700px) { .an-grid { grid-template-columns: 1fr; } .an-cards { grid-template-columns: minmax(0, 1fr); } .an-card { min-width: 0; } }
+    /* On a phone (finding: make the per-product page work at 390px): totals stack, charts and sparklines fit the width,
+       event lists and tables scroll inside their own card, and every link, sort header and tappable row is 44px. */
+    @media (max-width: 760px), (pointer: coarse) {
+      .an-total { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; }
+      .an-kpis { grid-template-columns: repeat(auto-fill, minmax(min(120px, 100%), 1fr)); }
+      .an-box, .an-card, .an-total { min-width: 0; max-width: 100%; }
+      .an-chart, .an-spark { max-width: 100%; height: auto; }
+      .an-legend { flex-wrap: wrap; gap: 4px 14px; }
+      .an-scroll { max-width: 100%; max-height: 60vh; overflow: auto; -webkit-overflow-scrolling: touch; overscroll-behavior: contain; }
+      .an-events { max-height: 6.5em; overflow-y: auto; }
+      .an-box pre { max-width: 100%; }
+      .an-bars .row { grid-template-columns: minmax(70px, 34%) minmax(0, 1fr) auto; }
+      .an-sec-nav { gap: 0 4px; }
+      .an-sec-nav a, .an-box a, .an-bar a, .an-total a, [data-an-back], .an-bar .pill a { display: inline-flex; align-items: center; justify-content: center; min-height: 44px; min-width: 44px; padding: 0 6px; }
+      .an-box th[data-sort], .an-box th { min-height: 44px; padding-top: 12px; padding-bottom: 12px; }
+      .an-box tr[data-an-session] td, .an-box td { padding-top: 10px; padding-bottom: 10px; }
+      .an-card { min-height: 44px; }
+      .an-bar label { min-height: 44px; }
+      .an-players td button { min-height: 44px; }
+    }`;
   document.head.appendChild(css);
 
   // ------------------------------------------------------------- formatting
@@ -198,11 +220,20 @@
       <div><div class="k">Sessions today · 7 days · 30 days</div><div class="v">${per('today', 'sessions')} · ${per('7d', 'sessions')} · ${per('30d', 'sessions')}</div></div>
       <div><div class="k">Every game, 30 days</div>${spark(t.daily.map((d) => d.visitors), 'Visitors per day, every game')}</div>
       <div class="meta">${t.withData} of ${t.products} products have players on record.</div></div>`;
+    // Gen's overview fields lastEventAt, events24h, botEvents24h, quiet: when the last event came in, how many in the
+    // last 24 hours (real and bot apart), and a red label when there were none. Shown on every card, data or not.
+    const eventsLine = (p) => {
+      const at = p.lastEventAt == null ? null : (typeof p.lastEventAt === 'number' ? p.lastEventAt : Date.parse(p.lastEventAt));
+      const last = at && Number.isFinite(at) ? `last event ${ago(at)}` : 'no event on record';
+      const quiet = p.quiet ?? (!Number(p.events24h) && !Number(p.botEvents24h));
+      return `<div class="status-line an-events" data-an-events="${esc(p.product)}"><span>${last}</span><span>${num(p.events24h ?? 0)} events in 24h · ${num(p.botEvents24h ?? 0)} bot</span>${quiet ? '<span class="pill quiet">no events in 24h</span>' : ''}</div>`;
+    };
     const card = (p) => {
-      if (!p.hasData) return `<div class="card an-card empty" data-an-open="${esc(p.product)}"><h3>${esc(p.name)}</h3><div class="status-line meta">No players on record yet: Hawkes Analytics (Gen's SDK) isn't on ${esc(p.name)} yet, or nobody has played since it went on.</div></div>`;
+      if (!p.hasData) return `<div class="card an-card empty" data-an-open="${esc(p.product)}"><h3>${esc(p.name)}</h3>${eventsLine(p)}<div class="status-line meta">No players on record yet: Hawkes Analytics (Gen's SDK) isn't on ${esc(p.name)} yet, or nobody has played since it went on.</div></div>`;
       const pp = (k) => `<div class="an-kpi"><span class="k">${k === 'today' ? 'Today' : k === '7d' ? '7 days' : '30 days'}</span><b>${num(p[k].visitors)} ${trendTag(p[k].trend.visitors)}</b><span class="meta">visitors · ${num(p[k].sessions)} sessions ${trendTag(p[k].trend.sessions)}</span></div>`;
       return `<div class="card an-card" data-an-open="${esc(p.product)}">
         <h3>${esc(p.name)} <small>${p.activeNow ? `<span class="pill ship">${num(p.activeNow)} playing now</span>` : 'nobody playing right now'}</small></h3>
+        ${eventsLine(p)}
         <div class="an-kpis">${pp('today')}${pp('7d')}${pp('30d')}</div>
         <div>${spark(p.daily.map((d) => d.visitors), `${p.name}: visitors per day, 30 days`)} <span class="meta">visitors per day, 30 days</span></div>
         <div class="an-kpis">

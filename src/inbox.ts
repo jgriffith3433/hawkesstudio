@@ -18,6 +18,7 @@ import type http from 'node:http';
 import { db, parse } from './db.ts';
 import { getProduct, getInfra, isInfra, loadProducts, managedElsewhere, StudioError } from './config.ts';
 import { fixerNow, latestChain, attemptsText, type FixerNow } from './buildfix.ts';
+import { openAccess, recheckAccess, accessLinks } from './buildaccess.ts';
 import { failingBuilds, failSignature, lastBuilds } from './buildfail.ts';
 import {
   listQuestions, getQuestion, setQuestion, answeredSince, getTask, getItem, getMilestone, listMilestones, milestoneProgress, milestoneTasks, tasksAwaitingGpu,
@@ -27,6 +28,7 @@ import { walkAwayOn, walkAwaySettings, gpuAutoApproveLimit } from './walkaway.ts
 import { gate } from './acceptance.ts';
 import { listApprovals, type Approval } from './approvals.ts';
 import { contradictionSettled } from './memory-curate.ts';
+import { creditsWaiting, creditsBack } from './creditwait.ts';
 
 // Answers to the cards that aren't questions (budgets, merges, milestones): what was answered, by whom, and for a
 // milestone how long its card stays away (until; null: for good).
@@ -37,7 +39,7 @@ export type InboxLink = { label: string; url?: string; video?: string };
 export type InboxItem = {
   /** q_... for a question; gpu:k_..., merge:c_..., milestone:n_... for the others. */
   id: string;
-  kind: 'question' | 'agent' | 'gpu' | 'merge' | 'milestone' | 'approval' | 'video' | 'build';
+  kind: 'question' | 'agent' | 'gpu' | 'merge' | 'milestone' | 'approval' | 'video' | 'build' | 'access' | 'credits';
   /** The one-line question, and the whole of it when it's longer. */
   title: string; text: string | null;
   product: string | null; productName: string | null;
@@ -373,6 +375,34 @@ export async function inbox({ tokens = false }: { tokens?: boolean } = {}): Prom
     }
   }
 
+  // GitHub access a build needs (buildaccess.ts): ONE card per project with the exact fix and the link. Looked at now, as the
+  // Inbox opens (never on a timer): access back means the builds start again and the card goes.
+  await recheckAccess().catch((e) => console.warn(`[inbox] checking GitHub access: ${e?.message ?? e}`));
+  for (const a of openAccess()) {
+    const p = loadProducts().find((x) => x.id === a.product);
+    if (!p || managedElsewhere(p)) continue;
+    const links = await accessLinks(a);
+    out.push({
+      id: `access:${a.id}`, kind: 'access', title: `${p.name}: Studio needs ${a.what === 'permission' ? `the "${a.permission}" permission` : a.what === 'install' ? 'its GitHub app installed' : 'access'} on ${a.slug ?? 'the repository'}`,
+      text: `${a.detail ?? ''}\n\nBuilds waiting: ${a.builds.join(', ')}. When you've done it, press "Check again" (or just open this page): Studio rebuilds by itself.`.trim(),
+      product: p.id, productName: p.name, context: a.detail, asker: 'Studio', recommendation: 'Check again', options: ['Check again'],
+      blocks: `${p.name}'s builds (${a.builds.join(', ')})`, since: a.opened, weight: 55, links, subject: p.id, conversation: null, asks: 1,
+    });
+  }
+
+  // Out of credits (creditwait.ts): ONE card, not one per refused run. Nothing failed; paid work starts again by itself when
+  // credits are added (the ledger's write), or on "Check again".
+  const cw = creditsWaiting();
+  if (cw) {
+    out.push({
+      id: 'credits:wait', kind: 'credits', title: 'Waiting for credits: paid work is paused',
+      text: `${cw.message}\n\nNothing failed and no agent was sent back: ${cw.runs.length} run${cw.runs.length === 1 ? ' was' : 's were'} held. Add credits (Settings → Plan and credits); the waiting beta playtest plays once by itself when they arrive.`,
+      product: null, productName: null, context: cw.need != null && cw.have != null ? `Needs ${cw.need.toLocaleString('en-US')}, ${cw.have.toLocaleString('en-US')} left.` : null,
+      asker: 'Studio', recommendation: 'Check again', options: ['Check again'], blocks: 'beta playtests and new agent work',
+      since: cw.since, weight: 60, links: [{ label: 'Plan and credits', url: '#settings' }], subject: null, conversation: null, asks: 1,
+    });
+  }
+
   // A video version waiting for J to screen it (videos.ts): watch it here or in the Screening tab; a typed answer is a note.
   for (const v of (await listVideos()).filter((x) => (x.state === 'ready to screen' || x.state === 'animatic ready') && x.latest)) {
     const anim = v.state === 'animatic ready';
@@ -545,9 +575,23 @@ export async function answerInbox(id: string, answer: string, by: string, opts: 
     if (!ms) throw new StudioError(`No milestone ${m[1]}`, 404);
     const key = `milestone:${ms.id}:${ms.reached_at ?? 0}`;
     if (/^\s*go live\b/i.test(text)) {
-      // Going live stays the deploy plan and J's typed words; the card stays until it's live.
+      // His "go live" here is his word (golive-policy.ts asksToGoLive): each product goes through the same plan and gate as
+      // any go live (beta's exact playtested commit, no blockers), with nothing for him to type. One that can't says why.
       const products = [...new Set(milestoneProgress(ms.id).items.map((i) => i.product))];
-      return { answered: null, by, next: 'deploy', products, note: `Going live is the deploy plan, then "DEPLOY <product>" typed by J (${products.join(', ')}).` };
+      const { deployPlan, queueLive } = await import('./deploy.ts');
+      const went: string[] = [];
+      const waits: string[] = [];
+      for (const pr of products) {
+        try {
+          const plan: any = await deployPlan(pr, { notesWaitMs: 0 });
+          if (plan.blockers?.length) { waits.push(`${pr}: ${plan.blockers.join(' ').slice(0, 300)}`); continue; }
+          queueLive('golive', { product: pr, confirm: plan.confirm, by: `${by} (go live on the milestone card)`, beta: plan.beta?.sha });
+          went.push(pr);
+        } catch (e: any) { waits.push(`${pr}: ${String(e?.message ?? e).slice(0, 300)}`); }
+      }
+      if (!went.length) return { answered: null, by, next: 'deploy', products, note: `Nothing went live yet. ${waits.join(' | ')}` };
+      record(id, by, text, `Milestone "${ms.title}"`);
+      return { answered: id, by, wentLive: went, waits, note: `Going live: ${went.join(', ')}.${waits.length ? ` Waiting: ${waits.join(' | ')}` : ''}` };
     }
     if (/^\s*later\b/i.test(text)) {
       ack(key, by, text, Date.now() + 24 * HOUR, `Milestone "${ms.title}"`);
@@ -559,6 +603,21 @@ export async function answerInbox(id: string, answer: string, by: string, opts: 
     pm.pmEvent('feedback', `${by} playtested milestone ${ms.id} ("${ms.title}") and says: "${what}". Turn it into tasks on its items (or a new item in it), and say so in a line.`, ms.id, ms.product);
     ack(key, by, what, null, `Milestone "${ms.title}"`);
     return { answered: id, by, told: 'the PM' };
+  }
+  // The access card: look again now; back means it rebuilt and resolved, still missing says what is missing.
+  if (id === 'credits:wait') {
+    const { startBeta } = await import('./pipeline.ts');
+    const started = creditsBack((product, o) => startBeta(product, o));
+    return { answered: id, by, resolved: true, resumed: started };
+  }
+  const am = /^access:(x_[0-9a-f]+)$/.exec(id);
+  if (am) {
+    const row = db.prepare('SELECT product, status FROM build_access WHERE id = ?').get(am[1]) as any;
+    if (!row) throw new StudioError(`No access card ${am[1]}`, 404);
+    if (row.status !== 'open') return { answered: id, by, resolved: true };
+    const r = (await recheckAccess({ product: row.product, force: true }))[0];
+    if (!r?.back) throw new StudioError('GitHub still refuses: the permission is not there yet. Accept it on the installation page (the card has the link), then check again.');
+    return { answered: id, by, resolved: true, rebuilding: true };
   }
   // A failed build: build it again (a run), or dismiss the card (the failure stays in the build history).
   const bm = /^build:(b_[0-9a-f]+)$/.exec(id);

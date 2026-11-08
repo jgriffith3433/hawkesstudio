@@ -294,7 +294,7 @@
     for (let i = next.length; i < nodes.length; i++) nodes[i].remove();
     rows = next;
     renderTail();
-    if (atBottom || (added && c.status === 'thinking')) log.scrollTop = log.scrollHeight;
+    if (atBottom) log.scrollTop = log.scrollHeight; // never yank a reader who scrolled up (send() scrolls down itself)
   }
 
   // The push stream (stream.js): a conversation changed (or the safety tick, or a reconnect). The badge comes with the
@@ -354,6 +354,7 @@
       current = c.id;
       await loadList();
       await loadConversation();
+      const lg = el('#talkLog'); if (lg) lg.scrollTop = lg.scrollHeight; // your own message: show it
     } catch (e) {
       alert(e.message);
       el('#talkInput').value = text;
@@ -417,6 +418,22 @@
   // It also grows when its status line fills in (the Talk dock and Activity sit below it).
   if (window.ResizeObserver) new ResizeObserver(setHdr).observe(document.querySelector('header'));
   setHdr();
+  // The on-screen keyboard: iOS doesn't shrink dvh for it, so Talk's height and the dock's bottom follow the visual
+  // viewport (events only, no timer): the input stays above the keyboard and the newest message stays in view.
+  if (window.visualViewport) {
+    const vv = window.visualViewport;
+    const setVv = () => {
+      const kb = Math.max(0, Math.round(innerHeight - vv.height - vv.offsetTop));
+      const root = document.documentElement.style;
+      root.setProperty('--vvh', `${Math.round(vv.height)}px`);
+      root.setProperty('--kb', `${kb}px`);
+      document.body.classList.toggle('kb-open', kb > 120);
+      if (kb > 120 && document.activeElement?.closest?.('.talk-input')) {
+        const log = document.querySelector('#talkLog, .talk-log'); if (log) log.scrollTop = log.scrollHeight;
+      }
+    };
+    vv.addEventListener('resize', setVv); vv.addEventListener('scroll', setVv); setVv();
+  }
   // Dropping files on the conversation attaches them.
   el('#talkLog').addEventListener('dragover', (e) => e.preventDefault());
   el('#talkLog').addEventListener('drop', (e) => { e.preventDefault(); attach([...(e.dataTransfer?.files ?? [])]); });

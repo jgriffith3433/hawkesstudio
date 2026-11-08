@@ -157,7 +157,7 @@ if (typeof document !== 'undefined') (() => {
     return `<div class="act-item${warn ? ' act-warn' : ''}" data-key="x:${esc(x.id)}">
       <div class="act-top">${ICON[x.status] ?? '•'} 🔎 <b>${esc(x.productName)}</b> <span class="pill ${warn ? 'failed' : x.status === 'done' ? 'ship' : ''}">${esc(x.status)}</span>${x.model ? ` <span class="pill">${esc(x.model)}</span>` : ''}<span class="act-time">${esc(t)}</span></div>
       <div class="act-title">${esc(x.question)}</div>
-      ${x.detail ? `<div class="act-now">${esc(x.detail)}</div>` : ''}
+      ${x.detail && !/^\w+:\s*$/.test(x.detail) ? `<div class="act-now">${esc(x.detail)}</div>` : warn ? '<div class="act-now">failed with no reason recorded: Re-run it, or ask Talk to look</div>' : ''}
       <div class="meta">scout ${esc(x.id)} · by ${by(x)}${x.turns ? ` · ${x.turns} turns` : ''}${x.cost ? ` · $${x.cost.toFixed(2)}` : running ? ' · cost shows when it reports' : ''}${x.retryOf ? ` · re-run of ${esc(x.retryOf)}` : ''}</div>
       ${running && x.log?.length ? `<details class="act-log"><summary class="meta">last steps</summary><pre>${esc(x.log.join('\n'))}</pre></details>` : ''}
       ${x.hasReport ? `<details class="act-log" data-scout-report="${esc(x.id)}"><summary class="meta">report</summary><pre class="scout-report" data-patch-keep style="white-space:pre-wrap">open to read</pre></details>` : ''}
@@ -344,17 +344,23 @@ if (typeof document !== 'undefined') (() => {
     return `<div class="act-item${o.stuck || o.status === 'failed' ? ' act-warn' : ''}"><div class="act-top">${icon} <b>${esc(o.title)}</b><span class="act-time">${esc(state)}</span></div><div class="act-now">${esc(o.status === 'failed' ? o.error ?? '' : o.step ?? '')}${o.by ? ` · by ${esc(o.by)}` : ''}${o.attempts > 1 ? ` · attempt ${o.attempts}` : ''}</div>${log ? `<details class="act-log"><summary class="meta">log</summary><pre>${log}</pre></details>` : ''}</div>`;
   }
 
-  function setCount(n) {
+  function setCount(n, failed) {
     if (typeof n !== 'number') return;
     const badge = el('#actCount');
     badge.textContent = n;
     badge.classList.toggle('zero', !n);
+    // Failed scouts stay visible on the button (a calm 0 hid them); the title says what the number is.
+    if (typeof failed === 'number') {
+      let f = el('#actFailed');
+      if (!f && failed) { f = document.createElement('span'); f.id = 'actFailed'; f.className = 'badge'; f.style.cssText = 'margin-left:4px;background:#b3412f;color:#fff'; badge.after(f); }
+      if (f) { f.textContent = failed ? `${failed} failed` : ''; f.hidden = !failed; }
+    }
   }
   /** The payload without what moves on its own (the time of the read, running seconds): src/stream.ts signature. */
   const sig = (a) => JSON.stringify(a, (k, v) => (['at', 'seconds', 'lastMinute', 'slow', 'stuck'].includes(k) ? undefined : v));
 
   function render(a, force = false) {
-    setCount(a.count);
+    setCount(a.count, a.failed);
     if (!open) return;
     el('#actUpdated').textContent = `updated ${new Date(a.at).toLocaleTimeString()}`;
     const s = sig(a);
@@ -397,7 +403,7 @@ if (typeof document !== 'undefined') (() => {
   studioStream.on('activity', (e) => {
     // A running playtest's screenshots: fetch the new ones now that something moved (the ticker only plays what's loaded).
     if (!e.badge) for (const p of players.values()) if (p.running) p.next = 0;
-    setCount(e.count);
+    setCount(e.count, e.failed);
     if (!e.badge || (open && !last)) tick();
   });
 

@@ -17,6 +17,7 @@ import { resumeGapMs, RESTART_LOOP, RESTART_WINDOW_MS } from './ops.ts';
 import { loadProducts, getProduct, localUrl, today, PROJECTS, betaPlaytestsOn, managedElsewhere, managedNote, StudioError, type Product, type Playtest, type BuildSpec } from './config.ts';
 import { unityBuild } from './buildpkgs.ts';
 import { endStatus, runCounts, runCancelled, haltOf, jobCancelDetail, runCancelDetail } from './cancel.ts';
+import { creditRefusal, holdRun as creditsHold, creditsWaiting } from './creditwait.ts';
 import { gen, genRun, genUp, ensureGen } from './gen.ts';
 import { ensureServer, gitState, treeFingerprint, runCheck, serveDir, stopServed } from './local.ts';
 import { absorb, applyKnown, expireIdeas, notSeenIn, type ReviewMode } from './backlog.ts';
@@ -40,6 +41,7 @@ import { brainId, harnessStopOf, type Harness } from './brains.ts';
 import { harnessHeld, holdHarness, onHoldLifted } from './harness-hold.ts';
 import { isBillingError } from './llm.ts';
 import { kickFollowups } from './followup-kick.ts';
+import { NEUTRAL, hookMissing, libraryProject, openFindingCount } from './verdictwork.ts';
 
 export type RunOptions = {
   products?: string[];
@@ -144,6 +146,7 @@ export function startRun(kind: string, options: RunOptions = {}) {
   const id = newId('r');
   db.prepare('INSERT INTO runs (id, kind, status, detail, products, options, started) VALUES (?, ?, ?, ?, ?, ?, ?)').run(id, kind, 'running', 'starting', J(products), J(options), Date.now());
   tagRun(id, options.origin);
+  if (skipForCredits(id, products[0] ?? null)) return { id, done: Promise.resolve() };
   const done = (async () => {
     try {
       await runAll(id, products, options);
@@ -205,6 +208,8 @@ async function runAll(run: string, ids: string[], o: RunOptions) {
   db.prepare('UPDATE runs SET detail = ? WHERE id = ?').run(`running ${ids.length} products`, run);
   // The scenarios this run will play, in order, so the Activity card can show "n of N" with N fixed (runplan.ts).
   planRun(run, products.flatMap((p) => testsOf(p, o).map((t) => ({ product: p.id, name: nameOf({ ...t, scenario: t.scenario ? resolveScenario(p, t.scenario) : t.scenario }) }))));
+  // More browsers for a run that plays many projects, so they don't queue behind four (playtest-capacity.ts).
+  void import('./playtest-capacity.ts').then((C) => C.raiseForRun(new Set(products.flatMap((p) => testsOf(p, o).map((t) => `${p.id}|${t.scenario ?? ''}`))).size)).catch(() => {});
   await Promise.all(products.map((p) => runProduct(run, p, o).catch((e) => {
     const s = startStep(run, p.id, 'error', 'pipeline');
     updateStep(s, { status: 'failed', detail: String(e.message ?? e), finished: true });
@@ -688,6 +693,12 @@ async function playScenario(run: string, p: Product, asked: Playtest, { review =
     if (t.where === 'local' && !was?.data?.played && p.github && (await cloudBetaUrl(p))) {
       const v = (await import('./previews.ts')).betaPreview(p.id);
       if (v?.sha) played = { branch: BETA, sha: v.sha, title: v.ref };
+      // A Unity project Studio builds: what's played is the commit the published build was made from (its row's full sha),
+      // which can be older than beta's head; the report names it as that (betabuild.ts).
+      const BB = await import('./betabuild.ts');
+      const ub = BB.unityBuildOf(p);
+      const pub = ub ? BB.publishedBuild(p.id, ub.id) : null;
+      if (pub?.sha) played = { branch: BETA, sha: pub.sha, title: `${ub!.id} ${pub.version}`, madeFrom: true };
     }
     // A web app its own CI deploys (Product.versionPath): what's played is the commit its beta says it runs.
     if (t.where === 'local' && !was?.data?.played && p.versionPath) {
@@ -696,8 +707,6 @@ async function playScenario(run: string, p: Product, asked: Playtest, { review =
     }
     const build = played ? String(played.build ?? played.sha) : null;
     // A scenario this build is known not to have is skipped, not played (scenarios.ts).
-    const has = t.where === 'local' && t.scenario && !prior ? knownScenarios(p.id, build) : null;
-    if (has && !has.includes(t.scenario!)) return skipMissing(run, p, s, asked, t.scenario!, has, played);
     const serveDirOf = path.join(betaSiteDir(p), path.relative(p.site.split('/')[0], p.local.dir));
     const wrong = unityBeta ? servedMismatch(runBetaBuild(run, p.id), now, gameVersions(serveDirOf)) : null;
     if (wrong) {
@@ -739,6 +748,13 @@ async function playScenario(run: string, p: Product, asked: Playtest, { review =
       return null;
     }
     updateStep(s, { data: { played, url, ...(deps.length ? { deps } : {}), ...(since ? { runningSince: since } : {}) } });
+    // A scenario this copy is known not to have is skipped, not played (scenarios.ts). The list is the one seen at this
+    // page of this build, so a list from another page (the lore site's root) never skips the game's scenarios.
+    const has = t.where === 'local' && t.scenario && !prior ? knownScenarios(p.id, build, url) : null;
+    if (has && !has.includes(t.scenario!)) {
+      if (port) stopServed(port);
+      return skipMissing(run, p, s, asked, t.scenario!, has, played);
+    }
     // Live sites may not have the contract yet (it ships with the next deploy): auto falls back to a generic smoke test.
     const params: Record<string, unknown> = { url, mode: t.mode ?? (p.contract && t.where === 'local' ? 'contract' : 'auto'), ...(t.scenario ? { scenario: t.scenario } : {}), ...(t.timeout ? { timeout: t.timeout } : {}), ...(t.seed ? { seed: t.seed } : {}), ...(playOptions(t) ? { options: playOptions(t) } : {}) };
     if (t.mode === 'site') params.maxPages = 40;
@@ -746,10 +762,11 @@ async function playScenario(run: string, p: Product, asked: Playtest, { review =
     Object.assign(params, playtestExtras(p.id, name, t));
     { const skip = (await import('./gpu-breaker.ts')).down(); if (skip.length) params.skipProviders = skip; }
     // An app behind a sign-in (Product.testSignIn): on its beta, the playtest starts signed in as a test account.
-    if (t.where === 'local' && p.testSignIn?.url && !prior) {
+    if (t.where === 'local' && (p.testSignIn?.url || (await import('./playtest-signin.ts')).isStudioProject(p.id)) && !prior) {
       try {
         const signedIn = await (await import('./playtest-signin.ts')).testSignIn(p);
         params.cookies = [...((params.cookies as unknown[]) ?? []), ...signedIn];
+        updateStep(s, { detail: 'signed in as the test account' });
       } catch (e: any) {
         updateStep(s, { status: 'failed', detail: `the test sign-in failed: ${e.message}`, data: { played, url, signInFailed: true }, finished: true });
         return null;
@@ -763,10 +780,39 @@ async function playScenario(run: string, p: Product, asked: Playtest, { review =
     // step's first start (kept on the step, so a restart never extends it), and 10 minutes without progress is stuck.
     // share: the same play another run queued (same page, scenario, device, baseline) and Gen hasn't started yet is
     // joined, not queued twice; each run still reviews it. Not a page this run serves on its own port (it stops with the run).
-    job = await runGenJob('playtest.run', p.id, params, (j) => updateStep(s, { job: j.id, detail: j.detail }), {
-      runMs: playtestRunMs(t), job: prior?.id, since, idleMs: PLAYTEST_IDLE_MS(), abandon, priority, halt: haltOf(run), share: port === null,
-      onStart: (at) => db.prepare(`UPDATE steps SET data = json_set(COALESCE(data, '{}'), '$.runningSince', ?) WHERE id = ?`).run(at, s),
-    }).finally(() => { if (port) stopServed(port); });
+    try {
+      const F = await import('./playtest-finish.ts');
+      job = await runGenJob('playtest.run', p.id, params, queuedNote(s), {
+        runMs: F.cappedRunMs(playtestRunMs(t)), queueMs: F.PLAYTEST_QUEUE_MS(), job: prior?.id, since, idleMs: PLAYTEST_IDLE_MS(), abandon, priority, halt: haltOf(run), share: port === null,
+        onStart: (at) => db.prepare(`UPDATE steps SET data = json_set(COALESCE(data, '{}'), '$.runningSince', ?) WHERE id = ?`).run(at, s),
+      });
+      // Cut off (a provider with no free worker or a full disk, a Gen or beta restart): one more try on the next backend,
+      // then it ends with its reason in one sentence, never a hang.
+      const cut = F.classifyFailure(job);
+      if (cut && !haltOf(run)()) {
+        if (cut.provider) { const B = await import('./gpu-breaker.ts'); B.trip(cut.provider); }
+        updateStep(s, { detail: `${F.plainWhy(job, null)} Trying again on the next backend.` });
+        if (cut.kind === 'beta-restart') { try { await (await import('./previews.ts')).betaSettled(p.id); } catch { /* the retry will say */ } }
+        const second = await runGenJob('playtest.run', p.id, F.retryParams(params, cut), queuedNote(s), {
+          runMs: F.cappedRunMs(playtestRunMs(t)), queueMs: F.PLAYTEST_QUEUE_MS(), idleMs: PLAYTEST_IDLE_MS(), abandon, priority, halt: haltOf(run), share: false,
+          onStart: (at) => db.prepare(`UPDATE steps SET data = json_set(COALESCE(data, '{}'), '$.runningSince', ?) WHERE id = ?`).run(at, s),
+        });
+        if (second.status !== 'done') second.error = F.plainWhy(second, cut);
+        job = second;
+      }
+    } catch (e: any) {
+      // Refused for credits (or quota, billing): its own outcome, like cancelled. Not a failed playtest, not a failed beta build.
+      const why = creditRefusal(e);
+      if (!why) throw e;
+      waitForCredits(run, p.id, s, why, { url, played });
+      return null;
+    } finally { if (port) stopServed(port); }
+    // The job itself ended on a credit refusal (Gen says so in its error): the same outcome.
+    const jobWhy = job.status === 'failed' ? creditRefusal({ message: job.error ?? job.detail }) : null;
+    if (jobWhy && /credit|quota|billing|payment/i.test(String(job.error ?? job.detail ?? ''))) {
+      waitForCredits(run, p.id, s, jobWhy, { url, played }, job.id);
+      return job;
+    }
     // A newer beta build waits on this old one (betaqueue.ts supersedingBuild): cancelled, not failed.
     if (job.abandoned) {
       updateStep(s, { status: 'skipped', job: job.id, detail: `cancelled: ${job.error}`, data: { url, played, abandoned: job.error, runningSince: since ?? null }, finished: true });
@@ -778,10 +824,10 @@ async function playScenario(run: string, p: Product, asked: Playtest, { review =
       return job;
     }
     // The game's own scenario list, for the next playtest of this build; a scenario it doesn't have is skipped, not failed.
-    if (t.where === 'local') noteScenarios(p.id, build, job.result?.scenarios);
+    if (t.where === 'local') noteScenarios(p.id, build, job.result?.scenarios, url);
     const missing = t.where === 'local' && job.status !== 'done' ? missingScenario(job.error ?? job.detail) : null;
     if (missing) {
-      noteScenarios(p.id, build, missing.has);
+      noteScenarios(p.id, build, missing.has, url);
       return skipMissing(run, p, s, asked, missing.scenario, missing.has, played, job.id);
     }
     // The copy must still hold the build that was served when it started (a newer build waits for this run, unless it waited too long).
@@ -797,6 +843,16 @@ async function playScenario(run: string, p: Product, asked: Playtest, { review =
   }
   const r = job.result ?? {};
   const ok = job.status === 'done';
+  // Nothing to playtest (J, 2026-11-08): a page that never exposed the playtest hook, with no open finding behind it (a
+  // library, an SDK's page), is skipped, not failed: no red card, no review, no bad verdict (verdictwork.ts). With an open
+  // finding behind it the game is still failed.
+  if (!ok && hookMissing(job.error ?? job.detail) && !openFindingCount(p.id)) {
+    updateStep(s, {
+      status: 'skipped', job: job.id, detail: `nothing to playtest: ${job.error ?? job.detail} (${url}), and no open finding is behind it`,
+      data: { url, played, unplayable: true, error: job.error ?? job.detail }, finished: true,
+    });
+    return job;
+  }
   // A task's check (criteria judged) against the scenario budget (pace.ts): over it, the run card warns and the task's
   // agent hears it (pm.ts). Daily "full" runs are long on purpose: not flagged.
   const at = playOptions(t)?.at;
@@ -881,6 +937,19 @@ function fileStuck(run: string, p: Product, name: string, job: any) {
 export function playOptions(t: Pick<Playtest, 'options' | 'at'>): Record<string, unknown> | undefined {
   const at = typeof t.at === 'string' && t.at.trim() ? t.at.trim() : null;
   return at ? { ...(t.options ?? {}), at } : t.options;
+}
+
+/** A playtest job's updates onto its step; while Gen has it queued, the step says why (tabs in use, how many ahead). */
+function queuedNote(step: string) {
+  return (j: any) => {
+    updateStep(step, { job: j.id, detail: j.detail });
+    if (j.status !== 'queued') return;
+    void import('./playtest-capacity.ts').then((C) => C.waitReason(j.id)).then((why) => {
+      if (!why) return;
+      const cur = db.prepare('SELECT status, detail FROM steps WHERE id = ?').get(step) as any;
+      if (cur && !['done', 'failed', 'skipped', 'cancelled'].includes(cur.status) && String(cur.detail ?? '') === String(j.detail ?? '')) updateStep(step, { detail: why });
+    }).catch(() => {});
+  };
 }
 
 /** Plays of one beta run at once (the playtester's slots: Hawkes Gen runs 2 playtests at a time on its GPU machine). */
@@ -1015,10 +1084,12 @@ async function fileReview(rs: string, p: Product, run: string, name: string, rev
     known.fixed.length ? `${known.fixed.length} known look fixed` : '', known.present.length ? `${known.present.length} known still there` : '',
   ].filter(Boolean);
   const late = x.tries > 0 || Date.now() - x.at > 60_000 ? ' · reviewed late (it waited for the AI)' : '';
+  // A library has nothing to playtest on its own page: its review's verdict reads neutral, never fix-first or broken (verdictwork.ts).
+  const verdict = libraryProject(p) && v.verdict !== NEUTRAL ? NEUTRAL : v.verdict;
   updateStep(rs, {
     status: 'done', job: rev.id, cost: rev.cost ?? 0,
-    detail: `${v.verdict} · ${x.mode}${x.barMet ? ' (meets its quality bar)' : ''} · ${(v.findings ?? []).length} findings (${parts.join(', ')})${p.quality ? ` · bar: ${v.meetsBar ?? '?'}` : ''}${viaNote(rev)}${late}`,
-    data: { ...v, added: merged.added, updated: merged.updated, ideas: merged.ideas, skipped: merged.skipped, knownFixed: known.fixed, knownPresent: known.present, reviewKey: x.reviewKey, mode: x.mode, sha: x.sha, barHash: barHash(p.quality), bar: x.barWhy }, finished: true,
+    detail: `${verdict} · ${x.mode}${x.barMet ? ' (meets its quality bar)' : ''} · ${(v.findings ?? []).length} findings (${parts.join(', ')})${p.quality ? ` · bar: ${v.meetsBar ?? '?'}` : ''}${viaNote(rev)}${late}`,
+    data: { ...v, ...(verdict !== v.verdict ? { verdict, verdictWas: v.verdict } : {}), added: merged.added, updated: merged.updated, ideas: merged.ideas, skipped: merged.skipped, knownFixed: known.fixed, knownPresent: known.present, reviewKey: x.reviewKey, mode: x.mode, sha: x.sha, barHash: barHash(p.quality), bar: x.barWhy }, finished: true,
   });
   // A review that came late (it waited for the AI; its run is long over): act on its verdict now (verdictwork.ts).
   if (late && isServer()) void import('./verdictwork.ts').then((m) => m.actOnVerdict(p.id, 'a late review')).catch(() => {});
@@ -1105,7 +1176,7 @@ export async function cloudBetaUrl(p: { id: string; live: string; local: { serve
   // A game added through Talk: its beta site is a path of its own (sites.<domain>/b/<game>/), built with relative
   // paths, so the root is the game; its live address's path (GitHub Pages' /<repo>/) isn't part of it.
   const github = (p as { github?: string }).github;
-  if (github) return betaPageUrl(root, p as { site?: string; repo?: string; github?: string });
+  if (github) return betaPageUrl(root, p as { site?: string; repo?: string; github?: string; live?: string });
   const live = new URL(p.live);
   return new URL(live.pathname + live.search, root).toString();
 }
@@ -1126,10 +1197,31 @@ export function pagePathUrl(root: string, path: string) {
  * (a Unity build with publish.page "site" lands at <root>/YoobaLand/index.html; the root has no game page).
  * `site` that is only the repo (owner/name, or the repo folder) is not a sub-folder.
  */
-export function betaPageUrl(root: string, p: { site?: string; repo?: string; github?: string }) {
+export function betaPageUrl(root: string, p: { site?: string; repo?: string; github?: string; live?: string }) {
   const site = String(p.site ?? '').trim().replace(/^\/+|\/+$/g, '');
-  if (!site || site === '.' || site === p.repo || site === p.github || site === String(p.github ?? p.repo ?? '').split('/').pop()) return root;
+  if (!site || site === '.' || site === p.repo || site === p.github || site === String(p.github ?? p.repo ?? '').split('/').pop()) return livePagePath(root, p);
   return `${root.replace(/\/?$/, '/')}${site.split('/').map(encodeURIComponent).join('/')}/`;
+}
+
+/**
+ * The game's page under the beta root: its live address's path (phorigins.com/play/game.html is the game, the root is
+ * the lore site: 2026-11-08, ph-origins' local playtests played the root, whose contract has only smoke). On GitHub
+ * Pages the first segment is the repo's own name (a project page), which the beta root already stands for.
+ */
+export function livePagePath(root: string, p: { repo?: string; github?: string; live?: string }) {
+  let u: URL;
+  try { u = new URL(String(p.live ?? '')); } catch { return root; }
+  // A library's "live" is its repo page (github.com/<owner>/<name>): that path is not a page of its site, so its beta
+  // root is the page (2026-11-08: Hawkes Net's beta playtests opened .../jgriffith3433/hawkesnet-babylon and never found the contract).
+  if (isRepoPage(u.toString())) return root;
+  let segs = u.pathname.split('/').filter((x, i, a) => x || i === a.length - 1);
+  if (/\.github\.io$/i.test(u.hostname)) {
+    const name = String(p.github ?? p.repo ?? '').split('/').pop()?.toLowerCase();
+    if (segs[0] && segs[0].toLowerCase() === name) segs = segs.slice(1);
+  }
+  const rest = segs.filter(Boolean).join('/');
+  if (!rest) return root;
+  return `${root.replace(/\/?$/, '/')}${rest.split('/').map(encodeURIComponent).join('/')}${u.pathname.endsWith('/') ? '/' : ''}${u.search}`;
 }
 
 export const playtestRequest = (b: any): PartialOptions => ({ ...(typeof b.at === 'string' && b.at.trim() ? { at: b.at.trim() } : {}), ...(Number(b.peers) > 1 ? { peers: Math.min(4, Math.round(Number(b.peers))) } : {}), scenario: b.scenario, where: b.where, device: b.device === 'phone' ? 'phone' : undefined, mode: b.mode, review: b.review, focus: b.focus, reviewMode: ['full', 'verify', 'regression'].includes(b.reviewMode) ? b.reviewMode : undefined, seed: Number(b.seed) || undefined, options: b.options && typeof b.options === 'object' && !Array.isArray(b.options) ? b.options : undefined });
@@ -1140,6 +1232,7 @@ export function startPartial(kind: 'build' | 'playtest' | 'test', productId: str
   const id = newId('r');
   db.prepare('INSERT INTO runs (id, kind, status, detail, products, options, started) VALUES (?, ?, ?, ?, ?, ?, ?)').run(id, kind, 'running', `${kind} ${p.id}`, J([p.id]), J(opts), Date.now());
   tagRun(id, opts.origin);
+  if (kind !== 'test' && skipForCredits(id, p.id)) return { id, done: Promise.resolve() };
   return { id, done: partialBody(id, kind, p, opts) };
 }
 
@@ -1165,9 +1258,44 @@ async function partialBody(id: string, kind: string, p: Product, opts: PartialOp
     }
     closeRun(id, `${kind} ${p.id}`);
   } catch (e: any) {
+    if (runWaitsForCredits(id, p.id, e)) return;
     db.prepare(`UPDATE runs SET status = 'failed', detail = ?, finished = ? WHERE id = ?`).run(String(e.message ?? e), Date.now(), id);
     kickFollowups();
   }
+}
+
+/**
+ * Checked before a run starts its paid steps: while Studio is waiting for credits (creditwait.ts) the run is recorded as
+ * `cancelled` ("waiting for credits", not a failure) and starts nothing. True when it was skipped.
+ */
+function skipForCredits(id: string, product: string | null): boolean {
+  const w = creditsWaiting();
+  if (!w) return false;
+  creditsHold(id, product, w, w.since); // the wait's own start: skipped runs don't stretch it
+  db.prepare(`UPDATE runs SET status = 'cancelled', detail = ?, finished = ? WHERE id = ?`).run('waiting for credits (not started; not a failure)', Date.now(), id);
+  kickFollowups();
+  return true;
+}
+
+/**
+ * A step refused for credits (or quota, billing): `cancelled` with data.credits, so no review, no finding and nothing is
+ * blamed (cancel.ts), and the run is held for the credit-change event (creditwait.ts resumes a beta run once).
+ */
+function waitForCredits(run: string, product: string, step: string, why: { message: string; need: number | null; have: number | null }, data: Record<string, unknown> = {}, job?: string) {
+  creditsHold(run, product, why);
+  updateStep(step, { status: 'cancelled', ...(job ? { job } : {}), detail: `waiting for credits: ${why.message.replace(/ Add credits.*$/, '')}`, data: { ...data, credits: true, cancelled: true }, finished: true });
+}
+
+/** A run that threw a credit refusal ends `cancelled` (waiting for credits), never `failed`. True when it was one. */
+function runWaitsForCredits(id: string, product: string, e: unknown): boolean {
+  const why = creditRefusal(e);
+  if (!why) return false;
+  creditsHold(id, product, why);
+  db.prepare(`UPDATE steps SET status = 'cancelled', detail = ?, finished = ? WHERE status = 'running' AND run = ?`).run(`waiting for credits: ${why.message.replace(/ Add credits.*$/, '')}`, Date.now(), id);
+  const n = runCounts(id);
+  db.prepare(`UPDATE runs SET status = ?, detail = ?, finished = ? WHERE id = ?`).run(endStatus({ ...n, failed: n.failed, cancelled: Math.max(1, n.cancelled) }), 'waiting for credits (not a failure)', Date.now(), id);
+  kickFollowups();
+  return true;
 }
 
 /**
@@ -1195,6 +1323,8 @@ export function startBeta(productId: string, o: BetaOptions = {}) {
   const id = newId('r');
   db.prepare('INSERT INTO runs (id, kind, status, detail, products, options, started) VALUES (?, ?, ?, ?, ?, ?, ?)').run(id, 'beta', 'running', `beta ${p.id}`, J([p.id]), J({ focus: o.focus, ...(o.reverify ? { reverify: true } : {}), criteria: o.criteria, scenario: o.scenario, options: o.options, playtest: o.playtest, quiet: o.quiet, plays: o.plays, ...(o.merge ? { merge: o.merge } : {}), ...(o.tag ? { tag: o.tag } : {}) }), Date.now());
   tagRun(id, o.origin);
+  // Out of credits already: the paid steps (the build, the playtest) aren't started, the run waits (creditwait.ts).
+  if ((p.build || o.playtest || o.plays?.length || betaPlaytestsOn()) && skipForCredits(id, p.id)) return { id, done: Promise.resolve() };
   return { id, done: betaBody(id, p, o) };
 }
 
@@ -1291,6 +1421,24 @@ async function betaBody(id: string, p: Product, { focus, criteria, scenario, opt
       if (built?.superseded) return void supersede(id, p.id, built.superseded, head());
       // Cancelled build: beta is not built, nothing is played on it, and the next push builds again (cancel.ts).
       if (built?.status === 'cancelled') return void closeRun(id, `beta ${p.id}`);
+    } else if (lane && p.github && (await import('./betabuild.ts')).unityBuildOf(p) && (await import('./previews-cloud.ts')).remoteSites()) {
+      // A Unity project Studio builds from GitHub (its `builds`): beta's head is built, or the build already running is
+      // waited for, and nothing plays before it is published (J, 2026-11-08). The step names the commit it was made from.
+      const BB = await import('./betabuild.ts');
+      const spec = BB.unityBuildOf(p)!;
+      const s = startStep(id, p.id, 'build', spec.id, 'beta\'s head, built before it is played');
+      const slug = String(p.github);
+      const r = await BB.ensureBetaBuild(p.id, spec.id, {
+        head: async () => {
+          const { repoToken, githubFetch } = await import('./ghtoken.ts');
+          const { githubCommit } = await import('./sitestore.ts');
+          return githubCommit(slug, BETA, githubFetch(await repoToken(slug)));
+        },
+        start: async (sha) => (await import('./builds.ts')).startBuild(p.id, { trigger: 'beta', build: spec.id, sha, ref: BETA, origin: null }),
+        say: (detail) => updateStep(s, { detail }),
+      });
+      updateStep(s, { status: r.ok ? (r.how === 'already built' ? 'skipped' : 'done') : 'failed', detail: r.detail, data: r.ok ? { built: { sha: r.sha, version: r.version, run: r.run, how: r.how } } : { failed: true, sha: r.sha || null }, finished: true });
+      if (!r.ok) return void closeRun(id, `beta ${p.id}`);
     } else void import('./previews.ts').then(({ buildPreview }) => buildPreview(p.id)).catch(() => {});
     // What the beta runs this one superseded asked for comes along: a playtest, their tasks' criteria (pm.ts reads them).
     // Only what still waits for a beta check, once per scenario, within a budget (playplan.ts): a burst of pushes used to
@@ -1361,6 +1509,7 @@ async function betaBody(id: string, p: Product, { focus, criteria, scenario, opt
     // The owner said to keep going live (golive-policy.ts): beta's run passed, so it goes live by itself.
     void (await import('./golive-policy.ts')).autoGoLive(p.id, `beta run ${id}`);
   } catch (e: any) {
+    if (runWaitsForCredits(id, p.id, e)) return;
     db.prepare(`UPDATE runs SET status = 'failed', detail = ?, finished = ? WHERE id = ?`).run(String(e.message ?? e), Date.now(), id);
     kickFollowups();
   }

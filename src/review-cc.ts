@@ -138,6 +138,8 @@ export async function reviewViaClaudeCode(product: string, p: any, failedJob?: s
     const listed: any = await gen.assets({ job: p.job, limit: '500' });
     const assets = ((listed?.items ?? []) as any[]).filter((a) => a.meta?.playtest === 'shot').sort((a, b) => (a.meta.t ?? 0) - (b.meta.t ?? 0));
     if (!assets.length) return { id: failedJob ?? null, status: 'failed', error: `${p.job} has no screenshots` };
+    // A screenshot's file can be missing on this instance (Cloud Run's disk is per instance): asked for through Gen's
+    // HTTP files, and any that still can't be read are left out and named in the review (llm.ts imageFiles).
     // Gen's frame pick: every event shot first (up to 60%), then even spacing. Fewer than Gen's 16, to keep it quick.
     const n = Math.min(Number(p.frames) || 12, 16);
     const important = assets.filter((a) => ['problem', 'scene', 'end', 'ready', 'loaded', 'page'].includes(a.meta.reason));
@@ -178,12 +180,18 @@ export async function reviewViaClaudeCode(product: string, p: any, failedJob?: s
     const j = await askClaudeCode({ prompt, system: REVIEW_SYSTEM, schema: REVIEW_SCHEMA, images: frames.map((a) => `asset:${a.id}`), model: p.model, effort: 'high', timeoutMs: 15 * 60_000, purpose: 'review', product });
     if (j.status !== 'done') return { ...j, id: failedJob ?? null };
     const review = settleCriteria(settleReview(j.result.value, { mode, maxFindings, known }), criteria);
+    const missingShots: number[] = Array.isArray(j.missingImages) ? j.missingImages : [];
     const shown = frames.map((a) => a.id);
     for (const f of review.findings) f.shots = (f.evidence ?? []).map((i: number) => shown[i]).filter(Boolean);
     if (!phone) delete review.phone;
     review.visual = big.length ? { big: big.length, top: big.slice(0, 6).map((x: any) => ({ key: x.key, score: x.score, diff: x.diff })) } : null;
     review.frames = frames.map((a) => ({ asset: a.id, t: a.meta.t, reason: a.meta.reason, scene: a.meta.scene }));
     review.playtest = { job: p.job, url: result.url, scenario: result.scenario, outcome: result.outcome, seconds: result.seconds, fps: result.fps, problems: result.problems?.length ?? 0, device: result.device ?? 'desktop' };
+    if (missingShots.length) {
+      review.missingShots = missingShots.map((i) => frames[i]?.id).filter(Boolean);
+      review.summary = `${String(review.summary ?? '').trim()} (Reviewed without ${missingShots.length} of ${frames.length} screenshots that were missing: ${review.missingShots.join(', ')}.)`.trim();
+      for (const f of review.findings) f.shots = (f.shots ?? []).filter((id: string) => !review.missingShots.includes(id));
+    }
     review.model = p.model;
     review.via = 'claude-code';
     review.billing = j.billing;
@@ -200,10 +208,16 @@ export async function reviewViaClaudeCode(product: string, p: any, failedJob?: s
 export async function reviewJob(product: string, params: any, viaGen: () => Promise<any>): Promise<any> {
   if (llmVia() === 'claude-code') return reviewViaClaudeCode(product, params);
   const j = await viaGen();
-  if (j?.status === 'done' || process.env.STUDIO_LLM_VIA === 'gen' || !isBillingError(j?.error ?? '')) return j;
+  if (j?.status === 'done' || process.env.STUDIO_LLM_VIA === 'gen') return j;
+  // A screenshot missing from Gen's disk: review here instead, with the shots that can be read (not Gen's fault with the AI).
+  if (isMissingFileError(j?.error ?? '')) return reviewViaClaudeCode(product, params, j.id);
+  if (!isBillingError(j?.error ?? '')) return j;
   markGenDown(String(j.error));
   return reviewViaClaudeCode(product, params, j.id);
 }
+
+/** Gen's review failed because a file it needed isn't on its disk (a per-instance library, lost on restart). */
+export const isMissingFileError = (e: unknown) => /ENOENT|no such file or directory/i.test(typeof e === 'string' ? e : String((e as any)?.message ?? (e as any)?.error ?? e ?? ''));
 
 /** A short note for a step's detail when Claude Code answered instead of Gen. */
 export const viaNote = (j: any) => (j?.via === 'claude-code' ? ` · via Claude Code, ${j.billing ?? MAX_PLAN}` : '');

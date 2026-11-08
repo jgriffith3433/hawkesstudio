@@ -33,6 +33,15 @@
         "npm run typecheck",
         "npm test"
       ],
+      "checkEnv": {
+        "HAWKESGEN_MOCK_PROVIDERS": "1",
+        "HAWKESGEN_AI_MOCK": "1",
+        "HAWKESGEN_AUDIO_MOCK": "1",
+        "HAWKESGEN_QUALITY_MOCK": "1",
+        "CI": "1"
+      },
+      "baselineCheck": "npm test",
+      "baselineBranch": "beta",
       "smoke": {
         "start": "src/server.ts",
         "portEnv": "HAWKESGEN_PORT",

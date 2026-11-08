@@ -484,9 +484,9 @@ export function studioMcp({ studio, waitRun }: Client = { studio: defaultStudio,
     },
     {
       name: 'studio_analytics',
-      description: "How real players do (Hawkes Analytics, Gen's player analytics of every product's pages): compact JSON plus plain sentences with their sample sizes. Live site, bots and J's own devices left out, last 30 days unless you say otherwise. view: overview (every product: sessions and players this week vs the week before, D1, rating, error rate), product (one product's headline numbers), dropoff (where sessions end: before the game was ready, by level, screen, last event), levels (attempts, completion, quits, deaths, retries before the first win), feedback (ratings and the latest comments), errors (grouped by signature with sessions, players, browsers, builds), frustration (what got in players' way: out of credits, failed requests and generations, assistant failures, rage clicks, errors; how many left right after), engagement (time spent per activity: play, build, drive, fly...), accounts (signed-in accounts: what each spends time on, uses, hits, rates and pays; user for one), builds (two builds' KPIs side by side: by default the two newest; a, b to pick), insights (Gen's biggest changes and worst drop-offs, only over minimum samples), session (one session's timeline: session id). Check \"players die here 70% of the time\" before and after a change; don't call a change from small samples (under 30 sessions or 20 attempts is noise).",
+      description: "How real players do (Hawkes Analytics, Gen's player analytics of every product's pages): compact JSON plus plain sentences with their sample sizes. Live site, bots and J's own devices left out, last 30 days unless you say otherwise. view: overview (every product: sessions and players this week vs the week before, D1, rating, error rate), product (one product's headline numbers), sessions (sessions, players, median session length), events (one custom event by name grouped by chosen props, e.g. event stuck by level,objective: Gen has no such route, so Studio reads Gen's raw event export (GET export?what=events, at most 20000 rows, oldest first, real players only) and groups them itself; says when it may be cut off), dropoff (where sessions end: before the game was ready, by level, screen, last event), levels (attempts, completion, quits, deaths, retries before the first win), feedback (ratings and the latest comments), errors (grouped by signature with sessions, players, browsers, builds), frustration (what got in players' way: out of credits, failed requests and generations, assistant failures, rage clicks, errors; how many left right after), engagement (time spent per activity: play, build, drive, fly...), accounts (signed-in accounts: what each spends time on, uses, hits, rates and pays; user for one), builds (two builds' KPIs side by side: by default the two newest; a, b to pick), insights (Gen's biggest changes and worst drop-offs, only over minimum samples), session (one session's timeline: session id). Check \"players die here 70% of the time\" before and after a change; don't call a change from small samples (under 30 sessions or 20 attempts is noise).",
       inputSchema: obj({
-        view: str('overview | product | dropoff | levels | feedback | errors | frustration | engagement | accounts | builds | insights | session (default: product with a product, else overview)'), product: str('Product id (every view but overview)'), user: str('An account id (accounts view: that account; other views: only its sessions)'),
+        view: str('overview | product | sessions | events | dropoff | levels | feedback | errors | frustration | engagement | accounts | builds | insights | session (default: product with a product, else overview)'), event: str('events: the custom event name, e.g. stuck'), by: str('events: comma-separated props to group by, e.g. level,objective (a prop, else level/screen/page/build)'), limit: str('events: rows to read from Gen, up to 20000'), product: str('Product id (every view but overview)'), user: str('An account id (accounts view: that account; other views: only its sessions)'),
         range: str('today | 24h | 7d | 14d | 30d (default) | 90d | 180d | 365d'), from: str('ISO date or ms (overrides range)'), to: str('ISO date or ms'), env: str('live (default) | beta | preview | local | a comma list | all'),
         build: str('Only this build (its version string)'), device: str('desktop | phone | tablet'), browser: str('e.g. Chrome'), country: str('ISO code, e.g. US'),
         a: str('builds: the older build'), b: str('builds: the newer build'), session: str('session: its id (s_...)'),
@@ -495,7 +495,17 @@ export function studioMcp({ studio, waitRun }: Client = { studio: defaultStudio,
         const { viewRoute, compactView } = await import('./players.ts');
         const { view, path: route } = viewRoute(a);
         const scope = `${a.env || 'live'}${a.range || a.from ? `, ${a.range || `${a.from} to ${a.to || 'now'}`}` : ', last 30 days'}${a.build ? `, build ${a.build}` : ''}${a.device ? `, ${a.device}` : ''}${a.browser ? `, ${a.browser}` : ''}${a.country ? `, ${a.country}` : ''}; bots and J's own devices left out`;
-        return compactView(view, await studio(route), scope);
+        try {
+          const d = await studio(route);
+          if (view !== 'events') return compactView(view, d, scope);
+          const by = String(a.by ?? '').split(',').map((x) => x.trim()).filter(Boolean).slice(0, 4);
+          const { eventBreakdown, EVENT_ROW_LIMIT } = await import('./players.ts');
+          const limit = Math.min(EVENT_ROW_LIMIT, Math.max(1, Math.floor(Number(a.limit)) || EVENT_ROW_LIMIT));
+          return compactView('events', eventBreakdown(d?.rows ?? [], String(a.event), by, limit), scope);
+        } catch (e: any) {
+          const { analyticsFix } = await import('./players.ts');
+          throw new Error(analyticsFix(String(e?.message ?? e), a.product));
+        }
       },
     },
     {

@@ -83,6 +83,7 @@ import { launch, DetachedChild, detachedActivity, stopDetached, type DetachRec }
 import { cloudMcp, setWorkspaceRestorer } from './cloudjob.ts';
 import { cloudMode } from './cloudauth.ts';
 import { warmDeps, installCold, markInstalled } from './warm.ts';
+import { failingTests, compareFailures, describeTests } from './infra-tests.ts';
 import { infraFailed, INFRA_FAILED_SQL, isInfraText } from './infra-failure.ts';
 import { ensureGpuFor, needsGpu } from './gpustart.ts';
 import { walkAwayOn, WALK_AWAY_BY } from './walkaway.ts';
@@ -298,16 +299,28 @@ export function saysNoChange(summary: string) {
   return /\b(made no (change|commit)s?|no changes? (were |was )?(made|needed)|nothing to (change|fix|do)|changed nothing|committ?ed nothing|commit nothing|didn'?t change|did not change|not changing|left (it )?as (it is|is))\b/i.test(String(summary ?? ''));
 }
 /** The mark of a commit Studio made for the agent (the job's leftover step, cloudjob-run.ts; commitForAgent). */
-const STUDIO_COMMIT = /Committed by Hawkes Studio/;
+/** Studio's trailers, each as the whole last line of the message (cloudjob-run.ts commitLeftovers, cloudjob.ts, commitForAgent). A phrase anywhere else in a message (an agent quoting it) is not the mark. */
+const STUDIO_TRAILER = /^Committed by Hawkes Studio(?:'s job)?: (?:the agent left these changes uncommitted\.|the agent's own git commit was refused\b.*|the agent's commit\b.*)$/;
+const STUDIO_EMAIL = 'studio@hawkesgen.ai';
+/** One commit's message and committer/author emails: Studio's only when its last line is Studio's trailer and nobody else committed it (an agent's amend, even --no-edit, changes the committer). */
+const isStudioCommit = (rec: string) => {
+  const [authorEmail, committerEmail, ...body] = rec.split('\x01');
+  const lines = body.join('\x01').trim().split('\n').map((l) => l.trimEnd());
+  const last = lines[lines.length - 1] ?? '';
+  if (!STUDIO_TRAILER.test(last)) return false;
+  // Commits Studio made carry its own identity when the job made them; commitForAgent uses the worktree's (the agent's) identity, so only a *different, non-Studio* committer or author is refused when the trailer is the job's.
+  if (/^Committed by Hawkes Studio's job/.test(last)) return authorEmail.trim() === STUDIO_EMAIL && committerEmail.trim() === STUDIO_EMAIL;
+  return true;
+};
 /**
  * Whether every commit of the branch (beyond its base) was made by Studio for the agent, none by the agent itself: the job's
  * "leftover changes" commit after a pass that changed nothing (c_2d931adecba5 on 2026-11-03 merged two shader files the
  * agent never touched into Sick of It's beta). False with no commits.
  */
 export function onlyStudioCommits(worktree: string, base: string) {
-  const log = git(worktree, ['log', '--format=%B%x00', `origin/${base}..HEAD`]).out;
-  const msgs = log.split('\0').map((m) => m.trim()).filter(Boolean);
-  return msgs.length > 0 && msgs.every((m) => STUDIO_COMMIT.test(m));
+  const log = git(worktree, ['log', '--format=%ae%x01%ce%x01%B%x00', `origin/${base}..HEAD`]).out;
+  const recs = log.split('\0').map((m) => m.trim()).filter(Boolean);
+  return recs.length > 0 && recs.every(isStudioCommit);
 }
 /** The detail of a change whose agent made no commit because the work is already done: the PM checks it (pm.ts), not a try. */
 export const ALREADY = 'nothing to do: already done';
@@ -2780,20 +2793,55 @@ export async function smokeCheck(dir: string, t: Infra) {
   }
 }
 
-type InfraCheck = { cmd: string; ok: boolean; seconds: number; out?: string };
+type InfraCheck = { cmd: string; ok: boolean; seconds: number; out?: string; failed?: string[]; known?: string[]; baseline?: string };
 /**
  * A Studio or Gen change's checks (products.json infra "checks": typecheck and tests), all at once: they read the
  * worktree and write nothing the other reads (tsc is noEmit), so the slowest one sets the time (the tests, ~100 s)
  * instead of their sum (+ ~14 s of typecheck). Every one runs to the end and each result is kept, in the listed order,
  * so a change failing both hears of both. onDone: each one as it finishes. run: tests' stand-in for sh.
  */
-export async function infraChecks(dir: string, cmds: string[], onDone?: (k: InfraCheck) => void, run: (cwd: string, cmd: string, env: NodeJS.ProcessEnv) => Promise<{ ok: boolean; out: string; ms: number }> = sh): Promise<InfraCheck[]> {
+export async function infraChecks(dir: string, cmds: string[], onDone?: (k: InfraCheck) => void, run: (cwd: string, cmd: string, env: NodeJS.ProcessEnv) => Promise<{ ok: boolean; out: string; ms: number }> = sh, extraEnv: Record<string, string> = {}): Promise<InfraCheck[]> {
   return Promise.all(cmds.map(async (cmd) => {
-    const r = await run(dir, cmd, infraEnv()).catch((e: any) => ({ ok: false, out: String(e?.message ?? e), ms: 0 }));
+    const r = await run(dir, cmd, { ...infraEnv(), ...extraEnv }).catch((e: any) => ({ ok: false, out: String(e?.message ?? e), ms: 0 }));
     const k: InfraCheck = { cmd, ok: r.ok, seconds: Math.round(r.ms / 1000), out: r.ok ? undefined : tail(r.out) };
     onDone?.(k);
     return k;
   }));
+}
+
+/**
+ * The tests already red on a clean checkout of the branch a change goes into (beta's own result), found by running the
+ * same check there once per commit (kept in .data/infra-baseline/). Visible on the change as "already failing", never
+ * skipped; only a failure that isn't in this list blocks. null when the baseline can't be had (then nothing is excused).
+ */
+export async function baselineFailures(c: Pick<Change, 'id' | 'worktree' | 'base'>, t: Infra, run: (cwd: string, cmd: string, env: NodeJS.ProcessEnv) => Promise<{ ok: boolean; out: string; ms: number }> = sh): Promise<{ sha: string; branch: string; failed: string[] } | null> {
+  const branch = t.baselineBranch ?? c.base ?? 'main';
+  const cmd = t.baselineCheck!;
+  let f = await gitAsync(c.worktree, ['fetch', '--quiet', 'origin', `+refs/heads/${branch}:refs/remotes/origin/${branch}`]);
+  if (!f.ok) return null;
+  const sha = git(c.worktree, ['rev-parse', `origin/${branch}`]).out;
+  if (!sha) return null;
+  const dir = path.join(DATA, 'infra-baseline');
+  fs.mkdirSync(dir, { recursive: true });
+  const file = path.join(dir, `${t.id}-${sha}.json`);
+  if (fs.existsSync(file)) return JSON.parse(fs.readFileSync(file, 'utf8'));
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), `hawkes-base-${t.id}-`));
+  try {
+    const w = await gitAsync(c.worktree, ['worktree', 'add', '--detach', '--force', tmp, sha]);
+    if (!w.ok) return null;
+    const env = { ...infraEnv(), ...(t.checkEnv ?? {}), PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1' };
+    const ci = await run(tmp, 'npm ci --no-audit --no-fund', env);
+    if (!ci.ok) return null;
+    const r = await run(tmp, cmd, env);
+    const out = { sha, branch, failed: failingTests(r.out) };
+    // A run that failed with no failing test named (it crashed, or timed out) says nothing about which tests are red.
+    if (!r.ok && !out.failed.length) return null;
+    fs.writeFileSync(file, JSON.stringify(out));
+    return out;
+  } finally {
+    await gitAsync(c.worktree, ['worktree', 'remove', '--force', tmp]).catch(() => {});
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
 }
 
 /** Verification of a Studio or Gen change: the checks and a smoke check here, and CI on the pull request (GitHub). */
@@ -2802,7 +2850,22 @@ async function verifyInfra(c: Change, t: Infra) {
   const ci = ciChecks(c.slug, sha, { onWait: (d) => update(c.id, { detail: d }) }).catch((e: any) => ({ state: 'error', detail: String(e.message ?? e), runs: [] as any[] }));
   await npmCi(c.id, c.worktree);
   update(c.id, { detail: `running ${t.checks.join(' and ')}` });
-  const checks = await infraChecks(c.worktree, t.checks, (k) => addLog(c.id, `${k.cmd}: ${k.ok ? 'ok' : 'FAILED'} (${k.seconds} s)`));
+  const checks = await infraChecks(c.worktree, t.checks, (k) => addLog(c.id, `${k.cmd}: ${k.ok ? 'ok' : 'FAILED'} (${k.seconds} s)`), sh, t.checkEnv);
+  // Compared with beta's own result: a test red there too is shown as already failing, and only new failures block.
+  const compared: string[] = [];
+  for (const k of checks) {
+    if (k.ok || k.cmd !== t.baselineCheck) continue;
+    const failed = failingTests(k.out ?? '');
+    if (!failed.length) continue;
+    update(c.id, { detail: `${k.cmd} failed: comparing with ${t.baselineBranch ?? c.base}'s own result` });
+    const base = await baselineFailures(c, t).catch(() => null);
+    if (!base) { k.failed = failed; addLog(c.id, `${k.cmd}: no baseline from ${t.baselineBranch ?? c.base}, so none of ${failed.length} failing test(s) is excused`); continue; }
+    const cmp = compareFailures(failed, base.failed);
+    k.failed = cmp.fresh; k.known = cmp.known; k.baseline = base.sha.slice(0, 7);
+    if (!cmp.fresh.length) { k.ok = true; k.out = undefined; }
+    compared.push(describeTests(cmp, k.seconds, k.ok));
+    addLog(c.id, `${k.cmd}: ${cmp.fresh.length} new failing, ${cmp.known.length} already failing on ${base.branch} @ ${k.baseline}`);
+  }
   update(c.id, { detail: 'smoke check: starting the changed service on a spare port' });
   const smoke = await smokeCheck(c.worktree, t).catch((e: any) => ({ ok: false, detail: String(e.message ?? e) }) as any);
   addLog(c.id, `smoke: ${smoke.ok ? 'ok' : 'FAILED'}: ${smoke.detail}`);
@@ -2811,7 +2874,7 @@ async function verifyInfra(c: Change, t: Infra) {
   const ok = ciResult.state === 'success' && checks.every((k) => k.ok) && smoke.ok;
   const summary = [
     `CI ${ciResult.state === 'success' ? 'green' : `${ciResult.state} (${ciResult.detail})`}`,
-    ...checks.map((k) => `${k.cmd} ${k.ok ? 'ok' : 'FAILED'}`),
+    ...checks.map((k) => k.failed?.length || k.known?.length ? describeTests({ failed: [...(k.failed ?? []), ...(k.known ?? [])], known: k.known ?? [], fresh: k.failed ?? [], fixed: [] }, k.seconds, k.ok) : `${k.cmd} ${k.ok ? `ok (${k.seconds} s)` : 'FAILED'}`),
     `smoke: ${smoke.detail}`,
   ].join(' · ');
   return { kind: 'infra', sha, outcome: ok ? 'passed' : 'failed', verdict: ok ? 'ship' : 'broken', summary, ci: ciResult, checks, smoke };
@@ -2829,6 +2892,8 @@ async function approveInfra(c: Change, by: string, origin?: string | null) {
   const pr = await github(`/repos/${c.slug}/pulls/${c.pr}`);
   if (pr.state !== 'open') throw new Error(`Pull request #${c.pr} is ${pr.merged ? 'already merged' : pr.state}.`);
   if (c.verify?.sha && pr.head.sha !== c.verify.sha) throw new Error(`Pull request #${c.pr}'s head moved after the checks (checked ${String(c.verify.sha).slice(0, 7)}, now ${String(pr.head.sha).slice(0, 7)}). Revise ${c.id} so the new head is checked.`);
+  // Tests gate every merge, whoever asks (J's tap, a delegated merge, walk-away): a failed Studio check never merges.
+  if (c.verify?.outcome === 'failed' || (c.verify?.checks ?? []).some((k: any) => !k.ok)) throw new Error(`The checks on ${c.id} failed (${String(c.verify?.summary ?? 'see its log').slice(0, 400)}); not merging into ${c.base}. Revise it so they pass.`);
   const up = await updateFromBase(c.id);
   if (up.state === 'merged' || up.state === 'conflict') return holdForMain(c, up, by, origin);
   const head = getChange(c.id)!.verify?.sha ?? pr.head.sha;

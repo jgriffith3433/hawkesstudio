@@ -87,11 +87,19 @@ function runRow(r: any) {
 
 const scoutModel = () => { try { return roleArgs('scout').role.model ?? null; } catch { return null; } };
 
+/** Cuts text to at most n characters at a word boundary, with an ellipsis (never mid-word). */
+export function clip(s: string, n: number) {
+  if (s.length <= n) return s;
+  const cut = s.slice(0, n - 1);
+  const sp = cut.lastIndexOf(' ');
+  return `${(sp > n * 0.5 ? cut.slice(0, sp) : cut).replace(/[\s,;:.-]+$/, '')}…`;
+}
+
 /** A scout as one Activity row (the report is fetched when J opens it: GET /api/scouts/<id>, so the push payload stays small). */
 export function scoutRow(x: any) {
   const partial = x.status === 'done' && /^partial report/.test(x.detail ?? '');
   return {
-    id: x.id, product: x.product, productName: name(x.product), question: String(x.question ?? '').replace(/\s+/g, ' ').slice(0, 160),
+    id: x.id, product: x.product, productName: name(x.product), question: clip(String(x.question ?? '').replace(/\s+/g, ' '), 160),
     status: partial ? 'partial' : x.status, detail: x.detail ?? null, started: x.created, finished: x.finished ?? null, cost: x.cost ?? 0,
     origin: x.origin ?? null, by: x.origin ? `Talk: ${convTitle(x.origin)}` : 'J', hasReport: ['done', 'cancelled'].includes(x.status) && Boolean(x.report),
     // Live progress while it runs (scout.ts keeps the last steps and the turns used; the push stream carries each write).
@@ -159,6 +167,8 @@ export async function activity() {
     // Moments in the last hour Studio couldn't answer for over a second (a blocking call), and what was running then.
     loop: { lastMinute: loop.lastMinute, blocks: loop.blocks.filter((b) => b.at > Date.now() - 3600_000) },
     // The header badge: things working now (a Gen job a run's step is waiting on counts once, as its run).
+    // Scouts that failed and aren't dismissed: the header shows them next to the badge (a calm "0" hid 21 of them).
+    failed: scouts.filter((x) => x.status === 'failed').length,
     count: changes.length + runs.length + scouts.filter((x) => x.status === 'running').length + talk.length + ops.length + jobs.filter((j) => !stepJobs.has(j.id)).length,
   };
 }

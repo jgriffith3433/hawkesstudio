@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, interactive-widget=resizes-content">
   <title>Hawkes Studio</title>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='%23101418'/><path d='M8 8v16M24 8v16M8 16h16' stroke='%2333d6a6' stroke-width='3.5' stroke-linecap='round'/></svg>">
   <link rel="stylesheet" href="style.css">
@@ -10,7 +10,7 @@
 <body>
   <header>
     <div class="brand"><span class="mark">H</span> Hawkes Studio <small data-platform>clinical trials, daily</small> <a href="#settings" class="walk-badge" id="walkAwayBadge" hidden title="Walk-away mode is on: Studio and Gen changes merge into main by themselves once green, the PM decides routine calls itself, and your Inbox keeps only what's yours (Settings, PM loop)">🚶 Walk-away</a></div>
-    <nav>
+    <nav class="pending">
       <button data-tab="home" title="At a glance: per game, what needs you, what is running, what is ready to ship">Home</button>
       <button data-tab="inbox" class="on" title="Everything waiting on you: decisions, GPU budgets, merges only you make, milestones to playtest">Inbox <span class="ib-count zero" id="inboxCount">0</span></button>
       <button data-tab="talk">Talk</button>
