@@ -374,7 +374,10 @@ argument, and counts any declaration in the method as enough. Fixtures: `test/fi
 with file, line and message (twice at most, `UNITY_FIXES`, never a try), then fails the change with no pull request.
 What ran is in the change's log, its PR description and its ready line. Engine: Roslyn (`tools/unity-check`, published
 into the agent image at `/opt/unity-check/unity-check`, `STUDIO_UNITY_CHECK` to point elsewhere or `off`), else the
-built-in checker (a lexer and a member scan, always there). Test `test/unitycheck.test.ts`.
+built-in checker (a lexer and a member scan, always there). The member scan skips generic argument lists and `where T : X`
+constraints (`Dictionary<string, Callbacks>` in an initializer, `void Load<T>(...) where T : UnityEngine.Object`: Sick of It's
+false CS0102s, fixture `GenericsClean.cs`). The Roslyn tool is a single-file publish, where `Assembly.Location` is empty: it
+takes the core library from memory (`CoreReferences` in `tools/unity-check/Program.cs`). Test `test/unitycheck.test.ts`.
 
 **The compile gate** (J, 2026-11-04, `src/compilecheck.ts`). After the pull request is pushed and before the change is
 ready (so before it can merge into beta), Studio asks Hawkes Gen to compile the branch: `unity.build` in customer mode
