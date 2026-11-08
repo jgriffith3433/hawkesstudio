@@ -41,6 +41,7 @@ import { brainId, harnessStopOf, type Harness } from './brains.ts';
 import { harnessHeld, holdHarness, onHoldLifted } from './harness-hold.ts';
 import { isBillingError } from './llm.ts';
 import { kickFollowups } from './followup-kick.ts';
+import { NEUTRAL, hookMissing, libraryProject, openFindingCount } from './verdictwork.ts';
 
 export type RunOptions = {
   products?: string[];
@@ -834,6 +835,16 @@ async function playScenario(run: string, p: Product, asked: Playtest, { review =
   }
   const r = job.result ?? {};
   const ok = job.status === 'done';
+  // Nothing to playtest (J, 2026-11-08): a page that never exposed the playtest hook, with no open finding behind it (a
+  // library, an SDK's page), is skipped, not failed: no red card, no review, no bad verdict (verdictwork.ts). With an open
+  // finding behind it the game is still failed.
+  if (!ok && hookMissing(job.error ?? job.detail) && !openFindingCount(p.id)) {
+    updateStep(s, {
+      status: 'skipped', job: job.id, detail: `nothing to playtest: ${job.error ?? job.detail} (${url}), and no open finding is behind it`,
+      data: { url, played, unplayable: true, error: job.error ?? job.detail }, finished: true,
+    });
+    return job;
+  }
   // A task's check (criteria judged) against the scenario budget (pace.ts): over it, the run card warns and the task's
   // agent hears it (pm.ts). Daily "full" runs are long on purpose: not flagged.
   const at = playOptions(t)?.at;
@@ -1052,10 +1063,12 @@ async function fileReview(rs: string, p: Product, run: string, name: string, rev
     known.fixed.length ? `${known.fixed.length} known look fixed` : '', known.present.length ? `${known.present.length} known still there` : '',
   ].filter(Boolean);
   const late = x.tries > 0 || Date.now() - x.at > 60_000 ? ' · reviewed late (it waited for the AI)' : '';
+  // A library has nothing to playtest on its own page: its review's verdict reads neutral, never fix-first or broken (verdictwork.ts).
+  const verdict = libraryProject(p) && v.verdict !== NEUTRAL ? NEUTRAL : v.verdict;
   updateStep(rs, {
     status: 'done', job: rev.id, cost: rev.cost ?? 0,
-    detail: `${v.verdict} · ${x.mode}${x.barMet ? ' (meets its quality bar)' : ''} · ${(v.findings ?? []).length} findings (${parts.join(', ')})${p.quality ? ` · bar: ${v.meetsBar ?? '?'}` : ''}${viaNote(rev)}${late}`,
-    data: { ...v, added: merged.added, updated: merged.updated, ideas: merged.ideas, skipped: merged.skipped, knownFixed: known.fixed, knownPresent: known.present, reviewKey: x.reviewKey, mode: x.mode, sha: x.sha, barHash: barHash(p.quality), bar: x.barWhy }, finished: true,
+    detail: `${verdict} · ${x.mode}${x.barMet ? ' (meets its quality bar)' : ''} · ${(v.findings ?? []).length} findings (${parts.join(', ')})${p.quality ? ` · bar: ${v.meetsBar ?? '?'}` : ''}${viaNote(rev)}${late}`,
+    data: { ...v, ...(verdict !== v.verdict ? { verdict, verdictWas: v.verdict } : {}), added: merged.added, updated: merged.updated, ideas: merged.ideas, skipped: merged.skipped, knownFixed: known.fixed, knownPresent: known.present, reviewKey: x.reviewKey, mode: x.mode, sha: x.sha, barHash: barHash(p.quality), bar: x.barWhy }, finished: true,
   });
   // A review that came late (it waited for the AI; its run is long over): act on its verdict now (verdictwork.ts).
   if (late && isServer()) void import('./verdictwork.ts').then((m) => m.actOnVerdict(p.id, 'a late review')).catch(() => {});

@@ -25,9 +25,18 @@
 // Switches are Settings → Agents (`autoWorkVerdicts`, `autoReverify`, both default on), not env vars.
 
 import { db, parse } from './db.ts';
-import { getProduct, isInfra, managedElsewhere } from './config.ts';
+import { getProduct, isInfra, managedElsewhere, type Product } from './config.ts';
 
 export const BAD = ['fix-first', 'broken'];
+/**
+ * A project with nothing to playtest reads this: grey "nothing to playtest", never fix-first or broken, no Inbox card, no
+ * re-check, not counted red anywhere (J, 2026-11-08: Hawkes Net, Hawkes Net for Unity and for Babylon are libraries).
+ */
+export const NEUTRAL = 'nothing-to-playtest';
+/** Gen's playtest says this when a contract game's page never exposed its hook (tools/playtest.ts). */
+const HOOK_MISSING = /never exposed window\.hawkesPlaytest/i;
+/** A playtest failure that is the page never exposing the playtest hook. */
+export const hookMissing = (text: unknown) => HOOK_MISSING.test(String(text ?? ''));
 /** Statuses of a change whose agent is on the project (or about to be). */
 const ACTIVE = ['queued', 'working', 'verifying', 'revising', 'needs answer', 'waiting on Gen', 'asked'];
 /** The window of quiet after the last merge before the one re-check starts (a burst of merges costs one playtest). */
@@ -43,7 +52,55 @@ export function latestVerdict(product: string): Verdict | null {
   if (!r) return null;
   const d = parse(r.data) as any;
   if (!d?.verdict) return null;
-  return { verdict: String(d.verdict), at: r.finished ?? r.started, commit: d.sha ? String(d.sha).slice(0, 7) : null, summary: d.summary ?? null, run: r.run };
+  return nothingToPlayOf(product, { verdict: String(d.verdict), at: r.finished ?? r.started, commit: d.sha ? String(d.sha).slice(0, 7) : null, summary: d.summary ?? null, run: r.run });
+}
+
+/** How many findings are open (or being fixed) behind the project: a page that never exposed the hook counts only with none. */
+export function openFindingCount(product: string): number {
+  try { return Number((db.prepare(`SELECT COUNT(*) AS n FROM findings WHERE product = ? AND status IN ('open', 'fixing')`).get(product) as any)?.n ?? 0); } catch { return 0; }
+}
+
+/**
+ * A library or SDK: its live address is its repository page (GitHub or GitLab), and it has no beta, build or builds of its
+ * own to play instead. A library with a beta demo plays that demo; it is judged by its playtests like any page.
+ */
+export function libraryProject(p: Pick<Product, 'live' | 'beta' | 'build' | 'builds'> | null | undefined): boolean {
+  if (!p) return false;
+  return /^https:\/\/(www\.)?(github|gitlab)\.com\//i.test(p.live ?? '') && !p.beta && !p.build && !(p.builds?.length);
+}
+
+/** When the product's newest playtest that found nothing to play was (skipped, data.unplayable), else null. */
+function unplayableAt(product: string): number | null {
+  try {
+    const r = db.prepare(`SELECT started, finished FROM steps WHERE product = ? AND kind = 'playtest' AND status = 'skipped' AND data LIKE '%"unplayable":true%' ORDER BY started DESC LIMIT 1`).get(product) as any;
+    return r ? Number(r.finished ?? r.started) : null;
+  } catch { return null; }
+}
+
+/**
+ * Whether a bad verdict has nothing to playtest behind it: a library (always), or a page that never exposed its hook while
+ * no finding is open (its playtest came after the review). Real games with open findings keep their verdict.
+ */
+export function nothingToPlay(product: string, v: { at?: number | null } | null = null): boolean {
+  let p: Product | null = null;
+  try { p = getProduct(product); } catch { p = null; }
+  if (libraryProject(p)) return true;
+  if (openFindingCount(product) > 0) return false;
+  const at = unplayableAt(product);
+  return at !== null && (!v?.at || at >= v.at);
+}
+
+/** A review's verdict as the product reads it now: a bad one with nothing to playtest behind it is NEUTRAL. */
+function nothingToPlayOf(product: string, v: Verdict): Verdict {
+  return BAD.includes(v.verdict) && nothingToPlay(product, v) ? { ...v, verdict: NEUTRAL } : v;
+}
+
+/** A review step row as the Projects page reads it (server.ts overview): its data with the neutral verdict where it applies. */
+export function readReview<T extends { data?: any; finished?: number | null; started?: number | null; run?: string | null }>(product: string, row: T | null): T | null {
+  const verdict = row?.data?.verdict;
+  if (!row || !BAD.includes(String(verdict))) return row;
+  const v = nothingToPlayOf(product, { verdict: String(verdict), at: row.finished ?? row.started ?? 0, commit: null, summary: null, run: row.run ?? null });
+  return v.verdict === NEUTRAL ? { ...row, data: { ...row.data, verdict: NEUTRAL, verdictWas: verdict } } : row;
 }
 
 /**
