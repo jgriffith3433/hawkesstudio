@@ -81,8 +81,8 @@ export interface FeelOptions {
   player?: unknown;
   /** The camera to watch (default: scene.activeCamera). */
   camera?: unknown;
-  /** The Babylon scene (default: found by itself). */
-  scene?: unknown;
+  /** The Babylon scene, or a function returning it (default: found by itself; re-found once if it renders no frame in 5 s). */
+  scene?: unknown | (() => unknown);
   /** Movement input held, 0..1 (default: WASD / arrows / touch held). */
   input?: () => number;
   /** False while the player can't move (the game plays itself, a cutscene, a menu): only hitches are watched then. */

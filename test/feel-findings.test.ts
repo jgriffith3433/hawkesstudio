@@ -58,3 +58,22 @@ test('a replay keeps the run\'s start point (options.at) with the spot', async (
   assert.deepEqual(f.replay, { scenario: 'level', options: { seed: 3, at: 'station', spot: '1,2,3' } });
   assert.deepEqual(replayOf(f.detail), f.replay);
 });
+
+test('a sensor that saw no frames, or never active in 3D, files one bug instead of nothing', async () => {
+  const { feelSensorFindings } = await import('../src/feel.ts');
+  const off = feelSensorFindings({ feel: [], metrics: { 'feel.samples': 0 }, events: [] }, { scenario: 'smoke' });
+  assert.equal(off.length, 1);
+  assert.equal(off[0].title, 'feel sensor not running in smoke');
+  assert.equal(off[0].severity, 'bug');
+  assert.match(off[0].detail, /never reported a feel-sensor event/);
+  const idle = feelSensorFindings({ feel: [], metrics: { 'feel.samples': 300, 'feel.activeSeconds': 0 }, events: [{ type: 'feel-sensor', detail: '{"adapter":"babylon"}' }] }, { scenario: 'play' });
+  assert.equal(idle[0].title, 'feel sensor not running in play');
+  assert.match(idle[0].detail, /never active/);
+  assert.match(idle[0].detail, /babylon/);
+  // Healthy, switched off (no metric) and games with no feel wiring (no feel array) stay quiet.
+  assert.deepEqual(feelSensorFindings({ feel: [], metrics: { 'feel.samples': 300, 'feel.activeSeconds': 12 } }, { scenario: 's' }), []);
+  assert.deepEqual(feelSensorFindings({ feel: [], metrics: { fpsAverage: 60 } }, { scenario: 's' }), []);
+  assert.deepEqual(feelSensorFindings({ metrics: { 'feel.samples': 0 } }, { scenario: 's' }), []);
+  // Frames-only adapter has no activeSeconds: not a 3D claim.
+  assert.deepEqual(feelSensorFindings({ feel: [], metrics: { 'feel.samples': 50 } }, { scenario: 's' }), []);
+});

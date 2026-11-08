@@ -174,3 +174,14 @@ test('metrics: a press against a wall (no movement) is not counted', () => {
   const { core } = run(frames(120, (i) => ({ input: i >= 10 ? 1 : 0, player: { x: 0, y: 0, z: 0 } })));
   assert.equal(core.metrics()['feel.inputLatencyMs'], undefined);
 });
+
+test('metrics: feel.samples counts frames; feel.activeSeconds only when the adapter says whether the player is active', () => {
+  const idle = run(frames(30, () => ({ active: false }))).core.metrics();
+  assert.equal(idle['feel.samples'], 30);
+  assert.equal(idle['feel.activeSeconds'], 0);
+  const on = run(frames(30, () => ({ active: true }))).core.metrics();
+  assert.ok(on['feel.activeSeconds'] > 0.3);
+  const plain = run(frames(30, () => ({}))).core.metrics();
+  assert.equal(plain['feel.activeSeconds'], undefined);
+  assert.equal(run([]).core.metrics()['feel.samples'], 0);
+});

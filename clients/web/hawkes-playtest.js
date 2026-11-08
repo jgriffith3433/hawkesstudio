@@ -135,18 +135,45 @@ export function installPlaytest(opts) {
       pushToRunner({ type: 'feel', flag });
     };
     const base = { ...o, seed: r.options.seed, sceneName: () => r.state.scene, emit };
-    try {
-      const scene = o.scene ?? discoverBabylonScene(window);
-      sensor = (scene && startBabylonFeel({ ...base, scene })) || startFrameFeel(base);
-    } catch (e) {
-      sensor = null;
-      tracker.log(`feel sensor off: ${e?.message ?? e}`);
+    // feel.scene is a scene or a function returning one (the game builds its scene later than it installs the playtest).
+    const given = () => { try { return typeof o.scene === 'function' ? o.scene() : o.scene; } catch { return null; } };
+    const attach = (scene) => {
+      try {
+        sensor = (scene && startBabylonFeel({ ...base, scene })) || startFrameFeel(base);
+      } catch (e) {
+        sensor = null;
+        tracker.log(`feel sensor off: ${e?.message ?? e}`);
+      }
+      // Always say what the sensor is (or that it isn't): a sensor that is silently off reads as "no feel problems".
+      const info = sensor?.info?.() ?? { adapter: 'none', player: false, camera: false };
+      tracker.event('feel-sensor', JSON.stringify({ adapter: info.adapter, player: info.player ? 'yes' : 'no', camera: info.camera ? 'yes' : 'no' }));
+    };
+    const first = given() ?? discoverBabylonScene(window);
+    attach(first);
+    // A Babylon scene that renders no frame in 5 s is the wrong scene (a menu scene, a disposed one): look again, once.
+    if (sensor?.info?.().adapter === 'babylon') {
+      const mine = sensor;
+      feelTimer = setTimeout(() => {
+        feelTimer = null;
+        if (r !== run || r.done || sensor !== mine || (mine.metrics?.()['feel.samples'] ?? 0) > 0) return;
+        const again = given() ?? discoverBabylonScene(window);
+        tracker.log(`feel sensor: its scene rendered no frame in 5 s; looking again${again && again !== first ? ' (found another scene)' : again ? ' (same scene)' : ' (none found, frames only)'}`);
+        try { mine.stop(); } catch {}
+        attach(again);
+      }, 5000);
     }
   }
   function feelMetrics() {
-    try { return run?.feelMetrics ?? sensor?.metrics?.() ?? {}; } catch { return {}; }
+    try {
+      if (run?.feelMetrics) return run.feelMetrics;
+      if (sensor) return sensor.metrics?.() ?? {};
+      // The sensor was meant to run and isn't: say so (feel.samples 0), unless the game turned it off.
+      return feelOpts === false ? {} : { 'feel.samples': 0 };
+    } catch { return {}; }
   }
+  let feelTimer = null;
   function stopFeel() {
+    if (feelTimer) { clearTimeout(feelTimer); feelTimer = null; }
     try { if (sensor && run) { run.feelFinal = sensor.flags(); run.feelMetrics = sensor.metrics?.() ?? null; } sensor?.stop(); } catch {}
     sensor = null;
   }

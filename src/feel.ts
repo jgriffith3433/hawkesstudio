@@ -121,6 +121,37 @@ export function feelFindings(result: any, { scenario, mode = 'full', max = 6, at
     .map(({ rank, ...f }) => f);
 }
 
+/**
+ * A feel sensor that is silently off must not read as "no feel problems" (J, 2026-11-08: I Can Be AI's smoke returned
+ * zero flags with 900 ms frames and the camera inside a roof). A game with feel wiring (its report has a `feel` array
+ * and the sensor's `feel.samples` metric) whose sensor saw no frames, or whose 3D gameplay was never active
+ * (`feel.activeSeconds` 0, only the Babylon adapter measures it), gets one bug instead of nothing.
+ */
+export function feelSensorFindings(result: any, { scenario }: { scenario: string }): FeelFinding[] {
+  if (!Array.isArray(result?.feel)) return [];
+  const m = result?.metrics ?? {};
+  const samples = Number(m['feel.samples']);
+  const active = Number(m['feel.activeSeconds']);
+  const noFrames = m['feel.samples'] != null && samples === 0;
+  const neverActive = !noFrames && m['feel.activeSeconds'] != null && active === 0 && samples > 0;
+  if (!noFrames && !neverActive) return [];
+  const sensorEvents = (Array.isArray(result?.events) ? result.events : []).filter((e: any) => e?.type === 'feel-sensor').map((e: any) => String(e.detail ?? '')).slice(-3);
+  return [{
+    title: `feel sensor not running in ${scenario}`,
+    severity: 'bug', area: 'gameplay',
+    detail: [
+      noFrames
+        ? `The feel sensor saw no frames in ${scenario} (feel.samples 0), so "no feel problems" means nothing: camera, floor, hitch and stuck checks did not run.`
+        : `The feel sensor saw ${samples} frames in ${scenario} but the player was never active (feel.activeSeconds 0), so the camera, floor and stuck checks never ran.`,
+      sensorEvents.length ? `Sensor events: ${sensorEvents.join(' ')}` : 'The game never reported a feel-sensor event (the sensor did not start).',
+    ].join('\n'),
+    fix: noFrames
+      ? 'Check the sensor started on the scene the game renders: pass feel.scene (a scene or a function returning it) to installPlaytest, make sure the page renders frames while the scenario plays, and look at the run log for "feel sensor" lines.'
+      : 'Give the sensor what it needs: feel.player (and feel.camera), and make feel.active() true while the player controls the character; check the scenario really enters 3D gameplay.',
+    shots: [], replay: null,
+  }];
+}
+
 /** The replay line a feel finding carries in its detail ("Replay: {...}"), or null. */
 export function replayOf(detail: string | null | undefined): Replay | null {
   const m = /^Replay: (\{.*\})\s*$/m.exec(String(detail ?? ''));

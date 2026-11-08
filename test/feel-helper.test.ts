@@ -70,3 +70,24 @@ test('explore: with the player given, the run gets an explore scenario that maps
   const map = JSON.parse(rep.events.find((e: any) => e.type === 'explore-map').detail);
   assert.equal(map.cell, 2);
 });
+
+test('the sensor announces itself, accepts feel.scene as a function and reports samples', async () => {
+  // @ts-ignore: plain JS
+  const { installPlaytest } = await import('../clients/web/hawkes-playtest.js');
+  let release!: () => void;
+  let asked = 0;
+  const api = installPlaytest({
+    product: 'demo2', feel: { scene: () => { asked++; return null; } },
+    scenarios: [{ id: 'smoke', title: 'Smoke', seconds: 10 }],
+    start: () => new Promise<void>((r) => { release = r; }),
+  });
+  const done = api.start('smoke', {});
+  assert.ok(asked >= 1);
+  const rep0: any = api.report();
+  const ev = rep0.events.find((e: any) => e.type === 'feel-sensor');
+  assert.deepEqual(JSON.parse(ev.detail), { adapter: 'frames', player: 'no', camera: 'no' });
+  assert.equal(rep0.metrics['feel.samples'], 0);
+  release();
+  await done;
+  assert.equal((api.report() as any).metrics['feel.samples'], 0);
+});
