@@ -84,7 +84,7 @@ import { recordPass, lastPassFor, type PassOutcome } from './ledger.ts';
 import { markModelUnavailable, refusedModelOf } from './models.ts';
 import { claudeCommand, spawnShell, sandboxShare, assertWorktree, shareWorktree } from './sandbox.ts';
 import { launch, DetachedChild, detachedActivity, stopDetached, type DetachRec } from './detach.ts';
-import { cloudMcp, setWorkspaceRestorer } from './cloudjob.ts';
+import { cloudMcp, setWorkspaceRestorer, MERGE_BASE_FILE } from './cloudjob.ts';
 import { cloudMode } from './cloudauth.ts';
 import { warmDeps, installCold, markInstalled } from './warm.ts';
 import { failingTests, compareFailures, describeTests } from './infra-tests.ts';
@@ -1512,6 +1512,11 @@ async function agentPass(id: string, ph: Phase, save: (patch: Partial<Phase>) =>
 }
 async function agentPassRaw(id: string, ph: Phase, save: (patch: Partial<Phase>) => void, s: AgentSettings, env: NodeJS.ProcessEnv, resume?: { session?: string; prompt: string }) {
   const brief = path.join(getChange(id)!.worktree, '.hawkes', 'brief.md');
+  // A conflict pass tells the job which branch to bring in with its token (cloudjob-run.ts premerge): the job's clone has no
+  // credentials of its own for the agent's `git merge`.
+  const mergeBaseFile = path.join(getChange(id)!.worktree, MERGE_BASE_FILE);
+  if (ph.conflict) { fs.mkdirSync(path.dirname(mergeBaseFile), { recursive: true }); fs.writeFileSync(mergeBaseFile, `${getChange(id)!.base}\n`); }
+  else fs.rmSync(mergeBaseFile, { force: true });
   const fresh = (): AgentRun => ({
     onStart: (rec) => save({ proc: { rec, offset: 0 }, brain: brainId() }),
     onProgress: (offset) => save({ proc: { ...ph.proc!, offset } }),
@@ -3240,6 +3245,28 @@ async function githubSaysConflict(c: Change) {
   return false;
 }
 
+/** The files both lists name, in the first list's order (what two sides changed in common). */
+export const overlapOf = (mine: string[], theirs: string[]) => { const t = new Set(theirs); return [...new Set(mine)].filter((f) => t.has(f)); };
+
+/**
+ * The files a pull request really conflicts on when GitHub says it does (it only says "dirty"): what the branch changed
+ * since it forked from its base, and what the base changed since, in common. Not every file the change touches (J,
+ * 2026-11-08: a conflict pass on 15 new PNGs that beta never touched). [] when the sides share no file (a conflict git
+ * reports for another reason), null when GitHub can't say.
+ */
+export async function githubConflictFiles(c: Pick<Change, 'slug' | 'base' | 'branch'>): Promise<string[] | null> {
+  try {
+    const names = (r: any) => (r.files ?? []).map((f: any) => String(f.filename));
+    const mine = await github(`/repos/${c.slug}/compare/${encodeURIComponent(c.base)}...${encodeURIComponent(c.branch)}`);
+    const fork = mine.merge_base_commit?.sha;
+    if (!fork) return null;
+    const theirs = await github(`/repos/${c.slug}/compare/${fork}...${encodeURIComponent(c.base)}`);
+    // GitHub lists at most 300 files per comparison: past that it can't be sure which overlap.
+    if ((mine.files ?? []).length >= 300 || (theirs.files ?? []).length >= 300) return null;
+    return overlapOf(names(mine), names(theirs));
+  } catch { return null; }
+}
+
 /**
  * A person's (or the PM's, or walk-away's) merge that met a conflict: its own agent resolves it, like an automatic
  * merge does (J, 2026-11-04: "it should be able to deal with the merge conflicts"). The error says so, and carries
@@ -3292,7 +3319,14 @@ export async function updateFromBase(id: string): Promise<{ state: 'current' | '
       git(c.worktree, ['merge', '--abort']);
       await gitAsync(c.worktree, ['reset', '--hard', before]);
       restoreNotes(c.worktree, notes);
-      addLog(id, `${c.base} moved: merging origin/${c.base} into the branch conflicts${files.length ? ` in ${files.join(', ')}` : ` (${(m.err || m.out).slice(0, 200)})`}`);
+      // No unmerged file: git never got as far as comparing (credentials, a blob it couldn't fetch from the promisor
+      // remote). That is a failure of the fetch, not a conflict: an agent can't resolve it and a pass must not be spent on it.
+      if (!files.length) {
+        const why = `merging origin/${c.base} failed before any file conflicted: ${(m.err || m.out).split('\n').filter(Boolean).slice(-2).join(' | ').slice(0, 300)}`;
+        addLog(id, `${c.base} moved: ${why} (not a conflict)`);
+        return { state: 'skipped', why };
+      }
+      addLog(id, `${c.base} moved: merging origin/${c.base} into the branch conflicts in ${files.join(', ')}`);
       return { state: 'conflict', files };
     }
     git(c.worktree, ['rm', '-r', '--cached', '--quiet', '--ignore-unmatch', '--', NOTES]);
@@ -3482,8 +3516,13 @@ export async function approve(id: string, { confirm, by = 'J', origin, auto = fa
       let e = e0;
       const files = () => github(`/repos/${c.slug}/pulls/${c.pr}/files?per_page=100`).then((fs: any[]) => fs.map((f) => f.filename)).catch(() => [] as string[]);
       // GitHub says it conflicts with beta (the branch couldn't be brought up to date here): a conflict like any other.
-      // GitHub doesn't name the conflicting files: the agent gets the ones the change touches.
-      if (!isConflict(e) && MERGE_REFUSED.test(String(e.message ?? e)) && await githubSaysConflict(c)) e = conflictError(c, await files());
+      // GitHub doesn't name the conflicting files: they are the ones both sides changed (githubConflictFiles); only when
+      // GitHub can't compare, the ones the change touches.
+      if (!isConflict(e) && MERGE_REFUSED.test(String(e.message ?? e)) && await githubSaysConflict(c)) {
+        const both = await githubConflictFiles(c);
+        if (both) addLog(id, both.length ? `GitHub says the branch conflicts with ${c.base}; both sides changed ${both.slice(0, 10).join(', ')}` : `GitHub says the branch conflicts with ${c.base}, but the two sides changed no file in common`);
+        e = conflictError(c, both ?? await files());
+      }
       if (isConflict(e)) throw auto ? e : conflictHandled(id, e);
       if (auto) throw e;
       // Anything else (an automatic merge says it in one line itself: autoMergeBeta): J hears it in Talk with the files,
