@@ -70,6 +70,8 @@ export interface FeelOptions {
   scene?: unknown;
   /** Movement input held, 0..1 (default: WASD / arrows / touch held). */
   input?: () => number;
+  /** False while the player can't move (the game plays itself, a cutscene, a menu): only hitches are watched then. */
+  active?: () => boolean;
   /** The game's own "player is inside a solid" check. */
   inside?: () => boolean;
   /** The controller's grounded flag: turns on the slope-landing check. */

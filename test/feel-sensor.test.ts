@@ -121,3 +121,31 @@ test('slope landing: lands, then slides off with no input', () => {
   const walk = run(frames(60, (i) => ({ player: { x: i < 20 ? 0 : (i - 20) * 0.08, y: 0, z: 0 }, grounded: i >= 20, input: 1 })));
   assert.ok(!walk.got.some((f) => f.kind === 'slope-slide'));
 });
+
+test('frames with no player (the game playing itself) start the timers over', () => {
+  const under = (t: number) => ({ player: { x: 0, y: -2, z: 0 }, floorBelow: false, surfaceAbove: 0, t });
+  const list = [
+    ...frames(12, (i, t) => under(t)),                       // 0.2 s under the floor: not yet a flag
+    ...frames(30, () => ({}), 0.2),                          // the player isn't the player's for a moment
+    ...frames(12, (i, t) => under(t), 0.7),                  // 0.2 s again: still not a flag
+  ];
+  const { got } = run(list);
+  assert.equal(got.filter((f) => f.kind === 'below-ground').length, 0);
+});
+
+test('the Babylon adapter watches only hitches while the game says the player is inactive', async () => {
+  const { startBabylonFeel } = await import('../clients/web/hawkes-feel.js');
+  const after: (() => void)[] = [];
+  const scene = { onAfterRenderObservable: { add: (f: any) => { after.push(f); return f; }, remove: () => {} }, activeCamera: null, pickWithRay: () => null };
+  let active = false;
+  let yaw = 0;
+  const cam = { getScene: () => scene, globalPosition: { x: 0, y: 2, z: -4 }, getWorldMatrix: () => ({ m: [0, 0, 0, 0, 0, 0, 0, 0, Math.sin(yaw), 0, Math.cos(yaw), 0, 0, 0, 0, 0] }) };
+  const got: any[] = [];
+  const s = startBabylonFeel({ scene, camera: cam, input: () => 0, active: () => active, emit: (f: any) => got.push(f) })!;
+  const tick = () => after.forEach((f) => f());
+  tick(); yaw = 2; tick(); tick();            // the game's own camera cuts while inactive: not flagged
+  assert.equal(got.filter((f) => f.kind === 'camera-snap').length, 0);
+  active = true; tick(); yaw = 0; tick();     // the hand-over is a cut too
+  assert.equal(got.filter((f) => f.kind === 'camera-snap').length, 0);
+  s.stop();
+});
