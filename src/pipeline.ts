@@ -1177,6 +1177,9 @@ export function betaPageUrl(root: string, p: { site?: string; repo?: string; git
 export function livePagePath(root: string, p: { repo?: string; github?: string; live?: string }) {
   let u: URL;
   try { u = new URL(String(p.live ?? '')); } catch { return root; }
+  // A library's "live" is its repo page (github.com/<owner>/<name>): that path is not a page of its site, so its beta
+  // root is the page (2026-11-08: Hawkes Net's beta playtests opened .../jgriffith3433/hawkesnet-babylon and never found the contract).
+  if (isRepoPage(u.toString())) return root;
   let segs = u.pathname.split('/').filter((x, i, a) => x || i === a.length - 1);
   if (/\.github\.io$/i.test(u.hostname)) {
     const name = String(p.github ?? p.repo ?? '').split('/').pop()?.toLowerCase();
