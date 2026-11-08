@@ -208,6 +208,8 @@ async function runAll(run: string, ids: string[], o: RunOptions) {
   db.prepare('UPDATE runs SET detail = ? WHERE id = ?').run(`running ${ids.length} products`, run);
   // The scenarios this run will play, in order, so the Activity card can show "n of N" with N fixed (runplan.ts).
   planRun(run, products.flatMap((p) => testsOf(p, o).map((t) => ({ product: p.id, name: nameOf({ ...t, scenario: t.scenario ? resolveScenario(p, t.scenario) : t.scenario }) }))));
+  // More browsers for a run that plays many projects, so they don't queue behind four (playtest-capacity.ts).
+  void import('./playtest-capacity.ts').then((C) => C.raiseForRun(new Set(products.flatMap((p) => testsOf(p, o).map((t) => `${p.id}|${t.scenario ?? ''}`))).size)).catch(() => {});
   await Promise.all(products.map((p) => runProduct(run, p, o).catch((e) => {
     const s = startStep(run, p.id, 'error', 'pipeline');
     updateStep(s, { status: 'failed', detail: String(e.message ?? e), finished: true });
@@ -780,7 +782,7 @@ async function playScenario(run: string, p: Product, asked: Playtest, { review =
     // joined, not queued twice; each run still reviews it. Not a page this run serves on its own port (it stops with the run).
     try {
       const F = await import('./playtest-finish.ts');
-      job = await runGenJob('playtest.run', p.id, params, (j) => updateStep(s, { job: j.id, detail: j.detail }), {
+      job = await runGenJob('playtest.run', p.id, params, queuedNote(s), {
         runMs: F.cappedRunMs(playtestRunMs(t)), queueMs: F.PLAYTEST_QUEUE_MS(), job: prior?.id, since, idleMs: PLAYTEST_IDLE_MS(), abandon, priority, halt: haltOf(run), share: port === null,
         onStart: (at) => db.prepare(`UPDATE steps SET data = json_set(COALESCE(data, '{}'), '$.runningSince', ?) WHERE id = ?`).run(at, s),
       });
@@ -791,7 +793,7 @@ async function playScenario(run: string, p: Product, asked: Playtest, { review =
         if (cut.provider) { const B = await import('./gpu-breaker.ts'); B.trip(cut.provider); }
         updateStep(s, { detail: `${F.plainWhy(job, null)} Trying again on the next backend.` });
         if (cut.kind === 'beta-restart') { try { await (await import('./previews.ts')).betaSettled(p.id); } catch { /* the retry will say */ } }
-        const second = await runGenJob('playtest.run', p.id, F.retryParams(params, cut), (j) => updateStep(s, { job: j.id, detail: j.detail }), {
+        const second = await runGenJob('playtest.run', p.id, F.retryParams(params, cut), queuedNote(s), {
           runMs: F.cappedRunMs(playtestRunMs(t)), queueMs: F.PLAYTEST_QUEUE_MS(), idleMs: PLAYTEST_IDLE_MS(), abandon, priority, halt: haltOf(run), share: false,
           onStart: (at) => db.prepare(`UPDATE steps SET data = json_set(COALESCE(data, '{}'), '$.runningSince', ?) WHERE id = ?`).run(at, s),
         });
@@ -935,6 +937,19 @@ function fileStuck(run: string, p: Product, name: string, job: any) {
 export function playOptions(t: Pick<Playtest, 'options' | 'at'>): Record<string, unknown> | undefined {
   const at = typeof t.at === 'string' && t.at.trim() ? t.at.trim() : null;
   return at ? { ...(t.options ?? {}), at } : t.options;
+}
+
+/** A playtest job's updates onto its step; while Gen has it queued, the step says why (tabs in use, how many ahead). */
+function queuedNote(step: string) {
+  return (j: any) => {
+    updateStep(step, { job: j.id, detail: j.detail });
+    if (j.status !== 'queued') return;
+    void import('./playtest-capacity.ts').then((C) => C.waitReason(j.id)).then((why) => {
+      if (!why) return;
+      const cur = db.prepare('SELECT status, detail FROM steps WHERE id = ?').get(step) as any;
+      if (cur && !['done', 'failed', 'skipped', 'cancelled'].includes(cur.status) && String(cur.detail ?? '') === String(j.detail ?? '')) updateStep(step, { detail: why });
+    }).catch(() => {});
+  };
 }
 
 /** Plays of one beta run at once (the playtester's slots: Hawkes Gen runs 2 playtests at a time on its GPU machine). */
