@@ -674,6 +674,12 @@ export type Infra = {
   about: string;
   checks: string[];
   smoke: { start: string; portEnv: string; dataEnv: string; health: string; scripts: string; env?: Record<string, string> };
+  /** Offline flags for the checks (Gen's provider mocks): added to the secret-free environment of `checks`. */
+  checkEnv?: Record<string, string>;
+  /** The check that is compared with beta's own result (agents.ts verifyInfra): only tests new in the change block. */
+  baselineCheck?: string;
+  /** The branch a change is compared with (default: the change's base). */
+  baselineBranch?: string;
 };
 
 export function loadInfra(): Infra[] {
