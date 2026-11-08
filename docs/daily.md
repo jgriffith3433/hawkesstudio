@@ -840,8 +840,10 @@ period, 20 new players for D1, 20 attempts at a level, 10 ratings, 30 sessions p
 all). Numbers are said with their sample sizes.
 
 - **studio_analytics** (Talk, the PM, and every agent's and scout's own MCP server): `{ product?, view, range, env,
-  build, device, browser, country, from, to, a, b, session }`, views overview | product | dropoff | levels | feedback |
-  errors | builds | insights | session. It reads Studio's `/api/analytics/...` (the Analytics tab's proxy, Studio's Gen
+  build, device, browser, country, from, to, a, b, session, event, by, limit }`, views overview | product | sessions | events | dropoff | levels | feedback |
+  errors | builds | insights | session. `events` is one custom event by name grouped by props (`event: stuck, by: level,objective`): Gen has no
+  route for that, so Studio reads Gen's `export?what=events` (GET, at most 20,000 rows, oldest first) and groups it itself, saying when it may be cut off
+  or the sample is small. A refused or missing Gen read answers with the one fix (never a key, never a file to search). It reads Studio's `/api/analytics/...` (the Analytics tab's proxy, Studio's Gen
   key stays on the server) and answers compact JSON plus plain sentences. An agent checks "players die here 70% of the
   time" before and after its change.
 - **The daily report** has a "Players" section per product (daily runs only: a `players` step per product holds Gen's
