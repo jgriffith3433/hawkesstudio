@@ -28,7 +28,9 @@ const GEN_FILE = process.env.STUDIO_LEASE_GEN_FILE || '/tmp/hawkes-restore-gener
 const LOCAL_GEN = process.env.STUDIO_LITESTREAM_GEN_FILE || '/data/.studio.db-litestream/generation';
 const GEN = /^[0-9a-f]{16}$/;
 const key = (name: string) => `${statePrefix()}db/${name}`;
-export type Lease = { id: string; rev: string | null; at: number };
+/** `how` is why this holder took the database: first, released (the last holder stopped), quiet (its heartbeat stayed silent
+ * through the confirm window), idle (it answered nothing), handover. Named in the loser's exit line. */
+export type Lease = { id: string; rev: string | null; at: number; how?: string };
 
 const readJsonObj = async <T>(bucket: string, name: string): Promise<T | null> => {
   const b = await gcsRead(bucket, key(name)).catch(() => null);
@@ -71,11 +73,17 @@ export async function claim(o: { waitMs?: number; staleMs?: number; pollMs?: num
   // still answers nothing while it watches (confirmMs): a burst reaching a working, idle holder is answered in
   // milliseconds. A holder too old to report servedAt keeps the database as before.
   let orphaned = false;
+  // A same-revision stray never calls the holder gone on one old heartbeat: a write that was slow or failed under load
+  // looks the same as a dead holder (2026-11-08: the restart loop). It watches the heartbeat for the confirm window and
+  // only a holder whose time and last answer both stand still is gone.
+  let holderGone = Boolean(prev) && !holderAlive && !(await readJsonObj(bucket, `released-${prev!.id}`));
+  if (prev?.rev && prev.rev === mine.rev && holderGone && (await beatMoves(bucket, prev.id, beat0, { confirmMs, pollMs, now }))) return { claimed: false, id: null, previous: prev.id, how: 'same revision holds it', holder: prev.rev };
   if (prev?.rev && prev.rev === mine.rev && holderAlive) {
     const idle = beat0.servedAt !== null && now() - beat0.servedAt > idleMs;
     if (!idle || !(await staysIdle(bucket, prev.id, beat0.servedAt!, { confirmMs, pollMs, now }))) return { claimed: false, id: null, previous: prev.id, how: 'same revision holds it', holder: prev.rev };
     orphaned = true;
   }
+  mine.how = !prev ? 'first' : orphaned ? 'idle' : holderGone ? 'quiet' : 'handover';
   const took = orphaned ? { took: 'the holder answered nothing' } : {};
   await gcsWrite(bucket, key('lease.json'), Buffer.from(JSON.stringify(mine)), 'application/json');
   fs.writeFileSync(ID_FILE, mine.id);
@@ -111,6 +119,18 @@ async function readBeat(bucket: string, id: string): Promise<{ at: number; gener
   return { at: Number(t) || 0, generation: null, servedAt: null };
 }
 
+/** Whether the holder's heartbeat or last answer moves within `confirmMs` (it is alive, only its writes were late). */
+async function beatMoves(bucket: string, id: string, from: { at: number; servedAt: number | null }, o: { confirmMs: number; pollMs: number; now: () => number }) {
+  const start = o.now();
+  while (o.now() - start < o.confirmMs) {
+    await new Promise((r) => setTimeout(r, o.pollMs));
+    const b = await readBeat(bucket, id);
+    if (b.at > from.at || (b.servedAt !== null && b.servedAt > (from.servedAt ?? 0))) return true;
+    if (await readJsonObj(bucket, `released-${id}`)) return false;
+  }
+  return false;
+}
+
 /** Whether a live holder answers nothing for `confirmMs` more: true unless a heartbeat shows a newer request answered. */
 async function staysIdle(bucket: string, id: string, since: number, o: { confirmMs: number; pollMs: number; now: () => number }) {
   const start = o.now();
@@ -124,6 +144,16 @@ async function staysIdle(bucket: string, id: string, since: number, o: { confirm
 
 /** A Cloud Run revision's number (studio-beta-00043-9r2 → 43); 0 when unknown (J's PC, tests). */
 export const revNumber = (rev: string | null | undefined) => Number(/-(\d+)-[a-z0-9]+$/.exec(String(rev ?? ''))?.[1] ?? 0);
+
+/** Why this instance exited, kept in the bucket (best effort, short). */
+export async function recordExit(path: string, why: string) {
+  const bucket = stateBucket();
+  if (!bucket) return;
+  await Promise.race([
+    gcsWrite(bucket, key(`exit-${Date.now()}-${myLeaseId() ?? 'x'}`), Buffer.from(JSON.stringify({ at: Date.now(), path, why, rev: process.env.K_REVISION ?? null })), 'application/json'),
+    new Promise((r) => setTimeout(r, 3000)),
+  ]);
+}
 
 /** Written once this instance's Litestream has made its last sync: the next holder may restore. */
 export async function release(id = myLeaseId()) {
@@ -142,16 +172,23 @@ export function watchLease(onLost: (by: Lease) => void, o: { everyMs?: number } 
   const bucket = stateBucket();
   const id = myLeaseId();
   if (!bucket || !id) return () => {};
-  let lost = false;
+  let lost = false, failures = 0, beating = false;
   const tick = async () => {
-    if (lost) return;
-    const lease = await readJsonObj<Lease>(bucket, 'lease.json');
-    if (lease && lease.id !== id) {
-      lost = true;
-      onLost(lease);
-      return;
-    }
-    await gcsWrite(bucket, key(`alive-${id}`), beatBody(Date.now()), 'application/json').catch(() => {});
+    if (lost || beating) return;
+    beating = true;
+    try {
+      const lease = await readJsonObj<Lease>(bucket, 'lease.json');
+      if (lease && lease.id !== id) {
+        lost = true;
+        onLost(lease);
+        return;
+      }
+      // A failed heartbeat is logged and tried again at once: a holder whose writes fail looks dead to a stray.
+      for (let i = 0; i < 3; i++) {
+        try { await gcsWrite(bucket, key(`alive-${id}`), beatBody(Date.now()), 'application/json'); if (failures) console.warn(`[lease] heartbeat back after ${failures} failure(s)`); failures = 0; return; }
+        catch (e: any) { failures++; console.warn(`[lease] heartbeat write failed (${failures} in a row): ${e?.message ?? e}`); }
+      }
+    } finally { beating = false; }
   };
   const t = setInterval(() => void tick().catch(() => {}), o.everyMs ?? 5000);
   t.unref();
@@ -166,7 +203,7 @@ if (import.meta.url === `file://${process.argv[1]}` || process.argv[1]?.endsWith
     console.log(`[lease] ${JSON.stringify(r)}`);
     // A newer revision, or a live instance of this one, holds the database: this one must not start (exit 3 tells
     // entrypoint.sh).
-    if (r.how === 'newer holds it' || r.how === 'same revision holds it') process.exit(3);
+    if (r.how === 'newer holds it' || r.how === 'same revision holds it') { console.error(`[lease] exit via claim: ${r.how}, holder ${r.previous}`); process.exit(3); }
   }
   else if (what === 'release') console.log(`[lease] released ${await release().catch(() => false)}`);
 }

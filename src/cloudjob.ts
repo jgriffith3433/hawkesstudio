@@ -26,7 +26,7 @@ import path from 'node:path';
 import zlib from 'node:zlib';
 import { createHash } from 'node:crypto';
 import { EventEmitter } from 'node:events';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { DATA, ROOT } from './config.ts';
 import { runToken } from './jobbroker.ts';
 import { storeLfsObject, type LfsRef } from './lfs.ts';
@@ -103,15 +103,31 @@ export function dirtyState(cwd: string) {
   return { changed, deleted: [...deleted] };
 }
 
+/** The same as `git`, without holding Studio's event loop (a sync spawn froze it for ~2 s per job start, 2026-11-08). */
+export const gitAsync = (cwd: string, args: string[]) => new Promise<{ ok: boolean; out: string; raw: Buffer }>((resolve) => {
+  const p = spawn('git', ['-c', 'safe.directory=*', ...args], { cwd, windowsHide: true });
+  const out: Buffer[] = [];
+  p.stdout.on('data', (d) => out.push(d));
+  p.stderr.resume();
+  p.on('error', () => resolve({ ok: false, out: '', raw: Buffer.alloc(0) }));
+  p.on('close', (code) => { const raw = Buffer.concat(out); resolve({ ok: code === 0, out: raw.toString('utf8').trim(), raw }); });
+});
+async function dirtyStateAsync(cwd: string) {
+  const list = async (args: string[]) => (await gitAsync(cwd, ['ls-files', '-z', ...args])).raw.toString('utf8').split('\0').filter(Boolean);
+  const deleted = new Set(await list(['-d']));
+  const changed = [...new Set([...(await list(['-m'])), ...(await list(['-o', '--exclude-standard']))])].filter((f) => !deleted.has(f));
+  return { changed, deleted: [...deleted] };
+}
+
 /** What a workspace looks like for the job: HEAD, its branch, origin, a bundle of commits GitHub lacks, the dirty files. */
-export function workspaceIn(cwd: string, tmp: string) {
-  const head = git(cwd, ['rev-parse', 'HEAD']).out;
-  const branch = git(cwd, ['rev-parse', '--abbrev-ref', 'HEAD']).out;
-  const remote = plainRemote(git(cwd, ['remote', 'get-url', 'origin']).out);
+export async function workspaceIn(cwd: string, tmp: string) {
+  const head = (await gitAsync(cwd, ['rev-parse', 'HEAD'])).out;
+  const branch = (await gitAsync(cwd, ['rev-parse', '--abbrev-ref', 'HEAD'])).out;
+  const remote = plainRemote((await gitAsync(cwd, ['remote', 'get-url', 'origin'])).out);
   const bundle = path.join(tmp, 'in.bundle');
   // Only what no remote-tracking ref has: the rest the job clones from GitHub. Empty (HEAD is on GitHub): no bundle.
-  const b = git(cwd, ['bundle', 'create', bundle, 'HEAD', '--not', '--remotes']);
-  const { changed, deleted } = dirtyState(cwd);
+  const b = await gitAsync(cwd, ['bundle', 'create', bundle, 'HEAD', '--not', '--remotes']);
+  const { changed, deleted } = await dirtyStateAsync(cwd);
   return { head, branch, remote, bundle: b.ok && fs.existsSync(bundle) ? bundle : null, changed, deleted };
 }
 
@@ -324,7 +340,7 @@ export function startCloudJob(unit: string, spec: Spec, o: { gitToken?: string |
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'hs-job-'));
     try {
       const cwd = path.resolve(spec.cwd);
-      const ws = isGitWorkspace(cwd) ? workspaceIn(cwd, tmp) : null;
+      const ws = isGitWorkspace(cwd) ? await workspaceIn(cwd, tmp) : null;
       const entries: { p: string; file: string }[] = [];
       if (ws) for (const rel of ws.changed) entries.push({ p: rel, file: path.join(cwd, rel) });
       // The agent's brief and notes (.hawkes/) are kept out of commits by .git/info/exclude, so the dirty files above
@@ -448,8 +464,34 @@ export function jobFailureLine(unit: string, exit: { code: number | null; signal
   return `[studio] the Cloud Run job failed: ${String(exit.error ?? '').replace(/\s+/g, ' ').slice(0, 300)} (exit code ${exit.code ?? 'none'}${exit.signal ? `, signal ${exit.signal}` : ''})${tail ? `; last output: ${tail}` : '; it printed nothing'}`;
 }
 
+/**
+ * Cancels this Studio's agent-job executions that Studio no longer follows (2026-11-08: about 16 never-finished executions
+ * in one region held its CPU quota, which can stop Cloud Run starting Studio's own replacement instance, and cost money).
+ * Only executions of this Studio's own state prefix, and none younger than 10 minutes (one being started isn't followed
+ * yet). Runs once when Studio starts; returns the names it cancelled.
+ */
+export async function cancelStrayExecutions(): Promise<string[]> {
+  const project = process.env.STUDIO_GCP_PROJECT;
+  if (!project || !process.env.STUDIO_STATE_BUCKET) return [];
+  const t = { project, region: process.env.STUDIO_GCP_REGION || 'us-east4', job: process.env.STUDIO_AGENT_JOB || 'studio-agent' };
+  const mine = String(process.env.STUDIO_STATE_PREFIX ?? '').replace(/^\/+|\/+$/g, '');
+  const g = await import('./gcp.ts');
+  const tracked = new Set([...follows.values()].filter((f) => !f.done).map((f) => f.execution).filter(Boolean));
+  const cancelled: string[] = [];
+  for (const e of await g.listOpenExecutions(t)) {
+    if (tracked.has(e.name) || Date.now() - e.createdAt < 10 * 60_000) continue;
+    if (!e.env.STUDIO_JOB_UNIT || String(e.env.STUDIO_STATE_PREFIX ?? '').replace(/^\/+|\/+$/g, '') !== mine) continue;
+    await g.cancelExecution(e.name);
+    cancelled.push(e.name);
+  }
+  if (cancelled.length) console.log(`[cloudjob] cancelled ${cancelled.length} execution(s) Studio no longer follows: ${cancelled.map((n) => n.split('/').pop()).join(', ')}`);
+  return cancelled;
+}
+
 function end(f: Follow, exit: { code: number | null; signal: string | null; error?: string }) {
   f.done = true;
+  // The record ended: an execution still running for it (a job Studio gave up on or stopped) is cancelled too.
+  if (f.execution) { const r = runnerFor(), name = f.execution; void r.state(name).then((s) => { if (s && !s.done) return r.cancel(name); }).catch(() => {}); }
   if (exit.error) { try { fs.appendFileSync(local(f.unit, 'err'), `${jobFailureLine(f.unit, exit)}\n`); } catch { /* the folder went */ } }
   try {
     fs.writeFileSync(local(f.unit, 'exit.tmp'), JSON.stringify({ ...exit, at: Date.now() }));
