@@ -6,6 +6,7 @@
 using System.Text.Json;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
+using System.Reflection.Metadata;
 
 if (args.Length < 2) { Console.Error.WriteLine("usage: unity-check <dir> --changed <files...> [--also <files...>]"); return 2; }
 var dir = args[0];
@@ -19,6 +20,7 @@ var trees = new List<SyntaxTree>();
 var rels = new Dictionary<SyntaxTree, string>();
 foreach (var f in changed.Concat(also))
 {
+    if (string.IsNullOrWhiteSpace(f)) continue;
     var path = Path.Combine(dir, f);
     if (!File.Exists(path)) continue;
     var tree = CSharpSyntaxTree.ParseText(File.ReadAllText(path), new CSharpParseOptions(LanguageVersion.Latest), path);
@@ -38,8 +40,27 @@ void Emit(SyntaxTree? tree, Diagnostic d)
 foreach (var t in trees.Where(t => changedSet.Contains(rels[t])))
     foreach (var d in t.GetDiagnostics().Where(d => d.Severity == DiagnosticSeverity.Error)) Emit(t, d);
 // Declaration errors across the changed files and their partial parts.
-var comp = CSharpCompilation.Create("check", trees, new[] { MetadataReference.CreateFromFile(typeof(object).Assembly.Location) },
+var comp = CSharpCompilation.Create("check", trees, CoreReferences(),
     new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
 foreach (var d in comp.GetDeclarationDiagnostics().Where(d => wanted.Contains(d.Id)))
     Emit(d.Location.SourceTree, d);
 return count == 0 ? 0 : 1;
+
+// The core library to compile against. This tool is published as a single file, where Assembly.Location is an EMPTY string:
+// MetadataReference.CreateFromFile("") is what crashed with "The value cannot be an empty string. (Parameter 'path')".
+// So a file path is used only when there is one; otherwise the library's metadata is read from memory; and with neither,
+// no reference at all (the duplicate-member codes are decided by source declarations and are still reported; the missing
+// System.Object errors are not in `wanted`).
+static unsafe MetadataReference[] CoreReferences()
+{
+    var asm = typeof(object).Assembly;
+    try
+    {
+        if (!string.IsNullOrEmpty(asm.Location) && File.Exists(asm.Location))
+            return new[] { MetadataReference.CreateFromFile(asm.Location) };
+        if (asm.TryGetRawMetadata(out byte* blob, out int length))
+            return new[] { (MetadataReference)AssemblyMetadata.Create(ModuleMetadata.CreateFromMetadata((IntPtr)blob, length)).GetReference() };
+    }
+    catch (Exception e) { Console.Error.WriteLine("unity-check: no core library reference (" + e.Message + ")"); }
+    return Array.Empty<MetadataReference>();
+}

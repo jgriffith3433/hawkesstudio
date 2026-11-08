@@ -143,3 +143,18 @@ test('CS0103 runs with the real checkUnityFiles summary and is part of the fix p
   assert.match(unityFixPrompt(r), /UndefinedName\.cs:18 error CS0103/);
   assert.match(unityFixPrompt(r), /undefined name|does not exist/i, 'the agent is told what CS0103 means');
 });
+
+test('generic arguments and constraints are not member names (Sick of It AddressablesOperationManager: false CS0102 on BoolCallbackList, List, Object, UObject)', () => {
+  const r = run('GenericsClean.cs');
+  assert.deepEqual(r.issues, []);
+  assert.equal(r.ok, true);
+});
+
+test('generics do not hide real duplicates: a repeated generic method or a field named like one is still caught', () => {
+  const check = (src: string) => { const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'uc-')); fs.writeFileSync(path.join(dir, 'A.cs'), src); return checkUnityFiles(dir, ['A.cs'], { engine: 'builtin' }).issues.map((i) => `${i.code}:${i.line}`); };
+  assert.deepEqual(check('class A {\n  void Find<T>(string a) where T : Object { }\n  void Find<T>(string b) where T : Object { }\n}\n'), ['CS0111:3']);
+  assert.deepEqual(check('class A {\n  void Find<T>(string a) where T : Object { }\n  void Find<T, U>(string a) { }\n}\n'), []);
+  assert.deepEqual(check('class A {\n  Dictionary<string, Foo> Bark = new Dictionary<string, Foo>();\n  void Bark() { }\n}\n'), ['CS0102:3']);
+  assert.deepEqual(check('class A {\n  int Find;\n  void Find<T>() where T : class { }\n}\n'), ['CS0102:3']);
+  assert.deepEqual(check('class A {\n  int a = 1, a = 2;\n}\n').length, 1);
+});
