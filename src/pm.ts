@@ -26,6 +26,7 @@
 
 import { INFRA_FAILED_SQL, infraWaitMs, isInfraText, MAX_FINDING_STARTS_PER_DAY } from './infra-failure.ts';
 import { isVideoTask } from './videos.ts';
+import { unityBuildOf, buildProof, builtBy, includesMerge, missingScenarioSkips } from './betabuild.ts';
 import fs from 'node:fs';
 import { critical, criticalSync } from './drain.ts';
 import path from 'node:path';
@@ -384,13 +385,49 @@ type TaskChecks = NonNullable<Task['checks']>;
 
 // ------------------------------------------------------------ beta builds
 
+/** A Unity project Studio builds from GitHub (its `builds`): its beta runs build beta's head first (betabuild.ts). */
+const unityStudioBuilt = (product: string) => { try { return Boolean(unityBuildOf(getProduct(product))); } catch { return false; } };
+
+/**
+ * What a beta run's build proves for one task (betabuild.ts buildProof): the commit the run built or kept must include the
+ * task's merge commit (its pull request's, compared on GitHub). Not a Unity project Studio builds: always fine.
+ */
+export async function proofFor(product: string, t: Task, runId: string, deps: { merge?: (t: Task) => Promise<{ slug: string; sha: string } | null>; includes?: typeof includesMerge } = {}) {
+  if (!unityStudioBuilt(product)) return undefined;
+  const built = builtBy(runId, product);
+  if (!built) return buildProof({ unity: true, built: null, includes: null });
+  let includes: boolean | null = null;
+  try {
+    const m = await (deps.merge ?? mergeOf)(t);
+    if (m) {
+      const { repoToken, githubFetch } = await import('./ghtoken.ts');
+      includes = await (deps.includes ?? includesMerge)(m.slug, m.sha, built.sha, githubFetch(await repoToken(m.slug)));
+    }
+  } catch { /* couldn't tell */ }
+  return buildProof({ unity: true, built, includes });
+}
+
+/** A task's merge commit on GitHub: its change's pull request (merge_commit_sha) in the project's repo. */
+async function mergeOf(t: Task): Promise<{ slug: string; sha: string } | null> {
+  const { getChange } = await changes();
+  const c = t.change ? getChange(t.change) : null;
+  const slug = String((getProduct(t.product) as any).github ?? '');
+  if (!c?.pr || !slug) return null;
+  const { repoToken, githubFetch } = await import('./ghtoken.ts');
+  const r = await githubFetch(await repoToken(slug))(`https://api.github.com/repos/${slug}/pulls/${c.pr}`, { headers: { Accept: 'application/vnd.github+json', 'User-Agent': 'hawkes-studio' } });
+  const sha = r.ok ? ((await r.json()) as any)?.merge_commit_sha : null;
+  return sha ? { slug, sha: String(sha) } : null;
+}
+
 /** A beta run's result as a task's build: OK unless a step before the playtest failed (the repo, pre-deploy build, Unity build). */
-export function buildOf(product: string, r: { id: string; status: string; detail?: string | null; finished?: number | null }): TaskBuild {
+export function buildOf(product: string, r: { id: string; status: string; detail?: string | null; finished?: number | null }, proof?: { ok: boolean; why: string | null }): TaskBuild {
   const failed = (db.prepare(`SELECT kind, name, detail FROM steps WHERE run = ? AND product = ? AND status = 'failed' AND kind NOT IN ('playtest', 'review')`).all(r.id, product) as any[])
     // A fetch race in Studio's own repo step (two fetches of one repo) says nothing about the build: never a failure.
     .filter((x) => !(x.kind === 'repo' && REF_LOCK.test(String(x.detail ?? ''))));
   let unity = false;
-  try { unity = Boolean(getProduct(product).build); } catch { /* gone from products.json */ }
+  try { const gp = getProduct(product); unity = Boolean(gp.build) || Boolean(unityBuildOf(gp)); } catch { /* gone from products.json */ }
+  // A Unity project Studio builds from GitHub: only a run that built a commit with the task's merge counts (betabuild.ts).
+  if (proof && !proof.ok) return { ok: false, unproven: true, run: r.id, at: r.finished ?? Date.now(), unity, detail: `not built by beta run ${r.id}: ${proof.why}`.slice(0, 1200) };
   // Failed only in its playtest (a milestone's check): built. Failed with no failed step (the run itself threw): not.
   const steps = (db.prepare(`SELECT COUNT(*) AS n FROM steps WHERE run = ? AND status = 'failed'`).get(r.id) as any).n as number;
   const ok = !failed.length && (r.status === 'done' || steps > 0);
@@ -427,7 +464,7 @@ export async function followBuilds() {
     const finished = runs.filter((x) => ['done', 'failed', 'partial'].includes(x.status));
     for (const { t, at } of list) {
       const r = finished.find((x) => x.started >= at);
-      if (r && t.build?.run !== r.id) setTask(t.id, { build: buildOf(product, r) });
+      if (r && t.build?.run !== r.id) setTask(t.id, { build: buildOf(product, r, await proofFor(product, t, r.id)) });
     }
     // Nothing built the newest merge (startBeta threw, a restart lost it): a beta build of its own, once.
     const last = list.reduce((a, b) => (a.at >= b.at ? a : b));
@@ -440,7 +477,15 @@ export async function followBuilds() {
     // files the build's errors name, else the one merged last.
     const newest = finished[0];
     if (!newest) continue;
-    const hit = list.map((x) => ({ ...x, t: getTask(x.t.id)! })).filter((x) => x.t.status === 'merged' && x.t.build?.run === newest.id && !x.t.build?.ok);
+    // A run that built nothing that includes a task's merge (betabuild.ts) proves nothing about it: never blamed on the task;
+    // beta is built once more (a Unity project's beta run builds its head first).
+    const unproven = list.filter((x) => { const b = getTask(x.t.id)?.build; return Boolean(b && b.run === newest.id && b.unproven); });
+    if (unproven.length && pmSettings().enabled && !creditsWaitReason() && !listDecisions({ since: newest.started, action: 'beta-build' }).some((d) => d.product === product)) {
+      const { startBeta } = await import('./pipeline.ts');
+      const r = startBeta(product, { focus: `Building beta's head: run ${newest.id} didn't build a commit with ${unproven.map((x) => `"${x.t.title}"`).join(', ')}.`, playtest: false });
+      logDecision('beta-build', unproven[0].t.id, product, `beta run ${newest.id} built nothing that includes ${unproven.length} merged task(s): started ${r.id}, which builds beta's head first`);
+    }
+    const hit = list.map((x) => ({ ...x, t: getTask(x.t.id)! })).filter((x) => x.t.status === 'merged' && x.t.build?.run === newest.id && !x.t.build?.ok && !x.t.build?.unproven);
     if (!hit.length || deciding.has(newest.id) || listDecisions({ since: newest.started, action: 'build-failed', limit: 10_000 }).some((d) => d.subject === newest.id)) continue;
     deciding.add(newest.id);
     try {
@@ -640,6 +685,14 @@ export async function milestoneCheck(id: string) {
     logDecision('milestone-rerun', id, m.product, `milestone "${m.title}": its beta check broke (${broken}), so its criteria aren't counted as missed: playing it again (${tries + 1} of ${s.maxTries})`.slice(0, 1500));
     return;
   }
+  // A run whose scenarios were skipped as "no scenario" (the build played predates them) checked nothing: it is not a
+  // milestone check, whatever else it did, so nothing is judged or announced from it. Checked again after beta's next build.
+  const unchecked = runs.flatMap((r) => missingScenarioSkips(r).map((x) => `${x.scenario} (run ${r})`));
+  if (unchecked.length) {
+    setMilestoneChecks(id, []);
+    logDecision('milestone-recheck', id, m.product, `milestone "${m.title}" not checked: the build played has no scenario ${unchecked.join(', ')}, so those runs don't count as a check; it is checked again after beta's next build`.slice(0, 1500));
+    return;
+  }
   // Its tasks judged from those runs first (checkOnBeta: a "no" goes to decideMiss in walk-away mode), then J hears, but
   // only when every criterion is met, or misses remain after the tries (J, 2026-10-19: "0 of 2 criteria met" was announced).
   for (const t of tasks) await syncTask(getTask(t.id)!, (await changes()).getChange).catch((e) => console.warn(`[pm] milestone task ${t.id}: ${e.message ?? e}`));
@@ -695,7 +748,9 @@ export function brokenCheck(run: string, product?: string): string | null {
   // Over and not failed counts as done here (buildOf reads any other status as a run that threw).
   // A cancelled build was never built: this run says nothing about beta (and nothing is blamed), the next one builds it.
   if (buildCancelled(run, p)) return `beta's build was cancelled in run ${run}, so beta was not built or checked there`;
-  const build = buildOf(p, { ...r, status: r.status === 'failed' ? 'failed' : 'done' });
+  // A Unity project Studio builds: a run with no build of beta's head built nothing, so it checked nothing.
+  const sp = unityStudioBuilt(p) ? buildProof({ unity: true, built: builtBy(run, p), includes: true }) : undefined;
+  const build = buildOf(p, { ...r, status: r.status === 'failed' ? 'failed' : 'done' }, sp);
   return build.ok ? null : build.detail;
 }
 

@@ -691,6 +691,12 @@ async function playScenario(run: string, p: Product, asked: Playtest, { review =
     if (t.where === 'local' && !was?.data?.played && p.github && (await cloudBetaUrl(p))) {
       const v = (await import('./previews.ts')).betaPreview(p.id);
       if (v?.sha) played = { branch: BETA, sha: v.sha, title: v.ref };
+      // A Unity project Studio builds: what's played is the commit the published build was made from (its row's full sha),
+      // which can be older than beta's head; the report names it as that (betabuild.ts).
+      const BB = await import('./betabuild.ts');
+      const ub = BB.unityBuildOf(p);
+      const pub = ub ? BB.publishedBuild(p.id, ub.id) : null;
+      if (pub?.sha) played = { branch: BETA, sha: pub.sha, title: `${ub!.id} ${pub.version}`, madeFrom: true };
     }
     // A web app its own CI deploys (Product.versionPath): what's played is the commit its beta says it runs.
     if (t.where === 'local' && !was?.data?.played && p.versionPath) {
@@ -1400,6 +1406,24 @@ async function betaBody(id: string, p: Product, { focus, criteria, scenario, opt
       if (built?.superseded) return void supersede(id, p.id, built.superseded, head());
       // Cancelled build: beta is not built, nothing is played on it, and the next push builds again (cancel.ts).
       if (built?.status === 'cancelled') return void closeRun(id, `beta ${p.id}`);
+    } else if (lane && p.github && (await import('./betabuild.ts')).unityBuildOf(p) && (await import('./previews-cloud.ts')).remoteSites()) {
+      // A Unity project Studio builds from GitHub (its `builds`): beta's head is built, or the build already running is
+      // waited for, and nothing plays before it is published (J, 2026-11-08). The step names the commit it was made from.
+      const BB = await import('./betabuild.ts');
+      const spec = BB.unityBuildOf(p)!;
+      const s = startStep(id, p.id, 'build', spec.id, 'beta\'s head, built before it is played');
+      const slug = String(p.github);
+      const r = await BB.ensureBetaBuild(p.id, spec.id, {
+        head: async () => {
+          const { repoToken, githubFetch } = await import('./ghtoken.ts');
+          const { githubCommit } = await import('./sitestore.ts');
+          return githubCommit(slug, BETA, githubFetch(await repoToken(slug)));
+        },
+        start: async (sha) => (await import('./builds.ts')).startBuild(p.id, { trigger: 'beta', build: spec.id, sha, ref: BETA, origin: null }),
+        say: (detail) => updateStep(s, { detail }),
+      });
+      updateStep(s, { status: r.ok ? (r.how === 'already built' ? 'skipped' : 'done') : 'failed', detail: r.detail, data: r.ok ? { built: { sha: r.sha, version: r.version, run: r.run, how: r.how } } : { failed: true, sha: r.sha || null }, finished: true });
+      if (!r.ok) return void closeRun(id, `beta ${p.id}`);
     } else void import('./previews.ts').then(({ buildPreview }) => buildPreview(p.id)).catch(() => {});
     // What the beta runs this one superseded asked for comes along: a playtest, their tasks' criteria (pm.ts reads them).
     // Only what still waits for a beta check, once per scenario, within a budget (playplan.ts): a burst of pushes used to

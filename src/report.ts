@@ -128,7 +128,7 @@ export function reportMarkdown(run: string) {
     // Which commit the local playtests played (beta on the server; pipeline.ts records it per playtest).
     const played = [...new Map(x.steps.filter((s) => s.kind === 'playtest' && s.data?.played).map((s) => {
       const pl = s.data.played;
-      return [`${pl.branch}@${pl.sha}`, `${pl.branch} \`${String(pl.sha).slice(0, 7)}\`${pl.title ? ` "${pl.title}"` : ''}${pl.build ? ` (build Game/v${pl.build})` : ''}${pl.dirty ? ` + ${pl.dirty} uncommitted` : ''}`];
+      return [`${pl.branch}@${pl.sha}`, `${pl.madeFrom ? 'a build made from' : pl.branch} \`${String(pl.sha).slice(0, 7)}\`${pl.title ? ` "${pl.title}"` : ''}${pl.build ? ` (build Game/v${pl.build})` : ''}${pl.dirty ? ` + ${pl.dirty} uncommitted` : ''}`];
     })).values()];
     if (played.length) L.push(`Local playtests played ${played.join(', ')}.`, '');
     for (const s of x.steps.filter((s) => s.kind !== 'review' && s.kind !== 'players')) {
