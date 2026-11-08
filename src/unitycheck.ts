@@ -208,6 +208,26 @@ export function lexCs(text: string, file = 'file.cs'): { toks: Tok[]; issues: Un
 
 type Member = { type: string; name: string; sig: string | null; line: number; file: string; cond: boolean };
 
+/** At a `<` that opens a generic argument list (`Dictionary<string, List<int>>`, `LoadAsset<T>`): the index just past its matching `>`,
+ * or -1 when what follows is not a type list (a less-than comparison: `a < b && c > d`). Only names, dots, commas, nested lists, `?`,
+ * `[]`, tuples and `::` may sit inside, so commas in there are never member separators. */
+export function skipTypeArgs(toks: Tok[], from: number): number {
+  if (!(toks[from]?.k === 'p' && toks[from].v === '<')) return -1;
+  let depth = 0;
+  let paren = 0;
+  for (let j = from; j < toks.length; j++) {
+    const x = toks[j];
+    if (x.k === 'id') continue;
+    if (x.k !== 'p') return -1;
+    if (x.v === '<') depth++;
+    else if (x.v === '>') { depth--; if (depth === 0) return paren === 0 ? j + 1 : -1; }
+    else if (x.v === '(') paren++;
+    else if (x.v === ')') { paren--; if (paren < 0) return -1; }
+    else if (!(x.v === ',' || x.v === '.' || x.v === '?' || x.v === '[' || x.v === ']' || x.v === ':')) return -1;
+  }
+  return -1;
+}
+
 /** The members declared at type level, keyed by the full name of their type (namespace and outer types included). */
 export function membersOf(toks: Tok[], file: string): { members: Member[]; partialTypes: Set<string> } {
   const members: Member[] = [];
@@ -260,7 +280,8 @@ export function membersOf(toks: Tok[], file: string): { members: Member[]; parti
     }
     // type declaration
     const tk = decl.findIndex((x) => x.k === 'id' && TYPE_KW.has(x.v));
-    const tkOk = tk >= 0 && decl[tk + 1]?.k === 'id' && !(decl[tk - 1] && decl[tk - 1].k === 'p' && decl[tk - 1].v === '.');
+    // A `class` / `struct` after `:` or `,` is a generic constraint (`where T : class where U : struct`), not a type declaration.
+    const tkOk = tk >= 0 && decl[tk + 1]?.k === 'id' && !(decl[tk - 1] && decl[tk - 1].k === 'p');
     if (tkOk && (end === '{' || end === ';')) {
       const name = decl[tk + 1].v;
       if (end === '{') scopes.push({ kind: 'type', name });
@@ -276,12 +297,31 @@ export function membersOf(toks: Tok[], file: string): { members: Member[]; parti
     const cond = decl.some((x) => x.cond);
     const line = decl[0].line;
     // method / constructor: a name directly before the first top-level `(`
-    const paren = decl.findIndex((x, k) => x.k === 'p' && x.v === '(' && k > 0 && decl[k - 1].k === 'id' && !KEYWORDS.has(decl[k - 1].v));
+    // A generic method (`void LoadAsset<T>(...) where T : UnityEngine.Object`) has its type parameters between the name and `(`:
+    // `arity` counts them, so `F<T>(int)` and `F(int)` are different members.
+    let paren = -1;
+    let nameAt = -1;
+    let arity = 0;
+    for (let k = 1; k < decl.length && paren < 0; k++) {
+      const x = decl[k];
+      const prev = decl[k - 1];
+      if (x.k !== 'p' || prev.k !== 'id' || KEYWORDS.has(prev.v)) continue;
+      if (x.v === '(') { paren = k; nameAt = k - 1; }
+      else if (x.v === '<') {
+        const e = skipTypeArgs(decl, k);
+        if (e > 0 && decl[e]?.k === 'p' && decl[e].v === '(') {
+          paren = e; nameAt = k - 1;
+          let d = 0;
+          arity = 1;
+          for (let q = k; q < e; q++) { const y = decl[q]; if (y.k !== 'p') continue; if (y.v === '<') d++; else if (y.v === '>') d--; else if (y.v === ',' && d === 1) arity++; }
+        }
+      }
+    }
     const isOperator = words.includes('operator');
     if (paren > 0 && !isOperator) {
       // An explicit interface implementation (`void IFoo.Bar()`) is its own member: the interface is part of its name.
-      let name = decl[paren - 1].v;
-      for (let q = paren - 2; q > 0 && decl[q].k === 'p' && decl[q].v === '.' && decl[q - 1].k === 'id'; q -= 2) name = `${decl[q - 1].v}.${name}`;
+      let name = decl[nameAt].v;
+      for (let q = nameAt - 1; q > 0 && decl[q].k === 'p' && decl[q].v === '.' && decl[q - 1].k === 'id'; q -= 2) name = `${decl[q - 1].v}.${name}`;
       // parameter types: split the (...) at top-level commas, drop the parameter's name and default
       const params: Tok[][] = [[]];
       let d = 0;
@@ -299,8 +339,9 @@ export function membersOf(toks: Tok[], file: string): { members: Member[]; parti
         const ty = ws.slice(0, Math.max(1, ws.length - 1)); // the last token is the parameter's name
         return ty.map((x) => x.v).join('');
       }).join(',');
+      const sigKey = arity ? `<${arity}>${sig}` : sig;
       // A partial method's declaration and its implementation are one member.
-      members.push({ type, name, sig, line, file, cond: cond || words.includes('partial') });
+      members.push({ type, name, sig: sigKey, line, file, cond: cond || words.includes('partial') });
       // `where T : ...` constraints and bodies
       if (end === '{') i = skipBlock(j + 1);
       else { // `=>` bodies and abstract/extern `;`
@@ -324,10 +365,12 @@ export function membersOf(toks: Tok[], file: string): { members: Member[]; parti
       while (k < n && !(dd === 0 && toks[k].k === 'p' && toks[k].v === ';')) {
         const x = toks[k];
         if (x.k === 'p') {
+          // Commas inside generic arguments (`new Dictionary<string, Callbacks>()`) separate nothing.
+          if (x.v === '<' && toks[k - 1]?.k === 'id') { const e = skipTypeArgs(toks, k); if (e > 0) { k = e; expectName = false; continue; } }
           if (x.v === '(' || x.v === '{' || x.v === '[') dd++;
           else if (x.v === ')' || x.v === '}' || x.v === ']') dd--;
           else if (x.v === ',' && dd === 0) expectName = true;
-        } else if (expectName && x.k === 'id' && !KEYWORDS.has(x.v) && dd === 0) {
+        } else if (expectName && x.k === 'id' && !KEYWORDS.has(x.v) && dd === 0 && toks[k + 1]?.k === 'p' && (toks[k + 1].v === '=' || toks[k + 1].v === ',' || toks[k + 1].v === ';')) {
           members.push({ type, name: x.v, sig: null, line: x.line, file, cond }); expectName = false;
         } else expectName = false;
         k++;
@@ -400,7 +443,9 @@ export function roslynTool(): string | null {
 }
 
 function runRoslyn(tool: string, dir: string, changed: string[], extra: string[]): UnityIssue[] | { error: string } {
-  const r = spawnSync(tool, [dir, '--changed', ...changed, '--also', ...extra], { encoding: 'utf8', timeout: 120_000, maxBuffer: 16 * 1024 * 1024 });
+  // Absolute directory, no empty argument (an empty path is what the tool's file calls reject), run from inside it.
+  const abs = path.resolve(dir);
+  const r = spawnSync(tool, [abs, '--changed', ...changed.filter(Boolean), '--also', ...extra.filter(Boolean)], { encoding: 'utf8', cwd: abs, timeout: 120_000, maxBuffer: 16 * 1024 * 1024 });
   if (r.error) return { error: String(r.error.message ?? r.error) };
   if (r.status !== 0 && r.status !== 1) return { error: `exit ${r.status}: ${String(r.stderr ?? '').slice(0, 300)}` };
   try {
