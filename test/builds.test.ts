@@ -356,6 +356,10 @@ test("Gen's \"token for this build is gone\" counts as a lost token (sick-of-it-
   assert.equal(B.tokenLost('Unity exited with code 1: compile errors'), false);
   assert.ok(B.tokenLost("couldn't fetch jgriffith3433/sickofitgame-unity at bc65eafd322b (is the commit pushed, and can the GitHub token read the repo?): ##utp:{\"type\":\"MemoryLeaks\"}"));
   assert.equal(B.tokenLost(undefined), false);
+  // Gen's own words for a token that waited in its queue (sick-of-it-unity web build 53, 2026-11-08): infrastructure, never the game.
+  const old = "The GitHub token for this build is 48 minutes old, too old to start a build with (GitHub's installation tokens last an hour and the build fetches its source after it starts). Nothing was built: resubmit it with a fresh token.";
+  assert.ok(B.tokenLost(old));
+  assert.ok(B.infraLost(old));
 });
 
 test('a Unity build whose token Gen lost is submitted again once with a fresh token, and is ready', async () => {
