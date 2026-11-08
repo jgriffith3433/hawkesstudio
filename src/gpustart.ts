@@ -22,6 +22,16 @@ const up = (s: Server) => s.state === 'running' || s.state === 'pending';
 /** A generation server is running (booted, taking jobs): a task waiting for GPU can run again (pm.ts). */
 export const generatorRunning = (servers: Server[]) => servers.some((s) => generator(s) && s.state === 'running');
 
+type ProviderRow = { id?: string; provider?: string; enabled?: boolean; ready?: boolean; health?: { down?: boolean } | null };
+/**
+ * A GPU provider with no server to start (RunPod, Modal, Cloud Run, any HTTPS host: Gen's GET /v1/gpu/providers) that is
+ * set up and not cooling down: GPU work runs now. Since AWS suspended the account (2026-10-28) the fleet never comes up,
+ * so waiting for a fleet server only waited forever and told Talk "AWS_ACCESS_KEY_ID ... not in hawkesgen/.env" every
+ * two hours (J, 2026-11-08: "why am I getting these").
+ */
+export const serverlessReady = (status: { providers?: ProviderRow[] } | null | undefined) =>
+  (status?.providers ?? []).find((p) => p.provider !== 'fleet' && p.enabled !== false && p.ready && !p.health?.down) ?? null;
+
 /**
  * What to do for a change that needs the GPU: nothing (a server is already up or coming up), start one stopped server
  * (the one whose disk fits the job best), or nothing possible (why). Pure: the fleet list in, the decision out.
@@ -47,6 +57,8 @@ export function pickGpuServer(servers: Server[], max = GPU_CAP): { action: 'none
 }
 
 export type GpuDeps = {
+  /** Gen's GPU providers (GET /v1/gpu/providers): a ready serverless one means nothing needs starting. */
+  providers?: () => Promise<{ providers?: ProviderRow[] }>;
   fleet: () => Promise<{ servers?: Server[]; settings?: { servers?: number } }>;
   start: (id: string) => Promise<{ id?: string; region?: string; was?: string; note?: string }>;
   log: (action: string, subject: string | null, product: string | null, detail: string) => void;
@@ -70,6 +82,7 @@ async function defaults(c: GpuChange): Promise<GpuDeps> {
   const { logDecision } = await import('./roadmap.ts');
   const { tellAbout } = await import('./followup.ts');
   return {
+    providers: () => (gen as any).request('/gpu/providers'),
     fleet: () => gen.fleet(),
     // Always with the id: Gen's start without one launches a new server when nothing is startable.
     start: (id) => gen.fleetAction('start', { id, confirm: true }),
@@ -150,6 +163,11 @@ async function tryStart(c: GpuChange, d: GpuDeps): Promise<{ done: boolean; resu
   const subject = c.task ?? c.id;
   const what = c.task ? `${c.task} (${c.id})` : c.id;
   const budget = `GPU budget $${Number(c.gpu_budget).toFixed(2)}`;
+  // A serverless provider takes GPU jobs as they come: there is no server to start.
+  try {
+    const ready = serverlessReady(d.providers ? await d.providers() : null);
+    if (ready) return { done: true, result: `already running: ${ready.id} (${ready.provider}) takes GPU jobs, no server to start` };
+  } catch { /* Gen couldn't say: the fleet as before */ }
   let fleet;
   try {
     fleet = await d.fleet();

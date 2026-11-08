@@ -168,3 +168,23 @@ test('the real start is always called with the id and confirm (a start never bec
   const src = (await import('node:fs')).readFileSync(new URL('../src/gpustart.ts', import.meta.url), 'utf8');
   assert.match(src, /fleetAction\('start', \{ id, confirm: true \}\)/);
 });
+
+test('a ready RunPod or Modal endpoint is a GPU up: nothing to start, no fleet read, nothing told (AWS is gone)', async () => {
+  const { serverlessReady } = await import('../src/gpustart.ts');
+  const rows = (o: Record<string, any>) => ({ providers: [{ id: 'fleet', provider: 'fleet', enabled: true, ready: false }, { id: 'runpod-gpu', provider: 'runpod', enabled: true, ready: true, health: { down: false }, ...o }] });
+  assert.equal(serverlessReady(rows({}))?.id, 'runpod-gpu');
+  assert.equal(serverlessReady(rows({ ready: false })), null);
+  assert.equal(serverlessReady(rows({ health: { down: true } })), null);
+  assert.equal(serverlessReady(rows({ enabled: false })), null);
+  assert.equal(serverlessReady({ providers: [{ id: 'fleet', provider: 'fleet', enabled: true, ready: true }] }), null);
+  const told: string[] = [];
+  let fleetRead = false;
+  const r = await ensureGpuFor({ id: 'gpu-wait-k_1', product: 'p', task: 'k_1', gpu_budget: '5' }, {
+    providers: async () => rows({}),
+    fleet: async () => { fleetRead = true; throw new Error('AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY are not in hawkesgen/.env'); },
+    start: async () => { throw new Error('no'); }, log: () => {}, tell: (_t, x) => { told.push(x); },
+  });
+  assert.match(r, /^already running: runpod-gpu/);
+  assert.equal(fleetRead, false);
+  assert.deepEqual(told, []);
+});

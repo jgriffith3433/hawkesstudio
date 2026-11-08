@@ -1116,7 +1116,11 @@ let fleetSeen: { at: number; running: boolean } | null = null;
 async function gpuRunning() {
   if (fleetSeen && Date.now() - fleetSeen.at < 2 * 60_000) return fleetSeen.running;
   const { gen } = await import('./gen.ts');
-  const { generatorRunning } = await import('./gpustart.ts');
+  const { generatorRunning, serverlessReady } = await import('./gpustart.ts');
+  // RunPod, Modal and the like run GPU jobs with no server to start: one of them ready counts as a GPU server up.
+  try {
+    if (serverlessReady(await (gen as any).request('/gpu/providers'))) { fleetSeen = { at: Date.now(), running: true }; return true; }
+  } catch { /* Gen couldn't say: the fleet as before */ }
   const f: any = await gen.fleet();
   fleetSeen = { at: Date.now(), running: !f?.error && generatorRunning(f?.servers ?? []) };
   return fleetSeen.running;
