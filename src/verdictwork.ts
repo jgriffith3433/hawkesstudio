@@ -12,6 +12,11 @@
 //                             Misconfiguration (the live address is dead, e.g. a lost domain): the label says so, an Inbox
 //                             card is filed, no code fixer is started. Called at the end of every run (pipeline.ts) and
 //                             when a fixer's change fails or closes (agents.ts) — events, never a timer.
+//                             No open finding at all behind it (all fixed, won't fix, ideas): never a card. Studio starts ONE
+//                             full-review beta playtest to recompute the verdict (the label says "re-checking: every finding behind
+//                             it is fixed"); a re-check that still reads bad with nothing open marks the verdict stale (the review's
+//                             verdict becomes "stale", the red label clears, logged). One re-check per project per reviewed commit
+//                             (pm_log `verdict-recheck`). A card the owner answered is never filed again for the same review.
 //   noteMerge(product, change) a change merged into beta: if it fixed a bad verdict, ONE beta playtest + review follows
 //                             the burst of merges (a quiet window; a merge during the check queues one more after it).
 //   verdictLabel(product)     what the Projects card shows: the verdict, the review's age and commit, and what Studio is
@@ -54,6 +59,33 @@ export function deadAddress(product: string, v: Verdict | null = latestVerdict(p
   // A review that says the page never loaded for that reason, with no playtest of its own failing.
   if (rows.length && rows.every((x) => x.status === 'failed') && DEAD.test(v.summary ?? '')) return String(v.summary).slice(0, 200);
   return null;
+}
+
+/** The verdict was recomputed and found stale (nothing open behind it): the review step reads "stale", not fix-first. */
+export const STALE = 'stale';
+
+type Recheck = { commit: string | null; run: string | null };
+/** The re-check Studio already started for this project's reviewed commit (one per commit, so it can't loop). */
+function recheckFor(product: string, v: Verdict): Recheck | null {
+  try {
+    const rows = db.prepare(`SELECT detail FROM pm_log WHERE action = 'verdict-recheck' AND subject = ? AND undone IS NULL ORDER BY at DESC LIMIT 20`).all(subject(product)) as any[];
+    for (const r of rows) {
+      const m = parse(String(r.detail).split('\n')[1] ?? '') as Recheck | null;
+      if (m && (m.run === v.run || (v.commit && m.commit === v.commit))) return m;
+    }
+  } catch { /* no log yet */ }
+  return null;
+}
+/** Whether the verdict's run was itself a re-check (a beta run started to recompute a verdict). */
+function wasRecheck(run: string | null): boolean {
+  if (!run) return false;
+  try { return parse((db.prepare('SELECT options FROM runs WHERE id = ?').get(run) as any)?.options)?.reverify === true; } catch { return false; }
+}
+/** An answered verdict card for this very review: not asked again until a new review reads bad. */
+function answeredFor(product: string, v: Verdict): boolean {
+  try {
+    return !!db.prepare(`SELECT 1 FROM questions WHERE subject = ? AND status NOT IN ('open', 'asked J') AND context LIKE ? LIMIT 1`).get(subject(product), `%[review ${v.run}]%`);
+  } catch { return false; }
 }
 
 type Change = { id: string; status: string; title?: string | null };
@@ -135,8 +167,10 @@ export async function actOnVerdict(product: string, trigger = 'a run ended', d?:
       return { action: 'none', why: v ? `its verdict is ${v.verdict}` : 'no review yet' };
     }
     const card = async (reason: string, options: string[], recommend: string, topic: string): Promise<Outcome> => {
+      // Answered already for this review: say nothing again (a new review with a new bad verdict may ask).
+      if (answeredFor(product, v)) return { action: 'none', why: 'its card for this review was already answered' };
       const text = `${p.name} reads "${v.verdict === 'broken' ? 'broken' : 'fix first'}" and Studio can't work on it by itself: ${reason}`;
-      await d!.ask(text, { subject: subject(product), product, context: reason.slice(0, 480), options, recommend, topic });
+      await d!.ask(text, { subject: subject(product), product, context: `${reason.slice(0, 440)} [review ${v.run}]`, options, recommend, topic });
       return { action: 'card', why: reason };
     };
     // Misconfiguration, not code: say so and let the owner decide (no code fixer for a dead domain).
@@ -152,11 +186,10 @@ export async function actOnVerdict(product: string, trigger = 'a run ended', d?:
 
     const open = db.prepare(`SELECT id, title, severity FROM findings WHERE product = ? AND status = 'open' ORDER BY CASE severity WHEN 'blocker' THEN 0 WHEN 'bug' THEN 1 ELSE 2 END, seen DESC`).all(product) as any[];
     const worth = open.filter((f) => s.severities.includes(f.severity));
+    if (!open.length) return staleOrRecheck(product, p.name, v, trigger, s, d);
     if (!worth.length) {
-      return card(open.length
-        ? `${open.length} open finding${open.length === 1 ? ' is' : 's are'} not in the severities agents fix (${s.severities.join(', ')}). Say which to fix, or play it yourself.`
-        : `the review has no open finding behind it for an agent to fix. Say what is wrong and I'll make it a task, or play it and use the 🐞 button.`,
-      ['Tell me what is wrong', 'Run a full playtest again'], 'Run a full playtest again and see whether it still reads this way', 'verdict');
+      return card(`${open.length} open finding${open.length === 1 ? ' is' : 's are'} not in the severities agents fix (${s.severities.join(', ')}). Say which to fix, or play it yourself.`,
+        ['Tell me what is wrong', 'Run a full playtest again'], 'Run a full playtest again and see whether it still reads this way', 'verdict');
     }
     const blocks: string[] = [];
     for (const f of worth) {
@@ -177,6 +210,35 @@ export async function actOnVerdict(product: string, trigger = 'a run ended', d?:
     console.warn(`[studio] verdict work for ${product}: ${e?.message ?? e}`);
     return { action: 'none', why: `couldn't look: ${String(e?.message ?? e).slice(0, 160)}` };
   }
+}
+
+/**
+ * A bad verdict with no open finding behind it (everything is fixed, won't fix or an idea): the owner is never asked.
+ * First time for this reviewed commit: ONE full-review beta playtest recomputes it. If a re-check (or a later review of a
+ * re-check run) still reads bad with nothing open, the verdict is stale: its review step is marked and the label clears.
+ */
+async function staleOrRecheck(product: string, name: string, v: Verdict, trigger: string, s: Settings, d: Deps): Promise<Outcome> {
+  const { logDecision } = await import('./roadmap.ts');
+  const prior = recheckFor(product, v);
+  if (wasRecheck(v.run) || (prior && prior.run !== v.run)) {
+    // The re-check's own review still reads bad, and every finding is closed: the label is stale.
+    const row = db.prepare(`SELECT id, data FROM steps WHERE run = ? AND product = ? AND kind = 'review' AND status = 'done' ORDER BY started DESC LIMIT 1`).get(v.run, product) as any;
+    if (row) {
+      const data = parse(row.data) as any;
+      db.prepare('UPDATE steps SET data = ? WHERE id = ?').run(JSON.stringify({ ...data, verdict: STALE, verdictWas: data.verdict }), row.id);
+    }
+    await closeCard(product, 'the re-check still reads this way but every finding behind it is fixed: the label is stale and cleared');
+    logDecision('verdict-stale', subject(product), product, `${name} read ${v.verdict} (${trigger}) with no open finding, even after a re-check on ${v.commit ?? 'beta'}: cleared the red label as stale`);
+    return { action: 'none', why: 'stale verdict cleared: every finding behind it is fixed' };
+  }
+  await closeCard(product, 'every finding behind it is fixed: Studio is re-checking by itself');
+  if (rechecking(product)) return { action: 'busy', why: 're-check is playing' };
+  if (prior) return { action: 'none', why: 'its re-check ended without a new review; not started again for this commit' };
+  if (!s.autoReverify) return { action: 'off', why: 're-checking is switched off (Settings → Agents)' };
+  logDecision('verdict-recheck', subject(product), product, `${name} reads ${v.verdict} (${trigger}) but every finding behind it is fixed: started ONE full playtest of beta to recompute it\n${JSON.stringify({ commit: v.commit, run: v.run })}`);
+  const run = d.startBeta(product, { focus: `The label reads ${v.verdict} but every finding behind it is fixed. Play beta in full and review it again so the verdict is current.`, playtest: true, reverify: true }) as any;
+  void run?.done;
+  return { action: 'started', why: 'started a full playtest of beta: every finding behind the verdict is fixed', change: '', finding: '' } as Outcome;
 }
 
 /** The runs of a finished run's products: look at each one's verdict (pipeline.ts, after autoFix). */
@@ -256,7 +318,7 @@ export function verdictLabel(product: string, s?: Settings): VerdictLabel | null
   const v = latestVerdict(product);
   if (!v || !BAD.includes(v.verdict)) return null;
   const base = { verdict: v.verdict, at: v.at, commit: v.commit, change: null as string | null, reason: null as string | null };
-  if (rechecking(product)) return { ...base, state: 'rechecking' };
+  if (rechecking(product)) return { ...base, state: 'rechecking', reason: recheckFor(product, v) && !wasRecheck(v.run) ? 'every finding behind it is fixed' : null };
   const mine = changesOf(product).filter((c) => ACTIVE.includes(c.status) || c.status === 'ready');
   if (mine.length) return { ...base, state: 'fixing', change: mine[0].id };
   const q = openCard(product);

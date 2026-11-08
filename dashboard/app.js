@@ -405,13 +405,13 @@ function devLine(p) {
   return `<div class="meta">${links}${parts.length ? ` — ${parts.join(' · ')}` : ''}${stop}</div>${conflict}`;
 }
 
-const VERDICT = { ship: 'Looks good to ship', 'fix-first': 'Works, but has problems to fix first', broken: 'Broken: needs fixing' };
+const VERDICT = { ship: 'Looks good to ship', 'fix-first': 'Works, but has problems to fix first', broken: 'Broken: needs fixing', stale: 'Earlier problems are fixed (re-checked)' };
 /** The label of a bad verdict: what the review said (its age and commit) and what Studio is doing about it. */
 function verdictLine(vw) {
   const said = vw.verdict === 'broken' ? 'Broken' : 'Fix first';
   const seen = `reviewed ${ago(vw.at)}${vw.commit ? ` on ${vw.commit}` : ''}`;
   const doing = vw.state === 'fixing' ? `fixing (agent running${vw.change ? `, ${vw.change}` : ''})`
-    : vw.state === 'rechecking' ? 're-checking on beta after a fix merged'
+    : vw.state === 'rechecking' ? (vw.reason ? `re-checking: ${vw.reason}` : 're-checking on beta after a fix merged')
     : vw.state === 'needs-you' ? `needs you: ${vw.reason ?? 'see the Inbox'}`
     : vw.reason ? `waiting: ${vw.reason}` : 'waiting for Studio to pick it up';
   return `${said} (${seen}) — ${doing}.`;
