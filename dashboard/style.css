@@ -608,3 +608,21 @@ body.lt-big-open { overflow: hidden; }
 .rm-board { grid-template-columns: repeat(auto-fill, minmax(min(360px, 100%), 1fr)); margin: 8px 0 16px; }
 .rm-bitem { padding: 6px 0; border-top: 1px solid var(--line, #333); }
 
+
+/* Compact phone header (finding f_e797de0f5b21: the header took 36% of the screen). On a phone: the brand on one line,
+   ONE row of tabs that swipes sideways; the status dots, account row and Connect/Talk buttons leave the header (Connect
+   and the account links are in More; Talk is a tab) and only Activity stays, beside the brand. */
+.me-menu { display: none; }
+@media (min-width: 0) and (max-width: 760px) {
+  header { gap: 4px 10px; padding: 6px 10px; }
+  .brand { flex: 1 1 auto; min-width: 0; white-space: nowrap; font-size: 15px; }
+  .brand small[data-platform] { display: none; }
+  .brand .walk-badge { display: none; }
+  nav { order: 3; flex: 1 1 100%; flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; }
+  nav::-webkit-scrollbar { display: none; }
+  nav > button, nav .more { flex: 0 0 auto; white-space: nowrap; }
+  header > .status, header > .me, #connectBtn, #dockBtn { display: none; }
+  #actBtn { order: 2; flex: 0 0 auto; }
+  .me-menu { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 14px; padding: 10px 12px; border-top: 1px solid var(--line); }
+  .me-menu a { min-height: 44px; display: inline-flex; align-items: center; }
+}
