@@ -257,6 +257,58 @@ shows every run with all of this, next to the previous run of the same scenario.
 Claude (`playtest.review`) then watches the frames together with the product's story doc and the polish checklist.
 It writes findings: bugs, polish problems, confusing moments, and what got better or worse since the last run.
 
+## Feel
+
+What makes a 3D game feel cheap rarely shows in a screenshot review: the camera snapping round, falling through the
+floor, sticking on a doorway, being shoved by a collider, a hitch. The **feel sensor** measures those while a playtest
+runs, and costs nothing when none does.
+
+- **Web games** (`clients/web/hawkes-feel.js`, started by `hawkes-playtest.js` with every run): Babylon.js scenes are
+  found by themselves, which gives the camera and hitch checks. Give the player for the player checks:
+  `installPlaytest({ ..., feel: { player: () => hero.mesh, input: () => movingKeys ? 1 : 0 } })` (`feel: false` turns
+  it off). Optional: `camera`, `inside()` (the game's own "inside a solid" check), `grounded()`, `animSpeed()` (m/s the
+  feet animate at), `isSolid(mesh)` for the rays, `thresholds`.
+- **Unity** (`com.hawkes.playtest` 0.3: `HawkesFeel`): add the component once, set `Player` (and `Input`; the camera
+  defaults to `Camera.main`). WebGL pushes flags to the page; desktop sends them as run events.
+
+| kind | severity | what |
+|---|---|---|
+| `camera-snap` | polish (bug when repeated) | the camera turns faster than a person would in one frame |
+| `camera-jump` | polish (bug when repeated) | the camera moves metres in a frame the player didn't |
+| `camera-blocked` | polish | the camera sits behind or in a wall for a moment |
+| `below-ground` | bug | a surface above the player and nothing below: through the floor |
+| `fell-out` | bug | falling with no floor anywhere |
+| `inside-geometry` | bug | the game's own `inside()` check says so |
+| `stuck` | bug | movement input held, the player hardly moves |
+| `collision-pop` | polish | the player is shoved metres in one frame |
+| `jitter` | polish | the player shakes back and forth against something |
+| `hitch` | polish | one frame many times the usual length (ignored in software rendering) |
+| `foot-sliding` | polish | the walk cycle and the body's ground speed disagree (give `animSpeed`) |
+| `slope-slide` | polish | after landing, carried a metre or more with no input (give `grounded`) |
+
+Each flag carries `{ id, kind, severity, t, pos, cam {pos, yaw, pitch}, seed, scene, value, detail, count }`. It goes
+into the run (an event `feel`, a problem for bugs, and the report's `feel` list) and is **pushed to the runner the
+moment it happens** through `window.__hawkesPlaytestPush` (a Playwright binding the runner adds; nobody polls for it).
+Call `t.cut()` (Unity: `HawkesFeel.Cut()`) before an intended teleport, respawn or cutscene.
+
+**Replays.** `options.spot` (`"x,y,z"` or `"x,y,z,yaw"`; `?spot=` on the URL) asks a scenario to start the player at a
+place: in `start()`, `t.spot` is `{ x, y, z, yaw? }` or null. Put the player there (a named setup shortcut, like `at`)
+and play on through real input. Every feel flag has the `spot` that replays it.
+
+**The runner** (Gen `playtest.run`) takes a screenshot at each flag (`feel:<kind>`, spaced at least 1.5 s apart, 24 at
+most), cuts a 4 s clip around the six worst after the run, and returns them in `result.feel`. Then a cheap vision pass
+(Haiku, `polish: auto|on|off`, about 10 frames, a couple of cents) scores flag shots and evenly spread frames against
+the polish rubric: `result.polish { score, hits }`. Both go to the review. **The rubric is one list**, Gen's
+`POLISH_RUBRIC_LINES` (src/tools/playtest-feel.ts: ugly buildings, z-fighting, floating or sunk props, stretched or missing
+textures, clipping, inside-out models, backwards text, the camera inside geometry, bad lighting): add a line there and
+the vision pass, the review and Studio's finding titles all use it. A run can add lines of its own with playtest.run's
+`rubric` param (`[{ kind, title, look }]`, at most 20), which is how Studio's quality gates add checks without a Gen deploy.
+
+**Studio** (`src/feel.ts`) files one finding per kind and scene with every place, the clips and shots, and a
+`Replay: {"scenario", "options": {"seed", "spot"}}` line. Bugs go to the backlog and are auto-fixed like any other;
+polish goes to the ideas list. The fix agent is told the replay, and the change's playtest (and beta's) plays that
+exact place again.
+
 ## Games without the contract
 
 A page with no `window.hawkesPlaytest` still gets a **generic smoke test**: load it, wait for the canvas or the

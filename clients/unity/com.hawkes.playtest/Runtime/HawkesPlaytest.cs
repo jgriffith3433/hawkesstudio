@@ -90,6 +90,8 @@ namespace Hawkes.Playtest
         internal readonly Dictionary<string, double> Metrics = new Dictionary<string, double>();
         internal readonly List<(float t, string type, string detail)> Events = new List<(float, string, string)>();
         internal readonly List<(PlaytestSeverity severity, string message)> Problems = new List<(PlaytestSeverity, string)>();
+        /// <summary>The feel sensor's flags (HawkesFeel), as JSON objects: the report's "feel".</summary>
+        internal readonly List<string> Feel = new List<string>();
         internal readonly List<string> LogLines = new List<string>();
         internal float LastMove;
         float _endTime;
@@ -230,6 +232,12 @@ namespace Hawkes.Playtest
                 sb.Append("{\"severity\":").Append(Json.Str(Problems[i].severity.ToString().ToLowerInvariant()))
                   .Append(",\"message\":").Append(Json.Str(Problems[i].message)).Append('}');
             }
+            sb.Append("],\"feel\":[");
+            for (var i = 0; i < Feel.Count; i++)
+            {
+                if (i > 0) sb.Append(',');
+                sb.Append(Feel[i]);
+            }
             sb.Append("],\"log\":[");
             for (var i = 0; i < LogLines.Count; i++)
             {
@@ -246,7 +254,7 @@ namespace Hawkes.Playtest
         /// <summary>The contract version this package speaks (2: the page and the native transport).</summary>
         public const int ContractVersion = 2;
         /// <summary>This package's version (package.json), sent in the native hello.</summary>
-        public const string PackageVersion = "0.2.0";
+        public const string PackageVersion = "0.3.0";
 
         public static string Product { get; private set; }
         public static IReadOnlyList<PlaytestScenario> Scenarios => _scenarios;
