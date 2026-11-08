@@ -127,8 +127,11 @@ export function installPlaytest(opts) {
       tracker.log(`feel sensor off: ${e?.message ?? e}`);
     }
   }
+  function feelMetrics() {
+    try { return run?.feelMetrics ?? sensor?.metrics?.() ?? {}; } catch { return {}; }
+  }
   function stopFeel() {
-    try { if (sensor && run) run.feelFinal = sensor.flags(); sensor?.stop(); } catch {}
+    try { if (sensor && run) { run.feelFinal = sensor.flags(); run.feelMetrics = sensor.metrics?.() ?? null; } sensor?.stop(); } catch {}
     sensor = null;
   }
 
@@ -186,7 +189,8 @@ export function installPlaytest(opts) {
         scenario: run.id,
         outcome: run.done ? run.state.status : 'stuck',
         seconds: round(run.seconds ?? now()),
-        metrics: { ...run.metrics, fpsAverage: fps.average(), fpsWorst: fps.worst() },
+        // The feel sensor's measurements (feel.*) first, so a game's own run.metric('feel.…') wins.
+        metrics: { ...feelMetrics(), ...run.metrics, fpsAverage: fps.average(), fpsWorst: fps.worst() },
         events: run.events.slice(),
         problems: run.problems.slice(),
         log: run.log.slice(),

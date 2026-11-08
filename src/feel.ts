@@ -49,8 +49,10 @@ const placeOf = (f: FeelFlag) => (f.pos ? `(${f.pos.map((v) => Math.round(v)).jo
 /** Whether a flag kind counts as a bug at this many sightings (else polish, the ideas list). */
 export function feelSeverity(kind: string, sev: 'bug' | 'polish', count: number): 'bug' | 'polish' {
   if (sev === 'bug') return 'bug';
-  if (kind === 'camera-snap' || kind === 'camera-jump') return count >= 2 ? 'bug' : 'polish';
-  if (kind === 'camera-blocked' || kind === 'collision-pop' || kind === 'jitter') return count >= 3 ? 'bug' : 'polish';
+  // Hard limits (the quality rubric's camera-and-controls rule): the camera snapping, jumping or clipping into a wall
+  // is a bug at the first sighting; games mark their intended cuts (hawkesPlaytest.cut()), so what's left is real.
+  if (kind === 'camera-snap' || kind === 'camera-jump' || kind === 'camera-blocked') return 'bug';
+  if (kind === 'collision-pop' || kind === 'jitter') return count >= 3 ? 'bug' : 'polish';
   return 'polish';
 }
 

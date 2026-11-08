@@ -118,6 +118,10 @@ export function createFeelCore({ emit = () => {}, seed = 0, scene = () => undefi
   let landed = null;             // { t, pos } when the player last landed
   let wasGrounded = null;
   const flips = [];
+  // Measurements for the quality rubric's hard limits (metrics(), sent as playtest metrics feel.*).
+  const m = { worstFrameMs: 0, maxCamDegPerSec: 0, camClipSeconds: 0, insideSeconds: 0, latencies: [] };
+  let press = null;              // { t, pos } when movement input last went from up to down
+  let lastInput = 0;
 
   function median() {
     if (!dts.length) return 1 / 60;
@@ -163,17 +167,21 @@ export function createFeelCore({ emit = () => {}, seed = 0, scene = () => undefi
     // Frame hitches: long against the frames around it, and long in absolute terms.
     if (prev && dt * 1000 >= th.hitchMs && dt >= med * th.hitchFactor) raise('hitch', s, dt * 1000, `frame took ${Math.round(dt * 1000)} ms (usual ${Math.round(med * 1000)} ms)`);
     if (dt > 0 && dt < 1) { dts.push(dt); if (dts.length > 120) dts.shift(); }
+    // A frame under 2 s (longer is a tab in the background, not a hitch), after the first.
+    if (prev && dt < 2 && dt * 1000 > m.worstFrameMs) m.worstFrameMs = dt * 1000;
 
     // Camera.
     if (prev?.cam && s.cam && !quiet && dt > 0 && dt < 0.5) {
       const turned = angleDeg(prev.cam.fwd, s.cam.fwd);
       const rate = turned / Math.max(dt, med);
+      if (rate > m.maxCamDegPerSec) m.maxCamDegPerSec = rate;
       if (turned >= th.snapMinDeg && rate >= th.snapDegPerSec) raise('camera-snap', s, turned, `camera turned ${Math.round(turned)}° in one frame`);
       const camMoved = dist(prev.cam.pos, s.cam.pos);
       const playerMoved = prev.player && s.player ? dist(prev.player, s.player) : 0;
       if (camMoved - playerMoved >= th.cameraJumpMeters) raise('camera-jump', s, camMoved, `camera moved ${r2(camMoved)} m in one frame`);
     }
     if (s.cameraBlocked !== undefined) {
+      if (s.cameraBlocked && !quiet && dt < 0.5) m.camClipSeconds += dt;
       if (s.cameraBlocked) {
         blockedSince ??= s.t;
         if (s.t - blockedSince >= th.blockedSeconds) raise('camera-blocked', s, s.t - blockedSince);
@@ -183,7 +191,18 @@ export function createFeelCore({ emit = () => {}, seed = 0, scene = () => undefi
     // Player.
     if (s.player) {
       const p = s.player;
+      // Input latency: from the frame before movement input went down (it arrived during this frame) to the first frame
+      // the player has visibly moved. A press that moves nothing within half a second (a wall, a menu) isn't counted.
+      const inp = s.input ?? 0;
+      if (inp >= 0.5 && lastInput < 0.5 && prev && !quiet) press = { t: prev.t, pos: { ...p } };
+      if (press && inp < 0.5 && dist(press.pos, p) < 0.02) press = null;
+      if (press) {
+        if (dist(press.pos, p) >= 0.02) { m.latencies.push((s.t - press.t) * 1000); if (m.latencies.length > 200) m.latencies.shift(); press = null; }
+        else if (s.t - press.t > 0.5) press = null;
+      }
+      lastInput = inp;
       if (s.inside !== undefined) {
+        if (s.inside && dt < 0.5) m.insideSeconds += dt;
         if (s.inside) { insideSince ??= s.t; if (s.t - insideSince >= 0.3) raise('inside-geometry', s); } else insideSince = null;
       }
       if (s.floorBelow !== undefined) {
@@ -244,6 +263,7 @@ export function createFeelCore({ emit = () => {}, seed = 0, scene = () => undefi
     } else {
       // No player this frame (a menu, a cutscene, the game playing itself): the timers start over.
       belowSince = fallingSince = insideSince = slidingSince = blockedSince = null; landed = null; wasGrounded = null; moves.length = 0; flips.length = 0;
+      press = null; lastInput = 0;
     }
     prev = { t: s.t, cam: s.cam ? { pos: { ...s.cam.pos }, fwd: { ...s.cam.fwd } } : null, player: s.player ? { ...s.player } : null };
   }
@@ -253,6 +273,24 @@ export function createFeelCore({ emit = () => {}, seed = 0, scene = () => undefi
     /** An intended cut, respawn or teleport: camera and movement checks rest for `seconds`. */
     cut(seconds = 0.75) { quietUntil = (prev?.t ?? 0) + seconds; fallingSince = null; belowSince = null; slidingSince = null; landed = null; moves.length = 0; flips.length = 0; },
     flags: () => flags.map(({ lastT, ...f }) => f),
+    /**
+     * The run's measurements as playtest metrics: worst frame (ms), fastest camera turn (deg/s), seconds the camera
+     * spent behind a wall and the player inside geometry, and input latency (median ms, with how many presses it saw).
+     * A measurement the game gave the sensor nothing for is left out, never reported as 0.
+     */
+    metrics() {
+      const out = {};
+      if (dts.length) out['feel.worstHitchMs'] = Math.round(m.worstFrameMs);
+      if (m.maxCamDegPerSec > 0) out['feel.maxCameraDegPerSec'] = Math.round(m.maxCamDegPerSec);
+      if (prev?.cam) out['feel.cameraClipSeconds'] = r2(m.camClipSeconds);
+      if (m.insideSeconds > 0) out['feel.insideSeconds'] = r2(m.insideSeconds);
+      if (m.latencies.length) {
+        const l = m.latencies.slice().sort((a, b) => a - b);
+        out['feel.inputLatencyMs'] = Math.round(l[Math.floor(l.length / 2)]);
+        out['feel.inputSamples'] = l.length;
+      }
+      return out;
+    },
     thresholds: th,
   };
 }
@@ -371,6 +409,7 @@ export function startBabylonFeel(opts = {}) {
     core,
     cut: (seconds) => core.cut(seconds),
     flags: () => core.flags(),
+    metrics: () => core.metrics(),
     stop() { try { scene.onAfterRenderObservable.remove(obs); } catch {} keys?.stop(); },
   };
 }
@@ -388,7 +427,7 @@ export function startFrameFeel(opts = {}) {
     requestAnimationFrame(tick);
   };
   requestAnimationFrame(tick);
-  return { core, cut: (s) => core.cut(s), flags: () => core.flags(), stop() { on = false; } };
+  return { core, cut: (s) => core.cut(s), flags: () => core.flags(), metrics: () => core.metrics(), stop() { on = false; } };
 }
 
 const MOVE_KEYS = new Set(['KeyW', 'KeyA', 'KeyS', 'KeyD', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight']);

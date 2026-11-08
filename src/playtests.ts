@@ -288,6 +288,9 @@ export function playtestData(job: any, url: string) {
     thumb: r.shots?.length ? r.shots[r.shots.length - 1].asset : outs.filter((x: any) => x.kind === 'image').pop()?.asset ?? null,
     shots: r.shots?.length ?? 0,
     s3: r.s3 ?? null,
+    // The feel layer's flags and vision hits, for the quality gate on going live (deploy.ts qualityOfPlay).
+    feel: Array.isArray(r.feel) ? r.feel.slice(0, 200) : null,
+    polishHits: Array.isArray(r.polish?.hits) ? r.polish.hits.slice(0, 60) : null,
     visual: r.visual ? { baseline: r.visual.baseline, pairs: r.visual.pairs?.length ?? 0, big: r.visual.big ?? 0, top: (r.visual.pairs ?? []).filter((x: any) => x.big).slice(0, 4) } : null,
     url,
   };

@@ -80,7 +80,7 @@ function playOf(s: Step, steps: Step[], carried = false) {
 function qualityOfPlay(s: Step, rv: Step | undefined) {
   let p: Product;
   try { p = getProduct(s.product); } catch { return { fails: [], unmeasured: [] }; }
-  return qualityGate(p, { problems: s.data?.problems, metrics: s.data?.metrics, findings: rv?.data?.findings, fun: rv?.data?.fun ?? null });
+  return qualityGate(p, { problems: s.data?.problems, metrics: s.data?.metrics, findings: rv?.data?.findings, fun: rv?.data?.fun ?? null, feel: s.data?.feel, polish: s.data?.polishHits, motion: rv?.data?.motion ?? null, software: Boolean(s.data?.software) });
 }
 
 /**
