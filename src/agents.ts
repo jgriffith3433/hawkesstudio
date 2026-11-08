@@ -193,11 +193,12 @@ const SETTINGS_FILE = path.join(DATA, 'agents.json');
  */
 export type AgentSettings = { enabled: boolean; autoFix: boolean; autoWorkVerdicts: boolean; autoReverify: boolean; autoMergeBeta: boolean; betaPlaytests: boolean; maxConcurrent: number; perProduct: number; productLimits: Record<string, number>; maxPerDay: number; maxCostPerDay: number; severities: string[]; model: string; maxTurns: number; idleMinutes: number; genWaitHours: number; access?: { gen?: boolean; repos?: boolean }; showcase: 'web' | 'all' | 'off' };
 /** showcase: which ready game changes that a player would see are playtested by themselves, so their pull request ships
- * with shots and a walk-through clip from the built game (the owner's gaps list, 2026-11-08): web (web games and site
- * pages: served from the worktree, no build), all (Unity too: a build of the branch on the build server), off.
+ * with shots and a walk-through clip from the built game (the owner's gaps list, 2026-11-08): all, the default (Unity
+ * too, for changes a player sees or feels: the change's build on the build server, within maxCostPerDay), web (web
+ * games and site pages only: served from the worktree, no build), off.
  * access: what agents reach beyond their own project (access.ts; both on unless turned off here or on the project).
  * genWaitHours: a change parked on Gen jobs longer than this is told in Talk once (it isn't failed). */
-const DEFAULTS: AgentSettings = { enabled: true, autoFix: true, autoWorkVerdicts: true, autoReverify: true, autoMergeBeta: true, betaPlaytests: false, maxConcurrent: 2, perProduct: 1, productLimits: { sickofit: 2 }, maxPerDay: 1000, maxCostPerDay: 150, severities: ['blocker', 'bug'], model: 'claude-sonnet-5-5', maxTurns: 80, idleMinutes: 20, genWaitHours: 6, showcase: 'web' };
+const DEFAULTS: AgentSettings = { enabled: true, autoFix: true, autoWorkVerdicts: true, autoReverify: true, autoMergeBeta: true, betaPlaytests: false, maxConcurrent: 2, perProduct: 1, productLimits: { sickofit: 2 }, maxPerDay: 1000, maxCostPerDay: 150, severities: ['blocker', 'bug'], model: 'claude-sonnet-5-5', maxTurns: 80, idleMinutes: 20, genWaitHours: 6, showcase: 'all' };
 export function agentSettings(): AgentSettings {
   try {
     return { ...DEFAULTS, ...JSON.parse(fs.readFileSync(SETTINGS_FILE, 'utf8')) };
@@ -2322,15 +2323,30 @@ export function visibleFiles(files: string[]) {
 }
 
 /**
- * Whether a ready change is played by itself so it ships with shots and a clip (settings showcase): a game's or a
- * site's change a player would see. Returns why, or null. Unity needs showcase "all" (a build on the build server).
+ * A Unity change's files a player sees or feels: scenes, prefabs, models, animation, materials and shaders, VFX, UI,
+ * audio and textures, and C# only where it drives the camera, controls, UI, animation, effects or sound. Pure code or
+ * data with no visible effect (ScriptableObject .asset files, settings, editor tools, tests) is not.
  */
-export function showcaseFor(c: Pick<Change, 'worktree' | 'base' | 'repo' | 'task'> & { infra?: boolean }, p: Product, mode = agentSettings().showcase): string | null {
+const UNITY_UNSEEN = /(^|\/)(Editor|Tests?|Plugins|Packages|ProjectSettings|docs?|\.github|\.claude|\.hawkes)\/|\.(asmdef|asmref|meta|md|txt|json|asset|yml|yaml)$/i;
+const UNITY_SEEN = /\.(unity|prefab|fbx|obj|blend|glb|gltf|anim|controller|overrideController|mask|playable|mat|shader|shadergraph|hlsl|cginc|vfx|vfxoperator|uxml|uss|tss|wav|ogg|mp3|aif+|png|jpe?g|psd|tga|exr|ttf|otf)$/i;
+const FELT_CS = /(camera|cinemachine|input|control|player|character|move|movement|locomotion|jump|dash|ui|hud|menu|screen|dialog|vfx|fx|particle|effect|anim|audio|sound|music|sfx|weapon|combat|hit|feel)/i;
+export function unityVisibleFiles(files: string[]) {
+  return files.filter((f) => !UNITY_UNSEEN.test(f) && (UNITY_SEEN.test(f) || (/\.cs$/i.test(f) && FELT_CS.test(f))));
+}
+
+/**
+ * Whether a ready change is played by itself so it ships with shots and a clip (settings showcase): a game's or a
+ * site's change a player would see. Returns why, or null. A Unity change (showcase "all", the default) is played only
+ * when it touches what a player sees or feels (unityVisibleFiles), reusing the change's build of that commit when
+ * there is one (buildChange), and only while the day's agent cost is under maxCostPerDay.
+ */
+export function showcaseFor(c: Pick<Change, 'worktree' | 'base' | 'repo' | 'task'> & { infra?: boolean }, p: Product, mode = agentSettings().showcase, spent = () => costToday().cost): string | null {
   if (mode === 'off' || c.infra || !isGame(p)) return null;
   if (c.task && isVideoTask(c.task)) return null;
-  const unity = p.engine === 'unity' || Boolean(p.build);
-  if (unity && !isSiteChange(c as Change, p) && mode !== 'all') return null;
-  const seen = visibleFiles(changedFiles(c));
+  const unity = (p.engine === 'unity' || Boolean(p.build)) && !isSiteChange(c as Change, p);
+  if (unity && mode !== 'all') return null;
+  if (unity && spent() >= agentSettings().maxCostPerDay) return null;
+  const seen = (unity ? unityVisibleFiles : visibleFiles)(changedFiles(c));
   return seen.length ? `${seen.length} file${seen.length === 1 ? '' : 's'} a player sees: ${seen.slice(0, 3).join(', ')}${seen.length > 3 ? ', ...' : ''}` : null;
 }
 

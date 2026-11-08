@@ -73,9 +73,12 @@ floating or sunk props, inside-out models, backwards text) breaks that rule when
   never reached goes back once as a scenario fix, and the rest are checked again after beta's next build.
 - **Motion.** Gen's review (`playtest.review` v5) looks at short clips at 15 fps around the flagged moments, and
   measures stutters in the recording (`review.motion.worstHitchMs`).
-- **Shots and a clip with every visible change** (`showcase` in agent settings: `web` by default, `all` adds Unity
-  build-server builds, `off`): a ready game change that touches files a player sees is played by itself, and its pull
-  request gets a "From the built game" section with the shots, motion sheets and video.
+- **Shots and a clip with every visible change** (`showcase` in agent settings: `all` by default, `web` for web games
+  only, `off`): a ready game change that touches files a player sees is played by itself, and its pull request gets a
+  "From the built game" section with the shots, motion sheets and video. A Unity change counts only when it touches
+  what a player sees or feels (scenes, prefabs, models, animation, materials and shaders, VFX, UI, audio, textures,
+  and C# for the camera, controls, UI, animation, effects or sound; `unityVisibleFiles`), reuses the change's build of
+  that commit when there is one, and is skipped once the day's agent cost reaches `maxCostPerDay`.
 
 ## Kinds of work
 
