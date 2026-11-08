@@ -124,7 +124,7 @@ export type Task = {
   /** Beta's build after it merged (pm.ts followBuilds): did it build (for Unity: did it compile), in which beta run. */
   build: TaskBuild | null;
 };
-export type TaskBuild = { ok: boolean; run: string; at: number; detail: string; unity?: boolean };
+export type TaskBuild = { ok: boolean; /** The run built nothing that includes the task's merge: not a failure of the task. */ unproven?: boolean; run: string; at: number; detail: string; unity?: boolean };
 export type TaskGpu = { items?: any[]; estimate?: { gpuHours: number; cost: number; withIdleTail: number; servers: number; wallMinutes: number; at: number; error?: string }; budget?: number | null; approvedBy?: string | null; approvedAt?: number | null };
 export type Item = {
   id: string; product: string; title: string; goal: string | null; why: string | null; criteria: string[]; size: string | null; status: string;

@@ -397,7 +397,7 @@ export const betaPort = (p: Product) => 9000 + (p.local.port % 1000);
  * What a local playtest plays, recorded with each playtest (step data "played") so the report and the deploy plan
  * know which commit was tested. Unity on the beta lane: the beta build. Otherwise: the product's checkout.
  */
-export type Played = { branch: string; sha: string; title?: string; dirty?: number; build?: string | null };
+export type Played = { branch: string; sha: string; title?: string; dirty?: number; build?: string | null; /** The commit a published build was made from (it can be older than the branch's head). */ madeFrom?: boolean };
 export function playedLocal(p: Product): Played | null {
   if (p.build && betaLane()) {
     const b = betaBuild(p);
