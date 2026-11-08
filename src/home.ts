@@ -42,8 +42,13 @@ export async function home() {
       needsList: cap(needsList), runningList: cap(runningList), readyList: cap(readyList),
     };
   });
+  // Anything not tied to a game (Studio's own questions) gets its own "Studio" card, so the total always has a list.
+  const looseItems = items.filter((i) => !i.product || !games.some((g) => g.id === i.product));
+  if (looseItems.length) {
+    const needsList = looseItems.map((i) => ({ title: i.title, blocks: i.blocks }));
+    games.push({ id: 'studio', name: 'Studio', needs: needsList.length, running: 0, ready: 0, needsList: cap(needsList), runningList: [], readyList: [] });
+  }
   const sum = (k: 'needs' | 'running' | 'ready') => games.reduce((n, g) => n + g[k], 0);
-  // Anything not tied to a game (Studio's own questions): shown in the total, under "Studio".
-  const loose = items.filter((i) => !i.product || !games.some((g) => g.id === i.product)).length;
-  return { at: Date.now(), games, totals: { needs: sum('needs') + loose, running: sum('running'), ready: sum('ready') }, loose };
+  const loose = looseItems.length;
+  return { at: Date.now(), games, totals: { needs: sum('needs'), running: sum('running'), ready: sum('ready') }, loose };
 }

@@ -40,3 +40,10 @@ test('the page refreshes from the stream and has no timer or poll', () => {
   const css = fs.readFileSync(path.join(import.meta.dirname, '..', 'dashboard', 'style.css'), 'utf8');
   assert.match(css, /@media \(max-width: 480px\) \{ \.home-games/);
 });
+
+test('an inbox item with no game gets a Studio card, so the total always has a list', async () => {
+  const h = await home();
+  const studio = h.games.find((x) => x.id === 'studio');
+  assert.equal(h.totals.needs, h.games.reduce((n, g) => n + g.needs, 0));
+  if (h.loose) { assert.ok(studio); assert.equal(studio!.needs, h.loose); } else assert.equal(studio, undefined);
+});
