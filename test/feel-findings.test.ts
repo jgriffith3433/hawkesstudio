@@ -48,3 +48,10 @@ test('feelLine', () => {
   assert.equal(feelLine({}), '');
   assert.equal(feelLine({ feel: [{}], polish: { score: 6.5 } }), 'feel: 1 flag, polish 6.5/10');
 });
+
+test('a replay keeps the run\'s start point (options.at) with the spot', async () => {
+  const { feelFindings, replayOf } = await import('../src/feel.ts');
+  const [f] = feelFindings({ seed: 3, feel: [{ id: 'a', kind: 'stuck', severity: 'bug', t: 1, pos: [1, 2, 3], spot: '1,2,3', detail: 'held' }] }, { scenario: 'level', at: 'station' });
+  assert.deepEqual(f.replay, { scenario: 'level', options: { seed: 3, at: 'station', spot: '1,2,3' } });
+  assert.deepEqual(replayOf(f.detail), f.replay);
+});

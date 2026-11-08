@@ -58,7 +58,7 @@ export function feelSeverity(kind: string, sev: 'bug' | 'polish', count: number)
  * The run's feel flags and polish hits as findings: one per kind and scene, worst first. In a verify or regression
  * run only bugs are filed (the polish list is the daily run's job). Hitches are left out when the run had no GPU.
  */
-export function feelFindings(result: any, { scenario, mode = 'full', max = 6 }: { scenario: string; mode?: string; max?: number }): FeelFinding[] {
+export function feelFindings(result: any, { scenario, mode = 'full', max = 6, at }: { scenario: string; mode?: string; max?: number; at?: string }): FeelFinding[] {
   const flags: FeelFlag[] = (Array.isArray(result?.feel) ? result.feel : []).filter((f: any) => f?.kind && (!result?.software || f.kind !== 'hitch'));
   const hits: PolishHit[] = Array.isArray(result?.polish?.hits) ? result.polish.hits : [];
   const groups = new Map<string, FeelFlag[]>();
@@ -74,7 +74,8 @@ export function feelFindings(result: any, { scenario, mode = 'full', max = 6 }: 
     const severity = feelSeverity(kind, list.some((f) => f.severity === 'bug') ? 'bug' : 'polish', total);
     const worst = [...list].sort((a, b) => (b.count ?? 1) - (a.count ?? 1) || Math.abs(b.value ?? 0) - Math.abs(a.value ?? 0))[0];
     const seed = worst.seed ?? result?.seed;
-    const replay: Replay | null = worst.spot ? { scenario, options: { ...(seed != null ? { seed } : {}), spot: worst.spot } } : null;
+    // The start point (options.at: a level or chapter) rides along: a spot only means something in the place it was found.
+    const replay: Replay | null = worst.spot ? { scenario, options: { ...(seed != null ? { seed } : {}), ...(at ? { at: at.slice(0, 80) } : {}), spot: worst.spot } } : null;
     const places = list.slice(0, 8).map((f) => `- ${placeOf(f)} at ${r1(f.rt ?? f.t)} s: ${f.detail}${(f.count ?? 1) > 1 ? ` (x${f.count})` : ''}${f.clip ? ` · clip ${f.clip}` : ''}${f.shot ? ` · shot ${f.shot}` : ''}`);
     out.push({
       rank: (severity === 'bug' ? 0 : 1000) - total,
