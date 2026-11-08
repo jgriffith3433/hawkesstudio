@@ -53,6 +53,8 @@ const mergeTries: string[] = [];
 const prBranch = new Map<number, string>();
 const dirty = new Map<number, string>();
 const refuse = new Map<number, string>();
+const updateBranchCalls: number[] = [];
+const ubFail = new Map<number, string>();
 const listen = async (server: http.Server) => {
   server.listen(0, '127.0.0.1');
   await once(server, 'listening');
@@ -78,6 +80,26 @@ const github = http.createServer(async (req, res) => {
       return json(200, { merged: true, sha: 'f'.repeat(40) });
     }
     return json(200, { number: Number(m[1]), state: 'open', merged: false, head: { sha, ref: branch }, mergeable: !isDirty, mergeable_state: isDirty ? 'dirty' : 'clean' });
+  }
+  const ub = /^\/repos\/x\/game\/pulls\/(\d+)\/update-branch$/.exec(url.pathname);
+  if (ub && req.method === 'PUT') {
+    updateBranchCalls.push(Number(ub[1]));
+    if (ubFail.has(Number(ub[1]))) return json(500, { message: ubFail.get(Number(ub[1])) });
+    const branch = prBranch.get(Number(ub[1]))!;
+    const gh = path.join(tmp, `gh-${ub[1]}-${updateBranchCalls.length}`);
+    git(tmp, 'clone', '--quiet', '-b', branch, origin, gh);
+    const r = spawnSync('git', ['-c', 'user.name=GitHub', '-c', 'user.email=g@example.com', 'merge', '--no-edit', 'origin/beta'], { cwd: gh, encoding: 'utf8' });
+    if (r.status !== 0) return json(422, { message: 'merge conflict between base and head' });
+    git(gh, 'push', '--quiet', 'origin', `HEAD:${branch}`);
+    return json(202, { message: 'Updating pull request branch.' });
+  }
+  const cmp = /^\/repos\/x\/game\/compare\/(.+)\.\.\.(.+)$/.exec(url.pathname);
+  if (cmp) {
+    const [a, b] = [decodeURIComponent(cmp[1]), decodeURIComponent(cmp[2])];
+    const rev = (x: string) => (/^[0-9a-f]{40}$/.test(x) ? x : `refs/heads/${x}`);
+    const base = spawnSync('git', ['merge-base', rev(a), rev(b)], { cwd: origin, encoding: 'utf8' }).stdout.trim();
+    const files = spawnSync('git', ['diff', '--name-only', base, rev(b)], { cwd: origin, encoding: 'utf8' }).stdout.split('\n').filter(Boolean);
+    return json(200, { merge_base_commit: { sha: base }, files: files.map((filename) => ({ filename })) });
   }
   if (/^\/repos\/x\/game\/pulls$/.test(url.pathname)) return json(200, []);
   if (req.method === 'DELETE') return json(204, {});
@@ -194,12 +216,13 @@ test('GitHub says it conflicts and there is no worktree here (a big repo on Clou
   dirty.set(n, git(repoDir, 'rev-parse', `refs/heads/${c.branch}`));
   const tries = mergeTries.length;
   await assert.rejects(agents.approve(c.id, { confirm: `MERGE ${c.id}` }), (e: any) => /its agent is resolving the conflicts/.test(e.message) && e.resolving === true);
-  assert.equal(mergeTries.length, tries + 1, 'asked GitHub once');
+  assert.equal(mergeTries.length, tries, 'update-branch found the overlap before any merge was asked');
   assert.equal(stopped(), before, 'no "Merge stopped" conversation: it is being dealt with');
   assert.equal(getChange(c.id)!.conflicts, 1);
   await until(() => getChange(c.id)!.status === 'merged', 60_000, 'the worktree made again, the conflict pass and the merge');
   assert.ok(merges.includes(c.branch));
-  assert.equal(fs.readFileSync(path.join(c.wt, 'menu.txt'), 'utf8').replace(/\r\n/g, '\n'), 'Ready\n', "the agent kept its side, in a worktree made again from the branch");
+  // (the worktree is cleaned up once merged: checked only while it is still there)
+  if (fs.existsSync(path.join(c.wt, 'menu.txt'))) assert.equal(fs.readFileSync(path.join(c.wt, 'menu.txt'), 'utf8').replace(/\r\n/g, '\n'), 'Ready\n', "the agent kept its side, in a worktree made again from the branch");
 });
 
 test('a merge that fails for another reason: Talk hears it once, and it is not asked of GitHub again for a minute', async () => {
@@ -318,4 +341,45 @@ test("the PM's minute check meets a conflict GitHub reports: its agent takes it;
   assert.equal(pm.reviewable(getChange(d.id)), false, 'the PM waits for J');
   assert.ok(mergeTries.length <= tries + 1, 'GitHub asked at most once');
   db.prepare(`UPDATE changes SET status = 'closed' WHERE id = ?`).run(d.id);
+});
+
+test('disjoint files, GitHub says dirty, no worktree: update-branch brings it current and it merges, no conflict pass', async () => {
+  const c = readyChange('Disjoint\n');
+  betaMoves('elsewhere.txt', 'Not the menu\n');
+  git(repoDir, 'worktree', 'remove', '--force', c.wt);
+  dirty.set(n, git(repoDir, 'rev-parse', `refs/heads/${c.branch}`));
+  const calls = updateBranchCalls.length;
+  await autoMergeBeta(c.id);
+  const x = getChange(c.id)!;
+  assert.equal(x.status, 'merged', x.log.join('\n'));
+  assert.equal(updateBranchCalls.length, calls + 1, 'GitHub updated the branch');
+  assert.equal(x.conflicts ?? null, null, 'no conflict pass');
+  assert.ok(merges.includes(c.branch));
+});
+
+test('a real overlap with no worktree: a conflict pass naming the file', async () => {
+  const c = readyChange('Overlap\n');
+  betaMoves('menu.txt', 'Beta menu\n');
+  git(repoDir, 'worktree', 'remove', '--force', c.wt);
+  dirty.set(n, git(repoDir, 'rev-parse', `refs/heads/${c.branch}`));
+  await autoMergeBeta(c.id);
+  const x = getChange(c.id)!;
+  assert.equal(x.conflicts, 1, x.log.join('\n'));
+  assert.ok(x.notes.some((nt: any) => /conflict pass 1 \(menu\.txt\)/.test(nt.text)), JSON.stringify(x.notes));
+  await until(() => getChange(c.id)!.status === 'merged', 60_000, 'the conflict pass and the merge');
+});
+
+test('a failed update-branch with no shared file never spends a pass or files a card', async () => {
+  const c = readyChange('Failing\n');
+  betaMoves('another.txt', 'More\n');
+  git(repoDir, 'worktree', 'remove', '--force', c.wt);
+  dirty.set(n, git(repoDir, 'rev-parse', `refs/heads/${c.branch}`));
+  ubFail.set(n, 'upstream unavailable');
+  await autoMergeBeta(c.id);
+  const x = getChange(c.id)!;
+  assert.equal(x.conflicts ?? null, null, x.log.join('\n'));
+  assert.equal(x.status, 'ready');
+  assert.match(x.auto_merge ?? '', /^failed/);
+  assert.ok(!rm.listQuestions('asked J').some((q) => q.subject === c.task), 'no Inbox card');
+  db.prepare(`UPDATE changes SET status = 'closed' WHERE id = ?`).run(c.id);
 });

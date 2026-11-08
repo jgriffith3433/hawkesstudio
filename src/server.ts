@@ -1183,7 +1183,11 @@ const server = http.createServer(async (req, res) => {
         betaPushes.splice(50);
         return send(res, r.ok ? 202 : 200, r);
       }
-      if (ref === 'refs/heads/beta') return send(res, 200, { ok: true, branch: 'beta', ...(await onBetaPush(folder, sha)) });
+      if (ref === 'refs/heads/beta') {
+        // Beta moved (server push, no timer): ready changes that couldn't merge try again.
+        void import('./agents.ts').then((m) => m.onBaseMoved(folder)).catch(() => {});
+        return send(res, 200, { ok: true, branch: 'beta', ...(await onBetaPush(folder, sha)) });
+      }
       if (ref === 'refs/heads/main') {
         // Publishing can take a while (a Unity build): answer now; it shows in Runs and /api/hooks/pushes.
         const { onMainPush } = await import('./golive.ts');
