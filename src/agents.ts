@@ -3430,11 +3430,64 @@ export async function githubConflictFiles(c: Pick<Change, 'slug' | 'base' | 'bra
 }
 
 /**
+ * Brings the pull request's branch current with its base on GitHub's side (PUT update-branch with expected_head_sha), for
+ * when Studio couldn't do it in a worktree (no worktree, the fetch failed, a big Unity repo). The new head is what merges
+ * (verify.sha). A conflict only when GitHub refuses with a conflict AND the two sides share at least one file
+ * (githubConflictFiles); a refusal over no shared file, or any other trouble, is `failed`: never a conflict pass.
+ */
+export async function updateBranchOnGithub(id: string): Promise<{ state: 'current' | 'merged' | 'conflict' | 'failed'; files?: string[]; sha?: string; why?: string }> {
+  const c = getChange(id);
+  if (!c || !c.slug || !c.pr) return { state: 'failed', why: 'no pull request' };
+  try {
+    const pr = await github(`/repos/${c.slug}/pulls/${c.pr}`);
+    const head = String(pr.head?.sha ?? '');
+    if (!head) return { state: 'failed', why: 'GitHub gave no head sha' };
+    try {
+      await github(`/repos/${c.slug}/pulls/${c.pr}/update-branch`, { method: 'PUT', body: { expected_head_sha: head } });
+    } catch (e: any) {
+      const msg = String(e.message ?? e);
+      if (/up.to.date|no new commits|already/i.test(msg)) return { state: 'current', sha: head };
+      if (/conflict|dirty|not mergeable/i.test(msg)) {
+        const both = await githubConflictFiles(c);
+        if (both && both.length) return { state: 'conflict', files: both };
+        return { state: 'failed', why: `GitHub refused to update the branch (${msg.slice(0, 200)}) but the two sides share no file` };
+      }
+      return { state: 'failed', why: msg.slice(0, 200) };
+    }
+    // GitHub makes the merge commit in the background: the head moves a moment later.
+    for (let i = 0; i < 6; i++) {
+      await new Promise((r) => setTimeout(r, Number(process.env.STUDIO_MERGE_RETRY_MS ?? 3000)));
+      const now = await github(`/repos/${c.slug}/pulls/${c.pr}`).catch(() => null);
+      const sha = String(now?.head?.sha ?? '');
+      if (sha && sha !== head) {
+        update(id, { verify: { ...(c.verify ?? {}), sha } });
+        addLog(id, `${c.base} moved: GitHub brought the branch up to date (update-branch) and ${sha.slice(0, 7)} is what merges`);
+        return { state: 'merged', sha };
+      }
+    }
+    return { state: 'failed', why: 'GitHub accepted update-branch but the head did not move' };
+  } catch (e: any) { return { state: 'failed', why: String(e.message ?? e).slice(0, 200) }; }
+}
+
+/**
+ * The base branch moved (GitHub's push webhook, server push): ready changes of that repo that couldn't merge by themselves
+ * try again. Never a timer.
+ */
+export function onBaseMoved(repoFolder: string) {
+  for (const c of listChanges()) {
+    if (c.repo !== repoFolder || c.infra || c.status !== 'ready' || !c.pr || !String(c.auto_merge ?? '').startsWith('failed')) continue;
+    void autoMergeBeta(c.id).catch((e) => console.warn(`[studio] auto-merge ${c.id} after ${c.base} moved: ${e.message ?? e}`));
+  }
+}
+
+/**
  * A person's (or the PM's, or walk-away's) merge that met a conflict: its own agent resolves it, like an automatic
  * merge does (J, 2026-11-04: "it should be able to deal with the merge conflicts"). The error says so, and carries
  * `resolving` so a caller doesn't start a pass of its own; with the passes used up, it says J decides.
  */
 function conflictHandled(id: string, e: Error & { conflict: string[] }) {
+  // No file really conflicts: never a pass, never an Inbox card.
+  if (!e.conflict.length) return Object.assign(new Error(`${e.message} (no shared file: not a conflict pass)`), { conflict: e.conflict });
   if (resolveConflicts(id, e.conflict)) {
     const c = getChange(id)!;
     return Object.assign(new Error(`${e.message}: its agent is resolving the conflicts (conflict pass ${c.conflicts} of ${CONFLICT_PASSES}, not a try); it merges once they're resolved`), { conflict: e.conflict, resolving: true });
@@ -3572,13 +3625,36 @@ export function resolveConflicts(id: string, files: string[]) {
   const go = () => {
     if (running.has(id)) return void setTimeout(go, 200).unref();
     running.add(id);
-    void work(id, note, undefined, ph, true).finally(() => {
+    void syncToRemoteHead(id).catch((e) => addLog(id, `conflict pass: could not check the remote head (${String(e.message ?? e).slice(0, 120)})`)).then(() => work(id, note, undefined, ph, true)).finally(() => {
       running.delete(id);
       remember(id);
       void pump();
     });
   };
   go();
+  return true;
+}
+
+/**
+ * Before a conflict pass: if the branch's head moved on GitHub (someone merged beta into it, update-branch), the worktree
+ * is reset to that head, so the pass doesn't report conflicts from a stale local branch. Only a clean worktree whose HEAD
+ * is an ancestor of the remote head is moved (nothing local is lost).
+ */
+export async function syncToRemoteHead(id: string) {
+  const c = getChange(id);
+  if (!c || !c.slug || !c.pr || !c.worktree || !fs.existsSync(path.join(c.worktree, '.git'))) return false;
+  const pr = await github(`/repos/${c.slug}/pulls/${c.pr}`);
+  const remote = String(pr.head?.sha ?? '');
+  const local = git(c.worktree, ['rev-parse', 'HEAD']).out;
+  if (!remote || remote === local) return false;
+  const f = await gitAsync(c.worktree, ['fetch', '--quiet', 'origin', c.branch]);
+  if (!f.ok || !git(c.worktree, ['cat-file', '-e', `${remote}^{commit}`]).ok) return false;
+  if (!git(c.worktree, ['merge-base', '--is-ancestor', local, remote]).ok) return false;
+  const r = await gitAsync(c.worktree, ['reset', '--hard', remote]);
+  if (!r.ok) return false;
+  await shareWorktree(c.worktree);
+  update(id, { verify: { ...(c.verify ?? {}), sha: remote } });
+  addLog(id, `the branch moved on GitHub (${local.slice(0, 7)} -> ${remote.slice(0, 7)}): the worktree is reset to it before the conflict pass`);
   return true;
 }
 
@@ -3668,12 +3744,23 @@ export async function approve(id: string, { confirm, by = 'J', origin, auto = fa
       const e = conflictError(getChange(id)!, up.files ?? []);
       throw auto ? e : conflictHandled(id, e);
     }
+    // Studio couldn't update it here (no worktree, fetch failed): GitHub does it. Only a real shared file is a conflict.
+    if (up.state === 'skipped') {
+      const ub = await updateBranchOnGithub(id);
+      if (ub.state === 'conflict') {
+        const e = conflictError(getChange(id)!, ub.files ?? []);
+        throw auto ? e : conflictHandled(id, e);
+      }
+      if (ub.state === 'failed') addLog(id, `${up.why ?? 'not updated here'}; update-branch: ${ub.why} (not a conflict)`);
+    }
     // The pull request's head is checked before the merge (a verified commit: the agent's, or Studio's merge of beta).
-    const sha = await verifiedHead(getChange(id)!);
+    let sha = await verifiedHead(getChange(id)!);
     let m: any;
-    try {
+    let retried = false;
+    for (;;) try {
       // `sha`: GitHub refuses the merge if the pull request's head moved since the check above.
       m = await github(`/repos/${c.slug}/pulls/${c.pr}/merge`, { method: 'PUT', body: { merge_method: await mergeMethodOf(c.slug!), sha, commit_title: `${c.title} (#${c.pr})` } });
+      break;
     } catch (e0: any) {
       let e = e0;
       const files = () => github(`/repos/${c.slug}/pulls/${c.pr}/files?per_page=100`).then((fs: any[]) => fs.map((f) => f.filename)).catch(() => [] as string[]);
@@ -3682,8 +3769,20 @@ export async function approve(id: string, { confirm, by = 'J', origin, auto = fa
       // GitHub can't compare, the ones the change touches.
       if (!isConflict(e) && MERGE_REFUSED.test(String(e.message ?? e)) && await githubSaysConflict(c)) {
         const both = await githubConflictFiles(c);
-        if (both) addLog(id, both.length ? `GitHub says the branch conflicts with ${c.base}; both sides changed ${both.slice(0, 10).join(', ')}` : `GitHub says the branch conflicts with ${c.base}, but the two sides changed no file in common`);
-        e = conflictError(c, both ?? await files());
+        if (both?.length) {
+          addLog(id, `GitHub says the branch conflicts with ${c.base}; both sides changed ${both.slice(0, 10).join(', ')}`);
+          e = conflictError(c, both);
+        } else {
+          // No shared file (or GitHub can't compare): not a conflict, never a pass or an Inbox card. Bring the branch
+          // current on GitHub and merge once more.
+          addLog(id, `GitHub says the branch conflicts with ${c.base}, but ${both ? 'the two sides changed no file in common' : 'it could not compare the sides'} (not a conflict)`);
+          if (!retried) {
+            retried = true;
+            const ub = await updateBranchOnGithub(id);
+            if (ub.state === 'conflict') e = conflictError(c, ub.files ?? []);
+            else if (ub.state === 'merged' || ub.state === 'current') { sha = await verifiedHead(getChange(id)!); continue; }
+          }
+        }
       }
       if (isConflict(e)) throw auto ? e : conflictHandled(id, e);
       if (auto) throw e;
@@ -3761,6 +3860,7 @@ export async function autoMergeBeta(id: string) {
     return merged;
   } catch (e: any) {
     // A conflict with beta: its own agent resolves it (no try, nobody asked); stuck after CONFLICT_PASSES, J decides.
+    if (isConflict(e) && !e.conflict.length) return fail(`${String(e.message).slice(0, 200)} (no shared file: not a conflict pass)`);
     if (isConflict(e)) {
       if (resolveConflicts(id, e.conflict)) return null;
       const r = await fail(`it still conflicts with ${BETA} after ${CONFLICT_PASSES} conflict passes by its agent: ${String(e.message).slice(0, 200)}`);
