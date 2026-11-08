@@ -241,6 +241,9 @@ export function createFeelCore({ emit = () => {}, seed = 0, scene = () => undefi
         const held = win.length > 2 && win.every((m) => m.input >= 0.5) && s.t - win[0].t >= th.stuckSeconds * 0.9;
         if (held && flat(win[0].pos, p) < th.stuckMeters) raise('stuck', s, th.stuckSeconds, `movement held ${th.stuckSeconds} s, moved ${r2(flat(win[0].pos, p))} m`);
       }
+    } else {
+      // No player this frame (a menu, a cutscene, the game playing itself): the timers start over.
+      belowSince = fallingSince = insideSince = slidingSince = blockedSince = null; landed = null; wasGrounded = null; moves.length = 0; flips.length = 0;
     }
     prev = { t: s.t, cam: s.cam ? { pos: { ...s.cam.pos }, fwd: { ...s.cam.fwd } } : null, player: s.player ? { ...s.player } : null };
   }
@@ -288,7 +291,7 @@ function isPartOf(mesh, root) {
 
 /**
  * Starts the sensor on a Babylon.js scene. Returns { stop(), cut(), flags() }.
- * opts: { scene?, player?, camera?, input?: () => 0..1, inside?: () => bool, grounded?: () => bool,
+ * opts: { scene?, player?, camera?, input?: () => 0..1, active?: () => bool, inside?: () => bool, grounded?: () => bool,
  *         animSpeed?: () => m/s the feet animate at, isSolid?: (mesh) => bool,
  *         headHeight = 1.5, thresholds, seed, sceneName: () => string, emit(flag) }
  */
@@ -319,11 +322,19 @@ export function startBabylonFeel(opts = {}) {
   }
   const V = (x, y, z) => (B?.Vector3 ? new B.Vector3(x, y, z) : null);
 
+  let wasActive = true;
   const obs = scene.onAfterRenderObservable.add(() => {
     const now = performance.now();
     const dt = (now - last) / 1000;
     last = now;
     frame++;
+    // opts.active: false while the player isn't the player's to move (the game plays itself, a cutscene, a menu).
+    // Only frame hitches are watched then; the camera and movement checks start fresh when it turns true again.
+    let active = true;
+    if (opts.active) { try { active = !!opts.active(); } catch { active = true; } }
+    if (active && !wasActive) core.cut();
+    wasActive = active;
+    if (!active) { core.sample({ t: (now - t0) / 1000, dt, input: 0 }); return; }
     const s = { t: (now - t0) / 1000, dt, input: Number(input()) || 0 };
     const cam = readNode(opts.camera) ?? scene.activeCamera;
     if (cam?.getWorldMatrix) {
@@ -381,11 +392,14 @@ export function startFrameFeel(opts = {}) {
 }
 
 const MOVE_KEYS = new Set(['KeyW', 'KeyA', 'KeyS', 'KeyD', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight']);
+const KEY_CODES = { w: 'KeyW', a: 'KeyA', s: 'KeyS', d: 'KeyD', arrowup: 'ArrowUp', arrowdown: 'ArrowDown', arrowleft: 'ArrowLeft', arrowright: 'ArrowRight' };
 function watchMovementKeys(win) {
   const down = new Set();
   let touch = 0;
-  const kd = (e) => { if (MOVE_KEYS.has(e.code)) down.add(e.code); };
-  const ku = (e) => down.delete(e.code);
+  // e.code, or the key's name for synthetic events that only set key (a playtest's own key presses).
+  const codeOf = (e) => e.code || KEY_CODES[String(e.key ?? '').toLowerCase()] || '';
+  const kd = (e) => { const c = codeOf(e); if (MOVE_KEYS.has(c)) down.add(c); };
+  const ku = (e) => down.delete(codeOf(e));
   const ts = () => { touch++; };
   const te = () => { touch = Math.max(0, touch - 1); };
   const blur = () => { down.clear(); touch = 0; };
