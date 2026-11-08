@@ -98,7 +98,7 @@ async function look() {
       const a = await probes.activity().catch(() => null);
       if (a) {
         counts.activity = a.count;
-        compare('activity', signature(a), { count: a.count });
+        compare('activity', signature(a), { count: a.count, ...('failed' in a ? { failed: (a as any).failed } : {}) });
       }
     }
     if (probes.inbox) {
