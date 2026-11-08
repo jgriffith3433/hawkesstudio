@@ -35,17 +35,19 @@ export function missingScenario(error: unknown): { scenario: string; has: string
 
 /** The scenarios each build was seen to have: `${product}:${build}` → ids. */
 const seen = new Map<string, string[]>();
-const key = (product: string, build: string) => `${product}:${build}`;
+/** Keyed by the page too (its address without the query), so a list read at one page never speaks for another. */
+const pageOf = (url?: string | null) => { try { const u = new URL(String(url)); return `${u.origin}${u.pathname}`; } catch { return ''; } };
+const key = (product: string, build: string, url?: string | null) => `${product}:${build}@${pageOf(url)}`;
 
 /** Records a build's scenario list (Gen's result.scenarios: ids or { id }). */
-export function noteScenarios(product: string, build: string | null | undefined, list: unknown) {
+export function noteScenarios(product: string, build: string | null | undefined, list: unknown, url?: string | null) {
   if (!build || !Array.isArray(list) || !list.length) return;
   const ids = list.map((s: any) => (typeof s === 'string' ? s : s?.id)).filter((s): s is string => typeof s === 'string' && Boolean(s));
-  if (ids.length) seen.set(key(product, build), ids);
+  if (ids.length) seen.set(key(product, build, url), ids);
 }
 
 /** The scenarios a build is known to have (null: not known yet). */
-export const knownScenarios = (product: string, build: string | null | undefined) => (build ? seen.get(key(product, build)) ?? null : null);
+export const knownScenarios = (product: string, build: string | null | undefined, url?: string | null) => (build ? seen.get(key(product, build, url)) ?? null : null);
 
 /** For tests. */
 export const forgetScenarios = () => seen.clear();

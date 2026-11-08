@@ -698,8 +698,6 @@ async function playScenario(run: string, p: Product, asked: Playtest, { review =
     }
     const build = played ? String(played.build ?? played.sha) : null;
     // A scenario this build is known not to have is skipped, not played (scenarios.ts).
-    const has = t.where === 'local' && t.scenario && !prior ? knownScenarios(p.id, build) : null;
-    if (has && !has.includes(t.scenario!)) return skipMissing(run, p, s, asked, t.scenario!, has, played);
     const serveDirOf = path.join(betaSiteDir(p), path.relative(p.site.split('/')[0], p.local.dir));
     const wrong = unityBeta ? servedMismatch(runBetaBuild(run, p.id), now, gameVersions(serveDirOf)) : null;
     if (wrong) {
@@ -741,6 +739,13 @@ async function playScenario(run: string, p: Product, asked: Playtest, { review =
       return null;
     }
     updateStep(s, { data: { played, url, ...(deps.length ? { deps } : {}), ...(since ? { runningSince: since } : {}) } });
+    // A scenario this copy is known not to have is skipped, not played (scenarios.ts). The list is the one seen at this
+    // page of this build, so a list from another page (the lore site's root) never skips the game's scenarios.
+    const has = t.where === 'local' && t.scenario && !prior ? knownScenarios(p.id, build, url) : null;
+    if (has && !has.includes(t.scenario!)) {
+      if (port) stopServed(port);
+      return skipMissing(run, p, s, asked, t.scenario!, has, played);
+    }
     // Live sites may not have the contract yet (it ships with the next deploy): auto falls back to a generic smoke test.
     const params: Record<string, unknown> = { url, mode: t.mode ?? (p.contract && t.where === 'local' ? 'contract' : 'auto'), ...(t.scenario ? { scenario: t.scenario } : {}), ...(t.timeout ? { timeout: t.timeout } : {}), ...(t.seed ? { seed: t.seed } : {}), ...(playOptions(t) ? { options: playOptions(t) } : {}) };
     if (t.mode === 'site') params.maxPages = 40;
@@ -810,10 +815,10 @@ async function playScenario(run: string, p: Product, asked: Playtest, { review =
       return job;
     }
     // The game's own scenario list, for the next playtest of this build; a scenario it doesn't have is skipped, not failed.
-    if (t.where === 'local') noteScenarios(p.id, build, job.result?.scenarios);
+    if (t.where === 'local') noteScenarios(p.id, build, job.result?.scenarios, url);
     const missing = t.where === 'local' && job.status !== 'done' ? missingScenario(job.error ?? job.detail) : null;
     if (missing) {
-      noteScenarios(p.id, build, missing.has);
+      noteScenarios(p.id, build, missing.has, url);
       return skipMissing(run, p, s, asked, missing.scenario, missing.has, played, job.id);
     }
     // The copy must still hold the build that was served when it started (a newer build waits for this run, unless it waited too long).
@@ -1137,7 +1142,7 @@ export async function cloudBetaUrl(p: { id: string; live: string; local: { serve
   // A game added through Talk: its beta site is a path of its own (sites.<domain>/b/<game>/), built with relative
   // paths, so the root is the game; its live address's path (GitHub Pages' /<repo>/) isn't part of it.
   const github = (p as { github?: string }).github;
-  if (github) return betaPageUrl(root, p as { site?: string; repo?: string; github?: string });
+  if (github) return betaPageUrl(root, p as { site?: string; repo?: string; github?: string; live?: string });
   const live = new URL(p.live);
   return new URL(live.pathname + live.search, root).toString();
 }
@@ -1158,10 +1163,28 @@ export function pagePathUrl(root: string, path: string) {
  * (a Unity build with publish.page "site" lands at <root>/YoobaLand/index.html; the root has no game page).
  * `site` that is only the repo (owner/name, or the repo folder) is not a sub-folder.
  */
-export function betaPageUrl(root: string, p: { site?: string; repo?: string; github?: string }) {
+export function betaPageUrl(root: string, p: { site?: string; repo?: string; github?: string; live?: string }) {
   const site = String(p.site ?? '').trim().replace(/^\/+|\/+$/g, '');
-  if (!site || site === '.' || site === p.repo || site === p.github || site === String(p.github ?? p.repo ?? '').split('/').pop()) return root;
+  if (!site || site === '.' || site === p.repo || site === p.github || site === String(p.github ?? p.repo ?? '').split('/').pop()) return livePagePath(root, p);
   return `${root.replace(/\/?$/, '/')}${site.split('/').map(encodeURIComponent).join('/')}/`;
+}
+
+/**
+ * The game's page under the beta root: its live address's path (phorigins.com/play/game.html is the game, the root is
+ * the lore site: 2026-11-08, ph-origins' local playtests played the root, whose contract has only smoke). On GitHub
+ * Pages the first segment is the repo's own name (a project page), which the beta root already stands for.
+ */
+export function livePagePath(root: string, p: { repo?: string; github?: string; live?: string }) {
+  let u: URL;
+  try { u = new URL(String(p.live ?? '')); } catch { return root; }
+  let segs = u.pathname.split('/').filter((x, i, a) => x || i === a.length - 1);
+  if (/\.github\.io$/i.test(u.hostname)) {
+    const name = String(p.github ?? p.repo ?? '').split('/').pop()?.toLowerCase();
+    if (segs[0] && segs[0].toLowerCase() === name) segs = segs.slice(1);
+  }
+  const rest = segs.filter(Boolean).join('/');
+  if (!rest) return root;
+  return `${root.replace(/\/?$/, '/')}${rest.split('/').map(encodeURIComponent).join('/')}${u.pathname.endsWith('/') ? '/' : ''}${u.search}`;
 }
 
 export const playtestRequest = (b: any): PartialOptions => ({ ...(typeof b.at === 'string' && b.at.trim() ? { at: b.at.trim() } : {}), ...(Number(b.peers) > 1 ? { peers: Math.min(4, Math.round(Number(b.peers))) } : {}), scenario: b.scenario, where: b.where, device: b.device === 'phone' ? 'phone' : undefined, mode: b.mode, review: b.review, focus: b.focus, reviewMode: ['full', 'verify', 'regression'].includes(b.reviewMode) ? b.reviewMode : undefined, seed: Number(b.seed) || undefined, options: b.options && typeof b.options === 'object' && !Array.isArray(b.options) ? b.options : undefined });
