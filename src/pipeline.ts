@@ -886,7 +886,7 @@ async function playScenario(run: string, p: Product, asked: Playtest, { review =
     }
     updateStep(s, { detail: `played in software (${r.fps?.average ?? '?'} fps)${r.softwareBecause ? `: ${String(r.softwareBecause).slice(0, 120)}` : ''}; reviewed anyway, it is not GPU-bound` });
   }
-  fileFeel(run, p, name, t.scenario ?? name.replace(/@.*$/, ''), r, mode);
+  fileFeel(run, p, name, t.scenario ?? name.replace(/@.*$/, ''), r, mode, playOptions(t)?.at);
   return reviewPlaytest(run, p, t, job, played, { focus, mode, criteria });
 }
 
@@ -894,9 +894,9 @@ async function playScenario(run: string, p: Product, asked: Playtest, { review =
  * The feel layer's findings (feel.ts): what the game's sensor flagged and the vision pass saw, one finding per kind
  * and scene, each with the places and a replay (scenario + seed + spot) for the fix and its recheck.
  */
-function fileFeel(run: string, p: Product, name: string, scenario: string, r: any, mode?: string) {
+function fileFeel(run: string, p: Product, name: string, scenario: string, r: any, mode?: string, at?: unknown) {
   try {
-    const list = feelFindings(r, { scenario, mode: mode ?? 'full' });
+    const list = feelFindings(r, { scenario, mode: mode ?? 'full', at: typeof at === 'string' && at ? at : undefined });
     if (!list.length) return;
     const got = absorb(p.id, run, name, list, { mode: 'full' });
     console.log(`[studio] ${p.id} ${name}: feel ${r.feel?.length ?? 0} flags${r.polish?.score != null ? `, polish ${r.polish.score}/10` : ''} -> ${got.added.length} new, ${got.updated.length} seen again, ${got.ideas.length} ideas`);

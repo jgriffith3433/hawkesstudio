@@ -200,6 +200,7 @@ namespace Hawkes.Playtest
                         if (seed.HasValue) options.seed = (int)seed.Value;
                         if (speed.HasValue) options.speed = (float)speed.Value;
                         options.at = MiniJson.Str(opts, "at") ?? "";
+                        options.spot = MiniJson.Str(opts, "spot") ?? "";
                         options.json = MiniJson.Write(opts);
                     }
                     var known = HasScenario(scenario);

@@ -11,7 +11,9 @@
 // Before a teleport, respawn or cutscene: HawkesFeel.Cut().
 // Each flag goes into the run (event "feel", a problem for bugs, the report's "feel") and, on WebGL, is pushed to the
 // runner at once (window.__hawkesPlaytestPush); on desktop it travels as the run event.
-// To replay a flagged place, the bot reads run.Options.Json's "spot" ("x,y,z[,yaw]": HawkesFeel.ParseSpot).
+// While the player can't move (a cutscene, a menu, the game playing itself) set Active to return false: only hitches count.
+// To replay a flagged place, the bot reads options.spot ("x,y,z[,yaw]": HawkesFeel.ParseSpot), stands the player there,
+// calls HawkesFeel.Cut() and plays on with real input.
 using System;
 using System.Collections.Generic;
 using System.Globalization;
@@ -34,6 +36,9 @@ namespace Hawkes.Playtest
         public Func<bool> Grounded;
         /// <summary>How fast the walk/run animation moves the feet, m/s (0 idle): turns on the foot-sliding check.</summary>
         public Func<float> AnimSpeed;
+        /// <summary>False while the player can't move (cutscene, menu, the game playing itself): only hitches count then.</summary>
+        public Func<bool> Active;
+        /// <summary>Eye height above Player.position (a feet pivot: about 1.5; a capsule-centre pivot: about 0.7).</summary>
         public float HeadHeight = 1.5f;
 
         [Header("Thresholds")]
@@ -60,7 +65,7 @@ namespace Hawkes.Playtest
         readonly List<float> _dts = new List<float>();
         readonly List<(float t, Vector3 pos, float input)> _moves = new List<(float, Vector3, float)>();
         readonly List<float> _flips = new List<float>();
-        bool _hasPrev; float _prevT; Vector3 _prevCamPos, _prevCamFwd, _prevPlayer; bool _prevHasPlayer;
+        bool _hasPrev, _hasCamPrev = false, _wasActive = true; float _prevT; Vector3 _prevCamPos, _prevCamFwd, _prevPlayer; bool _prevHasPlayer;
         float _quietUntil = -1, _t0;
         float? _fallingSince, _blockedSince, _belowSince, _slidingSince, _landedT;
         Vector3 _landedPos; bool? _wasGrounded;
@@ -74,6 +79,10 @@ namespace Hawkes.Playtest
         {
             var f = _instance;
             if (f == null) return;
+            // A bot that teleports in the run's first frame calls this before Update has seen the run: start it now so
+            // the quiet time isn't wiped by Begin.
+            var run = HawkesPlaytest.Current;
+            if (run != null && !run.Done && run != f._run) f.Begin(run);
             f._quietUntil = f.Now + seconds;
             f._fallingSince = null; f._belowSince = null; f._slidingSince = null; f._landedT = null; f._moves.Clear(); f._flips.Clear();
         }
@@ -106,7 +115,7 @@ namespace Hawkes.Playtest
         void Begin(PlaytestRun run)
         {
             _run = run; _flags.Clear(); _dts.Clear(); _moves.Clear(); _flips.Clear();
-            _hasPrev = false; _quietUntil = -1; _t0 = Time.realtimeSinceStartup; _frame = 0; _n = 0;
+            _hasPrev = false; _hasCamPrev = false; _prevHasPlayer = false; _wasActive = true; _quietUntil = -1; _t0 = Time.realtimeSinceStartup; _frame = 0; _n = 0;
             _fallingSince = _blockedSince = _belowSince = _slidingSince = _landedT = null; _wasGrounded = null; _lastSignX = _lastSignZ = 0;
         }
 
@@ -150,13 +159,27 @@ namespace Hawkes.Playtest
                 Raise("hitch", t, Mathf.Round(dt * 1000f), "frame took " + Mathf.RoundToInt(dt * 1000f) + " ms (usual " + Mathf.RoundToInt(med * 1000f) + " ms)", cam);
             if (dt > 0 && dt < 1) { _dts.Add(dt); if (_dts.Count > 120) _dts.RemoveAt(0); }
 
+            var active = true;
+            if (Active != null) { try { active = Active(); } catch { active = true; } }
+            if (active && !_wasActive) Cut();
+            _wasActive = active;
+            if (!active)
+            {
+                // Only hitches while inactive; everything else starts fresh when control comes back.
+                _hasCamPrev = false; _prevHasPlayer = false;
+                _fallingSince = _blockedSince = _belowSince = _slidingSince = _landedT = null; _wasGrounded = null;
+                _moves.Clear(); _flips.Clear();
+                _hasPrev = true; _prevT = t;
+                return;
+            }
+
             var hasPlayer = Player != null;
             var p = hasPlayer ? Player.position : Vector3.zero;
 
             if (cam != null)
             {
                 var cpos = cam.transform.position; var cfwd = cam.transform.forward;
-                if (_hasPrev && !quiet && dt > 0 && dt < 0.5f)
+                if (_hasCamPrev && !quiet && dt > 0 && dt < 0.5f)
                 {
                     var turned = Vector3.Angle(_prevCamFwd, cfwd);
                     if (turned >= SnapMinDeg && turned / Mathf.Max(dt, med) >= SnapDegPerSec) Raise("camera-snap", t, turned, "camera turned " + Mathf.RoundToInt(turned) + "° in one frame", cam);
@@ -173,7 +196,7 @@ namespace Hawkes.Playtest
                         else _blockedSince = null;
                     }
                 }
-                _prevCamPos = cpos; _prevCamFwd = cfwd;
+                _prevCamPos = cpos; _prevCamFwd = cfwd; _hasCamPrev = true;
             }
 
             if (hasPlayer)

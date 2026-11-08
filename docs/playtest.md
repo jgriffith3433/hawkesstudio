@@ -266,10 +266,12 @@ runs, and costs nothing when none does.
 - **Web games** (`clients/web/hawkes-feel.js`, started by `hawkes-playtest.js` with every run): Babylon.js scenes are
   found by themselves, which gives the camera and hitch checks. Give the player for the player checks:
   `installPlaytest({ ..., feel: { player: () => hero.mesh, input: () => movingKeys ? 1 : 0 } })` (`feel: false` turns
-  it off). Optional: `camera`, `inside()` (the game's own "inside a solid" check), `grounded()`, `animSpeed()` (m/s the
+  it off). Optional: `camera`, `active()` (false while the game plays itself or a cutscene runs: only hitches are watched then, and the hand-over counts as a cut), `inside()` (the game's own "inside a solid" check), `grounded()`, `animSpeed()` (m/s the
   feet animate at), `isSolid(mesh)` for the rays, `thresholds`.
-- **Unity** (`com.hawkes.playtest` 0.3: `HawkesFeel`): add the component once, set `Player` (and `Input`; the camera
-  defaults to `Camera.main`). WebGL pushes flags to the page; desktop sends them as run events.
+- **Unity** (`com.hawkes.playtest` 0.3.1: `HawkesFeel`): add the component once, set `Player` (and `Input`; the camera
+  defaults to `Camera.main`). Optional: `Active`, `Grounded`, `AnimSpeed`, `Solid` (layers for the rays), `HeadHeight`.
+  WebGL pushes flags to the page; desktop sends them as run events. A replay's place is `options.spot`
+  (`HawkesFeel.ParseSpot`); call `HawkesFeel.Cut()` after standing the player there.
 
 | kind | severity | what |
 |---|---|---|
@@ -293,7 +295,9 @@ Call `t.cut()` (Unity: `HawkesFeel.Cut()`) before an intended teleport, respawn 
 
 **Replays.** `options.spot` (`"x,y,z"` or `"x,y,z,yaw"`; `?spot=` on the URL) asks a scenario to start the player at a
 place: in `start()`, `t.spot` is `{ x, y, z, yaw? }` or null. Put the player there (a named setup shortcut, like `at`)
-and play on through real input. Every feel flag has the `spot` that replays it.
+and play on through real input. Every feel flag has the `spot` that replays it. A game may answer any scenario with a
+spot by a short probe there instead of the whole scenario (take control, place, walk each way, jump, turn the camera):
+the recheck after a fix then plays that place in seconds.
 
 **The runner** (Gen `playtest.run`) takes a screenshot at each flag (`feel:<kind>`, spaced at least 1.5 s apart, 24 at
 most), cuts a 4 s clip around the six worst after the run, and returns them in `result.feel`. Then a cheap vision pass
