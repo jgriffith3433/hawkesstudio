@@ -418,7 +418,7 @@ async function buildOne(run: string, p: Product, b: BuildSpec, o: StartOptions) 
     say(`${sha.slice(0, 7)} (${ref})${o.resume ? ', carrying on after a restart' : ''}`);
     const row = rowId;
     stage = 'build';
-    out = b.tool === 'unity' ? await viaGen(p, b, slug, sha, ref, token, say, { job: o.resume?.job ?? undefined, row, onSubmit: (id) => db.prepare('UPDATE builds SET gen_job = ?, gen_done = NULL, token_sent = ? WHERE id = ?').run(id, Date.now(), row), onDone: () => db.prepare('UPDATE builds SET gen_done = ? WHERE id = ?').run(Date.now(), row) }, hold)
+    out = b.tool === 'unity' ? await viaGen(p, b, slug, sha, ref, token, say, { job: o.resume?.job ?? undefined, row, onSubmit: (id) => db.prepare('UPDATE builds SET gen_job = ?, gen_done = NULL, token_sent = ?, token_at = ? WHERE id = ?').run(id, Date.now(), Date.now(), row), onDone: () => db.prepare('UPDATE builds SET gen_done = ? WHERE id = ?').run(Date.now(), row) }, hold)
       : b.tool === 'actions' ? await viaActions(b, slug, o.artifact!, gh, say, hold)
       : await viaStudio(p, b, slug, sha, token, gh, say, hold);
     await hold();
@@ -593,7 +593,7 @@ export function tokenLost(error: unknown): boolean {
   // repo?)" when the source fetch failed. Studio only builds commits it read from GitHub, so that is the token (an hour's
   // installation token outlived by a long queue), never the code: sick-of-it-unity v13 (2026-11-03) was called a compile
   // error for it.
-  return /token\b[^.]{0,40}?\b(is gone|gone|expired)|GitHub refused|can't read the repo|can the GitHub token read the repo|couldn't fetch [^\n]{0,200}? at [0-9a-f]{7,40}\b|Bad credentials|\b401\b/i.test(String(error ?? ''));
+  return /token\b[^.]{0,40}?\b(is gone|gone|expired)|token\b[^.]{0,60}?\d+ minutes old|too old to start a build|resubmit it with a fresh token|GitHub refused|can't read the repo|can the GitHub token read the repo|couldn't fetch [^\n]{0,200}? at [0-9a-f]{7,40}\b|Bad credentials|\b401\b/i.test(String(error ?? ''));
 }
 
 /**
