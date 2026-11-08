@@ -21,6 +21,7 @@ import crypto from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { PROJECTS, DATA, paths, getProduct, loadProducts, localUrl, StudioError, hostedBeta, type Product } from './config.ts';
 import { appPort, appStatus, ensureApp, stopApp } from './apps.ts';
+import { forgetProductScenarios } from './scenarios.ts';
 import { db } from './db.ts';
 import { BRANCH, BETA, isServer, type RepoResult } from './repos.ts';
 import { betaBuild, betaSiteFolder } from './beta.ts';
@@ -119,6 +120,8 @@ function record(product: string, change: string | undefined, v: Preview | null) 
     delete (e as any).main;
     if (v) e.beta = v;
     else delete e.beta;
+    // A beta published again serves a page with its own scenario list: none seen before speaks for it (scenarios.ts).
+    if (v?.status === 'ready') forgetProductScenarios(product);
   } else {
     e.changes ??= {};
     if (v) e.changes[change] = v;

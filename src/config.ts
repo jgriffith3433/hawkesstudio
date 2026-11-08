@@ -317,7 +317,14 @@ function readRepoFolders(): Record<string, string> {
  * Whether Studio hosts this project's beta site (previews.ts): a web project, or one with a web build, built from its
  * GitHub repo, without a beta address of its own (a web app's own server).
  */
-export const hostedBeta = (p: Pick<Product, 'engine' | 'beta' | 'builds'>) => !p.beta && ((p.engine as string) === 'web' || Boolean(p.builds?.some((b) => (b.target ?? 'web') === 'web')));
+/**
+ * Whether a project's `beta` is an address of its own (a web app's server). The address Studio itself publishes a beta
+ * site at (`https://sites.<domain>/o/<org>/<id>/`, `/b/<id>/`, `/g/<id>/`) is not: a project saved with it (Talk's
+ * studio_project update, I Can Be AI 2026-11-08) was left unbuilt, unlisted and served from an old publish.
+ */
+export const studioSiteAddress = (url?: string | null) => /^https:\/\/sites\.[^/]+\/(?:o\/[^/]+\/[^/]+|[bg]\/[^/]+)\/?$/.test(String(url ?? '').trim());
+export const hasOwnBeta = (p: Pick<Product, 'beta'>) => Boolean(p.beta) && !studioSiteAddress(p.beta);
+export const hostedBeta = (p: Pick<Product, 'engine' | 'beta' | 'builds'>) => !hasOwnBeta(p) && ((p.engine as string) === 'web' || Boolean(p.builds?.some((b) => (b.target ?? 'web') === 'web')));
 
 /**
  * A project's GitHub owner/name as stored: `repo`, or `github` when the project was saved back in its mapped form
