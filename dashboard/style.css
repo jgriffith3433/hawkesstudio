@@ -556,6 +556,18 @@ body.lt-big-open { overflow: hidden; }
 .set-flash { outline: 2px solid var(--accent, #6cf); transition: outline-color 2s; }
 .empty p { margin: 4px 0; }
 
+/* The on-screen keyboard on a phone (talk.js sets --vvh, the visual viewport's height, and --kb, the keyboard's): Talk
+   fills what is left above it and the dock sheet rides on top of it, so the input is never hidden. */
+@media (max-width: 760px) {
+  #talk.on, .talk { max-height: calc(var(--vvh, 100dvh) - var(--hdr, 0px) - 10px); }
+  body.kb-open #talk.on { height: calc(var(--vvh, 100dvh) - 12px); min-height: 0; }
+  body.kb-open #talk.on > .talk { min-height: 0; }
+  body.kb-open:has(#talk.on) header { display: none; }
+  .talk-dock { bottom: var(--kb, 0px); }
+  body.kb-open .talk-dock { height: min(55dvh, calc(var(--vvh, 100dvh) - 8px)); }
+  .talk-input { padding-bottom: env(safe-area-inset-bottom, 0px); }
+}
+
 /* ---- Mobile cockpit (J, 2026-11-06: "J approves from a phone"). On a phone or any touch screen every control a thumb
    uses is at least 44px (Approve / Deny, Inbox answers, Changes, Roadmap, the tabs), and no page scrolls sideways:
    wide content (tables, code, long words) scrolls inside its own box or wraps. test/mobile-cockpit.test.ts keeps this. */
@@ -595,3 +607,4 @@ body.lt-big-open { overflow: hidden; }
 /* Roadmap board: a card per milestone, items with their state and blocker in words. */
 .rm-board { grid-template-columns: repeat(auto-fill, minmax(min(360px, 100%), 1fr)); margin: 8px 0 16px; }
 .rm-bitem { padding: 6px 0; border-top: 1px solid var(--line, #333); }
+

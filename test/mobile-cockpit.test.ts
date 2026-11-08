@@ -37,3 +37,11 @@ test('no page scrolls sideways at 390px: wide content wraps or scrolls inside it
   assert.match(b, /\.tab table \{ display: block; max-width: 100%; overflow-x: auto/);
   assert.match(b, /overflow-wrap: anywhere/);
 });
+
+test('Talk\'s input stays above the on-screen keyboard', () => {
+  const talk = fs.readFileSync(path.join(dir, 'talk.js'), 'utf8');
+  assert.match(talk, /visualViewport/);
+  assert.match(talk, /--kb/);
+  assert.match(css, /\.talk-dock \{ bottom: var\(--kb, 0px\)/);
+  assert.match(css, /body\.kb-open #talk\.on \{ height: calc\(var\(--vvh/);
+});
