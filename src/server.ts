@@ -1232,6 +1232,9 @@ void import('./stream.ts').then(({ setProbes }) => setProbes({
   },
 }));
 
+// Breadcrumbs for the next unexplained restart (crashlog.ts).
+void import('./crashlog.ts').then((m) => m.installCrashLog());
+
 // On Cloud Run the platform's port on every address (its front end is the only way in; cloudauth.ts gates it).
 const cloud = cloudMode();
 // Cloud Run stops an instance with SIGTERM and 10 s: the state files go up first (the database is Litestream's), and
