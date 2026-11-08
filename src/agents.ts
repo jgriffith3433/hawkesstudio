@@ -95,6 +95,7 @@ import { brainId, brainLabel, brainSettings, harnessStopOf, isHarness, type Harn
 import { harnessHeld, holdDetail, holdHarness, onHoldLifted, reviewHolds, LABEL as HARNESS_LABEL } from './harness-hold.ts';
 import { githubReachable } from './ghtoken.ts';
 import { kickFollowups } from './followup-kick.ts';
+import { POLISH_BY } from './polish.ts';
 import { sessionGone, freshSessionPrompt } from './sessiongone.ts';
 
 db.exec(`
@@ -1015,6 +1016,68 @@ export function roleOf(c: { infra?: boolean; request?: string | null; findings?:
   return c.request ? 'builder' : 'fixer';
 }
 
+/**
+ * The kind of work a change is, for its brief (the owner's gaps list, 2026-11-08: separate briefs for fix, feature,
+ * content and polish work). polish: the weekly polish pass, or findings that are all polish; fix: playtest findings;
+ * content: the content role's work; feature: any other request or task.
+ */
+export type JobKind = 'fix' | 'feature' | 'content' | 'polish';
+export function jobKind(c: Parameters<typeof roleOf>[0] & { started_by?: string | null }, findings: { severity?: string }[] = []): JobKind {
+  if (c.started_by === POLISH_BY || (!c.request && findings.length > 0 && findings.every((f) => f.severity === 'polish'))) return 'polish';
+  if (!c.request) return 'fix';
+  return roleOf(c) === 'content' ? 'content' : 'feature';
+}
+
+/** Each kind's opening line, its rules, how to start, what to keep to, and its commit message prefix. */
+export const JOB_BRIEFS: Record<JobKind, { intro: (name: string, about: string) => string; rules: string; look: string; keep: string; prefix: string }> = {
+  fix: {
+    intro: (name, about) => `You are fixing a problem Hawkes Studio's automated playtest found in ${name} (${about}).`,
+    rules: `- Find the root cause and fix it where it starts. Prove it: the replay place or the scenario that hit it before now
+  passes, and say how in the summary.
+- Never make a check pass instead of fixing the game: don't loosen a test, a timeout, a threshold, a tolerance or a
+  playtest scenario, don't skip or retry a step until it passes, and don't hide the symptom (an invisible wall over a
+  hole, a catch that swallows the error, a longer wait). That is a failed fix, however green it looks.
+- If the real fix is bigger than one change, fix what you can properly and say what's left.`,
+    look: 'Look at the screenshots to see the problem. Find the cause in the code or data; prefer the smallest correct fix.',
+    keep: 'Keep to this finding. Don\'t refactor unrelated code',
+    prefix: 'Fix',
+  },
+  feature: {
+    intro: (name, about) => `You are building something new in ${name} (${about}).`,
+    rules: `- Build it to the full quality bar the first time: no placeholder art, grey boxes, stub content or "TODO" UI. Make
+  art, sound and voice with Hawkes Gen (within the budget this brief gives), and wire them in.
+- It has to feel good, not only work: in a game, the camera and controls rule below holds for anything a player moves or sees.
+- Done means a player can use it end to end and a playtest shows it: add or extend a playtest scenario that plays it
+  through real input.`,
+    look: 'Read the story doc, the world bible and the code it touches. Plan it, then build it.',
+    keep: 'Keep to this request. Don\'t refactor unrelated code',
+    prefix: 'Add',
+  },
+  content: {
+    intro: (name, about) => `You are making content for ${name} (${about}): story, places, characters, dialogue or art.`,
+    rules: `- Canon first: read the story doc and \`docs/world-bible.md\`; names, tone and facts match them, and what you add goes
+  into the world bible.
+- Dense, not sparse: every area you touch is dressed, has a landmark, life and ambient sound, and a player never goes
+  more than about 10 seconds without something to see, hear or do.
+- Tell it through play: events, in-game cutscenes, Hawkes Gen voice lines and sound effects. On-screen text is a last
+  resort, one line at most.`,
+    look: 'Read the story doc and the world bible, then the scenes and data this touches. Plan what goes where, then make it.',
+    keep: 'Keep to this request. Don\'t refactor unrelated code',
+    prefix: 'Content',
+  },
+  polish: {
+    intro: (name, about) => `This is ${name}'s polish pass (${about}): the items below are the worst on its polish list, by how much they bother a player.`,
+    rules: `- Make each item disappear for a player, not just stop being flagged: fix it at its source (the model, the material,
+  the camera rig, the placement), never by hiding the spot or loosening a check.
+- Each item stands alone: if one is too big for this pass, leave it as it is and say so in the summary, and do the rest.
+- For each item, say in the summary what you changed and where to see it (the scene and place, the replay spot when
+  there is one), so the before and after shots are taken at the same place.`,
+    look: 'Look at each item\'s screenshots and replay place to see it the way a player does. Find where it comes from.',
+    keep: 'Keep to these items. Don\'t refactor unrelated code',
+    prefix: 'Polish',
+  },
+};
+
 // ------------------------------------------------------------------ routing (routing.ts)
 
 /** Earlier attempts at the same work that didn't land: the same task's other changes, or changes on the same findings. */
@@ -1172,9 +1235,12 @@ async function writeBrief(c: Change, p: Product, findings0: any[], note?: string
     const repos = a.repos && cloudMode() && !c.infra ? (await A.siblingRepos(p.id)).map((slug) => ({ slug, dir: path.relative(c.worktree, A.extraRepoDir(c.worktree, slug)).split(path.sep).join('/') })) : [];
     return A.accessBrief(a, repos);
   }).catch(() => '');
-  const brief = `# ${c.request ? 'Work' : 'Fix'} for ${p.name}
+  const startedBy = (db.prepare('SELECT started_by FROM changes WHERE id = ?').get(c.id) as any)?.started_by ?? null;
+  const kind = jobKind({ ...c, started_by: startedBy }, findings);
+  const job = JOB_BRIEFS[kind];
+  const brief = `# ${({ fix: 'Fix', feature: 'Work', content: 'Content', polish: 'Polish pass' } as const)[kind]} for ${p.name}
 
-You are fixing a problem Hawkes Studio's automated playtest found in ${p.name} (${p.about}).
+${job.intro(p.name, p.about)}
 ${sub ? `The project lives in \`${sub}/\` inside this repository.` : ''}
 ${onSite ? `
 ## This is the website repo (${site!.top})
@@ -1227,16 +1293,19 @@ ${findings.map((f) => `### [${f.severity}] ${f.title}
   this game's scenario doesn't yet, add that named setup shortcut. Studio replays this exact place to check your fix.` : ''}
 - Screenshots: ${(shots.filter((s) => s.includes(f.id)).map((s) => `\`${s}\``).join(', ')) || 'none'}${f.entities?.length ? `
 - In Hawkes Gen's library: ${f.entities.map((e: any) => `\`${e.id}\` (${e.kind})`).join(', ')}. When the problem is the art itself, fix it there (the hawkesgen MCP: hawkesgen_entities to see its versions, hawkesgen_entity_make with revise and feedback, hawkesgen_entity_judge to pick): a pick is written into this repo's files by Studio.` : ''}`).join('\n\n')}
+
+## This kind of work (${kind})
+
+${job.rules}
 ${note ? `\n## Notes on the last attempt (J's or the PM's)\n\n${note}\n` : ''}${attemptsBrief(c, changeRoute(c))}${others ? `\n${others}` : ''}${unity}${quality}${reach}${players}${mem.text ? `\n${mem.text}` : ''}
 ## How to work
 
 1. Read \`AGENTS.md\` (and any docs it points to) before changing anything. Follow its rules.
-2. Look at the screenshots to see the problem. Find the cause in the code or data; prefer the smallest correct fix.
-3. Keep to this finding. Don't refactor unrelated code, don't touch generated output or build folders, don't change
-   secrets, CI, or deploy scripts.
+2. ${job.look}
+3. ${job.keep}, don't touch generated output or build folders, don't change secrets, CI, or deploy scripts.
 4. Run the project's checks:
 ${checks}${buildCheck}
-5. Commit your change with a clear message (\`Fix: ...\`). Don't push; Studio does. Studio stops a pass after
+5. Commit your change with a clear message (\`${job.prefix}: ...\`). Don't push; Studio does. Studio stops a pass after
    ${Math.round(agentLimitMs(c) / 60_000)} minutes: commit as you go (after each working piece or finished batch), so a stop loses nothing.
    A third-party error from a Gen job (ElevenLabs payment_issue, a 401 or 402) is not yours to retry: test ONE line
    first for voice work, and on that error stop at once, write \`.hawkes/stuck.md\` naming the service, and end.
