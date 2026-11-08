@@ -49,6 +49,7 @@ import { db, newId, J, parse } from './db.ts';
 import { getProduct, getInfra, isInfra, PROJECTS, DATA, ROOT, storyOf, localUrl, StudioError, betaPageGlobals, managedElsewhere, managedNote, type Product, type Infra, type Playtest } from './config.ts';
 import { withPass } from './sitekeys.ts';
 import { getFinding, updateFinding } from './backlog.ts';
+import { replayOf } from './feel.ts';
 import { reviewParams } from './review.ts';
 import { reviewJob } from './review-cc.ts';
 import { gen, genEvents, genRun, fileUrl } from './gen.ts';
@@ -1201,7 +1202,10 @@ Follow what J said there; where it differs from the request, J's latest word win
 ${findings.map((f) => `### [${f.severity}] ${f.title}
 - Area: ${f.area ?? '-'} · scenario: ${f.scenario ?? '-'} · seen ${f.seen} time(s)
 - What's wrong: ${f.detail ?? '-'}
-- Suggested fix: ${f.fix ?? '-'}
+- Suggested fix: ${f.fix ?? '-'}${replayOf(f.detail) ? `
+- Replay (the playtest feel sensor's place): scenario \`${replayOf(f.detail)!.scenario}\` with options \`${JSON.stringify(replayOf(f.detail)!.options)}\`. The game's
+  playtest puts the player at \`spot\` (x,y,z[,yaw]) when it gets one (hawkes-playtest.js \`t.spot\`, docs/playtest.md#feel); if
+  this game's scenario doesn't yet, add that named setup shortcut. Studio replays this exact place to check your fix.` : ''}
 - Screenshots: ${(shots.filter((s) => s.includes(f.id)).map((s) => `\`${s}\``).join(', ')) || 'none'}${f.entities?.length ? `
 - In Hawkes Gen's library: ${f.entities.map((e: any) => `\`${e.id}\` (${e.kind})`).join(', ')}. When the problem is the art itself, fix it there (the hawkesgen MCP: hawkesgen_entities to see its versions, hawkesgen_entity_make with revise and feedback, hawkesgen_entity_judge to pick): a pick is written into this repo's files by Studio.` : ''}`).join('\n\n')}
 ${note ? `\n## Notes on the last attempt (J's or the PM's)\n\n${note}\n` : ''}${attemptsBrief(c, changeRoute(c))}${others ? `\n${others}` : ''}${unity}${reach}${players}${mem.text ? `\n${mem.text}` : ''}
@@ -2372,7 +2376,11 @@ async function verifyChange(c: Change, p: Product, findings: any[], jobs?: JobMe
   }
   // The scenario the agent added or extended for its criteria (.hawkes/scenario.txt), else the finding's, else the first.
   // A second line in scenario.txt may give the scenario's options as JSON ({"stage":"neon-pit"}): the new content to play.
-  const { scenario: agentScenario, options: agentOptions } = agentScenarioOf(c.worktree);
+  const fromAgent = agentScenarioOf(c.worktree);
+  // A feel finding carries a replay (feel.ts: scenario + seed + spot): with no scenario.txt, the fix is checked at that place.
+  const replay = fromAgent.scenario ? null : findings.map((f: any) => replayOf(f.detail)).find(Boolean) ?? null;
+  const agentScenario = fromAgent.scenario ?? replay?.scenario;
+  const agentOptions = fromAgent.scenario ? fromAgent.options : replay?.options;
   const scenario = agentScenario ?? findings.map((f: any) => f.scenario).find((s: string) => s && s.endsWith('@local'))?.split('@')[0] ?? (p.playtests.find((t) => t.where === 'local')?.scenario ?? 'smoke');
   const mode = agentScenario ? undefined : p.playtests.find((t) => t.where === 'local' && (t.scenario ?? t.mode) === scenario)?.mode;
   const port = 8800 + (parseInt(c.id.slice(2, 6), 16) % 200);

@@ -71,6 +71,15 @@ mergeInto(LibraryManager.library, {
     try { window.__hawkesPlaytestState = JSON.parse(UTF8ToString(jsonPtr)); } catch (e) {}
   },
 
+  // The feel sensor (HawkesFeel.cs): a flag, pushed to the runner the moment it happens (a Playwright binding), no polling.
+  HawkesPlaytest_Push: function (jsonPtr) {
+    try {
+      var msg = JSON.parse(UTF8ToString(jsonPtr));
+      if (typeof window.__hawkesPlaytestPush === 'function') window.__hawkesPlaytestPush(msg);
+      window.dispatchEvent(new CustomEvent('hawkes-playtest', { detail: msg }));
+    } catch (e) {}
+  },
+
   HawkesPlaytest_SetReport: function (jsonPtr) {
     try { window.__hawkesPlaytestReport = JSON.parse(UTF8ToString(jsonPtr)); } catch (e) {}
   },
