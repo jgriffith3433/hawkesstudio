@@ -38,6 +38,15 @@
       el.className = 'me';
       el.innerHTML = `${esc(me.email)}${me.role === 'admin' ? ' · admin' : ''}<a href="/auth/set-password?next=/">password</a><a href="/auth/signout">sign out</a>`;
       status.after(el);
+      // On a phone the header drops this row (style.css); the same links live at the bottom of the More menu.
+      const menu = $('#moreMenu');
+      if (menu && !$('#meMenu')) {
+        const box = document.createElement('div');
+        box.id = 'meMenu';
+        box.className = 'me-menu';
+        box.innerHTML = `<span class="meta">${esc(me.email)}${me.role === 'admin' ? ' · admin' : ''}</span><a href="/auth/set-password?next=/">password</a><a href="/auth/signout">sign out</a>`;
+        menu.append(box);
+      }
     }
     const btn = document.querySelector('nav button[data-tab="users"]');
     if (btn) btn.hidden = me?.role !== 'admin';
