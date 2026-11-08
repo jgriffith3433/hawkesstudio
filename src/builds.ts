@@ -14,7 +14,7 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import type http from 'node:http';
 import { db, newId } from './db.ts';
-import { getProduct, loadProducts, StudioError, managedElsewhere, setBuildMachine, type BuildSpec, type BuildMachine, type Product } from './config.ts';
+import { getProduct, loadProducts, hasOwnBeta, StudioError, managedElsewhere, setBuildMachine, type BuildSpec, type BuildMachine, type Product } from './config.ts';
 import { folderFilesAsync } from './sitestore.ts';
 import { BuildFailure, LOG_LINES, extractLog, recordFailure, announce, settleFailure } from './buildfail.ts';
 
@@ -61,7 +61,7 @@ export function buildsOf(p: Product): BuildSpec[] {
   if (p.builds?.length) return p.builds;
   // A web app with its own server and beta (p.beta, kind app) is built and served where it's hosted: no build here,
   // which used to fail on every push (2026-10-31 review).
-  return (p.engine as string) === 'web' && (p as any).github && !p.beta && (p as any).kind !== 'app' ? [{ id: 'web', tool: 'npm', target: 'web' }] : [];
+  return (p.engine as string) === 'web' && (p as any).github && !hasOwnBeta(p) && (p as any).kind !== 'app' ? [{ id: 'web', tool: 'npm', target: 'web' }] : [];
 }
 /** When a build runs by itself: actions builds start themselves (their own workflow's triggers), the rest on beta pushes. */
 export const triggersOf = (b: BuildSpec): BuildTrigger[] => b.on ?? (b.tool === 'actions' ? [] : ['beta']);

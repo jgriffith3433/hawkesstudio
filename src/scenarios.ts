@@ -49,6 +49,11 @@ export function noteScenarios(product: string, build: string | null | undefined,
 /** The scenarios a build is known to have (null: not known yet). */
 export const knownScenarios = (product: string, build: string | null | undefined, url?: string | null) => (build ? seen.get(key(product, build, url)) ?? null : null);
 
+/** Forgets every list seen for a product: its beta was (re)published, so the next playtest reads the new page's own. */
+export function forgetProductScenarios(product: string) {
+  for (const k of [...seen.keys()]) if (k.startsWith(`${product}:`)) seen.delete(k);
+}
+
 /** For tests. */
 export const forgetScenarios = () => seen.clear();
 
