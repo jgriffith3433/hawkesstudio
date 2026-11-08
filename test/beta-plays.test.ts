@@ -15,7 +15,7 @@ process.env.STUDIO_DATA = tmp;
 process.env.STUDIO_BETA_TICK_MS = '10';
 
 const { db, newId, J, parse } = await import('../src/db.ts');
-const { resolveScenario, missingScenario, noteScenarios, knownScenarios, migrateScenarioAliases } = await import('../src/scenarios.ts');
+const { resolveScenario, missingScenario, noteScenarios, knownScenarios, forgetScenarios, migrateScenarioAliases } = await import('../src/scenarios.ts');
 const { holdBeta, betaPlayers, waitForBetaPlays, serveBeta, runBetaBuild, servedMismatch } = await import('../src/betaplay.ts');
 
 const sick = { id: 'sickofit', scenarioAliases: { gloob: 'yooba', 'gloob-shop': 'yooba-shop' } };
@@ -44,6 +44,11 @@ test('a build\'s scenario list is kept per build, so the next playtest of it ski
   assert.deepEqual(knownScenarios('sickofit', '168'), ['smoke', 'level-1']);
   assert.equal(knownScenarios('sickofit', '170'), null);
   assert.equal(knownScenarios('sickofit', null), null);
+  // a list seen at one page of a build never speaks for another page (ph-origins' lore site root had only smoke)
+  forgetScenarios();
+  noteScenarios('phorigins', '4253899', ['smoke'], 'https://sites.x/ph/?playtest');
+  assert.deepEqual(knownScenarios('phorigins', '4253899', 'https://sites.x/ph/'), ['smoke']);
+  assert.equal(knownScenarios('phorigins', '4253899', 'https://sites.x/ph/play/game.html'), null);
 });
 
 test('the stored scenario names on changes are renamed once', () => {

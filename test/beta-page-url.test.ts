@@ -50,3 +50,17 @@ test('other builds have no page of their own to play elsewhere', async () => {
   assert.equal(siteBuildPublish([{ id: 'web', publish: { project: 'site', path: 'Game/' } }] as any), null);
   assert.equal(siteBuildPublish([{ id: 'web', publish: { project: 'site', path: 'Game/', commit: true } }] as any), null);
 });
+
+// 2026-11-08: ph-origins (live https://phorigins.com/play/game.html) played its beta root, the lore site, whose
+// contract has only smoke, so every other scenario skipped. The game page is the live path under the beta root.
+test("an added game is played at its live page's path under the beta root", async () => {
+  const { betaPageUrl } = await import('../src/pipeline.ts');
+  const phroot = 'https://sites.hawkesgen.ai/o/j-studio-4f12/ph-origins/';
+  const ph = { site: 'phoriginswebsite', repo: 'phoriginswebsite', github: 'jgriffith3433/phoriginswebsite', live: 'https://phorigins.com/play/game.html' };
+  assert.equal(betaPageUrl(phroot, ph), `${phroot}play/game.html`);
+  // GitHub Pages' project page: the repo's name is the beta root itself
+  assert.equal(betaPageUrl(root, { github: 'acme/yooba', live: 'https://acme.github.io/yooba/' }), root);
+  assert.equal(betaPageUrl(root, { github: 'acme/yooba', live: 'https://acme.github.io/yooba/play/' }), `${root}play/`);
+  assert.equal(betaPageUrl(root, { github: 'acme/yooba', live: 'https://yooba.com/' }), root);
+  assert.equal(betaPageUrl(root, { github: 'acme/yooba', live: 'not a url' }), root);
+});
