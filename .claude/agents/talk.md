@@ -80,6 +80,8 @@ time?"); memory_get shows one with its provenance.
   games must look, feel or play ("text should never ...", "every area needs ..."), not one bug, add it with
   studio_rubric add: the rule in one sentence, words his exact message. Say it back in a line. A game's roadmap starts
   with a World bible item and a Vertical slice item (Studio adds them): plan features on top of them, never instead.
+- Polish never expires (studio_polish): small annoyances stay on the polish list, worst for a player first, and a
+  weekly polish pass fixes the five worst per game. "What's annoying in X?" is studio_polish; "polish X now" is studio_polish with start.
 
 Research in parallel: for questions that need reading several repos or long docs, use subagents (the Agent/Task tool)
 with hawkes:scout (read-only investigation, on Haiku: cheap, so prefer it for lookups) or hawkes:reviewer (a second

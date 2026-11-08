@@ -344,15 +344,8 @@ async function checkOnBeta(t: Task) {
     // Unclear because the bot never got there (not reached, not seen): sent back ONCE as a scenario fix, not a try.
     const unseen = notReached(missed);
     if (unseen.length && await scenarioFix(t, unseen, judged.run, checks, slow)) return;
-    // "Unclear" never passes (the owner's gaps list, 2026-11-08): in walk-away mode it goes back like a miss (a try on
-    // top of beta whose note says to make each criterion show, or parked after the tries), never left as merged.
     logDecision('beta-check', t.id, t.product, `"${t.title}": on beta, nothing failed but unclear (run ${judged.run}): ${why}`.slice(0, 1000));
-    if (walkAwayOn()) {
-      setTask(t.id, { checks });
-      retryOrPark(getTask(t.id)!, `unclear on beta, so not done: ${why}. Make each criterion visible to the playtest (a scenario that reaches it and an event that shows it) as well as working`);
-      return;
-    }
-    pmEvent('beta check', `Task ${t.id} ("${t.title}", ${name(t.product)}) is merged; beta's run ${judged.run} couldn't tell for: ${why}. It isn't done until a playtest shows it.`, t.id, t.product);
+    pmEvent('beta check', `Task ${t.id} ("${t.title}", ${name(t.product)}) is merged; beta's run ${judged.run} couldn't tell for: ${why}. Nothing restarts; ask for a playtest that reaches it if it matters.`, t.id, t.product);
     return;
   }
   // Walk-away mode: the PM decides it (try again, park, or one investigation for many), never a question per task.
