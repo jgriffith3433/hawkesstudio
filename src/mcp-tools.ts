@@ -406,6 +406,17 @@ export function studioMcp({ studio, waitRun }: Client = { studio: defaultStudio,
       run: async ({ subject, text, by }) => (text ? studio('/api/comments', { method: 'POST', body: { subject, text, by } }) : (await studio(`/api/comments?subject=${encodeURIComponent(subject)}`)).comments),
     },
     {
+      name: 'studio_rubric',
+      description: "The game quality rules every game agent, review, fun review and go-live gate follows (no backwards text, no z-fighting or clipping, no inside-out models, nothing sunk or floating, animation that holds up over time, a full living world, not a demo), plus J's own lines added to them. action list (default): the rules and lines for a product (or all games). action add: when J gives general feedback about how games must look, feel or play (not one bug), add it as a rule line: text (the rule in one sentence), words (J's exact words from his own message in this conversation, required), product (empty = every game), rule (the base rule it sharpens, empty = J's own), problem (optional playtest problem code quality.<name> that fails the gate when reported). action remove: id (ql_...) and words (J's own message asking for it).",
+      inputSchema: obj({ action: str('list | add | remove'), product: str('Product id (empty = every game)'), text: str('add: the rule in one sentence'), words: str("add: J's exact words from this conversation"), rule: str('add: the base rule id it sharpens (optional)'), problem: str('add: a playtest problem code, quality.<name> (optional)'), id: str('remove: the line id (ql_...)') }),
+      run: async ({ action, product, text, words, rule, problem, id }) => {
+        if (!action || action === 'list') return studio(`/api/quality/rubric${product ? `?product=${encodeURIComponent(product)}` : ''}`);
+        if (action === 'add') return studio('/api/quality/rubric', { method: 'POST', body: { product, text, words, rule, problem } });
+        if (action === 'remove') return studio(`/api/quality/rubric/${id}`, { method: 'DELETE', body: { words } });
+        throw new Error('action: list | add | remove');
+      },
+    },
+    {
       name: 'studio_ops',
       description: "Studio's background work right now and the last day: going live, rollbacks and merges of main into beta (queued, running with their current step and last log lines, done or failed with the reason; 'stuck' when one runs much longer than usual), every git or shell command Studio is waiting on, and the event loop (any moment in the last hour Studio froze for over a second, what was running then, and 'where': the functions and files the freeze was in, from a CPU profile kept in .data/profiles). Use it for \"is it still going live?\", \"what's running?\", \"why is Studio slow?\". product: only that product's operations.",
       inputSchema: obj({ product: str('A product id (optional)') }),

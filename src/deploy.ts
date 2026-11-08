@@ -33,6 +33,7 @@ import {
 import { cloudGoLive, cloudRefs, cloudBlockers, cloudGoLiveNow, compareOnGitHub, type CloudRefs, type Compare } from './deploy-cloud.ts';
 import { githubSlugOf, isGoLiveMerge, publishTargets, buildRunsAt, onlyDocsSince, goLiveOnGitHub, rollbackRefs, rollbackOnGitHub, type GitHubIO } from './deploy-github.ts';
 import { repoMap } from './repos.ts';
+import { qualityGate, failLine } from './quality.ts';
 import { customerStudio } from './tenancy.ts';
 import { STUDIO_RELEASE, RELEASES, playedCommit, releasesAt, releasesPath, readReleases, draftWithin, addReleaseTo, releaseLine, releaseNotesLine, type Draft } from './release.ts';
 
@@ -71,7 +72,31 @@ function playOf(s: Step, steps: Step[], carried = false) {
     carriedFrom: carried ? String(s.data.played.sha).slice(0, 7) : null,
     verdict: rv?.data?.verdict ?? null, summary: rv?.data?.summary ?? null, scores: rv?.data?.scores ?? null,
     blockers: (rv?.data?.findings ?? []).filter((f: any) => f.severity === 'blocker').map((f: any) => f.title),
+    quality: qualityOfPlay(s, rv),
   };
+}
+
+/** The game quality rubric on one played build (quality.ts): the rules it broke, and what wasn't measured. */
+function qualityOfPlay(s: Step, rv: Step | undefined) {
+  let p: Product;
+  try { p = getProduct(s.product); } catch { return { fails: [], unmeasured: [] }; }
+  return qualityGate(p, { problems: s.data?.problems, metrics: s.data?.metrics, findings: rv?.data?.findings, fun: rv?.data?.fun ?? null });
+}
+
+/**
+ * The game quality rubric as a go-live gate: a played build of beta that broke a rule blocks going live (no bypass:
+ * fix it on beta, play beta again); checks the game doesn't measure yet are one warning.
+ */
+export function qualityBlockers(tested: { name: string; quality?: ReturnType<typeof qualityGate> }[], short: string | undefined) {
+  const blockers: string[] = [];
+  const unmeasured = new Set<string>();
+  for (const t of tested) {
+    const fails = t.quality?.fails ?? [];
+    if (fails.length) blockers.push(`Playtest ${t.name} on ${short ?? 'beta'} broke ${fails.length} game quality rule${fails.length === 1 ? '' : 's'}: ${fails.slice(0, 4).map(failLine).join('; ')}${fails.length > 4 ? ` (and ${fails.length - 4} more)` : ''}. Fix ${fails.length === 1 ? 'it' : 'them'} on ${BETA} and play ${BETA} again.`);
+    for (const u of t.quality?.unmeasured ?? []) unmeasured.add(u);
+  }
+  const warnings = unmeasured.size ? [`Not measured by the playtests yet (the game doesn't report them): ${[...unmeasured].join(', ')}.`] : [];
+  return { blockers, warnings };
 }
 
 /** The latest finished playtest of each scenario of a project in these runs (a build's run plays it where it is mounted). */
@@ -225,6 +250,7 @@ async function planOf(productId: string, { notesWaitMs = 20_000, io }: { notesWa
     if (t.blockers.length) warnings.push(`The review of ${t.name} found ${t.blockers.length} blocker(s): ${t.blockers.join('; ')}`);
     if (!t.verdict) warnings.push(`${t.name} on ${beta?.short} has no review.`);
   }
+  { const q = qualityBlockers(tested, beta?.short); blockers.push(...q.blockers); warnings.push(...q.warnings); }
 
   // The pre-deploy build lives on beta (beta.ts prepareBeta), so the playtested commit is exactly what ships.
   if (played && p.deploy?.prebuild && !prebuilt(p, played.sha, played.title)) {
@@ -314,6 +340,7 @@ async function cloudPlan(p: Product) {
     if (t.blockers.length) warnings.push(`The review of ${t.name} found ${t.blockers.length} blocker(s): ${t.blockers.join('; ')}`);
     if (!t.verdict) warnings.push(`${t.name} on ${beta?.short} has no review.`);
   }
+  { const q = qualityBlockers(tested, beta?.short); blockers.push(...q.blockers); warnings.push(...q.warnings); }
   const b = betaBuild(p);
   const siteBeta = refs?.site.beta ?? null;
   const top = p.repo.split('/')[0];
@@ -385,6 +412,7 @@ async function githubPlan(p: Product, io: GitHubIO = {}) {
   }
   if (beta && !tested.length) blockers.push(last ? `${BETA} hasn't been playtested at ${beta.short} (the last playtest played ${last.played.branch} ${String(last.played.sha).slice(0, 7)}). Playtest ${BETA} first.` : `${BETA} hasn't been playtested yet: play it first (a beta run or a playtest of the project).`);
   warnings.push(...playWarnings(tested, beta?.short));
+  { const q = qualityBlockers(tested, beta?.short); blockers.push(...q.blockers); warnings.push(...q.warnings); }
   const tg = beta ? await publishTargets(p, beta.sha, io).catch((e: any) => ({ targets: [], blockers: [`GitHub: ${e.message}`], attempts: [] })) : { targets: [], blockers: [], attempts: [] };
   blockers.push(...tg.blockers);
   const moving = tg.targets.filter((t) => t.move);

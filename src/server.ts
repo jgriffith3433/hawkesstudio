@@ -715,6 +715,25 @@ const server = http.createServer(async (req, res) => {
       return send(res, 200, answered);
     }
 
+    // The game quality rubric (quality.ts): the base rules plus the owner's lines. A line is added from the owner's own
+    // words: the dashboard, the report button ("Rule: ..."), or Talk quoting the owner's message in its conversation.
+    if (route === '/api/quality/rubric' || route.startsWith('/api/quality/rubric/')) {
+      const q = await import('./quality.ts');
+      if (route === '/api/quality/rubric' && method === 'GET') return send(res, 200, { rules: q.rubricFor(url.searchParams.get('product')), lines: q.rubricLines(url.searchParams.get('product')) });
+      const { callerOf } = await import('./memory-api.ts');
+      const c = callerOf(req);
+      const mem = await import('./memory.ts');
+      const b = await readJson(req);
+      const owners = c.who === 'J' || ((c.who === 'talk' || c.who === 'pm') && mem.jSaid(c.id, b.words));
+      if (!owners) return send(res, 403, { error: c.who === 'talk' || c.who === 'pm' ? "A quality rule is the owner's word: pass words, their exact message in this conversation." : 'Only the owner changes the quality rules.' });
+      if (route === '/api/quality/rubric' && method === 'POST') {
+        const by = c.who === 'J' ? String(b.by ?? 'J') : 'J (via Talk)';
+        return send(res, 200, q.addRubricLine({ product: b.product ?? null, rule: b.rule ?? null, text: String(b.text ?? ''), words: b.words ?? null, problem: b.problem ?? null, by, source: c.who === 'J' ? 'dashboard' : 'talk' }));
+      }
+      const rm = /^\/api\/quality\/rubric\/(ql_[0-9a-f]+)$/.exec(route);
+      if (rm && method === 'DELETE') return send(res, 200, q.removeRubricLine(rm[1]));
+      return send(res, 404, { error: 'not found' });
+    }
     // The roadmap, the PM loop, comments, questions, scouts and "ready for you to test" (roadmap.ts, pm.ts, scout.ts).
     if (route.startsWith('/api/roadmap') || route.startsWith('/api/pm') || route.startsWith('/api/comments') || route.startsWith('/api/questions') || route.startsWith('/api/scouts') || route === '/api/ready') {
       const rm = await import('./roadmap.ts');
@@ -729,7 +748,14 @@ const server = http.createServer(async (req, res) => {
       m = /^\/api\/roadmap\/milestones\/(n_[0-9a-f]+)$/.exec(route);
       if (m && method === 'GET') return send(res, 200, rm.getMilestone(m[1]) ? { ...rm.getMilestone(m[1]), ...rm.milestoneProgress(m[1]) } : { error: 'no such milestone' });
       if (m && method === 'PATCH') { const ms = rm.updateMilestone(m[1], b); pm.kick(); return send(res, 200, ms); }
-      if (route === '/api/roadmap/items' && method === 'POST') { const it = rm.addItem({ ...b, origin: b.origin ?? talkFrom, by }); pm.kick(); return send(res, 200, it); }
+      if (route === '/api/roadmap/items' && method === 'POST') {
+        const it = rm.addItem({ ...b, origin: b.origin ?? talkFrom, by });
+        // A game's roadmap starts with its world bible and vertical slice (worldplan.ts, the game quality rules).
+        const { ensureFoundation, BIBLE_TITLE, SLICE_TITLE } = await import('./worldplan.ts');
+        const foundation = [BIBLE_TITLE, SLICE_TITLE].includes(it.title) ? { added: [] as string[] } : await ensureFoundation(it.product, by).catch(() => ({ added: [] as string[] }));
+        pm.kick();
+        return send(res, 200, foundation.added.length ? { ...it, foundation: { added: foundation.added, note: 'This game had no world bible: a World bible item and a Vertical slice item were put first on its roadmap.' } } : it);
+      }
       m = /^\/api\/roadmap\/items\/(i_[0-9a-f]+)$/.exec(route);
       if (m && method === 'GET') return send(res, 200, rm.getItemView(m[1]) ?? { error: 'no such item' });
       if (m && method === 'PATCH') { const it = rm.updateItem(m[1], b); pm.kick(); return send(res, 200, it); }

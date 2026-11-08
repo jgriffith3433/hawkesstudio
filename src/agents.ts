@@ -37,6 +37,9 @@
 import { buildCheckBrief } from './buildfix.ts';
 import { compileGate, compileFixPrompt, runCompileCheck, skippedCompile, COMPILE_FIXES, type CompileResult } from './compilecheck.ts';
 import { unityCheck, unityFixPrompt, issueLines, looksUnity, changedCsFiles, type UnityCheckResult } from './unitycheck.ts';
+import { rubricBrief, isGame, qualityGate, failLine } from './quality.ts';
+import { qualityScan, qualityFixPrompt, scanLines, type QualityScan } from './quality-scan.ts';
+import { funReview } from './fun-review.ts';
 import { forOwner } from './owner.ts';
 import { isVideoTask, videoReady, versionsOf } from './videos.ts';
 import fs from 'node:fs';
@@ -522,6 +525,10 @@ export type Phase = {
   compile?: CompileResult;
   compileFixes?: number;
   compileFix?: boolean;
+  /** The quality scan (quality-scan.ts, the game quality rubric's build gate) before the pull request: its last result; `qualityFixes` passes sent back for it (at most QUALITY_FIXES), `qualityFix` the next pass is one. */
+  quality?: QualityScan;
+  qualityFixes?: number;
+  qualityFix?: boolean;
   /** A conflict pass (resolveConflicts): the files that conflict with the base; the agent's session merges and resolves. */
   conflict?: string[];
   /** Parked on Gen (status WAITING_GEN, step 'gen'): the agent's queued jobs, polled until every one has finished. */
@@ -622,6 +629,16 @@ function nudgeResume(c: Change, ph: Phase) {
 export const UNITY_FIXES = 2;
 function unityFixResume(c: Change, u: UnityCheckResult) {
   const prompt = unityFixPrompt(u);
+  return c.session ? { session: c.session, prompt } : { prompt: `Read .hawkes/brief.md for what your change is. ${prompt}` };
+}
+/** The plugin's name (its subagents are "<name>:<role>"): hawkes in this Studio, studio in a customer's. */
+function pluginName() {
+  try { return String(JSON.parse(fs.readFileSync(path.join(PLUGIN_DIR(), '.claude-plugin', 'plugin.json'), 'utf8')).name || 'hawkes'); } catch { return 'hawkes'; }
+}
+/** How many times a game change that fails the quality scan is sent back to its agent before it fails. */
+export const QUALITY_FIXES = 2;
+function qualityFixResume(c: Change, q: QualityScan) {
+  const prompt = qualityFixPrompt(q);
   return c.session ? { session: c.session, prompt } : { prompt: `Read .hawkes/brief.md for what your change is. ${prompt}` };
 }
 function compileFixResume(c: Change, r: CompileResult) {
@@ -1147,6 +1164,8 @@ async function writeBrief(c: Change, p: Product, findings0: any[], note?: string
   // Up to 3 agents per product (J, 2026-10-19): what the others are doing, and the Unity rules (parallel.ts).
   const others = onSite ? '' : othersSection(p.name, neighboursOf(c), perProductLimit(p.id));
   const unity = !onSite && isUnity(p.id) ? `\n## Working in Unity (several agents share this repo)\n\n${UNITY_RULES}\n` : '';
+  // The game quality rubric (quality.ts): every game's agents get it, whatever the task (the owner, 2026-11-08).
+  const quality = onSite ? '' : rubricBrief(p, pluginName());
   // What the agent reaches beyond its project (access.ts): Gen files from the owners' own libraries, the other repos.
   const reach = await import('./access.ts').then(async (A) => {
     const a = await A.agentAccess(p.id);
@@ -1208,7 +1227,7 @@ ${findings.map((f) => `### [${f.severity}] ${f.title}
   this game's scenario doesn't yet, add that named setup shortcut. Studio replays this exact place to check your fix.` : ''}
 - Screenshots: ${(shots.filter((s) => s.includes(f.id)).map((s) => `\`${s}\``).join(', ')) || 'none'}${f.entities?.length ? `
 - In Hawkes Gen's library: ${f.entities.map((e: any) => `\`${e.id}\` (${e.kind})`).join(', ')}. When the problem is the art itself, fix it there (the hawkesgen MCP: hawkesgen_entities to see its versions, hawkesgen_entity_make with revise and feedback, hawkesgen_entity_judge to pick): a pick is written into this repo's files by Studio.` : ''}`).join('\n\n')}
-${note ? `\n## Notes on the last attempt (J's or the PM's)\n\n${note}\n` : ''}${attemptsBrief(c, changeRoute(c))}${others ? `\n${others}` : ''}${unity}${reach}${players}${mem.text ? `\n${mem.text}` : ''}
+${note ? `\n## Notes on the last attempt (J's or the PM's)\n\n${note}\n` : ''}${attemptsBrief(c, changeRoute(c))}${others ? `\n${others}` : ''}${unity}${quality}${reach}${players}${mem.text ? `\n${mem.text}` : ''}
 ## How to work
 
 1. Read \`AGENTS.md\` (and any docs it points to) before changing anything. Follow its rules.
@@ -1906,6 +1925,7 @@ async function work(id: string, note?: string, answer?: string, resumed?: Phase 
       const resume = forHarness(ph, ph.nudge ? nudgeResume(c, ph)
         : ph.unityFix && ph.unity ? unityFixResume(c, ph.unity)
         : ph.compileFix && ph.compile ? compileFixResume(c, ph.compile)
+        : ph.qualityFix && ph.quality ? qualityFixResume(c, ph.quality)
         : ph.conflict ? conflictResume(c, ph.conflict)
         : ph.genDone ? (c.session ? { session: c.session, prompt: ph.genDone } : { prompt: `Read .hawkes/brief.md: it's your whole task. ${ph.genDone}` })
         : answer && c.session
@@ -1931,7 +1951,7 @@ async function work(id: string, note?: string, answer?: string, resumed?: Phase 
         return parkForHarness(id, ph, save, stop);
       }
       // The cost and the next step are written together, so a restart never counts a pass twice.
-      save({ step: 'publish', result: r.result, stopped: r.stopped, machinery: machineryFailure(r.stderr) ?? undefined, nudge: false, unityFix: false, compileFix: false, genDone: undefined, harness: undefined, proc: undefined }, { cost: getChange(id)!.cost + r.cost });
+      save({ step: 'publish', result: r.result, stopped: r.stopped, machinery: machineryFailure(r.stderr) ?? undefined, nudge: false, unityFix: false, compileFix: false, qualityFix: false, genDone: undefined, harness: undefined, proc: undefined }, { cost: getChange(id)!.cost + r.cost });
     }
 
     if (ph.step === 'publish') {
@@ -2072,6 +2092,27 @@ async function work(id: string, note?: string, answer?: string, resumed?: Phase 
           }
         }
       }
+      // The quality scan (quality-scan.ts): a game change's files read against the game quality rubric before a pull
+      // request opens; what the change brings (not what was already on the base) sends it back, then fails it.
+      if (!isSiteChange(c, p) && !c.infra && commits.length && isGame(p)) {
+        update(id, { detail: 'quality scan: reading what the change touched against the game quality rules' });
+        const q = await Promise.resolve().then(() => qualityScan(c.worktree, `origin/${c.base}`)).catch((e: any): QualityScan => ({ ok: true, files: 0, issues: [], known: [], summary: `Quality scan couldn't run: ${String(e.message ?? e).slice(0, 200)}` }));
+        save({ quality: q });
+        addLog(id, q.summary);
+        for (const l of scanLines(q)) addLog(id, `quality scan: ${l}`);
+        if (!q.ok) {
+          const used = ph.qualityFixes ?? 0;
+          if (used < QUALITY_FIXES) {
+            addLog(id, `quality scan failed: sending the agent back to fix it (${used + 1} of ${QUALITY_FIXES}); no pull request yet`);
+            save({ step: 'agent', qualityFixes: used + 1, qualityFix: true, result: undefined, stopped: undefined, proc: undefined, since: Date.now() }, { status: 'working', detail: `the quality scan found ${q.issues.length} problem${q.issues.length === 1 ? '' : 's'}: the agent is fixing them` });
+            return work(id, note, answer, ph, true);
+          }
+          const detail = `blocked: it still breaks the game quality rules after ${QUALITY_FIXES} fix passes: ${scanLines(q, 3).join('; ')}`.slice(0, 300);
+          reopenTaken(id, findings.map((f) => f.id), detail);
+          update(id, { status: 'failed', detail, summary, commits, phase: { ...ph, failed: true, quality: q } });
+          return;
+        }
+      }
       const diffstat = git(c.worktree, ['diff', '--shortstat', `origin/${c.base}...HEAD`]).out;
       update(id, { summary, commits, diffstat, detail: 'pushing and opening the pull request' });
       const unityMd = ph.unity ? `\n\n**${ph.unity.summary}**` : '';
@@ -2127,7 +2168,7 @@ async function work(id: string, note?: string, answer?: string, resumed?: Phase 
     c = getChange(id)!;
     // A playtest on request: its results join what the change already had (sha, preview, canon), and it's ready again.
     if (ph.requested) {
-      const keep = Object.fromEntries(['scenario', 'options', 'canon', 'pendingGpu', 'unityCheck', 'compileCheck'].filter((k) => c.verify?.[k] !== undefined).map((k) => [k, c.verify[k]]));
+      const keep = Object.fromEntries(['scenario', 'options', 'canon', 'pendingGpu', 'unityCheck', 'compileCheck', 'qualityScan'].filter((k) => c.verify?.[k] !== undefined).map((k) => [k, c.verify[k]]));
       const verify = { ...keep, ...ph.verify, sha: ph.tip ?? c.verify?.sha, preview: c.verify?.preview ?? null, try: c.verify?.try ?? null, asked: { at: Date.now(), by: ph.requested } };
       addLog(id, `playtest (asked by ${ph.requested}): ${verify.outcome ?? '?'} · review: ${verify.verdict ?? 'n/a'}${verify.error ? ` · ${verify.error}` : ''}`);
       update(id, { status: 'ready', detail: readyDetail(verify), verify, phase: null });
@@ -2156,7 +2197,7 @@ async function work(id: string, note?: string, answer?: string, resumed?: Phase 
     // A GPU task's change that shipped stand-ins: merged, but its task waits for GPU (pm.ts) and runs again.
     const pendingGpu = c.task && (needsGpu(c) || roleOf(c) === 'content') ? pendingGpuOf(c.worktree, c.summary ?? '') : null;
     if (pendingGpu) addLog(id, `stand-ins: still to make on the GPU: ${pendingGpu.split('\n')[0].slice(0, 200)}`);
-    const done = { ...verify, sha: ph.tip, preview, ...(ph.unity ? { unityCheck: ph.unity } : {}), ...(ph.compile ? { compileCheck: ph.compile } : {}), try: howTo, ...(pendingGpu ? { pendingGpu } : {}) };
+    const done = { ...verify, sha: ph.tip, preview, ...(ph.unity ? { unityCheck: ph.unity } : {}), ...(ph.compile ? { compileCheck: ph.compile } : {}), ...(ph.quality ? { qualityScan: { ok: ph.quality.ok, files: ph.quality.files, summary: ph.quality.summary, known: ph.quality.known.length } } : {}), try: howTo, ...(pendingGpu ? { pendingGpu } : {}) };
     // A video waits for J's screening (videos.ts): never merged by itself, its version kept, notes he left meanwhile sent back.
     if (c.task && isVideoTask(c.task)) {
       update(id, { status: 'ready', detail: 'ready to screen', verify: done, phase: null, auto_merge: null });
@@ -2203,7 +2244,11 @@ export function readyDetail(v: any) {
   const unity = v?.unityCheck ? ` · ${v.unityCheck.engine === 'none' ? 'Unity check: no C# changed' : `Unity check passed (${v.unityCheck.engine === 'roslyn' ? 'Roslyn' : 'built-in'}, ${v.unityCheck.files.length} file${v.unityCheck.files.length === 1 ? '' : 's'})`}` : '';
   const compile = v?.compileCheck ? ` · ${v.compileCheck.summary}` : '';
   const notes = v?.canon?.notes?.length ? ` · ${v.canon.notes.length} canon note${v.canon.notes.length === 1 ? '' : 's'} (not blocking)` : '';
-  return `${what}${unity}${compile}${notes}${v?.preview ? ` · preview ${v.preview}` : ''}`;
+  // The game quality rubric (quality.ts): the scan before the pull request, and on a played build the rules it broke and the fun review.
+  const scan = v?.qualityScan?.summary ? ` · ${v.qualityScan.summary}` : '';
+  const broke = played && v?.quality?.fails?.length ? ` · ${v.quality.fails.length} quality rule${v.quality.fails.length === 1 ? '' : 's'} broken` : '';
+  const fun = played && v?.fun?.verdict && v.fun.verdict !== 'unjudged' ? ` · fun review: ${v.fun.verdict}` : '';
+  return `${what}${unity}${compile}${scan}${broke}${fun}${notes}${v?.preview ? ` · preview ${v.preview}` : ''}`;
 }
 /** Whether a change was playtested (on request, or by the old automatic verification): its result is on it. */
 export const playtested = (v: any) => Boolean(v && (v.playtest || (v.outcome && v.outcome !== 'not played')));
@@ -2410,7 +2455,13 @@ async function verifyChange(c: Change, p: Product, findings: any[], jobs?: JobMe
     const v = rev.result ?? {};
     const video = run.outputs?.find((o: any) => o.kind === 'video')?.asset ?? null;
     const criteria = c.criteria.length ? await judgeCriteria(c.criteria, v, run.result, c.summary) : undefined;
-    return { outcome: run.result?.outcome, scenario, ...(agentScenario && agentOptions ? { options: agentOptions } : {}), playtest: run.id, review: rev.id, verdict: v.verdict, changeWorked: v.changeWorked, known: v.known ?? [], summary: v.summary, scores: v.scores, findings: (v.findings ?? []).slice(0, 8), video, url: localUrl(p), build, ...(criteria ? { criteria } : {}), ...(rev.via === 'claude-code' ? { reviewVia: `Claude Code, ${rev.billing}` } : {}) };
+    // The game quality rubric on the played build (quality.ts): the fun review (a demo fails), then every rule's
+    // playtest and vision checks from the problems, metrics and findings. A broken rule fails the gate (acceptance.ts).
+    const fun = isGame(p) ? await funReview(p, { review: v, playtest: { ...(run.result ?? {}), scenario }, dir: c.worktree, request: c.request }).catch(() => null) : null;
+    const q = qualityGate(p, { problems: run.result?.problems, metrics: run.result?.metrics, findings: v.findings, fun });
+    if (fun) addLog(c.id, `fun review: ${fun.verdict}${fun.why ? `: ${fun.why}` : ''}`.slice(0, 600));
+    for (const f of q.fails) addLog(c.id, failLine(f).slice(0, 600));
+    return { outcome: run.result?.outcome, ...(isGame(p) ? { quality: q, ...(fun ? { fun } : {}) } : {}), scenario, ...(agentScenario && agentOptions ? { options: agentOptions } : {}), playtest: run.id, review: rev.id, verdict: v.verdict, changeWorked: v.changeWorked, known: v.known ?? [], summary: v.summary, scores: v.scores, findings: (v.findings ?? []).slice(0, 8), video, url: localUrl(p), build, ...(criteria ? { criteria } : {}), ...(rev.via === 'claude-code' ? { reviewVia: `Claude Code, ${rev.billing}` } : {}) };
   } finally {
     stopServed(port);
   }

@@ -76,6 +76,10 @@ time?"); memory_get shows one with its provenance.
 - Agents' notes arrive as candidates; the PM curates them (memory_curate). Cite entries by id when they matter.
 - Moving a product's knowledge to another Studio (J's customer Studio, say): memory_transfer link gives a one-time
   export link to paste there; memory_transfer import takes a link, a pasted bundle or a Markdown doc into this one.
+- Game quality rules (studio_rubric): every game follows them without being told. When J gives general feedback on how
+  games must look, feel or play ("text should never ...", "every area needs ..."), not one bug, add it with
+  studio_rubric add: the rule in one sentence, words his exact message. Say it back in a line. A game's roadmap starts
+  with a World bible item and a Vertical slice item (Studio adds them): plan features on top of them, never instead.
 
 Research in parallel: for questions that need reading several repos or long docs, use subagents (the Agent/Task tool)
 with hawkes:scout (read-only investigation, on Haiku: cheap, so prefer it for lookups) or hawkes:reviewer (a second

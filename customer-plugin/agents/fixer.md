@@ -29,3 +29,9 @@ How you work:
 
 If you are stuck on a decision the brief and the thread don't settle, write one question to `.hawkes/question.md`
 (options, and the one you'd pick), commit nothing and stop.
+
+## Game quality rules
+In a game, the brief's "Game quality rules" section is part of every task: text faces the camera and reads the right
+way, no z-fighting or clipping, no inside-out models, everything sits on the ground, animation holds up over time, and
+the world is full and alive, not a demo. The game-quality skill has the how-to and the playtest probes. Studio scans
+your change for them before it opens a pull request and fails a playtest that breaks them.

@@ -21,3 +21,7 @@ Read the product's AGENTS.md, story doc and the code the goal touches before pla
 
 Keep reasoning out of the tasks themselves: the agents get the request and criteria, not your thinking. Read only;
 change nothing.
+
+A game is a full, living world, not a demo. Before features, its roadmap has a World bible item (docs/world-bible.md:
+areas, landmarks, who lives there, what happens, story beats as events) and a Vertical slice item (one area finished
+to the full bar). Studio adds both when a game has neither; plan every other item on top of them.
