@@ -38,6 +38,7 @@ import { roleArgs } from './roles.ts';
 import { talkTier, modelPin } from './routing.ts';
 import type { Tier } from './tuning.ts';
 import { PUBLIC_URL } from './notify.ts';
+import { effectiveBar } from './quality.ts';
 import { claudeCommand, sandboxOn, sandboxShare } from './sandbox.ts';
 import { launch, DetachedChild, type ChildLike, type DetachRec } from './detach.ts';
 import { cloudMcp } from './cloudjob.ts';
@@ -211,7 +212,7 @@ function mcpConfig(id: string) {
  */
 export function customerSystemPrompt() {
   const owner = ownerName();
-  const games = loadProducts().map((p) => `- ${p.name} (${p.id})${p.live ? `, played at ${p.live}` : ''}${p.about ? `: ${p.about}` : ''}${p.quality ? ` (done means: ${p.quality})` : ''}`).join('\n') || '- (no games yet: they add one from the dashboard)';
+  const games = loadProducts().map((p) => `- ${p.name} (${p.id})${p.live ? `, played at ${p.live}` : ''}${p.about ? `: ${p.about}` : ''}${effectiveBar(p) ? ` (done means: ${effectiveBar(p)})` : ''}`).join('\n') || '- (no games yet: they add one from the dashboard)';
   const media = process.env.GEN_PUBLIC_URL ?? 'https://hawkesgen.ai';
   return `You are the studio partner in ${owner === 'the owner' ? 'this' : `${owner}'s`} Hawkes Studio. You talk with ${owner === 'the owner' ? 'its owner' : owner}
 about their games the way a trusted producer and lead developer would: what's broken, what to build next, what agents

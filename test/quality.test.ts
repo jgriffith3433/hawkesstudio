@@ -243,3 +243,14 @@ test("a game's tuning moves its limits; software runs ignore timing; optional me
   assert.ok(none.unmeasured.some((u) => u.includes('feel.inputLatencyMs')));
   assert.ok(!none.unmeasured.some((u) => /coyote|jump-buffer|hit-stop|video/.test(u)), 'optional metrics are not listed');
 });
+
+test("a game's bar never accepts prototype art or sparse content; other projects keep theirs", () => {
+  const g = { ...game, quality: 'Players can finish the first level. Prototype art and sparse content are accepted. Placeholder UI is fine for now. Controls feel tight.' };
+  const bar = q.effectiveBar(g)!;
+  assert.doesNotMatch(bar, /Prototype art|Placeholder UI/);
+  assert.match(bar, /Players can finish the first level\. Controls feel tight\./);
+  assert.match(bar, /no prototype, placeholder or grey-box art/);
+  assert.equal(q.effectiveBar({ ...game, quality: undefined }), q.GAME_FLOOR);
+  assert.equal(q.effectiveBar({ ...site, quality: 'Prototype art is accepted.' }), 'Prototype art is accepted.');
+  assert.equal(q.effectiveBar({ ...site, quality: undefined }), undefined);
+});

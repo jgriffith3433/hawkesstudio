@@ -88,7 +88,9 @@ test('the merge gate and verified', () => {
   assert.deepEqual([unplayed.pass, unplayed.played, unplayed.why], [true, false, []]);
   assert.equal(gate({ sha: 'abc', outcome: 'not played', error: "the playtest couldn't run: no page server" }, crit).pass, true, "a playtest that couldn't run is no reason");
   assert.equal(gate({ sha: 'abc', canon: { ok: false, summary: 'x', conflicts: [{ entry: 'm_1', why: 'contradicts' }] } }, []).pass, false, 'a canon conflict still stops it');
-  assert.equal(gate({ outcome: 'passed', verdict: 'ship', criteria: [{ criterion: 'a', met: 'yes' }, { criterion: 'b', met: 'unclear' }] }, crit).pass, true, 'unclear is judged again on beta');
+  const unclear = gate({ outcome: 'passed', verdict: 'ship', criteria: [{ criterion: 'a', met: 'yes' }, { criterion: 'b', met: 'unclear', evidence: 'never reached' }] }, crit);
+  assert.equal(unclear.pass, false, 'unclear never passes (2026-11-08)');
+  assert.match(unclear.why.join(' '), /unclear: b \(never reached\)/);
   const no = gate({ outcome: 'passed', verdict: 'ship', criteria: [{ criterion: 'a', met: 'yes' }, { criterion: 'b', met: 'no', evidence: 'missing' }] }, crit);
   assert.equal(no.pass, false);
   assert.match(no.why.join(' '), /not met: b/);

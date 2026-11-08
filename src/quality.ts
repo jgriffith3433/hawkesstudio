@@ -156,6 +156,19 @@ export function rubricReviewText(p: Product) {
   return `Game quality rules: a finding that breaks one starts its title with the check in brackets, e.g. "[quality:ground-contact] The fountain floats above the square", and is at least a bug. ${checks.map((c) => `[quality:${c.id}] ${c.what}`).join(' ')}`;
 }
 
+/**
+ * A game's quality bar never accepts prototype work (the owner's gaps list, 2026-11-08: "quality bars stop accepting
+ * prototype art or sparse content"): sentences of products.json `quality` that accept prototype, placeholder, temporary
+ * or grey-box art, stub UI or sparse content are left out, and GAME_FLOOR is added. Other projects keep their bar as is.
+ */
+export const GAME_FLOOR = 'Floor for every game (above anything else in this bar): no prototype, placeholder or grey-box art, no stub or programmer UI, no sparse or empty areas. Every area is dressed and alive, and the camera and controls feel right (the game quality rules).';
+const ACCEPTS_LESS = /\b(prototype|placeholder|programmer|temp(orary)?|grey-?box|gray-?box|blockout|stub|sparse|rough|unfinished|basic shapes?|primitives?)\b[^.!?]*\b(accept(ed|able)?|fine|ok(ay)?|allowed|is enough|are enough|will do|for now)\b|\b(accept(ed|able)?|fine|ok(ay)?|allowed)\b[^.!?]*\b(prototype|placeholder|programmer|grey-?box|gray-?box|blockout|stub|sparse)\b/i;
+export function effectiveBar(p: Pick<Product, 'engine' | 'kind' | 'quality'>): string | undefined {
+  if (!isGame(p)) return p.quality?.trim() || undefined;
+  const kept = String(p.quality ?? '').split(/(?<=[.!?])\s+/).map((x) => x.trim()).filter((x) => x && !ACCEPTS_LESS.test(x)).join(' ');
+  return [kept, GAME_FLOOR].filter(Boolean).join('\n');
+}
+
 // ------------------------------------------------------------------ the playtest gate
 
 const TAG = /^\s*\[quality:([a-z0-9_-]+)\]/i;

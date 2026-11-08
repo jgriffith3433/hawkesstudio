@@ -2523,7 +2523,7 @@ async function verifyChange(c: Change, p: Product, findings: any[], jobs?: JobMe
     const rev = await reviewJob(p.id, revParams, () => genRun('playtest.review', p.id, revParams, undefined, undefined, { job: jobs?.get('review') || undefined, onSubmit: (id) => jobs?.set('review', id) }));
     const v = rev.result ?? {};
     const video = run.outputs?.find((o: any) => o.kind === 'video')?.asset ?? null;
-    const criteria = c.criteria.length ? await judgeCriteria(c.criteria, v, run.result, c.summary) : undefined;
+    const criteria = c.criteria.length ? await judgeCriteria(c.criteria, v, run.result) : undefined;
     // The game quality rubric on the played build (quality.ts): the fun review (a demo fails), then every rule's
     // playtest and vision checks from the problems, metrics and findings. A broken rule fails the gate (acceptance.ts).
     const fun = isGame(p) ? await funReview(p, { review: v, playtest: { ...(run.result ?? {}), scenario }, dir: c.worktree, request: c.request }).catch(() => null) : null;

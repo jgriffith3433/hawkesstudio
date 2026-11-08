@@ -23,7 +23,7 @@ import { ensureServer, gitState, treeFingerprint, runCheck, serveDir, stopServed
 import { absorb, applyKnown, expireIdeas, notSeenIn, type ReviewMode } from './backlog.ts';
 import { feelFindings } from './feel.ts';
 import { barState, barHash, reviewedSha, reviewParams } from './review.ts';
-import { isGame } from './quality.ts';
+import { isGame, effectiveBar } from './quality.ts';
 import { funReview } from './fun-review.ts';
 import { reviewJob, viaNote } from './review-cc.ts';
 import { writeReport } from './report.ts';
@@ -1123,8 +1123,8 @@ async function fileReview(rs: string, p: Product, run: string, name: string, rev
     : null;
   updateStep(rs, {
     status: 'done', job: rev.id, cost: rev.cost ?? 0,
-    detail: `${verdict} · ${x.mode}${x.barMet ? ' (meets its quality bar)' : ''} · ${(v.findings ?? []).length} findings (${parts.join(', ')})${p.quality ? ` · bar: ${v.meetsBar ?? '?'}` : ''}${fun && fun.verdict !== 'unjudged' ? ` · fun: ${fun.verdict}` : ''}${viaNote(rev)}${late}`,
-    data: { ...v, ...(fun ? { fun } : {}), ...(verdict !== v.verdict ? { verdict, verdictWas: v.verdict } : {}), added: merged.added, updated: merged.updated, ideas: merged.ideas, skipped: merged.skipped, knownFixed: known.fixed, knownPresent: known.present, reviewKey: x.reviewKey, mode: x.mode, sha: x.sha, barHash: barHash(p.quality), bar: x.barWhy }, finished: true,
+    detail: `${verdict} · ${x.mode}${x.barMet ? ' (meets its quality bar)' : ''} · ${(v.findings ?? []).length} findings (${parts.join(', ')})${effectiveBar(p) ? ` · bar: ${v.meetsBar ?? '?'}` : ''}${fun && fun.verdict !== 'unjudged' ? ` · fun: ${fun.verdict}` : ''}${viaNote(rev)}${late}`,
+    data: { ...v, ...(fun ? { fun } : {}), ...(verdict !== v.verdict ? { verdict, verdictWas: v.verdict } : {}), added: merged.added, updated: merged.updated, ideas: merged.ideas, skipped: merged.skipped, knownFixed: known.fixed, knownPresent: known.present, reviewKey: x.reviewKey, mode: x.mode, sha: x.sha, barHash: barHash(effectiveBar(p)), bar: x.barWhy }, finished: true,
   });
   // A review that came late (it waited for the AI; its run is long over): act on its verdict now (verdictwork.ts).
   if (late && isServer()) void import('./verdictwork.ts').then((m) => m.actOnVerdict(p.id, 'a late review')).catch(() => {});
