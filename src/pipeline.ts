@@ -217,7 +217,7 @@ async function runAll(run: string, ids: string[], o: RunOptions) {
     const s = startStep(run, p.id, 'error', 'pipeline');
     updateStep(s, { status: 'failed', detail: String(e.message ?? e), finished: true });
   })));
-  // Ideas (polish, ideas) not seen for 14 days drop off the ideas list (kept as expired).
+  // Ideas not seen for 14 days drop off the ideas list (kept as expired); polish never expires (polish.ts).
   const expired = expireIdeas();
   if (expired) {
     const s = startStep(run, 'studio', 'backlog', 'ideas expired');
@@ -243,6 +243,17 @@ async function runAll(run: string, ids: string[], o: RunOptions) {
     const { autoFix } = await import('./agents.ts');
     const started = autoFix(run);
     if (started.length) db.prepare(`UPDATE runs SET detail = ? WHERE id = ?`).run(`${report.headline} · agents started ${started.length} fixes`, run);
+    // The weekly polish pass (polish.ts): a game whose last one is a week old gets a change on its worst polish.
+    const { startFix, agentSettings } = await import('./agents.ts');
+    if ((db.prepare('SELECT kind FROM runs WHERE id = ?').get(run) as any)?.kind === 'daily' && agentSettings().enabled) {
+      const { weeklyPolish } = await import('./polish.ts');
+      const games = loadProducts().filter((p) => isGame(p) && !managedElsewhere(p));
+      const pass = weeklyPolish(games, startFix);
+      if (pass.started.length || pass.skipped.length) {
+        const s = startStep(run, 'studio', 'backlog', 'polish pass');
+        updateStep(s, { status: pass.started.length ? 'done' : 'skipped', detail: [pass.started.length ? `weekly polish pass started for ${pass.started.map((x) => `${x.product} (${x.findings.length} items, ${x.change})`).join(', ')}` : '', ...pass.skipped.map((x) => `${x.product}: ${x.why}`)].filter(Boolean).join('; ').slice(0, 600), data: pass, finished: true });
+      }
+    }
     // A project that still reads fix-first or broken with nobody on it: a fixer, or one Inbox card saying why (verdictwork.ts).
     void import('./verdictwork.ts').then((m) => m.actOnRun(run)).catch((e) => console.warn(`[studio] verdicts after ${run}: ${e.message ?? e}`));
   }

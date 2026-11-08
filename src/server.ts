@@ -490,6 +490,23 @@ const server = http.createServer(async (req, res) => {
       // Each with the library entities it names (finding-entities.ts); without Gen, the findings alone.
       return send(res, 200, { findings: await (await import('./finding-entities.ts')).withEntities(list).catch(() => list) });
     }
+    // The polish list, worst for a player first, and each game's last weekly polish pass (polish.ts).
+    if (route === '/api/polish' && method === 'GET') {
+      const P = await import('./polish.ts');
+      const product = q('product');
+      const list = P.polishList(product, Number(q('limit')) || 50);
+      const products = [...new Set(product ? [product] : list.map((f) => f.product))];
+      return send(res, 200, { polish: list, passes: Object.fromEntries(products.map((id) => [id, { last: P.lastPolishPass(id), due: P.polishDue(id) }])), every: `${P.POLISH_DAYS} days`, batch: P.POLISH_BATCH });
+    }
+    // A polish pass now, on the product's worst POLISH_BATCH items (the weekly one runs after the daily run).
+    m = /^\/api\/polish\/([\w-]+)$/.exec(route);
+    if (m && method === 'POST') {
+      const P = await import('./polish.ts');
+      const items = P.polishList(m[1], P.POLISH_BATCH).map((f) => f.id);
+      if (!items.length) return send(res, 409, { error: `${m[1]} has nothing on its polish list` });
+      const { startFix } = await import('./agents.ts');
+      return send(res, 200, { change: startFix(m[1], items, { auto: true, by: P.POLISH_BY }), findings: items });
+    }
     m = /^\/api\/findings\/(f_[0-9a-f]+)$/.exec(route);
     if (m && method === 'GET') return send(res, 200, getFinding(m[1]) ?? { error: 'no such finding' });
     if (m && method === 'PATCH') return send(res, 200, updateFinding(m[1], await readJson(req)));
@@ -1307,5 +1324,9 @@ server.listen(listenPort, cloud ? '0.0.0.0' : '127.0.0.1', () => {
     if (moved) console.log(`[backlog] moved ${moved} open polish/idea finding(s) to the ideas list`);
     const expired = expireIdeas();
     if (expired) console.log(`[backlog] ${expired} idea(s) expired (not seen for 14 days)`);
-  });
+  }).then(() => import('./polish.ts')).then(({ restoreExpiredPolish }) => {
+    // Polish never expires (polish.ts): once, the polish that did goes back on the list.
+    const back = restoreExpiredPolish();
+    if (back) console.log(`[backlog] ${back} expired polish finding(s) back on the polish list`);
+  }).catch((e) => console.warn(`[backlog] startup repairs: ${e.message ?? e}`));
 });

@@ -75,10 +75,23 @@ export function studioMcp({ studio, waitRun }: Client = { studio: defaultStudio,
     },
     {
       name: 'studio_backlog',
-      description: 'Findings from playtest reviews (merged across days), most severe first. Each has a fix suggestion and screenshot asset ids (Hawkes Gen library), and entities: the library entities it names (a character, prop or stage), so art problems can be fixed there (hawkesgen_entities, hawkesgen_entity_make with revise, hawkesgen_entity_judge). The backlog (open, fixing) is blockers and bugs; polish and ideas are the ideas list (status idea): never auto-fixed, expired after 14 days unseen. Reviews are capped (5 new findings each), are told the known findings and report only new ones, and say which known ones look fixed. Review modes: daily = full; beta runs and playtests of an agent change (on request) = verify; live checks = regression (only regressions and blockers reach the backlog outside full). A product that meets its quality bar (products.json "quality") gets regression-only daily reviews until its build changes meaningfully.',
+      description: 'Findings from playtest reviews (merged across days), most severe first. Each has a fix suggestion and screenshot asset ids (Hawkes Gen library), and entities: the library entities it names (a character, prop or stage), so art problems can be fixed there (hawkesgen_entities, hawkesgen_entity_make with revise, hawkesgen_entity_judge). The backlog (open, fixing) is blockers and bugs; polish and ideas are the ideas list (status idea): never auto-fixed one by one; ideas expire after 14 days unseen, polish never does (studio_polish has it by player pain, and a weekly polish pass fixes the worst). Reviews are capped (5 new findings each), are told the known findings and report only new ones, and say which known ones look fixed. Review modes: daily = full; beta runs and playtests of an agent change (on request) = verify; live checks = regression (only regressions and blockers reach the backlog outside full). A product that meets its quality bar (products.json "quality") gets regression-only daily reviews until its build changes meaningfully.',
       inputSchema: obj({ product: str('Product id (optional)'), status: str('open, fixing, fixed, wontfix, idea (the ideas list), expired (comma list; default open,fixing)'), severity: str('blocker, bug, polish, idea (comma list, optional)') }),
       run: async ({ product, status, severity }) => (await studio(`/api/findings?${new URLSearchParams({ ...(product ? { product } : {}), status: status ?? 'open,fixing', ...(severity ? { severity } : {}) })}`)).findings
         .map((f: any) => ({ id: f.id, product: f.product, severity: f.severity, area: f.area, title: f.title, detail: f.detail, fix: f.fix, status: f.status, seen: f.seen, scenario: f.scenario, shots: f.shots, note: f.note, ...(f.entities?.length ? { entities: f.entities } : {}) })),
+    },
+    {
+      name: 'studio_polish',
+      description: 'The polish list: polish findings (never expire) ordered by player pain (severity, how often seen, how it is felt: camera and controls first, then visuals, then text), with each game\'s last weekly polish pass and whether one is due. With start and a product: a polish pass now, one agent change on its worst 5 items (the weekly one runs by itself after the daily run).',
+      inputSchema: obj({ product: str('Product id (optional; required with start)'), start: bool('Start a polish pass for the product now'), limit: { type: 'number', description: 'How many items (default 50)' } }),
+      run: async ({ product, start, limit }) => {
+        if (start) {
+          if (!product) throw new Error('start needs a product');
+          return studio(`/api/polish/${encodeURIComponent(product)}`, { method: 'POST', body: {} });
+        }
+        const r = await studio(`/api/polish?${new URLSearchParams({ ...(product ? { product } : {}), ...(limit ? { limit: String(limit) } : {}) })}`);
+        return { ...r, polish: r.polish.map((f: any) => ({ id: f.id, product: f.product, pain: f.pain, title: f.title, area: f.area, seen: f.seen, last_seen: new Date(f.last_seen).toISOString(), fix: f.fix, shots: f.shots })) };
+      },
     },
     {
       name: 'studio_update_finding',
