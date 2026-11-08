@@ -294,7 +294,7 @@
     for (let i = next.length; i < nodes.length; i++) nodes[i].remove();
     rows = next;
     renderTail();
-    if (atBottom || (added && c.status === 'thinking')) log.scrollTop = log.scrollHeight;
+    if (atBottom) log.scrollTop = log.scrollHeight; // never yank a reader who scrolled up (send() scrolls down itself)
   }
 
   // The push stream (stream.js): a conversation changed (or the safety tick, or a reconnect). The badge comes with the
@@ -354,6 +354,7 @@
       current = c.id;
       await loadList();
       await loadConversation();
+      const lg = el('#talkLog'); if (lg) lg.scrollTop = lg.scrollHeight; // your own message: show it
     } catch (e) {
       alert(e.message);
       el('#talkInput').value = text;
