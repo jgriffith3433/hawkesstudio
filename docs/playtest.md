@@ -319,6 +319,16 @@ exact place again.
 rubric's limits (`docs/quality.md`). Games report what only they know: `feel.coyoteMs`, `feel.jumpBufferMs`,
 `feel.hitStopMs`.
 
+**Silence is not success.** A sensor that is off reads as "no feel problems", so it says so. When it starts the run logs a
+`feel-sensor` event, `{"adapter":"babylon"|"frames"|"none","player":"yes"|"no","camera":"yes"|"no"}`, and at finish the
+metrics always carry `feel.samples` (frames the sensor saw; 0 when it never started) and, on the Babylon adapter,
+`feel.activeSeconds` (time `active()` was true, or the whole run when the game gives none). `feel.scene` may be a scene or
+a function returning one. If the Babylon scene the sensor attached to renders no frame in 5 s, it looks for the scene once more
+and logs it (a second `feel-sensor` event). **Studio** (`feelSensorFindings`): a game with feel wiring (a `feel`
+array in its report) that plays with `feel.samples` 0, or with `feel.activeSeconds` 0 (3D gameplay that never became active),
+files one bug, "feel sensor not running in <scenario>", with the sensor's events. `feel: false` reports neither metric
+and files nothing.
+
 ## Explore
 
 The **explore bot** (`clients/web/hawkes-explore.js`, copy it next to `hawkes-playtest.js`) plays a level the way a

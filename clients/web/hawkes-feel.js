@@ -119,7 +119,7 @@ export function createFeelCore({ emit = () => {}, seed = 0, scene = () => undefi
   let wasGrounded = null;
   const flips = [];
   // Measurements for the quality rubric's hard limits (metrics(), sent as playtest metrics feel.*).
-  const m = { worstFrameMs: 0, maxCamDegPerSec: 0, camClipSeconds: 0, insideSeconds: 0, latencies: [] };
+  const m = { worstFrameMs: 0, maxCamDegPerSec: 0, camClipSeconds: 0, insideSeconds: 0, latencies: [], samples: 0, activeSeconds: 0, tracksActive: false };
   let press = null;              // { t, pos } when movement input last went from up to down
   let lastInput = 0;
 
@@ -161,6 +161,10 @@ export function createFeelCore({ emit = () => {}, seed = 0, scene = () => undefi
 
   function sample(s) {
     const dt = Math.max(0, s.dt ?? 0);
+    // Silence must not read as success: count the frames the sensor saw, and (when the adapter knows) the seconds the
+    // player was the player's to move. Studio files a bug when these stay 0 in a run (src/feel.ts feelSensorFindings).
+    m.samples++;
+    if (s.active !== undefined) { m.tracksActive = true; if (s.active && dt < 1) m.activeSeconds += dt; }
     const med = median();
     const quiet = s.t < quietUntil;
 
@@ -279,7 +283,8 @@ export function createFeelCore({ emit = () => {}, seed = 0, scene = () => undefi
      * A measurement the game gave the sensor nothing for is left out, never reported as 0.
      */
     metrics() {
-      const out = {};
+      const out = { 'feel.samples': m.samples };
+      if (m.tracksActive) out['feel.activeSeconds'] = r2(m.activeSeconds);
       if (dts.length) out['feel.worstHitchMs'] = Math.round(m.worstFrameMs);
       if (m.maxCamDegPerSec > 0) out['feel.maxCameraDegPerSec'] = Math.round(m.maxCamDegPerSec);
       if (prev?.cam) out['feel.cameraClipSeconds'] = r2(m.camClipSeconds);
@@ -372,8 +377,8 @@ export function startBabylonFeel(opts = {}) {
     if (opts.active) { try { active = !!opts.active(); } catch { active = true; } }
     if (active && !wasActive) core.cut();
     wasActive = active;
-    if (!active) { core.sample({ t: (now - t0) / 1000, dt, input: 0 }); return; }
-    const s = { t: (now - t0) / 1000, dt, input: Number(input()) || 0 };
+    if (!active) { core.sample({ t: (now - t0) / 1000, dt, input: 0, active: false }); return; }
+    const s = { t: (now - t0) / 1000, dt, input: Number(input()) || 0, active: true };
     const cam = readNode(opts.camera) ?? scene.activeCamera;
     if (cam?.getWorldMatrix) {
       const m = cam.getWorldMatrix().m;
@@ -410,6 +415,13 @@ export function startBabylonFeel(opts = {}) {
     cut: (seconds) => core.cut(seconds),
     flags: () => core.flags(),
     metrics: () => core.metrics(),
+    /** What the sensor is attached to now (the "feel-sensor" event): the adapter, whether it finds a player and a camera. */
+    info: () => {
+      let player = false, camera = false;
+      try { player = !!readPos(opts.player); } catch {}
+      try { camera = !!(readNode(opts.camera) ?? scene.activeCamera); } catch {}
+      return { adapter: 'babylon', player, camera };
+    },
     stop() { try { scene.onAfterRenderObservable.remove(obs); } catch {} keys?.stop(); },
   };
 }
@@ -427,7 +439,7 @@ export function startFrameFeel(opts = {}) {
     requestAnimationFrame(tick);
   };
   requestAnimationFrame(tick);
-  return { core, cut: (s) => core.cut(s), flags: () => core.flags(), metrics: () => core.metrics(), stop() { on = false; } };
+  return { core, cut: (s) => core.cut(s), flags: () => core.flags(), metrics: () => core.metrics(), info: () => ({ adapter: 'frames', player: false, camera: false }), stop() { on = false; } };
 }
 
 const MOVE_KEYS = new Set(['KeyW', 'KeyA', 'KeyS', 'KeyD', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight']);

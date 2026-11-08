@@ -21,7 +21,7 @@ import { creditRefusal, holdRun as creditsHold, creditsWaiting } from './creditw
 import { gen, genRun, genUp, ensureGen } from './gen.ts';
 import { ensureServer, gitState, treeFingerprint, runCheck, serveDir, stopServed } from './local.ts';
 import { absorb, applyKnown, expireIdeas, notSeenIn, type ReviewMode } from './backlog.ts';
-import { feelFindings } from './feel.ts';
+import { feelFindings, feelSensorFindings } from './feel.ts';
 import { barState, barHash, reviewedSha, reviewParams } from './review.ts';
 import { isGame, effectiveBar } from './quality.ts';
 import { funReview } from './fun-review.ts';
@@ -909,7 +909,10 @@ async function playScenario(run: string, p: Product, asked: Playtest, { review =
  */
 function fileFeel(run: string, p: Product, name: string, scenario: string, r: any, mode?: string, at?: unknown) {
   try {
-    const list = feelFindings(r, { scenario, mode: mode ?? 'full', at: typeof at === 'string' && at ? at : undefined });
+    const list = [
+      ...feelSensorFindings(r, { scenario }),
+      ...feelFindings(r, { scenario, mode: mode ?? 'full', at: typeof at === 'string' && at ? at : undefined }),
+    ];
     if (!list.length) return;
     const got = absorb(p.id, run, name, list, { mode: 'full' });
     console.log(`[studio] ${p.id} ${name}: feel ${r.feel?.length ?? 0} flags${r.polish?.score != null ? `, polish ${r.polish.score}/10` : ''} -> ${got.added.length} new, ${got.updated.length} seen again, ${got.ideas.length} ideas`);
