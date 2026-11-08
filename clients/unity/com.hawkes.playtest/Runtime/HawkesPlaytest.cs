@@ -69,7 +69,10 @@ namespace Hawkes.Playtest
         public string at = "";
         /// <summary>Every option the runner passed, as JSON (scenario-specific keys such as a level or stage).</summary>
         public string json = "";
+        /// <summary>A feel replay's place, "x,y,z[,yaw]" (HawkesFeel.ParseSpot); empty: none. Stand the player there and play on.</summary>
+        public string spot = "";
         public bool HasStart => !string.IsNullOrEmpty(at);
+        public bool HasSpot => !string.IsNullOrEmpty(spot);
     }
 
     public delegate IEnumerator PlaytestBot(string scenario, PlaytestOptions options, PlaytestRun run);
@@ -254,7 +257,7 @@ namespace Hawkes.Playtest
         /// <summary>The contract version this package speaks (2: the page and the native transport).</summary>
         public const int ContractVersion = 2;
         /// <summary>This package's version (package.json), sent in the native hello.</summary>
-        public const string PackageVersion = "0.3.0";
+        public const string PackageVersion = "0.3.1";
 
         public static string Product { get; private set; }
         public static IReadOnlyList<PlaytestScenario> Scenarios => _scenarios;
@@ -431,6 +434,7 @@ namespace Hawkes.Playtest
             public int seed = 1;
             public float speed = 1f;
             public string at;
+            public string spot;
             public string options;
             public string action;
             public bool down;
@@ -513,7 +517,7 @@ namespace Hawkes.Playtest
                     Command c;
                     try { c = JsonUtility.FromJson<Command>(raw); }
                     catch { continue; }
-                    if (c.cmd == "start") StartScenario(c.id, new PlaytestOptions { seed = c.seed, speed = c.speed, at = c.at ?? "", json = c.options ?? "" });
+                    if (c.cmd == "start") StartScenario(c.id, new PlaytestOptions { seed = c.seed, speed = c.speed, at = c.at ?? "", spot = c.spot ?? "", json = c.options ?? "" });
                     else if (c.cmd == "stop") Stop();
                     else if (c.cmd == "input") _input?.Invoke(c.action, c.down);
                 }

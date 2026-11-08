@@ -268,8 +268,10 @@ runs, and costs nothing when none does.
   `installPlaytest({ ..., feel: { player: () => hero.mesh, input: () => movingKeys ? 1 : 0 } })` (`feel: false` turns
   it off). Optional: `camera`, `active()` (false while the game plays itself or a cutscene runs: only hitches are watched then, and the hand-over counts as a cut), `inside()` (the game's own "inside a solid" check), `grounded()`, `animSpeed()` (m/s the
   feet animate at), `isSolid(mesh)` for the rays, `thresholds`.
-- **Unity** (`com.hawkes.playtest` 0.3: `HawkesFeel`): add the component once, set `Player` (and `Input`; the camera
-  defaults to `Camera.main`). WebGL pushes flags to the page; desktop sends them as run events.
+- **Unity** (`com.hawkes.playtest` 0.3.1: `HawkesFeel`): add the component once, set `Player` (and `Input`; the camera
+  defaults to `Camera.main`). Optional: `Active`, `Grounded`, `AnimSpeed`, `Solid` (layers for the rays), `HeadHeight`.
+  WebGL pushes flags to the page; desktop sends them as run events. A replay's place is `options.spot`
+  (`HawkesFeel.ParseSpot`); call `HawkesFeel.Cut()` after standing the player there.
 
 | kind | severity | what |
 |---|---|---|
