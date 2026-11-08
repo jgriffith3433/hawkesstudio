@@ -357,6 +357,8 @@ export function startCloudJob(unit: string, spec: Spec, o: { gitToken?: string |
         // The job's checkout is sparse like Studio's worktree (the job's disk is memory: a Unity project's whole tree killed it).
         if (big) sparse = jobSparsePatterns(cwd);
       }
+      // A conflict pass (agents.ts agentPassRaw writes MERGE_BASE_FILE): the job brings that branch's side in with its token.
+      const mergeBase = ws ? readMergeBase(cwd) : null;
       // An agent's read-only copies of the Studio's other projects' repos (access.ts), next to its worktree.
       const repos = ws ? await import('./access.ts').then((A) => A.extraReposFor(cwd)).catch(() => []) : [];
       await r.put(key(unit, 'spec.json'), JSON.stringify({
@@ -364,7 +366,7 @@ export function startCloudJob(unit: string, spec: Spec, o: { gitToken?: string |
         // Talk's answer (detach.ts names its unit hawkes-talk-<conversation>-…): its output goes up as it comes.
         ...(unit.startsWith('hawkes-talk-') ? { flushMs: TALK_FLUSH_MS() } : {}),
         // tokenAt and refresh: a job that waits for a machine past most of the token's hour gets a fresh one (jobgit.ts).
-        git: ws ? { head: ws.head, branch: ws.branch, remote: ws.remote, bundle: Boolean(ws.bundle), token: gitToken, tokenAt: Date.now(), ...(await gitRefresh(unit, ws.remote)), ...(big ? (sparse ? { sparse } : {}) : { partial: false, lfs: true }), ...(unit.startsWith('hawkes-agent-') ? { commitDirty: true } : {}) } : null,
+        git: ws ? { ...(mergeBase ? { base: mergeBase } : {}), head: ws.head, branch: ws.branch, remote: ws.remote, bundle: Boolean(ws.bundle), token: gitToken, tokenAt: Date.now(), ...(await gitRefresh(unit, ws.remote)), ...(big ? (sparse ? { sparse } : {}) : { partial: false, lfs: true }), ...(unit.startsWith('hawkes-agent-') ? { commitDirty: true } : {}) } : null,
       }));
       f.execution = await r.start(unit);
       await r.put(key(unit, 'execution.txt'), f.execution);
@@ -377,6 +379,16 @@ export function startCloudJob(unit: string, spec: Spec, o: { gitToken?: string |
     }
     follow(f, spec.cwd, spec.env);
   })();
+}
+
+/** Where a conflict pass names the base branch it merges (inside .hawkes/, so it travels by name and never into a commit). */
+export const MERGE_BASE_FILE = '.hawkes/merge-base.txt';
+/** The base branch a conflict pass merges, or null (not a conflict pass, or a name that isn't a plain branch name). */
+export function readMergeBase(cwd: string): string | null {
+  try {
+    const b = fs.readFileSync(path.join(cwd, MERGE_BASE_FILE), 'utf8').trim();
+    return /^[\w][\w./-]{0,100}$/.test(b) && !b.includes('..') ? b : null;
+  } catch { return null; }
 }
 
 /** The source patterns the job checks out in a big repo: the same ones Studio's worktree got (source-ready.ts). */

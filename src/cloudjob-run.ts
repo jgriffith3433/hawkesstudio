@@ -28,7 +28,7 @@ type Store = Pick<JobRunner, 'put' | 'get' | 'list' | 'remove'>;
 // files unless the spec asks (`lfs`), so a big repo (a Unity project of GBs) is never pulled whole; `partial: false` asks
 // for a full clone (Studio's spec for a small repo, so the pass can read any old file without a token).
 // tokenAt: when Studio minted `token`; refresh: where and with which job key to ask for a fresh one (jobgit.ts).
-type JobGit = { head: string; branch: string; remote: string; bundle: boolean; token: string | null; tokenAt?: number; refresh?: { url: string; key: string }; shallow?: boolean; partial?: boolean; lfs?: boolean; commitDirty?: boolean; sparse?: string[] };
+type JobGit = { base?: string; head: string; branch: string; remote: string; bundle: boolean; token: string | null; tokenAt?: number; refresh?: { url: string; key: string }; shallow?: boolean; partial?: boolean; lfs?: boolean; commitDirty?: boolean; sparse?: string[] };
 type Spec = { kind?: 'build'; outputs?: string[]; file: string; args: string[]; cwd: string; env: Record<string, string>; sessions: string; git: JobGit | null; flushMs?: number; repos?: ExtraRepo[] };
 /** A read-only copy of another of the Studio's repos, next to the worktree (access.ts extraReposFor). */
 type ExtraRepo = { slug: string; remote: string; token: string | null; dir: string };
@@ -74,6 +74,31 @@ function gitWithToken(cwd: string, args: string[], token: string | null, env: Re
   const auth = token ? ['-c', `http.extraHeader=Authorization: Basic ${Buffer.from(`x-access-token:${token}`).toString('base64')}`] : [];
   const r = spawnSync('git', ['-c', 'safe.directory=*', ...auth, ...args], { cwd, encoding: 'utf8', env: { ...process.env, GIT_TERMINAL_PROMPT: '0', ...env }, maxBuffer: 64 * 1024 * 1024 });
   return { status: r.status, ok: r.status === 0, err: String(r.stderr ?? r.error?.message ?? '').trim() };
+}
+
+/**
+ * A conflict pass (spec.git.base): beta's side of the merge is brought into the clone WITH the token, before the agent
+ * starts. The clone is blobless and keeps no credentials, so the agent's own `git merge origin/<base>` could not fetch the
+ * blobs it needs ("could not read Username", "could not fetch <blob> from promisor remote") and every pass looked like a
+ * conflict (Yooba Land #509, #510, 2026-11-08). Fetches the base, tries the merge (which pulls the blobs both sides
+ * touched into the clone) and always backs out of it (the agent makes the real merge, with those blobs already here); a
+ * real overlap is named by file. A credentials or fetch failure is its own answer, never a conflict. Exported for the tests.
+ */
+export function premerge(cwd: string, base: string, token: string | null, log: (s: string) => void, run: typeof gitWithToken = gitWithToken):
+  { state: 'current' | 'clean' | 'conflict' | 'failed'; files: string[]; err?: string } {
+  const ref = `refs/remotes/origin/${base}`;
+  const f = run(cwd, ['fetch', '--quiet', 'origin', `+refs/heads/${base}:${ref}`], token);
+  if (!f.ok) return { state: 'failed', files: [], err: `fetch of origin/${base}: ${f.err.split('\n').pop()}` };
+  if (git(cwd, ['merge-base', '--is-ancestor', ref, 'HEAD']).ok) return { state: 'current', files: [] };
+  const id = ['-c', 'user.name=Hawkes Studio', '-c', 'user.email=studio@hawkesgen.ai', '-c', 'core.hooksPath=/dev/null'];
+  const m = run(cwd, [...id, 'merge', '--no-ff', '--no-commit', ref], token);
+  if (m.ok) { git(cwd, ['merge', '--abort']); return { state: 'clean', files: [] }; }
+  const files = git(cwd, ['diff', '--name-only', '--diff-filter=U']).out.split('\n').filter(Boolean);
+  git(cwd, ['merge', '--abort']);
+  // No unmerged file: git could not even read the other side (credentials, a blob it could not fetch): not a conflict.
+  if (!files.length) return { state: 'failed', files: [], err: `merge of origin/${base}: ${m.err.split('\n').filter(Boolean).slice(-2).join(' | ')}` };
+  log(`[job] origin/${base} conflicts with the branch in ${files.slice(0, 10).join(', ')}${files.length > 10 ? ` and ${files.length - 10} more` : ''}`);
+  return { state: 'conflict', files };
 }
 
 /** A spec's token older than this is swapped for a fresh one before cloning (GitHub's last an hour). */
@@ -136,7 +161,7 @@ export function jobToken(unit: string, g: Pick<JobGit, 'token' | 'tokenAt' | 're
 }
 
 /** Rebuilds the workspace; returns the HEAD the pass starts from. */
-export async function prepare(unit: string, spec: Spec, store: Store, log: (s: string) => void, at: (p: string) => string = (p) => p, baseline?: Baseline) {
+export async function prepare(unit: string, spec: Spec, store: Store, log: (s: string) => void, at: (p: string) => string = (p) => p, baseline?: Baseline, tokenOut?: { get?: () => string | null }) {
   const key = (n: string) => `jobs/${unit}/${n}`;
   const cwd = at(spec.cwd);
   if (spec.git) {
@@ -144,6 +169,7 @@ export async function prepare(unit: string, spec: Spec, store: Store, log: (s: s
     fs.rmSync(cwd, { recursive: true, force: true });
     const env = jobGitEnv(spec.git);
     const tok = jobToken(unit, spec.git, log);
+    if (tokenOut) tokenOut.get = tok.get;
     await tok.freshen();
     if (spec.git.shallow && !spec.git.bundle) {
       // Just that commit (a beta site's build): GitHub hands out any commit it has by id.
@@ -189,6 +215,12 @@ export async function prepare(unit: string, spec: Spec, store: Store, log: (s: s
       const probe = probeSource(cwd);
       if (!probe.ok) throw new Error(sourceError(`the job's clone of ${spec.git.remote}`, probe));
       log(`[job] source check: ${probe.tracked} tracked files, read ${probe.sample ?? 'the root files'}`);
+    }
+    if (g.base) {
+      const pm = await tok.run((t) => { const r = premerge(cwd, g.base!, t, log); return { ...r, ok: r.state !== 'failed', err: r.err ?? '' }; });
+      if (pm.state === 'failed') log(`[job] ${tok.message(`bringing in origin/${g.base}`, pm.err ?? '')} (the agent is told; this is not a conflict)`);
+      else if (pm.state === 'clean') log(`[job] origin/${g.base} merges into the branch with no conflicts (its files are fetched for the agent)`);
+      else if (pm.state === 'current') log(`[job] the branch already has origin/${g.base}`);
     }
     // As in Studio's own clone: the agent's brief and notes never go into a commit.
     fs.appendFileSync(path.join(cwd, '.git', 'info', 'exclude'), '\n.hawkes/\n');
@@ -350,7 +382,7 @@ export function replayOf(cwd: string, start: string, head: string, maxBytes = 12
 }
 
 /** What the pass did: its new commits (a bundle), its uncommitted files and the session folder. */
-export function collect(spec: Spec, start: string | null, tmp: string, at: (p: string) => string = (p) => p, baseline?: Baseline) {
+export function collect(spec: Spec, start: string | null, tmp: string, at: (p: string) => string = (p) => p, baseline?: Baseline, token: string | null = null) {
   const cwd = at(spec.cwd);
   const entries = folderEntries(at(spec.sessions), (rel) => path.join(spec.sessions, rel));
   let gitOut: { head: string; bundle: boolean } | null = null;
@@ -364,7 +396,8 @@ export function collect(spec: Spec, start: string | null, tmp: string, at: (p: s
       // The same commits as plain files too: the bundle's thin pack may not apply in Studio's light clone.
       commit = replayOf(cwd, start, head);
       bundle = path.join(tmp, 'out.bundle');
-      const b = git(cwd, ['bundle', 'create', bundle, 'HEAD', `^${start}`]);
+      // With the token: in a partial clone the bundle needs objects (a merged-in base's blobs) it must fetch from GitHub.
+      const b = gitWithToken(cwd, ['bundle', 'create', bundle, 'HEAD', `^${start}`], token);
       if (!b.ok) {
         // Never silent: HEAD moved, so the pass committed, but its commits can't travel. The pass fails with git's reason.
         bundle = null;
@@ -439,8 +472,9 @@ export async function runUnit(unit: string, store: Store, { every = 2000, at = (
   let signal: string | null = null;
   let error: string | undefined;
   const baseline: Baseline = new Map();
+  const tokenBox: { get?: () => string | null } = {};
   try {
-    start = await prepare(unit, spec, store, say, at, baseline);
+    start = await prepare(unit, spec, store, say, at, baseline, tokenBox);
     const user = agentUser();
     if (user) {
       // The pass's user owns its workspace and session folder (and nothing of this runner's).
@@ -501,7 +535,7 @@ export async function runUnit(unit: string, store: Store, { every = 2000, at = (
   }
   try {
     if (spec.git?.commitDirty && !error) commitLeftovers(at(spec.cwd), say, undefined, baseline);
-    const out = collect(spec, start, tmp, at, baseline);
+    const out = collect(spec, start, tmp, at, baseline, tokenBox.get?.() ?? null);
     if (out.bundle) await store.put(key('out/out.bundle'), fs.readFileSync(out.bundle));
     await store.put(key('out/out.pack'), out.pack);
     await flush();
