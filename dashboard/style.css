@@ -18,6 +18,7 @@ header { display: flex; align-items: center; gap: 24px; padding: 12px 20px; bord
 .brand small { color: var(--dim); font-weight: 400; font-size: 12px; }
 .mark { display: inline-grid; place-items: center; width: 26px; height: 26px; border-radius: 6px; background: var(--accent); color: #062018; font-weight: 800; }
 nav { display: flex; gap: 4px; }
+nav.pending { visibility: hidden; } /* the full tab list in the HTML is replaced by the grouped one once /api/me answers (groups.js); never show it */
 nav button { background: none; border-color: transparent; }
 nav button.on { background: var(--panel2); border-color: var(--line); }
 .status { margin-left: auto; color: var(--dim); font-size: 12px; display: flex; gap: 12px; flex-wrap: wrap; }

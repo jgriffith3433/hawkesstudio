@@ -30,7 +30,7 @@
     }
     window.studioMe = full;
     window.gateUi?.(full);
-    window.groupNav?.(full);
+    try { window.groupNav?.(full); } finally { document.querySelector("nav.pending")?.classList.remove("pending"); }
     const status = $('#status');
     if (me && status && !$('#meBox')) {
       const el = document.createElement('span');
