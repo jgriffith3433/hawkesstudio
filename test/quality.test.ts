@@ -54,6 +54,16 @@ test('the playtest gate fails on codes, tags and metrics, and lists what was nev
   assert.equal(q.qualityGate(game, { fun: { verdict: 'thin' } }).fails.length, 0, 'thin is said, not failed');
 });
 
+test("the gate reads the feel layer's sensor flags and vision hits", () => {
+  const once = q.qualityGate(game, { feel: [{ kind: 'foot-sliding', severity: 'polish', detail: 'once' }] });
+  assert.equal(once.fails.length, 0, 'one polish sighting is not a broken rule');
+  const g = q.qualityGate(game, {
+    feel: [{ kind: 'foot-sliding', severity: 'polish', count: 3, scene: 'Town', detail: 'walk cycle at 2x ground speed' }, { kind: 'camera-snap', severity: 'bug', detail: 'not a rubric rule' }],
+    polish: [{ kind: 'z-fighting', severity: 'bug', where: 'the bridge', detail: 'flicker' }, { kind: 'floating-props', severity: 'bug', where: 'market', detail: 'a crate hovers' }],
+  });
+  assert.deepEqual(g.fails.map((f) => f.check).sort(), ['floating-sunk', 'foot-slide', 'z-flicker']);
+});
+
 test("J's lines join the rubric, its brief and its gate", () => {
   assert.equal(q.ruleFromReport('Rule: doors always open toward the player'), 'doors always open toward the player');
   assert.equal(q.ruleFromReport('The door is broken'), null);

@@ -2458,7 +2458,7 @@ async function verifyChange(c: Change, p: Product, findings: any[], jobs?: JobMe
     // The game quality rubric on the played build (quality.ts): the fun review (a demo fails), then every rule's
     // playtest and vision checks from the problems, metrics and findings. A broken rule fails the gate (acceptance.ts).
     const fun = isGame(p) ? await funReview(p, { review: v, playtest: { ...(run.result ?? {}), scenario }, dir: c.worktree, request: c.request }).catch(() => null) : null;
-    const q = qualityGate(p, { problems: run.result?.problems, metrics: run.result?.metrics, findings: v.findings, fun });
+    const q = qualityGate(p, { problems: run.result?.problems, metrics: run.result?.metrics, findings: v.findings, fun, feel: run.result?.feel, polish: run.result?.polish?.hits });
     if (fun) addLog(c.id, `fun review: ${fun.verdict}${fun.why ? `: ${fun.why}` : ''}`.slice(0, 600));
     for (const f of q.fails) addLog(c.id, failLine(f).slice(0, 600));
     return { outcome: run.result?.outcome, ...(isGame(p) ? { quality: q, ...(fun ? { fun } : {}) } : {}), scenario, ...(agentScenario && agentOptions ? { options: agentOptions } : {}), playtest: run.id, review: rev.id, verdict: v.verdict, changeWorked: v.changeWorked, known: v.known ?? [], summary: v.summary, scores: v.scores, findings: (v.findings ?? []).slice(0, 8), video, url: localUrl(p), build, ...(criteria ? { criteria } : {}), ...(rev.via === 'claude-code' ? { reviewVia: `Claude Code, ${rev.billing}` } : {}) };

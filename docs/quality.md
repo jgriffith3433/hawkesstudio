@@ -45,7 +45,9 @@ A product is a game when its `kind` is empty or `game` and its engine isn't `sta
    the playtest never took are a warning ("Not measured"), so a game without probes shows what was never checked.
 
 The playtest probes themselves (sensors in `window.hawkesPlaytest`, clips and screenshots, the vision polish rubric)
-belong to the playtest feel work (`docs/playtest.md`); the gate reads whatever codes and metrics they report.
+belong to the playtest feel layer (`docs/playtest.md#feel`, `src/feel.ts`). The gate reads what it reports too: a
+sensor flag or vision hit whose kind a rule names (`foot-sliding`, `slope-slide`, `inside-geometry`, z-fighting,
+floating or sunk props, inside-out models, backwards text) breaks that rule when it is a bug or was seen twice.
 
 ## Planning a game
 

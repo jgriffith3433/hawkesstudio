@@ -178,7 +178,30 @@ function named(item: any, checks: ReturnType<typeof rubricChecks>) {
  * (the game doesn't report them yet: said, never a pass). `data`: a playtest's result or step data (problems, metrics)
  * and its review (findings, or the review's own data); `fun`: the fun review (fun-review.ts).
  */
-export function qualityGate(p: Pick<Product, 'id' | 'engine' | 'kind'>, data: { problems?: any[]; metrics?: Record<string, unknown> | null; findings?: any[]; fun?: { verdict?: string; why?: string } | null }) {
+/**
+ * The playtest feel layer's kinds (feel.ts: the game's sensor flags in result.feel, the vision pass's hits in
+ * result.polish.hits) that break a rubric rule, by the check they count as. A kind that is itself a check id or a
+ * quality.* code (a line of the owner's sent as playtest.run's rubric) counts as that check.
+ */
+const FEEL_KINDS: [RegExp, string][] = [
+  [/^foot-slid/, 'foot-slide'],
+  [/^slope-slide$/, 'stuck-airborne'],
+  [/^inside-geometry$|clip/, 'clipping'],
+  [/z-?fight|flicker/, 'z-flicker'],
+  [/inside-?out|backface|normals/, 'inside-out'],
+  [/backwards|mirror|text/, 'text-mirrored'],
+  [/float|sunk|buried|hover/, 'floating-sunk'],
+  [/empty|bare|barren/, 'empty-area'],
+];
+function feelCheck(kind: string, checks: ReturnType<typeof rubricChecks>) {
+  const k = kind.trim().toLowerCase();
+  const own = checks.find((c) => c.id === k || c.problem === k || c.problem === `quality.${k}`);
+  if (own) return own;
+  const hit = FEEL_KINDS.find(([re]) => re.test(k));
+  return hit ? checks.find((c) => c.id === hit[1]) ?? null : null;
+}
+
+export function qualityGate(p: Pick<Product, 'id' | 'engine' | 'kind'>, data: { problems?: any[]; metrics?: Record<string, unknown> | null; findings?: any[]; fun?: { verdict?: string; why?: string } | null; feel?: any[] | null; polish?: any[] | null }) {
   if (!isGame(p)) return { fails: [] as QualityFail[], unmeasured: [] as string[] };
   const checks = rubricChecks(p.id);
   const fails: QualityFail[] = [];
@@ -192,6 +215,16 @@ export function qualityGate(p: Pick<Product, 'id' | 'engine' | 'kind'>, data: { 
   for (const pr of data.problems ?? []) {
     const c = named(pr, checks);
     if (c) add(c, String(pr.message ?? pr.title ?? c.what));
+  }
+  // The feel layer: sensor flags and vision hits of a kind a rule names. The rule is broken by a bug-severity one, or
+  // by the same kind seen twice or more (one polish sighting can be a fluke of the run).
+  const feel = [...(Array.isArray(data.feel) ? data.feel : []), ...(Array.isArray(data.polish) ? data.polish : [])].filter((f) => f?.kind);
+  const seenKind = new Map<string, number>();
+  for (const f of feel) seenKind.set(String(f.kind), (seenKind.get(String(f.kind)) ?? 0) + Math.max(1, Number(f.count) || 1));
+  for (const f of feel) {
+    if (f.severity !== 'bug' && (seenKind.get(String(f.kind)) ?? 0) < 2) continue;
+    const c = feelCheck(String(f.kind), checks);
+    if (c) add(c, `${f.title ?? f.kind}${f.scene ? ` in ${f.scene}` : ''}${f.where ? ` (${f.where})` : ''}: ${String(f.detail ?? '').slice(0, 200)}`);
   }
   for (const f of data.findings ?? []) {
     const c = named(f, checks);
