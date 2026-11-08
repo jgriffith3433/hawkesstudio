@@ -38,7 +38,7 @@ So everything also shows in Gen's dashboard, library and usage. Studio adds:
 - the beta lane and the go-live gate (with rollback)
 
 - `docs/playtest.md`: **the playtest contract** every game implements (`window.hawkesPlaytest`).
-- `docs/quality.md`: **the game quality rules** every game agent, review and gate follows (`quality/game-rubric.json`, `src/quality.ts`, `src/quality-scan.ts`, `src/fun-review.ts`, `src/worldplan.ts`): the six rules, the pre-PR scan, the `quality.*` playtest codes and metrics, the fun reviewer, world bible and vertical slice, and how J's feedback becomes new rubric lines (`studio_rubric`, "Rule: ..." on the report button).
+- `docs/quality.md`: **the game quality rules** every game agent, review and gate follows (`quality/game-rubric.json`, `src/quality.ts`, `src/quality-scan.ts`, `src/fun-review.ts`, `src/worldplan.ts`): the seven rules, hard and measured limits (camera, clipping, input latency, hitches; a game's `tuning`), the pre-PR scan, the `quality.*` playtest codes and metrics, the separate judge (unclear never passes), the game floor on review bars (`effectiveBar`), job kinds (`jobKind`), the polish list and weekly polish pass (`src/polish.ts`, `studio_polish`), shots and a clip on visible changes (`showcase`), the fun reviewer, world bible and vertical slice, and how J's feedback becomes new rubric lines (`studio_rubric`, "Rule: ..." on the report button). The explore bot (`clients/web/hawkes-explore.js`, `src/explore.ts`) is in `docs/playtest.md#explore`.
 - `docs/projects.md`: **projects** (games are projects now: a game, a web app with its own server, beta and live, or a site): their fields (kind, more repos, versionPath, checks, testSignIn, reportOrigins), bug reports from any project's pages with its report key (`src/reportkey.ts`), playtests signed in through its beta (`src/playtest-signin.ts`), the commit a deployed app runs (`src/deployed.ts`).
 - `docs/daily.md`: how J and Claude use the daily loop.
 - `docs/memory.md`: **the shared memory** every agent, scout, reviewer and Talk reads and writes (decisions, preferences,
@@ -102,7 +102,7 @@ npm run typecheck; npm test    # tests need Hawkes Gen running (they use free lo
 Node 24 runs `src/*.ts` directly (type stripping: erasable syntax only, `.ts` imports). `bin/restart.ps1` (re)starts
 the service detached; restart it after changing `src/`. The MCP server (`bin/studio-mcp.mjs`, in every project's
 `.mcp.json` as `hawkesstudio`) gives agents:
-- `studio_overview`, `studio_report`, `studio_backlog`, `studio_update_finding`
+- `studio_overview`, `studio_report`, `studio_backlog`, `studio_update_finding`, `studio_polish`
 - `studio_run`, `studio_playtest`, `studio_build`, `studio_run_status`
 - `studio_assets`, `studio_make_assets`
 - `studio_deploy_plan`, `studio_deploy` (also `action: merge-main | beta`), `studio_rollback`

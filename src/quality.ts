@@ -20,7 +20,14 @@ import { db, newId } from './db.ts';
 import { ROOT, StudioError, type Product } from './config.ts';
 
 export type CheckKind = 'scan' | 'playtest' | 'vision' | 'review';
-export type RubricCheck = { id: string; kind: CheckKind; what: string; problem?: string; metric?: string; max?: number };
+/**
+ * A check. `metric` with `max` / `min`: a playtest metric outside fails it (a product's `tuning` can move the limit for
+ * its own game). `hard`: one sighting of the kind fails, whatever its severity (the camera clipping, snapping). `optional`:
+ * a metric only some games report (coyote time in a game with no jumping), not listed as unmeasured when missing.
+ */
+export type RubricCheck = { id: string; kind: CheckKind; what: string; problem?: string; metric?: string; max?: number; min?: number; hard?: boolean; optional?: boolean };
+/** A game's own limits for measured checks, by metric: products.json `tuning`, e.g. { "feel.inputLatencyMs": { "max": 120 } }. */
+export type QualityTuning = Record<string, { max?: number; min?: number }>;
 export type RubricRule = { id: string; title: string; why: string; build: string[]; checks: RubricCheck[] };
 /** A line the owner added from feedback: an instruction (and, with `problem`, a code that fails a playtest). */
 export type RubricLine = { id: string; product: string | null; rule: string; text: string; words: string | null; problem: string | null; by: string; source: string; at: number };
@@ -149,6 +156,19 @@ export function rubricReviewText(p: Product) {
   return `Game quality rules: a finding that breaks one starts its title with the check in brackets, e.g. "[quality:ground-contact] The fountain floats above the square", and is at least a bug. ${checks.map((c) => `[quality:${c.id}] ${c.what}`).join(' ')}`;
 }
 
+/**
+ * A game's quality bar never accepts prototype work (the owner's gaps list, 2026-11-08: "quality bars stop accepting
+ * prototype art or sparse content"): sentences of products.json `quality` that accept prototype, placeholder, temporary
+ * or grey-box art, stub UI or sparse content are left out, and GAME_FLOOR is added. Other projects keep their bar as is.
+ */
+export const GAME_FLOOR = 'Floor for every game (above anything else in this bar): no prototype, placeholder or grey-box art, no stub or programmer UI, no sparse or empty areas. Every area is dressed and alive, and the camera and controls feel right (the game quality rules).';
+const ACCEPTS_LESS = /\b(prototype|placeholder|programmer|temp(orary)?|grey-?box|gray-?box|blockout|stub|sparse|rough|unfinished|basic shapes?|primitives?)\b[^.!?]*\b(accept(ed|able)?|fine|ok(ay)?|allowed|is enough|are enough|will do|for now)\b|\b(accept(ed|able)?|fine|ok(ay)?|allowed)\b[^.!?]*\b(prototype|placeholder|programmer|grey-?box|gray-?box|blockout|stub|sparse)\b/i;
+export function effectiveBar(p: Pick<Product, 'engine' | 'kind' | 'quality'>): string | undefined {
+  if (!isGame(p)) return p.quality?.trim() || undefined;
+  const kept = String(p.quality ?? '').split(/(?<=[.!?])\s+/).map((x) => x.trim()).filter((x) => x && !ACCEPTS_LESS.test(x)).join(' ');
+  return [kept, GAME_FLOOR].filter(Boolean).join('\n');
+}
+
 // ------------------------------------------------------------------ the playtest gate
 
 const TAG = /^\s*\[quality:([a-z0-9_-]+)\]/i;
@@ -184,6 +204,9 @@ function named(item: any, checks: ReturnType<typeof rubricChecks>) {
  * quality.* code (a line of the owner's sent as playtest.run's rubric) counts as that check.
  */
 const FEEL_KINDS: [RegExp, string][] = [
+  [/^camera-blocked$|^camera-(inside|clip)/, 'camera-clip'],
+  [/^camera-(snap|jump|shake)/, 'camera-snap'],
+  [/^jitter$|^collision-pop$/, 'movement-jitter'],
   [/^foot-slid/, 'foot-slide'],
   [/^slope-slide$/, 'stuck-airborne'],
   [/^inside-geometry$|clip/, 'clipping'],
@@ -201,7 +224,7 @@ function feelCheck(kind: string, checks: ReturnType<typeof rubricChecks>) {
   return hit ? checks.find((c) => c.id === hit[1]) ?? null : null;
 }
 
-export function qualityGate(p: Pick<Product, 'id' | 'engine' | 'kind'>, data: { problems?: any[]; metrics?: Record<string, unknown> | null; findings?: any[]; fun?: { verdict?: string; why?: string } | null; feel?: any[] | null; polish?: any[] | null }) {
+export function qualityGate(p: Pick<Product, 'id' | 'engine' | 'kind'> & { tuning?: QualityTuning }, data: { problems?: any[]; metrics?: Record<string, unknown> | null; findings?: any[]; fun?: { verdict?: string; why?: string } | null; feel?: any[] | null; polish?: any[] | null; motion?: { worstHitchMs?: number | null } | null; software?: boolean }) {
   if (!isGame(p)) return { fails: [] as QualityFail[], unmeasured: [] as string[] };
   const checks = rubricChecks(p.id);
   const fails: QualityFail[] = [];
@@ -216,14 +239,15 @@ export function qualityGate(p: Pick<Product, 'id' | 'engine' | 'kind'>, data: { 
     const c = named(pr, checks);
     if (c) add(c, String(pr.message ?? pr.title ?? c.what));
   }
-  // The feel layer: sensor flags and vision hits of a kind a rule names. The rule is broken by a bug-severity one, or
-  // by the same kind seen twice or more (one polish sighting can be a fluke of the run).
-  const feel = [...(Array.isArray(data.feel) ? data.feel : []), ...(Array.isArray(data.polish) ? data.polish : [])].filter((f) => f?.kind);
+  // The feel layer: sensor flags and vision hits of a kind a rule names. The rule is broken by a bug-severity one, by
+  // any sighting of a hard check's kind (the camera clipping or snapping), or by the same kind seen twice or more (one
+  // polish sighting can be a fluke of the run). Hitches say nothing on a browser without a GPU.
+  const feel = [...(Array.isArray(data.feel) ? data.feel : []), ...(Array.isArray(data.polish) ? data.polish : [])].filter((f) => f?.kind && !(data.software && f.kind === 'hitch'));
   const seenKind = new Map<string, number>();
   for (const f of feel) seenKind.set(String(f.kind), (seenKind.get(String(f.kind)) ?? 0) + Math.max(1, Number(f.count) || 1));
   for (const f of feel) {
-    if (f.severity !== 'bug' && (seenKind.get(String(f.kind)) ?? 0) < 2) continue;
     const c = feelCheck(String(f.kind), checks);
+    if (!c || (f.severity !== 'bug' && !c.hard && (seenKind.get(String(f.kind)) ?? 0) < 2)) continue;
     if (c) add(c, `${f.title ?? f.kind}${f.scene ? ` in ${f.scene}` : ''}${f.where ? ` (${f.where})` : ''}: ${String(f.detail ?? '').slice(0, 200)}`);
   }
   for (const f of data.findings ?? []) {
@@ -231,15 +255,22 @@ export function qualityGate(p: Pick<Product, 'id' | 'engine' | 'kind'>, data: { 
     if (c) add(c, `${String(f.title ?? '').replace(TAG, '').trim()}${f.detail ? `: ${String(f.detail).slice(0, 200)}` : ''}`);
   }
   const unmeasured: string[] = [];
-  const metrics = (data.metrics ?? {}) as Record<string, unknown>;
+  const metrics = { ...(data.metrics ?? {}) } as Record<string, unknown>;
+  // The review's own hitch measure (Hawkes Gen's motion pass on the recording).
+  if (Number.isFinite(Number(data.motion?.worstHitchMs)) && metrics['video.worstHitchMs'] === undefined) metrics['video.worstHitchMs'] = Number(data.motion!.worstHitchMs);
+  if (data.software) for (const k of ['feel.worstHitchMs', 'video.worstHitchMs', 'feel.inputLatencyMs']) delete metrics[k];
   for (const c of checks) {
     if (!c.metric) continue;
     const v = Number(metrics[c.metric]);
     if (metrics[c.metric] === undefined || metrics[c.metric] === null || !Number.isFinite(v)) {
-      if (!fails.some((f) => f.check === c.id)) unmeasured.push(`${c.id} (${c.metric})`);
+      if (!c.optional && !fails.some((f) => f.check === c.id)) unmeasured.push(`${c.id} (${c.metric})`);
       continue;
     }
-    if (c.max !== undefined && v > c.max) add(c, `${c.metric} = ${v}, over ${c.max}: ${c.what}`);
+    const own = p.tuning?.[c.metric];
+    const max = own?.max ?? c.max;
+    const min = own?.min ?? c.min;
+    if (max !== undefined && v > max) add(c, `${c.metric} = ${v}, over ${max}: ${c.what}`);
+    if (min !== undefined && v < min) add(c, `${c.metric} = ${v}, under ${min}: ${c.what}`);
   }
   if (data.fun?.verdict === 'demo') {
     const c = checks.find((x) => x.id === 'fun-review');

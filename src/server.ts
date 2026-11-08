@@ -400,6 +400,16 @@ const server = http.createServer(async (req, res) => {
     // Playtests: every run with its video, screenshots and review (dashboard Playtests tab), trends.
     if (route === '/api/playtests' && method === 'GET') return send(res, 200, listPlaytests({ product: q('product'), scenario: q('scenario'), where: q('where'), device: q('device'), outcome: q('outcome'), limit: Number(q('limit')) || 100, before: Number(q('before')) || undefined }));
     if (route === '/api/playtests/audit' && method === 'GET') return send(res, 200, (await import('./playaudit.ts')).playAudit(Number(q('days')) || 30));
+    // The explore bot's heatmap of one playtest step (explore.ts): where it went, got stuck and fell out, as an SVG.
+    if (route === '/api/playtests/heatmap' && method === 'GET') {
+      const row = db.prepare(`SELECT * FROM steps WHERE id = ? AND kind = 'playtest'`).get(q('step') ?? '');
+      const step = row ? rowToStep(row) : null;
+      const map = (step?.data as any)?.explore;
+      if (!step || !map) return send(res, 404, { error: 'no explore map for that playtest step' });
+      const { heatmapSvg } = await import('./explore.ts');
+      res.writeHead(200, { 'Content-Type': 'image/svg+xml', 'Cache-Control': 'no-store' });
+      return void res.end(heatmapSvg(map, `${step.product} ${step.name}`));
+    }
     if (route === '/api/playtests/trends' && method === 'GET') return send(res, 200, trends({ product: q('product'), days: Number(q('days')) || 30 }));
     // The Playtests page's grid: playing, waiting and just finished, with each one's Studio context (livetests.ts).
     if (route === '/api/playtests/live' && method === 'GET') return send(res, 200, await (await import('./livetests.ts')).livePlaytests());
@@ -489,6 +499,23 @@ const server = http.createServer(async (req, res) => {
       const list = listFindings({ product: q('product'), status: q('status'), severity: q('severity'), limit: Number(q('limit')) || 500 });
       // Each with the library entities it names (finding-entities.ts); without Gen, the findings alone.
       return send(res, 200, { findings: await (await import('./finding-entities.ts')).withEntities(list).catch(() => list) });
+    }
+    // The polish list, worst for a player first, and each game's last weekly polish pass (polish.ts).
+    if (route === '/api/polish' && method === 'GET') {
+      const P = await import('./polish.ts');
+      const product = q('product');
+      const list = P.polishList(product, Number(q('limit')) || 50);
+      const products = [...new Set(product ? [product] : list.map((f) => f.product))];
+      return send(res, 200, { polish: list, passes: Object.fromEntries(products.map((id) => [id, { last: P.lastPolishPass(id), due: P.polishDue(id) }])), every: `${P.POLISH_DAYS} days`, batch: P.POLISH_BATCH });
+    }
+    // A polish pass now, on the product's worst POLISH_BATCH items (the weekly one runs after the daily run).
+    m = /^\/api\/polish\/([\w-]+)$/.exec(route);
+    if (m && method === 'POST') {
+      const P = await import('./polish.ts');
+      const items = P.polishList(m[1], P.POLISH_BATCH).map((f) => f.id);
+      if (!items.length) return send(res, 409, { error: `${m[1]} has nothing on its polish list` });
+      const { startFix } = await import('./agents.ts');
+      return send(res, 200, { change: startFix(m[1], items, { auto: true, by: P.POLISH_BY }), findings: items });
     }
     m = /^\/api\/findings\/(f_[0-9a-f]+)$/.exec(route);
     if (m && method === 'GET') return send(res, 200, getFinding(m[1]) ?? { error: 'no such finding' });
@@ -1307,5 +1334,9 @@ server.listen(listenPort, cloud ? '0.0.0.0' : '127.0.0.1', () => {
     if (moved) console.log(`[backlog] moved ${moved} open polish/idea finding(s) to the ideas list`);
     const expired = expireIdeas();
     if (expired) console.log(`[backlog] ${expired} idea(s) expired (not seen for 14 days)`);
-  });
+  }).then(() => import('./polish.ts')).then(({ restoreExpiredPolish }) => {
+    // Polish never expires (polish.ts): once, the polish that did goes back on the list.
+    const back = restoreExpiredPolish();
+    if (back) console.log(`[backlog] ${back} expired polish finding(s) back on the polish list`);
+  }).catch((e) => console.warn(`[backlog] startup repairs: ${e.message ?? e}`));
 });

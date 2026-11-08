@@ -1,5 +1,5 @@
 // Reviews converge (backlog.ts, review.ts): bugs to the backlog, polish and ideas to the ideas list, only regressions and
-// blockers outside a full review, known findings judged by id, ideas expiring after 14 days unseen.
+// blockers outside a full review, known findings judged by id, ideas expiring after 14 days unseen (polish never).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -49,11 +49,15 @@ test('known findings: the list a review gets, "present" counts as seen, "fixed" 
   assert.equal(getFinding(bug.id)!.status, 'open');
 });
 
-test('ideas expire after 14 days unseen; old open polish moves to the ideas list once', () => {
-  const idea = knownFindings(P).find((k) => k.status === 'idea')!;
-  db.prepare('UPDATE findings SET last_seen = ? WHERE id = ?').run(Date.now() - 15 * 86_400_000, idea.id);
+test('ideas expire after 14 days unseen, polish never does; old open polish moves to the ideas list once', () => {
+  absorb(P, 'r_8', 'smoke@local', [f('idea', 'A photo mode for the harbour')]);
+  const ideas = knownFindings(P).filter((k) => k.status === 'idea');
+  const idea = ideas.find((k) => k.severity === 'idea')!;
+  const polish = ideas.find((k) => k.severity === 'polish')!;
+  db.prepare('UPDATE findings SET last_seen = ? WHERE id IN (?, ?)').run(Date.now() - 15 * 86_400_000, idea.id, polish.id);
   assert.equal(expireIdeas(), 1);
   assert.equal(getFinding(idea.id)!.status, 'expired');
+  assert.equal(getFinding(polish.id)!.status, 'idea', 'polish stays on the polish list');
   const r = absorb(P, 'r_9', 'smoke@local', [f('bug', 'Old polish that was filed as a bug')]);
   db.prepare(`UPDATE findings SET severity = 'polish' WHERE id = ?`).run(r.added[0]);
   assert.equal(moveOldPolishToIdeas(), 1);

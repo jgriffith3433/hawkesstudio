@@ -25,16 +25,19 @@ test('flags group by kind and scene, bugs first, with places and a replay', () =
 });
 
 test('outside the daily run only bugs are filed; software runs drop hitches', () => {
-  const r = { software: true, feel: [flag({ kind: 'camera-snap' }), flag({ kind: 'hitch', count: 50 }), flag({ kind: 'stuck', severity: 'bug' })], polish: { hits: [{ kind: 'z-fighting', title: 'Z-fighting (surfaces flicker through each other)', severity: 'polish', where: 'wall', detail: 'flicker', t: 3, asset: 'a1' }] } };
+  const r = { software: true, feel: [flag({ kind: 'collision-pop' }), flag({ kind: 'hitch', count: 50 }), flag({ kind: 'stuck', severity: 'bug' })], polish: { hits: [{ kind: 'z-fighting', title: 'Z-fighting (surfaces flicker through each other)', severity: 'polish', where: 'wall', detail: 'flicker', t: 3, asset: 'a1' }] } };
   assert.deepEqual(feelFindings(r, { scenario: 's', mode: 'verify' }).map((f) => f.title), ['Player gets stuck on geometry']);
   const full = feelFindings(r, { scenario: 's' });
   assert.ok(!full.some((f) => /hitch/i.test(f.title)));
   assert.ok(full.some((f) => /Z-fighting/.test(f.title) && f.area === 'art' && f.shots[0] === 'a1'));
 });
 
-test('repeated camera snaps become a bug', () => {
-  assert.equal(feelSeverity('camera-snap', 'polish', 1), 'polish');
-  assert.equal(feelSeverity('camera-snap', 'polish', 2), 'bug');
+test('the camera snapping, jumping or clipping is a bug at once (hard limits); jitter when repeated', () => {
+  assert.equal(feelSeverity('camera-snap', 'polish', 1), 'bug');
+  assert.equal(feelSeverity('camera-jump', 'polish', 1), 'bug');
+  assert.equal(feelSeverity('camera-blocked', 'polish', 1), 'bug');
+  assert.equal(feelSeverity('jitter', 'polish', 2), 'polish');
+  assert.equal(feelSeverity('jitter', 'polish', 3), 'bug');
   assert.equal(feelSeverity('hitch', 'polish', 99), 'polish');
 });
 

@@ -27,9 +27,9 @@ const scan = await import('../src/quality-scan.ts');
 const game = { id: 'qgame', engine: 'web', kind: undefined } as any;
 const site = { id: 'qsite', engine: 'static', kind: undefined } as any;
 
-test('the rubric has the six rules, each with checks', () => {
+test('the rubric has the seven rules, each with checks', () => {
   const ids = q.baseRules().map((r) => r.id);
-  assert.deepEqual(ids, ['text-facing', 'no-z-fighting', 'normals-outward', 'ground-contact', 'animation-over-time', 'living-world']);
+  assert.deepEqual(ids, ['text-facing', 'no-z-fighting', 'normals-outward', 'ground-contact', 'animation-over-time', 'living-world', 'camera-and-controls']);
   for (const r of q.baseRules()) assert.ok(r.checks.length && r.build.length, r.id);
   assert.equal(q.isGame(game), true);
   assert.equal(q.isGame(site), false);
@@ -42,7 +42,7 @@ test('the playtest gate fails on codes, tags and metrics, and lists what was nev
   assert.ok(none.unmeasured.some((u) => u.includes('quality.maxQuietSeconds')), 'a missing reading is unmeasured, not a pass');
   const g = q.qualityGate(game, {
     problems: [{ severity: 'bug', message: 'quality.ground-contact: Barn 12 cm below the ground' }, { severity: 'bug', message: 'a plain bug' }],
-    metrics: { 'quality.maxQuietSeconds': 25, 'quality.textOnlyBeats': 0 },
+    metrics: { 'quality.maxQuietSeconds': 25, 'quality.textOnlyBeats': 0, 'feel.cameraClipSeconds': 0, 'feel.inputLatencyMs': 40, 'feel.worstHitchMs': 50 },
     findings: [{ title: '[quality:text-facing] The shop sign reads backwards' }],
     fun: { verdict: 'demo', why: 'one empty room' },
   });
@@ -58,7 +58,7 @@ test("the gate reads the feel layer's sensor flags and vision hits", () => {
   const once = q.qualityGate(game, { feel: [{ kind: 'foot-sliding', severity: 'polish', detail: 'once' }] });
   assert.equal(once.fails.length, 0, 'one polish sighting is not a broken rule');
   const g = q.qualityGate(game, {
-    feel: [{ kind: 'foot-sliding', severity: 'polish', count: 3, scene: 'Town', detail: 'walk cycle at 2x ground speed' }, { kind: 'camera-snap', severity: 'bug', detail: 'not a rubric rule' }],
+    feel: [{ kind: 'foot-sliding', severity: 'polish', count: 3, scene: 'Town', detail: 'walk cycle at 2x ground speed' }, { kind: 'stuck', severity: 'bug', detail: 'not a rubric rule' }],
     polish: [{ kind: 'z-fighting', severity: 'bug', where: 'the bridge', detail: 'flicker' }, { kind: 'floating-props', severity: 'bug', where: 'market', detail: 'a crate hovers' }],
   });
   assert.deepEqual(g.fails.map((f) => f.check).sort(), ['floating-sunk', 'foot-slide', 'z-flicker']);
@@ -217,4 +217,40 @@ test("a game's roadmap starts with its world bible and vertical slice, once", as
   assert.match(String(slice.depends), new RegExp(bibleTask.id));
   assert.deepEqual((await wp.ensureFoundation('qgame', 'J')).added, [], 'added once');
   assert.deepEqual((await wp.ensureFoundation('qsite', 'J')).added, [], 'not a game');
+});
+
+test('hard limits: one sighting of the camera clipping or snapping fails; hitches and latency by number', () => {
+  const metrics = { 'feel.cameraClipSeconds': 0, 'feel.inputLatencyMs': 40, 'feel.worstHitchMs': 50 };
+  const snap = q.qualityGate(game, { metrics, feel: [{ kind: 'camera-snap', severity: 'polish', count: 1, detail: 'turned 120 degrees in a frame' }] });
+  assert.deepEqual(snap.fails.map((f) => f.check), ['camera-snap']);
+  const clip = q.qualityGate(game, { metrics, feel: [{ kind: 'camera-blocked', severity: 'polish', detail: 'camera behind the wall' }, { kind: 'inside-geometry', severity: 'polish', detail: 'in the wall' }] });
+  assert.deepEqual(clip.fails.map((f) => f.check).sort(), ['camera-clip', 'clipping']);
+  const jitterOnce = q.qualityGate(game, { metrics, feel: [{ kind: 'jitter', severity: 'polish', detail: 'once' }] });
+  assert.equal(jitterOnce.fails.length, 0, 'jitter is not a hard limit');
+  const slow = q.qualityGate(game, { metrics: { 'feel.cameraClipSeconds': 0.4, 'feel.inputLatencyMs': 180, 'feel.worstHitchMs': 600, 'feel.coyoteMs': 20 }, motion: { worstHitchMs: 400 } });
+  assert.deepEqual(slow.fails.map((f) => f.check).sort(), ['camera-clip', 'coyote-time', 'hitch', 'input-latency', 'video-hitch']);
+  assert.match(slow.fails.find((f) => f.check === 'coyote-time')!.evidence, /under 80/);
+});
+
+test("a game's tuning moves its limits; software runs ignore timing; optional metrics aren't unmeasured", () => {
+  const metrics = { 'feel.cameraClipSeconds': 0, 'feel.inputLatencyMs': 120, 'feel.worstHitchMs': 50, 'feel.coyoteMs': 60 };
+  assert.deepEqual(q.qualityGate(game, { metrics }).fails.map((f) => f.check).sort(), ['coyote-time', 'input-latency']);
+  const tuned = { ...game, tuning: { 'feel.inputLatencyMs': { max: 150 }, 'feel.coyoteMs': { min: 50 } } };
+  assert.deepEqual(q.qualityGate(tuned, { metrics }).fails, []);
+  const soft = q.qualityGate(game, { software: true, metrics: { 'feel.cameraClipSeconds': 0, 'feel.inputLatencyMs': 900, 'feel.worstHitchMs': 3000 }, feel: [{ kind: 'hitch', severity: 'polish', count: 40, detail: 'slow' }] });
+  assert.deepEqual(soft.fails, []);
+  const none = q.qualityGate(game, { metrics: {} });
+  assert.ok(none.unmeasured.some((u) => u.includes('feel.inputLatencyMs')));
+  assert.ok(!none.unmeasured.some((u) => /coyote|jump-buffer|hit-stop|video/.test(u)), 'optional metrics are not listed');
+});
+
+test("a game's bar never accepts prototype art or sparse content; other projects keep theirs", () => {
+  const g = { ...game, quality: 'Players can finish the first level. Prototype art and sparse content are accepted. Placeholder UI is fine for now. Controls feel tight.' };
+  const bar = q.effectiveBar(g)!;
+  assert.doesNotMatch(bar, /Prototype art|Placeholder UI/);
+  assert.match(bar, /Players can finish the first level\. Controls feel tight\./);
+  assert.match(bar, /no prototype, placeholder or grey-box art/);
+  assert.equal(q.effectiveBar({ ...game, quality: undefined }), q.GAME_FLOOR);
+  assert.equal(q.effectiveBar({ ...site, quality: 'Prototype art is accepted.' }), 'Prototype art is accepted.');
+  assert.equal(q.effectiveBar({ ...site, quality: undefined }), undefined);
 });

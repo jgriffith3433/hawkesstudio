@@ -149,3 +149,28 @@ test('the Babylon adapter watches only hitches while the game says the player is
   assert.equal(got.filter((f) => f.kind === 'camera-snap').length, 0);
   s.stop();
 });
+
+test('metrics: worst frame, camera turn rate and time behind walls', () => {
+  const f = frames(120, (i, t) => ({ player: { x: 1, y: 0, z: 0 }, cam: { pos: { x: 0, y: 2, z: -3 }, fwd: fwd(t * 30) }, cameraBlocked: i >= 60 && i < 90 }));
+  f[100].dt = 0.3;
+  const { core } = run(f);
+  const m = core.metrics();
+  assert.equal(m['feel.worstHitchMs'], 300);
+  assert.ok(m['feel.maxCameraDegPerSec'] >= 29 && m['feel.maxCameraDegPerSec'] <= 31, String(m['feel.maxCameraDegPerSec']));
+  assert.ok(Math.abs(m['feel.cameraClipSeconds'] - 0.5) < 0.02, String(m['feel.cameraClipSeconds']));
+  assert.equal(m['feel.inputLatencyMs'], undefined, 'no presses, no latency');
+});
+
+test('metrics: input latency from the press to the first visible movement', () => {
+  // Movement goes down at frame 10; the player starts moving 6 frames later (100 ms at 60 fps, counted from frame 9).
+  const f = frames(120, (i, t) => ({ input: i >= 10 && i < 60 ? 1 : 0, player: { x: i >= 15 && i < 60 ? (i - 14) * 0.05 : i >= 60 ? 2.3 : 0, y: 0, z: 0 } }));
+  const { core } = run(f);
+  const m = core.metrics();
+  assert.equal(m['feel.inputSamples'], 1);
+  assert.equal(m['feel.inputLatencyMs'], 100);
+});
+
+test('metrics: a press against a wall (no movement) is not counted', () => {
+  const { core } = run(frames(120, (i) => ({ input: i >= 10 ? 1 : 0, player: { x: 0, y: 0, z: 0 } })));
+  assert.equal(core.metrics()['feel.inputLatencyMs'], undefined);
+});

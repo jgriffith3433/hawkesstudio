@@ -59,6 +59,21 @@ export interface PlaytestOptions {
   stallSeconds?: number;
   /** The feel sensor (hawkes-feel.js): false turns it off; the player and input turn on the player checks. */
   feel?: false | FeelOptions;
+  /**
+   * The explore bot (hawkes-explore.js, docs/playtest.md#explore): with feel.player set, adds an "explore" scenario that
+   * hugs walls, jumps edges and maps stuck and fall spots. true: the game is playable on load.
+   */
+  explore?: boolean | ExploreOptions;
+}
+
+export interface ExploreOptions {
+  /** Gets the player into play (past menus) before the bot starts. */
+  enter?(t: Tracker): void | Promise<void>;
+  /** How long the bot plays (default 120). */
+  seconds?: number;
+  /** Grid cell size in meters (default 2). */
+  cell?: number;
+  thresholds?: Record<string, unknown>;
 }
 
 export interface FeelOptions {

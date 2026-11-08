@@ -1,6 +1,7 @@
 // The backlog: findings from playtest reviews, merged across days. A finding seen again updates the existing
 // one (seen count, last seen, latest screenshots) instead of piling up. Blockers and bugs are the backlog; polish and
-// ideas are the ideas list (status idea), never auto-fixed and expired after 14 days unseen. Reviews are told what's
+// ideas are the ideas list (status idea), never auto-fixed one by one. Ideas expire after 14 days unseen; polish never
+// does, and a weekly polish pass takes the worst of it (polish.ts). Reviews are told what's
 // known (knownFindings) and report only new problems, saying which known ones look fixed or are still there (applyKnown).
 
 import { db, newId, J, parse } from './db.ts';
@@ -157,10 +158,13 @@ export function applyKnown(product: string, run: string, scenario: string, known
   return { fixed, present };
 }
 
-/** Ideas not seen for IDEA_DAYS expire (status expired: kept, out of the list). Studio runs it at startup and after each run. */
+/**
+ * Ideas not seen for IDEA_DAYS expire (status expired: kept, out of the list). Studio runs it at startup and after each
+ * run. Polish never expires (the owner, 2026-11-08): it stays on the polish list, ordered by player pain (polish.ts).
+ */
 export function expireIdeas(days = IDEA_DAYS) {
   const cutoff = Date.now() - days * 86_400_000;
-  return Number(db.prepare(`UPDATE findings SET status = 'expired', note = ?, updated = ? WHERE status = 'idea' AND last_seen < ?`)
+  return Number(db.prepare(`UPDATE findings SET status = 'expired', note = ?, updated = ? WHERE status = 'idea' AND severity != 'polish' AND last_seen < ?`)
     .run(`Expired: not seen for ${days} days.`, Date.now(), cutoff).changes);
 }
 
