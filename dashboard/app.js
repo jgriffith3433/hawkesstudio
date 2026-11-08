@@ -405,7 +405,7 @@ function devLine(p) {
   return `<div class="meta">${links}${parts.length ? ` — ${parts.join(' · ')}` : ''}${stop}</div>${conflict}`;
 }
 
-const VERDICT = { ship: 'Looks good to ship', 'fix-first': 'Works, but has problems to fix first', broken: 'Broken: needs fixing', stale: 'Earlier problems are fixed (re-checked)' };
+const VERDICT = { ship: 'Looks good to ship', 'fix-first': 'Works, but has problems to fix first', broken: 'Broken: needs fixing', stale: 'Earlier problems are fixed (re-checked)', 'nothing-to-playtest': 'Nothing to playtest' };
 /** The label of a bad verdict: what the review said (its age and commit) and what Studio is doing about it. */
 function verdictLine(vw) {
   const said = vw.verdict === 'broken' ? 'Broken' : 'Fix first';
@@ -422,6 +422,8 @@ function health(p) {
   // Handed over to another Studio (config.ts managedBy): shown last, its history kept, nothing run here.
   if (p.managedBy) return { rank: 4, text: `Managed by another Studio (${p.managedBy}): this Studio doesn't run, build, change or deploy it.` };
   const r = p.lastReview?.data;
+  // A library or SDK, or a page with nothing to playtest (verdictwork.ts NEUTRAL): grey, never red, whatever is filed.
+  if (p.nothingToPlay || r?.verdict === 'nothing-to-playtest') return { rank: 3, text: `Nothing to playtest${p.nothingToPlay ? ': it is a library, and its repository page is not a game' : ': its page never exposed the playtest hook and nothing is open behind it'}.` };
   const failed = p.playtests.filter((t) => t.playtest?.status === 'failed');
   const bugs = (p.open.blocker ?? 0) + (p.open.bug ?? 0);
   const played = p.playtests.map((t) => t.playtest?.finished ?? 0).reduce((a, b) => Math.max(a, b), 0);
