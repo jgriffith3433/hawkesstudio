@@ -38,6 +38,7 @@ So everything also shows in Gen's dashboard, library and usage. Studio adds:
 - the beta lane and the go-live gate (with rollback)
 
 - `docs/playtest.md`: **the playtest contract** every game implements (`window.hawkesPlaytest`).
+- `docs/quality.md`: **the game quality rules** every game agent, review and gate follows (`quality/game-rubric.json`, `src/quality.ts`, `src/quality-scan.ts`, `src/fun-review.ts`, `src/worldplan.ts`): the six rules, the pre-PR scan, the `quality.*` playtest codes and metrics, the fun reviewer, world bible and vertical slice, and how J's feedback becomes new rubric lines (`studio_rubric`, "Rule: ..." on the report button).
 - `docs/projects.md`: **projects** (games are projects now: a game, a web app with its own server, beta and live, or a site): their fields (kind, more repos, versionPath, checks, testSignIn, reportOrigins), bug reports from any project's pages with its report key (`src/reportkey.ts`), playtests signed in through its beta (`src/playtest-signin.ts`), the commit a deployed app runs (`src/deployed.ts`).
 - `docs/daily.md`: how J and Claude use the daily loop.
 - `docs/memory.md`: **the shared memory** every agent, scout, reviewer and Talk reads and writes (decisions, preferences,

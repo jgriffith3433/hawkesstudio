@@ -7,6 +7,7 @@
 //     shown on an Approve card (approvals.ts kind "github"; J: "Approve card") and run on the tap with the best token
 //     Studio has for the repo (github-app.ts accessFor). Adding the game to Studio, builds and playtests need no card.
 
+import { BIBLE_SECTIONS } from './quality-scan.ts';
 import crypto from 'node:crypto';
 import { StudioError, getProduct, saveProduct, loadProducts, managedElsewhere, type Product } from './config.ts';
 import { accessFor, gh, repoSlug, githubStatus, userToken, appConfig, installUrl, userInstallationFor } from './github-app.ts';
@@ -477,11 +478,13 @@ export function firstVersionBrief(name: string, pitch: string, starter: string) 
 
 What they want: ${pitch}
 
+- First, plan the world in docs/world-bible.md (sections: ${BIBLE_SECTIONS.join(', ')}; the game-quality skill has the template), even if small: a game is a full, living world, not a demo. Commit it before code.
+- Build the first version as a vertical slice of the bible's first area: the core loop in a place that is dressed and alive (a landmark, something moving on its own, ambient sound, more than one kind of interaction), with any story told by events and sound, not text.
 - Replace the starter's demo (the ball and orbs, or the box and stars) with this game's own core loop: what the player does, a goal, a way to win or lose, a score or progress on screen. Small and fun beats big and broken: one solid loop first.
 - Keep the playtest contract working (src/playtest.js): its bot plays through real key presses. Update the smoke scenario so it plays this game's core loop and finishes 'done' when it reaches a point a player would (scores, clears, survives). Add a scenario for anything else worth checking.
 - Shapes and colors are fine for art now; leave clear names where real art, sound and music will go (Hawkes Gen makes them later).
 - \`npm run build\` must pass. Update README.md and AGENTS.md to describe the game as it now is.`,
-    criteria: ['The game opens and its own core loop is playable (not the starter demo)', 'The smoke playtest plays the core loop with real input and finishes done', 'npm run build passes'],
+    criteria: ['docs/world-bible.md plans the world with every section', 'The game opens and its own core loop is playable (not the starter demo)', 'The smoke playtest plays the core loop with real input and finishes done', 'npm run build passes'],
   };
 }
 

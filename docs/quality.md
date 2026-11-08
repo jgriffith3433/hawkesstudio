@@ -1,0 +1,66 @@
+# Game quality rules
+
+J's standard for every game Studio makes (2026-11-08): the six rules below, built into Studio so every agent follows
+them without being told, and checked so a build that breaks them fails. The most important one is the last: a game is a
+full, living world with soul, not a little demo.
+
+## Where they live
+
+| What | Where |
+|---|---|
+| The rules (ids, why, how to build them, checks) | `quality/game-rubric.json` (override with `STUDIO_RUBRIC_FILE`) |
+| J's added lines | the `quality_lines` table (`src/quality.ts`), per game or for every game |
+| What agents read | the brief's "Game quality rules" section (`rubricBrief`), the `game-quality` skill, the role files |
+| What reviews read | the review bar (`review.ts` reviewParams: the product's own bar plus `rubricReviewText`) |
+
+A product is a game when its `kind` is empty or `game` and its engine isn't `static` (`isGame`).
+
+## The rules
+
+| Id | Rule |
+|---|---|
+| `text-facing` | In-world text reads the right way round (no negative scale, billboards face the camera correctly) |
+| `no-z-fighting` | No z-fighting, nothing clipping through anything |
+| `normals-outward` | No inside-out models |
+| `ground-contact` | Buildings and props sit on the ground: not sunk (over 5 cm) or floating (over 2 cm) |
+| `animation-over-time` | Animation holds up over time: slope landings settle within 0.3 s, feet don't slide |
+| `living-world` | A full, living world with soul: a world bible, never more than ~10 s with nothing to see, hear or do, story told through gameplay, events, cutscenes, SFX and voice, not text |
+
+## The gates
+
+1. **Before the pull request** (`src/agents.ts`, `src/quality-scan.ts`): Studio scans the files the change touched:
+   Unity scenes, prefabs and assets (mirrored text, near clip under 0.05, mirrored meshes, duplicate surfaces), C#
+   (`LookAt(camera)` on text, near clip), web code (near clip, mirrored text), glTF and GLB models (inside-out by
+   normals and signed volume, mirrored nodes), and `docs/world-bible.md` (every section). Each file is compared with
+   its version on the base branch, so only new issues count. The agent is sent back up to twice; then the change
+   fails ("still breaks the game quality rules").
+2. **The playtest** (`qualityGate` in `src/quality.ts`): a problem whose message or code starts with a rubric code
+   (`quality.ground-contact: ...`) or carries `[quality:<rule>]`, or a metric over its limit
+   (`quality.maxQuietSeconds` over 10, `quality.textOnlyBeats` over 0), fails the check. `acceptance.ts` won't merge
+   a playtested change that fails it.
+3. **The fun review** (`src/fun-review.ts`, the `fun-reviewer` role): after a game build is played and reviewed,
+   Studio asks whether it is living, thin or a demo, from the frames, events, metrics and the world bible. A demo
+   fails the quality gate; thin is reported. A review that couldn't run is "unjudged", never a pass.
+4. **Going live** (`qualityBlockers` in `src/deploy.ts`): a played build that broke a rule blocks the plan; readings
+   the playtest never took are a warning ("Not measured"), so a game without probes shows what was never checked.
+
+The playtest probes themselves (sensors in `window.hawkesPlaytest`, clips and screenshots, the vision polish rubric)
+belong to the playtest feel layer (`docs/playtest.md#feel`, `src/feel.ts`). The gate reads what it reports too: a
+sensor flag or vision hit whose kind a rule names (`foot-sliding`, `slope-slide`, `inside-geometry`, z-fighting,
+floating or sunk props, inside-out models, backwards text) breaks that rule when it is a bug or was seen twice.
+
+## Planning a game
+
+`src/worldplan.ts`: when a game's roadmap gets an item and the game has no world bible (in its source or on the
+roadmap), Studio puts two items first: **World bible** (docs/world-bible.md, judged by the fun reviewer, no code) and
+**Vertical slice** (one area finished to the full bar, depending on the bible). A new game's first version is planned
+the same way (`repokit.ts` firstVersionBrief).
+
+## J's feedback becomes rules
+
+- **Talk**: when J gives general feedback on how games must look, feel or play, Talk calls `studio_rubric add` with
+  the rule in a sentence and J's exact words. The API checks the words are in J's own message in that conversation
+  (`memory.ts` jSaid); the dashboard (J) needs no quote.
+- **The report button**: a report that starts with `Rule:` becomes a rubric line for that game instead of a bug.
+- `GET /api/quality/rubric?product=` lists the rules and lines; `POST` adds one; `DELETE /api/quality/rubric/<id>`
+  removes one (same check). A line can name a playtest code (`problem: quality.<name>`) so it fails the gate too.

@@ -51,6 +51,10 @@ agent runs: "how did we fix X last time?"); memory_get shows one with its proven
 - Bringing a game's knowledge from another Studio ("bring its canon over"): memory_transfer import with the export link
   or pasted bundle they give you, and product set to the game here; story docs or a repo's AGENTS.md they paste import
   with markdown. Imports are candidates unless they say to make them active (then quote their words).
+- Game quality rules (studio_rubric): every game follows them without being told. When they give general feedback on how
+  games must look, feel or play ("text should never ...", "every area needs ..."), not one bug, add it with
+  studio_rubric add: the rule in one sentence, words their exact message. Say it back in a line. A game's roadmap starts
+  with a World bible item and a Vertical slice item (Studio adds them): plan features on top of them, never instead.
 
 Research in parallel: for questions that need reading long docs or several places, use subagents (the Agent/Task tool)
 with studio:scout (read-only investigation, cheap: prefer it for lookups) or studio:reviewer (a second opinion on an

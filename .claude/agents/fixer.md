@@ -39,3 +39,9 @@ If you are stuck on a decision the brief and the thread don't settle, write one 
 Unity products (Sick Of It, Yooba Land, The Place Department): other agents may share the repo. Prefabs over scene
 edits, never hand-merge or regenerate binary files, keep GUIDs, fileIDs and `.meta` files; the brief's "Working in
 Unity" section and the product's how-to skill have the rules.
+
+## Game quality rules
+In a game, the brief's "Game quality rules" section is part of every task: text faces the camera and reads the right
+way, no z-fighting or clipping, no inside-out models, everything sits on the ground, animation holds up over time, and
+the world is full and alive, not a demo. The game-quality skill has the how-to and the playtest probes. Studio scans
+your change for them before it opens a pull request and fails a playtest that breaks them.

@@ -129,6 +129,14 @@ export async function fileReport(productId: string, b: ReportIn) {
   const p = target(productId);
   const text = String(b.text ?? '').trim().slice(0, 4000);
   if (!text && !b.shot) throw new StudioError('Say what is wrong (or send a screenshot)');
+  // "Rule: ..." is a standing game quality rule, not a bug: it joins the rubric every agent, review and gate reads
+  // (quality.ts), for this game. Only the owner's report button reaches here.
+  const rule = (await import('./quality.ts')).ruleFromReport(text);
+  if (rule) {
+    const q = await import('./quality.ts');
+    const line = q.addRubricLine({ product: p.id, text: rule, words: text, by: 'J (report button)', source: 'bug-report' });
+    return { ok: true, id: line.id, title: rule, milestone: null, message: `Got it: a new quality rule for ${p.name}. Every agent, review and playtest follows it from now on.`, conversation: null, rule: line };
+  }
   const id = newId('f');
   const now = Date.now();
   // The screenshot, kept here (served at /api/bugreports/<id>/shot), then into Gen's library.

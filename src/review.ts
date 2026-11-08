@@ -14,6 +14,7 @@ import { storyOf, type Product } from './config.ts';
 import { knownFindings, type ReviewMode } from './backlog.ts';
 import { repoDirs, git, shaOf } from './beta.ts';
 import { canonLines } from './memory.ts';
+import { rubricReviewText } from './quality.ts';
 
 /** Reviews run on Sonnet: cents each. */
 export const reviewModel = () => process.env.STUDIO_REVIEW_MODEL ?? 'claude-sonnet-5-5';
@@ -80,7 +81,8 @@ export function reviewParams(p: Product, job: string, mode: ReviewMode, extra: R
     // Studio's own 🐞 button sits on every beta page (bugreport.ts); reviews filed it as the game's (2026-10-31).
     product: `${p.name} (presented publicly as "${p.framing}"). ${p.about} (On beta pages Hawkes Studio adds a small red bug-report button at the right edge: it is Studio's, not part of the game, and never a finding.)`, story: withCanon(p),
     known: knownFindings(p.id),
-    ...(p.quality ? { bar: p.quality } : {}),
+    // The product's own bar, and for a game the quality rubric's checks to judge and tag (quality.ts).
+    ...(p.quality || rubricReviewText(p) ? { bar: [p.quality, rubricReviewText(p)].filter(Boolean).join('\n\n') } : {}),
     ...extra,
   };
 }

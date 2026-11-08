@@ -8,6 +8,7 @@
 
 import { askClaude } from './llm.ts';
 import type { Check } from './roadmap.ts';
+import { failLine, type QualityFail } from './quality.ts';
 
 const norm = (m: unknown): Check['met'] => (m === 'yes' || m === true ? 'yes' : m === 'no' || m === false ? 'no' : 'unclear');
 
@@ -87,6 +88,11 @@ export function gate(verify: any, criteria: string[]) {
     if (verify.error) why.push(String(verify.error).slice(0, 200));
     for (const c of (verify.criteria ?? []) as Check[]) if (c.met === 'no') why.push(`not met: ${c.criterion} (${c.evidence ?? ''})`);
   }
+  // The game quality rubric (quality.ts): a rule the played build broke (a playtest problem, a review finding, a metric
+  // over its limit, a fun review calling it a demo) fails it, like a failed criterion.
+  if (verify && played) for (const f of (verify.quality?.fails ?? []) as QualityFail[]) why.push(failLine(f));
+  // The scan before the pull request (quality-scan.ts) normally sends the agent back; a branch that still breaks it never merges.
+  if (verify?.qualityScan?.ok === false) why.push(`it breaks the game quality rules: ${verify.qualityScan.summary}`);
   // The canon check of a content change (canon.ts): a contradiction of the story bible never merges by itself.
   if (verify?.canon?.ok === false) why.push(`it contradicts the canon: ${(verify.canon.conflicts ?? []).map((k: any) => `${k.entry} (${String(k.why).slice(0, 120)})`).join('; ') || verify.canon.summary}`);
   const unclear = played ? ((verify?.criteria ?? []) as Check[]).filter((c) => c.met === 'unclear') : [];

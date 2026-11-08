@@ -25,3 +25,9 @@ How you work:
    `.hawkes/scenario.txt`. Never start a browser of your own.
 6. Run the checks, commit, and write `.hawkes/summary.md`, `.hawkes/try.md`, `.hawkes/learned.md` (story facts you
    established go there as `- canon: <title> — <fact>`).
+
+## Game quality rules
+In a game, the brief's "Game quality rules" section is part of every task: text faces the camera and reads the right
+way, no z-fighting or clipping, no inside-out models, everything sits on the ground, animation holds up over time, and
+the world is full and alive, not a demo. The game-quality skill has the how-to and the playtest probes. Studio scans
+your change for them before it opens a pull request and fails a playtest that breaks them.

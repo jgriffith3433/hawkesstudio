@@ -1,0 +1,96 @@
+{
+  "version": 1,
+  "about": "The game quality rubric (2026-11-08, approved by the studio owner). Every game's agents follow it, every change to a game is scanned against it, and every playtest is gated on it (src/quality.ts, docs/quality.md). New lines come from the owner's feedback (studio_rubric add, or a bug report that starts with \"Rule:\") and are stored in Studio's database, not here.",
+  "rules": [
+    {
+      "id": "text-facing",
+      "title": "In-world text reads the right way round",
+      "why": "Unity's 3D text reads correctly only when it faces away from the camera. Pointing it straight at the camera, or giving it a negative scale, mirrors it.",
+      "build": [
+        "A billboard sign copies the camera's rotation (transform.rotation = camera.transform.rotation); it never calls LookAt(camera) on text.",
+        "Never use a negative scale on text, or on anything that holds text."
+      ],
+      "checks": [
+        { "id": "text-negative-scale", "kind": "scan", "what": "Text (TextMesh, TextMeshPro) whose scale, or a parent's, mirrors it." },
+        { "id": "text-lookat-camera", "kind": "scan", "what": "A script on text that calls LookAt on the camera without turning it round." },
+        { "id": "text-mirrored", "kind": "vision", "what": "A screenshot of every in-world sign: each one reads left to right.", "problem": "quality.text-mirrored" }
+      ]
+    },
+    {
+      "id": "no-z-fighting",
+      "title": "No z-fighting and no models clipping through each other",
+      "why": "Agents stack separate walls, floors and ceilings so two surfaces sit in exactly the same place, and a tiny camera near distance makes even slightly separated surfaces flicker.",
+      "build": [
+        "Rooms snap to a grid: walls sit on top of the floor and meet at corners without overlapping; no two surfaces share a plane.",
+        "The camera's near distance is 0.05 or more (Unity nearClipPlane, Babylon minZ, three.js near); 0.1 to 0.3 for a third-person camera.",
+        "Props and characters never overlap other meshes; colliders match the visible shape."
+      ],
+      "checks": [
+        { "id": "near-clip", "kind": "scan", "what": "A camera near distance under 0.05." },
+        { "id": "duplicate-surface", "kind": "scan", "what": "Two copies of the same mesh at the same position, rotation and scale." },
+        { "id": "z-flicker", "kind": "playtest", "what": "Two frames from a slightly moved camera: surfaces that swap or flicker.", "problem": "quality.z-fighting" },
+        { "id": "clipping", "kind": "playtest", "what": "Models poking through each other, the player or the camera inside a wall or floor.", "problem": "quality.clipping" }
+      ]
+    },
+    {
+      "id": "normals-outward",
+      "title": "No inside-out models",
+      "why": "AI-made 3D models often come out with faces flipped, and mirroring with a negative scale or mixing up glTF and Unity axes flips them too, so you see the back of each face.",
+      "build": [
+        "Every model goes through one cleanup step on import (and Hawkes Gen's 3D export) that points normals outward and bakes in any mirroring.",
+        "Mirror a model by making a mirrored copy of the mesh, never with a negative scale on its object."
+      ],
+      "checks": [
+        { "id": "model-inside-out", "kind": "scan", "what": "A glTF or GLB model whose faces mostly point inward." },
+        { "id": "mesh-mirrored", "kind": "scan", "what": "A mesh object (Unity scene or prefab, glTF node) with a mirroring negative scale." },
+        { "id": "inside-out", "kind": "vision", "what": "A model that looks inside out on screen.", "problem": "quality.inside-out" }
+      ]
+    },
+    {
+      "id": "ground-contact",
+      "title": "Buildings and props sit on the ground",
+      "why": "Agents drop models at guessed coordinates without checking the ground height or where the model's base really is, so buildings sink into the ground and props float.",
+      "build": [
+        "Every building and prop is placed by finding the ground below it (a raycast or the terrain's height) and lining up the bottom of the model's bounds, not its center or pivot.",
+        "Placement runs again whenever the terrain changes."
+      ],
+      "checks": [
+        { "id": "ground-contact", "kind": "playtest", "what": "A ground-contact scan of every scene: anything sunk more than 5 cm into the ground, or floating more than 2 cm above it.", "problem": "quality.ground-contact" },
+        { "id": "floating-sunk", "kind": "vision", "what": "Buildings or props that look sunk or floating on screen.", "problem": "quality.floating-sunk" }
+      ]
+    },
+    {
+      "id": "animation-over-time",
+      "title": "Animation holds up over time",
+      "why": "Playtests that take snapshots miss what goes wrong between frames: a landing decided only when falling speed hits zero never happens on a slope, and walk and run animations played at a fixed speed slide on the ground.",
+      "build": [
+        "Landing uses a ground check that allows for slopes (a short spherecast or the controller's isGrounded), and every animation state has a way back out.",
+        "Measure how fast each walk and run animation really moves and match playback speed (or a blend) to the character's actual speed.",
+        "The playtest scenario jumps onto slopes of 10 to 40 degrees and ramps walk to run and back, logging state, grounded, speed and foot movement every frame."
+      ],
+      "checks": [
+        { "id": "stuck-airborne", "kind": "playtest", "what": "The character stays in a jump or fall state while on the ground for more than 0.3 seconds.", "problem": "quality.stuck-airborne" },
+        { "id": "foot-slide", "kind": "playtest", "what": "A planted foot slides along the ground.", "problem": "quality.foot-slide" }
+      ]
+    },
+    {
+      "id": "living-world",
+      "title": "A game is a full, living world with soul, not a demo",
+      "why": "A game is an entire world: it needs character and soul, very little empty space, room to breathe and many kinds of interaction. Story is told through gameplay, real in-game events, cutscenes, sound and voice, not text.",
+      "build": [
+        "Plan before building: each game has a world bible (docs/world-bible.md) covering its areas, landmarks, who lives there, what happens in each place, and the story beats as events, and it is checked before any code.",
+        "Build a vertical slice first: one area finished to the full bar (dressed, a landmark, life, ambient sound, several kinds of interaction, a story beat told as an event) before widening.",
+        "Full world: a player never walks more than about 10 seconds without something to see, hear or do. Every area has dressing, a landmark, life, ambient sound and several kinds of interaction.",
+        "Breathing: things move and change on their own, like characters' routines, weather, wind and reactions to the player.",
+        "Story as experience: every story beat happens through gameplay, in-game cutscenes with real events, sound effects and Hawkes Gen voice lines. On-screen text is a last resort, one line at most; a beat told only in text fails."
+      ],
+      "checks": [
+        { "id": "world-bible", "kind": "scan", "what": "A world bible that is added or changed has every section: Areas, Landmarks, Who lives here, What happens, Story beats." },
+        { "id": "quiet-gap", "kind": "playtest", "what": "The playtest walks each area and times the gaps between things to see, hear or do: none longer than 10 seconds.", "metric": "quality.maxQuietSeconds", "max": 10, "problem": "quality.quiet-gap" },
+        { "id": "text-story", "kind": "playtest", "what": "Story text counted against voiced and acted beats: no beat told only in text.", "metric": "quality.textOnlyBeats", "max": 0, "problem": "quality.text-story" },
+        { "id": "empty-area", "kind": "vision", "what": "How empty each area looks: bare floors, nothing alive, nothing to do.", "problem": "quality.empty-area" },
+        { "id": "fun-review", "kind": "review", "what": "The fun reviewer's verdict on a played build: a living world, or a demo." }
+      ]
+    }
+  ]
+}

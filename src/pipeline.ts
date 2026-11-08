@@ -23,6 +23,8 @@ import { ensureServer, gitState, treeFingerprint, runCheck, serveDir, stopServed
 import { absorb, applyKnown, expireIdeas, notSeenIn, type ReviewMode } from './backlog.ts';
 import { feelFindings } from './feel.ts';
 import { barState, barHash, reviewedSha, reviewParams } from './review.ts';
+import { isGame } from './quality.ts';
+import { funReview } from './fun-review.ts';
 import { reviewJob, viaNote } from './review-cc.ts';
 import { writeReport } from './report.ts';
 import { assetStatus, makeAsset } from './assets.ts';
@@ -1103,10 +1105,15 @@ async function fileReview(rs: string, p: Product, run: string, name: string, rev
   const late = x.tries > 0 || Date.now() - x.at > 60_000 ? ' · reviewed late (it waited for the AI)' : '';
   // A library has nothing to playtest on its own page: its review's verdict reads neutral, never fix-first or broken (verdictwork.ts).
   const verdict = libraryProject(p) && v.verdict !== NEUTRAL ? NEUTRAL : v.verdict;
+  // The fun review of a game (fun-review.ts, the quality rubric's living-world rule): full and verify reviews, not
+  // regression checks. A "demo" fails the quality gate on going live (deploy.ts qualityBlockers).
+  const fun = isGame(p) && x.mode !== 'regression' && !libraryProject(p)
+    ? await funReview(p, { review: v, playtest: { ...(playResult ?? {}), scenario: name }, dir: await import('./beta.ts').then((b) => b.repoDirs(p).source).catch(() => null) }).catch(() => null)
+    : null;
   updateStep(rs, {
     status: 'done', job: rev.id, cost: rev.cost ?? 0,
-    detail: `${verdict} · ${x.mode}${x.barMet ? ' (meets its quality bar)' : ''} · ${(v.findings ?? []).length} findings (${parts.join(', ')})${p.quality ? ` · bar: ${v.meetsBar ?? '?'}` : ''}${viaNote(rev)}${late}`,
-    data: { ...v, ...(verdict !== v.verdict ? { verdict, verdictWas: v.verdict } : {}), added: merged.added, updated: merged.updated, ideas: merged.ideas, skipped: merged.skipped, knownFixed: known.fixed, knownPresent: known.present, reviewKey: x.reviewKey, mode: x.mode, sha: x.sha, barHash: barHash(p.quality), bar: x.barWhy }, finished: true,
+    detail: `${verdict} · ${x.mode}${x.barMet ? ' (meets its quality bar)' : ''} · ${(v.findings ?? []).length} findings (${parts.join(', ')})${p.quality ? ` · bar: ${v.meetsBar ?? '?'}` : ''}${fun && fun.verdict !== 'unjudged' ? ` · fun: ${fun.verdict}` : ''}${viaNote(rev)}${late}`,
+    data: { ...v, ...(fun ? { fun } : {}), ...(verdict !== v.verdict ? { verdict, verdictWas: v.verdict } : {}), added: merged.added, updated: merged.updated, ideas: merged.ideas, skipped: merged.skipped, knownFixed: known.fixed, knownPresent: known.present, reviewKey: x.reviewKey, mode: x.mode, sha: x.sha, barHash: barHash(p.quality), bar: x.barWhy }, finished: true,
   });
   // A review that came late (it waited for the AI; its run is long over): act on its verdict now (verdictwork.ts).
   if (late && isServer()) void import('./verdictwork.ts').then((m) => m.actOnVerdict(p.id, 'a late review')).catch(() => {});
