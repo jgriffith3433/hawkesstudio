@@ -191,10 +191,13 @@ const SETTINGS_FILE = path.join(DATA, 'agents.json');
  * perProduct: changes of one product that may run at once (a second only when it won't collide: parallel.ts);
  * productLimits: per-product overrides of it (J, 2026-10-18: Sick Of It 2). Studio and Gen always run one at a time.
  */
-export type AgentSettings = { enabled: boolean; autoFix: boolean; autoWorkVerdicts: boolean; autoReverify: boolean; autoMergeBeta: boolean; betaPlaytests: boolean; maxConcurrent: number; perProduct: number; productLimits: Record<string, number>; maxPerDay: number; maxCostPerDay: number; severities: string[]; model: string; maxTurns: number; idleMinutes: number; genWaitHours: number; access?: { gen?: boolean; repos?: boolean } };
-/** access: what agents reach beyond their own project (access.ts; both on unless turned off here or on the project).
+export type AgentSettings = { enabled: boolean; autoFix: boolean; autoWorkVerdicts: boolean; autoReverify: boolean; autoMergeBeta: boolean; betaPlaytests: boolean; maxConcurrent: number; perProduct: number; productLimits: Record<string, number>; maxPerDay: number; maxCostPerDay: number; severities: string[]; model: string; maxTurns: number; idleMinutes: number; genWaitHours: number; access?: { gen?: boolean; repos?: boolean }; showcase: 'web' | 'all' | 'off' };
+/** showcase: which ready game changes that a player would see are playtested by themselves, so their pull request ships
+ * with shots and a walk-through clip from the built game (the owner's gaps list, 2026-11-08): web (web games and site
+ * pages: served from the worktree, no build), all (Unity too: a build of the branch on the build server), off.
+ * access: what agents reach beyond their own project (access.ts; both on unless turned off here or on the project).
  * genWaitHours: a change parked on Gen jobs longer than this is told in Talk once (it isn't failed). */
-const DEFAULTS: AgentSettings = { enabled: true, autoFix: true, autoWorkVerdicts: true, autoReverify: true, autoMergeBeta: true, betaPlaytests: false, maxConcurrent: 2, perProduct: 1, productLimits: { sickofit: 2 }, maxPerDay: 1000, maxCostPerDay: 150, severities: ['blocker', 'bug'], model: 'claude-sonnet-5-5', maxTurns: 80, idleMinutes: 20, genWaitHours: 6 };
+const DEFAULTS: AgentSettings = { enabled: true, autoFix: true, autoWorkVerdicts: true, autoReverify: true, autoMergeBeta: true, betaPlaytests: false, maxConcurrent: 2, perProduct: 1, productLimits: { sickofit: 2 }, maxPerDay: 1000, maxCostPerDay: 150, severities: ['blocker', 'bug'], model: 'claude-sonnet-5-5', maxTurns: 80, idleMinutes: 20, genWaitHours: 6, showcase: 'web' };
 export function agentSettings(): AgentSettings {
   try {
     return { ...DEFAULTS, ...JSON.parse(fs.readFileSync(SETTINGS_FILE, 'utf8')) };
@@ -490,6 +493,8 @@ async function dropEmptyWorktree(id: string, commits: string[]) {
  */
 export type Phase = {
   step: 'prepare' | 'agent' | 'publish' | 'verify' | 'finish' | 'gen';
+  /** Played by itself to ship shots and a clip with the change (showcaseFor), not on J's request. */
+  showcase?: boolean;
   note?: string;
   answer?: string;
   /** The worktree's HEAD before the agent's pass. */
@@ -2220,9 +2225,12 @@ async function work(id: string, note?: string, answer?: string, resumed?: Phase 
           return;
         }
       }
-      // The branch tip the agent's checks passed on; approving merges exactly this commit (approve() checks it). No
-      // playtest here: one runs only when J asks for it (playtestChange); beta's run after the merge judges the criteria.
-      save({ step: 'finish', tip: git(c.worktree, ['rev-parse', 'HEAD']).out, jobs: {}, verify: undefined });
+      // The branch tip the agent's checks passed on; approving merges exactly this commit (approve() checks it). A game
+      // change a player would see is played here so it ships with shots and a clip (showcaseFor); others are played
+      // only when J asks (playtestChange), and beta's run after the merge judges the criteria.
+      const show = showcaseFor(c, p);
+      if (show) addLog(id, `playtesting the change so its pull request ships with shots and a walk-through clip (${show})`);
+      save({ step: show ? 'verify' : 'finish', tip: git(c.worktree, ['rev-parse', 'HEAD']).out, jobs: {}, verify: undefined, ...(show ? { showcase: true } : {}) });
     }
 
     if (ph.step === 'verify') {
@@ -2240,6 +2248,7 @@ async function work(id: string, note?: string, answer?: string, resumed?: Phase 
       const keep = Object.fromEntries(['scenario', 'options', 'canon', 'pendingGpu', 'unityCheck', 'compileCheck', 'qualityScan'].filter((k) => c.verify?.[k] !== undefined).map((k) => [k, c.verify[k]]));
       const verify = { ...keep, ...ph.verify, sha: ph.tip ?? c.verify?.sha, preview: c.verify?.preview ?? null, try: c.verify?.try ?? null, asked: { at: Date.now(), by: ph.requested } };
       addLog(id, `playtest (asked by ${ph.requested}): ${verify.outcome ?? '?'} · review: ${verify.verdict ?? 'n/a'}${verify.error ? ` · ${verify.error}` : ''}`);
+      await attachShowcase(getChange(id)!, verify);
       update(id, { status: 'ready', detail: readyDetail(verify), verify, phase: null });
       return;
     }
@@ -2274,6 +2283,8 @@ async function work(id: string, note?: string, answer?: string, resumed?: Phase 
       addLog(id, r.version ? `video v${r.version.n}: ${r.version.asset}${r.resent ? ' (notes from while it worked: another pass)' : ''}` : 'no video left in .hawkes/video.json');
       return;
     }
+    // Shots and a walk-through clip from the built game on the pull request (attachShowcase), before it can merge.
+    await attachShowcase(getChange(id)!, done);
     const auto = agentSettings().autoMergeBeta;
     // 'trying' is written with 'ready', so Talk's "ready for J" notice (followup.ts) never races the merge.
     update(id, { status: 'ready', detail: readyDetail(done), verify: done, phase: null, auto_merge: auto ? 'trying' : null });
@@ -2303,6 +2314,68 @@ async function work(id: string, note?: string, answer?: string, resumed?: Phase 
   }
 }
 
+/** Files a player would see change: game code, scenes, assets and pages; not docs, tests, CI or the playtest's own scenarios. */
+const UNSEEN = /(^|\/)(docs?|tests?|__tests__|\.github|\.claude|\.hawkes|playtest|scenarios?)\/|\.(md|txt|test\.[jt]sx?|spec\.[jt]sx?|d\.ts|lock|yml|yaml)$|(^|\/)(package(-lock)?\.json|tsconfig[^/]*\.json|AGENTS\.md|CLAUDE\.md|LICENSE)$|(^|\/)hawkes-(playtest|feel|perf)\.js$/i;
+const SEEN = /\.(html?|css|scss|[jt]sx?|mjs|glb|gltf|fbx|obj|png|jpe?g|webp|gif|svg|ogg|mp3|wav|m4a|json|cs|unity|prefab|mat|shader|shadergraph|anim|controller|asset|uxml|uss)$/i;
+export function visibleFiles(files: string[]) {
+  return files.filter((f) => SEEN.test(f) && !UNSEEN.test(f));
+}
+
+/**
+ * Whether a ready change is played by itself so it ships with shots and a clip (settings showcase): a game's or a
+ * site's change a player would see. Returns why, or null. Unity needs showcase "all" (a build on the build server).
+ */
+export function showcaseFor(c: Pick<Change, 'worktree' | 'base' | 'repo' | 'task'> & { infra?: boolean }, p: Product, mode = agentSettings().showcase): string | null {
+  if (mode === 'off' || c.infra || !isGame(p)) return null;
+  if (c.task && isVideoTask(c.task)) return null;
+  const unity = p.engine === 'unity' || Boolean(p.build);
+  if (unity && !isSiteChange(c as Change, p) && mode !== 'all') return null;
+  const seen = visibleFiles(changedFiles(c));
+  return seen.length ? `${seen.length} file${seen.length === 1 ? '' : 's'} a player sees: ${seen.slice(0, 3).join(', ')}${seen.length > 3 ? ', ...' : ''}` : null;
+}
+
+/** The pull request's "From the built game" section: shots, motion sheets and the walk-through video, or null. Pure. */
+export function showcaseSection(v: any) {
+  if (!v || !playtested(v) || (!v.video && !v.shots?.length)) return null;
+  const shots = ((v.shots ?? []) as any[]).map((s) => `![${s.reason ?? 'shot'} at ${s.t ?? '?'}s](${fileUrl(s.asset)})`);
+  const sheets = ((v.sheets ?? []) as any[]).map((m) => `[motion ${m.start}s to ${m.end}s (${m.reason})](${fileUrl(m.asset)})`);
+  return [
+    SHOWCASE_MARK,
+    '## From the built game',
+    '',
+    `Played by Hawkes Studio${v.scenario ? ` (scenario \`${v.scenario}\`)` : ''}: ${v.outcome ?? '?'}, review ${v.verdict ?? 'n/a'}${v.criteria?.length ? `, criteria ${v.criteria.filter((k: any) => k.met === 'yes').length}/${v.criteria.length} met` : ''}${v.quality?.fails?.length ? `, ${v.quality.fails.length} quality rule${v.quality.fails.length === 1 ? '' : 's'} broken` : ''}.`,
+    '',
+    v.video ? `Walk-through: [video](${fileUrl(v.video)})${sheets.length ? ` · ${sheets.join(' · ')}` : ''}` : sheets.join(' · '),
+    '',
+    shots.join('\n'),
+    SHOWCASE_END,
+  ].join('\n');
+}
+const SHOWCASE_MARK = '<!-- studio:showcase -->';
+const SHOWCASE_END = '<!-- /studio:showcase -->';
+/** A pull request body with the showcase section put in (replacing an earlier one). Pure. */
+export function withShowcase(body: string | null | undefined, section: string) {
+  const b = String(body ?? '');
+  const i = b.indexOf(SHOWCASE_MARK);
+  const j = b.indexOf(SHOWCASE_END);
+  const rest = i >= 0 && j > i ? `${b.slice(0, i).trimEnd()}${b.slice(j + SHOWCASE_END.length)}` : b;
+  return `${rest.trimEnd()}\n\n${section}\n`;
+}
+
+/** Puts the played change's shots and clip on its pull request; marks verify.showcase. Never fails the change. */
+async function attachShowcase(c: Change, v: any) {
+  const section = showcaseSection(v);
+  if (!section || !c.pr || !c.slug) return;
+  try {
+    const pr = await github(`/repos/${c.slug}/pulls/${c.pr}`);
+    await github(`/repos/${c.slug}/pulls/${c.pr}`, { method: 'PATCH', body: { body: withShowcase(pr?.body, section) } });
+    v.showcase = { at: Date.now(), shots: (v.shots ?? []).length, video: v.video ?? null };
+    addLog(c.id, `pull request #${c.pr}: shots and a walk-through clip from the built game added`);
+  } catch (e: any) {
+    addLog(c.id, `couldn't add the shots to pull request #${c.pr}: ${String(e.message ?? e).slice(0, 200)}`);
+  }
+}
+
 /** A ready change's one line: whether it was playtested (only on request), its review and criteria, its preview. */
 export function readyDetail(v: any) {
   const played = playtested(v);
@@ -2317,7 +2390,8 @@ export function readyDetail(v: any) {
   const scan = v?.qualityScan?.summary ? ` · ${v.qualityScan.summary}` : '';
   const broke = played && v?.quality?.fails?.length ? ` · ${v.quality.fails.length} quality rule${v.quality.fails.length === 1 ? '' : 's'} broken` : '';
   const fun = played && v?.fun?.verdict && v.fun.verdict !== 'unjudged' ? ` · fun review: ${v.fun.verdict}` : '';
-  return `${what}${unity}${compile}${scan}${broke}${fun}${notes}${v?.preview ? ` · preview ${v.preview}` : ''}`;
+  const shown = v?.showcase?.at ? ' · shots and a walk-through clip on the pull request' : '';
+  return `${what}${unity}${compile}${scan}${broke}${fun}${notes}${shown}${v?.preview ? ` · preview ${v.preview}` : ''}`;
 }
 /** Whether a change was playtested (on request, or by the old automatic verification): its result is on it. */
 export const playtested = (v: any) => Boolean(v && (v.playtest || (v.outcome && v.outcome !== 'not played')));
@@ -2530,7 +2604,10 @@ async function verifyChange(c: Change, p: Product, findings: any[], jobs?: JobMe
     const q = qualityGate(p, { problems: run.result?.problems, metrics: run.result?.metrics, findings: v.findings, fun, feel: run.result?.feel, polish: run.result?.polish?.hits, motion: v.motion ?? null, software: Boolean(run.result?.software) });
     if (fun) addLog(c.id, `fun review: ${fun.verdict}${fun.why ? `: ${fun.why}` : ''}`.slice(0, 600));
     for (const f of q.fails) addLog(c.id, failLine(f).slice(0, 600));
-    return { outcome: run.result?.outcome, ...(isGame(p) ? { quality: q, ...(fun ? { fun } : {}) } : {}), scenario, ...(agentScenario && agentOptions ? { options: agentOptions } : {}), playtest: run.id, review: rev.id, verdict: v.verdict, changeWorked: v.changeWorked, known: v.known ?? [], summary: v.summary, scores: v.scores, findings: (v.findings ?? []).slice(0, 8), video, url: localUrl(p), build, ...(criteria ? { criteria } : {}), ...(rev.via === 'claude-code' ? { reviewVia: `Claude Code, ${rev.billing}` } : {}) };
+    // What the pull request shows (attachShowcase): the review's frames and motion sheets, and the run's video.
+    const shots = ((v.frames ?? []) as any[]).filter((f) => f?.asset).slice(0, 6).map((f) => ({ asset: f.asset, t: f.t, reason: f.reason }));
+    const sheets = ((v.motion?.sheets ?? []) as any[]).filter((m) => m?.asset).slice(0, 3).map((m) => ({ asset: m.asset, start: m.start, end: m.end, reason: m.reason }));
+    return { outcome: run.result?.outcome, ...(isGame(p) ? { quality: q, ...(fun ? { fun } : {}) } : {}), scenario, shots, sheets, ...(agentScenario && agentOptions ? { options: agentOptions } : {}), playtest: run.id, review: rev.id, verdict: v.verdict, changeWorked: v.changeWorked, known: v.known ?? [], summary: v.summary, scores: v.scores, findings: (v.findings ?? []).slice(0, 8), video, url: localUrl(p), build, ...(criteria ? { criteria } : {}), ...(rev.via === 'claude-code' ? { reviewVia: `Claude Code, ${rev.billing}` } : {}) };
   } finally {
     stopServed(port);
   }
