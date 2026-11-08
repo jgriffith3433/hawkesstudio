@@ -67,7 +67,7 @@ import { buildPreview, removePreview, previewUrl, changeSiteDir, changeBuild, ty
 import { BETA, ensureBeta, gitAsync } from './beta.ts';
 import { addWorktree, discardIfHalfMade } from './worktree.ts';
 import { saveWork, restoreBranch, catchUpWorktree } from './savework.ts';
-import { lfsPull } from './lfs.ts';
+import { lfsPull, pushPendingLfs } from './lfs.ts';
 import { healSource, populateSource, probeSource, repairedError, sourceError, SOURCE_UNREADABLE_SAID } from './source-ready.ts';
 import { runCommand, resumeGapMs, RESTART_LOOP, RESTART_WINDOW_MS } from './ops.ts';
 import { deployPending, critical } from './drain.ts';
@@ -1844,6 +1844,8 @@ async function pump() {
 async function publish(id: string, { force, title, body }: { force: boolean; title: string | null; body: string }) {
   return critical(`pushing ${id} and its pull request`, async () => {
     let c = getChange(id)!;
+    // LFS files the job made go up first: GitHub must never get a pointer without its file.
+    await pushPendingLfs(c.worktree, gitAsync, (m) => addLog(id, m));
     const push = await gitAsync(c.worktree, ['push', '--quiet', '-u', 'origin', `HEAD:${c.branch}`, ...(force ? ['--force-with-lease'] : [])]);
     if (!push.ok) throw new Error(`push failed: ${push.err}`);
     // A pull request merged or closed outside Studio (GitHub's website, another tool) takes no more commits: pushing
@@ -3558,7 +3560,8 @@ export async function updateFromBase(id: string): Promise<{ state: 'current' | '
     if (notesOnly) addLog(id, `${c.base} moved: only agents' notes conflicted (${files.join(', ')}); Studio kept them out of git`);
   }
   const sha = git(c.worktree, ['rev-parse', 'HEAD']).out;
-  const p = await gitAsync(c.worktree, ['push', '--quiet', 'origin', `HEAD:${c.branch}`]);
+  const lfsUp = await pushPendingLfs(c.worktree, gitAsync, (m) => addLog(id, m)).then(() => null, (e: any) => String(e.message ?? e));
+  const p = lfsUp ? { ok: false, err: lfsUp } : await gitAsync(c.worktree, ['push', '--quiet', 'origin', `HEAD:${c.branch}`]);
   if (!p.ok) {
     await gitAsync(c.worktree, ['reset', '--hard', before]);
     return { state: 'skipped', why: `push failed: ${p.err.slice(0, 200)}` };
