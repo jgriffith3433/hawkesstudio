@@ -52,7 +52,27 @@
     .an-players td button + button { margin-left: 4px; }
     .an-players td .meta { font-size: 12px; }
     .an-sec-nav { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 12px; font-size: 13px; }
-    @media (max-width: 700px) { .an-grid { grid-template-columns: 1fr; } .an-cards { grid-template-columns: minmax(0, 1fr); } .an-card { min-width: 0; } }`;
+    @media (max-width: 700px) { .an-grid { grid-template-columns: 1fr; } .an-cards { grid-template-columns: minmax(0, 1fr); } .an-card { min-width: 0; } }
+    /* On a phone (finding: make the per-product page work at 390px): totals stack, charts and sparklines fit the width,
+       event lists and tables scroll inside their own card, and every link, sort header and tappable row is 44px. */
+    @media (max-width: 760px), (pointer: coarse) {
+      .an-total { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; }
+      .an-kpis { grid-template-columns: repeat(auto-fill, minmax(min(120px, 100%), 1fr)); }
+      .an-box, .an-card, .an-total { min-width: 0; max-width: 100%; }
+      .an-chart, .an-spark { max-width: 100%; height: auto; }
+      .an-legend { flex-wrap: wrap; gap: 4px 14px; }
+      .an-scroll { max-width: 100%; max-height: 60vh; overflow: auto; -webkit-overflow-scrolling: touch; overscroll-behavior: contain; }
+      .an-events { max-height: 6.5em; overflow-y: auto; }
+      .an-box pre { max-width: 100%; }
+      .an-bars .row { grid-template-columns: minmax(70px, 34%) minmax(0, 1fr) auto; }
+      .an-sec-nav { gap: 0 4px; }
+      .an-sec-nav a, .an-box a, .an-bar a, .an-total a, [data-an-back], .an-bar .pill a { display: inline-flex; align-items: center; justify-content: center; min-height: 44px; min-width: 44px; padding: 0 6px; }
+      .an-box th[data-sort], .an-box th { min-height: 44px; padding-top: 12px; padding-bottom: 12px; }
+      .an-box tr[data-an-session] td, .an-box td { padding-top: 10px; padding-bottom: 10px; }
+      .an-card { min-height: 44px; }
+      .an-bar label { min-height: 44px; }
+      .an-players td button { min-height: 44px; }
+    }`;
   document.head.appendChild(css);
 
   // ------------------------------------------------------------- formatting
