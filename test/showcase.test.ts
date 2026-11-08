@@ -14,7 +14,7 @@ process.env.STUDIO_PRODUCTS = path.join(tmp, 'products.json');
 fs.mkdirSync(process.env.STUDIO_DATA, { recursive: true });
 fs.writeFileSync(process.env.STUDIO_PRODUCTS, JSON.stringify({ products: [] }));
 
-const { visibleFiles, showcaseFor, showcaseSection, withShowcase } = await import('../src/agents.ts');
+const { visibleFiles, unityVisibleFiles, showcaseFor, showcaseSection, withShowcase } = await import('../src/agents.ts');
 
 test('visibleFiles keeps what a player sees', () => {
   const files = ['src/game.js', 'index.html', 'assets/hero.glb', 'README.md', 'test/game.test.js', 'docs/plan.md',
@@ -53,4 +53,19 @@ test('withShowcase replaces an earlier section instead of stacking', () => {
   assert.match(twice, /^Before: x\n\nAfter: y\n\n/);
   assert.doesNotMatch(twice, /\/v1\/files\/v1\)/);
   assert.equal(twice.split('## From the built game').length, 2);
+});
+
+test('unityVisibleFiles keeps what a player sees or feels, not pure code or data', () => {
+  const files = ['Assets/Scenes/Level1.unity', 'Assets/Prefabs/Door.prefab', 'Assets/Art/Hero.fbx', 'Assets/Anim/Run.anim',
+    'Assets/Scripts/PlayerController.cs', 'Assets/Scripts/CameraFollow.cs', 'Assets/UI/HudView.cs', 'Assets/Scripts/SaveSystem.cs',
+    'Assets/Data/Enemies.asset', 'Assets/Editor/BuildTool.cs', 'Assets/Tests/MoveTests.cs', 'ProjectSettings/QualitySettings.asset',
+    'Assets/Audio/jump.wav', 'Assets/Scenes/Level1.unity.meta', 'Assets/Scripts/Analytics.asmdef'];
+  assert.deepEqual(unityVisibleFiles(files), ['Assets/Scenes/Level1.unity', 'Assets/Prefabs/Door.prefab', 'Assets/Art/Hero.fbx',
+    'Assets/Anim/Run.anim', 'Assets/Scripts/PlayerController.cs', 'Assets/Scripts/CameraFollow.cs', 'Assets/UI/HudView.cs', 'Assets/Audio/jump.wav']);
+});
+
+test('a Unity change is not played once the day\'s agent cost reaches the cap', () => {
+  const c = { worktree: '/nope', base: 'beta', repo: 'MyGame', task: 'Smoother camera' } as any;
+  const p = { engine: 'unity', repo: 'MyGame', site: 'MyGameSite', build: 'x' } as any;
+  assert.equal(showcaseFor(c, p, 'all', () => 1e9), null);
 });
