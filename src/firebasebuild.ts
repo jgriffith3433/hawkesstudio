@@ -207,21 +207,24 @@ const b64 = (s: string) => Buffer.from(s, 'utf8').toString('base64');
 export type DeployPlan = { project: string; deployer: string; only: string; sources: string[]; health: string | null; url: string; ref: string; sha: string; name: string };
 
 /**
- * The job's shell script. The token is in the environment only as HAWKES_DEPLOY_TOKEN, which the stand-in takes when it
- * starts and the shell then unsets: the check, `npm ci`, firebase.json's predeploy and firebase-tools never see it.
+ * The job's shell script. The token arrives in the environment as HAWKES_DEPLOY_TOKEN; the shell's first line moves it
+ * into an unexported variable, so the check (`npm ci` and its install scripts), firebase.json's predeploy and
+ * firebase-tools never see it; only the stand-in is started with it, after the check, like firebase.yml signed in.
  */
 export function deployScript(d: DeployPlan): string {
   const record = JSON.stringify({ project: d.project, ref: d.ref, commit: d.sha, url: d.url, name: d.name, health: d.health });
   const checks = d.sources.map((s) => `echo "[job] checking ${s.replace(/["$`\\]/g, '')}"; (cd ${q(s)} && npm ci --no-audit --no-fund --loglevel=error && if [ -f tsconfig.json ]; then npx --yes tsc -p .; fi)`);
   return [
     'set -e',
+    // Out of the environment first: a plain shell variable, which no child process inherits.
+    'DEPLOY_TOKEN="$HAWKES_DEPLOY_TOKEN"; unset HAWKES_DEPLOY_TOKEN',
     'export CI=1 npm_config_update_notifier=false',
     ...checks,
     `export HAWKES_DEPLOY_READY="$(mktemp -u)"`,
-    `node -e 'eval(Buffer.from("${b64(METADATA_SHIM)}","base64").toString())' &`,
+    `HAWKES_DEPLOY_TOKEN="$DEPLOY_TOKEN" node -e 'eval(Buffer.from("${b64(METADATA_SHIM)}","base64").toString())' &`,
     'SHIM=$!',
     `trap 'kill $SHIM 2>/dev/null || true' EXIT`,
-    'unset HAWKES_DEPLOY_TOKEN',
+    'unset DEPLOY_TOKEN',
     'for i in $(seq 1 100); do [ -f "$HAWKES_DEPLOY_READY" ] && break; sleep 0.1; done',
     '[ -f "$HAWKES_DEPLOY_READY" ] || { echo "the sign-in stand-in did not start"; exit 1; }',
     `echo "[job] deploying ${d.only} to ${d.project} as ${d.deployer}"`,
