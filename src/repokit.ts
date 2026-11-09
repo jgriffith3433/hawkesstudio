@@ -70,6 +70,30 @@ export async function linksFor(repo: string | null, p?: Product | null) {
   return out;
 }
 
+/**
+ * The checklist line for the app's permissions on a repo: missing required ones block (Studio can't work there), pending
+ * optional ones are a passing note (nothing waits on them). null when Studio can't tell (no app here or there).
+ */
+export async function permissionsItem(slug: string): Promise<Item | null> {
+  const { probeHook } = await import('./buildaccess.ts');
+  const P = await import('./ghperms.ts');
+  const p = await probeHook.run(slug);
+  if (!p.known || !p.ok) return null;
+  const missing = P.missingRequired(p.permissions);
+  const asked = P.pending(p.appPermissions ?? null, p.permissions);
+  const link = p.manage ?? undefined;
+  if (missing.length) {
+    const what = P.labels(missing);
+    const appHas = p.appPermissions ? missing.every((k) => P.grants(p.appPermissions, k, P.APP_PERMISSIONS[k])) : true;
+    return { id: 'permissions', ok: false, by: 'person', link, what: `GitHub hasn't given Studio ${what} on ${p.account ?? slug.split('/')[0]} yet`,
+      fix: P.stepsText(P.acceptSteps({ what, account: p.account, appHas, ownsApp: p.ownsApp })) };
+  }
+  if (asked.length) {
+    return { id: 'permissions', ok: true, link, what: `Studio has everything it needs on ${p.account ?? slug.split('/')[0]}. The app also asks for ${P.labels(asked, p.appPermissions ?? {})}, which only ${asked.includes('actions') ? "starting your own GitHub Actions builds from Studio's Build button" : 'an optional feature'} uses: accept it on the installation page whenever you like` };
+  }
+  return { id: 'permissions', ok: true, what: 'Studio has every GitHub permission it needs' };
+}
+
 const studioBase = () => (process.env.STUDIO_PUBLIC_URL || 'https://studio.hawkesgen.ai').replace(/\/+$/, '');
 
 async function exists(token: string, url: string) {
@@ -98,6 +122,13 @@ export async function readiness(productId: string, userId?: string | null) {
   // Reached only through the person's own GitHub sign-in: the setup card, agents and builds use the app, so they can't.
   const access0 = items.find((i) => i.id === 'access');
   if (access0?.ok && /your GitHub sign-in/.test(access0.what)) items.push({ id: 'app', ok: false, what: "Studio reaches it only through your GitHub sign-in, but setup, builds and agents need the GitHub App on it", by: 'person', fix: 'Install the GitHub App on this repository (the link opens with it chosen), then check again.', link: (await linksFor(slug)).install });
+  // Permissions the installation hasn't accepted yet (ghperms.ts): an app that added one after it was installed waits for
+  // the account owner to accept it on the installation's page, which nobody guesses (J, 2026-11-08). Said at setup, with
+  // the steps and the link, so it never surfaces first as a failed build.
+  if (slug && access0?.ok && !items.some((i) => i.id === 'app')) {
+    const item = await permissionsItem(slug).catch(() => null);
+    if (item) items.push(item);
+  }
   if (slug && token) {
     const info = await gh(token, 'GET', `/repos/${slug}`);
     const main = String(info.default_branch ?? 'main');

@@ -2,7 +2,9 @@
 //   GET  /api/github                    the connection: the app, its installations, the person's GitHub sign-in
 //   GET  /api/github/app/setup[?org=]   the page that sends the person to GitHub to make the app (one click there)
 //   GET  /api/github/app/created        GitHub's answer to the manifest (state-checked): the app saved, then install it
-//   GET  /api/github/installed          where GitHub returns after an install: back to the dashboard
+//   GET  /api/github/installed          where GitHub returns after an install (or an update): looks again, back to the dashboard
+//   POST /api/github/recheck            looks at open GitHub access cards once (Studio shown again after a trip to GitHub)
+//   POST /api/github/webhook            the app's installation events, signed (github-webhook.ts; open route)
 //   GET  /api/github/connect            sign in with GitHub (the app's OAuth), for the signed-in person
 //   GET  /api/github/callback           GitHub's sign-in answer (state-checked)
 //   DELETE /api/github/user             forget the person's GitHub sign-in
@@ -84,7 +86,20 @@ export async function handleGithubRoutes(req: http.IncomingMessage, res: http.Se
     const r = await G.appCreated(String(url.searchParams.get('code') ?? ''), String(url.searchParams.get('state') ?? ''));
     return redirect(res, r.install!), true;
   }
+  // Back from GitHub, or Studio shown again with a GitHub access card open (inbox.js): look once now. `open` is how many
+  // cards are left; with none, nothing is asked of GitHub. Any signed-in person (looking changes nothing but the card).
+  if (route === '/api/github/recheck' && method === 'POST') {
+    const who = requester(req);
+    if (!who) throw new StudioError('Sign in to this Studio first.', 401);
+    // force (looks even if it looked a minute ago): the control plane telling this Studio GitHub changed (its owner key).
+    const b = await readJson(req).catch(() => ({}));
+    const force = b?.force === true && who.id === (await import('./auth.ts')).OWNER_J.id;
+    return send(res, 200, await (await import('./github-webhook.ts')).recheckNow({ force })), true;
+  }
   if (route === '/api/github/installed' && method === 'GET') {
+    // GitHub returns here after an install or an update of one (setup_on_update): what it may do may have changed, so the
+    // waiting builds are looked at again now rather than when someone next opens the Inbox.
+    void (async () => (await import('./github-webhook.ts')).recheckNow({ force: true }))().catch(() => {});
     return html(res, 200, flowPage({ title: 'GitHub is connected', text: 'Studio can work on the repositories you chose. Taking you back…', done: ['signin', 'repos'], at: 'back', next: backTo(base, 'installed'), nextLabel: 'Back to Studio' })), true;
   }
   if (route === '/api/github/connect' && method === 'GET') {

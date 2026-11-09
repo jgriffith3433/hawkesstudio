@@ -80,7 +80,7 @@ test("an app they already have: checked with GitHub (the key, the permissions St
   const base = 'https://studio.hawkesgen.ai/o/j-studio-4f12';
   await assert.rejects(G.useExistingApp(base, { appId: 'abc', pem }), /App ID/);
   await assert.rejects(G.useExistingApp(base, { appId: 55, pem: 'not a key' }), /Private key/);
-  await assert.rejects(G.useExistingApp(base, { appId: 55, pem }), /needs more permissions: contents: write/);
+  await assert.rejects(G.useExistingApp(base, { appId: 55, pem }), /needs more permissions: Contents: write/);
   assert.equal(G.appConfig(), null, 'nothing kept');
   appPerms = { metadata: 'read', contents: 'write', pull_requests: 'write', workflows: 'write', pages: 'write', administration: 'write', actions: 'read', checks: 'write' };
   const r = await G.useExistingApp(base, { appId: '55', pem, clientSecret: 'existing-secret' });

@@ -45,6 +45,8 @@ let ibLoading = null; // the load in flight
 let ibAgain = false; // asked for again while one was in flight
 let ibWaiting = false; // asked for while the page was hidden
 let ibFailed = false; // the last load ended in an error (shown with Retry)
+// A GitHub access card is open (buildaccess.ts): from the Inbox, its badge's count, or the last look.
+let ibAccessOpen = false;
 const ibOnScreen = () => Boolean($('#inbox')?.classList.contains('on'));
 
 /** GET path as J's click (approval tokens come with it), with the timeout, one retry and the sign-in redirect. */
@@ -97,6 +99,7 @@ async function drawInbox() {
   const err = $('#ibErr');
   if (err) err.hidden = true;
   ibItems = r.items;
+  ibAccessOpen = r.items.some((x) => x.kind === 'access');
   setInboxCount(r.count, r.walkAway);
   // A card J is typing in isn't redrawn under him.
   if (document.activeElement?.matches?.('#inbox .ib-card input') && document.activeElement.value) return;
@@ -134,7 +137,7 @@ function setInboxCount(n, walkAway) {
   // A customer's Studio: their own walk-away mode (no Studio/Gen merges there; Settings, Walk-away mode).
   if (b && window.studioMe?.customer) b.title = 'Walk-away mode is on: the PM decides routine calls itself, ready changes merge into beta, and your Inbox keeps only what\'s yours (Settings, Walk-away mode). Going live stays your call.';
 }
-const pollInboxCount = () => api('/api/inbox?count=1').then((r) => setInboxCount(r.count, r.walkAway)).catch(() => {});
+const pollInboxCount = () => api('/api/inbox?count=1').then((r) => { ibAccessOpen = r.access > 0; setInboxCount(r.count, r.walkAway); }).catch(() => {});
 
 async function ibAnswer(card, answer) {
   const x = ibItems.find((i) => i.id === card.dataset.ib);
@@ -210,6 +213,17 @@ addEventListener('studio-tab', (e) => { if (e.detail === 'inbox') ibRefresh(); }
 document.addEventListener('visibilitychange', () => {
   if (document.hidden || !ibOnScreen()) return;
   if (ibWaiting || ibFailed || ibDrawn === null) { ibWaiting = false; ibRefresh(); }
+});
+// Back from GitHub (accepting a permission or installing the app opens in another tab): when Studio is shown again and a
+// GitHub access card is open, Studio looks once (server-side at most once a minute per card). A return, never a timer;
+// the app's installation webhook usually got there first.
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden || !ibAccessOpen) return;
+  fetch('/api/github/recheck', { method: 'POST', credentials: 'include' }).then((r) => r.ok ? r.json() : null).then((j) => {
+    if (!j) return;
+    ibAccessOpen = j.open > 0;
+    if (j.back && ibOnScreen()) void loadInbox();
+  }).catch(() => {});
 });
 // Restored from the browser's back/forward cache: it may have been a long while.
 addEventListener('pageshow', (e) => { if (e.persisted && ibOnScreen()) ibRefresh(); });

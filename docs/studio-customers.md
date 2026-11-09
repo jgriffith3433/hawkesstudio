@@ -40,7 +40,12 @@ the same way, one item at a time, each with its one action:
 
 1. **Sign up** (below) and, if Talk and agents are wanted, link their own AI (Settings → Your AI).
 2. **Connect GitHub**: their own GitHub App, made from the project dialog (github-app.ts chooser: their account or an
-   organization, or an app they already have), installed on the repos Studio may use.
+   organization, or an app they already have), installed on the repos Studio may use. Installing it grants every
+   permission Studio uses in one go (docs/github-permissions.md: the list and why each is needed); Studio never needs
+   Actions: write, since its builds run in its own cloud. If the app ever asks for more after it was installed, GitHub
+   holds it until the account owner accepts it on the installation's page: the checklist's "permissions" item and, if a
+   build is waiting, one Inbox card walk them through it (Review request, then Accept new permissions) with the direct
+   link, and Studio carries on by itself once GitHub says it's accepted.
 3. **Add a project**: a game, web app or site; its repo (and more repos); live and beta addresses if it has them.
 4. **Studio's hook and branches**: one Approve tap writes `.github/workflows/hawkes-studio.yml` (pushes and build tags
    reach this Studio) and makes `dev` and `beta`. A repo already wired to another Studio offers "point it here"
