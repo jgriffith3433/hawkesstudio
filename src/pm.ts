@@ -2940,6 +2940,8 @@ async function pace(startedNow: number, deps: Partial<IdleDepsLike> = {}) {
 type IdleDepsLike = Parameters<typeof idleWatch>[1];
 /** For tests: one pace pass with stand-ins for the scouts and the products. */
 export const paceForTest = pace;
+/** For tests: the defaults pass (agent questions nobody answered, failed tasks). */
+export const defaultsForTest = (subjects: string[], olderThan?: number) => applyDefaults(subjects, olderThan);
 
 /** Defaults for subjects of the last turn, and for anything waiting longer than `olderThan`. */
 async function applyDefaults(subjects: string[], olderThan?: number) {
@@ -2970,10 +2972,35 @@ async function applyDefaults(subjects: string[], olderThan?: number) {
     if (q.kind !== 'agent') continue;
     if (subjects.includes(q.subject ?? '') || (olderThan !== undefined && now - q.at > olderThan && !turnRunning())) {
       const c = q.subject ? getChange(q.subject) : null;
+      // A blocked agent first: Studio checks Gen (diagnose.ts) and resumes it with what it found; the card says what was tried.
+      const tried = await diagnoseBlocked(q).catch((e: any) => { console.warn(`[pm] diagnosing ${q.id}: ${e?.message ?? e}`); return null; });
+      if (tried === 'resumed') continue;
       setQuestion(q.id, { status: 'asked J' });
-      askJ(`An agent working on "${c?.title ?? q.subject}" asks: ${q.text.slice(0, 1200)}`, { subject: c?.task ?? q.subject, product: q.product, forwards: q.id, topic: 'agent question', blocks: `the agent on ${q.subject} (paused)`, from: 'an agent question the PM could not answer' });
+      askJ(`An agent working on "${c?.title ?? q.subject}" asks: ${q.text.slice(0, 1200)}`, { subject: c?.task ?? q.subject, product: q.product, forwards: q.id, topic: 'agent question', context: tried, blocks: `the agent on ${q.subject} (paused)`, from: 'an agent question the PM could not answer' });
     }
   }
+}
+
+/** Replaced by the tests: Hawkes Gen as Studio's key (diagnose.ts liveIO). */
+export const diagnoseIO: { get: () => Promise<import('./diagnose.ts').IO> } = { get: async () => (await import('./diagnose.ts')).liveIO() };
+
+/**
+ * An agent's question that is really Gen refusing something (an expired link, a file or project not found, a 401): Studio
+ * checks it (diagnose.ts), and if the check passes the agent is answered with what was found (it resumes). Otherwise the
+ * card is filed with what was tried. Returns 'resumed', the "Tried:" line for the card, or null (not a Gen problem).
+ */
+export async function diagnoseBlocked(q: { id: string; text: string; subject?: string | null; product?: string | null }): Promise<'resumed' | string | null> {
+  const D = await import('./diagnose.ts');
+  const d = await D.diagnose(q.text, await diagnoseIO.get());
+  if (!d) return null;
+  const { causeFromKey } = await import('./causes.ts');
+  const cause = causeFromKey(`gen-${d.kind}`);
+  const line = `Studio checked first: ${d.tried.join('; ')}. ${d.found}.`;
+  logCause(cause, { product: q.product, kind: d.ok ? 'answered' : 'card', ref: q.id, subject: q.subject ?? q.id, detail: line, dedup: `diagnosed:${q.id}` });
+  if (!d.ok) return `${line} That did not clear it.`;
+  logDecision('self-answer', q.subject ?? null, q.product ?? null, `diagnosed ${q.id} (${cause.label}) and resumed its agent: ${line}`.slice(0, 1500));
+  await answerQuestion(q.id, `${d.answer}\n\n(${line})`, 'Studio PM (self-healing)');
+  return 'resumed';
 }
 
 /** Events from the database: changes reaching ready, failed or needs answer; runs finishing. Each seen once. */

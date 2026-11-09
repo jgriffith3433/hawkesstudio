@@ -50,6 +50,10 @@ const LABELS: Record<string, string> = {
   'cloud-quota': 'a cloud quota',
   conflict: 'merge conflicts',
   harness: 'the AI harness stopping',
+  'gen-link': 'an expired Hawkes Gen file link',
+  'gen-file': 'a file missing from the Hawkes Gen library',
+  'gen-project': 'no access to a Hawkes Gen project',
+  'gen-auth': 'Hawkes Gen refusing the key (401)',
 };
 /** Transient: Studio retries them itself. conflict counts as one: a conflict that isn't real goes away on a fresh try. */
 const TRANSIENT = new Set(['studio-restart', 'killed-run', 'token-expired', 'network', 'server-error', 'rate-limit', 'gen-restart', 'cloud-quota', 'conflict']);

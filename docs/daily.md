@@ -236,6 +236,14 @@ fetches; each step runs when a card would be filed, when the Inbox is read, or o
 4. *Cleared causes close their cards* (`closeCleared`, run when the Inbox is read): an open card whose transient cause has
    cleared (Studio stable since it was filed; Gen answering again with nothing new failing that way) is answered with its
    try-again option by "Studio PM (self-healing), cause cleared", and the log says how it cleared. J-only cards never close this way.
+5. *A blocked agent is diagnosed before J is asked* (`src/diagnose.ts`, `pm.ts diagnoseBlocked`, run when an agent question
+   nobody answered would be filed). By what the agent says Gen refused: an expired or 403/404 file link gets fresh signed
+   links, each opened once; "No Gen file a_..." asks the Gen library again and runs asset sync (the product's asset lock
+   names the job that made it; no generation, no GPU); "No access to project X" asks Gen as Studio's key under the full org
+   project id (`genProject`); a Gen 401 checks Gen's health and Studio's own Gen key. If the check passes, the agent is
+   answered with what was found by "Studio PM (self-healing)" and resumes, logged under the causes `gen-link`, `gen-file`,
+   `gen-project`, `gen-auth` (a repeat opens the usual fix task). If it fails the card is filed with "Studio checked first:
+   ... That did not clear it." Event driven, no timers.
 Tests: `test/causes.test.ts`.
 
 **The Inbox** (the dashboard's first tab, its badge is the count; `GET /api/inbox`, `studio_inbox`, `src/inbox.ts`) is
