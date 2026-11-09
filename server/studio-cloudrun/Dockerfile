@@ -34,6 +34,20 @@ RUN curl -fsSL "https://github.com/benbjohnson/litestream/releases/download/v${L
 # Claude Code: agents, scouts and Talk run it in the job; the service runs it for the Claude sign-in and its own calls.
 RUN npm install -g --no-audit --no-fund @anthropic-ai/claude-code && claude --version
 
+# The other harnesses (brains.ts; J, 2026-11-09: "Be able to sign into all AI coding agent providers with subscription
+# usage"): GitHub Copilot CLI, Gemini CLI and OpenAI's Codex CLI from npm; Cursor's `agent` and Antigravity's `agy` from
+# their own installers, into /opt/ai-clis (readable by the job's `agent` user) with links in /usr/local/bin. Until
+# 2026-11-09 only Claude Code was here, so Antigravity's sign-in failed with "agy: not found". One that fails to install
+# doesn't fail the image: Settings says that provider isn't installed and Studio runs on the others.
+RUN for p in @github/copilot @google/gemini-cli @openai/codex; do \
+      npm install -g --no-audit --no-fund "$p" || echo "WARNING: $p did not install"; \
+    done; \
+    mkdir -p /opt/ai-clis/cursor /opt/ai-clis/agy; \
+    (HOME=/opt/ai-clis/cursor sh -c 'curl -fsSL https://cursor.com/install | bash' && ln -sf /opt/ai-clis/cursor/.local/bin/agent /usr/local/bin/agent) || echo "WARNING: Cursor's agent did not install"; \
+    (HOME=/opt/ai-clis/agy sh -c 'curl -fsSL https://antigravity.google/cli/install.sh | bash' && install -m 0755 /opt/ai-clis/agy/.local/bin/agy /usr/local/bin/agy) || echo "WARNING: agy did not install"; \
+    chmod -R a+rX /opt/ai-clis; \
+    for b in copilot gemini codex agent agy; do command -v "$b" >/dev/null && echo "installed: $b" || echo "missing: $b"; done
+
 # The job's unprivileged user: the pass runs as it, the runner (root) keeps the clone token (cloudjob-run.ts).
 RUN useradd --create-home --uid 1001 --shell /bin/bash agent
 

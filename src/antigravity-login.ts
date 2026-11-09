@@ -22,6 +22,17 @@ import { geminiHome } from './brains.ts';
 import { plain } from './claude-accounts.ts';
 // @ts-ignore: a plain .mjs (the adapter), no types
 import { agyBin } from '../bin/antigravity-agent.mjs';
+import { loadLogin, saveLogin } from './ai-logins.ts';
+
+/** The stored login's one file, relative to a home (ai-logins.ts keeps it across Cloud Run restarts). */
+const LOGIN_REL = '.gemini/antigravity-cli/antigravity-oauth-token';
+
+/** Whether `agy` can be started here: a known path, or on PATH. */
+export function agyInstalled(): boolean {
+  const bin = String(agyBin());
+  if (path.isAbsolute(bin)) return fs.existsSync(bin);
+  return (process.env.PATH ?? '').split(path.delimiter).some((d) => d && fs.existsSync(path.join(d, bin)));
+}
 
 const tokenFile = (home?: string) => home
   ? path.join(home, '.gemini', 'antigravity-cli', 'antigravity-oauth-token')
@@ -65,6 +76,11 @@ function writeLogin(raw: string, file = tokenFile()) {
  */
 export function shareAgyLogin(): boolean {
   let raw = readFile(tokenFile());
+  // A Cloud Run instance starts with an empty home: the login kept in DATA (ai-logins.ts) comes back first.
+  if (!loginOf(raw)) {
+    const kept = loadLogin('antigravity')?.files?.[LOGIN_REL];
+    if (loginOf(kept)) { writeLogin(kept!); raw = kept!; }
+  }
   if (!loginOf(raw) && SECRET) {
     try {
       const fromSecret = Buffer.from(SECRET.trim(), 'base64').toString('utf8');
@@ -126,6 +142,10 @@ function signinCommand(tmp: string): { file: string; args: string[] } {
 
 /** Starts `agy` with a scratch home, picks Google OAuth and waits for the link. One at a time; a new one replaces an old one. */
 export async function startAgySignin(timeoutMs = 45_000) {
+  // Said plainly (2026-11-09: agy wasn't in the Cloud Run image, and the click only ever showed "restarting").
+  if (!process.env.STUDIO_AGY_SIGNIN_ARGS && process.platform !== 'win32' && !agyInstalled()) {
+    throw new StudioError("Antigravity's CLI (agy) isn't installed on this Studio's server, so it can't sign in here yet. Studio installs it with its next release; then sign in again. Meanwhile Studio keeps working on your other providers.", 409);
+  }
   if (signin && ['starting', 'waiting', 'finishing'].includes(signin.state)) endSignin('failed', 'Replaced by a new sign-in.');
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'studio-agy-'));
   const cmd = signinCommand(tmp);
@@ -185,6 +205,7 @@ export async function finishAgySignin(code: string, timeoutMs = 60_000) {
     throw new StudioError(why, 400);
   }
   writeLogin(raw);
+  try { saveLogin('antigravity', { [LOGIN_REL]: raw }, { account: loginOf(raw)?.email ?? null, by: 'Settings' }); } catch (e: any) { console.warn(`[antigravity] couldn't keep the login: ${e.message}`); }
   shareAgyLogin();
   endSignin('done');
   try {

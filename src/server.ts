@@ -36,8 +36,18 @@ import { cloudMode, gate, schedulerCall } from './cloudauth.ts';
 
 const MIME: Record<string, string> = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.mjs': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.png': 'image/png', '.json': 'application/json', '.md': 'text/markdown; charset=utf-8' };
 
+/**
+ * A cell's own 502/503/504 reaches the router (server/studio-edge) without its X-Studio-Cell header: Google's front end
+ * keeps those codes for itself. The router then took a real error for a restart, sent the request again three times and
+ * said "Your studio is restarting" (2026-11-09: Antigravity's sign-in failed with "agy: not found" and J only ever saw
+ * that). A cell answers such an error as a 500 and keeps the code in X-Studio-Status.
+ */
+const cellStatus = (status: number, org = process.env.STUDIO_ORG) => (org && status >= 502 && status <= 504 ? 500 : status);
+
 function send(res: http.ServerResponse, status: number, body: unknown) {
-  res.writeHead(status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+  const out = cellStatus(status);
+  if (out !== status) res.setHeader('X-Studio-Status', String(status));
+  res.writeHead(out, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
   res.end(JSON.stringify(body));
 }
 

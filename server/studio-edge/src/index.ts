@@ -167,6 +167,19 @@ export default {
   },
 };
 
+/** Whether the cell's own /api/health answers now (it sets X-Studio-Cell on every answer). */
+async function cellUp(target: URL, org: string) {
+  const h = await fetch(new URL('/api/health', target), { headers: { 'X-Forwarded-Prefix': `/o/${org}` }, signal: AbortSignal.timeout(4000) }).catch(() => null);
+  return h?.headers.get('X-Studio-Cell') === org;
+}
+
+/** A cell's error that arrived without its body: said as what it is, with the code, never as a restart. */
+export function cellError(res: Response): Response {
+  const json = /json/.test(res.headers.get('Content-Type') ?? '');
+  if (json) return res;
+  return Response.json({ error: `Your studio couldn't do that (HTTP ${res.status}). Nothing was changed. Try again; if it keeps failing, Activity shows what went wrong.`, status: res.status }, { status: 500, headers: { 'Cache-Control': 'no-store', 'X-Studio-Status': String(res.status) } });
+}
+
 async function handle(request: Request, env: Env, ctx?: Ctx): Promise<Response> {
   const url = new URL(request.url);
   const r = env.CELLS_PROJECT_NUMBER ? route(request) : null;
@@ -209,6 +222,11 @@ async function handle(request: Request, env: Env, ctx?: Ctx): Promise<Response> 
     }
   }
   let res = await first;
+  // A cell answers its own errors as 500 (server.ts send: Google's front end keeps 502-504 for itself and drops the
+  // cell's header with them). A 500 without the header is asked about once: a cell whose /api/health answers is up, so
+  // the answer was its own error, sent on as that and never sent again or called a restart (2026-11-09: a sign-in's
+  // real error was sent three more times and shown as "restarting").
+  if (res.status === 500 && !res.headers.get('X-Studio-Cell') && await cellUp(target, org)) return fromCell(cellError(res), org);
   for (let i = 0; i < 3 && !res.headers.get('X-Studio-Cell') && res.status !== 404 && (body === null || body instanceof ArrayBuffer); i++) {
     await new Promise((r) => setTimeout(r, 2000 * (i + 1)));
     res = await send();
