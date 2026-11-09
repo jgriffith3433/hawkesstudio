@@ -33,7 +33,7 @@ export type QualityTuning = Record<string, { max?: number; min?: number }>;
 export type RubricRule = { id: string; title: string; why: string; build: string[]; checks: RubricCheck[] };
 /** A line the owner added from feedback: an instruction (and, with `problem`, a code that fails a playtest). */
 export type RubricLine = { id: string; product: string | null; rule: string; text: string; words: string | null; problem: string | null; by: string; source: string; at: number };
-export type QualityFail = { check: string; rule: string; title: string; evidence: string };
+export type QualityFail = { check: string; rule: string; title: string; evidence: string; kind?: CheckKind };
 
 db.exec(`CREATE TABLE IF NOT EXISTS quality_lines (
   id TEXT PRIMARY KEY, product TEXT, rule TEXT NOT NULL, text TEXT NOT NULL, words TEXT, problem TEXT,
@@ -262,7 +262,7 @@ export function qualityGate(p: Pick<Product, 'id' | 'engine' | 'kind'> & { tunin
     const key = `${c.id}:${evidence.slice(0, 80)}`;
     if (seen.has(key)) return;
     seen.add(key);
-    fails.push({ check: c.id, rule: c.rule, title: c.ruleTitle, evidence: evidence.slice(0, 400) });
+    fails.push({ check: c.id, rule: c.rule, title: c.ruleTitle, evidence: evidence.slice(0, 400), kind: c.kind });
   };
   for (const pr of data.problems ?? []) {
     const c = named(pr, checks);

@@ -85,22 +85,45 @@ function qualityOfPlay(s: Step, rv: Step | undefined) {
 }
 
 /**
- * The game quality rubric as a go-live gate: a played build of beta that broke a rule blocks going live (no bypass).
- * Studio files each broken rule as a bug (pipeline.ts fileQuality), its agents fix it on beta and beta is played again,
- * so the owner is never asked to. Checks the game doesn't measure yet are one warning; notes (load stutter, the
- * recording's stutters) are warnings too.
+ * Rules that are a game's goal, not a go-live gate (J, 2026-11-09, on PH Origins and Yooba Land stuck for days behind
+ * "a full, living world, not a demo"): no single fix loop finishes a world, so holding every fix behind it only keeps
+ * players on an older, worse build. A break of one is still filed for agents on beta and shown as a warning.
  */
-export function qualityBlockers(tested: { name: string; quality?: { fails: QualityFail[]; unmeasured: string[]; notes?: string[] } }[], short: string | undefined) {
+export const GOAL_RULES = new Set(['living-world']);
+/**
+ * Whether a broken quality rule holds going live. Not: a goal rule (GOAL_RULES), or what the vision judge saw on
+ * screen (a prop that looks like it floats) when the review of that same play says "ship". Those go to agents as fixes
+ * and the card shows them; the sensors' and scans' measured breaks (clipping, the camera in a wall, a hitch in play)
+ * still hold it, and a person can still go live past them (isOverridable).
+ */
+export function holdsGoLive(f: QualityFail, verdict?: string | null) {
+  if (GOAL_RULES.has(f.rule)) return false;
+  if (f.kind === 'vision' && verdict === 'ship') return false;
+  return true;
+}
+
+/**
+ * The game quality rubric as a go-live gate: a played build of beta that broke a rule that holds going live
+ * (holdsGoLive) blocks it until beta plays clean or a person goes live anyway (approvals.ts). Studio files each broken
+ * rule as a bug (pipeline.ts fileFeel), its agents fix it on beta and beta is played again. Breaks that don't hold it,
+ * checks the game doesn't measure yet, and notes (load stutter, the recording's stutters) are warnings.
+ */
+export function qualityBlockers(tested: { name: string; verdict?: string | null; quality?: { fails: QualityFail[]; unmeasured: string[]; notes?: string[] } }[], short: string | undefined) {
   const blockers: string[] = [];
+  const goals: string[] = [];
   const unmeasured = new Set<string>();
   const notes = new Set<string>();
   for (const t of tested) {
-    const fails = t.quality?.fails ?? [];
-    if (fails.length) blockers.push(`Playtest ${t.name} on ${short ?? 'beta'} broke ${fails.length} game quality rule${fails.length === 1 ? '' : 's'}: ${fails.slice(0, 4).map(failLine).join('; ')}${fails.length > 4 ? ` (and ${fails.length - 4} more)` : ''}. Studio is fixing ${fails.length === 1 ? 'it' : 'them'} on ${BETA} and plays ${BETA} again by itself; it goes live when that passes.`);
+    const all = t.quality?.fails ?? [];
+    const fails = all.filter((f) => holdsGoLive(f, t.verdict));
+    const soft = all.filter((f) => !holdsGoLive(f, t.verdict));
+    if (fails.length) blockers.push(`Playtest ${t.name} on ${short ?? 'beta'} broke ${fails.length} game quality rule${fails.length === 1 ? '' : 's'}: ${fails.slice(0, 4).map(failLine).join('; ')}${fails.length > 4 ? ` (and ${fails.length - 4} more)` : ''}. Studio is fixing ${fails.length === 1 ? 'it' : 'them'} on ${BETA} and plays ${BETA} again by itself; you can also go live past ${fails.length === 1 ? 'it' : 'them'} (Go live anyway).`);
+    if (soft.length) goals.push(`Not holding go live (Studio keeps fixing ${soft.length === 1 ? 'it' : 'these'} on ${BETA}): ${t.name} on ${short ?? 'beta'} ${soft.slice(0, 3).map(failLine).join('; ')}${soft.length > 3 ? ` (and ${soft.length - 3} more)` : ''}.`);
     for (const u of t.quality?.unmeasured ?? []) unmeasured.add(u);
     for (const n of t.quality?.notes ?? []) notes.add(`${t.name}: ${n}`);
   }
-  const warnings = unmeasured.size ? [`Not measured by the playtests yet (the game doesn't report them): ${[...unmeasured].join(', ')}.`] : [];
+  const warnings = [...goals];
+  if (unmeasured.size) warnings.push(`Not measured by the playtests yet (the game doesn't report them): ${[...unmeasured].join(', ')}.`);
   warnings.push(...[...notes].slice(0, 6));
   return { blockers, warnings };
 }
@@ -160,6 +183,37 @@ export function planFix(blockers: string[]): BlockerFix | null {
 export const isPlaytestBlocker = (b: string) => /hasn't been playtested/.test(b);
 /** True when a plan's only blockers are its commit not being playtested: "Go live anyway" is offered (a person's tap only). */
 export const playtestOnly = (blockers: string[]) => blockers.length > 0 && blockers.every(isPlaytestBlocker);
+/** A playtest of beta broke a quality rule that holds going live (qualityBlockers). */
+export const isQualityBlocker = (b: string) => /^Playtest \S+ on \S+ broke \d+ game quality rules?:/.test(b);
+/**
+ * The blockers a person may go live past (J, 2026-11-09: "there should always be a way for the user to at least handle
+ * this situation"): beta's commit not playtested, and quality rules its playtest broke. What would make going live
+ * impossible or wrong (nothing to go live, live ahead of beta, no build, GitHub unreadable) still stops it, each with
+ * its own button (Bring beta up to date, the Go live page's fix).
+ */
+export const isOverridable = (b: string) => isPlaytestBlocker(b) || isQualityBlocker(b);
+/** True when every blocker of a plan is one a person may go live past: the card offers "Go live anyway". */
+export const overridableOnly = (blockers: string[]) => blockers.length > 0 && blockers.every(isOverridable);
+
+/**
+ * The agent work on a product that is fixing beta now (queued, working, verifying, revising, ready to merge), newest
+ * first, and the open findings of the plays that hold going live with no change on them: the card shows both, so a
+ * stalled fix loop is visible and one tap starts it again (approvals.ts 'fixnow').
+ */
+export function fixWork(productId: string, runs: string[] = []) {
+  let changes: { id: string; title: string; status: string; detail: string | null; updated: number | null }[] = [];
+  try {
+    changes = db.prepare(`SELECT id, title, status, detail, COALESCE(updated, created) AS updated FROM changes WHERE product = ? AND status IN ('queued', 'working', 'verifying', 'revising', 'ready', 'needs answer', 'waiting on Gen') ORDER BY COALESCE(updated, created) DESC LIMIT 6`).all(productId) as any[];
+  } catch { /* no agents table on this server */ }
+  let open: { id: string; title: string }[] = [];
+  const rs = [...new Set(runs.filter(Boolean))];
+  if (rs.length) {
+    try {
+      open = db.prepare(`SELECT id, title FROM findings WHERE product = ? AND status = 'open' AND last_run IN (${rs.map(() => '?').join(', ')}) ORDER BY last_seen DESC LIMIT 6`).all(productId, ...rs) as any[];
+    } catch { /* no findings table */ }
+  }
+  return { changes, open };
+}
 
 /** What a person recorded when they took a commit live without its playtest (approvals.ts "Go live anyway"). */
 export type PlaytestSkip = { by: string; at: number; sha: string; why: string[]; approval: string };
@@ -187,7 +241,8 @@ export async function deployPlan(productId: string, opts: { notesWaitMs?: number
   // Builds whose newest attempt failed (buildfail.ts): Go live's red badge, whatever else the plan says.
   const BF = await import('./buildfail.ts');
   const buildFailing = BF.failingBuilds(productId);
-  return { ...plan, playtestOnly: playtestOnly(plan.blockers), betaDown: await betaDownOf(productId, plan), buildFailing, buildRunning: BF.buildsRunning(productId), buildDone: BF.buildsDone(productId) };
+  const runs = ((plan as any).tested?.playtests ?? []).map((t: any) => t.run).filter(Boolean);
+  return { ...plan, playtestOnly: playtestOnly(plan.blockers), overridable: overridableOnly(plan.blockers), fixWork: fixWork(productId, runs), betaDown: await betaDownOf(productId, plan), buildFailing, buildRunning: BF.buildsRunning(productId), buildDone: BF.buildsDone(productId) };
 }
 /**
  * When beta's last playtest failed because the beta site didn't answer: what happened in plain words and the two ways
@@ -494,9 +549,10 @@ async function deployNow(productId: string, { confirm, by = 'J', mergeMain, orig
   opLog(`making the plan for ${p.name}`);
   const plan = await deployPlan(p.id, { io });
   if (confirm !== plan.confirm) throw new StudioError(`Going live publishes ${plan.live}: ${plan.what} Show J the plan, then send confirm: "${plan.confirm}" (J's call).`);
-  // A person's "Go live anyway" on an Approve card (playtestSkipFor) goes past beta not being playtested, and nothing else.
+  // A person's "Go live anyway" on an Approve card (playtestSkipFor) goes past beta not being playtested and the quality
+  // rules its playtests broke (isOverridable), and nothing else.
   const skip = playtestSkipFor(approval, p.id, expect);
-  const blockers = skip ? plan.blockers.filter((b) => !isPlaytestBlocker(b)) : plan.blockers;
+  const blockers = skip ? plan.blockers.filter((b) => !isOverridable(b)) : plan.blockers;
   if (blockers.length) throw new StudioError(`Not going live:\n- ${blockers.join('\n- ')}`);
   // An Approve card (approvals.ts) is for one beta commit: a different one now isn't what J approved.
   if (expect && plan.beta?.sha !== expect && plan.played?.sha !== expect) throw new StudioError(`${BETA} is ${plan.beta?.short ?? '?'} now, not ${expect.slice(0, 7)} that J approved; look at the plan again.`);

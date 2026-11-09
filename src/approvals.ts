@@ -50,9 +50,10 @@ export type Kind = (typeof KINDS)[number];
 export const NEVER = Number.MAX_SAFE_INTEGER;
 
 /** What J sees: a title, plain lines, links, blockers (approving is refused while there are any) and warnings. */
-export type Card = { title: string; lines: string[]; blockers: string[]; warnings: string[]; links: { label: string; url: string }[]; approve: string; deny: string; skip?: Skip | null; catchUp?: boolean };
+export type Card = { title: string; lines: string[]; blockers: string[]; warnings: string[]; links: { label: string; url: string }[]; approve: string; deny: string; skip?: Skip | null; catchUp?: boolean; fixNow?: string[] };
 /**
- * A go-live card whose only blockers are beta's commit not being playtested: a person may still take it live with
+ * A go-live card whose only blockers are ones a person may go live past (deploy.ts isOverridable: beta's commit not
+ * playtested, quality rules its playtest broke): a person may still take it live with
  * "Go live anyway" (decideApproval 'anyway', after a confirm step that names the commit). Walk-away, auto go-live, Talk
  * and agents never can: they don't decide cards, and walk-away waits while a card has blockers.
  */
@@ -107,6 +108,13 @@ async function describe(kind: Kind, target: string, params: Record<string, any>)
     if (p.siteCommits.length) lines.push(`${p.siteCommits.length} website commit(s) go live with it (${p.site}): ${p.siteCommits.slice(0, 8).map((c) => `${c!.short} ${c!.title} (${c!.author})`).join('; ')}${p.siteCommits.length > 8 ? '; …' : ''}`);
     if (p.players) lines.push(p.players);
     lines.push(p.tested.playtests.length ? `Playtests of beta ${p.tested.sha}: ${p.tested.playtests.map((t) => `${t.name} ${t.outcome ?? t.status}${t.verdict ? `, review "${t.verdict}"` : ''}`).join(' · ')}` : `Beta ${p.tested.sha ?? ''} hasn't been playtested.`);
+    // The fix loop, in sight (J, 2026-11-09: cards said "Studio is fixing them" for hours with nothing visibly moving):
+    // the agent changes on this product now, or that none is, with the findings waiting and one tap to start them.
+    const { isQualityBlocker } = await import('./deploy.ts');
+    const fw = p.fixWork ?? { changes: [], open: [] };
+    const quality = p.blockers.some(isQualityBlocker);
+    if (fw.changes.length) lines.push(`Studio is fixing beta now: ${fw.changes.slice(0, 3).map((c) => `"${c.title}" (${c.status}${c.detail ? `: ${String(c.detail).slice(0, 90)}` : ''})`).join('; ')}${fw.changes.length > 3 ? `; and ${fw.changes.length - 3} more` : ''}. Beta is played again when they merge.`);
+    else if (quality) lines.push(fw.open.length ? `No agent is fixing these yet: ${fw.open.length} finding(s) from the playtest wait (${fw.open.slice(0, 3).map((f) => `"${f.title}"`).join('; ')}). "Fix it now" starts them; "Go live anyway" ships beta as it is.` : `No agent is fixing these right now. "Go live anyway" ships beta as it is; the next beta playtest files them again.`);
     return {
       // Bound to the playtested commit: a Studio release commit on top of it (only releases.json) isn't beta moving.
       bind: J([p.played?.sha ?? p.beta?.sha ?? null, p.main?.sha ?? null]),
@@ -114,7 +122,10 @@ async function describe(kind: Kind, target: string, params: Record<string, any>)
         title: `Go live with ${p.name}?`, lines, blockers: p.blockers, warnings: p.warnings, links: [p.betaSite ? { label: 'Beta site', url: p.betaSite } : null, { label: 'Live site', url: p.live }].filter(Boolean) as Card['links'], approve: `Approve: go live`, deny: 'Deny',
         // Only live having commits beta lacks stops it: one tap brings beta up to date (nothing goes live), not a dead end.
         catchUp: p.fix === 'merge-main',
-        skip: p.playtestOnly && (p.played ?? p.beta) ? { sha: (p.played ?? p.beta)!.sha, short: (p.played ?? p.beta)!.short, why: p.blockers } : null,
+        // Every blocker a person may go live past (deploy.ts isOverridable: not playtested, quality rules broken): "Go live
+        // anyway", so a go-live card is never a dead end (J, 2026-11-09).
+        skip: p.overridable && (p.played ?? p.beta) ? { sha: (p.played ?? p.beta)!.sha, short: (p.played ?? p.beta)!.short, why: p.blockers } : null,
+        fixNow: !fw.changes.length && quality && fw.open.length ? fw.open.map((f) => f.id) : undefined,
       },
     };
   }
@@ -453,7 +464,7 @@ export async function decideApproval(id: string, token: string, decision: string
 async function decide(id: string, token: string, decision: string, req: http.IncomingMessage, extra: { commit?: string } = {}) {
   const why = notJClick(req);
   if (why) throw new StudioError(`Only J approves or denies, with a tap on the card: ${why}.`, 403);
-  if (!['approve', 'deny', 'anyway', 'catchup'].includes(decision)) throw new StudioError('decision: approve | deny | anyway | catchup');
+  if (!['approve', 'deny', 'anyway', 'catchup', 'fixnow'].includes(decision)) throw new StudioError('decision: approve | deny | anyway | catchup | fixnow');
   expire();
   const r = row(id);
   if (!r) throw new StudioError(`No approval ${id}`, 404);
@@ -463,10 +474,10 @@ async function decide(id: string, token: string, decision: string, req: http.Inc
   const expect = Buffer.from(String(r.token));
   const got = Buffer.from(String(token ?? ''));
   if (got.length !== expect.length || !crypto.timingSafeEqual(got, expect)) throw new StudioError('Wrong token for this card.', 403);
-  if ((decision === 'anyway' || decision === 'catchup') && a.kind !== 'deploy') throw new StudioError(`"${decision === 'anyway' ? 'Go live anyway' : 'Bring beta up to date'}" is only for going live.`, 400);
+  if (['anyway', 'catchup', 'fixnow'].includes(decision) && a.kind !== 'deploy') throw new StudioError(`"${decision === 'anyway' ? 'Go live anyway' : decision === 'fixnow' ? 'Fix it now' : 'Bring beta up to date'}" is only for going live.`, 400);
   // Who tapped: the signed-in admin's name (or J's own page without a session, as before).
   const u = sessionUser(cookieToken(req));
-  const by = decision === 'anyway' && u ? (u.name || u.email) : 'J';
+  const by = (decision === 'anyway' || decision === 'fixnow') && u ? (u.name || u.email) : 'J';
   if (decision === 'deny') {
     if (!claim(id, 'denied', by)) throw new StudioError('This card was just decided.', 409);
     if (a.kind === 'decision') await answerDecision(a, a.card.deny, by).catch(() => {});
@@ -502,17 +513,29 @@ async function decide(id: string, token: string, decision: string, req: http.Inc
       .run(by, Date.now(), `Bringing beta up to date with main (${op.id}). Nothing went live: beta is deployed and playtested again, then it can go live.`, id);
     return getApproval(id)!;
   }
-  // "Go live anyway": a person going live past beta not being playtested, and past nothing else. The confirm step on the
-  // card names the commit; the tap sends it back, so it is for exactly the commit they were shown.
+  // "Fix it now": the playtest's findings that no agent has taken yet go to agents for beta (a stalled fix loop moves
+  // again). Not a decision: the card stays, now showing the fix under way.
+  if (decision === 'fixnow') {
+    const ids = now.card.fixNow ?? [];
+    if (!ids.length) { refreshCard(id, now); throw new StudioError('Nothing is waiting for a fix: Studio is already on it (the card shows what).', 409); }
+    const { startFix } = await import('./agents.ts');
+    const change = startFix(a.target, ids, { by: `${by} (the go-live card)` });
+    refreshCard(id, await describe(a.kind, a.target, a.params));
+    await tell(a, `${by} asked Studio to fix beta now (${change}): ${ids.length} finding(s) from the playtest. The go-live card stays; beta is played again when the fix merges.`);
+    return getApproval(id)!;
+  }
+  // "Go live anyway": a person going live past beta not being playtested or the quality rules its playtest broke, and
+  // past nothing else. The confirm step on the card names the commit; the tap sends it back, so it is for exactly the
+  // commit they were shown.
   if (decision === 'anyway' && now.card.blockers.length) {
     const skip = now.card.skip;
-    if (!skip) throw new StudioError(`Can't go live anyway: not only the playtest stops it:\n- ${now.card.blockers.join('\n- ')}`, 409);
+    if (!skip) throw new StudioError(`Can't go live anyway: something stops it that going live can't skip:\n- ${now.card.blockers.join('\n- ')}`, 409);
     const c = String(extra.commit ?? '');
-    if (!c || !(c === skip.short || c === skip.sha)) throw new StudioError(`Confirm going live without a playtest of ${skip.short}: tap "Go live anyway" again.`, 409);
+    if (!c || !(c === skip.short || c === skip.sha)) throw new StudioError(`Confirm going live with ${skip.short} as it is: tap "Go live anyway" again.`, 409);
     if (!claim(id, 'approving', by)) throw new StudioError('This card was just decided.', 409);
     const rec = { by, at: Date.now(), sha: skip.sha, why: skip.why };
     db.prepare('UPDATE approvals SET params = ?, card = ? WHERE id = ?').run(J({ ...a.params, skipPlaytest: rec }), J(now.card), id);
-    await carryOut({ ...a, params: { ...a.params, skipPlaytest: rec } }, by, `${by} went live without a playtest of ${skip.short}`);
+    await carryOut({ ...a, params: { ...a.params, skipPlaytest: rec } }, by, `${by} went live past its checks with ${skip.short}`);
     return getApproval(id)!;
   }
   if (now.card.blockers.length) throw new StudioError(`Can't approve yet:\n- ${now.card.blockers.join('\n- ')}`, 409);
