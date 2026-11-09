@@ -706,9 +706,11 @@ async function playScenario(run: string, p: Product, asked: Playtest, opts: Play
     played = t.where === 'local' ? (was?.data?.played ?? (unityBeta ? now : playedLocal(p))) : null;
     // A game added through Talk plays its published beta site: what's played is the commit that site was built from,
     // not this instance's clone (2026-10-31: Star Skipper's beta playtest said it played main, the starter).
-    if (t.where === 'local' && !was?.data?.played && p.github && (await cloudBetaUrl(p))) {
+    // Any project whose local playtest plays the published beta site, github or not (2026-11-09: Imagine Live TV said it
+    // played the server's beta checkout, but played its published site, which lagged the push).
+    if (t.where === 'local' && !was?.data?.played && (p.github || !p.build) && (await cloudBetaUrl(p))) {
       const v = (await import('./previews.ts')).betaPreview(p.id);
-      if (v?.sha) played = { branch: BETA, sha: v.sha, title: v.ref };
+      if (v?.sha && v.status === 'ready') played = { branch: BETA, sha: v.sha, title: v.ref };
       // A Unity project Studio builds: what's played is the commit the published build was made from (its row's full sha),
       // which can be older than beta's head; the report names it as that (betabuild.ts).
       const BB = await import('./betabuild.ts');
@@ -764,6 +766,17 @@ async function playScenario(run: string, p: Product, asked: Playtest, opts: Play
       return null;
     }
     updateStep(s, { data: { played, url, ...(deps.length ? { deps } : {}), ...(since ? { runningSince: since } : {}) } });
+    // The page must be the commit the report names: a beta site that lags the push says so and isn't judged.
+    if (t.where === 'local' && !prior && played && !unityBeta) {
+      const off = await (await import('./servedpage.ts')).checkServedPage(url, played);
+      if (off) {
+        console.warn(`[studio] ${p.id} ${name} (${run}): ${off}`);
+        if (port) stopServed(port);
+        updateStep(s, { status: 'failed', detail: off, data: { played, url, wrongBuild: true }, finished: true });
+        void import('./previews.ts').then((m) => m.buildPreview(p.id)).catch(() => {});
+        return null;
+      }
+    }
     // A scenario this copy is known not to have is skipped, not played (scenarios.ts). The list is the one seen at this
     // page of this build, so a list from another page (the lore site's root) never skips the game's scenarios.
     const has = t.where === 'local' && t.scenario && !prior ? knownScenarios(p.id, build, url) : null;
