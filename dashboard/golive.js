@@ -211,8 +211,9 @@ if (typeof document !== 'undefined') (() => {
     const showFx = FixResult.show(fx, { red: L.color === 'red' || offerPlay, fix: p.fix && FIX[p.fix] ? p.fix : offerPlay ? 'playtest' : null, okSince });
     // The fix "Play beta" plays this commit too: when it isn't played yet, the button says so.
     const fixLabel = fix === 'beta' && PlayState.canPlay(ps) ? FIX.playtest.label : fix && FIX[fix].label;
-    // Only the playtest stops it (deploy.ts playtestOnly): a person may go live anyway, beside "Playtest this commit".
-    const anyway = up && !run.length && !!p.playtestOnly;
+    // Only checks a person may go past stop it (deploy.ts overridable: not playtested, quality rules broken): a person
+    // may go live anyway, beside the fix buttons.
+    const anyway = up && !run.length && !!(p.overridable || p.playtestOnly);
     const fxRun = fx?.run ? ` · <a href="#runs" data-glrun="${esc(fx.run)}">the run</a>` : '';
     return `<div class="gl-card ${L.color}" data-p="${esc(p.product)}" data-key="gl:${esc(p.product)}">
       <h3><span class="gl-light ${L.color}" title="${esc(L.text)}"></span>${esc(p.name)}</h3>
