@@ -14,10 +14,12 @@
 //   - J's phone hears only when the hold needs him (billing, no login), once per hold, with the exact error. A usage
 //     reset or an outage is a Talk line when work pauses and one when it resumes.
 
+import fs from 'node:fs';
 import os from 'node:os';
+import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { db, J, parse } from './db.ts';
-import { brainId, brainSettings, ANTIGRAVITY_AGENT, COPILOT_AGENT, CURSOR_AGENT, GEMINI_AGENT, failover, fallbackChain, harnessConfigured, harnessStopOf, setFailover, syncBrain, type Harness, type HarnessKind, type HarnessStop } from './brains.ts';
+import { adapterOf, brainId, brainSettings, failover, fallbackChain, harnessConfigured, harnessStopOf, setFailover, syncBrain, type Harness, type HarnessKind, type HarnessStop } from './brains.ts';
 
 db.exec(`CREATE TABLE IF NOT EXISTS harness_holds (
   harness TEXT PRIMARY KEY, kind TEXT NOT NULL, why TEXT NOT NULL, line TEXT, account TEXT, since INTEGER NOT NULL,
@@ -46,7 +48,7 @@ export const activeHolds = () => (db.prepare('SELECT * FROM harness_holds WHERE 
 /** Whether the harness in use is held: nothing new starts on it. */
 export const harnessHeld = (harness: Harness = brainId()) => Boolean(activeHold(harness));
 
-export const LABEL: Record<Harness, string> = { claude: 'Claude', cursor: 'Cursor', copilot: 'Copilot', gemini: 'Gemini', antigravity: 'Antigravity' };
+export const LABEL: Record<Harness, string> = { claude: 'Claude', cursor: 'Cursor', copilot: 'Copilot', gemini: 'Gemini', antigravity: 'Antigravity', codex: 'Codex' };
 /** A minute, in ms (STUDIO_HARNESS_MINUTE_MS: tests run the backoff in milliseconds). */
 const minute = () => (Number(process.env.STUDIO_HARNESS_MINUTE_MS) > 0 ? Number(process.env.STUDIO_HARNESS_MINUTE_MS) : 60_000);
 const BACKOFF = [10, 20, 40, 60];
@@ -87,6 +89,8 @@ function save(h: Hold) {
     line = excluded.line, account = excluded.account, since = excluded.since, until = excluded.until, attempts = excluded.attempts,
     reset = excluded.reset, notified = excluded.notified, switched = excluded.switched, lifted = excluded.lifted, log = excluded.log`)
     .run(h.harness, h.kind, h.why, h.line, h.account, h.since, h.until, h.attempts, h.reset ? 1 : 0, h.notified, h.switched, h.lifted, J(h.log.slice(-40)));
+  // Settings' providers box and the Inbox's AI card follow holds through the push stream (a burst of writes is one look).
+  void import('./stream.ts').then((st) => { st.changed('ai-logins'); st.poke(); }).catch(() => {});
 }
 const stamp = (line: string) => `${new Date().toISOString().slice(0, 16).replace('T', ' ')} ${line}`;
 const addLine = (harness: Harness, line: string) => {
@@ -130,6 +134,8 @@ export const holdDeps = {
 const resumers: (() => void)[] = [];
 export const onHoldLifted = (f: () => void) => void resumers.push(f);
 const resume = () => { for (const f of resumers) try { f(); } catch { /* the queue's own */ } };
+/** Starts the queue again now (a provider switched back on, or the spread turned on: providers.ts). */
+export const resumeNow = () => resume();
 
 /** Changes parked by a hold (agents.ts parkForHarness): queued, phase.harness set. */
 export function parkedChanges(): { id: string; title: string | null; product: string }[] {
@@ -187,15 +193,34 @@ export function holdHarness(stop: HarnessStop, { source, harness = brainId(), no
  * (a stand-in that turned out not to answer is held quietly).
  */
 function announce(h: Hold, fresh = false) {
-  if (h.harness !== brainId() && h.harness !== brainSettings().chosen) return;
+  // Several providers at once (providers.ts): the others carry the work, so this is a line, not "agents paused"; the
+  // Inbox's AI card (inbox.ts) asks J only when he is needed (a sign-in, billing, or nothing left to run on).
+  const others = spreadOthers(h.harness);
+  if (!others.length && h.harness !== brainId() && h.harness !== brainSettings().chosen) return;
+  // A sign-in or a bill only J can sort out: his phone hears once per hold, whether or not others carry the work.
   if (needsJ(h.kind) && !h.notified) {
     save({ ...h, notified: Date.now() });
-    const what = h.kind === 'billing' ? 'pay what the error asks for' : `sign ${LABEL[h.harness]} in again (Settings)`;
-    void holdDeps.phone(`Agents paused: ${h.why}`, `${h.line ?? h.why}. Studio holds ${LABEL[h.harness]} until it answers (${what}); the other harness stands in when it can. It checks again every 30 minutes and resumes by itself.`.slice(0, 400)).catch(() => {});
+    const what = h.kind === 'billing' ? 'pay what the error asks for' : `sign ${LABEL[h.harness]} in again (Settings → AI providers)`;
+    const meanwhile = others.length ? `${others.map((x) => LABEL[x]).join(', ')} carr${others.length === 1 ? 'ies' : 'y'} the work meanwhile` : 'the other harness stands in when it can';
+    void holdDeps.phone(others.length ? `${LABEL[h.harness]} needs you: ${h.why}` : `Agents paused: ${h.why}`, `${h.line ?? h.why}. Studio holds ${LABEL[h.harness]} until it answers (${what}); ${meanwhile}. It checks again every 30 minutes and resumes by itself.`.slice(0, 400)).catch(() => {});
+  }
+  if (others.length) {
+    if (fresh) void holdDeps.talk(`${LABEL[h.harness]} is held: work moves to ${others.map((x) => LABEL[x]).join(', ')}`, `${h.why} (${h.line ?? '?'}). Nothing stopped: parked passes continue on ${others.map((x) => LABEL[x]).join(' or ')}, and ${LABEL[h.harness]} takes work again by itself once it answers (${holdDetail(h)}).`).catch(() => {});
+    return;
   }
   if (fresh) {
     void holdDeps.talk(`Agents paused: ${h.why}`, `${h.why} (${h.line ?? '?'}). Every agent change it stopped is parked with its work, not failed, and nothing new starts on ${LABEL[h.harness]} until then. ${holdDetail(h).replace(/^waiting for/, 'Waiting for')}. It resumes by itself.`).catch(() => {});
   }
+}
+
+/** The providers that take the work while this one is held, when several run at once (providers.ts "spread"). */
+let spreadOthers: (h: Harness) => Harness[] = () => [];
+export const setSpreadOthers = (f: (h: Harness) => Harness[]) => void (spreadOthers = f);
+
+/** "Check again" (the Inbox's AI card): every hold is probed now, not at its next time. */
+export async function recheckHolds() {
+  for (const h of activeHolds()) save({ ...h, until: Math.min(h.until, Date.now()), switched: null });
+  return reviewHolds();
 }
 
 /** Lifts the hold (a probe answered, an account switched, or J's own word); ends a stand-in for it and resumes the queue. */
@@ -336,20 +361,37 @@ async function defaultProbe(harness: Harness): Promise<{ ok: boolean; note: stri
     ...(harness === 'claude' ? ['--model', 'claude-haiku-5-5', '--tools', '', '--setting-sources', ''] : [])];
   const pre: string[] = process.env.TALK_CLAUDE_ARGS ? JSON.parse(process.env.TALK_CLAUDE_ARGS) : [];
   const stand = Boolean(process.env.TALK_CLAUDE || pre.length);
-  const adapter = harness === 'cursor' ? CURSOR_AGENT : harness === 'copilot' ? COPILOT_AGENT : harness === 'gemini' ? GEMINI_AGENT : harness === 'antigravity' ? ANTIGRAVITY_AGENT : '';
+  const adapter = adapterOf(harness);
   const file = stand ? (process.env.TALK_CLAUDE || 'claude') : adapter ? process.execPath : 'claude';
   const argv = stand ? [...pre, ...args] : adapter ? [adapter, ...args] : args;
   const env = harness === 'claude' ? claudeEnv() : { ...process.env };
   if (stand) env.HAWKES_PROBE_HARNESS = harness;
+  // A signed-in CLI (cli-signin.ts) probes in a home of its own, seeded with the kept login; a token it refreshes there is
+  // kept (OpenAI's refresh tokens work once), so the next pass doesn't start with a spent one.
+  const cli = harness === 'codex' || harness === 'cursor' || harness === 'copilot';
+  const home = cli && !stand ? fs.mkdtempSync(path.join(os.tmpdir(), `studio-probe-${harness}-`)) : null;
+  if (home) env.HOME = home;
+  const keepRefreshed = async () => {
+    if (!home) return;
+    try {
+      // @ts-ignore: a plain .mjs, no types
+      const { changedLogins } = await import('../bin/ai-login-seed.mjs');
+      const { keepRefreshedLogin, CLI_PROVIDERS } = await import('./cli-signin.ts');
+      const back = changedLogins(env, home)[CLI_PROVIDERS[harness as 'codex'].envName];
+      if (back) keepRefreshedLogin(harness as 'codex', back);
+    } catch { /* the probe's answer stands either way */ }
+    fs.rmSync(home, { recursive: true, force: true });
+  };
   return new Promise((resolve) => {
     const child = spawn(file, argv, { cwd: os.tmpdir(), env, windowsHide: true });
     let out = '';
     child.stdout.on('data', (d) => (out += d));
     child.stderr.on('data', (d) => (out += d));
     const timer = setTimeout(() => child.kill('SIGTERM'), 90_000);
-    child.on('error', (e) => { clearTimeout(timer); resolve({ ok: false, note: `couldn't start it: ${e.message}` }); });
+    child.on('error', (e) => { clearTimeout(timer); void keepRefreshed(); resolve({ ok: false, note: `couldn't start it: ${e.message}` }); });
     child.on('close', () => {
       clearTimeout(timer);
+      void keepRefreshed();
       let result: any = null;
       for (const l of out.split('\n')) { try { const m = JSON.parse(l); if (m.type === 'result') result = m; } catch { /* not JSON */ } }
       // A clean result answers (a warning on stderr doesn't make it a stop); else what the output says.

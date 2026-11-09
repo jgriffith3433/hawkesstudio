@@ -46,8 +46,12 @@ export type Tuning = {
 
 export const MODELS: Tuning['models'] = {
   claude: { fast: 'claude-haiku-5-5', standard: 'claude-sonnet-5-5', deep: 'claude-opus-5-5', max: 'claude-fable-5-1' },
-  copilot: { fast: 'claude-haiku-5.5', standard: 'claude-sonnet-5.5', deep: 'claude-sonnet-5.5', max: 'claude-sonnet-5.5' },
-  cursor: { fast: '', standard: '', deep: '', max: '' },
+  // Copilot's ids (dots). A model the plan refuses steps down a tier by itself (models.ts), so a guess never blocks work.
+  copilot: { fast: 'claude-haiku-5.5', standard: 'claude-sonnet-5.5', deep: 'claude-opus-5.5', max: 'claude-opus-5.5' },
+  // Cursor: its own fast model for quick jobs, Auto (its router, the plan's cheapest pool) for the rest.
+  cursor: { fast: 'composer-2.5', standard: 'auto', deep: 'auto', max: 'auto' },
+  // Codex on a ChatGPT plan: the plan's default model at a reasoning effort per tier (bin/codex-agent.mjs ':<effort>').
+  codex: { fast: ':low', standard: ':medium', deep: ':high', max: ':xhigh' },
   // Gemini CLI's own aliases: Flash for quick jobs, Auto (its router) for most work, Pro where a mistake is expensive.
   gemini: { fast: 'flash', standard: '', deep: 'pro', max: 'pro' },
   // Antigravity CLI slugs (`agy models`): the Flash tier for quick jobs, Gemini 4 for the rest.

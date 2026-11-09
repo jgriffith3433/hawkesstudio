@@ -1,7 +1,8 @@
 # Google harnesses
 
 Studio has two, both through the same adapter pattern (`bin/*-agent.mjs` turns the CLI's events into Claude Code's
-stream-json), both in the same fallback chain and holds. The chain is claude, cursor, copilot, antigravity, gemini.
+stream-json), both in the same fallback chain and holds. The chain is J's order in Settings → AI providers (default claude, codex,
+cursor, copilot, antigravity, gemini); see docs/providers.md.
 
 | Harness | CLI | Pays with | Adapter |
 |---|---|---|---|

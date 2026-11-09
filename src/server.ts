@@ -996,6 +996,33 @@ const server = http.createServer(async (req, res) => {
       if (route === '/api/antigravity/signin/cancel' && method === 'POST') return send(res, 200, al.cancelAgySignin());
     }
 
+    // Every AI provider (providers.ts, cli-signin.ts): anyone may see which are signed in and answering; signing in or
+    // out, switching one on or off and the order are J's own click in Settings (as for Antigravity).
+    if (route === '/api/ai/providers' && method === 'GET') {
+      const P = await import('./providers.ts');
+      const C = await import('./cli-signin.ts');
+      const A = await import('./antigravity-login.ts');
+      return send(res, 200, { ...P.providerStatus(), logins: C.cliLogins(), antigravity: A.agyLogin(), trouble: P.providerTrouble() });
+    }
+    if (route.startsWith('/api/ai/') && method === 'POST' && ['/api/ai/providers', '/api/ai/signin', '/api/ai/signin/cancel', '/api/ai/signout', '/api/ai/recheck'].includes(route)) {
+      const why = (await import('./approvals.ts')).notJClick(req);
+      if (why) return send(res, 403, { error: `AI providers change only from J's own click in Settings: ${why}.` });
+      if ((await import('./tenancy.ts')).customerStudio() && route !== '/api/ai/recheck') return send(res, 403, { error: 'Connect your AI under Settings → Your AI.' });
+      const b = await readJson(req);
+      try {
+        const C = await import('./cli-signin.ts');
+        const provider = String(b.provider ?? '');
+        if (route === '/api/ai/providers') return send(res, 200, (await import('./providers.ts')).saveProviders(b, 'J'));
+        if (route === '/api/ai/recheck') { await (await import('./harness-hold.ts')).recheckHolds(); return send(res, 200, { ok: true }); }
+        if (!C.isCliProvider(provider)) return send(res, 400, { error: `provider: ${C.CLI_PROVIDER_IDS.join(' | ')} (Antigravity signs in from its own box)` });
+        if (route === '/api/ai/signin') return send(res, 200, await C.startCliSignin(provider));
+        if (route === '/api/ai/signin/cancel') return send(res, 200, C.cancelCliSignin(provider));
+        if (route === '/api/ai/signout') return send(res, 200, C.signOutCli(provider));
+      } catch (e: any) {
+        return send(res, e.status ?? 400, { error: e.message });
+      }
+    }
+
     // A customer's other AI providers (ailink.ts): their Cursor, Copilot or Gemini key, and which one Talk and the agents
     // run on. An admin's own click, as for Claude.
     const aiKey = /^\/api\/ai\/(cursor|copilot|gemini)\/key$/.exec(route);
@@ -1306,8 +1333,13 @@ server.listen(listenPort, cloud ? '0.0.0.0' : '127.0.0.1', () => {
   }).catch((e) => console.warn(`[studio] renaming scenarios: ${e.message ?? e}`));
   // Antigravity's login for every agy Studio starts, the sandboxed agent user's too (antigravity-login.ts); again every
   // 10 minutes, so a sign-in made in a terminal is picked up.
-  if (!cloud) shareAgyLogin();
+  // On Cloud Run too: the instance's home starts empty, and the logins kept in DATA (ai-logins.ts, pulled before the
+  // server starts) come back into it and into the environment the agent passes get (cli-signin.ts shareCliLogins).
+  shareAgyLogin();
   if (!cloud) setInterval(shareAgyLogin, 10 * 60_000).unref();
+  void import('./cli-signin.ts').then((c) => { const n = c.shareCliLogins(); if (n.length) console.log(`[ai] signed in here: ${n.join(', ')}`); }).catch((e) => console.warn(`[ai] logins: ${e.message ?? e}`));
+  // Several providers at once and the failover order (providers.ts registers itself with brains.ts and harness-hold.ts).
+  void import('./providers.ts').catch((e) => console.warn(`[ai] providers: ${e.message ?? e}`));
   const runs = resumeRuns();
   // Builds nothing is going to finish (a run gone, or building past the maximum) are settled; later ones when Gen says so (builds.ts).
   void import('./builds.ts').then((B) => { void B.watchGenBuilds(); void import('./buildaccess.ts').then((A) => A.resumeRetries()); void import('./firebasebuild.ts').then((F) => F.retireActionsCards()).catch((e) => console.warn(`[studio] closing Actions cards: ${e?.message ?? e}`)); return B.reconcileBuilds().then(() => import('./buildfix.ts')).then((F) => F.resumeChains()); }).catch((e) => console.warn(`[studio] reconciling builds: ${e.message ?? e}`));

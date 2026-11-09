@@ -18,6 +18,8 @@
 // - FAKE_LIMIT: while the file FAKE_LIMIT_FILE exists, a pass writes work.txt (uncommitted), prints Cursor's unpaid-invoice
 //   error on stderr and ends with no result, like a harness that refuses to run; once it's gone, it works like a good
 //   agent. A plain -p call (a harness probe) answers the same way: the error while the file exists, else a result.
+//   FAKE_LIMIT_HARNESS: only that provider is limited (the harness Studio started the pass or probe on:
+//   HAWKES_PASS_HARNESS / HAWKES_PROBE_HARNESS); the others work, so the work can move to them (providers.ts).
 // A plain turn resuming the session "dead-session" fails like a session another harness made: error_during_execution,
 // nothing spent (talk.ts starts a new session with the conversation so far).
 // Told to merge its base (a conflict pass: "git merge origin/<base>" in its prompt), it merges keeping its own side of
@@ -46,7 +48,9 @@ const session = 'fake-session';
 log({ start: args });
 
 const INVOICE = 'ActionRequiredError: You have an unpaid invoice Pay your unpaid invoice at [cursor.com/dashboard/billing](https://cursor.com/dashboard/billing) to resume requests.';
-const limited = () => Boolean(process.env.FAKE_LIMIT_FILE && fs.existsSync(process.env.FAKE_LIMIT_FILE));
+const harness = process.env.HAWKES_PASS_HARNESS || process.env.HAWKES_PROBE_HARNESS || 'claude';
+const limited = () => Boolean(process.env.FAKE_LIMIT_FILE && fs.existsSync(process.env.FAKE_LIMIT_FILE))
+  && (!process.env.FAKE_LIMIT_HARNESS || process.env.FAKE_LIMIT_HARNESS === harness);
 function refuse() {
   process.stderr.write(`${INVOICE}
 `);
@@ -75,7 +79,7 @@ async function answer(text) {
 
 async function agent() {
   const resumed = args.includes('--resume');
-  log({ agent: process.cwd(), resumed, prompt: args[args.indexOf('-p') + 1] });
+  log({ agent: process.cwd(), resumed, harness, prompt: args[args.indexOf('-p') + 1] });
   out({ type: 'system', subtype: 'init', session_id: 'fake-agent-session', apiKeySource: 'none' });
   out({ type: 'assistant', message: { content: [{ type: 'text', text: 'Looking at the brief.' }] } });
   let brief = '';

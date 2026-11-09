@@ -66,7 +66,7 @@
   }
 
   function brainBox(b) {
-    const key = b.key ? 'The Cursor key is on this server.' : 'CURSOR_API_KEY is not on this server yet. Cursor cannot run until it is in the hawkes/cursor secret.';
+    const key = b.key ? 'Cursor is signed in (or its key is on this server).' : 'Cursor is not signed in yet: Sign in under AI providers (your Cursor plan), or put CURSOR_API_KEY in the hawkes/cursor secret.';
     const cop = b.copilot ? 'A Copilot token or login is on this server.' : 'No Copilot login on this server yet: put a fine-grained token (Copilot Requests permission) in COPILOT_GITHUB_TOKEN, or run copilot login there. See docs/copilot.md.';
     const gem = b.gemini ? 'A Gemini API key is on this server (billed on that key, not the Google AI plan).' : 'No Gemini API key on this server yet: set GEMINI_API_KEY (deploy/gemini-key.mjs). Google AI Pro/Ultra sign-ins use the Antigravity harness instead. See docs/gemini.md.';
     const agy = b.antigravity ? 'Antigravity is signed in with a Google account on this server.' : 'Antigravity (agy) is not signed in on this server yet: use "Sign in with Google" in the Antigravity login box below.';
@@ -76,14 +76,16 @@
         ? [['', 'Antigravity default'], ['gemini-4-argon-high', 'Gemini 4 Argon (High)'], ['gemini-4-argon-medium', 'Gemini 4 Argon (Medium)'], ['gemini-3.8-flash-medium', 'Gemini 3.8 Flash (Medium)'], ['gemini-3.8-flash-low', 'Gemini 3.8 Flash (Low)'], ['claude-opus-5-5-medium', 'Claude Opus 5.5 (Medium)'], ['claude-sonnet-5-5-medium', 'Claude Sonnet 5.5 (Medium)']]
       : b.harness === 'gemini'
         ? [['', 'Auto (Gemini picks)'], ['pro', 'Pro'], ['flash', 'Flash'], ['flash-lite', 'Flash-Lite']]
+        : b.harness === 'codex'
+        ? [['', 'Codex default'], [':low', 'Default, low effort'], [':medium', 'Default, medium effort'], [':high', 'Default, high effort'], [':xhigh', 'Default, extra high effort']]
         : b.harness === 'copilot'
         ? [['', 'Copilot’s default'], ['claude-sonnet-4.5', 'Claude Sonnet 4.5'], ['claude-haiku-4.5', 'Claude Haiku 4.5'], ['gpt-5.4', 'GPT-5.4']]
         : [['', 'Each role’s model'], ['claude-opus-5-5', 'Opus'], ['claude-sonnet-5-5', 'Sonnet'], ['claude-haiku-5-5', 'Haiku']];
-    const note = b.harness === 'cursor' ? key : b.harness === 'copilot' ? cop : b.harness === 'gemini' ? gem : b.harness === 'antigravity' ? agy : 'Claude Code, signed in with the Claude account.';
+    const note = b.harness === 'codex' ? (b.codex ? 'OpenAI Codex is signed in with a ChatGPT account on this server.' : 'Codex is not signed in yet: Sign in under AI providers.') : b.harness === 'cursor' ? key : b.harness === 'copilot' ? cop : b.harness === 'gemini' ? gem : b.harness === 'antigravity' ? agy : 'Claude Code, signed in with the Claude account.';
     const stand = b.failover ? ` <b>${b.harness} is standing in</b> for ${b.chosen} until it answers again.` : '';
     return `<div class="set-box"><h3>🧠 Harness and model</h3>
-      <div class="meta">What runs Talk, the PM, the agents and Gen's writing and review calls. Claude Code is the original harness.       Cursor, GitHub Copilot and Google Antigravity run on their plans (the Gemini API key bills a key). If the one you pick is out of usage, has a billing error or is down, Studio tries the others in turn (Claude, Cursor, Copilot, Antigravity, Gemini) and goes back by itself. Switching takes effect on the next turn and the next agent; a session already running is restarted on the harness you pick.${stand}</div>
-            ${row('Harness', select('brain', 'harness', b.harness, [['claude', 'Claude Code'], ['cursor', 'Cursor'], ['copilot', 'GitHub Copilot'], ['antigravity', 'Google Antigravity (AI Ultra)'], ['gemini', 'Gemini API key']]), note)}
+      <div class="meta">What runs Talk, the PM, the agents and Gen's writing and review calls. Claude Code is the original harness.       OpenAI Codex, Cursor, GitHub Copilot and Google Antigravity run on their plans (the Gemini API key bills a key). If the one you pick is out of usage, has a billing error or is down, Studio tries the others in the order in AI providers and goes back by itself. Switching takes effect on the next turn and the next agent; a session already running is restarted on the harness you pick.${stand}</div>
+            ${row('Harness', select('brain', 'harness', b.harness, [['claude', 'Claude Code'], ['codex', 'OpenAI Codex (ChatGPT plan)'], ['cursor', 'Cursor'], ['copilot', 'GitHub Copilot'], ['antigravity', 'Google Antigravity (AI Ultra)'], ['gemini', 'Gemini API key']]), note)}
       ${row('Model', select('brain', 'model', b.model, models), b.harness === 'cursor' ? 'Auto is Cursor’s router (keeps going when premium usage is out). Grok and Composer are pinned models.' : b.harness === 'copilot' ? 'Copilot’s own model ids; the default is what your plan picks.' : b.harness === 'claude' && b.model && data.routing?.enabled ? '<b>Not used while Model routing is on:</b> each run gets its routed model (Haiku, Sonnet, Opus when it climbs, Fable when you ask). Turn routing off to pin this model for every run.' : 'Leave this on each role’s model, or pick one for every role.')}
     </div>`;
   }
@@ -157,6 +159,99 @@
       ${body}
     </div>`;
   }
+
+  // Every AI provider at once (src/providers.ts, src/cli-signin.ts; J, 2026-11-09: "able to easily switch between
+  // providers or even use multiple providers at once"). Cursor, Codex and Copilot sign in with their own device page:
+  // Studio runs the CLI's login on the server and shows its link (and code); J signs in on the provider's page and the box
+  // updates by itself through the push stream. Studio keeps the login server side, never shown. Changes are J's click.
+  let providers = null;
+  const PROV_ROLES = [['fixer', 'Fixer'], ['builder', 'Builder'], ['content', 'Content'], ['scout', 'Scouts']];
+  function providersBox(pv) {
+    if (!pv) return '';
+    const login = (id) => pv.logins?.find((l) => l.provider === id);
+    const order = pv.providers.map((x) => x.id);
+    const rows = pv.providers.map((x, i) => {
+      const l = login(x.id);
+      const si = l?.signin;
+      const state = x.ready
+        ? `<span style="color:var(--accent)">✓ answering</span>${x.busy ? ` · ${x.busy} running` : ''}${l?.account ? ` · ${esc(l.account)}` : ''}`
+        : x.hold
+          ? `<span class="set-err">${esc(x.hold.why)}</span>${x.hold.needsYou ? '' : ` · back by itself ${x.hold.resets ? 'when it resets' : 'once it answers'}`}`
+          : `<span class="meta">${esc(x.why ?? '')}</span>`;
+      let act = '';
+      if (l) {
+        if (si && (si.state === 'waiting' || si.state === 'starting')) {
+          act = si.url
+            ? `<div class="ca-add"><div>1. <a href="${esc(si.url)}" target="_blank" rel="noopener"><b>Open ${esc(l.label)}'s sign-in page</b></a> and sign in with the account on ${esc(l.plan)}.</div>
+                ${si.code ? `<div>2. Enter this code there: <b style="font-size:16px;letter-spacing:1px;user-select:all">${esc(si.code)}</b></div>` : ''}
+                <div class="meta">This box updates by itself when ${esc(l.label)} says you're in.</div>
+                <div class="ca-line"><button class="small" data-aicancel="${x.id}">Cancel</button></div></div>`
+            : '<div class="meta">Starting the sign-in on the server…</div>';
+        } else {
+          act = `<button class="small" data-aisignin="${x.id}" ${l.installed ? '' : 'disabled title="Its CLI isn\'t on this server yet"'}>${l.signedIn ? 'Sign in again' : 'Sign in'}</button>${l.signedIn ? ` <button class="small" data-aisignout="${x.id}">Sign out</button>` : ''}`
+            + (si?.state === 'failed' && si.error ? `<div class="set-err">${esc(si.error)}</div>` : '');
+        }
+      } else if (x.id === 'antigravity') act = '<span class="meta">Sign in with Google in the Antigravity box.</span>';
+      else if (x.id === 'claude') act = '<span class="meta">Claude accounts box.</span>';
+      else if (x.id === 'gemini') act = '<span class="meta">API key only (GEMINI_API_KEY): Google no longer lets the Gemini CLI use a personal plan. The plan runs through Antigravity.</span>';
+      return `<div class="set-row" data-aiprov="${x.id}"><div><label><input type="checkbox" data-aiuse="${x.id}" ${x.on ? 'checked' : ''}> <b>${esc(x.label)}</b></label>
+          ${i > 0 ? ` <button class="small" data-aiup="${x.id}" title="Try earlier">↑</button>` : ''}<div class="meta">${state}</div></div>
+        <div>${act}</div></div>`;
+    }).join('');
+    const ready = pv.providers.filter((x) => x.ready).map((x) => x.label);
+    const roleSel = PROV_ROLES.map(([r, name]) => `${name} <select data-airole="${r}"><option value="">any</option>${pv.providers.map((x) => `<option value="${x.id}" ${pv.roles?.[r] === x.id ? 'selected' : ''}>${esc(x.label)}</option>`).join('')}</select>`).join(' &nbsp; ');
+    return `<div class="set-box" id="setProvidersBox"><h3>🔌 AI providers</h3>
+      <div class="meta">${pv.mode === 'spread'
+        ? `Every provider that's signed in takes agent work at once, each new pass on the least busy one (now: ${ready.length ? esc(ready.join(', ')) : '<span class="set-err">none</span>'}). When one runs out of usage, is signed out or down, its work moves to the others and it comes back by itself. Talk stays on the harness above.`
+        : `Everything runs on the harness above; when it's held, the next provider in this order stands in until it answers again.`}
+        You hear about it in the Inbox only when one needs you (signed out or billing) or none can run.</div>
+      ${row('Use', `<select data-aimode><option value="spread" ${pv.mode === 'spread' ? 'selected' : ''}>Every signed-in provider at once</option><option value="one" ${pv.mode === 'one' ? 'selected' : ''}>One at a time (the harness above, others stand in)</option></select>`)}
+      ${rows}
+      ${row('Provider per role', roleSel, 'Pins a role to a provider while it answers; otherwise the least busy one takes it. The models each tier uses per provider are in Advanced → Agent tuning.')}
+      <div id="aiMsg" class="meta"></div>
+    </div>`;
+  }
+  async function refreshProviders() {
+    providers = await api('/api/ai/providers').catch(() => null);
+    const box = $('#setProvidersBox');
+    if (box && providers) box.outerHTML = providersBox(providers);
+  }
+  const aiDo = async (t, fn) => {
+    const m = $('#aiMsg');
+    try {
+      if (t) t.disabled = true;
+      await fn();
+      await refreshProviders();
+    } catch (err) {
+      const mm = $('#aiMsg');
+      if (mm) mm.innerHTML = `<span class="set-err">${esc(err.message)}</span>`;
+      else if (m) m.innerHTML = `<span class="set-err">${esc(err.message)}</span>`;
+      if (t) t.disabled = false;
+    }
+  };
+  // Pushed when a sign-in shows its link, finishes or fails, a hold starts or lifts, or J changes the order.
+  studioStream.on('ai-logins', () => { if (tab === 'settings' && $('#setProvidersBox')) void refreshProviders(); });
+  document.addEventListener('change', (e) => {
+    const t = e.target;
+    if (!t.closest?.('#setProvidersBox')) return;
+    if (t.dataset.aiuse) return aiDo(t, () => claudeCall('/api/ai/providers', { method: 'POST', body: { use: { [t.dataset.aiuse]: t.checked } } }));
+    if (t.hasAttribute('data-aimode')) return aiDo(t, () => claudeCall('/api/ai/providers', { method: 'POST', body: { mode: t.value } }));
+    if (t.dataset.airole) return aiDo(t, () => claudeCall('/api/ai/providers', { method: 'POST', body: { roles: { [t.dataset.airole]: t.value } } }));
+  });
+  document.addEventListener('click', (e) => {
+    const t = e.target.closest?.('#setProvidersBox button');
+    if (!t) return;
+    const id = t.dataset.aisignin || t.dataset.aisignout || t.dataset.aicancel || t.dataset.aiup;
+    if (t.dataset.aisignin) return aiDo(t, async () => { $('#aiMsg').textContent = 'Starting the sign-in on the server…'; await claudeCall('/api/ai/signin', { method: 'POST', body: { provider: id } }); });
+    if (t.dataset.aicancel) return aiDo(t, () => claudeCall('/api/ai/signin/cancel', { method: 'POST', body: { provider: id } }));
+    if (t.dataset.aisignout && confirm('Sign out? Studio forgets this login here and stops using the provider until you sign in again.')) return aiDo(t, () => claudeCall('/api/ai/signout', { method: 'POST', body: { provider: id } }));
+    if (t.dataset.aiup && providers) {
+      const order = providers.providers.map((x) => x.id);
+      const i = order.indexOf(id);
+      if (i > 0) [order[i - 1], order[i]] = [order[i], order[i - 1]];
+      return aiDo(t, () => claudeCall('/api/ai/providers', { method: 'POST', body: { order } }));
+    }
+  });
 
   async function claudeAction(fn, target) {
     const msg = $('#caMsg');
@@ -286,7 +381,7 @@
       const r = t.roles[n];
       return `<div class="set-row"><div>${roleHelp[n]}</div><div>${select('tuning', `roles.${n}.tier`, r.tier, tiers)} ${select('tuning', `roles.${n}.effort`, r.effort, efforts)} ${num('tuning', `roles.${n}.maxTurns`, r.maxTurns, { min: 0, max: 500 })}</div></div>`;
     }).join('');
-    const models = ['claude', 'copilot', 'cursor', 'antigravity', 'gemini'].map((h) => row(`${h === 'claude' ? 'Claude Code' : h === 'copilot' ? 'Copilot' : h === 'gemini' ? 'Gemini API' : h === 'antigravity' ? 'Antigravity' : 'Cursor'} models`,
+    const models = ['claude', 'codex', 'copilot', 'cursor', 'antigravity', 'gemini'].filter((h) => t.models[h]).map((h) => row(`${h === 'claude' ? 'Claude Code' : h === 'codex' ? 'OpenAI Codex' : h === 'copilot' ? 'Copilot' : h === 'gemini' ? 'Gemini API' : h === 'antigravity' ? 'Antigravity' : 'Cursor'} models`,
       ['fast', 'standard', 'deep', 'max'].map((k) => `<input type="text" data-s="tuning" data-k="models.${h}.${k}" value="${esc(t.models[h][k] ?? '')}" placeholder="${k}: default" size="18" title="${k}">`).join(' '))).join('');
     const jobs = Object.keys(t.jobs).map((j) => `${j} ${select('tuning', `jobs.${j}`, t.jobs[j], tiers)}`).join(' &nbsp; ');
     return `<div class="set-box"><h3>🎚️ Agent tuning: cost, speed, quality</h3>
@@ -299,7 +394,7 @@
       <div class="meta" style="padding-top:8px"><b>Copilot</b>: billed per prompt times the model's multiplier (tool calls inside a run are free), so the model tier and the number of resumed passes cost, turns mostly don't.</div>
       ${row('Spend stop per run (AI credits)', num('tuning', 'copilot.maxCredits', t.copilot.maxCredits, { min: 0, max: 5000 }), 'The Copilot CLI stops a run that passes this (minimum 30, 0: no stop). One model call can overshoot it.')}
       ${row('Context window', select('tuning', 'copilot.contextTier', t.copilot.contextTier, [['default', 'default'], ['long_context', 'long (costs more per prompt)']]))}
-      <div class="meta" style="padding-top:8px"><b>Models</b>: the model for each tier (empty: that harness's own default; Claude Code uses its tier ids, Copilot its dotted ids)</div>
+      <div class="meta" style="padding-top:8px"><b>Models</b>: the model for each tier (empty: that harness's own default; Claude Code uses its tier ids, Copilot its dotted ids, Codex a model and/or :effort such as gpt-5.5:high)</div>
       ${models}
       <div class="meta" style="padding-top:8px"><b>Small jobs</b> (triage, dedupe, summaries, reviews, canon checks through Gen)</div>
       <div class="set-row"><div>${jobs}</div><div></div></div>
@@ -503,7 +598,7 @@
   }
 
   async function loadSettingsTab() {
-    [data, claude, agyLogin, services, routing, billing] = await Promise.all([api('/api/settings'), api('/api/claude/accounts').catch(() => null), api('/api/antigravity/login').catch(() => null), api('/api/services').catch(() => null), api('/api/routing').catch(() => null), api('/api/billing').catch(() => null)]);
+    [data, claude, agyLogin, services, routing, billing, providers] = await Promise.all([api('/api/settings'), api('/api/claude/accounts').catch(() => null), api('/api/antigravity/login').catch(() => null), api('/api/services').catch(() => null), api('/api/routing').catch(() => null), api('/api/billing').catch(() => null), window.studioMe?.customer ? null : api('/api/ai/providers').catch(() => null)]);
     window.callVoice?.apply(data.call);
     const badge = $('#walkAwayBadge');
     if (badge) badge.hidden = !data.pm.walkAway;
@@ -512,7 +607,7 @@
     // Every Studio: what matters first (the plan, the AI, notifications), the rest folded away by topic (J, 2026-10-30:
     // "make settings page easier to deal with"). J's Studio is the same page plus its own (J, 2026-11-02): his AI
     // (harness, Claude accounts, Antigravity) where a customer's "Your AI" is, and the platform's in a section of its own.
-    $('#setBody').innerHTML = `<div class="set-grid">${billingBox(billing)}${cu ? '<div id="setAiBox"></div>' : brainBox(data.brain) + claudeBox(claude, data.brain) + agyBox(agyLogin)}${cu ? walkAwayBox(data.pm) : ''}${buildsBox(data.builds)}${notifyBox(data.notify)}</div>
+    $('#setBody').innerHTML = `<div class="set-grid">${billingBox(billing)}${cu ? '<div id="setAiBox"></div>' : brainBox(data.brain) + providersBox(providers) + claudeBox(claude, data.brain) + agyBox(agyLogin)}${cu ? walkAwayBox(data.pm) : ''}${buildsBox(data.builds)}${notifyBox(data.notify)}</div>
       <details class="set-more"><summary>Agents and the PM: how much they do by themselves</summary><div class="set-grid">${agentsBox(data.agents)}${pmBox(data.pm)}</div></details>
       <details class="set-more"><summary>Advanced: models, tuning and the call voice</summary><div class="set-grid">${data.routing ? routingBox(data.routing, routing) : ''}${tuningBox(data.tuning)}${callBox(data.call)}</div></details>
       ${cu ? '' : `<details class="set-more" open><summary>Platform: customers' Studios, services, costs, resources and playtest machines</summary><div class="set-grid"><div id="setCellsBox"></div><div id="svcBox">${servicesBox(services)}</div>${costsBox(data.costs)}${resourcesBox(data.resources)}${playtestsBox(data.playtests)}</div></details>`}`;
@@ -521,9 +616,9 @@
     else mountCustomers($('#setCellsBox'));
     if (data.call.engine === 'eleven') loadElevenVoices();
     // A dialog or empty state sent the reader to one section ("Add credits" → Plan and credits, "Connect your AI" → Your AI).
-    const want = window.__settingsFocus;
+    const want = window.__settingsFocus ?? (location.hash === '#settings/ai' ? 'ai' : null);
     window.__settingsFocus = null;
-    const box = want && document.getElementById(want === 'ai' ? 'setAiBox' : 'setBilling');
+    const box = want && document.getElementById(want === 'ai' ? (cu ? 'setAiBox' : 'setProvidersBox') : 'setBilling');
     if (box) { box.scrollIntoView({ block: 'start' }); box.classList.add('set-flash'); setTimeout(() => box.classList.remove('set-flash'), 2500); }
   }
   window.loadSettingsTab = loadSettingsTab;

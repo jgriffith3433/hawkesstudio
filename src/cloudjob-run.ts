@@ -21,6 +21,8 @@ import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 import { parsePointer, lfsObjectPath, type LfsRef } from './lfs.ts';
 import { git, packFiles, readPack, unpack, folderEntries, dirtyState, type JobRunner, type PackCommit, type PackFile } from './cloudjob.ts';
+// @ts-ignore: a plain .mjs, no types
+import { changedLogins } from '../bin/ai-login-seed.mjs';
 
 type Store = Pick<JobRunner, 'put' | 'get' | 'list' | 'remove'>;
 // kind "build" (previews-cloud.ts): a beta site's build of one commit, in a shallow clone when GitHub has the commit; no
@@ -507,6 +509,7 @@ export async function runUnit(unit: string, store: Store, { every = 2000, at = (
   let error: string | undefined;
   const baseline: Baseline = new Map();
   const tokenBox: { get?: () => string | null } = {};
+  let passHome: string | null = null;
   try {
     start = await prepare(unit, spec, store, say, at, baseline, tokenBox);
     const user = agentUser();
@@ -518,6 +521,7 @@ export async function runUnit(unit: string, store: Store, { every = 2000, at = (
       for (const a of spec.args) if (path.isAbsolute(a) && fs.existsSync(at(a)) && fs.statSync(at(a)).isFile()) spawnSync('chown', [`${user.uid}:${user.gid}`, at(a)]);
     }
     const env = { ...spec.env, PATH: process.env.PATH ?? '/usr/local/bin:/usr/bin:/bin', HOME: user?.home ?? os.homedir(), STUDIO_JOB: '1' };
+    passHome = env.HOME;
     const child = spawn(spec.file, spec.args, { cwd: at(spec.cwd), env, stdio: ['ignore', 'pipe', 'pipe'], ...(user ? { uid: user.uid, gid: user.gid } : {}), windowsHide: true });
     // Output goes up `flushMs` after it's written (Talk's answers: a quarter second), else on the timer below.
     const flushMs = Number(spec.flushMs) > 0 ? Number(spec.flushMs) : 0;
@@ -544,6 +548,14 @@ export async function runUnit(unit: string, store: Store, { every = 2000, at = (
   } catch (e: any) {
     error = String(e.message ?? e);
     say(`[job] ${error}`);
+  }
+  // An AI CLI that refreshed its sign-in in the pass's home (OpenAI's refresh tokens work once): the new login files go
+  // back for Studio to keep (cli-signin.ts keepRefreshedLogin), or the next pass would start with a spent one.
+  try {
+    const back = passHome ? changedLogins(spec.env, passHome) : {};
+    if (Object.keys(back).length) await store.put(key('out/logins.json'), JSON.stringify(back));
+  } catch (e: any) {
+    say(`[job] sending a refreshed sign-in back: ${e.message ?? e}`);
   }
   if (spec.kind === 'build') {
     // A build sends back its outputs only (never the workspace or a session).

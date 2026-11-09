@@ -93,10 +93,13 @@ test('a real Talk answer lifts a usage hold that began before its turn', { timeo
   hold.liftHold('test done', 'claude');
 });
 
-test('routing wins over the Settings model pin on Claude Code; other harnesses keep their pin', () => {
+// Routing applies on every provider (J, 2026-11-09: "make sure the other providers have the routing too"): the route's
+// tier becomes that provider's model (Tuning → Models); with routing off, the pin holds, as before.
+test('routing wins over the Settings model pin on every harness; off, the pin holds', () => {
   assert.equal(modelPin({ harness: 'claude', model: 'claude-sonnet-5-5' }, { enabled: true }), '');
   assert.equal(modelPin({ harness: 'claude', model: 'claude-sonnet-5-5' }, { enabled: false }), 'claude-sonnet-5-5');
-  assert.equal(modelPin({ harness: 'cursor', model: 'grok-4.7' }, { enabled: true }), 'grok-4.7');
+  assert.equal(modelPin({ harness: 'cursor', model: 'grok-4.7' }, { enabled: true }), '');
+  assert.equal(modelPin({ harness: 'cursor', model: 'grok-4.7' }, { enabled: false }), 'grok-4.7');
   assert.equal(modelPin({ harness: 'claude', model: '' }, { enabled: true }), '');
 });
 
