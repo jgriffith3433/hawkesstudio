@@ -429,7 +429,7 @@ export type ProductInput = {
 /** One way a project is built (docs/builds.md). */
 export type BuildSpec = {
   id: string;
-  tool: 'unity' | 'npm' | 'static' | 'actions';
+  tool: 'unity' | 'npm' | 'static' | 'actions' | 'firebase';
   target?: 'web' | 'windows' | 'linux' | 'mac' | 'android';
   path?: string; method?: string; command?: string; out?: string;
   workflow?: string; artifact?: string;
@@ -444,7 +444,15 @@ export type BuildSpec = {
    * that runs out of memory is built again a size up, and Studio saves that size here (setBuildMachine).
    */
   machine?: BuildMachine;
+  /**
+   * firebase (firebasebuild.ts): `firebase deploy` from Studio's own cloud build job, signed in keylessly as the Firebase
+   * project's deployer service account. beta/live: the Firebase projects (default: .firebaserc's staging and prod
+   * aliases); only: what to deploy (default: what firebase.json has); serviceAccount: the account to act as ("{project}"
+   * is replaced; default deployer@{project}.iam.gserviceaccount.com); health: a path that must answer after the deploy.
+   */
+  firebase?: FirebaseConf;
 };
+export type FirebaseConf = { beta?: string; live?: string; only?: string; serviceAccount?: string; health?: string };
 export type BuildMachine = string | { cpu: number; memoryGiB: number };
 /** Cloud Run's vCPU counts and the most memory each takes (GiB); Hawkes Gen checks a size name against its own sizes. */
 const MACHINE_MEMORY: Record<number, [number, number]> = { 2: [1, 8], 4: [2, 16], 6: [4, 24], 8: [4, 32] };
@@ -465,7 +473,7 @@ export function checkMachine(m: unknown, at = 'machine'): BuildMachine {
   if (!Number.isInteger(mem) || mem < range[0] || mem > range[1]) throw new StudioError(`${at}.memoryGiB: ${cpu} vCPU takes ${range[0]} to ${range[1]} GiB`, 400);
   return { cpu, memoryGiB: mem };
 }
-const BUILD_TOOLS = ['unity', 'npm', 'static', 'actions'];
+const BUILD_TOOLS = ['unity', 'npm', 'static', 'actions', 'firebase'];
 const BUILD_TARGETS = ['web', 'windows', 'linux', 'mac', 'android'];
 // A folder inside a repo or site: no leading slash, no "..", ordinary characters.
 const RELPATH = /^(?!\/)(?!.*(^|\/)\.\.(\/|$))[\w .@+/-]{0,200}$/;
@@ -484,7 +492,7 @@ export function checkBuilds(list: unknown): BuildSpec[] {
     const target = b.target ?? 'web';
     if (!BUILD_TARGETS.includes(target)) throw new StudioError(`${at}.target: ${BUILD_TARGETS.join(', ')}`, 400);
     if (b.tool === 'unity' && target !== 'web') throw new StudioError(`${at}: Hawkes Gen builds Unity for the web; for desktop or Android use tool "actions" (your own GitHub Actions)`, 400);
-    if ((b.tool === 'npm' || b.tool === 'static') && target !== 'web') throw new StudioError(`${at}: ${b.tool} builds are web builds`, 400);
+    if ((b.tool === 'npm' || b.tool === 'static' || b.tool === 'firebase') && target !== 'web') throw new StudioError(`${at}: ${b.tool} builds are web builds`, 400);
     const out: BuildSpec = { id, tool: b.tool, target };
     for (const k of ['path', 'out'] as const) if (b[k] !== undefined && b[k] !== '') {
       const v = String(b[k]).trim().replace(/\\/g, '/').replace(/\/+$/, '');
@@ -516,6 +524,17 @@ export function checkBuilds(list: unknown): BuildSpec[] {
       out.machine = checkMachine(b.machine, `${at}.machine`);
     }
     if (b.playtest !== undefined) out.playtest = b.playtest !== false;
+    if (b.firebase !== undefined && b.firebase !== null) {
+      if (b.tool !== 'firebase') throw new StudioError(`${at}.firebase: only firebase builds take Firebase settings`, 400);
+      const f = b.firebase;
+      if (typeof f !== 'object' || Array.isArray(f)) throw new StudioError(`${at}.firebase: { beta, live, only, serviceAccount, health }`, 400);
+      const conf: FirebaseConf = {};
+      for (const k of ['beta', 'live'] as const) if (f[k]) { if (!/^[a-z][a-z0-9-]{4,29}$/.test(String(f[k]))) throw new StudioError(`${at}.firebase.${k}: a Firebase project id`, 400); conf[k] = String(f[k]); }
+      if (f.only) { if (!/^[\w:,.-]{1,200}$/.test(String(f.only))) throw new StudioError(`${at}.firebase.only: what firebase deploy --only takes, like hosting,functions`, 400); conf.only = String(f.only); }
+      if (f.serviceAccount) { if (!/^[a-z][a-z0-9-]{4,29}@(\{project\}|[a-z][a-z0-9-]{4,29})\.iam\.gserviceaccount\.com$/.test(String(f.serviceAccount))) throw new StudioError(`${at}.firebase.serviceAccount: a service account like deployer@{project}.iam.gserviceaccount.com`, 400); conf.serviceAccount = String(f.serviceAccount); }
+      if (f.health) { if (!/^\/[\w./?=&-]{0,200}$/.test(String(f.health))) throw new StudioError(`${at}.firebase.health: a path like /v1/health`, 400); conf.health = String(f.health); }
+      out.firebase = conf;
+    }
     if (b.env !== undefined) {
       if (!b.env || typeof b.env !== 'object' || Array.isArray(b.env)) throw new StudioError(`${at}.env: { NAME: "value" }`, 400);
       const env: Record<string, string> = {};

@@ -1291,7 +1291,7 @@ server.listen(listenPort, cloud ? '0.0.0.0' : '127.0.0.1', () => {
   if (!cloud) setInterval(shareAgyLogin, 10 * 60_000).unref();
   const runs = resumeRuns();
   // Builds nothing is going to finish (a run gone, or building past the maximum) are settled; later ones when Gen says so (builds.ts).
-  void import('./builds.ts').then((B) => { void B.watchGenBuilds(); void import('./buildaccess.ts').then((A) => A.resumeRetries()); return B.reconcileBuilds().then(() => import('./buildfix.ts')).then((F) => F.resumeChains()); }).catch((e) => console.warn(`[studio] reconciling builds: ${e.message ?? e}`));
+  void import('./builds.ts').then((B) => { void B.watchGenBuilds(); void import('./buildaccess.ts').then((A) => A.resumeRetries()); void import('./firebasebuild.ts').then((F) => F.retireActionsCards()).catch((e) => console.warn(`[studio] closing Actions cards: ${e?.message ?? e}`)); return B.reconcileBuilds().then(() => import('./buildfix.ts')).then((F) => F.resumeChains()); }).catch((e) => console.warn(`[studio] reconciling builds: ${e.message ?? e}`));
   chooseBrain();
   const changes = resumeChanges();
   // Pull requests J merged on GitHub: their changes are marked merged (agents.ts) once at start-up, then when beta's
