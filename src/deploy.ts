@@ -98,7 +98,9 @@ export const GOAL_RULES = new Set(['living-world']);
  */
 export function holdsGoLive(f: QualityFail, verdict?: string | null) {
   if (GOAL_RULES.has(f.rule)) return false;
-  if (f.kind === 'vision' && verdict === 'ship') return false;
+  // Any AI sighting (J, 2026-11-09, I Can Be AI held by "a blue slab looks like it clips the floor" though the review
+  // said ship): only what the game or browser measured holds a build the review would ship.
+  if (verdict === 'ship' && (f.seen === 'vision' || f.kind === 'vision' || f.kind === 'review')) return false;
   return true;
 }
 
