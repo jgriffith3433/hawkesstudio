@@ -133,6 +133,9 @@ fs.writeFileSync(process.env.STUDIO_PRODUCTS, JSON.stringify({
 }));
 
 const { db, J } = await import('../src/db.ts');
+const causes = await import('../src/causes.ts');
+/** Studio's own fresh try on a conflict (causes.ts, the Inbox's gate) already used: what follows is J's. */
+const freshTryUsed = (subject: string) => causes.logCause(causes.causeFromKey('conflict'), { product: 'game', kind: 'retried', subject, ref: subject, dedup: `pre:${subject}` });
 const agents = await import('../src/agents.ts');
 const rm = await import('../src/roadmap.ts');
 const { getChange, updateFromBase, autoMergeBeta, CONFLICT_PASSES } = agents;
@@ -303,6 +306,7 @@ test("a conflict goes back to the change's own agent (not a try), and once resol
 
 test('an agent that fails twice on the same conflict: stuck, and only then J is asked', async () => {
   const c = readyChange('Launch\n', 'Rename the start button FAKE_NOTHING');
+  freshTryUsed(c.task);
   betaMoves('menu.txt', 'Off we go\n');
   await autoMergeBeta(c.id);
   await until(() => {
@@ -315,6 +319,7 @@ test('an agent that fails twice on the same conflict: stuck, and only then J is 
   const q = rm.listQuestions('asked J').find((y) => y.subject === c.task);
   assert.ok(q, 'J decides now');
   assert.match(q!.text, /tried 2 times to resolve the conflicts/);
+  assert.match(q!.context ?? '', /Already tried: Studio answered "try again" by itself 1 time/, 'it says what Studio already tried');
   assert.equal(rm.getTask(c.task)!.tries, 1, 'still not a try');
 });
 
@@ -332,6 +337,7 @@ test("the PM's minute check meets a conflict GitHub reports: its agent takes it;
 
   // Passes used up: one question for J, and the PM leaves it alone after that.
   const d = readyChange('Hi there\n');
+  freshTryUsed(d.task);
   betaMoves('menu.txt', 'Greetings\n');
   dirty.set(n, git(repoDir, 'rev-parse', `refs/heads/${d.branch}`));
   db.prepare('UPDATE changes SET conflicts = ? WHERE id = ?').run(CONFLICT_PASSES, d.id);

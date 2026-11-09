@@ -1,6 +1,9 @@
 // The Inbox: everything waiting on J (decisions, agent questions, GPU budgets, merges only he may make, milestones
 // reached), most blocking first, with the nav badge. Uses app.js's helpers ($, esc, api, ago, file, show).
-const IB_KIND = { question: ['your call', 'broken'], agent: ['agent asks', 'warn'], gpu: ['GPU budget', 'warn'], merge: ['merge', ''], milestone: ['milestone reached', 'ship'], video: ['ready to screen', 'ship'], access: ['GitHub access', 'warn'], credits: ['waiting for credits', 'warn'] };
+const IB_KIND = { question: ['your call', 'broken'], agent: ['agent asks', 'warn'], gpu: ['GPU budget', 'warn'], merge: ['merge', ''], milestone: ['milestone reached', 'ship'], video: ['ready to screen', 'ship'], access: ['GitHub access', 'warn'], credits: ['waiting for credits', 'warn'], build: ['build failed', 'broken'] };
+// Cause keys (causes.ts) in plain words, for the "same cause" pill and "Fixing the cause".
+const IB_CAUSE = { 'studio-restart': 'Studio restarting', 'killed-run': 'runs killed or orphaned', 'token-expired': 'an expired GitHub token', network: 'the network', 'server-error': 'a server error', 'rate-limit': 'a rate limit', 'gen-restart': 'Hawkes Gen restarting', 'cloud-quota': 'a cloud quota', conflict: 'merge conflicts', harness: 'the AI harness' };
+const ibCauseWords = (k) => IB_CAUSE[k] ?? String(k ?? '').replace(/^access:/, 'GitHub access: ');
 let ibItems = [];
 
 function ibCard(x) {
@@ -14,7 +17,8 @@ function ibCard(x) {
   return `<div class="ib-card" data-ib="${esc(x.id)}" data-key="ib:${esc(x.id)}">
     <div class="ib-head"><span class="pill ${pill}">${esc(label)}</span>${x.productName ? ` <b>${esc(x.productName)}</b>` : ''}</div>
     <h4>${esc(x.title)}</h4>
-    <div class="status-line">Holding up ${esc(x.blocks)} · waiting ${esc(ago(x.since).replace(' ago', '') || 'just now')}</div>
+    <div class="status-line">Holding up ${esc(x.blocks)} · waiting ${esc(ago(x.since).replace(' ago', '') || 'just now')}${x.count > 1 ? ` · <span class="pill">${x.count} with the same cause</span>` : ''}</div>
+    ${x.fixing ? `<div class="meta ib-fixing">🔧 Fixing the cause (${esc(ibCauseWords(x.cause))}): <a href="#roadmap">${esc(x.fixing.title)}</a> · ${esc(x.fixing.status)}</div>` : ''}
     ${x.context ? `<div class="meta">${esc(x.context)}</div>` : ''}
     ${x.recommendation ? `<div class="meta">Recommended: <b>${esc(x.recommendation)}</b></div>` : ''}
     <div class="actions ib-actions">${options.map((o) => `<button class="small${rec(o) ? ' primary' : ''}" data-ibopt="${esc(o)}">${esc(o)}${rec(o) ? ' ★' : ''}</button>`).join('')}</div>
@@ -22,7 +26,7 @@ function ibCard(x) {
     ${links.length ? `<div class="meta ib-links">${links.join(' · ')}</div>` : ''}
     <details class="more-details"><summary class="meta">Details</summary>
       ${x.text ? `<div class="summary" style="white-space:pre-wrap">${esc(x.text)}</div>` : ''}
-      <div class="meta">Asked by ${esc(x.asker)}${x.asks > 1 ? ` (${x.asks} times)` : ''} · ${esc(x.id)}</div>
+      <div class="meta">Asked by ${esc(x.asker)}${x.asks > 1 ? ` (${x.asks} times)` : ''} · ${esc(x.id)}${x.cause ? ` · cause: ${esc(ibCauseWords(x.cause))}` : ''}${x.merged?.length ? ` · also answers ${esc(x.merged.join(', '))}` : ''}</div>
     </details>
   </div>`;
 }
@@ -104,7 +108,25 @@ async function drawInbox() {
   // Unchanged: left alone, so a card isn't swapped out from under a thumb mid-tap (the stream refetches often).
   // Changed: redrawn in place (patch.js), so the cards J isn't touching stay put and so does the page.
   if (list !== ibDrawn) { studioPatch($('#ibList'), list); ibDrawn = list; }
+  ibDrawHealing(r.healing);
   studioPatch($('#ibAnswered'), r.answered.length ? `<summary class="meta">Answered lately (${r.answered.length})</summary>${r.answered.map((a) => `<div class="test"><span class="name">${esc(a.title)}</span><span class="detail">${esc(String(a.answer ?? '').slice(0, 200))} · <b>by ${esc(a.by ?? '?')}</b> · ${ago(a.at)} · ${esc(a.id)}</span></div>`).join('')}` : '');
+}
+
+/**
+ * "Fixing the cause" (causes.ts): the causes that came up twice in a week, each with the Studio task fixing it, and what
+ * Studio settled by itself in the last day (retried, answered with its recommendation, built again), so J sees the system
+ * handling what never reached him.
+ */
+function ibDrawHealing(h) {
+  const el = $('#ibHealing');
+  if (!el) return;
+  const fixing = h?.fixing ?? [];
+  const s = h?.settled ?? {};
+  const settled = [s.retried ? `retried ${s.retried}` : '', s.answered ? `answered ${s.answered} with its recommendation` : '', s.rebuilt ? `built ${s.rebuilt} again` : ''].filter(Boolean);
+  if (!fixing.length && !settled.length) { el.hidden = true; studioPatch(el, ''); return; }
+  el.hidden = false;
+  studioPatch(el, `${fixing.length ? `<h4>Fixing the cause</h4>${fixing.map((f) => `<div class="ib-fix" data-key="fix:${esc(f.cause)}">🔧 <b>${esc(ibCauseWords(f.cause))}</b> came up ${f.seen} time${f.seen === 1 ? '' : 's'} this week${f.selfSettled ? ` (${f.selfSettled} settled by Studio)` : ''}, last ${esc(ago(f.last))}. <a href="#roadmap">${esc(f.title)}</a> <span class="pill">${esc(f.status)}</span></div>`).join('')}` : ''}
+    ${settled.length ? `<div class="meta">In the last day Studio handled these itself, without asking you: ${esc(settled.join(', '))}.</div>` : ''}`);
 }
 
 /** Loads and draws the Inbox. Never rejects: it ends in the cards, the empty state or the error with Retry. */

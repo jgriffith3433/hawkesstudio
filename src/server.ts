@@ -731,7 +731,7 @@ const server = http.createServer(async (req, res) => {
       const items = await ib.inbox({ tokens: !(await import('./approvals.ts')).notJClick(req) });
       // walkAway: the header's badge (walk-away mode, walkaway.ts).
       const walkAway = (await import('./walkaway.ts')).walkAwayOn();
-      return send(res, 200, q('count') === '1' ? { count: items.length, walkAway } : { count: items.length, walkAway, items, answered: ib.recentAnswers() });
+      return send(res, 200, q('count') === '1' ? { count: items.length, walkAway } : { count: items.length, walkAway, items, answered: ib.recentAnswers(), healing: ib.selfHealing() });
     }
     if (route === '/api/inbox/answer' && method === 'POST') {
       const ib = await import('./inbox.ts');

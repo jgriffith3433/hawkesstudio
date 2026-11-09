@@ -265,6 +265,10 @@ body.in-call .talk-input, body.in-call .talk-files, body.in-call #notifyBox { di
 .ib-card .ib-free { display: flex; gap: 6px; margin-top: 8px; }
 .ib-card .ib-free input { flex: 1; min-width: 0; }
 .ib-card.ib-busy { opacity: .6; pointer-events: none; }
+.ib-healing { border: 1px solid var(--line); border-left: 3px solid var(--green, #3a7); border-radius: 10px; padding: 10px 14px; margin: 0 0 12px; background: var(--panel); }
+.ib-healing h4 { margin: 0 0 6px; font-size: 14px; }
+.ib-healing .ib-fix { margin: 4px 0; }
+.ib-card .ib-fixing { margin-top: 4px; }
 .ib-card.ib-done { opacity: 0; }
 /* Approve / Deny cards (approval.js): the Talk chat, the Inbox, the go-live dialog; big buttons for a thumb. */
 .approval { border: 2px solid var(--amber); border-radius: 12px; background: var(--panel); padding: 12px 14px; margin: 8px 0; max-width: 860px; align-self: stretch; }

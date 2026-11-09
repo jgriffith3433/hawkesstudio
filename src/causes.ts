@@ -73,7 +73,7 @@ export function causeOf(text: unknown, o: { permission?: string | null; repo?: s
   if (/quota|RESOURCE_EXHAUSTED/i.test(e)) return mk('cloud-quota');
   if (/ECONNRESET|ECONNREFUSED|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|EPIPE|socket hang up|fetch failed|network (error|is unreachable)|connection (reset|refused|closed)/i.test(e)) return mk('network');
   if (/(^|[^\d$.])(500|502|503|504)([^\d]|$)|bad gateway|service unavailable|gateway time-?out|internal server error/i.test(e)) return mk('server-error');
-  if (/merge conflict|conflicts? with|still conflicts|can't merge into|couldn't merge into/i.test(e)) return mk('conflict');
+  if (/merge conflict|conflicts? with|still conflicts|conflicted with/i.test(e)) return mk('conflict');
   return null;
 }
 
@@ -81,7 +81,8 @@ export function causeOf(text: unknown, o: { permission?: string | null; repo?: s
 export function jOnly(q: { text: string; topic?: string | null; options?: string[]; recommendation?: string | null }): string | null {
   const all = `${q.text}\n${(q.options ?? []).join(' ')}\n${q.recommendation ?? ''}`;
   if (q.topic === 'gpu') return 'money (a GPU budget)';
-  if (q.topic === 'needs J' || q.topic === 'idle') return 'what to do next is his';
+  // Ideas he left undecided (the stall watch asks about ideas holding others up) and new work are direction: his.
+  if (q.topic === 'needs J' || q.topic === 'idle' || q.topic === 'stall') return 'what to do next is his';
   if (/\bGPU\b/.test(q.text)) return 'money (GPU generation)';
   if (/\$\s?\d/.test(`${(q.options ?? []).join(' ')} ${q.recommendation ?? ''}`)) return 'money';
   if (/\b(secret|api key|password|private key|credentials? (for|to))\b/i.test(all)) return 'a secret';
@@ -183,6 +184,9 @@ function openFixTask(cause: Cause, rows: LogRow[]): { task: string; item: string
 
 /** Tries Studio makes by itself for one subject and transient cause before J hears of it, and the waits between them. */
 export const RETRY_LIMIT = 3;
+/** A cause that needs fewer: a conflict an agent already tried to resolve gets one fresh try on top of the moved base. */
+export const RETRY_LIMITS: Record<string, number> = { conflict: 1 };
+export const retryLimit = (cause: string) => RETRY_LIMITS[cause] ?? RETRY_LIMIT;
 export const RETRY_WAITS_MS = [2, 10, 30].map((m) => m * 60_000);
 /** Times a week the PM answers questions on one subject with their recommendation before they are J's. */
 export const AUTO_ANSWERS = 2;
@@ -206,8 +210,9 @@ export function gateQuestion(q: { text: string; context?: string | null; subject
   if (cause?.cls === 'transient') {
     const again = retryOption(q.options);
     if (again) {
-      const tried = causeLog(cause.key, 86_400_000).filter((r) => r.kind === 'retried' && r.subject === subject);
-      if (tried.length < RETRY_LIMIT) return { file: false, cause, action: 'retry', answer: again, inMs: RETRY_WAITS_MS[tried.length], attempt: tried.length + 1 };
+      // Counted over the week, so a failure that keeps coming back isn't retried forever, a day at a time.
+      const tried = causeLog(cause.key, WEEK).filter((r) => r.kind === 'retried' && r.subject === subject);
+      if (tried.length < retryLimit(cause.key)) return { file: false, cause, action: 'retry', answer: again, inMs: RETRY_WAITS_MS[tried.length], attempt: tried.length + 1 };
       return { file: true, cause, note: `Already tried: Studio answered "${again}" by itself ${tried.length} times (${tried.map((r) => new Date(r.at).toISOString().slice(11, 16)).join(', ')} UTC) because it looked like ${cause.label}, and it still fails.` };
     }
   }
@@ -225,7 +230,7 @@ export function settleQuestion(qid: string, g: Gate & { file: false }, o: { prod
   const cause = g.cause ?? mk('recommended', 'other');
   const subject = o.subject ?? o.product ?? 'studio';
   if (g.action === 'retry') {
-    logCause(cause, { product: o.product, kind: 'retried', ref: qid, subject, detail: `retry ${g.attempt} of ${RETRY_LIMIT} in ${Math.round(g.inMs / 60_000)} min ("${g.answer}"): ${o.text}`, dedup: `retried:${qid}` });
+    logCause(cause, { product: o.product, kind: 'retried', ref: qid, subject, detail: `retry ${g.attempt} of ${retryLimit(cause.key)} in ${Math.round(g.inMs / 60_000)} min ("${g.answer}"): ${o.text}`, dedup: `retried:${qid}` });
     heldRetry({ id: qid, kind: 'question', ref: qid, attempt: g.attempt, waitMs: g.inMs, why: `${cause.key}: ${o.text}` });
     return;
   }
