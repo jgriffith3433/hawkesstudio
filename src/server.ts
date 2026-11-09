@@ -173,6 +173,13 @@ const server = http.createServer(async (req, res) => {
       for await (const c of req) chunks.push(c as Buffer);
       return send(res, 200, (await import('./billing.ts')).handleStripeWebhook(Buffer.concat(chunks), String(req.headers['stripe-signature'] ?? '')));
     }
+    // The GitHub App's webhook (github-webhook.ts): open, GitHub's signature is the check. Only installation events.
+    if (route === '/api/github/webhook' && method === 'POST') {
+      const chunks: Buffer[] = [];
+      for await (const c of req) chunks.push(c as Buffer);
+      const r = await (await import('./github-webhook.ts')).handleGithubWebhook(Buffer.concat(chunks), req.headers);
+      return send(res, r.status, r.body);
+    }
     // A beta asking whether this Studio signed a playtest's test sign-in token (playtest-signin.ts): ok or 401, no secret.
     if (route === '/api/signin/verify' && method === 'POST') {
       try { (await import('./playtest-signin.ts')).verifyIssued(await readJson(req)); return send(res, 200, { ok: true }); }
@@ -731,7 +738,9 @@ const server = http.createServer(async (req, res) => {
       const items = await ib.inbox({ tokens: !(await import('./approvals.ts')).notJClick(req) });
       // walkAway: the header's badge (walk-away mode, walkaway.ts).
       const walkAway = (await import('./walkaway.ts')).walkAwayOn();
-      return send(res, 200, q('count') === '1' ? { count: items.length, walkAway } : { count: items.length, walkAway, items, answered: ib.recentAnswers(), healing: ib.selfHealing() });
+      // access: open GitHub access cards, so the page knows to look again when it's shown after a trip to GitHub (inbox.js).
+      const access = items.filter((i: any) => i.kind === 'access').length;
+      return send(res, 200, q('count') === '1' ? { count: items.length, walkAway, access } : { count: items.length, walkAway, access, items, answered: ib.recentAnswers(), healing: ib.selfHealing() });
     }
     if (route === '/api/inbox/answer' && method === 'POST') {
       const ib = await import('./inbox.ts');
@@ -1291,7 +1300,7 @@ server.listen(listenPort, cloud ? '0.0.0.0' : '127.0.0.1', () => {
   if (!cloud) setInterval(shareAgyLogin, 10 * 60_000).unref();
   const runs = resumeRuns();
   // Builds nothing is going to finish (a run gone, or building past the maximum) are settled; later ones when Gen says so (builds.ts).
-  void import('./builds.ts').then((B) => { void B.watchGenBuilds(); void import('./buildaccess.ts').then((A) => A.resumeRetries()); return B.reconcileBuilds().then(() => import('./buildfix.ts')).then((F) => F.resumeChains()); }).catch((e) => console.warn(`[studio] reconciling builds: ${e.message ?? e}`));
+  void import('./builds.ts').then((B) => { void B.watchGenBuilds(); void import('./buildaccess.ts').then((A) => A.resumeRetries()); void import('./firebasebuild.ts').then((F) => F.retireActionsCards()).catch((e) => console.warn(`[studio] closing Actions cards: ${e?.message ?? e}`)); return B.reconcileBuilds().then(() => import('./buildfix.ts')).then((F) => F.resumeChains()); }).catch((e) => console.warn(`[studio] reconciling builds: ${e.message ?? e}`));
   chooseBrain();
   const changes = resumeChanges();
   // Playtests refused with 429 carry on with their backoff; runs and changes the restarts stopped start again once Studio

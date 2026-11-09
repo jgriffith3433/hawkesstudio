@@ -35,6 +35,7 @@ import { githubSlugOf, isGoLiveMerge, publishTargets, buildRunsAt, onlyDocsSince
 import { repoMap } from './repos.ts';
 import { qualityGate, failLine } from './quality.ts';
 import { customerStudio } from './tenancy.ts';
+import { asFirebase, firebaseBuildOf } from './firebasebuild.ts';
 import { STUDIO_RELEASE, RELEASES, playedCommit, releasesAt, releasesPath, readReleases, draftWithin, addReleaseTo, releaseLine, releaseNotesLine, type Draft } from './release.ts';
 
 const brief = (c: Commit | null) => c && { sha: c.sha, short: c.short, title: c.title, author: c.author, date: c.date };
@@ -434,11 +435,28 @@ async function githubPlan(p: Product, io: GitHubIO = {}) {
   };
 }
 
+const firebaseOf = (p: Product) => firebaseBuildOf((p.builds ?? []).map(asFirebase));
+
+/**
+ * Main moved (a go live or a rollback): a project with a Firebase build deploys main to its live Firebase project now,
+ * from Studio's own cloud build (the build run shows it; a failure is told like any build's). Nothing for other projects.
+ */
+export async function deployMain(p: Product, sha: string, origin?: string | null): Promise<string | null> {
+  const b = firebaseOf(p);
+  if (!b) return null;
+  const { startBuild } = await import('./builds.ts');
+  const run = await startBuild(p.id, { build: b.id, ref: 'main', sha, origin: origin ?? null });
+  opLog(`deploying ${sha.slice(0, 7)} to Firebase (live) from Studio's cloud build${run ? `: run ${run.id}` : ''}`);
+  return run?.id ?? null;
+}
+
 /**
  * Who publishes a product's main: GitHub Pages (the default), or the product's own server (products.json deploy.via
  * "ec2": its box pulls it; Studio only moves main and plays the live site).
  */
 export function publisherOf(p: Product) {
+  // A Firebase build (firebasebuild.ts): Studio deploys main itself from its own cloud build, never GitHub Actions.
+  if (firebaseOf(p)) return { box: true as const, says: 'Studio deploys it to Firebase (hosting and functions) from its own cloud build, at', done: 'Studio deploys it to Firebase from its own cloud build within about 10 minutes (a build run shows it)' };
   if (p.deploy?.via === 'firebase') return { box: true as const, says: 'GitHub Actions deploys it to Firebase (hosting and functions)', done: 'GitHub Actions deploys it to Firebase within about 10 minutes' };
   // A customer's project is hosted wherever they host it (GitHub Pages, Netlify, Vercel, Cloudflare, a server): its host
   // deploys its live branch, and Studio checks the live site once the host reports the commit (verifyLive).
@@ -487,6 +505,7 @@ async function deployNow(productId: string, { confirm, by = 'J', mergeMain, orig
     insert.run(id, p.id, 'deploy', r.slug, r.before, after, plan.beta!.sha, null, null, null, null, by, `${plan.commits.length} commit(s): ${plan.commits.slice(0, 8).map((c) => c!.title).join('; ')}${r.targets.length ? ` · builds: ${r.targets.map((t) => `${t.build} ${t.version} into ${t.slug}`).join(', ')}` : ''}`.slice(0, 1000), Date.now());
     // Each repo a build went into is that project's go live too (its own rollback puts it back).
     for (const t of r.targets) insert.run(newId('d'), t.project, 'deploy', t.slug, t.before, t.after, t.after, r.slug, null, plan.beta!.sha, String(t.version), by, `build ${t.build} ${t.version} of ${p.name} (${plan.beta!.short})`, Date.now());
+    await deployMain(p, after, origin).catch((e: any) => opLog(`couldn't start the Firebase deploy of ${MAIN}: ${String(e?.message ?? e).slice(0, 300)}`));
     if (after !== r.before && p.live) void verifyLive(p.id, after, `Just went live (${BETA} ${plan.beta!.short}: ${plan.commits.slice(0, 3).map((c) => c!.title).join('; ')})`, origin);
     for (const t of r.targets) {
       const tp = (() => { try { return getProduct(t.project); } catch { return null; } })();
@@ -725,6 +744,7 @@ async function rollbackNow(productId: string, { confirm, by = 'J', origin, io }:
     db.prepare('INSERT INTO deploys (id, product, kind, repo, before, after, by, detail, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
       .run(id, p.id, 'rollback', viaGitHub, r.before, r.after, by, `to ${d.before!.slice(0, 7)}, undoing ${d.id}`, Date.now());
     db.prepare('UPDATE deploys SET rolled_back = ? WHERE id = ?').run(id, d.id);
+    await deployMain(p, r.after, origin).catch((e: any) => opLog(`couldn't start the Firebase deploy of the rollback: ${String(e?.message ?? e).slice(0, 300)}`));
     if (p.live) void verifyLive(p.id, r.after, `Just rolled back to ${d.before!.slice(0, 7)} (undoing ${d.after.slice(0, 7)}). Check the live site works.`, origin);
     return { ok: true, product: p.id, rollback: id, live: p.live, main: r.after.slice(0, 7), to: d.before!.slice(0, 7), note: `${publisherOf(p).done}; Studio then playtests live. ${BETA} still has the rolled-back commits: fix forward there.` };
   }

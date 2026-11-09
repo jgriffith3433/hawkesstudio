@@ -400,6 +400,20 @@ export async function isolateCells(o: { dry?: boolean } = {}) {
   return out;
 }
 
+/**
+ * GitHub says an installation linked to an org changed (an owner accepted new permissions, repositories were added:
+ * github-webhook.ts): its Studio looks again at once (its owner key), if it is awake. A sleeping one isn't woken for
+ * this: it looks when its people come back to it and before its next GitHub build (buildaccess.ts). Returns whether told.
+ */
+export async function tellCellGithubChanged(orgId: string, o: { call?: (url: string, key: string) => Promise<number> } = {}): Promise<boolean> {
+  if (!cellsOn()) return false;
+  const org = getOrg(orgId);
+  if (!org || org.state !== 'awake' || org.suspended) return false;
+  const call = o.call ?? (async (url: string, key: string) => (await fetch(url, { method: 'POST', headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ force: true }), signal: AbortSignal.timeout(30_000) })).status);
+  const status = await call(`${R.serviceUrl(org.id)}/api/github/recheck`, deriveKey('owner', org.id));
+  return status < 300;
+}
+
 /** Nightly runs of every paying org whose plan has them: woken first, then asked (its owner key) to run. */
 export async function nightly(o: { dry?: boolean; call?: (url: string, key: string) => Promise<number> } = {}) {
   const { featuresOf } = await import('./entitlements.ts');
@@ -679,7 +693,7 @@ export async function handleCellsKeyed(req: http.IncomingMessage, res: http.Serv
   }
   // GitHub through J's app (github-app.ts): a cell's install link and linked installations, and a token for one of its
   // org's repos, scoped to that repo. Never a repo of an installation another org linked.
-  const gh = /^\/api\/cells\/self\/(github|github-token|github-user|github-disconnect)$/.exec(route);
+  const gh = /^\/api\/cells\/self\/(github|github-token|github-user|github-disconnect|github-probe)$/.exec(route);
   if (gh && method === 'POST') {
     if (!cellsOn()) return send(res, 404, { error: 'not the control plane' }), true;
     const orgId = String(req.headers['x-studio-cell'] ?? '');
@@ -710,6 +724,9 @@ export async function handleCellsKeyed(req: http.IncomingMessage, res: http.Serv
         if (!user) return send(res, 400, { error: 'user' }), true;
         return send(res, 200, (await G.userToken(user, orgId)) ?? { token: null }), true;
       }
+      // What the app may do on one of the org's repos (ghperms.ts): the installation's accepted and pending permissions,
+      // only through an installation linked to this org (another org's repo looks not installed).
+      if (gh[1] === 'github-probe') return send(res, 200, await G.orgRepoProbe(orgId, String(b.repo ?? ''))), true;
       const t = await G.orgRepoToken(orgId, String(b.repo ?? ''), { read: b.read === true });
       return send(res, 200, t ?? { token: null }), true;
     } catch (e: any) { return send(res, e.status ?? 400, { error: e.message ?? String(e) }), true; }

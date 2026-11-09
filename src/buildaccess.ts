@@ -16,6 +16,7 @@
 //   code: unchanged (buildfail.ts announce → buildfix.ts, a fixer and the backlog).
 
 import { db, newId } from './db.ts';
+import { acceptSteps, stepsText, grants } from './ghperms.ts';
 
 export type FailType = 'transient' | 'access' | 'code' | 'other';
 
@@ -59,12 +60,19 @@ export function accessCause(error: unknown): AccessCause | null {
   return { what: 'unknown', permission: null, key: null, workflow, status, message };
 }
 
-/** The fix, in plain words, for an access cause on a repo (the card adds the link). */
-export function accessFix(cause: AccessCause, slug: string | null): string {
+/**
+ * The fix, in plain words, for an access cause on a repo (the card adds the links). A missing permission is walked
+ * through step by step (ghperms.ts acceptSteps): accepting it on the installation's page, and adding it to the app
+ * first only when the app doesn't ask for it yet (`appHas` false; unknown counts as asked, the usual case).
+ */
+export function accessFix(cause: AccessCause, slug: string | null, o: { appHas?: boolean | null; account?: string | null; ownsApp?: boolean } = {}): string {
   const repo = slug || 'the repository';
   if (cause.what === 'permission') {
     const doing = cause.workflow ? `start ${cause.workflow}` : cause.key === 'actions' ? 'start its workflows' : 'make changes there';
-    return `GitHub refused: Hawkes Studio's GitHub app doesn't have the "${cause.permission}" permission on ${repo}, which Studio needs to ${doing}. Open the app's installation page, accept the permission (or add it under the app's Permissions first, if you own the app), and Studio rebuilds by itself.`;
+    const why = cause.key === 'actions'
+      ? ` Studio's own builds don't need it (they run in Studio's cloud); it's only for a build that runs in ${repo}'s own GitHub Actions.`
+      : '';
+    return `Studio's GitHub app doesn't have "${cause.permission}" on ${repo} yet, which it needs to ${doing}.${why}\n\n${stepsText(acceptSteps({ what: cause.permission ?? 'the permission', account: o.account ?? slug?.split('/')[0] ?? null, appHas: o.appHas !== false, ownsApp: o.ownsApp }))}`;
   }
   if (cause.what === 'install') return `Hawkes Studio's GitHub app isn't installed on ${repo} (or can't see it). Install it on that repository (the link opens with it chosen) and Studio rebuilds by itself.`;
   return `GitHub refused Studio's access to ${repo}${cause.status ? ` (${cause.status}${cause.message ? ` ${cause.message}` : ''})` : ''}. Check that Hawkes Studio's GitHub app is installed on it with access to its code and Actions, and Studio rebuilds by itself.`;
@@ -178,6 +186,9 @@ export async function handleFailure(rowId: string, o: { product: string; build: 
   clearRetry(o.product, o.build);
   if (type === 'access') {
     const cause = accessCause(o.error)!;
+    // A project that builds nothing in GitHub Actions never gets an Actions card (firebasebuild.ts: its Firebase deploy
+    // runs in Studio's own cloud now): whatever failed is told like any other failure.
+    if (cause.key === 'actions' && !(await projectUsesActions(o.product))) return { handled: false, type: 'other' };
     const card = await fileAccessCard(o.product, o.build, o.slug, cause, o.workflow);
     return { handled: true, type, card };
   }
@@ -200,11 +211,32 @@ export function openAccess(product?: string): AccessRow[] {
 }
 
 /**
+ * Open cards that one fix covers: the same cause on repos of the same GitHub account (one installation, one accept).
+ * The Inbox shows each group as one card.
+ */
+export function accessGroups(rows: AccessRow[]): AccessRow[][] {
+  const by = new Map<string, AccessRow[]>();
+  for (const r of rows) {
+    const k = `${r.what}|${r.permission ?? ''}|${(r.slug?.split('/')[0] ?? r.product).toLowerCase()}`;
+    by.set(k, [...(by.get(k) ?? []), r]);
+  }
+  return [...by.values()];
+}
+
+/**
  * ONE open card per project: a second build failing the same way adds itself to the card (so they all rebuild when access
  * is back) and says nothing more; a different problem on the same project replaces the card's cause. Returns the card's id.
  */
-export async function fileAccessCard(product: string, build: string, slug: string | null, cause: AccessCause, workflow?: string | null): Promise<string> {
-  const detail = accessFix(cause, slug);
+/** What the walk-through needs from a probe: whether the app already asks for the permission, whose installation, whose app. */
+export function fixContext(p: Probe | null, key: string | null) {
+  if (!p?.known) return {};
+  return { appHas: p.appPermissions && key ? grants(p.appPermissions, key, 'write') : null, account: p.account, ownsApp: p.ownsApp };
+}
+
+export async function fileAccessCard(product: string, build: string, slug: string | null, cause: AccessCause, workflow?: string | null, probe?: Probe | null): Promise<string> {
+  // The probe says whether the app already asks for it (accept only) or its owner adds it first. Looked at once, here.
+  if (!probe && slug && cause.what === 'permission') probe = await probeHook.run(slug).catch(() => null);
+  const detail = accessFix(cause, slug, fixContext(probe ?? null, cause.key));
   const have = openAccess(product)[0];
   if (have) {
     const builds = [...new Set([...have.builds, build])];
@@ -212,19 +244,22 @@ export async function fileAccessCard(product: string, build: string, slug: strin
       .run(JSON.stringify(builds), cause.what, cause.permission, cause.key, workflow ?? cause.workflow, detail, slug, have.id);
     return have.id;
   }
+  // Another project on the same GitHub account already waits on the same fix: this one joins its card, told nothing new.
+  const sameFix = openAccess().some((r) => r.what === cause.what && (r.permission ?? '') === (cause.permission ?? '') && (r.slug?.split('/')[0] ?? '').toLowerCase() === (slug?.split('/')[0] ?? '').toLowerCase() && Boolean(slug));
   const id = newId('x');
   db.prepare("INSERT INTO build_access (id, product, slug, builds, what, permission, key, workflow, status, detail, opened) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?)")
     .run(id, product, slug, JSON.stringify([build]), cause.what, cause.permission, cause.key, workflow ?? cause.workflow, detail, Date.now());
   // Told once, when the card is made (repeated failures add to it silently).
+  if (sameFix) return id;
   void (async () => {
     let name = product;
     try { name = (await import('./config.ts')).getProduct(product).name; } catch { /* keep the id */ }
-    await hooks.notify(`${name}: Studio needs one permission on GitHub`, detail.slice(0, 500), '#inbox');
+    await hooks.notify(`${name}: Studio needs one step on GitHub`, detail.slice(0, 500), '#inbox');
   })().catch((e: any) => console.warn(`[builds] couldn't tell about the access card for ${product}: ${e?.message ?? e}`));
   return id;
 }
 
-export type Probe = { ok: boolean; permissions: Record<string, string> | null; installId: number | null; account: string | null; type: string | null; known: boolean };
+export type Probe = { ok: boolean; permissions: Record<string, string> | null; installId: number | null; account: string | null; type: string | null; known: boolean; manage?: string | null; appPermissions?: Record<string, string> | null; ownsApp?: boolean };
 /** Replaced by the tests: what the app can do on a repo. `known: false` means Studio can't tell (no app key here). */
 export const probeHook: { run: (slug: string) => Promise<Probe> } = { run: probeApp };
 
@@ -233,9 +268,19 @@ export async function probeApp(slug: string): Promise<Probe> {
   const unknown: Probe = { ok: true, permissions: null, installId: null, account: null, type: null, known: false };
   try {
     const A = await import('./github-app.ts');
-    if (!A.appConfig()) return unknown;
+    if (!A.appConfig()) {
+      // A customer's Studio: the shared app's installation, asked through the control plane (it holds the app's key).
+      const c = await (await import('./cellside.ts')).cellGithubProbe(slug).catch(() => null);
+      if (!c) return unknown;
+      if (!c.installed) return { ok: false, permissions: null, installId: null, account: null, type: null, known: true };
+      // pending: what the app asks for and this installation hasn't accepted; the app's own list is the two together.
+      const appPermissions: Record<string, string> = { ...(c.permissions ?? {}) };
+      for (const k of c.pending ?? []) appPermissions[k] = appPermissions[k] === 'read' || !appPermissions[k] ? 'write' : appPermissions[k];
+      return { ok: true, permissions: c.permissions ?? {}, installId: c.id ?? null, account: c.account ?? null, type: c.type ?? null, known: true, manage: c.manage ?? null, appPermissions, ownsApp: false };
+    }
     const d = await A.gh(A.appJwt(), 'GET', `/repos/${slug}/installation`, undefined, { jwt: true });
-    return { ok: true, permissions: d?.permissions ?? {}, installId: Number(d?.id) || null, account: d?.account?.login ?? null, type: d?.account?.type ?? null, known: true };
+    const account = d?.account?.login ?? null, type = d?.account?.type ?? null, installId = Number(d?.id) || null;
+    return { ok: true, permissions: d?.permissions ?? {}, installId, account, type, known: true, manage: installId && account ? A.manageUrl(installId, account, type ?? 'User') : null, appPermissions: await A.appPermissions().catch(() => null), ownsApp: true };
   } catch (e: any) {
     // 404: the app isn't installed on it. Anything else (GitHub down, the app's key not for this Studio): can't tell.
     if (e?.status === 404 || /: 404 /.test(String(e?.message))) return { ok: false, permissions: null, installId: null, account: null, type: null, known: true };
@@ -255,9 +300,20 @@ export async function accessOk(row: Pick<AccessRow, 'slug' | 'what' | 'key'>): P
   return true;
 }
 
+/** Whether a project still has a build in its own GitHub Actions (unknown project: yes, as before). */
+export async function projectUsesActions(product: string): Promise<boolean> {
+  try {
+    const { getProduct } = await import('./config.ts');
+    const { buildsOf } = await import('./builds.ts');
+    return (await import('./firebasebuild.ts')).usesActions(buildsOf(getProduct(product)));
+  } catch { return true; }
+}
+
 /** Before an Actions build starts: can the app start workflows on this repo? Fine → true. Not → the card is filed and false. */
 export async function preflight(product: string, build: string, slug: string, workflow: string | null): Promise<{ ok: true } | { ok: false; card: string; message: string }> {
   if (!selfHandling()) return { ok: true };
+  // Only a project that still builds in GitHub Actions needs Actions: write (never one whose builds run in Studio).
+  if (!(await projectUsesActions(product))) return { ok: true };
   const p = await probeHook.run(slug);
   if (p.known && !p.ok) {
     const cause: AccessCause = { what: 'install', permission: null, key: null, workflow, status: 404, message: 'not installed' };
@@ -265,7 +321,7 @@ export async function preflight(product: string, build: string, slug: string, wo
   }
   if (p.known && (RANK[p.permissions?.actions ?? ''] ?? 0) < RANK.write) {
     const cause: AccessCause = { what: 'permission', permission: 'Actions: write', key: 'actions', workflow, status: 403, message: 'Resource not accessible by integration' };
-    return { ok: false, card: await fileAccessCard(product, build, slug, cause, workflow), message: accessFix(cause, slug) };
+    return { ok: false, card: await fileAccessCard(product, build, slug, cause, workflow, p), message: accessFix(cause, slug, fixContext(p, 'actions')) };
   }
   // Fine now: a card left open from before has nothing left to wait for (the build that is starting is the rebuild).
   await resolveAccess(product, 'Studio (access is back)', { rebuild: false });
@@ -312,9 +368,15 @@ export async function accessLinks(row: AccessRow): Promise<{ label: string; url:
     const A = await import('./github-app.ts');
     const app = A.appConfig();
     const p = row.slug ? await probeHook.run(row.slug) : null;
-    if (p?.installId && p.account) links.push({ label: row.what === 'permission' ? `Accept ${row.permission ?? 'the permission'} on GitHub` : 'The app on this repository', url: A.manageUrl(p.installId, p.account, p.type ?? 'User') });
-    else if (A.installUrl()) links.push({ label: 'Install the GitHub app', url: (await (await import('./repokit.ts')).linksFor(row.slug)).install ?? A.installUrl()! });
-    if (app && row.what === 'permission') links.push({ label: `The app's Permissions`, url: `${A.WEB()}/settings/apps/${app.slug}/permissions` });
+    const manage = p?.manage ?? (p?.installId && p.account ? A.manageUrl(p.installId, p.account, p.type ?? 'User') : null);
+    if (manage) links.push({ label: row.what === 'permission' ? 'Installation page on GitHub' : 'The app on this repository', url: manage });
+    else {
+      const install = (await (await import('./repokit.ts')).linksFor(row.slug)).install ?? A.installUrl();
+      if (install) links.push({ label: 'Install the GitHub app', url: install });
+    }
+    // The app's own Permissions page only when the app doesn't ask for it yet, and only for the app's owner (this Studio's app).
+    const asks = row.key && p?.appPermissions ? grants(p.appPermissions, row.key, 'write') : true;
+    if (app && row.what === 'permission' && !asks) links.push({ label: "The app's Permissions on GitHub", url: `${A.WEB()}/settings/apps/${app.slug}/permissions` });
   } catch { /* no app here: the card still says what to do */ }
   return links;
 }

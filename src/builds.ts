@@ -17,6 +17,7 @@ import { db, newId } from './db.ts';
 import { getProduct, loadProducts, hasOwnBeta, StudioError, managedElsewhere, setBuildMachine, type BuildSpec, type BuildMachine, type Product } from './config.ts';
 import { folderFilesAsync } from './sitestore.ts';
 import { BuildFailure, LOG_LINES, extractLog, recordFailure, announce, settleFailure } from './buildfail.ts';
+import { asFirebase } from './firebasebuild.ts';
 
 db.exec(`CREATE TABLE IF NOT EXISTS builds (
   id TEXT PRIMARY KEY, product TEXT NOT NULL, build TEXT NOT NULL, version INTEGER NOT NULL, status TEXT NOT NULL,
@@ -58,7 +59,8 @@ export type StartOptions = {
 
 /** A project's builds: its own, else a web project's implicit one (its beta branch built, or published as it is). */
 export function buildsOf(p: Product): BuildSpec[] {
-  if (p.builds?.length) return p.builds;
+  // A Firebase workflow build runs in Studio's own cloud build now (firebasebuild.ts), never in GitHub Actions.
+  if (p.builds?.length) return p.builds.map(asFirebase);
   // A web app with its own server and beta (p.beta, kind app) is built and served where it's hosted: no build here,
   // which used to fail on every push (2026-10-31 review).
   return (p.engine as string) === 'web' && (p as any).github && !hasOwnBeta(p) && (p as any).kind !== 'app' ? [{ id: 'web', tool: 'npm', target: 'web' }] : [];
@@ -248,6 +250,8 @@ export async function startBuild(projectId: string, o: StartOptions = {}): Promi
   tagRun(id, o.origin);
   // A rebuild is the answer to the failed build's Inbox card: it goes now, and comes back only if this one fails differently.
   if (!o.change) await (await import('./inbox.ts')).resolveBuildCards(p.id, specs.map((b) => b.id), o.origin ? 'Talk' : 'J').catch((e) => console.warn(`[builds] ${p.id}: resolving the failed build's card: ${e?.message ?? e}`));
+  // Building in Studio's own cloud: a card still waiting on GitHub's "Actions: write" for this project has nothing to wait for.
+  if (specs.some((b) => b.tool === 'firebase')) await (await import('./firebasebuild.ts')).retireActionsCards({ product: p.id }).catch((e) => console.warn(`[builds] ${p.id}: closing the Actions card: ${e?.message ?? e}`));
   const done = (async () => {
     const { closeRun } = await import('./pipeline.ts');
     try {
@@ -420,6 +424,7 @@ async function buildOne(run: string, p: Product, b: BuildSpec, o: StartOptions) 
     stage = 'build';
     out = b.tool === 'unity' ? await viaGen(p, b, slug, sha, ref, token, say, { job: o.resume?.job ?? undefined, row, onSubmit: (id) => db.prepare('UPDATE builds SET gen_job = ?, gen_done = NULL, token_sent = ?, token_at = ? WHERE id = ?').run(id, Date.now(), Date.now(), row), onDone: () => db.prepare('UPDATE builds SET gen_done = ? WHERE id = ?').run(Date.now(), row) }, hold)
       : b.tool === 'actions' ? await viaActions(b, slug, o.artifact!, gh, say, hold)
+      : b.tool === 'firebase' ? await viaFirebase(p, b, slug, sha, ref, token, gh, say, hold)
       : await viaStudio(p, b, slug, sha, token, gh, say, hold);
     await hold();
     stage = 'publish';
@@ -442,7 +447,8 @@ async function buildOne(run: string, p: Product, b: BuildSpec, o: StartOptions) 
     // A token minted now: the one this build started with can be hours old after a Unity build.
     const ghNow = githubFetch(await repoToken(slug));
     const head = await githubCommit(slug, 'beta', ghNow).catch(() => null);
-    const movesBeta = !o.change && !newer && (head ? head === sha : ref === 'beta');
+    // A Firebase deploy of main is the live site going out (deploy.ts deployMain): it never moves beta.
+    const movesBeta = !o.change && !newer && !(b.tool === 'firebase' && ref === 'main') && (head ? head === sha : ref === 'beta');
     if (!o.change && !movesBeta) say(`${b.id} ${version} is published at its own address; beta stays (${newer ? 'a newer build is ready' : `${sha.slice(0, 7)} isn't beta's newest commit`})`);
     if (movesBeta && (b.target ?? 'web') === 'web') {
       await setBeta(p.id, b.id, version);
@@ -530,6 +536,54 @@ async function pageInfo(p: Product, sha: string, ref: string, change: string | u
 
 const tmpDir = () => fs.mkdtempSync(path.join(os.tmpdir(), 'hs-build-'));
 const sizeOf = (files: { size: number }[]) => files.reduce((n, f) => n + f.size, 0);
+
+/**
+ * firebase: `firebase deploy` of the commit in Studio's Cloud Run job, signed in keylessly as the Firebase project's
+ * deployer (firebasebuild.ts); beta deploys the staging project, main the live one. Its output is the build record.
+ */
+async function viaFirebase(p: Product, b: BuildSpec, slug: string, sha: string, ref: string, token: string | null, gh: typeof fetch, say: (s: string) => void, hold: () => Promise<void> = async () => {}): Promise<Output> {
+  const F = await import('./firebasebuild.ts');
+  const dir = b.path && b.path !== '.' ? b.path : '';
+  const read = async (name: string) => {
+    const r = await gh(`https://api.github.com/repos/${slug}/contents/${dir ? `${encodeURI(dir)}/` : ''}${name}?ref=${sha}`, { headers: { 'User-Agent': 'hawkes-studio', Accept: 'application/vnd.github.raw' } });
+    if (r.status === 404) return null;
+    if (!r.ok) throw new Error(`GitHub couldn't read ${slug}'s ${name} (${r.status})`);
+    try { return JSON.parse(await r.text()); } catch { throw new Error(`${slug}'s ${name} isn't JSON`); }
+  };
+  const json = await read('firebase.json');
+  if (!json) throw new Error(`${slug} has no firebase.json${dir ? ` in ${dir}` : ''}, so there is nothing to deploy to Firebase`);
+  const project = F.projectFor(ref, b.firebase, await read('.firebaserc'));
+  if (!project) throw new Error(`no Firebase project for ${ref}: set the build's firebase.${ref === 'main' ? 'live' : 'beta'}, or a "${ref === 'main' ? 'prod' : 'staging'}" alias in .firebaserc`);
+  const only = b.firebase?.only ?? F.deployOnly(json);
+  if (!only) throw new Error(`${slug}'s firebase.json has nothing firebase deploy knows (hosting, functions, firestore, storage)`);
+  const deployer = F.deployerOf(project, b.firebase);
+  const { url, health } = F.addressesOf(p as any, ref, project, b.firebase);
+  say(`signing in to Firebase ${project} as ${deployer}`);
+  const t = await F.deployerToken(deployer);
+  const root = `/tmp/build/${p.id}`;
+  const command = `${dir ? `cd ${JSON.stringify(dir)} && ` : ''}${F.deployScript({ project, deployer, only, sources: F.functionsOf(json).map((x) => x.source), health, url, ref, sha, name: p.name })}`;
+  say(`deploying ${sha.slice(0, 7)} (${ref}) to Firebase ${project}: ${only}`);
+  const { runCloudBuild } = await import('./cloudjob.ts');
+  const outDir = path.posix.join(dir || '.', 'studio-build');
+  const r = await runCloudBuild(`build-${p.id}-${b.id}-${Date.now().toString(36)}`, {
+    remote: `https://github.com/${slug}.git`, head: sha, cwd: root, command, outputs: [outDir], gitToken: token,
+    secretEnv: { HAWKES_DEPLOY_TOKEN: t.token, HAWKES_DEPLOY_AS: deployer, HAWKES_DEPLOY_PROJECT: project, HAWKES_DEPLOY_EXPIRES: String(t.expires) },
+    timeoutMs: 45 * 60_000,
+    onLine: (l) => { if (/^\[job\]|error|Deploy complete|health/i.test(l)) say(F.scrub(l, t.token)); }, beforeOutputs: hold,
+  });
+  const log = F.scrub(r.log, t.token);
+  if (r.error || r.code !== 0) {
+    const { digestLog } = await import('./buildfail.ts');
+    const d = digestLog(log, 'firebase deploy');
+    const real = d.errors.length ? d.errors.slice(0, 3).join(' | ') : log.split('\n').filter(Boolean).slice(-3).join(' | ');
+    throw new BuildFailure(F.scrub(`firebase deploy to ${project} failed${r.error ? `: ${r.error}` : ` (exit ${r.code})`}${d.step ? `, at ${d.step}` : ''}${real ? `: ${real}` : ''}`, t.token).slice(0, 500), { jobs: [], log: log.split('\n').slice(-LOG_LINES).join('\n') });
+  }
+  if (!r.outputs) throw new Error('the deploy made no build record (studio-build/)');
+  const tmp = tmpDir();
+  await untar(r.outputs, tmp);
+  const out = await folderOutput(path.join(tmp, outDir), tmp);
+  return { ...out, detail: `Firebase ${project} (${only}) at ${url}` };
+}
 
 /** npm or static: Studio's Cloud Run job runs the command (or the files are published as they are, with no package.json). */
 async function viaStudio(p: Product, b: BuildSpec, slug: string, sha: string, token: string | null, gh: typeof fetch, say: (s: string) => void, hold: () => Promise<void> = async () => {}): Promise<Output> {

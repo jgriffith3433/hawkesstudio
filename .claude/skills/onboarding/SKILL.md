@@ -28,6 +28,14 @@ changed) and returns:
 If Studio can't reach the repo yet, the error says so: give them the install link (studio_project check or studio_github
 status) and survey again after.
 
+If the checklist (studio_project check) has a `permissions` item that isn't done, GitHub is holding back a permission
+the app asks for until the account owner accepts it: an app that gained a permission after it was installed waits for
+that, and nobody guesses it. Walk them through the item's steps one at a time, with its link (the installation's page:
+**Review request**, then **Accept new permissions**). They don't need to tell you when it's done: Studio sees it by itself
+(GitHub's installation event, or their coming back to Studio) and carries on. Studio's own builds never need
+Actions: write; only a build that runs in their own GitHub Actions and is started from the Build button does
+(docs/github-permissions.md).
+
 ## 2. Say what you found, plainly
 
 A short picture in their terms, not a dump: "Your game is a Unity 6 project in `Game/`; your website serves its
