@@ -18,7 +18,7 @@ import type http from 'node:http';
 import { db, parse } from './db.ts';
 import { getProduct, getInfra, isInfra, loadProducts, managedElsewhere, StudioError } from './config.ts';
 import { fixerNow, latestChain, attemptsText, type FixerNow } from './buildfix.ts';
-import { openAccess, recheckAccess, accessLinks } from './buildaccess.ts';
+import { openAccess, recheckAccess, accessLinks, accessGroups, type AccessRow } from './buildaccess.ts';
 import { failingBuilds, failSignature, lastBuilds } from './buildfail.ts';
 import {
   listQuestions, getQuestion, setQuestion, answeredSince, getTask, getItem, getMilestone, listMilestones, milestoneProgress, milestoneTasks, tasksAwaitingGpu,
@@ -377,16 +377,22 @@ export async function inbox({ tokens = false }: { tokens?: boolean } = {}): Prom
 
   // GitHub access a build needs (buildaccess.ts): ONE card per project with the exact fix and the link. Looked at now, as the
   // Inbox opens (never on a timer): access back means the builds start again and the card goes.
+  // One card per fix, not per project: projects on the same GitHub account missing the same thing share it, since one
+  // accept on that account's installation page fixes them all (ghperms.ts).
   await recheckAccess().catch((e) => console.warn(`[inbox] checking GitHub access: ${e?.message ?? e}`));
-  for (const a of openAccess()) {
-    const p = loadProducts().find((x) => x.id === a.product);
-    if (!p || managedElsewhere(p)) continue;
+  for (const group of accessGroups(openAccess())) {
+    const named = group.map((a) => ({ a, p: loadProducts().find((x) => x.id === a.product) })).filter((x) => x.p && !managedElsewhere(x.p));
+    if (!named.length) continue;
+    const { a, p } = named[0] as { a: AccessRow; p: NonNullable<(typeof named)[0]['p']> };
+    const names = named.map((x) => x.p!.name);
+    const builds = named.flatMap((x) => x.a.builds.map((b) => (named.length > 1 ? `${x.p!.name} ${b}` : b)));
+    const where = named.length > 1 ? `${a.slug?.split('/')[0] ?? 'GitHub'} (${names.join(', ')})` : a.slug ?? 'the repository';
     const links = await accessLinks(a);
     out.push({
-      id: `access:${a.id}`, kind: 'access', title: `${p.name}: Studio needs ${a.what === 'permission' ? `the "${a.permission}" permission` : a.what === 'install' ? 'its GitHub app installed' : 'access'} on ${a.slug ?? 'the repository'}`,
-      text: `${a.detail ?? ''}\n\nBuilds waiting: ${a.builds.join(', ')}. When you've done it, press "Check again" (or just open this page): Studio rebuilds by itself.`.trim(),
+      id: `access:${a.id}`, kind: 'access', title: `${named.length > 1 ? names.join(', ') : p.name}: Studio needs ${a.what === 'permission' ? `"${a.permission}"` : a.what === 'install' ? 'its GitHub app installed' : 'access'} on ${where}`,
+      text: `${a.detail ?? ''}\n\nWaiting: ${builds.join(', ')}. Studio checks again by itself when GitHub says it's done or you come back here; "Check again" looks right now.`.trim(),
       product: p.id, productName: p.name, context: a.detail, asker: 'Studio', recommendation: 'Check again', options: ['Check again'],
-      blocks: `${p.name}'s builds (${a.builds.join(', ')})`, since: a.opened, weight: 55, links, subject: p.id, conversation: null, asks: 1,
+      blocks: `${names.join(', ')} builds (${builds.join(', ')})`, since: Math.min(...named.map((x) => x.a.opened)), weight: 55, links, subject: p.id, conversation: null, asks: 1,
     });
   }
 
@@ -615,8 +621,15 @@ export async function answerInbox(id: string, answer: string, by: string, opts: 
     const row = db.prepare('SELECT product, status FROM build_access WHERE id = ?').get(am[1]) as any;
     if (!row) throw new StudioError(`No access card ${am[1]}`, 404);
     if (row.status !== 'open') return { answered: id, by, resolved: true };
-    const r = (await recheckAccess({ product: row.product, force: true }))[0];
-    if (!r?.back) throw new StudioError('GitHub still refuses: the permission is not there yet. Accept it on the installation page (the card has the link), then check again.');
+    // The whole card: every project it groups (one accept fixes them all).
+    const first = openAccess().find((x) => x.id === am[1]);
+    const group = first ? accessGroups(openAccess()).find((g) => g.some((x) => x.id === first.id)) ?? [first] : [];
+    let back = false;
+    for (const product of new Set(group.map((x) => x.product).concat(row.product))) {
+      const r = (await recheckAccess({ product, force: true }))[0];
+      back = back || Boolean(r?.back);
+    }
+    if (!back) throw new StudioError('GitHub still refuses: it is not accepted yet. Open the installation page (the card has the link), press Review request, then Accept new permissions; Studio notices by itself.');
     return { answered: id, by, resolved: true, rebuilding: true };
   }
   // A failed build: build it again (a run), or dismiss the card (the failure stays in the build history).

@@ -89,6 +89,15 @@ export async function cellGithubUser(user: string): Promise<{ login: string; tok
   return r?.token ? { login: String(r.login), token: String(r.token) } : null;
 }
 
+/** What the shared app may do on one of this org's repos (cells.ts github-probe); null outside a cell or when unreachable. */
+export async function cellGithubProbe(repo: string): Promise<{ installed: boolean; id?: number; account?: string; type?: string; manage?: string; permissions?: Record<string, string>; pending?: string[]; missing?: string[] } | null> {
+  if (!inCell()) return null;
+  return post('github-probe', { repo });
+}
+
+/** Forgets this cell's cached repo tokens (they carry the permissions they were made with): after permissions change. */
+export const forgetCellTokens = () => cellTokens.clear();
+
 const cellTokens = new Map<string, { token: string; until: number }>();
 /**
  * A token for one of this org's repos (scoped to it alone), or null when no installation of the org reaches it.

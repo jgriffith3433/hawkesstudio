@@ -78,6 +78,8 @@ export function openRoute(route: string, method: string) {
   // app's secret, so it needs no session here (a customer's person has none in J's Studio: the gate sent them round in
   // a loop). Without a state the route checks the session itself (J's own install from the app's page).
   if (route === '/api/github/callback' && method === 'GET') return true;
+  // The GitHub App's installation events (github-webhook.ts): GitHub's HMAC signature with the app's webhook secret is the check.
+  if (route === '/api/github/webhook' && method === 'POST') return true;
   // The terms, privacy and refunds page: for anyone, before signing up (server.ts LEGAL).
   if (LEGAL_ROUTES.has(route) && method === 'GET') return true;
   return false;

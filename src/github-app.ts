@@ -14,6 +14,7 @@ import { DATA, StudioError } from './config.ts';
 import { customerStudio, PLATFORM_GITHUB } from './tenancy.ts';
 import { getUser } from './auth.ts';
 import { seal, unseal } from './cellkeys.ts';
+import { APP_PERMISSIONS, WHY, label, shortOf, labels, pending, missingRequired, type Perms } from './ghperms.ts';
 
 export const API = () => (process.env.GITHUB_API_BASE || 'https://api.github.com').replace(/\/+$/, '');
 export const WEB = () => (process.env.GITHUB_WEB_BASE || 'https://github.com').replace(/\/+$/, '');
@@ -75,6 +76,11 @@ export async function gh(token: string | null, method: string, url: string, body
 
 // ------------------------------------------------------------------ making the app (the manifest flow)
 
+/** An address GitHub can deliver to: https and not this computer. */
+const publicBase = (base: string) => {
+  try { const u = new URL(base); return u.protocol === 'https:' && !/^(localhost|127\.|\[::1\]|0\.0\.0\.0)/.test(u.hostname); } catch { return false; }
+};
+
 /** What Studio asks GitHub to make: permissions for setting a game up and working on it, nothing else. */
 export function manifest(base: string) {
   const host = new URL(base).host;
@@ -92,11 +98,13 @@ export function manifest(base: string) {
     // linking it to their Studio (customers' cells, below).
     request_oauth_on_install: true,
     public: !customerStudio(),
-    hook_attributes: { url: `${base}/api/github/webhook`, active: false },
-    default_permissions: {
-      metadata: 'read', contents: 'write', pull_requests: 'write', workflows: 'write', pages: 'write',
-      administration: 'write', actions: 'read', checks: 'read',
-    },
+    // On, for the installation events GitHub sends every app (no subscription needed): an owner accepting new
+    // permissions, repositories added (github-routes.ts /api/github/webhook). No other events: pushes still come
+    // through each repo's own hook.
+    // (A Studio on this computer, http or localhost, keeps it off: GitHub refuses a webhook it can't reach.)
+    hook_attributes: { url: `${base}/api/github/webhook`, active: publicBase(base) },
+    // Everything Studio uses, asked for once at install (ghperms.ts; Actions: write is not needed: builds run in Studio's cloud).
+    default_permissions: { ...APP_PERMISSIONS },
     default_events: [],
   };
 }
@@ -167,7 +175,7 @@ export function chooserPage(base: string) {
   const esc = (s: string) => s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]!));
   const setup = `${base}/api/github/app/setup`;
   const m = manifest(base);
-  const perms = Object.entries(m.default_permissions).map(([k, v]) => `${k.replace(/_/g, ' ')}: ${v}`).join(', ');
+  const perms = Object.entries(m.default_permissions).map(([k, v]) => `${label(k, v)} (to ${WHY[k] ?? k})`).join('; ');
   return `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Connect GitHub</title>
 <body style="font:16px system-ui;max-width:600px;margin:48px auto;padding:0 16px;line-height:1.45">
 <h1 style="font-size:22px">Connect Studio to GitHub</h1>
@@ -221,10 +229,8 @@ export async function useExistingApp(base: string, input: { appId?: unknown; pem
   try { a = await gh(appJwt(probe), 'GET', '/app', undefined, { jwt: true }); } catch (e: any) {
     throw new StudioError(`GitHub didn't accept that App ID and private key (${String(e.message ?? e).slice(0, 160)}).`, 400);
   }
-  const rank: Record<string, number> = { read: 1, write: 2, admin: 3 };
-  const have: Record<string, string> = a.permissions ?? {};
-  const missing = Object.entries(manifest(base).default_permissions).filter(([k, v]) => (rank[have[k]] ?? 0) < rank[v]).map(([k, v]) => `${k.replace(/_/g, ' ')}: ${v}`);
-  if (missing.length) throw new StudioError(`That app needs more permissions: ${missing.join(', ')}. Add them on GitHub (${a.html_url ?? 'the app\'s page'} → Permissions), then try again.`, 400);
+  const missing = shortOf(a.permissions ?? {});
+  if (missing.length) throw new StudioError(`That app needs more permissions: ${labels(missing)}. Add them on GitHub (${a.html_url ?? 'the app\'s page'} → Permissions → set each, then Save changes), then try again. If it's already installed, GitHub then asks you to accept them on each installation's page.`, 400);
   const cfg: AppConfig = {
     id, slug: String(a.slug), clientId: String(input.clientId ?? '').trim() || String(a.client_id ?? ''), clientSecret: String(input.clientSecret ?? '').trim(),
     pem, htmlUrl: String(a.html_url ?? ''), owner: String(a.owner?.login ?? ''),
@@ -261,11 +267,42 @@ export async function ghAll(token: string, url: string, pick: (d: any) => any[] 
   return out;
 }
 
-export async function installations() {
+export type Installation = { id: number; account: string; type: string; repos: string; manage: string; permissions: Perms; pending: string[]; missing: string[] };
+
+/**
+ * Every installation, with what it has accepted (`permissions`), what the app asks for that it hasn't accepted yet
+ * (`pending`: GitHub's review request on its page) and which of those Studio can't work without (`missing`).
+ */
+export async function installations(): Promise<Installation[]> {
   const c = appConfig();
   if (!c) return [];
   const list = await ghAll(appJwt(c), '/app/installations', (d) => d, { jwt: true });
-  return (list as any[]).map((i) => ({ id: i.id as number, account: String(i.account?.login ?? ''), type: String(i.account?.type ?? ''), repos: i.repository_selection as string, manage: manageUrl(i.id, String(i.account?.login ?? ''), String(i.account?.type ?? '')) }));
+  const app = await appPermissions().catch(() => null);
+  return (list as any[]).map((i) => {
+    const have: Perms = i.permissions ?? {};
+    return {
+      id: i.id as number, account: String(i.account?.login ?? ''), type: String(i.account?.type ?? ''), repos: i.repository_selection as string,
+      manage: manageUrl(i.id, String(i.account?.login ?? ''), String(i.account?.type ?? '')), permissions: have, pending: pending(app, have), missing: missingRequired(have),
+    };
+  });
+}
+
+/**
+ * What the app itself asks for now (GET /app), kept for ten minutes and forgotten when GitHub says an installation
+ * changed (the webhook): its owner may have added one on GitHub since the app was made.
+ */
+let appPerms: { perms: Perms; at: number } | null = null;
+export async function appPermissions(): Promise<Perms | null> {
+  if (!appConfig()) return null;
+  if (appPerms && Date.now() - appPerms.at < 10 * 60_000) return appPerms.perms;
+  const a = await gh(appJwt(), 'GET', '/app', undefined, { jwt: true });
+  appPerms = { perms: a?.permissions ?? {}, at: Date.now() };
+  return appPerms.perms;
+}
+export function forgetInstallState() {
+  appPerms = null;
+  tokenCache.clear();
+  jobTokens.clear();
 }
 
 const tokenCache = new Map<number, { token: string; expires: number }>();
@@ -393,11 +430,30 @@ export function linkInstallation(id: number, org: string, account: string) {
   writeSecret(INSTALLS_FILE(), all);
 }
 
+/** The org (customer's Studio) an installation is linked to, or null (this Studio's own, or nobody's yet). */
+export function installationOrg(id: number): string | null {
+  return readJson<Record<string, InstallLink>>(INSTALLS_FILE(), {})[String(id)]?.org ?? null;
+}
+
 /** The installations linked to one org, as GitHub has them now (gone ones are left out). */
 export async function orgInstallations(org: string) {
   const linked = Object.entries(readJson<Record<string, InstallLink>>(INSTALLS_FILE(), {})).filter(([, l]) => l.org === org).map(([id]) => Number(id));
   if (!linked.length) return [];
   return (await installations()).filter((i) => linked.includes(i.id));
+}
+
+/**
+ * The installation that reaches one org's repo, and its permissions (what it accepted, what the app asks for that it
+ * hasn't): for a customer's Studio, which holds no app key (buildaccess.ts probeApp, repokit.ts readiness).
+ */
+export async function orgRepoProbe(org: string, repo: string) {
+  const slug = repoSlug(repo);
+  if (!slug) throw new StudioError('repo: owner/name', 400);
+  const owner = slug.split('/')[0].toLowerCase();
+  const inst = (await orgInstallations(org)).find((i) => i.account.toLowerCase() === owner);
+  if (!inst) return { installed: false };
+  if (inst.repos !== 'all' && !(await installationRepos(inst.id).catch(() => [])).some((r) => r.repo.toLowerCase() === slug.toLowerCase())) return { installed: false };
+  return { installed: true, id: inst.id, account: inst.account, type: inst.type, manage: inst.manage, permissions: inst.permissions, pending: inst.pending, missing: inst.missing };
 }
 
 /**

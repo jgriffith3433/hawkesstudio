@@ -169,6 +169,10 @@ async function studioGithubLine(box) {
       : `<div class="meta">GitHub: the app <b>${esc(g.app.slug)}</b>${g.installations.length ? ` is installed on ${g.installations.map((i) => esc(i.account)).join(', ')}` : ' is made, not installed yet'}${g.user ? `; you're signed in as <b>${esc(g.user.login)}</b>` : ''}.</div>
          <div style="margin-top:6px;display:flex;gap:6px;flex-wrap:wrap">${g.connect ? btn(g.connect, 'Sign in with GitHub', true) : ''}${g.install ? btn(g.install, g.installations.length ? 'Change repositories' : 'Choose repositories', !g.connect && !g.installations.length) : ''}</div>
          ${g.connect ? '<div class="meta">First sign in with GitHub, then choose the repositories Studio may work on.</div>' : ''}
+         ${g.installations.filter((i) => i.missing?.length || i.pending?.length).map((i) => `<div class="meta" style="margin-top:6px;white-space:pre-line">${i.missing?.length
+           ? `⬜ On ${esc(i.account)}, GitHub is waiting for you to accept new permissions for Studio (${esc(i.missing.join(', ').replace(/_/g, ' '))}); Studio can't work there until you do.\n1. Open the installation page below as an owner of ${esc(i.account)}.\n2. Near the top, press Review request, then Accept new permissions.\n3. Come back here: Studio checks again by itself.`
+           : `On ${esc(i.account)}, the app also asks for ${esc(i.pending.join(', ').replace(/_/g, ' '))}, which only an optional feature uses: accept it on the installation page whenever you like.`}
+           ${i.manage ? ` <a class="button small${i.missing?.length ? ' primary' : ''}" href="${esc(i.manage)}" target="_blank" rel="noopener">Installation page on GitHub ↗</a>` : ''}</div>`).join('')}
          ${g.user || g.installations.length ? `<div class="meta" style="margin-top:6px">${g.installations.map((i) => i.manage ? `<a href="${esc(i.manage)}" target="_blank" rel="noopener">Manage on GitHub (${esc(i.account)}) ↗</a>` : '').filter(Boolean).join(' · ')}${g.user ? ` <button type="button" class="small" data-gh="disconnect" style="margin-left:6px">Disconnect GitHub</button>` : ''}</div>` : ''}`;
     box.querySelector('[data-gh="disconnect"]')?.addEventListener('click', async (e) => {
       if (!confirm(`Disconnect GitHub (${g.user.login}) from this Studio? Studio forgets your GitHub sign-in and revokes it on GitHub. To remove Studio from your repositories too, use Manage on GitHub.`)) return;
@@ -186,7 +190,7 @@ async function studioGameReady(id, box) {
   box.innerHTML = '<div class="meta">Checking what it needs…</div>';
   try {
     const r = await api(`/api/games/${id}/readiness`);
-    const rows = r.items.map((i) => `<li style="margin:4px 0">${i.ok ? '✅' : '⬜'} ${esc(i.what)}${!i.ok && i.fix ? `<div class="meta">${esc(i.fix)}</div>` : ''}${!i.ok && i.link ? ` <a href="${esc(i.link)}" target="_blank" rel="noopener">Open ↗</a>` : ''}</li>`).join('');
+    const rows = r.items.map((i) => `<li style="margin:4px 0">${i.ok ? '✅' : '⬜'} ${esc(i.what)}${!i.ok && i.fix ? `<div class="meta" style="white-space:pre-line">${esc(i.fix)}</div>` : ''}${!i.ok && i.link ? ` <a href="${esc(i.link)}" target="_blank" rel="noopener">Open ↗</a>` : ''}</li>`).join('');
     const links = Object.entries(r.links ?? {}).filter(([k]) => ['live', 'beta', 'repo', 'actions'].includes(k)).map(([k, u]) => `<a href="${esc(u)}" target="_blank" rel="noopener">${({ live: 'Play it', beta: 'Beta', repo: 'Repository', actions: 'Builds on GitHub' })[k]} ↗</a>`).join(' · ');
     box.innerHTML = `<div style="display:flex;justify-content:space-between;align-items:center;gap:8px"><b>${r.ready ? 'Ready ✓' : 'Get it ready'}</b><span class="meta">${links}</span></div>
       <ul style="list-style:none;padding:0;margin:6px 0">${rows}</ul>
