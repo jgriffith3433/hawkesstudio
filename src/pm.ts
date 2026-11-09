@@ -57,6 +57,7 @@ import { notReached, slowNote, playTime, samplePace, whereTimeGoes, idleWatch, i
 import { harnessBlocked, harnessStopOf } from './brains.ts';
 import { harnessHeld, holdStatus, onHoldLifted } from './harness-hold.ts';
 import { addWorktree } from './worktree.ts';
+import { gateQuestion, settleQuestion, logCause } from './causes.ts';
 
 // ---------------------------------------------------------------- settings
 
@@ -1448,8 +1449,22 @@ export function askJ(text: string, { subject, product, options, from, recommend,
   const item = subject?.startsWith('k_') ? getItem(getTask(subject)?.item ?? '') : subject?.startsWith('i_') ? getItem(subject) : null;
   const origin = item?.origin ?? null;
   const askedBy = !from ? 'Studio PM' : /^(Talk|J|agent)/.test(from) ? from : `Studio PM (${from})`;
+  // The one gate in front of the Inbox (causes.ts): transient causes are retried by Studio, a recommendation that spends
+  // nothing is the PM's to give in walk-away mode, and only J-only calls (or the last failure of a retry limit) are filed.
+  const g = gateQuestion({ text, context, subject, product, options, recommendation: recommend ?? null, topic, forwards, asker: from ? askedBy : null });
+  if (g.file && g.note) context = `${g.note}${context ? ` ${context}` : ''}`;
   const q = addQuestion({ kind: 'decision', subject, product, text, options, origin, recommendation: recommend ?? null, context, blocks, topic, forwards, askedBy });
   if (q.status !== 'open') return q;
+  if (g.cause) db.prepare('UPDATE questions SET cause = ? WHERE id = ?').run(g.cause.key, q.id);
+  if (!g.file) {
+    setQuestion(q.id, { status: 'held' });
+    settleQuestion(q.id, g, { product, subject, text });
+    logDecision(g.action === 'retry' ? 'self-retry' : 'self-answer', subject ?? null, product ?? null, g.action === 'retry'
+      ? `held ${q.id} (${g.cause?.label}): Studio answers "${g.answer}" itself in ${Math.round(g.inMs / 60_000)} min, try ${g.attempt}: ${text.slice(0, 300)}`
+      : `answered ${q.id} with its recommendation "${g.answer}" instead of asking J: ${text.slice(0, 300)}`);
+    return getQuestion(q.id)!;
+  }
+  if (g.note && g.cause) logCause(g.cause, { product, kind: 'filed-after-tries', ref: q.id, subject: subject ?? product ?? 'studio', detail: `${g.note} ${text}`, dedup: `filed:${q.id}` });
   setQuestion(q.id, { status: 'asked J' });
   const body = `Studio PM needs your call (${q.id})${product ? `, ${name(product)}` : ''}:\n\n${text}${options?.length ? `\n\nOptions: ${options.join(' · ')}` : ''}${recommend ? `\nRecommended: ${recommend}` : ''}\n\nIt's in your Inbox (${PUBLIC_URL}/#inbox); answer there, or here ("${q.id}: <answer>").`;
   void postTo(origin, `Question for you: ${text.slice(0, 60)}`, body);

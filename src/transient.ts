@@ -84,6 +84,7 @@ export async function fireRateRetry(run: string): Promise<string | null> {
 /** After a restart: retries that were waiting carry on (late ones a few seconds from now). */
 export function resumeRateRetries() {
   for (const r of db.prepare(`SELECT run, due FROM rate_retries WHERE state = 'waiting'`).all() as any[]) arm(r.run, Math.max(5_000, r.due - Date.now()));
+  resumeHeldRetries();
 }
 
 // ------------------------------------------------------------------ what restarts stopped
@@ -140,4 +141,52 @@ export function reviveWhenStable(fire: () => unknown = () => reviveStopped()) {
   stableTimer = setTimeout(() => { stableTimer = null; void Promise.resolve(fire()).catch((e) => console.warn(`[studio] reviving what restarts stopped: ${e?.message ?? e}`)); }, left);
   stableTimer.unref?.();
   return left;
+}
+
+// ------------------------------------------------------------------ held retries (causes.ts)
+// What the Inbox's gate held back because its cause is transient (a question whose "try again" Studio answers itself, ...):
+// one row and one one-shot timer per wait, like the playtests above, so a restart carries each on. The work for each kind
+// is registered by the module that owns it (onHeldRetry); nothing is fetched while waiting.
+
+db.exec(`CREATE TABLE IF NOT EXISTS held_retries (
+  id TEXT PRIMARY KEY, kind TEXT NOT NULL, ref TEXT NOT NULL, attempt INTEGER NOT NULL, due INTEGER NOT NULL, state TEXT NOT NULL, why TEXT, at INTEGER NOT NULL
+)`);
+const heldKinds = new Map<string, (ref: string) => Promise<unknown>>();
+const heldTimers = new Map<string, NodeJS.Timeout>();
+export function onHeldRetry(kind: string, fn: (ref: string) => Promise<unknown>) { heldKinds.set(kind, fn); }
+
+function armHeld(id: string, ms: number) {
+  const old = heldTimers.get(id);
+  if (old) clearTimeout(old);
+  const t = setTimeout(() => { heldTimers.delete(id); void fireHeld(id); }, Math.max(0, ms));
+  t.unref?.();
+  heldTimers.set(id, t);
+}
+
+/** Holds `ref` for `waitMs`, then runs its kind's work. `why` must carry no secret (causes.ts redacts before). */
+export function heldRetry(o: { id: string; kind: string; ref: string; attempt: number; waitMs: number; why: string }) {
+  const due = Date.now() + o.waitMs;
+  db.prepare(`INSERT OR REPLACE INTO held_retries (id, kind, ref, attempt, due, state, why, at) VALUES (?, ?, ?, ?, ?, 'waiting', ?, ?)`).run(o.id, o.kind, o.ref, o.attempt, due, o.why.slice(0, 300), Date.now());
+  armHeld(o.id, o.waitMs);
+  return due;
+}
+export const heldRetriesOf = (ref: string) => db.prepare('SELECT * FROM held_retries WHERE ref = ? ORDER BY at DESC').all(ref) as { id: string; kind: string; attempt: number; due: number; state: string }[];
+
+export async function fireHeld(id: string) {
+  const r = db.prepare(`SELECT * FROM held_retries WHERE id = ? AND state = 'waiting'`).get(id) as any;
+  if (!r) return false;
+  if (!heldKinds.has(r.kind)) await import('./causes.ts'); // registers its kinds
+  const fn = heldKinds.get(r.kind);
+  db.prepare(`UPDATE held_retries SET state = 'fired' WHERE id = ?`).run(id);
+  if (!fn) return false;
+  try { await fn(r.ref); return true; } catch (e: any) {
+    console.warn(`[studio] ${r.ref}: the held retry couldn't run: ${String(e?.message ?? e).slice(0, 200)}`);
+    db.prepare(`UPDATE held_retries SET state = 'gaveup' WHERE id = ?`).run(id);
+    return false;
+  }
+}
+
+/** After a restart: held retries carry on (late ones a few seconds from now). Called with resumeRateRetries. */
+export function resumeHeldRetries() {
+  for (const r of db.prepare(`SELECT id, due FROM held_retries WHERE state = 'waiting'`).all() as any[]) armHeld(r.id, Math.max(5_000, r.due - Date.now()));
 }
