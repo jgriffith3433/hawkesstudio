@@ -85,3 +85,29 @@ test('the sandbox can never sign Antigravity in', () => {
   assert.match(guardRoute('/api/antigravity/signin', 'POST', 't_123456') ?? '', /J's click/);
   assert.match(guardRoute('/api/antigravity/signin/code', 'POST', null) ?? '', /J's click/);
 });
+
+test('a login made in Settings is kept in Studio\'s data, so a new instance (an empty home) has it again', async () => {
+  await al.startAgySignin(10_000);
+  await al.finishAgySignin('4/good-code-1234', 5000);
+  const kept = JSON.parse(fs.readFileSync(path.join(process.env.STUDIO_DATA!, 'ai', 'logins', 'antigravity.json'), 'utf8'));
+  assert.match(kept.files['.gemini/antigravity-cli/antigravity-oauth-token'], /from-signin/);
+  assert.equal(kept.account, 'j@example.com');
+  fs.rmSync(studioFile);
+  assert.equal(al.shareAgyLogin(), true);
+  assert.match(fs.readFileSync(studioFile, 'utf8'), /from-signin/, 'the kept login came back into the empty home');
+});
+
+test("no agy on the server: the sign-in says so plainly (never a restart, never a raw shell error)", async () => {
+  const args = process.env.STUDIO_AGY_SIGNIN_ARGS;
+  const pathWas = process.env.PATH;
+  delete process.env.STUDIO_AGY_SIGNIN_ARGS;
+  process.env.PATH = path.join(tmp, 'empty-bin');
+  try {
+    if (process.platform === 'win32' || fs.existsSync('/usr/local/bin/agy') || fs.existsSync('/usr/bin/agy')) return;
+    assert.equal(al.agyInstalled(), false);
+    await assert.rejects(al.startAgySignin(2000), (e: any) => e.status === 409 && /isn't installed on this Studio's server/.test(e.message));
+  } finally {
+    process.env.STUDIO_AGY_SIGNIN_ARGS = args;
+    process.env.PATH = pathWas;
+  }
+});
