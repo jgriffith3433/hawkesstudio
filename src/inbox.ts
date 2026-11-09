@@ -29,6 +29,7 @@ import { gate } from './acceptance.ts';
 import { listApprovals, type Approval } from './approvals.ts';
 import { contradictionSettled } from './memory-curate.ts';
 import { creditsWaiting, creditsBack } from './creditwait.ts';
+import { causeOf, cardCause, logCards, mergeByCause, openFix, logCause, causeLog, fixingNow, settledLately, RETRY_LIMIT, SELF_BY } from './causes.ts';
 
 // Answers to the cards that aren't questions (budgets, merges, milestones): what was answered, by whom, and for a
 // milestone how long its card stays away (until; null: for good).
@@ -58,6 +59,12 @@ export type InboxItem = {
   confirm?: string;
   /** An Approve / Deny card (approvals.ts): J taps one of its buttons; the Inbox's answer doesn't decide it. */
   approval?: Approval;
+  /** Its cause key (causes.ts: token-expired, studio-restart, conflict, access:<permission>@<repo>, ...), or null. */
+  cause?: string | null;
+  /** Cards with the same cause and product folded into this one: how many in all, and the ids an answer also reaches. */
+  count?: number; merged?: string[];
+  /** The Studio fix task for its cause (causes.ts), when the cause came up twice in a week: "Fixing the cause". */
+  fixing?: { task: string; title: string; status: string } | null;
 };
 
 const name = (product: string | null | undefined) => {
@@ -285,7 +292,7 @@ export async function inbox({ tokens = false }: { tokens?: boolean } = {}): Prom
       product: a.product, productName: name(a.product), context: a.context,
       asker: q.asked_by ?? (q.kind === 'agent' ? `agent ${q.subject ?? ''}`.trim() : 'Studio PM'),
       recommendation: q.recommendation, options: q.options, blocks: a.blocks, since: q.at, weight: a.weight, links: a.links,
-      subject: q.subject, conversation: q.origin, asks: q.asks,
+      subject: q.subject, conversation: q.origin, asks: q.asks, cause: (q as any).cause ?? null,
     });
   }
 
@@ -364,13 +371,19 @@ export async function inbox({ tokens = false }: { tokens?: boolean } = {}): Prom
     if (managedElsewhere(p)) continue;
     for (const f of failingBuilds(p.id)) {
       if (!f.finished || Date.now() - f.finished > 7 * 24 * HOUR || acked(`build:${f.id}`) || buildCardAnswered(f)) continue;
+      // The gate (causes.ts): a build that failed for a transient reason (an expired token, the network, a restart) is built
+      // again by Studio, up to RETRY_LIMIT times a day; only the last failure shows, saying what was tried.
+      const cause = f.kind === 'code' ? null : causeOf(f.reason);
+      const tried = cause?.cls === 'transient' ? causeLog(cause.key, 24 * HOUR).filter((r) => r.kind === 'rebuilt' && r.subject === `${p.id}/${f.build}`) : [];
+      if (cause?.cls === 'transient' && tried.length < RETRY_LIMIT && (await rebuildForCause(p.id, f, cause))) continue;
+      const triedLine = tried.length ? `\n\nAlready tried: Studio built it again ${tried.length} time${tried.length === 1 ? '' : 's'} by itself (${tried.map((r) => new Date(r.at).toISOString().slice(11, 16)).join(', ')} UTC) because it looked like ${cause!.label}, and it still fails.` : '';
       out.push({
         id: `build:${f.id}`, kind: 'build', title: `${p.name}: build ${f.build} ${f.version} failed${f.sha ? ` (${f.sha.slice(0, 7)})` : ''}`,
-        text: `${f.plain}${fixLine(f).text}\n\nReason: ${f.reason}${f.genJob ? `\nGen job: ${f.genJob}` : ''}`.slice(0, 1500),
+        text: `${f.plain}${fixLine(f).text}${triedLine}\n\nReason: ${f.reason}${f.genJob ? `\nGen job: ${f.genJob}` : ''}`.slice(0, 1800),
         product: p.id, productName: p.name, context: `${f.kind === 'infrastructure' ? 'Infrastructure' : f.kind === 'code' ? 'The code' : 'Cause unclear'}${f.stepWords ? `, while ${f.stepWords}` : ''}${f.tries > 1 ? `, after ${f.tries} tries` : ''}. ${f.plain}`.slice(0, 400),
         asker: 'Studio', recommendation: f.kind === 'code' ? null : 'Build again', options: ['Build again', 'Dismiss'], blocks: `${p.name} going live (the build is what ships)`,
         since: f.finished, weight: 50, links: [...fixLine(f).links, { label: 'Why did this fail?', url: `#build-why/${p.id}/${f.id}` }, ...(f.run ? [{ label: 'The run', url: '#runs' }] : [])],
-        subject: p.id, conversation: null, asks: 1,
+        subject: p.id, conversation: null, asks: 1, cause: cause?.key ?? null,
       });
     }
   }
@@ -387,6 +400,7 @@ export async function inbox({ tokens = false }: { tokens?: boolean } = {}): Prom
       text: `${a.detail ?? ''}\n\nBuilds waiting: ${a.builds.join(', ')}. When you've done it, press "Check again" (or just open this page): Studio rebuilds by itself.`.trim(),
       product: p.id, productName: p.name, context: a.detail, asker: 'Studio', recommendation: 'Check again', options: ['Check again'],
       blocks: `${p.name}'s builds (${a.builds.join(', ')})`, since: a.opened, weight: 55, links, subject: p.id, conversation: null, asks: 1,
+      cause: `access:${String(a.what === 'permission' ? a.permission ?? 'permission' : a.what).toLowerCase().replace(/\s+/g, '')}@${a.slug ?? p.id}`,
     });
   }
 
@@ -443,7 +457,32 @@ export async function inbox({ tokens = false }: { tokens?: boolean } = {}): Prom
 
   // What blocks most first; the age of a wait counts too (a day adds as much as a task waiting behind it).
   const score = (x: InboxItem) => x.weight + Math.min((Date.now() - x.since) / HOUR, 96) / 2.4;
-  return out.sort((a, b) => score(b) - score(a) || a.since - b.since);
+  out.sort((a, b) => score(b) - score(a) || a.since - b.since);
+  // Each card's cause (causes.ts), logged the first time it shows (the second time a cause comes up in a week opens a
+  // Studio fix task); one card per cause and product (the most blocking one, with a count); the fix task linked.
+  for (const x of out) if (x.cause === undefined) x.cause = cardCause(x)?.key ?? null;
+  logCards(out);
+  const merged = mergeByCause(out);
+  for (const x of merged) x.fixing = x.cause ? openFix(x.cause) : null;
+  return merged;
+}
+
+/** A transient build failure Studio builds again itself instead of filing (the card is answered "Build again" by it). */
+async function rebuildForCause(product: string, f: { id: string; build: string; reason: string }, cause: ReturnType<typeof causeOf> & {}) {
+  try {
+    const r = await (await import('./builds.ts')).startBuild(product, { build: f.build });
+    ack(`build:${f.id}`, SELF_BY, `Build again (${cause.label})`, null, `Build ${f.build} of ${product}`);
+    logCause(cause, { product, kind: 'rebuilt', ref: f.id, subject: `${product}/${f.build}`, detail: `built again (${r?.id ?? 'no run'}): ${f.reason}`, dedup: `rebuilt:${f.id}` });
+    return true;
+  } catch (e: any) {
+    console.warn(`[inbox] ${product}/${f.build}: couldn't build it again by itself: ${e?.message ?? e}`);
+    return false;
+  }
+}
+
+/** What the Inbox page shows above the cards: the causes being fixed, and what Studio settled itself in the last day. */
+export function selfHealing() {
+  return { fixing: fixingNow(), settled: settledLately() };
 }
 
 /** "3 decisions in your Inbox" (or null when it's empty): what Talk and the PM say instead of listing them. */
@@ -494,6 +533,21 @@ const NO = /^\s*(no|nope|not now|later|skip|park|don'?t)\b/i;
  * free text. by: actor(). conversation: the Talk conversation the answer came through (for typed confirmations).
  */
 export async function answerInbox(id: string, answer: string, by: string, opts: { confirm?: string; conversation?: string | null } = {}) {
+  // A card that folded others with the same cause (causes.ts mergeByCause): its answer reaches each of them.
+  // Questions: the other open ones with its cause and product (the table says); other cards: what the Inbox folded.
+  let merged: string[] = [];
+  const q = /^q_[0-9a-f]+$/.test(id) ? (db.prepare('SELECT cause, product FROM questions WHERE id = ?').get(id) as any) : null;
+  if (q?.cause) merged = (db.prepare(`SELECT id FROM questions WHERE cause = ? AND COALESCE(product, '') = ? AND id != ? AND status IN ('open', 'asked J') AND kind = 'decision' AND COALESCE(topic, '') != 'gpu'`).all(q.cause, q.product ?? '', id) as any[]).map((r) => r.id);
+  else if (!q && /^(build|access):/.test(id)) merged = (await inbox()).find((x) => x.id === id)?.merged ?? [];
+  const out = await answerOne(id, answer, by, opts);
+  const also: string[] = [];
+  for (const m of merged) {
+    try { await answerOne(m, answer, by, opts); also.push(m); } catch (e: any) { console.warn(`[inbox] ${m} (same cause as ${id}): ${e?.message ?? e}`); }
+  }
+  return also.length ? { ...out, alsoAnswered: also } : out;
+}
+
+async function answerOne(id: string, answer: string, by: string, opts: { confirm?: string; conversation?: string | null } = {}) {
   const text = String(answer ?? '').trim();
   if (!text) throw new StudioError('Say the answer (one of the options, or your own words)');
   const pm = await import('./pm.ts');
