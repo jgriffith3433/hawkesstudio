@@ -294,7 +294,8 @@ export type Reconciled = { build: string; version: number; product: string; job:
  * for 12 hours with its Gen job long gone). A row is looked at when its run isn't running any more (stopped, failed,
  * interrupted, deleted), or when it has been building longer than BUILD_MAX_MS. Rows whose run is going stay alone: that
  * run is waiting on the job (and a restart re-attaches to it, pipeline.ts waitingInGen).
- * With a Gen job, Gen is asked once for its state: failed or cancelled → the build fails with Gen's reason; done → the
+ * A build whose run was cancelled, or whose Gen job ended cancelled, ends cancelled: no failure, no card (cancel.ts).
+ * With a Gen job, Gen is asked once for its state: failed → the build fails with Gen's reason; done → the
  * build fails saying Gen did finish and Studio didn't publish it (start it again); still going → cancelled, and the build
  * fails ("timed out" when it ran past the maximum). Gen unreachable → the row is left for the next look; Gen not
  * knowing the job (404) → failed. No polling: called when Studio starts (after the runs are resumed), when a build starts,
@@ -319,7 +320,13 @@ export async function reconcileBuilds(o: { only?: string; product?: string; now?
       // Keep the reason, the log Gen has, and tell J once (buildfail.ts).
       void settleFailure(b.id, detail.slice(0, 500), { job: gone, stage: 'build' }).catch((e) => console.warn(`[builds] couldn't record why ${b.id} failed: ${e?.message ?? e}`));
     };
-    if (!b.gen_job) { fail(orphan ? `stopped: ${why}, with no Gen job to wait for` : `timed out after ${age}: no result`); continue; }
+    // Cancelled, not failed (cancel.ts): a build whose run was cancelled, or whose Gen job ended cancelled, makes no card.
+    const cancel = (detail: string) => {
+      const r = db.prepare("UPDATE builds SET status = 'cancelled', detail = ?, finished = ? WHERE id = ? AND status = 'building'").run(detail.slice(0, 500), now, b.id);
+      if (Number(r.changes)) out.push({ build: b.build, version: b.version, product: b.product, job: b.gen_job ?? null, outcome: detail });
+    };
+    const runCancelled = b.run ? (await import('./cancel.ts')).haltOf(b.run)() : null;
+    if (!b.gen_job) { if (runCancelled) cancel(runCancelled); else fail(orphan ? `stopped: ${why}, with no Gen job to wait for` : `timed out after ${age}: no result`); continue; }
     let job: any;
     try {
       job = await (o.job ?? ((id) => import('./gen.ts').then((G) => G.gen.job(id))))(b.gen_job);
@@ -332,7 +339,11 @@ export async function reconcileBuilds(o: { only?: string; product?: string; now?
     if (status === 'done') {
       db.prepare('UPDATE builds SET gen_done = ? WHERE id = ? AND gen_done IS NULL').run(now, b.id);
       fail(`Hawkes Gen finished job ${b.gen_job}, but Studio stopped before publishing it (${why}); build again`, job);
-    } else if (status === 'failed' || status === 'cancelled') {
+    } else if (status === 'cancelled' || (runCancelled && status !== 'failed')) {
+      db.prepare('UPDATE builds SET gen_done = ? WHERE id = ? AND gen_done IS NULL').run(now, b.id);
+      if (status !== 'cancelled') await (o.cancel ?? ((id, w) => import('./cancel.ts').then((C) => C.cancelJob(id, 'Studio', w))))(b.gen_job, runCancelled!).catch(() => {});
+      cancel(runCancelled ?? (await import('./cancel.ts')).jobCancelDetail(job));
+    } else if (status === 'failed') {
       db.prepare('UPDATE builds SET gen_done = ? WHERE id = ? AND gen_done IS NULL').run(now, b.id);
       fail(`the Unity build ${status}: ${job?.error ?? 'no reason given'}`, job);
     } else {
@@ -422,7 +433,12 @@ async function buildOne(run: string, p: Product, b: BuildSpec, o: StartOptions) 
     say(`${sha.slice(0, 7)} (${ref})${o.resume ? ', carrying on after a restart' : ''}`);
     const row = rowId;
     stage = 'build';
-    out = b.tool === 'unity' ? await viaGen(p, b, slug, sha, ref, token, say, { job: o.resume?.job ?? undefined, row, onSubmit: (id) => db.prepare('UPDATE builds SET gen_job = ?, gen_done = NULL, token_sent = ?, token_at = ? WHERE id = ?').run(id, Date.now(), Date.now(), row), onDone: () => db.prepare('UPDATE builds SET gen_done = ? WHERE id = ?').run(Date.now(), row) }, hold)
+    // The run cancelled: the wait ends at once and the Gen job is cancelled (cancel.ts haltOf). The step carries the Gen
+    // job, so cancelling the run cancels it in Gen too (2026-11-09: a cancel found no job on the step and the build kept going).
+    const { haltOf } = await import('./cancel.ts');
+    const started = (db.prepare('SELECT started FROM builds WHERE id = ?').get(row) as { started: number } | undefined)?.started;
+    if (o.resume?.job) updateStep(step, { job: o.resume.job });
+    out = b.tool === 'unity' ? await viaGen(p, b, slug, sha, ref, token, say, { job: o.resume?.job ?? undefined, row, started, halt: haltOf(run), onSubmit: (id) => { db.prepare('UPDATE builds SET gen_job = ?, gen_done = NULL, token_sent = ?, token_at = ? WHERE id = ?').run(id, Date.now(), Date.now(), row); updateStep(step, { job: id }); }, onDone: () => db.prepare('UPDATE builds SET gen_done = ? WHERE id = ?').run(Date.now(), row) }, hold)
       : b.tool === 'actions' ? await viaActions(b, slug, o.artifact!, gh, say, hold)
       : b.tool === 'firebase' ? await viaFirebase(p, b, slug, sha, ref, token, gh, say, hold)
       : await viaStudio(p, b, slug, sha, token, gh, say, hold);
@@ -492,6 +508,13 @@ async function buildOne(run: string, p: Product, b: BuildSpec, o: StartOptions) 
     if (!o.change && movesBeta) await (await import('./golive-policy.ts')).autoGoLive(p.id, `build ${b.id} ${version}`);
   } catch (e: any) {
     const why = String(e?.message ?? e).slice(0, 500);
+    // Cancelled on purpose: its own outcome. No failure, no card in J's Inbox, no retry, no fix task (cancel.ts).
+    if (e instanceof BuildCancelled) {
+      console.warn(`[builds] ${p.id} ${b.id} cancelled: ${why}`);
+      if (rowId) db.prepare("UPDATE builds SET status = 'cancelled', detail = ?, finished = ? WHERE id = ? AND status = 'building'").run(why, Date.now(), rowId);
+      updateStep(step, { status: 'cancelled', detail: why, data: { cancelled: true }, finished: true });
+      return;
+    }
     // In the log too: a customer's Studio is only visible to the platform through its logs (2026-10-31: a refused build
     // left no trace anywhere J or Claude could read).
     console.warn(`[builds] ${p.id} ${b.id} failed: ${why}`);
@@ -664,7 +687,7 @@ export const UNITY_FAILED = /Unity exited with code (?!0\b)\d+/i;
 export function infraLost(error: unknown): boolean {
   const e = String(error ?? '');
   if ((/error CS\d+|compil(e|ation) (error|failed)|BuildFailedException|build method .* (failed|threw)|out of memory/i.test(e) || UNITY_FAILED.test(e)) && !tokenLost(e)) return false;
-  return tokenLost(e) || /Gen (restarted|was restarted|is restarting)|restarted while|server (restarted|shut ?down)|worker (lost|restarted|was preempted)|preempted|job (was )?(lost|interrupted|orphaned)|interrupted \(|instance (was )?(terminated|stopped)|\b50[234]\b|ECONNRESET|socket hang up/i.test(e);
+  return tokenLost(e) || /Gen (restarted|was restarted|is restarting)|restarted while|server (restarted|shut ?down)|worker (lost|restarted|was preempted)|preempted|job (was )?(lost|interrupted|orphaned)|Hawkes Gen lost job|no such job|interrupted \(|instance (was )?(terminated|stopped)|\b50[234]\b|ECONNRESET|socket hang up/i.test(e);
 }
 
 /** How many times a Unity build that Gen lost to infrastructure (token, restart) is submitted again, each with a fresh token. */
@@ -724,12 +747,51 @@ export function genBuildParams(b: BuildSpec, slug: string, sha: string, ref: str
   return { github, ...(b.path ? { path: b.path } : {}), ...(b.method ? { method: b.method } : {}), ...(b.machine ? { machine: b.machine } : {}), target: 'web', out: 'artifact' };
 }
 
+/**
+ * A build cancelled on purpose (its run cancelled, or its Gen job cancelled by J, Talk or Studio): its own outcome, never a
+ * failure. No failure card, no blame, no fix task (cancel.ts); the next beta run builds again. Exported for the tests.
+ */
+export class BuildCancelled extends Error {
+  constructor(message: string) { super(message); this.name = 'BuildCancelled'; }
+}
+
+/** The fewest minutes a build may run before it counts as stuck, whatever its history says (a clean Library takes long). */
+export const SLOW_FLOOR_MS = () => Number(process.env.STUDIO_BUILD_SLOW_FLOOR_MS) > 0 ? Number(process.env.STUDIO_BUILD_SLOW_FLOOR_MS) : 30 * 60_000;
+/** How many times its usual time a build may take before Studio calls it stuck. */
+export const SLOW_FACTOR = 4;
+/** Gen's own longest wait for a Unity build (its limit is 180 min plus setup): the cap on any watchdog. */
+export const GEN_BUILD_MAX_MS = 3 * 60 * 60 * 1000;
+
+/**
+ * How long a build of this project may run before Studio calls it stuck (2026-11-09: Place Department web 74 sat 93 min
+ * "running" in Gen while its last builds took 8): SLOW_FACTOR times the median of its last 5 builds that finished, at
+ * least SLOW_FLOOR_MS, at most GEN_BUILD_MAX_MS. With no history, Gen's own limit. Exported for the tests.
+ */
+export function slowLimitMs(product: string, build: string): number {
+  const rows = db.prepare("SELECT started, finished FROM builds WHERE product = ? AND build = ? AND status = 'ready' AND change IS NULL AND finished IS NOT NULL ORDER BY finished DESC LIMIT 5").all(product, build) as { started: number; finished: number }[];
+  const took = rows.map((r) => r.finished - r.started).filter((ms) => ms > 0).sort((a, b) => a - b);
+  if (!took.length) return GEN_BUILD_MAX_MS;
+  const median = took[Math.floor(took.length / 2)];
+  return Math.min(GEN_BUILD_MAX_MS, Math.max(SLOW_FLOOR_MS(), median * SLOW_FACTOR));
+}
+
+/** What the build step says while Gen works: Gen's own step (its detail: the stage, the Unity line), not just "running". Exported for the tests. */
+export function genStepWords(j: any): string | null {
+  const words = String(j?.detail || j?.progress?.step || j?.status || '').trim();
+  return words ? `Hawkes Gen: ${words}` : null;
+}
+
+const mins = (ms: number) => Math.round(ms / 60_000);
+
 /** unity: Hawkes Gen builds that commit in the cloud with the repo's own token, and hands back the output as an asset. */
-async function viaGen(p: Product, b: BuildSpec, slug: string, sha: string, ref: string, token: string | null, say: (s: string) => void, resume: { job?: string; row?: string; onSubmit?: (id: string) => void; onDone?: () => void } = {}, hold: () => Promise<void> = async () => {}): Promise<Output> {
+async function viaGen(p: Product, b: BuildSpec, slug: string, sha: string, ref: string, token: string | null, say: (s: string) => void, resume: { job?: string; row?: string; onSubmit?: (id: string) => void; onDone?: () => void; halt?: () => string | null; started?: number } = {}, hold: () => Promise<void> = async () => {}): Promise<Output> {
   if (!token) throw new Error(`Studio has no GitHub access to ${slug}: connect GitHub and install the app on it`);
   const { genRun, gen } = await import('./gen.ts');
   say('Hawkes Gen is building it (Unity WebGL, in the cloud)');
-  const submit = (tok: string, r: typeof resume) => genRun('unity.build', p.id, genBuildParams(b, slug, sha, ref, tok, resume.row), (j) => { if (j?.progress?.step || j?.status) say(`Hawkes Gen: ${j.progress?.step ?? j.status}`); }, 3 * 60 * 60 * 1000, r);
+  // How long this build may take before it counts as stuck: from its own history (slowLimitMs). A build resumed after a
+  // restart has what is left of it (at least 5 min, so it gets one fresh look).
+  const limit = slowLimitMs(p.id, b.id);
+  const submit = (tok: string, r: typeof resume, timeoutMs: number) => genRun('unity.build', p.id, genBuildParams(b, slug, sha, ref, tok, resume.row), (j) => { const w = genStepWords(j); if (w) say(w); }, timeoutMs, { job: r.job, onSubmit: r.onSubmit, halt: resume.halt });
   // Minted now, as late as there is: a token made at the start of the run could be an hour old by the time Gen reads it.
   // Gen also asks Studio for a new one when the job starts (refresh, genTokenFor), so no build rides on this one.
   const { forgetRepoToken, repoToken } = await import('./ghtoken.ts');
@@ -738,19 +800,52 @@ async function viaGen(p: Product, b: BuildSpec, slug: string, sha: string, ref: 
   // Every Gen job this build tried and why each failed, and what Gen kept of the last one (buildfail.ts): the failure keeps them.
   const tried: { id: string; error: string }[] = [];
   const note = (j: any) => { if (j?.status === 'failed' || j?.status === 'cancelled') tried.push({ id: String(j.id ?? ''), error: String(j.error ?? 'no reason given').slice(0, 300) }); };
-  let job: any = await submit(first, { job: resume.job, onSubmit: resume.onSubmit });
+  const firstWait = resume.job && resume.started ? Math.max(5 * 60_000, limit - (Date.now() - resume.started)) : limit;
+  let job: any = await submit(first, { job: resume.job, onSubmit: resume.onSubmit }, firstWait);
   note(job);
-  // A Gen that restarted (Cloud Run scales it to zero) or lost the token is infrastructure, not the project: the same
-  // build is submitted again with a freshly minted token, up to TOKEN_RETRIES times, and the run says so (sick-of-it-unity
-  // v3 to v7 failed on it). Each resubmit is a new Gen job, recorded on the row. A Unity compile error is never retried,
-  // and a real access problem fails every time and ends here.
-  for (let n = 1; job.status === 'failed' && infraLost(job.error) && n <= TOKEN_RETRIES; n++) {
+  // Cancelled (the run was, or someone cancelled the Gen job): its own outcome, never a failure, and never retried.
+  const cancelled = async (j: any) => {
+    if (j?.halted) throw new BuildCancelled(String(j.error ?? 'cancelled'));
+    if (j?.status === 'cancelled') { const { jobCancelDetail } = await import('./cancel.ts'); throw new BuildCancelled(jobCancelDetail(j)); }
+  };
+  await cancelled(job);
+  // Stuck far past its usual time (Gen still says running, or says nothing new): Studio cancels that Gen job and builds
+  // it once more by itself with a fresh token, with twice the room. Stuck again: it fails, saying where Gen was, and only
+  // then does J hear of it. Never a polling loop: genWait looks at Gen once, at this deadline.
+  let slowRetried = false;
+  const stuck = async (j: any, room: number) => {
+    const where = j.lastDetail ? `, last at "${String(j.lastDetail).slice(0, 120)}"` : '';
+    if (j.id) { const { cancelJob } = await import('./cancel.ts'); await cancelJob(String(j.id), 'Studio', `stuck: ran ${mins(room)} min, past this build's usual time${where}`).catch(() => {}); }
+    return { ...j, status: 'failed', error: `the build was stuck in Hawkes Gen: it ran ${mins(room)} min, far past this project's usual build time${where}` };
+  };
+  if (job.timedOut) {
+    job = await stuck(job, firstWait);
+    tried[tried.length - 1] = { id: String(job.id ?? ''), error: String(job.error).slice(0, 300) };
+    forgetRepoToken(slug);
+    const fresh = await repoToken(slug);
+    if (fresh) {
+      const room = Math.min(GEN_BUILD_MAX_MS, limit * 2);
+      say(`${job.error}: Studio cancelled it and is building it again by itself (allowing ${mins(room)} min)`);
+      slowRetried = true;
+      job = await submit(fresh, { row: resume.row, onSubmit: resume.onSubmit }, room);
+      note(job);
+      await cancelled(job);
+      if (job.timedOut) { job = await stuck(job, room); tried[tried.length - 1] = { id: String(job.id ?? ''), error: String(job.error).slice(0, 300) }; }
+    }
+  }
+  // A Gen that restarted (Cloud Run scales it to zero), lost the token or lost the job is infrastructure, not the project:
+  // the same build is submitted again with a freshly minted token, up to TOKEN_RETRIES times, and the run says so
+  // (sick-of-it-unity v3 to v7 failed on it). Each resubmit is a new Gen job, recorded on the row. A Unity compile error is
+  // never retried, a real access problem fails every time and ends here, and a build stuck twice isn't tried a third time.
+  for (let n = 1; job.status === 'failed' && !slowRetried && infraLost(job.error) && n <= TOKEN_RETRIES; n++) {
     forgetRepoToken(slug);
     const fresh = await repoToken(slug);
     if (!fresh) break;
     say(`Hawkes Gen lost this build (${String(job.error).slice(0, 120)}): Studio is building it again by itself with a fresh GitHub token (try ${n + 1} of ${TOKEN_RETRIES + 1})`);
-    job = await submit(fresh, { row: resume.row, onSubmit: resume.onSubmit });
+    job = await submit(fresh, { row: resume.row, onSubmit: resume.onSubmit }, limit);
     note(job);
+    await cancelled(job);
+    if (job.timedOut) { job = await stuck(job, limit); tried[tried.length - 1] = { id: String(job.id ?? ''), error: String(job.error).slice(0, 300) }; break; }
   }
   if (job.status !== 'done') throw new BuildFailure(`the Unity build ${job.status}: ${job.error ?? 'no reason given'}`, { jobs: tried, log: extractLog(job) });
   resume.onDone?.();
@@ -758,11 +853,12 @@ async function viaGen(p: Product, b: BuildSpec, slug: string, sha: string, ref: 
   if (!asset) throw new Error('Hawkes Gen finished without the build output');
   await hold();
   say('downloading the build');
-  const tmp = tmpDir();
   // Streamed from Gen straight into tar (2026-11-01): a Unity build with its Addressables content is hundreds of MB, and
   // holding it in memory (arrayBuffer, a Buffer copy, spawnSync's input) on top of the unpacked files (Cloud Run's disk
   // is memory too) went over a customer's Studio's 2 GiB, which restarted it mid-build until the run was stopped.
-  await untarStream(await gen.request(`/files/${asset}`, { raw: true }), tmp);
+  // Gen answering the download with a 502 (half of Place Department's builds on 2026-11-08 and 09) threw a finished Unity
+  // build away: the download is tried again, each time into a fresh folder (downloadBuild).
+  const tmp = await downloadBuild(() => gen.request(`/files/${asset}`, { raw: true }), say);
   const learned = learnMachine(p.id, b, job.result);
   if (learned) say(learned);
   const ran = job.result?.machine?.name ? `on ${job.result.machine.name} (${job.result.machine.cpu} vCPU, ${job.result.machine.memoryGiB} GiB)` : '';
@@ -820,6 +916,36 @@ export async function folderOutput(dir: string, tmp: string, keepFolder = false)
   const files = await folderFilesAsync(root);
   if (!files.length) { fs.rmSync(tmp, { recursive: true, force: true }); throw new Error('the build output is empty'); }
   return { files, bytes: sizeOf(files), cleanup: () => fs.rmSync(tmp, { recursive: true, force: true }) };
+}
+
+/** Whether a download failure is worth another try: Gen or its proxy busy (5xx, 429), the connection cut, a timeout. Exported for the tests. */
+export function downloadTransient(e: unknown): boolean {
+  const st = Number((e as any)?.status);
+  if (st === 429 || (st >= 500 && st < 600)) return true;
+  return /HTTP (5\d\d|429)\b|ECONNRESET|ETIMEDOUT|EPIPE|socket hang up|terminated|fetch failed|other side closed|premature close|aborted/i.test(String((e as any)?.message ?? e));
+}
+
+/** The waits between download tries (ms). Exported for the tests to shorten. */
+export const DOWNLOAD_WAITS = [5_000, 20_000, 60_000];
+
+/**
+ * Downloads a finished build from Gen and unpacks it into a fresh folder, trying again on a transient failure (DOWNLOAD_WAITS);
+ * a partly unpacked folder is thrown away before each new try. Returns the folder. Exported for the tests.
+ */
+export async function downloadBuild(fetchIt: () => Promise<Response>, say: (s: string) => void = () => {}, o: { waits?: number[]; unpack?: (res: Response, dir: string) => Promise<void> } = {}): Promise<string> {
+  const waits = o.waits ?? DOWNLOAD_WAITS;
+  for (let n = 0; ; n++) {
+    const tmp = tmpDir();
+    try {
+      await (o.unpack ?? untarStream)(await fetchIt(), tmp);
+      return tmp;
+    } catch (e: any) {
+      fs.rmSync(tmp, { recursive: true, force: true });
+      if (n >= waits.length || !downloadTransient(e)) throw e;
+      say(`downloading the build failed (${String(e?.message ?? e).slice(0, 120)}): trying again in ${Math.round(waits[n] / 1000)} s (try ${n + 2} of ${waits.length + 1})`);
+      await new Promise((r) => setTimeout(r, waits[n]));
+    }
+  }
 }
 
 /** Unpacks a .tar.gz response into dir as it downloads, never holding the archive in memory. */

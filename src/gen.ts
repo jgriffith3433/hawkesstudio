@@ -97,7 +97,10 @@ export async function genWait(id: string, onUpdate?: (job: any) => void, timeout
           look = false;
           fromGet = true;
           heard = Date.now();
-        } catch (e) {
+        } catch (e: any) {
+          // Gen doesn't know the job (404): it is gone, whatever the stream says. Nothing will ever finish it, so the wait
+          // ends now as lost (builds.ts infraLost resubmits it) instead of after an hour of misses or the build's timeout.
+          if (e?.status === 404 || /no such job/i.test(String(e?.message ?? ''))) return { id, status: 'failed', error: `Hawkes Gen lost job ${id} (no such job)`, lost: true };
           if (++misses > 60) throw e;
           if (misses === 10) await ensureGen();
           const ev = await f.next(3000);
@@ -125,7 +128,7 @@ export async function genWait(id: string, onUpdate?: (job: any) => void, timeout
       }
       if (Date.now() > end) {
         if (!fromGet) { look = true; continue; }
-        return { ...j, status: 'failed', error: `timed out after ${Math.round(timeoutMs / 60000)} min` };
+        return { ...j, status: 'failed', error: `timed out after ${Math.round(timeoutMs / 60000)} min`, timedOut: true, lastDetail: j.detail ?? null };
       }
       const { due, ms } = nextLook(f.live(), { pollMs, heard, deadlines: [end + 1], localMs: halt ? pollMs : undefined });
       const ev = await f.next(ms);

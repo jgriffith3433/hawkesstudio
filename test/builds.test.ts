@@ -642,3 +642,213 @@ test('a Gen build with no job id yet still counts as waiting in Gen (restarts do
   db.prepare("INSERT INTO builds (id, product, build, version, status, sha, ref, runner, target, run, started) VALUES ('b_nojob', 'game-restart', 'web', 9, 'building', ?, 'beta', 'gen', 'web', 'r_nojob', ?)").run(SHA1, Date.now());
   assert.equal(P.waitingInGen('r_nojob'), true);
 });
+
+// ---- 2026-11-09: Place Department web 74 sat 93 min "Hawkes Gen: running" while its builds took 8; cancelling its run
+// didn't reach the Gen job, and the cancel then showed up in J's Inbox as "build failed: cancelled, no reason given".
+
+/** A Unity project with a history of fast builds (ms long), so its stuck limit is the floor the test sets. */
+function fastHistory(db: any, product: string, tookMs = 50) {
+  C.saveProduct({ id: product, name: product, engine: 'unity', repo: 'acme/game', builds: [{ id: 'web', tool: 'unity', path: 'Game', playtest: false }] } as any);
+  const t = Date.now() - 3600_000;
+  for (let v = 1; v <= 3; v++) db.prepare("INSERT INTO builds (id, product, build, version, status, sha, ref, runner, target, started, finished) VALUES (?, ?, 'web', ?, 'ready', ?, 'beta', 'gen', 'web', ?, ?)").run(`b_${product}_${v}`, product, v, 'e'.repeat(40), t + v * 1000, t + v * 1000 + tookMs);
+}
+
+test("the build step shows Gen's own step, not just \"running\"", () => {
+  assert.equal(B.genStepWords({ status: 'running', detail: 'Unity: compiling shaders (412/2048)' }), 'Hawkes Gen: Unity: compiling shaders (412/2048)');
+  assert.equal(B.genStepWords({ status: 'running' }), 'Hawkes Gen: running');
+  assert.equal(B.genStepWords({ status: 'queued', progress: { step: 'waiting for the cloud machine' } }), 'Hawkes Gen: waiting for the cloud machine');
+  assert.equal(B.genStepWords({}), null);
+});
+
+test("a build's stuck limit comes from its own history: 4x its usual time, never under the floor or over Gen's limit", async () => {
+  const { db } = await import('../src/db.ts');
+  assert.equal(B.slowLimitMs('game-nohistory', 'web'), B.GEN_BUILD_MAX_MS, 'no history: Gen\'s own limit');
+  const t = Date.now() - 10 * 3600_000;
+  const row = (id: string, v: number, mins: number, change: string | null = null, status = 'ready') => db.prepare("INSERT INTO builds (id, product, build, version, status, sha, ref, runner, target, change, started, finished) VALUES (?, 'game-hist', 'web', ?, ?, ?, 'beta', 'gen', 'web', ?, ?, ?)").run(id, v, status, 'f'.repeat(40), change, t + v * 3600_000, t + v * 3600_000 + mins * 60_000);
+  row('b_h1', 1, 8); row('b_h2', 2, 9); row('b_h3', 3, 13);
+  row('b_h4', 4, 90, null, 'failed'); row('b_h5', 5, 120, 'c_preview');
+  assert.equal(B.slowLimitMs('game-hist', 'web'), 36 * 60_000, '4x the median (9 min) of its ready beta builds; failures and previews don\'t count');
+  row('b_h6', 6, 2); row('b_h7', 7, 2); row('b_h8', 8, 2);
+  assert.equal(B.slowLimitMs('game-hist', 'web'), 30 * 60_000, 'never under the floor (a clean Library takes long)');
+  row('b_h9', 9, 100); row('b_h10', 10, 100); row('b_h11', 11, 100);
+  assert.equal(B.slowLimitMs('game-hist', 'web'), B.GEN_BUILD_MAX_MS, 'never over Gen\'s own limit');
+});
+
+/** Gen stand-in for one test: submits give the next id; jobs answer from state(id); cancels are recorded. */
+function genStandIn(ids: string[], state: (id: string) => any) {
+  const before = globalThis.fetch;
+  const posted: string[] = [], cancels: string[] = [];
+  globalThis.fetch = (async (input: any, init: any = {}) => {
+    const u = new URL(String(input instanceof Request ? input.url : input));
+    if (u.host === 'gen.test') {
+      let m: RegExpExecArray | null;
+      if (u.pathname === '/v1/jobs' && init.method === 'POST' && posted.length < ids.length) { genCalls.push(JSON.parse(String(init.body))); const id = ids[posted.length]; posted.push(id); return Response.json({ jobs: [{ id, status: 'queued' }] }); }
+      if ((m = /^\/v1\/jobs\/([^/]+)\/cancel$/.exec(u.pathname))) { cancels.push(m[1]); return Response.json({ id: m[1], status: 'cancelled' }); }
+      if ((m = /^\/v1\/jobs\/([^/]+)$/.exec(u.pathname)) && ids.includes(m[1])) { const s = state(m[1]); return s === 404 ? Response.json({ error: 'No such job' }, { status: 404 }) : Response.json({ id: m[1], ...s }); }
+    }
+    return before(input, init);
+  }) as typeof fetch;
+  return { posted, cancels, restore: () => { globalThis.fetch = before; } };
+}
+
+test('a build stuck far past its usual time is cancelled in Gen and built again once by itself, and is ready', async () => {
+  const { db } = await import('../src/db.ts');
+  fastHistory(db, 'game-slow');
+  process.env.STUDIO_BUILD_SLOW_FLOOR_MS = '400';
+  const g = genStandIn(['j_stuck1'], () => ({ status: 'running', detail: 'Unity: compiling shaders' }));
+  try {
+    const r = (await B.startBuild('game-slow', {}))!;
+    await r.done;
+    const run = await runOf(r.id);
+    assert.equal(run.status, 'done', JSON.stringify(run.steps.map((s: any) => s.detail)));
+    assert.deepEqual(g.cancels, ['j_stuck1'], 'the stuck Gen job was cancelled');
+    assert.deepEqual(g.posted, ['j_stuck1'], 'the stuck job, then a second build (the default stand-in job)');
+    const row = db.prepare("SELECT status, gen_job FROM builds WHERE product = 'game-slow' AND version = 4").get() as any;
+    assert.equal(row.status, 'ready');
+    assert.equal(row.gen_job, 'j_unity', 'the row follows the new job');
+  } finally {
+    g.restore();
+    delete process.env.STUDIO_BUILD_SLOW_FLOOR_MS;
+  }
+});
+
+test('a build stuck twice fails as stuck (infrastructure), saying where Gen was, and is not tried a third time', async () => {
+  const { db } = await import('../src/db.ts');
+  fastHistory(db, 'game-stuck2');
+  process.env.STUDIO_BUILD_SLOW_FLOOR_MS = '400';
+  const g = genStandIn(['j_s2a', 'j_s2b', 'j_s2c'], () => ({ status: 'running', detail: 'Unity: importing assets' }));
+  try {
+    const r = (await B.startBuild('game-stuck2', {}))!;
+    await r.done;
+    const run = await runOf(r.id);
+    assert.notEqual(run.status, 'done');
+    assert.deepEqual(g.posted, ['j_s2a', 'j_s2b'], 'one automatic retry, no third');
+    assert.deepEqual(g.cancels, ['j_s2a', 'j_s2b']);
+    const row = db.prepare("SELECT status, detail, fail_class, fail_kind FROM builds WHERE product = 'game-stuck2' AND version = 4").get() as any;
+    assert.equal(row.status, 'failed');
+    assert.match(row.detail, /stuck in Hawkes Gen: it ran \d+ min, far past this project's usual build time, last at "Unity: importing assets"/);
+    assert.equal(row.fail_class, 'timeout');
+    assert.equal(row.fail_kind, 'infrastructure');
+  } finally {
+    g.restore();
+    delete process.env.STUDIO_BUILD_SLOW_FLOOR_MS;
+  }
+});
+
+test('a Gen job Gen no longer knows (404) is resubmitted at once, not waited on for hours, and the build is ready', async () => {
+  const { db } = await import('../src/db.ts');
+  C.saveProduct({ id: 'game-404', name: 'Game 404', engine: 'unity', repo: 'acme/game', builds: [{ id: 'web', tool: 'unity', path: 'Game', playtest: false }] } as any);
+  const g = genStandIn(['j_vanished'], () => 404);
+  try {
+    const t0 = Date.now();
+    const r = (await B.startBuild('game-404', {}))!;
+    await r.done;
+    const run = await runOf(r.id);
+    assert.equal(run.status, 'done', JSON.stringify(run.steps.map((s: any) => s.detail)));
+    assert.ok(Date.now() - t0 < 30_000);
+    const row = db.prepare("SELECT status, gen_job FROM builds WHERE product = 'game-404'").get() as any;
+    assert.equal(row.status, 'ready');
+    assert.equal(row.gen_job, 'j_unity');
+  } finally {
+    g.restore();
+  }
+});
+
+test('cancelling a build run cancels its Gen job, and the build ends cancelled: no failure, no card in the Inbox', async () => {
+  const { db } = await import('../src/db.ts');
+  const X = await import('../src/cancel.ts');
+  C.saveProduct({ id: 'game-cancel', name: 'Game cancel', engine: 'unity', repo: 'acme/game', builds: [{ id: 'web', tool: 'unity', path: 'Game', playtest: false }] } as any);
+  const g = genStandIn(['j_tocancel'], () => ({ status: 'running', detail: 'Unity: building player' }));
+  try {
+    const r = (await B.startBuild('game-cancel', {}))!;
+    for (let i = 0; i < 200 && !g.posted.length; i++) await new Promise((res) => setTimeout(res, 20));
+    for (let i = 0; i < 200 && !(db.prepare("SELECT gen_job FROM builds WHERE product = 'game-cancel'").get() as any)?.gen_job; i++) await new Promise((res) => setTimeout(res, 20));
+    await X.cancelRun(r.id, 'Talk', 'hanging');
+    await r.done;
+    assert.deepEqual([...new Set(g.cancels)], ['j_tocancel'], "the build's Gen job was cancelled with the run");
+    const row = db.prepare("SELECT status, detail, fail_class, notified FROM builds WHERE product = 'game-cancel'").get() as any;
+    assert.equal(row.status, 'cancelled');
+    assert.match(row.detail, /run cancelled by Talk/);
+    assert.equal(row.fail_class, null, 'not recorded as a failure');
+    assert.equal(row.notified, null, 'nothing in the Inbox');
+    const step = (await runOf(r.id)).steps.find((s: any) => s.kind === 'build');
+    assert.equal(step.status, 'cancelled');
+    assert.equal(step.job, 'j_tocancel', 'the step carries its Gen job');
+  } finally {
+    g.restore();
+  }
+});
+
+test('a Gen job cancelled from outside the run (in Gen, or by its job id) ends the build cancelled, with who did it: never a failure card', async () => {
+  const { db } = await import('../src/db.ts');
+  const X = await import('../src/cancel.ts');
+  C.saveProduct({ id: 'game-jobcancel', name: 'Game job cancel', engine: 'unity', repo: 'acme/game', builds: [{ id: 'web', tool: 'unity', path: 'Game', playtest: false }] } as any);
+  let cancelled = false;
+  const g = genStandIn(['j_outside'], () => (cancelled ? { status: 'cancelled', detail: 'cancelled' } : { status: 'running' }));
+  try {
+    const r = (await B.startBuild('game-jobcancel', {}))!;
+    for (let i = 0; i < 200 && !g.posted.length; i++) await new Promise((res) => setTimeout(res, 20));
+    await X.cancelJob('j_outside', 'Claude', 'hanging 1.5 h');
+    cancelled = true;
+    await r.done;
+    const row = db.prepare("SELECT status, detail, fail_class, notified FROM builds WHERE product = 'game-jobcancel'").get() as any;
+    assert.equal(row.status, 'cancelled');
+    assert.doesNotMatch(row.detail, /no reason given/);
+    assert.equal(row.fail_class, null);
+    assert.equal(row.notified, null);
+  } finally {
+    g.restore();
+  }
+});
+
+test('reconcileBuilds: a build whose run was cancelled, or whose Gen job ended cancelled, is cancelled, not failed', async () => {
+  const { db } = await import('../src/db.ts');
+  const X = await import('../src/cancel.ts');
+  const now = Date.now();
+  db.prepare("INSERT INTO runs (id, kind, status, detail, products, options, started) VALUES ('r_rc1', 'build', 'cancelled', '', '[\"game-rc\"]', '{}', ?)").run(now - 3600_000);
+  db.prepare("INSERT INTO runs (id, kind, status, detail, products, options, started) VALUES ('r_rc2', 'build', 'failed', '', '[\"game-rc\"]', '{}', ?)").run(now - 3600_000);
+  const row = (id: string, v: number, run: string, job: string | null) => db.prepare("INSERT INTO builds (id, product, build, version, status, sha, ref, runner, target, run, gen_job, started) VALUES (?, 'game-rc', 'web', ?, 'building', ?, 'beta', 'gen', 'web', ?, ?, ?)").run(id, v, SHA1, run, job, now - 3600_000);
+  row('b_rc_run', 1, 'r_rc1', 'j_rc_run'); row('b_rc_job', 2, 'r_rc2', 'j_rc_job'); row('b_rc_nojob', 3, 'r_rc1', null);
+  X.noteCancel('run:r_rc1', 'Jaycee', 'not needed');
+  const cancels: string[] = [];
+  const jobs: Record<string, any> = { j_rc_run: { status: 'running' }, j_rc_job: { id: 'j_rc_job', status: 'cancelled', error: null } };
+  const out = await B.reconcileBuilds({ product: 'game-rc', now, job: async (id) => jobs[id], cancel: async (id) => { cancels.push(id); } });
+  const st = (id: string) => db.prepare('SELECT status, detail, fail_class, notified FROM builds WHERE id = ?').get(id) as any;
+  for (const id of ['b_rc_run', 'b_rc_job', 'b_rc_nojob']) {
+    assert.equal(st(id).status, 'cancelled', id);
+    assert.equal(st(id).fail_class, null, id);
+  }
+  assert.match(st('b_rc_run').detail, /run cancelled by Jaycee/);
+  assert.deepEqual(cancels, ['j_rc_run'], 'the still-running Gen job of a cancelled run is cancelled');
+  assert.equal(out.length, 3);
+});
+
+test("a finished build's download is tried again when Gen answers 502 (half of Place Department's builds lost on it)", async () => {
+  const said: string[] = [];
+  let calls = 0;
+  const unpack = async (res: Response, dir: string) => { fs.writeFileSync(path.join(dir, 'index.html'), await res.text()); };
+  const dir = await B.downloadBuild(async () => { if (++calls < 3) throw Object.assign(new Error('Hawkes Gen /files/a_x: HTTP 502'), { status: 502 }); return new Response('ok'); }, (s) => said.push(s), { waits: [1, 1, 1], unpack });
+  assert.equal(calls, 3);
+  assert.equal(fs.readFileSync(path.join(dir, 'index.html'), 'utf8'), 'ok');
+  assert.equal(said.length, 2);
+  assert.match(said[0], /trying again/);
+  // Not transient: no second try.
+  calls = 0;
+  await assert.rejects(B.downloadBuild(async () => { calls++; throw Object.assign(new Error('Hawkes Gen /files/a_x: HTTP 404'), { status: 404 }); }, () => {}, { waits: [1, 1], unpack }), /404/);
+  assert.equal(calls, 1);
+  // Transient every time: gives up after the waits, with the reason.
+  calls = 0;
+  await assert.rejects(B.downloadBuild(async () => { calls++; throw new Error('socket hang up'); }, () => {}, { waits: [1, 1], unpack }), /socket hang up/);
+  assert.equal(calls, 3);
+  // A half-unpacked try leaves nothing behind.
+  const dirs: string[] = [];
+  await assert.rejects(B.downloadBuild(async () => new Response('x'), () => {}, { waits: [1], unpack: async (_r, d) => { dirs.push(d); fs.writeFileSync(path.join(d, 'part'), 'x'); throw new Error('premature close'); } }));
+  for (const d of dirs) assert.equal(fs.existsSync(d), false);
+  assert.equal(B.downloadTransient(new Error('Hawkes Gen /files/a: HTTP 503')), true);
+  assert.equal(B.downloadTransient(new Error('unpacking the build: not a gzip archive')), false);
+});
+
+test('a lost Gen job is infrastructure Studio retries itself', () => {
+  assert.equal(B.infraLost('Hawkes Gen lost job j_e54e36e0cb10 (no such job)'), true);
+  assert.equal(B.infraLost('error CS0103: no such job'), false, 'a compile error is never retried');
+});

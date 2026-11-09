@@ -70,6 +70,11 @@ export async function cancelRun(runId: string, by: string, reason?: string | nul
   if (run.status !== 'running') throw new Error(`Run ${runId} is ${run.status}, not running`);
   noteCancel(`run:${runId}`, by, reason);
   const jobs = (db.prepare(`SELECT job FROM steps WHERE run = ? AND status = 'running' AND job IS NOT NULL`).all(runId) as { job: string }[]).map((s) => s.job);
+  // A build's Gen job lives on its build row (builds.ts): before 2026-11-09 its step never carried it, so cancelling the run
+  // cancelled nothing in Gen and the build kept running there.
+  try {
+    for (const r of db.prepare(`SELECT gen_job FROM builds WHERE run = ? AND status = 'building' AND gen_job IS NOT NULL`).all(runId) as { gen_job: string }[]) jobs.push(r.gen_job);
+  } catch { /* no builds table yet */ }
   const out: { job: string; status?: string; error?: string }[] = [];
   for (const j of new Set(jobs)) out.push(await cancelJob(j, by, reason).catch((e: any) => ({ job: j, error: String(e.message ?? e) })));
   const state = runState(runId);

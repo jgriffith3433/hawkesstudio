@@ -253,3 +253,26 @@ test('nextLook: the next deadline (or the 5-minute safety check) while live, pol
   assert.deepEqual(nextLook(true, { now, pollMs: 2000, heard: now, deadlines: [now + 3600_000] }), { due: now + 300_000, ms: 300_000 });
   assert.deepEqual(nextLook(true, { now, pollMs: 2000, heard: now, deadlines: [now + 60_000], localMs: 2000 }), { due: now + 60_000, ms: 2000 });
 });
+
+test('a wait on a job Gen no longer knows (404) ends at once as lost, not after its timeout', async () => {
+  const G = await import('../src/gen.ts');
+  const { noEvents } = await import('../src/genevents.ts');
+  let asked = 0;
+  const api = { job: async () => { asked++; throw Object.assign(new Error('No such job'), { status: 404 }); }, cancel: async () => ({}) };
+  const t0 = Date.now();
+  const j: any = await G.genWait('j_gone', undefined, 3600_000, undefined, { api, events: noEvents, pollMs: 10 });
+  assert.equal(j.status, 'failed');
+  assert.equal(j.lost, true);
+  assert.match(j.error, /Hawkes Gen lost job j_gone/);
+  assert.equal(asked, 1);
+  assert.ok(Date.now() - t0 < 1000);
+});
+
+test('a wait past its deadline says it timed out, with where Gen last was', async () => {
+  const G = await import('../src/gen.ts');
+  const { noEvents } = await import('../src/genevents.ts');
+  const api = { job: async () => ({ id: 'j_slow', status: 'running', detail: 'Unity: compiling shaders' }), cancel: async () => ({}) };
+  const j: any = await G.genWait('j_slow', undefined, 50, undefined, { api, events: noEvents, pollMs: 10 });
+  assert.equal(j.timedOut, true);
+  assert.equal(j.lastDetail, 'Unity: compiling shaders');
+});
