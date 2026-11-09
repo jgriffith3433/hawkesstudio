@@ -14,7 +14,7 @@ fs.mkdirSync(process.env.STUDIO_DATA, { recursive: true });
 Object.assign(process.env, { GIT_CONFIG_COUNT: '1', GIT_CONFIG_KEY_0: 'core.autocrlf', GIT_CONFIG_VALUE_0: 'false' });
 const sh = (cwd: string, ...a: string[]) => execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t.com', '-c', 'init.defaultBranch=main', ...a], { cwd, encoding: 'utf8' }).trim();
 const { commitLeftovers, dirtyBaseline, realChanges, LEFTOVER_MARK } = await import('../src/cloudjob-run.ts');
-const { onlyStudioCommits, saysNoChange, decidedNoChange } = await import('../src/agents.ts');
+const { onlyStudioCommits, saysNoChange, decidedNoChange, cutOffLeftovers, CUT_OFF_LEFTOVERS } = await import('../src/agents.ts');
 
 let n = 0;
 function repo() {
@@ -104,4 +104,26 @@ test('Studio\'s own commits are told from the agent\'s; no-change summaries are 
   assert.ok(saysNoChange('Nothing to change here.'));
   assert.ok(!saysNoChange('Fixed the shader and added a test.'));
   assert.ok(decidedNoChange("J already decided this is won't fix, so I changed nothing."));
+});
+
+test('a change that is only Studio\'s leftover commit from a cut-off agent is not ready (c_cf47dbcaca13)', () => {
+  const dir = repo();
+  const base = sh(dir, 'rev-parse', 'HEAD');
+  sh(dir, 'update-ref', 'refs/remotes/origin/beta', base);
+  fs.mkdirSync(path.join(dir, 'scripts'));
+  fs.writeFileSync(path.join(dir, 'scripts/_tmp-render.mjs'), 'scratch\n');
+  assert.equal(commitLeftovers(dir, () => {}), true);
+  const onlyStudio = onlyStudioCommits(dir, 'beta');
+  assert.equal(onlyStudio, true);
+  // Studio ended the session (no summary.md of its own) or the pass was stopped: cut off.
+  assert.equal(cutOffLeftovers({ onlyStudio, hasSummaryFile: false }), true);
+  assert.equal(cutOffLeftovers({ onlyStudio, stopped: 'cut', hasSummaryFile: true }), true);
+  assert.equal(cutOffLeftovers({ onlyStudio, stopped: 'time', hasSummaryFile: false }), true);
+  // A finished agent (its own summary, no stop) that left files for Studio to commit is unchanged.
+  assert.equal(cutOffLeftovers({ onlyStudio, hasSummaryFile: true }), false);
+  // The agent's own commit is never "leftovers".
+  fs.writeFileSync(path.join(dir, 'Assets/V.cs'), 'agent\n');
+  sh(dir, 'commit', '-qam', 'Fix: the real one');
+  assert.equal(cutOffLeftovers({ onlyStudio: onlyStudioCommits(dir, 'beta'), stopped: 'cut', hasSummaryFile: false }), false);
+  assert.ok(CUT_OFF_LEFTOVERS.includes("leftovers weren't merged"));
 });
