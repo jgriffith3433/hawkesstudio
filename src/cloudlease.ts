@@ -26,6 +26,8 @@ const ID_FILE = process.env.STUDIO_LEASE_ID_FILE || '/tmp/hawkes-lease-id';
 const GEN_FILE = process.env.STUDIO_LEASE_GEN_FILE || '/tmp/hawkes-restore-generation';
 // Litestream's own record of the generation this instance streams (beside the database).
 const LOCAL_GEN = process.env.STUDIO_LITESTREAM_GEN_FILE || '/data/.studio.db-litestream/generation';
+// Written by the server's first heartbeat (watchLease): the startup heartbeat (entrypoint.sh: cloudlease.ts beat) stops then.
+const SERVER_FILE = process.env.STUDIO_LEASE_SERVER_FILE || '/tmp/hawkes-lease-server-beating';
 const GEN = /^[0-9a-f]{16}$/;
 const key = (name: string) => `${statePrefix()}db/${name}`;
 /** `how` is why this holder took the database: first, released (the last holder stopped), quiet (its heartbeat stayed silent
@@ -45,12 +47,12 @@ export const myLeaseId = () => { try { return fs.readFileSync(ID_FILE, 'utf8').t
  * Takes the lease and waits until the previous holder has stopped writing: its released-<id>, or its heartbeat going
  * quiet (`staleMs`), at most `waitMs`. Returns what happened, for the log.
  */
-export async function claim(o: { waitMs?: number; staleMs?: number; pollMs?: number; idleMs?: number; confirmMs?: number; now?: () => number; rev?: string | null } = {}) {
+export async function claim(o: { waitMs?: number; staleMs?: number; pollMs?: number; idleMs?: number; confirmMs?: number; olderSilentMs?: number; now?: () => number; rev?: string | null } = {}) {
   const bucket = stateBucket();
   if (!bucket) return { claimed: false, why: 'no state bucket' };
   const now = o.now ?? Date.now;
   const waitMs = o.waitMs ?? 30_000, staleMs = o.staleMs ?? 15_000, pollMs = o.pollMs ?? 1000;
-  const idleMs = o.idleMs ?? 20_000, confirmMs = o.confirmMs ?? 10_000;
+  const idleMs = o.idleMs ?? 20_000, confirmMs = o.confirmMs ?? 10_000, olderSilentMs = o.olderSilentMs ?? 120_000;
   const prev = await readJsonObj<Lease>(bucket, 'lease.json');
   const mine: Lease = { id: `l_${crypto.randomBytes(6).toString('hex')}`, rev: o.rev !== undefined ? o.rev : process.env.K_REVISION ?? null, at: now() };
   // An older revision never takes the database from a newer one: Cloud Run can start a fresh instance of the old
@@ -62,7 +64,14 @@ export async function claim(o: { waitMs?: number; staleMs?: number; pollMs?: num
   // ...but only a newer holder that is still alive: a service made again after hibernation numbers its revisions from 1
   // while the lease still names the deleted service's -00004-, and a new revision that crashed must let the old one
   // start again (2026-10-31 review: a woken customer Studio never came up).
-  if (prev && holderAlive && revNumber(prev.rev) > revNumber(mine.rev)) return { claimed: false, id: null, previous: prev.id, how: 'newer holds it', holder: prev.rev };
+  const released = Boolean(prev) && Boolean(await readJsonObj(bucket, `released-${prev!.id}`));
+  const newerHolds = Boolean(prev) && !released && revNumber(prev!.rev) > revNumber(mine.rev);
+  if (prev && holderAlive && newerHolds) return { claimed: false, id: null, previous: prev.id, how: 'newer holds it', holder: prev.rev };
+  // ...and a newer holder that only looks silent is still the newer one: restoring the database and starting the server
+  // can take longer than staleMs (2026-11-09: two revisions traded the database every ~20 s through a deploy, each fresh
+  // instance of the OLD revision finding the new holder "dead" and taking the lease back). An older revision needs the
+  // newer holder silent for olderSilentMs and still silent through the confirm window.
+  if (newerHolds && (now() - beat0.at < olderSilentMs || (await beatMoves(bucket, prev!.id, beat0, { confirmMs, pollMs, now })))) return { claimed: false, id: null, previous: prev!.id, how: 'newer holds it', holder: prev!.rev };
   // A second instance of the same revision (Cloud Run starts one under load) never takes the database from a live
   // holder: each took over from the last, five in two minutes, and a beta site's build died with them (2026-10-31). It
   // stays down like an old revision's; a holder that died (no heartbeat) is replaced as before.
@@ -73,11 +82,13 @@ export async function claim(o: { waitMs?: number; staleMs?: number; pollMs?: num
   // still answers nothing while it watches (confirmMs): a burst reaching a working, idle holder is answered in
   // milliseconds. A holder too old to report servedAt keeps the database as before.
   let orphaned = false;
-  // A same-revision stray never calls the holder gone on one old heartbeat: a write that was slow or failed under load
+  // No instance of any revision calls a holder gone on one old heartbeat: a write that was slow or failed under load
   // looks the same as a dead holder (2026-11-08: the restart loop). It watches the heartbeat for the confirm window and
-  // only a holder whose time and last answer both stand still is gone.
-  let holderGone = Boolean(prev) && !holderAlive && !(await readJsonObj(bucket, `released-${prev!.id}`));
-  if (prev?.rev && prev.rev === mine.rev && holderGone && (await beatMoves(bucket, prev.id, beat0, { confirmMs, pollMs, now }))) return { claimed: false, id: null, previous: prev.id, how: 'same revision holds it', holder: prev.rev };
+  // only a holder whose time and last answer both stand still is gone ("quiet" always goes through it).
+  const holderGone = Boolean(prev) && !holderAlive && !released;
+  if (holderGone && (await beatMoves(bucket, prev!.id, beat0, { confirmMs, pollMs, now }))) {
+    return { claimed: false, id: null, previous: prev!.id, how: prev!.rev && prev!.rev === mine.rev ? 'same revision holds it' : 'holder still beating', holder: prev!.rev };
+  }
   if (prev?.rev && prev.rev === mine.rev && holderAlive) {
     const idle = beat0.servedAt !== null && now() - beat0.servedAt > idleMs;
     if (!idle || !(await staysIdle(bucket, prev.id, beat0.servedAt!, { confirmMs, pollMs, now }))) return { claimed: false, id: null, previous: prev.id, how: 'same revision holds it', holder: prev.rev };
@@ -87,9 +98,10 @@ export async function claim(o: { waitMs?: number; staleMs?: number; pollMs?: num
   const took = orphaned ? { took: 'the holder answered nothing' } : {};
   await gcsWrite(bucket, key('lease.json'), Buffer.from(JSON.stringify(mine)), 'application/json');
   fs.writeFileSync(ID_FILE, mine.id);
-  await gcsWrite(bucket, key(`alive-${mine.id}`), beatBody(now()), 'application/json');
+  await gcsWrite(bucket, key(`alive-${mine.id}`), beatBody(now(), true), 'application/json');
   if (!prev) return { claimed: true, id: mine.id, previous: null, waited: 0, how: 'first' };
   const start = now();
+  let lastBeat = start;
   const gone = now() - beat0.at > staleMs;
   for (;;) {
     const rel = await readJsonObj<{ generation?: string }>(bucket, `released-${prev.id}`);
@@ -104,13 +116,16 @@ export async function claim(o: { waitMs?: number; staleMs?: number; pollMs?: num
       return { claimed: true, id: mine.id, previous: prev.id, waited: now() - start, how: 'quiet', generation: beat0.generation, ...took };
     }
     if (now() - start >= waitMs) return { claimed: true, id: mine.id, previous: prev.id, waited: now() - start, how: 'timed out', ...took };
+    // The wait can outlast staleMs: keep beating, or the previous holder's own strays would call this claim dead.
+    if (now() - lastBeat >= 5000) { lastBeat = now(); await gcsWrite(bucket, key(`alive-${mine.id}`), beatBody(now(), true), 'application/json').catch(() => {}); }
     await new Promise((r) => setTimeout(r, pollMs));
   }
 }
 
 /** This instance's Litestream generation (null before Litestream has made one). */
 const localGeneration = () => { try { const g = fs.readFileSync(LOCAL_GEN, 'utf8').trim(); return GEN.test(g) ? g : null; } catch { return null; } };
-const beatBody = (at: number) => Buffer.from(JSON.stringify({ at, generation: localGeneration(), servedAt: lastServed() }));
+/** `starting`: the claim holds the database but the server isn't beating yet (restore and start-up). */
+const beatBody = (at: number, starting = false) => Buffer.from(JSON.stringify({ at, generation: localGeneration(), servedAt: lastServed(), ...(starting ? { starting: true } : {}) }));
 /** A holder's heartbeat: when, the generation it streams and when it last answered a request (older heartbeats lack the
  * last, or were the time alone). */
 async function readBeat(bucket: string, id: string): Promise<{ at: number; generation: string | null; servedAt: number | null }> {
@@ -165,6 +180,28 @@ export async function release(id = myLeaseId()) {
 }
 
 /**
+ * The holder's heartbeat from the moment it claims until the server's own (watchLease) takes over: restoring the database
+ * and starting Node take longer than the 15 s a heartbeat may be old (2026-11-09). entrypoint.sh runs this in the
+ * background; it ends when the server has beaten once, when another instance took the lease, or after `maxMs`.
+ */
+export async function startupBeat(o: { everyMs?: number; maxMs?: number } = {}) {
+  const bucket = stateBucket();
+  const id = myLeaseId();
+  if (!bucket || !id) return 'no lease';
+  fs.rmSync(SERVER_FILE, { force: true });
+  const everyMs = o.everyMs ?? 5000, end = Date.now() + (o.maxMs ?? 15 * 60_000);
+  while (Date.now() < end) {
+    if (fs.existsSync(SERVER_FILE)) return 'server beating';
+    const lease = await readJsonObj<Lease>(bucket, 'lease.json');
+    if (lease && lease.id !== id) return 'lease lost';
+    if (fs.existsSync(SERVER_FILE)) return 'server beating';
+    await gcsWrite(bucket, key(`alive-${id}`), beatBody(Date.now(), true), 'application/json').catch((e) => console.warn(`[lease] startup heartbeat failed: ${e?.message ?? e}`));
+    await new Promise((r) => setTimeout(r, everyMs));
+  }
+  return 'limit';
+}
+
+/**
  * The holder's side: a heartbeat every `everyMs`, and `onLost` once another instance has claimed the lease (it then saves
  * its state and exits, so its database stops changing). Returns a stop function (tests).
  */
@@ -185,7 +222,7 @@ export function watchLease(onLost: (by: Lease) => void, o: { everyMs?: number } 
       }
       // A failed heartbeat is logged and tried again at once: a holder whose writes fail looks dead to a stray.
       for (let i = 0; i < 3; i++) {
-        try { await gcsWrite(bucket, key(`alive-${id}`), beatBody(Date.now()), 'application/json'); if (failures) console.warn(`[lease] heartbeat back after ${failures} failure(s)`); failures = 0; return; }
+        try { await gcsWrite(bucket, key(`alive-${id}`), beatBody(Date.now()), 'application/json'); if (failures) console.warn(`[lease] heartbeat back after ${failures} failure(s)`); failures = 0; try { fs.writeFileSync(SERVER_FILE, String(Date.now())); } catch { /* the startup heartbeat ends by its own limit */ } return; }
         catch (e: any) { failures++; console.warn(`[lease] heartbeat write failed (${failures} in a row): ${e?.message ?? e}`); }
       }
     } finally { beating = false; }
@@ -203,7 +240,8 @@ if (import.meta.url === `file://${process.argv[1]}` || process.argv[1]?.endsWith
     console.log(`[lease] ${JSON.stringify(r)}`);
     // A newer revision, or a live instance of this one, holds the database: this one must not start (exit 3 tells
     // entrypoint.sh).
-    if (r.how === 'newer holds it' || r.how === 'same revision holds it') { console.error(`[lease] exit via claim: ${r.how}, holder ${r.previous}`); process.exit(3); }
+    if (r.how === 'newer holds it' || r.how === 'same revision holds it' || r.how === 'holder still beating') { console.error(`[lease] exit via claim: ${r.how}, holder ${r.previous}`); process.exit(3); }
   }
+  else if (what === 'beat') console.log(`[lease] startup heartbeat ended: ${await startupBeat().catch((e) => `error ${e?.message ?? e}`)}`);
   else if (what === 'release') console.log(`[lease] released ${await release().catch(() => false)}`);
 }
