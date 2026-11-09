@@ -89,6 +89,15 @@ export async function cellGithubUser(user: string): Promise<{ login: string; tok
   return r?.token ? { login: String(r.login), token: String(r.token) } : null;
 }
 
+/** What the shared app may do on one of this org's repos (cells.ts github-probe); null outside a cell or when unreachable. */
+export async function cellGithubProbe(repo: string): Promise<{ installed: boolean; id?: number; account?: string; type?: string; manage?: string; permissions?: Record<string, string>; pending?: string[]; missing?: string[] } | null> {
+  if (!inCell()) return null;
+  return post('github-probe', { repo });
+}
+
+/** Forgets this cell's cached repo tokens (they carry the permissions they were made with): after permissions change. */
+export const forgetCellTokens = () => cellTokens.clear();
+
 const cellTokens = new Map<string, { token: string; until: number }>();
 /**
  * A token for one of this org's repos (scoped to it alone), or null when no installation of the org reaches it.
@@ -112,13 +121,14 @@ export async function cellGithubToken(repo: string, { read = false }: { read?: b
 export async function cellGenAsset(asset: string, owners: boolean) {
   const c = cfg();
   if (!c) throw Object.assign(new Error('not a customer cell'), { status: 409 });
+  // The control plane not answering (a restart) is a 503 the import tool retries, not "no such file".
   const r = await fetch(`${c.url}/api/cells/self/gen-asset`, {
     method: 'POST', signal: AbortSignal.timeout(180_000),
     headers: { Authorization: `Bearer ${c.key}`, 'X-Studio-Cell': c.org, 'Content-Type': 'application/json' }, body: JSON.stringify({ asset, owners }),
-  });
+  }).catch(() => { throw Object.assign(new Error("Hawkes Gen didn't answer, retrying"), { status: 503 }); });
   if (!r.ok) {
     const j: any = await r.json().catch(() => ({}));
-    throw Object.assign(new Error(j.error ?? `the control plane answered ${r.status} for ${asset}`), { status: r.status === 401 ? 502 : r.status });
+    throw Object.assign(new Error(j.error ?? `the control plane answered ${r.status} for ${asset}`), { status: r.status === 401 ? 502 : [502, 504].includes(r.status) ? 503 : r.status });
   }
   const via = r.headers.get('x-gen-via') === 'owner' ? 'owner' as const : 'own' as const;
   return {
