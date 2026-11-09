@@ -331,6 +331,17 @@ export function onlyStudioCommits(worktree: string, base: string) {
   const recs = log.split('\0').map((m) => m.trim()).filter(Boolean);
   return recs.length > 0 && recs.every(isStudioCommit);
 }
+/** The detail of a change whose agent was cut off and left only Studio's own leftover commit (c_cf47dbcaca13, 2026-11-09). */
+export const CUT_OFF_LEFTOVERS = "the agent was cut off before finishing; its leftovers weren't merged";
+/**
+ * Whether a change is only Studio's leftover commit from an agent that never finished: every commit is Studio's
+ * (`onlyStudio`) and the pass was cut off (`stopped`: time, turns, no result) or ended without the agent's own
+ * .hawkes/summary.md (`hasSummaryFile` false: Studio ended its session while a background check ran, so the summary was just
+ * its last words). Such a commit is a scratch file at best (scripts/_tmp-render.mjs) and must not reach beta as "ready".
+ */
+export function cutOffLeftovers({ onlyStudio, stopped, hasSummaryFile }: { onlyStudio: boolean; stopped?: string; hasSummaryFile: boolean }) {
+  return onlyStudio && (Boolean(stopped) || !hasSummaryFile);
+}
 /** The detail of a change whose agent made no commit because the work is already done: the PM checks it (pm.ts), not a try. */
 export const ALREADY = 'nothing to do: already done';
 /** An agent's summary (of a change with no commit) saying the work is already there. */
@@ -2091,6 +2102,13 @@ async function work(id: string, note?: string, answer?: string, resumed?: Phase 
         addQuestion({ kind: 'agent', subject: id, product: c.product, text: question });
         // The conversation that started it hears it now, so Talk asks the owner (access.ts agentPaused).
         void import('./access.ts').then((A) => A.agentPaused(id, question)).catch(() => {});
+        return;
+      }
+      // The agent was cut off and the branch holds only Studio's leftover commit: not ready, nothing to merge.
+      if (commits.length && cutOffLeftovers({ onlyStudio: onlyStudioCommits(c.worktree, c.base), stopped: ph.stopped, hasSummaryFile: fs.existsSync(summaryFile) })) {
+        addLog(id, `${CUT_OFF_LEFTOVERS} (${commits.join('; ').slice(0, 160)}); last words: ${summary.slice(0, 160).replace(/\s+/g, ' ')}`);
+        reopenTaken(id, findings.map((f) => f.id), CUT_OFF_LEFTOVERS);
+        update(id, { status: 'failed', detail: CUT_OFF_LEFTOVERS, summary, commits, phase: null });
         return;
       }
       // A conflict pass that couldn't resolve safely (its list, or markers left in): never a broken merge; the PM decides.
