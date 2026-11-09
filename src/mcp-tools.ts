@@ -730,7 +730,10 @@ export function studioMcp({ studio, waitRun }: Client = { studio: defaultStudio,
       if (a.dir) {
         try { root = execFileSync('git', ['rev-parse', '--show-toplevel'], { cwd: String(a.dir), encoding: 'utf8' }).trim(); } catch { throw new Error(`${a.dir} is not inside a git repo: give dir (your worktree)`); }
       } else root = worktreeRoot();
-      const r = await studio('/api/agents/gen-import', { method: 'POST', body: { asset: a.asset, path: rel, product: a.product, width: a.width ?? a.square, height: a.height ?? a.square, fit: a.fit, format: a.format, quality: a.quality } });
+      // A Gen hiccup (503 "didn't answer", Studio restarting) is retried at 30 s, 2 min, 5 min before an agent sees an
+      // error (backoff.ts); a real 404 ("no Gen file this studio may use") comes straight back.
+      const { retryWithBackoff } = await import('./backoff.ts');
+      const r = await retryWithBackoff(() => studio('/api/agents/gen-import', { method: 'POST', body: { asset: a.asset, path: rel, product: a.product, width: a.width ?? a.square, height: a.height ?? a.square, fit: a.fit, format: a.format, quality: a.quality } }));
       const dest = writeImport(root, rel, Buffer.from(String(r.bytes), 'base64'));
       return { ok: true, wrote: path.relative(root, dest).split(path.sep).join('/'), bytes: r.size, type: r.mime, from: r.source?.via === 'owner' ? "an owner's own Gen library (copied into this Studio's)" : "this Studio's Gen library", ...(r.made ? { made: r.made } : {}) };
     },

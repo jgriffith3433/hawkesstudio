@@ -1294,6 +1294,9 @@ server.listen(listenPort, cloud ? '0.0.0.0' : '127.0.0.1', () => {
   void import('./builds.ts').then((B) => { void B.watchGenBuilds(); void import('./buildaccess.ts').then((A) => A.resumeRetries()); return B.reconcileBuilds().then(() => import('./buildfix.ts')).then((F) => F.resumeChains()); }).catch((e) => console.warn(`[studio] reconciling builds: ${e.message ?? e}`));
   chooseBrain();
   const changes = resumeChanges();
+  // Playtests refused with 429 carry on with their backoff; runs and changes the restarts stopped start again once Studio
+  // has stayed up (transient.ts): one timer each, nothing polls.
+  void import('./transient.ts').then((T) => { T.resumeRateRetries(); T.reviveWhenStable(); });
   // Pull requests J merged on GitHub: their changes are marked merged (agents.ts) once at start-up, then when beta's
   // push hook fires (onBaseMoved), never on a timer.
   const mergedOutside = () => void import('./agents.ts').then(({ syncMergedOutside }) => syncMergedOutside()).catch((e) => console.warn(`[studio] merged outside Studio: ${e.message ?? e}`));
