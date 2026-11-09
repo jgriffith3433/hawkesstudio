@@ -2352,7 +2352,7 @@ export function unityVisibleFiles(files: string[]) {
 export function showcaseFor(c: Pick<Change, 'worktree' | 'base' | 'repo' | 'task'> & { infra?: boolean }, p: Product, mode = agentSettings().showcase, spent = () => costToday().cost): string | null {
   if (mode === 'off' || c.infra || !isGame(p)) return null;
   if (c.task && isVideoTask(c.task)) return null;
-  const unity = (p.engine === 'unity' || Boolean(p.build)) && !isSiteChange(c as Change, p);
+  const unity = (p.engine === 'unity' || Boolean(p.build) || Boolean(p.builds?.some((b) => b.tool === 'unity'))) && !isSiteChange(c as Change, p);
   if (unity && mode !== 'all') return null;
   if (unity && spent() >= agentSettings().maxCostPerDay) return null;
   const seen = (unity ? unityVisibleFiles : visibleFiles)(changedFiles(c));
@@ -2573,6 +2573,33 @@ export function verifyPlaytest(project: string, params: Record<string, unknown>,
   }, { runMs: playtestRunMs({ timeout } as Playtest), queueMs: VERIFY_QUEUE_MS, idleMs: PLAYTEST_IDLE_MS(), priority: VERIFY_PRIORITY, job: prior, ...(api ? { api } : {}), ...(pollMs ? { pollMs } : {}) });
 }
 
+/** How a change of a Unity product is built to be played: the build server's batch (products.json build), the project's Unity build in its builds list (any `on`), or not at all. null: not a Unity product. */
+export type ChangeBuildPlan = { how: 'server' } | { how: 'cloud'; spec: NonNullable<Product['builds']>[number] } | { how: 'none'; why: string };
+export function changeBuildPlan(p: Pick<Product, 'name' | 'engine' | 'build' | 'builds' | 'github'>): ChangeBuildPlan | { how: 'web' } {
+  if (p.build) return { how: 'server' };
+  const spec = p.builds?.find((b) => b.tool === 'unity');
+  if (!spec && p.engine !== 'unity') return { how: 'web' };
+  if (!spec) return { how: 'none', why: `${p.name} has no build settings (a Unity entry in its builds list, or products.json build)` };
+  if ((spec.target ?? 'web') !== 'web') return { how: 'none', why: `${p.name}'s Unity build "${spec.id}" is for ${spec.target}, which can't be played in a browser` };
+  if (!p.github) return { how: 'none', why: `${p.name}'s Unity build "${spec.id}" needs a GitHub repository to build from, and it has none` };
+  return { how: 'cloud', spec };
+}
+
+/** Builds a change's pushed branch through the project's builds list (builds.ts, change mode) and says where it was published. */
+async function buildChangeInCloud(c: Change, p: Product, buildId: string): Promise<ChangeBuild & { url?: string }> {
+  const sha = git(c.worktree, ['rev-parse', 'HEAD']).out;
+  const B = await import('./builds.ts');
+  addLog(c.id, `build: ${sha.slice(0, 7)} through ${p.name}'s builds list (${buildId}), published for this change only`);
+  update(c.id, { detail: 'building the branch in the cloud' });
+  const r = await B.startBuild(p.id, { build: buildId, change: c.id, ref: c.branch });
+  await r?.done;
+  const row = db.prepare("SELECT status, url, detail FROM builds WHERE product = ? AND change = ? ORDER BY started DESC LIMIT 1").get(p.id, c.id) as { status: string; url: string | null; detail: string | null } | undefined;
+  const ok = row?.status === 'ready' && Boolean(row.url);
+  const error = ok ? undefined : String(row?.detail ?? (r ? 'build failed' : 'the build did not start')).slice(0, 500);
+  addLog(c.id, ok ? `build: published at ${row!.url}` : `build failed: ${error}`);
+  return { sha, ok, at: Date.now(), job: null as any, version: null, cost: 0, minutes: 0, ...(ok ? { url: row!.url! } : { error, retry: !/error CS\d+|Build ?Failed/i.test(String(error)) }) } as any;
+}
+
 /** One Studio fix task per product (never one per change) to add the build settings a Unity product lacks. */
 function fileMissingBuildTask(p: Product) {
   try {
@@ -2583,18 +2610,28 @@ function fileMissingBuildTask(p: Product) {
   } catch (e: any) { console.warn(`[studio] filing the build-settings task for ${p.id}: ${e.message ?? e}`); }
 }
 
-async function verifyChange(c: Change, p: Product, findings: any[], jobs?: JobMemo) {
+export async function verifyChange(c: Change, p: Product, findings: any[], jobs?: JobMemo) {
   let dir: string;
   let build: ChangeBuild | null = null;
+  let cloudUrl: string | null = null;
+  const plan = changeBuildPlan(p);
   if (isSiteChange(c, p)) {
     // A website change: its worktree is the site as it would be (with live's Game/v<n>): served as it is, no build.
     dir = path.join(c.worktree, path.relative(c.repo, p.local.dir));
-  } else if (!p.build && p.engine === 'unity') {
-    // A product Studio can't build (no build settings) isn't a failed build: the change isn't played and merges on the
-    // agent's checks, like any change with no playtest. One Studio task asks for the product's build settings.
+  } else if (plan.how === 'none') {
+    // A product Studio can't build for a playtest (no usable build settings) isn't a failed build: the change isn't played
+    // and goes on to beta's own build on the agent's checks, like a skipped compile check. One Studio task asks for settings.
     fileMissingBuildTask(p);
-    return { outcome: 'not played', error: `${p.name} has no build settings (products.json build), so Studio can't build it to play: merged on the agent's checks`, build: null };
-  } else if (p.engine === 'unity' || p.build) {
+    return { outcome: 'not played', error: `${plan.why}, so Studio can't build it to play: merged on the agent's checks`, build: null };
+  } else if (plan.how === 'cloud') {
+    // A project built through its builds list: the branch is built the way beta is (builds.ts, Hawkes Gen's cloud build),
+    // published at c/<change>/, and that address is what gets played.
+    build = await buildChangeInCloud(c, p, plan.spec.id).catch((e: any): ChangeBuild => ({ sha: '', ok: false, at: Date.now(), error: String(e.message ?? e).slice(0, 500), retry: true }));
+    if (!build.ok && /^cancelled\b/.test(String(build.error))) return { outcome: 'not played', error: build.error, build, cancelled: true };
+    if (!build.ok) return { outcome: 'build failed', error: build.error, build };
+    dir = '';
+    cloudUrl = (build as ChangeBuild & { url?: string }).url ?? null;
+  } else if (plan.how === 'server') {
     // Unity: build the branch, then serve that build the way the site's local server would.
     build = await buildChange(c, p, jobs).catch((e: any): ChangeBuild => ({ sha: '', ok: false, at: Date.now(), error: String(e.message ?? e).slice(0, 500), retry: true }));
     // Cancelled isn't failed: the change is simply not played (the "not played" path), no revise, no try.
@@ -2622,7 +2659,7 @@ async function verifyChange(c: Change, p: Product, findings: any[], jobs?: JobMe
     if (prior.status === 'running') await gen.cancel(prior.id).catch(() => {});
     prior = null;
   }
-  const url = prior?.status === 'done' ? localUrl(p) : await serveDir(p, dir, port);
+  const url = cloudUrl ?? (prior?.status === 'done' ? localUrl(p) : await serveDir(p, dir, port));
   const timeout = p.playtests.find((t) => t.where === 'local' && (t.scenario ?? t.mode) === scenario)?.timeout;
   try {
     const run = await verifyPlaytest(p.id, { url, mode: mode ?? (p.contract ? 'contract' : 'auto'), ...(mode ? {} : { scenario }), ...(mode === 'site' ? { maxPages: 40 } : {}), ...(agentScenario && agentOptions ? { options: agentOptions } : {}), globals: betaPageGlobals(), ...withPass() },
