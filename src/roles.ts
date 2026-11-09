@@ -16,7 +16,7 @@ import path from 'node:path';
 import { ROOT, PROJECTS, StudioError } from './config.ts';
 import { sandboxOn } from './sandbox.ts';
 import { roleTune, jobTune, type Tier, type Effort } from './tuning.ts';
-import { brainId } from './brains.ts';
+import { brainId, type Harness } from './brains.ts';
 import { customerStudio } from './tenancy.ts';
 import { cloudMode } from './cloudauth.ts';
 
@@ -134,13 +134,13 @@ export function loadRole(name: string): Role {
  * The Claude Code arguments for a role: model, its instructions after the default system prompt, the tools it may use
  * without asking (plus `extraAllowed`, e.g. its MCP tools), what it may never use, and the plugin (skills, subagents).
  */
-export function roleArgs(name: RoleName, { extraAllowed = [] as string[], extraPrompt = '', maxTurns, retry = 1, tier, effort }: { extraAllowed?: string[]; extraPrompt?: string; maxTurns?: number; retry?: number; tier?: Tier; effort?: Effort } = {}) {
+export function roleArgs(name: RoleName, { extraAllowed = [] as string[], extraPrompt = '', maxTurns, retry = 1, tier, effort, harness = brainId() }: { extraAllowed?: string[]; extraPrompt?: string; maxTurns?: number; retry?: number; tier?: Tier; effort?: Effort; harness?: Harness } = {}) {
   const base = loadRole(name);
-  // Settings → Tuning: the model, effort and turn cap for this role on the harness in use (an env override still wins);
-  // a route (routing.ts) sets the tier and effort instead.
-  const tune = roleTune(name, { retry, tier, effort });
+  // Settings → Tuning: the model, effort and turn cap for this role on the harness the run is on (an env override still
+  // wins); a route (routing.ts) sets the tier and effort instead.
+  const tune = roleTune(name, { harness, retry, tier, effort });
   const envModel = process.env[`STUDIO_MODEL_${name.toUpperCase()}`];
-  const r = { ...base, model: envModel ? base.model : tune.model || (brainId() === 'claude' ? base.model : 'auto'), tier: tune.tier, effort: tune.effort };
+  const r = { ...base, model: envModel ? base.model : tune.model || (harness === 'claude' ? base.model : 'auto'), tier: tune.tier, effort: tune.effort };
   const allowed = [...r.allowed, ...extraAllowed];
   const args = ['--model', r.model, '--append-system-prompt', extraPrompt ? `${r.body}\n\n${extraPrompt}` : r.body];
   if (tune.effort) args.push('--effort', tune.effort);

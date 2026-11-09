@@ -281,8 +281,10 @@ export type RouteInput = ClassifyInput & {
   premium?: 'deep' | 'max' | null;
   /** Automatic deep passes so far today (default: the pass ledger's). */
   deepToday?: number;
-  /** Conserve mode (default: a usage limit in the last conserveHours). */
+  /** Conserve mode (default: a usage limit in the last conserveHours, on this harness when it's given). */
   conserve?: boolean;
+  /** The provider the work runs on (providers.ts), for conserve mode. */
+  harness?: string | null;
 };
 
 /** The tier and effort a piece of work runs on now. Pure given its input (the defaults read the ledger and the holds). */
@@ -308,7 +310,7 @@ export function routeFor(input: RouteInput, s: RoutingSettings = routingSettings
   if (UP[tier] > ceiling) tier = TIERS[ceiling];
   let capped: string | null = null;
   if (tier === 'deep') {
-    const conserve = input.conserve ?? conserving(s);
+    const conserve = input.conserve ?? conserving(s, Date.now(), input.harness);
     const deepToday = input.deepToday ?? deepPassesToday();
     if (conserve) capped = `conserving usage (a usage limit in the last ${s.conserveHours} h)`;
     else if (deepToday >= s.deepPerDay) capped = `the day's ${s.deepPerDay} automatic deep passes are used`;
@@ -350,16 +352,19 @@ export function deepPassesToday(now = Date.now()) {
 }
 
 /** The last usage limit the harness hit (harness-hold.ts), if it is within conserveHours. */
-export function lastUsageStop(s: RoutingSettings = routingSettings(), now = Date.now()): number | null {
+export function lastUsageStop(s: RoutingSettings = routingSettings(), now = Date.now(), harness?: string | null): number | null {
   if (!(s.conserveHours > 0)) return null;
   try {
-    const r = db.prepare(`SELECT MAX(since) AS at FROM harness_holds WHERE kind = 'usage'`).get() as { at: number | null };
+    // Per provider when the pass's provider is known: Codex's limit doesn't make a Claude pass conserve.
+    const r = (harness
+      ? db.prepare(`SELECT MAX(since) AS at FROM harness_holds WHERE kind = 'usage' AND harness = ?`).get(harness)
+      : db.prepare(`SELECT MAX(since) AS at FROM harness_holds WHERE kind = 'usage'`).get()) as { at: number | null };
     return r.at && now - r.at < s.conserveHours * 3600_000 ? r.at : null;
   } catch {
     return null;
   }
 }
-export const conserving = (s: RoutingSettings = routingSettings(), now = Date.now()) => lastUsageStop(s, now) !== null;
+export const conserving = (s: RoutingSettings = routingSettings(), now = Date.now(), harness?: string | null) => lastUsageStop(s, now, harness) !== null;
 
 /**
  * The model pinned for every run (Settings → Harness → Model), or '' when each run's own model applies. On Claude Code
@@ -368,7 +373,10 @@ export const conserving = (s: RoutingSettings = routingSettings(), now = Date.no
  */
 export function modelPin(b: { harness: string; model: string } = brainSettings(), s: Pick<RoutingSettings, 'enabled'> = routingSettings()): string {
   if (!b.model) return '';
-  return b.harness === 'claude' && s.enabled ? '' : b.model;
+  // Routing on: every harness's runs take the route's tier, as that harness's tuned model (Settings → Tuning), so each
+  // provider gets Haiku-class models for small work and its deep one on failure (J, 2026-11-09: "make sure the other
+  // providers have the routing too"). Off: the pin, as before.
+  return s.enabled ? '' : b.model;
 }
 
 /** Talk's turn: the tier for Studio's own turns, and J's premium ask. null: the role's tuned tier. */

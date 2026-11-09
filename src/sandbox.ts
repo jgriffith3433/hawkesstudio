@@ -13,8 +13,9 @@ import type http from 'node:http';
 import type net from 'node:net';
 import { DATA, PROJECTS } from './config.ts';
 import { runCommand } from './ops.ts';
-import { brainId, ANTIGRAVITY_AGENT, COPILOT_AGENT, CURSOR_AGENT, GEMINI_AGENT } from './brains.ts';
+import { adapterOf, brainId, brainSettings, type Harness } from './brains.ts';
 import { modelPin } from './routing.ts';
+import { tierOfModel, tuningSettings } from './tuning.ts';
 import { cloudMode, agentKey } from './cloudauth.ts';
 
 /** The wrapper deploy/agent-sandbox.mjs installs: it runs a command as the sandbox user with its own HOME and umask. */
@@ -157,7 +158,7 @@ export async function shareAll(group: string | null = sandboxOn() ? AGENT_GROUP 
  * What a sandboxed Claude Code gets from Studio's environment: nothing secret but its own Claude login (it can't run
  * without it), no AWS role marker, no GitHub token, no service keys. Its Gen key is in its MCP config, not here.
  */
-const PASS = /^(PATH|LANG|LC_\w+|TZ|TERM|NODE_OPTIONS|NODE_EXTRA_CA_CERTS|HAWKESGEN_URL|GEN_PUBLIC_URL|STUDIO_PORT|STUDIO_SERVER|STUDIO_PUBLIC_URL|TALK_\w+|CLAUDE_CODE_OAUTH_TOKEN|ANTHROPIC_API_KEY|XAI_API_KEY|CURSOR_API_KEY|CURSOR_AGENT|COPILOT_GITHUB_TOKEN|COPILOT_HOME|COPILOT_BIN|COPILOT_MODEL|COPILOT_EFFORT|COPILOT_MAX_CREDITS|COPILOT_CONTEXT|GEMINI_API_KEY|GEMINI_OAUTH_CREDS|GEMINI_BIN|GEMINI_CLI_HOME|AGY_BIN|AGY_CREDS|AGY_MODEL|GOOGLE_GENAI_USE_VERTEXAI|GOOGLE_CLOUD_PROJECT|GOOGLE_CLOUD_LOCATION|GROK_SESSION_DIR|HAWKES_BRAIN|CLAUDE_CODE_\w+|DISABLE_\w+|npm_config_cache)$/;
+const PASS = /^(PATH|LANG|LC_\w+|TZ|TERM|NODE_OPTIONS|NODE_EXTRA_CA_CERTS|HAWKESGEN_URL|GEN_PUBLIC_URL|STUDIO_PORT|STUDIO_SERVER|STUDIO_PUBLIC_URL|TALK_\w+|CLAUDE_CODE_OAUTH_TOKEN|ANTHROPIC_API_KEY|XAI_API_KEY|CURSOR_API_KEY|CURSOR_AGENT|COPILOT_GITHUB_TOKEN|COPILOT_HOME|COPILOT_BIN|COPILOT_MODEL|COPILOT_EFFORT|COPILOT_MAX_CREDITS|COPILOT_CONTEXT|GEMINI_API_KEY|GEMINI_OAUTH_CREDS|GEMINI_BIN|GEMINI_CLI_HOME|AGY_BIN|AGY_CREDS|AGY_MODEL|CURSOR_CREDS|COPILOT_CREDS|CODEX_CREDS|CODEX_BIN|CODEX_MODEL|GOOGLE_GENAI_USE_VERTEXAI|GOOGLE_CLOUD_PROJECT|GOOGLE_CLOUD_LOCATION|GROK_SESSION_DIR|HAWKES_BRAIN|CLAUDE_CODE_\w+|DISABLE_\w+|npm_config_cache)$/;
 export function sandboxEnv(env: NodeJS.ProcessEnv) {
   const out: Record<string, string> = {};
   for (const [k, v] of Object.entries(env)) if (v !== undefined && PASS.test(k)) out[k] = v;
@@ -179,8 +180,8 @@ export function sandboxEnv(env: NodeJS.ProcessEnv) {
  * (sudoers lets the Studio user run only that, as only that user, passing only the variables named here), with the
  * filtered environment. Elsewhere (J's PC, a server without the sandbox): as Studio's own user, like before.
  */
-export function spawnClaude(args: string[], { cwd, env }: { cwd: string; env: NodeJS.ProcessEnv }): ChildProcessWithoutNullStreams {
-  const c = claudeCommand(args, { cwd, env });
+export function spawnClaude(args: string[], { cwd, env, brain }: { cwd: string; env: NodeJS.ProcessEnv; brain?: Harness }): ChildProcessWithoutNullStreams {
+  const c = claudeCommand(args, { cwd, env, brain });
   return spawn(c.file, c.args, { cwd: c.cwd, env: c.env, windowsHide: true });
 }
 
@@ -190,18 +191,34 @@ export function spawnClaude(args: string[], { cwd, env }: { cwd: string; env: No
  * stand-in script with node, never in the sandbox.
  */
 /** Cursor replaces the Claude Code executable. Tests that set TALK_CLAUDE or TALK_CLAUDE_ARGS keep their stand-in. */
-function brainCommand(args: string[], forceClaude = false) {
+/**
+ * A Claude Code model id (claude-opus-5-5) in a run started on another provider becomes that provider's model for the
+ * same tier (Settings → Tuning), so routing's Haiku/Sonnet/Opus choice holds on every provider; '' (its own default) drops
+ * the flag. A role's own args already carry the provider's model (roles.ts roleTune) and pass through unchanged.
+ */
+function forHarness(args: string[], harness: Harness) {
+  const at = args.indexOf('--model');
+  const m = at >= 0 ? String(args[at + 1] ?? '') : '';
+  if (!/^claude-(opus|sonnet|haiku|fable)-\d+-\d+(\[1m\])?$/i.test(m)) return args;
+  const t = tuningSettings();
+  const tier = tierOfModel(m, t);
+  if (!tier) return args;
+  const own = t.models[harness]?.[tier] ?? '';
+  return own ? args.map((a, i) => (i === at + 1 ? own : a)) : args.filter((_, i) => i !== at && i !== at + 1);
+}
+
+function brainCommand(args: string[], harness: Harness = brainId()) {
   const exe = process.env.TALK_CLAUDE || 'claude';
   const pre: string[] = process.env.TALK_CLAUDE_ARGS ? JSON.parse(process.env.TALK_CLAUDE_ARGS) : [];
-  // The fallback (llm.ts) is real Claude Code on J's Max plan whatever the brain is: when the brain is Cursor and
-  // Cursor is down (an unpaid invoice, 2026-10-20), falling back to "the brain" just failed the same way again.
-  if (forceClaude) return { file: exe, args: [...pre, ...args] };
-  const brain = brainId();
-  // The pinned model (Settings), unless routing picks each run's model (routing.ts modelPin).
-  const model = modelPin();
-  const mapped = model ? args.map((a, i, all) => (all[i - 1] === '--model' ? model : a)) : args;
-  if (pre.length || process.env.TALK_CLAUDE || brain === 'claude') return { file: exe, args: [...pre, ...mapped] };
-  return { file: process.execPath, args: [brain === 'copilot' ? COPILOT_AGENT : brain === 'gemini' ? GEMINI_AGENT : brain === 'antigravity' ? ANTIGRAVITY_AGENT : CURSOR_AGENT, ...mapped] };
+  // The pinned model (Settings), unless routing picks each run's model (routing.ts modelPin). Only on the harness it was
+  // pinned for: a pass another provider runs (providers.ts) uses that provider's tuned model.
+  const b = brainSettings();
+  const model = harness === b.harness ? modelPin(b) : '';
+  const mapped = model ? args.map((a, i, all) => (all[i - 1] === '--model' ? model : a)) : harness === 'claude' ? args : forHarness(args, harness);
+  // Tests' stand-in sees which harness the pass was on.
+  if (pre.length || process.env.TALK_CLAUDE) return { file: exe, args: [...pre, ...mapped], harness };
+  if (harness === 'claude') return { file: exe, args: mapped, harness };
+  return { file: process.execPath, args: [adapterOf(harness), ...mapped], harness };
 }
 
 /**
@@ -223,8 +240,15 @@ function promptAsFile(args: string[], claude: boolean) {
   return [...args.slice(0, at), '--append-system-prompt-file', file, ...args.slice(at + 2)];
 }
 
-export function claudeCommand(args: string[], { cwd, env, brain }: { cwd: string; env: NodeJS.ProcessEnv; brain?: 'claude' }) {
-  const cmd = brainCommand(promptAsFile(args, brain === 'claude' || !!process.env.TALK_CLAUDE || brainId() === 'claude'), brain === 'claude');
+/**
+ * brain: the harness this run is on (providers.ts picks one per agent pass and scout; llm.ts's fallback is always real
+ * Claude Code on J's Max plan whatever the brain is: when the brain is Cursor and Cursor is down, falling back to "the
+ * brain" just failed the same way again). Default: the harness in use.
+ */
+export function claudeCommand(args: string[], { cwd, env, brain }: { cwd: string; env: NodeJS.ProcessEnv; brain?: Harness }) {
+  const harness = brain ?? brainId();
+  const cmd = brainCommand(promptAsFile(args, harness === 'claude' || !!process.env.TALK_CLAUDE), harness);
+  if (process.env.TALK_CLAUDE_ARGS) env = { ...env, HAWKES_PASS_HARNESS: harness };
   if (!sandboxOn() || process.env.TALK_CLAUDE_ARGS) return { file: cmd.file, args: cmd.args, cwd, env };
   const clean = sandboxEnv(env);
   const keep = Object.keys(clean).filter((k) => k !== 'HOME' && k !== 'PATH');
@@ -251,6 +275,8 @@ export function sandboxSpawn(file: string, args: string[], { own, ...opts }: Spa
   const clean = { ...sandboxEnv(opts.env ?? process.env), ...own };
   delete clean.CLAUDE_CODE_OAUTH_TOKEN;
   delete clean.ANTHROPIC_API_KEY;
+  // Nor any other provider's sign-in (cli-signin.ts): a dev server or build has no use for them.
+  for (const k of ['CURSOR_API_KEY', 'COPILOT_GITHUB_TOKEN', 'GEMINI_API_KEY', 'GEMINI_OAUTH_CREDS', 'AGY_CREDS', 'CURSOR_CREDS', 'COPILOT_CREDS', 'CODEX_CREDS']) delete clean[k];
   const keep = Object.keys(clean).filter((k) => k !== 'HOME' && k !== 'PATH');
   return spawn('sudo', ['-n', '-u', process.env.HAWKES_AGENT_USER!, `--preserve-env=${keep.join(',')}`, WRAPPER, path.resolve(opts.cwd), file, ...args], { ...opts, env: clean, windowsHide: true, shell: false });
 }

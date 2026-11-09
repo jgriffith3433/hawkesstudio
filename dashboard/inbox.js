@@ -1,6 +1,6 @@
 // The Inbox: everything waiting on J (decisions, agent questions, GPU budgets, merges only he may make, milestones
 // reached), most blocking first, with the nav badge. Uses app.js's helpers ($, esc, api, ago, file, show).
-const IB_KIND = { question: ['your call', 'broken'], agent: ['agent asks', 'warn'], gpu: ['GPU budget', 'warn'], merge: ['merge', ''], milestone: ['milestone reached', 'ship'], video: ['ready to screen', 'ship'], access: ['GitHub access', 'warn'], credits: ['waiting for credits', 'warn'], build: ['build failed', 'broken'] };
+const IB_KIND = { question: ['your call', 'broken'], agent: ['agent asks', 'warn'], gpu: ['GPU budget', 'warn'], merge: ['merge', ''], milestone: ['milestone reached', 'ship'], video: ['ready to screen', 'ship'], access: ['GitHub access', 'warn'], credits: ['waiting for credits', 'warn'], ai: ['AI providers', 'broken'], build: ['build failed', 'broken'] };
 // Cause keys (causes.ts) in plain words, for the "same cause" pill and "Fixing the cause".
 const IB_CAUSE = { 'studio-restart': 'Studio restarting', 'killed-run': 'runs killed or orphaned', 'token-expired': 'an expired GitHub token', network: 'the network', 'server-error': 'a server error', 'rate-limit': 'a rate limit', 'gen-restart': 'Hawkes Gen restarting', 'cloud-quota': 'a cloud quota', conflict: 'merge conflicts', harness: 'the AI harness' };
 const ibCauseWords = (k) => IB_CAUSE[k] ?? String(k ?? '').replace(/^access:/, 'GitHub access: ');

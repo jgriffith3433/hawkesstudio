@@ -92,6 +92,7 @@ import { infraFailed, INFRA_FAILED_SQL, isInfraText } from './infra-failure.ts';
 import { ensureGpuFor, needsGpu } from './gpustart.ts';
 import { walkAwayOn, WALK_AWAY_BY } from './walkaway.ts';
 import { brainId, brainLabel, brainSettings, harnessStopOf, isHarness, type Harness, type HarnessStop } from './brains.ts';
+import { noProviderFree, pickHarness, providerSettings, using } from './providers.ts';
 import { harnessHeld, holdDetail, holdHarness, onHoldLifted, reviewHolds, LABEL as HARNESS_LABEL } from './harness-hold.ts';
 import { githubReachable } from './ghtoken.ts';
 import { kickFollowups } from './followup-kick.ts';
@@ -472,8 +473,13 @@ export function reviveForTask(task: string, note?: string) {
   setTimeout(() => void pump(), 0).unref();
   return c.id;
 }
-/** A recorded session can only be resumed by the harness that made it (a stand-in can't read the other's sessions). */
-const sameHarness = (ph: Phase) => (ph.brain ?? 'claude') === brainId();
+/** The harness a phase's session was made on (older phases saved none: Claude Code). */
+const brainOf = (ph: Phase): Harness => (isHarness(ph.brain) ? ph.brain : 'claude');
+/**
+ * A recorded session can only be resumed by the harness that made it (a stand-in can't read the other's sessions). With
+ * several providers (providers.ts), the next pass stays on that harness while it answers, so the session goes on.
+ */
+const sameHarness = (ph: Phase) => brainOf(ph) === pickHarness({ prefer: brainOf(ph) });
 /** A resume for the harness running now: a session of the other harness becomes a fresh session told the same. */
 function forHarness(ph: Phase, r: { session?: string; prompt: string } | undefined) {
   if (!r?.session || sameHarness(ph)) return r;
@@ -1123,7 +1129,7 @@ export function attemptOf(c: Change): number {
  * The route this change's current attempt runs on (routing.ts): stored with the attempt, so its nudges, resumes and
  * answers stay on the same model, and computed again when the attempt changes. null: routing is off (tuning.ts as before).
  */
-export function changeRoute(c: Change): Route | null {
+export function changeRoute(c: Change, harness?: Harness): Route | null {
   if (!routingSettings().enabled) return null;
   const attempt = attemptOf(c);
   const stored = parse(c.route ?? null) as Route | null;
@@ -1133,7 +1139,7 @@ export function changeRoute(c: Change): Route | null {
   const worst = findings.some((f) => f.severity === 'blocker') ? 'blocker' : findings[0]?.severity ?? null;
   const role = roleOf(c);
   const text = [c.request, c.title, ...findings.map((f) => `${f.title} ${f.area ?? ''} ${f.detail ?? ''}`)].filter(Boolean).join('\n');
-  const r = routeFor({ text, role, criteria: c.criteria.length, severity: worst, attempt, premium });
+  const r = routeFor({ text, role, criteria: c.criteria.length, severity: worst, attempt, premium, harness });
   if (r.premium) usePremium(c.id, c.task);
   db.prepare('UPDATE changes SET route = ? WHERE id = ?').run(J(r), c.id);
   return r;
@@ -1383,9 +1389,12 @@ export function agentMcp(id: string) {
 }
 
 /** An agent pass's end: `stopped` says why it ended before finishing ('time': Studio's time limit; 'turns': its turn limit; 'cut': no result). */
-type AgentResult = { ok: boolean; cost: number; result: string; sawResult: boolean; lost: boolean; stopped?: 'time' | 'turns' | 'cut'; stderr?: string };
-/** How an agent pass runs: as a new process (onStart records it), or reattached to one started before a restart. */
-type AgentRun = { reattach?: { rec: DetachRec; offset: number }; onStart?: (rec: DetachRec) => void; onProgress?: (offset: number) => void };
+type AgentResult = { ok: boolean; cost: number; result: string; sawResult: boolean; lost: boolean; stopped?: 'time' | 'turns' | 'cut'; stderr?: string; harness?: Harness };
+/**
+ * How an agent pass runs: as a new process (onStart records it), or reattached to one started before a restart; harness:
+ * the provider it runs on (providers.ts), else the harness in use.
+ */
+type AgentRun = { reattach?: { rec: DetachRec; offset: number }; onStart?: (rec: DetachRec) => void; onProgress?: (offset: number) => void; harness?: Harness };
 
 /**
  * How long one agent pass may run before Studio stops it (counted from its unit's start, so a restart doesn't reset it).
@@ -1435,8 +1444,10 @@ function runAgent(c: Change, briefFile: string, s: AgentSettings, env = claudeEn
       // The role (.claude/agents/<role>.md): its model, standing instructions (the stable, cached part of the prompt),
       // tools and turn limit; the task itself is the brief.
       // The route (routing.ts): the category's tier, one up per failed attempt, Opus within the day's budget, Fable only on J's ask.
-      const route = changeRoute(c);
+      const harness = how.harness ?? brainId();
+      const route = changeRoute(c, harness);
       const { args: roleFlags, role } = roleArgs(agentRole(c), {
+        harness,
         extraAllowed: [...(AGENT_FULL_TOOLS ? ['mcp__hawkesstudio'] : AGENT_STUDIO_TOOLS.map((t) => `mcp__hawkesstudio__${t}`)), 'mcp__hawkesgen'],
         maxTurns: s.maxTurns !== DEFAULTS.maxTurns ? s.maxTurns : undefined,
         retry: (c.task ? getTask(c.task)?.tries : 0) || 1,
@@ -1450,9 +1461,9 @@ function runAgent(c: Change, briefFile: string, s: AgentSettings, env = claudeEn
         // Its own Studio MCP server (Talk's tools, as this change: X-Studio-Agent), and Gen's.
         '--mcp-config', agentMcp(c.id), '--strict-mcp-config',
       ];
-      addLog(c.id, `role ${role.name} (${role.model})`);
+      addLog(c.id, `role ${role.name} (${role.model})${harness !== 'claude' || brainId() !== 'claude' ? ` on ${brainLabel(harness)}` : ''}`);
       // Outside Studio where it can be (detach.ts): a deploy restarting Studio doesn't stop it. Same user, same environment.
-      const l = launch(`agent-${c.id}`, claudeCommand(args, { cwd: c.worktree, env }));
+      const l = launch(`agent-${c.id}`, claudeCommand(args, { cwd: c.worktree, env, brain: harness }));
       child = l.child;
       if (l.rec) {
         addLog(c.id, `agent runs as ${l.rec.mode === 'systemd' ? 'the unit' : l.rec.mode === 'cloudrun' ? 'the Cloud Run job' : 'the process'} ${l.rec.unit} (it survives a Studio restart)`);
@@ -1559,7 +1570,7 @@ function runAgent(c: Change, briefFile: string, s: AgentSettings, env = claudeEn
       clearTimeout(timer);
       clearTimeout(grace);
       clearInterval(watch);
-      const h = brainId();
+      const h = how.harness ?? brainId();
       addLog(c.id, `couldn't start ${h === 'claude' ? 'Claude Code' : brainLabel(h)}: ${e.message}`);
       resolve({ ok: false, cost: 0, result: e.message, sawResult: false, lost: false, stderr: out.stderr });
     });
@@ -1584,9 +1595,9 @@ async function agentPass(id: string, ph: Phase, save: (patch: Partial<Phase>) =>
   try {
     const c = getChange(id)!;
     const role = agentRole(c);
-    const harness = (isHarness(ph.brain) ? ph.brain : brainId()) as Harness;
+    const harness = r.harness ?? ((isHarness(ph.brain) ? ph.brain : brainId()) as Harness);
     const retry = (c.task ? getTask(c.task)?.tries : 0) || 1;
-    const route = changeRoute(c);
+    const route = changeRoute(c, harness);
     const t = roleTune(role, { harness, retry, ...(route ? { tier: route.tier, effort: route.effort } : {}) });
     const text = `${r.result ?? ''}\n${r.stderr ?? ''}`;
     const stuck = fs.existsSync(path.join(c.worktree, '.hawkes', 'stuck.md'));
@@ -1605,24 +1616,37 @@ async function agentPassRaw(id: string, ph: Phase, save: (patch: Partial<Phase>)
   const mergeBaseFile = path.join(getChange(id)!.worktree, MERGE_BASE_FILE);
   if (ph.conflict) { fs.mkdirSync(path.dirname(mergeBaseFile), { recursive: true }); fs.writeFileSync(mergeBaseFile, `${getChange(id)!.base}\n`); }
   else fs.rmSync(mergeBaseFile, { force: true });
+  // The provider for this pass (providers.ts): a running process stays where it is; a session stays on the harness that
+  // holds it while that one answers; otherwise the least busy provider that answers (or the harness in use).
+  const spread = providerSettings().mode === 'spread';
+  let harness: Harness = ph.proc && spread ? brainOf(ph) : pickHarness({ role: agentRole(getChange(id)!), prefer: ph.proc || resume?.session ? brainOf(ph) : null });
+  // A session another harness made can't be resumed here: a new session told the same (forHarness).
+  if (resume?.session && harness !== brainOf(ph)) resume = { prompt: `Read .hawkes/brief.md: it's your whole task. Your earlier session ran on another AI harness, so this one starts fresh: your work so far is in the worktree (\`git status\`, \`git log\`). ${resume.prompt}` };
   const fresh = (): AgentRun => ({
-    onStart: (rec) => save({ proc: { rec, offset: 0 }, brain: brainId() }),
+    onStart: (rec) => save({ proc: { rec, offset: 0 }, brain: harness }),
     onProgress: (offset) => save({ proc: { ...ph.proc!, offset } }),
+    harness,
   });
-  if (ph.proc && (ph.brain ?? 'claude') !== brainId()) {
-    addLog(id, `agent: stopping the ${ph.brain ?? 'claude'} session; the brain is ${brainLabel()} now, so this pass starts again`);
-    stopDetached(ph.proc.rec);
-    ph.proc = undefined;
-    save({ proc: undefined, brain: brainId() });
+  const release = using(harness);
+  try {
+    if (ph.proc && brainOf(ph) !== harness) {
+      addLog(id, `agent: stopping the ${brainOf(ph)} session; the brain is ${brainLabel(harness)} now, so this pass starts again`);
+      stopDetached(ph.proc.rec);
+      ph.proc = undefined;
+      save({ proc: undefined, brain: harness });
+    }
+    if (ph.proc) {
+      addLog(id, `agent: reattached to ${ph.proc.rec.unit} after a Studio restart`);
+      const r = await runAgent(getChange(id)!, brief, s, env, resume, { ...fresh(), reattach: ph.proc });
+      if (!r.lost) return { ...r, harness };
+      addLog(id, `agent: ${ph.proc.rec.unit} is gone with no result (the server restarted?); starting the pass again`);
+      save({ proc: undefined });
+    }
+    if (harness !== brainOf(ph)) save({ brain: harness });
+    return { ...(await runAgent(getChange(id)!, brief, s, env, resume, fresh())), harness };
+  } finally {
+    release();
   }
-  if (ph.proc) {
-    addLog(id, `agent: reattached to ${ph.proc.rec.unit} after a Studio restart`);
-    const r = await runAgent(getChange(id)!, brief, s, env, resume, { ...fresh(), reattach: ph.proc });
-    if (!r.lost) return r;
-    addLog(id, `agent: ${ph.proc.rec.unit} is gone with no result (the server restarted?); starting the pass again`);
-    save({ proc: undefined });
-  }
-  return runAgent(getChange(id)!, brief, s, env, resume, fresh());
 }
 
 // ------------------------------------------------------------------ flow
@@ -1774,7 +1798,11 @@ export function noRoomFor(product: string, next: WorkShape, statuses = `queued,$
 
 /** A change parked by the harness waits out its gap and stops at the cap (resumeGate); the cap asks J once. */
 function resumeAllowed(c: Change) {
-  const h = phaseOf(c.id)?.harness;
+  const ph = phaseOf(c.id);
+  const h = ph?.harness;
+  // Parked by one provider and another answers now (providers.ts, or a stand-in): it moves there at once. The gap and
+  // the cap are for resuming on the provider that just stopped it.
+  if (h && h.kind !== 'revive' && isHarness(h.on) && pickHarness({ prefer: null }) !== h.on && !harnessHeld(pickHarness({ prefer: null }))) return true;
   const g = resumeGate(h);
   if (g.go) return true;
   if (!g.capped) {
@@ -1801,8 +1829,8 @@ export async function customerAgentGate(): Promise<string | null> {
 async function pump() {
   // A Studio deploy is waiting (drain.ts): start nothing new; the queue resumes after the deploy restarts Studio.
   if (deployPending()) return;
-  // The harness in use refuses to run (harness-hold.ts): nothing starts; the hold's own look resumes the queue.
-  if (harnessHeld()) return void reviewHolds().catch(() => {});
+  // No provider can run (harness-hold.ts holds, providers.ts): nothing starts; the hold's own look resumes the queue.
+  if (noProviderFree()) return void reviewHolds().catch(() => {});
   // A customer's Studio whose plan has no agents, or with no AI linked yet: nothing starts (it would only fail as a
   // harness stop and wait forever); the queued changes say why, and start the moment that's fixed (2026-10-31 review).
   const gate = await customerAgentGate();
@@ -2742,13 +2770,13 @@ export function guardFiles(target: string, files: string[], words: string) {
 const requestAndNotes = (c: Pick<Change, 'request' | 'notes'>) => [c.request ?? '', ...(c.notes ?? []).map((n) => n.text)].join('\n');
 
 /** The environment of an infra agent and its checks: no GitHub, AWS or other service keys (the harness login stays for the agent). */
-const SECRET = /(KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|AWS_|ANTHROPIC|ELEVENLABS|OPENAI|GITHUB|CLAUDE|STRIPE|SMTP)/i;
+const SECRET = /(KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|CREDS|AWS_|ANTHROPIC|ELEVENLABS|OPENAI|GITHUB|CLAUDE|STRIPE|SMTP)/i;
 export function infraEnv({ agent = false, keepGenKey = true } = {}) {
   const env: Record<string, string> = {};
   for (const [k, v] of Object.entries(agent ? claudeEnv() : process.env)) {
     if (v === undefined) continue;
     // CURSOR_API_KEY matches SECRET (KEY). Product agents keep it via sandbox.ts; Studio and Gen agents go through here.
-    const login = agent && /^(CLAUDE_CODE_OAUTH_TOKEN|ANTHROPIC_API_KEY|CURSOR_API_KEY|COPILOT_GITHUB_TOKEN|GEMINI_API_KEY|GEMINI_OAUTH_CREDS|AGY_CREDS)$/.test(k);
+    const login = agent && /^(CLAUDE_CODE_OAUTH_TOKEN|ANTHROPIC_API_KEY|CURSOR_API_KEY|COPILOT_GITHUB_TOKEN|GEMINI_API_KEY|GEMINI_OAUTH_CREDS|AGY_CREDS|CURSOR_CREDS|COPILOT_CREDS|CODEX_CREDS)$/.test(k);
     if (!SECRET.test(k) || login || (keepGenKey && k === 'HAWKESGEN_KEY')) env[k] = v;
   }
   // Not the server: a worktree must never act like the running Studio (repo syncs) or Gen (fleet access).

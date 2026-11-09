@@ -12,6 +12,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import readline from 'node:readline';
+import { seedLogin } from './ai-login-seed.mjs';
 
 export function copilotBin() {
   const home = process.env.HOME || os.homedir();
@@ -245,6 +246,8 @@ function userText(message) {
 }
 
 async function main() {
+  // The Copilot sign-in Studio keeps (COPILOT_CREDS: src/cli-signin.ts), into this home unless it has the same or a newer one.
+  seedLogin('COPILOT_CREDS');
   const parsed = parseClaudeArgs(process.argv);
   if (!parsed.streamIn) {
     const { code } = await runAgent(parsed, parsed.prompt, parsed.resume || randomUUID(), !parsed.resume);

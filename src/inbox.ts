@@ -40,7 +40,7 @@ export type InboxLink = { label: string; url?: string; video?: string };
 export type InboxItem = {
   /** q_... for a question; gpu:k_..., merge:c_..., milestone:n_... for the others. */
   id: string;
-  kind: 'question' | 'agent' | 'gpu' | 'merge' | 'milestone' | 'approval' | 'video' | 'build' | 'access' | 'credits';
+  kind: 'question' | 'agent' | 'gpu' | 'merge' | 'milestone' | 'approval' | 'video' | 'build' | 'access' | 'credits' | 'ai';
   /** The one-line question, and the whole of it when it's longer. */
   title: string; text: string | null;
   product: string | null; productName: string | null;
@@ -424,6 +424,40 @@ export async function inbox({ tokens = false }: { tokens?: boolean } = {}): Prom
     });
   }
 
+  // The AI providers (providers.ts): ONE card, only when J is truly needed: a provider he uses is signed out or needs
+  // billing, or nothing at all can take work (every provider limited or broken). Usage limits and outages with another
+  // provider answering heal by themselves (the work moves; the provider comes back when a probe answers), so no card.
+  // The card goes away by itself once healed: it is rebuilt from the holds every time.
+  const ai = await import('./providers.ts').then((P) => ({ P, t: P.providerTrouble() })).catch(() => null);
+  if (ai?.t) {
+    const { P, t } = ai;
+    const { LABEL, needsJ, whenUtc } = await import('./harness-hold.ts');
+    const signedOut = t.holds.filter((h) => needsJ(h.kind));
+    const s = P.providerSettings();
+    const resets = t.holds.filter((h) => !needsJ(h.kind)).map((h) => `${LABEL[h.harness]} ${h.reset ? 'resets' : 'is tried again'} ${whenUtc(h.until)}`);
+    const title = t.stuck
+      ? `AI work is paused: no provider can take it${signedOut.length ? ` (${signedOut.map((h) => LABEL[h.harness]).join(', ')} need${signedOut.length === 1 ? 's' : ''} you)` : ''}`
+      : signedOut.length === 1 ? `${LABEL[signedOut[0].harness]} needs you: ${signedOut[0].why}` : `${signedOut.length} AI providers need you`;
+    const fix = signedOut.map((h) => h.kind === 'auth' ? `Sign ${LABEL[h.harness]} in again: Settings → AI providers → Sign in.` : `${LABEL[h.harness]}: pay or raise what its account asks for, then Check again.`);
+    const text = [
+      t.lines.join('\n'),
+      fix.join('\n'),
+      t.stuck
+        ? `Nothing failed: agent passes and scouts are parked with their work and continue by themselves the moment any provider answers.${resets.length ? ` ${resets.join('; ')}.` : ''}${s.mode === 'one' && t.others.length ? ` Other providers are signed in (${t.others.map((h) => LABEL[h]).join(', ')}): "Use every signed-in provider" lets them take the work now.` : ' Signing in another provider (Settings → AI providers) lets it take the work now.'}`
+        : `Nothing stopped: ${P.readyHarnesses(s).map((h) => LABEL[h]).join(', ')} carr${P.readyHarnesses(s).length === 1 ? 'ies' : 'y'} the work meanwhile.`,
+    ].filter(Boolean).join('\n\n');
+    const options = ['Check again'];
+    if (s.mode === 'one' && t.others.length) options.push('Use every signed-in provider');
+    for (const h of signedOut.slice(0, 2)) if (P.readyHarnesses(s).length || t.others.some((x) => x !== h.harness)) options.push(`Stop using ${LABEL[h.harness]}`);
+    out.push({
+      id: 'ai:providers', kind: 'ai', title, text, product: null, productName: null, context: t.lines[0] ?? null,
+      asker: 'Studio', recommendation: signedOut.length ? null : 'Check again', options,
+      blocks: t.stuck ? 'every agent pass, scout and PM start' : `${signedOut.map((h) => LABEL[h.harness]).join(', ')} (the others carry on)`,
+      since: t.since, weight: t.stuck ? 70 : 40,
+      links: [{ label: signedOut.length ? 'Sign in (Settings → AI providers)' : 'AI providers', url: '#settings/ai' }], subject: null, conversation: null, asks: 1,
+    });
+  }
+
   // A video version waiting for J to screen it (videos.ts): watch it here or in the Screening tab; a typed answer is a note.
   for (const v of (await listVideos()).filter((x) => (x.state === 'ready to screen' || x.state === 'animatic ready') && x.latest)) {
     const anim = v.state === 'animatic ready';
@@ -664,6 +698,28 @@ async function answerOne(id: string, answer: string, by: string, opts: { confirm
     pm.pmEvent('feedback', `${by} playtested milestone ${ms.id} ("${ms.title}") and says: "${what}". Turn it into tasks on its items (or a new item in it), and say so in a line.`, ms.id, ms.product);
     ack(key, by, what, null, `Milestone "${ms.title}"`);
     return { answered: id, by, told: 'the PM' };
+  }
+  // The AI card (providers.ts): look again now, switch a provider off, or let every signed-in one take work.
+  if (id === 'ai:providers') {
+    const P = await import('./providers.ts');
+    const H = await import('./harness-hold.ts');
+    const off = /^stop using (.+)$/i.exec(text);
+    if (off) {
+      jOnly('Switching an AI provider off');
+      const h = (Object.keys(H.LABEL) as (keyof typeof H.LABEL)[]).find((k) => H.LABEL[k].toLowerCase() === off[1].trim().toLowerCase() || k === off[1].trim().toLowerCase());
+      if (!h) throw new StudioError(`No provider "${off[1]}"`);
+      P.saveProviders({ use: { [h]: false } }, by);
+      return { answered: id, by, off: h, resolved: !P.providerTrouble() };
+    }
+    if (/every signed-in provider|spread/i.test(text)) {
+      jOnly('Using every AI provider');
+      P.saveProviders({ mode: 'spread' }, by);
+      return { answered: id, by, mode: 'spread', resolved: !P.providerTrouble() };
+    }
+    await H.recheckHolds();
+    const still = P.providerTrouble();
+    if (still) throw new StudioError(`Still stopped: ${still.lines.join('; ')}. Studio keeps checking by itself and this card goes away once it answers.`);
+    return { answered: id, by, resolved: true };
   }
   // The access card: look again now; back means it rebuilt and resolved, still missing says what is missing.
   if (id === 'credits:wait') {

@@ -10,6 +10,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import readline from 'node:readline';
+import { seedLogin } from './ai-login-seed.mjs';
 
 const TOOLS = {
   readToolCall: 'Read', writeToolCall: 'Write', editToolCall: 'Edit', grepToolCall: 'Grep', globToolCall: 'Glob',
@@ -126,7 +127,13 @@ function mcpEnv(file) {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'hawkes-cursor-'));
   fs.mkdirSync(path.join(home, '.cursor'), { recursive: true });
   fs.copyFileSync(file, path.join(home, '.cursor', 'mcp.json'));
-  return { HOME: home };
+  // The sign-in goes along to that home (2026-11-09: a subscription login, not only CURSOR_API_KEY): Studio's kept one
+  // (CURSOR_CREDS), else the real home's own (an `agent login` made in a terminal).
+  if (!seedLogin('CURSOR_CREDS', process.env, home)) {
+    const real = process.env.HOME || os.homedir();
+    for (const rel of ['.config/cursor', '.cursor/cli-config.json']) { try { fs.cpSync(path.join(real, rel), path.join(home, rel), { recursive: true }); } catch { /* none */ } }
+  }
+  return { HOME: home, XDG_CONFIG_HOME: path.join(home, '.config') };
 }
 
 let current = null;
@@ -162,6 +169,8 @@ function userText(message) {
 }
 
 async function main() {
+  // The Cursor sign-in Studio keeps (CURSOR_CREDS: src/cli-signin.ts), into this home unless it has the same or a newer one.
+  seedLogin('CURSOR_CREDS');
   const parsed = parseClaudeArgs(process.argv);
   if (!parsed.streamIn) {
     const { code } = await runAgent(parsed, parsed.prompt, parsed.resume);

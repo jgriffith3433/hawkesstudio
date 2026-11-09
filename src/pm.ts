@@ -55,7 +55,8 @@ import { getFinding, updateFinding, takenBy } from './backlog.ts';
 import { waitsForCurrentBuild, staleReport, staleNote } from './bugreport.ts';
 import { notReached, slowNote, playTime, samplePace, whereTimeGoes, idleWatch, idleState, IDLE_SUBJECT } from './pace.ts';
 import { harnessBlocked, harnessStopOf } from './brains.ts';
-import { harnessHeld, holdStatus, onHoldLifted } from './harness-hold.ts';
+import { holdStatus, onHoldLifted } from './harness-hold.ts';
+import { noProviderFree } from './providers.ts';
 import { addWorktree } from './worktree.ts';
 import { gateQuestion, settleQuestion, logCause } from './causes.ts';
 
@@ -883,7 +884,7 @@ export function capacity() {
 export function startWaitReason(t?: Pick<Task, 'id' | 'product'>, now = Date.now()): string | null {
   const s = pmSettings();
   if (!s.enabled) return 'the PM is paused (Settings)';
-  if (harnessHeld()) return 'the AI harness is on hold (a usage limit or billing); it starts when the harness answers';
+  if (noProviderFree()) return 'the AI harness is on hold (a usage limit or billing); it starts when the harness answers';
   const credits = creditsWaitReason(now);
   if (credits) return credits;
   const cap = capacity();
@@ -987,7 +988,7 @@ export async function startWork() {
   const s = pmSettings();
   if (!s.enabled || !(await import('./ghtoken.ts')).githubReachable()) return [];
   // The harness in use refuses to run (harness-hold.ts): starting would only burn tries. The hold resumes the loop.
-  if (harnessHeld()) return [];
+  if (noProviderFree()) return [];
   // Out of credits: nothing starts (one "waiting for credits" state, one Inbox card); credits coming back resume it (creditwait.ts).
   if (creditsWaitReason()) return [];
   const { agentSettings, startFix, DECIDED, ALREADY, STUDIO_FAILED_SQL, autoFixBlock } = await changes();
@@ -2312,7 +2313,7 @@ async function scoutFor(id: string) {
 export async function followRescues() {
   const out: string[] = [];
   // Scouts can't run while the harness is held: the rescues wait (their scouts start when it lifts).
-  if (harnessHeld()) return out;
+  if (noProviderFree()) return out;
   for (const [id, r] of Object.entries(rescues())) {
     if (r.state !== 'scouting') continue;
     const t = getTask(id);
@@ -2889,7 +2890,7 @@ export async function tick() {
     }
     const startedNow = await startWork();
     // A harness hold isn't idle slots or a stall: nothing may start, and it resumes by itself (studio_pm status "hold").
-    const held = harnessHeld();
+    const held = noProviderFree();
     // Where the time goes (pace.ts): idle slots and work parked on Gen/GPU, sampled each tick; idle slots with nothing
     // the PM may start get ONE question for J with scouts' proposals for the idle products.
     try {

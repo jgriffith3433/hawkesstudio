@@ -13,7 +13,8 @@ import { PROJECTS, getProduct, getInfra, isInfra, storyOf, StudioError } from '.
 import { repoMap } from './repos.ts';
 import { claudeEnv } from './claude.ts';
 import { brainId, harnessStopOf } from './brains.ts';
-import { harnessHeld, holdHarness } from './harness-hold.ts';
+import { holdHarness } from './harness-hold.ts';
+import { noProviderFree, pickHarness } from './providers.ts';
 import { BETA, gitAsync } from './beta.ts';
 import { lfsPull } from './lfs.ts';
 import { briefSection, recordRun } from './memory.ts';
@@ -151,7 +152,7 @@ export function startScout(product: string, question: string, origin: string | n
   if (!question?.trim()) throw new StudioError('Say what to find out');
   if (active >= 2) throw new StudioError('Two scouts are already running; ask again when one reports back.');
   // The harness in use refuses to run (harness-hold.ts): a scout now would only fail. Asked again after the hold.
-  if (harnessHeld()) throw new StudioError('The AI harness is on hold (a usage limit or billing): scouts start again once it answers.');
+  if (noProviderFree()) throw new StudioError('Every AI provider is on hold (a usage limit, billing or a sign-in): scouts start again once one answers.');
   const inf = isInfra(product) ? getInfra(product) : null;
   const p = inf ? null : getProduct(product);
   const top = inf ? inf.repo : p!.repo.split('/')[0];
@@ -203,7 +204,7 @@ export function followUpScout(id: string, message: string) {
   if (s.status === 'running') throw new StudioError(`Scout ${id} is still running; follow up when it reports`);
   if (!message?.trim()) throw new StudioError('Say what to ask the scout');
   if (active >= 2) throw new StudioError('Two scouts are already running; ask again when one reports back.');
-  if (harnessHeld()) throw new StudioError('The AI harness is on hold (a usage limit or billing): scouts start again once it answers.');
+  if (noProviderFree()) throw new StudioError('Every AI provider is on hold (a usage limit, billing or a sign-in): scouts start again once one answers.');
   const { top, base } = baseOf(s.product);
   cancelled.delete(id);
   set(id, { status: 'running', detail: 'following up', finished: null, log: JSON.stringify([`follow-up: ${message.trim().slice(0, 100)}`]) });
@@ -287,9 +288,10 @@ the report; if the question has numbered parts, answer each one briefly. Reply w
 (only real direction choices; with the option you'd pick)
 ${mem.text ? `\n${mem.text}` : ''}${story ? `\nThe product's story, for tone:\n${story}\n` : ''}`;
     // The scout role (.claude/agents/scout.md): model, read-only tools, turn limit; SCOUT_MODEL still overrides the model.
-    const { args: roleFlags } = roleArgs('scout', { maxTurns: SCOUT_MAX_TURNS, extraAllowed: ['mcp__hawkesstudio__memory_search', 'mcp__hawkesstudio__memory_get', 'mcp__hawkesstudio__memory_write', 'mcp__hawkesstudio__studio_analytics'] });
+    // The provider it runs on (providers.ts): a follow-up stays on the one holding its session while it answers.
+    const harness = pickHarness({ role: 'scout', prefer: follow?.session ? (getScout(id) as any)?.harness ?? null : null });
+    const { args: roleFlags } = roleArgs('scout', { harness, maxTurns: SCOUT_MAX_TURNS, extraAllowed: ['mcp__hawkesstudio__memory_search', 'mcp__hawkesstudio__memory_get', 'mcp__hawkesstudio__memory_write', 'mcp__hawkesstudio__studio_analytics'] });
     if (process.env.SCOUT_MODEL) roleFlags.splice(roleFlags.indexOf('--model') + 1, 1, process.env.SCOUT_MODEL);
-    const harness = brainId();
     const agentMcpFile = (await import('./agents.ts')).agentMcp(id);
     const follow2 = follow ? { ...follow, resume: Boolean(follow.session) } : null;
     // A follow-up resumes the scout's session; with none (or when Claude Code no longer has it) a fresh pass is told what was found.
@@ -297,7 +299,7 @@ ${mem.text ? `\n${mem.text}` : ''}${story ? `\nThe product's story, for tone:\n$
     const attempt = (resumeId: string | null) => new Promise<ScoutStream>((resolve) => {
       const args = ['-p', forOwner(resumeId ? follow!.message : freshPrompt), ...(resumeId ? ['--resume', resumeId] : []), '--output-format', 'stream-json', '--verbose', ...roleFlags,
         '--mcp-config', agentMcpFile, '--strict-mcp-config'];
-      const child = spawnClaude(args, { cwd: wt, env: claudeEnv() });
+      const child = spawnClaude(args, { cwd: wt, env: claudeEnv(), brain: harness });
       const st = newScoutStream();
       let buf = '';
       const logTool = (detail: string) => {

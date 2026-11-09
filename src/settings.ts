@@ -178,6 +178,7 @@ export function costRaising(section: Section, patch: Record<string, any>, cur: R
   if (section === 'call' && patch.engine === 'eleven' && cur.engine !== 'eleven') out.push(`the ElevenLabs voice (about $${ELEVEN_PER_MIN.toFixed(2)} a minute Talk speaks)`);
   if (section === 'brain' && (patch.harness === 'cursor' || patch.id === 'cursor' || patch.id === 'grok') && cur.harness !== 'cursor') out.push('harness → Cursor (the Cursor plan)');
   if (section === 'brain' && (patch.harness === 'copilot' || patch.id === 'copilot') && cur.harness !== 'copilot') out.push('harness → Copilot (the Copilot plan\'s premium requests)');
+  if (section === 'brain' && (patch.harness === 'codex' || patch.id === 'codex') && cur.harness !== 'codex') out.push('harness → OpenAI Codex (the ChatGPT plan\'s usage)');
   if (section === 'brain' && (patch.harness === 'gemini' || patch.id === 'gemini') && cur.harness !== 'gemini') out.push('harness → Gemini API key');
   if (section === 'brain' && (patch.harness === 'antigravity' || patch.id === 'antigravity') && cur.harness !== 'antigravity') out.push('harness → Antigravity (the Google AI plan\'s quota)');
   return out;

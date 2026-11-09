@@ -629,6 +629,26 @@ export function setWorkspaceRestorer(f: WorkspaceRestorer | null) {
   restorer = f;
 }
 
+/**
+ * A refreshed AI sign-in the pass sent back (cloudjob-run.ts, out/logins.json): kept (cli-signin.ts) and removed from the
+ * bucket at once. Never fails the pass.
+ */
+export async function keepJobLogins(r: Pick<JobRunner, 'get' | 'remove'>, unit: string) {
+  try {
+    const raw = await r.get(key(unit, 'out/logins.json'));
+    if (!raw) return [];
+    await r.remove(key(unit, 'out/logins.json')).catch(() => {});
+    const back = JSON.parse(raw.toString('utf8')) as Record<string, Record<string, string>>;
+    const { keepRefreshedLogin, CLI_PROVIDERS, CLI_PROVIDER_IDS } = await import('./cli-signin.ts');
+    const kept: string[] = [];
+    for (const p of CLI_PROVIDER_IDS) if (back[CLI_PROVIDERS[p].envName] && keepRefreshedLogin(p, back[CLI_PROVIDERS[p].envName])) kept.push(p);
+    return kept;
+  } catch (e: any) {
+    console.warn(`[cloudjob] keeping a refreshed AI sign-in: ${e.message ?? e}`);
+    return [];
+  }
+}
+
 /** Where a job's folder is in the bucket, for messages (never a credential). */
 export function jobFolder(unit: string) {
   const P = String(process.env.STUDIO_STATE_PREFIX ?? '').replace(/^\/+|\/+$/g, '');
@@ -648,6 +668,7 @@ export async function bringLfs(r: JobRunner, unit: string, cwd: string, refs: Lf
 
 async function finish(f: Follow, r: JobRunner, cwd: string, env: NodeJS.ProcessEnv) {
   const exit = JSON.parse((await r.get(key(f.unit, 'out/exit.json')))?.toString('utf8') ?? '{}');
+  await keepJobLogins(r, f.unit);
   try {
     const packB = await r.get(key(f.unit, 'out/out.pack'));
     const pack = packB ? readPack(packB) : null;
