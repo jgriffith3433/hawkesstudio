@@ -38,6 +38,17 @@ Approve cards that way). Now (`src/cloudlease.ts`):
   `entrypoint.sh` writes `released-<id>` with the generation it streamed (`node src/cloudlease.ts release`).
 - The new instance restores exactly that generation (`litestream restore -generation`), never a guess.
 
+**Two revisions trading the database (2026-11-09).** After a claim nothing beat until the server's `watchLease` started,
+past `litestream restore` and Node start-up: longer than the 15 s a heartbeat may be old. The new holder looked dead, a
+fresh instance of the OLDER revision took the lease back ("quiet"), and each loser exited and was replaced, every ~20 s.
+Now: the claim writes `starting: true` and keeps beating while it waits; `entrypoint.sh` runs `cloudlease.ts beat` from
+the claim until the server's first heartbeat (`startupBeat`; the server leaves `/tmp/hawkes-lease-server-beating`); an
+older revision takes from a newer holder only after 2 min of silence (`olderSilentMs`) that still stands through the
+confirm window, else it stays down (exit 3); and every "quiet" takeover, any revision, goes through the confirm window
+(`holder still beating` / `same revision holds it`). Test: `cloud-lease.test.ts` replays 02:33-02:35. Service-wide
+maxScale stays unset (not 1: see below); a cell still carrying a hand-set `maxScale: 3` is cleared with
+`gcloud run services update studio-o-j-studio-4f12 --region us-east4 --max=default`.
+
 The logs say `[lease] {"claimed":true,…,"how":"released","generation":"…"}` on a start after a deploy, `"first"`
 the first time, `"quiet"` after a crash. Test: `test/cloud-lease.test.ts`.
 
