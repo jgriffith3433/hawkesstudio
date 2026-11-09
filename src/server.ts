@@ -740,7 +740,7 @@ const server = http.createServer(async (req, res) => {
       const walkAway = (await import('./walkaway.ts')).walkAwayOn();
       // access: open GitHub access cards, so the page knows to look again when it's shown after a trip to GitHub (inbox.js).
       const access = items.filter((i: any) => i.kind === 'access').length;
-      return send(res, 200, q('count') === '1' ? { count: items.length, walkAway, access } : { count: items.length, walkAway, access, items, answered: ib.recentAnswers() });
+      return send(res, 200, q('count') === '1' ? { count: items.length, walkAway, access } : { count: items.length, walkAway, access, items, answered: ib.recentAnswers(), healing: ib.selfHealing() });
     }
     if (route === '/api/inbox/answer' && method === 'POST') {
       const ib = await import('./inbox.ts');

@@ -129,6 +129,7 @@ fs.writeFileSync(process.env.STUDIO_PRODUCTS, JSON.stringify({
 }));
 
 const { db, J } = await import('../src/db.ts');
+const causes = await import('../src/causes.ts');
 const agents = await import('../src/agents.ts');
 const { getChange, walkAwayMerge } = agents;
 const pm = await import('../src/pm.ts');
@@ -204,6 +205,8 @@ test('walk-away: main moved: brought up to date, it merges once CI on the update
 
 test('walk-away: red CI never merges: its agent gets a fix pass (not a try), and after its tries J decides', { timeout: 120_000 }, async () => {
   const c = readyChange('Go\n');
+  // The PM already answered "try again" for it as often as the gate allows in a week (causes.ts AUTO_ANSWERS): J's now.
+  for (let i = 0; i < causes.AUTO_ANSWERS; i++) causes.logCause(causes.causeFromKey('recommended'), { product: 'hawkesstudio', kind: 'answered', subject: c.id, ref: `pre${i}`, dedup: `pre:${c.id}:${i}` });
   redAll.add(c.branch);
   await walkAwayMerge(c.id);
   assert.ok(!merged(c.branch), 'nothing merged into main');

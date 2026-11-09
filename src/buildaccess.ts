@@ -27,6 +27,7 @@ export type AccessCause = { what: 'permission' | 'install' | 'unknown'; permissi
 
 const RATE = /rate limit|abuse detection|secondary rate|too many requests|\b429\b/i;
 const NETWORK = /ECONNRESET|ECONNREFUSED|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|EPIPE|socket hang up|fetch failed|network (error|is unreachable)|connection (reset|refused|closed)|UND_ERR|TLS|aborted|bad gateway|service unavailable|gateway time-?out|temporarily unavailable|try again/i;
+const TOKEN = /bad credentials|token (has |had )?expired|expired (github |installation )?token|token (was |is )?lost|tokenLost/i;
 const SERVER = /(^|[^\d])(50[0-4]|52[0-9])([^\d]|$)/;
 
 /** The refusal's HTTP status and GitHub's message out of an error text ("… 403 {"message":"Resource not accessible …"}"). */
@@ -87,7 +88,8 @@ export function failType(error: unknown, o: { stage?: string | null; kind?: stri
   if (o.kind === 'code') return 'code';
   if (RATE.test(e) && !/not accessible by integration/i.test(e)) return 'transient';
   if (accessCause(e)) return 'access';
-  if (NETWORK.test(e) || SERVER.test(e)) return 'transient';
+  // A GitHub token that expired or was lost between queueing and fetching: the next try mints a fresh one (causes.ts token-expired).
+  if (NETWORK.test(e) || SERVER.test(e) || TOKEN.test(e)) return 'transient';
   // "Getting the commit" failing with nothing more to say (Gen or GitHub didn't answer), but not a repo or branch that isn't there.
   if (o.stage === 'checkout' && !/has no (GitHub repo|beta or main)|no GitHub repo|has no builds|no build "/i.test(e)) return 'transient';
   return 'other';
