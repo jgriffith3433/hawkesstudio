@@ -211,3 +211,94 @@ test('a card whose cause has cleared closes by itself, with a line saying how; o
     C.probes.cleared = real;
   }
 });
+
+// ------------------------------------------------------------------ a blocked agent is diagnosed before J is asked
+
+const okIO = (over: Partial<import('../src/diagnose.ts').IO> = {}): import('../src/diagnose.ts').IO => ({
+  signed: async (a) => `https://gen.test/v1/files/${a}?exp=9&sig=fresh`,
+  status: async () => 200,
+  asset: async () => ({ project: 'cgame' }),
+  lockedJob: async () => null,
+  project: async () => 200,
+  full: (p) => `org_ab12.${p}`,
+  key: async () => 200,
+  health: async () => true,
+  ...over,
+});
+
+/** An agent question nobody answered, as the PM's defaults pass finds it; returns its row and the Inbox card, if any. */
+async function blockedAgent(text: string, io: import('../src/diagnose.ts').IO) {
+  reset();
+  pm.diagnoseIO.get = async () => io;
+  const q = rm.addQuestion({ kind: 'agent', subject: 'c_dddddddddddd', product: 'cgame', text });
+  answered.length = 0;
+  await pm.defaultsForTest(['c_dddddddddddd']);
+  const cards = (await ib.inbox()).filter((x) => x.subject === 'c_dddddddddddd' || x.id === q.id || x.subject?.startsWith('k_') || x.product === 'cgame');
+  const card = cards.find((x) => /Studio checked first/.test(x.context ?? '')) ?? cards[0];
+  return { q, row: rm.getQuestion(q.id)!, card };
+}
+
+test('blocked agent: an expired Gen link gets fresh links, checked; the agent resumes with them and no card is filed', async () => {
+  const text = 'I cannot load https://hawkesgen.ai/v1/files/a_0123456789ab?exp=1&sig=old: it answers 403 (the link expired). Which link should I use?';
+  const ok = await blockedAgent(text, okIO());
+  assert.equal(ok.row.status, 'answered');
+  assert.equal(ok.row.answered_by, C.SELF_BY);
+  assert.match(ok.row.answer ?? '', /fresh signed links/);
+  assert.match(ok.row.answer ?? '', /a_0123456789ab\?exp=9&sig=fresh/);
+  assert.equal(ok.card, undefined, 'no card');
+  assert.ok(C.causeLog('gen-link').some((r) => r.ref === ok.q.id && r.kind === 'answered'));
+
+  // The fresh link still doesn't open: a card, saying what was tried.
+  const bad = await blockedAgent(text, okIO({ status: async () => 403 }));
+  assert.equal(bad.row.status, 'asked J');
+  assert.match(bad.card?.context ?? '', /Studio checked first: made fresh signed links.*still don't open.*did not clear it/);
+});
+
+test('blocked agent: "No Gen file" runs asset sync; found again resumes the agent, still missing files the card', async () => {
+  const text = 'studio_gen_import failed: No Gen file a_00ff00ff00ff this studio may use. What now?';
+  const synced = await blockedAgent(text, okIO({
+    asset: async (id) => (id === 'a_00ff00ff00ff' ? null : { project: 'cgame' }),
+    lockedJob: async () => ({ product: 'cgame', asset: 'hero', job: 'j_1', outputs: ['a_11aa11aa11aa'] }),
+  }));
+  assert.equal(synced.row.status, 'answered');
+  assert.match(synced.row.answer ?? '', /after asset sync/);
+  assert.match(synced.row.answer ?? '', /ran asset sync for a_00ff00ff00ff: the lock of cgame says job j_1/);
+
+  const gone = await blockedAgent(text, okIO({ asset: async () => null }));
+  assert.equal(gone.row.status, 'asked J');
+  assert.match(gone.card?.context ?? '', /ran asset sync.*no product lock lists it.*Gen has no file for a_00ff00ff00ff/);
+});
+
+test('blocked agent: "No access to project" checks the full org project id; accepted resumes, refused files the card', async () => {
+  const text = 'Gen answered 403: No access to project yooba. Should I use another project?';
+  const seen: string[] = [];
+  const ok = await blockedAgent(text, okIO({ project: async (full) => { seen.push(full); return 200; } }));
+  assert.deepEqual(seen, ['org_ab12.yooba'], 'asked under the full org id');
+  assert.equal(ok.row.status, 'answered');
+  assert.match(ok.row.answer ?? '', /full id \(org_ab12\.yooba\)/);
+
+  const no = await blockedAgent(text, okIO({ project: async () => 403 }));
+  assert.equal(no.row.status, 'asked J');
+  assert.match(no.card?.context ?? '', /full org id "org_ab12\.yooba".*answered 403 for org_ab12\.yooba/);
+});
+
+test('blocked agent: a Gen 401 checks Studio\'s key and Gen; key accepted resumes, key refused or Gen down files the card', async () => {
+  const text = 'Hawkes Gen returned 401 Unauthorized for my asset call. Can you check the key?';
+  const ok = await blockedAgent(text, okIO());
+  assert.equal(ok.row.status, 'answered');
+  assert.match(ok.row.answer ?? '', /accepts Studio's key/);
+
+  const refused = await blockedAgent(text, okIO({ key: async () => 401 }));
+  assert.equal(refused.row.status, 'asked J');
+  assert.match(refused.card?.context ?? '', /Gen answered 401 to Studio's key/);
+
+  const down = await blockedAgent(text, okIO({ health: async () => false }));
+  assert.equal(down.row.status, 'asked J');
+  assert.match(down.card?.context ?? '', /Hawkes Gen doesn't answer/);
+});
+
+test('blocked agent: a question that is not a Gen problem goes to J untouched', async () => {
+  const r = await blockedAgent('Should the shop sell coins or gems?', okIO());
+  assert.equal(r.row.status, 'asked J');
+  assert.doesNotMatch(r.card?.context ?? '', /Studio checked first/);
+});

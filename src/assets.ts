@@ -59,7 +59,7 @@ export function loadManifest(p: Product): Manifest | null {
   return m;
 }
 
-const readLock = (p: Product): Lock => {
+export const readLock = (p: Product): Lock => {
   try {
     return JSON.parse(fs.readFileSync(lockPath(p), 'utf8'));
   } catch {
