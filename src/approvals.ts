@@ -10,8 +10,9 @@
 //   decideApproval(id, token, 'approve' | 'deny', req)
 //                                           only from J's own browser session (jClick): never the agent sandbox's user,
 //                                           never a call carrying Talk's or an agent's headers or the MCP key. Refused
-//                                           when the token is wrong or used, after 15 minutes (expired), or when the
-//                                           target changed since the card was made (stale: ask for a new card). Approve
+//                                           when the token is wrong or used. Cards never expire by time; when the target
+//                                           changed since the card was made, the card updates itself to the current plan
+//                                           and asks again (nothing runs). Approve
 //                                           runs the action as J, through the same code and refusals as before (CI
 //                                           green for a Studio/Gen merge, the deploy blockers); deny closes it. Either
 //                                           way who decided and when is recorded and the conversation is told.
@@ -40,12 +41,13 @@ try { db.exec('ALTER TABLE approvals ADD COLUMN dismissed INTEGER'); } catch { /
 
 export const KINDS = ['merge', 'deploy', 'rollback', 'gpu', 'settings', 'decision', 'github'] as const;
 export type Kind = (typeof KINDS)[number];
-/** How long a card can be approved. */
-export const TTL_MS = () => Number(process.env.STUDIO_APPROVAL_TTL_MS ?? 15 * 60_000);
-/** A GitHub setup card waits in the Inbox for days: it's bound to its plan (a changed plan makes it stale), and the owner
- *  taps it whenever they next open Studio. 15 minutes made every one lapse before it was seen (2026-11-01). */
-export const GITHUB_TTL_MS = () => Number(process.env.STUDIO_APPROVAL_GITHUB_TTL_MS ?? 7 * 24 * 60 * 60_000);
-export const ttlFor = (kind: string) => (kind === 'github' ? GITHUB_TTL_MS() : TTL_MS());
+/**
+ * A card never expires by time (J, 2026-11-09: the go-live card for Studio's restart fix lapsed after 15 minutes before
+ * he saw it, and the release waited hours). It waits until he answers; what keeps it honest is the re-check at tap time
+ * (decide: the plan is rebuilt, and a changed target refreshes the card in place instead of running). `expires` stays
+ * in the table (NOT NULL) as this far-off value; old rows that already expired stay expired.
+ */
+export const NEVER = Number.MAX_SAFE_INTEGER;
 
 /** What J sees: a title, plain lines, links, blockers (approving is refused while there are any) and warnings. */
 export type Card = { title: string; lines: string[]; blockers: string[]; warnings: string[]; links: { label: string; url: string }[]; approve: string; deny: string; skip?: Skip | null; catchUp?: boolean };
@@ -165,10 +167,19 @@ async function describe(kind: Kind, target: string, params: Record<string, any>)
   throw new StudioError(`kind: ${KINDS.join(' | ')}`);
 }
 
-/** Pending cards past their time are expired, and ones already done are settled (read paths call this first). */
+/** Ones already done are settled (read paths call this first). Cards don't expire by time (NEVER). */
 function expire() {
-  db.prepare(`UPDATE approvals SET status = 'expired' WHERE status = 'pending' AND expires <= ?`).run(Date.now());
   settleDone();
+}
+
+/**
+ * The target changed since the card was made (beta moved, the change was revised, a setting changed): the card is
+ * rebuilt from the current plan, in place (same id, a new token, still waiting), and shows what changed. Nothing runs;
+ * J reads the new plan and taps again. A dismissed card shows again.
+ */
+function refreshCard(id: string, now: { bind: string; card: Card }) {
+  const card = { ...now.card, warnings: [...now.card.warnings, 'This card changed since you last saw it (the target moved). It now shows the current plan: read it, then approve again.'] };
+  db.prepare(`UPDATE approvals SET bind = ?, card = ?, token = ?, dismissed = NULL WHERE id = ? AND status = 'pending'`).run(now.bind, J(card), crypto.randomBytes(18).toString('hex'), id);
 }
 
 /**
@@ -253,19 +264,25 @@ export async function requestApproval(kind: string, target: string, params: Reco
   const clean = kind === 'github' ? { plan: params.plan } : kind === 'gpu' ? { amount: params.amount === undefined || params.amount === null || params.amount === '' ? undefined : Number(params.amount) } : kind === 'settings' ? { patch: params.patch } : {};
   const { bind, card } = await describe(kind as Kind, target, clean);
   expire();
-  const same = db.prepare(`SELECT * FROM approvals WHERE status = 'pending' AND kind = ? AND target = ? AND bind = ? ORDER BY created DESC LIMIT 1`).get(kind, target, bind) as any;
+  // The same action on the same target is one card: asked again, it's shown where it was asked again too (the newest
+  // conversation) with today's words; if the target moved meanwhile, that card is updated in place (superseded cards
+  // merge into one, so J only ever sees one card per thing). Any extra pending duplicates are closed.
+  const waiting = db.prepare(`SELECT * FROM approvals WHERE status = 'pending' AND kind = ? AND target = ? ORDER BY created DESC`).all(kind, target) as any[];
+  const same = waiting.find((w) => w.bind === bind) ?? waiting[0];
   if (same) {
-    // Shown where it was asked again too (the newest conversation), with today's words.
-    db.prepare('UPDATE approvals SET card = ?, conversation = COALESCE(?, conversation) WHERE id = ?').run(J(card), conversation, same.id);
+    const token = same.bind === bind ? same.token : crypto.randomBytes(18).toString('hex');
+    db.prepare('UPDATE approvals SET card = ?, bind = ?, params = ?, token = ?, dismissed = CASE WHEN bind = ? THEN dismissed ELSE NULL END, conversation = COALESCE(?, conversation) WHERE id = ?').run(J(card), bind, J(clean), token, bind, conversation, same.id);
+    for (const w of waiting) if (w.id !== same.id) db.prepare(`UPDATE approvals SET status = 'stale', token = '', result = 'merged into the newer card for the same thing' WHERE id = ? AND status = 'pending'`).run(w.id);
     cardChanged(conversation ?? same.conversation);
     return getApproval(same.id)!;
   }
-  // An older card for the same action and target no longer matches: it's stale.
-  db.prepare(`UPDATE approvals SET status = 'stale', result = 'a newer card replaced it' WHERE status = 'pending' AND kind = ? AND target = ?`).run(kind, target);
+  // Routine go-lives need no card (J, 2026-11-09): the owner's policy is auto and walk-away is on, and the plan passes.
+  const auto = kind === 'deploy' ? await autoGoLiveInstead(target, card) : null;
+  if (auto) return auto;
   const id = newId('a');
   const now = Date.now();
   db.prepare('INSERT INTO approvals (id, kind, target, params, bind, token, card, status, requested_by, conversation, created, expires) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
-    .run(id, kind, target, J(clean), bind, crypto.randomBytes(18).toString('hex'), J(card), 'pending', by, conversation, now, now + ttlFor(kind));
+    .run(id, kind, target, J(clean), bind, crypto.randomBytes(18).toString('hex'), J(card), 'pending', by, conversation, now, NEVER);
   // Walk-away mode: the card approves itself now, unless it is one that still waits (walkAwayHold).
   await selfApprove(id).catch((e) => console.warn(`[approvals] walk-away approving ${id}: ${e.message ?? e}`));
   cardChanged(conversation);
@@ -328,7 +345,8 @@ export async function selfApprove(id: string): Promise<string | null> {
     return null;
   }
   if (now.bind !== r.bind) {
-    db.prepare(`UPDATE approvals SET status = 'stale', result = 'what it was about changed since the card was made', card = ? WHERE id = ? AND status = 'pending'`).run(J(now.card), id);
+    refreshCard(id, now);
+    cardChanged(a.conversation);
     return null;
   }
   // Can't go as things stand (a deploy plan's blockers, a merge's red CI): it waits, and is tried again later.
@@ -439,7 +457,7 @@ async function decide(id: string, token: string, decision: string, req: http.Inc
   expire();
   const r = row(id);
   if (!r) throw new StudioError(`No approval ${id}`, 404);
-  if (r.status === 'expired') throw new StudioError('This card expired (15 minutes). Ask for a new one.', 410);
+  if (r.status === 'expired') throw new StudioError('This card expired (an old one, from before cards stopped expiring). Ask for a new one.', 410);
   if (r.status !== 'pending') throw new StudioError(`This card is ${r.status}${r.decided_by ? ` (by ${r.decided_by})` : ''}.`, 409);
   const a = toApproval(r);
   const expect = Buffer.from(String(r.token));
@@ -464,8 +482,9 @@ async function decide(id: string, token: string, decision: string, req: http.Inc
     throw new StudioError(`This card no longer applies: ${e.message ?? e}`, 409);
   }
   if (now.bind !== r.bind) {
-    db.prepare(`UPDATE approvals SET status = 'stale', result = 'what it was about changed since the card was made', card = ? WHERE id = ? AND status = 'pending'`).run(J(now.card), id);
-    throw new StudioError('What this card was about changed since it was made (stale). Look at the new card.', 409);
+    // Not stale and not run: the card shows the current plan, in place, and asks again.
+    refreshCard(id, now);
+    throw new StudioError('What this card was about changed since you last saw it (beta moved, the change was revised, or a setting changed). It now shows the current plan: read it and tap again. Nothing was run.', 409);
   }
   // Walk-away mode: a merge that can't happen as things stand: the card is stale now (it never sits there as "Can't approve yet").
   if (now.card.blockers.length && a.kind === 'merge' && walkAwayOn()) {
@@ -592,6 +611,29 @@ async function run(a: Approval, by: string): Promise<string> {
   }
   await answerDecision(a, a.card.approve, by);
   return `Answered "${a.card.approve}".`;
+}
+
+/**
+ * Walk-away mode, a go-live card asked for, and the owner's go-live policy is auto: a routine go-live (beta playtested at
+ * the exact commit, no blockers, nothing holding it) isn't a card at all. Studio takes it itself (golive-policy.ts
+ * autoGoLive: the same checks), which queues the go-live (a line in Activity), and a line goes in the PM log. Returns a
+ * record that is not stored as a card, or null when a card is needed (any blocker, a playtest hold, policy not auto).
+ */
+async function autoGoLiveInstead(product: string, card: Card): Promise<Approval | null> {
+  if (!walkAwayCardsOn() || card.blockers.length) return null;
+  try {
+    const { policyOf, autoGoLive } = await import('./golive-policy.ts');
+    if (policyOf(product).policy !== 'auto') return null;
+    const r = await autoGoLive(product, 'a go-live card was asked for and walk-away mode is on');
+    if (!r.went) return null;
+    const { logDecision } = await import('./roadmap.ts');
+    const result = `Studio took it live itself (go-live policy auto, walk-away on, beta playtested at this commit, no blockers): ${r.went}. Follow it in Activity.`;
+    logDecision('walk-away approve', product, product, `No card: ${card.title} ${result}`);
+    return { id: '', kind: 'deploy', target: product, params: {}, status: 'approved', card, requested_by: null, conversation: null, created: Date.now(), expires: NEVER, decided_by: WALK_AWAY_BY, decided_at: Date.now(), result, dismissed: null };
+  } catch (e: any) {
+    console.warn(`[approvals] automatic go-live of ${product}: ${e?.message ?? e}`);
+    return null;
+  }
 }
 
 /** The conversation that asked hears the decision (a notice, then a short turn of Talk's). */
