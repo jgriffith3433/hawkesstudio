@@ -93,20 +93,13 @@ test('the token belongs to its card, and a wrong one is refused', async () => {
   assert.equal((await ap.requestApproval('decision', q1.id)).id, a1.id);
 });
 
-test('a GitHub setup card waits days, not 15 minutes', () => {
-  assert.equal(ap.ttlFor('github'), 7 * 24 * 60 * 60_000);
-  assert.equal(ap.ttlFor('deploy'), 15 * 60_000);
-});
-
-test('a card expires after 15 minutes', async () => {
+test('cards never expire by time (approvals-no-expiry.test.ts has the rest)', async () => {
   const q = pm.askJ('Park the boss fight?', { product: 'aptest', options: ['Yes', 'No'] });
   const a = await ap.requestApproval('decision', q.id);
-  const t = token(a.id);
-  assert.ok(a.expires - a.created >= 14 * 60_000 && a.expires - a.created <= 16 * 60_000);
-  db.prepare('UPDATE approvals SET expires = ? WHERE id = ?').run(Date.now() - 1, a.id);
-  assert.equal(await status(ap.decideApproval(a.id, t, 'approve', jPage())), 410);
-  assert.equal(ap.getApproval(a.id)!.status, 'expired');
-  assert.equal(rm.getQuestion(q.id)!.status === 'open' || rm.getQuestion(q.id)!.status === 'asked J', true, 'nothing was answered');
+  assert.ok(a.expires > Date.now() + 365 * 86_400_000);
+  db.prepare('UPDATE approvals SET created = ? WHERE id = ?').run(Date.now() - 86_400_000, a.id);
+  assert.equal(ap.getApproval(a.id)!.status, 'pending');
+  assert.equal((await ap.decideApproval(a.id, token(a.id), 'deny', jPage())).status, 'denied');
 });
 
 test('product changes merge into beta by themselves: no merge card for one, unless that is turned off', async () => {
@@ -128,15 +121,16 @@ test('a card goes stale when its target changes: a revised change, a setting cha
   // The agent pushed again: a different verified commit is not what the card showed.
   db.prepare('UPDATE changes SET verify = ? WHERE id = ?').run(JSON.stringify({ outcome: 'passed', verdict: 'ship', sha: 'bbbbbbb2' }), 'c_aaaaaaaaaaa1');
   assert.equal(await status(ap.decideApproval(a.id, t, 'approve', jPage())), 409);
-  assert.equal(ap.getApproval(a.id)!.status, 'stale');
-  // A newer card replaces an older one for the same target.
+  assert.equal(ap.getApproval(a.id)!.status, 'pending', 'the card refreshes in place instead of going stale');
+  // Asking again for the same target is the same card.
   const b = await ap.requestApproval('merge', 'c_aaaaaaaaaaa1');
-  assert.notEqual(b.id, a.id);
+  assert.equal(b.id, a.id);
   const c = await ap.requestApproval('settings', 'call', { patch: { rate: 1.2 } });
   assert.equal(ap.getApproval(b.id)!.status, 'pending', 'a card on another target stays');
   await saveSettings('call', { rate: 0.9 }, { conversation: null, by: 'J' });
   assert.equal(await status(ap.decideApproval(c.id, token(c.id), 'approve', jPage())), 409);
-  assert.equal(callSettings().rate, 0.9, 'the stale card changed nothing');
+  assert.equal(callSettings().rate, 0.9, 'the refreshed card changed nothing');
+  ap.getApproval(c.id) && db.prepare(`UPDATE approvals SET status = 'denied' WHERE id = ?`).run(c.id);
   // A fresh card for the same patch applies it.
   const d = await ap.requestApproval('settings', 'call', { patch: { rate: 1.2 } });
   assert.equal((await ap.decideApproval(d.id, token(d.id), 'approve', jPage())).status, 'approved');

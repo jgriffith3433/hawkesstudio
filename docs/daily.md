@@ -251,7 +251,7 @@ the one place for everything waiting on J, across every conversation, agent and 
 - questions: decisions filed for him, and agent questions on his own requests (the PM answers its agents' questions
   first and passes on what it can't; the decision passing one on is one card with it, `questions.forwards`)
 - GPU budgets: content tasks waiting for his budget (`tasksAwaitingGpu`)
-- Approve / Deny cards waiting for his tap (below), first: they expire in 15 minutes
+- Approve / Deny cards waiting for his tap (below), first: they wait until he answers (they never expire by time)
 - merges only he may make: Studio and Gen changes (into main, which deploys: "Merge into main" brings up an Approve
   card with the checks; typing `MERGE <id>` is the fallback); with automatic merges into beta off, also changes the PM
   doesn't review (his own requests, work from before the loop), everything while delegated merges are off
@@ -284,14 +284,26 @@ words; the Inbox asks for one when he presses "Merge into main"; the go-live and
   Approve. It shows in the Talk conversation that asked (also during a call: the chat stays on screen) and in the
   Inbox, on a phone with big buttons. In the chat a card sits in the message flow where it was asked (never pinned
   over it): only the newest waiting card is shown in full, older waiting ones are a line with Show. Once approved,
-  denied, expired or stale (also when another device decided it) a card is one line ("Approved: Merge … into beta").
+  denied or stale (also when another device decided it; old expired ones the same) a card is one line ("Approved: Merge … into beta").
   Its × closes it in the chat without deciding it (`POST /api/approvals/<id>/dismiss`, J's page only): it stays
   pending in the Inbox until it expires, and Talk isn't told.
 - **Bound and one-time:** a card is for one action on one target as it was when made: the change's status and verified
   commit; for a deploy the exact beta commit (and main); for a rollback main and the go live it undoes; the patch and
-  today's values for a setting. Its token works once, expires after 15 minutes, and the card goes **stale** (refused)
-  when the target changed (beta moved, the change was revised, the setting changed meanwhile): ask for a new card.
-  Asking again for the same thing returns the same pending card; a newer one replaces an older one for that target.
+  today's values for a setting. Its token works once. **A card never expires by time** (J, 2026-11-09: the go-live card for
+  Studio's restart fix lapsed after 15 minutes before he saw it, and the release waited hours); it waits until he
+  answers. What keeps it honest is the re-check at tap time: Studio rebuilds the plan for the target (deploy plan, merge
+  checks, GPU estimate, settings patch). Still the same and passing: it runs. The target changed (beta moved, the change
+  was revised, a setting changed): **the card updates itself to the current plan and asks again in place** (same card,
+  a new token, a warning that it changed, nothing run; a dismissed card shows again). Superseded cards merge: asking
+  again for the same kind and target updates the one waiting card, so J only ever sees one card per thing. Walk-away's
+  own approval refreshes a changed card the same way and tries again on the PM's next tick.
+- **No card for a routine go-live:** with the owner's go-live policy **auto** and walk-away mode on, asking for a go-live
+  card (`studio_approval` deploy) whose plan has no blockers, with beta playtested at the exact commit and every
+  playtest clean (`golive-policy.ts autoGoLive`, the same checks as the automatic go-live after a beta run), makes no
+  card: Studio queues the go-live itself (a line in Activity, "Going live with …") and a line in the PM log
+  (`walk-away approve`). The reply is `status: approved, decided_by: Studio (walk-away)` with no id. Anything else
+  (a blocker, a failed or missing playtest, policy ask or hold, walk-away off) still gets a card. Cards stay for what
+  walk-away doesn't cover: GPU past the caps, cost-raising settings, protected-file merges, GitHub setup, secrets.
   A card with nothing left to approve (a GPU budget already approved, a question already answered, a change merged, a
   go live since) settles itself as "Out of date" with why, and asking for one is refused with that reason. A waiting
   card with a blocker says "Can't approve yet" on its button, and a failed tap shows why on the card.

@@ -723,7 +723,7 @@ const server = http.createServer(async (req, res) => {
       if (route === '/api/approvals' && method === 'POST') {
         const b = await readJson(req);
         const by = await (await import('./inbox.ts')).actor(req, b.by);
-        return send(res, 200, await ap.requestApproval(String(b.kind ?? ''), String(b.target ?? ''), { amount: b.amount, patch: b.patch }, { by, conversation: origin ?? (typeof b.conversation === 'string' && /^t_[0-9a-f]{6,32}$/.test(b.conversation) ? b.conversation : null) }).then((a) => ap.getApproval(a.id, jPage)));
+        return send(res, 200, await ap.requestApproval(String(b.kind ?? ''), String(b.target ?? ''), { amount: b.amount, patch: b.patch }, { by, conversation: origin ?? (typeof b.conversation === 'string' && /^t_[0-9a-f]{6,32}$/.test(b.conversation) ? b.conversation : null) }).then((a) => (a.id ? ap.getApproval(a.id, jPage) : a)));
       }
       m = /^\/api\/approvals\/(a_[0-9a-f]+)(?:\/(approve|deny|dismiss|anyway|catchup))?$/.exec(route);
       if (m && method === 'GET' && !m[2]) { const a = ap.getApproval(m[1], jPage); return a ? send(res, 200, a) : send(res, 404, { error: 'no such approval' }); }
