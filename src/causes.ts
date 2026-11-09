@@ -250,6 +250,50 @@ onHeldRetry('question', async (ref) => {
   await hooks.answer(ref, retryOption(opts) ?? 'try again', `${SELF_BY}, retry ${h?.attempt ?? '?'}`);
 });
 
+// ------------------------------------------------------------------ cards whose cause has cleared
+
+/** Replaced by the tests: says how a cause cleared for a card ("Studio has been up 20 min"), or null while it hasn't. */
+export const probes: { cleared: (cause: Cause, card: { id: string; at: number }) => Promise<string | null> } = {
+  cleared: async (cause, card) => {
+    const { STABLE_MS } = await import('./transient.ts');
+    const ageMin = Math.round((Date.now() - card.at) / 60_000);
+    if (cause.key === 'studio-restart') {
+      const up = process.uptime() * 1000;
+      return up >= STABLE_MS() && Date.now() - up > card.at ? `Studio has stayed up ${Math.round(up / 60_000)} min since it was filed` : null;
+    }
+    if (['gen-restart', 'network', 'server-error', 'rate-limit', 'cloud-quota'].includes(cause.key)) {
+      if (Date.now() - card.at < 5 * 60_000) return null;
+      return (await (await import('./gen.ts')).genUp()) ? `Hawkes Gen answers again and nothing new has failed this way since the card was filed ${ageMin} min ago` : null;
+    }
+    return null; // an expired token, a kill or a conflict: only a retry shows it (the gate's job)
+  },
+};
+
+/**
+ * Closes open question cards whose transient cause has cleared (J, 2026-11-09: "close cards whose cause has cleared"): the
+ * agent or task resumes with the card's try-again option (or it's closed with the line), by "Studio PM (self-healing)" and
+ * with how it cleared. A cause seen again since the card was filed keeps it open. Runs when the Inbox is read; no timer.
+ */
+export async function closeCleared(): Promise<{ id: string; how: string }[]> {
+  const out: { id: string; how: string }[] = [];
+  const rows = db.prepare(`SELECT id, text, context, options, at, cause FROM questions WHERE status = 'asked J' AND kind IN ('decision', 'agent')`).all() as any[];
+  for (const q of rows) {
+    const cause = q.cause ? mk(q.cause) : causeOf(`${q.text}\n${q.context ?? ''}`);
+    if (!cause || cause.cls !== 'transient') continue;
+    if (jOnly({ text: q.text })) continue;
+    if (causeLog(cause.key, WEEK).some((r) => r.at > Number(q.at) && (r.kind === 'card' || r.kind === 'filed-after-tries') && r.ref !== q.id)) continue;
+    const how = await probes.cleared(cause, { id: q.id, at: Number(q.at) }).catch(() => null);
+    if (!how) continue;
+    const opts = (() => { try { return JSON.parse(q.options ?? '[]'); } catch { return []; } })();
+    const again = retryOption(opts);
+    logCause(cause, { kind: 'answered', ref: q.id, subject: q.id, detail: `closed, ${how}`, dedup: `cleared:${q.id}` });
+    if (again) await hooks.answer(q.id, again, `${SELF_BY}, cause cleared`).catch((e) => console.warn(`[studio] ${q.id}: ${e?.message ?? e}`));
+    else db.prepare(`UPDATE questions SET status = 'resolved', answer = ?, answered_by = ?, answered_at = ? WHERE id = ?`).run(`(cleared: ${cause.label}; ${how})`, SELF_BY, Date.now(), q.id);
+    out.push({ id: q.id, how });
+  }
+  return out;
+}
+
 // ------------------------------------------------------------------ the Inbox's cards
 
 export type CardLike = { id: string; kind: string; title: string; text: string | null; context: string | null; product: string | null; subject: string | null; asks: number };
