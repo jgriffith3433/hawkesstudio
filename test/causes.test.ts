@@ -186,3 +186,28 @@ test('the root-cause log: a cause\'s second occurrence in 7 days opens ONE Studi
     C.hooks.openFix = real;
   }
 });
+
+test('a card whose cause has cleared closes by itself, with a line saying how; one that is still failing stays', async () => {
+  reset();
+  const real = C.probes.cleared;
+  const ids = (n: string) => pm.askJ(`"${n}" failed 3 times. The last: fetch failed: ECONNRESET. Try again, or drop it?`, { subject: n, product: 'cgame', options: ['try again', 'drop it'], from: 'someone' });
+  try {
+    // Filed directly (as after the retry limit): asked J, with a cause.
+    const q = ids('c_cccccccccccc');
+    db.prepare(`UPDATE questions SET status = 'asked J', cause = 'network', at = ? WHERE id = ?`).run(Date.now() - 3_600_000, q.id);
+    C.probes.cleared = async () => null;
+    assert.equal((await ib.inbox()).filter((x) => x.id === q.id).length, 1, 'still failing: the card stays');
+    C.probes.cleared = async () => 'Hawkes Gen answers again';
+    const before = answered.length;
+    const cards = await ib.inbox();
+    assert.equal(cards.filter((x) => x.id === q.id).length, 0, 'cleared: gone');
+    assert.deepEqual(answered.at(before), { q: q.id, a: 'try again', by: `${C.SELF_BY}, cause cleared` });
+    assert.ok(C.causeLog('network').some((r) => r.ref === q.id && /closed, Hawkes Gen answers again/.test(r.detail ?? '')));
+    // A J-only card never closes by itself.
+    const perm = pm.askJ('Accept the Actions: write permission on the installation page after a 503?', { product: 'cgame', options: ['try again'], from: 'builds' });
+    await ib.inbox();
+    assert.equal(rm.getQuestion(perm.id)!.status, 'asked J');
+  } finally {
+    C.probes.cleared = real;
+  }
+});

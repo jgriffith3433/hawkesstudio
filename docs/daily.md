@@ -222,6 +222,22 @@ never only a sentence in a PM log. The first time it is also said in the convers
 a notice) and on his phone; asking again on the same subject (and topic), or in nearly the same words, merges into the
 open question (`asks` counts the repeats) instead of a new one.
 
+**The Inbox heals itself** (`src/causes.ts`; J, 2026-11-08: "I wish studio would just handle these issues by themselves"). No timer
+fetches; each step runs when a card would be filed, when the Inbox is read, or on a one-shot wait.
+1. *The gate* (`gateQuestion`, asked by `askJ`): a transient cause (studio restart, killed run, expired token, network, 5xx,
+   rate limit, Gen restart, cloud quota, conflict) with a "try again" option is held, never shown, and answered by Studio
+   after 2, 10, 30 minutes; the agent or task resumes. Judgement questions with a recommendation are answered by the PM
+   in walk-away mode (twice a subject a week). Failed builds with a transient cause are built again by Studio.
+2. *Only J's calls get cards*: money above the caps, GitHub permissions or installs, secrets, sent as J, going live. A card
+   after Studio's tries says "Already tried: ...".
+3. *Root-cause log* (`cause_log`): every card and self-settled failure has a cause key. Same cause and product fold into one
+   card with a count (an answer reaches all). The second occurrence of a cause on another subject in 7 days opens ONE
+   Studio fix task (shown as "Fixing the cause").
+4. *Cleared causes close their cards* (`closeCleared`, run when the Inbox is read): an open card whose transient cause has
+   cleared (Studio stable since it was filed; Gen answering again with nothing new failing that way) is answered with its
+   try-again option by "Studio PM (self-healing), cause cleared", and the log says how it cleared. J-only cards never close this way.
+Tests: `test/causes.test.ts`.
+
 **The Inbox** (the dashboard's first tab, its badge is the count; `GET /api/inbox`, `studio_inbox`, `src/inbox.ts`) is
 the one place for everything waiting on J, across every conversation, agent and the PM loop:
 - questions: decisions filed for him, and agent questions on his own requests (the PM answers its agents' questions

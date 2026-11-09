@@ -29,7 +29,7 @@ import { gate } from './acceptance.ts';
 import { listApprovals, type Approval } from './approvals.ts';
 import { contradictionSettled } from './memory-curate.ts';
 import { creditsWaiting, creditsBack } from './creditwait.ts';
-import { causeOf, cardCause, logCards, mergeByCause, openFix, logCause, causeLog, fixingNow, settledLately, RETRY_LIMIT, SELF_BY } from './causes.ts';
+import { closeCleared, causeOf, cardCause, logCards, mergeByCause, openFix, logCause, causeLog, fixingNow, settledLately, RETRY_LIMIT, SELF_BY } from './causes.ts';
 
 // Answers to the cards that aren't questions (budgets, merges, milestones): what was answered, by whom, and for a
 // milestone how long its card stays away (until; null: for good).
@@ -274,6 +274,7 @@ export async function inbox({ tokens = false }: { tokens?: boolean } = {}): Prom
       links: [], subject: a.target, conversation: a.conversation, asks: 1, approval: a,
     });
   }
+  await closeCleared().catch((e) => console.warn(`[inbox] closing cards whose cause cleared: ${e?.message ?? e}`));
   const open = listQuestions();
   const forwarded = new Set(open.map((q) => q.forwards).filter(Boolean));
   const gpuQ = new Map(open.filter((q) => q.topic === 'gpu' && q.subject).map((q) => [q.subject!, q]));
