@@ -740,7 +740,7 @@ export type CloudBuild = { code: number | null; error?: string; log: string; out
  * from GitHub (`bundle`: a local file of commits GitHub lacks, for an agent change not pushed yet); `command` runs in
  * `cwd` (the clone's absolute path; a site in a subfolder cds into it); `outputs` (relative to cwd) come back as a .tgz.
  */
-export async function runCloudBuild(unit: string, o: { remote: string; head: string; cwd: string; command: string; outputs: string[]; bundle?: string | null; gitToken?: string | null; timeoutMs?: number; onLine?: (s: string) => void; every?: number; beforeOutputs?: () => Promise<void> }): Promise<CloudBuild> {
+export async function runCloudBuild(unit: string, o: { remote: string; head: string; cwd: string; command: string; outputs: string[]; bundle?: string | null; gitToken?: string | null; timeoutMs?: number; onLine?: (s: string) => void; every?: number; beforeOutputs?: () => Promise<void>; secretEnv?: Record<string, string> }): Promise<CloudBuild> {
   const r = runnerFor();
   const k = (n: string) => key(unit, n);
   building++;
@@ -752,7 +752,9 @@ export async function runCloudBuild(unit: string, o: { remote: string; head: str
     const gitToken = (await jobRepoToken(slugOfRemote(o.remote)).catch(() => null)) ?? o.gitToken ?? null;
     await r.put(k('spec.json'), JSON.stringify({
       kind: 'build', outputs: o.outputs, file: '/bin/sh', args: ['-c', o.command], cwd: o.cwd,
-      env: { CI: '1', npm_config_update_notifier: 'false' }, sessions: path.posix.join(o.cwd, '.hawkes-none', 's', 's'),
+      // secretEnv: a short-lived credential for this one execution (a Firebase deployer's token, firebasebuild.ts), in its
+      // spec only, which is removed with the job's folder when it ends; never in the command line or the log.
+      env: { CI: '1', npm_config_update_notifier: 'false', ...(o.secretEnv ?? {}) }, sessions: path.posix.join(o.cwd, '.hawkes-none', 's', 's'),
       git: { head: o.head, branch: 'HEAD', remote: plainRemote(o.remote), bundle: Boolean(o.bundle), token: gitToken, tokenAt: Date.now(), ...(await gitRefresh(unit, o.remote)), shallow: !o.bundle, lfs: true },
     }));
     execution = await r.start(unit);

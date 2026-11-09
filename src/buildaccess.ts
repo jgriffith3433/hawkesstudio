@@ -184,6 +184,9 @@ export async function handleFailure(rowId: string, o: { product: string; build: 
   clearRetry(o.product, o.build);
   if (type === 'access') {
     const cause = accessCause(o.error)!;
+    // A project that builds nothing in GitHub Actions never gets an Actions card (firebasebuild.ts: its Firebase deploy
+    // runs in Studio's own cloud now): whatever failed is told like any other failure.
+    if (cause.key === 'actions' && !(await projectUsesActions(o.product))) return { handled: false, type: 'other' };
     const card = await fileAccessCard(o.product, o.build, o.slug, cause, o.workflow);
     return { handled: true, type, card };
   }
@@ -295,9 +298,20 @@ export async function accessOk(row: Pick<AccessRow, 'slug' | 'what' | 'key'>): P
   return true;
 }
 
+/** Whether a project still has a build in its own GitHub Actions (unknown project: yes, as before). */
+export async function projectUsesActions(product: string): Promise<boolean> {
+  try {
+    const { getProduct } = await import('./config.ts');
+    const { buildsOf } = await import('./builds.ts');
+    return (await import('./firebasebuild.ts')).usesActions(buildsOf(getProduct(product)));
+  } catch { return true; }
+}
+
 /** Before an Actions build starts: can the app start workflows on this repo? Fine → true. Not → the card is filed and false. */
 export async function preflight(product: string, build: string, slug: string, workflow: string | null): Promise<{ ok: true } | { ok: false; card: string; message: string }> {
   if (!selfHandling()) return { ok: true };
+  // Only a project that still builds in GitHub Actions needs Actions: write (never one whose builds run in Studio).
+  if (!(await projectUsesActions(product))) return { ok: true };
   const p = await probeHook.run(slug);
   if (p.known && !p.ok) {
     const cause: AccessCause = { what: 'install', permission: null, key: null, workflow, status: 404, message: 'not installed' };
