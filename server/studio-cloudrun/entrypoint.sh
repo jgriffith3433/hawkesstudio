@@ -31,6 +31,10 @@ LEASE=0
 node --disable-warning=ExperimentalWarning src/cloudlease.ts claim || LEASE=$?
 # A newer revision, or a live instance of this same one, holds the database (Cloud Run started a stray one): stay down.
 if [ "$LEASE" = 3 ]; then echo "[lease] another live instance holds the database: this one stays down (exit via entrypoint, claim code 3)" | tee /dev/stderr; exit 0; fi
+# The holder beats from now until the server's own heartbeat starts (restore and start-up outlast a heartbeat's 15 s):
+# without it a fresh instance of any revision finds this one dead and takes the database (2026-11-09).
+node --disable-warning=ExperimentalWarning src/cloudlease.ts beat &
+BEAT=$!
 GEN=$(cat /tmp/hawkes-restore-generation 2>/dev/null || true)
 litestream restore -config /etc/litestream.yml -if-db-not-exists -if-replica-exists ${GEN:+-generation "$GEN"} /data/studio.db
 # Not exec: once Studio stops (Cloud Run's SIGTERM, or a newer instance took the lease) and Litestream has made its last
@@ -41,4 +45,5 @@ LS=$!
 trap 'kill -TERM $LS 2>/dev/null' TERM INT
 wait $LS || true
 wait $LS 2>/dev/null || true
+kill $BEAT 2>/dev/null || true
 node --disable-warning=ExperimentalWarning src/cloudlease.ts release || true
