@@ -1058,6 +1058,25 @@ products.json products keep the flows above.
   at this Studio" (step `repoint` on the setup Approve card): the workflow rewritten with its address on main, and on
   beta and dev where they have it (`src/handover.ts`). Tests: `test/deploy-github.test.ts`, `test/github-games.test.ts`.
 
+### Transient failures retry by themselves (2026-11-09)
+
+J: "make transient failures retry with backoff instead of stopping work or filing cards." No polling: each failure
+schedules its own timer (and a row, so a restart carries it on). Code: `src/transient.ts`, `src/backoff.ts`; test
+`test/transient.test.ts`.
+
+- **Gen imports.** When Hawkes Gen's lookup of an asset (or of an owner's account) fails or errors, `studio_gen_import`
+  answers **503 "Hawkes Gen didn't answer, retrying"** (`access.ts missingOr503`), never "no access". The tool retries
+  it after 30 s, 2 min and 5 min before an agent sees an error. Only Gen's own 404 or a file outside the libraries this
+  Studio may use stays the clear **404** "No Gen file ... this studio may use".
+- **Playtests refused with 429.** The step ends `cancelled` (data `rateLimited`, no review, nothing blamed) and the same
+  playtest starts again after 2, 5, 10, 20 and 30 minutes, tagged with the same origin so the conversation (and through
+  it the change's agent) hears the result when it lands. After the fifth refusal the 429 stands as a failure.
+- **Stopped by Studio restarts.** A run or change stopped with "Studio restarted N times in a row" is started again
+  once, after Studio has stayed up 15 minutes (`STUDIO_STABLE_MS`): a change carries on from its step, a run starts as
+  a new one, a project's builds it stopped are rebuilt once. A Studio that keeps crashing never gets there.
+- **A passing standalone beta playtest** (`studio_playtest` on beta, a Beta button play) asks `golive-policy.ts
+  autoGoLive`, as the end of a beta run does; the plan still checks the policy, the exact commit tested and the verdicts.
+
 ## Developing on beta
 
 J and agents build on beta together, live on the cloud server (`src/dev.ts`, `src/dev-front.ts`):

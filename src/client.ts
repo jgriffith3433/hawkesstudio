@@ -34,7 +34,7 @@ export const studioAt = (base: string, auth: string | null = null) => async func
       body: body !== undefined ? JSON.stringify(body) : undefined,
     });
   } catch {
-    throw new Error(`Hawkes Studio isn't running at ${base}. Start it: C:\\Projects\\hawkesstudio\\auto-start.bat`);
+    throw Object.assign(new Error(`Hawkes Studio isn't running at ${base}. Start it: C:\\Projects\\hawkesstudio\\auto-start.bat`), { status: 0 });
   }
   const text = await r.text();
   let data: any;
@@ -43,7 +43,7 @@ export const studioAt = (base: string, auth: string | null = null) => async func
   } catch {
     data = text;
   }
-  if (!r.ok) throw new Error(data?.error ?? `HTTP ${r.status}`);
+  if (!r.ok) throw Object.assign(new Error(data?.error ?? `HTTP ${r.status}`), { status: r.status });
   return data;
 };
 export const studio = studioAt(STUDIO_URL, auth);

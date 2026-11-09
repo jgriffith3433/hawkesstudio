@@ -14,6 +14,7 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { db, newId, J, rowToStep, parse, type Step } from './db.ts';
 import { resumeGapMs, RESTART_LOOP, RESTART_WINDOW_MS } from './ops.ts';
+import { isRateLimited, scheduleRateRetry } from './transient.ts';
 import { loadProducts, getProduct, localUrl, today, PROJECTS, betaPlaytestsOn, managedElsewhere, managedNote, StudioError, type Product, type Playtest, type BuildSpec } from './config.ts';
 import { unityBuild } from './buildpkgs.ts';
 import { endStatus, runCounts, runCancelled, haltOf, jobCancelDetail, runCancelDetail } from './cancel.ts';
@@ -643,7 +644,8 @@ export async function playtestProduct(run: string, p: Product, asked: Playtest, 
 }
 type PlayOptions = { review?: boolean; focus?: string; mode?: ReviewMode; criteria?: string[]; abandon?: () => string | null; slot?: number; priority?: number };
 
-async function playScenario(run: string, p: Product, asked: Playtest, { review = true, focus, mode = 'full', criteria, abandon, slot = 0, priority }: PlayOptions = {}) {
+async function playScenario(run: string, p: Product, asked: Playtest, opts: PlayOptions = {}) {
+  const { review = true, focus, mode = 'full', criteria, abandon, slot = 0, priority } = opts;
   // A renamed scenario (an older task's name) plays under the game's current name (products.json scenarioAliases).
   const renamed = asked.scenario ? resolveScenario(p, asked.scenario) : undefined;
   const t: Playtest = renamed && renamed !== asked.scenario ? { ...asked, scenario: renamed } : asked;
@@ -817,10 +819,16 @@ async function playScenario(run: string, p: Product, asked: Playtest, { review =
     } catch (e: any) {
       // Refused for credits (or quota, billing): its own outcome, like cancelled. Not a failed playtest, not a failed beta build.
       const why = creditRefusal(e);
-      if (!why) throw e;
+      if (!why) {
+        // Refused with 429: played again later by itself (transient.ts), the result reaches whoever asked.
+        if (isRateLimited(e) && waitForRateLimit(run, p.id, s, t, opts, String((e as any)?.message ?? e), { url, played })) return null;
+        throw e;
+      }
       waitForCredits(run, p.id, s, why, { url, played });
       return null;
     } finally { if (port) stopServed(port); }
+    // The job itself was refused with 429 (the playtest lane's limit): the same outcome.
+    if (job.status === 'failed' && isRateLimited({ message: job.error ?? job.detail }) && waitForRateLimit(run, p.id, s, t, opts, String(job.error ?? job.detail), { url, played }, job.id)) return job;
     // The job itself ended on a credit refusal (Gen says so in its error): the same outcome.
     const jobWhy = job.status === 'failed' ? creditRefusal({ message: job.error ?? job.detail }) : null;
     if (jobWhy && /credit|quota|billing|payment/i.test(String(job.error ?? job.detail ?? ''))) {
@@ -1299,7 +1307,21 @@ async function partialBody(id: string, kind: string, p: Product, opts: PartialOp
     if (runWaitsForCredits(id, p.id, e)) return;
     db.prepare(`UPDATE runs SET status = 'failed', detail = ?, finished = ? WHERE id = ?`).run(String(e.message ?? e), Date.now(), id);
     kickFollowups();
+    return;
   }
+  await goLiveAfterPlaytest(id, kind, p.id, opts.where);
+}
+
+/**
+ * A standalone playtest of beta that passed goes live by itself when the owner said to keep going live, as the end of a
+ * beta run does (golive-policy.ts autoGoLive checks the policy, the plan, the exact commit tested and the verdicts).
+ * Returns whether autoGoLive was asked. `go` is for the tests.
+ */
+export async function goLiveAfterPlaytest(run: string, kind: string, productId: string, where?: string, go?: (product: string, why: string) => Promise<unknown>): Promise<boolean> {
+  if (kind !== 'playtest' || (where ?? 'local') !== 'local' || !betaLane()) return false;
+  if ((db.prepare('SELECT status FROM runs WHERE id = ?').get(run) as any)?.status !== 'done') return false;
+  await (go ?? (await import('./golive-policy.ts')).autoGoLive)(productId, `playtest ${run}`);
+  return true;
 }
 
 /**
@@ -1322,6 +1344,23 @@ function skipForCredits(id: string, product: string | null): boolean {
 function waitForCredits(run: string, product: string, step: string, why: { message: string; need: number | null; have: number | null }, data: Record<string, unknown> = {}, job?: string) {
   creditsHold(run, product, why);
   updateStep(step, { status: 'cancelled', ...(job ? { job } : {}), detail: `waiting for credits: ${why.message.replace(/ Add credits.*$/, '')}`, data: { ...data, credits: true, cancelled: true }, finished: true });
+}
+
+/**
+ * A playtest refused with HTTP 429: `cancelled` with data.rateLimited (no review, no finding, nothing blamed: cancel.ts),
+ * and the same playtest is queued to play again after a backoff (transient.ts). False when the tries are used up: the
+ * refusal then stands as the failure it is.
+ */
+function waitForRateLimit(run: string, product: string, step: string, t: Playtest, opts: PlayOptions, message: string, data: Record<string, unknown> = {}, job?: string): boolean {
+  const kind = (db.prepare('SELECT kind FROM runs WHERE id = ?').get(run) as any)?.kind === 'beta' ? 'beta' : 'playtest';
+  const spec = kind === 'beta'
+    ? { scenario: t.scenario, options: t.options, criteria: opts.criteria, focus: opts.focus, playtest: true }
+    : { scenario: t.scenario, mode: t.mode, where: t.where, device: t.device, seed: t.seed, options: t.options, at: t.at, peers: t.peers, review: opts.review, focus: opts.focus, reviewMode: opts.mode };
+  const due = scheduleRateRetry({ run, product, kind, spec, why: message });
+  if (!due) return false;
+  const when = new Date(due).toISOString().slice(11, 16);
+  updateStep(step, { status: 'cancelled', ...(job ? { job } : {}), detail: `rate limited (HTTP 429): playing it again at ${when} UTC, by itself (${message.slice(0, 120)})`, data: { ...data, rateLimited: true, retryAt: due, cancelled: true }, finished: true });
+  return true;
 }
 
 /** A run that threw a credit refusal ends `cancelled` (waiting for credits), never `failed`. True when it was one. */

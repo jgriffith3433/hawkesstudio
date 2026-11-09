@@ -112,13 +112,14 @@ export async function cellGithubToken(repo: string, { read = false }: { read?: b
 export async function cellGenAsset(asset: string, owners: boolean) {
   const c = cfg();
   if (!c) throw Object.assign(new Error('not a customer cell'), { status: 409 });
+  // The control plane not answering (a restart) is a 503 the import tool retries, not "no such file".
   const r = await fetch(`${c.url}/api/cells/self/gen-asset`, {
     method: 'POST', signal: AbortSignal.timeout(180_000),
     headers: { Authorization: `Bearer ${c.key}`, 'X-Studio-Cell': c.org, 'Content-Type': 'application/json' }, body: JSON.stringify({ asset, owners }),
-  });
+  }).catch(() => { throw Object.assign(new Error("Hawkes Gen didn't answer, retrying"), { status: 503 }); });
   if (!r.ok) {
     const j: any = await r.json().catch(() => ({}));
-    throw Object.assign(new Error(j.error ?? `the control plane answered ${r.status} for ${asset}`), { status: r.status === 401 ? 502 : r.status });
+    throw Object.assign(new Error(j.error ?? `the control plane answered ${r.status} for ${asset}`), { status: r.status === 401 ? 502 : [502, 504].includes(r.status) ? 503 : r.status });
   }
   const via = r.headers.get('x-gen-via') === 'owner' ? 'owner' as const : 'own' as const;
   return {

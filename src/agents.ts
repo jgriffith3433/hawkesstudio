@@ -546,6 +546,8 @@ export type Phase = {
   harness?: { kind: string; line: string; at: number; on: string; /** When each park happened (the last hour's, for the resume cap). */ parks?: number[]; /** Asked J after the cap: no more resumes by itself. */ capped?: boolean };
   /** Restarts that resumed it at this step in a row (resumeChanges): a step that keeps ending Studio isn't resumed again. */
   restarts?: { step: string; n: number; at: number };
+  /** A change stopped for restarts that was carried on once Studio had stayed up (reviveRestartStopped): not again. */
+  revived?: boolean;
   /** Whole-run retries after a Studio checkout failure in prepare (AUTO_RETRIES at most): Studio tries again by itself. */
   autoRetry?: number;
 };
@@ -4107,6 +4109,40 @@ export function carryFinishedToReady(c: Change, ph: Phase): boolean {
   return true;
 }
 
+/** Carries a change on from its recorded step after `wait` ms (a failure outside work()'s own handling is logged, never an unhandled rejection). */
+function launchResume(c: Change, ph: Phase, wait: number) {
+  running.add(c.id);
+  void new Promise((r) => setTimeout(r, wait)).then(() => work(c.id, undefined, undefined, ph)).catch((e) => {
+    update(c.id, { status: 'failed', detail: `couldn't carry on after the restart: ${String(e?.message ?? e).slice(0, 200)}`, phase: { ...ph, failed: true } });
+    console.warn(`[studio] resume ${c.id}: ${e?.message ?? e}`);
+  }).finally(() => {
+    running.delete(c.id);
+    remember(c.id);
+    void pump();
+  });
+}
+
+/** Changes that resumeChanges stopped for restarting Studio too often ("stopped: Studio restarted N times in a row"). */
+export const restartStopped = (c: Pick<Change, 'status' | 'detail'>) => c.status === 'failed' && /^stopped: Studio restarted \d+ times in a row/.test(String(c.detail ?? ''));
+
+/**
+ * Studio has stayed up for a while (stable.ts), so what the restarts stopped is not what keeps ending it: those changes
+ * carry on from the step they were at, once each (phase.revived). Returns the ids.
+ */
+export function reviveRestartStopped(): string[] {
+  const out: string[] = [];
+  for (const c of listChanges({ status: 'failed', limit: 200 })) {
+    const ph = phaseOf(c.id);
+    if (!restartStopped(c) || !ph?.step || ph.revived || running.has(c.id)) continue;
+    const next: Phase = { ...ph, failed: false, revived: true, restarts: undefined };
+    update(c.id, { status: 'working', detail: 'carrying on: Studio has stayed up since the restarts that stopped it', phase: next });
+    addLog(c.id, `Studio has been stable for a while: resuming at the ${ph.step} step`);
+    launchResume(c, next, out.length * resumeGapMs());
+    out.push(c.id);
+  }
+  return out;
+}
+
 export function resumeChanges() {
   const out: string[] = [];
   for (const c of listChanges({ status: 'working,verifying,revising', limit: 200 })) {
@@ -4131,19 +4167,10 @@ export function resumeChanges() {
     }
     ph.restarts = { step: ph.step, n, at: Date.now() };
     update(c.id, { phase: ph });
-    running.add(c.id);
     // One every RESUME_GAP_MS, not all at once: each picks up with git and file work, which together froze Studio's start.
     const wait = out.length * resumeGapMs();
     out.push(c.id);
-    // A failure outside work()'s own handling (its project was removed since) is logged, never an unhandled rejection.
-    void new Promise((r) => setTimeout(r, wait)).then(() => work(c.id, undefined, undefined, ph)).catch((e) => {
-      update(c.id, { status: 'failed', detail: `couldn't carry on after the restart: ${String(e?.message ?? e).slice(0, 200)}`, phase: { ...ph, failed: true } });
-      console.warn(`[studio] resume ${c.id}: ${e?.message ?? e}`);
-    }).finally(() => {
-      running.delete(c.id);
-      remember(c.id);
-      void pump();
-    });
+    launchResume(c, ph, wait);
   }
   // A restart between "ready" and its automatic merge: the merge is tried again (approve() refuses a moved head).
   for (const c of listChanges({ status: 'ready', limit: 100 })) {

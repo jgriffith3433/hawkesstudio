@@ -80,10 +80,20 @@ export function genSourceOk(project: string, { own, owners }: { own: string | nu
 export async function personalProjectsOf(emails: string[], admin: (p: string) => Promise<any>): Promise<Set<string>> {
   const out = new Set<string>();
   for (const e of [...new Set(emails.map((x) => String(x ?? '').trim().toLowerCase()).filter((x) => /^[^@\s]+@[^@\s]+$/.test(x)))]) {
-    const r = await admin(`/admin/accounts?q=${encodeURIComponent(e)}&limit=20`).catch(() => null);
+    // A real "no such account" is an empty answer; Gen not answering is a 503 the caller (and the tool) retries.
+    const r = await admin(`/admin/accounts?q=${encodeURIComponent(e)}&limit=20`).catch(missingOr503);
     for (const a of (r?.items ?? []) as any[]) if (String(a.email ?? '').toLowerCase() === e && !a.disabled && isPersonalGen(String(a.project ?? ''))) out.add(String(a.project));
   }
   return out;
+}
+
+/**
+ * Gen's lookup failed. Only Gen's own "not found" (404) means the asset or account isn't there (null, for the caller's
+ * 404); anything else (Gen restarting, a timeout, a 5xx) is a 503 "didn't answer, retrying", which studio_gen_import retries.
+ */
+export function missingOr503(e: any): null {
+  if (Number(e?.status) === 404) return null;
+  throw new StudioError("Hawkes Gen didn't answer, retrying", 503);
 }
 
 export type GenFile = { bytes: Buffer; mime: string; project: string; title: string | null; ext: string };
@@ -104,7 +114,7 @@ export async function controlGenAsset(o: {
 }): Promise<GenFile & { via: 'own' | 'owner' }> {
   if (!/^a_[0-9a-f]{8,40}$/.test(o.asset)) throw new StudioError('asset: a Gen asset id (a_...)', 400);
   if (!o.genOrg) throw new StudioError('This studio has no Hawkes Gen org yet.', 409);
-  const a = await o.admin(`/assets/${o.asset}`).catch(() => null);
+  const a = await o.admin(`/assets/${o.asset}`).catch(missingOr503);
   const project = String(a?.project ?? '');
   const owners = o.wantOwners && isPersonalGen(project) ? await personalProjectsOf(o.ownerEmails, o.admin) : new Set<string>();
   const via = a ? genSourceOk(project, { own: o.genOrg, owners }) : null;
@@ -170,7 +180,7 @@ export async function importGenFile(ask: ImportAsk, deps: Partial<ImportDeps> = 
   const step = transformOf(ask);
   // 1. Where the file is, and whether this Studio may use it.
   let src: GenFile & { via: 'own' | 'owner' };
-  const mine = await d.ownAsset(ask.asset).catch(() => null);
+  const mine = await d.ownAsset(ask.asset).catch(missingOr503);
   const ownOk = mine ? genSourceOk(mine.project, { own: d.ownOrg(), owners: new Set() }) : null;
   if (mine && ownOk) src = { ...(await d.ownBytes(ask.asset, mine)), via: 'own' };
   else if (d.inCell()) src = await d.cellAsset(ask.asset, access.gen);
@@ -226,7 +236,7 @@ async function defaultImportDeps(): Promise<ImportDeps> {
     ownOrg: () => (prefix ? prefix.replace(/\.$/, '') : null),
     inCell: () => cellside.inCell(),
     ownAsset: async (asset) => {
-      try { return await gen.asset(asset); } catch { return null; }
+      try { return await gen.asset(asset); } catch (e) { return missingOr503(e); }
     },
     ownBytes: async (asset, meta) => {
       const f = await bytesOf(asset);

@@ -150,6 +150,8 @@ health and logs `restarted` / `restart failed` in `self-deploys.jsonl`, which th
    - **Agent changes** record their step (`changes.phase`: prepare, agent, publish, finish; verify with its Gen jobs
      for a playtest J asked for) and carry on from it, waiting on the same Gen jobs (a build isn't built twice). A playtest that was
      playing a page Studio served is played again (its page server stopped with Studio).
+   - **Stopped by too many restarts** ("restarted 3 times in a row"): started again once, after Studio has stayed up
+     15 minutes (`transient.ts`, docs/daily.md "Transient failures retry by themselves").
    - **A pass's time limit** counts from its unit's start, so a restart doesn't reset it: an hour, three for content
      and GPU work (`agentLimitMs`). A unit is only taken as gone when `systemctl` says so twice; no answer (a busy
      server) counts as running. An agent that stops (that limit, its turn limit, a cut session) with its work
