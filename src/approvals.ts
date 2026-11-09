@@ -234,6 +234,26 @@ export function settleDone() {
       if (why) settle.run(now, why, a.id);
     }
   } catch { /* no roadmap tables in this process yet */ }
+  // A go-live or rollback card nobody can act on (J, 2026-11-09: "I told you this state shouldn't happen"): withdrawn,
+  // whoever asked for it and however it got here (a card from before this rule, a rebuild that turned into one).
+  try {
+    const open = db.prepare(`SELECT id, card FROM approvals WHERE status = 'pending' AND kind IN ('deploy', 'rollback')`).all() as any[];
+    for (const a of open) {
+      const why = deadEnd(parse(a.card) as Card);
+      if (why) settle.run(now, `withdrawn: ${why}`, a.id);
+    }
+  } catch { /* no approvals rows yet */ }
+}
+
+/**
+ * Why a go-live or rollback card would be a dead end in J's Inbox, or null when he can act on it now: it has no blockers
+ * (Approve works), every blocker is one a person may go live past (skip: "Go live anyway"), or only live being ahead
+ * stops it (catchUp). Such a card is never made (requestApproval) and never left waiting (settleDone): Studio keeps
+ * working the plan (build, playtest, fixes on beta) and asks again when there is something to decide.
+ */
+export function deadEnd(card: Pick<Card, 'blockers' | 'skip' | 'catchUp'> | null | undefined): string | null {
+  if (!card || !card.blockers?.length || card.skip || card.catchUp) return null;
+  return `nothing to approve or go live past yet: ${card.blockers.slice(0, 3).join(' ').slice(0, 400)}`;
 }
 
 /** Why a GPU budget card has nothing left to approve (the task no longer waits for one), or null while it waits. */
@@ -274,6 +294,12 @@ export async function requestApproval(kind: string, target: string, params: Reco
   if (moot) throw new StudioError(`Nothing to approve for ${target}: ${moot}.`, 409);
   const clean = kind === 'github' ? { plan: params.plan } : kind === 'gpu' ? { amount: params.amount === undefined || params.amount === null || params.amount === '' ? undefined : Number(params.amount) } : kind === 'settings' ? { patch: params.patch } : {};
   const { bind, card } = await describe(kind as Kind, target, clean);
+  // Only a card J can act on reaches his Inbox: a dead end isn't made, and one already waiting for it is withdrawn.
+  const stuck = kind === 'deploy' || kind === 'rollback' ? deadEnd(card) : null;
+  if (stuck) {
+    db.prepare(`UPDATE approvals SET status = 'stale', token = '', decided_by = 'Studio', decided_at = ?, result = ? WHERE status = 'pending' AND kind = ? AND target = ?`).run(Date.now(), `withdrawn: ${stuck}`, kind, target);
+    throw new StudioError(`No card for ${target}: ${stuck}${card.blockers.length > 3 ? ` (and ${card.blockers.length - 3} more)` : ''}. Studio keeps working the plan (builds, playtests, fixes on beta) and goes live or asks when there is something to decide.`, 409);
+  }
   expire();
   // The same action on the same target is one card: asked again, it's shown where it was asked again too (the newest
   // conversation) with today's words; if the target moved meanwhile, that card is updated in place (superseded cards

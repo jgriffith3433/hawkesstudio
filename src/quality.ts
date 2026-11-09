@@ -33,7 +33,13 @@ export type QualityTuning = Record<string, { max?: number; min?: number }>;
 export type RubricRule = { id: string; title: string; why: string; build: string[]; checks: RubricCheck[] };
 /** A line the owner added from feedback: an instruction (and, with `problem`, a code that fails a playtest). */
 export type RubricLine = { id: string; product: string | null; rule: string; text: string; words: string | null; problem: string | null; by: string; source: string; at: number };
-export type QualityFail = { check: string; rule: string; title: string; evidence: string; kind?: CheckKind };
+/**
+ * seen: how the break was found. 'measured': the game or the browser reported it (a problem code, a console error, the
+ * feel sensor's flag, a metric over its limit). 'vision': an AI looked at frames or the recording and judged it (the
+ * polish pass's hits, the review's findings, the fun review). deploy.ts holdsGoLive never holds going live on a vision
+ * sighting when the review of that play says ship: the judge sees new things every replay, so it never converges.
+ */
+export type QualityFail = { check: string; rule: string; title: string; evidence: string; kind?: CheckKind; seen?: 'measured' | 'vision' };
 
 db.exec(`CREATE TABLE IF NOT EXISTS quality_lines (
   id TEXT PRIMARY KEY, product TEXT, rule TEXT NOT NULL, text TEXT NOT NULL, words TEXT, problem TEXT,
@@ -258,11 +264,11 @@ export function qualityGate(p: Pick<Product, 'id' | 'engine' | 'kind'> & { tunin
   const notes: string[] = [];
   const fails: QualityFail[] = [];
   const seen = new Set<string>();
-  const add = (c: (typeof checks)[number], evidence: string) => {
+  const add = (c: (typeof checks)[number], evidence: string, how: 'measured' | 'vision' = 'measured') => {
     const key = `${c.id}:${evidence.slice(0, 80)}`;
     if (seen.has(key)) return;
     seen.add(key);
-    fails.push({ check: c.id, rule: c.rule, title: c.ruleTitle, evidence: evidence.slice(0, 400), kind: c.kind });
+    fails.push({ check: c.id, rule: c.rule, title: c.ruleTitle, evidence: evidence.slice(0, 400), kind: c.kind, seen: how === 'vision' || c.kind === 'vision' || c.kind === 'review' ? 'vision' : 'measured' });
   };
   for (const pr of data.problems ?? []) {
     const c = named(pr, checks);
@@ -271,7 +277,7 @@ export function qualityGate(p: Pick<Product, 'id' | 'engine' | 'kind'> & { tunin
   // The feel layer: sensor flags and vision hits of a kind a rule names. The rule is broken by a bug-severity one, by
   // any sighting of a hard check's kind (the camera clipping or snapping), or by the same kind seen twice or more (one
   // polish sighting can be a fluke of the run). Hitches say nothing on a browser without a GPU.
-  const feel = [...(Array.isArray(data.feel) ? data.feel : []), ...(Array.isArray(data.polish) ? data.polish : [])].filter((f) => f?.kind && !(data.software && f.kind === 'hitch'));
+  const feel = [...(Array.isArray(data.feel) ? data.feel : []), ...(Array.isArray(data.polish) ? data.polish.map((f: any) => (f && typeof f === 'object' ? { ...f, __vision: true } : f)) : [])].filter((f) => f?.kind && !(data.software && f.kind === 'hitch'));
   const seenKind = new Map<string, number>();
   for (const f of feel) seenKind.set(String(f.kind), (seenKind.get(String(f.kind)) ?? 0) + Math.max(1, Number(f.count) || 1));
   for (const f of feel) {
@@ -279,11 +285,11 @@ export function qualityGate(p: Pick<Product, 'id' | 'engine' | 'kind'> & { tunin
     if (!c || (f.severity !== 'bug' && !c.hard && (seenKind.get(String(f.kind)) ?? 0) < 2)) continue;
     // A measured check is decided by its reading (a 120 ms hitch is under the 250 ms limit), unless it is a hard limit.
     if (c.metric && !c.hard) continue;
-    if (c) add(c, `${f.title ?? f.kind}${f.scene ? ` in ${f.scene}` : ''}${f.where ? ` (${f.where})` : ''}: ${String(f.detail ?? '').slice(0, 200)}`);
+    if (c) add(c, `${f.title ?? f.kind}${f.scene ? ` in ${f.scene}` : ''}${f.where ? ` (${f.where})` : ''}: ${String(f.detail ?? '').slice(0, 200)}`, f.__vision ? 'vision' : 'measured');
   }
   for (const f of data.findings ?? []) {
     const c = named(f, checks);
-    if (c) add(c, `${String(f.title ?? '').replace(TAG, '').trim()}${f.detail ? `: ${String(f.detail).slice(0, 200)}` : ''}`);
+    if (c) add(c, `${String(f.title ?? '').replace(TAG, '').trim()}${f.detail ? `: ${String(f.detail).slice(0, 200)}` : ''}`, 'vision');
   }
   const unmeasured: string[] = [];
   const metrics = { ...(data.metrics ?? {}) } as Record<string, unknown>;
@@ -320,7 +326,7 @@ export function qualityGate(p: Pick<Product, 'id' | 'engine' | 'kind'> & { tunin
   }
   if (data.fun?.verdict === 'demo') {
     const c = checks.find((x) => x.id === 'fun-review');
-    if (c) add(c, `the fun review calls it a demo, not a living world${data.fun.why ? `: ${data.fun.why}` : ''}`);
+    if (c) add(c, `the fun review calls it a demo, not a living world${data.fun.why ? `: ${data.fun.why}` : ''}`, 'vision');
   }
   return { fails, unmeasured, notes };
 }

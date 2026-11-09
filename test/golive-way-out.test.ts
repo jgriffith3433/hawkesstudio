@@ -45,3 +45,27 @@ test("fixWork is empty on a server with nothing running", () => {
   const w = D.fixWork('no-such-product', ['r_x']);
   assert.deepEqual(w, { changes: [], open: [] });
 });
+
+test("an AI sighting of any rule doesn't hold going live when the review says ship; the same rule measured does", () => {
+  const seen = (how: 'vision' | 'measured') => ({ ...fail('no-z-fighting', 'clipping', 'playtest'), seen: how });
+  assert.deepEqual(D.qualityBlockers([{ name: 'smoke@local', verdict: 'ship', quality: { fails: [seen('vision')], unmeasured: [] } }], 'abc1234').blockers, []);
+  assert.equal(D.qualityBlockers([{ name: 'smoke@local', verdict: 'ship', quality: { fails: [seen('measured')], unmeasured: [] } }], 'abc1234').blockers.length, 1);
+});
+
+test('the quality gate marks what the vision pass saw apart from what the game measured', async () => {
+  const Q = await import('../src/quality.ts');
+  const p = { id: 'way-out-game', engine: 'web', kind: 'game', world: '3d' } as any;
+  const hit = { kind: 'clipping', severity: 'bug', title: 'clipping', scene: 'Night bedroom', detail: 'looks like it clips' };
+  const vision = Q.qualityGate(p, { polish: [hit] }).fails.filter((f) => f.check === 'clipping');
+  const measured = Q.qualityGate(p, { feel: [hit] }).fails.filter((f) => f.check === 'clipping');
+  assert.ok(vision.length && vision.every((f) => f.seen === 'vision'));
+  assert.ok(measured.length && measured.every((f) => f.seen === 'measured'));
+});
+
+test('a go-live card is only made or kept when someone can act on it', async () => {
+  const A = await import('../src/approvals.ts');
+  assert.equal(A.deadEnd({ blockers: [] }), null);
+  assert.equal(A.deadEnd({ blockers: ['x'], skip: { sha: 'a', short: 'a', why: ['x'] } as any }), null);
+  assert.equal(A.deadEnd({ blockers: ['x'], catchUp: true }), null);
+  assert.match(A.deadEnd({ blockers: ['Nothing to go live: main already is beta (594db2a).'] })!, /^nothing to approve or go live past yet/);
+});
