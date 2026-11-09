@@ -1294,10 +1294,10 @@ server.listen(listenPort, cloud ? '0.0.0.0' : '127.0.0.1', () => {
   void import('./builds.ts').then((B) => { void B.watchGenBuilds(); void import('./buildaccess.ts').then((A) => A.resumeRetries()); return B.reconcileBuilds().then(() => import('./buildfix.ts')).then((F) => F.resumeChains()); }).catch((e) => console.warn(`[studio] reconciling builds: ${e.message ?? e}`));
   chooseBrain();
   const changes = resumeChanges();
-  // Pull requests J merged on GitHub: their changes are marked merged (agents.ts), every 5 minutes.
+  // Pull requests J merged on GitHub: their changes are marked merged (agents.ts) once at start-up, then when beta's
+  // push hook fires (onBaseMoved), never on a timer.
   const mergedOutside = () => void import('./agents.ts').then(({ syncMergedOutside }) => syncMergedOutside()).catch((e) => console.warn(`[studio] merged outside Studio: ${e.message ?? e}`));
   setTimeout(mergedOutside, 60_000).unref();
-  setInterval(mergedOutside, 5 * 60_000).unref();
   const answers = resumeTalk();
   // Scene redos J started from Screening carry on, waiting on the Gen jobs they already submitted (videos.ts).
   void import('./videos.ts').then(({ resumeRedos }) => resumeRedos()).then((n) => { if (n) console.log(`[studio] ${n} video redo(s) carrying on`); }).catch((e) => console.warn(`[studio] video redos: ${e.message ?? e}`));
