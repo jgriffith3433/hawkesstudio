@@ -72,7 +72,7 @@ import { healSource, populateSource, probeSource, repairedError, sourceError, SO
 import { runCommand, resumeGapMs, RESTART_LOOP, RESTART_WINDOW_MS } from './ops.ts';
 import { deployPending, critical } from './drain.ts';
 import { notify, notifyOnce, PUBLIC_URL } from './notify.ts';
-import { threadFor, getTask } from './roadmap.ts';
+import { threadFor, getTask, addItem, addTask } from './roadmap.ts';
 import { overlapWith, filesIn, othersSection, sortConflicts, UNITY_RULES, type WorkShape } from './parallel.ts';
 import { judgeCriteria, gate } from './acceptance.ts';
 import { briefSection, learnFrom, recordRun, LEARNED_ASK } from './memory.ts';
@@ -2465,15 +2465,17 @@ export function playtestChange(id: string, by = 'J') {
  * with an Approve card. Only when GitHub merged the commit Studio has on record; a pull request merged before the
  * agent's later commits stays as it is (approve() says to revise it, publish() opens a new pull request).
  */
-export async function syncMergedOutside() {
+export async function syncMergedOutside(repoFolder?: string) {
   const out: string[] = [];
   if (!githubReachable()) return out;
   for (const c of listChanges({ status: 'ready', limit: 100 })) {
-    if (!c.pr || running.has(c.id)) continue;
+    if (!c.pr || running.has(c.id) || (repoFolder && c.repo !== repoFolder)) continue;
     const pr = await github(`/repos/${c.slug}/pulls/${c.pr}`).catch(() => null);
     if (!pr?.merged) continue;
     const head = String(pr.head?.sha ?? '');
-    if (c.verify?.sha && head !== c.verify.sha) continue;
+    // After a conflict pass or update-branch the branch tip moved past the verified commit: the worktree's tip counts too.
+    const tip = fs.existsSync(c.worktree) ? git(c.worktree, ['rev-parse', 'HEAD']).out : '';
+    if (c.verify?.sha && head !== c.verify.sha && head !== tip) continue;
     await critical(`recording ${c.id} as merged`, async () => {
       if (getChange(c.id)?.status !== 'ready') return;
       const at = String(pr.merged_at ?? '').slice(0, 16).replace('T', ' ');
@@ -2569,12 +2571,27 @@ export function verifyPlaytest(project: string, params: Record<string, unknown>,
   }, { runMs: playtestRunMs({ timeout } as Playtest), queueMs: VERIFY_QUEUE_MS, idleMs: PLAYTEST_IDLE_MS(), priority: VERIFY_PRIORITY, job: prior, ...(api ? { api } : {}), ...(pollMs ? { pollMs } : {}) });
 }
 
+/** One Studio fix task per product (never one per change) to add the build settings a Unity product lacks. */
+function fileMissingBuildTask(p: Product) {
+  try {
+    const title = `Add build settings (products.json build) for ${p.name}`;
+    if (db.prepare('SELECT 1 FROM items WHERE product = ? AND title = ?').get('hawkesstudio', title)) return;
+    const item = addItem({ product: 'hawkesstudio', title, by: 'Studio', status: 'planned', goal: `Studio can't build ${p.name} to playtest its changes.`, criteria: [`products.json has a build entry for ${p.id} (project, site, method)`, `A change to ${p.name} gets built and played before it merges`] });
+    addTask({ item: item.id, title, request: `${p.name} (${p.id}) is a Unity product with no \`build\` settings in products.json, so agent changes can't be built and played. Add its build settings (project, site, -executeMethod) like the other Unity products, following docs/builds.md. Until then its changes merge into beta on the agent's checks.` });
+  } catch (e: any) { console.warn(`[studio] filing the build-settings task for ${p.id}: ${e.message ?? e}`); }
+}
+
 async function verifyChange(c: Change, p: Product, findings: any[], jobs?: JobMemo) {
   let dir: string;
   let build: ChangeBuild | null = null;
   if (isSiteChange(c, p)) {
     // A website change: its worktree is the site as it would be (with live's Game/v<n>): served as it is, no build.
     dir = path.join(c.worktree, path.relative(c.repo, p.local.dir));
+  } else if (!p.build && p.engine === 'unity') {
+    // A product Studio can't build (no build settings) isn't a failed build: the change isn't played and merges on the
+    // agent's checks, like any change with no playtest. One Studio task asks for the product's build settings.
+    fileMissingBuildTask(p);
+    return { outcome: 'not played', error: `${p.name} has no build settings (products.json build), so Studio can't build it to play: merged on the agent's checks`, build: null };
   } else if (p.engine === 'unity' || p.build) {
     // Unity: build the branch, then serve that build the way the site's local server would.
     build = await buildChange(c, p, jobs).catch((e: any): ChangeBuild => ({ sha: '', ok: false, at: Date.now(), error: String(e.message ?? e).slice(0, 500), retry: true }));
@@ -3476,6 +3493,8 @@ export async function updateBranchOnGithub(id: string): Promise<{ state: 'curren
  * try again. Never a timer.
  */
 export function onBaseMoved(repoFolder: string) {
+  // A pull request merged on GitHub moves beta: its ready change is marked merged now (no timer), before any retry.
+  void syncMergedOutside(repoFolder).catch((e) => console.warn(`[studio] merged outside Studio: ${e.message ?? e}`));
   for (const c of listChanges()) {
     if (c.repo !== repoFolder || c.infra || c.status !== 'ready' || !c.pr || !String(c.auto_merge ?? '').startsWith('failed')) continue;
     void autoMergeBeta(c.id).catch((e) => console.warn(`[studio] auto-merge ${c.id} after ${c.base} moved: ${e.message ?? e}`));
