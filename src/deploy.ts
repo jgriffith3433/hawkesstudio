@@ -33,7 +33,7 @@ import {
 import { cloudGoLive, cloudRefs, cloudBlockers, cloudGoLiveNow, compareOnGitHub, type CloudRefs, type Compare } from './deploy-cloud.ts';
 import { githubSlugOf, isGoLiveMerge, publishTargets, buildRunsAt, onlyDocsSince, goLiveOnGitHub, rollbackRefs, rollbackOnGitHub, type GitHubIO } from './deploy-github.ts';
 import { repoMap } from './repos.ts';
-import { qualityGate, failLine } from './quality.ts';
+import { qualityGate, failLine, type QualityFail } from './quality.ts';
 import { customerStudio } from './tenancy.ts';
 import { asFirebase, firebaseBuildOf } from './firebasebuild.ts';
 import { STUDIO_RELEASE, RELEASES, playedCommit, releasesAt, releasesPath, readReleases, draftWithin, addReleaseTo, releaseLine, releaseNotesLine, type Draft } from './release.ts';
@@ -80,23 +80,28 @@ function playOf(s: Step, steps: Step[], carried = false) {
 /** The game quality rubric on one played build (quality.ts): the rules it broke, and what wasn't measured. */
 function qualityOfPlay(s: Step, rv: Step | undefined) {
   let p: Product;
-  try { p = getProduct(s.product); } catch { return { fails: [], unmeasured: [] }; }
+  try { p = getProduct(s.product); } catch { return { fails: [], unmeasured: [], notes: [] }; }
   return qualityGate(p, { problems: s.data?.problems, metrics: s.data?.metrics, findings: rv?.data?.findings, fun: rv?.data?.fun ?? null, feel: s.data?.feel, polish: s.data?.polishHits, motion: rv?.data?.motion ?? null, software: Boolean(s.data?.software) });
 }
 
 /**
- * The game quality rubric as a go-live gate: a played build of beta that broke a rule blocks going live (no bypass:
- * fix it on beta, play beta again); checks the game doesn't measure yet are one warning.
+ * The game quality rubric as a go-live gate: a played build of beta that broke a rule blocks going live (no bypass).
+ * Studio files each broken rule as a bug (pipeline.ts fileQuality), its agents fix it on beta and beta is played again,
+ * so the owner is never asked to. Checks the game doesn't measure yet are one warning; notes (load stutter, the
+ * recording's stutters) are warnings too.
  */
-export function qualityBlockers(tested: { name: string; quality?: ReturnType<typeof qualityGate> }[], short: string | undefined) {
+export function qualityBlockers(tested: { name: string; quality?: { fails: QualityFail[]; unmeasured: string[]; notes?: string[] } }[], short: string | undefined) {
   const blockers: string[] = [];
   const unmeasured = new Set<string>();
+  const notes = new Set<string>();
   for (const t of tested) {
     const fails = t.quality?.fails ?? [];
-    if (fails.length) blockers.push(`Playtest ${t.name} on ${short ?? 'beta'} broke ${fails.length} game quality rule${fails.length === 1 ? '' : 's'}: ${fails.slice(0, 4).map(failLine).join('; ')}${fails.length > 4 ? ` (and ${fails.length - 4} more)` : ''}. Fix ${fails.length === 1 ? 'it' : 'them'} on ${BETA} and play ${BETA} again.`);
+    if (fails.length) blockers.push(`Playtest ${t.name} on ${short ?? 'beta'} broke ${fails.length} game quality rule${fails.length === 1 ? '' : 's'}: ${fails.slice(0, 4).map(failLine).join('; ')}${fails.length > 4 ? ` (and ${fails.length - 4} more)` : ''}. Studio is fixing ${fails.length === 1 ? 'it' : 'them'} on ${BETA} and plays ${BETA} again by itself; it goes live when that passes.`);
     for (const u of t.quality?.unmeasured ?? []) unmeasured.add(u);
+    for (const n of t.quality?.notes ?? []) notes.add(`${t.name}: ${n}`);
   }
   const warnings = unmeasured.size ? [`Not measured by the playtests yet (the game doesn't report them): ${[...unmeasured].join(', ')}.`] : [];
+  warnings.push(...[...notes].slice(0, 6));
   return { blockers, warnings };
 }
 
