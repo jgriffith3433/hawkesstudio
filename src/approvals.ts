@@ -379,13 +379,52 @@ export async function selfApprove(id: string): Promise<string | null> {
 
 /** Walk-away mode: every pending card that may approve itself does (the PM's tick; cards from before it was on). */
 export async function selfApproveWaiting(): Promise<string[]> {
-  if (!walkAwayCardsOn()) return [];
+  if (!walkAwayCardsOn()) {
+    // Off: nothing approves itself, but waiting go-live cards still follow their plan (recheckHeld).
+    for (const { id } of db.prepare(`SELECT id FROM approvals WHERE status = 'pending' AND kind = 'deploy'`).all() as any[]) void recheckHeld(id).catch(() => {});
+    return [];
+  }
   expire();
   const out: string[] = [];
   for (const { id } of db.prepare(`SELECT id FROM approvals WHERE status = 'pending' ORDER BY created`).all() as any[]) {
     if (await selfApprove(id).catch(() => null)) out.push(id);
+    else void recheckHeld(id).catch((e) => console.warn(`[approvals] rechecking ${id}: ${e?.message ?? e}`));
   }
   return out;
+}
+
+/** How often a waiting go-live card is looked at again (its plan is rebuilt: GitHub, the playtests). */
+const RECHECK_MS = () => Number(process.env.STUDIO_CARD_RECHECK_MS ?? 10 * 60_000);
+const rechecked = new Map<string, number>();
+/**
+ * A go-live card that waits for the owner (walkAwayHold) is rebuilt from the current plan now and then (J, 2026-11-09:
+ * cards said "Studio is fixing them on beta and plays beta again by itself; it goes live when that passes" and then sat
+ * for hours, unchanged, with a dead button): once the fix merged and beta played clean, the card shows it can go (or,
+ * on the auto go-live policy, Studio takes it live itself and the card says so); while it still waits, it shows the
+ * fix work as it stands. Same target: the card's words change in place, same token; a moved target is refreshCard.
+ */
+export async function recheckHeld(id: string, now = Date.now()) {
+  const r = row(id);
+  if (!r || r.status !== 'pending' || r.kind !== 'deploy') return null;
+  if (now - (rechecked.get(id) ?? 0) < RECHECK_MS()) return null;
+  rechecked.set(id, now);
+  const a = toApproval(r);
+  const fresh = await describe(a.kind, a.target, a.params);
+  if (fresh.bind !== r.bind) { refreshCard(id, fresh); cardChanged(a.conversation); return 'refreshed'; }
+  if (!fresh.card.blockers.length) {
+    const auto = await autoGoLiveInstead(a.target, fresh.card);
+    if (auto) {
+      db.prepare(`UPDATE approvals SET status = 'approved', token = '', card = ?, decided_by = ?, decided_at = ?, result = ? WHERE id = ? AND status = 'pending'`).run(J(fresh.card), WALK_AWAY_BY, Date.now(), auto.result, id);
+      cardChanged(a.conversation);
+      return 'went live';
+    }
+  }
+  if (J(fresh.card) !== J(a.card)) {
+    db.prepare(`UPDATE approvals SET card = ? WHERE id = ? AND status = 'pending'`).run(J(fresh.card), id);
+    cardChanged(a.conversation);
+    return 'updated';
+  }
+  return null;
 }
 
 async function productOf(a: Approval): Promise<string | null> {
