@@ -14,7 +14,7 @@ GitHub mode into the website repo). Everything here is the `builds` list, which 
 "builds": [
   {
     "id": "web",               // a-z0-9-, unique in the project; the build's name in links and runs
-    "tool": "unity",           // unity | npm | static | actions   (godot and anything else: actions)
+    "tool": "unity",           // unity | npm | static | firebase | actions   (godot and anything else: actions)
     "target": "web",           // web | windows | linux | mac | android
     "path": "YoobaLand",       // where in the repo: the Unity project, the site folder, the npm package (default ".")
     "method": "YoobaWebBuild.Build", // unity: -executeMethod (default: Gen's own HawkesBuild.Build, enabled scenes)
@@ -44,6 +44,21 @@ What builds it (the runner) follows from `tool`:
   `build-overrides.json`) with a line in the build's history ("ran on l after m ran out of memory; saved l ...").
 - **npm / static → Studio** (its Cloud Run job, `cloudjob.ts runCloudBuild`): `command` in `path`, output `out`; static
   publishes the files as they are (no package.json needed).
+- **firebase → Studio** (the same Cloud Run job; `firebasebuild.ts`, J 2026-11-09: Hawkes Games off GitHub Actions):
+  `firebase deploy` of the commit, what its own `firebase.json` describes (`hosting,functions:<codebase>,firestore`...),
+  to the staging project for beta and the prod project for main (`.firebaserc` aliases `staging` / `prod`, or the build's
+  `firebase: { beta, live, only, serviceAccount, health }`). First the functions' check (`npm ci`, `npx tsc -p .` where
+  there is a tsconfig), then the deploy, the health check (`versionPath`, e.g. `/v1/health`) and a small build record
+  (`studio-build/`), published as the build's version. A push to beta deploys staging; going live and rolling back deploy
+  main (`deploy.ts deployMain`, a build run). **Keyless:** Studio (not the job) mints a one-hour token of
+  `deployer@<project>.iam.gserviceaccount.com` with Google's IAM Credentials API; the job's shell takes it out of the
+  environment before the repo's own code runs and gives it only to a metadata server stand-in on 127.0.0.1
+  (`GCE_METADATA_HOST`), which firebase-tools' Google sign-in reads. No key file, no token in the repo, command or log
+  (`scrub`). Studio's service account needs `roles/iam.serviceAccountTokenCreator` on each deployer: Studio adds it itself
+  where it may manage that account, else the build fails naming the exact role, account and project. An `actions` build
+  whose workflow is `firebase.yml` is read as a firebase build (`asFirebase`): the workflow stays in the repo and is never
+  started by Studio, and a project with no `actions` build left never gets the Actions preflight or card (an open one
+  closes when Studio starts and when it builds: `retireActionsCards`).
 - **actions → the project's own GitHub Actions**: the workflow builds however it likes (GameCI for Unity with their own
   license, Godot export, anything), uploads an artifact, then tells Studio (below). Studio downloads the artifact and
   carries on. Studio can start it (`workflow_dispatch`) when asked.
