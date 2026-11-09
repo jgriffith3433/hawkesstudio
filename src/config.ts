@@ -154,6 +154,12 @@ export type Product = {
    * e.g. { "feel.inputLatencyMs": { "max": 120 }, "feel.coyoteMs": { "min": 60 } }.
    */
   tuning?: Record<string, { max?: number; min?: number }>;
+  /**
+   * Whether it has a 3D world the player moves through: the rubric's camera and controls checks apply only then. Unset:
+   * Unity games, and any game whose playtest saw a camera or player move (quality.ts hasWorld3d). "none" for a site or
+   * video story with no world.
+   */
+  world?: '3d' | '2d' | 'none';
   /** The public voice of its "What's new" (release.ts): voice, and words its notes never use. Unset: a game's player's-eye voice. */
   releaseVoice?: { voice: string; never?: string[] };
   /**

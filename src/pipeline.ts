@@ -24,7 +24,7 @@ import { ensureServer, gitState, treeFingerprint, runCheck, serveDir, stopServed
 import { absorb, applyKnown, expireIdeas, notSeenIn, type ReviewMode } from './backlog.ts';
 import { feelFindings, feelSensorFindings } from './feel.ts';
 import { barState, barHash, reviewedSha, reviewParams } from './review.ts';
-import { isGame, effectiveBar } from './quality.ts';
+import { isGame, effectiveBar, qualityFindings } from './quality.ts';
 import { funReview } from './fun-review.ts';
 import { reviewJob, viaNote } from './review-cc.ts';
 import { writeReport } from './report.ts';
@@ -933,6 +933,9 @@ function fileFeel(run: string, p: Product, name: string, scenario: string, r: an
     const list = [
       ...feelSensorFindings(r, { scenario }),
       ...feelFindings(r, { scenario, mode: mode ?? 'full', at: typeof at === 'string' && at ? at : undefined }),
+      // A measured limit the play broke (a hitch in play over 250 ms, input latency): a bug the agents fix on beta, so
+      // the go-live gate clears by itself (deploy.ts qualityBlockers), never a "fix it" for the owner.
+      ...qualityFindings(p, r, scenario),
     ];
     if (!list.length) return;
     const got = absorb(p.id, run, name, list, { mode: 'full' });

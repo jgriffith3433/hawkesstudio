@@ -228,7 +228,8 @@ test('hard limits: one sighting of the camera clipping or snapping fails; hitche
   const jitterOnce = q.qualityGate(game, { metrics, feel: [{ kind: 'jitter', severity: 'polish', detail: 'once' }] });
   assert.equal(jitterOnce.fails.length, 0, 'jitter is not a hard limit');
   const slow = q.qualityGate(game, { metrics: { 'feel.cameraClipSeconds': 0.4, 'feel.inputLatencyMs': 180, 'feel.worstHitchMs': 600, 'feel.coyoteMs': 20 }, motion: { worstHitchMs: 400 } });
-  assert.deepEqual(slow.fails.map((f) => f.check).sort(), ['camera-clip', 'coyote-time', 'hitch', 'input-latency', 'video-hitch']);
+  assert.deepEqual(slow.fails.map((f) => f.check).sort(), ['camera-clip', 'coyote-time', 'hitch', 'input-latency']);
+  assert.ok(slow.notes.some((n) => /video\.worstHitchMs = 400, over 250 \(video-hitch, a note/.test(n)), 'the recording stutter is a note');
   assert.match(slow.fails.find((f) => f.check === 'coyote-time')!.evidence, /under 80/);
 });
 
@@ -239,7 +240,7 @@ test("a game's tuning moves its limits; software runs ignore timing; optional me
   assert.deepEqual(q.qualityGate(tuned, { metrics }).fails, []);
   const soft = q.qualityGate(game, { software: true, metrics: { 'feel.cameraClipSeconds': 0, 'feel.inputLatencyMs': 900, 'feel.worstHitchMs': 3000 }, feel: [{ kind: 'hitch', severity: 'polish', count: 40, detail: 'slow' }] });
   assert.deepEqual(soft.fails, []);
-  const none = q.qualityGate(game, { metrics: {} });
+  const none = q.qualityGate({ ...game, world: '3d' as const }, { metrics: {} });
   assert.ok(none.unmeasured.some((u) => u.includes('feel.inputLatencyMs')));
   assert.ok(!none.unmeasured.some((u) => /coyote|jump-buffer|hit-stop|video/.test(u)), 'optional metrics are not listed');
 });
@@ -253,4 +254,35 @@ test("a game's bar never accepts prototype art or sparse content; other projects
   assert.equal(q.effectiveBar({ ...game, quality: undefined }), q.GAME_FLOOR);
   assert.equal(q.effectiveBar({ ...site, quality: 'Prototype art is accepted.' }), 'Prototype art is accepted.');
   assert.equal(q.effectiveBar({ ...site, quality: undefined }), undefined);
+});
+
+// J's go-lives, 2026-11-09: the hitch gates blocked four games on loading frames and a recorder stall.
+test('loading frames are load stutter, a recording stall alone is a note, and hitches under the limit pass', () => {
+  const feel = [
+    { kind: 'hitch', severity: 'polish', scene: 'Title', t: 1, value: 483, detail: 'frame took 483 ms' },
+    { kind: 'hitch', severity: 'polish', scene: 'Level 1: The Apex Peak', t: 40, st: 20, value: 133, detail: 'frame took 133 ms', count: 2 },
+    { kind: 'hitch', severity: 'polish', scene: 'Level 1: The Apex Peak', t: 60, st: 40, value: 117, detail: 'frame took 117 ms' },
+  ];
+  const g = q.qualityGate({ ...game, engine: 'unity' as const }, { metrics: { 'feel.worstHitchMs': 483, 'feel.inputLatencyMs': 40, 'feel.cameraClipSeconds': 0 }, feel, motion: { worstHitchMs: 800 } });
+  assert.deepEqual(g.fails, []);
+  assert.ok(g.notes.some((n) => /Load stutter .*483 ms on Title/.test(n)));
+  assert.ok(g.notes.some((n) => /video-hitch/.test(n)));
+  // A hitch in play over the limit still fails, and is filed as a bug for the agents.
+  const bad = [...feel, { kind: 'hitch', severity: 'polish', scene: 'Arena', t: 90, st: 30, value: 317, detail: 'frame took 317 ms' }];
+  const g2 = q.qualityGate(game, { metrics: { 'feel.worstHitchMs': 483, 'feel.inputLatencyMs': 40, 'feel.cameraClipSeconds': 0 }, feel: bad });
+  assert.deepEqual(g2.fails.map((f) => f.check), ['hitch']);
+  assert.match(g2.fails[0].evidence, /feel\.worstHitchMs = 317/);
+  const found = q.qualityFindings(game, { metrics: { 'feel.worstHitchMs': 483, 'feel.inputLatencyMs': 40, 'feel.cameraClipSeconds': 0 }, feel: bad }, 'smoke');
+  assert.equal(found.length, 1);
+  assert.equal(found[0].severity, 'bug');
+  assert.equal(found[0].title, 'Quality limit broken: hitch (The camera and controls feel right)');
+});
+
+test('a project with no 3D world gets no camera or controls checks', () => {
+  const tv = { ...game, engine: 'web' as const };
+  const g = q.qualityGate(tv, { metrics: { 'feel.worstHitchMs': 40 }, feel: [], motion: { worstHitchMs: 970 } });
+  assert.deepEqual(g.fails, []);
+  assert.ok(!g.unmeasured.some((u) => /input-latency|camera/.test(u)));
+  assert.equal(q.hasWorld3d({ engine: 'web' }, { metrics: { 'feel.maxCameraDegPerSec': 90 } }), true);
+  assert.equal(q.hasWorld3d({ engine: 'unity', world: 'none' }, {}), false);
 });

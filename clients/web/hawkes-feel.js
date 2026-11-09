@@ -121,6 +121,8 @@ export function createFeelCore({ emit = () => {}, seed = 0, scene = () => undefi
   // Measurements for the quality rubric's hard limits (metrics(), sent as playtest metrics feel.*).
   const m = { worstFrameMs: 0, maxCamDegPerSec: 0, camClipSeconds: 0, insideSeconds: 0, latencies: [], samples: 0, activeSeconds: 0, tracksActive: false };
   let press = null;              // { t, pos } when movement input last went from up to down
+  let sceneName;                 // the scene the last sample was in, and when it began (seconds)
+  let sceneT = 0;
   let lastInput = 0;
 
   function median() {
@@ -140,6 +142,10 @@ export function createFeelCore({ emit = () => {}, seed = 0, scene = () => undefi
       return null;
     }
     if (flags.length >= th.maxFlags) return null;
+    // The scene and when it began: Studio counts a hitch on a loading screen or in a scene's first seconds as load
+    // stutter, not a hitch in play (quality.ts inPlayHitch).
+    const sc = scene() ?? undefined;
+    if (sc !== sceneName) { sceneName = sc; sceneT = s.t; }
     const flag = {
       id: `feel-${++n}`,
       kind,
@@ -149,7 +155,8 @@ export function createFeelCore({ emit = () => {}, seed = 0, scene = () => undefi
       pos: v3(pos),
       ...(s.cam ? { cam: { pos: v3(s.cam.pos), ...yawPitch(s.cam.fwd) } } : {}),
       seed,
-      scene: scene() ?? undefined,
+      scene: sc,
+      st: r2(s.t - sceneT),
       ...(value != null ? { value: r2(value) } : {}),
       detail: detail ?? WORDS[kind] ?? kind,
       count: 1,
@@ -161,6 +168,7 @@ export function createFeelCore({ emit = () => {}, seed = 0, scene = () => undefi
 
   function sample(s) {
     const dt = Math.max(0, s.dt ?? 0);
+    { let sc; try { sc = scene() ?? undefined; } catch {} if (sc !== sceneName) { sceneName = sc; sceneT = s.t; } }
     // Silence must not read as success: count the frames the sensor saw, and (when the adapter knows) the seconds the
     // player was the player's to move. Studio files a bug when these stay 0 in a run (src/feel.ts feelSensorFindings).
     m.samples++;

@@ -106,17 +106,17 @@
         "Report the tuned values as playtest metrics, e.g. run.metric('feel.coyoteMs', 120), run.metric('feel.jumpBufferMs', 120), run.metric('feel.hitStopMs', 70); the feel sensor measures input latency, camera clipping and hitches itself."
       ],
       "checks": [
-        { "id": "camera-clip", "kind": "playtest", "what": "The camera inside or behind a wall or floor (the feel sensor's camera-blocked). A hard limit: one sighting fails.", "problem": "quality.camera-clip", "metric": "feel.cameraClipSeconds", "max": 0, "hard": true },
-        { "id": "camera-snap", "kind": "playtest", "what": "The camera snaps, jumps or shakes between frames outside an intended cut. A hard limit: one sighting fails.", "problem": "quality.camera-snap", "hard": true },
-        { "id": "movement-jitter", "kind": "playtest", "what": "The player or camera jitters back and forth, or collision shoves the player.", "problem": "quality.jitter" },
-        { "id": "input-latency", "kind": "playtest", "what": "Input to visible movement, measured by the feel sensor: under 100 ms.", "metric": "feel.inputLatencyMs", "max": 100, "problem": "quality.input-latency" },
-        { "id": "hitch", "kind": "playtest", "what": "Frame hitches during play: no frame over 250 ms.", "metric": "feel.worstHitchMs", "max": 250, "problem": "quality.hitch" },
-        { "id": "video-hitch", "kind": "review", "what": "Stutters the recording shows (the review's video freezes): none over 250 ms.", "metric": "video.worstHitchMs", "max": 250, "optional": true },
-        { "id": "coyote-time", "kind": "playtest", "what": "Jumping games report their coyote time: at least 80 ms.", "metric": "feel.coyoteMs", "min": 80, "optional": true },
-        { "id": "jump-buffer", "kind": "playtest", "what": "Jumping games report their jump buffer: at least 80 ms.", "metric": "feel.jumpBufferMs", "min": 80, "optional": true },
-        { "id": "hit-stop", "kind": "playtest", "what": "Combat games report their hit-stop: at least 40 ms on heavy hits.", "metric": "feel.hitStopMs", "min": 40, "optional": true },
-        { "id": "explore-falls", "kind": "playtest", "what": "The explore bot (hugging walls, jumping edges) never falls through or out of the world. A hard limit: one spot fails.", "metric": "explore.fallSpots", "max": 0, "hard": true, "optional": true },
-        { "id": "explore-stuck", "kind": "playtest", "what": "The explore bot never gets stuck on geometry it can't escape by sliding, jumping or backing out.", "metric": "explore.stuckSpots", "max": 0, "optional": true }
+        { "id": "camera-clip", "kind": "playtest", "world": "3d", "what": "The camera inside or behind a wall or floor (the feel sensor's camera-blocked). A hard limit: one sighting fails.", "problem": "quality.camera-clip", "metric": "feel.cameraClipSeconds", "max": 0, "hard": true },
+        { "id": "camera-snap", "kind": "playtest", "world": "3d", "what": "The camera snaps, jumps or shakes between frames outside an intended cut. A hard limit: one sighting fails.", "problem": "quality.camera-snap", "hard": true },
+        { "id": "movement-jitter", "kind": "playtest", "world": "3d", "what": "The player or camera jitters back and forth, or collision shoves the player.", "problem": "quality.jitter" },
+        { "id": "input-latency", "kind": "playtest", "world": "3d", "what": "Input to visible movement, measured by the feel sensor: under 100 ms.", "metric": "feel.inputLatencyMs", "max": 100, "problem": "quality.input-latency" },
+        { "id": "hitch", "kind": "playtest", "what": "Frame hitches during play: no frame over 250 ms. Loading, title and menu screens and a scene's first seconds are load stutter, a note, not a fail.", "metric": "feel.worstHitchMs", "max": 250, "problem": "quality.hitch" },
+        { "id": "video-hitch", "kind": "review", "what": "Stutters the recording shows (the review's video freezes): none over 250 ms. Advisory: the recorder can stall on its own, so it is a note unless the game's own frame timings agree (the hitch check).", "metric": "video.worstHitchMs", "max": 250, "optional": true, "advisory": true },
+        { "id": "coyote-time", "kind": "playtest", "world": "3d", "what": "Jumping games report their coyote time: at least 80 ms.", "metric": "feel.coyoteMs", "min": 80, "optional": true },
+        { "id": "jump-buffer", "kind": "playtest", "world": "3d", "what": "Jumping games report their jump buffer: at least 80 ms.", "metric": "feel.jumpBufferMs", "min": 80, "optional": true },
+        { "id": "hit-stop", "kind": "playtest", "world": "3d", "what": "Combat games report their hit-stop: at least 40 ms on heavy hits.", "metric": "feel.hitStopMs", "min": 40, "optional": true },
+        { "id": "explore-falls", "kind": "playtest", "world": "3d", "what": "The explore bot (hugging walls, jumping edges) never falls through or out of the world. A hard limit: one spot fails.", "metric": "explore.fallSpots", "max": 0, "hard": true, "optional": true },
+        { "id": "explore-stuck", "kind": "playtest", "world": "3d", "what": "The explore bot never gets stuck on geometry it can't escape by sliding, jumping or backing out.", "metric": "explore.stuckSpots", "max": 0, "optional": true }
       ]
     }
   ]

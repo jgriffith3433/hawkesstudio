@@ -24,8 +24,10 @@ export type CheckKind = 'scan' | 'playtest' | 'vision' | 'review';
  * A check. `metric` with `max` / `min`: a playtest metric outside fails it (a product's `tuning` can move the limit for
  * its own game). `hard`: one sighting of the kind fails, whatever its severity (the camera clipping, snapping). `optional`:
  * a metric only some games report (coyote time in a game with no jumping), not listed as unmeasured when missing.
+ * `world: "3d"`: only for a game with a 3D world (hasWorld3d). `advisory`: a reading over its limit is a note, never a
+ * fail (the recording's stutters: the recorder can stall on its own).
  */
-export type RubricCheck = { id: string; kind: CheckKind; what: string; problem?: string; metric?: string; max?: number; min?: number; hard?: boolean; optional?: boolean };
+export type RubricCheck = { id: string; kind: CheckKind; what: string; problem?: string; metric?: string; max?: number; min?: number; hard?: boolean; optional?: boolean; world?: '3d'; advisory?: boolean };
 /** A game's own limits for measured checks, by metric: products.json `tuning`, e.g. { "feel.inputLatencyMs": { "max": 120 } }. */
 export type QualityTuning = Record<string, { max?: number; min?: number }>;
 export type RubricRule = { id: string; title: string; why: string; build: string[]; checks: RubricCheck[] };
@@ -224,9 +226,36 @@ function feelCheck(kind: string, checks: ReturnType<typeof rubricChecks>) {
   return hit ? checks.find((c) => c.id === hit[1]) ?? null : null;
 }
 
-export function qualityGate(p: Pick<Product, 'id' | 'engine' | 'kind'> & { tuning?: QualityTuning }, data: { problems?: any[]; metrics?: Record<string, unknown> | null; findings?: any[]; fun?: { verdict?: string; why?: string } | null; feel?: any[] | null; polish?: any[] | null; motion?: { worstHitchMs?: number | null } | null; software?: boolean }) {
-  if (!isGame(p)) return { fails: [] as QualityFail[], unmeasured: [] as string[] };
-  const checks = rubricChecks(p.id);
+/** A loading, title or menu screen: a long frame there is load stutter, not a hitch in play. */
+export const LOADING_SCENE = /\b(load(ing)?|title|main menu|menu|splash|intro|boot|lobby|start screen|press start)\b/i;
+/** A scene's first seconds (its first frames, shader warm-up) count as loading too. */
+export const LOAD_SECONDS = 3;
+
+/** A hitch flag in play, not on a loading screen or in a scene's first seconds (or the run's). */
+export function inPlayHitch(f: { scene?: string | null; t?: number; st?: number }) {
+  if (f.scene && LOADING_SCENE.test(f.scene)) return false;
+  const since = Number.isFinite(Number(f.st)) ? Number(f.st) : Number(f.t);
+  return !(Number.isFinite(since) && since < LOAD_SECONDS);
+}
+
+const CAMERA_KINDS = /^(camera-|below-ground|fell-out|stuck|collision-pop|jitter|foot-sliding|slope-slide|inside-geometry)/;
+/**
+ * Whether a played game has a 3D world: its `world` setting when set, else a Unity game, or a playtest whose feel
+ * sensor watched a camera or a moving player (camera readings, input latency, explore cells, or a camera or player flag).
+ */
+export function hasWorld3d(p: { engine?: string; world?: string }, data: { metrics?: Record<string, unknown> | null; feel?: any[] | null }) {
+  if (p.world) return p.world === '3d';
+  if (p.engine === 'unity') return true;
+  const m = data.metrics ?? {};
+  if (['feel.maxCameraDegPerSec', 'feel.cameraClipSeconds', 'feel.inputLatencyMs', 'explore.coverage'].some((k) => Number.isFinite(Number(m[k])) && m[k] !== null)) return true;
+  return (Array.isArray(data.feel) ? data.feel : []).some((f) => CAMERA_KINDS.test(String(f?.kind ?? '')));
+}
+
+export function qualityGate(p: Pick<Product, 'id' | 'engine' | 'kind'> & { tuning?: QualityTuning; world?: Product['world'] }, data: { problems?: any[]; metrics?: Record<string, unknown> | null; findings?: any[]; fun?: { verdict?: string; why?: string } | null; feel?: any[] | null; polish?: any[] | null; motion?: { worstHitchMs?: number | null } | null; software?: boolean }) {
+  if (!isGame(p)) return { fails: [] as QualityFail[], unmeasured: [] as string[], notes: [] as string[] };
+  const world3d = hasWorld3d(p, data);
+  const checks = rubricChecks(p.id).filter((c) => world3d || c.world !== '3d');
+  const notes: string[] = [];
   const fails: QualityFail[] = [];
   const seen = new Set<string>();
   const add = (c: (typeof checks)[number], evidence: string) => {
@@ -248,6 +277,8 @@ export function qualityGate(p: Pick<Product, 'id' | 'engine' | 'kind'> & { tunin
   for (const f of feel) {
     const c = feelCheck(String(f.kind), checks);
     if (!c || (f.severity !== 'bug' && !c.hard && (seenKind.get(String(f.kind)) ?? 0) < 2)) continue;
+    // A measured check is decided by its reading (a 120 ms hitch is under the 250 ms limit), unless it is a hard limit.
+    if (c.metric && !c.hard) continue;
     if (c) add(c, `${f.title ?? f.kind}${f.scene ? ` in ${f.scene}` : ''}${f.where ? ` (${f.where})` : ''}: ${String(f.detail ?? '').slice(0, 200)}`);
   }
   for (const f of data.findings ?? []) {
@@ -259,6 +290,19 @@ export function qualityGate(p: Pick<Product, 'id' | 'engine' | 'kind'> & { tunin
   // The review's own hitch measure (Hawkes Gen's motion pass on the recording).
   if (Number.isFinite(Number(data.motion?.worstHitchMs)) && metrics['video.worstHitchMs'] === undefined) metrics['video.worstHitchMs'] = Number(data.motion!.worstHitchMs);
   if (data.software) for (const k of ['feel.worstHitchMs', 'video.worstHitchMs', 'feel.inputLatencyMs']) delete metrics[k];
+  // The worst frame in play: with the sensor's flags, the worst hitch outside loading screens and a scene's first
+  // seconds (loading ones are load stutter, a note). Every frame of 100 ms and over (4x the usual) is flagged.
+  if (Array.isArray(data.feel) && Number.isFinite(Number(metrics['feel.worstHitchMs']))) {
+    const hitches = data.feel.filter((f) => f?.kind === 'hitch' && Number.isFinite(Number(f.value)));
+    const load = hitches.filter((f) => !inPlayHitch(f));
+    const play = hitches.filter((f) => inPlayHitch(f));
+    const worstPlay = play.reduce((m, f) => Math.max(m, Number(f.value)), 0);
+    if (load.length) {
+      const worstLoad = load.reduce((m, f) => Math.max(m, Number(f.value)), 0);
+      notes.push(`Load stutter (not counted as a hitch): up to ${Math.round(worstLoad)} ms on ${[...new Set(load.map((f) => f.scene || 'the first seconds'))].slice(0, 3).join(', ')}.`);
+    }
+    if (Number(metrics['feel.worstHitchMs']) > worstPlay) metrics['feel.worstHitchMs'] = Math.round(worstPlay);
+  }
   for (const c of checks) {
     if (!c.metric) continue;
     const v = Number(metrics[c.metric]);
@@ -269,14 +313,45 @@ export function qualityGate(p: Pick<Product, 'id' | 'engine' | 'kind'> & { tunin
     const own = p.tuning?.[c.metric];
     const max = own?.max ?? c.max;
     const min = own?.min ?? c.min;
-    if (max !== undefined && v > max) add(c, `${c.metric} = ${v}, over ${max}: ${c.what}`);
-    if (min !== undefined && v < min) add(c, `${c.metric} = ${v}, under ${min}: ${c.what}`);
+    const over = max !== undefined && v > max ? `${c.metric} = ${v}, over ${max}` : min !== undefined && v < min ? `${c.metric} = ${v}, under ${min}` : null;
+    if (!over) continue;
+    if (c.advisory) notes.push(`${over} (${c.id}, a note: ${c.what.split('. Advisory')[0]})`);
+    else add(c, `${over}: ${c.what}`);
   }
   if (data.fun?.verdict === 'demo') {
     const c = checks.find((x) => x.id === 'fun-review');
     if (c) add(c, `the fun review calls it a demo, not a living world${data.fun.why ? `: ${data.fun.why}` : ''}`);
   }
-  return { fails, unmeasured };
+  return { fails, unmeasured, notes };
+}
+
+const LIMIT_FIX: Record<string, string> = {
+  hitch: 'Find what stalls the frame at that moment (a synchronous load, shader compile, garbage collection spike, a big allocation or a physics burst) and move it off the frame: preload or stream it, warm shaders during loading, pool objects. Loading screens are exempt; play is not.',
+  'input-latency': 'Read input in the same frame it moves the player (no extra frame of buffering, no smoothing on the first frame of movement), and keep the frame time low.',
+  'camera-clip': 'Keep the camera out of walls: a collision probe or spring arm that pulls it in front of geometry, and fade what still blocks the view.',
+  'explore-falls': 'Close the holes the explore bot fell through: collision on every walkable surface, no gaps at seams, a kill floor that respawns.',
+  'explore-stuck': 'Smooth the collision where the explore bot got stuck: step offsets, no thin lips or snag edges, slide along walls.',
+};
+
+/**
+ * A played build's broken measured limits (a hitch in play over 250 ms, input latency over 100 ms), one finding each
+ * with a title that stays the same run to run, filed as bugs so agents fix them on beta (pipeline.ts fileFeel).
+ * Flag-based fails are filed by the feel layer already; advisory readings are notes, never findings.
+ */
+export function qualityFindings(p: Pick<Product, 'id' | 'engine' | 'kind'> & { tuning?: QualityTuning; world?: Product['world'] }, r: any, scenario: string) {
+  if (!r) return [];
+  const g = qualityGate(p, { metrics: r.metrics, feel: r.feel, polish: r.polish?.hits, software: Boolean(r.software) });
+  const checks = rubricChecks(p.id);
+  return g.fails.flatMap((f) => {
+    const c = checks.find((x) => x.id === f.check);
+    if (!c?.metric || !f.evidence.startsWith(`${c.metric} = `)) return [];
+    return [{
+      title: `Quality limit broken: ${c.id} (${f.title})`,
+      severity: 'bug', area: c.id === 'hitch' ? 'performance' : c.id.startsWith('camera') ? 'camera' : 'gameplay',
+      detail: `The ${scenario} playtest measured ${f.evidence.split(':')[0]}. ${c.what}${g.notes.length ? `\nNotes: ${g.notes.join(' ')}` : ''}`.slice(0, 1500),
+      fix: LIMIT_FIX[c.id] ?? `Bring ${c.metric} inside its limit, then play the scenario again.`,
+    }];
+  });
 }
 
 /** One line per failure, for a gate's reasons, a blocker or a log. */

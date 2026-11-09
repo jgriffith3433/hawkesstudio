@@ -37,6 +37,18 @@ or jump (`camera-snap`), models clipping (`clipping`), and a fall spot the explo
 rendering drops the hitch and latency readings. These are starting values: a game tunes its own in products.json
 `tuning`, e.g. `{ "feel.inputLatencyMs": { "max": 120 }, "feel.coyoteMs": { "min": 120 } }`.
 
+**What counts as a hitch** (J's go-lives, 2026-11-09). The hitch limit is for play: a long frame on a loading,
+title or menu screen, or in a scene's first 3 s, is **load stutter**, a warning on the plan and never a fail
+(`inPlayHitch`; the sensor's flags carry `st`, seconds into the scene). Hitch flags under the limit never fail on their
+own: the reading decides. The recording's stutters (`video-hitch`) are **advisory**: the recorder can stall by itself,
+so only the game's own frame timings can fail the hitch rule. The camera and controls checks (`world: "3d"`) apply only
+to a game with a 3D world: products.json `world` (`3d`, `2d`, `none`), else Unity games and any game whose playtest saw
+a camera or a moving player (`hasWorld3d`).
+
+**Studio fixes what it finds.** A broken measured limit (a hitch in play over 250 ms, input latency) is filed as a bug
+when the playtest ends (`qualityFindings`), so the agents fix it on beta after the run and beta is played again; the
+go-live plan says Studio is on it and never asks the owner to fix and replay.
+
 **The bar never accepts prototype work.** A game's review bar always ends with the game floor (`effectiveBar` in
 `src/quality.ts`: final art and dense content, not placeholders), and a bar line that accepts less ("prototype art is
 fine", "placeholder ok") is dropped.
