@@ -110,9 +110,11 @@ const HOOK = `<script data-hawkes-report>${NET}${GL}window.__hawkesLog=window.__
 export function injectReport(html: string, info: PageInfo) {
   // Whole documents only (a fragment a page fetches and inserts stays as it is).
   if (html.includes('data-hawkes-report') || !/<(html|head|body)[\s>]/i.test(html)) return html;
-  const attr = JSON.stringify(info).replace(/&/g, '&amp;').replace(/'/g, '&#39;').replace(/</g, '&lt;');
-  const src = (info.src ?? `${info.root ?? ''}/dev/__studio/report.js`).replace(/"/g, '&quot;');
-  const widget = `<script src="${src}" data-hawkes='${attr}' defer></script>`;
+  // The widget is added after the page's load event (a script element made then), so a slow or blocked widget
+  // request (a cross-origin fetch ORB refuses, a Studio asleep) can never hold up the page's load or page.goto.
+  const esc = (v: string) => JSON.stringify(v).replace(/</g, '\\u003c').replace(/\u2028/g, '\\u2028').replace(/\u2029/g, '\\u2029');
+  const src = info.src ?? `${info.root ?? ''}/dev/__studio/report.js`;
+  const widget = `<script data-hawkes-loader>(function(s,a){function go(){try{var e=document.createElement('script');e.src=s;e.async=true;e.setAttribute('data-hawkes',a);(document.body||document.documentElement).appendChild(e)}catch(x){}}if(document.readyState==='complete')setTimeout(go,0);else addEventListener('load',function(){setTimeout(go,0)})})(${esc(src)},${esc(JSON.stringify(info))})</script>`;
   // After <meta charset> when it's there (it has to stay in the first 1024 bytes), else right after <head>.
   const head = /<meta[^>]+charset[^>]*>/i.exec(html.slice(0, 2048)) ?? /<head(\s[^>]*)?>/i.exec(html);
   let out = head ? html.slice(0, head.index + head[0].length) + HOOK + html.slice(head.index + head[0].length)

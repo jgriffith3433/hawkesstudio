@@ -74,7 +74,7 @@ export async function handleReportRoutes(req: http.IncomingMessage, res: http.Se
   if (!route.startsWith('/r/')) return false;
   const method = req.method ?? 'GET';
   if (route === '/r/widget.js' && method === 'GET') {
-    res.writeHead(200, { 'Content-Type': 'text/javascript; charset=utf-8', 'Cache-Control': 'public, max-age=300', 'Access-Control-Allow-Origin': '*' });
+    res.writeHead(200, { 'Content-Type': 'text/javascript; charset=utf-8', 'Cache-Control': 'public, max-age=300', 'Access-Control-Allow-Origin': '*', 'Cross-Origin-Resource-Policy': 'cross-origin' });
     res.end(fs.readFileSync(WIDGET));
     return true;
   }
@@ -88,7 +88,7 @@ export async function handleReportRoutes(req: http.IncomingMessage, res: http.Se
   if (!m[2] && method === 'GET') {
     const b = base(req);
     const cfg = { product: p.id, ref: 'beta', endpoint: `${b}/r/${p.id}/report?k=${key}`, errors: `${b}/r/${p.id}/error?k=${key}` };
-    res.writeHead(200, { 'Content-Type': 'text/javascript; charset=utf-8', 'Cache-Control': 'public, max-age=300', 'Access-Control-Allow-Origin': '*' });
+    res.writeHead(200, { 'Content-Type': 'text/javascript; charset=utf-8', 'Cache-Control': 'public, max-age=300', 'Access-Control-Allow-Origin': '*', 'Cross-Origin-Resource-Policy': 'cross-origin' });
     res.end(`(function(){if(window.__hawkesReport)return;var s=document.createElement('script');s.src=${JSON.stringify(`${b}/r/widget.js`)};s.defer=true;s.setAttribute('data-hawkes',${JSON.stringify(JSON.stringify(cfg))});(document.body||document.head).appendChild(s)})();`);
     return true;
   }

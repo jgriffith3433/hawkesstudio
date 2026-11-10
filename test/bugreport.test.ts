@@ -37,13 +37,29 @@ test('the button goes into whole pages only, once', () => {
   const out = br.injectReport(page, info);
   assert.ok(out.indexOf('window.__hawkesLog') > out.indexOf('<meta charset="utf-8">'), 'the console hook comes after <meta charset>');
   assert.ok(out.indexOf('window.__hawkesLog') < out.indexOf('<title>'), 'and before anything else in <head>');
-  assert.ok(/<script src="\/dev\/__studio\/report\.js" data-hawkes='[^']*Game\/v12[^']*' defer><\/script><\/body>/.test(out), 'the widget sits before </body> with the build');
+  assert.ok(/<script data-hawkes-loader>[^]*"\/dev\/__studio\/report\.js"[^]*Game\/v12[^]*<\/script><\/body>/.test(out), 'the widget loader sits before </body> with the build');
+  assert.ok(!/<script src="[^"]*report\.js"/.test(out), 'the widget is no script tag the load event waits on');
   assert.equal(br.injectReport(out, info), out, 'injected once');
   assert.equal(br.injectReport('<div>a fragment</div>', info), '<div>a fragment</div>', 'fragments stay as they are');
   assert.ok(br.injectReport('<p>no head', info) === '<p>no head', 'not a document');
   const quotes = br.injectReport('<html><body></body></html>', { product: 'brtest', ref: "it's <b>" });
-  assert.ok(!quotes.includes("it's") && !quotes.includes('<b>'), 'the data attribute is escaped');
+  assert.ok(!quotes.includes('<b>') && quotes.includes('it\'s \\u003cb>'), 'the info is a JSON string with < escaped, so it cannot end the script');
   assert.ok(fs.existsSync(br.WIDGET), 'the widget file is there');
+});
+
+test('the widget is added after the page loads, so it cannot hold the load event', () => {
+  const out = br.injectReport('<html><head></head><body></body></html>', { product: 'brtest', src: 'https://studio.example/o/x/r/widget.js' });
+  const code = /<script data-hawkes-loader>([\s\S]*?)<\/script>/.exec(out)![1];
+  const added: any[] = [];
+  const listeners: Record<string, () => void> = {};
+  const timers: (() => void)[] = [];
+  const ctx: any = { document: { readyState: 'loading', body: { appendChild: (e: any) => added.push(e) }, createElement: () => ({ attrs: {} as any, setAttribute(k: string, v: string) { this.attrs[k] = v; } }) }, addEventListener: (n: string, f: () => void) => { listeners[n] = f; }, setTimeout: (f: () => void) => timers.push(f) };
+  vm.runInNewContext(code, ctx);
+  assert.equal(added.length, 0, 'nothing is requested while the page loads');
+  listeners.load(); timers.forEach((f) => f());
+  assert.equal(added.length, 1);
+  assert.equal(added[0].src, 'https://studio.example/o/x/r/widget.js');
+  assert.equal(JSON.parse(added[0].attrs['data-hawkes']).product, 'brtest');
 });
 
 test('beta pages name beta Hawkes Net before any game code runs, and a page that names its own keeps it', () => {

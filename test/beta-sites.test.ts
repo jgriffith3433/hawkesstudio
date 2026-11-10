@@ -420,8 +420,8 @@ test("an added game's beta site is a path on sites.<domain>: /g/<game>/ for live
   assert.equal(r.status, 200);
   assert.equal(await r.text(), '/* widget */');
   const { injectReport } = await import('../src/bugreport.ts');
-  assert.match(injectReport('<html><body></body></html>', { product: 'orbit-run', root: '/b/orbit-run' }), /src="\/b\/orbit-run\/dev\/__studio\/report\.js"/);
-  assert.match(injectReport('<html><body></body></html>', { product: 'phorigins' }), /src="\/dev\/__studio\/report\.js"/);
+  assert.match(injectReport('<html><body></body></html>', { product: 'orbit-run', root: '/b/orbit-run' }), /"\/b\/orbit-run\/dev\/__studio\/report\.js"/);
+  assert.match(injectReport('<html><body></body></html>', { product: 'phorigins' }), /"\/dev\/__studio\/report\.js"/);
 });
 
 test("customers' Studios: sites.<domain>/o/<org>/<project>/, written only by that Studio under its org, seen only with its pass", async () => {
@@ -434,7 +434,7 @@ test("customers' Studios: sites.<domain>/o/<org>/<project>/, written only by tha
     const page = { product: 'space', sha: 'abc1234', root: '/o/acme-1a2b/space', src: 'https://studio.hawkesgen.ai/o/acme-1a2b/r/widget.js', endpoint: 'https://studio.hawkesgen.ai/o/acme-1a2b/r/space/report?k=rk_x', errors: 'https://studio.hawkesgen.ai/o/acme-1a2b/r/space/error?k=rk_x' };
     await S.publishSite(acme, 'o/acme-1a2b/space/beta', [file('index.html', '<!doctype html><html><head><meta charset="utf-8"></head><body>space</body></html>'), file('game.wasm', 'w')], { page, build: { sha: 'abc1234' } });
     const html = new TextDecoder().decode(r2.m.get('live/o/acme-1a2b/space/beta/index.html')!.data);
-    assert.match(html, /src="https:\/\/studio\.hawkesgen\.ai\/o\/acme-1a2b\/r\/widget\.js"/, "its own Studio's 🐞 widget");
+    assert.match(html, /"https:\/\/studio\.hawkesgen\.ai\/o\/acme-1a2b\/r\/widget\.js"/, "its own Studio's 🐞 widget");
     assert.match(html, /r\/space\/report\?k=rk_x/, "posting with the project's report key");
     assert.equal(r2.m.get('live/o/acme-1a2b/space/beta/game.wasm')!.type, 'application/wasm');
     // Only under its own org, and only with its own key.
