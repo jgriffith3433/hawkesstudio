@@ -39,7 +39,7 @@ db.exec(`CREATE TABLE IF NOT EXISTS approvals (
 // J's × on a card in the chat: hidden from the conversation, still pending (and answerable) in the Inbox.
 try { db.exec('ALTER TABLE approvals ADD COLUMN dismissed INTEGER'); } catch { /* already there */ }
 
-export const KINDS = ['merge', 'deploy', 'rollback', 'gpu', 'settings', 'decision', 'github'] as const;
+export const KINDS = ['merge', 'deploy', 'rollback', 'gpu', 'settings', 'decision', 'github', 'quota'] as const;
 export type Kind = (typeof KINDS)[number];
 /**
  * A card never expires by time (J, 2026-11-09: the go-live card for Studio's restart fix lapsed after 15 minutes before
@@ -165,6 +165,18 @@ async function describe(kind: Kind, target: string, params: Record<string, any>)
     const d = await rk.describePlan(plan);
     const repo = plan.kind === 'setup' ? plan.repo : `${plan.owner}/${plan.repoName}`;
     return { bind: rk.planHash(plan), card: { title: d.title, lines: d.lines, blockers: d.blockers, warnings: [], links: plan.kind === 'setup' ? [{ label: repo, url: `https://github.com/${repo}` }] : [], approve: plan.kind === 'new' ? 'Approve: make it' : 'Approve: set it up', deny: 'Deny' } };
+  }
+  if (kind === 'quota') {
+    // A Google quota a part of Studio needs and can't raise itself (quota.ts): one card per project and region.
+    const qt = await import('./quota.ts');
+    const asks = (Array.isArray(params.asks) ? params.asks : []).filter((a: any) => a && (a.kind === 'cpu' || a.kind === 'disk') && Number(a.value) > 0) as import('./quota.ts').QuotaAsk[];
+    if (!asks.length) throw new StudioError('quota: asks, [{ kind: cpu | disk, region, value, why }]');
+    const lines = await qt.describeQuota(asks);
+    const names = asks.map((a) => qt.QUOTAS[a.kind].label).join(' and ');
+    return {
+      bind: hash(J(asks.map((a) => [a.kind, a.region, a.value]))),
+      card: { title: `Ask Google for more ${names} in ${asks[0].region}?`, lines: [...lines, 'Approve files the request with Google from Studio itself. Google usually answers within minutes to a day; Studio carries on meanwhile.'], blockers: [], warnings: [], links: [{ label: 'Quotas in Google Cloud', url: `https://console.cloud.google.com/iam-admin/quotas?project=${encodeURIComponent(target.split(':')[0])}` }], approve: 'Approve: ask Google', deny: 'Deny' },
+    };
   }
   if (kind === 'decision') {
     const rm = await import('./roadmap.ts');
@@ -292,7 +304,7 @@ export async function requestApproval(kind: string, target: string, params: Reco
   // Already approved or answered: no card (it could only sit there with an Approve that never works).
   const moot = kind === 'gpu' && getTask(target) ? gpuMoot(target) : kind === 'decision' && getQuestion(target) ? decisionMoot(target) : null;
   if (moot) throw new StudioError(`Nothing to approve for ${target}: ${moot}.`, 409);
-  const clean = kind === 'github' ? { plan: params.plan } : kind === 'gpu' ? { amount: params.amount === undefined || params.amount === null || params.amount === '' ? undefined : Number(params.amount) } : kind === 'settings' ? { patch: params.patch } : {};
+  const clean = kind === 'github' ? { plan: params.plan } : kind === 'gpu' ? { amount: params.amount === undefined || params.amount === null || params.amount === '' ? undefined : Number(params.amount) } : kind === 'settings' ? { patch: params.patch } : kind === 'quota' ? { asks: params.asks } : {};
   const { bind, card } = await describe(kind as Kind, target, clean);
   // Only a card J can act on reaches his Inbox: a dead end isn't made, and one already waiting for it is withdrawn.
   const stuck = kind === 'deploy' || kind === 'rollback' ? deadEnd(card) : null;
@@ -342,6 +354,8 @@ export async function walkAwayHold(a: Approval): Promise<string | null> {
     return null;
   }
   if ((a.kind === 'deploy' || a.kind === 'rollback') && customerStudio()) return "going live and rolling back are the owner's";
+  // Raising a Google quota lets the project spend more: always the owner's tap (J, 2026-11-10).
+  if (a.kind === 'quota') return "raising a Google quota is the owner's";
   if (a.kind === 'gpu') {
     const t = getTask(a.target);
     const e = t?.gpu?.estimate;
@@ -696,6 +710,12 @@ async function run(a: Approval, by: string): Promise<string> {
   if (a.kind === 'github') {
     const { applyPlan } = await import('./repokit.ts');
     return (await applyPlan(a.params.plan, { origin })).join(' ');
+  }
+  if (a.kind === 'quota') {
+    const { raiseQuota } = await import('./quota.ts');
+    const done: string[] = [];
+    for (const q of a.params.asks ?? []) done.push(await raiseQuota(q));
+    return `${done.join('; ')}.`;
   }
   await answerDecision(a, a.card.approve, by);
   return `Answered "${a.card.approve}".`;
