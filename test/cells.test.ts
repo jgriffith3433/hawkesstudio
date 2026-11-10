@@ -664,6 +664,11 @@ test("the deploy config: Studio's startup probe is the cells' (10 minutes), Lite
   assert.ok(p.periodSeconds <= 240 && p.timeoutSeconds <= p.periodSeconds && p.initialDelaySeconds <= 240);
   assert.ok(p.initialDelaySeconds + p.periodSeconds * p.failureThreshold >= 480);
   assert.match(deploy, /`--startup-probe=\$\{STARTUP_PROBE\}`/);
+  // CI's deploy of each commit sets the same probe, so a service made before deploy.mjs had it gets it too
+  // (without it the live service kept Cloud Run's one 4 minute try and the restore outlasted it).
+  const ci = fs.readFileSync(path.join(root, '.github/workflows/ci.yml'), 'utf8');
+  assert.equal(/STARTUP_PROBE: (\S+)/.exec(ci)?.[1], probe, "ci.yml's STARTUP_PROBE is deploy.mjs's");
+  assert.match(ci, /gcloud run services update "\$SERVICE" --image "\$tag" --startup-probe "\$STARTUP_PROBE"/);
   // The cap is per revision (the template), never service-wide: the old and new revisions overlap during a rollout.
   assert.match(deploy, /'--max-instances=1', '--max=default'/);
   assert.match(deploy, /'--min-instances=0'/);
