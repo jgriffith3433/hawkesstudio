@@ -94,6 +94,7 @@ import { ensureGpuFor, needsGpu } from './gpustart.ts';
 import { walkAwayOn, WALK_AWAY_BY } from './walkaway.ts';
 import { brainId, brainLabel, brainSettings, harnessStopOf, isHarness, type Harness, type HarnessStop } from './brains.ts';
 import { noProviderFree, notReady, pickHarness, providerSettings, using, whyHarness } from './providers.ts';
+import { noteTimeline } from './speed.ts';
 import { currentBrain, lastHarness, noteBrain, reportedModel, runAsked, runReported, runStarted } from './runs.ts';
 import { harnessHeld, holdDetail, holdHarness, onHoldLifted, reviewHolds, LABEL as HARNESS_LABEL } from './harness-hold.ts';
 import { githubReachable } from './ghtoken.ts';
@@ -283,6 +284,12 @@ function update(id: string, patch: Partial<Record<string, any>>) {
   // A cancelled change stays cancelled until someone resumes (queued) or closes it: a pass still winding down can only log (cancelChange).
   if (cur?.status === 'cancelled' && !['queued', 'closed'].includes(patch.status) && Object.keys(patch).some((k) => !['log', 'notes', 'cost'].includes(k))) return;
   const next: any = { ...cur, ...patch, updated: Date.now() };
+  // The speed metric (speed.ts): every status or step change, so each phase's time is measured.
+  if (cur) {
+    const stepOf = (ph: any) => { const x = typeof ph === 'string' ? parse(ph) : ph; return (x?.step as string | undefined) ?? null; };
+    const step = patch.phase !== undefined ? stepOf(patch.phase) : stepOf(cur.phase);
+    if (next.status !== cur.status || step !== stepOf(cur.phase)) noteTimeline(id, next.status ?? null, step);
+  }
   for (const k of ['findings', 'commits', 'verify', 'notes', 'log', 'phase']) if (patch[k] !== undefined) next[k] = patch[k] === null ? null : J(patch[k]);
   db.prepare(`UPDATE changes SET status=?, detail=?, pr=?, pr_url=?, title=?, summary=?, commits=?, diffstat=?, verify=?, notes=?, log=?, cost=?, session=?, phase=?, auto_merge=?, updated=? WHERE id=?`)
     .run(next.status, next.detail, next.pr, next.pr_url, next.title, next.summary, next.commits, next.diffstat, next.verify, next.notes, next.log, next.cost, next.session ?? null, next.phase ?? null, next.auto_merge ?? null, next.updated, id);
@@ -1859,6 +1866,7 @@ export function startTask(productId: string, request: string, { criteria = [], t
   db.prepare('INSERT INTO changes (id, product, findings, status, detail, repo, slug, branch, base, worktree, title, request, notes, log, created) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
     .run(id, target.id, '[]', 'queued', `${task ? 'queued by the PM (a roadmap task)' : 'queued (J asked)'}${ahead}`, top, slug, `task/${id.slice(2)}-${words}`, inf ? 'main' : BETA, path.join(WORK(), id), (title ?? request.split(String.fromCharCode(10))[0]).slice(0, 120), request, '[]', '[]', Date.now());
   db.prepare('UPDATE changes SET task = ?, criteria = ?, gpu_budget = ? WHERE id = ?').run(task, J(criteria), gpuBudget === null || !(gpuBudget >= 0) ? null : String(gpuBudget), id);
+  noteTimeline(id, 'queued', null);
   void pump();
   return id;
 }
@@ -1885,6 +1893,7 @@ export function startFix(productId: string, findingIds: string[], { auto = false
   const branch = `fix/${id.slice(2)}-${findings[0].title.toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 40).replace(/-$/, '')}`;
   db.prepare('INSERT INTO changes (id, product, findings, status, detail, repo, slug, branch, base, worktree, title, notes, log, created) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
     .run(id, p.id, J(findings.map((f) => f.id)), 'queued', `${auto ? `queued by ${by}` : 'queued'}${ahead}`, top, slug, branch, BETA, path.join(WORK(), id), `Fix: ${findings[0].title}`.slice(0, 120), '[]', '[]', Date.now());
+  noteTimeline(id, 'queued', null);
   if (auto) db.prepare('UPDATE changes SET started_by = ? WHERE id = ?').run(by, id);
   // J (2026-10-17): a finding is consumed as soon as an agent takes it: fixed now, assumed done by the change. A review
   // reporting it again doesn't reopen it while this change is unmerged (backlog.ts absorb); closing the change does.

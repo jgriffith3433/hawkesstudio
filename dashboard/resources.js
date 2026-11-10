@@ -173,6 +173,19 @@
       ${rows ? `<table><tr><th>Run</th><th>Provider</th><th>Model</th><th class="n">For</th></tr>${rows}</table>` : ''}</details>`;
   }
 
+  // Task speed (speed.ts): a task's start to beta and to a playtested beta, and each phase's median minutes per change.
+  const PHASE = { queued: 'waiting for a slot', prepare: 'preparing', agent: 'AI working', gen: 'waiting on Gen', checks: 'checks and review', publish: 'pull request and merge', ready: 'waiting to merge' };
+  function speed(r) {
+    const sp = r.work?.speed;
+    if (!sp) return '';
+    const hm = (m) => (m == null ? '–' : m >= 120 ? `${(m / 60).toFixed(1)} h` : `${m} min`);
+    const rows = Object.entries(sp.changes.phases).filter(([, m]) => m != null).map(([p, m]) => `<tr><td>${esc(PHASE[p] ?? p)}</td><td class="n">${hm(m)}</td></tr>`).join('');
+    return `<details class="rs-box more-details" data-k="speed" data-key="rs:speed"><summary>Task speed <span class="meta">· ${sp.tasks.count ? `${hm(sp.tasks.toBetaMin)} from start to beta` : 'no task reached beta this week'}</span></summary>
+      <p style="margin:4px 0">${esc(sp.line)}</p>
+      <p class="meta" style="margin:4px 0">Per merged change (median of ${sp.changes.count}): the AI itself ${hm(sp.changes.agentMin)} over ${sp.changes.passes ?? '–'} pass(es).</p>
+      ${rows ? `<table><tr><th>Phase</th><th class="n">Median</th></tr>${rows}</table>` : '<p class="meta">Phase times start with changes made from now on.</p>'}</details>`;
+  }
+
   function work(r) {
     const w = r.work;
     if (!w) return '';
@@ -221,7 +234,7 @@
     const worst = r.attention[0]?.level ?? '';
     studioPatch(el, `<p class="rs-head ${worst}">${worst === 'bad' ? '⚠ ' : ''}${esc(r.headline)}</p>
       ${r.attention.length > 1 ? `<ul class="rs-att">${r.attention.slice(1).map((a) => `<li class="${a.level === 'bad' ? 'rs-red' : 'rs-amber'}">${a.level === 'bad' ? '⚠' : '•'} ${esc(a.text)}</li>`).join('')}</ul>` : ''}
-      ${tiles(r)}${groups(r.host)}${outside(r)}${netbox(r)}${fleet(r)}${providersNow(r)}${work(r)}${loop(r)}${charts(r)}
+      ${tiles(r)}${groups(r.host)}${outside(r)}${netbox(r)}${fleet(r)}${providersNow(r)}${speed(r)}${work(r)}${loop(r)}${charts(r)}
       <div class="meta">Read ${ago(r.at)}${r.host ? ` in ${r.host.sampleMs} ms` : ''}. Phone alerts: ${r.settings.alerts ? `memory or disk over ${r.settings.memoryPct}% / ${r.settings.diskPct}% for ${r.settings.minutes} min, a machine idle ${r.settings.pastStopMinutes} min past its stop time, the portal failing ${r.settings.portalMinutes} min, event-loop p99 over ${r.settings.loopP99Ms} ms for ${r.settings.loopMinutes} min, WebSockets over ${r.settings.wsPct}%, a backup older than ${r.settings.backupHours} h, a relay node down` : 'off'} (<a href="#settings" data-rs-go="settings">Settings</a>).</div>`);
     for (const [k, o] of open) { const d = el.querySelector(`details[data-k="${k}"]`); if (d) d.open = o; }
   }
