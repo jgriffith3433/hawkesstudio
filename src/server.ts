@@ -248,12 +248,12 @@ const server = http.createServer(async (req, res) => {
     if (route === '/api/config') return send(res, 200, { genUrl: process.env.GEN_PUBLIC_URL || 'http://127.0.0.1:8790' });
     if (route === '/api/health') {
       const ops = await import('./ops.ts');
-      return send(res, 200, { ok: true, name: 'hawkesstudio', lane: process.env.STUDIO_LANE || 'live', gen: await genUp(), run: activeRun()?.id ?? null, loop: ops.loopHealth(), ops: ops.listOps({ since: Date.now() }).filter((o) => o.status !== 'done' && o.status !== 'failed').length, commands: ops.runningCommands().length });
+      return send(res, 200, { ok: true, name: 'hawkesstudio', lane: process.env.STUDIO_LANE || 'live', gen: await genUp(), genBusy: (await import('./genpace.ts')).genBusy(), run: activeRun()?.id ?? null, loop: ops.loopHealth(), ops: ops.listOps({ since: Date.now() }).filter((o) => o.status !== 'done' && o.status !== 'failed').length, commands: ops.runningCommands().length });
     }
     // Background operations (ops.ts): the go-live queue, rollbacks and merges, the commands running now, the event loop.
     if (route === '/api/ops' && method === 'GET') {
       const ops = await import('./ops.ts');
-      return send(res, 200, { ops: ops.listOps({ product: q('product'), limit: Number(q('limit')) || 100 }), commands: ops.runningCommands(), loop: ops.loopHealth() });
+      return send(res, 200, { ops: ops.listOps({ product: q('product'), limit: Number(q('limit')) || 100 }), commands: ops.runningCommands(), loop: ops.loopHealth(), genBusy: (await import('./genpace.ts')).genBusy() });
     }
     if (route === '/api/self-deploys') return send(res, 200, { deploys: selfDeploys(Number(q('limit') ?? 30)), busy: selfBusy() });
     if (route === '/api/overview') return send(res, 200, await overview());

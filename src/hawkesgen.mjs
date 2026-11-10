@@ -33,14 +33,29 @@ function userConfig() {
 }
 
 export class HawkesGenError extends Error {
-  constructor(message, { status, kind, attempts, job } = {}) {
+  constructor(message, { status, kind, attempts, job, retryAfter } = {}) {
     super(message);
     this.name = 'HawkesGenError';
     this.status = status;
+    // Seconds to wait before trying again, from a busy answer's Retry-After (or Gen's own { retryAfter }).
+    this.retryAfter = retryAfter;
     this.kind = kind;
     this.attempts = attempts;
     this.job = job;
   }
+}
+
+/** A response's Retry-After in seconds (a number of seconds or an HTTP date), else Gen's { retryAfter }, else undefined. */
+export function retryAfterOf(r, data) {
+  const h = r?.headers?.get?.('retry-after');
+  if (h) {
+    const n = Number(h);
+    if (Number.isFinite(n) && n >= 0) return n;
+    const t = Date.parse(h);
+    if (Number.isFinite(t)) return Math.max(0, Math.ceil((t - Date.now()) / 1000));
+  }
+  const d = Number(data?.retryAfter);
+  return Number.isFinite(d) && d > 0 ? d : undefined;
 }
 
 const isNode = typeof process !== 'undefined' && !!process.versions?.node;
@@ -82,11 +97,11 @@ export class HawkesGen {
       throw new HawkesGenError(`Can't reach Hawkes Gen at ${this.url} (${e.message}). Start it: C:\\Projects\\hawkesgen\\auto-start.bat`, { status: 0, kind: 'offline' });
     }
     if (raw) {
-      if (!r.ok) throw new HawkesGenError(`Hawkes Gen ${path}: HTTP ${r.status}`, { status: r.status });
+      if (!r.ok) throw new HawkesGenError(`Hawkes Gen ${path}: HTTP ${r.status}`, { status: r.status, retryAfter: retryAfterOf(r) });
       return r;
     }
     const data = await r.json().catch(() => ({}));
-    if (!r.ok) throw new HawkesGenError(data.error ?? `HTTP ${r.status}`, { status: r.status, kind: data.kind, attempts: data.attempts });
+    if (!r.ok) throw new HawkesGenError(data.error ?? `HTTP ${r.status}`, { status: r.status, kind: data.kind, attempts: data.attempts, retryAfter: retryAfterOf(r, data) });
     return data;
   }
 

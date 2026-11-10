@@ -7,6 +7,11 @@ import path from 'node:path';
 import { GEN_URL, GEN_PUBLIC_URL, PROJECTS } from './config.ts';
 import { GenEvents, nextLook, terminal, type JobFollower } from './genevents.ts';
 import { submitKnown } from './gen-params.ts';
+import { isGenBusy, noteGenBusy, submitTurn } from './genpace.ts';
+
+const isSubmit = (p: string, o: any) => String(p).split('?')[0] === '/jobs' && String(o?.method ?? 'GET').toUpperCase() === 'POST';
+/** How long a submit Gen answers busy (429, 503) is tried again before the build fails (STUDIO_GEN_BUSY_MS: tests). */
+export const GEN_BUSY_MS = () => Number(process.env.STUDIO_GEN_BUSY_MS ?? 15 * 60_000);
 
 export const gen = new HawkesGen({ url: GEN_URL });
 /**
@@ -40,12 +45,20 @@ export const scoped = (b: any): any => {
   };
   // Submitting jobs: a cell charges them to its balance first (credits.ts), and a refusal for lack of credits (the
   // control plane's or Gen's own 402) says how many are needed and where to add more.
-  gen.request = async (p: string, o: any = {}) => {
-    if (!(String(p).split('?')[0] === '/jobs' && String(o.method ?? 'GET').toUpperCase() === 'POST')) return raw(p, o);
+  const metered = async (p: string, o: any = {}) => {
+    if (!isSubmit(p, o)) return raw(p, o);
     const C = await import('./credits.ts');
     try {
       return C.meteringOn() ? await C.meteredSubmit(raw, p, { ...o, body: scoped(o.body) }) : await raw(p, o);
     } catch (e) { throw C.genRefusal(e); }
+  };
+  // Gen busy (genpace.ts): a busy answer opens a calm window; submits wait it out and go out spaced.
+  gen.request = async (p: string, o: any = {}) => {
+    if (isSubmit(p, o)) await submitTurn();
+    try { return await metered(p, o); } catch (e) {
+      if (isGenBusy(e)) noteGenBusy(e, p);
+      throw e;
+    }
   };
 }
 
@@ -154,11 +167,15 @@ export async function genRun(tool: string, project: string, params: Record<strin
   const before = halt?.();
   if (before) return { id: null, status: 'cancelled', error: before, halted: true } as any;
   let job: any;
+  const t0 = Date.now();
   for (let i = 0; ; i++) {
     try {
       job = await submitKnown((t, b) => gen.submit(t, b), tool, { project, params });
       break;
     } catch (e: any) {
+      // Busy (2026-11-10: Cloud Run had no room for Gen and Yooba Land's build failed on the first 429): nothing was
+      // made and any credits were refunded, so it is sent again after the calm window, which the next submit waits out.
+      if (isGenBusy(e) && Date.now() - t0 < GEN_BUSY_MS()) { noteGenBusy(e, '/jobs'); continue; }
       if ((e.kind !== 'offline' && !/reach|fetch failed|ECONN/i.test(String(e.message))) || i >= 20) throw e;
       if (i === 3) await ensureGen();
       await new Promise((r) => setTimeout(r, 3000));
