@@ -157,7 +157,7 @@ if (typeof document !== 'undefined') (() => {
 
   function changeHtml(c, done = false) {
     const brain = c.harness_label || c.harness
-      ? ` <span class="pill" title="${esc([c.role, c.harness_label || c.harness, c.model].filter(Boolean).join(' · '))}">${esc(c.harness_label || c.harness)}${c.model ? ` · ${esc(c.model)}` : ''}</span>`
+      ? ` <span class="pill" title="${esc([c.role, c.harness_label || c.harness, c.model, c.model && !c.model_reported ? 'asked for, not confirmed by the harness yet' : ''].filter(Boolean).join(' · '))}">${esc(c.harness_label || c.harness)}${c.model ? ` · ${esc(c.model)}${c.model_reported ? '' : ' (asked)'}` : ''}</span>`
       : '';
     return `<div class="act-item" data-key="c:${esc(c.id)}${done ? ':done' : ''}">
       <div class="act-top">${ICON[c.status] ?? '•'} <b>${esc(c.productName)}</b> <span class="pill ${c.status === 'ready' ? 'ship' : c.status === 'failed' ? 'failed' : ''}">${esc(c.status)}</span>${brain}<span class="act-time">${done ? `${ago(c.at)}` : since(c.started)}</span></div>

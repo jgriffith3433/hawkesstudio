@@ -22,7 +22,7 @@ db.exec(`CREATE TABLE IF NOT EXISTS pass_ledger (
   outcome TEXT
 )`);
 // The route that chose the tier (routing.ts): its category, and J's premium ask when one set it.
-for (const col of ['category', 'premium']) try { db.exec(`ALTER TABLE pass_ledger ADD COLUMN ${col} TEXT`); } catch { /* already there */ }
+for (const col of ['category', 'premium', 'reported']) try { db.exec(`ALTER TABLE pass_ledger ADD COLUMN ${col} TEXT`); } catch { /* already there */ }
 db.exec('CREATE INDEX IF NOT EXISTS pass_ledger_change ON pass_ledger (change_id)');
 db.exec('CREATE INDEX IF NOT EXISTS pass_ledger_at ON pass_ledger (at)');
 
@@ -30,13 +30,15 @@ db.exec('CREATE INDEX IF NOT EXISTS pass_ledger_at ON pass_ledger (at)');
 export type PassOutcome = 'done' | 'time' | 'turns' | 'cut' | 'harness-stop' | 'model-refused' | 'stuck' | 'failed';
 export type PassRecord = {
   change: string; product?: string | null; task?: string | null; role: string; harness: string; model: string;
+  /** The model the harness reported running (its init event), when it said; `model` is the one the pass asked for. */
+  reported?: string | null;
   tier: string; effort: string; retry: number; ms: number; cost: number; outcome: PassOutcome;
   category?: string | null; premium?: string | null;
 };
 
 export function recordPass(p: PassRecord, now = Date.now()) {
-  db.prepare('INSERT INTO pass_ledger (at, change_id, product, task, role, harness, model, tier, effort, retry, ms, cost, outcome, category, premium) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
-    .run(now, p.change, p.product ?? null, p.task ?? null, p.role, p.harness, p.model, p.tier, p.effort, p.retry, Math.round(p.ms), p.cost, p.outcome, p.category ?? null, p.premium ?? null);
+  db.prepare('INSERT INTO pass_ledger (at, change_id, product, task, role, harness, model, tier, effort, retry, ms, cost, outcome, category, premium, reported) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+    .run(now, p.change, p.product ?? null, p.task ?? null, p.role, p.harness, p.model, p.tier, p.effort, p.retry, Math.round(p.ms), p.cost, p.outcome, p.category ?? null, p.premium ?? null, p.reported ?? null);
 }
 
 /** The ledger by route category over the last `days`: passes, tiers used, and how its changes ended. */
@@ -51,8 +53,8 @@ export function categorySummary(days = 7, now = Date.now()) {
     WHERE l.at >= ? GROUP BY 1 ORDER BY passes DESC`).all(now - days * 86400_000) as any[];
 }
 
-const lastPassStmt = db.prepare('SELECT role, harness, model, tier, effort, retry FROM pass_ledger WHERE change_id = ? ORDER BY id DESC LIMIT 1');
-export function lastPassFor(changeId: string): { role: string; harness: string; model: string; tier: string; effort: string; retry: number } | null {
+const lastPassStmt = db.prepare('SELECT role, harness, model, reported, tier, effort, retry FROM pass_ledger WHERE change_id = ? ORDER BY id DESC LIMIT 1');
+export function lastPassFor(changeId: string): { role: string; harness: string; model: string; reported: string | null; tier: string; effort: string; retry: number } | null {
   return (lastPassStmt.get(changeId) as any) ?? null;
 }
 
@@ -61,10 +63,10 @@ export type LedgerRow = {
   cost: number; minutes: number; harnessStops: number; costPerMerged: number | null; mergeRate: number | null;
 };
 
-/** The ledger grouped by role, harness and model over the last `days`. A change counts once per group, by its status now. */
+/** The ledger grouped by role, harness and model (the one the harness reported, else the one asked for) over the last `days`. A change counts once per group, by its status now. */
 export function ledgerSummary(days = 7, now = Date.now()): LedgerRow[] {
   const rows = db.prepare(`
-    SELECT l.role, l.harness, l.model,
+    SELECT l.role, l.harness, COALESCE(l.reported, l.model) AS model,
       COUNT(*) AS passes,
       COUNT(DISTINCT l.change_id) AS changes,
       COUNT(DISTINCT CASE WHEN c.status = 'merged' THEN l.change_id END) AS merged,
@@ -74,7 +76,7 @@ export function ledgerSummary(days = 7, now = Date.now()): LedgerRow[] {
       SUM(CASE WHEN l.outcome IN ('harness-stop', 'model-refused') THEN 1 ELSE 0 END) AS harnessStops
     FROM pass_ledger l LEFT JOIN changes c ON c.id = l.change_id
     WHERE l.at >= ?
-    GROUP BY l.role, l.harness, l.model
+    GROUP BY l.role, l.harness, COALESCE(l.reported, l.model)
     ORDER BY cost DESC, passes DESC`).all(now - days * 86400_000) as any[];
   return rows.map((r) => ({
     ...r,

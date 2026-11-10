@@ -4,6 +4,7 @@
 // order, sizes and rough cost, risks, questions for J), which goes back to the Talk conversation that asked
 // (talk.ts studioSays: Claude turns it into a proposal for J). At most 2 run at once.
 
+import { reportedModel, runAsked, runReported, runStarted } from './runs.ts';
 import { forOwner } from './owner.ts';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -88,10 +89,11 @@ export const SCOUT_WALL_MIN = Number(process.env.STUDIO_SCOUT_WALL_MIN) || 15;
 const SCOUT_MAX_TURNS = 100;
 
 /** What a scout's stream-json output said, line by line (feedScoutLine), so a run that ends without a report still says why. */
-export type ScoutStream = { session: string; steps: number; result: string; cost: number; ok: boolean; subtype: string; isError: boolean; turns: number; sawResult: boolean; said: string[]; code: number | null; err: string; timedOut: boolean };
+export type ScoutStream = { session: string; steps: number; result: string; cost: number; ok: boolean; subtype: string; isError: boolean; turns: number; sawResult: boolean; said: string[]; code: number | null; err: string; timedOut: boolean; model?: string };
 export const newScoutStream = (): ScoutStream => ({ session: '', steps: 0, result: '', cost: 0, ok: false, subtype: '', isError: false, turns: 0, sawResult: false, said: [], code: null, err: '', timedOut: false });
 export function feedScoutLine(st: ScoutStream, m: any, onTool?: (detail: string) => void) {
   if (m?.session_id) st.session = String(m.session_id);
+  if (m?.type === 'system' && m.subtype === 'init' && reportedModel(m.model)) st.model = reportedModel(m.model)!;
   if (m?.type === 'assistant') {
     st.steps++;
     for (const part of m.message?.content ?? []) {
@@ -303,13 +305,16 @@ ${mem.text ? `\n${mem.text}` : ''}${story ? `\nThe product's story, for tone:\n$
     const harness = own ?? pickHarness({ role: 'scout', prefer: follow?.session && isHarness(mine?.harness) ? mine.harness : null });
     set(id, { harness });
     // Counted on its provider while it runs, so the spread puts the next pass or scout on a less busy one.
-    releaseLoad = using(harness);
+    const release = using(harness);
+    const endRun = runStarted({ id: `scout:${id}`, kind: 'scout', harness, model: null, product: mine?.product ?? null, title: mine?.question?.slice(0, 120) ?? null });
+    releaseLoad = () => { release(); endRun(); };
     // A lookup ("where is...", "what does...", "is there...") is read-and-answer work: the fast tier (routing.ts), as
     // agent changes of that kind are. Anything else keeps the scout role's tuned tier.
     const R = await import('./routing.ts');
     const quick = R.routingSettings().enabled && R.classify({ text: follow?.message ?? mine?.question ?? '' }).category === 'lookup_or_explain';
     const { args: roleFlags } = roleArgs('scout', { harness, ...(quick ? { tier: 'fast' as const, effort: 'medium' as const } : {}), maxTurns: SCOUT_MAX_TURNS, extraAllowed: ['mcp__hawkesstudio__memory_search', 'mcp__hawkesstudio__memory_get', 'mcp__hawkesstudio__memory_write', 'mcp__hawkesstudio__studio_analytics'] });
     if (process.env.SCOUT_MODEL) roleFlags.splice(roleFlags.indexOf('--model') + 1, 1, process.env.SCOUT_MODEL);
+    if (roleFlags.includes('--model')) runAsked(`scout:${id}`, roleFlags[roleFlags.indexOf('--model') + 1] ?? null);
     const agentMcpFile = (await import('./agents.ts')).agentMcp(id);
     const follow2 = follow ? { ...follow, resume: Boolean(follow.session) } : null;
     // A follow-up resumes the scout's session; with none (or when Claude Code no longer has it) a fresh pass is told what was found.
@@ -335,7 +340,7 @@ ${mem.text ? `\n${mem.text}` : ''}${story ? `\nThe product's story, for tone:\n$
         while ((i = buf.indexOf('\n')) >= 0) {
           const line = buf.slice(0, i);
           buf = buf.slice(i + 1);
-          try { feedScoutLine(st, JSON.parse(line), logTool); } catch { /* not JSON */ }
+          try { feedScoutLine(st, JSON.parse(line), logTool); if (st.model) runReported(`scout:${id}`, st.model); } catch { /* not JSON */ }
         }
       });
       child.on('close', (code) => { clearTimeout(timer); st.code = code; resolve(st); });

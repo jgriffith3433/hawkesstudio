@@ -23,6 +23,7 @@
 // where it got to (resumeTalk), so the answer keeps streaming into the conversation. A call's warm process (it reads
 // stdin) stays Studio's child: a restart ends the call.
 
+import { reportedModel, runReported, runStarted } from './runs.ts';
 import { customerStudio } from './tenancy.ts';
 import { forOwner, ownerName } from './owner.ts';
 import fs from 'node:fs';
@@ -863,11 +864,17 @@ function giveUp(id: string, child: ChildLike, ctx: TurnCtx) {
  * Reads a turn's process until it ends (its own, or one reattached after a restart). Each line that changes the
  * conversation saves it, and the offset of a detached process's output with it, so a restart reads on from there.
  */
+/** Each answering conversation's live run, ended when its turn finishes. */
+const runEnds = new Map<string, () => void>();
 function followTurn(id: string, child: ChildLike, ctx: TurnCtx, { prompt, fresh, session, started = Date.now() }: { prompt?: string; fresh: boolean; session: string | null; started?: number }) {
   const { userAt, auto } = ctx;
   running.set(id, child);
+  // Shown as a live run (runs.ts) until finishTurn: its provider and model.
+  runEnds.get(id)?.();
+  runEnds.set(id, runStarted({ id: `talk:${id}`, kind: 'talk', harness: ctx.harness, model: ctx.model === 'auto' ? null : ctx.model, title: getConversation(id)?.title?.slice(0, 120) ?? null, since: started }));
   readLines(child, (m) => {
     onLine(id, m, ctx);
+    if (m.type === 'system' && m.subtype === 'init' && reportedModel(m.model)) runReported(`talk:${id}`, reportedModel(m.model));
     if (child instanceof DetachedChild && m.type !== 'stream_event') db.prepare(`UPDATE conversations SET proc = json_set(proc, '$.offset', ?, '$.billing', ?) WHERE id = ? AND proc IS NOT NULL`).run(child.offset, ctx.billing, id);
   });
   child.stderr!.on('data', (d) => (ctx.err += d));
@@ -1021,6 +1028,8 @@ function onLine(id: string, m: any, ctx: TurnCtx) {
 function finishTurn(id: string, ctx: TurnCtx, { stopped = false, code = 0, turn }: { stopped?: boolean; code?: number | null; turn?: Turn }) {
   if (ctx.finished) return;
   ctx.finished = true;
+  runEnds.get(id)?.();
+  runEnds.delete(id);
   // Ended by the deadline: a stopped turn, with a line saying so unless it had already answered.
   stopped ||= Boolean(ctx.timedOut);
   running.delete(id);

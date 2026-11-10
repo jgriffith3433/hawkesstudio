@@ -1,6 +1,7 @@
 // Hawkes Studio service: the dashboard and API on http://127.0.0.1:8791. Runs (daily or one-off) execute
 // in this process; the CLI and MCP server talk to it.
 
+import { brainHistory } from './runs.ts';
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -880,7 +881,7 @@ const server = http.createServer(async (req, res) => {
     }
 
     // Agent changes (findings -> pull requests).
-    if (route === '/api/changes' && method === 'GET') return send(res, 200, { changes: listChanges({ status: q('status'), product: q('product'), ...(q('limit') ? { limit: Math.min(500, Math.max(1, Number(q('limit')) || 100)) } : {}), offset: Number(q('offset')) || 0 }).map((c) => ({ ...c, stage: stageOf(c, c.verify) })), today: costToday(), settings: agentSettings() });
+    if (route === '/api/changes' && method === 'GET') return send(res, 200, { changes: listChanges({ status: q('status'), product: q('product'), ...(q('limit') ? { limit: Math.min(500, Math.max(1, Number(q('limit')) || 100)) } : {}), offset: Number(q('offset')) || 0 }).map((c) => ({ ...c, stage: stageOf(c, c.verify), brains: brainHistory(c.id, 12) })), today: costToday(), settings: agentSettings() });
     if (route === '/api/changes' && method === 'POST') {
       const b = await readJson(req);
       // An agent on Studio or Gen themselves (infra agents) is the platform admin's (lockdown.ts).
@@ -925,8 +926,10 @@ const server = http.createServer(async (req, res) => {
     }
     m = /^\/api\/changes\/(c_[0-9a-f]+)(?:\/(approve|revise|close|playtest))?$/.exec(route);
     if (m && method === 'GET' && !m[2]) {
-      const c = getChange(m[1]);
-      if (!c) return send(res, 200, { error: 'no such change' });
+      const got = getChange(m[1]);
+      if (!got) return send(res, 200, { error: 'no such change' });
+      // Its provider history (runs.ts): every start, switch with why, model the harness reported, and park.
+      const c = { ...got, brains: brainHistory(got.id) };
       return send(res, 200, c.links?.video ? { ...c, links: { ...c.links, video: await signFileLinks(c.links.video) } } : c);
     }
     if (m && method === 'POST' && m[2]) {
