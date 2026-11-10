@@ -93,3 +93,27 @@ test('skipping beta playtests is per project, from the owner\'s words; CI on the
   P.setBetaPlay('moon', 'play', 'Talk', 'play beta again');
   assert.equal(ciSkipFor('moon', 'abc1234', { sha: 'abc1234', runs: ['Deploy'] }), null, 'back to playtests: CI alone no longer lets it go');
 });
+
+test('before going live: ONE beta play per commit, none while one plays, and a played commit is not played again', async () => {
+  const { db } = await import('../src/db.ts');
+  const starts: any[] = [];
+  const start = (product: string, o: any) => {
+    const id = `r_bgl${starts.length}`;
+    starts.push({ product, ...o });
+    db.prepare('INSERT INTO runs (id, kind, status, detail, products, options, started) VALUES (?, ?, ?, ?, ?, ?, ?)').run(id, 'beta', 'running', `beta ${product}`, JSON.stringify([product]), JSON.stringify({ focus: o.focus }), Date.now());
+    return { id };
+  };
+  const first = await P.playBeforeGoLive('moon', 'abc1234', 'test', start);
+  assert.equal(first.started, 'r_bgl0');
+  assert.equal(starts[0].playtest, true);
+  assert.equal(starts[0].reverify, true);
+  assert.match(starts[0].focus, /abc1234/);
+  // Another merge lands while it plays: nothing new starts (the next pass plays the newest commit).
+  assert.deepEqual(await P.playBeforeGoLive('moon', 'def5678', 'test', start), { playing: 'r_bgl0' });
+  db.prepare(`UPDATE runs SET status = 'failed' WHERE id = 'r_bgl0'`).run();
+  // That commit was played (and failed): not played again until beta moves.
+  assert.deepEqual(await P.playBeforeGoLive('moon', 'abc1234', 'test', start), { played: 'r_bgl0' });
+  // Beta moved: the newest commit gets its one play.
+  assert.equal((await P.playBeforeGoLive('moon', 'def5678', 'test', start)).started, 'r_bgl1');
+  assert.equal(starts.length, 2);
+});

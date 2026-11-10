@@ -23,6 +23,23 @@ export function betaPlaytestsOn() {
     return false;
   }
 }
+/**
+ * When beta is playtested on its own (J, 2026-11-10: "Do that", to keeping the daily playtest and the one before go-live
+ * and dropping the one on every beta merge). "go-live" (the default): no play follows a merge or a fix; a project on
+ * go-live policy auto gets ONE beta playtest of beta's newest commit when that is all that holds it (golive-policy.ts
+ * playBeforeGoLive), covering every merge since its last play. "merge": as before, the re-checks after fix merges and the
+ * resumed waiting plays run too. Asking for a beta play (the Beta button, Talk, studio_deploy beta) always plays.
+ * Settings > Agents (agents.json betaPlayWhen).
+ */
+export type BetaPlayWhen = 'go-live' | 'merge';
+export const BETA_PLAY_WHEN: readonly BetaPlayWhen[] = ['go-live', 'merge'];
+export function betaPlayWhen(): BetaPlayWhen {
+  try {
+    return JSON.parse(fs.readFileSync(path.join(DATA, 'agents.json'), 'utf8')).betaPlayWhen === 'merge' ? 'merge' : 'go-live';
+  } catch {
+    return 'go-live';
+  }
+}
 export const PORT = Number(process.env.STUDIO_PORT) || 8791;
 /** A GitHub repository, owner/name. */
 const SLUG = /^[\w.-]+\/[\w.-]+$/;

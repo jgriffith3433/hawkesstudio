@@ -89,10 +89,10 @@ test('credits back: the waiting beta run plays once (and a daily or one-off run 
   for (const r of [beta, beta2, daily]) W.holdRun(r, 'cwgame', W.creditRefusal(refusal())!);
   const started: string[] = [];
   const startBeta = (product: string, o: any) => { assert.equal(product, 'cwgame'); assert.equal(o.playtest, true); const id = `r_new${started.length}`; started.push(id); return { id }; };
-  const ids = W.resumeWaiting(startBeta);
+  const ids = W.resumeWaiting(startBeta, Date.now(), () => 'merge');
   assert.equal(ids.length, 1, 'two held beta runs of one product play once');
   assert.equal(W.creditsWaiting(), null, 'the wait is over');
-  assert.deepEqual(W.resumeWaiting(startBeta), [], 'a second event starts nothing');
+  assert.deepEqual(W.resumeWaiting(startBeta, Date.now(), () => 'merge'), [], 'a second event starts nothing');
   assert.equal(started.length, 1);
 });
 
@@ -116,4 +116,14 @@ test('a hold lapses after an hour (a cell hears no event), and a new refusal hol
   db.exec('DELETE FROM credit_waits');
   W.holdRun(run(), 'cwgame', W.creditRefusal(refusal())!, Date.now() - W.HOLD_MS - 1000);
   assert.equal(W.creditsWaiting(), null);
+});
+
+test('credits back with beta played only before going live: the waiting beta run builds, no play', async () => {
+  db.exec('DELETE FROM credit_waits');
+  const beta = run('beta', 'cancelled');
+  W.holdRun(beta, 'cwgame2', W.creditRefusal(refusal())!);
+  const seen: any[] = [];
+  const ids = W.resumeWaiting((product: string, o: any) => { seen.push(o); return { id: 'r_build0' }; }, Date.now(), () => 'go-live');
+  assert.equal(ids.length, 1);
+  assert.equal(seen[0].playtest, false);
 });

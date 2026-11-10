@@ -25,7 +25,7 @@
 // Switches are Settings → Agents (`autoWorkVerdicts`, `autoReverify`, both default on), not env vars.
 
 import { db, parse } from './db.ts';
-import { getProduct, isInfra, managedElsewhere, type Product } from './config.ts';
+import { getProduct, isInfra, managedElsewhere, betaPlayWhen, type Product } from './config.ts';
 
 export const BAD = ['fix-first', 'broken'];
 /**
@@ -177,6 +177,8 @@ export type Deps = {
   ask: (text: string, o: { subject: string; product: string; context: string; options: string[]; recommend: string; topic: string }) => unknown;
   startBeta: (product: string, o: { focus: string; playtest: boolean; reverify: boolean }) => unknown;
   quietMs: number;
+  /** When beta plays by itself (config.ts betaPlayWhen; tests). */
+  playWhen?: () => 'go-live' | 'merge';
 };
 
 async function liveDeps(): Promise<Deps> {
@@ -292,6 +294,7 @@ async function staleOrRecheck(product: string, name: string, v: Verdict, trigger
   if (rechecking(product)) return { action: 'busy', why: 're-check is playing' };
   if (prior) return { action: 'none', why: 'its re-check ended without a new review; not started again for this commit' };
   if (!s.autoReverify) return { action: 'off', why: 're-checking is switched off (Settings → Agents)' };
+  if ((d.playWhen ?? betaPlayWhen)() === 'go-live') return { action: 'off', why: 'beta is played once, before it goes live (Settings → Agents → When beta is playtested)' };
   logDecision('verdict-recheck', subject(product), product, `${name} reads ${v.verdict} (${trigger}) but every finding behind it is fixed: started ONE full playtest of beta to recompute it\n${JSON.stringify({ commit: v.commit, run: v.run })}`);
   const run = d.startBeta(product, { focus: `The label reads ${v.verdict} but every finding behind it is fixed. Play beta in full and review it again so the verdict is current.`, playtest: true, reverify: true }) as any;
   void run?.done;
@@ -316,6 +319,8 @@ export async function noteMerge(product: string, change: string, d?: Deps): Prom
   try {
     d ??= await liveDeps();
     if (!d.settings().autoReverify) return false;
+    // Beta plays once, before going live (config.ts betaPlayWhen): no play after each burst of merges.
+    if ((d.playWhen ?? betaPlayWhen)() === 'go-live') return false;
     const v = latestVerdict(product);
     if (!v || !BAD.includes(v.verdict)) return false;
     if (managedElsewhere(getProduct(product)) || isInfra(product)) return false;
