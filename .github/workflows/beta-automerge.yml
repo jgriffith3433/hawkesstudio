@@ -7,7 +7,9 @@
 # - Checks: the repo runs no tests on GitHub (J, 2026-10-25), so there are none to wait for: run `npm run typecheck`
 #   and `npm test` before opening the pull request. The deploy's health check still rolls a bad beta back.
 # - Deploy: a merge made with this workflow's token doesn't start other workflows (GitHub's rule), so it starts beta's
-#   deploy (ci.yml's workflow_dispatch on beta) itself afterwards.
+#   deploy (ci.yml's workflow_dispatch on beta) itself afterwards, and Studio's hook (hawkes-studio.yml) too: without
+#   it Studio never hears that beta moved, so nothing went live by itself after these merges (#309 and #310 sat on
+#   beta, J 2026-11-09: "Okay skip beta playtests" for Studio's own changes).
 # - A conflict with beta fails this run with the reason; push a fix to the branch and it tries again.
 name: Merge into beta
 on:
@@ -60,3 +62,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh workflow run ci.yml --repo "${{ github.repository }}" --ref beta
+      - name: Tell Hawkes Studio that beta moved
+        if: env.MERGED == '1'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run hawkes-studio.yml --repo "${{ github.repository }}" --ref beta
