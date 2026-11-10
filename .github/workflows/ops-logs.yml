@@ -6,9 +6,9 @@ on:
   workflow_dispatch:
     inputs:
       target:
-        description: studio (the service), studio-agent (the agents' job), cell-agent, or cell (a customer's Studio, with org)
+        description: studio (the service), studio-agent (the agents' job), cell-agent, cell (a customer's Studio, with org), or build (the Cloud Build image builds)
         type: choice
-        options: [studio, studio-agent, cell-agent, cell]
+        options: [studio, studio-agent, cell-agent, cell, build]
         default: studio
       org:
         description: "cell: the org id (e.g. j-studio-4f12)"
@@ -30,6 +30,10 @@ on:
         description: "Optional: only this revision's logs (e.g. studio-00042-abc), to see a new revision that failed to start"
         type: string
         default: ''
+      contains:
+        description: "Optional: only lines containing this text (letters, digits, spaces, : . _ -), e.g. 'installed: ' to see which AI CLIs an image build installed"
+        type: string
+        default: ''
 permissions:
   contents: read
   id-token: write
@@ -49,6 +53,7 @@ jobs:
           LANE: ${{ inputs.lane }}
           ORG: ${{ inputs.org }}
           REVISION: ${{ inputs.revision }}
+          CONTAINS: ${{ inputs.contains }}
         run: |
           if [ "$TARGET" = cell ]; then [[ "$ORG" =~ ^[a-z0-9-]{1,40}$ ]] || { echo "cell needs org (lower-case letters, digits, dashes)"; exit 1; }; fi
           [[ "$MINUTES" =~ ^[0-9]+$ ]] && [ "$MINUTES" -ge 5 ] && [ "$MINUTES" -le 120 ] || { echo "minutes must be 5 to 120"; exit 1; }
@@ -60,8 +65,11 @@ jobs:
             case "$TARGET" in studio) f="resource.type=cloud_run_revision AND resource.labels.service_name=studio";; studio-agent) f="resource.type=cloud_run_job AND resource.labels.job_name=studio-agent";; cell-agent) f="resource.type=cloud_run_job AND resource.labels.job_name=studio-cell-agent";; cell) f="resource.type=cloud_run_revision AND resource.labels.service_name=studio-o-$ORG";; esac
           fi
           # A cell runs in the cells' region (CELLS_REGION_*), which may not be the lane's: its service name is enough.
-          if [ "$TARGET" != cell ]; then f="$f AND resource.labels.location=$region"; fi
+          # The image builds (tools/studio-cloudrun/build.mjs): both lanes build in one project, so the lane doesn't narrow them.
+          if [ "$TARGET" = build ]; then f="resource.type=build"; fi
+          if [ "$TARGET" != cell ] && [ "$TARGET" != build ]; then f="$f AND resource.labels.location=$region"; fi
           if [ -n "$REVISION" ]; then [[ "$REVISION" =~ ^[a-z0-9-]{1,63}$ ]] || { echo "revision: lower-case letters, digits, dashes"; exit 1; }; f="$f AND resource.labels.revision_name=$REVISION"; fi
+          if [ -n "$CONTAINS" ]; then [[ "$CONTAINS" =~ ^[A-Za-z0-9\ :._-]{1,80}$ ]] || { echo "contains: letters, digits, spaces, : . _ - (up to 80)"; exit 1; }; f="$f AND textPayload:\"$CONTAINS\""; fi
           echo "FILTER=$f" >> "$GITHUB_ENV"
       - uses: google-github-actions/auth@v2
         with:
