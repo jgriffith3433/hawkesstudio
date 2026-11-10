@@ -13,6 +13,7 @@ import os from 'node:os';
 import path from 'node:path';
 import readline from 'node:readline';
 import { seedLogin } from './ai-login-seed.mjs';
+import { pluginBridge } from './plugin-bridge.mjs';
 
 export function copilotBin() {
   const home = process.env.HOME || os.homedir();
@@ -34,7 +35,7 @@ export function unshim(bin) {
 
 /** Claude Code's argv, as Studio builds it, reduced to what Copilot needs. */
 export function parseClaudeArgs(argv) {
-  const out = { prompt: '', model: '', resume: '', system: '', mcp: '', streamIn: false, partial: false, effort: '' };
+  const out = { prompt: '', model: '', resume: '', system: '', plugins: [], mcp: '', streamIn: false, partial: false, effort: '' };
   const args = argv.slice(2);
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
@@ -49,7 +50,8 @@ export function parseClaudeArgs(argv) {
     else if (a === '--include-partial-messages') out.partial = true;
     else if (a === '--effort') out.effort = next();
     else if (a === '--max-turns') out.maxTurns = Number(next()) || 0;
-    else if (a === '--output-format' || a === '--plugin-dir' || a === '--allowedTools' || a === '--disallowedTools' || a === '--permission-mode' || a === '--tools' || a === '--setting-sources') next();
+    else if (a === '--plugin-dir') out.plugins.push(next());
+    else if (a === '--output-format' || a === '--allowedTools' || a === '--disallowedTools' || a === '--permission-mode' || a === '--tools' || a === '--setting-sources') next();
   }
   return out;
 }
@@ -78,8 +80,15 @@ export function copilotArgs(parsed, prompt, session) {
   return args;
 }
 
-/** The prompt text: the role's instructions go in front of the first turn of a session (Copilot has no append flag). */
-export const promptWith = (parsed, prompt, fresh) => (parsed.system && fresh ? `${parsed.system}\n\n---\n\n${prompt}` : prompt);
+/**
+ * The prompt text: the role's instructions go in front of the first turn of a session (Copilot has no append flag),
+ * with Studio's skills and reviewers as files to read (plugin-bridge.mjs: these harnesses can't load the plugin).
+ */
+export const promptWith = (parsed, prompt, fresh) => {
+  if (!fresh) return prompt;
+  const front = [parsed.system, pluginBridge(parsed.plugins)].filter(Boolean).join('\n\n');
+  return front ? `${front}\n\n---\n\n${prompt}` : prompt;
+};
 
 const dataOf = (e) => (e && typeof e.data === 'object' && e.data ? e.data : e ?? {});
 

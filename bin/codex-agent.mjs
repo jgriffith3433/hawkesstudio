@@ -14,6 +14,7 @@ import os from 'node:os';
 import path from 'node:path';
 import readline from 'node:readline';
 import { seedLogin } from './ai-login-seed.mjs';
+import { pluginBridge } from './plugin-bridge.mjs';
 
 export function codexBin() {
   const home = process.env.HOME || os.homedir();
@@ -23,7 +24,7 @@ export function codexBin() {
 
 /** Claude Code's argv, as Studio builds it, reduced to what Codex needs. */
 export function parseClaudeArgs(argv) {
-  const out = { prompt: '', model: '', resume: '', system: '', mcp: '', streamIn: false, partial: false, effort: '', maxTurns: 0 };
+  const out = { prompt: '', model: '', resume: '', system: '', plugins: [], mcp: '', streamIn: false, partial: false, effort: '', maxTurns: 0 };
   const args = argv.slice(2);
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
@@ -38,7 +39,8 @@ export function parseClaudeArgs(argv) {
     else if (a === '--include-partial-messages') out.partial = true;
     else if (a === '--effort') out.effort = next();
     else if (a === '--max-turns') out.maxTurns = Number(next()) || 0;
-    else if (a === '--output-format' || a === '--plugin-dir' || a === '--allowedTools' || a === '--disallowedTools' || a === '--permission-mode' || a === '--tools' || a === '--setting-sources') next();
+    else if (a === '--plugin-dir') out.plugins.push(next());
+    else if (a === '--output-format' || a === '--allowedTools' || a === '--disallowedTools' || a === '--permission-mode' || a === '--tools' || a === '--setting-sources') next();
   }
   return out;
 }
@@ -102,7 +104,12 @@ export function codexArgs(parsed, { resume = '', profile = '' } = {}) {
 }
 
 /** The role's instructions go in front of the first turn of a thread (Codex has no append flag in exec). */
-export const promptWith = (parsed, prompt, fresh) => (parsed.system && fresh ? `${parsed.system}\n\n---\n\n${prompt}` : prompt);
+export const promptWith = (parsed, prompt, fresh) => {
+  if (!fresh) return prompt;
+  // Studio's skills and reviewers as files to read (plugin-bridge.mjs: Codex can't load the plugin).
+  const front = [parsed.system, pluginBridge(parsed.plugins)].filter(Boolean).join('\n\n');
+  return front ? `${front}\n\n---\n\n${prompt}` : prompt;
+};
 
 /** One Codex item as Claude Code's tool_use (null: not a tool). */
 export function toolOf(item) {

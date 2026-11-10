@@ -88,3 +88,27 @@ test("Copilot never gets Studio's repo tokens, and a classic token gives way to 
   fs.writeFileSync(path.join(home, '.copilot', 'config.json'), '{"logged_in_users":[{"login":"j"}]}');
   assert.equal(copilotEnv({ ...base, COPILOT_GITHUB_TOKEN: 'ghp_old' }).COPILOT_GITHUB_TOKEN, undefined);
 });
+
+test('harnesses without plugins get Studio\'s skills and reviewers as files to read', async () => {
+  const { pluginBridge } = await import('../bin/plugin-bridge.mjs');
+  const { promptWith: cursorFront } = await import('../bin/copilot-agent.mjs');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'plugin-bridge-'));
+  fs.mkdirSync(path.join(dir, '.claude-plugin'), { recursive: true });
+  fs.writeFileSync(path.join(dir, '.claude-plugin', 'plugin.json'), '{"name":"hawkes"}');
+  fs.mkdirSync(path.join(dir, 'skills', 'game-quality'), { recursive: true });
+  fs.writeFileSync(path.join(dir, 'skills', 'game-quality', 'SKILL.md'), '---\nname: game-quality\ndescription: The quality rules.\n---\nbody');
+  fs.mkdirSync(path.join(dir, 'agents'));
+  fs.writeFileSync(path.join(dir, 'agents', 'fun-reviewer.md'), '---\nname: fun-reviewer\ndescription: Living world or demo.\n---\nbody');
+  fs.writeFileSync(path.join(dir, 'agents', 'fixer.md'), '---\nname: fixer\ndescription: Fixes.\n---\nbody');
+  const text = pluginBridge([dir]);
+  assert.match(text, /hawkes:game-quality\): The quality rules\. Read .*skills\/game-quality\/SKILL\.md/);
+  assert.match(text, /hawkes:fun-reviewer\): Living world or demo\. Its instructions: .*agents\/fun-reviewer\.md/);
+  assert.doesNotMatch(text, /fixer/, 'work roles are not reviewers');
+  assert.doesNotMatch(pluginBridge([dir], { skills: false }), /game-quality/);
+  assert.equal(pluginBridge([path.join(dir, 'missing')]), '');
+  const parsed = parseClaudeArgs(['node', 'x', '-p', 'hi', '--append-system-prompt', 'ROLE', '--plugin-dir', dir]);
+  assert.deepEqual(parsed.plugins, [dir]);
+  const first = cursorFront(parsed, 'TASK', true);
+  assert.ok(first.startsWith('ROLE\n\n## Studio') && first.endsWith('---\n\nTASK'));
+  assert.equal(cursorFront(parsed, 'NEXT', false), 'NEXT', 'a resumed turn already has it');
+});
