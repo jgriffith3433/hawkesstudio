@@ -32,7 +32,7 @@ test('the sign-in page is Google only; a password POST is refused', async () => 
   assert.equal(passwordsAllowed(), false);
   const page = res();
   await handleAuthRoute(req(), page, new URL('http://x/auth/signin'));
-  assert.match(page.body, /accounts\.google\.com\/gsi\/client/);
+  assert.match(page.body, /accounts\.google\.com\/gsi\/client\?hl=en/);
   // Google's button needs the origin as Referer, or it answers "origin not allowed for the client ID".
   assert.equal(page.headers['Referrer-Policy'], 'strict-origin-when-cross-origin');
   assert.equal(page.headers['Cross-Origin-Opener-Policy'], 'same-origin-allow-popups');
@@ -42,6 +42,25 @@ test('the sign-in page is Google only; a password POST is refused', async () => 
   await handleAuthRoute(req('POST', 'email=a%40b.com&password=whatever-123'), post, new URL('http://x/auth/signin'));
   assert.equal(post.status, 410);
   assert.match(post.body, /Sign in with Google/);
+});
+
+test('Continue with Google stays English, matches the card, and keeps a 44px full-width tap area', async () => {
+  const page = res();
+  await handleAuthRoute(req(), page, new URL('http://x/auth/signin'));
+  // f_98f714b98705: force English even when the browser is Romanian (hl + locale).
+  assert.match(page.body, /gsi\/client\?hl=en/);
+  assert.match(page.body, /locale:'en'/);
+  assert.match(page.body, /text:'continue_with'/);
+  // Theme follows the card (dark → filled_black, light → outline); never a white box on the dark card.
+  assert.match(page.body, /theme:dark\?'filled_black':'outline'/);
+  assert.match(page.body, /\.g-tap\{[^}]*background:transparent/);
+  assert.match(page.body, /#g\{[^}]*background:transparent/);
+  // f_f2966d06e2c3: reserved 44px row (no layout jump), full card width, GIS large scaled to 44px.
+  assert.match(page.body, /class="g-tap"/);
+  assert.match(page.body, /\.g-tap\{[^}]*min-height:44px/);
+  assert.match(page.body, /\.g-tap\{[^}]*width:100%/);
+  assert.match(page.body, /#g\{[^}]*transform:scale\(1\.1\)/);
+  assert.match(page.body, /renderButton\([^)]*width:Math\.min\(400/);
 });
 
 test('STUDIO_PASSWORD_LOGIN=1 brings the password form back', async () => {
