@@ -136,6 +136,28 @@ try { db.exec('ALTER TABLE changes ADD COLUMN auto_fixes INTEGER'); } catch { /*
 // and the route of the current attempt (JSON), kept so every pass of one attempt runs on the same model.
 try { db.exec('ALTER TABLE changes ADD COLUMN revisions INTEGER'); } catch { /* already there */ }
 try { db.exec('ALTER TABLE changes ADD COLUMN route TEXT'); } catch { /* already there */ }
+
+/**
+ * Worktree paths are stored whole. When Studio's working folder moves (Cloud Run: from the in-memory /tmp/projects onto
+ * the mounted disk, src/cellrun.ts CELL_DISK), a change's old path would be made again in memory and its cleanup would
+ * refuse a folder outside .work. At start, every stored path under another root's .work is moved under this one.
+ * Exported for the tests.
+ */
+export function rebaseWorktrees(work = path.join(PROJECTS, '.work')): number {
+  const rows = db.prepare("SELECT id, worktree FROM changes WHERE worktree LIKE '%/.work/%' OR worktree LIKE '%\\.work\\%'").all() as { id: string; worktree: string }[];
+  const set = db.prepare('UPDATE changes SET worktree = ? WHERE id = ?');
+  let moved = 0;
+  for (const r of rows) {
+    const rel = path.relative(work, path.resolve(r.worktree));
+    if (rel && !rel.startsWith('..') && !path.isAbsolute(rel)) continue;
+    const m = /[\\/]\.work[\\/](.+)$/.exec(r.worktree);
+    if (!m) continue;
+    set.run(path.join(work, ...m[1].split(/[\\/]/)), r.id);
+    moved++;
+  }
+  return moved;
+}
+try { const n = rebaseWorktrees(); if (n) console.log(`[studio] ${n} change(s)' worktree paths moved under ${path.join(PROJECTS, '.work')} (the working folder moved)`); } catch (e: any) { console.warn(`[studio] worktree paths: ${e?.message ?? e}`); }
 // The PM asks about changes by task and by status and date many times a pass. `created` and `task` sit after the agent's
 // log in each row, so without these every question reads past every log, on the one thread that also answers J's
 // browser (2026-11-06: a busy day froze a customer's Studio for up to 61 s at a time, and it stopped loading).
@@ -2039,7 +2061,7 @@ const waitsForDisk = (id: string) => (diskWait.get(id) ?? 0) > Date.now();
 /** A change that couldn't get disk room for its worktree: queued again (not failed), looked at again after DISK_WAIT_MS. */
 function waitForDisk(id: string, why: string) {
   diskWait.set(id, Date.now() + DISK_WAIT_MS());
-  const short = why.replace(/\. Cleared .*$/, '').replace(/^in-memory disk is full/, 'the disk is full');
+  const short = why.replace(/\. Cleared .*$/, '').replace(/^(in-memory|working) disk is full/, 'the disk is full');
   update(id, { status: 'queued', phase: null, detail: `queued: waits for disk room (${short.slice(0, 200)})` });
   addLog(id, `disk: no room for its worktree (${short.slice(0, 200)}): back in the queue, it starts once work beside it ends`);
   setTimeout(() => void pump(), DISK_WAIT_MS() + 1000).unref();
@@ -2435,7 +2457,7 @@ async function workPass(id: string, note?: string, answer?: string, resumed?: Ph
         // "preparing" this way and sat failed): back in the queue, picked again once work beside it ends.
         const full = await import('./disksweep.ts').then((d) => d.ensureDiskRoom(100 * 1024 * 1024, { say: (s) => addLog(id, s.replace(/^\[disksweep\] /, 'disk: ')) })).then(() => null, (e) => {
           const m = String(e?.message ?? e);
-          return /in-memory disk is full/.test(m) ? m : null;
+          return /(in-memory|working) disk is full/.test(m) ? m : null;
         });
         if (full) return void waitForDisk(id, full);
         await checkoutSlot(() => critical(`making the worktree of ${id}`, async () => {

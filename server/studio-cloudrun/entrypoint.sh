@@ -24,6 +24,15 @@ export STUDIO_PORT="${PORT:-8080}"
 # A customer's cell keeps its database under its own prefix of the shared bucket (litestream.yml; empty for J's Studio).
 export STUDIO_STATE_PREFIX="${STUDIO_STATE_PREFIX:-}"
 case "$STUDIO_STATE_PREFIX" in ""|*/) ;; *) export STUDIO_STATE_PREFIX="$STUDIO_STATE_PREFIX/" ;; esac
+# Studio's working disk (src/cellrun.ts CELL_DISK): when Cloud Run mounts it, product clones, agents' worktrees, installs,
+# temp files and the npm cache go there instead of the in-memory filesystem that filled the instance's memory.
+if [ -d /disk ] && mountpoint -q /disk 2>/dev/null; then
+  export STUDIO_PROJECTS=/disk/projects TMPDIR=/disk/tmp STUDIO_NPM_CACHE=/disk/npm-cache
+  mkdir -p "$TMPDIR" "$STUDIO_NPM_CACHE" && chmod 1777 "$TMPDIR" "$STUDIO_NPM_CACHE"
+  echo "[disk] working files on the mounted disk /disk ($(df -h /disk | awk 'NR==2{print $2" total, "$4" free"}'))"
+else
+  echo "[disk] no working disk mounted at /disk: working files stay in memory"
+fi
 mkdir -p /data "$STUDIO_PROJECTS"
 # When memory runs out, the kernel should kill a command Studio started (it fails and is retried), not Studio, Litestream
 # or this shell (src/oomguard.ts; 2026-11-10: ten SIGKILLs of Studio itself in 40 minutes). Inherited by both. Best effort.
