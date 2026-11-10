@@ -6,6 +6,7 @@ import { spawnSync } from 'node:child_process';
 import path from 'node:path';
 import { GEN_URL, GEN_PUBLIC_URL, PROJECTS } from './config.ts';
 import { GenEvents, nextLook, terminal, type JobFollower } from './genevents.ts';
+import { submitKnown } from './gen-params.ts';
 
 export const gen = new HawkesGen({ url: GEN_URL });
 /**
@@ -155,7 +156,7 @@ export async function genRun(tool: string, project: string, params: Record<strin
   let job: any;
   for (let i = 0; ; i++) {
     try {
-      job = await gen.submit(tool, { project, params });
+      job = await submitKnown((t, b) => gen.submit(t, b), tool, { project, params });
       break;
     } catch (e: any) {
       if ((e.kind !== 'offline' && !/reach|fetch failed|ECONN/i.test(String(e.message))) || i >= 20) throw e;
