@@ -28,3 +28,18 @@ test('beta-ci-ended starts on workflow_dispatch (not workflow_run), waits for th
   assert.ok(watch > 0 && tell > watch, 'waits for the run, then tells Studio');
   assert.match(ended, /\[\[ "\$RUN_ID" =~ \^\[0-9\]\+\$ \]\]/);
 });
+
+test("a commit's CI is its Deploy run, never Studio's hook, the CI-ended relay or an operator workflow", async () => {
+  const { ciRunsOf } = await import('../src/golive-policy.ts');
+  const run = (name: string, path: string, event = 'workflow_dispatch', conclusion: string | null = 'success', status = 'completed') => ({ name, path: `.github/workflows/${path}`, event, status, conclusion });
+  const got = ciRunsOf([
+    run('Deploy', 'ci.yml'),
+    run('ops-logs', 'ops-logs.yml', 'workflow_dispatch', 'failure'),
+    run('ops-admin', 'ops-admin.yml', 'workflow_dispatch', 'failure'),
+    run('Beta CI ended', 'beta-ci-ended.yml', 'workflow_dispatch', null, 'in_progress'),
+    run('Hawkes Studio', 'hawkes-studio.yml', 'push'),
+    run('Merge into beta', 'beta-automerge.yml', 'pull_request'),
+    run('Tests', 'tests.yml', 'push'),
+  ]);
+  assert.deepEqual(got.map((r) => r.name), ['Deploy', 'Tests']);
+});
