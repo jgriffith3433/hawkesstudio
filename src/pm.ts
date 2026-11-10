@@ -1981,6 +1981,9 @@ export async function undoDecision(id: string, by = 'J') {
   } else if (u.kind === 'settings') {
     fs.writeFileSync(FILE, JSON.stringify({ ...pmSettings(), ...u.before }, null, 2));
     detail = `settings back: ${JSON.stringify(u.before)}`;
+  } else if (u.kind === 'queue-heal') {
+    // A change the queue heal parked (queue-heal.ts): resumed now.
+    detail = (await import('./queue-heal.ts')).resumeParked(u.change, by);
   } else throw new StudioError(`Don't know how to undo ${u.kind}`);
   markUndone(id);
   logDecision('undo', d.subject, d.product, `${by} undid ${id} (${d.action}): ${detail}`);

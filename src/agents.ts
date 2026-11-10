@@ -102,6 +102,7 @@ import { kickFollowups } from './followup-kick.ts';
 import { POLISH_BY } from './polish.ts';
 import { sessionGone, freshSessionPrompt } from './sessiongone.ts';
 import { memLow, memRoom, memFreed, memSummary } from './memgate.ts';
+import { queueHold, parkedOut } from './queue-heal.ts';
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS changes (
@@ -821,6 +822,8 @@ export function machineryFailure(stderr: string | undefined | null): string | nu
 export const phaseOf = (id: string): Phase | null => parse((db.prepare('SELECT phase FROM changes WHERE id = ?').get(id) as any)?.phase ?? null);
 /** A line on a change's log, from outside this file (access.ts). */
 export const changeLog = (id: string, line: string) => addLog(id, line);
+/** A change's fields written as the pass would (queue-heal.ts parks with it). */
+export const patchChange = (id: string, patch: Partial<Record<string, any>>) => update(id, patch);
 function addLog(id: string, line: string) {
   const c = getChange(id)!;
   const log = [...c.log, `${new Date().toISOString().slice(11, 19)} ${line}`].slice(-400);
@@ -1913,7 +1916,7 @@ export function startFix(productId: string, findingIds: string[], { auto = false
 const ACTIVE = 'working,verifying,revising';
 /** " behind c_..." when the product's slots are taken by changes running or waiting ahead of a new one; else "". */
 function aheadOf(product: string) {
-  const busy = [...listChanges({ status: ACTIVE, product }), ...listChanges({ status: 'queued', product })];
+  const busy = [...listChanges({ status: ACTIVE, product }), ...listChanges({ status: 'queued', product }).filter((c) => !parkedOut(c))];
   return busy.length >= perProductLimit(product) ? ` behind ${busy[0].id}` : '';
 }
 
@@ -1984,7 +1987,8 @@ export function noRoomFor(product: string, next: WorkShape, statuses = `queued,$
   // Videos write only under videos/<slug>/ (videos.ts): they never collide with the product's other work or each other,
   // so they neither need a product slot nor hold one (J, 2026-10-22: a video waiting for his screening blocked four more).
   if (isVideoTask(next.task)) return null;
-  const others = listChanges({ status: statuses, product, limit: 50 }).filter((c) => !isVideoTask(c.task));
+  // A parked change (queue-heal.ts: it failed again and again) holds no slot of its product.
+  const others = listChanges({ status: statuses, product, limit: 50 }).filter((c) => !isVideoTask(c.task) && !parkedOut(c));
   const limit = perProductLimit(product);
   if (others.length >= limit) return limit === 1 ? `${others[0].id} is running` : `${limit} changes are running`;
   return others.length ? overlapWith(next, others.map(shapeOf), { unity: isUnity(product) }) : null;
@@ -1992,6 +1996,8 @@ export function noRoomFor(product: string, next: WorkShape, statuses = `queued,$
 
 /** A change parked by the harness waits out its gap and stops at the cap (resumeGate); the cap asks J once. */
 function resumeAllowed(c: Change, free: () => Harness | null = freeHarness) {
+  // Parked after failing again and again, or woken and at the end of its product's line (queue-heal.ts): not this pass.
+  if (queueHold(c)) return false;
   const ph = phaseOf(c.id);
   const h = ph?.harness;
   // Parked by one provider and another answers now (providers.ts, or a stand-in): it moves there at once. The gap and
@@ -2077,7 +2083,7 @@ function slotHolders() {
 
 /** The queue now, for /api/health, /api/ops and the Resources page: stalled says why when it sits with free slots. */
 export function queueHealth(now = Date.now()) {
-  const queued = listChanges({ status: 'queued', limit: 500 });
+  const queued = listChanges({ status: 'queued', limit: 500 }).filter((c) => !parkedOut(c));
   const s = agentSettings();
   const free = s.maxConcurrent - Math.max(listChanges({ status: AGENT_SLOT, limit: 500 }).length, slotHolders());
   const oldest = Math.min(...queued.map((c) => c.updated ?? c.created ?? now), now);
@@ -2102,7 +2108,7 @@ export function queueHeldBy(details: (string | null | undefined)[]): string {
  * one that was wrong (a gate set below what the machine holds at rest) stops holding work for good.
  */
 export function checkQueue(now = Date.now()): string | null {
-  const queued = listChanges({ status: 'queued', limit: 500 });
+  const queued = listChanges({ status: 'queued', limit: 500 }).filter((c) => !parkedOut(c));
   const s = agentSettings();
   const active = listChanges({ status: AGENT_SLOT, limit: 500 }).length;
   const free = s.maxConcurrent - Math.max(active, slotHolders());
