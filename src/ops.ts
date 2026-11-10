@@ -308,10 +308,10 @@ export function startLoopMonitor() {
     blocks.push(block);
     if (blocks.length > 50) blocks.shift();
     const warn = () => console.warn(`[studio] the event loop was blocked for ${late} ms${block.where ? ` ${block.where}` : ''}${running.length ? ` (running: ${running.join('; ').slice(0, 300)})` : ''}${block.cause?.profile ? ` [profile ${block.cause.profile}]` : ''}`);
-    if (!profiling()) return void (warn(), reportFreeze(block));
+    if (!profiling()) return warn();
     void captureBlock(late).then((cause) => {
       if (cause) Object.assign(block, { cause, where: describe(cause) });
-    }).catch(() => {}).finally(() => { warn(); reportFreeze(block); });
+    }).catch(() => {}).finally(warn);
   }, 500).unref();
   // Percentiles per minute: the last full minute is what health shows.
   setInterval(() => {
@@ -321,20 +321,6 @@ export function startLoopMonitor() {
   }, 60_000).unref();
 }
 let lastMinute: { p50ms: number; p99ms: number; maxms: number } | null = null;
-
-/**
- * A freeze this long is a new stall shape for the self-healing supervisor (selfheal.ts anomaly): it files one Studio fix
- * task with where the time went, so the next one is fixed in code without anyone noticing it first (2026-11-10: a 224 s
- * block made Cloud Run refuse every request, claude.ai's token refreshes included, and Studio's connector signed out).
- */
-export const FREEZE_MS = () => Number(process.env.STUDIO_FREEZE_MS) > 0 ? Number(process.env.STUDIO_FREEZE_MS) : 10_000;
-function reportFreeze(block: Block) {
-  if (block.ms < FREEZE_MS()) return;
-  void import('./selfheal.ts').then((S) => S.anomaly('loop-block', 'Studio froze (its event loop was blocked)',
-    `Studio's event loop was blocked for ${Math.round(block.ms / 1000)} s${block.where ? ` ${block.where}` : ''}`,
-    [`at ${new Date(block.at).toISOString()}`, ...(block.where ? [`where: ${block.where}`] : []), ...(block.cause?.profile ? [`CPU profile: ${block.cause.profile}`] : []), ...(block.running.length ? [`running: ${block.running.join('; ').slice(0, 600)}`] : [])]))
-    .catch(() => {});
-}
 
 /** The event loop's health: delay percentiles over the last minute, and the recent blocks. */
 export function loopHealth() {
