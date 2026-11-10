@@ -78,3 +78,19 @@ jobs:
           gcloud run services update-traffic "$SERVICE" --to-revisions "$prev=100" --region "$RUN_REGION" --project "$PROJECT" --format=none
           [ -n "$prevJob" ] && gcloud run jobs update "$JOB" --image "$prevJob" --region "$RUN_REGION" --project "$PROJECT" --format=none
           exit 1
+  # Beta's CI is ending: tell Hawkes Studio once this run is over (beta-ci-ended.yml), so a go live waiting on its CI looks
+  # again. A workflow_run trigger never fired here: beta's Deploy runs are started by GITHUB_TOKEN (beta-automerge.yml),
+  # and GitHub starts no workflow from a GITHUB_TOKEN run's events (2026-11-10: #362's CI went green at 22:57 and
+  # nothing woke Studio). A workflow_dispatch is the one event GITHUB_TOKEN may start, so this run starts it itself.
+  ended:
+    name: Tell Studio when beta's CI is over
+    needs: deploy
+    if: always() && github.ref_name == 'beta'
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    permissions:
+      actions: write
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run beta-ci-ended.yml --repo "$GITHUB_REPOSITORY" --ref beta -f run_id="$GITHUB_RUN_ID"
