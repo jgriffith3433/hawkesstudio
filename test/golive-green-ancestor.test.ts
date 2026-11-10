@@ -41,7 +41,7 @@ P.setBetaPlay('tool', 'skip', 'Talk', 'skip beta playtests');
 test('green CI on an older beta commit takes main to that commit, not to the newer tip', async () => {
   const plan = await D.deployPlan('tool');
   assert.equal(plan.beta?.sha, sha('4'));
-  assert.match(plan.blockers.join('\n'), /hasn't been playtested/, 'the tip is unplayed: only CI gates it here');
+  assert.doesNotMatch(plan.blockers.join('\n'), /hasn't been playtested/, 'playtests are skipped here: CI gates it');
   const r: any = await D.deploy('tool', { confirm: plan.confirm, by: 'Studio (CI passed)', beta: sha('3'), ciPassed: { sha: sha('3'), runs: ['Deploy'] } } as any);
   assert.equal(r.ok, true);
   const w = gh.repos['me/tool'];
@@ -58,12 +58,14 @@ test('a commit main already has is a no-op, never a move backwards', async () =>
   assert.equal(gh.repos['me/tool'].refs.main, sha('3'));
 });
 
-test('without green CI for that commit, an older commit is still refused as not what was approved', async () => {
+test('without green CI on any beta commit, nothing goes live', async () => {
   const w = gh.repos['me/tool'];
   w.commits[sha('5')] = { parents: [sha('4')], tree: 't5', title: 'Fix D' };
   w.refs.beta = sha('5');
+  P.goLiveCi.list = async () => [{ name: 'Deploy', status: 'completed', conclusion: 'failure' }];
   const plan = await D.deployPlan('tool');
-  await assert.rejects(D.deploy('tool', { confirm: plan.confirm, by: 'someone', beta: sha('4') }), /Not going live|not 4444444/);
+  await assert.rejects(D.deploy('tool', { confirm: plan.confirm, by: 'someone', beta: sha('4') }), /Not going live yet: CI on/);
+  P.goLiveCi.list = undefined;
   assert.equal(w.refs.main, sha('3'));
 });
 
