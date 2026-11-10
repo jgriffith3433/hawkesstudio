@@ -206,6 +206,16 @@ test("an Actions build: the workflow's artifact is published when its run report
   assert.ok(push && 'site' in push.runs && !('godot' in push.runs));
 });
 
+test('a beta push that builds nothing (Hawkes Studio itself) asks the go-live policy, which waits for CI by itself', async () => {
+  C.saveProduct({ id: 'selfdeploy', name: 'Self deploy', engine: 'web', kind: 'app', repo: 'acme/selfdeploy' } as any);
+  const push: any = await B.onRepoHook({ repository: 'acme/selfdeploy', ref: 'refs/heads/beta', sha: SHA1 }, {});
+  assert.deepEqual(push?.runs, {});
+  assert.deepEqual(push?.golive, ['selfdeploy'], 'autoGoLive is asked for it');
+  // A build tag is not beta moving: nothing is asked.
+  const tag: any = await B.onRepoHook({ repository: 'acme/selfdeploy', ref: 'refs/tags/build-1', sha: SHA1 }, {});
+  assert.equal(tag?.golive, undefined);
+});
+
 test("a site's _headers: Godot's cross-origin isolation, from a safe list", () => {
   const rules = W.parseHeaders('/*\n  Cross-Origin-Opener-Policy: same-origin\n  Cross-Origin-Embedder-Policy: require-corp\n  Set-Cookie: no=1\n');
   assert.equal(rules[0].headers.length, 2, 'Set-Cookie is never taken');
