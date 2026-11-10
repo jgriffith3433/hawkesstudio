@@ -78,6 +78,25 @@ export async function ciOn(slug: string, sha: string, { maxMs = 40 * 60_000, eve
   }
 }
 
+/**
+ * The newest commit on beta whose CI passed: beta's tip, else one of the newest beta commits main lacks (`commits`,
+ * newest first). One look each, no wait held: beta's CI tells Studio when it ends (beta-ci-ended.yml), and that brings
+ * the go live back here. With merges every few minutes and CI taking ten, the tip rarely has finished CI, and the tip's
+ * run is cancelled whenever a newer merge's run replaces it, so the tip alone kept every fix on beta for hours.
+ * Used by both ways of going live (autoGoLive and the golive operation), so they agree on what may go.
+ */
+export async function greenOnBeta(slug: string, tip: string, commits: ({ sha?: string } | null)[] = []): Promise<CiResult> {
+  const look = (at: string) => ciOn(slug, at, { maxMs: 0, list: goLiveCi.list });
+  const first = await look(tip);
+  if (first.ok) return first;
+  for (const c of commits.slice(0, 12)) {
+    if (!c?.sha || c.sha === tip) continue;
+    const older = await look(c.sha);
+    if (older.ok) return older;
+  }
+  return first;
+}
+
 export function setPolicy(product: string, policy: Policy, by: string, words?: string | null) {
   getProduct(product);
   if (!['auto', 'hold', 'ask'].includes(policy)) throw new Error('policy: auto | hold | ask');
@@ -166,26 +185,19 @@ async function autoGoLiveNow(productId: string, why: string): Promise<{ went?: s
       // One look, no wait held in memory: beta's CI tells Studio when it ends (ci.yml's last step calls the same hook as a
       // push), and that call brings Studio back here. Waiting up to 40 minutes inside this call was lost whenever Studio
       // restarted meanwhile (2026-11-10 21:42 to 21:48: four restarts, and nothing went live).
-      const look = (at: string) => ciOn(plan.github.slug, at, { maxMs: 0, list: goLiveCi.list });
-      let ci = await look(plan.beta.sha);
-      // The tip's CI not done yet, or cancelled because a newer merge's run took its place: the newest beta commit whose
-      // CI passed goes live (main moves to it, never past it). With merges every few minutes and CI taking ten, the tip
-      // rarely has finished CI, and waiting for one that has kept every fix on beta for hours (2026-11-10: 20 commits,
-      // 70 minutes). The tip goes live on a later pass once its own CI is done.
-      if (!ci.ok) {
-        for (const c of (plan.commits ?? []).slice(0, 12)) {
-          if (!c?.sha || c.sha === plan.beta.sha) continue;
-          const older = await look(c.sha);
-          if (older.ok) { ci = older; break; }
-        }
-      }
+      const ci = await greenOnBeta(plan.github.slug, plan.beta.sha, plan.commits ?? []);
       if (!ci.ok) {
         console.log(`[golive] ${p.id}: not going live by itself yet (${why}): ${ci.why}; Studio looks again when beta's CI ends`);
         return { waits: ci.why };
       }
-      // Already live (another pass took main past it): nothing to do.
       plan = await deployPlan(p.id, { notesWaitMs: 0 });
-      if (plan.beta?.sha !== ci.sha && !(plan.commits ?? []).some((c: any) => c?.sha === ci.sha)) return { waits: `${ci.sha.slice(0, 7)} is already live` };
+      // Not among the commits main lacks any more: live only if main has it (GitHub's compare says so), never assumed
+      // from it missing from a list (2026-11-10: "already live" said with main 49 commits behind beta).
+      if (plan.beta?.sha !== ci.sha && !(plan.commits ?? []).some((c: any) => c?.sha === ci.sha)) {
+        const { isAncestorOnGitHub } = await import('./deploy-cloud.ts');
+        const live = plan.main?.sha ? await isAncestorOnGitHub(plan.github.slug, ci.sha, plan.main.sha).catch(() => false) : false;
+        return { waits: live ? `${ci.sha.slice(0, 7)} is already live (main ${plan.main?.short ?? '?'} has it)` : `${ci.sha.slice(0, 7)} isn't on beta any more; the next green commit goes live` };
+      }
       if (plan.beta?.sha !== ci.sha) console.log(`[golive] ${p.id}: going live at ${ci.sha.slice(0, 7)} (green CI); beta's tip ${plan.beta?.short ?? '?'} follows once its own CI passes`);
       const { op } = queueLive('golive', { product: p.id, confirm: plan.confirm, by: `Studio (${ci.why}; the owner said to skip beta playtests${pol.betaPlayWords ? `: "${pol.betaPlayWords.slice(0, 60)}"` : ''})`, beta: ci.sha, ciPassed: { sha: ci.sha, runs: ci.runs } });
       console.log(`[golive] ${p.id}: going live by itself on green CI (${why}): ${op.id}`);

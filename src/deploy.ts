@@ -249,9 +249,24 @@ export function ciSkipFor(product: string, sha: string | undefined, ci: { sha: s
   return { by: `Studio (CI passed; ${pol.beta_play_by ?? 'the owner'} said to skip beta playtests)`, at: Date.now(), sha, why: [`CI passed: ${ci.runs.join(', ').slice(0, 300)}`], approval: '' };
 }
 
+/**
+ * The owner skips beta playtests for this project (golive-policy.ts betaPlay skip): beta not being playtested is not a
+ * blocker of its plan, and CI on the commit going live is its gate instead (ciGate; deployNow finds that commit). Every
+ * way of going live reads this one plan, so none of them refuses for want of a playtest the owner said to skip
+ * (2026-11-10: the plan said "beta hasn't been playtested" for Hawkes Studio, and its go live stopped there).
+ */
+async function ciGated<T extends { blockers: string[]; warnings: string[]; canDeploy?: boolean; fix?: any }>(productId: string, plan: T): Promise<T & { ciGate?: boolean }> {
+  const { skipsBetaPlay } = await import('./golive-policy.ts');
+  if (!skipsBetaPlay(productId)) return plan;
+  const unplayed = plan.blockers.filter(isPlaytestBlocker);
+  const blockers = plan.blockers.filter((b) => !isPlaytestBlocker(b));
+  const warnings = unplayed.length ? [`Beta playtests are skipped for this project (the owner's word): it goes live at the newest ${BETA} commit whose CI passed.`, ...plan.warnings] : plan.warnings;
+  return { ...plan, blockers, warnings, canDeploy: !blockers.length, fix: planFix(blockers), ciGate: true };
+}
+
 /** notesWaitMs: how long to wait for the release notes being written (the Approve card waits longer, to show them). */
 export async function deployPlan(productId: string, opts: { notesWaitMs?: number; io?: GitHubIO } = {}) {
-  const plan = await planOf(productId, opts);
+  const plan = await ciGated(productId, await planOf(productId, opts));
   // Builds whose newest attempt failed (buildfail.ts): Go live's red badge, whatever else the plan says.
   const BF = await import('./buildfail.ts');
   const buildFailing = BF.failingBuilds(productId);
@@ -495,7 +510,12 @@ async function githubPlan(p: Product, io: GitHubIO = {}) {
   const tg = beta ? await publishTargets(p, beta.sha, io).catch((e: any) => ({ targets: [], blockers: [`GitHub: ${e.message}`], attempts: [] })) : { targets: [], blockers: [], attempts: [] };
   blockers.push(...tg.blockers);
   const moving = tg.targets.filter((t) => t.move);
-  if (beta && cmp.main && !cmp.ahead.length && !cmp.behind.length && !moving.length) blockers.push(`Nothing to go live: ${MAIN} already is ${BETA} (${beta.short})${tg.targets.length ? ' and its builds are live' : ''}.`);
+  // "Nothing to go live" says main already is beta: only when their commits say so, never from an empty list of commits
+  // alone (a compare GitHub answered without its commits read as "already live" with main 49 commits behind).
+  if (beta && cmp.main && !cmp.ahead.length && !cmp.behind.length && !moving.length) {
+    if (cmp.main.sha === beta.sha) blockers.push(`Nothing to go live: ${MAIN} already is ${BETA} (${beta.short})${tg.targets.length ? ' and its builds are live' : ''}.`);
+    else blockers.push(`GitHub: comparing ${MAIN} ${cmp.main.short} with ${BETA} ${beta.short} listed no commits though they differ; Studio reads it again on the next look.`);
+  }
   const into = moving.map((t) => `${t.slug}'s ${MAIN} to its ${BETA} commit holding build ${t.build} ${t.version} (${t.commit.slice(0, 7)})`);
   return {
     product: p.id, name: p.name, live: p.live, betaSite: previewUrl(p.id), repo: slug, site: slug, unity: false,
@@ -548,7 +568,8 @@ export function publisherOf(p: Product) {
 export const deploy = (...a: Parameters<typeof deployNow>) => critical(`going live: ${a[0]}`, async () => {
   const r: any = await deployNow(...a);
   // A person went live past the playtest ("Go live anyway"): who, when and which commit go on the go live's record.
-  const skip = playtestSkipFor(a[1]?.approval, a[0], a[1]?.beta) ?? ciSkipFor(a[0], a[1]?.beta, a[1]?.ciPassed);
+  // CI as the gate: the commit and runs deployNow went live on (it finds them itself when not given).
+  const skip = playtestSkipFor(a[1]?.approval, a[0], a[1]?.beta) ?? ciSkipFor(a[0], r?.ciPassed?.sha ?? a[1]?.beta, r?.ciPassed ?? a[1]?.ciPassed);
   if (skip && r?.deploy) {
     db.prepare('UPDATE deploys SET skipped_playtest = ? WHERE id = ?').run(JSON.stringify(skip), r.deploy);
     opLog(`${skip.by} took ${a[0]} live without a playtest of ${skip.sha.slice(0, 7)}`);
@@ -556,6 +577,16 @@ export const deploy = (...a: Parameters<typeof deployNow>) => critical(`going li
   }
   return r;
 });
+/** Going live where CI is the gate (playtests skipped) and no beta commit has green CI yet: the operation waits for it. */
+export class NeedsCi extends Error {
+  short: string;
+  why: string;
+  constructor(short: string, why: string) {
+    super(`Not going live yet: ${why}.`);
+    this.short = short;
+    this.why = why;
+  }
+}
 /** Going live waits for one beta playtest of beta's newest commit (deployNow; the golive operation starts it and waits). */
 export class NeedsBetaPlay extends Error {
   short: string;
@@ -576,7 +607,21 @@ async function deployNow(productId: string, { confirm, by = 'J', mergeMain, orig
   }
   if (mergeMain) return { ok: true, product: p.id, ...(await mergeMainIntoBeta(p, by)), note: `Nothing went live. Playtest ${BETA} again before going live.` };
   opLog(`making the plan for ${p.name}`);
-  let plan = await deployPlan(p.id, { io });
+  let plan: any = await deployPlan(p.id, { io });
+  // CI is this project's gate (playtests skipped): the newest beta commit whose CI passed goes live. Found here, so every
+  // way of going live (Studio by itself, a person's go live, an Approve card) goes by the same rule. None yet: the
+  // operation waits, and beta's CI ending wakes it (golive-policy.ts autoGoLive → wakeGoLives).
+  if (plan.ciGate && !(ciPassed && expect && ciPassed.sha === expect) && !playtestSkipFor(approval, p.id, expect) && plan.beta?.sha && plan.github?.slug && plan.commits?.length) {
+    const { greenOnBeta } = await import('./golive-policy.ts');
+    const ci = await greenOnBeta(plan.github.slug, plan.beta.sha, plan.commits);
+    if (!ci.ok) throw new NeedsCi(plan.beta.short ?? plan.beta.sha.slice(0, 7), ci.why);
+    if (expect && expect !== ci.sha && !plan.commits.slice(plan.commits.findIndex((c: any) => c?.sha === ci.sha)).some((c: any) => c?.sha === expect)) {
+      // Asked for a newer commit than the newest green one: that newer one isn't through CI yet.
+      throw new NeedsCi(expect.slice(0, 7), `CI on ${expect.slice(0, 7)} hasn't passed yet (${ci.sha.slice(0, 7)} is the newest ${BETA} commit with green CI)`);
+    }
+    expect = ci.sha;
+    ciPassed = { sha: ci.sha, runs: ci.runs };
+  }
   // Going live on green CI where playtests are skipped: CI passed on `expect`, an older commit of beta than its tip
   // (merges kept landing while CI ran, so beta's tip is rarely the commit whose CI is done). Main goes to that commit,
   // not the tip: the plan is cut down to it (its own commits, it as beta), and only what it lists goes live.
@@ -587,8 +632,13 @@ async function deployNow(productId: string, { confirm, by = 'J', mergeMain, orig
       plan = { ...plan, beta: { ...(plan.beta as any), sha: at.sha, short: at.short ?? at.sha.slice(0, 7), title: at.title }, played: plan.beta as any, commits: plan.commits.slice(i), blockers: (plan.blockers ?? []).filter((b: string) => !/^Nothing to go live/.test(b)), ancestorOk: true } as any;
       opLog(`going live at ${expect.slice(0, 7)}, the newest ${BETA} commit with green CI (${BETA}'s tip ${String((plan as any).played?.short ?? '')} is newer and goes live once its own CI passes)`);
     } else if (i < 0) {
-      // Already live (a later go live took main past it) or not on beta any more: nothing to move.
-      return { ok: true, product: p.id, nothing: true, main: plan.main?.short ?? null, beta: plan.beta?.short ?? null, release: null, note: `Nothing to go live: ${expect.slice(0, 7)} is no longer ahead of ${MAIN}` };
+      // Not among the commits main lacks: already live only if main has it, as GitHub's compare says. Never concluded
+      // from it missing from that list (2026-11-10: "already live" with main 49 commits behind beta).
+      const { isAncestorOnGitHub } = await import('./deploy-cloud.ts');
+      const slug = githubSlugOf(p);
+      const has = slug && plan.main?.sha ? await isAncestorOnGitHub(slug, expect, plan.main.sha, io?.fetch ?? ((...a: Parameters<typeof fetch>) => fetch(...a)), io?.token) : false;
+      if (!has) throw new StudioError(`Not going live: ${expect.slice(0, 7)} isn't on ${BETA} ahead of ${MAIN} ${plan.main?.short ?? '?'}, and ${MAIN} doesn't have it either; look at the plan again.`, 409);
+      return { ok: true, product: p.id, nothing: true, main: plan.main?.short ?? null, beta: plan.beta?.short ?? null, release: null, note: `Already live: ${MAIN} ${plan.main?.short ?? '?'} has ${expect.slice(0, 7)}` };
     }
   }
   if (confirm !== plan.confirm) throw new StudioError(`Going live publishes ${plan.live}: ${plan.what} Show J the plan, then send confirm: "${plan.confirm}" (J's call).`);
@@ -607,7 +657,7 @@ async function deployNow(productId: string, { confirm, by = 'J', mergeMain, orig
   if (blockers.length) throw new StudioError(`Not going live:\n- ${blockers.join('\n- ')}`);
   // After waiting for that play (requireClean): it has to have passed. The owner's earlier "go live" was for a beta that
   // plays clean; a failed or broken play stops it here and says why.
-  if (requireClean) {
+  if (requireClean && !plan.ciGate) {
     const { playtestHolds } = await import('./golive-policy.ts');
     const holds = playtestHolds(plan.tested?.playtests as any, plan.tested?.sha ?? plan.beta?.short);
     if (holds.length) throw new StudioError(`Not going live: beta's playtest before going live didn't pass: ${holds.join('; ')}`);
@@ -630,7 +680,7 @@ async function deployNow(productId: string, { confirm, by = 'J', mergeMain, orig
       const tp = (() => { try { return getProduct(t.project); } catch { return null; } })();
       if (tp?.live) void verifyLive(tp.id, t.after, `Just went live: build ${t.build} ${t.version} of ${p.name} (${plan.beta!.short})`, origin);
     }
-    return { ok: true, product: p.id, deploy: id, live: p.live, main: after.slice(0, 7), beta: plan.beta!.short, release: null, log: r.log, note: `${publisherOf(p).done}; Studio waits for it, then playtests the live site where there is one. If it went wrong: the rollback plan.` };
+    return { ok: true, product: p.id, deploy: id, live: p.live, main: after.slice(0, 7), beta: plan.beta!.short, release: null, log: r.log, ciPassed, note: `${publisherOf(p).done}; Studio waits for it, then playtests the live site where there is one. If it went wrong: the rollback plan.` };
   }
   const { source, site, unity } = repoDirs(p);
   // A Unity game on Cloud Run: both mains move through GitHub's API (deploy-cloud.ts), fast-forward only.
@@ -1035,20 +1085,11 @@ registerOp('golive', async (j: LiveJob, ctx) => {
     // After waiting for beta's play, beta's newest commit is what goes (the ask was for beta, and beta moved on), unless
     // an Approve card bound it to one commit.
     const waited = Boolean(ctx.op.wait);
-    return await deploy(j.product, { confirm: j.confirm, by: j.by, origin: j.origin, beta: waited && !j.approval ? undefined : j.beta, mergeMain: j.mergeMain, approval: j.approval, ciPassed: j.ciPassed, requireClean: waited });
+    return await deploy(j.product, { confirm: j.confirm, by: j.by, origin: j.origin, beta: waited && !j.approval ? undefined : j.beta, mergeMain: j.mergeMain, approval: j.approval, ciPassed: waited && !j.approval ? undefined : j.ciPassed, requireClean: waited });
   } catch (e: any) {
+    // CI is the gate and no beta commit has green CI yet: wait, never fail; beta's CI ending wakes this (autoGoLive).
+    if (e instanceof NeedsCi) throw new OpWaits(`waiting for CI on ${BETA} ${e.short}: ${e.why} (the owner skips beta playtests for this project); goes live by itself when it passes`, null);
     if (e instanceof NeedsBetaPlay) {
-      // A project whose owner skips beta playtests (golive-policy.ts betaPlay skip): CI on beta's commit is its gate.
-      const P = await import('./golive-policy.ts');
-      const slug = githubSlugOf(getProduct(j.product));
-      if (P.skipsBetaPlay(j.product) && slug) {
-        const sha = (await deployPlan(j.product, { notesWaitMs: 0 })).beta?.sha;
-        const ci = sha ? await P.ciOn(slug, sha, { maxMs: 0 }) : null;
-        if (ci?.ok) return deploy(j.product, { confirm: j.confirm, by: j.by, origin: j.origin, mergeMain: false, ciPassed: { sha: ci.sha, runs: ci.runs }, beta: ci.sha });
-        if (ci && /didn't pass/.test(ci.why)) throw new StudioError(`Not going live: ${ci.why}`);
-        // CI still running: the end of its wait (autoGoLive) wakes this.
-        throw new OpWaits(`waiting for CI on beta ${e.short} (the owner skips beta playtests for this project); goes live by itself when it passes`, null);
-      }
       return waitForBetaPlay(getOp(ctx.op.id) ?? ctx.op, j.product, e.short);
     }
     // A second attempt after a restart that finds it already done: that's the first attempt's success.
