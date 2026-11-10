@@ -628,6 +628,9 @@ export async function effectivePlan(orgId: string) {
   const sub = B.currentSubscription(orgId);
   const paying = sub && sub.status !== 'canceled' ? sub : null;
   const gift = activeGift(getOrg(orgId));
+  // The owner's own studio has every feature, never on a paid plan (a platform admin's email owns it).
+  const owner = getOrg(orgId)?.ownerEmail?.toLowerCase();
+  if (owner && (await import('./tenancy.ts')).platformAdmins().includes(owner)) return { planId: 'studio_studio', status: 'owner', maxGames: null, sub, gift };
   if (gift && (!paying || planRank(gift.plan) > planRank(paying.planId))) return { planId: gift.plan, status: 'gift', maxGames: B.getPlan(gift.plan)?.maxGames ?? null, sub, gift };
   return { planId: paying?.planId ?? 'free', status: paying?.status ?? null, maxGames: paying?.plan?.maxGames ?? null, sub, gift };
 }

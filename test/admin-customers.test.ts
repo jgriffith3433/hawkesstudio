@@ -177,3 +177,24 @@ test('suspend needs a reason, stops charges and wake-ups, and unsuspend gives th
   assert.equal(u.body.suspended, null);
   assert.equal((await C.ensureCell(org.id, 'a visit', { dry: true })).state, 'awake');
 });
+
+test('changing a plan: complimentary, no Stripe, confirmed, includes cloud builds, free takes it back', async () => {
+  assert.equal((await call(jGoogle('POST'), `${base}/plan`, 'POST', { plan: 'studio_studio', note: 'pilot' })).status, 400, 'needs confirm');
+  assert.equal((await call(jGoogle('POST'), `${base}/plan`, 'POST', { plan: 'gold', note: 'pilot', confirm: true })).status, 400);
+  assert.equal((await call(as(helper, 'google')('POST'), `${base}/plan`, 'POST', { plan: 'studio_studio', note: 'pilot', confirm: true })).status, 403);
+  const r = await call(jGoogle('POST'), `${base}/plan`, 'POST', { plan: 'studio_studio', note: 'pilot customer', confirm: true });
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  assert.equal(r.body.plan.id, 'studio_studio');
+  assert.equal(r.body.plan.status, 'gift');
+  assert.ok(r.body.plan.includes.includes('Cloud builds'));
+  assert.ok((await call(jGoogle(), '/api/admin/customers')).body.plans.some((p: any) => p.id === 'free'));
+  const f = await call(jGoogle('POST'), `${base}/plan`, 'POST', { plan: 'free', note: 'pilot over', confirm: true });
+  assert.equal(f.body.plan.id, 'free');
+});
+
+test("the owner's own studio always has every feature", async () => {
+  const mine = C.createOrg({ sub: '1000001', email: 'piercehawkes3@gmail.com', name: 'J' }, 'J Studio');
+  const e = await C.effectivePlan(mine.id);
+  assert.equal(e.planId, 'studio_studio');
+  assert.equal(e.status, 'owner');
+});

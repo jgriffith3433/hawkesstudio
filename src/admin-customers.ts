@@ -6,6 +6,7 @@
 //   GET  /api/admin/customers/<org>                 one: members, the recent ledger, the last 30 days' usage, gift, suspension
 //   POST /api/admin/customers/<org>/suspend         {reason}   hibernates it and refuses wake-ups, charges and nightly runs
 //   POST /api/admin/customers/<org>/unsuspend
+//   POST /api/admin/customers/<org>/plan            {plan, note, credits?, confirm: true}  a complimentary plan (no Stripe, no charge); free takes it back
 //   POST /api/admin/customers/<org>/gift-credits    {amount, reason, confirm: true, key?}  a labeled admin gift in its ledger
 import type http from 'node:http';
 import crypto from 'node:crypto';
@@ -13,6 +14,7 @@ import { StudioError } from './config.ts';
 import { db } from './db.ts';
 import * as C from './cells.ts';
 import * as Bill from './billing.ts';
+import { PLAN_FEATURES, FEATURE_NAMES, featuresOf } from './entitlements.ts';
 
 type Send = (res: http.ServerResponse, status: number, body: unknown) => unknown;
 type ReadJson = (req: http.IncomingMessage) => Promise<any>;
@@ -36,13 +38,16 @@ async function row(o: C.Org) {
   const last = Math.max(o.lastActive ?? 0, o.lastSignin ?? 0) || null;
   return {
     id: o.id, name: o.name, ownerEmail: o.ownerEmail, state: o.state, status: o.state === 'deleted' ? 'deleted' : o.suspended ? 'suspended' : o.state,
-    plan: { id: e.planId, status: e.status }, credits: B.creditBalance(o.id), created: o.created, lastActivity: last,
+    plan: { id: e.planId, status: e.status, games: featuresOf(e.planId, e.maxGames).games, includes: featuresOf(e.planId, e.maxGames).features.map((f) => FEATURE_NAMES[f]), subscription: e.sub && e.sub.status !== 'canceled' ? e.sub.planId : null }, credits: B.creditBalance(o.id), created: o.created, lastActivity: last,
     projects: o.projects, members: Math.max(people, 1), suspended: o.suspended, error: o.error,
   };
 }
 
+/** The plans the admin can give, with what each includes. */
+const planChoices = () => Object.entries(PLAN_FEATURES).map(([id, p]) => ({ id, games: p.games, includes: p.features.map((f) => FEATURE_NAMES[f]) }));
+
 export async function listCustomers() {
-  return { cellsOn: C.cellsOn(), customers: await Promise.all(C.listOrgs().map(row)), giftMax: C.cellsSettings().giftMaxCredits };
+  return { cellsOn: C.cellsOn(), customers: await Promise.all(C.listOrgs().map(row)), giftMax: C.cellsSettings().giftMaxCredits, plans: planChoices() };
 }
 
 export async function customerDetail(id: string) {
@@ -57,8 +62,27 @@ export async function customerDetail(id: string) {
     ...(await row(o)), genOrg: o.genOrg, image: o.image, hibernatedAt: o.hibernatedAt, gift: o.gift,
     members, ledger: B.creditLedger(50, id),
     usage: { days: 30, byKind: usage, spent: -usage.reduce((a, u) => a + (u.credits < 0 ? u.credits : 0), 0), added: usage.reduce((a, u) => a + (u.credits > 0 ? u.credits : 0), 0) },
-    giftMax: C.cellsSettings().giftMaxCredits,
+    giftMax: C.cellsSettings().giftMaxCredits, plans: planChoices(),
   };
+}
+
+/**
+ * Sets a customer's plan with no Stripe and no charge: a complimentary plan (cells.ts setGift: it counts like a
+ * subscription, its credits a month are its own number or the plan's), or Free to take it back. A paying subscription on
+ * a higher plan still wins for features (effectivePlan); nothing here touches a Stripe price or subscription.
+ */
+export async function setPlan(id: string, input: { plan?: unknown; note?: unknown; credits?: unknown; confirm?: unknown }, by: string) {
+  const o = C.getOrg(id);
+  if (!o || o.state === 'deleted') throw new StudioError(`No studio "${id}"`, 404);
+  const plan = String(input.plan ?? '');
+  if (!PLAN_FEATURES[plan]) throw new StudioError(`plan: one of ${Object.keys(PLAN_FEATURES).join(', ')}`, 400);
+  const note = String(input.note ?? '').trim();
+  if (note.length < 3 || note.length > 200) throw new StudioError('note: say why (3 to 200 characters)', 400);
+  if (input.confirm !== true) throw new StudioError('confirm: send confirm true once the plan change has been checked', 400);
+  if (plan === 'free') C.removeGift(id);
+  else await C.setGift(id, { plan, note, credits: input.credits }, by);
+  console.log(`[admin] ${id} plan -> ${plan} (complimentary) by ${by}: ${note}`);
+  return customerDetail(id);
 }
 
 export async function suspend(id: string, reason: unknown, by: string) {
@@ -118,11 +142,12 @@ export async function handleAdminApi(req: http.IncomingMessage, res: http.Server
   const by = (platformAdminOf(req) ?? requester(req))?.email ?? 'the platform admin';
   try {
     if (route === '/api/admin/customers' && method === 'GET') return send(res, 200, await listCustomers()), true;
-    const m = /^\/api\/admin\/customers\/([a-z0-9-]+)(?:\/(suspend|unsuspend|gift-credits))?$/.exec(route);
+    const m = /^\/api\/admin\/customers\/([a-z0-9-]+)(?:\/(suspend|unsuspend|gift-credits|plan))?$/.exec(route);
     if (!m) return send(res, 404, { error: 'No such admin page.' }), true;
     if (!m[2] && method === 'GET') return send(res, 200, await customerDetail(m[1])), true;
     if (m[2] && method === 'POST') {
       const b = await readJson(req);
+      if (m[2] === 'plan') return send(res, 200, await setPlan(m[1], b, by)), true;
       if (m[2] === 'suspend') await suspend(m[1], b.reason, by);
       else if (m[2] === 'unsuspend') unsuspend(m[1], by);
       else return send(res, 200, { ...giftCredits(m[1], b, by), detail: await customerDetail(m[1]) }), true;
