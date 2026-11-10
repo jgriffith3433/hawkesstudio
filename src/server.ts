@@ -1126,6 +1126,12 @@ const server = http.createServer(async (req, res) => {
       const r = await res2.resources({ range: q('range') || '1h' });
       return send(res, 200, q('format') === 'md' ? { markdown: res2.resourcesMarkdown(r) } : r);
     }
+    // How fast a task goes from its start to a playtested beta, and each phase's median time (speed.ts).
+    if (route === '/api/speed' && method === 'GET') {
+      const S = await import('./speed.ts');
+      const r = S.speedReport(Number(q('days')) || 7);
+      return send(res, 200, { ...r, line: S.speedLine(r) });
+    }
     if (route === '/api/ledger' && method === 'GET') {
       const { ledgerSummary, ledgerReport } = await import('./ledger.ts');
       const days = Number(q('days')) || 7;

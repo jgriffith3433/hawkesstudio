@@ -447,6 +447,8 @@ async function work() {
     // Every run going now (agent passes, scouts, Talk answers, PM and reviewer calls) by provider, with the model each
     // harness reported (runs.ts), and any change that shows another provider than its running job.
     runs: R.liveRuns(), providers: R.loadByProvider(),
+    // Task start to beta and to a playtested beta, and where a change's time goes (speed.ts).
+    speed: await import('./speed.ts').then((S) => { const r = S.speedReport(7); return { ...r, line: S.speedLine(r) }; }).catch(() => null),
     mismatches: R.liveMismatches((id) => { const r = rows.find((x) => x.id === id); return r ? brainOfChange(r) : null; }),
     pm, jobs,
   };
