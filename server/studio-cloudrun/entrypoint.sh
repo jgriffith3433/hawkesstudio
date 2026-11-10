@@ -25,6 +25,9 @@ export STUDIO_PORT="${PORT:-8080}"
 export STUDIO_STATE_PREFIX="${STUDIO_STATE_PREFIX:-}"
 case "$STUDIO_STATE_PREFIX" in ""|*/) ;; *) export STUDIO_STATE_PREFIX="$STUDIO_STATE_PREFIX/" ;; esac
 mkdir -p /data "$STUDIO_PROJECTS"
+# When memory runs out, the kernel should kill a command Studio started (it fails and is retried), not Studio, Litestream
+# or this shell (src/oomguard.ts; 2026-11-10: ten SIGKILLs of Studio itself in 40 minutes). Inherited by both. Best effort.
+echo -500 > /proc/self/oom_score_adj 2>/dev/null || echo "[oomguard] couldn't lower the service's oom_score_adj"
 # One writer at a time (src/cloudlease.ts): claim the database and wait until the instance before this one (a deploy's
 # old revision lives on for a while) has stopped writing and made its last sync, then restore what it left.
 LEASE=0
