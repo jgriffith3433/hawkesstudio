@@ -12,8 +12,7 @@
 // decision). Woken by a restart or new code, it waits at the end of its product's line. An ops note (the decision log,
 // with an undo) says what was parked and why.
 //
-// Nothing here polls or sets a timer: it runs when the pump looks at each queued change (agents.ts resumeAllowed) and
-// when the self-healing supervisor (selfheal.ts) calls parkBlockers() on its look.
+// Nothing here polls or sets a timer: it runs when the pump looks at each queued change (agents.ts resumeAllowed).
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
@@ -35,11 +34,24 @@ type Park = { change: string; product: string; at: number; why: string | null; e
 
 /** This process: a park made by an earlier one wakes (Studio restarted). Tests set it. */
 let BOOT: string = crypto.randomUUID();
-export function setBoot(id: string) { BOOT = id; }
+export function setBoot(id: string) { BOOT = id; forgotten = false; }
 
 // Parks are read on every pump look at a queued change: kept in memory, written through to the table.
 const parks = new Map<string, Park>();
 for (const r of db.prepare('SELECT * FROM queue_parks').all() as any[]) parks.set(r.change, r as Park);
+/**
+ * Parks of changes that are done for good are forgotten, once per Studio start, on the pump's first look (the changes
+ * table isn't there yet while this module loads). A failed change may be queued again: its count stays.
+ */
+let forgotten = false;
+function forgetFinished() {
+  if (forgotten) return;
+  forgotten = true;
+  for (const [id] of parks) {
+    const s = (db.prepare('SELECT status FROM changes WHERE id = ?').get(id) as any)?.status;
+    if (!s || ['merged', 'closed'].includes(s)) dropPark(id);
+  }
+}
 
 function savePark(p: Park) {
   parks.set(p.change, p);
@@ -125,6 +137,7 @@ function behindLine(c: Change, p: Park) {
  */
 export function queueHold(c: Change): string | null {
   try {
+    forgetFinished();
     if (c.status !== 'queued') return null;
     const p = parks.get(c.id);
     if (p && p.woke == null) {
@@ -141,34 +154,6 @@ export function queueHold(c: Change): string | null {
     console.warn(`[queue-heal] ${c.id}: ${e?.message ?? e}`);
     return null;
   }
-}
-
-/**
- * Parks every queued change that failed PARK_AFTER times since it was last woken, and wakes the parked ones something
- * changed for. The self-healing supervisor calls it on its look; the pump's look at each change does the same check.
- */
-export function parkBlockers(): { parked: string[]; woke: string[] } {
-  const parked: string[] = [];
-  const woke: string[] = [];
-  for (const r of db.prepare(`SELECT id FROM changes WHERE status = 'queued'`).all() as { id: string }[]) {
-    const c = getChange(r.id);
-    if (!c) continue;
-    const p = parks.get(c.id);
-    if (p && p.woke == null) {
-      const w = wakeWhy(p, c);
-      if (w) { wake(p, c, w.why, w.manual); woke.push(c.id); }
-      continue;
-    }
-    const n = failStreak(c);
-    if (n >= PARK_AFTER) { park(c, n); parked.push(c.id); }
-  }
-  // Parks of changes that are done for good are forgotten (a failed one may be queued again: its count stays).
-  for (const [id] of parks) {
-    const s = (db.prepare('SELECT status FROM changes WHERE id = ?').get(id) as any)?.status;
-    if (!s || ['merged', 'closed'].includes(s)) dropPark(id);
-  }
-  if (woke.length) void pumpNow();
-  return { parked, woke };
 }
 
 /** Resumes a parked change now, ahead of the line (pm.ts undoDecision, kind "queue-heal"). Returns what it did. */

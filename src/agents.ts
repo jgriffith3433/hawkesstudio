@@ -103,6 +103,7 @@ import { POLISH_BY } from './polish.ts';
 import { sessionGone, freshSessionPrompt } from './sessiongone.ts';
 import { memLow, memRoom, memFreed, memSummary } from './memgate.ts';
 import { queueHold, parkedOut } from './queue-heal.ts';
+import { refreshFromTask } from './queue-follow.ts';
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS changes (
@@ -2214,7 +2215,9 @@ async function pumpPass() {
   // One look at the providers for the whole pass, not two per queued change (each reads every provider's hold and PATH).
   let free: Harness | null | undefined;
   const freeOnce = () => (free === undefined ? (free = freeHarness()) : free);
-  const queued = listChanges({ status: 'queued', limit: 500 }).reverse().filter((c) => !running.has(c.id) && !waitsForDisk(c.id) && resumeAllowed(c, freeOnce));
+  // A change checks its task as it is about to start (queue-follow.ts): a rewritten task gives it the new request, a gone
+  // one closes it.
+  const queued = listChanges({ status: 'queued', limit: 500 }).reverse().filter((c) => !running.has(c.id) && !waitsForDisk(c.id) && resumeAllowed(c, freeOnce) && refreshFromTask(c.id));
   // Each change's shape (its task, earlier changes and files: git) once per pass, however many candidates it sits beside.
   const shapes = new Map<string, WorkShape>();
   const shape = (c: Change) => shapes.get(c.id) ?? (shapes.set(c.id, shapeOf(c)), shapes.get(c.id)!);

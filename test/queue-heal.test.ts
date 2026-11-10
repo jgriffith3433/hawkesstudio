@@ -30,6 +30,19 @@ const shape = { task: null, depends: [], text: 'something else', files: [] };
 /** What the pump's look does (agents.ts pumpPass): the queue oldest first, each change through resumeAllowed's hold. */
 const pumpable = () => A.listChanges({ status: 'queued', limit: 500 }).reverse().filter((c) => !H.queueHold(c));
 const picks = () => A.pickQueued(pumpable().map((c) => ({ id: c.id, product: c.product })), [], 6, { limit: () => 1 });
+/** The pump's look at every queued change (queueHold): which it parked and which it woke. */
+function look() {
+  const parked: string[] = [];
+  const woke: string[] = [];
+  for (const c of A.listChanges({ status: 'queued', limit: 500 }).reverse()) {
+    const before = H.parkedOut(c);
+    H.queueHold(c);
+    const after = H.parkedOut(A.getChange(c.id)!);
+    if (!before && after) parked.push(c.id);
+    if (before && !after) woke.push(c.id);
+  }
+  return { parked, woke };
+}
 
 test('failures are counted from the log: errors, failed agent jobs and resumes that could not carry on', () => {
   assert.equal(H.failCount(['10:00:00 agent started', '10:01:00 error: worktree failed', '10:02:00 stderr: [studio] the Cloud Run job failed: gone', "10:03:00 couldn't carry on after the restart: x", '10:04:00 note: error: not at the start']), 3);
@@ -39,7 +52,7 @@ test('failures are counted from the log: errors, failed agent jobs and resumes t
 test('a head that failed 3 times is parked: it holds no slot, and the next change of its product starts', async () => {
   add('c_head00000001', { log: [...fails(3), '13:00:00 waiting for memory before carrying on (0.7 GB free of 3.8 GB)'] });
   add('c_next00000001');
-  const out = H.parkBlockers();
+  const out = look();
   assert.deepEqual(out.parked, ['c_head00000001']);
   assert.ok(H.parkedOut(A.getChange('c_head00000001')!));
   assert.match(String(A.getChange('c_head00000001')!.detail), /^queued: parked: its publish or start failed 3 times/);
@@ -50,31 +63,31 @@ test('a head that failed 3 times is parked: it holds no slot, and the next chang
   assert.equal(A.queueHealth().queued, 0);
   // Not retried until something changes.
   assert.equal(H.queueHold(A.getChange('c_head00000001')!), 'parked');
-  assert.deepEqual(H.parkBlockers(), { parked: [], woke: [] });
+  assert.deepEqual(look(), { parked: [], woke: [] });
   // An ops note in the decision log, with an undo.
   await settle();
   const d = listDecisions({ action: 'queue-park' })[0];
   assert.match(d.detail ?? '', /c_head00000001.*parked/);
   assert.deepEqual(d.undo, { kind: 'queue-heal', op: 'park', change: 'c_head00000001' });
   db.prepare(`UPDATE changes SET status = 'closed' WHERE id = 'c_head00000001'`).run();
-  H.parkBlockers();
+  look();
 });
 
-test('the pump parks a change the moment it reaches 3 failures, without waiting for the supervisor', () => {
+test('the pump parks a change the moment it reaches 3 failures', () => {
   add('c_pump00000001', { log: fails(3) });
   add('c_pump00000002');
   assert.deepEqual(picks().filter((x) => x.startsWith('c_pump')), ['c_pump00000002']);
   assert.ok(H.parkedOut(A.getChange('c_pump00000001')!));
   for (const id of ['c_pump00000001', 'c_pump00000002']) db.prepare(`UPDATE changes SET status = 'closed' WHERE id = ?`).run(id);
-  H.parkBlockers();
+  look();
 });
 
 test('after a restart it is unparked at the end of its product\'s line, and parked again only after 3 new failures', () => {
   add('c_old000000001', { log: fails(3) });
-  H.parkBlockers();
+  look();
   add('c_mid000000001');
   H.setBoot('a-later-studio');
-  const woke = H.parkBlockers();
+  const woke = look();
   assert.deepEqual(woke.woke, ['c_old000000001']);
   assert.match(String(A.getChange('c_old000000001')!.detail), /unparked \(Studio restarted\); at the end of its product's line/);
   // Behind the change that was queued before it woke, though it is older.
@@ -88,16 +101,16 @@ test('after a restart it is unparked at the end of its product\'s line, and park
   db.prepare('UPDATE changes SET log = ? WHERE id = ?').run(JSON.stringify(log), 'c_old000000001');
   assert.equal(H.queueHold(A.getChange('c_old000000001')!), null);
   db.prepare('UPDATE changes SET log = ? WHERE id = ?').run(JSON.stringify([...fails(3), ...fails(3)]), 'c_old000000001');
-  assert.deepEqual(H.parkBlockers().parked, ['c_old000000001']);
+  assert.deepEqual(look().parked, ['c_old000000001']);
   for (const id of ['c_old000000001', 'c_new000000001']) db.prepare(`UPDATE changes SET status = 'closed' WHERE id = ?`).run(id);
-  H.parkBlockers();
+  look();
 });
 
 test('new code on beta wakes a parked change', () => {
   add('c_beta00000001', { log: fails(4) });
-  assert.deepEqual(H.parkBlockers().parked, ['c_beta00000001']);
+  assert.deepEqual(look().parked, ['c_beta00000001']);
   add('c_landed000001', { status: 'merged', merged_at: Date.now() });
-  assert.deepEqual(H.parkBlockers().woke, ['c_beta00000001']);
+  assert.deepEqual(look().woke, ['c_beta00000001']);
   assert.match(String(A.getChange('c_beta00000001')!.detail), /new code on beta/);
   db.prepare(`UPDATE changes SET status = 'closed' WHERE id = 'c_beta00000001'`).run();
 });
@@ -105,7 +118,7 @@ test('new code on beta wakes a parked change', () => {
 test('a resume (the decision\'s undo, or Cancel then Resume) starts it again at once', async () => {
   add('c_undo00000001', { log: fails(3) });
   add('c_wait00000001');
-  H.parkBlockers();
+  look();
   await settle();
   const d = listDecisions({ action: 'queue-park' }).find((x) => x.undo?.change === 'c_undo00000001')!;
   const r = await undoDecision(d.id, 'J');
@@ -114,7 +127,7 @@ test('a resume (the decision\'s undo, or Cancel then Resume) starts it again at 
   assert.equal(H.queueHold(A.getChange('c_undo00000001')!), null, 'a person\'s resume doesn\'t wait at the end of the line');
   // A note on the change (Resume after a Cancel adds one) wakes it the same way.
   add('c_note00000001', { log: fails(3) });
-  H.parkBlockers();
+  look();
   db.prepare('UPDATE changes SET notes = ? WHERE id = ?').run(JSON.stringify([{ at: Date.now(), by: 'J', text: 'resumed' }]), 'c_note00000001');
   assert.equal(H.queueHold(A.getChange('c_note00000001')!), null);
   assert.ok(!H.parkedOut(A.getChange('c_note00000001')!));

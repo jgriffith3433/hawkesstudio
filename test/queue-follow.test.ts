@@ -1,7 +1,7 @@
 // A queued agent change follows its roadmap task (2026-11-10: a roadmap prune dropped or rewrote about 160 tasks and left
 // about 20 queued changes holding the old text, cancelled by hand). A task rewritten while its change is queued gives the
-// change the new request and criteria (when it is edited, and again as the change starts); a task that is gone keeps its
-// queued change from starting; a change an agent has started on is never touched. Scratch database; no Gen, agents or Claude.
+// change the new request and criteria (when it is edited, and again as the change starts); a task that is gone closes its
+// queued change before it starts; a change an agent has started on is never touched. Scratch database; no Gen, agents or Claude.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -77,26 +77,33 @@ test("the PM's note for another attempt stays on a refreshed request", () => {
   assert.deepEqual(agents.getChange(id)!.criteria, ['b']);
 });
 
-test('a queued change whose task is dropped, put back to idea, done or deleted never starts', () => {
+const until = async (f: () => boolean, ms = 10_000) => {
+  const end = Date.now() + ms;
+  while (!f()) {
+    if (Date.now() > end) throw new Error('timed out');
+    await new Promise((r) => setTimeout(r, 20));
+  }
+};
+
+test('a queued change whose task is dropped, put back to idea, done or deleted never starts and closes itself', async () => {
   for (const status of ['dropped', 'idea', 'done']) {
     const { t, id } = queuedFor(`Thing ${status}`, ['x']);
     rm.updateTask(t.id, { status });
     assert.equal(QF.refreshFromTask(id), false, status);
-    const c = agents.getChange(id)!;
-    assert.equal(c.status, 'queued', 'left for the self-healing supervisor to close (closeOrphan), not cancelled here');
-    assert.equal(c.detail, `queued: won't start, its task ${t.id} is ${status}`);
+    // Closed by its own check (no supervisor has to find it), with why on its log.
+    await until(() => agents.getChange(id)!.status === 'closed');
+    assert.ok(agents.getChange(id)!.log.some((l) => l.includes(`closed before it started: its task ${t.id} is ${status}`)), status);
   }
   // Dropped without updateTask (an item drop, a bulk prune): the start-time check still catches it.
   const pruned = queuedFor('Old work', []);
   db.prepare(`UPDATE tasks SET status = 'dropped' WHERE id = ?`).run(pruned.t.id);
   assert.equal(QF.refreshFromTask(pruned.id), false);
+  await until(() => agents.getChange(pruned.id)!.status === 'closed');
   const gone = queuedFor('Deleted task', []);
   db.prepare('DELETE FROM tasks WHERE id = ?').run(gone.t.id);
   assert.equal(QF.refreshFromTask(gone.id), false);
-  assert.match(agents.getChange(gone.id)!.detail ?? '', /is gone$/);
-  // Planned again: it starts.
-  rm.updateTask(pruned.t.id, { status: 'planned' });
-  assert.equal(QF.refreshFromTask(pruned.id), true);
+  await until(() => agents.getChange(gone.id)!.status === 'closed');
+  assert.ok(agents.getChange(gone.id)!.log.some((l) => /is gone$/.test(l)));
 });
 
 test('a working change, or one an agent already started, is never touched', () => {
