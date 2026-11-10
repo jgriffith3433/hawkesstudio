@@ -589,7 +589,8 @@ export async function resources({ range = '1h' } = {}) {
   const { loopHealth, runningCommands } = await import('./ops.ts');
   const s = resourceSettings();
   const xs = await import('./external.ts');
-  const attention = [...attentionOf(host, w, fl, s), ...netAttention(net), ...xs.externalIncidents(s).map((i) => ({ level: 'bad' as const, text: `${i.title}: ${i.message}` }))]
+  const gb = (await import('./genpace.ts')).genBusyAttention();
+  const attention = [...attentionOf(host, w, fl, s), ...netAttention(net), ...(gb ? [gb] : []), ...xs.externalIncidents(s).map((i) => ({ level: 'bad' as const, text: `${i.title}: ${i.message}` }))]
     .sort((a, b) => (a.level === b.level ? 0 : a.level === 'bad' ? -1 : 1));
   return {
     at: Date.now(), headline: headline(host, attention, w), attention, host, loop: loopHealth(), commands: runningCommands(),

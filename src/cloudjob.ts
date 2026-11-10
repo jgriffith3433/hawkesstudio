@@ -387,6 +387,8 @@ export function startCloudJob(unit: string, spec: Spec, o: { gitToken?: string |
         // tokenAt and refresh: a job that waits for a machine past most of the token's hour gets a fresh one (jobgit.ts).
         git: ws ? { ...(mergeBase ? { base: mergeBase } : {}), head: ws.head, branch: ws.branch, remote: ws.remote, bundle: Boolean(ws.bundle), token: gitToken, tokenAt: Date.now(), ...(await gitRefresh(unit, ws.remote)), ...(big ? (sparse ? { sparse } : {}) : { partial: false, lfs: true }), ...(unit.startsWith('hawkes-agent-') ? { commitDirty: true } : {}) } : null,
       }));
+      // Spaced, and after a busy Gen's calm window (genpace.ts): agent jobs share the region's Cloud Run CPU quota with Gen.
+      await (await import('./genpace.ts')).jobStartTurn();
       f.execution = await r.start(unit);
       await r.put(key(unit, 'execution.txt'), f.execution);
       fs.writeFileSync(local(unit, 'cloud.json'), JSON.stringify({ execution: f.execution }));
