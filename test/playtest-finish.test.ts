@@ -11,8 +11,8 @@ test('a provider hang, a full disk and restarts are retryable; a game failure is
   assert.equal(F.classifyFailure({ status: 'done' }), null);
 });
 
-test('the retry skips the failed provider and the reason is one sentence', () => {
-  assert.deepEqual(F.retryParams({ skipProviders: ['modal'] }, { provider: 'runpod' }).skipProviders, ['modal', 'runpod']);
+test('the retry carries no provider hint (Gen rejects unknown params) and the reason is one sentence', () => {
+  assert.deepEqual(F.retryParams({ url: 'u', skipProviders: ['modal'] }, { provider: 'runpod' }), { url: 'u' });
   const c = { kind: 'provider' as const, provider: 'runpod' };
   const s = F.plainWhy({ error: 'x' }, c);
   assert.match(s, /no free worker \(runpod\).*second try/);

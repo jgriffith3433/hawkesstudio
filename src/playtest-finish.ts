@@ -25,11 +25,10 @@ export function classifyFailure(job: any): { kind: FailureKind; provider: string
   return null;
 }
 
-/** The params for the second try: the provider that failed is skipped (disk-full and stuck ones included). */
-export function retryParams(params: Record<string, unknown>, c: { provider: string | null }): Record<string, unknown> {
-  const skip = new Set<string>(Array.isArray(params.skipProviders) ? (params.skipProviders as string[]) : []);
-  if (c.provider) skip.add(c.provider);
-  return { ...params, ...(skip.size ? { skipProviders: [...skip] } : {}) };
+/** The params for the second try. playtest.run accepts no provider hint (Gen rejects unknown params), so they are the same minus any stale `skipProviders`. */
+export function retryParams(params: Record<string, unknown>, _c: { provider: string | null }): Record<string, unknown> {
+  const { skipProviders: _skip, ...rest } = params;
+  return rest;
 }
 
 const WHY: Record<FailureKind, string> = {

@@ -1,7 +1,7 @@
 // A circuit breaker for the playtest GPU providers (J's backlog, 2026-11-03): when RunPod is out of credit or Modal times
 // out, every playtest used to wait 110-300 s before Hawkes Gen fell back to software, and the run was then "inconclusive".
 // Now the first software fallback that names a provider opens that provider's breaker for a few minutes. While it is open
-// every playtest.run carries `skipProviders` (a hint for Gen, which ignores what it doesn't know) so the next playtest goes
+// the next playtest goes
 // straight to the next backend without touching Gen's saved order, and the problem is told once instead of on every playtest.
 
 export const OPEN_MS = () => Number(process.env.STUDIO_GPU_BREAKER_MS ?? 10 * 60_000);
