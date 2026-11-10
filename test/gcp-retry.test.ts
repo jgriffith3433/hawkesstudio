@@ -19,6 +19,17 @@ test('a GET that keeps getting 503 fails after three tries', async () => {
   assert.equal(n, 3);
 });
 
+test('a GET whose connection drops is asked again; one that keeps dropping fails', async () => {
+  let n = 0;
+  setGcpFetch(async () => { if (++n < 2) throw new TypeError('fetch failed'); return new Response('{"ok":1}', { status: 200 }); }, 't');
+  assert.deepEqual(await gapi('https://run.googleapis.com/v2/x'), { ok: 1 });
+  assert.equal(n, 2);
+  n = 0;
+  setGcpFetch(async () => { n++; throw new TypeError('fetch failed'); }, 't');
+  await assert.rejects(gapi('https://run.googleapis.com/v2/x'), /fetch failed/);
+  assert.equal(n, 3);
+});
+
 test('a 403 and a POST are not repeated', async () => {
   let n = 0;
   setGcpFetch(async () => { n++; return new Response('no', { status: 403 }); }, 't');
