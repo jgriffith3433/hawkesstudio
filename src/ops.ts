@@ -22,12 +22,37 @@ db.exec(`
   );
   CREATE INDEX IF NOT EXISTS ops_status ON ops(status, created);
 `);
+// What a waiting operation waits for (OpWaits): { on: a run id or null, why, rounds }.
+try { db.exec('ALTER TABLE ops ADD COLUMN wait TEXT'); } catch { /* already there */ }
 
-export type OpStatus = 'queued' | 'running' | 'done' | 'failed';
+/**
+ * waiting: the operation can't finish yet and is parked on something Studio does by itself (a beta playtest before going
+ * live): not a failure, not counted as running, and woken (back to queued) when that thing ends (wakeOps), or after a
+ * restart (resumeOps). It takes no running slot meanwhile.
+ */
+export type OpStatus = 'queued' | 'running' | 'waiting' | 'done' | 'failed';
+/** Statuses of an operation that hasn't ended. */
+export const OPEN_OP = ['queued', 'running', 'waiting'] as const;
+export const opOpen = (status: string) => (OPEN_OP as readonly string[]).includes(status);
+
+/**
+ * Thrown by a handler that has to wait for something Studio started (a playtest): the operation is parked as waiting,
+ * with why on its step, until wakeOps(kind, product) puts it back in the queue. `on`: the run it waits for.
+ */
+export class OpWaits extends Error {
+  why: string;
+  on: string | null;
+  constructor(why: string, on: string | null = null) {
+    super(why);
+    this.why = why;
+    this.on = on;
+  }
+}
 export type Op = {
   id: string; kind: string; product: string | null; title: string; status: OpStatus; step: string | null; log: string[];
   payload: any; result: any; error: string | null; by: string | null; origin: string | null; attempts: number;
   created: number; started: number | null; finished: number | null; heartbeat: number | null; seconds: number | null; stuck?: boolean;
+  wait?: { on: string | null; why: string; rounds: number; since: number } | null;
 };
 
 const MAX_RUNNING = Number(process.env.STUDIO_OPS_PARALLEL) || 2;
@@ -39,7 +64,7 @@ function toOp(r: any): Op {
   const now = Date.now();
   const seconds = r.started ? Math.round(((r.finished ?? now) - r.started) / 1000) : null;
   return {
-    ...r, log: parse(r.log) ?? [], payload: parse(r.payload), result: parse(r.result), seconds,
+    ...r, log: parse(r.log) ?? [], payload: parse(r.payload), result: parse(r.result), seconds, wait: r.wait ? parse(r.wait) : null,
     stuck: r.status === 'running' && r.started && now - r.started > (STUCK_MS[r.kind] ?? 20 * 60_000) ? true : undefined,
   };
 }
@@ -51,7 +76,7 @@ export const getOp = (id: string) => {
 
 /** Running and queued operations, then the recent finished ones (newest first). */
 export function listOps({ product, since = Date.now() - 7 * 86_400_000, limit = 100 }: { product?: string; since?: number; limit?: number } = {}) {
-  const rows = db.prepare(`SELECT * FROM ops WHERE (status IN ('queued', 'running') OR created > ?) ${product ? 'AND product = ?' : ''} ORDER BY CASE status WHEN 'running' THEN 0 WHEN 'queued' THEN 1 ELSE 2 END, created DESC LIMIT ?`)
+  const rows = db.prepare(`SELECT * FROM ops WHERE (status IN ('queued', 'running', 'waiting') OR created > ?) ${product ? 'AND product = ?' : ''} ORDER BY CASE status WHEN 'running' THEN 0 WHEN 'queued' THEN 1 WHEN 'waiting' THEN 2 ELSE 3 END, created DESC LIMIT ?`)
     .all(...(product ? [since, product, limit] : [since, limit])) as any[];
   return rows.map(toOp);
 }
@@ -69,9 +94,12 @@ export function registerOp(kind: string, run: Handler, h: { done?: (op: Op) => v
   hooks.set(kind, h);
 }
 
-/** Queues an operation and returns it at once. A queued or running one of the same kind for the same product is reused. */
+/**
+ * Queues an operation and returns it at once. A queued, running or waiting one of the same kind for the same product is
+ * reused (asking to go live again while the first ask waits for its playtest is the same ask).
+ */
 export function enqueue(kind: string, { product = null, title, payload = {}, by = null, origin = null }: { product?: string | null; title: string; payload?: any; by?: string | null; origin?: string | null }) {
-  const same = db.prepare(`SELECT * FROM ops WHERE kind = ? AND product IS ? AND status IN ('queued', 'running') AND payload = ?`).get(kind, product, J(payload)) as any;
+  const same = db.prepare(`SELECT * FROM ops WHERE kind = ? AND product IS ? AND status IN ('queued', 'running', 'waiting') AND payload = ?`).get(kind, product, J(payload)) as any;
   if (same) return toOp(same);
   const id = newId('op');
   db.prepare('INSERT INTO ops (id, kind, product, title, status, payload, by, origin, created, log) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
@@ -143,6 +171,14 @@ async function runOp(id: string) {
     db.prepare(`UPDATE ops SET status = 'done', result = ?, finished = ?, step = 'done' WHERE id = ?`).run(J(result ?? null), Date.now(), id);
     await hooks.get(op.kind)?.done?.(getOp(id)!);
   } catch (e: any) {
+    if (e instanceof OpWaits) {
+      const before = getOp(id)?.wait;
+      const wait = { on: e.on, why: e.why.slice(0, 300), rounds: (before?.rounds ?? 0) + (e.on && e.on !== before?.on ? 1 : 0), since: before?.since ?? Date.now() };
+      // attempts counts restarts mid-run (resumeOps): a wait isn't one.
+      db.prepare(`UPDATE ops SET status = 'waiting', step = ?, wait = ?, attempts = 0, heartbeat = ? WHERE id = ?`).run(e.why.slice(0, 300), J(wait), Date.now(), id);
+      append(id, `waiting: ${e.why.slice(0, 300)}`);
+      return;
+    }
     db.prepare(`UPDATE ops SET status = 'failed', error = ?, finished = ? WHERE id = ?`).run(String(e?.message ?? e).slice(0, 2000), Date.now(), id);
     append(id, `failed: ${String(e?.message ?? e).split('\n')[0].slice(0, 300)}`);
     await Promise.resolve(hooks.get(op.kind)?.failed?.(getOp(id)!)).catch(() => {});
@@ -160,8 +196,32 @@ export const RESTART_LOOP = 3;
 export const RESTART_WINDOW_MS = 5 * 60_000;
 export const resumeGapMs = () => process.env.STUDIO_RESUME_GAP_MS !== undefined && Number(process.env.STUDIO_RESUME_GAP_MS) >= 0 ? Number(process.env.STUDIO_RESUME_GAP_MS) : 2000;
 
-/** After a restart: running operations go back in the queue (handlers are idempotent), up to MAX_ATTEMPTS. */
+/**
+ * What a waiting operation waited for has ended (a beta run finished, passed or not): back in the queue, where its
+ * handler looks again (goes live, waits for the next play, or fails with the playtest's reason). `kind` and `product`
+ * narrow it; `run` wakes only the ones waiting on that run, or on nothing in particular. Returns how many woke.
+ */
+export function wakeOps({ kind, product, run }: { kind?: string; product?: string; run?: string } = {}) {
+  const rows = (db.prepare(`SELECT id, kind, product, wait FROM ops WHERE status = 'waiting'`).all() as any[])
+    .filter((r) => (!kind || r.kind === kind) && (!product || r.product === product) && (!run || !r.wait || [run, null].includes((parse(r.wait) as any)?.on ?? null)));
+  for (const r of rows) {
+    db.prepare(`UPDATE ops SET status = 'queued' WHERE id = ? AND status = 'waiting'`).run(r.id);
+    append(r.id, `woken${run ? ` (run ${run} ended)` : ''}: looking again`);
+  }
+  if (rows.length) setImmediate(() => void pump());
+  return rows.length;
+}
+
+/**
+ * After a restart: running operations go back in the queue (handlers are idempotent), up to MAX_ATTEMPTS. Waiting ones
+ * whose run isn't running any more (it ended while Studio was down, or never started) are woken: nothing is left parked.
+ */
 export function resumeOps() {
+  for (const w of db.prepare(`SELECT id, wait FROM ops WHERE status = 'waiting'`).all() as any[]) {
+    const on = (parse(w.wait) as any)?.on;
+    const r = on ? (db.prepare('SELECT status FROM runs WHERE id = ?').get(on) as any) : null;
+    if (!r || r.status !== 'running') db.prepare(`UPDATE ops SET status = 'queued' WHERE id = ?`).run(w.id);
+  }
   const rows = db.prepare(`SELECT id, attempts FROM ops WHERE status = 'running'`).all() as any[];
   for (const r of rows) {
     if (r.attempts >= MAX_ATTEMPTS) {

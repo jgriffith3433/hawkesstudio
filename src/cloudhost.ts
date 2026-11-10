@@ -127,7 +127,7 @@ export async function busy(): Promise<string | null> {
   } catch { /* not loaded */ }
   try {
     const ops = await import('./ops.ts');
-    if (ops.listOps({ since: Date.now() }).some((o) => o.status !== 'done' && o.status !== 'failed')) return 'a background operation';
+    if (ops.listOps({ since: Date.now() }).some((o) => o.status === 'queued' || o.status === 'running')) return 'a background operation'; // a waiting one waits on a run, which keeps Studio up itself
   } catch { /* not loaded */ }
   return null;
 }

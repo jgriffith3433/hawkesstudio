@@ -1416,8 +1416,14 @@ export function startBeta(productId: string, o: BetaOptions = {}) {
   db.prepare('INSERT INTO runs (id, kind, status, detail, products, options, started) VALUES (?, ?, ?, ?, ?, ?, ?)').run(id, 'beta', 'running', `beta ${p.id}`, J([p.id]), J({ focus: o.focus, ...(o.reverify ? { reverify: true } : {}), criteria: o.criteria, scenario: o.scenario, options: o.options, playtest: o.playtest, quiet: o.quiet, plays: o.plays, ...(o.merge ? { merge: o.merge } : {}), ...(o.tag ? { tag: o.tag } : {}) }), Date.now());
   tagRun(id, o.origin);
   // Out of credits already: the paid steps (the build, the playtest) aren't started, the run waits (creditwait.ts).
-  if ((p.build || o.playtest || o.plays?.length || betaPlaytestsOn()) && skipForCredits(id, p.id)) return { id, done: Promise.resolve() };
-  return { id, done: betaBody(id, p, o) };
+  if ((p.build || o.playtest || o.plays?.length || betaPlaytestsOn()) && skipForCredits(id, p.id)) {
+    setImmediate(() => void import('./deploy.ts').then((d) => d.wakeGoLives(p.id, id)).catch(() => {}));
+    return { id, done: Promise.resolve() };
+  }
+  // However the run ends (passed, failed, superseded, waiting for credits), a go live waiting for beta's play looks
+  // again (deploy.ts waitForBetaPlay): nothing stays parked on a run that's over.
+  const done = betaBody(id, p, o).finally(() => import('./deploy.ts').then((d) => d.wakeGoLives(p.id, id)).catch(() => {}));
+  return { id, done };
 }
 
 /**

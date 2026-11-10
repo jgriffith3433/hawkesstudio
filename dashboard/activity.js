@@ -103,6 +103,19 @@ var FramePlayer = (() => {
   return { FRAME_MS, merge, advance, clock, caption };
 })();
 
+// What this person has seen and cleared (src/activity-seen.ts keeps it per person on the server): the header's red
+// count is the failures they haven't seen; Clear hides what finished. Pure, tested without a DOM (test/activity-seen.test.ts).
+var ActivitySeen = (() => {
+  const mark = (s) => Math.max(s?.seenAt ?? 0, s?.clearedAt ?? 0);
+  /** The failures ({ key, at }) not seen yet. */
+  const unseen = (failures, s) => (failures ?? []).filter((f) => f.at > mark(s));
+  /** Whether a finished item (ended at `at`) still shows: after the last Clear, or everything while "Show cleared" is on. */
+  const shows = (at, s, showCleared = false) => showCleared || !(typeof at === 'number' && at <= (s?.clearedAt ?? 0));
+  /** A failure that came in since the panel was last looked at (`before`: the seen time when it was opened). */
+  const isNew = (at, before) => typeof at === 'number' && at > before;
+  return { unseen, shows, isNew };
+})();
+
 if (typeof document !== 'undefined') (() => {
   const el = (s) => document.querySelector(s);
   const KEY = 'studio.activity';
@@ -114,6 +127,19 @@ if (typeof document !== 'undefined') (() => {
   let showDismissed = false; // "Show dismissed": finished scouts J tucked away (or older failed ones), fetched when asked and on each stream event while on
   let hiddenScouts = [];
   let drawn = ''; // what the drawer shows (redrawn only when the payload changed)
+  let seen = { seenAt: 0, clearedAt: 0 }; // this person's (GET /api/activity/seen; pushed as "activity-seen")
+  let seenBefore = 0; // the seen time when the drawer was opened: what came in after it is marked new while it's open
+  let failures = null; // the newest failures list ({ key, at }) from the stream or the drawer's fetch
+  let showCleared = false;
+  let marking = false;
+  let seenKnown = false;
+  /** This person's state came from the server: the first time, with the panel already open, "new" is what's after it. */
+  function gotSeen(x) {
+    if (!x || typeof x.seenAt !== 'number') return;
+    if (!seenKnown && open) seenBefore = Math.max(x.seenAt, x.clearedAt ?? 0);
+    seenKnown = true;
+    seen = x;
+  }
 
   const dur = (ms) => {
     const s = Math.max(0, Math.round(ms / 1000));
@@ -336,40 +362,84 @@ if (typeof document !== 'undefined') (() => {
 
   /** A background operation (going live, a rollback, a merge): its step, how long, its last log lines. */
   function opHtml(o) {
-    const icon = { queued: '⏳', running: '🚀', done: '✅', failed: '❌' }[o.status] ?? '•';
+    const icon = { queued: '⏳', running: '🚀', waiting: '⏳', done: o.result?.nothing ? '☑️' : '✅', failed: '❌' }[o.status] ?? '•';
     const secs = o.seconds ?? 0;
     const took = secs >= 60 ? `${Math.floor(secs / 60)} min ${secs % 60} s` : `${secs} s`;
-    const state = o.status === 'queued' ? 'queued' : o.status === 'running' ? `${o.stuck ? '⚠ taking much longer than usual · ' : ''}${took}` : `${o.status} after ${took}`;
+    const state = o.status === 'queued' ? 'queued'
+      : o.status === 'waiting' ? `waiting for playtest · ${took}`
+      : o.status === 'running' ? `${o.stuck ? '⚠ taking much longer than usual · ' : ''}${took}`
+      : o.result?.nothing ? 'already live' : `${o.status} after ${took}`;
     const log = (o.log ?? []).slice(-8).map((l) => esc(l)).join('\n');
-    return `<div class="act-item${o.stuck || o.status === 'failed' ? ' act-warn' : ''}"><div class="act-top">${icon} <b>${esc(o.title)}</b><span class="act-time">${esc(state)}</span></div><div class="act-now">${esc(o.status === 'failed' ? o.error ?? '' : o.step ?? '')}${o.by ? ` · by ${esc(o.by)}` : ''}${o.attempts > 1 ? ` · attempt ${o.attempts}` : ''}</div>${log ? `<details class="act-log"><summary class="meta">log</summary><pre>${log}</pre></details>` : ''}</div>`;
+    const fresh = o.status === 'failed' && ActivitySeen.isNew(o.finished, seenBefore);
+    const now = o.status === 'failed' ? o.error ?? '' : o.status === 'done' && o.result?.note && o.result?.nothing ? o.result.note : o.step ?? '';
+    return `<div class="act-item${o.stuck || o.status === 'failed' ? ' act-warn' : ''}${fresh ? ' act-new' : ''}"><div class="act-top">${icon} <b>${esc(o.title)}</b>${fresh ? ' <span class="pill act-new-pill">new</span>' : ''}<span class="act-time">${esc(state)}</span></div><div class="act-now">${esc(now)}${o.by ? ` · by ${esc(o.by)}` : ''}${o.attempts > 1 ? ` · attempt ${o.attempts}` : ''}</div>${log ? `<details class="act-log"><summary class="meta">log</summary><pre>${log}</pre></details>` : ''}</div>`;
   }
 
-  function setCount(n, failed) {
-    if (typeof n !== 'number') return;
-    const badge = el('#actCount');
-    badge.textContent = n;
-    badge.classList.toggle('zero', !n);
-    // Failed scouts stay visible on the button (a calm 0 hid them); the title says what the number is.
+  function setCount(n, failedAll, list) {
+    if (Array.isArray(list)) failures = list;
+    if (typeof n === 'number') {
+      const badge = el('#actCount');
+      badge.textContent = n;
+      badge.classList.toggle('zero', !n);
+    }
+    // Failures this person hasn't seen stay visible on the button; opening the panel marks them seen (activity-seen.ts).
+    // An older server sends only the total.
+    const failed = failures ? ActivitySeen.unseen(failures, seen).length : failedAll;
     if (typeof failed === 'number') {
       let f = el('#actFailed');
-      if (!f && failed) { f = document.createElement('span'); f.id = 'actFailed'; f.className = 'badge'; f.style.cssText = 'margin-left:4px;background:#b3412f;color:#fff'; badge.after(f); }
+      if (!f && failed) { f = document.createElement('span'); f.id = 'actFailed'; f.className = 'badge'; f.style.cssText = 'margin-left:4px;background:#b3412f;color:#fff'; f.title = 'Failures you haven\'t seen: open Activity to see them'; el('#actCount').after(f); }
       if (f) { f.textContent = failed ? `${failed} failed` : ''; f.hidden = !failed; }
     }
   }
   /** The payload without what moves on its own (the time of the read, running seconds): src/stream.ts signature. */
   const sig = (a) => JSON.stringify(a, (k, v) => (['at', 'seconds', 'lastMinute', 'slow', 'stuck'].includes(k) ? undefined : v));
 
+  /** Everything this person sees is seen: the panel is open on a visible page and a failure in it isn't marked yet. */
+  async function markSeen() {
+    if (!open || document.hidden || marking || !seenKnown || !failures || !ActivitySeen.unseen(failures, seen).length) return;
+    marking = true;
+    try { seen = await api('/api/activity/seen', { method: 'POST', body: {} }); } catch { /* the next open tries again */ }
+    marking = false;
+    setCount(undefined, undefined);
+  }
+  async function loadSeen() {
+    try { gotSeen(await api('/api/activity/seen')); } catch { return; }
+    setCount(undefined, undefined);
+    if (open && last) render(last, true);
+  }
+  /** What finished and can be cleared, and how many are hidden by the last Clear. */
+  function finishedOf(a) {
+    const ops = (a.opsDone ?? []).map((o) => o.finished ?? o.created);
+    const scouts = (a.scouts ?? []).filter((x) => x.status !== 'running').map((x) => x.finished ?? x.started);
+    const recent = (a.recent ?? []).map((x) => x.at);
+    const all = [...ops, ...scouts, ...recent];
+    return { shown: all.filter((t) => ActivitySeen.shows(t, seen)).length, hidden: all.filter((t) => !ActivitySeen.shows(t, seen)).length };
+  }
+  function clearBar(a) {
+    const f = finishedOf(a);
+    if (!f.shown && !f.hidden) return '';
+    return `<div class="act-actions act-clearbar">${f.shown ? `<button class="small act-clear" data-act-clear title="Hide what has finished (it's kept: Show cleared brings it back)">Clear finished (${f.shown})</button> ` : ''}${f.hidden ? `<button class="small act-clear" data-act-showcleared>${showCleared ? 'Hide cleared' : `Show cleared (${f.hidden})`}</button>` : ''}</div>`;
+  }
+
   function render(a, force = false) {
-    setCount(a.count, a.failed);
+    if (a.seen) gotSeen(a.seen);
+    setCount(a.count, a.failed, a.failures);
     if (!open) return;
+    void markSeen();
+    a = { ...a,
+      opsDone: (a.opsDone ?? []).filter((o) => ActivitySeen.shows(o.finished ?? o.created, seen, showCleared)),
+      scouts: (a.scouts ?? []).filter((x) => x.status === 'running' || ActivitySeen.shows(x.finished ?? x.started, seen, showCleared)),
+      recent: (a.recent ?? []).filter((x) => ActivitySeen.shows(x.at, seen, showCleared)),
+      clearBar: clearBar(a) };
     el('#actUpdated').textContent = `updated ${new Date(a.at).toLocaleTimeString()}`;
-    const s = sig(a);
+    const s = sig(a) + `|${seen.clearedAt}|${seenBefore}|${showCleared}`;
     if (s === drawn && !force) return;
     drawn = s;
     const blocks = a.loop?.blocks ?? [];
     studioPatch(el('#actBody'), [
       blocks.length ? `<div class="act-item act-warn"><div class="act-top">⚠ <b>Studio froze ${blocks.length} time(s) in the last hour</b></div><div class="act-now">${blocks.slice(0, 3).map((b) => `${new Date(b.at).toLocaleTimeString()}: ${(b.ms / 1000).toFixed(1)} s${b.where ? ` ${esc(b.where.slice(0, 200))}` : ''}${b.running.length ? ` (during ${esc(b.running.join('; ').slice(0, 160))})` : ''}`).join('<br>')}</div></div>` : '',
-      (a.ops?.length || a.opsDone?.length) ? section('Going live, rollbacks, merges', a.ops.length, a.ops.map(opHtml).join('') + (a.opsDone.length ? `<details class="act-recent"><summary class="meta">finished today (${a.opsDone.length})</summary>${a.opsDone.map(opHtml).join('')}</details>` : '')) : '',
+      a.clearBar,
+      (a.ops?.length || a.opsDone?.length) ? section('Going live, rollbacks, merges', a.ops.length, a.ops.map(opHtml).join('') + (a.opsDone.length ? `<details class="act-recent"${a.opsDone.some((o) => o.status === 'failed' && ActivitySeen.isNew(o.finished, seenBefore)) ? ' open' : ''}><summary class="meta">finished today (${a.opsDone.length}${a.opsDone.some((o) => o.status === 'failed') ? `, ${a.opsDone.filter((o) => o.status === 'failed').length} failed` : ''})</summary>${a.opsDone.map(opHtml).join('')}</details>` : '')) : '',
       section('Agents', a.changes.length, a.changes.map((c) => changeHtml(c)).join('')),
       a.cancelled?.length ? section('Cancelled agents (not failed)', a.cancelled.length, a.cancelled.map((c) => changeHtml(c)).join('')) : '',
       section('Studio runs and scouts', a.runs.length + (a.scouts ?? []).length, [...a.runs.map((r) => ({ t: r.started, h: runHtml(r) })), ...(a.scouts ?? []).map((x) => ({ t: x.started, h: scoutHtml(x) }))].sort((p, q) => p.t - q.t).map((i) => i.h).join('')
@@ -403,11 +473,16 @@ if (typeof document !== 'undefined') (() => {
   studioStream.on('activity', (e) => {
     // A running playtest's screenshots: fetch the new ones now that something moved (the ticker only plays what's loaded).
     if (!e.badge) for (const p of players.values()) if (p.running) p.next = 0;
-    setCount(e.count, e.failed);
+    setCount(e.count, e.failed, e.failures);
     if (!e.badge || (open && !last)) tick();
   });
+  // This person's seen / cleared state moved (another tab, the phone): fetch it (one small read, no timer).
+  studioStream.on('activity-seen', () => loadSeen());
+  void loadSeen();
 
   function setOpen(v, { keep = true } = {}) {
+    // What's new is what came in since this person last looked: marked while the panel stays open.
+    if (v && !open) seenBefore = Math.max(seen.seenAt, seen.clearedAt);
     open = v;
     if (keep) remember(v ? 'open' : 'closed');
     el('#activity').hidden = !v;
@@ -425,7 +500,7 @@ if (typeof document !== 'undefined') (() => {
     else openRuns.delete(d.dataset.framesRun);
     mountPlayers();
   }, true);
-  document.addEventListener('visibilitychange', () => { if (!document.hidden) kick(); });
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) { kick(); void markSeen(); } });
 
   el('#actBtn').addEventListener('click', () => setOpen(!open));
   el('#actClose').addEventListener('click', () => setOpen(false));
@@ -450,6 +525,17 @@ if (typeof document !== 'undefined') (() => {
   }
   el('#activity').addEventListener('toggle', (e) => { if (e.target.open && e.target.dataset?.scoutReport) loadScoutReport(e.target); }, true);
   el('#activity').addEventListener('click', (e) => {
+    if (e.target.closest('[data-act-clear]')) {
+      e.preventDefault();
+      api('/api/activity/clear', { method: 'POST', body: {} }).then((r) => { seen = r; setCount(undefined, undefined); if (last) render(last, true); }).catch((err) => alert(`Couldn't do that: ${err.message}`));
+      return;
+    }
+    if (e.target.closest('[data-act-showcleared]')) {
+      e.preventDefault();
+      showCleared = !showCleared;
+      if (last) render(last, true);
+      return;
+    }
     const dm = e.target.closest('[data-scout-dismiss]');
     if (dm) {
       e.preventDefault();

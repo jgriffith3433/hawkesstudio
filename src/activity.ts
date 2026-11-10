@@ -159,7 +159,7 @@ export async function activity() {
   titles.clear();
   // Background operations (ops.ts): going live, rollbacks, merges; queued and running ones, and the last day's finished.
   const allOps = listOps({ since: Date.now() - 86_400_000, limit: 40 });
-  const ops = allOps.filter((o) => o.status === 'queued' || o.status === 'running');
+  const ops = allOps.filter((o) => o.status === 'queued' || o.status === 'running' || o.status === 'waiting');
   const opsDone = allOps.filter((o) => o.status === 'done' || o.status === 'failed').slice(0, 10);
   const loop = loopHealth();
   return {
@@ -168,7 +168,12 @@ export async function activity() {
     loop: { lastMinute: loop.lastMinute, blocks: loop.blocks.filter((b) => b.at > Date.now() - 3600_000) },
     // The header badge: things working now (a Gen job a run's step is waiting on counts once, as its run).
     // Scouts that failed and aren't dismissed: the header shows them next to the badge (a calm "0" hid 21 of them).
-    failed: scouts.filter((x) => x.status === 'failed').length,
-    count: changes.length + runs.length + scouts.filter((x) => x.status === 'running').length + talk.length + ops.length + jobs.filter((j) => !stepJobs.has(j.id)).length,
+    failed: scouts.filter((x) => x.status === 'failed').length + opsDone.filter((o) => o.status === 'failed').length,
+    // Each failure with when it ended: the page counts the ones its person hasn't seen (activity-seen.ts unseen).
+    failures: [
+      ...opsDone.filter((o) => o.status === 'failed').map((o) => ({ key: `op:${o.id}`, at: o.finished ?? o.created })),
+      ...scouts.filter((x) => x.status === 'failed').map((x) => ({ key: `scout:${x.id}`, at: x.finished ?? x.started })),
+    ],
+    count: changes.length + runs.length + scouts.filter((x) => x.status === 'running').length + talk.length + ops.filter((o) => o.status !== 'waiting').length + jobs.filter((j) => !stepJobs.has(j.id)).length,
   };
 }

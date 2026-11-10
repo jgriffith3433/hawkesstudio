@@ -259,7 +259,22 @@ const server = http.createServer(async (req, res) => {
     if (route === '/api/overview') return send(res, 200, await overview());
     if (route === '/api/home') return send(res, 200, await cached('home', 1000, async () => (await import('./home.ts')).home()));
     // Everything running in the background (the dashboard's Activity panel).
-    if (route === '/api/activity') return send(res, 200, await cached('activity', 1500, activity));
+    // What this person has seen in the panel and cleared from it (activity-seen.ts): per person, pushed as "activity-seen".
+    if (route === '/api/activity/seen' || route === '/api/activity/clear') {
+      const S = await import('./activity-seen.ts');
+      const me = S.viewerKey((await import('./auth.ts')).requester(req));
+      if (method === 'GET') return send(res, 200, S.seenOf(me));
+      if (method !== 'POST') return send(res, 405, { error: 'GET or POST' });
+      const b = await readJson(req).catch(() => ({}));
+      const out = route === '/api/activity/seen' ? S.markSeen(me) : S.clearActivity(me, b?.restore ? 0 : Date.now());
+      (await import('./stream.ts')).changed('activity-seen');
+      return send(res, 200, out);
+    }
+    if (route === '/api/activity') {
+      const a: any = await cached('activity', 1500, activity);
+      const S = await import('./activity-seen.ts');
+      return send(res, 200, { ...a, seen: S.seenOf(S.viewerKey((await import('./auth.ts')).requester(req))) });
+    }
     // The dashboard's one push stream (stream.ts): "something changed" events instead of polling.
     if (route === '/api/stream' && method === 'GET') return (await import('./stream.ts')).handleStream(req, res, { talkUnseen: unseenConversations() });
     // A Cloud Run job's runner says it wrote new output (cloudjob-run.ts, with the agents' key like its MCP server): its
@@ -584,7 +599,9 @@ const server = http.createServer(async (req, res) => {
       const b = await readJson(req);
       // Talk going live on the project's auto policy alone (no owner's words): only a beta whose playtests passed.
       if (!b.mergeMain && (await import('./guards.ts')).goesLiveOnAutoOnly(req, m[1])) {
-        const held = (await import('./golive-policy.ts')).holdLine(await deployPlan(m[1], { notesWaitMs: 0 }));
+        // Not played yet isn't a hold here: the go live plays beta once and goes only if that passes (deploy.ts waitForBetaPlay).
+        const plan: any = await deployPlan(m[1], { notesWaitMs: 0 });
+        const held = plan.tested?.playtests?.length ? (await import('./golive-policy.ts')).holdLine(plan) : null;
         if (held) return send(res, 409, { error: held });
       }
       return send(res, 200, await (await import('./deploy.ts')).runLive('golive', { product: m[1], confirm: b.confirm, by: b.by, mergeMain: b.mergeMain, beta: b.beta, origin }));

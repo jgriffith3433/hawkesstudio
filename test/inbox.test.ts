@@ -141,8 +141,10 @@ test('changes only J may merge, and milestones reached', async () => {
   const it = rm.addItem({ product: 'ibtest', title: 'Controls', status: 'planned' });
   const ms = rm.addMilestone({ product: 'ibtest', title: 'Controls done', items: [it.id] });
   rm.markReached(ms.id);
-  const card = (await ib.inbox()).find((x) => x.id === `milestone:${ms.id}`)!;
-  assert.ok(card.links.some((l) => l.url === '#ready'));
+  // A milestone reached is not an Inbox card (J, 2026-11-10: "Remove the notification in the inbox for when milestones
+  // are reached"); the Roadmap shows it. An answer to an older card still works.
+  assert.ok(!(await ib.inbox()).some((x) => x.kind === 'milestone'), 'no Inbox card for a milestone reached');
+  const card = { id: `milestone:${ms.id}` };
   const go = await ib.answerInbox(card.id, 'Go live', 'J');
   assert.equal((go as any).next, 'deploy', 'going live stays the deploy plan and DEPLOY');
   await ib.answerInbox(card.id, 'Something is wrong: the dash button sticks', 'J');

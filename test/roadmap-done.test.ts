@@ -230,9 +230,8 @@ test("a milestone with every task merged and built gets ONE beta playtest of its
   assert.deepEqual(ready.flatMap((r) => r.criteria.map((c) => c.met)), ['yes', 'yes', 'yes']);
   assert.ok(rm.listDecisions({ action: 'milestone' }).some((d) => d.subject === ms.id), 'J was told');
   const { inbox } = await import('../src/inbox.ts');
-  const card = (await inbox()).find((x) => x.id === `milestone:${ms.id}`);
-  assert.ok(card, 'every criterion met: the card is in his Inbox');
-  assert.match(card!.title, /^Milestone reached/);
+  // No Inbox card for it (J, 2026-11-10): the Roadmap shows it reached.
+  assert.equal((await inbox()).find((x) => x.id === `milestone:${ms.id}`), undefined, 'no milestone card in his Inbox');
 });
 
 /** A milestone of one product with one merged, built task per criteria list, its check started; returns the check run. */
@@ -288,9 +287,7 @@ test("a milestone check with criteria unclear tells J nothing: it's checked agai
     assert.equal(rm.getMilestone(ms.id)!.status, 'reached');
     const told = rm.listDecisions({ action: 'milestone' }).find((d) => d.subject === ms.id)!;
     assert.match(told.detail!, /misses left after its tries.*the boss roars/);
-    const card = await milestoneCard(ms.id);
-    assert.match(card!.title, /1 criteria still not met on beta after its tries/);
-    assert.match(card!.text!, /the boss roars \(unclear: still too dark to tell\)/);
+    assert.equal(await milestoneCard(ms.id), undefined, 'reached with misses: told, but no Inbox card (J, 2026-11-10)');
   } finally {
     pm.savePmSettings({ maxTries: before.maxTries });
   }

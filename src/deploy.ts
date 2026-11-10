@@ -25,7 +25,7 @@ import { startPartial } from './pipeline.ts';
 import { db, newId, rowToStep, type Step } from './db.ts';
 import { previewUrl } from './previews.ts';
 import { noRuntimeChange } from './playplan.ts';
-import { opLog, registerOp, enqueue, queuePosition, getOp, type Op } from './ops.ts';
+import { opLog, registerOp, enqueue, queuePosition, getOp, wakeOps, OpWaits, type Op } from './ops.ts';
 import {
   BETA, MAIN, STUDIO_ROLLBACK, AUTHOR, must, repoDirs, compareBeta, compareRefs, fetchForRead, NotClonedError, fetchOrigin, shaOf, commitOf, commitsIn, betaBuild, saveBetaBuild,
   betaSiteDir, betaSiteFolder, scratch, listDeploys, mergeMainIntoBeta, prebuilt, git as gitIn, gitAsync, type Commit, type DeployRow,
@@ -552,7 +552,18 @@ export const deploy = (...a: Parameters<typeof deployNow>) => critical(`going li
   }
   return r;
 });
-async function deployNow(productId: string, { confirm, by = 'J', mergeMain, origin, beta: expect, approval, io, ciPassed }: { confirm?: string; by?: string; mergeMain?: boolean; message?: string; origin?: string | null; beta?: string; approval?: string; io?: GitHubIO; ciPassed?: { sha: string; runs: string[] } }) {
+/** Going live waits for one beta playtest of beta's newest commit (deployNow; the golive operation starts it and waits). */
+export class NeedsBetaPlay extends Error {
+  short: string;
+  blockers: string[];
+  constructor(short: string, blockers: string[]) {
+    super(`Not going live yet: ${blockers.join(' ')}`);
+    this.short = short;
+    this.blockers = blockers;
+  }
+}
+
+async function deployNow(productId: string, { confirm, by = 'J', mergeMain, origin, beta: expect, approval, io, ciPassed, requireClean }: { confirm?: string; by?: string; mergeMain?: boolean; message?: string; origin?: string | null; beta?: string; approval?: string; io?: GitHubIO; ciPassed?: { sha: string; runs: string[] }; requireClean?: boolean }) {
   const p = getProduct(productId);
   if (mergeMain && githubSlugOf(p)) {
     const { syncBetaWithLive } = await import('./deploy-github.ts');
@@ -568,7 +579,21 @@ async function deployNow(productId: string, { confirm, by = 'J', mergeMain, orig
   // Or the owner skips beta playtests for this project (golive-policy.ts betaPlay) and CI passed on that exact commit.
   const skip = playtestSkipFor(approval, p.id, expect) ?? ciSkipFor(p.id, expect, ciPassed);
   const blockers = skip ? plan.blockers.filter((b) => !isOverridable(b)) : plan.blockers;
+  // Main already is beta: what was asked for is already true. A no-op that succeeds, not a failure (whatever else the
+  // plan says about beta's playtests: nothing would move).
+  const already = blockers.find((b) => /^Nothing to go live/.test(b));
+  if (already) return { ok: true, product: p.id, nothing: true, main: plan.main?.short ?? plan.beta?.short ?? null, beta: plan.beta?.short ?? null, release: null, note: `Already live: ${already.replace(/^Nothing to go live:\s*/, '')}` };
+  // All that stops it is beta's newest commit not being playtested (merges landed after the last play): Studio plays it
+  // once, and the go live carries on by itself when that play passes (the golive operation waits, ops.ts OpWaits).
+  if (playtestOnly(blockers) && plan.beta?.sha && (!expect || !approval || plan.beta.sha === expect)) throw new NeedsBetaPlay(plan.beta.short ?? plan.beta.sha.slice(0, 7), blockers);
   if (blockers.length) throw new StudioError(`Not going live:\n- ${blockers.join('\n- ')}`);
+  // After waiting for that play (requireClean): it has to have passed. The owner's earlier "go live" was for a beta that
+  // plays clean; a failed or broken play stops it here and says why.
+  if (requireClean) {
+    const { playtestHolds } = await import('./golive-policy.ts');
+    const holds = playtestHolds(plan.tested?.playtests as any, plan.tested?.sha ?? plan.beta?.short);
+    if (holds.length) throw new StudioError(`Not going live: beta's playtest before going live didn't pass: ${holds.join('; ')}`);
+  }
   // An Approve card (approvals.ts) is for one beta commit: a different one now isn't what J approved.
   if (expect && plan.beta?.sha !== expect && plan.played?.sha !== expect) throw new StudioError(`${BETA} is ${plan.beta?.short ?? '?'} now, not ${expect.slice(0, 7)} that J approved; look at the plan again.`);
   // A project with a GitHub repo (deploy-github.ts): its main, and the repos its builds went into, through GitHub's API.
@@ -954,11 +979,60 @@ async function settleApproval(op: Op, ok: boolean, text: string) {
   if (!ok) await import('./notify.ts').then((n) => n.notify(`${op.title} failed`, text.slice(0, 300), { tags: ['warning'], priority: 4 })).catch(() => {});
 }
 
+/** How many beta plays one go live waits through (beta moving on during each) before it says so and stops. */
+export const MAX_PLAY_ROUNDS = 3;
+
+/**
+ * A go live that needs beta's newest commit played first (NeedsBetaPlay): ONE beta playtest of that commit is started
+ * (golive-policy.ts playBeforeGoLive: covers every merge since the last play; one already playing is joined), and the
+ * operation waits for it (OpWaits) instead of failing. The play's run ending wakes it (pipeline.ts → wakeGoLives); it
+ * then goes live if the play passed, waits again if beta moved meanwhile (up to MAX_PLAY_ROUNDS plays), or fails with
+ * the play's own reason. `play` is for the tests.
+ */
+type BetaPlayer = (product: string, short: string, why: string) => Promise<{ started?: string; playing?: string; played?: string; error?: string }>;
+/** The tests' stand-in for starting beta's play (golive-policy.ts playBeforeGoLive). */
+export const goLiveHooks: { play?: BetaPlayer } = {};
+
+export async function waitForBetaPlay(op: Op, product: string, short: string, play?: BetaPlayer): Promise<never> {
+  const rounds = op.wait?.rounds ?? 0;
+  if (rounds >= MAX_PLAY_ROUNDS) throw new StudioError(`Not going live: beta kept moving while it was being playtested (${rounds} plays; now ${short}). It goes live with the next beta play that passes.`);
+  const go = play ?? goLiveHooks.play ?? (await import('./golive-policy.ts')).playBeforeGoLive;
+  const r = await go(product, short, `going live was asked for (${op.by ?? 'someone'})`);
+  if (r.started || r.playing) throw new OpWaits(`waiting for beta's playtest at ${short} (${r.started ? 'started' : 'already playing'}: run ${r.started ?? r.playing}); goes live by itself if it passes`, r.started ?? r.playing ?? null);
+  if (r.played) {
+    const run = db.prepare('SELECT status, detail FROM runs WHERE id = ?').get(r.played) as any;
+    // Its play is held until credits come back (creditwait.ts starts beta's run again then): still waiting, not failed.
+    if (/waiting for credits/.test(String(run?.detail ?? ''))) throw new OpWaits(`waiting for credits to play beta ${short} (Studio plays it when they're back); goes live by itself if it passes`, null);
+    throw new StudioError(`Not going live: beta's playtest run ${r.played} at ${short} didn't play it (${run?.status ?? 'gone'}${run?.detail ? `: ${String(run.detail).slice(0, 200)}` : ''}). Play beta again (studio beta ${product}), then go live.`);
+  }
+  throw new StudioError(`Not going live: couldn't start beta's playtest at ${short}: ${r.error ?? 'unknown'}`);
+}
+
+/** A beta run (or a beta playtest) of `product` ended: go lives waiting for it look again (ops.ts wakeOps). */
+export const wakeGoLives = (product: string, run?: string) => wakeOps({ kind: 'golive', product, run });
+
 registerOp('golive', async (j: LiveJob, ctx) => {
   ctx.step(j.mergeMain ? `merging main into ${j.product}'s beta` : `going live with ${j.product}`);
   try {
-    return await deploy(j.product, { confirm: j.confirm, by: j.by, origin: j.origin, beta: j.beta, mergeMain: j.mergeMain, approval: j.approval, ciPassed: j.ciPassed });
+    // After waiting for beta's play, beta's newest commit is what goes (the ask was for beta, and beta moved on), unless
+    // an Approve card bound it to one commit.
+    const waited = Boolean(ctx.op.wait);
+    return await deploy(j.product, { confirm: j.confirm, by: j.by, origin: j.origin, beta: waited && !j.approval ? undefined : j.beta, mergeMain: j.mergeMain, approval: j.approval, ciPassed: j.ciPassed, requireClean: waited });
   } catch (e: any) {
+    if (e instanceof NeedsBetaPlay) {
+      // A project whose owner skips beta playtests (golive-policy.ts betaPlay skip): CI on beta's commit is its gate.
+      const P = await import('./golive-policy.ts');
+      const slug = githubSlugOf(getProduct(j.product));
+      if (P.skipsBetaPlay(j.product) && slug) {
+        const sha = (await deployPlan(j.product, { notesWaitMs: 0 })).beta?.sha;
+        const ci = sha ? await P.ciOn(slug, sha, { maxMs: 0 }) : null;
+        if (ci?.ok) return deploy(j.product, { confirm: j.confirm, by: j.by, origin: j.origin, mergeMain: false, ciPassed: { sha: ci.sha, runs: ci.runs }, beta: ci.sha });
+        if (ci && /didn't pass/.test(ci.why)) throw new StudioError(`Not going live: ${ci.why}`);
+        // CI still running: the end of its wait (autoGoLive) wakes this.
+        throw new OpWaits(`waiting for CI on beta ${e.short} (the owner skips beta playtests for this project); goes live by itself when it passes`, null);
+      }
+      return waitForBetaPlay(getOp(ctx.op.id) ?? ctx.op, j.product, e.short);
+    }
     // A second attempt after a restart that finds it already done: that's the first attempt's success.
     if (ctx.op.attempts > 1 && /Nothing to go live/.test(String(e.message))) {
       const d = db.prepare(`SELECT * FROM deploys WHERE product = ? AND kind = 'deploy' AND at >= ? ORDER BY at DESC LIMIT 1`).get(j.product, ctx.op.created) as DeployRow | undefined;
@@ -995,6 +1069,8 @@ export async function runLive(kind: 'golive' | 'rollback', j: LiveJob, maxMs = 4
     const now = getOp(op.id)!;
     if (now.status === 'done') return now.result;
     if (now.status === 'failed') throw new StudioError(now.error ?? 'failed', 409);
+    // Parked on beta's playtest (waitForBetaPlay): accepted, and it carries on by itself; nobody has to ask again.
+    if (now.status === 'waiting') return { ok: true, waiting: true, op: now.id, product: now.product, note: `${now.title}: ${now.step ?? 'waiting'}. Nothing to do: it goes live by itself when that passes (Activity shows it).` };
     if (Date.now() > end) throw new StudioError(`${now.title} is still ${now.status} (${now.step ?? ''}); it carries on: see Activity.`, 202);
     await new Promise((r) => setTimeout(r, 1000));
   }

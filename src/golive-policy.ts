@@ -135,6 +135,16 @@ export function asksToRollBack(text: string | null | undefined, product?: string
  */
 export async function autoGoLive(productId: string, why: string): Promise<{ went?: string; waits?: string }> {
   try {
+    return await autoGoLiveNow(productId, why);
+  } finally {
+    // A go live someone asked for that waits on this project's beta (a playtest, or CI where playtests are skipped)
+    // looks again now: it goes live, waits on, or says why it can't (deploy.ts waitForBetaPlay).
+    await import('./deploy.ts').then((d) => d.wakeGoLives(productId)).catch(() => {});
+  }
+}
+
+async function autoGoLiveNow(productId: string, why: string): Promise<{ went?: string; waits?: string }> {
+  try {
     const p = getProduct(productId);
     if (managedElsewhere(p)) return { waits: 'managed by another Studio' };
     const pol = policyOf(p.id);
