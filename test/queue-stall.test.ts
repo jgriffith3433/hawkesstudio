@@ -9,7 +9,10 @@ import os from 'node:os';
 import path from 'node:path';
 
 process.env.STUDIO_DATA = fs.mkdtempSync(path.join(os.tmpdir(), 'studio-queue-stall-'));
-const { queueStalled, queueHeldBy: heldBy } = await import('../src/agents.ts');
+fs.writeFileSync(path.join(process.env.STUDIO_DATA, 'agents.json'), JSON.stringify({ maxConcurrent: 3 }));
+const { queueStalled, queueHeldBy: heldBy, queueHealth } = await import('../src/agents.ts');
+const { db } = await import('../src/db.ts');
+const { queueAttention } = await import('../src/resources.ts');
 
 const min = 60_000;
 const now = 1_000 * min;
@@ -55,4 +58,28 @@ test('a revision waits its turn in the queue instead of starting on the spot pas
   const body = src.slice(src.indexOf('export function revise('), src.indexOf('export function answerChange('));
   assert.ok(body.includes('reviseNotes.set(id, note)'), 'the note is kept for the pump');
   assert.ok(!/\bvoid work\(/.test(body), 'revise never starts a pass itself (2026-11-10: 13 passes on a cap of 6)');
+});
+
+test('a verifying change (waiting on a Gen build or playtest) holds no agent slot; working and revising do', () => {
+  const add = (id: string, status: string, updated: number) => db.prepare('INSERT INTO changes (id, product, findings, status, title, created, updated, request) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').run(id, 'qs', '[]', status, id, updated, updated, 'test');
+  const t = Date.now();
+  add('c_qs_verify1', 'verifying', t);
+  add('c_qs_verify2', 'verifying', t);
+  add('c_qs_verify3', 'verifying', t);
+  add('c_qs_work', 'working', t);
+  add('c_qs_queued', 'queued', t - 60 * min);
+  const q = queueHealth(t);
+  assert.equal(q.max, 3);
+  assert.equal(q.free, 2, 'three verifying and one working leave two of three slots free');
+  assert.equal(q.queued, 1);
+  db.prepare("UPDATE changes SET status = 'revising' WHERE id = 'c_qs_verify1'").run();
+  assert.equal(queueHealth(t).free, 1);
+});
+
+test('the Resources page warns while the queue sits with free slots, and says nothing otherwise', () => {
+  assert.equal(queueAttention(null), null);
+  assert.equal(queueAttention({ stalled: null, heldBy: null }), null);
+  const a = queueAttention({ stalled: '5 queued and 2 slot(s) free, but nothing started for 14 min', heldBy: '5x queued by the PM' });
+  assert.equal(a?.level, 'warn');
+  assert.match(String(a?.text), /isn't moving: 5 queued .* Held by: 5x queued by the PM/);
 });

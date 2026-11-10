@@ -1966,8 +1966,32 @@ export function queueStalled(o: { queued: number; free: number; lastStartAt: num
   // A hold (a deploy, no provider) is a reason, not an excuse: one that lasts this long is reported like any stall.
   return `${o.queued} queued and ${o.free} slot(s) free, but nothing started for ${Math.round((o.now - o.lastStartAt) / 60_000)} min${o.memLow ? ' (memory is low)' : ''}${o.held ? ' (held: a deploy is pending or no provider is ready)' : ''}`;
 }
-/** How long a queue may sit with free slots before the watchdog steps in (STUDIO_QUEUE_STALL_MS; 20 minutes). */
-export const QUEUE_STALL_MS = () => Number(process.env.STUDIO_QUEUE_STALL_MS) > 0 ? Number(process.env.STUDIO_QUEUE_STALL_MS) : 20 * 60_000;
+/** How long a queue may sit with free slots before the watchdog steps in and health says so (STUDIO_QUEUE_STALL_MS; 10 minutes). */
+export const QUEUE_STALL_MS = () => Number(process.env.STUDIO_QUEUE_STALL_MS) > 0 ? Number(process.env.STUDIO_QUEUE_STALL_MS) : 10 * 60_000;
+
+/**
+ * The statuses that hold one of the maxConcurrent agent slots: an agent at work. A change that is verifying waits on a
+ * build or playtest in Hawkes Gen and runs no agent, so it holds none (2026-11-10: three of six slots sat on cloud
+ * builds for up to an hour while 84 changes waited). The product's own limit (perProduct) still counts it.
+ */
+const AGENT_SLOT = 'working,revising';
+/** Passes in this process that hold an agent slot (a verifying change's pass holds none). */
+function slotHolders() {
+  let n = 0;
+  for (const id of running) if (getChange(id)?.status !== 'verifying') n++;
+  return n;
+}
+
+/** The queue now, for /api/health, /api/ops and the Resources page: stalled says why when it sits with free slots. */
+export function queueHealth(now = Date.now()) {
+  const queued = listChanges({ status: 'queued', limit: 500 });
+  const s = agentSettings();
+  const free = s.maxConcurrent - Math.max(listChanges({ status: AGENT_SLOT, limit: 500 }).length, slotHolders());
+  const oldest = Math.min(...queued.map((c) => c.updated ?? c.created ?? now), now);
+  const held = deployPending() || noProviderFree();
+  const stalled = s.enabled === false ? null : queueStalled({ queued: queued.length, free, lastStartAt, oldestQueuedAt: oldest, now, memLow: memLow(), held });
+  return { queued: queued.length, free, max: s.maxConcurrent, lastStartAt, idleMin: Math.round((now - lastStartAt) / 60_000), stalled, heldBy: stalled ? queueHeldBy(queued.map((c) => c.detail)) : null };
+}
 
 /** The reasons queued changes give, counted (the first words of their detail): what holds the queue. */
 export function queueHeldBy(details: (string | null | undefined)[]): string {
@@ -1987,8 +2011,8 @@ export function queueHeldBy(details: (string | null | undefined)[]): string {
 export function checkQueue(now = Date.now()): string | null {
   const queued = listChanges({ status: 'queued', limit: 500 });
   const s = agentSettings();
-  const active = listChanges({ status: ACTIVE, limit: 500 }).length;
-  const free = s.maxConcurrent - Math.max(active, running.size);
+  const active = listChanges({ status: AGENT_SLOT, limit: 500 }).length;
+  const free = s.maxConcurrent - Math.max(active, slotHolders());
   const oldest = Math.min(...queued.map((c) => c.updated ?? c.created ?? now), now);
   const why = queueStalled({ queued: queued.length, free, lastStartAt, oldestQueuedAt: oldest, now, memLow: memLow(), held: deployPending() || noProviderFree() });
   if (!why) return null;
@@ -2034,7 +2058,7 @@ async function pump() {
   // A video has a lane of its own (noRoomFor): only the studio-wide cap applies to it.
   const lane = (c: Change) => (isVideoTask(c.task) ? `video:${c.id}` : c.product);
   const busy = [...active.values()].map(lane);
-  const picks = pickQueued(queued.map((c) => ({ id: c.id, product: lane(c) })), busy, s.maxConcurrent - running.size, { limit: (p) => (p.startsWith('video:') ? 1 : perProductLimit(p, s)), fit });
+  const picks = pickQueued(queued.map((c) => ({ id: c.id, product: lane(c) })), busy, s.maxConcurrent - slotHolders(), { limit: (p) => (p.startsWith('video:') ? 1 : perProductLimit(p, s)), fit });
   // A queued change's " behind c_..." names what it waits for now, not one that finished since (J, 2026-10-18).
   const ahead = new Map<string, string[]>();
   for (const c of [...active.values(), ...picks.map((x) => getChange(x)!)]) ahead.set(c.product, [...(ahead.get(c.product) ?? []), c.id]);
