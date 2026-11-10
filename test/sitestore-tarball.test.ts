@@ -78,3 +78,27 @@ test('publishSite removes what its source unpacked, even when the publish fails 
   const kept: any = keepPrefetch(files.slice(), files);
   assert.equal(kept.cleanup, files.cleanup, 'filtering keeps the cleanup with the prefetch');
 });
+
+test('extractWanted: a download cut off mid-stream rejects instead of crashing the process', async () => {
+  const fs = await import('node:fs');
+  const os = await import('node:os');
+  const path = await import('node:path');
+  const zlib = await import('node:zlib');
+  const gz = zlib.gzipSync(Buffer.alloc(4096, 1));
+  let sent = false;
+  const body = new ReadableStream<Uint8Array>({
+    pull(c) {
+      if (!sent) { sent = true; c.enqueue(new Uint8Array(gz.subarray(0, 20))); return; }
+      c.error(new TypeError('terminated'));
+    },
+  });
+  let uncaught: unknown = null;
+  const onUncaught = (e: unknown) => { uncaught = e; };
+  process.on('uncaughtException', onUncaught);
+  try {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cut-'));
+    await assert.rejects(extractWanted(body, new Set(['a']), dir), /terminated/);
+    await new Promise((ok) => setTimeout(ok, 20));
+    assert.equal(uncaught, null);
+  } finally { process.off('uncaughtException', onUncaught); }
+});
