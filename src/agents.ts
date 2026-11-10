@@ -409,8 +409,15 @@ export const SUMMARY_STOP_MAX = 400;
  * is held studio-wide (harness-hold.ts). Never failed, never a try, no nudge spent: when the hold lifts (or the other
  * harness stands in) pump resumes it where it was (harnessResume). J, 2026-10-20: "It should just recover itself."
  */
-function parkForHarness(id: string, ph: Phase, save: (patch: Partial<Phase>, extra?: Record<string, any>) => void, stop: HarnessStop) {
-  const harness = (isHarness(ph.brain) ? ph.brain : brainId()) as Harness;
+/** The provider a stopped pass ran on: its result's, else the change's last pass (runs.ts), else its phase, else the one in use. */
+export function parkHarness(id: string, ph: Pick<Phase, 'brain'>, ran?: Harness | null): Harness {
+  return (ran ?? lastHarness(id) ?? (isHarness(ph.brain) ? ph.brain : brainId())) as Harness;
+}
+function parkForHarness(id: string, ph: Phase, save: (patch: Partial<Phase>, extra?: Record<string, any>) => void, stop: HarnessStop, ran?: Harness | null) {
+  // The provider that really ran the pass (its result says, else the change's provider history), so a limit on one
+  // provider never holds another: the phase's brain only when neither knows, and the harness in use last of all.
+  const harness = parkHarness(id, ph, ran);
+  if (isHarness(ph.brain) && ph.brain !== harness) addLog(id, `the stop came from ${HARNESS_LABEL[harness]}, the provider that ran the pass (its phase still said ${HARNESS_LABEL[ph.brain]})`);
   const { hold } = holdHarness(stop, { source: `agent change ${id}`, harness });
   noteBrain(id, { kind: 'park', harness, model: currentBrain(id)?.model ?? null, why: `${stop.kind}: ${stop.line}` });
   writeHandoff(id, harness, `${HARNESS_LABEL[harness]} stopped it (${stop.kind}: ${stop.line.slice(0, 160)})`);
@@ -465,10 +472,10 @@ export function resumeGate(h: { at: number; parks?: number[]; capped?: boolean }
  * run the pass again on the next tier down. Not a try, not a hold. Null when it wasn't that, or the model was already
  * known as refused (so a requeue never loops).
  */
-function modelRefused(r: { ok: boolean; sawResult: boolean; result: string; stderr?: string }, ph: Phase) {
+function modelRefused(r: { ok: boolean; sawResult: boolean; result: string; stderr?: string; harness?: Harness }, ph: Phase) {
   if (r.ok && r.sawResult) return null;
   const model = refusedModelOf(`${r.result ?? ''}\n${r.stderr ?? ''}`);
-  const harness = (isHarness(ph.brain) ? ph.brain : brainId()) as Harness;
+  const harness = (r.harness ?? (isHarness(ph.brain) ? ph.brain : brainId())) as Harness;
   return model && markModelUnavailable(harness, model) ? { model, harness } : null;
 }
 function requeueForModel(id: string, save: (patch: Partial<Phase>, extra?: Record<string, any>) => void, gone: { model: string; harness: Harness }) {
@@ -2437,7 +2444,7 @@ async function workPass(id: string, note?: string, answer?: string, resumed?: Ph
       const stop = passStop(r, readSummary(getChange(id)!.worktree));
       if (stop) {
         save({}, { cost: getChange(id)!.cost + r.cost });
-        return parkForHarness(id, ph, save, stop);
+        return parkForHarness(id, ph, save, stop, r.harness);
       }
       // The cost and the next step are written together, so a restart never counts a pass twice.
       save({ step: 'publish', result: r.result, stopped: r.stopped, machinery: machineryFailure(r.stderr) ?? undefined, nudge: false, unityFix: false, compileFix: false, qualityFix: false, genDone: undefined, harness: undefined, proc: undefined }, { cost: getChange(id)!.cost + r.cost });
@@ -3306,7 +3313,7 @@ async function workInfra(id: string, note?: string, resumed?: Phase | null, nudg
       const stop = passStop(r, readSummary(getChange(id)!.worktree));
       if (stop) {
         save({}, { cost: getChange(id)!.cost + r.cost });
-        return parkForHarness(id, ph, save, stop);
+        return parkForHarness(id, ph, save, stop, r.harness);
       }
       save({ step: 'publish', result: r.result, stopped: r.stopped, nudge: false, harness: undefined, proc: undefined }, { cost: getChange(id)!.cost + r.cost });
     }

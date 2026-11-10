@@ -18,7 +18,7 @@ fs.writeFileSync(path.join(process.env.STUDIO_DATA, 'notify.json'), JSON.stringi
 const R = await import('../src/runs.ts');
 const P = await import('../src/providers.ts');
 const hold = await import('../src/harness-hold.ts');
-const { brainOfChange } = await import('../src/agents.ts');
+const { brainOfChange, parkHarness } = await import('../src/agents.ts');
 const { recordPass } = await import('../src/ledger.ts');
 
 P.providerDeps.installed = () => true;
@@ -105,4 +105,12 @@ test('why a pass runs where it does: held, full, back in order, first choice', (
   assert.match(P.whyHarness('claude', 'codex', 'builder', { ...s, off: ['claude'] as any }), /^Claude: switched off in Settings/);
   hold.holdHarness({ kind: 'usage', line: "You've hit your weekly limit", resetsAt: Date.now() + 86_400_000 }, { source: 'test', harness: 'claude' });
   assert.match(P.whyHarness('claude', 'codex', 'builder', s), /^Claude: /);
+});
+
+test("a stop holds the provider that ran the pass, never the phase's stale one or the harness in use", () => {
+  // c_8d0f27ed053a, 2026-11-10: a weekly-limit stop held Claude for three days; its passes ran on Copilot.
+  assert.equal(parkHarness('c_park_a', { brain: 'claude' }, 'copilot'), 'copilot', "the pass's own result wins");
+  R.noteBrain('c_park_b', { kind: 'start', harness: 'copilot', model: 'claude-sonnet-5.5', why: null });
+  assert.equal(parkHarness('c_park_b', { brain: 'claude' }), 'copilot', 'then the provider history');
+  assert.equal(parkHarness('c_park_c', { brain: 'codex' }), 'codex', 'then the phase');
 });
