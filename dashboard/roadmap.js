@@ -36,7 +36,16 @@ async function loadRoadmap() {
   studioPatch($('#rmQuestions'), pm.questions.length ? `<div class="meta" style="margin:4px 0 8px">${asked ? `<b>${asked} question(s) for you</b> are in your <a href="#inbox" onclick="show('inbox');return false">Inbox</a>.` : ''}${agents ? ` ${agents} agent question(s) the PM is answering.` : ''}</div>` : '');
   rmMilestones = r.milestones;
   rmItems = r.items;
-  const board = $('#rmView').value !== 'list';
+  const view = $('#rmView').value;
+  // The overview: every project on one screen (overviewHtml). A row opens that project's board; "← Every project" comes back.
+  const overview = view === 'overview';
+  studioPatch($('#rmOverview'), overview ? overviewHtml(overviewData(r), Boolean($('#rmStatus').value)) : `<button class="small" data-ov-back title="Every project's progress on one screen">← Every project</button>`);
+  if (overview) {
+    for (const id of ['#rmBoard', '#rmMilestones', '#rmList']) studioPatch($(id), '');
+    studioPatch($('#rmLog'), logHtml(pm));
+    return;
+  }
+  const board = view !== 'list';
   studioPatch($('#rmBoard'), board ? boardHtml(r) : '');
   studioPatch($('#rmMilestones'), !board && r.milestones.length ? `<h3>Milestones</h3>${r.milestones.map(milestoneHtml).join('')}` : '');
   // Sort by priority (stable: equal ones keep the roadmap order), items and the tasks in each.
@@ -47,9 +56,12 @@ async function loadRoadmap() {
   const open = new Set([...$('#rmList').querySelectorAll('details[data-key][open]')].map((d) => d.dataset.key));
   studioPatch($('#rmList'), r.items.length ? r.items.map(itemHtml).join('') : '<div class="empty">No roadmap items yet. Tell Talk what you want ("let\'s do X"): it proposes items and tasks with acceptance criteria, and adds them when you say yes.</div>');
   for (const d of $('#rmList').querySelectorAll('details[data-key]')) if (open.has(d.dataset.key)) d.open = true;
-  studioPatch($('#rmLog'), `<summary class="meta">PM decision log (${pm.log.length})</summary>${pm.log.map((d) => `<div class="test"><span class="name">${esc(d.action)}</span><span class="detail">${esc(d.detail ?? '')} · ${esc(d.product ?? '')} · ${ago(d.at)}${d.undone ? ' · <i>undone</i>' : ''}</span>${d.undo && !d.undone ? `<button class="small" data-undo="${d.id}">Undo</button>` : ''}</div>`).join('')}`);
+  studioPatch($('#rmLog'), logHtml(pm));
   for (const id of rmOpen) loadThread(id);
 }
+
+/** The PM decision log, with Undo on the ones that can be undone. */
+const logHtml = (pm) => `<summary class="meta">PM decision log (${pm.log.length})</summary>${pm.log.map((d) => `<div class="test"><span class="name">${esc(d.action)}</span><span class="detail">${esc(d.detail ?? '')} · ${esc(d.product ?? '')} · ${ago(d.at)}${d.undone ? ' · <i>undone</i>' : ''}</span>${d.undo && !d.undone ? `<button class="small" data-undo="${d.id}">Undo</button>` : ''}</div>`).join('')}`;
 
 /** The harness hold (harness-hold.ts): what refuses to run and why, until when, the stand-in, and what waits on it. */
 function holdHtml(h) {
@@ -109,6 +121,109 @@ function boardHtml(r) {
   if (loose.length) cards.push(`<div class="card rm-col" data-key="bm:none"><h3>No milestone yet</h3><div class="status-line"><b>${loose.filter((i) => DONE_STATES.includes(itemState(i))).length} of ${loose.length} items done</b></div>${loose.map((i) => boardItem(i)).join('')}</div>`);
   return cards.length ? `<div class="cards rm-board">${cards.join('')}</div>` : '';
 }
+// ------------------------------------------------------------ overview
+// J, 2026-11-09: "For the Plan tab, I'd like a more birds eye view of work being done (but in progress format for all
+// projects and so I don't have to scroll)". One row per project: a bar of its tasks by where they stand, how far along
+// (on beta or live), a small bar per open milestone, and the counts that matter. It fits a laptop screen; a row opens
+// that project's board. Built from the same /api/roadmap answer as the board (no extra request), and redrawn by the
+// push stream like the rest of the page (no timer).
+/** Where a task stands, in the overview's words: [key, label, colour]. Order is the bar's order, left to right. */
+const OV_BUCKETS = [
+  ['live', 'live', 'var(--accent)'],
+  ['beta', 'on beta', 'var(--blue)'],
+  ['working', 'working', 'var(--amber)'],
+  ['gpu', 'waiting for GPU', 'var(--violet)'],
+  ['planned', 'planned', '#46515d'],
+  ['you', 'needs you', 'var(--red)'],
+];
+/** A task (itemProgress `tasks`: status and what it waits on) to its overview bucket. */
+function taskBucket(t) {
+  const w = t.waits ?? '';
+  if (/^(you|your)\b/.test(w)) return 'you';
+  if (t.status === 'live') return 'live';
+  if (['verified', 'done'].includes(t.status) || (t.status === 'merged' && !w)) return 'beta';
+  if (t.status === 'waiting for GPU' || /^GPU jobs/.test(w)) return 'gpu';
+  if (t.status === 'planned') return 'planned';
+  return 'working';
+}
+/**
+ * Per project: task counts per bucket, items done of total, and each open (or reached) milestone's items done of total
+ * for that project (a milestone across products counts its own items per product). Projects with nothing planned are
+ * listed apart, so the grid stays one screen.
+ */
+function overviewData(r) {
+  const OV_DONE = ['on beta', 'verified', 'live', 'done'];
+  const blank = (id, name) => ({ id, name, n: Object.fromEntries(OV_BUCKETS.map(([k]) => [k, 0])), tasks: 0, items: 0, itemsDone: 0, ms: [], shipped: 0 });
+  const rows = new Map();
+  const row = (id) => rows.get(id) ?? rows.set(id, blank(id, (r.products ?? []).find((p) => p.id === id)?.name ?? id)).get(id);
+  for (const p of r.products ?? []) row(p.id);
+  for (const it of r.items ?? []) {
+    const state = it.progress?.state ?? it.status;
+    if (['idea', 'dropped'].includes(state)) continue;
+    const x = row(it.product);
+    x.items++;
+    if (OV_DONE.includes(state)) x.itemsDone++;
+    for (const t of it.progress?.tasks ?? []) { x.n[taskBucket(t)]++; x.tasks++; }
+  }
+  let milestones = 0;
+  for (const m of r.milestones ?? []) {
+    if (m.status === 'dropped') continue;
+    const by = new Map();
+    for (const i of m.items ?? []) {
+      const pid = i.product ?? m.product;
+      if (!pid) continue;
+      const g = by.get(pid) ?? by.set(pid, { done: 0, total: 0 }).get(pid);
+      g.total++;
+      if (OV_DONE.includes(i.state ?? i.status)) g.done++;
+    }
+    if (!by.size && m.product) by.set(m.product, { done: 0, total: 0 });
+    if (m.status !== 'live') milestones++;
+    for (const [pid, g] of by) {
+      if (m.status === 'live') row(pid).shipped++;
+      else row(pid).ms.push({ id: m.id, title: m.title, status: m.status, ...g });
+    }
+  }
+  const all = [...rows.values()];
+  const busy = all.filter((x) => x.tasks || x.items || x.ms.length);
+  const total = blank('all', 'Every project');
+  for (const x of busy) { for (const [k] of OV_BUCKETS) total.n[k] += x.n[k]; total.tasks += x.tasks; total.items += x.items; total.itemsDone += x.itemsDone; }
+  return { rows: busy, idle: all.filter((x) => !busy.includes(x)), total, milestones };
+}
+const ovPct = (x) => (x.tasks ? Math.round((100 * (x.n.live + x.n.beta)) / x.tasks) : 0);
+/** The stacked bar: one segment per bucket, as wide as its share of the tasks. */
+function ovBar(x) {
+  if (!x.tasks) return `<span class="rm-ov-bar empty" title="No tasks yet: Studio plans them from the items' goals"></span>`;
+  return `<span class="rm-ov-bar" title="${esc(OV_BUCKETS.filter(([k]) => x.n[k]).map(([k, label]) => `${x.n[k]} ${label}`).join(' · '))}">${OV_BUCKETS.filter(([k]) => x.n[k]).map(([k, , c]) => `<i style="width:${((100 * x.n[k]) / x.tasks).toFixed(2)}%;background:${c}"></i>`).join('')}</span>`;
+}
+/** The counts J asked for: working, on beta, live and needing him (and GPU waits when there are any). Zeroes left out. */
+function ovCounts(x) {
+  const show = ['you', 'working', 'gpu', 'beta', 'live'].filter((k) => x.n[k]);
+  return show.map((k) => { const [, label, c] = OV_BUCKETS.find(([b]) => b === k); return `<span class="rm-ov-c${k === 'you' ? ' you' : ''}" title="${x.n[k]} task${x.n[k] === 1 ? '' : 's'} ${esc(label)}"><i style="background:${c}"></i>${x.n[k]}</span>`; }).join('') || '<span class="meta">nothing yet</span>';
+}
+/** A small bar per milestone of the project: filled as far as its items are done; reached ones are full and outlined. */
+function ovMilestones(x) {
+  const MAX = 6;
+  const bars = x.ms.slice(0, MAX).map((m) => { const pct = m.total ? Math.round((100 * m.done) / m.total) : 0; return `<span class="rm-ov-m${m.status === 'reached' ? ' reached' : ''}" title="🏁 ${esc(m.title)}: ${m.done} of ${m.total} item${m.total === 1 ? '' : 's'} done${m.status === 'reached' ? ' (reached: ready for you to test)' : ''}"><i style="width:${pct}%"></i></span>`; }).join('');
+  const more = x.ms.length > MAX ? `<span class="meta">+${x.ms.length - MAX}</span>` : '';
+  const shipped = x.shipped ? `<span class="meta" title="${x.shipped} milestone${x.shipped === 1 ? '' : 's'} live">✓${x.shipped}</span>` : '';
+  return `${bars}${more}${shipped}` || '<span class="meta">—</span>';
+}
+function overviewHtml(d, filtered = false) {
+  if (!d.rows.length) return '<div class="empty">No roadmap work yet. Tell Talk what you want: it proposes items and tasks, and they show here.</div>';
+  const t = d.total;
+  const legend = OV_BUCKETS.map(([k, label, c]) => `<span class="rm-ov-c${k === 'you' ? ' you' : ''}"><i style="background:${c}"></i>${esc(label)} <b>${t.n[k]}</b></span>`).join('');
+  const rowHtml = (x) => `<div class="rm-ov-row" role="button" tabindex="0" data-ov="${esc(x.id)}" data-key="ov:${esc(x.id)}" title="Open ${esc(x.name)}'s board">
+    <span class="rm-ov-name">${esc(x.name)}</span>${ovBar(x)}<span class="rm-ov-pct">${ovPct(x)}%</span>
+    <span class="rm-ov-ms">${ovMilestones(x)}</span><span class="rm-ov-n">${ovCounts(x)}</span></div>`;
+  return `<div class="rm-ov" data-key="ov">
+    <div class="rm-ov-head"><b>${d.rows.length} project${d.rows.length === 1 ? '' : 's'} · ${d.milestones} milestone${d.milestones === 1 ? '' : 's'} · ${t.tasks} task${t.tasks === 1 ? '' : 's'}</b> <span class="meta">${ovPct(t)}% on beta or live · ${t.itemsDone} of ${t.items} items done</span></div>
+    <div class="rm-ov-legend">${legend}</div>
+    <div class="rm-ov-row total" data-key="ov:all"><span class="rm-ov-name">Every project</span>${ovBar(t)}<span class="rm-ov-pct">${ovPct(t)}%</span><span class="rm-ov-ms meta">milestones</span><span class="rm-ov-n meta">tasks</span></div>
+    <div class="rm-ov-rows">${d.rows.map(rowHtml).join('')}</div>
+    ${d.idle.length ? `<div class="meta rm-ov-idle">${filtered ? 'Nothing in this filter' : 'Nothing planned yet'}: ${d.idle.map((x) => esc(x.name)).join(' · ')}</div>` : ''}
+  </div>`;
+}
+
 function milestoneHtml(m) {
   const pct = m.total ? Math.round((100 * m.done) / m.total) : 0;
   return `<div class="finding"><div style="flex:1">
@@ -181,7 +296,12 @@ async function loadThread(id) {
     <div class="actions"><input data-cin="${id}" placeholder="Add a comment (agents read this thread)" style="flex:1"><button class="small" data-csend="${id}">Add</button></div></div>`;
 }
 
-$('#rmProduct').onchange = $('#rmView').onchange = $('#rmStatus').onchange = $('#rmSort').onchange = loadRoadmap;
+$('#rmView').onchange = $('#rmStatus').onchange = $('#rmSort').onchange = loadRoadmap;
+// Picking one project from the overview shows its board (the overview is every project at once).
+$('#rmProduct').onchange = () => {
+  if ($('#rmProduct').value && $('#rmView').value === 'overview') $('#rmView').value = 'board';
+  loadRoadmap();
+};
 // The inline priority selects: an item's, or a task's own ('' = its item's).
 $('#roadmap').addEventListener('change', async (e) => {
   const sel = e.target.closest('select[data-prio]');
@@ -193,7 +313,25 @@ $('#roadmap').addEventListener('change', async (e) => {
   }
   loadRoadmap();
 });
+/** A project's row opens its board; "← Every project" comes back to the overview. */
+function openOverviewRow(id) {
+  $('#rmProduct').value = id;
+  $('#rmView').value = 'board';
+  loadRoadmap();
+  window.scrollTo?.(0, 0);
+}
+$('#roadmap').addEventListener('keydown', (e) => {
+  const row = e.target.closest?.('[data-ov]');
+  if (row && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); openOverviewRow(row.dataset.ov); }
+});
 $('#roadmap').addEventListener('click', async (e) => {
+  const row = e.target.closest('[data-ov]');
+  if (row) return openOverviewRow(row.dataset.ov);
+  if (e.target.closest('[data-ov-back]')) {
+    $('#rmProduct').value = '';
+    $('#rmView').value = 'overview';
+    return loadRoadmap();
+  }
   const t = e.target.closest('button');
   if (!t) return;
   try {

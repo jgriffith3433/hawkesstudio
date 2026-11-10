@@ -611,6 +611,41 @@ body.lt-big-open { overflow: hidden; }
 /* Roadmap board: a card per milestone, items with their state and blocker in words. */
 .rm-board { grid-template-columns: repeat(auto-fill, minmax(min(360px, 100%), 1fr)); margin: 8px 0 16px; }
 .rm-bitem { padding: 6px 0; border-top: 1px solid var(--line, #333); }
+/* Roadmap overview (J, 2026-11-09: a bird's-eye view of every project, in progress format, without scrolling): one
+   compact row per project, a stacked bar of its tasks, % on beta or live, a mini bar per milestone, the counts. */
+.rm-ov { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 10px 12px; margin: 6px 0 12px; }
+.rm-ov-head { display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: baseline; }
+.rm-ov-legend { display: flex; flex-wrap: wrap; gap: 2px 14px; margin: 6px 0 4px; font-size: 12px; color: var(--dim); }
+.rm-ov-legend b { color: var(--text); font-weight: 600; }
+.rm-ov-row { display: grid; grid-template-columns: minmax(110px, 190px) minmax(140px, 1fr) 40px minmax(84px, 150px) minmax(150px, 210px); gap: 12px; align-items: center; padding: 3px 6px; border-radius: 6px; font-size: 13px; min-height: 26px; }
+.rm-ov-rows .rm-ov-row { cursor: pointer; }
+.rm-ov-rows .rm-ov-row:hover, .rm-ov-rows .rm-ov-row:focus-visible { background: var(--panel2); outline: none; }
+.rm-ov-row.total { border-bottom: 1px solid var(--line); border-radius: 0; margin-bottom: 2px; padding-bottom: 6px; font-weight: 600; }
+.rm-ov-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rm-ov-bar { display: flex; height: 10px; border-radius: 5px; overflow: hidden; background: var(--line); }
+.rm-ov-bar > i { display: block; height: 100%; }
+.rm-ov-bar.empty { background: repeating-linear-gradient(45deg, var(--line) 0 4px, transparent 4px 8px); }
+.rm-ov-pct { text-align: right; font-variant-numeric: tabular-nums; color: var(--dim); font-size: 12px; }
+.rm-ov-ms { display: flex; gap: 3px; align-items: center; flex-wrap: nowrap; overflow: hidden; }
+.rm-ov-m { display: block; flex: 0 0 18px; height: 8px; border-radius: 2px; background: var(--line); overflow: hidden; }
+.rm-ov-m > i { display: block; height: 100%; background: var(--accent); opacity: .75; }
+.rm-ov-m.reached { box-shadow: 0 0 0 1px var(--accent); }
+.rm-ov-m.reached > i { opacity: 1; }
+.rm-ov-n { display: flex; gap: 10px; flex-wrap: nowrap; font-variant-numeric: tabular-nums; font-size: 12px; white-space: nowrap; }
+.rm-ov-c { display: inline-flex; align-items: center; gap: 4px; }
+.rm-ov-c > i { display: inline-block; width: 8px; height: 8px; border-radius: 2px; }
+.rm-ov-c.you { color: var(--red); font-weight: 600; }
+.rm-ov-idle { margin-top: 6px; }
+/* A phone: two short lines per project (name and counts / its bar, % and milestones), still tappable as one row. */
+@media (max-width: 640px) {
+  .rm-ov { padding: 8px; }
+  .rm-ov-row { grid-template-columns: minmax(0, 1fr) auto auto; grid-template-areas: "name n n" "bar pct ms"; gap: 3px 8px; padding: 5px 4px; min-height: 44px; }
+  .rm-ov-name { grid-area: name; } .rm-ov-bar { grid-area: bar; } .rm-ov-pct { grid-area: pct; } .rm-ov-ms { grid-area: ms; justify-content: flex-end; } .rm-ov-n { grid-area: n; gap: 7px; }
+  .rm-ov-row.total .rm-ov-ms, .rm-ov-row.total .rm-ov-n { display: none; }
+  .rm-ov-row.total { grid-template-areas: "name name name" "bar pct pct"; min-height: 0; }
+  .rm-ov-m { flex-basis: 12px; }
+  .rm-ov-rows .rm-ov-row + .rm-ov-row { border-top: 1px solid var(--line); border-radius: 0; }
+}
 
 
 /* Compact phone header (finding f_e797de0f5b21: the header took 36% of the screen). On a phone: the brand on one line,
