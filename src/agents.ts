@@ -1921,6 +1921,9 @@ function waitForDisk(id: string, why: string) {
   setTimeout(() => void pump(), DISK_WAIT_MS() + 1000).unref();
 }
 
+/** A revision's note, kept until the pump starts its pass (revise). */
+const reviseNotes = new Map<string, string>();
+
 /** When the pump last started a change (checkQueue: a queue with free slots and no start for long is stalled). */
 let lastStartAt = Date.now();
 
@@ -2023,7 +2026,10 @@ async function pump() {
     // Back from a harness hold: the same, from the step it parked at (harnessResume).
     const back = (ph?.genDone || ph?.harness) && !ph.failed ? ph : null;
     if (back) update(c.id, { status: 'working', detail: ph!.harness ? `${brainLabel()} carries on after the harness hold` : `its Gen jobs finished: ${brainLabel()} continues with them` });
-    void work(c.id, undefined, undefined, back, Boolean(back)).finally(() => {
+    // After a restart the map is empty: a change still queued for another pass takes its newest note.
+    const note = reviseNotes.get(c.id) ?? (c.detail === 'queued for another pass' ? c.notes.at(-1)?.text : undefined);
+    reviseNotes.delete(c.id);
+    void work(c.id, back ? undefined : note, undefined, back, Boolean(back)).finally(() => {
       land();
       remember(c.id);
       void pump();
@@ -4176,13 +4182,11 @@ export function revise(id: string, note: string, by = 'J') {
   // A person's revision: the conflict passes start over, and an approval waiting to merge (Studio/Gen) is for what was.
   db.prepare('UPDATE changes SET conflicts = NULL, approved = NULL, revisions = COALESCE(revisions, 0) + 1 WHERE id = ?').run(id);
   update(id, { status: 'queued', detail: 'queued for another pass', notes: [...c.notes, { at: Date.now(), by, text: note }] });
-  const land = claim(id);
-  // When it's done, the queue goes on (a revision holds a slot like any change).
-  void work(id, note).finally(() => {
-    land();
-    remember(id);
-    void pump();
-  });
+  // It waits its turn like any change: the pump starts it within the cap, the memory gate and the overlap rules. On
+  // 2026-11-10 the PM revised ten failed changes at once, each started on the spot: 13 passes ran on a cap of 6 on a
+  // Studio already short of memory.
+  reviseNotes.set(id, note);
+  void pump();
   return getChange(id);
 }
 
