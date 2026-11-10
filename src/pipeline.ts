@@ -789,7 +789,6 @@ async function playScenario(run: string, p: Product, asked: Playtest, opts: Play
     if (t.mode === 'site') params.maxPages = 40;
     if (p.contract && p.engine === 'web' && (params.mode === 'contract' || params.mode === 'auto')) params.url = withPlaytestHint(String(params.url));
     Object.assign(params, playtestExtras(p.id, name, t));
-    { const skip = (await import('./gpu-breaker.ts')).down(); if (skip.length) params.skipProviders = skip; }
     // An app behind a sign-in (Product.testSignIn): on its beta, the playtest starts signed in as a test account.
     if (t.where === 'local' && (p.testSignIn?.url || (await import('./playtest-signin.ts')).isStudioProject(p.id)) && !prior) {
       try {
