@@ -141,7 +141,7 @@ export function setFailover(f: Failover | null) {
  * The harness in use: J's choice (Settings, or HAWKES_BRAIN), or the failover standing in for it. `chosen` is J's
  * choice either way; `model` is the chosen model, or the stand-in's default (Claude: each role's own; Cursor: Auto).
  */
-export function brainSettings(): { harness: Harness; model: string; id: Harness; saved: number | null; key: boolean; copilot: boolean; gemini: boolean; antigravity: boolean; codex: boolean; chosen: Harness; failover: Failover | null } {
+export function brainSettings(): { harness: Harness; model: string; id: Harness; saved: number | null; key: boolean; cursor: boolean; copilot: boolean; gemini: boolean; antigravity: boolean; codex: boolean; chosen: Harness; failover: Failover | null } {
   const env = process.env.HAWKES_BRAIN;
   const saved = row();
   const forced: Harness | null = env === 'grok' ? 'cursor' : isHarness(env) ? env : null;
@@ -151,7 +151,7 @@ export function brainSettings(): { harness: Harness; model: string; id: Harness;
   const f = failover();
   const stand = f && f.from === base.harness && f.harness !== base.harness ? f : null;
   const eff = stand ? { harness: stand.harness, model: defaultModel(stand.harness) } : base;
-  return { ...eff, id: eff.harness, saved: saved?.updated ?? null, key: Boolean(process.env.CURSOR_API_KEY || process.env.CURSOR_CREDS), copilot: harnessConfigured('copilot'), gemini: harnessConfigured('gemini'), antigravity: harnessConfigured('antigravity'), codex: harnessConfigured('codex'), chosen: base.harness, failover: stand };
+  return { ...eff, id: eff.harness, saved: saved?.updated ?? null, key: Boolean(process.env.CURSOR_API_KEY || process.env.CURSOR_CREDS), cursor: harnessConfigured('cursor'), copilot: harnessConfigured('copilot'), gemini: harnessConfigured('gemini'), antigravity: harnessConfigured('antigravity'), codex: harnessConfigured('codex'), chosen: base.harness, failover: stand };
 }
 
 export const brainId = (): Harness => brainSettings().harness;

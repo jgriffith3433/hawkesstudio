@@ -849,7 +849,7 @@ const server = http.createServer(async (req, res) => {
       }
       const sc = await import('./scout.ts');
       if (route === '/api/scouts' && method === 'GET') return send(res, 200, { scouts: q('dismissed') ? (await import('./activity.ts')).hiddenScouts() : sc.listScouts() });
-      if (route === '/api/scouts' && method === 'POST') return send(res, 200, sc.startScout(String(b.product), String(b.question ?? ''), talkFrom));
+      if (route === '/api/scouts' && method === 'POST') return send(res, 200, sc.startScout(String(b.product), String(b.question ?? ''), talkFrom, b.provider ? { provider: String(b.provider) } : {}));
       if (route === '/api/scouts/clear-failed' && method === 'POST') return send(res, 200, { ok: true, dismissed: sc.clearFailedScouts() });
       m = /^\/api\/scouts\/(x_[0-9a-f]+)\/(dismiss|restore)$/.exec(route);
       if (m && method === 'POST') {
