@@ -51,8 +51,49 @@ async function connect(who: typeof j) {
   const code = new URL(allow.headers.get('location')!).searchParams.get('code')!;
   const t = (await (await fetch(`${base}/oauth/token`, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ grant_type: 'authorization_code', code, code_verifier: verifier, client_id: reg.client_id, redirect_uri: REDIRECT }) })).json()) as any;
   assert.match(t.access_token, /^hsm_/);
+  last = { ...t, client_id: reg.client_id };
   return t.access_token as string;
 }
+let last: any = null;
+const refresh = (refresh_token: string, client_id: string) =>
+  fetch(`${base}/oauth/token`, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ grant_type: 'refresh_token', refresh_token, client_id }) });
+
+test('a sign-in survives: tokens last a day, and a refresh whose answer was lost can be retried (2026-11-10 sign-out)', async () => {
+  const O = await import('../src/mcp-oauth.ts');
+  await connect(j);
+  const first = last;
+  assert.equal(first.expires_in, 24 * 3600, 'access tokens last a day');
+  assert.ok(O.ACCESS_TTL >= 12 * 3600);
+  const a = await refresh(first.refresh_token, first.client_id);
+  assert.equal(a.status, 200);
+  const ta = (await a.json()) as any;
+  assert.notEqual(ta.refresh_token, first.refresh_token, 'still rotated');
+  // The editor never got that answer (a dropped connection, a busy server): it retries with the old token and stays in.
+  const b = await refresh(first.refresh_token, first.client_id);
+  assert.equal(b.status, 200, 'the old refresh token works again inside the grace window');
+  const tb = (await b.json()) as any;
+  assert.equal((await mcp(tb.access_token)).status, 200);
+  assert.equal((await mcp(ta.access_token)).status, 200, 'the first answer still works too');
+  // After the grace window the old one is gone; the newest one still works.
+  const realNow = Date.now;
+  Date.now = () => realNow() + (O.REFRESH_GRACE + 60) * 1000;
+  try {
+    const c = await refresh(first.refresh_token, first.client_id);
+    assert.equal(c.status, 400);
+    assert.equal(((await c.json()) as any).error, 'invalid_grant');
+    assert.equal((await refresh(tb.refresh_token, first.client_id)).status, 200);
+  } finally { Date.now = realNow; }
+});
+
+test('a retry inside the grace window never stretches it', async () => {
+  await connect(j);
+  const first = last;
+  for (let i = 0; i < 3; i++) assert.equal((await refresh(first.refresh_token, first.client_id)).status, 200);
+  const realNow = Date.now;
+  const O = await import('../src/mcp-oauth.ts');
+  Date.now = () => realNow() + (O.REFRESH_GRACE + 60) * 1000;
+  try { assert.equal((await refresh(first.refresh_token, first.client_id)).status, 400, 'reuse does not reset the window'); } finally { Date.now = realNow; }
+});
 
 test('with no sign-in, /mcp answers 401 and names where to sign in', async () => {
   const r = await mcp();

@@ -36,7 +36,7 @@ test('a hold that lasts past the stall time is reported too, never silent', () =
 
 test("the pump says why it started nothing, and the watchdog logs it", () => {
   const src = fs.readFileSync(new URL('../src/agents.ts', import.meta.url), 'utf8');
-  const pump = src.slice(src.indexOf('async function pump()'), src.indexOf('/** Pushes a change'));
+  const pump = src.slice(src.indexOf('async function pumpPass()'), src.indexOf('/** Pushes a change'));
   for (const ret of pump.match(/\n  (if \([^\n]*\) )?return[^\n]*/g) ?? []) assert.match(ret, /pumpNote/, `every early return records why: ${ret.trim()}`);
   assert.match(src, /queue stalled: \$\{why\}; the pump's last look: \$\{pumpNote\}/);
 });
