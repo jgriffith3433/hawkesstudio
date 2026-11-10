@@ -82,6 +82,66 @@
     if (wide.length) fail(name, `wider than the screen: ${wide.join('; ')}`);
   }
 
+  function parseColor(str) {
+    if (!str) return null;
+    const s = str.trim();
+    if (s.startsWith('#')) {
+      const hex = s.length === 4 ? s.slice(1).split('').map((c) => c + c).join('') : s.slice(1, 7);
+      const n = parseInt(hex, 16);
+      return Number.isNaN(n) ? null : [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+    }
+    const m = /rgba?\(\s*(\d+)[\s,]+(\d+)[\s,]+(\d+)/.exec(s);
+    return m ? [Number(m[1]), Number(m[2]), Number(m[3])] : null;
+  }
+
+  function contrastRatio(a, b) {
+    const lum = (rgb) => {
+      const [r, g, bl] = rgb.map((v) => { const x = v / 255; return x <= 0.03928 ? x / 12.92 : Math.pow((x + 0.055) / 1.055, 2.4); });
+      return 0.2126 * r + 0.7152 * g + 0.0722 * bl;
+    };
+    const l1 = lum(a), l2 = lum(b);
+    return Math.round(((Math.max(l1, l2) + 0.05) / (Math.min(l1, l2) + 0.05)) * 100) / 100;
+  }
+
+  async function verifyThemesAndScale(tab, name) {
+    const root = document.documentElement;
+    const cs0 = getComputedStyle(root);
+    if (typeof cs0?.getPropertyValue !== 'function') return;
+    const prev = root.dataset ? root.dataset.theme : undefined;
+    const ratios = {};
+    for (const theme of ['dark', 'light']) {
+      if (root.dataset) root.dataset.theme = theme;
+      await sleep(60);
+      const cs = getComputedStyle(root);
+      const surf = parseColor(cs.getPropertyValue('--surface'));
+      const txt = parseColor(cs.getPropertyValue('--text'));
+      const muted = parseColor(cs.getPropertyValue('--text-muted'));
+      if (surf && txt && muted) {
+        const tc = contrastRatio(txt, surf);
+        const mc = contrastRatio(muted, surf);
+        if (tc < 4.5 || mc < 4.5) fail(name, `${theme} theme contrast too low (text ${tc}:1, muted ${mc}:1)`);
+        ratios[theme] = { text: tc, muted: mc };
+      }
+      verify(tab, name);
+    }
+    const cs = getComputedStyle(root);
+    const scale = ['--text-xs', '--text-sm', '--text-md', '--text-lg', '--text-xl', '--text-2xl'].map((k) => parseFloat(cs.getPropertyValue(k)));
+    if (scale.every((n) => Number.isFinite(n))) {
+      for (let i = 1; i < scale.length; i++) {
+        if (!(scale[i] > scale[i - 1])) fail(name, `type scale not stepping monotonically: ${scale.join(' -> ')}`);
+      }
+      event(`type-scale:${tab}`, `${scale.join('px -> ')}px`);
+    }
+    if (ratios.dark && ratios.light) {
+      event(`theme:${tab}`, `dark ${ratios.dark.text}:1 (muted ${ratios.dark.muted}:1), light ${ratios.light.text}:1 (muted ${ratios.light.muted}:1)`);
+      log(`${name}: dark (${ratios.dark.text}:1) & light (${ratios.light.text}:1) themes coherent, 6-step type scale (${scale.join('/')}px), layout ok at ${root.clientWidth || innerWidth}px`);
+    }
+    if (root.dataset) {
+      if (prev === undefined) delete root.dataset.theme;
+      else root.dataset.theme = prev;
+    }
+  }
+
   async function step(name, tab, act, extra) {
     if (run.stopped) throw new TabFailure('stopped');
     errors = [];
@@ -94,6 +154,7 @@
     if (extra) await extra();
     await sleep(150); // a frame or two for the render to paint before the screenshot
     verify(tab, name);
+    await verifyThemesAndScale(tab, name);
     run.metrics.tabsPassed += 1;
     run.progress = run.metrics.tabsPassed / 6;
     event(`pass:${tab}`, name);
