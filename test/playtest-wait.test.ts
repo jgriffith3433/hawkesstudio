@@ -27,3 +27,14 @@ test('raiseForRun lifts Gen\'s cap when J has not chosen one', async () => {
     assert.deepEqual(puts, [{ browsers: 9 }]);
   } finally { capacityApi.request = orig; }
 });
+
+test("waitReason gives Gen's own reason for the job when it has one (the lane it really waits on)", async () => {
+  const real = capacityApi.request;
+  capacityApi.request = async () => ({ lanes: { used: 1, limit: 1 }, playing: [], waiting: [{ job: 'a', detail: 'waiting: 8 of 8 playtest browser tabs in use' }, { job: 'b', detail: 'waiting: this project already has 2 playtest tabs running (its share)' }] });
+  try {
+    assert.equal(await waitReason('a'), 'waiting for a free browser: 8 of 8 playtest browser tabs in use, 0 ahead in the queue');
+    assert.match((await waitReason('b'))!, /this project already has 2 playtest tabs running \(its share\), 1 ahead/);
+  } finally {
+    capacityApi.request = real;
+  }
+});
