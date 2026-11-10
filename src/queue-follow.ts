@@ -4,12 +4,28 @@
 //   - refreshFromTask: the one check at the moment a queued change starts (the agents.ts queue), and again whenever its
 //     task is edited (roadmap.ts updateTask: refreshTaskChanges). A task rewritten since the change was queued gives it
 //     the new request and criteria (its brief is written from them when the agent starts), with a line on its log. A task
-//     that is gone (dropped, back to idea, done, deleted) keeps it from starting; the self-healing supervisor's orphans
-//     check (selfheal-checks.ts, agents.ts closeOrphan) closes it.
+//     that is gone (dropped, back to idea, done, deleted) closes the change then and there: it never starts, and nothing
+//     else has to come looking for it.
 // A change an agent has started on (working, verifying, revising, or queued again to carry on: a revision, an answer, a
 // harness hold, its Gen jobs, a resume) is never touched. Event-driven: it runs when something happens, never on a timer.
 
 import { db, J, parse } from './db.ts';
+
+/** Closes a never-started change whose task is gone (once; agents.ts close also removes its worktree). Tests replace it. */
+const closing = new Set<string>();
+export const followHooks = {
+  close: (id: string, why: string) => import('./agents.ts').then(async (a) => {
+    a.changeLog(id, `closed before it started: ${why}`);
+    await a.close(id, 'Studio');
+  }),
+};
+function closeGone(id: string, why: string) {
+  if (closing.has(id)) return;
+  closing.add(id);
+  void Promise.resolve(followHooks.close(id, why))
+    .catch((e) => console.warn(`[queue-follow] closing ${id}: ${e?.message ?? e}`))
+    .finally(() => closing.delete(id));
+}
 
 /** Task statuses with nothing for a not-yet-started change to do. */
 export const TASK_GONE = ['dropped', 'idea', 'done'];
@@ -26,9 +42,9 @@ export function neverStarted(r: Pick<Row, 'status' | 'session' | 'pr' | 'commits
 }
 
 /**
- * Called as a queued change is about to start. Returns whether it may start. A change with no task, or one an agent has
- * started on, starts as it is. A task that is gone (dropped, idea, done, deleted): it doesn't start, and its detail says
- * why (the supervisor closes it). A task whose request or criteria changed since the change was queued: the change takes
+ * Called as a queued change is about to start (agents.ts pumpPass) and when its task is edited. Returns whether it may
+ * start. A change with no task, or one an agent has started on, starts as it is. A task that is gone (dropped, idea,
+ * done, deleted): it doesn't start, and it is closed. A task whose request or criteria changed since the change was queued: the change takes
  * the new ones (and the task's title), logged on the change, before its agent's brief is written from them.
  */
 export function refreshFromTask(change: string | { id: string }): boolean {
@@ -38,6 +54,7 @@ export function refreshFromTask(change: string | { id: string }): boolean {
   if (!t || TASK_GONE.includes(t.status)) {
     const detail = `queued: won't start, its task ${r.task} is ${t ? t.status : 'gone'}`;
     if (r.detail !== detail) db.prepare('UPDATE changes SET detail = ? WHERE id = ?').run(detail, r.id);
+    closeGone(r.id, `its task ${r.task} is ${t ? t.status : 'gone'}`);
     return false;
   }
   const cur = String(r.request ?? '');
