@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { checkUnityFiles, lexCs, unityCheck, unityFixPrompt, issueLines } from '../src/unitycheck.ts';
+import { checkUnityFiles, lexCs, unityCheck, unityCheckAsync, unityFixPrompt, issueLines } from '../src/unitycheck.ts';
 
 const FIX = path.join(import.meta.dirname, 'fixture', 'unity-check');
 const run = (...f: string[]) => checkUnityFiles(FIX, f, { engine: 'builtin' });
@@ -85,6 +85,26 @@ test('partial classes across files: a changed part that repeats a member of an u
   const ok = unityCheck(dir, 'beta');
   assert.equal(ok.ok, true);
   assert.match(ok.summary, /1 other part/);
+});
+
+test('the check a live Studio runs (off its own thread) answers the same as the plain one', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'uc-'));
+  const g = (...a: string[]) => assert.equal(spawnSync('git', a, { cwd: dir }).status, 0, a.join(' '));
+  g('init', '-q', '-b', 'beta');
+  g('config', 'user.email', 'a@b.c'); g('config', 'user.name', 'a');
+  fs.mkdirSync(path.join(dir, 'Assets'));
+  fs.copyFileSync(path.join(FIX, 'PartialA.cs'), path.join(dir, 'Assets', 'BossA.cs'));
+  g('add', '.'); g('commit', '-q', '-m', 'base');
+  g('update-ref', 'refs/remotes/origin/beta', 'HEAD');
+  g('checkout', '-q', '-b', 'task');
+  fs.copyFileSync(path.join(FIX, 'PartialB.cs'), path.join(dir, 'Assets', 'BossB.cs'));
+  g('add', '.'); g('commit', '-q', '-m', 'dup');
+  const a = await unityCheckAsync(dir, 'beta');
+  const b = unityCheck(dir, 'beta');
+  assert.deepEqual(a, b);
+  assert.equal(a.ok, false);
+  assert.deepEqual(a.partials, ['Assets/BossA.cs']);
+  assert.equal((await unityCheckAsync(dir, 'nope')).engine, 'none', 'a base git can\'t read: nothing changed, as before');
 });
 
 test('no changed .cs file: nothing to read, passes', () => {

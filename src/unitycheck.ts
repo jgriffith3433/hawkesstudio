@@ -15,6 +15,7 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { undefinedNames } from './unitynames.ts';
+import { runLight } from './spawner.ts';
 
 export type UnityIssue = { file: string; line: number; col?: number; code: string; message: string };
 export type UnityCheckResult = {
@@ -442,35 +443,53 @@ export function roslynTool(): string | null {
   return null;
 }
 
-function runRoslyn(tool: string, dir: string, changed: string[], extra: string[]): UnityIssue[] | { error: string } {
-  // Absolute directory, no empty argument (an empty path is what the tool's file calls reject), run from inside it.
-  const abs = path.resolve(dir);
-  const r = spawnSync(tool, [abs, '--changed', ...changed.filter(Boolean), '--also', ...extra.filter(Boolean)], { encoding: 'utf8', cwd: abs, timeout: 120_000, maxBuffer: 16 * 1024 * 1024 });
-  if (r.error) return { error: String(r.error.message ?? r.error) };
-  if (r.status !== 0 && r.status !== 1) return { error: `exit ${r.status}: ${String(r.stderr ?? '').slice(0, 300)}` };
+const roslynArgs = (abs: string, changed: string[], extra: string[]) => [abs, '--changed', ...changed.filter(Boolean), '--also', ...extra.filter(Boolean)];
+
+/** The tool's answer: one JSON issue a line (exit 0 clean, 1 issues); anything else is the tool failing. */
+function roslynResult(status: number | null, stdout: string, stderr: string, error?: string): UnityIssue[] | { error: string } {
+  if (error) return { error };
+  if (status !== 0 && status !== 1) return { error: `exit ${status}: ${String(stderr ?? '').slice(0, 300)}` };
   try {
-    const rows = String(r.stdout).split('\n').filter((l) => l.trim().startsWith('{')).map((l) => JSON.parse(l));
+    const rows = String(stdout).split('\n').filter((l) => l.trim().startsWith('{')).map((l) => JSON.parse(l));
     return rows.map((x) => ({ file: String(x.file), line: Number(x.line) || 1, col: x.col ? Number(x.col) : undefined, code: String(x.code), message: String(x.message) }));
   } catch (e: any) {
     return { error: `unreadable output: ${e.message}` };
   }
 }
 
+function runRoslyn(tool: string, dir: string, changed: string[], extra: string[]): UnityIssue[] | { error: string } {
+  // Absolute directory, no empty argument (an empty path is what the tool's file calls reject), run from inside it.
+  const abs = path.resolve(dir);
+  const r = spawnSync(tool, roslynArgs(abs, changed, extra), { encoding: 'utf8', cwd: abs, timeout: 120_000, maxBuffer: 16 * 1024 * 1024 });
+  return roslynResult(r.status, r.stdout, r.stderr, r.error ? String(r.error.message ?? r.error) : undefined);
+}
+
 /** The .cs files changed in a worktree against a base (git's three-dot diff), deleted ones left out. */
 export function changedCsFiles(worktree: string, base: string): string[] {
   const r = spawnSync('git', ['diff', '--name-only', '--diff-filter=ACMR', `${base}...HEAD`], { cwd: worktree, encoding: 'utf8', timeout: 30_000 });
-  if (r.status !== 0) return [];
-  return r.stdout.split('\n').map((s) => s.trim()).filter((f) => /\.cs$/i.test(f));
+  return r.status === 0 ? csOf(r.stdout) : [];
 }
+export async function changedCsFilesAsync(worktree: string, base: string): Promise<string[]> {
+  const r = await runLight('git', ['diff', '--name-only', '--diff-filter=ACMR', `${base}...HEAD`], { cwd: worktree, timeoutMs: 30_000 });
+  return r.status === 0 && !r.error ? csOf(r.stdout) : [];
+}
+const csOf = (out: string) => out.split('\n').map((s) => s.trim()).filter((f) => /\.cs$/i.test(f));
 
 /** Every tracked .cs file that mentions one of the partial types: the other parts of a partial class. */
 function otherPartsOf(worktree: string, types: Set<string>, changed: Set<string>): string[] {
   if (!types.size) return [];
   const r = spawnSync('git', ['ls-files', '--', '*.cs'], { cwd: worktree, encoding: 'utf8', timeout: 30_000, maxBuffer: 64 * 1024 * 1024 });
-  if (r.status !== 0) return [];
+  return r.status === 0 ? partsIn(worktree, r.stdout, types, changed) : [];
+}
+async function otherPartsOfAsync(worktree: string, types: Set<string>, changed: Set<string>): Promise<string[]> {
+  if (!types.size) return [];
+  const r = await runLight('git', ['ls-files', '--', '*.cs'], { cwd: worktree, timeoutMs: 30_000, maxBytes: 64 * 1024 * 1024 });
+  return r.status === 0 && !r.error ? partsIn(worktree, r.stdout, types, changed) : [];
+}
+function partsIn(worktree: string, lsFiles: string, types: Set<string>, changed: Set<string>): string[] {
   const names = [...types].map((t) => t.split('.').pop() as string);
   const out: string[] = [];
-  for (const f of r.stdout.split('\n').filter(Boolean)) {
+  for (const f of lsFiles.split('\n').filter(Boolean)) {
     if (changed.has(f)) continue;
     let text = '';
     try { text = fs.readFileSync(path.join(worktree, f), 'utf8'); } catch { continue; }
@@ -481,12 +500,13 @@ function otherPartsOf(worktree: string, types: Set<string>, changed: Set<string>
   return out;
 }
 
-/** Runs the Unity check on a list of files (paths inside `dir`). Pure apart from reading files; the tests use it directly. */
-export function checkUnityFiles(dir: string, changed: string[], { engine = 'auto' }: { engine?: 'auto' | 'builtin' } = {}): UnityCheckResult {
-  if (!changed.length) return { engine: 'none', ok: true, files: [], partials: [], issues: [], summary: 'Unity check: no C# file changed, nothing to read' };
+type Scan = { changedSet: Set<string>; issues: UnityIssue[]; members: Member[]; names: UnityIssue[]; partialTypes: Set<string> };
+const readIn = (dir: string) => (f: string) => { try { return fs.readFileSync(path.join(dir, f), 'utf8'); } catch { return null; } };
+
+/** Pass 1: the changed files (lexer, members), and which of their types are partial. */
+function scanChanged(dir: string, changed: string[]): Scan {
   const changedSet = new Set(changed.map(rel));
-  const read = (f: string) => { try { return fs.readFileSync(path.join(dir, f), 'utf8'); } catch { return null; } };
-  // Pass 1: the changed files (lexer, members), and which of their types are partial.
+  const read = readIn(dir);
   const issues: UnityIssue[] = [];
   const members: Member[] = [];
   const names: UnityIssue[] = [];
@@ -502,17 +522,21 @@ export function checkUnityFiles(dir: string, changed: string[], { engine = 'auto
     members.push(...m.members);
     for (const t of m.partialTypes) partialTypes.add(t);
   }
-  const partials = otherPartsOf(dir, partialTypes, changedSet);
+  return { changedSet, issues, members, names, partialTypes };
+}
+
+/** The rest, once the partials are known and Roslyn (when it ran) answered. */
+function finishCheck(dir: string, sc: Scan, partials: string[], ros: UnityIssue[] | { error: string } | null, engine: 'auto' | 'builtin'): UnityCheckResult {
+  const { changedSet, issues, members, names } = sc;
   let engineUsed: UnityCheckResult['engine'] = 'builtin';
   let note: string | undefined;
-  const tool = engine === 'auto' ? roslynTool() : null;
-  if (tool) {
-    const r = runRoslyn(tool, dir, [...changedSet], partials);
-    if (Array.isArray(r)) { engineUsed = 'roslyn'; issues.length = 0; issues.push(...r); }
-    else note = `Roslyn tool failed (${r.error}); the built-in checker ran instead`;
+  if (ros) {
+    if (Array.isArray(ros)) { engineUsed = 'roslyn'; issues.length = 0; issues.push(...ros); }
+    else note = `Roslyn tool failed (${ros.error}); the built-in checker ran instead`;
   } else if (engine === 'auto') note = 'Roslyn is not on this machine; the built-in checker ran';
   if (engineUsed === 'builtin') {
     // The other parts of partial classes join the member scan (their own syntax isn't this change's).
+    const read = readIn(dir);
     for (const f of partials) {
       const text = read(f);
       if (text === null) continue;
@@ -530,9 +554,38 @@ export function checkUnityFiles(dir: string, changed: string[], { engine = 'auto
   return { engine: engineUsed, ok, files, partials, issues, summary, ...(note ? { note } : {}) };
 }
 
+const NONE: UnityCheckResult = { engine: 'none', ok: true, files: [], partials: [], issues: [], summary: 'Unity check: no C# file changed, nothing to read' };
+
+/** Runs the Unity check on a list of files (paths inside `dir`). Pure apart from reading files; the tests use it directly. */
+export function checkUnityFiles(dir: string, changed: string[], { engine = 'auto' }: { engine?: 'auto' | 'builtin' } = {}): UnityCheckResult {
+  if (!changed.length) return { ...NONE };
+  const sc = scanChanged(dir, changed);
+  const partials = otherPartsOf(dir, sc.partialTypes, sc.changedSet);
+  const tool = engine === 'auto' ? roslynTool() : null;
+  return finishCheck(dir, sc, partials, tool ? runRoslyn(tool, dir, [...sc.changedSet], partials) : null, engine);
+}
+
+/** checkUnityFiles with its commands (git, Roslyn) run off Studio's thread: what a change's check uses on a live Studio. */
+export async function checkUnityFilesAsync(dir: string, changed: string[], { engine = 'auto' }: { engine?: 'auto' | 'builtin' } = {}): Promise<UnityCheckResult> {
+  if (!changed.length) return { ...NONE };
+  const sc = scanChanged(dir, changed);
+  const partials = await otherPartsOfAsync(dir, sc.partialTypes, sc.changedSet);
+  const tool = engine === 'auto' ? roslynTool() : null;
+  let ros: UnityIssue[] | { error: string } | null = null;
+  if (tool) {
+    const abs = path.resolve(dir);
+    const r = await runLight(tool, roslynArgs(abs, [...sc.changedSet], partials), { cwd: abs, timeoutMs: 120_000 });
+    ros = roslynResult(r.status, r.stdout, r.stderr, r.error);
+  }
+  return finishCheck(dir, sc, partials, ros, engine);
+}
+
 /** The change's Unity check: the .cs files it changed against its base, read with whatever engine this machine has. */
 export function unityCheck(worktree: string, base: string): UnityCheckResult {
   return checkUnityFiles(worktree, changedCsFiles(worktree, `origin/${base}`));
+}
+export async function unityCheckAsync(worktree: string, base: string): Promise<UnityCheckResult> {
+  return checkUnityFilesAsync(worktree, await changedCsFilesAsync(worktree, `origin/${base}`));
 }
 
 /** The issues as lines an agent can act on: `file:line CSxxxx message`. */

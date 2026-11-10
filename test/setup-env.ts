@@ -8,3 +8,5 @@ process.env.STUDIO_J_PRODUCTS ||= path.join(path.dirname(fileURLToPath(import.me
 // The memory gate (src/memgate.ts) reads the test machine's free memory; tests that count starts or checkouts would
 // depend on it. test/memgate.test.ts turns it back on with a memory source of its own.
 process.env.STUDIO_MEM_GATE ||= 'off';
+// The PM's starts-today memo (pm.ts) is off for tests that write pm_log and changes directly; test/pm-memo.test.ts turns it on.
+process.env.STUDIO_PM_MEMO ||= 'off';

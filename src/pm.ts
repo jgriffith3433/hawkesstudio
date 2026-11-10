@@ -38,6 +38,7 @@ import {
   logDecision, listDecisions, getDecision, markUndone, countToday, listItems, threadFor, milestonesToReach, markReached, getMilestone, milestoneTasks, setMilestoneChecks,
   itemProgress, gpuCleared, setStartWaitHook, GPU_WAIT, priceUnpriced, autoApproveWaiting, gpuDigestTasks, type Task, type Check, type TaskBuild, type Question,
   addItem, addTask, askedJ, landed, blockedBy, updateTask, taskWaits, DONE, adoptDoneDrops, tasksOf, waitingOn, STUCK_DEPENDENCY,
+  pmLogVersion,
 } from './roadmap.ts';
 import { gate, allMet } from './acceptance.ts';
 import { buildCancelled, cancelNote, cancelWords, repairCancelled } from './cancel.ts';
@@ -835,8 +836,21 @@ export const dayBounds = (now = Date.now()) => {
  * change Studio itself failed to run (a clone killed, a session gone, a shell that refused git: infra-failure.ts) is
  * given back, so a retry loop around broken machinery cannot use up the day (J, 2026-11-02: 8 of 8 burned, no task started).
  */
+/**
+ * Memo of startsToday: the PM asks for it once per task on every pass (capacity, startWaitReason), and with 300 tasks
+ * on the roadmap the two queries behind it froze Studio for 1-2 s a pass (2026-11-10, studio_ops). Kept until pm_log
+ * changes (pmLogVersion) or the day turns, and at most 15 s: a change failing meanwhile only gives a start back later.
+ */
+let startsMemo: { key: string; at: number; n: number } | null = null;
 export function startsToday(now = Date.now()): number {
   const { since } = dayBounds(now);
+  const key = `${since}|${pmLogVersion.n}`;
+  if (process.env.STUDIO_PM_MEMO !== 'off' && startsMemo && startsMemo.key === key && Math.abs(now - startsMemo.at) < 15_000) return startsMemo.n;
+  const n = startsTodayRead(since);
+  startsMemo = { key, at: now, n };
+  return n;
+}
+function startsTodayRead(since: number): number {
   // Automatic resends (an agent carried on in its own worktree, a run again for GPU art or after a build failure: logged
   // "not counted as a try") are the same work going on, not new starts (J, 2026-11-03: they filled the day).
   return startsWithAgent(db.prepare(`SELECT detail FROM pm_log WHERE action = 'start' AND at >= ? AND undone IS NULL

@@ -99,3 +99,31 @@ export function stopSpawner() {
   ready = false;
   try { h?.kill(); } catch { /* gone */ }
 }
+
+/**
+ * A command's output without blocking Studio: started by the spawner helper (spawner.ts), killed after `timeoutMs`,
+ * output cut at `maxBytes`. The Roslyn run took up to 120 s on Studio's own thread with spawnSync, and its start alone
+ * froze Studio for 2.7 s once Studio was big (2026-11-10, studio_ops).
+ */
+export function runLight(cmd: string, args: string[], o: { cwd: string; timeoutMs: number; maxBytes?: number }): Promise<{ status: number | null; stdout: string; stderr: string; error?: string }> {
+  const max = o.maxBytes ?? 16 * 1024 * 1024;
+  return new Promise((resolve) => {
+    let out = '';
+    let err = '';
+    let error: string | undefined;
+    let done = false;
+    let c: LightChild;
+    try { c = spawnLight(cmd, args, { cwd: o.cwd }); } catch (e: any) { resolve({ status: null, stdout: '', stderr: '', error: String(e?.message ?? e) }); return; }
+    const timer = setTimeout(() => { error = `timed out after ${Math.round(o.timeoutMs / 1000)} s`; c.kill('SIGKILL'); }, o.timeoutMs);
+    timer.unref?.();
+    c.stdout.on('data', (d: Buffer | string) => { if (out.length < max) out += String(d); else if (!error) { error = 'output too long'; c.kill('SIGKILL'); } });
+    c.stderr.on('data', (d: Buffer | string) => { if (err.length < 64 * 1024) err += String(d); });
+    c.on('error', (e: any) => { error ??= String(e?.message ?? e); });
+    c.on('close', (code: number | null) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      resolve({ status: code, stdout: out, stderr: err, ...(error ? { error } : {}) });
+    });
+  });
+}

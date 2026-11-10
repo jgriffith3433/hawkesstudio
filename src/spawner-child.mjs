@@ -9,6 +9,8 @@ import { spawn } from 'node:child_process';
 
 const children = new Map();
 const send = (m) => { try { process.send?.(m); } catch { /* Studio went away: we exit on disconnect */ } };
+// A send that lands after Studio is gone fails later, as an 'error' on the process: the same case, not a crash.
+process.on('error', () => {});
 
 process.on('message', (m) => {
   if (!m || typeof m !== 'object') return;
