@@ -11,6 +11,7 @@ import os from 'node:os';
 import path from 'node:path';
 import readline from 'node:readline';
 import { seedLogin } from './ai-login-seed.mjs';
+import { pluginBridge } from './plugin-bridge.mjs';
 
 const TOOLS = {
   readToolCall: 'Read', writeToolCall: 'Write', editToolCall: 'Edit', grepToolCall: 'Grep', globToolCall: 'Glob',
@@ -51,7 +52,10 @@ export function cursorArgs(parsed, prompt, resume) {
   if (parsed.model) args.push('--model', parsed.model);
   if (resume) args.push('--resume', resume);
   for (const dir of parsed.plugins) if (dir && fs.existsSync(dir)) args.push('--plugin-dir', dir);
-  const text = parsed.system && !resume ? `${parsed.system}\n\n${prompt}` : prompt;
+  // Cursor loads the plugin's skills (--plugin-dir) but has no subagents: the reviewers go in as files to read
+  // (plugin-bridge.mjs), so "ask the fun-reviewer subagent" is a review pass it can do.
+  const front = resume ? '' : [parsed.system, pluginBridge(parsed.plugins, { skills: false })].filter(Boolean).join('\n\n');
+  const text = front ? `${front}\n\n${prompt}` : prompt;
   args.push(text);
   return args;
 }

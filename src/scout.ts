@@ -304,7 +304,11 @@ ${mem.text ? `\n${mem.text}` : ''}${story ? `\nThe product's story, for tone:\n$
     set(id, { harness });
     // Counted on its provider while it runs, so the spread puts the next pass or scout on a less busy one.
     releaseLoad = using(harness);
-    const { args: roleFlags } = roleArgs('scout', { harness, maxTurns: SCOUT_MAX_TURNS, extraAllowed: ['mcp__hawkesstudio__memory_search', 'mcp__hawkesstudio__memory_get', 'mcp__hawkesstudio__memory_write', 'mcp__hawkesstudio__studio_analytics'] });
+    // A lookup ("where is...", "what does...", "is there...") is read-and-answer work: the fast tier (routing.ts), as
+    // agent changes of that kind are. Anything else keeps the scout role's tuned tier.
+    const R = await import('./routing.ts');
+    const quick = R.routingSettings().enabled && R.classify({ text: follow?.message ?? mine?.question ?? '' }).category === 'lookup_or_explain';
+    const { args: roleFlags } = roleArgs('scout', { harness, ...(quick ? { tier: 'fast' as const, effort: 'medium' as const } : {}), maxTurns: SCOUT_MAX_TURNS, extraAllowed: ['mcp__hawkesstudio__memory_search', 'mcp__hawkesstudio__memory_get', 'mcp__hawkesstudio__memory_write', 'mcp__hawkesstudio__studio_analytics'] });
     if (process.env.SCOUT_MODEL) roleFlags.splice(roleFlags.indexOf('--model') + 1, 1, process.env.SCOUT_MODEL);
     const agentMcpFile = (await import('./agents.ts')).agentMcp(id);
     const follow2 = follow ? { ...follow, resume: Boolean(follow.session) } : null;

@@ -214,3 +214,31 @@ test('an agent change: its attempt, its route kept per attempt, its stuck report
   fs.writeFileSync(path.join(wt, '.hawkes', 'stuck.md'), 'tried A and B; the cause is in the loader');
   assert.match(withStuck(wt, 'summary'), /Stuck after two approaches:\ntried A and B/);
 });
+
+test('the Opus budget counts each provider on its own, and usage shows each provider\'s share', () => {
+  db.exec('DELETE FROM pass_ledger');
+  const p = { change: 'c_ffffffffffff', role: 'builder', model: 'x', tier: 'deep', effort: 'high', retry: 1, ms: 1000, cost: 1, outcome: 'done' as const, category: 'systems_work' };
+  for (let i = 0; i < 6; i++) recordPass({ ...p, harness: 'claude' });
+  recordPass({ ...p, harness: 'copilot', tier: 'standard', cost: 0, outcome: 'failed' });
+  assert.equal(R.deepPassesToday(Date.now(), 'claude'), 6);
+  assert.equal(R.deepPassesToday(Date.now(), 'copilot'), 0);
+  const sys = { text: 'Migrate the save format to v3', role: 'builder' as const, conserve: false };
+  assert.equal(R.routeFor({ ...sys, harness: 'claude' }).tier, 'standard', "Claude's six are used");
+  assert.equal(R.routeFor({ ...sys, harness: 'copilot' }).tier, 'deep', "Copilot's budget is its own");
+  const u = R.routingUsage(7);
+  const cl = u.providers.find((x) => x.harness === 'claude')!;
+  const co = u.providers.find((x) => x.harness === 'copilot')!;
+  assert.equal(cl.passes, 6);
+  assert.equal(co.passes, 1);
+  assert.equal(co.failed, 1);
+  assert.equal(cl.share, 85.7, 'by passes, so a provider that reports no cost still shows');
+  assert.ok(R.routingStatus().byProvider.some((x) => x.harness === 'copilot' && x.deepToday === 0));
+  db.exec('DELETE FROM pass_ledger');
+});
+
+test('"one line" in a long brief is not a small edit; a lookup question is', () => {
+  assert.notEqual(R.classify({ text: 'Write the bible. On-screen text is a last resort, one line at most.' }).category, 'small_isolated_edit');
+  assert.equal(R.classify({ text: 'Make the one-line fix to the pause label' }).category, 'small_isolated_edit');
+  assert.equal(R.classify({ text: 'Is there a save system in Sick Of It?' }).category, 'lookup_or_explain');
+  assert.equal(R.classify({ text: 'Where are the playtest scenarios?' }).tier, 'fast');
+});

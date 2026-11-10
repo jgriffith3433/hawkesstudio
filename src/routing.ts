@@ -18,7 +18,7 @@
 import { db, J, parse } from './db.ts';
 import { StudioError } from './config.ts';
 import { TIERS, type Tier, type Effort } from './tuning.ts';
-import { brainSettings } from './brains.ts';
+import { brainSettings, HARNESS_IDS } from './brains.ts';
 
 db.exec(`CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated INTEGER NOT NULL, by TEXT)`);
 db.exec(`CREATE TABLE IF NOT EXISTS routing_premium (subject TEXT PRIMARY KEY, tier TEXT NOT NULL, by TEXT, words TEXT, at INTEGER NOT NULL, used INTEGER NOT NULL DEFAULT 0)`);
@@ -50,9 +50,9 @@ export const RULES: Rule[] = [
   { id: 'tests_from_spec', label: 'Tests from a spec', tier: 'fast', effort: 'medium', escalate: 'standard',
     re: /\b(write (unit |more )?tests|add (unit |more )?tests|test coverage|cover (the |these |all )?(cases|edge cases)|playtest scenario for)\b/i },
   { id: 'small_isolated_edit', label: 'Small isolated edit (typo, wording, a value, one file)', tier: 'fast', effort: 'low', escalate: 'standard',
-    re: /\b(typo|spelling|misspel|wording|reword|copy change|change the (text|label|title|wording|colou?r|font|link)|rename (the|a|this) \w+$|one[- ]line|single file|bump (the )?version|tweak (the )?(colou?r|size|padding|margin|speed|value|number)|(colou?r|font size|padding|margin|z-index) of|broken link|alt text|favicon)\b/i },
+    re: /\b(typo|spelling|misspel|wording|reword|copy change|change the (text|label|title|wording|colou?r|font|link)|rename (the|a|this) \w+$|one[- ]line (fix|change|edit|tweak)|single file|bump (the )?version|tweak (the )?(colou?r|size|padding|margin|speed|value|number)|(colou?r|font size|padding|margin|z-index) of|broken link|alt text|favicon)\b/i },
   { id: 'lookup_or_explain', label: 'Lookup or explanation', tier: 'fast', effort: 'low', escalate: 'standard',
-    re: /^\s*(what does|explain|which api|where (is|does)|why does|how does|what is)\b/i },
+    re: /^\s*(what does|explain|which api|where (is|are|does|do)|why does|how does|what is|is there|are there|do we (have|use)|does (the|it|this|our))\b/i },
   { id: 'planning', label: 'Planning or design (scope, architecture, trade-offs)', tier: 'standard', effort: 'high', escalate: 'deep',
     re: /\b(plan (out|the)|scope (out|the)|architecture|design (doc|the system)|how should we|trade-?offs?|not sure whether|options for)\b/i },
   { id: 'content', label: 'Content (story, lines, levels, characters) checked against canon', tier: 'standard', effort: 'medium', escalate: 'deep', re: null },
@@ -118,7 +118,7 @@ export type RoutingSettings = {
   maxEscalations: number;
   /** The highest tier a route reaches by itself (never max: J asks for that). */
   ceiling: 'standard' | 'deep';
-  /** Automatic deep passes a day; past it, routes stay on standard with more effort. 0: no automatic deep at all. */
+  /** Automatic deep passes a day on each provider; past it, that provider's routes stay on standard with more effort. 0: no automatic deep at all. */
   deepPerDay: number;
   /** Hours after the harness hit a usage limit that automatic routes stay on standard or below. 0: off. */
   conserveHours: number;
@@ -311,7 +311,8 @@ export function routeFor(input: RouteInput, s: RoutingSettings = routingSettings
   let capped: string | null = null;
   if (tier === 'deep') {
     const conserve = input.conserve ?? conserving(s, Date.now(), input.harness);
-    const deepToday = input.deepToday ?? deepPassesToday();
+    // Per provider: each subscription has its own limits, so Claude's Opus passes don't use up Copilot's budget.
+    const deepToday = input.deepToday ?? deepPassesToday(Date.now(), input.harness);
     if (conserve) capped = `conserving usage (a usage limit in the last ${s.conserveHours} h)`;
     else if (deepToday >= s.deepPerDay) capped = `the day's ${s.deepPerDay} automatic deep passes are used`;
     if (capped) {
@@ -341,10 +342,12 @@ const dayStart = (now = Date.now()) => {
   return d.getTime();
 };
 
-/** Automatic (not J's premium) deep passes today, from the pass ledger. */
-export function deepPassesToday(now = Date.now()) {
+/** Automatic (not J's premium) deep passes today, from the pass ledger: on one provider when it's given, else all. */
+export function deepPassesToday(now = Date.now(), harness?: string | null) {
   try {
-    const r = db.prepare(`SELECT COUNT(*) AS n FROM pass_ledger WHERE at >= ? AND tier = 'deep' AND (premium IS NULL OR premium = '')`).get(dayStart(now)) as { n: number };
+    const r = (harness
+      ? db.prepare(`SELECT COUNT(*) AS n FROM pass_ledger WHERE at >= ? AND tier = 'deep' AND (premium IS NULL OR premium = '') AND harness = ?`).get(dayStart(now), harness)
+      : db.prepare(`SELECT COUNT(*) AS n FROM pass_ledger WHERE at >= ? AND tier = 'deep' AND (premium IS NULL OR premium = '')`).get(dayStart(now))) as { n: number };
     return r.n;
   } catch {
     return 0;
@@ -416,12 +419,34 @@ export function routingUsage(days = 7, now = Date.now(), tierOf: (m: string) => 
     try { for (const r of db.prepare('SELECT cost FROM scouts WHERE created >= ?').all(since) as any[]) add('fast', r.cost, 'passes'); } catch { /* no scouts yet */ }
   }
   const total = Object.values(by).reduce((n, v) => n + v.usage, 0);
+  return { days, total: Math.round(total * 100) / 100, tiers: tierRows(by, total), providers: providerUsage(since) };
+}
+
+export type ProviderUsage = { harness: string; passes: number; share: number; usage: number; fast: number; standard: number; deep: number; done: number; failed: number; changes: number };
+
+/**
+ * Each provider's share of agent passes (by count: Cursor, Copilot and Antigravity report no cost, so a cost share would
+ * hide them), the tiers it ran, and how its passes ended. The spread across providers, for Settings and studio_routing.
+ */
+export function providerUsage(since: number): ProviderUsage[] {
+  let rows: any[] = [];
+  try {
+    rows = db.prepare(`SELECT COALESCE(harness, 'claude') AS harness, COUNT(*) AS passes, COALESCE(SUM(cost), 0) AS usage,
+      SUM(tier = 'fast') AS fast, SUM(tier = 'standard') AS standard, SUM(tier IN ('deep', 'max')) AS deep,
+      SUM(outcome = 'done') AS done, SUM(outcome IN ('failed', 'harness-stop', 'model-refused')) AS failed, COUNT(DISTINCT change_id) AS changes
+      FROM pass_ledger WHERE at >= ? GROUP BY COALESCE(harness, 'claude') ORDER BY passes DESC`).all(since) as any[];
+  } catch { /* no ledger yet */ }
+  const all = rows.reduce((n, r) => n + r.passes, 0);
+  return rows.map((r) => ({ harness: r.harness, passes: r.passes, share: all ? Math.round((r.passes / all) * 1000) / 10 : 0, usage: Math.round(r.usage * 100) / 100, fast: r.fast ?? 0, standard: r.standard ?? 0, deep: r.deep ?? 0, done: r.done ?? 0, failed: r.failed ?? 0, changes: r.changes }));
+}
+
+function tierRows(by: Record<Tier, { usage: number; passes: number; turns: number }>, total: number) {
   const tiers: TierUsage[] = TIERS.map((t) => {
     const share = total ? Math.round((by[t].usage / total) * 1000) / 10 : 0;
     const [lo, hi] = TARGETS[t];
     return { tier: t, usage: Math.round(by[t].usage * 100) / 100, share, target: TARGETS[t], passes: by[t].passes, turns: by[t].turns, status: !total ? 'ok' : share > hi ? 'over' : share < lo && t !== 'max' ? 'under' : 'ok' };
   });
-  return { days, total: Math.round(total * 100) / 100, tiers };
+  return tiers;
 }
 function defaultTierOf(model: string): Tier | null {
   const m = String(model ?? '').toLowerCase();
@@ -442,6 +467,11 @@ export function routingStatus(now = Date.now()) {
     rules: RULES.map((r) => ({ id: r.id, label: r.label, tier: r.tier, effort: r.effort, escalate: r.escalate })),
     deepToday: deepPassesToday(now),
     conserve: stop ? { since: stop, until: stop + s.conserveHours * 3600_000 } : null,
+    // Per provider: the Opus budget and conserve mode count each subscription on its own.
+    byProvider: HARNESS_IDS.map((h) => {
+      const at = lastUsageStop(s, now, h);
+      return { harness: h, deepToday: deepPassesToday(now, h), conserve: at ? { since: at, until: at + s.conserveHours * 3600_000 } : null };
+    }),
     usage: routingUsage(7, now),
     premium: premiumGrants(10),
   };
