@@ -1264,9 +1264,19 @@ export async function onRepoHook(claims: Record<string, any>, body: any) {
   }
   const trigger: BuildTrigger | null = ref === 'refs/heads/beta' ? 'beta' : /^refs\/tags\/build-/.test(ref) ? 'tag' : null;
   if (!trigger) return null;
+  const golive: string[] = [];
   for (const p of projects) {
     const r = await startBuild(p.id, { trigger, sha, ref: trigger === 'beta' ? 'beta' : ref.replace(/^refs\/tags\//, '') }).catch((e) => { out[p.id] = `not built: ${e.message}`; return null; });
     if (r) out[p.id] = r.id;
+    // Beta moved and nothing builds for it here (Hawkes Studio itself: its own CI deploys it): the go-live policy is
+    // asked now, as a build's end would (2026-11-10: #324 to #327 sat on beta with green CI, because in a customer's
+    // Studio nothing called autoGoLive after a push that builds nothing). It waits for CI on that commit itself (ciOn),
+    // and a later push simply finds beta moved; it never throws.
+    else if (trigger === 'beta' && (!out[p.id] || !buildsOf(p).length)) {
+      if (!buildsOf(p).length) delete out[p.id];
+      golive.push(p.id);
+    }
   }
-  return { ok: true, trigger, runs: out };
+  if (golive.length) void import('./golive-policy.ts').then((G) => Promise.all(golive.map((id) => G.autoGoLive(id, `beta moved to ${sha.slice(0, 7)}`)))).catch(() => {});
+  return { ok: true, trigger, runs: out, ...(golive.length ? { golive } : {}) };
 }
