@@ -54,13 +54,18 @@ jobs:
       - name: Build the image for this commit
         run: node tools/studio-cloudrun/build.mjs --project "$PROJECT" --region "$REGION" --commit "$GITHUB_SHA" --apply
       - name: Deploy it, keeping the previous revision to fall back on
+        env:
+          STARTUP_PROBE: tcpSocket.port=8080,initialDelaySeconds=0,periodSeconds=10,timeoutSeconds=5,failureThreshold=60
         run: |
           prev=$(gcloud run services describe "$SERVICE" --region "$RUN_REGION" --project "$PROJECT" --format='value(status.latestReadyRevisionName)')
           [ -n "$prev" ] || { echo "No $SERVICE service yet: J runs tools/studio-cloudrun/deploy.ps1 for this lane first"; exit 1; }
           prevJob=$(gcloud run jobs describe "$JOB" --region "$RUN_REGION" --project "$PROJECT" --format='value(spec.template.spec.template.spec.containers[0].image)')
           echo "prev=$prev" >> "$GITHUB_ENV"; echo "prevJob=$prevJob" >> "$GITHUB_ENV"
           tag=$(node -e "console.log(require('./.data/cloudrun/studio-image.json').tag)")
-          gcloud run services update "$SERVICE" --image "$tag" --region "$RUN_REGION" --project "$PROJECT" --format=none
+          # The startup probe goes with every deploy: a service made before tools/studio-cloudrun/deploy.mjs set it keeps
+          # Cloud Run's default (one 4 minute try), which a restore of the live database can outlast. Same value as
+          # deploy.mjs STARTUP_PROBE and src/cellrun.ts CELL_STARTUP_PROBE (test/cells.test.ts checks all three).
+          gcloud run services update "$SERVICE" --image "$tag" --startup-probe "$STARTUP_PROBE" --region "$RUN_REGION" --project "$PROJECT" --format=none
           gcloud run jobs update "$JOB" --image "$tag" --region "$RUN_REGION" --project "$PROJECT" --format=none
       - name: Health check (back to the previous revision if it fails)
         run: |
