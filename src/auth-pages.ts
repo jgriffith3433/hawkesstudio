@@ -101,9 +101,20 @@ const meta = (req: http.IncomingMessage) => ({ ip: A.clientIp(req), ua: String(r
 function googleBlock(next: string) {
   const id = googleClientId();
   if (!id) return '';
-  return `<div class="g-tap"><div id="g"></div></div><div class="err" id="gerr" hidden></div>
+  return `<div class="g-tap"><div id="g"></div></div><div class="err" id="gerr" hidden></div><button type="button" id="gbusy" disabled hidden style="margin-top:4px;opacity:.7">Opening Google…</button><button type="button" id="gretry" hidden>Try again</button>
 <script src="https://accounts.google.com/gsi/client?hl=en" async onload="hsGoogle()" onerror="var e=document.getElementById('gerr');e.hidden=false;e.textContent='Google sign-in could not load. Check your connection or blockers, then reload.'"></script>
-<script>function hsGoogle(){var el=document.getElementById('g');var tap=el&&el.parentElement;var w=tap?Math.floor(tap.getBoundingClientRect().width):0;var dark=!window.matchMedia||!window.matchMedia('(prefers-color-scheme: light)').matches;google.accounts.id.initialize({client_id:${JSON.stringify(id)},callback:function(r){fetch('/auth/google',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({credential:r.credential,next:${JSON.stringify(next)}})}).then(function(x){return x.json().then(function(j){if(x.ok)location.href=j.next||'/';else{var e=document.getElementById('gerr');e.hidden=false;e.className=j.waitlist?'ok':'err';e.textContent=j.error||('HTTP '+x.status);}});});}});google.accounts.id.renderButton(el,{theme:dark?'filled_black':'outline',size:'large',text:'continue_with',shape:'pill',locale:'en',width:Math.min(400,Math.max(200,Math.round((w||320)/1.1)))});}</script>
+<script>function hsGoogle(){var el=document.getElementById('g');var tap=el&&el.parentElement;var w=tap?Math.floor(tap.getBoundingClientRect().width):0;var dark=!window.matchMedia||!window.matchMedia('(prefers-color-scheme: light)').matches;var phone=!!(window.matchMedia&&window.matchMedia('(pointer: coarse)').matches);var gerr=document.getElementById('gerr'),busy=document.getElementById('gbusy'),retry=document.getElementById('gretry'),waiting=false,done=false;
+function show(m){waiting=false;busy.hidden=true;tap.hidden=false;gerr.hidden=false;gerr.className='err';gerr.textContent=m;retry.hidden=false;}
+function press(){waiting=true;gerr.hidden=true;retry.hidden=true;tap.hidden=true;busy.hidden=false;}
+retry.onclick=function(){gerr.hidden=true;retry.hidden=true;waiting=false;busy.hidden=true;tap.hidden=false;};
+function back(){if(waiting&&!done)show('The Google window was closed. Try again.');}
+window.addEventListener('focus',function(){if(waiting)setTimeout(back,1200);});
+document.addEventListener('visibilitychange',function(){if(!document.hidden&&waiting)setTimeout(back,1200);});
+var q=new URLSearchParams(location.search).get('gerr');if(q){gerr.hidden=false;gerr.textContent=q;retry.hidden=false;}
+var cfg={client_id:${JSON.stringify(id)},callback:function(r){done=true;fetch('/auth/google',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({credential:r.credential,next:${JSON.stringify(next)}})}).then(function(x){return x.json().then(function(j){if(x.ok)location.href=j.next||'/';else{done=false;if(j.waitlist){waiting=false;busy.hidden=true;tap.hidden=false;gerr.hidden=false;gerr.className='ok';gerr.textContent=j.error;}else show(j.error||('HTTP '+x.status));}});}).catch(function(){done=false;show('Could not reach Studio. Try again.');});}};
+if(phone){cfg.ux_mode='redirect';cfg.login_uri=location.origin+'/auth/google?next='+encodeURIComponent(${JSON.stringify(next)});}
+google.accounts.id.initialize(cfg);
+google.accounts.id.renderButton(el,{theme:dark?'filled_black':'outline',size:'large',text:'continue_with',shape:'pill',locale:'en',width:Math.min(400,Math.max(200,Math.round((w||320)/1.1))),click_listener:press});}</script>
 <details style="margin-top:10px"><summary><small>Sign in with a password instead</small></summary>`;
 }
 
@@ -246,7 +257,9 @@ export async function handleAuthRoute(req: http.IncomingMessage, res: http.Serve
     }
     return true;
   }
-  if (method === 'POST' && !sameSite(req)) {
+  // GIS redirect mode posts from accounts.google.com; its own g_csrf_token cookie check below protects that route.
+  const fromGoogle = route === '/auth/google' && String(req.headers.origin ?? '') === 'https://accounts.google.com';
+  if (method === 'POST' && !fromGoogle && !sameSite(req)) {
     json(res, 403, { error: 'That form came from another site.' });
     return true;
   }
@@ -273,6 +286,19 @@ export async function handleAuthRoute(req: http.IncomingMessage, res: http.Serve
   }
   if (route === '/auth/google' && method === 'POST') {
     const f = await form(req);
+    // GIS redirect mode (phones): Google posts the credential as a form with its csrf token in a cookie too.
+    if (f.g_csrf_token) {
+      const ck = /(?:^|;\s*)g_csrf_token=([^;]+)/.exec(String(req.headers.cookie ?? ''))?.[1];
+      const to = A.safeNext(url.searchParams.get('next'));
+      try {
+        if (!ck || ck !== f.g_csrf_token) throw new StudioError('Sign-in could not be checked. Try again.');
+        const u = A.googleUser(await verifyGoogleProfile(String(f.credential ?? '')), meta(req));
+        redirect(res, to, { 'Set-Cookie': signedInCookie(req, u, true, 'google') });
+      } catch (e: any) {
+        redirect(res, `/auth/signin?next=${encodeURIComponent(to)}&gerr=${encodeURIComponent(e.message ?? 'Sign-in failed. Try again.')}`);
+      }
+      return true;
+    }
     let profile: Awaited<ReturnType<typeof verifyGoogleProfile>> | null = null;
     try {
       profile = await verifyGoogleProfile(String(f.credential ?? ''));
