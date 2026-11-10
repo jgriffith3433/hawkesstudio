@@ -247,6 +247,11 @@ export type JobRunner = {
   /** null: Cloud Run doesn't know it (any more). started: Cloud Run began running it (false: still waiting for room). */
   state(execution: string): Promise<{ done: boolean; message: string; started?: boolean } | null>;
   cancel(execution: string): Promise<void>;
+  /**
+   * When anything under this prefix was last written (ms), or null when nothing is there. Optional (a runner without it
+   * counts a reattached job's old output as written when Studio started following it again).
+   */
+  lastWrite?(prefix: string): Promise<number | null>;
 };
 
 /**
@@ -283,6 +288,10 @@ export function cloudRunner(): JobRunner {
     }),
     state: async (execution) => (await g()).getExecution(execution),
     cancel: async (execution) => (await g()).cancelExecution(execution),
+    lastWrite: async (prefix) => {
+      const t = (await (await g()).gcsList(bucket, at(prefix))).map((o) => Date.parse(String(o.updated))).filter((n) => Number.isFinite(n));
+      return t.length ? Math.max(...t) : null;
+    },
   };
 }
 
@@ -298,7 +307,7 @@ const key = (unit: string, name: string) => `jobs/${unit}/${name}`;
 
 type Spec = { file: string; args: string[]; cwd: string; env: NodeJS.ProcessEnv };
 /** kick: read the bucket now (a nudge came); pushed: nudges have come for this job, so the timed look is a safety net. */
-type Follow = { unit: string; execution: string | null; seen: { log: number; err: number }; done: boolean; error?: string; stopAsked?: number; kick?: (nudged: boolean) => void; pushed?: boolean };
+type Follow = { unit: string; execution: string | null; seen: { log: number; err: number }; done: boolean; reattached?: boolean; error?: string; stopAsked?: number; kick?: (nudged: boolean) => void; pushed?: boolean };
 const follows = new Map<string, Follow>();
 /** How many jobs Studio is following now (cloudhost.ts keeps the instance up while there are any). */
 export const following = () => [...follows.values()].filter((f) => !f.done).length;
@@ -431,7 +440,7 @@ async function gitRefresh(unit: string, remote: string): Promise<{ refresh?: { u
 /** After a Studio restart: follows a job started before it (the execution's name is in the bucket). */
 export function reattachCloudJob(unit: string, cwd: string, env: NodeJS.ProcessEnv = process.env) {
   if (follows.has(unit) || fs.existsSync(local(unit, 'exit')) || fs.existsSync(local(unit, 'gone'))) return;
-  const f: Follow = { unit, execution: null, seen: { log: 0, err: 0 }, done: false };
+  const f: Follow = { unit, execution: null, seen: { log: 0, err: 0 }, done: false, reattached: true };
   follows.set(unit, f);
   fs.mkdirSync(DIR(), { recursive: true, mode: 0o700 });
   // The local mirror starts again from the first chunk (a new instance has none; an old one rewrites what it had).
@@ -569,6 +578,8 @@ function follow(f: Follow, cwd: string, env: NodeJS.ProcessEnv, every = Number(p
   /** When new output last came (or following began), for JOB_SILENT_MS; and whether any came at all. */
   let heardAt = since;
   let heard = false;
+  /** The first look of a job followed again after a restart: what it pulls is old output (see look). */
+  let catchUp = Boolean(f.reattached);
   let timer: NodeJS.Timeout | null = null;
   let busy = false;
   let again = false;
@@ -586,7 +597,16 @@ function follow(f: Follow, cwd: string, env: NodeJS.ProcessEnv, every = Number(p
       if (f.stopAsked && f.execution && Date.now() - f.stopAsked > 20_000) await r.cancel(f.execution);
       const was = f.seen.log + f.seen.err;
       const names = await pull(f, r);
-      if (f.seen.log + f.seen.err > was) { heardAt = Date.now(); heard = true; }
+      if (catchUp) {
+        // Followed again after a restart: the first pull replays everything the job ever wrote. That is not new output,
+        // so its silence counts from when the job last wrote, not from now. (On 2026-11-10 an agent job silent since
+        // 18:26 looked fresh after each of five deploys in an hour and held its slot; JOB_SILENT_MS never came.)
+        catchUp = false;
+        if (f.seen.log + f.seen.err > was) {
+          heard = true;
+          heardAt = (await r.lastWrite?.(key(f.unit, 'out/')).catch(() => null)) ?? since;
+        }
+      } else if (f.seen.log + f.seen.err > was) { heardAt = Date.now(); heard = true; }
       if (names.includes('exit.json')) {
         await finish(f, r, cwd, env);
         return true;
