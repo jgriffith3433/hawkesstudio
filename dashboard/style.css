@@ -317,6 +317,11 @@ body.in-call .talk-input, body.in-call .talk-files, body.in-call #notifyBox { di
 .act-bar.failed > span { background: var(--red); }
 .act-log pre { max-height: 220px; overflow: auto; font-size: 11px; white-space: pre-wrap; }
 .act-none { padding: 0 2px 4px; }
+/* Failures that came in since the panel was last opened; Clear finished / Show cleared (activity-seen.ts). */
+.act-item.act-new { border-color: var(--red); }
+.act-new-pill { background: var(--red); color: #fff; border-color: var(--red); }
+.act-clearbar { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0 2px; }
+@media (max-width: 760px) { .act-clear { min-height: 40px; padding: 6px 12px; } }
 .act-frames { margin-top: 4px; }
 .act-frames > summary { cursor: pointer; padding: 2px 0; }
 .fr-slot { margin: 6px 0; }

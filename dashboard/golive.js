@@ -193,7 +193,7 @@ if (typeof document !== 'undefined') (() => {
     const lastLive = Math.max(p.previous[0]?.at ?? 0, p.main ? Date.parse(p.main.date) : 0) || null;
     const groups = {};
     for (const c of [...p.commits, ...site(p)]) (groups[who(c)] ??= []).push(c);
-    const run = liveOps(p.product).filter((o) => o.status === 'queued' || o.status === 'running');
+    const run = liveOps(p.product).filter((o) => o.status === 'queued' || o.status === 'running' || o.status === 'waiting');
     const last = liveOps(p.product).find((o) => o.status === 'done' || o.status === 'failed');
     const recent = last && Date.now() - (last.finished ?? last.created) < 6 * 3600_000 ? last : null;
     const canRoll = p.previous.some((d) => d.kind === 'deploy' && !d.rolledBack);
@@ -224,10 +224,10 @@ if (typeof document !== 'undefined') (() => {
       ${(p.buildRunning ?? []).map((r) => BuildFail.running(p.product, r)).join('')}
       ${(p.buildFailing ?? []).map((f) => BuildFail.badge(p.product, f)).join('')}
       ${(p.buildDone ?? []).map((d) => BuildFail.done(p.product, d)).join('')}
-      ${run.map((o) => `<div class="gl-busy">⏳ ${esc(o.title)}${o.status === 'queued' ? ' (waiting its turn)' : o.step ? `: ${esc(o.step)}` : '…'}</div>`).join('')}
+      ${run.map((o) => `<div class="gl-busy">⏳ ${esc(o.title)}${o.status === 'waiting' ? `: ${esc(o.step ?? 'waiting for beta\'s playtest')}` : o.status === 'queued' ? ' (waiting its turn)' : o.step ? `: ${esc(o.step)}` : '…'}</div>`).join('')}
       ${fixRunning && !run.length && fx && !fx.done && !fx.error && !buildGoing ? `<div class="gl-busy">⏳ ${esc(FIX[fx.action].busy)}${fx.step ? `: ${esc(fx.step)}` : '…'}</div>` : ''}
       ${!showFx ? '' : fx.error ? `<div class="gl-done gl-fail">❌ ${esc(FIX[fx.action].label)} failed ${esc(ago(fx.errorAt))}: ${esc(String(fx.error).slice(0, 300))}</div>` : `<div class="gl-done">${fx.done.ok ? `✅ ${esc(FIX[fx.action].label)} finished ${esc(ago(fx.done.at))}${fxRun}` : `<span class="gl-fail">❌ ${esc(FIX[fx.action].label)} failed ${esc(ago(fx.done.at))}: ${esc(String(fx.done.detail ?? '').slice(0, 300))}</span>${fxRun}`}</div>`}
-      ${!run.length && recent ? `<div class="gl-done">${recent.status === 'done' ? `✅ ${esc(recent.kind === 'rollback' ? 'Rolled back' : 'Went live')} ${esc(ago(recent.finished))}${recent.result?.skippedPlaytest ? ` without a playtest (${esc(recent.result.skippedPlaytest.by)})` : ''}${recent.result?.release ? ` · v${esc(recent.result.release.version)}: ${esc(recent.result.release.title ?? '')}` : ''}` : `❌ ${esc(recent.title)} failed ${esc(ago(recent.finished))}: ${esc(String(recent.error ?? '').slice(0, 200))}`}</div>` : ''}
+      ${!run.length && recent ? `<div class="gl-done">${recent.status === 'done' ? `✅ ${esc(recent.kind === 'rollback' ? 'Rolled back' : recent.result?.nothing ? 'Already live' : 'Went live')} ${esc(ago(recent.finished))}${recent.result?.skippedPlaytest ? ` without a playtest (${esc(recent.result.skippedPlaytest.by)})` : ''}${recent.result?.release ? ` · v${esc(recent.result.release.version)}: ${esc(recent.result.release.title ?? '')}` : ''}` : `❌ ${esc(recent.title)} failed ${esc(ago(recent.finished))}: ${esc(String(recent.error ?? '').slice(0, 200))}`}</div>` : ''}
       ${p.players ? `<div class="gl-players meta" title="Real players on the live site (Hawkes Analytics; bots and your own devices left out)">👥 ${esc(p.players)}</div>` : ''}
       ${up && p.release ? `<div class="gl-release meta">${p.release.existing ? 'What\'s new (already on beta, kept)' : 'Releases'} v${esc(p.release.version)}: ${esc(p.release.title ?? '(the notes are being written)')}${p.release.notes?.length ? `<ul>${p.release.notes.map((x) => `<li>${esc(x)}</li>`).join('')}</ul>` : ''}</div>` : ''}
       ${Object.entries(groups).map(([g, cs]) => `<div class="gl-group"><b>${esc(g)} (${cs.length})</b><ul>${cs.slice(0, 6).map((c) => `<li>${esc(plain(c.title))}</li>`).join('')}${cs.length > 6 ? `<li class="meta">and ${cs.length - 6} more</li>` : ''}</ul></div>`).join('')}
@@ -270,7 +270,7 @@ if (typeof document !== 'undefined') (() => {
   }
 
   /** Products whose card shows a fix button and isn't running one. */
-  const blockedNow = () => products.map((x) => plans.get(x.id)).filter((p) => p && !p.error && p.beta && p.fix && FIX[p.fix] && light(p).color === 'red' && !liveOps(p.product).some((o) => o.status === 'queued' || o.status === 'running'))
+  const blockedNow = () => products.map((x) => plans.get(x.id)).filter((p) => p && !p.error && p.beta && p.fix && FIX[p.fix] && light(p).color === 'red' && !liveOps(p.product).some((o) => o.status === 'queued' || o.status === 'running' || o.status === 'waiting'))
     .filter((p) => { const f = fixing.get(p.product); return !f || f.done || f.error; });
 
   /** Starts the beta step that clears a product's blockers; the card follows its run. Never goes live. */
@@ -357,10 +357,10 @@ if (typeof document !== 'undefined') (() => {
 
   async function loadOps() {
     const [o, a] = await Promise.all([api('/api/ops?limit=60'), approvals.call('/api/approvals?pending=1').catch(() => ({ approvals: [] }))]);
-    const before = JSON.stringify(ops.filter((x) => x.status === 'queued' || x.status === 'running').map((x) => x.id));
+    const before = JSON.stringify(ops.filter((x) => x.status === 'queued' || x.status === 'running' || x.status === 'waiting').map((x) => x.id));
     ops = o.ops;
     pending = a.approvals.filter((x) => x.status === 'pending');
-    const now = JSON.stringify(ops.filter((x) => x.status === 'queued' || x.status === 'running').map((x) => x.id));
+    const now = JSON.stringify(ops.filter((x) => x.status === 'queued' || x.status === 'running' || x.status === 'waiting').map((x) => x.id));
     return before !== now; // something started or finished: the plans moved
   }
   // Each card's plan loads on its own: one slow plan (a repo busy pushing a big build) never holds the others, the

@@ -5,7 +5,7 @@
 //   GPU budgets content tasks that wait for J to approve a budget (roadmap.ts tasksAwaitingGpu)
 //   merges      ready changes only J may merge: Studio and Gen (into main, which deploys), changes the PM doesn't
 //               review (J's own requests, work from before the loop), everything while delegated merges are off
-//   milestones  reached: every task merged and built on beta, its criteria judged by one beta playtest; J's turn to playtest (with the beta link)
+//   (milestones reached: no card since 2026-11-10, J's word; the Roadmap shows them)
 //
 // Each card says what it blocks and since when, who asked and what they recommend, with options, a free-text answer and
 // links. Cards are sorted by what they block most. Answering routes the way it always did (an agent resumes, the PM's
@@ -21,7 +21,7 @@ import { fixerNow, latestChain, attemptsText, type FixerNow } from './buildfix.t
 import { openAccess, recheckAccess, accessLinks, accessGroups, type AccessRow } from './buildaccess.ts';
 import { failingBuilds, failSignature, lastBuilds } from './buildfail.ts';
 import {
-  listQuestions, getQuestion, setQuestion, answeredSince, getTask, getItem, getMilestone, listMilestones, milestoneProgress, milestoneTasks, tasksAwaitingGpu,
+  listQuestions, getQuestion, setQuestion, answeredSince, getTask, getItem, getMilestone, milestoneProgress, tasksAwaitingGpu,
   approveGpu, updateTask, estimateTask, addComment, gpuBudgetFor, gpuAutoApprovedToday, gpuDigestTasks, type Question, type Task,
 } from './roadmap.ts';
 import { walkAwayOn, walkAwaySettings, gpuAutoApproveLimit } from './walkaway.ts';
@@ -473,30 +473,9 @@ export async function inbox({ tokens = false }: { tokens?: boolean } = {}): Prom
     });
   }
 
-  for (const m of listMilestones({ status: 'reached' })) {
-    const key = `milestone:${m.id}:${m.reached_at ?? 0}`;
-    if (acked(key)) continue;
-    const p = milestoneProgress(m.id);
-    // Live, or done by hand (not consumed: done because its tasks were created, which is still to playtest).
-    if (p.items.length && p.items.every((i) => i.state === 'live' || (i.status === 'done' && !i.consumed))) continue;
-    const products = [...new Set(p.items.map((i) => i.product))];
-    const beta = products.map((x) => betaLink(x)).filter(Boolean) as string[];
-    // Reached with criteria still missed (only after its tries, pm.ts milestoneCheck): the card says what's left.
-    const left = milestoneTasks(m.id).flatMap((t) => (t.checks?.where === 'beta' ? t.checks.results : [])).filter((r) => r.met !== 'yes');
-    out.push({
-      id: `milestone:${m.id}`, kind: 'milestone', title: left.length ? `Milestone "${m.title}": ${left.length} criteria still not met on beta after its tries. Playtest it?` : `Milestone reached: "${m.title}". Playtest it?`,
-      text: left.length ? `What's left: ${left.map((r) => `${r.criterion} (${r.met}${r.evidence ? `: ${r.evidence}` : ''})`).join('; ')}`.slice(0, 1500) : null,
-      product: m.product ?? (products.length === 1 ? products[0] : null), productName: name(m.product ?? (products.length === 1 ? products[0] : null)),
-      context: `${p.done}/${p.total} items on beta (every task merged and built)${(() => {
-        // The milestone's beta playtest (pm.ts milestoneCheck): how many of its tasks' criteria it saw met.
-        const results = milestoneTasks(m.id).flatMap((t) => (t.checks?.where === 'beta' ? t.checks.results : []));
-        return results.length ? `; beta's playtest: ${results.filter((r) => r.met === 'yes').length} of ${results.length} criteria met` : '';
-      })()}: ${p.items.map((i) => i.title).join(' · ')}${m.test ? `. You said you'd test: ${m.test}` : ''}`,
-      asker: 'Studio PM', recommendation: 'Playtest it on beta', options: ['Go live', 'Something is wrong', 'Later'],
-      blocks: `going live with ${p.total} item(s)`, since: m.reached_at ?? m.created, weight: 35,
-      links: [...beta.map((url) => ({ label: 'Play it on beta', url })), { label: 'What to test', url: '#ready' }], subject: m.id, conversation: m.origin, asks: 1,
-    });
-  }
+  // No card for a milestone reached (J, 2026-11-10: "Remove the notification in the inbox for when milestones are
+  // reached"): its progress is on the Roadmap, and going live follows the project's go-live policy. Answers to an older
+  // milestone:n_ card still work (answer() below).
 
   // What blocks most first; the age of a wait counts too (a day adds as much as a task waiting behind it).
   const score = (x: InboxItem) => x.weight + Math.min((Date.now() - x.since) / HOUR, 96) / 2.4;
