@@ -48,6 +48,20 @@ type CiRun = { name: string; status: string; conclusion: string | null };
 export const goLiveCi: { list?: (slug: string, sha: string) => Promise<CiRun[] | null> } = {};
 
 /**
+ * Which of a commit's workflow runs are its CI: push runs, and workflow_dispatch runs (the auto-merge starts beta's Deploy
+ * with workflow_dispatch, since a merge made with a workflow's token starts no push run), but never Studio's own hook
+ * (hawkes-studio.yml), the CI-ended relay (beta-ci-ended.yml, which is still running when it tells Studio) or an operator
+ * workflow (ops-*.yml: logs, health, admin, secrets), all dispatched on beta's commit too. 2026-11-10 22:57: an ops-logs
+ * run that failed on 4da1bb5 read as "CI on 4da1bb5 didn't pass" and that commit never went live.
+ */
+export function ciRunsOf(runs: any[]): CiRun[] {
+  return runs
+    .filter((x) => ['push', 'workflow_dispatch'].includes(String(x.event)))
+    .filter((x) => !/(^|\/)(hawkes-studio|beta-ci-ended|ops-[\w.-]*)\.ya?ml$/i.test(String(x.path ?? '')) && !/hawkes-studio/i.test(String(x.name ?? '')))
+    .map((x) => ({ name: String(x.name), status: String(x.status), conclusion: x.conclusion ?? null }));
+}
+
+/**
  * CI on one commit (every push workflow run for it, Studio's own hook aside), waited for while it runs: a deploy on
  * GitHub's runners has no callback to Studio, so this looks every 20 s for at most `maxMs`, as verifyLive does. Green:
  * every run completed as success or skipped, and at least one ran.
@@ -60,7 +74,7 @@ export async function ciOn(slug: string, sha: string, { maxMs = 40 * 60_000, eve
     const j: any = r?.ok ? await r.json() : null;
     // Beta's CI is its Deploy run (ci.yml: build, deploy, health check; no tests on GitHub, J 2026-10-25). The auto-merge
     // starts it with workflow_dispatch, since a merge made with a workflow's token starts no push run: count both.
-    return j ? (j.workflow_runs ?? []).filter((x: any) => ['push', 'workflow_dispatch'].includes(String(x.event)) && !/hawkes-studio/i.test(`${x.name} ${x.path}`)).map((x: any) => ({ name: String(x.name), status: String(x.status), conclusion: x.conclusion ?? null })) : null;
+    return j ? ciRunsOf(j.workflow_runs ?? []) : null;
   });
   const end = Date.now() + maxMs;
   for (;;) {

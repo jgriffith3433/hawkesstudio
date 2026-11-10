@@ -3,19 +3,23 @@
 # nothing: on 2026-11-10 (21:42 to 21:48) Studio restarted four times while it waited up to 40 minutes in memory for
 # CI, and nothing went live.
 #
-# It runs once the Deploy run is complete (a step inside that run would still see it running), and it starts the same
-# hook a push to beta does (hawkes-studio.yml on beta), so Studio hears it the way it hears beta moving. GitHub runs
-# workflow_run workflows from the default branch: this takes effect once it is on main.
+# Started by the Deploy run's last job (ci.yml "ended") with that run's id. It waits the few seconds until that run is
+# complete (Studio reads the run's conclusion, and a job inside the run would still see it running), then starts the
+# same hook a push to beta does (hawkes-studio.yml on beta), so Studio hears it the way it hears beta moving. It used to
+# be a workflow_run trigger, which never fired: beta's Deploy runs are started by GITHUB_TOKEN, and GitHub starts no
+# workflow from a GITHUB_TOKEN run's events; workflow_dispatch is the exception.
 name: Beta CI ended
 on:
-  workflow_run:
-    workflows: [Deploy]
-    types: [completed]
-    branches: [beta]
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: the Deploy run on beta that is ending
+        type: string
+        required: true
 permissions:
   actions: write
 concurrency:
-  group: beta-ci-ended
+  group: beta-ci-ended-${{ inputs.run_id }}
   cancel-in-progress: false
 jobs:
   tell:
@@ -25,4 +29,8 @@ jobs:
       - name: Tell Hawkes Studio that beta's CI ended
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh workflow run hawkes-studio.yml --repo "${{ github.repository }}" --ref beta
+          RUN_ID: ${{ inputs.run_id }}
+        run: |
+          [[ "$RUN_ID" =~ ^[0-9]+$ ]] || { echo "run_id must be a run id"; exit 1; }
+          gh run watch "$RUN_ID" --repo "$GITHUB_REPOSITORY" --interval 5 > /dev/null || true
+          gh workflow run hawkes-studio.yml --repo "$GITHUB_REPOSITORY" --ref beta

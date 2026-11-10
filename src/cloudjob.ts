@@ -622,6 +622,9 @@ function follow(f: Follow, cwd: string, env: NodeJS.ProcessEnv, every = Number(p
         const st = await r.state(f.execution);
         if (st && !st.done && !heard && st.started === false && Date.now() - since > JOB_START_MS()) {
           dropJob(f, `the Cloud Run job never started in ${Math.round((Date.now() - since) / 60_000)} min (Cloud Run had no room for it): starting it again`);
+          // No room is the region's CPU quota (agent jobs, builds and Gen share it): the owner gets one Approve card to
+          // raise it, filed with Google on the tap (quota.ts), instead of jobs waiting on it forever.
+          void import('./quota.ts').then((q) => q.askCpuForJobs(Math.round((Date.now() - since) / 60_000), st.message)).catch(() => {});
           return true;
         }
         if (st && !st.done && Date.now() - heardAt > JOB_SILENT_MS()) {
