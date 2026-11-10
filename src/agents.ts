@@ -652,6 +652,8 @@ export type Phase = {
   revived?: boolean;
   /** Whole-run retries after a Studio checkout failure in prepare (AUTO_RETRIES at most): Studio tries again by itself. */
   autoRetry?: number;
+  /** Queued again to try by itself (endPass): not started before this time; the queue's own timer (pumpAt) wakes it. */
+  notBefore?: number;
 };
 
 /**
@@ -2022,6 +2024,8 @@ function resumeAllowed(c: Change, free: () => Harness | null = freeHarness) {
   // Parked after failing again and again, or woken and at the end of its product's line (queue-heal.ts): not this pass.
   if (queueHold(c)) return false;
   const ph = phaseOf(c.id);
+  // Queued to try again by itself (endPass): not before its time; the queue's one timer wakes it then.
+  if (ph?.notBefore && !ph.failed && ph.notBefore > Date.now()) { pumpAt(ph.notBefore + 50); return false; }
   const h = ph?.harness;
   // Parked by one provider and another answers now (providers.ts, or a stand-in): it moves there at once. The gap and
   // the cap are for resuming on the provider that just stopped it.
@@ -2261,8 +2265,10 @@ async function pumpPass() {
     // Back from waiting on Gen: its own session continues with the jobs' results (same worktree, same branch).
     const ph = phaseOf(c.id);
     // Back from a harness hold: the same, from the step it parked at (harnessResume).
-    const back = (ph?.genDone || ph?.harness) && !ph.failed ? ph : null;
-    if (back) update(c.id, { status: 'working', detail: ph!.harness ? `${brainLabel()} carries on after the harness hold` : `its Gen jobs finished: ${brainLabel()} continues with them` });
+    // Queued to try again by itself (endPass): from its recorded phase.
+    const back = (ph?.genDone || ph?.harness || ph?.notBefore) && !ph.failed ? ph : null;
+    if (back?.notBefore) delete back.notBefore;
+    if (back) update(c.id, { status: 'working', detail: ph!.harness ? `${brainLabel()} carries on after the harness hold` : ph!.genDone ? `its Gen jobs finished: ${brainLabel()} continues with them` : 'trying the run again (Studio tries it by itself)' });
     // After a restart the map is empty: a change still queued for another pass takes its newest note.
     const note = reviseNotes.get(c.id) ?? (c.detail === 'queued for another pass' ? c.notes.at(-1)?.text : undefined);
     reviseNotes.delete(c.id);
@@ -2781,15 +2787,17 @@ async function workPass(id: string, note?: string, answer?: string, resumed?: Ph
     // again by itself, twice, after a wait, before leaving it failed (the PM's backoff and Studio blocker take over).
     const tried = ph.autoRetry ?? 0;
     if (ph.step === 'prepare' && tried < AUTO_RETRIES && checkoutFailure(String(e.message)) && getChange(id)?.status !== 'cancelled') {
-      addLog(id, `Studio's checkout failed (${String(e.message).slice(0, 200)}): trying the whole run again by itself in ${Math.round(AUTO_RETRY_WAIT_MS[tried] / 1000)} s (${tried + 1} of ${AUTO_RETRIES}; not a try)`);
-      await new Promise((r) => setTimeout(r, AUTO_RETRY_WAIT_MS[tried]));
-      if (getChange(id)?.status === 'cancelled') return;
-      return work(id, note, answer, { step: 'prepare', note, answer, since: Date.now(), autoRetry: tried + 1 }, true);
+      // Back in the queue to try again, not a wait inside the pass: the slot is free meanwhile.
+      const wait = AUTO_RETRY_WAIT_MS[tried];
+      return endPass(id, {
+        detail: `queued: Studio's checkout failed; it tries the run again by itself (${tried + 1} of ${AUTO_RETRIES})`,
+        phase: { step: 'prepare', note, answer, since: Date.now(), autoRetry: tried + 1 }, retryAt: Date.now() + wait,
+        log: `Studio's checkout failed (${String(e.message).slice(0, 200)}): trying the whole run again by itself in ${Math.round(wait / 1000)} s (${tried + 1} of ${AUTO_RETRIES}; not a try)`,
+      });
     }
     // update() opens the bugs it still holds again (reopenTaken); ones triaged while it ran stay as they are.
     const tail = ph.step === 'prepare' && tried ? ` (Studio already tried the run again ${tried}×; the PM tries it again later)` : '';
-    update(id, { status: 'failed', detail: (String(e.message).slice(0, 300 - tail.length) + tail), phase: { step: ph.step, jobs: ph.jobs, failed: true } });
-    await endChangeDisk(id);
+    await endPass(id, { detail: String(e.message).slice(0, 300 - tail.length) + tail, phase: { step: ph.step, jobs: ph.jobs, failed: true } });
   }
 }
 
@@ -3425,8 +3433,7 @@ async function workInfra(id: string, note?: string, resumed?: Phase | null, nudg
   } catch (e: any) {
     if (e instanceof PassAbandoned) throw e;
     addLog(id, `error: ${e.message}`);
-    update(id, { status: 'failed', detail: String(e.message).slice(0, 300), phase: { step: ph.step, failed: true } });
-    await endChangeDisk(id);
+    await endPass(id, { detail: String(e.message), phase: { step: ph.step, failed: true } });
   }
 }
 
@@ -4570,6 +4577,31 @@ async function endChangeDisk(id: string) {
 }
 
 /**
+ * The one way a pass on a change ends when it can't carry on: work()'s failure, the infra pass's, a resume that couldn't
+ * carry on after a restart, the stuck watch giving up, and a restart loop. Owned by the pass that failed, so nothing else
+ * has to come and find it.
+ *   - retryAt: Studio tries the change again by itself. It goes back in the queue with its phase, holding no slot and no
+ *     disk meanwhile, and the queue's one timer (pumpAt) starts it at that time.
+ *   - otherwise it ends failed with why (the PM's own backoff takes it from there, pm.ts afterFailed).
+ * Either way its worktree is freed (its commits are on its branch, savework.ts) and the queue looks again for the slot
+ * it let go of. Before this each of those five places set the status itself, and three left the worktree on disk.
+ */
+export async function endPass(id: string, o: { detail: string; phase?: Phase | null; retryAt?: number; log?: string }) {
+  if (o.log) addLog(id, o.log);
+  const c = getChange(id);
+  if (!c || ['cancelled', 'closed', 'merged'].includes(c.status)) return;
+  if (o.retryAt && o.phase) {
+    update(id, { status: 'queued', detail: o.detail.slice(0, 300), phase: { ...o.phase, notBefore: o.retryAt, proc: undefined } });
+    await endChangeDisk(id);
+    pumpAt(o.retryAt);
+    return;
+  }
+  update(id, { status: 'failed', detail: o.detail.slice(0, 300), phase: o.phase === undefined ? { step: phaseOf(id)?.step ?? 'prepare', failed: true } : o.phase });
+  await endChangeDisk(id);
+  setImmediate(() => void pump());
+}
+
+/**
  * At most STUDIO_CHECKOUTS (default 2) worktree checkouts and dependency installs at once. Several big ones together
  * (a 1,256-file worktree plus npm ci each) were what the cloud server's memory couldn't hold on 2026-11-01: the git
  * process was killed (signal 9) and Studio restarted. The rest wait their turn; nothing is refused.
@@ -4678,8 +4710,8 @@ function launchResume(c: Change, ph: Phase, wait: number) {
       return work(c.id, undefined, undefined, ph);
     }).catch((e) => {
       if (passGen(c.id) !== gen) return;
-      update(c.id, { status: 'failed', detail: `couldn't carry on after the restart: ${String(e?.message ?? e).slice(0, 200)}`, phase: { ...ph, failed: true } });
       console.warn(`[studio] resume ${c.id}: ${e?.message ?? e}`);
+      return endPass(c.id, { detail: `couldn't carry on after the restart: ${String(e?.message ?? e).slice(0, 200)}`, phase: { ...ph, failed: true } });
     }).finally(() => {
       waitingStart.delete(c.id);
       land();
@@ -4788,8 +4820,7 @@ export function checkStuck(now = Date.now()): StuckAction[] {
         out.push({ id: r.id, step: ph.step, was, idleMin: mins, did: 'ready' });
         continue;
       }
-      update(r.id, { status: 'failed', detail: `stuck: it hung at the ${ph.step} step ${n - 1} times (the PM tries it again)`, phase: { ...ph, failed: true, watch: { step: ph.step, n, at: now } } });
-      addLog(r.id, `watchdog: hung at the ${ph.step} step ${n - 1} times: failed so it starts over (not a try against the work)`);
+      void endPass(r.id, { detail: `stuck: it hung at the ${ph.step} step ${n - 1} times (the PM tries it again)`, phase: { ...ph, failed: true, watch: { step: ph.step, n, at: now } }, log: `watchdog: hung at the ${ph.step} step ${n - 1} times: failed so it starts over (not a try against the work)` });
       out.push({ id: r.id, step: ph.step, was, idleMin: mins, did: 'failed' });
       continue;
     }
@@ -4850,8 +4881,7 @@ export function resumeChanges() {
     if (n > RESTART_LOOP) {
       // Its pull request is already open and the work committed: only the finish was cut off. That is ready, not failed.
       if (carryFinishedToReady(c, ph)) continue;
-      update(c.id, { status: 'failed', detail: `stopped: Studio restarted ${n - 1} times in a row during its ${ph.step} step, so it isn't resumed again (start it again once the cause is fixed)`, phase: { ...ph, failed: true } });
-      addLog(c.id, `stopped after ${n - 1} restarts in a row at the ${ph.step} step`);
+      void endPass(c.id, { detail: `stopped: Studio restarted ${n - 1} times in a row during its ${ph.step} step, so it isn't resumed again (start it again once the cause is fixed)`, phase: { ...ph, failed: true }, log: `stopped after ${n - 1} restarts in a row at the ${ph.step} step` });
       console.warn(`[studio] ${c.id}: stopped after ${n - 1} restarts in a row at ${ph.step}`);
       continue;
     }
