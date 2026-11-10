@@ -71,7 +71,9 @@ export async function diskTop(dirs: { dir: string; depth: number }[] = [{ dir: P
   for (const { dir, depth } of dirs) {
     if (!dir || seen.has(dir) || !fs.existsSync(dir)) continue;
     seen.add(dir);
-    const r = await runLight('du', ['-xm', `--max-depth=${depth}`, dir], { cwd: '/', timeoutMs: 90_000, maxBytes: 4 * 1024 * 1024 });
+    // No -x: on Cloud Run (and this job's overlay) a file written under /tmp often has a different device id than its
+    // parent directory, so `du -x` reported 0 for every folder and the "disk holds" line stayed empty (2026-11-10).
+    const r = await runLight('du', ['-m', `--max-depth=${depth}`, dir], { cwd: '/', timeoutMs: 90_000, maxBytes: 4 * 1024 * 1024 });
     let got = 0;
     for (const line of r.stdout.split('\n')) {
       const m = line.match(/^(\d+)\s+(.+)$/);

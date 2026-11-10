@@ -390,7 +390,11 @@ async function buildOne(run: string, p: Product, b: BuildSpec, o: StartOptions) 
   // Downloading the output, unpacking and publishing hold Studio's one heavy slot (heavyslot.ts); the build itself and
   // its playtest don't.
   const slot: { release: (() => void) | null } = { release: null };
-  const hold = async () => { if (!slot.release) slot.release = await (await import('./heavyslot.ts')).heavySlot(say); };
+  const hold = async () => {
+    // Cloud Run's disk is memory: clear room before a download or publish lands in /tmp (disksweep.ts).
+    await import('./disksweep.ts').then((d) => d.ensureDiskRoom(50 * 1024 * 1024, { say })).catch((e) => { if (/in-memory disk is full/.test(String(e?.message ?? e))) throw e; });
+    if (!slot.release) slot.release = await (await import('./heavyslot.ts')).heavySlot(say);
+  };
   const release = () => slot.release?.();
   try {
     if (!slug) throw new Error(`${p.name} has no GitHub repo to build from`);
