@@ -71,9 +71,21 @@ export const REAL_DISK_SHARE = 0.85;
 /** On a real disk: free space that must stay after a write (512 MB, or 5% of a bigger disk). */
 export const realDiskFloor = (size = diskInfo().size) => Math.max(512 * MB, Math.floor(size * 0.05));
 
-/** Soft ceiling: on a real disk, most of it; in RAM, this share of the memory (cgroup) limit. */
+/**
+ * In memory, but on a sized volume (cellrun.ts CELL_MEMORY_DISK, when Google refuses the disk): smaller than the memory
+ * limit, so the volume itself caps what the working files can take and a write past it fails with ENOSPC.
+ */
+export function onSizedMemoryVolume(limit = memInfo().limit): boolean {
+  if (onRealDisk()) return false;
+  const d = diskInfo();
+  return d.size > 0 && limit > 0 && d.size < limit * 0.9;
+}
+/** On a sized in-memory volume: room that must stay on it after a write. */
+export const MEMORY_VOLUME_FLOOR = 256 * MB;
+
+/** Soft ceiling: on a real disk or a sized in-memory volume, most of it; in RAM, this share of the memory (cgroup) limit. */
 export function diskBudget(limit = memInfo().limit): number {
-  if (onRealDisk()) return Math.floor(diskInfo().size * REAL_DISK_SHARE);
+  if (onRealDisk() || onSizedMemoryVolume(limit)) return Math.floor(diskInfo().size * REAL_DISK_SHARE);
   return Math.floor(limit * diskShare());
 }
 
@@ -100,13 +112,14 @@ export const diskFloor = (limit = memInfo().limit) => {
 export function diskFull(need = 0): boolean {
   if (process.env.STUDIO_DISK_SWEEP === 'off') return false;
   if (onRealDisk()) { const d = diskInfo(); return d.free - need < realDiskFloor(d.size); }
+  if (onSizedMemoryVolume() && diskInfo().free - need < MEMORY_VOLUME_FLOOR) return true;
   return memInfo().available - need < diskFloor();
 }
 
 export function diskSummary(): string {
   const d = diskInfo();
   const gb = (n: number) => (n / 1024 ** 3).toFixed(2);
-  return `${gb(d.used)} GB used of ${gb(d.size)} GB (${d.pct}%; ${onRealDisk() ? 'on disk' : 'in memory'}; budget ${gb(diskBudget())} GB; ${gb(memInfo().available)} GB of memory free)`;
+  return `${gb(d.used)} GB used of ${gb(d.size)} GB (${d.pct}%; ${onRealDisk() ? 'on disk' : onSizedMemoryVolume() ? 'in a sized memory volume' : 'in memory'}; budget ${gb(diskBudget())} GB; ${gb(memInfo().available)} GB of memory free)`;
 }
 
 export type SweepReport = {
