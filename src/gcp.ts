@@ -23,8 +23,11 @@ let cached: Cached | null = null;
 
 /** Tests swap in a fake fetch (every Google call goes through it). */
 let fetchImpl: typeof fetch = (input, init) => fetch(input, init);
+/** Waits between tries of a read Google answered 429/5xx to (none under a test's fake fetch). */
+let retryWaits = [1_000, 4_000];
 export function setGcpFetch(f: typeof fetch | null, token: string | null = null) {
   fetchImpl = f ?? ((input, init) => fetch(input, init));
+  retryWaits = f ? [0, 0] : [1_000, 4_000];
   cached = token ? { token, expires: Date.now() + 3600_000 } : null;
 }
 
@@ -79,12 +82,23 @@ export async function accessToken(): Promise<string> {
 
 /** A JSON call to a Google API. 404 resolves to null when `missingOk`. */
 export async function gapi(url: string, init: { method?: string; body?: unknown; missingOk?: boolean; timeoutMs?: number } = {}): Promise<any> {
-  const r = await fetchImpl(url, {
-    method: init.method ?? (init.body === undefined ? 'GET' : 'POST'),
+  const method = init.method ?? (init.body === undefined ? 'GET' : 'POST');
+  const call = async () => fetchImpl(url, {
+    method,
     headers: { Authorization: `Bearer ${await accessToken()}`, ...(init.body === undefined ? {} : { 'Content-Type': 'application/json' }) },
     body: init.body === undefined ? undefined : JSON.stringify(init.body),
     signal: AbortSignal.timeout(init.timeoutMs ?? 60_000),
   });
+  // A read Google answered 429 or 5xx to (Cloud Run's "503 upstream" while a build follows its job) is asked again,
+  // twice, before it fails: one blip used to end a build whose deploy was still running (2026-11-10, hawkes-games
+  // firebase). Writes aren't repeated, since a POST may have landed.
+  let r = await call();
+  for (const wait of method === 'GET' ? retryWaits : []) {
+    if (r.status !== 429 && r.status < 500) break;
+    await r.text().catch(() => '');
+    await new Promise((ok) => setTimeout(ok, wait));
+    r = await call();
+  }
   if (r.status === 404 && init.missingOk) return null;
   const text = await r.text();
   if (!r.ok) {

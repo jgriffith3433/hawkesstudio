@@ -399,7 +399,16 @@ async function buildOne(run: string, p: Product, b: BuildSpec, o: StartOptions) 
     const gh = githubFetch(token);
     const { githubCommit } = await import('./sitestore.ts');
     const ref = o.ref ?? 'beta';
-    const sha = o.sha ?? (await githubCommit(slug, ref, gh)) ?? (await githubCommit(slug, 'main', gh));
+    let sha = o.sha ?? (await githubCommit(slug, ref, gh)) ?? (await githubCommit(slug, 'main', gh));
+    // GitHub answers 404 for a private repo a stale or wrong token can't see, so "no branch" is asked once more with a
+    // freshly minted token before the build fails (2026-11-10: two hawkes-games builds failed "no beta or main branch"
+    // while both branches were there).
+    if (!sha) {
+      const { forgetRepoToken } = await import('./ghtoken.ts');
+      forgetRepoToken(slug);
+      const fresh = githubFetch(await repoToken(slug));
+      sha = (await githubCommit(slug, ref, fresh)) ?? (await githubCommit(slug, 'main', fresh));
+    }
     if (!sha) throw new Error(`${slug} has no ${ref} or main branch on GitHub`);
     shaSeen = sha;
     // A push or the nightly sync asking again for a commit already built: nothing to build (a Unity build costs money).
