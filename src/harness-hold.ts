@@ -26,6 +26,8 @@ db.exec(`CREATE TABLE IF NOT EXISTS harness_holds (
   until INTEGER NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, reset INTEGER, notified INTEGER, switched INTEGER,
   lifted INTEGER, log TEXT
 )`);
+// When the hold was last probed (a hold that names its reset time is still looked at every RECHECK minutes).
+try { db.exec('ALTER TABLE harness_holds ADD COLUMN probed INTEGER'); } catch { /* already there */ }
 
 export type Hold = {
   harness: Harness; kind: HarnessKind; why: string; line: string | null; account: string | null; since: number;
@@ -35,6 +37,8 @@ export type Hold = {
   reset: boolean;
   /** J's phone was told (billing, no login). `switched`: when a stand-in (the other harness, another account) was last looked for. */
   notified: number | null; switched: number | null; lifted: number | null; log: string[];
+  /** When it was last probed (null: not yet). */
+  probed?: number | null;
 };
 const toHold = (r: any): Hold | null => (r ? { ...r, reset: Boolean(r.reset), log: parse(r.log) ?? [] } : null);
 export const getHold = (harness: Harness = brainId()) => toHold(db.prepare('SELECT * FROM harness_holds WHERE harness = ?').get(harness));
@@ -51,7 +55,7 @@ export const harnessHeld = (harness: Harness = brainId()) => Boolean(activeHold(
 export const LABEL: Record<Harness, string> = { claude: 'Claude', cursor: 'Cursor', copilot: 'Copilot', gemini: 'Gemini', antigravity: 'Antigravity', codex: 'Codex' };
 /** A minute, in ms (STUDIO_HARNESS_MINUTE_MS: tests run the backoff in milliseconds). */
 const minute = () => (Number(process.env.STUDIO_HARNESS_MINUTE_MS) > 0 ? Number(process.env.STUDIO_HARNESS_MINUTE_MS) : 60_000);
-// A stop that named no reset time is looked at again soon (a probe is one tiny Haiku turn): 5, 10, 15, then every 30
+// A stop that named no reset time is looked at again soon (a probe is one tiny turn): 5, 10, 15, then every 30
 // minutes (J, 2026-11-10: work sat on a stand-in for hours while Claude had usage).
 const BACKOFF = [5, 10, 15, 30];
 const SEVERITY: Record<HarnessKind, number> = { transient: 0, usage: 1, auth: 2, billing: 3 };
@@ -59,6 +63,12 @@ const SEVERITY: Record<HarnessKind, number> = { transient: 0, usage: 1, auth: 2,
 export const needsJ = (kind: HarnessKind) => kind === 'billing' || kind === 'auth';
 /** How often a stand-in is looked for again while one isn't found (each look is a probe). */
 const SWITCH_EVERY = 15;
+/**
+ * A usage hold that names its reset time is still probed this often (J, 2026-11-10: "The usage isn't out": a "weekly
+ * limit · resets Nov 13" hold would have sat three days unprobed while the account answered). A real limit fails the probe
+ * and the hold stays; one that was per-model, wrong or already lifted answers and the work comes back.
+ */
+const RECHECK = 30;
 
 /** The next probe: the reset time named (a minute after it), else the backoff by how many probes failed. */
 export function untilFor(stop: Pick<HarnessStop, 'kind' | 'resetsAt'>, attempts: number, now = Date.now()) {
@@ -86,11 +96,11 @@ export function holdDetail(h: Pick<Hold, 'harness' | 'kind' | 'until' | 'reset'>
 }
 
 function save(h: Hold) {
-  db.prepare(`INSERT INTO harness_holds (harness, kind, why, line, account, since, until, attempts, reset, notified, switched, lifted, log)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(harness) DO UPDATE SET kind = excluded.kind, why = excluded.why,
+  db.prepare(`INSERT INTO harness_holds (harness, kind, why, line, account, since, until, attempts, reset, notified, switched, lifted, log, probed)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(harness) DO UPDATE SET kind = excluded.kind, why = excluded.why,
     line = excluded.line, account = excluded.account, since = excluded.since, until = excluded.until, attempts = excluded.attempts,
-    reset = excluded.reset, notified = excluded.notified, switched = excluded.switched, lifted = excluded.lifted, log = excluded.log`)
-    .run(h.harness, h.kind, h.why, h.line, h.account, h.since, h.until, h.attempts, h.reset ? 1 : 0, h.notified, h.switched, h.lifted, J(h.log.slice(-40)));
+    reset = excluded.reset, notified = excluded.notified, switched = excluded.switched, lifted = excluded.lifted, log = excluded.log, probed = excluded.probed`)
+    .run(h.harness, h.kind, h.why, h.line, h.account, h.since, h.until, h.attempts, h.reset ? 1 : 0, h.notified, h.switched, h.lifted, J(h.log.slice(-40)), h.probed ?? null);
   // Settings' providers box and the Inbox's AI card follow holds through the push stream (a burst of writes is one look).
   void import('./stream.ts').then((st) => { st.changed('ai-logins'); st.poke(); }).catch(() => {});
 }
@@ -313,7 +323,8 @@ export async function reviewHolds(now = Date.now()) {
         liftHold(`it wasn't ${LABEL[h.harness]}: ${h.line}`.slice(0, 200), h.harness);
         continue;
       }
-      if (now >= h.until) {
+      const recheck = h.kind === 'usage' && h.reset && now - (h.probed ?? h.since) >= RECHECK * minute();
+      if (now >= h.until || recheck) {
         const p = await holdDeps.probe(h.harness).catch((e: any) => ({ ok: false, note: String(e?.message ?? e) }));
         if (p.ok) {
           liftHold(`a probe answered: ${p.note}`.slice(0, 200), h.harness);
@@ -324,7 +335,8 @@ export async function reviewHolds(now = Date.now()) {
         const stop = harnessStopOf(p.note) ?? { kind: cur.kind, line: cur.line ?? p.note, resetsAt: null };
         const attempts = cur.attempts + 1;
         const until = untilFor(stop, attempts, Date.now());
-        save({ ...cur, attempts, until, reset: Boolean(stop.resetsAt && stop.resetsAt > Date.now()), log: [...cur.log, stamp(`probe: still stopped (${p.note.slice(0, 160)}); next at ${whenUtc(until)}`)] });
+        const reset = Boolean(stop.resetsAt && stop.resetsAt > Date.now());
+        save({ ...cur, attempts, until, reset, probed: Date.now(), log: [...cur.log, stamp(`probe: still stopped (${p.note.slice(0, 160)}); ${reset ? `resets ${whenUtc(until)}, looked at again every ${RECHECK} minutes` : `next at ${whenUtc(until)}`}`)] });
       }
       const cur = activeHold(h.harness);
       if (!cur || cur.harness !== brainId()) continue;
@@ -366,7 +378,7 @@ export function holdStatus() {
 async function defaultProbe(harness: Harness): Promise<{ ok: boolean; note: string }> {
   const { claudeEnv } = await import('./claude.ts');
   const args = ['-p', 'Reply with just: ok', '--output-format', 'stream-json', '--verbose', '--max-turns', '1', '--strict-mcp-config', '--no-session-persistence',
-    ...(harness === 'claude' ? ['--model', 'claude-haiku-5-5', '--tools', '', '--setting-sources', ''] : [])];
+    ...(harness === 'claude' ? ['--model', process.env.STUDIO_PROBE_MODEL || 'sonnet', '--tools', '', '--setting-sources', ''] : [])];
   const pre: string[] = process.env.TALK_CLAUDE_ARGS ? JSON.parse(process.env.TALK_CLAUDE_ARGS) : [];
   const stand = Boolean(process.env.TALK_CLAUDE || pre.length);
   const adapter = adapterOf(harness);

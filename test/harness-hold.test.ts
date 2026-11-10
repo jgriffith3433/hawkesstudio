@@ -287,3 +287,29 @@ test('a usage stop with no reset time is looked at again within minutes', () => 
   assert.equal(first, 5 * Number(process.env.STUDIO_HARNESS_MINUTE_MS));
   assert.equal(later, 30 * Number(process.env.STUDIO_HARNESS_MINUTE_MS));
 });
+
+test('a usage hold that names a reset days away is still probed every 30 minutes, and lifts when the account answers', async () => {
+  clear();
+  brains.saveBrain('claude');
+  const stop = brains.harnessStopOf("You've hit your weekly limit · resets Nov 13, 1pm (UTC)", { now: Date.UTC(2026, 10, 10, 1, 15) })!;
+  assert.equal(stop.kind, 'usage');
+  hold.holdHarness({ ...stop, resetsAt: Date.now() + 3 * 86_400_000 }, { source: 'agent change c_8d0f27ed053a' });
+  const h = hold.activeHold('claude')!;
+  assert.equal(h.reset, true);
+  // Not yet 30 (test) minutes: no probe.
+  probed.length = 0;
+  await hold.reviewHolds(h.since + 1);
+  assert.ok(!probed.includes('claude'), 'too soon');
+  // The account still at its limit: probed, still held, the reset kept.
+  probes = { claude: { ok: false, note: "You've hit your weekly limit · resets Nov 13, 1pm (UTC)" } };
+  await new Promise((r) => setTimeout(r, 35));
+  await hold.reviewHolds();
+  assert.ok(probed.includes('claude'));
+  assert.ok(hold.activeHold('claude'), 'a real limit stays held');
+  assert.equal(hold.activeHold('claude')!.reset, true);
+  // It answers (the limit was per-model, wrong, or lifted): back now, not on Nov 13.
+  probes = { claude: { ok: true, note: 'answering' } };
+  await new Promise((r) => setTimeout(r, 35));
+  await hold.reviewHolds();
+  assert.equal(hold.harnessHeld('claude'), false);
+});
