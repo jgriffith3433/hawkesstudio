@@ -12,9 +12,9 @@ import { db, newId } from './db.ts';
 import { PROJECTS, getProduct, getInfra, isInfra, storyOf, StudioError } from './config.ts';
 import { repoMap } from './repos.ts';
 import { claudeEnv } from './claude.ts';
-import { brainId, harnessStopOf } from './brains.ts';
-import { holdHarness } from './harness-hold.ts';
-import { noProviderFree, pickHarness } from './providers.ts';
+import { HARNESS_IDS, brainId, harnessStopOf, isHarness } from './brains.ts';
+import { holdHarness, LABEL } from './harness-hold.ts';
+import { noProviderFree, notReady, pickHarness, using } from './providers.ts';
 import { BETA, gitAsync } from './beta.ts';
 import { lfsPull } from './lfs.ts';
 import { briefSection, recordRun } from './memory.ts';
@@ -35,13 +35,14 @@ db.exec(`
 `);
 // Later columns (a table made before them gets them added): the Claude session (follow-ups resume it), the turns used so
 // far, the last steps (live progress in Activity), and the scout this one re-runs.
-for (const col of ['session TEXT', 'turns INTEGER DEFAULT 0', 'log TEXT', 'retry_of TEXT', 'dismissed INTEGER']) {
+// harness: the AI provider it ran on (providers.ts), so a follow-up resumes there and the view says which.
+for (const col of ['session TEXT', 'turns INTEGER DEFAULT 0', 'log TEXT', 'retry_of TEXT', 'dismissed INTEGER', 'harness TEXT', 'provider TEXT']) {
   try { db.exec(`ALTER TABLE scouts ADD COLUMN ${col}`); } catch { /* already there */ }
 }
 
-export type Scout = { id: string; product: string; question: string; status: string; detail: string | null; report: string | null; origin: string | null; cost: number; created: number; finished: number | null; session?: string | null; turns?: number | null; log?: string | null; retry_of?: string | null; dismissed?: number | null };
+export type Scout = { id: string; product: string; question: string; status: string; detail: string | null; report: string | null; origin: string | null; cost: number; created: number; finished: number | null; session?: string | null; turns?: number | null; log?: string | null; retry_of?: string | null; dismissed?: number | null; harness?: string | null; provider?: string | null };
 /** A scout with its log as a list and who cancelled it (the same shape through the API, studio_scout and Activity). */
-const view = (x: Scout | undefined) => (x ? { ...x, log: ((): string[] => { try { return JSON.parse(x.log ?? '[]'); } catch { return []; } })(), cancelled: x.status === 'cancelled' ? cancelNote(`scout:${x.id}`) : null, model: process.env.SCOUT_MODEL ?? roleArgs('scout').role.model ?? null } : null);
+const view = (x: Scout | undefined) => (x ? { ...x, log: ((): string[] => { try { return JSON.parse(x.log ?? '[]'); } catch { return []; } })(), cancelled: x.status === 'cancelled' ? cancelNote(`scout:${x.id}`) : null, model: process.env.SCOUT_MODEL ?? roleArgs('scout', isHarness(x.harness) ? { harness: x.harness } : {}).role.model ?? null } : null);
 export const getScout = (id: string) => (db.prepare('SELECT * FROM scouts WHERE id = ?').get(id) as Scout | undefined) ?? null;
 export const getScoutView = (id: string) => view(getScout(id)!);
 export const listScouts = (limit = 30) => db.prepare('SELECT id, product, question, status, detail, cost, turns, created, finished, retry_of FROM scouts ORDER BY created DESC LIMIT ?').all(limit) as Scout[];
@@ -70,7 +71,7 @@ export function clearFailedScouts(now = Date.now()) {
 const set = (id: string, patch: Partial<Scout>) => {
   const cur = getScout(id)!;
   const n = { ...cur, ...patch };
-  db.prepare('UPDATE scouts SET status = ?, detail = ?, report = ?, cost = ?, finished = ?, session = ?, turns = ?, log = ? WHERE id = ?').run(n.status, n.detail, n.report, n.cost, n.finished, n.session ?? null, n.turns ?? 0, n.log ?? null, id);
+  db.prepare('UPDATE scouts SET status = ?, detail = ?, report = ?, cost = ?, finished = ?, session = ?, turns = ?, log = ?, harness = ? WHERE id = ?').run(n.status, n.detail, n.report, n.cost, n.finished, n.session ?? null, n.turns ?? 0, n.log ?? null, n.harness ?? null, id);
 };
 /** Running scouts' processes, so Cancel can stop one; `cancelled` marks the ones asked to stop. */
 const live = new Map<string, { kill: () => void; st: ScoutStream | null }>();
@@ -147,18 +148,24 @@ try { sweepScouts(); } catch { /* the table or folder isn't there yet */ }
  * opts.brief: the scout's instructions instead of "what would it take" (the PM's diagnosis of a task that failed its
  * tries, pm.ts rescue); opts.quiet: its report is read by the PM (getScout), not posted to Talk.
  */
-type ScoutOpts = { brief?: string; quiet?: boolean; retryOf?: string; followUp?: { message: string; prior: string | null; session: string | null } };
+type ScoutOpts = { brief?: string; quiet?: boolean; retryOf?: string; followUp?: { message: string; prior: string | null; session: string | null };
+  /** J's pick of AI provider for this one scout (a check that a provider works: studio_scout provider). */ provider?: string | null };
 export function startScout(product: string, question: string, origin: string | null = null, opts: ScoutOpts = {}) {
   if (!question?.trim()) throw new StudioError('Say what to find out');
   if (active >= 2) throw new StudioError('Two scouts are already running; ask again when one reports back.');
   // The harness in use refuses to run (harness-hold.ts): a scout now would only fail. Asked again after the hold.
   if (noProviderFree()) throw new StudioError('Every AI provider is on hold (a usage limit, billing or a sign-in): scouts start again once one answers.');
+  if (opts.provider) {
+    if (!isHarness(opts.provider)) throw new StudioError(`provider: ${HARNESS_IDS.join(' | ')}`);
+    const why = notReady(opts.provider);
+    if (why) throw new StudioError(`${LABEL[opts.provider]} can't take a scout now: ${why}.`, 409);
+  }
   const inf = isInfra(product) ? getInfra(product) : null;
   const p = inf ? null : getProduct(product);
   const top = inf ? inf.repo : p!.repo.split('/')[0];
   if (!inf && !repoMap()[top]) throw new StudioError(`products.json has no GitHub repo for ${top}`);
   const id = newId('x');
-  db.prepare('INSERT INTO scouts (id, product, question, status, detail, origin, created, retry_of) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').run(id, inf?.id ?? p!.id, question.trim().slice(0, 4000), 'running', 'starting', origin, Date.now(), opts.retryOf ?? null);
+  db.prepare('INSERT INTO scouts (id, product, question, status, detail, origin, created, retry_of, provider) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)').run(id, inf?.id ?? p!.id, question.trim().slice(0, 4000), 'running', 'starting', origin, Date.now(), opts.retryOf ?? null, opts.provider ?? null);
   active++;
   void run(id, top, inf ? 'main' : BETA, opts).finally(() => active--);
   return getScoutView(id)!;
@@ -218,6 +225,7 @@ async function run(id: string, top: string, base: string, opts: ScoutOpts = {}) 
   const repo = path.join(PROJECTS, top);
   const wt = path.join(PROJECTS, '.work', `scout-${id}`);
   let ref = '';
+  let releaseLoad = () => {};
   try {
     // A clone or worktree that fails (a big Unity repo killed for memory, "could not read Username") falls back to reading
     // GitHub's tarball of the ref (repo-read.ts): no history, no art, but the source a scout needs.
@@ -289,7 +297,13 @@ the report; if the question has numbered parts, answer each one briefly. Reply w
 ${mem.text ? `\n${mem.text}` : ''}${story ? `\nThe product's story, for tone:\n${story}\n` : ''}`;
     // The scout role (.claude/agents/scout.md): model, read-only tools, turn limit; SCOUT_MODEL still overrides the model.
     // The provider it runs on (providers.ts): a follow-up stays on the one holding its session while it answers.
-    const harness = pickHarness({ role: 'scout', prefer: follow?.session ? (getScout(id) as any)?.harness ?? null : null });
+    // J's pick for this scout (provider) while it answers; a follow-up stays on the provider that holds its session.
+    const mine = getScout(id);
+    const own = isHarness(mine?.provider) && !notReady(mine.provider) ? mine.provider : null;
+    const harness = own ?? pickHarness({ role: 'scout', prefer: follow?.session && isHarness(mine?.harness) ? mine.harness : null });
+    set(id, { harness });
+    // Counted on its provider while it runs, so the spread puts the next pass or scout on a less busy one.
+    releaseLoad = using(harness);
     const { args: roleFlags } = roleArgs('scout', { harness, maxTurns: SCOUT_MAX_TURNS, extraAllowed: ['mcp__hawkesstudio__memory_search', 'mcp__hawkesstudio__memory_get', 'mcp__hawkesstudio__memory_write', 'mcp__hawkesstudio__studio_analytics'] });
     if (process.env.SCOUT_MODEL) roleFlags.splice(roleFlags.indexOf('--model') + 1, 1, process.env.SCOUT_MODEL);
     const agentMcpFile = (await import('./agents.ts')).agentMcp(id);
@@ -349,12 +363,13 @@ ${mem.text ? `\n${mem.text}` : ''}${story ? `\nThe product's story, for tone:\n$
     if (cancelled.has(id)) set(id, { status: 'cancelled', detail: `cancelled ${cancelWords(cancelNote(`scout:${id}`))}`, finished: Date.now() });
     else set(id, { status: 'failed', detail: String(e.message ?? e).slice(0, 600), finished: Date.now() });
   } finally {
+    releaseLoad();
     live.delete(id);
     git(repo, ['worktree', 'remove', '--force', wt]);
     fs.rmSync(wt, { recursive: true, force: true });
   }
   const done = getScout(id)!;
-  recordRun({ id: `ar_${id.slice(2)}`, kind: 'scout', subject: id, product: done.product, title: `Scout: ${done.question.slice(0, 150)}`, outcome: done.status, summary: done.report ?? done.detail ?? '', by: done.origin ? 'Talk' : 'J', model: process.env.SCOUT_MODEL ?? roleArgs('scout').role.model, cost: done.cost, started: done.created, finished: done.finished ?? Date.now() });
+  recordRun({ id: `ar_${id.slice(2)}`, kind: 'scout', subject: id, product: done.product, title: `Scout: ${done.question.slice(0, 150)}`, outcome: done.status, summary: done.report ?? done.detail ?? '', by: done.origin ? 'Talk' : 'J', model: process.env.SCOUT_MODEL ?? roleArgs('scout', isHarness(done.harness) ? { harness: done.harness } : {}).role.model, cost: done.cost, started: done.created, finished: done.finished ?? Date.now() });
   const text = done.status === 'done'
     ? `Scout ${id} reported on "${done.question}" (${done.product}):\n\n${done.report}\n\nTurn this into a proposal for J: the roadmap item and tasks with acceptance criteria, order, size and rough cost. Add them (studio_roadmap) only after J says yes.`
     : done.status === 'cancelled' ? `Scout ${id} on "${done.question}" (${done.product}) was ${done.detail}. It is not a failure; re-run it (studio_cancel { kind: "scout", id: "${id}", resume: true }, a new scout) or ask a follow-up (studio_scout { id, message }) if it's still wanted.${done.report ? `\n\nWhat it had:\n${done.report}` : ''}`

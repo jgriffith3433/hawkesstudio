@@ -61,3 +61,16 @@ test('an Activity row carries progress, cost, model, and the cancel note', () =>
   assert.equal(after.status, 'cancelled');
   assert.equal(after.cancelled?.by, 'J');
 });
+
+test('a scout on a provider J names: refused with the reason when that provider is not ready, or not a provider', () => {
+  delete process.env.GEMINI_API_KEY;
+  delete process.env.GOOGLE_GENAI_USE_VERTEXAI;
+  assert.throws(() => sc.startScout('p', 'which provider?', null, { provider: 'gemini' }), /Gemini.* can't take a scout now: not signed in here/);
+  assert.throws(() => sc.startScout('p', 'which provider?', null, { provider: 'grok' }), /provider: claude \| /);
+});
+
+test('the scout view names the provider it ran on', () => {
+  add('x_prov1', 'done', 'a report');
+  db.prepare("UPDATE scouts SET harness = 'cursor' WHERE id = 'x_prov1'").run();
+  assert.equal((sc.getScoutView('x_prov1') as any).harness, 'cursor');
+});
