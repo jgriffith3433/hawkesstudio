@@ -32,7 +32,11 @@ test('a new cell mounts the working disk at /disk (gen2, launch stage BETA)', ()
   assert.equal(s.template.executionEnvironment, 'EXECUTION_ENVIRONMENT_GEN2');
   assert.deepEqual(s.template.volumes, [{ name: 'studio-work', emptyDir: { medium: 'DISK', sizeLimit: '10Gi' } }]);
   assert.deepEqual(s.template.containers[0].volumeMounts, [{ name: 'studio-work', mountPath: '/disk' }]);
-  const plain: any = R.withoutDisk(s);
+  const mem: any = R.withoutDisk(s);
+  assert.equal(mem.launchStage, undefined);
+  assert.deepEqual(mem.template.volumes, [{ name: 'studio-work', emptyDir: { medium: 'MEMORY', sizeLimit: '2560Mi' } }], 'refused the disk: the same mount, in memory, sized');
+  assert.deepEqual(mem.template.containers[0].volumeMounts, [{ name: 'studio-work', mountPath: '/disk' }]);
+  const plain: any = R.withoutDisk(s, true);
   assert.equal(plain.launchStage, undefined);
   assert.equal(plain.template.volumes, undefined);
   assert.equal(plain.template.containers[0].volumeMounts, undefined);
@@ -77,7 +81,8 @@ test('a deploy\'s roll puts each cell on the working disk; a refusal of the disk
   const no = fakeGoogle(true);
   await R.setImage('studio-o-acme', 'v3', {}, cfg);
   assert.equal(no.svc.template.containers[0].image, 'v3', 'the image still went out');
-  assert.equal(no.svc.template.containers[0].volumeMounts, undefined);
+  assert.deepEqual(no.svc.template.containers[0].volumeMounts, [{ name: 'studio-work', mountPath: '/disk' }], 'same mount');
+  assert.deepEqual(no.svc.template.volumes, [{ name: 'studio-work', emptyDir: { medium: 'MEMORY', sizeLimit: '2560Mi' } }], 'in memory, sized');
   assert.equal(no.calls.filter((c) => c.method === 'PATCH').length, 2);
 });
 
@@ -139,7 +144,7 @@ test('a revision refused for its working disk rolls the same image out without t
   (realGet as any).services = [{ ...realGet, name: 'projects/p/locations/us-east4/services/studio-o-acme' }];
   const seen: boolean[] = [];
   const outcome = async () => {
-    const hasDisk = (g.svc.template.volumes ?? []).some((v: any) => v.name === 'studio-work');
+    const hasDisk = (g.svc.template.volumes ?? []).some((v: any) => v.emptyDir?.medium === 'DISK');
     seen.push(hasDisk);
     return hasDisk ? { ok: false, why: 'Revision studio-o-acme-00096 is not ready: Quota exceeded for total allowable ephemeral disk allocation per project per region.' } : { ok: true, why: null };
   };
@@ -149,8 +154,49 @@ test('a revision refused for its working disk rolls the same image out without t
   assert.deepEqual(r.done, ['studio-o-acme']);
   assert.equal(g.svc.template.containers[0].image, 'v9', 'the new image is what runs');
   assert.deepEqual(seen, [true, false], 'tried with the disk, then without it');
-  assert.equal((g.svc.template.volumes ?? []).some((v: any) => v.name === 'studio-work'), false);
+  assert.deepEqual(g.svc.template.volumes, [{ name: 'studio-work', emptyDir: { medium: 'MEMORY', sizeLimit: '2560Mi' } }], 'the in-memory, sized volume instead');
   assert.match(lines.join('\n'), /refused the new revision's working disk/);
+});
+
+// 2026-11-10 23:29-23:38: with no volume the working files went to the cell's unbounded in-memory filesystem, held 3 GB
+// of 3.9 GB, memory free sat at 0-12 MB, and the kernel froze Studio for up to 105 s at a time: claude.ai's connector
+// timed out and signed out. Now the files sit on a sized in-memory volume; only if that is refused too, no volume.
+test('a cell refused the disk gets a sized in-memory volume; refused that too, no volume, and the roll still lands', async () => {
+  const g = fakeGoogle(false);
+  g.svc.labels = { 'hawkes-studio-cell': '1', 'hawkes-org': 'acme', 'hawkes-lane': 'live' };
+  (g.svc as any).services = [{ ...g.svc, name: 'projects/p/locations/us-east4/services/studio-o-acme' }];
+  const seen: string[] = [];
+  const outcome = async () => {
+    const v = (g.svc.template.volumes ?? []).find((x: any) => x.name === 'studio-work');
+    seen.push(v?.emptyDir?.medium ?? 'none');
+    return v ? { ok: false, why: 'Revision is not ready: emptyDir volume refused' } : { ok: true, why: null };
+  };
+  const lines: string[] = [];
+  const r = await R.rollCells('v10', { health: async () => true, log: (s) => lines.push(s), outcome }, cfg);
+  assert.equal(r.failed, null, lines.join('\n'));
+  assert.deepEqual(seen, ['DISK', 'MEMORY', 'none']);
+  assert.equal(g.svc.template.containers[0].image, 'v10');
+  assert.equal(g.svc.template.containers[0].volumeMounts, undefined);
+});
+
+test('on a sized in-memory volume the volume\'s own room refuses a write before memory runs out', () => {
+  const GB = 1024 ** 3;
+  const sweep = process.env.STUDIO_DISK_SWEEP;
+  delete process.env.STUDIO_DISK_SWEEP;
+  try {
+    D.setRealDiskSource(() => false);
+    M.setMemSource(() => ({ limit: 4 * GB, available: 1.4 * GB } as any));
+    D.setDiskSource(() => ({ used: 2.4 * GB, free: 0.1 * GB, size: 2.5 * GB, pct: 96, path: '/disk/projects' }));
+    assert.equal(D.onSizedMemoryVolume(4 * GB), true);
+    assert.equal(D.diskFull(50 * 1024 * 1024), true, 'the volume is nearly full though memory may look fine');
+    assert.match(D.diskSummary(), /sized memory volume/);
+    assert.equal(D.diskBudget(4 * GB), Math.floor(2.5 * GB * D.REAL_DISK_SHARE), 'sweeps from the volume\'s own size');
+    D.setDiskSource(() => ({ used: 3 * GB, free: 1 * GB, size: 4 * GB, pct: 75, path: '/projects' }));
+    assert.equal(D.onSizedMemoryVolume(4 * GB), false, 'the unbounded in-memory filesystem is not a sized volume');
+  } finally {
+    D.setDiskSource(null); D.setRealDiskSource(null); M.setMemSource(null);
+    if (sweep !== undefined) process.env.STUDIO_DISK_SWEEP = sweep;
+  }
 });
 
 test('a revision that fails for its image (not the disk) still goes back to the old image', async () => {

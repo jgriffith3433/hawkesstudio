@@ -130,15 +130,27 @@ export const cellDiskVolume = () => ({ name: CELL_DISK.name, emptyDir: { medium:
 export const withDiskMount = (mounts: any[] | undefined) => [...(mounts ?? []).filter((m) => m?.name !== CELL_DISK.name && m?.mountPath !== CELL_DISK.mountPath), { name: CELL_DISK.name, mountPath: CELL_DISK.mountPath }];
 /** A service's volumes with the working disk's (once). */
 export const withDiskVolume = (volumes: any[] | undefined) => [...(volumes ?? []).filter((v) => v?.name !== CELL_DISK.name), cellDiskVolume()];
-/** The same service body without the working disk: what Cloud Run took before (a refusal of the disk falls back to it). */
-export function withoutDisk(body: any) {
+/**
+ * When Google refuses the disk: the same mount, in memory, with a size limit. Without any volume the working files went
+ * to the instance's unbounded in-memory filesystem: on 2026-11-10 23:29-23:38 they held 3 GB of J's 3.9 GB, memory
+ * free sat at 0-12 MB, and the kernel's reclaim froze the whole process for up to 105 s at a time (the event loop
+ * "blocked" with almost nothing on the profile), long enough that claude.ai's connector timed out and signed out. A
+ * sized in-memory volume makes a write past the limit fail with ENOSPC (infra-failure.ts: an infra failure, retried,
+ * no start used) instead of starving Studio: 4 GiB less 2560 MiB leaves about 1.5 GiB for Studio, Litestream and a pass.
+ */
+export const CELL_MEMORY_DISK = { sizeLimit: '2560Mi' } as const;
+export const memoryDiskVolume = () => ({ name: CELL_DISK.name, emptyDir: { medium: 'MEMORY', sizeLimit: CELL_MEMORY_DISK.sizeLimit } });
+/** The working disk's volume swapped for the in-memory one (`plain`: no volume at all, the last resort). */
+export function withoutDisk(body: any, plain = false) {
   const b = structuredClone(body);
   delete b.launchStage;
   if (b.template) {
     b.template.volumes = (b.template.volumes ?? []).filter((v: any) => v?.name !== CELL_DISK.name);
+    if (!plain) b.template.volumes.push(memoryDiskVolume());
     if (!b.template.volumes.length) delete b.template.volumes;
-    b.template.containers = (b.template.containers ?? []).map((ct: any) => {
+    b.template.containers = (b.template.containers ?? []).map((ct: any, i: number) => {
       const m = (ct.volumeMounts ?? []).filter((x: any) => x?.name !== CELL_DISK.name);
+      if (!plain && i === 0) return { ...ct, volumeMounts: withDiskMount(m) };
       const { volumeMounts: _drop, ...rest } = ct;
       return m.length ? { ...rest, volumeMounts: m } : rest;
     });
@@ -196,8 +208,12 @@ export async function createCell(org: string, owner: { sub: string; email: strin
     try { op = await call('POST', `${base(c)}/services?serviceId=${name}`, cellService(org, owner, image, c, gen), o); break; }
     catch (e: any) {
       if (!/409/.test(String(e?.message ?? e)) && diskRefused(e)) {
-        console.warn(`[cells] ${name}: Cloud Run refused the working disk (${String(e?.message ?? e).slice(0, 300)}); made without it`);
-        op = await call('POST', `${base(c)}/services?serviceId=${name}`, withoutDisk(cellService(org, owner, image, c, gen)), o);
+        console.warn(`[cells] ${name}: Cloud Run refused the working disk (${String(e?.message ?? e).slice(0, 300)}); made on the in-memory one`);
+        try { op = await call('POST', `${base(c)}/services?serviceId=${name}`, withoutDisk(cellService(org, owner, image, c, gen)), o); }
+        catch (e2: any) {
+          if (!diskRefused(e2)) throw e2;
+          op = await call('POST', `${base(c)}/services?serviceId=${name}`, withoutDisk(cellService(org, owner, image, c, gen), true), o);
+        }
         break;
       }
       if (!/409/.test(String(e?.message ?? e)) || i >= 6) throw e;
@@ -259,27 +275,35 @@ export async function serviceImage(service: string, c = cellsConfig()): Promise<
  * CELL_LIMITS gets raised and every one gets CELL_STARTUP_PROBE: the roll after a deploy is what brings
  * older cells up to date).
  */
-export async function setImage(service: string, image: string, o: { dry?: boolean; disk?: boolean } = {}, c = cellsConfig()) {
+export async function setImage(service: string, image: string, o: { dry?: boolean; disk?: boolean | 'none' } = {}, c = cellsConfig()) {
   const url = `${base(c)}/services/${service}`;
   if (dryRun(o)) return call('PATCH', `${url}?updateMask=template.containers`, { template: { containers: [{ image }] } }, o);
   const s = await gapi(url);
   const containers = (s.template?.containers ?? [{}]).map((ct: any, i: number) => (i === 0 ? { ...ct, image, resources: { ...(ct.resources ?? {}), limits: withCellLimits(ct.resources?.limits) }, startupProbe: CELL_STARTUP_PROBE } : ct));
   // With the working disk (CELL_DISK): the roll after a deploy brings every cell onto it. Refused (a launch stage or a
   // quota Google won't take): the image alone, as before, so a deploy never fails for the disk.
-  const plainBody = () => {
-    const plain = containers.map((ct: any) => ({ ...ct, volumeMounts: (ct.volumeMounts ?? []).filter((m: any) => m?.name !== CELL_DISK.name) })).map((ct: any) => (ct.volumeMounts.length ? ct : (({ volumeMounts: _v, ...r }) => r)(ct)));
-    return { template: { containers: plain, volumes: (s.template?.volumes ?? []).filter((v: any) => v?.name !== CELL_DISK.name) } };
+  // Without the disk: the same mount in memory, sized (CELL_MEMORY_DISK), so the working files can't starve Studio;
+  // 'none' (that was refused too): no volume, as before.
+  const plainBody = (none = false) => {
+    const t = withoutDisk({ template: { containers, volumes: s.template?.volumes ?? [] } }, none).template;
+    return { template: { containers: t.containers, volumes: t.volumes ?? [] } };
   };
   // Without the disk (disk: false): the revision with it was refused after the update was taken (Google's ephemeral disk
-  // quota is checked when the revision starts, not when it's asked for), so the image goes out on its own.
-  if (o.disk === false) return call('PATCH', `${url}?updateMask=template.containers,template.volumes`, plainBody(), o);
+  // quota is checked when the revision starts, not when it's asked for), so the image goes out on the in-memory one.
+  if (o.disk === false || o.disk === 'none') return call('PATCH', `${url}?updateMask=template.containers,template.volumes`, plainBody(o.disk === 'none'), o);
   const withDisk = { launchStage: 'BETA', template: { containers: containers.map((ct: any, i: number) => (i === 0 ? { ...ct, volumeMounts: withDiskMount(ct.volumeMounts) } : ct)), volumes: withDiskVolume(s.template?.volumes) } };
   try {
     return await call('PATCH', `${url}?updateMask=launchStage,template.containers,template.volumes`, withDisk, o);
   } catch (e: any) {
     if (!diskRefused(e)) throw e;
-    console.warn(`[cells] ${service}: Cloud Run refused the working disk (${String(e?.message ?? e).slice(0, 300)}); new image without it`);
-    return call('PATCH', `${url}?updateMask=template.containers,template.volumes`, plainBody(), o);
+    console.warn(`[cells] ${service}: Cloud Run refused the working disk (${String(e?.message ?? e).slice(0, 300)}); new image on the in-memory one`);
+    try {
+      return await call('PATCH', `${url}?updateMask=template.containers,template.volumes`, plainBody(), o);
+    } catch (e2: any) {
+      if (!diskRefused(e2)) throw e2;
+      console.warn(`[cells] ${service}: Cloud Run refused the in-memory working volume too (${String(e2?.message ?? e2).slice(0, 300)}); new image with no volume`);
+      return call('PATCH', `${url}?updateMask=template.containers,template.volumes`, plainBody(true), o);
+    }
   }
 }
 
@@ -384,7 +408,7 @@ export async function rollCells(image: string, o: { dry?: boolean; health?: (url
     // Healthy means the NEW revision is ready and serving, then answering: the old one answers /api/health until it's
     // replaced, so a bad image used to pass every cell (2026-10-31 review). A cell that fails goes back to its image.
     let out = dryRun(o) ? { ok: true, why: null } : await (o.outcome ?? newRevisionOutcome)(cell.service, image, c);
-    let disk = true;
+    let disk: boolean | 'none' = true;
     // Refused for its working disk, not its image (2026-11-10 22:41: "Quota exceeded for total allowable ephemeral disk
     // allocation per project per region", and every fix on main stayed off J's Studio): the same image without the disk.
     // The next roll asks for the disk again, so the cell gets it back once Google allows it.
@@ -393,6 +417,13 @@ export async function rollCells(image: string, o: { dry?: boolean; health?: (url
       disk = false;
       await setImage(cell.service, image, { ...o, disk: false }, c);
       out = await (o.outcome ?? newRevisionOutcome)(cell.service, image, c);
+      // The sized in-memory volume refused too (never seen; it needs no quota): the image with no volume at all.
+      if (!out.ok && diskFailure(out.why)) {
+        log(`${cell.service}: the in-memory working volume was refused too (${String(out.why).slice(0, 200)}); the new image with no volume`);
+        disk = 'none';
+        await setImage(cell.service, image, { ...o, disk: 'none' }, c);
+        out = await (o.outcome ?? newRevisionOutcome)(cell.service, image, c);
+      }
     }
     if (!dryRun(o) && !(out.ok && (await health(serviceUrl(cell.org, c))))) {
       log(`${cell.service} is not healthy on the new image${out.why ? ` (${String(out.why).slice(0, 200)})` : ''}: back to ${cell.image.split(':').pop()}, and the roll stops here (${cells.length - done.length - 1} left on the old one)`);
