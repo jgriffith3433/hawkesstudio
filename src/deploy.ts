@@ -447,13 +447,17 @@ async function githubPlan(p: Product, io: GitHubIO = {}) {
   const warnings: string[] = [];
   if (managedElsewhere(p)) blockers.push(managedNote(p));
   let cmp: Compare = { main: null, beta: null, ahead: [], behind: [] };
+  let unread = false;
   try {
     cmp = await compareOnGitHub(slug, io.fetch ?? ((...a: Parameters<typeof fetch>) => fetch(...a)), io.token);
   } catch (e: any) {
+    // GitHub didn't answer (gh() already tried again): say so, not "connect GitHub", which sends J to fix access that works.
+    unread = true;
     blockers.push(`GitHub: ${e.message}`);
   }
   const beta = cmp.beta;
-  if (!cmp.main && !beta) blockers.push(`Studio can't read ${slug}'s ${MAIN} or ${BETA} on GitHub: connect GitHub and give Studio's app access to it (the project's setup check has the link).`);
+  if (unread) { /* the line above says why */ }
+  else if (!cmp.main && !beta) blockers.push(`Studio can't read ${slug}'s ${MAIN} or ${BETA} on GitHub: connect GitHub and give Studio's app access to it (the project's setup check has the link).`);
   else if (!beta) blockers.push(`${slug} has no ${BETA} branch on GitHub yet: make it from ${MAIN} (the project's setup does), then playtest it.`);
   else if (!cmp.main) blockers.push(`${slug} has no ${MAIN} branch on GitHub.`);
   // Live's extra commits only Studio's rollbacks: going live records them in beta first (an "ours" merge, beta's files),

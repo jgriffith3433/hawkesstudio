@@ -22,10 +22,30 @@ export const cloudGoLive = () => Boolean(process.env.K_SERVICE);
 
 const headers = (token?: string | null) => ({ Accept: 'application/vnd.github+json', 'User-Agent': 'hawkes-studio', 'X-GitHub-Api-Version': '2022-11-28', ...(token ? { Authorization: `Bearer ${token}` } : {}) });
 
+/** Waits between tries of a read GitHub didn't answer (a test sets them to 0). */
+export const ghRetry = { waits: [1_000, 4_000] };
+
+/**
+ * One GitHub API call. A read (GET) that times out, can't connect or gets a 5xx or 429 is tried again (ghRetry.waits),
+ * since one slow answer from GitHub used to fail a whole go live with "connect GitHub" (2026-11-10, 21:26: the plan's
+ * compare timed out, the go live failed, and nothing tried again until beta moved). Writes are never repeated here.
+ */
 export async function gh(f: Fetch, token: string | null | undefined, method: string, url: string, body?: unknown) {
-  const r = await f(`https://api.github.com${url}`, { method, headers: { ...headers(token), ...(body ? { 'Content-Type': 'application/json' } : {}) }, body: body ? JSON.stringify(body) : undefined, signal: AbortSignal.timeout(30_000) });
-  const j = (await r.json().catch(() => ({}))) as any;
-  return { ok: r.ok, status: r.status, j };
+  const read = method === 'GET';
+  for (let i = 0; ; i++) {
+    const last = !read || i >= ghRetry.waits.length;
+    let r: Response;
+    try {
+      r = await f(`https://api.github.com${url}`, { method, headers: { ...headers(token), ...(body ? { 'Content-Type': 'application/json' } : {}) }, body: body ? JSON.stringify(body) : undefined, signal: AbortSignal.timeout(30_000) });
+    } catch (e: any) {
+      if (last) throw new Error(`GitHub didn't answer ${method} ${url.split('?')[0]}: ${e?.message ?? e}`);
+      await new Promise((w) => setTimeout(w, ghRetry.waits[i]));
+      continue;
+    }
+    if (!last && (r.status >= 500 || r.status === 429)) { await new Promise((w) => setTimeout(w, ghRetry.waits[i])); continue; }
+    const j = (await r.json().catch(() => ({}))) as any;
+    return { ok: r.ok, status: r.status, j };
+  }
 }
 
 export const commitOf = (c: any): Commit => ({ sha: c.sha, short: String(c.sha).slice(0, 7), author: c.commit?.author?.name ?? c.author?.login ?? '?', date: c.commit?.committer?.date ?? c.commit?.author?.date ?? '', title: String(c.commit?.message ?? '').split('\n')[0] });
