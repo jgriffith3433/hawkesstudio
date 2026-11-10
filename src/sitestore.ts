@@ -340,7 +340,7 @@ export async function githubFiles(slug: string, sha: string, { sub = '', fetcher
   files.cleanup = () => { for (const d of dirs.splice(0)) fs.rmSync(d, { recursive: true, force: true }); got.clear(); };
   files.prefetch = async (paths, progress) => {
     await import('./disksweep.ts').then((d) => d.ensureDiskRoom(80 * 1024 * 1024, { say: (s) => progress?.(s) })).catch((e) => {
-      if (/in-memory disk is full/.test(String(e?.message ?? e))) throw e;
+      if (/(in-memory|working) disk is full/.test(String(e?.message ?? e))) throw e;
     });
     if (paths.length <= TARBALL_OVER) return;
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'site-'));

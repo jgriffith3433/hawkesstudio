@@ -51,8 +51,29 @@ export function diskInfo(dir = PROJECTS): DiskInfo {
   }
 }
 
-/** Soft ceiling: disk used under this share of the memory (cgroup) limit. */
+/**
+ * Whether Studio's working files (PROJECTS: product clones, agents' worktrees, installs) sit on a real disk rather than
+ * in RAM. On Cloud Run they used to share the instance's memory, so the disk filled memory within about an hour of a
+ * restart and the memory gate idled half the slots (2026-11-10: 5.7 slot-hours). Cells now mount an ephemeral disk at
+ * /disk (cellrun.ts CELL_DISK; the entrypoint moves PROJECTS onto it when it is there). On a real disk, room is the
+ * disk's own free space and the memory gate no longer counts these files.
+ */
+const DISK_FS = new Set([0xef53 /* ext2/3/4 */, 0x58465342 /* xfs */, 0x9123683e /* btrfs */]);
+export let realDiskSource: (() => boolean) | null = null;
+export function setRealDiskSource(f: (() => boolean) | null) { realDiskSource = f; }
+export function onRealDisk(dir = PROJECTS): boolean {
+  if (realDiskSource) return realDiskSource();
+  if (diskSource) return false; // the tests' disk is the in-memory one unless they say otherwise
+  try { return DISK_FS.has(Number(fs.statfsSync(dir).type)); } catch { return false; }
+}
+/** On a real disk: the share of it Studio fills before it sweeps hard. */
+export const REAL_DISK_SHARE = 0.85;
+/** On a real disk: free space that must stay after a write (512 MB, or 5% of a bigger disk). */
+export const realDiskFloor = (size = diskInfo().size) => Math.max(512 * MB, Math.floor(size * 0.05));
+
+/** Soft ceiling: on a real disk, most of it; in RAM, this share of the memory (cgroup) limit. */
 export function diskBudget(limit = memInfo().limit): number {
+  if (onRealDisk()) return Math.floor(diskInfo().size * REAL_DISK_SHARE);
   return Math.floor(limit * diskShare());
 }
 
@@ -78,13 +99,14 @@ export const diskFloor = (limit = memInfo().limit) => {
  */
 export function diskFull(need = 0): boolean {
   if (process.env.STUDIO_DISK_SWEEP === 'off') return false;
+  if (onRealDisk()) { const d = diskInfo(); return d.free - need < realDiskFloor(d.size); }
   return memInfo().available - need < diskFloor();
 }
 
 export function diskSummary(): string {
   const d = diskInfo();
   const gb = (n: number) => (n / 1024 ** 3).toFixed(2);
-  return `${gb(d.used)} GB used of ${gb(d.size)} GB (${d.pct}%; budget ${gb(diskBudget())} GB; ${gb(memInfo().available)} GB of memory free)`;
+  return `${gb(d.used)} GB used of ${gb(d.size)} GB (${d.pct}%; ${onRealDisk() ? 'on disk' : 'in memory'}; budget ${gb(diskBudget())} GB; ${gb(memInfo().available)} GB of memory free)`;
 }
 
 export type SweepReport = {
@@ -284,7 +306,7 @@ export async function ensureDiskRoom(need = 0, opts: { keep?: Set<string>; repos
   if (!diskFull(need)) return diskSummary();
   await sweepDisk({ hard: true, keep: opts.keep, repos: opts.repos, say: opts.say });
   if (!diskHigh(need) || !diskFull(need)) return diskSummary();
-  throw new Error(`in-memory disk is full (${diskSummary()}; need ${Math.round(need / MB)} MB more). Cleared profiles, logs, tmp and ended worktrees; free space and try again.`);
+  throw new Error(`${onRealDisk() ? 'working' : 'in-memory'} disk is full (${diskSummary()}; need ${Math.round(need / MB)} MB more). Cleared profiles, logs, tmp and ended worktrees; free space and try again.`);
 }
 
 /** Resolve live keep-set and repo list from Studio's DB (lazy import so tests stay free of agents.ts). */

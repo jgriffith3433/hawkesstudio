@@ -116,11 +116,44 @@ export function withCellLimits(limits: Record<string, string> | undefined): Reco
   return l;
 }
 
+/**
+ * Studio's working disk: product clones, agents' worktrees, dependency installs, temp files and the npm cache. Without it
+ * they live on Cloud Run's in-memory filesystem and count against the 4 GiB limit: after a restart the disk filled
+ * memory within about an hour and the memory gate held half the agents (2026-11-10, 5.7 idle slot-hours that day).
+ * A Cloud Run ephemeral disk (gen2, Preview: the service carries launchStage BETA) is real disk, wiped when the instance
+ * ends, which is all this needs (clones and worktrees are made again on demand). The entrypoint moves STUDIO_PROJECTS,
+ * TMPDIR and the npm cache onto it when it is mounted. 10 GiB is the default per-instance allowance.
+ */
+export const CELL_DISK = { name: 'studio-work', mountPath: '/disk', sizeLimit: '10Gi' } as const;
+export const cellDiskVolume = () => ({ name: CELL_DISK.name, emptyDir: { medium: 'DISK', sizeLimit: CELL_DISK.sizeLimit } });
+/** A container's mounts with the working disk's (once). */
+export const withDiskMount = (mounts: any[] | undefined) => [...(mounts ?? []).filter((m) => m?.name !== CELL_DISK.name && m?.mountPath !== CELL_DISK.mountPath), { name: CELL_DISK.name, mountPath: CELL_DISK.mountPath }];
+/** A service's volumes with the working disk's (once). */
+export const withDiskVolume = (volumes: any[] | undefined) => [...(volumes ?? []).filter((v) => v?.name !== CELL_DISK.name), cellDiskVolume()];
+/** The same service body without the working disk: what Cloud Run took before (a refusal of the disk falls back to it). */
+export function withoutDisk(body: any) {
+  const b = structuredClone(body);
+  delete b.launchStage;
+  if (b.template) {
+    b.template.volumes = (b.template.volumes ?? []).filter((v: any) => v?.name !== CELL_DISK.name);
+    if (!b.template.volumes.length) delete b.template.volumes;
+    b.template.containers = (b.template.containers ?? []).map((ct: any) => {
+      const m = (ct.volumeMounts ?? []).filter((x: any) => x?.name !== CELL_DISK.name);
+      const { volumeMounts: _drop, ...rest } = ct;
+      return m.length ? { ...rest, volumeMounts: m } : rest;
+    });
+  }
+  return b;
+}
+/** Google refused the request because of the disk (or its launch stage), not something else: try without it. */
+const diskRefused = (e: any) => /\b400\b|INVALID_ARGUMENT|launch.?stage|emptyDir|ephemeral|volume|quota/i.test(String(e?.message ?? e));
+
 /** The service body for a cell (Cloud Run Admin API v2 Service). */
 export function cellService(org: string, owner: { sub: string; email: string }, image: string, c = cellsConfig(), gen?: CellGen) {
   return {
     labels: { 'hawkes-studio-cell': '1', 'hawkes-org': org, 'hawkes-lane': c.lane },
     ingress: 'INGRESS_TRAFFIC_ALL',
+    launchStage: 'BETA',
     template: {
       labels: { 'hawkes-studio-cell': '1', 'hawkes-org': org },
       // Its own account when isolated (cellAccount below), else the shared studio-cells@.
@@ -134,7 +167,9 @@ export function cellService(org: string, owner: { sub: string; email: string }, 
         env: Object.entries(cellEnv(org, owner, c, gen)).map(([name, value]) => ({ name, value })),
         resources: { limits: { ...CELL_LIMITS }, cpuIdle: false },
         startupProbe: CELL_STARTUP_PROBE,
+        volumeMounts: withDiskMount(undefined),
       }],
+      volumes: [cellDiskVolume()],
     },
   };
 }
@@ -160,6 +195,11 @@ export async function createCell(org: string, owner: { sub: string; email: strin
   for (let i = 0; ; i++) {
     try { op = await call('POST', `${base(c)}/services?serviceId=${name}`, cellService(org, owner, image, c, gen), o); break; }
     catch (e: any) {
+      if (!/409/.test(String(e?.message ?? e)) && diskRefused(e)) {
+        console.warn(`[cells] ${name}: Cloud Run refused the working disk (${String(e?.message ?? e).slice(0, 300)}); made without it`);
+        op = await call('POST', `${base(c)}/services?serviceId=${name}`, withoutDisk(cellService(org, owner, image, c, gen)), o);
+        break;
+      }
       if (!/409/.test(String(e?.message ?? e)) || i >= 6) throw e;
       if (await getCell(org, o, c).catch(() => null)) break;
       await new Promise((r) => setTimeout(r, 10_000));
@@ -224,7 +264,17 @@ export async function setImage(service: string, image: string, o: { dry?: boolea
   if (dryRun(o)) return call('PATCH', `${url}?updateMask=template.containers`, { template: { containers: [{ image }] } }, o);
   const s = await gapi(url);
   const containers = (s.template?.containers ?? [{}]).map((ct: any, i: number) => (i === 0 ? { ...ct, image, resources: { ...(ct.resources ?? {}), limits: withCellLimits(ct.resources?.limits) }, startupProbe: CELL_STARTUP_PROBE } : ct));
-  return call('PATCH', `${url}?updateMask=template.containers`, { template: { containers } }, o);
+  // With the working disk (CELL_DISK): the roll after a deploy brings every cell onto it. Refused (a launch stage or a
+  // quota Google won't take): the image alone, as before, so a deploy never fails for the disk.
+  const withDisk = { launchStage: 'BETA', template: { containers: containers.map((ct: any, i: number) => (i === 0 ? { ...ct, volumeMounts: withDiskMount(ct.volumeMounts) } : ct)), volumes: withDiskVolume(s.template?.volumes) } };
+  try {
+    return await call('PATCH', `${url}?updateMask=launchStage,template.containers,template.volumes`, withDisk, o);
+  } catch (e: any) {
+    if (!diskRefused(e)) throw e;
+    console.warn(`[cells] ${service}: Cloud Run refused the working disk (${String(e?.message ?? e).slice(0, 300)}); new image without it`);
+    const plain = containers.map((ct: any) => ({ ...ct, volumeMounts: (ct.volumeMounts ?? []).filter((m: any) => m?.name !== CELL_DISK.name) })).map((ct: any) => (ct.volumeMounts.length ? ct : (({ volumeMounts: _v, ...r }) => r)(ct)));
+    return call('PATCH', `${url}?updateMask=template.containers`, { template: { containers: plain } }, o);
+  }
 }
 
 /**
