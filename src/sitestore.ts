@@ -247,7 +247,12 @@ export async function extractWanted(body: ReadableStream<Uint8Array> | NodeJS.Re
     }
     entry = null;
   };
-  for await (const chunk of src.pipe(zlib.createGunzip())) {
+  // pipe() doesn't pass the source's errors on: a download cut off mid-stream (undici's "TypeError: terminated") was
+  // an 'error' with no listener, an uncaught exception that restarted Studio (2026-11-10, twice in an hour). The
+  // gunzip side now ends with that error, so the loop below throws it to the caller instead.
+  const gunzip = zlib.createGunzip();
+  (src as NodeJS.ReadableStream).on('error', (e: Error) => gunzip.destroy(e));
+  for await (const chunk of src.pipe(gunzip)) {
     buf = buf.length ? Buffer.concat([buf, chunk as Buffer]) : (chunk as Buffer);
     for (;;) {
       if (entry) {
