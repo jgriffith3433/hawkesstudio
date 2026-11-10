@@ -190,6 +190,24 @@ export function finish(state, code, stderr) {
   return out;
 }
 
+/**
+ * The environment the Copilot CLI starts with. Copilot reads COPILOT_GITHUB_TOKEN, then GH_TOKEN, then GITHUB_TOKEN, and
+ * only then its own login: Studio's server has GITHUB_TOKEN (its repo push token, often a classic ghp_ one) for git, so
+ * Copilot took that and refused it ("Classic Personal Access Tokens (ghp_) are not supported"), even with J signed in.
+ * The repo tokens are never Copilot's; a classic COPILOT_GITHUB_TOKEN is dropped too when there is a login to use instead.
+ */
+export function copilotEnv(env = process.env, home = env.HOME || os.homedir()) {
+  const out = { ...env, NO_COLOR: '1' };
+  delete out.GH_TOKEN;
+  delete out.GITHUB_TOKEN;
+  const copilotHome = env.COPILOT_HOME || path.join(home, '.copilot');
+  const login = Boolean(env.COPILOT_CREDS) || ['config.json', 'hosts.json', 'apps.json'].some((f) => {
+    try { return /oauth|token|login|user/i.test(fs.readFileSync(path.join(copilotHome, f), 'utf8').slice(0, 4000)); } catch { return false; }
+  });
+  if (/^ghp_/.test(String(out.COPILOT_GITHUB_TOKEN ?? '').trim()) && login) delete out.COPILOT_GITHUB_TOKEN;
+  return out;
+}
+
 let current = null;
 function runAgent(parsed, prompt, session, fresh) {
   const state = { session, sessionLocked: true, text: '', started: false, deltas: false, announced: new Set(), began: Date.now(), error: '', turns: 0, capped: false };
@@ -201,7 +219,7 @@ function runAgent(parsed, prompt, session, fresh) {
       const script = /\.(mjs|cjs|js)$/i.test(bin);
       const argv = copilotArgs(parsed, promptWith(parsed, prompt, fresh), session);
       child = spawn(script ? process.execPath : bin, [...(script ? [bin] : []), ...argv], {
-        cwd: process.cwd(), env: { ...process.env, NO_COLOR: '1' }, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true,
+        cwd: process.cwd(), env: copilotEnv(), stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true,
       });
     } catch (e) {
       for (const ev of finish(state, 1, `couldn't start copilot: ${e.message}`)) process.stdout.write(`${JSON.stringify(ev)}\n`);

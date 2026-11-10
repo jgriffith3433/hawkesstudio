@@ -23,8 +23,9 @@ harness in the chain (default `claude,cursor,copilot`; override with `STUDIO_HAR
 4. Settings → Harness → GitHub Copilot, optionally with a model (any id Copilot lists, for example `gpt-5.4` or
    `claude-sonnet-4.5`). Empty uses Copilot's default (`COPILOT_MODEL` env also works).
 
-Env: `COPILOT_GITHUB_TOKEN`, `COPILOT_HOME`, `COPILOT_BIN`, `COPILOT_MODEL`, `COPILOT_EFFORT`. `GH_TOKEN` is never passed
-to agents (it is the push token).
+Env: `COPILOT_GITHUB_TOKEN`, `COPILOT_HOME`, `COPILOT_BIN`, `COPILOT_MODEL`, `COPILOT_EFFORT`. `GH_TOKEN` and
+`GITHUB_TOKEN` (Studio's push token) never reach Copilot: the adapter (`copilotEnv`) removes them, since Copilot reads them
+before its own login and refuses a classic `ghp_` one. A classic `COPILOT_GITHUB_TOKEN` is dropped too when a login is kept.
 
 ## Limits
 
