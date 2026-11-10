@@ -68,3 +68,23 @@ test('end to end against a stand-in copilot binary', () => {
   assert.equal(lines.at(-1).result, 'done');
   assert.equal(lines.at(-1).is_error, false);
 });
+
+test("Copilot never gets Studio's repo tokens, and a classic token gives way to the kept sign-in", async () => {
+  const { copilotEnv } = await import('../bin/copilot-agent.mjs');
+  const fs = await import('node:fs');
+  const os = await import('node:os');
+  const path = await import('node:path');
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'copilot-env-'));
+  const base = { HOME: home, GITHUB_TOKEN: 'ghp_repo', GH_TOKEN: 'ghp_repo2', PATH: '/bin' };
+  const a = copilotEnv(base);
+  assert.equal(a.GITHUB_TOKEN, undefined);
+  assert.equal(a.GH_TOKEN, undefined);
+  assert.equal(a.NO_COLOR, '1');
+  // A fine-grained token stays; a classic one stays only when there is no login to fall back on (its error names it).
+  assert.equal(copilotEnv({ ...base, COPILOT_GITHUB_TOKEN: 'github_pat_x' }).COPILOT_GITHUB_TOKEN, 'github_pat_x');
+  assert.equal(copilotEnv({ ...base, COPILOT_GITHUB_TOKEN: 'ghp_old' }).COPILOT_GITHUB_TOKEN, 'ghp_old');
+  assert.equal(copilotEnv({ ...base, COPILOT_GITHUB_TOKEN: 'ghp_old', COPILOT_CREDS: 'x' }).COPILOT_GITHUB_TOKEN, undefined);
+  fs.mkdirSync(path.join(home, '.copilot'));
+  fs.writeFileSync(path.join(home, '.copilot', 'config.json'), '{"logged_in_users":[{"login":"j"}]}');
+  assert.equal(copilotEnv({ ...base, COPILOT_GITHUB_TOKEN: 'ghp_old' }).COPILOT_GITHUB_TOKEN, undefined);
+});

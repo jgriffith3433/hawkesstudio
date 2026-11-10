@@ -438,7 +438,9 @@ export async function inbox({ tokens = false }: { tokens?: boolean } = {}): Prom
     const title = t.stuck
       ? `AI work is paused: no provider can take it${signedOut.length ? ` (${signedOut.map((h) => LABEL[h.harness]).join(', ')} need${signedOut.length === 1 ? 's' : ''} you)` : ''}`
       : signedOut.length === 1 ? `${LABEL[signedOut[0].harness]} needs you: ${signedOut[0].why}` : `${signedOut.length} AI providers need you`;
-    const fix = signedOut.map((h) => h.kind === 'auth' ? `Sign ${LABEL[h.harness]} in again: Settings → AI providers → Sign in.` : `${LABEL[h.harness]}: pay or raise what its account asks for, then Check again.`);
+    const fix = signedOut.map((h) => h.kind === 'auth' && h.harness === 'copilot' && /classic personal access token|ghp_/i.test(`${h.why} ${h.line ?? ''}`)
+      ? 'Copilot was given a classic GitHub token (ghp_), which it refuses: Settings → AI providers → Copilot → Sign in (your GitHub account), or a fine-grained token with the account permission "Copilot Requests".'
+      : h.kind === 'auth' ? `Sign ${LABEL[h.harness]} in again: Settings → AI providers → Sign in.` : `${LABEL[h.harness]}: pay or raise what its account asks for, then Check again.`);
     const text = [
       t.lines.join('\n'),
       fix.join('\n'),
