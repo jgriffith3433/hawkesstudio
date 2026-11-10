@@ -476,6 +476,12 @@ export function attentionOf(host: Host | null, w: Awaited<ReturnType<typeof work
   return out.sort((a, b) => (a.level === b.level ? 0 : a.level === 'bad' ? -1 : 1));
 }
 
+/** The agent queue sitting with free slots and nothing starting (agents.ts queueHealth): a warning (pure: tested). */
+export function queueAttention(q: { stalled: string | null; heldBy: string | null } | null): Attention | null {
+  if (!q?.stalled) return null;
+  return { level: 'warn', text: `The agent queue isn't moving: ${q.stalled}. Held by: ${q.heldBy ?? 'nothing named'}. Studio drops timed holds and starts it again on its next look.` };
+}
+
 /** The page's one sentence: the worst problem, or that all is fine with the main numbers. */
 export function headline(host: Host | null, attention: Attention[], w: Awaited<ReturnType<typeof work>> | null) {
   if (attention.length) return attention[0].text;
@@ -590,7 +596,8 @@ export async function resources({ range = '1h' } = {}) {
   const s = resourceSettings();
   const xs = await import('./external.ts');
   const gb = (await import('./genpace.ts')).genBusyAttention();
-  const attention = [...attentionOf(host, w, fl, s), ...netAttention(net), ...(gb ? [gb] : []), ...xs.externalIncidents(s).map((i) => ({ level: 'bad' as const, text: `${i.title}: ${i.message}` }))]
+  const qa = queueAttention(await import('./agents.ts').then((A) => A.queueHealth()).catch(() => null));
+  const attention = [...attentionOf(host, w, fl, s), ...netAttention(net), ...(gb ? [gb] : []), ...(qa ? [qa] : []), ...xs.externalIncidents(s).map((i) => ({ level: 'bad' as const, text: `${i.title}: ${i.message}` }))]
     .sort((a, b) => (a.level === b.level ? 0 : a.level === 'bad' ? -1 : 1));
   return {
     at: Date.now(), headline: headline(host, attention, w), attention, host, loop: loopHealth(), commands: runningCommands(),
