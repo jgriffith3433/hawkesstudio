@@ -1321,6 +1321,8 @@ server.listen(listenPort, cloud ? '0.0.0.0' : '127.0.0.1', () => {
   // A restart (a deploy) ends nothing: runs, agent changes and Talk answers carry on from where they were, waiting on
   // the same Gen jobs and reading the same detached Claude Code processes (drain.ts, detach.ts).
   // Queued go-lives and rollbacks carry on (ops.ts), and the event loop is watched for anything that blocks it.
+  // Git commands start from a small helper process (spawner.ts), started now while Studio is small.
+  void import('./spawner.ts').then((sp) => sp.startSpawner());
   void import('./ops.ts').then((ops) => { ops.startLoopMonitor(); const n = ops.resumeOps(); if (n) console.log(`[studio] ${n} background operation(s) back in the queue after the restart`); });
   void import('./deploy.ts');
   // The agent sandbox commits in its worktrees: every repo's and worktree's git folder is the agent group's (sandbox.ts).

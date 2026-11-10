@@ -32,7 +32,7 @@ import { critical, criticalSync } from './drain.ts';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { db, J, parse } from './db.ts';
-import { DATA, PROJECTS, getProduct, getInfra, isInfra, today, StudioError, betaPlaytestsOn, loadInfra, loadProducts, managedElsewhereId } from './config.ts';
+import { DATA, PROJECTS, getProduct, getInfra, isInfra, today, StudioError, betaPlaytestsOn, loadInfra, loadProducts, managedElsewhereId, fileSig } from './config.ts';
 import {
   getTask, setTask, getItem, startableTasks, tasksAwaitingGpu, taskOfChange, addQuestion, listQuestions, getQuestion, setQuestion, addComment, isCommentSubject,
   logDecision, listDecisions, getDecision, markUndone, countToday, listItems, threadFor, milestonesToReach, markReached, getMilestone, milestoneTasks, setMilestoneChecks,
@@ -119,14 +119,25 @@ export function savePmSettings(patch: Partial<PmSettings>, by = 'J') {
 
 // State that survives restarts: the last daily turn, the PM conversation.
 const STATE = path.join(DATA, 'pm-state.json');
-const state = (): { daily?: string; conversation?: { id: string; day: string }; since?: number } => {
-  try {
-    return JSON.parse(fs.readFileSync(STATE, 'utf8'));
-  } catch {
-    return {};
-  }
+type PmState = { daily?: string; conversation?: { id: string; day: string }; since?: number };
+// Read once per version of the file (2026-11-10): heldFor/rescues/blockers per task parsed pm-state.json on every call,
+// 270-700 ms of each event-loop freeze over a few hundred tasks. What state() returns is shared: read it, and copy
+// (structuredClone) before changing anything, then saveState.
+let stateMemo: { sig: string; v: PmState } | null = null;
+const state = (): PmState => {
+  const sig = fileSig(STATE);
+  if (stateMemo?.sig === sig) return stateMemo.v;
+  let v: PmState = {};
+  try { v = JSON.parse(fs.readFileSync(STATE, 'utf8')) ?? {}; } catch { /* none yet */ }
+  stateMemo = { sig, v };
+  return v;
 };
-const saveState = (patch: Record<string, unknown>) => fs.writeFileSync(STATE, JSON.stringify({ ...state(), ...patch }, null, 2));
+const saveState = (patch: Record<string, unknown>) => {
+  const text = JSON.stringify({ ...state(), ...patch }, null, 2);
+  fs.writeFileSync(STATE, text);
+  // The memo is what was written (a copy: the caller may keep changing what it passed).
+  stateMemo = { sig: fileSig(STATE), v: JSON.parse(text) };
+};
 
 // ----------------------------------------------------------------- helpers
 
@@ -1652,7 +1663,7 @@ function retryOrPark(t: Task, why: string): 'retry' | 'rescue' | 'park' {
  * checks: beta's check of this task (its run, verdict); results: everything that run judged.
  */
 export async function decideMiss(t: Task, checks: { where: 'beta'; at: number; run: string; video?: string | null; verdict?: string }, results: Check[]) {
-  const all = investigations();
+  const all = structuredClone(investigations());
   const open = all[t.product];
   if (open?.tasks.includes(t.id)) return 'held';
   const missed = (x: Task) => x.criteria.filter((k) => results.find((r) => r.criterion === k)?.met === 'no');
@@ -1692,7 +1703,7 @@ export async function decideMiss(t: Task, checks: { where: 'beta'; at: number; r
 
 /** Investigations that finished: merged, their tasks judged again on beta (one beta run); failed or closed, each task decided alone. */
 export async function releaseInvestigations() {
-  const all = investigations();
+  const all = structuredClone(investigations());
   if (!Object.keys(all).length) return [];
   const { getChange } = await changes();
   const out: string[] = [];
@@ -1746,7 +1757,7 @@ export async function settleMissQuestions() {
   }
   const out: string[] = [];
   for (const [product, list] of byProduct) {
-    const all = investigations();
+    const all = structuredClone(investigations());
     let inv = all[product];
     if (!inv) {
       const fixing = (db.prepare(`SELECT id, title, request FROM changes WHERE product = ? AND task IS NULL AND status NOT IN ('merged', 'closed', 'failed') ORDER BY created DESC`).all(product) as any[])
@@ -1879,7 +1890,7 @@ export async function undoDecision(id: string, by = 'J') {
     const { close, getChange } = await changes();
     if (u.change && getChange(u.change) && !['merged', 'closed'].includes(getChange(u.change)!.status)) await close(u.change, by);
     if (u.change) {
-      const all = investigations();
+      const all = structuredClone(investigations());
       for (const [k, v] of Object.entries(all)) if (v.change === u.change) delete all[k];
       saveInvestigations(all);
     }
@@ -2042,7 +2053,7 @@ const blockerOf = (product: string) => {
  * (followBlockers). Returns the fix's task.
  */
 export function fileBlocker(a: { from: string; product: string; target: string; text: string; tasks: string[] }) {
-  const all = blockers();
+  const all = structuredClone(blockers());
   let fix = Object.entries(all).find(([, b]) => b.product === a.product && b.target === a.target)?.[0] ?? null;
   if (!fix || !getTask(fix)) {
     const it = addItem({ product: a.target, title: `Unblock ${name(a.product)}: a fix in ${name(a.target)}`, status: 'planned', priority: 'high', by: 'Studio PM', goal: `${name(a.product)}'s work waits on this` });
@@ -2078,7 +2089,7 @@ async function blockerFromFix(changeId: string) {
 
 /** Fixes elsewhere that merged: the product they blocked builds beta again. Dropped ones release their tasks. */
 export async function followBlockers() {
-  const all = blockers();
+  const all = structuredClone(blockers());
   const out: string[] = [];
   for (const [fix, b] of Object.entries(all)) {
     const k = getTask(fix);
@@ -2248,7 +2259,7 @@ function afterClosed(t: Task, c: any) {
 type Rescue = { scout: string | null; at: number; state: 'scouting' | 'retrying'; why: string; diagnosis?: string };
 const rescues = (): Record<string, Rescue> => (state() as any).rescues ?? {};
 const saveRescue = (id: string, r: Rescue | null) => {
-  const all = rescues();
+  const all = structuredClone(rescues());
   if (r) all[id] = r; else delete all[id];
   saveState({ rescues: all });
 };

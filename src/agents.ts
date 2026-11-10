@@ -98,6 +98,7 @@ import { githubReachable } from './ghtoken.ts';
 import { kickFollowups } from './followup-kick.ts';
 import { POLISH_BY } from './polish.ts';
 import { sessionGone, freshSessionPrompt } from './sessiongone.ts';
+import { memLow, memRoom, memFreed, memSummary } from './memgate.ts';
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS changes (
@@ -790,7 +791,7 @@ export const COMMIT_DENIED = /index\.lock|(commit|\.git)[^\n]{0,80}permission de
  * when the agent said so and the tree has changes; the caller checked the worktree still links here (assertWorktree).
  */
 async function commitForAgent(id: string, worktree: string, title: string, said: string) {
-  if (!COMMIT_DENIED.test(said) || !git(worktree, ['status', '--porcelain']).out) return false;
+  if (!COMMIT_DENIED.test(said) || !(await gitAsync(worktree, ['status', '--porcelain'])).out) return false;
   const add = await gitAsync(worktree, ['add', '--sparse', '-A']);
   const commit = add.ok && await gitAsync(worktree, ['-c', 'core.hooksPath=/dev/null', 'commit', '--no-verify', '-m', `${title.slice(0, 72)}\n\nCommitted by Hawkes Studio: the agent's own git commit was refused (a permission error in the worktree's git folder).`]);
   if (!add.ok || !commit || !commit.ok) {
@@ -1652,6 +1653,8 @@ async function agentPassRaw(id: string, ph: Phase, save: (patch: Partial<Phase>)
 // ------------------------------------------------------------------ flow
 
 const running = new Set<string>();
+/** Changes whose work has started in this process (pump, launchResume): what memRoom weighs memory against. */
+let inFlight = 0;
 
 export function costToday() {
   const since = new Date();
@@ -1865,9 +1868,16 @@ async function pump() {
     if (detail !== (c.detail ?? '')) update(c.id, { detail });
     ahead.set(c.product, [...before, c.id]);
   }
+  // Memory is the floor under maxConcurrent (memgate.ts): while too little is free, nothing new starts beside running work.
+  if (picks.length && memLow()) {
+    const room = inFlight > 0 ? 0 : 1;
+    const why = `queued: waits for memory to free up (${memSummary()})`;
+    for (const id of picks.splice(room)) { const c = getChange(id); if (c && !String(c.detail ?? '').startsWith('queued: waits for memory')) update(id, { detail: why }); }
+  }
   for (const id of picks) {
     const c = getChange(id)!;
     running.add(c.id);
+    inFlight++;
     // Back from waiting on Gen: its own session continues with the jobs' results (same worktree, same branch).
     const ph = phaseOf(c.id);
     // Back from a harness hold: the same, from the step it parked at (harnessResume).
@@ -1875,6 +1885,8 @@ async function pump() {
     if (back) update(c.id, { status: 'working', detail: ph!.harness ? `${brainLabel()} carries on after the harness hold` : `its Gen jobs finished: ${brainLabel()} continues with them` });
     void work(c.id, undefined, undefined, back, Boolean(back)).finally(() => {
       running.delete(c.id);
+      inFlight--;
+      memFreed();
       remember(c.id);
       void pump();
     });
@@ -1922,7 +1934,7 @@ async function publish(id: string, { force, title, body }: { force: boolean; tit
  */
 export async function ensureSourceReady(id: string, c: Pick<Change, 'worktree' | 'product' | 'infra'>, log: (m: string) => void = (m) => addLog(id, m), opts: { rebuild?: () => Promise<void>; sleep?: (ms: number) => Promise<void> } = {}) {
   if (c.infra) return;
-  const light = git(c.worktree, ['config', '--get', 'hawkes.light']).out === 'true';
+  const light = (await gitAsync(c.worktree, ['config', '--get', 'hawkes.light'])).out === 'true';
   // A full checkout shows its own Unity-ness (Assets/ tracked); a light one of a Unity product must have its code.
   const unity = light && isUnity(c.product);
   if (!light && !isUnity(c.product)) return;
@@ -1939,10 +1951,10 @@ export async function rebuildWorktree(id: string) {
   const repoDir = path.join(PROJECTS, c.repo);
   await checkoutSlot(() => critical(`making the worktree of ${id} again`, async () => {
     assertWorktreeRoot(c.worktree);
-    git(repoDir, ['worktree', 'remove', '--force', c.worktree]);
+    await gitAsync(repoDir, ['worktree', 'remove', '--force', c.worktree]);
     fs.rmSync(c.worktree, { recursive: true, force: true });
-    git(repoDir, ['worktree', 'prune']);
-    const has = git(repoDir, ['rev-parse', '--verify', '--quiet', `refs/heads/${c.branch}`]).ok;
+    await gitAsync(repoDir, ['worktree', 'prune']);
+    const has = (await gitAsync(repoDir, ['rev-parse', '--verify', '--quiet', `refs/heads/${c.branch}`])).ok;
     const w = await addWorktree(repoDir, c.worktree, has ? [c.worktree, c.branch] : ['-b', c.branch, c.worktree, `origin/${c.base}`], gitAsync, { removeLeftover: true, log: (m) => addLog(id, m), onKilled: lowerCheckouts });
     if (!w.ok) throw new Error(`worktree failed: ${w.err}`);
   }));
@@ -2008,11 +2020,11 @@ async function work(id: string, note?: string, answer?: string, resumed?: Phase 
             await gitAsync(repoDir, ['fetch', '--quiet', 'origin']);
           }
           // A worktree a restart cut off halfway is forgotten first; its branch is reused.
-          git(repoDir, ['worktree', 'prune']);
+          await gitAsync(repoDir, ['worktree', 'prune']);
           // Work saved on GitHub after an earlier pass (savework.ts) wins over beta: a restart that lost the worktree restarts from it.
           const restored = await restoreBranch(repoDir, c.branch);
           if (restored) addLog(id, restored);
-          const has = git(repoDir, ['rev-parse', '--verify', '--quiet', `refs/heads/${c.branch}`]).ok;
+          const has = (await gitAsync(repoDir, ['rev-parse', '--verify', '--quiet', `refs/heads/${c.branch}`])).ok;
           const w = await addWorktree(repoDir, c.worktree, has ? [c.worktree, c.branch] : ['-b', c.branch, c.worktree, `origin/${c.base}`], gitAsync, { removeLeftover: !fs.existsSync(path.join(c.worktree, '.git')), log: (m) => addLog(id, m), onKilled: lowerCheckouts });
           if (!w.ok) throw new Error(`worktree failed: ${w.err}`);
         }));
@@ -2038,7 +2050,7 @@ async function work(id: string, note?: string, answer?: string, resumed?: Phase 
       // A question or a stuck report from an earlier pass isn't read again (attemptsBrief carries what they said).
       fs.rmSync(path.join(c.worktree, '.hawkes', 'question.md'), { force: true });
       fs.rmSync(path.join(c.worktree, '.hawkes', 'stuck.md'), { force: true });
-      save({ step: 'agent', before: git(c.worktree, ['rev-parse', 'HEAD']).out, proc: undefined });
+      save({ step: 'agent', before: (await gitAsync(c.worktree, ['rev-parse', 'HEAD'])).out, proc: undefined });
     }
 
     if (ph.step === 'agent') {
@@ -2084,16 +2096,16 @@ async function work(id: string, note?: string, answer?: string, resumed?: Phase 
       assertWorktree(c.worktree, repoDir);
       const summaryFile = path.join(c.worktree, '.hawkes', 'summary.md');
       const summary = withStuck(c.worktree, fs.existsSync(summaryFile) ? fs.readFileSync(summaryFile, 'utf8').trim() : ph.result ?? '');
-      const listCommits = () => git(c.worktree, ['log', '--format=%h %s', `origin/${c.base}..HEAD`]).out.split('\n').filter(Boolean);
-      let commits = listCommits();
-      let changedNow = git(c.worktree, ['rev-parse', 'HEAD']).out !== ph.before;
+      const listCommits = async () => (await gitAsync(c.worktree, ['log', '--format=%h %s', `origin/${c.base}..HEAD`])).out.split('\n').filter(Boolean);
+      let commits = await listCommits();
+      let changedNow = (await gitAsync(c.worktree, ['rev-parse', 'HEAD'])).out !== ph.before;
       // The agent said it changed nothing, and the only commit is Studio's own "leftover changes" one (files the checkout showed
       // as modified, never the agent's): that commit is dropped, so no pull request opens and nothing reaches beta.
       if (commits.length && (decidedNoChange(summary) || saysNoChange(summary)) && onlyStudioCommits(c.worktree, c.base)) {
-        const r = git(c.worktree, ['reset', '--quiet', '--hard', `origin/${c.base}`]);
+        const r = await gitAsync(c.worktree, ['reset', '--quiet', '--hard', `origin/${c.base}`]);
         if (r.ok) {
           addLog(id, `the agent changed nothing (${summary.slice(0, 160).replace(/\s+/g, ' ')}): dropped Studio's leftover-changes commit (${commits.join('; ').slice(0, 160)}), no pull request`);
-          commits = listCommits();
+          commits = await listCommits();
           changedNow = false;
         }
       }
@@ -2102,7 +2114,7 @@ async function work(id: string, note?: string, answer?: string, resumed?: Phase 
       const question = fs.existsSync(questionFile) ? fs.readFileSync(questionFile, 'utf8').trim() : '';
       // Its commit refused by a permission error: Studio commits the work (the safety net behind shareWorktree).
       if (!question && (!commits.length || !changedNow) && await commitForAgent(id, c.worktree, c.title ?? id, `${ph.result ?? ''}\n${summary}`)) {
-        commits = listCommits();
+        commits = await listCommits();
         changedNow = true;
       }
       // It queued Gen jobs and ended (.hawkes/waiting-jobs.txt): parked until they finish, holding no slot (pollGenWaits).
@@ -2190,7 +2202,7 @@ async function work(id: string, note?: string, answer?: string, resumed?: Phase 
       // A project whose repository is Studio's or Gen's own (Gen's app: docs/projects.md) keeps their guard rails.
       const infraName = (/^jgriffith3433\/(hawkesstudio|hawkesgen)$/i.exec(c.slug ?? '') ?? [])[1]?.toLowerCase();
       if (infraName) {
-        const files = git(c.worktree, ['diff', '--name-only', `origin/${c.base}...HEAD`]).out.split('\n').filter(Boolean);
+        const files = (await gitAsync(c.worktree, ['diff', '--name-only', `origin/${c.base}...HEAD`])).out.split('\n').filter(Boolean);
         const bad = guardFiles(infraName, files, requestAndNotes(c));
         if (bad.length) {
           const list = bad.map((b) => `${b.file} (${b.why === 'forbidden' ? 'never changed by agents' : 'only when J names it'})`).join(', ');
@@ -2243,7 +2255,7 @@ async function work(id: string, note?: string, answer?: string, resumed?: Phase 
           return;
         }
       }
-      const diffstat = git(c.worktree, ['diff', '--shortstat', `origin/${c.base}...HEAD`]).out;
+      const diffstat = (await gitAsync(c.worktree, ['diff', '--shortstat', `origin/${c.base}...HEAD`])).out;
       update(id, { summary, commits, diffstat, detail: 'pushing and opening the pull request' });
       const unityMd = ph.unity ? `\n\n**${ph.unity.summary}**` : '';
       const criteriaMd = c.criteria.length ? `\n\n**Acceptance criteria:**\n${c.criteria.map((k) => `- ${k}`).join('\n')}` : '';
@@ -2255,14 +2267,14 @@ async function work(id: string, note?: string, answer?: string, resumed?: Phase 
       // owner knows nothing compiled this branch before it can merge (J, 2026-11-05).
       if (gate && !gate.run && gate.why) {
         addLog(id, gate.why);
-        const skipped = skippedCompile(gate.why, git(c.worktree, ['rev-parse', 'HEAD']).out);
+        const skipped = skippedCompile(gate.why, (await gitAsync(c.worktree, ['rev-parse', 'HEAD'])).out);
         save({ compile: skipped });
         const cur = getChange(id)!;
         if (!/Compile check skipped/.test(cur.summary ?? '')) update(id, { summary: `${cur.summary ?? summary}\n\n_${gate.why}._` });
       }
       if (gate?.run) {
         c = getChange(id)!;
-        const tipNow = git(c.worktree, ['rev-parse', 'HEAD']).out;
+        const tipNow = (await gitAsync(c.worktree, ['rev-parse', 'HEAD'])).out;
         update(id, { detail: 'Hawkes Gen is compiling the branch' });
         const cc = await runCompileCheck({ changeId: id, product: p.id, slug: c.slug, sha: tipNow, ref: `refs/heads/${c.branch}` }, (t) => update(id, { detail: t }));
         save({ compile: cc });
@@ -2286,7 +2298,7 @@ async function work(id: string, note?: string, answer?: string, resumed?: Phase 
       // only when J asks (playtestChange), and beta's run after the merge judges the criteria.
       const show = showcaseFor(c, p);
       if (show) addLog(id, `playtesting the change so its pull request ships with shots and a walk-through clip (${show})`);
-      save({ step: show ? 'verify' : 'finish', tip: git(c.worktree, ['rev-parse', 'HEAD']).out, jobs: {}, verify: undefined, ...(show ? { showcase: true } : {}) });
+      save({ step: show ? 'verify' : 'finish', tip: (await gitAsync(c.worktree, ['rev-parse', 'HEAD'])).out, jobs: {}, verify: undefined, ...(show ? { showcase: true } : {}) });
     }
 
     if (ph.step === 'verify') {
@@ -2313,8 +2325,8 @@ async function work(id: string, note?: string, answer?: string, resumed?: Phase 
     // Content and story changes are checked against the canon (canon.ts); a contradiction fails the merge gate.
     if (roleOf(c) === 'content') {
       update(id, { detail: 'checking the change against the canon' });
-      const files = git(c.worktree, ['diff', '--name-only', `origin/${c.base}...HEAD`]).out.split('\n').filter((f) => CONTENTISH.test(f));
-      const diff = files.length ? git(c.worktree, ['diff', `origin/${c.base}...HEAD`, '--', ...files.slice(0, 60)]).out : '';
+      const files = (await gitAsync(c.worktree, ['diff', '--name-only', `origin/${c.base}...HEAD`])).out.split('\n').filter((f) => CONTENTISH.test(f));
+      const diff = files.length ? (await gitAsync(c.worktree, ['diff', `origin/${c.base}...HEAD`, '--', ...files.slice(0, 60)])).out : '';
       // The task's request and criteria go with it: what the task asked for is never a conflict (canon.ts).
       const canon: CanonCheck = await canonCheck(p.id, diff, c.title ?? c.request ?? id, { request: c.request, criteria: c.criteria }).catch((e: any) => ({ ok: true, summary: `couldn't check: ${e.message}`, conflicts: [], checked: 0, skipped: 'error' }));
       addLog(id, `canon: ${canon.ok ? 'ok' : 'CONFLICT'}: ${canon.summary}${canon.conflicts.length ? ` (${canon.conflicts.map((k) => k.entry).join(', ')})` : ''}`);
@@ -2522,7 +2534,7 @@ export async function syncMergedOutside(repoFolder?: string) {
     if (!pr?.merged) continue;
     const head = String(pr.head?.sha ?? '');
     // After a conflict pass or update-branch the branch tip moved past the verified commit: the worktree's tip counts too.
-    const tip = fs.existsSync(c.worktree) ? git(c.worktree, ['rev-parse', 'HEAD']).out : '';
+    const tip = fs.existsSync(c.worktree) ? (await gitAsync(c.worktree, ['rev-parse', 'HEAD'])).out : '';
     if (c.verify?.sha && head !== c.verify.sha && head !== tip) continue;
     await critical(`recording ${c.id} as merged`, async () => {
       if (getChange(c.id)?.status !== 'ready') return;
@@ -2549,7 +2561,7 @@ type JobMemo = { get: (k: string) => string | undefined; set: (k: string, job: s
  */
 async function buildChange(c: Change, p: Product, jobs?: JobMemo): Promise<ChangeBuild> {
   if (!p.build) throw new Error(`${p.name} has no build settings (products.json build)`);
-  const sha = git(c.worktree, ['rev-parse', 'HEAD']).out;
+  const sha = (await gitAsync(c.worktree, ['rev-parse', 'HEAD'])).out;
   const siteTop = p.site.split('/')[0];
   const copy = changeSiteDir(c.id);
   const last = changeBuild(c.id);
@@ -2565,9 +2577,9 @@ async function buildChange(c: Change, p: Product, jobs?: JobMemo): Promise<Chang
   if (!prior) await critical(`making the website copy of ${c.id}`, async () => {
   const f = await gitAsync(siteRepo, ['fetch', '--quiet', 'origin']);
   if (!f.ok) throw new Error(`fetching ${siteTop} failed: ${f.err}`);
-  const head = git(siteRepo, ['symbolic-ref', '--short', 'refs/remotes/origin/HEAD']).out || 'origin/main';
+  const head = (await gitAsync(siteRepo, ['symbolic-ref', '--short', 'refs/remotes/origin/HEAD'])).out || 'origin/main';
   if (!fs.existsSync(path.join(copy, '.git'))) {
-    git(siteRepo, ['worktree', 'prune']);
+    await gitAsync(siteRepo, ['worktree', 'prune']);
     const w = await gitAsync(siteRepo, ['worktree', 'add', '--detach', '--force', copy, head]);
     if (!w.ok) throw new Error(`making the website copy failed: ${w.err}`);
     await shareWorktree(copy);
@@ -2633,7 +2645,7 @@ export function changeBuildPlan(p: Pick<Product, 'name' | 'engine' | 'build' | '
 
 /** Builds a change's pushed branch through the project's builds list (builds.ts, change mode) and says where it was published. */
 async function buildChangeInCloud(c: Change, p: Product, buildId: string): Promise<ChangeBuild & { url?: string }> {
-  const sha = git(c.worktree, ['rev-parse', 'HEAD']).out;
+  const sha = (await gitAsync(c.worktree, ['rev-parse', 'HEAD'])).out;
   const B = await import('./builds.ts');
   addLog(c.id, `build: ${sha.slice(0, 7)} through ${p.name}'s builds list (${buildId}), published for this change only`);
   update(c.id, { detail: 'building the branch in the cloud' });
@@ -2884,8 +2896,8 @@ async function workInfra(id: string, note?: string, resumed?: Phase | null, nudg
           // Only refs move in the server's checkout; its files only change through deploy/hawkes-pull.mjs.
           const f = await gitAsync(repoDir, ['fetch', '--quiet', 'origin']);
           if (!f.ok) throw new Error(`fetch failed: ${f.err}`);
-          git(repoDir, ['worktree', 'prune']);
-          const has = git(repoDir, ['rev-parse', '--verify', '--quiet', `refs/heads/${c.branch}`]).ok;
+          await gitAsync(repoDir, ['worktree', 'prune']);
+          const has = (await gitAsync(repoDir, ['rev-parse', '--verify', '--quiet', `refs/heads/${c.branch}`])).ok;
           const w = await addWorktree(repoDir, c.worktree, has ? [c.worktree, c.branch] : ['-b', c.branch, c.worktree, `origin/${c.base}`], gitAsync, { removeLeftover: !fs.existsSync(path.join(c.worktree, '.git')), log: (m) => addLog(id, m), onKilled: lowerCheckouts });
           if (!w.ok) throw new Error(`worktree failed: ${w.err}`);
           // A warm start: node_modules from a checkout with the same lockfile (warm.ts), not a fresh npm ci.
@@ -2895,7 +2907,7 @@ async function workInfra(id: string, note?: string, resumed?: Phase | null, nudg
           // Another pass: bring the branch up to date with main first (main may have moved, or the merge conflicted).
           await gitAsync(repoDir, ['fetch', '--quiet', 'origin']);
           const m = await gitAsync(c.worktree, ['-c', 'user.name=Hawkes Studio', '-c', 'user.email=studio@hawkesgen.ai', 'merge', '--no-edit', `origin/${c.base}`]);
-          if (!m.ok) git(c.worktree, ['merge', '--abort']);
+          if (!m.ok) await gitAsync(c.worktree, ['merge', '--abort']);
           addLog(id, m.ok ? `merged origin/${c.base} into the branch` : `merging origin/${c.base} conflicted; the agent works from the branch as it was`);
         }
       }));
@@ -2904,7 +2916,7 @@ async function workInfra(id: string, note?: string, resumed?: Phase | null, nudg
       await shareWorktree(c.worktree);
       await npmCi(id, c.worktree);
       writeInfraBrief(c, t, note);
-      save({ step: 'agent', before: git(c.worktree, ['rev-parse', 'HEAD']).out, proc: undefined });
+      save({ step: 'agent', before: (await gitAsync(c.worktree, ['rev-parse', 'HEAD'])).out, proc: undefined });
     }
 
     if (ph.step === 'agent') {
@@ -2935,12 +2947,12 @@ async function workInfra(id: string, note?: string, resumed?: Phase | null, nudg
       assertWorktree(c.worktree, repoDir);
       const summaryFile = path.join(c.worktree, '.hawkes', 'summary.md');
       const summary = withStuck(c.worktree, fs.existsSync(summaryFile) ? fs.readFileSync(summaryFile, 'utf8').trim() : ph.result ?? '');
-      const listCommits = () => git(c.worktree, ['log', '--format=%h %s', `origin/${c.base}..HEAD`]).out.split('\n').filter(Boolean);
-      let commits = listCommits();
-      let changedNow = git(c.worktree, ['rev-parse', 'HEAD']).out !== ph.before;
+      const listCommits = async () => (await gitAsync(c.worktree, ['log', '--format=%h %s', `origin/${c.base}..HEAD`])).out.split('\n').filter(Boolean);
+      let commits = await listCommits();
+      let changedNow = (await gitAsync(c.worktree, ['rev-parse', 'HEAD'])).out !== ph.before;
       // Its commit refused by a permission error: Studio commits the work (the safety net behind shareWorktree).
       if ((!commits.length || !changedNow) && await commitForAgent(id, c.worktree, c.title ?? id, `${ph.result ?? ''}\n${summary}`)) {
-        commits = listCommits();
+        commits = await listCommits();
         changedNow = true;
       }
       // It stopped with its work uncommitted: its session is resumed to commit it (as for a product change).
@@ -2957,7 +2969,7 @@ async function workInfra(id: string, note?: string, resumed?: Phase | null, nudg
         return;
       }
       // Guard rails, before anything leaves the server.
-      const files = git(c.worktree, ['diff', '--name-only', `origin/${c.base}...HEAD`]).out.split('\n').filter(Boolean);
+      const files = (await gitAsync(c.worktree, ['diff', '--name-only', `origin/${c.base}...HEAD`])).out.split('\n').filter(Boolean);
       const bad = guardFiles(t.id, files, requestAndNotes(c));
       if (bad.length) {
         const list = bad.map((b) => `${b.file} (${b.why === 'forbidden' ? 'never changed by agents' : 'only when J names it'})`).join(', ');
@@ -2965,11 +2977,11 @@ async function workInfra(id: string, note?: string, resumed?: Phase | null, nudg
         update(id, { status: 'failed', detail: `not pushed: it changes protected files: ${list}`.slice(0, 300), summary, commits, phase: null });
         return;
       }
-      const diffstat = git(c.worktree, ['diff', '--shortstat', `origin/${c.base}...HEAD`]).out;
+      const diffstat = (await gitAsync(c.worktree, ['diff', '--shortstat', `origin/${c.base}...HEAD`])).out;
       update(id, { summary, commits, diffstat, detail: 'pushing and opening the pull request' });
       const body = `${summary}\n\n---\n**J asked:** ${c.request ?? ''}\n\nMade by a Hawkes Studio agent. Approving it in Studio merges it into main, and ${t.name} deploys itself once CI passes (the control server pulls it, restarts the service and rolls back if it isn't healthy).\n\n${prGeneratedBy(id)}`;
       await publish(id, { force: Boolean(note), title: c.title, body });
-      save({ step: 'verify', tip: git(c.worktree, ['rev-parse', 'HEAD']).out, verify: undefined }, { status: 'verifying', detail: 'checking: CI on the pull request, the checks, a smoke check' });
+      save({ step: 'verify', tip: (await gitAsync(c.worktree, ['rev-parse', 'HEAD'])).out, verify: undefined }, { status: 'verifying', detail: 'checking: CI on the pull request, the checks, a smoke check' });
     }
 
     // Verify (checked again from the start after a restart: CI is GitHub's, the checks and smoke check take minutes), then ready.
@@ -3149,7 +3161,7 @@ export async function baselineFailures(c: Pick<Change, 'id' | 'worktree' | 'base
   const cmd = t.baselineCheck!;
   let f = await gitAsync(c.worktree, ['fetch', '--quiet', 'origin', `+refs/heads/${branch}:refs/remotes/origin/${branch}`]);
   if (!f.ok) return null;
-  const sha = git(c.worktree, ['rev-parse', `origin/${branch}`]).out;
+  const sha = (await gitAsync(c.worktree, ['rev-parse', `origin/${branch}`])).out;
   if (!sha) return null;
   const dir = path.join(DATA, 'infra-baseline');
   fs.mkdirSync(dir, { recursive: true });
@@ -3176,7 +3188,7 @@ export async function baselineFailures(c: Pick<Change, 'id' | 'worktree' | 'base
 
 /** Verification of a Studio or Gen change: the checks and a smoke check here, and CI on the pull request (GitHub). */
 async function verifyInfra(c: Change, t: Infra) {
-  const sha = git(c.worktree, ['rev-parse', 'HEAD']).out;
+  const sha = (await gitAsync(c.worktree, ['rev-parse', 'HEAD'])).out;
   const ci = ciChecks(c.slug, sha, { onWait: (d) => update(c.id, { detail: d }) }).catch((e: any) => ({ state: 'error', detail: String(e.message ?? e), runs: [] as any[] }));
   await npmCi(c.id, c.worktree);
   update(c.id, { detail: `running ${t.checks.join(' and ')}` });
@@ -3363,7 +3375,7 @@ export async function walkAwayMerge(id: string) {
   try {
     const v = c.verify ?? {};
     const sha = String(v.sha ?? '');
-    const files = fs.existsSync(c.worktree) ? git(c.worktree, ['diff', '--name-only', `origin/${c.base}...HEAD`]).out.split('\n').filter(Boolean) : [];
+    const files = fs.existsSync(c.worktree) ? (await gitAsync(c.worktree, ['diff', '--name-only', `origin/${c.base}...HEAD`])).out.split('\n').filter(Boolean) : [];
     if (!files.length) return await walkAwayHold(c, `Studio can't see which files it changes (its worktree is gone): you decide`);
     const prot = protectedTouched(c.product, files, requestAndNotes(c));
     if (prot.length) return await walkAwayHold(c, `it changes protected files (${prot.join(', ')}): those always wait for you`);
@@ -3466,7 +3478,7 @@ export function walkAwayPending() {
  * or when its head moved after verification (a push nobody verified).
  */
 async function verifiedHead(c: Change) {
-  const verifiedSha = c.verify?.sha || (fs.existsSync(c.worktree) ? git(c.worktree, ['rev-parse', 'HEAD']).out : '');
+  const verifiedSha = c.verify?.sha || (fs.existsSync(c.worktree) ? (await gitAsync(c.worktree, ['rev-parse', 'HEAD'])).out : '');
   let pr = await github(`/repos/${c.slug}/pulls/${c.pr}`);
   // Right after Studio pushes, GitHub can report the old head for a few seconds: on 2026-10-17 an automatic merge read
   // the previous commit a moment after the agent's push and refused. Read again before calling it moved (up to ~20 s).
@@ -3481,7 +3493,7 @@ async function verifiedHead(c: Change) {
       : `Pull request #${c.pr} is closed. Revise ${c.id} to open a new one, or close the change.`);
   }
   // Changes verified before Studio recorded the verified commit: the worktree's head is what was pushed and played.
-  const verified = c.verify?.sha || (fs.existsSync(c.worktree) ? git(c.worktree, ['rev-parse', 'HEAD']).out : '');
+  const verified = c.verify?.sha || (fs.existsSync(c.worktree) ? (await gitAsync(c.worktree, ['rev-parse', 'HEAD'])).out : '');
   if (!verified) throw new Error(`${c.id} has no verified commit on record; revise it so it is verified again.`);
   if (head !== verified) throw new Error(`Pull request #${c.pr}'s head moved after verification (verified ${verified.slice(0, 7)}, now ${head.slice(0, 7)}): not merging what wasn't checked. Revise ${c.id} so the new head is checked.`);
   return head;
@@ -3623,21 +3635,21 @@ export async function updateFromBase(id: string): Promise<{ state: 'current' | '
   assertWorktree(c.worktree, repoDir);
   const f = await gitAsync(repoDir, ['fetch', '--quiet', 'origin']);
   if (!f.ok) return { state: 'skipped', why: `fetch failed: ${f.err.slice(0, 200)}` };
-  if (!git(c.worktree, ['rev-parse', '--verify', '--quiet', `origin/${c.base}`]).ok) return { state: 'skipped', why: `no origin/${c.base}` };
+  if (!(await gitAsync(c.worktree, ['rev-parse', '--verify', '--quiet', `origin/${c.base}`])).ok) return { state: 'skipped', why: `no origin/${c.base}` };
   const untracked = await untrackNotes(c.worktree);
   if (untracked) addLog(id, `${NOTES} was committed on the branch: Studio took it out of git (the notes stay in the worktree)`);
-  const current = git(c.worktree, ['merge-base', '--is-ancestor', `origin/${c.base}`, 'HEAD']).ok;
+  const current = (await gitAsync(c.worktree, ['merge-base', '--is-ancestor', `origin/${c.base}`, 'HEAD'])).ok;
   if (current && !untracked) return { state: 'current' };
-  const before = git(c.worktree, ['rev-parse', 'HEAD']).out;
+  const before = (await gitAsync(c.worktree, ['rev-parse', 'HEAD'])).out;
   if (!current) {
     // A merge writes over ignored files, and .hawkes/ may be tracked on the base: the notes are kept aside and put back.
     const notes = snapshotNotes(c.worktree);
     const m = await gitAsync(c.worktree, [...STUDIO_GIT, 'merge', '--no-ff', '--no-edit', '-m', `Merge ${c.base} into ${c.branch} (Hawkes Studio: ${c.base} moved)`, `origin/${c.base}`]);
-    const files = m.ok ? [] : git(c.worktree, ['diff', '--name-only', '--diff-filter=U']).out.split('\n').filter(Boolean);
+    const files = m.ok ? [] : (await gitAsync(c.worktree, ['diff', '--name-only', '--diff-filter=U'])).out.split('\n').filter(Boolean);
     // Only agents' notes conflict (each change writes its own summary.md, try.md, learned.md): none of them belong in git.
     const notesOnly = !m.ok && files.length > 0 && files.every((f) => f.startsWith(NOTES));
     if (!m.ok && !notesOnly) {
-      git(c.worktree, ['merge', '--abort']);
+      await gitAsync(c.worktree, ['merge', '--abort']);
       await gitAsync(c.worktree, ['reset', '--hard', before]);
       restoreNotes(c.worktree, notes);
       // No unmerged file: git never got as far as comparing (credentials, a blob it couldn't fetch from the promisor
@@ -3650,12 +3662,12 @@ export async function updateFromBase(id: string): Promise<{ state: 'current' | '
       addLog(id, `${c.base} moved: merging origin/${c.base} into the branch conflicts in ${files.join(', ')}`);
       return { state: 'conflict', files };
     }
-    git(c.worktree, ['rm', '-r', '--cached', '--quiet', '--ignore-unmatch', '--', NOTES]);
+    await gitAsync(c.worktree, ['rm', '-r', '--cached', '--quiet', '--ignore-unmatch', '--', NOTES]);
     restoreNotes(c.worktree, notes);
-    if (notesOnly || git(c.worktree, ['diff', '--cached', '--quiet']).ok === false) {
+    if (notesOnly || (await gitAsync(c.worktree, ['diff', '--cached', '--quiet'])).ok === false) {
       const done = await gitAsync(c.worktree, [...STUDIO_GIT, 'commit', '--no-verify', ...(notesOnly ? ['--no-edit'] : ['--amend', '--no-edit'])]);
       if (!done.ok) {
-        git(c.worktree, ['merge', '--abort']);
+        await gitAsync(c.worktree, ['merge', '--abort']);
         await gitAsync(c.worktree, ['reset', '--hard', before]);
         restoreNotes(c.worktree, notes);
         return { state: 'skipped', why: `committing the merge failed: ${done.err.slice(0, 200)}` };
@@ -3663,7 +3675,7 @@ export async function updateFromBase(id: string): Promise<{ state: 'current' | '
     }
     if (notesOnly) addLog(id, `${c.base} moved: only agents' notes conflicted (${files.join(', ')}); Studio kept them out of git`);
   }
-  const sha = git(c.worktree, ['rev-parse', 'HEAD']).out;
+  const sha = (await gitAsync(c.worktree, ['rev-parse', 'HEAD'])).out;
   const lfsUp = await pushPendingLfs(c.worktree, gitAsync, (m) => addLog(id, m)).then(() => null, (e: any) => String(e.message ?? e));
   const p = lfsUp ? { ok: false, err: lfsUp } : await gitAsync(c.worktree, ['push', '--quiet', 'origin', `HEAD:${c.branch}`]);
   if (!p.ok) {
@@ -3687,13 +3699,13 @@ const STUDIO_GIT = ['-c', 'user.name=Hawkes Studio', '-c', 'user.email=studio@ha
  * "Approve and post drafts" stopped on .hawkes/summary.md). Takes them out of the branch's index, files kept.
  */
 async function untrackNotes(worktree: string) {
-  if (!git(worktree, ['ls-files', '--', NOTES]).out) return false;
-  const exclude = path.resolve(worktree, git(worktree, ['rev-parse', '--git-common-dir']).out, 'info', 'exclude');
+  if (!(await gitAsync(worktree, ['ls-files', '--', NOTES])).out) return false;
+  const exclude = path.resolve(worktree, (await gitAsync(worktree, ['rev-parse', '--git-common-dir'])).out, 'info', 'exclude');
   fs.mkdirSync(path.dirname(exclude), { recursive: true });
   if (!fs.existsSync(exclude) || !fs.readFileSync(exclude, 'utf8').includes(NOTES)) fs.appendFileSync(exclude, `\n${NOTES}\n`);
-  git(worktree, ['rm', '-r', '--cached', '--quiet', '--', NOTES]);
+  await gitAsync(worktree, ['rm', '-r', '--cached', '--quiet', '--', NOTES]);
   const r = await gitAsync(worktree, [...STUDIO_GIT, 'commit', '--no-verify', '--quiet', '-m', `Keep ${NOTES} out of git (Hawkes Studio: agents' notes)`]);
-  if (!r.ok) git(worktree, ['reset', '--quiet', 'HEAD', '--', NOTES]);
+  if (!r.ok) await gitAsync(worktree, ['reset', '--quiet', 'HEAD', '--', NOTES]);
   return r.ok;
 }
 function snapshotNotes(worktree: string) {
@@ -3752,11 +3764,11 @@ export async function syncToRemoteHead(id: string) {
   if (!c || !c.slug || !c.pr || !c.worktree || !fs.existsSync(path.join(c.worktree, '.git'))) return false;
   const pr = await github(`/repos/${c.slug}/pulls/${c.pr}`);
   const remote = String(pr.head?.sha ?? '');
-  const local = git(c.worktree, ['rev-parse', 'HEAD']).out;
+  const local = (await gitAsync(c.worktree, ['rev-parse', 'HEAD'])).out;
   if (!remote || remote === local) return false;
   const f = await gitAsync(c.worktree, ['fetch', '--quiet', 'origin', c.branch]);
-  if (!f.ok || !git(c.worktree, ['cat-file', '-e', `${remote}^{commit}`]).ok) return false;
-  if (!git(c.worktree, ['merge-base', '--is-ancestor', local, remote]).ok) return false;
+  if (!f.ok || !(await gitAsync(c.worktree, ['cat-file', '-e', `${remote}^{commit}`])).ok) return false;
+  if (!(await gitAsync(c.worktree, ['merge-base', '--is-ancestor', local, remote])).ok) return false;
   const r = await gitAsync(c.worktree, ['reset', '--hard', remote]);
   if (!r.ok) return false;
   await shareWorktree(c.worktree);
@@ -3789,7 +3801,7 @@ export function unresolvedConflicts(worktree: string, files: string[], committed
 async function conflictBack(id: string, ph: Phase, why: string) {
   const c = getChange(id)!;
   if (fs.existsSync(path.join(c.worktree, '.git'))) {
-    git(c.worktree, ['merge', '--abort']);
+    await gitAsync(c.worktree, ['merge', '--abort']);
     if (ph.before) await gitAsync(c.worktree, ['reset', '--hard', ph.before]);
     await shareWorktree(c.worktree);
   }
@@ -4088,7 +4100,7 @@ async function cleanup(id: string, { deleteBranch = false } = {}) {
   if (!c.infra) await removePreview(c.product, id).catch(() => {});
   const repoDir = path.join(PROJECTS, c.repo);
   await gitAsync(repoDir, ['worktree', 'remove', '--force', c.worktree]);
-  git(repoDir, ['branch', '-D', c.branch]);
+  await gitAsync(repoDir, ['branch', '-D', c.branch]);
   // A Unity change's website copy (its build).
   const copy = changeSiteDir(id);
   if (fs.existsSync(copy)) {
@@ -4110,7 +4122,7 @@ const checkoutWaiters: (() => void)[] = [];
 let lowerUntil = 0;
 /** A checkout was killed for memory (signal 9): one at a time for the next 10 minutes (J, 2026-11-05: make checkouts reliable). */
 export function lowerCheckouts(now = Date.now()) { lowerUntil = now + 10 * 60_000; }
-export const checkoutLimit = (now = Date.now()) => (now < lowerUntil ? 1 : Math.max(1, Number(process.env.STUDIO_CHECKOUTS) || 2));
+export const checkoutLimit = (now = Date.now()) => (now < lowerUntil || memLow() ? 1 : Math.max(1, Number(process.env.STUDIO_CHECKOUTS) || 2));
 export async function checkoutSlot<T>(fn: () => Promise<T>): Promise<T> {
   while (checkoutsActive >= checkoutLimit()) await new Promise<void>((r) => checkoutWaiters.push(r));
   checkoutsActive++;
@@ -4195,11 +4207,16 @@ export function carryFinishedToReady(c: Change, ph: Phase): boolean {
 /** Carries a change on from its recorded step after `wait` ms (a failure outside work()'s own handling is logged, never an unhandled rejection). */
 function launchResume(c: Change, ph: Phase, wait: number) {
   running.add(c.id);
-  void new Promise((r) => setTimeout(r, wait)).then(() => work(c.id, undefined, undefined, ph)).catch((e) => {
+  let started = false;
+  void new Promise((r) => setTimeout(r, wait))
+    // After a restart every change comes back: each carries on only when there is memory for it (memgate.ts).
+    .then(() => memRoom(() => inFlight, () => addLog(c.id, `waiting for memory before carrying on (${memSummary()})`)))
+    .then(() => { started = true; inFlight++; return work(c.id, undefined, undefined, ph); }).catch((e) => {
     update(c.id, { status: 'failed', detail: `couldn't carry on after the restart: ${String(e?.message ?? e).slice(0, 200)}`, phase: { ...ph, failed: true } });
     console.warn(`[studio] resume ${c.id}: ${e?.message ?? e}`);
   }).finally(() => {
     running.delete(c.id);
+    if (started) { inFlight--; memFreed(); }
     remember(c.id);
     void pump();
   });
@@ -4333,7 +4350,7 @@ export async function pollGenWaits(look: GenLook = {}) {
         const prompt = genDonePrompt(w);
         update(c.id, {
           status: 'queued', detail: `its Gen jobs finished (${w.jobs.map((j) => j.status).join(', ')}); the agent continues`,
-          phase: { step: 'agent', since: Date.now(), before: git(c.worktree, ['rev-parse', 'HEAD']).out, gen: w, genDone: prompt },
+          phase: { step: 'agent', since: Date.now(), before: (await gitAsync(c.worktree, ['rev-parse', 'HEAD'])).out, gen: w, genDone: prompt },
         });
         addLog(c.id, `Gen jobs finished: ${w.jobs.map((j) => `${j.id} ${j.status}${j.assets?.length ? ` (${j.assets.length} asset${j.assets.length === 1 ? '' : 's'})` : ''}`).join(', ')}; resuming its session`);
         void pump();

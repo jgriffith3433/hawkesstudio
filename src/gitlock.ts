@@ -4,6 +4,7 @@
 // repos.ts syncRepo, dev.ts); a fetch that still hits a ref lock (git outside Studio) drops the stale remote-tracking
 // ref and is tried again with --prune. No imports from Studio's modules, so beta.ts and repos.ts can both use it.
 
+import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 
@@ -20,10 +21,39 @@ const repoKeys = new Map<string, string>();
 export function repoKey(cwd: string) {
   const known = repoKeys.get(cwd);
   if (known) return known;
+  // Read from the .git files themselves (2026-11-10: a git rev-parse per new worktree ran synchronously on Studio's main
+  // thread, part of its event-loop freezes with 12 agents); git only when the layout isn't the usual one.
+  const read = commonDirOf(cwd);
+  if (read) {
+    repoKeys.set(cwd, read);
+    return read;
+  }
   const r = spawnSync('git', ['rev-parse', '--git-common-dir'], { cwd, encoding: 'utf8', windowsHide: true, timeout: 10_000 });
   const key = r.status === 0 && r.stdout.trim() ? path.resolve(cwd, r.stdout.trim()) : path.resolve(cwd);
   if (r.status === 0) repoKeys.set(cwd, key);
   return key;
+}
+
+/** The common git dir of a folder from its .git (a directory: a checkout; a "gitdir:" file: a worktree, whose own git
+ *  dir names the common one in "commondir"), looking up from cwd like git does; null when it can't tell. */
+export function commonDirOf(cwd: string): string | null {
+  try {
+    for (let dir = path.resolve(cwd); ; dir = path.dirname(dir)) {
+      const dotgit = path.join(dir, '.git');
+      const st = fs.statSync(dotgit, { throwIfNoEntry: false });
+      if (st?.isDirectory()) return dotgit;
+      if (st?.isFile()) {
+        const m = /^gitdir:\s*(.+)$/m.exec(fs.readFileSync(dotgit, 'utf8'));
+        if (!m) return null;
+        const gitdir = path.resolve(dir, m[1].trim());
+        const common = fs.readFileSync(path.join(gitdir, 'commondir'), { encoding: 'utf8', flag: 'r' }).trim();
+        return path.resolve(gitdir, common);
+      }
+      if (path.dirname(dir) === dir) return null;
+    }
+  } catch {
+    return null;
+  }
 }
 
 const repoLocks = new Map<string, Promise<unknown>>();

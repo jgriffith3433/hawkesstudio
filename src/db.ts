@@ -38,8 +38,18 @@ export function onDbWrite(fn: (table: string) => void) {
 }
 const WRITE = /^\s*(?:INSERT(?:\s+OR\s+\w+)?\s+INTO|REPLACE\s+INTO|UPDATE(?:\s+OR\s+\w+)?|DELETE\s+FROM)\s+["`]?([a-z_][a-z0-9_]*)/i;
 const prepare = db.prepare.bind(db);
-(db as any).prepare = (sql: string) => {
+// Prepared statements, kept (2026-11-10): Studio's ~1000 db.prepare(sql) calls each compiled their SQL again on every
+// call, and a PM pass over a few hundred tasks spent 400-1100 ms of a 1.5-3.6 s event-loop freeze in SQLite's prepare
+// alone. A statement is compiled once per SQL text and reused (node:sqlite statements reset on each run/get/all, and
+// SQLite recompiles one by itself after a schema change). The least recently used go once there are more than
+// STMT_CACHE_MAX (SQL built with a varying IN list makes new texts).
+export const STMT_CACHE_MAX = 2000;
+const statements = new Map<string, ReturnType<typeof prepare>>();
+/** How many SQL compiles the cache saved and paid (tests, studio_ops). */
+export const stmtStats = { hits: 0, compiles: 0 };
+function compile(sql: string) {
   const st = prepare(sql);
+  stmtStats.compiles++;
   const table = WRITE.exec(sql)?.[1]?.toLowerCase();
   if (!table || NOISY.has(table)) return st;
   const run = st.run.bind(st);
@@ -48,6 +58,20 @@ const prepare = db.prepare.bind(db);
     for (const fn of writeListeners) try { fn(table); } catch { /* a listener never breaks a write */ }
     return r;
   }) as typeof st.run;
+  return st;
+}
+(db as any).prepare = (sql: string) => {
+  const known = statements.get(sql);
+  if (known) {
+    stmtStats.hits++;
+    // Most recently used last (Map keeps insertion order).
+    statements.delete(sql);
+    statements.set(sql, known);
+    return known;
+  }
+  const st = compile(sql);
+  statements.set(sql, st);
+  if (statements.size > STMT_CACHE_MAX) statements.delete(statements.keys().next().value!);
   return st;
 };
 
