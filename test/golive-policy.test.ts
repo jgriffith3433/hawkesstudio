@@ -51,3 +51,29 @@ test('auto only ships a beta whose playtests passed: failed, stopped, inconclusi
   assert.equal(P.holdLine({ tested: { sha: 'abc1234', playtests: [pass] } }), null);
   assert.match(String(P.holdLine({ tested: { sha: 'abc1234', playtests: [{ ...pass, status: 'skipped' }] } })), /waits until beta plays clean: playtest smoke@local on abc1234 was inconclusive/);
 });
+
+test('skipping beta playtests is per project, from the owner\'s words; CI on the exact commit is the gate', async () => {
+  assert.equal(P.policyOf('moon').betaPlay, 'play', 'games keep their playtests unless the owner says otherwise');
+  assert.equal(P.skipsBetaPlay('moon'), false);
+  const was = P.policyOf('moon').policy;
+  P.setBetaPlay('moon', 'skip', 'Talk', 'skip beta playtests');
+  const pol = P.policyOf('moon');
+  assert.deepEqual([pol.betaPlay, pol.betaPlayBy, pol.betaPlayWords, pol.policy], ['skip', 'Talk', 'skip beta playtests', was], 'the go-live policy is left as it was');
+  assert.equal(P.skipsBetaPlay('moon'), true);
+  const { ciSkipFor } = await import('../src/deploy.ts');
+  assert.match(String(ciSkipFor('moon', 'abc1234', { sha: 'abc1234', runs: ['Deploy'] })?.by), /CI passed/);
+  assert.equal(ciSkipFor('moon', 'abc1234', { sha: 'fff0000', runs: ['Deploy'] }), null, 'CI of another commit');
+  assert.equal(ciSkipFor('moon', 'abc1234', undefined), null);
+  // CI: waits while a run is going, then green; a failed run is not.
+  let n = 0;
+  const list = async () => (++n < 3 ? [{ name: 'Deploy', status: 'in_progress', conclusion: null }] : [{ name: 'Deploy', status: 'completed', conclusion: 'success' }, { name: 'Lint', status: 'completed', conclusion: 'skipped' }]);
+  const ok = await P.ciOn('o/r', 'abc1234', { every: 5, maxMs: 1000, list });
+  assert.deepEqual([ok.ok, n], [true, 3]);
+  const bad = await P.ciOn('o/r', 'abc1234', { every: 5, maxMs: 1000, list: async () => [{ name: 'Deploy', status: 'completed', conclusion: 'failure' }] });
+  assert.equal(bad.ok, false);
+  assert.match(bad.why, /Deploy failure/);
+  const slow = await P.ciOn('o/r', 'abc1234', { every: 5, maxMs: 20, list: async () => [] });
+  assert.match(slow.why, /no CI run/);
+  P.setBetaPlay('moon', 'play', 'Talk', 'play beta again');
+  assert.equal(ciSkipFor('moon', 'abc1234', { sha: 'abc1234', runs: ['Deploy'] }), null, 'back to playtests: CI alone no longer lets it go');
+});

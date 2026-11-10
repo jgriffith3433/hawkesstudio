@@ -188,7 +188,10 @@ export async function handleGithubRoutes(req: http.IncomingMessage, res: http.Se
     if (method === 'GET') return send(res, 200, P.policyOf(m[1])), true;
     if (method === 'POST' || method === 'PUT') {
       const b = await readJson(req);
-      const pol = P.setPolicy(m[1], String(b.policy ?? '') as any, requester(req)?.email ?? (origin ? 'Talk' : 'someone'), b.words ? String(b.words) : null);
+      const who = requester(req)?.email ?? (origin ? 'Talk' : 'someone');
+      if (b.playtest !== undefined) P.setBetaPlay(m[1], String(b.playtest) as any, who, b.words ? String(b.words) : null);
+      if (!b.policy) return send(res, 200, P.policyOf(m[1])), true;
+      const pol = P.setPolicy(m[1], String(b.policy ?? '') as any, who, b.words ? String(b.words) : null);
       const now = pol.policy === 'auto' ? await P.autoGoLive(m[1], 'the owner said to keep going live') : null;
       return send(res, 200, { ...pol, ...(now ? { now } : {}) }), true;
     }
