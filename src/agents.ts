@@ -2735,8 +2735,11 @@ async function workPass(id: string, note?: string, answer?: string, resumed?: Ph
       // A playtest J asked for: the change's scenario on its version (web: the worktree; Unity: a build of the branch).
       // It never fails the change: a playtest that couldn't run (no build, no page server) says so on the change.
       const jobs: JobMemo = { get: (k) => ph.jobs?.[k], set: (k, job) => save({ jobs: { ...ph.jobs, [k]: job } }) };
+      // The commit it played (verify.sha can move later, when the base is merged in): what pm.ts compares with beta to
+      // keep this playtest's criteria as the task's verdict (acceptance.ts changeVerdictHolds).
+      const head = (await gitAsync(c.worktree, ['rev-parse', 'HEAD'])).out.trim();
       const verify: any = await verifyChange(getChange(id)!, p, findings, jobs).catch((e: any) => ({ outcome: 'not played', error: `the playtest couldn't run: ${String(e.message ?? e).slice(0, 300)}` }));
-      save({ step: 'finish', verify });
+      save({ step: 'finish', verify: { ...verify, played: verify?.build?.sha || head || ph.tip } });
     }
 
     c = getChange(id)!;

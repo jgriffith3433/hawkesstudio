@@ -32,7 +32,7 @@ import { assetStatus, makeAsset } from './assets.ts';
 import { syncRepos, syncRepo, repoMap, betaFolders, isServer, builtFromGitHub, BETA, BRANCH } from './repos.ts';
 import { gitAsync, betaLane, prepareBeta, playedLocal, gameVersions, resetBetaSite, pinBetaVersion, pruneGameVersions, saveBetaBuild, betaBuild, betaSiteDir, betaSiteFolder, betaPort, shaOf, repoDirs, fetchOrigin, betaBuildCurrent, siteBaseOf, refreshBetaSite } from './beta.ts';
 import { notifyOnce } from './notify.ts';
-import { judgeCriteria } from './acceptance.ts';
+import { judgeCriteria, sweepFor, type Sweep } from './acceptance.ts';
 import { runGenJob, playtestExtras, playtestData, playtestRunMs, REVIEW_RUN_MS, PLAYTEST_IDLE_MS } from './playtests.ts';
 import { tagRun } from './followup.ts';
 import { betaTurn, newerBetaRun, supersede, absorbed, supersedingBuild } from './betaqueue.ts';
@@ -432,13 +432,18 @@ export async function runProduct(run: string, p: Product, o: RunOptions) {
     notePlaying(run, p.id, nameOf(extra), "beta's newest commit hadn't been played, so it couldn't go live");
   }
   const ran: string[] = [];
+  // The daily run's plays of beta also judge the criteria of every merged task not verified yet (acceptance.ts
+  // sweepFor): phone criteria on its phone play when it has one. Asked again before each play (a task may land meanwhile).
+  const kind = isDaily(run) ? 'daily' : 'other';
+  const phonePlay = tests.some((x) => x.where === 'local' && x.device === 'phone');
   // Every local playtest of the run plays the beta build it built or kept: a newer build waits for them (betaplay.ts).
   const release = p.build && betaLane() && tests.some((t) => t.where === 'local') ? holdBeta(p.id, run) : null;
   try {
     for (const t of tests) {
       if (runCancelled(run)) break; // a cancelled run starts nothing more (cancel.ts)
       // The daily review is full; live desktop runs check for regressions only (beta's full review sees the same code first).
-      const res = await playtestProduct(run, p, t, { review: !o.noReview, focus: o.focus, mode: t.where === 'live' && t.device !== 'phone' ? 'regression' : 'full' });
+      const sweep = o.noReview ? null : sweepFor(p.id, { runKind: kind, where: t.where, device: t.device, phonePlay });
+      const res = await playtestProduct(run, p, t, { review: !o.noReview, focus: o.focus, mode: t.where === 'live' && t.device !== 'phone' ? 'regression' : 'full', ...(sweep ? { sweep } : {}) });
       if (res) ran.push(nameOf(t));
     }
   } finally {
@@ -701,10 +706,12 @@ export async function playtestProduct(run: string, p: Product, asked: Playtest, 
     await progressCheck(run);
   }
 }
-type PlayOptions = { review?: boolean; focus?: string; mode?: ReviewMode; criteria?: string[]; abandon?: () => string | null; slot?: number; priority?: number };
+type PlayOptions = { review?: boolean; focus?: string; mode?: ReviewMode; criteria?: string[]; abandon?: () => string | null; slot?: number; priority?: number;
+  /** Merged tasks' criteria this play's review judges too (acceptance.ts sweepFor): never a reason to review it again. */
+  sweep?: Sweep | null };
 
 async function playScenario(run: string, p: Product, asked: Playtest, opts: PlayOptions = {}) {
-  const { review = true, focus, mode = 'full', criteria, abandon, slot = 0, priority } = opts;
+  const { review = true, focus, mode = 'full', criteria, abandon, slot = 0, priority, sweep } = opts;
   // A renamed scenario (an older task's name) plays under the game's current name (products.json scenarioAliases).
   const renamed = asked.scenario ? resolveScenario(p, asked.scenario) : undefined;
   const t: Playtest = renamed && renamed !== asked.scenario ? { ...asked, scenario: renamed } : asked;
@@ -721,7 +728,7 @@ async function playScenario(run: string, p: Product, asked: Playtest, opts: Play
     const job = await gen.job(was.job).catch(() => null);
     if (!job || job.status !== 'done') return job;
     if (job.result?.software && p.engine !== 'static') return job;
-    return reviewPlaytest(run, p, t, job, was.data?.played ?? null, { focus, mode, criteria });
+    return reviewPlaytest(run, p, t, job, was.data?.played ?? null, { focus, mode, criteria, sweep });
   }
   // A run that has been going past its total cap plays no more scenarios: the rest are skipped with the reason, and J's phone is told once.
   const over = runOverCap(run);
@@ -980,7 +987,7 @@ async function playScenario(run: string, p: Product, asked: Playtest, opts: Play
     updateStep(s, { detail: `played in software (${r.fps?.average ?? '?'} fps)${r.softwareBecause ? `: ${String(r.softwareBecause).slice(0, 120)}` : ''}; reviewed anyway, it is not GPU-bound` });
   }
   fileFeel(run, p, name, t.scenario ?? name.replace(/@.*$/, ''), r, mode, playOptions(t)?.at);
-  return reviewPlaytest(run, p, t, job, played, { focus, mode, criteria });
+  return reviewPlaytest(run, p, t, job, played, { focus, mode, criteria, sweep });
 }
 
 /**
@@ -1104,7 +1111,7 @@ function skipMissing(run: string, p: Product, s: string, asked: Playtest, scenar
 }
 
 /** Claude's review of a finished playtest (or, resumed after a restart, the review it already had or was waiting for). */
-async function reviewPlaytest(run: string, p: Product, t: Playtest, job: any, played: ReturnType<typeof playedLocal>, { focus, mode = 'full', criteria }: { focus?: string; mode?: ReviewMode; criteria?: string[] }) {
+async function reviewPlaytest(run: string, p: Product, t: Playtest, job: any, played: ReturnType<typeof playedLocal>, { focus, mode = 'full', criteria: asked, sweep }: { focus?: string; mode?: ReviewMode; criteria?: string[]; sweep?: Sweep | null }) {
   const name = nameOf(t);
   const r = job.result ?? {};
   // Reviews cost money: skip one when nothing changed since the last review of this scenario (the same commit for local
@@ -1119,11 +1126,14 @@ async function reviewPlaytest(run: string, p: Product, t: Playtest, job: any, pl
   const prev = lastStep(p.id, 'review', name, run);
   const ageDays = prev ? (Date.now() - (prev.finished ?? 0)) / 86_400_000 : 99;
   const resumedReview = db.prepare(`SELECT id FROM steps WHERE run = ? AND product = ? AND kind = 'review' AND name = ?`).get(run, p.id, name) && resuming.has(run);
-  if (!resumedReview && prev?.data?.reviewKey === sameKey && ageDays < 7 && !focus && !criteria?.length) {
+  if (!resumedReview && prev?.data?.reviewKey === sameKey && ageDays < 7 && !focus && !asked?.length) {
     const rs0 = startStep(run, p.id, 'review', name, 'unchanged since the last review');
     updateStep(rs0, { status: 'skipped', detail: `unchanged since the last review (${prev.data.verdict}); not reviewed again`, data: { ...prev.data, reviewKey: sameKey, reused: prev.id }, finished: true });
     return job;
   }
+  // What it was asked to judge, then merged tasks' criteria in passing (the same review prompt: no new play or review).
+  const swept = (sweep?.criteria ?? []).filter((k) => !asked?.includes(k));
+  const criteria = [...(asked ?? []), ...swept];
   const rs = startStep(run, p.id, 'review', name, 'Claude is watching');
   // Resumed: a finished review was filed already (its findings are in the backlog); a running one is waited for again.
   const wasReview = resumedStep(rs);
@@ -1136,7 +1146,7 @@ async function reviewPlaytest(run: string, p: Product, t: Playtest, job: any, pl
   });
   // Gen's review, or the same review through Claude Code on the Max plan while Gen's Claude is out of credit (review-cc.ts).
   const rev = await reviewJob(p.id, revParams, () => runGenJob('playtest.review', p.id, revParams, (j) => updateStep(rs, { job: j.id, detail: j.detail }), { runMs: REVIEW_RUN_MS, job: wasReview?.job ?? undefined, halt: haltOf(run) }));
-  const pending: PendingReview = { job: job.id, params: revParams, criteria: criteria?.length ? criteria : null, mode: reviewMode, reviewKey: sameKey, sha: fullSha, barMet: Boolean(bar?.met), barWhy: bar?.why ?? null, at: Date.now(), tries: 0 };
+  const pending: PendingReview = { job: job.id, params: revParams, criteria: criteria?.length ? criteria : null, mode: reviewMode, reviewKey: sameKey, sha: fullSha, barMet: Boolean(bar?.met), barWhy: bar?.why ?? null, at: Date.now(), tries: 0, ...(swept.length ? { sweep: sweep!.tasks } : {}) };
   if (rev.status !== 'done') {
     if (rev.status === 'cancelled') {
       updateStep(rs, { status: 'cancelled', job: rev.id, detail: jobCancelDetail(rev), finished: true });
@@ -1156,7 +1166,9 @@ async function reviewPlaytest(run: string, p: Product, t: Playtest, job: any, pl
  * credits"): what it needs to run later on the playtest that already played. Kept in its step's data (status skipped);
  * catchUpReviews runs it once Claude or Cursor answers, and pm.ts reads its criteria then.
  */
-type PendingReview = { job: string; params: any; criteria: string[] | null; mode: ReviewMode; reviewKey: string; sha: string | null; barMet: boolean; barWhy: string | null; at: number; tries: number; superseded?: string };
+type PendingReview = { job: string; params: any; criteria: string[] | null; mode: ReviewMode; reviewKey: string; sha: string | null; barMet: boolean; barWhy: string | null; at: number; tries: number; superseded?: string;
+  /** The merged tasks whose criteria it judges in passing (sweepFor): pm.ts counts it for them, and never sends an unclear one back. */
+  sweep?: string[] };
 
 /** Whether a failed review failed on the AI (usage, billing, a login, an outage), not on the playtest. */
 export function aiStop(error: string) {
@@ -1217,7 +1229,7 @@ async function fileReview(rs: string, p: Product, run: string, name: string, rev
   // A roadmap task's acceptance criteria, judged on this playtest (the beta run after a merge; pm.ts reads them).
   if (x.criteria?.length) {
     const checks = await judgeCriteria(x.criteria, v, playResult);
-    db.prepare(`UPDATE steps SET data = json_set(data, '$.criteria', json(?)) WHERE id = ?`).run(J(checks), rs);
+    db.prepare(`UPDATE steps SET data = json_set(data, '$.criteria', json(?), '$.sweep', json(?)) WHERE id = ?`).run(J(checks), J(x.sweep?.length ? x.sweep : null), rs);
   }
 }
 
@@ -1661,7 +1673,10 @@ async function betaBody(id: string, p: Product, { focus, criteria, scenario, opt
         const q = startStep(id, p.id, 'beta', 'carry', same);
         updateStep(q, { status: 'done', finished: true });
       } else {
-        await playtestProduct(id, p, t, { focus, mode: 'verify', criteria, abandon: newerBuild, ...(bare ? { priority: 5 } : {}) });
+        // A play of beta that isn't a task's own check (the one before going live, the Beta button) judges every merged
+        // task's criteria not verified yet in its review (acceptance.ts sweepFor): no play of its own for them.
+        const sweep = sweepFor(p.id, { runKind: 'beta', where: t.where === 'live' ? 'live' : 'local', device: t.device, asked: !bare });
+        await playtestProduct(id, p, t, { focus, mode: 'verify', criteria, abandon: newerBuild, ...(bare ? { priority: 5 } : {}), ...(sweep ? { sweep } : {}) });
         if (by) return void supersede(id, p.id, by, shaOf(repoDirs(p).source, 'HEAD'));
       }
     } else if (lane && t) {
