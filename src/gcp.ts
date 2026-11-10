@@ -92,13 +92,22 @@ export async function gapi(url: string, init: { method?: string; body?: unknown;
   // A read Google answered 429 or 5xx to (Cloud Run's "503 upstream" while a build follows its job) is asked again,
   // twice, before it fails: one blip used to end a build whose deploy was still running (2026-11-10, hawkes-games
   // firebase). Writes aren't repeated, since a POST may have landed.
-  let r = await call();
-  for (const wait of method === 'GET' ? retryWaits : []) {
-    if (r.status !== 429 && r.status < 500) break;
-    await r.text().catch(() => '');
-    await new Promise((ok) => setTimeout(ok, wait));
-    r = await call();
+  // A read whose connection drops ("fetch failed") is asked again the same way; a timeout isn't.
+  const waits = method === 'GET' ? retryWaits : [];
+  const attempt = async (last: boolean): Promise<Response | null> => {
+    try { return await call(); } catch (e: any) {
+      if (last || e?.name === 'TimeoutError' || !/fetch failed|ECONNRESET|socket hang up|other side closed/i.test(String(e?.message ?? e) + String(e?.cause?.message ?? ''))) throw e;
+      return null;
+    }
+  };
+  let r = await attempt(waits.length === 0);
+  for (let i = 0; i < waits.length; i++) {
+    if (r && r.status !== 429 && r.status < 500) break;
+    await r?.text().catch(() => '');
+    await new Promise((ok) => setTimeout(ok, waits[i]));
+    r = await attempt(i === waits.length - 1);
   }
+  if (!r) throw new Error('fetch failed');
   if (r.status === 404 && init.missingOk) return null;
   const text = await r.text();
   if (!r.ok) {
