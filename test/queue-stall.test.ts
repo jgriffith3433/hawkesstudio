@@ -39,3 +39,10 @@ test('what holds the queue, counted by reason, most first', () => {
   ];
   assert.equal(heldBy(d), '3x queued: waits for disk room; 1x queued by the PM; 1x queued: waits for another change; 1x queued');
 });
+
+test('a revision waits its turn in the queue instead of starting on the spot past the cap', async () => {
+  const src = fs.readFileSync(new URL('../src/agents.ts', import.meta.url), 'utf8');
+  const body = src.slice(src.indexOf('export function revise('), src.indexOf('export function answerChange('));
+  assert.ok(body.includes('reviseNotes.set(id, note)'), 'the note is kept for the pump');
+  assert.ok(!/\bvoid work\(/.test(body), 'revise never starts a pass itself (2026-11-10: 13 passes on a cap of 6)');
+});
