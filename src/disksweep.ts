@@ -289,6 +289,7 @@ export async function sweepDisk(opts: {
 
   const freed = Math.max(0, before - diskInfo().used);
   if (freed > MB) report.detail.push(`statfs freed ~${Math.round(freed / MB)} MB`);
+  if (freed > MB || report.bytes > MB) diskFreed(`a ${hard ? 'hard' : 'soft'} sweep freed ~${Math.round(Math.max(freed, report.bytes) / MB)} MB`);
   const line = report.detail.length ? report.detail.join('; ') : 'nothing to clear';
   opts.say?.(`[disksweep] ${hard ? 'hard' : 'soft'}: ${line}; ${diskSummary()}`);
   return report;
@@ -362,6 +363,11 @@ let timer: NodeJS.Timeout | null = null;
 let started = false;
 
 /** At start-up and on a timer (Cloud Run or STUDIO_DISK_SWEEP=on). Idempotent. */
+/** Who wants to hear that a sweep freed space (agents.ts: changes waiting for disk room try again). */
+const freedListeners = new Set<(why: string) => void>();
+export function onDiskFreed(f: (why: string) => void) { freedListeners.add(f); return () => void freedListeners.delete(f); }
+export function diskFreed(why: string) { for (const f of freedListeners) { try { f(why); } catch { /* a listener's own problem */ } } }
+
 export function startDiskSweep() {
   if (started || process.env.STUDIO_DISK_SWEEP === 'off') return;
   if (!process.env.K_SERVICE && process.env.STUDIO_DISK_SWEEP !== 'on') return;

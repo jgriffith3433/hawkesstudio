@@ -39,6 +39,7 @@ import { compileGate, compileFixPrompt, runCompileCheck, skippedCompile, COMPILE
 import { unityCheckAsync, unityFixPrompt, issueLines, looksUnity, changedCsFilesAsync, type UnityCheckResult } from './unitycheck.ts';
 import { rubricBrief, isGame, qualityGate, failLine } from './quality.ts';
 import { qualityScan, qualityFixPrompt, scanLines, type QualityScan } from './quality-scan.ts';
+import { diskWaits } from './diskwait.ts';
 import { funReview } from './fun-review.ts';
 import { forOwner } from './owner.ts';
 import { isVideoTask, videoReady, versionsOf } from './videos.ts';
@@ -2059,17 +2060,19 @@ export async function customerAgentGate(): Promise<string | null> {
   return null;
 }
 
-/** Changes put back in the queue for want of disk room (waitForDisk): not picked again before this time. */
-const diskWait = new Map<string, number>();
-const DISK_WAIT_MS = () => Number(process.env.STUDIO_DISK_WAIT_MS) > 0 ? Number(process.env.STUDIO_DISK_WAIT_MS) : 5 * 60_000;
-const waitsForDisk = (id: string) => (diskWait.get(id) ?? 0) > Date.now();
-/** A change that couldn't get disk room for its worktree: queued again (not failed), looked at again after DISK_WAIT_MS. */
+/**
+ * Changes put back in the queue for want of disk room (waitForDisk): not picked again until room may have freed, which
+ * is an event, not a timer (diskwait.ts): a pass ending, or a sweep that freed space (disksweep.ts diskFreed).
+ */
+const diskWait = diskWaits(() => void pump());
+void import('./disksweep.ts').then((d) => d.onDiskFreed((why) => diskWait.freed(why))).catch(() => {});
+const waitsForDisk = (id: string) => diskWait.holds(id);
+/** A change that couldn't get disk room for its worktree: queued again (not failed), tried again once room may have freed. */
 function waitForDisk(id: string, why: string) {
-  diskWait.set(id, Date.now() + DISK_WAIT_MS());
+  diskWait.hold(id);
   const short = why.replace(/\. Cleared .*$/, '').replace(/^(in-memory|working) disk is full/, 'the disk is full');
   update(id, { status: 'queued', phase: null, detail: `queued: waits for disk room (${short.slice(0, 200)})` });
-  addLog(id, `disk: no room for its worktree (${short.slice(0, 200)}): back in the queue, it starts once work beside it ends`);
-  setTimeout(() => void pump(), DISK_WAIT_MS() + 1000).unref();
+  addLog(id, `disk: no room for its worktree (${short.slice(0, 200)}): back in the queue, it starts once work beside it ends or a sweep frees room`);
 }
 
 /** A revision's note, kept until the pump starts its pass (revise). */
@@ -2275,7 +2278,8 @@ async function pumpPass() {
     void work(c.id, back ? undefined : note, undefined, back, Boolean(back)).finally(() => {
       land();
       remember(c.id);
-      void pump();
+      // A pass ending frees what it held: changes waiting for disk room may start now (this wakes the queue too).
+      if (!diskWait.freed(`${c.id}'s pass ended`)) void pump();
     });
   }
 }
