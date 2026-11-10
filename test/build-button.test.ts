@@ -43,22 +43,26 @@ const row = (o: Record<string, unknown> = {}) => {
 };
 const REFUSED = 'the Unity build failed: customer builds take github { repo, commit, token, ref? } (not refresh): the output comes back as an asset, nothing is pushed';
 
-test('the build request is exactly what Gen takes: github { repo, commit, token, ref }, nothing else', () => {
+test('the build request is exactly what Gen takes: github { repo, commit, token, ref, refresh? }, nothing else', () => {
   const b = getProduct('bbgame').builds![0];
+  delete process.env.STUDIO_BUILD_KEY;
   const params = B.genBuildParams(b, 'acme/bbgame', SHA, 'beta', 'ghs_abc', 'b_1') as any;
-  assert.deepEqual(Object.keys(params.github).sort(), ['commit', 'ref', 'repo', 'token']);
-  assert.deepEqual(params.github, { repo: 'acme/bbgame', commit: SHA, token: 'ghs_abc', ref: 'beta' });
+  const keys = Object.keys(params.github).filter((k) => k !== 'refresh').sort();
+  assert.deepEqual(keys, ['commit', 'ref', 'repo', 'token']);
+  assert.equal(params.github.repo, 'acme/bbgame');
+  assert.equal(params.github.commit, SHA);
+  assert.equal(params.github.token, 'ghs_abc');
   assert.equal(params.out, 'artifact');
   assert.equal(params.target, 'web');
   assert.equal(params.path, 'Game');
   assert.equal(params.method, 'Deploy.Run');
-  assert.ok(!('refresh' in params.github), 'github.refresh is what Gen refused');
-  // Even with the row's key at hand, the refresh object does not ride unless it is switched on.
+  // With a key to sign it, the refresh rides by default (Gen takes it since 2026-11-10), and only with a build row.
   process.env.STUDIO_BUILD_KEY = 'k';
-  assert.ok(!('refresh' in (B.githubFor('a/b', 'c', 't', 'beta', 'b_1') as any)));
-  // Switched on by hand, the helper can still carry it for a Gen that takes it.
-  const on = B.githubFor('a/b', SHA, 't', 'beta', 'b_1', true) as any;
+  const on = B.githubFor('a/b', SHA, 't', 'beta', 'b_1') as any;
   assert.ok(on.refresh);
+  assert.equal(on.refresh.build, 'b_1');
+  assert.ok(!('refresh' in (B.githubFor('a/b', SHA, 't', 'beta') as any)), 'no row, no refresh');
+  assert.ok(!('refresh' in (B.githubFor('a/b', SHA, 't', 'beta', 'b_1', false) as any)), 'switched off');
 });
 
 test("Gen's rejection is the cause, in its own words, not 'Cause unclear'", () => {
