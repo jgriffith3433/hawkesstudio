@@ -156,13 +156,30 @@
       <div class="meta" style="margin-bottom:8px">${n.full ? 'From its operator view, read with the Gen key Studio holds.' : 'Public status only: the Gen key Studio holds is not an owner or admin key.'} Down or full: the line above and a phone note. Logs: <code>journalctl -u hawkes-net</code> on the box.</div></details>`;
   }
 
+  // What each AI provider is running now, and on which model: what the harness itself reported, else (asked) the model the
+  // run asked for and the harness hasn't confirmed yet (runs.ts).
+  const PROVIDER = { claude: 'Claude', codex: 'Codex', cursor: 'Cursor', copilot: 'Copilot', gemini: 'Gemini', antigravity: 'Antigravity' };
+  const KIND = { agent: 'agent', scout: 'scout', talk: 'Talk', pm: 'PM', review: 'PM or reviewer' };
+  function providersNow(r) {
+    const w = r.work;
+    if (!w || !w.runs) return '';
+    const mins = (t) => { const m = Math.round((Date.now() - t) / 60000); return m < 1 ? 'just now' : `${m} min`; };
+    const model = (x) => x.model ? `${esc(x.model)}${x.reported ? '' : ' <span class="meta" title="the model it asked for; the harness hasn\'t said yet">(asked)</span>'}` : '<span class="meta">not reported yet</span>';
+    const load = w.providers.map((p) => `<span class="pill" title="${esc(Object.entries(p.models).map(([m, n]) => `${n} on ${m}`).join(', '))}">${esc(PROVIDER[p.harness] ?? p.harness)} · ${p.running} running (${esc(Object.entries(p.kinds).map(([k, n]) => `${n} ${KIND[k] ?? k}`).join(', '))})</span>`).join(' ');
+    const rows = w.runs.map((x) => `<tr><td>${x.change ? `<a href="#changes/${esc(x.change)}">${esc(x.title || x.change)}</a>` : esc(x.title || KIND[x.kind] || x.kind)}<div class="meta">${esc(KIND[x.kind] ?? x.kind)}${x.product ? ` · ${esc(x.product)}` : ''}${x.change ? ` · ${esc(x.change)}` : ''}</div></td><td>${esc(PROVIDER[x.harness] ?? x.harness)}</td><td>${model(x)}</td><td class="n">${mins(x.since)}</td></tr>`).join('');
+    const bad = (w.mismatches ?? []).map((m) => `<p class="rs-red" style="margin:4px 0">${esc(m.text)}</p>`).join('');
+    return `<details class="rs-box more-details" data-k="providers" data-key="rs:providers" open><summary>AI providers now <span class="meta">· ${w.runs.length} run${w.runs.length === 1 ? '' : 's'} going</span></summary>
+      ${bad}<p style="margin:4px 0">${load || '<span class="meta">Nothing running on any provider.</span>'}</p>
+      ${rows ? `<table><tr><th>Run</th><th>Provider</th><th>Model</th><th class="n">For</th></tr>${rows}</table>` : ''}</details>`;
+  }
+
   function work(r) {
     const w = r.work;
     if (!w) return '';
     const a = w.agents;
     const limits = Object.entries(a.productLimits ?? {}).map(([p, n]) => `${esc(p)} ${n}`).join(', ');
     const list = a.list.map((c) => {
-      const b = c.harness_label || c.harness ? ` · ${esc(c.harness_label || c.harness)}${c.model ? ` (${esc(c.model)})` : ''}` : '';
+      const b = c.harness_label || c.harness ? ` · ${esc(c.harness_label || c.harness)}${c.model ? ` (${esc(c.model)}${c.model_reported ? '' : ', asked'})` : ''}` : '';
       return `<tr><td>${esc(c.title)}<div class="meta">${esc(c.product)} · ${esc(c.id)}${b}</div></td><td>${esc(c.status)}</td></tr>`;
     }).join('');
     return `<details class="rs-box more-details" data-k="work" data-key="rs:work"><summary>Agents, the PM and Gen's queue <span class="meta">· ${a.running} of ${a.maxConcurrent} agents working</span></summary>
@@ -204,7 +221,7 @@
     const worst = r.attention[0]?.level ?? '';
     studioPatch(el, `<p class="rs-head ${worst}">${worst === 'bad' ? '⚠ ' : ''}${esc(r.headline)}</p>
       ${r.attention.length > 1 ? `<ul class="rs-att">${r.attention.slice(1).map((a) => `<li class="${a.level === 'bad' ? 'rs-red' : 'rs-amber'}">${a.level === 'bad' ? '⚠' : '•'} ${esc(a.text)}</li>`).join('')}</ul>` : ''}
-      ${tiles(r)}${groups(r.host)}${outside(r)}${netbox(r)}${fleet(r)}${work(r)}${loop(r)}${charts(r)}
+      ${tiles(r)}${groups(r.host)}${outside(r)}${netbox(r)}${fleet(r)}${providersNow(r)}${work(r)}${loop(r)}${charts(r)}
       <div class="meta">Read ${ago(r.at)}${r.host ? ` in ${r.host.sampleMs} ms` : ''}. Phone alerts: ${r.settings.alerts ? `memory or disk over ${r.settings.memoryPct}% / ${r.settings.diskPct}% for ${r.settings.minutes} min, a machine idle ${r.settings.pastStopMinutes} min past its stop time, the portal failing ${r.settings.portalMinutes} min, event-loop p99 over ${r.settings.loopP99Ms} ms for ${r.settings.loopMinutes} min, WebSockets over ${r.settings.wsPct}%, a backup older than ${r.settings.backupHours} h, a relay node down` : 'off'} (<a href="#settings" data-rs-go="settings">Settings</a>).</div>`);
     for (const [k, o] of open) { const d = el.querySelector(`details[data-k="${k}"]`); if (d) d.open = o; }
   }

@@ -80,7 +80,8 @@ async function answer(text) {
 async function agent() {
   const resumed = args.includes('--resume');
   log({ agent: process.cwd(), resumed, harness, prompt: args[args.indexOf('-p') + 1] });
-  out({ type: 'system', subtype: 'init', session_id: 'fake-agent-session', apiKeySource: 'none' });
+  // The model it runs, as every harness's init says (Studio shows it: runs.ts).
+  out({ type: 'system', subtype: 'init', session_id: 'fake-agent-session', apiKeySource: 'none', model: `${harness}-fake-model` });
   out({ type: 'assistant', message: { content: [{ type: 'text', text: 'Looking at the brief.' }] } });
   let brief = '';
   try { brief = fs.readFileSync(path.join('.hawkes', 'brief.md'), 'utf8'); } catch { /* none */ }

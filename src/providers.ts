@@ -193,6 +193,27 @@ export function pickHarness({ role, prefer }: { role?: string | null; prefer?: H
   return [...ready].sort((a, b) => Number(room(b)) - Number(room(a)) || fill(a) - fill(b) || ready.indexOf(a) - ready.indexOf(b))[0];
 }
 
+/**
+ * In plain words, why a pass runs on `now` and not on `prev` (the provider of the change's last pass, or null for its
+ * first): what the change's provider history shows next to a switch. Call it before the pass counts on `now` (using).
+ */
+export function whyHarness(prev: Harness | null, now: Harness, role?: string | null, s: ProviderSettings = providerSettings()): string {
+  const L = (h: Harness) => LABEL[h] ?? h;
+  if (s.mode === 'one') return prev && prev !== now ? `${L(prev)} ${notReady(prev, s) ?? "isn't the harness in use"}: ${L(now)} stands in` : `${L(now)} is the harness in use`;
+  if (prev && prev !== now) {
+    const nr = notReady(prev, s);
+    if (nr) return `${L(prev)}: ${nr}`;
+    const cap = s.caps[prev] ?? DEFAULT_CAPS[prev];
+    if (busyOn(prev) >= cap) return `${L(prev)} was full (${busyOn(prev)} of ${cap} running)`;
+    if (s.order.indexOf(now) < s.order.indexOf(prev)) return `${L(now)} answers again: back to it (first in your order)`;
+    return `${L(now)} had more room`;
+  }
+  const pin = role ? s.roles[role as TunedRole] : undefined;
+  if (pin === now) return `${L(now)} is set for ${role} work`;
+  if (role && QUALITY_ROLES.has(role)) return s.order[0] === now ? `${L(now)}: first in your order for ${role} work` : `${L(now)}: the first in your order with room for ${role} work`;
+  return `${L(now)} was the least busy`;
+}
+
 // A hold's Talk line names the providers that carry on (harness-hold.ts announce).
 setSpreadOthers((h) => {
   try {

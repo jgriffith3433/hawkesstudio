@@ -421,6 +421,7 @@ export function netAttention(net: any): Attention[] {
 /** Agents (running, queued, waiting on Gen) against their limits, the PM's capacity, Gen's job queue. */
 async function work() {
   const { agentSettings, perProductLimit, brainOfChange } = await import('./agents.ts');
+  const R = await import('./runs.ts');
   const s = agentSettings();
   const rows = db.prepare(`SELECT id, product, title, status, phase, request, findings FROM changes WHERE status IN ('queued', 'working', 'verifying', 'revising', 'waiting on Gen')`).all() as any[];
   const running = rows.filter((r) => ['working', 'verifying', 'revising'].includes(r.status));
@@ -443,6 +444,10 @@ async function work() {
       maxConcurrent: s.maxConcurrent, perProduct: s.perProduct, productLimits: s.productLimits, byProduct: perProduct, enabled: s.enabled,
       list: rows.map((r) => ({ id: r.id, product: r.product, title: r.title, status: r.status, ...brainOfChange(r) })),
     },
+    // Every run going now (agent passes, scouts, Talk answers, PM and reviewer calls) by provider, with the model each
+    // harness reported (runs.ts), and any change that shows another provider than its running job.
+    runs: R.liveRuns(), providers: R.loadByProvider(),
+    mismatches: R.liveMismatches((id) => { const r = rows.find((x) => x.id === id); return r ? brainOfChange(r) : null; }),
     pm, jobs,
   };
 }
@@ -597,7 +602,9 @@ export async function resources({ range = '1h' } = {}) {
   const xs = await import('./external.ts');
   const gb = (await import('./genpace.ts')).genBusyAttention();
   const qa = queueAttention(await import('./agents.ts').then((A) => A.queueHealth()).catch(() => null));
-  const attention = [...attentionOf(host, w, fl, s), ...netAttention(net), ...(gb ? [gb] : []), ...(qa ? [qa] : []), ...xs.externalIncidents(s).map((i) => ({ level: 'bad' as const, text: `${i.title}: ${i.message}` }))]
+  // A change whose page names another provider than the job running it (runs.ts liveMismatches): what J reads would be wrong.
+  const mm = w?.mismatches?.length ? [{ level: 'bad' as const, text: `${plural(w.mismatches.length, 'change')} ${w.mismatches.length === 1 ? 'shows' : 'show'} another AI provider than the one running it: ${w.mismatches.slice(0, 3).map((x) => x.text).join('; ')}.` }] : [];
+  const attention = [...mm, ...attentionOf(host, w, fl, s), ...netAttention(net), ...(gb ? [gb] : []), ...(qa ? [qa] : []), ...xs.externalIncidents(s).map((i) => ({ level: 'bad' as const, text: `${i.title}: ${i.message}` }))]
     .sort((a, b) => (a.level === b.level ? 0 : a.level === 'bad' ? -1 : 1));
   return {
     at: Date.now(), headline: headline(host, attention, w), attention, host, loop: loopHealth(), commands: runningCommands(),

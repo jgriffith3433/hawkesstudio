@@ -13,6 +13,7 @@
 // The answer looks like a Gen job, so callers keep reading job.status and job.result.value / .text; a fallback one has
 // via "claude-code", billing "Max plan (not billed)" and cost 0.
 
+import { reportedModel, runReported, runStarted } from './runs.ts';
 import { forOwner } from './owner.ts';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -182,7 +183,7 @@ export function jsonIn(text: string) {
 }
 
 /** One `claude -p` run: { ok, text, structured, usage, error }. The prompt goes in on stdin (prompts can be long). */
-function runClaude(args: string[], input: string, cwd: string, timeoutMs: number): Promise<{ ok: boolean; text: string; structured: unknown; usage: number; error?: string }> {
+function runClaude(args: string[], input: string, cwd: string, timeoutMs: number): Promise<{ ok: boolean; text: string; structured: unknown; usage: number; error?: string; model?: string }> {
   return new Promise((resolve) => {
     const c = claudeCommand(args, { cwd, env: claudeEnv(), brain: 'claude' });
     const child = spawn(c.file, c.args, { cwd: c.cwd, env: c.env, windowsHide: true });
@@ -200,7 +201,9 @@ function runClaude(args: string[], input: string, cwd: string, timeoutMs: number
       } catch { /* not JSON */ }
       if (signal) return resolve({ ok: false, text: '', structured: undefined, usage: 0, error: `Claude Code timed out after ${Math.round(timeoutMs / 60000)} min` });
       if (!m || m.is_error) return resolve({ ok: false, text: String(m?.result ?? ''), structured: undefined, usage: Number(m?.total_cost_usd) || 0, error: `Claude Code: ${String(m?.result ?? err ?? `exit ${code}`).trim().slice(0, 300) || `exit ${code}`}` });
-      resolve({ ok: true, text: String(m.result ?? ''), structured: m.structured_output, usage: Number(m.total_cost_usd) || 0 });
+      // The model Claude Code says it used (the result's modelUsage), for the live runs view (runs.ts).
+      const model = reportedModel(Object.keys(m.modelUsage ?? {}).sort((a, b) => (m.modelUsage[b]?.costUSD ?? 0) - (m.modelUsage[a]?.costUSD ?? 0))[0]) ?? undefined;
+      resolve({ ok: true, text: String(m.result ?? ''), structured: m.structured_output, usage: Number(m.total_cost_usd) || 0, model });
     });
     child.stdin.on('error', () => {});
     child.stdin.end(input);
@@ -212,6 +215,8 @@ export async function askClaudeCode(p: AskParams): Promise<any> {
   return slot(async () => {
     const started = Date.now();
     const id = newId('cc');
+    // Shown as a live run (runs.ts): a PM or reviewer call, on Claude Code.
+    const endRun = runStarted({ id: `llm:${id}`, kind: 'review', harness: 'claude', model: p.model ?? null, title: p.purpose ? String(p.purpose).slice(0, 120) : null, product: p.product ?? null });
     // A temp folder outside the projects (no CLAUDE.md above it), readable by the sandbox user.
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'studio-llm-'));
     fs.chmodSync(dir, 0o755);
@@ -236,6 +241,7 @@ export async function askClaudeCode(p: AskParams): Promise<any> {
         const again = attempt && text ? `\n\nYour previous answer was not valid (${error}). Answer again with JSON only.` : '';
         const r = await runClaude(args, `${p.prompt}${pics}${gone}${shape}${again}`, dir, timeout);
         usage += r.usage;
+        if (r.model) runReported(`llm:${id}`, r.model);
         if (!r.ok) {
           error = r.error ?? 'failed';
           // Structured output itself failed: once more without --json-schema (the prompt asks for JSON only).
@@ -260,6 +266,7 @@ export async function askClaudeCode(p: AskParams): Promise<any> {
       error = String(e?.message ?? e);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
+      endRun();
     }
     const billing = usingSubscription() ? MAX_PLAN : 'API (per token)';
     const ok = !error;

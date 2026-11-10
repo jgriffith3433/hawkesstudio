@@ -93,7 +93,8 @@ import { infraFailed, INFRA_FAILED_SQL, isInfraText } from './infra-failure.ts';
 import { ensureGpuFor, needsGpu } from './gpustart.ts';
 import { walkAwayOn, WALK_AWAY_BY } from './walkaway.ts';
 import { brainId, brainLabel, brainSettings, harnessStopOf, isHarness, type Harness, type HarnessStop } from './brains.ts';
-import { noProviderFree, notReady, pickHarness, providerSettings, using } from './providers.ts';
+import { noProviderFree, notReady, pickHarness, providerSettings, using, whyHarness } from './providers.ts';
+import { currentBrain, lastHarness, noteBrain, reportedModel, runAsked, runReported, runStarted } from './runs.ts';
 import { harnessHeld, holdDetail, holdHarness, onHoldLifted, reviewHolds, LABEL as HARNESS_LABEL } from './harness-hold.ts';
 import { githubReachable } from './ghtoken.ts';
 import { kickFollowups } from './followup-kick.ts';
@@ -170,6 +171,7 @@ export type Change = {
   harness?: Harness | null;
   harness_label?: string | null;
   model?: string | null;
+  model_reported?: boolean;
   /** Absolute links for Talk and J: the change in Studio (its playtest and review if one was asked for, its log), the playtest video, preview, pull request. */
   links: ChangeLinks;
 };
@@ -234,14 +236,20 @@ export function brainOfChange(r: any) {
   const harness: Harness | null = phaseHarness ?? (pass?.harness as Harness | undefined) ?? (active ? brainId() : null);
   // The current attempt's route (routing.ts) names the model before its first pass is in the ledger.
   const routed = (() => { const x = parse(r.route ?? null) as Route | null; return x?.tier ? roleTune(roleArg, { tier: x.tier }).model : ''; })();
-  const model: string | null = phaseHarness
+  const planned: string | null = phaseHarness
     ? (modelPin() || routed || roleArgs(roleArg).role.model)
-    : pass?.model ?? (active ? (modelPin() || routed || roleArgs(roleArg).role.model) : null);
+    : pass?.reported ?? pass?.model ?? (active ? (modelPin() || routed || roleArgs(roleArg).role.model) : null);
+  // What the harness itself said it runs, for the provider the change is on (runs.ts): that's what's shown when there is one.
+  const ran = r.id ? currentBrain(r.id) : null;
+  const reported = Boolean(ran?.reported && ran.harness === harness) || Boolean(!ran && !phaseHarness && pass?.reported);
+  const model = ran?.reported && ran.harness === harness ? ran.model : planned;
   return {
     role,
     harness,
     harness_label: harness ? brainLabel(harness) : null,
     model,
+    /** true: the model is what the harness reported running; false: what the pass asked for (not confirmed yet). */
+    model_reported: reported,
   };
 }
 
@@ -404,10 +412,38 @@ export const SUMMARY_STOP_MAX = 400;
 function parkForHarness(id: string, ph: Phase, save: (patch: Partial<Phase>, extra?: Record<string, any>) => void, stop: HarnessStop) {
   const harness = (isHarness(ph.brain) ? ph.brain : brainId()) as Harness;
   const { hold } = holdHarness(stop, { source: `agent change ${id}`, harness });
+  noteBrain(id, { kind: 'park', harness, model: currentBrain(id)?.model ?? null, why: `${stop.kind}: ${stop.line}` });
+  writeHandoff(id, harness, `${HARNESS_LABEL[harness]} stopped it (${stop.kind}: ${stop.line.slice(0, 160)})`);
   addLog(id, `${HARNESS_LABEL[harness]} stopped the agent (${stop.kind}): ${stop.line.slice(0, 200)}. Parked with its worktree and session: not a try; it resumes by itself (${holdDetail(hold)})`);
   const now = Date.now();
   const parks = [...(ph.harness?.parks ?? []), now].filter((t) => now - t < RESUME_WINDOW);
   save({ step: 'agent', proc: undefined, result: undefined, stopped: undefined, nudge: false, harness: { kind: stop.kind, line: stop.line.slice(0, 300), at: now, on: harness, parks } }, { status: 'queued', detail: holdDetail(hold) });
+}
+/**
+ * A provider stopped a pass mid-way: what it was doing goes into .hawkes/handoff.md (in the worktree, so it reaches the
+ * job), so the next session, on whichever provider, carries on from there (runAgentInner points it at the file). Its
+ * commits are already on GitHub (saveWork after every pass) and its uncommitted files stay in the worktree.
+ */
+export function writeHandoff(id: string, harness: Harness, why: string) {
+  try {
+    const c = getChange(id);
+    if (!c?.worktree || !fs.existsSync(c.worktree)) return;
+    const now = currentBrain(id);
+    const steps = c.log.filter((l) => /^\d\d:\d\d:\d\d (agent|tool): /.test(l)).slice(-30).map((l) => `- ${l.slice(9)}`);
+    const dirty = (() => { try { return uncommitted(c.worktree).split('\n').filter(Boolean).length; } catch { return 0; } })();
+    const text = [
+      '# Where the last pass got to',
+      '',
+      `It ran on ${HARNESS_LABEL[harness]}${now?.model ? ` (${now.model})` : ''} and was cut off at ${new Date().toISOString().slice(0, 16).replace('T', ' ')} UTC: ${why}.`,
+      `Its commits are on this branch (\`git log\`)${dirty ? `; ${dirty} file(s) it changed aren't committed yet (\`git status\`)` : ''}.`,
+      '',
+      'What it was doing, newest last:',
+      ...(steps.length ? steps : ['- (nothing logged)']),
+      '',
+    ].join('\n');
+    fs.mkdirSync(path.join(c.worktree, '.hawkes'), { recursive: true });
+    fs.writeFileSync(path.join(c.worktree, HANDOFF), text);
+  } catch { /* a handoff never stops a park */ }
 }
 /**
  * How soon a change parked by a harness hold may start again, whatever the hold says (a probe that answers lifts the
@@ -1417,12 +1453,12 @@ export function agentMcp(id: string) {
 }
 
 /** An agent pass's end: `stopped` says why it ended before finishing ('time': Studio's time limit; 'turns': its turn limit; 'cut': no result). */
-type AgentResult = { ok: boolean; cost: number; result: string; sawResult: boolean; lost: boolean; stopped?: 'time' | 'turns' | 'cut'; stderr?: string; harness?: Harness };
+type AgentResult = { ok: boolean; cost: number; result: string; sawResult: boolean; lost: boolean; stopped?: 'time' | 'turns' | 'cut'; stderr?: string; harness?: Harness; model?: string };
 /**
  * How an agent pass runs: as a new process (onStart records it), or reattached to one started before a restart; harness:
  * the provider it runs on (providers.ts), else the harness in use.
  */
-type AgentRun = { reattach?: { rec: DetachRec; offset: number }; onStart?: (rec: DetachRec) => void; onProgress?: (offset: number) => void; harness?: Harness };
+type AgentRun = { reattach?: { rec: DetachRec; offset: number }; onStart?: (rec: DetachRec) => void; onProgress?: (offset: number) => void; harness?: Harness; onModel?: (model: string) => void };
 
 /**
  * How long one agent pass may run before Studio stops it (counted from its unit's start, so a restart doesn't reset it).
@@ -1457,7 +1493,25 @@ export function stuckWhy({ quietMs, idleMs, cpuMs, overMs, procs, genBusy }: { q
 /** A session that ended with its work uncommitted is resumed this many times to commit it (agents.ts nudge). */
 export const NUDGES = 2;
 
+/**
+ * One agent pass, shown as a live run (runs.ts) while it goes: its provider, the model it asked for, and the model the
+ * harness reported, which also goes into the change's provider history once per pass.
+ */
 function runAgent(c: Change, briefFile: string, s: AgentSettings, env = claudeEnv(), resume?: { session?: string; prompt: string }, how: AgentRun = {}): Promise<AgentResult> {
+  const harness = how.harness ?? brainId();
+  const runId = `agent:${c.id}`;
+  const end = runStarted({ id: runId, kind: 'agent', harness, model: how.reattach ? currentBrain(c.id)?.model ?? null : null, change: c.id, product: c.product, title: c.title });
+  const onModel = (model: string) => {
+    runReported(runId, model);
+    const now = currentBrain(c.id);
+    if (!now || !now.reported || now.model !== model || now.harness !== harness) noteBrain(c.id, { kind: 'model', harness, model, why: null });
+    how.onModel?.(model);
+  };
+  return runAgentInner(c, briefFile, s, env, resume, { ...how, onModel }).finally(end);
+}
+/** What a fresh session reads first when the last pass was cut off mid-way (writeHandoff). */
+const HANDOFF = path.join('.hawkes', 'handoff.md');
+function runAgentInner(c: Change, briefFile: string, s: AgentSettings, env = claudeEnv(), resume?: { session?: string; prompt: string }, how: AgentRun = {}): Promise<AgentResult> {
   return new Promise((resolve) => {
     let child: ReturnType<typeof launch>['child'];
     let started = Date.now();
@@ -1468,7 +1522,12 @@ function runAgent(c: Change, briefFile: string, s: AgentSettings, env = claudeEn
       quietUntil = how.reattach.offset;
       started = how.reattach.rec.started;
     } else {
-      const prompt = resume?.prompt ?? `Read ${path.relative(c.worktree, briefFile).replace(/\\/g, '/')} and do what it says. It's your whole task.`;
+      const base = resume?.prompt ?? `Read ${path.relative(c.worktree, briefFile).replace(/\\/g, '/')} and do what it says. It's your whole task.`;
+      // A new session after a pass was cut off (another provider took over, or the same one after a hold): it reads where
+      // the last one got to before anything else (writeHandoff), so it carries on instead of starting over.
+      const prompt = !resume?.session && fs.existsSync(path.join(c.worktree, HANDOFF))
+        ? `${base}\n\nFirst read ${HANDOFF}: it says what the last pass was doing when it was cut off and what it had done. Carry on from there; don't redo finished work.`
+        : base;
       // The role (.claude/agents/<role>.md): its model, standing instructions (the stable, cached part of the prompt),
       // tools and turn limit; the task itself is the brief.
       // The route (routing.ts): the category's tier, one up per failed attempt, Opus within the day's budget, Fable only on J's ask.
@@ -1482,6 +1541,10 @@ function runAgent(c: Change, briefFile: string, s: AgentSettings, env = claudeEn
         ...(route ? { tier: route.tier, effort: route.effort } : {}),
       });
       if (route) addLog(c.id, `route: ${routeLine(route, role.model)}`);
+      // The change's provider history: a start, or a switch with why (what the change's page shows).
+      const prev = lastHarness(c.id);
+      noteBrain(c.id, { kind: prev && prev !== harness ? 'switch' : 'start', harness, model: role.model || null, why: whyHarness(prev, harness, agentRole(c)) });
+      runAsked(`agent:${c.id}`, role.model || null);
       const args = [
         ...(resume?.session ? ['--resume', resume.session] : []),
         '-p', prompt, '--output-format', 'stream-json', '--verbose', ...roleFlags,
@@ -1554,6 +1617,11 @@ function runAgent(c: Change, briefFile: string, s: AgentSettings, env = claudeEn
           const m = JSON.parse(line);
           // Its session id, so a question can be answered in the same session (claude --resume).
           if (m.type === 'system' && m.session_id && getChange(c.id)?.session !== m.session_id) update(c.id, { session: m.session_id });
+          // The model the harness itself says it runs (Claude Code's init, the adapters' in bin/): what Studio shows.
+          if (m.type === 'system' && m.subtype === 'init') {
+            const rm = reportedModel(m.model);
+            if (rm && rm !== out.model) { out.model = rm; how.onModel?.(rm); }
+          }
           if (m.type === 'assistant' && !quiet) {
             for (const part of m.message?.content ?? []) {
               if (part.type === 'text' && part.text.trim()) addLog(c.id, `agent: ${part.text.trim().slice(0, 300)}`);
@@ -1633,7 +1701,9 @@ async function agentPass(id: string, ph: Phase, save: (patch: Partial<Phase>) =>
       : passStop(r) ? 'harness-stop'
       : stuck ? 'stuck'
       : r.stopped ?? (r.ok && r.sawResult ? 'done' : 'failed');
-    recordPass({ change: id, product: c.product, task: c.task, role, harness, model: t.model, tier: t.tier, effort: t.effort, retry, ms: Date.now() - t0, cost: r.cost, outcome, category: route?.category ?? null, premium: route?.premium ?? null });
+    recordPass({ change: id, product: c.product, task: c.task, role, harness, model: t.model, reported: r.model ?? null, tier: t.tier, effort: t.effort, retry, ms: Date.now() - t0, cost: r.cost, outcome, category: route?.category ?? null, premium: route?.premium ?? null });
+    // Finished: the handoff note did its job (a later cut-off writes a new one).
+    if (outcome === 'done') fs.rmSync(path.join(c.worktree, HANDOFF), { force: true });
   } catch { /* the ledger never stops a pass */ }
   return r;
 }
@@ -1665,6 +1735,7 @@ async function agentPassRaw(id: string, ph: Phase, save: (patch: Partial<Phase>)
     return await offMachine(id, async () => {
     if (ph.proc && brainOf(ph) !== harness) {
       addLog(id, `agent: stopping the ${brainOf(ph)} session; the brain is ${brainLabel(harness)} now, so this pass starts again`);
+      writeHandoff(id, brainOf(ph), `Studio moved the change to ${brainLabel(harness)}`);
       stopDetached(ph.proc.rec);
       ph.proc = undefined;
       save({ proc: undefined, brain: harness });

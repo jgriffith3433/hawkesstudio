@@ -6,6 +6,21 @@ const $ = (s, el = document) => el.querySelector(s);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 // Library files through Studio's relay (its own Gen key, ranges for video): Gen's /v1/files answers 401 to a browser.
 const file = (asset) => `/api/gen/v1/files/${asset}`;
+// A change's AI providers, newest last: each pass's start (or switch, with why), the model its harness reported, and
+// where a provider stopped it (runs.ts brain_events). Shown under a change's Details.
+const BRAIN_NAME = { claude: 'Claude', codex: 'Codex', cursor: 'Cursor', copilot: 'Copilot', gemini: 'Gemini', antigravity: 'Antigravity' };
+function brainsHtml(c) {
+  const ev = c.brains ?? [];
+  if (!ev.length) return '';
+  const hm = (t) => new Date(t).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  const name = (h) => esc(BRAIN_NAME[h] ?? h);
+  const lines = ev.map((e) => e.kind === 'switch' ? `<li><b>${hm(e.at)}</b> moved to <b>${name(e.harness)}</b>${e.model ? ` (${esc(e.model)}, asked)` : ''}: ${esc(e.why ?? '')}</li>`
+    : e.kind === 'start' ? `<li><b>${hm(e.at)}</b> pass on <b>${name(e.harness)}</b>${e.model ? ` (${esc(e.model)}, asked)` : ''}${e.why ? `: ${esc(e.why)}` : ''}</li>`
+    : e.kind === 'model' ? `<li><b>${hm(e.at)}</b> ${name(e.harness)} says it runs <b>${esc(e.model ?? '')}</b></li>`
+    : `<li><b>${hm(e.at)}</b> ${name(e.harness)} stopped it, parked to carry on: ${esc(e.why ?? '')}</li>`).join('');
+  const switches = ev.filter((e) => e.kind === 'switch').length;
+  return `<details data-key="${c.id}:brains"><summary class="meta">AI providers${switches ? ` · ${switches} switch${switches === 1 ? '' : 'es'}` : ''}</summary><ul class="meta" style="margin:4px 0;padding-left:18px">${lines}</ul></details>`;
+}
 const ago = (t) => {
   if (!t) return '';
   const m = Math.round((Date.now() - t) / 60000);
@@ -855,7 +870,7 @@ async function loadChanges() {
     // A product change is playtested only on request ("Playtest this change"); not being playtested is plain info.
     const played = v && (v.playtest || (v.outcome && v.outcome !== 'not played'));
     const brainPill = c.harness_label || c.harness
-      ? ` <span class="pill" title="${esc([c.role, c.harness_label || c.harness, c.model].filter(Boolean).join(' · '))}">${esc(c.harness_label || c.harness)}${c.model ? ` · ${esc(c.model)}` : ''}</span>`
+      ? ` <span class="pill" title="${esc([c.role, c.harness_label || c.harness, c.model, c.model && !c.model_reported ? 'the model it asked for: the harness hasn\'t confirmed it yet' : ''].filter(Boolean).join(' · '))}">${esc(c.harness_label || c.harness)}${c.model ? ` · ${esc(c.model)}${c.model_reported ? '' : ' (asked)'}` : ''}</span>`
       : '';
     return `<div class="finding" data-cid="${c.id}" data-key="ch:${esc(c.id)}"><div>
       <h4>${CH_ICON[c.status] ?? ''} ${esc(c.title)} <span class="pill ${c.status === 'ready' ? 'ship' : c.status === 'failed' ? 'failed' : ''}">${esc(c.status)}</span>${brainPill}</h4>
@@ -867,6 +882,7 @@ async function loadChanges() {
         ${!played && !c.infra && c.status === 'ready' ? `<div class="meta">Not playtested${v?.error ? ` (the last playtest asked for couldn't run: ${esc(v.error)})` : ''}.</div>` : ''}
         ${c.notes?.length ? `<div class="meta">${c.notes.map((n) => `${esc(n.by)}: ${esc(n.text)}`).join(' · ')}</div>` : ''}
         ${c.summary ? `<details data-key="${c.id}:summary"><summary class="meta">What the agent did</summary><pre>${esc(c.summary)}</pre></details>` : ''}
+        ${brainsHtml(c)}
         <details data-key="${c.id}:log"><summary class="meta">Log</summary><pre>${esc((c.log ?? []).slice(-40).join(String.fromCharCode(10)))}</pre></details>
         <div class="actions">
           ${c.status === 'ready' && !c.infra ? `<button class="small" data-change="${c.id}" data-act="playtest" title="Plays the change's scenario on its version (a build first for Unity), with a video and a review (a few cents).">${played ? 'Playtest again' : 'Playtest this change'}</button>` : ''}

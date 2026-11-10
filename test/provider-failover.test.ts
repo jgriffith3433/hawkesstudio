@@ -186,6 +186,22 @@ test('a provider that hits its limit hands the work to the next signed-in one, a
   assert.ok(logged().some((l) => l.agentLimited && !l.resumed), 'Claude refused the first pass');
   assert.ok(c.log.some((l: string) => /Claude stopped the agent \(billing\)/.test(l)), c.log.join('\n'));
   assert.ok(!c.log.some((l: string) => /failed/.test(l)), 'never failed');
+  // What the change shows (J, 2026-11-10: "visualize what model and providers each run and agent is using"): the
+  // provider and the model Codex itself reported, and its history: Claude, the park with why, the switch with why.
+  assert.equal(c.harness, 'codex');
+  assert.equal(c.model, 'codex-fake-model');
+  assert.equal(c.model_reported, true);
+  const kinds = c.brains.map((e: any) => `${e.kind}:${e.harness}`);
+  assert.deepEqual(kinds.slice(0, 5), ['start:claude', 'model:claude', 'park:claude', 'switch:codex', 'model:codex'], kinds.join(' '));
+  assert.match(c.brains.find((e: any) => e.kind === 'park').why, /^billing: /);
+  assert.match(c.brains.find((e: any) => e.kind === 'switch').why, /^Claude: /, 'the switch says why: Claude is held');
+  assert.equal(c.brains.find((e: any) => e.kind === 'model' && e.harness === 'codex').model, 'codex-fake-model');
+  // Mid-task recovery: Codex's new session was pointed at where Claude's pass got to.
+  assert.match(p[1].prompt, /First read \.hawkes\/handoff\.md/, p[1].prompt);
+  // Resources: nothing running now, and no change showing another provider than its job.
+  const rs = await api('/api/resources');
+  assert.deepEqual(rs.work.mismatches, []);
+  assert.ok(Array.isArray(rs.work.runs) && Array.isArray(rs.work.providers));
   pv = await api('/api/ai/providers');
   assert.equal(pv.providers.find((x: any) => x.id === 'claude').ready, false, 'Claude is held');
   assert.equal(pv.providers.find((x: any) => x.id === 'codex').ready, true, 'Codex carries on');
