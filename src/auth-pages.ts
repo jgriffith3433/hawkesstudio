@@ -27,6 +27,11 @@ button{width:100%;margin-top:20px;padding:12px;border:0;border-radius:9px;backgr
 .err{background:color-mix(in srgb,var(--bad) 14%,transparent);color:var(--bad);border-radius:8px;padding:10px 12px;margin:0 0 12px;font-size:14px}
 .ok{background:color-mix(in srgb,var(--accent) 14%,transparent);color:var(--accent);border-radius:8px;padding:10px 12px;margin:0 0 12px;font-size:14px}
 small{color:var(--muted)}a{color:var(--accent)}
+/* GIS Continue with Google: reserved 44px row (no layout jump), full card width on phones, transparent (no white box).
+   GIS "large" is 40px; scale to 44px so the tap target matches the phone rules (f_f2966d06e2c3). */
+.g-tap{width:100%;min-height:44px;height:44px;margin:4px 0 6px;display:flex;align-items:center;justify-content:center;background:transparent;overflow:hidden}
+#g{width:100%;height:40px;background:transparent;line-height:0;transform:scale(1.1);transform-origin:center center}
+#g>div,#g iframe{background:transparent!important}
 </style></head><body><main><div class="brand"><span class="mark">H</span>Hawkes Studio</div>${body}</main></body></html>`;
 }
 
@@ -89,13 +94,16 @@ const meta = (req: http.IncomingMessage) => ({ ip: A.clientIp(req), ua: String(r
 /**
  * Continue with Google (cloudauth.ts), when this Studio has a client id: Google's own button gives the page an ID token,
  * which goes to /auth/google; Studio checks it with Google and signs the account in. The password form stays below it.
+ * Locale is forced to English (hl=en + locale:'en') so a Romanian (or any) browser still reads "Continue with Google"
+ * like the rest of the card (f_98f714b98705). Theme follows the card (filled_black / outline). The .g-tap row is a
+ * full-width 44px tap area with a transparent background so no white box shows on phones (f_f2966d06e2c3).
  */
 function googleBlock(next: string) {
   const id = googleClientId();
   if (!id) return '';
-  return `<div id="g" style="display:flex;justify-content:center;align-items:center;height:44px;min-width:200px;margin:4px 0 6px;overflow:hidden"></div><div class="err" id="gerr" hidden></div>
-<script src="https://accounts.google.com/gsi/client" async onload="hsGoogle()" onerror="var e=document.getElementById('gerr');e.hidden=false;e.textContent='Google sign-in could not load. Check your connection or blockers, then reload.'"></script>
-<script>function hsGoogle(){google.accounts.id.initialize({client_id:${JSON.stringify(id)},callback:function(r){fetch('/auth/google',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({credential:r.credential,next:${JSON.stringify(next)}})}).then(function(x){return x.json().then(function(j){if(x.ok)location.href=j.next||'/';else{var e=document.getElementById('gerr');e.hidden=false;e.className=j.waitlist?'ok':'err';e.textContent=j.error||('HTTP '+x.status);}});});}});google.accounts.id.renderButton(document.getElementById('g'),{theme:'filled_black',size:'large',text:'continue_with',shape:'pill'});}</script>
+  return `<div class="g-tap"><div id="g"></div></div><div class="err" id="gerr" hidden></div>
+<script src="https://accounts.google.com/gsi/client?hl=en" async onload="hsGoogle()" onerror="var e=document.getElementById('gerr');e.hidden=false;e.textContent='Google sign-in could not load. Check your connection or blockers, then reload.'"></script>
+<script>function hsGoogle(){var el=document.getElementById('g');var tap=el&&el.parentElement;var w=tap?Math.floor(tap.getBoundingClientRect().width):0;var dark=!window.matchMedia||!window.matchMedia('(prefers-color-scheme: light)').matches;google.accounts.id.initialize({client_id:${JSON.stringify(id)},callback:function(r){fetch('/auth/google',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({credential:r.credential,next:${JSON.stringify(next)}})}).then(function(x){return x.json().then(function(j){if(x.ok)location.href=j.next||'/';else{var e=document.getElementById('gerr');e.hidden=false;e.className=j.waitlist?'ok':'err';e.textContent=j.error||('HTTP '+x.status);}});});}});google.accounts.id.renderButton(el,{theme:dark?'filled_black':'outline',size:'large',text:'continue_with',shape:'pill',locale:'en',width:Math.min(400,Math.max(200,Math.round((w||320)/1.1)))});}</script>
 <details style="margin-top:10px"><summary><small>Sign in with a password instead</small></summary>`;
 }
 
