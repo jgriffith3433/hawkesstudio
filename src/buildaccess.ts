@@ -29,6 +29,8 @@ const RATE = /rate limit|abuse detection|secondary rate|too many requests|\b429\
 const NETWORK = /ECONNRESET|ECONNREFUSED|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|EPIPE|socket hang up|fetch failed|network (error|is unreachable)|connection (reset|refused|closed)|UND_ERR|TLS|aborted|bad gateway|service unavailable|gateway time-?out|temporarily unavailable|try again/i;
 const TOKEN = /bad credentials|token (has |had )?expired|expired (github |installation )?token|token (was |is )?lost|tokenLost/i;
 const SERVER = /(^|[^\d])(50[0-4]|52[0-9])([^\d]|$)/;
+/** Google Cloud out of room for a moment (a region's CPU quota, shared with Studio's own agent jobs): it passes, the code is fine. */
+export const QUOTA = /quota exceeded|RESOURCE_EXHAUSTED|insufficient (regional )?quota|exceed(s|ed)? (the |your )?quota/i;
 
 /** The refusal's HTTP status and GitHub's message out of an error text ("… 403 {"message":"Resource not accessible …"}"). */
 export function githubStatus(error: unknown): { status: number | null; message: string } {
@@ -86,6 +88,7 @@ export function accessFix(cause: AccessCause, slug: string | null, o: { appHas?:
 export function failType(error: unknown, o: { stage?: string | null; kind?: string | null } = {}): FailType {
   const e = String(error ?? '');
   if (o.kind === 'code') return 'code';
+  if (QUOTA.test(e)) return 'transient';
   if (RATE.test(e) && !/not accessible by integration/i.test(e)) return 'transient';
   if (accessCause(e)) return 'access';
   // A GitHub token that expired or was lost between queueing and fetching: the next try mints a fresh one (causes.ts token-expired).

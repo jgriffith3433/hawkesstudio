@@ -126,3 +126,24 @@ test('preflight: shows the card before a build is started, and is quiet when the
   A.probeHook.run = async () => ({ ok: true, permissions: null, installId: null, account: null, type: null, known: false });
   assert.equal((await A.preflight('p5', 'b', 'o/r', 'b.yml')).ok, true); // can't tell: the build itself will say
 });
+
+// hawkes-games build 113 (2026-11-10): one function couldn't deploy because the region's CPU quota was used up (Studio's
+// own agent jobs share it). It was called "the code" and a fix agent was started; it is capacity, and retried.
+test('a Google Cloud quota error is infrastructure and retried, not a code fix', () => {
+  const log = [
+    'i  functions: updating Node.js 24 (2nd Gen) function portal:syncStarter(us-east4)...',
+    'Could not create or update Cloud Run service syncstarter, Container Healthcheck failed. Quota exceeded for total allowable CPU per project per region.',
+    '✔  functions[portal:api(us-east4)] Successful update operation.',
+    '⚠  functions: Deploys failed. Skipping deletes.',
+    'Error: There was an error deploying functions',
+  ].join('\n');
+  const d = F.digestLog(log, 'firebase deploy');
+  assert.match(d.errors[0], /Quota exceeded/);
+  const why = `firebase deploy to hawkes-staging failed (exit 2): ${d.errors.slice(0, 3).join(' | ')}`;
+  const c = F.classify(why, { stage: 'build', log });
+  assert.equal(c.kind, 'infrastructure');
+  assert.match(c.plain, /not the code/);
+  assert.equal(A.failType(why, { stage: 'build', kind: c.kind }), 'transient');
+  // Without the quota line it is still the project's own failure.
+  assert.equal(F.classify('firebase deploy to hawkes-staging failed (exit 2): Error: There was an error deploying functions', { stage: 'build' }).kind, 'code');
+});
