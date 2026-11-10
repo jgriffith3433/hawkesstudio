@@ -75,3 +75,14 @@ test('the go live itself refuses a commit that is not on beta', async () => {
   await assert.rejects(goLiveOnGitHub(C.getProduct('tool'), { beta: { sha: sha('9'), short: sha('9').slice(0, 7) }, main: { sha: sha('3') }, commits: [{}], ancestorOk: true } as any), /moved since the plan/);
   assert.equal(w.refs.main, sha('3'));
 });
+
+test('a CI look that fails (GitHub slow) is retried, not the end of the wait', async () => {
+  let n = 0;
+  const list = async () => {
+    if (++n === 1) throw new Error('The operation was aborted due to timeout');
+    return [{ name: 'Deploy', status: 'completed', conclusion: 'success' }];
+  };
+  const r = await P.ciOn('me/tool', sha('4'), { every: 5, maxMs: 1000, list });
+  assert.equal(r.ok, true);
+  assert.equal(n, 2);
+});
