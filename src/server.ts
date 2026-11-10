@@ -1313,7 +1313,12 @@ void import('./stream.ts').then(({ setProbes }) => setProbes({
 void import('./oomguard.ts').then((m) => m.installOomGuard());
 void import('./crashlog.ts').then((m) => m.installCrashLog());
 // Cloud Run's disk is memory: clear ended worktrees, profiles, tmp and packs before they fill it (disksweep.ts).
-void import('./disksweep.ts').then((m) => m.startDiskSweep());
+void import('./disksweep.ts').then((m) => {
+  m.startDiskSweep();
+  // A cell Google refused its working disk (cellrun.ts rollCells runs it without one) asks its owner for the quota: one
+  // Approve card, filed with Google on the tap (quota.ts).
+  void import('./quota.ts').then((q) => q.askDiskIfMissing(m.onRealDisk())).catch(() => {});
+});
 
 // On Cloud Run the platform's port on every address (its front end is the only way in; cloudauth.ts gates it).
 const cloud = cloudMode();
