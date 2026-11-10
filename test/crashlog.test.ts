@@ -46,3 +46,17 @@ test('the heartbeat says what the whole machine holds, and the verdict repeats i
   if (process.platform === 'linux') assert.match(s.top ?? '', /\d/);
   assert.match(verdictOn({ lastSeen: Date.now() - 5000, rssMb: 300, system: 'free 120 of 4096 MB; biggest: git 2900 MB' })!, /machine: free 120 of 4096 MB; biggest: git 2900/);
 });
+
+test('what fills the in-memory disk: the biggest folders, deepest listed, in MB', { skip: process.platform === 'win32' }, async () => {
+  const { diskTop } = await import('../src/crashlog.ts');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'disktop-'));
+  fs.mkdirSync(path.join(root, 'big', 'inner'), { recursive: true });
+  fs.mkdirSync(path.join(root, 'small'));
+  fs.writeFileSync(path.join(root, 'big', 'inner', 'blob'), Buffer.alloc(3 * 1024 * 1024, 1));
+  fs.writeFileSync(path.join(root, 'small', 'blob'), Buffer.alloc(1024, 1));
+  const line = await diskTop([{ dir: root, depth: 2 }], 10, 2);
+  assert.match(line, /big\/inner [34]\b/, 'du counts whole MB, rounded up');
+  assert.doesNotMatch(line, /small/, 'folders under the floor are left out');
+  assert.doesNotMatch(line, /(^|, )\S*big \d/, 'a parent whose child is listed is not listed again');
+  fs.rmSync(root, { recursive: true, force: true });
+});

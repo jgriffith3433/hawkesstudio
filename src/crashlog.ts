@@ -11,6 +11,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { DATA, PROJECTS } from './config.ts';
 import { memInfo } from './memgate.ts';
+import { runLight } from './spawner.ts';
 
 const BOOT = path.join(DATA, 'boot.json');
 const LOG = path.join(DATA, 'restarts.jsonl');
@@ -54,6 +55,30 @@ const sysLine = (s: ReturnType<typeof systemNow>) => [
   s.diskMb ? `disk ${Object.entries(s.diskMb).map(([k, v]) => `${k} ${v}`).join(', ')} MB` : '',
   s.top ? `biggest: ${s.top} MB` : '',
 ].filter(Boolean).join('; ');
+
+/**
+ * What fills the in-memory disk, biggest first (2026-11-10: projects held 2 GB of a 4 GB instance before each kill, and
+ * nothing said what). du runs off Studio's thread (spawner.ts), on the projects folder two levels deep (each repo, and
+ * each worktree, beta site and app under .work) and /tmp one level. Folders under 50 MB are left out.
+ */
+export async function diskTop(dirs: { dir: string; depth: number }[] = [{ dir: PROJECTS, depth: 2 }, { dir: DATA, depth: 1 }, { dir: '/tmp', depth: 1 }], max = 10, minMb = 50): Promise<string> {
+  const rows: { p: string; mb: number }[] = [];
+  for (const { dir, depth } of dirs) {
+    if (!fs.existsSync(dir)) continue;
+    const r = await runLight('du', ['-xm', `--max-depth=${depth}`, dir], { cwd: '/', timeoutMs: 60_000, maxBytes: 4 * 1024 * 1024 });
+    for (const line of r.stdout.split('\n')) {
+      const m = line.match(/^(\d+)\s+(.+)$/);
+      if (!m || m[2] === dir) continue;
+      const mbs = Number(m[1]);
+      if (mbs >= minMb) rows.push({ p: m[2], mb: mbs });
+    }
+  }
+  // A parent whose children are listed too counts only what its listed children don't hold.
+  rows.sort((a, b) => b.mb - a.mb);
+  const short = (p: string) => p.startsWith(PROJECTS + path.sep) ? p.slice(PROJECTS.length + 1) : p;
+  const leaves = rows.filter((r) => !rows.some((o) => o !== r && o.p.startsWith(r.p + path.sep)));
+  return leaves.slice(0, max).map((r) => `${short(r.p)} ${r.mb}`).join(', ');
+}
 
 /** What Studio is in the middle of, one short line (each part optional: a module not loaded yet is not running anything). */
 export async function whatIsRunning(): Promise<string> {
@@ -103,13 +128,23 @@ export function installCrashLog(): string | null {
 
   let running = 'nothing';
   let lowSaid = 0;
+  let disk = '';
+  let diskAt = 0;
+  let diskBusy = false;
   const beat = async () => {
     running = await whatIsRunning().catch(() => running);
     const sys = systemNow();
     const system = sysLine(sys);
-    writeBoot({ pid: process.pid, rev: process.env.K_REVISION ?? null, lastSeen: Date.now(), running, system, ...memoryNow() });
+    const low = sys.freeMb !== undefined && sys.limitMb ? sys.freeMb < sys.limitMb * 0.3 : false;
+    // What fills the disk: read again at most every 5 minutes while memory is low (du walks the whole tree).
+    if (low && !diskBusy && Date.now() - diskAt > 5 * 60_000 && process.env.STUDIO_DISK_TOP !== 'off') {
+      diskBusy = true;
+      diskAt = Date.now();
+      void diskTop().then((d) => { disk = d; if (d) console.warn(`[crashlog] disk holds: ${d} MB`); }).catch(() => {}).finally(() => { diskBusy = false; });
+    }
+    writeBoot({ pid: process.pid, rev: process.env.K_REVISION ?? null, lastSeen: Date.now(), running, system: disk ? `${system}; disk holds ${disk} MB` : system, ...memoryNow() });
     // Low on memory: said in the log every beat (at most once a minute), so the last state before a kill is on record.
-    if (sys.freeMb !== undefined && sys.limitMb && sys.freeMb < sys.limitMb * 0.3 && Date.now() - lowSaid > 55_000) {
+    if (low && Date.now() - lowSaid > 55_000) {
       lowSaid = Date.now();
       console.warn(`[crashlog] memory low: ${system}; studio rss ${memoryNow().rssMb} MB; running: ${running}`);
     }

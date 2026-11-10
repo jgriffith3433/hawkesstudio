@@ -36,7 +36,7 @@
 
 import { buildCheckBrief } from './buildfix.ts';
 import { compileGate, compileFixPrompt, runCompileCheck, skippedCompile, COMPILE_FIXES, type CompileResult } from './compilecheck.ts';
-import { unityCheck, unityFixPrompt, issueLines, looksUnity, changedCsFiles, type UnityCheckResult } from './unitycheck.ts';
+import { unityCheckAsync, unityFixPrompt, issueLines, looksUnity, changedCsFilesAsync, type UnityCheckResult } from './unitycheck.ts';
 import { rubricBrief, isGame, qualityGate, failLine } from './quality.ts';
 import { qualityScan, qualityFixPrompt, scanLines, type QualityScan } from './quality-scan.ts';
 import { funReview } from './fun-review.ts';
@@ -2213,10 +2213,10 @@ async function work(id: string, note?: string, answer?: string, resumed?: Phase 
       }
       // The Unity check: every changed .cs file read for what the compiler rejects, before a pull request opens.
       if (!isSiteChange(c, p) && !c.infra && commits.length) {
-        const files = changedCsFiles(c.worktree, `origin/${c.base}`);
+        const files = await changedCsFilesAsync(c.worktree, `origin/${c.base}`);
         if (files.length && (isUnity(p.id) || looksUnity(files))) {
           update(id, { detail: 'Unity check: reading the C# the change touched' });
-          const u = unityCheck(c.worktree, c.base);
+          const u = await unityCheckAsync(c.worktree, c.base);
           save({ unity: u });
           addLog(id, u.summary + (u.note ? ` (${u.note})` : ''));
           for (const l of issueLines(u)) addLog(id, `unity check: ${l}`);

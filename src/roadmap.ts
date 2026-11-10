@@ -72,6 +72,9 @@ try { db.exec('ALTER TABLE tasks ADD COLUMN target TEXT'); } catch { /* already 
 // What kind of work a task is: null (a change judged on beta) or 'video' (videos.ts: J screens each version, his notes
 // revise it, his approval finishes it).
 try { db.exec('ALTER TABLE tasks ADD COLUMN kind TEXT'); } catch { /* already there */ }
+/** Bumped on every write to pm_log (counts read from it are memoized against it: pm.ts startsToday). */
+export const pmLogVersion = { n: 0 };
+
 export const TASK_KINDS = ['video'];
 
 export const ITEM_STATUSES = ['idea', 'planned', 'in progress', 'on beta', 'live', 'done', 'dropped'];
@@ -906,6 +909,7 @@ export type LogEntry = { id: string; at: number; action: string; subject: string
 export function logDecision(action: string, subject: string | null, product: string | null, detail: string, undo: unknown = null) {
   const id = newId('d');
   db.prepare('INSERT INTO pm_log (id, at, action, subject, product, detail, undo) VALUES (?, ?, ?, ?, ?, ?, ?)').run(id, Date.now(), action, subject, product, detail.slice(0, 2000), undo ? J(undo) : null);
+  pmLogVersion.n++;
   return id;
 }
 export function listDecisions(q: { limit?: number; since?: number; action?: string } = {}) {
@@ -918,7 +922,7 @@ export const getDecision = (id: string) => {
   const r = db.prepare('SELECT * FROM pm_log WHERE id = ?').get(id) as any;
   return r ? ({ ...r, undo: parse(r.undo) } as LogEntry) : null;
 };
-export const markUndone = (id: string) => db.prepare('UPDATE pm_log SET undone = ? WHERE id = ?').run(Date.now(), id);
+export const markUndone = (id: string) => { pmLogVersion.n++; return db.prepare('UPDATE pm_log SET undone = ? WHERE id = ?').run(Date.now(), id); };
 export const countToday = (action: string) => {
   const since = new Date();
   since.setHours(0, 0, 0, 0);
