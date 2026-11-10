@@ -1569,7 +1569,12 @@ async function betaBody(id: string, p: Product, { focus, criteria, scenario, opt
       by ??= p.build && lane ? supersedingBuild(id, p.id) : null;
       return by ? `superseded by ${by}: a newer beta build is waiting to replace the one this played, and its checks play again there` : null;
     };
-    if (lane && plays?.length) {
+    // The owner skips beta playtests for this project (golive-policy.ts betaPlay): nothing is played; CI gates going live.
+    const skipPlay = lane && (await import('./golive-policy.ts')).skipsBetaPlay(p.id);
+    if (skipPlay) {
+      const s = startStep(id, p.id, 'playtest', 'beta');
+      updateStep(s, { status: 'skipped', detail: 'not playtested: the owner skips beta playtests for this project; it goes live once CI on beta passes', finished: true });
+    } else if (lane && plays?.length) {
       const release = p.build ? holdBeta(p.id, id) : null;
       try {
         // Only the scenarios of the tasks it judges (pm.ts playsFor), independent ones in parallel across the playtester's slots.

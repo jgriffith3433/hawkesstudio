@@ -17,10 +17,59 @@ import { getProduct, managedElsewhere } from './config.ts';
 export type Policy = 'auto' | 'hold' | 'ask';
 
 db.exec(`CREATE TABLE IF NOT EXISTS golive_policy (product TEXT PRIMARY KEY, policy TEXT NOT NULL, by TEXT, words TEXT, at INTEGER NOT NULL)`);
+// betaPlay "skip" (J, 2026-11-10: "skip beta playtests", for Hawkes Studio's own changes): beta isn't playtested; on
+// policy auto it goes live once CI on beta's commit passed (the beta deploy's health check is part of CI). Games keep
+// their playtests: it is per project, and off unless the owner says so for that project.
+for (const col of ['beta_play TEXT', 'beta_play_by TEXT', 'beta_play_words TEXT']) try { db.exec(`ALTER TABLE golive_policy ADD COLUMN ${col}`); } catch { /* already there */ }
 
-export function policyOf(product: string): { policy: Policy; by: string | null; words: string | null; at: number | null } {
-  const r = db.prepare('SELECT policy, by, words, at FROM golive_policy WHERE product = ?').get(product) as any;
-  return r ? { policy: (['auto', 'hold', 'ask'].includes(r.policy) ? r.policy : 'ask') as Policy, by: r.by, words: r.words, at: r.at } : { policy: 'ask', by: null, words: null, at: null };
+export type BetaPlay = 'play' | 'skip';
+
+export function policyOf(product: string): { policy: Policy; by: string | null; words: string | null; at: number | null; betaPlay: BetaPlay; betaPlayBy: string | null; betaPlayWords: string | null } {
+  const r = db.prepare('SELECT policy, by, words, at, beta_play, beta_play_by, beta_play_words FROM golive_policy WHERE product = ?').get(product) as any;
+  const betaPlay: BetaPlay = r?.beta_play === 'skip' ? 'skip' : 'play';
+  return r
+    ? { policy: (['auto', 'hold', 'ask'].includes(r.policy) ? r.policy : 'ask') as Policy, by: r.by, words: r.words, at: r.at, betaPlay, betaPlayBy: r.beta_play_by ?? null, betaPlayWords: r.beta_play_words ?? null }
+    : { policy: 'ask', by: null, words: null, at: null, betaPlay, betaPlayBy: null, betaPlayWords: null };
+}
+
+/** Whether beta is playtested before going live (play, the default) or only CI gates it (skip), from the owner's words. */
+export function setBetaPlay(product: string, betaPlay: BetaPlay, by: string, words?: string | null) {
+  getProduct(product);
+  if (betaPlay !== 'play' && betaPlay !== 'skip') throw new Error('playtest: play | skip');
+  db.prepare(`INSERT INTO golive_policy (product, policy, at) VALUES (?, 'ask', ?) ON CONFLICT(product) DO NOTHING`).run(product, Date.now());
+  db.prepare('UPDATE golive_policy SET beta_play = ?, beta_play_by = ?, beta_play_words = ? WHERE product = ?').run(betaPlay, by, words ? String(words).slice(0, 500) : null, product);
+  return policyOf(product);
+}
+export const skipsBetaPlay = (product: string) => { try { return policyOf(product).betaPlay === 'skip'; } catch { return false; } };
+
+export type CiResult = { ok: boolean; sha: string; runs: string[]; why: string };
+type CiRun = { name: string; status: string; conclusion: string | null };
+
+/**
+ * CI on one commit (every push workflow run for it, Studio's own hook aside), waited for while it runs: a deploy on
+ * GitHub's runners has no callback to Studio, so this looks every 20 s for at most `maxMs`, as verifyLive does. Green:
+ * every run completed as success or skipped, and at least one ran.
+ */
+export async function ciOn(slug: string, sha: string, { maxMs = 40 * 60_000, every = 20_000, list }: { maxMs?: number; every?: number; list?: (slug: string, sha: string) => Promise<CiRun[] | null> } = {}): Promise<CiResult> {
+  const read = list ?? (async (s: string, h: string) => {
+    const token = (await (await import('./ghtoken.ts')).repoToken(s).catch(() => null)) ?? process.env.GITHUB_TOKEN;
+    if (!token) return null;
+    const r = await fetch(`https://api.github.com/repos/${s}/actions/runs?head_sha=${h}&event=push&per_page=50`, { headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json' }, signal: AbortSignal.timeout(20_000) }).catch(() => null);
+    const j: any = r?.ok ? await r.json() : null;
+    return j ? (j.workflow_runs ?? []).filter((x: any) => !/hawkes-studio/i.test(`${x.name} ${x.path}`)).map((x: any) => ({ name: String(x.name), status: String(x.status), conclusion: x.conclusion ?? null })) : null;
+  });
+  const end = Date.now() + maxMs;
+  for (;;) {
+    const runs = await read(slug, sha);
+    if (runs?.length && runs.every((x) => x.status === 'completed')) {
+      const bad = runs.filter((x) => !['success', 'skipped', 'neutral'].includes(String(x.conclusion)));
+      return bad.length
+        ? { ok: false, sha, runs: runs.map((x) => x.name), why: `CI on ${sha.slice(0, 7)} didn't pass: ${bad.map((x) => `${x.name} ${x.conclusion}`).join(', ')}` }
+        : { ok: true, sha, runs: runs.map((x) => x.name), why: `CI passed on ${sha.slice(0, 7)} (${runs.map((x) => x.name).join(', ')})` };
+    }
+    if (Date.now() + every > end) return { ok: false, sha, runs: (runs ?? []).map((x) => x.name), why: runs?.length ? `CI on ${sha.slice(0, 7)} is still running` : `no CI run for ${sha.slice(0, 7)} yet` };
+    await new Promise((r) => setTimeout(r, every));
+  }
 }
 
 export function setPolicy(product: string, policy: Policy, by: string, words?: string | null) {
@@ -88,9 +137,28 @@ export async function autoGoLive(productId: string, why: string): Promise<{ went
     if (managedElsewhere(p)) return { waits: 'managed by another Studio' };
     const pol = policyOf(p.id);
     if (pol.policy !== 'auto') return { waits: `go-live policy is ${pol.policy}` };
-    const { deployPlan, queueLive } = await import('./deploy.ts');
-    const plan: any = await deployPlan(p.id, { notesWaitMs: 0 });
+    const { deployPlan, queueLive, isOverridable } = await import('./deploy.ts');
+    let plan: any = await deployPlan(p.id, { notesWaitMs: 0 });
     if (!plan.commits?.length && !plan.github?.targets?.some((t: any) => t.move)) return { waits: 'nothing new on beta' };
+    // The owner skips beta playtests for this project: CI on beta's exact commit is the gate instead.
+    if (pol.betaPlay === 'skip' && plan.github?.slug && plan.beta?.sha) {
+      const left = (plan.blockers ?? []).filter((b: string) => !isOverridable(b));
+      if (left.length) {
+        console.log(`[golive] ${p.id}: not going live by itself yet (${why}): ${left.join(' | ').slice(0, 400)}`);
+        return { waits: left.join(' ') };
+      }
+      const ci = await ciOn(plan.github.slug, plan.beta.sha);
+      if (!ci.ok) {
+        console.log(`[golive] ${p.id}: not going live by itself yet (${why}): ${ci.why}`);
+        return { waits: ci.why };
+      }
+      // Beta may have moved while CI ran: the newer commit gets its own pass when its CI is done.
+      plan = await deployPlan(p.id, { notesWaitMs: 0 });
+      if (plan.beta?.sha !== ci.sha) return { waits: `beta moved to ${plan.beta?.short ?? '?'} while CI ran on ${ci.sha.slice(0, 7)}` };
+      const { op } = queueLive('golive', { product: p.id, confirm: plan.confirm, by: `Studio (${ci.why}; the owner said to skip beta playtests${pol.betaPlayWords ? `: "${pol.betaPlayWords.slice(0, 60)}"` : ''})`, beta: ci.sha, ciPassed: { sha: ci.sha, runs: ci.runs } });
+      console.log(`[golive] ${p.id}: going live by itself on green CI (${why}): ${op.id}`);
+      return { went: op.id };
+    }
     // The one blocker is live having commits beta lacks: merge them into beta (its push builds and playtests it, and the
     // next pass goes live by itself). Anything else waits, said in the log.
     if (plan.blockers?.length === 1 && /can't be fast-forwarded/.test(plan.blockers[0]) && plan.github) {

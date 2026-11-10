@@ -237,6 +237,18 @@ export function playtestSkipFor(approval: string | undefined, product: string, s
   return { by: s.by, at: Number(s.at) || Date.now(), sha: s.sha, why: Array.isArray(s.why) ? s.why.map(String).slice(0, 10) : [], approval };
 }
 
+/**
+ * Going live past "not playtested" because the owner skips beta playtests for this project (golive-policy.ts betaPlay
+ * skip) and CI passed on the exact beta commit being released. null otherwise.
+ */
+export function ciSkipFor(product: string, sha: string | undefined, ci: { sha: string; runs: string[] } | undefined): PlaytestSkip | null {
+  if (!ci || !sha || ci.sha !== sha) return null;
+  let pol: any;
+  try { pol = db.prepare('SELECT beta_play, beta_play_by FROM golive_policy WHERE product = ?').get(product); } catch { return null; }
+  if (pol?.beta_play !== 'skip') return null;
+  return { by: `Studio (CI passed; ${pol.beta_play_by ?? 'the owner'} said to skip beta playtests)`, at: Date.now(), sha, why: [`CI passed: ${ci.runs.join(', ').slice(0, 300)}`], approval: '' };
+}
+
 /** notesWaitMs: how long to wait for the release notes being written (the Approve card waits longer, to show them). */
 export async function deployPlan(productId: string, opts: { notesWaitMs?: number; io?: GitHubIO } = {}) {
   const plan = await planOf(productId, opts);
@@ -532,7 +544,7 @@ export function publisherOf(p: Product) {
 export const deploy = (...a: Parameters<typeof deployNow>) => critical(`going live: ${a[0]}`, async () => {
   const r: any = await deployNow(...a);
   // A person went live past the playtest ("Go live anyway"): who, when and which commit go on the go live's record.
-  const skip = playtestSkipFor(a[1]?.approval, a[0], a[1]?.beta);
+  const skip = playtestSkipFor(a[1]?.approval, a[0], a[1]?.beta) ?? ciSkipFor(a[0], a[1]?.beta, a[1]?.ciPassed);
   if (skip && r?.deploy) {
     db.prepare('UPDATE deploys SET skipped_playtest = ? WHERE id = ?').run(JSON.stringify(skip), r.deploy);
     opLog(`${skip.by} took ${a[0]} live without a playtest of ${skip.sha.slice(0, 7)}`);
@@ -540,7 +552,7 @@ export const deploy = (...a: Parameters<typeof deployNow>) => critical(`going li
   }
   return r;
 });
-async function deployNow(productId: string, { confirm, by = 'J', mergeMain, origin, beta: expect, approval, io }: { confirm?: string; by?: string; mergeMain?: boolean; message?: string; origin?: string | null; beta?: string; approval?: string; io?: GitHubIO }) {
+async function deployNow(productId: string, { confirm, by = 'J', mergeMain, origin, beta: expect, approval, io, ciPassed }: { confirm?: string; by?: string; mergeMain?: boolean; message?: string; origin?: string | null; beta?: string; approval?: string; io?: GitHubIO; ciPassed?: { sha: string; runs: string[] } }) {
   const p = getProduct(productId);
   if (mergeMain && githubSlugOf(p)) {
     const { syncBetaWithLive } = await import('./deploy-github.ts');
@@ -553,7 +565,8 @@ async function deployNow(productId: string, { confirm, by = 'J', mergeMain, orig
   if (confirm !== plan.confirm) throw new StudioError(`Going live publishes ${plan.live}: ${plan.what} Show J the plan, then send confirm: "${plan.confirm}" (J's call).`);
   // A person's "Go live anyway" on an Approve card (playtestSkipFor) goes past beta not being playtested and the quality
   // rules its playtests broke (isOverridable), and nothing else.
-  const skip = playtestSkipFor(approval, p.id, expect);
+  // Or the owner skips beta playtests for this project (golive-policy.ts betaPlay) and CI passed on that exact commit.
+  const skip = playtestSkipFor(approval, p.id, expect) ?? ciSkipFor(p.id, expect, ciPassed);
   const blockers = skip ? plan.blockers.filter((b) => !isOverridable(b)) : plan.blockers;
   if (blockers.length) throw new StudioError(`Not going live:\n- ${blockers.join('\n- ')}`);
   // An Approve card (approvals.ts) is for one beta commit: a different one now isn't what J approved.
@@ -929,7 +942,7 @@ export async function verifyLive(productId: string, sha: string, focus: string, 
  * product goes at a time, two products at most in all, and Studio answers throughout (all git here is async). A restart
  * puts a running one back in the queue: going live again is a no-op once main is the approved beta commit.
  */
-type LiveJob = { product: string; confirm: string; by?: string; origin?: string | null; beta?: string; approval?: string; mergeMain?: boolean };
+type LiveJob = { product: string; confirm: string; by?: string; origin?: string | null; beta?: string; approval?: string; mergeMain?: boolean; ciPassed?: { sha: string; runs: string[] } };
 
 /** The approval card an operation came from hears how it ended, and so does the conversation that asked. */
 async function settleApproval(op: Op, ok: boolean, text: string) {
@@ -944,7 +957,7 @@ async function settleApproval(op: Op, ok: boolean, text: string) {
 registerOp('golive', async (j: LiveJob, ctx) => {
   ctx.step(j.mergeMain ? `merging main into ${j.product}'s beta` : `going live with ${j.product}`);
   try {
-    return await deploy(j.product, { confirm: j.confirm, by: j.by, origin: j.origin, beta: j.beta, mergeMain: j.mergeMain, approval: j.approval });
+    return await deploy(j.product, { confirm: j.confirm, by: j.by, origin: j.origin, beta: j.beta, mergeMain: j.mergeMain, approval: j.approval, ciPassed: j.ciPassed });
   } catch (e: any) {
     // A second attempt after a restart that finds it already done: that's the first attempt's success.
     if (ctx.op.attempts > 1 && /Nothing to go live/.test(String(e.message))) {
